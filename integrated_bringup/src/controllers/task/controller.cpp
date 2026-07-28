@@ -3,6 +3,7 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
@@ -323,6 +324,10 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // reader — including ReadState's ExtractFullState gate and the Stage-1 cache
   // refresh below — sees one consistent value for this tick.
   estop_active_ = estopped_.load(std::memory_order_acquire);
+  // F5 gate (#236 S7b), loaded beside estop_active_ for the same reason: every
+  // phase below has to agree on whether device 0 is usable this tick, and both
+  // output lanes — the CLIK path and ComputeEstop — honour it.
+  arm_readable_ = rtc::IsDeviceReadable(state.devices[0], arm_dof_);
 
   ReadState(state);
 
@@ -333,7 +338,11 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // reads ArmTcpPoseFromCache() and must see this tick's fresh FK. Same gate and
   // q_curr_full_ as the prior Compute-top Update — byte-for-byte. E-STOP ticks
   // skip it and keep arm_handle_ FK (ComputeEstop).
-  if (!estop_active_ && combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
+  // arm_readable_ joins the gate: refreshing the model from a state this tick
+  // could not read would put a partially-ZERO configuration into the Jacobian
+  // every consumer downstream of the cache reads.
+  if (!estop_active_ && arm_readable_ && combined_cache_.reorder_valid() &&
+      task_tcp_frame_idx_ >= 0) {
     combined_cache_.Update();
   }
 
@@ -391,8 +400,12 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
   // from a real cache Update, never a zero/stale frame — so if E-STOP is active
   // at activation this latches on the first clear tick instead, mirroring the
   // hand self-init's deferral until device 1 is valid.
+  // arm_readable_ joins the deferral (#265 audit T1/T2): the seeds below read
+  // desired_q_ and null_target from dev0.positions arm_dof_/nv deep without
+  // consulting nc0, so on a narrow device the unreported joints would latch at 0
+  // — "hold at the origin" — and arm_target_initialized_ makes that permanent.
   if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ &&
-      combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
+      arm_readable_ && combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
     if (arm_dof_ == 0 && state.num_devices > 0) {
       arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
     }
@@ -457,10 +470,19 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
     // instead. Left un-latched (arm_target_initialized_ stays false) so the full
     // TCP self-init still runs the moment the cache does become fresh. Skipped
     // under E-STOP (ComputeEstop owns the wire command there).
-    if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ && arm_handle_) {
+    //
+    // arm_readable_ replaces the `i < dev0.num_channels` term (#265 audit T3).
+    // That term was the repository's only explicit nc0 bound in these four
+    // controllers, and it is exactly the case #265 decision B warns about: it
+    // stopped the read at nc0 but left desired_q_[nc0, nv) at its previous
+    // value, which on the first tick is zero — the same partially-ZERO hold it
+    // was meant to prevent. The bound stays for OOB; the gate is what refuses.
+    if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ &&
+        arm_readable_ && arm_handle_) {
       const auto& dev0 = state.devices[0];
-      const int nseed = std::min(arm_handle_->nv(), static_cast<int>(desired_q_.size()));
-      for (int i = 0; i < nseed && i < dev0.num_channels; ++i) {
+      const int nseed = rtc::ModelChannelBound(
+          std::min(arm_handle_->nv(), static_cast<int>(desired_q_.size())), dev0.num_channels);
+      for (int i = 0; i < nseed; ++i) {
         desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
       }
     }

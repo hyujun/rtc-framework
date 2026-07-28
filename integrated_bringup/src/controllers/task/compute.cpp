@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
@@ -32,7 +33,10 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
   // the same ticks — byte-for-byte. The tip-Jacobian extraction + control pose
   // that used to live here consume the cache and moved to ComputeControl Stage 2
   // (after the Update).
-  if (!estop_active_ && combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
+  // arm_readable_ joins that gate (#236 S7b) — ExtractFullState gates internally
+  // too, but stating it here keeps this tick's phases readable as one decision.
+  if (!estop_active_ && arm_readable_ && combined_cache_.reorder_valid() &&
+      task_tcp_frame_idx_ >= 0) {
     combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
   }
 
@@ -131,7 +135,11 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   // frame registers but the reorder map fails would run CLIK on an un-refreshed
   // (zero-J / stale-pose) cache. DrainTargetSlot's hold fallback keeps desired_q_
   // seeded from measured in that case so WriteJointCommand holds position.
-  if (estop_active_ || !combined_cache_.reorder_valid() || task_tcp_frame_idx_ < 0) {
+  // !arm_readable_ joins the hold condition (#265 audit T4/T5): both the
+  // desired_q_ re-seed on a new target and the null-space error read
+  // dev0.positions nv deep, so an unread joint would enter the CLIK law as 0.
+  if (estop_active_ || !arm_readable_ || !combined_cache_.reorder_valid() ||
+      task_tcp_frame_idx_ < 0) {
     return;
   }
 
@@ -704,8 +712,26 @@ ControllerOutput DemoTaskController::WriteJointCommand(const ControllerState& st
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
+  if (!arm_readable_) {
+    // F5: no honest arm command this tick, so none is issued. Zero-length is
+    // "no update" — the drive holds its previous setpoint. nc0 zeros would be a
+    // real command to the origin (§3.7). The hand block below still runs.
+    rtc::SilenceDeviceOutput(out0);
+    if (state.num_devices > 1 && state.devices[1].valid) {
+      const int nc1 = state.devices[1].num_channels;
+      auto& out1 = output.devices[1];
+      out1.num_channels = nc1;
+      out1.goal_type = GoalType::kJoint;
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        out1.commands[i] = hand_computed_.positions[i];
+      }
+      rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                             std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
+    }
+    return output;
+  }
+  out0.num_channels = nc0;
 
   // Model-dimension bound. dq_ / desired_q_ / traj_dq_ are nv-wide Eigen
   // vectors while nc0 is whatever the device reported on the wire
@@ -759,6 +785,12 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
     // current stamp. The tail PushPullEstimatorLog then writes the matching
     // valid=0 CSV row.
     FillEstopPublishState(dt);
+    return;
+  }
+  if (!arm_readable_) {
+    // Telemetry follows the wire: a tick that issued no arm command has no arm
+    // reference to report either, and desired_q_ still holds the last readable
+    // tick's values (#265 audit T7).
     return;
   }
   const auto& dev0 = state.devices[0];
@@ -904,6 +936,9 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
   if (estop_active_) {
     return;
   }
+  if (!arm_readable_) {
+    return;  // same reason as FillLogOutput
+  }
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
@@ -1028,13 +1063,27 @@ ControllerOutput DemoTaskController::ComputeEstop(const ControllerState& state) 
   output.num_devices = state.num_devices;
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
-    out0.commands[i] =
-        dev0.positions[i] + std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
-                                ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
+  // safe_position_ is kDemoTaskMaxArmDof (32) wide and only [0, arm_dof_) is
+  // configured, while nc0 may reach kMaxDeviceChannels (64). The loop used to
+  // run to nc0 — an out-of-range read past 32, and a ramp toward
+  // safe_position_[i] == 0.0 (the origin) on every channel between arm_dof_ and
+  // it (#265 audit T8). The bound is the OOB fix; the tail policy is what those
+  // extra channels actually get. The gate is what refuses a narrow device: a
+  // `q + clamp(q_safe - q)` ramp is only a ramp toward safety while q is real.
+  const int nq = rtc::ModelChannelBound(nc0, arm_dof_);
+  if (arm_readable_) {
+    out0.num_channels = nc0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nq); ++i) {
+      const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+      out0.commands[i] =
+          dev0.positions[i] + std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
+                                  ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
+    }
+    // No configured safe position past the model: hold where the joint is.
+    rtc::FillCommandTail(out0.commands, nq, nc0, command_type_, dev0.positions);
+  } else {
+    rtc::SilenceDeviceOutput(out0);
   }
 
   // Hand: hold current position during E-Stop
@@ -1053,7 +1102,10 @@ ControllerOutput DemoTaskController::ComputeEstop(const ControllerState& state) 
   }
 
   // ── TF source poses (E-STOP path keeps arm tip tf alive) ───────────────
-  if (arm_handle_) {
+  // arm_readable_ joins the guard: FK on a device narrower than the model is FK
+  // at the ZERO configuration, and a pose derived from joints nobody reported
+  // must not be broadcast as a measurement (#125 F1's rule).
+  if (arm_readable_ && arm_handle_) {
     std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
     arm_handle_->ComputeForwardKinematics(q_span);
     pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);

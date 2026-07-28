@@ -244,6 +244,16 @@ class DemoTaskController final : public RTControllerInterface {
 
   ComputedTrajectory hand_computed_{};
   bool estop_active_{false};
+
+  /// F5 device-readability gate for the arm (device 0), evaluated once at the
+  /// top of Compute() next to estop_active_ so every phase of this tick sees one
+  /// consistent answer. False means device 0 did not report the arm_dof_
+  /// channels this controller reads, so CLIK, the null-space task and the
+  /// emitted command would all run at a partially ZERO configuration. The answer
+  /// is silence on device 0 (zero-length), NOT nc0 zeros — see
+  /// rtc_controller_interface/device_readability.hpp and §3.7 of
+  /// rtc_controllers/docs/compliance-conventions.md. RT-thread-only.
+  bool arm_readable_{false};
   // RT-thread-only cache of gains.control_6dof, set in ComputeControl so the
   // Fill* methods avoid a full Gains SeqLock copy just to read one bool.
   // Set after ComputeControl's E-STOP early-return, so it is valid only on

@@ -312,10 +312,30 @@ if(BUILD_TESTING)
     yaml-cpp
   )
   ament_target_dependencies(test_device_readability_gate
+    ament_index_cpp
     rclcpp
     rtc_controller_interface
     rtc_controllers
     rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── The same gate on the shared model scatter (#236 S7b, audit S1) ─────────
+  # URDF-backed on purpose: the claim it pins ("a bound leaves the skipped slots
+  # at their previous value") is about a buffer that persists between calls, so
+  # it needs a real reorder map. Every assertion is a configuration vector.
+  ament_add_gtest(test_combined_model_cache_gate test/test_combined_model_cache_gate.cpp)
+  target_link_libraries(test_combined_model_cache_gate
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_combined_model_cache_gate
+    ament_index_cpp
+    rclcpp
+    rtc_controller_interface
+    rtc_base
+    rtc_urdf_bridge
     pinocchio
     Eigen3
   )

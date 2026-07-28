@@ -16,6 +16,8 @@
 // Everything asserted below is a channel count or a joint command.
 
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
+#include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -26,6 +28,8 @@
 namespace {
 
 using integrated_bringup::DemoJointController;
+using integrated_bringup::DemoTaskController;
+using integrated_bringup::DemoWbcController;
 using rtc::ControllerState;
 
 constexpr int kArmDof = 6;
@@ -255,6 +259,157 @@ TEST_F(DemoJointGateTest, AWideDeviceIsNotTreatedAsAFault) {
   for (std::size_t i = 0; i < static_cast<std::size_t>(kArmDof); ++i) {
     EXPECT_TRUE(std::isfinite(out.devices[0].commands[i]));
   }
+}
+
+
+// ── demo_task: the same contract, a different binding ────────────────────────
+//
+// DemoTaskController is registered for runtime switching, so its answer to an
+// unreadable device has to match demo_joint's. Model-less on purpose (see the
+// file header): the wire and E-STOP lanes below need no URDF, and
+// ComputeControl early-returns without a registered TCP frame — which is
+// precisely the state in which the tail policy has to be right anyway.
+
+std::string MinimalTaskYaml() {
+  std::string yaml = "estop:\n  arm_safe_position: [";
+  for (int i = 0; i < kArmDof; ++i) {
+    yaml += (i ? ", " : "") + std::to_string(SafeArm(static_cast<std::size_t>(i)));
+  }
+  yaml += "]\nfsm:\n  pi_rotation_margin: 0.15\n  contact_stop_release_eps: 0.005\n";
+  return yaml;
+}
+
+class DemoTaskGateTest : public ::testing::Test {
+ protected:
+  DemoTaskController ctrl_{"", DemoTaskController::Gains{}};
+
+  void SetUp() override { ASSERT_NO_THROW(ctrl_.LoadConfig(YAML::Load(MinimalTaskYaml()))); }
+};
+
+TEST_F(DemoTaskGateTest, ANarrowDeviceSilencesTheArm) {
+  ControllerState narrow = MakeState(kArmDof - 2);
+  const auto out = ctrl_.Compute(narrow);
+
+  EXPECT_EQ(out.devices[0].num_channels, 0);
+  ASSERT_EQ(out.devices[1].num_channels, kHandChannels)
+      << "the hand keeps its own passthrough (§3.7)";
+}
+
+TEST_F(DemoTaskGateTest, TheEstopLaneAnswersTheSameWay) {
+  ctrl_.TriggerEstop();
+
+  ControllerState narrow = MakeState(kArmDof - 2);
+  const auto out = ctrl_.Compute(narrow);
+
+  EXPECT_EQ(out.devices[0].num_channels, 0);
+}
+
+TEST_F(DemoTaskGateTest, TheEstopRampStaysInsideTheFixedWidthSafePositionArray) {
+  // T8 — the J5 shape again, in the second binding. safe_position_ is
+  // kDemoTaskMaxArmDof wide; nc0 can be twice that.
+  constexpr int kWide = rtc::kMaxDeviceChannels;
+  static_assert(kWide > integrated_bringup::kDemoTaskMaxArmDof,
+                "fixture is vacuous unless the device can out-report safe_position_");
+  ctrl_.TriggerEstop();
+
+  ControllerState wide = MakeState(kWide);
+  const auto out = ctrl_.Compute(wide);
+
+  ASSERT_EQ(out.devices[0].num_channels, kWide);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kArmDof); ++i) {
+    const double step = (SafeArm(i) - MeasuredArm(i)) * kDt;
+    EXPECT_NEAR(out.devices[0].commands[i], MeasuredArm(i) + step, 1e-9) << "modelled joint " << i;
+  }
+  for (auto i = static_cast<std::size_t>(kArmDof); i < static_cast<std::size_t>(kWide); ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], MeasuredArm(i), 1e-9) << "tail channel " << i;
+  }
+}
+
+// ── demo_wbc: ur5e_p1a / iiwa7_leap initial_controller ───────────────────────
+//
+// arm_dof_ here is resolved by the self-init fallback (min(nc0, kMaxArmDof))
+// rather than YAML, which makes the first readable tick both the seed and the
+// resolution. That is worth pinning on its own: a fallback derived FROM nc0
+// must never be able to re-open the gate it just passed.
+
+class DemoWbcGateTest : public ::testing::Test {
+ protected:
+  DemoWbcController ctrl_{""};
+
+  void SeedFromReadableDevice() {
+    ControllerState seed = MakeState(kArmDof);
+    const auto out = ctrl_.Compute(seed);
+    ASSERT_EQ(out.devices[0].num_channels, kArmDof)
+        << "fixture precondition: a full-width device must NOT be gated";
+  }
+};
+
+TEST_F(DemoWbcGateTest, ANarrowDeviceSilencesTheArm) {
+  SeedFromReadableDevice();
+
+  ControllerState narrow = MakeState(kArmDof - 2);
+  const auto out = ctrl_.Compute(narrow);
+
+  EXPECT_EQ(out.devices[0].num_channels, 0);
+  ASSERT_EQ(out.devices[1].num_channels, kHandChannels)
+      << "the hand keeps its own passthrough (§3.7)";
+}
+
+TEST_F(DemoWbcGateTest, TheEstopLaneAnswersTheSameWay) {
+  SeedFromReadableDevice();
+  ctrl_.TriggerEstop();
+
+  ControllerState narrow = MakeState(kArmDof - 2);
+  const auto out = ctrl_.Compute(narrow);
+
+  EXPECT_EQ(out.devices[0].num_channels, 0);
+}
+
+TEST_F(DemoWbcGateTest, ChannelsPastTheModelHoldTheirMeasuredPosition) {
+  // W6 — robot_computed_ is only written [0, arm_dof_) by every FSM branch, so
+  // the extra channels used to leave the wire as a fresh zero.
+  SeedFromReadableDevice();
+
+  ControllerState wide = MakeState(kArmDof + 6);
+  const auto out = ctrl_.Compute(wide);
+
+  ASSERT_EQ(out.devices[0].num_channels, kArmDof + 6);
+  for (auto i = static_cast<std::size_t>(kArmDof); i < static_cast<std::size_t>(kArmDof + 6); ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], MeasuredArm(i), 1e-9) << "tail channel " << i;
+    EXPECT_NE(out.devices[0].commands[i], 0.0) << "tail channel " << i << " went to the origin";
+  }
+}
+
+TEST_F(DemoWbcGateTest, TheEstopTailHoldsInsteadOfCommandingTheOrigin) {
+  // W7 — the ramp loop is arm_dof_ deep but num_channels was declared nc0, so
+  // [arm_dof_, nc0) went out as a fresh zero under E-STOP.
+  SeedFromReadableDevice();
+  ctrl_.TriggerEstop();
+
+  ControllerState wide = MakeState(kArmDof + 6);
+  const auto out = ctrl_.Compute(wide);
+
+  ASSERT_EQ(out.devices[0].num_channels, kArmDof + 6);
+  for (auto i = static_cast<std::size_t>(kArmDof); i < static_cast<std::size_t>(kArmDof + 6); ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], MeasuredArm(i), 1e-9) << "tail channel " << i;
+  }
+  // safe_position_ is all-zero without LoadConfig, so the modelled joints ramp
+  // toward the origin — which is exactly why the tail must NOT: an unmodelled
+  // channel has no safe position to ramp to, only a place to stay.
+  EXPECT_LT(out.devices[0].commands[0], MeasuredArm(0)) << "modelled joint 0 should be ramping";
+}
+
+TEST_F(DemoWbcGateTest, TheDofFallbackCannotReopenTheGateItJustPassed) {
+  // arm_dof_ starts unresolved, so the first tick's gate degrades to a plain
+  // validity check and the fallback then sets arm_dof_ = min(nc0, kMaxArmDof).
+  // Bounded by nc0, so the resolved value can never exceed what was reported.
+  ControllerState first = MakeState(kArmDof);
+  const auto seeded = ctrl_.Compute(first);
+  EXPECT_EQ(seeded.devices[0].num_channels, kArmDof);
+
+  // ...and from now on a narrower device is refused.
+  ControllerState narrow = MakeState(kArmDof - 1);
+  EXPECT_EQ(ctrl_.Compute(narrow).devices[0].num_channels, 0);
 }
 
 }  // namespace

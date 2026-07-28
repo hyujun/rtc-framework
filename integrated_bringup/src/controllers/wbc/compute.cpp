@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
@@ -654,7 +655,10 @@ void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double 
     // joint targets into the wire output. Production reaches this branch
     // only after init failure, but the unit-test path exercises it on
     // every preempt-into-kRelease, so the fresh-hold guard is mandatory.
-    if (state.num_devices > 0 && state.devices[0].valid) {
+    // IsDeviceReadable, not `valid` (#265 audit W5): this loop runs arm_dof_
+    // deep, so a device that reported fewer channels would hold the unreported
+    // joints at 0 — a "fresh hold" at the origin.
+    if (state.num_devices > 0 && arm_readable_) {
       for (int i = 0; i < arm_dof_; ++i) {
         const auto idx = static_cast<std::size_t>(i);
         robot_computed_.positions[idx] = state.devices[0].positions[idx];
@@ -734,14 +738,26 @@ ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& sta
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.commands[i] = robot_computed_.positions[i];
+  if (arm_readable_) {
+    out0.num_channels = nc0;
+    // robot_computed_ is only written [0, arm_dof_) by every FSM branch, so
+    // channels the device reports beyond the model were left at a fresh zero —
+    // "go to the origin" on a position lane (#265 audit W6). The tail policy is
+    // what they actually get.
+    const int nq = rtc::ModelChannelBound(nc0, arm_dof_);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nq); ++i) {
+      out0.commands[i] = robot_computed_.positions[i];
+    }
+    rtc::FillCommandTail(out0.commands, nq, nc0, command_type_, dev0.positions);
+    rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
+                           std::span<const double>(device_position_upper_[0]),
+                           -kJointLimitFallbackRad, kJointLimitFallbackRad);
+  } else {
+    // F5: no honest arm command this tick, so none is issued. Zero-length is
+    // "no update" — the drive holds its previous setpoint (§3.7).
+    rtc::SilenceDeviceOutput(out0);
   }
-  rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
-                         std::span<const double>(device_position_upper_[0]),
-                         -kJointLimitFallbackRad, kJointLimitFallbackRad);
 
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
@@ -1026,15 +1042,32 @@ ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) n
   // DemoJoint/DemoTask ComputeEstop pattern — instant jump risks hardware
   // damage on real UR5e at high E-STOP delta).
   auto& out0 = output.devices[0];
-  out0.num_channels = dev0.num_channels;
+  const int nc0 = dev0.num_channels;
   out0.goal_type = GoalType::kJoint;
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
-  for (int i = 0; i < arm_dof_; ++i) {
-    const auto idx = static_cast<std::size_t>(i);
-    const double lim = (idx < device_max_velocity_[0].size()) ? device_max_velocity_[0][idx] : 2.0;
-    out0.commands[idx] =
-        dev0.positions[idx] + std::clamp(safe_position_[idx] - dev0.positions[idx], -lim, lim) * dt;
-    out0.target_positions[idx] = out0.commands[idx];
+  // The ramp loop is arm_dof_ deep but num_channels was declared nc0, so
+  // channels in [arm_dof_, nc0) went out as a fresh zero — the arm's extra
+  // channels commanded to the origin under E-STOP (#265 audit W7). And the ramp
+  // itself is only a ramp toward safety while q is a real measurement, so the
+  // gate applies here exactly as it does on the normal lane (#236 E-8).
+  const int nq = rtc::ModelChannelBound(nc0, arm_dof_);
+  if (arm_readable_) {
+    out0.num_channels = nc0;
+    for (int i = 0; i < nq; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      const double lim =
+          (idx < device_max_velocity_[0].size()) ? device_max_velocity_[0][idx] : 2.0;
+      out0.commands[idx] = dev0.positions[idx] +
+                           std::clamp(safe_position_[idx] - dev0.positions[idx], -lim, lim) * dt;
+      out0.target_positions[idx] = out0.commands[idx];
+    }
+    // No configured safe position past the model: hold where the joint is.
+    rtc::FillCommandTail(out0.commands, nq, nc0, command_type_, dev0.positions);
+    for (std::size_t i = static_cast<std::size_t>(nq); i < static_cast<std::size_t>(nc0); ++i) {
+      out0.target_positions[i] = out0.commands[i];
+    }
+  } else {
+    rtc::SilenceDeviceOutput(out0);
   }
 
   // Hold current position (hand). E-8: this is a fresh ControllerOutput, so the
@@ -1108,9 +1141,14 @@ void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexc
   // joint_goal mirror = current measured config (arm + hand). This makes the
   // logged joint_goal match the posture reference idle actually regulates to.
   const auto& dev0 = state.devices[0];
-  for (int i = 0; i < arm_dof_; ++i) {
-    const auto idx = static_cast<std::size_t>(i);
-    current_target_slot_.targets[0][idx] = dev0.positions[idx];
+  // Only mirror a measurement that exists: an unreadable arm would seed the
+  // joint_goal — and through BuildTargetPosture the posture REFERENCE — with
+  // zeros for the joints nobody reported.
+  if (arm_readable_) {
+    for (int i = 0; i < arm_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      current_target_slot_.targets[0][idx] = dev0.positions[idx];
+    }
   }
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
@@ -1124,7 +1162,7 @@ void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexc
   BuildTargetPosture(state);
   // SE3 hold pose at the current measured FK (base_frame → tip), persisted to
   // the SeqLock POD so the next-tick DrainTargetSlot restore keeps it valid.
-  if (arm_handle_) {
+  if (arm_readable_ && arm_handle_) {
     std::span<const double> q_arm(dev0.positions.data(), static_cast<std::size_t>(arm_dof_));
     arm_handle_->ComputeForwardKinematics(q_arm);
     tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
