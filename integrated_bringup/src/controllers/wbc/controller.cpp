@@ -4,6 +4,7 @@
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_math/se3/so3.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -1520,39 +1521,17 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
 // ── Phase 1: Read state ──────────────────────────────────────────────────────
 
 void DemoWbcController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
-    return;
-  }
-  PendingTarget pending{};
-  pending.device_idx = device_idx;
-  pending.generation = ActivationGeneration();
-  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-  pending.num_values = static_cast<int>(nch);
-  for (std::size_t i = 0; i < nch; ++i) {
-    pending.values[i] = target[i];
-  }
-  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
-  // and is the SOLE writer of target_seqlock_.
-  (void)pending_targets_.Push(pending);
+  // Off-RT marshal. The base stamps the activation generation, bounds the
+  // index and the width, and queues; the RT thread drains inside Compute() and
+  // is the SOLE writer of target_seqlock_.
+  PushPendingTarget(device_idx, target, /*is_task=*/false);
 }
 
 void DemoWbcController::SetDeviceTaskTarget(int device_idx,
                                             std::span<const double> task6) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
-    return;
-  }
-  PendingTarget pending{};
-  pending.device_idx = device_idx;
-  pending.generation = ActivationGeneration();
-  pending.is_task = true;
-  const std::size_t nch = std::min(task6.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-  pending.num_values = static_cast<int>(nch);
-  for (std::size_t i = 0; i < nch; ++i) {
-    pending.values[i] = task6[i];
-  }
-  // Off-RT marshal — same SPSC queue as joint targets; the RT thread converts
-  // the task-tagged entry to a commanded SE3 in DrainTargetSlot.
-  (void)pending_targets_.Push(pending);
+  // Off-RT marshal — same mailbox as joint targets, tagged so the RT side
+  // converts it to a commanded SE3 instead of overwriting the joint slot.
+  PushPendingTarget(device_idx, task6, /*is_task=*/true);
 }
 
 // RT-thread-only. Refreshes current_target_slot_, drains pending entries,
@@ -1711,59 +1690,62 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     }
   }
 
-  PendingTarget pending{};
-  while (pending_targets_.Pop(pending)) {
-    // Drop targets queued before the current activation (#196 §3) — they were
-    // addressed to a controller that is no longer the one running.
-    if (!IsCurrentGeneration(pending.generation)) {
-      continue;
-    }
-    const auto didx = static_cast<std::size_t>(pending.device_idx);
-    if (didx >= ControllerState::kMaxDevices) {
-      continue;
-    }
-    if (pending.is_task) {
-      // Commanded SE3 — arm (device 0) only; the hand has no SE3 task slot, so a
-      // task goal on device 1+ is ignored. Convert (x,y,z,r,p,y)→SE3 with the
-      // ZYX (yaw·pitch·roll) convention, matching DemoTask. trig only, no alloc
-      // (RT-1/RT-4); the joint slot (targets[0]) is left untouched so arm joint
-      // posture and the commanded SE3 stay independent.
-      if (pending.device_idx == 0 && pending.num_values >= 6) {
-        const Eigen::AngleAxisd roll(pending.values[3], Eigen::Vector3d::UnitX());
-        const Eigen::AngleAxisd pitch(pending.values[4], Eigen::Vector3d::UnitY());
-        const Eigen::AngleAxisd yaw(pending.values[5], Eigen::Vector3d::UnitZ());
-        const Eigen::Matrix3d rotation = (yaw * pitch * roll).matrix();
-        const Eigen::Vector3d translation(pending.values[0], pending.values[1], pending.values[2]);
-        std::memcpy(current_target_slot_.tcp_cmd_rot.data(), rotation.data(),
-                    sizeof(current_target_slot_.tcp_cmd_rot));
-        std::memcpy(current_target_slot_.tcp_cmd_t.data(), translation.data(),
-                    sizeof(current_target_slot_.tcp_cmd_t));
-        current_target_slot_.tcp_cmd_valid = true;
-        arm_task_new_target_pending_ = true;
-        slot_dirty = true;
-      }
-      continue;
-    }
-    const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
-                                     static_cast<std::size_t>(kMaxDeviceChannels));
-    for (std::size_t i = 0; i < nch; ++i) {
-      current_target_slot_.targets[didx][i] = pending.values[i];
-    }
-    if (pending.device_idx == 0) {
-      robot_new_target_pending_ = true;
-    } else if (pending.device_idx == 1) {
-      hand_new_target_pending_ = true;
-    }
-    // q_des_target_full_ is rebuilt at phase entry so the posture + SE3
-    // references stay a consistent snapshot. A new target is a goal edge: re-anchor
-    // the CLIK desired to the measured state (otherwise it carries forward).
-    clik_reseed_pending_ = true;
+  // Base drain: pops everything queued, drops what a later activation
+  // invalidated (#196 §3), and calls ApplyPendingTarget for each survivor.
+  // The dirty flag comes from Apply rather than the entry count because a
+  // surviving entry can still reach no slot — see drained_slot_dirty_.
+  drained_slot_dirty_ = false;
+  (void)DrainPendingTargets();
+  if (drained_slot_dirty_) {
     slot_dirty = true;
   }
 
   if (slot_dirty) {
     target_seqlock_.Store(current_target_slot_);
   }
+}
+
+// RT tick, called once per surviving mailbox entry from DrainTargetSlot().
+// Writes the RT working copy, which DrainTargetSlot publishes once at the end.
+void DemoWbcController::ApplyPendingTarget(int device_idx, std::span<const double> values,
+                                           bool is_task) noexcept {
+  const auto didx = static_cast<std::size_t>(device_idx);
+  if (is_task) {
+    // Commanded SE3 — arm (device 0) only; the hand has no SE3 task slot, so a
+    // task goal on device 1+ is ignored. Convert (x,y,z,r,p,y)→SE3 with the ZYX
+    // (yaw·pitch·roll) convention shared with DemoTask through
+    // rtc::math::se3::RpyToRotationZyx, so the convention has one owner rather
+    // than a copy per binding. trig only, no alloc (RT-1/RT-4); the joint slot
+    // (targets[0]) is left untouched so arm joint posture and the commanded SE3
+    // stay independent.
+    if (device_idx == 0 && values.size() >= 6) {
+      const Eigen::Matrix3d rotation =
+          rtc::math::se3::RpyToRotationZyx(Eigen::Vector3d(values[3], values[4], values[5]));
+      const Eigen::Vector3d translation(values[0], values[1], values[2]);
+      std::memcpy(current_target_slot_.tcp_cmd_rot.data(), rotation.data(),
+                  sizeof(current_target_slot_.tcp_cmd_rot));
+      std::memcpy(current_target_slot_.tcp_cmd_t.data(), translation.data(),
+                  sizeof(current_target_slot_.tcp_cmd_t));
+      current_target_slot_.tcp_cmd_valid = true;
+      arm_task_new_target_pending_ = true;
+      drained_slot_dirty_ = true;
+    }
+    return;
+  }
+
+  for (std::size_t i = 0; i < values.size() && i < kMaxDeviceChannels; ++i) {
+    current_target_slot_.targets[didx][i] = values[i];
+  }
+  if (device_idx == 0) {
+    robot_new_target_pending_ = true;
+  } else if (device_idx == 1) {
+    hand_new_target_pending_ = true;
+  }
+  // q_des_target_full_ is rebuilt at phase entry so the posture + SE3
+  // references stay a consistent snapshot. A new target is a goal edge: re-anchor
+  // the CLIK desired to the measured state (otherwise it carries forward).
+  clik_reseed_pending_ = true;
+  drained_slot_dirty_ = true;
 }
 
 bool DemoWbcController::ApplyCommandedSe3IfPresent() noexcept {

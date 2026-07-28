@@ -13,7 +13,6 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
-#include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
@@ -261,10 +260,11 @@ class DemoJointController final : public RTControllerInterface {
   // ── Internal state ──────────────────────────────────────────────────────
   rtc::SeqLock<Gains> gains_lock_;
 
-  // SeqLock + SPSC marshal for the per-device joint target slots. RT thread
-  // (Compute) is the SOLE writer of target_seqlock_; off-RT writers push
-  // onto pending_targets_ via SetDeviceTarget. See joint_pd_controller.hpp
-  // for the full rationale ([[feedback_eigen_seqlock_pod_wrapper]]).
+  // SeqLock for the per-device joint target slots. RT thread (Compute) is the
+  // SOLE writer of target_seqlock_; off-RT writers hand their goal to the base
+  // mailbox via SetDeviceTarget → PushPendingTarget, and the RT drain calls
+  // ApplyPendingTarget below. The slot layout and its meaning stay here — the
+  // marshal itself is base-owned (#206).
   struct TargetSlot {
     std::array<std::array<double, rtc::kMaxDeviceChannels>, ControllerState::kMaxDevices> targets{};
   };
@@ -272,23 +272,14 @@ class DemoJointController final : public RTControllerInterface {
   static_assert(std::is_trivially_copyable_v<TargetSlot>,
                 "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
 
-  struct PendingTarget {
-    int device_idx{0};
-    int num_values{0};
-    std::array<double, rtc::kMaxDeviceChannels> values{};
-    // Activation generation observed by the off-RT pusher. The RT drain drops
-    // entries a later activation has invalidated — see
-    // rtc::RTControllerInterface::ActivationGeneration (#196 §3).
-    std::uint32_t generation{0};
-  };
-
-  static_assert(std::is_trivially_copyable_v<PendingTarget>,
-                "PendingTarget must be trivially copyable for SpscQueue");
-
-  static constexpr std::size_t kPendingTargetDepth = 4;
+  // One drained target → this controller's slot. Called on the RT tick from
+  // DrainTargetSlot(), with device_idx and values already bounded by the base.
+  // `is_task` is unused: this controller keeps one joint slot per device, and
+  // its task ingress is the base default (which forwards to SetDeviceTarget).
+  void ApplyPendingTarget(int device_idx, std::span<const double> values,
+                          bool is_task) noexcept override;
 
   rtc::SeqLock<TargetSlot> target_seqlock_;
-  rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
   // Per-device self-init flags. The arm (device 0) is seeded immediately on the
   // first tick; the hand (device 1) hold-seed is DEFERRED until it first reports
   // a valid measured state. A single shared flag used to flip true after the
@@ -375,8 +366,8 @@ class DemoJointController final : public RTControllerInterface {
   CommandType command_type_{CommandType::kPosition};
 
   // ── Trajectory ───────────────────────────────────────────────────────────
-  // RT-thread-only flags; SetDeviceTarget marshals via pending_targets_ and
-  // the RT thread flips these when it drains a device-0 / device-1 entry.
+  // RT-thread-only flags; SetDeviceTarget marshals through the base mailbox and
+  // ApplyPendingTarget flips these when a device-0 / device-1 entry is drained.
   bool robot_new_target_pending_{false};
   bool hand_new_target_pending_{false};
   // Templates fixed at compile-time capacity; only the first arm_dof_ /

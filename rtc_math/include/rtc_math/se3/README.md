@@ -85,6 +85,25 @@ inverse-transpose is what makes mechanical power `⟨ν, f⟩` frame-invariant �
 by the `WrenchTransform.PowerDuality` test, never by assuming a library's
 `act`/`actInv` orientation.
 
+## RPY → R at the wire edge (`so3.hpp`)
+
+`RpyToRotationZyx(rpy)` returns `R = Rz(yaw)·Ry(pitch)·Rx(roll)` — intrinsic
+Z-Y'-X'', the "ZYX Euler at boundaries" rule of `CLAUDE.md` §10. Internal math
+stays on quaternions and `log`/`exp`; this exists only where a message or an
+operator still speaks `(x, y, z, r, p, y)`.
+
+It takes one `Vec3`, not three scalars: three adjacent `double` parameters are
+trivially transposed at a call site and a swapped roll/yaw yields a plausible
+rotation rather than an obvious failure. Gimbal lock belongs to the **inverse**
+map (`R → rpy`); this direction is total and well conditioned.
+
+The reason it lives here rather than in each binding: the same three
+`AngleAxisd` lines were written twice in the controller bindings with different
+spellings, which is the drift class issue #206 exists to remove. Changing the
+convention must be one edit. Consumer-side tests deliberately re-derive it
+literally instead of calling this — a shared helper on both sides of an
+assertion pins nothing.
+
 ## Choosing a definition
 
 - **WBC / QP residual / impedance** with separately-tuned translation vs rotation
@@ -106,7 +125,8 @@ by the `WrenchTransform.PowerDuality` test, never by assuming a library's
 - `test/test_se3_module.cpp` — the Eigen-only core tests (exp/log identities,
   θ→0/π robustness, error scales, finite-difference `exactPoseErrorRate` for all
   6 types, `J(ξ)ξ=ξ`, scalar-gain exact exponential decay, wrench transform
-  `Ad^{-T}` power duality) run with **no** external dependency. When Pinocchio is found, two extra cross-checks compile in
+  `Ad^{-T}` power duality, `RpyToRotationZyx` axis/order/properness) run with
+  **no** external dependency. When Pinocchio is found, two extra cross-checks compile in
   (`log3`/`log6` and `Jlog3`/`Jlog6` < 1e-10), gated by `RTC_MATH_HAVE_PINOCCHIO`.
 - `examples/se3_error_compare` (+ `scripts/plot_se3_compare.py`) — S1 straight-line
   vs screw, S2 Lee stall, S3 θ=179.999° robustness, S4 anisotropic-gain Jlog

@@ -210,7 +210,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   const auto gains = gains_lock_.Load();
 
   if (diag.estopped) {
-    DrainPendingTargets();
+    DiscardPendingTargets();
     return ComputeEstop(state, gains, /*control_valid=*/false, diag);
   }
 
@@ -638,7 +638,7 @@ ControllerOutput TaskAdmittanceController::ComputeEstop(const ControllerState& s
   return output;
 }
 
-void TaskAdmittanceController::DrainPendingTargets() noexcept {
+void TaskAdmittanceController::DiscardPendingTargets() noexcept {
   PendingTarget discarded{};
   while (pending_targets_.Pop(discarded)) {
     // discard: a command issued while held must not survive recovery
@@ -654,7 +654,7 @@ ControllerOutput TaskAdmittanceController::ComputeNoJointState(const ControllerS
   // depth-4 queue holds the OLDEST commands of the outage (SpscQueue drops the
   // newest when full) and the first recovered tick jumps to one of them instead
   // of the measured pose.
-  DrainPendingTargets();
+  DiscardPendingTargets();
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   compliance::ComplianceFaults faults;
   faults.device_state_invalid = true;

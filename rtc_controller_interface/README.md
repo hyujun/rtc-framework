@@ -87,9 +87,27 @@ joint 목표는 디스패치 직전에 `device_name_configs_[group_name].joint_l
 | `IsCurrentGeneration(gen)` | base public | RT drain 측 판정 술어 |
 | `ResetTargetInitialization()` | base protected virtual | `on_activate` 가 매 활성화마다 호출. 파생 controller 는 여기서 `target_initialized_` 계열 latch 만 내려 첫 tick 재-seed 를 강제한다 |
 
-각 controller 의 `PendingTarget` 은 `generation` 필드를 갖고, off-RT `SetDeviceTarget`/`SetDeviceTaskTarget` 이 push 시점의 세대를 찍으며, RT `Compute()` drain 이 `IsCurrentGeneration` 이 아닌 entry 를 버린다. 활성화 latch reset 은 **base 가 소유**하므로 controller 는 `on_activate` override 없이도 재-seed 를 얻는다 (이 소유권 이전 전에는 `on_activate` override 가 없는 controller 들이 재활성화 시 이전 hold 를 그대로 유지했다).
+`PendingTarget` 은 `generation` 필드를 갖고, off-RT `PushPendingTarget` 이 push 시점의 세대를 찍으며, RT `DrainPendingTargets()` 가 `IsCurrentGeneration` 이 아닌 entry 를 버린다 (아래 §Target mailbox). 활성화 latch reset 은 **base 가 소유**하므로 controller 는 `on_activate` override 없이도 재-seed 를 얻는다 (이 소유권 이전 전에는 `on_activate` override 가 없는 controller 들이 재활성화 시 이전 hold 를 그대로 유지했다).
 
-> **`PendingTarget` 자체는 아직 base 소유가 아니다** — `SpscQueue` + `SeqLock<TargetSlot>` + drain 루프는 구현체마다 복제돼 있고, base 가 소유하는 것은 generation 스탬프와 latch reset 뿐이다. 이 복제가 #206 의 내용이며, #236 이 그것을 슬라이스 S7 로 흡수해 mailbox 전체를 이 패키지로 올린다 (같은 글루 계층의 submodel 선택 · device 한계값 로드 · 판독가능성 게이트와 함께). 그때 이 절은 "각 controller 의" 가 아니라 "base 의" 로 다시 쓰인다. 배치 규칙의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 표다.
+### Target mailbox (#206)
+
+off-RT ingress → RT drain marshal 이 이 패키지 소유다. 같은 스켈레톤이 controller 마다 복제돼 있었고, 그래서 한 사본에서 고친 결함이 나머지에 전파되지 않았다 (PR #256 F5/F7/F8/F9, PR #263 의 `ComputeNoJointState` drain 누락).
+
+| 요소 | 가시성 | 역할 |
+|---|---|---|
+| `PushPendingTarget(device_idx, values, is_task)` | base protected | off-RT producer. 세대 스탬프 + `device_idx`/채널 폭 bound + enqueue. **single-producer** — 프로덕션 유일 경로는 controller LifecycleNode default group 의 `DeliverTargetMessage` |
+| `DrainPendingTargets()` | base protected | RT consumer. 무효 세대·범위 밖 entry 를 버리고 생존분마다 `ApplyPendingTarget` 호출, 적용 개수 반환 |
+| `DiscardPendingTargets()` | base protected | RT consumer, apply 없이 비우기. E-STOP 경로와 device-invalid 경로가 **같은 primitive** 를 쓴다 (#263 은 한 controller 안에서 이 둘이 갈라진 결함이었다). 호출 여부는 derived 소유 — base 가 자동으로 discard 하면 그러지 않던 controller 의 거동이 바뀐다 |
+| `ApplyPendingTarget(...)` | base protected virtual (default = 계수만) | derived 가 `TargetSlot` 의미를 소유하는 지점. base 는 세대·인덱스·폭을 이미 검증해서 넘긴다. default 는 no-op 이 아니라 `GetTargetUnhandledCount()` 를 올린다 (#206 R4 — pure virtual 은 기각했으나 실패는 보이게) |
+| `GetTargetDropCount()` | base public | 큐 포화로 유실된 goal 수 + throttled WARN 1건. 이전에는 `Push()` 반환값을 전부 버려서 포화가 controller 밖에서 **관측 불가**였다 |
+| `GetTargetRejectCount()` | base public | 큐에 닿기 전에 거부된 goal 수 — `DeliverTargetMessage` 의 메시지 검증과 `PushPendingTarget` 의 `device_idx` bound 양쪽. "형식이 틀린 goal" 축이며, 포화("형식은 맞으나 늦은 goal")와 구분된다 |
+| `GetTargetUnhandledCount()` | base public | drain 이 base default `ApplyPendingTarget` 에 넘긴 entry 수. **0 이 아니면** 그 controller 는 push 는 하면서 override 를 안 한 것 — 모든 goal 이 pop 된 뒤 버려지는데 drop/reject 어느 쪽도 오르지 않는 유일한 침묵 경로였다 |
+
+depth 는 4 (usable 3 — ring 이 한 칸을 full/empty 구분에 쓴다), 포화 정책은 **FIFO + newest-drop** 이라 이미 받아들인 goal 을 나중 것이 밀어내지 않는다. `SeqLock<TargetSlot>` · self-init seed · 궤적 재초기화 플래그 · joint/task 슬롯 독립성은 **derived 소유**로 남는다 — 모든 controller 를 수용하는 canonical slot 은 WBC 의 사적 의미를 base 계약으로 승격시키므로 기각됐다 (#206 §2).
+
+> **계측의 현재 한계** — 위 세 카운터는 **프로세스 밖 소비자가 없다.** 진단 토픽으로 나가는 것이 없으므로 원격 operator 가 얻는 신호는 로그 한 줄이 전부다. 토픽 노출은 후속 작업이며, 그때까지 "관측 가능해졌다" 는 *계측과 로그* 까지를 뜻한다.
+
+> **전이 상태** — 이 mailbox 를 쓰는 것은 base 를 상속한 바인딩 전부가 아니다. `rtc_controllers` 에 남은 어댑터들은 아직 자기 사본을 갖고 있고 (`grep -rln "SpscQueue<PendingTarget" rtc_controllers`), 그중 셋은 자기 큐를 비우는 private `DiscardPendingTargets()` 를 선언해 base 의 동명 메서드를 가린다 — **의미는 같고** 대상 큐만 다르다. 원래는 이 선언이 `DrainPendingTargets()` 라 base 의 *apply* 와 이름이 겹쳤고, 그 클래스들 안에서 base 의 `DiscardPendingTargets()` 는 항상 빈 큐를 비우는 no-op 이었다. 그 어댑터들은 #236 S7c 에서 삭제된다. 배치 규칙의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 표다.
 
 CM 이 아닌 단위 테스트가 직접 `Compute()` 를 도는 경로는 양쪽 모두 세대 0 이라 아무것도 드롭되지 않는다.
 

@@ -14,7 +14,6 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
-#include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
@@ -396,7 +395,8 @@ class DemoTaskController final : public RTControllerInterface {
   std::array<double, kDemoTaskMaxArmDof> null_target_init_{};
 
   // TargetSlot — Eigen SE3 mirrored as flat doubles. RT thread is the SOLE
-  // writer of target_seqlock_; off-RT writers push onto pending_targets_.
+  // writer of target_seqlock_; off-RT writers hand their goal to the base
+  // mailbox via SetDeviceTarget → PushPendingTarget (#206).
   static constexpr std::size_t kSE3RotDoubles = 9;
   static constexpr std::size_t kSE3TransDoubles = 3;
 
@@ -411,23 +411,16 @@ class DemoTaskController final : public RTControllerInterface {
   static_assert(std::is_trivially_copyable_v<TargetSlot>,
                 "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
 
-  struct PendingTarget {
-    int device_idx{0};
-    int num_values{0};
-    std::array<double, kMaxDeviceChannels> values{};
-    // Activation generation observed by the off-RT pusher. The RT drain drops
-    // entries a later activation has invalidated — see
-    // rtc::RTControllerInterface::ActivationGeneration (#196 §3).
-    std::uint32_t generation{0};
-  };
-
-  static_assert(std::is_trivially_copyable_v<PendingTarget>,
-                "PendingTarget must be trivially copyable for SpscQueue");
-
-  static constexpr std::size_t kPendingTargetDepth = 4;
+  // One drained target → this controller's slot. Called on the RT tick from
+  // DrainTargetSlot(), with device_idx and values already bounded by the base.
+  // Device 0 is the task device: its goal is an SE3 pose or a
+  // position+nullspace pair depending on `control_6dof`. `is_task` is unused —
+  // this controller's task ingress is the base default, which forwards to
+  // SetDeviceTarget because device 0's buffer already IS the pose.
+  void ApplyPendingTarget(int device_idx, std::span<const double> values,
+                          bool is_task) noexcept override;
 
   rtc::SeqLock<TargetSlot> target_seqlock_;
-  rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
   // Per-device self-init flags — see demo_joint_controller.hpp. The arm/TCP
   // hold is seeded on the first tick; the hand (device 1) hold-seed is deferred
   // until device 1 first reports a valid measured state so it is never locked to

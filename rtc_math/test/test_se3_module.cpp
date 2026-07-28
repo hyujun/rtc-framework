@@ -393,3 +393,61 @@ TEST(WrenchTransform, PowerDuality) {
         << "power invariance sample " << i;
   }
 }
+
+// ── RPY → R, the boundary convention ─────────────────────────────────────────
+//
+// RpyToRotationZyx is the single owner of the (r,p,y) → R convention used at
+// the message edge, so what these tests pin is the CONVENTION, not the trig:
+// a controller reading a goal off the wire and a client writing one must agree
+// on which axis moves first. Each check fails under a different plausible
+// mistake — axis order, intrinsic vs extrinsic, sign.
+
+// Single-axis rotations name their own axis: swapping any two arguments moves
+// the nonzero block to a different pair of entries.
+TEST(RpyToRotation, SingleAxisMatchesAngleAxis) {
+  constexpr double kAngle = 0.7;
+  const Mat3 rx = se3::RpyToRotationZyx(Vec3(kAngle, 0.0, 0.0));
+  const Mat3 ry = se3::RpyToRotationZyx(Vec3(0.0, kAngle, 0.0));
+  const Mat3 rz = se3::RpyToRotationZyx(Vec3(0.0, 0.0, kAngle));
+
+  EXPECT_LT((rx - Eigen::AngleAxisd(kAngle, Vec3::UnitX()).toRotationMatrix()).norm(), kTight);
+  EXPECT_LT((ry - Eigen::AngleAxisd(kAngle, Vec3::UnitY()).toRotationMatrix()).norm(), kTight);
+  EXPECT_LT((rz - Eigen::AngleAxisd(kAngle, Vec3::UnitZ()).toRotationMatrix()).norm(), kTight);
+}
+
+// The composition order. R = Rz·Ry·Rx (intrinsic Z-Y'-X''): roll is applied in
+// the body frame first, yaw last in the world frame. The reversed product
+// Rx·Ry·Rz is a different rotation for any two nonzero angles, so this is what
+// separates ZYX from XYZ.
+TEST(RpyToRotation, ComposesYawPitchRollInThatOrder) {
+  const Vec3 rpy(0.3, -0.4, 1.1);
+  const Mat3 expected = (Eigen::AngleAxisd(rpy.z(), Vec3::UnitZ()) *
+                         Eigen::AngleAxisd(rpy.y(), Vec3::UnitY()) *
+                         Eigen::AngleAxisd(rpy.x(), Vec3::UnitX()))
+                            .toRotationMatrix();
+  const Mat3 reversed = (Eigen::AngleAxisd(rpy.x(), Vec3::UnitX()) *
+                         Eigen::AngleAxisd(rpy.y(), Vec3::UnitY()) *
+                         Eigen::AngleAxisd(rpy.z(), Vec3::UnitZ()))
+                            .toRotationMatrix();
+
+  EXPECT_LT((se3::RpyToRotationZyx(rpy) - expected).norm(), kTight);
+  EXPECT_GT((expected - reversed).norm(), 0.1) << "the fixture cannot tell the two orders apart";
+}
+
+// A rotation matrix, for every input: orthonormal with det +1. Guards the
+// direction a sign slip would take it (det −1 is a reflection, not a rotation).
+TEST(RpyToRotation, IsAProperRotationEverywhere) {
+  auto rng = MakeRng();
+  std::uniform_real_distribution<double> ang(-3.2, 3.2);
+  for (int i = 0; i < kNumSamples; ++i) {
+    const Mat3 R = se3::RpyToRotationZyx(Vec3(ang(rng), ang(rng), ang(rng)));
+    EXPECT_LT((R.transpose() * R - Mat3::Identity()).norm(), kTight) << "orthonormal sample " << i;
+    EXPECT_NEAR(R.determinant(), 1.0, kTight) << "determinant sample " << i;
+  }
+}
+
+// Zero in, identity out — the self-init path feeds an all-zero goal before any
+// operator command arrives, and it must not rotate the tool.
+TEST(RpyToRotation, ZeroIsIdentity) {
+  EXPECT_LT((se3::RpyToRotationZyx(Vec3::Zero()) - Mat3::Identity()).norm(), kTight);
+}

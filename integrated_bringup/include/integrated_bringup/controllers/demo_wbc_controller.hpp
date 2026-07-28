@@ -17,7 +17,6 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/wbc_reduced_dynamics_provider.hpp"
-#include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -200,9 +199,11 @@ class DemoWbcController final : public RTControllerInterface {
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  // Commanded SE3 (arm task goal). Marshals a task-tagged PendingTarget onto the
-  // SPSC queue; the RT thread converts (x,y,z,r,p,y)→SE3 into the TargetSlot's
-  // commanded slot in DrainTargetSlot. Joint targets keep using SetDeviceTarget.
+  // Commanded SE3 (arm task goal). Marshals a task-tagged entry onto the base
+  // mailbox; the RT thread converts (x,y,z,r,p,y)→SE3 into the TargetSlot's
+  // commanded slot in ApplyPendingTarget. Joint targets keep using
+  // SetDeviceTarget — this controller is the reason the mailbox carries the
+  // is_task tag at all, since the two goals must not clobber each other.
   void SetDeviceTaskTarget(int device_idx, std::span<const double> task6) noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "DemoWbcController"; }
@@ -813,8 +814,9 @@ class DemoWbcController final : public RTControllerInterface {
                                 const ComputedTrajectory& computed, int target_slot) noexcept;
 
   // ── Target management ───────────────────────────────────────────────────
-  // RT thread is the SOLE writer of target_seqlock_. Off-RT SetDeviceTarget
-  // callers marshal onto pending_targets_; RT thread drains in Compute().
+  // RT thread is the SOLE writer of target_seqlock_. Off-RT SetDeviceTarget /
+  // SetDeviceTaskTarget callers marshal onto the base mailbox; the RT thread
+  // drains it in Compute() (#206).
   static constexpr std::size_t kSE3RotDoubles = 9;
   static constexpr std::size_t kSE3TransDoubles = 3;
 
@@ -836,24 +838,20 @@ class DemoWbcController final : public RTControllerInterface {
   static_assert(std::is_trivially_copyable_v<TargetSlot>,
                 "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
 
-  struct PendingTarget {
-    int device_idx{0};
-    int num_values{0};
-    std::array<double, kMaxDeviceChannels> values{};
-    bool is_task{false};  // true = task-space (SE3) goal via SetDeviceTaskTarget
-    // Activation generation observed by the off-RT pusher. The RT drain drops
-    // entries a later activation has invalidated — see
-    // rtc::RTControllerInterface::ActivationGeneration (#196 §3).
-    std::uint32_t generation{0};
-  };
+  // One drained target → this controller's slot. Called on the RT tick from
+  // DrainTargetSlot(), with device_idx and values already bounded by the base.
+  // `is_task` routes between the two independent slots: joint posture
+  // (targets[]) and the commanded SE3 (tcp_cmd_*).
+  void ApplyPendingTarget(int device_idx, std::span<const double> values,
+                          bool is_task) noexcept override;
 
-  static_assert(std::is_trivially_copyable_v<PendingTarget>,
-                "PendingTarget must be trivially copyable for SpscQueue");
-
-  static constexpr std::size_t kPendingTargetDepth = 4;
+  // Set by ApplyPendingTarget when a drained entry actually reached the slot.
+  // Not every surviving entry does — a task goal on a device with no SE3 slot,
+  // or one too short to form a pose, is dropped on the floor — so the drain
+  // cannot infer "slot changed" from the entry count alone. RT-thread-only.
+  bool drained_slot_dirty_{false};
 
   rtc::SeqLock<TargetSlot> target_seqlock_;
-  rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
   std::atomic<bool> target_initialized_{false};
 
   // Base hook — see demo_joint_controller.hpp. Previously duplicated inside

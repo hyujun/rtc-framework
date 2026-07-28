@@ -87,11 +87,11 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 | Execution context | Scheduler | RT? | 허용 연산 |
 |---|---|---|---|
-| `rt_control` loop (`ControlLoop`, `Compute`, `SetDeviceTarget`, inline `WriteCommand`) | SCHED_FIFO 90, Core 1 | **RT** | RT-1~10 전면 구속. alloc/throw/log/lock 금지 |
+| `rt_control` loop (`ControlLoop`, `Compute`, mailbox drain, inline `WriteCommand`) | SCHED_FIFO 90, Core 1 | **RT** | RT-1~10 전면 구속. alloc/throw/log/lock 금지 |
 | MPC thread (`MPCThread::OnTick` → `HandlerMPCThread::Solve`), `UdpHandController::RunCommCycle` | SCHED_FIFO, dedicated core | **RT** | 동일 |
 | DeviceBackend state/motor/sensor 구독 콜백 (`cb_group_rt_callback_`) | SCHED_FIFO 70, Core 2 | **RT** | **mailbox-only** — SeqLock/atomic store, memcpy, steady_clock 캡처까지 |
 | `nrt_publish_thread` (`NrtPublishLoopEntry` → `PublishNonRtSnapshot`) | SCHED_OTHER 0 | 비-RT | ROS publish 포함 자유. executor 콜백이 **아님** (std::jthread + eventfd) |
-| Controller-owned RobotTarget 구독, `grasp_command` 서비스 (controller LifecycleNode default group) | SCHED_OTHER 0 | 비-RT | 자유. 단 RT loop 와 공유하는 상태는 SeqLock/SPSC 경유 |
+| Controller-owned RobotTarget 구독, `grasp_command` 서비스, **`SetDeviceTarget` marshal** (base `DeliverTargetMessage` 경유) (controller LifecycleNode default group) | SCHED_OTHER 0 | 비-RT | 자유. 단 RT loop 와 공유하는 상태는 SeqLock/SPSC 경유 — target 은 base mailbox (`PushPendingTarget`) 가 그 경유를 소유하고, RT tick 의 `DrainPendingTargets()` 가 유일한 소비자다 |
 | Lifecycle 콜백 (`on_configure`/`on_activate`/`on_deactivate`/`on_cleanup`), 파라미터 콜백 | SCHED_OTHER 0 | 비-RT | 자유 — 여기서의 `push_back`·`new`·로깅은 정상이며 RT-1 위반이 아니다 |
 | `DrainLog()` / CSV drain / 1 Hz aux 타이머 (`cb_group_nrt_logging_`) | SCHED_OTHER nice -5 | 비-RT | 자유. RT 가 SPSC 로 넘긴 것을 여기서 포맷·기록 |
 

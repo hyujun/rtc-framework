@@ -255,7 +255,7 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
   const auto gains = gains_lock_.Load();
 
   if (diag.estopped) {
-    DrainPendingTargets();
+    DiscardPendingTargets();
     return ComputeEstop(state, /*control_valid=*/false, diag, gains);
   }
 
@@ -708,7 +708,7 @@ ControllerOutput CascadedComplianceController::ComputeEstop(const ControllerStat
   return output;
 }
 
-void CascadedComplianceController::DrainPendingTargets() noexcept {
+void CascadedComplianceController::DiscardPendingTargets() noexcept {
   PendingTarget discarded{};
   while (pending_targets_.Pop(discarded)) {
     // discard: a command issued while held must not survive recovery
@@ -724,7 +724,7 @@ ControllerOutput CascadedComplianceController::ComputeNoJointState(const Control
   // depth-4 queue holds the OLDEST commands of the outage (SpscQueue drops the
   // newest when full) and the first recovered tick jumps to one of them instead
   // of the measured pose — braked only by max_torque_rate.
-  DrainPendingTargets();
+  DiscardPendingTargets();
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   compliance::ComplianceFaults faults;
   faults.device_state_invalid = true;

@@ -160,4 +160,30 @@ inline constexpr double kQuatVecEps = 1e-8;
   return Mat3::Identity() + 0.5 * W + c * (W * W);
 }
 
+// ── RPY → R, the boundary convention ────────────────────────────────────────
+//
+// R = Rz(yaw)·Ry(pitch)·Rx(roll), i.e. intrinsic Z-Y'-X'' — the "ZYX Euler at
+// boundaries" rule in CLAUDE.md §10. Internal math stays on quaternions and
+// log/exp; this exists only for the wire edge, where operators and messages
+// still speak (x, y, z, r, p, y).
+//
+// Placed here rather than re-derived per call site: the same three AngleAxisd
+// lines were written twice in the controller bindings with different spellings,
+// which is the drift class #206 was opened to remove. Changing the convention
+// must be one edit.
+//
+// Singular at pitch = ±π/2 in the INVERSE direction only (gimbal lock is a
+// property of the R → rpy map); this direction is total and well conditioned.
+//
+// Takes one Vec3 rather than three doubles on purpose: three adjacent scalars
+// of the same type are the easiest possible thing to transpose at a call site,
+// and a transposed roll/yaw produces a plausible-looking rotation rather than
+// an obvious failure.
+[[nodiscard]] inline Mat3 RpyToRotationZyx(const Vec3& rpy) noexcept {
+  const Eigen::AngleAxisd rx(rpy.x(), Vec3::UnitX());
+  const Eigen::AngleAxisd ry(rpy.y(), Vec3::UnitY());
+  const Eigen::AngleAxisd rz(rpy.z(), Vec3::UnitZ());
+  return (rz * ry * rx).toRotationMatrix();
+}
+
 }  // namespace rtc::math::se3
