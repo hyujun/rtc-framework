@@ -544,7 +544,9 @@ ControllerOutput DemoJointController::WriteJointCommand(const ControllerState& s
   } else {
     // F5: this tick has no honest arm command, so it issues none. Zero-length is
     // "no update" — the drive holds its previous setpoint. Emitting nc0 zeros
-    // instead would be a real command to the origin (§3.7).
+    // instead would be a real command to the origin (§3.7). The reference lanes
+    // are filled by FillLog/FillPublishOutput so the logged row does not read as
+    // that very command.
     rtc::SilenceDeviceOutput(out0);
   }
 
@@ -587,8 +589,20 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
       out0.trajectory_positions[i] = robot_computed_.positions[i];
       out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-      out0.goal_positions[i] = current_target_slot_.targets[0][i];
     }
+  } else {
+    // Withholding is not the same as writing zeros. The log POD copies these
+    // arrays bounded by the DEVICE's channel count, not the output's, and it
+    // has no field for the emitted width — so an untouched row is recorded as
+    // zeros and reads as a command to the origin, on the one failure mode this
+    // gate exists for. Report where the drive is parked instead (see
+    // rtc_controller_interface/device_readability.hpp, HoldTelemetryAtMeasured).
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
+  }
+  // The goal survives the gate — a latched hold target does not stop being the
+  // target because this tick could not be read.
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
 
   // Arm FK was computed once in ComputeControl and cached in arm_tcp_pose_.
@@ -705,15 +719,20 @@ void DemoJointController::FillPublishOutput(const ControllerState& state, Contro
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  // Same reason as FillLogOutput: a silenced arm has no reference to publish.
+  // Same reason as FillLogOutput: a silenced arm has no reference to publish,
+  // and the parked position is what the row should show instead of zeros.
   if (arm_readable_) {
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
       out0.target_positions[i] = robot_computed_.positions[i];
       out0.target_velocities[i] = robot_computed_.velocities[i];
       out0.trajectory_positions[i] = robot_computed_.positions[i];
       out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-      out0.goal_positions[i] = current_target_slot_.targets[0][i];
     }
+  } else {
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
+  }
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
 
   // Arm FK cached in ComputeControl (arm_tcp_pose_); reused here — no recompute.
@@ -821,6 +840,9 @@ ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state)
     }
   } else {
     rtc::SilenceDeviceOutput(out0);
+    // A silenced E-STOP tick is still a logged tick — FillLogOutput does not run
+    // on this lane, so the parked-position fill has to happen here.
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
   }
 
   // Hand: hold current position during E-Stop

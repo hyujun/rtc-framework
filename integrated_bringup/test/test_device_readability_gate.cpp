@@ -94,6 +94,18 @@ ControllerState MakeState(int arm_channels) {
   return state;
 }
 
+// A silenced tick must report THIS tick's measurement, not the last readable
+// tick's reference. The fixture's measurements are otherwise identical across
+// ticks, so every parked-position assertion shifts the arm first — the shift is
+// what makes those assertions falsifiable.
+constexpr double kArmShift = 0.031;
+
+void ShiftArmMeasurements(ControllerState& state, int channels) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(channels); ++i) {
+    state.devices[0].positions[i] = MeasuredArm(i) + kArmShift;
+  }
+}
+
 // arm_dof_ resolved from YAML (6), so a device narrower than 6 is the state the
 // gate must refuse. Resolving it from the device instead — the arm_dof_ == 0
 // fallback — would make every fixture trivially readable and the suite vacuous.
@@ -151,6 +163,55 @@ TEST_F(DemoJointGateTest, TheHandKeepsBeingCommandedWhileTheArmIsSilent) {
     EXPECT_NEAR(out.devices[1].commands[i], MeasuredHand(i), 1e-9) << "hand channel " << i;
   }
   EXPECT_EQ(out.num_devices, 2);
+}
+
+TEST_F(DemoJointGateTest, ASilencedTickReportsTheParkedPositionNotZeros) {
+  constexpr int kNarrow = kArmDof - 2;
+  SeedFromReadableDevice();
+
+  ControllerState narrow = MakeState(kNarrow);
+  // Move the arm since the seed tick. Without this the last readable tick's
+  // reference and this tick's measurement are the same numbers, and the
+  // assertion below cannot tell "parked at the measurement" from "replayed the
+  // stale reference" — it would pass with the fill deleted.
+  ShiftArmMeasurements(narrow, kNarrow);
+  const auto out = ctrl_.Compute(narrow);
+
+  ASSERT_EQ(out.devices[0].num_channels, 0);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kNarrow); ++i) {
+    // Not robot_computed_ (the last readable tick's trajectory) and not 0 (a
+    // row that reads as a command to the origin) — this tick's measurement.
+    EXPECT_NEAR(out.devices[0].target_positions[i], MeasuredArm(i) + kArmShift, 1e-9)
+        << "channel " << i;
+    EXPECT_NEAR(out.devices[0].trajectory_positions[i], MeasuredArm(i) + kArmShift, 1e-9)
+        << "channel " << i;
+    EXPECT_DOUBLE_EQ(out.devices[0].trajectory_velocities[i], 0.0)
+        << "a parked joint is not moving, channel " << i;
+  }
+}
+
+TEST_F(DemoJointGateTest, ASilencedEstopTickAlsoReportsTheParkedPosition) {
+  // The E-STOP lane runs no Fill*, so it owns this fill itself. Without it the
+  // one lane an operator reads during an E-STOP incident is a row of zeros.
+  constexpr int kNarrow = kArmDof - 2;
+  SeedFromReadableDevice();
+  ctrl_.TriggerEstop();
+
+  ControllerState narrow = MakeState(kNarrow);
+  // Move the arm since the seed tick. Without this the last readable tick's
+  // reference and this tick's measurement are the same numbers, and the
+  // assertion below cannot tell "parked at the measurement" from "replayed the
+  // stale reference" — it would pass with the fill deleted.
+  ShiftArmMeasurements(narrow, kNarrow);
+  const auto out = ctrl_.Compute(narrow);
+
+  ASSERT_EQ(out.devices[0].num_channels, 0);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kNarrow); ++i) {
+    EXPECT_NEAR(out.devices[0].target_positions[i], MeasuredArm(i) + kArmShift, 1e-9)
+        << "channel " << i;
+    EXPECT_NEAR(out.devices[0].trajectory_positions[i], MeasuredArm(i) + kArmShift, 1e-9)
+        << "channel " << i;
+  }
 }
 
 TEST_F(DemoJointGateTest, TheEstopLaneAnswersTheSameWay) {
@@ -261,7 +322,6 @@ TEST_F(DemoJointGateTest, AWideDeviceIsNotTreatedAsAFault) {
   }
 }
 
-
 // ── demo_task: the same contract, a different binding ────────────────────────
 //
 // DemoTaskController is registered for runtime switching, so its answer to an
@@ -293,6 +353,44 @@ TEST_F(DemoTaskGateTest, ANarrowDeviceSilencesTheArm) {
   EXPECT_EQ(out.devices[0].num_channels, 0);
   ASSERT_EQ(out.devices[1].num_channels, kHandChannels)
       << "the hand keeps its own passthrough (§3.7)";
+}
+
+TEST_F(DemoTaskGateTest, TheHandKeepsBeingCommandedWhileTheArmIsSilent) {
+  // The count alone does not say the hand is being driven — it says an array
+  // was declared. This asserts the VALUES, because the way this binding failed
+  // was that the hand lane lived inside ComputeControl and the arm gate's early
+  // return froze hand_computed_ at its zero-init: device 1 got a full-length,
+  // perfectly valid command to the hand's origin. That is the arm hazard moved
+  // one device over, and §3.7's secondary passthrough forbids it.
+  ControllerState narrow = MakeState(kArmDof - 2);
+  const auto out = ctrl_.Compute(narrow);
+
+  ASSERT_EQ(out.devices[0].num_channels, 0);
+  ASSERT_EQ(out.devices[1].num_channels, kHandChannels);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kHandChannels); ++i) {
+    EXPECT_NEAR(out.devices[1].commands[i], MeasuredHand(i), 1e-9) << "hand channel " << i;
+    EXPECT_NE(out.devices[1].commands[i], 0.0) << "hand channel " << i << " commanded to origin";
+  }
+}
+
+TEST_F(DemoTaskGateTest, ASilencedTickReportsTheParkedPositionNotZeros) {
+  constexpr int kNarrow = kArmDof - 2;
+  ControllerState narrow = MakeState(kNarrow);
+  // Shifted so "this tick's measurement" is distinguishable from every other
+  // number in the fixture — see ShiftArmMeasurements.
+  ShiftArmMeasurements(narrow, kNarrow);
+  const auto out = ctrl_.Compute(narrow);
+
+  // The log POD is bounded by the DEVICE's channel count, not the output's, and
+  // has no field for the emitted width — so leaving the reference lanes at
+  // their fresh zero records the silenced tick as a command to the origin.
+  ASSERT_EQ(out.devices[0].num_channels, 0);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kNarrow); ++i) {
+    EXPECT_NEAR(out.devices[0].target_positions[i], MeasuredArm(i) + kArmShift, 1e-9)
+        << "channel " << i;
+    EXPECT_NEAR(out.devices[0].trajectory_positions[i], MeasuredArm(i) + kArmShift, 1e-9)
+        << "channel " << i;
+  }
 }
 
 TEST_F(DemoTaskGateTest, TheEstopLaneAnswersTheSameWay) {
@@ -353,6 +451,48 @@ TEST_F(DemoWbcGateTest, ANarrowDeviceSilencesTheArm) {
   EXPECT_EQ(out.devices[0].num_channels, 0);
   ASSERT_EQ(out.devices[1].num_channels, kHandChannels)
       << "the hand keeps its own passthrough (§3.7)";
+}
+
+TEST_F(DemoWbcGateTest, TheHandKeepsBeingCommandedWhileTheArmIsSilent) {
+  // Values, not just the count — same reason as the demo_task twin: a hand lane
+  // that replays a frozen buffer declares the right length and commands the
+  // origin. This binding holds the hand from measurement in DrainTargetSlot's
+  // deferral, so the assertion pins the behaviour rather than fixing it.
+  SeedFromReadableDevice();
+
+  ControllerState narrow = MakeState(kArmDof - 2);
+  const auto out = ctrl_.Compute(narrow);
+
+  ASSERT_EQ(out.devices[0].num_channels, 0);
+  ASSERT_EQ(out.devices[1].num_channels, kHandChannels);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kHandChannels); ++i) {
+    EXPECT_NEAR(out.devices[1].commands[i], MeasuredHand(i), 1e-9) << "hand channel " << i;
+  }
+}
+
+TEST_F(DemoWbcGateTest, ASilencedTickReportsTheParkedPositionNotZeros) {
+  // Both output lanes, not one: this binding's publish fill was gated first and
+  // the log fill kept mirroring robot_computed_, so the CSV and the topic
+  // disagreed about the same tick. Both write out0, so one assertion covers the
+  // agreement.
+  constexpr int kNarrow = kArmDof - 2;
+  SeedFromReadableDevice();
+
+  ControllerState narrow = MakeState(kNarrow);
+  // Move the arm since the seed tick. Without this the last readable tick's
+  // reference and this tick's measurement are the same numbers, and the
+  // assertion below cannot tell "parked at the measurement" from "replayed the
+  // stale reference" — it would pass with the fill deleted.
+  ShiftArmMeasurements(narrow, kNarrow);
+  const auto out = ctrl_.Compute(narrow);
+
+  ASSERT_EQ(out.devices[0].num_channels, 0);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kNarrow); ++i) {
+    EXPECT_NEAR(out.devices[0].target_positions[i], MeasuredArm(i) + kArmShift, 1e-9)
+        << "channel " << i;
+    EXPECT_NEAR(out.devices[0].trajectory_positions[i], MeasuredArm(i) + kArmShift, 1e-9)
+        << "channel " << i;
+  }
 }
 
 TEST_F(DemoWbcGateTest, TheEstopLaneAnswersTheSameWay) {

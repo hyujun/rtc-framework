@@ -1,9 +1,9 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
-#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
@@ -117,7 +117,8 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 
 // ── Phase 2: Compute control (CLIK/IK + trajectory + sensor logic) ──────────
 
-void DemoTaskController::ComputeControl(const ControllerState& state, double dt) noexcept {
+void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
+                                        const Gains& gains) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ComputeControl");
   // ── Arm TCP pose: cache once for this tick (Update() ran in Compute() before
   // ComputeControl). ArmTcpPoseFromCache is internally gated (Identity when the
@@ -169,8 +170,9 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     J_pos_.noalias() = J_full_.topRows(3);
   }
 
-  // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
-  const auto gains = gains_lock_.Load();
+  // `gains` is the tick's single SeqLock snapshot, loaded in Compute() and
+  // shared with ComputeSecondary — one atomic read, and the arm half and the
+  // hand half of a tick cannot disagree about a gain.
   control_6dof_cached_ = gains.control_6dof;  // reused by Fill* (avoids re-Load)
 
   const auto& dev0 = state.devices[0];
@@ -182,12 +184,9 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   // #121: ComputeHandForwardKinematics runs the closed-chain projection when the
   // hand has loop closure with downstream fingertips, else the serial hand FK;
   // HandFingertipPose returns the hand-root-relative fingertip pose from whichever
-  // path is active (byte-for-byte in the serial case).
-  // Default to invalid each tick so a tick where hand FK fails entirely (e.g.
-  // the hand device drops out) withholds the fingertip TF rather than
-  // republishing a prior tick's cached pose as valid — matches wbc, whose gate
-  // sits inside `if (ComputeHandFingertipFk(...))` on a fresh output (#125 F1).
-  fingertip_pose_valid_.fill(false);
+  // path is active (byte-for-byte in the serial case). The pose-validity flags
+  // were already defaulted to invalid for this tick in Compute() — see the
+  // #125 F1 note there for why the reset cannot live inside this gated block.
   if (ComputeHandForwardKinematics(state)) {
     // Fingertip world poses (monitoring — always computed)
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
@@ -431,6 +430,27 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     null_dq_ *= rtc::joint::FloorPostureGain(gains.null_kp);
     dq_ += null_dq_;
   }
+}
+
+// ── Phase 2b: secondary (hand) lane ─────────────────────────────────────────
+//
+// Split out of ComputeControl for the F5 gate (#236 S7b). ComputeControl holds
+// the ARM on a tick device 0 cannot be read on, and the hand must not be held
+// with it — §3.7's "secondary passthrough 유지": a hand does not stop being
+// commandable because the arm's state went missing, and WriteJointCommand keeps
+// commanding device 1 on a silenced tick. While these blocks lived inside
+// ComputeControl its early return froze hand_computed_, and on a controller that
+// had never seen a readable tick that froze value is the zero-init — a real
+// position command to the hand's origin, which is the hazard the gate exists to
+// prevent, moved one device over.
+//
+// Reads nothing arm-derived: the hand trajectory, the grasp FSM and the ToF
+// snapshot all source device 1 and the fingertip sensors. `gains` is the same
+// per-tick SeqLock snapshot ComputeControl gets — loaded once in Compute() and
+// passed to both, so the two halves of a tick cannot see different gains.
+void DemoTaskController::ComputeSecondary(const ControllerState& state, double dt,
+                                          const Gains& gains) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::ComputeSecondary");
 
   // ── Hand motor trajectory ──────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
@@ -716,22 +736,41 @@ ControllerOutput DemoTaskController::WriteJointCommand(const ControllerState& st
   if (!arm_readable_) {
     // F5: no honest arm command this tick, so none is issued. Zero-length is
     // "no update" — the drive holds its previous setpoint. nc0 zeros would be a
-    // real command to the origin (§3.7). The hand block below still runs.
+    // real command to the origin (§3.7). The shared hand block below still runs
+    // — ComputeSecondary keeps hand_computed_ tracking on a silenced tick, so
+    // what it commands is the hand's own trajectory, not a frozen buffer.
     rtc::SilenceDeviceOutput(out0);
-    if (state.num_devices > 1 && state.devices[1].valid) {
-      const int nc1 = state.devices[1].num_channels;
-      auto& out1 = output.devices[1];
-      out1.num_channels = nc1;
-      out1.goal_type = GoalType::kJoint;
-      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-        out1.commands[i] = hand_computed_.positions[i];
-      }
-      rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                             std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
-    }
-    return output;
+    // The log lane is bounded by the DEVICE's channel count, not this output's,
+    // so an untouched reference row would be recorded as zeros and read as a
+    // command to the origin. Report where the drive is parked instead.
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
+  } else {
+    out0.num_channels = nc0;
+    WriteArmJointCommand(state, out0, dt);
   }
-  out0.num_channels = nc0;
+
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const int nc1 = state.devices[1].num_channels;
+    auto& out1 = output.devices[1];
+    out1.num_channels = nc1;
+    out1.goal_type = GoalType::kJoint;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+      out1.commands[i] = hand_computed_.positions[i];
+    }
+    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
+  }
+
+  return output;
+}
+
+// Arm half of the wire command. Split out so the silenced branch above and the
+// readable branch share ONE hand block rather than two copies of a device
+// command lane that must never drift apart.
+void DemoTaskController::WriteArmJointCommand(const ControllerState& state, rtc::DeviceOutput& out0,
+                                              double dt) noexcept {
+  const auto& dev0 = state.devices[0];
+  const int nc0 = dev0.num_channels;
 
   // Model-dimension bound. dq_ / desired_q_ / traj_dq_ are nv-wide Eigen
   // vectors while nc0 is whatever the device reported on the wire
@@ -757,20 +796,6 @@ ControllerOutput DemoTaskController::WriteJointCommand(const ControllerState& st
   for (std::size_t i = nq; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = dev0.positions[i];
   }
-
-  if (state.num_devices > 1 && state.devices[1].valid) {
-    const int nc1 = state.devices[1].num_channels;
-    auto& out1 = output.devices[1];
-    out1.num_channels = nc1;
-    out1.goal_type = GoalType::kJoint;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.commands[i] = hand_computed_.positions[i];
-    }
-    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
-  }
-
-  return output;
 }
 
 // ── Phase 3b: Fill log output ────────────────────────────────────────────────
@@ -787,23 +812,29 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
     FillEstopPublishState(dt);
     return;
   }
-  if (!arm_readable_) {
-    // Telemetry follows the wire: a tick that issued no arm command has no arm
-    // reference to report either, and desired_q_ still holds the last readable
-    // tick's values (#265 audit T7).
-    return;
-  }
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  // Same model-dimension bound as WriteJointCommand — these read the identical
-  // nv-wide buffers, so the telemetry lane must not index further than the wire
-  // lane does (issue #172).
-  const std::size_t nq = ArmCommandBound(nc0);
-  for (std::size_t i = 0; i < nq; ++i) {
-    out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
-    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
+  if (arm_readable_) {
+    // Same model-dimension bound as WriteJointCommand — these read the identical
+    // nv-wide buffers, so the telemetry lane must not index further than the wire
+    // lane does (issue #172).
+    const std::size_t nq = ArmCommandBound(nc0);
+    for (std::size_t i = 0; i < nq; ++i) {
+      out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
+      out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
+    }
+  } else {
+    // No arm reference this tick — desired_q_ still holds the last readable
+    // tick's values (#265 audit T7), so publishing it would date-stamp stale
+    // numbers. Report the parked position instead of leaving a row of zeros
+    // that reads as a command to the origin (rtc_controller_interface/
+    // device_readability.hpp, HoldTelemetryAtMeasured).
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
   }
+  // The goal survives the gate: a target the operator set does not stop
+  // existing because the arm went unreadable, and it is the one column on a
+  // silenced row that should still say what was asked for.
   for (std::size_t i = 0; i < 3; ++i) {
     out0.goal_positions[i] = current_target_slot_.tcp_target[i];
   }
@@ -936,26 +967,29 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
   if (estop_active_) {
     return;
   }
-  if (!arm_readable_) {
-    return;  // same reason as FillLogOutput
-  }
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  // Model-dimension bound, as in WriteJointCommand / FillLogOutput (issue #172).
-  const std::size_t nq = ArmCommandBound(nc0);
-  for (std::size_t i = 0; i < nq; ++i) {
-    out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
-    out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
-    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
-  }
   const std::size_t nnull =
       std::min(static_cast<std::size_t>(nc0), current_target_slot_.null_target.size());
-  for (std::size_t i = 0; i < 3; ++i) {
-    out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
-  }
-  for (std::size_t i = 3; i < nnull; ++i) {
-    out0.target_positions[i] = current_target_slot_.null_target[i];
+  if (arm_readable_) {
+    // Model-dimension bound, as in WriteJointCommand / FillLogOutput (issue #172).
+    const std::size_t nq = ArmCommandBound(nc0);
+    for (std::size_t i = 0; i < nq; ++i) {
+      out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
+      out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
+      out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
+    }
+    for (std::size_t i = 3; i < nnull; ++i) {
+      out0.target_positions[i] = current_target_slot_.null_target[i];
+    }
+  } else {
+    // Same rule as FillLogOutput: withhold the stale reference, report the
+    // parked position rather than a row of zeros.
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.goal_positions[i] = current_target_slot_.tcp_target[i];
@@ -995,7 +1029,11 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
     const Eigen::Quaterniond quat(tcp_current.rotation());
     output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
     output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
-    output.arm_tip_pose_valid = true;
+    // Withheld on a silenced tick: the cache was not refreshed from this tick's
+    // state, so arm_tcp_pose_ is history, not a measurement (#125 F1's rule).
+    // This fill no longer early-returns on !arm_readable_ (the hand lanes below
+    // must keep publishing), so the flag has to carry the gate itself.
+    output.arm_tip_pose_valid = arm_readable_;
   }
   if (vtcp_valid_) {
     const Eigen::Vector3d& trans = vtcp_pose_.translation();
@@ -1082,8 +1120,20 @@ ControllerOutput DemoTaskController::ComputeEstop(const ControllerState& state) 
     }
     // No configured safe position past the model: hold where the joint is.
     rtc::FillCommandTail(out0.commands, nq, nc0, command_type_, dev0.positions);
+    // Telemetry mirrors the ramp, as demo_joint and demo_wbc already do on this
+    // lane. This controller used to write `commands` alone, so its E-STOP CSV
+    // row showed a moving command against a zero reference (#236 S7b review).
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      out0.goal_positions[i] =
+          (i < static_cast<std::size_t>(nq)) ? safe_position_[i] : out0.commands[i];
+      out0.target_positions[i] = out0.commands[i];
+      out0.trajectory_positions[i] = out0.commands[i];
+    }
   } else {
     rtc::SilenceDeviceOutput(out0);
+    // A silenced E-STOP tick is still a logged tick: report the parked position
+    // rather than a row of zeros that reads as a command to the origin.
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
   }
 
   // Hand: hold current position during E-Stop

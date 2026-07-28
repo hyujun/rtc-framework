@@ -1,9 +1,9 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
-#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/se3_task.hpp"
 
@@ -880,7 +880,21 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
   RTC_TRACE_SCOPE("DemoWbcController::FillLogOutput");
   const auto& dev0 = state.devices[0];
   const int nc0 = dev0.num_channels;
-  FillDeviceTrajectoryPods(output.devices[0], nc0, robot_computed_, 0);
+  // Same gate as FillPublishOutput (#236 S7b): on a silenced tick robot_computed_
+  // still holds the last readable tick's values, and recording them here while
+  // the publish lane withholds them would make the CSV and the topic disagree
+  // about the same tick. Withholding alone is not enough either — the log POD is
+  // bounded by the DEVICE's channel count, so an untouched row is written as
+  // zeros and reads as a command to the origin; report the parked position.
+  if (arm_readable_) {
+    FillDeviceTrajectoryPods(output.devices[0], nc0, robot_computed_, 0);
+  } else {
+    rtc::HoldTelemetryAtMeasured(output.devices[0], nc0, dev0.positions);
+    // The goal survives the gate, as in demo_joint / demo_task.
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      output.devices[0].goal_positions[i] = current_target_slot_.targets[0][i];
+    }
+  }
 
   // actual_task_positions + task_goal_positions from the shared cache oMf (log
   // POD reads both). #unified-kindyn Phase 2: no arm_handle_ FK recompute here —
@@ -987,6 +1001,11 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
       out0.target_velocities[i] = robot_computed_.velocities[i];
     }
     FillDeviceTrajectoryPods(out0, nc0, robot_computed_, 0);
+  } else {
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      out0.goal_positions[i] = current_target_slot_.targets[0][i];
+    }
   }
 
   // #unified-kindyn Phase 2: arm TCP from the shared cache oMf (clik_tcp/base),
@@ -1076,6 +1095,9 @@ ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) n
     }
   } else {
     rtc::SilenceDeviceOutput(out0);
+    // A silenced E-STOP tick is still a logged tick — no Fill* runs on this
+    // lane, so the parked-position fill has to happen here.
+    rtc::HoldTelemetryAtMeasured(out0, nc0, dev0.positions);
   }
 
   // Hold current position (hand). E-8: this is a fresh ControllerOutput, so the

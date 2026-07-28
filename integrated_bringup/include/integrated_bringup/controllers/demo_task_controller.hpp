@@ -273,12 +273,24 @@ class DemoTaskController final : public RTControllerInterface {
 
   // ── 3-phase pipeline ────────────────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
-  void ComputeControl(const ControllerState& state, double dt) noexcept;
+  /// Arm (device 0) stage: Jacobian extraction, hand FK for the arm-relative
+  /// fingertip poses, CLIK and the null-space task. Held whole whenever the arm
+  /// cannot be read this tick (F5) or the cache is not fresh.
+  void ComputeControl(const ControllerState& state, double dt, const Gains& gains) noexcept;
+  /// Secondary (device 1) stage: hand trajectory, grasp FSM, ToF snapshot.
+  /// Deliberately NOT behind ComputeControl's gate — §3.7 "secondary
+  /// passthrough 유지"; see the definition's header comment (#236 S7b).
+  void ComputeSecondary(const ControllerState& state, double dt, const Gains& gains) noexcept;
   // WriteOutput was split into 3 explicit-intent methods (see
   // demo_joint_controller.hpp for the bucket contract). Compute() calls
   // them in order WriteJointCommand → FillLogOutput → FillPublishOutput.
   [[nodiscard]] ControllerOutput WriteJointCommand(const ControllerState& state,
                                                    double dt) noexcept;
+  /// Arm half of WriteJointCommand's wire fill. Split out so the F5-silenced
+  /// branch and the readable branch share ONE hand block instead of two copies
+  /// of a device command lane that must never drift apart (#236 S7b).
+  void WriteArmJointCommand(const ControllerState& state, rtc::DeviceOutput& out0,
+                            double dt) noexcept;
   void FillLogOutput(const ControllerState& state, ControllerOutput& output, double dt) noexcept;
   void FillPublishOutput(const ControllerState& state, ControllerOutput& output,
                          double dt) noexcept;

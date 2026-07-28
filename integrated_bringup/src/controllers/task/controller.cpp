@@ -3,9 +3,9 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
-#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_math/se3/so3.hpp"
 
@@ -347,7 +347,30 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   }
 
   DrainTargetSlot(state);
-  ComputeControl(state, dt);
+
+  // Pose-validity flags default to invalid every tick, BEFORE the arm stage that
+  // would set them. They cannot be reset inside that stage: it is skipped
+  // whenever the arm is unreadable or the cache is not fresh, and the publish
+  // path below still runs — so a stale `true` would republish a prior tick's
+  // cached fingertip / virtual-TCP pose as though it were this tick's
+  // measurement (#125 F1). Only ComputeControl sets them back to true.
+  fingertip_pose_valid_.fill(false);
+  vtcp_valid_ = false;
+
+  // One gains snapshot for the whole tick (SeqLock: torn-read-free), shared by
+  // the arm stage and the hand stage so the two halves cannot disagree.
+  const auto gains = gains_lock_.Load();
+  ComputeControl(state, dt, gains);
+  // Secondary (hand) lane — outside the arm stage's F5 gate (§3.7 "secondary
+  // passthrough 유지", see ComputeSecondary's header comment) but NOT outside
+  // E-STOP. These blocks used to sit inside ComputeControl, whose early return
+  // covered both conditions at once; splitting them apart means the E-STOP half
+  // of that guard has to be restated here, or an E-STOP tick would keep
+  // advancing the hand trajectory and stepping the grasp FSM while ComputeEstop
+  // owns the wire.
+  if (!estop_active_) {
+    ComputeSecondary(state, dt, gains);
+  }
   // Output composition split by consumer (wire / log / publish). See
   // demo_joint_controller.hpp for the bucket assignment rationale.
   auto output = WriteJointCommand(state, dt);
@@ -404,8 +427,8 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
   // desired_q_ and null_target from dev0.positions arm_dof_/nv deep without
   // consulting nc0, so on a narrow device the unreported joints would latch at 0
   // — "hold at the origin" — and arm_target_initialized_ makes that permanent.
-  if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ &&
-      arm_readable_ && combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
+  if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ && arm_readable_ &&
+      combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
     if (arm_dof_ == 0 && state.num_devices > 0) {
       arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
     }
