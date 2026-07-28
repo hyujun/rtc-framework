@@ -102,8 +102,53 @@ namespace rtc {
 // Commands already staged in the array are left in place — `num_channels == 0`
 // makes them unreachable, and clearing kMaxDeviceChannels doubles would spend
 // RT budget to change nothing observable.
+//
+// This silences the WIRE only. The log lane is bounded by the DEVICE's channel
+// count, not this one, so pair every call with HoldTelemetryAtMeasured below or
+// the silenced tick is recorded as a row of zeros.
 inline void SilenceDeviceOutput(DeviceOutput& out) noexcept {
   out.num_channels = 0;
+}
+
+// The telemetry half of the F5 answer: on a silenced tick the reference lanes
+// say WHERE THE DRIVE IS PARKED, not 0.
+//
+// SilenceDeviceOutput stops the wire, but it does not stop the log. The device
+// state POD copies the output's position-semantics arrays bounded by the
+// DEVICE's num_channels, not the output's (integrated_bringup/logging/
+// pod_fill.hpp), and it carries no field for the emitted width — so a silenced
+// tick that leaves those arrays at their fresh zero is recorded as a row of
+// zeros, which reads exactly like "commanded every joint to the origin". That
+// is the one misreading §3.7 exists to prevent, appearing on the one failure
+// mode this gate is for (a start-up configuration mismatch), in the one place
+// an engineer looks to diagnose it.
+//
+// The controller manager already answers this the same way for its own
+// zero-length case: BuildHoldOutput keeps the position-semantics telemetry
+// position-valued so the GUI/log lanes show where the hold is parked rather
+// than a 0 that would read as a command to the origin
+// (rtc_controller_manager/src/rt_controller_node_rt_loop.cpp).
+//
+// `measured` is THIS tick's device positions, never a stale computed reference,
+// so this does not re-introduce the staleness the gate withholds — the withheld
+// thing is last readable tick's trajectory/goal, and what replaces it is a
+// measurement taken this tick. Velocities stay at their fresh zero: a parked
+// joint is not moving.
+//
+// Touches the REFERENCE lanes only. `goal_positions` is left to the binding:
+// what a goal MEANS is per-binding (a joint hold target, a TCP pose split
+// across the first three slots) and a goal the operator set does not stop
+// existing because the arm went unreadable — that is the one column on a
+// silenced row that should still say what was asked for.
+//
+// RT-safe: noexcept, no allocation, bounded by the shorter of the two spans.
+inline void HoldTelemetryAtMeasured(DeviceOutput& out, int num_channels,
+                                    std::span<const double> measured) noexcept {
+  const auto end = std::min(measured.size(), static_cast<std::size_t>(std::max(0, num_channels)));
+  for (std::size_t i = 0; i < end; ++i) {
+    out.target_positions[i] = measured[i];
+    out.trajectory_positions[i] = measured[i];
+  }
 }
 
 // Fills the channels a readable device reported but the model does not cover —

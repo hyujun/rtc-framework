@@ -272,7 +272,26 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 | `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어, 정책 없음 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 (`num_channels` 는 wire 길이) |
 | `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태를 읽기 **전**. false 면 아래 침묵 |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | primary device 에만. secondary 는 그대로 둔다 |
+| `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane (`target_*` / `trajectory_*`) 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** — 아래 참조 |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → 0.0 / position → 측정값) | 명령 조립 시. 미기입은 fresh-zero = "원점으로" |
+
+**침묵은 wire 만 침묵시킨다 — 로그는 아니다.** device state 로그 POD 는 출력이 아니라 **device 의**
+`num_channels` 로 bound 하고 (`integrated_bringup/logging/pod_fill.hpp`) 실제로 내보낸 폭을 담는 필드가
+없다. 그래서 reference lane 을 fresh-zero 로 두면 침묵 tick 이 **전 채널 0 인 행**으로 기록되고, 이는
+정확히 "전 관절을 원점으로 명령" 으로 읽힌다 — §3.7 이 막으려는 그 오독이, 이 게이트의 유일한 발현
+조건(기동시 설정 불일치) 에서, 엔지니어가 진단하러 보는 유일한 장소에 나타난다. 따라서
+`SilenceDeviceOutput` 을 부르는 모든 lane 은 `HoldTelemetryAtMeasured` 도 부른다 (E-STOP lane 포함 —
+거기엔 `Fill*` 가 돌지 않으므로 `ComputeEstop` 이 직접 채운다). CM 의 `BuildHoldOutput` 이 자기
+zero-length 케이스에 쓰는 정책과 같다. `goal_positions` 는 예외로 바인딩이 계속 소유한다 — goal 이
+무엇을 뜻하는지는 바인딩마다 다르고 (관절 hold 타깃 / 앞 3슬롯이 TCP pose), 운영자가 준 목표는 팔이
+판독 불가가 됐다고 사라지지 않는다.
+
+**게이트는 primary lane 만 잡는다 — secondary 제어 법칙까지 멈추면 안 된다.** 판독 불가 tick 에
+컨트롤러가 secondary(핸드) 궤적 계산 자체를 건너뛰면, 그 tick 의 핸드 명령은 *직전 값의 재생*이 되고
+활성화 이후 판독 가능한 tick 이 한 번도 없었다면 그 값은 zero-init 이다 — 즉 **핸드를 원점으로 보내는
+진짜 명령**이며, 팔에서 막은 hazard 를 device 하나 옆으로 옮긴 것에 불과하다. 그러므로 secondary
+lane 은 primary 게이트와 **다른 함수/다른 분기**에 두어 항상 돌게 한다 (`DemoTaskController::
+ComputeSecondary` 가 이 이유로 `ComputeControl` 에서 분리돼 있다).
 
 **두 술어의 이름을 분리한 이유** (#265 결정 B): `min(nc0, nv)` 는 좁은 device 를 안전하게
 만들어 주는 것처럼 보이지만 그렇지 않다. *지속* 버퍼에 scatter 하는 경로(`ExtractFullState`,

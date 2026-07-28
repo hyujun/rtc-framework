@@ -24,6 +24,7 @@ using rtc::CommandType;
 using rtc::DeviceOutput;
 using rtc::DeviceState;
 using rtc::FillCommandTail;
+using rtc::HoldTelemetryAtMeasured;
 using rtc::IsDeviceReadable;
 using rtc::kMaxDeviceChannels;
 using rtc::ModelChannelBound;
@@ -195,6 +196,78 @@ TEST(SilenceDeviceOutputTest, TouchesOnlyTheDeviceItIsGiven) {
     EXPECT_DOUBLE_EQ(output.devices[1].commands[i], 0.5 + static_cast<double>(i));
   }
   EXPECT_EQ(output.num_devices, 2) << "the device count still describes the state, not the gate";
+}
+
+// ── HoldTelemetryAtMeasured — what a silenced tick LOOKS like ────────────────
+//
+// Silencing the wire does not silence the log: the device state POD copies the
+// output's position-semantics arrays bounded by the DEVICE's channel count, not
+// the output's, and carries no field for the emitted width. So the reference
+// lanes of a silenced tick are the only thing standing between "no command" and
+// a recorded row that reads as "commanded every joint to the origin".
+
+TEST(HoldTelemetryAtMeasuredTest, ReferenceLanesReportTheParkedPosition) {
+  DeviceOutput out;
+  const DeviceState dev = MakeDevice(6);
+  SilenceDeviceOutput(out);
+
+  HoldTelemetryAtMeasured(out, dev.num_channels, dev.positions);
+
+  EXPECT_EQ(out.num_channels, 0) << "the wire stays silent";
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_DOUBLE_EQ(out.target_positions[i], dev.positions[i]) << "channel " << i;
+    EXPECT_DOUBLE_EQ(out.trajectory_positions[i], dev.positions[i]) << "channel " << i;
+    EXPECT_NE(out.trajectory_positions[i], 0.0)
+        << "a row of zeros is the reading this function exists to prevent";
+  }
+}
+
+TEST(HoldTelemetryAtMeasuredTest, LeavesTheGoalAndTheCommandsToTheBinding) {
+  DeviceOutput out;
+  const DeviceState dev = MakeDevice(6);
+  for (std::size_t i = 0; i < 6; ++i) {
+    out.goal_positions[i] = 7.0 + static_cast<double>(i);
+  }
+  SilenceDeviceOutput(out);
+
+  HoldTelemetryAtMeasured(out, dev.num_channels, dev.positions);
+
+  for (std::size_t i = 0; i < 6; ++i) {
+    // What a goal MEANS is per-binding (a joint hold target, a TCP pose split
+    // across the first three slots), so this primitive must not overwrite it.
+    EXPECT_DOUBLE_EQ(out.goal_positions[i], 7.0 + static_cast<double>(i)) << "channel " << i;
+    // A parked joint is not moving, and nothing was commanded.
+    EXPECT_DOUBLE_EQ(out.target_velocities[i], 0.0) << "channel " << i;
+    EXPECT_DOUBLE_EQ(out.commands[i], 0.0) << "channel " << i;
+  }
+}
+
+TEST(HoldTelemetryAtMeasuredTest, StopsAtTheShorterOfTheTwoSpans) {
+  DeviceOutput out;
+  std::array<double, 3> measured{1.5, 2.5, 3.5};
+
+  // num_channels claims more than `measured` covers: the extra channels have no
+  // measurement to park at, so they keep their fresh zero rather than reading
+  // past the span.
+  HoldTelemetryAtMeasured(out, 9, measured);
+
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_DOUBLE_EQ(out.trajectory_positions[i], measured[i]);
+  }
+  for (std::size_t i = 3; i < 9; ++i) {
+    EXPECT_DOUBLE_EQ(out.trajectory_positions[i], 0.0) << "channel " << i;
+  }
+}
+
+TEST(HoldTelemetryAtMeasuredTest, IgnoresANegativeChannelCount) {
+  DeviceOutput out;
+  const DeviceState dev = MakeDevice(6);
+
+  // A negative int converted to std::size_t would be enormous.
+  HoldTelemetryAtMeasured(out, -4, dev.positions);
+
+  EXPECT_DOUBLE_EQ(out.trajectory_positions[0], 0.0);
+  EXPECT_DOUBLE_EQ(out.target_positions[0], 0.0);
 }
 
 // ── FillCommandTail — the [model_bound, nc0) domain split ────────────────────

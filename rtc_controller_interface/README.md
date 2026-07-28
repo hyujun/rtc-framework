@@ -152,11 +152,14 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 | `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 — `num_channels` 는 wire 길이 |
 | `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태 판독 **전** |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length (`num_channels = 0`) | primary device 에만. secondary passthrough 는 유지 |
+| `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 의 도메인별 중립값 (torque → `0.0` / position → 측정값) | 명령 조립 시 |
 
 **두 술어의 이름이 갈린 것이 핵심이다** (#265 결정 B). `min(nc0, nv)` 는 좁은 device 를 안전하게 만들어 주는 것처럼 보이지만 그렇지 않다 — *지속* 버퍼에 scatter 하는 경로에서 건너뛴 슬롯은 이전값(초기 0)을 유지하므로, 모델이 보는 configuration 은 **bound 없이 읽은 것과 수치적으로 동일**하다. bound 는 crash 만 없애고 hazard 는 남긴다. 따라서 #172 의 bound 는 OOB 방어로서 유지하되 F5 답으로 쓰면 안 된다.
 
 **침묵은 fail-safe 가 아니다.** zero-length 는 출하된 백엔드 전부에서 "no update" = 직전 setpoint 유지다 (`WriteSafeCommand` 와 같은 성질). `nc0` 길이의 0 을 대신 내보내는 것은 **진짜 0 커맨드**이고, 토크 모드 팔에서는 정지가 아니라 낙하다.
+
+**침묵은 wire 만 침묵시킨다.** 로그 POD 는 출력이 아니라 device 의 `num_channels` 로 bound 하고 내보낸 폭을 담는 필드가 없으므로, reference lane 을 비워 두면 침묵 tick 이 "전 관절 원점 명령" 으로 기록된다. `SilenceDeviceOutput` 은 `HoldTelemetryAtMeasured` 와 항상 짝이며, `goal_positions` 만 바인딩 소유로 남는다. 근거·판정은 §3.7.
 
 **한계 — 필요조건만 판정한다** (#265 D1-a → **issue #284**). `num_channels` 는 wire 길이이므로 reorder map 이 활성이면 `nc0 >= model_dim` 이어도 매칭 안 된 슬롯에 구멍이 남을 수 있다. `num_channels` 재정의는 기각됐다 (그 필드는 위 egress bound 로 이미 쓰인다). 이 갭은 #284 가 소유한다.
 
