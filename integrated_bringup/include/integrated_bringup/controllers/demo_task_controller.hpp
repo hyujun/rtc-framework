@@ -67,6 +67,17 @@ inline constexpr int kDemoTaskMaxHandDof = 32;
 // maps (unified kin&dyn Phase 4). Actual full_dof_ resolved at runtime.
 inline constexpr int kDemoTaskMaxFullDof = kDemoTaskMaxArmDof + kDemoTaskMaxHandDof;
 
+/// Ticks an external task goal may be held while the control frame it was
+/// authored in is unavailable, before the goal expires and the arm falls back to
+/// holding the frame that IS available (#292 R1).
+///
+/// Deliberately a tick count, not a duration: the frame comes back when the
+/// closed-chain hand FK walk-in converges, and that walk-in is
+/// ⌈Δ/max_seed_increment⌉ *iterations* long — it scales with tick count, not
+/// with wall time, so converting through control_rate would make the budget
+/// rate-dependent for no reason. A measured p1b walk-in is ~93 ticks.
+inline constexpr std::uint32_t kVtcpFrameWaitTicks = 1000;
+
 /// Demo Task-Space Controller: CLIK (arm) + P control (hand).
 ///
 /// Controls the end-effector in Cartesian space via damped Jacobian
@@ -212,6 +223,15 @@ class DemoTaskController final : public RTControllerInterface {
   [[nodiscard]] const ::integrated_bringup::ToFSnapshotData& GetToFSnapshotForTesting()
       const noexcept {
     return tof_snapshot_;
+  }
+
+  /// Test-only: the control frame the last Compute() tick ran in (#292).
+  /// Exposes the member-mask derivation, which is otherwise invisible — it only
+  /// reaches behaviour through ClassifyFrameTransition, and a mask that is wrong
+  /// in a way the classifier ignores (kConstant, where it is pinned to 0xFF)
+  /// would leave no trace anywhere else.
+  [[nodiscard]] ControlFrameId GetControlFrameIdForTesting() const noexcept {
+    return ControlFrameId{vtcp_valid_, vtcp_member_mask_, true};
   }
 
  private:
@@ -371,6 +391,12 @@ class DemoTaskController final : public RTControllerInterface {
   bool vtcp_valid_{false};                                ///< Virtual TCP computed successfully
   Eigen::Matrix3d skew_buf_{Eigen::Matrix3d::Zero()};     ///< Jacobian modification buffer
   std::array<FingertipVtcpInput, kNumFingertips> vtcp_inputs_{};  ///< Pre-allocated
+  /// Fingertips that fed this tick's virtual TCP (bit f = fingertip f), pinned
+  /// to 0xFF in kConstant mode where the control point does not depend on them.
+  /// Written only by UpdateVirtualTcp: this function's early returns leave
+  /// vtcp_inputs_ stale, so deriving the mask from that array anywhere else
+  /// would read a previous tick's participating set. RT-thread-only.
+  std::uint8_t vtcp_member_mask_{0};
 
   void UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp, const Gains& gains) noexcept;
 
@@ -455,7 +481,39 @@ class DemoTaskController final : public RTControllerInterface {
   void ResetTargetInitialization() noexcept override {
     arm_target_initialized_.store(false, std::memory_order_release);
     hand_target_initialized_.store(false, std::memory_order_release);
+    // #292: a new activation has no external goal yet, and no frame wait in
+    // progress. Both are atomic for the same reason the two flags above are —
+    // this hook runs off-RT from on_activate while the RT tick reads them.
+    target_is_hold_seed_.store(true, std::memory_order_release);
+    frame_wait_ticks_.store(0, std::memory_order_release);
   }
+
+  // ── Control-frame contract (#292) ─────────────────────────────────────────
+  // The invariant: run CLIK only when the frame the goal was authored in is the
+  // frame being controlled this tick. See ClassifyFrameTransition in
+  // support/virtual_tcp.hpp for the law and the reasoning.
+
+  /// Frame the goal currently in current_target_slot_ was authored in.
+  /// RT-thread-only, and deliberately NOT reset by ResetTargetInitialization:
+  /// SeedHoldTarget rewrites it in full, and the arm self-init that calls it is
+  /// gated on exactly the conditions ComputeControl needs to read it, so no
+  /// reader can observe a previous activation's value. Left non-atomic because
+  /// std::atomic over a 3-byte struct is not guaranteed lock-free (RT-4).
+  ControlFrameId target_frame_id_{};
+  /// Is the goal still the self-init hold seed (as opposed to an external one)?
+  /// A hold seed may be moved to the current frame freely — that is what makes
+  /// a frame transition free of arm motion; an external goal may not.
+  std::atomic<bool> target_is_hold_seed_{true};
+  /// Consecutive ticks an external goal has been held for a frame mismatch.
+  std::atomic<std::uint32_t> frame_wait_ticks_{0};
+
+  /// Seed the arm hold target at `pose` and tag it with frame `id`, so the goal
+  /// and the control frame agree and CLIK sees zero task error. Shared by the
+  /// first-tick self-init and ComputeControl's frame-transition branch.
+  /// RT-thread-only. The caller owns the target_seqlock_ Store (the self-init
+  /// batches it into its existing slot_dirty publish).
+  void SeedHoldTarget(const pinocchio::SE3& pose, const rtc::DeviceState& dev0,
+                      ControlFrameId id) noexcept;
 
   TargetSlot current_target_slot_{};
 

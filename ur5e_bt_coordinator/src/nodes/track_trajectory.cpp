@@ -57,6 +57,19 @@ BT::NodeStatus TrackTrajectory::onRunning() {
   auto current = bridge_->GetTcpPose();
   double err = current.PositionDistanceTo(waypoints_[current_idx_]);
 
+  // #292: same rule as MoveToPose — a waypoint may only be marked reached from
+  // a live pose in the active controller's task frame. A stale pose left over
+  // from the previous controller could otherwise walk the whole waypoint list
+  // without the arm moving at all.
+  if (!bridge_->IsTcpPoseValid()) {
+    static rclcpp::Clock stale_clock{RCL_STEADY_TIME};
+    RCLCPP_WARN_THROTTLE(logger(), stale_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                         "TCP pose is not live (task frame unsettled or transform missing) — "
+                         "withholding the waypoint check at %zu/%zu",
+                         current_idx_, waypoints_.size());
+    return BT::NodeStatus::RUNNING;
+  }
+
   if (err < pos_tol_) {
     ++current_idx_;
     if (current_idx_ >= waypoints_.size()) {

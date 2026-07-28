@@ -12,8 +12,11 @@
 #include <cmath>
 #include <span>
 
+using integrated_bringup::ClassifyFrameTransition;
 using integrated_bringup::ComputeVirtualTcp;
+using integrated_bringup::ControlFrameId;
 using integrated_bringup::FingertipVtcpInput;
+using integrated_bringup::FrameTransition;
 using integrated_bringup::VirtualTcpConfig;
 using integrated_bringup::VirtualTcpMode;
 
@@ -216,4 +219,104 @@ TEST(VirtualTcpTest, WorldPoseEqualsBaseTimesTcpVtcp) {
   const Eigen::Vector3d expected_world =
       T_base_tcp.translation() + T_base_tcp.rotation() * offset_in_tcp;
   EXPECT_TRUE((result.world_pose.translation() - expected_world).isZero(1e-9));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ClassifyFrameTransition — the control-frame contract (#292)
+//
+// Every one of the six transitions is exercised here because this is the ONLY
+// place that can be. The controller fixture (test_demo_task_controller.cpp)
+// runs on iiwa7_leap, whose `_base.yaml` leaves `extended`/`closure_path`
+// commented out and ships no closure sidecar, so its hand FK is serial: all
+// four fingertips are valid from tick 1 and `member_mask` is pinned to 0b1111
+// for the life of the controller. kReplanExternal and kBindExternal are
+// unreachable there. That fixture pins the wiring; these pin the law.
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+constexpr std::uint32_t kBound = 1000;
+
+// The two frames a p1b-shaped controller alternates between during the
+// closed-chain FK walk-in: tool0 while the loop is still held, virtual TCP
+// (all four tips participating) once it converges.
+constexpr ControlFrameId kTool0{false, 0, true};
+constexpr ControlFrameId kVtcpAll{true, 0b1111, true};
+
+}  // namespace
+
+TEST(FrameTransitionTest, MatchingFramesRunTheExistingClik) {
+  EXPECT_EQ(ClassifyFrameTransition(kTool0, kTool0, /*is_hold_seed=*/true, 0, kBound),
+            FrameTransition::kNone);
+  EXPECT_EQ(ClassifyFrameTransition(kVtcpAll, kVtcpAll, /*is_hold_seed=*/false, 0, kBound),
+            FrameTransition::kNone);
+}
+
+TEST(FrameTransitionTest, FrameKindChangeWithHoldSeedReseeds) {
+  // Both directions: the first-valid edge (tool0 → vtcp) and a vtcp that drops
+  // back out. Re-seeding either way leaves zero task error.
+  EXPECT_EQ(ClassifyFrameTransition(kTool0, kVtcpAll, /*is_hold_seed=*/true, 0, kBound),
+            FrameTransition::kReseed);
+  EXPECT_EQ(ClassifyFrameTransition(kVtcpAll, kTool0, /*is_hold_seed=*/true, 0, kBound),
+            FrameTransition::kReseed);
+}
+
+TEST(FrameTransitionTest, FrameKindChangeWithExternalGoalHoldsWithinBudget) {
+  EXPECT_EQ(ClassifyFrameTransition(kVtcpAll, kTool0, /*is_hold_seed=*/false, 0, kBound),
+            FrameTransition::kHoldExternal);
+  EXPECT_EQ(ClassifyFrameTransition(kVtcpAll, kTool0, /*is_hold_seed=*/false, kBound - 1, kBound),
+            FrameTransition::kHoldExternal);
+}
+
+TEST(FrameTransitionTest, FrameKindChangeWithExternalGoalExpiresPastBudget) {
+  // R1: the goal expires and the arm returns to holding the current frame,
+  // rather than being frozen forever or re-tagged into whatever frame is live.
+  // Boundary is exact — `wait_ticks == bound` is the first expiring tick.
+  EXPECT_EQ(ClassifyFrameTransition(kVtcpAll, kTool0, /*is_hold_seed=*/false, kBound, kBound),
+            FrameTransition::kExpireExternal);
+  EXPECT_EQ(ClassifyFrameTransition(kVtcpAll, kTool0, /*is_hold_seed=*/false, kBound + 1, kBound),
+            FrameTransition::kExpireExternal);
+}
+
+TEST(FrameTransitionTest, MemberSetChangeWithHoldSeedReseeds) {
+  // (E) Same frame kind, participating fingertips changed → the control point
+  // moved even though vtcp_valid_ never went false.
+  constexpr ControlFrameId kVtcpThree{true, 0b0111, true};
+  EXPECT_EQ(ClassifyFrameTransition(kVtcpAll, kVtcpThree, /*is_hold_seed=*/true, 0, kBound),
+            FrameTransition::kReseed);
+}
+
+TEST(FrameTransitionTest, MemberSetChangeWithBoundExternalGoalReplans) {
+  // (E) NOT a hold: the goal is still expressed in the vtcp frame and stays
+  // valid, so it is replanned from the new control point.
+  constexpr ControlFrameId kVtcpThree{true, 0b0111, true};
+  EXPECT_EQ(ClassifyFrameTransition(kVtcpAll, kVtcpThree, /*is_hold_seed=*/false, 0, kBound),
+            FrameTransition::kReplanExternal);
+}
+
+TEST(FrameTransitionTest, UnboundExternalGoalBindsOnFirstAgreeingTick) {
+  // An off-RT goal cannot know the participating set, so it arrives unbound.
+  constexpr ControlFrameId kUnboundVtcp{true, 0, false};
+  EXPECT_EQ(ClassifyFrameTransition(kUnboundVtcp, kVtcpAll, /*is_hold_seed=*/false, 0, kBound),
+            FrameTransition::kBindExternal);
+}
+
+TEST(FrameTransitionTest, UnboundExternalGoalStillHoldsOnAFrameKindMismatch) {
+  // Binding must not pre-empt the mismatch check: a goal authored for the vtcp
+  // frame that arrives mid-walk-in has to be held, not bound to tool0. Binding
+  // it there is precisely the silent reinterpretation this contract forbids.
+  constexpr ControlFrameId kUnboundVtcp{true, 0, false};
+  EXPECT_EQ(ClassifyFrameTransition(kUnboundVtcp, kTool0, /*is_hold_seed=*/false, 0, kBound),
+            FrameTransition::kHoldExternal);
+}
+
+TEST(FrameTransitionTest, MemberMaskIsIgnoredWhileControllingTool0) {
+  // `virtual_tcp_mode: disabled` must stay byte-for-byte. Both sides are tool0,
+  // so a non-zero mask on either is not part of the frame identity and must not
+  // manufacture a transition.
+  constexpr ControlFrameId kTool0StaleMask{false, 0b1111, true};
+  EXPECT_EQ(ClassifyFrameTransition(kTool0StaleMask, kTool0, /*is_hold_seed=*/true, 0, kBound),
+            FrameTransition::kNone);
+  EXPECT_EQ(ClassifyFrameTransition(kTool0StaleMask, kTool0, /*is_hold_seed=*/false, 0, kBound),
+            FrameTransition::kNone);
 }

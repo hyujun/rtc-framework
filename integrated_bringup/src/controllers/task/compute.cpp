@@ -92,6 +92,9 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
                                           const Gains& gains) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::UpdateVirtualTcp");
   vtcp_valid_ = false;
+  // Cleared beside vtcp_valid_ so the two early returns below cannot leave a
+  // previous tick's participating set behind (#292).
+  vtcp_member_mask_ = 0;
   if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled)
     return;
 
@@ -102,9 +105,20 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
     vtcp_inputs_[f].active = HandFingertipPose(f, ft_pose);
     if (!vtcp_inputs_[f].active)
       continue;
+    vtcp_member_mask_ |= static_cast<std::uint8_t>(1U << f);
     vtcp_inputs_[f].position_in_tcp = ft_pose.translation();
     // Force magnitude for weighted mode (cached in ReadState; 0 when !valid).
     vtcp_inputs_[f].force_magnitude = static_cast<double>(fingertip_data_[f].force_mag);
+  }
+
+  // #292 frame identity: which fingertips define this tick's control point.
+  // kConstant reads none of them, so its mask is pinned — otherwise a fingertip
+  // dropping out would flip a constant-offset vtcp's frame identity for no
+  // reason and force a spurious re-seed. kWeighted deliberately tracks
+  // membership only: its weight (1 + |F|) drifts continuously, which moves the
+  // control point smoothly rather than discontinuously.
+  if (gains.vtcp.mode == VirtualTcpMode::kConstant) {
+    vtcp_member_mask_ = 0xFF;
   }
 
   const auto result = ComputeVirtualTcp(gains.vtcp, T_base_tcp, vtcp_inputs_);
@@ -230,6 +244,82 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
   const Eigen::Vector3d ctrl_pos = control_pose.translation();
 
   tcp_position_ = {ctrl_pos[0], ctrl_pos[1], ctrl_pos[2]};
+
+  // ── Control-frame contract (#292) ──────────────────────────────────────
+  // Run the CLIK below only when the goal was authored in the frame being
+  // controlled this tick. When a closed-chain hand's FK walk-in converges, the
+  // control point moves from tool0 to the virtual TCP in a single tick; without
+  // this the trajectory's start and goal stay at the tool0 hold pose and
+  // computePoseError hands the whole frame offset (0.21 m plus a ~90° rotation
+  // on p1b, which runs control_6dof) to CLIK as task error. Nothing here needs
+  // a warm-up gate: while the hand FK is still held, the seed frame and the
+  // control frame are BOTH tool0, so the existing CLIK already holds correctly.
+  const ControlFrameId cur_id{use_vtcp_frame, vtcp_member_mask_, true};
+  switch (ClassifyFrameTransition(
+      target_frame_id_, cur_id, target_is_hold_seed_.load(std::memory_order_acquire),
+      frame_wait_ticks_.load(std::memory_order_acquire), kVtcpFrameWaitTicks)) {
+    case FrameTransition::kNone:
+      frame_wait_ticks_.store(0, std::memory_order_release);
+      break;
+
+    case FrameTransition::kReseed:
+      // No external goal is at stake, so move the hold seed onto the new control
+      // point: the task error stays exactly zero and the arm does not move. This
+      // is also why a frame that flickers valid/invalid needs no latch or
+      // hysteresis — every tick re-seeds to zero error.
+      SeedHoldTarget(control_pose, dev0, cur_id);
+      target_seqlock_.Store(current_target_slot_);
+      break;
+
+    case FrameTransition::kHoldExternal: {
+      // Hold the arm and keep new_target_pending_ untouched, so the goal fires
+      // unchanged on the tick its frame returns. An EXPLICIT hold: desired_q_
+      // tracks the measurement and WriteArmJointCommand integrates a zero dq_
+      // onto it. Deliberately not rtc::SilenceDeviceOutput — that means "no
+      // update" (the drive keeps its previous setpoint) and answers the F5
+      // question, not this one; the arm is readable here.
+      frame_wait_ticks_.fetch_add(1, std::memory_order_acq_rel);
+      dq_.setZero();
+      traj_dq_.setZero();
+      const std::size_t nhold = ArmCommandBound(dev0.num_channels);
+      for (std::size_t i = 0; i < nhold; ++i) {
+        desired_q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
+      }
+      return;
+    }
+
+    case FrameTransition::kExpireExternal:
+      // R1: the authoring frame never came back. Expire the goal and hold the
+      // frame that IS available. The rejected alternative — re-tagging the goal
+      // into the live frame — is the same silent reinterpretation this contract
+      // exists to forbid, just spelled with a timeout.
+      RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                           "task goal expired: control frame unavailable for %u ticks "
+                           "(goal vtcp=%d, control vtcp=%d) — holding current frame",
+                           kVtcpFrameWaitTicks, static_cast<int>(target_frame_id_.is_vtcp),
+                           static_cast<int>(cur_id.is_vtcp));
+      SeedHoldTarget(control_pose, dev0, cur_id);
+      target_seqlock_.Store(current_target_slot_);
+      break;
+
+    case FrameTransition::kReplanExternal:
+      // Same frame kind, but the participating fingertips changed and moved the
+      // control point. The goal is still expressed in this frame and stays
+      // valid, so replan from the new control point instead of holding: the goal
+      // survives and the trajectory restarts from rest, so there is no jerk.
+      target_frame_id_ = cur_id;
+      new_target_pending_ = true;
+      frame_wait_ticks_.store(0, std::memory_order_release);
+      break;
+
+    case FrameTransition::kBindExternal:
+      // First tick the frames agree. An off-RT goal cannot know the
+      // participating set, so bind it here; new_target_pending_ is already true
+      // and initialises the trajectory below, so nothing else is owed.
+      target_frame_id_ = cur_id;
+      frame_wait_ticks_.store(0, std::memory_order_release);
+      break;
+  }
 
   // ── Task-space trajectory ──────────────────────────────────────────────
   if (new_target_pending_) {

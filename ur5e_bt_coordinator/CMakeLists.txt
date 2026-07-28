@@ -175,6 +175,7 @@ if(BUILD_TESTING)
     test_hand_nodes
     test_shape_nodes
     test_data_nodes
+    test_task_frame
   )
   # Tier 2 e2e: real-DDS fixture tests (use test_helpers.hpp) — the
   # service/rebind path itself is the test subject, so these keep the mock

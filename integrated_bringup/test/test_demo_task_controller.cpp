@@ -485,6 +485,277 @@ TEST_F(TaskControllerUrdfTest, VirtualTcpConstantOffsetPublishes) {
   const double dy = out.virtual_tcp_pose.position[1] - out.arm_tip_pose.position[1];
   const double dz = out.virtual_tcp_pose.position[2] - out.arm_tip_pose.position[2];
   EXPECT_NEAR(std::sqrt(dx * dx + dy * dy + dz * dz), 0.05, 1e-6);
+
+  // Turning the vtcp on moved the control point but must not have moved the ARM
+  // (#292): the hold seed follows the frame, so the offset is never spent as
+  // task error. Added, not relaxed — the offset assertions above are unchanged.
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-6)
+        << "arm joint " << i << " moved when the control frame changed";
+  }
+}
+
+// ── Control-frame contract (#292) ────────────────────────────────────────────
+//
+// These pin the WIRING. The transition law itself is pinned exhaustively by
+// ClassifyFrameTransition's tests in test_virtual_tcp.cpp, which is the only
+// place it can be: iiwa7_leap's _base.yaml leaves `extended`/`closure_path`
+// commented out and ships no closure sidecar, so this fixture's hand FK is
+// serial — all four fingertips are valid from tick 1 and the member mask never
+// moves. kReplanExternal and kBindExternal-after-a-mask-change are unreachable
+// here, and a controller-level test pretending otherwise would pass without
+// executing anything.
+//
+// The lever for "the control frame is tool0 while the intended frame is vtcp"
+// is device 1's validity: RunHandForwardKinematics' serial path requires a
+// valid hand device, so such a tick produces no fingertip poses and leaves
+// vtcp_valid_ false while gains.vtcp.mode stays enabled. That is held for a
+// different reason than a closed-chain walk-in tick, but it is the same shape
+// from ComputeControl's side, which is the side under test.
+
+// The observed p1b defect, reduced: the control point moves from tool0 to a
+// virtual TCP 0.2 m and ~90° away in one tick, with the measured joints
+// unchanged. SetUp's first Compute ran with the default Gains (vtcp disabled),
+// so the self-init latched a tool0 hold — enabling the vtcp now IS the
+// first-valid edge.
+TEST_F(TaskControllerUrdfTest, VtcpFirstValidDoesNotInjectArmMotion) {
+  auto gains = ctrl_->get_gains();
+  gains.control_6dof = true;  // p1b runs 6-DOF CLIK, which is what made it violent
+  gains.vtcp.mode = VirtualTcpMode::kConstant;
+  gains.vtcp.offset = {0.0, 0.0, 0.2};              // ≈ the measured 0.2098 m jump
+  gains.vtcp.orientation = {1.5708, 0.0, -1.5708};  // p1b's virtual_tcp_orientation
+  ctrl_->set_gains(gains);
+
+  auto out = RunTicks(1);  // the edge tick itself
+  ASSERT_TRUE(out.virtual_tcp_pose_valid);
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-9)
+        << "arm joint " << i << " moved on the first-valid edge";
+  }
+  // The goal was re-seeded into the frame now being controlled, so the two
+  // agree — the condition whose absence let computePoseError see 0.2 m of error.
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_NEAR(out.task_goal_positions[i], out.actual_task_positions[i], 1e-9)
+        << "task goal and actual disagree in component " << i;
+  }
+
+  out = RunTicks(20);  // and no drift accumulates afterwards
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-6)
+        << "arm joint " << i << " drifted after the frame transition";
+  }
+}
+
+// A goal that arrives while the control frame is still tool0 is held, not
+// reinterpreted, and fires unchanged once its frame arrives.
+TEST_F(TaskControllerUrdfTest, ExternalTargetBeforeFirstValidIsHeldThenExecuted) {
+  auto gains = ctrl_->get_gains();
+  gains.vtcp.mode = VirtualTcpMode::kCentroid;
+  ctrl_->set_gains(gains);
+
+  state_.devices[1].valid = false;  // hand FK yields nothing → control frame is tool0
+  RunTicks(1);
+  ASSERT_FALSE(last_out_.virtual_tcp_pose_valid);
+
+  const auto tcp0 = ctrl_->tcp_position();
+  std::array<double, kArmDof> target{};
+  target[0] = tcp0[0] + 0.03;
+  target[1] = tcp0[1] - 0.02;
+  target[2] = tcp0[2] + 0.02;
+  for (int i = 3; i < kArmDof; ++i) {
+    target[static_cast<std::size_t>(i)] = kArmHome[static_cast<std::size_t>(i)];
+  }
+  ctrl_->SetDeviceTarget(0, target);
+
+  auto out = RunTicks(30);
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-9)
+        << "arm joint " << i << " moved while the goal's frame was unavailable";
+  }
+
+  state_.devices[1].valid = true;  // frame arrives → the preserved goal executes
+  RunTicks(1200);
+  ASSERT_TRUE(last_out_.virtual_tcp_pose_valid);
+  const auto tcp = ctrl_->tcp_position();
+  EXPECT_NEAR(tcp[0], target[0], 2e-3);
+  EXPECT_NEAR(tcp[1], target[1], 2e-3);
+  EXPECT_NEAR(tcp[2], target[2], 2e-3);
+}
+
+// Losing the frame mid-flight holds the arm and preserves the goal verbatim —
+// it is never re-read as a goal in whatever frame happens to be live.
+TEST_F(TaskControllerUrdfTest, VtcpLossHoldsExternalGoalAndDoesNotReinterpret) {
+  auto gains = ctrl_->get_gains();
+  gains.vtcp.mode = VirtualTcpMode::kCentroid;
+  ctrl_->set_gains(gains);
+  RunTicks(1);
+  ASSERT_TRUE(last_out_.virtual_tcp_pose_valid);
+
+  const auto tcp0 = ctrl_->tcp_position();
+  std::array<double, kArmDof> target{};
+  target[0] = tcp0[0] + 0.03;
+  target[1] = tcp0[1];
+  target[2] = tcp0[2] + 0.02;
+  for (int i = 3; i < kArmDof; ++i) {
+    target[static_cast<std::size_t>(i)] = kArmHome[static_cast<std::size_t>(i)];
+  }
+  ctrl_->SetDeviceTarget(0, target);
+  RunTicks(100);  // part-way through the trajectory
+
+  const std::array<double, 3> goal_before = {last_out_.task_goal_positions[0],
+                                             last_out_.task_goal_positions[1],
+                                             last_out_.task_goal_positions[2]};
+  std::array<double, kArmDof> cmd_before{};
+  for (int i = 0; i < kArmDof; ++i) {
+    cmd_before[static_cast<std::size_t>(i)] =
+        last_out_.devices[0].commands[static_cast<std::size_t>(i)];
+  }
+
+  state_.devices[1].valid = false;
+  auto out = RunTicks(50);
+  ASSERT_FALSE(out.virtual_tcp_pose_valid);
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                cmd_before[static_cast<std::size_t>(i)], 1e-9)
+        << "arm joint " << i << " moved while the goal's frame was gone";
+  }
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.task_goal_positions[i], goal_before[i], 1e-12)
+        << "goal component " << i << " was rewritten while its frame was gone";
+  }
+
+  state_.devices[1].valid = true;
+  RunTicks(1200);
+  const auto tcp = ctrl_->tcp_position();
+  EXPECT_NEAR(tcp[0], target[0], 2e-3);
+  EXPECT_NEAR(tcp[1], target[1], 2e-3);
+  EXPECT_NEAR(tcp[2], target[2], 2e-3);
+}
+
+// A frame that flickers every single tick still produces no motion while the
+// goal is a hold seed — each tick re-seeds to zero error, which is why the
+// design needs no latch or hysteresis anywhere.
+TEST_F(TaskControllerUrdfTest, VtcpFlickerWithHoldSeedProducesNoMotion) {
+  auto gains = ctrl_->get_gains();
+  gains.vtcp.mode = VirtualTcpMode::kCentroid;
+  ctrl_->set_gains(gains);
+
+  for (int k = 0; k < 40; ++k) {
+    state_.devices[1].valid = (k % 2 == 0);
+    RunTicks(1);
+    for (int i = 0; i < kArmDof; ++i) {
+      ASSERT_NEAR(last_out_.devices[0].commands[static_cast<std::size_t>(i)],
+                  kArmHome[static_cast<std::size_t>(i)], 1e-9)
+          << "arm joint " << i << " moved on flicker tick " << k;
+    }
+  }
+}
+
+// R1: a goal whose frame never returns expires and the arm goes back to holding
+// the frame it DOES have, instead of being frozen for the rest of the session.
+TEST_F(TaskControllerUrdfTest, ExternalGoalExpiresInsteadOfFreezingTheArm) {
+  auto gains = ctrl_->get_gains();
+  gains.vtcp.mode = VirtualTcpMode::kCentroid;
+  ctrl_->set_gains(gains);
+
+  state_.devices[1].valid = false;
+  RunTicks(1);
+  ASSERT_FALSE(last_out_.virtual_tcp_pose_valid);
+
+  const auto tcp0 = ctrl_->tcp_position();
+  std::array<double, kArmDof> target{};
+  target[0] = tcp0[0] + 0.05;
+  target[1] = tcp0[1];
+  target[2] = tcp0[2];
+  for (int i = 3; i < kArmDof; ++i) {
+    target[static_cast<std::size_t>(i)] = kArmHome[static_cast<std::size_t>(i)];
+  }
+  ctrl_->SetDeviceTarget(0, target);
+
+  // Still inside the budget: the goal is intact and distinct from the actual
+  // pose, so the expiry below is observably a change and not a no-op.
+  auto out = RunTicks(10);
+  EXPECT_NEAR(out.task_goal_positions[0], target[0], 1e-12);
+  EXPECT_GT(std::abs(out.task_goal_positions[0] - out.actual_task_positions[0]), 1e-3);
+
+  out = RunTicks(static_cast<int>(integrated_bringup::kVtcpFrameWaitTicks) + 5);
+  // Expired: the goal is now the hold seed at the frame actually being
+  // controlled, so goal and actual agree again...
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.task_goal_positions[i], out.actual_task_positions[i], 1e-9)
+        << "component " << i << " did not fall back to a hold seed";
+  }
+  // ...and the arm never moved to get there.
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-6)
+        << "arm joint " << i << " moved across goal expiry";
+  }
+}
+
+// `virtual_tcp_mode: disabled` must behave exactly as before: both frames are
+// permanently tool0, so every tick classifies as kNone and nothing new runs.
+TEST_F(TaskControllerUrdfTest, VirtualTcpDisabledPathUnchanged) {
+  ASSERT_EQ(ctrl_->get_gains().vtcp.mode, VirtualTcpMode::kDisabled);
+  EXPECT_FALSE(ctrl_->GetControlFrameIdForTesting().is_vtcp);
+
+  auto out = RunTicks(20);
+  EXPECT_FALSE(out.virtual_tcp_pose_valid);
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-6);
+  }
+
+  // An external goal still executes with no frame ceremony in the way.
+  const auto tcp0 = ctrl_->tcp_position();
+  std::array<double, kArmDof> target{};
+  target[0] = tcp0[0] + 0.03;
+  target[1] = tcp0[1];
+  target[2] = tcp0[2] + 0.02;
+  for (int i = 3; i < kArmDof; ++i) {
+    target[static_cast<std::size_t>(i)] = kArmHome[static_cast<std::size_t>(i)];
+  }
+  ctrl_->SetDeviceTarget(0, target);
+  RunTicks(600);
+  const auto tcp = ctrl_->tcp_position();
+  EXPECT_NEAR(tcp[0], target[0], 1e-3);
+  EXPECT_NEAR(tcp[1], target[1], 1e-3);
+  EXPECT_NEAR(tcp[2], target[2], 1e-3);
+}
+
+// The member mask reaches behaviour only through ClassifyFrameTransition, which
+// ignores it in the two cases below — so a wrong derivation would leave no other
+// trace. Read it directly.
+TEST_F(TaskControllerUrdfTest, ControlFrameIdReportsMemberMaskPerMode) {
+  auto gains = ctrl_->get_gains();
+  gains.vtcp.mode = VirtualTcpMode::kCentroid;
+  ctrl_->set_gains(gains);
+  RunTicks(1);
+  auto id = ctrl_->GetControlFrameIdForTesting();
+  EXPECT_TRUE(id.is_vtcp);
+  EXPECT_EQ(id.member_mask, 0b1111) << "all four serial-FK fingertips participate";
+
+  // kConstant does not read the fingertips, so its mask is pinned: a fingertip
+  // dropping out must not flip a constant-offset vtcp's frame identity.
+  gains.vtcp.mode = VirtualTcpMode::kConstant;
+  gains.vtcp.offset = {0.0, 0.0, 0.05};
+  ctrl_->set_gains(gains);
+  RunTicks(1);
+  id = ctrl_->GetControlFrameIdForTesting();
+  EXPECT_TRUE(id.is_vtcp);
+  EXPECT_EQ(id.member_mask, 0xFF);
+
+  // No hand FK this tick → no frame and no members. A mask surviving from the
+  // previous tick here would be a stale participating set.
+  state_.devices[1].valid = false;
+  RunTicks(1);
+  id = ctrl_->GetControlFrameIdForTesting();
+  EXPECT_FALSE(id.is_vtcp);
+  EXPECT_EQ(id.member_mask, 0);
 }
 
 // ── E-STOP ───────────────────────────────────────────────────────────────────

@@ -75,10 +75,20 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 
 ### TF
 
-TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` → `tool0_actual`.
+TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` → *active controller 의 task frame*.
 이 프레임은 active controller가 `<ns>/transforms` (전용 `/tf` publisher 없음) 로만 발행하므로,
 `transforms_sub_`가 controller 전환마다 rewire 되어 그 `TFMessage`를 `tf_buffer_`에 직접 feed 한다
 (bare `TransformListener`는 `/tf`만 듣기 때문에 이 프레임을 못 받는다 — 외부 `/tf` 재발행 불필요).
+
+#### Task frame 선택 (#292)
+
+child frame 은 **고정이 아니다**. `virtual_tcp_mode` 가 켜진 task 컨트롤러는 virtual TCP 를 제어하므로, `tool0_actual` 을 읽으면 `GetTcpPose()` 와 `PublishArmTarget` 이 서로 다른 frame 이 된다 — GUI 와 달리 여기서는 표시 문제가 아니라 **수렴이 영원히 성립하지 않는** 문제다 (`MoveToPose` / `TrackTrajectory` 가 이 pose 로 도달을 판정한다).
+
+선택은 **availability** 로만 한다 (컨트롤러 이름 하드코딩 없음). 컨트롤러는 실제로 그 점을 제어하는 tick 에만 `virtual_tcp_actual` 을 발행하므로 한 번이라도 관측되면 즉시 latch 하고, 없이 `tool0_actual` 만 `kTaskFrameSettleMsgs` 건이면 fallback 으로 latch 한다. settle window 는 closed-chain hand FK walk-in (~93 tick) 동안 vtcp 컨트롤러도 tool0 만 발행하기 때문에 필요하며, 컨트롤러는 tick 당 최대 1개 `TFMessage` 를 내므로 N 메시지 window 는 최소 N tick 을 커버한다.
+
+- **`IsTcpPoseValid()` 를 반드시 함께 본다.** rewire 직후 캐시는 *이전* 컨트롤러의 pose 다. `MoveToPose` / `TrackTrajectory` 는 live 가 아니면 수렴 판정을 보류하고 RUNNING 을 유지한다 — 그러지 않으면 우연히 tolerance 안에 든 stale pose 로 **움직이지도 않은 동작이 SUCCESS** 로 보고된다.
+- rewire 는 task frame 선택·pose validity·tf buffer 를 모두 리셋한다.
+- **절대 waypoint 를 조용히 변환하지 않는다.** 트리의 절대 waypoint 는 거의 확실히 tool0 authoring 인데 wire 에 frame 필드가 없어 vtcp 컨트롤러에 tool0 목표를 보낼 방법이 없다. 제어 frame 이 vtcp 로 latch 되면 WARN 으로 노출하고, waypoint authoring 의미 자체는 미결 (#292 — (a) BT 를 non-vtcp 컨트롤러에서만 운용 / (b) 브릿지가 `T_tcp_vtcp` 로 변환 / (c) 감지 후 실패, 현재는 (c) + 읽기 frame 정합).
 
 ## BT 트리
 

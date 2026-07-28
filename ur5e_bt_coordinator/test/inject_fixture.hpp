@@ -174,22 +174,16 @@ class InjectTestFixture : public ::testing::Test {
 
   // ── State injection helpers (signatures mirror RosTestFixture) ──────────
 
-  void PublishArmState(const Pose6D& tcp, const std::vector<double>& joints) {
-    sensor_msgs::msg::JointState js;
-    js.position.assign(joints.begin(), joints.end());
-    injector_->ArmJointState(std::move(js));
-
-    // TCP pose travels the production route too: a `base → tool0_actual`
-    // transform through OnTransforms → tf_buffer_, read back via GetTcpPose's
-    // quaternion↔RPY round-trip.
+  /// Build the `base → <child>` TFMessage the controllers broadcast for a task
+  /// pose. RPY → quaternion is ZYX, matching GetTcpPose's inverse mapping.
+  tf2_msgs::msg::TFMessage MakeTaskTf(const Pose6D& tcp, const std::string& child) const {
     geometry_msgs::msg::TransformStamped tfs;
     tfs.header.stamp = node_->now();
     tfs.header.frame_id = "base";
-    tfs.child_frame_id = "tool0_actual";
+    tfs.child_frame_id = child;
     tfs.transform.translation.x = tcp.x;
     tfs.transform.translation.y = tcp.y;
     tfs.transform.translation.z = tcp.z;
-    // RPY → quaternion (ZYX, matches GetTcpPose's inverse mapping).
     const double cr = std::cos(tcp.roll * 0.5);
     const double sr = std::sin(tcp.roll * 0.5);
     const double cp = std::cos(tcp.pitch * 0.5);
@@ -202,7 +196,45 @@ class InjectTestFixture : public ::testing::Test {
     tfs.transform.rotation.z = cr * cp * sy - sr * sp * cy;
     tf2_msgs::msg::TFMessage tf_msg;
     tf_msg.transforms.push_back(tfs);
-    injector_->Transforms(std::move(tf_msg));
+    return tf_msg;
+  }
+
+  /// Inject the transform until the bridge's task frame latches (#292).
+  ///
+  /// The bridge picks its task frame from availability over a settle window: a
+  /// vtcp-configured controller publishes tool0 alone during its hand-FK
+  /// walk-in, so one message is not evidence about which point it controls.
+  /// Repeating here reaches the same state production reaches after the same
+  /// number of ticks — it does not bypass the window, it satisfies it.
+  /// virtual_tcp_actual latches on the first message, so that path costs one.
+  void InjectUntilTaskFrameSettles(const tf2_msgs::msg::TFMessage& tf_msg) {
+    constexpr int kMaxInjections = 512;  // > kTaskFrameSettleMsgs, loop backstop
+    for (int i = 0; i < kMaxInjections; ++i) {
+      injector_->Transforms(tf_msg);
+      if (!bridge_->GetTaskFrame().empty()) {
+        return;
+      }
+    }
+  }
+
+  void PublishArmState(const Pose6D& tcp, const std::vector<double>& joints) {
+    sensor_msgs::msg::JointState js;
+    js.position.assign(joints.begin(), joints.end());
+    injector_->ArmJointState(std::move(js));
+
+    // TCP pose travels the production route too: a `base → tool0_actual`
+    // transform through OnTransforms → tf_buffer_, read back via GetTcpPose's
+    // quaternion↔RPY round-trip.
+    InjectUntilTaskFrameSettles(MakeTaskTf(tcp, "tool0_actual"));
+  }
+
+  /// As PublishArmState, but the controller broadcasts a virtual TCP — the
+  /// frame a vtcp-configured task controller actually controls in (#292).
+  void PublishVirtualTcpState(const Pose6D& vtcp, const std::vector<double>& joints) {
+    sensor_msgs::msg::JointState js;
+    js.position.assign(joints.begin(), joints.end());
+    injector_->ArmJointState(std::move(js));
+    InjectUntilTaskFrameSettles(MakeTaskTf(vtcp, "virtual_tcp_actual"));
   }
 
   void PublishHandState(const std::vector<double>& joints) {
