@@ -1146,6 +1146,46 @@ void RunCrossCheck(CascadedComplianceController& ctrl, CascadeShim& shim,
   }
 }
 
+// Shim-only driver for the §7.6 evaluation-gate cases (#236 S7c-2, 분류 B).
+//
+// The one lane RunCrossCheck borrows from the adapter is the CONDITIONED wrench
+// (diag.wrench_lwa), and the §7.6 verdict does not read it:
+// EvaluateBandwidthSeparation is a function of the two gain sets and Λ_S, i.e.
+// of q alone. So these cases can drive the same signal straight in as an
+// already-LOCAL_WORLD_ALIGNED wrench and drop their last adapter dependency,
+// without weakening what they assert. (The CrossCheckYaml pipeline the adapter
+// runs is a pass-through by construction — filter off, no bias, zero deadband,
+// 1e6 saturation — so the difference is the frame transform, which changes where
+// the compliant frame goes and nothing about the verdict.)
+//
+// Returns the last tick's ShimOutput: the §7.6 fields are what the cases assert,
+// and reading them from the OUTPUT rather than from a counter is what keeps
+// "the published figure follows the gains" a claim about the published figure.
+ShimOutput RunShimOnly(CascadeShim& shim, const CascadedComplianceController::Gains& g, int ticks,
+                       Drive drive = Drive::kSweep) {
+  const int nv = shim.nv();
+  auto state = MakeState(nv, kDt);
+  ShimOutput last{};
+
+  for (int tick = 0; tick < ticks; ++tick) {
+    if (drive == Drive::kSweep) {
+      FillSweep(state, nv, tick, kDt);
+    } else {
+      for (int j = 0; j < nv; ++j) {
+        const auto uj = static_cast<std::size_t>(j);
+        state.devices[0].positions[uj] = 0.0;
+        state.devices[0].velocities[uj] = 0.0;
+      }
+    }
+
+    const double phase = 0.05 * tick;
+    const std::array<double, 6> w{
+        5.0 * std::cos(phase), 3.5 * std::sin(phase), -2.5, 0.4 * std::sin(phase), -0.3, 0.2};
+    last = shim.Step(g, state, w, /*wrench_live=*/true);
+  }
+  return last;
+}
+
 // One posture-gate combination end to end. The gate is `kp != 0 || kd != 0`, so
 // three of the four corners are meaningfully different: both gains, stiffness
 // only, damping only (which is where the PD form produces −0.0·Δq on the seed
@@ -1250,44 +1290,37 @@ TEST(PostureCore, CoreDrivenShimMatchesTheAdapterBitwiseThroughTheActivationRamp
 // The §7.6 evaluation gate — the two ways it reopens
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Re-evaluation on a gain change, cross-checked. test_cascaded_compliance_
-// controller.cpp already pins the adapter's own behaviour here; what this case
-// adds is that the SHIM's copy of the gate reopens on the same tick and computes
-// the same verdict from the same Λ_S — i.e. that the extraction did not move
-// WHEN the verdict is formed, only where the arithmetic lives.
-TEST(BandwidthSeparation, AdapterReEvaluatesTheRatioWhenTheGainsChange) {
+// Re-evaluation on a gain change. Retargeted onto the shim in #236 S7c-2
+// (분류 B): test_cascaded_compliance_controller.cpp used to pin the adapter's
+// own behaviour here and this case pinned that the SHIM's copy of the gate
+// agreed. With the adapter retiring, the shim IS the owner of the stateful
+// contract — the gate reopens on a gain change, and the published figure
+// follows the gains it was handed rather than the ones it was seeded with.
+TEST(BandwidthSeparation, ShimReEvaluatesTheRatioWhenTheGainsChange) {
   auto g = CrossCheckGains();
-  CascadedComplianceController ctrl(Serial7dof(), g);
-  ctrl.SetControlRate(1.0 / kDt);
-  ctrl.LoadConfig(YAML::Load(CrossCheckYaml()));
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
 
   CascadeShim shim;
   shim.RequestBandwidthEval();
-  CrossCheckStats first;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/20, &first);
-  const double initial = ctrl.GetDiagnosticsForTesting().bandwidth_ratio;
+  const ShimOutput first = RunShimOnly(shim, g, /*ticks=*/20);
+  const double initial = first.bandwidth_ratio;
   ASSERT_TRUE(std::isfinite(initial)) << "the first activation produced no verdict to retire";
+  ASSERT_GT(shim.bw_evaluations(), 0) << "nothing was ever evaluated — the case is vacuous";
 
   // Retire the inner loop's bandwidth: same cascade, an inner stiffness far
   // below the outer one. The published figure must FOLLOW the gains.
   g.impedance.kp_pos = {{1.0, 1.0, 1.0}};
   g.impedance.kp_rot = {{0.1, 0.1, 0.1}};
-  ctrl.set_gains(g);
   shim.RequestBandwidthEval();
 
   const int before_soft = shim.bw_evaluations();
-  CrossCheckStats second;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/20, &second);
+  const ShimOutput soft = RunShimOnly(shim, g, /*ticks=*/20);
 
-  EXPECT_GT(shim.bw_evaluations(), before_soft) << "the gate never reopened after set_gains()";
-  const auto soft = ctrl.GetDiagnosticsForTesting();
+  EXPECT_GT(shim.bw_evaluations(), before_soft) << "the gate never reopened for the new gains";
   EXPECT_LT(soft.bandwidth_ratio, initial)
       << "the report still describes the retired gains — a softer inner loop must LOWER the ratio";
   EXPECT_TRUE(soft.bandwidth_ratio_low)
-      << "an inner loop two orders below the outer one is coupled (ratio = " << soft.bandwidth_ratio
-      << ")";
+      << "an inner loop two orders below the outer one is coupled (ratio = "
+      << soft.bandwidth_ratio << ")";
 
   // The threshold is a gain too, and the flag has to follow IT rather than a
   // constant: restore the inner stiffness and drop min_bandwidth_ratio below the
@@ -1295,15 +1328,12 @@ TEST(BandwidthSeparation, AdapterReEvaluatesTheRatioWhenTheGainsChange) {
   // set, which a field wired to `true` would also satisfy.
   g.impedance = CrossCheckGains().impedance;
   g.min_bandwidth_ratio = 0.0;
-  ctrl.set_gains(g);
   shim.RequestBandwidthEval();
 
   const int before_restore = shim.bw_evaluations();
-  CrossCheckStats third;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/20, &third);
+  const ShimOutput restored = RunShimOnly(shim, g, /*ticks=*/20);
 
   EXPECT_GT(shim.bw_evaluations(), before_restore) << "the gate never reopened for the third set";
-  const auto restored = ctrl.GetDiagnosticsForTesting();
   EXPECT_GT(restored.bandwidth_ratio, soft.bandwidth_ratio)
       << "restoring the inner stiffness did not raise the ratio back";
   EXPECT_FALSE(restored.bandwidth_ratio_low)
@@ -1312,17 +1342,14 @@ TEST(BandwidthSeparation, AdapterReEvaluatesTheRatioWhenTheGainsChange) {
   EXPECT_EQ(shim.bw_retries(), 0) << "a healthy pose must not need a retry";
 }
 
-// The retry path. When the evaluation cannot be FORMED the controller must
-// publish "not evaluable" (∞, flag clear) and try again next tick, never leave
-// the previous activation's number in place under gains that no longer apply.
+// The retry path. When the evaluation cannot be FORMED the owner must publish
+// "not evaluable" (∞, flag clear) and try again next tick, never leave the
+// previous activation's number in place under gains that no longer apply.
 //
 // The failure is the REAL one, not an injected NaN: at the all-zero
 // configuration serial_7dof is fully extended with its four Z axes parallel, J
 // drops to rank 5 and Λ_S⁻¹ = J M⁻¹ Jᵀ is singular — so with the §6.5 damping
-// retired (σ₀ = 0 ⇒ λ² = 0) the Cholesky fails at every tick. Both gains reach
-// the controller through set_gains(), which writes the POD straight into the
-// SeqLock and bypasses LoadConfig's validation — the documented bypass S4 used
-// to force a non-factorable Λ_d.
+// retired (σ₀ = 0 ⇒ λ² = 0) the Cholesky fails at every tick.
 //
 // (A non-finite gain would NOT do: Eigen's LLT rejects a non-positive pivot, and
 // a NaN pivot compares false against `<= 0`, so a NaN λ² factorises "successfully"
@@ -1331,48 +1358,41 @@ TEST(BandwidthSeparation, AdapterReEvaluatesTheRatioWhenTheGainsChange) {
 //
 // The posture gains are retired so the tick stays otherwise clean: dyn_ok is
 // only assigned under the posture gate, so with that gate closed a failed Λ_S
-// costs the REPORT and nothing else — exactly the separation §7.6's comment in
-// the adapter claims ("a rank-deficient seeding pose must cost the bandwidth
-// REPORT, not the activation").
-TEST(BandwidthSeparation, AdapterRetriesAfterAFailedEvaluation) {
+// costs the REPORT and nothing else — the separation §7.6 asks for ("a
+// rank-deficient seeding pose must cost the bandwidth REPORT, not the
+// activation"). Retargeted onto the shim in #236 S7c-2 (분류 B).
+TEST(BandwidthSeparation, ShimRetriesAfterAFailedEvaluation) {
   auto g = CrossCheckGains();
   g.nullspace_kp = 0.0;
   g.nullspace_kd = 0.0;
   g.singularity_threshold = 0.0;  // no DLS shell: A stays exactly J M⁻¹ Jᵀ
 
-  CascadedComplianceController ctrl(Serial7dof(), g);
-  ctrl.SetControlRate(1.0 / kDt);
-  ctrl.LoadConfig(YAML::Load(CrossCheckYaml()));
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
-
   CascadeShim shim;
   shim.RequestBandwidthEval();
-  CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/12, &stats, Drive::kSingularHold);
+  const ShimOutput failed = RunShimOnly(shim, g, /*ticks=*/12, Drive::kSingularHold);
 
-  const auto failed = ctrl.GetDiagnosticsForTesting();
   EXPECT_FALSE(std::isfinite(failed.bandwidth_ratio))
       << "a Λ_S that cannot be factorised must publish 'not evaluable', not a number";
   EXPECT_FALSE(failed.bandwidth_ratio_low) << "'not evaluable' must never present as 'coupled'";
-  EXPECT_TRUE(failed.control_valid)
-      << "the failed REPORT stopped the controller — §7.6 is a diagnostic (D20)";
   EXPECT_GT(shim.bw_retries(), 1) << "the evaluation was not retried — one failure and the gate "
                                      "would stay shut for the rest of the activation";
-  EXPECT_EQ(shim.bw_evaluations(), 0) << "the verdict was computed despite the failed solve";
+  EXPECT_EQ(shim.bw_evaluations(), 0) << "a verdict was computed despite the failed solve";
+  // §7.6 is a DIAGNOSTIC (D20): a failed report must not stop the law. The
+  // adapter said this with diag.control_valid; on this side the equivalent
+  // observable is that the tick still produced a finite torque.
+  EXPECT_TRUE(failed.tau_dev.allFinite())
+      << "the failed REPORT poisoned the torque — §7.6 must cost the report and nothing else";
 
   // Non-vacuity, and the recovery: restore the §6.5 damping shell — at the SAME
   // singular pose — and the very next evaluation must succeed. Without this the
-  // assertions above would hold just as well for a controller that never
-  // evaluates at all, and holding the pose fixed keeps the contrast about the
-  // damping rather than about having moved off the singularity.
+  // assertions above would hold just as well for a shim that never evaluates at
+  // all, and holding the pose fixed keeps the contrast about the damping rather
+  // than about having moved off the singularity.
   g.singularity_threshold = 0.02;
-  ctrl.set_gains(g);
   shim.RequestBandwidthEval();
-  CrossCheckStats recovered;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/5, &recovered, Drive::kSingularHold);
+  const ShimOutput recovered = RunShimOnly(shim, g, /*ticks=*/5, Drive::kSingularHold);
 
   EXPECT_GT(shim.bw_evaluations(), 0) << "the retry never succeeded once the pose was evaluable";
-  EXPECT_TRUE(std::isfinite(ctrl.GetDiagnosticsForTesting().bandwidth_ratio))
-      << "the controller stayed at 'not evaluable' after the cause was removed";
+  EXPECT_TRUE(std::isfinite(recovered.bandwidth_ratio))
+      << "the verdict stayed at 'not evaluable' after the cause was removed";
 }

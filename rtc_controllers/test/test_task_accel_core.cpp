@@ -47,6 +47,7 @@
 // enforces the ordering). Everything below pulls Eigen, so it comes first.
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
+#include "rtc_controllers/compliance/torque_estop.hpp"
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/task/task_accel_law.hpp"
@@ -255,8 +256,31 @@ class OscShim {
   // target — the caller keeps the two in lock-step, as the adapter's own drain
   // ordering (FK first, trajectory re-init after) requires.
   // Returns the unclamped torque in DEVICE channel order.
+  // The controller-local E-STOP latch, mirroring TriggerEstop()/ClearEstop().
+  // Deliberately NOT merged with any global-E-STOP flag — same as the adapter,
+  // where `estopped_` is cleared only by an explicit ClearEstop().
+  void TriggerEstop() { estopped_ = true; }
+
+  void ClearEstop() { estopped_ = false; }
+
   Eigen::VectorXd Step(const rtc::OperationalSpaceController::Gains& g,
                        const rtc::ControllerState& state, const std::array<double, 6>* goal) {
+    // ── Step 0: the E-STOP early return (adapter :193-212) ─────────────────
+    // The ORDER inside this branch is the contract, not an implementation
+    // detail: the posture-gate window is cleared BEFORE the return, so a held
+    // tick reports the gate it actually ran (closed) instead of inheriting the
+    // previous active tick's `true` for the whole stop. That flag is the only
+    // observable a numerically inert gate has, so a mutation that kept the
+    // posture task running through an E-STOP would otherwise leave both the
+    // torque lanes and the window looking exactly as they do now (S5 M4).
+    if (estopped_) {
+      last_nullspace_active_ = false;
+      // A held tick is a discontinuity — the next active tick re-seeds the pose
+      // target and the trajectory from the measurement (adapter :693).
+      initialized_ = false;
+      return EstopHold(g, state);
+    }
+
     // ── Step 1: copy joint state into buffers ──────────────────────────────
     const auto& dev0 = state.devices[0];
     std::array<double, kMaxDeviceChannels> q_buf{};
@@ -449,6 +473,32 @@ class OscShim {
   [[nodiscard]] double last_lambda_sq() const { return last_lambda_sq_; }
 
  private:
+  // τ = ĝ(q) − D·q̇ clamped per joint (E-8, #184), through the same core helper
+  // the adapter calls. Coriolis is omitted there and so it is here: at the
+  // speeds a safety stop targets the damping term dominates.
+  Eigen::VectorXd EstopHold(const rtc::OperationalSpaceController::Gains& g,
+                            const rtc::ControllerState& state) {
+    const auto& dev0 = state.devices[0];
+    std::array<double, kMaxDeviceChannels> q_buf{};
+    Eigen::VectorXd qdot_dev = Eigen::VectorXd::Zero(nv_);
+    for (int i = 0; i < nv_; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      q_buf[ui] = dev0.positions[ui];
+      qdot_dev(i) = dev0.velocities[ui];
+    }
+    handle_->ComputeGeneralizedGravity(
+        std::span<const double>(q_buf.data(), static_cast<std::size_t>(nv_)));
+    Eigen::VectorXd grav_dev = Eigen::VectorXd::Zero(nv_);
+    handle_->ReorderOutput(handle_->GetGeneralizedGravity(),
+                           std::span<double>(grav_dev.data(), static_cast<std::size_t>(nv_)));
+    const Eigen::VectorXd t_max = Eigen::VectorXd::Constant(nv_, rtc::kDefaultMaxJointTorque);
+    Eigen::VectorXd out = Eigen::VectorXd::Zero(nv_);
+    rtc::compliance::GravityCompDampedHold(out, grav_dev, qdot_dev, g.estop_damping, t_max);
+    return out;
+  }
+
+  bool estopped_{false};
+
   std::shared_ptr<const pinocchio::Model> model_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
   pinocchio::FrameIndex tip_{0};
@@ -804,6 +854,85 @@ TEST(TaskAccelLaw, CoreDrivenShimMatchesTheAdapterAcrossAPiRotationSplit) {
 // armed by RAII: an ASSERT_* added inside the region returns from the test, and
 // a bare disarm line would then never run — leaving counting on for every later
 // test in the binary, where nothing reads it.
+// ═══════════════════════════════════════════════════════════════════════════
+// The posture gate — shim-only (#236 S7c-2, 분류 B)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// These two moved here from test_dls_convergence.cpp's OscAdapter suite, which
+// retires with OperationalSpaceController. What they pin is NOT adapter
+// behaviour: it is the gate's own contract, and the observation window
+// (last_nullspace_active()) already existed on this shim — it was only ever
+// ASSERTED through the adapter's cross-check, so 분류 A's retirement would have
+// taken the coverage with it.
+//
+// Why a window and not an output lane: mutation M2 (deleting the
+// `null_kp != 0 || null_kd != 0` half of the gate) ran the whole suite clean and
+// has to. With both gains zero the posture torque is a signed zero, Nᵀ·0 is
+// zero, and adding it changes no bit of any torque lane. The flag is the only
+// place the branch is visible at all.
+
+TEST(OscShimPostureGate, IsWiredToTheGains) {
+  rtc::OperationalSpaceController::Gains gains;
+  gains.null_kp = 0.0;
+  gains.null_kd = 0.0;
+
+  OscShim shim;
+  ASSERT_EQ(shim.nv(), 7) << "fixture must be redundant (nv > 6), or the gate is closed anyway";
+  auto state = MakeState(7, 0.001);
+
+  FillSweep(state, 7, 0, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_FALSE(shim.last_nullspace_active()) << "both posture gains are zero";
+
+  gains.null_kp = 3.0;
+  FillSweep(state, 7, 1, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_TRUE(shim.last_nullspace_active()) << "a non-zero stiffness must open the gate";
+
+  gains.null_kp = 0.0;
+  gains.null_kd = 0.4;
+  FillSweep(state, 7, 2, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_TRUE(shim.last_nullspace_active()) << "damping alone must open the gate too";
+
+  gains.null_kd = 0.0;
+  FillSweep(state, 7, 3, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_FALSE(shim.last_nullspace_active()) << "the gate must close again";
+}
+
+TEST(OscShimPostureGate, ReportsClosedOnAnEstoppedTick) {
+  // The window has to describe THIS tick or it is not a window. The E-STOP
+  // branch is an early return that sits before the gate assignment, so unless it
+  // clears the flag itself a held tick inherits the previous active tick's
+  // `true` and keeps reporting it for the whole stop.
+  rtc::OperationalSpaceController::Gains gains;
+  gains.null_kp = 3.0;  // gate open on the redundant fixture
+
+  OscShim shim;
+  auto state = MakeState(7, 0.001);
+
+  FillSweep(state, 7, 0, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  ASSERT_TRUE(shim.last_nullspace_active()) << "fixture must open the gate first, or this pins "
+                                               "nothing";
+
+  shim.TriggerEstop();
+  FillSweep(state, 7, 1, 0.001);
+  const Eigen::VectorXd held = shim.Step(gains, state, nullptr);
+  EXPECT_FALSE(shim.last_nullspace_active())
+      << "an E-STOP tick runs no posture task — the gate observable must say so";
+  // Non-vacuity: the held tick still produced a hold, so the assertion above is
+  // about the gate rather than about the branch having emitted nothing at all.
+  EXPECT_TRUE(held.allFinite());
+  EXPECT_GT(held.cwiseAbs().maxCoeff(), 0.0) << "ĝ(q) − D·q̇ collapsed to zero on every joint";
+
+  shim.ClearEstop();
+  FillSweep(state, 7, 2, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_TRUE(shim.last_nullspace_active()) << "recovery must reopen the gate, not latch it closed";
+}
+
 TEST(TaskAccelLaw, IsAllocationFree) {
   auto rng = MakeRng();
 
