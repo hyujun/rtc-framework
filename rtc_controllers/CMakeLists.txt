@@ -51,6 +51,9 @@ add_library(rtc_controllers STATIC
   src/params/joint_pd_params.cpp
   src/params/osc_params.cpp
   src/params/clik_params.cpp
+  src/params/task_impedance_params.cpp
+  src/params/task_admittance_params.cpp
+  src/params/cascaded_compliance_params.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC

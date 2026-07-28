@@ -11,6 +11,7 @@
 #include "rtc_controllers/compliance/torque_estop.hpp"
 #include "rtc_controllers/compliance/wrench_conditioning.hpp"
 #include "rtc_controllers/compliance/wrench_pipeline.hpp"
+#include "rtc_controllers/params/task_impedance_params.hpp"
 #include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
@@ -91,78 +92,14 @@ namespace rtc {
 /// is a **configure error** (§6.1 — rotation would drift uncontrolled).
 class TaskImpedanceController final : public RTControllerInterface {
  public:
-  /// Task selection (axis B): which Cartesian DoF the impedance law regulates.
-  enum class TaskSelection : std::uint8_t { kFullSe3, kTranslationOnly };
-
-  /// Control-law family (axis A). Explicit rather than inferred from "is a
-  /// wrench configured?": the two laws have different failure modes and
-  /// different singularity exposure, so which one runs must be a declared
-  /// choice, not a side effect of wiring a sensor.
-  enum class Formulation : std::uint8_t {
-    kJacobianTranspose,  ///< §6.2 — Λ-free, task-singularity-free (default)
-    kInertiaShaping,     ///< §6.3 — Λ_S Λ_d⁻¹ shaping; needs Λ_S ⇒ §6.5 applies
-  };
-
-  // ── Gain / feature configuration (trivially copyable POD for SeqLock) ──────
-  struct Gains {
-    /// Cartesian stiffness/damping, per axis — the §6.2 law's OWN parameter POD,
-    /// nested rather than re-declared. K_p is a stiffness [N/m or N·m/rad], K_d a
-    /// damping [N·s/m or N·m·s/rad] — NOT the OSC acceleration-form gains.
-    ///
-    /// It used to be four loose arrays here carrying the SAME defaults as
-    /// compliance::ImpedanceParams (200 / 28 / 20 / 9), so the copy was a second
-    /// definition of one set of numbers, and every RT tick rebuilt the POD
-    /// POSITIONALLY — `ImpedanceParams{kp_pos, kd_pos, kp_rot, kd_rot}` — a
-    /// silent dependency on the core's field ORDER that no test could see.
-    /// Nesting removes both (#236 S6b), and the sibling
-    /// CascadedComplianceController::Gains was already written this way.
-    ///
-    /// Nesting is only a de-duplication when the defaults MATCH; where they do
-    /// not, it just renames the second definition (#236 D-S5b, and see
-    /// agent_docs/design-principles.md §코어의 형태). The YAML keys are unchanged
-    /// (`kp_pos:` …) — schema changes are G2/S8's business.
-    compliance::ImpedanceParams impedance{};
-
-    // Nullspace posture task (bites only when nv > task DoF m). Kd ≥ 2√Kp is
-    // enforced in LoadConfig (§6.4); Kp = 0 with Kd > 0 (pure damping) is allowed
-    // EXCEPT under TRANSLATION_ONLY (§6.1).
-    double nullspace_kp{0.0};  ///< posture centering stiffness toward q_null [N·m/rad]
-    double nullspace_kd{2.0};  ///< nullspace joint damping [N·m·s/rad]
-
-    // σ_min-adaptive DLS for the nullspace Λ_S (§6.5).
-    double singularity_threshold{0.02};  ///< σ₀: DLS engages below this (also DEGRADED)
-    double singularity_critical{0.005};  ///< σ_min below this → SAFE_STOP
-    double max_damping{0.05};            ///< λ_max for the DLS ramp
-
-    // Safety layer (§5.3, §10.5).
-    double joint_limit_margin{0.1};  ///< δ [rad]: repulsive band width
-    double joint_limit_kp{0.0};      ///< k_lim [N·m/rad]; 0 disables the SPRING term only
-    double joint_limit_kd{
-        2.0};  ///< d_lim [N·m·s/rad]; independent of k_lim (pure damping if k_lim=0)
-    double max_torque_rate{2000.0};  ///< [N·m/s] slew limit (dt-scaled, never 500 Hz)
-    double pose_error_limit{1.5};    ///< ‖e‖ bound → SAFE_STOP when exceeded
-
-    // Activation and E-STOP.
-    double activation_ramp_time{0.5};     ///< [s] gain 0→1 linear ramp (§10.7); ≤0 = no ramp
-    double estop_damping{5.0};            ///< D for the torque E-STOP hold ĝ(q) − D·q̇ (E-8)
-    double saturation_persist_time{0.1};  ///< [s] saturation held longer → DEGRADED
-
-    // ── §6.3 inertia shaping (only read when formulation == kInertiaShaping) ─
-    /// Λ_d and the §5.2 ratio bound, held as the CORE's own struct rather than
-    /// as three loose fields. Held this way for the reason
-    /// TaskAdmittanceController::Gains holds compliance::AdmittanceParams: the
-    /// defaults and the §5.2 bound then have ONE definition instead of a copy
-    /// here that nothing compares against, and Compute() passes `gains.inertia`
-    /// straight through instead of re-assembling the struct positionally on
-    /// every RT tick — an aggregate init that silently depends on field order.
-    compliance::InertiaShapingParams inertia{};
-
-    // ── External wrench staleness / contact (§10.6) ──────────────────────────
-    double wrench_timeout{0.05};        ///< [s] older than this → fade + DEGRADED
-    double wrench_fadeout_time{0.1};    ///< [s] linear ramp to ZERO (never hold the last value)
-    double contact_threshold{5.0};      ///< [N] ‖f_LWA‖ above this → RUNNING_CONTACT
-    double contact_release_ratio{0.6};  ///< release at ratio·threshold (hysteresis, §10.6 MUST)
-  };
+  /// The gains POD and the two axis enums live beside the laws rather than
+  /// inside this adapter — see params/task_impedance_params.hpp for why (#236
+  /// S7c-2, D-B/G2). These aliases keep every existing spelling
+  /// (`TaskImpedanceController::Gains`, `::TaskSelection`, `::Formulation`)
+  /// resolving to the lifted definitions.
+  using TaskSelection = params::TaskSelection;
+  using Formulation = params::TaskImpedanceFormulation;
+  using Gains = params::TaskImpedanceParams;
 
   /// @param urdf_path  Absolute path to the robot URDF.
   /// @param gains      Impedance / nullspace / safety gains.

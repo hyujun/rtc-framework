@@ -10,6 +10,7 @@
 #include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"
 #include "rtc_controllers/compliance/wrench_pipeline.hpp"
+#include "rtc_controllers/params/cascaded_compliance_params.hpp"
 #include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
@@ -118,48 +119,12 @@ class CascadedComplianceController final : public RTControllerInterface {
   /// Task dimension. Fixed at 6 — see the scope note above.
   static constexpr int kTaskDim = 6;
 
-  // ── Gain / feature configuration (trivially copyable POD for SeqLock) ──────
-  struct Gains {
-    /// OUTER loop: §7.2 virtual dynamics + §7.4/§7.5 bounds. `stiffness` = K_p^a;
-    /// setting it to zero is hand-guiding (§7.6 MUST-3: the frame then STAYS
-    /// where the force left it instead of returning to X_d).
-    compliance::AdmittanceParams admittance{};
-
-    /// INNER loop: §6.2 Cartesian stiffness / damping. These are the gains that
-    /// make the arm track X_c; they are NOT the compliance the operator tunes —
-    /// that is `admittance` above.
-    compliance::ImpedanceParams impedance{};
-
-    /// §10.6 staleness / contact.
-    compliance::WrenchPipelineParams wrench{};
-
-    // Nullspace posture task (bites only when nv > 6), torque domain like the
-    // impedance controller: Nᵀ-projected, so it cannot disturb the task.
-    double nullspace_kp{0.0};  ///< posture centering stiffness [N·m/rad]
-    double nullspace_kd{2.0};  ///< nullspace joint damping [N·m·s/rad]
-
-    // §6.5 σ_min-adaptive DLS for Λ_S (nullspace projector + the §7.6 MUST-1
-    // ratio). The inner law itself is Jacobian-transpose and needs no inverse.
-    double singularity_threshold{0.02};  ///< σ₀: DLS engages below this (also DEGRADED)
-    double singularity_critical{0.005};  ///< σ_min below this → SAFE_STOP
-    double max_damping{0.05};            ///< λ_max for the DLS ramp
-
-    // Safety layer (§5.3, §10.5) — torque domain.
-    double joint_limit_margin{0.1};  ///< δ [rad]: repulsive band width
-    double joint_limit_kp{0.0};      ///< k_lim [N·m/rad]; 0 disables the SPRING term only
-    double joint_limit_kd{2.0};      ///< d_lim [N·m·s/rad]; independent of k_lim
-    double max_torque_rate{2000.0};  ///< [N·m/s] slew limit (dt-scaled)
-    double pose_error_limit{1.5};    ///< ‖e(X, X_c)‖ bound → SAFE_STOP
-
-    // Activation and E-STOP.
-    double activation_ramp_time{0.5};     ///< [s] 0→1 linear ramp (§10.7); ≤0 = no ramp
-    double estop_damping{5.0};            ///< D for the torque E-STOP hold ĝ(q) − D·q̇ (E-8)
-    double saturation_persist_time{0.1};  ///< [s] saturation held longer → DEGRADED
-
-    /// §7.6 MUST-1 minimum ω_i/ω_a. Diagnostic only (see the class note); 0
-    /// silences the flag rather than latching anything.
-    double min_bandwidth_ratio{3.0};
-  };
+  /// The gains POD lives beside the laws rather than inside this adapter —
+  /// see params/cascaded_compliance_params.hpp for why (#236 S7c-2, D-B/G2).
+  /// The alias keeps every existing spelling
+  /// (`CascadedComplianceController::Gains`) resolving to the lifted
+  /// definition.
+  using Gains = params::CascadedComplianceParams;
 
   /// @param urdf_path  Absolute path to the robot URDF.
   /// @param gains      Outer admittance / inner impedance / safety gains.

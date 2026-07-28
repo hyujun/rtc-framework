@@ -20,24 +20,47 @@
 // dropped in silence — the precise #172 defect the check was added to prevent.
 // That is what the cases below pin, on both sides (over-long AND exact), so a
 // deleted length check fails here rather than passing everywhere.
+//
+// S7c-2 extends the same reasoning to the three compliance schemas. Their
+// length checks are spelled `n.size() != 6` rather than `!= nv`, but they fail
+// identically: with the check deleted, a SHORT sequence still throws (yaml-cpp
+// converts a past-the-end index) and a scalar still throws (index [0] of a
+// scalar), so every pre-existing mis-shape case stayed green. Only the OVER-LONG
+// sequence discriminates, and none of the adapter suites had one.
+#include "rtc_controllers/params/cascaded_compliance_params.hpp"
 #include "rtc_controllers/params/clik_params.hpp"
 #include "rtc_controllers/params/joint_pd_params.hpp"
 #include "rtc_controllers/params/osc_params.hpp"
+#include "rtc_controllers/params/task_admittance_params.hpp"
+#include "rtc_controllers/params/task_impedance_params.hpp"
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <cmath>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
 using rtc::CommandType;
+using rtc::params::CascadedComplianceConfig;
+using rtc::params::CascadedComplianceParams;
 using rtc::params::ClikParams;
 using rtc::params::JointPdParams;
 using rtc::params::OscParams;
+using rtc::params::ParseCascadedComplianceParams;
 using rtc::params::ParseClikParams;
 using rtc::params::ParseJointPdParams;
 using rtc::params::ParseOscParams;
+using rtc::params::ParseTaskAdmittanceParams;
+using rtc::params::ParseTaskImpedanceParams;
+using rtc::params::TaskAdmittanceConfig;
+using rtc::params::TaskAdmittanceParams;
+using rtc::params::TaskImpedanceConfig;
+using rtc::params::TaskImpedanceFormulation;
+using rtc::params::TaskImpedanceParams;
+using rtc::params::TaskSelection;
 
 constexpr int kNv = 6;
 
@@ -167,6 +190,279 @@ TEST(ClikSchema, ReportsTheRetiredDampingKey) {
   rtc::params::ClikRetiredKeys retired;
   ASSERT_NO_THROW(ParseClikParams(YAML::Load("damping: 0.1"), p, ct, &retired));
   EXPECT_TRUE(retired.damping);
+}
+
+// ── compliance 3종 (S7c-2) ──────────────────────────────────────────────────
+//
+// The message of whatever the parser throws, or "" if it accepts the node.
+// Matching on the message matters for the same reason it does in the adapter
+// suites: yaml-cpp's own conversion failure also derives from
+// std::runtime_error, so a bare EXPECT_THROW passes even when the value never
+// reached the check under test.
+template <typename Fn>
+std::string ParseError(Fn&& parse) {
+  try {
+    parse();
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return {};
+}
+
+bool Mentions(const std::string& msg, const std::string& needle) {
+  return msg.find(needle) != std::string::npos;
+}
+
+std::string ImpedanceError(const std::string& yaml, TaskSelection sel = TaskSelection::kFullSe3) {
+  return ParseError([&] {
+    TaskImpedanceParams p;
+    TaskImpedanceConfig c;
+    ParseTaskImpedanceParams(YAML::Load(yaml), p, sel, c);
+  });
+}
+
+std::string AdmittanceError(const std::string& yaml) {
+  return ParseError([&] {
+    TaskAdmittanceParams p;
+    TaskAdmittanceConfig c;
+    ParseTaskAdmittanceParams(YAML::Load(yaml), p, c);
+  });
+}
+
+std::string CascadeError(const std::string& yaml) {
+  return ParseError([&] {
+    CascadedComplianceParams p;
+    CascadedComplianceConfig c;
+    ParseCascadedComplianceParams(YAML::Load(yaml), p, c);
+  });
+}
+
+// ── task impedance ─────────────────────────────────────────────────────────
+
+TEST(TaskImpedanceSchema, RejectsAnOverLongDesiredInertiaSequence) {
+  // The discriminating shape (see the file header): seven entries for a 6-D Λ_d.
+  // Indices 0..5 all exist, so yaml-cpp throws nothing and the explicit length
+  // check is the only thing between this file and a silently dropped entry.
+  const auto msg = ImpedanceError("desired_inertia: [1, 2, 3, 4, 5, 6, 7]");
+  EXPECT_TRUE(Mentions(msg, "desired_inertia")) << msg;
+  EXPECT_TRUE(Mentions(msg, "6 entries")) << msg;
+}
+
+TEST(TaskImpedanceSchema, RejectsANonSpdDesiredInertia) {
+  // NUM-2: Λ_d⁻¹ is formed every tick, so a zero or negative entry is a divide,
+  // not a tuning mistake a clamp can absorb.
+  EXPECT_TRUE(Mentions(ImpedanceError("desired_inertia: [1, 0, 1, 1, 1, 1]"), "must be > 0"));
+  EXPECT_TRUE(Mentions(ImpedanceError("desired_inertia: [1, -1, 1, 1, 1, 1]"), "must be > 0"));
+  // Non-vacuity: a well-shaped SPD Λ_d is accepted AND applied, and it is what
+  // turns §5.2's "off unless asked for" default off.
+  TaskImpedanceParams p;
+  TaskImpedanceConfig c;
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("desired_inertia: [1, 2, 3, 4, 5, 6]"), p,
+                                           TaskSelection::kFullSe3, c));
+  EXPECT_DOUBLE_EQ(p.inertia.desired_inertia[5], 6.0);
+  EXPECT_FALSE(p.inertia.desired_inertia_natural);
+}
+
+TEST(TaskImpedanceSchema, TranslationOnlyRequiresPostureStiffness) {
+  // §6.1: TRANSLATION_ONLY leaves orientation to the null space, so a zero
+  // posture stiffness leaves rotation with no authority at all.
+  EXPECT_TRUE(Mentions(ImpedanceError("nullspace_stiffness: 0.0", TaskSelection::kTranslationOnly),
+                       "§6.1"));
+  // And the floor runs FIRST, so a negative gain reaches the guard as 0 rather
+  // than walking through a `kp == 0.0` comparison (#277).
+  EXPECT_TRUE(Mentions(
+      ImpedanceError("nullspace_stiffness: -30.0", TaskSelection::kTranslationOnly), "§6.1"));
+  // FULL_SE3 is unaffected — orientation is a task DoF there.
+  EXPECT_EQ(ImpedanceError("nullspace_stiffness: 0.0", TaskSelection::kFullSe3), "");
+}
+
+TEST(TaskImpedanceSchema, FloorsThePostureGainsBeforeTheDampingCorrection) {
+  // The ORDER is the contract: §6.4's correction is `if (kp > 0.0)`, so an
+  // unfloored negative K_pⁿ would skip the damping floor entirely.
+  TaskImpedanceParams p;
+  TaskImpedanceConfig c;
+  ASSERT_NO_THROW(
+      ParseTaskImpedanceParams(YAML::Load("nullspace_stiffness: -30.0\nnullspace_damping: -1.0"), p,
+                               TaskSelection::kFullSe3, c));
+  EXPECT_DOUBLE_EQ(p.nullspace_kp, 0.0);
+  EXPECT_DOUBLE_EQ(p.nullspace_kd, 0.0);
+
+  TaskImpedanceParams q;
+  ASSERT_NO_THROW(
+      ParseTaskImpedanceParams(YAML::Load("nullspace_stiffness: 25.0\nnullspace_damping: 0.1"), q,
+                               TaskSelection::kFullSe3, c));
+  EXPECT_DOUBLE_EQ(q.nullspace_kd, 2.0 * std::sqrt(25.0)) << "§6.4 floor K_dⁿ ≥ 2√K_pⁿ";
+}
+
+TEST(TaskImpedanceSchema, FormulationIsADeclaredChoiceAndAnUnknownOneIsRejected) {
+  TaskImpedanceParams p;
+  TaskImpedanceConfig c;
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("formulation: inertia_shaping"), p,
+                                           TaskSelection::kFullSe3, c));
+  EXPECT_EQ(c.formulation, TaskImpedanceFormulation::kInertiaShaping);
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("formulation: jacobian_transpose"), p,
+                                           TaskSelection::kFullSe3, c));
+  EXPECT_EQ(c.formulation, TaskImpedanceFormulation::kJacobianTranspose);
+  EXPECT_TRUE(Mentions(ImpedanceError("formulation: shape_it_please"), "formulation must be"));
+}
+
+TEST(TaskImpedanceSchema, RejectsANonTorqueCommandType) {
+  EXPECT_TRUE(Mentions(ImpedanceError("command_type: position"), "command_type"));
+}
+
+TEST(TaskImpedanceSchema, ARejectedParseLeavesTheNonGainConfigUntouched) {
+  // The #172 contract at the parse layer: everything that can throw runs BEFORE
+  // `config` is written, so a caller that keeps its live wiring in a
+  // TaskImpedanceConfig can retry a bad file without half-applying it.
+  TaskImpedanceParams p;
+  TaskImpedanceConfig c;
+  c.sensor_frame = "live_frame";
+  c.wrench_enabled = true;
+  EXPECT_THROW(ParseTaskImpedanceParams(
+                   YAML::Load("external_wrench:\n  sensor_frame: new_frame\n  enabled: false\n"
+                              "command_type: position\n"),
+                   p, TaskSelection::kFullSe3, c),
+               std::runtime_error);
+  EXPECT_EQ(c.sensor_frame, "live_frame") << "a rejected parse rewrote the caller's frame";
+  EXPECT_TRUE(c.wrench_enabled) << "a rejected parse rewrote the caller's wrench wiring";
+}
+
+TEST(TaskImpedanceSchema, AnUndefinedNodeFloorsTheGainsAndLeavesTheConfigAlone) {
+  // NUM-6's loader half, and the reason the owner skips the frame lookup on this
+  // path: none of the wiring keys were read, which is not the same as reading
+  // them as their defaults.
+  //
+  // `YAML::NodeType::Undefined` and NOT a default-constructed `YAML::Node`: the
+  // latter is a DEFINED Null (`IsDefined()` is true when `m_pNode` is null), so
+  // it walks the FULL parse with every key absent and would pin the other branch
+  // — same helper, same reason, as test_task_impedance_controller.cpp.
+  TaskImpedanceParams p;
+  p.nullspace_kp = -3.0;
+  p.nullspace_kd = -1.0;
+  TaskImpedanceConfig c;
+  c.sensor_frame = "live_frame";
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Node(YAML::NodeType::Undefined), p,
+                                           TaskSelection::kFullSe3, c));
+  EXPECT_DOUBLE_EQ(p.nullspace_kp, 0.0);
+  EXPECT_DOUBLE_EQ(p.nullspace_kd, 0.0);
+  EXPECT_EQ(c.sensor_frame, "live_frame");
+
+  // The §6.1 guard runs on this path too, and the floor above it means a
+  // negative posture stiffness reaches it as 0 rather than slipping past a
+  // `kp == 0.0` comparison.
+  TaskImpedanceParams q;
+  q.nullspace_kp = -30.0;
+  EXPECT_THROW(ParseTaskImpedanceParams(YAML::Node(YAML::NodeType::Undefined), q,
+                                        TaskSelection::kTranslationOnly, c),
+               std::runtime_error);
+  EXPECT_DOUBLE_EQ(q.nullspace_kp, 0.0)
+      << "the floor must be written back even when the guard then rejects the configuration — "
+         "the owner commits these gains on the throwing path";
+}
+
+// ── task admittance ────────────────────────────────────────────────────────
+
+TEST(TaskAdmittanceSchema, RejectsOverLongSequences) {
+  // The discriminating shape on both widths this schema uses.
+  EXPECT_TRUE(Mentions(AdmittanceError("desired_inertia: [1, 2, 3, 4, 5, 6, 7]"), "6-entry"));
+  EXPECT_TRUE(Mentions(AdmittanceError("ik_kp_pos: [1, 2, 3, 4]"), "3-entry"));
+  EXPECT_TRUE(
+      Mentions(AdmittanceError("min_desired_inertia: [1, 2, 3]"), "min_desired_inertia must be"));
+}
+
+TEST(TaskAdmittanceSchema, RejectsAMisshapedIkGainInsteadOfIgnoringIt) {
+  // `ik_kp_pos: 0.0` is the obvious way to write the §7.3 pure-feedforward
+  // experiment; dropped silently it ran as a CLIK variant instead, with nothing
+  // in the diagnostics to say so.
+  EXPECT_TRUE(Mentions(AdmittanceError("ik_kp_pos: 0.0"), "ik_kp_pos"));
+  // Non-vacuity: the well-shaped spelling is accepted and applied.
+  TaskAdmittanceParams p;
+  TaskAdmittanceConfig c;
+  ASSERT_NO_THROW(ParseTaskAdmittanceParams(YAML::Load("ik_kp_pos: [0.0, 0.0, 0.0]"), p, c));
+  EXPECT_DOUBLE_EQ(p.ik_kp_pos[0], 0.0);
+}
+
+TEST(TaskAdmittanceSchema, RejectsANonPositivePoseErrorLimit) {
+  // Compared every tick against a CRITICAL fault, so 0 latches SAFE_STOP on the
+  // first tick with no cause field pointing at the config (D6).
+  EXPECT_TRUE(Mentions(AdmittanceError("pose_error_limit: 0.0"), "pose_error_limit"));
+  EXPECT_TRUE(Mentions(AdmittanceError("pose_error_limit: -1.0"), "pose_error_limit"));
+}
+
+TEST(TaskAdmittanceSchema, RequiresAWrenchSourceAndAPositionCommand) {
+  // §7.1: admittance takes force as its INPUT — without one it degenerates into
+  // an expensive position hold, which is a configure error and not a fallback.
+  EXPECT_TRUE(Mentions(AdmittanceError("external_wrench:\n  enabled: false\n"), "§7.1"));
+  EXPECT_TRUE(Mentions(AdmittanceError("command_type: torque"), "command_type"));
+
+  TaskAdmittanceParams p;
+  TaskAdmittanceConfig c;
+  ASSERT_NO_THROW(
+      ParseTaskAdmittanceParams(YAML::Load("external_wrench:\n  sensor_frame: tool0\n"), p, c));
+  EXPECT_EQ(c.sensor_frame, "tool0") << "the frame must leave the parse layer UNRESOLVED";
+  EXPECT_EQ(c.command_type, CommandType::kPosition);
+}
+
+// ── cascaded compliance ────────────────────────────────────────────────────
+
+TEST(CascadedComplianceSchema, RejectsOverLongSequences) {
+  // The discriminating shape, on the nested sections where a dropped entry is
+  // hardest to notice: `outer.stiffness` is the gain an operator tunes to make
+  // the arm yield, and a silently truncated one leaves the default pushing back.
+  EXPECT_TRUE(
+      Mentions(CascadeError("outer:\n  stiffness: [1, 2, 3, 4, 5, 6, 7]\n"), "outer.stiffness"));
+  EXPECT_TRUE(Mentions(CascadeError("inner:\n  kp_pos: [1, 2, 3, 4]\n"), "inner.kp_pos"));
+  EXPECT_TRUE(Mentions(CascadeError("external_wrench:\n  deadband: [1, 1, 1, 1, 1, 1, 1]\n"),
+                       "external_wrench.deadband"));
+  // Non-vacuity: the exact widths are accepted AND applied.
+  CascadedComplianceParams p;
+  CascadedComplianceConfig c;
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(
+      YAML::Load("inner:\n  kp_pos: [11, 22, 33]\nouter:\n  stiffness: [1, 2, 3, 4, 5, 6]\n"), p,
+      c));
+  EXPECT_DOUBLE_EQ(p.impedance.kp_pos[1], 22.0);
+  EXPECT_DOUBLE_EQ(p.admittance.stiffness[5], 6.0);
+}
+
+TEST(CascadedComplianceSchema, RejectsASectionThatIsPresentButNotAMap) {
+  // One level up from the leaf shape check: a whole section skipped leaves every
+  // key under it at its default while the file says otherwise.
+  EXPECT_TRUE(Mentions(CascadeError("outer: 3.0\n"), "outer must be a map"));
+  EXPECT_TRUE(Mentions(CascadeError("inner: [1.0, 2.0]\n"), "inner must be a map"));
+  EXPECT_TRUE(Mentions(CascadeError("external_wrench: 3.0\n"), "external_wrench must be a map"));
+  // An ABSENT section stays legal — the defaults ARE the documented behaviour.
+  EXPECT_EQ(CascadeError("nullspace_stiffness: 1.0\n"), "");
+}
+
+TEST(CascadedComplianceSchema, RejectsNonFiniteScalars) {
+  // `std::max(0.0, NaN)` returns 0.0 — silently a third value — and an infinite
+  // gain latches SAFE_STOP with `nan_inf` on the first tick with nothing
+  // pointing at the config line.
+  EXPECT_TRUE(Mentions(CascadeError("outer:\n  stiffness: [.nan, 0, 0, 0, 0, 0]\n"), "finite"));
+  EXPECT_TRUE(Mentions(CascadeError("estop_damping: .nan\n"), "estop_damping"));
+  // `.inf` and not an overflowing literal: yaml-cpp rejects the latter itself,
+  // which would make this pass without the check ever running.
+  EXPECT_TRUE(Mentions(CascadeError("outer:\n  damping: [.inf, 1, 1, 1, 1, 1]\n"), "finite"));
+}
+
+TEST(CascadedComplianceSchema, RejectsThresholdsThatWouldLatchOnTheFirstTick) {
+  EXPECT_TRUE(Mentions(CascadeError("pose_error_limit: 0.0\n"), "pose_error_limit"));
+  EXPECT_TRUE(Mentions(CascadeError("max_torque_rate: 0.0\n"), "max_torque_rate"));
+  EXPECT_TRUE(
+      Mentions(CascadeError("outer:\n  desired_inertia: [1, 0, 1, 1, 1, 1]\n"), "must be > 0"));
+  EXPECT_TRUE(Mentions(CascadeError("inner:\n  kp_pos: [10, -1, 10]\n"), "must be >= 0"));
+}
+
+TEST(CascadedComplianceSchema, RequiresAnExternalWrenchSourceAndATorqueCommand) {
+  EXPECT_TRUE(Mentions(CascadeError("external_wrench:\n  enabled: false\n"), "§7.6"));
+  EXPECT_TRUE(Mentions(CascadeError("command_type: position\n"), "command_type"));
+
+  CascadedComplianceParams p;
+  CascadedComplianceConfig c;
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(
+      YAML::Load("external_wrench:\n  sensor_frame: ft_sensor\n"), p, c));
+  EXPECT_EQ(c.sensor_frame, "ft_sensor") << "the frame must leave the parse layer UNRESOLVED";
+  EXPECT_EQ(c.command_type, CommandType::kTorque);
 }
 
 }  // namespace
