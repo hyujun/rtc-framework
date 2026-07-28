@@ -263,7 +263,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     // on the first recovery tick and overwrite the measured-pose re-seed. The RT
     // thread is the sole SPSC consumer, so draining here keeps the single-
     // consumer invariant.
-    DrainPendingTargets();
+    DiscardPendingTargets();
     return ComputeEstop(state, /*control_valid=*/false, diag, gains);
   }
 
@@ -688,7 +688,7 @@ ControllerOutput TaskImpedanceController::ComputeEstop(const ControllerState& st
   return output;
 }
 
-void TaskImpedanceController::DrainPendingTargets() noexcept {
+void TaskImpedanceController::DiscardPendingTargets() noexcept {
   PendingTarget discarded{};
   while (pending_targets_.Pop(discarded)) {
     // discard: a command issued while held must not survive recovery
@@ -704,7 +704,7 @@ ControllerOutput TaskImpedanceController::ComputeNoJointState(const ControllerSt
   // depth-4 queue holds the OLDEST commands of the outage (SpscQueue drops the
   // newest when full) and the first recovered tick jumps to one of them instead
   // of the measured pose — braked only by max_torque_rate.
-  DrainPendingTargets();
+  DiscardPendingTargets();
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   compliance::ComplianceFaults faults;
   faults.device_state_invalid = true;

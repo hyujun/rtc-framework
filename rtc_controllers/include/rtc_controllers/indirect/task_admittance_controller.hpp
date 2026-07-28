@@ -266,7 +266,12 @@ class TaskAdmittanceController final : public RTControllerInterface {
   /// tick right after it. The RT thread is the sole SPSC consumer, so draining
   /// here is what keeps "a command issued while held does not survive recovery"
   /// true for both paths rather than only for E-STOP.
-  void DrainPendingTargets() noexcept;
+  ///
+  /// Deliberately hides RTControllerInterface::DiscardPendingTargets(): same
+  /// meaning, but this controller still owns its own pre-#206 queue, so the
+  /// base's version would empty an always-empty one. The declaration goes away
+  /// with the controller in #236 S7c, after which the base's is the only one.
+  void DiscardPendingTargets() noexcept;
 
   /// Ask the RT thread to retire the hold latch on its next tick. Callable from
   /// any thread; `estop_hold_*` itself stays RT-owned (RT-4 — no lock, and no
