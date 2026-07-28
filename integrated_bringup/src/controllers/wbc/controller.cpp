@@ -2,9 +2,9 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
-#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_math/se3/so3.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -1394,6 +1394,13 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   // scatter, the FSM dispatch, WriteJointCommand and ComputeEstop all answer
   // "is device 0 usable this tick?" the same way.
   arm_readable_ = rtc::IsDeviceReadable(state.devices[0], arm_dof_);
+  // Same gate on the secondary axis (#291), loaded here for the same reason:
+  // ReadState's model scatter is already a hand consumer. Separate flag, not a
+  // widening of arm_readable_: §3.7 keeps the hand commandable when the ARM
+  // goes missing, and this answers the different question of whether the HAND
+  // reported the hand_dof_ channels its own loops read. `num_devices > 1`
+  // folds in here so the read sites carry one predicate, not a two-term guard.
+  hand_readable_ = state.num_devices > 1 && rtc::IsDeviceReadable(state.devices[1], hand_dof_);
 
   ReadState(state);
   DrainTargetSlot(state);
@@ -1571,8 +1578,14 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     // reported only part of the arm passes it, and the passthrough hold below
     // then reads dev0.positions arm_dof_ deep — the unreported joints coming
     // back as 0. IsDeviceReadable is the same test plus the channel axis.
+    // The hand half is the same test on its own axis (#291). `valid` alone was
+    // wrong here for exactly the reason it was wrong for the arm: the hand seed
+    // further down runs hand_dof_ deep, so a partially-reporting hand passes
+    // `valid` and latches targets[1] — and the posture reference built from it
+    // by SeedHoldFromMeasured — with a phantom 0 per unreported finger, with
+    // target_initialized_ true and no re-seed to follow.
     const bool arm_ready = state.num_devices > 0 && arm_readable_;
-    const bool hand_ready = state.num_devices <= 1 || state.devices[1].valid;
+    const bool hand_ready = state.num_devices <= 1 || hand_readable_;
     if (!arm_ready || !hand_ready) {
       const auto& dev0 = state.devices[0];
       // Arm passthrough only when the arm itself is readable — this branch is
@@ -1585,7 +1598,12 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
           robot_computed_.velocities[idx] = 0.0;
         }
       }
-      if (state.num_devices > 1 && state.devices[1].valid) {
+      // Hand passthrough only when the hand itself is readable — this branch is
+      // also taken when only the ARM is missing, and then the hand hold is a
+      // real measurement worth passing through (§3.7 secondary passthrough).
+      // On an unreadable hand WriteJointCommand silences device 1 anyway, so
+      // leaving hand_computed_ untouched here is what makes the two agree.
+      if (hand_readable_) {
         const auto& dev1 = state.devices[1];
         for (int i = 0; i < hand_dof_; ++i) {
           const auto idx = static_cast<std::size_t>(i);
@@ -1637,6 +1655,11 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
         current_target_slot_.targets[d][i] = dev.positions[i];
       }
       if (d == 1) {
+        // hand_dof_ deep, and the only thing keeping it inside what the hand
+        // reported is the hand_ready gate above (#291) — reaching here means
+        // IsDeviceReadable(dev1, hand_dof_) held, or that the fallback just
+        // resolved hand_dof_ to min(nc1, kMaxHandDof), which is <= nc1 by
+        // construction. Do not weaken hand_ready without re-bounding this loop.
         trajectory::JointSpaceTrajectory<kMaxHandDof>::State hold{};
         for (int i = 0; i < hand_dof_; ++i) {
           const auto idx = static_cast<std::size_t>(i);

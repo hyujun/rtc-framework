@@ -2,8 +2,8 @@
 #include "integrated_bringup/support/combined_model_cache.hpp"
 
 #include "rtc_base/tracing/trace_scope.hpp"
-#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/types/types.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
 #include <rclcpp/logging.hpp>
@@ -148,12 +148,30 @@ void CombinedModelCache::ExtractFullState(const rtc::ControllerState& state, int
     q_curr_full_[pq] = dev0.positions[eidx];
     v_curr_full_[pv] = dev0.velocities[eidx];
   }
-  if (state.num_devices > 1 && state.devices[1].valid) {
+  // Secondary lane, gated on ITS OWN width (#291 — this is the decision #236
+  // S7b deferred). The deferral's open question was what "which ticks refresh
+  // the hand model" should become; the answer is all-or-nothing, for a reason
+  // the bound below cannot supply:
+  //
+  // q_curr_full_ PERSISTS, so with the bound alone a narrow hand produces a
+  // SPLICED configuration — slots [0, nc1) fresh from this tick, slots
+  // [nc1, hand_dof) still holding whatever was there before (zero until the
+  // first readable tick). That is not a stale model, it is a model of a hand
+  // posture the robot was never in, and every consumer downstream — fingertip
+  // FK, the Delassus/constraint blocks of the closed-chain path — is a
+  // kinematic function of the WHOLE hand block. A coherent configuration one
+  // tick old is a defensible input to those; an incoherent splice is not.
+  //
+  // So this is NOT "the bound was enough" (it never was — the header pins that
+  // as the trap) and NOT "the hand is exempt". It is: refresh the hand block
+  // only from a state that can fill all of it, and otherwise leave last
+  // readable tick's coherent block in place. Note the asymmetry with the arm
+  // above, which `return`s: an unreadable ARM invalidates the hand block too
+  // (they share one model), while an unreadable HAND leaves the arm scatter
+  // intact — §3.7's secondary-passthrough rule expressed in the model lane.
+  if (state.num_devices > 1 && rtc::IsDeviceReadable(state.devices[1], hand_dof)) {
     const auto& dev1 = state.devices[1];
-    // Secondary lane keeps its own (weaker) `valid` guard: the F5 gate above is
-    // the primary device's policy, and tightening the hand to
-    // IsDeviceReadable(dev1, hand_dof) would change which ticks refresh the
-    // hand model — a separate decision, outside #236 S7b's scope.
+    // Still bounded, for the same over-reporting reason as the arm above.
     const int nhand = rtc::ModelChannelBound(hand_dof, dev1.num_channels);
     for (int i = 0; i < nhand; ++i) {
       const auto eidx = static_cast<std::size_t>(arm_dof + i);

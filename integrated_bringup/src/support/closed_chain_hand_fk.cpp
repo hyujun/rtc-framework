@@ -1,6 +1,8 @@
 // ── ClosedChainHandFk 구현 ───────────────────────────────────────────────────
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 
+#include "rtc_controller_interface/device_readability.hpp"
+
 #include <rclcpp/logging.hpp>
 
 #include <algorithm>
@@ -205,17 +207,17 @@ bool RunHandForwardKinematics(ClosedChainHandFk& fk, rub::RtModelHandle* hand_ha
     fk.Update(state);  // measured actuated q → loop-consistent full FK (per-source hold 내부화)
     return true;
   }
-  // serial 경로: device 1(hand) 측정값 필요.
-  if (state.num_devices <= 1 || !state.devices[1].valid) {
+  // serial 경로: device 1(hand) 측정값 필요. `valid` + channel 범위 검사(#4) 두 조건은
+  // 합치면 정확히 F5 술어이므로 base 로 수렴시킨다 (#291) — 이 파일의 손수 구현이
+  // device-1 축에서 저장소가 이미 갖고 있던 올바른 답이었고, 이제 팔 축과 같은 이름을
+  // 쓴다. 동작은 그대로: num_channels < nq 이면 positions[] out-of-bounds/stale read
+  // 대신 `return false` 로 직전 FK 를 유지한다 (withhold 계약, 침묵과는 다른 lane).
+  const auto hand_nq = static_cast<std::size_t>(hand_handle->nq());
+  if (state.num_devices <= 1 ||
+      !rtc::IsDeviceReadable(state.devices[1], static_cast<int>(hand_nq))) {
     return false;
   }
   const auto& dev1 = state.devices[1];
-  const auto hand_nq = static_cast<std::size_t>(hand_handle->nq());
-  // closed 경로와 대칭으로 channel 범위 검사(#4): num_channels < nq 이면 serial FK 불가 →
-  // positions[] out-of-bounds/stale read 대신 직전 FK 를 유지한다.
-  if (static_cast<std::size_t>(dev1.num_channels) < hand_nq) {
-    return false;
-  }
   for (std::size_t i = 0; i < hand_nq; ++i) {
     hand_q[static_cast<Eigen::Index>(i)] = dev1.positions[i];
   }

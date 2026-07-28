@@ -1,8 +1,8 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
-#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -310,6 +310,14 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   // bypasses YAML; IsDeviceReadable then degrades to a plain validity check,
   // which is the honest answer while nothing is known to be missing.
   arm_readable_ = rtc::IsDeviceReadable(state.devices[0], arm_dof_);
+  // Same gate on the secondary axis (#291). Separate flag, not a widening of
+  // arm_readable_: §3.7 keeps the hand commandable when the ARM goes missing,
+  // and this answers the different question of whether the HAND reported the
+  // hand_dof_ channels its own loops read. `num_devices > 1` folds in here so
+  // the read sites carry one predicate instead of a two-term guard. hand_dof_
+  // may still be 0 in a fixture that bypasses YAML, and IsDeviceReadable then
+  // degrades to the plain validity check those sites used before.
+  hand_readable_ = state.num_devices > 1 && rtc::IsDeviceReadable(state.devices[1], hand_dof_);
 
   ReadState(state);
   // RT-thread-only: refresh current_target_slot_ + run self-init if needed.
@@ -448,14 +456,21 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
     slot_dirty = true;
   }
 
-  // ── Hand (device 1) self-init — DEFERRED until device 1 is first valid ──────
+  // ── Hand (device 1) self-init — DEFERRED until device 1 is first READABLE ───
   // Seeding while the hand is still coming up would lock targets[1] to its zero
-  // init and drive every finger to 0. Retried each tick until valid; when no
+  // init and drive every finger to 0. Retried each tick until readable; when no
   // hand device is configured the flag latches true immediately.
+  //
+  // hand_readable_, not `valid` (#291): the hold seed below runs hand_dof_ deep,
+  // so a hand that reported only part of its channels passes `valid` and seeds
+  // the unreported fingers from a phantom 0. This is the hand's T1/T2 (#265) —
+  // and it is WORSE than the per-tick read sites, because the flag LATCHES on
+  // success: an ordinary A site re-poisons every tick and therefore heals the
+  // tick the gate goes true, while a poisoned seed here is never re-seeded.
   if (!hand_target_initialized_.load(std::memory_order_acquire)) {
     if (state.num_devices <= 1) {
       hand_target_initialized_.store(true, std::memory_order_release);
-    } else if (state.devices[1].valid) {
+    } else if (hand_readable_) {
       if (hand_dof_ == 0) {
         hand_dof_ = std::min(state.devices[1].num_channels, kDemoJointMaxHandDof);
       }

@@ -90,7 +90,9 @@ class CombinedModelCacheGateTest : public ::testing::Test {
     cfg.root_joint_type = "fixed";
     cfg.sub_models.push_back({"iiwa7", "link_0", "ee_link"});
     cfg.tree_models.push_back(
-        {"wbc", "link_0", {"thumb_tip_head", "index_tip_head", "middle_tip_head", "ring_tip_head"}});
+        {"wbc",
+         "link_0",
+         {"thumb_tip_head", "index_tip_head", "middle_tip_head", "ring_tip_head"}});
     ASSERT_NO_THROW(builder_ = std::make_shared<rub::PinocchioModelBuilder>(cfg));
 
     ASSERT_TRUE(cache_.InitModel(*builder_, {}, "[test]", logger_));
@@ -166,6 +168,150 @@ TEST_F(CombinedModelCacheGateTest, AWideDeviceIsScatteredAndBounded) {
 
   for (int i = 0; i < kArmDof; ++i) {
     EXPECT_NEAR(ModelValue(i), MeasuredArm(static_cast<std::size_t>(i)), 1e-12) << "joint " << i;
+  }
+}
+
+// ── The HAND half: the deferral #236 S7b left open, resolved (#291) ───────────
+//
+// S7b gated the arm half here and left the hand on `valid` + ModelChannelBound,
+// with a comment saying that tightening it "would change which ticks refresh the
+// hand model — a separate decision". This is that decision, and the tests below
+// are what it now means. The reasoning is NOT "the bound was enough" — the file
+// header explains at length why a bound over a persistent buffer never is — it
+// is that a partial hand refresh produces a SPLICED configuration: fingers
+// [0, nc1) from this tick, fingers [nc1, hand_dof) from whenever they were last
+// written. Every consumer of this block (fingertip FK, the closed-chain
+// constraint blocks) is a kinematic function of the whole hand, so a coherent
+// configuration one tick old is a defensible input and an incoherent splice is
+// not.
+
+constexpr int kHandDof = 16;  // leap right
+
+const std::vector<std::string>& HandJointNames() {
+  // devices.leap.joint_state_names from config/iiwa7_leap/sim.yaml — thumb
+  // first, matching the shipped controller-facing order.
+  static const std::vector<std::string> names{"12", "13", "14", "15", "0", "1", "2",  "3",
+                                              "4",  "5",  "6",  "7",  "8", "9", "10", "11"};
+  return names;
+}
+
+double MeasuredHand(std::size_t i) {
+  return -0.23 - 0.05 * static_cast<double>(i);
+}
+
+double SecondHandReading(std::size_t i) {
+  return 0.37 + 0.02 * static_cast<double>(i);
+}
+
+ControllerState MakeTwoDeviceState(int arm_channels, int hand_channels,
+                                   double (*arm_value)(std::size_t),
+                                   double (*hand_value)(std::size_t)) {
+  ControllerState state = MakeState(arm_channels, arm_value);
+  state.num_devices = 2;
+  auto& dev1 = state.devices[1];
+  dev1.num_channels = hand_channels;
+  dev1.valid = true;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(hand_channels); ++i) {
+    dev1.positions[i] = hand_value(i);
+    dev1.velocities[i] = 0.0;
+  }
+  return state;
+}
+
+class CombinedModelCacheHandGateTest : public ::testing::Test {
+ protected:
+  CombinedModelCache cache_;
+  std::shared_ptr<rub::PinocchioModelBuilder> builder_;
+  rclcpp::Logger logger_ = rclcpp::get_logger("combined_model_cache_hand_gate_test");
+
+  void SetUp() override {
+    rub::ModelConfig cfg;
+    cfg.urdf_path = ament_index_cpp::get_package_share_directory("robot_descriptions") +
+                    "/robots/iiwa7_leap/urdf/iiwa7_with_leap_right.urdf.xacro";
+    cfg.root_joint_type = "fixed";
+    cfg.sub_models.push_back({"iiwa7", "link_0", "ee_link"});
+    cfg.tree_models.push_back(
+        {"wbc",
+         "link_0",
+         {"thumb_tip_head", "index_tip_head", "middle_tip_head", "ring_tip_head"}});
+    ASSERT_NO_THROW(builder_ = std::make_shared<rub::PinocchioModelBuilder>(cfg));
+
+    ASSERT_TRUE(cache_.InitModel(*builder_, {}, "[test]", logger_));
+    cache_.BuildReorderMap(&ArmJointNames(), &HandJointNames(), kArmDof + kHandDof, "[test]",
+                           logger_);
+    ASSERT_TRUE(cache_.reorder_valid())
+        << "fixture precondition: arm AND hand joint names must both map";
+  }
+
+  double ModelValue(int i) const { return cache_.q()[cache_.ext_to_pin_q(i)]; }
+
+  double HandModelValue(int i) const { return cache_.q()[cache_.ext_to_pin_q(kArmDof + i)]; }
+};
+
+TEST_F(CombinedModelCacheHandGateTest, AReadableHandIsScattered) {
+  // Positive control: without it, every "unchanged" assertion below would pass
+  // on a helper that stopped writing the hand block entirely.
+  ControllerState full = MakeTwoDeviceState(kArmDof, kHandDof, MeasuredArm, MeasuredHand);
+  cache_.ExtractFullState(full, kArmDof, kHandDof);
+
+  for (int i = 0; i < kHandDof; ++i) {
+    EXPECT_NEAR(HandModelValue(i), MeasuredHand(static_cast<std::size_t>(i)), 1e-12)
+        << "finger " << i;
+  }
+}
+
+TEST_F(CombinedModelCacheHandGateTest, ANarrowHandScattersNothingRatherThanAPrefix) {
+  ControllerState full = MakeTwoDeviceState(kArmDof, kHandDof, MeasuredArm, MeasuredHand);
+  cache_.ExtractFullState(full, kArmDof, kHandDof);
+
+  // A narrower hand arrives. With ModelChannelBound alone the first six fingers
+  // would take SecondHandReading while the last ten kept MeasuredHand — a
+  // posture the robot was never in. The gate refuses the whole hand update.
+  ControllerState narrow = MakeTwoDeviceState(kArmDof, 6, MeasuredArm, SecondHandReading);
+  cache_.ExtractFullState(narrow, kArmDof, kHandDof);
+
+  for (int i = 0; i < kHandDof; ++i) {
+    EXPECT_NEAR(HandModelValue(i), MeasuredHand(static_cast<std::size_t>(i)), 1e-12)
+        << "finger " << i << " took part of an unreadable hand's reading";
+  }
+}
+
+TEST_F(CombinedModelCacheHandGateTest, ANarrowFirstHandReadingLeavesTheHandBlockAtZero) {
+  // The first-tick form, and the one that reaches hardware: nothing has been
+  // scattered yet, so a prefix scatter would hand the model six real fingers
+  // and ten at the origin.
+  ControllerState narrow = MakeTwoDeviceState(kArmDof, 6, MeasuredArm, MeasuredHand);
+  cache_.ExtractFullState(narrow, kArmDof, kHandDof);
+
+  for (int i = 0; i < kHandDof; ++i) {
+    EXPECT_NEAR(HandModelValue(i), 0.0, 1e-12)
+        << "finger " << i << " was scattered from a hand that never reported it";
+  }
+}
+
+TEST_F(CombinedModelCacheHandGateTest, AnUnreadableHandDoesNotBlockTheArmScatter) {
+  // The asymmetry the gate placement encodes, and §3.7's secondary-passthrough
+  // rule expressed in the model lane: an unreadable ARM returns early and so
+  // invalidates the hand block too (they share one model), but an unreadable
+  // HAND must leave the arm scatter intact. Getting this backwards would turn a
+  // finger-count mismatch into a frozen arm model.
+  ControllerState narrow = MakeTwoDeviceState(kArmDof, 6, MeasuredArm, MeasuredHand);
+  cache_.ExtractFullState(narrow, kArmDof, kHandDof);
+
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(ModelValue(i), MeasuredArm(static_cast<std::size_t>(i)), 1e-12)
+        << "arm joint " << i << " was withheld because the HAND was narrow";
+  }
+}
+
+TEST_F(CombinedModelCacheHandGateTest, AWideHandIsScatteredAndBounded) {
+  // Over-reporting stays a normal input on this axis too.
+  ControllerState wide = MakeTwoDeviceState(kArmDof, kHandDof + 8, MeasuredArm, MeasuredHand);
+  cache_.ExtractFullState(wide, kArmDof, kHandDof);
+
+  for (int i = 0; i < kHandDof; ++i) {
+    EXPECT_NEAR(HandModelValue(i), MeasuredHand(static_cast<std::size_t>(i)), 1e-12)
+        << "finger " << i;
   }
 }
 

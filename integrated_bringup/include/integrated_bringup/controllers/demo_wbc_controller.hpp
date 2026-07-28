@@ -513,6 +513,17 @@ class DemoWbcController final : public RTControllerInterface {
   /// rtc_controllers/docs/compliance-conventions.md. RT-thread-only.
   bool arm_readable_{false};
 
+  /// The same F5 gate on the SECONDARY axis (issue #291). arm_readable_ is
+  /// device 0's policy and deliberately does not silence the hand (§3.7,
+  /// "secondary passthrough 유지"); this flag is the hand's answer about
+  /// ITSELF. False means device 1 did not report the hand_dof_ channels the
+  /// hand loops read — hand_dof_ comes from YAML joint_state_names.size()
+  /// while num_channels is the wire length, so a start-up mismatch would read
+  /// the unreported finger joints as a finite 0 and ramp them origin-ward.
+  /// The answer is the same as the arm's: silence device 1 (zero-length) with
+  /// the reference lanes held at the measurement. RT-thread-only.
+  bool hand_readable_{false};
+
   /// Arm joint position the E-STOP path drives to. Authoritative source is
   /// LoadConfig(cfg["estop"]["arm_safe_position"]); only the first
   /// `arm_dof_` slots are read by ComputeEstop. Zero-initialized by default

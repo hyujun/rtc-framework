@@ -19,7 +19,7 @@ RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 �
 | `include/rtc_controller_interface/rt_controller_interface.hpp` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) |
 | `include/rtc_controller_interface/controller_registry.hpp` | 싱글톤 레지스트리 (`ControllerRegistry`) + `RTC_REGISTER_CONTROLLER` 매크로 |
 | `include/rtc_controller_interface/controller_types.hpp` | `rtc_base/types/types.hpp` 재수출 (편의 헤더) |
-| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b) — 술어 `ModelChannelBound` / `IsDeviceReadable` + 원시연산 `SilenceDeviceOutput` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
+| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b, secondary 축 #291) — 술어 `ModelChannelBound` / `IsDeviceReadable` + 원시연산 `SilenceDeviceOutput` / `HoldTelemetryAtMeasured` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
 | `include/rtc_controller_interface/controller_log_set.hpp` | Controller-owned CSV 로그 집합 헬퍼 (`ControllerLogSet` + `LogHandle<PodT>`) — opt-in. `rtc::ThreadCsvProducer/Logger` 페어를 typed handle 로 묶어 `<session>/controllers/<config_key>/<instance>.csv` 에 기록. 같은 LogSet 안에서 동일 `instance` 를 두 번 등록하면 `RegisterLog` 가 unbound `LogHandle` 반환 (Q-MSG-3 path-uniqueness enforcement) |
 
 ### 소스 파일
@@ -151,7 +151,7 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 |---|---|---|
 | `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 — `num_channels` 는 wire 길이 |
 | `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태 판독 **전** |
-| `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length (`num_channels = 0`) | primary device 에만. secondary passthrough 는 유지 |
+| `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length (`num_channels = 0`) | **그 게이트가 판정한 device 에만.** primary 게이트는 secondary 를 침묵시키지 않는다 (passthrough 유지) — 아래 오독 주의 |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 의 도메인별 중립값 (torque → `0.0` / position → 측정값) | 명령 조립 시 |
 
@@ -160,6 +160,8 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 **침묵은 fail-safe 가 아니다.** zero-length 는 출하된 백엔드 전부에서 "no update" = 직전 setpoint 유지다 (`WriteSafeCommand` 와 같은 성질). `nc0` 길이의 0 을 대신 내보내는 것은 **진짜 0 커맨드**이고, 토크 모드 팔에서는 정지가 아니라 낙하다.
 
 **침묵은 wire 만 침묵시킨다.** 로그 POD 는 출력이 아니라 device 의 `num_channels` 로 bound 하고 내보낸 폭을 담는 필드가 없으므로, reference lane 을 비워 두면 침묵 tick 이 "전 관절 원점 명령" 으로 기록된다. `SilenceDeviceOutput` 은 `HoldTelemetryAtMeasured` 와 항상 짝이며, `goal_positions` 만 바인딩 소유로 남는다. 근거·판정은 §3.7.
+
+**"primary 에만" 은 device 축이 아니라 게이트 축이다** (#291 — 오독 주의). 위 표의 `SilenceDeviceOutput` 행은 *primary 의 게이트가 primary 만 침묵시킨다*는 뜻이지, **secondary 에 게이트를 두지 말라는 뜻이 아니다.** 질문이 둘이기 때문이다 — (1) *팔이* 판독 불가일 때 핸드를 죽이는가 → **아니다**(passthrough 유지), (2) *핸드가* 자기 폭으로 판독 불가일 때 핸드는 무엇을 내보내는가 → **팔과 같게 침묵**. `IsDeviceReadable` 은 이미 device 무관이므로 `IsDeviceReadable(dev1, hand_dof_)` 로 부르면 되고 새 추상화가 필요 없다. 게이트는 **device 마다 자기 폭으로** 서며, 한 device 의 게이트가 다른 device 를 침묵시키지 않는다. secondary 축의 함정(latch 하는 self-init / grasp FSM 의 분기 오염 / 모델 lane 의 all-or-nothing)은 §3.7.
 
 **한계 — 필요조건만 판정한다** (#265 D1-a → **issue #284**). `num_channels` 는 wire 길이이므로 reorder map 이 활성이면 `nc0 >= model_dim` 이어도 매칭 안 된 슬롯에 구멍이 남을 수 있다. `num_channels` 재정의는 기각됐다 (그 필드는 위 egress bound 로 이미 쓰인다). 이 갭은 #284 가 소유한다.
 

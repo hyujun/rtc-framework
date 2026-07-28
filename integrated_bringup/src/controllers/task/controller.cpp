@@ -328,6 +328,12 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // phase below has to agree on whether device 0 is usable this tick, and both
   // output lanes — the CLIK path and ComputeEstop — honour it.
   arm_readable_ = rtc::IsDeviceReadable(state.devices[0], arm_dof_);
+  // Same gate on the secondary axis (#291). Separate flag, not a widening of
+  // arm_readable_: §3.7 keeps the hand commandable when the ARM goes missing,
+  // and this answers the different question of whether the HAND reported the
+  // hand_dof_ channels its own loops read. `num_devices > 1` folds in here so
+  // the read sites carry one predicate instead of a two-term guard.
+  hand_readable_ = state.num_devices > 1 && rtc::IsDeviceReadable(state.devices[1], hand_dof_);
 
   ReadState(state);
 
@@ -503,14 +509,21 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
     }
   }
 
-  // ── Hand (device 1) self-init — DEFERRED until device 1 is first valid ──────
+  // ── Hand (device 1) self-init — DEFERRED until device 1 is first READABLE ───
   // Seeding while the hand is still coming up would lock targets[1] to its zero
-  // init and drive every finger to 0. Retried each tick until valid; when no
+  // init and drive every finger to 0. Retried each tick until readable; when no
   // hand device is configured the flag latches true immediately.
+  //
+  // hand_readable_, not `valid` (#291): the hold seed below runs hand_dof_ deep,
+  // so a hand that reported only part of its channels passes `valid` and seeds
+  // the unreported fingers from a phantom 0. This is the hand's T1/T2 (#265) —
+  // and it is WORSE than the per-tick read sites, because the flag LATCHES on
+  // success: an ordinary A site re-poisons every tick and therefore heals the
+  // tick the gate goes true, while a poisoned seed here is never re-seeded.
   if (!hand_target_initialized_.load(std::memory_order_acquire)) {
     if (state.num_devices <= 1) {
       hand_target_initialized_.store(true, std::memory_order_release);
-    } else if (state.devices[1].valid) {
+    } else if (hand_readable_) {
       if (hand_dof_ == 0) {
         hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
       }
