@@ -163,7 +163,7 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 
 **한계 — 필요조건만 판정한다** (#265 D1-a → **issue #284**). `num_channels` 는 wire 길이이므로 reorder map 이 활성이면 `nc0 >= model_dim` 이어도 매칭 안 된 슬롯에 구멍이 남을 수 있다. `num_channels` 재정의는 기각됐다 (그 필드는 위 egress bound 로 이미 쓰인다). 이 갭은 #284 가 소유한다.
 
-테스트: `test/test_device_readability.cpp` (계약 19건, URDF 없음) · `integrated_bringup/test/test_device_readability_gate.cpp` (바인딩 3종) · `integrated_bringup/test/test_combined_model_cache_gate.cpp` (공유 모델 scatter).
+테스트: `test/test_device_readability.cpp` (술어·원시연산 계약, URDF 없음) · `integrated_bringup/test/test_device_readability_gate.cpp` (바인딩 3종) · `integrated_bringup/test/test_combined_model_cache_gate.cpp` (공유 모델 scatter).
 
 ### 가상 메서드 (기본 구현 제공)
 
