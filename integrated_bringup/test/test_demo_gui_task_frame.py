@@ -101,6 +101,25 @@ def test_selection_is_frozen_once_latched():
     assert sel2.selection() == FALLBACK
 
 
+def test_default_settle_window_outlasts_the_walk_in():
+    """The window's whole job is to outlast the closed-chain FK walk-in, so its
+    default has to exceed the walk-in's length. A measured p1b walk-in is ~93 RT
+    ticks and the controller emits at most one TFMessage per tick, so an
+    N-message window spans at least N ticks. A default below that silently
+    reintroduces the bug this module prevents, on the exact robot that has it.
+    """
+    from integrated_bringup.demo_gui.task_frame import DEFAULT_SETTLE_MSGS
+
+    observed_walk_in_ticks = 93
+    assert observed_walk_in_ticks < DEFAULT_SETTLE_MSGS
+
+    sel = TaskFrameSelector(FALLBACK)
+    _observe_n(sel, WALKIN_FRAMES, observed_walk_in_ticks)
+    assert sel.selection() is None, "fallback latched inside a walk-in-length window"
+    sel.observe(SETTLED_FRAMES)
+    assert sel.selection() == VIRTUAL_TCP_FRAME
+
+
 def test_messages_carrying_neither_frame_are_not_evidence():
     """Such a message says nothing about the task frame, so it must not advance
     the window toward a fallback the controller never published."""
@@ -144,10 +163,12 @@ def test_seeded_flag_is_one_shot_per_rewire():
 
 
 def test_rewire_replaces_the_tf_buffer_and_invalidates_the_frame():
-    """tf2 caches transforms for 10 s by default, so without replacing the
-    buffer the PREVIOUS controller's virtual_tcp_actual keeps resolving through
-    lookup_transform after its publisher is gone. The availability test would
-    then answer for the wrong controller and feed its stale pose to the readout.
+    """The frame selection and the pose validity are what actually defend here:
+    nothing the previous controller broadcast is evidence about the next one,
+    and its pose must stop reading as live. The buffer swap is defence in depth
+    — selection is message-driven, so a stale buffer cannot mis-select a frame
+    on its own, but it would leave the rewired-away controller's transforms
+    resolvable for tf2's default 10 s cache.
 
     Driven against the reset helper directly — the surrounding rewire destroys
     and recreates rclpy handles, which needs a live node (the AC-5 pattern from
@@ -249,5 +270,3 @@ def test_task_entry_degree_round_trip_is_identity():
     for metres in (0.0, 0.4137, -0.0866):
         text = f"{metres:.4f}"  # translation entries are metres on both sides
         assert float(text) == pytest.approx(metres, abs=1e-6)
-
-

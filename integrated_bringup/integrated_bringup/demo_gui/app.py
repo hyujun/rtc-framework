@@ -386,13 +386,17 @@ class DemoControllerGUI(Node):
         self._pull_peak.reset()
         self._wbc_active = False
 
-        # #292: the tf buffer is controller-sourced state too, and it is the
-        # sharp case here. tf2 caches transforms for 10 s by default, so the
-        # previous controller's virtual_tcp_actual keeps resolving through
-        # lookup_transform long after its publisher is gone — which would make
-        # the availability test below answer for the wrong controller AND feed
-        # its stale pose to the readout. Replacing the buffer is what makes
-        # "did the ACTIVE controller broadcast this frame" a real question.
+        # #292: the task frame and the pose validity are controller-sourced too.
+        # Nothing the previous controller broadcast is evidence about what the
+        # next one controls, and its pose must stop reading as live.
+        #
+        # The tf buffer goes with them. That is defence in depth rather than the
+        # primary guard: the frame selection is driven by observed TFMessages,
+        # not by what resolves through lookup_transform, so a stale buffer
+        # cannot by itself mis-select a frame. What it would leave behind is the
+        # rewired-away controller's transforms still resolvable for 10 s (tf2's
+        # default cache) — unreachable while the selection stays message-driven,
+        # but a trap the moment anything reads the buffer without asking first.
         self._tf_buffer = Buffer()
         self._task_frame.on_rewire()
         self._task_pose_valid = False

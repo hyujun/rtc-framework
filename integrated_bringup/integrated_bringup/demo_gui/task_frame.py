@@ -42,14 +42,23 @@ from dataclasses import dataclass, replace
 VIRTUAL_TCP_FRAME = "virtual_tcp_actual"
 
 # TFMessages carrying the fallback frame but no virtual TCP that must arrive
-# before the fallback is latched. The controller broadcasts one message per RT
-# tick, so this is a tick count, matching the units the C++ side's frame-wait
-# budget uses (kVtcpFrameWaitTicks) and for the same reason: the walk-in length
-# scales with iterations, not with wall time. 15 is far shorter than that
-# budget because the GUI only has to outlast the *transport* of the first few
-# ticks — the controller resolves its own frame long before then, and a wrong
-# guess here is corrected by the next rewire rather than held for a session.
-DEFAULT_SETTLE_MSGS = 15
+# before the fallback is latched.
+#
+# The window has to outlast the closed-chain hand FK walk-in, because a
+# vtcp-configured controller publishes tool0 alone for its whole duration and
+# latching tool0 there is the exact error this module exists to prevent. A
+# measured p1b walk-in is ~93 RT ticks, and the controller emits at most one
+# TFMessage per tick (the CM's publish lane coalesces, never duplicates) — so a
+# window of N messages always spans at least N ticks, and 150 clears 93 with
+# margin regardless of the wire rate. Counting messages rather than seconds is
+# what makes that argument hold: the walk-in is ⌈Δ/max_seed_increment⌉
+# iterations long, so it scales with ticks, not with wall time (the same reason
+# the C++ side's kVtcpFrameWaitTicks is a tick count).
+#
+# The cost of overshooting is small and self-correcting: a controller that never
+# publishes a virtual TCP leaves the task panel disabled for this many messages
+# — a fraction of a second at any realistic rate — and a rewire resets it.
+DEFAULT_SETTLE_MSGS = 150
 
 
 @dataclass(frozen=True)
