@@ -724,6 +724,7 @@ publish 하는 joint span 과 프로파일이 어긋나면 `/rosout` 에 one-sho
 | `demo_gui/discovery.py` | `RobotShape` (arm/hand DoF·finger group) + `RobotProfile` / `ROBOT_PROFILES` — `--robot` 가 선택하는 정적 로봇 프로파일 (joint 스키마 + TCP frame) |
 | `demo_gui/catalog.py` | `ControllerCatalog` — `/rtc_cm/list_controllers` 비동기 폴러 (5 s 주기). 라디오 버튼 / preset combo / 라벨이 모두 이 catalog 결과에서 옴. |
 | `demo_gui/pull.py` | Pull Force Estimate 패널의 상태기계 — `PullSnapshot` (immutable) / `PullPeakHold` / `badge_state` / `build_render`. Tk·rclpy 비의존이라 `test/test_demo_gui_pull.py` 가 디스플레이 없이 검증. |
+| `demo_gui/task_frame.py` | `TaskFrameSelector` — active controller 가 **실제로 제어 중인** task frame 선택 (#292). `virtual_tcp_actual` 을 한 번이라도 관측하면 즉시 latch, 없이 fallback (`RobotProfile.tcp_child`) 만 `settle_msgs` 건이면 fallback latch. 컨트롤러 이름 하드코딩 없이 **availability** 로만 판정하며, settle window 는 closed-chain hand FK walk-in 동안 tool0 만 발행되는 창을 넘기기 위한 것이다. Tk·rclpy 비의존 (`test/test_demo_gui_task_frame.py`). |
 
 #### 동적 controller 발견 (`/rtc_cm/list_controllers`)
 
@@ -757,6 +758,8 @@ GUI 시작 시:
 WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/ur5e_p1a/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.
 
 **Target 패널 (관절 vs task):** `demo_joint_controller` 는 관절 목표만, `demo_task_controller` 는 task-space (EE SE3) 목표만 입력 패널이 활성화됩니다. `demo_wbc_controller` 는 **둘 다 활성화** — 암 posture (nullspace reference) 와 commanded EE SE3 jog 를 독립적으로 받기 때문 (`demo_gui/config.py` `DUAL_TARGET_SPACE`). WBC 에서 `Send Command` 는 두 `RobotTarget` (goal_type `joint` + `task`) 을 모두 publish 하며, controller `DeliverTargetMessage` 가 goal_type 별로 라우팅합니다. EE SE3 패널 값은 TF (`virtual_tcp`/`ee_link`) 가 wiring 되어 있어야 current pose 로 seed 됩니다.
+
+**Task frame 게이트 (#292):** task 목표는 active controller 의 **제어 frame 이 확정된 뒤에만** 입력·발행할 수 있습니다. 컨트롤러 전환 직후에는 `TaskFrameSelector` 가 미확정 상태라 task target entry / step 버튼이 `disabled` 이고, EE pose 표시는 `—` 입니다 (이전 컨트롤러의 pose 를 라이브처럼 보여주지 않기 위해). frame 이 확정되면 그 시점의 실제 pose 로 **1회** seed 되고 패널이 활성화됩니다 — 전환 시점에 seed 하면 아직 이전 컨트롤러의 pose 라 "표시된 pose 를 그대로 target 으로 보냈는데 로봇이 움직이는" 결함이 됩니다. `Send Preset` 의 자동 task publish 와 preset 저장도 같은 게이트를 통과합니다. 이 게이트는 컨트롤러 측 계약의 나머지 절반이다 — `ApplyPendingTarget` 이 외부 목표를 컨트롤러의 *의도된* frame 으로 태깅할 수 있는 근거가 "미확정 창에서는 authoring 자체가 불가능하다" 이기 때문.
 
 #### Grasp/Release 버튼 동작
 

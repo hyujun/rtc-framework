@@ -45,6 +45,7 @@ from integrated_bringup.demo_gui.pull import (
     invalid_reason_label,
     mask_label,
 )
+from integrated_bringup.demo_gui.task_frame import TaskFrameSelector
 from rtc_msgs.msg import GraspState, PullEstimate, WbcState
 
 # Fields the GUI adds on top of the wire message.
@@ -670,6 +671,13 @@ def test_rewire_resets_controller_sourced_state():
     state._pull_peak = PullPeakHold()
     state._pull_peak.observe(state._pull)
     state._wbc_active = True
+    # The helper also drops the task-frame state (#292) — the tf buffer and the
+    # frame selection are controller-sourced too. Covered by
+    # test_demo_gui_task_frame; stubbed here so this test still reaches the
+    # pull assertions below.
+    state._tf_buffer = None
+    state._task_frame = TaskFrameSelector("tool0_actual")
+    state._task_pose_valid = True
 
     DemoControllerGUI._reset_controller_sourced_state(state)
 
@@ -741,6 +749,11 @@ def test_panel_renders_every_state_against_real_widgets():
         gui._pull = PULL_UNAVAILABLE
         gui._pull_peak = PullPeakHold()
         gui.estop_active = False
+        # Reached via _reset_controller_sourced_state at the end of this test,
+        # which also drops the task-frame state (#292).
+        gui._tf_buffer = None
+        gui._task_frame = TaskFrameSelector("tool0_actual")
+        gui._task_pose_valid = True
         DemoControllerGUI._build_pull_panel(
             gui, tk.Frame(root), tkfont.Font(family="Courier", size=9)
         )

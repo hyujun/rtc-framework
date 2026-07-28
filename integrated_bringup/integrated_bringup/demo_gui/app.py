@@ -94,6 +94,7 @@ from .pull import (
     PullSnapshot,
     build_render,
 )
+from .task_frame import TaskFrameSelector
 
 
 def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, float, float]:
@@ -207,7 +208,17 @@ class DemoControllerGUI(Node):
         # tcp_parent→tcp_child back out via lookup_transform.
         self._tf_buffer = Buffer()
         self._tf_parent_frame = self._profile.tcp_parent
-        self._tf_child_frame = self._profile.tcp_child
+        # #292: the child frame is NOT fixed by the profile. A task controller
+        # with virtual_tcp_mode enabled controls a virtual TCP, and reading
+        # tool0 while it does that puts the displayed pose and the published
+        # goal in different frames. TaskFrameSelector picks the frame from what
+        # the active controller actually broadcasts; profile.tcp_child is only
+        # the fallback for controllers that never broadcast a virtual TCP.
+        self._task_frame = TaskFrameSelector(self._profile.tcp_child)
+        # Is current_task_positions a live reading in the selected frame? False
+        # before the frame settles and whenever the lookup fails, so the readout
+        # can say so instead of showing the previous controller's numbers.
+        self._task_pose_valid = False
 
         # _pending_load_gains carries a tk-thread callback to fire after
         # AsyncParameterClient.get_parameters resolves on the executor.
@@ -375,6 +386,17 @@ class DemoControllerGUI(Node):
         self._pull_peak.reset()
         self._wbc_active = False
 
+        # #292: the tf buffer is controller-sourced state too, and it is the
+        # sharp case here. tf2 caches transforms for 10 s by default, so the
+        # previous controller's virtual_tcp_actual keeps resolving through
+        # lookup_transform long after its publisher is gone — which would make
+        # the availability test below answer for the wrong controller AND feed
+        # its stale pose to the readout. Replacing the buffer is what makes
+        # "did the ACTIVE controller broadcast this frame" a real question.
+        self._tf_buffer = Buffer()
+        self._task_frame.on_rewire()
+        self._task_pose_valid = False
+
     def _rewire_owned_topics(self, ns: str, arm_group: str, hand_group: str) -> None:
         """(Re)create the controller-owned + per-group pubs/subs against ``ns``
         and the given group names, destroying any prior handles first."""
@@ -461,7 +483,13 @@ class DemoControllerGUI(Node):
         TransformListener never receives it. Pushing each frame into the
         buffer here lets _arm_joint_cb resolve tcp_parent→tcp_child via the
         normal lookup_transform path.
+
+        The same message is the evidence TaskFrameSelector runs on (#292): the
+        controller only broadcasts virtual_tcp_actual on ticks it is actually
+        controlling that point, so which frames appear here is what decides
+        which one the GUI reads.
         """
+        self._task_frame.observe(tf.child_frame_id for tf in msg.transforms)
         for tf in msg.transforms:
             self._tf_buffer.set_transform(tf, "demo_gui")
 
@@ -487,18 +515,27 @@ class DemoControllerGUI(Node):
                 self.current_positions = list(msg.position[:arm_dof])
         # TCP pose: tf2 lookup of the frames fed by _transforms_cb (failures
         # are silent — e.g. before the first transforms message arrives).
+        # #292: the child frame is whichever one the active controller turned
+        # out to be controlling. Until that settles there is no frame to read,
+        # and a lookup against a guessed one would produce a pose in the wrong
+        # frame — worse than no pose, because it looks live.
+        child = self._task_frame.selection()
+        if child is None:
+            self._task_pose_valid = False
+            return
         try:
             tfs = self._tf_buffer.lookup_transform(
                 self._tf_parent_frame,
-                self._tf_child_frame,
+                child,
                 rclpy.time.Time(),
             )
             t = tfs.transform.translation
             r = tfs.transform.rotation
             roll, pitch, yaw = _quat_to_rpy(r.w, r.x, r.y, r.z)
             self.current_task_positions = [t.x, t.y, t.z, roll, pitch, yaw]
+            self._task_pose_valid = True
         except TransformException:
-            pass
+            self._task_pose_valid = False
 
     def _hand_joint_cb(self, msg: JointState):
         """Phase 4: /rtc_cm/<hand_group>/joint_states 구독 콜백 (replaces _hand_gui_pos_cb)."""
@@ -739,12 +776,32 @@ class DemoControllerGUI(Node):
                 self._status_labels_values[i].config(text=text)
 
         # ── End-Effector Pose ──
+        # #292: without a live reading in the settled control frame there is no
+        # honest pose to show. Blanking beats leaving the last numbers up, which
+        # are indistinguishable from live data and may belong to the previous
+        # controller or to the wrong control point entirely.
+        task_live = self._task_pose_valid
         for i in range(6):
-            val = self.current_task_positions[i]
-            text = f"{val:.4f} m" if i < 3 else f"{val:.4f} rad  ({math.degrees(val):.2f}°)"
+            if not task_live:
+                text = "—"
+            else:
+                val = self.current_task_positions[i]
+                text = f"{val:.4f} m" if i < 3 else f"{val:.4f} rad  ({math.degrees(val):.2f}°)"
             if self._prev_task[i] != text:
                 self._prev_task[i] = text
                 self._task_state_labels_values[i].config(text=text)
+
+        # #292: seed the task target panel once per rewire, here rather than in
+        # _on_switch_controller — this is the first moment a live pose in the
+        # right frame exists. The panel's enabled state follows the same gate,
+        # so re-running it also un-disables the entries the instant the frame
+        # settles.
+        idx = self.selected_ctrl.get()
+        if idx and task_live and not self._task_frame.seeded():
+            if self._task_space_ready(idx):
+                self._set_task_target_entries(self.current_task_positions)
+                self._update_target_inputs_state(idx)
+            self._task_frame.mark_seeded()
 
         # ── Hand state ──
         for i in range(self._shape.hand_dof):
@@ -2405,8 +2462,21 @@ class DemoControllerGUI(Node):
 
     # ---- Button handlers -----------------------------------------------------
 
+    def _task_space_ready(self, ctrl_idx: str) -> bool:
+        """May a task goal be authored for ``ctrl_idx`` right now? (#292)
+
+        The controller's task panel has to be enabled AND its control frame has
+        to have settled. The frame half is the GUI's side of the contract the
+        controller depends on: ApplyPendingTarget tags every external goal with
+        the controller's *intended* frame precisely because authoring during the
+        unsettled window is impossible from here. Drop this gate and that
+        assumption breaks — it is not merely a panel-cosmetics rule.
+        """
+        return target_panel_states(ctrl_idx)[1] and self._task_frame.selection() is not None
+
     def _update_target_inputs_state(self, ctrl_idx: int):
-        joint_on, task_on = target_panel_states(ctrl_idx)
+        joint_on, _ = target_panel_states(ctrl_idx)
+        task_on = self._task_space_ready(ctrl_idx)
         joint_state = "normal" if joint_on else "disabled"
         task_state = "normal" if task_on else "disabled"
 
@@ -2527,11 +2597,16 @@ class DemoControllerGUI(Node):
 
         # Seed every enabled target panel from current state so neither holds
         # stale values (dual-space WBC seeds both).
-        joint_on, task_on = target_panel_states(idx)
+        #
+        # The TASK panel is deliberately NOT seeded here (#292). At this instant
+        # the new controller has not published a single transform, so the frame
+        # is unsettled and current_task_positions still holds the previous
+        # controller's pose — seeding from it is how "copy the displayed pose
+        # into the target and the robot moves" happened. The Tk refresh seeds it
+        # once, after the frame settles and a live pose has been read.
+        joint_on, _ = target_panel_states(idx)
         if joint_on:
             self._set_joint_target_entries(self.current_positions)
-        if task_on:
-            self._set_task_target_entries(self.current_task_positions)
 
         # Status readout naming follows the primary space (joint for dual/WBC).
         _task_status_names = ["X (m)", "Y (m)", "Z (m)", "Roll", "Pitch", "Yaw"]
@@ -2771,10 +2846,13 @@ class DemoControllerGUI(Node):
 
     def _copy_current_to_target(self):
         idx = self.selected_ctrl.get()
-        joint_on, task_on = target_panel_states(idx)
+        joint_on, _ = target_panel_states(idx)
         if joint_on:
             self._set_joint_target_entries(self.current_positions)
-        if task_on:
+        # #292: only copy a task pose that is a live reading in the frame the
+        # goal will be interpreted in. The joint and hand halves are unaffected
+        # — a task frame that has not settled says nothing about them.
+        if self._task_space_ready(idx) and self._task_pose_valid:
             self._set_task_target_entries(self.current_task_positions)
         self._set_hand_target_entries(self.current_hand_positions)
 
@@ -2826,7 +2904,11 @@ class DemoControllerGUI(Node):
 
     def _publish_target(self):
         idx = self.selected_ctrl.get()
-        joint_on, task_on = target_panel_states(idx)
+        joint_on, _ = target_panel_states(idx)
+        # #292: never publish a task goal while the control frame is unsettled —
+        # the entries still hold whatever text was last in them, and the
+        # controller would have to guess which frame authored it.
+        task_on = self._task_space_ready(idx)
 
         if self.robot_cmd_pub is None:
             self.get_logger().warn("robot_cmd_pub not yet bound — waiting for active controller")
@@ -2914,7 +2996,20 @@ class DemoControllerGUI(Node):
             )
             robot_target_vals = data.get("robot_target", [])
 
-            if len(robot_target_vals) == self._shape.arm_dof:
+            # #292: this path publishes a task goal AUTOMATICALLY right after
+            # _on_switch_controller, so it has to pass the same frame gate as
+            # the manual Send button — it is otherwise the one route that can
+            # author a goal inside the very window the gate exists to close.
+            # Only the robot half is withheld; the hand target below is
+            # frame-independent and still goes out.
+            frame_blocked = goal_type != "joint" and not self._task_space_ready(ctrl_name)
+            if frame_blocked:
+                self.get_logger().warn(
+                    f"Preset '{name}': task goal withheld — the active controller's control "
+                    "frame has not settled yet. Re-send once the task state shows a live pose."
+                )
+
+            if not frame_blocked and len(robot_target_vals) == self._shape.arm_dof:
                 robot_msg = RobotTarget()
                 robot_msg.joint_names = list(self._shape.arm_joint_names)
                 if goal_type == "joint":
@@ -3056,6 +3151,17 @@ class DemoControllerGUI(Node):
                     round(math.degrees(v), 4) for v in self.current_positions
                 ]
             else:
+                # #292: a task preset saved from an unsettled frame records a
+                # pose in an unknown frame and is silently wrong every time it
+                # is replayed afterwards. Refuse rather than persist it.
+                if not self._task_pose_valid:
+                    messagebox.showwarning(
+                        "Frame Not Settled",
+                        "The active controller's task control frame has not settled, so the "
+                        "current pose cannot be saved as a task preset. Wait until the task "
+                        "state shows a live pose and try again.",
+                    )
+                    return
                 preset_data["robot_target"] = [
                     round(v, 4) if i < 3 else round(math.degrees(v), 4)
                     for i, v in enumerate(self.current_task_positions)
