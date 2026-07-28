@@ -6,6 +6,7 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_math/se3/so3.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -532,16 +533,15 @@ void DemoTaskController::ApplyPendingTarget(int device_idx, std::span<const doub
   // Device 0 carries the task goal. Under control_6dof it is a full SE3 pose
   // (x,y,z,r,p,y); a short goal is ignored rather than half-applied, since a
   // pose assembled from three values would command an arbitrary orientation.
+  // ZYX (yaw·pitch·roll) at the wire edge — CLAUDE.md §10, shared with DemoWbc
+  // through rtc::math::se3::RpyToRotationZyx so the convention has one owner.
   if (gains_lock_.Load().control_6dof) {
     if (values.size() >= 6) {
       current_target_slot_.tcp_target[0] = values[0];
       current_target_slot_.tcp_target[1] = values[1];
       current_target_slot_.tcp_target[2] = values[2];
-      Eigen::AngleAxisd rollAngle(values[3], Eigen::Vector3d::UnitX());
-      Eigen::AngleAxisd pitchAngle(values[4], Eigen::Vector3d::UnitY());
-      Eigen::AngleAxisd yawAngle(values[5], Eigen::Vector3d::UnitZ());
-      const Eigen::Quaternion<double> qrot = yawAngle * pitchAngle * rollAngle;
-      const Eigen::Matrix3d rotation = qrot.matrix();
+      const Eigen::Matrix3d rotation =
+          rtc::math::se3::RpyToRotationZyx(Eigen::Vector3d(values[3], values[4], values[5]));
       const Eigen::Vector3d translation(values[0], values[1], values[2]);
       std::memcpy(current_target_slot_.tcp_target_rot.data(), rotation.data(),
                   sizeof(current_target_slot_.tcp_target_rot));
@@ -554,8 +554,14 @@ void DemoTaskController::ApplyPendingTarget(int device_idx, std::span<const doub
     return;
   }
 
-  // Position-only mode: the first three values are the TCP position, anything
-  // beyond them is a nullspace posture goal.
+  // Position-only mode. The goal is POSITIONALLY ALIGNED with the arm joint
+  // vector, not a [xyz | posture] concatenation: values[0..2] are the TCP
+  // position and values[3..arm_dof) set null_target[3..arm_dof) — the nullspace
+  // posture for joints 3 and up. Joints 0-2 keep whatever the first-tick
+  // self-init seeded (null_target_init_ from YAML, else the measured pose),
+  // because those three slots carry the TCP position on the wire instead.
+  // A client that sends [x,y,z] followed by a FULL posture q[0..n) has its
+  // posture applied shifted by three; the wire format has no room for one.
   const auto cap = (arm_dof_ > 0) ? static_cast<std::size_t>(arm_dof_)
                                   : static_cast<std::size_t>(kDemoTaskMaxArmDof);
   const std::size_t pn = std::min(values.size(), cap);

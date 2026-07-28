@@ -4,6 +4,7 @@
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_math/se3/so3.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -1711,15 +1712,15 @@ void DemoWbcController::ApplyPendingTarget(int device_idx, std::span<const doubl
   const auto didx = static_cast<std::size_t>(device_idx);
   if (is_task) {
     // Commanded SE3 — arm (device 0) only; the hand has no SE3 task slot, so a
-    // task goal on device 1+ is ignored. Convert (x,y,z,r,p,y)→SE3 with the
-    // ZYX (yaw·pitch·roll) convention, matching DemoTask. trig only, no alloc
-    // (RT-1/RT-4); the joint slot (targets[0]) is left untouched so arm joint
-    // posture and the commanded SE3 stay independent.
+    // task goal on device 1+ is ignored. Convert (x,y,z,r,p,y)→SE3 with the ZYX
+    // (yaw·pitch·roll) convention shared with DemoTask through
+    // rtc::math::se3::RpyToRotationZyx, so the convention has one owner rather
+    // than a copy per binding. trig only, no alloc (RT-1/RT-4); the joint slot
+    // (targets[0]) is left untouched so arm joint posture and the commanded SE3
+    // stay independent.
     if (device_idx == 0 && values.size() >= 6) {
-      const Eigen::AngleAxisd roll(values[3], Eigen::Vector3d::UnitX());
-      const Eigen::AngleAxisd pitch(values[4], Eigen::Vector3d::UnitY());
-      const Eigen::AngleAxisd yaw(values[5], Eigen::Vector3d::UnitZ());
-      const Eigen::Matrix3d rotation = (yaw * pitch * roll).matrix();
+      const Eigen::Matrix3d rotation =
+          rtc::math::se3::RpyToRotationZyx(Eigen::Vector3d(values[3], values[4], values[5]));
       const Eigen::Vector3d translation(values[0], values[1], values[2]);
       std::memcpy(current_target_slot_.tcp_cmd_rot.data(), rotation.data(),
                   sizeof(current_target_slot_.tcp_cmd_rot));
