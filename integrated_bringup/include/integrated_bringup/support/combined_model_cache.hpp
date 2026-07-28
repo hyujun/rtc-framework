@@ -93,6 +93,13 @@ class CombinedModelCache {
   /// 측정 device pos/vel 을 Pinocchio 순서 q/v 로 scatter (arm=device0[0,arm_dof), hand=
   /// device1[0,hand_dof) → ext[arm_dof, arm_dof+hand_dof)). @ref reorder_valid() 무효 시 no-op.
   /// device channel 수로 clamp. RT-safe, no alloc.
+  ///
+  /// **F5 게이트 내장** (#236 S7b): `rtc::IsDeviceReadable(devices[0], arm_dof)` 가 false 면
+  /// arm scatter 를 아예 하지 않는다 (no-op). clamp 만으로는 안전해지지 않기 때문이다 —
+  /// `q_curr_full_` 은 tick 을 넘어 **지속**하므로 건너뛴 슬롯이 이전값(첫 tick 엔 0)을
+  /// 유지하고, 모델이 보는 configuration 은 미보고 채널을 그냥 읽은 것과 수치적으로 같아진다.
+  /// 계약·근거는 `rtc_controller_interface/device_readability.hpp` 와
+  /// `rtc_controllers/docs/compliance-conventions.md` §3.7.
   void ExtractFullState(const rtc::ControllerState& state, int arm_dof, int hand_dof) noexcept;
 
   /// scatter 된 q/v 로 cache 의 FK/J/M/h/g/oMf 갱신. RT-safe 래퍼. cache 미초기화

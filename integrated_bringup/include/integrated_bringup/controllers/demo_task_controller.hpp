@@ -244,6 +244,16 @@ class DemoTaskController final : public RTControllerInterface {
 
   ComputedTrajectory hand_computed_{};
   bool estop_active_{false};
+
+  /// F5 device-readability gate for the arm (device 0), evaluated once at the
+  /// top of Compute() next to estop_active_ so every phase of this tick sees one
+  /// consistent answer. False means device 0 did not report the arm_dof_
+  /// channels this controller reads, so CLIK, the null-space task and the
+  /// emitted command would all run at a partially ZERO configuration. The answer
+  /// is silence on device 0 (zero-length), NOT nc0 zeros — see
+  /// rtc_controller_interface/device_readability.hpp and §3.7 of
+  /// rtc_controllers/docs/compliance-conventions.md. RT-thread-only.
+  bool arm_readable_{false};
   // RT-thread-only cache of gains.control_6dof, set in ComputeControl so the
   // Fill* methods avoid a full Gains SeqLock copy just to read one bool.
   // Set after ComputeControl's E-STOP early-return, so it is valid only on
@@ -263,12 +273,24 @@ class DemoTaskController final : public RTControllerInterface {
 
   // ── 3-phase pipeline ────────────────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
-  void ComputeControl(const ControllerState& state, double dt) noexcept;
+  /// Arm (device 0) stage: Jacobian extraction, hand FK for the arm-relative
+  /// fingertip poses, CLIK and the null-space task. Held whole whenever the arm
+  /// cannot be read this tick (F5) or the cache is not fresh.
+  void ComputeControl(const ControllerState& state, double dt, const Gains& gains) noexcept;
+  /// Secondary (device 1) stage: hand trajectory, grasp FSM, ToF snapshot.
+  /// Deliberately NOT behind ComputeControl's gate — §3.7 "secondary
+  /// passthrough 유지"; see the definition's header comment (#236 S7b).
+  void ComputeSecondary(const ControllerState& state, double dt, const Gains& gains) noexcept;
   // WriteOutput was split into 3 explicit-intent methods (see
   // demo_joint_controller.hpp for the bucket contract). Compute() calls
   // them in order WriteJointCommand → FillLogOutput → FillPublishOutput.
   [[nodiscard]] ControllerOutput WriteJointCommand(const ControllerState& state,
                                                    double dt) noexcept;
+  /// Arm half of WriteJointCommand's wire fill. Split out so the F5-silenced
+  /// branch and the readable branch share ONE hand block instead of two copies
+  /// of a device command lane that must never drift apart (#236 S7b).
+  void WriteArmJointCommand(const ControllerState& state, rtc::DeviceOutput& out0,
+                            double dt) noexcept;
   void FillLogOutput(const ControllerState& state, ControllerOutput& output, double dt) noexcept;
   void FillPublishOutput(const ControllerState& state, ControllerOutput& output,
                          double dt) noexcept;

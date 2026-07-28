@@ -2,6 +2,7 @@
 #include "integrated_bringup/support/combined_model_cache.hpp"
 
 #include "rtc_base/tracing/trace_scope.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/types/types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
@@ -126,10 +127,20 @@ void CombinedModelCache::ExtractFullState(const rtc::ControllerState& state, int
     return;
   }
   const auto& dev0 = state.devices[0];
-  // Clamp to the device channel count: arm_dof == num_channels by config
-  // construction, but a mismatched config must not scatter stale slots past the
-  // valid measured range into q/v.
-  const int narm = std::min(arm_dof, dev0.num_channels);
+  // F5 gate, INSIDE the helper (#236 S7b). Six call sites across three
+  // controllers scatter through here, and the bound below cannot make a narrow
+  // device safe — q_curr_full_ PERSISTS across ticks, so the slots the bound
+  // skips keep their previous value (zero before the first readable tick) and
+  // the model runs at a configuration numerically identical to reading the
+  // unreported channels outright (#265 comment 2 §2). Every caller gates as
+  // well; this one is what makes the seventh caller safe by construction.
+  if (!rtc::IsDeviceReadable(dev0, arm_dof)) {
+    return;
+  }
+  // Still bounded: over-reporting (nc0 > arm_dof) is a normal input, and
+  // ext_to_pin_q_ only has full_dof_ entries. This is the OOB half — see
+  // rtc_controller_interface/device_readability.hpp for why it has its own name.
+  const int narm = rtc::ModelChannelBound(arm_dof, dev0.num_channels);
   for (int i = 0; i < narm; ++i) {
     const auto eidx = static_cast<std::size_t>(i);
     const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
@@ -139,7 +150,11 @@ void CombinedModelCache::ExtractFullState(const rtc::ControllerState& state, int
   }
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
-    const int nhand = std::min(hand_dof, dev1.num_channels);
+    // Secondary lane keeps its own (weaker) `valid` guard: the F5 gate above is
+    // the primary device's policy, and tightening the hand to
+    // IsDeviceReadable(dev1, hand_dof) would change which ticks refresh the
+    // hand model — a separate decision, outside #236 S7b's scope.
+    const int nhand = rtc::ModelChannelBound(hand_dof, dev1.num_channels);
     for (int i = 0; i < nhand; ++i) {
       const auto eidx = static_cast<std::size_t>(arm_dof + i);
       const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);

@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -301,6 +302,14 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   // trajectory control law and the arm-TCP FK it consumes. E-STOP ticks skip both
   // and keep arm_handle_ FK (ComputeEstop).
   estop_active_ = estopped_.load(std::memory_order_acquire);
+  // F5 gate, loaded next to estop_active_ and for the same reason: every phase
+  // below has to agree on whether device 0 is usable this tick. Both output
+  // lanes honour it — the E-STOP branch just below and the normal path — so
+  // there is one answer to "unreadable arm" rather than one per lane (#236 S7b,
+  // §3.7). arm_dof_ may still be 0 on the very first tick of a fixture that
+  // bypasses YAML; IsDeviceReadable then degrades to a plain validity check,
+  // which is the honest answer while nothing is known to be missing.
+  arm_readable_ = rtc::IsDeviceReadable(state.devices[0], arm_dof_);
 
   ReadState(state);
   // RT-thread-only: refresh current_target_slot_ + run self-init if needed.
@@ -407,10 +416,17 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
   current_target_slot_ = target_seqlock_.Load();
   bool slot_dirty = false;
 
-  // ── Arm (device 0) self-init — runs on the first tick, unconditionally ──────
-  if (!arm_target_initialized_.load(std::memory_order_acquire)) {
+  // ── Arm (device 0) self-init — DEFERRED until device 0 is readable ─────────
+  // It used to run on the first tick unconditionally, seeding arm_dof_ slots
+  // from dev0.positions without ever consulting num_channels (#265 audit J1) —
+  // so a device narrower than the configured arm would latch a hold target
+  // whose unreported joints are 0, i.e. "go to the origin", and the latch made
+  // it permanent. Retried each tick, exactly like the hand's deferred self-init
+  // below; the two answers in this one function are now the same answer.
+  if (!arm_target_initialized_.load(std::memory_order_acquire) && arm_readable_) {
     // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
-    // dimensions (e.g. unit tests that bypass YAML).
+    // dimensions (e.g. unit tests that bypass YAML). Bounded by nc0, so the
+    // resolved arm_dof_ can never re-open the gate this branch just passed.
     if (arm_dof_ == 0 && state.num_devices > 0) {
       arm_dof_ = std::min(state.devices[0].num_channels, kDemoJointMaxArmDof);
     }

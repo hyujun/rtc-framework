@@ -2,6 +2,7 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_math/se3/so3.hpp"
@@ -1388,6 +1389,12 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   // tick — the exact path that must be a conservative position hold.
   hand_tauff_active_ = false;
 
+  // F5 gate (#236 S7b). Loaded before ReadState — earlier than estop_active_
+  // below, because ReadState's model scatter is already a consumer — so the
+  // scatter, the FSM dispatch, WriteJointCommand and ComputeEstop all answer
+  // "is device 0 usable this tick?" the same way.
+  arm_readable_ = rtc::IsDeviceReadable(state.devices[0], arm_dof_);
+
   ReadState(state);
   DrainTargetSlot(state);
 
@@ -1441,7 +1448,10 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     if (target_live_phase && ApplyCommandedSe3IfPresent()) {
       target_seqlock_.Store(current_target_slot_);
       const bool mpc_on = mpc_enabled_ && mpc_manager_.Enabled();
-      if (arm_handle_ && !mpc_on && Se3TaskActiveInPhase(phase_)) {
+      // arm_readable_ joins the guard (#265 audit W3): FK on a device narrower
+      // than arm_dof_ runs at the ZERO configuration, and its result would
+      // become the trajectory START pose.
+      if (arm_readable_ && arm_handle_ && !mpc_on && Se3TaskActiveInPhase(phase_)) {
         std::span<const double> q_arm(state.devices[0].positions.data(),
                                       static_cast<std::size_t>(arm_dof_));
         arm_handle_->ComputeForwardKinematics(q_arm);  // start = current FK
@@ -1557,14 +1567,23 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     // until both are valid: leave target_initialized_ false and command a
     // passthrough hold so the next tick re-attempts the seed from a real
     // measured configuration once every device streams.
-    const bool arm_ready = state.num_devices > 0 && state.devices[0].valid;
+    // `valid` alone was the wrong test (#265 audit W1): a device that has
+    // reported only part of the arm passes it, and the passthrough hold below
+    // then reads dev0.positions arm_dof_ deep — the unreported joints coming
+    // back as 0. IsDeviceReadable is the same test plus the channel axis.
+    const bool arm_ready = state.num_devices > 0 && arm_readable_;
     const bool hand_ready = state.num_devices <= 1 || state.devices[1].valid;
     if (!arm_ready || !hand_ready) {
       const auto& dev0 = state.devices[0];
-      for (int i = 0; i < arm_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        robot_computed_.positions[idx] = dev0.positions[idx];
-        robot_computed_.velocities[idx] = 0.0;
+      // Arm passthrough only when the arm itself is readable — this branch is
+      // also taken when only the HAND is missing, and then the arm hold is a
+      // real measurement worth passing through.
+      if (arm_readable_) {
+        for (int i = 0; i < arm_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          robot_computed_.positions[idx] = dev0.positions[idx];
+          robot_computed_.velocities[idx] = 0.0;
+        }
       }
       if (state.num_devices > 1 && state.devices[1].valid) {
         const auto& dev1 = state.devices[1];

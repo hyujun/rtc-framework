@@ -502,6 +502,17 @@ class DemoWbcController final : public RTControllerInterface {
   std::atomic<bool> hand_estopped_{false};
   bool estop_active_{false};
 
+  /// F5 device-readability gate for the arm (device 0), evaluated once at the
+  /// very top of Compute() — before ReadState, so the model scatter, the FSM
+  /// dispatch, the wire command and ComputeEstop all see one answer for this
+  /// tick. False means device 0 did not report the arm_dof_ channels this
+  /// controller reads, so TSID, the posture reference and the emitted command
+  /// would run at a partially ZERO configuration. The answer is silence on
+  /// device 0 (zero-length), NOT nc0 zeros — see
+  /// rtc_controller_interface/device_readability.hpp and §3.7 of
+  /// rtc_controllers/docs/compliance-conventions.md. RT-thread-only.
+  bool arm_readable_{false};
+
   /// Arm joint position the E-STOP path drives to. Authoritative source is
   /// LoadConfig(cfg["estop"]["arm_safe_position"]); only the first
   /// `arm_dof_` slots are read by ComputeEstop. Zero-initialized by default

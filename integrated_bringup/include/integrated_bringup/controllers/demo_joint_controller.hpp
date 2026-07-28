@@ -437,6 +437,22 @@ class DemoJointController final : public RTControllerInterface {
   std::atomic<bool> hand_estopped_{false};
   bool estop_active_{false};
 
+  /// F5 device-readability gate for the arm (device 0), evaluated once at the
+  /// top of Compute() so every phase of this tick — ReadState, DrainTargetSlot,
+  /// ComputeControl, the three output fills, ComputeEstop — sees one consistent
+  /// answer. Same idiom and same reason as estop_active_ above.
+  ///
+  /// False means device 0 did not report the arm_dof_ channels this controller
+  /// reads, so its unreported joints would come back as a finite 0.0 and the
+  /// trajectory, the FK and the emitted command would all run at a partially
+  /// ZERO configuration. The answer is silence on device 0 (zero-length), NOT
+  /// nc0 zeros — see rtc_controller_interface/device_readability.hpp and §3.7 of
+  /// rtc_controllers/docs/compliance-conventions.md. The hand (device 1) is
+  /// untouched by this flag: it keeps its own state, target and trajectory.
+  ///
+  /// RT-thread-only, like estop_active_ — no synchronisation needed.
+  bool arm_readable_{false};
+
   /// Arm joint position the E-STOP path drives to. Authoritative source is
   /// LoadConfig(cfg["estop"]["arm_safe_position"]); only the first
   /// arm_dof_ slots are read by ComputeEstop. Zero-initialised by default

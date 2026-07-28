@@ -1,5 +1,6 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/internal_force_task.hpp"
@@ -257,9 +258,13 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         target_seqlock_.Store(current_target_slot_);
 
         // Reset FK to current pose so InitTcpTrajectory's start = current.
-        std::span<const double> q_arm(dev0.positions.data(), static_cast<std::size_t>(arm_dof_));
-        arm_handle_->ComputeForwardKinematics(q_arm);
-        InitTcpTrajectory(state);
+        // Skipped on an unreadable arm — the "current pose" would be FK at the
+        // ZERO configuration, and it becomes the trajectory start (#265 W3).
+        if (arm_readable_) {
+          std::span<const double> q_arm(dev0.positions.data(), static_cast<std::size_t>(arm_dof_));
+          arm_handle_->ComputeForwardKinematics(q_arm);
+          InitTcpTrajectory(state);
+        }
       }
 
       // Posture reference tracks the same targets[] snapshot the SE3 goal was
@@ -404,7 +409,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       clik_reseed_pending_ = true;
 
       // SE3 hold at current TCP (zero-displacement quintic).
-      if (arm_handle_) {
+      if (arm_readable_ && arm_handle_) {
         std::span<const double> q_arm(dev0.positions.data(), static_cast<std::size_t>(arm_dof_));
         arm_handle_->ComputeForwardKinematics(q_arm);
         tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
@@ -421,11 +426,17 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     }
 
     case WbcPhase::kFallback: {
-      // Hold current position, deactivate contacts
-      for (int i = 0; i < arm_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        robot_computed_.positions[idx] = dev0.positions[idx];
-        robot_computed_.velocities[idx] = 0.0;
+      // Hold current position, deactivate contacts. Only where "current
+      // position" is a measurement: this loop is arm_dof_ deep and used to
+      // ignore nc0 entirely (#265 audit W4). On an unreadable arm
+      // WriteJointCommand silences device 0 anyway, so leaving robot_computed_
+      // untouched here is what makes the two agree.
+      if (arm_readable_) {
+        for (int i = 0; i < arm_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          robot_computed_.positions[idx] = dev0.positions[idx];
+          robot_computed_.velocities[idx] = 0.0;
+        }
       }
       if (state.num_devices > 1 && dev1.valid) {
         for (int i = 0; i < hand_dof_; ++i) {
