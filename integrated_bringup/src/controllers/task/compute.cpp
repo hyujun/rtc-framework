@@ -546,7 +546,16 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
 
-    if (hand_new_target_pending_) {
+    // hand_readable_ joins the pending flag rather than replacing the enclosing
+    // guard (#291): this seed is the only dev1 read in ComputeSecondary, and it
+    // runs hand_dof_ deep, so a narrow hand would start the ramp from a phantom
+    // origin and drive the unreported fingers origin-ward over `duration`.
+    // Scoping it here — not early-returning — keeps the trajectory evaluation
+    // below running, which is what WriteJointCommand's silenced-arm branch
+    // relies on to keep hand_computed_ tracking. The flag stays pending, so the
+    // seed is retried the tick the hand becomes readable (the arm's
+    // arm_target_initialized_ deferral, #265 audit T1/T2, on the hand axis).
+    if (hand_new_target_pending_ && hand_readable_) {
       trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State start_state;
       trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State goal_state;
 
@@ -658,11 +667,28 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
         contact_latched_ = false;
       }
 
-      if (state.num_devices > 1 && state.devices[1].valid) {
+      // hand_readable_, not `valid` (#291). Two distinct hazards live in this
+      // block and the gate is the only thing that closes either:
+      //   - the LPF below is an IIR. Feeding it a phantom 0 per unreported
+      //     finger does not merely spoil this tick's hand_filt — the sample
+      //     persists in the filter state and decays over the following ticks,
+      //     so the contamination outlives the tick that produced it.
+      //   - the release gate reads dev1.positions[gi] at a MODEL index, so an
+      //     unreported gi yields a phantom `d` that flips a BRANCH
+      //     (release_phase → drop the contact latch), not just a number.
+      // The pre-existing `else if (contact_latched_)` below is already the
+      // right answer for "no usable hand state": hold the last commanded
+      // position rather than let the trajectory drive. Widening the predicate
+      // routes the narrow-hand case into it. hand_hold_position_ cannot replay
+      // a zero-init here — contact_latched_ is only ever set inside this
+      // readable branch, so an always-unreadable hand leaves it false and the
+      // else-if a no-op.
+      if (hand_readable_) {
         const auto& dev1 = state.devices[1];
 
-        // LPF the measured hand position. Run every valid tick (not just while
-        // latched) so the IIR state stays warm and latch entry has no transient.
+        // LPF the measured hand position. Run every readable tick (not just
+        // while latched) so the IIR state stays warm and latch entry has no
+        // transient.
         std::array<double, kDemoTaskMaxHandDof> hand_meas{};
         for (int i = 0; i < hand_dof_; ++i) {
           hand_meas[static_cast<std::size_t>(i)] = dev1.positions[static_cast<std::size_t>(i)];
@@ -840,15 +866,29 @@ ControllerOutput DemoTaskController::WriteJointCommand(const ControllerState& st
   }
 
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const int nc1 = state.devices[1].num_channels;
+    const auto& dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
     auto& out1 = output.devices[1];
-    out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.commands[i] = hand_computed_.positions[i];
+    if (!hand_readable_) {
+      // F5 on the SECONDARY axis (#291), the same answer the arm gets above and
+      // for the same reason: hand_computed_ was withheld this tick, so the only
+      // thing left to command would be a stale or zero-init buffer. Zero-length
+      // is "no update" — the hand holds its previous setpoint. nc1 zeros would
+      // be a real command to the origin, i.e. every finger slammed open.
+      rtc::SilenceDeviceOutput(out1);
+      // The log lane is bounded by the DEVICE's channel count, so an untouched
+      // reference row would be recorded as zeros and read as exactly that
+      // origin command. Report where the fingers are parked instead.
+      rtc::HoldTelemetryAtMeasured(out1, nc1, dev1.positions);
+    } else {
+      out1.num_channels = nc1;
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        out1.commands[i] = hand_computed_.positions[i];
+      }
+      rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                             std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
     }
-    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
   }
 
   return output;
@@ -960,11 +1000,24 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
   }
 
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const int nc1 = state.devices[1].num_channels;
+    const auto& dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
     auto& out1 = output.devices[1];
+    if (hand_readable_) {
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        out1.trajectory_positions[i] = hand_computed_.positions[i];
+        out1.trajectory_velocities[i] = hand_computed_.velocities[i];
+      }
+    } else {
+      // No hand reference this tick — hand_computed_ still holds the last
+      // readable tick's values (#291, the hand's T7), so publishing it would
+      // date-stamp stale numbers. Report the parked position instead of leaving
+      // a row of zeros that reads as a command to the origin.
+      rtc::HoldTelemetryAtMeasured(out1, nc1, dev1.positions);
+    }
+    // The goal survives the gate on this axis too: a finger target the operator
+    // set does not stop existing because the hand went unreadable.
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.trajectory_positions[i] = hand_computed_.positions[i];
-      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
   }
@@ -1170,13 +1223,25 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
   }
 
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const int nc1 = state.devices[1].num_channels;
+    const auto& dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
     auto& out1 = output.devices[1];
+    if (hand_readable_) {
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        out1.target_positions[i] = hand_computed_.positions[i];
+        out1.target_velocities[i] = hand_computed_.velocities[i];
+        out1.trajectory_positions[i] = hand_computed_.positions[i];
+        out1.trajectory_velocities[i] = hand_computed_.velocities[i];
+      }
+    } else {
+      // Stale hand_computed_ must not be date-stamped as this tick's reference
+      // (#291) — park the reference lanes at the measurement. Velocities stay
+      // at their fresh zero: a parked finger is not moving.
+      rtc::HoldTelemetryAtMeasured(out1, nc1, dev1.positions);
+    }
+    // The goal survives the gate on this axis too: a finger target the operator
+    // set does not stop existing because the hand went unreadable.
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.target_positions[i] = hand_computed_.positions[i];
-      out1.target_velocities[i] = hand_computed_.velocities[i];
-      out1.trajectory_positions[i] = hand_computed_.positions[i];
-      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
   }

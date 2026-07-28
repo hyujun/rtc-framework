@@ -18,12 +18,15 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
+#include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <cmath>
 #include <cstddef>
+#include <map>
+#include <string>
 
 namespace {
 
@@ -66,7 +69,9 @@ std::string MinimalJointYaml() {
   return yaml + "command_type: \"position\"\n";
 }
 
-ControllerState MakeState(int arm_channels) {
+// `hand_channels` defaults to a full-width hand so every arm-axis test above is
+// unaffected; the #291 section below varies it to exercise the secondary gate.
+ControllerState MakeState(int arm_channels, int hand_channels = kHandChannels) {
   ControllerState state{};
   state.num_devices = 2;
   state.dt = kDt;
@@ -86,9 +91,12 @@ ControllerState MakeState(int arm_channels) {
   }
 
   auto& dev1 = state.devices[1];
-  dev1.num_channels = kHandChannels;
+  dev1.num_channels = hand_channels;
   dev1.valid = true;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(kHandChannels); ++i) {
+  // Same rule as the arm above: ONLY the reported finger channels carry a
+  // measurement, so an unreported one reads back as a finite 0.0 and the gate
+  // assertions stay falsifiable.
+  for (std::size_t i = 0; i < static_cast<std::size_t>(hand_channels); ++i) {
     dev1.positions[i] = MeasuredHand(i);
   }
   return state;
@@ -550,6 +558,313 @@ TEST_F(DemoWbcGateTest, TheDofFallbackCannotReopenTheGateItJustPassed) {
   // ...and from now on a narrower device is refused.
   ControllerState narrow = MakeState(kArmDof - 1);
   EXPECT_EQ(ctrl_.Compute(narrow).devices[0].num_channels, 0);
+}
+
+// ── The same gate on the SECONDARY (hand) axis (issue #291) ──────────────────
+//
+// Everything above asks what the bindings do when the ARM goes narrow. This
+// section asks the question #236 S7b never audited, because its axis was nc0:
+// what happens when the HAND does. The hazard is structurally identical —
+// hand_dof_ comes from the declared joint_state_names while num_channels is the
+// wire length, so a start-up mismatch reads the unreported fingers back as a
+// finite 0 — and the answer is the same one: silence device 1.
+//
+// FIXTURE PRECONDITION, and the reason for the machinery below. hand_dof_ is
+// resolved in OnDeviceConfigsSet from the SECONDARY device's joint_state_names,
+// and GetSecondaryDeviceName() reads topic_config_.groups[1] — so without a
+// two-group `topics:` section there IS no secondary name, hand_dof_ stays 0,
+// and the runtime fallback sets it to min(nc1, kMaxHandDof). That fallback is
+// bounded BY nc1, so hand_readable_ could never be false and every assertion in
+// this section would pass with the gate deleted. The two-group topics section
+// plus the declared 10-name hand config is what makes these tests falsifiable.
+
+constexpr int kHandDof = 10;    // declared width (joint_state_names.size())
+constexpr int kNarrowHand = 6;  // what the wire actually reports
+
+std::string TopicsTwoGroups() {
+  return "topics:\n"
+         "  arm:\n    subscribe:\n      - {topic: \"target\", role: \"target\"}\n"
+         "  hand:\n    subscribe:\n      - {topic: \"hand_target\", role: \"target\"}\n";
+}
+
+std::map<std::string, rtc::DeviceNameConfig> MakeHandDeclaringConfigs() {
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+
+  rtc::DeviceNameConfig arm;
+  arm.device_name = "arm";
+  for (int i = 0; i < kArmDof; ++i) {
+    arm.joint_state_names.push_back("a" + std::to_string(i));
+  }
+  configs["arm"] = std::move(arm);
+
+  // Ten declared finger joints — the ur5e_p1b shape (_base.yaml declares 10)
+  // that #291 is about. The device below reports six of them.
+  rtc::DeviceNameConfig hand;
+  hand.device_name = "hand";
+  for (int i = 0; i < kHandDof; ++i) {
+    hand.joint_state_names.push_back("h" + std::to_string(i));
+  }
+  configs["hand"] = std::move(hand);
+  return configs;
+}
+
+// Same falsifiability trick as ShiftArmMeasurements, on the hand: a silenced
+// tick must report THIS tick's finger measurement, not the last readable
+// tick's reference.
+constexpr double kHandShift = 0.047;
+
+void ShiftHandMeasurements(ControllerState& state, int channels) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(channels); ++i) {
+    state.devices[1].positions[i] = MeasuredHand(i) + kHandShift;
+  }
+}
+
+class DemoJointHandGateTest : public ::testing::Test {
+ protected:
+  DemoJointController ctrl_{""};
+
+  void SetUp() override {
+    ASSERT_NO_THROW(ctrl_.LoadConfig(YAML::Load(MinimalJointYaml() + TopicsTwoGroups())));
+    ctrl_.SetDeviceNameConfigs(MakeHandDeclaringConfigs());
+  }
+
+  // One tick with a hand that reports all ten declared channels.
+  void SeedFromReadableHand() {
+    ControllerState seed = MakeState(kArmDof, kHandDof);
+    const auto out = ctrl_.Compute(seed);
+    ASSERT_EQ(out.devices[1].num_channels, kHandDof)
+        << "fixture precondition: a full-width hand must NOT be gated";
+  }
+};
+
+TEST_F(DemoJointHandGateTest, ANarrowHandSilencesTheHand) {
+  SeedFromReadableHand();
+
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  const auto out = ctrl_.Compute(narrow);
+
+  // Zero-length, NOT six zeros — and NOT a six-long command either, which is
+  // the shape that looks harmless and is the one #291 rejects: the four
+  // unreported fingers would have been read as 0 and ramped origin-ward.
+  EXPECT_EQ(out.devices[1].num_channels, 0);
+  EXPECT_NE(out.devices[1].num_channels, kNarrowHand);
+}
+
+TEST_F(DemoJointHandGateTest, TheArmKeepsBeingCommandedWhileTheHandIsSilent) {
+  // §3.7's secondary-passthrough rule, read in the other direction: the hand's
+  // own gate must not silence the ARM. This is the mirror of
+  // TheHandKeepsBeingCommandedWhileTheArmIsSilent above, and the two together
+  // are what make the two flags separate rather than one widened predicate.
+  SeedFromReadableHand();
+
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  const auto out = ctrl_.Compute(narrow);
+
+  ASSERT_EQ(out.devices[1].num_channels, 0);
+  ASSERT_EQ(out.devices[0].num_channels, kArmDof) << "the hand's gate silenced the arm";
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kArmDof); ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], MeasuredArm(i), 1e-9) << "arm joint " << i;
+  }
+}
+
+TEST_F(DemoJointHandGateTest, ASilencedHandTickReportsTheParkedFingerPositionNotZeros) {
+  SeedFromReadableHand();
+
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  // Move the fingers since the seed tick, so "parked at this tick's
+  // measurement" is distinguishable from "replayed the stale reference".
+  ShiftHandMeasurements(narrow, kNarrowHand);
+  const auto out = ctrl_.Compute(narrow);
+
+  ASSERT_EQ(out.devices[1].num_channels, 0);
+  // The device-state log POD is bounded by the DEVICE's channel count, not the
+  // output's, so leaving these at their fresh zero records the silenced tick as
+  // "commanded every finger to the origin" — the one misreading §3.7 exists to
+  // prevent, on the one failure mode this gate is for.
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kNarrowHand); ++i) {
+    EXPECT_NEAR(out.devices[1].target_positions[i], MeasuredHand(i) + kHandShift, 1e-9)
+        << "finger " << i;
+    EXPECT_NEAR(out.devices[1].trajectory_positions[i], MeasuredHand(i) + kHandShift, 1e-9)
+        << "finger " << i;
+    EXPECT_DOUBLE_EQ(out.devices[1].trajectory_velocities[i], 0.0)
+        << "a parked finger is not moving, channel " << i;
+  }
+}
+
+TEST_F(DemoJointHandGateTest, HandSelfInitWaitsForAReadableHandInsteadOfSeedingZeros) {
+  // The site class the #291 issue table missed (it greps as `dev.positions`
+  // inside a `devices[d]` loop, not `dev1.`). It is the worst of the A sites
+  // because hand_target_initialized_ LATCHES: an ordinary read site re-poisons
+  // every tick and therefore heals the tick the gate goes true, but a poisoned
+  // seed here is never re-seeded.
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  const auto gated = ctrl_.Compute(narrow);
+  ASSERT_EQ(gated.devices[1].num_channels, 0);
+
+  // Hand recovers and reports all ten. The hold must come from THIS tick.
+  ControllerState full = MakeState(kArmDof, kHandDof);
+  const auto out = ctrl_.Compute(full);
+
+  ASSERT_EQ(out.devices[1].num_channels, kHandDof);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kHandDof); ++i) {
+    // Channels [kNarrowHand, kHandDof) are the mutation signal: with the gate
+    // removed the first tick latches them at 0 and no later tick re-seeds, so
+    // they stay 0 here while the reported ones look fine.
+    EXPECT_NEAR(out.devices[1].commands[i], MeasuredHand(i), 1e-9)
+        << "finger " << i << " was seeded from the unreadable tick";
+  }
+}
+
+// Write a fingertip force (Fz) into the inference lane, enough to read as a
+// hard contact. Mirrors SetFingertipForce in test_demo_joint_controller.cpp.
+void SetFingertipForce(ControllerState& s, int f, float fz) {
+  auto& dev1 = s.devices[1];
+  dev1.inference_enable[static_cast<std::size_t>(f)] = true;
+  const int base =
+      f * static_cast<int>(integrated_bringup::kHandInferenceValuesPerFingertipCapacity);
+  dev1.inference_data[static_cast<std::size_t>(base)] = 0.0F;      // native contact slot
+  dev1.inference_data[static_cast<std::size_t>(base + 1)] = 0.0F;  // Fx
+  dev1.inference_data[static_cast<std::size_t>(base + 2)] = 0.0F;  // Fy
+  dev1.inference_data[static_cast<std::size_t>(base + 3)] = fz;    // Fz
+}
+
+TEST_F(DemoJointHandGateTest, AnUnreadableHandCannotLatchContactStopFromPhantomFingers) {
+  // The B-axis assertion, and the one the issue asks be made on the BRANCH
+  // rather than on a number: the contact-stop path does not merely compute a
+  // slightly-wrong hand position from unread fingers, it takes a different
+  // path through the FSM. Two things in that block read unread state — the
+  // hold LPF (an IIR, so the contamination outlives the tick) and the release
+  // gate's `d = target - dev1.positions[gi]` at a MODEL index — and both feed
+  // a latch.
+  SeedFromReadableHand();
+
+  // The hand goes narrow AND the fingertips report a hard contact. Without the
+  // gate this tick latches contact_stop: contact_now is true, so
+  // hand_hold_position_ is snapshotted from the LPF'd measurement — whose last
+  // four fingers are the phantom 0 — and contact_latched_ makes it permanent.
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  narrow.devices[1].num_inference_groups = 2;
+  SetFingertipForce(narrow, 0, 5.0F);
+  SetFingertipForce(narrow, 1, 5.0F);
+  ASSERT_EQ(ctrl_.Compute(narrow).devices[1].num_channels, 0);
+
+  // Hand readable again, contact gone. THE BRANCH is what differs: a latched
+  // controller replays the frozen hold (contact_latched_ survives a contact
+  // drop by design — only the release gate or an E-STOP clears it), while an
+  // unlatched one lets the trajectory drive. Fingers [kNarrowHand, kHandDof)
+  // are where the two answers separate, because those are the ones whose
+  // frozen hold would have been built from a phantom 0.
+  ControllerState full = MakeState(kArmDof, kHandDof);
+  const auto out = ctrl_.Compute(full);
+
+  ASSERT_EQ(out.devices[1].num_channels, kHandDof);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kHandDof); ++i) {
+    EXPECT_NEAR(out.devices[1].commands[i], MeasuredHand(i), 1e-9)
+        << "finger " << i << ": contact_stop latched on a tick that could not read the hand";
+  }
+}
+
+TEST_F(DemoJointHandGateTest, AWideHandIsNotTreatedAsAFault) {
+  // Over-reporting is a normal input on this axis too — a hand state topic
+  // broader than the declared joint list must not become a permanent silence.
+  SeedFromReadableHand();
+
+  ControllerState wide = MakeState(kArmDof, kHandDof + 4);
+  const auto out = ctrl_.Compute(wide);
+
+  EXPECT_EQ(out.devices[1].num_channels, kHandDof + 4);
+}
+
+// ── demo_task: the same secondary-axis contract, a different binding ──────────
+
+class DemoTaskHandGateTest : public ::testing::Test {
+ protected:
+  DemoTaskController ctrl_{"", DemoTaskController::Gains{}};
+
+  void SetUp() override {
+    ASSERT_NO_THROW(ctrl_.LoadConfig(YAML::Load(MinimalTaskYaml() + TopicsTwoGroups())));
+    ctrl_.SetDeviceNameConfigs(MakeHandDeclaringConfigs());
+  }
+
+  void SeedFromReadableHand() {
+    ControllerState seed = MakeState(kArmDof, kHandDof);
+    const auto out = ctrl_.Compute(seed);
+    ASSERT_EQ(out.devices[1].num_channels, kHandDof)
+        << "fixture precondition: a full-width hand must NOT be gated";
+  }
+};
+
+TEST_F(DemoTaskHandGateTest, ANarrowHandSilencesTheHand) {
+  SeedFromReadableHand();
+
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  const auto out = ctrl_.Compute(narrow);
+
+  EXPECT_EQ(out.devices[1].num_channels, 0);
+  EXPECT_EQ(out.devices[0].num_channels, kArmDof) << "the hand's gate silenced the arm";
+}
+
+TEST_F(DemoTaskHandGateTest, ASilencedHandTickReportsTheParkedFingerPositionNotZeros) {
+  SeedFromReadableHand();
+
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  ShiftHandMeasurements(narrow, kNarrowHand);
+  const auto out = ctrl_.Compute(narrow);
+
+  ASSERT_EQ(out.devices[1].num_channels, 0);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kNarrowHand); ++i) {
+    EXPECT_NEAR(out.devices[1].target_positions[i], MeasuredHand(i) + kHandShift, 1e-9)
+        << "finger " << i;
+    EXPECT_NEAR(out.devices[1].trajectory_positions[i], MeasuredHand(i) + kHandShift, 1e-9)
+        << "finger " << i;
+  }
+}
+
+TEST_F(DemoTaskHandGateTest, HandSelfInitWaitsForAReadableHandInsteadOfSeedingZeros) {
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  ASSERT_EQ(ctrl_.Compute(narrow).devices[1].num_channels, 0);
+
+  ControllerState full = MakeState(kArmDof, kHandDof);
+  const auto out = ctrl_.Compute(full);
+
+  ASSERT_EQ(out.devices[1].num_channels, kHandDof);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kHandDof); ++i) {
+    EXPECT_NEAR(out.devices[1].commands[i], MeasuredHand(i), 1e-9)
+        << "finger " << i << " was seeded from the unreadable tick";
+  }
+}
+
+// ── demo_wbc: the defer guard, whose hand half was still `valid` ──────────────
+
+class DemoWbcHandGateTest : public ::testing::Test {
+ protected:
+  DemoWbcController ctrl_{""};
+
+  void SetUp() override {
+    ASSERT_NO_THROW(ctrl_.LoadConfig(YAML::Load(TopicsTwoGroups())));
+    ctrl_.SetDeviceNameConfigs(MakeHandDeclaringConfigs());
+  }
+};
+
+TEST_F(DemoWbcHandGateTest, TheDeferGuardWaitsForAReadableHandNotMerelyAValidOne) {
+  // DrainTargetSlot's first-tick self-init defers until EVERY device can be
+  // seeded from a real measurement. Its arm half became IsDeviceReadable in
+  // #265 audit W1; its hand half stayed `valid`, so a partially-reporting hand
+  // passed the guard and latched targets[1] — and through SeedHoldFromMeasured
+  // the posture REFERENCE — with a phantom 0 per unreported finger, with
+  // target_initialized_ true and no re-seed to follow.
+  ControllerState narrow = MakeState(kArmDof, kNarrowHand);
+  const auto gated = ctrl_.Compute(narrow);
+  EXPECT_EQ(gated.devices[1].num_channels, 0);
+
+  ControllerState full = MakeState(kArmDof, kHandDof);
+  const auto out = ctrl_.Compute(full);
+
+  ASSERT_EQ(out.devices[1].num_channels, kHandDof);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kHandDof); ++i) {
+    EXPECT_NEAR(out.devices[1].commands[i], MeasuredHand(i), 1e-9)
+        << "finger " << i << " was seeded from the unreadable tick";
+  }
 }
 
 }  // namespace

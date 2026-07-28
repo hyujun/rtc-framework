@@ -271,7 +271,7 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 |---|---|---|
 | `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어, 정책 없음 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 (`num_channels` 는 wire 길이) |
 | `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태를 읽기 **전**. false 면 아래 침묵 |
-| `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | primary device 에만. secondary 는 그대로 둔다 |
+| `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | **그 게이트가 판정한 device 에만.** primary 게이트는 primary 만 침묵시키고 secondary 는 그대로 둔다 — secondary 가 *자기* 폭으로 판독 불가일 때는 secondary 도 침묵한다 (#291, 아래 표) |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane (`target_*` / `trajectory_*`) 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** — 아래 참조 |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → 0.0 / position → 측정값) | 명령 조립 시. 미기입은 fresh-zero = "원점으로" |
 
@@ -292,6 +292,34 @@ zero-length 케이스에 쓰는 정책과 같다. `goal_positions` 는 예외로
 진짜 명령**이며, 팔에서 막은 hazard 를 device 하나 옆으로 옮긴 것에 불과하다. 그러므로 secondary
 lane 은 primary 게이트와 **다른 함수/다른 분기**에 두어 항상 돌게 한다 (`DemoTaskController::
 ComputeSecondary` 가 이 이유로 `ComputeControl` 에서 분리돼 있다).
+
+**단, 위 문장은 "secondary 에는 게이트가 없다" 가 아니다 (#291).** 두 개의 다른 질문이 있다.
+
+| 질문 | 답 | 술어 |
+|---|---|---|
+| *팔이* 판독 불가일 때 핸드를 죽이는가 | **아니다** — 위 문단. 핸드는 계속 명령된다 | `arm_readable_` 는 `devices[0]` 만 침묵시킨다 |
+| *핸드가* 판독 불가일 때 핸드는 무엇을 내보내는가 | **팔과 같게 침묵** — `SilenceDeviceOutput(out1)` + `HoldTelemetryAtMeasured` | `hand_readable_ = IsDeviceReadable(dev1, hand_dof_)` |
+
+두 번째 줄이 #291 이 닫은 것이다. hazard 는 팔과 **구조가 같다**: `hand_dof_` 는 YAML
+`joint_state_names.size()` 에서 오고 `num_channels` 는 wire 길이라, 어긋나면 미보고 핸드 관절이
+유한한 `0` 으로 읽혀 궤적·hold·grasp FSM 에 흘러든다. 따라서 게이트는 **device 마다 자기 폭으로**
+서고, 한 device 의 게이트가 다른 device 를 침묵시키지 않는다. `IsDeviceReadable` 이 애초에
+device 무관이라 새 추상화는 필요 없었다.
+
+secondary 축에서 특히 주의할 세 가지:
+
+- **latch 하는 self-init 이 가장 위험하다.** `hand_target_initialized_` / `target_initialized_` 는
+  성공 시 latch 하므로, 판독 불가 상태에서 seed 하면 환영의 `0` 이 영구히 남고 재시드가 없다
+  (일반 판독 지점은 tick 마다 재오염되므로 게이트가 서는 순간 회복된다). 팔의 #265 audit T1/T2 와
+  같은 자리다
+- **grasp FSM 은 수치가 아니라 분기가 바뀐다.** release gate 의 `d = target − dev1.positions[gi]`
+  는 `gi` 가 모델 인덱스라, 미보고 채널이면 `d` 가 환영값이 되어 contact-stop/release **판정이
+  뒤집힌다**. 또 hold LPF 는 IIR 이라 오염 샘플이 그 tick 을 넘어 남는다
+- **모델 lane 은 all-or-nothing 이다.** `ExtractFullState` 의 핸드 절반은 bound 만으로는 부족하다
+  — 지속 버퍼 `q_curr_full_` 에서 부분 갱신은 *fresh 앞부분 + stale 뒷부분* 이라는 **로봇이 취한 적
+  없는 자세**가 되고, fingertip FK·폐쇄체인 구속 블록은 핸드 블록 **전체**의 함수다. 한 tick 묵은
+  일관된 자세는 방어 가능하지만 이어붙인 자세는 아니다. 반대 방향의 비대칭은 유지된다: 팔이 판독
+  불가면 (모델을 공유하므로) 핸드 블록도 갱신하지 않고, 핸드가 판독 불가여도 팔 scatter 는 남긴다
 
 **두 술어의 이름을 분리한 이유** (#265 결정 B): `min(nc0, nv)` 는 좁은 device 를 안전하게
 만들어 주는 것처럼 보이지만 그렇지 않다. *지속* 버퍼에 scatter 하는 경로(`ExtractFullState`,

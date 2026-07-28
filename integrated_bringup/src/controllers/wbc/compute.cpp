@@ -665,7 +665,10 @@ void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double 
         robot_computed_.velocities[idx] = 0.0;
       }
     }
-    if (state.num_devices > 1 && state.devices[1].valid) {
+    // Same on the hand axis (#291): hand_dof_ deep, so an unreported finger
+    // would be recorded as a "fresh hold" at the origin — the same defect the
+    // arm gate above closes, on the device this branch also touches.
+    if (hand_readable_) {
       for (int i = 0; i < hand_dof_; ++i) {
         const auto idx = static_cast<std::size_t>(i);
         hand_computed_.positions[idx] = state.devices[1].positions[idx];
@@ -760,29 +763,48 @@ ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& sta
   }
 
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const int nc1 = state.devices[1].num_channels;
+    const auto& dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
     auto& out1 = output.devices[1];
-    out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.commands[i] = hand_computed_.positions[i];
-    }
-    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                           std::span<const double>(device_position_upper_[1]),
-                           -kJointLimitFallbackRad, kJointLimitFallbackRad);
-    // Stage C-3: when hand τ_ff is active this tick, drive the hand device via
-    // kPdFeedforward — the position commands above are the PD target (hold pose)
-    // and feedforward carries the model torque. The arm device leaves its
-    // per-device command_type unset (inherits the global kPosition default).
-    if (hand_tauff_active_) {
-      out1.command_type = CommandType::kPdFeedforward;
-      // #9: hand_computed_.feedforward holds hand_dof_ model torques; copy only
-      // that many. If the hand device reports nc1 > hand_dof_ channels, the tail
-      // of out1.feedforward stays fresh-zero (no stale read past hand_dof_).
-      const auto nff =
-          std::min(static_cast<std::size_t>(nc1), static_cast<std::size_t>(std::max(hand_dof_, 0)));
-      for (std::size_t i = 0; i < nff; ++i) {
-        out1.feedforward[i] = hand_computed_.feedforward[i];
+    if (!hand_readable_) {
+      // F5 on the SECONDARY axis (#291), the same answer the arm gets above and
+      // for the same reason: hand_computed_ was withheld this tick, so the only
+      // thing left to command would be a stale or zero-init buffer. Zero-length
+      // is "no update" — the hand holds its previous setpoint. nc1 zeros would
+      // be a real command to the origin, i.e. every finger slammed open. The
+      // τ_ff branch is skipped with it: a feedforward torque is only meaningful
+      // alongside the PD target it was computed against, and there is no
+      // command lane to attach it to on a silenced tick.
+      rtc::SilenceDeviceOutput(out1);
+      // The log lane is bounded by the DEVICE's channel count, so an untouched
+      // reference row would be recorded as zeros and read as exactly that
+      // origin command. Report where the fingers are parked instead.
+      rtc::HoldTelemetryAtMeasured(out1, nc1, dev1.positions);
+    } else {
+      out1.num_channels = nc1;
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        out1.commands[i] = hand_computed_.positions[i];
+      }
+      rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                             std::span<const double>(device_position_upper_[1]),
+                             -kJointLimitFallbackRad, kJointLimitFallbackRad);
+      // Stage C-3: when hand τ_ff is active this tick, drive the hand device via
+      // kPdFeedforward — the position commands above are the PD target (hold
+      // pose) and feedforward carries the model torque. The arm device leaves
+      // its per-device command_type unset (inherits the global kPosition
+      // default).
+      if (hand_tauff_active_) {
+        out1.command_type = CommandType::kPdFeedforward;
+        // #9: hand_computed_.feedforward holds hand_dof_ model torques; copy
+        // only that many. If the hand device reports nc1 > hand_dof_ channels,
+        // the tail of out1.feedforward stays fresh-zero (no stale read past
+        // hand_dof_).
+        const auto nff = std::min(static_cast<std::size_t>(nc1),
+                                  static_cast<std::size_t>(std::max(hand_dof_, 0)));
+        for (std::size_t i = 0; i < nff; ++i) {
+          out1.feedforward[i] = hand_computed_.feedforward[i];
+        }
       }
     }
   }
@@ -903,9 +925,19 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
     FillTaskPosePods(output);
   }
 
+  // Same on the hand axis (#291), same shape as the arm above.
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const int nc1 = state.devices[1].num_channels;
-    FillDeviceTrajectoryPods(output.devices[1], nc1, hand_computed_, 1);
+    const auto& dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
+    if (hand_readable_) {
+      FillDeviceTrajectoryPods(output.devices[1], nc1, hand_computed_, 1);
+    } else {
+      rtc::HoldTelemetryAtMeasured(output.devices[1], nc1, dev1.positions);
+      // The goal survives the gate, as on the arm.
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        output.devices[1].goal_positions[i] = current_target_slot_.targets[1][i];
+      }
+    }
   }
 
   // WBC state aggregates (per-fingertip + FSM phase). Staging buffer feeds
@@ -1042,14 +1074,23 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
     }
   }
 
+  // Same on the hand axis (#291), same shape as the arm above.
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const int nc1 = state.devices[1].num_channels;
+    const auto& dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
     auto& out1 = output.devices[1];
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.target_positions[i] = hand_computed_.positions[i];
-      out1.target_velocities[i] = hand_computed_.velocities[i];
+    if (hand_readable_) {
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        out1.target_positions[i] = hand_computed_.positions[i];
+        out1.target_velocities[i] = hand_computed_.velocities[i];
+      }
+      FillDeviceTrajectoryPods(out1, nc1, hand_computed_, 1);
+    } else {
+      rtc::HoldTelemetryAtMeasured(out1, nc1, dev1.positions);
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        out1.goal_positions[i] = current_target_slot_.targets[1][i];
+      }
     }
-    FillDeviceTrajectoryPods(out1, nc1, hand_computed_, 1);
   }
 }
 
@@ -1180,7 +1221,11 @@ void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexc
       current_target_slot_.targets[0][idx] = dev0.positions[idx];
     }
   }
-  if (state.num_devices > 1 && state.devices[1].valid) {
+  // Same on the hand axis (#291). This one latches further than most: targets[1]
+  // feeds BuildHandTargetPosture and through it the posture REFERENCE, so a
+  // phantom 0 per unreported finger becomes what TSID actively regulates the
+  // hand toward — not a one-tick blemish.
+  if (hand_readable_) {
     const auto& dev1 = state.devices[1];
     for (int i = 0; i < hand_dof_; ++i) {
       const auto idx = static_cast<std::size_t>(i);

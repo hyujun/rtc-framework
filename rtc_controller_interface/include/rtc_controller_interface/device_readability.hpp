@@ -95,9 +95,18 @@ namespace rtc {
 // WriteSafeCommand). It is the honest statement that this controller has
 // nothing to say about this device right now.
 //
-// Only the primary device is silenced by a gate on the primary device: a hand
-// does not stop being commandable because the arm's state went missing (§3.7,
-// "secondary passthrough 유지"). Leave the other DeviceOutput entries alone.
+// Silences the device THIS gate judged, and only that one. A gate on the
+// primary device does not touch the secondary: a hand does not stop being
+// commandable because the arm's state went missing (§3.7, "secondary
+// passthrough 유지"). Leave the other DeviceOutput entries alone.
+//
+// That is a statement about which GATE, not about which DEVICE may have one
+// (#291). A secondary device judged unreadable against ITS OWN width —
+// IsDeviceReadable(dev1, hand_dof) — is silenced here exactly like the arm,
+// because the hazard is the same one: hand_dof comes from the declared
+// joint_state_names while num_channels is the wire length, so a mismatch reads
+// the unreported fingers back as a finite 0. These predicates are device-
+// agnostic on purpose; nothing here is primary-only.
 //
 // Commands already staged in the array are left in place — `num_channels == 0`
 // makes them unreachable, and clearing kMaxDeviceChannels doubles would spend

@@ -1,7 +1,7 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
-#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/internal_force_task.hpp"
 #include "rtc_tsid/tasks/object_se3_task.hpp"
@@ -356,7 +356,12 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         // finger-open (ComputeReleaseMode) — not by closure/hold in normal
         // operation. Kept so a mid-grasp TSID-init failure degrades to a sane
         // ramp instead of a stale hold.
-        if (state.num_devices > 1 && dev1.valid) {
+        // hand_readable_, not `valid` (#291): hstart is filled hand_dof_ deep,
+        // so a narrow hand would ramp the unreported fingers from a phantom
+        // origin toward the stored target. The gate sits INSIDE OnPhaseEnter's
+        // per-phase body, never on the transition itself — an unreadable hand
+        // must not be able to stall the FSM, only to withhold this seed.
+        if (hand_readable_) {
           trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
           trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
           double hmax = 0.0;
@@ -438,7 +443,12 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
           robot_computed_.velocities[idx] = 0.0;
         }
       }
-      if (state.num_devices > 1 && dev1.valid) {
+      // Same on the hand axis (#291): this loop is hand_dof_ deep, so a narrow
+      // hand would record "hold where you are" as "hold at the origin" for
+      // every unreported finger. On an unreadable hand WriteJointCommand
+      // silences device 1 anyway, so leaving hand_computed_ untouched is what
+      // makes the two agree.
+      if (hand_readable_) {
         for (int i = 0; i < hand_dof_; ++i) {
           const auto idx = static_cast<std::size_t>(i);
           hand_computed_.positions[idx] = dev1.positions[idx];
