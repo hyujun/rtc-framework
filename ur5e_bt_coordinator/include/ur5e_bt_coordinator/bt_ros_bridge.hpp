@@ -74,12 +74,34 @@ class BtRosBridge {
 
   // ── Cached state (thread-safe reads) ──────────────────────────────────────
 
-  /// Current TCP pose from tf2 lookup (`base → tool0_actual`).
+  /// Current TCP pose from tf2 lookup, in the ACTIVE controller's task frame.
   /// Phase 4: replaces GuiPosition.task_positions consumer; the active
   /// controller broadcasts `<config_key>/transforms` (tf2_msgs/TFMessage),
   /// which `transforms_sub_` feeds into tf_buffer_ manually (the controller
   /// has no /tf publisher, so the bare listener alone would never see it).
+  ///
+  /// The child frame is NOT fixed (#292): a task controller with
+  /// `virtual_tcp_mode` enabled controls a virtual TCP, and reading tool0 while
+  /// it does that puts this pose in a different frame than the goals published
+  /// through PublishArmTarget — which matters here more than in the GUI,
+  /// because MoveToPose / TrackTrajectory judge *convergence* with it, so a
+  /// frame mismatch is not a display bug but a goal that can never be reached.
+  ///
+  /// Always pair with IsTcpPoseValid(). After a controller rewire this returns
+  /// the last-known pose, which belongs to the PREVIOUS controller until the
+  /// new one broadcasts; treating that as live is how a convergence test
+  /// succeeds against a pose nobody is holding.
   Pose6D GetTcpPose() const;
+
+  /// True when GetTcpPose() is a live reading in the active controller's
+  /// settled task frame. False before the frame settles, after a rewire until
+  /// the new controller broadcasts, and whenever the lookup fails.
+  [[nodiscard]] bool IsTcpPoseValid() const;
+
+  /// The task frame GetTcpPose() reads, or empty while unsettled (#292).
+  /// Exposed for the watchdog and for nodes that need to say which frame a
+  /// waypoint would be compared against.
+  [[nodiscard]] std::string GetTaskFrame() const;
 
   /// Current arm joint positions from /rtc_cm/ur5e/joint_states.
   /// Phase 4: CM publishes the per-group JointState regardless of active
@@ -299,6 +321,12 @@ class BtRosBridge {
   // sequence itself is NOT locked and relies on the single-thread executor
   // invariant (see the THREADING note on RewireControllerTopics in the .cpp).
   void RewireControllerTopics(const std::string& ctrl_name);
+
+  /// Run the tf2 lookup for the active task frame and refresh tcp_pose_ /
+  /// tcp_pose_valid_. Returns whether this call produced a live reading. Both
+  /// GetTcpPose() and IsTcpPoseValid() go through it so neither depends on the
+  /// other having been called first (#292).
+  bool RefreshTcpPose() const;
   std::string rewired_controller_;
   mutable std::mutex controller_topics_mutex_;
 
@@ -341,7 +369,41 @@ class BtRosBridge {
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr transforms_sub_;
   std::string tf_parent_frame_{"base"};
-  std::string tf_child_frame_{"tool0_actual"};
+
+  // ── Task-frame selection (#292) ───────────────────────────────────────────
+  // Which control point the active controller is actually using, decided from
+  // AVAILABILITY rather than from a controller name: the controller broadcasts
+  // kVirtualTcpFrame only on ticks it is controlling that point (integrated_
+  // bringup owned_topics.cpp gates the slot on virtual_tcp_pose_valid), so
+  // observing the frame at all is the evidence. A controller that never
+  // publishes it — WBC, or task with the vtcp disabled — settles on the
+  // fallback, and no controller list has to be kept in sync here.
+  //
+  // Mirrors integrated_bringup/demo_gui/task_frame.py, which makes the same
+  // decision for the GUI. Deliberately duplicated rather than shared: that one
+  // is Python, and this package is robot-specific while that one is not.
+  static constexpr const char* kVirtualTcpFrame = "virtual_tcp_actual";
+  // TFMessages carrying the fallback but no virtual TCP before the fallback is
+  // latched. The window has to OUTLAST the closed-chain FK walk-in, during
+  // which even a vtcp-configured controller publishes tool0 alone — latching
+  // tool0 there is the exact error this exists to prevent. A measured p1b
+  // walk-in is ~93 RT ticks and the controller emits at most one TFMessage per
+  // tick (the CM's publish lane coalesces, never duplicates), so a window of N
+  // messages spans at least N ticks and 150 clears 93 with margin at any wire
+  // rate. Counting messages rather than seconds is what makes that argument
+  // hold — the walk-in is ⌈Δ/max_seed_increment⌉ iterations long, so it scales
+  // with ticks (the same reason integrated_bringup's kVtcpFrameWaitTicks is a
+  // tick count). Kept in sync with demo_gui/task_frame.py DEFAULT_SETTLE_MSGS.
+  static constexpr int kTaskFrameSettleMsgs = 150;
+
+  // All four guarded by state_mutex_. tf_child_frame_ is empty until the frame
+  // settles; that emptiness is what IsTcpPoseValid() reports as "not live yet".
+  std::string tf_fallback_child_frame_{"tool0_actual"};
+  std::string tf_child_frame_;
+  int tf_fallback_seen_{0};
+  // Mutable for the same reason tcp_pose_ is: GetTcpPose() is const and writes
+  // both — the freshness of the cache is set by the same lookup that fills it.
+  mutable bool tcp_pose_valid_{false};
 
   // ── Publishers ────────────────────────────────────────────────────────────
   // LifecyclePublisher, deliberately not the rclcpp::Publisher base: publish()

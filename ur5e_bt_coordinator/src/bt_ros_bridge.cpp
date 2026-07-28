@@ -203,6 +203,51 @@ void BtRosBridge::OnShapeEstimate(shape_estimation_msgs::msg::ShapeEstimate::Sha
 }
 
 void BtRosBridge::OnTransforms(tf2_msgs::msg::TFMessage::SharedPtr msg) {
+  // #292: this message is also the evidence the task-frame selection runs on.
+  // The controller broadcasts kVirtualTcpFrame only on ticks it is actually
+  // controlling that point, so one sighting is conclusive; the fallback has to
+  // out-wait the settle window because the closed-chain FK walk-in publishes
+  // tool0 alone. Once latched, the frame is frozen until the next rewire — a
+  // control point that drops out for a tick must not move what convergence is
+  // measured against.
+  bool latched_virtual_tcp = false;
+  {
+    std::lock_guard lock(state_mutex_);
+    if (tf_child_frame_.empty()) {
+      bool saw_virtual_tcp = false;
+      bool saw_fallback = false;
+      for (const auto& tf : msg->transforms) {
+        if (tf.child_frame_id == kVirtualTcpFrame) {
+          saw_virtual_tcp = true;
+        } else if (tf.child_frame_id == tf_fallback_child_frame_) {
+          saw_fallback = true;
+        }
+      }
+      if (saw_virtual_tcp) {
+        tf_child_frame_ = kVirtualTcpFrame;
+        latched_virtual_tcp = true;
+      } else if (saw_fallback && ++tf_fallback_seen_ >= kTaskFrameSettleMsgs) {
+        tf_child_frame_ = tf_fallback_child_frame_;
+      }
+      // A message with neither frame is not evidence about the task frame, so
+      // it neither advances nor resets the window.
+    }
+  }
+
+  if (latched_virtual_tcp) {
+    // The absolute waypoints in a tree come from vision or config and are
+    // almost certainly authored against tool0, but the wire has no frame field,
+    // so there is no way to send a tool0 goal to a vtcp-configured controller.
+    // Surface the mismatch loudly rather than converting silently — a silent
+    // conversion here would be the same class of defect this issue fixes, and
+    // choosing the conversion is a human decision (see #292).
+    RCLCPP_WARN(node_->get_logger(),
+                "active controller controls '%s', not '%s': absolute waypoints authored against "
+                "the tool0 frame will be interpreted at the virtual TCP. Verify the tree's "
+                "waypoint frame before running it.",
+                kVirtualTcpFrame, tf_fallback_child_frame_.c_str());
+  }
+
   for (const auto& tf : msg->transforms) {
     tf_buffer_->setTransform(tf, "bt_ros_bridge", /*is_static=*/false);
   }
@@ -284,14 +329,24 @@ void BtRosBridge::OnToFSnapshot(rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
 
 // ── Cached state accessors ────────────────────────────────────────────────
 
-Pose6D BtRosBridge::GetTcpPose() const {
-  // Phase 4: tf2 lookup `base → tool0_actual`. Returns the cached value when
-  // lookup fails (e.g., no transform yet at startup) so callers see a
-  // last-known pose rather than zeros.
-  if (tf_buffer_) {
+// Runs the tf2 lookup and refreshes tcp_pose_ / tcp_pose_valid_, returning
+// whether this call produced a live reading. Both public accessors go through
+// it so neither depends on the other having been called first — an
+// IsTcpPoseValid() that merely reported a remembered flag would answer about
+// whenever GetTcpPose() last ran, which is a trap for any caller that checks
+// validity before reading (#292).
+bool BtRosBridge::RefreshTcpPose() const {
+  std::string child;
+  {
+    std::lock_guard lock(state_mutex_);
+    child = tf_child_frame_;
+  }
+  // Unsettled frame: there is nothing to look up. Guessing a frame here would
+  // produce a pose that looks live and is measured against the wrong control
+  // point, which is worse for a convergence test than having no pose at all.
+  if (tf_buffer_ && !child.empty()) {
     try {
-      const auto tfs =
-          tf_buffer_->lookupTransform(tf_parent_frame_, tf_child_frame_, tf2::TimePointZero);
+      const auto tfs = tf_buffer_->lookupTransform(tf_parent_frame_, child, tf2::TimePointZero);
       const double qw = tfs.transform.rotation.w;
       const double qx = tfs.transform.rotation.x;
       const double qy = tfs.transform.rotation.y;
@@ -311,13 +366,39 @@ Pose6D BtRosBridge::GetTcpPose() const {
       // falls back to this last-known pose rather than a zero-initialized one.
       std::lock_guard lock(state_mutex_);
       tcp_pose_ = pose;
-      return pose;
+      tcp_pose_valid_ = true;
+      return true;
     } catch (const tf2::TransformException&) {
-      // fall through to cached value
+      // fall through: the cached pose stays, its freshness does not
     }
   }
   std::lock_guard lock(state_mutex_);
+  // #292: a failed lookup means the cache is no longer a live reading. The pose
+  // itself is kept (callers that only want a last-known value keep working),
+  // but it stops claiming to be current — the case that matters is right after
+  // a rewire, where the cache still holds the PREVIOUS controller's pose and a
+  // convergence test would otherwise succeed against a pose nobody is holding.
+  tcp_pose_valid_ = false;
+  return false;
+}
+
+Pose6D BtRosBridge::GetTcpPose() const {
+  // Phase 4: tf2 lookup of `base → <active controller's task frame>`. Returns
+  // the cached value when the lookup fails (e.g. no transform yet at startup)
+  // so callers see a last-known pose rather than zeros — pair with
+  // IsTcpPoseValid() to tell a live reading from a stale one (#292).
+  RefreshTcpPose();
+  std::lock_guard lock(state_mutex_);
   return tcp_pose_;
+}
+
+bool BtRosBridge::IsTcpPoseValid() const {
+  return RefreshTcpPose();
+}
+
+std::string BtRosBridge::GetTaskFrame() const {
+  std::lock_guard lock(state_mutex_);
+  return tf_child_frame_;
 }
 
 std::vector<double> BtRosBridge::GetArmJointPositions() const {
@@ -752,6 +833,30 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   transforms_sub_.reset();
   arm_target_pub_.reset();
   hand_target_pub_.reset();
+
+  // #292: the task frame and the pose cache are controller-sourced state and
+  // have to die with the subscription that fed them. Nothing the previous
+  // controller broadcast is evidence about what the next one controls, and its
+  // cached pose must stop reading as live — otherwise MoveToPose's convergence
+  // test can find the stale pose within tolerance of its target and report
+  // SUCCESS for a motion that never happened. This reset is the load-bearing
+  // half, and test_task_frame's two rewire cases fail without it.
+  //
+  // The tf buffer is replaced for the same reason, though it is defence in
+  // depth rather than the primary guard here: the frame selection is driven by
+  // observed TFMessages (OnTransforms), not by what happens to resolve through
+  // lookupTransform, so a stale buffer cannot by itself mis-select a frame.
+  // What it would leave behind is a rewired-away controller's transforms still
+  // resolvable for 10 s (tf2's default cache) — which the reset below already
+  // makes unreachable, but only for as long as selection stays message-driven.
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  {
+    std::lock_guard lock(state_mutex_);
+    tf_child_frame_.clear();
+    tf_fallback_seen_ = 0;
+    tcp_pose_valid_ = false;
+  }
 
   // Feed the active controller's broadcast TF into tf_buffer_ so GetTcpPose's
   // `base → tool0_actual` lookup resolves. The controller publishes these on

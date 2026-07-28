@@ -53,6 +53,19 @@ BT::NodeStatus MoveToPose::onRunning() {
   double pos_err = current.PositionDistanceTo(target_);
   double rot_err = current.OrientationDistanceTo(target_);
 
+  // #292: convergence may only be judged against a LIVE pose in the active
+  // controller's task frame. Right after a controller rewire the bridge still
+  // holds the previous controller's pose, and it can sit within tolerance of
+  // this target by accident — reporting SUCCESS for a motion that never
+  // happened. Keep running instead; the timeout below is the real backstop.
+  if (!bridge_->IsTcpPoseValid()) {
+    static rclcpp::Clock stale_clock{RCL_STEADY_TIME};
+    RCLCPP_WARN_THROTTLE(logger(), stale_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                         "TCP pose is not live (task frame unsettled or transform missing) — "
+                         "withholding the convergence check");
+    return BT::NodeStatus::RUNNING;
+  }
+
   if (pos_err < pos_tol_ && rot_err < rot_tol_) {
     RCLCPP_INFO(logger(), "reached target (pos_err=%.4f rot_err=%.4f elapsed=%.2fs)", pos_err,
                 rot_err, ElapsedSeconds(start_time_));
