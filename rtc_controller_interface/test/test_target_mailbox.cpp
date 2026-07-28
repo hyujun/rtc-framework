@@ -104,6 +104,24 @@ class MailboxBinding : public rtc::RTControllerInterface {
 
   [[nodiscard]] int task_applies() const noexcept { return task_applies_; }
 
+  // Ticks that left through the E-STOP early return. Without it, the discard
+  // tests would infer "the E-STOP branch ran" from joint_applies()==0, which a
+  // drain that simply failed also satisfies.
+  [[nodiscard]] int estop_ticks() const noexcept {
+    return estop_ticks_.load(std::memory_order_relaxed);
+  }
+
+  // Entries whose channels were NOT all equal. Every push in this file is
+  // uniform by construction, so a nonzero count means the queue handed the RT
+  // side a mix of two different goals — the tearing this mailbox exists to
+  // prevent. Checked per entry rather than once at the end, because
+  // ApplyPendingTarget overwrites the whole slot: a torn entry at iteration k is
+  // erased by the uniform one at k+1, so a post-hoc slot read can only ever
+  // observe the last of ~10^5 applies.
+  [[nodiscard]] int nonuniform_entries() const noexcept {
+    return nonuniform_entries_.load(std::memory_order_relaxed);
+  }
+
   // Every span length ApplyPendingTarget was handed, in order.
   [[nodiscard]] const std::vector<std::size_t>& applied_widths() const noexcept {
     return applied_widths_;
@@ -113,6 +131,12 @@ class MailboxBinding : public rtc::RTControllerInterface {
   void ApplyPendingTarget(int device_idx, std::span<const double> values,
                           bool is_task) noexcept override {
     applied_widths_.push_back(values.size());
+    for (std::size_t i = 1; i < values.size(); ++i) {
+      if (values[i] != values[0]) {
+        nonuniform_entries_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      }
+    }
     if (is_task) {
       ++task_applies_;
       for (std::size_t i = 0; i < values.size() && i < slot_.task.size(); ++i) {
@@ -132,6 +156,7 @@ class MailboxBinding : public rtc::RTControllerInterface {
   rtc::SeqLock<TargetSlot> slot_seqlock_;
   std::atomic<bool> estopped_{false};
   std::atomic<int> estop_ticks_{0};
+  std::atomic<int> nonuniform_entries_{0};
   int applied_last_tick_{0};
   int joint_applies_{0};
   int task_applies_{0};
@@ -237,8 +262,11 @@ TEST(TargetMailbox, AnEmptyGoalStillCountsAsAnApplication) {
 }
 
 // An out-of-range device index is refused before the queue, so it consumes no
-// depth and is not counted as a saturation drop.
-TEST(TargetMailbox, OutOfRangeDeviceIndexIsRefusedAtIngress) {
+// depth — but it IS counted. The per-controller copies returned in silence,
+// which was survivable only while the sole producer derived device_idx from a
+// topic_config_ group position; any other producer lost every goal with nothing
+// anywhere to show for it.
+TEST(TargetMailbox, OutOfRangeDeviceIndexIsRefusedAtIngressAndCounted) {
   MailboxBinding ctrl;
   auto state = MakeState();
 
@@ -248,6 +276,7 @@ TEST(TargetMailbox, OutOfRangeDeviceIndexIsRefusedAtIngress) {
 
   (void)ctrl.Compute(state);
   EXPECT_EQ(ctrl.applied_last_tick(), 0);
+  EXPECT_EQ(ctrl.GetTargetRejectCount(), 3U) << "a refused index vanished without being counted";
   EXPECT_EQ(ctrl.GetTargetDropCount(), 0U) << "a rejected index must not read as queue saturation";
 }
 
@@ -283,26 +312,69 @@ TEST(TargetMailbox, TaskAndJointTargetsReachIndependentSlots) {
 
 namespace {
 
-// A binding that does NOT override SetDeviceTaskTarget, to pin the base's
-// default forwarding: a task goal must arrive as an ordinary joint-tagged push.
-class SingleSlotBinding : public MailboxBinding {
+// The degenerate binding: ONE slot, and no SetDeviceTaskTarget override at all.
+// It derives straight from the base rather than from MailboxBinding, because
+// MailboxBinding does override that ingress — inheriting from it and calling
+// the base version through a qualified name would exercise the same code but
+// prove nothing about the shape a real single-slot controller has. This is the
+// shape most pre-#206 controllers had.
+class SingleSlotBinding : public rtc::RTControllerInterface {
  public:
-  using MailboxBinding::SetDeviceTarget;
+  void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override {
+    PushPendingTarget(device_idx, target, /*is_task=*/false);
+  }
+
+  [[nodiscard]] rtc::ControllerOutput Compute(const rtc::ControllerState&) noexcept override {
+    applied_last_tick_ = DrainPendingTargets();
+    rtc::ControllerOutput out{};
+    out.valid = true;
+    return out;
+  }
+
+  [[nodiscard]] std::string_view Name() const noexcept override { return "SingleSlotBinding"; }
+
+  [[nodiscard]] int applied_last_tick() const noexcept { return applied_last_tick_; }
+
+  [[nodiscard]] int task_tagged() const noexcept { return task_tagged_; }
+
+  [[nodiscard]] const std::array<double, rtc::kMaxDeviceChannels>& slot() const noexcept {
+    return slot_;
+  }
+
+ protected:
+  void ApplyPendingTarget(int /*device_idx*/, std::span<const double> values,
+                          bool is_task) noexcept override {
+    if (is_task) {
+      ++task_tagged_;
+    }
+    for (std::size_t i = 0; i < values.size() && i < slot_.size(); ++i) {
+      slot_[i] = values[i];
+    }
+  }
+
+ private:
+  std::array<double, rtc::kMaxDeviceChannels> slot_{};
+  int applied_last_tick_{0};
+  int task_tagged_{0};
 };
 
 }  // namespace
 
+// The base's SetDeviceTaskTarget is a default-virtual that forwards to
+// SetDeviceTarget. A controller that never separated the two slots must keep
+// receiving task goals through its joint path, untagged — making the default
+// pure virtual, or having it tag `is_task`, would silently reroute them.
 TEST(TargetMailbox, DefaultTaskIngressForwardsToTheJointPath) {
   SingleSlotBinding ctrl;
   auto state = MakeState();
 
-  // Reach the base default explicitly rather than through the derived override.
-  ctrl.rtc::RTControllerInterface::SetDeviceTaskTarget(0, Uniform(rtc::kTaskSpaceDim, 3.5));
+  // Unqualified: this IS the base default, because nothing overrides it here.
+  ctrl.SetDeviceTaskTarget(0, Uniform(rtc::kTaskSpaceDim, 3.5));
   (void)ctrl.Compute(state);
 
-  EXPECT_EQ(ctrl.task_applies(), 0) << "the base default must not tag the entry as a task goal";
-  EXPECT_EQ(ctrl.joint_applies(), 1);
-  EXPECT_DOUBLE_EQ(ctrl.rt_slot().joint[0][0], 3.5);
+  EXPECT_EQ(ctrl.applied_last_tick(), 1);
+  EXPECT_EQ(ctrl.task_tagged(), 0) << "the base default must not tag the entry as a task goal";
+  EXPECT_DOUBLE_EQ(ctrl.slot()[0], 3.5);
 }
 
 // ── Activation generation gate, through the real queue ──────────────────────
@@ -447,6 +519,8 @@ TEST(TargetMailbox, DiscardEmptiesTheQueueWithoutApplyingAnything) {
   ctrl.TriggerEstop();
   (void)ctrl.Compute(state);  // takes the E-STOP early return → DiscardPendingTargets()
 
+  ASSERT_EQ(ctrl.estop_ticks(), 1) << "the tick never took the E-STOP branch, so nothing below "
+                                      "distinguishes a discard from a drain that did not run";
   EXPECT_EQ(ctrl.joint_applies(), 0) << "a goal queued during E-STOP reached the slot";
   EXPECT_DOUBLE_EQ(ctrl.rt_slot().joint[0][0], 0.0);
 
@@ -469,16 +543,18 @@ TEST(TargetMailbox, DiscardDoesNotMoveTheDropCounter) {
   ctrl.TriggerEstop();
   (void)ctrl.Compute(state);
 
+  ASSERT_EQ(ctrl.estop_ticks(), 1) << "no discard happened, so a clean counter proves nothing";
   EXPECT_EQ(ctrl.GetTargetDropCount(), 0U);
 }
 
 namespace {
 
-// Pushes but never overrides ApplyPendingTarget — the R4 trade-off made
-// visible. Pinned rather than left to prose because the failure is silent: the
-// drain pops the entries, so the drop counter stays clean while every goal is
-// lost. If ApplyPendingTarget is ever made pure virtual, this stops compiling,
-// which is the intended way to find this test.
+// Pushes but never overrides ApplyPendingTarget — the R4 trade-off, and the
+// counter that keeps it from being silent. The drain pops the entries and
+// reports them applied, so neither the drop counter nor the return value shows
+// anything; GetTargetUnhandledCount() is the whole diagnostic. If
+// ApplyPendingTarget is ever made pure virtual, this stops compiling, which is
+// the intended way to find this test.
 class ForgetfulBinding : public rtc::RTControllerInterface {
  public:
   [[nodiscard]] rtc::ControllerOutput Compute(const rtc::ControllerState&) noexcept override {
@@ -502,7 +578,7 @@ class ForgetfulBinding : public rtc::RTControllerInterface {
 
 }  // namespace
 
-TEST(TargetMailbox, BindingWithoutApplyOverrideLosesTargetsWithoutADiagnostic) {
+TEST(TargetMailbox, BindingWithoutApplyOverrideIsCountedNotSilent) {
   ForgetfulBinding ctrl;
   auto state = MakeState();
 
@@ -511,25 +587,67 @@ TEST(TargetMailbox, BindingWithoutApplyOverrideLosesTargetsWithoutADiagnostic) {
 
   EXPECT_EQ(ctrl.last_applied(), 1) << "the entry was consumed";
   EXPECT_EQ(ctrl.GetTargetDropCount(), 0U)
-      << "documented trade-off (#206 R4): a missing ApplyPendingTarget override is invisible "
-         "to the drop counter — the drain popped the entry and nobody stored it";
+      << "this is not saturation — the queue had room and the entry was popped";
+  EXPECT_EQ(ctrl.GetTargetUnhandledCount(), 1U)
+      << "the goal reached the base's no-op default and nothing recorded it (#206 R4)";
+}
+
+// The counter must not fire for a controller that simply does not use the
+// mailbox: nothing is pushed, so nothing is drained, so nothing is unhandled.
+// Otherwise every non-mailbox binding would read as broken.
+TEST(TargetMailbox, ABindingThatNeverPushesReportsNothingUnhandled) {
+  ForgetfulBinding ctrl;
+  auto state = MakeState();
+
+  for (int i = 0; i < 4; ++i) {
+    (void)ctrl.Compute(state);
+  }
+
+  EXPECT_EQ(ctrl.GetTargetUnhandledCount(), 0U);
+}
+
+// A controller that DOES override must never touch the counter — otherwise the
+// diagnostic would read as "broken" for every correctly written controller.
+TEST(TargetMailbox, AnOverriddenApplyLeavesTheUnhandledCounterAlone) {
+  MailboxBinding ctrl;
+  auto state = MakeState();
+
+  ctrl.SetDeviceTarget(0, Uniform(6, 1.0));
+  ctrl.SetDeviceTaskTarget(0, Uniform(rtc::kTaskSpaceDim, 2.0));
+  (void)ctrl.Compute(state);
+
+  ASSERT_EQ(ctrl.applied_last_tick(), 2);
+  EXPECT_EQ(ctrl.GetTargetUnhandledCount(), 0U);
 }
 
 // ── SPSC stress: one off-RT producer against the RT drain ───────────────────
 
 // The mailbox's whole reason to exist is that the producer and the RT thread
 // run concurrently. Every pushed goal is uniform across channels, so any
-// published slot whose channels disagree can only have come from two different
-// entries — a torn read or a drain that applied a partial entry.
+// observation whose channels disagree can only have come from two different
+// entries.
+//
+// There are TWO places a mix can appear, and they need separate sensors:
+//
+//   queue tearing — the SPSC handed the RT side half of one entry and half of
+//     another. Detected inside ApplyPendingTarget, once per entry, because the
+//     apply overwrites the whole slot: an inspection after the threads join can
+//     only ever see the LAST of ~10^5 applies, so a 1-in-1000 tear would pass
+//     such a check ~999 times out of 1000.
+//
+//   SeqLock tearing — a reader Loaded the published slot while the RT thread
+//     was mid-Store. Only a THIRD thread can observe that; the RT thread is the
+//     writer, so its own Load is trivially consistent and pins nothing.
 TEST(TargetMailbox, ConcurrentProducerAndRtDrainNeverPublishATornSlot) {
   MailboxBinding ctrl;
   auto state = MakeState();
 
   constexpr int kIters = 100'000;
   std::atomic<bool> producer_done{false};
+  std::atomic<bool> readers_stop{false};
   std::atomic<int> ticks{0};
-  std::atomic<int> torn{0};
-  std::atomic<int> checked{0};
+  std::atomic<int> torn_loads{0};
+  std::atomic<int> samples{0};
 
   std::thread producer([&]() {
     std::array<double, 6> tgt{};
@@ -547,23 +665,39 @@ TEST(TargetMailbox, ConcurrentProducerAndRtDrainNeverPublishATornSlot) {
       (void)ctrl.Compute(state);
       ticks.fetch_add(1, std::memory_order_relaxed);
     }
+    readers_stop.store(true, std::memory_order_release);
+  });
+
+  // The diagnostic reader: an off-RT consumer of the published slot, which is
+  // what SeqLock<TargetSlot> exists to serve.
+  std::thread reader([&]() {
+    while (!readers_stop.load(std::memory_order_acquire)) {
+      const auto snapshot = ctrl.published_slot();
+      samples.fetch_add(1, std::memory_order_relaxed);
+      if (snapshot.joint[0][0] == 0.0) {
+        continue;  // nothing published yet
+      }
+      for (std::size_t i = 1; i < 6; ++i) {
+        if (snapshot.joint[0][i] != snapshot.joint[0][0]) {
+          torn_loads.fetch_add(1, std::memory_order_relaxed);
+          break;
+        }
+      }
+    }
   });
 
   producer.join();
   consumer.join();
-
-  // Both workers have joined, so this read races with nothing.
-  const auto published = ctrl.published_slot();
-  for (std::size_t i = 1; i < 6; ++i) {
-    if (published.joint[0][i] != published.joint[0][0]) {
-      torn.fetch_add(1, std::memory_order_relaxed);
-    }
-    checked.fetch_add(1, std::memory_order_relaxed);
-  }
+  reader.join();
 
   EXPECT_GT(ticks.load(std::memory_order_relaxed), 0);
-  EXPECT_EQ(checked.load(std::memory_order_relaxed), 5);
-  EXPECT_EQ(torn.load(std::memory_order_relaxed), 0)
-      << "the published slot mixed values from two different goals";
-  EXPECT_GE(published.joint[0][0], 1.0) << "no goal was ever applied — the race never opened";
+  EXPECT_GT(samples.load(std::memory_order_relaxed), 0) << "the reader never sampled the slot";
+  EXPECT_EQ(ctrl.nonuniform_entries(), 0)
+      << "the queue handed the RT side an entry mixing two different goals";
+  EXPECT_EQ(torn_loads.load(std::memory_order_relaxed), 0)
+      << "a concurrent Load saw the slot mid-Store";
+
+  // Both workers have joined, so this read races with nothing.
+  EXPECT_GE(ctrl.published_slot().joint[0][0], 1.0)
+      << "no goal was ever applied — the race never opened";
 }

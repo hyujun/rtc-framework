@@ -98,12 +98,16 @@ off-RT ingress → RT drain marshal 이 이 패키지 소유다. 같은 스켈�
 | `PushPendingTarget(device_idx, values, is_task)` | base protected | off-RT producer. 세대 스탬프 + `device_idx`/채널 폭 bound + enqueue. **single-producer** — 프로덕션 유일 경로는 controller LifecycleNode default group 의 `DeliverTargetMessage` |
 | `DrainPendingTargets()` | base protected | RT consumer. 무효 세대·범위 밖 entry 를 버리고 생존분마다 `ApplyPendingTarget` 호출, 적용 개수 반환 |
 | `DiscardPendingTargets()` | base protected | RT consumer, apply 없이 비우기. E-STOP 경로와 device-invalid 경로가 **같은 primitive** 를 쓴다 (#263 은 한 controller 안에서 이 둘이 갈라진 결함이었다). 호출 여부는 derived 소유 — base 가 자동으로 discard 하면 그러지 않던 controller 의 거동이 바뀐다 |
-| `ApplyPendingTarget(...)` | base protected virtual (default no-op) | derived 가 `TargetSlot` 의미를 소유하는 지점. base 는 세대·인덱스·폭을 이미 검증해서 넘긴다 |
-| `GetTargetDropCount()` | base public | 큐 포화로 유실된 goal 수. 이전에는 `Push()` 반환값을 전부 버려서 포화가 controller 밖에서 관측 불가였다. malformed 메시지를 세는 `GetTargetRejectCount()` 와 별개 |
+| `ApplyPendingTarget(...)` | base protected virtual (default = 계수만) | derived 가 `TargetSlot` 의미를 소유하는 지점. base 는 세대·인덱스·폭을 이미 검증해서 넘긴다. default 는 no-op 이 아니라 `GetTargetUnhandledCount()` 를 올린다 (#206 R4 — pure virtual 은 기각했으나 실패는 보이게) |
+| `GetTargetDropCount()` | base public | 큐 포화로 유실된 goal 수 + throttled WARN 1건. 이전에는 `Push()` 반환값을 전부 버려서 포화가 controller 밖에서 **관측 불가**였다 |
+| `GetTargetRejectCount()` | base public | 큐에 닿기 전에 거부된 goal 수 — `DeliverTargetMessage` 의 메시지 검증과 `PushPendingTarget` 의 `device_idx` bound 양쪽. "형식이 틀린 goal" 축이며, 포화("형식은 맞으나 늦은 goal")와 구분된다 |
+| `GetTargetUnhandledCount()` | base public | drain 이 base default `ApplyPendingTarget` 에 넘긴 entry 수. **0 이 아니면** 그 controller 는 push 는 하면서 override 를 안 한 것 — 모든 goal 이 pop 된 뒤 버려지는데 drop/reject 어느 쪽도 오르지 않는 유일한 침묵 경로였다 |
 
 depth 는 4 (usable 3 — ring 이 한 칸을 full/empty 구분에 쓴다), 포화 정책은 **FIFO + newest-drop** 이라 이미 받아들인 goal 을 나중 것이 밀어내지 않는다. `SeqLock<TargetSlot>` · self-init seed · 궤적 재초기화 플래그 · joint/task 슬롯 독립성은 **derived 소유**로 남는다 — 모든 controller 를 수용하는 canonical slot 은 WBC 의 사적 의미를 base 계약으로 승격시키므로 기각됐다 (#206 §2).
 
-> **전이 상태** — 이 mailbox 를 쓰는 것은 base 를 상속한 바인딩 전부가 아니다. `rtc_controllers` 에 남은 어댑터들은 아직 자기 사본을 갖고 있고 (`grep -rln "SpscQueue<PendingTarget" rtc_controllers`), 그중 셋은 **discard** 를 하는 private `DrainPendingTargets()` 를 따로 선언해 base 의 동명 메서드를 가린다. 그 어댑터들은 #236 S7c 에서 삭제된다. 배치 규칙의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 표다.
+> **계측의 현재 한계** — 위 세 카운터는 **프로세스 밖 소비자가 없다.** 진단 토픽으로 나가는 것이 없으므로 원격 operator 가 얻는 신호는 로그 한 줄이 전부다. 토픽 노출은 후속 작업이며, 그때까지 "관측 가능해졌다" 는 *계측과 로그* 까지를 뜻한다.
+
+> **전이 상태** — 이 mailbox 를 쓰는 것은 base 를 상속한 바인딩 전부가 아니다. `rtc_controllers` 에 남은 어댑터들은 아직 자기 사본을 갖고 있고 (`grep -rln "SpscQueue<PendingTarget" rtc_controllers`), 그중 셋은 자기 큐를 비우는 private `DiscardPendingTargets()` 를 선언해 base 의 동명 메서드를 가린다 — **의미는 같고** 대상 큐만 다르다. 원래는 이 선언이 `DrainPendingTargets()` 라 base 의 *apply* 와 이름이 겹쳤고, 그 클래스들 안에서 base 의 `DiscardPendingTargets()` 는 항상 빈 큐를 비우는 no-op 이었다. 그 어댑터들은 #236 S7c 에서 삭제된다. 배치 규칙의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 표다.
 
 CM 이 아닌 단위 테스트가 직접 `Compute()` 를 도는 경로는 양쪽 모두 세대 0 이라 아무것도 드롭되지 않는다.
 

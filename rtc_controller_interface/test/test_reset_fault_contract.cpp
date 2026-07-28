@@ -87,6 +87,24 @@ class FaultLatchBinding : public rtc::RTControllerInterface {
       latched_ = false;
       ++resets_consumed_;
     }
+
+    // The E-STOP early return, present for real rather than described in a
+    // comment. It is what makes the ordering above load-bearing: move the
+    // consume block below this and AResetIsConsumedEvenOnAnEstoppedTick fails,
+    // which is the mechanism #260 shipped in the production controllers. It
+    // also stores its own diagnostic, so an E-STOPPED tick publishes the real
+    // latch state instead of leaving the last one to go stale.
+    if (diag.estopped) {
+      ++estop_exits_;
+      diag.latched = latched_;
+      diag_lock_.Store(diag);
+      rtc::ControllerOutput out{};
+      out.valid = false;
+      return out;
+    }
+
+    // Fault detection lives past the early return, like a real controller's:
+    // an E-STOPPED tick computes nothing, so it can detect nothing.
     if (latch_request_.exchange(false, std::memory_order_acq_rel)) {
       latched_ = true;
     }
@@ -95,7 +113,7 @@ class FaultLatchBinding : public rtc::RTControllerInterface {
     diag_lock_.Store(diag);
 
     rtc::ControllerOutput out{};
-    out.valid = !diag.estopped;
+    out.valid = true;
     return out;
   }
 
@@ -104,6 +122,11 @@ class FaultLatchBinding : public rtc::RTControllerInterface {
   [[nodiscard]] std::string_view Name() const noexcept override { return "FaultLatchBinding"; }
 
   [[nodiscard]] int resets_consumed() const noexcept { return resets_consumed_; }
+
+  // How many ticks left through the E-STOP early return. Without it the tests
+  // below would infer "the early return ran" from the latch state alone, which
+  // a controller with no early return at all also satisfies.
+  [[nodiscard]] int estop_exits() const noexcept { return estop_exits_; }
 
  protected:
   void ResetTargetInitialization() noexcept override {
@@ -121,6 +144,7 @@ class FaultLatchBinding : public rtc::RTControllerInterface {
   rtc::SeqLock<Diagnostics> diag_lock_;
   bool latched_{false};  // RT-thread-owned
   int resets_consumed_{0};
+  int estop_exits_{0};
 };
 
 // A binding that keeps no fault latch of its own: it must read as "never
@@ -203,11 +227,13 @@ TEST_F(ResetFaultContract, OneRequestClearsOneLatchAndIsNotReplayed) {
 TEST_F(ResetFaultContract, ClearEstopDoesNotReleaseTheControllerFault) {
   base().TriggerEstop();
   Tick();
+  ASSERT_EQ(ctrl_.estop_exits(), 1) << "the tick did not take the E-STOP early return at all";
   ASSERT_TRUE(base().HasLatchedFault())
       << "the E-STOP tick published a state that hides the SAFE_STOP latch";
 
   base().ClearEstop();
   Tick();
+  EXPECT_EQ(ctrl_.estop_exits(), 1) << "the cleared tick still took the E-STOP exit";
   EXPECT_TRUE(base().HasLatchedFault())
       << "ClearEstop() released a controller-local fault latch (E-8)";
 }
@@ -231,6 +257,8 @@ TEST_F(ResetFaultContract, AResetIsConsumedEvenOnAnEstoppedTick) {
   base().ResetFault();
   Tick();
 
+  ASSERT_EQ(ctrl_.estop_exits(), 1)
+      << "vacuous otherwise: there was no early return for the reset to survive";
   EXPECT_EQ(ctrl_.resets_consumed(), 1) << "the E-STOP early return swallowed the reset request";
 }
 

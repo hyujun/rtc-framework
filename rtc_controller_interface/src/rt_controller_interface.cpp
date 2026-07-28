@@ -651,6 +651,11 @@ void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, 
 void RTControllerInterface::PushPendingTarget(int device_idx, std::span<const double> values,
                                               bool is_task) noexcept {
   if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
+    // Counted, not silent. Unreachable from DeliverTargetMessage (its index is
+    // a topic_config_ group position), so reaching it means some other producer
+    // computed an index the controller has no device for — exactly the case
+    // that must not vanish without a trace.
+    RejectPushedTarget("device index out of range");
     return;
   }
   PendingTarget pending{};
@@ -664,9 +669,39 @@ void RTControllerInterface::PushPendingTarget(int device_idx, std::span<const do
   }
   // Off-RT marshal — the RT thread drains this inside Compute() and is the sole
   // writer of whatever slot the derived controller publishes through. Push is
-  // lock-free with newest-drop on overflow, so a callback never blocks; the
-  // discarded return is accounted by GetTargetDropCount().
-  (void)pending_targets_.Push(pending);
+  // lock-free with newest-drop on overflow, so a callback never blocks.
+  if (!pending_targets_.Push(pending)) {
+    WarnTargetDropped();
+  }
+}
+
+void RTControllerInterface::RejectPushedTarget(const char* reason) noexcept {
+  const auto total = target_reject_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (!node_) {
+    return;  // unit-test path: count only, no clock to throttle against
+  }
+  // Same constraints as RejectTarget(): noexcept caller, so scalars and string
+  // literals only. No group name here — the ingress that carries one is
+  // DeliverTargetMessage, and this path is reached when the index itself is the
+  // thing that is wrong.
+  RCLCPP_WARN_THROTTLE(TargetWarnLogger(), *node_->get_clock(), kTargetRejectWarnThrottleMs,
+                       "[%.*s] target REJECTED at mailbox ingress — %s (%lu rejected so far)",
+                       static_cast<int>(Name().size()), Name().data(), reason,
+                       static_cast<unsigned long>(total));
+}
+
+void RTControllerInterface::WarnTargetDropped() noexcept {
+  if (!node_) {
+    return;  // unit-test path: SpscQueue's own drop_count() is the only record
+  }
+  // Saturation is a rate problem, so it arrives in bursts — one line per
+  // throttle window is what makes it readable. The counter is authoritative;
+  // this only makes it visible to someone reading the log.
+  RCLCPP_WARN_THROTTLE(TargetWarnLogger(), *node_->get_clock(), kTargetRejectWarnThrottleMs,
+                       "[%.*s] target DROPPED — mailbox full, the producer outran the control "
+                       "tick (%lu dropped so far)",
+                       static_cast<int>(Name().size()), Name().data(),
+                       static_cast<unsigned long>(pending_targets_.drop_count()));
 }
 
 int RTControllerInterface::DrainPendingTargets() noexcept {

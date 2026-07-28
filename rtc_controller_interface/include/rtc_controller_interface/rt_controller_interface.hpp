@@ -375,8 +375,12 @@ class RTControllerInterface {
   void DeliverTargetMessage(const std::string& group_name, int device_idx,
                             const rtc_msgs::msg::RobotTarget& msg) noexcept;
 
-  // Number of target messages rejected by the validation above, since
+  // Number of targets refused before they reached the queue, since
   // construction. Monotonic; intended for diagnostics and tests.
+  //
+  // Two producers bump it: DeliverTargetMessage's message validation above, and
+  // PushPendingTarget's device_idx bound. Both mean "this goal was malformed",
+  // as opposed to GetTargetDropCount()'s "this goal was well-formed but late".
   [[nodiscard]] std::uint64_t GetTargetRejectCount() const noexcept {
     return target_reject_count_.load(std::memory_order_relaxed);
   }
@@ -385,14 +389,31 @@ class RTControllerInterface {
   // full when PushPendingTarget ran, since construction. Monotonic; safe to read
   // from any thread (the counter is relaxed-atomic inside SpscQueue).
   //
-  // Distinct from GetTargetRejectCount(): that one counts messages DeliverTargetMessage
-  // refused as malformed, this one counts well-formed goals the RT thread never
-  // saw because the producer outran one control tick. Both were previously
-  // invisible on the drop side — every copy of the marshal discarded Push()'s
-  // bool return, so queue saturation could not be observed from outside the
-  // controller at all (#206 §4).
+  // Distinct from GetTargetRejectCount(): that one counts goals refused as
+  // malformed, this one counts well-formed goals the RT thread never saw
+  // because the producer outran one control tick. Every copy of the marshal
+  // used to discard Push()'s bool return, so a saturating producer lost goals
+  // with no trace at all (#206 §4); the drop now both increments this counter
+  // and emits one throttled warning naming the controller.
+  //
+  // No ROS surface yet — nothing publishes it on a diagnostics topic, so a
+  // remote operator still learns about saturation from the log rather than from
+  // a message. Wiring it into a controller snapshot is follow-up work.
   [[nodiscard]] std::uint64_t GetTargetDropCount() const noexcept {
     return pending_targets_.drop_count();
+  }
+
+  // Number of drained entries that reached the base's default (no-op)
+  // ApplyPendingTarget, since construction. Monotonic, relaxed-atomic.
+  //
+  // Nonzero means a controller pushes onto the mailbox but never overrode
+  // ApplyPendingTarget, so every goal it accepts is popped and thrown away.
+  // That failure is otherwise perfectly silent — the drain pops the entry, so
+  // GetTargetDropCount() stays 0 and DrainPendingTargets() reports it as
+  // applied. A controller that does not use the mailbox at all never pushes,
+  // so this stays 0 for it.
+  [[nodiscard]] std::uint64_t GetTargetUnhandledCount() const noexcept {
+    return target_unhandled_count_.load(std::memory_order_relaxed);
   }
 
   // ── Activation generation gate (fail-closed, issue #196 §3) ──────────────
@@ -580,9 +601,13 @@ class RTControllerInterface {
 
   // Off-RT producer. Stamps the current activation generation, bounds
   // `device_idx` against ControllerState::kMaxDevices and `values` against
-  // kMaxDeviceChannels, then enqueues. An out-of-range device_idx returns
-  // silently (unchanged from the per-controller copies — it is unreachable via
-  // DeliverTargetMessage, whose device_idx is a topic_config_ group position).
+  // kMaxDeviceChannels, then enqueues.
+  //
+  // An out-of-range device_idx is refused and counted by GetTargetRejectCount()
+  // — the per-controller copies returned silently, which was safe only while
+  // DeliverTargetMessage (whose device_idx is a topic_config_ group position)
+  // was the sole producer. A caller that computes the index some other way used
+  // to lose every goal with nothing anywhere to show for it.
   //
   // SINGLE PRODUCER. The queue is SPSC: in production the sole caller path is
   // DeliverTargetMessage() → SetDevice{,Task}Target() on the controller's
@@ -611,11 +636,13 @@ class RTControllerInterface {
   // base's own initiative would silently change the other six.
   //
   // NAME COLLISION, transitional: three not-yet-migrated controllers declare a
-  // private non-virtual DrainPendingTargets() of their own whose body is a
-  // discard — the opposite of the base pair above. Those declarations HIDE both
-  // of these inside those classes; nothing there calls the base versions, so
-  // behaviour is unchanged, but do not read a call site in one of them as this
-  // contract until it has been migrated (#206 / #236).
+  // private non-virtual DiscardPendingTargets() of their own, which hides this
+  // one inside those classes and empties their still-private queue instead.
+  // The two agree on MEANING, which is the point — the declaration used to be
+  // spelled DrainPendingTargets(), so `discard` in the base and `discard` in
+  // the derived answered to opposite names while the base's Discard resolved
+  // there to an always-empty queue. Those classes disappear in #236 S7c and
+  // this paragraph with them.
   void DiscardPendingTargets() noexcept;
 
   // Apply one drained target. Called once per surviving entry from
@@ -624,11 +651,17 @@ class RTControllerInterface {
   // points at the drain's stack frame — copy what is needed, do not retain it.
   //
   // Default no-op rather than pure virtual, so a controller that does not use
-  // the mailbox needs no stub. The trade-off is recorded because it bites
-  // quietly: a controller that pushes but forgets to override loses its targets
-  // with no diagnostic — the drain pops them, so GetTargetDropCount() stays 0.
+  // the mailbox needs no stub (#206 R4). What the default does instead of
+  // nothing is COUNT: a controller that pushes but forgets to override would
+  // otherwise lose every target in perfect silence, since the drain pops the
+  // entry and reports it as applied. GetTargetUnhandledCount() is the only
+  // place that shows up.
+  //
+  // RT tick path: one relaxed fetch_add, no allocation, no logging, no locks.
   virtual void ApplyPendingTarget(int /*device_idx*/, std::span<const double> /*values*/,
-                                  bool /*is_task*/) noexcept {}
+                                  bool /*is_task*/) noexcept {
+    target_unhandled_count_.fetch_add(1, std::memory_order_relaxed);
+  }
 
   // Called after SetDeviceNameConfigs(). Override to resolve URDF-based
   // kinematics (e.g. tip_link → end_id_).
@@ -720,10 +753,25 @@ class RTControllerInterface {
   // so unit tests can assert the counter without a LifecycleNode.
   void RejectTarget(const std::string& group_name, const char* reason) noexcept;
 
-  // Monotonic count of target messages dropped by DeliverTargetMessage's
-  // validation. Atomic because diagnostics may read it from another thread
-  // while the controller's non-RT callback group writes it.
+  // Same accounting for the mailbox ingress, which has no group name to quote:
+  // PushPendingTarget is reached after DeliverTargetMessage has already resolved
+  // (or bypassed) the group. Non-RT, same throttle window as RejectTarget.
+  void RejectPushedTarget(const char* reason) noexcept;
+
+  // One throttled line when a well-formed goal is lost to queue saturation.
+  // Non-RT (PushPendingTarget's contract). Counter-only when no node has been
+  // injected, matching RejectTarget's unit-test path.
+  void WarnTargetDropped() noexcept;
+
+  // Monotonic count of targets refused before the queue — DeliverTargetMessage's
+  // message validation and PushPendingTarget's device_idx bound. Atomic because
+  // diagnostics may read it from another thread while the controller's non-RT
+  // callback group writes it.
   std::atomic<std::uint64_t> target_reject_count_{0};
+
+  // Monotonic count of entries that reached the base's default ApplyPendingTarget.
+  // Written on the RT thread (relaxed fetch_add), read from anywhere.
+  std::atomic<std::uint64_t> target_unhandled_count_{0};
 
   // Bumped by on_activate; read off-RT (SetDeviceTarget stamp) and on the RT
   // thread (drain predicate), hence atomic. Wrap-around is harmless: a stamp
