@@ -303,6 +303,23 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── F5 device-readability gate at the binding (#236 S7b) ───────────────────
+  # Deliberately URDF-free: every assertion is a channel count or a joint
+  # command, so the serial_6dof vacuity trap (§3.3) cannot reach it.
+  ament_add_gtest(test_device_readability_gate test/test_device_readability_gate.cpp)
+  target_link_libraries(test_device_readability_gate
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_device_readability_gate
+    rclcpp
+    rtc_controller_interface
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── demo_task_controller unit tests (#149) ─────────────────────────────────
   # URDF-backed (iiwa7_leap via ament_index, no ROS node/DDS): CLIK 3/6-DOF +
   # π-split trajectory, hand trajectory, force-only grasp detection,

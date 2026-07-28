@@ -3,6 +3,7 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -27,7 +28,16 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
   // ComputeControl Stage 1 consumes it via pinocchio_cache_.Update. Same gate as
   // the prior Compute-top block (non-E-STOP, reorder map ready, arm TCP frame
   // registered) so it runs on exactly the same ticks — byte-for-byte.
-  if (!estop_active_ && combined_cache_.reorder_valid() && arm_tcp_frame_idx_ >= 0) {
+  //
+  // arm_readable_ joins that gate (#236 S7b). ExtractFullState scatters into
+  // the PERSISTENT q_curr_full_/v_curr_full_, and its own min(arm_dof, nc0)
+  // bound does not help there: the slots it skips keep their previous value —
+  // zero on the first tick — so the model would run at a partially ZERO
+  // configuration that is numerically identical to reading the unreported
+  // channels outright (#265 comment 2 §2). The bound stays for OOB; the gate is
+  // what keeps unread state out of the model.
+  if (!estop_active_ && arm_readable_ && combined_cache_.reorder_valid() &&
+      arm_tcp_frame_idx_ >= 0) {
     combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
   }
 
@@ -141,7 +151,10 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // !estop_active_ guard is implied; gate on cache readiness only. Stage 2 (the
   // trajectory control law below + the arm_tcp_pose_ FK) consumes it. Same gate
   // and same q_curr_full_ as the prior Compute-top Update — byte-for-byte.
-  if (combined_cache_.reorder_valid() && arm_tcp_frame_idx_ >= 0) {
+  // arm_readable_ gates it for the same reason ReadState's scatter is gated:
+  // refreshing the model from a state this tick could not read would put the
+  // partially-ZERO configuration into every consumer downstream of the cache.
+  if (arm_readable_ && combined_cache_.reorder_valid() && arm_tcp_frame_idx_ >= 0) {
     combined_cache_.Update();
   }
 
@@ -152,44 +165,62 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // ── Robot arm trajectory ────────────────────────────────────────────────
   // current_target_slot_ was refreshed by DrainTargetSlot() at the start of
   // Compute(); the flags are RT-thread-only.
-  if (robot_new_target_pending_) {
-    trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State start_state;
-    trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State goal_state;
+  //
+  // The whole block is behind the F5 gate (#265 audit J2). Its start state is
+  // dev0.positions read arm_dof_ deep, so on a device narrower than the arm the
+  // unreported joints would enter the quintic as 0 and the arm would be
+  // trajectory-planned toward the origin. Skipping leaves robot_new_target_
+  // pending_ latched, so a goal that arrived during the outage is planned from
+  // the MEASURED state on the first readable tick rather than being lost.
+  if (arm_readable_) {
+    if (robot_new_target_pending_) {
+      trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State start_state;
+      trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State goal_state;
 
-    double max_dist = 0.0;
-    for (int i = 0; i < arm_dof_; ++i) {
-      const auto idx = static_cast<std::size_t>(i);
-      start_state.positions[idx] = dev0.positions[idx];
-      start_state.velocities[idx] = 0.0;
-      start_state.accelerations[idx] = 0.0;
+      double max_dist = 0.0;
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        start_state.positions[idx] = dev0.positions[idx];
+        start_state.velocities[idx] = 0.0;
+        start_state.accelerations[idx] = 0.0;
 
-      goal_state.positions[idx] = current_target_slot_.targets[0][idx];
-      goal_state.velocities[idx] = 0.0;
-      goal_state.accelerations[idx] = 0.0;
+        goal_state.positions[idx] = current_target_slot_.targets[0][idx];
+        goal_state.velocities[idx] = 0.0;
+        goal_state.accelerations[idx] = 0.0;
 
-      max_dist =
-          std::max(max_dist, std::abs(current_target_slot_.targets[0][idx] - dev0.positions[idx]));
+        max_dist = std::max(max_dist,
+                            std::abs(current_target_slot_.targets[0][idx] - dev0.positions[idx]));
+      }
+
+      // Duration from trajectory_speed, then enforce max trajectory velocity.
+      // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
+      const double T_speed = max_dist / gains.robot_trajectory_speed;
+      const double T_vel = (gains.robot_max_traj_velocity > 0.0)
+                               ? (1.875 * max_dist / gains.robot_max_traj_velocity)
+                               : 0.0;
+      const double duration = std::max({0.01, T_speed, T_vel});
+      robot_trajectory_.initialize(start_state, goal_state, duration);
+      robot_trajectory_time_ = 0.0;
+      robot_new_target_pending_ = false;
     }
 
-    // Duration from trajectory_speed, then enforce max trajectory velocity.
-    // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
-    const double T_speed = max_dist / gains.robot_trajectory_speed;
-    const double T_vel = (gains.robot_max_traj_velocity > 0.0)
-                             ? (1.875 * max_dist / gains.robot_max_traj_velocity)
-                             : 0.0;
-    const double duration = std::max({0.01, T_speed, T_vel});
-    robot_trajectory_.initialize(start_state, goal_state, duration);
-    robot_trajectory_time_ = 0.0;
-    robot_new_target_pending_ = false;
-  }
+    const auto robot_traj = robot_trajectory_.compute(robot_trajectory_time_);
+    robot_trajectory_time_ += dt;
 
-  const auto robot_traj = robot_trajectory_.compute(robot_trajectory_time_);
-  robot_trajectory_time_ += dt;
-
-  for (int i = 0; i < arm_dof_; ++i) {
-    const auto idx = static_cast<std::size_t>(i);
-    robot_computed_.positions[idx] = robot_traj.positions[idx];
-    robot_computed_.velocities[idx] = robot_traj.velocities[idx];
+    for (int i = 0; i < arm_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      robot_computed_.positions[idx] = robot_traj.positions[idx];
+      robot_computed_.velocities[idx] = robot_traj.velocities[idx];
+    }
+    // Channels the device reports but the trajectory does not model — the
+    // `nc0 > arm_dof_` direction, which is a NORMAL input (num_channels is the
+    // wire length). Leaving them unwritten is a fresh zero, and this is a
+    // position lane, so that reads as "go to the origin" on every extra channel
+    // (#265 audit J3). robot_computed_ is what all three output fills below
+    // copy, so filling the tail HERE is what makes their `i < nc0` loops mean
+    // what they say. Velocities stay 0: a held joint is not moving.
+    rtc::FillCommandTail(robot_computed_.positions, arm_dof_, dev0.num_channels, command_type_,
+                         dev0.positions);
   }
 
   // ── Hand motor trajectory ──────────────────────────────────────────────
@@ -500,13 +531,22 @@ ControllerOutput DemoJointController::WriteJointCommand(const ControllerState& s
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.commands[i] = robot_computed_.positions[i];
+  if (arm_readable_) {
+    // Every channel in [0, nc0) is real: ComputeControl filled [0, arm_dof_)
+    // from the trajectory and the rest from the tail policy.
+    out0.num_channels = nc0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      out0.commands[i] = robot_computed_.positions[i];
+    }
+    rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
+                           std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
+  } else {
+    // F5: this tick has no honest arm command, so it issues none. Zero-length is
+    // "no update" — the drive holds its previous setpoint. Emitting nc0 zeros
+    // instead would be a real command to the origin (§3.7).
+    rtc::SilenceDeviceOutput(out0);
   }
-  rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
-                         std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
 
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
@@ -539,10 +579,16 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.trajectory_positions[i] = robot_computed_.positions[i];
-    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-    out0.goal_positions[i] = current_target_slot_.targets[0][i];
+  // Telemetry follows the wire: on a tick that issued no arm command there is
+  // no arm trajectory to report either, and robot_computed_ still holds the
+  // last readable tick's values. Publishing those would date-stamp stale
+  // numbers as this tick's reference.
+  if (arm_readable_) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      out0.trajectory_positions[i] = robot_computed_.positions[i];
+      out0.trajectory_velocities[i] = robot_computed_.velocities[i];
+      out0.goal_positions[i] = current_target_slot_.targets[0][i];
+    }
   }
 
   // Arm FK was computed once in ComputeControl and cached in arm_tcp_pose_.
@@ -659,12 +705,15 @@ void DemoJointController::FillPublishOutput(const ControllerState& state, Contro
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.target_positions[i] = robot_computed_.positions[i];
-    out0.target_velocities[i] = robot_computed_.velocities[i];
-    out0.trajectory_positions[i] = robot_computed_.positions[i];
-    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-    out0.goal_positions[i] = current_target_slot_.targets[0][i];
+  // Same reason as FillLogOutput: a silenced arm has no reference to publish.
+  if (arm_readable_) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      out0.target_positions[i] = robot_computed_.positions[i];
+      out0.target_velocities[i] = robot_computed_.velocities[i];
+      out0.trajectory_positions[i] = robot_computed_.positions[i];
+      out0.trajectory_velocities[i] = robot_computed_.velocities[i];
+      out0.goal_positions[i] = current_target_slot_.targets[0][i];
+    }
   }
 
   // Arm FK cached in ComputeControl (arm_tcp_pose_); reused here — no recompute.
@@ -679,13 +728,16 @@ void DemoJointController::FillPublishOutput(const ControllerState& state, Contro
   output.actual_task_positions[5] = rpy[2];
   output.task_goal_positions = output.actual_task_positions;
 
-  // TF source poses for kRobotTransforms publish.
+  // TF source poses for kRobotTransforms publish. Withheld on a silenced tick:
+  // arm_tcp_pose_ then holds whatever the cache had before the outage — or
+  // identity if there was never a readable tick — and neither is this tick's
+  // measurement (#125 F1's rule, applied to the F5 gate).
   {
     const Eigen::Vector3d& t = tcp.translation();
     const Eigen::Quaterniond q(tcp.rotation());
     output.arm_tip_pose.position = {t.x(), t.y(), t.z()};
     output.arm_tip_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
-    output.arm_tip_pose_valid = true;
+    output.arm_tip_pose_valid = arm_readable_;
   }
   if (vtcp_valid_) {
     const Eigen::Vector3d& t = vtcp_pose_.translation();
@@ -731,19 +783,44 @@ ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state)
   ControllerOutput output;
   output.num_devices = state.num_devices;
 
-  // Robot arm: move toward safe position with velocity limit
+  // Robot arm: move toward safe position with velocity limit.
+  //
+  // F5 covers this lane too (#236 E-8, approved). The ramp is
+  // `q + clamp(q_safe - q)`, which is only a ramp toward safety while q is a
+  // real measurement; with an unreadable device the unreported joints read 0
+  // and this would ramp them to safe_position_[i] from a fabricated origin.
+  // The answer is the same silence Compute() gives — NOT nc0 zeros, and not an
+  // nc0-length ramp (§3.7).
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
-    out0.commands[i] =
-        dev0.positions[i] + std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
-                                ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
-    out0.goal_positions[i] = safe_position_[i];
-    out0.target_positions[i] = out0.commands[i];
-    out0.trajectory_positions[i] = out0.commands[i];
+  // safe_position_ is kDemoJointMaxArmDof wide and only [0, arm_dof_) is
+  // configured, while nc0 may reach kMaxDeviceChannels — twice as far. The loop
+  // used to run to nc0, so `nc0 > kDemoJointMaxArmDof` read out of range and
+  // `arm_dof_ <= i < kDemoJointMaxArmDof` ramped toward safe_position_[i] ==
+  // 0.0, i.e. toward the origin (#265 audit J5). The bound is the OOB fix; the
+  // tail policy is what those extra channels actually get.
+  const int nq = rtc::ModelChannelBound(nc0, arm_dof_);
+  if (arm_readable_) {
+    out0.num_channels = nc0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nq); ++i) {
+      const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+      out0.commands[i] =
+          dev0.positions[i] + std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
+                                  ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
+      out0.goal_positions[i] = safe_position_[i];
+      out0.target_positions[i] = out0.commands[i];
+      out0.trajectory_positions[i] = out0.commands[i];
+    }
+    // No configured safe position past the model: hold where the joint is.
+    rtc::FillCommandTail(out0.commands, nq, nc0, command_type_, dev0.positions);
+    for (std::size_t i = static_cast<std::size_t>(nq); i < static_cast<std::size_t>(nc0); ++i) {
+      out0.goal_positions[i] = out0.commands[i];
+      out0.target_positions[i] = out0.commands[i];
+      out0.trajectory_positions[i] = out0.commands[i];
+    }
+  } else {
+    rtc::SilenceDeviceOutput(out0);
   }
 
   // Hand: hold current position during E-Stop
@@ -764,8 +841,11 @@ ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state)
   // FK for task-space logging (same as normal path). arm_handle_ is always
   // non-null in production; the guard mirrors ComputeControl so the empty-URDF
   // unit fixture (null arm_handle_) can drive ComputeEstop without a crash.
+  // arm_readable_ joins it: FK on a device narrower than the model is FK at the
+  // ZERO configuration, and a pose derived from joints nobody reported is not a
+  // pose worth broadcasting.
   pinocchio::SE3 tcp = pinocchio::SE3::Identity();
-  if (arm_handle_) {
+  if (arm_readable_ && arm_handle_) {
     std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
     arm_handle_->ComputeForwardKinematics(q_span);
     tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
@@ -790,7 +870,12 @@ ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state)
     const Eigen::Quaterniond q(tcp.rotation());
     output.arm_tip_pose.position = {t.x(), t.y(), t.z()};
     output.arm_tip_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
-    output.arm_tip_pose_valid = true;
+    // Withheld rather than published as identity when the FK above did not run
+    // — the same rule the fingertip TF already follows (#125 F1), and the one
+    // DemoTaskController's E-STOP path already applies to a null arm_handle_:
+    // a consumer must not be handed the base origin as though it were a
+    // measurement.
+    output.arm_tip_pose_valid = arm_readable_ && (arm_handle_ != nullptr);
   }
   output.virtual_tcp_pose_valid = false;
   for (std::size_t f = 0; f < output.task_link_pose_valid.size(); ++f) {
