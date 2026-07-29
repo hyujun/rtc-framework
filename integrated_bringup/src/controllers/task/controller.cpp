@@ -13,6 +13,7 @@
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>  // std::sqrt
 #include <cstddef>
 #include <stdexcept>
@@ -787,19 +788,38 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   }
 
   auto g = gains_lock_.Load();
-  // CLIK gains — translation / rotation separated
-  if (cfg["kp_translation"] && cfg["kp_translation"].IsSequence()) {
-    std::size_t n = std::min<std::size_t>(cfg["kp_translation"].size(), 3);
-    for (std::size_t i = 0; i < n; ++i) {
-      g.kp_translation[i] = cfg["kp_translation"][i].as<double>();
+  // CLIK gains — translation / rotation separated. Shape-checked rather than
+  // fitted to whatever length arrives (#302).
+  //
+  // This binding already enforces the rule on its OTHER surface:
+  // OnGainParametersSet rejects `v.size() != 3` with "kp_translation requires 3
+  // values", so `ros2 param set` and the BT SetGains node cannot install a
+  // mis-shaped gain. The YAML path used `min(size, 3)` and disagreed — the same
+  // key, on the same controller, accepted from a file what it refuses from a
+  // parameter. The two surfaces now say the same thing.
+  //
+  // `min(size, 3)` was also the worst of the three spellings this repo had,
+  // because it PARTIALLY fills: `kp_translation: [5.0, 5.0]` runs [5, 5,
+  // <default>], a gain no operator wrote and no diagnostic can flag, since the
+  // entries that did come from YAML make the POD look deliberate. The schema
+  // parsers' silent form at least left the whole triple at its default. An
+  // over-long sequence dropped the tail in silence, which is the #172 defect
+  // proper.
+  auto load3 = [&cfg](const char* key, std::array<double, 3>& arr) {
+    const YAML::Node& n = cfg[key];
+    if (!n) {
+      return;
     }
-  }
-  if (cfg["kp_rotation"] && cfg["kp_rotation"].IsSequence()) {
-    std::size_t n = std::min<std::size_t>(cfg["kp_rotation"].size(), 3);
-    for (std::size_t i = 0; i < n; ++i) {
-      g.kp_rotation[i] = cfg["kp_rotation"][i].as<double>();
+    if (!n.IsSequence() || n.size() != 3) {
+      throw std::runtime_error(std::string("demo_task_controller: '") + key +
+                               "' must be a 3-entry sequence [x,y,z]");
     }
-  }
+    for (std::size_t i = 0; i < 3; ++i) {
+      arr[i] = n[i].as<double>();
+    }
+  };
+  load3("kp_translation", g.kp_translation);
+  load3("kp_rotation", g.kp_rotation);
   if (cfg["damping"]) {
     g.damping = cfg["damping"].as<double>();
   }
