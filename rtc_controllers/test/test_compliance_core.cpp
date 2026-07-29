@@ -99,6 +99,45 @@ TEST(TaskDynamics, FloorMaxDampingBoundsFiniteAndPassesNonFinite) {
             std::numeric_limits<double>::infinity());
 }
 
+// NUM-2's σ₀ floor, the partner symbol (#282). Same three regions, and the
+// non-finite case matters MORE here than it does for λ_max: a laundered NaN σ₀
+// comes back as 1e-6, a shell no reachable pose enters, so §6.5 is disarmed at
+// every pose while every callsite still reads as armed. Passed through, it makes
+// λ² non-finite (see the companion assertion below) and the downstream
+// finite-command check sees it.
+TEST(TaskDynamics, FloorSigma0BoundsFiniteAndPassesNonFinite) {
+  EXPECT_DOUBLE_EQ(FloorSigma0(0.0), kMinSigma0);
+  EXPECT_DOUBLE_EQ(FloorSigma0(-1.0), kMinSigma0);
+  EXPECT_DOUBLE_EQ(FloorSigma0(0.5 * kMinSigma0), kMinSigma0);
+
+  EXPECT_DOUBLE_EQ(FloorSigma0(0.02), 0.02);
+  EXPECT_DOUBLE_EQ(FloorSigma0(kMinSigma0), kMinSigma0);
+
+  EXPECT_TRUE(std::isnan(FloorSigma0(std::numeric_limits<double>::quiet_NaN())));
+  EXPECT_EQ(FloorSigma0(-std::numeric_limits<double>::infinity()),
+            -std::numeric_limits<double>::infinity());
+  EXPECT_EQ(FloorSigma0(std::numeric_limits<double>::infinity()),
+            std::numeric_limits<double>::infinity());
+}
+
+// Why the passthrough is not just a stylistic match with FloorMaxDamping: the
+// law has to actually PROPAGATE a non-finite σ₀ for the downstream check to have
+// anything to catch. Both of AdaptiveDampingSquared's short-circuit comparisons
+// are false against NaN, so it reaches the ratio — this pins that, because a
+// future `if (!std::isfinite(sigma0)) return 0.0;` inside the law would silently
+// restore exactly the disarmed-and-silent outcome the floor was written to avoid.
+TEST(TaskDynamics, NonFiniteSigma0ReachesLambdaSquaredRatherThanBeingSwallowed) {
+  constexpr double lmax = 0.05;
+  const double nan_s0 = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(std::isfinite(AdaptiveDampingSquared(0.01, nan_s0, lmax)))
+      << "a non-finite σ₀ was swallowed into a finite λ² — the corrupt gain now "
+         "produces a plausible command and nothing downstream can see it";
+  // +inf σ₀ is the whole workspace inside the shell, which IS finite and is the
+  // ramp's own limit (σ_min/σ₀ → 0 ⇒ λ² → λ_max²). Not a fault.
+  EXPECT_DOUBLE_EQ(AdaptiveDampingSquared(0.01, std::numeric_limits<double>::infinity(), lmax),
+                   lmax * lmax);
+}
+
 // The other half of #301's decision: the floor is a CONSUMER policy, and the law
 // keeps taking λ_max as a plain argument. Flooring inside AdaptiveDampingSquared
 // would leave every existing oracle green (all drive λ_max = 0.05) while making
