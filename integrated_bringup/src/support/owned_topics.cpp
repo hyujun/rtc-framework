@@ -192,7 +192,7 @@ void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopic
   // stream whose subscribers accumulate every sample (shape_estimation voxel
   // cloud / snapshot_history, bt_coordinator collection buffer) — depth 1 would
   // drop intermediate snapshots under burst. Deep best_effort queue by design.
-  rclcpp::QoS tof_qos{5};
+  rclcpp::QoS tof_qos{5};  // ARCH-6-exempt
   tof_qos.best_effort();
   handles.tof_pub = node->create_publisher<rtc_msgs::msg::ToFSnapshot>(topic_name, tof_qos);
 }

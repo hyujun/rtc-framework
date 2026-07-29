@@ -106,15 +106,17 @@ Stage 1, task = Compute-scope Stage 1(DrainTargetSlot self-init 이 fresh cache 
 
 각 데모 컨트롤러가 노출하는 정확한 parameter list 는 코드/YAML 이 SSoT:
 
+컨트롤러 LifecycleNode 는 **이름과 namespace 를 둘 다 `config_key` 로** 만들어지므로 (`rt_controller_node_params.cpp`: name=`config_key`, ns=`/config_key`), FQN 은 `/<config_key>/<config_key>` 다:
+
 ```bash
 # 활성화 후 actual parameter list
-ros2 param list /demo_wbc_controller
-ros2 param describe /demo_wbc_controller <param>
+ros2 param list /demo_wbc_controller/demo_wbc_controller
+ros2 param describe /demo_wbc_controller/demo_wbc_controller <param>
 ```
 
 또는 컨트롤러 source 의 `DeclareGainParameters()` 멤버 + bringup config (`integrated_bringup/config/<robot>/controllers/<config_key>.yaml`).
 
-읽기 전용 cap parameter (`*_max_traj_velocity` 등) 는 `ParameterDescriptor::read_only=true` 로 선언. One-shot 이벤트 (Force-PI grasp) 는 `~/grasp_command` srv (`rtc_msgs/srv/GraspCommand`) — active controller 만 server 를 띄움.
+읽기 전용 cap parameter (`*_max_traj_velocity` 등) 는 `ParameterDescriptor::read_only=true` 로 선언. One-shot 이벤트 (Force-PI grasp) 는 `grasp_command` srv (`rtc_msgs/srv/GraspCommand`) — **상대 이름**으로 advertise 하므로 노드 namespace 기준 `/<config_key>/grasp_command` 로 해석된다 (`~/` 를 쓰면 이름이 한 번 더 중첩된다). Active controller 만 server 를 띄움.
 
 `mpc_enable`은 빌드타임 `mpc_enabled_` (YAML `mpc.enabled`) 와 AND 결합 — YAML이 false면 런타임 1은 무시된다. `riccati_gain_scale`은 `[0,1]`로 자동 clamp.
 
@@ -123,8 +125,8 @@ ros2 param describe /demo_wbc_controller <param>
 런타임 튜닝 예:
 
 ```bash
-ros2 param set /demo_wbc_controller se3_weight 150.0
-ros2 param set /demo_task_controller kp_translation '[20.0, 20.0, 30.0]'
+ros2 param set /demo_wbc_controller/demo_wbc_controller se3_weight 150.0
+ros2 param set /demo_task_controller/demo_task_controller kp_translation '[20.0, 20.0, 30.0]'
 
 # Force-PI grasp (one-shot event)
 ros2 service call /demo_task_controller/grasp_command \
@@ -193,10 +195,10 @@ PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/incl
 
 YAML config 트리:
 
-- **Robot-specific bringup** (`integrated_bringup/config/<robot>/`) — `{sim,robot}.yaml` (CM-level: `control_rate`, `initial_controller`, `devices.<group>.backend`, `urdf`, `device_timeout_*`), `mujoco_simulator.yaml` (per-robot overlay), `digital_twin.yaml` (per-robot overlay), `controllers/<config_key>.yaml` (production controller params — controller 당 한 파일의 **flat** 배치. 유일한 하위 디렉토리는 `controllers/mpc/` (`phase_config`·`contact_light`·`contact_rich`) 이며 `demo_wbc_controller.yaml` 이 참조한다. `direct/`·`indirect/` 하위 디렉토리는 `rtc_controllers` 예제 레이아웃이지 여기가 아니다)
+- **Robot-specific bringup** (`integrated_bringup/config/<robot>/`) — `{sim,robot}.yaml` (CM-level: `control_rate`, `initial_controller`, `devices.<group>.backend`, `urdf`, `device_timeout_*`), `mujoco_simulator.yaml` (per-robot overlay), `digital_twin.yaml` (per-robot overlay), `controllers/<config_key>.yaml` (production controller params — controller 당 한 파일의 **flat** 배치. 유일한 하위 디렉토리는 `controllers/mpc/` (`phase_config`·`contact_light`·`contact_rich`) 이며 `demo_wbc_controller.yaml` 이 참조한다. `direct/`·`indirect/` 하위 디렉토리는 `rtc_controllers` 예제 레이아웃이지 여기가 아니며, 지금은 어느 등록 호출도 그 경로를 lookup 하지 않는다)
 - **Agnostic defaults** — `rtc_mujoco_sim/config/solver_param.yaml` (MuJoCo solver SSoT), `rtc_digital_twin/config/digital_twin.yaml` (robot-agnostic display defaults), `udp_hand_driver/config/udp_hand_node.yaml` (UDP transport)
 
-**컨트롤러 YAML 이 어디서 로드되는가**: `RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, ...)` 의 2번째 인자가 lookup 경로의 하위 디렉토리를 정한다. `integrated_bringup` 의 데모 컨트롤러 3종은 `config_subdir` 로 빈 문자열을 넘기므로 `config/<robot>/controllers/<config_key>.yaml` 이 되고, `rtc_controllers` 예제만 `"direct"` / `"indirect"` 를 넘겨 하위 디렉토리를 갖는다. 문서가 예제 레이아웃을 production 레이아웃으로 서술하는 오류가 반복됐으므로 (#213) 새 컨트롤러 추가 시 등록 매크로의 인자를 먼저 확인한다.
+**컨트롤러 YAML 이 어디서 로드되는가**: `RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, ...)` 의 2번째 인자가 lookup 경로의 하위 디렉토리를 정한다. 저장소의 **모든** 등록 호출은 현재 `config_subdir` 로 빈 문자열을 넘기므로 (`integrated_bringup` 데모 3종 + CM 테스트) 경로는 `config/<robot>/controllers/<config_key>.yaml` 이 된다. `rtc_controllers/examples/controllers/{direct,indirect}/` 는 **파일만 있는 레퍼런스 레이아웃**이고 이를 lookup 하는 등록 호출은 없다 (#236 S7c 에서 어댑터가 삭제됨). 문서가 예제 레이아웃을 production 레이아웃으로 서술하는 오류가 반복됐으므로 (#213) 새 컨트롤러 추가 시 등록 매크로의 인자를 먼저 확인한다.
 
 - **Reference only** — `rtc_controllers/examples/controllers/{direct,indirect}/*.yaml` (`<robot>` placeholder, production 은 위 robot-specific path 가 owner)
 

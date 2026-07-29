@@ -25,7 +25,7 @@ Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_utils.hpp`
 **RT priority hierarchy**:
 
 ```
-90 rt_control (Core 1)  >  70 rt_callback (Core 2 + DDS recv co-pin)  >  60 mpc_main (Core 3)  >  55 mpc_workers (Core 4-5 on ≥ 10c)
+90 rt_control (Core 1)  >  70 rt_callback (Core 2 + DDS recv co-pin)  >  60 mpc_main (Core 3)  >  55 mpc_workers (Core 4 on 10c, Core 4-5 on ≥ 12c)
 ```
 
 - **Core 0 reserved** for OS / DDS / IRQ only — ≥ 6-core 모든 tier 에서 nrt_logging / nrt_callback 이 Core 0 와 분리 (v4.1)
@@ -129,7 +129,7 @@ controller-owned target sub 이 **default group** 에 붙는다는 점은 의도
 - **DeviceBackend-owned** — device-wire state/motor/sensor sub + joint/ros2 command pub, `devices.<group>.backend:` (sim.yaml/robot.yaml) 에서 선언
 - **CM fixed publishers** — `RtControllerNode` 가 hardcode 로 소유 (YAML 무관): per-group digital-twin `/rtc_cm/<group>/joint_states`, safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name` latched rewire trigger). 모두 lifecycle 무관 standalone publisher 로 active
 
-RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nrt_callback thread 가 read + ROS publish.
+RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT `nrt_publish_thread` 가 read + ROS publish.
 
 외부 도구 (BT, GUIs, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 구독 → switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire.
 
