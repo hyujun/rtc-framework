@@ -30,7 +30,9 @@ namespace rtc::params {
 /// Per-joint PD gains and the compensation switches (§ joint PD law).
 /// Arrays are sized to the fixed capacity kMaxRobotDOF so a 7-DOF+ arm is
 /// indexable without overrunning; the parser requires the YAML sequence length
-/// to equal the model DOF exactly (no silent truncation/padding — issue #172).
+/// to equal the model DOF exactly (no silent truncation/padding — issue #172),
+/// and rejects a model DOF above that capacity outright, which is what keeps
+/// "equal to nv" from meaning "past the end of the array" (#298 S7c-2).
 struct JointPdParams {
   std::array<double, kMaxRobotDOF> kp{
       {100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
@@ -44,17 +46,25 @@ struct JointPdParams {
 /// Parse the joint-PD YAML schema into @p out, updating @p command_type when the
 /// `command_type` key is present.
 ///
-/// @param cfg           controller config node; a null node is a no-op.
-/// @param nv            model DOF. `kp`/`kd` sequences must be exactly this long.
+/// @param cfg           controller config node; a null node parses nothing (but
+///                      does not skip the @p nv capacity check below — that one
+///                      is about the model, not the config).
+/// @param nv            model DOF, in [0, kMaxRobotDOF]. `kp`/`kd` sequences
+///                      must be exactly this long. Pass the EFFECTIVE DOF the
+///                      binding will drive, i.e. after any submodel selection.
 /// @param out           seeded with the caller's current values; only the keys
 ///                      present in @p cfg are overwritten.
 /// @param command_type  in/out — carries the caller's current command type in so
 ///                      the cross-field rule below can be evaluated against the
 ///                      value that will actually be in force.
 ///
-/// @throws std::runtime_error on a schema violation: a mis-sized gain sequence,
-///         or dynamics compensation requested on a non-torque command. The
-///         latter is a cross-FIELD rule, which is why it is validated here with
+/// @throws std::runtime_error on an @p nv outside the fixed capacity, on a
+///         mis-sized gain sequence, or on dynamics compensation requested on a
+///         non-torque command. The capacity case is checked first and is the
+///         only one an absent @p cfg still reaches — the gain arrays are indexed
+///         by @p nv, so accepting a wider model would corrupt memory rather than
+///         report a schema error (#298 S7c-2). The third is a cross-FIELD rule,
+///         which is why it is validated here with
 ///         the schema rather than at the use site — g and C·v are N·m and cannot
 ///         be added to a position/velocity command, and failing fast at configure
 ///         time beats silently dropping the terms every tick (issue #172).

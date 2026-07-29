@@ -9,6 +9,25 @@ namespace rtc::params {
 
 void ParseJointPdParams(const YAML::Node& cfg, int nv, JointPdParams& out,
                         CommandType& command_type) {
+  // Fixed-capacity bound, checked BEFORE the `if (!cfg)` return: `kp`/`kd` are
+  // kMaxRobotDOF-wide arrays and the loops below index them by the MODEL DOF, so
+  // a wider model overruns them. That is a property of the model, not of the
+  // YAML, which is why an absent config does not make it safe to skip. The
+  // deleted JointPDController carried this as a constructor fail-fast and its
+  // LoadConfig relied on it by name ("nv <= kMaxRobotDOF is already guaranteed
+  // by the constructor's capacity check"); nothing in this layer re-established
+  // it when the adapter went (#298 S7c-2).
+  //
+  // One difference from that constructor check, and it is a fix: this one sees
+  // the nv the CALLER passes, i.e. the effective DOF after submodel selection.
+  // The old one ran on the full system model, so a 14-DOF dual-arm URDF threw at
+  // construction before the reduction that would have brought it under the cap
+  // — see docs/compliance-conventions.md §3.5.
+  if (nv < 0 || nv > kMaxRobotDOF) {
+    throw std::runtime_error(
+        "joint_pd: model DOF nv=" + std::to_string(nv) +
+        " is outside the fixed gain capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
+  }
   if (!cfg) {
     return;
   }

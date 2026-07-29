@@ -115,6 +115,38 @@ TEST(JointPdSchema, AcceptsAndAppliesAnExactLengthSequence) {
   }
 }
 
+TEST(JointPdSchema, RejectsAModelWiderThanTheFixedCapacity) {
+  // The rule above ("sequence length == nv") is only safe while nv itself fits:
+  // kp/kd are kMaxRobotDOF-wide arrays that the parser indexes by the MODEL DOF.
+  // A 14-DOF dual-arm model with a matching 14-entry sequence satisfies the
+  // length check and then writes past the end of std::array<double, 12> — memory
+  // corruption reported as a clean parse. JointPDController rejected this in its
+  // constructor and its LoadConfig said so by name; the parser owns it now
+  // (#298 S7c-2).
+  const int too_wide = rtc::kMaxRobotDOF + 2;
+  std::string kp = "kp: [1";
+  for (int i = 1; i < too_wide; ++i) {
+    kp += ", 1";
+  }
+  kp += "]";
+
+  JointPdParams p;
+  auto ct = CommandType::kTorque;
+  EXPECT_THROW(ParseJointPdParams(YAML::Load(kp), too_wide, p, ct), std::runtime_error);
+
+  // The discriminating half: it is the MODEL that is rejected, not the YAML. An
+  // absent node reaches the same check, which is the case a binding with no
+  // config section actually hits — and the one a guard written below the
+  // `if (!cfg)` early return would sail straight past.
+  EXPECT_THROW(ParseJointPdParams(UndefinedNode(), too_wide, p, ct), std::runtime_error);
+
+  // Non-vacuity: exactly AT the capacity must still parse, or a guard that
+  // rejected everything would satisfy both cases above.
+  JointPdParams q;
+  auto ct2 = CommandType::kTorque;
+  EXPECT_NO_THROW(ParseJointPdParams(UndefinedNode(), rtc::kMaxRobotDOF, q, ct2));
+}
+
 TEST(JointPdSchema, DynamicsCompensationRequiresATorqueCommand) {
   // The cross-FIELD rule: g and C·v are N·m and cannot be added to a
   // position command. It is evaluated against the command type that will
@@ -302,12 +334,18 @@ TEST(OscSchema, AnUndefinedNodeKeepsTheRestButStillFloorsThePostureGains) {
   p.null_kd = -1.0;
   p.max_damping = 0.077;
   p.trajectory_speed = 0.33;
-  auto ct = CommandType::kTorque;
+  // Seeded kPosition, not kTorque: this is the value a value-initialised caller
+  // arrives with (kPosition is CommandType's first enumerator), and seeding the
+  // answer would make the command-type assertion below unable to fail.
+  auto ct = CommandType::kPosition;
   ASSERT_NO_THROW(ParseOscParams(UndefinedNode(), p, ct));
   EXPECT_DOUBLE_EQ(p.null_kp, 0.0) << "the `if (!cfg)` early return skipped the posture floor";
   EXPECT_DOUBLE_EQ(p.null_kd, 0.0);
   EXPECT_DOUBLE_EQ(p.max_damping, 0.077) << "an absent node must not reset the other fields";
   EXPECT_DOUBLE_EQ(p.trajectory_speed, 0.33);
+  EXPECT_EQ(ct, CommandType::kTorque)
+      << "the early return skipped the torque-only verdict — an OSC binding with no config "
+         "section would publish N·m tagged as a position command";
 }
 
 TEST(ClikSchema, FloorsTheSingularityGuardsAndPostureGain) {
@@ -613,6 +651,28 @@ TEST(TaskAdmittanceSchema, RequiresAWrenchSourceAndAPositionCommand) {
   EXPECT_EQ(c.command_type, CommandType::kPosition);
 }
 
+TEST(TaskAdmittanceSchema, AnUndefinedNodeStillFloorsThePostureGain) {
+  // The `if (!cfg)` early return — the branch every case above misses, because
+  // they all pass a LOADED node and so exercise the floor written BELOW that
+  // return. NUM-6's loader half is "regardless of whether the key is present",
+  // and an absent node is the widest case of that: the gain then comes from the
+  // constructor or a previous set_gains(), which are exactly the two paths the
+  // floor exists for. Deleting `FloorPostureGain` from this branch left the
+  // whole suite green — the impedance, OSC and CLIK parsers each pin their own
+  // copy of it and these two did not (#298 S7c-2).
+  TaskAdmittanceParams p;
+  p.nullspace_kp = -4.0;
+  p.pose_error_limit = 0.37;
+  TaskAdmittanceConfig c;
+  c.sensor_frame = "live_frame";
+  ASSERT_NO_THROW(ParseTaskAdmittanceParams(UndefinedNode(), p, c));
+  EXPECT_DOUBLE_EQ(p.nullspace_kp, 0.0)
+      << "a negative posture gain drives q̇₀ AWAY from the null-space target, and N hides that "
+         "from the task";
+  EXPECT_DOUBLE_EQ(p.pose_error_limit, 0.37) << "an absent node must not reset the other fields";
+  EXPECT_EQ(c.sensor_frame, "live_frame") << "config is not written on the early-return path";
+}
+
 // ── cascaded compliance ────────────────────────────────────────────────────
 
 TEST(CascadedComplianceSchema, RejectsOverLongSequences) {
@@ -673,6 +733,24 @@ TEST(CascadedComplianceSchema, RequiresAnExternalWrenchSourceAndATorqueCommand) 
       YAML::Load("external_wrench:\n  sensor_frame: ft_sensor\n"), p, c));
   EXPECT_EQ(c.sensor_frame, "ft_sensor") << "the frame must leave the parse layer UNRESOLVED";
   EXPECT_EQ(c.command_type, CommandType::kTorque);
+}
+
+TEST(CascadedComplianceSchema, AnUndefinedNodeStillFloorsThePostureGains) {
+  // The cascade half of the same gap — see the admittance case for why the
+  // early-return branch needs its own oracle. Both gains here, not just the
+  // stiffness: this schema carries a nullspace damping too, and a negative one
+  // injects energy rather than merely pointing the posture task the wrong way.
+  CascadedComplianceParams p;
+  p.nullspace_kp = -12.0;
+  p.nullspace_kd = -1.5;
+  p.max_torque_rate = 4321.0;
+  CascadedComplianceConfig c;
+  c.sensor_frame = "live_frame";
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(UndefinedNode(), p, c));
+  EXPECT_DOUBLE_EQ(p.nullspace_kp, 0.0);
+  EXPECT_DOUBLE_EQ(p.nullspace_kd, 0.0) << "a negative posture damping injects energy";
+  EXPECT_DOUBLE_EQ(p.max_torque_rate, 4321.0) << "an absent node must not reset the other fields";
+  EXPECT_EQ(c.sensor_frame, "live_frame") << "config is not written on the early-return path";
 }
 
 }  // namespace

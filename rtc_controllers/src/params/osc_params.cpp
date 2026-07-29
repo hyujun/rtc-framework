@@ -19,6 +19,15 @@ void ParseOscParams(const YAML::Node& cfg, OscParams& out, CommandType& command_
     // See the header: the floor runs even with no node at all (NUM-6).
     out.null_kp = joint::FloorPostureGain(out.null_kp);
     out.null_kd = joint::FloorPostureGain(out.null_kd);
+    // The torque-only verdict runs here too. The YAML path below assigns it
+    // UNCONDITIONALLY — the `command_type` key can only reject, never choose —
+    // so leaving it alone on this branch would make "no config section" the one
+    // way an OSC binding keeps a non-torque type for a law that emits N·m. It is
+    // not a hypothetical default either: CommandType's first enumerator is
+    // kPosition, so that is exactly what a value-initialised caller arrives
+    // with, and the adapter could not reach this because its command_type_ was a
+    // member fixed at kTorque (#298 S7c-2).
+    command_type = CommandType::kTorque;
     return;
   }
 

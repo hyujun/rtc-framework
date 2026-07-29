@@ -67,11 +67,14 @@ struct OscParams {
 /// exactly the two paths the floor exists for. Returning early would leave the
 /// caller reporting a gain the law refuses to run.
 ///
-/// @param command_type in/out — OSC is a torque controller; a `command_type` key
-///        that is not "torque" throws rather than silently mislabelling the
-///        output (position/velocity task control belongs to CLIK). Validated
-///        BEFORE the caller commits the parsed gains so a rejected reconfigure
-///        does not mutate live RT gains (issue #172).
+/// @param command_type out — OSC is a torque controller, so EVERY successful
+///        parse leaves this kTorque, including the null-@p cfg path above: the
+///        key can only reject, never choose, and a caller that arrives with the
+///        value-initialised kPosition must not keep it for a law that emits N·m.
+///        A `command_type` key that is not "torque" throws rather than silently
+///        mislabelling the output (position/velocity task control belongs to
+///        CLIK), and it throws before the assignment, so a rejected reconfigure
+///        does not mutate the caller's live command type (issue #172).
 /// @param retired optional; receives which retired keys were present.
 ///
 /// @throws std::runtime_error on a non-torque command_type.
