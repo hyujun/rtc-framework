@@ -64,6 +64,15 @@ using rtc::params::TaskSelection;
 
 constexpr int kNv = 6;
 
+// An *undefined* node — the "no YAML config at all" case the controller manager
+// hands a controller. This is NOT the same as a default-constructed `YAML::Node`,
+// which is a DEFINED Null: `operator bool` is true for it, so it sails past every
+// `if (!cfg)` early return and runs the full key-absent parse. Only this reaches
+// the early-return branch, and the two paths floor different things.
+YAML::Node UndefinedNode() {
+  return YAML::Node(YAML::NodeType::Undefined);
+}
+
 // ── joint PD: the gain-length rule, from both sides ─────────────────────────
 
 TEST(JointPdSchema, RejectsAnOverLongKpSequence) {
@@ -124,6 +133,66 @@ TEST(JointPdSchema, DynamicsCompensationRequiresATorqueCommand) {
   EXPECT_EQ(ct2, CommandType::kTorque);
 }
 
+// ── pre-migrated from test_controller_config.cpp (#298 S7c-2 3단계) ──────────
+//
+// The cases below were driven through JointPDController::LoadConfig / the CLIK
+// and OSC equivalents. Every one of them asserts something the SCHEMA owns, so
+// re-pointing them at the Parse free function is a change of driver, not of
+// contract — and it is what lets them outlive the adapter that is about to be
+// deleted. The halves that assert ADAPTER behaviour (set_gains() re-flooring,
+// get_gains() round-tripping, OnDeviceConfigsSet, the trajectory split) are not
+// migrated: they retire with their subject, with provenance in the delete
+// commit.
+
+TEST(JointPdSchema, ParsesEveryScalarAndFlagItIsGiven) {
+  // From JointPDConfig.LoadConfigParsesGainsAndFlags. This is the non-vacuity
+  // floor under every rejection case above: a parser that dropped the node
+  // wholesale would satisfy all of them.
+  JointPdParams p;
+  auto ct = CommandType::kPosition;
+  ASSERT_NO_THROW(ParseJointPdParams(YAML::Load(R"(
+kp: [1, 2, 3, 4, 5, 6]
+kd: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+enable_gravity_compensation: true
+enable_coriolis_compensation: true
+trajectory_speed: 2.5
+command_type: torque
+)"),
+                                     kNv, p, ct));
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_NEAR(p.kp[i], static_cast<double>(i + 1), 1e-12) << "kp[" << i << "]";
+    EXPECT_NEAR(p.kd[i], 0.1 * static_cast<double>(i + 1), 1e-12) << "kd[" << i << "]";
+  }
+  EXPECT_TRUE(p.enable_gravity_compensation);
+  EXPECT_TRUE(p.enable_coriolis_compensation);
+  EXPECT_DOUBLE_EQ(p.trajectory_speed, 2.5);
+  EXPECT_EQ(ct, CommandType::kTorque);
+}
+
+TEST(JointPdSchema, FloorsTheTrajectorySpeed) {
+  // From JointPDConfig.LoadConfigClampsTrajectorySpeedFloor. The law divides by
+  // this to get a segment duration, so a configured 0 is a division by zero, not
+  // "as fast as possible".
+  JointPdParams p;
+  auto ct = CommandType::kTorque;
+  ASSERT_NO_THROW(ParseJointPdParams(YAML::Load("trajectory_speed: 0.0"), kNv, p, ct));
+  EXPECT_GE(p.trajectory_speed, 1e-6);
+}
+
+TEST(JointPdSchema, AnUndefinedNodeLeavesEveryFieldAlone) {
+  // From JointPDConfig.LoadConfigNullNodeKeepsDefaults. Seeded with non-default
+  // values so "kept the defaults" cannot pass by the parser writing defaults
+  // back over them.
+  JointPdParams p;
+  p.kp[0] = 7.5;
+  p.trajectory_speed = 3.0;
+  auto ct = CommandType::kPosition;
+  ASSERT_NO_THROW(ParseJointPdParams(UndefinedNode(), kNv, p, ct));
+  EXPECT_DOUBLE_EQ(p.kp[0], 7.5);
+  EXPECT_DOUBLE_EQ(p.trajectory_speed, 3.0);
+  EXPECT_EQ(ct, CommandType::kPosition) << "a no-op parse must not rewrite the command type";
+}
+
 // ── OSC / CLIK: the guards that must survive the move ───────────────────────
 
 TEST(OscSchema, RejectsANonTorqueCommandType) {
@@ -172,6 +241,73 @@ TEST(OscSchema, ReportsTheRetiredDampingKeyInsteadOfSilentlyIgnoringIt) {
   rtc::params::OscRetiredKeys none;
   ASSERT_NO_THROW(ParseOscParams(YAML::Load("max_damping: 0.1"), p, ct, &none));
   EXPECT_FALSE(none.damping) << "a config using the CURRENT key must not be reported as retired";
+
+  // From OscConfig.RetiredDampingKeyIsIgnoredNotMapped: reporting is not the
+  // whole rule — the retired key must not be quietly aliased onto the ramp
+  // ceiling either. A constant λ and λ_max are different quantities.
+  OscParams q;
+  const double before_max = q.max_damping;
+  const double before_sigma = q.singularity_threshold;
+  auto ct2 = CommandType::kTorque;
+  ASSERT_NO_THROW(ParseOscParams(YAML::Load("damping: 0.01"), q, ct2));
+  EXPECT_DOUBLE_EQ(q.max_damping, before_max);
+  EXPECT_DOUBLE_EQ(q.singularity_threshold, before_sigma);
+}
+
+TEST(OscSchema, ParsesEveryGainItIsGiven) {
+  // From OscConfig.LoadConfigParsesAllGains — the non-vacuity floor under the
+  // floor/reject cases above.
+  OscParams p;
+  auto ct = CommandType::kTorque;
+  ASSERT_NO_THROW(ParseOscParams(YAML::Load(R"(
+kp_pos: [3.0, 3.0, 3.0]
+kd_pos: [0.2, 0.2, 0.2]
+kp_rot: [1.0, 1.0, 1.0]
+kd_rot: [0.1, 0.1, 0.1]
+max_damping: 0.05
+singularity_threshold: 0.03
+enable_gravity_compensation: true
+trajectory_speed: 0.15
+trajectory_angular_speed: 0.7
+max_traj_velocity: 0.6
+max_traj_angular_velocity: 1.2
+command_type: torque
+)"),
+                                 p, ct));
+  EXPECT_NEAR(p.kp_pos[0], 3.0, 1e-12);
+  EXPECT_NEAR(p.kd_pos[1], 0.2, 1e-12);
+  EXPECT_NEAR(p.kp_rot[2], 1.0, 1e-12);
+  EXPECT_NEAR(p.kd_rot[0], 0.1, 1e-12);
+  EXPECT_NEAR(p.max_damping, 0.05, 1e-12);
+  EXPECT_NEAR(p.singularity_threshold, 0.03, 1e-12);
+  EXPECT_TRUE(p.enable_gravity_compensation);
+  EXPECT_NEAR(p.trajectory_speed, 0.15, 1e-12);
+  EXPECT_NEAR(p.trajectory_angular_speed, 0.7, 1e-12);
+  EXPECT_NEAR(p.max_traj_velocity, 0.6, 1e-12);
+  EXPECT_NEAR(p.max_traj_angular_velocity, 1.2, 1e-12);
+  EXPECT_EQ(ct, CommandType::kTorque);
+}
+
+TEST(OscSchema, AnUndefinedNodeKeepsTheRestButStillFloorsThePostureGains) {
+  // From OscConfig.LoadConfigNullNodeKeepsDefaults and the closing half of
+  // OscConfig.PostureGainsAreFlooredAndTheFloorSurvivesSetGains.
+  //
+  // This is the branch FloorsThePostureGainsEvenWithNoNodeAtAll does NOT reach:
+  // that one passes `YAML::Node()`, a DEFINED Null, which runs the full parse
+  // with every key absent. An UNDEFINED node takes the `if (!cfg)` early return
+  // instead, and a floor written only below that return leaves a negative gain
+  // in the POD — reported by get_gains(), refused by the law.
+  OscParams p;
+  p.null_kp = -8.0;
+  p.null_kd = -1.0;
+  p.max_damping = 0.077;
+  p.trajectory_speed = 0.33;
+  auto ct = CommandType::kTorque;
+  ASSERT_NO_THROW(ParseOscParams(UndefinedNode(), p, ct));
+  EXPECT_DOUBLE_EQ(p.null_kp, 0.0) << "the `if (!cfg)` early return skipped the posture floor";
+  EXPECT_DOUBLE_EQ(p.null_kd, 0.0);
+  EXPECT_DOUBLE_EQ(p.max_damping, 0.077) << "an absent node must not reset the other fields";
+  EXPECT_DOUBLE_EQ(p.trajectory_speed, 0.33);
 }
 
 TEST(ClikSchema, FloorsTheSingularityGuardsAndPostureGain) {
@@ -182,6 +318,70 @@ TEST(ClikSchema, FloorsTheSingularityGuardsAndPostureGain) {
   EXPECT_GT(p.max_damping, 0.0);
   EXPECT_GT(p.singularity_threshold, 0.0);
   EXPECT_DOUBLE_EQ(p.null_kp, 0.0);
+
+  // From ClikConfig.LoadConfigFloorsBothEndsOfTheDlsRamp: negative is the same
+  // failure with a sign, because AdaptiveDampingSquared's short-circuit is
+  // `sigma0 <= 0` — zero alone does not discriminate a `> 0` guard from a `>= 0`
+  // one.
+  ASSERT_NO_THROW(ParseClikParams(YAML::Load("singularity_threshold: -1.0"), p, ct));
+  EXPECT_GT(p.singularity_threshold, 0.0);
+
+  // From ClikConfig.NegativePostureGainIsFlooredAndTheFloorSurvivesSetGains
+  // (its schema half): a floor, not a rewrite. Without this a parser that
+  // hard-zeroed null_kp would satisfy the assertion above.
+  ASSERT_NO_THROW(ParseClikParams(YAML::Load("null_kp: 0.8"), p, ct));
+  EXPECT_DOUBLE_EQ(p.null_kp, 0.8);
+}
+
+TEST(ClikSchema, ParsesEveryGainItIsGiven) {
+  // From ClikConfig.LoadConfigParsesAllGains.
+  ClikParams p;
+  auto ct = CommandType::kTorque;
+  ASSERT_NO_THROW(ParseClikParams(YAML::Load(R"(
+kp_translation: [2.0, 3.0, 4.0]
+kp_rotation: [1.1, 1.2, 1.3]
+max_damping: 0.02
+singularity_threshold: 0.03
+null_kp: 0.8
+enable_null_space: true
+control_6dof: true
+trajectory_speed: 0.2
+trajectory_angular_speed: 0.6
+max_traj_velocity: 0.8
+max_traj_angular_velocity: 1.5
+command_type: position
+)"),
+                                  p, ct));
+  EXPECT_NEAR(p.kp_translation[0], 2.0, 1e-12);
+  EXPECT_NEAR(p.kp_translation[2], 4.0, 1e-12);
+  EXPECT_NEAR(p.kp_rotation[1], 1.2, 1e-12);
+  EXPECT_NEAR(p.max_damping, 0.02, 1e-12);
+  EXPECT_NEAR(p.singularity_threshold, 0.03, 1e-12);
+  EXPECT_NEAR(p.null_kp, 0.8, 1e-12);
+  EXPECT_TRUE(p.enable_null_space);
+  EXPECT_TRUE(p.control_6dof);
+  EXPECT_NEAR(p.trajectory_speed, 0.2, 1e-12);
+  EXPECT_NEAR(p.trajectory_angular_speed, 0.6, 1e-12);
+  EXPECT_NEAR(p.max_traj_velocity, 0.8, 1e-12);
+  EXPECT_NEAR(p.max_traj_angular_velocity, 1.5, 1e-12);
+  // Unlike OSC this law runs in either domain, so the key decides and nothing is
+  // rejected.
+  EXPECT_EQ(ct, CommandType::kPosition);
+}
+
+TEST(ClikSchema, AnUndefinedNodeKeepsTheRestButStillFloorsThePostureGain) {
+  // From ClikConfig.LoadConfigNullNodeKeepsDefaults and the closing half of
+  // ClikConfig.NegativePostureGainIsFlooredAndTheFloorSurvivesSetGains. See the
+  // OSC twin for why an UNDEFINED node is a different branch from `YAML::Node()`.
+  ClikParams p;
+  p.null_kp = -0.8;
+  p.max_damping = 0.077;
+  p.singularity_threshold = 0.055;
+  auto ct = CommandType::kPosition;
+  ASSERT_NO_THROW(ParseClikParams(UndefinedNode(), p, ct));
+  EXPECT_DOUBLE_EQ(p.null_kp, 0.0) << "the `if (!cfg)` early return skipped the posture floor";
+  EXPECT_DOUBLE_EQ(p.max_damping, 0.077) << "an absent node must not reset the other fields";
+  EXPECT_DOUBLE_EQ(p.singularity_threshold, 0.055);
 }
 
 TEST(ClikSchema, ReportsTheRetiredDampingKey) {
@@ -190,6 +390,16 @@ TEST(ClikSchema, ReportsTheRetiredDampingKey) {
   rtc::params::ClikRetiredKeys retired;
   ASSERT_NO_THROW(ParseClikParams(YAML::Load("damping: 0.1"), p, ct, &retired));
   EXPECT_TRUE(retired.damping);
+
+  // From ClikConfig.RetiredDampingKeyIsIgnoredNotMapped: reported, and not
+  // aliased onto the ramp ceiling behind the report.
+  ClikParams q;
+  const double before_max = q.max_damping;
+  const double before_sigma = q.singularity_threshold;
+  auto ct2 = CommandType::kPosition;
+  ASSERT_NO_THROW(ParseClikParams(YAML::Load("damping: 0.01"), q, ct2));
+  EXPECT_DOUBLE_EQ(q.max_damping, before_max);
+  EXPECT_DOUBLE_EQ(q.singularity_threshold, before_sigma);
 }
 
 // ── compliance 3종 (S7c-2) ──────────────────────────────────────────────────
