@@ -4,6 +4,7 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
+#include "rtc_controllers/compliance/task_dynamics.hpp"  // FloorMaxDamping, kMinSigma0
 #include "rtc_controllers/gain_floor.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
@@ -447,13 +448,37 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
   // The trajectory feedforward velocity (trajectory local → Jacobian frame) is
   // computed once and reused for both the CLIK command dq_ and the log-only
   // feedforward traj_dq_, so the frame rotation runs a single time per tick.
-  if (gains.control_6dof) {
-    JJt_6d_.noalias() = J_full_ * J_full_.transpose();
-    JJt_6d_.diagonal().array() += gains.damping * gains.damping;
-    ldlt_6d_.compute(JJt_6d_);
-    JJt_inv_6d_.noalias() = ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
-    Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
+  // §6.5 σ_min-adaptive DLS (#282). λ_max is floored HERE and not only in
+  // LoadConfig because `set_gains()` and the parameter callback write the Gains
+  // POD straight into the SeqLock and bypass configure entirely — NUM-1's
+  // point-of-use half, whose first in-tree consumer this is.
+  const double lambda_max = rtc::compliance::FloorMaxDamping(gains.max_damping);
+  const rtc::compliance::DifferentialIk::Result ik =
+      gains.control_6dof ? ik_6d_.Compute(J_full_, gains.singularity_threshold, lambda_max)
+                         : ik_3d_.Compute(J_pos_, gains.singularity_threshold, lambda_max);
+  if (!ik.ok) {
+    // A non-finite Jacobian — a NaN joint state that reached FK. J⁺ and N still
+    // hold the PREVIOUS tick's contents by contract, so solving with them would
+    // command a plausible-looking velocity derived from a stale inverse. Hold
+    // explicitly instead, the same shape the frame-transition kHoldExternal
+    // branch above uses: zero dq_ and let WriteArmJointCommand integrate it onto
+    // a desired_q_ that tracks the measurement. Deliberately not
+    // rtc::SilenceDeviceOutput — that answers the F5 question ("was the device
+    // readable"), and the device IS readable here; the Jacobian is not.
+    dq_.setZero();
+    traj_dq_.setZero();
+    const std::size_t nhold = ArmCommandBound(dev0.num_channels);
+    for (std::size_t i = 0; i < nhold; ++i) {
+      desired_q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
+    }
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "task CLIK held: non-finite Jacobian (control_6dof=%d) — "
+                         "J+ would be stale, holding arm at measurement",
+                         static_cast<int>(gains.control_6dof));
+    return;
+  }
 
+  if (gains.control_6dof) {
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
     for (std::size_t i = 0; i < 3; ++i) {
       kp_vec_6d[static_cast<Eigen::Index>(i)] = gains.kp_translation[i];
@@ -474,15 +499,14 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
 
     const Eigen::Matrix<double, 6, 1> task_vel_6d =
         kp_vec_6d.cwiseProduct(pos_error_6d_) + ff_vel_6d;
-    dq_.noalias() = Jpinv_6d_ * task_vel_6d;
-    traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
+    // Two-argument Solve, not Solve(twist, zero, out): the 6-DOF branch has no
+    // posture task at all (the null-space block below is gated on
+    // `!control_6dof`), and `+= N·0` is a full nv×nv product whose result is not
+    // the identity on a signed zero. Adding it would be both RT work and a
+    // bitwise change for nothing.
+    ik_6d_.Solve(task_vel_6d, dq_);
+    ik_6d_.Solve(ff_vel_6d, traj_dq_);
   } else {
-    JJt_.noalias() = J_pos_ * J_pos_.transpose();
-    JJt_.diagonal().array() += gains.damping * gains.damping;
-    ldlt_.compute(JJt_);
-    JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
-    Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
-
     Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
                            gains.kp_translation[2]);
     Eigen::Vector3d ff_lin;
@@ -494,33 +518,39 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
       ff_lin = traj_state_.pose.rotation() * traj_state_.velocity.linear();
     }
     const Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + ff_lin;
-    dq_.noalias() = Jpinv_ * task_vel;
-    traj_dq_.noalias() = Jpinv_ * ff_lin;
-  }
 
-  // ── Null-space secondary task ──────────────────────────────────────────
-  // null_dq = (I − Jpinv·J)·null_err = null_err − Jpinv·(J·null_err). Computing
-  // it this way avoids materialising the nv×nv projector N (and the Jpinv·J
-  // matmul) — only two matrix-vector products remain.
-  if (gains.enable_null_space && !gains.control_6dof) {
-    for (Eigen::Index i = 0; i < arm_handle_->nv(); ++i) {
-      null_err_[i] = current_target_slot_.null_target[static_cast<std::size_t>(i)] -
-                     dev0.positions[static_cast<std::size_t>(i)];
+    // ── Null-space secondary task ────────────────────────────────────────
+    // Folded into this branch (#282): the gate WAS `enable_null_space &&
+    // !control_6dof`, and inside the else the second half is already true.
+    // q̇ = J⁺·task_vel + N·q̇_null now happens in one Solve — the old spelling
+    // computed null_err − J⁺(J·null_err) to avoid materialising the nv×nv
+    // projector, and there is nothing left to avoid because Compute() forms N
+    // either way.
+    if (gains.enable_null_space) {
+      for (Eigen::Index i = 0; i < arm_handle_->nv(); ++i) {
+        qdot_null_[i] = current_target_slot_.null_target[static_cast<std::size_t>(i)] -
+                        dev0.positions[static_cast<std::size_t>(i)];
+      }
+      // NUM-6 at the point of use (#277). This gate never reads the gain, so
+      // the floor goes straight on the gain rather than in front of the gate.
+      // (The retired ClikController adapter placed it identically — #236 S7c
+      // deleted the class, not the placement rule, whose SSoT is
+      // agent_docs/modification-guide.md §Adding a New Controller item 5.)
+      // LoadConfig and the `null_kp` parameter callback floor it too; this half
+      // covers neither, because the gain reaches the SeqLock POD from both and
+      // a negative K_p drives the posture AWAY from its target while N hides
+      // that from the Cartesian task.
+      //
+      // The gain now scales q̇_null BEFORE the projection instead of the
+      // projected result after it. N is linear, so the two agree algebraically
+      // and differ only in rounding; the shared law takes q̇_null as its
+      // argument, which is what fixes the order.
+      qdot_null_ *= rtc::FloorNonNegativeGain(gains.null_kp);
+      ik_3d_.Solve(task_vel, qdot_null_, dq_);
+    } else {
+      ik_3d_.Solve(task_vel, dq_);
     }
-    const Eigen::Vector3d j_nerr = J_pos_ * null_err_;
-    null_dq_.noalias() = Jpinv_ * j_nerr;
-    null_dq_ = null_err_ - null_dq_;
-    // NUM-6 at the point of use (#277). This gate is `enable_null_space &&
-    // !control_6dof` and never reads the gain, so the floor goes straight on
-    // the gain rather than in front of the gate. (The retired ClikController
-    // adapter placed it identically — #236 S7c deleted the class, not the
-    // placement rule, whose SSoT is agent_docs/modification-guide.md §Adding a
-    // New Controller item 5.) LoadConfig and the `null_kp` parameter
-    // callback floor it too; this half covers neither, because the gain reaches
-    // the SeqLock POD from both and a negative K_p drives the posture AWAY from
-    // its target while (I − J⁺J) hides that from the Cartesian task.
-    null_dq_ *= rtc::FloorNonNegativeGain(gains.null_kp);
-    dq_ += null_dq_;
+    ik_3d_.Solve(ff_lin, traj_dq_);
   }
 }
 

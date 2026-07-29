@@ -37,8 +37,12 @@
 // Neither adapter is instantiated outside rtc_controllers: integrated_bringup
 // registers demo_joint/task/wbc_controller and nothing else, so runtime exposure
 // is zero (#236 R1/D-S2b). The wired sixth copy of this law —
-// demo_task_controller's own inline DLS — is deliberately NOT touched here; it
-// is a binding, and S7 owns it.
+// demo_task_controller's own inline DLS — is deliberately NOT covered here; it
+// is a binding, and #282 migrated it under its own harness
+// (integrated_bringup/test/test_task_dls_convergence.cpp). That one could not
+// borrow this file's tier-2 bound: it was an LDLT of a materialised inverse
+// rather than an LLT, and it ships on three robots, so the number was measured
+// again rather than inherited.
 
 // no_malloc_scope.hpp MUST precede every Eigen header — it installs the Eigen
 // allocation tripwire by defining EIGEN_RUNTIME_NO_MALLOC and its own

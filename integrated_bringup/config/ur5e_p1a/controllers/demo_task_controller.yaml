@@ -2,7 +2,11 @@ demo_task_controller:
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
   kp_translation: [5.0, 5.0, 5.0]         # Translation proportional gain (x, y, z) [1/s]
   kp_rotation: [2.0, 2.0, 2.0]            # Rotation proportional gain (rx, ry, rz) [1/s]
-  damping: 0.01                       # Damped pseudoinverse lambda (singularity stabilization)
+  # §6.5 σ_min-adaptive DLS (#282). These replaced a single constant λ
+  # (`damping`), which is retired: a constant λ and the ceiling of a ramp are
+  # not the same quantity, so it is reported and ignored rather than mapped.
+  singularity_threshold: 0.02         # σ₀ — damping engages below this σ_min(J)
+  max_damping: 0.05                   # λ_max — ceiling of the §6.5 ramp
 
   # ── Null-space configuration ────────────────────────────────────────────────
   enable_null_space: false            # Enable null-space joint centering

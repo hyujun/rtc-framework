@@ -99,10 +99,10 @@ CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->Pu
 
 **`rtc_controllers` 쪽은 끝났다.** 이 패키지에는 `RTControllerInterface` 구체 구현이 없고 `package.xml` 도 `rtc_controller_interface` 를 의존하지 않는다 (issue #236 슬라이스 S1–S7: 법칙별 코어 추출 → G1 글루 base 상향 → 상속 클래스 삭제). 수는 여기 박제하지 않는다 — `grep -rn "public RTControllerInterface" rtc_controllers/include` 와 `grep -n rtc_controller_interface rtc_controllers/package.xml` 이 **둘 다 비어야** 한다 (AP-DOC-1).
 
-**끝나지 않은 것은 3계층 배치 자체다.** 위 완료형은 *`rtc_controllers` 에 한정*한다 — 바인딩 쪽에는 코어로 수렴하지 않은 인라인 사본이 남아 있다 (예: `demo_task_controller` 의 상수-λ DLS, #282).
+**끝나지 않은 것은 3계층 배치 자체다.** 위 완료형은 *`rtc_controllers` 에 한정*한다. 오래 예로 들던 `demo_task_controller` 의 상수-λ DLS 는 **#282 에서 `compliance::DifferentialIk` 로 수렴했고**, 이제 `grep -rn "diagonal().array() +=\|LDLT<\|LLT<\|Jpinv" integrated_bringup/src integrated_bringup/include` 는 **0건**이다 — 바인딩에 남은 인라인 **DLS/pseudoinverse** 사본은 없다. 다만 이것이 3계층 배치 전체의 완료를 뜻하지는 않는다: DLS 가 아닌 다른 법칙까지 감사한 뒤라야 완료형으로 쓸 수 있다 (그 판정은 `#236` 종결 작업 소관).
 
 - 규칙은 **새 코드에 즉시 구속**된다. 새 제어 법칙은 코어로 쓰고, 필요하면 바인딩을 integration 패키지에 만든다.
-- 바인딩에 남은 인라인 사본의 코어 수렴은 issue #282 가 담당한다.
+- DLS 축의 코어 수렴은 issue #282 가 **완료**했다. 나머지 법칙의 잔여 감사는 `#236` 종결 작업이 담당한다.
 - **이 문서의 근거 문단에 나오는 어댑터 클래스명**(`ClikController` · `TaskImpedanceController` · `TaskAdmittanceController` 등)**은 S1–S7 슬라이스가 판정을 내리던 시점의 대상이다** — 지금 코드에 없다. 그 판정이 왜 그렇게 났는지는 여전히 유효하므로 남겨 두되, 살아 있는 코드로 읽지 않는다.
 - 문서는 **"`rtc_controllers` 는 순수하다 / 더 이상 상속하지 않는다"를 완료형으로 서술해도 된다** (2026-07-29 부터 — 그 전까지는 금지였다). 여전히 완료형으로 쓰지 않는 것은 **"3계층 배치가 끝났다"** 쪽이다: 범위가 다른 두 문장이고, 후자는 아직 거짓이라 쓰는 순간 문서-코드 불일치를 새로 만든다 ([CLAUDE.md](../CLAUDE.md) §6 E-9).
 

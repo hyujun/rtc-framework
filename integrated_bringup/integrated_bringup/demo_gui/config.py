@@ -246,7 +246,8 @@ HAND_TAUFF_SOURCES = ["gravity_comp", "tsid_tau"]
 #       robot_max_traj_vel, hand_max_traj_vel,
 #       grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips,
 #       grasp_cmd, grasp_target_force]
-#   DemoTask wire order:  [kp_translation x3, kp_rotation x3, damping, null_kp,
+#   DemoTask wire order:  [kp_translation x3, kp_rotation x3,
+#       singularity_threshold, max_damping, null_kp,
 #       enable_null_space(0/1), control_6dof(0/1),
 #       traj_speed, traj_angular_speed, hand_traj_speed,
 #       max_traj_vel, max_traj_angular_vel, hand_max_traj_vel,
@@ -265,7 +266,10 @@ GAIN_DEFS = {
     "demo_task_controller": [
         ("kp_translation", 3, [5.0] * 3, False, "CLIK Gains"),
         ("kp_rotation", 3, [2.0] * 3, False, "CLIK Gains"),
-        ("damping", 1, [0.01], False, "CLIK Gains"),
+        # §6.5 DLS pair (#282) — replaced the retired constant-lambda
+        # "damping" parameter, which the controller no longer declares.
+        ("singularity_threshold", 1, [0.02], False, "CLIK Gains"),
+        ("max_damping", 1, [0.05], False, "CLIK Gains"),
         ("null_kp", 1, [0.5], False, "CLIK Gains"),
         ("null_space", 1, [1], True, "CLIK Gains"),
         ("control_6dof", 1, [0], True, "CLIK Gains"),
@@ -351,7 +355,8 @@ GAIN_PARAM_DISPATCH: dict[str, dict[str, tuple[str, callable]]] = {
     "demo_task_controller": {
         "kp_translation": ("kp_translation", _set_double_array),
         "kp_rotation": ("kp_rotation", _set_double_array),
-        "damping": ("damping", _set_double),
+        "singularity_threshold": ("singularity_threshold", _set_double),
+        "max_damping": ("max_damping", _set_double),
         "null_kp": ("null_kp", _set_double),
         "null_space": ("enable_null_space", _set_bool),
         "control_6dof": ("control_6dof", _set_bool),

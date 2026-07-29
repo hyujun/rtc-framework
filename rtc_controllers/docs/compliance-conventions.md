@@ -380,8 +380,10 @@ hold-invalidate 가 은퇴시켰다. 새 바인딩이 그 두 조건 중 하나�
 이관은 **비트 동일이 아니다** — `## 검증 전략` 이 요구하는 "발생 지점마다 (왜 / 차이 상한 /
 무해 근거)" 기록이 아래 표다. 감당 근거는 **두 어댑터 모두 bringup 배선이 0** 이라는 것이다
 (`integrated_bringup` 은 `demo_joint`/`demo_task`/`demo_wbc` 만 등록한다). 배선된 여섯 번째
-사본인 `demo_task_controller` 의 인라인 DLS 는 **바인딩이므로 S7 소관**이고 여기서 건드리지
-않았다.
+사본인 `demo_task_controller` 의 인라인 DLS 는 **바인딩이므로** 여기서 건드리지 않았고,
+**#282 에서 같은 2-티어 형식으로 별도 이관됐다** — 그쪽은 배선이 0 이 아니라 출하 로봇 3종이므로
+티어 2 상한을 인용하지 않고 다시 실측했다 (LDLT→LLT 는 여기 CLIK 의 LLT→LLT 와 다른 반올림
+프로파일이다). 하네스는 `integrated_bringup/test/test_task_dls_convergence.cpp`.
 
 차이는 **두 티어**이고 섞으면 센서가 vacuous 해진다.
 

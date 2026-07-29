@@ -122,7 +122,7 @@ integrated_bringup/
 ```
 ur5e_p1a/_base.yaml                            controller.yaml
 ┌──────────────────────────┐               ┌────────────────┐
-│ urdf:                    │               │ kp, damping,   │
+│ urdf:                    │               │ kp, max_damping│
 │   package + path ────────┼──(urdf)──→    │ trajectory_    │
 │   sub_models:            │               │ speed, ...     │
 │     - name: "ur5e"       │               └────────────────┘
@@ -333,7 +333,9 @@ q_cmd  = q_des
 |---------|------------|------|
 | `kp_translation` | `[5.0, 5.0, 5.0]` | 위치 비례 게인 (x, y, z) [1/s] — **정확히 3원소** 시퀀스여야 하고 과다·미달·스칼라는 configure 실패 (#302). `ros2 param` 콜백이 이미 강제하던 계약을 YAML 로더도 따른다 |
 | `kp_rotation` | `[2.0, 2.0, 2.0]` | 자세 비례 게인 (rx, ry, rz) [1/s] — 같은 길이 계약 |
-| `damping` | `0.01` | 의사역행렬 감쇠 계수 lambda |
+| `singularity_threshold` | `0.02` | σ₀ — `σ_min(J) < σ₀` 에서만 §6.5 DLS 감쇠가 붙기 시작. 로더·`ros2 param` 콜백이 `rtc::compliance::kMinSigma0` (1e-6) 로 floor — σ₀ ≤ 0 은 셸을 좁히는 게 아니라 λ²=0 을 상시 반환해 §6.5 를 **끈다** (NUM-2) |
+| `max_damping` | `0.05` | λ_max — §6.5 램프의 상한. 로더·콜백·**사용 지점(tick)** 셋 다 `rtc::compliance::FloorMaxDamping` 으로 floor (NUM-1; `set_gains()` 는 SeqLock 에 POD 를 직접 써 configure 를 우회하므로 tick half 가 필요하다). 비유한 값은 세탁하지 않고 그대로 통과시켜 하류 finite 검사로 보낸다 |
+| ~~`damping`~~ | — | **은퇴 (#282).** 상수 λ 를 지정하던 키. 남아 있으면 **경고 후 무시**되며 `max_damping` 으로 매핑되지 않는다 — 상수 λ 와 램프의 상한은 같은 양이 아니라 어떤 매핑도 추측이 되기 때문 (`rtc_controllers` 의 다섯 스키마가 #236 S2b/S3b 에서 같은 판정을 내렸다). 지우고 위 두 키를 명시할 것 |
 | `null_kp` | `0.5` | 영공간 관절 센터링 게인 — YAML 로더·`ros2 param` 콜백·사용 지점 모두 `rtc::FloorNonNegativeGain` floor (NUM-6, #277). 음수는 posture 를 목표에서 **멀어지는** 방향으로 몰고 `(I − J⁺J)` 가 그걸 task 로부터 가려 fault 없는 조용한 drift 가 된다 |
 | `enable_null_space` | `false` | 영공간 활성화 (3-DOF 모드에서만 동작) |
 | `control_6dof` | `true` | 6-DOF 제어 활성화 |
@@ -350,8 +352,8 @@ q_cmd  = q_des
 | `fsm.contact_stop_lpf_cutoff_hz` | `20.0` Hz | contact_stop latch hold 위치 Bessel LPF cutoff. 범위 (0, control_rate/2) (선택 키, 기본 Gains 값) |
 | `command_type` | `"position"` | 출력 타입 — `"position"` (PD 위치 추종) / `"torque"` (직접 토크) / `"pd_feedforward"` (PD 위치 + τ_ff, mujoco_sim 은 qfrc_applied 주입·중력보상 off) |
 
-**게인 업데이트 레이아웃 (16개 요소):**
-`[kp_trans*3, kp_rot*3, damping, null_kp, enable_null(0/1), control_6dof(0/1), traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]`
+**게인 업데이트 레이아웃 (17개 요소):**
+`[kp_trans*3, kp_rot*3, singularity_threshold, max_damping, null_kp, enable_null(0/1), control_6dof(0/1), traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]`
 
 #### Virtual TCP (핑거팁 기반 제어점)
 
@@ -746,7 +748,7 @@ GUI 시작 시:
 |---|---|---|---|
 | `demo_joint_controller` | Arm/Hand Trajectory | `robot_trajectory_speed`, `hand_trajectory_speed` | `robot_max_traj_velocity`, `hand_max_traj_velocity` |
 | `demo_joint_controller` | Grasp Detection | `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips` | — |
-| `demo_task_controller` | CLIK Gains | `kp_translation` (×3), `kp_rotation` (×3), `damping`, `null_kp`, `enable_null_space`, `control_6dof` | — |
+| `demo_task_controller` | CLIK Gains | `kp_translation` (×3), `kp_rotation` (×3), `singularity_threshold`, `max_damping`, `null_kp`, `enable_null_space`, `control_6dof` | — |
 | `demo_task_controller` | Arm/Hand Trajectory | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed` | `max_traj_velocity`, `max_traj_angular_velocity`, `hand_max_traj_velocity` |
 | `demo_task_controller` | Grasp Detection | (joint 와 동일) | — |
 | `demo_wbc_controller` | Arm/Hand Trajectory | `arm_trajectory_speed`, `hand_trajectory_speed` | `arm_max_traj_velocity`, `hand_max_traj_velocity` |

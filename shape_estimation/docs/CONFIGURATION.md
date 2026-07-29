@@ -69,7 +69,8 @@ shape_estimation_node의 모든 파라미터, 튜닝 가이드, 시나리오별 
 |-----------|------|---------|-------------|
 | `exploration.exploration_gains.kp_translation` | double[3] | [10, 10, 10] | 위치 비례 게인 |
 | `exploration.exploration_gains.kp_rotation` | double[3] | [5, 5, 5] | 회전 비례 게인 |
-| `exploration.exploration_gains.damping` | double | 0.01 | Damped pseudoinverse 감쇠 |
+| `exploration.exploration_gains.singularity_threshold` | double | 0.02 | σ₀: §6.5 DLS 감쇠가 붙기 시작하는 σ_min(J) |
+| `exploration.exploration_gains.max_damping` | double | 0.05 | λ_max: §6.5 램프의 상한 (상수 λ `damping` 은 #282 에서 은퇴) |
 | `exploration.exploration_gains.null_kp` | double | 0.0 | Null-space 게인 |
 | `exploration.exploration_gains.enable_null_space` | bool | false | Null-space 활성화 |
 | `exploration.exploration_gains.control_6dof` | bool | true | 6-DOF 제어 (위치+자세) |

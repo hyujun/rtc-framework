@@ -5,7 +5,9 @@ demo_task_controller:
   # ── CLIK gains ─────────────────────────────────────────────────────────────
   kp_translation: [5.0, 5.0, 5.0]
   kp_rotation: [2.0, 2.0, 2.0]
-  damping: 0.01
+  # §6.5 σ_min-adaptive DLS (#282) — replaced the retired constant λ `damping`.
+  singularity_threshold: 0.02   # σ₀
+  max_damping: 0.05             # λ_max
 
   # ── Null-space ─────────────────────────────────────────────────────────────
   # iiwa7 is 7-DoF → null-space exists; off by default, enable for redundancy

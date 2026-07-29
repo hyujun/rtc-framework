@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "rtc_controllers/compliance/task_dynamics.hpp"  // FloorMaxDamping, kMinSigma0
 #include "rtc_controllers/gain_floor.hpp"
 
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -74,8 +75,14 @@ void DemoTaskController::DeclareGainParameters() noexcept {
     g.kp_rotation[i] = kp_r[i];
   }
 
-  g.damping =
-      declare_double("damping", g.damping, "Damped pseudoinverse lambda (singularity stab.)");
+  // §6.5 DLS (#282). The retired `damping` is NOT declared — leaving it would
+  // give `ros2 param set … damping` a parameter that accepts a value and
+  // changes nothing, which is worse than the error a missing name produces.
+  g.singularity_threshold = std::max(
+      rtc::compliance::kMinSigma0, declare_double("singularity_threshold", g.singularity_threshold,
+                                                  "σ₀: DLS damping engages below this σ_min(J)"));
+  g.max_damping = rtc::compliance::FloorMaxDamping(
+      declare_double("max_damping", g.max_damping, "λ_max: ceiling of the §6.5 DLS ramp"));
   g.null_kp = declare_double("null_kp", g.null_kp, "Null-space joint-centering gain [1/s]");
   g.enable_null_space =
       declare_bool("enable_null_space", g.enable_null_space, "Enable null-space secondary task");
@@ -152,8 +159,18 @@ rcl_interfaces::msg::SetParametersResult DemoTaskController::OnGainParametersSet
           g.kp_rotation[i] = v[i];
         }
         gains_dirty = true;
-      } else if (name == "damping") {
-        g.damping = p.as_double();
+      } else if (name == "singularity_threshold") {
+        // NUM-2 floor, here because this is the only surface that reaches σ₀ at
+        // runtime. σ₀ ≤ 0 does not narrow the shell — AdaptiveDampingSquared
+        // short-circuits and returns λ² = 0 for EVERY σ_min, i.e. it disarms
+        // §6.5 everywhere rather than making it stricter.
+        g.singularity_threshold = std::max(rtc::compliance::kMinSigma0, p.as_double());
+        gains_dirty = true;
+      } else if (name == "max_damping") {
+        // NUM-1 λ_max floor. ComputeControl applies it again on the tick —
+        // set_gains() writes the POD straight into the SeqLock and never passes
+        // through here, so neither half covers the other.
+        g.max_damping = rtc::compliance::FloorMaxDamping(p.as_double());
         gains_dirty = true;
       } else if (name == "null_kp") {
         // NUM-6 (#277) — the same floor LoadConfig applies, here because this is

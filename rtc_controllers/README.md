@@ -13,7 +13,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 >
 > **이 패키지의 어댑터는 #236 S7c 에서 제거됐습니다.** 검증은 개수 박제가 아니라 grep 입니다 — `grep -rn "public RTControllerInterface" include/` 와 `grep -n rtc_controller_interface package.xml` 이 모두 비어야 합니다. 남은 것은 법칙(`compliance/*` · `joint/*` · `task/*`), 그 YAML 스키마(`params/*` — POD + `ParseXxxParams` 자유함수, rclcpp-free), 그리고 `grasp/`·`trajectory/` 입니다.
 >
-> **단 3계층 배치 전이 자체는 아직 진행 중입니다** — 위 문장은 *이 패키지*에 한정되며, 바인딩 쪽에 남은 인라인 사본(예: `demo_task_controller` 의 상수-λ DLS, #282)은 별개입니다. 전이 현황의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §현황 입니다.
+> **단 3계층 배치 전이 자체는 아직 진행 중입니다** — 위 문장은 *이 패키지*에 한정됩니다. 오래 예로 들던 `demo_task_controller` 의 상수-λ DLS 는 #282 에서 이 패키지의 `compliance::DifferentialIk` 로 수렴했고, 바인딩에 남은 인라인 DLS 사본은 이제 없습니다. 전이 현황의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §현황 입니다.
 
 > **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
