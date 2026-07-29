@@ -202,9 +202,14 @@ void ParseCascadedComplianceParams(const YAML::Node& cfg, CascadedCompliancePara
   // F8 — every threshold that a first tick compares against must be incapable of
   // latching SAFE_STOP by being 0 or negative.
   //
-  // max_torque_rate is a rate BOUND: 0 would freeze the command at the
-  // rate-limit history forever (the arm stops responding while every fault stays
-  // clear), so it is rejected rather than clamped.
+  // max_torque_rate is a rate BOUND: compliance::RateLimit early-returns on
+  // `max_rate <= 0.0` (safety_limiter.hpp — "a degenerate tick must not freeze
+  // the command at tau_prev"), so a 0 does not freeze the command. It turns
+  // §10.5's slew stage OFF for the life of the deployment: `SafetyStatus::
+  // rate_limited` never goes true and nothing in the diagnostics says the arm
+  // has no slew protection. Rejected rather than clamped — there is no
+  // defensible value to clamp TO, and a silently disabled limiter is worse than
+  // a configure failure.
   if (const YAML::Node& n = cfg["max_torque_rate"]; n) {
     const double v = num(n, "max_torque_rate");
     if (!(v > 0.0)) {

@@ -136,7 +136,11 @@ struct TaskImpedanceConfig {
 ///
 /// @throws std::runtime_error on a §6.1 violation, a non-torque `command_type`,
 ///         an unknown `formulation`, a mis-shaped or non-SPD `desired_inertia`,
-///         or a mis-shaped `external_wrench` entry. Every throw happens BEFORE
+///         a mis-shaped `external_wrench` entry, or an F8 threshold
+///         (`max_torque_rate`, `pose_error_limit`) that is not strictly positive
+///         and finite — 0 silently disables the §10.5 slew stage, a
+///         non-positive pose bound latches SAFE_STOP on the first tick, and
+///         NaN/inf make the CRITICAL bound unreachable. Every throw happens BEFORE
 ///         @p config is written, so a rejected reconfigure leaves the caller's
 ///         live state untouched (issue #172).
 ///

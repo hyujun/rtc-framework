@@ -75,11 +75,40 @@ void ParseTaskImpedanceParams(const YAML::Node& cfg, TaskImpedanceParams& out,
   if (cfg["joint_limit_damping"]) {
     out.joint_limit_kd = cfg["joint_limit_damping"].as<double>();
   }
-  if (cfg["max_torque_rate"]) {
-    out.max_torque_rate = cfg["max_torque_rate"].as<double>();
+  // F8 — the two thresholds a first tick compares against. Both were transcribed
+  // unguarded from the adapter, and the sibling schemas (cascade for both,
+  // admittance for pose_error_limit) already reject exactly these values; the
+  // three now sit in one directory, which is what made the asymmetry visible
+  // (#298 S7c-2). `!(v > 0.0)` and not `v <= 0.0` so NaN is rejected too — it
+  // makes every comparison false, which is the quietest failure of the three.
+  //
+  // max_torque_rate is a rate BOUND: compliance::RateLimit early-returns on
+  // `max_rate <= 0.0`, so a 0 does not freeze the command — it turns §10.5's
+  // slew stage OFF for the life of the deployment, with `SafetyStatus::
+  // rate_limited` never going true and nothing in the diagnostics to say the
+  // arm has no slew protection. Rejected rather than clamped: there is no
+  // defensible value to clamp TO, and a silently disabled limiter is worse than
+  // a configure failure.
+  if (const YAML::Node& n = cfg["max_torque_rate"]; n) {
+    const double v = n.as<double>();
+    if (!(v > 0.0) || !std::isfinite(v)) {
+      throw std::runtime_error("task_impedance: max_torque_rate must be > 0 and finite");
+    }
+    out.max_torque_rate = v;
   }
-  if (cfg["pose_error_limit"]) {
-    out.pose_error_limit = cfg["pose_error_limit"].as<double>();
+  // pose_error_limit is compared every tick against a CRITICAL fault, so a 0 or
+  // negative bound makes `e.norm() > limit` true forever: SAFE_STOP latches on
+  // the first tick and `pose_error_exceeded` carries no cause field to point at
+  // the config. An infinite one is the mirror image — the CRITICAL bound never
+  // fires at all. The `<= 0 disables` idiom is deliberately NOT offered (D6):
+  // this IS the guard, and a way to switch it off makes a mis-configuration look
+  // like a legitimate setting.
+  if (const YAML::Node& n = cfg["pose_error_limit"]; n) {
+    const double v = n.as<double>();
+    if (!(v > 0.0) || !std::isfinite(v)) {
+      throw std::runtime_error("task_impedance: pose_error_limit must be > 0 and finite");
+    }
+    out.pose_error_limit = v;
   }
   if (cfg["activation_ramp_time"]) {
     out.activation_ramp_time = cfg["activation_ramp_time"].as<double>();

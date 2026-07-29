@@ -554,6 +554,37 @@ TEST(TaskImpedanceSchema, FormulationIsADeclaredChoiceAndAnUnknownOneIsRejected)
   EXPECT_TRUE(Mentions(ImpedanceError("formulation: shape_it_please"), "formulation must be"));
 }
 
+TEST(TaskImpedanceSchema, RejectsThresholdsThatWouldSilenceOrLatchTheFirstTick) {
+  // F8, converged with the cascade and admittance schemas (#298 S7c-2). Both
+  // keys were transcribed unguarded from the adapter while the siblings rejected
+  // exactly these values — an asymmetry only visible once the three parsers
+  // shared a directory.
+  EXPECT_TRUE(Mentions(ImpedanceError("max_torque_rate: 0.0"), "max_torque_rate"));
+  EXPECT_TRUE(Mentions(ImpedanceError("max_torque_rate: -5.0"), "max_torque_rate"));
+  EXPECT_TRUE(Mentions(ImpedanceError("pose_error_limit: 0.0"), "pose_error_limit"));
+  EXPECT_TRUE(Mentions(ImpedanceError("pose_error_limit: -1.0"), "pose_error_limit"));
+
+  // The quiet halves, which a bare `v <= 0.0` would let straight through: NaN
+  // makes every comparison false so the CRITICAL pose bound never fires at all,
+  // and +inf does the same by being unreachable. `.inf`/`.nan` rather than an
+  // overflowing literal — yaml-cpp rejects the latter itself, which would make
+  // the case pass without the check under test ever running.
+  EXPECT_TRUE(Mentions(ImpedanceError("pose_error_limit: .nan"), "pose_error_limit"));
+  EXPECT_TRUE(Mentions(ImpedanceError("pose_error_limit: .inf"), "pose_error_limit"));
+  EXPECT_TRUE(Mentions(ImpedanceError("max_torque_rate: .nan"), "max_torque_rate"));
+  EXPECT_TRUE(Mentions(ImpedanceError("max_torque_rate: .inf"), "max_torque_rate"));
+
+  // Non-vacuity: a sane pair parses AND lands, so a guard that rejected
+  // everything would not satisfy the cases above.
+  TaskImpedanceParams p;
+  TaskImpedanceConfig c;
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("max_torque_rate: 800.0\n"
+                                                      "pose_error_limit: 0.25"),
+                                           p, TaskSelection::kFullSe3, c));
+  EXPECT_DOUBLE_EQ(p.max_torque_rate, 800.0);
+  EXPECT_DOUBLE_EQ(p.pose_error_limit, 0.25);
+}
+
 TEST(TaskImpedanceSchema, RejectsANonTorqueCommandType) {
   EXPECT_TRUE(Mentions(ImpedanceError("command_type: position"), "command_type"));
 }

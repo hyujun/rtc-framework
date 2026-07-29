@@ -406,6 +406,22 @@ hold-invalidate 가 은퇴시켰다. 새 바인딩이 그 두 조건 중 하나�
   OSC 의 `nullspace_active()` (게인 0 이면 게이트가 수치적으로 inert) 와 CLIK 의 비유한 J 강등
   경로 (`ok == false` 가 평범한 draw 에서는 도달 불가). 나머지 9종은 창 없이 발화한다.
 
+## 3.9 F8 임계값 수렴 — 세 스키마의 비대칭 해소 (#298 S7c-2)
+
+§10.5 `max_torque_rate` 와 CRITICAL `pose_error_limit` 은 세 계열이 **같은 이름·같은
+안전 계층**을 공유하는데도 검증이 갈려 있었다. 캐스케이드는 둘 다, 어드미턴스는
+`pose_error_limit` 을 거부했고, **임피던스는 둘 다 무가드**였다. 어댑터 시절에는 세
+`LoadConfig` 가 1000줄 넘는 파일 셋에 흩어져 있어 나란히 읽을 수 없었고, S7c-1 이
+`params/` 한 디렉토리로 모으면서 비로소 보였다 — 통합 리팩터가 아웃라이어를 드러낸
+전형적인 경로다.
+
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| **판정식** | `!(v > 0.0) \|\| !std::isfinite(v)` — 세 스키마 공통 | `v <= 0.0` 은 **NaN 을 통과시킨다** (NaN 과의 모든 비교가 false). `.inf` 도 마찬가지로 통과하는데, `pose_error_limit: .inf` 는 CRITICAL 바운드를 영구 도달 불가로 만든다 — 0 과 정확히 반대 방향의 같은 결함이다 |
+| **`max_torque_rate` 이 0 일 때 실제로 일어나는 일** | 슬루 리미터가 **조용히 꺼진다** (freeze 아님) | `compliance::RateLimit` 은 `max_rate <= 0.0` 에서 `tau_prev = tau; return false;` 로 early-return 한다 ("a degenerate tick must not freeze the command at tau_prev"). 캐스케이드 주석은 "명령이 rate-limit 이력에 freeze 된다" 고 적혀 있었으나 헬퍼와 모순이었고, 함께 정정했다. 결과가 다르면 완화책도 다르다 — 진짜 위험은 `SafetyStatus::rate_limited` 가 영원히 false 인 채 팔에 슬루 보호가 없는 것이고, 진단 어디에도 그 사실이 안 나온다 |
+| **거부 vs 클램프** | 거부 | 클램프할 **정당한 대상값이 없다**. `≤0 = 비활성` 관용구도 미채택 (D6 과 동일 논리): 가드 자체를 끄는 수단을 주면 오설정이 정당한 설정처럼 보인다 |
+| **호환성** | 파괴적 변경이나 실측 노출 0 | repo 내 `max_torque_rate: 0` / `pose_error_limit: ≤0` 설정 0건, 이 값을 *허용* 으로 pin 하던 테스트 0건 (기존 테스트는 `1.0e6` 만 쓴다). 따라서 PROC-6/E-6 해당 없음 — 기존 assertion 을 약화한 것이 아니라 가드를 추가한 것이다 |
+
 ## 4. 슬라이스 1 설계 주석 (README 필수 설명)
 
 - **A=NONE 은 열등한 fallback 이 아니다** (§6.2). 폐루프는 `Λ(q)ë + [μ+K_d]ė + K_p e = f_ext`
