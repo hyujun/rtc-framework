@@ -1,5 +1,5 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
-#include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
@@ -161,7 +161,7 @@ rcl_interfaces::msg::SetParametersResult DemoTaskController::OnGainParametersSet
         // and the BT SetGains node both land here). A negative K_p drives the
         // null-space posture away from its target and (I − J⁺J) keeps that off
         // the Cartesian task, so nothing downstream would report it.
-        g.null_kp = rtc::joint::FloorPostureGain(p.as_double());
+        g.null_kp = rtc::FloorNonNegativeGain(p.as_double());
         gains_dirty = true;
       } else if (name == "enable_null_space") {
         g.enable_null_space = p.as_bool();

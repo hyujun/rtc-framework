@@ -2,7 +2,7 @@
 
 #include "rtc_controllers/compliance/external_wrench.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
-#include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 
 #include <Eigen/Core>
 
@@ -20,8 +20,16 @@ void ParseCascadedComplianceParams(const YAML::Node& cfg, CascadedCompliancePara
     // NUM-6's loader half is "regardless of whether the key is present", and an
     // absent NODE is the widest case of that: the gains here came from the
     // constructor or a previous set_gains(), the two paths the floor exists for.
-    out.nullspace_kp = joint::FloorPostureGain(out.nullspace_kp);
-    out.nullspace_kd = joint::FloorPostureGain(out.nullspace_kd);
+    // §5.3's safety-layer gains take the same bound (#280); this is the ONLY
+    // path on which their non-finite branch is reachable, since `num` rejects a
+    // non-finite YAML scalar before the floor ever sees it.
+    out.nullspace_kp = FloorNonNegativeGain(out.nullspace_kp);
+    out.nullspace_kd = FloorNonNegativeGain(out.nullspace_kd);
+    out.joint_limit_kp = FloorNonNegativeGain(out.joint_limit_kp);
+    out.joint_limit_kd = FloorNonNegativeGain(out.joint_limit_kd);
+    if (!IsFiniteNonNegative(out.joint_limit_margin)) {
+      throw std::runtime_error("cascaded_compliance: joint_limit_margin must be >= 0 and finite");
+    }
     return;
   }
 
@@ -177,8 +185,8 @@ void ParseCascadedComplianceParams(const YAML::Node& cfg, CascadedCompliancePara
   if (cfg["nullspace_damping"]) {
     out.nullspace_kd = num(cfg["nullspace_damping"], "nullspace_damping");
   }
-  out.nullspace_kp = joint::FloorPostureGain(out.nullspace_kp);
-  out.nullspace_kd = joint::FloorPostureGain(out.nullspace_kd);
+  out.nullspace_kp = FloorNonNegativeGain(out.nullspace_kp);
+  out.nullspace_kd = FloorNonNegativeGain(out.nullspace_kd);
   if (cfg["singularity_threshold"]) {
     out.singularity_threshold = std::max(
         compliance::kMinSigma0, num(cfg["singularity_threshold"], "singularity_threshold"));
@@ -192,14 +200,34 @@ void ParseCascadedComplianceParams(const YAML::Node& cfg, CascadedCompliancePara
     // branch is unreachable here — kept for the one symbol, not two spellings.
     out.max_damping = compliance::FloorMaxDamping(num(cfg["max_damping"], "max_damping"));
   }
+  // §5.3's three. The hand-written `std::max(0.0, ·)` these carried until #280
+  // was the only floor in this file that was NOT the shared symbol, and it sat
+  // inside the `if`, so it could not see an absent key — the case where the
+  // value comes from the constructor or a set_gains() POD. Read raw here,
+  // bounded unconditionally with the posture gains below.
   if (cfg["joint_limit_margin"]) {
-    out.joint_limit_margin = std::max(0.0, num(cfg["joint_limit_margin"], "joint_limit_margin"));
+    out.joint_limit_margin = num(cfg["joint_limit_margin"], "joint_limit_margin");
   }
   if (cfg["joint_limit_stiffness"]) {
-    out.joint_limit_kp = std::max(0.0, num(cfg["joint_limit_stiffness"], "joint_limit_stiffness"));
+    out.joint_limit_kp = num(cfg["joint_limit_stiffness"], "joint_limit_stiffness");
   }
   if (cfg["joint_limit_damping"]) {
-    out.joint_limit_kd = std::max(0.0, num(cfg["joint_limit_damping"], "joint_limit_damping"));
+    out.joint_limit_kd = num(cfg["joint_limit_damping"], "joint_limit_damping");
+  }
+  // The same bound the posture gains take above, for the same reason with the
+  // sign flipped: inside the band `q − lo` is negative, so a negative k_lim
+  // pushes the joint INTO its limit and a negative d_lim injects energy at the
+  // hard stop. Unconditional — `num` above only judges a key that is PRESENT,
+  // and the dangerous value is the one that arrives from the constructor or a
+  // set_gains() POD with no key at all. That also makes the non-finite branch of
+  // the floor unreachable from the YAML path here (`num` threw already) and live
+  // on the POD path — the same defence-in-depth split FloorMaxDamping has.
+  out.joint_limit_kp = FloorNonNegativeGain(out.joint_limit_kp);
+  out.joint_limit_kd = FloorNonNegativeGain(out.joint_limit_kd);
+  // Rejected, not floored: clamping δ to 0 is indistinguishable from the
+  // misconfiguration it hides (see IsFiniteNonNegative).
+  if (!IsFiniteNonNegative(out.joint_limit_margin)) {
+    throw std::runtime_error("cascaded_compliance: joint_limit_margin must be >= 0 and finite");
   }
   // F8 — every threshold that a first tick compares against must be incapable of
   // latching SAFE_STOP by being 0 or negative.

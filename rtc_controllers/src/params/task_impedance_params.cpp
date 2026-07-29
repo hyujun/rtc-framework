@@ -2,7 +2,7 @@
 
 #include "rtc_controllers/compliance/external_wrench.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
-#include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 
 #include <Eigen/Core>
 
@@ -17,17 +17,23 @@ namespace rtc::params {
 void ParseTaskImpedanceParams(const YAML::Node& cfg, TaskImpedanceParams& out,
                               TaskSelection selection, TaskImpedanceConfig& config) {
   if (!cfg) {
-    // Even without YAML this is a CONFIGURE, so it runs the same three steps the
-    // YAML path does — floor, §6.4, §6.1 — on the gains it has. NUM-6's loader
-    // half is "regardless of whether the key is present", and an absent NODE is
-    // the widest case of that: these gains come from the constructor or a
-    // previous set_gains(), i.e. exactly the two paths the floor exists for. The
-    // floor is written back into `out` and not just evaluated for the guard —
-    // otherwise get_gains() would keep reporting a gain Compute() refuses to
-    // run, on the one path where nothing else rewrites the POD. The caller
-    // commits `out` even when the guard below throws; see LoadConfig.
-    out.nullspace_kp = joint::FloorPostureGain(out.nullspace_kp);
-    out.nullspace_kd = joint::FloorPostureGain(out.nullspace_kd);
+    // Even without YAML this is a CONFIGURE, so it runs the same steps the YAML
+    // path does — floors, §5.3's reject, §6.4, §6.1 — on the gains it has.
+    // NUM-6's loader half is "regardless of whether the key is present", and an
+    // absent NODE is the widest case of that: these gains come from the
+    // constructor or a previous set_gains(), i.e. exactly the two paths the
+    // floor exists for. The floor is written back into `out` and not just
+    // evaluated for the guard — otherwise get_gains() would keep reporting a
+    // gain Compute() refuses to run, on the one path where nothing else rewrites
+    // the POD. The caller commits `out` even when a guard below throws; see
+    // LoadConfig.
+    out.nullspace_kp = FloorNonNegativeGain(out.nullspace_kp);
+    out.nullspace_kd = FloorNonNegativeGain(out.nullspace_kd);
+    out.joint_limit_kp = FloorNonNegativeGain(out.joint_limit_kp);
+    out.joint_limit_kd = FloorNonNegativeGain(out.joint_limit_kd);
+    if (!IsFiniteNonNegative(out.joint_limit_margin)) {
+      throw std::runtime_error("task_impedance: joint_limit_margin must be >= 0 and finite");
+    }
     if (out.nullspace_kp > 0.0) {
       out.nullspace_kd = std::max(out.nullspace_kd, 2.0 * std::sqrt(out.nullspace_kp));
     }
@@ -78,6 +84,9 @@ void ParseTaskImpedanceParams(const YAML::Node& cfg, TaskImpedanceParams& out,
   if (cfg["max_damping"]) {
     out.max_damping = compliance::FloorMaxDamping(cfg["max_damping"].as<double>());
   }
+  // §5.3's three. Read raw here and bounded unconditionally below, next to the
+  // posture floors — a bound written inside these `if`s would miss the absent
+  // key, which is the case that most needs it (#280).
   if (cfg["joint_limit_margin"]) {
     out.joint_limit_margin = cfg["joint_limit_margin"].as<double>();
   }
@@ -146,8 +155,28 @@ void ParseTaskImpedanceParams(const YAML::Node& cfg, TaskImpedanceParams& out,
   // adapter that held them went with #298 S7c-2 and no shipped binding has
   // replaced it. The two rules below do NOT get that second half regardless;
   // see §6.4's note.
-  out.nullspace_kp = joint::FloorPostureGain(out.nullspace_kp);
-  out.nullspace_kd = joint::FloorPostureGain(out.nullspace_kd);
+  out.nullspace_kp = FloorNonNegativeGain(out.nullspace_kp);
+  out.nullspace_kd = FloorNonNegativeGain(out.nullspace_kd);
+
+  // §5.3's two safety-layer gains take the SAME bound (#280), and for the same
+  // reason the posture gains do — with the sign flipped, which is why this
+  // schema being the one without it was the sharpest gap in the directory:
+  // inside the margin band `q − lo` is negative, so a negative k_lim turns the
+  // term that pushes a joint AWAY from its limit into one that pushes it IN, and
+  // a negative d_lim injects energy exactly where the arm is closest to a hard
+  // stop. The shipped UR5e config runs `k_lim=0, d_lim=2` (pure damping), which
+  // makes d_lim the only defence there. Unconditional, and NOT `std::max`: the
+  // §10.5 finite check sits immediately after AddJointLimitRepulsive and BEFORE
+  // saturation, so laundering a NaN gain to 0.0 here is what retires the
+  // `nan_inf` SAFE_STOP that a NaN torque would otherwise raise.
+  out.joint_limit_kp = FloorNonNegativeGain(out.joint_limit_kp);
+  out.joint_limit_kd = FloorNonNegativeGain(out.joint_limit_kd);
+  // The margin is the one member of the trio that CANNOT be floored — see
+  // IsFiniteNonNegative. Unconditional like the floors above, so a δ that
+  // arrived from the constructor or a set_gains() POD is judged too.
+  if (!IsFiniteNonNegative(out.joint_limit_margin)) {
+    throw std::runtime_error("task_impedance: joint_limit_margin must be >= 0 and finite");
+  }
 
   // §6.4 nullspace damping floor K_dⁿ ≥ 2√K_pⁿ (also allows K_pⁿ=0 pure damping).
   //

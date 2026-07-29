@@ -117,6 +117,7 @@ rtc_controllers/
 ├── CMakeLists.txt
 ├── package.xml
 ├── include/rtc_controllers/
+│   ├── gain_floor.hpp                        -- 불변식이 이름 붙인 게인 하한 한 곳 (header-only) — `FloorNonNegativeGain` (NUM-6/6b: 유한만 0 으로 floor, 비유한은 통과시켜 하류 finite 검사로) + `IsFiniteNonNegative` (floor 로 못 고치는 δ 류의 거부 판정)
 │   ├── params/                               -- 컨트롤러-레벨 YAML 스키마 (#236 S7c). 게인 POD + `ParseXxxParams(YAML::Node, …)` 자유함수. yaml-cpp 만 의존하고 **rclcpp-free** — 미래 바인딩이 ROS 로깅 스택 없이 config 를 검증할 수 있어야 한다. 은퇴 키는 로그 대신 `<Name>RetiredKeys` 로 **보고**하고 호출자가 찍는다
 │   │   ├── joint_pd_params.hpp               -- kp/kd (길이 == nv 강제, #172) + 중력/코리올리 스위치 (torque 전용 교차검증)
 │   │   ├── clik_params.hpp                   -- 태스크 P 게인 + §6.5 DLS + 영공간 + 궤적 한계
@@ -327,7 +328,7 @@ q_cmd  = q_des
 | `kp_rotation` | `double[3]` | `[1.0, 1.0, 1.0]` | 회전 비례 게인 (rx, ry, rz) [1/s] — 6-DOF 모드에서만 법칙에 들어간다 |
 | `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max — 로더가 `compliance::FloorMaxDamping` 으로 `1e-4` floor. 사용 지점 half 는 바인딩 요구사항 (NUM-1) |
 | `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `1e-6` 로 floor (σ₀≤0 은 감쇠를 상시 0 으로 만든다) |
-| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] — 로더·사용 지점 모두 `joint::FloorPostureGain` floor (#277). 음수는 posture 를 목표에서 **멀어지는** 방향으로 몰고 `N` 이 그걸 task 로부터 가려 조용한 drift 가 된다 |
+| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] — 로더·사용 지점 모두 `rtc::FloorNonNegativeGain` floor (#277). 음수는 posture 를 목표에서 **멀어지는** 방향으로 몰고 `N` 이 그걸 task 로부터 가려 조용한 drift 가 된다 |
 | `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 (3-DOF 모드에서만 발동) |
 | `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 병진 속도 (m/s) |
 | `trajectory_angular_speed` | `double` | `0.5` | 태스크 공간 궤적 회전 속도 (rad/s, 6-DOF 모드) |
@@ -410,7 +411,7 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 | `kd_rot` | `double[3]` | `[10, 10, 10]` | 자세 미분 게인 [1/s] |
 | `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max (Λ⁻¹ 정칙화) — 로더가 `compliance::FloorMaxDamping` 으로 `1e-4` floor. 사용 지점 half 는 바인딩 요구사항 (NUM-1) |
 | `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `max(1e-6, ·)` floor |
-| `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) — 로더·사용 지점 모두 `joint::FloorPostureGain` floor (#277). 음수 `K_pⁿ` 는 τ₀ 를 발산 방향으로 만들고 `Nᵀ` 가 그걸 task 로부터 가린다 |
+| `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) — 로더·사용 지점 모두 `rtc::FloorNonNegativeGain` floor (#277). 음수 `K_pⁿ` 는 τ₀ 를 발산 방향으로 만들고 `Nᵀ` 가 그걸 task 로부터 가린다 |
 | `null_kd` | `double` | `1.0` | 널공간 관절 damping [N·m·s/rad] — 같은 floor. 음수 감쇠는 여유자유도에 에너지를 **주입**한다 |
 | `trajectory_speed` | `double` | `0.1` | 위치 궤적 최대 병진 속도 (m/s) |
 | `trajectory_angular_speed` | `double` | `0.5` | 자세 궤적 최대 회전 속도 (rad/s) |

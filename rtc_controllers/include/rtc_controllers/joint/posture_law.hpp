@@ -30,12 +30,12 @@
 // at a seeded reference (q_ref − q is exactly +0.0 there) under a negative Kp,
 // and a pre-extraction probe measured the flip on 50% of draws in that state at
 // -O0/-O2/-O3. #277 has since floored Kp at 0 in all six shipping consumers
-// (`FloorPostureGain` below), at the point of use as well as in LoadConfig, so
-// THAT route to −0.0 is closed for them — but the argument for two functions
-// never rested on it. This law takes Kp as a plain argument and floors nothing
-// (the floor belongs to the consumer, which is also where the activation gate
-// lives), so a direct caller still reaches the sign flip, and `x − 0.0·q̇` is
-// not bitwise `x` for any −0.0 x however it arose. Two shapes, two functions,
+// (`rtc::FloorNonNegativeGain`, gain_floor.hpp), at the point of use as well as
+// in LoadConfig, so THAT route to −0.0 is closed for them — but the argument for
+// two functions never rested on it. This law takes Kp as a plain argument and
+// floors nothing (the floor belongs to the consumer, which is also where the
+// activation gate lives), so a direct caller still reaches the sign flip, and
+// `x − 0.0·q̇` is not bitwise `x` for any −0.0 x however it arose. Two functions,
 // two literal oracles — the same call this repo made for task/task_vel_law.hpp's
 // six-axis and translation-only forms.
 //
@@ -54,36 +54,16 @@
 #pragma once
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <span>
 
 namespace rtc::joint {
 
-/// The NUM-6 posture-gain floor, in ONE place. Every consumer applies it twice
-/// (LoadConfig unconditionally, and again at the point of use before the
-/// activation gate, because `set_gains()` writes the Gains POD straight into the
-/// SeqLock and bypasses configure), which is six controllers × two sites — and a
-/// bound named by an invariant must not be six private `std::max` calls that
-/// drift one at a time. `compliance::kMinMaxDamping` made the same call for
-/// §6.5's λ_max.
-///
-/// Why not `std::max(0.0, g)` written out at each site: `std::max` is
-/// `a < b ? b : a`, and `0.0 < NaN` is FALSE, so it returns **0.0** for a NaN
-/// gain. That is not a floor, it is laundering — a non-finite gain used to reach
-/// the law, make τ₀ non-finite and latch SAFE_STOP through the controller's
-/// `nan_inf` fault, and a plain `std::max` would instead close the activation
-/// gate and discard the operator's corrupt gain in silence. So a non-finite gain
-/// is passed through UNCHANGED and left for the finite-output check that already
-/// exists downstream; only finite values are floored. (+inf is unchanged either
-/// way; −inf keeps the gate open and reaches the same fault as NaN.)
-///
-/// The law itself still floors nothing — see the header note. This is a policy
-/// the CONSUMER applies, next to the law it protects, because the consumer is
-/// also where the activation gate lives.
-[[nodiscard]] inline double FloorPostureGain(double gain) noexcept {
-  return std::isfinite(gain) ? std::max(0.0, gain) : gain;
-}
+// The NUM-6 floor these gains take moved to `rtc::FloorNonNegativeGain`
+// (gain_floor.hpp) in #280, when the §5.3 joint-limit safety gains turned out to
+// need the SAME bound and `FloorPostureGain` became a name that lied at half its
+// call sites. The rationale — why not a bare `std::max`, why the consumer and
+// never the law applies it — travelled with the symbol.
 
 /// The per-tick posture inputs, all in ONE channel order — whichever order the
 /// caller intends to project in. Grouped in a struct rather than passed

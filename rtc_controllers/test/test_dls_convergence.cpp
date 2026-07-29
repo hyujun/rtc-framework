@@ -262,7 +262,7 @@ OscInline PreExtractionOscBlock(const Snapshot& s, const Vec6& a_task, double la
 /// fixture and belong to the binding, not to the law.
 ///
 /// #277's posture floor is deliberately NOT mirrored here, in either oracle. It
-/// sits one line ABOVE Step 7 in the controller (`FloorPostureGain` before the
+/// sits one line ABOVE Step 7 in the controller (`FloorNonNegativeGain` before the
 /// gate), so it belongs to the binding the same way the reorders do — and the
 /// oracle above is a frozen literal of the PRE-#236-S2b code, which cannot grow
 /// a 2026 clamp without ceasing to be the thing it witnesses. Both oracles are
