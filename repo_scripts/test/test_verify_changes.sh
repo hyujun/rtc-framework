@@ -527,5 +527,26 @@ out=$(run_hook "$dir")
 expect_contains "AGENTS.md alone reminds about CLAUDE.md" "$out" "AGENTS.md changed without CLAUDE.md"
 rm -rf "$dir"
 
+# 33. ARCH-5 allows <test_depend>robot_descriptions: a test that resolves the
+#     share dir through ament at runtime needs the dep to order installation,
+#     and that runtime lookup is the pattern ARCH-5 asks for in the first place.
+#     Pinned as a test so the exception is not just prose -- widening the
+#     alternation to catch test_depend would break rtc_controller_manager.
+dir=$(make_fixture)
+sed -i 's|</package>|  <test_depend>robot_descriptions</test_depend>\n</package>|' \
+  "$dir/rtc_demo/package.xml"
+out=$(run_hook "$dir")
+expect_not_contains "ARCH-5 permits <test_depend>robot_descriptions" "$out" "ARCH-5"
+rm -rf "$dir"
+
+# 34. ...while <depend> in the same position still trips it, so 33 is not green
+#     because the ARCH-5 package.xml check went missing altogether.
+dir=$(make_fixture)
+sed -i 's|</package>|  <depend>robot_descriptions</depend>\n</package>|' \
+  "$dir/rtc_demo/package.xml"
+out=$(run_hook "$dir")
+expect_contains "ARCH-5 still catches <depend>robot_descriptions" "$out" "ARCH-5"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

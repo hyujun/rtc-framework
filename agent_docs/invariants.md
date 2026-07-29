@@ -249,6 +249,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 **허용**:
 - `package.xml`: `<exec_depend>robot_descriptions</exec_depend>`
+- `package.xml`: `<test_depend>robot_descriptions</test_depend>` — **테스트가 아래 ament 런타임 lookup 을 쓸 때 설치 순서를 보장하는 용도로만**. colcon 토폴로지 엣지는 생기지만 (`colcon list --packages-up-to <pkg>` 에 나타난다) 아래 근거가 보호하려는 것은 깨지지 않는다: `robot_descriptions` 는 `install(DIRECTORY)` 한 줄이라 빌드 비용이 사실상 0 이고, 별도 overlay 에 두면 colcon 이 dep 을 해석하지 못해 **엣지 자체가 생기지 않는다**. 현 사례는 `rtc_controller_manager` (테스트가 `urdf.package` 파라미터로 share dir 을 런타임 resolve — 이 dep 이 없으면 병렬 빌드에서 설치 순서가 보장되지 않아 flaky)
 - C++: `ament_index_cpp::get_package_share_directory("robot_descriptions")`
 - Python: `ament_index_python.packages.get_package_share_directory("robot_descriptions")`
 - URDF/MJCF/launch/YAML: `package://robot_descriptions/robots/<name>/...` URL, 또는 패키지명 문자열 (rtc_controller_manager 가 런타임 resolve — `rtc_controller_manager/src/rt_controller_node_params.cpp` 참조)
@@ -260,6 +261,8 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 - `ament_export_dependencies(... robot_descriptions)`
 
 **근거**: 빌드 시점에 link 할 artifact 가 0개이므로 build-dep 효과는 0. 그러나 build-dep 을 걸면 colcon 이 강제 토폴로지 엣지를 만들어 "이 디렉토리를 워크스페이스 어디 두든 — 형제 디렉토리든 별도 overlay 든 — `install/robot_descriptions/share/` 만 있으면 동작" 모델이 깨진다 (사용자 정책).
+
+`<test_depend>` 가 예외인 이유도 같은 근거에서 나온다 — 그것은 **런타임 lookup 방식을 동작하게 만드는 장치**이지 그 방식을 대체하는 것이 아니다. 소스 트리 상대경로(`${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/...`)로 configure 시점에 경로를 박는 쪽이 colcon 엣지는 안 만들지만 "어디 두든 동작" 모델은 오히려 더 훼손한다.
 
 **복구**: build-dep 줄 제거 + `<exec_depend>` 로 강등. 일반적으로 코드 수정 0 줄.
 

@@ -518,6 +518,9 @@ if [ "$PURE_FORMAT" -eq 0 ] && [ -n "$CHANGED_META" ]; then
     if echo "$ADDED_CODE" | grep -qE 'find_package[[:space:]]*\([[:space:]]*robot_descriptions'; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-5 (robot_descriptions is data-only — find_package is a build-time dep): ${f}\n"
     fi
+    # <test_depend> is deliberately absent from this alternation: ARCH-5 allows
+    # it for a test that resolves the share dir through ament at runtime, where
+    # the dep only orders installation.  See invariants.md §ARCH-5 세부 스펙.
     if echo "$ADDED_CODE" | grep -qE '<(build_depend|depend|build_export_depend)>robot_descriptions</'; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-5 (robot_descriptions must be <exec_depend> only): ${f}\n"
     fi
