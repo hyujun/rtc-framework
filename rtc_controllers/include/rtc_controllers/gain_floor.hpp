@@ -31,9 +31,15 @@ namespace rtc {
 /// operator's corrupt gain in silence (for a posture gain it also closes the
 /// activation gate, so the symptom disappears entirely). So a non-finite gain is
 /// passed through UNCHANGED and left for the finite-output check that already
-/// exists downstream — `compliance::AllFinite`, which §10.5 evaluates on the
-/// post-repulsive command before saturation can mask an ∞. (+inf is unchanged
-/// either way; −inf reaches the same fault as NaN.)
+/// exists downstream. WHICH check depends on the lane the consumer emits on, and
+/// there is one on each: on the torque lane `compliance::AllFinite`, which §10.5
+/// evaluates on the post-repulsive command before saturation can mask an ∞, and
+/// on the POSITION lane `urtc::ValidateControllerOutput`, which screens every
+/// command at the actuator boundary and makes the controller manager substitute
+/// a hold for the tick and escalate to E-STOP after ~100 ms of consecutive
+/// rejects. A consumer on neither lane owes the check itself before it claims
+/// this passthrough. (+inf is unchanged either way; −inf reaches the same fault
+/// as NaN.)
 ///
 /// Applied by the CONSUMER, never by the law. Every law here takes its gains as
 /// plain arguments and floors nothing (`ComputePostureTorque`,

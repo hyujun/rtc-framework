@@ -13,7 +13,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 >
 > **이 패키지의 어댑터는 #236 S7c 에서 제거됐습니다.** 검증은 개수 박제가 아니라 grep 입니다 — `grep -rn "public RTControllerInterface" include/` 와 `grep -n rtc_controller_interface package.xml` 이 모두 비어야 합니다. 남은 것은 법칙(`compliance/*` · `joint/*` · `task/*`), 그 YAML 스키마(`params/*` — POD + `ParseXxxParams` 자유함수, rclcpp-free), 그리고 `grasp/`·`trajectory/` 입니다.
 >
-> **단 3계층 배치 전이 자체는 아직 진행 중입니다** — 위 문장은 *이 패키지*에 한정되며, 바인딩 쪽에 남은 인라인 사본(예: `demo_task_controller` 의 상수-λ DLS, #282)은 별개입니다. 전이 현황의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §현황 입니다.
+> **단 3계층 배치 전이 자체는 아직 진행 중입니다** — 위 문장은 *이 패키지*에 한정됩니다. 오래 예로 들던 `demo_task_controller` 의 상수-λ DLS 는 #282 에서 이 패키지의 `compliance::DifferentialIk` 로 수렴했고, 바인딩에 남은 인라인 DLS 사본은 이제 없습니다. 전이 현황의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §현황 입니다.
 
 > **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
@@ -326,8 +326,8 @@ q_cmd  = q_des
 |---------|------|--------|------|
 | `kp_translation` | `double[3]` | `[1.0, 1.0, 1.0]` | 병진 비례 게인 (x, y, z) [1/s] |
 | `kp_rotation` | `double[3]` | `[1.0, 1.0, 1.0]` | 회전 비례 게인 (rx, ry, rz) [1/s] — 6-DOF 모드에서만 법칙에 들어간다 |
-| `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max — 로더가 `compliance::FloorMaxDamping` 으로 `1e-4` floor. 사용 지점 half 는 바인딩 요구사항 (NUM-1) |
-| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `1e-6` 로 floor (σ₀≤0 은 감쇠를 상시 0 으로 만든다) |
+| `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max — 로더가 `compliance::FloorMaxDamping` 으로 `1e-4` floor. 사용 지점 half 는 바인딩 요구사항 (NUM-1) — `integrated_bringup` 의 `demo_task_controller` 가 첫 in-tree 준수 사례 (#282) |
+| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `compliance::FloorSigma0` 으로 `1e-6` floor (σ₀≤0 은 감쇠를 상시 0 으로 만든다). 사용 지점 half 는 λ_max 와 같은 바인딩 요구사항 (NUM-2) |
 | `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] — 로더·사용 지점 모두 `rtc::FloorNonNegativeGain` floor (#277). 음수는 posture 를 목표에서 **멀어지는** 방향으로 몰고 `N` 이 그걸 task 로부터 가려 조용한 drift 가 된다 |
 | `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 (3-DOF 모드에서만 발동) |
 | `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 병진 속도 (m/s) |
@@ -410,7 +410,7 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 | `kp_rot` | `double[3]` | `[50, 50, 50]` | 자세 비례 게인 [1/s²] |
 | `kd_rot` | `double[3]` | `[10, 10, 10]` | 자세 미분 게인 [1/s] |
 | `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max (Λ⁻¹ 정칙화) — 로더가 `compliance::FloorMaxDamping` 으로 `1e-4` floor. 사용 지점 half 는 바인딩 요구사항 (NUM-1) |
-| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `max(1e-6, ·)` floor |
+| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `compliance::FloorSigma0` 으로 floor |
 | `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) — 로더·사용 지점 모두 `rtc::FloorNonNegativeGain` floor (#277). 음수 `K_pⁿ` 는 τ₀ 를 발산 방향으로 만들고 `Nᵀ` 가 그걸 task 로부터 가린다 |
 | `null_kd` | `double` | `1.0` | 널공간 관절 damping [N·m·s/rad] — 같은 floor. 음수 감쇠는 여유자유도에 에너지를 **주입**한다 |
 | `trajectory_speed` | `double` | `0.1` | 위치 궤적 최대 병진 속도 (m/s) |

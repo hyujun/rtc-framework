@@ -23,6 +23,7 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
+#include "rtc_controllers/compliance/task_dynamics.hpp"  // kMinMaxDamping
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -32,6 +33,8 @@
 #include <array>
 #include <cmath>
 #include <exception>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -70,7 +73,8 @@ using integrated_bringup::testfx::SharedIiwa7LeapModelConfig;
 const char* const kTaskYaml = R"(
 kp_translation: [5.0, 5.0, 5.0]
 kp_rotation: [2.0, 2.0, 2.0]
-damping: 0.01
+singularity_threshold: 0.02
+max_damping: 0.05
 null_kp: 0.5
 enable_null_space: true
 control_6dof: false
@@ -247,6 +251,349 @@ TEST_F(TaskControllerUrdfTest, Clik6DofConvergesToPoseTarget) {
   EXPECT_LT(GeodesicAngle(ActualRotation(), r_goal), 0.02);
   // 6-DOF publish goal carries the target orientation rpy.
   EXPECT_NEAR(last_out_.task_goal_positions[5], rpy_goal[2], 1e-9);
+}
+
+// ── §6.5 DLS at the binding (#282) ───────────────────────────────────────────
+//
+// The numerics of the migration — the two tiers and their oracle — live in
+// test_task_dls_convergence.cpp. What has to be pinned HERE is that the shipped
+// controller reaches that law at all, on the surfaces that bypass configure.
+//
+// Each of these drives one tick from a fixed state and reads the arm command,
+// which is desired_q_ after integrating dq_. The plant is a perfect tracker, so
+// a single tick from an identical start makes the command a direct readout of
+// the joint velocity the law produced.
+
+namespace {
+
+// One tick from a chosen arm state under the given gains; returns the arm
+// command. Fresh controller each time so no trajectory/seed state carries over
+// between the gain settings being compared.
+//
+// `six_dof` is a parameter rather than kTaskYaml's value because all three
+// shipped robot configs run `control_6dof: true`. A suite that only drove the
+// YAML's 3-DOF default would leave the lane that actually ships uncovered and
+// stay green for a mutation of the 6-D arm of the ternary alone.
+//
+// `extended` puts the arm at q = 0 — iiwa7 fully extended, where every joint
+// axis is either on the tool's line or parallel to its neighbours' and the
+// Jacobian collapses to σ_min = EXACTLY 0 (the same pose sits at the bottom of
+// test_task_dls_convergence.cpp's recorded σ_min range). It is the only pose at
+// which the σ₀ floor is observable: everywhere else σ_min far exceeds both a
+// sub-floor σ₀ and its floor, and λ² is 0 on either side of the comparison.
+std::array<double, kArmDof> CommandUnderGains(
+    bool six_dof, bool extended, const std::function<void(DemoTaskController::Gains&)>& mutate) {
+  DemoTaskController ctrl("", DemoTaskController::Gains{});
+  ctrl.SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+  ctrl.SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+  ctrl.SetControlRate(1.0 / kDt);
+  ctrl.LoadConfig(YAML::Load(kTaskYaml));
+  ctrl.SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
+
+  auto state = MakeIiwa7LeapState();
+  if (extended) {
+    for (int i = 0; i < kArmDof; ++i) {
+      state.devices[0].positions[static_cast<std::size_t>(i)] = 0.0;
+    }
+  }
+  static_cast<void>(ctrl.Compute(state));  // seed the hold target from the measured pose
+
+  // set_gains() writes the POD straight into the SeqLock: no LoadConfig, no
+  // parameter callback. This is exactly the surface the point-of-use halves of
+  // NUM-1 (λ_max) and NUM-2 (σ₀) exist for.
+  auto g = ctrl.get_gains();
+  g.control_6dof = six_dof;
+  mutate(g);
+  ctrl.set_gains(g);
+
+  // One tick under the selected branch before the goal is authored: the 6-DOF
+  // read path is what fills the rpy entries of actual_task_positions, and the
+  // pose target below is expressed relative to them.
+  state.iteration += 1;
+  const ControllerOutput seed = ctrl.Compute(state);
+
+  // A target the law has to work against — otherwise the task velocity is zero
+  // and every damping setting produces the same (zero) command, which would
+  // make every test below vacuous.
+  const auto tcp0 = ctrl.tcp_position();
+  if (six_dof) {
+    const std::array<double, 6> target = {tcp0[0] + 0.05,
+                                          tcp0[1] - 0.04,
+                                          tcp0[2] + 0.03,
+                                          seed.actual_task_positions[3],
+                                          seed.actual_task_positions[4],
+                                          seed.actual_task_positions[5] + 0.2};
+    ctrl.SetDeviceTarget(0, target);
+  } else {
+    std::array<double, kArmDof> target{};
+    target[0] = tcp0[0] + 0.05;
+    target[1] = tcp0[1] - 0.04;
+    target[2] = tcp0[2] + 0.03;
+    for (int i = 3; i < kArmDof; ++i) {
+      target[static_cast<std::size_t>(i)] = kArmHome[static_cast<std::size_t>(i)] + 0.2;
+    }
+    ctrl.SetDeviceTarget(0, target);
+  }
+
+  // Ticked WITHOUT feeding the command back into the state, for two reasons.
+  // The pose stays exactly where it was put, so `extended`'s rank-deficient
+  // Jacobian is still rank-deficient on the tick that is measured — a perfect
+  // tracker would walk straight off it. And the measurement stays the
+  // trajectory's start, so the task error is the trajectory's own displacement:
+  // one tick would leave it at zero (a rest-to-rest quintic has zero position
+  // AND zero velocity at t = 0), which made the whole comparison read the
+  // null-space term alone and collapse to nothing on the 6-DOF lane, which has
+  // no posture task at all. kTrialTicks lands mid-trajectory, where the error
+  // and the feedforward are both largest.
+  constexpr int kTrialTicks = 40;
+  ControllerOutput out{};
+  for (int t = 0; t < kTrialTicks; ++t) {
+    state.iteration += 1;
+    out = ctrl.Compute(state);
+  }
+
+  std::array<double, kArmDof> cmd{};
+  for (int i = 0; i < kArmDof; ++i) {
+    cmd[static_cast<std::size_t>(i)] = out.devices[0].commands[static_cast<std::size_t>(i)];
+  }
+  return cmd;
+}
+
+// Non-finite input short-circuits to infinity instead of being skipped.
+// `std::max` is `a < b ? b : a` and `x < NaN` is false, so a naive running max
+// reports **0** for two commands that are entirely NaN — which would make every
+// `MaxAbsDiff(...) == 0` assertion below pass on a controller that had gone
+// non-finite. That is the same laundering FloorMaxDamping exists to prevent,
+// reproduced inside the sensor meant to detect it.
+[[nodiscard]] double MaxAbsDiff(const std::array<double, kArmDof>& a,
+                                const std::array<double, kArmDof>& b) {
+  double m = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const double d = std::abs(a[i] - b[i]);
+    if (!std::isfinite(d)) {
+      return std::numeric_limits<double>::infinity();
+    }
+    m = std::max(m, d);
+  }
+  return m;
+}
+
+}  // namespace
+
+// Every case below runs on BOTH task dimensions. The 3-DOF lane is kTaskYaml's
+// default; the 6-DOF lane is what config/{ur5e_p1a,ur5e_p1b,iiwa7_leap} ship.
+class TaskControllerDlsBinding : public ::testing::TestWithParam<bool> {
+ protected:
+  [[nodiscard]] std::array<double, kArmDof> Command(
+      const std::function<void(DemoTaskController::Gains&)>& mutate, bool extended = false) const {
+    return CommandUnderGains(GetParam(), extended, mutate);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(BothTaskDimensions, TaskControllerDlsBinding, ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                           return info.param ? "SixDof" : "ThreeDof";
+                         });
+
+// Tier 1, in the binding's own units. At a well-conditioned pose the §6.5 ramp
+// damps by EXACTLY zero, so λ_max is not read at all and changing it must leave
+// the command bit-identical. Under the retired constant-λ law every λ change
+// moved the command, so this is a direct discriminator between the two laws —
+// not a restatement of AdaptiveDampingSquared's unit test, which cannot see
+// whether this controller calls it.
+TEST_P(TaskControllerDlsBinding, LambdaMaxIsInertOutsideTheSingularityShell) {
+  const auto a = Command([](DemoTaskController::Gains& g) { g.max_damping = 0.05; });
+  const auto b = Command([](DemoTaskController::Gains& g) { g.max_damping = 0.5; });
+  EXPECT_EQ(MaxAbsDiff(a, b), 0.0)
+      << "λ_max changed the command at a well-conditioned pose — the binding is not running the "
+         "§6.5 ramp (which is exactly 0 there), it is running something that always damps";
+}
+
+// The partner: inflate σ₀ past the pose's σ_min so the whole workspace is inside
+// the shell, and λ_max must now move the command. Without this the test above
+// would also pass on a controller that ignored λ_max entirely.
+TEST_P(TaskControllerDlsBinding, LambdaMaxMovesTheCommandInsideTheShell) {
+  const auto a = Command([](DemoTaskController::Gains& g) {
+    g.singularity_threshold = 100.0;
+    g.max_damping = 0.05;
+  });
+  const auto b = Command([](DemoTaskController::Gains& g) {
+    g.singularity_threshold = 100.0;
+    g.max_damping = 0.5;
+  });
+  EXPECT_GT(MaxAbsDiff(a, b), 1e-9)
+      << "inside the shell λ² = λ_max²(1 − (σ_min/σ₀)²), so λ_max must reach the command";
+}
+
+// NUM-1's point-of-use half, which this controller is the first in-tree consumer
+// of (modification-guide §Adding a New Controller item 5). A λ_max below
+// kMinMaxDamping arriving through set_gains() never passes LoadConfig or the
+// parameter callback, so only the tick's own FloorMaxDamping can catch it: the
+// command must equal the FLOORED one, not the raw one. σ₀ is inflated so λ² is
+// non-zero and the floor is observable at all.
+TEST_P(TaskControllerDlsBinding, PointOfUseFloorsLambdaMaxFromSetGains) {
+  const auto below = Command([](DemoTaskController::Gains& g) {
+    g.singularity_threshold = 100.0;
+    g.max_damping = 1e-9;  // below kMinMaxDamping
+  });
+  const auto at_floor = Command([](DemoTaskController::Gains& g) {
+    g.singularity_threshold = 100.0;
+    g.max_damping = rtc::compliance::kMinMaxDamping;
+  });
+  const auto unfloored = Command([](DemoTaskController::Gains& g) {
+    g.singularity_threshold = 100.0;
+    g.max_damping = 1e-3;  // a value the floor does NOT change
+  });
+
+  EXPECT_EQ(MaxAbsDiff(below, at_floor), 0.0)
+      << "a sub-floor λ_max from set_gains() must be raised to kMinMaxDamping on the tick";
+  EXPECT_GT(MaxAbsDiff(at_floor, unfloored), 1e-12)
+      << "vacuity guard: λ_max must be observable at all in this configuration, otherwise the "
+         "equality above would hold for any floor or none";
+}
+
+// NUM-2's point-of-use half, the σ₀ partner of the test above. σ₀ ≤ 0 arriving
+// through set_gains() is NOT a stricter shell — AdaptiveDampingSquared
+// short-circuits on `sigma0 <= 0.0` and returns λ² = 0 for every σ_min, so §6.5
+// is disarmed at every pose INCLUDING a genuinely singular one, where J Jᵀ is
+// only positive semi-definite and Eigen's LLT still reports Success. Nothing
+// else in the chain reports it either; the arm just gets an undamped J⁺.
+//
+// Read the assertion as the mutation it is written against: with the floor, σ₀
+// becomes kMinSigma0 > σ_min = 0, the pose is inside the shell, and λ_max
+// reaches the command. Delete the floor and λ² is 0, which makes λ_max inert and
+// collapses this difference to exactly zero — the same signature
+// LambdaMaxIsInertOutsideTheSingularityShell asserts on purpose one pose over.
+TEST_P(TaskControllerDlsBinding, PointOfUseFloorsSigma0FromSetGains) {
+  const auto a = Command(
+      [](DemoTaskController::Gains& g) {
+        g.singularity_threshold = 0.0;  // disarms §6.5 everywhere if it survives
+        g.max_damping = 0.05;
+      },
+      /*extended=*/true);
+  const auto b = Command(
+      [](DemoTaskController::Gains& g) {
+        g.singularity_threshold = 0.0;
+        g.max_damping = 0.5;
+      },
+      /*extended=*/true);
+
+  EXPECT_GT(MaxAbsDiff(a, b), 1e-9)
+      << "λ_max was inert at a rank-deficient pose under σ₀ = 0, i.e. λ² = 0: the σ₀ ≤ 0 that "
+         "set_gains() wrote reached AdaptiveDampingSquared unfloored and disarmed §6.5 exactly "
+         "where it is needed";
+  for (const double v : a) {
+    EXPECT_TRUE(std::isfinite(v)) << "the damped solve must still produce a finite command";
+  }
+}
+
+// A non-finite λ_max is NOT laundered into a plausible one — FloorMaxDamping
+// passes it through so the corruption stays visible downstream instead of the
+// controller quietly running a damping shell that looks armed.
+TEST_P(TaskControllerDlsBinding, NonFiniteLambdaMaxIsNotLaunderedIntoTheFloor) {
+  const auto nan_gain = Command([](DemoTaskController::Gains& g) {
+    g.singularity_threshold = 100.0;
+    g.max_damping = std::numeric_limits<double>::quiet_NaN();
+  });
+  const auto floored = Command([](DemoTaskController::Gains& g) {
+    g.singularity_threshold = 100.0;
+    g.max_damping = rtc::compliance::kMinMaxDamping;
+  });
+  bool any_non_finite = false;
+  for (const double v : nan_gain) {
+    any_non_finite = any_non_finite || !std::isfinite(v);
+  }
+  EXPECT_TRUE(any_non_finite)
+      << "std::max(1e-4, NaN) == 1e-4 would have laundered this into a finite command; the "
+         "non-finite value must survive to the downstream finite check";
+  EXPECT_GT(MaxAbsDiff(nan_gain, floored), 0.0);
+}
+
+// The σ₀ twin of the case above, and the reason FloorSigma0 is a symbol rather
+// than a `std::max` at each site: `max(1e-6, NaN) == 1e-6` is a shell of radius
+// 1e-6, which no reachable pose enters — so the corrupt gain reads back as a
+// controller that is armed and simply never triggers, with no fault and no log.
+// Passed through, the NaN reaches λ² and then the command, where
+// ValidateControllerOutput rejects the tick at the actuator boundary.
+TEST_P(TaskControllerDlsBinding, NonFiniteSigma0IsNotLaunderedIntoTheFloor) {
+  const auto nan_gain = Command([](DemoTaskController::Gains& g) {
+    g.singularity_threshold = std::numeric_limits<double>::quiet_NaN();
+    g.max_damping = 0.05;
+  });
+  bool any_non_finite = false;
+  for (const double v : nan_gain) {
+    any_non_finite = any_non_finite || !std::isfinite(v);
+  }
+  EXPECT_TRUE(any_non_finite)
+      << "a NaN σ₀ was laundered into 1e-6 — the operator's corrupt gain has been traded for a "
+         "silently disarmed singularity guard";
+}
+
+// The ok=false lane. A NaN joint state reaches FK and makes the Jacobian
+// non-finite; DifferentialIk then reports ok=false and keeps the PREVIOUS
+// tick's J+ and N on purpose. Solving with those would command a
+// plausible-looking velocity derived from a stale inverse, so the binding holds
+// explicitly instead — dq_ = 0 and desired_q_ tracks the measurement, the same
+// shape #292's kHoldExternal uses.
+//
+// The observable is NaN CONTAINMENT. The pre-#282 inline had no guard: a single
+// NaN column makes every entry of J J^T non-finite, so the materialised inverse
+// and therefore all seven joint commands went NaN. With the hold, only the joint
+// whose own measurement is NaN carries it (that is the hold copying the state,
+// not the law spreading it) and the other six stay pinned to where they were.
+TEST_F(TaskControllerUrdfTest, NonFiniteJacobianHoldsInsteadOfSolvingWithAStaleInverse) {
+  const auto tcp0 = ctrl_->tcp_position();
+  std::array<double, kArmDof> target{};
+  target[0] = tcp0[0] + 0.05;
+  target[1] = tcp0[1];
+  target[2] = tcp0[2];
+  for (int i = 3; i < kArmDof; ++i) {
+    target[static_cast<std::size_t>(i)] = kArmHome[static_cast<std::size_t>(i)];
+  }
+  ctrl_->SetDeviceTarget(0, target);
+  RunTicks(20);  // in motion, so a stale J+ would produce visible drift
+
+  std::array<double, kArmDof> before{};
+  for (int i = 0; i < kArmDof; ++i) {
+    before[static_cast<std::size_t>(i)] = state_.devices[0].positions[static_cast<std::size_t>(i)];
+  }
+  // Vacuity guard: the arm must actually be moving, or "it held" is free.
+  ASSERT_GT(std::abs(before[0] - kArmHome[0]) + std::abs(before[1] - kArmHome[1]), 1e-4)
+      << "fixture drifted: the arm never left home, so holding proves nothing";
+  const auto traj_before = last_out_.trajectory_task_positions;
+
+  constexpr std::size_t kNanJoint = 2;
+  state_.devices[0].positions[kNanJoint] = std::numeric_limits<double>::quiet_NaN();
+  state_.iteration += 1;
+  const auto out = ctrl_->Compute(state_);
+
+  // The hold must not advance the clock it is holding against. The §6.5 solve
+  // sits AHEAD of `traj_state_ = trajectory_.compute(...)` / `trajectory_time_
+  // += dt` for exactly this: with the hold on the far side of them the reference
+  // kept running for the whole outage while the arm stood still, and whatever
+  // resumed the law would have been handed the entire accumulated gap as task
+  // error — a max-velocity dash to catch up, the jerk #292's hold-then-resume
+  // shape exists to avoid. kHoldExternal returns ahead of the same two lines.
+  for (std::size_t i = 0; i < traj_before.size(); ++i) {
+    EXPECT_DOUBLE_EQ(out.trajectory_task_positions[i], traj_before[i])
+        << "trajectory reference component " << i
+        << " advanced on a tick the control law could not be evaluated on";
+  }
+
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    const double cmd = out.devices[0].commands[u];
+    if (u == kNanJoint) {
+      EXPECT_FALSE(std::isfinite(cmd))
+          << "joint " << i << " IS the non-finite measurement; laundering it would hide the fault";
+      continue;
+    }
+    EXPECT_TRUE(std::isfinite(cmd))
+        << "joint " << i
+        << " went non-finite: the NaN spread through J+ instead of being contained by the hold";
+    EXPECT_DOUBLE_EQ(cmd, before[u])
+        << "joint " << i << " moved on a tick the law could not be evaluated on";
+  }
 }
 
 // Near-π rotation triggers the split-trajectory defense (two rest-to-rest
@@ -919,6 +1266,66 @@ TEST(TaskControllerLoadConfigTest, NegativeNullKpIsFlooredByTheLoader) {
   ASSERT_NO_THROW(ctrl.LoadConfig(no_key));
   EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kp, 0.0)
       << "an absent key left a negative posture gain in the POD";
+}
+
+// ── #282: the retired `damping` key is reported, never mapped ───────────────
+//
+// The five rtc_controllers schemas retired the same key on the ground that a
+// constant λ and the ceiling of a σ_min-adaptive ramp are not the same quantity,
+// so any mapping would be a guess (rtc_controllers/README.md). This controller
+// ships in three robot configs, so a stale key must not stop a bring-up either —
+// it is ignored, and the ramp runs on ITS OWN keys.
+TEST(TaskControllerLoadConfigTest, RetiredDampingKeyIsIgnoredAndNotMappedOntoMaxDamping) {
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  auto cfg = MinimalValidYaml();
+  cfg["damping"] = 0.9;  // a value nothing should adopt
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+
+  const auto g = ctrl.get_gains();
+  EXPECT_DOUBLE_EQ(g.max_damping, DemoTaskController::Gains{}.max_damping)
+      << "the retired constant λ was mapped onto λ_max — that mapping is the guess this "
+         "contract exists to refuse";
+  EXPECT_DOUBLE_EQ(g.singularity_threshold, DemoTaskController::Gains{}.singularity_threshold);
+}
+
+// Both §6.5 keys are read, and both are floored by the loader. The floors are
+// the shared symbols (NUM-1 / NUM-2), so this also pins that a future edit
+// cannot quietly swap them for a hand-written std::max.
+TEST(TaskControllerLoadConfigTest, DlsKeysAreParsedAndFlooredByTheLoader) {
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  auto cfg = MinimalValidYaml();
+  cfg["max_damping"] = 0.07;
+  cfg["singularity_threshold"] = 0.03;
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().max_damping, 0.07);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().singularity_threshold, 0.03);
+
+  // λ_max below kMinMaxDamping: floored. σ₀ ≤ 0 does not narrow the shell, it
+  // makes AdaptiveDampingSquared return 0 for every σ_min — i.e. it disarms
+  // §6.5 everywhere — so it is floored rather than accepted.
+  cfg["max_damping"] = 1e-9;
+  cfg["singularity_threshold"] = -1.0;
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().max_damping, rtc::compliance::kMinMaxDamping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().singularity_threshold, rtc::compliance::kMinSigma0);
+
+  // A floor is not a clamp: a non-finite value passes through UNCHANGED so the
+  // downstream finite check still sees it. `std::max(1e-4, NaN) == 1e-4` would
+  // have laundered it into a plausible value.
+  cfg["max_damping"] = ".nan";
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+  EXPECT_TRUE(std::isnan(ctrl.get_gains().max_damping))
+      << "a non-finite λ_max was laundered into the floor";
+
+  // Same for σ₀, and this is the half a hand-written `std::max(kMinSigma0, ·)`
+  // got wrong until #282's review: `1e-6 < NaN` is false, so it returned 1e-6 —
+  // a shell no reachable pose enters, i.e. the operator's corrupt gain silently
+  // traded for a §6.5 that never engages.
+  cfg["max_damping"] = 0.05;
+  cfg["singularity_threshold"] = ".nan";
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+  EXPECT_TRUE(std::isnan(ctrl.get_gains().singularity_threshold))
+      << "a non-finite σ₀ was laundered into the floor";
 }
 
 // ── #302: the two surfaces of this controller must agree on gain length ─────

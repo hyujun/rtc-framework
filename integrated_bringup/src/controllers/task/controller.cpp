@@ -6,6 +6,7 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
+#include "rtc_controllers/compliance/task_dynamics.hpp"  // FloorMaxDamping, kMinSigma0
 #include "rtc_controllers/gain_floor.hpp"
 #include "rtc_math/se3/so3.hpp"
 
@@ -73,19 +74,16 @@ void DemoTaskController::InitArmModel(const rtc_urdf_bridge::ModelConfig& config
   q_ = Eigen::VectorXd::Zero(nv);
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
   J_pos_ = Eigen::MatrixXd::Zero(3, nv);
-  JJt_ = Eigen::Matrix3d::Zero();
-  JJt_inv_ = Eigen::Matrix3d::Zero();
-  Jpinv_ = Eigen::MatrixXd::Zero(nv, 3);
+  // §6.5 DLS working buffers (#282). Resize() is the ONLY allocating entry
+  // point on either object; ComputeControl may not call it (RT-1).
+  ik_6d_.Resize(nv, 6);
+  ik_3d_.Resize(nv, 3);
   dq_ = Eigen::VectorXd::Zero(nv);
   desired_q_ = Eigen::VectorXd::Zero(nv);
   traj_dq_ = Eigen::VectorXd::Zero(nv);
-  null_err_ = Eigen::VectorXd::Zero(nv);
-  null_dq_ = Eigen::VectorXd::Zero(nv);
+  qdot_null_ = Eigen::VectorXd::Zero(nv);
   pos_error_ = Eigen::Vector3d::Zero();
 
-  JJt_6d_ = Eigen::Matrix<double, 6, 6>::Zero();
-  JJt_inv_6d_ = Eigen::Matrix<double, 6, 6>::Zero();
-  Jpinv_6d_ = Eigen::MatrixXd::Zero(nv, 6);
   pos_error_6d_ = Eigen::Matrix<double, 6, 1>::Zero();
 }
 
@@ -820,8 +818,31 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   };
   load3("kp_translation", g.kp_translation);
   load3("kp_rotation", g.kp_rotation);
+  // §6.5 σ_min-adaptive DLS (#282). Both floors are the shared symbols, not a
+  // hand-written std::max — `max(1e-4, NaN) == 1e-4` would launder a non-finite
+  // λ_max into a plausible one and hand the caller a damping shell that only
+  // looks armed (NUM-1), and `max(1e-6, NaN) == 1e-6` does the same to σ₀ for a
+  // shell so narrow no reachable pose enters it (NUM-2). ComputeControl floors
+  // BOTH again at the point of use.
+  if (cfg["singularity_threshold"]) {
+    g.singularity_threshold =
+        rtc::compliance::FloorSigma0(cfg["singularity_threshold"].as<double>());
+  }
+  if (cfg["max_damping"]) {
+    g.max_damping = rtc::compliance::FloorMaxDamping(cfg["max_damping"].as<double>());
+  }
   if (cfg["damping"]) {
-    g.damping = cfg["damping"].as<double>();
+    // Retired in #282. Reported rather than mapped onto max_damping, for the
+    // same reason the five rtc_controllers schemas give (#236 S2b/S3b): a
+    // constant λ and the ceiling of a σ_min-adaptive ramp are not the same
+    // quantity, so any mapping would be a guess. WARN and not a throw because
+    // this controller ships in three robot configs and a stale key must not
+    // stop a bring-up — but the ramp then runs on ITS defaults, not on 0.01.
+    RCLCPP_WARN(logger_,
+                "demo_task_controller: 'damping' is retired (#282) and IGNORED — it is not "
+                "mapped onto max_damping. Replace it with max_damping / "
+                "singularity_threshold; the §6.5 ramp is running on %.3g / %.3g.",
+                g.max_damping, g.singularity_threshold);
   }
   if (cfg["null_kp"]) {
     g.null_kp = cfg["null_kp"].as<double>();

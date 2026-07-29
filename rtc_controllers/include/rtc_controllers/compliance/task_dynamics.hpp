@@ -38,16 +38,18 @@ namespace rtc::compliance {
 // change one documented invariant, and any single miss leaves a consumer whose
 // singularity guard silently differs from the doc that describes it.
 //
-// Where each is applied, post-#298 S7c-2:
-//   σ₀ (NUM-2) — in the parsers (params/*.cpp) only. It parameterises where the
-//     ramp starts rather than how hard it damps, and every set_gains()-equivalent
-//     caller in the repo is a test that supplies it explicitly.
-//   λ_max (NUM-1) — in the parsers, and NUM-1 additionally requires it at the
-//     point of USE, because a gains POD written straight into a SeqLock bypasses
-//     configure entirely. That second half lived in the adapters' Compute() and
-//     was deleted with them; it is now a BINDING REQUIREMENT and no in-tree
-//     consumer exercises it (no shipped binding reads max_damping yet). A
-//     binding that adds one must call FloorMaxDamping on the tick as well.
+// Where each is applied, post-#282:
+//   λ_max (NUM-1) — in the parsers, and again at the point of USE, because a
+//     gains POD written straight into a SeqLock bypasses configure entirely.
+//     That second half lived in the adapters' Compute() and was deleted with
+//     them (#298 S7c-2); demo_task_controller is the first shipped binding to
+//     exercise it again.
+//   σ₀ (NUM-2) — the SAME two places, and for the same reason. It used to be
+//     parser-only on the argument that it merely parameterises where the ramp
+//     starts; that argument does not survive the surface `set_gains()` opens.
+//     σ₀ ≤ 0 does not start the ramp later, it disarms §6.5 EVERYWHERE —
+//     AdaptiveDampingSquared short-circuits to λ² = 0 for every σ_min — so the
+//     missing half is not a weaker guard, it is no guard.
 inline constexpr double kMinMaxDamping = 1e-4;
 
 /// The NUM-1 λ_max floor, in ONE place — the §6.5 counterpart of NUM-6's
@@ -56,21 +58,21 @@ inline constexpr double kMinMaxDamping = 1e-4;
 /// can GREP, not a `std::max` open-coded at each site plus a row in a doc table.
 /// Every consumer applies it twice (the parser unconditionally, and again at the
 /// point of use before the value reaches the law, because `set_gains()` writes
-/// the Gains POD straight into the SeqLock and bypasses configure). The
-/// point-of-use half currently has no in-tree caller — no shipped binding reads
-/// `max_damping` — which is exactly why the rule needs a symbol rather than a
-/// convention: #298 S7c-2 deleted the adapters that held it and nothing was left
-/// pointing at the gap.
+/// the Gains POD straight into the SeqLock and bypasses configure).
 ///
 /// Why not `std::max(kMinMaxDamping, x)` written out at each site: `std::max` is
 /// `a < b ? b : a`, and `1e-4 < NaN` is FALSE, so it returns **1e-4** for a NaN
 /// λ_max. That is not a floor, it is laundering — it turns a corrupt gain into a
 /// plausible one and hands the caller a damping shell that looks armed. A
-/// non-finite λ_max is instead passed through UNCHANGED, so λ² is non-finite,
-/// the torque it scales is non-finite, and the finite-output check downstream
-/// sees it. (`cascaded_compliance_params` rejects non-finite before it gets
-/// here, so there this branch is unreachable defence-in-depth; the other four
-/// parsers reach it.)
+/// non-finite λ_max is instead passed through UNCHANGED, so λ² is non-finite and
+/// a finite-output check downstream sees it. WHICH check depends on the lane, and
+/// both exist: on the torque lane `compliance::AllFinite` (§10.5, evaluated
+/// before saturation can mask an ∞), and on the position lane
+/// `urtc::ValidateControllerOutput`, which screens every command at the actuator
+/// boundary and makes the manager replace the tick with a hold and escalate to
+/// E-STOP after ~100 ms of consecutive rejects. (`cascaded_compliance_params`
+/// rejects non-finite before it gets here, so there this branch is unreachable
+/// defence-in-depth; the other four parsers reach it.)
 ///
 /// The law itself still floors nothing — `AdaptiveDampingSquared` takes λ_max as
 /// a plain argument and must keep satisfying its own named property, λ² ≤ λ_max²
@@ -85,6 +87,26 @@ inline constexpr double kMinMaxDamping = 1e-4;
 // σ₀ ≤ 0 does not narrow the shell — AdaptiveDampingSquared short-circuits and
 // returns λ² = 0 for EVERY σ_min, i.e. no damping anywhere.
 inline constexpr double kMinSigma0 = 1e-6;
+
+/// The NUM-2 σ₀ floor, in ONE place — FloorMaxDamping's partner, deliberately
+/// the same shape because it is the same problem one gain over.
+///
+/// Why not `std::max(kMinSigma0, x)` at each site: `1e-6 < NaN` is FALSE, so a
+/// NaN σ₀ comes back as **1e-6** — and for σ₀ that laundering is worse than for
+/// λ_max, because the result still looks armed at every callsite. A shell of
+/// radius 1e-6 is one no reachable pose enters, so §6.5 never engages, no fault
+/// fires and nothing is logged: the operator's corrupt gain has been traded for
+/// a silently disarmed singularity guard. Passed through UNCHANGED instead, a
+/// non-finite σ₀ propagates: `sigma0 <= 0.0` and `sigma_min >= sigma0` are BOTH
+/// false against NaN, so AdaptiveDampingSquared reaches the ratio and returns a
+/// non-finite λ², which the same downstream finite-command check catches.
+///
+/// Applied at BOTH surfaces like λ_max, and for the same reason — `set_gains()`
+/// writes the Gains POD straight into the SeqLock and passes through neither
+/// parser nor parameter callback.
+[[nodiscard]] inline double FloorSigma0(double sigma0) noexcept {
+  return std::isfinite(sigma0) ? std::max(kMinSigma0, sigma0) : sigma0;
+}
 
 // σ_min-adaptive DLS damping λ² (spec §6.5):
 //   λ² = 0                              if σ_min ≥ σ₀        (no damping)

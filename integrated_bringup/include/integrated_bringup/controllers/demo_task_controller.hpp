@@ -18,6 +18,7 @@
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/compliance/differential_ik.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
@@ -125,11 +126,26 @@ class DemoTaskController final : public RTControllerInterface {
     std::array<double, 3> kp_translation{
         {5.0, 5.0, 5.0}};  ///< Translation proportional gain (x,y,z) [1/s]
     std::array<double, 3> kp_rotation{
-        {2.0, 2.0, 2.0}};          ///< Rotation proportional gain (rx,ry,rz) [1/s]
-    double damping{0.01};          ///< Damping factor λ for J^#
-    double null_kp{0.5};           ///< Null-space joint-centering gain [1/s]
-    bool enable_null_space{true};  ///< Enable null-space secondary task
-    bool control_6dof{false};      ///< Enable 6-DOF (translation + orientation) control
+        {2.0, 2.0, 2.0}};  ///< Rotation proportional gain (rx,ry,rz) [1/s]
+    // §6.5 σ_min-adaptive DLS. These two REPLACED a single constant λ
+    // (`damping`, retired in #282) and are named/defaulted to match the five
+    // task-space schemas in rtc_controllers/src/params/ — see LoadConfig for
+    // why the old key is reported rather than mapped onto max_damping.
+    //
+    // ONE σ₀ parameterises BOTH branches, and σ_min does not mean the same thing
+    // in them: `control_6dof` feeds the mixed-unit 6×n Jacobian (m/rad rows plus
+    // dimensionless axis rows, so σ_min is dominated by the O(1) rotational
+    // part), while the 3-DOF branch feeds the translation-only 3×n Jacobian,
+    // whose σ_min scales with link length. The shipped 0.02 is tuned for the
+    // 6-DOF lane all three robot configs run; a tree that flips `control_6dof`
+    // at runtime is reinterpreting this gain, not carrying it over. The retired
+    // constant λ was unit-agnostic and had no such coupling — it is the price of
+    // a law that is parameterised on the Jacobian's conditioning.
+    double singularity_threshold{0.02};  ///< σ₀: DLS engages below this
+    double max_damping{0.05};            ///< λ_max: ceiling of the §6.5 ramp
+    double null_kp{0.5};                 ///< Null-space joint-centering gain [1/s]
+    bool enable_null_space{true};        ///< Enable null-space secondary task
+    bool control_6dof{false};            ///< Enable 6-DOF (translation + orientation) control
 
     // Trajectory speed
     double trajectory_speed{0.1};  ///< TCP translational speed for trajectory duration [m/s]
@@ -185,14 +201,16 @@ class DemoTaskController final : public RTControllerInterface {
   void PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
+  // gains layout: [kp_translation×3, kp_rotation×3, singularity_threshold,
+  //                max_damping, null_kp,
   //                enable_null_space(0/1), control_6dof(0/1),
   //                trajectory_speed, trajectory_angular_speed,
   //                hand_trajectory_speed, max_traj_velocity,
   //                max_traj_angular_velocity, hand_max_traj_velocity,
   //                grasp_contact_threshold, grasp_force_threshold,
   //                grasp_min_fingertips,
-  //                grasp_command, grasp_target_force] = 21 values
+  //                grasp_command, grasp_target_force] = 22 values
+  // (21 before #282 retired the single `damping` λ for the §6.5 pair.)
   void LoadConfig(const YAML::Node& cfg) override;
   void OnDeviceConfigsSet() override;
 
@@ -432,22 +450,23 @@ class DemoTaskController final : public RTControllerInterface {
   Eigen::VectorXd q_;
   Eigen::MatrixXd J_full_;
   Eigen::MatrixXd J_pos_;
-  Eigen::Matrix3d JJt_;
-  Eigen::Matrix3d JJt_inv_;
-  Eigen::MatrixXd Jpinv_;
+  // §6.5 damped least squares, one instance per task dimension (#282). Both are
+  // Resize()d in InitArmModel and only Compute()/Solve()d on the tick. Two
+  // objects rather than one re-Resize()d per branch: Resize() allocates, and
+  // `control_6dof` is a runtime ros2 parameter, so a single instance would heap
+  // -allocate on the RT tick the operator flips it (RT-1).
+  rtc::compliance::DifferentialIk ik_6d_;
+  rtc::compliance::DifferentialIk ik_3d_;
   Eigen::VectorXd dq_;
   Eigen::VectorXd desired_q_;  ///< nv: integrated desired joint position
   Eigen::VectorXd traj_dq_;    // feedforward-only trajectory velocity (for logging)
-  Eigen::VectorXd null_err_;
-  Eigen::VectorXd null_dq_;
+  /// q̇_null = K_p·(q_null − q), the posture velocity handed to Solve() as the
+  /// nullspace argument. One buffer where there used to be two (`null_err_` and
+  /// the projected `null_dq_`): DifferentialIk applies N itself, so the
+  /// projected result never needs to be named.
+  Eigen::VectorXd qdot_null_;
   Eigen::Vector3d pos_error_;
-  Eigen::Matrix<double, 6, 6> JJt_6d_;
-  Eigen::Matrix<double, 6, 6> JJt_inv_6d_;
-  Eigen::MatrixXd Jpinv_6d_;
   Eigen::Matrix<double, 6, 1> pos_error_6d_;
-
-  Eigen::LDLT<Eigen::Matrix3d> ldlt_;
-  Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt_6d_;
 
   // ── Controller state ──────────────────────────────────────────────────────
   // RT-thread-only working copy of the SE3 target (materialised from the
@@ -646,7 +665,7 @@ class DemoTaskController final : public RTControllerInterface {
 
   // ── Phase B (gain→parameter migration): per-controller ROS 2 parameters ──
   //
-  // Tunable gains (kp_translation, damping, trajectory_speed, ...) are
+  // Tunable gains (kp_translation, max_damping, trajectory_speed, ...) are
   // declared as parameters on the controller's own LifecycleNode in
   // on_configure. The set-parameters callback rebuilds a Gains snapshot
   // and stores it via gains_lock_.Store(); the SeqLock provides RT-safe

@@ -26,7 +26,8 @@ namespace rtc_bt {
 ///   demo_joint_controller: robot_trajectory_speed, hand_trajectory_speed,
 ///                          grasp_{contact,force}_threshold,
 ///                          grasp_min_fingertips
-///   demo_task_controller:  kp_translation, kp_rotation, damping, null_kp,
+///   demo_task_controller:  kp_translation, kp_rotation,
+///                          singularity_threshold, max_damping, null_kp,
 ///                          enable_null_space, control_6dof,
 ///                          trajectory_speed, trajectory_angular_speed,
 ///                          hand_trajectory_speed,

@@ -115,7 +115,7 @@ child frame 은 **고정이 아니다**. `virtual_tcp_mode` 가 켜진 task 컨�
 | `MoveToJoints` | StatefulAction | Joint-space 목표 이동, per-joint tolerance 도달 판정 | `target`, `pose_name`(poses.yaml named arm pose, target 대체), `tolerance`(0.01), `timeout_s`(10.0) |
 | `GraspControl` | StatefulAction | Hand open/close/pinch/preset 제어, 점진적 닫기 지원 | `mode`(close), `target_positions`, `close_speed`(0.3), `max_position`(1.4), `pinch_fingers`("thumb,index"), `timeout_s`(8.0) |
 | `TrackTrajectory` | StatefulAction | Waypoint 시퀀스 순차 추적 (sweep motion 등) | `waypoints`, `position_tolerance`(0.01), `timeout_s`(30.0) |
-| `SetGains` | StatefulAction | active controller LifecycleNode의 ROS 2 parameter 동적 변경 (`set_parameters_atomically`). 입력 포트 중 채워진 것만 dispatch — 컨트롤러별 매핑은 `set_gains.cpp` 참조 (예: `trajectory_speed` → DemoJoint면 `robot_trajectory_speed`, DemoWbc면 `arm_trajectory_speed`). `grasp_command`/`grasp_target_force`는 ROS 2 srv (`rtc_msgs/srv/GraspCommand`)로 분기. read-only 파라미터 (`*_max_traj_velocity`)는 변경 불가 (rejected) | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof`, `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips`, `se3_weight`, `force_weight`, `posture_weight`, `mpc_enable`, `riccati_gain_scale`, `grasp_command`, `grasp_target_force` |
+| `SetGains` | StatefulAction | active controller LifecycleNode의 ROS 2 parameter 동적 변경 (`set_parameters_atomically`). 입력 포트 중 채워진 것만 dispatch — 컨트롤러별 매핑은 `set_gains.cpp` 참조 (예: `trajectory_speed` → DemoJoint면 `robot_trajectory_speed`, DemoWbc면 `arm_trajectory_speed`). `grasp_command`/`grasp_target_force`는 ROS 2 srv (`rtc_msgs/srv/GraspCommand`)로 분기. read-only 파라미터 (`*_max_traj_velocity`)는 변경 불가 (rejected) | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `kp_translation`, `kp_rotation`, `singularity_threshold`, `max_damping`, `null_kp`, `enable_null_space`, `control_6dof`, `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips`, `se3_weight`, `force_weight`, `posture_weight`, `mpc_enable`, `riccati_gain_scale`, `grasp_command`, `grasp_target_force` |
 | `SwitchController` | StatefulAction | 활성 컨트롤러 전환 (joint ↔ task) | `controller_name`, `timeout_s`(3.0) |
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
 | `SetPoseZ` | SyncAction | Pose의 Z좌표를 절대값으로 덮어씀 (X, Y, 방향 유지). `z`가 NaN(기본값)이면 pass-through. Object final goal의 Z를 고정하는 용도 | `input_pose`, `z`(NaN) → 출력: `output_pose` |
@@ -442,7 +442,7 @@ assm_v1 hand (joint_states 순서 thumb:3/index:3/middle:3/ring:1) 예시:
 | `trajectory_speed` | `robot_trajectory_speed` | `trajectory_speed` | `arm_trajectory_speed` |
 | `trajectory_angular_speed` | — | `trajectory_angular_speed` | — |
 | `hand_trajectory_speed` | `hand_trajectory_speed` | `hand_trajectory_speed` | `hand_trajectory_speed` |
-| `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof` | — | (CLIK 게인) | — |
+| `kp_translation`, `kp_rotation`, `singularity_threshold`, `max_damping`, `null_kp`, `enable_null_space`, `control_6dof` | — | (CLIK 게인) | — |
 | `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips` | (Force-PI grasp) | (Force-PI grasp) | — |
 | `se3_weight`, `force_weight`, `posture_weight`, `mpc_enable`, `riccati_gain_scale` | — | — | (TSID + MPC) |
 

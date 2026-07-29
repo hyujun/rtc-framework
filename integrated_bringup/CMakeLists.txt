@@ -361,6 +361,35 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── #282 two-tier DLS convergence harness ──────────────────────────────────
+  # Pure numerics: the pre-#282 inline block (oracle) against
+  # compliance::DifferentialIk. Its own binary because it installs the Eigen
+  # allocation tripwire (no_malloc_scope.hpp defines EIGEN_RUNTIME_NO_MALLOC for
+  # the whole TU) and a replacement operator new (alloc_gate.hpp, one TU per
+  # binary) — neither belongs in a binary that also builds a live controller.
+  # Test-only headers from rtc_base/rtc_controllers resolve via source-relative
+  # include dirs, the same never-installed idiom test_closed_chain_hand_fk uses.
+  ament_add_gtest(test_task_dls_convergence test/test_task_dls_convergence.cpp)
+  target_include_directories(test_task_dls_convergence PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_link_libraries(test_task_dls_convergence
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_task_dls_convergence
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+  # alloc_gate.hpp pairs new→malloc with delete→free, which makes GCC
+  # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
+  target_compile_options(test_task_dls_convergence PRIVATE -Wno-mismatched-new-delete)
+
   # ── demo_joint_controller URDF-backed tests (#149) ─────────────────────────
   # Model-dependent joint paths the empty-URDF sister cannot reach: arm quintic
   # trajectory, fingertip FK/TF, virtual TCP, ToF populate, E-STOP FK.

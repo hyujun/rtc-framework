@@ -2245,7 +2245,7 @@ class DemoControllerGUI(Node):
             # One LabelFrame per group (editable panel + optional
             # applied mirror). Inside each group the array_area sits to
             # the left and the scalar_area to the right, so array-form
-            # gains (kp_*) and related scalars (damping, null_kp, …)
+            # gains (kp_*) and related scalars (max_damping, null_kp, …)
             # stay on one row.
             def _make_group_box(parent_row: tk.Widget, title: str) -> dict:
                 box = ttk.LabelFrame(parent_row, text=title, padding=4)
