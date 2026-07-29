@@ -6,6 +6,7 @@
 #include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"  // FloorMaxDamping, kMinSigma0
 #include "rtc_controllers/gain_floor.hpp"
+#include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <algorithm>
@@ -505,12 +506,6 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
   // computed once and reused for both the CLIK command dq_ and the log-only
   // feedforward traj_dq_, so the frame rotation runs a single time per tick.
   if (gains.control_6dof) {
-    Eigen::Matrix<double, 6, 1> kp_vec_6d;
-    for (std::size_t i = 0; i < 3; ++i) {
-      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains.kp_translation[i];
-      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains.kp_rotation[i];
-    }
-
     // Feedforward: trajectory local → Jacobian frame (vtcp or world-aligned).
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
     if (use_vtcp_frame) {
@@ -523,8 +518,12 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
       ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
     }
 
-    const Eigen::Matrix<double, 6, 1> task_vel_6d =
-        kp_vec_6d.cwiseProduct(pos_error_6d_) + ff_vel_6d;
+    // The shared law, not a local spelling of it (#314). ff_vel_6d is already in
+    // the Jacobian frame, which is the frame contract ComputeTaskVelocity states
+    // for nu_ff — the rotation above is the caller's half of that contract.
+    const Eigen::Matrix<double, 6, 1> task_vel_6d = rtc::task::ComputeTaskVelocity(
+        rtc::task::TaskVelParams{gains.kp_translation, gains.kp_rotation}, pos_error_6d_,
+        ff_vel_6d);
     // Two-argument Solve, not Solve(twist, zero, out): the 6-DOF branch has no
     // posture task at all (the null-space block below is gated on
     // `!control_6dof`), and `+= N·0` is a full nv×nv product whose result is not
@@ -533,8 +532,6 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
     ik_6d_.Solve(task_vel_6d, dq_);
     ik_6d_.Solve(ff_vel_6d, traj_dq_);
   } else {
-    Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
-                           gains.kp_translation[2]);
     Eigen::Vector3d ff_lin;
     if (use_vtcp_frame) {
       const Eigen::Matrix3d R_vtcp_traj =
@@ -543,7 +540,11 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
     } else {
       ff_lin = traj_state_.pose.rotation() * traj_state_.velocity.linear();
     }
-    const Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + ff_lin;
+    // Translation-only counterpart of the call above (#314). Takes the
+    // translation gains DIRECTLY: this branch commands no orientation, and the
+    // signature says so.
+    const Eigen::Vector3d task_vel =
+        rtc::task::ComputeTranslationVelocity(gains.kp_translation, pos_error_, ff_lin);
 
     // ── Null-space secondary task ────────────────────────────────────────
     // Folded into this branch (#282): the gate WAS `enable_null_space &&
