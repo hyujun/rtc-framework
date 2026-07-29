@@ -39,17 +39,29 @@ void ParseTaskImpedanceParams(const YAML::Node& cfg, TaskImpedanceParams& out,
     return;
   }
 
-  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr) {
-    if (n && n.IsSequence() && n.size() == 3) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        arr[i] = n[i].as<double>();
-      }
+  // Shape-checked, never silently ignored (#302). `kp_pos` is the sharpest case
+  // in the repo: `inner.kp_pos: [1, 2, 3, 4]` throws in cascaded_compliance —
+  // pinned by test_params_schema — while the SAME key spelled at this schema's
+  // top level parsed clean and kept the default. Reading the five schemas side
+  // by side in one directory is what made that visible (#298 S7c-2); the silent
+  // form was transcribed from the adapter under a functional-equivalence brief,
+  // so converging it is a separate change. No scalar broadcast (D5).
+  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr, const char* what) {
+    if (!n) {
+      return;
+    }
+    if (!n.IsSequence() || n.size() != 3) {
+      throw std::runtime_error(std::string("task_impedance: ") + what +
+                               " must be a 3-entry sequence [x,y,z]");
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      arr[i] = n[i].as<double>();
     }
   };
-  load3(cfg["kp_pos"], out.impedance.kp_pos);
-  load3(cfg["kd_pos"], out.impedance.kd_pos);
-  load3(cfg["kp_rot"], out.impedance.kp_rot);
-  load3(cfg["kd_rot"], out.impedance.kd_rot);
+  load3(cfg["kp_pos"], out.impedance.kp_pos, "kp_pos");
+  load3(cfg["kd_pos"], out.impedance.kd_pos, "kd_pos");
+  load3(cfg["kp_rot"], out.impedance.kp_rot, "kp_rot");
+  load3(cfg["kd_rot"], out.impedance.kd_rot, "kd_rot");
   if (cfg["nullspace_stiffness"]) {
     out.nullspace_kp = cfg["nullspace_stiffness"].as<double>();
   }

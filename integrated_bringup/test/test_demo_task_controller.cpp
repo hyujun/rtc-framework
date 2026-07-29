@@ -31,8 +31,10 @@
 
 #include <array>
 #include <cmath>
+#include <exception>
 #include <memory>
 #include <string>
+#include <vector>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -917,6 +919,69 @@ TEST(TaskControllerLoadConfigTest, NegativeNullKpIsFlooredByTheLoader) {
   ASSERT_NO_THROW(ctrl.LoadConfig(no_key));
   EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kp, 0.0)
       << "an absent key left a negative posture gain in the POD";
+}
+
+// ── #302: the two surfaces of this controller must agree on gain length ─────
+//
+// OnGainParametersSet already rejected `v.size() != 3` ("kp_translation requires
+// 3 values"), so `ros2 param set` and the BT SetGains node could not install a
+// mis-shaped gain. LoadConfig used `min(size, 3)` and accepted from a file
+// exactly what the parameter surface refuses — the same key, the same
+// controller, opposite verdicts.
+//
+// Message-matched, not a bare EXPECT_THROW: `[1, 2, 3, 4]` reaches no
+// past-the-end index, so nothing else in this loader would have thrown, and for
+// the short case yaml-cpp must not be allowed to satisfy the assertion for a
+// reason unrelated to length.
+TEST(TaskControllerLoadConfigTest, MisShapedCartesianGainSequenceThrows) {
+  auto load_error = [](const YAML::Node& cfg) {
+    DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+    try {
+      ctrl.LoadConfig(cfg);
+    } catch (const std::exception& e) {
+      return std::string(e.what());
+    }
+    return std::string{};
+  };
+
+  auto over_long = MinimalValidYaml();
+  over_long["kp_translation"] = std::vector<double>{1.0, 2.0, 3.0, 4.0};
+  EXPECT_NE(load_error(over_long).find("kp_translation"), std::string::npos);
+  EXPECT_NE(load_error(over_long).find("3-entry"), std::string::npos);
+
+  auto short_seq = MinimalValidYaml();
+  short_seq["kp_rotation"] = std::vector<double>{1.0, 2.0};
+  EXPECT_NE(load_error(short_seq).find("kp_rotation"), std::string::npos);
+
+  auto scalar = MinimalValidYaml();
+  scalar["kp_translation"] = 0.5;
+  EXPECT_NE(load_error(scalar).find("kp_translation"), std::string::npos);
+}
+
+TEST(TaskControllerLoadConfigTest, ExactWidthCartesianGainsAreAppliedAndAbsentKeysKeepDefaults) {
+  // Non-vacuity under the case above, and the specific regression the `min(size,
+  // 3)` spelling produced: a two-entry sequence used to write entries 0 and 1
+  // from YAML and leave entry 2 at its default, so the POD held a gain no
+  // operator ever wrote and get_gains() reported it as if deliberate. Asserting
+  // the whole triple is what makes a partial fill visible.
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  const auto defaults = ctrl.get_gains();
+
+  auto cfg = MinimalValidYaml();
+  cfg["kp_translation"] = std::vector<double>{7.0, 8.0, 9.0};
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().kp_translation[0], 7.0);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().kp_translation[2], 9.0);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().kp_rotation[2], defaults.kp_rotation[2])
+      << "an absent key must stay at its default, not become a config error";
+
+  // A rejected reconfigure must not leave a half-written gain behind either.
+  auto bad = MinimalValidYaml();
+  bad["kp_translation"] = std::vector<double>{1.0, 2.0};
+  EXPECT_THROW(ctrl.LoadConfig(bad), std::runtime_error);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().kp_translation[0], 7.0)
+      << "a mis-shaped sequence partially overwrote the live gain";
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().kp_translation[2], 9.0);
 }
 
 TEST(TaskControllerLoadConfigTest, MissingEstopThrows) {
