@@ -788,91 +788,39 @@ TEST(OscAdapter, PostureGateReportsClosedOnAnEstoppedTick) {
   EXPECT_TRUE(ctrl.nullspace_active()) << "recovery must reopen the gate, not latch it closed";
 }
 
-TEST(ClikAdapter, HoldsInsteadOfCommandingNaNWhenTheJacobianGoesNonFinite) {
-  // Mutation M6 — ignoring DifferentialIk's `ok` and solving anyway — also ran
-  // clean, for a different reason: on every ordinary draw `ok` is true, so the
-  // guard is never exercised and deleting it changes nothing. The pre-migration
-  // adapter never checked its LDLT's .info() at all, which is exactly why the
-  // guard is new behaviour worth a test rather than an inherited invariant.
-  //
-  // Reaching `ok == false` needs a NON-FINITE Jacobian, i.e. a NaN joint state
-  // through FK. The helper then keeps its last good J⁺ on purpose, so a caller
-  // that ignores `ok` publishes J⁺·(NaN task error) — a NaN joint velocity that
-  // this controller would then INTEGRATE into its position command. Holding at
-  // zero velocity is the answer; the assertion is on finiteness of the velocity
-  // lane, which is what separates the two.
-  rtc::ClikController::Gains gains;
-  gains.control_6dof = false;
-  gains.enable_null_space = true;
-  rtc::ClikController ctrl(rtc::testing::Serial7dof(), gains);
-
-  rtc::ControllerState state = rtc::testing::MakeState(7, 0.001);
-  for (int tick = 0; tick < 5; ++tick) {
-    rtc::testing::FillSweep(state, 7, tick, 0.001);
-    const rtc::ControllerOutput healthy = ctrl.Compute(state);
-    for (int i = 0; i < 7; ++i) {
-      ASSERT_TRUE(std::isfinite(healthy.devices[0].target_velocities[static_cast<std::size_t>(i)]))
-          << "healthy tick " << tick << " channel " << i;
-    }
-  }
-
-  rtc::testing::FillSweep(state, 7, 5, 0.001);
-  state.devices[0].positions[2] = std::numeric_limits<double>::quiet_NaN();
-  const rtc::ControllerOutput degraded = ctrl.Compute(state);
-  for (int i = 0; i < 7; ++i) {
-    EXPECT_TRUE(std::isfinite(degraded.devices[0].target_velocities[static_cast<std::size_t>(i)]))
-        << "a non-finite Jacobian must produce a HELD velocity, not a NaN one; channel " << i;
-  }
-}
-
-TEST(OscAdapter, HoldsGravityTorqueWhenTheJacobianGoesNonFinite) {
-  // The dynamic sibling of the CLIK test above, and it did NOT hold before this
-  // guard existed. The adapter's own defence is `dyn_ok`, fed by two .info()
-  // checks — and .info() cannot see a NaN, because every pivot test inside LLT
-  // is a comparison and comparisons against NaN are false. Worse, the one place
-  // a NaN would have to surface, σ_min = sqrt(max(0, λ_min)), LAUNDERS it:
-  // std::max(0.0, NaN) returns 0.0, so a NaN pose reports the same σ_min as a
-  // perfectly singular one and λ² is set from that clean number. The result was
-  // r.ok == true over an all-NaN Λ_S, i.e. τ = Jᵀ(Λ·a) + h published as a
-  // command with the τ = h fallback never taken. Only J_S.allFinite() catches it.
-  rtc::OperationalSpaceController::Gains gains;
-  gains.null_kp = 0.0;
-  gains.null_kd = 1.0;
-  rtc::OperationalSpaceController ctrl(rtc::testing::Serial7dof(), gains);
-
-  rtc::ControllerState state = rtc::testing::MakeState(7, 0.001);
-  for (int tick = 0; tick < 5; ++tick) {
-    rtc::testing::FillSweep(state, 7, tick, 0.001);
-    const rtc::ControllerOutput healthy = ctrl.Compute(state);
-    for (int i = 0; i < 7; ++i) {
-      ASSERT_TRUE(std::isfinite(healthy.devices[0].commands[static_cast<std::size_t>(i)]))
-          << "healthy tick " << tick << " channel " << i;
-    }
-  }
-
-  // (a) NaN POSITION — J and M both go non-finite, so the helper's gate fires
-  //     and the adapter takes its τ = h fallback. h is NaN too (same state), so
-  //     the fallback alone is not enough; the Step 10 scrub is what holds.
-  rtc::testing::FillSweep(state, 7, 5, 0.001);
-  state.devices[0].positions[2] = std::numeric_limits<double>::quiet_NaN();
-  const rtc::ControllerOutput bad_q = ctrl.Compute(state);
-  for (int i = 0; i < 7; ++i) {
-    EXPECT_TRUE(std::isfinite(bad_q.devices[0].commands[static_cast<std::size_t>(i)]))
-        << "a non-finite joint position must not reach the actuator as a torque; channel " << i;
-  }
-
-  // (b) NaN VELOCITY — the case the gate does NOT see: J(q) and M(q) depend on
-  //     q alone and stay finite, so dyn_ok is true and the fallback never runs,
-  //     yet h = C(q,v)v and tcp_vel_ = J·v both carry the NaN into τ. Without
-  //     the scrub this channel publishes NaN with every guard reporting healthy.
-  rtc::testing::FillSweep(state, 7, 6, 0.001);
-  state.devices[0].velocities[4] = std::numeric_limits<double>::quiet_NaN();
-  const rtc::ControllerOutput bad_v = ctrl.Compute(state);
-  for (int i = 0; i < 7; ++i) {
-    EXPECT_TRUE(std::isfinite(bad_v.devices[0].commands[static_cast<std::size_t>(i)]))
-        << "a non-finite joint velocity must not reach the actuator as a torque; channel " << i;
-  }
-}
+// ── Retired with the adapters (#298 S7c-2 4단계) ────────────────────────────
+//
+// `ClikAdapter.HoldsInsteadOfCommandingNaNWhenTheJacobianGoesNonFinite` and
+// `OscAdapter.HoldsGravityTorqueWhenTheJacobianGoesNonFinite` stood here. Both
+// asked the same question of a live adapter: does a non-finite model quantity
+// reach the actuator as a command?
+//
+// They are NOT simply duplicates of the two `MigratedGates` cases above, which
+// is what the S7c plan first recorded. Reading them settled it:
+//
+//   - the core gates pin `!ok` / `!dyn_ok` and that the helper keeps its last
+//     good J⁺ / Λ_S. They do not pin what the CALLER does with that answer.
+//   - the OSC case's (b) half — a NaN *velocity* — is invisible to any core
+//     gate by construction: J(q) and M(q) depend on q alone and stay finite, so
+//     `dyn_ok` is true and the τ = h fallback never runs, while h = C(q,v)v
+//     carries the NaN through. Only the adapter's Step 10 scrub stopped that
+//     tick.
+//
+// The contract still has an owner after the adapters go, but a different one:
+// the base output gate, `RTControllerInterface::ValidateOutput` →
+// `OutputRejectReason::kNonFiniteCommand`, covered by
+// `rtc_controller_interface/test/test_output_validation.cpp` and
+// `rtc_controller_manager/test/test_rt_loop_pipeline.cpp` (both survive S7c).
+//
+// The ANSWER differs and that is worth writing down: the adapter scrubbed and
+// published a usable command, whereas an unscrubbed binding has its whole output
+// rejected and the manager substitutes a hold. Both are safe; they are not the
+// same behaviour.
+//
+// ⇒ Binding requirement, not an adapter defect: a future binding that wants to
+//   guarantee "my output is finite" — rather than delegating that to the CM's
+//   reject-and-hold path — has to reimplement the scrub. Nothing in the core
+//   layer will do it for it, because the core cannot see the NaN-velocity case.
 
 TEST(TaskDynamicsCore, ReportsNotOkOnANonFiniteJacobian) {
   // The unit-level statement of the same thing, and the one that pins WHICH
