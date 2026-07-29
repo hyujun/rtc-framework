@@ -22,13 +22,13 @@
 | 패키지 | 설명 | 빌드 |
 |--------|------|------|
 | [`rtc_msgs`](rtc_msgs/) | 커스텀 ROS 2 메시지 (`rtc_msgs/msg/` 가 SSoT — 개수·목록은 여기 박제하지 않는다) | ament_cmake |
-| [`rtc_base`](rtc_base/) | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
+| [`rtc_base`](rtc_base/) | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/14/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
 | [`rtc_math`](rtc_math/) | 헤더-전용 robot-agnostic 기하/제어 수학 (Eigen-only): SE(3) Lie-group 원시 연산(so3/se3 log/exp/Jacobian) + task-space pose/velocity(twist) error 정의(`rtc::math::se3`). Pinocchio 어댑터는 optional | ament_cmake |
 | [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket/CanSocket/SerialPort RAII, UDP·CAN·CAN FD·RS485 transport (length-prefixed 프레이머), PacketCodec concept, Transceiver 템플릿 | ament_cmake |
 | [`rtc_controller_interface`](rtc_controller_interface/) | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
 | [`rtc_controllers`](rtc_controllers/) | 제어 알고리즘 라이브러리 — 관절/태스크 제어 법칙, compliance 공용 커널, Force-PI grasp, 퀸틱 궤적 생성기 (목록은 [rtc_controllers/README.md](rtc_controllers/) 가 SSoT) | ament_cmake |
 | [`rtc_tsid`](rtc_tsid/) | TSID QP 프레임워크: WQP/HQP formulation, PostureTask/SE3Task/CoMTask/ForceTask, EOM/Contact/FrictionCone/TorqueLimit/JointLimit 제약, ProxSuite 백엔드 | ament_cmake |
-| [`rtc_mpc`](rtc_mpc/) | MPC↔RT 인터페이스: zero-copy `TripleBuffer<T>` (single-atomic publish/acquire), cubic-Hermite `TrajectoryInterpolator`, `RiccatiFeedback`, `MPCSolutionManager` facade, `MPCThread`+`MockMPCThread` jthread skeleton (solver-agnostic; Aligator는 후속 패키지) | ament_cmake |
+| [`rtc_mpc`](rtc_mpc/) | MPC↔RT 인터페이스: zero-copy `TripleBuffer<T>` (single-atomic publish/acquire), cubic-Hermite `TrajectoryInterpolator`, `RiccatiFeedback`, `MPCSolutionManager` facade, `MPCThread`+`MockMPCThread` jthread skeleton (인터페이스는 solver-agnostic; Aligator 백엔드는 `find_package(aligator REQUIRED)` 로 이미 링크됨 — source-install 이라 `package.xml` 대신 CMake 로 해결) | ament_cmake |
 | [`rtc_controller_manager`](rtc_controller_manager/) | 설정 가능한 RT 루프 (`control_rate`, default 500Hz, clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP + `DeviceBackend` 추상 | ament_cmake |
 | [`rtc_inference`](rtc_inference/) | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
 | [`rtc_mujoco_sim`](rtc_mujoco_sim/) | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
@@ -60,32 +60,41 @@
 
 ### 의존성 그래프
 
+**층위 요약이다 — 전체 엣지의 SSoT 는 각 패키지의 `package.xml`** 이며 여기 전수 박제하지 않는다. 아래는 층위를 가르는 `rtc_*` 엣지와 주요 외부 의존만 담는다.
+
 ```
 rtc_msgs, rtc_base (독립)
   ├── rtc_communication ← rtc_base
   ├── rtc_inference ← rtc_base
   ├── rtc_controller_interface ← rtc_base, rtc_msgs, rtc_urdf_bridge
-  │   ├── rtc_controllers ← rtc_controller_interface
-  │   └── rtc_controller_manager ← rtc_controller_interface, rtc_communication
-  ├── rtc_tsid ← Pinocchio, ProxSuite, Eigen3, yaml-cpp
-  ├── rtc_mpc  ← rtc_base, Eigen3, yaml-cpp
-  ├── rtc_mujoco_sim ← MuJoCo 3.x (optional)
-  ├── rtc_digital_twin (독립, Python)
-  └── rtc_tools (독립, Python)
+  ├── rtc_controllers ← rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
+  │     (rtc_controller_interface 의 형제 — 의존하지 않는다, #236 S7c)
+  ├── rtc_controller_manager ← rtc_controller_interface, rtc_controllers,
+  │       rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge
+  ├── rtc_tsid ← rtc_math, rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
+  ├── rtc_mpc  ← rtc_base, Eigen3, yaml-cpp, Pinocchio
+  │       (+ CMake 전용: fmt ≥ 10, aligator — source-install, package.xml 미선언)
+  ├── rtc_mujoco_sim ← rtc_base, rtc_msgs, MuJoCo 3.x (optional)
+  ├── rtc_digital_twin (Python) ← rtc_msgs (exec)
+  └── rtc_tools (Python) ← rtc_msgs (exec)
 
 repo_scripts (ament_cmake — 스크립트 install + ament_add_test, 라이브러리/실행파일 없음)
 rtc_math (독립) ← Eigen3 (Pinocchio adapter optional)
 rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
 
 shape_estimation_msgs (독립)
-  └── shape_estimation ← shape_estimation_msgs, Eigen3
+  └── shape_estimation ← shape_estimation_msgs, rtc_msgs, tf2/tf2_ros,
+                         rclcpp_action, Eigen3
 
 robot_descriptions (독립, data-only — <exec_depend> only, ARCH-5)
 udp_hand_driver ← rtc_communication, rtc_inference, rtc_base
-ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
+ur5e_bt_coordinator ← rtc_msgs, shape_estimation_msgs, tf2/tf2_ros,
+                      BehaviorTree.CPP v4, Eigen3
 
-integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
-                     udp_hand_driver, robot_descriptions (runtime lookup)
+integrated_bringup ← rtc_controller_manager, rtc_controller_interface, rtc_controllers,
+                     rtc_tsid, rtc_mpc, rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
+                     + <exec_depend> udp_hand_driver, robot_descriptions (runtime lookup),
+                       rtc_tools, repo_scripts, ur_robot_driver
 ```
 
 ---
@@ -93,11 +102,11 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 ## 주요 기능
 
 ### RT 제어 코어
-- **가변 DOF 실시간 제어**: `clock_nanosleep(TIMER_ABSTIME)` 기반 RT 루프 (`control_rate` YAML로 100Hz–5kHz 설정, default 500Hz), CPU 코어 자동 할당 (4/6/8/10/12/16코어)
+- **가변 DOF 실시간 제어**: `clock_nanosleep(TIMER_ABSTIME)` 기반 RT 루프 (`control_rate` YAML로 100Hz–5kHz 설정, default 500Hz), CPU 코어 자동 할당 (4/6/8/10/12/14/16코어)
 - **Lock-Free SPSC 아키텍처**: RT 스레드 → SPSC 버퍼 → 비-RT 퍼블리시/로깅 (wait-free push, cache-line 정렬)
 - **SeqLock 동기화**: 단일 Writer / 다중 Reader lock-free 상태 공유 (trivially copyable 타입 전용)
 - **컨트롤러 계층 분리**: `rtc_controller_interface` (프레임워크 계약 + 공통 글루) → `rtc_controllers` (제어 법칙 + YAML 스키마 라이브러리 — 노드도 `RTControllerInterface` 상속도 없고, `rtc_controller_interface` 를 **의존하지도 않는다**) → `integrated_bringup` (바인딩 + 등록 + production YAML). 배치 규칙·전이 상태는 [agent_docs/design-principles.md](agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms
-- **Lifecycle 관리**: 모든 C++ 노드가 `rclcpp_lifecycle::LifecycleNode` 기반 — `ros2 lifecycle` CLI로 런타임 상태 제어 (deactivate/activate), Launch event handler 기반 자동 configure→activate 체이닝
+- **Lifecycle 관리**: 핵심 C++ 노드가 `rclcpp_lifecycle::LifecycleNode` 기반 — `ros2 lifecycle` CLI로 런타임 상태 제어 (deactivate/activate), Launch event handler 기반 자동 configure→activate 체이닝. robot-agnostic standalone 노드는 예외 (예: `ClosureStatePublisher` 는 `rclcpp::Node`)
 
 ### 제어 알고리즘
 `rtc_controllers` 는 **법칙 함수 + YAML 스키마**로 제공하고, 그것을 tick 마다 부르는 바인딩은 integration 패키지가 소유한다 (#236 S7c). 목록·헤더 경로는 [rtc_controllers/README.md](rtc_controllers/README.md#개요) 가 SSoT.
@@ -122,7 +131,7 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 
 ### 통신 & 로깅
 - **전송 계층 추상화**: UDP·CAN·CAN FD (SocketCAN)·RS485 (termios, length-prefixed 프레이머) 구현 완료, EtherCAT 확장 가능
-- **세션 기반 CSV 로깅**: `logging_data/YYMMDD_HHMM/` — timing, robot, device 3파일 분리
+- **세션 기반 CSV 로깅**: `logging_data/YYMMDD_HHMM/` — 서브디렉토리별 분리 (`timing/`, `device/`, `controllers/<config_key>/`; 전체 목록은 아래 세션 디렉토리 표)
 - **ROS2 파라미터 인트로스펙션**: 컨트롤러별 토픽 매핑을 읽기 전용 파라미터로 노출
 
 ### 도구
@@ -259,7 +268,7 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
     ├── inline ────────────────────→ DeviceBackend.WriteCommand (actuator, RT-safe contract)
     │                                 → /forward_position_controller/commands · hand UDP
     ├──→ SPSC (cap 16)  ──→ [nrt_publish_thread (CFS)] ──→ controller.PublishNonRtSnapshot
-    ├──→ SPSC ──→ [nrt_logging_executor] ──→ CSV 3-파일 (timing, robot, device)
+    ├──→ SPSC ──→ [nrt_logging_executor] ──→ 세션 CSV (timing/, device/, controllers/)
     └──→ E-STOP ──→ /system/estop_status
 
 [핸드 HW] ←UDP 직접 소유→ [udp_hand_driver] ← SeqLock ← [ControlLoop]
@@ -297,8 +306,9 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 |---|---|
 | `controllers/<config_key>/` | per-controller 데이터 CSV (`<instance>.csv`; Phase C에서 controller-owned 경로로 일원화) |
 | `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log — 동일 7열 RtTickTimingPayload 스키마) |
-| `monitor/` | ur5e_failure_*.log, controller_stats.json |
-| `hand/` | hand_udp_stats.json |
+| `device/` | 디바이스 통계 JSON (예: udp_hand_driver 의 `hand_udp_stats.json`) |
+| `monitor/` | 모니터링 로그 (생성만 되고 현재 기록 주체 없음) |
+| `tracing/` | LTTng trace 세션 (`--tracing` 빌드 시, [docs/tracing.md](docs/tracing.md)) |
 | `sim/` | screenshot_*.ppm (MuJoCo 전용) |
 | `plots/`, `motions/` | rtc_tools 출력 |
 

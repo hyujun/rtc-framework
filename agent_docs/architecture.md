@@ -141,19 +141,25 @@ Session logs: `logging_data/YYMMDD_HHMM/{timing,monitor,device,sim,plots,motions
 
 ## Dependency Graph
 
+**이 그래프는 ARCH-2 (상향 의존 금지) 판정에 필요한 층위 요약이다 — 전체 엣지의 SSoT 는 각 패키지의 `package.xml`** 이며 여기 전수 박제하지 않는다 (AP-DOC-1). 아래는 층위를 가르는 `rtc_*` 엣지와 외부 의존만 담는다.
+
 ```
 rtc_msgs, rtc_base (independent)
   +-- rtc_communication, rtc_inference <-- rtc_base
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs, rtc_urdf_bridge
-  |     +-- rtc_controllers <-- rtc_controller_interface, rtc_urdf_bridge
-  |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication
-  +-- rtc_tsid <-- rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
-  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio, fmt ≥ 10
-  +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
+  +-- rtc_controllers <-- rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
+  |     (sibling of rtc_controller_interface -- does NOT depend on it, #236 S7c)
+  +-- rtc_controller_manager <-- rtc_controller_interface, rtc_controllers,
+  |         rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge
+  +-- rtc_tsid <-- rtc_math, rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
+  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio
+  |         (+ CMake-only: fmt >= 10, aligator -- source-installed, package.xml 미선언)
+  +-- rtc_mujoco_sim <-- rtc_base, rtc_msgs, MuJoCo 3.x (optional)
 rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base
 robot_descriptions (data-only, no code deps)
-integrated_bringup <-- rtc_controller_manager, udp_hand_driver, robot_descriptions,
-                 rtc_tsid, rtc_mpc
+integrated_bringup <-- rtc_controller_manager, rtc_controller_interface, rtc_controllers,
+                 rtc_tsid, rtc_mpc, rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
+                 + <exec_depend> udp_hand_driver, robot_descriptions, rtc_tools, repo_scripts
 ```
