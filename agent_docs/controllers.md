@@ -47,34 +47,19 @@ Algorithms 이며, 여기서는 반복하지 않는다 (AP-DOC-1).
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoWbcController | Position | TSID QP + Hand | `initial_controller` default — **`ur5e_p1a`·`iiwa7_leap` 만**. `ur5e_p1b` 는 sim·robot 둘 다 `demo_joint_controller` 다 (robot profile 별 `{sim,robot}.yaml` 이 SSoT). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
 
-### Joint order & submodel selection (#172 Phase 3 — 삭제된 어댑터의 동작 기록)
+### Joint order & submodel selection
 
-**아래 서술의 주어는 지금 코드에 없다.** `rtc_controllers` 어댑터들은 데모 컨트롤러의
-`CombinedModelCache` 와 별개로 자체 `RtModelHandle` 위에서 **device joint order** 와
-**primary-device submodel** 를 처리했고, 그 코드는 컨트롤러마다 복제된 법칙-무관 boilerplate 라
-#236 이 G1(프레임워크 공통 글루)로 분류한 뒤 S7c 에서 어댑터와 함께 삭제됐다
-(`MaybeSelectSubModel` 은 저장소 어디에도 없다). base 로 올라간 것은 그 **입력**이다 —
-`RTControllerInterface` 가 `GetPrimaryDeviceName()` / `GetSystemModelConfig()` 를 주고, 모델을
-실제로 고르고 재정렬하는 것은 바인딩 몫이다 (`integrated_bringup/src/controllers/*/controller.cpp`).
+device joint order 와 primary-device submodel 처리는 컨트롤러마다 복제된 법칙-무관 boilerplate 라
+#236 이 G1(프레임워크 공통 글루)로 분류한 뒤 S7c 에서 어댑터와 함께 삭제됐다. base 에 남은 것은
+그 **입력** (`RTControllerInterface` 의 `GetPrimaryDeviceName()` / `GetSystemModelConfig()`) 이고,
+모델을 실제로 고르고 재정렬하는 것은 바인딩 몫이다 (`integrated_bringup/src/controllers/*/controller.cpp`).
+삭제된 어댑터의 동작 기록은 #172 Phase 3 · #236 에 있다.
 
-이 절을 지우지 않고 남기는 이유는 아래 **재정렬 함정** 하나다: 바인딩에서 그대로 재발하며,
-발현하면 모든 수가 유한한 채 토크만 틀린다.
-
-- **Joint reorder (A2)**: `OnDeviceConfigsSet` 에서 `js==nv` 이면 `handle_->SetJointOrder(joint_state_names)`.
-  device 순서 == URDF 순서면 `HasJointReorder()==false` → memcpy fallback(zero-overhead, 기존 로봇 불변).
-  다르면 모델은 device 순서 입력을 correct 하게 소비하고, model 파생 항을 device channel 순서로 되돌린다:
-  JointPD `g`/`C·v`, OSC `τ`(주경로)+null-space `tau0`, CLIK `dq`/`traj_dq`+null-space `null_err`,
-  TaskImpedance·Cascaded `τ`+`ĝ`, TaskAdmittance `dq`.
-  device 순서로 형성한 항(null-space·Coriolis·관절속도 `q̇`)을 Pinocchio 순서 행렬과 곱하기 직전
-  `RtModelHandle::ReorderInput` (device→Pinocchio scatter, `ReorderOutput` 의 역방향)으로 1회 gather
-  한다 — `ν = J·q̇` 의 `q̇` 를 빠뜨리면 감쇠 토크가 틀리면서 모든 수가 유한해 fault 도 안 뜬다 (#236
-  슬라이스 4 리뷰에서 실제로 발현). P 는 FK 입력만 reorder(joint command 은 device-order native, task
-  출력은 order-invariant → 출력 reorder 불요).
-- **Submodel selection (A1)**: `LoadConfig`(base LoadConfig 가 `topic_config_` 채운 직후)에서
-  `MaybeSelectSubModel` — `GetSystemModelConfig().sub_models` 중 `GetPrimaryDeviceName()` 과 이름이 일치하는
-  sub_model 이 있으면 `GetReducedModel(primary)` 로 handle_ 교체(`InitFromModel` 이 nv-크기 버퍼 재할당). system
-  config 없음/매칭 없음 → ctor 의 full model 유지(무회귀). hook 순서상 `OnSystemModelConfigSet` 시점엔
-  `topic_config_` 미준비라 선택 불가 → `LoadConfig` 배치(DemoJointController 레퍼런스와 동일).
+남기는 것은 **재정렬 함정** 하나다 — 바인딩에서 그대로 재발하며, 발현하면 모든 수가 유한한 채
+토크만 틀린다: device 순서로 형성한 항 (null-space·Coriolis·관절속도 `q̇`) 을 Pinocchio 순서 행렬과
+곱하기 직전 `RtModelHandle::ReorderInput` (device→Pinocchio scatter, `ReorderOutput` 의 역방향) 으로
+1회 gather 한다. `ν = J·q̇` 의 `q̇` 를 빠뜨리면 감쇠 토크가 틀리면서 fault 도 안 뜬다 (#236 슬라이스 4
+리뷰에서 실제 발현).
 
 ### Unified arm kin&dyn (joint / task / wbc)
 
