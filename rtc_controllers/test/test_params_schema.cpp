@@ -37,6 +37,7 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -485,6 +486,25 @@ std::string CascadeError(const std::string& yaml) {
   });
 }
 
+// The other two task-space schemas, so the #302 section below can drive all five
+// through one shape. Declared here rather than beside their own sections because
+// ParseError lives here and the OSC/CLIK cases predate it.
+std::string OscError(const std::string& yaml) {
+  return ParseError([&] {
+    OscParams p;
+    auto ct = CommandType::kTorque;
+    ParseOscParams(YAML::Load(yaml), p, ct);
+  });
+}
+
+std::string ClikError(const std::string& yaml) {
+  return ParseError([&] {
+    ClikParams p;
+    auto ct = CommandType::kTorque;
+    ParseClikParams(YAML::Load(yaml), p, ct);
+  });
+}
+
 // ── task impedance ─────────────────────────────────────────────────────────
 
 TEST(TaskImpedanceSchema, RejectsAnOverLongDesiredInertiaSequence) {
@@ -782,6 +802,86 @@ TEST(CascadedComplianceSchema, AnUndefinedNodeStillFloorsThePostureGains) {
   EXPECT_DOUBLE_EQ(p.nullspace_kd, 0.0) << "a negative posture damping injects energy";
   EXPECT_DOUBLE_EQ(p.max_torque_rate, 4321.0) << "an absent node must not reset the other fields";
   EXPECT_EQ(c.sensor_frame, "live_frame") << "config is not written on the early-return path";
+}
+
+// ── 3-entry gain length, all five schemas (#302) ────────────────────────────
+//
+// The file header explains why the 6-entry cases needed an OVER-LONG sequence to
+// discriminate: a SHORT one makes yaml-cpp throw TypedBadConversion on its own,
+// and that derives from std::runtime_error, so the assertion survives deleting
+// the length check. THESE cases are the opposite, and it is worth being explicit
+// because the conclusion inverts: the three silent parsers did not read the node
+// AT ALL unless it was already a 3-sequence, so with the new check deleted the
+// short form, the long form and the scalar all parse clean. Every shape below
+// discriminates — measured by deleting each check in turn, not reasoned.
+//
+// That non-read is also why message matching matters here more than usual: an
+// EXPECT_THROW would be satisfied by yaml-cpp for reasons unrelated to length.
+
+TEST(TaskGainLengthSchema, RejectsMisShapedThreeEntryGainsInEveryTaskSchema) {
+  // The sharpest pair: `kp_pos: [1, 2, 3, 4]` threw under `inner:` in the
+  // cascade schema (pinned above) and parsed CLEAN at the impedance schema's top
+  // level, leaving the default gain running. Same key name, opposite verdict.
+  EXPECT_TRUE(Mentions(ImpedanceError("kp_pos: [1, 2, 3, 4]"), "kp_pos"));
+  EXPECT_TRUE(Mentions(ImpedanceError("kp_pos: [1, 2, 3, 4]"), "3-entry"));
+  EXPECT_TRUE(Mentions(ImpedanceError("kd_rot: [1, 2]"), "kd_rot"));
+  EXPECT_TRUE(Mentions(ImpedanceError("kp_rot: 0.5"), "kp_rot"));
+
+  EXPECT_TRUE(Mentions(OscError("kp_pos: [1, 2, 3, 4]"), "kp_pos"));
+  EXPECT_TRUE(Mentions(OscError("kd_pos: [1, 2]"), "kd_pos"));
+  EXPECT_TRUE(Mentions(OscError("kp_rot: 0.5"), "kp_rot"));
+
+  // CLIK carried `>= 3`, which reproduced #172's truncation in its exact
+  // original shape — the over-long case is the one that changes verdict here.
+  EXPECT_TRUE(Mentions(ClikError("kp_translation: [1, 2, 3, 4]"), "kp_translation"));
+  EXPECT_TRUE(Mentions(ClikError("kp_rotation: [1, 2]"), "kp_rotation"));
+  EXPECT_TRUE(Mentions(ClikError("kp_translation: 0.5"), "kp_translation"));
+}
+
+TEST(TaskGainLengthSchema, AcceptsAndAppliesTheExactWidthAndLeavesAnAbsentKeyAlone) {
+  // Non-vacuity under the rejections above: without this, deleting the parse
+  // body entirely would leave the section green.
+  TaskImpedanceParams imp;
+  TaskImpedanceConfig ic;
+  const double imp_kd_rot_default = imp.impedance.kd_rot[0];
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("kp_pos: [11, 22, 33]"), imp,
+                                           TaskSelection::kFullSe3, ic));
+  EXPECT_DOUBLE_EQ(imp.impedance.kp_pos[2], 33.0);
+  EXPECT_DOUBLE_EQ(imp.impedance.kd_rot[0], imp_kd_rot_default)
+      << "an absent key must stay at its default, not become a config error";
+
+  OscParams osc;
+  auto osc_ct = CommandType::kTorque;
+  ASSERT_NO_THROW(ParseOscParams(YAML::Load("kd_rot: [0.1, 0.2, 0.3]"), osc, osc_ct));
+  EXPECT_DOUBLE_EQ(osc.kd_rot[1], 0.2);
+
+  ClikParams clik;
+  auto clik_ct = CommandType::kTorque;
+  ASSERT_NO_THROW(ParseClikParams(YAML::Load("kp_translation: [2, 3, 4]"), clik, clik_ct));
+  EXPECT_DOUBLE_EQ(clik.kp_translation[2], 4.0);
+
+  // The two schemas that were already right keep their verdict — this section
+  // converged the other three ONTO them, it did not move the contract.
+  EXPECT_EQ(AdmittanceError("ik_kp_pos: [0.0, 0.0, 0.0]"), "");
+  EXPECT_EQ(CascadeError("inner:\n  kp_pos: [11, 22, 33]\n"), "");
+}
+
+TEST(TaskGainLengthSchema, RejectsRatherThanPartiallyFillingAShortSequence) {
+  // Why a short sequence is not merely "the same defect, smaller": nothing in
+  // the POD records which entries came from YAML, so a partially-filled gain is
+  // indistinguishable from a deliberate one at every surface including
+  // get_gains(). The three parsers here dropped the whole triple instead, which
+  // is less bad but equally silent — and integrated_bringup's DemoTaskController
+  // DID partially fill (#302), which is why this is asserted and not assumed.
+  TaskImpedanceParams p;
+  TaskImpedanceConfig c;
+  const std::array<double, 3> before = p.impedance.kp_pos;
+  EXPECT_TRUE(Mentions(ImpedanceError("kp_pos: [7, 7]"), "3-entry"));
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("nullspace_stiffness: 1.0"), p,
+                                           TaskSelection::kFullSe3, c));
+  EXPECT_DOUBLE_EQ(p.impedance.kp_pos[0], before[0]);
+  EXPECT_DOUBLE_EQ(p.impedance.kp_pos[1], before[1]);
+  EXPECT_DOUBLE_EQ(p.impedance.kp_pos[2], before[2]);
 }
 
 }  // namespace

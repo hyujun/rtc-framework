@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <stdexcept>
 #include <string>
 
 namespace rtc::params {
@@ -20,18 +21,29 @@ void ParseClikParams(const YAML::Node& cfg, ClikParams& out, CommandType& comman
     return;
   }
 
-  // CLIK gains — translation / rotation separated. Note the `>= 3` (not `== 3`)
-  // length test: transcribed as it stood, so a longer sequence keeps being
-  // accepted and truncated exactly as before.
-  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr) {
-    if (n && n.IsSequence() && n.size() >= 3) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        arr[i] = n[i].as<double>();
-      }
+  // CLIK gains — translation / rotation separated. Shape-checked, never silently
+  // ignored (#302). This parser carried the `>= 3` variant, which reproduced the
+  // #172 defect in its exact original shape: a 4-entry sequence parsed clean and
+  // the extra entry was dropped without a word. The `< 3` and scalar cases were
+  // worse still — the node was not read at all, so the DEFAULT gain ran under a
+  // config file that named another value and `get_gains()` agreed with the
+  // default. Converged onto the spelling the two compliance schemas already use.
+  // No shipped config supplied a length other than 3, so no deployment changes
+  // behaviour. No scalar broadcast (D5).
+  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr, const char* what) {
+    if (!n) {
+      return;
+    }
+    if (!n.IsSequence() || n.size() != 3) {
+      throw std::runtime_error(std::string("clik: ") + what +
+                               " must be a 3-entry sequence [x,y,z]");
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      arr[i] = n[i].as<double>();
     }
   };
-  load3(cfg["kp_translation"], out.kp_translation);
-  load3(cfg["kp_rotation"], out.kp_rotation);
+  load3(cfg["kp_translation"], out.kp_translation, "kp_translation");
+  load3(cfg["kp_rotation"], out.kp_rotation, "kp_rotation");
 
   if (cfg["max_damping"]) {
     // Floor the damped-least-squares λ_max so a zero/negative value cannot

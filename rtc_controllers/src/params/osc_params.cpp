@@ -31,17 +31,31 @@ void ParseOscParams(const YAML::Node& cfg, OscParams& out, CommandType& command_
     return;
   }
 
-  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr) {
-    if (n && n.IsSequence() && n.size() == 3) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        arr[i] = n[i].as<double>();
-      }
+  // Shape-checked, never silently ignored (#302) — the spelling the two
+  // compliance schemas already use. The silent form transcribed from the adapter
+  // read the node ONLY when it was a 3-sequence, so `kp_pos: [1, 2]` and
+  // `kp_pos: 0.5` left the DEFAULT gain running under a config file that says
+  // otherwise, and `get_gains()` reported that default too — the mis-configured
+  // deployment was indistinguishable from a correct one at every surface. That
+  // is the #172 defect (a length that is not the expected one must fail fast,
+  // never truncate or drop in silence) reaching the 3-entry task gains, which
+  // the nv-length rule never covered. No scalar broadcast (D5).
+  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr, const char* what) {
+    if (!n) {
+      return;
+    }
+    if (!n.IsSequence() || n.size() != 3) {
+      throw std::runtime_error(std::string("osc: ") + what +
+                               " must be a 3-entry sequence [x,y,z]");
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      arr[i] = n[i].as<double>();
     }
   };
-  load3(cfg["kp_pos"], out.kp_pos);
-  load3(cfg["kd_pos"], out.kd_pos);
-  load3(cfg["kp_rot"], out.kp_rot);
-  load3(cfg["kd_rot"], out.kd_rot);
+  load3(cfg["kp_pos"], out.kp_pos, "kp_pos");
+  load3(cfg["kd_pos"], out.kd_pos, "kd_pos");
+  load3(cfg["kp_rot"], out.kp_rot, "kp_rot");
+  load3(cfg["kd_rot"], out.kd_rot, "kd_rot");
 
   if (cfg["max_damping"]) {
     // Floor λ_max > 0 (NUM-1/NUM-4): λ² regularises Λ⁻¹ at kinematic
