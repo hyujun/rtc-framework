@@ -33,7 +33,6 @@
 #include <rclcpp/logging.hpp>
 #include <rclcpp/parameter.hpp>
 
-#include <Eigen/Cholesky>  // LDLT
 #include <Eigen/Core>
 
 #include <algorithm>
@@ -85,17 +84,27 @@ inline constexpr std::uint32_t kVtcpFrameWaitTicks = 1000;
 /// pseudoinverse, while simultaneously running proportional position
 /// control on the 10-DOF hand motors.
 ///
-/// ### Arm control law — CLIK (task-space velocity), still inline
+/// ### Arm control law — CLIK (task-space velocity), partially converged
 ///
 /// The retired `ClikController` adapter ran this same law (#236 S7c deleted the class).
-/// This binding has not yet converged onto `rtc_controllers`' cores
-/// (`task/task_vel_law.hpp` + `compliance/differential_ik.hpp`) — the constant-λ DLS below
-/// is exactly the inline copy issue #282 tracks. See agent_docs/design-principles.md §현황.
+/// This binding is converged onto `rtc_controllers`' cores for ONE of its two
+/// halves, and the split matters when reading the code below:
+///   - **DLS + null-space projector → converged** (#282). `compliance::DifferentialIk`
+///     owns J^# and N, and λ is the §6.5 σ_min-adaptive ramp — NOT the constant it
+///     used to be. The posture gain multiplies q̇_null BEFORE the projection,
+///     because that is the argument the shared law takes.
+///   - **Task-velocity assembly → still inline.** `kp ⊙ e + ν_ff` is spelled here
+///     even though `task/task_vel_law.hpp` (`ComputeTaskVelocity` /
+///     `ComputeTranslationVelocity`) is its core counterpart. #282 deliberately
+///     scoped itself to the DLS; this half is the remaining inline copy.
+/// See agent_docs/design-principles.md §현황 for what that leaves open.
 /// @code
 ///   pos_error    = x_des − FK(q)
-///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped pseudoinverse]
+///   λ²           = 0                       if σ_min(J) ≥ σ₀       [§6.5 ramp]
+///                = λ_max²(1 − (σ_min/σ₀)²) if σ_min(J) < σ₀
+///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped least squares]
 ///   N            = I − J^# J                        [null-space projector]
-///   dq           = kp · J^# · pos_error + null_kp · N · (q_null − q)
+///   dq           = J^# · (kp ⊙ pos_error + ν_ff) + N · (null_kp · (q_null − q))
 ///   q_des       += clamp(dq, ±v_max) * dt        [q_des = q_actual at
 ///   trajectory init] q_cmd        = q_des
 /// @endcode

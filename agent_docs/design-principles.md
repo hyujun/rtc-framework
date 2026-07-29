@@ -99,7 +99,7 @@ CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->Pu
 
 **`rtc_controllers` 쪽은 끝났다.** 이 패키지에는 `RTControllerInterface` 구체 구현이 없고 `package.xml` 도 `rtc_controller_interface` 를 의존하지 않는다 (issue #236 슬라이스 S1–S7: 법칙별 코어 추출 → G1 글루 base 상향 → 상속 클래스 삭제). 수는 여기 박제하지 않는다 — `grep -rn "public RTControllerInterface" rtc_controllers/include` 와 `grep -n rtc_controller_interface rtc_controllers/package.xml` 이 **둘 다 비어야** 한다 (AP-DOC-1).
 
-**끝나지 않은 것은 3계층 배치 자체다.** 위 완료형은 *`rtc_controllers` 에 한정*한다. 오래 예로 들던 `demo_task_controller` 의 상수-λ DLS 는 **#282 에서 `compliance::DifferentialIk` 로 수렴했고**, 이제 `grep -rn "diagonal().array() +=\|LDLT<\|LLT<\|Jpinv" integrated_bringup/src integrated_bringup/include` 는 **0건**이다 — 바인딩에 남은 인라인 **DLS/pseudoinverse** 사본은 없다. 다만 이것이 3계층 배치 전체의 완료를 뜻하지는 않는다: DLS 가 아닌 다른 법칙까지 감사한 뒤라야 완료형으로 쓸 수 있다 (그 판정은 `#236` 종결 작업 소관).
+**끝나지 않은 것은 3계층 배치 자체다.** 위 완료형은 *`rtc_controllers` 에 한정*한다. 오래 예로 들던 `demo_task_controller` 의 상수-λ DLS 는 **#282 에서 `compliance::DifferentialIk` 로 수렴했고**, 이제 `grep -rn "diagonal().array() +=\|LDLT<\|LLT<\|Jpinv" integrated_bringup/src integrated_bringup/include` 는 **0건**이다 — 바인딩에 남은 인라인 **DLS/pseudoinverse** 사본은 없다. 다만 이것이 3계층 배치 전체의 완료를 뜻하지는 **않는다** — 같은 함수 안에 **태스크 속도 법칙**이 인라인으로 남아 있다: `kp ⊙ e + ν_ff` 가 `compute.cpp` 에 직접 쓰여 있고 코어 대응물 [task/task_vel_law.hpp](../rtc_controllers/include/rtc_controllers/task/task_vel_law.hpp) 의 `ComputeTaskVelocity` / `ComputeTranslationVelocity` 는 호출되지 않는다 (#282 는 DLS 축만 범위로 잡았다). 즉 잔여를 세는 기준은 "DLS 사본" 이 아니라 "코어 대응물이 있는데 호출하지 않는 법칙" 이고, 그 기준으로는 아직 0 이 아니다.
 
 - 규칙은 **새 코드에 즉시 구속**된다. 새 제어 법칙은 코어로 쓰고, 필요하면 바인딩을 integration 패키지에 만든다.
 - DLS 축의 코어 수렴은 issue #282 가 **완료**했다. 나머지 법칙의 잔여 감사는 `#236` 종결 작업이 담당한다.
