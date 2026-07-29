@@ -47,8 +47,6 @@
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/compliance/differential_ik.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
-#include "rtc_controllers/direct/operational_space_controller.hpp"
-#include "rtc_controllers/indirect/clik_controller.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
@@ -703,90 +701,21 @@ TEST(MigratedGates, ClikHoldsRatherThanCommandingAStaleInverse) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Adapter-level gates — the two windows the mutation sweep proved were needed
+// Adapter-level gates — retired with their subject (#298 S7c-2)
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Both tests below exist because a mutation went UNDETECTED without them. That
-// is the only reason either window exists: #236 R6 budgeted output lanes plus
-// shim counters first and authorised a new window only where the sweep showed a
-// hole, because OperationalSpaceController and ClikController are scheduled for
-// deletion in S7 and every accessor added to them is a small debt.
-
-TEST(OscAdapter, PostureGateIsWiredToTheGains) {
-  // Mutation M2 — deleting the `(null_kp != 0 || null_kd != 0)` half of the gate
-  // — ran the WHOLE suite clean. It has to: with both gains zero the posture
-  // torque is a signed zero, Nᵀ·0 is zero, and adding it changes no bit of any
-  // torque lane. An output comparison cannot see this gate, so
-  // nullspace_active() is the window (S5 M4's answer, reached again here).
-  rtc::OperationalSpaceController::Gains gains;
-  gains.null_kp = 0.0;
-  gains.null_kd = 0.0;
-  rtc::OperationalSpaceController ctrl(rtc::testing::Serial7dof(), gains);
-
-  rtc::ControllerState state = rtc::testing::MakeState(7, 0.001);
-  rtc::testing::FillSweep(state, 7, 0, 0.001);
-
-  (void)ctrl.Compute(state);
-  EXPECT_FALSE(ctrl.nullspace_active()) << "both posture gains are zero";
-
-  gains.null_kp = 3.0;
-  ctrl.set_gains(gains);
-  rtc::testing::FillSweep(state, 7, 1, 0.001);
-  (void)ctrl.Compute(state);
-  EXPECT_TRUE(ctrl.nullspace_active()) << "a non-zero stiffness must open the gate";
-
-  gains.null_kp = 0.0;
-  gains.null_kd = 0.4;
-  ctrl.set_gains(gains);
-  rtc::testing::FillSweep(state, 7, 2, 0.001);
-  (void)ctrl.Compute(state);
-  EXPECT_TRUE(ctrl.nullspace_active()) << "damping alone must open the gate too";
-
-  gains.null_kd = 0.0;
-  ctrl.set_gains(gains);
-  rtc::testing::FillSweep(state, 7, 3, 0.001);
-  (void)ctrl.Compute(state);
-  EXPECT_FALSE(ctrl.nullspace_active()) << "the gate must close again";
-}
-
-TEST(OscAdapter, PostureGateReportsClosedOnAnEstoppedTick) {
-  // The window has to describe THIS tick or it is not a window. Compute() takes
-  // the E-STOP branch on an early return that sits BEFORE the reset feeding the
-  // gate, so a hold tick used to inherit the previous active tick's `true` and
-  // keep reporting it for the whole stop. The consequence is specific: this flag
-  // is the only observable for a gate that is numerically inert when closed, so
-  // a mutation that kept the posture task running through an E-STOP would leave
-  // both the torque lanes AND the flag looking exactly as they do now.
-  rtc::OperationalSpaceController::Gains gains;
-  gains.null_kp = 3.0;  // gate open on the redundant fixture
-  rtc::OperationalSpaceController ctrl(rtc::testing::Serial7dof(), gains);
-  // The hold path maps max_joint_torque_ as an exactly nv-sized Eigen vector and
-  // OnDeviceConfigsSet is what grows it to nv — the other tests here never reach
-  // ComputeEstop, so this is the first that needs the device configs wired.
-  {
-    rtc::DeviceNameConfig cfg;
-    cfg.device_name = "arm";
-    std::map<std::string, rtc::DeviceNameConfig> configs;
-    configs.emplace("arm", cfg);
-    ctrl.SetDeviceNameConfigs(configs);
-  }
-
-  rtc::ControllerState state = rtc::testing::MakeState(7, 0.001);
-  rtc::testing::FillSweep(state, 7, 0, 0.001);
-  (void)ctrl.Compute(state);
-  ASSERT_TRUE(ctrl.nullspace_active()) << "fixture must open the gate first, or this pins nothing";
-
-  ctrl.TriggerEstop();
-  rtc::testing::FillSweep(state, 7, 1, 0.001);
-  (void)ctrl.Compute(state);
-  EXPECT_FALSE(ctrl.nullspace_active())
-      << "an E-STOP tick runs no posture task — the gate observable must say so";
-
-  ctrl.ClearEstop();
-  rtc::testing::FillSweep(state, 7, 2, 0.001);
-  (void)ctrl.Compute(state);
-  EXPECT_TRUE(ctrl.nullspace_active()) << "recovery must reopen the gate, not latch it closed";
-}
+// `OscAdapter.PostureGateIsWiredToTheGains` and
+// `OscAdapter.PostureGateReportsClosedOnAnEstoppedTick` stood here. Both existed
+// because a mutation went UNDETECTED without them: #236 R6 budgeted output lanes
+// plus shim counters first and authorised a new adapter accessor only where the
+// sweep showed a hole.
+//
+// They are 분류 B — the contract is the GATE's, not the adapter's, so it moved
+// rather than retired. Successors: `OscShimPostureGate.IsWiredToTheGains` and
+// `OscShimPostureGate.ReportsClosedOnAnEstoppedTick` in test_task_accel_core.cpp,
+// driving OscShim with no adapter (S7c-2 2단계, `567678a0`). The E-STOP branch
+// they need was added to the shim there; both were mutation-checked to fire on
+// their own target and nothing else.
 
 // ── Retired with the adapters (#298 S7c-2 4단계) ────────────────────────────
 //

@@ -18,7 +18,8 @@
 //      whole-vector `+= ν_ff`. Both are claimed to be bitwise inert; these
 //      oracles are where that is measured.
 //
-//   2. The live ClikController. TRANSIENT (dies with S7). Its job is the one
+//   2. The live ClikController. TRANSIENT — RETIRED in #298 S7c-2 with the
+//      adapter (see "Oracle 2 retired" below). Its job was the one
 //      thing oracle 1 structurally cannot do: catch a CORRELATED transcription
 //      error, plus the WIRING — which doubles reach the core as e and ν_ff, and
 //      in which of the four (control_6dof × enable_null_space) modes.
@@ -63,8 +64,8 @@
 // enforces the ordering). Everything below pulls Eigen, so it comes first.
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/compliance/differential_ik.hpp"
-#include "rtc_controllers/indirect/clik_controller.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/params/clik_params.hpp"
 #include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
@@ -294,7 +295,7 @@ class ClikShim {
   // One tick. `goal` is non-null exactly on the tick the adapter drains a queued
   // target — the caller keeps the two in lock-step, as the adapter's own drain
   // ordering (FK first, trajectory re-init after) requires.
-  ShimOutput Step(const rtc::ClikController::Gains& g, const rtc::ControllerState& state,
+  ShimOutput Step(const rtc::params::ClikParams& g, const rtc::ControllerState& state,
                   const std::array<double, 6>* goal) {
     const bool use_6dof = g.control_6dof;
     const bool use_null_space = g.enable_null_space;
@@ -805,216 +806,36 @@ TEST(ReferenceHandles, IndependentHandlesAgreeOnTheReorderPathBitwise) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Cross-check against the live adapter (transient — dies with S7)
+// Oracle 2 retired with the adapter (#298 S7c-2)
 // ═══════════════════════════════════════════════════════════════════════════
-
-namespace {
-
-struct CrossCheckStats {
-  double peak_vel{0.0};
-  double peak_traj_vel{0.0};
-  double peak_err{0.0};
-  double peak_cmd_delta{0.0};
-};
-
-// Drive adapter and shim through the same tick sequence and compare every
-// device-0 lane bit for bit.
-void RunCrossCheck(rtc::ClikController& ctrl, ClikShim& shim, const rtc::ClikController::Gains& g,
-                   const std::array<double, 6>& goal, int retarget_tick, int ticks, double dt,
-                   CrossCheckStats* stats) {
-  const int nv = shim.nv();
-  auto state = MakeState(nv, dt);
-  std::array<double, kMaxDeviceChannels> first_cmd{};
-
-  for (int tick = 0; tick < ticks; ++tick) {
-    FillSweep(state, nv, tick, dt);
-
-    if (tick == retarget_tick)
-      ctrl.SetDeviceTarget(0, std::span<const double>(goal));
-
-    const auto out = ctrl.Compute(state);
-    const ShimOutput shim_out = shim.Step(g, state, tick == retarget_tick ? &goal : nullptr);
-
-    for (int j = 0; j < nv; ++j) {
-      const auto uj = static_cast<std::size_t>(j);
-      const double adapter_vel = out.devices[0].target_velocities[uj];
-
-      // The adapter clamps the joint velocity after the law; the shim does not
-      // (limits are an integration-layer concern). Keeping the clamp provably
-      // inert is what makes the bitwise comparison meaningful — assert it,
-      // don't assume it. kDefaultMaxJointVelocity is a narrow 2.0 rad/s.
-      ASSERT_LT(std::abs(adapter_vel), rtc::kDefaultMaxJointVelocity)
-          << "velocity clamp fired at tick " << tick << " ch " << j
-          << " — comparison would be invalid";
-
-      EXPECT_TRUE(BitsEqual(adapter_vel, shim_out.target_velocities[uj]))
-          << "tick " << tick << " ch " << j << " target_velocity: adapter " << adapter_vel
-          << " vs shim " << shim_out.target_velocities[uj];
-      EXPECT_TRUE(
-          BitsEqual(out.devices[0].trajectory_velocities[uj], shim_out.trajectory_velocities[uj]))
-          << "tick " << tick << " ch " << j << " trajectory_velocity";
-      EXPECT_TRUE(BitsEqual(out.devices[0].commands[uj], shim_out.commands[uj]))
-          << "tick " << tick << " ch " << j << " command (integrated q_des)";
-
-      stats->peak_vel = std::max(stats->peak_vel, std::abs(adapter_vel));
-      stats->peak_traj_vel =
-          std::max(stats->peak_traj_vel, std::abs(out.devices[0].trajectory_velocities[uj]));
-
-      // The integrator must actually move, or `commands` would be pinning the
-      // seed rather than the law that drives it.
-      if (tick == 0)
-        first_cmd[uj] = out.devices[0].commands[uj];
-      else
-        stats->peak_cmd_delta =
-            std::max(stats->peak_cmd_delta, std::abs(out.devices[0].commands[uj] - first_cmd[uj]));
-    }
-
-    // The adapter's window onto the core's input: the cached 3-D pose error,
-    // which is the head of the 6-D error in BOTH modes. Pinning it bitwise
-    // localises a cross-check failure to either the error (binding) or the law
-    // (core) instead of leaving the whole tick suspect.
-    const auto adapter_err = ctrl.position_error();
-    for (int i = 0; i < 3; ++i) {
-      EXPECT_TRUE(BitsEqual(adapter_err[static_cast<std::size_t>(i)], shim_out.position_error[i]))
-          << "tick " << tick << " pose-error axis " << i;
-      stats->peak_err =
-          std::max(stats->peak_err, std::abs(adapter_err[static_cast<std::size_t>(i)]));
-    }
-  }
-}
-
-rtc::ClikController::Gains CrossCheckGains(bool use_6dof, bool use_null_space) {
-  rtc::ClikController::Gains g;
-  // Six PAIRWISE-DISTINCT gains, not two isotropic blocks. Oracle 2 exists to
-  // catch WIRING errors, and a permutation inside one block — kp_translation
-  // marshalled as {y,x,z} into TaskVelParams — is bit-for-bit invisible when all
-  // three values are equal. Kept at or below the old 2.0 / 1.5 maxima so the
-  // adapter's kDefaultMaxJointVelocity clamp stays as inert as before (the
-  // per-channel ASSERT_LT in RunCrossCheck still proves it, never assumes it).
-  g.kp_translation = {{2.0, 1.4, 1.7}};
-  g.kp_rotation = {{1.5, 0.9, 1.2}};
-  g.max_damping = 0.05;
-  g.singularity_threshold = 0.02;
-  g.null_kp = 0.5;
-  g.enable_null_space = use_null_space;
-  g.control_6dof = use_6dof;
-  g.trajectory_speed = 0.05;
-  g.trajectory_angular_speed = 0.25;
-  return g;
-}
-
-// The four (control_6dof × enable_null_space) combinations the adapter can run.
-// The null-space task is gated on `use_null_space && !use_6dof`, so the two
-// 6-DOF rows must leave it dormant — an asymmetry the shim would be free to get
-// wrong if the sweep only ever ran three of the four (plan §S3 R7).
-void RunModeCombination(bool use_6dof, bool use_null_space, const std::array<double, 6>& goal) {
-  const auto g = CrossCheckGains(use_6dof, use_null_space);
-
-  rtc::ClikController ctrl(Serial7dof(), g);
-  ctrl.OnDeviceConfigsSet();  // populates max_joint_velocity_ = kDefaultMaxJointVelocity
-  ctrl.set_gains(g);
-
-  ClikShim shim;
-  ASSERT_EQ(shim.nv(), 7) << "fixture must be redundant (nv > 6) for a non-trivial null space";
-
-  CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, goal, /*retarget_tick=*/3, /*ticks=*/40, /*dt=*/0.002, &stats);
-
-  EXPECT_GT(stats.peak_vel, 1e-4) << "every compared velocity was ~0 — the cross-check is vacuous";
-  EXPECT_GT(stats.peak_traj_vel, 1e-6)
-      << "the feedforward lane never moved — trajectory_velocities pins nothing";
-  EXPECT_GT(stats.peak_err, 1e-5)
-      << "the pose error never left zero — the K_p branch was not exercised";
-  EXPECT_GT(stats.peak_cmd_delta, 1e-6) << "the integrator never moved — commands pins only a seed";
-
-  if (use_null_space && !use_6dof) {
-    EXPECT_GT(shim.null_hits(), 0) << "the null-space branch never fired";
-    EXPECT_GT(shim.peak_null(), 1e-6)
-        << "the null-space branch fired but contributed ~0 — it pins nothing";
-  } else {
-    EXPECT_EQ(shim.null_hits(), 0)
-        << "the null-space task ran outside 3-DOF mode — the adapter gates it on "
-           "(enable_null_space && !control_6dof)";
-  }
-}
-
-// 6-DOF mode reads all six doubles as [x,y,z, roll,pitch,yaw]; 3-DOF mode reads
-// the first three as the TCP position and [3..6) as null-space joint references,
-// so the two modes get goals that are sensible under their own interpretation.
-std::array<double, 6> Goal6dof() {
-  return {0.30, 0.10, 0.45, 0.20, -0.15, 0.35};
-}
-
-std::array<double, 6> Goal3dof() {
-  return {0.30, 0.10, 0.45, 0.25, 0.20, 0.30};
-}
-
-}  // namespace
-
-TEST(TaskVelLaw, CoreDrivenShimMatchesTheAdapterBitwise6dofWithNullSpaceFlag) {
-  RunModeCombination(/*use_6dof=*/true, /*use_null_space=*/true, Goal6dof());
-}
-
-TEST(TaskVelLaw, CoreDrivenShimMatchesTheAdapterBitwise6dofWithoutNullSpace) {
-  RunModeCombination(/*use_6dof=*/true, /*use_null_space=*/false, Goal6dof());
-}
-
-TEST(TaskVelLaw, CoreDrivenShimMatchesTheAdapterBitwise3dofWithNullSpace) {
-  RunModeCombination(/*use_6dof=*/false, /*use_null_space=*/true, Goal3dof());
-}
-
-TEST(TaskVelLaw, CoreDrivenShimMatchesTheAdapterBitwise3dofWithoutNullSpace) {
-  RunModeCombination(/*use_6dof=*/false, /*use_null_space=*/false, Goal3dof());
-}
-
-// A near-π retarget takes the split branch, so the shim must reproduce the
-// two-segment state machine (has_pending_segment_ / pending_duration_) as well
-// as the law. 6-DOF only: the adapter computes an angular distance — and hence
-// can split — solely in that mode.
-TEST(TaskVelLaw, CoreDrivenShimMatchesTheAdapterAcrossAPiRotationSplit) {
-  auto g = CrossCheckGains(/*use_6dof=*/true, /*use_null_space=*/false);
-  // Softer proportional gains than the straight-retarget cases, and the DEFAULT
-  // angular trajectory limits rather than raised ones. Both are forced by the
-  // narrow kDefaultMaxJointVelocity = 2.0 rad/s clamp: a near-π rotation drives
-  // the pose error toward π (the fixture's measured state sweeps independently
-  // of the command, so the error is never worked off), and speeding the segment
-  // up to shorten the test raises the feedforward peak as 1.875·Δθ/T. Either one
-  // trips the clamp, and a fired clamp voids the bitwise comparison rather than
-  // failing it informatively. The gains are law parameters, so this is a choice
-  // of operating point, not a weakened assertion — both sides read the same
-  // gains, the comparison is still bitwise on every lane, and the non-vacuity
-  // guards below still require the law to have visibly done something.
-  g.kp_translation = {{0.15, 0.15, 0.15}};
-  g.kp_rotation = {{0.15, 0.15, 0.15}};
-
-  rtc::ClikController ctrl(Serial7dof(), g);
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
-
-  ClikShim shim;
-  constexpr int kRetargetTick = 2;
-  // 50 Hz keeps the tick budget for a ~6.2 s first segment manageable; dt only
-  // parameterises the trajectory sampler and the integrator.
-  constexpr double kDt = 0.02;
-  // π − 0.05 clears the adapter's kPiSafetyMargin of 0.15.
-  const std::array<double, 6> goal =
-      GoalRotatedFromTcp(kRetargetTick, kDt, M_PI - 0.05, Eigen::Vector3d(0.3, -0.5, 0.8),
-                         Eigen::Vector3d(0.02, 0.0, -0.01));
-
-  CrossCheckStats stats;
-  // Segment 1 covers half of (π − 0.05) at the default 0.25 rad/s, i.e. ~6.2 s
-  // ≈ 310 ticks. Long enough to cross its end and run into segment 2.
-  RunCrossCheck(ctrl, shim, g, goal, kRetargetTick, /*ticks=*/340, kDt, &stats);
-
-  EXPECT_GT(stats.peak_vel, 1e-4) << "every compared velocity was ~0 — the cross-check is vacuous";
-  EXPECT_GT(stats.peak_err, 1e-5)
-      << "the pose error never left zero — the K_p branch was not exercised";
-  // Without these the test would still pass on a straight (single-segment)
-  // retarget and would pin none of the state machine it was written for.
-  EXPECT_EQ(shim.splits(), 1) << "the π-rotation split branch never fired — goal is not near π";
-  EXPECT_GT(shim.transitions(), 0)
-      << "segment 1 never ended — the run is too short to reach the transition";
-}
+//
+// Five cross-check cases stood here, driving the live ClikController and
+// ClikShim through the same tick sequence and comparing target_velocities,
+// trajectory_velocities, the integrated commands and the cached pose error bit
+// for bit:
+//
+//   TaskVelLaw.CoreDrivenShimMatchesTheAdapterBitwise6dofWithNullSpaceFlag
+//   TaskVelLaw.CoreDrivenShimMatchesTheAdapterBitwise6dofWithoutNullSpace
+//   TaskVelLaw.CoreDrivenShimMatchesTheAdapterBitwise3dofWithNullSpace
+//   TaskVelLaw.CoreDrivenShimMatchesTheAdapterBitwise3dofWithoutNullSpace
+//   TaskVelLaw.CoreDrivenShimMatchesTheAdapterAcrossAPiRotationSplit
+//
+// VERIFICATION PROVENANCE — task::ComputeTaskVelocity and BOTH
+// PreExtractionInlineForm copies above (six-axis and translation-only are
+// different expression shapes) were verified bitwise against the live
+// ClikController @ 0f873901 over 40 ticks x 7 channels x all four
+// (control_6dof x enable_null_space) combinations, plus 340 ticks across the
+// near-pi rotation split with the split and the segment transition asserted to
+// have fired; the null-space gate was asserted dormant on the two 6-DOF rows and
+// live on the 3-DOF one, so the sweep pinned the asymmetry rather than three of
+// four rows (plan §S3 R7). Oracle 2 retired in S7c.
+//
+// They could not be migrated: oracle 2's unique job was the CORRELATED
+// transcription error, which by construction needs the shipped code to compare
+// against. See test_joint_pd_core.cpp's equivalent block for the full argument.
+//
+// ClikShim below is kept as the reference recipe an S7 binding starts from —
+// including the two-segment pi-split state machine. Nothing pins it any more.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RT contract

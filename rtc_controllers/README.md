@@ -11,24 +11,29 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 
 > **계약 (issue #236, 2026-07-26)**: 이 패키지는 **제어 법칙만** 소유합니다 — 노드·publisher·subscription 을 만들지 않고, `RTControllerInterface` 를 상속하지도 않습니다. 프레임워크 계약을 구현하는 클래스(= 바인딩)는 downstream integration 패키지가 소유합니다. 규칙·3계층 배치·경계 판정의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 이며, 여기서 반복하지 않습니다.
 >
-> **전이 상태 — 오늘 코드는 아직 그 형태가 아닙니다.** `RTControllerInterface` 를 상속한 어댑터 클래스가 `include/rtc_controllers/{direct,indirect}/` 에 남아 있고 (`grep -rn "public RTControllerInterface" include/`), `package.xml` 의 `<depend>rtc_controller_interface</depend>` 도 그대로입니다. 규칙은 **새 코드에 즉시** 적용되며, 기존 어댑터는 #236 슬라이스 S1–S7 에서 코어 추출 후 삭제됩니다. 이미 목표 형태로 서 있는 것은 `compliance/*` 커널과 `grasp/`·`trajectory/` 이며, 새 법칙은 처음부터 그 형태로 씁니다.
+> **이 패키지의 어댑터는 #236 S7c 에서 제거됐습니다.** 검증은 개수 박제가 아니라 grep 입니다 — `grep -rn "public RTControllerInterface" include/` 와 `grep -n rtc_controller_interface package.xml` 이 모두 비어야 합니다. 남은 것은 법칙(`compliance/*` · `joint/*` · `task/*`), 그 YAML 스키마(`params/*` — POD + `ParseXxxParams` 자유함수, rclcpp-free), 그리고 `grasp/`·`trajectory/` 입니다.
+>
+> **단 3계층 배치 전이 자체는 아직 진행 중입니다** — 위 문장은 *이 패키지*에 한정되며, 바인딩 쪽에 남은 인라인 사본(예: `demo_task_controller` 의 상수-λ DLS, #282)은 별개입니다. 전이 현황의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §현황 입니다.
 
 > **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
-**제어 법칙 분류** ("형태" 열이 *어댑터* 인 행은 전이 중 — 위 계약 참조. `GraspController` 는 이미 상속하지 않는 코어입니다):
+**제어 법칙 분류** — 각 행은 *법칙*이며, 그것을 tick 마다 부르는 바인딩은 downstream 이 소유합니다. 스키마 열은 그 법칙의 컨트롤러-레벨 설정 POD + 파서(`params/`)로, 바인딩이 configure 시 한 번 호출합니다:
 
-| 제어 법칙 | 공간 | 출력 모드 | 카테고리 | 형태 |
-|---------|------|----------|----------|------|
-| PController | 관절 공간 | Position (indirect) | `indirect/` | 어댑터 (코어 미신설 — #236 D-Q1) |
-| JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 + `joint/joint_pd_law.hpp` 코어 |
-| ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `task/task_vel_law.hpp` 코어 (부분) |
-| OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `task/task_accel_law.hpp` 코어 (부분) |
-| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§6.2 `impedance_law` · §6.3 `inertia_shaping`) + `joint/posture_law.hpp` |
-| TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 + `task/task_vel_law.hpp` + `joint/posture_law.hpp` (P 형) |
-| CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§7.6 `bandwidth_separation` 포함) + `joint/posture_law.hpp` |
-| GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` | **코어** (상위 컨트롤러가 멤버로 소유) |
+| 제어 법칙 | 공간 | 출력 모드 | 코어 헤더 | 스키마 (`params/`) |
+|---------|------|----------|----------|----------|
+| 관절 PD | 관절 공간 | Torque (direct) | `joint/joint_pd_law.hpp` | `joint_pd_params.hpp` |
+| 태스크 속도 (CLIK) | 태스크 공간 | Position (indirect) | `task/task_vel_law.hpp` + `compliance/differential_ik.hpp` | `clik_params.hpp` |
+| 태스크 가속 (OSC) | 태스크 공간 | Torque (direct) | `task/task_accel_law.hpp` + `compliance/task_dynamics.hpp` | `osc_params.hpp` |
+| 태스크 임피던스 | 태스크 공간 | Torque (direct) | `compliance/impedance_law.hpp` (§6.2) · `compliance/inertia_shaping.hpp` (§6.3) + `joint/posture_law.hpp` | `task_impedance_params.hpp` |
+| 태스크 어드미턴스 | 태스크 공간 | Position (indirect) | `compliance/admittance_integrator.hpp` (§7.2) + `task/task_vel_law.hpp` + `joint/posture_law.hpp` (P 형) | `task_admittance_params.hpp` |
+| 캐스케이드 컴플라이언스 | 태스크 공간 | Torque (direct) | 위 둘 + `compliance/bandwidth_separation.hpp` (§7.6) | `cascaded_compliance_params.hpp` |
+| GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/grasp_controller.hpp` | — (상위 컨트롤러가 멤버로 소유) |
 
-> `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러다. 기본 법칙은
+> 관절 공간 P 제어(구 `PController`)는 코어를 신설하지 않고 어댑터와 함께 은퇴했습니다 (#236 D-Q1) — 관절 PD 를 `kd = 0` 으로 쓰면 같은 법칙입니다.
+>
+> 각 코어의 참조 배선(모델·궤적·SeqLock 을 어떻게 엮는가)은 `test/test_*_core.cpp` 의 `*Shim` 클래스에 남아 있습니다. **어떤 테스트도 그 shim 을 pin 하지 않습니다** — 새 바인딩의 출발점이지 검증된 산출물이 아닙니다 (#236 S7c).
+
+> **태스크 임피던스**는 Cartesian **compliance** 법칙이다. 기본 법칙은
 > `formulation: jacobian_transpose` (§6.2 A=NONE,
 > `τ = Jᵀ Sᵀ[K_p·S·e + K_d·S·ė] + τ_null + ĝ(q)`) — OSC 와 달리 task inertia Λ 를 쓰지
 > 않아 **task-space 특이점에서 자유**롭다 (Λ 는 nullspace 에만). MuJoCo backend 전용
@@ -38,9 +43,9 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > 외부 F/T 를 쓰면 `formulation: inertia_shaping` (§6.3) 으로 목표 관성 `Λ_d` 를 성형할 수
 > 있다 (기본 비활성 — §5.2 MUST). **코어 (#236 S4):** 그 성형 법칙
 > `f_cmd = B·f_task + (B − I)·f_ext`, `B = Λ_S Λ_d⁻¹` 는 `compliance/inertia_shaping.hpp` 의
-> `ComputeShapedTaskForce()` 로 추출됐고 어댑터는 그것을 호출한다. 추출은 **bit-for-bit
+> `ComputeShapedTaskForce()` 로 추출됐고 바인딩이 그것을 호출한다. 추출은 **bit-for-bit
 > inert** 이며 `test_inertia_shaping_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴
-> 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정한다 (어댑터 대조는
+> 복사본과 (2) 삭제 전 살아 있던 어댑터 양쪽에 대해 비트 단위로 고정했다 (후자는 #236 S7c 에서 은퇴 — provenance 는 그 파일의 "Oracle 2 retired" 주석; 어댑터 대조는
 > selection × Λ_d × clamp 조합 + 활성화 램프). 코어는 `Λ_S` 를 **인자로** 받으므로
 > `TaskDynamics` 를 모른다 — Λ 블록의 수렴점 판정은 S2b 몫이다. wrench 는 **비-RT setter `SetExternalWrench()`** 로 받는다:
 > 컨트롤러는 순수 제어 알고리즘이라 노드·구독·메시지 타입을 만들지 않으며, 호출자는
@@ -48,7 +53,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > 모두 컨트롤러가 수행). 입력 계약·조건화 순서·staleness 정책·`Λ_d` clamp·하드웨어 부호
 > 검증 절차(P1–P4) 등 규범·근거는 [docs/compliance-conventions.md](docs/compliance-conventions.md).
 >
-> `TaskAdmittanceController` 는 같은 계열의 **반대 방향** 제어기다 (§7 Rule 3): 힘을
+> **태스크 어드미턴스**는 같은 계열의 **반대 방향** 법칙이다 (§7 Rule 3): 힘을
 > **입력**으로 받아 가상 compliant frame `X_c` 를 적분하고 (`Λ_d ẍ̃ + K_d ẋ̃ + K_p x̃ = f_ext`),
 > 미분 IK 로 관절 **위치** 명령을 만든다. 같은 `+x` 밀림에 impedance 는 `−x` 로 저항하고
 > admittance 는 `+x` 로 따라간다 (§11.4.1 P2 vs P3 — 두 컨트롤러를 같은 픽스처에서 대조하는
@@ -64,19 +69,19 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > [docs/compliance-conventions.md](docs/compliance-conventions.md) §3.5.
 >
 > **코어 (#236 S5 — 재사용):** §7.3 의 IK 속도항 `ν = ν_c + K^ik ⊙ e` 는 **새 코어를 만들지 않고**
-> `ClikController` 가 이미 쓰는 `task/task_vel_law.hpp` 의 `ComputeTaskVelocity()` 를 호출한다 —
+> CLIK 이 이미 쓰는 `task/task_vel_law.hpp` 의 `ComputeTaskVelocity()` 를 호출한다 —
 > 같은 속도형 법칙에 같은 `[1/s]` 게인 규약이므로 두 번째 사본을 만드는 대신 일반화한 것이다
 > (design-principles P5). 여기서 `ν_ff` 자리에 들어가는 것이 CLIK 의 궤적 twist 가 아니라 §7.2
 > compliant frame 의 속도 `ν_c` 라는 점만 다르며, 법칙은 그 출처를 알지 않는다. 재사용은
 > **bit-for-bit inert** 이고 `test_admittance_task_vel_reuse.cpp` 가 (1) 이 컨트롤러 고유의 추출
 > 이전 인라인 형태(`ν_c` 사본에 per-element 누산 — 코어와 피연산자 순서가 반대다) 리터럴
-> 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정한다 (어댑터 대조는
+> 복사본과 (2) 삭제 전 살아 있던 어댑터 양쪽에 대해 비트 단위로 고정했다 (후자는 #236 S7c 에서 은퇴 — provenance 는 그 파일의 "Oracle 2 retired" 주석; 어댑터 대조는
 > `integrate_from_measured` × `nullspace_kp` × `ik_kp` 조합 + 활성화 램프). `ik_kp_* = 0` 은 §7.3
 > 을 문자 그대로 읽은 순수 피드포워드 형태이며 별도 케이스로 고정된다. 속도 클램프→적분→관절한계
-> clamp→rate 재바운드로 이어지는 **관절 tail 은 법칙이 아니라 한계·정책**이라 어댑터에 남아 있고,
+> clamp→rate 재바운드로 이어지는 **관절 tail 은 법칙이 아니라 한계·정책**이라 바인딩 몫이고,
 > DLS `J⁺`·영공간은 이미 `compliance/differential_ik` 다.
 >
-> `CascadedComplianceController` 는 그 둘을 **직렬로** 잇는다 (§7.6): outer admittance 가
+> **캐스케이드 컴플라이언스**는 그 둘을 **직렬로** 잇는다 (§7.6): outer admittance 가
 > compliant frame `(X_c, ν_c)` 를 만들고, inner §6.2 impedance 가 그것을 추종하는 **토크**를
 > 낸다. 명세가 "외력 추종의 올바른 구조" 로 지목한 형태이며 §6.3(측정 외력을 impedance
 > 법칙에 직접 가산)보다 안정적이라고 명시한 대안이다. 순응 거동은 **outer 게인만** 정의하고
@@ -90,7 +95,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > 뒤 다음 tick 에 재시도한다. 규범은 같은 문서 §3.6.
 >
 > **코어 (#236 S6):** 그 판정식 자체는 `compliance/bandwidth_separation.hpp` 의 무상태 free
-> function `EvaluateBandwidthSeparation()` 이고 어댑터는 그것을 호출한다 — §7.6 MUST-1 은 두
+> function `EvaluateBandwidthSeparation()` 이고 바인딩이 그것을 호출한다 — §7.6 MUST-1 은 두
 > 게인 세트와 관성에 대한 **명세의 진술**이지 이 클래스의 사정이 아니며, `Λ_S` 를 인자로 받으므로
 > 그것을 누가 만드는가(S2b 수렴점)를 선점하지 않는다. 같은 슬라이스에서 영공간 **자세 법칙**
 > `τ₀ = Kp·(q_null−q) − Kd·q̇` 도 `joint/posture_law.hpp` 로 나갔다: 이 컨트롤러와
@@ -98,7 +103,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > 발동 조건이었다 (`TaskAdmittanceController` 는 같은 법칙의 속도형 P — 별도 함수인 이유는
 > [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태).
 > 추출은 **bit-for-bit inert** 이며 `test_posture_core.cpp` 가 (1) 추출 이전 인라인 형태의
-> 리터럴 복사본 3개와 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정한다. 두 게이트가 닫힐
+> 리터럴 복사본 3개와 (2) 삭제 전 살아 있던 어댑터 양쪽에 대해 비트 단위로 고정했다 (후자는 #236 S7c 에서 은퇴 — provenance 는 그 파일의 "Oracle 2 retired" 주석). 두 게이트가 닫힐
 > 때 **수치적으로 inert** 하므로(자세 게이트는 부호 있는 0 만 흘리고, §7.6 게이트는 이전 값을
 > 그대로 남긴다) 토크 비교만으로는 배선이 고정되지 않는다 — 그래서 `diag.nullspace_active` 와
 > `diag.bandwidth_ratio` 를 **매 tick** 대조한다.
@@ -112,15 +117,13 @@ rtc_controllers/
 ├── CMakeLists.txt
 ├── package.xml
 ├── include/rtc_controllers/
-│   ├── indirect/
-│   │   ├── p_controller.hpp              -- 관절 공간 P 제어기
-│   │   ├── clik_controller.hpp           -- 태스크 공간 CLIK 제어기
-│   │   └── task_admittance_controller.hpp -- 태스크 공간 admittance (§7, 힘 입력 → 위치 출력)
-│   ├── direct/
-│   │   ├── joint_pd_controller.hpp       -- 관절 공간 PD + 동역학 보상
-│   │   ├── operational_space_controller.hpp -- 태스크 공간 OSC
-│   │   ├── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
-│   │   └── cascaded_compliance_controller.hpp -- §7.6 outer admittance + inner impedance (토크 출력)
+│   ├── params/                               -- 컨트롤러-레벨 YAML 스키마 (#236 S7c). 게인 POD + `ParseXxxParams(YAML::Node, …)` 자유함수. yaml-cpp 만 의존하고 **rclcpp-free** — 미래 바인딩이 ROS 로깅 스택 없이 config 를 검증할 수 있어야 한다. 은퇴 키는 로그 대신 `<Name>RetiredKeys` 로 **보고**하고 호출자가 찍는다
+│   │   ├── joint_pd_params.hpp               -- kp/kd (길이 == nv 강제, #172) + 중력/코리올리 스위치 (torque 전용 교차검증)
+│   │   ├── clik_params.hpp                   -- 태스크 P 게인 + §6.5 DLS + 영공간 + 궤적 한계
+│   │   ├── osc_params.hpp                    -- 태스크 PD (가속도형) + §6.5 DLS + posture + E-STOP 감쇠
+│   │   ├── task_impedance_params.hpp         -- §6.2/§6.3 게인 + TaskSelection · TaskImpedanceFormulation
+│   │   ├── task_admittance_params.hpp        -- §7.2/§7.3 게인 + wrench 소스
+│   │   └── cascaded_compliance_params.hpp    -- outer/inner 게인 + §7.6 임계
 │   ├── joint/
 │   │   ├── posture_law.hpp                   -- 영공간 자세 법칙 코어 (header-only, 무상태) — 토크형 PD `Kp·(q_ref−q) − Kd·q̇` 와 속도형 P `Kp·(q_ref−q)` **두 함수**. 레퍼런스 `q_ref` 를 인자로 받으므로 측정 seed(impedance·cascade)와 config `safe_position`(OSC)이 한 법칙이다. P 를 PD 의 `Kd=0` 으로 흡수하지 않는 이유는 비트 동치가 깨지기 때문 (부호 있는 0 — [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태). 채널 순서·사영 Nᵀ·활성화 램프는 바인딩 몫
 │   │   └── joint_pd_law.hpp                  -- 관절 공간 PD 법칙 코어 (header-only, 무상태). 궤적 **샘플**을 받고 생성기를 소유하지 않는다 — 어느 궤적이 어느 법칙을 먹이는지는 integration 계층의 구조 결정
@@ -155,16 +158,8 @@ rtc_controllers/
 │       └── grasp_state.hpp                   -- GraspStateData POD (SeqLock-호환). contact_flag 는 capability-aware: sensor A → native sigmoid prob, sensor B → derived binary (rtc_msgs/GraspState.msg 참조)
 ├── src/
 │   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
+│   ├── params/                               -- 위 스키마 파서 6종 구현
 │   └── controllers/
-│       ├── indirect/
-│       │   ├── p_controller.cpp
-│       │   ├── clik_controller.cpp
-│       │   └── task_admittance_controller.cpp
-│       ├── direct/
-│       │   ├── joint_pd_controller.cpp
-│       │   ├── operational_space_controller.cpp
-│       │   ├── task_impedance_controller.cpp
-│       │   └── cascaded_compliance_controller.cpp
 │       └── grasp/
 │           ├── grasp_controller.cpp
 │           └── pull_force_estimator.cpp
@@ -185,7 +180,7 @@ rtc_controllers/
 
 아래 5절은 비-compliance 계열입니다. compliance 3종(`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`)의 법칙·계약·근거는 §개요의 서술과 [docs/compliance-conventions.md](docs/compliance-conventions.md) 가 SSoT 이므로 여기서 반복하지 않습니다.
 
-### 1. PController (관절 공간 P 제어)
+### 1. 관절 공간 P 제어 (은퇴한 `PController` 의 법칙)
 
 가장 단순한 비례 관절 위치 제어기입니다. 동역학 모델을 사용하지 않으며 빠른 응답이 필요한 기본 위치 제어에 적합합니다.
 
@@ -222,11 +217,11 @@ p_controller:
 
 ---
 
-### 2. JointPDController (관절 공간 PD + 중력/코리올리 피드포워드)
+### 2. 관절 공간 PD + 중력/코리올리 피드포워드 (`joint/joint_pd_law.hpp`)
 
 5차 다항식 궤적 생성과 선택적 중력/코리올리 **피드포워드**를 포함하는 관절 공간 PD 토크 제어기입니다.
 
-> **코어 (#236 S1):** 아래 제어 법칙 자체는 `joint/joint_pd_law.hpp` 의 `ComputeJointPdCommand()` 로 추출됐고 `JointPDController` 는 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_joint_pd_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정합니다. 코어는 궤적을 소유하지 않습니다 — 궤적 생성·재타겟은 어댑터(장차 바인딩) 몫이고, 코어는 `ref_pos`/`ref_vel` 샘플만 받습니다.
+> **코어 (#236 S1):** 아래 제어 법칙 자체는 `joint/joint_pd_law.hpp` 의 `ComputeJointPdCommand()` 로 추출됐고 바인딩이 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_joint_pd_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 삭제 전 살아 있던 어댑터 양쪽에 대해 비트 단위로 고정했습니다 (후자는 #236 S7c 에서 은퇴 — provenance 는 그 파일의 "Oracle 2 retired" 주석). 코어는 궤적을 소유하지 않습니다 — 궤적 생성·재타겟은 바인딩 몫이고, 코어는 `ref_pos`/`ref_vel` 샘플만 받습니다.
 
 > **명명 주의 (#172):** 이 제어기는 표준 computed-torque 가 **아닙니다** — 질량행렬 `M(q)` 나 desired acceleration `ddq_d` 를 사용하지 않고, PD 항에 `g(q)`·`C(q,v)·v` 를 피드포워드로 더할 뿐입니다 (즉 `M·ddq_ref + h` 형태가 아님). 정식 computed-torque 가 필요하면 별도 제어기로 추가해야 합니다.
 
@@ -280,11 +275,11 @@ joint_pd_controller:
 
 ---
 
-### 3. ClikController (태스크 공간 CLIK)
+### 3. 태스크 공간 CLIK (`task/task_vel_law.hpp`)
 
 Closed-Loop Inverse Kinematics -- 감쇠 의사역행렬과 영공간 보조 태스크를 사용하는 태스크 공간 위치 제어기입니다. 3-DOF (위치만) 또는 6-DOF (위치+자세) 모드를 지원합니다.
 
-> **코어 (#236 S3a — 부분):** 아래 두 모드의 **태스크 속도 법칙** `task_vel = K_p ⊙ e + ν_ff` 는 `task/task_vel_law.hpp` 의 `ComputeTaskVelocity()` (6축) · `ComputeTranslationVelocity()` (병진 전용) 으로 추출됐고 `ClikController` 는 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_task_vel_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정합니다 (어댑터 대조는 `control_6dof` × `enable_null_space` 네 조합 + π-회전 split 전이 전부). 코어는 궤적도 pose error 정의도 **피드포워드의 프레임 전송도** 소유하지 않습니다 — 이미 world-aligned 로 회전된 `ν_ff` 를 인자로 받을 뿐이며, `R_trajectory` 로 회전할지 `R_current` 로 회전할지는 프레임을 소유한 바인딩이 정합니다. **아래 감쇠 의사역행렬(J^#)과 영공간 블록은 아직 어댑터 안에 있습니다** — `compliance/differential_ik` 로의 흡수는 S3b (#258) 이며, 그 헬퍼는 σ_min-적응형 감쇠를 쓰고 CLIK 인라인은 상수 λ 라 현 형태로는 bit-identical 이 성립하지 않아 분리됐습니다 (#236 D-S3).
+> **코어 (#236 S3a — 부분):** 아래 두 모드의 **태스크 속도 법칙** `task_vel = K_p ⊙ e + ν_ff` 는 `task/task_vel_law.hpp` 의 `ComputeTaskVelocity()` (6축) · `ComputeTranslationVelocity()` (병진 전용) 으로 추출됐고 바인딩이 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_task_vel_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 삭제 전 살아 있던 어댑터 양쪽에 대해 비트 단위로 고정했습니다 (후자는 #236 S7c 에서 은퇴 — provenance 는 그 파일의 "Oracle 2 retired" 주석; 어댑터 대조는 `control_6dof` × `enable_null_space` 네 조합 + π-회전 split 전이 전부). 코어는 궤적도 pose error 정의도 **피드포워드의 프레임 전송도** 소유하지 않습니다 — 이미 world-aligned 로 회전된 `ν_ff` 를 인자로 받을 뿐이며, `R_trajectory` 로 회전할지 `R_current` 로 회전할지는 프레임을 소유한 바인딩이 정합니다. 감쇠 의사역행렬(J^#)과 영공간 블록은 **S3b (#258) 에서 `compliance/differential_ik` 로 흡수됐습니다.** 그 헬퍼는 σ_min-적응형 감쇠를 쓰고 흡수 전 인라인은 상수 λ 였으므로 bit-identical 이 성립하지 않아 별도 슬라이스가 됐고 (#236 D-S3), 대신 `test_dls_convergence.cpp` 의 2-tier 수렴 하네스가 그 차이를 고정합니다.
 
 **제어 법칙 (3-DOF 모드):**
 
@@ -379,11 +374,11 @@ clik_controller:
 
 ---
 
-### 4. OperationalSpaceController (태스크 공간 6-DOF 토크 OSC)
+### 4. 태스크 공간 6-DOF 토크 OSC (`task/task_accel_law.hpp`)
 
-전체 6-DOF 태스크 공간 **토크** 제어기입니다 (operational-space / Khatib 정식화). 태스크 공간 PD 가속도를 task inertia Λ 와 Jacobian transpose 로 관절 토크에 사상하고, joint-space Coriolis + 중력을 완전 보상합니다. **출력은 N·m** 이며 command_type 은 `torque` 로 고정됩니다 (다른 값은 LoadConfig 에서 거부 — position/velocity task 제어는 ClikController 사용). 이 전환은 #172 에서 진행되었으며, 이전 velocity-IK→position 계약을 대체합니다.
+전체 6-DOF 태스크 공간 **토크** 제어기입니다 (operational-space / Khatib 정식화). 태스크 공간 PD 가속도를 task inertia Λ 와 Jacobian transpose 로 관절 토크에 사상하고, joint-space Coriolis + 중력을 완전 보상합니다. **출력은 N·m** 이며 command_type 은 `torque` 로 고정됩니다 (다른 값은 `ParseOscParams` 에서 거부 — position/velocity task 제어는 CLIK 법칙 사용). 이 전환은 #172 에서 진행되었으며, 이전 velocity-IK→position 계약을 대체합니다.
 
-> **코어 (#236 S2a — 부분):** 아래 `a_task` 식은 `task/task_accel_law.hpp` 의 `ComputeTaskAcceleration()` 으로 추출됐고 `OperationalSpaceController` 는 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_task_accel_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정합니다. 코어는 궤적도 pose error 정의도 소유하지 않습니다 — `e`·`ν_d`·`a_ff` 를 인자로 받을 뿐입니다. **아래 Λ / τ / Nᵀ 블록은 아직 어댑터 안에 있습니다** — `compliance/task_dynamics` 로의 흡수는 S2b 이며, 그 헬퍼의 현 형태(동적 크기 LLT + Λ 를 materialise 하는 구조)로는 bit-identical 이 성립하지 않아 분리됐습니다 (#236 D-S2).
+> **코어 (#236 S2a — 부분):** 아래 `a_task` 식은 `task/task_accel_law.hpp` 의 `ComputeTaskAcceleration()` 으로 추출됐고 바인딩이 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_task_accel_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 삭제 전 살아 있던 어댑터 양쪽에 대해 비트 단위로 고정했습니다 (후자는 #236 S7c 에서 은퇴 — provenance 는 그 파일의 "Oracle 2 retired" 주석). 코어는 궤적도 pose error 정의도 소유하지 않습니다 — `e`·`ν_d`·`a_ff` 를 인자로 받을 뿐입니다. Λ / τ / Nᵀ 블록은 **S2b 에서 `compliance/task_dynamics` 로 흡수됐습니다.** 그 헬퍼의 형태(동적 크기 LLT + Λ 를 materialise 하는 구조)로는 bit-identical 이 성립하지 않아 별도 슬라이스가 됐고 (#236 D-S2), 대신 `test_dls_convergence.cpp` 의 2-tier 수렴 하네스가 그 차이를 고정합니다.
 
 **제어 법칙:**
 
@@ -435,7 +430,7 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 - 동적 일관 널공간 사영 — 여유자유도(nv>6) posture 이차 태스크
 - SO(3) 로그 맵 / SE(3) 궤적 보간 / ZYX 오일러 규약
 
-**E-STOP:** 중력 보상 감쇠 토크 홀드 `τ = ĝ(q) − D·q̇` (관절별 ±τ_max clamp, non-finite→0). D 는 `estop_damping` YAML (기본 5.0). 잔여 운동 에너지를 −D·q̇ 로 흡수하고 ĝ(q) 로 중력에 버틴다. `TaskImpedanceController` 와 동일한 `compliance::GravityCompDampedHold` helper 사용 (#184; #172 가 남긴 position-slew 결함을 대체). `estopped_` 는 controller-local latch 로 `ClearEstop()` 없이는 자동 복귀하지 않는다.
+**E-STOP:** 중력 보상 감쇠 토크 홀드 `τ = ĝ(q) − D·q̇` (관절별 ±τ_max clamp, non-finite→0). D 는 `estop_damping` YAML (기본 5.0). 잔여 운동 에너지를 −D·q̇ 로 흡수하고 ĝ(q) 로 중력에 버틴다. 태스크 임피던스와 동일한 `compliance::GravityCompDampedHold` helper 사용 (#184; #172 가 남긴 position-slew 결함을 대체). `estopped_` 는 controller-local latch 로 `ClearEstop()` 없이는 자동 복귀하지 않는다.
 
 ```yaml
 # examples/controllers/direct/operational_space_controller.yaml
@@ -589,7 +584,7 @@ q(t) = c0 + c1*t + c2*t^2 + c3*t^3 + c4*t^4 + c5*t^5
 
 ### JointSpaceTrajectory (`joint_space_trajectory.hpp`)
 
-N-DOF 관절 공간 궤적 -- 각 관절에 독립 QuinticPolynomial을 적용합니다. `JointPDController`에서 사용합니다.
+N-DOF 관절 공간 궤적 -- 각 관절에 독립 QuinticPolynomial을 적용합니다. 관절 PD 바인딩에서 사용합니다.
 
 | 메서드 | 설명 |
 |--------|------|
@@ -597,11 +592,11 @@ N-DOF 관절 공간 궤적 -- 각 관절에 독립 QuinticPolynomial을 적용�
 | `compute(t)` | 시간 t에서의 위치/속도/가속도 반환 |
 | `duration()` | 궤적 지속 시간 |
 
-**Duration 계산 (JointPDController):** `max(0.01, max_joint_distance / trajectory_speed)`
+**Duration 계산 (관절 PD):** `max(0.01, max_joint_distance / trajectory_speed)`
 
 ### TaskSpaceTrajectory (`task_space_trajectory.hpp`)
 
-SE(3) 태스크 공간 궤적 -- log6 기반 tangent space에서 6-DOF에 각각 QuinticPolynomial을 적용합니다. `ClikController`와 `OperationalSpaceController`에서 사용합니다.
+SE(3) 태스크 공간 궤적 -- log6 기반 tangent space에서 6-DOF에 각각 QuinticPolynomial을 적용합니다. CLIK · OSC 바인딩에서 사용합니다.
 
 | 메서드 | 설명 |
 |--------|------|
@@ -726,19 +721,29 @@ auto state = traj.compute(time);
 
 ## 컨트롤러 등록
 
-`rtc_controllers`의 어댑터 클래스는 **라이브러리 심볼로만 제공**되며 `ControllerRegistry`에 **자동 등록되지 않습니다** — 즉 이 저장소에서 실제로 런타임 노출을 갖는 어댑터는 **0개**입니다. 런타임에 선택 가능한 컨트롤러 집합은 각 로봇의 `<robot>_bringup` 패키지가 결정합니다 (이 저장소에서는 `integrated_bringup`이 `DemoJointController`, `DemoTaskController`, `DemoWbcController` 3종을 등록).
+`rtc_controllers` 는 **라이브러리 심볼로만 제공**되며 `ControllerRegistry` 에 등록할 수 있는 클래스를 하나도 갖지 않습니다 (#236 S7c 이전에도 어댑터의 런타임 노출은 0개였고, 이제는 어댑터 자체가 없습니다). 런타임에 선택 가능한 컨트롤러 집합은 각 로봇의 `<robot>_bringup` 패키지가 결정합니다 (이 저장소에서는 `integrated_bringup`이 `DemoJointController`, `DemoTaskController`, `DemoWbcController` 3종을 등록).
 
-> 목표 형태에서는 아래처럼 `rtc_controllers` 클래스를 직접 등록하는 대신, downstream 이 **바인딩 클래스**를 자기 패키지에 만들고 그 안에서 `rtc_controllers` 의 코어를 멤버로 소유해 호출합니다 — `integrated_bringup` 의 데모 컨트롤러가 `trajectory/*`·`grasp/*` 를 쓰는 방식 그대로입니다. 아래 예시는 어댑터가 살아 있는 동안의 경로입니다 ([agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
-
-필요 시 downstream 패키지에서 다음과 같이 직접 등록할 수 있습니다.
+> `rtc_controllers` 에는 등록할 수 있는 클래스가 없습니다 (#236 S7c 에서 어댑터가 삭제됨). downstream 은 **바인딩 클래스**를 자기 패키지에 만들고 그 안에서 `rtc_controllers` 의 코어를 멤버로 소유해 호출합니다 — `integrated_bringup` 의 데모 컨트롤러가 `trajectory/*`·`grasp/*` 를 쓰는 방식 그대로입니다 ([agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
 
 ```cpp
 #include "rtc_controller_interface/controller_registry.hpp"
-#include "rtc_controllers/indirect/p_controller.hpp"
+#include "<your_bringup_pkg>/my_joint_controller.hpp"   // RTControllerInterface 상속은 여기서
 
 RTC_REGISTER_CONTROLLER(
-    p_controller, "indirect/", "<your_bringup_pkg>",
-    std::make_unique<rtc::PController>(urdf))
+    my_joint_controller, "direct/", "<your_bringup_pkg>",
+    std::make_unique<mypkg::MyJointController>(urdf))
+```
+
+바인딩 안에서 법칙과 스키마를 부르는 형태는 다음과 같습니다.
+
+```cpp
+#include "rtc_controllers/joint/joint_pd_law.hpp"      // 법칙 (RT tick)
+#include "rtc_controllers/params/joint_pd_params.hpp"  // 스키마 (configure 시 1회)
+
+// on_configure / LoadConfig
+rtc::params::ParseJointPdParams(cfg, model_nv, gains_, command_type_);
+// Compute() 안
+rtc::joint::ComputeJointPdCommand(gains_view, inputs, dt, nq, nc0, cmd_type, prev_err, out);
 ```
 
 > `src/controller_registration.cpp`의 `ForceBuiltinControllerRegistration()`은 이제 no-op이며, 기존 `main()`들과의 링크 호환성을 위해서만 남아 있습니다.
@@ -747,9 +752,9 @@ RTC_REGISTER_CONTROLLER(
 
 ## 컨트롤러 비교
 
-아래는 **비-compliance 4종**의 대조표입니다. compliance 3종(`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`)은 게인 단위·부호 규약·wrench 계약이 달라 같은 축으로 비교되지 않으므로 §개요의 서술과 [docs/compliance-conventions.md](docs/compliance-conventions.md) 가 SSoT 입니다.
+아래는 **비-compliance 4종 법칙**의 대조표입니다 (열 이름은 #236 S7c 에서 삭제된 어댑터가 쓰던 이름 — 법칙 자체는 `joint/`·`task/` 에 남아 있습니다). compliance 3종(`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`)은 게인 단위·부호 규약·wrench 계약이 달라 같은 축으로 비교되지 않으므로 §개요의 서술과 [docs/compliance-conventions.md](docs/compliance-conventions.md) 가 SSoT 입니다.
 
-| | PController | JointPDController | ClikController | OperationalSpaceController |
+| | 관절 P (은퇴) | 관절 PD | CLIK | OSC |
 |---|---|---|---|---|
 | **제어 공간** | 관절 | 관절 | 태스크 (3/6-DOF) | 태스크 (6-DOF) |
 | **출력** | Position | Torque | Position | **Torque (N·m)** |
@@ -764,27 +769,27 @@ RTC_REGISTER_CONTROLLER(
 
 ### 게인 채널 (per-controller ROS 2 parameter)
 
-`rtc_controllers` 의 컨트롤러는 **하나도** 런타임 게인 채널을 갖지 않는다 — 게인을 `LoadConfig` 시점에 YAML 에서 로드해 고정한다. 이는 누락이 아니라 계약이다: 파라미터 채널은 LifecycleNode 를 요구하고 이 패키지는 노드를 만들지 않는다. 데모 컨트롤러(`DemoJointController`/`DemoTaskController`/`DemoWbcController`)는 integration 패키지에 있어 자기 LifecycleNode(`/<config_key>`)에서 게인을 `declare_parameter`로 노출하며 `add_on_set_parameters_callback`이 SeqLock writer로 mutate→Store 한다 ([agent_docs/controllers.md](../agent_docs/controllers.md) §Gains, Phase A~F migration 2026-04-26). 옛 `~/controller_gains` 토픽 + `UpdateGainsFromMsg` / `GetCurrentGains` 가상 메서드는 모두 제거.
+`rtc_controllers` 는 런타임 게인 채널을 제공하지 않는다 — `params/` 파서가 configure 시점에 YAML 에서 게인을 읽어 POD 를 채울 뿐이다. 이는 누락이 아니라 계약이다: 파라미터 채널은 LifecycleNode 를 요구하고 이 패키지는 노드를 만들지 않는다. 데모 컨트롤러(`DemoJointController`/`DemoTaskController`/`DemoWbcController`)는 integration 패키지에 있어 자기 LifecycleNode(`/<config_key>`)에서 게인을 `declare_parameter`로 노출하며 `add_on_set_parameters_callback`이 SeqLock writer로 mutate→Store 한다 ([agent_docs/controllers.md](../agent_docs/controllers.md) §Gains, Phase A~F migration 2026-04-26). 옛 `~/controller_gains` 토픽 + `UpdateGainsFromMsg` / `GetCurrentGains` 가상 메서드는 모두 제거.
 
-`set_gains`/`get_gains` public accessor는 모든 컨트롤러에 보존 (테스트와 데모 컨트롤러 내부 작성 시 사용).
-
-`Gains` struct 레이아웃은 [include/rtc_controllers/{direct,indirect}/*.hpp](./include/rtc_controllers/) 참조.
+게인 POD 레이아웃은 [include/rtc_controllers/params/*.hpp](./include/rtc_controllers/params/) 참조 — 그 옆의 `ParseXxxParams()` 가 YAML 스키마이며, 둘 다 바인딩이 소유합니다.
 
 ### RT 안전 보장 (전체 공통)
 
-모든 컨트롤러의 RT 경로 메서드 (`Compute`, `SetDeviceTarget`)는:
-- `noexcept` 보장
-- 생성자에서 모든 Pinocchio/Eigen 버퍼 사전 할당 (RT 경로에서 동적 할당 없음)
-- **SeqLock + SPSC marshal (2026-05-17 RT-4 cleanup):** target 슬롯은 `rtc::SeqLock<TargetSlot>`이 publish하고 **RT 스레드 (Compute)** 가 유일한 writer다. Off-RT `SetDeviceTarget` 콜백은 `rtc::SpscQueue<PendingTarget, 4>`에 lock-free push (newest-drop) 만 하고 SeqLock을 직접 만지지 않는다. RT 스레드는 매 tick에서 (1) queue drain → slot 갱신, (2) 첫 tick일 경우 현재 device state로 self-init (controller-internal hold init policy), (3) 단일 `target_seqlock_.Store(slot)` 호출. SE3 타입은 `is_trivially_copyable=false` (Eigen false-negative)이므로 `std::array<double, 9>` (rotation) + `std::array<double, 3>` (translation) POD wrapper로 마샬링한다. 자세한 패턴은 에이전트 memory `feedback_eigen_seqlock_pod_wrapper`.
+이 패키지가 tick 위에서 제공하는 것은 **법칙 함수**뿐이므로, 그 함수들이 지키는 것은:
+- `noexcept`, 무상태 (header-only), 컨테이너·Eigen 동적 타입 없음 — 스크래치가 필요한 곳은 max-size 고정 타입 (`Matrix<double,Dyn,Dyn,0,6,6>`)
 - Eigen: `noalias()` 사용, 고정 크기 행렬(3x3, 6x6) 스택 할당
-- **Gains SeqLock 스냅샷:** 모든 컨트롤러의 `gains_` 필드를 `rtc::SeqLock<Gains> gains_lock_`로 교체. RT 경로(`Compute()`)는 진입 시 `const auto gains = gains_lock_.Load()`로 전체 구조체를 단일 스냅샷으로 읽어, parameter callback이 non-RT (nrt_callback) 스레드에서 동시 실행되어도 한 틱 내 모든 필드(bool/배열/스칼라) 일관성 보장. nrt_callback writer(`LoadConfig`, parameter callback, `set_gains`)는 Load→mutate→Store 패턴으로 torn-write 방지.
-- **trajectory_speed 검증:** `LoadConfig()` 및 데모 컨트롤러의 parameter callback에서 `trajectory_speed`/`trajectory_angular_speed`에 `std::max(1e-6, val)` 적용하여 0 또는 음수 값으로 인한 무한 궤적 duration 방지
+- 각 코어 스위트의 `IsAllocationFree` 가 두 센서로 이것을 고정한다 — `operator new` 카운터(`rtc_controllers/testing/alloc_gate.hpp`)와 Eigen 자체 할당 tripwire(`rtc_base/testing/no_malloc_scope.hpp`). Eigen 은 `std::malloc` 을 직접 부르므로 전자만으로는 안 보인다
+
+**바인딩이 지켜야 하는 것** (여기 없고, base 와 integration 계층이 소유):
+- **SeqLock + SPSC marshal:** target 슬롯은 `rtc::SeqLock<TargetSlot>` 이 publish 하고 **RT 스레드 (Compute)** 가 유일한 writer다. Off-RT `SetDeviceTarget` 콜백은 `rtc::SpscQueue<PendingTarget, 4>` 에 lock-free push (newest-drop) 만 한다. 이 글루는 #236 S7a 에서 `RTControllerInterface` 로 상향됐으므로 (`PushPendingTarget` / `DrainPendingTargets` / `ApplyPendingTarget`) 바인딩이 복제하지 않는다. SE3 는 `is_trivially_copyable=false` (Eigen false-negative) 이므로 POD wrapper 로 마샬링한다
+- **게인 스냅샷:** 게인 POD 를 `rtc::SeqLock<Params>` 에 두고 `Compute()` 진입 시 한 번 `Load()` — parameter callback 이 non-RT 스레드에서 동시 실행돼도 한 tick 내 전 필드 일관성이 유지된다. writer 는 Load→mutate→Store
+- **`params/` 파서를 configure 에서 호출**하고 그 결과만 SeqLock 에 넣는다. 파서는 비-RT 이고 throw 한다 (`trajectory_speed` 의 `std::max(1e-6, ·)` floor 같은 검증이 거기 있다)
 
 ---
 
 ## 예시 설정 파일 (`examples/`)
 
-각 컨트롤러에 대응하는 YAML reference example. `LoadConfig()` 메서드에서 파싱하는 스키마를 보여주며, 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다. **production 설정은 `integrated_bringup/config/<robot>/controllers/`** 에 두고, 아래 example 의 `<robot>` placeholder 를 robot 식별자 (`devices.<group>` 키) 로 치환해 복제합니다.
+각 법칙에 대응하는 YAML reference example. `params/ParseXxxParams()` 가 파싱하는 스키마를 보여주며, 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다. **production 설정은 `integrated_bringup/config/<robot>/controllers/`** 에 두고, 아래 example 의 `<robot>` placeholder 를 robot 식별자 (`devices.<group>` 키) 로 치환해 복제합니다.
 
 | 파일 | 설명 |
 |------|------|
@@ -793,7 +798,7 @@ RTC_REGISTER_CONTROLLER(
 | `examples/controllers/direct/joint_pd_controller.yaml` | JointPD 제어기: kp/kd 게인, 중력/코리올리 보상, 궤적 속도, 토픽 매핑 |
 | `examples/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, §6.5 DLS (`max_damping`/`singularity_threshold`), 널공간 posture, 궤적 속도, 토픽 매핑 |
 
-각 YAML 파일은 `topics` 섹션에서 디바이스별 ROS2 토픽 구독/발행 매핑도 정의합니다. 이 매핑은 `RTControllerInterface::LoadConfig()`에서 공통 파싱됩니다.
+각 YAML 파일은 `topics` 섹션에서 디바이스별 ROS2 토픽 구독/발행 매핑도 정의합니다. 이 섹션은 `params/` 스키마가 아니라 **base 의 `RTControllerInterface::LoadConfig()`** 가 파싱하므로, 바인딩은 게인 파싱(`ParseXxxParams`) 전에 base 판을 먼저 부르면 됩니다.
 
 ---
 
@@ -802,12 +807,11 @@ RTC_REGISTER_CONTROLLER(
 | 의존성 | 용도 |
 |--------|------|
 | `ament_cmake` | 빌드 시스템 |
-| `rtc_controller_interface` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) + 레지스트리. **전이 중 — 목표 형태에서는 이 의존이 제거된다** (#236: 이 패키지는 프레임워크 계약을 모르는 알고리즘만 남는다) |
 | `rtc_base` | 공유 데이터 타입 (`ControllerState`, `ControllerOutput`, `DeviceState`), 상수 (`kDefaultMaxJointVelocity`, `kDefaultMaxJointTorque`), RT-safe 유틸리티 (`utils/clamp_commands.hpp::ClampSymmetric`, `utils/device_passthrough.hpp::PassthroughSecondaryDevices`) |
 | `rtc_msgs` | RTC 프레임워크 커스텀 ROS2 메시지 |
 | `eigen` | 선형 대수 연산 (Eigen3) |
 | `pinocchio` | 기구학/동역학 (FK, Jacobian, Gravity, Coriolis, SE3/SO3, exp/log) |
-| `rtc_math` | SE3 헬퍼 (`rtc_math/se3/pinocchio_adapter.hpp` — ClikController/OperationalSpaceController의 log/exp 오차 계산) |
+| `rtc_math` | SE3 헬퍼 (`rtc_math/se3/pinocchio_adapter.hpp` — CLIK/OSC 법칙의 log/exp 오차 계산) |
 | `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 (`ModelConfig`/`PinocchioModelBuilder`) |
 | `yaml-cpp` | YAML 설정 파싱 |
 
@@ -828,14 +832,12 @@ source install/setup.bash
 ## 의존성 그래프 내 위치
 
 ```
-rtc_base + pinocchio + yaml-cpp + eigen
+rtc_base + pinocchio + yaml-cpp + eigen + rtc_math + rtc_urdf_bridge
     |
-rtc_controller_interface  -- 추상 인터페이스 + 레지스트리
-    |                        (전이 중 — 목표 형태에서는 이 화살표가 사라진다, #236)
-rtc_controllers  -- 제어 법칙 라이브러리 (+ 전이 중인 어댑터)
-    ^
-    |-- rtc_controller_manager  (컨트롤러 인스턴스화 + Compute 호출)
+rtc_controllers  -- 제어 법칙 + YAML 스키마 라이브러리
+    ^                (rtc_controller_interface 를 의존하지 않는다 — #236 S7c)
     |-- integrated_bringup            (바인딩 소유 + launch에서 컨트롤러 선택)
+                                       └ rtc_controller_interface 는 여기서 상속한다
 ```
 
 ---

@@ -28,7 +28,8 @@
 //      rather than inherited from the session probe that chose D-S5a (plan §S5
 //      R3/R4, and the S3a M7 rule: one oracle per inline shape).
 //
-//   2. The live TaskAdmittanceController. TRANSIENT (dies with S7). Its job is
+//   2. The live TaskAdmittanceController. TRANSIENT — RETIRED in #298 S7c-2
+//      with the adapter (see "Oracle 2 retired" below). Its job was
 //      the one thing oracle 1 structurally cannot do: catch a CORRELATED
 //      transcription error, plus the WIRING — that ν_c and e reach the core in
 //      that order and in that role, that the gains marshalled into TaskVelParams
@@ -74,7 +75,7 @@
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/compliance/admittance_integrator.hpp"
 #include "rtc_controllers/compliance/differential_ik.hpp"
-#include "rtc_controllers/indirect/task_admittance_controller.hpp"
+#include "rtc_controllers/params/task_admittance_params.hpp"
 #include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
@@ -108,7 +109,6 @@ namespace {
 using Vec6 = Eigen::Matrix<double, 6, 1>;
 
 using rtc::kMaxDeviceChannels;
-using rtc::TaskAdmittanceController;
 using rtc::task::ComputeTaskVelocity;
 using rtc::task::TaskVelParams;
 using rtc::testing::BitsEqual;
@@ -308,6 +308,11 @@ struct ShimOutput {
   bool nullspace_active{false};
 };
 
+// The adapter's TaskAdmittanceController::kTaskDim, kept local now that the
+// adapter is gone. 6-D task space is the law's own shape (a full SE(3) twist),
+// not a configurable, so a literal here is the honest form.
+constexpr int kShimTaskDim = 6;
+
 // Owns the model, the compliant-frame integrator, the differential IK and the
 // joint tail (STRUCTURE) and calls the core (ALGORITHM). Mirrors
 // TaskAdmittanceController::Compute() step for step from the joint-state copy
@@ -334,7 +339,7 @@ class AdmittanceShim {
     q_dev_ = Eigen::VectorXd::Zero(nv_);
     desired_q_ = Eigen::VectorXd::Zero(nv_);
     q_base_ = Eigen::VectorXd::Zero(nv_);
-    ik_.Resize(nv_, TaskAdmittanceController::kTaskDim);
+    ik_.Resize(nv_, kShimTaskDim);
   }
 
   [[nodiscard]] int nv() const { return nv_; }
@@ -342,7 +347,7 @@ class AdmittanceShim {
   // One tick. `f_lwa` is the conditioned external wrench the adapter produced on
   // THIS tick (diag.wrench_lwa) — the one lane the shim borrows rather than
   // replicates; see the file header.
-  ShimOutput Step(const TaskAdmittanceController::Gains& g, const rtc::ControllerState& state,
+  ShimOutput Step(const rtc::params::TaskAdmittanceParams& g, const rtc::ControllerState& state,
                   const std::array<double, 6>& f_lwa) {
     const auto& dev0 = state.devices[0];
     const double dt = state.dt;
@@ -399,7 +404,7 @@ class AdmittanceShim {
     const Vec6 nu = ComputeTaskVelocity(TaskVelParams{g.ik_kp_pos, g.ik_kp_rot}, e, nu_c);
 
     const bool nullspace_active =
-        (nv_ > TaskAdmittanceController::kTaskDim) && (g.nullspace_kp != 0.0);
+        (nv_ > kShimTaskDim) && (g.nullspace_kp != 0.0);
     if (nullspace_active) {
       for (int i = 0; i < nv_; ++i)
         qdot_null_dev_(i) = g.nullspace_kp * (q_null_(i) - q_dev_(i));
@@ -559,223 +564,55 @@ external_wrench:
 )";
 }
 
-TaskAdmittanceController::Gains CrossCheckGains() {
-  TaskAdmittanceController::Gains g;
-  // Six PAIRWISE-DISTINCT gains, not two isotropic blocks. Oracle 2 exists to
-  // catch WIRING errors, and a permutation inside one block — ik_kp_pos
-  // marshalled as {y,x,z} into TaskVelParams — is bit-for-bit invisible when all
-  // three values are equal.
+// The reference gains oracle 2 was driven with, kept for the RT gate below.
+// Six PAIRWISE-DISTINCT gains, not two isotropic blocks: oracle 2 existed to
+// catch WIRING errors, and a permutation inside one block — ik_kp_pos marshalled
+// as {y,x,z} into TaskVelParams — is bit-for-bit invisible when all three values
+// are equal. The distinctness still earns its keep for the allocation gate,
+// which reads the same POD.
+rtc::params::TaskAdmittanceParams CrossCheckGains() {
+  rtc::params::TaskAdmittanceParams g;
   g.ik_kp_pos = {{2.0, 1.4, 1.7}};
   g.ik_kp_rot = {{1.5, 0.9, 1.2}};
   g.nullspace_kp = 0.5;
-  g.activation_ramp_time = 0.0;  // α = 1 unless a case says otherwise
+  g.activation_ramp_time = 0.0;
   g.joint_limit_margin = 0.0;
-  // §7.5 keeps ν_c inside 0.25 m/s; with the gains above the resulting joint
-  // velocities stay well under kDefaultMaxJointVelocity = 2.0 rad/s, which the
-  // per-channel ASSERT_LT in RunCrossCheck proves every tick rather than assumes
-  // (S1 harness contract item 5) — a fired clamp voids a bitwise comparison
-  // instead of failing it informatively.
   return g;
-}
-
-struct CrossCheckStats {
-  double peak_vel{0.0};
-  double peak_err{0.0};
-  double peak_cmd_delta{0.0};
-  double peak_nu_c{0.0};
-};
-
-// Drive adapter and shim through the same tick sequence and compare both
-// device-0 lanes bit for bit.
-void RunCrossCheck(TaskAdmittanceController& ctrl, AdmittanceShim& shim,
-                   const TaskAdmittanceController::Gains& g, int ticks, CrossCheckStats* stats) {
-  const int nv = shim.nv();
-  auto state = MakeState(nv, kDt);
-  std::array<double, kMaxDeviceChannels> first_cmd{};
-
-  for (int tick = 0; tick < ticks; ++tick) {
-    FillSweep(state, nv, tick, kDt);
-
-    // A wrench that changes sign and magnitude, so the compliant frame keeps
-    // moving and ν_c is not a constant the comparison could absorb.
-    const double phase = 0.05 * tick;
-    const std::array<double, 6> w{
-        6.0 * std::cos(phase), 4.0 * std::sin(phase), -3.0, 0.4 * std::sin(phase), -0.3, 0.2};
-    ctrl.SetExternalWrench(std::span<const double, 6>(w.data(), 6));
-
-    const auto out = ctrl.Compute(state);
-    const auto diag = ctrl.GetDiagnosticsForTesting();
-    ASSERT_TRUE(diag.control_valid) << "tick " << tick << ": the adapter did not run the law";
-    // A fired §7.5 guard would still be compared correctly (the shim runs the
-    // same integrator), but a fired JOINT clamp would not — the shim mirrors the
-    // tail, so a divergence there would be a tail bug masquerading as a law bug.
-    // Both counters are cross-checked after the run; here we only need the
-    // adapter's own view of the joint bound.
-    ASSERT_FALSE(diag.joint_velocity_limited)
-        << "tick " << tick
-        << ": the joint velocity clamp or rate bound fired — the comparison "
-           "would be pinning the limiter, not the law";
-
-    const ShimOutput shim_out = shim.Step(g, state, diag.wrench_lwa);
-
-    for (int j = 0; j < nv; ++j) {
-      const auto uj = static_cast<std::size_t>(j);
-      const double adapter_vel = out.devices[0].target_velocities[uj];
-      ASSERT_LT(std::abs(adapter_vel), rtc::kDefaultMaxJointVelocity)
-          << "velocity clamp fired at tick " << tick << " ch " << j
-          << " — comparison would be invalid";
-
-      EXPECT_TRUE(BitsEqual(adapter_vel, shim_out.target_velocities[uj]))
-          << "tick " << tick << " ch " << j << " target_velocity: adapter " << adapter_vel
-          << " vs shim " << shim_out.target_velocities[uj];
-      EXPECT_TRUE(BitsEqual(out.devices[0].commands[uj], shim_out.commands[uj]))
-          << "tick " << tick << " ch " << j << " command (integrated q_des)";
-
-      stats->peak_vel = std::max(stats->peak_vel, std::abs(adapter_vel));
-      if (tick == 0)
-        first_cmd[uj] = out.devices[0].commands[uj];
-      else
-        stats->peak_cmd_delta =
-            std::max(stats->peak_cmd_delta, std::abs(out.devices[0].commands[uj] - first_cmd[uj]));
-    }
-
-    // The adapter's window onto the core's two inputs. Pinning them bitwise
-    // localises a cross-check failure to the binding (error definition,
-    // compliant frame) or to the law, instead of leaving the whole tick suspect.
-    for (int i = 0; i < 6; ++i) {
-      const auto ui = static_cast<std::size_t>(i);
-      EXPECT_TRUE(BitsEqual(diag.pose_error[ui], shim_out.pose_error[i]))
-          << "tick " << tick << " pose-error axis " << i << " (the core's e input)";
-      EXPECT_TRUE(BitsEqual(diag.compliant_velocity[ui], shim_out.nu_c[i]))
-          << "tick " << tick << " compliant-velocity axis " << i << " (the core's ν_ff input)";
-      stats->peak_err = std::max(stats->peak_err, std::abs(diag.pose_error[ui]));
-      stats->peak_nu_c = std::max(stats->peak_nu_c, std::abs(diag.compliant_velocity[ui]));
-    }
-
-    // The posture gate. See ShimOutput::nullspace_active — with the gate closed
-    // this flag is the ONLY observable that separates "the branch was skipped"
-    // from "the branch ran and contributed signed zeros".
-    EXPECT_EQ(diag.nullspace_active, shim_out.nullspace_active)
-        << "tick " << tick << ": adapter and shim disagree on the posture gate";
-  }
-}
-
-// One (integrate_from_measured × nullspace_kp × ik_kp) combination end to end.
-// All three are gates or operating points of the LAW's own inputs:
-//   • integrate_from_measured selects the integration base, so it decides what
-//     `commands` even means;
-//   • nullspace_kp = 0 retires the posture term, leaving q̇ = J⁺ν — the mode in
-//     which a wiring error in the null-space lane cannot hide behind it;
-//   • ik_kp = 0 is §7.3 read literally (ν = ν_c), the pure-feedforward form. It
-//     is the ONE case where a dropped K⊙e term would still match, so it runs
-//     alongside the others rather than instead of them — and its non-vacuity
-//     guard is inverted accordingly (see below).
-void RunModeCombination(bool integrate_from_measured, bool nullspace, bool ik_gain) {
-  auto g = CrossCheckGains();
-  g.integrate_from_measured = integrate_from_measured;
-  if (!nullspace)
-    g.nullspace_kp = 0.0;
-  if (!ik_gain) {
-    g.ik_kp_pos = {{0.0, 0.0, 0.0}};
-    g.ik_kp_rot = {{0.0, 0.0, 0.0}};
-  }
-
-  TaskAdmittanceController ctrl(Serial7dof(), g);
-  ctrl.LoadConfig(YAML::Load(CrossCheckYaml()));
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);  // LoadConfig owns the wiring; the POD under test comes from here
-  ASSERT_TRUE(ctrl.external_wrench_enabled());
-
-  AdmittanceShim shim;
-  ASSERT_EQ(shim.nv(), 7) << "fixture must be redundant (nv > 6) for a non-trivial null space";
-
-  CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/60, &stats);
-
-  EXPECT_GT(stats.peak_vel, 1e-4) << "every compared velocity was ~0 — the cross-check is vacuous";
-  EXPECT_GT(stats.peak_cmd_delta, 1e-6) << "the integrator never moved — commands pins only a seed";
-  EXPECT_GT(stats.peak_err, 1e-5)
-      << "the pose error never left zero — the core's e input was inert on every axis";
-  EXPECT_GT(stats.peak_nu_c, 1e-6)
-      << "the compliant frame never moved — the core's ν_ff input was inert on every axis";
-  EXPECT_GT(shim.wrench_ticks(), 0) << "f_ext was zero on every tick — the §7.2 frame was driven "
-                                       "by nothing and ν_c pins nothing";
-  // The tail is mirrored, not compared: if it fired, the bitwise agreement above
-  // would be pinning the limiter's saturation rather than the law.
-  EXPECT_EQ(shim.vel_clamps(), 0) << "the shim's velocity clamp fired — operating point is wrong";
-  EXPECT_EQ(shim.rate_rebounds(), 0) << "the shim's rate bound fired — operating point is wrong";
-  EXPECT_EQ(shim.ik_failures(), 0) << "the DLS failed — the comparison would be pinning the "
-                                      "degrade path, which is oracle 1's job";
-  EXPECT_EQ(shim.nonfinite_steps(), 0) << "the §7.2 integrator refused a step — the run is not the "
-                                          "clean-tick regime this suite compares";
-
-  if (nullspace) {
-    EXPECT_GT(shim.nullspace_ticks(), 0) << "the null-space branch never fired";
-    EXPECT_GT(shim.peak_null(), 1e-9)
-        << "the null-space branch fired but contributed ~0 — it pins nothing";
-  } else {
-    EXPECT_EQ(shim.nullspace_ticks(), 0)
-        << "the null-space task ran with nullspace_kp = 0 — the adapter gates it on that";
-  }
 }
 
 }  // namespace
 
-TEST(AdmittanceTaskVelReuse, CoreDrivenShimMatchesTheAdapterBitwiseMeasuredBaseWithNullSpace) {
-  RunModeCombination(/*integrate_from_measured=*/true, /*nullspace=*/true, /*ik_gain=*/true);
-}
-
-TEST(AdmittanceTaskVelReuse, CoreDrivenShimMatchesTheAdapterBitwiseMeasuredBaseWithoutNullSpace) {
-  RunModeCombination(/*integrate_from_measured=*/true, /*nullspace=*/false, /*ik_gain=*/true);
-}
-
-TEST(AdmittanceTaskVelReuse, CoreDrivenShimMatchesTheAdapterBitwiseSelfIntegratingWithNullSpace) {
-  RunModeCombination(/*integrate_from_measured=*/false, /*nullspace=*/true, /*ik_gain=*/true);
-}
-
-TEST(AdmittanceTaskVelReuse,
-     CoreDrivenShimMatchesTheAdapterBitwiseSelfIntegratingWithoutNullSpace) {
-  RunModeCombination(/*integrate_from_measured=*/false, /*nullspace=*/false, /*ik_gain=*/true);
-}
-
-// §7.3 read literally: with K^ik = 0 the law degenerates to ν = ν_c. Kept as its
-// own case in BOTH integration modes because it is the operating point the spec
-// states and the gains doc says is reproducible — and because it is the one
-// where the core is reached with a zero gain vector, i.e. where a marshalling
-// error that swapped the P term for something else would be invisible in the
-// output but is still pinned by the pose-error and ν_c lanes.
-TEST(AdmittanceTaskVelReuse, CoreDrivenShimMatchesTheAdapterBitwiseWithTheSpecLiteralZeroIkGain) {
-  RunModeCombination(/*integrate_from_measured=*/true, /*nullspace=*/true, /*ik_gain=*/false);
-}
-
-TEST(AdmittanceTaskVelReuse,
-     CoreDrivenShimMatchesTheAdapterBitwiseWithTheSpecLiteralZeroIkGainSelfIntegrating) {
-  RunModeCombination(/*integrate_from_measured=*/false, /*nullspace=*/false, /*ik_gain=*/false);
-}
-
-// The activation ramp is the one piece of wiring that touches the core's ν_ff
-// input INDIRECTLY: f_ext reaches the §7.2 integrator as α·f_lwa, so a binding
-// that forgot to ramp it would hand the law a different compliant velocity. With
-// the ramp retired (α = 1) in every case above, that path is unpinned, so this
-// case runs it and asserts partial-α ticks actually occurred.
-TEST(AdmittanceTaskVelReuse, CoreDrivenShimMatchesTheAdapterBitwiseThroughTheActivationRamp) {
-  auto g = CrossCheckGains();
-  g.activation_ramp_time = 0.05;  // 25 ticks at 2 ms — partway through most of the run
-
-  TaskAdmittanceController ctrl(Serial7dof(), g);
-  ctrl.LoadConfig(YAML::Load("activation_ramp_time: 0.05" + CrossCheckYaml()));
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
-
-  AdmittanceShim shim;
-  CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/40, &stats);
-
-  EXPECT_GT(stats.peak_vel, 1e-4) << "every compared velocity was ~0 — the cross-check is vacuous";
-  EXPECT_GT(shim.ramped_ticks(), 0)
-      << "α was never strictly between 0 and 1 — the ramp wiring is not being pinned";
-  EXPECT_GT(stats.peak_nu_c, 1e-6) << "the compliant frame never moved under the ramped wrench";
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// Oracle 2 retired with the adapter (#298 S7c-2)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Seven cross-check cases stood here, driving the live TaskAdmittanceController
+// and AdmittanceShim through the same tick sequence and comparing
+// target_velocities, the integrated commands, the compliant-frame velocity and
+// the pose error bit for bit:
+//
+//   AdmittanceTaskVelReuse.CoreDrivenShimMatchesTheAdapterBitwiseMeasuredBaseWithNullSpace
+//   AdmittanceTaskVelReuse.CoreDrivenShimMatchesTheAdapterBitwiseMeasuredBaseWithoutNullSpace
+//   AdmittanceTaskVelReuse.CoreDrivenShimMatchesTheAdapterBitwiseSelfIntegratingWithNullSpace
+//   AdmittanceTaskVelReuse.CoreDrivenShimMatchesTheAdapterBitwiseSelfIntegratingWithoutNullSpace
+//   AdmittanceTaskVelReuse.CoreDrivenShimMatchesTheAdapterBitwiseWithTheSpecLiteralZeroIkGain
+//   AdmittanceTaskVelReuse.CoreDrivenShimMatchesTheAdapterBitwiseWithTheSpecLiteralZeroIkGainSelfIntegrating
+//   AdmittanceTaskVelReuse.CoreDrivenShimMatchesTheAdapterBitwiseThroughTheActivationRamp
+//
+// VERIFICATION PROVENANCE — the task::ComputeTaskVelocity REUSE and
+// PreExtractionInlineForm above were verified bitwise against the live
+// TaskAdmittanceController @ 0f873901 over 40 ticks x 7 channels across
+// integrate_from_measured x nullspace_kp x ik_kp, including the spec-literal
+// K^ik = 0 operating point in both integration modes, plus the activation ramp
+// with partial-alpha ticks asserted to have occurred. Oracle 2 retired in S7c.
+//
+// They could not be migrated: oracle 2's unique job was the CORRELATED
+// transcription error, which by construction needs the shipped code to compare
+// against. See test_joint_pd_core.cpp's equivalent block for the full argument.
+//
+// AdmittanceShim above is kept as the reference recipe an S7 binding starts
+// from — it instantiates the adapter's own AdmittanceIntegrator / DifferentialIk
+// rather than re-deriving them. Nothing pins it any more.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RT contract
@@ -810,10 +647,10 @@ TEST(AdmittanceTaskVelReuse, IsAllocationFree) {
   for (int trial = 1; trial <= 64; ++trial)
     draws.push_back(RandomDraw(rng, trial));
 
-  // The gains POD the adapter actually marshals from, rather than a bare
-  // TaskVelParams: a regression that made Gains's ik_kp_* something other than a
-  // std::array would then show up here as an allocation on the way in.
-  TaskAdmittanceController::Gains g = CrossCheckGains();
+  // The controller-level gains POD, rather than a bare TaskVelParams: a
+  // regression that made its ik_kp_* something other than a std::array would
+  // then show up here as an allocation on the way in.
+  rtc::params::TaskAdmittanceParams g = CrossCheckGains();
 
   std::size_t new_calls = 0;
   std::uint64_t eigen_allocs = 0;

@@ -26,7 +26,6 @@ endif()
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
-find_package(rtc_controller_interface REQUIRED)
 find_package(rtc_base REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -37,13 +36,6 @@ find_package(yaml-cpp REQUIRED)
 
 # ── Library ───────────────────────────────────────────────────────────────────
 add_library(rtc_controllers STATIC
-  src/controllers/indirect/p_controller.cpp
-  src/controllers/indirect/clik_controller.cpp
-  src/controllers/indirect/task_admittance_controller.cpp
-  src/controllers/direct/joint_pd_controller.cpp
-  src/controllers/direct/operational_space_controller.cpp
-  src/controllers/direct/task_impedance_controller.cpp
-  src/controllers/direct/cascaded_compliance_controller.cpp
   src/controllers/grasp/grasp_controller.cpp
   src/controllers/grasp/pull_force_estimator.cpp
   # G2 schema layer (#236 S7c-1): gains PODs + YAML parsers that outlive the
@@ -61,7 +53,6 @@ target_include_directories(rtc_controllers PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(rtc_controllers
-  rtc_controller_interface
   rtc_base
   rtc_msgs
   pinocchio
@@ -92,7 +83,6 @@ install(DIRECTORY examples/
 # ── Export ────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
-  rtc_controller_interface
   rtc_base
   rtc_msgs
   Eigen3
@@ -161,10 +151,6 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_pull_force_estimator test/test_pull_force_estimator.cpp)
   target_link_libraries(test_pull_force_estimator rtc_controllers)
-
-  ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
-  target_link_libraries(test_core_controllers rtc_controllers)
-  target_include_directories(test_core_controllers PRIVATE ${rtc_urdf_bridge_test_include})
 
   # #236 S1 golden-vector harness: the joint-space PD core pinned bit-for-bit
   # against a literal copy of the pre-extraction inline form (durable oracle)
@@ -288,64 +274,6 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_dls_convergence PRIVATE -Wno-mismatched-new-delete)
 
-  ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
-  target_link_libraries(test_task_impedance_controller rtc_controllers)
-  target_include_directories(test_task_impedance_controller PRIVATE
-    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  # The zero-allocation gate replaces global operator new/delete (new→malloc,
-  # delete→free). GCC's -Wmismatched-new-delete then false-positives on every
-  # delete site program-wide; suppress it for this target only.
-  target_compile_options(test_task_impedance_controller PRIVATE -Wno-mismatched-new-delete)
-
-  # Slice-2 external wrench surface (#236): SetExternalWrench input contract,
-  # conditioning + Ad^{-T} frame transform, staleness fade / DEGRADED, §6.3
-  # inertia shaping incl. the T4.1 continuity boundary, zero-alloc with the
-  # wrench path live. Same global operator-new interposition as
-  # test_task_impedance_controller, hence the same -Wmismatched-new-delete
-  # suppression.
-  ament_add_gtest(test_task_impedance_wrench test/test_task_impedance_wrench.cpp)
-  target_link_libraries(test_task_impedance_wrench rtc_controllers)
-  target_include_directories(test_task_impedance_wrench PRIVATE
-    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_task_impedance_wrench PRIVATE -Wno-mismatched-new-delete)
-
-  # Slice-4 cascade surface (#236): outer admittance → inner impedance as a
-  # COMPOSITION — §7.6 MUST-4 (the wrench is spent once), MUST-1 (bandwidth
-  # report, never a fault), MUST-3 (return vs hand-guiding), plus the F5/F7/F8
-  # classes PR #256 found in the copied skeleton and the RT allocation gate.
-  # Same global operator-new interposition as the impedance suites, hence the
-  # same -Wmismatched-new-delete suppression.
-  ament_add_gtest(test_cascaded_compliance_controller
-    test/test_cascaded_compliance_controller.cpp)
-  target_link_libraries(test_cascaded_compliance_controller rtc_controllers)
-  target_include_directories(test_cascaded_compliance_controller
-    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_cascaded_compliance_controller
-    PRIVATE -Wno-mismatched-new-delete)
-
-  # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
-  # (tip_link / joint_limits / safe_position), bounds guards, multi-device
-  # passthrough, 6-DOF + gravity/Coriolis compensation branches.
-  # Slice-3 controller surface (#236): the §11.4.1 P2/P3 sign contrast against
-  # the impedance law, wrench→motion end to end, §10.6 staleness, the
-  # position-domain E-STOP hold, configure contracts, and the RT allocation
-  # gate. Same global operator-new interposition as the impedance wrench suite,
-  # hence the same -Wmismatched-new-delete suppression.
-  ament_add_gtest(test_task_admittance_controller test/test_task_admittance_controller.cpp)
-  target_link_libraries(test_task_admittance_controller rtc_controllers)
-  target_include_directories(test_task_admittance_controller
-    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_task_admittance_controller PRIVATE -Wno-mismatched-new-delete)
-
-  # #260 external fault recovery: ResetFault() / HasLatchedFault() reached
-  # through the BASE interface (all the CM ever holds), E-8 separation in both
-  # directions, and the activation boundary that must not launder a stale reset.
-  # Drives all three compliance controllers through one shared contract check.
-  ament_add_gtest(test_compliance_fault_recovery test/test_compliance_fault_recovery.cpp)
-  target_link_libraries(test_compliance_fault_recovery rtc_controllers)
-  target_include_directories(test_compliance_fault_recovery
-    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-
   # G2 schema layer contract (#236 S7c-1). Drives the ParseXxxParams free
   # functions directly — no controller, no URDF — so these cases outlive the
   # adapters. Also carries the over-long-sequence sensor that the adapter-driven
@@ -353,36 +281,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_params_schema test/test_params_schema.cpp)
   target_link_libraries(test_params_schema rtc_controllers)
 
-  ament_add_gtest(test_controller_config test/test_controller_config.cpp)
-  target_link_libraries(test_controller_config rtc_controllers)
-  target_include_directories(test_controller_config PRIVATE ${rtc_urdf_bridge_test_include})
-
-  # #172 deeper AC: 7-DOF generalization (serial_7dof.urdf, no OOB gain/target
-  # read), non-Z gravity/Coriolis magnitude vs the RNEA identity
-  # (planar_3r.urdf, reference from an independent RtModelHandle), and the
-  # device-order vs URDF-order identity contract.
-  ament_add_gtest(test_dof_dynamics test/test_dof_dynamics.cpp)
-  target_link_libraries(test_dof_dynamics rtc_controllers)
-  target_include_directories(test_dof_dynamics PRIVATE ${rtc_urdf_bridge_test_include})
-
   # QuinticPolynomial boundary math + T<=0 short-circuit (trajectory_utils.hpp).
   ament_add_gtest(test_trajectory_utils test/test_trajectory_utils.cpp)
   target_link_libraries(test_trajectory_utils rtc_controllers)
-
-  # RT-4 single-writer SeqLock race stress: SetDeviceTarget (off-RT) vs
-  # Compute (RT) — verifies the SPSC marshal pattern keeps target_seqlock_
-  # tear-free under concurrent producer/consumer access.
-  ament_add_gtest(test_target_seqlock_race test/test_target_seqlock_race.cpp)
-  target_link_libraries(test_target_seqlock_race rtc_controllers)
-  target_include_directories(test_target_seqlock_race PRIVATE ${rtc_urdf_bridge_test_include})
-
-  # Activation generation gate (#196 §3): stale targets queued while Inactive
-  # must not reach the target slot after re-activation.
-  ament_add_gtest(test_activation_generation_gate
-    test/test_activation_generation_gate.cpp)
-  target_link_libraries(test_activation_generation_gate rtc_controllers)
-  target_include_directories(test_activation_generation_gate
-    PRIVATE ${rtc_urdf_bridge_test_include})
 endif()
 
 ament_package()
