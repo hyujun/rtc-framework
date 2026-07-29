@@ -167,7 +167,7 @@ $$\tau = J^\top S^\top\left[B\left(K_p S e + K_d S\dot e\right) + (B - I)\,S f^{
 | **`max_inertia_ratio` clamp** | `‖B − I‖∞ > r−1` 이면 `B ← I + s(B−I)`, `s = (r−1)/‖B−I‖∞` ⇒ `‖B‖∞ ≤ r` 정확 보장. 기본 3.0 | 편차를 clamp 하면 연속이고 **`B = I` 를 절대 건드리지 않는다** — `B` 자체를 스케일하면 중립 설정을 안전 clamp 가 흔들어 T4.1 이 깨진다. 발동 시 `diag.inertia_clamped` 로 보고 (RT 로깅 금지, RT-3) |
 | **`Λ_d` 인자화 실패** | `B = I` (즉 §6.2) 로 degrade + **`inertia_solve_failed`** 보고 (`inertia_clamped` 와 **별개 플래그**) | 특이 자세에서 DLS 로도 `Λ_S` 가 정부호를 잃을 수 있다. 쓰레기 shaping 행렬을 내보내는 것보다 Λ 를 아예 안 쓰는 법칙으로 후퇴하는 편이 안전. 플래그를 clamp 와 공유하면 "튜닝 bound 가 제 일을 했다" 와 "수치 붕괴" 를 operator 가 구분할 수 없고, clamp 테스트가 인자화 실패로도 green 이 된다 |
 | **`Λ_S` 게이트 확장** | `M(q)`·Cholesky·`TaskDynamics::Compute` 게이트를 `nullspace_active` → **`nullspace_active \|\| inertia_shaping`**. σ_min fault (§6.5) 도 같은 게이트 | §6.3 은 여유자유도와 무관하게 `Λ_S` 를 요구한다. **PR #241 F2 의 narrowing 을 되돌리는 것이 아니라 조건을 넓히는 것** — `jacobian_transpose` 에서는 Λ 를 아예 형성하지 않으므로 F2 축소가 그대로 유효하다 |
-| **특이 arm** | `Λ_S` 를 쓰는 순간 §6.5 특이점 노출이 되살아난다. rank-deficient arm 에서는 §6.3 이 SAFE_STOP 으로 latch 되고 §6.2 는 계속 제어한다 | 설계된 동작이며 테스트로 고정 (`serial_6dof` 픽스처는 6관절이 전부 +Z 동축이라 σ_min ≡ 0) |
+| **특이 arm** | `Λ_S` 를 쓰는 순간 §6.5 특이점 노출이 되살아난다. rank-deficient arm 에서는 §6.3 이 SAFE_STOP 으로 latch 되고 §6.2 는 계속 제어한다 | 설계된 동작이며 테스트로 고정 (`serial_6dof` 픽스처는 6관절이 전부 +Z 동축이라 σ_min ≡ 0). **같은 동축성이 `ĝ(q) ≡ 0` 도 만든다** — 중력이 −Z 인데 모든 관절축이 +Z 라 중력 토크의 축 성분이 정확히 0 이다. 따라서 이 픽스처 위에서는 **중력 기반 hazard 단언이 게이트를 지워도 통과한다** (vacuous). 관측 가능한 것은 TCP 자세뿐이므로, 게이트를 검증하려면 같은 seed 컨트롤러에 partial-zero 형상을 valid 로 먹여 실제 출력 차이를 대조한다 |
 
 ## 3.4 §11.4.1 부호 규약 검증 — 하드웨어 도입 전 MUST
 

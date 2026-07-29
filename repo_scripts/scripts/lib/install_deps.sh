@@ -38,7 +38,8 @@ install_ur_driver() {
 }
 
 # ── Pinocchio + rtc_urdf_bridge deps ────────────────────────────────────
-# Pinocchio: needed by ClikController / DemoTaskController / OSC / rtc_urdf_bridge
+# Pinocchio: needed by rtc_urdf_bridge, rtc_controllers' model-based laws, and
+#            the integrated_bringup bindings (DemoJoint / DemoTask / DemoWbc)
 # tinyxml2, yaml-cpp: needed by rtc_urdf_bridge
 install_pinocchio() {
   info "Installing Pinocchio and rtc_urdf_bridge dependencies..."

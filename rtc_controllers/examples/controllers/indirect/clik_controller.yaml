@@ -1,12 +1,20 @@
-# ── EXAMPLE — reference config for ClikController ─────────────────────────────
+# ── EXAMPLE — reference config: clik_controller ───────────────────────────────
 # Location: rtc_controllers/examples/controllers/indirect/ (installed under
 #           share/rtc_controllers/examples/). NOT a production YAML.
 #
-# rtc_controllers ships this as a *reference example* only. The class is not
-# auto-registered; downstream <robot>_bringup packages opt in by:
-#   1) adding a `RTC_REGISTER_CONTROLLER(clik_controller, "indirect",
-#      "<robot>_bringup", std::make_unique<rtc::ClikController>(...))`
-#      registration in their controller_registration.cpp, and
+# rtc_controllers ships this as a *reference example* only — it registers
+# nothing. Downstream <robot>_bringup packages opt in by:
+#   1) writing their OWN binding class that owns the core and implements
+#      RTControllerInterface, then registering THAT:
+#        RTC_REGISTER_CONTROLLER(clik_controller, "indirect", "<robot>_bringup",
+#                               std::make_unique<MyBinding>(...))
+#      in their controller_registration.cpp.
+#      코어: `task/task_vel_law.hpp` + `compliance/differential_ik.hpp`
+#      스키마: `params/clik_params.hpp`
+#      The adapter class this file once named was deleted in #236 S7c —
+#      rtc_controllers ships laws, not bindings. Worked example:
+#      integrated_bringup/src/controllers/. Procedure:
+#      agent_docs/modification-guide.md §Adding a New Controller.
 #   2) copying this YAML to `<robot>_bringup/config/controllers/indirect/` and
 #      replacing the placeholder topic group ("<robot>" below) with their own
 #      robot identity (matches their CM `devices.<group>` key).
