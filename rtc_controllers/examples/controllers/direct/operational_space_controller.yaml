@@ -26,7 +26,7 @@ operational_space_controller:
   # λ² = 0 (σ_min ≥ σ₀) / λ_max²·(1 − (σ_min/σ₀)²) (σ_min < σ₀).
   # #236 S2b 이전에는 상수 λ 인 `damping` 키였다 — 그 상수가 아웃라이어였고
   # 여기로 수렴시키는 것이 이관의 목적이다 (특이점에서 멀면 감쇠가 정확히 0).
-  max_damping: 0.05                       # λ_max (max(1e-4, ·) floor 적용)
+  max_damping: 0.05                       # λ_max (FloorMaxDamping 으로 1e-4 floor)
   singularity_threshold: 0.02             # σ₀: 이 아래에서 DLS 감쇠가 붙기 시작
 
   # ── 널공간 posture 이차 태스크 (nv>6 여유자유도에서만 유효) ──────────────────

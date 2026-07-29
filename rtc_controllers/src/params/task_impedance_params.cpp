@@ -64,7 +64,7 @@ void ParseTaskImpedanceParams(const YAML::Node& cfg, TaskImpedanceParams& out,
     out.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   }
   if (cfg["max_damping"]) {
-    out.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
+    out.max_damping = compliance::FloorMaxDamping(cfg["max_damping"].as<double>());
   }
   if (cfg["joint_limit_margin"]) {
     out.joint_limit_margin = cfg["joint_limit_margin"].as<double>();
@@ -128,9 +128,12 @@ void ParseTaskImpedanceParams(const YAML::Node& cfg, TaskImpedanceParams& out,
   //   • §6.1's guard tests `kp == 0.0` while its message claims `> 0`, so a
   //     negative K_pⁿ walked straight through the check that exists precisely
   //     because TRANSLATION_ONLY leaves orientation to the null space.
-  // Compute() floors again at the point of use because set_gains() bypasses
-  // configure entirely (NUM-1) — the same treatment max_damping gets. The two
-  // rules below do NOT get that second half; see §6.4's note.
+  // A binding must floor again at the point of use because set_gains() bypasses
+  // configure entirely (NUM-1) — the same requirement λ_max carries through
+  // compliance::FloorMaxDamping. Neither tick-side half has a caller today: the
+  // adapter that held them went with #298 S7c-2 and no shipped binding has
+  // replaced it. The two rules below do NOT get that second half regardless;
+  // see §6.4's note.
   out.nullspace_kp = joint::FloorPostureGain(out.nullspace_kp);
   out.nullspace_kd = joint::FloorPostureGain(out.nullspace_kd);
 

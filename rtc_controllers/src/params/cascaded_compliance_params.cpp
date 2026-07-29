@@ -188,7 +188,9 @@ void ParseCascadedComplianceParams(const YAML::Node& cfg, CascadedCompliancePara
         std::max(0.0, num(cfg["singularity_critical"], "singularity_critical"));
   }
   if (cfg["max_damping"]) {
-    out.max_damping = std::max(compliance::kMinMaxDamping, num(cfg["max_damping"], "max_damping"));
+    // `num` has already rejected non-finite, so FloorMaxDamping's isfinite
+    // branch is unreachable here — kept for the one symbol, not two spellings.
+    out.max_damping = compliance::FloorMaxDamping(num(cfg["max_damping"], "max_damping"));
   }
   if (cfg["joint_limit_margin"]) {
     out.joint_limit_margin = std::max(0.0, num(cfg["joint_limit_margin"], "joint_limit_margin"));

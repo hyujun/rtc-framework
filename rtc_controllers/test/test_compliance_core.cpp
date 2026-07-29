@@ -71,6 +71,50 @@ TEST(TaskDynamics, AdaptiveDampingBoundaries) {
   EXPECT_EQ(AdaptiveDampingSquared(0.01, 0.0, lmax), 0.0);  // σ₀ ≤ 0 guard
 }
 
+// NUM-1's λ_max floor, as the symbol a binding calls (#301). Every case here is
+// one a plain `std::max(kMinMaxDamping, ·)` would answer differently or that the
+// existing oracles cannot reach: they all drive λ_max = 0.05, three orders above
+// the floor, so the floor is the identity everywhere else in this suite and
+// nothing else in-tree distinguishes the two spellings.
+TEST(TaskDynamics, FloorMaxDampingBoundsFiniteAndPassesNonFinite) {
+  // Fires: below the floor, at zero, and negative — the DLS-disarming inputs
+  // NUM-1 exists for. A gains POD written straight into a SeqLock reaches these.
+  EXPECT_DOUBLE_EQ(FloorMaxDamping(0.0), kMinMaxDamping);
+  EXPECT_DOUBLE_EQ(FloorMaxDamping(-1.0), kMinMaxDamping);
+  EXPECT_DOUBLE_EQ(FloorMaxDamping(0.5 * kMinMaxDamping), kMinMaxDamping);
+
+  // Identity above the floor — the only region the rest of the suite exercises.
+  EXPECT_DOUBLE_EQ(FloorMaxDamping(0.05), 0.05);
+  EXPECT_DOUBLE_EQ(FloorMaxDamping(kMinMaxDamping), kMinMaxDamping);
+
+  // Non-finite passes through UNCHANGED rather than being laundered into a
+  // plausible 1e-4. `std::max` is `a < b ? b : a` and `1e-4 < NaN` is false, so
+  // the open-coded spelling returns the floor for NaN and for −inf — a corrupt
+  // λ_max would read back as a healthy damping shell. These two assertions are
+  // what distinguish the symbol from the expression it replaced.
+  EXPECT_TRUE(std::isnan(FloorMaxDamping(std::numeric_limits<double>::quiet_NaN())));
+  EXPECT_EQ(FloorMaxDamping(-std::numeric_limits<double>::infinity()),
+            -std::numeric_limits<double>::infinity());
+  EXPECT_EQ(FloorMaxDamping(std::numeric_limits<double>::infinity()),
+            std::numeric_limits<double>::infinity());
+}
+
+// The other half of #301's decision: the floor is a CONSUMER policy, and the law
+// keeps taking λ_max as a plain argument. Flooring inside AdaptiveDampingSquared
+// would leave every existing oracle green (all drive λ_max = 0.05) while making
+// the law's own named property — λ² ≤ λ_max², pinned by
+// AdaptiveDampingLaw.NeverExceedsLambdaMaxSquared — false below 1e-4. This test
+// is that property's witness in the region the property test cannot see.
+TEST(TaskDynamics, AdaptiveDampingDoesNotFloorItsOwnArgument) {
+  constexpr double s0 = 0.02;
+  constexpr double tiny = 1e-9;  // far below kMinMaxDamping
+  EXPECT_DOUBLE_EQ(AdaptiveDampingSquared(0.0, s0, tiny), tiny * tiny);
+  EXPECT_LE(AdaptiveDampingSquared(0.5 * s0, s0, tiny), tiny * tiny);
+  EXPECT_LT(AdaptiveDampingSquared(0.0, s0, tiny), kMinMaxDamping * kMinMaxDamping)
+      << "the law floored its own λ_max — that is the consumer's job "
+         "(compliance::FloorMaxDamping), and doing it here breaks λ² ≤ λ_max²";
+}
+
 // T4.5 — nullspace orthogonality: for a well-conditioned J_S (λ²=0) the
 // dynamically-consistent projector satisfies J_S M⁻¹ Nᵀ τ = 0 exactly. This is
 // the transpose-error detector of §6.4 (Nᵀ vs N).

@@ -436,9 +436,13 @@ hold-invalidate 가 은퇴시켰다. 새 바인딩이 그 두 조건 중 하나�
   로부터 가리므로, 조용히 자세가 밀리는 대신 0 과 동일하게 취급돼 가드에 걸린다. floor 가
   가드 **앞**에 있는 것이 이 정합성의 전부다. configure 는 거부로 끝나지만 `set_gains()` 는
   POD 를 SeqLock 에 직접 써 configure 를 통째로 우회하므로, 런타임에 같은 조합에 도달하면
-  `ComplianceFaults::posture_authority_lost` 가 **DEGRADED** 로 뜬다 — 여기서 SAFE_STOP 이
-  아닌 이유는 병진 task 는 여전히 정상 추종 중이고 잃은 것은 회전 *권한* 이라, 알리는 것이
+  `ComplianceFaults::posture_authority_lost` 를 **DEGRADED** 로 세워야 한다 — 여기서 SAFE_STOP
+  이 아닌 이유는 병진 task 는 여전히 정상 추종 중이고 잃은 것은 회전 *권한* 이라, 알리는 것이
   멈추는 것보다 정확한 축소-권한 답이기 때문이다. 조용한 것만이 선택지가 아니었다.
+  **단 이것은 아직 요구사항이지 구현이 아니다** (#301): `ComplianceStateMachine` 에 출하
+  바인딩이 없어 `ComplianceFaults` 의 어떤 필드도 in-tree 기록자가 없고, `TaskSelection::`
+  `kTranslationOnly` 자체가 출하 컨트롤러에 배선돼 있지 않아 조건에 도달할 경로도 없다.
+  상태 머신을 배선하는 바인딩이 생길 때 이 필드 하나가 아니라 전체를 함께 세운다.
 - **`J̇·v` (task-space Coriolis) 는 생략** — quasi-static 가정. 저속 compliance 에서 무시 가능하며
   provider surface 가 repo 에 없다. 고속 task 가 필요하면 별도 설계.
 - **MuJoCo-only** — 위 매트릭스 Backend scope 참조. YAML `command_type: "torque"` 이외 거부.
