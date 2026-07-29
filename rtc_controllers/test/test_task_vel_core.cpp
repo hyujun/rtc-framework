@@ -73,7 +73,6 @@
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 #include "rtc_math/se3/velocity_error.hpp"
-#include "test_urdf_path.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -93,7 +92,6 @@
 #include <memory>
 #include <random>
 #include <span>
-#include <string>
 #include <vector>
 
 // The allocation gate is TWO complementary sensors, and this core needs both:
@@ -631,36 +629,6 @@ class ClikShim {
   int null_hits_{0};
   double peak_null_{0.0};
 };
-
-// A goal pose sitting exactly `angle` radians of rotation away from the TCP
-// orientation at `tick`, returned as the [x,y,z, r,p,y] vector SetDeviceTarget
-// takes in 6-DOF mode (ZYX Euler, matching the adapter's drain). Deriving the
-// target from the fixture instead of hard-coding Euler angles is what makes the
-// π-split branch reachable ON PURPOSE — the S2a version of this test used a
-// literal yaw and silently took the single-segment path (plan §S3 R6).
-std::array<double, 6> GoalRotatedFromTcp(int tick, double dt, double angle,
-                                         const Eigen::Vector3d& axis,
-                                         const Eigen::Vector3d& translation_offset) {
-  std::shared_ptr<const pinocchio::Model> model;
-  auto handle = MakeHandle(model);
-  const auto tip = static_cast<pinocchio::FrameIndex>(model->nframes - 1);
-  const int nv = handle->nv();
-
-  auto state = MakeState(nv, dt);
-  FillSweep(state, nv, tick, dt);
-  std::vector<double> q(static_cast<std::size_t>(nv));
-  for (int i = 0; i < nv; ++i)
-    q[static_cast<std::size_t>(i)] = state.devices[0].positions[static_cast<std::size_t>(i)];
-
-  handle->ComputeJacobians(q);
-  const pinocchio::SE3& tcp = handle->GetFramePlacement(tip);
-
-  const Eigen::Matrix3d R_goal =
-      tcp.rotation() * Eigen::AngleAxisd(angle, axis.normalized()).toRotationMatrix();
-  const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(R_goal);
-  const Eigen::Vector3d p = tcp.translation() + translation_offset;
-  return {p.x(), p.y(), p.z(), rpy[0], rpy[1], rpy[2]};
-}
 
 }  // namespace
 

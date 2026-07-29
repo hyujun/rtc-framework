@@ -83,7 +83,6 @@
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <gtest/gtest.h>
-#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <array>
@@ -93,7 +92,6 @@
 #include <memory>
 #include <random>
 #include <span>
-#include <string>
 #include <vector>
 
 // The allocation gate is TWO complementary sensors, and this call site needs
@@ -403,8 +401,7 @@ class AdmittanceShim {
                                                     rtc::math::se3::ErrorType::SplitWorld);
     const Vec6 nu = ComputeTaskVelocity(TaskVelParams{g.ik_kp_pos, g.ik_kp_rot}, e, nu_c);
 
-    const bool nullspace_active =
-        (nv_ > kShimTaskDim) && (g.nullspace_kp != 0.0);
+    const bool nullspace_active = (nv_ > kShimTaskDim) && (g.nullspace_kp != 0.0);
     if (nullspace_active) {
       for (int i = 0; i < nv_; ++i)
         qdot_null_dev_(i) = g.nullspace_kp * (q_null_(i) - q_dev_(i));
@@ -547,22 +544,6 @@ class AdmittanceShim {
   std::vector<double> position_upper_ =
       std::vector<double>(static_cast<std::size_t>(rtc::kMaxRobotDOF), 1e9);
 };
-
-// A transparent wrench source: no deadband, no filter, no bias calibration.
-// This slice is about the §7.3 law, so every upstream stage that could re-shape
-// f_ext is switched off rather than replicated (each has its own test in
-// test_task_admittance_controller.cpp). activation_ramp_time is a TOP-LEVEL key
-// and is set per case, not here.
-std::string CrossCheckYaml() {
-  return R"(
-external_wrench:
-  enabled: true
-  filter_enabled: false
-  bias_calibration_samples: 0
-  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-  max: [1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6]
-)";
-}
 
 // The reference gains oracle 2 was driven with, kept for the RT gate below.
 // Six PAIRWISE-DISTINCT gains, not two isotropic blocks: oracle 2 existed to

@@ -153,17 +153,17 @@ if(BUILD_TESTING)
   target_link_libraries(test_pull_force_estimator rtc_controllers)
 
   # #236 S1 golden-vector harness: the joint-space PD core pinned bit-for-bit
-  # against a literal copy of the pre-extraction inline form (durable oracle)
-  # AND against the live JointPDController driven through a shim that owns the
-  # trajectory (transient oracle — it dies with the adapter at S7, and until
-  # then it is what catches a correlated transcription error). Needs the URDF
-  # fixture resolver for planar_3r (non-zero gravity) and the shared bitwise
-  # helpers. The RT allocation gate replaces global operator new/delete, which
-  # makes GCC false-positive -Wmismatched-new-delete program-wide.
+  # against a literal copy of the pre-extraction inline form. That literal oracle
+  # is the durable one and is what remains; the transient oracle (the live
+  # JointPDController driven through a shim) retired with the adapter at S7c-2,
+  # taking the planar_3r URDF fixture — and so ${rtc_urdf_bridge_test_include} —
+  # with it. JointPdShim stays as the reference recipe an S7 binding starts from,
+  # unpinned by design. Needs the shared bitwise helpers. The RT allocation gate
+  # replaces global operator new/delete, which makes GCC false-positive
+  # -Wmismatched-new-delete program-wide.
   ament_add_gtest(test_joint_pd_core test/test_joint_pd_core.cpp)
   target_link_libraries(test_joint_pd_core rtc_controllers)
-  target_include_directories(test_joint_pd_core PRIVATE
-    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_include_directories(test_joint_pd_core PRIVATE ${rtc_controllers_test_include})
   target_compile_options(test_joint_pd_core PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S2a golden-vector suite for the task-space acceleration core: bitwise

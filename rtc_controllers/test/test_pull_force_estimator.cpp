@@ -758,7 +758,13 @@ TEST_P(PullRecovery, ReturnFromInvalidGapTracksTheCurrentForceNotThePreGapOne) {
         MakeInput(Eigen::Vector3d(-pull / 2.0, 0.0, -5.0), kOpposingNormal)};
   };
 
-  const PullEstimate& settled = RunTicks(est, pinch(1.5), 1000);
+  // The input vector is named rather than passed as a temporary: RunTicks
+  // returns a reference into `est`, not into `inputs`, but GCC's
+  // -Wdangling-reference cannot tell which parameter a returned reference came
+  // from and flags the temporary. Naming it removes the temporary instead of
+  // suppressing the diagnostic, which keeps the warning live for a real case.
+  const std::vector<PullContactInput> held = pinch(1.5);
+  const PullEstimate& settled = RunTicks(est, held, 1000);
   ASSERT_TRUE(settled.valid);
   ASSERT_NEAR(settled.magnitude, 1.5, 1e-6);
 

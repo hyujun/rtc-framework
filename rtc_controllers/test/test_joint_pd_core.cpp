@@ -37,10 +37,8 @@
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
-#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
-#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <array>
@@ -48,7 +46,6 @@
 #include <cstddef>
 #include <random>
 #include <span>
-#include <string>
 #include <vector>
 
 // The RT allocation gate (rtc::testing::ScopedAllocGate, shared with the S2a/S3a
@@ -264,24 +261,6 @@ class JointPdShim {
   double time_{0.0};
   std::array<double, kMaxRobotDOF> prev_error_{};
 };
-
-// planar_3r.urdf has Y-axis joints, so g(q) ≢ 0. serial_6dof.urdf is all-Z and
-// would make every gravity assertion here vacuous — the same fixture trap
-// test_dof_dynamics.cpp was written to escape.
-std::string Planar3r() {
-  return rtc::test::TestUrdfPath("planar_3r.urdf");
-}
-
-constexpr int kPlanarNv = 3;
-
-rtc::ControllerState MakeState(int nc0, double dt) {
-  rtc::ControllerState state{};
-  state.num_devices = 1;
-  state.dt = dt;
-  state.devices[0].num_channels = nc0;
-  state.devices[0].valid = true;
-  return state;
-}
 
 }  // namespace
 

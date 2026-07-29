@@ -76,7 +76,6 @@
 #include <memory>
 #include <random>
 #include <span>
-#include <string>
 #include <vector>
 
 // The RT allocation gate is TWO complementary sensors (shared with the S1/S3a
@@ -264,8 +263,8 @@ class OscShim {
 
   void ClearEstop() { estopped_ = false; }
 
-  Eigen::VectorXd Step(const rtc::params::OscParams& g,
-                       const rtc::ControllerState& state, const std::array<double, 6>* goal) {
+  Eigen::VectorXd Step(const rtc::params::OscParams& g, const rtc::ControllerState& state,
+                       const std::array<double, 6>* goal) {
     // ── Step 0: the E-STOP early return (adapter :193-212) ─────────────────
     // The ORDER inside this branch is the contract, not an implementation
     // detail: the posture-gate window is cleared BEFORE the return, so a held
@@ -477,8 +476,7 @@ class OscShim {
   // τ = ĝ(q) − D·q̇ clamped per joint (E-8, #184), through the same core helper
   // the adapter calls. Coriolis is omitted there and so it is here: at the
   // speeds a safety stop targets the damping term dominates.
-  Eigen::VectorXd EstopHold(const rtc::params::OscParams& g,
-                            const rtc::ControllerState& state) {
+  Eigen::VectorXd EstopHold(const rtc::params::OscParams& g, const rtc::ControllerState& state) {
     const auto& dev0 = state.devices[0];
     std::array<double, kMaxDeviceChannels> q_buf{};
     Eigen::VectorXd qdot_dev = Eigen::VectorXd::Zero(nv_);
@@ -529,40 +527,6 @@ class OscShim {
   int splits_{0};
   int transitions_{0};
 };
-
-// A goal pose sitting exactly `angle` radians of rotation away from the TCP
-// orientation at `tick`, returned as the [x,y,z, r,p,y] vector SetDeviceTarget
-// takes (ZYX Euler, matching the adapter's RpyToMatrix). Deriving the target
-// from the fixture instead of hard-coding Euler angles is what makes the
-// π-split branch reachable on purpose: the first version of that test used a
-// literal yaw of π−0.02 and silently took the single-segment path, which the
-// shim's branch counters caught.
-std::array<double, 6> GoalRotatedFromTcp(int tick, double dt, double angle,
-                                         const Eigen::Vector3d& axis,
-                                         const Eigen::Vector3d& translation_offset) {
-  std::shared_ptr<const pinocchio::Model> model;
-  auto handle = MakeHandle(model);
-  const auto tip = static_cast<pinocchio::FrameIndex>(model->nframes - 1);
-  const int nv = handle->nv();
-
-  auto state = MakeState(nv, dt);
-  FillSweep(state, nv, tick, dt);
-  std::vector<double> q(static_cast<std::size_t>(nv));
-  for (int i = 0; i < nv; ++i)
-    q[static_cast<std::size_t>(i)] = state.devices[0].positions[static_cast<std::size_t>(i)];
-
-  // ComputeJacobians is what the adapter calls, and it refreshes frame
-  // placements as a side effect — using it keeps this helper on the adapter's
-  // own FK path rather than a parallel one.
-  handle->ComputeJacobians(q);
-  const pinocchio::SE3& tcp = handle->GetFramePlacement(tip);
-
-  const Eigen::Matrix3d R_goal =
-      tcp.rotation() * Eigen::AngleAxisd(angle, axis.normalized()).toRotationMatrix();
-  const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(R_goal);
-  const Eigen::Vector3d p = tcp.translation() + translation_offset;
-  return {p.x(), p.y(), p.z(), rpy[0], rpy[1], rpy[2]};
-}
 
 }  // namespace
 
@@ -725,19 +689,6 @@ TEST(ReferenceDynamics, IndependentHandlesAgreeBitwise) {
 // as the likeliest place to get the trajectory wiring wrong.
 
 // ═══════════════════════════════════════════════════════════════════════════
-// RT contract
-// ═══════════════════════════════════════════════════════════════════════════
-
-// RT-1: the law runs on the tick. It is fixed-size Eigen throughout, so this
-// gate is a structural regression guard, and it takes both sensors to be one:
-// a `std::vector<double>` inserted into the region trips only the operator-new
-// counter, an `Eigen::VectorXd` trips only the Eigen tripwire (measured in the
-// S3a suite, same gate). A bare `new`+immediate-`delete` pair would be elided,
-// so a mutation has to be a real allocation reaching an external sink. Both are
-// armed by RAII: an ASSERT_* added inside the region returns from the test, and
-// a bare disarm line would then never run — leaving counting on for every later
-// test in the binary, where nothing reads it.
-// ═══════════════════════════════════════════════════════════════════════════
 // The posture gate — shim-only (#236 S7c-2, 분류 B)
 // ═══════════════════════════════════════════════════════════════════════════
 //
@@ -815,6 +766,20 @@ TEST(OscShimPostureGate, ReportsClosedOnAnEstoppedTick) {
   (void)shim.Step(gains, state, nullptr);
   EXPECT_TRUE(shim.last_nullspace_active()) << "recovery must reopen the gate, not latch it closed";
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RT contract
+// ═══════════════════════════════════════════════════════════════════════════
+
+// RT-1: the law runs on the tick. It is fixed-size Eigen throughout, so this
+// gate is a structural regression guard, and it takes both sensors to be one:
+// a `std::vector<double>` inserted into the region trips only the operator-new
+// counter, an `Eigen::VectorXd` trips only the Eigen tripwire (measured in the
+// S3a suite, same gate). A bare `new`+immediate-`delete` pair would be elided,
+// so a mutation has to be a real allocation reaching an external sink. Both are
+// armed by RAII: an ASSERT_* added inside the region returns from the test, and
+// a bare disarm line would then never run — leaving counting on for every later
+// test in the binary, where nothing reads it.
 
 TEST(TaskAccelLaw, IsAllocationFree) {
   auto rng = MakeRng();
