@@ -69,7 +69,12 @@ BT::PortsList SetGains::providedPorts() {
       // ── DemoTask CLIK gains ───────────────────────────────────────────────
       BT::InputPort<std::string>("kp_translation", "", "e.g. \"5.0,5.0,5.0\""),
       BT::InputPort<std::string>("kp_rotation", "", "e.g. \"3.0,3.0,3.0\""),
-      BT::InputPort<double>("damping", "Damped pseudoinverse lambda"),
+      // §6.5 DLS pair (#282). The constant-λ "damping" port is gone with the
+      // parameter it dispatched to — the controller no longer declares it, so a
+      // surviving port would push an undeclared name and fail the whole atomic
+      // set, taking the other gains in the same tick down with it.
+      BT::InputPort<double>("singularity_threshold", "σ₀: DLS engages below this σ_min(J)"),
+      BT::InputPort<double>("max_damping", "λ_max: ceiling of the §6.5 DLS ramp"),
       BT::InputPort<double>("null_kp", "Null-space P gain"),
       BT::InputPort<bool>("enable_null_space", "Enable null-space task"),
       BT::InputPort<bool>("control_6dof", "false=3-DOF, true=6-DOF"),
@@ -142,8 +147,11 @@ bool SetGains::BuildParams() {
         RCLCPP_WARN(logger(), "kp_rotation must be 3 values (got %zu)", vals.size());
       }
     }
-    if (auto v = getInput<double>("damping"); v) {
-      params.emplace_back("damping", v.value());
+    if (auto v = getInput<double>("singularity_threshold"); v) {
+      params.emplace_back("singularity_threshold", v.value());
+    }
+    if (auto v = getInput<double>("max_damping"); v) {
+      params.emplace_back("max_damping", v.value());
     }
     if (auto v = getInput<double>("null_kp"); v) {
       params.emplace_back("null_kp", v.value());

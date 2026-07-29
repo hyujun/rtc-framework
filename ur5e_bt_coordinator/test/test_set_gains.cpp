@@ -52,12 +52,16 @@ TEST_F(SetGainsTest, DemoJointSetsRobotTrajectorySpeed) {
   EXPECT_DOUBLE_EQ(mock_joint_.node->get_parameter("robot_trajectory_speed").as_double(), 0.15);
 }
 
-TEST_F(SetGainsTest, DemoTaskSetsKpAndDamping) {
+TEST_F(SetGainsTest, DemoTaskSetsKpAndDlsGains) {
   // Fixture default = demo_task_controller; no SetActiveAlias needed.
+  // The single constant-λ `damping` port was retired with the parameter it
+  // dispatched to (#282) and replaced by the §6.5 pair; both are asserted so the
+  // dispatch cannot lose one of them silently.
   auto tree = CreateTree(
       R"(<SetGains kp_translation="500,500,500"
                    kp_rotation="250,250,250"
-                   damping="0.05"/>)");
+                   singularity_threshold="0.03"
+                   max_damping="0.07"/>)");
   EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
 
   const auto kp_t = mock_task_.node->get_parameter("kp_translation").as_double_array();
@@ -68,7 +72,8 @@ TEST_F(SetGainsTest, DemoTaskSetsKpAndDamping) {
   ASSERT_EQ(kp_r.size(), 3u);
   EXPECT_DOUBLE_EQ(kp_r[1], 250.0);
 
-  EXPECT_DOUBLE_EQ(mock_task_.node->get_parameter("damping").as_double(), 0.05);
+  EXPECT_DOUBLE_EQ(mock_task_.node->get_parameter("singularity_threshold").as_double(), 0.03);
+  EXPECT_DOUBLE_EQ(mock_task_.node->get_parameter("max_damping").as_double(), 0.07);
 }
 
 TEST_F(SetGainsTest, DemoTaskMapsTrajectorySpeedDirectly) {

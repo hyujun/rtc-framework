@@ -125,7 +125,8 @@ active 컨트롤러 LifecycleNode의 ROS 2 parameter를 atomic 변경 (`set_para
 |------|------|------|
 | `kp_translation` | string | 위치 비례 게인 `"kx,ky,kz"` (DemoTask) |
 | `kp_rotation` | string | 자세 비례 게인 `"kx,ky,kz"` (DemoTask) |
-| `damping` | double | 감쇠 계수 (DemoTask) |
+| `singularity_threshold` | double | σ₀: §6.5 DLS 감쇠가 붙기 시작하는 σ_min(J) (DemoTask) |
+| `max_damping` | double | λ_max: §6.5 램프의 상한 (DemoTask). 상수 λ `damping` 은 #282 에서 은퇴 |
 | `null_kp` | double | Null-space 비례 게인 (DemoTask) |
 | `enable_null_space` | bool | Null-space 활성화 (DemoTask) |
 | `control_6dof` | bool | 6DOF 제어 활성화 (DemoTask) |

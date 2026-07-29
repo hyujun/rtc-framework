@@ -283,7 +283,12 @@ class RosTestFixture : public ::testing::Test {
                                                      std::vector<double>{5.0, 5.0, 5.0});
     out.node->declare_parameter<std::vector<double>>("kp_rotation",
                                                      std::vector<double>{2.0, 2.0, 2.0});
-    out.node->declare_parameter<double>("damping", 0.01);
+    // §6.5 DLS pair (#282), replacing the retired constant-λ "damping". This
+    // mock exists to mirror the controller's DECLARED parameter set: leaving
+    // "damping" here would keep SetGains' test green against a name the real
+    // controller rejects, which is the failure mode the mock is meant to catch.
+    out.node->declare_parameter<double>("singularity_threshold", 0.02);
+    out.node->declare_parameter<double>("max_damping", 0.05);
     out.node->declare_parameter<double>("null_kp", 0.5);
     out.node->declare_parameter<bool>("enable_null_space", false);
     out.node->declare_parameter<bool>("control_6dof", true);
