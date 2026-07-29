@@ -38,8 +38,10 @@ find_package(yaml-cpp REQUIRED)
 add_library(rtc_controllers STATIC
   src/controllers/grasp/grasp_controller.cpp
   src/controllers/grasp/pull_force_estimator.cpp
-  # G2 schema layer (#236 S7c-1): gains PODs + YAML parsers that outlive the
-  # adapters above. Non-RT, yaml-cpp only.
+  # G2 schema layer (#236 S7c-1): gains PODs + YAML parsers, lifted out of the
+  # controllers/{direct,indirect} adapters so they would outlive them — which
+  # they now do, the adapters having been deleted at S7c-2. Non-RT, yaml-cpp
+  # only; a binding calls these once at configure time.
   src/params/joint_pd_params.cpp
   src/params/osc_params.cpp
   src/params/clik_params.cpp
@@ -167,17 +169,19 @@ if(BUILD_TESTING)
   target_compile_options(test_joint_pd_core PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S2a golden-vector suite for the task-space acceleration core: bitwise
-  # against a literal copy of the pre-extraction inline form (durable oracle)
-  # AND against the live OperationalSpaceController driven through a shim that
-  # owns the model and the trajectory. The OSC exposes no a_task, so the shim
-  # reproduces the whole Λ/τ/Nᵀ tail to observe the core through the emitted
-  # torque — hence the URDF fixture resolver for serial_7dof (non-zero gravity,
-  # redundant so Nᵀ is not inert; the fixture itself is shared with S3a via
-  # test/include/rtc_controllers/testing/serial7dof_fixture.hpp). Same shared
-  # global-operator-new gate as S1 with the same program-wide
-  # -Wmismatched-new-delete false positive, PLUS rtc_base's Eigen allocation
-  # tripwire (${rtc_base_test_include}) — operator-new counting cannot see Eigen's
-  # allocator, which calls std::malloc directly.
+  # against a literal copy of the pre-extraction inline form (durable oracle).
+  # The cross-check against the live OperationalSpaceController retired with the
+  # adapter at S7c-2, with its verification provenance recorded in the file.
+  # OscShim survives and is still driven here — shim-only, by the posture-gate
+  # cases (분류 B) — so it keeps reproducing the whole Λ/τ/Nᵀ tail and still needs
+  # the URDF fixture resolver for serial_7dof (non-zero gravity, redundant so Nᵀ
+  # is not inert; the fixture itself is shared via
+  # test/include/rtc_controllers/testing/serial7dof_fixture.hpp, which is what
+  # pulls in ${rtc_urdf_bridge_test_include}). Same shared global-operator-new
+  # gate as S1 with the same program-wide -Wmismatched-new-delete false positive,
+  # PLUS rtc_base's Eigen allocation tripwire (${rtc_base_test_include}) —
+  # operator-new counting cannot see Eigen's allocator, which calls std::malloc
+  # directly.
   ament_add_gtest(test_task_accel_core test/test_task_accel_core.cpp)
   target_link_libraries(test_task_accel_core rtc_controllers)
   target_include_directories(test_task_accel_core PRIVATE
@@ -187,12 +191,13 @@ if(BUILD_TESTING)
   # #236 S3a golden-vector suite for the task-space velocity core: bitwise
   # against literal copies of BOTH pre-extraction inline forms (six-axis and
   # translation-only are different expression shapes, so each needs its own
-  # durable oracle) AND against the live ClikController across all four
-  # (control_6dof × enable_null_space) modes plus the π-rotation split. CLIK's
-  # output IS the core's output pushed through J⁺, so the shim compares the
-  # velocity, feedforward and integrated-command lanes directly. Reuses
-  # test_task_accel_core's independent-handle premise via the same serial_7dof
-  # fixture (the reorder half of that premise is measured here). The RT gate is
+  # durable oracle). The cross-check against the live ClikController — all four
+  # (control_6dof × enable_null_space) modes plus the π-rotation split — retired
+  # with the adapter at S7c-2; ClikShim remains as the reference recipe for a
+  # binding, unpinned by design. Reuses test_task_accel_core's independent-handle
+  # premise via the same serial_7dof fixture (the reorder half of that premise is
+  # measured here, which is what still needs
+  # ${rtc_urdf_bridge_test_include}). The RT gate is
   # two complementary sensors: the shared global-operator-new gate as in S1/S2a
   # (hence ${rtc_controllers_test_include} and the same program-wide
   # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen allocation
@@ -207,10 +212,11 @@ if(BUILD_TESTING)
   # #236 S4 golden-vector suite for the §6.3 inertia-shaping core: bitwise
   # against a literal copy of the pre-extraction member (which keeps the
   # Eigen::MatrixXd scratch, so the suite MEASURES that D-S4a's max-size scratch
-  # is bit-inert instead of inheriting the probe's claim) AND against the live
-  # TaskImpedanceController across selection × Λ_d × clamp, plus the activation
-  # ramp that scales the core's f_ext input. The adapter exposes no f_cmd, so the
-  # shim replicates the whole τ tail and compares the final joint torque. The RT
+  # is bit-inert instead of inheriting the probe's claim). The cross-check
+  # against the live TaskImpedanceController (selection × Λ_d × clamp, plus the
+  # activation ramp scaling the core's f_ext input) retired with the adapter at
+  # S7c-2. ImpedanceShim survives and is still driven shim-only by the Λ_d
+  # factorisation-degrade case, so it keeps replicating the whole τ tail. The RT
   # gate is two complementary sensors as in S1/S2a/S3a — the shared global
   # operator-new gate (hence ${rtc_controllers_test_include} and the same
   # program-wide -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen
@@ -223,14 +229,15 @@ if(BUILD_TESTING)
   target_compile_options(test_inertia_shaping_core PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S5 golden-vector suite for the §7.3 task-velocity REUSE. No new core:
-  # TaskAdmittanceController now calls S3a's task::ComputeTaskVelocity, so the
-  # suite pins that the call is inert — bitwise against a literal copy of THIS
-  # controller's inline shape (ν_c copied, K⊙e accumulated into it, i.e. the
-  # operands the other way round from the core) and against the live adapter
-  # across integrate_from_measured × nullspace_kp × ik_kp, plus the activation
-  # ramp that feeds the §7.2 integrator. The shim instantiates the adapter's own
-  # AdmittanceIntegrator / DifferentialIk instead of re-deriving them, and
-  # compares target_velocities and commands directly. Same two-sensor RT gate as
+  # the admittance law calls S3a's task::ComputeTaskVelocity, so the suite pins
+  # that the call is inert — bitwise against a literal copy of the
+  # pre-extraction inline shape (ν_c copied, K⊙e accumulated into it, i.e. the
+  # operands the other way round from the core). The cross-check against the live
+  # TaskAdmittanceController (integrate_from_measured × nullspace_kp × ik_kp,
+  # plus the activation ramp feeding the §7.2 integrator) retired with the
+  # adapter at S7c-2; AdmittanceShim remains as the reference recipe, composing
+  # AdmittanceIntegrator / DifferentialIk rather than re-deriving them, and is
+  # still what S6's CascadeShim is built from. Same two-sensor RT gate as
   # S1/S2a/S3a/S4 — the shared global operator-new gate (hence
   # ${rtc_controllers_test_include} and the program-wide
   # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen tripwire
@@ -246,12 +253,14 @@ if(BUILD_TESTING)
   # null-space posture law (joint/posture_law.hpp, PD and P — two functions
   # because the K_d = 0 reduction flips the sign of a zero on a reachable state)
   # and the §7.6 MUST-1 verdict (compliance/bandwidth_separation.hpp). Literal
-  # oracles pin all three pre-extraction shapes; a shim composed from S4's
-  # ImpedanceShim and S5's AdmittanceShim pins the live cascade across the four
-  # posture-gate corners plus the activation ramp. Both gates are numerically
-  # INERT when closed, so the suite compares diag.nullspace_active and
-  # diag.bandwidth_ratio every tick and exercises both ways the §7.6 gate reopens
-  # (set_gains, and a retry after a failed factorisation). Same two-sensor RT
+  # oracles pin all three pre-extraction shapes. The cross-check against the live
+  # CascadedComplianceController retired with the adapter at S7c-2, but
+  # CascadeShim — composed from S4's ImpedanceShim and S5's AdmittanceShim —
+  # survives and is driven shim-only by the §7.6 evaluation-gate cases. Both
+  # gates are numerically INERT when closed, so the suite reads
+  # diag.nullspace_active and diag.bandwidth_ratio rather than a torque lane, and
+  # exercises both ways the §7.6 gate reopens (set_gains, and a retry after a
+  # failed factorisation). Same two-sensor RT
   # gate as S1–S5 — the shared global operator-new gate (hence
   # ${rtc_controllers_test_include} and the program-wide
   # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen tripwire

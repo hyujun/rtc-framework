@@ -2,10 +2,21 @@
 
 이 문서는 `rtc_controllers` 의 **compliance (impedance / admittance) 컨트롤러 계열**이
 따르는 **규범 매트릭스 (normative matrix)** 다. 코드·YAML·리뷰가 참조하는 SSoT 이며,
-값이 바뀌면 여기부터 갱신한다. 현재 범위는 **슬라이스 1 — `TaskImpedanceController`
+값이 바뀌면 여기부터 갱신한다. 현재 범위는 **슬라이스 1 — 태스크 임피던스
 (A=NONE, Jacobian-transpose)**, **슬라이스 2 — external wrench 입력 계약 + 조건화 체인 +
-§6.3 inertia shaping**, **슬라이스 3 — `TaskAdmittanceController` (§7, 힘 입력 → 위치 출력,
-§3.5)** 이고, 나머지 행은 후속 슬라이스에서 채운다.
+§6.3 inertia shaping**, **슬라이스 3 — 태스크 어드미턴스 (§7, 힘 입력 → 위치 출력,
+§3.5)**, **슬라이스 4 — §7.6 캐스케이드 컴플라이언스** 이고, 나머지 행은 후속
+슬라이스에서 채운다.
+
+**#298 S7c-2 이후 읽는 법.** 이 문서가 쓰일 당시 세 계열은 `rtc_controllers` 안의
+어댑터 클래스 (`TaskImpedanceController` / `TaskAdmittanceController` /
+`CascadedComplianceController`) 였고, 그 클래스들은 삭제됐다. 남은 것은 `compliance/`
+· `task/` · `joint/` 의 법칙 헤더와 `params/` 스키마이며, tick 배선·E-STOP·게이트는
+이제 **바인딩이 소유**한다. 따라서 아래 행들은 두 종류로 읽는다 — 법칙·스키마의
+성질을 규정하는 행은 여전히 코드에 대한 규범이고, tick 배선을 규정하는 행은
+**바인딩에 대한 요구사항**이다 (해당 행에 그렇게 표시했다). 삭제된 클래스명이
+남아 있는 곳은 그 결정이 어디서 관측됐는지를 가리키는 **이력 참조**이지 현행 구현이
+아니다.
 
 ## 1. 입력 명세 provenance
 
@@ -235,7 +246,7 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 
 | 항목 | 결정 | 근거 |
 |---|---|---|
-| **게이트 위치** | `Compute()` 의 조인트 상태 복사 **직전** — 세 컨트롤러 모두. `ComputeEstop()` 의 `ĝ(q)` 계산 직전 — **토크 도메인 둘** (`TaskImpedanceController`, `CascadedComplianceController`) | 미보고 채널은 `0` 으로 읽히므로 게이트 없이는 FK·Jacobian·법칙 전체가 **ZERO configuration** 에서 돌고 전 관절을 원점으로 당기는 토크가 나간다. 모든 수가 유한해 CM 의 actuator-boundary validator 도 거르지 않는다. `TaskImpedanceController` 는 `Compute()` 게이트조차 없이 출하됐었다 (#236 E-8 에서 신설) |
+| **바인딩 요구사항 — 게이트 위치** | `Compute()` 의 조인트 상태 복사 **직전** — 세 계열 모두. `ComputeEstop()` 의 `ĝ(q)` 계산 직전 — **토크 도메인 둘** (임피던스·캐스케이드) | 미보고 채널은 `0` 으로 읽히므로 게이트 없이는 FK·Jacobian·법칙 전체가 **ZERO configuration** 에서 돌고 전 관절을 원점으로 당기는 토크가 나간다. 모든 수가 유한해 CM 의 actuator-boundary validator 도 거르지 않는다. `TaskImpedanceController` 는 `Compute()` 게이트조차 없이 출하됐었다 (#236 E-8 에서 신설) |
 | **바인딩 요구사항 — position 도메인의 E-STOP hold seed** | position-hold latch 를 `dev0.positions` 에서 seed 하는 바인딩은 **그 seed 지점에도 게이트를 걸어야 한다** | 판독 불가 tick 에 latch 되면 미보고 채널의 hold 가 `0` 으로 굳어 "원점으로 servo" 가 되고, hold-valid 플래그가 latch 라 이후 tick 까지 남는다. 토크 도메인의 `ĝ(q)` 게이트와 같은 이유이며 위치는 다르다 — 여기서는 `Compute()` 진입 게이트를 통과한 뒤 별도로 도달할 수 있다. 이 행의 유래는 §부록 A |
 | **출력** | **zero-length** (`devices[0].num_channels = 0`) — 값이 아니라 "이번 tick 은 갱신 없음". secondary device passthrough 는 유지 | 알 수 없는 관절 위치의 정직한 대체값은 없다. CM 자신의 `BuildHoldOutput` 도 같은 idiom 을 쓴다. 팔 상태가 사라졌다고 손이 명령 불가가 되지는 않으므로 secondary 는 통과시킨다 |
 | **`ComputeEstop` 도 동일** | 같은 zero-length. **`nc0` 길이의 0 커맨드를 내보내지 않는다** | 둘은 반대다: zero-length 는 전 백엔드가 early-return 하는 **침묵**(드라이브는 직전 setpoint 유지), `nc0` 길이의 0 은 **진짜 0 N·m** 이고 토크 모드 팔에서는 정지가 아니라 **낙하**다. `ĝ(q) − D·q̇` 는 q·q̇ 가 실측일 때만 hold 이므로 판독 불가 상태에서는 hold 자체가 성립하지 않는다 |

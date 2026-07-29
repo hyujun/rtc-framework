@@ -31,7 +31,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 
 > 관절 공간 P 제어(구 `PController`)는 코어를 신설하지 않고 어댑터와 함께 은퇴했습니다 (#236 D-Q1) — 관절 PD 를 `kd = 0` 으로 쓰면 같은 법칙입니다.
 >
-> 각 코어의 참조 배선(모델·궤적·SeqLock 을 어떻게 엮는가)은 `test/test_*_core.cpp` 의 `*Shim` 클래스에 남아 있습니다. **어떤 테스트도 그 shim 을 pin 하지 않습니다** — 새 바인딩의 출발점이지 검증된 산출물이 아닙니다 (#236 S7c).
+> 각 코어의 참조 배선(모델·궤적·SeqLock 을 어떻게 엮는가)은 `test/test_*_core.cpp` 의 `*Shim` 클래스에 남아 있습니다. 어댑터 cross-check 가 은퇴하면서 대부분은 **아무 테스트도 pin 하지 않는** 상태가 됐습니다 (`JointPdShim` / `ClikShim` / `AdmittanceShim`) — 새 바인딩의 출발점이지 검증된 산출물이 아닙니다 (#236 S7c). 다만 셋은 예외로, 어댑터 없이 관측할 수 없던 게이트 계약을 지키기 위해 shim-only 케이스가 남아 이들을 pin 합니다: `OscShim` (posture 게이트), `ImpedanceShim` (Λ_d 인수분해 degrade), `CascadeShim` (§7.6 대역폭 평가 게이트). 이 셋을 고칠 때는 해당 케이스가 함께 움직입니다.
 
 > **태스크 임피던스**는 Cartesian **compliance** 법칙이다. 기본 법칙은
 > `formulation: jacobian_transpose` (§6.2 A=NONE,
@@ -740,8 +740,14 @@ RTC_REGISTER_CONTROLLER(
 #include "rtc_controllers/joint/joint_pd_law.hpp"      // 법칙 (RT tick)
 #include "rtc_controllers/params/joint_pd_params.hpp"  // 스키마 (configure 시 1회)
 
-// on_configure / LoadConfig
-rtc::params::ParseJointPdParams(cfg, model_nv, gains_, command_type_);
+// on_configure / LoadConfig — 사본에 파싱하고 통과한 뒤에만 커밋한다.
+// 파서는 in-place 로 @p out 을 채우므로, live 멤버를 그대로 넘기면 throw 하는
+// 설정이 절반만 적용된 게인을 남긴다 (아래 "게인 스냅샷" 계약과 같은 이유).
+auto g = gains_lock_.Load();
+auto cmd_type = command_type_.load(std::memory_order_relaxed);
+rtc::params::ParseJointPdParams(cfg, model_nv, g, cmd_type);   // throw 하면 여기서 끝
+gains_lock_.Store(g);
+command_type_.store(cmd_type, std::memory_order_relaxed);
 // Compute() 안
 rtc::joint::ComputeJointPdCommand(gains_view, inputs, dt, nq, nc0, cmd_type, prev_err, out);
 ```
@@ -793,7 +799,6 @@ rtc::joint::ComputeJointPdCommand(gains_view, inputs, dt, nq, nc0, cmd_type, pre
 
 | 파일 | 설명 |
 |------|------|
-| `examples/controllers/indirect/p_controller.yaml` | P 제어기: kp 게인, command_type, 토픽 매핑 |
 | `examples/controllers/indirect/clik_controller.yaml` | CLIK 제어기: kp, §6.5 DLS (`max_damping`/`singularity_threshold`), null_kp, 영공간/6DOF 설정, 토픽 매핑 |
 | `examples/controllers/direct/joint_pd_controller.yaml` | JointPD 제어기: kp/kd 게인, 중력/코리올리 보상, 궤적 속도, 토픽 매핑 |
 | `examples/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, §6.5 DLS (`max_damping`/`singularity_threshold`), 널공간 posture, 궤적 속도, 토픽 매핑 |
