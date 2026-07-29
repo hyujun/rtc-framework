@@ -95,22 +95,26 @@ CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->Pu
 
 외부 F/T wrench 처럼 device lane 에 없는 입력은 컨트롤러가 구독하는 것이 아니라 **비-RT setter** 로 주입한다 (`SetDeviceTarget` 과 동일 idiom, RT 와의 교환은 `SeqLock`/SPSC 로만 — RT-4). 전송 계층(누가 센서를 읽어 넣어주는가)은 컨트롤러 밖의 관심사다. 값에 딸린 freshness 는 ROS 타임스탬프가 아니라 **generation 카운터 + tick 카운팅**으로 표현한다 (RT 에서 clock 을 읽지 않기 위함; `ControllerState::dt` 사용).
 
-### 현황 — `rtc_controllers` 는 만족한다. 배치 전이는 진행 중이다
+### 현황 — `rtc_controllers` 는 만족한다. 바인딩 계층의 배치 전이도 끝났다
 
 **`rtc_controllers` 쪽은 끝났다.** 이 패키지에는 `RTControllerInterface` 구체 구현이 없고 `package.xml` 도 `rtc_controller_interface` 를 의존하지 않는다 (issue #236 슬라이스 S1–S7: 법칙별 코어 추출 → G1 글루 base 상향 → 상속 클래스 삭제). 수는 여기 박제하지 않는다 — `grep -rn "public RTControllerInterface" rtc_controllers/include` 와 `grep -n rtc_controller_interface rtc_controllers/package.xml` 이 **둘 다 비어야** 한다 (AP-DOC-1).
 
-**끝나지 않은 것은 3계층 배치 자체다.** 위 완료형은 *`rtc_controllers` 에 한정*한다. 오래 예로 들던 `demo_task_controller` 의 상수-λ DLS 는 **#282 에서 `compliance::DifferentialIk` 로 수렴했고**, 이제 `grep -rn "diagonal().array() +=\|LDLT<\|LLT<\|Jpinv" integrated_bringup/src integrated_bringup/include` 는 **0건**이다 — 바인딩에 남은 인라인 **DLS/pseudoinverse** 사본은 없다. 다만 이것이 3계층 배치 전체의 완료를 뜻하지는 **않는다** — 같은 함수 안에 **태스크 속도 법칙**이 인라인으로 남아 있다: `kp ⊙ e + ν_ff` 가 `compute.cpp` 에 직접 쓰여 있고 코어 대응물 [task/task_vel_law.hpp](../rtc_controllers/include/rtc_controllers/task/task_vel_law.hpp) 의 `ComputeTaskVelocity` / `ComputeTranslationVelocity` 는 호출되지 않는다 (#282 는 DLS 축만 범위로 잡았다). 즉 잔여를 세는 기준은 "DLS 사본" 이 아니라 "코어 대응물이 있는데 호출하지 않는 법칙" 이고, 그 기준으로는 아직 0 이 아니다.
+**바인딩 계층의 배치 전이도 끝났다.** 오래 예로 들던 `demo_task_controller` 는 두 축 모두 수렴했다 — 상수-λ DLS 는 **#282 에서 `compliance::DifferentialIk` 로**, 태스크 속도 법칙 `kp ⊙ e + ν_ff` 는 **#314 에서 [task/task_vel_law.hpp](../rtc_controllers/include/rtc_controllers/task/task_vel_law.hpp) 의 `ComputeTaskVelocity` / `ComputeTranslationVelocity` 로**. 잔여를 세는 기준은 "DLS 사본" 이 아니라 **"코어 대응물이 있는데 호출하지 않는 법칙"** 이고 (PR #313 이 이 기준을 박았다), 그 기준으로 `grep -rn "cwiseProduct\|diagonal().array() +=\|LDLT<\|LLT<\|Jpinv\|pseudoInverse" integrated_bringup/src integrated_bringup/include` 는 이제 **0건**이다. 바인딩에 남은 인라인 법칙 사본은 없다.
+
+호출자가 없는 코어(`ComputeImpedanceForce` · `ComputeJointPdCommand` · `ComputePostureTorque` / `ComputePostureVelocity` · `ComputeTaskAcceleration`)가 남아 있지만 이것은 **다른 상태**다 — S1–S7 이 추출한 뒤 S7c 가 어댑터를 지웠고, 그 법칙을 **인라인으로 다시 쓰는 살아 있는 바인딩이 없다**. 즉 "미수렴 사본" 이 아니라 "바인딩을 기다리는 코어" 이며, 위 기준의 분자에 들어가지 않는다.
+
+**단 이 완료형은 바인딩 계층에 한정한다.** `rtc_tsid` 의 SE3 / object-SE3 / CoM / posture task 는 가속도형 법칙을 자체적으로 쓴다 (`a_ff + kp ⊙ e + kd ⊙ ė`). 이는 바인딩 누수가 아니라 **동급 코어 간 중복** 축이다 — `rtc_tsid` 는 위 §1 이 "QP tasks, constraints" 를 배정한 자기 도메인의 코어이고, 속도 오차 정의부터 다르다 (Jlog6 정확 미분 대 `ν_d − ν`). 따라서 `ComputeTaskAcceleration` 으로의 수렴은 inert 리팩터가 아니라 **법칙 변경**이며, 착수하려면 별도 판단이 필요하다 ([CLAUDE.md](../CLAUDE.md) §6 E-9).
 
 - 규칙은 **새 코드에 즉시 구속**된다. 새 제어 법칙은 코어로 쓰고, 필요하면 바인딩을 integration 패키지에 만든다.
-- DLS 축의 코어 수렴은 issue #282 가 **완료**했다. 나머지 법칙의 잔여 감사는 `#236` 종결 작업이 담당한다.
+- DLS 축의 코어 수렴은 issue #282 가, 태스크 속도 축은 `#314` 가 **완료**했다. 두 축이 `demo_task_controller` 의 전부였다.
 - **이 문서의 근거 문단에 나오는 어댑터 클래스명**(`ClikController` · `TaskImpedanceController` · `TaskAdmittanceController` 등)**은 S1–S7 슬라이스가 판정을 내리던 시점의 대상이다** — 지금 코드에 없다. 그 판정이 왜 그렇게 났는지는 여전히 유효하므로 남겨 두되, 살아 있는 코드로 읽지 않는다.
-- 문서는 **"`rtc_controllers` 는 순수하다 / 더 이상 상속하지 않는다"를 완료형으로 서술해도 된다** (2026-07-29 부터 — 그 전까지는 금지였다). 여전히 완료형으로 쓰지 않는 것은 **"3계층 배치가 끝났다"** 쪽이다: 범위가 다른 두 문장이고, 후자는 아직 거짓이라 쓰는 순간 문서-코드 불일치를 새로 만든다 ([CLAUDE.md](../CLAUDE.md) §6 E-9).
+- 문서는 **"`rtc_controllers` 는 순수하다 / 더 이상 상속하지 않는다"** 와 **"바인딩 계층에 미수렴 법칙 사본이 없다"** 를 둘 다 완료형으로 서술해도 된다 (전자는 2026-07-29, 후자는 `#314` 부터). 여전히 완료형으로 쓰지 **않는** 것은 **"코어 간 법칙 중복이 없다"** 쪽이다 — 위 `rtc_tsid` 축이 열려 있어 쓰는 순간 문서-코드 불일치를 새로 만든다 ([CLAUDE.md](../CLAUDE.md) §6 E-9). 세 문장은 범위가 다르다.
 
 **ARCH-7 과의 구별**: ARCH-7 은 *exec / 런타임 정체성* 소유를 금지한다 (위 Boundary Rules). 이 규칙은 그보다 안쪽으로, exec 를 안 만들더라도 **노드·구독을 만드는 것**과 **프레임워크 인터페이스를 상속하는 것**을 금지한다. 세 규칙은 별개이며 ARCH-7 의 standalone-node 예외(`mujoco_simulator_node` 등)는 여기에 적용되지 않는다 — 그 예외는 robot-agnostic *노드* 패키지에 대한 것이지 컨트롤러에 대한 것이 아니다.
 
 **근거**: 컨트롤러를 순수 알고리즘으로 유지하면 (a) 단위 테스트가 ROS 컨텍스트 없이 성립하고, (b) 같은 법칙이 sim / 실기 / 오프라인 재생에서 배선만 갈아끼워 재사용되며, (c) 배선 결정(QoS, 네임스페이스, 메시지 타입)이 robot bringup 한 곳에 모인다. 상속 금지가 추가된 근거는 (d) — 프레임워크 계약을 구현하는 순간 글루가 법칙과 같은 파일에 들어오고, 그 글루의 대부분은 컨트롤러마다 **동일한 boilerplate** 라서 구현체 수만큼 복제된다. 실제로 mailbox 스켈레톤은 그렇게 복제됐고 (#206), 그 복제본들의 검증 공백에서 결함이 반복해 나왔다. 컨트롤러에 구독을 넣으려는 충동은 대개 "이 입력을 어떻게 넣지?" 에서 나오는데 답은 setter 이지 구독이며, 인터페이스를 상속하려는 충동은 "CM 이 이걸 어떻게 부르지?" 에서 나오는데 답은 바인딩이지 상속이 아니다.
 
-위반이 필요해 보이면 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN]` (E-1 / Critical) 로 보고한다. *(결정 2026-07-25, issue #236 — impedance/admittance 슬라이스 2의 wrench 입력 경로를 정하며 노드·구독 금지를 명문화. 그 전까지 이 규칙은 코드에만 존재했고 문서에 없어 "컨트롤러가 자기 구독을 만든다"가 유효한 선택지로 검토된 적이 있다. 2026-07-26 개정 — 같은 issue 에서 상속 금지 + 3계층 배치로 강화. 노드 금지만으로는 글루 복제를 막지 못한다는 것이 기존 구현체 전반에서 실측됐기 때문이다. 2026-07-29 개정 — S7c(PR #300) 로 어댑터가 전부 삭제되면서 §현황 을 완료형으로 전환. 완료형 금지 규칙은 폐기가 아니라 **범위 축소**다: `rtc_controllers` 에 대해서만 풀리고 3계층 배치 전체에 대해서는 그대로 산다.)*
+위반이 필요해 보이면 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN]` (E-1 / Critical) 로 보고한다. *(결정 2026-07-25, issue #236 — impedance/admittance 슬라이스 2의 wrench 입력 경로를 정하며 노드·구독 금지를 명문화. 그 전까지 이 규칙은 코드에만 존재했고 문서에 없어 "컨트롤러가 자기 구독을 만든다"가 유효한 선택지로 검토된 적이 있다. 2026-07-26 개정 — 같은 issue 에서 상속 금지 + 3계층 배치로 강화. 노드 금지만으로는 글루 복제를 막지 못한다는 것이 기존 구현체 전반에서 실측됐기 때문이다. 2026-07-29 개정 — S7c(PR #300) 로 어댑터가 전부 삭제되면서 §현황 을 완료형으로 전환. 완료형 금지 규칙은 폐기가 아니라 **범위 축소**다: `rtc_controllers` 에 대해서만 풀리고 3계층 배치 전체에 대해서는 그대로 산다. 2026-07-29 재개정 — `#314` 가 마지막 인라인 법칙 사본(태스크 속도)을 수렴시키면서 완료형 범위를 **바인딩 계층까지** 넓혔다. 전환 근거는 "코어 대응물이 있는데 호출하지 않는 법칙" 기준의 전수 grep 이 0 이 된 것이고, 남은 금지 범위는 코어 간 중복(`rtc_tsid` 축) 하나다.)*
 
 ## Backend / Controller Layering
 

@@ -87,17 +87,18 @@ inline constexpr std::uint32_t kVtcpFrameWaitTicks = 1000;
 /// ### Arm control law — CLIK (task-space velocity), partially converged
 ///
 /// The retired `ClikController` adapter ran this same law (#236 S7c deleted the class).
-/// This binding is converged onto `rtc_controllers`' cores for ONE of its two
-/// halves, and the split matters when reading the code below:
+/// This binding is converged onto `rtc_controllers`' cores for BOTH of its
+/// halves, and the split still matters when reading the code below:
 ///   - **DLS + null-space projector → converged** (#282). `compliance::DifferentialIk`
 ///     owns J^# and N, and λ is the §6.5 σ_min-adaptive ramp — NOT the constant it
 ///     used to be. The posture gain multiplies q̇_null BEFORE the projection,
 ///     because that is the argument the shared law takes.
-///   - **Task-velocity assembly → still inline.** `kp ⊙ e + ν_ff` is spelled here
-///     even though `task/task_vel_law.hpp` (`ComputeTaskVelocity` /
-///     `ComputeTranslationVelocity`) is its core counterpart. #282 deliberately
-///     scoped itself to the DLS; this half is the remaining inline copy.
-/// See agent_docs/design-principles.md §현황 for what that leaves open.
+///   - **Task-velocity assembly → converged** (#314). `kp ⊙ e + ν_ff` is
+///     `task/task_vel_law.hpp` (`ComputeTaskVelocity` for the 6-DOF branch,
+///     `ComputeTranslationVelocity` for the translation-only one). What stays on
+///     THIS side is the frame transport: ν_ff is rotated into the Jacobian frame
+///     here, because which frame that is (vtcp or world-aligned) is a binding
+///     concern the core law does not know about.
 /// @code
 ///   pos_error    = x_des − FK(q)
 ///   λ²           = 0                       if σ_min(J) ≥ σ₀       [§6.5 ramp]

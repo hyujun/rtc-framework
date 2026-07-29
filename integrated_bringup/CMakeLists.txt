@@ -390,6 +390,18 @@ if(BUILD_TESTING)
   # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
   target_compile_options(test_task_dls_convergence PRIVATE -Wno-mismatched-new-delete)
 
+  # ── Task-velocity assembly convergence (#314) ──────────────────────────────
+  # Compares two pure functions, so unlike its #282 sibling it needs no URDF, no
+  # controller library and no pinocchio — only the core header and the
+  # never-installed bit_compare.hpp, by source-relative include dir.
+  ament_add_gtest(test_task_vel_binding test/test_task_vel_binding.cpp)
+  target_include_directories(test_task_vel_binding PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  ament_target_dependencies(test_task_vel_binding
+    rtc_controllers
+    Eigen3
+  )
+
   # ── demo_joint_controller URDF-backed tests (#149) ─────────────────────────
   # Model-dependent joint paths the empty-URDF sister cannot reach: arm quintic
   # trajectory, fingertip FK/TF, virtual TCP, ToF populate, E-STOP FK.
