@@ -8,23 +8,29 @@
 [design-principles.md](design-principles.md) §`rtc_controllers` Controllers Are Pure Control
 Algorithms 이며, 여기서는 반복하지 않는다 (AP-DOC-1).
 
-> **전이 상태 (issue #236)** — "코어 위치" 가 *어댑터 내부* 인 행은 법칙이 아직
-> `RTControllerInterface` 를 상속한 클래스 안에 인라인으로 들어 있다. 실제 개수는
-> `grep -rn "public RTControllerInterface" rtc_controllers/include` 로 확인한다 (여기 박제하지
-> 않는다). 그 어댑터들은 **어디에도 등록돼 있지 않아 런타임 노출이 0** 이며 — 배포된 것은 아래
-> §배선된 컨트롤러 3종뿐이다 — #236 S1–S7 에서 코어 추출 후 삭제된다.
+> **현황 (#236 S7c 완료)** — 한때 같은 패키지에 있던 어댑터 클래스들은 삭제됐다
+> (`grep -rn "public RTControllerInterface" rtc_controllers/include` 가 비어야 한다; 개수는
+> 박제하지 않는다). 그것들은 **어디에도 등록돼 있지 않아 런타임 노출이 0** 이었고 — 배포되는
+> 것은 아래 §배선된 컨트롤러 3종, 즉 integration 패키지의 바인딩뿐이다 — 코어 추출의
+> cross-check oracle 로만 살아 있었다.
+>
+> 아래 표의 **"잔여 → S7 정리 완료"** 는 그 어댑터 안에 있던 글루가 어디로 갔는지를 뜻한다:
+> 모든 바인딩이 동일하게 필요로 하던 공통 글루(target mailbox 등)는 S7a 에서
+> `rtc_controller_interface` 로 올라갔고, 배치 고유 글루는 어댑터와 함께 삭제됐다 (바인딩은
+> 자기 것을 갖는다). 아직 코어로 수렴하지 않은 **바인딩 쪽 인라인 사본**은 별개이며
+> [design-principles.md](design-principles.md) §현황 이 SSoT 다 (#282).
 
 ### 알고리즘 코어 (`rtc_controllers`)
 
 | 제어 법칙 | Type | Space | 코어 위치 | Key Feature |
 |---|---|---|---|---|
-| P (관절 증분) | Position | Joint | 어댑터 내부 — **코어 미신설** (#236 D-Q1: 법칙이 `q + kp·e·dt` + 클램프라 파일 하나 값어치가 없다. S7 에서 삭제) | `q + kp*error*dt` incremental |
-| Joint PD | Torque | Joint | **추출됨** — `joint/joint_pd_law.hpp` (S1). 무상태 free function: 궤적 **샘플**을 받고 생성기를 소유하지 않으며 (배선은 integration 계층), 오차 이력은 in/out span (E-STOP hold 정책과 공유). 잔여(mailbox·모델 바운드·궤적 배선·텔레메트리·클램프)는 어댑터에 남아 S7 에서 base/바인딩으로 | PD + Pinocchio RNEA + quintic trajectory |
-| CLIK | Position | Cartesian 3/6-DOF | **부분 추출됨** — `task/task_vel_law.hpp` (S3a). 무상태 free function 2개 (6축 `ComputeTaskVelocity` · 병진전용 `ComputeTranslationVelocity` — 인라인 형태가 서로 다른 식이라 합치지 않는다): 태스크 속도 `task_vel = K_p ⊙ e + ν_ff` 만 담고, pose error 정의·궤적·**ν_ff 의 프레임 전송**(`R_traj` vs `R_current`)을 모른다 (게인은 속도형 `[1/s]`, 미분항 없음). DLS `J⁺`/영공간은 **`compliance/differential_ik` 로 흡수 완료** (S3b/#258, m=6·m=3 두 인스턴스 — `control_6dof` 가 런타임 가변 게인이라 둘 다 미리 sizing) + 영공간 자세는 `joint/posture_law.hpp` 의 `ComputePostureVelocity` (게인이 사영 **前** 로 이동 — 그래야 다른 소비자와 같은 법칙). **비-bit-identical 이관**이며 λ 규약이 §6.5 로 바뀐 것이 그 목적이다 (D-S2b (b)안). 잔여(관절 tail·클램프·적분)는 S7 | Damped Jacobian pseudoinverse + null-space |
-| OSC | Torque | Cartesian 6-DOF | **부분 추출됨** — `task/task_accel_law.hpp` (S2a). 무상태 free function: 태스크 가속도 `a_task = K_p·e + K_d·(ν_d−ν) + a_ff` 만 담고, pose error 정의·궤적·모델을 모른다 (게인은 가속도형 `[1/s²]`, `impedance_law` 의 힘형과 Λ 배 차이). `Λ`/`τ`/`Nᵀ` 는 **`compliance/task_dynamics` 로 흡수 완료** (S2b, D-Q2) + 영공간 자세는 `joint/posture_law.hpp` 의 `ComputePostureTorque` (`q_ref` 인자 = 설정된 `safe_position`). **비-bit-identical 이관**이며 λ 규약이 §6.5 로 바뀐 것이 그 목적이다 (D-S2b (b)안). 잔여(τ 조립·클램프·텔레메트리)는 S7 | Full pose PD + SE3 quintic trajectory; gravity-comp damped torque E-STOP (`ĝ(q)−D·q̇`, #184) |
-| Task impedance | Torque | Cartesian 3/6-DOF | **부분 추출됨** — `compliance/{impedance_law, inertia_shaping, task_dynamics, wrench_pipeline, safety_limiter, compliance_state_machine, torque_estop}`. §6.3 관성 성형은 `inertia_shaping.hpp` 의 무상태 free function `ComputeShapedTaskForce` (S4): `f_cmd = B·f_task + (B−I)·f_ext`, `B = Λ_S Λ_d⁻¹` + §5.2 편차 clamp 만 담고 **Λ_S 를 인자로** 받아 `TaskDynamics` 를 모른다 (수렴점 판정은 S2b). 영공간 자세 법칙은 `joint/posture_law.hpp` 의 `ComputePostureTorque` (S6) — cascade 의 인라인 루프와 **문자 그대로 동일**했던 것이 ARCH-3 발동 조건이었다. §6.2 게인은 `Gains` 에 `compliance::ImpedanceParams` 로 **중첩**돼 있다 (S6b — 기본값이 코어와 같아 중복이 실제로 사라지고, 매 tick positional 재조립도 함께 사라진다; YAML 키는 불변). 잔여(Λ 게이트·selection matrix·τ 꼬리)는 어댑터 내부로 S7 대상 | §6.2 A=NONE Jacobian-transpose compliance `Jᵀ Sᵀ[Kp·Se+Kd·Sė]+τ_null+ĝ`; Λ 미사용(특이점 자유), σ_min-adaptive DLS nullspace (`nv>task_dim`), gravity-comp torque E-STOP, MuJoCo-only. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) |
-| Task admittance | Position | Cartesian 6-DOF | **부분 추출됨** — `compliance/{admittance_integrator, differential_ik, wrench_pipeline}` + §7.3 속도항은 `task/task_vel_law.hpp` 재사용 (S5, 새 코어 없음) + 영공간 자세 법칙 `joint/posture_law.hpp` 의 `ComputePostureVelocity` (S6 — 속도형 **P**, PD 의 `Kd=0` 이 아니다). 잔여(관절 tail·클램프·적분)는 어댑터 내부로 S7 대상 | §7 Rule 3 — 힘 **입력** → 운동 출력. compliant frame `Λ_d ẍ̃+K_d ẋ̃+K_p x̃ = f_ext` 를 semi-implicit Euler + `exp3` retract 로 적분하고 §7.3 DLS 미분 IK 로 `q_cmd` 생성. 외부 wrench **필수** (A≠NONE, `enabled: false` 는 configure 에러), `min_desired_inertia` 하한(§7.4) · `max_compliant_displacement`/velocity(§7.5, `≤0`=off) · `max_return_{linear,angular}_velocity`(경계 밖 복귀 속도 상한, **상시**), E-STOP 은 position-hold(latch, 재활성화·`ClearEstop`·`ResetFault` 경계에서 무효화). impedance 와 **반대 부호**(§11.4.1 P2/P3). 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.5 |
-| Cascaded compliance | Torque | Cartesian 6-DOF | **부분 추출됨** — 위 두 행의 `compliance/*` 조합 + §7.6 MUST-1 판정식 `compliance/bandwidth_separation.hpp` (S6, `Λ_S` 를 인자로 — 만드는 쪽은 `compliance/task_dynamics`, S2b 이후 다섯 컨트롤러 공통) + 영공간 자세 법칙 `joint/posture_law.hpp` (S6). 잔여(τ 조립·§10.5 safety layer·FSM)는 어댑터 내부로 S7 대상 | §7.6 — outer admittance(느린 대역, 순응 정의) 가 만든 compliant frame `(X_c, ν_c)` 를 inner §6.2 impedance(빠른 대역)가 추종. `τ = Jᵀ·α[K_p^i·e(X,X_c) + K_d^i·(ν_c−ν)] + α·Nᵀτ_posture + ĝ`. 외부 wrench **필수** (outer 의 입력). **wrench 는 정확히 한 번만 소비** — inner 에 `f_ext` 항이 없다(§7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로, D19). 대역폭 분리 `ω_i/ω_a`(MUST-1) 는 seeding tick 에 `Λ_S(q₀)` 로 1회 평가해 **진단 플래그** `bandwidth_ratio_low` 로만 보고(fault 아님, D20). YAML 은 `outer:` / `inner:` 로 분리(양쪽 다 stiffness·damping 을 가진다). E-STOP 은 torque hold `ĝ−D·q̇`. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.6 |
+| P (관절 증분) | Position | Joint | **코어 없음** — 어댑터와 함께 은퇴 (#236 D-Q1: 법칙이 `q + kp·e·dt` + 클램프라 파일 하나 값어치가 없다). 관절 PD 를 `kd = 0` 으로 쓰면 같은 법칙 | `q + kp*error*dt` incremental |
+| Joint PD | Torque | Joint | **추출됨** — `joint/joint_pd_law.hpp` (S1). 무상태 free function: 궤적 **샘플**을 받고 생성기를 소유하지 않으며 (배선은 integration 계층), 오차 이력은 in/out span (E-STOP hold 정책과 공유). 잔여(mailbox·모델 바운드·궤적 배선·텔레메트리·클램프) → S7 정리 완료 | PD + Pinocchio RNEA + quintic trajectory |
+| CLIK | Position | Cartesian 3/6-DOF | **부분 추출됨** — `task/task_vel_law.hpp` (S3a). 무상태 free function 2개 (6축 `ComputeTaskVelocity` · 병진전용 `ComputeTranslationVelocity` — 인라인 형태가 서로 다른 식이라 합치지 않는다): 태스크 속도 `task_vel = K_p ⊙ e + ν_ff` 만 담고, pose error 정의·궤적·**ν_ff 의 프레임 전송**(`R_traj` vs `R_current`)을 모른다 (게인은 속도형 `[1/s]`, 미분항 없음). DLS `J⁺`/영공간은 **`compliance/differential_ik` 로 흡수 완료** (S3b/#258, m=6·m=3 두 인스턴스 — `control_6dof` 가 런타임 가변 게인이라 둘 다 미리 sizing) + 영공간 자세는 `joint/posture_law.hpp` 의 `ComputePostureVelocity` (게인이 사영 **前** 로 이동 — 그래야 다른 소비자와 같은 법칙). **비-bit-identical 이관**이며 λ 규약이 §6.5 로 바뀐 것이 그 목적이다 (D-S2b (b)안). 잔여(관절 tail·클램프·적분) → S7 정리 완료 | Damped Jacobian pseudoinverse + null-space |
+| OSC | Torque | Cartesian 6-DOF | **부분 추출됨** — `task/task_accel_law.hpp` (S2a). 무상태 free function: 태스크 가속도 `a_task = K_p·e + K_d·(ν_d−ν) + a_ff` 만 담고, pose error 정의·궤적·모델을 모른다 (게인은 가속도형 `[1/s²]`, `impedance_law` 의 힘형과 Λ 배 차이). `Λ`/`τ`/`Nᵀ` 는 **`compliance/task_dynamics` 로 흡수 완료** (S2b, D-Q2) + 영공간 자세는 `joint/posture_law.hpp` 의 `ComputePostureTorque` (`q_ref` 인자 = 설정된 `safe_position`). **비-bit-identical 이관**이며 λ 규약이 §6.5 로 바뀐 것이 그 목적이다 (D-S2b (b)안). 잔여(τ 조립·클램프·텔레메트리) → S7 정리 완료 | Full pose PD + SE3 quintic trajectory; gravity-comp damped torque E-STOP (`ĝ(q)−D·q̇`, #184) |
+| Task impedance | Torque | Cartesian 3/6-DOF | **부분 추출됨** — `compliance/{impedance_law, inertia_shaping, task_dynamics, wrench_pipeline, safety_limiter, compliance_state_machine, torque_estop}`. §6.3 관성 성형은 `inertia_shaping.hpp` 의 무상태 free function `ComputeShapedTaskForce` (S4): `f_cmd = B·f_task + (B−I)·f_ext`, `B = Λ_S Λ_d⁻¹` + §5.2 편차 clamp 만 담고 **Λ_S 를 인자로** 받아 `TaskDynamics` 를 모른다 (수렴점 판정은 S2b). 영공간 자세 법칙은 `joint/posture_law.hpp` 의 `ComputePostureTorque` (S6) — cascade 의 인라인 루프와 **문자 그대로 동일**했던 것이 ARCH-3 발동 조건이었다. §6.2 게인은 `Gains` 에 `compliance::ImpedanceParams` 로 **중첩**돼 있다 (S6b — 기본값이 코어와 같아 중복이 실제로 사라지고, 매 tick positional 재조립도 함께 사라진다; YAML 키는 불변). 잔여(Λ 게이트·selection matrix·τ 꼬리) → S7 정리 완료 | §6.2 A=NONE Jacobian-transpose compliance `Jᵀ Sᵀ[Kp·Se+Kd·Sė]+τ_null+ĝ`; Λ 미사용(특이점 자유), σ_min-adaptive DLS nullspace (`nv>task_dim`), gravity-comp torque E-STOP, MuJoCo-only. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) |
+| Task admittance | Position | Cartesian 6-DOF | **부분 추출됨** — `compliance/{admittance_integrator, differential_ik, wrench_pipeline}` + §7.3 속도항은 `task/task_vel_law.hpp` 재사용 (S5, 새 코어 없음) + 영공간 자세 법칙 `joint/posture_law.hpp` 의 `ComputePostureVelocity` (S6 — 속도형 **P**, PD 의 `Kd=0` 이 아니다). 잔여(관절 tail·클램프·적분) → S7 정리 완료 | §7 Rule 3 — 힘 **입력** → 운동 출력. compliant frame `Λ_d ẍ̃+K_d ẋ̃+K_p x̃ = f_ext` 를 semi-implicit Euler + `exp3` retract 로 적분하고 §7.3 DLS 미분 IK 로 `q_cmd` 생성. 외부 wrench **필수** (A≠NONE, `enabled: false` 는 configure 에러), `min_desired_inertia` 하한(§7.4) · `max_compliant_displacement`/velocity(§7.5, `≤0`=off) · `max_return_{linear,angular}_velocity`(경계 밖 복귀 속도 상한, **상시**), E-STOP 은 position-hold(latch, 재활성화·`ClearEstop`·`ResetFault` 경계에서 무효화). impedance 와 **반대 부호**(§11.4.1 P2/P3). 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.5 |
+| Cascaded compliance | Torque | Cartesian 6-DOF | **부분 추출됨** — 위 두 행의 `compliance/*` 조합 + §7.6 MUST-1 판정식 `compliance/bandwidth_separation.hpp` (S6, `Λ_S` 를 인자로 — 만드는 쪽은 `compliance/task_dynamics`, S2b 이후 다섯 컨트롤러 공통) + 영공간 자세 법칙 `joint/posture_law.hpp` (S6). 잔여(τ 조립·§10.5 safety layer·FSM) → S7 정리 완료 | §7.6 — outer admittance(느린 대역, 순응 정의) 가 만든 compliant frame `(X_c, ν_c)` 를 inner §6.2 impedance(빠른 대역)가 추종. `τ = Jᵀ·α[K_p^i·e(X,X_c) + K_d^i·(ν_c−ν)] + α·Nᵀτ_posture + ĝ`. 외부 wrench **필수** (outer 의 입력). **wrench 는 정확히 한 번만 소비** — inner 에 `f_ext` 항이 없다(§7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로, D19). 대역폭 분리 `ω_i/ω_a`(MUST-1) 는 seeding tick 에 `Λ_S(q₀)` 로 1회 평가해 **진단 플래그** `bandwidth_ratio_low` 로만 보고(fault 아님, D20). YAML 은 `outer:` / `inner:` 로 분리(양쪽 다 stiffness·damping 을 가진다). E-STOP 은 torque hold `ĝ−D·q̇`. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.6 |
 | Grasp (Force-PI) | Internal | Hand 3x3-DOF | **코어** — `grasp/grasp_controller.hpp`. `RTControllerInterface` 를 상속하지 않고 상위 컨트롤러가 멤버로 소유한다 (규칙이 명문화되기 전부터 이미 목표 형태) | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
 
 `compliance/*` 는 규칙의 예시가 아니라 **기준**이다 — Eigen/span in-out, `Resize()`/`Compute()` 분리,
@@ -41,13 +47,18 @@ Algorithms 이며, 여기서는 반복하지 않는다 (AP-DOC-1).
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoWbcController | Position | TSID QP + Hand | `initial_controller` default — **`ur5e_p1a`·`iiwa7_leap` 만**. `ur5e_p1b` 는 sim·robot 둘 다 `demo_joint_controller` 다 (robot profile 별 `{sim,robot}.yaml` 이 SSoT). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
 
-### Base controller joint order & submodel selection (#172 Phase 3)
+### Joint order & submodel selection (#172 Phase 3 — 삭제된 어댑터의 동작 기록)
 
-`rtc_controllers` 어댑터는 데모 컨트롤러의 `CombinedModelCache` 와 별개로, 자체
-`RtModelHandle` 위에서 **device joint order** 와 **primary-device submodel** 를 처리한다. 아래
-동작은 어댑터 **전체**에 있다 (`grep -rln "MaybeSelectSubModel" rtc_controllers/src` 로 확인) —
-법칙과 무관한 boilerplate 라 컨트롤러마다 복제돼 있으며, 그래서 #236 은 이것을 G1(프레임워크 공통
-글루)으로 분류해 **S7 에서 `rtc_controller_interface` 로 상향**한다. 아래 서술은 그때까지의 현황이다.
+**아래 서술의 주어는 지금 코드에 없다.** `rtc_controllers` 어댑터들은 데모 컨트롤러의
+`CombinedModelCache` 와 별개로 자체 `RtModelHandle` 위에서 **device joint order** 와
+**primary-device submodel** 를 처리했고, 그 코드는 컨트롤러마다 복제된 법칙-무관 boilerplate 라
+#236 이 G1(프레임워크 공통 글루)로 분류한 뒤 S7c 에서 어댑터와 함께 삭제됐다
+(`MaybeSelectSubModel` 은 저장소 어디에도 없다). base 로 올라간 것은 그 **입력**이다 —
+`RTControllerInterface` 가 `GetPrimaryDeviceName()` / `GetSystemModelConfig()` 를 주고, 모델을
+실제로 고르고 재정렬하는 것은 바인딩 몫이다 (`integrated_bringup/src/controllers/*/controller.cpp`).
+
+이 절을 지우지 않고 남기는 이유는 아래 **재정렬 함정** 하나다: 바인딩에서 그대로 재발하며,
+발현하면 모든 수가 유한한 채 토크만 틀린다.
 
 - **Joint reorder (A2)**: `OnDeviceConfigsSet` 에서 `js==nv` 이면 `handle_->SetJointOrder(joint_state_names)`.
   device 순서 == URDF 순서면 `HasJointReorder()==false` → memcpy fallback(zero-overhead, 기존 로봇 불변).
@@ -107,7 +118,7 @@ ros2 param describe /demo_wbc_controller <param>
 
 `mpc_enable`은 빌드타임 `mpc_enabled_` (YAML `mpc.enabled`) 와 AND 결합 — YAML이 false면 런타임 1은 무시된다. `riccati_gain_scale`은 `[0,1]`로 자동 clamp.
 
-`rtc_controllers` 어댑터는 **하나도** 게인 채널을 노출하지 않는다 (게인은 controller-specific YAML 로 로드 후 `LoadConfig` 시점에 고정, 이후 `set_gains` 로만 변경). 노출할 수 없는 것이 정상이다 — 파라미터 채널은 LifecycleNode 를 요구하고, 컨트롤러는 노드를 만들지 않기 때문이다 ([design-principles.md](design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
+`rtc_controllers` 는 게인 채널을 노출하지 **않는다 — 노출할 수 없는 것이 정상이다.** 파라미터 채널은 LifecycleNode 를 요구하는데 이 패키지는 노드를 만들지 않으며, 코어가 보는 것은 바인딩이 넘긴 `Params` 스냅샷뿐이다 ([design-principles.md](design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
 
 런타임 튜닝 예:
 

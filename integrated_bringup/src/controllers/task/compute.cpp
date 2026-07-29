@@ -511,9 +511,11 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
     null_dq_.noalias() = Jpinv_ * j_nerr;
     null_dq_ = null_err_ - null_dq_;
     // NUM-6 at the point of use (#277). This gate is `enable_null_space &&
-    // !control_6dof` and never reads the gain, so — like ClikController, the
-    // other velocity-domain consumer — the floor goes straight on the gain
-    // rather than before the gate. LoadConfig and the `null_kp` parameter
+    // !control_6dof` and never reads the gain, so the floor goes straight on
+    // the gain rather than in front of the gate. (The retired ClikController
+    // adapter placed it identically — #236 S7c deleted the class, not the
+    // placement rule, whose SSoT is agent_docs/modification-guide.md §Adding a
+    // New Controller item 5.) LoadConfig and the `null_kp` parameter
     // callback floor it too; this half covers neither, because the gain reaches
     // the SeqLock POD from both and a negative K_p drives the posture AWAY from
     // its target while (I − J⁺J) hides that from the Cartesian task.
@@ -906,8 +908,9 @@ void DemoTaskController::WriteArmJointCommand(const ControllerState& state, rtc:
   // vectors while nc0 is whatever the device reported on the wire
   // (WriteJointStateToCache sets num_channels from the JointState message
   // length, not from joint_state_names) — a device reporting more channels
-  // than the model DOF must never index past them (issue #172 OOB; the
-  // sibling JointPDController guards the same hazard with `nq`).
+  // than the model DOF must never index past them (issue #172 OOB; the sibling
+  // bindings guard the same hazard with rtc::ModelChannelBound, which
+  // ArmCommandBound wraps).
   const std::size_t nq = ArmCommandBound(nc0);
   // Clamp dq_ in-place so log + publish read the same canonical clamped value.
   for (std::size_t i = 0; i < nq; ++i) {
@@ -920,9 +923,9 @@ void DemoTaskController::WriteArmJointCommand(const ControllerState& state, rtc:
   }
   // Channels in [nq, nc0) have no model joint behind them. Hold them at the
   // measured position rather than leaving the fresh-zero init: on a position
-  // lane 0.0 is "go to the origin", not "stay put" (JointPDController's E-STOP
-  // tail makes the same distinction, and the backends' WriteSafeCommand
-  // comments call out the identical trap).
+  // lane 0.0 is "go to the origin", not "stay put" (DemoJointController's
+  // E-STOP tail makes the same distinction via rtc::FillCommandTail, and the
+  // backends' WriteSafeCommand comments call out the identical trap).
   for (std::size_t i = nq; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = dev0.positions[i];
   }

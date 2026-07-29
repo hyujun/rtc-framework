@@ -84,7 +84,12 @@ inline constexpr std::uint32_t kVtcpFrameWaitTicks = 1000;
 /// pseudoinverse, while simultaneously running proportional position
 /// control on the 10-DOF hand motors.
 ///
-/// ### Arm control law (same as ClikController)
+/// ### Arm control law — CLIK (task-space velocity), still inline
+///
+/// The retired `ClikController` adapter ran this same law (#236 S7c deleted the class).
+/// This binding has not yet converged onto `rtc_controllers`' cores
+/// (`task/task_vel_law.hpp` + `compliance/differential_ik.hpp`) — the constant-λ DLS below
+/// is exactly the inline copy issue #282 tracks. See agent_docs/design-principles.md §현황.
 /// @code
 ///   pos_error    = x_des − FK(q)
 ///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped pseudoinverse]

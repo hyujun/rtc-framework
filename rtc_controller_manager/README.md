@@ -276,7 +276,7 @@ pure virtual 인 이유: 아무것도 안 하는 default 는 이것이 대체하
 
 latch 가 서면 controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildHoldOutput()` (측정 위치 hold; torque 모드는 0 N·m) 로 치환된다.
 
-- **왜 CM 이 하는가**: actuator 안전이 각 controller 의 E-STOP hook 구현 정확성에 의존해서는 안 된다. in-tree 반례가 이미 있다 — `OperationalSpaceController` 의 E-STOP 경로는 자기 주석으로 "position-scale 값을 kTorque command 로 낸다 (Do NOT rely on this as a safe torque E-STOP)" 고 명시하고, `PController` 는 `SetHandEstop` 을 override 하지 않아 base no-op 으로 빠진다
+- **왜 CM 이 하는가**: actuator 안전이 각 controller 의 E-STOP hook 구현 정확성에 의존해서는 안 된다. **과거 실측 (S7c 이전, #236)** — 당시 in-tree 반례가 둘 있었다: `OperationalSpaceController` 의 E-STOP 경로는 자기 주석으로 "position-scale 값을 kTorque command 로 낸다 (Do NOT rely on this as a safe torque E-STOP)" 고 명시했고, `PController` 는 `SetHandEstop` 을 override 하지 않아 base no-op 으로 빠졌다. 두 클래스는 삭제됐고 현재 in-tree 바인딩은 전부 `SetHandEstop` 을 override 한다 — 그러나 그것은 **오늘의 집합에 대한 관찰이지 계약이 아니다.** `RTControllerInterface` 는 레지스트리로 로드되는 out-of-tree 계약이고 `SetHandEstop` 의 base 는 여전히 no-op 이므로, 반례가 in-tree 에 없다는 사실은 이 가드를 없앨 근거가 되지 못한다 (없앴다면 반례는 다음 바인딩과 함께 조용히 돌아온다)
 - **의도적으로 버리는 것**: in-tree `ComputeEstop` 은 전부 hold 가 아니라 설정된 `safe_position_` 으로의 slew 다. 그 후퇴는 controller 단위 정책이고 CM 은 검증할 모델이 없다. 복원은 Phase 4 의 backend safe-output 계약 (position / torque / hand 각각의 semantics) 소관이다
 - **합성 순서**: #196 Phase 2b 의 output validation **뒤에** 얹힌다 — 우회가 아니다. validator 는 terminal state 에서도 계속 돌고 (`rejected_output_count_`), E-STOP 치환은 `estop_substituted_outputs_` 로 따로 센다. 둘 다 같은 hold 를 내므로 **카운터가 갈라지지 않으면 어느 가드가 막았는지 테스트가 구분할 수 없다**
 

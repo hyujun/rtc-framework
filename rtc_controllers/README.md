@@ -15,7 +15,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 >
 > **단 3계층 배치 전이 자체는 아직 진행 중입니다** — 위 문장은 *이 패키지*에 한정되며, 바인딩 쪽에 남은 인라인 사본(예: `demo_task_controller` 의 상수-λ DLS, #282)은 별개입니다. 전이 현황의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §현황 입니다.
 
-> **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
+> **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
 **제어 법칙 분류** — 각 행은 *법칙*이며, 그것을 tick 마다 부르는 바인딩은 downstream 이 소유합니다. 스키마 열은 그 법칙의 컨트롤러-레벨 설정 POD + 파서(`params/`)로, 바인딩이 configure 시 한 번 호출합니다:
 
@@ -165,14 +165,13 @@ rtc_controllers/
 │           └── pull_force_estimator.cpp
 └── examples/controllers/                     -- ★ 모두 reference example (ARCH-1)
     ├── indirect/
-    │   ├── p_controller.yaml             -- example (placeholder `<robot>` 그룹)
-    │   └── clik_controller.yaml          -- example
+    │   └── clik_controller.yaml          -- example (placeholder `<robot>` 그룹)
     └── direct/
         ├── joint_pd_controller.yaml      -- example
         └── operational_space_controller.yaml -- example
 ```
 
-> 위 4개 YAML 은 *복제용 reference* 입니다 (설치 위치: `share/rtc_controllers/examples/`). 실제 production 설정은 `integrated_bringup/config/<robot>/controllers/` 에 두고, `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 `config_package` 를 자기 패키지로 등록하세요 (config_package 인자의 `<robot>_bringup` 은 다운스트림 패키지 이름 placeholder — 이 저장소의 concrete 패키지는 `integrated_bringup`). `<robot>` placeholder 는 자신의 CM `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 일괄 치환합니다. 자세한 사용법은 각 YAML 상단 주석 참고.
+> 위 YAML 들은 *복제용 reference* 입니다 (설치 위치: `share/rtc_controllers/examples/`). 실제 production 설정은 `integrated_bringup/config/<robot>/controllers/` 에 두고, `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 `config_package` 를 자기 패키지로 등록하세요 (config_package 인자의 `<robot>_bringup` 은 다운스트림 패키지 이름 placeholder — 이 저장소의 concrete 패키지는 `integrated_bringup`). `<robot>` placeholder 는 자신의 CM `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 일괄 치환합니다. 자세한 사용법은 각 YAML 상단 주석 참고.
 
 ---
 
@@ -209,7 +208,7 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current[i]) * dt
 - 스레드 동기화 없음 (단일 스레드 전용)
 
 ```yaml
-# examples/controllers/indirect/p_controller.yaml
+# 스키마 형태만 — 이 법칙의 example YAML 은 어댑터와 함께 은퇴했습니다 (S7c)
 p_controller:
   kp: [120.0, 120.0, 100.0, 80.0, 80.0, 80.0]
   command_type: "position"
