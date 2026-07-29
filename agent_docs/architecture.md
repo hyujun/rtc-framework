@@ -25,7 +25,7 @@ Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_utils.hpp`
 **RT priority hierarchy**:
 
 ```
-90 rt_control (Core 1)  >  70 rt_callback (Core 2 + DDS recv co-pin)  >  60 mpc_main (Core 3)  >  55 mpc_workers (Core 4-5 on ≥ 10c)
+90 rt_control (Core 1)  >  70 rt_callback (Core 2 + DDS recv co-pin)  >  60 mpc_main (Core 3)  >  55 mpc_workers (Core 4 on 10c, Core 4-5 on ≥ 12c)
 ```
 
 - **Core 0 reserved** for OS / DDS / IRQ only — ≥ 6-core 모든 tier 에서 nrt_logging / nrt_callback 이 Core 0 와 분리 (v4.1)
@@ -129,7 +129,7 @@ controller-owned target sub 이 **default group** 에 붙는다는 점은 의도
 - **DeviceBackend-owned** — device-wire state/motor/sensor sub + joint/ros2 command pub, `devices.<group>.backend:` (sim.yaml/robot.yaml) 에서 선언
 - **CM fixed publishers** — `RtControllerNode` 가 hardcode 로 소유 (YAML 무관): per-group digital-twin `/rtc_cm/<group>/joint_states`, safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name` latched rewire trigger). 모두 lifecycle 무관 standalone publisher 로 active
 
-RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nrt_callback thread 가 read + ROS publish.
+RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT `nrt_publish_thread` 가 read + ROS publish.
 
 외부 도구 (BT, GUIs, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 구독 → switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire.
 
@@ -141,19 +141,25 @@ Session logs: `logging_data/YYMMDD_HHMM/{timing,monitor,device,sim,plots,motions
 
 ## Dependency Graph
 
+**이 그래프는 ARCH-2 (상향 의존 금지) 판정에 필요한 층위 요약이다 — 전체 엣지의 SSoT 는 각 패키지의 `package.xml`** 이며 여기 전수 박제하지 않는다 (AP-DOC-1). 아래는 층위를 가르는 `rtc_*` 엣지와 외부 의존만 담는다.
+
 ```
 rtc_msgs, rtc_base (independent)
   +-- rtc_communication, rtc_inference <-- rtc_base
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs, rtc_urdf_bridge
-  |     +-- rtc_controllers <-- rtc_controller_interface, rtc_urdf_bridge
-  |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication
-  +-- rtc_tsid <-- rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
-  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio, fmt ≥ 10
-  +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
+  +-- rtc_controllers <-- rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
+  |     (sibling of rtc_controller_interface -- does NOT depend on it, #236 S7c)
+  +-- rtc_controller_manager <-- rtc_controller_interface, rtc_controllers,
+  |         rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge
+  +-- rtc_tsid <-- rtc_math, rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
+  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio
+  |         (+ CMake-only: fmt >= 10, aligator -- source-installed, package.xml 미선언)
+  +-- rtc_mujoco_sim <-- rtc_base, rtc_msgs, MuJoCo 3.x (optional)
 rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base
 robot_descriptions (data-only, no code deps)
-integrated_bringup <-- rtc_controller_manager, udp_hand_driver, robot_descriptions,
-                 rtc_tsid, rtc_mpc
+integrated_bringup <-- rtc_controller_manager, rtc_controller_interface, rtc_controllers,
+                 rtc_tsid, rtc_mpc, rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
+                 + <exec_depend> udp_hand_driver, robot_descriptions, rtc_tools, repo_scripts
 ```

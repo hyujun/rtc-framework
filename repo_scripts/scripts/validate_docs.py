@@ -29,6 +29,13 @@ D7  ``detect`` fenced blocks: the pattern is linted for the escaping mistakes
     ``# probe:`` line it must match (and any ``# antiprobe:`` it must not), so
     a pattern that compiles but can no longer fire still fails.  An optional
     ``# exemplar:`` additionally asserts the state of the tree today.
+D10 no bare "§N.M" section ref in the constitution corpus.  The same number
+    means different things in CLAUDE.md, in the compliance normative spec, and
+    in a file's own numbered headings; a prefix is what tells them apart.
+D11 no rule-ID reference to an ID its owning file never defines (RT-/ARCH-/
+    PROC-/NUM-/E- own by invariants.md, AP- by anti-patterns.md, P1..P5 by
+    design-principles.md).
+
 D8  no detection pattern parked in a markdown table cell.  A cell cannot hold
     an unescaped ``|``, so a regex put in one gets escaped into something
     inert; the table is the root cause, not the individual typos.
@@ -88,6 +95,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import subprocess
 import sys
@@ -218,17 +226,63 @@ SUPPRESS_RE = re.compile(r"validate-docs:\s*allow\s+(D\d+(?:\s*,\s*D\d+)*)")
 # Corpus whose code citations must be symbol-based (D4).
 SYMBOL_CITATION_DIRS = ("agent_docs/", ".claude/")
 
-# D9 scope: the constitution and the root README are the two documents whose
-# stated package count is a whole-repo total that AP-DOC-1 warns will drift.
-# A per-package README saying "이 패키지는 2개의 ..." is describing itself, not
-# the repo, so scoping to these two avoids firing on legitimate sub-counts.
-COUNT_SCOPED_DOCS = ("README.md", "CLAUDE.md")
+# D9 scope: the two constitutions (CLAUDE.md for Claude Code, AGENTS.md for
+# every other tool) and the root README are the documents whose stated package
+# count is a whole-repo total that AP-DOC-1 warns will drift.  A per-package
+# README saying "이 패키지는 2개의 ..." is describing itself, not the repo, so
+# scoping to these three avoids firing on legitimate sub-counts.  AGENTS.md was
+# outside this scope while it was a hand-maintained mirror of CLAUDE.md, which
+# is exactly the file most likely to carry a stale copy of such a count.
+COUNT_SCOPED_DOCS = ("README.md", "CLAUDE.md", "AGENTS.md")
 
 # D9: "N개 [ROS 2] 패키지" -- a claim about how many packages the repo has.
 # The counted noun must be 패키지; this deliberately does not match the prose
 # "7개 목록" / "1개 이상" that appears in the constitution for unrelated reasons.
 # `(\d+)` is greedy, so "210개" captures 210 (never a partial "21").
 PACKAGE_COUNT_RE = re.compile(r"(\d+)\s*개\s*(?:의\s*)?(?:ROS[\s-]*2\s*)?패키지")
+
+
+# D10: a bare "§N.M" with no namespace in front of it.  The corpus uses numeric
+# section numbers for three unrelated things -- the constitutions' own sections
+# (CLAUDE.md §6), the compliance normative spec (§6.5 = the sigma_min-adaptive
+# DLS lambda rule), and file-internal named sections (§RT Path Invariants).
+# "§6.5" alone meant Sprint Contract in one file and a damping law in another,
+# and both spellings coexisted inside invariants.md with nothing to tell them
+# apart.  A reference is disambiguated when it is preceded by a markdown link
+# (`...md) §3.5`), a document name (`CLAUDE.md §6.5`), or the literal
+# `compliance ` prefix for the normative spec.
+# Scope: the constitution corpus only.  A per-package doc citing "§3.9" next to
+# the spec that owns §3.9 is unambiguous in context; the collision that D10
+# exists for is the constitution corpus, where CLAUDE.md's own section numbers
+# and the compliance spec's both appear -- inside one file, with nothing to tell
+# them apart.  Widening this to every README turned it into 159 findings that
+# were almost all legitimate self-references.
+SECTION_REF_SCOPED_DOCS = ("agent_docs/", "CLAUDE.md", "AGENTS.md", ".claude/")
+SECTION_REF_RE = re.compile(r"§\d+\.\d[\d.]*")
+SELF_NUMBERED_HEADING_RE = re.compile(r"^#{2,3}\s+\d+\.\s", re.M)
+SECTION_REF_QUALIFIED_RE = re.compile(
+    r"(?:compliance|CLAUDE\.md|AGENTS\.md|README\.md|[A-Za-z0-9_.-]+\.md|\))\s*$"
+)
+
+# D11: a rule-ID reference to an ID that no document defines.  Each namespace
+# has exactly one owner: invariants.md defines RT-/ARCH-/PROC-/NUM-/E-,
+# anti-patterns.md defines AP-, design-principles.md defines P1..P5.  A typo'd
+# or invented ID ("P6", "RT-11") reads as authoritative and sends the reader
+# looking for a rule that was never written -- P1..P5 were referenced as IDs by
+# two documents while the owning file had never assigned those labels at all.
+RULE_ID_RE = re.compile(r"\b(RT-HOST-\d+|RT-\d+|ARCH-\d+|PROC-\d+|NUM-\d+[ab]?|E-\d+|AP-[A-Z]+-\d+|P[1-9])\b")
+RULE_ID_OWNERS = {
+    "RT": "agent_docs/invariants.md",
+    "ARCH": "agent_docs/invariants.md",
+    "PROC": "agent_docs/invariants.md",
+    "NUM": "agent_docs/invariants.md",
+    "E": "agent_docs/invariants.md",
+    "AP": "agent_docs/anti-patterns.md",
+    "P": "agent_docs/design-principles.md",
+}
+# IDs that are deliberately retired: referenced in prose as history, never as a
+# live rule.  Keeping them listed is what lets D11 stay strict about the rest.
+RULE_ID_RETIRED = frozenset({"RT-7", "AP-RTT-3", "AP-RTT-4", "AP-CTRL-2", "AP-CTRL-4"})
 
 
 @dataclass(frozen=True)
@@ -742,9 +796,88 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
                 )
 
     findings.extend(check_detect_blocks(repo, rel, text))
+    findings.extend(check_section_refs(rel, text))
+    findings.extend(check_rule_ids(repo, rel, text))
     if rel in COUNT_SCOPED_DOCS:
         findings.extend(check_package_count(rel, text, repo.package_count(), allowed))
     return findings
+
+
+def check_section_refs(rel: str, text: str) -> list[Finding]:
+    """D10 -- numeric section refs must name their namespace."""
+    findings: list[Finding] = []
+    if not rel.startswith(SECTION_REF_SCOPED_DOCS):
+        return findings
+    # A document that numbers its own headings ("## 6. Escalation Triggers") is
+    # the owner of those numbers, so "§6.5" inside it is a self-reference and
+    # needs no prefix.  The files that carry the ambiguity are the ones using
+    # named headings -- there, every numeric ref is necessarily cross-document.
+    if SELF_NUMBERED_HEADING_RE.search(text):
+        return findings
+    allowed = suppressions(text)
+    for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
+        if in_fence or "D10" in allowed.get(lineno, frozenset()):
+            continue
+        for m in SECTION_REF_RE.finditer(raw):
+            if SECTION_REF_QUALIFIED_RE.search(raw[: m.start()]):
+                continue
+            findings.append(
+                Finding(
+                    rel,
+                    lineno,
+                    "D10",
+                    f"bare section ref '{m.group(0)}' -- prefix it with the owning "
+                    "document ('CLAUDE.md \u00a76.5') or 'compliance ' for the "
+                    "normative spec",
+                )
+            )
+    return findings
+
+
+def check_rule_ids(repo: Repo, rel: str, text: str) -> list[Finding]:
+    """D11 -- every referenced rule ID must be defined by its owning file."""
+    findings: list[Finding] = []
+    allowed = suppressions(text)
+    for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
+        if in_fence or "D11" in allowed.get(lineno, frozenset()):
+            continue
+        for m in RULE_ID_RE.finditer(raw):
+            rid = m.group(1)
+            if rid in RULE_ID_RETIRED:
+                continue
+            ns = rid.split("-")[0] if "-" in rid else "P"
+            owner = RULE_ID_OWNERS.get(ns)
+            if owner is None or rel == owner:
+                continue
+            if not rule_id_defined(repo, owner, rid):
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        "D11",
+                        f"rule ID '{rid}' is not defined in its owner {owner}",
+                    )
+                )
+    return findings
+
+
+@functools.lru_cache(maxsize=None)
+def rule_id_defined(repo: Repo, owner: str, rid: str) -> bool:
+    """True when *owner* defines *rid* (table row, heading, or bold label)."""
+    path = repo.root / owner
+    try:
+        body = path.read_text(encoding="utf-8")
+    except OSError:
+        # Owner missing is a D1 concern; do not double-report it as D11.
+        return True
+    for pat in (
+        re.compile(r"^\|\s*" + re.escape(rid) + r"\s*\|", re.M),
+        re.compile(r"^#{2,4}\s+" + re.escape(rid) + r"\b", re.M),
+        re.compile(r"\*\*" + re.escape(rid) + r"\b"),
+    ):
+        if pat.search(body):
+            return True
+    return False
 
 
 def check_package_count(
@@ -1301,6 +1434,56 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
         "D9 ignores a non-package count",
         "README.md",
         "빌드 후 999개 파일이 생성됩니다.\n",
+        [],
+    ),
+    # D10 severance guard: a bare compliance-spec ref in a named-heading doc.
+    (
+        "D10 bare section ref",
+        "agent_docs/f.md",
+        "특이점 처리는 §6.5 를 따른다.\n",
+        ["D10"],
+    ),
+    # Qualified three ways -- none of these may fire, or the check is unusable.
+    (
+        "D10 qualified refs are silent",
+        "agent_docs/f.md",
+        "compliance §6.5 와 [CLAUDE.md](../CLAUDE.md) §6.5 와 CLAUDE.md §9.1.\n",
+        [],
+    ),
+    # A doc that numbers its own headings owns those numbers.
+    (
+        "D10 self-reference in a numbered doc",
+        "agent_docs/f.md",
+        "## 6. Escalation\n\n자세한 것은 §6.5 참조.\n",
+        [],
+    ),
+    # Out of the constitution corpus entirely.
+    (
+        "D10 out of scope",
+        "rtc_controllers/docs/spec.md",
+        "특이점 처리는 §6.5 를 따른다.\n",
+        [],
+    ),
+    # D11 severance guard: P9 is never a real principle, so this stays red as
+    # long as check_rule_ids is wired into check_markdown.
+    (
+        "D11 undefined rule ID",
+        "agent_docs/f.md",
+        "새 utility 는 P9 를 따른다.\n",
+        ["D11"],
+    ),
+    # ...and a defined one must stay silent, or every doc lights up.
+    (
+        "D11 defined rule IDs are silent",
+        "agent_docs/f.md",
+        "P5 와 ARCH-1 과 NUM-5 와 AP-RT-1 은 실재한다.\n",
+        [],
+    ),
+    # Retired IDs are cited as history, not as live rules.
+    (
+        "D11 retired ID is silent",
+        "agent_docs/f.md",
+        "RT-7 은 은퇴했다.\n",
         [],
     ),
 ]

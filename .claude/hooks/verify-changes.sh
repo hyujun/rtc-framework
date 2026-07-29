@@ -890,6 +890,21 @@ if [ -n "$SHELLCHECK_FAILURES" ]; then
   REPORT="${REPORT}shellcheck (warning+) on changed shell scripts:\n${SHELLCHECK_FAILURES}\n"
 fi
 
+# Constitution parity: CLAUDE.md and AGENTS.md state the same rules for two
+# different audiences (Claude Code / every other tool), and nothing else in the
+# harness looks at AGENTS.md at all.  It went 4 commits stale that way, losing
+# ARCH-7, NUM-5 and the cwd-drift recovery notes for the tools that only read
+# it.  Non-blocking on purpose: a Claude-only change (hook wiring, slash command)
+# legitimately touches one and not the other -- the agent decides, and says so.
+if echo "$CHANGED_TRACKED" | grep -qx 'CLAUDE.md' && \
+   ! echo "$CHANGED_TRACKED" | grep -qx 'AGENTS.md'; then
+  CHECKLIST="${CHECKLIST}  - CLAUDE.md changed without AGENTS.md: if the edit states a rule (not a Claude-only mechanism), mirror it into AGENTS.md so non-Claude tools get it too — or note in your report why it is Claude-specific\n"
+fi
+if echo "$CHANGED_TRACKED" | grep -qx 'AGENTS.md' && \
+   ! echo "$CHANGED_TRACKED" | grep -qx 'CLAUDE.md'; then
+  CHECKLIST="${CHECKLIST}  - AGENTS.md changed without CLAUDE.md: confirm the same rule holds for Claude Code, or note why it does not\n"
+fi
+
 # ARCH-6 QoS depth is a non-blocking sensor: fold it into the checklist stream
 # so it surfaces alongside (never as) a hard failure.
 if [ -n "$QOS_VIOLATIONS" ]; then

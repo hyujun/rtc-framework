@@ -38,9 +38,9 @@
 
 - **증상**: Aux thread가 holding 중이면 RT blocks → 100 µs+ stall
 - **원인**: Priority inheritance 없는 일반 mutex는 RT 태스크가 non-RT를 기다림
-- **복구**: `SeqLock<T>` (single-writer/multi-reader, trivially copyable만), `SpscBuffer`, atomic, `std::try_to_lock`
+- **복구**: `SeqLock<T>` (single-writer/multi-reader, trivially copyable만), `SpscQueue<T,N>` / `SpscPublishBuffer<N>`, atomic, `std::try_to_lock`
 
-### AP-RT-5: 정기 tick에서 unguarded log
+### AP-RT-5: 정기 tick에서 unguarded log (AP-RT-1 과 같은 RT-3 축 — AP-RT-1 은 `RCLCPP_*` 호출 자체, 여기는 throttle 없이 반복되는 형태)
 
 - **증상**: 1 tick당 여러 줄 로그 × 정기 tick 주파수 = rate-proportional 폭증
 - **복구**: `RCLCPP_*_THROTTLE(logger, clock, period_ms, "fmt", args...)` — msg는 [invariants.md](invariants.md) RT-3 세부 스펙 준수
@@ -61,6 +61,8 @@
   - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (post-`6405c76`) 가 표준 패턴
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
   - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
+
+> **AP-RTT-3 · AP-RTT-4 는 결번**이다 (은퇴 사유는 기록되지 않았다). AP-RTT-5 는 AP-THREAD-1 로 재분류됐다. ID 는 재사용하지 않는다.
 
 ### AP-RTT-1: `realtime_tools` primitive 도입 시 예방 규칙 (dedicated thread / ctor heap / drop 추적)
 
@@ -110,7 +112,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **탐지**: [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-4 검사 (대상 integration 패키지 집합을 `package.xml` 에서 자동 도출하므로 패키지 rename 에 따라가지 못하는 하드코딩 glob 이 없다)
 - **복구**: 공개 API만 사용, interface injection
 
-### AP-ARCH-4: Device boundary 누설
+### AP-ARCH-4: Device boundary 누설 (대응 invariant 없음 — device group 경계는 표로 규정되지 않았다)
 
 - **증상**: Hand/ToF state가 robot arm state로 새거나 그 반대 → GUI 혼선, digital twin 틀림
 - **원인**: 장치 그룹 경계 무시한 공용 버퍼 / state publisher
@@ -121,7 +123,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 
 - **증상**: `create_publisher`/`create_subscription` 에 depth 10 (rclcpp 기본값) 또는 `SensorDataQoS()` (기본 depth 5) 를 무심코 사용 → stale 샘플 큐잉
 - **탐지**: [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0b 의 ARCH-6 검사 (non-blocking). 인자 없는 `SensorDataQoS()` 도 대상
-- **복구**: depth 를 1 로. reliability/durability 는 유지하고 depth 필드만 이동 (`SensorDataQoS().keep_last(1)`). 다중 샘플 누적이 정당하면 §Escalation E-1 로 예외 기록
+- **복구**: depth 를 1 로. reliability/durability 는 유지하고 depth 필드만 이동 (`SensorDataQoS().keep_last(1)`). 다중 샘플 누적이 정당하면 [invariants.md](invariants.md) §Escalation Triggers 의 E-1 로 예외 기록
 
 ## Process / Drift
 
@@ -132,7 +134,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **탐지**: `grep -c <new_pattern>` 예상치 vs 실측 — 대상 파일 목록 명시 후 전수 grep
 - **복구**: complete 체크 전 전수 grep, 대상 파일 목록 명시 후 체크
 
-### AP-PROC-2: Code-only without YAML/README/CMake 동기화 ([modification-guide.md](modification-guide.md) PROC-1 위반)
+### AP-PROC-2: Code-only without YAML/README/CMake 동기화 ([invariants.md](invariants.md) PROC-1 위반)
 
 - **증상**: 빌드 실패, 파라미터 ParameterUninitializedException, 런타임 NotFound
 - **복구**: [modification-guide.md](modification-guide.md) Completion Checklist 전항목
@@ -162,6 +164,8 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **복구**: validate_tree / registerNodeType 양쪽 업데이트 — BT 노드 신설 시 체크리스트
 
 ## Controller-Specific
+
+> **AP-CTRL-2 · AP-CTRL-4 는 결번**이다 (은퇴 사유는 기록되지 않았다). ID 는 이력 참조를 위해 재사용하지 않는다.
 
 ### AP-CTRL-1: Mid-tick gains branch 불일치
 

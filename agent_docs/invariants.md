@@ -2,9 +2,9 @@
 
 이 파일의 규칙은 **위반 시 아키텍처가 깨진다**. 작업 중 이 중 하나를 건드려야 할 것 같으면, 코드를 수정하기 **전에** `[CONCERN]` 을 보고하고 사용자 컨펌을 받아야 한다.
 
-**Severity 는 파일 단위가 아니라 규칙 단위다.** [CLAUDE.md](../CLAUDE.md) §6 이 severity 의 SSoT 이며 (Critical = 컨펌 전 커밋·PR 금지, Warning = 판단에 따라 진행하되 결정 로그), 아래 Architecture 표가 Severity 열을 갖는다. 이전에 이 문단이 전 파일을 Critical 로 선언해 §6 에서 Warning 인 ARCH-3·ARCH-5 와 충돌했다 (#213).
+**Severity 는 파일 단위가 아니라 규칙 단위다.** 아래 §Escalation Triggers 가 E-번호·severity·`[CONCERN]` 포맷의 SSoT 이며 (Critical = 컨펌 전 커밋·PR 금지, Warning = 판단에 따라 진행하되 결정 로그), Architecture 표도 Severity 열을 갖는다. 이전에 이 문단이 전 파일을 Critical 로 선언해 §Escalation Triggers 에서 Warning 인 ARCH-3·ARCH-5 와 충돌했다 (#213).
 
-대응은 **1:1 이 아니다** — 그렇게 적었던 문장이 스스로 반증됐으므로 실제 관계를 적는다. §6 이 이름으로 지목하는 invariant 만 전용 E-번호를 갖고 (ARCH-1→E-2, ARCH-3→E-4, ARCH-5→E-10), 나머지는 "invariants.md 규칙을 건드림" 인 **E-1 (Critical)** 로 수렴한다. 반대로 E-3·E-6~E-9·E-11 은 ARCH 표가 아니라 msgs ABI·test·thread·E-STOP 등 다른 축을 가리키므로 대응하는 행이 없다. 그리고 **탐지 sensor 의 blocking 여부와 escalation severity 는 다른 축이다**: ARCH-6 은 non-blocking sensor 로 경고만 내지만, 규칙 자체를 바꾸려면 E-1 로 컨펌을 받아야 한다.
+대응은 **1:1 이 아니다** — 그렇게 적었던 문장이 스스로 반증됐으므로 실제 관계를 적는다. §Escalation Triggers 가 이름으로 지목하는 invariant 만 전용 E-번호를 갖고 (ARCH-1→E-2, ARCH-3→E-4, ARCH-5→E-10), 나머지는 "invariants.md 규칙을 건드림" 인 **E-1 (Critical)** 로 수렴한다. 반대로 E-3·E-6~E-9·E-11 은 ARCH 표가 아니라 msgs ABI·test·thread·E-STOP 등 다른 축을 가리키므로 대응하는 행이 없다. 그리고 **탐지 sensor 의 blocking 여부와 escalation severity 는 다른 축이다**: ARCH-6 은 non-blocking sensor 로 경고만 내지만, 규칙 자체를 바꾸려면 E-1 로 컨펌을 받아야 한다.
 
 규칙을 보완하는 문서:
 - [design-principles.md](design-principles.md) — ARCH 섹션의 근거 (robot-agnostic, 5 principles)
@@ -16,7 +16,7 @@
 
 **어떤 콜백이 RT 인지는 함수 이름이 아니라 그 콜백이 붙은 executor 의 스케줄러가 결정한다.** 판정의 SSoT 는 [architecture.md](architecture.md) §Execution Contexts 표이고, 개별 판정 절차는 [.claude/rules/rt-path.md](../.claude/rules/rt-path.md) 에 있다. 이 구분은 실제로 갈린다 — backend 의 sensor/state 구독 콜백은 `cb_group_rt_callback_` → SCHED_FIFO 라 **RT** 지만, controller 의 RobotTarget 구독 콜백은 controller LifecycleNode 의 default group → `nrt_callback_executor` → SCHED_OTHER 라 **비-RT** 다. 둘 다 "구독 콜백" 이지만 구속 여부가 반대다.
 
-RT path 의 대표 진입점: `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `SetDeviceTarget()` / `InitializeHoldPosition()` 의 tick 경로, DeviceBackend 의 state/motor/sensor 구독 콜백, UDP receive 콜백, `CheckTimeouts` 50 Hz 분기, **MPC thread** (`MPCThread::OnTick` → 파생 `Solve()` — dedicated SCHED_FIFO core), **`UdpHandController::RunCommCycle`** (self-clocked UDP send/recv cycle — `rtc::PeriodicRtThread` 기반 CommLoop, 별도 SCHED_FIFO thread).
+RT path 의 대표 진입점: `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `DrainPendingTargets()` 의 tick 경로 (target **marshal** 쪽 `SetDeviceTarget()` 은 controller LifecycleNode default group → 비-RT 다 — 위 SSoT 표 참조), DeviceBackend 의 state/motor/sensor 구독 콜백, UDP receive 콜백, `CheckTimeouts` 50 Hz 분기, **MPC thread** (`MPCThread::OnTick` → 파생 `Solve()` — dedicated SCHED_FIFO core), **`UdpHandController::RunCommCycle`** (self-clocked UDP send/recv cycle — `rtc::PeriodicRtThread` 기반 CommLoop, 별도 SCHED_FIFO thread).
 
 **비-RT path**: `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` lifecycle 콜백, `DrainLog()` aux thread, controller LifecycleNode 의 1 Hz aux 타이머 (timing CSV drain 등), ROS 파라미터 콜백, controller-owned RobotTarget 구독과 grasp_command 서비스 핸들러, 그리고 **`PublishNonRtSnapshot()`** — 이름과 달리 executor 콜백이 아니라 `NrtPublishLoopEntry` 의 전용 `std::jthread` (SCHED_OTHER) 에서 SPSC drain 으로 호출된다.
 
@@ -74,7 +74,7 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 | RT-1 | `new` / `malloc` / `push_back` / `emplace_back` / `resize` | Heap alloc은 100 µs+ jitter + priority inversion | `std::array`, 사전 할당된 fixed-size `Eigen::Matrix<fixed>` |
 | RT-2 | `throw` / `catch` | `noexcept` 위반 = unwinding latency 비결정, process kill 리스크 | Error code, `std::optional`, `std::expected` |
 | RT-3 | 정기 tick에서 `RCLCPP_INFO/WARN/ERROR/DEBUG/FATAL` 직접 호출 | Blocking I/O (rosout queue / network) | SPSC log buffer → `DrainLog()` aux thread ([rt_controller_node_estop.cpp](../rtc_controller_manager/src/rt_controller_node_estop.cpp) 참조) |
-| RT-4 | `std::mutex::lock()` / `std::lock_guard` / `std::scoped_lock` | 우선순위 역전, blocking | 1순위: `SeqLock<T>` (latest-only state, default) / `SpscQueue<T,N>` (producer→consumer) / `std::atomic<T>` (POD); last resort `std::try_to_lock`. **전체 7-등급 분류·결정 가이드는 위 §RT pub/sub primitive catalog** (중복 박제 회피) |
+| RT-4 | `std::mutex::lock()` / `std::lock_guard` / `std::scoped_lock` | 우선순위 역전, blocking | 1순위: `SeqLock<T>` (latest-only state, default) / `SpscQueue<T,N>` (producer→consumer) / `std::atomic<T>` (POD); last resort `std::try_to_lock`. **전체 등급 분류·결정 가이드는 위 §RT pub/sub primitive catalog** (중복 박제 회피) |
 | RT-5 | `auto` with Eigen expression | Expression template lazy-eval → aliasing 버그 (같은 메모리 r/w) | 명시 타입: `Eigen::MatrixXd M = ...` |
 | RT-6 | Quaternion `lerp` / `nlerp` | Non-unit 결과 → 회전축 변형, drift | `Eigen::Quaterniond::slerp(t, q_b)` only |
 | RT-7 | *(은퇴 — [PROC-6](#process-invariants) 으로 이동)* | assertion 무결성은 timing-safety 가 아닌 process 규칙 | ↓ PROC-6 참조 |
@@ -196,7 +196,7 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 | # | 규칙 | 이유 | 검증/구현 |
 |---|------|------|----------|
 | RT-HOST-1 | RT 프로세스는 main 진입 또는 `on_configure` 종료 시점에 `mlockall(MCL_CURRENT \| MCL_FUTURE)` 1회 호출 | Major/minor page fault → ms 단위 jitter | `controller_manager` 의 `lock_memory: true` 파라미터 또는 자체 `mlockall` 래퍼. `repo_scripts/scripts/verify_rt_runtime.sh` 가 `VmLck>0` 검증 |
-| RT-HOST-2 | RT thread 는 SCHED_FIFO priority ∈ [50, 95] 로 `on_activate` 시점에 설정. **99 금지** (kernel watchdog 영역) | CFS 비결정성 제거 | `rtc_base/threading/thread_config.hpp` 의 `SystemThreadConfigs` SSoT 사용. 60~90 layout 이미 호환. 외부 라이브러리 (`realtime_tools` 등) 가 자체 dedicated thread 생성 시 이 layout 과 정합 필수 |
+| RT-HOST-2 | RT thread 는 SCHED_FIFO priority ∈ [50, 95] 로 `on_activate` 시점에 설정. **99 금지** (kernel watchdog 영역) | CFS 비결정성 제거 | `rtc_base/threading/thread_config.hpp` 의 `SystemThreadConfigs` SSoT 사용. 현 layout 은 55~90 을 쓴다 (mpc_workers 55 가 하한 — 외부 thread 를 아래에 끼우려면 이 하한부터 확인). 외부 라이브러리 (`realtime_tools` 등) 가 자체 dedicated thread 생성 시 이 layout 과 정합 필수 |
 | RT-HOST-3 | RT thread 는 `thread_config.hpp` + `cpu_shield.sh` 가 정의한 CPU core 에 affinity 고정 | DDS receive thread / ROS executor / IRQ 와 동일 core 공유 시 cache pollution + 선점 jitter | `thread_config.hpp` 의 `SystemThreadConfigs::cpu_affinity` 또는 `cpu_shield.sh` runtime 격리. 외부 라이브러리 thread 생성 시 동일 정책 적용 필수 |
 
 **System-level** (수치 박제 X, script 위임): 다음은 배포 환경 책임이며, controller 시작 시 sensor 로 확인하고 timing log 헤더에 결과를 기록한다:
@@ -219,15 +219,15 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 
 ## Architecture Invariants
 
-| # | 규칙 | Severity ([CLAUDE.md](../CLAUDE.md) §6) | 이유 | 위반 탐지 |
+| # | 규칙 | Severity (§Escalation Triggers) | 이유 | 위반 탐지 |
 |---|------|---|------|-----------|
-| ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | **Critical** (E-2) | robot-agnostic 훼손 ([design-principles.md](design-principles.md) §Generality) | **자동** — hook Phase 0 의 ARCH-1 검사 |
+| ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | **Critical** (E-2) | robot-agnostic 훼손 ([design-principles.md](design-principles.md) §Five Principles (2. Generality)) | **자동** — hook Phase 0 의 ARCH-1 검사 |
 | ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md) §Dependency Graph) | **Critical** (E-1) | Cyclic dep / abstraction leak | 수동 리뷰 — `rtc_base/`가 `rtc_controllers/` include, `rtc_*/`가 integration 패키지 include 등 |
 | ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | Warning (E-4) | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 수동 리뷰 — 새 `.cpp`에 대응하는 pure-virtual base 부재 |
 | ARCH-4 | integration 패키지가 `rtc_*` private 헤더 (`rtc_*/src/`) include 금지 | **Critical** (E-1) | 경계 훼손, robot-specific leak | **자동** — hook Phase 0 의 ARCH-4 검사 |
 | ARCH-5 | `robot_descriptions`는 data-only — build-time 의존 금지 | Warning (E-10) | 빌드 토폴로지 부담 + "share만 있으면 OK" 모델 훼손 | 수동 리뷰 — `find_package` / `ament_target_dependencies` / `<depend>` 에 `robot_descriptions` |
 | ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane별 유지 — depth 필드만 강제) | Warning (sensor) / E-1 (규칙 변경) | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전. | **자동 (non-blocking)** — hook Phase 0b 의 ARCH-6 검사. 인자 없는 `SensorDataQoS()` (기본 depth 5) 도 `.keep_last(1)` 필요. test fixture 는 면제 |
-| ARCH-7 | `rtc_*` 는 control-framework runtime identity (RT 제어 루프를 구동하는 exec) 를 소유하지 않는다 | Warning (sensor) / E-1 (규칙 변경) | agnostic 패키지가 exec 를 가지면 exec ↔ 노드 ↔ pgrep ↔ logger 정렬이 깨지고 robot-specific 의존이 새어든다 | **자동** — hook Phase 0 의 ARCH-7 검사. 검사 대상은 `rtc_*/CMakeLists.txt` 에서 **HEAD 에 없던 타깃 이름** 이다 (줄 단위가 아니라 — CMake 는 줄을 제자리에서 고쳐 쓰므로 재들여쓰기가 신규 exec 로 읽혔다). `example_*` 는 이름으로 면제되고, 그 외 예외는 `add_executable` 줄 또는 바로 윗줄의 `ARCH-7-exempt` 주석으로 표시한다. 예외 범위는 [design-principles.md](design-principles.md) §ARCH-7 — robot-agnostic standalone 노드 (`mujoco_simulator_node`, `closure_state_publisher`) 와 example 타깃 |
+| ARCH-7 | `rtc_*` 는 control-framework runtime identity (RT 제어 루프를 구동하는 exec) 를 소유하지 않는다 | Warning (sensor) / E-1 (규칙 변경) | agnostic 패키지가 exec 를 가지면 exec ↔ 노드 ↔ pgrep ↔ logger 정렬이 깨지고 robot-specific 의존이 새어든다 | **자동** — hook Phase 0 의 ARCH-7 검사. 검사 대상은 `rtc_*/CMakeLists.txt` 에서 **HEAD 에 없던 타깃 이름** 이다 (줄 단위가 아니라 — CMake 는 줄을 제자리에서 고쳐 쓰므로 재들여쓰기가 신규 exec 로 읽혔다). `example_*` 는 이름으로 면제되고, 그 외 예외는 `add_executable` 줄 또는 바로 윗줄의 `ARCH-7-exempt` 주석으로 표시한다. 예외 범위는 [design-principles.md](design-principles.md) §Boundary Rules — robot-agnostic standalone 노드 (`mujoco_simulator_node`, `closure_state_publisher`) 와 example 타깃 |
 
 **탐지의 SSoT 는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) 다** — ARCH 계열 패턴을 여기에 복제하지 않는다. 이전에는 문서가 divergent copy 를 들고 있었고, 그 사본이 hook 보다 낡은 스코프 (`ur5e_*/`, whole-file) 를 담은 채 조용히 썩었다 (#213). 정확한 정규식·스코프·면제 규칙이 필요하면 hook 을 읽는다.
 
@@ -237,7 +237,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 - 변환 규칙: `rclcpp::QoS(N)`→`QoS(1)`, `.keep_last(N)`→`.keep_last(1)`, `rclcpp::SensorDataQoS()`→`SensorDataQoS().keep_last(1)` (best_effort 보존), create_pub/sub 정수 리터럴→`1`, Python `QoSProfile(depth=N)`→`depth=1`.
 - **reliability / durability 는 절대 함께 바꾸지 않는다**: `transient_local` (latched), `best_effort` (sensor/RT lane), `reliable` 은 그대로. depth 만 이동.
-- 적용 범위: 프로덕션 C++ + Python. test fixture 제외. 위반이 정당한 경우 (수집 버퍼 등 다중 샘플 누적 의존) 는 §Escalation `[CONCERN]` (E-1) 로 보고 후 예외 기록.
+- 적용 범위: 프로덕션 C++ + Python. test fixture 제외. 위반이 정당한 경우 (수집 버퍼 등 다중 샘플 누적 의존) 는 §Escalation Triggers 의 `[CONCERN]` (E-1) 로 보고 후 예외 기록.
 
 **기록된 예외 — ToF snapshot 토픽** (`<ns>/tof/snapshot`): 최대 `control_rate` (예: 500 Hz) 로 발행되는 sensor stream 이며 subscriber 가 **매 샘플을 누적**한다 (`shape_estimation` voxel cloud + snapshot_history, `ur5e_bt_coordinator` collection buffer). depth 1 이면 executor 가 못 따라갈 때 중간 스냅샷이 유실되므로 deep best_effort 큐를 유지한다 — publisher 5 (`integrated_bringup/src/support/owned_topics.cpp` `SetupToFSnapshotPublisher`), shape_estimation sub 5, bt_coordinator collection sub 100. latest-value 소비자 (wrench, marker, state 토픽) 는 예외 아님 — depth 1.
 
@@ -274,7 +274,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 | PROC-3 | `rtc_base` / `rtc_msgs` 변경 시 전체 빌드·전체 테스트 | 광범위 영향 — 대부분 패키지가 의존 |
 | PROC-4 | E-STOP trigger는 idempotent (`compare_exchange_strong`) | 중복 트리거 안전성 |
 | PROC-5 | C++ ↔ Python 미러 쌍은 한쪽만 고치지 말 것 — session subdir 목록 (`rtc_base/logging/session_dir.hpp` `kSubdirs` ↔ `rtc_tools.utils.session_dir` `_SESSION_SUBDIRS`) 등 "동일 로직" 표방 미러는 동시 수정 + 동등성 테스트 통과 | 부분 수정 drift — launch (Python) 가 노드 (C++) 보다 먼저 세션 디렉토리를 만들어 한쪽 누락이 런타임에 표면화 (`test_session_dir.py::test_subdir_list_matches_cpp_mirror`) |
-| PROC-6 | 기존 test assertion 을 통과시키려 **약화·수정 금지** (회귀 은폐). **예외**: assertion 이 진짜 틀렸거나 spec 이 바뀐 경우는 정당한 변경 — 새 코드 fix 와 **별도 commit** 으로 근거 제시 + 대응 regression test 갱신, 착수 전 §6 E-6 로 escalate. 탐지: `git diff test/` 의 `EXPECT_*`/`ASSERT_*` 상수 변경 (AP-PROC-4) | 회귀 은폐 방지 — 단, "test 를 절대 못 고친다" 가 아니라 "몰래 약화 금지, 정당한 변경은 근거와 함께". RT timing 과 무관한 process 규칙 (구 RT-7) |
+| PROC-6 | 기존 test assertion 을 통과시키려 **약화·수정 금지** (회귀 은폐). **예외**: assertion 이 진짜 틀렸거나 spec 이 바뀐 경우는 정당한 변경 — 새 코드 fix 와 **별도 commit** 으로 근거 제시 + 대응 regression test 갱신, 착수 전 §Escalation Triggers 의 E-6 로 escalate. 탐지: `git diff test/` 의 `EXPECT_*`/`ASSERT_*` 상수 변경 (AP-PROC-4) | 회귀 은폐 방지 — 단, "test 를 절대 못 고친다" 가 아니라 "몰래 약화 금지, 정당한 변경은 근거와 함께". RT timing 과 무관한 process 규칙 (구 RT-7) |
 
 | PROC-7 | Controller-owned SeqLock (`GraspState` / `WbcState` / `ToFSnapshot`) 은 `Compute()` 가 도는 **모든** tick 에서 Store — E-STOP·early-return tick 포함. 이번 tick 에 계산하지 않은 필드는 값을 얼리지 말고 명시적으로 무효화 (`FillEstopPublishState`). 탐지: `Compute()` 의 early-return 경로에 `*_state_lock_.Store` 가 없는 분기 | CM 은 tick 마다 새 `stamp_ns` 를 만들고 publish thread 는 SeqLock 을 다시 Load 하므로, Store 생략은 "미발행" 이 아니라 **stale body + fresh stamp 재발행** 이다 — E-STOP 중에 살아있어 보이는 `valid=1` telemetry 가 그 발현 (issue #234 P-1). 계약·경로는 [controllers.md](controllers.md#ros2-topics) |
 
@@ -282,14 +282,14 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 | # | 규칙 | 이유 | 구현 위치 |
 |---|------|------|-----------|
-| NUM-1 | 특이점 근처: damped pseudoinverse 필수 (`max_damping` / `singularity_threshold` YAML 주입). 램프의 **양 끝단이 모두** 하한을 받는다 — λ_max 바닥 `kMinMaxDamping` 과 σ₀ 바닥 `kMinSigma0` 은 **둘 다 로더와 값을 쓰는 지점 양쪽**에 (`LoadConfig` 에만 두면 `set_gains()` / ctor default 가 우회 — σ₀ 도 예외가 아니다). σ₀ ≤ 0 은 셸을 좁히는 게 아니라 `AdaptiveDampingSquared` 를 short-circuit 시켜 λ²=0 을 상시 반환한다 | Unbounded magnification | 두 상수의 **정의는 [compliance/task_dynamics.hpp](../rtc_controllers/include/rtc_controllers/compliance/task_dynamics.hpp) 한 곳** (지키는 법칙 옆; 사본을 소비자마다 두면 이 표 한 줄을 바꾸는 데 여러 번 편집이 필요했다). 두 하한 모두 `std::max` 를 손으로 쓰지 않고 **`compliance::FloorMaxDamping`** / **`compliance::FloorSigma0`** 을 부른다 (NUM-6 의 `FloorNonNegativeGain` 과 같은 형태·같은 이유: `max(1e-4, NaN) == 1e-4` 라 비유한 λ_max 를 *그럴듯한* 값으로 세탁한다. σ₀ 쪽은 더 나쁘다 — `max(1e-6, NaN) == 1e-6` 은 어떤 도달 가능한 자세도 들어오지 않는 셸이라 §6.5 가 무장한 것처럼 보이는 채로 전 자세에서 꺼진다. 비유한 값은 그대로 통과시켜 하류 finite 검사로 보낸다: 토크 레인은 `compliance::AllFinite` (§10.5), 위치 레인은 actuator 경계의 `urtc::ValidateControllerOutput` — 후자는 tick 을 hold 로 대체하고 연속 거부 ~100 ms 후 E-STOP 으로 올린다). **configure 쪽**: `rtc_controllers/src/params/` 의 다섯 파서 (osc·clik·task_impedance·task_admittance·cascaded_compliance) 가 `compliance::FloorMaxDamping(…)` 와 `std::max(compliance::kMinSigma0, …)` 를 건다 — σ₀ 쪽 다섯 곳의 손수 쓴 `std::max` 를 `FloorSigma0` 으로 수렴시키는 것은 후속 작업이다 (#282 리뷰). **사용 지점 쪽 (λ_max·σ₀)**: #298 S7c-2 에서 어댑터가 삭제되며 그 half 는 코드에서 사라졌고 지금은 **바인딩 요구사항** — `set_gains()` 상당 경로로 게인 POD 를 SeqLock 에 직접 쓰는 바인딩은 tick 에서 다시 `compliance::FloorMaxDamping(·)` 와 `compliance::FloorSigma0(·)` 를 걸어야 한다 (#282 의 `integrated_bringup` task 컨트롤러가 첫 in-tree 준수 사례이자 회귀 표면; #301 에서 doc 표 한 줄 대신 **grep 되는 심볼**로 만든 이유가 이것이다). 법칙 `AdaptiveDampingSquared` 는 **자기 인자를 floor 하지 않는다** — 안에 넣으면 자기 성질 λ² ≤ λ_max² 가 1e-4 아래에서 거짓이 되고, 기존 oracle 은 전부 λ_max = 0.05 를 쓰므로 **281개 테스트가 모두 green 인 채 통과한다** (#301 에서 실측; `TaskDynamics.AdaptiveDampingDoesNotFloorItsOwnArgument` 가 그 유일한 감지기). λ 규약은 §6.5 하나뿐 — OSC·CLIK 의 상수 λ 는 #236 S2b+S3b 에서 수렴했다 |
+| NUM-1 | 특이점 근처: damped pseudoinverse 필수 (`max_damping` / `singularity_threshold` YAML 주입). 램프의 **양 끝단이 모두** 하한을 받는다 — λ_max 바닥 `kMinMaxDamping` 과 σ₀ 바닥 `kMinSigma0` 은 **둘 다 로더와 값을 쓰는 지점 양쪽**에 (`LoadConfig` 에만 두면 `set_gains()` / ctor default 가 우회 — σ₀ 도 예외가 아니다). σ₀ ≤ 0 은 셸을 좁히는 게 아니라 `AdaptiveDampingSquared` 를 short-circuit 시켜 λ²=0 을 상시 반환한다 | Unbounded magnification | 두 상수의 **정의는 [compliance/task_dynamics.hpp](../rtc_controllers/include/rtc_controllers/compliance/task_dynamics.hpp) 한 곳** (지키는 법칙 옆; 사본을 소비자마다 두면 이 표 한 줄을 바꾸는 데 여러 번 편집이 필요했다). 두 하한 모두 `std::max` 를 손으로 쓰지 않고 **`compliance::FloorMaxDamping`** / **`compliance::FloorSigma0`** 을 부른다 (NUM-6 의 `FloorNonNegativeGain` 과 같은 형태·같은 이유: `max(1e-4, NaN) == 1e-4` 라 비유한 λ_max 를 *그럴듯한* 값으로 세탁한다. σ₀ 쪽은 더 나쁘다 — `max(1e-6, NaN) == 1e-6` 은 어떤 도달 가능한 자세도 들어오지 않는 셸이라 compliance §6.5 가 무장한 것처럼 보이는 채로 전 자세에서 꺼진다. 비유한 값은 그대로 통과시켜 하류 finite 검사로 보낸다: 토크 레인은 `compliance::AllFinite` (compliance §10.5), 위치 레인은 actuator 경계의 `urtc::ValidateControllerOutput` — 후자는 tick 을 hold 로 대체하고 연속 거부 ~100 ms 후 E-STOP 으로 올린다). **configure 쪽**: `rtc_controllers/src/params/` 의 다섯 파서 (osc·clik·task_impedance·task_admittance·cascaded_compliance) 가 `compliance::FloorMaxDamping(…)` 와 `std::max(compliance::kMinSigma0, …)` 를 건다 — σ₀ 쪽 다섯 곳의 손수 쓴 `std::max` 를 `FloorSigma0` 으로 수렴시키는 것은 후속 작업이다 (#282 리뷰). **사용 지점 쪽 (λ_max·σ₀)**: #298 S7c-2 에서 어댑터가 삭제되며 그 half 는 코드에서 사라졌고 지금은 **바인딩 요구사항** — `set_gains()` 상당 경로로 게인 POD 를 SeqLock 에 직접 쓰는 바인딩은 tick 에서 다시 `compliance::FloorMaxDamping(·)` 와 `compliance::FloorSigma0(·)` 를 걸어야 한다 (#282 의 `integrated_bringup` task 컨트롤러가 첫 in-tree 준수 사례이자 회귀 표면; #301 에서 doc 표 한 줄 대신 **grep 되는 심볼**로 만든 이유가 이것이다). 법칙 `AdaptiveDampingSquared` 는 **자기 인자를 floor 하지 않는다** — 안에 넣으면 자기 성질 λ² ≤ λ_max² 가 1e-4 아래에서 거짓이 되고, 기존 oracle 은 전부 λ_max = 0.05 를 쓰므로 **281개 테스트가 모두 green 인 채 통과한다** (#301 에서 실측; `TaskDynamics.AdaptiveDampingDoesNotFloorItsOwnArgument` 가 그 유일한 감지기). λ 규약은 compliance §6.5 하나뿐 — OSC·CLIK 의 상수 λ 는 #236 S2b+S3b 에서 수렴했다 |
 | NUM-2 | `dt` near-zero guard | `1/dt` 발산 | 모든 trajectory generator |
 | NUM-3 | Quaternion 정규화 매 곱 후 | Drift → non-unit | SE3 trajectory, orientation PD |
 | NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | `rtc_controllers/src/params/{clik,osc,joint_pd}_params.cpp` 의 `cfg["trajectory_speed"]` / `cfg["trajectory_angular_speed"]` 파싱부 (#298 S7c-2 이전에는 어댑터의 `LoadConfig`), 그리고 `integrated_bringup` 의 각 컨트롤러 `parameters.cpp` / `controller.cpp` — YAML 과 `ros2 param` 양쪽 진입점 모두 |
 | NUM-5 | 폐쇄 체인 사영: seed 증분 제한 필수. residual 로 조립 분기를 판정하지 말 것 | 점 구속 loop 은 조립 분기가 여럿이고 **모두 φ=0 을 만족** → ‖φ‖ 검사를 통과한 채 반대편 분기 착지, warm-start 로 영구 고정 | `loop_projection` (`ProjectPassiveWithContinuation`), `RtClosedChainHandle` (tick 당 seed clamp) |
-| NUM-6 | 영공간 자세 게인은 `rtc::FloorNonNegativeGain` 하한을 **로더와 사용 지점 양쪽**에서 받고, 사용 지점 하한은 활성 게이트 **판정 앞**에 둔다 | `K_pⁿ < 0` 은 복원이 아니라 발산 방향 (τ₀ = K_pⁿ·(q_ref − q) − K_dⁿ·q̇), `K_dⁿ < 0` 은 에너지 주입. `Nᵀ`/`N` 사영이 이를 task 로부터 가려 **fault 없이 조용히 자세가 밀린다**. 게이트가 `!= 0.0` 이라 법칙에만 걸면 *게이트는 열린 채 값만 0* 인 조합이 생긴다 | **로더 쪽**: `rtc_controllers/src/params/` 의 다섯 파서 전부 + `DemoTaskController` (`integrated_bringup`, `null_kp` 가 `ros2 param`·BT `SetGains` 로 런타임 노출되는 유일한 표면). 파서는 **키 유무와 무관하게 무조건** 이며 `if (!cfg)` 조기 반환 경로도 포함 (거기 게인은 정의상 생성자·`set_gains()` 산) — 여섯 파서 각각의 그 분기를 `test_params_schema.cpp` 의 `AnUndefinedNode*` 케이스가 pin 한다. **사용 지점 쪽** (`Compute()` 의 게이트 판정 앞) 은 #298 S7c-2 에서 어댑터와 함께 사라졌고 이제 **바인딩 요구사항** 이다 — `integrated_bringup` 의 task 컨트롤러가 in-tree 준수 사례 (`compute.cpp` 의 `null_dq_ *= FloorNonNegativeGain(gains.null_kp)`). 하한은 `std::max(0.0, ·)` 를 손으로 쓰지 않는다 — `max(0.0, NaN) == 0.0` 이라 비유한 게인을 세탁해 기존 `nan_inf` SAFE_STOP 을 지운다; `FloorNonNegativeGain` 은 비유한 값을 그대로 통과시켜 그 fault 로 보낸다 |
-| NUM-6a | NUM-6 의 *파생 규칙* 두 개 (태스크 임피던스 §6.4 임계감쇠 보정 `K_dⁿ ≥ 2√K_pⁿ`, §6.1 `TRANSLATION_ONLY` 가드) 는 floor **뒤**에 두되 configure 에만 둔다 | floor 앞이면 음수 `K_pⁿ` 가 `if (kp > 0.0)` 을 건너뛰어 감쇠 보정을 통째로 놓치고, `== 0.0` 가드를 그냥 통과한다. 반대로 이 둘을 tick 으로 옮기면 게인의 *하한* 이 아니라 *다른 게인의 재작성* 이 매 tick 돌아 `get_gains()` 와 `Compute()` 가 갈리고 리터럴 oracle 전부가 configure 규칙을 미러해야 한다 | `rtc_controllers/src/params/task_impedance_params.cpp` (YAML 경로 + `if (!cfg)` 경로 둘 다 동일 3단계: floor → §6.4 → §6.1) — #298 S7c-2 이전에는 `task_impedance_controller.cpp` `LoadConfig`. §6.1 의 런타임 등가물은 이제 **바인딩 요구사항** 이다: `set_gains()` 상당 경로로 `TRANSLATION_ONLY` + `K_pⁿ ≤ 0` 에 도달하면 `ComplianceFaults::posture_authority_lost` (DEGRADED) 를 세워야 한다. **이 필드만 고아인 것이 아니다** — `ComplianceStateMachine` 자체에 출하 바인딩이 없어 `ComplianceFaults` 의 *어떤* 필드도 in-tree 기록자가 없고, 인스턴스화는 전부 테스트다 (`integrated_bringup` 은 `compliance/` 를 include 조차 하지 않는다). 조건 자체도 아직 도달 불가: `TaskSelection::kTranslationOnly` 는 `rtc_controllers` 안에만 있고 출하된 task 컨트롤러는 enum 이 아니라 `enable_null_space && !control_6dof` bool 쌍을 쓴다. 따라서 **이 한 필드에만 setter 를 다는 국소 수정은 하지 않는다** (#301 결정) — 상태 머신을 배선하는 바인딩이 생길 때 전체를 함께 세운다. 필드는 [compliance_state_machine.hpp](../rtc_controllers/include/rtc_controllers/compliance/compliance_state_machine.hpp) 에 남아 있고 `AnyDegrade()` 가 이미 읽는다 |
-| NUM-6b | §5.3 안전층 게인도 같은 하한을 받는다 — `joint_limit_stiffness`(k_lim)·`joint_limit_damping`(d_lim) 은 `rtc::FloorNonNegativeGain`, `joint_limit_margin`(δ) 은 floor 가 아니라 **configure 거부** (`>= 0` 이고 유한). 세 검사 모두 키 유무와 무관하게 무조건이며 `if (!cfg)` 조기 반환 경로도 포함 | 밴드 안에서 `q − lo < 0` 이라 **부호가 자세 게인과 반대로 작동**한다: `k_lim < 0` 은 관절을 한계에서 밀어내는 대신 **한계 안쪽으로** 밀고, `d_lim < 0` 은 하드스톱 바로 앞에서 에너지를 주입한다 (출하 UR5e 는 `k_lim=0, d_lim=2` 라 d_lim 이 유일한 방어선). δ 는 clamp 로 고칠 수 없다 — `lo = q_min + δ` 이므로 δ<0 은 밴드를 한계 **밖**에 놓고 δ=NaN 은 두 비교를 모두 false 로 만들어 **반발항이 영원히 발동하지 않는데 fault 도 안 뜬다**. 0 으로 clamp 하면 그 오설정이 정상 구동되는 config 가 된다 | `rtc_controllers/src/params/` 의 세 파서 (task_impedance·cascaded_compliance·task_admittance — admittance 는 δ 만; δ 가 q_cmd clamp 밴드를 좁히는 §7.3 형태라도 판정은 같다). **사용 지점 쪽**은 NUM-1 λ_max 와 같은 **바인딩 요구사항** 이고 in-tree 소비자가 없다 — 법칙 `compliance::AddJointLimitRepulsive` 는 자기 인자를 floor **하지 않는다** (`AdaptiveDampingSquared` 와 같은 판정: 법칙이 인자를 몰래 고치면 리터럴 oracle 이 거짓이 되고, 기존 oracle 은 전부 양수 게인이라 그 변경을 못 본다). `test_params_schema.cpp` 의 `SafetyLayerGainSchema.*` 가 키×경로를 pin 하며, 11종 mutation 으로 각 케이스가 실제로 red 가 되는 것을 실측했다 (#280) |
+| NUM-6 | 영공간 자세 게인은 `rtc::FloorNonNegativeGain` 하한을 **로더와 사용 지점 양쪽**에서 받고, 사용 지점 하한은 활성 게이트 **판정 앞**에 둔다 | `K_pⁿ < 0` 은 복원이 아니라 발산 방향 (τ₀ = K_pⁿ·(q_ref − q) − K_dⁿ·q̇), `K_dⁿ < 0` 은 에너지 주입. `Nᵀ`/`N` 사영이 이를 task 로부터 가려 **fault 없이 조용히 자세가 밀린다**. 게이트가 `!= 0.0` 이라 법칙에만 걸면 *게이트는 열린 채 값만 0* 인 조합이 생긴다 | **로더 쪽**: `rtc_controllers/src/params/` 의 **영공간 자세 게인을 갖는 파서 전부** (`joint_pd` 는 그 게인이 없어 해당 없음) + `DemoTaskController` (`integrated_bringup`, `null_kp` 가 `ros2 param`·BT `SetGains` 로 런타임 노출되는 유일한 표면). 파서는 **키 유무와 무관하게 무조건** 이며 `if (!cfg)` 조기 반환 경로도 포함 (거기 게인은 정의상 생성자·`set_gains()` 산) — 그 분기는 `test_params_schema.cpp` 의 `AnUndefinedNode*` 케이스가 파서마다 pin 한다 (floor 를 걸지 않는 `joint_pd` 도 "필드를 건드리지 않음" 으로 pin 된다). **사용 지점 쪽** (`Compute()` 의 게이트 판정 앞) 은 #298 S7c-2 에서 어댑터와 함께 사라졌고 이제 **바인딩 요구사항** 이다 — `integrated_bringup` 의 task 컨트롤러가 in-tree 준수 사례 (`compute.cpp` 의 `null_dq_ *= FloorNonNegativeGain(gains.null_kp)`). 하한은 `std::max(0.0, ·)` 를 손으로 쓰지 않는다 — `max(0.0, NaN) == 0.0` 이라 비유한 게인을 세탁해 기존 `nan_inf` SAFE_STOP 을 지운다; `FloorNonNegativeGain` 은 비유한 값을 그대로 통과시켜 그 fault 로 보낸다 |
+| NUM-6a | NUM-6 의 *파생 규칙* 두 개 (태스크 임피던스 compliance §6.4 임계감쇠 보정 `K_dⁿ ≥ 2√K_pⁿ`, compliance §6.1 `TRANSLATION_ONLY` 가드) 는 floor **뒤**에 두되 configure 에만 둔다 | floor 앞이면 음수 `K_pⁿ` 가 `if (kp > 0.0)` 을 건너뛰어 감쇠 보정을 통째로 놓치고, `== 0.0` 가드를 그냥 통과한다. 반대로 이 둘을 tick 으로 옮기면 게인의 *하한* 이 아니라 *다른 게인의 재작성* 이 매 tick 돌아 `get_gains()` 와 `Compute()` 가 갈리고 리터럴 oracle 전부가 configure 규칙을 미러해야 한다 | `rtc_controllers/src/params/task_impedance_params.cpp` (YAML 경로 + `if (!cfg)` 경로 둘 다 동일 3단계: floor → compliance §6.4 → compliance §6.1) — #298 S7c-2 이전에는 `task_impedance_controller.cpp` `LoadConfig`. compliance §6.1 의 런타임 등가물은 이제 **바인딩 요구사항** 이다: `set_gains()` 상당 경로로 `TRANSLATION_ONLY` + `K_pⁿ ≤ 0` 에 도달하면 `ComplianceFaults::posture_authority_lost` (DEGRADED) 를 세워야 한다. **이 필드만 고아인 것이 아니다** — `ComplianceStateMachine` 자체에 출하 바인딩이 없어 `ComplianceFaults` 의 *어떤* 필드도 in-tree 기록자가 없고, 인스턴스화는 전부 테스트다 (`integrated_bringup` 은 `compliance/` 를 include 조차 하지 않는다). 조건 자체도 아직 도달 불가: `TaskSelection::kTranslationOnly` 는 `rtc_controllers` 안에만 있고 출하된 task 컨트롤러는 enum 이 아니라 `enable_null_space && !control_6dof` bool 쌍을 쓴다. 따라서 **이 한 필드에만 setter 를 다는 국소 수정은 하지 않는다** (#301 결정) — 상태 머신을 배선하는 바인딩이 생길 때 전체를 함께 세운다. 필드는 [compliance_state_machine.hpp](../rtc_controllers/include/rtc_controllers/compliance/compliance_state_machine.hpp) 에 남아 있고 `AnyDegrade()` 가 이미 읽는다 |
+| NUM-6b | compliance §5.3 안전층 게인도 같은 하한을 받는다 — `joint_limit_stiffness`(k_lim)·`joint_limit_damping`(d_lim) 은 `rtc::FloorNonNegativeGain`, `joint_limit_margin`(δ) 은 floor 가 아니라 **configure 거부** (`>= 0` 이고 유한). 세 검사 모두 키 유무와 무관하게 무조건이며 `if (!cfg)` 조기 반환 경로도 포함 | 밴드 안에서 `q − lo < 0` 이라 **부호가 자세 게인과 반대로 작동**한다: `k_lim < 0` 은 관절을 한계에서 밀어내는 대신 **한계 안쪽으로** 밀고, `d_lim < 0` 은 하드스톱 바로 앞에서 에너지를 주입한다 (출하 UR5e 는 `k_lim=0, d_lim=2` 라 d_lim 이 유일한 방어선). δ 는 clamp 로 고칠 수 없다 — `lo = q_min + δ` 이므로 δ<0 은 밴드를 한계 **밖**에 놓고 δ=NaN 은 두 비교를 모두 false 로 만들어 **반발항이 영원히 발동하지 않는데 fault 도 안 뜬다**. 0 으로 clamp 하면 그 오설정이 정상 구동되는 config 가 된다 | `rtc_controllers/src/params/` 의 세 파서 (task_impedance·cascaded_compliance·task_admittance — admittance 는 δ 만; δ 가 q_cmd clamp 밴드를 좁히는 compliance §7.3 형태라도 판정은 같다). **사용 지점 쪽**은 NUM-1 λ_max 와 같은 **바인딩 요구사항** 이고 in-tree 소비자가 없다 — 법칙 `compliance::AddJointLimitRepulsive` 는 자기 인자를 floor **하지 않는다** (`AdaptiveDampingSquared` 와 같은 판정: 법칙이 인자를 몰래 고치면 리터럴 oracle 이 거짓이 되고, 기존 oracle 은 전부 양수 게인이라 그 변경을 못 본다). `test_params_schema.cpp` 의 `SafetyLayerGainSchema.*` 가 키×경로를 pin 하며, 11종 mutation 으로 각 케이스가 실제로 red 가 되는 것을 실측했다 (#280) |
 
 ### NUM-5 세부 스펙
 
@@ -310,9 +310,46 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 근거·실측: issue #248, PR #249 리뷰.
 
+## Escalation Triggers (E-1 ~ E-11)
+
+**이 절이 E-번호·severity·`[CONCERN]` 포맷의 SSoT 다** — tool-neutral 이며 [CLAUDE.md](../CLAUDE.md) §6 과 [AGENTS.md](../AGENTS.md) §5 는 여기를 가리키기만 한다 (이전에는 양쪽이 전체 목록을 인라인 복제했고, 그 구조가 handoff 섹션 목록에서 실제 드리프트를 냈다 — AP-DOC-1).
+
+다음 상황에서는 코드를 쓰기 **전에** `[CONCERN]` 을 보고하고 사용자 컨펌을 기다린다.
+
+| ID | Severity | 트리거 | 관련 규칙 |
+|----|----------|--------|-----------|
+| E-1 | **Critical** | 이 파일의 invariant 를 위반하거나 예외가 필요할 것 같음 | 전 규칙 (전용 번호가 없는 모든 위반이 여기로 수렴) |
+| E-2 | **Critical** | `rtc_*` 패키지에 robot-specific 값을 넣어야 함 | ARCH-1 |
+| E-3 | **Critical** | `rtc_msgs` / `shape_estimation_msgs` public ABI 변경 필요 | — |
+| E-4 | **Warning** | Abstract interface 없이 두 번째 구현 추가 필요 | ARCH-3 |
+| E-5 | **Warning** | Optional dep (MuJoCo, aligator) fallback 제거 필요 | — |
+| E-6 | **Critical** | 기존 test assertion 을 약화·수정해야 할 것 같음 — 회귀 은폐 vs 정당한 spec 변경/test-bug 를 구분하고, 후자는 별도 commit + 근거 | PROC-6 |
+| E-7 | **Critical** | Thread model (core 배치, priority) 변경 | RT-HOST-1~3 |
+| E-8 | **Critical** | E-STOP 경로 수정 | PROC-4, PROC-7 |
+| E-9 | **Warning** | 문서-코드 불일치를 어느 쪽에 맞출지 결정 필요 | PROC-1 |
+| E-10 | **Warning** | `robot_descriptions` 를 build-time 으로 의존하려는 변경 (`find_package` / `<depend>` / `ament_target_dependencies`) | ARCH-5 |
+| E-11 | **Warning** | `PublishRole` enum 에 controller-owned non-RT 토픽을 추가하려는 변경 — 새 controller-owned 토픽은 `SeqLock<T>` + `Setup*Publisher` 패턴 | ARCH-6 |
+
+**Severity 의미**:
+
+- **Critical** — 사용자 컨펌 전까지 커밋·PR 금지
+- **Warning** — 사용자 판단에 따라 진행, 결정 로그 남김
+- **Info** — 기록만, 진행 가능
+
+**`[CONCERN]` 포맷**:
+
+```text
+[CONCERN] <한 줄 요약>
+Severity: Critical | Warning | Info
+Detail: <문제의 구체 내용, 저촉되는 invariant ID, 영향 범위, 검토한 대안>
+Alternative: <우회 안 1개 이상 — interface 추가 / SPSC defer / aux thread 이동 등>
+```
+
+Severity 는 파일이 아니라 **규칙 단위**로 정해진다 — 위 표와 Architecture 표의 Severity 열을 그대로 인용한다.
+
 ## 이 파일의 규칙을 건드려야 할 것 같을 때
 
-1. 수정 **전** `[CONCERN]` 보고 (Severity 는 위 표의 해당 규칙 열을 그대로 인용) — 포맷 SSoT 는 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN] 포맷`. `Detail` 에 어떤 invariant 에 저촉되는지·영향 범위, `Alternative` 에 우회 안 1개 이상 (interface 추가 / SPSC defer / aux thread 이동 등).
+1. 수정 **전** `[CONCERN]` 보고 — 트리거 표·severity·포맷은 위 §Escalation Triggers 가 SSoT.
 2. 사용자 컨펌 후 진행
 3. "임시로 위반 → 나중에 정리"는 허용되지 않음. Warning 이상은 별도 리팩터 task로 분리
 

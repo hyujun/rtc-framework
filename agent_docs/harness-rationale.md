@@ -7,7 +7,7 @@ CLAUDE.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orc
 ## 출처
 
 - [Fowler — *Harness engineering for coding agent users* (2026.04)](https://martinfowler.com/articles/harness-engineering.html)
-- [Anthropic — *Harness design for long-running application development* (2026.04)](https://www.anthropic.com/engineering/harness-design-long-running-apps) — 에이전트 자기 평가는 신뢰 불가 → inferential sensor 를 generation *전* 명시 (CLAUDE.md §5.5·§6.5 근거)
+- [Anthropic — *Harness design for long-running application development* (2026.04)](https://www.anthropic.com/engineering/harness-design-long-running-apps) — 에이전트 자기 평가는 신뢰 불가 → inferential sensor 를 generation *전* 명시 (CLAUDE.md §5.5 · CLAUDE.md §6.5 근거)
 - [Osmani — *Agent Harness Engineering* (2026)](https://addyosmani.com/blog/agent-harness-engineering/)
 - [Anthropic — *2026 Agentic Coding Trends Report*](https://resources.anthropic.com/2026-agentic-coding-trends-report)
 

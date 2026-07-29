@@ -23,7 +23,7 @@
 6. Verify   → 본 문서 Completion Checklist 8항목 통과
 ```
 
-**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지는 [CLAUDE.md](../CLAUDE.md) §4 가 SSoT (변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip 포함), hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **차단 탈출은 리포트 대응뿐이다**: 재진입은 `stop_hook_active` 로 가드되어 stop cycle 당 1회만 발화하므로 turn 이 무한히 물리지는 않지만, 문서화되지 않은 연속 차단 상한("N회 후 override" 류) 은 존재하지 않는다 — 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다 (hook 헤더 주석이 SSoT).
+**※ 4·5·6은 반드시 수행한다. Claude Code 로 작업할 때는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 이를 자동 실행/차단하므로 사전 수동 실행이 빠른 피드백용이 되지만, 그 hook 은 Claude Code 전용이다 — 다른 도구(Codex · Copilot 등)에서는 돌지 않으므로 4·5·6 을 직접 실행해야 하며 무엇을 돌릴지는 [AGENTS.md](../AGENTS.md) §3 "커밋 전에 직접 돌려야 하는 것" 이 SSoT.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지는 [CLAUDE.md](../CLAUDE.md) §4 가 SSoT (변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip 포함), hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **차단 탈출은 리포트 대응뿐이다**: 재진입은 `stop_hook_active` 로 가드되어 stop cycle 당 1회만 발화하므로 turn 이 무한히 물리지는 않지만, 문서화되지 않은 연속 차단 상한("N회 후 override" 류) 은 존재하지 않는다 — 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다 (hook 헤더 주석이 SSoT).
 
 ### Workflow Fail-Safe
 
@@ -40,7 +40,7 @@
 
 ## Sprint Contract & Spec (착수 전 성공 기준)
 
-언제 Sprint Contract 를 협상하고 무엇이 면제인지는 [CLAUDE.md](../CLAUDE.md) §6.5 (always-loaded 헌법) 가 trigger 목록의 SSoT. 여기엔 *포맷과 절차* 만 둔다 (가끔만 필요하므로 on-demand).
+언제 Sprint Contract 를 협상하고 무엇이 면제인지는 각 도구의 헌법이 갖는다 — Claude Code 는 [CLAUDE.md](../CLAUDE.md) §6.5, 그 외 도구는 [AGENTS.md](../AGENTS.md) §5 "착수 전 성공 기준" (두 목록은 같은 내용이다). 여기엔 *포맷과 절차* 만 둔다 (가끔만 필요하므로 on-demand).
 
 코드 수정 시작 *전* 1~3줄로 성공 기준을 사용자에게 제시하고 컨펌받는다:
 
@@ -66,10 +66,10 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 1. **코어 헤더** — `rtc_controllers/include/rtc_controllers/<family>/` 에 법칙만. 입출력은 Eigen / `std::span` 이고 `ControllerState`/`ControllerOutput`·lifecycle·mailbox 를 모른다. `Resize()`(off-RT, 할당 허용) / `Compute()`(`noexcept`, heap-free) 분리. 참조 구현은 `rtc_controllers/include/rtc_controllers/compliance/` 의 `task_dynamics.hpp`·`impedance_law.hpp`.
 2. **코어 파라미터** — 코어 옆에 `Params` POD + `ParseXxxParams(YAML::Node)` 자유 함수 (yaml-cpp 만 의존, 비-RT). 프레임워크 타입을 참조하지 않으므로 코어와 같은 층에 남는다.
 3. **바인딩 클래스** — integration 패키지(`integrated_bringup/`)에서 `RTControllerInterface` 를 상속하고 코어를 멤버로 소유한다. `Compute()`, `SetDeviceTarget()`, `Name()` (all `noexcept`) 구현 + `ControllerState` 해체 → 코어 호출 → `ControllerOutput` 조립. **`Name()` 은 전역 유일해야 한다** — CM 은 `Name()` 과 `config_key` 를 하나의 lookup 네임스페이스에 넣으므로, 컨트롤러 클래스를 복사하고 `Name()` 문자열을 안 고치면 bring-up 전체가 거부된다 (경고 아님; [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §식별자 충돌 가드). 같은 이유로 **한 클래스를 두 `config_key` 로 등록할 수 없다**. `DeviceStateCache` 에서 무엇을 읽고 무엇을 스스로 계산해야 하는지는 [design-principles.md](design-principles.md) §Backend / Controller Layering.
-4. **Runtime gains** — 바인딩의 LifecycleNode (`/<config_key>`) ROS 2 parameter 로 노출: `on_configure` 에서 `DeclareGainParameters()` + `add_on_set_parameters_callback(OnGainParametersSet)`. Read-only 캡(`*_max_traj_velocity`)은 `ParameterDescriptor::read_only=true`. Force-PI 같은 one-shot 이벤트는 [rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv) 같은 srv 채널을 별도로 마련하고 `~/grasp_command`로 advertise (active controller만 server를 띄움). **코어는 파라미터 채널을 갖지 않는다** — 노드를 만들지 않기 때문이며, 스냅샷을 인자로 받는다.
+4. **Runtime gains** — 바인딩의 LifecycleNode (`/<config_key>`) ROS 2 parameter 로 노출: `on_configure` 에서 `DeclareGainParameters()` + `add_on_set_parameters_callback(OnGainParametersSet)`. Read-only 캡(`*_max_traj_velocity`)은 `ParameterDescriptor::read_only=true`. Force-PI 같은 one-shot 이벤트는 [rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv) 같은 srv 채널을 별도로 마련하고 **상대 이름** `"grasp_command"` 로 advertise 한다 — 노드 namespace 기준 `/<config_key>/grasp_command` 로 해석되며, `~/` 를 쓰면 이름이 한 번 더 중첩된다 (active controller만 server를 띄움). **코어는 파라미터 채널을 갖지 않는다** — 노드를 만들지 않기 때문이며, 스냅샷을 인자로 받는다.
 5. Gains struct must be trivially copyable (plain arrays/bools/doubles/floats/ints; no `std::string`/`std::vector`/virtuals — `rtc::SeqLock` 의 타입 요구, [rtc_base/README.md](../rtc_base/README.md)). Store as `rtc::SeqLock<Gains> gains_lock_` — RT path snapshots once with `const auto gains = gains_lock_.Load();` at method entry; aux-thread writers (parameter callback / srv handler) use Load/mutate/Store. `set_gains`/`get_gains` accessors delegate to the SeqLock and are used by tests.
 
-   **게인 하한은 로더와 tick 양쪽에 건다.** `set_gains()` 는 방금 그 SeqLock 에 POD 를 직접 쓰므로 configure 의 floor 를 통째로 우회한다 — 코어 파서(2번)가 거는 것과 **같은 심볼**을 바인딩 `Compute()` 에서 한 번 더 부른다: 영공간 자세 게인과 §5.3 안전층 게인은 `rtc::FloorNonNegativeGain` (NUM-6; 자세 게인은 활성 게이트 **판정 앞**에), §6.5 DLS 의 λ_max 와 σ₀ 는 `compliance::FloorMaxDamping` / `compliance::FloorSigma0` (NUM-1/NUM-2). 하한을 `std::max(0.0, ·)` 로 손수 쓰지 않는다 — `std::max` 는 `a < b ? b : a` 라 `max(x, NaN) == x` 이고, 그러면 비유한 게인이 *그럴듯한* 값으로 세탁돼 기존 `nan_inf` SAFE_STOP 을 지운다 (두 헬퍼는 비유한 값을 그대로 통과시켜 그 fault 로 보낸다). λ_max·σ₀ 쪽 첫 in-tree 준수 사례는 `demo_task_controller` 다 (#282) — 새 바인딩도 그 패키지 테스트에 "tick 에서 λ_max / σ₀ 가 floor 된다" 케이스를 함께 넣는다 (#301 의 강제 지점). σ₀ 쪽은 관측 지점을 고르는 데 주의가 필요하다: 잘 조건화된 자세에서는 floor 여부와 무관하게 λ²=0 이라 테스트가 공허해지므로, 랭크 결손 자세(σ_min=0)에서 λ_max 가 명령을 움직이는지로 판정한다. 근거는 [invariants.md](invariants.md) NUM-1 / NUM-6 이 SSoT.
+   **게인 하한은 로더와 tick 양쪽에 건다.** `set_gains()` 는 방금 그 SeqLock 에 POD 를 직접 쓰므로 configure 의 floor 를 통째로 우회한다 — 코어 파서(2번)가 거는 것과 **같은 심볼**을 바인딩 `Compute()` 에서 한 번 더 부른다: 영공간 자세 게인과 compliance §5.3 안전층 게인은 `rtc::FloorNonNegativeGain` (NUM-6; 자세 게인은 활성 게이트 **판정 앞**에), compliance §6.5 DLS 의 λ_max 와 σ₀ 는 `compliance::FloorMaxDamping` / `compliance::FloorSigma0` (둘 다 NUM-1 — NUM-2 는 `dt` guard 라 무관하다). 하한을 `std::max(0.0, ·)` 로 손수 쓰지 않는다 — `std::max` 는 `a < b ? b : a` 라 `max(x, NaN) == x` 이고, 그러면 비유한 게인이 *그럴듯한* 값으로 세탁돼 기존 `nan_inf` SAFE_STOP 을 지운다 (두 헬퍼는 비유한 값을 그대로 통과시켜 그 fault 로 보낸다). λ_max·σ₀ 쪽 첫 in-tree 준수 사례는 `demo_task_controller` 다 (#282) — 새 바인딩도 그 패키지 테스트에 "tick 에서 λ_max / σ₀ 가 floor 된다" 케이스를 함께 넣는다 (#301 의 강제 지점). σ₀ 쪽은 관측 지점을 고르는 데 주의가 필요하다: 잘 조건화된 자세에서는 floor 여부와 무관하게 λ²=0 이라 테스트가 공허해지므로, 랭크 결손 자세(σ_min=0)에서 λ_max 가 명령을 움직이는지로 판정한다. 근거는 [invariants.md](invariants.md) NUM-1 / NUM-6 이 SSoT.
 6. **YAML** — production 은 `integrated_bringup/config/<robot>/controllers/` (바인딩과 같은 패키지가 소유한다; `rtc_controllers/examples/controllers/` 는 `<robot>` placeholder 를 쓰는 **참고용 example** 이라 그대로 로드되지 않으므로 — [rtc_controllers/README.md](../rtc_controllers/README.md) §사용 모델 — 새 컨트롤러가 여기 파일을 추가하지 않는다). `topics:` 섹션을 반드시 포함한다. 어떤 `role:` 문자열이 유효하고 어느 lane 이 controller YAML 밖에 사는지(device-wire → `devices.<group>.backend:`)는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §토픽 소유권 · §구독 역할 · §퍼블리시 역할 이 SSoT — **거기 없는 문자열은 오타와 동일하게 configure 를 실패시키므로 추측하지 말고 표를 본다.**
 7. **바인딩이 토픽을 소유한다면** — `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` / `PublishNonRtSnapshot` 을 override 하고 `owned_topics` 헬퍼에 위임한다 (또는 동등 코드를 인라인). 훅별 기본 동작 · 3-pass bring-up 계약 · `on_configure` override 규약은 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §Lifecycle 훅 이 SSoT. **그 문서가 다루지 않는 한 가지**: `on_activate` override 도 반드시 base 를 먼저 호출해야 한다 — base 가 activation generation 증분 + `ResetTargetInitialization()` 을 수행하므로 (#196 §3), 누락하면 비활성 구간에 쌓인 stale target 이 재활성화 첫 tick 에 적용된다. target-init latch reset 은 `on_activate` 안에 직접 쓰지 말고 `ResetTargetInitialization()` override 에 둔다.
 8. Register via `RTC_REGISTER_CONTROLLER()` macro — `config_key` 는 링크되는 모든 TU 에 걸쳐 유일해야 하고, 어떤 컨트롤러의 `Name()` 과도 겹치면 안 된다 (3번 항목의 `Name()` 유일성과 같은 네임스페이스). 등록 대상은 항상 바인딩이며 `integrated_bringup/src/controllers/controller_registration.cpp` 에 둔다 (`config_package` 는 자기 패키지 — `rtc_*` 패키지 이름을 넣으면 ARCH-1 위반)
@@ -121,7 +121,7 @@ README 패키지 표·count, [architecture.md](architecture.md) dependency graph
 
 - **Tests** — `<package>/test/` 의 affected suite 갱신 + 신규 동작에 대한 test 추가 (기존 assertion 을 건드려야 한다면 [invariants.md](invariants.md) PROC-6 을 먼저 편다)
 - **CMakeLists.txt** — source / install / `find_package` / `ament_add_gtest` / `rosidl_generate_interfaces` 일관성
-- **package.xml** — deps · version. `CMakeLists.txt` `find_package` 와 1:1 매칭
+- **package.xml** — deps · version. `CMakeLists.txt` `find_package` 와 1:1 매칭. **예외: rosdep 이 해결할 수 없는 source-install 의존** (`rtc_mpc` 의 `aligator`·`fmt` 처럼 `deps/install` 에서 `CMAKE_PREFIX_PATH` 로 찾는 것) 은 `<depend>` 로 올리면 rosdep 이 실패하므로 CMake 에만 두고, **`package.xml` 에 그 사유를 주석으로 남긴다** (해당 파일의 기존 주석이 예시)
 - **YAML config** — 추가/제거/이름변경된 parameter, `topics:` 섹션, valid range·unit 주석. Robot-specific 값은 `integrated_bringup/config/<robot>/...`, 기본값은 agnostic 패키지에
 - **Doc** — Package README.md (API / parameter / usage), inline Doxygen, cross-package 변경이면 root README + `docs/*.md`
 
@@ -137,7 +137,7 @@ colcon test-result --verbose
 
 ## Completion Checklist
 
-turn 종료 시 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 자동 수행하는 범위는 [CLAUDE.md](../CLAUDE.md) §4 가 SSoT. 이 절은 그 **여집합** — hook 이 검사하지 않으므로 에이전트가 직접 확인해야 하는 항목만 둔다.
+이 절은 Claude Code 의 Stop hook 이 자동 수행하는 범위([CLAUDE.md](../CLAUDE.md) §4 가 SSoT)의 **여집합** — 그 hook 이 있어도 검사되지 않으므로 항상 사람/에이전트가 직접 확인해야 하는 항목이다. **hook 이 없는 도구에서는 이것만으로 부족하다** — 먼저 [AGENTS.md](../AGENTS.md) §3 "커밋 전에 직접 돌려야 하는 것" 의 빌드·테스트·포맷·doc validation 을 수행하고, 그 위에 아래를 더한다.
 
 - [ ] `package.xml` 의 **deps 의미·version** — hook 은 `find_package` 추가 시 `package.xml` co-update 여부만 blocking 으로 보고, 선언된 dep 이 실제로 맞는지는 보지 않는다
 - [ ] YAML 의 **default 값·유효 범위·unit 주석** — hook 은 parse 성공 여부만 본다

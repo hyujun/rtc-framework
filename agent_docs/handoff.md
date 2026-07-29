@@ -11,7 +11,7 @@
 | 상황 | 필요한 action |
 |---|---|
 | 미완료 task 가 session · agent · model · 책임(ownership) 경계를 넘음 | **git issue 에 handoff artifact 생성** (§2 template, 저장은 §5) |
-| 같은 task · ownership 유지, context 압박만 | **compact** (Claude 메커니즘은 §6.6). durable 결정·evidence 손실 위험이 있을 때만 artifact 생성/갱신 |
+| 같은 task · ownership 유지, context 압박만 | **compact** (Claude 메커니즘은 [CLAUDE.md](../CLAUDE.md) §6.6). durable 결정·evidence 손실 위험이 있을 때만 artifact 생성/갱신 |
 | 대용량 grep · log · test 출력 · research | **subagent 로 위임/격리**. 그 자체로는 handoff 아님 |
 | 반복 실패 (3회 시도) | **재시도 중단** → evidence 기록 후 diagnose / escalate. 새 owner/session 이 필요할 때만 handoff |
 | 완료된 task 다음에 무관한 task | **새 task 시작**. artifact 불필요 |
