@@ -376,10 +376,15 @@ void RtControllerNode::ControlLoop() {
   // the "terminal state is still validated" contract and this must not
   // become a path around it. Once the latch is set, nothing the controller
   // computed reaches DeviceBackend::WriteCommand: actuator safety cannot
-  // depend on each controller implementing its E-STOP hook correctly, and
-  // in-tree it demonstrably does not (OperationalSpaceController's E-STOP
-  // path emits a position-scale value on a kTorque command by its own
-  // admission; PController never overrides SetHandEstop at all).
+  // depend on each controller implementing its E-STOP hook correctly. Two
+  // in-tree counterexamples were measured before #236 S7c deleted them --
+  // OperationalSpaceController's E-STOP path emitted a position-scale value
+  // on a kTorque command by its own admission, and PController never
+  // overrode SetHandEstop at all. Today's three bindings all override it,
+  // but that is an observation about today's set, not a contract:
+  // RTControllerInterface is loaded from a registry (out-of-tree
+  // implementations are the point) and SetHandEstop's base is still a no-op,
+  // so "no counterexample in tree" is not a reason to drop this guard.
   //
   // The substitution is the same BuildHoldOutput the invalid-output path
   // uses, so when both fire the command is identical — but the two keep

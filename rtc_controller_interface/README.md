@@ -108,7 +108,7 @@ depth 는 4 (usable 3 — ring 이 한 칸을 full/empty 구분에 쓴다), 포�
 
 > **계측의 현재 한계** — 위 세 카운터는 **프로세스 밖 소비자가 없다.** 진단 토픽으로 나가는 것이 없으므로 원격 operator 가 얻는 신호는 로그 한 줄이 전부다. 토픽 노출은 후속 작업이며, 그때까지 "관측 가능해졌다" 는 *계측과 로그* 까지를 뜻한다.
 
-> **전이 상태** — 이 mailbox 를 쓰는 것은 base 를 상속한 바인딩 전부가 아니다. `rtc_controllers` 에 남은 어댑터들은 아직 자기 사본을 갖고 있고 (`grep -rln "SpscQueue<PendingTarget" rtc_controllers`), 그중 셋은 자기 큐를 비우는 private `DiscardPendingTargets()` 를 선언해 base 의 동명 메서드를 가린다 — **의미는 같고** 대상 큐만 다르다. 원래는 이 선언이 `DrainPendingTargets()` 라 base 의 *apply* 와 이름이 겹쳤고, 그 클래스들 안에서 base 의 `DiscardPendingTargets()` 는 항상 빈 큐를 비우는 no-op 이었다. 그 어댑터들은 #236 S7c 에서 삭제된다. 배치 규칙의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 표다.
+> **사본은 이제 base 것 하나다** (#236 S7c). `rtc_controllers` 가 들고 있던 어댑터 사본은 삭제됐고 — `grep -rn "SpscQueue<PendingTarget" rtc_controllers/include rtc_controllers/src` 가 비어야 한다 — 그중 일부가 선언해 base 의 동명 메서드를 **가리던** private `DiscardPendingTargets()` 도 함께 사라졌다. 그 이름 충돌은 한때 실질적이었다: 선언이 원래 `DrainPendingTargets()` 라 base 의 *apply* 와 이름이 겹쳤고, 그 클래스들 안에서 base 의 `DiscardPendingTargets()` 는 항상 빈 큐를 비우는 no-op 이었다. 지금 파생은 integration 패키지의 바인딩과 테스트 mock 뿐이고 전부 위 표의 base 메서드를 그대로 쓴다. 배치 규칙의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 표다.
 
 CM 이 아닌 단위 테스트가 직접 `Compute()` 를 도는 경로는 양쪽 모두 세대 0 이라 아무것도 드롭되지 않는다.
 
@@ -321,7 +321,7 @@ RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, FactoryExpr)
 
 > `urdf` 변수는 매크로가 생성하는 람다의 파라미터 `(const std::string& urdf)`로 자동 제공됩니다.
 >
-> **등록 대상은 항상 downstream 의 클래스다.** `config_package` 에 `rtc_*` 패키지 이름을 넣는 형태는 ARCH-1 위반이며, 등록되는 클래스 자체도 integration 패키지가 소유하는 바인딩이어야 한다 ([agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms). `rtc_controllers` 에는 아직 `RTControllerInterface` 를 상속한 어댑터가 남아 있어 기술적으로 등록 가능하지만, 그 어댑터들은 #236 S1–S7 에서 삭제되므로 새 등록의 대상으로 삼지 않는다.
+> **등록 대상은 항상 downstream 의 클래스다.** `config_package` 에 `rtc_*` 패키지 이름을 넣는 형태는 ARCH-1 위반이며, 등록되는 클래스 자체도 integration 패키지가 소유하는 바인딩이어야 한다 ([agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms). `rtc_controllers` 에는 이제 상속 클래스가 없으므로 (#236 S1–S7) 등록 가능한 대상 자체가 바인딩뿐이다.
 
 ### 매크로 전개 예시
 

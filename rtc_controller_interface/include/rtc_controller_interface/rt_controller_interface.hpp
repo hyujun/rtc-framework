@@ -639,18 +639,12 @@ class RTControllerInterface {
   // one controller's E-STOP path discarded while its device-invalid path did
   // not, so the two diverged inside a single controller.
   //
-  // WHEN to call is deliberately left to the derived controller. Only four of
-  // the ten pre-existing copies discard on E-STOP; discarding here on the
-  // base's own initiative would silently change the other six.
-  //
-  // NAME COLLISION, transitional: three not-yet-migrated controllers declare a
-  // private non-virtual DiscardPendingTargets() of their own, which hides this
-  // one inside those classes and empties their still-private queue instead.
-  // The two agree on MEANING, which is the point — the declaration used to be
-  // spelled DrainPendingTargets(), so `discard` in the base and `discard` in
-  // the derived answered to opposite names while the base's Discard resolved
-  // there to an always-empty queue. Those classes disappear in #236 S7c and
-  // this paragraph with them.
+  // WHEN to call is deliberately left to the derived controller. When the
+  // mailbox was surveyed for #206 the pre-existing copies were split on it —
+  // some discarded on E-STOP, most did not — so discarding here on the base's
+  // own initiative would have silently changed the behaviour of the majority.
+  // That split is why the choice sits in the derived class and not here; it is
+  // not a statement about which controllers exist today.
   void DiscardPendingTargets() noexcept;
 
   // Apply one drained target. Called once per surviving entry from
