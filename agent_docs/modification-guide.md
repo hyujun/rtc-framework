@@ -23,7 +23,7 @@
 6. Verify   → 본 문서 Completion Checklist 8항목 통과
 ```
 
-**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지는 [CLAUDE.md](../CLAUDE.md) §4 가 SSoT (변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip 포함), hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **무한 차단이 아니다**: 8회 연속 `exit 2` 후 Claude Code 가 hook 을 override 하고 turn 을 종료하므로 (code.claude.com/docs best-practices), 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다.
+**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지는 [CLAUDE.md](../CLAUDE.md) §4 가 SSoT (변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip 포함), hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **차단 탈출은 리포트 대응뿐이다**: 재진입은 `stop_hook_active` 로 가드되어 stop cycle 당 1회만 발화하므로 turn 이 무한히 물리지는 않지만, 문서화되지 않은 연속 차단 상한("N회 후 override" 류) 은 존재하지 않는다 — 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다 (hook 헤더 주석이 SSoT).
 
 ### Workflow Fail-Safe
 
