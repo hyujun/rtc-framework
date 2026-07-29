@@ -501,5 +501,31 @@ out=$(run_hook "$dir")
 expect_contains "an unlisted new .cpp is flagged even when its name is a substring of a listed one" "$out" "isting.cpp not found"
 rm -rf "$dir"
 
+# 31. Constitution parity: CLAUDE.md and AGENTS.md carry the same rules for two
+#     audiences, and nothing else in the harness reads AGENTS.md -- it went 4
+#     commits stale that way. Editing one must remind about the other. Both
+#     directions, and silent when both move together (or neither does).
+dir=$(make_fixture)
+printf '# c\n' >"$dir/CLAUDE.md"
+printf '# a\n' >"$dir/AGENTS.md"
+git -C "$dir" add -A && git -C "$dir" commit -qm parity
+printf '# c\n\n새 규칙.\n' >"$dir/CLAUDE.md"
+out=$(run_hook "$dir")
+expect_contains "CLAUDE.md alone reminds about AGENTS.md" "$out" "CLAUDE.md changed without AGENTS.md"
+printf '# a\n\n같은 규칙.\n' >"$dir/AGENTS.md"
+out=$(run_hook "$dir")
+expect_not_contains "editing both is silent" "$out" "changed without"
+rm -rf "$dir"
+
+# 32. ...and the reverse direction, so the reminder is not one-way.
+dir=$(make_fixture)
+printf '# c\n' >"$dir/CLAUDE.md"
+printf '# a\n' >"$dir/AGENTS.md"
+git -C "$dir" add -A && git -C "$dir" commit -qm parity
+printf '# a\n\n새 규칙.\n' >"$dir/AGENTS.md"
+out=$(run_hook "$dir")
+expect_contains "AGENTS.md alone reminds about CLAUDE.md" "$out" "AGENTS.md changed without CLAUDE.md"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
