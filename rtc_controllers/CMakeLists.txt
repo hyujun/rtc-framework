@@ -26,7 +26,6 @@ endif()
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
-find_package(rtc_controller_interface REQUIRED)
 find_package(rtc_base REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -37,15 +36,18 @@ find_package(yaml-cpp REQUIRED)
 
 # ── Library ───────────────────────────────────────────────────────────────────
 add_library(rtc_controllers STATIC
-  src/controllers/indirect/p_controller.cpp
-  src/controllers/indirect/clik_controller.cpp
-  src/controllers/indirect/task_admittance_controller.cpp
-  src/controllers/direct/joint_pd_controller.cpp
-  src/controllers/direct/operational_space_controller.cpp
-  src/controllers/direct/task_impedance_controller.cpp
-  src/controllers/direct/cascaded_compliance_controller.cpp
   src/controllers/grasp/grasp_controller.cpp
   src/controllers/grasp/pull_force_estimator.cpp
+  # G2 schema layer (#236 S7c-1): gains PODs + YAML parsers, lifted out of the
+  # controllers/{direct,indirect} adapters so they would outlive them — which
+  # they now do, the adapters having been deleted at S7c-2. Non-RT, yaml-cpp
+  # only; a binding calls these once at configure time.
+  src/params/joint_pd_params.cpp
+  src/params/osc_params.cpp
+  src/params/clik_params.cpp
+  src/params/task_impedance_params.cpp
+  src/params/task_admittance_params.cpp
+  src/params/cascaded_compliance_params.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -53,7 +55,6 @@ target_include_directories(rtc_controllers PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(rtc_controllers
-  rtc_controller_interface
   rtc_base
   rtc_msgs
   pinocchio
@@ -84,7 +85,6 @@ install(DIRECTORY examples/
 # ── Export ────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
-  rtc_controller_interface
   rtc_base
   rtc_msgs
   Eigen3
@@ -154,36 +154,34 @@ if(BUILD_TESTING)
   ament_add_gtest(test_pull_force_estimator test/test_pull_force_estimator.cpp)
   target_link_libraries(test_pull_force_estimator rtc_controllers)
 
-  ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
-  target_link_libraries(test_core_controllers rtc_controllers)
-  target_include_directories(test_core_controllers PRIVATE ${rtc_urdf_bridge_test_include})
-
   # #236 S1 golden-vector harness: the joint-space PD core pinned bit-for-bit
-  # against a literal copy of the pre-extraction inline form (durable oracle)
-  # AND against the live JointPDController driven through a shim that owns the
-  # trajectory (transient oracle — it dies with the adapter at S7, and until
-  # then it is what catches a correlated transcription error). Needs the URDF
-  # fixture resolver for planar_3r (non-zero gravity) and the shared bitwise
-  # helpers. The RT allocation gate replaces global operator new/delete, which
-  # makes GCC false-positive -Wmismatched-new-delete program-wide.
+  # against a literal copy of the pre-extraction inline form. That literal oracle
+  # is the durable one and is what remains; the transient oracle (the live
+  # JointPDController driven through a shim) retired with the adapter at S7c-2,
+  # taking the planar_3r URDF fixture — and so ${rtc_urdf_bridge_test_include} —
+  # with it. JointPdShim stays as the reference recipe an S7 binding starts from,
+  # unpinned by design. Needs the shared bitwise helpers. The RT allocation gate
+  # replaces global operator new/delete, which makes GCC false-positive
+  # -Wmismatched-new-delete program-wide.
   ament_add_gtest(test_joint_pd_core test/test_joint_pd_core.cpp)
   target_link_libraries(test_joint_pd_core rtc_controllers)
-  target_include_directories(test_joint_pd_core PRIVATE
-    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_include_directories(test_joint_pd_core PRIVATE ${rtc_controllers_test_include})
   target_compile_options(test_joint_pd_core PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S2a golden-vector suite for the task-space acceleration core: bitwise
-  # against a literal copy of the pre-extraction inline form (durable oracle)
-  # AND against the live OperationalSpaceController driven through a shim that
-  # owns the model and the trajectory. The OSC exposes no a_task, so the shim
-  # reproduces the whole Λ/τ/Nᵀ tail to observe the core through the emitted
-  # torque — hence the URDF fixture resolver for serial_7dof (non-zero gravity,
-  # redundant so Nᵀ is not inert; the fixture itself is shared with S3a via
-  # test/include/rtc_controllers/testing/serial7dof_fixture.hpp). Same shared
-  # global-operator-new gate as S1 with the same program-wide
-  # -Wmismatched-new-delete false positive, PLUS rtc_base's Eigen allocation
-  # tripwire (${rtc_base_test_include}) — operator-new counting cannot see Eigen's
-  # allocator, which calls std::malloc directly.
+  # against a literal copy of the pre-extraction inline form (durable oracle).
+  # The cross-check against the live OperationalSpaceController retired with the
+  # adapter at S7c-2, with its verification provenance recorded in the file.
+  # OscShim survives and is still driven here — shim-only, by the posture-gate
+  # cases (분류 B) — so it keeps reproducing the whole Λ/τ/Nᵀ tail and still needs
+  # the URDF fixture resolver for serial_7dof (non-zero gravity, redundant so Nᵀ
+  # is not inert; the fixture itself is shared via
+  # test/include/rtc_controllers/testing/serial7dof_fixture.hpp, which is what
+  # pulls in ${rtc_urdf_bridge_test_include}). Same shared global-operator-new
+  # gate as S1 with the same program-wide -Wmismatched-new-delete false positive,
+  # PLUS rtc_base's Eigen allocation tripwire (${rtc_base_test_include}) —
+  # operator-new counting cannot see Eigen's allocator, which calls std::malloc
+  # directly.
   ament_add_gtest(test_task_accel_core test/test_task_accel_core.cpp)
   target_link_libraries(test_task_accel_core rtc_controllers)
   target_include_directories(test_task_accel_core PRIVATE
@@ -193,12 +191,13 @@ if(BUILD_TESTING)
   # #236 S3a golden-vector suite for the task-space velocity core: bitwise
   # against literal copies of BOTH pre-extraction inline forms (six-axis and
   # translation-only are different expression shapes, so each needs its own
-  # durable oracle) AND against the live ClikController across all four
-  # (control_6dof × enable_null_space) modes plus the π-rotation split. CLIK's
-  # output IS the core's output pushed through J⁺, so the shim compares the
-  # velocity, feedforward and integrated-command lanes directly. Reuses
-  # test_task_accel_core's independent-handle premise via the same serial_7dof
-  # fixture (the reorder half of that premise is measured here). The RT gate is
+  # durable oracle). The cross-check against the live ClikController — all four
+  # (control_6dof × enable_null_space) modes plus the π-rotation split — retired
+  # with the adapter at S7c-2; ClikShim remains as the reference recipe for a
+  # binding, unpinned by design. Reuses test_task_accel_core's independent-handle
+  # premise via the same serial_7dof fixture (the reorder half of that premise is
+  # measured here, which is what still needs
+  # ${rtc_urdf_bridge_test_include}). The RT gate is
   # two complementary sensors: the shared global-operator-new gate as in S1/S2a
   # (hence ${rtc_controllers_test_include} and the same program-wide
   # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen allocation
@@ -213,10 +212,11 @@ if(BUILD_TESTING)
   # #236 S4 golden-vector suite for the §6.3 inertia-shaping core: bitwise
   # against a literal copy of the pre-extraction member (which keeps the
   # Eigen::MatrixXd scratch, so the suite MEASURES that D-S4a's max-size scratch
-  # is bit-inert instead of inheriting the probe's claim) AND against the live
-  # TaskImpedanceController across selection × Λ_d × clamp, plus the activation
-  # ramp that scales the core's f_ext input. The adapter exposes no f_cmd, so the
-  # shim replicates the whole τ tail and compares the final joint torque. The RT
+  # is bit-inert instead of inheriting the probe's claim). The cross-check
+  # against the live TaskImpedanceController (selection × Λ_d × clamp, plus the
+  # activation ramp scaling the core's f_ext input) retired with the adapter at
+  # S7c-2. ImpedanceShim survives and is still driven shim-only by the Λ_d
+  # factorisation-degrade case, so it keeps replicating the whole τ tail. The RT
   # gate is two complementary sensors as in S1/S2a/S3a — the shared global
   # operator-new gate (hence ${rtc_controllers_test_include} and the same
   # program-wide -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen
@@ -229,14 +229,15 @@ if(BUILD_TESTING)
   target_compile_options(test_inertia_shaping_core PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S5 golden-vector suite for the §7.3 task-velocity REUSE. No new core:
-  # TaskAdmittanceController now calls S3a's task::ComputeTaskVelocity, so the
-  # suite pins that the call is inert — bitwise against a literal copy of THIS
-  # controller's inline shape (ν_c copied, K⊙e accumulated into it, i.e. the
-  # operands the other way round from the core) and against the live adapter
-  # across integrate_from_measured × nullspace_kp × ik_kp, plus the activation
-  # ramp that feeds the §7.2 integrator. The shim instantiates the adapter's own
-  # AdmittanceIntegrator / DifferentialIk instead of re-deriving them, and
-  # compares target_velocities and commands directly. Same two-sensor RT gate as
+  # the admittance law calls S3a's task::ComputeTaskVelocity, so the suite pins
+  # that the call is inert — bitwise against a literal copy of the
+  # pre-extraction inline shape (ν_c copied, K⊙e accumulated into it, i.e. the
+  # operands the other way round from the core). The cross-check against the live
+  # TaskAdmittanceController (integrate_from_measured × nullspace_kp × ik_kp,
+  # plus the activation ramp feeding the §7.2 integrator) retired with the
+  # adapter at S7c-2; AdmittanceShim remains as the reference recipe, composing
+  # AdmittanceIntegrator / DifferentialIk rather than re-deriving them, and is
+  # still what S6's CascadeShim is built from. Same two-sensor RT gate as
   # S1/S2a/S3a/S4 — the shared global operator-new gate (hence
   # ${rtc_controllers_test_include} and the program-wide
   # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen tripwire
@@ -252,12 +253,14 @@ if(BUILD_TESTING)
   # null-space posture law (joint/posture_law.hpp, PD and P — two functions
   # because the K_d = 0 reduction flips the sign of a zero on a reachable state)
   # and the §7.6 MUST-1 verdict (compliance/bandwidth_separation.hpp). Literal
-  # oracles pin all three pre-extraction shapes; a shim composed from S4's
-  # ImpedanceShim and S5's AdmittanceShim pins the live cascade across the four
-  # posture-gate corners plus the activation ramp. Both gates are numerically
-  # INERT when closed, so the suite compares diag.nullspace_active and
-  # diag.bandwidth_ratio every tick and exercises both ways the §7.6 gate reopens
-  # (set_gains, and a retry after a failed factorisation). Same two-sensor RT
+  # oracles pin all three pre-extraction shapes. The cross-check against the live
+  # CascadedComplianceController retired with the adapter at S7c-2, but
+  # CascadeShim — composed from S4's ImpedanceShim and S5's AdmittanceShim —
+  # survives and is driven shim-only by the §7.6 evaluation-gate cases. Both
+  # gates are numerically INERT when closed, so the suite reads
+  # diag.nullspace_active and diag.bandwidth_ratio rather than a torque lane, and
+  # exercises both ways the §7.6 gate reopens (set_gains, and a retry after a
+  # failed factorisation). Same two-sensor RT
   # gate as S1–S5 — the shared global operator-new gate (hence
   # ${rtc_controllers_test_include} and the program-wide
   # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen tripwire
@@ -280,94 +283,16 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_dls_convergence PRIVATE -Wno-mismatched-new-delete)
 
-  ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
-  target_link_libraries(test_task_impedance_controller rtc_controllers)
-  target_include_directories(test_task_impedance_controller PRIVATE
-    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  # The zero-allocation gate replaces global operator new/delete (new→malloc,
-  # delete→free). GCC's -Wmismatched-new-delete then false-positives on every
-  # delete site program-wide; suppress it for this target only.
-  target_compile_options(test_task_impedance_controller PRIVATE -Wno-mismatched-new-delete)
-
-  # Slice-2 external wrench surface (#236): SetExternalWrench input contract,
-  # conditioning + Ad^{-T} frame transform, staleness fade / DEGRADED, §6.3
-  # inertia shaping incl. the T4.1 continuity boundary, zero-alloc with the
-  # wrench path live. Same global operator-new interposition as
-  # test_task_impedance_controller, hence the same -Wmismatched-new-delete
-  # suppression.
-  ament_add_gtest(test_task_impedance_wrench test/test_task_impedance_wrench.cpp)
-  target_link_libraries(test_task_impedance_wrench rtc_controllers)
-  target_include_directories(test_task_impedance_wrench PRIVATE
-    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_task_impedance_wrench PRIVATE -Wno-mismatched-new-delete)
-
-  # Slice-4 cascade surface (#236): outer admittance → inner impedance as a
-  # COMPOSITION — §7.6 MUST-4 (the wrench is spent once), MUST-1 (bandwidth
-  # report, never a fault), MUST-3 (return vs hand-guiding), plus the F5/F7/F8
-  # classes PR #256 found in the copied skeleton and the RT allocation gate.
-  # Same global operator-new interposition as the impedance suites, hence the
-  # same -Wmismatched-new-delete suppression.
-  ament_add_gtest(test_cascaded_compliance_controller
-    test/test_cascaded_compliance_controller.cpp)
-  target_link_libraries(test_cascaded_compliance_controller rtc_controllers)
-  target_include_directories(test_cascaded_compliance_controller
-    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_cascaded_compliance_controller
-    PRIVATE -Wno-mismatched-new-delete)
-
-  # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
-  # (tip_link / joint_limits / safe_position), bounds guards, multi-device
-  # passthrough, 6-DOF + gravity/Coriolis compensation branches.
-  # Slice-3 controller surface (#236): the §11.4.1 P2/P3 sign contrast against
-  # the impedance law, wrench→motion end to end, §10.6 staleness, the
-  # position-domain E-STOP hold, configure contracts, and the RT allocation
-  # gate. Same global operator-new interposition as the impedance wrench suite,
-  # hence the same -Wmismatched-new-delete suppression.
-  ament_add_gtest(test_task_admittance_controller test/test_task_admittance_controller.cpp)
-  target_link_libraries(test_task_admittance_controller rtc_controllers)
-  target_include_directories(test_task_admittance_controller
-    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_task_admittance_controller PRIVATE -Wno-mismatched-new-delete)
-
-  # #260 external fault recovery: ResetFault() / HasLatchedFault() reached
-  # through the BASE interface (all the CM ever holds), E-8 separation in both
-  # directions, and the activation boundary that must not launder a stale reset.
-  # Drives all three compliance controllers through one shared contract check.
-  ament_add_gtest(test_compliance_fault_recovery test/test_compliance_fault_recovery.cpp)
-  target_link_libraries(test_compliance_fault_recovery rtc_controllers)
-  target_include_directories(test_compliance_fault_recovery
-    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-
-  ament_add_gtest(test_controller_config test/test_controller_config.cpp)
-  target_link_libraries(test_controller_config rtc_controllers)
-  target_include_directories(test_controller_config PRIVATE ${rtc_urdf_bridge_test_include})
-
-  # #172 deeper AC: 7-DOF generalization (serial_7dof.urdf, no OOB gain/target
-  # read), non-Z gravity/Coriolis magnitude vs the RNEA identity
-  # (planar_3r.urdf, reference from an independent RtModelHandle), and the
-  # device-order vs URDF-order identity contract.
-  ament_add_gtest(test_dof_dynamics test/test_dof_dynamics.cpp)
-  target_link_libraries(test_dof_dynamics rtc_controllers)
-  target_include_directories(test_dof_dynamics PRIVATE ${rtc_urdf_bridge_test_include})
+  # G2 schema layer contract (#236 S7c-1). Drives the ParseXxxParams free
+  # functions directly — no controller, no URDF — so these cases outlive the
+  # adapters. Also carries the over-long-sequence sensor that the adapter-driven
+  # config suite structurally could not provide; see the file header.
+  ament_add_gtest(test_params_schema test/test_params_schema.cpp)
+  target_link_libraries(test_params_schema rtc_controllers)
 
   # QuinticPolynomial boundary math + T<=0 short-circuit (trajectory_utils.hpp).
   ament_add_gtest(test_trajectory_utils test/test_trajectory_utils.cpp)
   target_link_libraries(test_trajectory_utils rtc_controllers)
-
-  # RT-4 single-writer SeqLock race stress: SetDeviceTarget (off-RT) vs
-  # Compute (RT) — verifies the SPSC marshal pattern keeps target_seqlock_
-  # tear-free under concurrent producer/consumer access.
-  ament_add_gtest(test_target_seqlock_race test/test_target_seqlock_race.cpp)
-  target_link_libraries(test_target_seqlock_race rtc_controllers)
-  target_include_directories(test_target_seqlock_race PRIVATE ${rtc_urdf_bridge_test_include})
-
-  # Activation generation gate (#196 §3): stale targets queued while Inactive
-  # must not reach the target slot after re-activation.
-  ament_add_gtest(test_activation_generation_gate
-    test/test_activation_generation_gate.cpp)
-  target_link_libraries(test_activation_generation_gate rtc_controllers)
-  target_include_directories(test_activation_generation_gate
-    PRIVATE ${rtc_urdf_bridge_test_include})
 endif()
 
 ament_package()

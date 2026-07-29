@@ -10,35 +10,35 @@
 //      joint_pd_controller.cpp:258-284 at 0f8da61c. DURABLE: it outlives the
 //      adapter, so it still pins the core after S7 deletes JointPDController.
 //
-//   2. The live JointPDController itself. TRANSIENT (dies with S7), and its job
-//      is the one thing oracle 1 structurally cannot do: catch a CORRELATED
-//      transcription error. Oracle 1 and the core were both transcribed from
-//      the same source by the same hand; if that reading was wrong, they agree
-//      and the existing JointPD tests — EXPECT_NEAR(…, 0.0, 1e-3) and
-//      "at least one command is nonzero" — are far too loose to notice.
+//   2. The live JointPDController itself. TRANSIENT — RETIRED in #298 S7c-2
+//      with the adapter. Its job was the one thing oracle 1 structurally cannot
+//      do: catch a CORRELATED transcription error. Oracle 1 and the core were
+//      both transcribed from the same source by the same hand; if that reading
+//      was wrong, they agree and the existing JointPD tests — EXPECT_NEAR(…,
+//      0.0, 1e-3) and "at least one command is nonzero" — were far too loose to
+//      notice. See "Oracle 2 retired with the adapter" below for the
+//      verification provenance it leaves behind.
 //
-// Oracle 2 also pins something oracle 1 cannot: the TRAJECTORY WIRING. The core
-// takes a reference sample, not a generator, so trajectory ownership stays in
-// the integration layer (see joint_pd_law.hpp "Why there is no trajectory
+// Oracle 2 also pinned something oracle 1 cannot: the TRAJECTORY WIRING. The
+// core takes a reference sample, not a generator, so trajectory ownership stays
+// in the integration layer (see joint_pd_law.hpp "Why there is no trajectory
 // here"). JointPdShim below is a minimal prototype of that binding — it owns
 // the JointSpaceTrajectory and replays seed/retarget exactly as the adapter
-// does — and the cross-check proves the recipe reproduces the shipped
-// controller bit for bit. S7's binding starts from this shim.
+// did. The cross-check proved the recipe reproduced the shipped controller bit
+// for bit; after S7c nothing pins the shim, so it is a starting point for a new
+// binding rather than a verified artefact.
 //
 // Every bitwise suite carries a non-vacuity partner
 // (BitwiseComparisonRejectsAReassociatedLaw) proving the comparison can
 // actually reject an algebraically equivalent regrouping. Without it the
 // equivalence test pins nothing.
 
-#include "rtc_controllers/direct/joint_pd_controller.hpp"
 #include "rtc_controllers/joint/joint_pd_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
-#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
-#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <array>
@@ -46,7 +46,6 @@
 #include <cstddef>
 #include <random>
 #include <span>
-#include <string>
 #include <vector>
 
 // The RT allocation gate (rtc::testing::ScopedAllocGate, shared with the S2a/S3a
@@ -263,24 +262,6 @@ class JointPdShim {
   std::array<double, kMaxRobotDOF> prev_error_{};
 };
 
-// planar_3r.urdf has Y-axis joints, so g(q) ≢ 0. serial_6dof.urdf is all-Z and
-// would make every gravity assertion here vacuous — the same fixture trap
-// test_dof_dynamics.cpp was written to escape.
-std::string Planar3r() {
-  return rtc::test::TestUrdfPath("planar_3r.urdf");
-}
-
-constexpr int kPlanarNv = 3;
-
-rtc::ControllerState MakeState(int nc0, double dt) {
-  rtc::ControllerState state{};
-  state.num_devices = 1;
-  state.dt = dt;
-  state.devices[0].num_channels = nc0;
-  state.devices[0].valid = true;
-  return state;
-}
-
 }  // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -350,137 +331,31 @@ TEST(JointPdLaw, BitwiseComparisonRejectsAReassociatedLaw) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Cross-check against the live adapter (transient — dies with S7)
+// Oracle 2 retired with the adapter (#298 S7c-2)
 // ═══════════════════════════════════════════════════════════════════════════
-
-namespace {
-
-// Drive adapter and shim through the same tick sequence and compare device-0
-// commands bit for bit. Returns the largest |command| seen so the caller can
-// prove the comparison was not over a field of zeros.
-void RunCrossCheck(rtc::JointPDController& ctrl, JointPdShim& shim,
-                   const rtc::JointPDController::Gains& g, CommandType cmd, int nc0, double dt,
-                   double clamp_limit, double* peak_out) {
-  const auto nq = static_cast<std::size_t>(std::min(nc0, kPlanarNv));
-  auto state = MakeState(nc0, dt);
-  double peak = 0.0;
-
-  const std::array<double, kPlanarNv> goal{0.18, -0.11, 0.07};
-  constexpr int kRetargetTick = 3;
-  constexpr int kTicks = 24;
-
-  for (int tick = 0; tick < kTicks; ++tick) {
-    // A little motion so the finite-difference term is exercised; both sides
-    // read the identical ControllerState. Velocity is the position increment
-    // over dt, so the state handed to the retarget is self-consistent — and the
-    // increment is small enough to keep the adapter's output clamp inert, which
-    // the per-channel assertion below verifies rather than assumes.
-    constexpr double kStep = 0.0005;
-    for (int j = 0; j < nc0; ++j) {
-      const auto uj = static_cast<std::size_t>(j);
-      state.devices[0].positions[uj] = kStep * static_cast<double>(tick) * (1.0 + 0.3 * j);
-      state.devices[0].velocities[uj] = kStep * (1.0 + 0.3 * j) / dt;
-    }
-
-    if (tick == kRetargetTick) {
-      ctrl.SetDeviceTarget(0, std::span<const double>(goal));
-    }
-
-    const auto out = ctrl.Compute(state);
-
-    // The adapter self-inits on its first tick and retargets on the tick that
-    // drains the queued target — the shim mirrors that ordering exactly.
-    if (tick == 0) {
-      shim.SeedHold(std::span<const double>(state.devices[0].positions), nq);
-    }
-    if (tick == kRetargetTick) {
-      shim.Retarget(std::span<const double>(state.devices[0].positions),
-                    std::span<const double>(state.devices[0].velocities),
-                    std::span<const double>(goal), g.trajectory_speed, nq);
-    }
-
-    // gravity_torques() is the value UpdateDynamics cached during the Compute
-    // above, so the shim is fed the adapter's own g(q). Coriolis has no
-    // accessor and is therefore off here; its branch is covered by oracle 1 and
-    // end-to-end by PlanarDynamics.JointPdCoriolisMatchesModelMagnitude.
-    const auto gravity = ctrl.gravity_torques();
-    std::array<double, kMaxRobotDOF> zero_coriolis{};
-
-    std::array<double, kMaxDeviceChannels> shim_cmd{};
-    shim.Step(JointPdGainsView{std::span<const double>(g.kp), std::span<const double>(g.kd),
-                               g.enable_gravity_compensation, g.enable_coriolis_compensation},
-              std::span<const double>(state.devices[0].positions), std::span<const double>(gravity),
-              std::span<const double>(zero_coriolis), dt, nq, static_cast<std::size_t>(nc0), cmd,
-              std::span<double>(shim_cmd));
-
-    for (int j = 0; j < nc0; ++j) {
-      const auto uj = static_cast<std::size_t>(j);
-      const double adapter = out.devices[0].commands[uj];
-      // The adapter clamps after the law; the shim does not (clamping is a
-      // limits concern owned by the integration layer). Keeping the clamp
-      // provably inert is what makes the bitwise comparison meaningful — assert
-      // it rather than assume it.
-      ASSERT_LT(std::abs(adapter), clamp_limit)
-          << "clamp fired at tick " << tick << " ch " << j << " — comparison would be invalid";
-      EXPECT_TRUE(BitsEqual(adapter, shim_cmd[uj]))
-          << "tick " << tick << " channel " << j << ": adapter " << adapter << " vs shim "
-          << shim_cmd[uj];
-      peak = std::max(peak, std::abs(adapter));
-    }
-  }
-  *peak_out = peak;
-}
-
-}  // namespace
-
-// Torque lane, gravity compensation ON, with a tail (nc0 = 5 > nv = 3).
-TEST(JointPdLaw, CoreDrivenShimMatchesTheAdapterBitwiseTorqueLane) {
-  rtc::JointPDController ctrl(Planar3r());
-  ctrl.OnDeviceConfigsSet();  // populates max_joint_torque_ = kDefaultMaxJointTorque
-
-  rtc::JointPDController::Gains g;
-  g.kp.fill(8.0);
-  g.kd.fill(0.8);
-  g.enable_gravity_compensation = true;
-  g.enable_coriolis_compensation = false;
-  g.trajectory_speed = 0.3;
-  ctrl.set_gains(g);
-
-  JointPdShim shim;
-  double peak = 0.0;
-  RunCrossCheck(ctrl, shim, g, CommandType::kTorque, /*nc0=*/5, /*dt=*/0.002,
-                /*clamp_limit=*/rtc::kDefaultMaxJointTorque, &peak);
-  EXPECT_GT(peak, 1e-3) << "every compared command was ~0 — the cross-check is vacuous";
-  // g(q) ≢ 0 on planar_3r is what makes the gravity branch observable at all.
-  const auto gravity = ctrl.gravity_torques();
-  EXPECT_GT(std::abs(gravity[0]) + std::abs(gravity[1]) + std::abs(gravity[2]), 1e-6)
-      << "fixture produced zero gravity — the gravity branch was not exercised";
-}
-
-// Position lane: reference-velocity feedforward instead of the dynamics terms.
-TEST(JointPdLaw, CoreDrivenShimMatchesTheAdapterBitwisePositionLane) {
-  rtc::JointPDController ctrl(Planar3r());
-  YAML::Node cfg = YAML::Load("command_type: position\n");
-  ctrl.LoadConfig(cfg);  // before enabling anything — the mixed-unit check bites otherwise
-  ctrl.OnDeviceConfigsSet();
-
-  rtc::JointPDController::Gains g;
-  // The position lane clamps to kDefaultMaxJointVelocity = 2.0 rad/s, which the
-  // quintic's own feedforward peak (≈1.875·dist/duration) can reach on its own;
-  // the slow trajectory_speed stretches the duration to keep it well inside.
-  g.kp.fill(2.0);
-  g.kd.fill(0.05);
-  g.enable_gravity_compensation = false;
-  g.enable_coriolis_compensation = false;
-  g.trajectory_speed = 0.2;
-  ctrl.set_gains(g);
-
-  JointPdShim shim;
-  double peak = 0.0;
-  RunCrossCheck(ctrl, shim, g, CommandType::kPosition, /*nc0=*/5, /*dt=*/0.002,
-                /*clamp_limit=*/rtc::kDefaultMaxJointVelocity, &peak);
-  EXPECT_GT(peak, 1e-3) << "every compared command was ~0 — the cross-check is vacuous";
-}
+//
+// Two cross-check cases stood here, driving the live JointPDController and
+// JointPdShim through the same tick sequence and comparing device-0 commands bit
+// for bit:
+//
+//   JointPdLaw.CoreDrivenShimMatchesTheAdapterBitwiseTorqueLane
+//   JointPdLaw.CoreDrivenShimMatchesTheAdapterBitwisePositionLane
+//
+// VERIFICATION PROVENANCE — ComputeJointPdCommand and PreExtractionInlineForm
+// above were verified bitwise against the live JointPDController @ 0f873901 over
+// 24 ticks x 5 channels x 2 command lanes (torque with gravity compensation,
+// position with velocity feedforward), with the adapter's output clamp asserted
+// inert on every compared sample; oracle 2 retired in S7c.
+//
+// They could not be migrated. Oracle 2's unique job was the CORRELATED
+// transcription error: oracle 1 and the core were transcribed from the same
+// source by the same hand, so a misreading makes both of them wrong in the same
+// way and they agree with each other. Only a comparison against the SHIPPED code
+// catches that, and that comparison needs the shipped code to exist.
+//
+// JointPdShim below is kept as the reference recipe an S7 binding starts from —
+// it owns the JointSpaceTrajectory and replays seed/retarget as the adapter did.
+// Nothing pins it any more: it is a starting point, not a verified artefact.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Contracts the extraction newly makes explicit

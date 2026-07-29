@@ -183,7 +183,7 @@ rm -rf build/<pkg> install/<pkg> && colcon build --packages-select <pkg>
 | E-STOP on startup | Set `init_timeout_sec: 0.0` for sim |
 | High jitter (>200us) | Check `taskset` pinning, verify `isolcpus`, `check_rt_setup.sh --summary` |
 | Hand timeout E-STOP | Check UDP link, `recv_timeout_ms: 0.4` |
-| Controller not found | Use config_key (e.g. "p_controller") or Name() |
+| Controller not found | Use config_key (e.g. "demo_task_controller") or Name() |
 | `ament_cmake_test` missing on `colcon test` | `.venv` overlay가 system site-packages를 가림. 재활성화 + ROS 2 환경 재로드 |
 
 ```bash

@@ -96,15 +96,16 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 - **가변 DOF 실시간 제어**: `clock_nanosleep(TIMER_ABSTIME)` 기반 RT 루프 (`control_rate` YAML로 100Hz–5kHz 설정, default 500Hz), CPU 코어 자동 할당 (4/6/8/10/12/16코어)
 - **Lock-Free SPSC 아키텍처**: RT 스레드 → SPSC 버퍼 → 비-RT 퍼블리시/로깅 (wait-free push, cache-line 정렬)
 - **SeqLock 동기화**: 단일 Writer / 다중 Reader lock-free 상태 공유 (trivially copyable 타입 전용)
-- **컨트롤러 계층 분리**: `rtc_controller_interface` (프레임워크 계약 + 공통 글루) → `rtc_controllers` (제어 법칙 라이브러리 — 노드도 `RTControllerInterface` 상속도 없음) → `integrated_bringup` (바인딩 + 등록 + production YAML). 배치 규칙·전이 상태는 [agent_docs/design-principles.md](agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms
+- **컨트롤러 계층 분리**: `rtc_controller_interface` (프레임워크 계약 + 공통 글루) → `rtc_controllers` (제어 법칙 + YAML 스키마 라이브러리 — 노드도 `RTControllerInterface` 상속도 없고, `rtc_controller_interface` 를 **의존하지도 않는다**) → `integrated_bringup` (바인딩 + 등록 + production YAML). 배치 규칙·전이 상태는 [agent_docs/design-principles.md](agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms
 - **Lifecycle 관리**: 모든 C++ 노드가 `rclcpp_lifecycle::LifecycleNode` 기반 — `ros2 lifecycle` CLI로 런타임 상태 제어 (deactivate/activate), Launch event handler 기반 자동 configure→activate 체이닝
 
 ### 제어 알고리즘
-- **PController**: Joint-space 비례 제어 (증분 스텝 `q + kp*error*dt`)
-- **JointPDController**: PD + Pinocchio RNEA 중력/코리올리 보상, JointSpaceTrajectory 퀸틱 보간
-- **ClikController**: Damped Jacobian 역운동학 (3/6-DOF), 영공간 제어, TaskSpaceTrajectory SE3 퀸틱
-- **OperationalSpaceController**: 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
-- **Compliance 계열** (`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`): §6.2 Jacobian-transpose impedance, §7 admittance (힘 입력 → 위치 출력), §7.6 두 루프 직렬. 규범·계약은 [rtc_controllers/docs/compliance-conventions.md](rtc_controllers/docs/compliance-conventions.md)
+`rtc_controllers` 는 **법칙 함수 + YAML 스키마**로 제공하고, 그것을 tick 마다 부르는 바인딩은 integration 패키지가 소유한다 (#236 S7c). 목록·헤더 경로는 [rtc_controllers/README.md](rtc_controllers/README.md#개요) 가 SSoT.
+
+- **관절 PD** (`joint/joint_pd_law.hpp`): PD + Pinocchio RNEA 중력/코리올리 보상. 궤적은 바인딩이 소유 (JointSpaceTrajectory 퀸틱 보간)
+- **태스크 속도 / CLIK** (`task/task_vel_law.hpp` + `compliance/differential_ik.hpp`): Damped Jacobian 역운동학 (3/6-DOF), 영공간 제어, TaskSpaceTrajectory SE3 퀸틱
+- **태스크 가속 / OSC** (`task/task_accel_law.hpp` + `compliance/task_dynamics.hpp`): 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
+- **Compliance 계열** (`compliance/*` §6.2 impedance · §7 admittance · §7.6 cascade): Jacobian-transpose impedance, 힘 입력 → 위치 출력, 두 루프 직렬. 규범·계약은 [rtc_controllers/docs/compliance-conventions.md](rtc_controllers/docs/compliance-conventions.md)
 - **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 6-state FSM (Idle→Approach→Closure→Hold→Release, 그리고 Fallback; enum slot 2·5 는 예약 — 과거 kPreGrasp 는 kApproach 에 병합, kRetreat 는 제거), ProxSuite Dense QP (Kinematic CLIK-QP position backbone + Dynamic TSID-ID τ_ff QP), RELEASE/abort 가 active grasp phase (`kApproach`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제), **Phase 5에서 MPC reference 주입 경로 지원 — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, MPC 비활성 시 Phase 4 고정-reference 동작 bit-identical 유지**
 
 ### 안전 시스템

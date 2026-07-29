@@ -33,16 +33,25 @@ namespace rtc::compliance {
 
 // ── The two bounds that keep §6.5 armed ─────────────────────────────────────
 // They live next to the law they protect, not in five anonymous namespaces. All
-// five task-space controllers apply the same two, and invariants.md NUM-1 names
-// them as ONE thing across all five — so five private copies means five edits to
-// change one documented invariant, and any single miss leaves a controller whose
+// five task-space schemas apply the same two, and invariants.md NUM-1 names them
+// as ONE thing across all five — so five private copies means five edits to
+// change one documented invariant, and any single miss leaves a consumer whose
 // singularity guard silently differs from the doc that describes it.
 //
-// λ_max (NUM-1) is floored at the point of USE as well as in LoadConfig, because
-// set_gains() writes the Gains POD straight into the SeqLock and bypasses
-// configure entirely. σ₀ (NUM-2) is floored in LoadConfig only: it parameterises
-// where the ramp starts rather than how hard it damps, and every set_gains()
-// caller in the repo is a test that supplies it explicitly.
+// Where each is applied, post-#298 S7c-2:
+//   σ₀ (NUM-2) — in the parsers (params/*.cpp) only. It parameterises where the
+//     ramp starts rather than how hard it damps, and every set_gains()-equivalent
+//     caller in the repo is a test that supplies it explicitly.
+//   λ_max (NUM-1) — in the parsers, and NUM-1 additionally requires it at the
+//     point of USE, because a gains POD written straight into a SeqLock bypasses
+//     configure entirely. That second half lived in the adapters' Compute() and
+//     was deleted with them; it is now a BINDING REQUIREMENT and no in-tree
+//     consumer exercises it (no shipped binding reads max_damping yet). A
+//     binding that adds one must floor it on the tick as well — this header
+//     deliberately does NOT floor inside AdaptiveDampingSquared, because the law
+//     takes λ_max as a plain argument and silently rewriting a caller's input
+//     would make the literal golden-vector oracles disagree with the law they
+//     pin. See invariants.md NUM-1.
 inline constexpr double kMinMaxDamping = 1e-4;
 
 // σ₀ ≤ 0 does not narrow the shell — AdaptiveDampingSquared short-circuits and

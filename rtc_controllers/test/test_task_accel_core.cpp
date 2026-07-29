@@ -13,7 +13,8 @@
 //      (.linear()/.angular()) the inline form used, so the binding's switch to
 //      Motion::toVector() is pinned as a repack-free view rather than assumed.
 //
-//   2. The live OperationalSpaceController. TRANSIENT (dies with S7). Its job is
+//   2. The live OperationalSpaceController. TRANSIENT — RETIRED in #298 S7c-2
+//      with the adapter (see "Oracle 2 retired" below). Its job was
 //      the one thing oracle 1 structurally cannot do: catch a CORRELATED
 //      transcription error, plus the WIRING — which six doubles reach the core
 //      as e, ν, ν_d and a_ff.
@@ -47,8 +48,9 @@
 // enforces the ordering). Everything below pulls Eigen, so it comes first.
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
-#include "rtc_controllers/direct/operational_space_controller.hpp"
+#include "rtc_controllers/compliance/torque_estop.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/params/osc_params.hpp"
 #include "rtc_controllers/task/task_accel_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
@@ -74,7 +76,6 @@
 #include <memory>
 #include <random>
 #include <span>
-#include <string>
 #include <vector>
 
 // The RT allocation gate is TWO complementary sensors (shared with the S1/S3a
@@ -255,8 +256,31 @@ class OscShim {
   // target — the caller keeps the two in lock-step, as the adapter's own drain
   // ordering (FK first, trajectory re-init after) requires.
   // Returns the unclamped torque in DEVICE channel order.
-  Eigen::VectorXd Step(const rtc::OperationalSpaceController::Gains& g,
-                       const rtc::ControllerState& state, const std::array<double, 6>* goal) {
+  // The controller-local E-STOP latch, mirroring TriggerEstop()/ClearEstop().
+  // Deliberately NOT merged with any global-E-STOP flag — same as the adapter,
+  // where `estopped_` is cleared only by an explicit ClearEstop().
+  void TriggerEstop() { estopped_ = true; }
+
+  void ClearEstop() { estopped_ = false; }
+
+  Eigen::VectorXd Step(const rtc::params::OscParams& g, const rtc::ControllerState& state,
+                       const std::array<double, 6>* goal) {
+    // ── Step 0: the E-STOP early return (adapter :193-212) ─────────────────
+    // The ORDER inside this branch is the contract, not an implementation
+    // detail: the posture-gate window is cleared BEFORE the return, so a held
+    // tick reports the gate it actually ran (closed) instead of inheriting the
+    // previous active tick's `true` for the whole stop. That flag is the only
+    // observable a numerically inert gate has, so a mutation that kept the
+    // posture task running through an E-STOP would otherwise leave both the
+    // torque lanes and the window looking exactly as they do now (S5 M4).
+    if (estopped_) {
+      last_nullspace_active_ = false;
+      // A held tick is a discontinuity — the next active tick re-seeds the pose
+      // target and the trajectory from the measurement (adapter :693).
+      initialized_ = false;
+      return EstopHold(g, state);
+    }
+
     // ── Step 1: copy joint state into buffers ──────────────────────────────
     const auto& dev0 = state.devices[0];
     std::array<double, kMaxDeviceChannels> q_buf{};
@@ -449,6 +473,31 @@ class OscShim {
   [[nodiscard]] double last_lambda_sq() const { return last_lambda_sq_; }
 
  private:
+  // τ = ĝ(q) − D·q̇ clamped per joint (E-8, #184), through the same core helper
+  // the adapter calls. Coriolis is omitted there and so it is here: at the
+  // speeds a safety stop targets the damping term dominates.
+  Eigen::VectorXd EstopHold(const rtc::params::OscParams& g, const rtc::ControllerState& state) {
+    const auto& dev0 = state.devices[0];
+    std::array<double, kMaxDeviceChannels> q_buf{};
+    Eigen::VectorXd qdot_dev = Eigen::VectorXd::Zero(nv_);
+    for (int i = 0; i < nv_; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      q_buf[ui] = dev0.positions[ui];
+      qdot_dev(i) = dev0.velocities[ui];
+    }
+    handle_->ComputeGeneralizedGravity(
+        std::span<const double>(q_buf.data(), static_cast<std::size_t>(nv_)));
+    Eigen::VectorXd grav_dev = Eigen::VectorXd::Zero(nv_);
+    handle_->ReorderOutput(handle_->GetGeneralizedGravity(),
+                           std::span<double>(grav_dev.data(), static_cast<std::size_t>(nv_)));
+    const Eigen::VectorXd t_max = Eigen::VectorXd::Constant(nv_, rtc::kDefaultMaxJointTorque);
+    Eigen::VectorXd out = Eigen::VectorXd::Zero(nv_);
+    rtc::compliance::GravityCompDampedHold(out, grav_dev, qdot_dev, g.estop_damping, t_max);
+    return out;
+  }
+
+  bool estopped_{false};
+
   std::shared_ptr<const pinocchio::Model> model_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
   pinocchio::FrameIndex tip_{0};
@@ -478,40 +527,6 @@ class OscShim {
   int splits_{0};
   int transitions_{0};
 };
-
-// A goal pose sitting exactly `angle` radians of rotation away from the TCP
-// orientation at `tick`, returned as the [x,y,z, r,p,y] vector SetDeviceTarget
-// takes (ZYX Euler, matching the adapter's RpyToMatrix). Deriving the target
-// from the fixture instead of hard-coding Euler angles is what makes the
-// π-split branch reachable on purpose: the first version of that test used a
-// literal yaw of π−0.02 and silently took the single-segment path, which the
-// shim's branch counters caught.
-std::array<double, 6> GoalRotatedFromTcp(int tick, double dt, double angle,
-                                         const Eigen::Vector3d& axis,
-                                         const Eigen::Vector3d& translation_offset) {
-  std::shared_ptr<const pinocchio::Model> model;
-  auto handle = MakeHandle(model);
-  const auto tip = static_cast<pinocchio::FrameIndex>(model->nframes - 1);
-  const int nv = handle->nv();
-
-  auto state = MakeState(nv, dt);
-  FillSweep(state, nv, tick, dt);
-  std::vector<double> q(static_cast<std::size_t>(nv));
-  for (int i = 0; i < nv; ++i)
-    q[static_cast<std::size_t>(i)] = state.devices[0].positions[static_cast<std::size_t>(i)];
-
-  // ComputeJacobians is what the adapter calls, and it refreshes frame
-  // placements as a side effect — using it keeps this helper on the adapter's
-  // own FK path rather than a parallel one.
-  handle->ComputeJacobians(q);
-  const pinocchio::SE3& tcp = handle->GetFramePlacement(tip);
-
-  const Eigen::Matrix3d R_goal =
-      tcp.rotation() * Eigen::AngleAxisd(angle, axis.normalized()).toRotationMatrix();
-  const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(R_goal);
-  const Eigen::Vector3d p = tcp.translation() + translation_offset;
-  return {p.x(), p.y(), p.z(), rpy[0], rpy[1], rpy[2]};
-}
 
 }  // namespace
 
@@ -644,151 +659,112 @@ TEST(ReferenceDynamics, IndependentHandlesAgreeBitwise) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Cross-check against the live adapter (transient — dies with S7)
+// Oracle 2 retired with the adapter (#298 S7c-2)
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// Three cross-check cases stood here, driving the live
+// OperationalSpaceController and OscShim through the same tick sequence and
+// comparing every device-0 torque channel plus the cached pose error bit for
+// bit:
+//
+//   TaskAccelLaw.CoreDrivenShimMatchesTheAdapterBitwise
+//   TaskAccelLaw.CoreDrivenShimMatchesTheAdapterBitwiseWithNullSpaceTask
+//   TaskAccelLaw.CoreDrivenShimMatchesTheAdapterAcrossAPiRotationSplit
+//
+// VERIFICATION PROVENANCE — task::ComputeTaskAcceleration and
+// PreExtractionInlineForm above were verified bitwise against the live
+// OperationalSpaceController @ 0f873901 over 40 + 40 + 140 ticks x 7 channels
+// (straight retarget, null-space posture task active on the redundant fixture,
+// and the near-pi rotation split with both the split and the segment transition
+// asserted to have fired), with the adapter's torque clamp asserted inert on
+// every compared sample; oracle 2 retired in S7c.
+//
+// They could not be migrated: oracle 2's unique job was the CORRELATED
+// transcription error, which by construction needs the shipped code to compare
+// against. See test_joint_pd_core.cpp's equivalent block for the full argument.
+//
+// OscShim below survives — the posture-gate cases at the end of this file drive
+// it shim-only (분류 B), and it remains the reference recipe an S7 binding
+// starts from, including the two-segment pi-split state machine that R5 flagged
+// as the likeliest place to get the trajectory wiring wrong.
 
-namespace {
+// ═══════════════════════════════════════════════════════════════════════════
+// The posture gate — shim-only (#236 S7c-2, 분류 B)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// These two moved here from test_dls_convergence.cpp's OscAdapter suite, which
+// retires with OperationalSpaceController. What they pin is NOT adapter
+// behaviour: it is the gate's own contract, and the observation window
+// (last_nullspace_active()) already existed on this shim — it was only ever
+// ASSERTED through the adapter's cross-check, so 분류 A's retirement would have
+// taken the coverage with it.
+//
+// Why a window and not an output lane: mutation M2 (deleting the
+// `null_kp != 0 || null_kd != 0` half of the gate) ran the whole suite clean and
+// has to. With both gains zero the posture torque is a signed zero, Nᵀ·0 is
+// zero, and adding it changes no bit of any torque lane. The flag is the only
+// place the branch is visible at all.
 
-// Drive adapter and shim through the same tick sequence and compare device-0
-// commands bit for bit.
-void RunCrossCheck(rtc::OperationalSpaceController& ctrl, OscShim& shim,
-                   const rtc::OperationalSpaceController::Gains& g,
-                   const std::array<double, 6>& goal, int retarget_tick, int ticks, double dt,
-                   double* peak_out, double* peak_err_out) {
-  const int nv = shim.nv();
-  auto state = MakeState(nv, dt);
-  double peak = 0.0;
-  double peak_err = 0.0;
-
-  for (int tick = 0; tick < ticks; ++tick) {
-    FillSweep(state, nv, tick, dt);
-
-    if (tick == retarget_tick) {
-      ctrl.SetDeviceTarget(0, std::span<const double>(goal));
-    }
-
-    const auto out = ctrl.Compute(state);
-    const Eigen::VectorXd shim_tau = shim.Step(g, state, tick == retarget_tick ? &goal : nullptr);
-
-    for (int j = 0; j < nv; ++j) {
-      const auto uj = static_cast<std::size_t>(j);
-      const double adapter = out.devices[0].commands[uj];
-      // The adapter clamps after the law; the shim does not (limits are an
-      // integration-layer concern). Keeping the clamp provably inert is what
-      // makes the bitwise comparison meaningful — assert it, don't assume it.
-      ASSERT_LT(std::abs(adapter), rtc::kDefaultMaxJointTorque)
-          << "clamp fired at tick " << tick << " ch " << j << " — comparison would be invalid";
-      EXPECT_TRUE(BitsEqual(adapter, shim_tau[j]))
-          << "tick " << tick << " channel " << j << ": adapter " << adapter << " vs shim "
-          << shim_tau[j];
-      peak = std::max(peak, std::abs(adapter));
-    }
-
-    // The adapter's ONE window onto the core's input: the cached pose error.
-    // Pinning it bitwise localises a cross-check failure to either the error
-    // (binding) or the law (core) instead of leaving the whole tick suspect.
-    const auto adapter_err = ctrl.pose_error();
-    for (int i = 0; i < 6; ++i) {
-      EXPECT_TRUE(BitsEqual(adapter_err[static_cast<std::size_t>(i)], shim.task_err()[i]))
-          << "tick " << tick << " pose-error axis " << i;
-      peak_err = std::max(peak_err, std::abs(adapter_err[static_cast<std::size_t>(i)]));
-    }
-  }
-  *peak_out = peak;
-  *peak_err_out = peak_err;
-}
-
-rtc::OperationalSpaceController::Gains CrossCheckGains() {
-  rtc::OperationalSpaceController::Gains g;
-  g.kp_pos = {{40.0, 40.0, 40.0}};
-  g.kd_pos = {{8.0, 8.0, 8.0}};
-  g.kp_rot = {{20.0, 20.0, 20.0}};
-  g.kd_rot = {{4.0, 4.0, 4.0}};
-  g.max_damping = 0.05;
-  g.singularity_threshold = 0.02;
-  g.trajectory_speed = 0.05;
-  g.trajectory_angular_speed = 0.25;
-  return g;
-}
-
-}  // namespace
-
-// Straight retarget: no π-split, single segment.
-TEST(TaskAccelLaw, CoreDrivenShimMatchesTheAdapterBitwise) {
-  rtc::OperationalSpaceController ctrl(Serial7dof(), CrossCheckGains());
-  ctrl.OnDeviceConfigsSet();  // populates max_joint_torque_ = kDefaultMaxJointTorque
-  const auto g = CrossCheckGains();
-  ctrl.set_gains(g);
+TEST(OscShimPostureGate, IsWiredToTheGains) {
+  rtc::params::OscParams gains;
+  gains.null_kp = 0.0;
+  gains.null_kd = 0.0;
 
   OscShim shim;
-  ASSERT_EQ(shim.nv(), 7) << "fixture must be redundant (nv > 6) for the null-space branch";
+  ASSERT_EQ(shim.nv(), 7) << "fixture must be redundant (nv > 6), or the gate is closed anyway";
+  auto state = MakeState(7, 0.001);
 
-  const std::array<double, 6> goal{0.30, 0.10, 0.45, 0.20, -0.15, 0.35};
-  double peak = 0.0;
-  double peak_err = 0.0;
-  RunCrossCheck(ctrl, shim, g, goal, /*retarget_tick=*/3, /*ticks=*/40, /*dt=*/0.002, &peak,
-                &peak_err);
-  EXPECT_GT(peak, 1e-3) << "every compared command was ~0 — the cross-check is vacuous";
-  EXPECT_GT(peak_err, 1e-4) << "the pose error never left zero — the K_p branch was not exercised";
+  FillSweep(state, 7, 0, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_FALSE(shim.last_nullspace_active()) << "both posture gains are zero";
+
+  gains.null_kp = 3.0;
+  FillSweep(state, 7, 1, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_TRUE(shim.last_nullspace_active()) << "a non-zero stiffness must open the gate";
+
+  gains.null_kp = 0.0;
+  gains.null_kd = 0.4;
+  FillSweep(state, 7, 2, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_TRUE(shim.last_nullspace_active()) << "damping alone must open the gate too";
+
+  gains.null_kd = 0.0;
+  FillSweep(state, 7, 3, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_FALSE(shim.last_nullspace_active()) << "the gate must close again";
 }
 
-// Same recipe with the dynamically-consistent null-space posture task active
-// (nv = 7 > 6 makes Nᵀ non-trivial). This pins the binding's Nᵀ wiring as well
-// as the core, which is what S7 will inherit.
-TEST(TaskAccelLaw, CoreDrivenShimMatchesTheAdapterBitwiseWithNullSpaceTask) {
-  auto g = CrossCheckGains();
-  g.null_kp = 2.0;
-  g.null_kd = 0.5;
-
-  rtc::OperationalSpaceController ctrl(Serial7dof(), g);
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
+TEST(OscShimPostureGate, ReportsClosedOnAnEstoppedTick) {
+  // The window has to describe THIS tick or it is not a window. The E-STOP
+  // branch is an early return that sits before the gate assignment, so unless it
+  // clears the flag itself a held tick inherits the previous active tick's
+  // `true` and keeps reporting it for the whole stop.
+  rtc::params::OscParams gains;
+  gains.null_kp = 3.0;  // gate open on the redundant fixture
 
   OscShim shim;
-  const std::array<double, 6> goal{0.28, -0.12, 0.40, -0.10, 0.20, 0.15};
-  double peak = 0.0;
-  double peak_err = 0.0;
-  RunCrossCheck(ctrl, shim, g, goal, /*retarget_tick=*/2, /*ticks=*/40, /*dt=*/0.002, &peak,
-                &peak_err);
-  EXPECT_GT(peak, 1e-3) << "every compared command was ~0 — the cross-check is vacuous";
-  EXPECT_GT(peak_err, 1e-4) << "the pose error never left zero — the K_p branch was not exercised";
-}
+  auto state = MakeState(7, 0.001);
 
-// A near-π retarget takes the split branch, so the shim must reproduce the
-// two-segment state machine (has_pending_segment_ / pending_duration_) as well
-// as the law. This is the transition R5 of the plan flagged as the place a
-// future binding is most likely to get the trajectory wiring wrong.
-TEST(TaskAccelLaw, CoreDrivenShimMatchesTheAdapterAcrossAPiRotationSplit) {
-  auto g = CrossCheckGains();
-  // The split's first segment covers HALF the rotation, and at the default
-  // angular speed that lasts longer than any practical tick budget. Raising the
-  // two angular limits parameterises the TRAJECTORY, not the law (D-T) — the
-  // gains the core reads are untouched.
-  g.trajectory_angular_speed = 2.0;
-  g.max_traj_angular_velocity = 4.0;
+  FillSweep(state, 7, 0, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  ASSERT_TRUE(shim.last_nullspace_active()) << "fixture must open the gate first, or this pins "
+                                               "nothing";
 
-  rtc::OperationalSpaceController ctrl(Serial7dof(), g);
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
+  shim.TriggerEstop();
+  FillSweep(state, 7, 1, 0.001);
+  const Eigen::VectorXd held = shim.Step(gains, state, nullptr);
+  EXPECT_FALSE(shim.last_nullspace_active())
+      << "an E-STOP tick runs no posture task — the gate observable must say so";
+  // Non-vacuity: the held tick still produced a hold, so the assertion above is
+  // about the gate rather than about the branch having emitted nothing at all.
+  EXPECT_TRUE(held.allFinite());
+  EXPECT_GT(held.cwiseAbs().maxCoeff(), 0.0) << "ĝ(q) − D·q̇ collapsed to zero on every joint";
 
-  OscShim shim;
-  constexpr int kRetargetTick = 2;
-  constexpr double kDt = 0.01;
-  // π − 0.05 clears the adapter's kPiSafetyMargin of 0.15.
-  const std::array<double, 6> goal =
-      GoalRotatedFromTcp(kRetargetTick, kDt, M_PI - 0.05, Eigen::Vector3d(0.3, -0.5, 0.8),
-                         Eigen::Vector3d(0.02, 0.0, -0.01));
-  double peak = 0.0;
-  double peak_err = 0.0;
-  // Long enough to cross the first segment's end and run into segment 2.
-  RunCrossCheck(ctrl, shim, g, goal, kRetargetTick, /*ticks=*/140, kDt, &peak, &peak_err);
-  EXPECT_GT(peak, 1e-3) << "every compared command was ~0 — the cross-check is vacuous";
-  EXPECT_GT(peak_err, 1e-4) << "the pose error never left zero — the K_p branch was not exercised";
-  // Without these the test would still pass on a straight (single-segment)
-  // retarget and would pin none of the state machine it was written for.
-  EXPECT_EQ(shim.splits(), 1) << "the π-rotation split branch never fired — goal is not near π";
-  EXPECT_GT(shim.transitions(), 0)
-      << "segment 1 never ended — the run is too short to reach the transition";
+  shim.ClearEstop();
+  FillSweep(state, 7, 2, 0.001);
+  (void)shim.Step(gains, state, nullptr);
+  EXPECT_TRUE(shim.last_nullspace_active()) << "recovery must reopen the gate, not latch it closed";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -804,6 +780,7 @@ TEST(TaskAccelLaw, CoreDrivenShimMatchesTheAdapterAcrossAPiRotationSplit) {
 // armed by RAII: an ASSERT_* added inside the region returns from the test, and
 // a bare disarm line would then never run — leaving counting on for every later
 // test in the binary, where nothing reads it.
+
 TEST(TaskAccelLaw, IsAllocationFree) {
   auto rng = MakeRng();
 

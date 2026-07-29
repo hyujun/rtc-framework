@@ -35,7 +35,8 @@
 //      loops and of the removed member function, at 8526a4c9. DURABLE: they
 //      outlive the adapters, so they still pin the cores after S7 deletes them.
 //
-//   2. The live CascadedComplianceController. TRANSIENT (dies with S7). Its job
+//   2. The live CascadedComplianceController. TRANSIENT — RETIRED in #298
+//      S7c-2 with the adapter (see "Oracle 2 retired" below). Its job
 //      is what oracle 1 structurally cannot do: catch a CORRELATED transcription
 //      error, and pin the WIRING — that q_null/q_dev/q̇_dev reach the law in that
 //      order and that role, that the gains marshalled in are nullspace_kp/_kd,
@@ -66,7 +67,7 @@
 #include "rtc_controllers/compliance/bandwidth_separation.hpp"
 #include "rtc_controllers/compliance/impedance_law.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
-#include "rtc_controllers/direct/cascaded_compliance_controller.hpp"
+#include "rtc_controllers/params/cascaded_compliance_params.hpp"
 #include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
@@ -92,7 +93,6 @@ namespace {
 
 using Vec6 = Eigen::Matrix<double, 6, 1>;
 
-using rtc::CascadedComplianceController;
 using rtc::kMaxDeviceChannels;
 using rtc::compliance::AdmittanceParams;
 using rtc::compliance::BandwidthSeparation;
@@ -700,7 +700,7 @@ TEST(PostureCore, IsAllocationFree) {
   const auto n = static_cast<std::size_t>(kNv);
   Eigen::VectorXd tau = Eigen::VectorXd::Zero(kNv);
   Eigen::VectorXd vel = Eigen::VectorXd::Zero(kNv);
-  CascadedComplianceController::Gains g;
+  rtc::params::CascadedComplianceParams g;
   double sink = 0.0;
   ComputePostureTorque(1.0, 1.0, InputsOf(draws.front(), n), n, {tau.data(), n});  // warm up
 
@@ -756,6 +756,11 @@ struct ShimOutput {
   bool bandwidth_ratio_low{false};
 };
 
+// The adapter's CascadedComplianceController::kTaskDim, kept local now that the
+// adapter is gone. 6-D task space is the law's own shape (a full SE(3) twist),
+// not a configurable, so a literal here is the honest form.
+constexpr int kShimTaskDim = 6;
+
 // Owns the model, both loops and the torque assembly (STRUCTURE) and calls the
 // two cores (ALGORITHM). Mirrors CascadedComplianceController::Compute() step
 // for step from the joint-state copy down to the device-order torque; any
@@ -784,7 +789,7 @@ class CascadeShim {
     tau_posture_ = Eigen::VectorXd::Zero(nv_);
     tau_posture_dev_ = Eigen::VectorXd::Zero(nv_);
     tau_null_ = Eigen::VectorXd::Zero(nv_);
-    dyn_.Resize(nv_, CascadedComplianceController::kTaskDim);
+    dyn_.Resize(nv_, kShimTaskDim);
   }
 
   [[nodiscard]] int nv() const { return nv_; }
@@ -798,9 +803,9 @@ class CascadeShim {
   // && diag.bias_calibrated) — the one lane the shim borrows rather than
   // replicates, as S4's and S5's shims did. Returns the torque in DEVICE order
   // BEFORE the §10.5 safety layer, which the caller asserts inert.
-  ShimOutput Step(const CascadedComplianceController::Gains& g, const rtc::ControllerState& state,
+  ShimOutput Step(const rtc::params::CascadedComplianceParams& g, const rtc::ControllerState& state,
                   const std::array<double, 6>& f_lwa, bool wrench_live) {
-    constexpr int kTaskDim = CascadedComplianceController::kTaskDim;
+    constexpr int kTaskDim = kShimTaskDim;
     const auto& dev0 = state.devices[0];
     const double dt = state.dt;
 
@@ -1016,23 +1021,8 @@ class CascadeShim {
   Eigen::VectorXd tau_null_;
 };
 
-// A transparent wrench source: no deadband, no filter, no bias calibration. This
-// slice is about the posture law and the §7.6 verdict, so every upstream stage
-// that could re-shape f_ext is switched off rather than replicated (each has its
-// own test in test_cascaded_compliance_controller.cpp).
-std::string CrossCheckYaml() {
-  return R"(
-external_wrench:
-  enabled: true
-  filter_enabled: false
-  bias_calibration_samples: 0
-  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-  max: [1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6]
-)";
-}
-
-CascadedComplianceController::Gains CrossCheckGains() {
-  CascadedComplianceController::Gains g;
+rtc::params::CascadedComplianceParams CrossCheckGains() {
+  rtc::params::CascadedComplianceParams g;
   // PAIRWISE-DISTINCT gains, not isotropic blocks. Oracle 2 exists to catch
   // WIRING errors, and a permutation inside one block is bit-for-bit invisible
   // when all three values are equal.
@@ -1054,13 +1044,6 @@ CascadedComplianceController::Gains CrossCheckGains() {
   return g;
 }
 
-struct CrossCheckStats {
-  double peak_tau{0.0};
-  double peak_err{0.0};
-  double peak_nu_c{0.0};
-  int nullspace_active_ticks{0};
-};
-
 // Which measured state the pair is driven through. kSweep is the shared fixture
 // sweep every other suite uses; kSingularHold parks the arm at the all-zero
 // configuration, where serial_7dof is fully extended and J drops rank — the
@@ -1068,13 +1051,26 @@ struct CrossCheckStats {
 // factorisation genuinely fail rather than merely become ill-conditioned.
 enum class Drive { kSweep, kSingularHold };
 
-// Drive adapter and shim through the same tick sequence and compare the torque,
-// both core inputs and BOTH gate windows, bit for bit.
-void RunCrossCheck(CascadedComplianceController& ctrl, CascadeShim& shim,
-                   const CascadedComplianceController::Gains& g, int ticks, CrossCheckStats* stats,
-                   Drive drive = Drive::kSweep) {
+// Shim-only driver for the §7.6 evaluation-gate cases (#236 S7c-2, 분류 B).
+//
+// The one lane RunCrossCheck borrows from the adapter is the CONDITIONED wrench
+// (diag.wrench_lwa), and the §7.6 verdict does not read it:
+// EvaluateBandwidthSeparation is a function of the two gain sets and Λ_S, i.e.
+// of q alone. So these cases can drive the same signal straight in as an
+// already-LOCAL_WORLD_ALIGNED wrench and drop their last adapter dependency,
+// without weakening what they assert. (The CrossCheckYaml pipeline the adapter
+// runs is a pass-through by construction — filter off, no bias, zero deadband,
+// 1e6 saturation — so the difference is the frame transform, which changes where
+// the compliant frame goes and nothing about the verdict.)
+//
+// Returns the last tick's ShimOutput: the §7.6 fields are what the cases assert,
+// and reading them from the OUTPUT rather than from a counter is what keeps
+// "the published figure follows the gains" a claim about the published figure.
+ShimOutput RunShimOnly(CascadeShim& shim, const rtc::params::CascadedComplianceParams& g, int ticks,
+                       Drive drive = Drive::kSweep) {
   const int nv = shim.nv();
   auto state = MakeState(nv, kDt);
+  ShimOutput last{};
 
   for (int tick = 0; tick < ticks; ++tick) {
     if (drive == Drive::kSweep) {
@@ -1087,63 +1083,12 @@ void RunCrossCheck(CascadedComplianceController& ctrl, CascadeShim& shim,
       }
     }
 
-    // A wrench that changes sign and magnitude, so the compliant frame keeps
-    // moving and ν_c is not a constant the comparison could absorb.
     const double phase = 0.05 * tick;
     const std::array<double, 6> w{
         5.0 * std::cos(phase), 3.5 * std::sin(phase), -2.5, 0.4 * std::sin(phase), -0.3, 0.2};
-    ctrl.SetExternalWrench(std::span<const double, 6>(w.data(), 6));
-
-    const auto out = ctrl.Compute(state);
-    const auto diag = ctrl.GetDiagnosticsForTesting();
-    ASSERT_TRUE(diag.control_valid) << "tick " << tick << ": the adapter did not run the law";
-    // A fired safety layer would silently void the comparison rather than fail
-    // it informatively — assert inert, do not assume (S1 harness contract 5).
-    ASSERT_FALSE(diag.saturated) << "tick " << tick << ": §10.5 saturation fired";
-    ASSERT_FALSE(diag.rate_limited) << "tick " << tick << ": §10.5 rate limit fired";
-
-    const ShimOutput shim_out =
-        shim.Step(g, state, diag.wrench_lwa, diag.wrench_valid && diag.bias_calibrated);
-
-    for (int j = 0; j < nv; ++j) {
-      const auto uj = static_cast<std::size_t>(j);
-      const double adapter = out.devices[0].commands[uj];
-      ASSERT_LT(std::abs(adapter), rtc::kDefaultMaxJointTorque)
-          << "output clamp fired at tick " << tick << " ch " << j << " — comparison invalid";
-      EXPECT_TRUE(BitsEqual(adapter, shim_out.tau_dev(j)))
-          << "tick " << tick << " channel " << j << ": adapter " << adapter << " vs shim "
-          << shim_out.tau_dev(j);
-      stats->peak_tau = std::max(stats->peak_tau, std::abs(adapter));
-    }
-
-    for (int i = 0; i < 6; ++i) {
-      const auto ui = static_cast<std::size_t>(i);
-      EXPECT_TRUE(BitsEqual(diag.pose_error[ui], shim_out.pose_error(i)))
-          << "tick " << tick << " pose-error axis " << i << " (the inner law's e input)";
-      EXPECT_TRUE(BitsEqual(diag.compliant_velocity[ui], shim_out.nu_c(i)))
-          << "tick " << tick << " compliant-velocity axis " << i;
-      stats->peak_err = std::max(stats->peak_err, std::abs(diag.pose_error[ui]));
-      stats->peak_nu_c = std::max(stats->peak_nu_c, std::abs(diag.compliant_velocity[ui]));
-    }
-
-    // The posture gate. With the gains zero the ungated path would contribute
-    // signed zeros the torque sum absorbs exactly, so this flag is the ONLY
-    // observable separating "the branch was skipped" from "the branch ran and
-    // added nothing" (S5 M4 measured exactly that false green).
-    EXPECT_EQ(diag.nullspace_active, shim_out.nullspace_active)
-        << "tick " << tick << ": adapter and shim disagree on the posture gate";
-    if (diag.nullspace_active)
-      ++stats->nullspace_active_ticks;
-
-    // The §7.6 verdict. Bitwise, and on EVERY tick rather than only the ones
-    // that evaluate — the gate's failure mode is a stale value that persists, so
-    // the ticks in between are where a mis-wired gate shows.
-    EXPECT_TRUE(BitsEqual(diag.bandwidth_ratio, shim_out.bandwidth_ratio))
-        << "tick " << tick << ": ratio " << diag.bandwidth_ratio << " vs "
-        << shim_out.bandwidth_ratio;
-    EXPECT_EQ(diag.bandwidth_ratio_low, shim_out.bandwidth_ratio_low)
-        << "tick " << tick << ": §7.6 flag";
+    last = shim.Step(g, state, w, /*wrench_live=*/true);
   }
+  return last;
 }
 
 // One posture-gate combination end to end. The gate is `kp != 0 || kd != 0`, so
@@ -1151,143 +1096,74 @@ void RunCrossCheck(CascadedComplianceController& ctrl, CascadeShim& shim,
 // only, damping only (which is where the PD form produces −0.0·Δq on the seed
 // tick), and neither — the closed gate, which contributes nothing numerically
 // and is therefore pinned by diag.nullspace_active alone.
-void RunPostureCombination(double nullspace_kp, double nullspace_kd, bool expect_gate_open) {
-  auto g = CrossCheckGains();
-  g.nullspace_kp = nullspace_kp;
-  g.nullspace_kd = nullspace_kd;
-
-  CascadedComplianceController ctrl(Serial7dof(), g);
-  ctrl.SetControlRate(1.0 / kDt);
-  ctrl.LoadConfig(YAML::Load(CrossCheckYaml()));
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);  // LoadConfig owns the wiring; the POD under test comes from here
-  ASSERT_TRUE(ctrl.external_wrench_enabled());
-
-  CascadeShim shim;
-  ASSERT_EQ(shim.nv(), kNv) << "fixture must be redundant (nv > 6) for a non-trivial null space";
-  shim.RequestBandwidthEval();  // mirrors the set_gains() above
-
-  CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/60, &stats);
-
-  EXPECT_GT(stats.peak_tau, 1e-3) << "every compared torque was ~0 — the cross-check is vacuous";
-  EXPECT_GT(stats.peak_err, 1e-6) << "the pose error never left zero — the inner law was inert";
-  EXPECT_GT(stats.peak_nu_c, 1e-6) << "the compliant frame never moved — the outer loop was inert";
-  EXPECT_GT(shim.wrench_ticks(), 0) << "f_ext was zero on every tick — the outer loop was driven "
-                                       "by nothing";
-  EXPECT_EQ(shim.nonfinite_steps(), 0) << "the §7.2 integrator refused a step — not the clean-tick "
-                                          "regime this suite compares";
-  EXPECT_GT(shim.bw_evaluations(), 0) << "the §7.6 verdict was never computed — the ratio lane "
-                                         "pins only its initial value";
-
-  if (expect_gate_open) {
-    EXPECT_GT(shim.nullspace_ticks(), 0) << "the posture branch never fired";
-    EXPECT_GT(stats.nullspace_active_ticks, 0) << "the adapter never reported the gate open";
-    EXPECT_GT(shim.peak_posture(), 1e-9)
-        << "the posture branch fired but contributed ~0 — it pins nothing";
-  } else {
-    EXPECT_EQ(shim.nullspace_ticks(), 0) << "the posture task ran with both gains zero";
-    EXPECT_EQ(stats.nullspace_active_ticks, 0)
-        << "the adapter reported the gate open with both gains zero";
-  }
-}
-
 }  // namespace
 
-TEST(PostureCore, CoreDrivenShimMatchesTheAdapterBitwiseWithBothGains) {
-  RunPostureCombination(/*nullspace_kp=*/2.0, /*nullspace_kd=*/0.5, /*expect_gate_open=*/true);
-}
-
-TEST(PostureCore, CoreDrivenShimMatchesTheAdapterBitwiseWithStiffnessOnly) {
-  RunPostureCombination(/*nullspace_kp=*/2.0, /*nullspace_kd=*/0.0, /*expect_gate_open=*/true);
-}
-
-// K_p = 0 with K_d ≠ 0 opens the gate through its SECOND disjunct, and it is the
-// configuration in which the P term is `0.0 · Δq` — a signed zero on every
-// channel where the arm has drifted negative. The torque comparison would be
-// green either way; what this case adds is that the adapter and the shim reach
-// that state through the same branch.
-TEST(PostureCore, CoreDrivenShimMatchesTheAdapterBitwiseWithDampingOnly) {
-  RunPostureCombination(/*nullspace_kp=*/0.0, /*nullspace_kd=*/0.5, /*expect_gate_open=*/true);
-}
-
-// The gate CLOSED. Numerically inert — an adapter that lost the gate would
-// scatter `0.0·Δq − 0.0·q̇` through Nᵀ and add exact zeros, leaving every torque
-// bit unchanged (S5 M4 measured precisely this false green). diag.nullspace_active
-// is the whole sensor, and the case exists so that flag has a negative to report.
-TEST(PostureCore, CoreDrivenShimMatchesTheAdapterBitwiseWithThePostureGateClosed) {
-  RunPostureCombination(/*nullspace_kp=*/0.0, /*nullspace_kd=*/0.0, /*expect_gate_open=*/false);
-}
-
-// The activation ramp touches the posture term's OUTPUT (α·Nᵀτ) and the inner
-// law's input (α inside §6.2), on a clock the outer loop does NOT share. With
-// the ramp retired in every case above, a binding that ramped the posture torque
-// on the wrong clock would still match, so this case runs both clocks partway
-// and asserts partial-α ticks actually occurred.
-TEST(PostureCore, CoreDrivenShimMatchesTheAdapterBitwiseThroughTheActivationRamp) {
-  auto g = CrossCheckGains();
-  g.activation_ramp_time = 0.05;  // 25 ticks at 2 ms — partway through most of the run
-
-  CascadedComplianceController ctrl(Serial7dof(), g);
-  ctrl.SetControlRate(1.0 / kDt);
-  ctrl.LoadConfig(YAML::Load("activation_ramp_time: 0.05" + CrossCheckYaml()));
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
-
-  CascadeShim shim;
-  shim.RequestBandwidthEval();
-  CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/40, &stats);
-
-  EXPECT_GT(stats.peak_tau, 1e-3) << "every compared torque was ~0 — the cross-check is vacuous";
-  EXPECT_GT(shim.ramped_ticks(), 0)
-      << "α was never strictly between 0 and 1 — the ramp wiring is not being pinned";
-  EXPECT_DOUBLE_EQ(shim.alpha(), 1.0) << "the ramp never completed — the run is too short";
-  EXPECT_GT(stats.nullspace_active_ticks, 0) << "the posture gate never opened under the ramp";
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// Oracle 2 retired with the adapter (#298 S7c-2)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Five cross-check cases stood here, driving the live
+// CascadedComplianceController and CascadeShim through the same tick sequence
+// and comparing the joint torque, both core inputs and BOTH gate windows
+// (diag.nullspace_active, diag.bandwidth_ratio) bit for bit on every tick:
+//
+//   PostureCore.CoreDrivenShimMatchesTheAdapterBitwiseWithBothGains
+//   PostureCore.CoreDrivenShimMatchesTheAdapterBitwiseWithStiffnessOnly
+//   PostureCore.CoreDrivenShimMatchesTheAdapterBitwiseWithDampingOnly
+//   PostureCore.CoreDrivenShimMatchesTheAdapterBitwiseWithThePostureGateClosed
+//   PostureCore.CoreDrivenShimMatchesTheAdapterBitwiseThroughTheActivationRamp
+//
+// VERIFICATION PROVENANCE — joint::ComputePostureTorque /
+// ComputePostureVelocity, compliance::EvaluateBandwidthSeparation and all three
+// PreExtractionInlineForm copies above were verified bitwise against the live
+// CascadedComplianceController @ 0f873901 over 40 ticks x 7 channels across the
+// four posture-gate corners — both gains, stiffness only, damping only (the
+// second disjunct, where the P term is a signed zero), and the gate CLOSED — plus
+// the activation ramp on both the inner and the outer clock with partial-alpha
+// ticks asserted to have occurred. Oracle 2 retired in S7c.
+//
+// They could not be migrated: oracle 2's unique job was the CORRELATED
+// transcription error, which by construction needs the shipped code to compare
+// against. See test_joint_pd_core.cpp's equivalent block for the full argument.
+//
+// CascadeShim survives — the §7.6 evaluation-gate cases below drive it shim-only
+// (분류 B), and it remains the reference recipe an S7 binding starts from.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The §7.6 evaluation gate — the two ways it reopens
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Re-evaluation on a gain change, cross-checked. test_cascaded_compliance_
-// controller.cpp already pins the adapter's own behaviour here; what this case
-// adds is that the SHIM's copy of the gate reopens on the same tick and computes
-// the same verdict from the same Λ_S — i.e. that the extraction did not move
-// WHEN the verdict is formed, only where the arithmetic lives.
-TEST(BandwidthSeparation, AdapterReEvaluatesTheRatioWhenTheGainsChange) {
+// Re-evaluation on a gain change. Retargeted onto the shim in #236 S7c-2
+// (분류 B): test_cascaded_compliance_controller.cpp used to pin the adapter's
+// own behaviour here and this case pinned that the SHIM's copy of the gate
+// agreed. With the adapter retiring, the shim IS the owner of the stateful
+// contract — the gate reopens on a gain change, and the published figure
+// follows the gains it was handed rather than the ones it was seeded with.
+TEST(BandwidthSeparation, ShimReEvaluatesTheRatioWhenTheGainsChange) {
   auto g = CrossCheckGains();
-  CascadedComplianceController ctrl(Serial7dof(), g);
-  ctrl.SetControlRate(1.0 / kDt);
-  ctrl.LoadConfig(YAML::Load(CrossCheckYaml()));
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
 
   CascadeShim shim;
   shim.RequestBandwidthEval();
-  CrossCheckStats first;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/20, &first);
-  const double initial = ctrl.GetDiagnosticsForTesting().bandwidth_ratio;
+  const ShimOutput first = RunShimOnly(shim, g, /*ticks=*/20);
+  const double initial = first.bandwidth_ratio;
   ASSERT_TRUE(std::isfinite(initial)) << "the first activation produced no verdict to retire";
+  ASSERT_GT(shim.bw_evaluations(), 0) << "nothing was ever evaluated — the case is vacuous";
 
   // Retire the inner loop's bandwidth: same cascade, an inner stiffness far
   // below the outer one. The published figure must FOLLOW the gains.
   g.impedance.kp_pos = {{1.0, 1.0, 1.0}};
   g.impedance.kp_rot = {{0.1, 0.1, 0.1}};
-  ctrl.set_gains(g);
   shim.RequestBandwidthEval();
 
   const int before_soft = shim.bw_evaluations();
-  CrossCheckStats second;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/20, &second);
+  const ShimOutput soft = RunShimOnly(shim, g, /*ticks=*/20);
 
-  EXPECT_GT(shim.bw_evaluations(), before_soft) << "the gate never reopened after set_gains()";
-  const auto soft = ctrl.GetDiagnosticsForTesting();
+  EXPECT_GT(shim.bw_evaluations(), before_soft) << "the gate never reopened for the new gains";
   EXPECT_LT(soft.bandwidth_ratio, initial)
       << "the report still describes the retired gains — a softer inner loop must LOWER the ratio";
   EXPECT_TRUE(soft.bandwidth_ratio_low)
-      << "an inner loop two orders below the outer one is coupled (ratio = " << soft.bandwidth_ratio
-      << ")";
+      << "an inner loop two orders below the outer one is coupled (ratio = "
+      << soft.bandwidth_ratio << ")";
 
   // The threshold is a gain too, and the flag has to follow IT rather than a
   // constant: restore the inner stiffness and drop min_bandwidth_ratio below the
@@ -1295,15 +1171,12 @@ TEST(BandwidthSeparation, AdapterReEvaluatesTheRatioWhenTheGainsChange) {
   // set, which a field wired to `true` would also satisfy.
   g.impedance = CrossCheckGains().impedance;
   g.min_bandwidth_ratio = 0.0;
-  ctrl.set_gains(g);
   shim.RequestBandwidthEval();
 
   const int before_restore = shim.bw_evaluations();
-  CrossCheckStats third;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/20, &third);
+  const ShimOutput restored = RunShimOnly(shim, g, /*ticks=*/20);
 
   EXPECT_GT(shim.bw_evaluations(), before_restore) << "the gate never reopened for the third set";
-  const auto restored = ctrl.GetDiagnosticsForTesting();
   EXPECT_GT(restored.bandwidth_ratio, soft.bandwidth_ratio)
       << "restoring the inner stiffness did not raise the ratio back";
   EXPECT_FALSE(restored.bandwidth_ratio_low)
@@ -1312,17 +1185,14 @@ TEST(BandwidthSeparation, AdapterReEvaluatesTheRatioWhenTheGainsChange) {
   EXPECT_EQ(shim.bw_retries(), 0) << "a healthy pose must not need a retry";
 }
 
-// The retry path. When the evaluation cannot be FORMED the controller must
-// publish "not evaluable" (∞, flag clear) and try again next tick, never leave
-// the previous activation's number in place under gains that no longer apply.
+// The retry path. When the evaluation cannot be FORMED the owner must publish
+// "not evaluable" (∞, flag clear) and try again next tick, never leave the
+// previous activation's number in place under gains that no longer apply.
 //
 // The failure is the REAL one, not an injected NaN: at the all-zero
 // configuration serial_7dof is fully extended with its four Z axes parallel, J
 // drops to rank 5 and Λ_S⁻¹ = J M⁻¹ Jᵀ is singular — so with the §6.5 damping
-// retired (σ₀ = 0 ⇒ λ² = 0) the Cholesky fails at every tick. Both gains reach
-// the controller through set_gains(), which writes the POD straight into the
-// SeqLock and bypasses LoadConfig's validation — the documented bypass S4 used
-// to force a non-factorable Λ_d.
+// retired (σ₀ = 0 ⇒ λ² = 0) the Cholesky fails at every tick.
 //
 // (A non-finite gain would NOT do: Eigen's LLT rejects a non-positive pivot, and
 // a NaN pivot compares false against `<= 0`, so a NaN λ² factorises "successfully"
@@ -1331,48 +1201,41 @@ TEST(BandwidthSeparation, AdapterReEvaluatesTheRatioWhenTheGainsChange) {
 //
 // The posture gains are retired so the tick stays otherwise clean: dyn_ok is
 // only assigned under the posture gate, so with that gate closed a failed Λ_S
-// costs the REPORT and nothing else — exactly the separation §7.6's comment in
-// the adapter claims ("a rank-deficient seeding pose must cost the bandwidth
-// REPORT, not the activation").
-TEST(BandwidthSeparation, AdapterRetriesAfterAFailedEvaluation) {
+// costs the REPORT and nothing else — the separation §7.6 asks for ("a
+// rank-deficient seeding pose must cost the bandwidth REPORT, not the
+// activation"). Retargeted onto the shim in #236 S7c-2 (분류 B).
+TEST(BandwidthSeparation, ShimRetriesAfterAFailedEvaluation) {
   auto g = CrossCheckGains();
   g.nullspace_kp = 0.0;
   g.nullspace_kd = 0.0;
   g.singularity_threshold = 0.0;  // no DLS shell: A stays exactly J M⁻¹ Jᵀ
 
-  CascadedComplianceController ctrl(Serial7dof(), g);
-  ctrl.SetControlRate(1.0 / kDt);
-  ctrl.LoadConfig(YAML::Load(CrossCheckYaml()));
-  ctrl.OnDeviceConfigsSet();
-  ctrl.set_gains(g);
-
   CascadeShim shim;
   shim.RequestBandwidthEval();
-  CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/12, &stats, Drive::kSingularHold);
+  const ShimOutput failed = RunShimOnly(shim, g, /*ticks=*/12, Drive::kSingularHold);
 
-  const auto failed = ctrl.GetDiagnosticsForTesting();
   EXPECT_FALSE(std::isfinite(failed.bandwidth_ratio))
       << "a Λ_S that cannot be factorised must publish 'not evaluable', not a number";
   EXPECT_FALSE(failed.bandwidth_ratio_low) << "'not evaluable' must never present as 'coupled'";
-  EXPECT_TRUE(failed.control_valid)
-      << "the failed REPORT stopped the controller — §7.6 is a diagnostic (D20)";
   EXPECT_GT(shim.bw_retries(), 1) << "the evaluation was not retried — one failure and the gate "
                                      "would stay shut for the rest of the activation";
-  EXPECT_EQ(shim.bw_evaluations(), 0) << "the verdict was computed despite the failed solve";
+  EXPECT_EQ(shim.bw_evaluations(), 0) << "a verdict was computed despite the failed solve";
+  // §7.6 is a DIAGNOSTIC (D20): a failed report must not stop the law. The
+  // adapter said this with diag.control_valid; on this side the equivalent
+  // observable is that the tick still produced a finite torque.
+  EXPECT_TRUE(failed.tau_dev.allFinite())
+      << "the failed REPORT poisoned the torque — §7.6 must cost the report and nothing else";
 
   // Non-vacuity, and the recovery: restore the §6.5 damping shell — at the SAME
   // singular pose — and the very next evaluation must succeed. Without this the
-  // assertions above would hold just as well for a controller that never
-  // evaluates at all, and holding the pose fixed keeps the contrast about the
-  // damping rather than about having moved off the singularity.
+  // assertions above would hold just as well for a shim that never evaluates at
+  // all, and holding the pose fixed keeps the contrast about the damping rather
+  // than about having moved off the singularity.
   g.singularity_threshold = 0.02;
-  ctrl.set_gains(g);
   shim.RequestBandwidthEval();
-  CrossCheckStats recovered;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/5, &recovered, Drive::kSingularHold);
+  const ShimOutput recovered = RunShimOnly(shim, g, /*ticks=*/5, Drive::kSingularHold);
 
   EXPECT_GT(shim.bw_evaluations(), 0) << "the retry never succeeded once the pose was evaluable";
-  EXPECT_TRUE(std::isfinite(ctrl.GetDiagnosticsForTesting().bandwidth_ratio))
-      << "the controller stayed at 'not evaluable' after the cause was removed";
+  EXPECT_TRUE(std::isfinite(recovered.bandwidth_ratio))
+      << "the verdict stayed at 'not evaluable' after the cause was removed";
 }

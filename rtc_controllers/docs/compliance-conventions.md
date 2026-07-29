@@ -2,10 +2,21 @@
 
 이 문서는 `rtc_controllers` 의 **compliance (impedance / admittance) 컨트롤러 계열**이
 따르는 **규범 매트릭스 (normative matrix)** 다. 코드·YAML·리뷰가 참조하는 SSoT 이며,
-값이 바뀌면 여기부터 갱신한다. 현재 범위는 **슬라이스 1 — `TaskImpedanceController`
+값이 바뀌면 여기부터 갱신한다. 현재 범위는 **슬라이스 1 — 태스크 임피던스
 (A=NONE, Jacobian-transpose)**, **슬라이스 2 — external wrench 입력 계약 + 조건화 체인 +
-§6.3 inertia shaping**, **슬라이스 3 — `TaskAdmittanceController` (§7, 힘 입력 → 위치 출력,
-§3.5)** 이고, 나머지 행은 후속 슬라이스에서 채운다.
+§6.3 inertia shaping**, **슬라이스 3 — 태스크 어드미턴스 (§7, 힘 입력 → 위치 출력,
+§3.5)**, **슬라이스 4 — §7.6 캐스케이드 컴플라이언스** 이고, 나머지 행은 후속
+슬라이스에서 채운다.
+
+**#298 S7c-2 이후 읽는 법.** 이 문서가 쓰일 당시 세 계열은 `rtc_controllers` 안의
+어댑터 클래스 (`TaskImpedanceController` / `TaskAdmittanceController` /
+`CascadedComplianceController`) 였고, 그 클래스들은 삭제됐다. 남은 것은 `compliance/`
+· `task/` · `joint/` 의 법칙 헤더와 `params/` 스키마이며, tick 배선·E-STOP·게이트는
+이제 **바인딩이 소유**한다. 따라서 아래 행들은 두 종류로 읽는다 — 법칙·스키마의
+성질을 규정하는 행은 여전히 코드에 대한 규범이고, tick 배선을 규정하는 행은
+**바인딩에 대한 요구사항**이다 (해당 행에 그렇게 표시했다). 삭제된 클래스명이
+남아 있는 곳은 그 결정이 어디서 관측됐는지를 가리키는 **이력 참조**이지 현행 구현이
+아니다.
 
 ## 1. 입력 명세 provenance
 
@@ -235,8 +246,8 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 
 | 항목 | 결정 | 근거 |
 |---|---|---|
-| **게이트 위치** | `Compute()` 의 조인트 상태 복사 **직전** — 세 컨트롤러 모두. `ComputeEstop()` 의 `ĝ(q)` 계산 직전 — **토크 도메인 둘** (`TaskImpedanceController`, `CascadedComplianceController`) | 미보고 채널은 `0` 으로 읽히므로 게이트 없이는 FK·Jacobian·법칙 전체가 **ZERO configuration** 에서 돌고 전 관절을 원점으로 당기는 토크가 나간다. 모든 수가 유한해 CM 의 actuator-boundary validator 도 거르지 않는다. `TaskImpedanceController` 는 `Compute()` 게이트조차 없이 출하됐었다 (#236 E-8 에서 신설) |
-| **미적용 — `TaskAdmittanceController::ComputeEstop`** | position-hold latch 를 `dev0.positions` 에서 seed 하는데 **게이트가 없다**. 이번 범위에서 손대지 않음 | 판독 불가 tick 에 latch 되면 미보고 채널의 hold 가 `0` 으로 굳어 "원점으로 servo" 가 되고, `estop_hold_valid_` 가 latch 라 이후 tick 까지 남는다. 다만 이 경로는 global E-STOP 하에서만 도달하고 그때 CM 이 `BuildHoldOutput` 으로 출력을 치환하므로 현재 하드웨어에 도달하지 않는다. position 도메인 hold 의 무효화 규칙(F1)과 얽히므로 별도 E-8 판단 사안으로 남긴다 |
+| **바인딩 요구사항 — 게이트 위치** | `Compute()` 의 조인트 상태 복사 **직전** — 세 계열 모두. `ComputeEstop()` 의 `ĝ(q)` 계산 직전 — **토크 도메인 둘** (임피던스·캐스케이드) | 미보고 채널은 `0` 으로 읽히므로 게이트 없이는 FK·Jacobian·법칙 전체가 **ZERO configuration** 에서 돌고 전 관절을 원점으로 당기는 토크가 나간다. 모든 수가 유한해 CM 의 actuator-boundary validator 도 거르지 않는다. `TaskImpedanceController` 는 `Compute()` 게이트조차 없이 출하됐었다 (#236 E-8 에서 신설) |
+| **바인딩 요구사항 — position 도메인의 E-STOP hold seed** | position-hold latch 를 `dev0.positions` 에서 seed 하는 바인딩은 **그 seed 지점에도 게이트를 걸어야 한다** | 판독 불가 tick 에 latch 되면 미보고 채널의 hold 가 `0` 으로 굳어 "원점으로 servo" 가 되고, hold-valid 플래그가 latch 라 이후 tick 까지 남는다. 토크 도메인의 `ĝ(q)` 게이트와 같은 이유이며 위치는 다르다 — 여기서는 `Compute()` 진입 게이트를 통과한 뒤 별도로 도달할 수 있다. 이 행의 유래는 §부록 A |
 | **출력** | **zero-length** (`devices[0].num_channels = 0`) — 값이 아니라 "이번 tick 은 갱신 없음". secondary device passthrough 는 유지 | 알 수 없는 관절 위치의 정직한 대체값은 없다. CM 자신의 `BuildHoldOutput` 도 같은 idiom 을 쓴다. 팔 상태가 사라졌다고 손이 명령 불가가 되지는 않으므로 secondary 는 통과시킨다 |
 | **`ComputeEstop` 도 동일** | 같은 zero-length. **`nc0` 길이의 0 커맨드를 내보내지 않는다** | 둘은 반대다: zero-length 는 전 백엔드가 early-return 하는 **침묵**(드라이브는 직전 setpoint 유지), `nc0` 길이의 0 은 **진짜 0 N·m** 이고 토크 모드 팔에서는 정지가 아니라 **낙하**다. `ĝ(q) − D·q̇` 는 q·q̇ 가 실측일 때만 hold 이므로 판독 불가 상태에서는 hold 자체가 성립하지 않는다 |
 | **fault 등급** | `device_state_invalid` 는 **DEGRADE**, critical 아님 → SAFE_STOP 승격 없음 | 백엔드 복구가 정상 경로이고, "명령을 내지 않는다" 는 축소된 권한의 답이 존재한다 (발산한 명령과 달리) |
@@ -343,6 +354,25 @@ F5 답으로 쓰면 안 된다. 이 성질은 계약 테스트
 남은 실제 구멍은 토크 정책이 아니라 **진단**이다 — `num_channels < nv` 는 낫지 않는 영구
 DEGRADED 인데 이를 알리는 경로가 없다 (issue #261).
 
+### 부록 A — position-domain E-STOP seed 행의 유래 (#236 S7c, E-8 결정 A)
+
+위 표의 "바인딩 요구사항" 행은 원래 **클래스별 결함 노트**였다:
+`TaskAdmittanceController::ComputeEstop` 이 `dev0.positions` 에서 hold latch 를 seed 하면서
+게이트를 걸지 않는다는 지적이고, "이번 범위에서 손대지 않음" 으로 유예돼 있었다. S7c 에서 그
+클래스가 삭제되면서 **주체가 사라졌으므로**, 결함 노트를 지우는 대신 남는 것 — 미래 바인딩이
+지켜야 할 요구사항 — 으로 다시 썼다 (E-8 결정 A: 은퇴 + provenance, 2026-07-28 사용자 컨펌).
+실코드 게이트를 추가하지도, base 로 상향하지도 않았다. 근거: 프로덕션 admittance/compliance
+바인딩이 0 이고, 계약 자체는 base(`device_readability.hpp`) + 데모 3종이 이미 소유한다.
+
+**동시에 그 행의 유예 *근거절* 을 정정했다.** 옛 문장은 "이 경로는 global E-STOP 하에서만
+도달하므로 CM 이 `BuildHoldOutput` 으로 치환한다" 였는데, 코드 실측상 `ComputeEstop` 호출점은
+둘이었다 — global E-STOP 경로(성립)와 **컨트롤러-로컬 SAFE_STOP 경로**다. 후자에서는
+`IsGlobalEstopped()` 가 false 라 CM 이 치환하지 **않는다**. 결론(하드웨어 미도달)은 살아 있었지만
+그 문장이 적지 않은 다른 이유 때문이었다: 로컬 경로는 `Compute()` 진입 F5 게이트의 하류라 그 tick
+의 device 가 항상 판독 가능했고, global 경로에서 굳은 zero-latch 는 `ClearEstop()` 의
+hold-invalidate 가 은퇴시켰다. 새 바인딩이 그 두 조건 중 하나라도 재현하지 않으면 위험은
+되살아나므로, 요구사항 형태로 남기는 편이 정확하다.
+
 ## 3.8 §6.5 λ 규약 수렴 — OSC·CLIK 이관의 지점별 차이 (#236 S2b+S3b)
 
 `OperationalSpaceController` 와 `ClikController` 는 저장소에 남아 있던 마지막 **상수-λ** DLS
@@ -375,6 +405,22 @@ DEGRADED 인데 이를 알리는 경로가 없다 (issue #261).
   배선 센서다. mutation 11종 중 2종이 관측 창 없이는 **탐지되지 않았고**, 그 둘에만 창을 냈다:
   OSC 의 `nullspace_active()` (게인 0 이면 게이트가 수치적으로 inert) 와 CLIK 의 비유한 J 강등
   경로 (`ok == false` 가 평범한 draw 에서는 도달 불가). 나머지 9종은 창 없이 발화한다.
+
+## 3.9 F8 임계값 수렴 — 세 스키마의 비대칭 해소 (#298 S7c-2)
+
+§10.5 `max_torque_rate` 와 CRITICAL `pose_error_limit` 은 세 계열이 **같은 이름·같은
+안전 계층**을 공유하는데도 검증이 갈려 있었다. 캐스케이드는 둘 다, 어드미턴스는
+`pose_error_limit` 을 거부했고, **임피던스는 둘 다 무가드**였다. 어댑터 시절에는 세
+`LoadConfig` 가 1000줄 넘는 파일 셋에 흩어져 있어 나란히 읽을 수 없었고, S7c-1 이
+`params/` 한 디렉토리로 모으면서 비로소 보였다 — 통합 리팩터가 아웃라이어를 드러낸
+전형적인 경로다.
+
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| **판정식** | `!(v > 0.0) \|\| !std::isfinite(v)` — 세 스키마 공통 | `v <= 0.0` 은 **NaN 을 통과시킨다** (NaN 과의 모든 비교가 false). `.inf` 도 마찬가지로 통과하는데, `pose_error_limit: .inf` 는 CRITICAL 바운드를 영구 도달 불가로 만든다 — 0 과 정확히 반대 방향의 같은 결함이다 |
+| **`max_torque_rate` 이 0 일 때 실제로 일어나는 일** | 슬루 리미터가 **조용히 꺼진다** (freeze 아님) | `compliance::RateLimit` 은 `max_rate <= 0.0` 에서 `tau_prev = tau; return false;` 로 early-return 한다 ("a degenerate tick must not freeze the command at tau_prev"). 캐스케이드 주석은 "명령이 rate-limit 이력에 freeze 된다" 고 적혀 있었으나 헬퍼와 모순이었고, 함께 정정했다. 결과가 다르면 완화책도 다르다 — 진짜 위험은 `SafetyStatus::rate_limited` 가 영원히 false 인 채 팔에 슬루 보호가 없는 것이고, 진단 어디에도 그 사실이 안 나온다 |
+| **거부 vs 클램프** | 거부 | 클램프할 **정당한 대상값이 없다**. `≤0 = 비활성` 관용구도 미채택 (D6 과 동일 논리): 가드 자체를 끄는 수단을 주면 오설정이 정당한 설정처럼 보인다 |
+| **호환성** | 파괴적 변경이나 실측 노출 0 | repo 내 `max_torque_rate: 0` / `pose_error_limit: ≤0` 설정 0건, 이 값을 *허용* 으로 pin 하던 테스트 0건 (기존 테스트는 `1.0e6` 만 쓴다). 따라서 PROC-6/E-6 해당 없음 — 기존 assertion 을 약화한 것이 아니라 가드를 추가한 것이다 |
 
 ## 4. 슬라이스 1 설계 주석 (README 필수 설명)
 
