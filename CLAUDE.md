@@ -126,7 +126,7 @@ Critical 은 E-1(invariant 일반)·E-2(ARCH-1)·E-3(msgs ABI)·E-6(test asserti
 
 ## 7. Anti-patterns
 
-최근 발현 빈도 Top: **AP-RT-1** (정기 tick `RCLCPP_*`) · **AP-RT-3** (`auto` + Eigen) · **AP-ARCH-1** (`rtc_*` 에 robot 상수) · **AP-PROC-1** ("✅ complete" 후 미완료) · **AP-PROC-4** (test assertion 수정) · **AP-DOC-1** (CLAUDE.md 에 패키지 수·테스트 수 박제). 전체 사례·복구·grep 은 [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) — §3 invariants 와 1:1 대응이므로 §3 에서 룰을 보고 anti-patterns 에서 *그 룰을 위반한 실제 commit* 을 찾는다.
+최근 발현 빈도 Top: **AP-RT-1** (정기 tick `RCLCPP_*`) · **AP-RT-3** (`auto` + Eigen) · **AP-ARCH-1** (`rtc_*` 에 robot 상수) · **AP-PROC-1** ("✅ complete" 후 미완료) · **AP-PROC-4** (test assertion 수정) · **AP-DOC-1** (CLAUDE.md 에 패키지 수·테스트 수 박제). 전체 사례·복구·grep 은 [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) — invariant 과 **1:1 이 아니다** (사례가 없는 규칙도, 여러 규칙에 걸치거나 어느 규칙에도 안 걸리는 사례도 있다). 각 AP 항목이 자기 헤더에 위반한 invariant 를 명기하므로 그 방향으로 읽는다: §3 에서 룰을 보고 anti-patterns 에서 *그 룰을 위반한 실제 commit* 을 찾되, 없다고 해서 그 룰이 약한 것은 아니다.
 
 ## 8. Where Things Live
 
