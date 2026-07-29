@@ -131,6 +131,16 @@ class DemoTaskController final : public RTControllerInterface {
     // (`damping`, retired in #282) and are named/defaulted to match the five
     // task-space schemas in rtc_controllers/src/params/ — see LoadConfig for
     // why the old key is reported rather than mapped onto max_damping.
+    //
+    // ONE σ₀ parameterises BOTH branches, and σ_min does not mean the same thing
+    // in them: `control_6dof` feeds the mixed-unit 6×n Jacobian (m/rad rows plus
+    // dimensionless axis rows, so σ_min is dominated by the O(1) rotational
+    // part), while the 3-DOF branch feeds the translation-only 3×n Jacobian,
+    // whose σ_min scales with link length. The shipped 0.02 is tuned for the
+    // 6-DOF lane all three robot configs run; a tree that flips `control_6dof`
+    // at runtime is reinterpreting this gain, not carrying it over. The retired
+    // constant λ was unit-agnostic and had no such coupling — it is the price of
+    // a law that is parameterised on the Jacobian's conditioning.
     double singularity_threshold{0.02};  ///< σ₀: DLS engages below this
     double max_damping{0.05};            ///< λ_max: ceiling of the §6.5 ramp
     double null_kp{0.5};                 ///< Null-space joint-centering gain [1/s]
@@ -655,7 +665,7 @@ class DemoTaskController final : public RTControllerInterface {
 
   // ── Phase B (gain→parameter migration): per-controller ROS 2 parameters ──
   //
-  // Tunable gains (kp_translation, damping, trajectory_speed, ...) are
+  // Tunable gains (kp_translation, max_damping, trajectory_speed, ...) are
   // declared as parameters on the controller's own LifecycleNode in
   // on_configure. The set-parameters callback rebuilds a Gains snapshot
   // and stores it via gains_lock_.Store(); the SeqLock provides RT-safe

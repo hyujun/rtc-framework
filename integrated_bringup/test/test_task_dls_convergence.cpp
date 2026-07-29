@@ -174,7 +174,10 @@ class InlineDlsOracle {
 // iiwa7 is one of the three wired robots and the one the rest of this package's
 // URDF-backed tests already build, so the tier-2 number is measured on real
 // robot conditioning rather than on random matrices.
-[[nodiscard]] std::vector<Eigen::MatrixXd> RealArmJacobians() {
+// Returned by reference: the static outlives every caller, and returning it by
+// value deep-copied 24 dynamically-sized 6×7 matrices on each of the six call
+// sites for nothing.
+[[nodiscard]] const std::vector<Eigen::MatrixXd>& RealArmJacobians() {
   static const std::vector<Eigen::MatrixXd> kJs = [] {
     auto builder = integrated_bringup::testfx::SharedIiwa7LeapBuilder();
     rtc_urdf_bridge::RtModelHandle handle(builder->GetReducedModel("iiwa7"));

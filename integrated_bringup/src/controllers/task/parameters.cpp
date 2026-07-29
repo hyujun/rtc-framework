@@ -78,8 +78,8 @@ void DemoTaskController::DeclareGainParameters() noexcept {
   // §6.5 DLS (#282). The retired `damping` is NOT declared — leaving it would
   // give `ros2 param set … damping` a parameter that accepts a value and
   // changes nothing, which is worse than the error a missing name produces.
-  g.singularity_threshold = std::max(
-      rtc::compliance::kMinSigma0, declare_double("singularity_threshold", g.singularity_threshold,
+  g.singularity_threshold =
+      rtc::compliance::FloorSigma0(declare_double("singularity_threshold", g.singularity_threshold,
                                                   "σ₀: DLS damping engages below this σ_min(J)"));
   g.max_damping = rtc::compliance::FloorMaxDamping(
       declare_double("max_damping", g.max_damping, "λ_max: ceiling of the §6.5 DLS ramp"));
@@ -160,11 +160,13 @@ rcl_interfaces::msg::SetParametersResult DemoTaskController::OnGainParametersSet
         }
         gains_dirty = true;
       } else if (name == "singularity_threshold") {
-        // NUM-2 floor, here because this is the only surface that reaches σ₀ at
-        // runtime. σ₀ ≤ 0 does not narrow the shell — AdaptiveDampingSquared
-        // short-circuits and returns λ² = 0 for EVERY σ_min, i.e. it disarms
-        // §6.5 everywhere rather than making it stricter.
-        g.singularity_threshold = std::max(rtc::compliance::kMinSigma0, p.as_double());
+        // NUM-2 floor. ComputeControl applies it again on the tick, exactly like
+        // λ_max below and for the identical reason — `set_gains()` writes the POD
+        // straight into the SeqLock and never passes through here, so neither
+        // half covers the other. σ₀ ≤ 0 does not narrow the shell:
+        // AdaptiveDampingSquared short-circuits and returns λ² = 0 for EVERY
+        // σ_min, i.e. it disarms §6.5 everywhere rather than making it stricter.
+        g.singularity_threshold = rtc::compliance::FloorSigma0(p.as_double());
         gains_dirty = true;
       } else if (name == "max_damping") {
         // NUM-1 λ_max floor. ComputeControl applies it again on the tick —

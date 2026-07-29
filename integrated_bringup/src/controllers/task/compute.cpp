@@ -322,6 +322,60 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
       break;
   }
 
+  // ── §6.5 damped pseudoinverse (#282) ───────────────────────────────────
+  // Formed HERE, ahead of the trajectory block, because its failure branch is a
+  // HOLD and a hold must not advance the clock it is holding against. Nothing
+  // between this point and the Solve() calls below feeds Compute(): it reads J
+  // alone, and J_full_ / J_pos_ are final once the vtcp block above has run — so
+  // the ok path is unchanged and only the !ok path moves, from after
+  // `trajectory_time_ += dt` to before it. Sitting after `traj_state_` was
+  // recomputed, the hold let the reference run away for the whole outage and
+  // handed the recovery tick the entire accumulated gap as task error.
+  //
+  // BOTH floors are applied here and not only in LoadConfig, because
+  // `set_gains()` and the parameter callback write the Gains POD straight into
+  // the SeqLock and bypass configure entirely — NUM-1's and NUM-2's
+  // point-of-use half, whose first in-tree consumer this is. σ₀ needs it as much
+  // as λ_max does: σ₀ ≤ 0 makes AdaptiveDampingSquared return λ² = 0 for every
+  // σ_min, disarming §6.5 at every pose including a genuinely singular one,
+  // where J Jᵀ is only positive SEMI-definite and Eigen's LLT still reports
+  // Success — so nothing else in the chain would report it either.
+  const double lambda_max = rtc::compliance::FloorMaxDamping(gains.max_damping);
+  const double sigma0 = rtc::compliance::FloorSigma0(gains.singularity_threshold);
+  const rtc::compliance::DifferentialIk::Result ik =
+      gains.control_6dof ? ik_6d_.Compute(J_full_, sigma0, lambda_max)
+                         : ik_3d_.Compute(J_pos_, sigma0, lambda_max);
+  if (!ik.ok) {
+    // A non-finite Jacobian — a NaN joint state that reached FK. J⁺ and N still
+    // hold the PREVIOUS tick's contents by contract, so solving with them would
+    // command a plausible-looking velocity derived from a stale inverse. Hold
+    // explicitly instead, the same shape the frame-transition kHoldExternal
+    // branch above uses: zero dq_, let WriteArmJointCommand integrate it onto a
+    // desired_q_ that tracks the measurement, and leave new_target_pending_ and
+    // trajectory_time_ untouched so a pending goal fires unchanged on the tick
+    // the Jacobian returns. Deliberately not rtc::SilenceDeviceOutput — that
+    // answers the F5 question ("was the device readable"), and the device IS
+    // readable here; the Jacobian is not.
+    //
+    // The NaN is deliberately NOT scrubbed on its way into desired_q_. It
+    // reaches the command, urtc::ValidateControllerOutput rejects the whole
+    // output at the actuator boundary, and ~100 ms of consecutive rejects
+    // escalates to E-STOP — the correct answer to a joint state that has stopped
+    // being a number. Copying only the finite entries would keep the command
+    // plausible and leave a stuck encoder running behind a throttled WARN.
+    dq_.setZero();
+    traj_dq_.setZero();
+    const std::size_t nhold = ArmCommandBound(dev0.num_channels);
+    for (std::size_t i = 0; i < nhold; ++i) {
+      desired_q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
+    }
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "task CLIK held: non-finite Jacobian (control_6dof=%d) — "
+                         "J+ would be stale, holding arm at measurement",
+                         static_cast<int>(gains.control_6dof));
+    return;
+  }
+
   // ── Task-space trajectory ──────────────────────────────────────────────
   if (new_target_pending_) {
     {
@@ -444,40 +498,12 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
     pos_error_[i] = p_err[i];
   }
 
-  // ── Damped pseudoinverse & Primary task ────────────────────────────────
+  // ── Primary task ───────────────────────────────────────────────────────
+  // J⁺ and N were formed by the §6.5 Compute() above, ahead of the trajectory
+  // block, so that its hold branch could not advance the clock it holds against.
   // The trajectory feedforward velocity (trajectory local → Jacobian frame) is
   // computed once and reused for both the CLIK command dq_ and the log-only
   // feedforward traj_dq_, so the frame rotation runs a single time per tick.
-  // §6.5 σ_min-adaptive DLS (#282). λ_max is floored HERE and not only in
-  // LoadConfig because `set_gains()` and the parameter callback write the Gains
-  // POD straight into the SeqLock and bypass configure entirely — NUM-1's
-  // point-of-use half, whose first in-tree consumer this is.
-  const double lambda_max = rtc::compliance::FloorMaxDamping(gains.max_damping);
-  const rtc::compliance::DifferentialIk::Result ik =
-      gains.control_6dof ? ik_6d_.Compute(J_full_, gains.singularity_threshold, lambda_max)
-                         : ik_3d_.Compute(J_pos_, gains.singularity_threshold, lambda_max);
-  if (!ik.ok) {
-    // A non-finite Jacobian — a NaN joint state that reached FK. J⁺ and N still
-    // hold the PREVIOUS tick's contents by contract, so solving with them would
-    // command a plausible-looking velocity derived from a stale inverse. Hold
-    // explicitly instead, the same shape the frame-transition kHoldExternal
-    // branch above uses: zero dq_ and let WriteArmJointCommand integrate it onto
-    // a desired_q_ that tracks the measurement. Deliberately not
-    // rtc::SilenceDeviceOutput — that answers the F5 question ("was the device
-    // readable"), and the device IS readable here; the Jacobian is not.
-    dq_.setZero();
-    traj_dq_.setZero();
-    const std::size_t nhold = ArmCommandBound(dev0.num_channels);
-    for (std::size_t i = 0; i < nhold; ++i) {
-      desired_q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
-    }
-    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
-                         "task CLIK held: non-finite Jacobian (control_6dof=%d) — "
-                         "J+ would be stale, holding arm at measurement",
-                         static_cast<int>(gains.control_6dof));
-    return;
-  }
-
   if (gains.control_6dof) {
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
     for (std::size_t i = 0; i < 3; ++i) {
@@ -527,6 +553,14 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
     // projector, and there is nothing left to avoid because Compute() forms N
     // either way.
     if (gains.enable_null_space) {
+      // Runs nv deep, and that is not the #172 hazard it resembles. In the range
+      // this could over-read — [num_channels, nv), which arm_readable_ confines
+      // to [arm_dof_, nv) — BOTH operands are the untouched zero-init: the only
+      // two writers of null_target (the self-init seed and the target dispatch)
+      // are bounded by arm_dof_, so the difference is 0 − 0 and the projector
+      // receives exactly the zero it would receive from a narrower loop. Adding
+      // a bound plus a setZero() here would buy a per-tick nv-wide write on the
+      // RT path and change no value (#282 review finding 5).
       for (Eigen::Index i = 0; i < arm_handle_->nv(); ++i) {
         qdot_null_[i] = current_target_slot_.null_target[static_cast<std::size_t>(i)] -
                         dev0.positions[static_cast<std::size_t>(i)];

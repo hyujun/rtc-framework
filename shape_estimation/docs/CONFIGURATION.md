@@ -63,7 +63,13 @@ shape_estimation_node의 모든 파라미터, 튜닝 가이드, 시나리오별 
 | `exploration.controller_name` | string | `demo_task_controller` | 탐색 시 활성화할 컨트롤러 |
 | `exploration.controller_switch_delay_ms` | int | 200 | 컨트롤러 전환 후 대기 시간 [ms] |
 
-#### Exploration Gains (DemoTaskController, 16 values)
+#### Exploration Gains (DemoTaskController, 17 values)
+
+> ⚠ **현재 미배선.** `shape_estimation_node` 에는 이 블록에 대한 `declare_parameter` 도
+> parameter client 도 없다 — 값을 바꿔도 컨트롤러에 전달되지 않는다. 키 이름은 컨트롤러
+> 스키마와 동기화해 두었으므로(배선 시 그대로 사용) 아래 표는 *의도된* 계약이며,
+> 실제 게인 변경은 `ros2 param set /demo_task_controller ...` 로만 가능하다.
+> 배선 또는 블록 삭제는 후속 이슈.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

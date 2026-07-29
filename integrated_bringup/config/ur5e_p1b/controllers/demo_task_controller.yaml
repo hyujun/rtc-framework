@@ -7,6 +7,12 @@ demo_task_controller:
   # not the same quantity, so it is reported and ignored rather than mapped.
   singularity_threshold: 0.02         # σ₀ — damping engages below this σ_min(J)
   max_damping: 0.05                   # λ_max — ceiling of the §6.5 ramp
+  # σ₀ is read by whichever branch `control_6dof` selects, and σ_min does not
+  # mean the same thing in the two: the 6-DOF branch feeds the mixed-unit 6×n J
+  # (m/rad rows plus dimensionless axis rows, so σ_min is dominated by the O(1)
+  # rotational part), the 3-DOF branch feeds the translation-only 3×n J, whose
+  # σ_min scales with link length. This value is tuned for the 6-DOF lane below;
+  # flipping `control_6dof` at runtime reinterprets it and it must be retuned.
 
   # ── Null-space configuration ────────────────────────────────────────────────
   enable_null_space: false            # Enable null-space joint centering

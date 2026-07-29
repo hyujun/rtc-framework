@@ -33,6 +33,12 @@ shape_estimation_node:
       controller_name: "demo_task_controller" # 탐색 시 활성화할 컨트롤러
       controller_switch_delay_ms: 200         # 컨트롤러 전환 후 대기 시간 [ms]
 
+      # ⚠ 현재 미배선 — shape_estimation_node 는 이 블록을 읽지 않는다.
+      # declare_parameter 도 parameter client 도 없어서 여기 값을 바꿔도
+      # 컨트롤러에 전달되지 않는다. 키 이름은 컨트롤러 스키마와 동기화해
+      # 두되(배선 시 그대로 쓰기 위해), 실제 게인 변경은 아직
+      # `ros2 param set /demo_task_controller ...` 로만 가능하다.
+      # 배선 또는 삭제는 후속 이슈.
       # 탐색 시 DemoTaskController 게인 (17개)
       # [kp_trans×3, kp_rot×3, singularity_threshold, max_damping,
       #  null_kp, enable_null_space(0/1),

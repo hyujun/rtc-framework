@@ -821,10 +821,12 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   // §6.5 σ_min-adaptive DLS (#282). Both floors are the shared symbols, not a
   // hand-written std::max — `max(1e-4, NaN) == 1e-4` would launder a non-finite
   // λ_max into a plausible one and hand the caller a damping shell that only
-  // looks armed (NUM-1). ComputeControl floors λ_max again at the point of use.
+  // looks armed (NUM-1), and `max(1e-6, NaN) == 1e-6` does the same to σ₀ for a
+  // shell so narrow no reachable pose enters it (NUM-2). ComputeControl floors
+  // BOTH again at the point of use.
   if (cfg["singularity_threshold"]) {
     g.singularity_threshold =
-        std::max(rtc::compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+        rtc::compliance::FloorSigma0(cfg["singularity_threshold"].as<double>());
   }
   if (cfg["max_damping"]) {
     g.max_damping = rtc::compliance::FloorMaxDamping(cfg["max_damping"].as<double>());
