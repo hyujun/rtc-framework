@@ -417,10 +417,44 @@ hold-invalidate 가 은퇴시켰다. 새 바인딩이 그 두 조건 중 하나�
 
 | 항목 | 결정 | 근거 |
 |---|---|---|
-| **판정식** | `!(v > 0.0) \|\| !std::isfinite(v)` — 세 스키마 공통 | `v <= 0.0` 은 **NaN 을 통과시킨다** (NaN 과의 모든 비교가 false). `.inf` 도 마찬가지로 통과하는데, `pose_error_limit: .inf` 는 CRITICAL 바운드를 영구 도달 불가로 만든다 — 0 과 정확히 반대 방향의 같은 결함이다 |
+| **판정식** | `!(v > 0.0) \|\| !std::isfinite(v)` — 세 스키마 공통 (어드미턴스는 #280 에서 합류; 아래 §3.10 참조) | `v <= 0.0` 은 **NaN 을 통과시킨다** (NaN 과의 모든 비교가 false). `.inf` 도 마찬가지로 통과하는데, `pose_error_limit: .inf` 는 CRITICAL 바운드를 영구 도달 불가로 만든다 — 0 과 정확히 반대 방향의 같은 결함이다 |
 | **`max_torque_rate` 이 0 일 때 실제로 일어나는 일** | 슬루 리미터가 **조용히 꺼진다** (freeze 아님) | `compliance::RateLimit` 은 `max_rate <= 0.0` 에서 `tau_prev = tau; return false;` 로 early-return 한다 ("a degenerate tick must not freeze the command at tau_prev"). 캐스케이드 주석은 "명령이 rate-limit 이력에 freeze 된다" 고 적혀 있었으나 헬퍼와 모순이었고, 함께 정정했다. 결과가 다르면 완화책도 다르다 — 진짜 위험은 `SafetyStatus::rate_limited` 가 영원히 false 인 채 팔에 슬루 보호가 없는 것이고, 진단 어디에도 그 사실이 안 나온다 |
 | **거부 vs 클램프** | 거부 | 클램프할 **정당한 대상값이 없다**. `≤0 = 비활성` 관용구도 미채택 (D6 과 동일 논리): 가드 자체를 끄는 수단을 주면 오설정이 정당한 설정처럼 보인다 |
 | **호환성** | 파괴적 변경이나 실측 노출 0 | repo 내 `max_torque_rate: 0` / `pose_error_limit: ≤0` 설정 0건, 이 값을 *허용* 으로 pin 하던 테스트 0건 (기존 테스트는 `1.0e6` 만 쓴다). 따라서 PROC-6/E-6 해당 없음 — 기존 assertion 을 약화한 것이 아니라 가드를 추가한 것이다 |
+
+## 3.10 §5.3 안전층 게인 수렴 — `params/` 의 마지막 비대칭 (#280)
+
+§3.9 가 F8 임계값 둘을 수렴시킨 뒤 남은 **마지막 비수렴 검증**이다 (NUM-6b). 키가 셋인데
+**처방이 갈린다** — 이것이 이 축을 별도 이슈로 만든 이유다. `std::max(0.0, ·)` 는 셋 중
+**어디에도** 옳은 철자가 아니며, 그 판정은 #279 리뷰가 자세 게인에서 이미 내렸다.
+
+| 키 | 처방 | 근거 |
+|---|---|---|
+| `joint_limit_stiffness` (k_lim) · `joint_limit_damping` (d_lim) | **floor** — `rtc::FloorNonNegativeGain` (유한만 floor, 비유한 통과) | 밴드 안에서 `q − lo < 0` 이라 부호가 자세 게인과 **반대로** 작동한다: `k_lim<0` 은 관절을 한계 **안쪽으로** 밀고 `d_lim<0` 은 하드스톱 앞에서 에너지를 주입한다. 출하 UR5e 는 `k_lim=0, d_lim=2` (순수 감쇠) 라 d_lim 이 유일한 방어선이다. 비유한 값을 0 으로 세탁하면 안 되는 이유는 `ApplySafetyLayer` 의 단계 순서다 — `AllFinite` 가 반발항 **뒤·saturation 앞**이라, NaN 게인은 지금 `nan_inf` SAFE_STOP 으로 잡히는데 `std::max` 는 그 fault 를 조용히 은퇴시킨다 |
+| `joint_limit_margin` (δ) | **configure 거부** (`>= 0` 이고 유한) | floor 로는 **고칠 수 없다**. `lo = q_min + δ` 이므로 δ<0 은 밴드를 한계 밖에 놓고, δ=NaN 은 `q < lo` 도 `q > hi` 도 false 로 만들어 반발항이 한 번도 발동하지 않는다 — 그런데 fault 는 없다. 0 으로 clamp 하면 그 오설정이 **정상 구동되는 config** 가 된다. δ=0 자체는 합법 ("밴드 경계 = 관절 한계"; 어드미턴스 출하 기본값) 이라 `>0` 이 아니라 `>=0` 이다 |
+
+**적용 범위** — 세 검사 모두 **키 유무와 무관하게 무조건**이고 `if (!cfg)` 조기 반환 경로도
+포함한다. 키 안(`if (cfg[key])`)에만 두면 값이 생성자·`set_gains()` 에서 온 경우를 못 보는데,
+POD 를 SeqLock 에 직접 쓰는 그 경로가 정확히 하한이 필요한 경우다. 캐스케이드는 #280 이전에
+floor 를 갖고 있었으나 `if` **안**의 손으로 쓴 `std::max` 여서 이 경우를 놓쳤다 — "이미 옳다"
+가 아니라 **양쪽 다 고칠 대상**이었다.
+
+**법칙에는 넣지 않는다** — `compliance::AddJointLimitRepulsive` 는 자기 인자를 floor 하지
+않는다. NUM-1 의 `AdaptiveDampingSquared` 와 같은 판정이다: 법칙이 인자를 몰래 고치면 리터럴
+oracle 이 거짓이 되고, 기존 oracle 은 전부 양수 게인이라 **그 변경을 아무 테스트도 못 본다**.
+사용 지점 하한은 λ_max 와 마찬가지로 **바인딩 요구사항**이며 in-tree 소비자는 아직 없다.
+
+**센서** — `test_params_schema.cpp` 의 `SafetyLayerGainSchema.*` 7 케이스가 키×경로(음수 YAML ·
+키 부재 · `UndefinedNode()` · 비유한 · 정상값 비-vacuity)를 pin 한다. green 만으로는 부족하므로
+**11종 mutation** 으로 각 가드를 하나씩 되돌려 실측했고, 전부 검출됐다. 특히 floor 를
+`std::max(0.0, ·)` 로 바꾸는 mutation 은 **비유한 통과 케이스 하나에서만** red 가 된다 — 나머지
+전 케이스가 green 을 유지하므로, 그 케이스가 없으면 #279 가 폐기한 철자가 그대로 재유입된다.
+
+**호환성** — 실측 노출 0 (`grep "joint_limit" integrated_bringup/src/` 0건, `ApplySafetyLayer`
+소비자는 테스트뿐). 이 키들을 쓰는 repo YAML 0건, 음수·비유한 값을 *허용* 으로 pin 하던 테스트도
+0건 — 따라서 PROC-6/E-6 해당 없음 (약화가 아니라 가드 추가). 같은 PR 에서 어드미턴스의
+`pose_error_limit` 이 §3.9 의 공통 판정식 중 `isfinite` 절반을 빠뜨리고 있던 것도 함께
+합류시켰다 (그 스키마에는 `num()` 이 없어 `.inf` 가 통과하고 있었다).
 
 ## 4. 슬라이스 1 설계 주석 (README 필수 설명)
 

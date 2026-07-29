@@ -1,7 +1,7 @@
 #include "rtc_controllers/params/clik_params.hpp"
 
 #include "rtc_controllers/compliance/task_dynamics.hpp"
-#include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -17,7 +17,7 @@ void ParseClikParams(const YAML::Node& cfg, ClikParams& out, CommandType& comman
   }
   if (!cfg) {
     // See the header: the floor runs even with no node at all (NUM-6).
-    out.null_kp = joint::FloorPostureGain(out.null_kp);
+    out.null_kp = FloorNonNegativeGain(out.null_kp);
     return;
   }
 
@@ -77,7 +77,7 @@ void ParseClikParams(const YAML::Node& cfg, ClikParams& out, CommandType& comman
   // bypasses configure — NUM-1), as λ_max must through
   // compliance::FloorMaxDamping. Neither half has a tick-side caller today:
   // ClikParams has no consumer outside this parser and the tests.
-  out.null_kp = joint::FloorPostureGain(out.null_kp);
+  out.null_kp = FloorNonNegativeGain(out.null_kp);
 
   if (cfg["enable_null_space"]) {
     out.enable_null_space = cfg["enable_null_space"].as<bool>();

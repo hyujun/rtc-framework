@@ -6,7 +6,7 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
-#include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 #include "rtc_math/se3/so3.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -833,7 +833,7 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   // posture away from its target and (I − J⁺J) hides that from the Cartesian
   // task, so it is a silent drift and not a fault. ComputeControl floors it
   // again at the point of use.
-  g.null_kp = rtc::joint::FloorPostureGain(g.null_kp);
+  g.null_kp = rtc::FloorNonNegativeGain(g.null_kp);
   if (cfg["enable_null_space"]) {
     g.enable_null_space = cfg["enable_null_space"].as<bool>();
   }

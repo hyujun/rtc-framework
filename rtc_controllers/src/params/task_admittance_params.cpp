@@ -2,11 +2,12 @@
 
 #include "rtc_controllers/compliance/external_wrench.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
-#include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 
 #include <Eigen/Core>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -19,7 +20,12 @@ void ParseTaskAdmittanceParams(const YAML::Node& cfg, TaskAdmittanceParams& out,
     // NUM-6's loader half is "regardless of whether the key is present", and an
     // absent NODE is the widest case of that: the gain here came from the
     // constructor or a previous set_gains(), the two paths the floor exists for.
-    out.nullspace_kp = joint::FloorPostureGain(out.nullspace_kp);
+    // §5.3's δ is judged here too (#280) — this branch is a CONFIGURE, and it is
+    // the path on which the margin can only have come from those same two.
+    out.nullspace_kp = FloorNonNegativeGain(out.nullspace_kp);
+    if (!IsFiniteNonNegative(out.joint_limit_margin)) {
+      throw std::runtime_error("task_admittance: joint_limit_margin must be >= 0 and finite");
+    }
     return;
   }
 
@@ -128,7 +134,11 @@ void ParseTaskAdmittanceParams(const YAML::Node& cfg, TaskAdmittanceParams& out,
   // because set_gains() bypasses configure (NUM-1) — the same requirement λ_max
   // carries through compliance::FloorMaxDamping. Neither tick-side half has a
   // caller today; the adapter that held them went with #298 S7c-2.
-  out.nullspace_kp = joint::FloorPostureGain(out.nullspace_kp);
+  //
+  // `joint_limit_margin` gets the same treatment further down, except that it is
+  // REJECTED rather than floored — it is placed next to its own parse, and still
+  // ahead of everything this function commits.
+  out.nullspace_kp = FloorNonNegativeGain(out.nullspace_kp);
   if (cfg["integrate_from_measured"]) {
     out.integrate_from_measured = cfg["integrate_from_measured"].as<bool>();
   }
@@ -151,18 +161,38 @@ void ParseTaskAdmittanceParams(const YAML::Node& cfg, TaskAdmittanceParams& out,
   // the config. The `<= 0 disables` idiom the §7.5 bounds use is deliberately
   // NOT offered — this is the guard, and a way to switch it off would make a
   // mis-configuration look like a legitimate setting.
+  // `!(v > 0.0) || !std::isfinite(v)`, the predicate the other two schemas
+  // converged on in #298 S7c-2. This one kept only the first half until #280:
+  // `.inf` passed, and an infinite bound is the mirror image of a zero one —
+  // `e.norm() > inf` is false forever, so the CRITICAL guard never fires at all.
+  // Unlike its siblings this parser has no `num()` in front of it, so nothing
+  // else in the call chain rejected the value either.
   if (const YAML::Node& n = cfg["pose_error_limit"]; n) {
     const double v = n.as<double>();
-    if (!(v > 0.0)) {
-      throw std::runtime_error("task_admittance: pose_error_limit must be > 0");
+    if (!(v > 0.0) || !std::isfinite(v)) {
+      throw std::runtime_error("task_admittance: pose_error_limit must be > 0 and finite");
     }
     out.pose_error_limit = v;
   }
   if (cfg["command_divergence_limit"]) {
     out.command_divergence_limit = std::max(0.0, cfg["command_divergence_limit"].as<double>());
   }
+  // δ here shrinks the q_cmd clamp band (§7.3) rather than opening a repulsive
+  // one, but it fails the same way and so takes the same judgement (#280): a
+  // negative δ WIDENS the band past the joint limits, and a non-finite one makes
+  // `std::clamp`'s comparisons false so the clamp passes q_cmd through
+  // untouched. Either way the limit guard is off with nothing to say so. The
+  // `std::max(0.0, ·)` this carried was worse than the sibling schemas' — with
+  // no `num()` in front of it, `max(0.0, NaN)` returned 0.0 and the corrupt
+  // value never surfaced at all.
   if (cfg["joint_limit_margin"]) {
-    out.joint_limit_margin = std::max(0.0, cfg["joint_limit_margin"].as<double>());
+    out.joint_limit_margin = cfg["joint_limit_margin"].as<double>();
+  }
+  // Unconditional, like the posture floor above: an absent key leaves whatever
+  // the constructor or a previous set_gains() put there, and that is the value
+  // this configure will run with.
+  if (!IsFiniteNonNegative(out.joint_limit_margin)) {
+    throw std::runtime_error("task_admittance: joint_limit_margin must be >= 0 and finite");
   }
   if (cfg["activation_ramp_time"]) {
     out.activation_ramp_time = cfg["activation_ramp_time"].as<double>();

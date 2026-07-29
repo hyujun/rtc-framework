@@ -1,7 +1,7 @@
 #include "rtc_controllers/params/osc_params.hpp"
 
 #include "rtc_controllers/compliance/task_dynamics.hpp"
-#include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -17,8 +17,8 @@ void ParseOscParams(const YAML::Node& cfg, OscParams& out, CommandType& command_
   }
   if (!cfg) {
     // See the header: the floor runs even with no node at all (NUM-6).
-    out.null_kp = joint::FloorPostureGain(out.null_kp);
-    out.null_kd = joint::FloorPostureGain(out.null_kd);
+    out.null_kp = FloorNonNegativeGain(out.null_kp);
+    out.null_kd = FloorNonNegativeGain(out.null_kd);
     // The torque-only verdict runs here too. The YAML path below assigns it
     // UNCONDITIONALLY — the `command_type` key can only reject, never choose —
     // so leaving it alone on this branch would make "no config section" the one
@@ -98,8 +98,8 @@ void ParseOscParams(const YAML::Node& cfg, OscParams& out, CommandType& command_
   // and the adapter that held both halves went with #298 S7c-2. (integrated_
   // bringup's DemoTaskController does floor at the point of use, but it is a
   // separate binding with its own Gains POD — it does not read OscParams.)
-  out.null_kp = joint::FloorPostureGain(out.null_kp);
-  out.null_kd = joint::FloorPostureGain(out.null_kd);
+  out.null_kp = FloorNonNegativeGain(out.null_kp);
+  out.null_kd = FloorNonNegativeGain(out.null_kd);
 
   if (cfg["estop_damping"]) {
     // D ≥ 0: the torque E-STOP hold (#184) subtracts D·q̇ to bleed kinetic

@@ -4,7 +4,7 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
-#include "rtc_controllers/joint/posture_law.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <algorithm>
@@ -519,7 +519,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
     // callback floor it too; this half covers neither, because the gain reaches
     // the SeqLock POD from both and a negative K_p drives the posture AWAY from
     // its target while (I − J⁺J) hides that from the Cartesian task.
-    null_dq_ *= rtc::joint::FloorPostureGain(gains.null_kp);
+    null_dq_ *= rtc::FloorNonNegativeGain(gains.null_kp);
     dq_ += null_dq_;
   }
 }

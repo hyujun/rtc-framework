@@ -872,7 +872,7 @@ class CascadeShim {
 
     // ── Λ_S / Nᵀ, the §7.6 verdict and the posture task ────────────────────
     bool dyn_ok = true;
-    // #277's `FloorPostureGain` sits immediately above this line in the adapter
+    // #277's `FloorNonNegativeGain` sits immediately above this line in the adapter
     // and is deliberately not mirrored: it is a binding-side clamp, and every
     // gain this shim is driven with is non-negative, where the floor is the
     // identity. A negative gain here would make the two sides disagree — floor

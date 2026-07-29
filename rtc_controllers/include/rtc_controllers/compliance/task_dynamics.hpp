@@ -51,7 +51,7 @@ namespace rtc::compliance {
 inline constexpr double kMinMaxDamping = 1e-4;
 
 /// The NUM-1 λ_max floor, in ONE place — the §6.5 counterpart of NUM-6's
-/// `joint::FloorPostureGain`, and deliberately the same shape, because it is the
+/// `rtc::FloorNonNegativeGain`, and deliberately the same shape, because it is the
 /// same problem: a bound named by an invariant must be a symbol a future binding
 /// can GREP, not a `std::max` open-coded at each site plus a row in a doc table.
 /// Every consumer applies it twice (the parser unconditionally, and again at the

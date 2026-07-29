@@ -39,6 +39,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -708,7 +709,7 @@ TEST(TaskAdmittanceSchema, AnUndefinedNodeStillFloorsThePostureGain) {
   // return. NUM-6's loader half is "regardless of whether the key is present",
   // and an absent node is the widest case of that: the gain then comes from the
   // constructor or a previous set_gains(), which are exactly the two paths the
-  // floor exists for. Deleting `FloorPostureGain` from this branch left the
+  // floor exists for. Deleting `FloorNonNegativeGain` from this branch left the
   // whole suite green — the impedance, OSC and CLIK parsers each pin their own
   // copy of it and these two did not (#298 S7c-2).
   TaskAdmittanceParams p;
@@ -882,6 +883,201 @@ TEST(TaskGainLengthSchema, RejectsRatherThanPartiallyFillingAShortSequence) {
   EXPECT_DOUBLE_EQ(p.impedance.kp_pos[0], before[0]);
   EXPECT_DOUBLE_EQ(p.impedance.kp_pos[1], before[1]);
   EXPECT_DOUBLE_EQ(p.impedance.kp_pos[2], before[2]);
+}
+
+// ── §5.3 safety-layer gain bounds, three schemas (#280) ─────────────────────
+//
+// The last validation in params/ that did not agree with its siblings. Three
+// keys, three schemas, and the right answer is NOT the same for all three keys —
+// which is the whole reason this took its own issue:
+//
+//   k_lim, d_lim  → FLOOR at 0, non-finite passed THROUGH. Inside the band the
+//                   term is `-k_lim·(q − lo) − d_lim·q̇` with `q − lo < 0`, so a
+//                   negative k_lim pushes the joint INTO its limit and a
+//                   negative d_lim injects energy at the hard stop. A NaN gain
+//                   makes τ non-finite, which §10.5's AllFinite catches BEFORE
+//                   saturation — so laundering it to 0.0 would retire an
+//                   existing `nan_inf` SAFE_STOP.
+//   margin        → REJECTED. A floor cannot fix it: `lo = q_min + δ` with δ<0
+//                   puts the band outside the limits and δ=NaN makes both
+//                   comparisons false, so the repulsive term simply never fires
+//                   again — and clamping δ to 0 produces a config that runs.
+//
+// The `.nan` cases below are the ones that discriminate the two spellings of the
+// floor: `std::max(0.0, NaN)` is 0.0, and every other case in this section stays
+// green under that mutation.
+
+TEST(SafetyLayerGainSchema, FloorsTheJointLimitGainsInEveryConsumingSchema) {
+  TaskImpedanceParams imp;
+  TaskImpedanceConfig ic;
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("joint_limit_stiffness: -50.0\n"
+                                                      "joint_limit_damping: -2.0\n"),
+                                           imp, TaskSelection::kFullSe3, ic));
+  EXPECT_DOUBLE_EQ(imp.joint_limit_kp, 0.0)
+      << "a negative k_lim pushes the joint INTO the limit it is meant to defend";
+  EXPECT_DOUBLE_EQ(imp.joint_limit_kd, 0.0) << "a negative d_lim injects energy at the hard stop";
+
+  // The cascade schema floored these before #280, but with a hand-written
+  // `std::max` inside the `if` — it had the right verdict on this input and the
+  // wrong one on the two below.
+  CascadedComplianceParams cas;
+  CascadedComplianceConfig cc;
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(YAML::Load("joint_limit_stiffness: -50.0\n"
+                                                           "joint_limit_damping: -2.0\n"),
+                                                cas, cc));
+  EXPECT_DOUBLE_EQ(cas.joint_limit_kp, 0.0);
+  EXPECT_DOUBLE_EQ(cas.joint_limit_kd, 0.0);
+}
+
+TEST(SafetyLayerGainSchema, FloorsAJointLimitGainThatArrivedWithoutAKey) {
+  // The set_gains() route, which is how these gains reach a controller when no
+  // YAML mentions them: the POD is written straight into the SeqLock, so the
+  // NEXT configure is the only thing that can still judge it. A floor written
+  // inside `if (cfg[key])` — the shape both schemas had — cannot see this.
+  TaskImpedanceParams imp;
+  imp.joint_limit_kp = -7.0;
+  imp.joint_limit_kd = -0.5;
+  TaskImpedanceConfig ic;
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("nullspace_damping: 1.0"), imp,
+                                           TaskSelection::kFullSe3, ic));
+  EXPECT_DOUBLE_EQ(imp.joint_limit_kp, 0.0) << "an absent key is not an absent gain";
+  EXPECT_DOUBLE_EQ(imp.joint_limit_kd, 0.0);
+
+  CascadedComplianceParams cas;
+  cas.joint_limit_kp = -7.0;
+  cas.joint_limit_kd = -0.5;
+  CascadedComplianceConfig cc;
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(YAML::Load("nullspace_damping: 1.0\n"), cas, cc));
+  EXPECT_DOUBLE_EQ(cas.joint_limit_kp, 0.0);
+  EXPECT_DOUBLE_EQ(cas.joint_limit_kd, 0.0);
+}
+
+TEST(SafetyLayerGainSchema, AnUndefinedNodeStillBoundsTheJointLimitGains) {
+  // The `if (!cfg)` early return — `UndefinedNode()` and not `YAML::Node()`,
+  // which is a DEFINED Null and would run the full key-absent parse instead
+  // (the branch the case above already covers).
+  TaskImpedanceParams imp;
+  imp.joint_limit_kp = -7.0;
+  imp.joint_limit_kd = -0.5;
+  TaskImpedanceConfig ic;
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(UndefinedNode(), imp, TaskSelection::kFullSe3, ic));
+  EXPECT_DOUBLE_EQ(imp.joint_limit_kp, 0.0);
+  EXPECT_DOUBLE_EQ(imp.joint_limit_kd, 0.0);
+
+  CascadedComplianceParams cas;
+  cas.joint_limit_kp = -7.0;
+  cas.joint_limit_kd = -0.5;
+  CascadedComplianceConfig cc;
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(UndefinedNode(), cas, cc));
+  EXPECT_DOUBLE_EQ(cas.joint_limit_kp, 0.0);
+  EXPECT_DOUBLE_EQ(cas.joint_limit_kd, 0.0);
+}
+
+TEST(SafetyLayerGainSchema, PassesANonFiniteJointLimitGainThroughInsteadOfLaunderingIt) {
+  // The case that tells a floor from a `std::max`. A NaN k_lim makes τ non-finite
+  // inside the band, `compliance::AllFinite` sees it before saturation can mask
+  // it, and the controller latches SAFE_STOP with `nan_inf`. `std::max(0.0, NaN)`
+  // returns 0.0, which silently disarms that whole path AND discards the
+  // operator's value — the failure #279's review found in the posture floor.
+  TaskImpedanceParams imp;
+  TaskImpedanceConfig ic;
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("joint_limit_stiffness: .nan\n"
+                                                      "joint_limit_damping: -.inf\n"),
+                                           imp, TaskSelection::kFullSe3, ic));
+  EXPECT_TRUE(std::isnan(imp.joint_limit_kp)) << "a NaN gain must reach the finite check, not 0.0";
+  EXPECT_TRUE(std::isinf(imp.joint_limit_kd) && imp.joint_limit_kd < 0.0)
+      << "−inf keeps the same fault path as NaN and must not be floored to 0 either";
+
+  // The cascade schema rejects a non-finite SCALAR before the floor ever sees it
+  // (`num`), so its non-finite branch is reachable only from the POD path — the
+  // defence-in-depth split FloorMaxDamping has. Both halves pinned.
+  EXPECT_TRUE(Mentions(CascadeError("joint_limit_stiffness: .nan\n"), "finite"));
+  CascadedComplianceParams cas;
+  cas.joint_limit_kd = std::numeric_limits<double>::quiet_NaN();
+  CascadedComplianceConfig cc;
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(UndefinedNode(), cas, cc));
+  EXPECT_TRUE(std::isnan(cas.joint_limit_kd));
+}
+
+TEST(SafetyLayerGainSchema, RejectsAMarginThatWouldDisarmTheBandInEveryTaskSchema) {
+  // All three schemas that carry δ, including admittance where it shrinks the
+  // q_cmd clamp band instead of opening a repulsive one — same disarm, same
+  // verdict. Rejected and not floored: 0 is a legal δ, so clamping a bad one
+  // produces a configuration that runs with the guard off.
+  EXPECT_TRUE(Mentions(ImpedanceError("joint_limit_margin: -0.05"), "joint_limit_margin"));
+  EXPECT_TRUE(Mentions(ImpedanceError("joint_limit_margin: .nan"), "joint_limit_margin"));
+  EXPECT_TRUE(Mentions(ImpedanceError("joint_limit_margin: .inf"), "joint_limit_margin"));
+
+  EXPECT_TRUE(Mentions(CascadeError("joint_limit_margin: -0.05\n"), "joint_limit_margin"));
+  EXPECT_TRUE(Mentions(CascadeError("joint_limit_margin: .nan\n"), "finite"));
+
+  EXPECT_TRUE(Mentions(AdmittanceError("joint_limit_margin: -0.05"), "joint_limit_margin"));
+  EXPECT_TRUE(Mentions(AdmittanceError("joint_limit_margin: .nan"), "joint_limit_margin"));
+
+  // And on the two paths a key-present check cannot reach.
+  TaskImpedanceParams imp;
+  imp.joint_limit_margin = -0.05;
+  TaskImpedanceConfig ic;
+  EXPECT_THROW(ParseTaskImpedanceParams(YAML::Load("nullspace_damping: 1.0"), imp,
+                                        TaskSelection::kFullSe3, ic),
+               std::runtime_error)
+      << "a margin from set_gains() is judged by the next configure";
+  TaskAdmittanceParams adm;
+  adm.joint_limit_margin = std::numeric_limits<double>::quiet_NaN();
+  TaskAdmittanceConfig ac;
+  EXPECT_THROW(ParseTaskAdmittanceParams(UndefinedNode(), adm, ac), std::runtime_error)
+      << "the early-return path is a CONFIGURE too";
+  CascadedComplianceParams cas;
+  cas.joint_limit_margin = -0.05;
+  CascadedComplianceConfig cc;
+  EXPECT_THROW(ParseCascadedComplianceParams(UndefinedNode(), cas, cc), std::runtime_error)
+      << "each schema needs its own oracle on this branch — `num` is not on it";
+}
+
+TEST(SafetyLayerGainSchema, AcceptsAndAppliesUsableSafetyLayerValues) {
+  // Non-vacuity for everything above — a bound that rejected or zeroed
+  // everything would satisfy all of it. Includes δ = 0, which is legal (the band
+  // edges become the joint limits) and is the shipped admittance default: a
+  // `> 0` spelling of the margin check would fail HERE and nowhere else.
+  TaskImpedanceParams imp;
+  TaskImpedanceConfig ic;
+  ASSERT_NO_THROW(ParseTaskImpedanceParams(YAML::Load("joint_limit_margin: 0.08\n"
+                                                      "joint_limit_stiffness: 12.0\n"
+                                                      "joint_limit_damping: 2.0\n"),
+                                           imp, TaskSelection::kFullSe3, ic));
+  EXPECT_DOUBLE_EQ(imp.joint_limit_margin, 0.08);
+  EXPECT_DOUBLE_EQ(imp.joint_limit_kp, 12.0);
+  EXPECT_DOUBLE_EQ(imp.joint_limit_kd, 2.0);
+
+  CascadedComplianceParams cas;
+  CascadedComplianceConfig cc;
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(YAML::Load("joint_limit_margin: 0.0\n"
+                                                           "joint_limit_stiffness: 0.0\n"
+                                                           "joint_limit_damping: 2.0\n"),
+                                                cas, cc));
+  EXPECT_DOUBLE_EQ(cas.joint_limit_margin, 0.0);
+  EXPECT_DOUBLE_EQ(cas.joint_limit_kd, 2.0)
+      << "k_lim=0 with d_lim>0 is the shipped UR5e soft limit";
+
+  TaskAdmittanceParams adm;
+  TaskAdmittanceConfig ac;
+  ASSERT_NO_THROW(ParseTaskAdmittanceParams(YAML::Load("joint_limit_margin: 0.02"), adm, ac));
+  EXPECT_DOUBLE_EQ(adm.joint_limit_margin, 0.02);
+}
+
+TEST(SafetyLayerGainSchema, RejectsAnInfinitePoseErrorLimitInTheAdmittanceSchemaToo) {
+  // The F8 predicate is `!(v > 0.0) || !std::isfinite(v)` and #298 S7c-2's doc
+  // row claims all three schemas share it; this one carried only the first half
+  // until #280. `.inf` is the mirror image of 0 — `e.norm() > inf` is false
+  // forever, so the CRITICAL bound never fires — and unlike its siblings this
+  // parser has no `num()` in front of it to reject the value first.
+  EXPECT_TRUE(Mentions(AdmittanceError("pose_error_limit: .inf"), "pose_error_limit"));
+  EXPECT_TRUE(Mentions(AdmittanceError("pose_error_limit: .nan"), "pose_error_limit"));
+  // Non-vacuity: a usable bound still parses and lands.
+  TaskAdmittanceParams p;
+  TaskAdmittanceConfig c;
+  ASSERT_NO_THROW(ParseTaskAdmittanceParams(YAML::Load("pose_error_limit: 0.4"), p, c));
+  EXPECT_DOUBLE_EQ(p.pose_error_limit, 0.4);
 }
 
 }  // namespace
