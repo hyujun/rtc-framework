@@ -6,7 +6,7 @@
 (A=NONE, Jacobian-transpose)**, **슬라이스 2 — external wrench 입력 계약 + 조건화 체인 +
 §6.3 inertia shaping**, **슬라이스 3 — 태스크 어드미턴스 (§7, 힘 입력 → 위치 출력,
 §3.5)**, **슬라이스 4 — §7.6 캐스케이드 컴플라이언스** 이고, 나머지 행은 후속
-슬라이스에서 채운다.
+슬라이스에서 채운다 — 잔여 행의 목록·판정은 issue #316.
 
 **#298 S7c-2 이후 읽는 법.** 이 문서가 쓰일 당시 세 계열은 `rtc_controllers` 안의
 어댑터 클래스 (`TaskImpedanceController` / `TaskAdmittanceController` /
@@ -516,4 +516,4 @@ controller-private `SeqLock<POD>` 에 매 tick store 하나 LifecyclePublisher �
   세우지 않는다 (state machine 테스트로만 구속).
 - **동적 payload 보상** (관성×가속도) — 준정적 가정, 정적 중력항만.
 
-후속 슬라이스 표는 issue #236 참조.
+후속 슬라이스 표는 issue #316 참조 (#236 은 종결 — 결정 이력만 그쪽에 남는다).
