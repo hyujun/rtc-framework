@@ -47,12 +47,40 @@ namespace rtc::compliance {
 //     configure entirely. That second half lived in the adapters' Compute() and
 //     was deleted with them; it is now a BINDING REQUIREMENT and no in-tree
 //     consumer exercises it (no shipped binding reads max_damping yet). A
-//     binding that adds one must floor it on the tick as well — this header
-//     deliberately does NOT floor inside AdaptiveDampingSquared, because the law
-//     takes λ_max as a plain argument and silently rewriting a caller's input
-//     would make the literal golden-vector oracles disagree with the law they
-//     pin. See invariants.md NUM-1.
+//     binding that adds one must call FloorMaxDamping on the tick as well.
 inline constexpr double kMinMaxDamping = 1e-4;
+
+/// The NUM-1 λ_max floor, in ONE place — the §6.5 counterpart of NUM-6's
+/// `joint::FloorPostureGain`, and deliberately the same shape, because it is the
+/// same problem: a bound named by an invariant must be a symbol a future binding
+/// can GREP, not a `std::max` open-coded at each site plus a row in a doc table.
+/// Every consumer applies it twice (the parser unconditionally, and again at the
+/// point of use before the value reaches the law, because `set_gains()` writes
+/// the Gains POD straight into the SeqLock and bypasses configure). The
+/// point-of-use half currently has no in-tree caller — no shipped binding reads
+/// `max_damping` — which is exactly why the rule needs a symbol rather than a
+/// convention: #298 S7c-2 deleted the adapters that held it and nothing was left
+/// pointing at the gap.
+///
+/// Why not `std::max(kMinMaxDamping, x)` written out at each site: `std::max` is
+/// `a < b ? b : a`, and `1e-4 < NaN` is FALSE, so it returns **1e-4** for a NaN
+/// λ_max. That is not a floor, it is laundering — it turns a corrupt gain into a
+/// plausible one and hands the caller a damping shell that looks armed. A
+/// non-finite λ_max is instead passed through UNCHANGED, so λ² is non-finite,
+/// the torque it scales is non-finite, and the finite-output check downstream
+/// sees it. (`cascaded_compliance_params` rejects non-finite before it gets
+/// here, so there this branch is unreachable defence-in-depth; the other four
+/// parsers reach it.)
+///
+/// The law itself still floors nothing — `AdaptiveDampingSquared` takes λ_max as
+/// a plain argument and must keep satisfying its own named property, λ² ≤ λ_max²
+/// (pinned by AdaptiveDampingLaw.NeverExceedsLambdaMaxSquared). An internal
+/// floor would make that property FALSE below 1e-4 while every existing oracle,
+/// which drives λ_max = 0.05 throughout, stayed green. This is a policy the
+/// CONSUMER applies, next to the law it protects.
+[[nodiscard]] inline double FloorMaxDamping(double lambda_max) noexcept {
+  return std::isfinite(lambda_max) ? std::max(kMinMaxDamping, lambda_max) : lambda_max;
+}
 
 // σ₀ ≤ 0 does not narrow the shell — AdaptiveDampingSquared short-circuits and
 // returns λ² = 0 for EVERY σ_min, i.e. no damping anywhere.

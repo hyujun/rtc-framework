@@ -47,7 +47,7 @@ void ParseOscParams(const YAML::Node& cfg, OscParams& out, CommandType& command_
     // Floor λ_max > 0 (NUM-1/NUM-4): λ² regularises Λ⁻¹ at kinematic
     // singularities. A zero/negative λ_max would remove that guard and admit NaN
     // torque.
-    out.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
+    out.max_damping = compliance::FloorMaxDamping(cfg["max_damping"].as<double>());
   }
   if (cfg["singularity_threshold"]) {
     // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
@@ -77,8 +77,13 @@ void ParseOscParams(const YAML::Node& cfg, OscParams& out, CommandType& command_
   // either from disturbing the Cartesian task — so the posture drifts silently.
   // Unconditional rather than folded into the two parses above: when a key is
   // ABSENT the value still arrives from the constructor or a previous
-  // set_gains(). The law floors again at the point of use because set_gains()
-  // bypasses configure entirely (NUM-1) — as max_damping does.
+  // set_gains(). A binding must floor again at the point of use because
+  // set_gains() bypasses configure entirely (NUM-1) — the same requirement λ_max
+  // carries through compliance::FloorMaxDamping. Neither tick-side half has a
+  // caller today: OscParams has no consumer outside this parser and the tests,
+  // and the adapter that held both halves went with #298 S7c-2. (integrated_
+  // bringup's DemoTaskController does floor at the point of use, but it is a
+  // separate binding with its own Gains POD — it does not read OscParams.)
   out.null_kp = joint::FloorPostureGain(out.null_kp);
   out.null_kd = joint::FloorPostureGain(out.null_kd);
 

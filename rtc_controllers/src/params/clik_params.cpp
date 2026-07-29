@@ -37,7 +37,7 @@ void ParseClikParams(const YAML::Node& cfg, ClikParams& out, CommandType& comman
     // Floor the damped-least-squares λ_max so a zero/negative value cannot
     // remove the singularity guard (NUM-1); a singular J Jᵀ would otherwise
     // yield a NaN joint-velocity command. Mirrors the OSC floor.
-    out.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
+    out.max_damping = compliance::FloorMaxDamping(cfg["max_damping"].as<double>());
   }
   if (cfg["singularity_threshold"]) {
     // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
@@ -61,8 +61,10 @@ void ParseClikParams(const YAML::Node& cfg, ClikParams& out, CommandType& comman
   // null-space target instead of toward it, and N hides that from the task.
   // Unconditional rather than folded into the parse above — when the key is
   // ABSENT the value still arrives from the constructor or a previous
-  // set_gains(). The law floors it again at the point of use (set_gains()
-  // bypasses configure — NUM-1).
+  // set_gains(). A binding must floor it again at the point of use (set_gains()
+  // bypasses configure — NUM-1), as λ_max must through
+  // compliance::FloorMaxDamping. Neither half has a tick-side caller today:
+  // ClikParams has no consumer outside this parser and the tests.
   out.null_kp = joint::FloorPostureGain(out.null_kp);
 
   if (cfg["enable_null_space"]) {

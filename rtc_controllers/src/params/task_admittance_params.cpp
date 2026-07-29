@@ -124,8 +124,10 @@ void ParseTaskAdmittanceParams(const YAML::Node& cfg, TaskAdmittanceParams& out,
   // null-space target, and N hides that from the task so it shows up only as a
   // slow silent drift. Unconditional rather than folded into the parse above —
   // when the key is ABSENT the value still arrives from the constructor or a
-  // previous set_gains(). Compute() floors it again at the point of use because
-  // set_gains() bypasses configure (NUM-1) — the same treatment max_damping gets.
+  // previous set_gains(). A binding must floor it again at the point of use
+  // because set_gains() bypasses configure (NUM-1) — the same requirement λ_max
+  // carries through compliance::FloorMaxDamping. Neither tick-side half has a
+  // caller today; the adapter that held them went with #298 S7c-2.
   out.nullspace_kp = joint::FloorPostureGain(out.nullspace_kp);
   if (cfg["integrate_from_measured"]) {
     out.integrate_from_measured = cfg["integrate_from_measured"].as<bool>();
@@ -138,7 +140,7 @@ void ParseTaskAdmittanceParams(const YAML::Node& cfg, TaskAdmittanceParams& out,
     out.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   }
   if (cfg["max_damping"]) {
-    out.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
+    out.max_damping = compliance::FloorMaxDamping(cfg["max_damping"].as<double>());
   }
 
   // ── Safety / activation ──────────────────────────────────────────────────
