@@ -25,15 +25,26 @@
 
 ### Architecture, process, and numerical rules
 
-- `rtc_*` 패키지에 robot name, joint count, hardware ID를 하드코딩하지 않는다.
-- 의존성 그래프를 거슬러 상위 계층에 의존하지 않는다.
-- 두 번째 구체 구현을 추가하기 전 abstract interface 또는 concept를 정의한다. `#ifdef`나 하드코딩 switch로 우회하지 않는다.
-- `robot_descriptions`는 data-only 패키지다. 소비자는 `<exec_depend>`와 ament index 런타임 lookup을 사용한다.
-- 새 utility 작성 전 기존 `rtc_*`에 유사 기능이 있는지 검색하고, 맞지 않으면 fork보다 일반화를 우선 검토한다.
-- 코드 변경 시 필요한 문서, YAML, `CMakeLists.txt`, `package.xml`을 함께 갱신한다.
-- 기존 test assertion을 통과시키기 위해 약화하지 않는다. 테스트가 틀렸거나 spec이 바뀐 경우에는 근거와 분리된 변경 단위를 남긴다.
-- `rtc_base` 또는 `rtc_msgs` 변경 시 전체 downstream 빌드·테스트를 수행한다.
-- 수치 특이점은 damped pseudoinverse와 zero guard 규칙을 따른다.
+규칙 ID 를 함께 적는다 — escalation 번호와 severity 가 ID 로 연결되고 (§5), 위반 보고도 ID 로 한다.
+
+- **ARCH-1** — `rtc_*` 패키지에 robot name, joint count, hardware ID를 하드코딩하지 않는다.
+- **ARCH-2** — 의존성 그래프를 거슬러 상위 계층에 의존하지 않는다.
+- **ARCH-3** — 두 번째 구체 구현을 추가하기 전 abstract interface 또는 concept를 정의한다. `#ifdef`나 하드코딩 switch로 우회하지 않는다.
+- **ARCH-5** — `robot_descriptions`는 data-only 패키지다. 소비자는 `<exec_depend>`와 ament index 런타임 lookup을 사용한다.
+- **ARCH-6** — 컨트롤러 토픽 QoS depth 는 1 이 기본이다. 예외는 코드에 `// ARCH-6-exempt` 마커와 사유를 남긴다.
+- **ARCH-7** — `rtc_*` 는 RT 제어 루프를 구동하는 실행파일을 소유하지 않는다. 진입 *함수*만 export 하고, exec 는 downstream (integration package) 이 만든다. robot-agnostic standalone 노드·`example_*` 는 예외이며 그 목록은 [agent_docs/design-principles.md](agent_docs/design-principles.md) 가 SSoT.
+- **P5 (설계원칙 5)** — 새 utility 작성 전 기존 `rtc_*`에 유사 기능이 있는지 검색하고, 맞지 않으면 fork보다 일반화를 우선 검토한다.
+- **PROC-1** — 코드 변경 시 필요한 문서, YAML, `CMakeLists.txt`, `package.xml`을 함께 갱신한다.
+- **PROC-3** — `rtc_base` 또는 `rtc_msgs` 변경 시 전체 downstream 빌드·테스트를 수행한다.
+- **PROC-6** — 기존 test assertion을 통과시키기 위해 약화하지 않는다. 테스트가 틀렸거나 spec이 바뀐 경우에는 근거와 분리된 변경 단위를 남긴다.
+- **NUM-1·NUM-2·NUM-4** — 수치 특이점은 damped pseudoinverse, `dt` zero guard, 게인 zero guard 규칙을 따른다.
+- **NUM-5** — 폐쇄 체인 사영은 **residual 로 조립 분기를 판정할 수 없다**. 점 구속 loop 은 분기가 여럿이고 모두 φ=0 을 만족하므로 seed 증분 제한이 필수다. 완화 장치는 발동한 경우에만 적용하고, 그로 인한 `held` 를 자기 치유로 가정하지 않는다.
+
+전체 규칙 (RT-1~RT-10, ARCH-1~7, PROC-1~7, NUM-1~6) 과 탐지 grep·복구 절차는 [agent_docs/invariants.md](agent_docs/invariants.md) 가 SSoT다. 위는 발현 빈도가 높은 것만 추린 요약이다.
+
+### 반복 실수 (사전 신호)
+
+[agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) 가 실제 위반 commit 사례·탐지·복구를 담는다. 최근 빈도 상위: **AP-RT-1** (정기 tick 에서 `RCLCPP_*` 로깅) · **AP-RT-3** (`auto` + Eigen expression aliasing) · **AP-ARCH-1** (`rtc_*` 에 robot 상수) · **AP-PROC-1** ("완료" 보고 후 실제 미완료) · **AP-PROC-4** (test assertion 수정) · **AP-DOC-1** (헌법·문서에 패키지 수·테스트 수 같은 변동 사실 박제).
 
 ## 3. Required Workflow
 
@@ -49,7 +60,19 @@
 - 실패를 반복 시도만 하지 않는다. 누락된 test, lint, interface, 환경 capability를 보완하거나 escalation 한다.
 - public header, launch, config, 파일 추가·삭제, dependency 변경에는 README 갱신 필요성을 확인한다. `CMakeLists.txt`와 `package.xml`의 동기화는 필수다.
 
-변경 위치별 필수 sensor와 추가 sensor는 [agent_docs/testing-debug.md](agent_docs/testing-debug.md)의 matrix를 따른다.
+변경 위치별 필수 sensor와 추가 sensor는 [agent_docs/testing-debug.md](agent_docs/testing-debug.md)의 matrix를 따른다. 그 matrix 의 **필수 sensor 와 추가 sensor 를 모두** 실행한다.
+
+### 커밋 전에 직접 돌려야 하는 것
+
+이 저장소에는 Claude Code 전용 자동화(편집 후 포매팅, turn 종료 시 검증)가 배선돼 있다. **그 자동화는 다른 도구에서는 돌지 않으므로** 아래를 직접 수행한다.
+
+- **포매팅** — C/C++ 는 `clang-format`(루트 `.clang-format`), Python 은 `ruff format` + `ruff check`(루트 `pyproject.toml`). 변경한 파일에 적용한다.
+- **빌드·테스트** — 변경한 패키지를 빌드하고 테스트한다. `rtc_base`/`rtc_msgs` 를 건드렸으면 전체 downstream (PROC-3).
+- **문서 검증** — `.md` 를 고쳤으면 `python3 repo_scripts/scripts/validate_docs.py --files <파일들>`.
+- **YAML** — 고친 YAML 이 parse 되는지 확인하고, default 값·유효 범위·단위 주석이 코드와 맞는지 본다.
+- **Doxygen** — public header 를 바꿨으면 주석을 갱신한다.
+
+CI(`.github/workflows/`)가 문서 코퍼스 전체 검증·빌드·CodeQL 을 다시 돌리므로, 위를 건너뛴 변경은 PR 에서 막힌다.
 
 ## 4. Review and Validation
 
@@ -60,6 +83,7 @@
 - `rtc_*`에 robot-specific 코드가 들어갈 가능성이 있는 변경
 - E-STOP 경로, safety publisher, lifecycle callback 변경
 - 다파일·다패키지 PR, 100줄 이상 변경, 신규 패키지 디렉터리
+- 다파일 리팩터 또는 유사 기능 중복이 의심되는 변경 — 이때는 버그가 아니라 **재사용·단순화** 관점으로 본다 (P5)
 
 리뷰에서는 robot-agnostic 원칙, abstract interface 필요성, 재사용성, RT 제약, public API 영향, E-STOP 안전성을 중점적으로 확인한다.
 
@@ -67,32 +91,25 @@
 
 다음 상황에서는 코드를 작성하기 전에 `[CONCERN]`을 보고하고 사용자 결정을 기다린다.
 
-severity 는 각 항목에 붙은 라벨을 따른다 — **Critical 은 사용자 승인 전 커밋·PR 을 금지**하므로, 라벨 없이 읽으면 무엇이 커밋을 막는지 알 수 없다. 아래 E-번호는 [CLAUDE.md](CLAUDE.md) §6 과 1:1 이며 그쪽이 SSoT 다.
+**E-1 ~ E-11 트리거 표·severity·`[CONCERN]` 포맷의 SSoT 는 [agent_docs/invariants.md](agent_docs/invariants.md) §Escalation Triggers 다** — tool-neutral 이므로 이 문서에 복제하지 않는다. 착수 전 그 표를 연다.
 
-- **E-1 (Critical)** — invariant를 위반하거나 예외가 필요할 가능성
-- **E-2 (Critical)** — `rtc_*` 패키지에 robot-specific 값 추가
-- **E-3 (Critical)** — `rtc_msgs` 또는 `shape_estimation_msgs` public ABI 변경
-- **E-4 (Warning)** — abstract interface 없이 두 번째 구현 추가
-- **E-5 (Warning)** — optional dependency(MuJoCo, aligator 등)의 fallback 제거
-- **E-6 (Critical)** — 기존 test assertion 변경 또는 약화
-- **E-7 (Critical)** — thread model(core affinity, priority) 변경
-- **E-8 (Critical)** — E-STOP 경로 변경
-- **E-9 (Warning)** — 문서와 코드 중 어느 쪽을 기준으로 맞출지 판단이 필요한 불일치
-- **E-10 (Warning)** — `robot_descriptions`에 build-time 의존성(`find_package`, `<depend>`, `ament_target_dependencies`) 추가
-- **E-11 (Warning)** — `PublishRole` enum에 controller-owned non-RT topic 추가. 새 controller-owned 토픽은 `SeqLock<T>` + `Setup*Publisher` helper 패턴을 쓴다
+severity 의 효력만 여기 박는다:
 
-```text
-[CONCERN] <한 줄 요약>
-Severity: Critical | Warning | Info
-Detail: <영향 범위, 검토한 대안>
-Alternative: <우회안 한 가지 이상>
-```
-
-- **Critical**: 사용자 승인 전 커밋·PR·위험 변경을 진행하지 않는다.
-- **Warning**: 사용자 판단에 따라 진행하며 결정 근거를 남긴다.
+- **Critical**: 사용자 승인 전 커밋·PR 을 진행하지 않는다. (E-1 invariant 일반 · E-2 ARCH-1 · E-3 msgs ABI · E-6 test assertion · E-7 thread model · E-8 E-STOP)
+- **Warning**: 사용자 판단에 따라 진행하며 결정 근거를 남긴다. (E-4 · E-5 · E-9 · E-10 · E-11)
 - **Info**: 기록 후 진행할 수 있다.
 
-다단계 작업, 신규 public abstraction/controller/device/thread/message, `rtc_base`/`rtc_msgs` 변경, 기능 동등성이 중요한 리팩터링은 구현 전에 객관적으로 검증 가능한 성공 기준을 짧게 합의한다.
+grep 이 정당한 코드를 invariant 위반으로 잘못 잡았다고 판단되면, **보고 없이 우회하지 않는다** — 판정 절차와 한 줄 보고 포맷 (`false-positive: <rule-id> at <file:line>, reason=...`) 은 [agent_docs/invariants.md](agent_docs/invariants.md) §False-positive 처리에 있다. RT 여부가 애매하면 비-RT 로 가정하지 말고 `[CONCERN]` 으로 보고한다.
+
+### 착수 전 성공 기준
+
+다단계 작업(PR 단위·다파일·다패키지·신규 디렉터리·phase 분할), 신규 abstract interface·controller·device·thread·message 추가, `rtc_base`/`rtc_msgs` 변경, 기능 동등성이 성공 조건인 리팩터링은 코드 수정 **전에** 1~3줄로 객관 검증 가능한 성공 기준을 제시하고 컨펌받는다. 포맷과 절차는 [agent_docs/modification-guide.md](agent_docs/modification-guide.md) §Sprint Contract & Spec.
+
+면제: 단일 파일 bug fix, 오타·포매팅, 단일 함수 추가, 의도가 한 줄 메시지에서 자명한 경우.
+
+### 반복 실패
+
+같은 문제를 **3회** 시도해도 풀리지 않으면 더 시도하지 말고 중단한다 — 무엇을 시도했고 각각 왜 실패했는지 진단을 정리해 escalate 한다 ([agent_docs/handoff.md](agent_docs/handoff.md)).
 
 ## 6. Build and Environment Hard Rules
 
@@ -100,7 +117,13 @@ Alternative: <우회안 한 가지 이상>
 
 ### colcon working directory
 
-`colcon build`와 `colcon test`는 반드시 colcon workspace root(`<rtc_ws>`, 일반적으로 `~/ros2_ws/rtc_ws`)에서 실행한다. repository root(`src/rtc-framework`)에서 실행하지 않는다. 직접 `colcon`을 실행할 때는 환경 설정 스크립트도 올바른 절대 경로 또는 workspace 기준 경로로 source한다.
+`colcon build`와 `colcon test`는 반드시 colcon workspace root(`<rtc_ws>` = `~/ros2_ws/rtc_ws`)에서 실행한다. repository root(`src/rtc-framework`)에서 실행하면 그 안에 별도 `build/`·`install/`·`log/` 트리가 생기고, 이후 호출마다 두 트리를 오가게 된다.
+
+**모든 colcon 호출을 `cd <rtc_ws> &&` 로 시작한다.** 환경은 절대 경로로 source 한다 — `source <rtc_ws>/src/rtc-framework/repo_scripts/scripts/setup_env.sh`. ws-root 로 갈 수 없으면 절대경로 `--build-base` / `--install-base` 를 지정한다. `build.sh` / `install.sh` 는 내부에서 workspace 로 이동하므로 안전하다.
+
+이 규칙은 몰라서가 아니라 **cwd drift** 로 재발한다. 셸의 cwd 는 호출 사이에 유지되므로, grep 하려고 repo 로 이동한 뒤 *다음* 호출에서 colcon 을 치면 그게 이미 위반이다. 증상이 빌드 실패가 아니라는 점이 비싸다 — **같은 세션의 검증들이 서로 모순되는 결과를 낸다** (한 테스트는 수정된 코드로, 다른 테스트는 stale 바이너리로 돈다). 검증 결과가 설명 불가하게 엇갈리면 코드를 의심하기 전에 `ls src/rtc-framework/build` 부터 확인한다.
+
+**`source` 를 파이프라인에 넣지 않는다.** `source setup_env.sh 2>&1 | tail -2 && colcon build …` 처럼 쓰면 source 가 subshell 에서 실행돼 환경이 부모 셸에 반영되지 않는다. 조용히 성공한 것처럼 보이는 게 함정이다 — `colcon` 자체는 PATH 에 있어 빌드가 시작되고, 한참 뒤 CMake 안에서 `ModuleNotFoundError: No module named 'ament_package'` 같은 **원인을 가리키지 않는 에러**로 죽는다. 출력을 줄이려면 리다이렉션(`source … >/dev/null 2>&1`)을 쓴다. 이 실패를 `Python3_EXECUTABLE` 탓으로 오진하기 쉬운데, 감별은 `/usr/bin/python3 -c "import ament_package"` 한 줄이면 된다.
 
 repository 안에 잘못 생성된 `build/`, `install/`, `log/`는 잘못된 CWD의 신호다. **이 repo-local 트리는 재생성 가능하므로 확인 없이 삭제한다.** 절대 건드리지 않아야 하는 것은 workspace root(`<rtc_ws>/{build,install,log}`)의 정상 incremental cache 이며, 둘을 혼동하지 않는다.
 
@@ -140,12 +163,15 @@ gtest binary 직접 실행, venv 비활성화, 강제 `PYTHONPATH` 설정 등으
 
 작업 후에는 repository root에 잘못 생성된 `build/`, `install/`, `log/`와 재생성 가능한 Python cache(`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`)가 있는지 확인한다. 작업 중 만든 임시 파일(분석 스크립트, 중간 산출물, 로그 덤프)도 종료 시 삭제한다. 보존 가치가 있으면 git log, 문서, issue 로 옮긴 뒤 삭제한다. 삭제는 사용자 변경물이나 workspace root의 정상 cache를 건드리지 않는 범위에서만 수행한다.
 
+feature branch 가 `main` 에 merge 됐으면 로컬 merged branch 를 삭제하고(`git branch -d`) stale remote-tracking ref 를 정리한다(`git fetch --prune`). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다.
+
 ## 9. Context Handoff
 
-미완료 작업이 session · agent · model · 책임 경계를 넘을 때는 **handoff artifact** 를 만든다. artifact 는 받는 에이전트가 **이전 transcript 없이 재개**할 수 있어야 완료다 (Goal, Acceptance criteria, Out of scope, Current state, Next action, Decisions, Evidence, Failed approaches, Workspace(git), Pointers).
+미완료 작업이 session · agent · model · 책임 경계를 넘을 때는 **handoff artifact** 를 만든다. artifact 는 받는 에이전트가 **이전 transcript 없이 재개**할 수 있어야 완료다. **채울 섹션 목록은 [agent_docs/handoff.md](agent_docs/handoff.md) §2 가 SSoT** 이며 여기 복제하지 않는다 — 이전에 복제본이 한 섹션(`Constraints / pending human decisions`)을 잃은 채 굳었다.
 
-- 받는 쪽은 진행 전에 `git status` 와 핵심 evidence(build/test)가 artifact 와 일치하는지 검증하고, 불일치 시 **구현 전에 artifact 를 먼저 갱신**한다.
-- 단순 오타·단일 세션 short task 는 artifact 불필요다. 다단계 작업은 [CLAUDE.md](CLAUDE.md) §6.5 Sprint Contract 를 적용한다.
+- 보내는 쪽은 필수 섹션을 전부 채우고(해당 없으면 `N/A`), Evidence 는 **실제 실행한 명령과 결과만** 적으며, 시간은 상대 표현이 아니라 절대 날짜로 쓴다. `git status` 와 HEAD 를 기록한다.
+- 받는 쪽은 transcript 가 아니라 artifact 를 읽고 시작한다. 진행 전에 `git status` 와 핵심 evidence(build/test)가 artifact 와 일치하는지 검증하고, 불일치 시 **구현 전에 artifact 를 먼저 갱신**한다. Acceptance criteria 와 Out of scope 를 확인한 뒤 Next action 을 집는다.
+- 단순 오타·단일 세션 short task 는 artifact 불필요다. 다단계 작업은 §5 의 착수 전 성공 기준을 적용한다.
 - credentials · secret · raw 대용량 log · 미검증 주장은 넣지 않는다.
 - **저장**: plan 파일은 repo 에 커밋하지 않는다 — 각 에이전트(Claude · Codex 등)가 자기 private 저장소에서 관리하고, tool 경계를 넘는 cross-tool 인계는 **git issue** 에 artifact 를 적어 공유한다. 완료된 plan 은 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (상세: [agent_docs/handoff.md](agent_docs/handoff.md) §5).
 

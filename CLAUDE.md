@@ -92,32 +92,17 @@ RT 핫패스 절대금지 규칙은 **RT-1 ~ RT-10** (RT-7 은 은퇴 → PROC-6
 
 ## 6. Escalation Triggers
 
-다음 상황에서 코드를 쓰기 **전에** `[CONCERN]` 보고 후 사용자 컨펌 대기. 세부 invariant·grep·복구는 [agent_docs/invariants.md](agent_docs/invariants.md) 참조.
+다음 상황에서 코드를 쓰기 **전에** `[CONCERN]` 보고 후 사용자 컨펌 대기.
 
-- **E-1** (Critical) — [agent_docs/invariants.md](agent_docs/invariants.md) 규칙을 건드려야 할 것 같음 (§3 전반)
-- **E-2** (Critical) — `rtc_*` 패키지에 robot-specific 값을 넣어야 함 (ARCH-1)
-- **E-3** (Critical) — `rtc_msgs` / `shape_estimation_msgs` public ABI 변경 필요
-- **E-4** (Warning) — Abstract interface 없이 두 번째 구현 추가 필요 (ARCH-3)
-- **E-5** (Warning) — Optional dep (MuJoCo, aligator) fallback 제거 필요
-- **E-6** (Critical) — 기존 test assertion 을 약화·수정해야 할 것 같음 — 회귀 은폐 vs 정당한 spec 변경/test-bug 구분, 후자는 별도 commit + 근거 (PROC-6)
-- **E-7** (Critical) — Thread model (core 배치, priority) 변경
-- **E-8** (Critical) — E-STOP 경로 수정
-- **E-9** (Warning) — 문서-코드 불일치를 어느 쪽에 맞출지 결정 필요
-- **E-10** (Warning) — `robot_descriptions` 를 build-time 으로 의존하려는 변경 (`find_package` / `<depend>` / `ament_target_dependencies`) (ARCH-5)
-- **E-11** (Warning) — `PublishRole` enum 에 controller-owned non-RT 토픽을 추가하려는 변경 — 새 controller-owned 토픽은 `SeqLock<T>` + `Setup*Publisher` helper 패턴 (Phase 4 trailing cleanup)
+**E-1 ~ E-11 트리거 표·severity·`[CONCERN]` 포맷의 SSoT 는 [agent_docs/invariants.md](agent_docs/invariants.md) §Escalation Triggers 다** — tool-neutral 이므로 헌법에 복제하지 않는다 (AP-DOC-1; 이전에 CLAUDE.md·AGENTS.md 가 각각 전체 목록을 들고 있었고 같은 구조가 handoff 섹션 목록에서 실제 드리프트를 냈다).
 
-### `[CONCERN]` 포맷
-
-```
-[CONCERN] <한 줄 요약>
-Severity: Critical | Warning | Info
-Detail: <문제의 구체 내용, 영향 범위, 검토한 대안>
-Alternative: <우회 안 1개 이상>
-```
+헌법이 박는 것은 severity 의 **효력**뿐이다:
 
 - **Critical**: 사용자 컨펌 전까지 커밋·PR 금지
 - **Warning**: 사용자 판단에 따라 진행, 결정 로그 남김
 - **Info**: 기록만, 진행 가능
+
+Critical 은 E-1(invariant 일반)·E-2(ARCH-1)·E-3(msgs ABI)·E-6(test assertion)·E-7(thread model)·E-8(E-STOP), Warning 은 E-4·E-5·E-9·E-10·E-11 이다. 각 트리거의 정확한 조건·관련 규칙 ID 는 위 SSoT 를 연다.
 
 ## 6.5 Sprint Contract (착수 전 성공 기준 협상)
 
@@ -206,5 +191,7 @@ Commit 완료 또는 사용자가 task 종료를 알린 후:
 - [agent_docs/testing-debug.md](agent_docs/testing-debug.md) — Sensor matrix, test commands, live debug topics, RT permissions
 - [agent_docs/invariants.md](agent_docs/invariants.md) — RT / ARCH / PROC / NUM invariants (escalation triggers detail)
 - [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) — Recurring mistakes with detection + recovery
+- [agent_docs/handoff.md](agent_docs/handoff.md) — Tool-neutral context handoff 계약 (trigger 분류·artifact template·sender/receiver checklist·storage)
+- [AGENTS.md](AGENTS.md) — 같은 헌법의 tool-neutral 판 (Claude 외 도구용). 규칙 변경 시 양쪽 동기화 필요
 - [README.md](README.md) — 빌드·설치 명령, deps 버전, 빠른 시작
 - [repo_scripts/README.md](repo_scripts/README.md) — PREEMPT_RT, CPU shield, env activation, isolated deps

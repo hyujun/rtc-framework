@@ -2,7 +2,7 @@
 
 이 파일의 규칙은 **위반 시 아키텍처가 깨진다**. 작업 중 이 중 하나를 건드려야 할 것 같으면, 코드를 수정하기 **전에** `[CONCERN]` 을 보고하고 사용자 컨펌을 받아야 한다.
 
-**Severity 는 파일 단위가 아니라 규칙 단위다.** [CLAUDE.md](../CLAUDE.md) §6 이 severity 의 SSoT 이며 (Critical = 컨펌 전 커밋·PR 금지, Warning = 판단에 따라 진행하되 결정 로그), 아래 Architecture 표가 Severity 열을 갖는다. 이전에 이 문단이 전 파일을 Critical 로 선언해 §6 에서 Warning 인 ARCH-3·ARCH-5 와 충돌했다 (#213).
+**Severity 는 파일 단위가 아니라 규칙 단위다.** 아래 §Escalation Triggers 가 E-번호·severity·`[CONCERN]` 포맷의 SSoT 이며 (Critical = 컨펌 전 커밋·PR 금지, Warning = 판단에 따라 진행하되 결정 로그), Architecture 표도 Severity 열을 갖는다. 이전에 이 문단이 전 파일을 Critical 로 선언해 §6 에서 Warning 인 ARCH-3·ARCH-5 와 충돌했다 (#213).
 
 대응은 **1:1 이 아니다** — 그렇게 적었던 문장이 스스로 반증됐으므로 실제 관계를 적는다. §6 이 이름으로 지목하는 invariant 만 전용 E-번호를 갖고 (ARCH-1→E-2, ARCH-3→E-4, ARCH-5→E-10), 나머지는 "invariants.md 규칙을 건드림" 인 **E-1 (Critical)** 로 수렴한다. 반대로 E-3·E-6~E-9·E-11 은 ARCH 표가 아니라 msgs ABI·test·thread·E-STOP 등 다른 축을 가리키므로 대응하는 행이 없다. 그리고 **탐지 sensor 의 blocking 여부와 escalation severity 는 다른 축이다**: ARCH-6 은 non-blocking sensor 로 경고만 내지만, 규칙 자체를 바꾸려면 E-1 로 컨펌을 받아야 한다.
 
@@ -310,9 +310,46 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 근거·실측: issue #248, PR #249 리뷰.
 
+## Escalation Triggers (E-1 ~ E-11)
+
+**이 절이 E-번호·severity·`[CONCERN]` 포맷의 SSoT 다** — tool-neutral 이며 [CLAUDE.md](../CLAUDE.md) §6 과 [AGENTS.md](../AGENTS.md) §5 는 여기를 가리키기만 한다 (이전에는 양쪽이 전체 목록을 인라인 복제했고, 그 구조가 handoff 섹션 목록에서 실제 드리프트를 냈다 — AP-DOC-1).
+
+다음 상황에서는 코드를 쓰기 **전에** `[CONCERN]` 을 보고하고 사용자 컨펌을 기다린다.
+
+| ID | Severity | 트리거 | 관련 규칙 |
+|----|----------|--------|-----------|
+| E-1 | **Critical** | 이 파일의 invariant 를 위반하거나 예외가 필요할 것 같음 | 전 규칙 (전용 번호가 없는 모든 위반이 여기로 수렴) |
+| E-2 | **Critical** | `rtc_*` 패키지에 robot-specific 값을 넣어야 함 | ARCH-1 |
+| E-3 | **Critical** | `rtc_msgs` / `shape_estimation_msgs` public ABI 변경 필요 | — |
+| E-4 | **Warning** | Abstract interface 없이 두 번째 구현 추가 필요 | ARCH-3 |
+| E-5 | **Warning** | Optional dep (MuJoCo, aligator) fallback 제거 필요 | — |
+| E-6 | **Critical** | 기존 test assertion 을 약화·수정해야 할 것 같음 — 회귀 은폐 vs 정당한 spec 변경/test-bug 를 구분하고, 후자는 별도 commit + 근거 | PROC-6 |
+| E-7 | **Critical** | Thread model (core 배치, priority) 변경 | RT-HOST-1~3 |
+| E-8 | **Critical** | E-STOP 경로 수정 | PROC-4, PROC-7 |
+| E-9 | **Warning** | 문서-코드 불일치를 어느 쪽에 맞출지 결정 필요 | PROC-1 |
+| E-10 | **Warning** | `robot_descriptions` 를 build-time 으로 의존하려는 변경 (`find_package` / `<depend>` / `ament_target_dependencies`) | ARCH-5 |
+| E-11 | **Warning** | `PublishRole` enum 에 controller-owned non-RT 토픽을 추가하려는 변경 — 새 controller-owned 토픽은 `SeqLock<T>` + `Setup*Publisher` 패턴 | ARCH-6 |
+
+**Severity 의미**:
+
+- **Critical** — 사용자 컨펌 전까지 커밋·PR 금지
+- **Warning** — 사용자 판단에 따라 진행, 결정 로그 남김
+- **Info** — 기록만, 진행 가능
+
+**`[CONCERN]` 포맷**:
+
+```text
+[CONCERN] <한 줄 요약>
+Severity: Critical | Warning | Info
+Detail: <문제의 구체 내용, 저촉되는 invariant ID, 영향 범위, 검토한 대안>
+Alternative: <우회 안 1개 이상 — interface 추가 / SPSC defer / aux thread 이동 등>
+```
+
+Severity 는 파일이 아니라 **규칙 단위**로 정해진다 — 위 표와 Architecture 표의 Severity 열을 그대로 인용한다.
+
 ## 이 파일의 규칙을 건드려야 할 것 같을 때
 
-1. 수정 **전** `[CONCERN]` 보고 (Severity 는 위 표의 해당 규칙 열을 그대로 인용) — 포맷 SSoT 는 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN] 포맷`. `Detail` 에 어떤 invariant 에 저촉되는지·영향 범위, `Alternative` 에 우회 안 1개 이상 (interface 추가 / SPSC defer / aux thread 이동 등).
+1. 수정 **전** `[CONCERN]` 보고 — 트리거 표·severity·포맷은 위 §Escalation Triggers 가 SSoT.
 2. 사용자 컨펌 후 진행
 3. "임시로 위반 → 나중에 정리"는 허용되지 않음. Warning 이상은 별도 리팩터 task로 분리
 

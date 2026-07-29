@@ -342,7 +342,9 @@ sudo update-grub && sudo reboot
 | [docs/RT_OPTIMIZATION.md](docs/RT_OPTIMIZATION.md) | 실시간 최적화 가이드 (CPU 코어 할당, 커널 설정) |
 | [docs/VSCODE_DEBUGGING.md](docs/VSCODE_DEBUGGING.md) | VS Code + GDB 디버깅 가이드 |
 | [docs/NUC_HYBRID_SUPPORT.md](docs/NUC_HYBRID_SUPPORT.md) | NUC 13/14/15 Pro hybrid CPU (P/E core) 감지 + BIOS 체크리스트. Layout 분기는 v4.1 slot 매핑이 처리 |
-| [CLAUDE.md](CLAUDE.md) | AI 에이전트 컨텍스트 (harness, invariants, escalation) |
+| [AGENTS.md](AGENTS.md) | **AI 에이전트 헌법 (tool-neutral)** — invariants, workflow, escalation, build hard rules. Codex · Copilot · Antigravity 등이 읽는다 |
+| [CLAUDE.md](CLAUDE.md) | 위와 같은 헌법의 Claude Code 판 — 추가로 hook · slash command · rule 자동 로드 등 Claude 전용 메커니즘 |
+| [agent_docs/](agent_docs/) | 위 두 헌법이 위임하는 세부 규칙의 SSoT (invariants, architecture, controllers, testing, conventions, handoff) |
 | [repo_scripts/README.md](repo_scripts/README.md) | RT 설정 / 빌드 / 환경 셋업 쉘 스크립트 가이드 (PREEMPT_RT, CPU shield, IRQ affinity, `setup_env.sh`) |
 
 각 패키지의 상세 API, 설정, 아키텍처는 해당 패키지의 `README.md`를 참조하세요.
