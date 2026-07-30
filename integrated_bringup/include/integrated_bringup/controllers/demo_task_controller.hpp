@@ -290,6 +290,26 @@ class DemoTaskController final : public RTControllerInterface {
     return {contact_stop_max_force_, contact_stop_active_count_};
   }
 
+  /// Test-only: the phase value the non-RT quiet gate would read right now.
+  /// Distinct from GetGraspStateForTesting().grasp_phase, which the output fill
+  /// writes: a tick that steps the FSM but never mirrors leaves the gate
+  /// believing the hand is idle and admits a mode change mid-grasp.
+  [[nodiscard]] uint8_t GetGraspPhaseMirrorForTesting() const noexcept {
+    return grasp_phase_pub_.load(std::memory_order_acquire);
+  }
+
+  /// Test-only: drive the Force-PI FSM the way the grasp_command service would,
+  /// without standing up a LifecycleNode. Returns false when no force_pi_grasp
+  /// block built a controller. Same shape as SetGraspControllerTypeForTesting —
+  /// a test-only door onto existing behaviour, no new production surface.
+  bool CommandGraspForTesting(double target_force) {
+    if (!grasp_controller_) {
+      return false;
+    }
+    grasp_controller_->CommandGrasp(target_force);
+    return true;
+  }
+
   /// Test-only: the latch value the non-RT quiet gate would read right now.
   /// Distinct from observing the freeze in the command: a tick that freezes the
   /// hand but never mirrors the latch leaves the gate believing the hand is
@@ -702,6 +722,15 @@ class DemoTaskController final : public RTControllerInterface {
   /// tick-old value is fine and unavoidable — the callback cannot stop the RT
   /// thread, which is exactly why ComputeSecondary carries the race closure.
   std::atomic<bool> contact_latched_pub_{false};
+  /// Non-RT-readable mirror of grasp_controller_->phase(), stored by the force_pi
+  /// branch. Same reason as the latch mirror, one step stronger: the quiet gate
+  /// must not admit a mode change mid-grasp, and the FSM is mutated by
+  /// GraspController::Update() on the RT tick — so reading phase() from the
+  /// callback would be a genuine data race on a safety decision. kIdle is 0, so
+  /// the zero init is the right answer before the first force_pi tick, and the
+  /// value cannot go stale under another mode: nothing steps the FSM there (the
+  /// grasp_command service is mode-gated, see GraspCommandRejectReason).
+  std::atomic<uint8_t> grasp_phase_pub_{0};
   /// Hold target while latched. Refreshed from the LPF output on every tick
   /// that contact is present; frozen once contact drops (no random-walk drift).
   std::array<double, kDemoTaskMaxHandDof> hand_hold_position_{};

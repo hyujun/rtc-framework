@@ -492,6 +492,33 @@ const char* GraspCommandRejectReason(GraspHandMode mode, bool has_controller) no
   return nullptr;
 }
 
+const char* GraspModeChangeRejectReason(GraspHandMode current, GraspHandMode requested,
+                                        const GraspModeSwitchState& state) noexcept {
+  // No-op first, before any gate: the requested mode is already in force, so
+  // accepting cannot change what the hand is doing. Refusing here would make an
+  // idempotent set fail whenever an object happens to be held — including the
+  // re-send a GUI does to confirm what it is already displaying.
+  if (requested == current) {
+    return nullptr;
+  }
+  // Capability before policy, same order as GraspCommandRejectReason: without a
+  // force_pi_grasp block there is no PI law to switch to, and that is a YAML
+  // problem rather than something waiting will fix.
+  if (requested == GraspHandMode::kForcePi && !state.has_controller) {
+    return "force_pi unavailable (no 'force_pi_grasp' block in demo_shared.yaml)";
+  }
+  // The two quiet refusals stay distinct: one is fixed by opening the hand, the
+  // other by finishing or releasing the PI grasp, and this string is all the
+  // operator gets.
+  if (state.contact_latched) {
+    return "hand is holding (contact_stop latch engaged) — release it first";
+  }
+  if (!state.grasp_phase_idle) {
+    return "force_pi grasp is in progress — release it first";
+  }
+  return nullptr;
+}
+
 void BuildPullForceEstimator(const DemoSharedConfig& cfg, double control_rate_hz,
                              std::unique_ptr<rtc::grasp::PullForceEstimator>& estimator) {
   if (!cfg.has_pull_estimator_block || !cfg.pull_estimator_enabled) {

@@ -154,7 +154,11 @@ Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (defaul
 
 **두 축이 분리돼 있다** (B-3): `BuildGraspController` 는 `force_pi_grasp` 블록 유무만 보고 **모드는 안 본다** — 블록이 있으면 어떤 모드로 시작하든 PI 컨트롤러가 만들어진다 (블록 = *capability*, 모드 = 매 tick 어느 법칙이 손을 잡는가). 컨트롤러 스위칭이 re-configure 를 하지 않으므로, 빌드가 모드를 봤다면 모드가 one-way door 가 된다. 따라서 `grasp_controller_ != nullptr` 은 "force_pi 가 돌고 있다"의 대용이 **아니다** — 제어 법칙·diagnostics fill·`grasp_command` srv (`GraspCommandRejectReason`) 가 각자 모드를 직접 확인한다. `ur5e_p1b` 가 `type: "none"` + 블록 조합을 실제로 싣고 있어 이 구분이 가설이 아니다.
 
-Configure-time only: joint/task controllers mirror the resolved mode as a **read-only** `grasp_controller_type` ROS parameter (display for the demo GUI's Grasp/Release gate); `ros2 param set` is rejected, and controller switching never re-configures, so changing it means editing YAML and restarting.
+**런타임 전환 가능** (B-4b; 이전에는 read-only 였다). joint/task 컨트롤러는 활성 모드를 writable `grasp_controller_type` ROS 파라미터로 노출하고, `ros2 param set` 은 **손이 quiet 할 때만** 수락한다 — contact_stop latch 미engage **그리고** force_pi FSM 이 `kIdle`. 판정의 SSoT 는 `GraspModeChangeRejectReason` (`demo_shared_config.hpp`); 이미 활성인 모드의 재요청은 quiet 여부와 무관하게 항상 수락 (no-op). 거부 시 사유가 `SetParametersResult::reason` 으로 돌아가고 GUI 가 그대로 표시한다.
+
+quiet 조건을 고른 이유 (2026-07-30 확정): 대안이던 "항상 허용 + 자동 safing" 은 RT tick 코드를 더 건드리고 재-seed 누락 자체가 hazard 가 된다. quiet 는 부수 이득도 준다 — force_pi 를 떠나는 것이 `kIdle` 에서만 가능하므로 발행된 GraspState 에 남는 PI diagnostics 는 idle-consistent setpoint 이지 stale mid-grasp state 가 아니다. 그래서 전환 시 그 필드들을 청소하지 않는다.
+
+**quiet gate 는 RT 스레드를 멈출 수 없다** — 파라미터 콜백은 RT tick 이 store 하는 atomic 미러(`contact_latched_pub_` / `grasp_phase_pub_`)를 읽으므로 판정이 한 tick 뒤처진다. check 와 store 사이에 접촉이 걸리는 창은 compute 쪽 race closure 가 닫는다: 모드가 contact_stop 을 떠난 tick 에 latch 가 걸려 있으면 latch 를 떨구기 **전에** hand goal 을 `hand_hold_position_` 으로 재-seed 하고 throttled WARN 을 찍는다 (gate 가 정상이면 절대 발화하지 않으므로 발화 자체가 결함 신호다). 없으면 명령이 전환 첫 tick 에 접촉 전 goal 로 튄다 — 실측 0.3 → 0.8 rad.
 
 **FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
 

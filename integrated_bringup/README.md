@@ -311,14 +311,17 @@ CSV (`<device>_sensor.csv`) 는 같은 tick 에서 raw (`ft_<f>_fx`) → guarded
 
 발동 시 `/rosout` 에 `[contact_stop] SKIP (release) dthumb_fe=... dindex_fe=... dmid_fe=...` 로그가 1초 간격으로 출력됩니다. 접촉 유지 중 동결은 `[contact_stop] FREEZE ...`, 접촉 없이 latch 로 유지 중일 때는 `[contact_stop] HOLD ...` 로그가 출력됩니다.
 
-**Force-PI Grasp/Release 버튼 (GUI):** `demo_controller_gui` 의 Grasp 탭에 있는 `▶ Grasp` / `■ Release` 버튼은 **`grasp_controller_type: "force_pi"`** YAML 설정에서만 동작합니다. 그 외 모드에서는 컨트롤러가 명령을 조용히 무시하며, `/rosout` 에 throttled WARN 로그가 출력됩니다:
+**Force-PI Grasp/Release 버튼 (GUI):** `demo_controller_gui` 의 Grasp 탭에 있는 `▶ Grasp` / `■ Release` 버튼은 **활성 모드가 `force_pi`** 일 때만 동작합니다. 그 외 모드에서 `grasp_command` srv 는 **사유와 함께 명시적으로 거부**합니다 (`ok=false` + `message`) — 조용히 무시하지 않습니다. 사유 문구의 SSoT 는 `GraspCommandRejectReason` (`demo_shared_config.hpp`) 이며 두 가지를 구분합니다: "`force_pi_grasp` 블록이 없음" (YAML 수정 필요) 과 "블록은 있는데 지금 모드가 force_pi 가 아님" (모드 전환 필요).
 
-```
-[grasp] Grasp command ignored: grasp_controller_type='contact_stop'
-  (require 'force_pi' in YAML to enable Grasp/Release buttons)
+GUI 는 이 상태를 **버튼 옆에 표시하고 직접 게이트**합니다. joint/task 컨트롤러는 활성 모드를 `grasp_controller_type` ROS 파라미터로 노출하므로 (`ros2 param get /demo_joint_controller/demo_joint_controller grasp_controller_type`), GUI 가 선택된 컨트롤러의 실제 모드를 읽어 `mode: force_pi` (녹색, 버튼 활성) 또는 `mode: contact_stop — Grasp/Release 는 force_pi 에서만 동작` (노랑, 버튼 비활성) 을 띄웁니다. 파라미터 서비스가 아직 안 뜬 경우에는 `mode: unknown` (회색) 으로 두고 버튼은 **활성 유지** — GUI 가 컨트롤러가 받아들일 명령을 막는 두 번째 게이트가 되면 안 되기 때문입니다. `demo_wbc_controller` 는 이 파라미터를 선언하지 않으며 (자체 FSM) 항상 활성입니다.
+
+**모드는 런타임에 바꿀 수 있습니다** (이전에는 read-only 였고 YAML 수정 + 재기동이 필요했습니다):
+
+```bash
+ros2 param set /demo_joint_controller/demo_joint_controller grasp_controller_type force_pi
 ```
 
-GUI 는 이 상태를 **버튼 옆에 표시하고 직접 게이트**합니다. joint/task 컨트롤러는 `grasp_controller_type` 을 read-only ROS 파라미터로 노출하므로 (`ros2 param get /demo_joint_controller/demo_joint_controller grasp_controller_type`), GUI 가 선택된 컨트롤러의 실제 모드를 읽어 `mode: force_pi` (녹색, 버튼 활성) 또는 `mode: contact_stop — Grasp/Release 는 force_pi 에서만 동작` (노랑, 버튼 비활성) 을 띄웁니다. 파라미터 서비스가 아직 안 뜬 경우에는 `mode: unknown` (회색) 으로 두고 버튼은 **활성 유지** — GUI 가 컨트롤러가 받아들일 명령을 막는 두 번째 게이트가 되면 안 되기 때문입니다. `demo_wbc_controller` 는 이 파라미터를 선언하지 않으며 (자체 FSM) 항상 활성입니다. 모드는 configure 시점 결정이라 (컨트롤러 전환은 activate/deactivate 뿐, re-configure 없음) 값을 바꾸려면 YAML 수정 후 재기동해야 합니다 — `ros2 param set` 은 read-only 로 거부됩니다.
+단 **손이 quiet 할 때만** 수락됩니다 — contact_stop latch 가 걸려 있지 않고, force_pi FSM 이 `kIdle` 이어야 합니다. 아니면 사유와 함께 거부되고 모드는 안 바뀝니다 (판정의 SSoT 는 `GraspModeChangeRejectReason`). `force_pi` 요청은 `force_pi_grasp` 블록이 있는 config 에서만 가능합니다 — 블록 유무가 *capability*, 모드가 *지금 어느 법칙이 도는가* 이며 두 축은 독립입니다 ([agent_docs/controllers.md](../agent_docs/controllers.md#graspcontroller-force-pi-internal-only)). 이미 활성인 모드를 다시 요청하는 것은 quiet 하지 않아도 항상 수락됩니다 (no-op).
 
 force_pi 모드에서는 phase 전이(`Idle → Approaching → Contact → ForceControl → Holding → Releasing`)가 `[grasp:force_pi] phase X -> Y target_force=...N` 로그로 출력되며, 500Hz 제어 루프에서는 2초 간격으로 `[grasp] type=... active=.../... max_force=...N` 상태 스냅샷이 출력됩니다.
 
@@ -787,7 +790,7 @@ WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mp
 
 #### Grasp/Release 버튼 동작
 
-- **`demo_joint_controller` / `demo_task_controller`**: `grasp_controller_type: "force_pi"` (`demo_shared.yaml` 기본값) 일 때만 동작. `"contact_stop"` / `"none"` 모드에서는 controller 가 명령을 silent ignore + `/rosout` 에 throttled WARN. GUI 는 두 컨트롤러가 노출하는 read-only `grasp_controller_type` 파라미터를 읽어 버튼 옆에 현재 모드를 표시하고, force_pi 가 아니면 버튼을 비활성화합니다 (파라미터 미조회 시에는 fail-open — 위 "Force-PI Grasp/Release 버튼 (GUI)" 절).
+- **`demo_joint_controller` / `demo_task_controller`**: 활성 모드가 `force_pi` 일 때만 동작. `"contact_stop"` / `"none"` 모드에서는 srv 가 **사유와 함께 거부** (`ok=false` + `message`, `GraspCommandRejectReason` 가 SSoT). GUI 는 두 컨트롤러가 노출하는 `grasp_controller_type` 파라미터를 읽어 버튼 옆에 현재 모드를 표시하고, force_pi 가 아니면 버튼을 비활성화합니다 (파라미터 미조회 시에는 fail-open — 위 "Force-PI Grasp/Release 버튼 (GUI)" 절). 그 파라미터는 런타임 설정 가능하며 (quiet gate), 같은 절에 조건이 있습니다.
 - **`demo_wbc_controller`**: `grasp_controller_type` 무관 — WBC 는 자체 6-state FSM (slots 2 & 5 reserved) 으로 GraspCommand 를 직접 처리 (lifecycle.cpp 의 `grasp_command_srv_`). GRASP 명령은 `kApproach` 진입, RELEASE 는 어떤 비-terminal phase 에서도 `kRelease` 로 즉시 preempt (Approach/Closure/Hold 중 GUI 로 RELEASE 누르면 즉시 반응). phase 표시기가 WbcPhase enum 라벨로 갱신됩니다.
 
 phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC publisher 인지에 따라 `GRASP_PHASE_NAMES` (6 상태) 또는 `WBC_PHASE_NAMES` (8 슬롯, 6 reachable — slot 2 PRE-GRASP / slot 5 RETREAT 는 deprecated reserved) 라벨 표를 자동 선택합니다 — 두 publisher 가 GUI 에 동시에 구독되지만 active 한 쪽만 발행하므로 자동 분기.

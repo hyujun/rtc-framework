@@ -162,6 +162,31 @@ void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
 [[nodiscard]] const char* GraspCommandRejectReason(GraspHandMode mode,
                                                    bool has_controller) noexcept;
 
+/// What a controller can tell the quiet gate about its hand right now. Every
+/// field is observable off the RT thread without racing it: the two mirrors are
+/// atomics the RT tick stores, and `has_controller` is fixed at configure time.
+struct GraspModeSwitchState {
+  bool has_controller{false};   ///< a force_pi_grasp block was configured
+  bool contact_latched{false};  ///< contact_stop hold engaged (RT mirror)
+  bool grasp_phase_idle{true};  ///< PI FSM at kIdle (true when there is no FSM)
+};
+
+/// Why a runtime `grasp_controller_type` change must be refused right now, or
+/// nullptr to accept. Never allocates; the returned string is a literal.
+///
+/// Policy (confirmed 2026-07-30): the mode may only move while the hand is
+/// QUIET. The rejected alternative was "always allow + auto-safe", which needs
+/// more RT code and turns a missing re-seed into the hazard itself. Quiet also
+/// buys something else: leaving force_pi is only possible at kIdle, so the PI
+/// diagnostics left in the published GraspState are an idle-consistent setpoint
+/// rather than a stale mid-grasp state — which is why nothing clears them.
+///
+/// A request for the mode already in force is never refused: it changes nothing,
+/// so refusing it would make an idempotent set fail while an object is held.
+[[nodiscard]] const char* GraspModeChangeRejectReason(GraspHandMode current,
+                                                      GraspHandMode requested,
+                                                      const GraspModeSwitchState& state) noexcept;
+
 // Build (or reset) the PullForceEstimator based on `cfg` (#167). Resets to
 // nullptr unless a pull_estimator block was provided and `enabled` is true.
 // Overwrites sample_rate_hz with `control_rate_hz` (YAML never sets it) and

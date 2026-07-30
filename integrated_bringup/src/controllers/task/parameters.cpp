@@ -60,14 +60,14 @@ void DemoTaskController::DeclareGainParameters() noexcept {
     }
     return node_->get_parameter(name).as_int();
   };
-  auto declare_string_ro = [&](const std::string& name, const std::string& default_val,
-                               const std::string& description) {
+  auto declare_string = [&](const std::string& name, const std::string& default_val,
+                            const std::string& description) {
     rcl_interfaces::msg::ParameterDescriptor d;
     d.description = description;
-    d.read_only = true;
     if (!node_->has_parameter(name)) {
-      (void)node_->declare_parameter<std::string>(name, default_val, d);
+      return node_->declare_parameter<std::string>(name, default_val, d);
     }
+    return node_->get_parameter(name).as_string();
   };
 
   // CLIK gains
@@ -131,16 +131,32 @@ void DemoTaskController::DeclareGainParameters() noexcept {
       static_cast<int>(declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
                                    "Min fingertips with contact for grasp detection"));
 
-  // Display-only mirror of the hand grasp mode LoadConfig already resolved from
-  // demo_shared.yaml. Unlike the read-only velocity caps above there is NO
-  // reverse assignment (param -> g.grasp_hand_mode): the parameter exists so a
-  // client can *see* which mode is running, and a reverse path is the only way
-  // the two could ever disagree. Changing the mode is a YAML + restart
-  // operation; rclcpp rejects `ros2 param set` on a read_only parameter, so
-  // OnGainParametersSet needs no case for this name.
-  declare_string_ro("grasp_controller_type", GraspHandModeName(g.grasp_hand_mode),
-                    "Active hand grasp mode: 'contact_stop' | 'force_pi' | 'none' "
-                    "(read-only; set via demo_shared.yaml)");
+  // WRITABLE as of B-4b (was read-only, display-only). The default is the mode
+  // LoadConfig resolved from demo_shared.yaml, and the returned value is assigned
+  // back like every other gain here — so a launch-time override wins over the
+  // YAML, which is the same precedence the rest of this function has. An override
+  // outside the whitelist throws out of ParseGraspHandMode on the non-RT
+  // on_configure path and becomes CallbackReturn::FAILURE, exactly as a bad
+  // demo_shared.yaml value does.
+  //
+  // The parse is wrapped because THIS FUNCTION IS noexcept: an unwhitelisted
+  // launch override would otherwise leave ParseGraspHandMode throwing out of a
+  // noexcept frame, i.e. std::terminate. There is no way to fail the lifecycle
+  // transition from here (void return), so the honest fallback is to keep the
+  // value demo_shared.yaml already validated and say so loudly. A bad value in
+  // the YAML itself still fails on_configure, as before.
+  const std::string requested_mode =
+      declare_string("grasp_controller_type", GraspHandModeName(g.grasp_hand_mode),
+                     "Active hand grasp mode: 'contact_stop' | 'force_pi' | 'none'. "
+                     "Runtime-settable while the hand is quiet (no contact_stop latch, "
+                     "no force_pi grasp in progress); otherwise the set is refused "
+                     "with a reason.");
+  try {
+    g.grasp_hand_mode = ParseGraspHandMode(requested_mode);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "grasp_controller_type override rejected (%s); keeping '%s'", e.what(),
+                 GraspHandModeName(g.grasp_hand_mode));
+  }
 
   gains_lock_.Store(g);
 }
@@ -225,6 +241,36 @@ rcl_interfaces::msg::SetParametersResult DemoTaskController::OnGainParametersSet
         gains_dirty = true;
       } else if (name == "grasp_min_fingertips") {
         g.grasp_min_fingertips = static_cast<int>(p.as_int());
+        gains_dirty = true;
+      } else if (name == "grasp_controller_type") {
+        // Whitelist first. p.as_string() throwing is a genuine type error and
+        // belongs to the outer catch; an off-whitelist STRING is a different
+        // mistake and deserves its own reason rather than a "type error" prefix.
+        GraspHandMode requested{};
+        try {
+          requested = ParseGraspHandMode(p.as_string());
+        } catch (const std::runtime_error& e) {
+          result.successful = false;
+          result.reason = e.what();
+          return result;
+        }
+        // Quiet gate. Both inputs come from RT-written atomics, never from the
+        // RT-owned originals — see the mirrors on the controller. The check is
+        // inherently a tick behind and cannot stop the RT thread, which is why
+        // ComputeSecondary carries the re-seed race closure for the window
+        // between this decision and the Store below.
+        if (const char* why = GraspModeChangeRejectReason(
+                g.grasp_hand_mode, requested,
+                {/*has_controller=*/grasp_controller_ != nullptr,
+                 /*contact_latched=*/contact_latched_pub_.load(std::memory_order_acquire),
+                 /*grasp_phase_idle=*/grasp_phase_pub_.load(std::memory_order_acquire) ==
+                     static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle)});
+            why != nullptr) {
+          result.successful = false;
+          result.reason = why;
+          return result;
+        }
+        g.grasp_hand_mode = requested;
         gains_dirty = true;
       }
       // Unknown parameter names are silently allowed — other callbacks

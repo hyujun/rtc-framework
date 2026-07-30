@@ -176,7 +176,11 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
               resp->message = "GRASP requires target_force > 0";
               return;
             }
-            const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
+            // The mirror, not phase(): the FSM is mutated by Update() on the RT
+            // tick, so a direct read here races it. Tick-old is exactly right for
+            // "the phase before this command" — the command has not been applied.
+            const auto phase_before =
+                static_cast<unsigned>(grasp_phase_pub_.load(std::memory_order_acquire));
             grasp_controller_->CommandGrasp(req->target_force);
             RCLCPP_INFO(logger_, "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
                         req->target_force, GraspHandModeName(gains_lock_.Load().grasp_hand_mode),
@@ -184,7 +188,8 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
             resp->ok = true;
             resp->message = "grasp started @ " + std::to_string(req->target_force) + " N";
           } else if (req->command == Req::RELEASE) {
-            const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
+            const auto phase_before =
+                static_cast<unsigned>(grasp_phase_pub_.load(std::memory_order_acquire));
             grasp_controller_->CommandRelease();
             RCLCPP_INFO(logger_, "[grasp_command] RELEASE type=%s phase_before=%u",
                         GraspHandModeName(gains_lock_.Load().grasp_hand_mode), phase_before);

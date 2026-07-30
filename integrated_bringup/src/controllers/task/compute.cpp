@@ -808,6 +808,10 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
       // Phase-transition log: rare event (gated by phase change), but still
       // throttled as a defensive RT-safety net in case the FSM oscillates.
       const auto cur_phase = static_cast<uint8_t>(grasp_controller_->phase());
+      // Mirror for the non-RT quiet gate (rationale on the member). Stored here
+      // rather than beside the latch mirror because this is the only place the
+      // FSM is stepped, so it is the only place the value can have changed.
+      grasp_phase_pub_.store(cur_phase, std::memory_order_release);
       if (cur_phase != prev_grasp_phase_) {
         RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                              "[force_pi] phase %u -> %u target_force=%.2fN", prev_grasp_phase_,

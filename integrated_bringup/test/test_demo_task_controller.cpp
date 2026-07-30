@@ -1091,6 +1091,26 @@ TEST_F(TaskContactStopWithPiBuiltTest, LatchMirrorTracksTheLatchForTheQuietGate)
   EXPECT_FALSE(ctrl_->GetContactLatchedMirrorForTesting());
 }
 
+// The gate's OTHER input, and the one that would otherwise go unverified until a
+// live robot: the FSM phase. GraspController::Update() mutates the FSM on the RT
+// tick, so the callback reads a mirror instead of phase() — and a mirror that never
+// leaves 0 is indistinguishable from an idle hand, which is exactly the state the
+// gate treats as "safe to switch".
+TEST_F(TaskForcePiBuiltTest, PhaseMirrorLeavesIdleOnceAGraspIsCommanded) {
+  ASSERT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0)) << "fixture built no PI controller";
+  // CommandGrasp only arms the transition; the FSM steps inside Update(), which
+  // only the force_pi branch calls — so the mirror can only move via a tick.
+  PrimeContact();
+  RunTicks(5, /*feedback_hand=*/false);
+
+  EXPECT_NE(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "the quiet gate would admit a mode change mid-grasp";
+}
+
 // The race the quiet gate cannot close by itself: the callback checks the mirror,
 // contact engages, and only then does the mode Store land. The tick that observes
 // the new mode stops running the hold, and hand_computed_ falls back to a

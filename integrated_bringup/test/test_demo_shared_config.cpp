@@ -21,6 +21,7 @@ using integrated_bringup::DemoSharedConfig;
 using integrated_bringup::GraspCommandRejectReason;
 using integrated_bringup::GraspHandMode;
 using integrated_bringup::GraspHandModeName;
+using integrated_bringup::GraspModeChangeRejectReason;
 using integrated_bringup::VirtualTcpMode;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -465,6 +466,95 @@ TEST(GraspCommandRejectReasonTest, MissingControllerIsRefusedInEveryMode) {
                  GraspCommandRejectReason(GraspHandMode::kForcePi, /*has_controller=*/false))
         << GraspHandModeName(mode);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Runtime grasp-mode change: the quiet gate (B-4b)
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+constexpr integrated_bringup::GraspModeSwitchState kQuiet{
+    /*has_controller=*/true, /*contact_latched=*/false, /*grasp_phase_idle=*/true};
+}  // namespace
+
+// The policy: the mode may only move while the hand is quiet.
+TEST(GraspModeChangeRejectReasonTest, QuietHandWithTheCapabilityIsAdmitted) {
+  EXPECT_EQ(
+      GraspModeChangeRejectReason(GraspHandMode::kContactStop, GraspHandMode::kForcePi, kQuiet),
+      nullptr);
+  EXPECT_EQ(
+      GraspModeChangeRejectReason(GraspHandMode::kForcePi, GraspHandMode::kContactStop, kQuiet),
+      nullptr);
+  EXPECT_EQ(GraspModeChangeRejectReason(GraspHandMode::kForcePi, GraspHandMode::kNone, kQuiet),
+            nullptr);
+}
+
+// A request for the mode already in force must be admitted even when the hand is
+// as un-quiet as it gets. It changes nothing, so refusing it would make an
+// idempotent set fail while an object is held — including the confirming re-send a
+// GUI does against what it is already displaying.
+TEST(GraspModeChangeRejectReasonTest, NoOpRequestIsNeverRefused) {
+  const integrated_bringup::GraspModeSwitchState busy{
+      /*has_controller=*/true, /*contact_latched=*/true, /*grasp_phase_idle=*/false};
+  for (auto mode : {GraspHandMode::kContactStop, GraspHandMode::kForcePi, GraspHandMode::kNone}) {
+    EXPECT_EQ(GraspModeChangeRejectReason(mode, mode, busy), nullptr) << GraspHandModeName(mode);
+  }
+  // Including with no controller at all — a config running "none" without a block
+  // must still be able to re-assert "none".
+  EXPECT_EQ(GraspModeChangeRejectReason(GraspHandMode::kNone, GraspHandMode::kNone,
+                                        {/*has_controller=*/false, true, false}),
+            nullptr);
+}
+
+// Each refusal has to be distinguishable: the three have different fixes (edit the
+// YAML / open the hand / finish the grasp) and this string is all the operator gets.
+TEST(GraspModeChangeRejectReasonTest, EveryRefusalNamesItsOwnCause) {
+  const char* no_block = GraspModeChangeRejectReason(
+      GraspHandMode::kContactStop, GraspHandMode::kForcePi,
+      {/*has_controller=*/false, /*contact_latched=*/false, /*grasp_phase_idle=*/true});
+  const char* latched = GraspModeChangeRejectReason(
+      GraspHandMode::kContactStop, GraspHandMode::kForcePi,
+      {/*has_controller=*/true, /*contact_latched=*/true, /*grasp_phase_idle=*/true});
+  const char* grasping = GraspModeChangeRejectReason(
+      GraspHandMode::kForcePi, GraspHandMode::kContactStop,
+      {/*has_controller=*/true, /*contact_latched=*/false, /*grasp_phase_idle=*/false});
+
+  ASSERT_NE(no_block, nullptr);
+  ASSERT_NE(latched, nullptr);
+  ASSERT_NE(grasping, nullptr);
+  EXPECT_STRNE(no_block, latched);
+  EXPECT_STRNE(no_block, grasping);
+  EXPECT_STRNE(latched, grasping);
+}
+
+// Capability before policy, same order as the command gate: a force_pi request
+// with no block reports the missing block even when the hand is also busy, because
+// waiting will not fix that one.
+TEST(GraspModeChangeRejectReasonTest, MissingCapabilityOutranksTheQuietChecks) {
+  const char* both = GraspModeChangeRejectReason(
+      GraspHandMode::kContactStop, GraspHandMode::kForcePi,
+      {/*has_controller=*/false, /*contact_latched=*/true, /*grasp_phase_idle=*/false});
+  const char* capability_only = GraspModeChangeRejectReason(
+      GraspHandMode::kContactStop, GraspHandMode::kForcePi,
+      {/*has_controller=*/false, /*contact_latched=*/false, /*grasp_phase_idle=*/true});
+  ASSERT_NE(both, nullptr);
+  EXPECT_STREQ(both, capability_only);
+}
+
+// Leaving force_pi is gated on the FSM being idle even with no contact latch, and
+// entering a mode that needs no capability is still gated on the latch. Neither
+// quiet term is redundant.
+TEST(GraspModeChangeRejectReasonTest, BothQuietTermsGateIndependently) {
+  // Latch only.
+  EXPECT_NE(GraspModeChangeRejectReason(
+                GraspHandMode::kContactStop, GraspHandMode::kNone,
+                {/*has_controller=*/true, /*contact_latched=*/true, /*grasp_phase_idle=*/true}),
+            nullptr);
+  // Phase only.
+  EXPECT_NE(GraspModeChangeRejectReason(
+                GraspHandMode::kForcePi, GraspHandMode::kNone,
+                {/*has_controller=*/true, /*contact_latched=*/false, /*grasp_phase_idle=*/false}),
+            nullptr);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
