@@ -7,8 +7,15 @@
 #include <cstddef>
 #include <span>
 
-// ── F5 device-readability gate (issue #236 S7b, contract SSoT: §3.7 of
-//    rtc_controllers/docs/compliance-conventions.md) ─────────────────────────
+// ── F5 device-readability gate (issue #236 S7b) ─────────────────────────────
+//
+// CONTRACT SSoT: §3.7 of rtc_controllers/docs/compliance-conventions.md.
+// That section owns the decision table, the rationale, the counterexamples and
+// the known limits; the comments here state what each function does and why
+// THIS code is shaped the way it is, and point there for the rest. Do not
+// restate the contract in this file — one sentence in two places drifts, and
+// keeping the copies in sync was mistaken for evidence of correctness once
+// already (#297).
 //
 // Every binding that reads ControllerState::devices[0] answers the same
 // question — "is this device usable as the joint state of THIS tick?" — and
@@ -25,15 +32,9 @@
 //   IsDeviceReadable   — may I USE this device at all this tick? The gate.
 //                        Policy: a false answer means emit nothing.
 //
-// Collapsing them is the trap this header exists to close. `min(nc0, nv)`
-// looks like it makes a narrow device safe, and it does not: a loop that
-// scatters into a PERSISTENT buffer (a Pinocchio q vector, a cached full
-// state) leaves every skipped slot holding its previous value — zero on the
-// first tick — so the model runs at a partially-ZERO configuration that is
-// numerically identical to reading the unreported channels directly. The
-// bound removed the crash and kept the hazard. #172's `min(nc0, nv)` is
-// therefore correct AS AN OOB DEFENCE and must not be reverted, but it was
-// never the F5 answer (#265 comment 2 §2).
+// Collapsing them is the trap this header exists to close: a bound removes the
+// crash and keeps the hazard, because skipped slots in a PERSISTENT buffer hold
+// their previous value. Worked example and the pinning tests: §3.7.
 
 namespace rtc {
 
@@ -48,8 +49,8 @@ namespace rtc {
 // happens on correct hardware with a broad state topic, and any loop that
 // indexes a model-sized buffer by `num_channels` reads out of range there.
 //
-// NOT A GATE. See the header comment: a bound alone leaves the skipped slots
-// at their previous value. Pair it with IsDeviceReadable, never replace it.
+// NOT A GATE — a bound alone leaves the skipped slots at their previous value.
+// Pair it with IsDeviceReadable, never replace it (§3.7).
 //
 // Negative inputs clamp to 0 rather than propagating: the result is used as a
 // loop bound and as a std::span length, where a negative int would convert to
@@ -59,25 +60,19 @@ namespace rtc {
 }
 
 // THE GATE. True when `dev` can serve as this tick's joint state for a
-// consumer that needs `model_dim` channels. §3.7's predicate verbatim:
-// `!dev.valid || dev.num_channels < model_dim` is the unreadable case.
+// consumer that needs `model_dim` channels.
 //
 // A false answer has ONE correct response — emit nothing for this device
-// (SilenceDeviceOutput) — because there is no honest substitute for a joint
-// position nobody reported. Do NOT emit `num_channels` zeros instead: that is
-// a REAL 0 command, which on a torque-mode arm is a drop rather than a stop,
-// and on a position lane is "servo to the origin".
+// (SilenceDeviceOutput). Emitting `num_channels` zeros instead is a REAL 0
+// command, which on a torque-mode arm is a drop rather than a stop; §3.7 is
+// where that decision and its alternatives are recorded.
 //
 // NECESSARY, NOT SUFFICIENT (issue #265 decision D1-a → issue #284). A true
-// answer does NOT prove that slots [0, num_channels) were written this tick.
-// `num_channels` is the wire length, and with an active reorder map the slots
-// that get written are the MATCHED reference indices — so a message whose
-// names only partly overlap the reference list yields `num_channels >=
-// model_dim` with holes still in it. That counterexample is pinned as
-// intended behaviour by integrated_bringup/test/test_joint_state_reorder.cpp,
-// and narrowing `num_channels` to mean freshness was rejected (#265 decision
-// B) because ValidateControllerOutput already uses the field as an egress
-// bound. Closing the gap needs a new field or a new predicate — issue #284.
+// answer does NOT prove that slots [0, num_channels) were written this tick —
+// with an active reorder map the written slots are the MATCHED reference
+// indices, so holes survive a passing gate. Closing that gap needs a new field
+// or a new predicate and is owned by issue #284; the counterexample and the
+// rejected alternatives are in §3.7.
 //
 // `model_dim <= 0` degrades to a plain validity check, which is what a
 // controller whose runtime DOF is not resolved yet (unit fixtures that bypass
@@ -90,23 +85,15 @@ namespace rtc {
 //
 // Zero-length is "no update" to every shipped backend — each one loops to
 // `min(num_channels, values.size())` and therefore early-returns, leaving the
-// drive on its previous setpoint. It is NOT a safe stop and must not be read
-// as one (rtc_base/devices/device_backend.hpp spells out the same for
-// WriteSafeCommand). It is the honest statement that this controller has
-// nothing to say about this device right now.
+// drive on its previous setpoint. It is NOT a safe stop and must not be read as
+// one (rtc_base/devices/device_backend.hpp spells out the same for
+// WriteSafeCommand).
 //
-// Silences the device THIS gate judged, and only that one. A gate on the
-// primary device does not touch the secondary: a hand does not stop being
-// commandable because the arm's state went missing (§3.7, "secondary
-// passthrough 유지"). Leave the other DeviceOutput entries alone.
-//
-// That is a statement about which GATE, not about which DEVICE may have one
-// (#291). A secondary device judged unreadable against ITS OWN width —
-// IsDeviceReadable(dev1, hand_dof) — is silenced here exactly like the arm,
-// because the hazard is the same one: hand_dof comes from the declared
-// joint_state_names while num_channels is the wire length, so a mismatch reads
-// the unreported fingers back as a finite 0. These predicates are device-
-// agnostic on purpose; nothing here is primary-only.
+// Silences the device THIS gate judged, and only that one — a statement about
+// which GATE, not about which DEVICE may have one (#291). These predicates are
+// device-agnostic on purpose: a secondary judged unreadable against ITS OWN
+// width is silenced here exactly like the arm. Both directions of that
+// asymmetry, and the secondary-axis traps, are in §3.7.
 //
 // Commands already staged in the array are left in place — `num_channels == 0`
 // makes them unreachable, and clearing kMaxDeviceChannels doubles would spend
@@ -122,21 +109,12 @@ inline void SilenceDeviceOutput(DeviceOutput& out) noexcept {
 // The telemetry half of the F5 answer: on a silenced tick the reference lanes
 // say WHERE THE DRIVE IS PARKED, not 0.
 //
-// SilenceDeviceOutput stops the wire, but it does not stop the log. The device
-// state POD copies the output's position-semantics arrays bounded by the
-// DEVICE's num_channels, not the output's (integrated_bringup/logging/
-// pod_fill.hpp), and it carries no field for the emitted width — so a silenced
-// tick that leaves those arrays at their fresh zero is recorded as a row of
-// zeros, which reads exactly like "commanded every joint to the origin". That
-// is the one misreading §3.7 exists to prevent, appearing on the one failure
-// mode this gate is for (a start-up configuration mismatch), in the one place
-// an engineer looks to diagnose it.
-//
-// The controller manager already answers this the same way for its own
-// zero-length case: BuildHoldOutput keeps the position-semantics telemetry
-// position-valued so the GUI/log lanes show where the hold is parked rather
-// than a 0 that would read as a command to the origin
-// (rtc_controller_manager/src/rt_controller_node_rt_loop.cpp).
+// SilenceDeviceOutput stops the wire, but it does not stop the log: the device
+// state POD is bounded by the DEVICE's num_channels, not the output's
+// (integrated_bringup/logging/pod_fill.hpp), so a silenced tick left at fresh
+// zero is recorded as a row of zeros — which reads as "commanded every joint to
+// the origin". Why that misreading is the one worth spending a loop on, and the
+// matching precedent in the controller manager's BuildHoldOutput, are in §3.7.
 //
 // `measured` is THIS tick's device positions, never a stale computed reference,
 // so this does not re-introduce the staleness the gate withholds — the withheld
