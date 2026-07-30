@@ -27,6 +27,22 @@ demo_joint_controller:
     # is ~2.11/(2*pi*fc), so 20 Hz would delay the freeze by ~17 ms out of the
     # 50 ms BT tick this latch covers; 50 Hz costs ~6.7 ms.
     contact_stop_force_lpf_cutoff_hz: 50.0
+    # Delta-spike guard on the raw fingertip force BEFORE the LPF above. The
+    # 260730_1017 session showed 6 samples over 6 N (index/ring fz), each
+    # lasting exactly 2 ticks before returning to ~0.0 N; fed straight into the
+    # filter, one 6.406 N spike left ~0.170 N of filtered tail behind it.
+    # A triplet whose per-axis change from the last accepted sample exceeds this
+    # — or that carries NaN/Inf — is replaced by the last accepted triplet at the
+    # LPF INPUT ONLY. Raw force is untouched (CSV ft_<f>_fx|fy|fz, GraspState,
+    # pull estimator).
+    contact_stop_force_guard_delta_n: 4.0 # N, per-axis |Δ| reject threshold, (0, 1000]
+    # Consecutive hold ticks before a sustained out-of-band raw value is accepted
+    # anyway. Without this cap a genuine fast contact step (|Δ| > 4 N on every
+    # tick) would be rejected forever and contact_stop could never fire. 2 ticks
+    # suppresses the observed spikes in full while costing a real step ~2 ms of
+    # delay against the filter's own ~6.7 ms group delay. NaN/Inf never escape
+    # this cap. 0 disables the delta hold.
+    contact_stop_force_guard_max_hold_ticks: 2 # ticks, [0, 1000]
 
   # ── E-STOP ──────────────────────────────────────────────────────────────────
   # Joint position the E-STOP path drives the arm toward (rad, length = arm DoF).

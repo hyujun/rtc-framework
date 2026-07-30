@@ -57,6 +57,11 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
     num_active_fingertips_ = counts.active;
     num_sensor_fingertips_ = counts.sensor;
 
+    // One SeqLock read for the whole fingertip loop: the force guard's tunables
+    // are the only gains this phase needs, and set_gains() must not change the
+    // threshold mid-loop.
+    const auto gains_now = gains_lock_.Load();
+
     for (std::size_t f = 0; f < static_cast<std::size_t>(num_active_fingertips_); ++f) {
       auto& ft = fingertip_data_[f];
       const std::size_t base = f * kHandSensorValuesPerFingertipCapacity;
@@ -84,7 +89,8 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
         ft.displacement = {};
         ft.force_mag = 0.0f;
       }
-      UpdateFingertipForceFilter(f);
+      UpdateFingertipForceFilter(f, {gains_now.contact_stop_force_guard_delta_n,
+                                     gains_now.contact_stop_force_guard_max_hold_ticks});
     }
   }
 }
@@ -102,14 +108,24 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
 // hand-position filter is gated against) and drop the primed flag so the next
 // valid sample seeds instead of ramping. Outputs go to zero to match raw
 // `ft.force`, which ReadState has already cleared.
-void DemoTaskController::UpdateFingertipForceFilter(std::size_t f) noexcept {
+//
+// The guard is invalidated on that same branch. Keeping its last-accepted
+// triplet across a dropout would compare the re-entry force against a base the
+// world has left behind — a lane that drops at 5 N and returns at 0.2 N is a
+// 4.8 N step, so the guard would hold the stale 5 N and the filter would seed
+// from it (#325 follow-up: that is exactly what the re-entry test pins).
+void DemoTaskController::UpdateFingertipForceFilter(
+    std::size_t f, const FingertipForceGuardConfig& guard_cfg) noexcept {
   const auto& ft = fingertip_data_[f];
   const std::size_t base = f * 3;
   if (!ft.valid) {
     force_lpf_primed_[f] = false;
-    fingertip_force_filt_[base] = 0.0F;
-    fingertip_force_filt_[base + 1] = 0.0F;
-    fingertip_force_filt_[base + 2] = 0.0F;
+    force_guard_[f].Invalidate();
+    force_guard_rejected_[f] = 0;
+    for (std::size_t j = 0; j < 3; ++j) {
+      fingertip_force_filt_[base + j] = 0.0F;
+      fingertip_force_guarded_[base + j] = 0.0F;
+    }
     fingertip_force_mag_filt_[f] = 0.0F;
     return;
   }
@@ -117,12 +133,20 @@ void DemoTaskController::UpdateFingertipForceFilter(std::size_t f) noexcept {
   const std::array<double, 3> raw{static_cast<double>(ft.force[0]),
                                   static_cast<double>(ft.force[1]),
                                   static_cast<double>(ft.force[2])};
+  // Delta-spike guard: the LPF is fed `guarded`, never `raw`. `ft.force` itself
+  // is untouched, so grasp detection, GraspState, the pull estimator and the
+  // CSV raw columns keep the driver's wire value.
+  const auto guarded = force_guard_[f].Apply(raw, guard_cfg);
+  force_guard_rejected_[f] = guarded.rejected ? 1U : 0U;
+  for (std::size_t j = 0; j < 3; ++j) {
+    fingertip_force_guarded_[base + j] = static_cast<float>(guarded.value[j]);
+  }
   if (!force_lpf_primed_[f]) {
     force_lpf_[f].Reset();
-    force_lpf_[f].Seed(raw);
+    force_lpf_[f].Seed(guarded.value);
     force_lpf_primed_[f] = true;
   }
-  const std::array<double, 3> filt = force_lpf_[f].Apply(raw);
+  const std::array<double, 3> filt = force_lpf_[f].Apply(guarded.value);
   for (std::size_t j = 0; j < 3; ++j) {
     fingertip_force_filt_[base + j] = static_cast<float>(filt[j]);
   }

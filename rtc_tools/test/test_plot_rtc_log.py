@@ -1356,14 +1356,17 @@ class TestPullEstimatorRoundTrip:
 
 from rtc_tools.plotting.columns import (  # noqa: E402
     ft_force_col as _ft_force_col,
+    ft_force_guard_rejected_col as _ft_guard_rejected_col,
+    ft_force_guarded_col as _ft_force_guarded_col,
     has_force_only_fingertips as _has_force_only_fingertips,
+    has_ft_force_guard as _has_ft_force_guard,
 )
 from rtc_tools.plotting.plotters.sensors import (  # noqa: E402
     plot_fingertip_force_only_auto as _plot_fingertip_force_only_auto,
 )
 
 
-def _force_only_df(labels=("thumb", "index", "middle", "ring"), n=40, filtered=True):
+def _force_only_df(labels=("thumb", "index", "middle", "ring"), n=40, filtered=True, guard=False):
     """CSV frame for a hand whose sensor_layout.values_per_group is 0.
 
     No `<label>_raw_*` / `<label>_filt_*` block at all — that absence is what
@@ -1379,6 +1382,20 @@ def _force_only_df(labels=("thumb", "index", "middle", "ring"), n=40, filtered=T
                 data[f"ft_{label}_{axis}_filt"] = np.sin(t * (k + 1)) + 0.1 * j
         for axis in ("ux", "uy", "uz"):
             data[f"ft_{label}_{axis}"] = np.zeros(n)
+    if guard:
+        # A 2-tick spike on fz, held out of the filter input — the 260730_1017
+        # p1b shape. Raw keeps the spike; guarded holds the pre-spike value.
+        for label in labels:
+            rejected = np.zeros(n, dtype=int)
+            rejected[5:7] = 1
+            data[f"ft_{label}_force_guard_rejected"] = rejected
+            for axis in ("fx", "fy", "fz"):
+                guarded = data[f"ft_{label}_{axis}"].copy()
+                guarded[5:7] = guarded[4]
+                data[f"ft_{label}_{axis}_guarded"] = guarded
+            raw_fz = data[f"ft_{label}_fz"].copy()
+            raw_fz[5:7] = 6.4
+            data[f"ft_{label}_fz"] = raw_fz
     return pd.DataFrame(data)
 
 
@@ -1406,6 +1423,50 @@ class TestForceOnlyDetection:
         """`ft_thumb_fx_filt` must not be mistaken for a fingertip named
         `thumb_fx` — the raw-force detector matches on the trailing token."""
         assert _detect_ft_labels(_force_only_df(labels=("thumb",))) == ["thumb"]
+
+
+def _collection_labels(ax):
+    """Labels of an axis's collections — `vlines` draws a LineCollection, which
+    does not show up in `get_lines()`."""
+    return [c.get_label() for c in ax.collections]
+
+
+class TestForceGuardColumns:
+    """The guard lane is what makes a session's hold decisions reconstructible.
+
+    Raw and filtered alone cannot separate "the guard held this tick" from "the
+    filter merely lagged", so these columns are the observability contract for
+    the 4 N delta-spike guard.
+    """
+
+    def test_guard_lane_detected_only_when_present(self):
+        assert _has_ft_force_guard(_force_only_df(guard=True))
+        assert not _has_ft_force_guard(_force_only_df())
+
+    def test_guarded_and_verdict_columns_resolve(self):
+        df = _force_only_df(guard=True)
+        assert _ft_force_guarded_col(df, "thumb", "fz") == "ft_thumb_fz_guarded"
+        assert _ft_guard_rejected_col(df, "thumb") == "ft_thumb_force_guard_rejected"
+        assert _ft_force_guarded_col(df, "thumb", "tz") is None
+
+    def test_guard_columns_absent_on_pre_guard_sessions(self):
+        df = _force_only_df()
+        assert _ft_force_guarded_col(df, "thumb", "fz") is None
+        assert _ft_guard_rejected_col(df, "thumb") is None
+
+    def test_guarded_columns_do_not_register_as_extra_ft_labels(self):
+        """`ft_thumb_fz_guarded` must not be read as a fingertip named
+        `thumb_fz`, and must not be picked up as a second raw-force set."""
+        df = _force_only_df(labels=("thumb",), guard=True)
+        assert _detect_ft_labels(df) == ["thumb"]
+        assert _ft_force_col(df, "thumb", "fz") == "ft_thumb_fz"
+
+    def test_raw_column_keeps_the_spike_the_guard_held_out(self):
+        """The guard never launders raw: the CSV's raw column still carries the
+        6.4 N wire spike that the guarded column holds out."""
+        df = _force_only_df(labels=("thumb",), guard=True)
+        assert df["ft_thumb_fz"].max() > 6.0
+        assert df["ft_thumb_fz_guarded"].max() < 6.0
 
 
 class TestPlotFingertipForceOnly:
@@ -1448,6 +1509,61 @@ class TestPlotFingertipForceOnly:
         _plot_fingertip_force_only_auto(_force_only_df(filtered=False), save_dir=str(tmp_path))
         assert (tmp_path / "fingertip_force.png").exists()
         assert "no ft_*_filt columns" in capsys.readouterr().out
+        plt.close("all")
+
+    def test_guard_hold_labels_appear_only_for_guarded_sessions(self, monkeypatch, tmp_path):
+        import matplotlib.pyplot as plt
+
+        captured = {}
+
+        real_subplots = plt.subplots
+
+        def spy(*args, **kwargs):
+            fig, axes = real_subplots(*args, **kwargs)
+            captured["axes"] = axes
+            return fig, axes
+
+        monkeypatch.setattr(plt, "subplots", spy)
+        _plot_fingertip_force_only_auto(
+            _force_only_df(labels=("thumb",), guard=True), save_dir=str(tmp_path)
+        )
+        axes = captured["axes"]
+        left_labels = [ln.get_label() for ln in axes[0, 0].get_lines()]
+        title = axes[0, 0].get_title()
+        assert "guard hold" in left_labels, left_labels
+        # Labelled once per row, not once per axis.
+        assert left_labels.count("guard hold") == 1, left_labels
+        assert "guard-held tick(s)" in title, title
+        # The magnitude panel marks the same ticks, so the two panels cannot
+        # disagree about when the guard fired.
+        assert any("guard hold (n=2)" in str(lbl) for lbl in _collection_labels(axes[0, 1])), (
+            _collection_labels(axes[0, 1])
+        )
+        plt.close("all")
+
+        captured.clear()
+        monkeypatch.setattr(plt, "subplots", spy)
+        _plot_fingertip_force_only_auto(_force_only_df(labels=("thumb",)), save_dir=str(tmp_path))
+        axes = captured["axes"]
+        plain_labels = [ln.get_label() for ln in axes[0, 0].get_lines()]
+        assert "guard hold" not in plain_labels, plain_labels
+        assert "guard-held" not in axes[0, 0].get_title()
+        plt.close("all")
+
+        # Guard lane present but nothing rejected — the overlay must stay off.
+        # guarded == raw on every accepted tick, so drawing it unconditionally
+        # would add three lines exactly on top of the raw traces and a legend
+        # entry that claims something happened.
+        quiet = _force_only_df(labels=("thumb",), guard=True)
+        quiet["ft_thumb_force_guard_rejected"] = 0
+        captured.clear()
+        monkeypatch.setattr(plt, "subplots", spy)
+        _plot_fingertip_force_only_auto(quiet, save_dir=str(tmp_path))
+        axes = captured["axes"]
+        quiet_labels = [ln.get_label() for ln in axes[0, 0].get_lines()]
+        assert "guard hold" not in quiet_labels, quiet_labels
+        assert "guard-held" not in axes[0, 0].get_title()
+        assert not any("guard hold" in str(lbl) for lbl in _collection_labels(axes[0, 1]))
         plt.close("all")
 
     def test_no_labels_is_a_noop(self, tmp_path, capsys):

@@ -75,6 +75,15 @@ def has_ft_force_filtered(df):
     return any(c.startswith("ft_") and c.endswith("_fx_filt") for c in df.columns)
 
 
+def has_ft_force_guard(df):
+    """sensor_log carries the delta-spike guard lane (`ft_*_force_guard_rejected`).
+
+    Sessions recorded before the guard landed have raw + `_filt` only; the
+    guard overlay is skipped for them rather than drawn as all-zero.
+    """
+    return any(c.startswith("ft_") and c.endswith("_force_guard_rejected") for c in df.columns)
+
+
 def has_force_only_fingertips(df):
     """Fingertips report force but carry no barometer/ToF lane.
 

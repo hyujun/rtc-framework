@@ -142,8 +142,9 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 
 | Figure | 레이아웃 | 내용 |
 |--------|---------|------|
-| `fingertip_force.png` | N행(핑거팁) × 2열 | 좌: `Fx/Fy/Fz` raw(옅음) + LPF(진함), 우: `‖F‖` raw + LPF |
+| `fingertip_force.png` | N행(핑거팁) × 2열 | 좌: `Fx/Fy/Fz` raw(옅음) + LPF(진함) + guard hold 구간(파선), 우: `‖F‖` raw + LPF + guard hold tick 표시 |
 
+- **Delta-spike guard 오버레이**: `ft_*_fx_guarded` / `ft_*_force_guard_rejected` 컬럼을 가진 세션에서만 그려집니다. 파선은 guard 가 raw 를 대체한 tick 구간만 (`np.where(rejected, guarded, nan)`) 표시하고, 우측 패널은 같은 tick 을 vline 으로 찍으며 좌측 제목에 hold tick 수를 적습니다 — guarded 는 거부 tick 을 뺀 나머지에서 raw 와 동일하므로 전 구간을 그리면 raw 위에 겹친 선 3개가 될 뿐입니다. guard 이전에 녹화된 세션은 컬럼 부재로 오버레이가 생략됩니다.
 - `‖F‖` 는 컬럼이 아니라 성분에서 계산되며, **필터된 성분의 norm** 입니다 — 즉 컨트롤러가 실제로 임계와 비교하는 값과 같습니다 (`‖F_raw‖` 를 필터한 값이 아님).
 - **확대 동기화**: 시간축은 8개 subplot 전체 공유 (`sharex="all"`), y축은 열 단위 공유 (`sharey="col"`) — 좌측은 부호 있는 성분, 우측은 비음수 크기라 하나로 묶으면 좌측 범위가 낭비됩니다.
 - 확대는 **인터랙티브 백엔드에서만** 가능합니다 — `--show` 가 기본값이므로 그냥 실행하면 됩니다. `--no-show` 를 주면 Agg 로 전환되어 PNG 만 나옵니다.
