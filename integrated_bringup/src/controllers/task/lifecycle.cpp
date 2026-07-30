@@ -101,7 +101,8 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
             {secondary_state_key, {secondary_joint_names_, secondary_motor_names_}},
         },
         {
-            {secondary_sensor_key, secondary_sensor_names_},
+            {secondary_sensor_key,
+             {secondary_sensor_names_, secondary_sensor_values_per_group_}},
         },
         {},                      // wbc_state_logs — WBC controller only
         {},                      // wbc_diag_logs  — WBC controller only

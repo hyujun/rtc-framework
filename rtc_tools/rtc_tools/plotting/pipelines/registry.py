@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from rtc_tools.plotting import plotters
 from rtc_tools.plotting.columns import (
+    has_force_only_fingertips,
     has_motor,
     has_task_goal,
     has_wbc_accel,
@@ -43,6 +44,11 @@ def _state_or(predicate, flag_name):
         return _p(df) or getattr(args, _f, False)
 
     return _gate
+
+
+def _not_force_only(df):
+    """Gate for the barometer/ToF figures — skip when the hand has no such lane."""
+    return not has_force_only_fingertips(df)
 
 
 # Per-tick timing CSVs (cm_timing_log.csv / mpc_timing_log.csv) share the
@@ -111,10 +117,29 @@ PIPELINES: dict[str, list[PlotEntry]] = {
         PlotEntry("motor_velocities", plotters.plot_motor_velocities, available=has_motor),
         PlotEntry("motor_efforts", plotters.plot_motor_efforts, available=has_motor),
     ],
+    # A force-only hand (sensor_layout.values_per_group == 0) has no
+    # barometer/ToF columns at all, so those three figures would each render an
+    # empty axis and `device_ft_output` would spend 3 of its 4 rows on channels
+    # the hardware does not have. `_not_force_only` routes such a session to the
+    # single `fingertip_force` figure instead; a hand WITH the sensor lane is
+    # unaffected and still gets the full set.
     "sensor_log": [
-        PlotEntry("sensor_barometer", plotters.plot_sensor_barometer_combined),
-        PlotEntry("sensor_tof", plotters.plot_sensor_tof_combined),
-        PlotEntry("device_ft_output", plotters.plot_device_ft_output_auto),
+        PlotEntry(
+            "sensor_barometer",
+            plotters.plot_sensor_barometer_combined,
+            available=_not_force_only,
+        ),
+        PlotEntry("sensor_tof", plotters.plot_sensor_tof_combined, available=_not_force_only),
+        PlotEntry(
+            "device_ft_output",
+            plotters.plot_device_ft_output_auto,
+            available=_not_force_only,
+        ),
+        PlotEntry(
+            "fingertip_force",
+            plotters.plot_fingertip_force_only_auto,
+            available=has_force_only_fingertips,
+        ),
         PlotEntry(
             "device_sensor_comparison",
             plotters.plot_device_sensor_comparison_auto,

@@ -108,8 +108,50 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
         ft.contact_flag = 0.0F;
         ft.in_contact = false;
       }
+      UpdateFingertipForceFilter(static_cast<std::size_t>(f));
     }
   }
+}
+
+// ── Per-axis fingertip force LPF ────────────────────────────────────────────
+//
+// Runs from ReadState for every parsed fingertip, on every tick — including
+// E-STOP ticks, where ReadState still decodes real sensor data. Keeping it
+// unconditional is what makes the logged filtered column comparable across
+// runs and keeps the filter warm so the first post-E-STOP contact is judged on
+// a settled signal rather than a ramp.
+//
+// Invalid fingertip: freeze the delay line (do NOT feed the zeroed force — an
+// IIR carries a phantom sample forward for several ticks, the same hazard the
+// hand-position filter is gated against) and drop the primed flag so the next
+// valid sample seeds instead of ramping. Outputs go to zero to match raw
+// `ft.force`, which ReadState has already cleared.
+void DemoJointController::UpdateFingertipForceFilter(std::size_t f) noexcept {
+  const auto& ft = fingertip_data_[f];
+  const std::size_t base = f * 3;
+  if (!ft.valid) {
+    force_lpf_primed_[f] = false;
+    fingertip_force_filt_[base] = 0.0F;
+    fingertip_force_filt_[base + 1] = 0.0F;
+    fingertip_force_filt_[base + 2] = 0.0F;
+    fingertip_force_mag_filt_[f] = 0.0F;
+    return;
+  }
+
+  const std::array<double, 3> raw{static_cast<double>(ft.force[0]),
+                                  static_cast<double>(ft.force[1]),
+                                  static_cast<double>(ft.force[2])};
+  if (!force_lpf_primed_[f]) {
+    force_lpf_[f].Reset();
+    force_lpf_[f].Seed(raw);
+    force_lpf_primed_[f] = true;
+  }
+  const std::array<double, 3> filt = force_lpf_[f].Apply(raw);
+  for (std::size_t j = 0; j < 3; ++j) {
+    fingertip_force_filt_[base + j] = static_cast<float>(filt[j]);
+  }
+  fingertip_force_mag_filt_[f] =
+      static_cast<float>(std::sqrt(filt[0] * filt[0] + filt[1] * filt[1] + filt[2] * filt[2]));
 }
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
@@ -430,7 +472,12 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
           }
         }
 
-        const bool contact_now = (active_count > 0 && max_force > force_thresh);
+        // Filtered aggregates, not the raw ones published on GraspState: this
+        // is the only consumer that acts on a threshold crossing, so a single
+        // noisy sample must not be able to latch a freeze. The published
+        // force_magnitude / max_force stay raw (BT contract unchanged).
+        const bool contact_now =
+            (contact_stop_active_count_ > 0 && contact_stop_max_force_ > force_thresh);
 
         if (release_phase) {
           // User is opening the hand: drop the latch and let the trajectory drive.
@@ -457,11 +504,15 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
             }
             // gate errors (target - actual) encode both the actual position and
             // the overshoot beyond target, enough to diagnose contact_stop engage.
+            // fmax/active are the FILTERED aggregates the branch above actually
+            // read; fmax_raw is carried alongside so a log line still shows how
+            // far the unfiltered signal ran ahead of the decision.
             RCLCPP_INFO_THROTTLE(
                 logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
-                "[contact_stop] %s active=%d fmax=%.2fN "
+                "[contact_stop] %s active=%d fmax=%.2fN fmax_raw=%.2fN "
                 "dgate=[%+.3f,%+.3f,%+.3f]",
-                contact_now ? "FREEZE" : "HOLD", active_count, static_cast<double>(max_force),
+                contact_now ? "FREEZE" : "HOLD", contact_stop_active_count_,
+                static_cast<double>(contact_stop_max_force_), static_cast<double>(max_force),
                 gate_err[0], gate_err[1], gate_err[2]);
           }
         }
@@ -710,10 +761,16 @@ void DemoJointController::FillGraspSensorAggregates(const Gains& gains) noexcept
   // grasp_contact_threshold is consulted only on sensor A paths there.
   float max_force = 0.0F;
   int active_count = 0;
+  // Same reduction over the LPF'd magnitudes. Computed here rather than in the
+  // contact_stop block so both aggregates come out of one pass over the same
+  // per-fingertip validity decisions and cannot drift apart.
+  float max_force_filt = 0.0F;
+  int active_count_filt = 0;
   for (int f = 0; f < num_active_fingertips_; ++f) {
     const auto idx = static_cast<std::size_t>(f);
     const auto& ft = fingertip_data_[idx];
     const float mag = ft.force_mag;  // cached in ReadState
+    const float mag_filt = fingertip_force_mag_filt_[idx];
 
     grasp_state_.force_magnitude[idx] = mag;
     // contact_flag publish policy: sensor A path → native probability so
@@ -730,7 +787,24 @@ void DemoJointController::FillGraspSensorAggregates(const Gains& gains) noexcept
     if (ft.in_contact) {
       ++active_count;
     }
+    if (mag_filt > max_force_filt) {
+      max_force_filt = mag_filt;
+    }
+    // ft.in_contact is ReadState's raw-force verdict, so the filtered count has
+    // to re-run that decision here. contact_flag is untouched by the force LPF
+    // (separate native lane) and ReadState already zeroes it off the native
+    // path, so only the force term differs between the two counts.
+    const bool native_path = has_native_contact_ && ft.valid;
+    const bool force_active_filt = ft.valid && (mag_filt > gains.grasp_force_threshold);
+    const bool active_filt =
+        native_path ? (ft.contact_flag > gains.grasp_contact_threshold && force_active_filt)
+                    : force_active_filt;
+    if (active_filt) {
+      ++active_count_filt;
+    }
   }
+  contact_stop_max_force_ = max_force_filt;
+  contact_stop_active_count_ = active_count_filt;
   grasp_state_.num_fingertips = num_active_fingertips_;
   grasp_state_.num_active_contacts = active_count;
   grasp_state_.max_force = max_force;

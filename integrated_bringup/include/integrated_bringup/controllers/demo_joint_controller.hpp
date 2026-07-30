@@ -98,6 +98,12 @@ class DemoJointController final : public RTControllerInterface {
     // Trajectory / grasp FSM tuning
     double contact_stop_release_eps{0.005};   ///< Hand contact-stop release hysteresis [rad]
     double contact_stop_lpf_cutoff_hz{20.0};  ///< Bessel LPF cutoff for latched hold [Hz]
+    /// Bessel LPF cutoff for the per-axis fingertip force that contact_stop
+    /// thresholds [Hz]. Higher than the hold-position cutoff on purpose: a 4th
+    /// order Bessel's DC group delay is ~2.11/(2*pi*fc), so the 20 Hz used for
+    /// position would delay the freeze by ~17 ms — a third of the 50 ms BT tick
+    /// this latch exists to cover. 50 Hz costs ~6.7 ms instead.
+    double contact_stop_force_lpf_cutoff_hz{50.0};
   };
 
   explicit DemoJointController(std::string_view urdf_path);
@@ -143,6 +149,19 @@ class DemoJointController final : public RTControllerInterface {
   // these accessors (RT-7 safe; no behavior change).
   [[nodiscard]] const ::rtc::grasp::GraspStateData& GetGraspStateForTesting() const noexcept {
     return grasp_state_;
+  }
+
+  /// Test-only: the FILTERED contact_stop aggregates. Distinct from
+  /// GetGraspStateForTesting(), whose max_force / num_active_contacts stay raw
+  /// — only these two drive the freeze decision, so a test that reads the
+  /// GraspState cannot tell whether the LPF is wired in at all.
+  struct ContactStopAggregates {
+    float max_force{0.0F};
+    int active_count{0};
+  };
+
+  [[nodiscard]] ContactStopAggregates GetContactStopAggregatesForTesting() const noexcept {
+    return {contact_stop_max_force_, contact_stop_active_count_};
   }
 
   /// Test-only: the body the publish thread would Load right now (#234 P-1).
@@ -218,6 +237,12 @@ class DemoJointController final : public RTControllerInterface {
 
   // ── 3-phase pipeline ────────────────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
+  /// Advance fingertip `f`'s per-axis force LPF from the raw force ReadState
+  /// just parsed, writing fingertip_force_filt_ / fingertip_force_mag_filt_.
+  void UpdateFingertipForceFilter(std::size_t f) noexcept;
+  /// Config-time (throws): Init every per-fingertip force filter and clear the
+  /// derived state. Called from the constructor and from LoadConfig.
+  void InitFingertipForceFilters(double cutoff_hz);
   void ComputeControl(const ControllerState& state, double dt) noexcept;
   // WriteOutput was split into 3 explicit-intent methods. The Compute()
   // dispatcher calls them in this order:
@@ -414,6 +439,33 @@ class DemoJointController final : public RTControllerInterface {
   /// LoadConfig (throws); Apply/Reset are noexcept + heap-free (RT-safe).
   rtc::BesselFilterN<kDemoJointMaxHandDof> hand_pos_filter_;
 
+  // ── Fingertip force LPF (contact_stop decision variable) ─────────────────
+  //
+  // One filter PER FINGERTIP rather than a single BesselFilterN<3*N>: an
+  // invalid fingertip must not advance its own filter, and Apply() is
+  // all-channels-or-nothing. Runs on every tick regardless of
+  // grasp_controller_type so the logged column means the same thing in every
+  // run; force_pi keeps its own separate scalar filter over |F|.
+  //
+  // Per-axis, not on |F|: filtering the magnitude lets zero-mean axis noise
+  // rectify into a positive bias that walks the aggregate toward the contact
+  // threshold with no contact present.
+  std::array<rtc::BesselFilterN<3>, rtc::kMaxSensorGroups> force_lpf_{};
+  /// False until the next valid sample seeds the corresponding filter. Cleared
+  /// whenever a fingertip goes invalid so re-entry seeds to the live force
+  /// instead of ramping up from a delay line the world has left behind.
+  std::array<bool, rtc::kMaxSensorGroups> force_lpf_primed_{};
+  /// LPF output packed [fingertip * 3 + axis] — contiguous because the CSV POD
+  /// fill takes a span. Zero on invalid fingertips, matching raw `ft.force`.
+  std::array<float, 3U * static_cast<std::size_t>(rtc::kMaxSensorGroups)> fingertip_force_filt_{};
+  /// ‖filtered force‖ per fingertip [N].
+  std::array<float, rtc::kMaxSensorGroups> fingertip_force_mag_filt_{};
+  /// contact_stop aggregates derived from the FILTERED magnitudes. Kept apart
+  /// from grasp_state_.max_force / num_active_contacts, which stay raw so the
+  /// published GraspState and its BT consumers see an unchanged contract.
+  float contact_stop_max_force_{0.0F};
+  int contact_stop_active_count_{0};
+
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};
 
@@ -557,6 +609,10 @@ class DemoJointController final : public RTControllerInterface {
   std::vector<std::string> secondary_joint_names_;
   std::vector<std::string> secondary_motor_names_;
   std::vector<std::string> secondary_sensor_names_;
+  /// Hand DeviceSensorLayout stride, cached for the CSV header/row writers. 0
+  /// on a force-only hand → no barometer/ToF columns at all.
+  std::size_t secondary_sensor_values_per_group_{
+      integrated_bringup::DeviceSensorLogPod::kSensorValuesPerFingertip};
 
   rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
   rclcpp::TimerBase::SharedPtr log_drain_timer_;

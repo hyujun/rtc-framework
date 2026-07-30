@@ -1,5 +1,6 @@
 from .detect import (
     BARO_VALUE_COUNT,
+    FORCE_AXES,
     TOF_VALUE_COUNT,
     baro_col,
     detect_fingertip_labels,
@@ -7,6 +8,7 @@ from .detect import (
     detect_ft_labels,
     detect_joint_columns,
     detect_num_channels,
+    ft_force_col,
     has_columns,
     has_motor_columns,
     invalidate_column_cache,
@@ -15,6 +17,8 @@ from .detect import (
 from .views import (
     has_command_type,
     has_fingertip_sensors,
+    has_force_only_fingertips,
+    has_ft_force_filtered,
     has_ft_inference,
     has_joint_goal_gui,
     has_motor,
@@ -29,6 +33,7 @@ from .views import (
 __all__ = [
     # detect
     "BARO_VALUE_COUNT",
+    "FORCE_AXES",
     "TOF_VALUE_COUNT",
     "baro_col",
     "detect_fingertip_labels",
@@ -36,6 +41,7 @@ __all__ = [
     "detect_ft_labels",
     "detect_joint_columns",
     "detect_num_channels",
+    "ft_force_col",
     "has_columns",
     "has_motor_columns",
     "invalidate_column_cache",
@@ -43,6 +49,8 @@ __all__ = [
     # views (predicates for pipeline gating)
     "has_command_type",
     "has_fingertip_sensors",
+    "has_force_only_fingertips",
+    "has_ft_force_filtered",
     "has_ft_inference",
     "has_joint_goal_gui",
     "has_motor",

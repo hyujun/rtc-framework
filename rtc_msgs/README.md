@@ -269,6 +269,8 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | `inference_valid` | `bool` | 추론 출력 유효성 플래그 |
 | `inference_output` | `float32[]` | 추론 결과 (핑거팁당 F/u/contact 값) |
 
+> 이 메시지는 컨트롤러 `logs:` 블록의 `msg_type:` 키로만 쓰이고 실제로 publish 되지는 않습니다. CSV 컬럼 집합의 SSoT 는 `integrated_bringup/logging/device_sensor_log_pod.hpp` 의 POD mirror 이며, 그쪽은 여기 없는 컬럼(LPF 된 축별 힘 등)을 추가로 갖는 **superset** 입니다.
+
 ---
 
 ### `ToFSnapshot.msg`

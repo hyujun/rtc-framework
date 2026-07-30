@@ -15,11 +15,13 @@ import numpy as np
 
 from rtc_tools.plotting.columns import (
     BARO_VALUE_COUNT as _BARO_N,
+    FORCE_AXES as _FORCE_AXES,
     TOF_VALUE_COUNT as _TOF_N,
     baro_col as _baro_col,
     detect_fingertip_labels as _detect_fingertip_labels,
     detect_fingertip_labels_raw as _detect_fingertip_labels_raw,
     detect_ft_labels as _detect_ft_labels,
+    ft_force_col as _ft_force_col,
     tof_col as _tof_col,
 )
 from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
@@ -487,6 +489,112 @@ def plot_sensor_tof_combined(df, save_dir=None):
     plt.close()
 
 
+def plot_fingertip_force_only(df, fingertip_labels, save_dir=None):
+    """Force-only fingertips: N rows (one per fingertip) x 2 columns.
+
+    Left  — Fx / Fy / Fz, raw (faint) overlaid with the LPF'd series (solid).
+    Right — ‖F‖ for the same two, i.e. the quantity contact_stop thresholds.
+
+    For a hand with no barometer/ToF lane the 4-row combined figure
+    (`plot_device_ft_output`) spends 3 of its 4 rows on permanently-zero
+    channels; this is the view that carries signal instead.
+
+    Zoom is synchronised across ALL subplots on the time axis (`sharex="all"`).
+    The y axes are shared per column only: the left panels are signed and the
+    right ones are magnitudes, so one shared y range would waste half of each
+    left panel. Zooming needs the interactive backend, which `plot_rtc_log`
+    uses by default; `--no-show` switches to Agg and writes the PNG only.
+    """
+    labels = fingertip_labels
+    if not labels:
+        print("  Skipping force-only plot (ft_*_fx columns not found)")
+        return
+
+    num_ft = len(labels)
+    fig, axes = plt.subplots(
+        num_ft,
+        2,
+        figsize=(12, 3.2 * num_ft),
+        squeeze=False,
+        sharex="all",
+        sharey="col",
+    )
+    fig.suptitle("Fingertip Force (raw vs LPF)", fontsize=16, fontweight="bold")
+
+    t = df["timestamp"]
+    # One colour per axis, reused across every fingertip row so a given trace
+    # means the same thing everywhere in the figure.
+    axis_colors = {"fx": "C0", "fy": "C1", "fz": "C2"}
+    any_filtered = False
+
+    for f_idx, label in enumerate(labels):
+        ax_v = axes[f_idx, 0]
+        ax_m = axes[f_idx, 1]
+
+        raw_components = {}
+        filt_components = {}
+        for axis in _FORCE_AXES:
+            raw_col = _ft_force_col(df, label, axis)
+            filt_col = _ft_force_col(df, label, axis, filt=True)
+            color = axis_colors[axis]
+            if raw_col is not None:
+                raw_components[axis] = df[raw_col]
+                ax_v.plot(t, df[raw_col], alpha=0.3, linewidth=0.8, color=color)
+            if filt_col is not None:
+                filt_components[axis] = df[filt_col]
+                ax_v.plot(
+                    t,
+                    df[filt_col],
+                    alpha=1.0,
+                    linewidth=1.2,
+                    color=color,
+                    label=axis.upper(),
+                )
+            elif raw_col is not None:
+                # No filtered lane in this CSV — label the raw trace instead so
+                # the legend never comes out empty.
+                ax_v.plot(
+                    t, df[raw_col], alpha=1.0, linewidth=1.2, color=color, label=axis.upper()
+                )
+
+        ax_v.set_title(f"{label} — F (solid=LPF, faint=raw)", fontsize=10)
+        ax_v.set_ylabel("Force (N)")
+        ax_v.legend(fontsize=7, ncol=3)
+        ax_v.grid(True, alpha=0.3)
+
+        # ‖F‖ is derived here rather than read from a column: the CSV carries
+        # the components only. Computed from the filtered components (not by
+        # filtering ‖F_raw‖) so the right panel is exactly the aggregate the
+        # controller thresholds.
+        if len(raw_components) == len(_FORCE_AXES):
+            mag_raw = np.sqrt(sum(np.square(raw_components[a]) for a in _FORCE_AXES))
+            ax_m.plot(t, mag_raw, alpha=0.35, linewidth=0.9, color="C3", label="‖F‖ raw")
+        if len(filt_components) == len(_FORCE_AXES):
+            any_filtered = True
+            mag_filt = np.sqrt(sum(np.square(filt_components[a]) for a in _FORCE_AXES))
+            ax_m.plot(t, mag_filt, alpha=1.0, linewidth=1.4, color="C3", label="‖F‖ LPF")
+
+        ax_m.set_title(f"{label} — ‖F‖", fontsize=10)
+        ax_m.set_ylabel("‖F‖ (N)")
+        ax_m.legend(fontsize=7)
+        ax_m.grid(True, alpha=0.3)
+
+    axes[num_ft - 1, 0].set_xlabel("Time (s)")
+    axes[num_ft - 1, 1].set_xlabel("Time (s)")
+
+    if not any_filtered:
+        print("  Note: no ft_*_filt columns — plotting raw force only")
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / "fingertip_force.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
+    else:
+        plt.show()
+    plt.close()
+
+
 # ── Pipeline adapters ──────────────────────────────────────────────────────
 
 
@@ -498,3 +606,8 @@ def plot_device_ft_output_auto(df, save_dir=None):
 def plot_device_sensor_comparison_auto(df, save_dir=None):
     """Pipeline adapter: detect raw fingertip labels from df, then plot."""
     plot_device_sensor_comparison(df, _detect_fingertip_labels_raw(df), save_dir)
+
+
+def plot_fingertip_force_only_auto(df, save_dir=None):
+    """Pipeline adapter: detect FT labels from df, then plot the force view."""
+    plot_fingertip_force_only(df, _detect_ft_labels(df), save_dir)

@@ -6,12 +6,14 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -99,6 +101,66 @@ TEST(DeviceSensorLogPod, HeaderColumnsMatchRowColumnsFor4Fingertips) {
   const std::string row = row_os.str();
 
   EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+}
+
+// A force-only hand declares values_per_group=0. The barometer/ToF block must
+// then be absent entirely rather than emitted as a permanently-zero column
+// group that reads downstream as a flatlining sensor.
+TEST(DeviceSensorLogPod, ForceOnlyLayoutEmitsNoBaroTofColumns) {
+  const std::vector<std::string> sensor_names{"thumb", "index", "middle", "ring"};
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteDeviceSensorLogHeader(hdr_os, sensor_names, /*values_per_group=*/0);
+  const std::string hdr = hdr_os.str();
+
+  EXPECT_EQ(hdr.find("_raw_"), std::string::npos) << hdr;
+  EXPECT_EQ(hdr.find("_filt_0"), std::string::npos) << hdr;
+  // The inference lane survives; so do the LPF'd force columns.
+  EXPECT_NE(hdr.find("ft_thumb_fx"), std::string::npos) << hdr;
+  EXPECT_NE(hdr.find("ft_thumb_fx_filt"), std::string::npos) << hdr;
+  EXPECT_NE(hdr.find("force_filtered_valid"), std::string::npos) << hdr;
+
+  // 1 timestamp + inference_valid + force_filtered_valid + 4*(7 + 3) = 43 cols.
+  EXPECT_EQ(CountCommas(hdr), 42) << hdr;
+}
+
+TEST(DeviceSensorLogPod, ForceOnlyLayoutHeaderMatchesRow) {
+  const std::vector<std::string> sensor_names{"thumb", "index", "middle", "ring"};
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteDeviceSensorLogHeader(hdr_os, sensor_names, /*values_per_group=*/0);
+
+  integrated_bringup::DeviceSensorLogPod pod{};
+  pod.num_fingertips = static_cast<std::uint8_t>(sensor_names.size());
+  pod.force_filtered_valid = true;
+  std::ostringstream row_os;
+  integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, /*values_per_group=*/0);
+
+  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+      << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
+}
+
+// The valid flag is what separates "this controller has no force LPF" (wbc,
+// empty span) from "the filter output was genuinely 0" — a zero column alone
+// cannot say which.
+TEST(DeviceSensorLogPod, ForceFilteredValidDistinguishesAbsentFilterFromZeroOutput) {
+  rtc::ControllerState state{};
+  state.num_devices = 2;
+  state.devices[1].num_channels = 1;
+  state.devices[1].inference_enable[0] = true;
+
+  const std::array<float, 3> filtered{{1.5F, -2.0F, 0.5F}};
+  integrated_bringup::DeviceSensorLogPod with_filter{};
+  integrated_bringup::FillDeviceSensorLogPod(state, 1, /*num_active_fingertips=*/1, filtered,
+                                             with_filter);
+  EXPECT_TRUE(with_filter.force_filtered_valid);
+  EXPECT_FLOAT_EQ(with_filter.force_filtered[0], 1.5F);
+  EXPECT_FLOAT_EQ(with_filter.force_filtered[1], -2.0F);
+  EXPECT_FLOAT_EQ(with_filter.force_filtered[2], 0.5F);
+
+  integrated_bringup::DeviceSensorLogPod without_filter{};
+  integrated_bringup::FillDeviceSensorLogPod(state, 1, /*num_active_fingertips=*/1, {},
+                                             without_filter);
+  EXPECT_FALSE(without_filter.force_filtered_valid);
+  EXPECT_FLOAT_EQ(without_filter.force_filtered[0], 0.0F);
 }
 
 TEST(DeviceSensorLogPod, RowRespectsRuntimeNumFingertips) {

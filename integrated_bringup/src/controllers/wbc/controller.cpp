@@ -1326,6 +1326,10 @@ void DemoWbcController::OnDeviceConfigsSet() {
     if (const auto layout = GetSensorLayout(secondary_name); layout.has_value()) {
       has_native_contact_ = layout->has_native_contact;
       has_native_displacement_ = layout->has_native_displacement;
+      // 0 on a force-only hand → the CSV writers emit no barometer/ToF block
+      // at all rather than a permanently-zero one.
+      secondary_sensor_values_per_group_ =
+          (layout->values_per_group > 0) ? static_cast<std::size_t>(layout->values_per_group) : 0U;
     }
   }
   RCLCPP_INFO(logger_,
@@ -1415,7 +1419,8 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     // HW telemetry is meaningful during E-STOP).
     if (secondary_sensor_log_handle_) {
       integrated_bringup::DeviceSensorLogPod pod{};
-      FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
+      FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_,
+                             /*force_filtered=*/{}, pod);
       secondary_sensor_log_handle_.Push(pod);
     }
     // #234 P-1: the same rule applied to the *wire* required a store, not a
@@ -1527,7 +1532,8 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   }
   if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};
-    FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
+    FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_,
+                             /*force_filtered=*/{}, pod);
     secondary_sensor_log_handle_.Push(pod);
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,

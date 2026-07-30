@@ -1348,3 +1348,159 @@ class TestPullEstimatorRoundTrip:
         _print_pull_estimator_statistics(df)
         out = capsys.readouterr().out
         assert "index+middle" in out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Force-only fingertip view (hand with no barometer/ToF lane)
+# ═══════════════════════════════════════════════════════════════════════════
+
+from rtc_tools.plotting.columns import (  # noqa: E402
+    ft_force_col as _ft_force_col,
+    has_force_only_fingertips as _has_force_only_fingertips,
+)
+from rtc_tools.plotting.plotters.sensors import (  # noqa: E402
+    plot_fingertip_force_only_auto as _plot_fingertip_force_only_auto,
+)
+
+
+def _force_only_df(labels=("thumb", "index", "middle", "ring"), n=40, filtered=True):
+    """CSV frame for a hand whose sensor_layout.values_per_group is 0.
+
+    No `<label>_raw_*` / `<label>_filt_*` block at all — that absence is what
+    the force-only gate keys on.
+    """
+    t = np.linspace(0.0, 1.0, n)
+    data = {"timestamp": t, "inference_valid": np.ones(n, dtype=int)}
+    for k, label in enumerate(labels):
+        data[f"ft_{label}_contact"] = np.zeros(n)
+        for j, axis in enumerate(("fx", "fy", "fz")):
+            data[f"ft_{label}_{axis}"] = np.sin(t * (k + 1)) + 0.1 * j
+            if filtered:
+                data[f"ft_{label}_{axis}_filt"] = np.sin(t * (k + 1)) + 0.1 * j
+        for axis in ("ux", "uy", "uz"):
+            data[f"ft_{label}_{axis}"] = np.zeros(n)
+    return pd.DataFrame(data)
+
+
+class TestForceOnlyDetection:
+    def test_force_only_frame_is_detected(self):
+        assert _has_force_only_fingertips(_force_only_df())
+
+    def test_frame_with_baro_block_is_not_force_only(self):
+        """A hand that DOES have the sensor lane keeps the barometer figures."""
+        df = _force_only_df()
+        for v in range(11):
+            df[f"thumb_filt_{v}"] = np.zeros(len(df))
+        assert not _has_force_only_fingertips(df)
+
+    def test_frame_without_inference_is_not_force_only(self):
+        assert not _has_force_only_fingertips(pd.DataFrame({"timestamp": [0.0, 1.0]}))
+
+    def test_filtered_column_resolves_separately_from_raw(self):
+        df = _force_only_df()
+        assert _ft_force_col(df, "thumb", "fx") == "ft_thumb_fx"
+        assert _ft_force_col(df, "thumb", "fx", filt=True) == "ft_thumb_fx_filt"
+        assert _ft_force_col(df, "thumb", "tx") is None
+
+    def test_filtered_columns_do_not_register_as_extra_ft_labels(self):
+        """`ft_thumb_fx_filt` must not be mistaken for a fingertip named
+        `thumb_fx` — the raw-force detector matches on the trailing token."""
+        assert _detect_ft_labels(_force_only_df(labels=("thumb",))) == ["thumb"]
+
+
+class TestPlotFingertipForceOnly:
+    def test_renders_one_row_per_fingertip_and_two_columns(self, tmp_path):
+        import matplotlib.pyplot as plt
+
+        df = _force_only_df()
+        _plot_fingertip_force_only_auto(df, save_dir=str(tmp_path))
+        assert (tmp_path / "fingertip_force.png").exists()
+        plt.close("all")
+
+    def test_axes_share_x_globally_and_y_per_column(self, monkeypatch, tmp_path):
+        """Zoom must propagate across every subplot on time, but the signed
+        components and the non-negative magnitude must not share a y range."""
+        import matplotlib.pyplot as plt
+
+        from rtc_tools.plotting.plotters import sensors as _sensors
+
+        # The plotter closes its figure; keep it alive to inspect the axes.
+        monkeypatch.setattr(_sensors.plt, "close", lambda *a, **k: None)
+        _plot_fingertip_force_only_auto(_force_only_df(), save_dir=str(tmp_path))
+
+        axes = plt.gcf().axes
+        assert len(axes) == 8  # 4 fingertips x (components, magnitude)
+
+        x_sibs = axes[0].get_shared_x_axes().get_siblings(axes[0])
+        assert set(map(id, x_sibs)) == set(map(id, axes)), "time axis must be shared by all 8"
+
+        left, right = axes[0], axes[1]
+        y_left = set(map(id, left.get_shared_y_axes().get_siblings(left)))
+        assert id(right) not in y_left, "signed components must not share y with the magnitude"
+        assert id(axes[2]) in y_left, "same column must share y across fingertips"
+
+        plt.close("all")
+
+    def test_renders_without_filtered_columns(self, tmp_path, capsys):
+        """A session recorded before the LPF columns existed still plots."""
+        import matplotlib.pyplot as plt
+
+        _plot_fingertip_force_only_auto(_force_only_df(filtered=False), save_dir=str(tmp_path))
+        assert (tmp_path / "fingertip_force.png").exists()
+        assert "no ft_*_filt columns" in capsys.readouterr().out
+        plt.close("all")
+
+    def test_no_labels_is_a_noop(self, tmp_path, capsys):
+        import matplotlib.pyplot as plt
+
+        _plot_fingertip_force_only_auto(pd.DataFrame({"timestamp": [0.0]}), save_dir=str(tmp_path))
+        assert not (tmp_path / "fingertip_force.png").exists()
+        assert "Skipping force-only plot" in capsys.readouterr().out
+        plt.close("all")
+
+
+class TestRegistryForceOnlyRouting:
+    def test_force_only_selects_force_figure_and_skips_baro_tof(self):
+        from rtc_tools.plotting.pipelines.registry import PIPELINES
+
+        df = _force_only_df()
+        fired = {e.name for e in PIPELINES["sensor_log"] if e.flag is None and e.available(df)}
+        assert fired == {"fingertip_force"}
+
+    def test_hand_with_sensor_lane_keeps_the_original_figures(self):
+        from rtc_tools.plotting.pipelines.registry import PIPELINES
+
+        df = _force_only_df()
+        for label in ("thumb", "index", "middle", "ring"):
+            for v in range(11):
+                df[f"{label}_filt_{v}"] = np.zeros(len(df))
+        fired = {e.name for e in PIPELINES["sensor_log"] if e.flag is None and e.available(df)}
+        assert fired == {"sensor_barometer", "sensor_tof", "device_ft_output"}
+
+
+class TestNarrowRowWarning:
+    def test_row_narrower_than_header_warns_but_loads(self, tmp_path, capsys):
+        """The DeviceSensorLog writer legitimately emits short rows when the
+        device reported no fingertips; pandas NaN-fills them silently, so the
+        loader has to say so."""
+        path = tmp_path / "p_sensor.csv"
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["t_relative_s", "inference_valid", "ft_thumb_fx"])
+            w.writerow([0.0, 0])
+            w.writerow([0.002, 0])
+
+        df = load_log_csv(str(path), "sensor_log")
+        assert len(df) == 2
+        assert df["ft_thumb_fx"].isna().all()
+        assert "narrower than its header" in capsys.readouterr().out
+
+    def test_full_width_rows_do_not_warn(self, tmp_path, capsys):
+        path = tmp_path / "p_sensor.csv"
+        _write_csv(
+            path,
+            ["t_relative_s", "inference_valid", "ft_thumb_fx"],
+            [[0.0, 1, 0.5], [0.002, 1, 0.6]],
+        )
+        load_log_csv(str(path), "sensor_log")
+        assert "narrower than its header" not in capsys.readouterr().out
