@@ -60,6 +60,15 @@ void DemoTaskController::DeclareGainParameters() noexcept {
     }
     return node_->get_parameter(name).as_int();
   };
+  auto declare_string_ro = [&](const std::string& name, const std::string& default_val,
+                               const std::string& description) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    d.read_only = true;
+    if (!node_->has_parameter(name)) {
+      (void)node_->declare_parameter<std::string>(name, default_val, d);
+    }
+  };
 
   // CLIK gains
   const auto kp_t = declare_double_array(
@@ -121,6 +130,17 @@ void DemoTaskController::DeclareGainParameters() noexcept {
   g.grasp_min_fingertips =
       static_cast<int>(declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
                                    "Min fingertips with contact for grasp detection"));
+
+  // Display-only mirror of the hand grasp mode LoadConfig already resolved from
+  // demo_shared.yaml. Unlike the read-only velocity caps above there is NO
+  // reverse assignment (param -> grasp_hand_mode_): the parameter exists so a
+  // client can *see* which mode is running, and a reverse path is the only way
+  // the two could ever disagree. Changing the mode is a YAML + restart
+  // operation; rclcpp rejects `ros2 param set` on a read_only parameter, so
+  // OnGainParametersSet needs no case for this name.
+  declare_string_ro("grasp_controller_type", GraspHandModeName(grasp_hand_mode_),
+                    "Active hand grasp mode: 'contact_stop' | 'force_pi' | 'none' "
+                    "(read-only; set via demo_shared.yaml)");
 
   gains_lock_.Store(g);
 }

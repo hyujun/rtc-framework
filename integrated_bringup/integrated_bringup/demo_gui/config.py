@@ -13,6 +13,8 @@ Public surface (imported by app.py):
 - TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
 - DUAL_TARGET_SPACE, target_panel_states
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
+- GRASP_MODE_PARAM, GRASP_MODE_UNKNOWN, GRASP_MODE_OWNERS,
+  grasp_command_enabled, grasp_mode_fg
 - _DEFAULT_PRESETS, default_presets_for, preset_hand_targets, _resolve_preset_path
 - GAIN_DEFS, GAIN_ROW_NAMES, GAIN_PARAM_DISPATCH,
   GAIN_GROUP_LAYOUT, GAIN_GROUP_PARENT_GRASP, GROUP_SCALARS_PER_ROW
@@ -126,6 +128,65 @@ WBC_PHASE_NAMES = {
     6: ("RELEASE", "#f38ba8", "#1e1e2e"),
     7: ("FALLBACK", "#f9e2af", "#1e1e2e"),
 }
+
+# ── Hand grasp mode (read-only mirror of demo_shared.yaml) ────────────────
+# The demo joint/task controllers declare `grasp_controller_type` as a
+# read-only string parameter seeded from the YAML value LoadConfig resolved
+# (integrated_bringup/src/controllers/{joint,task}/parameters.cpp). It is a
+# configure-time decision: controller switching is activate/deactivate only,
+# with no re-configure, so the value never changes while the CM lives.
+GRASP_MODE_PARAM = "grasp_controller_type"
+GRASP_MODE_FORCE_PI = "force_pi"
+
+# Sentinel for "not fetched yet / fetch failed". Deliberately not one of the
+# whitelist values so it can never be mistaken for a real mode.
+GRASP_MODE_UNKNOWN = ""
+
+# Controllers that declare the parameter. demo_wbc_controller does NOT: it runs
+# its own 6-state WbcPhase FSM and handles GraspCommand directly (lifecycle.cpp
+# grasp_command_srv_), so its Grasp/Release work regardless of the mode.
+GRASP_MODE_OWNERS = frozenset({"demo_joint_controller", "demo_task_controller"})
+
+
+def grasp_command_enabled(ctrl: str, mode: str) -> tuple[bool, str]:
+    """Return ``(buttons_enabled, status_text)`` for the Grasp tab.
+
+    The Grasp/Release buttons drive the controller's ``~/grasp_command`` srv,
+    which only reaches a GraspController when the controller was configured
+    with ``grasp_controller_type: "force_pi"``. In the other modes the srv
+    replies with a rejection and the hand does nothing, so the buttons are
+    disabled and the reason is put on screen instead of a fixed hint that is
+    wrong in the common case.
+
+    Fail-open on ``GRASP_MODE_UNKNOWN``: an unreachable parameter service says
+    nothing about what the controller would accept, and the GUI must not become
+    a second gate that blocks a command the controller would have honoured. The
+    controller already answers with a precise reason when it will not act.
+    """
+    if ctrl not in GRASP_MODE_OWNERS:
+        # WBC (or any future controller with its own grasp path) — no parameter
+        # to consult, and the mode does not gate its srv.
+        return True, "own grasp FSM (grasp_controller_type 무관)"
+    if mode == GRASP_MODE_UNKNOWN:
+        return True, "mode: unknown (parameter service unreachable)"
+    if mode == GRASP_MODE_FORCE_PI:
+        return True, f"mode: {mode}"
+    return False, f"mode: {mode} — Grasp/Release 는 force_pi 에서만 동작"
+
+
+# Status-label colours keyed by the same three cases as grasp_command_enabled.
+GRASP_MODE_FG_ACTIVE = "#a6e3a1"  # force_pi / own-FSM — commands will act
+GRASP_MODE_FG_BLOCKED = "#f9e2af"  # contact_stop / none — commands are inert
+GRASP_MODE_FG_UNKNOWN = "#9399b2"  # not fetched / service down
+
+
+def grasp_mode_fg(ctrl: str, mode: str) -> str:
+    """Foreground colour for the Grasp tab's mode label."""
+    if ctrl in GRASP_MODE_OWNERS and mode == GRASP_MODE_UNKNOWN:
+        return GRASP_MODE_FG_UNKNOWN
+    enabled, _ = grasp_command_enabled(ctrl, mode)
+    return GRASP_MODE_FG_ACTIVE if enabled else GRASP_MODE_FG_BLOCKED
+
 
 # Default hand presets (positions in degrees for readability, converted to rad
 # at runtime). Two rosters keyed by hand DoF — a preset's positions_deg length

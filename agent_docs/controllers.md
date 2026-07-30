@@ -152,6 +152,8 @@ edge를 기다리지 않는 live command. (FSM 의 hold/non-hold 판정은 hand 
 
 Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`). Whitelist `{force_pi, contact_stop, none}` — `none` disables all hand intervention (trajectory passes through) while GraspState aggregation/publishing continues; any other string fails `on_configure`.
 
+Configure-time only: joint/task controllers mirror the resolved mode as a **read-only** `grasp_controller_type` ROS parameter (display for the demo GUI's Grasp/Release gate); `ros2 param set` is rejected, and controller switching never re-configures, so changing it means editing YAML and restarting.
+
 **FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
 
 PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/include/.../grasp_types.hpp` 가 SSoT — controller-specific YAML 로 override 가능.
