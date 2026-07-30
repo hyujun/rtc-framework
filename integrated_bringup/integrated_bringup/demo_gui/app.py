@@ -12,6 +12,10 @@ their own modules.
                        in each demo's source file). Read-only caps
                        (*_max_traj_velocity) are skipped on Apply.
 - Force-PI grasp     → /<active>/grasp_command srv (rtc_msgs/GraspCommand)
+- Grasp mode         → `grasp_controller_type` parameter, read back for the
+                       Grasp tab readout and writable via Set Mode; the
+                       controller refuses the switch unless the hand is quiet
+                       and the reason is shown verbatim
 - E-STOP status      → /system/estop_status (subscribe)
 - Robot/hand target  → /<active>/<group>/joint_goal (RobotTarget pub); the arm
                        and hand group names come from the active controller's
@@ -65,10 +69,13 @@ from .config import (
     GAIN_GROUP_PARENT_GRASP,
     GAIN_PARAM_DISPATCH,
     GAIN_ROW_NAMES,
+    GRASP_MODE_FG_ACTIVE,
+    GRASP_MODE_FG_BLOCKED,
     GRASP_MODE_FG_UNKNOWN,
     GRASP_MODE_OWNERS,
     GRASP_MODE_PARAM,
     GRASP_MODE_UNKNOWN,
+    GRASP_MODES,
     GRASP_PHASE_NAMES,
     GROUP_SCALARS_PER_ROW,
     HAND_TAUFF_GROUP,
@@ -167,13 +174,26 @@ class DemoControllerGUI(Node):
         self._param_clients: dict[str, AsyncParameterClient] = {}
         self._grasp_clients: dict[str, rclpy.client.Client] = {}
 
-        # config_key -> the controller's `grasp_controller_type` (read-only
-        # param). Cached because it is a configure-time constant: switching
-        # controllers only activates/deactivates them, never re-configures, so
-        # one successful read holds for the CM's lifetime. A *failed* read is
-        # never cached, which is what makes the fetch retry after a CM restart
-        # or a query issued before the controller finished configuring.
+        # config_key -> the controller's `grasp_controller_type`. Cached to keep
+        # the 5 s catalog poll and every radio click off the parameter service;
+        # controller switching only activates/deactivates, never re-configures,
+        # so nothing changes this value except a `set_parameters` — and the one
+        # writer the GUI knows about is its own Set Mode button, which drops the
+        # entry and re-reads (_after_grasp_mode_set). A mode set from elsewhere
+        # (`ros2 param set`) is therefore not observed until the next
+        # invalidation; the readout can lag, and the controller — not this
+        # cache — is what gates the command.
+        # A *failed* read is never cached, which is what makes the fetch retry
+        # after a CM restart or a query issued before the controller finished
+        # configuring.
         self._grasp_modes: dict[str, str] = {}
+
+        # (config_key, mode) last seeded into the Grasp tab's mode combobox.
+        # The combobox is a *request* widget: it is seeded from the live mode
+        # when that changes (or when the selection moves to another controller)
+        # and otherwise left alone, so the 5 s poll cannot wipe a pick the
+        # operator has made but not yet applied.
+        self._grasp_mode_seeded: tuple[str, str] | None = None
 
         # Sensor calibration (Control tab). The driver namespaces these under the
         # hand device group (/<hand_group>/calibration/*), so derive the prefix
@@ -790,7 +810,8 @@ class DemoControllerGUI(Node):
         future.add_done_callback(_on_done)
 
     def _apply_grasp_mode(self, ctrl: str, mode: str) -> None:
-        """Paint the Grasp tab's mode label + button state. Tk thread only.
+        """Paint the Grasp tab's mode readout, button state and mode combobox.
+        Tk thread only.
 
         Late callbacks are dropped: a fetch for a controller the user has since
         navigated away from must not repaint the label with a mode that does
@@ -807,6 +828,116 @@ class DemoControllerGUI(Node):
         state = "normal" if enabled else "disabled"
         self._grasp_btn.config(state=state)
         self._release_btn.config(state=state)
+
+        # The switch widgets follow whether the controller *has* the parameter,
+        # which is a different question from whether Grasp/Release would act:
+        # contact_stop disables the buttons above and is exactly the state you
+        # switch out of, so gating the combobox on `enabled` would lock the
+        # operator into the mode they want to leave. WBC has no parameter at
+        # all, so there the widgets are dead.
+        is_owner = ctrl in GRASP_MODE_OWNERS
+        self._grasp_mode_combo.config(state="readonly" if is_owner else "disabled")
+        self._grasp_mode_apply_btn.config(state="normal" if is_owner else "disabled")
+
+        # Seed the request widget from the live mode only when that mode (or the
+        # selected controller) has changed — the 5 s catalog poll lands here with
+        # an unchanged mode and must not discard a pick the operator has made
+        # but not yet applied. An off-whitelist value (a controller newer than
+        # this GUI) blanks the box rather than proposing a mode we cannot name.
+        seeded = (ctrl, mode)
+        if self._grasp_mode_seeded != seeded:
+            self._grasp_mode_seeded = seeded
+            self._grasp_mode_combo.set(mode if mode in GRASP_MODES else GRASP_MODE_UNKNOWN)
+
+    def _send_grasp_mode(self) -> None:
+        """Ask the selected controller to switch `grasp_controller_type`.
+
+        The controller only accepts this while the hand is quiet (no
+        contact_stop latch, no force_pi grasp in progress). A refusal comes back
+        as SetParametersResult.reason and is shown verbatim — it is the only
+        thing that tells the operator whether to open the hand or to release the
+        PI grasp first, and inventing a friendlier sentence here would decouple
+        the GUI from the gate it is reporting on.
+        """
+        ctrl = self.selected_ctrl.get()
+        requested = self._grasp_mode_combo.get()
+
+        if ctrl not in GRASP_MODE_OWNERS:
+            self._set_grasp_mode_result(f"/{ctrl} does not declare {GRASP_MODE_PARAM}", ok=False)
+            return
+        if requested not in GRASP_MODES:
+            # Blank box: the live mode has not been read yet, so there is
+            # nothing to send and no default worth guessing.
+            self._set_grasp_mode_result("select a mode first", ok=False)
+            return
+
+        client = self._get_param_client(ctrl)
+        if not client.wait_for_services(timeout_sec=1.0):
+            self._set_grasp_mode_result(f"parameter services for /{ctrl} unavailable", ok=False)
+            return
+
+        future = client.set_parameters_atomically(
+            [Parameter(name=GRASP_MODE_PARAM, type_=Parameter.Type.STRING, value=requested)]
+        )
+        self._set_grasp_mode_result(f"setting {requested} …", ok=None)
+
+        def _on_set_done(fut):
+            try:
+                resp = fut.result()
+            except Exception as exc:  # noqa: BLE001 — surfaced in the label
+                self.get_logger().error(f"{GRASP_MODE_PARAM} set exception: {exc}")
+                self.root.after(0, self._set_grasp_mode_result, f"set failed: {exc}", False)
+                return
+            # set_parameters_atomically answers with a single SetParametersResult.
+            result = resp.result
+            self.root.after(
+                0,
+                self._after_grasp_mode_set,
+                ctrl,
+                requested,
+                bool(result.successful),
+                str(result.reason),
+            )
+
+        future.add_done_callback(_on_set_done)
+
+    def _after_grasp_mode_set(self, ctrl: str, requested: str, ok: bool, reason: str) -> None:
+        """Report the outcome and re-read the mode. Tk thread only.
+
+        The cache is dropped on *both* outcomes, and the re-read is what paints
+        the label. On success that is the difference between showing the mode
+        the controller confirmed and showing the one the GUI asked for. On a
+        refusal it matters too: the gate decided against the controller's
+        current mode, which is not necessarily the one this cache holds.
+
+        Invalidate and refetch in the same Tk callback so no catalog poll can
+        slip in between and re-cache the stale value it just read.
+        """
+        if ok:
+            self._set_grasp_mode_result(f"{GRASP_MODE_PARAM} → {requested}", ok=True)
+            self.get_logger().info(f"/{ctrl} {GRASP_MODE_PARAM} set to {requested}")
+        else:
+            self._set_grasp_mode_result(f"refused: {reason}", ok=False)
+            self.get_logger().warn(f"/{ctrl} {GRASP_MODE_PARAM}={requested} refused: {reason}")
+
+        self._grasp_modes.pop(ctrl, None)
+        self._refresh_grasp_mode(ctrl)
+
+    def _set_grasp_mode_result(self, text: str, ok: bool | None) -> None:
+        """Write the mode-switch outcome line. Tk thread only.
+
+        ``ok=None`` is the in-flight state, which gets the unknown colour rather
+        than the accepted one: a request that has left the GUI is not a switch
+        that happened.
+        """
+        if not hasattr(self, "_grasp_mode_result_var"):
+            return  # Grasp tab not built yet (startup ordering)
+        self._grasp_mode_result_var.set(text)
+        if ok is None:
+            fg = GRASP_MODE_FG_UNKNOWN
+        else:
+            fg = GRASP_MODE_FG_ACTIVE if ok else GRASP_MODE_FG_BLOCKED
+        self._grasp_mode_result_label.config(fg=fg)
 
     def _schedule_refresh(self):
         """Periodic GUI refresh scheduled on the Tk event loop (thread-safe)."""
@@ -2002,12 +2133,12 @@ class DemoControllerGUI(Node):
 
         # Live mode readout, replacing the fixed "requires force_pi in YAML"
         # hint this used to carry. That hint was right about the rule and
-        # useless about the run: the buttons only reach a GraspController when
-        # the selected controller was configured with
-        # grasp_controller_type: "force_pi", and until the controllers exposed
-        # that as a read-only parameter the GUI could not tell the operator
-        # which side of the rule they were on. _apply_grasp_mode fills this in
-        # (and disables the buttons) per selected controller.
+        # useless about the run: the buttons only reach a GraspController while
+        # the selected controller is running grasp_controller_type: "force_pi",
+        # and until the controllers exposed that as a parameter the GUI could
+        # not tell the operator which side of the rule they were on.
+        # _apply_grasp_mode fills this in (and disables the buttons) per
+        # selected controller.
         self._grasp_mode_var = tk.StringVar(value="mode: …")
         self._grasp_mode_label = tk.Label(
             cmd_frame,
@@ -2017,6 +2148,44 @@ class DemoControllerGUI(Node):
             font=("Segoe UI", 7, "italic"),
         )
         self._grasp_mode_label.pack(side="left", padx=(12, 0))
+
+        # Mode switch row. The mode is writable at runtime, but only while the
+        # hand is quiet — the controller refuses the set otherwise and hands
+        # back the reason, which lands verbatim in _grasp_mode_result_var. That
+        # result gets its own label rather than sharing the readout above: the
+        # catalog poll repaints the readout every 5 s and would wipe the one
+        # sentence explaining why nothing happened.
+        mode_frame = tk.Frame(fp_frame, bg="#1e1e2e")
+        mode_frame.pack(fill="x", padx=4, pady=(2, 0))
+
+        tk.Label(
+            mode_frame, text="Grasp mode:", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)
+        ).pack(side="left", padx=(0, 2))
+        self._grasp_mode_combo = ttk.Combobox(
+            mode_frame, values=list(GRASP_MODES), width=12, state="readonly"
+        )
+        # Deliberately blank: seeded from the controller's live mode by
+        # _apply_grasp_mode, so an empty box means "not read yet" instead of
+        # asserting a mode the GUI has not seen.
+        self._grasp_mode_combo.set(GRASP_MODE_UNKNOWN)
+        self._grasp_mode_combo.pack(side="left", padx=2)
+        self._grasp_mode_apply_btn = ttk.Button(
+            mode_frame, text="Set Mode", command=self._send_grasp_mode
+        )
+        self._grasp_mode_apply_btn.pack(side="left", padx=4)
+
+        self._grasp_mode_result_var = tk.StringVar(value="")
+        self._grasp_mode_result_label = tk.Label(
+            mode_frame,
+            textvariable=self._grasp_mode_result_var,
+            bg="#1e1e2e",
+            fg=GRASP_MODE_FG_UNKNOWN,
+            font=("Segoe UI", 7),
+            anchor="w",
+            justify="left",
+            wraplength=420,
+        )
+        self._grasp_mode_result_label.pack(side="left", padx=(8, 0), fill="x", expand=True)
 
         # ── Sensor Calibration ─────────────────────────────────────────
         # Triggers recalibration of hand sensors via /<hand_group>/calibration/command.

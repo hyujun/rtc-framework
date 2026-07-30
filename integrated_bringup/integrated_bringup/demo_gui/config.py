@@ -13,7 +13,7 @@ Public surface (imported by app.py):
 - TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
 - DUAL_TARGET_SPACE, target_panel_states
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
-- GRASP_MODE_PARAM, GRASP_MODE_UNKNOWN, GRASP_MODE_OWNERS,
+- GRASP_MODE_PARAM, GRASP_MODE_UNKNOWN, GRASP_MODE_OWNERS, GRASP_MODES,
   grasp_command_enabled, grasp_mode_fg
 - _DEFAULT_PRESETS, default_presets_for, preset_hand_targets, _resolve_preset_path
 - GAIN_DEFS, GAIN_ROW_NAMES, GAIN_PARAM_DISPATCH,
@@ -129,18 +129,29 @@ WBC_PHASE_NAMES = {
     7: ("FALLBACK", "#f9e2af", "#1e1e2e"),
 }
 
-# ── Hand grasp mode (read-only mirror of demo_shared.yaml) ────────────────
-# The demo joint/task controllers declare `grasp_controller_type` as a
-# read-only string parameter seeded from the YAML value LoadConfig resolved
-# (integrated_bringup/src/controllers/{joint,task}/parameters.cpp). It is a
-# configure-time decision: controller switching is activate/deactivate only,
-# with no re-configure, so the value never changes while the CM lives.
+# ── Hand grasp mode (live mirror of the controller's active mode) ──────────
+# The demo joint/task controllers declare `grasp_controller_type` as a string
+# parameter seeded from the YAML value LoadConfig resolved
+# (integrated_bringup/src/controllers/{joint,task}/parameters.cpp). It is
+# *writable at runtime*: the controller accepts a change while the hand is
+# quiet (no contact_stop latch, no force_pi grasp in progress) and otherwise
+# refuses it with a reason. So this is a live value, not a configure-time
+# constant — the GUI reads it back after every set attempt rather than
+# assuming the mode it asked for.
 GRASP_MODE_PARAM = "grasp_controller_type"
 GRASP_MODE_FORCE_PI = "force_pi"
 
 # Sentinel for "not fetched yet / fetch failed". Deliberately not one of the
 # whitelist values so it can never be mistaken for a real mode.
 GRASP_MODE_UNKNOWN = ""
+
+# The modes the controller accepts, in enum-declaration order. SSoT is
+# `ParseGraspHandMode` (integrated_bringup/src/support/demo_shared_config.cpp);
+# kept literal here so a GUI that offered a mode the controller has never heard
+# of would show up as a rejected set rather than agreeing with itself. An
+# off-whitelist request is refused by the controller with its own reason, which
+# makes this list a convenience for the operator, not a second gate.
+GRASP_MODES = ("contact_stop", GRASP_MODE_FORCE_PI, "none")
 
 # Controllers that declare the parameter. demo_wbc_controller does NOT: it runs
 # its own 6-state WbcPhase FSM and handles GraspCommand directly (lifecycle.cpp
@@ -152,8 +163,8 @@ def grasp_command_enabled(ctrl: str, mode: str) -> tuple[bool, str]:
     """Return ``(buttons_enabled, status_text)`` for the Grasp tab.
 
     The Grasp/Release buttons drive the controller's ``~/grasp_command`` srv,
-    which only reaches a GraspController when the controller was configured
-    with ``grasp_controller_type: "force_pi"``. In the other modes the srv
+    which only reaches the hand while the controller is *running*
+    ``grasp_controller_type: "force_pi"``. In the other modes the srv
     replies with a rejection and the hand does nothing, so the buttons are
     disabled and the reason is put on screen instead of a fixed hint that is
     wrong in the common case.
