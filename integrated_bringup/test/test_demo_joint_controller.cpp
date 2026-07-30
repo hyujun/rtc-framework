@@ -521,6 +521,38 @@ TEST_F(JointContactStopWithPiBuiltTest, SwitchingAwayWhileLatchedDoesNotSnapBack
 // only be set while the hold is the law, and the closure drops it on the way out,
 // so "latched while contact_stop is the law again" cannot be constructed. It is
 // defence-in-depth, like the WARN.)
+// The edge must not be consumed by a tick that cannot run the closure. E-STOP is
+// the one tick shaped like that: Compute() early-returns before the hand lane, so
+// a mode change landing there is observed by nobody — and if the edge is computed
+// (and the cache advanced) ahead of that gate, the NEXT tick sees no edge either
+// and the closure is skipped for a switch that really did happen. The joint
+// controller is structurally immune (edge and closure are both locals of
+// ComputeControl, which E-STOP never reaches); this pins that, so a future hoist
+// of the comparison out of the hand lane cannot silently reintroduce it. The task
+// controller had exactly that hoist.
+TEST_F(JointContactStopWithPiBuiltTest, EstopTickDoesNotSwallowTheModeEdge) {
+  PrimeHandMotion(ctrl_, state_);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+  ASSERT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4) << "fixture never latched";
+  ASSERT_TRUE(ctrl_.GetContactLatchedMirrorForTesting());
+
+  // The switch lands while the E-STOP owns the wire, then the E-STOP clears.
+  ctrl_.TriggerEstop();
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kForcePi;
+  ctrl_.set_gains(g);
+  (void)RunHandTicks(ctrl_, state_, 1);
+  ctrl_.ClearEstop();
+
+  out = RunHandTicks(ctrl_, state_, 1);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-3)
+      << "the E-STOP tick ate the edge — first live tick snapped back";
+  out = RunHandTicks(ctrl_, state_, 300);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-3);
+  EXPECT_NEAR(out.devices[1].goal_positions[0], kHandStart, 1e-3) << "goal never re-seeded";
+  EXPECT_FALSE(ctrl_.GetContactLatchedMirrorForTesting());
+}
+
 TEST_F(JointContactStopWithPiBuiltTest, QuietSwitchKeepsTheOperatorsGoal) {
   // No contact anywhere, so the latch never engages.
   for (int i = 0; i < 10; ++i) {

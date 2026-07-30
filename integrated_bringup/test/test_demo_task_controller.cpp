@@ -1138,6 +1138,37 @@ TEST_F(TaskContactStopWithPiBuiltTest, SwitchingAwayWhileLatchedDoesNotSnapBackT
   EXPECT_FALSE(ctrl_->GetContactLatchedMirrorForTesting());
 }
 
+// The regression this controller actually had: the mode comparison was hoisted
+// into Compute(), beside the tick's single gains Load and therefore AHEAD of the
+// `!estop_active_` gate on ComputeSecondary — while the closure that is the edge's
+// only consumer sits behind it. A switch landing on an E-STOP tick advanced the
+// cache with nobody to act on it, and the next live tick saw no edge: the hold
+// stopped and the hand resumed a trajectory still aimed at the pre-contact goal.
+// The justification in the header was itself false (FillLogOutput E-STOP-early-
+// returns, so it never reads the cache on those ticks). Same test on the joint
+// controller keeps the pair symmetric.
+TEST_F(TaskContactStopWithPiBuiltTest, EstopTickDoesNotSwallowTheModeEdge) {
+  PrimeContact();
+  auto out = RunTicks(300, /*feedback_hand=*/false);
+  ASSERT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4) << "fixture never latched";
+  ASSERT_TRUE(ctrl_->GetContactLatchedMirrorForTesting());
+
+  ctrl_->TriggerEstop();
+  auto g = ctrl_->get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kForcePi;
+  ctrl_->set_gains(g);
+  (void)RunTicks(1, /*feedback_hand=*/false);
+  ctrl_->ClearEstop();
+
+  out = RunTicks(1, /*feedback_hand=*/false);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-3)
+      << "the E-STOP tick ate the edge — first live tick snapped back";
+  out = RunTicks(300, /*feedback_hand=*/false);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-3);
+  EXPECT_NEAR(out.devices[1].goal_positions[0], kHandStart, 1e-3) << "goal never re-seeded";
+  EXPECT_FALSE(ctrl_->GetContactLatchedMirrorForTesting());
+}
+
 // The reachable half of the closure's guard: on a QUIET switch — the normal path,
 // the one the gate admits — the closure must stay out of the way. Keyed on the
 // mode edge alone it would discard the operator's pending target every time.

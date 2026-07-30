@@ -675,6 +675,16 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
                                           const Gains& gains) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ComputeSecondary");
 
+  // The grasp mode this hand lane runs under, cached for the output fills (which
+  // have no Gains of their own) and compared for the race closure below. Both
+  // live on this side of Compute()'s `!estop_active_` gate on purpose: an E-STOP
+  // tick must not consume the edge that the closure is the only consumer of.
+  // Tick 1 can report a spurious edge (the member starts at kContactStop while
+  // the config may say otherwise); the only consumer is latch-gated and the latch
+  // cannot be set before a tick has run, so that edge is unreachable in practice.
+  const bool grasp_mode_changed = gains.grasp_hand_mode != grasp_hand_mode_cached_;
+  grasp_hand_mode_cached_ = gains.grasp_hand_mode;
+
   // ── Hand motor trajectory ──────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
@@ -766,7 +776,7 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
     //
     // WARN, not INFO: a quiet gate that works means this never fires, so the
     // message appearing at all is the signal that the gate has a hole.
-    if (grasp_mode_changed_ && contact_latched_ && !run_contact_stop) {
+    if (grasp_mode_changed && contact_latched_ && !run_contact_stop) {
       trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State hold_state;
       for (int i = 0; i < hand_dof_; ++i) {
         const auto idx = static_cast<std::size_t>(i);

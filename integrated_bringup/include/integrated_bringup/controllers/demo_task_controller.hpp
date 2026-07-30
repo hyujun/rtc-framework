@@ -673,19 +673,18 @@ class DemoTaskController final : public RTControllerInterface {
   // The mode itself lives in Gains (see Gains::grasp_hand_mode) — this is the
   // RT-thread-only cache of the value THIS tick runs under, so FillLogOutput can
   // gate the Force-PI diagnostics on it without a second Gains SeqLock copy.
-  // Sibling of control_6dof_cached_ above, with one difference that matters:
-  // it is written in Compute() beside the tick's single gains Load, before the
-  // `!estop_active_` gate on ComputeSecondary — FillLogOutput runs on E-STOP
-  // ticks here too, and would otherwise read a value from an earlier tick. The
-  // reason to cache rather than re-Load is not the copy: re-Loading would let a
-  // mode write that landed mid-tick make the log describe a law that did not run.
+  // Sibling of control_6dof_cached_ above. Written at the top of
+  // ComputeSecondary, i.e. INSIDE Compute()'s `!estop_active_` gate, which is
+  // also where the mode edge is compared and consumed (the closure is the edge's
+  // only consumer, so the two must not straddle that gate — hoisting the write
+  // into Compute() is what let an E-STOP tick swallow a mode change). Both
+  // consumers of the cache — the closure here and FillLogOutput's Force-PI
+  // diagnostics — run only on the same non-E-STOP ticks: FillLogOutput
+  // E-STOP-early-returns before reading it, so it can never see an earlier
+  // tick's value. The reason to cache rather than re-Load is not the copy:
+  // re-Loading would let a mode write that landed mid-tick make the log describe
+  // a law that did not run.
   GraspHandMode grasp_hand_mode_cached_{GraspHandMode::kContactStop};
-  /// Did the mode change on THIS tick? A member rather than a local because the
-  /// edge is detected in Compute() (beside the single gains Load) and consumed in
-  /// ComputeSecondary()'s race closure. The joint controller keeps the same value
-  /// as a local — there the Load and the closure sit in one function.
-  /// RT-thread-only, valid for the tick that set it.
-  bool grasp_mode_changed_{false};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
 
   // ── In-plane pull-force estimator (#167) ──────────────────────────────────

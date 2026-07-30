@@ -396,16 +396,12 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // One gains snapshot for the whole tick (SeqLock: torn-read-free), shared by
   // the arm stage and the hand stage so the two halves cannot disagree.
   const auto gains = gains_lock_.Load();
-  // The grasp mode rides that snapshot; cache it here — not inside
-  // ComputeSecondary — because FillLogOutput reads it on E-STOP ticks too, and
-  // ComputeSecondary is gated off on those (rationale on the member). The edge
-  // for ComputeSecondary's race closure is read off the same comparison, so no
-  // second copy of the mode is needed. Tick 1 can report a spurious edge (the
-  // member starts at kContactStop while the config may say otherwise); the only
-  // consumer is latch-gated and the latch cannot be set before a tick has run,
-  // so that edge is unreachable in practice.
-  grasp_mode_changed_ = gains.grasp_hand_mode != grasp_hand_mode_cached_;
-  grasp_hand_mode_cached_ = gains.grasp_hand_mode;
+  // The grasp mode rides that snapshot, but it is cached at the top of
+  // ComputeSecondary — the same side of the `!estop_active_` gate as the closure
+  // that consumes the edge. Caching it here instead is what let an E-STOP tick
+  // swallow a mode change: the edge was computed and the cache advanced on a
+  // tick whose ComputeSecondary never ran, so the closure saw no edge on the
+  // next one either.
   ComputeControl(state, dt, gains);
   // Secondary (hand) lane — outside the arm stage's F5 gate (§3.7 "secondary
   // passthrough 유지", see ComputeSecondary's header comment) but NOT outside
