@@ -222,6 +222,9 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
 
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
+  // The grasp mode rides that same snapshot; cache it for the output fills,
+  // which have no Gains of their own (rationale on the member).
+  grasp_hand_mode_cached_ = gains.grasp_hand_mode;
   const auto& dev0 = state.devices[0];
 
   // ── Robot arm trajectory ────────────────────────────────────────────────
@@ -384,13 +387,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     // inside rclcpp logging macros is acceptable at this interval.
     RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
                          "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
-                         GraspHandModeName(grasp_hand_mode_), active_count, num_active_fingertips_,
-                         static_cast<double>(max_force), static_cast<double>(force_thresh),
+                         GraspHandModeName(gains.grasp_hand_mode), active_count,
+                         num_active_fingertips_, static_cast<double>(max_force),
+                         static_cast<double>(force_thresh),
                          grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
 
     // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary
     // freeze)
-    if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
+    if (grasp_controller_ && gains.grasp_hand_mode == GraspHandMode::kForcePi) {
       // Build force input: one force magnitude per grasp finger.
       std::array<double, rtc::grasp::kMaxGraspFingers> f_raw{};
       for (int f = 0; f < num_grasp_fingers_; ++f) {
@@ -424,7 +428,7 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
           }
         }
       }
-    } else if (grasp_hand_mode_ != GraspHandMode::kNone) {
+    } else if (gains.grasp_hand_mode != GraspHandMode::kNone) {
       // grasp_controller_type=="none": no hand intervention — trajectory output
       // passes through untouched.  GraspState aggregation/publishing below is
       // unaffected (BT IsGrasped/IsForceAbove still observe contact).  The
@@ -750,7 +754,9 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
     }
   }
 
-  if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
+  // grasp_hand_mode_cached_, not a fresh Load: this publishes what the control
+  // law produced, so it must agree with the branch ComputeControl took.
+  if (grasp_controller_ && grasp_hand_mode_cached_ == GraspHandMode::kForcePi) {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
     grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
     const auto fs = grasp_controller_->finger_states();

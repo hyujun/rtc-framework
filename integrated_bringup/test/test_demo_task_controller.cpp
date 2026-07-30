@@ -704,6 +704,26 @@ TEST_F(TaskContactStopTest, ContactFreezesHandAtMeasuredPosition) {
   EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4);
 }
 
+// The mode reaches the RT tick through the Gains SeqLock snapshot, not a plain
+// member (B-1 RT handoff): the tick loads Gains once, so the mode and the
+// thresholds it is read against can never be observed half-applied. This drives
+// the branch through the PUBLIC gains path only, away from the kContactStop
+// default — asking for contact_stop would prove nothing, since that is what an
+// ignored Gains field leaves behind anyway.
+TEST_F(TaskContactStopTest, GraspModeTravelsThroughTheGainsSnapshot) {
+  auto g = ctrl_->get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kNone;
+  ctrl_->set_gains(g);
+
+  PrimeContact();
+  auto out = RunTicks(300, /*feedback_hand=*/false);
+
+  // Contact is observed either way — a tick that ignored the Gains field would
+  // freeze the hand at 0.3 instead of driving it toward the 0.8 goal.
+  ASSERT_TRUE(ctrl_->GetGraspStateForTesting().grasp_detected);
+  EXPECT_GT(out.devices[1].commands[0], 0.5);
+}
+
 // Latch: after contact drops (object slips) the hold persists — the command
 // must NOT snap to the goal-advanced trajectory.
 TEST_F(TaskContactStopTest, LatchHoldsAfterContactLost) {
@@ -1383,6 +1403,21 @@ fsm:
 TEST(TaskControllerLoadConfigTest, MinimalYamlLoads) {
   DemoTaskController ctrl{"", DemoTaskController::Gains{}};
   EXPECT_NO_THROW(ctrl.LoadConfig(MinimalValidYaml()));
+}
+
+// The grasp mode rides the Gains snapshot (B-1 RT handoff), so LoadConfig has to
+// resolve it BEFORE the Store it shares with every other gain — assigned after,
+// the value lands in a local nothing reads again and the RT tick silently runs
+// the default law. Only a non-default YAML value can tell those apart: both the
+// Gains default and the shared-config default are contact_stop. Sister pin to
+// JointControllerLoadConfigTest.GraspControllerTypeReachesGains — the ordering is
+// written out once per controller, so it needs a copy per controller.
+TEST(TaskControllerLoadConfigTest, GraspControllerTypeReachesGains) {
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  auto cfg = MinimalValidYaml();
+  cfg["grasp_controller_type"] = "none";
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+  EXPECT_EQ(ctrl.get_gains().grasp_hand_mode, integrated_bringup::GraspHandMode::kNone);
 }
 
 // ── #277 / NUM-6: the sixth posture-gain consumer ───────────────────────────

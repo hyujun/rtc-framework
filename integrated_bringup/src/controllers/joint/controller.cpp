@@ -715,10 +715,11 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   g.grasp_contact_threshold = shared.grasp_contact_threshold;
   g.grasp_force_threshold = shared.grasp_force_threshold;
   g.grasp_min_fingertips = shared.grasp_min_fingertips;
-  gains_lock_.Store(g);
   // Already whitelist-validated in ApplyDemoSharedConfig; resolve to the enum
-  // the RT hot path branches on.
-  grasp_hand_mode_ = ParseGraspHandMode(shared.grasp_controller_type);
+  // the RT hot path branches on. Set BEFORE the Store, not after: the mode is a
+  // Gains field now, so a post-Store assignment would be dropped on the floor.
+  g.grasp_hand_mode = ParseGraspHandMode(shared.grasp_controller_type);
+  gains_lock_.Store(g);
   num_grasp_fingers_ = shared.num_grasp_fingers;
   finger_dof_ = shared.finger_dof;
   finger_joint_map_ = shared.hand_finger_joint_map;

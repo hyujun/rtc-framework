@@ -396,6 +396,10 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // One gains snapshot for the whole tick (SeqLock: torn-read-free), shared by
   // the arm stage and the hand stage so the two halves cannot disagree.
   const auto gains = gains_lock_.Load();
+  // The grasp mode rides that snapshot; cache it here — not inside
+  // ComputeSecondary — because FillLogOutput reads it on E-STOP ticks too, and
+  // ComputeSecondary is gated off on those (rationale on the member).
+  grasp_hand_mode_cached_ = gains.grasp_hand_mode;
   ComputeControl(state, dt, gains);
   // Secondary (hand) lane — outside the arm stage's F5 gate (§3.7 "secondary
   // passthrough 유지", see ComputeSecondary's header comment) but NOT outside
@@ -1009,10 +1013,11 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   g.grasp_contact_threshold = shared.grasp_contact_threshold;
   g.grasp_force_threshold = shared.grasp_force_threshold;
   g.grasp_min_fingertips = shared.grasp_min_fingertips;
-  gains_lock_.Store(g);
   // Already whitelist-validated in ApplyDemoSharedConfig; resolve to the enum
-  // the RT hot path branches on.
-  grasp_hand_mode_ = ParseGraspHandMode(shared.grasp_controller_type);
+  // the RT hot path branches on. Set BEFORE the Store, not after: the mode is a
+  // Gains field now, so a post-Store assignment would be dropped on the floor.
+  g.grasp_hand_mode = ParseGraspHandMode(shared.grasp_controller_type);
+  gains_lock_.Store(g);
   num_grasp_fingers_ = shared.num_grasp_fingers;
   finger_dof_ = shared.finger_dof;
   finger_joint_map_ = shared.hand_finger_joint_map;

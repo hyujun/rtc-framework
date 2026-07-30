@@ -96,6 +96,17 @@ class DemoJointController final : public RTControllerInterface {
     float grasp_force_threshold{1.0f};    ///< |F| threshold [N] — common
     int grasp_min_fingertips{2};          ///< grasp_detected = active_count ≥ N
 
+    /// Which hand grasp-intervention law runs: contact_stop (binary freeze),
+    /// force_pi (adaptive PI) or none (trajectory passthrough). Resolved from
+    /// the whitelisted `grasp_controller_type` string once in LoadConfig so the
+    /// RT hot path branches on an enum instead of comparing a std::string.
+    ///
+    /// It rides the Gains snapshot rather than a plain member because the mode
+    /// and the thresholds it is interpreted with have to reach the RT tick in
+    /// ONE SeqLock body — the tick loads Gains once and branches on this field,
+    /// so a write can never be observed half-applied against a stale threshold.
+    GraspHandMode grasp_hand_mode{GraspHandMode::kContactStop};
+
     // Trajectory / grasp FSM tuning
     double contact_stop_release_eps{0.005};   ///< Hand contact-stop release hysteresis [rad]
     double contact_stop_lpf_cutoff_hz{20.0};  ///< Bessel LPF cutoff for latched hold [Hz]
@@ -197,11 +208,15 @@ class DemoJointController final : public RTControllerInterface {
     return tof_snapshot_;
   }
 
-  /// Test-only: override the grasp_hand_mode_ that LoadConfig would set from
+  /// Test-only: override the grasp mode that LoadConfig would set from
   /// demo_shared.yaml, so the "none" no-op / contact_stop branches can be
   /// exercised without a full YAML load. Accepts the same whitelisted strings.
+  /// Same contract as before the mode moved into Gains — only the storage
+  /// changed, so it now read-modify-stores the gains snapshot.
   void SetGraspControllerTypeForTesting(std::string_view type) {
-    grasp_hand_mode_ = ParseGraspHandMode(std::string(type));
+    auto g = gains_lock_.Load();
+    g.grasp_hand_mode = ParseGraspHandMode(std::string(type));
+    gains_lock_.Store(g);
   }
 
   /// Test-only: fingertips carrying a raw sensor lane (gates the ToF snapshot),
@@ -429,10 +444,16 @@ class DemoJointController final : public RTControllerInterface {
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_upper_;
 
   // ── Grasp controller (force_pi mode) ──────────────────────────────────────
-  // Hand grasp-intervention mode, resolved once from the whitelisted
-  // `grasp_controller_type` string in LoadConfig so the RT hot path branches on
-  // an enum instead of comparing a std::string every tick.
-  GraspHandMode grasp_hand_mode_{GraspHandMode::kContactStop};
+  // The mode itself lives in Gains (see Gains::grasp_hand_mode) — this is the
+  // RT-thread-only cache of the value ComputeControl actually branched on this
+  // tick, so FillLogOutput can gate the Force-PI diagnostics on it without a
+  // second Gains SeqLock copy. Same idiom as arm_readable_ / estop_active_, and
+  // the reason is stronger than saving a copy: re-Loading in the output fill
+  // would let a mode write that landed mid-tick make the log describe a control
+  // law this tick did not run. Written right after ComputeControl's gains load,
+  // which Compute() reaches only on non-E-STOP ticks — the same ticks that call
+  // the Fill* methods.
+  GraspHandMode grasp_hand_mode_cached_{GraspHandMode::kContactStop};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
   /// Finger index → hand joint indices mapping (ragged; fingers may have
   /// different DoF). finger_joint_map_[f][0 .. finger_dof_[f]) valid for

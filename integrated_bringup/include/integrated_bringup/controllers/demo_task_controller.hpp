@@ -179,6 +179,17 @@ class DemoTaskController final : public RTControllerInterface {
     float grasp_force_threshold{1.0f};    ///< |F| threshold [N] — common
     int grasp_min_fingertips{2};          ///< grasp_detected = active_count ≥ N
 
+    /// Which hand grasp-intervention law runs: contact_stop (binary freeze),
+    /// force_pi (adaptive PI) or none (trajectory passthrough). Resolved from
+    /// the whitelisted `grasp_controller_type` string once in LoadConfig so the
+    /// RT hot path branches on an enum instead of comparing a std::string.
+    ///
+    /// It rides the Gains snapshot rather than a plain member because the mode
+    /// and the thresholds it is interpreted with have to reach the RT tick in
+    /// ONE SeqLock body — the tick loads Gains once and branches on this field,
+    /// so a write can never be observed half-applied against a stale threshold.
+    GraspHandMode grasp_hand_mode{GraspHandMode::kContactStop};
+
     // Trajectory / grasp FSM tuning
     double pi_rotation_margin{0.15};  ///< Split quintic trajectory when |angle|>π-margin [rad]
     double contact_stop_release_eps{0.005};   ///< Hand contact-stop release hysteresis [rad]
@@ -631,10 +642,16 @@ class DemoTaskController final : public RTControllerInterface {
   bool hand_new_target_pending_{false};  // RT-thread-only
 
   // ── Grasp controller (force_pi mode) ──────────────────────────────────────
-  // Hand grasp-intervention mode, resolved once from the whitelisted
-  // `grasp_controller_type` string in LoadConfig so the RT hot path branches on
-  // an enum instead of comparing a std::string every tick.
-  GraspHandMode grasp_hand_mode_{GraspHandMode::kContactStop};
+  // The mode itself lives in Gains (see Gains::grasp_hand_mode) — this is the
+  // RT-thread-only cache of the value THIS tick runs under, so FillLogOutput can
+  // gate the Force-PI diagnostics on it without a second Gains SeqLock copy.
+  // Sibling of control_6dof_cached_ above, with one difference that matters:
+  // it is written in Compute() beside the tick's single gains Load, before the
+  // `!estop_active_` gate on ComputeSecondary — FillLogOutput runs on E-STOP
+  // ticks here too, and would otherwise read a value from an earlier tick. The
+  // reason to cache rather than re-Load is not the copy: re-Loading would let a
+  // mode write that landed mid-tick make the log describe a law that did not run.
+  GraspHandMode grasp_hand_mode_cached_{GraspHandMode::kContactStop};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
 
   // ── In-plane pull-force estimator (#167) ──────────────────────────────────

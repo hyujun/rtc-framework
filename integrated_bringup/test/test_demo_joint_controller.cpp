@@ -190,6 +190,36 @@ TEST_F(JointGraspTest, NoneTypeSkipsHandIntervention) {
   EXPECT_GT(out.devices[1].commands[0], 0.5);
 }
 
+// The mode reaches the RT tick through the Gains SeqLock snapshot, not through a
+// plain member (B-1 RT handoff): the tick loads Gains once, so the mode and the
+// thresholds it is read against can never be observed half-applied.
+//
+// This is the pin for that handoff, and the two halves fail for different
+// reasons. The storage half catches a writer that stores the mode somewhere the
+// tick does not read (SetGraspControllerTypeForTesting keeping its own copy);
+// the behaviour half catches a tick that reads somewhere the writers do not
+// write. Only the behaviour half needs a non-default mode to be conclusive:
+// asking for kContactStop proves nothing, since that is what an ignored Gains
+// field would leave behind anyway.
+TEST_F(JointGraspTest, GraspModeTravelsThroughTheGainsSnapshot) {
+  ctrl_.SetGraspControllerTypeForTesting("force_pi");
+  EXPECT_EQ(ctrl_.get_gains().grasp_hand_mode, integrated_bringup::GraspHandMode::kForcePi);
+  ctrl_.SetGraspControllerTypeForTesting("contact_stop");
+  EXPECT_EQ(ctrl_.get_gains().grasp_hand_mode, integrated_bringup::GraspHandMode::kContactStop);
+
+  // Behaviour half: steer the branch through the PUBLIC gains path only, away
+  // from the kContactStop default.
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kNone;
+  ctrl_.set_gains(g);
+  PrimeHandMotion(ctrl_, state_);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+  // Contact is observed either way — a tick that ignored the Gains field would
+  // still freeze the hand at 0.3 instead of letting it reach the 0.8 goal.
+  ASSERT_TRUE(ctrl_.GetGraspStateForTesting().grasp_detected);
+  EXPECT_GT(out.devices[1].commands[0], 0.5);
+}
+
 TEST_F(JointGraspTest, ContactStopFreezesHandAtCurrentPosition) {
   // Default grasp_controller_type is "contact_stop" (control group).
   PrimeHandMotion(ctrl_, state_);

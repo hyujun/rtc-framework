@@ -133,12 +133,12 @@ void DemoTaskController::DeclareGainParameters() noexcept {
 
   // Display-only mirror of the hand grasp mode LoadConfig already resolved from
   // demo_shared.yaml. Unlike the read-only velocity caps above there is NO
-  // reverse assignment (param -> grasp_hand_mode_): the parameter exists so a
+  // reverse assignment (param -> g.grasp_hand_mode): the parameter exists so a
   // client can *see* which mode is running, and a reverse path is the only way
   // the two could ever disagree. Changing the mode is a YAML + restart
   // operation; rclcpp rejects `ros2 param set` on a read_only parameter, so
   // OnGainParametersSet needs no case for this name.
-  declare_string_ro("grasp_controller_type", GraspHandModeName(grasp_hand_mode_),
+  declare_string_ro("grasp_controller_type", GraspHandModeName(g.grasp_hand_mode),
                     "Active hand grasp mode: 'contact_stop' | 'force_pi' | 'none' "
                     "(read-only; set via demo_shared.yaml)");
 
