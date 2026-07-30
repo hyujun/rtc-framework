@@ -35,6 +35,17 @@ _SESSION_SUBDIRS = (
 _SESSION_PATTERN = re.compile(r"^\d{6}_\d{4}$")
 
 
+def is_session_dir_name(name: str) -> bool:
+    """``YYMMDD_HHMM`` 세션 디렉토리 이름인지 판정합니다.
+
+    C++ ``CleanupOldSessions()`` 의 ``\\d{6}_\\d{4}`` 정규식과 같은 패턴.
+    세션 폴더를 식별하는 곳 (정리·최신 세션 탐색·CSV → 세션 역산) 은 모두
+    이 함수를 쓴다 — 느슨한 자체 판정 (길이·구분자 위치) 은 세션이 아닌
+    디렉토리를 세션으로 오인한다.
+    """
+    return bool(_SESSION_PATTERN.match(name))
+
+
 def resolve_logging_root() -> str:
     """활성 colcon 워크스페이스의 ``logging_data`` 루트 경로를 결정합니다.
 
@@ -88,7 +99,7 @@ def cleanup_old_sessions(logging_root: str, max_sessions: int) -> None:
     dirs = sorted(
         d
         for d in os.listdir(logging_root)
-        if os.path.isdir(os.path.join(logging_root, d)) and _SESSION_PATTERN.match(d)
+        if os.path.isdir(os.path.join(logging_root, d)) and is_session_dir_name(d)
     )
     while len(dirs) > max_sessions:
         oldest = os.path.join(logging_root, dirs.pop(0))

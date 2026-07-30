@@ -96,7 +96,12 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --stats
 ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 ```
 
-> `--save-dir` 미지정 시 `RTC_SESSION_DIR/plots/`에 자동 저장됩니다.
+> `--save-dir` 미지정 시 **입력 CSV 를 담고 있는 세션의 `plots/`** 에 저장됩니다 —
+> CSV 경로에서 상위로 올라가며 만나는 `YYMMDD_HHMM` 디렉토리가 기준이므로,
+> 과거 세션 CSV 를 다시 그려도 figure 가 그 세션에 남습니다 (최신 세션으로
+> 흩어지지 않음). CSV 가 세션 트리 밖이면 `RTC_SESSION_DIR/plots/` →
+> 현재 ws `logging_data` 의 최신 세션 순으로 폴백하고, 그것도 없으면
+> 저장 없이 GUI 표시만 합니다.
 >
 > `--save-dir` 지정 시 Agg backend 자동 사용 (GUI 없이 렌더링).
 

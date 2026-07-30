@@ -1620,3 +1620,195 @@ class TestNarrowRowWarning:
         )
         load_log_csv(str(path), "sensor_log")
         assert "narrower than its header" not in capsys.readouterr().out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# resolve_default_save_dir — CSV 경로에서 세션 역산
+# ═══════════════════════════════════════════════════════════════════════════
+
+import os  # noqa: E402
+
+from rtc_tools.plotting.io.session import (  # noqa: E402
+    find_enclosing_session as _find_enclosing_session,
+    resolve_default_save_dir as _resolve_default_save_dir,
+)
+
+_TIMING_HEADER = ["t_wall_ns", "tick_count", "t_total_us", "jitter_us"]
+_TIMING_ROWS = [[i * 1_000_000, i + 1, 100.0 + i, float(i)] for i in range(20)]
+
+
+def _make_session(root, name="260101_0900", *, with_plots=True):
+    """Create <root>/<name>/ (+ plots/) and return the session path."""
+    session = root / name
+    (session / "controllers" / "demo_wbc_controller").mkdir(parents=True)
+    if with_plots:
+        (session / "plots").mkdir()
+    (session / "timing").mkdir()
+    return session
+
+
+@pytest.fixture
+def _isolated_session_env(monkeypatch, tmp_path):
+    """세션 해석에 영향을 주는 env 를 지우고 cwd 를 marker 없는 dir 로 옮긴다.
+
+    colcon test 는 COLCON_PREFIX_PATH 를 세팅한 채 실제 ws 안에서 돌기 때문에,
+    격리하지 않으면 폴백 단계가 개발자의 실제 logging_data 를 집어 테스트가
+    호스트 상태에 의존한다.
+    """
+    for name in ("RTC_SESSION_DIR", "COLCON_PREFIX_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    bare = tmp_path / "bare_cwd"
+    bare.mkdir()
+    monkeypatch.chdir(bare)
+
+
+class TestFindEnclosingSession:
+    """find_enclosing_session: CSV 경로 상위에서 YYMMDD_HHMM 디렉토리를 찾는다."""
+
+    def test_csv_directly_in_session_root(self, tmp_path):
+        session = _make_session(tmp_path)
+        csv_path = session / "p1b_state.csv"
+        csv_path.touch()
+        assert _find_enclosing_session(str(csv_path)) == str(session)
+
+    def test_csv_in_nested_subdir(self, tmp_path):
+        session = _make_session(tmp_path)
+        csv_path = session / "controllers" / "demo_wbc_controller" / "p1b_state.csv"
+        csv_path.touch()
+        assert _find_enclosing_session(str(csv_path)) == str(session)
+
+    def test_relative_path_is_resolved(self, tmp_path, monkeypatch):
+        session = _make_session(tmp_path)
+        (session / "timing" / "cm_timing_log.csv").touch()
+        monkeypatch.chdir(session / "timing")
+        assert _find_enclosing_session("cm_timing_log.csv") == str(session)
+
+    def test_returns_none_outside_session_tree(self, tmp_path):
+        loose = tmp_path / "loose.csv"
+        loose.touch()
+        assert _find_enclosing_session(str(loose)) is None
+
+    def test_lookalike_dir_name_is_not_a_session(self, tmp_path):
+        """길이 11 + '_' 위치만 보던 옛 판정은 이런 이름을 세션으로 오인했다."""
+        fake = tmp_path / "2601xx_0900"
+        fake.mkdir()
+        csv_path = fake / "p1b_state.csv"
+        csv_path.touch()
+        assert _find_enclosing_session(str(csv_path)) is None
+
+
+class TestResolveDefaultSaveDir:
+    """resolve_default_save_dir: CSV 세션 → RTC_SESSION_DIR → 최신 세션 순."""
+
+    def test_csv_session_beats_env_session(self, tmp_path, monkeypatch, _isolated_session_env):
+        root = tmp_path / "logging_data"
+        root.mkdir()
+        old = _make_session(root, "260101_0900")
+        new = _make_session(root, "260202_1000")
+        monkeypatch.setenv("RTC_SESSION_DIR", str(new))
+
+        csv_path = old / "controllers" / "demo_wbc_controller" / "p1b_state.csv"
+        csv_path.touch()
+
+        assert _resolve_default_save_dir(str(csv_path)) == str(old / "plots")
+
+    def test_csv_session_beats_latest_session(self, tmp_path, _isolated_session_env):
+        root = tmp_path / "logging_data"
+        root.mkdir()
+        old = _make_session(root, "260101_0900")
+        _make_session(root, "260202_1000")
+
+        csv_path = old / "timing" / "cm_timing_log.csv"
+        csv_path.touch()
+
+        assert _resolve_default_save_dir(str(csv_path)) == str(old / "plots")
+
+    def test_creates_plots_dir_when_absent(self, tmp_path, _isolated_session_env):
+        session = _make_session(tmp_path, with_plots=False)
+        csv_path = session / "p1b_state.csv"
+        csv_path.touch()
+
+        save_dir = _resolve_default_save_dir(str(csv_path))
+        assert save_dir == str(session / "plots")
+        assert os.path.isdir(save_dir)
+
+    def test_falls_back_to_env_outside_session_tree(
+        self, tmp_path, monkeypatch, _isolated_session_env
+    ):
+        session = _make_session(tmp_path / "elsewhere", "260303_1100")
+        monkeypatch.setenv("RTC_SESSION_DIR", str(session))
+
+        loose = tmp_path / "loose_state.csv"
+        loose.touch()
+
+        assert _resolve_default_save_dir(str(loose)) == str(session / "plots")
+
+    def test_falls_back_to_latest_session_without_env(
+        self, tmp_path, monkeypatch, _isolated_session_env
+    ):
+        ws = tmp_path / "ws"
+        (ws / "install").mkdir(parents=True)
+        (ws / "src").mkdir()
+        root = ws / "logging_data"
+        root.mkdir()
+        _make_session(root, "260101_0900")
+        newest = _make_session(root, "260202_1000")
+        monkeypatch.chdir(ws)
+
+        loose = tmp_path / "loose_state.csv"
+        loose.touch()
+
+        assert _resolve_default_save_dir(str(loose)) == str(newest / "plots")
+
+    def test_returns_none_when_no_session_anywhere(self, tmp_path, _isolated_session_env):
+        loose = tmp_path / "loose_state.csv"
+        loose.touch()
+        assert _resolve_default_save_dir(str(loose)) is None
+
+    def test_no_csv_arg_keeps_env_chain(self, tmp_path, monkeypatch, _isolated_session_env):
+        session = _make_session(tmp_path, "260404_1200")
+        monkeypatch.setenv("RTC_SESSION_DIR", str(session))
+        assert _resolve_default_save_dir() == str(session / "plots")
+
+
+class TestMainSaveDirRouting:
+    """main() end-to-end: PNG 가 CSV 와 같은 세션에 떨어지는지."""
+
+    def _write_timing_csv(self, session):
+        path = session / "timing" / "cm_timing_log.csv"
+        _write_csv(path, _TIMING_HEADER, _TIMING_ROWS)
+        return path
+
+    def test_figures_land_in_the_csv_own_session(
+        self, tmp_path, monkeypatch, _isolated_session_env
+    ):
+        from rtc_tools.plotting.plot_rtc_log import main
+
+        root = tmp_path / "logging_data"
+        root.mkdir()
+        old = _make_session(root, "260101_0900")
+        newest = _make_session(root, "260202_1000")
+        monkeypatch.setenv("RTC_SESSION_DIR", str(newest))
+
+        csv_path = self._write_timing_csv(old)
+        monkeypatch.setattr("sys.argv", ["plot_rtc_log", str(csv_path), "--no-show"])
+        main()
+
+        assert list((old / "plots").glob("*.png")), "CSV 세션에 figure 가 없다"
+        assert not list((newest / "plots").glob("*.png")), "env 세션으로 새어나갔다"
+
+    def test_explicit_save_dir_still_wins(self, tmp_path, monkeypatch, _isolated_session_env):
+        from rtc_tools.plotting.plot_rtc_log import main
+
+        session = _make_session(tmp_path, "260101_0900")
+        csv_path = self._write_timing_csv(session)
+        out = tmp_path / "explicit_out"
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["plot_rtc_log", str(csv_path), "--no-show", "--save-dir", str(out)],
+        )
+        main()
+
+        assert list(out.glob("*.png"))
+        assert not list((session / "plots").glob("*.png"))
