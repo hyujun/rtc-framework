@@ -349,7 +349,8 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
       frame_wait_ticks_.fetch_add(1, std::memory_order_acq_rel);
       dq_.setZero();
       traj_dq_.setZero();
-      const std::size_t nhold = ArmCommandBound(dev0.num_channels);
+      const std::size_t nhold = static_cast<std::size_t>(
+          rtc::ModelChannelBound(dev0.num_channels, static_cast<int>(desired_q_.size())));
       for (std::size_t i = 0; i < nhold; ++i) {
         desired_q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
       }
@@ -432,7 +433,8 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
     // plausible and leave a stuck encoder running behind a throttled WARN.
     dq_.setZero();
     traj_dq_.setZero();
-    const std::size_t nhold = ArmCommandBound(dev0.num_channels);
+    const std::size_t nhold = static_cast<std::size_t>(
+        rtc::ModelChannelBound(dev0.num_channels, static_cast<int>(desired_q_.size())));
     for (std::size_t i = 0; i < nhold; ++i) {
       desired_q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
     }
@@ -1136,9 +1138,9 @@ void DemoTaskController::WriteArmJointCommand(const ControllerState& state, rtc:
   // (WriteJointStateToCache sets num_channels from the JointState message
   // length, not from joint_state_names) — a device reporting more channels
   // than the model DOF must never index past them (issue #172 OOB; the sibling
-  // bindings guard the same hazard with rtc::ModelChannelBound, which
-  // ArmCommandBound wraps).
-  const std::size_t nq = ArmCommandBound(nc0);
+  // bindings guard the same hazard with the same base predicate).
+  const std::size_t nq =
+      static_cast<std::size_t>(rtc::ModelChannelBound(nc0, static_cast<int>(desired_q_.size())));
   // Clamp dq_ in-place so log + publish read the same canonical clamped value.
   for (std::size_t i = 0; i < nq; ++i) {
     const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
@@ -1179,7 +1181,8 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
     // Same model-dimension bound as WriteJointCommand — these read the identical
     // nv-wide buffers, so the telemetry lane must not index further than the wire
     // lane does (issue #172).
-    const std::size_t nq = ArmCommandBound(nc0);
+    const std::size_t nq =
+        static_cast<std::size_t>(rtc::ModelChannelBound(nc0, static_cast<int>(desired_q_.size())));
     for (std::size_t i = 0; i < nq; ++i) {
       out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
       out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
@@ -1368,7 +1371,8 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
       std::min(static_cast<std::size_t>(nc0), current_target_slot_.null_target.size());
   if (arm_readable_) {
     // Model-dimension bound, as in WriteJointCommand / FillLogOutput (issue #172).
-    const std::size_t nq = ArmCommandBound(nc0);
+    const std::size_t nq =
+        static_cast<std::size_t>(rtc::ModelChannelBound(nc0, static_cast<int>(desired_q_.size())));
     for (std::size_t i = 0; i < nq; ++i) {
       out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
       out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];

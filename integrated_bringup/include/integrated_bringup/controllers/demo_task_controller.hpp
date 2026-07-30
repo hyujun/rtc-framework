@@ -540,14 +540,21 @@ class DemoTaskController final : public RTControllerInterface {
   void InitArmModel(const rtc_urdf_bridge::ModelConfig& config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
 
-  // Model-dimension bound for arm-device channel loops (issue #172 pattern).
-  // The device's reported channel count is wire-derived and independent of the
-  // model DOF, so every loop that indexes an nv-wide Eigen buffer by a device
-  // channel index has to intersect the two. Returns min(nc0, nv).
-  [[nodiscard]] std::size_t ArmCommandBound(int nc0) const noexcept {
-    return std::min(static_cast<std::size_t>(std::max(nc0, 0)),
-                    static_cast<std::size_t>(desired_q_.size()));
-  }
+  // Arm-device channel loops bound themselves with rtc::ModelChannelBound(nc0,
+  // desired_q_.size()) — the base predicate, called directly (#296). This class
+  // carried a private wrapper with identical semantics until then; S7b lifted
+  // the predicate to base but did not see that copy.
+  //
+  // The model dimension is desired_q_.size() and NOT arm_dof_, which is what the
+  // sibling wbc binding passes: arm_dof_ comes from the YAML estop.arm_safe_
+  // position length (or the first tick's channel count), so the two are not
+  // interchangeable here and substituting one would change behaviour rather than
+  // converge a spelling.
+  //
+  // Call sites cast the int result to std::size_t rather than base gaining a
+  // size_t overload: the loops below index both Eigen buffers (Eigen::Index) and
+  // device arrays (size_t), so no single return type removes every cast, and a
+  // type-convenience overload would widen the base surface for nothing (ARCH-3).
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
   Eigen::VectorXd q_;
