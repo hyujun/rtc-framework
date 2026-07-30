@@ -223,7 +223,12 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
   // The grasp mode rides that same snapshot; cache it for the output fills,
-  // which have no Gains of their own (rationale on the member).
+  // which have no Gains of their own (rationale on the member). The edge is read
+  // off the same comparison so no second copy of the mode is needed. Tick 1 can
+  // report a spurious edge (the member starts at kContactStop while the config
+  // may say otherwise); the only consumer is latch-gated and the latch cannot be
+  // set before a tick has run, so that edge is unreachable in practice.
+  const bool grasp_mode_changed = gains.grasp_hand_mode != grasp_hand_mode_cached_;
   grasp_hand_mode_cached_ = gains.grasp_hand_mode;
   const auto& dev0 = state.devices[0];
 
@@ -392,9 +397,63 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
                          static_cast<double>(force_thresh),
                          grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
 
-    // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary
-    // freeze)
-    if (grasp_controller_ && gains.grasp_hand_mode == GraspHandMode::kForcePi) {
+    // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary freeze).
+    // Named once, because the race closure below has to ask "will the hold run
+    // this tick?" and get exactly the answer the branch itself uses.
+    //
+    // The `!= kNone` form is deliberate: a "force_pi" config whose grasp
+    // controller failed to build (null) must still fall into the contact_stop
+    // safety freeze, not silently become a no-op.
+    const bool run_force_pi = grasp_controller_ && gains.grasp_hand_mode == GraspHandMode::kForcePi;
+    const bool run_contact_stop = !run_force_pi && gains.grasp_hand_mode != GraspHandMode::kNone;
+
+    // ── Race closure for the runtime mode switch ──────────────────────────
+    // The parameter callback refuses a mode change unless the hand is quiet, but
+    // it reads the latch through an atomic mirror and cannot hold the RT thread
+    // still — contact can engage between its check and its Store. If that
+    // happens, the next tick stops running the hold while hand_hold_position_
+    // still describes where the hand is parked, and hand_computed_ reverts to the
+    // trajectory, which is still aimed at the PRE-CONTACT goal. On a held object
+    // that is a resumed squeeze, not a cosmetic jump.
+    //
+    // So re-seed the goal to the hold position BEFORE dropping the latch: the
+    // trajectory that takes over is then already a standing hold. RT-safe — the
+    // target slot is this thread's own working copy and the RT tick is the sole
+    // writer of target_seqlock_ (DrainTargetSlot Stores it the same way).
+    //
+    // A quiet gate that works means this branch never runs. Hence WARN rather
+    // than INFO: the message appearing at all is the signal that the gate has a
+    // hole, and it is the only evidence that would survive the incident.
+    if (grasp_mode_changed && contact_latched_ && !run_contact_stop) {
+      trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State hold_state;
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        current_target_slot_.targets[1][idx] = hand_hold_position_[idx];
+        // This tick too, not just the next one: the hand trajectory block ran
+        // earlier in ComputeControl, so hand_computed_ already holds a step
+        // toward the old goal.
+        hand_computed_.positions[idx] = hand_hold_position_[idx];
+        hand_computed_.velocities[idx] = 0.0;
+        hold_state.positions[idx] = hand_hold_position_[idx];
+        hold_state.velocities[idx] = 0.0;
+        hold_state.accelerations[idx] = 0.0;
+      }
+      target_seqlock_.Store(current_target_slot_);
+      // Duration only has to be non-zero: start state == goal state, so the
+      // quintic is a constant. Same value DrainTargetSlot's hold-seed uses.
+      constexpr double kHoldSeedDuration = 0.01;
+      hand_trajectory_.initialize(hold_state, hold_state, kHoldSeedDuration);
+      hand_trajectory_time_ = 0.0;
+      // The goal now equals the trajectory, so nothing is left pending.
+      hand_new_target_pending_ = false;
+      contact_latched_ = false;
+      RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
+                           "[grasp] mode left contact_stop while LATCHED -> re-seeded hand hold "
+                           "(the quiet gate should have refused this); now type=%s",
+                           GraspHandModeName(gains.grasp_hand_mode));
+    }
+
+    if (run_force_pi) {
       // Build force input: one force magnitude per grasp finger.
       std::array<double, rtc::grasp::kMaxGraspFingers> f_raw{};
       for (int f = 0; f < num_grasp_fingers_; ++f) {
@@ -428,13 +487,11 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
           }
         }
       }
-    } else if (gains.grasp_hand_mode != GraspHandMode::kNone) {
+    } else if (run_contact_stop) {
       // grasp_controller_type=="none": no hand intervention — trajectory output
       // passes through untouched.  GraspState aggregation/publishing below is
-      // unaffected (BT IsGrasped/IsForceAbove still observe contact).  The
-      // negated form (!= "none") is deliberate: a "force_pi" config whose
-      // grasp controller failed to build (null) must still fall into the
-      // contact_stop safety freeze, not silently become a no-op.
+      // unaffected (BT IsGrasped/IsForceAbove still observe contact). Why the
+      // predicate is negated rather than `== kContactStop`: see run_contact_stop.
       //
       // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
       // → BT tick(50ms) 사이에도 과도한 hand closure 방지
@@ -550,6 +607,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
         }
       }
     }
+
+    // Publish the latch for the non-RT quiet gate (rationale on the member).
+    // Unconditional and outside every branch on purpose: the latch is written on
+    // several paths (contact engage, release gate, hand E-STOP, the race closure
+    // above) and a mirror maintained per-path would be one refactor away from
+    // missing one — and a missed path fails in the direction that opens the mode
+    // switch on a held object.
+    contact_latched_pub_.store(contact_latched_, std::memory_order_release);
 
     // ── In-plane pull-force estimate (#167) ─────────────────────────────
     // Feeds the 3-axis fingertip forces (before the |F| collapse above) plus

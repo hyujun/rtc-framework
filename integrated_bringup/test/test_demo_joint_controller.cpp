@@ -431,6 +431,98 @@ TEST_F(JointContactStopWithPiBuiltTest, ContactStopFromTheFirstTickStillFreezes)
   EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4);
 }
 
+// ── Mode-switch race closure (B-4a) ─────────────────────────────────────────
+
+// The latch mirror the non-RT quiet gate reads. Its own test rather than a rider
+// on the freeze assertions: a tick that freezes the hand but never mirrors leaves
+// the gate believing the hand is quiet, and no command assertion can see that.
+TEST_F(JointContactStopWithPiBuiltTest, LatchMirrorTracksTheLatchForTheQuietGate) {
+  EXPECT_FALSE(ctrl_.GetContactLatchedMirrorForTesting()) << "mirror set before any contact";
+
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 100);
+  EXPECT_TRUE(ctrl_.GetContactLatchedMirrorForTesting())
+      << "hold engaged but the gate cannot see it";
+
+  // Release intent on every gate joint (idx {1,4,7}, signs {+1,-1,-1}) drops the
+  // latch with contact still present — the mirror has to follow that path too,
+  // not just the engage path.
+  std::array<double, 10> open{};
+  open.fill(kHandStart);
+  open[1] = kHandStart + 0.3;
+  open[4] = kHandStart - 0.3;
+  open[7] = kHandStart - 0.3;
+  ctrl_.SetDeviceTarget(1, open);
+  (void)RunHandTicks(ctrl_, state_, 300);
+  EXPECT_FALSE(ctrl_.GetContactLatchedMirrorForTesting());
+}
+
+// The race the quiet gate cannot close by itself: the callback checks the mirror,
+// contact engages, and only then does the mode Store land. The tick that observes
+// the new mode stops running the hold — and hand_computed_ falls back to a
+// trajectory still aimed at the PRE-CONTACT goal, which by now has run to
+// completion at 0.8. On a held object that is a resumed squeeze.
+//
+// set_gains() here IS the race: it skips the gate exactly the way a gate with a
+// hole would. Without the closure the command snaps from the 0.3 hold to 0.8.
+TEST_F(JointContactStopWithPiBuiltTest, SwitchingAwayWhileLatchedDoesNotSnapBackToTheOldGoal) {
+  PrimeHandMotion(ctrl_, state_);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+  ASSERT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4) << "fixture never latched";
+  ASSERT_TRUE(ctrl_.GetContactLatchedMirrorForTesting());
+
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kForcePi;
+  ctrl_.set_gains(g);
+
+  // First tick after the switch, then well past the old trajectory's duration.
+  out = RunHandTicks(ctrl_, state_, 1);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-3) << "snapped back on the switch tick";
+  out = RunHandTicks(ctrl_, state_, 300);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-3) << "ramped toward the old goal after";
+
+  // The goal itself was re-seeded, not just the command — otherwise the next
+  // re-plan (any new target, or the trajectory being re-initialised) walks back
+  // to 0.8 and the hold above was only a reprieve.
+  EXPECT_NEAR(out.devices[1].goal_positions[0], kHandStart, 1e-3);
+  // And the closure dropped the latch: it handed ownership of the hand to the
+  // new mode rather than leaving a contact_stop latch behind under force_pi.
+  EXPECT_FALSE(ctrl_.GetContactLatchedMirrorForTesting());
+}
+
+// The other half of the closure's guard, and the half that is actually reachable:
+// on a QUIET switch — the normal path, the one the gate admits — the closure must
+// stay out of the way. A closure keyed on the mode edge alone would re-seed the
+// goal to wherever the hand happens to be and silently discard the operator's
+// pending target on every legitimate switch.
+//
+// (The `!run_contact_stop` term of the guard has no reachable test: a latch can
+// only be set while the hold is the law, and the closure drops it on the way out,
+// so "latched while contact_stop is the law again" cannot be constructed. It is
+// defence-in-depth, like the WARN.)
+TEST_F(JointContactStopWithPiBuiltTest, QuietSwitchKeepsTheOperatorsGoal) {
+  // No contact anywhere, so the latch never engages.
+  for (int i = 0; i < 10; ++i) {
+    state_.devices[1].positions[static_cast<std::size_t>(i)] = kHandStart;
+  }
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  std::array<double, 10> tgt{};
+  tgt.fill(kHandGoal);
+  ctrl_.SetDeviceTarget(1, tgt);
+  (void)RunHandTicks(ctrl_, state_, 50);
+  ASSERT_FALSE(ctrl_.GetContactLatchedMirrorForTesting()) << "fixture latched without contact";
+
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kForcePi;
+  ctrl_.set_gains(g);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+
+  EXPECT_NEAR(out.devices[1].goal_positions[0], kHandGoal, 1e-9)
+      << "quiet switch discarded the goal";
+  EXPECT_NEAR(out.devices[1].commands[0], kHandGoal, 1e-3);
+}
+
 // ── Deferred hand hold-seed (device-1 startup race) ─────────────────────────
 // If the hand device (device 1) is not yet valid on the controller's first
 // Compute() tick, its hold target must NOT latch to the zero-initialized

@@ -290,6 +290,14 @@ class DemoTaskController final : public RTControllerInterface {
     return {contact_stop_max_force_, contact_stop_active_count_};
   }
 
+  /// Test-only: the latch value the non-RT quiet gate would read right now.
+  /// Distinct from observing the freeze in the command: a tick that freezes the
+  /// hand but never mirrors the latch leaves the gate believing the hand is
+  /// quiet, and the freeze assertions cannot tell those two apart.
+  [[nodiscard]] bool GetContactLatchedMirrorForTesting() const noexcept {
+    return contact_latched_pub_.load(std::memory_order_acquire);
+  }
+
   /// Test-only: the delta-spike guard's per-tick output — what the force LPF was
   /// fed ([fingertip * 3 + axis]) and whether the raw triplet was held out.
   /// Distinct from both the raw force and the filter output: on a held tick all
@@ -652,6 +660,12 @@ class DemoTaskController final : public RTControllerInterface {
   // reason to cache rather than re-Load is not the copy: re-Loading would let a
   // mode write that landed mid-tick make the log describe a law that did not run.
   GraspHandMode grasp_hand_mode_cached_{GraspHandMode::kContactStop};
+  /// Did the mode change on THIS tick? A member rather than a local because the
+  /// edge is detected in Compute() (beside the single gains Load) and consumed in
+  /// ComputeSecondary()'s race closure. The joint controller keeps the same value
+  /// as a local — there the Load and the closure sit in one function.
+  /// RT-thread-only, valid for the tick that set it.
+  bool grasp_mode_changed_{false};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
 
   // ── In-plane pull-force estimator (#167) ──────────────────────────────────
@@ -676,9 +690,18 @@ class DemoTaskController final : public RTControllerInterface {
   std::array<int, rtc::grasp::kMaxGraspFingers> release_gate_sign_{{+1, -1, -1}};
 
   /// contact_stop hold latch (RT-thread-only). Set when contact first engages,
-  /// cleared only by the release-phase gate or E-STOP — so the hand keeps its
-  /// position after contact drops, rather than snapping back to the trajectory.
+  /// cleared only by the release-phase gate, E-STOP, or the mode-switch race
+  /// closure — so the hand keeps its position after contact drops, rather than
+  /// snapping back to the trajectory.
   bool contact_latched_{false};
+  /// Non-RT-readable mirror of contact_latched_, stored once per tick by the
+  /// grasp block. The parameter callback's quiet gate has to know whether the
+  /// hold is engaged before it lets the grasp mode move, and contact_latched_ is
+  /// RT-thread-only: a callback that read it directly would be a data race, and
+  /// one that assumed instead would open the switch on a held object. Reading a
+  /// tick-old value is fine and unavoidable — the callback cannot stop the RT
+  /// thread, which is exactly why ComputeSecondary carries the race closure.
+  std::atomic<bool> contact_latched_pub_{false};
   /// Hold target while latched. Refreshed from the LPF output on every tick
   /// that contact is present; frozen once contact drops (no random-walk drift).
   std::array<double, kDemoTaskMaxHandDof> hand_hold_position_{};
