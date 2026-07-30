@@ -56,8 +56,7 @@ void ParseClikParams(const YAML::Node& cfg, ClikParams& out, CommandType& comman
     // σ₀ ≤ 0, so a zero here removes the §6.5 ramp entirely instead of narrowing
     // it — and with λ² ≡ 0 a singular pose makes DifferentialIk report !ok, which
     // this law answers by holding at zero velocity every tick.
-    out.singularity_threshold =
-        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    out.singularity_threshold = compliance::FloorSigma0(cfg["singularity_threshold"].as<double>());
   }
   if (cfg["damping"] && retired) {
     // Retired in #236 S3b (#258). Reported rather than mapped onto max_damping:

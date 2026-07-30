@@ -45,8 +45,7 @@ void ParseOscParams(const YAML::Node& cfg, OscParams& out, CommandType& command_
       return;
     }
     if (!n.IsSequence() || n.size() != 3) {
-      throw std::runtime_error(std::string("osc: ") + what +
-                               " must be a 3-entry sequence [x,y,z]");
+      throw std::runtime_error(std::string("osc: ") + what + " must be a 3-entry sequence [x,y,z]");
     }
     for (std::size_t i = 0; i < 3; ++i) {
       arr[i] = n[i].as<double>();
@@ -69,8 +68,7 @@ void ParseOscParams(const YAML::Node& cfg, OscParams& out, CommandType& command_
     // §6.5 ramp entirely. The other three task-space controllers clamp this key
     // identically; "same names, same defaults" only holds if the VALIDATION
     // converges too.
-    out.singularity_threshold =
-        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    out.singularity_threshold = compliance::FloorSigma0(cfg["singularity_threshold"].as<double>());
   }
   if (cfg["damping"] && retired) {
     // Retired in #236 S2b. Reported rather than mapped onto max_damping: a

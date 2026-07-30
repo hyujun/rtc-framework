@@ -75,8 +75,7 @@ void ParseTaskImpedanceParams(const YAML::Node& cfg, TaskImpedanceParams& out,
     out.nullspace_kd = cfg["nullspace_damping"].as<double>();
   }
   if (cfg["singularity_threshold"]) {
-    out.singularity_threshold =
-        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    out.singularity_threshold = compliance::FloorSigma0(cfg["singularity_threshold"].as<double>());
   }
   if (cfg["singularity_critical"]) {
     out.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
