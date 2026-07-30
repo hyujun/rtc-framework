@@ -131,20 +131,25 @@ void DemoTaskController::DeclareGainParameters() noexcept {
       static_cast<int>(declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
                                    "Min fingertips with contact for grasp detection"));
 
-  // WRITABLE as of B-4b (was read-only, display-only). The default is the mode
-  // LoadConfig resolved from demo_shared.yaml, and the returned value is assigned
-  // back like every other gain here — so a launch-time override wins over the
-  // YAML, which is the same precedence the rest of this function has. An override
-  // outside the whitelist throws out of ParseGraspHandMode on the non-RT
-  // on_configure path and becomes CallbackReturn::FAILURE, exactly as a bad
-  // demo_shared.yaml value does.
+  // WRITABLE as of B-4b (was read-only, display-only). Seeded from the mode
+  // LoadConfig resolved out of demo_shared.yaml.
   //
-  // The parse is wrapped because THIS FUNCTION IS noexcept: an unwhitelisted
-  // launch override would otherwise leave ParseGraspHandMode throwing out of a
-  // noexcept frame, i.e. std::terminate. There is no way to fail the lifecycle
-  // transition from here (void return), so the honest fallback is to keep the
-  // value demo_shared.yaml already validated and say so loudly. A bad value in
-  // the YAML itself still fails on_configure, as before.
+  // Where a value other than the YAML's can come from — NOT a launch override, as
+  // this comment used to claim: per-controller child nodes are built with
+  // use_global_arguments(false) and no parameter_overrides
+  // (rt_controller_node_params.cpp), so launch-file and CLI parameter values never
+  // reach this node. The reachable source is `ros2 param set` issued while the
+  // controller is CLEANED UP: on_cleanup drops the on-set callback but leaves the
+  // parameter declared, and declare_string below then returns that stored value
+  // instead of the seed.
+  //
+  // The parse is wrapped because THIS FUNCTION IS noexcept: an off-whitelist value
+  // would otherwise leave ParseGraspHandMode throwing out of a noexcept frame,
+  // i.e. std::terminate. It also cannot fail the lifecycle transition (void
+  // return) — the second thing this comment used to claim — so the honest fallback
+  // is to keep the value demo_shared.yaml already validated and say so loudly. A
+  // bad value in the YAML itself still fails on_configure, as before.
+  const GraspHandMode configured_mode = g.grasp_hand_mode;
   const std::string requested_mode =
       declare_string("grasp_controller_type", GraspHandModeName(g.grasp_hand_mode),
                      "Active hand grasp mode: 'contact_stop' | 'force_pi' | 'none'. "
@@ -152,7 +157,25 @@ void DemoTaskController::DeclareGainParameters() noexcept {
                      "no force_pi grasp in progress); otherwise the set is refused "
                      "with a reason.");
   try {
-    g.grasp_hand_mode = ParseGraspHandMode(requested_mode);
+    const GraspHandMode requested = ParseGraspHandMode(requested_mode);
+    // The whitelist is not the whole gate: the set described above passed no
+    // capability check at all, so iiwa7_leap (no force_pi_grasp block) would come
+    // up claiming a mode it cannot run. Same SSoT as the runtime path rather than
+    // a second opinion. The two quiet inputs are facts here, not mirrors:
+    // LoadConfig ran earlier in this bring-up and cleared the latch, and
+    // BuildGraspController either just made a fresh (idle) controller or left
+    // nullptr.
+    if (const char* why =
+            GraspModeChangeRejectReason(configured_mode, requested,
+                                        {.has_controller = grasp_controller_ != nullptr,
+                                         .contact_latched = false,
+                                         .grasp_phase_idle = true});
+        why != nullptr) {
+      RCLCPP_ERROR(logger_, "grasp_controller_type '%s' rejected at configure (%s); keeping '%s'",
+                   requested_mode.c_str(), why, GraspHandModeName(configured_mode));
+    } else {
+      g.grasp_hand_mode = requested;
+    }
   } catch (const std::exception& e) {
     RCLCPP_ERROR(logger_, "grasp_controller_type override rejected (%s); keeping '%s'", e.what(),
                  GraspHandModeName(g.grasp_hand_mode));

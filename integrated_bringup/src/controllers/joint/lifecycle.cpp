@@ -183,12 +183,15 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
             resp->message = "controller is not active";
             return;
           }
+          // ONE snapshot for the whole callback: the decision and the log line
+          // that reports it must name the same mode. Three separate Loads could
+          // refuse on one mode and log another if a set landed in between.
+          const auto mode = gains_lock_.Load().grasp_hand_mode;
           // Mode, not just nullness (#327 B-3). BuildGraspController no longer
           // consults the mode, so a non-null controller no longer means the PI law
           // is the one driving the hand — accepting here would answer "grasp
           // started" and step an FSM the tick ignores.
-          if (const char* why = GraspCommandRejectReason(gains_lock_.Load().grasp_hand_mode,
-                                                         grasp_controller_ != nullptr);
+          if (const char* why = GraspCommandRejectReason(mode, grasp_controller_ != nullptr);
               why != nullptr) {
             resp->ok = false;
             resp->message = why;
@@ -208,7 +211,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
                 static_cast<unsigned>(grasp_phase_pub_.load(std::memory_order_acquire));
             grasp_controller_->CommandGrasp(req->target_force);
             RCLCPP_INFO(logger_, "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
-                        req->target_force, GraspHandModeName(gains_lock_.Load().grasp_hand_mode),
+                        req->target_force, GraspHandModeName(mode),
                         phase_before);
             resp->ok = true;
             resp->message = "grasp started @ " + std::to_string(req->target_force) + " N";
@@ -217,7 +220,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
                 static_cast<unsigned>(grasp_phase_pub_.load(std::memory_order_acquire));
             grasp_controller_->CommandRelease();
             RCLCPP_INFO(logger_, "[grasp_command] RELEASE type=%s phase_before=%u",
-                        GraspHandModeName(gains_lock_.Load().grasp_hand_mode), phase_before);
+                        GraspHandModeName(mode), phase_before);
             resp->ok = true;
             resp->message = "release accepted";
           } else {
