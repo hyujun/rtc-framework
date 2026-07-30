@@ -287,10 +287,18 @@ def test_selection_change_refreshes_the_mode():
 # ── the mode switch (combobox + Set Mode) ────────────────────────────────────
 
 
-def test_the_offered_modes_are_the_whitelist_and_nothing_else():
+def test_the_offered_modes_are_the_whitelist_in_enum_order():
     """The combobox values are the controller's whitelist. A GUI-only mode would
     reach the controller as an off-whitelist string and be refused — the failure
-    would show up at the operator, not here, which is why the set is pinned."""
+    would show up at the operator, not here, which is why the list is pinned.
+
+    Pinned as a sequence, not a set: the values are what the operator reads top to
+    bottom, and they follow the GraspHandMode enum declaration order
+    (kContactStop, kForcePi, kNone). A set comparison would let a reordering — or
+    a duplicate — through silently."""
+    assert list(GRASP_MODES) == ["contact_stop", "force_pi", "none"]
+    # And the same names the rest of this file talks about, so the two literal
+    # copies of the whitelist cannot drift apart.
     assert set(GRASP_MODES) == {"force_pi", *BLOCKED_MODES}
 
 
@@ -418,6 +426,7 @@ def _send_state(
     reason: str = "",
     services_ready: bool = True,
     pick: str = "force_pi",
+    defer: bool = False,
 ):
     """State for the Set Mode path. The fake future fires its done-callback
     synchronously, so one _send_grasp_mode call exercises the whole chain.
@@ -440,9 +449,17 @@ def _send_state(
     state.get_logger = lambda: state._logger
     state.sent_params = []
     state.refreshes = []
+    state.refresh_kwargs = []
+    state.pending = []
+
     # Record the cache *as seen by the refetch*: invalidating after the refetch
-    # would leave the refetch reading the value it was meant to replace.
-    state._refresh_grasp_mode = lambda c: state.refreshes.append((c, dict(state._grasp_modes)))
+    # would leave the refetch reading the value it was meant to replace. The
+    # kwargs are recorded separately so the unknown-paint decision is observable.
+    def _fake_refresh(c, **kwargs):
+        state.refreshes.append((c, dict(state._grasp_modes)))
+        state.refresh_kwargs.append(kwargs)
+
+    state._refresh_grasp_mode = _fake_refresh
 
     class _Future:
         def __init__(self, resp):
@@ -452,7 +469,15 @@ def _send_state(
             return self._resp
 
         def add_done_callback(self, cb):
-            cb(self)
+            # `defer` models the real thing: the response lands on the executor
+            # thread some time after the press, which is the only way to put a
+            # selection change *between* the request and the outcome.
+            if defer:
+                state.pending.append(lambda: cb(self))
+            else:
+                cb(self)
+
+    state.fire = lambda: [cb() for cb in state.pending]
 
     class _Result:
         successful = None
@@ -563,6 +588,85 @@ def test_a_refusal_shows_the_controller_reason_verbatim_and_still_refetches():
     assert reason in state._grasp_mode_result_var.get()
     assert state._grasp_mode_result_label.kwargs["fg"] == GRASP_MODE_FG_BLOCKED
     assert state.refreshes == [(JOINT, {})]
+
+
+def test_a_refusal_keeps_the_operators_pick_in_the_combobox():
+    """The refusal is the case where the pick matters most: the operator opens the
+    hand and presses Set Mode again. Blanking the box on the way back — which is
+    what the refetch's unknown paint did — makes them re-choose the mode they
+    already chose, and the tab briefly claims it does not know the current mode
+    either."""
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _send_state(JOINT, successful=False, reason="hand is holding", pick="contact_stop")
+
+    DemoControllerGUI._send_grasp_mode(state)
+
+    assert state._grasp_mode_combo.get() == "contact_stop"
+    assert state.refresh_kwargs == [{"paint_unknown": False}], (
+        "the refetch repainted unknown, which blanks the combobox"
+    )
+
+
+def test_the_unknown_paint_is_kept_where_it_is_load_bearing():
+    """Companion to the test above: the unknown paint is skipped only for the
+    post-set refetch. The selection-change path must keep it — that is the case it
+    exists for, so the label cannot go on showing the previous controller's mode
+    while a fetch is in flight."""
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _refresh_state(JOINT, services_ready=False)
+    DemoControllerGUI._refresh_grasp_mode(state, JOINT)
+
+    assert state.applied == [(JOINT, GRASP_MODE_UNKNOWN)]
+
+
+def test_refresh_skips_the_unknown_paint_when_asked():
+    """The flag has to be honoured by the real method, not merely passed to it —
+    the caller-side test above drives a stubbed refetch, so on its own it would
+    still pass if _refresh_grasp_mode ignored the argument entirely."""
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _refresh_state(JOINT, services_ready=False)
+    DemoControllerGUI._refresh_grasp_mode(state, JOINT, paint_unknown=False)
+
+    assert state.applied == [], "painted unknown despite paint_unknown=False"
+    assert state._grasp_modes == {}, "a failed read must still not be cached"
+
+
+def test_an_outcome_for_a_deselected_controller_is_not_painted():
+    """Late-callback rule, same as _apply_grasp_mode's. The set is async: if the
+    response lands after the user moved on, the refusal belongs to a controller
+    whose widgets are no longer on screen. The cache drop and re-read still run —
+    those are about that controller's state, not about what is displayed."""
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _send_state(JOINT, successful=False, reason="hand is holding", defer=True)
+    state._grasp_modes[JOINT] = "contact_stop"
+    DemoControllerGUI._send_grasp_mode(state)
+    state._grasp_mode_result_var.set("")  # drop the in-flight line
+
+    state.selected_ctrl.set(TASK)  # the user navigates away, then the reply lands
+    state.fire()
+
+    assert state._grasp_mode_result_var.get() == "", "painted another controller's refusal"
+    assert JOINT not in state._grasp_modes, "cache drop skipped for the deselected controller"
+    assert state.refreshes == [(JOINT, {})], "re-read skipped for the deselected controller"
+
+
+def test_the_apply_guard_names_a_widget_the_method_drives():
+    """The builder creates the readout before the switch row, so guarding on
+    _grasp_mode_var alone would pass in a window where the combobox does not exist
+    yet. Unreachable today by construction — this keeps it that way through a
+    builder reorder."""
+    import inspect
+
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    source = inspect.getsource(DemoControllerGUI._apply_grasp_mode)
+    guarded = source.split('hasattr(self, "')[1].split('"')[0]
+    assert guarded == "_grasp_mode_apply_btn"
+    assert f"self.{guarded}.config" in source, "guard names a widget the method never drives"
 
 
 def test_the_refusal_reason_survives_a_catalog_poll_repaint():

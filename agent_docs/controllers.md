@@ -150,7 +150,7 @@ edge를 기다리지 않는 live command. (FSM 의 hold/non-hold 판정은 hand 
 
 ## GraspController (Force-PI, internal only)
 
-Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`). Whitelist `{force_pi, contact_stop, none}` — `none` disables all hand intervention (trajectory passes through) while GraspState aggregation/publishing continues; any other string fails `on_configure`.
+Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`). Whitelist `{force_pi, contact_stop, none}` — `none` disables all hand intervention (trajectory passes through) while GraspState aggregation/publishing continues. 화이트리스트 밖 값의 처리는 **출처에 따라 다르다**: YAML 값이면 `LoadConfig` 가 throw 해 `on_configure` FAILURE, 파라미터로 들어오면 (`DeclareGainParameters` 는 noexcept·void 라 전이를 실패시킬 수 없다) ERROR 로그와 함께 **거부되고 YAML 값이 유지**된다. 파라미터 경로는 capability 게이트도 통과해야 한다 — 블록 없이 `force_pi` 를 요구하면 같은 방식으로 거부된다 (cleanup 상태에서 `ros2 param set` 이 콜백 없이 수락되는 창을 막는다).
 
 **두 축이 분리돼 있다** (B-3): `BuildGraspController` 는 `force_pi_grasp` 블록 유무만 보고 **모드는 안 본다** — 블록이 있으면 어떤 모드로 시작하든 PI 컨트롤러가 만들어진다 (블록 = *capability*, 모드 = 매 tick 어느 법칙이 손을 잡는가). 컨트롤러 스위칭이 re-configure 를 하지 않으므로, 빌드가 모드를 봤다면 모드가 one-way door 가 된다. 따라서 `grasp_controller_ != nullptr` 은 "force_pi 가 돌고 있다"의 대용이 **아니다** — 제어 법칙·diagnostics fill·`grasp_command` srv (`GraspCommandRejectReason`) 가 각자 모드를 직접 확인한다. `ur5e_p1b` 가 `type: "none"` + 블록 조합을 실제로 싣고 있어 이 구분이 가설이 아니다.
 

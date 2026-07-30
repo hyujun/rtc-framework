@@ -758,13 +758,19 @@ class DemoControllerGUI(Node):
             self._grasp_clients[ctrl] = client
         return client
 
-    def _refresh_grasp_mode(self, ctrl: str) -> None:
+    def _refresh_grasp_mode(self, ctrl: str, *, paint_unknown: bool = True) -> None:
         """Show ``ctrl``'s grasp mode, fetching it once if not already cached.
 
         Runs on the Tk thread (selection change). The cached path paints
         immediately; the fetch path paints the unknown state first so the label
         never keeps showing the *previous* controller's mode while the
         round-trip is in flight.
+
+        ``paint_unknown=False`` skips that intermediate paint, for the one caller
+        where the previous controller's mode is not the risk: the re-read after a
+        set attempt, where the selection has not moved and the unknown paint would
+        blank the combobox — throwing away the pick the operator would otherwise
+        just re-apply after a refusal.
         """
         if not ctrl:
             return
@@ -773,7 +779,8 @@ class DemoControllerGUI(Node):
             self._apply_grasp_mode(ctrl, cached)
             return
 
-        self._apply_grasp_mode(ctrl, GRASP_MODE_UNKNOWN)
+        if paint_unknown:
+            self._apply_grasp_mode(ctrl, GRASP_MODE_UNKNOWN)
         if ctrl not in GRASP_MODE_OWNERS:
             # No parameter to fetch — the label is already correct and a query
             # would only wait out the service timeout.
@@ -819,7 +826,12 @@ class DemoControllerGUI(Node):
         """
         if ctrl != self.selected_ctrl.get():
             return
-        if not hasattr(self, "_grasp_mode_var"):
+        # Guard on the LAST widget this method drives, not the first: the builder
+        # creates the readout before the switch row, so a check on _grasp_mode_var
+        # alone would pass in a window where the combobox does not exist yet. The
+        # ordering makes that window unreachable today — this keeps it unreachable
+        # if the builder is ever reordered or the tab built lazily.
+        if not hasattr(self, "_grasp_mode_apply_btn"):
             return  # Grasp tab not built yet (startup ordering)
 
         enabled, text = grasp_command_enabled(ctrl, mode)
@@ -913,15 +925,29 @@ class DemoControllerGUI(Node):
         Invalidate and refetch in the same Tk callback so no catalog poll can
         slip in between and re-cache the stale value it just read.
         """
+        # Logged unconditionally, painted only for the current selection — the same
+        # late-callback rule _apply_grasp_mode follows. If the user moved to another
+        # controller while this set was in flight, painting would put one
+        # controller's refusal next to another controller's widgets.
+        selected = ctrl == self.selected_ctrl.get()
         if ok:
-            self._set_grasp_mode_result(f"{GRASP_MODE_PARAM} → {requested}", ok=True)
             self.get_logger().info(f"/{ctrl} {GRASP_MODE_PARAM} set to {requested}")
+            if selected:
+                self._set_grasp_mode_result(f"{GRASP_MODE_PARAM} → {requested}", ok=True)
         else:
-            self._set_grasp_mode_result(f"refused: {reason}", ok=False)
             self.get_logger().warn(f"/{ctrl} {GRASP_MODE_PARAM}={requested} refused: {reason}")
+            if selected:
+                self._set_grasp_mode_result(f"refused: {reason}", ok=False)
 
+        # Not gated on the selection: these are about `ctrl`'s state, not about
+        # what is on screen. Dropping the entry keeps the next visit to that
+        # controller honest, and the re-read is what confirms the mode.
         self._grasp_modes.pop(ctrl, None)
-        self._refresh_grasp_mode(ctrl)
+        # paint_unknown=False: the selection has not moved, so there is no previous
+        # controller's mode to clear — and the unknown paint would blank the
+        # combobox, discarding a pick the operator is about to re-apply after a
+        # refusal. The fetch's own callback paints the confirmed value.
+        self._refresh_grasp_mode(ctrl, paint_unknown=False)
 
     def _set_grasp_mode_result(self, text: str, ok: bool | None) -> None:
         """Write the mode-switch outcome line. Tk thread only.
