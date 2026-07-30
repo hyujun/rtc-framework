@@ -1622,12 +1622,14 @@ class DemoControllerGUI(Node):
         # Live Feedback: Arm Joint / End-Effector Pose / Hand Motor
         status_frame = ttk.LabelFrame(control_tab, text="Live Feedback", padding=4)
         status_frame.pack(fill="both", expand=False, padx=8, pady=2)
+        # Three side-by-side columns: arm joints │ end-effector │ hand motors.
         status_frame.columnconfigure(0, weight=1)
         status_frame.columnconfigure(1, weight=1)
+        status_frame.columnconfigure(2, weight=1)
 
-        # Row 0, Col 0: Arm Joint Positions (always q1..q6)
+        # Col 0: Arm Joint Positions (always q1..q6)
         joint_frame = ttk.LabelFrame(status_frame, text="Arm Joint Positions", padding=4)
-        joint_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 2), pady=(0, 2))
+        joint_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
 
         self._status_labels_names: list[tk.Label] = []
         self._status_labels_values: list[tk.Label] = []
@@ -1657,9 +1659,9 @@ class DemoControllerGUI(Node):
             val_lbl.grid(row=i, column=1, padx=3, pady=1)
             self._status_labels_values.append(val_lbl)
 
-        # Row 0, Col 1: End-Effector Pose (always task-space)
+        # Col 1: End-Effector Pose (always task-space)
         ee_frame = ttk.LabelFrame(status_frame, text="End-Effector Pose", padding=4)
-        ee_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 0), pady=(0, 2))
+        ee_frame.grid(row=0, column=1, sticky="nsew", padx=2)
 
         _task_state_row_labels = ["X (m)", "Y (m)", "Z (m)", "Roll", "Pitch", "Yaw"]
         self._task_state_labels_values: list[tk.Label] = []
@@ -1687,9 +1689,9 @@ class DemoControllerGUI(Node):
             val_lbl.grid(row=i, column=1, padx=3, pady=1)
             self._task_state_labels_values.append(val_lbl)
 
-        # Row 1: Hand Motor Positions (full width)
+        # Col 2: Hand Motor Positions (one sub-column per finger group)
         hand_status_frame = ttk.LabelFrame(status_frame, text="Hand Motor Positions", padding=4)
-        hand_status_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(2, 0))
+        hand_status_frame.grid(row=0, column=2, sticky="nsew", padx=(2, 0))
 
         self._hand_state_labels_values: list[tk.Label] = []
 
@@ -1929,6 +1931,22 @@ class DemoControllerGUI(Node):
             lbl.grid(row=i // 2, column=(i % 2) * 2 + 1, padx=(0, 8), pady=1)
             setattr(self, attr, lbl)
 
+        # Top row, third column: Grasp Detection params, alongside the
+        # aggregate values they gate (Active Contacts / Threshold / Min
+        # Fingers are the *applied* side of exactly these entries).
+        #
+        # Swapped per active controller by `_show_gains_panel`. The actual
+        # per-controller widgets (contact_thresh / force_thresh /
+        # min_fingertips) live inside `self._gains_grasp_inner`; the flat
+        # GAIN_DEFS wire order is still honoured because widgets are appended
+        # to `self._gain_entries` during `_prebuild_gains_panels`.
+        #
+        # Plain Frame, not a titled LabelFrame: the per-controller panel inside
+        # already draws a "Grasp Detection" group box, and two nested boxes with
+        # the same caption read as a rendering bug.
+        self._gains_grasp_inner = tk.Frame(top_row, bg="#1e1e2e")
+        self._gains_grasp_inner.pack(side="left", fill="y", padx=(12, 4))
+
         # Per-fingertip table
         ttk.Separator(state_frame, orient="horizontal").pack(fill="x", pady=2)
 
@@ -1998,23 +2016,28 @@ class DemoControllerGUI(Node):
             vl.grid(row=i + 1, column=3, padx=2, pady=1)
             self._ft_valid_labels.append(vl)
 
-        # ── Pull Force Estimate (#167 · #234 PR-C) ─────────────────────
-        self._build_pull_panel(parent, mono_font)
+        # ── Pull Force Estimate │ Force-PI Grasp Controller ─────────────
+        # One row, two columns. Both panels build into their own column
+        # frame and keep packing internally, so `_build_pull_panel` stays
+        # parent-agnostic (it is built standalone by the panel tests).
+        panel_row = tk.Frame(parent, bg="#1e1e2e")
+        panel_row.pack(fill="x")
+        panel_row.columnconfigure(0, weight=1)
+        panel_row.columnconfigure(1, weight=1)
 
-        # ── Grasp Detection Params ──────────────────────────────────────
-        # Swapped per active controller by `_show_gains_panel`. The
-        # actual per-controller widgets (contact_thresh / force_thresh /
-        # min_fingertips) live inside `self._gains_grasp_inner`; the
-        # flat GAIN_DEFS wire order is still honoured because widgets
-        # are appended to `self._gain_entries` during `_prebuild_gains_panels`.
-        grasp_gains_frame = ttk.LabelFrame(parent, text="Grasp Detection", padding=4)
-        grasp_gains_frame.pack(fill="x", padx=8, pady=(2, 2))
-        self._gains_grasp_inner = tk.Frame(grasp_gains_frame, bg="#1e1e2e")
-        self._gains_grasp_inner.pack(fill="x")
+        # Col 0: Pull Force Estimate (#167 · #234 PR-C)
+        pull_col = tk.Frame(panel_row, bg="#1e1e2e")
+        pull_col.grid(row=0, column=0, sticky="nsew")
+        self._build_pull_panel(pull_col, mono_font)
 
-        # ── Force-PI Grasp Controller ──────────────────────────────────
-        fp_frame = ttk.LabelFrame(parent, text="Force-PI Grasp Controller", padding=4)
-        fp_frame.pack(fill="x", padx=8, pady=(2, 2))
+        # Col 1: Force-PI Grasp Controller
+        fp_col = tk.Frame(panel_row, bg="#1e1e2e")
+        fp_col.grid(row=0, column=1, sticky="nsew")
+        fp_frame = ttk.LabelFrame(fp_col, text="Force-PI Grasp Controller", padding=4)
+        fp_frame.pack(fill="both", expand=True, padx=8, pady=(2, 2))
+        # Wrap width for the two full-sentence readouts at the bottom of this
+        # panel, sized to the half-tab column they now live in.
+        fp_wrap_px = 480
 
         # Phase + target force row
         fp_top = tk.Frame(fp_frame, bg="#1e1e2e")
@@ -2164,16 +2187,22 @@ class DemoControllerGUI(Node):
         # and until the controllers exposed that as a parameter the GUI could
         # not tell the operator which side of the rule they were on.
         # _apply_grasp_mode fills this in (and disables the buttons) per
-        # selected controller.
+        # selected controller. Its own row rather than a trailing item on the
+        # command row: this panel is half-tab-wide, and the sentence it can
+        # carry ("mode: unknown (parameter service unreachable)") is exactly
+        # the case where a clipped readout would mislead.
         self._grasp_mode_var = tk.StringVar(value="mode: …")
         self._grasp_mode_label = tk.Label(
-            cmd_frame,
+            fp_frame,
             textvariable=self._grasp_mode_var,
             bg="#1e1e2e",
             fg=GRASP_MODE_FG_UNKNOWN,
             font=("Segoe UI", 7, "italic"),
+            anchor="w",
+            justify="left",
+            wraplength=fp_wrap_px,
         )
-        self._grasp_mode_label.pack(side="left", padx=(12, 0))
+        self._grasp_mode_label.pack(fill="x", padx=8, pady=(2, 0))
 
         # Mode switch row. The mode is writable at runtime, but only while the
         # hand is quiet — the controller refuses the set otherwise and hands
@@ -2200,18 +2229,21 @@ class DemoControllerGUI(Node):
         )
         self._grasp_mode_apply_btn.pack(side="left", padx=4)
 
+        # Same reasoning as the readout above — the refusal reason is a full
+        # sentence, so it gets the panel width instead of the stub left over
+        # beside the combobox.
         self._grasp_mode_result_var = tk.StringVar(value="")
         self._grasp_mode_result_label = tk.Label(
-            mode_frame,
+            fp_frame,
             textvariable=self._grasp_mode_result_var,
             bg="#1e1e2e",
             fg=GRASP_MODE_FG_UNKNOWN,
             font=("Segoe UI", 7),
             anchor="w",
             justify="left",
-            wraplength=420,
+            wraplength=fp_wrap_px,
         )
-        self._grasp_mode_result_label.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        self._grasp_mode_result_label.pack(fill="x", padx=8, pady=(2, 0))
 
         # ── Sensor Calibration ─────────────────────────────────────────
         # Triggers recalibration of hand sensors via /<hand_group>/calibration/command.
