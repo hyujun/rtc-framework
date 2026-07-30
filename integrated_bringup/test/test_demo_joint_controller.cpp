@@ -10,6 +10,9 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 
+#include <lifecycle_msgs/msg/state.hpp>
+#include <rclcpp_lifecycle/state.hpp>
+
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
@@ -521,6 +524,126 @@ TEST_F(JointContactStopWithPiBuiltTest, SwitchingAwayWhileLatchedDoesNotSnapBack
 // only be set while the hold is the law, and the closure drops it on the way out,
 // so "latched while contact_stop is the law again" cannot be constructed. It is
 // defence-in-depth, like the WARN.)
+// ── FSM ownership when the PI law is not running (review C2) ─────────────────
+
+// The lock this closed. A GRASP accepted under force_pi steps the FSM off Idle on
+// the next tick; if the mode switch lands after that, nothing steps the FSM ever
+// again — the gate's phase mirror froze non-Idle, so every later switch was
+// refused, and grasp_command refused RELEASE because the mode was no longer
+// force_pi. There was no way back. The non-force_pi ticks now own the FSM.
+TEST_F(JointForcePiBuiltTest, LeavingForcePiMidGraspReleasesTheQuietGate) {
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0)) << "fixture built no PI controller";
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 5);
+  ASSERT_NE(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "fixture never left Idle — the lock cannot be constructed";
+
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kContactStop;
+  ctrl_.set_gains(g);
+  (void)RunHandTicks(ctrl_, state_, 1);
+
+  EXPECT_EQ(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "the quiet gate is still waiting on an FSM nobody steps";
+}
+
+// `none` is the other away-mode and it is not hypothetical: ur5e_p1b ships a
+// force_pi_grasp block with grasp_controller_type "none", so this is the path a
+// real config takes. A reset keyed on "the freeze runs" instead of "the PI law
+// does not" would leave that config locked.
+TEST_F(JointForcePiBuiltTest, LeavingForcePiForNoneAlsoReleasesTheQuietGate) {
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 5);
+  ASSERT_NE(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kNone;
+  ctrl_.set_gains(g);
+  (void)RunHandTicks(ctrl_, state_, 1);
+
+  EXPECT_EQ(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "mode none left the gate locked";
+}
+
+// The other half: coming back must not resume the interrupted grasp. UpdateIdle()
+// consumes the request flags and there is no external cancel, so a flag that
+// survives the excursion re-enters kApproaching on the first tick home.
+TEST_F(JointForcePiBuiltTest, ReturningToForcePiDoesNotResumeTheInterruptedGrasp) {
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 5);
+
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kContactStop;
+  ctrl_.set_gains(g);
+  (void)RunHandTicks(ctrl_, state_, 1);
+
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kForcePi;
+  ctrl_.set_gains(g);
+  (void)RunHandTicks(ctrl_, state_, 50);
+
+  EXPECT_EQ(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "the old grasp resumed itself on the way back";
+}
+
+// The flag-only shape of the same hazard: a request armed while another law owns
+// the hand never steps the FSM, so nothing is observable at the time — the phase
+// stays Idle either way. It only surfaces when force_pi comes back.
+TEST_F(JointContactStopWithPiBuiltTest, AGraspArmedUnderAnotherLawIsDisarmed) {
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 1);
+
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kForcePi;
+  ctrl_.set_gains(g);
+  (void)RunHandTicks(ctrl_, state_, 50);
+
+  EXPECT_EQ(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "a request armed under another law fired on the switch";
+}
+
+// The activation half, which no tick can cover: a deactivate mid-grasp stops the
+// ticks, so the reset has to happen at on_activate. Same argument the
+// pull-estimator latches next to it have carried since #167.
+TEST_F(JointForcePiBuiltTest, ActivationResetsTheFsmAndArmsTheServiceGate) {
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  // Activate FIRST, so the deactivate below is a true→false transition. Asserting
+  // `false` on a controller that was never activated passes on the initial value
+  // and says nothing about on_deactivate — a mutation that dropped that store
+  // survived this test until the order was fixed.
+  EXPECT_FALSE(ctrl_.IsActiveForTesting()) << "active before any activation";
+  ASSERT_EQ(ctrl_.on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(ctrl_.IsActiveForTesting()) << "activation did not open the service gate";
+
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 5);
+  ASSERT_NE(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+
+  ASSERT_EQ(ctrl_.on_deactivate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl_.IsActiveForTesting()) << "grasp_command still accepted while Inactive";
+  ASSERT_EQ(ctrl_.on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  EXPECT_TRUE(ctrl_.IsActiveForTesting());
+  EXPECT_EQ(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "re-activation resumed a mid-grasp FSM";
+  // And the request that was armed against that FSM is gone, not merely paused.
+  (void)RunHandTicks(ctrl_, state_, 50);
+  EXPECT_EQ(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+}
+
 // The edge must not be consumed by a tick that cannot run the closure. E-STOP is
 // the one tick shaped like that: Compute() early-returns before the hand lane, so
 // a mode change landing there is observed by nobody — and if the edge is computed

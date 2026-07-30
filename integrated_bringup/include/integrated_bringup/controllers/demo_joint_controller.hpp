@@ -202,6 +202,13 @@ class DemoJointController final : public RTControllerInterface {
     return true;
   }
 
+  /// Test-only: the activity flag the grasp_command service gates on. The service
+  /// itself needs a node and is verified at runtime; this pins the lifecycle
+  /// writes that feed it.
+  [[nodiscard]] bool IsActiveForTesting() const noexcept {
+    return active_.load(std::memory_order_acquire);
+  }
+
   /// Test-only: the latch value the non-RT quiet gate would read right now.
   /// Distinct from observing the freeze in the command: a tick that freezes the
   /// hand but never mirrors the latch leaves the gate believing the hand is
@@ -511,15 +518,28 @@ class DemoJointController final : public RTControllerInterface {
   /// tick-old value is fine and unavoidable — the callback cannot stop the RT
   /// thread, which is exactly why ComputeControl carries the race closure.
   std::atomic<bool> contact_latched_pub_{false};
-  /// Non-RT-readable mirror of grasp_controller_->phase(), stored by the force_pi
-  /// branch. Same reason as the latch mirror, one step stronger: the quiet gate
-  /// must not admit a mode change mid-grasp, and the FSM is mutated by
+  /// Non-RT-readable mirror of grasp_controller_->phase(), stored on EVERY tick.
+  /// Same reason as the latch mirror, one step stronger: the quiet gate must not
+  /// admit a mode change mid-grasp, and the FSM is mutated by
   /// GraspController::Update() on the RT tick — so reading phase() from the
   /// callback would be a genuine data race on a safety decision. kIdle is 0, so
-  /// the zero init is the right answer before the first force_pi tick, and the
-  /// value cannot go stale under another mode: nothing steps the FSM there (the
-  /// grasp_command service is mode-gated, see GraspCommandRejectReason).
+  /// the zero init is the right answer before the first force_pi tick.
+  ///
+  /// It used to be stored only inside the force_pi branch, justified by "the value
+  /// cannot go stale under another mode: nothing steps the FSM there". The premise
+  /// held; the conclusion did not. Nothing steps the FSM under another mode — and
+  /// that is exactly the problem, because the switch INTO another mode can land
+  /// after a tick has stepped the FSM off Idle: the mirror then froze non-Idle
+  /// with nothing left to move it, the gate refused every subsequent switch, and
+  /// grasp_command refused RELEASE because the mode was no longer force_pi. The
+  /// fix is on both ends — the non-force_pi ticks now Reset() the FSM, and this
+  /// mirror is stored unconditionally so it reports that.
   std::atomic<uint8_t> grasp_phase_pub_{0};
+  /// Is this controller Active? Written by on_activate / on_deactivate, read by
+  /// the grasp_command service — which outlives deactivation, so without this it
+  /// answered "grasp started" for a controller whose ticks had stopped, arming a
+  /// request that fired on the next activation.
+  std::atomic<bool> active_{false};
   /// Hold target while latched. Refreshed from the LPF output on every tick
   /// that contact is present; frozen once contact drops (no random-walk drift).
   std::array<double, kDemoJointMaxHandDof> hand_hold_position_{};

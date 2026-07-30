@@ -25,6 +25,9 @@
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"  // kMinMaxDamping
 
+#include <lifecycle_msgs/msg/state.hpp>
+#include <rclcpp_lifecycle/state.hpp>
+
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
@@ -1136,6 +1139,111 @@ TEST_F(TaskContactStopWithPiBuiltTest, SwitchingAwayWhileLatchedDoesNotSnapBackT
   // re-plan walks back to 0.8 and the hold above was only a reprieve.
   EXPECT_NEAR(out.devices[1].goal_positions[0], kHandStart, 1e-3);
   EXPECT_FALSE(ctrl_->GetContactLatchedMirrorForTesting());
+}
+
+// ── FSM ownership when the PI law is not running (review C2) ─────────────────
+// Same four properties as the joint controller, same order. Rationale lives there;
+// the pair has to stay symmetric because the fix is in shared code
+// (GraspController::Reset) driven from two independent compute paths.
+
+TEST_F(TaskForcePiBuiltTest, LeavingForcePiMidGraspReleasesTheQuietGate) {
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0)) << "fixture built no PI controller";
+  PrimeContact();
+  (void)RunTicks(5, /*feedback_hand=*/false);
+  ASSERT_NE(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "fixture never left Idle — the lock cannot be constructed";
+
+  auto g = ctrl_->get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kContactStop;
+  ctrl_->set_gains(g);
+  (void)RunTicks(1, /*feedback_hand=*/false);
+
+  EXPECT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "the quiet gate is still waiting on an FSM nobody steps";
+}
+
+// `none` is the other away-mode, and ur5e_p1b ships block + "none" — a reset keyed
+// on "the freeze runs" rather than "the PI law does not" would lock that config.
+TEST_F(TaskForcePiBuiltTest, LeavingForcePiForNoneAlsoReleasesTheQuietGate) {
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+  (void)RunTicks(5, /*feedback_hand=*/false);
+  ASSERT_NE(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+
+  auto g = ctrl_->get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kNone;
+  ctrl_->set_gains(g);
+  (void)RunTicks(1, /*feedback_hand=*/false);
+
+  EXPECT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "mode none left the gate locked";
+}
+
+TEST_F(TaskForcePiBuiltTest, ReturningToForcePiDoesNotResumeTheInterruptedGrasp) {
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+  (void)RunTicks(5, /*feedback_hand=*/false);
+
+  auto g = ctrl_->get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kContactStop;
+  ctrl_->set_gains(g);
+  (void)RunTicks(1, /*feedback_hand=*/false);
+
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kForcePi;
+  ctrl_->set_gains(g);
+  (void)RunTicks(50, /*feedback_hand=*/false);
+
+  EXPECT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "the old grasp resumed itself on the way back";
+}
+
+TEST_F(TaskContactStopWithPiBuiltTest, AGraspArmedUnderAnotherLawIsDisarmed) {
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+  (void)RunTicks(1, /*feedback_hand=*/false);
+
+  auto g = ctrl_->get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kForcePi;
+  ctrl_->set_gains(g);
+  (void)RunTicks(50, /*feedback_hand=*/false);
+
+  EXPECT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "a request armed under another law fired on the switch";
+}
+
+TEST_F(TaskForcePiBuiltTest, ActivationResetsTheFsmAndArmsTheServiceGate) {
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  // Activate FIRST — see the joint twin: asserting `false` without a preceding
+  // activation only re-reads the initial value and lets a dropped on_deactivate
+  // store survive.
+  EXPECT_FALSE(ctrl_->IsActiveForTesting()) << "active before any activation";
+  ASSERT_EQ(ctrl_->on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(ctrl_->IsActiveForTesting()) << "activation did not open the service gate";
+
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+  (void)RunTicks(5, /*feedback_hand=*/false);
+  ASSERT_NE(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+
+  ASSERT_EQ(ctrl_->on_deactivate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl_->IsActiveForTesting()) << "grasp_command still accepted while Inactive";
+  ASSERT_EQ(ctrl_->on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  EXPECT_TRUE(ctrl_->IsActiveForTesting());
+  EXPECT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "re-activation resumed a mid-grasp FSM";
+  (void)RunTicks(50, /*feedback_hand=*/false);
+  EXPECT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
 }
 
 // The regression this controller actually had: the mode comparison was hoisted

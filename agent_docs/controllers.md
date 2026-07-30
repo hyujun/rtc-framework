@@ -160,6 +160,8 @@ quiet 조건을 고른 이유 (2026-07-30 확정): 대안이던 "항상 허용 +
 
 **quiet gate 는 RT 스레드를 멈출 수 없다** — 파라미터 콜백은 RT tick 이 store 하는 atomic 미러(`contact_latched_pub_` / `grasp_phase_pub_`)를 읽으므로 판정이 한 tick 뒤처진다. check 와 store 사이에 접촉이 걸리는 창은 compute 쪽 race closure 가 닫는다: 모드가 contact_stop 을 떠난 tick 에 latch 가 걸려 있으면 latch 를 떨구기 **전에** hand goal 을 `hand_hold_position_` 으로 재-seed 하고 throttled WARN 을 찍는다 (gate 가 정상이면 절대 발화하지 않으므로 발화 자체가 결함 신호다). 없으면 명령이 전환 첫 tick 에 접촉 전 goal 로 튄다 — 실측 0.3 → 0.8 rad.
 
+**non-force_pi tick 은 FSM 을 리셋한다** (리뷰 후속 C2). `GraspController::Reset()` 을 모드가 force_pi 가 아닌 매 tick + `on_activate` 에서 호출하므로 **"이 컨트롤러가 PI 법칙을 돌리지 않는 동안 FSM 은 항상 kIdle"** 이 무조건 성립한다. 조건부였을 때 실제로 깨졌다: GRASP 수락 → RT tick 이 FSM 을 kApproaching 으로 step → 그 뒤 모드 전환 Store 가 착지하면, 아무도 FSM 을 step 하지 않으므로 phase 미러가 non-Idle 로 얼고 quiet gate 가 이후 **모든** 전환을 거부하며 `grasp_command` 는 모드가 force_pi 가 아니라 RELEASE 도 거부한다 (복구 불가). 미러도 분기 밖에서 **매 tick** store 한다. 같은 이유로 `grasp_command` 는 Inactive 컨트롤러에서 거부된다 — 서비스가 deactivate 를 넘어 살아 있어 요청만 arm 되고 다음 활성화 첫 tick 에 발화했다.
+
 **FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
 
 PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/include/.../grasp_types.hpp` 가 SSoT — controller-specific YAML 로 override 가능.

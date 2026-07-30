@@ -41,6 +41,23 @@ void GraspController::CommandRelease() noexcept {
   release_requested_.store(true, std::memory_order_release);
 }
 
+void GraspController::Reset() noexcept {
+  phase_ = GraspPhase::kIdle;
+  grasp_requested_.store(false, std::memory_order_release);
+  // The release flag is defence-in-depth rather than a live hazard on its own:
+  // UpdateIdle() already drops it unconditionally ("이미 Idle"), so a lone stale
+  // RELEASE cannot act. What it covers is the ordering — UpdateIdle() takes a
+  // pending GRASP first, so a pair armed while another law owned the hand would
+  // enter kApproaching still carrying the release, and abort the new grasp on the
+  // next tick.
+  release_requested_.store(false, std::memory_order_release);
+  // Same pair Init() clears, and for the same reason: the per-finger s / force
+  // history and the filter tail describe an object this controller may no longer
+  // be touching.
+  ResetFingers();
+  force_filter_.Reset();
+}
+
 void GraspController::set_target_force(double f) noexcept {
   if (f > 0.0) {
     active_target_force_ = f;

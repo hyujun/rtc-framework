@@ -467,10 +467,6 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       // Phase-transition log: rare event (gated by phase change), but still
       // throttled as a defensive RT-safety net in case the FSM oscillates.
       const auto cur_phase = static_cast<uint8_t>(grasp_controller_->phase());
-      // Mirror for the non-RT quiet gate (rationale on the member). Stored here
-      // rather than beside the latch mirror because this is the only place the
-      // FSM is stepped, so it is the only place the value can have changed.
-      grasp_phase_pub_.store(cur_phase, std::memory_order_release);
       if (cur_phase != prev_grasp_phase_) {
         RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                              "[force_pi] phase %u -> %u target_force=%.2fN", prev_grasp_phase_,
@@ -612,12 +608,33 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       }
     }
 
-    // Publish the latch for the non-RT quiet gate (rationale on the member).
-    // Unconditional and outside every branch on purpose: the latch is written on
-    // several paths (contact engage, release gate, hand E-STOP, the race closure
-    // above) and a mirror maintained per-path would be one refactor away from
-    // missing one — and a missed path fails in the direction that opens the mode
-    // switch on a held object.
+    // Not the PI law this tick → the FSM must not stay parked where the law left
+    // it. Whoever stops calling Update() stops advancing the FSM, so a grasp
+    // interrupted by a mode change stays frozen mid-phase with its request flags
+    // still armed: the mirror below freezes with it and the quiet gate then
+    // refuses every switch from that point on (it is waiting for an FSM nobody
+    // steps), while the first tick back in force_pi resumes the squeeze on
+    // whatever the hand is holding by then. Idempotent, so it needs no mode edge
+    // to be observed — that is what keeps it working when a tick swallows one.
+    if (!run_force_pi && grasp_controller_ != nullptr) {
+      grasp_controller_->Reset();
+      // The transition log's baseline goes with it: the next force_pi tick must
+      // not report a phase change that happened while the law was not running.
+      prev_grasp_phase_ = static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle);
+    }
+
+    // Publish the FSM phase + the latch for the non-RT quiet gate (rationale on
+    // the members). Unconditional and outside every branch on purpose: both are
+    // written on several paths (the latch on contact engage, release gate, hand
+    // E-STOP and the race closure above; the phase inside Update() and the reset
+    // just above) and a mirror maintained per-path would be one refactor away
+    // from missing one. Both fail in the same direction when missed — the phase
+    // one freezes non-Idle and locks the switch, the latch one opens the switch
+    // on a held object.
+    grasp_phase_pub_.store(grasp_controller_ != nullptr
+                               ? static_cast<uint8_t>(grasp_controller_->phase())
+                               : static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle),
+                           std::memory_order_release);
     contact_latched_pub_.store(contact_latched_, std::memory_order_release);
 
     // ── In-plane pull-force estimate (#167) ─────────────────────────────
