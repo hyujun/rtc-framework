@@ -794,6 +794,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_presets test/test_demo_gui_presets.py)
   ament_add_pytest_test(test_demo_gui_pull test/test_demo_gui_pull.py)
   ament_add_pytest_test(test_demo_gui_task_frame test/test_demo_gui_task_frame.py)
+  ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
 endif()
 
 ament_package()
