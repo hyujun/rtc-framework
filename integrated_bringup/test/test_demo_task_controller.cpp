@@ -1141,6 +1141,37 @@ TEST_F(TaskContactStopWithPiBuiltTest, SwitchingAwayWhileLatchedDoesNotSnapBackT
   EXPECT_FALSE(ctrl_->GetContactLatchedMirrorForTesting());
 }
 
+// ── Quiet-gate mirrors across a re-configure (review C3) ─────────────────────
+// Rationale on the joint twins.
+
+TEST_F(TaskContactStopWithPiBuiltTest, ReconfigureClearsTheLatchMirror) {
+  PrimeContact();
+  (void)RunTicks(300, /*feedback_hand=*/false);
+  ASSERT_TRUE(ctrl_->GetContactLatchedMirrorForTesting()) << "fixture never latched";
+
+  ctrl_->LoadConfig(YAML::Load(ControllerYaml()));
+
+  EXPECT_FALSE(ctrl_->GetContactLatchedMirrorForTesting())
+      << "re-configure left the gate believing the old hand was still holding";
+  EXPECT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+}
+
+TEST_F(TaskForcePiBuiltTest, ReconfigureClearsThePhaseMirror) {
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+  (void)RunTicks(5, /*feedback_hand=*/false);
+  ASSERT_NE(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+
+  ctrl_->LoadConfig(YAML::Load(ControllerYaml()));
+
+  EXPECT_EQ(ctrl_->GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "re-configure left the gate waiting on the old FSM";
+  EXPECT_FALSE(ctrl_->GetContactLatchedMirrorForTesting());
+}
+
 // ── FSM ownership when the PI law is not running (review C2) ─────────────────
 // Same four properties as the joint controller, same order. Rationale lives there;
 // the pair has to stay symmetric because the fix is in shared code

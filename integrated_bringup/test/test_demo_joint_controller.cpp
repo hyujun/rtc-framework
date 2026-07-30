@@ -524,6 +524,40 @@ TEST_F(JointContactStopWithPiBuiltTest, SwitchingAwayWhileLatchedDoesNotSnapBack
 // only be set while the hold is the law, and the closure drops it on the way out,
 // so "latched while contact_stop is the law again" cannot be constructed. It is
 // defence-in-depth, like the WARN.)
+// ── Quiet-gate mirrors across a re-configure (review C3) ─────────────────────
+
+// LoadConfig resets the latch and rebuilds the PI controller, but the parameter
+// callback reads only the mirrors — so a mirror left holding the previous
+// configuration's value decides the next mode switch. A stale `true` latch refuses
+// every switch; a stale non-Idle phase does the same and cannot be cleared.
+TEST_F(JointContactStopWithPiBuiltTest, ReconfigureClearsTheLatchMirror) {
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 300);
+  ASSERT_TRUE(ctrl_.GetContactLatchedMirrorForTesting()) << "fixture never latched";
+
+  ctrl_.LoadConfig(YAML::Load(kForcePiYaml));
+
+  EXPECT_FALSE(ctrl_.GetContactLatchedMirrorForTesting())
+      << "re-configure left the gate believing the old hand was still holding";
+  EXPECT_EQ(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+}
+
+TEST_F(JointForcePiBuiltTest, ReconfigureClearsThePhaseMirror) {
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 5);
+  ASSERT_NE(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
+
+  ctrl_.LoadConfig(YAML::Load(kForcePiYaml));
+
+  EXPECT_EQ(ctrl_.GetGraspPhaseMirrorForTesting(),
+            static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle))
+      << "re-configure left the gate waiting on the old FSM";
+  EXPECT_FALSE(ctrl_.GetContactLatchedMirrorForTesting());
+}
+
 // ── FSM ownership when the PI law is not running (review C2) ─────────────────
 
 // The lock this closed. A GRASP accepted under force_pi steps the FSM off Idle on
