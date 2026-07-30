@@ -675,6 +675,16 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
                                           const Gains& gains) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ComputeSecondary");
 
+  // The grasp mode this hand lane runs under, cached for the output fills (which
+  // have no Gains of their own) and compared for the race closure below. Both
+  // live on this side of Compute()'s `!estop_active_` gate on purpose: an E-STOP
+  // tick must not consume the edge that the closure is the only consumer of.
+  // Tick 1 can report a spurious edge (the member starts at kContactStop while
+  // the config may say otherwise); the only consumer is latch-gated and the latch
+  // cannot be set before a tick has run, so that edge is unreachable in practice.
+  const bool grasp_mode_changed = gains.grasp_hand_mode != grasp_hand_mode_cached_;
+  grasp_hand_mode_cached_ = gains.grasp_hand_mode;
+
   // ── Hand motor trajectory ──────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
@@ -739,13 +749,63 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
     // inside rclcpp logging macros is acceptable at this interval.
     RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
                          "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
-                         GraspHandModeName(grasp_hand_mode_), active_count, num_active_fingertips_,
-                         static_cast<double>(max_force), static_cast<double>(force_thresh),
+                         GraspHandModeName(gains.grasp_hand_mode), active_count,
+                         num_active_fingertips_, static_cast<double>(max_force),
+                         static_cast<double>(force_thresh),
                          grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
 
-    // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary
-    // freeze)
-    if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
+    // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary freeze).
+    // Named once, because the race closure below has to ask "will the hold run
+    // this tick?" and get exactly the answer the branch itself uses.
+    //
+    // The `!= kNone` form is deliberate: a "force_pi" config whose grasp
+    // controller failed to build (null) must still fall into the contact_stop
+    // safety freeze, not silently become a no-op.
+    const bool run_force_pi = grasp_controller_ && gains.grasp_hand_mode == GraspHandMode::kForcePi;
+    const bool run_contact_stop = !run_force_pi && gains.grasp_hand_mode != GraspHandMode::kNone;
+
+    // ── Race closure for the runtime mode switch ──────────────────────────
+    // Sibling of the joint controller's; the full rationale lives there. In
+    // short: the parameter callback refuses a mode change unless the hand is
+    // quiet, but it reads the latch through an atomic mirror and cannot hold the
+    // RT thread still, so contact can engage between its check and its Store.
+    // The next tick would then stop running the hold while hand_computed_ reverts
+    // to a trajectory still aimed at the PRE-CONTACT goal — a resumed squeeze on
+    // a held object. Re-seed the goal to the hold position before dropping the
+    // latch, so the trajectory taking over is already a standing hold.
+    //
+    // WARN, not INFO: a quiet gate that works means this never fires, so the
+    // message appearing at all is the signal that the gate has a hole.
+    if (grasp_mode_changed && contact_latched_ && !run_contact_stop) {
+      trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State hold_state;
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        current_target_slot_.targets[1][idx] = hand_hold_position_[idx];
+        // This tick too, not just the next one: the hand trajectory block ran
+        // earlier in ComputeSecondary, so hand_computed_ already holds a step
+        // toward the old goal.
+        hand_computed_.positions[idx] = hand_hold_position_[idx];
+        hand_computed_.velocities[idx] = 0.0;
+        hold_state.positions[idx] = hand_hold_position_[idx];
+        hold_state.velocities[idx] = 0.0;
+        hold_state.accelerations[idx] = 0.0;
+      }
+      target_seqlock_.Store(current_target_slot_);
+      // Duration only has to be non-zero: start state == goal state, so the
+      // quintic is a constant. Same value DrainTargetSlot's hold-seed uses.
+      constexpr double kHoldSeedDuration = 0.01;
+      hand_trajectory_.initialize(hold_state, hold_state, kHoldSeedDuration);
+      hand_trajectory_time_ = 0.0;
+      // The goal now equals the trajectory, so nothing is left pending.
+      hand_new_target_pending_ = false;
+      contact_latched_ = false;
+      RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
+                           "[grasp] mode left contact_stop while LATCHED -> re-seeded hand hold "
+                           "(the quiet gate should have refused this); now type=%s",
+                           GraspHandModeName(gains.grasp_hand_mode));
+    }
+
+    if (run_force_pi) {
       std::array<double, rtc::grasp::kMaxGraspFingers> f_raw{};
       for (int f = 0; f < num_grasp_fingers_; ++f) {
         f_raw[static_cast<std::size_t>(f)] =
@@ -776,13 +836,11 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
           }
         }
       }
-    } else if (grasp_hand_mode_ != GraspHandMode::kNone) {
+    } else if (run_contact_stop) {
       // grasp_controller_type=="none": no hand intervention — trajectory output
       // passes through untouched.  GraspState aggregation/publishing below is
-      // unaffected (BT IsGrasped/IsForceAbove still observe contact).  The
-      // negated form (!= "none") is deliberate: a "force_pi" config whose
-      // grasp controller failed to build (null) must still fall into the
-      // contact_stop safety freeze, not silently become a no-op.
+      // unaffected (BT IsGrasped/IsForceAbove still observe contact). Why the
+      // predicate is negated rather than `== kContactStop`: see run_contact_stop.
       //
       // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
       // → BT tick(50ms) 사이에도 과도한 hand closure 방지
@@ -897,6 +955,35 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
         }
       }
     }
+
+    // Not the PI law this tick → the FSM must not stay parked where the law left
+    // it. Whoever stops calling Update() stops advancing the FSM, so a grasp
+    // interrupted by a mode change stays frozen mid-phase with its request flags
+    // still armed: the mirror below freezes with it and the quiet gate then
+    // refuses every switch from that point on (it is waiting for an FSM nobody
+    // steps), while the first tick back in force_pi resumes the squeeze on
+    // whatever the hand is holding by then. Idempotent, so it needs no mode edge
+    // to be observed — that is what keeps it working when a tick swallows one.
+    if (!run_force_pi && grasp_controller_ != nullptr) {
+      grasp_controller_->Reset();
+      // The transition log's baseline goes with it: the next force_pi tick must
+      // not report a phase change that happened while the law was not running.
+      prev_grasp_phase_ = static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle);
+    }
+
+    // Publish the FSM phase + the latch for the non-RT quiet gate (rationale on
+    // the members). Unconditional and outside every branch on purpose: both are
+    // written on several paths (the latch on contact engage, release gate, hand
+    // E-STOP and the race closure above; the phase inside Update() and the reset
+    // just above) and a mirror maintained per-path would be one refactor away
+    // from missing one. Both fail in the same direction when missed — the phase
+    // one freezes non-Idle and locks the switch, the latch one opens the switch
+    // on a held object.
+    grasp_phase_pub_.store(grasp_controller_ != nullptr
+                               ? static_cast<uint8_t>(grasp_controller_->phase())
+                               : static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle),
+                           std::memory_order_release);
+    contact_latched_pub_.store(contact_latched_, std::memory_order_release);
 
     // ── In-plane pull-force estimate (#167) ─────────────────────────────
     // Feeds the 3-axis fingertip forces (before the |F| collapse in
@@ -1165,7 +1252,9 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
     }
   }
 
-  if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
+  // grasp_hand_mode_cached_, not a fresh Load: this publishes what the control
+  // law produced, so it must agree with the branch ComputeSecondary took.
+  if (grasp_controller_ && grasp_hand_mode_cached_ == GraspHandMode::kForcePi) {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
     grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
     const auto fs = grasp_controller_->finger_states();

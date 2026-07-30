@@ -101,8 +101,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
             {secondary_state_key, {secondary_joint_names_, secondary_motor_names_}},
         },
         {
-            {secondary_sensor_key,
-             {secondary_sensor_names_, secondary_sensor_values_per_group_}},
+            {secondary_sensor_key, {secondary_sensor_names_, secondary_sensor_values_per_group_}},
         },
         {},                      // wbc_state_logs — WBC controller only
         {},                      // wbc_diag_logs  — WBC controller only
@@ -159,11 +158,28 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
             resp->message = "E-STOP active";
             return;
           }
-          if (!grasp_controller_) {
+          // Activity, before any mode question: this service outlives
+          // on_deactivate, so an Inactive controller used to answer "grasp
+          // started" and arm a request that no tick of its own would consume —
+          // then fire it on the first tick after the next activation. on_activate
+          // now Resets() the FSM, which disarms that; this stops the lie.
+          if (!active_.load(std::memory_order_acquire)) {
             resp->ok = false;
-            resp->message =
-                "grasp_controller unavailable (set 'grasp_controller_type: "
-                "force_pi' in YAML to enable Grasp/Release)";
+            resp->message = "controller is not active";
+            return;
+          }
+          // ONE snapshot for the whole callback: the decision and the log line
+          // that reports it must name the same mode. Three separate Loads could
+          // refuse on one mode and log another if a set landed in between.
+          const auto mode = gains_lock_.Load().grasp_hand_mode;
+          // Mode, not just nullness (#327 B-3). BuildGraspController no longer
+          // consults the mode, so a non-null controller no longer means the PI law
+          // is the one driving the hand — accepting here would answer "grasp
+          // started" and step an FSM the tick ignores.
+          if (const char* why = GraspCommandRejectReason(mode, grasp_controller_ != nullptr);
+              why != nullptr) {
+            resp->ok = false;
+            resp->message = why;
             return;
           }
           using Req = rtc_msgs::srv::GraspCommand::Request;
@@ -173,17 +189,22 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
               resp->message = "GRASP requires target_force > 0";
               return;
             }
-            const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
+            // The mirror, not phase(): the FSM is mutated by Update() on the RT
+            // tick, so a direct read here races it. Tick-old is exactly right for
+            // "the phase before this command" — the command has not been applied.
+            const auto phase_before =
+                static_cast<unsigned>(grasp_phase_pub_.load(std::memory_order_acquire));
             grasp_controller_->CommandGrasp(req->target_force);
             RCLCPP_INFO(logger_, "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
-                        req->target_force, GraspHandModeName(grasp_hand_mode_), phase_before);
+                        req->target_force, GraspHandModeName(mode), phase_before);
             resp->ok = true;
             resp->message = "grasp started @ " + std::to_string(req->target_force) + " N";
           } else if (req->command == Req::RELEASE) {
-            const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
+            const auto phase_before =
+                static_cast<unsigned>(grasp_phase_pub_.load(std::memory_order_acquire));
             grasp_controller_->CommandRelease();
             RCLCPP_INFO(logger_, "[grasp_command] RELEASE type=%s phase_before=%u",
-                        GraspHandModeName(grasp_hand_mode_), phase_before);
+                        GraspHandModeName(mode), phase_before);
             resp->ok = true;
             resp->message = "release accepted";
           } else {
@@ -226,12 +247,31 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
   // baseline) are otherwise only cleared at configure, so a deactivate/activate
   // cycle would resume mid-grasp state against a possibly different object.
   ResetPullEstimatorRtState(pull_wiring_);
+  // The identical argument, applied to the grasp FSM — which it was not, until a
+  // review found the gap. A deactivate mid-grasp freezes the FSM (nothing steps
+  // it while Inactive) with its request flags still armed, so the first tick after
+  // re-activation resumes a squeeze against whatever the hand now holds, and the
+  // quiet gate's phase mirror stays non-Idle in the meantime. Safe here: the CM
+  // activates before it ticks this controller, so no RT tick is in flight — the
+  // same window ResetPullEstimatorRtState relies on.
+  if (grasp_controller_) {
+    grasp_controller_->Reset();
+  }
+  grasp_phase_pub_.store(static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle),
+                         std::memory_order_release);
+  // Gates the grasp_command service (below Inactive it would arm a request no
+  // tick of this controller consumes and answer "grasp started").
+  active_.store(true, std::memory_order_release);
   // Base bumps the activation generation + calls ResetTargetInitialization().
   return RTControllerInterface::on_activate(prev);
 }
 
 RTControllerInterface::CallbackReturn DemoTaskController::on_deactivate(
     const rclcpp_lifecycle::State& prev) noexcept {
+  // First, before anything else can block: the service stays alive across
+  // deactivation, so this is what stops it accepting commands for a controller
+  // that has stopped ticking.
+  active_.store(false, std::memory_order_release);
   DeactivateOwnedTopics(prev, owned_topics_);
   log_set_.DrainAll();  // flush in-flight log SPSC residue
   return CallbackReturn::SUCCESS;

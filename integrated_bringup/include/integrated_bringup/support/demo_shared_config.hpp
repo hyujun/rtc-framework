@@ -137,10 +137,55 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg);
 // sites forward the value from their LifecycleNode's `config_variant` param.
 void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_variant = "");
 
-// Build (or reset) the GraspController based on `cfg`. Resets to nullptr unless
-// grasp_controller_type == "force_pi" and a force-pi block was provided.
+// Build (or reset) the GraspController based on `cfg`. Resets to nullptr unless a
+// force-pi block was provided.
+//
+// The MODE is deliberately not consulted. What a force-pi block buys is the
+// *capability* to run the PI law; which law actually drives the hand each tick is
+// `Gains::grasp_hand_mode`, and that is now writable at runtime — so a build that
+// skipped construction under contact_stop would make the mode a one-way door.
+// Every consumer that used to read `grasp_controller_ != nullptr` as "force_pi is
+// running" must therefore check the mode itself: the control law and the
+// diagnostics fill do (see the two controllers' compute paths), and the
+// grasp_command service uses GraspCommandRejectReason below.
 void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
                           std::unique_ptr<rtc::grasp::GraspController>& grasp_controller);
+
+/// Why a `grasp_command` (GRASP / RELEASE) must be refused right now, or nullptr
+/// to accept. Never allocates; the returned string is a literal.
+///
+/// `has_controller` alone is not the answer any more. The FSM this service steps
+/// only reaches the hand through the force_pi control law, so under contact_stop
+/// or none a command would be accepted, answer "grasp started", step the FSM and
+/// change nothing the hand can feel. That is reachable in a shipped config:
+/// ur5e_p1b carries a force_pi_grasp block with `grasp_controller_type: "none"`.
+[[nodiscard]] const char* GraspCommandRejectReason(GraspHandMode mode,
+                                                   bool has_controller) noexcept;
+
+/// What a controller can tell the quiet gate about its hand right now. Every
+/// field is observable off the RT thread without racing it: the two mirrors are
+/// atomics the RT tick stores, and `has_controller` is fixed at configure time.
+struct GraspModeSwitchState {
+  bool has_controller{false};   ///< a force_pi_grasp block was configured
+  bool contact_latched{false};  ///< contact_stop hold engaged (RT mirror)
+  bool grasp_phase_idle{true};  ///< PI FSM at kIdle (true when there is no FSM)
+};
+
+/// Why a runtime `grasp_controller_type` change must be refused right now, or
+/// nullptr to accept. Never allocates; the returned string is a literal.
+///
+/// Policy (confirmed 2026-07-30): the mode may only move while the hand is
+/// QUIET. The rejected alternative was "always allow + auto-safe", which needs
+/// more RT code and turns a missing re-seed into the hazard itself. Quiet also
+/// buys something else: leaving force_pi is only possible at kIdle, so the PI
+/// diagnostics left in the published GraspState are an idle-consistent setpoint
+/// rather than a stale mid-grasp state — which is why nothing clears them.
+///
+/// A request for the mode already in force is never refused: it changes nothing,
+/// so refusing it would make an idempotent set fail while an object is held.
+[[nodiscard]] const char* GraspModeChangeRejectReason(GraspHandMode current,
+                                                      GraspHandMode requested,
+                                                      const GraspModeSwitchState& state) noexcept;
 
 // Build (or reset) the PullForceEstimator based on `cfg` (#167). Resets to
 // nullptr unless a pull_estimator block was provided and `enabled` is true.

@@ -150,9 +150,17 @@ edge를 기다리지 않는 live command. (FSM 의 hold/non-hold 판정은 hand 
 
 ## GraspController (Force-PI, internal only)
 
-Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`). Whitelist `{force_pi, contact_stop, none}` — `none` disables all hand intervention (trajectory passes through) while GraspState aggregation/publishing continues; any other string fails `on_configure`.
+Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`). Whitelist `{force_pi, contact_stop, none}` — `none` disables all hand intervention (trajectory passes through) while GraspState aggregation/publishing continues. 화이트리스트 밖 값의 처리는 **출처에 따라 다르다**: YAML 값이면 `LoadConfig` 가 throw 해 `on_configure` FAILURE, 파라미터로 들어오면 (`DeclareGainParameters` 는 noexcept·void 라 전이를 실패시킬 수 없다) ERROR 로그와 함께 **거부되고 YAML 값이 유지**된다. 파라미터 경로는 capability 게이트도 통과해야 한다 — 블록 없이 `force_pi` 를 요구하면 같은 방식으로 거부된다 (cleanup 상태에서 `ros2 param set` 이 콜백 없이 수락되는 창을 막는다).
 
-Configure-time only: joint/task controllers mirror the resolved mode as a **read-only** `grasp_controller_type` ROS parameter (display for the demo GUI's Grasp/Release gate); `ros2 param set` is rejected, and controller switching never re-configures, so changing it means editing YAML and restarting.
+**두 축이 분리돼 있다** (B-3): `BuildGraspController` 는 `force_pi_grasp` 블록 유무만 보고 **모드는 안 본다** — 블록이 있으면 어떤 모드로 시작하든 PI 컨트롤러가 만들어진다 (블록 = *capability*, 모드 = 매 tick 어느 법칙이 손을 잡는가). 컨트롤러 스위칭이 re-configure 를 하지 않으므로, 빌드가 모드를 봤다면 모드가 one-way door 가 된다. 따라서 `grasp_controller_ != nullptr` 은 "force_pi 가 돌고 있다"의 대용이 **아니다** — 제어 법칙·diagnostics fill·`grasp_command` srv (`GraspCommandRejectReason`) 가 각자 모드를 직접 확인한다. `ur5e_p1b` 가 `type: "none"` + 블록 조합을 실제로 싣고 있어 이 구분이 가설이 아니다.
+
+**런타임 전환 가능** (B-4b; 이전에는 read-only 였다). joint/task 컨트롤러는 활성 모드를 writable `grasp_controller_type` ROS 파라미터로 노출하고, `ros2 param set` 은 **손이 quiet 할 때만** 수락한다 — contact_stop latch 미engage **그리고** force_pi FSM 이 `kIdle`. 판정의 SSoT 는 `GraspModeChangeRejectReason` (`demo_shared_config.hpp`); 이미 활성인 모드의 재요청은 quiet 여부와 무관하게 항상 수락 (no-op). 거부 시 사유가 `SetParametersResult::reason` 으로 돌아가고 GUI 가 그대로 표시한다 (B-5: Grasp 탭의 `Grasp mode:` 콤보박스 + `Set Mode`; 사유는 별도 라벨, 시도 후에는 성공·거부 모두 파라미터를 재조회 — 표시되는 모드는 요청한 값이 아니라 컨트롤러가 확인한 값이다).
+
+quiet 조건을 고른 이유 (2026-07-30 확정): 대안이던 "항상 허용 + 자동 safing" 은 RT tick 코드를 더 건드리고 재-seed 누락 자체가 hazard 가 된다. quiet 는 부수 이득도 준다 — force_pi 를 떠나는 것이 `kIdle` 에서만 가능하므로 발행된 GraspState 에 남는 PI diagnostics 는 idle-consistent setpoint 이지 stale mid-grasp state 가 아니다. 그래서 전환 시 그 필드들을 청소하지 않는다.
+
+**quiet gate 는 RT 스레드를 멈출 수 없다** — 파라미터 콜백은 RT tick 이 store 하는 atomic 미러(`contact_latched_pub_` / `grasp_phase_pub_`)를 읽으므로 판정이 한 tick 뒤처진다. check 와 store 사이에 접촉이 걸리는 창은 compute 쪽 race closure 가 닫는다: 모드가 contact_stop 을 떠난 tick 에 latch 가 걸려 있으면 latch 를 떨구기 **전에** hand goal 을 `hand_hold_position_` 으로 재-seed 하고 throttled WARN 을 찍는다 (gate 가 정상이면 절대 발화하지 않으므로 발화 자체가 결함 신호다). 없으면 명령이 전환 첫 tick 에 접촉 전 goal 로 튄다 — 실측 0.3 → 0.8 rad.
+
+**non-force_pi tick 은 FSM 을 리셋한다** (리뷰 후속 C2). `GraspController::Reset()` 을 모드가 force_pi 가 아닌 매 tick + `on_activate` 에서 호출하므로 **"이 컨트롤러가 PI 법칙을 돌리지 않는 동안 FSM 은 항상 kIdle"** 이 무조건 성립한다. 조건부였을 때 실제로 깨졌다: GRASP 수락 → RT tick 이 FSM 을 kApproaching 으로 step → 그 뒤 모드 전환 Store 가 착지하면, 아무도 FSM 을 step 하지 않으므로 phase 미러가 non-Idle 로 얼고 quiet gate 가 이후 **모든** 전환을 거부하며 `grasp_command` 는 모드가 force_pi 가 아니라 RELEASE 도 거부한다 (복구 불가). 미러도 분기 밖에서 **매 tick** store 한다. 같은 이유로 `grasp_command` 는 Inactive 컨트롤러에서 거부된다 — 서비스가 deactivate 를 넘어 살아 있어 요청만 arm 되고 다음 활성화 첫 tick 에 발화했다.
 
 **FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
 

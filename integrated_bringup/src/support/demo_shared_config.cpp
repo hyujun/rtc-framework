@@ -460,7 +460,11 @@ void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_var
 
 void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
                           std::unique_ptr<rtc::grasp::GraspController>& grasp_controller) {
-  if (cfg.grasp_controller_type != "force_pi" || !cfg.has_force_pi_block) {
+  // The block, not the mode, gates construction — rationale in the header. A
+  // config that ships the block gets the PI capability whatever mode it starts
+  // in, so `grasp_controller_type` can be moved at runtime without a re-configure
+  // (which controller switching never performs anyway).
+  if (!cfg.has_force_pi_block) {
     grasp_controller.reset();
     return;
   }
@@ -473,6 +477,46 @@ void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
       static_cast<std::size_t>(std::clamp(cfg.num_grasp_fingers, 0, rtc::grasp::kMaxGraspFingers));
   grasp_controller->Init(std::span<const rtc::grasp::FingerConfig>(cfg.force_pi_fingers.data(), n),
                          gp);
+}
+
+const char* GraspCommandRejectReason(GraspHandMode mode, bool has_controller) noexcept {
+  // Capability first, then policy: "no block in your YAML" and "the block is
+  // there but this mode does not run it" are different operator problems and the
+  // fix for each is a different edit.
+  if (!has_controller) {
+    return "grasp_controller unavailable (no 'force_pi_grasp' block in demo_shared.yaml)";
+  }
+  if (mode != GraspHandMode::kForcePi) {
+    return "grasp mode is not 'force_pi' (switch grasp_controller_type first)";
+  }
+  return nullptr;
+}
+
+const char* GraspModeChangeRejectReason(GraspHandMode current, GraspHandMode requested,
+                                        const GraspModeSwitchState& state) noexcept {
+  // No-op first, before any gate: the requested mode is already in force, so
+  // accepting cannot change what the hand is doing. Refusing here would make an
+  // idempotent set fail whenever an object happens to be held — including the
+  // re-send a GUI does to confirm what it is already displaying.
+  if (requested == current) {
+    return nullptr;
+  }
+  // Capability before policy, same order as GraspCommandRejectReason: without a
+  // force_pi_grasp block there is no PI law to switch to, and that is a YAML
+  // problem rather than something waiting will fix.
+  if (requested == GraspHandMode::kForcePi && !state.has_controller) {
+    return "force_pi unavailable (no 'force_pi_grasp' block in demo_shared.yaml)";
+  }
+  // The two quiet refusals stay distinct: one is fixed by opening the hand, the
+  // other by finishing or releasing the PI grasp, and this string is all the
+  // operator gets.
+  if (state.contact_latched) {
+    return "hand is holding (contact_stop latch engaged) — release it first";
+  }
+  if (!state.grasp_phase_idle) {
+    return "force_pi grasp is in progress — release it first";
+  }
+  return nullptr;
 }
 
 void BuildPullForceEstimator(const DemoSharedConfig& cfg, double control_rate_hz,

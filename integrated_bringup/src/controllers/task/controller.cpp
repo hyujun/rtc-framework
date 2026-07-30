@@ -396,6 +396,12 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // One gains snapshot for the whole tick (SeqLock: torn-read-free), shared by
   // the arm stage and the hand stage so the two halves cannot disagree.
   const auto gains = gains_lock_.Load();
+  // The grasp mode rides that snapshot, but it is cached at the top of
+  // ComputeSecondary — the same side of the `!estop_active_` gate as the closure
+  // that consumes the edge. Caching it here instead is what let an E-STOP tick
+  // swallow a mode change: the edge was computed and the cache advanced on a
+  // tick whose ComputeSecondary never ran, so the closure saw no edge on the
+  // next one either.
   ComputeControl(state, dt, gains);
   // Secondary (hand) lane — outside the arm stage's F5 gate (§3.7 "secondary
   // passthrough 유지", see ComputeSecondary's header comment) but NOT outside
@@ -1009,10 +1015,11 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   g.grasp_contact_threshold = shared.grasp_contact_threshold;
   g.grasp_force_threshold = shared.grasp_force_threshold;
   g.grasp_min_fingertips = shared.grasp_min_fingertips;
-  gains_lock_.Store(g);
   // Already whitelist-validated in ApplyDemoSharedConfig; resolve to the enum
-  // the RT hot path branches on.
-  grasp_hand_mode_ = ParseGraspHandMode(shared.grasp_controller_type);
+  // the RT hot path branches on. Set BEFORE the Store, not after: the mode is a
+  // Gains field now, so a post-Store assignment would be dropped on the floor.
+  g.grasp_hand_mode = ParseGraspHandMode(shared.grasp_controller_type);
+  gains_lock_.Store(g);
   num_grasp_fingers_ = shared.num_grasp_fingers;
   finger_dof_ = shared.finger_dof;
   finger_joint_map_ = shared.hand_finger_joint_map;
@@ -1049,6 +1056,17 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   InitFingertipForceFilters(g.contact_stop_force_lpf_cutoff_hz);
   contact_latched_ = false;
   hand_hold_position_.fill(0.0);
+  // The quiet gate's two mirrors go with the state they mirror. A re-configure
+  // (cleanup → configure) rebuilds the latch and the grasp controller but used to
+  // leave the mirrors holding the previous configuration's values, and the
+  // parameter callback reads only the mirrors: a latch cleared here with a stale
+  // `true` mirror refuses every mode change, and the reverse opens one on a hand
+  // the new config knows nothing about. BuildGraspController runs later in this
+  // same call, so kIdle is the correct value either way — a fresh controller is
+  // idle and a null one has no FSM.
+  contact_latched_pub_.store(false, std::memory_order_release);
+  grasp_phase_pub_.store(static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle),
+                         std::memory_order_release);
 
   // ── Phase C: parse `logs:` section ──────────────────────────────────────
   parsed_log_entries_.clear();

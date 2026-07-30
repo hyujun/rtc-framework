@@ -231,6 +231,20 @@ TEST(JointControllerLoadConfigTest, ForceGuardKeysReachGains) {
   EXPECT_EQ(plain.get_gains().contact_stop_force_guard_max_hold_ticks, 2);
 }
 
+// The grasp mode rides the Gains snapshot (B-1 RT handoff), so LoadConfig has to
+// resolve it BEFORE the Store it shares with every other gain — assigned after,
+// the value lands in a local nothing reads again and the RT tick silently runs
+// the default law. Only a non-default YAML value can tell those apart: both the
+// Gains default and the shared-config default are contact_stop.
+TEST(JointControllerLoadConfigTest, GraspControllerTypeReachesGains) {
+  DemoJointController ctrl{""};
+  ctrl.SetControlRate(1.0 / kDt);
+  auto cfg = YAML::Load(kJointYaml);
+  cfg["grasp_controller_type"] = "none";
+  ctrl.LoadConfig(cfg);
+  EXPECT_EQ(ctrl.get_gains().grasp_hand_mode, integrated_bringup::GraspHandMode::kNone);
+}
+
 TEST(JointControllerLoadConfigTest, ForceGuardOutOfRangeThrows) {
   DemoJointController ctrl{""};
   ctrl.SetControlRate(1.0 / kDt);

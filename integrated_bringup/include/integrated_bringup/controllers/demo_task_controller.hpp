@@ -179,6 +179,17 @@ class DemoTaskController final : public RTControllerInterface {
     float grasp_force_threshold{1.0f};    ///< |F| threshold [N] — common
     int grasp_min_fingertips{2};          ///< grasp_detected = active_count ≥ N
 
+    /// Which hand grasp-intervention law runs: contact_stop (binary freeze),
+    /// force_pi (adaptive PI) or none (trajectory passthrough). Resolved from
+    /// the whitelisted `grasp_controller_type` string once in LoadConfig so the
+    /// RT hot path branches on an enum instead of comparing a std::string.
+    ///
+    /// It rides the Gains snapshot rather than a plain member because the mode
+    /// and the thresholds it is interpreted with have to reach the RT tick in
+    /// ONE SeqLock body — the tick loads Gains once and branches on this field,
+    /// so a write can never be observed half-applied against a stale threshold.
+    GraspHandMode grasp_hand_mode{GraspHandMode::kContactStop};
+
     // Trajectory / grasp FSM tuning
     double pi_rotation_margin{0.15};  ///< Split quintic trajectory when |angle|>π-margin [rad]
     double contact_stop_release_eps{0.005};   ///< Hand contact-stop release hysteresis [rad]
@@ -277,6 +288,41 @@ class DemoTaskController final : public RTControllerInterface {
 
   [[nodiscard]] ContactStopAggregates GetContactStopAggregatesForTesting() const noexcept {
     return {contact_stop_max_force_, contact_stop_active_count_};
+  }
+
+  /// Test-only: the phase value the non-RT quiet gate would read right now.
+  /// Distinct from GetGraspStateForTesting().grasp_phase, which the output fill
+  /// writes: a tick that steps the FSM but never mirrors leaves the gate
+  /// believing the hand is idle and admits a mode change mid-grasp.
+  [[nodiscard]] uint8_t GetGraspPhaseMirrorForTesting() const noexcept {
+    return grasp_phase_pub_.load(std::memory_order_acquire);
+  }
+
+  /// Test-only: drive the Force-PI FSM the way the grasp_command service would,
+  /// without standing up a LifecycleNode. Returns false when no force_pi_grasp
+  /// block built a controller. Same shape as SetGraspControllerTypeForTesting —
+  /// a test-only door onto existing behaviour, no new production surface.
+  bool CommandGraspForTesting(double target_force) {
+    if (!grasp_controller_) {
+      return false;
+    }
+    grasp_controller_->CommandGrasp(target_force);
+    return true;
+  }
+
+  /// Test-only: the activity flag the grasp_command service gates on. The service
+  /// itself needs a node and is verified at runtime; this pins the lifecycle
+  /// writes that feed it.
+  [[nodiscard]] bool IsActiveForTesting() const noexcept {
+    return active_.load(std::memory_order_acquire);
+  }
+
+  /// Test-only: the latch value the non-RT quiet gate would read right now.
+  /// Distinct from observing the freeze in the command: a tick that freezes the
+  /// hand but never mirrors the latch leaves the gate believing the hand is
+  /// quiet, and the freeze assertions cannot tell those two apart.
+  [[nodiscard]] bool GetContactLatchedMirrorForTesting() const noexcept {
+    return contact_latched_pub_.load(std::memory_order_acquire);
   }
 
   /// Test-only: the delta-spike guard's per-tick output — what the force LPF was
@@ -631,10 +677,21 @@ class DemoTaskController final : public RTControllerInterface {
   bool hand_new_target_pending_{false};  // RT-thread-only
 
   // ── Grasp controller (force_pi mode) ──────────────────────────────────────
-  // Hand grasp-intervention mode, resolved once from the whitelisted
-  // `grasp_controller_type` string in LoadConfig so the RT hot path branches on
-  // an enum instead of comparing a std::string every tick.
-  GraspHandMode grasp_hand_mode_{GraspHandMode::kContactStop};
+  // The mode itself lives in Gains (see Gains::grasp_hand_mode) — this is the
+  // RT-thread-only cache of the value THIS tick runs under, so FillLogOutput can
+  // gate the Force-PI diagnostics on it without a second Gains SeqLock copy.
+  // Sibling of control_6dof_cached_ above. Written at the top of
+  // ComputeSecondary, i.e. INSIDE Compute()'s `!estop_active_` gate, which is
+  // also where the mode edge is compared and consumed (the closure is the edge's
+  // only consumer, so the two must not straddle that gate — hoisting the write
+  // into Compute() is what let an E-STOP tick swallow a mode change). Both
+  // consumers of the cache — the closure here and FillLogOutput's Force-PI
+  // diagnostics — run only on the same non-E-STOP ticks: FillLogOutput
+  // E-STOP-early-returns before reading it, so it can never see an earlier
+  // tick's value. The reason to cache rather than re-Load is not the copy:
+  // re-Loading would let a mode write that landed mid-tick make the log describe
+  // a law that did not run.
+  GraspHandMode grasp_hand_mode_cached_{GraspHandMode::kContactStop};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
 
   // ── In-plane pull-force estimator (#167) ──────────────────────────────────
@@ -659,9 +716,40 @@ class DemoTaskController final : public RTControllerInterface {
   std::array<int, rtc::grasp::kMaxGraspFingers> release_gate_sign_{{+1, -1, -1}};
 
   /// contact_stop hold latch (RT-thread-only). Set when contact first engages,
-  /// cleared only by the release-phase gate or E-STOP — so the hand keeps its
-  /// position after contact drops, rather than snapping back to the trajectory.
+  /// cleared only by the release-phase gate, E-STOP, or the mode-switch race
+  /// closure — so the hand keeps its position after contact drops, rather than
+  /// snapping back to the trajectory.
   bool contact_latched_{false};
+  /// Non-RT-readable mirror of contact_latched_, stored once per tick by the
+  /// grasp block. The parameter callback's quiet gate has to know whether the
+  /// hold is engaged before it lets the grasp mode move, and contact_latched_ is
+  /// RT-thread-only: a callback that read it directly would be a data race, and
+  /// one that assumed instead would open the switch on a held object. Reading a
+  /// tick-old value is fine and unavoidable — the callback cannot stop the RT
+  /// thread, which is exactly why ComputeSecondary carries the race closure.
+  std::atomic<bool> contact_latched_pub_{false};
+  /// Non-RT-readable mirror of grasp_controller_->phase(), stored on EVERY tick.
+  /// Same reason as the latch mirror, one step stronger: the quiet gate must not
+  /// admit a mode change mid-grasp, and the FSM is mutated by
+  /// GraspController::Update() on the RT tick — so reading phase() from the
+  /// callback would be a genuine data race on a safety decision. kIdle is 0, so
+  /// the zero init is the right answer before the first force_pi tick.
+  ///
+  /// It used to be stored only inside the force_pi branch, justified by "the value
+  /// cannot go stale under another mode: nothing steps the FSM there". The premise
+  /// held; the conclusion did not. Nothing steps the FSM under another mode — and
+  /// that is exactly the problem, because the switch INTO another mode can land
+  /// after a tick has stepped the FSM off Idle: the mirror then froze non-Idle
+  /// with nothing left to move it, the gate refused every subsequent switch, and
+  /// grasp_command refused RELEASE because the mode was no longer force_pi. The
+  /// fix is on both ends — the non-force_pi ticks now Reset() the FSM, and this
+  /// mirror is stored unconditionally so it reports that.
+  std::atomic<uint8_t> grasp_phase_pub_{0};
+  /// Is this controller Active? Written by on_activate / on_deactivate, read by
+  /// the grasp_command service — which outlives deactivation, so without this it
+  /// answered "grasp started" for a controller whose ticks had stopped, arming a
+  /// request that fired on the next activation.
+  std::atomic<bool> active_{false};
   /// Hold target while latched. Refreshed from the LPF output on every tick
   /// that contact is present; frozen once contact drops (no random-walk drift).
   std::array<double, kDemoTaskMaxHandDof> hand_hold_position_{};

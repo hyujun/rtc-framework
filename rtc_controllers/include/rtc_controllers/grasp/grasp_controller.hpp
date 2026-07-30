@@ -47,6 +47,25 @@ class GraspController {
   /// Request grasp release.
   void CommandRelease() noexcept;
 
+  /// Return the FSM to Idle and drop both pending requests, without touching the
+  /// configuration Init() computed.
+  ///
+  /// For callers that own this controller but do not always run it: whoever stops
+  /// calling Update() also stops advancing the FSM, so a grasp interrupted by a
+  /// control-law change or a deactivate stays frozen mid-phase, with its request
+  /// flags still armed. The next Update() would then resume a squeeze — against
+  /// whatever the hand is holding by then — and any observer gating on phase()
+  /// sees a non-Idle value that nothing can clear. Calling Reset() on the ticks
+  /// where the PI law is not the one driving the hand, and at activation, turns
+  /// "the FSM is idle whenever this controller is not running it" into an
+  /// unconditional property instead of one that depends on every caller path.
+  ///
+  /// RT-safe: fixed-size loops, no allocation, no logging, no filter-coefficient
+  /// recompute (the coefficients are Init()'s business and stay valid). The
+  /// active target force is deliberately kept — it is a setpoint, not state, and
+  /// a GRASP always supplies its own.
+  void Reset() noexcept;
+
   /// Current state machine phase.
   [[nodiscard]] GraspPhase phase() const noexcept { return phase_; }
 

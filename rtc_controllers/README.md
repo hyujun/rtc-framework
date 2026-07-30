@@ -477,6 +477,7 @@ operational_space_controller:
 | `Update(std::span<const double> f_raw, double dt) noexcept` | RT-safe, 매 제어 주기 호출. `f_raw[f]`는 `Init()` configs와 동일 순서의 finger별 힘 크기(3축 norm) — 부족한 entry는 0 취급, 초과 entry는 무시. `GraspJointCommands` 반환 |
 | `finger_states()` | `std::span<const FingerState>` — `Init()`에서 설정된 `num_fingers_`개 활성 finger 범위만 span |
 | `CommandGrasp(target_force=0)` / `CommandRelease()` | atomic 플래그 기반 크로스 스레드 명령 |
+| `Reset() noexcept` | RT-safe. FSM 을 `kIdle` 로 되돌리고 두 요청 플래그·finger 상태·힘 필터 tail 을 clear (`Init()` 이 하는 일에서 필터 **계수 재계산만 제외**). `active_target_force_` 는 setpoint 이므로 유지. **소유자가 이 컨트롤러를 항상 돌리지 않는 경우 필수** — `Update()` 호출을 멈추면 FSM 도 멈추므로, 제어 법칙 전환이나 deactivate 로 중단된 grasp 가 phase 중간에 요청 플래그를 든 채 얼어붙고 다음 `Update()` 가 그 squeeze 를 재개한다. `phase()` 로 게이트하는 관측자에게는 아무도 지울 수 없는 non-Idle 값이 남는다 |
 
 **상태 머신 (GraspPhase):**
 
