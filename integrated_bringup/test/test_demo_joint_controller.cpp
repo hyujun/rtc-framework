@@ -11,9 +11,11 @@
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 
 #include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 
 namespace {
@@ -285,6 +287,148 @@ TEST_F(JointGraspTest, ContactStopHoldUsesFilteredPosition) {
   // LPF lag: the hold has moved off 0.3 but has not jumped to the raw 0.5.
   EXPECT_GT(out.devices[1].commands[0], kHandStart + 1e-4);
   EXPECT_LT(out.devices[1].commands[0], 0.5 - 1e-3);
+}
+
+// ── "contact_stop never runs the PI law" — at the compute level ─────────────
+//
+// Today this guarantee is held by a BUILD-TIME fact: BuildGraspController only
+// constructs the Force-PI controller when the type is "force_pi", so under
+// contact_stop `grasp_controller_` is null and the `grasp_controller_ && mode ==
+// kForcePi` branch cannot be taken whatever the mode says. That is about to stop
+// being true — making the build mode-independent is the next commit — so the
+// guarantee needs an owner in ComputeControl BEFORE it loses the one it has.
+//
+// The fixture is the state that used to be unreachable: a controller that DID
+// build the PI controller, then had its mode moved to contact_stop. Only step 1's
+// Gains handoff makes that constructible from a test at all.
+namespace {
+// Minimal LoadConfig payload that BUILDS the Force-PI controller — the
+// whitelisted type AND a `force_pi_grasp` block, the two conditions
+// BuildGraspController ANDs. `arm_safe_position` is 6 wide to match MakeState's
+// 6 arm channels so the arm stays readable. Under an empty config_variant the
+// shared demo_shared.yaml path does not resolve, so the built-in defaults plus
+// this block are the whole configuration (3 fingers, joint map {0,1,2}/{3,4,5}/
+// {6,7,8}) — nothing here depends on an installed YAML.
+const char* const kForcePiYaml = R"(
+estop:
+  arm_safe_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+fsm:
+  contact_stop_release_eps: 0.005
+grasp_controller_type: "force_pi"
+force_pi_grasp:
+  f_target: 2.5
+  fingers:
+    thumb:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+    index:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+    middle:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+)";
+
+class JointForcePiBuiltTest : public ::testing::Test {
+ protected:
+  DemoJointController ctrl_{""};
+  ControllerState state_ = MakeState();
+
+  // Mode the controller runs under from its FIRST tick. Overridden below to get a
+  // history with no force_pi tick in it at all — some of the published grasp
+  // fields are FSM latches, so "never published" and "published then switched
+  // away from" are different states and only one of them is this file's business.
+  virtual integrated_bringup::GraspHandMode InitialMode() const {
+    return integrated_bringup::GraspHandMode::kForcePi;
+  }
+
+  void SetUp() override {
+    ctrl_.SetControlRate(1.0 / 0.002);
+    ctrl_.LoadConfig(YAML::Load(kForcePiYaml));
+    // Precondition, not an assumption: if the block stopped building the PI
+    // controller, every assertion below would pass for the wrong reason.
+    ASSERT_EQ(ctrl_.get_gains().grasp_hand_mode, integrated_bringup::GraspHandMode::kForcePi);
+    auto g = ctrl_.get_gains();
+    g.grasp_hand_mode = InitialMode();
+    ctrl_.set_gains(g);
+    (void)ctrl_.Compute(state_);
+  }
+};
+
+class JointContactStopWithPiBuiltTest : public JointForcePiBuiltTest {
+ protected:
+  integrated_bringup::GraspHandMode InitialMode() const override {
+    return integrated_bringup::GraspHandMode::kContactStop;
+  }
+};
+}  // namespace
+
+// Control arm. With the PI controller built and the mode left at force_pi, the
+// contact_stop freeze must NOT run: the FSM sits in kIdle (nothing has commanded
+// a grasp), so the PI law writes no finger and the trajectory reaches its goal.
+// The published target_force is the PI law's fingerprint — FillLogOutput only
+// copies it on the force_pi branch, and 2.5 comes from the YAML above.
+TEST_F(JointForcePiBuiltTest, ForcePiModeSkipsTheFreezeAndPublishesPiDiagnostics) {
+  PrimeHandMotion(ctrl_, state_);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+
+  ASSERT_TRUE(ctrl_.GetGraspStateForTesting().grasp_detected);
+  EXPECT_GT(out.devices[1].commands[0], 0.5) << "contact_stop freeze ran under force_pi";
+  EXPECT_NEAR(ctrl_.GetGraspStateForTesting().grasp_target_force, 2.5F, 1e-5F);
+}
+
+// The pin. Same built PI controller, mode moved to contact_stop: the hand must
+// freeze at the measured position, which is only reachable through the `else if`
+// branch. A tick that let a non-null grasp_controller_ decide on its own would
+// run the PI branch here and the hand would sail to the 0.8 goal.
+TEST_F(JointForcePiBuiltTest, ContactStopModeFreezesEvenWhenThePiControllerExists) {
+  auto g = ctrl_.get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kContactStop;
+  ctrl_.set_gains(g);
+
+  PrimeHandMotion(ctrl_, state_);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+
+  ASSERT_TRUE(ctrl_.GetGraspStateForTesting().grasp_detected);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4);
+}
+
+// Same guarantee, OTHER consumer of the mode. FillLogOutput copies the FSM phase
+// / target force / per-finger PI state out of grasp_controller_, and it reads the
+// mode from grasp_hand_mode_cached_ rather than from the Gains snapshot the
+// control law branched on. That second read site is why this is its own
+// assertion: publishing a target force the control law never applied would make
+// the CSV and the GUI describe a law that did not run.
+//
+// The fixture runs contact_stop from tick 1 on purpose. These fields are FSM
+// latches — nothing rewrites them on a tick that does not take the force_pi
+// branch — so a fixture that ticked force_pi first would leave a stale 2.5 N here
+// no matter how correct the gate is, and the assertion would be about latch
+// clearing rather than about publishing.
+TEST_F(JointContactStopWithPiBuiltTest, ContactStopModePublishesNoPiDiagnostics) {
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 300);
+
+  const auto& gs = ctrl_.GetGraspStateForTesting();
+  EXPECT_NEAR(gs.grasp_target_force, 0.0F, 1e-9F)
+      << "PI target force published while the PI law was not running";
+  EXPECT_EQ(gs.grasp_phase, 0U);
+  for (std::size_t f = 0; f < 3; ++f) {
+    EXPECT_NEAR(gs.finger_s[f], 0.0F, 1e-9F) << "finger " << f;
+  }
+}
+
+// The freeze half again, but with contact_stop in force from the first tick — the
+// shape a controller that STARTED in contact_stop with the block present will
+// have once the build stops looking at the mode. The sister test above covers the
+// runtime-switch shape; this one covers the config-time shape, and they exercise
+// different histories through the same branch.
+TEST_F(JointContactStopWithPiBuiltTest, ContactStopFromTheFirstTickStillFreezes) {
+  PrimeHandMotion(ctrl_, state_);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+
+  ASSERT_TRUE(ctrl_.GetGraspStateForTesting().grasp_detected);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4);
 }
 
 // ── Deferred hand hold-seed (device-1 startup race) ─────────────────────────

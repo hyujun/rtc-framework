@@ -122,6 +122,20 @@ double GeodesicAngle(const Eigen::Matrix3d& a, const Eigen::Matrix3d& b) {
 
 class TaskControllerUrdfTest : public ::testing::Test {
  protected:
+  /// YAML LoadConfig receives. Overridden by fixtures that need extra blocks
+  /// (e.g. `force_pi_grasp`); the default keeps every existing test byte-identical.
+  virtual std::string ControllerYaml() const { return kTaskYaml; }
+
+  /// Grasp mode the controller runs under from its FIRST tick, applied after
+  /// LoadConfig. Overridden to build a history with no force_pi tick in it — some
+  /// published grasp fields are FSM latches, so "never published" and "published
+  /// then switched away from" are different states. The default returns what
+  /// LoadConfig resolved, so the base fixture stays a no-op rather than pinning
+  /// the mode behind the YAML's back.
+  virtual integrated_bringup::GraspHandMode InitialMode() const {
+    return ctrl_->get_gains().grasp_hand_mode;
+  }
+
   void SetUp() override {
     ctrl_ = std::make_unique<DemoTaskController>("", DemoTaskController::Gains{});
     // Production bring-up sequence (rt_controller_node_params.cpp): system
@@ -131,8 +145,13 @@ class TaskControllerUrdfTest : public ::testing::Test {
     ctrl_->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
     ctrl_->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
     ctrl_->SetControlRate(1.0 / kDt);
-    ctrl_->LoadConfig(YAML::Load(kTaskYaml));
+    ctrl_->LoadConfig(YAML::Load(ControllerYaml()));
     ctrl_->SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
+    {
+      auto g = ctrl_->get_gains();
+      g.grasp_hand_mode = InitialMode();
+      ctrl_->set_gains(g);
+    }
 
     state_ = MakeIiwa7LeapState();
     // First tick: cache Update + arm/hand hold self-init.
@@ -941,6 +960,108 @@ TEST_F(TaskContactStopTest, NonFiniteForceNeverReachesTheFilter) {
   RunTicks(1);
   EXPECT_FALSE(ctrl_->WasForceGuardRejectedForTesting(0));
   EXPECT_NEAR(ctrl_->GetGuardedFingertipForceForTesting()[2], 0.6f, 1e-4f);
+}
+
+// ── "contact_stop never runs the PI law" — at the compute level ─────────────
+//
+// Today this guarantee is held by a BUILD-TIME fact: BuildGraspController only
+// constructs the Force-PI controller when the type is "force_pi", so under
+// contact_stop `grasp_controller_` is null and the `grasp_controller_ && mode ==
+// kForcePi` branch cannot be taken whatever the mode says. That is about to stop
+// being true — making the build mode-independent is the next commit — so the
+// guarantee needs an owner in ComputeSecondary BEFORE it loses the one it has.
+//
+// Sister block to the joint controller's; the branch is written out once per
+// controller, so it needs a copy per controller.
+namespace {
+// Appended to kTaskYaml (a flat map, so top-level keys concatenate). Supplies the
+// two conditions BuildGraspController ANDs: the whitelisted type AND a
+// `force_pi_grasp` block. f_target=2.5 is the PI law's fingerprint in the
+// published GraspState — FillLogOutput copies it only on the force_pi branch.
+const char* const kForcePiBlock = R"(
+grasp_controller_type: "force_pi"
+force_pi_grasp:
+  f_target: 2.5
+  fingers:
+    thumb:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+    index:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+    middle:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+)";
+}  // namespace
+
+class TaskForcePiBuiltTest : public TaskContactStopTest {
+ protected:
+  std::string ControllerYaml() const override { return std::string(kTaskYaml) + kForcePiBlock; }
+
+  integrated_bringup::GraspHandMode InitialMode() const override {
+    // Precondition check lives here rather than in a test body: if the block
+    // stopped building the PI controller, every assertion would pass for the
+    // wrong reason. LoadConfig has already run when this is called.
+    EXPECT_EQ(ctrl_->get_gains().grasp_hand_mode, integrated_bringup::GraspHandMode::kForcePi);
+    return integrated_bringup::GraspHandMode::kForcePi;
+  }
+};
+
+class TaskContactStopWithPiBuiltTest : public TaskForcePiBuiltTest {
+ protected:
+  integrated_bringup::GraspHandMode InitialMode() const override {
+    (void)TaskForcePiBuiltTest::InitialMode();  // keep the build precondition
+    return integrated_bringup::GraspHandMode::kContactStop;
+  }
+};
+
+// Control arm. With the PI controller built and the mode left at force_pi, the
+// contact_stop freeze must NOT run: the FSM sits in kIdle (nothing commanded a
+// grasp), so the PI law overwrites no finger and the trajectory reaches its goal.
+TEST_F(TaskForcePiBuiltTest, ForcePiModeSkipsTheFreezeAndPublishesPiDiagnostics) {
+  PrimeContact();
+  auto out = RunTicks(300, /*feedback_hand=*/false);
+
+  ASSERT_TRUE(ctrl_->GetGraspStateForTesting().grasp_detected);
+  EXPECT_GT(out.devices[1].commands[0], 0.5) << "contact_stop freeze ran under force_pi";
+  EXPECT_NEAR(ctrl_->GetGraspStateForTesting().grasp_target_force, 2.5F, 1e-5F);
+}
+
+// The pin. Same built PI controller, mode moved to contact_stop after the fixture
+// ticked in force_pi — the runtime-switch shape. The hand must freeze at the
+// measured position, reachable only through the `else if` branch; a tick that let
+// a non-null grasp_controller_ decide on its own would sail to the 0.8 goal.
+TEST_F(TaskForcePiBuiltTest, ContactStopModeFreezesEvenWhenThePiControllerExists) {
+  auto g = ctrl_->get_gains();
+  g.grasp_hand_mode = integrated_bringup::GraspHandMode::kContactStop;
+  ctrl_->set_gains(g);
+
+  PrimeContact();
+  auto out = RunTicks(300, /*feedback_hand=*/false);
+
+  ASSERT_TRUE(ctrl_->GetGraspStateForTesting().grasp_detected);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4);
+}
+
+// Same branch, config-time shape: contact_stop in force from tick 1. Distinct
+// history through the same gate, and the only shape in which the published-
+// diagnostics half is meaningful — grasp_phase / grasp_target_force / finger_s are
+// FSM latches, so a fixture that ticked force_pi first would leave a stale 2.5 N
+// behind however correct the gate is.
+TEST_F(TaskContactStopWithPiBuiltTest, ContactStopFromTheFirstTickFreezesAndPublishesNothing) {
+  PrimeContact();
+  auto out = RunTicks(300, /*feedback_hand=*/false);
+
+  const auto& gs = ctrl_->GetGraspStateForTesting();
+  ASSERT_TRUE(gs.grasp_detected);
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4);
+  EXPECT_NEAR(gs.grasp_target_force, 0.0F, 1e-9F)
+      << "PI target force published while the PI law was not running";
+  EXPECT_EQ(gs.grasp_phase, 0U);
+  for (std::size_t f = 0; f < 3; ++f) {
+    EXPECT_NEAR(gs.finger_s[f], 0.0F, 1e-9F) << "finger " << f;
+  }
 }
 
 // ── ToF snapshot ─────────────────────────────────────────────────────────────
