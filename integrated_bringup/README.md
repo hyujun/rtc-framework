@@ -315,7 +315,9 @@ CSV (`<device>_sensor.csv`) 는 같은 tick 에서 raw (`ft_<f>_fx`) → guarded
 
 GUI 는 이 상태를 **버튼 옆에 표시하고 직접 게이트**합니다. joint/task 컨트롤러는 활성 모드를 `grasp_controller_type` ROS 파라미터로 노출하므로 (`ros2 param get /demo_joint_controller/demo_joint_controller grasp_controller_type`), GUI 가 선택된 컨트롤러의 실제 모드를 읽어 `mode: force_pi` (녹색, 버튼 활성) 또는 `mode: contact_stop — Grasp/Release 는 force_pi 에서만 동작` (노랑, 버튼 비활성) 을 띄웁니다. 파라미터 서비스가 아직 안 뜬 경우에는 `mode: unknown` (회색) 으로 두고 버튼은 **활성 유지** — GUI 가 컨트롤러가 받아들일 명령을 막는 두 번째 게이트가 되면 안 되기 때문입니다. `demo_wbc_controller` 는 이 파라미터를 선언하지 않으며 (자체 FSM) 항상 활성입니다.
 
-**모드는 런타임에 바꿀 수 있습니다** (이전에는 read-only 였고 YAML 수정 + 재기동이 필요했습니다):
+모드는 **같은 탭에서 바꿀 수도 있습니다**: readout 아래 `Grasp mode:` 콤보박스에서 값을 고르고 `Set Mode` 를 누르면 선택된 컨트롤러의 `grasp_controller_type` 을 set 합니다. 거부되면 컨트롤러가 돌려준 사유(`SetParametersResult::reason`)가 그 옆 줄에 **그대로** 표시됩니다 — 문구를 다시 쓰지 않는 이유는 그것이 "손을 펴라" 와 "PI grasp 를 놓아라" 를 가르는 유일한 정보이기 때문입니다. 사유 줄은 모드 readout 과 **별도 라벨**입니다 (readout 은 5초 catalog 폴링이 매번 덮어쓰므로 거기 두면 읽기 전에 사라집니다). 시도 후에는 성공·거부 **양쪽 모두** 파라미터를 다시 읽으므로, readout 은 GUI 가 *요청한* 모드가 아니라 컨트롤러가 *확인한* 모드입니다. 콤보박스는 실제 모드가 변할 때만 다시 seed 되어 (폴링이 조작자의 미적용 선택을 덮어쓰지 않음), `demo_wbc_controller` 선택 시에는 콤보박스와 `Set Mode` 가 비활성입니다 (파라미터 자체가 없음). GUI 밖에서 (`ros2 param set`) 바꾼 모드는 다음 무효화 시점까지 readout 에 반영되지 않을 수 있습니다 — 명령을 실제로 게이트하는 것은 이 표시가 아니라 컨트롤러입니다.
+
+**모드는 런타임에 바꿀 수 있습니다** (이전에는 read-only 였고 YAML 수정 + 재기동이 필요했습니다). CLI 도 같은 경로입니다:
 
 ```bash
 ros2 param set /demo_joint_controller/demo_joint_controller grasp_controller_type force_pi
