@@ -460,7 +460,11 @@ void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_var
 
 void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
                           std::unique_ptr<rtc::grasp::GraspController>& grasp_controller) {
-  if (cfg.grasp_controller_type != "force_pi" || !cfg.has_force_pi_block) {
+  // The block, not the mode, gates construction — rationale in the header. A
+  // config that ships the block gets the PI capability whatever mode it starts
+  // in, so `grasp_controller_type` can be moved at runtime without a re-configure
+  // (which controller switching never performs anyway).
+  if (!cfg.has_force_pi_block) {
     grasp_controller.reset();
     return;
   }
@@ -473,6 +477,19 @@ void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
       static_cast<std::size_t>(std::clamp(cfg.num_grasp_fingers, 0, rtc::grasp::kMaxGraspFingers));
   grasp_controller->Init(std::span<const rtc::grasp::FingerConfig>(cfg.force_pi_fingers.data(), n),
                          gp);
+}
+
+const char* GraspCommandRejectReason(GraspHandMode mode, bool has_controller) noexcept {
+  // Capability first, then policy: "no block in your YAML" and "the block is
+  // there but this mode does not run it" are different operator problems and the
+  // fix for each is a different edit.
+  if (!has_controller) {
+    return "grasp_controller unavailable (no 'force_pi_grasp' block in demo_shared.yaml)";
+  }
+  if (mode != GraspHandMode::kForcePi) {
+    return "grasp mode is not 'force_pi' (switch grasp_controller_type first)";
+  }
+  return nullptr;
 }
 
 void BuildPullForceEstimator(const DemoSharedConfig& cfg, double control_rate_hz,

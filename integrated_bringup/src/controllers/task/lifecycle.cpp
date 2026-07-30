@@ -158,11 +158,15 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
             resp->message = "E-STOP active";
             return;
           }
-          if (!grasp_controller_) {
+          // Mode, not just nullness (#327 B-3). BuildGraspController no longer
+          // consults the mode, so a non-null controller no longer means the PI law
+          // is the one driving the hand — accepting here would answer "grasp
+          // started" and step an FSM the tick ignores.
+          if (const char* why = GraspCommandRejectReason(gains_lock_.Load().grasp_hand_mode,
+                                                         grasp_controller_ != nullptr);
+              why != nullptr) {
             resp->ok = false;
-            resp->message =
-                "grasp_controller unavailable (set 'grasp_controller_type: "
-                "force_pi' in YAML to enable Grasp/Release)";
+            resp->message = why;
             return;
           }
           using Req = rtc_msgs::srv::GraspCommand::Request;

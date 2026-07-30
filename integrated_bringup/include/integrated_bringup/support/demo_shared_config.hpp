@@ -137,10 +137,30 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg);
 // sites forward the value from their LifecycleNode's `config_variant` param.
 void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_variant = "");
 
-// Build (or reset) the GraspController based on `cfg`. Resets to nullptr unless
-// grasp_controller_type == "force_pi" and a force-pi block was provided.
+// Build (or reset) the GraspController based on `cfg`. Resets to nullptr unless a
+// force-pi block was provided.
+//
+// The MODE is deliberately not consulted. What a force-pi block buys is the
+// *capability* to run the PI law; which law actually drives the hand each tick is
+// `Gains::grasp_hand_mode`, and that is now writable at runtime — so a build that
+// skipped construction under contact_stop would make the mode a one-way door.
+// Every consumer that used to read `grasp_controller_ != nullptr` as "force_pi is
+// running" must therefore check the mode itself: the control law and the
+// diagnostics fill do (see the two controllers' compute paths), and the
+// grasp_command service uses GraspCommandRejectReason below.
 void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
                           std::unique_ptr<rtc::grasp::GraspController>& grasp_controller);
+
+/// Why a `grasp_command` (GRASP / RELEASE) must be refused right now, or nullptr
+/// to accept. Never allocates; the returned string is a literal.
+///
+/// `has_controller` alone is not the answer any more. The FSM this service steps
+/// only reaches the hand through the force_pi control law, so under contact_stop
+/// or none a command would be accepted, answer "grasp started", step the FSM and
+/// change nothing the hand can feel. That is reachable in a shipped config:
+/// ur5e_p1b carries a force_pi_grasp block with `grasp_controller_type: "none"`.
+[[nodiscard]] const char* GraspCommandRejectReason(GraspHandMode mode,
+                                                   bool has_controller) noexcept;
 
 // Build (or reset) the PullForceEstimator based on `cfg` (#167). Resets to
 // nullptr unless a pull_estimator block was provided and `enabled` is true.

@@ -152,6 +152,8 @@ edge를 기다리지 않는 live command. (FSM 의 hold/non-hold 판정은 hand 
 
 Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`). Whitelist `{force_pi, contact_stop, none}` — `none` disables all hand intervention (trajectory passes through) while GraspState aggregation/publishing continues; any other string fails `on_configure`.
 
+**두 축이 분리돼 있다** (B-3): `BuildGraspController` 는 `force_pi_grasp` 블록 유무만 보고 **모드는 안 본다** — 블록이 있으면 어떤 모드로 시작하든 PI 컨트롤러가 만들어진다 (블록 = *capability*, 모드 = 매 tick 어느 법칙이 손을 잡는가). 컨트롤러 스위칭이 re-configure 를 하지 않으므로, 빌드가 모드를 봤다면 모드가 one-way door 가 된다. 따라서 `grasp_controller_ != nullptr` 은 "force_pi 가 돌고 있다"의 대용이 **아니다** — 제어 법칙·diagnostics fill·`grasp_command` srv (`GraspCommandRejectReason`) 가 각자 모드를 직접 확인한다. `ur5e_p1b` 가 `type: "none"` + 블록 조합을 실제로 싣고 있어 이 구분이 가설이 아니다.
+
 Configure-time only: joint/task controllers mirror the resolved mode as a **read-only** `grasp_controller_type` ROS parameter (display for the demo GUI's Grasp/Release gate); `ros2 param set` is rejected, and controller switching never re-configures, so changing it means editing YAML and restarting.
 
 **FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
