@@ -70,6 +70,27 @@ def has_raw_sensors(df):
     return bool(detect_fingertip_labels_raw(df))
 
 
+def has_ft_force_filtered(df):
+    """sensor_log has the per-axis LPF'd force columns (`ft_*_fx_filt`)."""
+    return any(c.startswith("ft_") and c.endswith("_fx_filt") for c in df.columns)
+
+
+def has_force_only_fingertips(df):
+    """Fingertips report force but carry no barometer/ToF lane.
+
+    True for a hand whose `sensor_layout.values_per_group` is 0: the CSV writer
+    then emits no `<name>_raw_*` / `<name>_filt_*` block at all, so column
+    presence alone separates "no such hardware" from "hardware reading zero".
+
+    Sessions recorded before the writer honoured that stride still carry the
+    zero-filled block and are NOT matched here — they keep routing to the
+    barometer/ToF figures, which is what those files' columns claim to be.
+    """
+    if not has_ft_inference(df):
+        return False
+    return not detect_fingertip_labels(df) and not detect_fingertip_labels_raw(df)
+
+
 # ── WBC-specific (DeviceWbcLog / WbcDiagLog) predicates ────────────────────
 
 

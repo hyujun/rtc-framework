@@ -1147,6 +1147,10 @@ class DemoWbcController final : public RTControllerInterface {
   std::vector<std::string> secondary_joint_names_;
   std::vector<std::string> secondary_motor_names_;
   std::vector<std::string> secondary_sensor_names_;
+  /// Hand DeviceSensorLayout stride, cached for the CSV header/row writers. 0
+  /// on a force-only hand → no barometer/ToF columns at all.
+  std::size_t secondary_sensor_values_per_group_{
+      integrated_bringup::DeviceSensorLogPod::kSensorValuesPerFingertip};
 
   rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
   rclcpp::TimerBase::SharedPtr log_drain_timer_;

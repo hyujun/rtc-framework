@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace integrated_bringup {
 
@@ -71,8 +72,13 @@ inline void FillDeviceStateLogPod(const rtc::ControllerState& state,
   pod.goal_type = (out.goal_type == rtc::GoalType::kTask) ? 1 : 0;
 }
 
+/// `force_filtered` is the controller's per-axis LPF output packed
+/// [fingertip * 3 + axis]. Pass an empty span from controllers that do not run
+/// that filter (wbc): the POD's columns then stay zero AND
+/// `force_filtered_valid` stays false, which is the only thing that
+/// distinguishes "no filter here" from "the filter output was 0".
 inline void FillDeviceSensorLogPod(const rtc::ControllerState& state, std::size_t device_idx,
-                                   int num_active_fingertips,
+                                   int num_active_fingertips, std::span<const float> force_filtered,
                                    integrated_bringup::DeviceSensorLogPod& pod) noexcept {
   pod.t_relative_s = state.t_relative_s;
   if (static_cast<std::size_t>(state.num_devices) <= device_idx) {
@@ -100,6 +106,12 @@ inline void FillDeviceSensorLogPod(const rtc::ControllerState& state, std::size_
       pod.inference_valid = true;
       break;
     }
+  }
+
+  pod.force_filtered_valid = !force_filtered.empty();
+  const auto n_filt = num_fingertips * integrated_bringup::DeviceSensorLogPod::kForceAxes;
+  for (std::size_t i = 0; i < n_filt && i < force_filtered.size(); ++i) {
+    pod.force_filtered[i] = force_filtered[i];
   }
 }
 

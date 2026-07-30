@@ -114,7 +114,8 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
                  integrated_bringup::WbcDiagLogPod::kMaxContactVars);
 
     LogRegistrationContext ctx{logger_, log_set_, {}, {}, {}, {}, {}};
-    ctx.sensor_logs = {{secondary_sensor_key, secondary_sensor_names_}};
+    ctx.sensor_logs = {
+        {secondary_sensor_key, {secondary_sensor_names_, secondary_sensor_values_per_group_}}};
     ctx.wbc_state_logs = {
         {primary_state_key, {/*role=*/0, primary_joint_names_, {}, {}}},
         {secondary_state_key,

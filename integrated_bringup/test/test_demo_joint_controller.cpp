@@ -340,4 +340,71 @@ TEST_F(JointGraspTest, EstopTickClearsControlLawDerivedDiagnostics) {
   }
 }
 
+// ── contact_stop force LPF ───────────────────────────────────────────────────
+
+// The freeze decision reads LPF'd force while the published GraspState keeps
+// the raw value. Both halves matter: without the first, a single noisy sample
+// can latch a freeze; without the second, every BT consumer of
+// GraspState.max_force silently inherits the filter's group delay.
+TEST_F(JointGraspTest, FilteredForceLagsRawWhilePublishedStaysRaw) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  // Valid but unloaded, long enough for the filter to settle at 0 — the step
+  // below therefore starts from a primed filter rather than from a seed.
+  SetFingertipForce(state_, 0, 0.0f);
+  SetFingertipForce(state_, 1, 0.0f);
+  for (int i = 0; i < 60; ++i) {
+    state_.iteration = i + 1;
+    (void)ctrl_.Compute(state_);
+  }
+
+  SetFingertipForce(state_, 0, 5.0f);
+  SetFingertipForce(state_, 1, 5.0f);
+  state_.iteration = 61;
+  (void)ctrl_.Compute(state_);
+
+  EXPECT_NEAR(ctrl_.GetGraspStateForTesting().max_force, 5.0f, 1e-4f)
+      << "published aggregate must stay raw";
+  EXPECT_LT(ctrl_.GetContactStopAggregatesForTesting().max_force, 5.0f * 0.9f)
+      << "contact_stop aggregate must lag the step";
+
+  for (int i = 0; i < 120; ++i) {
+    state_.iteration = 62 + i;
+    (void)ctrl_.Compute(state_);
+  }
+  EXPECT_NEAR(ctrl_.GetContactStopAggregatesForTesting().max_force, 5.0f, 1e-2f);
+}
+
+// An invalid fingertip must not advance its filter with the zeroed force
+// ReadState writes: an IIR would carry that phantom sample for several ticks
+// after the lane recovers. Re-entry seeds to the live force instead — erring
+// toward an early freeze, which is the fail-safe direction for this latch.
+TEST_F(JointGraspTest, InvalidFingertipFreezesFilterAndReEntrySeeds) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 5.0f);
+  SetFingertipForce(state_, 1, 5.0f);
+  for (int i = 0; i < 150; ++i) {
+    state_.iteration = i + 1;
+    (void)ctrl_.Compute(state_);
+  }
+  ASSERT_NEAR(ctrl_.GetContactStopAggregatesForTesting().max_force, 5.0f, 1e-2f);
+
+  state_.devices[1].inference_enable[0] = false;
+  state_.devices[1].inference_enable[1] = false;
+  for (int i = 0; i < 5; ++i) {
+    state_.iteration = 151 + i;
+    (void)ctrl_.Compute(state_);
+  }
+  EXPECT_NEAR(ctrl_.GetContactStopAggregatesForTesting().max_force, 0.0f, 1e-6f)
+      << "invalid fingertips report no force";
+
+  // One tick back at a much lower force: seeded, so no residue of the old 5 N.
+  SetFingertipForce(state_, 0, 0.2f);
+  SetFingertipForce(state_, 1, 0.2f);
+  state_.iteration = 160;
+  (void)ctrl_.Compute(state_);
+  EXPECT_NEAR(ctrl_.GetContactStopAggregatesForTesting().max_force, 0.2f, 1e-4f);
+}
+
 }  // namespace

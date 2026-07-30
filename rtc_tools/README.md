@@ -138,6 +138,17 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 | Figure 5 | `--ft` | F/T 추론 출력 (Force + Torque per fingertip) |
 | Figure 6 | `--sensor-compare` | Raw vs Filtered 센서 오버레이 비교 |
 
+**Force-only hand (`sensor_layout.values_per_group: 0`).** 기압/ToF lane 이 없는 핸드는 CSV 에 `<name>_raw_*` / `<name>_filt_*` 블록이 **아예 생성되지 않으며**, 그 부재를 gate 로 삼아 위 Figure 3·4 와 `device_ft_output` 대신 단일 `fingertip_force.png` 하나만 생성됩니다 (`device_ft_output` 은 4 행 중 3 행이 없는 채널이므로).
+
+| Figure | 레이아웃 | 내용 |
+|--------|---------|------|
+| `fingertip_force.png` | N행(핑거팁) × 2열 | 좌: `Fx/Fy/Fz` raw(옅음) + LPF(진함), 우: `‖F‖` raw + LPF |
+
+- `‖F‖` 는 컬럼이 아니라 성분에서 계산되며, **필터된 성분의 norm** 입니다 — 즉 컨트롤러가 실제로 임계와 비교하는 값과 같습니다 (`‖F_raw‖` 를 필터한 값이 아님).
+- **확대 동기화**: 시간축은 8개 subplot 전체 공유 (`sharex="all"`), y축은 열 단위 공유 (`sharey="col"`) — 좌측은 부호 있는 성분, 우측은 비음수 크기라 하나로 묶으면 좌측 범위가 낭비됩니다.
+- 확대는 **인터랙티브 백엔드에서만** 가능합니다 — `--show` 가 기본값이므로 그냥 실행하면 됩니다. `--no-show` 를 주면 Agg 로 전환되어 PNG 만 나옵니다.
+- 이 스트라이드를 존중하기 전에 녹화된 세션은 0으로 채워진 블록을 그대로 갖고 있으므로 여기 매칭되지 않고 기존 기압/ToF figure 로 갑니다.
+
 **Timing 모드 플롯:**
 
 | Figure | 내용 |

@@ -15,11 +15,21 @@ class LegacyCsvError(ValueError):
 
 
 def _check_header_matches_data(filepath: str) -> None:
-    """Reject CSVs whose data rows are wider than the header.
+    """Reject CSVs whose data rows are wider than the header; warn if narrower.
 
     Reads the header + up to 10 data rows. If any data row has more columns
     than the header, raise LegacyCsvError. This catches the legacy sensor_log
     case (header < data) without doing column padding.
+
+    A row NARROWER than the header is a different animal and is not an error:
+    the DeviceSensorLog writer sizes its header from the names captured at
+    configure time but each row from the fingertip count the device actually
+    reported that tick, so a device that reported none legitimately emits a
+    two-field row (see test_device_log_pods.cpp RowRespectsRuntimeNumFingertips).
+    pandas NaN-fills the difference silently, which downstream is
+    indistinguishable from a sensor that recorded nothing but zeros — so warn,
+    because "this session has no fingertip data" is almost never what the
+    person plotting it expects to find.
     """
     with open(filepath) as f:
         reader = csv.reader(f)
@@ -27,6 +37,8 @@ def _check_header_matches_data(filepath: str) -> None:
         if header is None:
             return  # empty file: let pandas raise EmptyDataError downstream
         header_count = len(header)
+        narrow = 0
+        narrowest = header_count
         for _, row in zip(range(10), reader, strict=False):
             if len(row) > header_count:
                 raise LegacyCsvError(
@@ -35,6 +47,16 @@ def _check_header_matches_data(filepath: str) -> None:
                     f"{len(row)}). Re-record this session with the current "
                     f"code; legacy header repair is no longer supported."
                 )
+            if len(row) < header_count:
+                narrow += 1
+                narrowest = min(narrowest, len(row))
+        if narrow:
+            print(
+                f"  WARNING: {filepath} has data rows narrower than its header "
+                f"({narrowest} vs {header_count} columns in the first {narrow} of 10 "
+                f"sampled rows). The missing columns load as NaN — the producing "
+                f"device reported fewer channels than were declared at configure time."
+            )
 
 
 # Columns whose values are intentionally string/categorical — never coerce.

@@ -40,6 +40,8 @@ from .sensors import (
     plot_device_sensor_comparison_auto,
     plot_device_sensors,
     plot_device_sensors_raw,
+    plot_fingertip_force_only,
+    plot_fingertip_force_only_auto,
     plot_sensor_barometer_combined,
     plot_sensor_tof_combined,
 )
@@ -87,6 +89,8 @@ __all__ = [
     "plot_device_sensor_comparison_auto",
     "plot_device_sensors",
     "plot_device_sensors_raw",
+    "plot_fingertip_force_only",
+    "plot_fingertip_force_only_auto",
     "plot_sensor_barometer_combined",
     "plot_sensor_tof_combined",
     # timing

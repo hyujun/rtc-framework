@@ -44,6 +44,23 @@ DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
   // (unit tests). LoadConfig re-Inits at the runtime-configured rate/cutoff.
   hand_pos_filter_.Init(gains.contact_stop_lpf_cutoff_hz, 1.0 / GetDefaultDt());
   hand_pos_filter_.Reset();
+  InitFingertipForceFilters(gains.contact_stop_force_lpf_cutoff_hz);
+}
+
+// BesselFilterN::Apply() before Init() silently returns 0 for every channel, so
+// an un-Init'd force filter would not fail loudly — it would report "no force"
+// forever and quietly disable contact_stop. Both the constructor and LoadConfig
+// call this for that reason.
+void DemoTaskController::InitFingertipForceFilters(double cutoff_hz) {
+  for (auto& lpf : force_lpf_) {
+    lpf.Init(cutoff_hz, 1.0 / GetDefaultDt());
+    lpf.Reset();
+  }
+  force_lpf_primed_.fill(false);
+  fingertip_force_filt_.fill(0.0F);
+  fingertip_force_mag_filt_.fill(0.0F);
+  contact_stop_max_force_ = 0.0F;
+  contact_stop_active_count_ = 0;
 }
 
 void DemoTaskController::InitArmModel(const rtc_urdf_bridge::ModelConfig& config) {
@@ -298,6 +315,10 @@ void DemoTaskController::OnDeviceConfigsSet() {
     if (const auto layout = GetSensorLayout(secondary); layout.has_value()) {
       has_native_contact_ = layout->has_native_contact;
       has_native_displacement_ = layout->has_native_displacement;
+      // 0 on a force-only hand → the CSV writers emit no barometer/ToF block
+      // at all rather than a permanently-zero one.
+      secondary_sensor_values_per_group_ =
+          (layout->values_per_group > 0) ? static_cast<std::size_t>(layout->values_per_group) : 0U;
     }
   }
   RCLCPP_INFO(logger_,
@@ -400,7 +421,8 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   }
   if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};
-    FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
+    FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_,
+                           fingertip_force_filt_, pod);
     secondary_sensor_log_handle_.Push(pod);
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
@@ -925,6 +947,19 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
       }
       g.contact_stop_lpf_cutoff_hz = cutoff;
     }
+
+    // Optional: LPF cutoff for the per-axis fingertip force contact_stop
+    // thresholds. Same Nyquist bound as above.
+    if (fsm["contact_stop_force_lpf_cutoff_hz"]) {
+      const double cutoff = fsm["contact_stop_force_lpf_cutoff_hz"].as<double>();
+      const double nyquist = 0.5 / GetDefaultDt();
+      if (!(cutoff > 0.0 && cutoff < nyquist)) {
+        throw std::runtime_error(
+            "demo_task_controller: 'fsm.contact_stop_force_lpf_cutoff_hz' out of range "
+            "(0, control_rate/2)");
+      }
+      g.contact_stop_force_lpf_cutoff_hz = cutoff;
+    }
   }
 
   // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──
@@ -978,6 +1013,7 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   // path stays allocation- and throw-free. Reset the latch to a clean state.
   hand_pos_filter_.Init(g.contact_stop_lpf_cutoff_hz, 1.0 / GetDefaultDt());
   hand_pos_filter_.Reset();
+  InitFingertipForceFilters(g.contact_stop_force_lpf_cutoff_hz);
   contact_latched_ = false;
   hand_hold_position_.fill(0.0);
 

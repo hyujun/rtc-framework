@@ -162,6 +162,23 @@ def tof_col(df, label, t, raw=False):
     return legacy if legacy in df.columns else None
 
 
+FORCE_AXES = ("fx", "fy", "fz")
+
+
+def ft_force_col(df, label, axis, filt=False):
+    """Resolve the raw or LPF'd force column for `label` / `axis`, or None.
+
+    `axis` is one of FORCE_AXES. The filtered columns are suffixed
+    (`ft_<label>_fx_filt`) rather than prefixed, so the raw-force detectors —
+    which match on the trailing `_fx` token — cannot mistake them for a second
+    set of raw columns.
+    """
+    if axis not in FORCE_AXES:
+        return None
+    col = f"ft_{label}_{axis}_filt" if filt else f"ft_{label}_{axis}"
+    return col if col in df.columns else None
+
+
 def detect_ft_labels(df):
     """FT inference output fingertip 라벨 목록을 자동 감지.
 

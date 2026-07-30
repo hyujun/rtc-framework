@@ -22,6 +22,11 @@ demo_joint_controller:
   fsm:
     contact_stop_release_eps: 0.005 # rad, hand contact-stop release hysteresis
     contact_stop_lpf_cutoff_hz: 20.0 # Hz, Bessel LPF cutoff for latched hold
+    # Per-axis LPF on the fingertip force contact_stop thresholds. Higher cutoff
+    # than the hold LPF above on purpose: the 4th-order Bessel's DC group delay
+    # is ~2.11/(2*pi*fc), so 20 Hz would delay the freeze by ~17 ms out of the
+    # 50 ms BT tick this latch covers; 50 Hz costs ~6.7 ms.
+    contact_stop_force_lpf_cutoff_hz: 50.0
 
   # ── E-STOP ──────────────────────────────────────────────────────────────────
   # Joint position the E-STOP path drives the arm toward (rad, length = arm DoF).

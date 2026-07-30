@@ -11,7 +11,7 @@
 //   - The helper does NOT assume any device name, fingertip count, or
 //     instance string mapping. The caller passes:
 //       * state_logs   : map<instance, (joint_names, motor_names)>
-//       * sensor_logs  : map<instance, sensor_names>
+//       * sensor_logs  : map<instance, (sensor_names, values_per_group)>
 //     and receives back maps keyed by the same instance strings. Each demo
 //     controller assigns the entries it cares about into its own typed
 //     handle members (e.g. primary_state_log_handle_,
@@ -91,8 +91,18 @@ struct LogRegistrationContext {
   // if it appears in the parsed YAML (defensive against typos).
   std::map<std::string, std::pair<std::vector<std::string>, std::vector<std::string>>> state_logs;
 
-  // Map: DeviceSensorLog instance string → sensor_names.
-  std::map<std::string, std::vector<std::string>> sensor_logs;
+  // DeviceSensorLog header context per instance.
+  struct SensorLogInfo {
+    std::vector<std::string> sensor_names;
+    // Runtime DeviceSensorLayout stride (0 for a force-only hand). Drives the
+    // raw/filt column block so a device with no barometer/ToF lane gets no
+    // such columns instead of a permanently-zero block. Defaults to the POD
+    // capacity for callers that have no layout.
+    std::size_t values_per_group{DeviceSensorLogPod::kSensorValuesPerFingertip};
+  };
+
+  // Map: DeviceSensorLog instance string → header context.
+  std::map<std::string, SensorLogInfo> sensor_logs;
 
   // ── WBC-specific channels (Path A: POD-only, integrated_bringup-private) ──
   // DeviceWbcLog header context per instance. role drives the arm/hand column
@@ -199,14 +209,17 @@ template <typename ParsedLogEntryT>
       if (it == ctx.sensor_logs.end()) {
         continue;
       }
-      const auto sensor_names = it->second;
+      const auto sensor_names = it->second.sensor_names;
+      // Both writers must agree on the stride or the row stops lining up with
+      // the header, so the same value is captured into each.
+      const auto values_per_group = it->second.values_per_group;
       auto handle = ctx.log_set.RegisterLog<integrated_bringup::DeviceSensorLogPod>(
           entry.instance,
-          [sensor_names](std::ostream& os) {
-            integrated_bringup::WriteDeviceSensorLogHeader(os, sensor_names);
+          [sensor_names, values_per_group](std::ostream& os) {
+            integrated_bringup::WriteDeviceSensorLogHeader(os, sensor_names, values_per_group);
           },
-          [](std::ostream& os, const integrated_bringup::DeviceSensorLogPod& pod) {
-            integrated_bringup::WriteDeviceSensorLogRow(os, pod);
+          [values_per_group](std::ostream& os, const integrated_bringup::DeviceSensorLogPod& pod) {
+            integrated_bringup::WriteDeviceSensorLogRow(os, pod, values_per_group);
           });
       if (!handle) {
         RCLCPP_WARN(ctx.logger, "Failed to open device_sensor CSV for instance=%s",

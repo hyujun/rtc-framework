@@ -284,6 +284,14 @@ position_output = quintic(t, q_start, q_goal, duration)
 
 **ContactStopHand:** 핑거팁 센서에서 힘 감지 시 핸드 궤적 출력을 현재 위치로 동결하여 과도한 hand closure를 방지합니다. 동결 위치는 측정 위치를 Bessel LPF (`fsm.contact_stop_lpf_cutoff_hz`, 기본 20 Hz) 로 통과시킨 값이라 인코더 노이즈가 desired 로 직접 실리지 않습니다.
 
+**힘 입력 LPF (joint / task):** 동결 여부를 판정하는 `|F|` 는 핑거팁별 `fx/fy/fz` 를 축별로 Bessel LPF (`fsm.contact_stop_force_lpf_cutoff_hz`, 기본 50 Hz) 에 통과시킨 뒤 계산합니다 — 단일 노이즈 샘플이 freeze 를 latch 하지 못하게 하기 위함입니다. 세 가지가 의도된 설계입니다.
+
+- **축별 필터 (크기 필터 아님)**: `|F|` 를 먼저 만들고 필터링하면 평균 0 인 축 노이즈가 정류되어 양의 바이어스로 남아 접촉이 없어도 임계에 접근합니다.
+- **cutoff 가 위치 LPF 보다 높음**: 4차 Bessel 의 DC 군지연은 `~2.11/(2π·fc)` 이므로 20 Hz 면 ~17 ms — 이 latch 가 보호하려는 BT tick(50 ms) 의 1/3 입니다. 50 Hz 는 ~6.7 ms.
+- **grasp_controller_type 과 무관하게 항상 실행**: 로그 컬럼의 의미가 런 설정에 따라 바뀌지 않도록. `force_pi` 의 `force_filter_` 는 손가락별 **`|F|` 스칼라** 에 걸리는 별개 필터이며 이 축별 필터와 무관합니다.
+
+발행되는 `GraspState` 의 `force_magnitude` / `max_force` 는 **raw** 로 유지되므로 BT (`IsForceAbove` 등) 계약은 변하지 않습니다. `[contact_stop]` 로그는 판정에 쓰인 `fmax=` (필터) 와 `fmax_raw=` 를 함께 출력합니다. WBC 는 이 필터를 갖지 않습니다 (latch 없이 `phase.cpp` 가 raw `force_magnitude` 로 FSM 전이).
+
 **Hold latch (contact_stop 모드 전용):** 접촉이 한 번 성립하면 동결이 **latch** 되어, 이후 접촉이 사라져도 (물체 미끄러짐 등) 명시적 release 전까지 위치를 유지합니다 — latch 이전에는 접촉이 한 tick만 끊겨도 명령이 (goal 까지 진행된) 궤적으로 스냅백했습니다. Latch 는 아래 release-phase gate 또는 E-STOP 으로만 해제됩니다. 접촉 유지 중에는 LPF 출력을 계속 추종하고 (compliant), 접촉이 사라지면 마지막 LPF 출력을 고정합니다 (drift 방지). 핸드 상태 dropout (`devices[1].valid==false`) 중에도 latch 되어 있으면 마지막 명령을 유지합니다.
 
 **Release-Phase Skip (contact_stop 모드 전용):** 사용자가 토픽(`/p1a/joint_goal`)으로 손을 여는 방향의 goal을 내린 경우에는 접촉 잔존 힘이 있더라도 contact_stop 동결을 자동으로 건너뛰고 latch 를 해제합니다. 아래 3개 조건이 모두 성립해야 release 의도로 인정됩니다 (ε = `fsm.contact_stop_release_eps` rad 히스테리시스, 기본 0.005):

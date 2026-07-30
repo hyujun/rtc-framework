@@ -773,6 +773,60 @@ TEST_F(TaskContactStopTest, HandDropoutWhileLatchedHoldsPosition) {
   EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-3);
 }
 
+// ── contact_stop force LPF ───────────────────────────────────────────────────
+
+// The freeze decision reads LPF'd force while the published GraspState keeps
+// the raw value. Both halves matter: without the first, a single noisy sample
+// can latch a freeze; without the second, every BT consumer of
+// GraspState.max_force silently inherits the filter's group delay.
+TEST_F(TaskContactStopTest, FilteredForceLagsRawWhilePublishedStaysRaw) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  // Valid but unloaded, long enough for the filter to settle at 0 — the step
+  // below therefore starts from a primed filter rather than from a seed.
+  SetFingertipForce(state_, 0, 0.0f);
+  SetFingertipForce(state_, 1, 0.0f);
+  RunTicks(60);
+
+  SetFingertipForce(state_, 0, 5.0f);
+  SetFingertipForce(state_, 1, 5.0f);
+  RunTicks(1);
+
+  const auto gs = ctrl_->GetGraspStateForTesting();
+  const auto agg = ctrl_->GetContactStopAggregatesForTesting();
+  EXPECT_NEAR(gs.max_force, 5.0f, 1e-4f) << "published aggregate must stay raw";
+  EXPECT_LT(agg.max_force, 5.0f * 0.9f) << "contact_stop aggregate must lag the step";
+
+  // …and converge to the same steady state, so the filter costs delay, not gain.
+  RunTicks(120);
+  EXPECT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 5.0f, 1e-2f);
+}
+
+// An invalid fingertip must not advance its filter with the zeroed force
+// ReadState writes: an IIR would carry that phantom sample for several ticks
+// after the lane recovers. Re-entry seeds to the live force instead — erring
+// toward an early freeze, which is the fail-safe direction for this latch.
+TEST_F(TaskContactStopTest, InvalidFingertipFreezesFilterAndReEntrySeeds) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 5.0f);
+  SetFingertipForce(state_, 1, 5.0f);
+  RunTicks(150);
+  ASSERT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 5.0f, 1e-2f);
+
+  state_.devices[1].inference_enable[0] = false;
+  state_.devices[1].inference_enable[1] = false;
+  RunTicks(5);
+  EXPECT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 0.0f, 1e-6f)
+      << "invalid fingertips report no force";
+
+  // One tick back at a much lower force: seeded, so no residue of the old 5 N.
+  SetFingertipForce(state_, 0, 0.2f);
+  SetFingertipForce(state_, 1, 0.2f);
+  RunTicks(1);
+  EXPECT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 0.2f, 1e-4f);
+}
+
 // ── ToF snapshot ─────────────────────────────────────────────────────────────
 
 // A real raw sensor lane (baro+ToF stride) alongside ≥3 inference groups
