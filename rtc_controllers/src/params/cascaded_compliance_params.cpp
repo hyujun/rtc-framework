@@ -188,8 +188,10 @@ void ParseCascadedComplianceParams(const YAML::Node& cfg, CascadedCompliancePara
   out.nullspace_kp = FloorNonNegativeGain(out.nullspace_kp);
   out.nullspace_kd = FloorNonNegativeGain(out.nullspace_kd);
   if (cfg["singularity_threshold"]) {
-    out.singularity_threshold = std::max(
-        compliance::kMinSigma0, num(cfg["singularity_threshold"], "singularity_threshold"));
+    // Unreachable isfinite branch here for the same reason as FloorMaxDamping
+    // below — `num` rejects non-finite first. One symbol, not two spellings.
+    out.singularity_threshold =
+        compliance::FloorSigma0(num(cfg["singularity_threshold"], "singularity_threshold"));
   }
   if (cfg["singularity_critical"]) {
     out.singularity_critical =

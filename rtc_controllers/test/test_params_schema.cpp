@@ -999,6 +999,62 @@ TEST(SafetyLayerGainSchema, PassesANonFiniteJointLimitGainThroughInsteadOfLaunde
   EXPECT_TRUE(std::isnan(cas.joint_limit_kd));
 }
 
+TEST(SingularityGuardSchema, PassesANonFiniteSigma0ThroughInEveryParserInsteadOfLaunderingIt) {
+  // The σ₀ twin of PassesANonFiniteJointLimitGainThroughInsteadOfLaunderingIt,
+  // and the reason the five parsers converged on compliance::FloorSigma0 (#311).
+  //
+  // `std::max(kMinSigma0, NaN)` returns kMinSigma0, because `1e-6 < NaN` is
+  // false. For σ₀ that laundering is worse than for λ_max: the result still
+  // looks armed at every callsite, but a shell of radius 1e-6 is one no
+  // reachable pose enters, so §6.5 never engages, no fault fires and nothing is
+  // logged. The operator's corrupt gain has been traded for a silently disarmed
+  // singularity guard. Passed through unchanged it reaches the downstream finite
+  // checks (compliance::AllFinite on the torque lane, ValidateControllerOutput
+  // on the position lane) instead.
+  //
+  // MUTATION ORACLE: reverting any one of these four to
+  // `std::max(compliance::kMinSigma0, ...)` turns that parser's EXPECT_TRUE
+  // below red — the value comes back as kMinSigma0, which is finite.
+  const std::string kNanSigma = "singularity_threshold: .nan";
+
+  OscParams osc;
+  auto osc_ct = CommandType::kTorque;
+  ASSERT_NO_THROW(ParseOscParams(YAML::Load(kNanSigma), osc, osc_ct));
+  EXPECT_TRUE(std::isnan(osc.singularity_threshold))
+      << "osc laundered a NaN σ₀ into a live-looking "
+         "1e-6 shell";
+
+  TaskImpedanceParams imp;
+  TaskImpedanceConfig ic;
+  ASSERT_NO_THROW(
+      ParseTaskImpedanceParams(YAML::Load(kNanSigma), imp, TaskSelection::kFullSe3, ic));
+  EXPECT_TRUE(std::isnan(imp.singularity_threshold)) << "task_impedance laundered a NaN σ₀";
+
+  TaskAdmittanceParams adm;
+  TaskAdmittanceConfig ac;
+  ASSERT_NO_THROW(ParseTaskAdmittanceParams(YAML::Load(kNanSigma), adm, ac));
+  EXPECT_TRUE(std::isnan(adm.singularity_threshold)) << "task_admittance laundered a NaN σ₀";
+
+  ClikParams clik;
+  auto clik_ct = CommandType::kPosition;
+  ASSERT_NO_THROW(ParseClikParams(YAML::Load(kNanSigma), clik, clik_ct));
+  EXPECT_TRUE(std::isnan(clik.singularity_threshold)) << "clik laundered a NaN σ₀";
+
+  // The cascade schema rejects a non-finite scalar before the floor ever sees it
+  // (`num`), exactly as it does for λ_max — so FloorSigma0's non-finite branch
+  // is unreachable THERE and this parser's oracle is the rejection, not the
+  // pass-through. Reverting that one call site to std::max is invisible to any
+  // test by construction; it converged for the single spelling, not for a
+  // behaviour change. Both halves pinned, the POD path included.
+  EXPECT_TRUE(Mentions(CascadeError("singularity_threshold: .nan\n"), "finite"));
+  CascadedComplianceParams cas;
+  cas.singularity_threshold = std::numeric_limits<double>::quiet_NaN();
+  CascadedComplianceConfig cc;
+  ASSERT_NO_THROW(ParseCascadedComplianceParams(UndefinedNode(), cas, cc));
+  EXPECT_TRUE(std::isnan(cas.singularity_threshold))
+      << "a σ₀ from set_gains() bypasses `num`, so the POD path must still pass it through";
+}
+
 TEST(SafetyLayerGainSchema, RejectsAMarginThatWouldDisarmTheBandInEveryTaskSchema) {
   // All three schemas that carry δ, including admittance where it shrinks the
   // q_cmd clamp band instead of opening a repulsive one — same disarm, same
