@@ -145,25 +145,23 @@ CM 측 정책(호출부는 `rt_controller_node_rt_loop.cpp` 의 `Compute()` 반�
 
 egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게이트는 "컨트롤러가 **읽어도 되는가**" 를 본다. `ControllerState::devices[0]` 이 이번 tick 에 쓸 수 없는 상태 — `!valid` 또는 `num_channels < 모델 DOF` — 이면 미보고 채널이 **유한한 `0`** 으로 읽히고, FK·Jacobian·제어 법칙 전체가 부분 ZERO configuration 에서 돌아 전 관절을 원점으로 당기는 명령이 나간다. 모든 수가 유한하므로 위의 actuator-boundary validator 도 fault 도 이를 잡지 않는다.
 
-계약 SSoT 는 `rtc_controllers/docs/compliance-conventions.md` §3.7 이고, 구현은 헤더 전용 `device_readability.hpp` 다 (3계층 배치표의 "device 판독가능성 게이트" 행 — `agent_docs/design-principles.md`).
+**계약 SSoT 는 `rtc_controllers/docs/compliance-conventions.md` §3.7 이다** (#297 결정) — 판정식, 침묵의 의미와 그 대가, secondary 축 규칙, 알려진 한계는 전부 거기 있다. **아래는 이 패키지가 노출하는 이름의 색인이지 계약 전문이 아니다.** 구현은 헤더 전용 `device_readability.hpp` (3계층 배치표의 "device 판독가능성 게이트" 행 — `agent_docs/design-principles.md`).
 
-| 이름 | 무엇을 답하는가 | 언제 |
-|---|---|---|
-| `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 — `num_channels` 는 wire 길이 |
-| `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태 판독 **전** |
-| `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length (`num_channels = 0`) | **그 게이트가 판정한 device 에만.** primary 게이트는 secondary 를 침묵시키지 않는다 (passthrough 유지) — 아래 오독 주의 |
-| `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** |
-| `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 의 도메인별 중립값 (torque → `0.0` / position → 측정값) | 명령 조립 시 |
+| 이름 | 한 줄 요약 |
+|---|---|
+| `ModelChannelBound(nc0, model_dim)` | 인덱싱 상한 — 순수 OOB 방어, 정책 없음. **항상** 적용 |
+| `IsDeviceReadable(dev, model_dim)` | **게이트** — 이 device 를 이번 tick 에 써도 되는가. 조인트 상태 판독 전 |
+| `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length. 판정한 그 device 에만 |
+| `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane 을 측정값으로. `SilenceDeviceOutput` 과 **항상 짝** |
+| `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → `0.0` / position → 측정값) |
 
-**두 술어의 이름이 갈린 것이 핵심이다** (#265 결정 B). `min(nc0, nv)` 는 좁은 device 를 안전하게 만들어 주는 것처럼 보이지만 그렇지 않다 — *지속* 버퍼에 scatter 하는 경로에서 건너뛴 슬롯은 이전값(초기 0)을 유지하므로, 모델이 보는 configuration 은 **bound 없이 읽은 것과 수치적으로 동일**하다. bound 는 crash 만 없애고 hazard 는 남긴다. 따라서 #172 의 bound 는 OOB 방어로서 유지하되 F5 답으로 쓰면 안 된다.
+소비자가 가장 자주 틀리는 세 가지만 여기서 경고한다 — **판단 근거와 반례는 §3.7 을 열 것**:
 
-**침묵은 fail-safe 가 아니다.** zero-length 는 출하된 백엔드 전부에서 "no update" = 직전 setpoint 유지다 (`WriteSafeCommand` 와 같은 성질). `nc0` 길이의 0 을 대신 내보내는 것은 **진짜 0 커맨드**이고, 토크 모드 팔에서는 정지가 아니라 낙하다.
+- **bound 는 게이트가 아니다** (#265 결정 B). `min(nc0, nv)` 는 crash 만 없애고 hazard 는 남긴다.
+- **침묵은 fail-safe 가 아니고, wire 만 침묵시킨다.** zero-length 는 "no update"(직전 setpoint 유지)이지 정지가 아니며, 로그 lane 은 `HoldTelemetryAtMeasured` 가 따로 채워야 한다.
+- **"primary 에만" 은 device 축이 아니라 게이트 축이다** (#291). secondary 도 *자기* 폭으로 게이트를 갖는다.
 
-**침묵은 wire 만 침묵시킨다.** 로그 POD 는 출력이 아니라 device 의 `num_channels` 로 bound 하고 내보낸 폭을 담는 필드가 없으므로, reference lane 을 비워 두면 침묵 tick 이 "전 관절 원점 명령" 으로 기록된다. `SilenceDeviceOutput` 은 `HoldTelemetryAtMeasured` 와 항상 짝이며, `goal_positions` 만 바인딩 소유로 남는다. 근거·판정은 §3.7.
-
-**"primary 에만" 은 device 축이 아니라 게이트 축이다** (#291 — 오독 주의). 위 표의 `SilenceDeviceOutput` 행은 *primary 의 게이트가 primary 만 침묵시킨다*는 뜻이지, **secondary 에 게이트를 두지 말라는 뜻이 아니다.** 질문이 둘이기 때문이다 — (1) *팔이* 판독 불가일 때 핸드를 죽이는가 → **아니다**(passthrough 유지), (2) *핸드가* 자기 폭으로 판독 불가일 때 핸드는 무엇을 내보내는가 → **팔과 같게 침묵**. `IsDeviceReadable` 은 이미 device 무관이므로 `IsDeviceReadable(dev1, hand_dof_)` 로 부르면 되고 새 추상화가 필요 없다. 게이트는 **device 마다 자기 폭으로** 서며, 한 device 의 게이트가 다른 device 를 침묵시키지 않는다. secondary 축의 함정(latch 하는 self-init / grasp FSM 의 분기 오염 / 모델 lane 의 all-or-nothing)은 §3.7.
-
-**한계 — 필요조건만 판정한다** (#265 D1-a → **issue #284**). `num_channels` 는 wire 길이이므로 reorder map 이 활성이면 `nc0 >= model_dim` 이어도 매칭 안 된 슬롯에 구멍이 남을 수 있다. `num_channels` 재정의는 기각됐다 (그 필드는 위 egress bound 로 이미 쓰인다). 이 갭은 #284 가 소유한다.
+**한계 — `IsDeviceReadable` 은 필요조건만 판정한다** (#265 D1-a → **issue #284**). reorder map 이 활성이면 `nc0 >= model_dim` 이어도 슬롯에 구멍이 남을 수 있다. 이 갭은 #284 가 소유한다.
 
 테스트: `test/test_device_readability.cpp` (술어·원시연산 계약, URDF 없음) · `integrated_bringup/test/test_device_readability_gate.cpp` (바인딩 3종) · `integrated_bringup/test/test_combined_model_cache_gate.cpp` (공유 모델 scatter).
 
