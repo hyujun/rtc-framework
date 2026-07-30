@@ -261,10 +261,14 @@ rcl_interfaces::msg::SetParametersResult DemoTaskController::OnGainParametersSet
         // between this decision and the Store below.
         if (const char* why = GraspModeChangeRejectReason(
                 g.grasp_hand_mode, requested,
-                {/*has_controller=*/grasp_controller_ != nullptr,
-                 /*contact_latched=*/contact_latched_pub_.load(std::memory_order_acquire),
-                 /*grasp_phase_idle=*/grasp_phase_pub_.load(std::memory_order_acquire) ==
-                     static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle)});
+                // Designated initialisers, not positional-with-comments: all three
+                // fields are bool, so swapping two of them would otherwise compile
+                // and silently invert a safety decision. C++20 requires these in
+                // declaration order, which turns that mistake into a build error.
+                {.has_controller = grasp_controller_ != nullptr,
+                 .contact_latched = contact_latched_pub_.load(std::memory_order_acquire),
+                 .grasp_phase_idle = grasp_phase_pub_.load(std::memory_order_acquire) ==
+                                     static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle)});
             why != nullptr) {
           result.successful = false;
           result.reason = why;
