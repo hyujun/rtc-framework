@@ -22,6 +22,8 @@ from rtc_tools.plotting.columns import (
     detect_fingertip_labels_raw as _detect_fingertip_labels_raw,
     detect_ft_labels as _detect_ft_labels,
     ft_force_col as _ft_force_col,
+    ft_force_guard_rejected_col as _ft_guard_rejected_col,
+    ft_force_guarded_col as _ft_force_guarded_col,
     tof_col as _tof_col,
 )
 from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
@@ -492,8 +494,17 @@ def plot_sensor_tof_combined(df, save_dir=None):
 def plot_fingertip_force_only(df, fingertip_labels, save_dir=None):
     """Force-only fingertips: N rows (one per fingertip) x 2 columns.
 
-    Left  — Fx / Fy / Fz, raw (faint) overlaid with the LPF'd series (solid).
-    Right — ‖F‖ for the same two, i.e. the quantity contact_stop thresholds.
+    Left  — Fx / Fy / Fz, raw (faint) overlaid with the LPF'd series (solid),
+            plus the delta-spike guard's held segments (dashed) where it
+            replaced raw at the filter input.
+    Right — ‖F‖ for the same two, i.e. the quantity contact_stop thresholds,
+            with a vertical marker per guard-held tick.
+
+    The guard overlay is drawn only for sessions that carry the guard lane
+    (`ft_*_fx_guarded` / `ft_*_force_guard_rejected`), and the dashed hold
+    segments only where guarded actually differs from raw — on an unremarkable
+    session that is nowhere, and three extra lines exactly on top of the raw
+    traces would be noise, not information.
 
     For a hand with no barometer/ToF lane the 4-row combined figure
     (`plot_device_ft_output`) spends 3 of its 4 rows on permanently-zero
@@ -533,9 +544,16 @@ def plot_fingertip_force_only(df, fingertip_labels, save_dir=None):
 
         raw_components = {}
         filt_components = {}
+        # Guard verdict for this fingertip: a boolean mask over ticks. Absent on
+        # pre-guard sessions, in which case nothing below draws.
+        rejected_col = _ft_guard_rejected_col(df, label)
+        rejected = df[rejected_col].to_numpy().astype(bool) if rejected_col else None
+        num_rejected = int(rejected.sum()) if rejected is not None else 0
+        hold_labelled = False
         for axis in _FORCE_AXES:
             raw_col = _ft_force_col(df, label, axis)
             filt_col = _ft_force_col(df, label, axis, filt=True)
+            guarded_col = _ft_force_guarded_col(df, label, axis)
             color = axis_colors[axis]
             if raw_col is not None:
                 raw_components[axis] = df[raw_col]
@@ -557,7 +575,25 @@ def plot_fingertip_force_only(df, fingertip_labels, save_dir=None):
                     t, df[raw_col], alpha=1.0, linewidth=1.2, color=color, label=axis.upper()
                 )
 
-        ax_v.set_title(f"{label} — F (solid=LPF, faint=raw)", fontsize=10)
+            # Held segments only: masking to the rejected ticks is what makes the
+            # guard visible at all. A 2-tick hold in a 120 s session is invisible
+            # as a full-length line under the raw trace it otherwise equals.
+            if guarded_col is not None and raw_col is not None and num_rejected:
+                held = np.where(rejected, df[guarded_col].to_numpy(), np.nan)
+                ax_v.plot(
+                    t,
+                    held,
+                    linestyle="--",
+                    linewidth=2.0,
+                    color=color,
+                    label="guard hold" if not hold_labelled else None,
+                )
+                hold_labelled = True
+
+        title = f"{label} — F (solid=LPF, faint=raw)"
+        if num_rejected:
+            title += f", {num_rejected} guard-held tick(s)"
+        ax_v.set_title(title, fontsize=10)
         ax_v.set_ylabel("Force (N)")
         ax_v.legend(fontsize=7, ncol=3)
         ax_v.grid(True, alpha=0.3)
@@ -573,6 +609,18 @@ def plot_fingertip_force_only(df, fingertip_labels, save_dir=None):
             any_filtered = True
             mag_filt = np.sqrt(sum(np.square(filt_components[a]) for a in _FORCE_AXES))
             ax_m.plot(t, mag_filt, alpha=1.0, linewidth=1.4, color="C3", label="‖F‖ LPF")
+
+        if num_rejected:
+            # vlines rather than a shaded span: the events are 1-2 ticks wide, and
+            # an axvspan that narrow does not render at figure dpi.
+            ax_m.vlines(
+                t[rejected],
+                *ax_m.get_ylim(),
+                color="0.4",
+                linewidth=0.8,
+                alpha=0.6,
+                label=f"guard hold (n={num_rejected})",
+            )
 
         ax_m.set_title(f"{label} — ‖F‖", fontsize=10)
         ax_m.set_ylabel("‖F‖ (N)")

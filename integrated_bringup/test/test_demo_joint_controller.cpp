@@ -13,6 +13,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
+#include <limits>
 
 namespace {
 
@@ -405,6 +407,129 @@ TEST_F(JointGraspTest, InvalidFingertipFreezesFilterAndReEntrySeeds) {
   state_.iteration = 160;
   (void)ctrl_.Compute(state_);
   EXPECT_NEAR(ctrl_.GetContactStopAggregatesForTesting().max_force, 0.2f, 1e-4f);
+}
+
+// ── contact_stop force delta-spike guard ─────────────────────────────────────
+//
+// Wiring only: the guard's own laws are pinned in test_fingertip_force_guard.cpp.
+// What these tests establish is that the LPF is fed the GUARDED triplet, that the
+// raw lane is untouched, and that the per-tick verdict is observable.
+
+// The 260730_1017 p1b failure mode, reproduced: a 2-tick fz spike (6.406 then
+// 6.058 N) on an otherwise ~0.02 N lane. Fed straight into the Bessel LPF it
+// left ~0.170 N of filtered tail — 17 % of a 1 N contact threshold, from noise.
+TEST_F(JointGraspTest, TwoTickForceSpikeIsHeldOutOfTheFilterWhileRawIsUntouched) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 0.02f);
+  SetFingertipForce(state_, 1, 0.02f);
+  for (int i = 0; i < 80; ++i) {
+    state_.iteration = i + 1;
+    (void)ctrl_.Compute(state_);
+  }
+  const float settled = ctrl_.GetContactStopAggregatesForTesting().max_force;
+  ASSERT_NEAR(settled, 0.02f, 1e-3f) << "filter must be settled before the spike";
+
+  SetFingertipForce(state_, 0, 6.406f);
+  state_.iteration = 81;
+  (void)ctrl_.Compute(state_);
+  EXPECT_TRUE(ctrl_.WasForceGuardRejectedForTesting(0));
+  // Raw is untouched: the published GraspState still reports the wire value, so
+  // grasp detection and every BT consumer see exactly what the driver sent.
+  EXPECT_NEAR(ctrl_.GetGraspStateForTesting().max_force, 6.406f, 1e-3f);
+  // The LPF was fed the held triplet, not the spike.
+  EXPECT_NEAR(ctrl_.GetGuardedFingertipForceForTesting()[2], 0.02f, 1e-4f);
+
+  SetFingertipForce(state_, 0, 6.058f);
+  state_.iteration = 82;
+  (void)ctrl_.Compute(state_);
+  EXPECT_TRUE(ctrl_.WasForceGuardRejectedForTesting(0))
+      << "the second spike tick is compared against last_accepted, not the first spike";
+  EXPECT_NEAR(ctrl_.GetGuardedFingertipForceForTesting()[2], 0.02f, 1e-4f);
+
+  SetFingertipForce(state_, 0, 0.04f);
+  state_.iteration = 83;
+  (void)ctrl_.Compute(state_);
+  EXPECT_FALSE(ctrl_.WasForceGuardRejectedForTesting(0));
+  EXPECT_NEAR(ctrl_.GetGuardedFingertipForceForTesting()[2], 0.04f, 1e-4f);
+
+  // No tail: without the guard the filtered aggregate peaks near 0.17 N here.
+  for (int i = 0; i < 20; ++i) {
+    state_.iteration = 84 + i;
+    (void)ctrl_.Compute(state_);
+    EXPECT_LT(ctrl_.GetContactStopAggregatesForTesting().max_force, 0.06f) << "tick " << i;
+  }
+}
+
+// The other half of the contract: a step that persists is real. Without the
+// consecutive-hold cap the guard would reject a genuine 6 N contact on EVERY
+// tick (|6 - 0| > 4 forever) and contact_stop could never fire.
+TEST_F(JointGraspTest, SustainedForceStepReachesTheFilterAfterTheHoldCap) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 0.0f);
+  SetFingertipForce(state_, 1, 0.0f);
+  for (int i = 0; i < 60; ++i) {
+    state_.iteration = i + 1;
+    (void)ctrl_.Compute(state_);
+  }
+
+  SetFingertipForce(state_, 0, 6.0f);
+  SetFingertipForce(state_, 1, 6.0f);
+  for (int i = 0; i < 2; ++i) {
+    state_.iteration = 61 + i;
+    (void)ctrl_.Compute(state_);
+    EXPECT_TRUE(ctrl_.WasForceGuardRejectedForTesting(0)) << "hold tick " << i;
+    EXPECT_NEAR(ctrl_.GetGuardedFingertipForceForTesting()[2], 0.0f, 1e-6f) << "hold tick " << i;
+  }
+  state_.iteration = 63;
+  (void)ctrl_.Compute(state_);
+  EXPECT_FALSE(ctrl_.WasForceGuardRejectedForTesting(0)) << "hold cap must let a real step through";
+  EXPECT_NEAR(ctrl_.GetGuardedFingertipForceForTesting()[2], 6.0f, 1e-4f);
+
+  for (int i = 0; i < 200; ++i) {
+    state_.iteration = 64 + i;
+    (void)ctrl_.Compute(state_);
+  }
+  EXPECT_NEAR(ctrl_.GetContactStopAggregatesForTesting().max_force, 6.0f, 1e-2f);
+}
+
+// NaN has no hold cap: admitted once, it poisons the IIR delay line for good and
+// the downstream max/threshold arithmetic then reads as a plausible number
+// instead of failing loudly.
+TEST_F(JointGraspTest, NonFiniteForceNeverReachesTheFilter) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 0.5f);
+  SetFingertipForce(state_, 1, 0.5f);
+  for (int i = 0; i < 80; ++i) {
+    state_.iteration = i + 1;
+    (void)ctrl_.Compute(state_);
+  }
+  ASSERT_NEAR(ctrl_.GetContactStopAggregatesForTesting().max_force, 0.5f, 1e-3f);
+
+  SetFingertipForce(state_, 0, std::numeric_limits<float>::quiet_NaN());
+  for (int i = 0; i < 20; ++i) {
+    state_.iteration = 81 + i;
+    (void)ctrl_.Compute(state_);
+    EXPECT_TRUE(ctrl_.WasForceGuardRejectedForTesting(0)) << "tick " << i;
+    const float agg = ctrl_.GetContactStopAggregatesForTesting().max_force;
+    EXPECT_TRUE(std::isfinite(agg)) << "tick " << i;
+    EXPECT_NEAR(agg, 0.5f, 1e-3f) << "tick " << i;
+  }
+
+  SetFingertipForce(state_, 0, std::numeric_limits<float>::infinity());
+  state_.iteration = 200;
+  (void)ctrl_.Compute(state_);
+  EXPECT_TRUE(ctrl_.WasForceGuardRejectedForTesting(0));
+  EXPECT_TRUE(std::isfinite(ctrl_.GetContactStopAggregatesForTesting().max_force));
+
+  // Recovery: a finite in-band sample is accepted again immediately.
+  SetFingertipForce(state_, 0, 0.6f);
+  state_.iteration = 201;
+  (void)ctrl_.Compute(state_);
+  EXPECT_FALSE(ctrl_.WasForceGuardRejectedForTesting(0));
+  EXPECT_NEAR(ctrl_.GetGuardedFingertipForceForTesting()[2], 0.6f, 1e-4f);
 }
 
 }  // namespace

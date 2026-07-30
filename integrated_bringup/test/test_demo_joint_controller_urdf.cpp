@@ -210,4 +210,37 @@ TEST_F(JointControllerUrdfTest, EstopDrivesTowardSafePositionKeepsTf) {
   EXPECT_TRUE(out.valid);
 }
 
+// The joint controller parses its own `fsm:` block, so a typo here is invisible
+// from the task controller's suite. Absent keys fall back to the Gains defaults,
+// which is exactly what makes a silent typo look like a configured session.
+TEST(JointControllerLoadConfigTest, ForceGuardKeysReachGains) {
+  DemoJointController ctrl{""};
+  ctrl.SetControlRate(1.0 / kDt);
+  auto cfg = YAML::Load(kJointYaml);
+  cfg["fsm"]["contact_stop_force_guard_delta_n"] = 2.5;
+  cfg["fsm"]["contact_stop_force_guard_max_hold_ticks"] = 5;
+  ctrl.LoadConfig(cfg);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().contact_stop_force_guard_delta_n, 2.5);
+  EXPECT_EQ(ctrl.get_gains().contact_stop_force_guard_max_hold_ticks, 5);
+
+  // Defaults survive when the keys are absent (p1a / iiwa7_leap configs).
+  DemoJointController plain{""};
+  plain.SetControlRate(1.0 / kDt);
+  plain.LoadConfig(YAML::Load(kJointYaml));
+  EXPECT_DOUBLE_EQ(plain.get_gains().contact_stop_force_guard_delta_n, 4.0);
+  EXPECT_EQ(plain.get_gains().contact_stop_force_guard_max_hold_ticks, 2);
+}
+
+TEST(JointControllerLoadConfigTest, ForceGuardOutOfRangeThrows) {
+  DemoJointController ctrl{""};
+  ctrl.SetControlRate(1.0 / kDt);
+  auto bad_delta = YAML::Load(kJointYaml);
+  bad_delta["fsm"]["contact_stop_force_guard_delta_n"] = -1.0;
+  EXPECT_THROW(ctrl.LoadConfig(bad_delta), std::runtime_error);
+
+  auto bad_ticks = YAML::Load(kJointYaml);
+  bad_ticks["fsm"]["contact_stop_force_guard_max_hold_ticks"] = 5000;
+  EXPECT_THROW(ctrl.LoadConfig(bad_ticks), std::runtime_error);
+}
+
 }  // namespace

@@ -56,7 +56,12 @@ void DemoTaskController::InitFingertipForceFilters(double cutoff_hz) {
     lpf.Init(cutoff_hz, 1.0 / GetDefaultDt());
     lpf.Reset();
   }
+  for (auto& guard : force_guard_) {
+    guard.Invalidate();
+  }
   force_lpf_primed_.fill(false);
+  force_guard_rejected_.fill(0);
+  fingertip_force_guarded_.fill(0.0F);
   fingertip_force_filt_.fill(0.0F);
   fingertip_force_mag_filt_.fill(0.0F);
   contact_stop_max_force_ = 0.0F;
@@ -421,8 +426,10 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   }
   if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};
-    FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_,
-                           fingertip_force_filt_, pod);
+    FillDeviceSensorLogPod(
+        state, /*device_idx=*/1, num_active_fingertips_,
+        ForceFilterLogView{fingertip_force_filt_, fingertip_force_guarded_, force_guard_rejected_},
+        pod);
     secondary_sensor_log_handle_.Push(pod);
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
@@ -959,6 +966,32 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
             "(0, control_rate/2)");
       }
       g.contact_stop_force_lpf_cutoff_hz = cutoff;
+    }
+
+    // Optional: delta-spike guard in front of that force LPF. Bounds are
+    // sanity bounds, not tuning advice — the guard only decides what the filter
+    // is fed, so a wrong value degrades the filtered column rather than the
+    // wire command.
+    if (fsm["contact_stop_force_guard_delta_n"]) {
+      const double delta = fsm["contact_stop_force_guard_delta_n"].as<double>();
+      if (!(delta > 0.0 && delta <= 1000.0)) {
+        throw std::runtime_error(
+            "demo_task_controller: 'fsm.contact_stop_force_guard_delta_n' out of range "
+            "(0, 1000] N");
+      }
+      g.contact_stop_force_guard_delta_n = delta;
+    }
+
+    // 0 disables the delta hold (NaN/Inf are still rejected); the upper bound
+    // keeps a typo from freezing the filtered force for minutes.
+    if (fsm["contact_stop_force_guard_max_hold_ticks"]) {
+      const int ticks = fsm["contact_stop_force_guard_max_hold_ticks"].as<int>();
+      if (!(ticks >= 0 && ticks <= 1000)) {
+        throw std::runtime_error(
+            "demo_task_controller: 'fsm.contact_stop_force_guard_max_hold_ticks' out of range "
+            "[0, 1000] ticks");
+      }
+      g.contact_stop_force_guard_max_hold_ticks = ticks;
     }
   }
 

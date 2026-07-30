@@ -119,8 +119,10 @@ TEST(DeviceSensorLogPod, ForceOnlyLayoutEmitsNoBaroTofColumns) {
   EXPECT_NE(hdr.find("ft_thumb_fx_filt"), std::string::npos) << hdr;
   EXPECT_NE(hdr.find("force_filtered_valid"), std::string::npos) << hdr;
 
-  // 1 timestamp + inference_valid + force_filtered_valid + 4*(7 + 3) = 43 cols.
-  EXPECT_EQ(CountCommas(hdr), 42) << hdr;
+  // 1 timestamp + inference_valid + force_filtered_valid + 4*(7 + 3 + 3 + 1) = 59
+  // cols. The 3 guarded + 1 guard-verdict columns per fingertip were appended
+  // when the delta-spike guard landed; this count is the schema, not a bound.
+  EXPECT_EQ(CountCommas(hdr), 58) << hdr;
 }
 
 TEST(DeviceSensorLogPod, ForceOnlyLayoutHeaderMatchesRow) {
@@ -149,7 +151,8 @@ TEST(DeviceSensorLogPod, ForceFilteredValidDistinguishesAbsentFilterFromZeroOutp
 
   const std::array<float, 3> filtered{{1.5F, -2.0F, 0.5F}};
   integrated_bringup::DeviceSensorLogPod with_filter{};
-  integrated_bringup::FillDeviceSensorLogPod(state, 1, /*num_active_fingertips=*/1, filtered,
+  integrated_bringup::FillDeviceSensorLogPod(state, 1, /*num_active_fingertips=*/1,
+                                             integrated_bringup::ForceFilterLogView{filtered},
                                              with_filter);
   EXPECT_TRUE(with_filter.force_filtered_valid);
   EXPECT_FLOAT_EQ(with_filter.force_filtered[0], 1.5F);
@@ -161,6 +164,104 @@ TEST(DeviceSensorLogPod, ForceFilteredValidDistinguishesAbsentFilterFromZeroOutp
                                              without_filter);
   EXPECT_FALSE(without_filter.force_filtered_valid);
   EXPECT_FLOAT_EQ(without_filter.force_filtered[0], 0.0F);
+}
+
+// The guard columns are what make a session's guard behaviour reconstructible:
+// raw and filtered alone cannot separate "the guard held this tick" from "the
+// filter merely lagged". Column names must also stay clear of the trailing
+// `_fx` / `_contact` tokens the rtc_tools raw-force and fingertip-label
+// detectors match on, or the guarded block would be read as a second set of raw
+// force columns.
+TEST(DeviceSensorLogPod, GuardColumnsAppendedAfterFilteredBlockWithNonRawNames) {
+  const std::vector<std::string> sensor_names{"thumb", "index"};
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteDeviceSensorLogHeader(hdr_os, sensor_names, /*values_per_group=*/0);
+  const std::string hdr = hdr_os.str();
+
+  const auto raw_pos = hdr.find("ft_index_fx,");
+  const auto filt_pos = hdr.find("ft_index_fx_filt");
+  const auto guarded_pos = hdr.find("ft_index_fx_guarded");
+  const auto rejected_pos = hdr.find("ft_index_force_guard_rejected");
+  ASSERT_NE(raw_pos, std::string::npos) << hdr;
+  ASSERT_NE(filt_pos, std::string::npos) << hdr;
+  ASSERT_NE(guarded_pos, std::string::npos) << hdr;
+  ASSERT_NE(rejected_pos, std::string::npos) << hdr;
+  // Append-only: everything a pre-guard reader consumed positionally still
+  // precedes the new blocks.
+  EXPECT_LT(raw_pos, filt_pos) << hdr;
+  EXPECT_LT(filt_pos, guarded_pos) << hdr;
+  EXPECT_LT(guarded_pos, rejected_pos) << hdr;
+
+  // No new column ends in the tokens the raw detectors key on.
+  std::istringstream cols(hdr);
+  std::string col;
+  while (std::getline(cols, col, ',')) {
+    if (col.find("_guarded") != std::string::npos ||
+        col.find("_force_guard_rejected") != std::string::npos) {
+      EXPECT_FALSE(col.size() >= 3 && col.compare(col.size() - 3, 3, "_fx") == 0) << col;
+      EXPECT_FALSE(col.size() >= 8 && col.compare(col.size() - 8, 8, "_contact") == 0) << col;
+    }
+  }
+}
+
+// Header and row must still agree once the pod carries guard data (a row that
+// emits the guarded block while the header does not — or vice versa — shifts
+// every column after it).
+TEST(DeviceSensorLogPod, GuardColumnsHeaderMatchesRow) {
+  const std::vector<std::string> sensor_names{"thumb", "index", "middle", "ring"};
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteDeviceSensorLogHeader(hdr_os, sensor_names, /*values_per_group=*/0);
+
+  integrated_bringup::DeviceSensorLogPod pod{};
+  pod.num_fingertips = static_cast<std::uint8_t>(sensor_names.size());
+  pod.force_filtered_valid = true;
+  pod.force_guarded[0] = 1.0F;
+  pod.force_guard_rejected[0] = 1;
+  std::ostringstream row_os;
+  integrated_bringup::WriteDeviceSensorLogRow(row_os, pod, /*values_per_group=*/0);
+
+  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+      << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
+}
+
+// One tick, four quantities: the driver's raw force, the guarded triplet the LPF
+// was fed, the filter output, and the guard verdict. A fill that dropped any of
+// them (or wrote the guarded triplet over the raw slots) would still produce a
+// well-formed row.
+TEST(DeviceSensorLogPod, FillCarriesRawGuardedFilteredAndVerdictForSameTick) {
+  rtc::ControllerState state{};
+  state.num_devices = 2;
+  state.devices[1].num_channels = 1;
+  state.devices[1].inference_enable[0] = true;
+  // Raw wire force = a 6.4 N fz spike (inference slots 1..3).
+  state.devices[1].inference_data[1] = 0.1F;
+  state.devices[1].inference_data[2] = -0.2F;
+  state.devices[1].inference_data[3] = 6.4F;
+
+  const std::array<float, 3> filtered{{0.1F, -0.2F, 0.03F}};
+  const std::array<float, 3> guarded{{0.1F, -0.2F, 0.02F}};
+  const std::array<std::uint8_t, 1> rejected{{1}};
+
+  integrated_bringup::DeviceSensorLogPod pod{};
+  integrated_bringup::FillDeviceSensorLogPod(
+      state, 1, /*num_active_fingertips=*/1,
+      integrated_bringup::ForceFilterLogView{filtered, guarded, rejected}, pod);
+
+  // Raw is preserved verbatim — the guard must never launder the wire value.
+  EXPECT_FLOAT_EQ(pod.inference_output[3], 6.4F);
+  EXPECT_FLOAT_EQ(pod.force_guarded[2], 0.02F);
+  EXPECT_FLOAT_EQ(pod.force_filtered[2], 0.03F);
+  EXPECT_EQ(pod.force_guard_rejected[0], 1);
+  EXPECT_TRUE(pod.force_filtered_valid);
+
+  // A controller without the force LPF has no guard either: both blocks stay
+  // zero and the shared valid flag says so.
+  integrated_bringup::DeviceSensorLogPod no_filter{};
+  integrated_bringup::FillDeviceSensorLogPod(state, 1, /*num_active_fingertips=*/1, {}, no_filter);
+  EXPECT_FALSE(no_filter.force_filtered_valid);
+  EXPECT_FLOAT_EQ(no_filter.force_guarded[2], 0.0F);
+  EXPECT_EQ(no_filter.force_guard_rejected[0], 0);
+  EXPECT_FLOAT_EQ(no_filter.inference_output[3], 6.4F) << "raw lane is independent of the guard";
 }
 
 TEST(DeviceSensorLogPod, RowRespectsRuntimeNumFingertips) {

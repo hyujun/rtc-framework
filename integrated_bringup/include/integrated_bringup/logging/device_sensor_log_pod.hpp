@@ -6,10 +6,11 @@
 // generic rtc::ThreadCsvLogger<DeviceSensorLogPod>.
 //
 // The mirror is a SUPERSET, not a copy: `force_filtered` /
-// `force_filtered_valid` have no DeviceSensorLog.msg counterpart. That is
-// deliberate — the msg name appears only as the `msg_type:` key in the
-// controller `logs:` YAML block and is never actually published, so this POD is
-// the sole carrier and a CSV-only column costs no message ABI (E-3).
+// `force_filtered_valid` / `force_guarded` / `force_guard_rejected` have no
+// DeviceSensorLog.msg counterpart. That is deliberate — the msg name appears
+// only as the `msg_type:` key in the controller `logs:` YAML block and is never
+// actually published, so this POD is the sole carrier and a CSV-only column
+// costs no message ABI (E-3).
 //
 // Robot-specific caps (kMaxFingertips, kSensorValuesPerFingertip,
 // kFTValuesPerFingertip) are integrated_bringup's own SSoT — they
@@ -75,6 +76,20 @@ struct DeviceSensorLogPod {
   // grasp_controller_type: the filter runs every tick regardless of mode, so
   // this column's meaning does not change with the run's configuration.
   std::array<float, kMaxForceFilteredValues> force_filtered{};
+
+  // ── Guarded LPF input, packed [fingertip * 3 + axis] ─────────────────────
+  // What the LPF above was actually fed this tick: the raw triplet, or the last
+  // accepted one when the delta-spike guard held (FingertipForceGuard). Logged
+  // beside raw + filtered because the guard's effect is otherwise
+  // unreconstructible offline — from raw and filtered alone one cannot tell a
+  // held tick from a filter that simply lagged. Gated by the same
+  // `force_filtered_valid` flag: a controller without the force LPF has no
+  // guard either, so the two blocks are present or absent together.
+  std::array<float, kMaxForceFilteredValues> force_guarded{};
+  /// 1 on ticks where the guard replaced the raw triplet by the held one.
+  /// uint8 rather than bool so the CSV column is unambiguously 0/1 and the POD
+  /// stays trivially copyable with a stable size.
+  std::array<std::uint8_t, kMaxFingertips> force_guard_rejected{};
 };
 
 static_assert(std::is_trivially_copyable_v<DeviceSensorLogPod>,
@@ -82,8 +97,8 @@ static_assert(std::is_trivially_copyable_v<DeviceSensorLogPod>,
 
 /// Emit the entire CSV header line. `sensor_names` length determines the
 /// per-fingertip column expansion (each fingertip gets `values_per_group` raw
-/// + filtered and kFTValuesPerFingertip inference columns, plus the 3 LPF'd
-/// force columns). The logger appends '\n'.
+/// + filtered and kFTValuesPerFingertip inference columns, plus 3 LPF'd force,
+/// 3 guarded LPF-input and 1 guard-verdict column). The logger appends '\n'.
 ///
 /// `values_per_group` is the device's runtime `DeviceSensorLayout` stride, NOT
 /// the compile-time capacity. A force-only hand declares 0 there and gets no
@@ -131,6 +146,22 @@ inline void WriteDeviceSensorLogHeader(
       os << ',' << "ft_" << name << '_' << col;
     }
   }
+
+  // Guarded LPF input + guard verdict. APPENDED, never inserted: an older
+  // reader that positionally consumed the columns above keeps working, and the
+  // `_guarded` / `_force_guard_rejected` suffixes stay clear of the trailing
+  // `_fx` / `_contact` tokens the raw-force and fingertip-label detectors match
+  // on (rtc_tools plotting/columns/detect.py).
+  static constexpr std::array<const char*, DeviceSensorLogPod::kForceAxes> kForceGuardedCols{
+      "fx_guarded", "fy_guarded", "fz_guarded"};
+  for (const auto& name : sensor_names) {
+    for (const char* col : kForceGuardedCols) {
+      os << ',' << "ft_" << name << '_' << col;
+    }
+  }
+  for (const auto& name : sensor_names) {
+    os << ',' << "ft_" << name << "_force_guard_rejected";
+  }
 }
 
 /// Emit one row. Column count must agree with the header writer's
@@ -165,6 +196,12 @@ inline void WriteDeviceSensorLogRow(
   const auto n_filt = static_cast<std::size_t>(p.num_fingertips) * DeviceSensorLogPod::kForceAxes;
   for (std::size_t i = 0; i < n_filt; ++i) {
     os << ',' << p.force_filtered[i];
+  }
+  for (std::size_t i = 0; i < n_filt; ++i) {
+    os << ',' << p.force_guarded[i];
+  }
+  for (std::size_t f = 0; f < static_cast<std::size_t>(p.num_fingertips); ++f) {
+    os << ',' << static_cast<int>(p.force_guard_rejected[f] != 0 ? 1 : 0);
   }
 }
 

@@ -49,7 +49,7 @@ integrated_bringup/
 │       ├── device_wbc_log_pod.hpp      <- WBC state superset: a_opt 가속도 + SE3 traj(arm)/fingertip force(hand), role-aware writer
 │       ├── wbc_diag_log_pod.hpp        <- per-tick TSID/QP 진단 (solve time / λ / 수렴 / grasp), 단일 wbc_diag.csv
 │       ├── pull_estimator_log_pod.hpp  <- in-plane pull-force estimate (#167) — pre-filter+filtered force + plane/basis + contact·touch·opposing mask + tick, 단일 pull_estimator.csv (3 데모 컨트롤러 공용)
-│       └── pod_fill.hpp                <- FillDeviceStateLogPod / FillDeviceSensorLogPod (device_idx 인자, robot-agnostic). WBC POD fill 은 controller-private (compute.cpp)
+│       └── pod_fill.hpp                <- FillDeviceStateLogPod / FillDeviceSensorLogPod (device_idx + ForceFilterLogView 인자, robot-agnostic). WBC POD fill 은 controller-private (compute.cpp)
 ├── src/
 │   ├── integrated_rt_controller_main.cpp     <- UR5e용 진입점
 │   ├── controllers/
@@ -290,6 +290,15 @@ position_output = quintic(t, q_start, q_goal, duration)
 - **cutoff 가 위치 LPF 보다 높음**: 4차 Bessel 의 DC 군지연은 `~2.11/(2π·fc)` 이므로 20 Hz 면 ~17 ms — 이 latch 가 보호하려는 BT tick(50 ms) 의 1/3 입니다. 50 Hz 는 ~6.7 ms.
 - **grasp_controller_type 과 무관하게 항상 실행**: 로그 컬럼의 의미가 런 설정에 따라 바뀌지 않도록. `force_pi` 의 `force_filter_` 는 손가락별 **`|F|` 스칼라** 에 걸리는 별개 필터이며 이 축별 필터와 무관합니다.
 
+**Delta-spike guard (LPF 입력 전단, joint / task):** 위 LPF 로 들어가는 raw triplet 은 먼저 축별 delta guard 를 통과합니다 — 어느 축이든 마지막 **수용값** 대비 변화가 `fsm.contact_stop_force_guard_delta_n` (기본 4.0 N) 을 넘거나 NaN/Inf 면 triplet 전체를 마지막 수용값으로 대체합니다 (hold-last). 실기 세션 (260730_1017) 에서 index/ring `fz` 에 6 N 초과 샘플 6개가 각각 정확히 2 tick 지속했고, 그 6.406 N spike 하나가 필터 출력에 ~0.170 N 의 잔향을 남겼습니다 — 1 N 임계의 17 % 를 노이즈가 만든 셈입니다.
+
+- **비교 기준은 last_accepted** (직전 raw 아님): spike 가 기준을 재설정하면 참값으로의 복귀가 거부됩니다.
+- **연속 hold 상한** (`fsm.contact_stop_force_guard_max_hold_ticks`, 기본 2 tick): 이 cap 이 없으면 지속되는 진짜 접촉 step (`|Δ| > 4 N` 이 매 tick 성립) 이 영구히 거부되어 contact_stop 이 발동하지 못합니다. 2 tick 은 관측된 spike 를 전부 억제하면서 실접촉엔 필터 자체 군지연 (~6.7 ms) 대비 ~4 ms (500 Hz) 만 더합니다. **NaN/Inf 는 이 cap 을 타지 않습니다** — IIR 에 한 번 들어가면 delay line 이 영구 오염되고, 하류 max/clamp 가 그 NaN 을 그럴듯한 수로 세탁합니다.
+- **dropout 시 guard 도 무효화**: 핑거팁 lane 이 invalid 가 되면 LPF primed 플래그와 함께 guard 기준도 버립니다 — 5 N 에서 끊겨 0.2 N 로 복귀한 lane 은 4.8 N step 이므로, 기준을 유지하면 stale 5 N 을 무한히 hold 하게 됩니다.
+- **raw 는 불변**: guard 는 LPF 입력만 고릅니다. `GraspState`, pull estimator, grasp 판정, CSV 의 `ft_<f>_fx|fy|fz` 는 driver wire 값 그대로입니다.
+
+CSV (`<device>_sensor.csv`) 는 같은 tick 에서 raw (`ft_<f>_fx`) → guarded LPF 입력 (`ft_<f>_fx_guarded`) → LPF 출력 (`ft_<f>_fx_filt`) → guard 판정 (`ft_<f>_force_guard_rejected`) 을 모두 남기므로, guard 효과를 오프라인에서 재구성할 수 있습니다 (raw 와 filtered 만으로는 "guard 가 hold 했다" 와 "필터가 지연됐다" 를 구분할 수 없습니다).
+
 발행되는 `GraspState` 의 `force_magnitude` / `max_force` 는 **raw** 로 유지되므로 BT (`IsForceAbove` 등) 계약은 변하지 않습니다. `[contact_stop]` 로그는 판정에 쓰인 `fmax=` (필터) 와 `fmax_raw=` 를 함께 출력합니다. WBC 는 이 필터를 갖지 않습니다 (latch 없이 `phase.cpp` 가 raw `force_magnitude` 로 FSM 전이).
 
 **Hold latch (contact_stop 모드 전용):** 접촉이 한 번 성립하면 동결이 **latch** 되어, 이후 접촉이 사라져도 (물체 미끄러짐 등) 명시적 release 전까지 위치를 유지합니다 — latch 이전에는 접촉이 한 tick만 끊겨도 명령이 (goal 까지 진행된) 궤적으로 스냅백했습니다. Latch 는 아래 release-phase gate 또는 E-STOP 으로만 해제됩니다. 접촉 유지 중에는 LPF 출력을 계속 추종하고 (compliant), 접촉이 사라지면 마지막 LPF 출력을 고정합니다 (drift 방지). 핸드 상태 dropout (`devices[1].valid==false`) 중에도 latch 되어 있으면 마지막 명령을 유지합니다.
@@ -358,6 +367,9 @@ q_cmd  = q_des
 | `fsm.pi_rotation_margin` | `0.15` rad | π 근처 quintic 궤적 분할 임계값. 범위 [0, π/2] (필수 키) |
 | `fsm.contact_stop_release_eps` | `0.005` rad | contact_stop release 히스테리시스. 범위 [0, 0.1] (필수 키) |
 | `fsm.contact_stop_lpf_cutoff_hz` | `20.0` Hz | contact_stop latch hold 위치 Bessel LPF cutoff. 범위 (0, control_rate/2) (선택 키, 기본 Gains 값) |
+| `fsm.contact_stop_force_lpf_cutoff_hz` | `50.0` Hz | 핑거팁 힘 축별 Bessel LPF cutoff. 범위 (0, control_rate/2) (선택 키) |
+| `fsm.contact_stop_force_guard_delta_n` | `4.0` N | 힘 LPF 입력 delta-spike guard 의 축별 |Δ| 거부 임계. 범위 (0, 1000] (선택 키) |
+| `fsm.contact_stop_force_guard_max_hold_ticks` | `2` ticks | 지속 out-of-band 값을 수용하기까지의 연속 hold 상한 (0 = delta hold 비활성, NaN/Inf 거부는 유지). 범위 [0, 1000] (선택 키) |
 | `command_type` | `"position"` | 출력 타입 — `"position"` (PD 위치 추종) / `"torque"` (직접 토크) / `"pd_feedforward"` (PD 위치 + τ_ff, mujoco_sim 은 qfrc_applied 주입·중력보상 off) |
 
 **게인 업데이트 레이아웃 (17개 요소):**

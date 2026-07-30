@@ -1420,7 +1420,7 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     if (secondary_sensor_log_handle_) {
       integrated_bringup::DeviceSensorLogPod pod{};
       FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_,
-                             /*force_filtered=*/{}, pod);
+                             /*force_view=*/{}, pod);
       secondary_sensor_log_handle_.Push(pod);
     }
     // #234 P-1: the same rule applied to the *wire* required a store, not a
@@ -1533,7 +1533,7 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};
     FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_,
-                             /*force_filtered=*/{}, pod);
+                           /*force_view=*/{}, pod);
     secondary_sensor_log_handle_.Push(pod);
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,

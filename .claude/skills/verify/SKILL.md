@@ -41,7 +41,7 @@ DISPLAY=:1 ros2 run integrated_bringup demo_controller_gui   # 창 제목 "Demo 
 
 - 세션 루트: `~/ros2_ws/rtc_ws/logging_data/<YYMMDD_HHMM>/` (`rtc_tools.utils.session_dir.resolve_logging_root`).
 - 컨트롤러 CSV: `controllers/<ctrl>/<instance>.csv` — Compute() 활성 중에만 append (activity-gated).
-- Plot: `ros2 run rtc_tools plot_rtc_log <csv> --save-dir <dir> --no-show` (Agg 강제).
+- Plot: `ros2 run rtc_tools plot_rtc_log <csv> --no-show` — `--save-dir` 미지정 시 그 CSV 를 담고 있는 세션의 `plots/` 에 저장하므로 (Agg 강제) 세션 밖으로 빼고 싶을 때만 `--save-dir <dir>`.
 
 ## Gotchas
 

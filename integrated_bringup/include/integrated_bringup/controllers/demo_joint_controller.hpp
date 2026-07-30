@@ -1,6 +1,7 @@
 #ifndef UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
 
+#include "integrated_bringup/controllers/fingertip_force_guard.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/controllers/tof_snapshot.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
@@ -104,6 +105,12 @@ class DemoJointController final : public RTControllerInterface {
     /// position would delay the freeze by ~17 ms — a third of the 50 ms BT tick
     /// this latch exists to cover. 50 Hz costs ~6.7 ms instead.
     double contact_stop_force_lpf_cutoff_hz{50.0};
+    /// Delta-spike guard on the raw force entering that LPF (see
+    /// fingertip_force_guard.hpp). Per-axis |Δ| rejection threshold [N] and the
+    /// consecutive-hold cap [ticks] that keeps a genuine sustained step from
+    /// being rejected forever.
+    double contact_stop_force_guard_delta_n{4.0};
+    int contact_stop_force_guard_max_hold_ticks{2};
   };
 
   explicit DemoJointController(std::string_view urdf_path);
@@ -162,6 +169,18 @@ class DemoJointController final : public RTControllerInterface {
 
   [[nodiscard]] ContactStopAggregates GetContactStopAggregatesForTesting() const noexcept {
     return {contact_stop_max_force_, contact_stop_active_count_};
+  }
+
+  /// Test-only: the delta-spike guard's per-tick output — what the force LPF was
+  /// fed ([fingertip * 3 + axis]) and whether the raw triplet was held out.
+  /// Distinct from both the raw force and the filter output: on a held tick all
+  /// three differ, and only this pair says the guard is what changed the input.
+  [[nodiscard]] std::span<const float> GetGuardedFingertipForceForTesting() const noexcept {
+    return fingertip_force_guarded_;
+  }
+
+  [[nodiscard]] bool WasForceGuardRejectedForTesting(std::size_t f) const noexcept {
+    return f < force_guard_rejected_.size() && force_guard_rejected_[f] != 0;
   }
 
   /// Test-only: the body the publish thread would Load right now (#234 P-1).
@@ -239,7 +258,10 @@ class DemoJointController final : public RTControllerInterface {
   void ReadState(const ControllerState& state) noexcept;
   /// Advance fingertip `f`'s per-axis force LPF from the raw force ReadState
   /// just parsed, writing fingertip_force_filt_ / fingertip_force_mag_filt_.
-  void UpdateFingertipForceFilter(std::size_t f) noexcept;
+  /// The raw triplet passes through the delta-spike guard first, so
+  /// fingertip_force_guarded_ / force_guard_rejected_ are refreshed here too.
+  void UpdateFingertipForceFilter(std::size_t f,
+                                  const FingertipForceGuardConfig& guard_cfg) noexcept;
   /// Config-time (throws): Init every per-fingertip force filter and clear the
   /// derived state. Called from the constructor and from LoadConfig.
   void InitFingertipForceFilters(double cutoff_hz);
@@ -455,9 +477,21 @@ class DemoJointController final : public RTControllerInterface {
   /// whenever a fingertip goes invalid so re-entry seeds to the live force
   /// instead of ramping up from a delay line the world has left behind.
   std::array<bool, rtc::kMaxSensorGroups> force_lpf_primed_{};
+  /// Delta-spike guard in front of each filter — the LPF is fed this guard's
+  /// output, never the raw triplet. Invalidated together with
+  /// force_lpf_primed_ so a dropout does not leave a stale comparison base
+  /// that would reject the live force forever.
+  std::array<FingertipForceGuard, rtc::kMaxSensorGroups> force_guard_{};
   /// LPF output packed [fingertip * 3 + axis] — contiguous because the CSV POD
   /// fill takes a span. Zero on invalid fingertips, matching raw `ft.force`.
   std::array<float, 3U * static_cast<std::size_t>(rtc::kMaxSensorGroups)> fingertip_force_filt_{};
+  /// What the LPF was actually fed, same packing. Equal to the raw triplet on
+  /// accepted ticks; the held triplet on rejected ones. CSV-only — no consumer
+  /// of this controller's outputs reads it.
+  std::array<float, 3U * static_cast<std::size_t>(rtc::kMaxSensorGroups)>
+      fingertip_force_guarded_{};
+  /// Per-fingertip guard verdict for the current tick (1 = raw was held out).
+  std::array<std::uint8_t, rtc::kMaxSensorGroups> force_guard_rejected_{};
   /// ‖filtered force‖ per fingertip [N].
   std::array<float, rtc::kMaxSensorGroups> fingertip_force_mag_filt_{};
   /// contact_stop aggregates derived from the FILTERED magnitudes. Kept apart

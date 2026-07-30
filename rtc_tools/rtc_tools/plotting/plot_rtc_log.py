@@ -58,8 +58,9 @@ def main():
         type=str,
         default=None,
         help="Directory to save plots (PNG). "
-        "미지정 시 RTC_SESSION_DIR/plots/ (없으면 "
-        "현재 colcon ws logging_data 의 최신 세션) 사용",
+        "미지정 시 csv_file 을 담고 있는 세션의 plots/ 사용 "
+        "(CSV 가 세션 트리 밖이면 RTC_SESSION_DIR, 그것도 없으면 "
+        "현재 colcon ws logging_data 의 최신 세션)",
     )
     parser.add_argument(
         "--show",
@@ -113,9 +114,15 @@ def main():
         args.ft = True
         args.sensor_compare = True
 
-    # --save-dir 미지정 시 세션 디렉토리의 plots/ 서브디렉토리를 기본값으로 사용.
+    # save-dir 해석이 CSV 경로를 보므로 존재 확인이 먼저 와야 한다.
+    if not os.path.isfile(args.csv_file):
+        print(f"Error: file not found: {args.csv_file}")
+        sys.exit(1)
+
+    # --save-dir 미지정 시 CSV 를 담고 있는 세션의 plots/ 를 기본값으로 사용
+    # (CSV 가 세션 트리 밖이면 RTC_SESSION_DIR → 최신 세션 순으로 폴백).
     if args.save_dir is None:
-        args.save_dir = resolve_default_save_dir()
+        args.save_dir = resolve_default_save_dir(args.csv_file)
 
     # Backend 설정. plotters/*는 import 시점에 matplotlib.pyplot을 import하므로
     # 반드시 configure_backend() 이후에 lazy-import 한다.
@@ -126,10 +133,6 @@ def main():
     # pipelines.registry imports plotters/* (which import matplotlib.pyplot),
     # so it must be imported AFTER configure_backend().
     from rtc_tools.plotting.pipelines import run_pipeline
-
-    if not os.path.isfile(args.csv_file):
-        print(f"Error: file not found: {args.csv_file}")
-        sys.exit(1)
 
     log_type = detect_log_type(args.csv_file)
     if log_type == "unknown":

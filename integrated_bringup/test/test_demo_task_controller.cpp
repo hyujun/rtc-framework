@@ -827,6 +827,102 @@ TEST_F(TaskContactStopTest, InvalidFingertipFreezesFilterAndReEntrySeeds) {
   EXPECT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 0.2f, 1e-4f);
 }
 
+// ── contact_stop force delta-spike guard ─────────────────────────────────────
+//
+// Wiring only (the guard's laws live in test_fingertip_force_guard.cpp): the LPF
+// must be fed the GUARDED triplet while the raw lane stays the driver's value.
+// Duplicated from the joint controller's suite on purpose — the two controllers
+// hold independent guard arrays, and a wiring mistake in one is invisible in the
+// other.
+
+// The 260730_1017 p1b failure mode: a 2-tick fz spike (6.406 then 6.058 N) on an
+// otherwise ~0.02 N lane, which fed straight into the Bessel LPF left ~0.170 N of
+// filtered tail behind it.
+TEST_F(TaskContactStopTest, TwoTickForceSpikeIsHeldOutOfTheFilterWhileRawIsUntouched) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 0.02f);
+  SetFingertipForce(state_, 1, 0.02f);
+  RunTicks(80);
+  ASSERT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 0.02f, 1e-3f)
+      << "filter must be settled before the spike";
+
+  SetFingertipForce(state_, 0, 6.406f);
+  RunTicks(1);
+  EXPECT_TRUE(ctrl_->WasForceGuardRejectedForTesting(0));
+  EXPECT_NEAR(ctrl_->GetGraspStateForTesting().max_force, 6.406f, 1e-3f)
+      << "published aggregate must stay raw";
+  EXPECT_NEAR(ctrl_->GetGuardedFingertipForceForTesting()[2], 0.02f, 1e-4f);
+
+  SetFingertipForce(state_, 0, 6.058f);
+  RunTicks(1);
+  EXPECT_TRUE(ctrl_->WasForceGuardRejectedForTesting(0))
+      << "the second spike tick is compared against last_accepted, not the first spike";
+
+  SetFingertipForce(state_, 0, 0.04f);
+  RunTicks(1);
+  EXPECT_FALSE(ctrl_->WasForceGuardRejectedForTesting(0));
+  EXPECT_NEAR(ctrl_->GetGuardedFingertipForceForTesting()[2], 0.04f, 1e-4f);
+
+  for (int i = 0; i < 20; ++i) {
+    RunTicks(1);
+    EXPECT_LT(ctrl_->GetContactStopAggregatesForTesting().max_force, 0.06f) << "tick " << i;
+  }
+}
+
+// Without the consecutive-hold cap a genuine 6 N contact would be rejected on
+// every tick (|6 - 0| > 4 forever) and the freeze would never trigger.
+TEST_F(TaskContactStopTest, SustainedForceStepReachesTheFilterAfterTheHoldCap) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 0.0f);
+  SetFingertipForce(state_, 1, 0.0f);
+  RunTicks(60);
+
+  SetFingertipForce(state_, 0, 6.0f);
+  SetFingertipForce(state_, 1, 6.0f);
+  for (int i = 0; i < 2; ++i) {
+    RunTicks(1);
+    EXPECT_TRUE(ctrl_->WasForceGuardRejectedForTesting(0)) << "hold tick " << i;
+  }
+  RunTicks(1);
+  EXPECT_FALSE(ctrl_->WasForceGuardRejectedForTesting(0))
+      << "hold cap must let a real step through";
+  EXPECT_NEAR(ctrl_->GetGuardedFingertipForceForTesting()[2], 6.0f, 1e-4f);
+
+  RunTicks(200);
+  EXPECT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 6.0f, 1e-2f);
+}
+
+// NaN gets no hold cap: one admitted sample poisons the IIR delay line for good.
+TEST_F(TaskContactStopTest, NonFiniteForceNeverReachesTheFilter) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 0.5f);
+  SetFingertipForce(state_, 1, 0.5f);
+  RunTicks(80);
+  ASSERT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 0.5f, 1e-3f);
+
+  SetFingertipForce(state_, 0, std::numeric_limits<float>::quiet_NaN());
+  for (int i = 0; i < 20; ++i) {
+    RunTicks(1);
+    EXPECT_TRUE(ctrl_->WasForceGuardRejectedForTesting(0)) << "tick " << i;
+    const float agg = ctrl_->GetContactStopAggregatesForTesting().max_force;
+    EXPECT_TRUE(std::isfinite(agg)) << "tick " << i;
+    EXPECT_NEAR(agg, 0.5f, 1e-3f) << "tick " << i;
+  }
+
+  SetFingertipForce(state_, 0, std::numeric_limits<float>::infinity());
+  RunTicks(1);
+  EXPECT_TRUE(ctrl_->WasForceGuardRejectedForTesting(0));
+  EXPECT_TRUE(std::isfinite(ctrl_->GetContactStopAggregatesForTesting().max_force));
+
+  SetFingertipForce(state_, 0, 0.6f);
+  RunTicks(1);
+  EXPECT_FALSE(ctrl_->WasForceGuardRejectedForTesting(0));
+  EXPECT_NEAR(ctrl_->GetGuardedFingertipForceForTesting()[2], 0.6f, 1e-4f);
+}
+
 // ── ToF snapshot ─────────────────────────────────────────────────────────────
 
 // A real raw sensor lane (baro+ToF stride) alongside ≥3 inference groups
@@ -1478,6 +1574,34 @@ TEST(TaskControllerLoadConfigTest, LpfCutoffAboveNyquistThrows) {
   ctrl.SetControlRate(500.0);
   auto cfg = MinimalValidYaml();
   cfg["fsm"]["contact_stop_lpf_cutoff_hz"] = 400.0;  // ≥ control_rate/2
+  EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
+}
+
+// The guard keys are optional (absent → Gains defaults), so a typo in the key
+// name silently keeps 4.0 N / 2 ticks and the session looks configured. These
+// three tests are what separate "the YAML was honoured" from "the YAML parsed".
+TEST(TaskControllerLoadConfigTest, ForceGuardKeysReachGains) {
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  auto cfg = MinimalValidYaml();
+  cfg["fsm"]["contact_stop_force_guard_delta_n"] = 2.5;
+  cfg["fsm"]["contact_stop_force_guard_max_hold_ticks"] = 5;
+  ctrl.LoadConfig(cfg);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().contact_stop_force_guard_delta_n, 2.5);
+  EXPECT_EQ(ctrl.get_gains().contact_stop_force_guard_max_hold_ticks, 5);
+}
+
+TEST(TaskControllerLoadConfigTest, ForceGuardDeltaOutOfRangeThrows) {
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  auto cfg = MinimalValidYaml();
+  // 0 would reject every triplet whose axis moved at all — not a usable guard.
+  cfg["fsm"]["contact_stop_force_guard_delta_n"] = 0.0;
+  EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
+}
+
+TEST(TaskControllerLoadConfigTest, ForceGuardHoldTicksOutOfRangeThrows) {
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  auto cfg = MinimalValidYaml();
+  cfg["fsm"]["contact_stop_force_guard_max_hold_ticks"] = -1;
   EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
 }
 

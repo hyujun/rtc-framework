@@ -179,6 +179,26 @@ def ft_force_col(df, label, axis, filt=False):
     return col if col in df.columns else None
 
 
+def ft_force_guarded_col(df, label, axis):
+    """Resolve the guarded LPF-input column for `label` / `axis`, or None.
+
+    `ft_<label>_fx_guarded` is what the controller's force LPF was actually fed
+    after the delta-spike guard — equal to raw on accepted ticks, the last
+    accepted triplet on held ones. Suffixed like the `_filt` columns so the
+    raw-force detectors (trailing `_fx`) cannot pick it up as a second raw set.
+    """
+    if axis not in FORCE_AXES:
+        return None
+    col = f"ft_{label}_{axis}_guarded"
+    return col if col in df.columns else None
+
+
+def ft_force_guard_rejected_col(df, label):
+    """Resolve `label`'s per-tick guard verdict column (1 = raw held out), or None."""
+    col = f"ft_{label}_force_guard_rejected"
+    return col if col in df.columns else None
+
+
 def detect_ft_labels(df):
     """FT inference output fingertip 라벨 목록을 자동 감지.
 

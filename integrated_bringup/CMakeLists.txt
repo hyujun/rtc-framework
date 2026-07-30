@@ -231,6 +231,14 @@ if(BUILD_TESTING)
         "Path to panda.urdf used by integrated_bringup tests" FORCE)
   endif()
 
+  # ── Fingertip force delta-spike guard (header-only, no ROS/Eigen deps) ────
+  # Instantiated in the test TU so its TU-global operator new counter observes
+  # every allocation the guard could make on the RT path.
+  ament_add_gtest(test_fingertip_force_guard test/test_fingertip_force_guard.cpp)
+  target_include_directories(test_fingertip_force_guard PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
   # ── DeviceStateLog / DeviceSensorLog POD mirrors (header-only) ────────────
   ament_add_gtest(test_device_log_pods test/test_device_log_pods.cpp)
   target_include_directories(test_device_log_pods PRIVATE

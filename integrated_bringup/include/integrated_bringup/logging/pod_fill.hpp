@@ -72,13 +72,25 @@ inline void FillDeviceStateLogPod(const rtc::ControllerState& state,
   pod.goal_type = (out.goal_type == rtc::GoalType::kTask) ? 1 : 0;
 }
 
-/// `force_filtered` is the controller's per-axis LPF output packed
-/// [fingertip * 3 + axis]. Pass an empty span from controllers that do not run
-/// that filter (wbc): the POD's columns then stay zero AND
-/// `force_filtered_valid` stays false, which is the only thing that
-/// distinguishes "no filter here" from "the filter output was 0".
+/// The contact_stop force lane as the CSV sees it. Bundled rather than passed
+/// as three positional spans: `filtered` and `guarded` have identical type,
+/// length and packing, so a transposed argument at one of the five call sites
+/// would compile and produce a plausible-looking file.
+///
+/// Empty from controllers that run no force LPF (wbc) — the POD's columns then
+/// stay zero AND `force_filtered_valid` stays false, which is the only thing
+/// that distinguishes "no filter here" from "the filter output was 0".
+struct ForceFilterLogView {
+  /// Per-axis LPF output, packed [fingertip * 3 + axis].
+  std::span<const float> filtered{};
+  /// What the LPF was fed after the delta-spike guard, same packing.
+  std::span<const float> guarded{};
+  /// Per-fingertip guard verdict (non-zero = raw replaced by hold-last).
+  std::span<const std::uint8_t> guard_rejected{};
+};
+
 inline void FillDeviceSensorLogPod(const rtc::ControllerState& state, std::size_t device_idx,
-                                   int num_active_fingertips, std::span<const float> force_filtered,
+                                   int num_active_fingertips, const ForceFilterLogView& force_view,
                                    integrated_bringup::DeviceSensorLogPod& pod) noexcept {
   pod.t_relative_s = state.t_relative_s;
   if (static_cast<std::size_t>(state.num_devices) <= device_idx) {
@@ -108,10 +120,16 @@ inline void FillDeviceSensorLogPod(const rtc::ControllerState& state, std::size_
     }
   }
 
-  pod.force_filtered_valid = !force_filtered.empty();
+  pod.force_filtered_valid = !force_view.filtered.empty();
   const auto n_filt = num_fingertips * integrated_bringup::DeviceSensorLogPod::kForceAxes;
-  for (std::size_t i = 0; i < n_filt && i < force_filtered.size(); ++i) {
-    pod.force_filtered[i] = force_filtered[i];
+  for (std::size_t i = 0; i < n_filt && i < force_view.filtered.size(); ++i) {
+    pod.force_filtered[i] = force_view.filtered[i];
+  }
+  for (std::size_t i = 0; i < n_filt && i < force_view.guarded.size(); ++i) {
+    pod.force_guarded[i] = force_view.guarded[i];
+  }
+  for (std::size_t f = 0; f < num_fingertips && f < force_view.guard_rejected.size(); ++f) {
+    pod.force_guard_rejected[f] = force_view.guard_rejected[f];
   }
 }
 
