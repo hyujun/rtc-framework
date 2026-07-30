@@ -152,6 +152,52 @@ TEST(DemoSharedConfigTest, GraspControllerTypeRejectsUnknown) {
   EXPECT_THROW(ApplyDemoSharedConfig(node, cfg), std::runtime_error);
 }
 
+// String → enum → string must be the identity on the whole whitelist. The
+// controllers keep the mode as a GraspHandMode enum and hand the name back out
+// on two paths that a caller compares against the YAML they wrote: the
+// read-only `grasp_controller_type` parameter the demo GUI reads to decide
+// whether Grasp/Release can do anything, and the [grasp] throttled log line. A
+// mapping that dropped a case (e.g. kNone printing "contact_stop") would make
+// both lie about a config that loaded correctly, with nothing else to catch it.
+TEST(DemoSharedConfigTest, GraspHandModeNameRoundTripsWhitelist) {
+  for (const char* t : {"force_pi", "contact_stop", "none"}) {
+    const auto mode = integrated_bringup::ParseGraspHandMode(t);
+    EXPECT_STREQ(integrated_bringup::GraspHandModeName(mode), t);
+  }
+}
+
+// The enum→name direction must also be total: every enumerator maps to a
+// distinct, non-empty name. Iterating the enum (rather than the strings) is
+// what catches a *newly added* mode that forgot its GraspHandModeName case and
+// so falls through to another mode's label.
+TEST(DemoSharedConfigTest, GraspHandModeNamesAreDistinct) {
+  using integrated_bringup::GraspHandMode;
+  using integrated_bringup::GraspHandModeName;
+  const std::string contact_stop = GraspHandModeName(GraspHandMode::kContactStop);
+  const std::string force_pi = GraspHandModeName(GraspHandMode::kForcePi);
+  const std::string none = GraspHandModeName(GraspHandMode::kNone);
+
+  EXPECT_FALSE(contact_stop.empty());
+  EXPECT_NE(contact_stop, force_pi);
+  EXPECT_NE(contact_stop, none);
+  EXPECT_NE(force_pi, none);
+
+  // And each name must survive the trip back, so the pair stays a bijection
+  // over the whitelist rather than merely being distinct.
+  EXPECT_EQ(integrated_bringup::ParseGraspHandMode(contact_stop), GraspHandMode::kContactStop);
+  EXPECT_EQ(integrated_bringup::ParseGraspHandMode(force_pi), GraspHandMode::kForcePi);
+  EXPECT_EQ(integrated_bringup::ParseGraspHandMode(none), GraspHandMode::kNone);
+}
+
+// ParseGraspHandMode is the enum-side gate; it must reject the same strings
+// ApplyDemoSharedConfig rejects rather than defaulting to a mode.
+TEST(DemoSharedConfigTest, ParseGraspHandModeRejectsUnknown) {
+  EXPECT_THROW((void)integrated_bringup::ParseGraspHandMode("bogus_mode"), std::runtime_error);
+  EXPECT_THROW((void)integrated_bringup::ParseGraspHandMode(""), std::runtime_error);
+  // Case matters — the YAML whitelist is exact.
+  EXPECT_THROW((void)integrated_bringup::ParseGraspHandMode("Force_PI"), std::runtime_error);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // force_pi_grasp block parsing
 // ═══════════════════════════════════════════════════════════════════════════
