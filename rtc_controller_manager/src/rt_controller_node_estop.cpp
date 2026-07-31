@@ -40,12 +40,25 @@ void RtControllerNode::ClearGlobalEstop() noexcept {
   if (!global_estop_.load(std::memory_order_acquire)) {
     return;
   }
-  global_estop_.store(false, std::memory_order_release);
-
+  // Mirror of TriggerGlobalEstop: the latch changes on the far side of the
+  // propagation loop, not the near side. The RT loop decides substitution from
+  // the latch alone (rt_controller_node_rt_loop.cpp Phase 2c), so lowering it
+  // first would open a fail-open window — a tick landing mid-loop would forward
+  // the raw output of a controller still holding its own E-STOP state. Ordered
+  // this way the same tick substitutes hold_output_ for an already-cleared
+  // controller instead, which is the safe direction.
+  //
+  // Propagating while the latch still reads true is only sound because no
+  // in-tree ClearEstop() consults IsGlobalEstopped() — they store their own
+  // atomic and return. Out-of-tree controllers arrive through the registry, so
+  // that is an observation, not a contract: a ClearEstop() override must not
+  // condition its behaviour on the global latch.
   for (auto& ctrl : controllers_) {
     ctrl->ClearEstop();
     ctrl->SetHandEstop(false);
   }
+
+  global_estop_.store(false, std::memory_order_release);
   estop_status_pending_.store(true, std::memory_order_release);
   // Defer the RCLCPP_INFO to the non-RT log thread (DrainLog).
   estop_log_pending_.store(true, std::memory_order_release);

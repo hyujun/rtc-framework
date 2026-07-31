@@ -126,6 +126,103 @@ TEST_F(EstopTest, ClearWithoutTriggerIsNoOp) {
   EXPECT_EQ(0, ctrl_b_->ClearEstopCount());
 }
 
+// ── Latch/propagation ordering (issue #299) ──────────────────────────────────
+//
+// The RT loop decides substitution from the global latch alone
+// (rt_controller_node_rt_loop.cpp Phase 2c: `const bool estopped =
+// IsGlobalEstopped();`), so the order in which the latch and the per-controller
+// state change is itself a safety property, not an implementation detail:
+//
+//   trigger — latch first, then propagate. A tick in between substitutes
+//             hold_output_ for a controller that has not yet estopped. Safe.
+//   clear   — propagate first, then latch. A tick in between substitutes
+//             hold_output_ for a controller that is already cleared. Safe.
+//
+// Lowering the latch first inverts the clear window into a fail-open one: the
+// tick forwards the output of a controller still holding its E-STOP state.
+// Neither ordering is visible from the final state, which is all the two tests
+// above look at — they pass under both. Observing it requires reading the latch
+// from *inside* the propagation callback, which is what this controller does.
+class LatchObservingController : public MockController {
+ public:
+  LatchObservingController(std::string name, const RtControllerNode& node)
+      : MockController(std::move(name)), node_(node) {}
+
+  void TriggerEstop() noexcept override {
+    latch_during_trigger_ = ControllerLifecycleTestAccess::IsEstopped(node_);
+    MockController::TriggerEstop();
+  }
+
+  void ClearEstop() noexcept override {
+    latch_during_clear_ = ControllerLifecycleTestAccess::IsEstopped(node_);
+    MockController::ClearEstop();
+  }
+
+  bool LatchDuringTrigger() const { return latch_during_trigger_; }
+
+  bool LatchDuringClear() const { return latch_during_clear_; }
+
+ private:
+  const RtControllerNode& node_;
+  bool latch_during_trigger_{false};
+  bool latch_during_clear_{false};
+};
+
+class EstopOrderTest : public EstopTest {
+ protected:
+  // Deliberately does not chain to EstopTest::SetUp(): the base fixture's plain
+  // MockControllers cannot read the latch, and injecting over them would leave
+  // the base's ctrl_a_ / ctrl_b_ dangling. Those stay null here.
+  void SetUp() override {
+    node_ = std::make_shared<RtControllerNode>("test_estop_order_node");
+
+    std::vector<std::unique_ptr<RTControllerInterface>> ctrls;
+    auto a = std::make_unique<LatchObservingController>("ctrl_a", *node_);
+    auto b = std::make_unique<LatchObservingController>("ctrl_b", *node_);
+    obs_a_ = a.get();
+    obs_b_ = b.get();
+    ctrls.push_back(std::move(a));
+    ctrls.push_back(std::move(b));
+    ControllerLifecycleTestAccess::InjectControllers(*node_, std::move(ctrls),
+                                                     {"type_a", "type_b"});
+    ControllerLifecycleTestAccess::EnsureEstopPublisher(*node_);
+  }
+
+  LatchObservingController* obs_a_{nullptr};
+  LatchObservingController* obs_b_{nullptr};
+};
+
+TEST_F(EstopOrderTest, ClearPropagatesToControllersBeforeLoweringTheLatch) {
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node_, "unit_test");
+  ASSERT_TRUE(ControllerLifecycleTestAccess::IsEstopped(*node_));
+
+  ControllerLifecycleTestAccess::CallClearEstop(*node_);
+
+  // Guard the observation itself: a latch value recorded by a callback that
+  // never ran would read as the member's initial value, not as evidence.
+  ASSERT_EQ(1, obs_a_->ClearEstopCount());
+  ASSERT_EQ(1, obs_b_->ClearEstopCount());
+
+  EXPECT_TRUE(obs_a_->LatchDuringClear());
+  EXPECT_TRUE(obs_b_->LatchDuringClear());
+  // …and down only once every controller has been told.
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node_));
+}
+
+TEST_F(EstopOrderTest, TriggerRaisesTheLatchBeforePropagating) {
+  // The mirror of the above, and the reason "propagate first" is the correct
+  // repair direction for clear rather than the reverse. Already holds today —
+  // this pins it so a later symmetry edit cannot silently move the trigger side
+  // to match a still-broken clear side.
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node_, "unit_test");
+
+  ASSERT_EQ(1, obs_a_->TriggerEstopCount());
+  ASSERT_EQ(1, obs_b_->TriggerEstopCount());
+
+  EXPECT_TRUE(obs_a_->LatchDuringTrigger());
+  EXPECT_TRUE(obs_b_->LatchDuringTrigger());
+}
+
 // ── Device liveness: startup gate + watchdog (issue #198 §1/§2) ──────────────
 //
 // Liveness now comes from the backend's own LastStateStamp(), so these tests
