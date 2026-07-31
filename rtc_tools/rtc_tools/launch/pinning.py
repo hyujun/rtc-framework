@@ -330,20 +330,27 @@ def adopt_process_into_shield(
     Must complete *before* the controller activates and spawns its RT threads
     (which then inherit the "user" cpuset). Callers gate ACTIVATE on this action's
     ``OnProcessExit`` for a deterministic order rather than racing the async sudo
-    call against thread creation. Defensive by design: skips (warns, never fails
-    the launch) when the process is gone, the script is missing, or no shield is
-    active (the ``adopt`` subcommand itself no-ops in the last case, so shield-off
-    runs keep the CM at full affinity and its existing self-pin path is unchanged).
+    call against thread creation.
 
-    The one case that is *not* benign: passwordless sudo is unavailable **while a
-    cset shield is already active** (e.g. relaunching after a manual ``sudo
-    cpu_shield.sh on``). The new CM inherited the "system" cpuset, cannot be
-    adopted into "user", and its self-pin to the shielded RT cores then EINVALs
-    (issue #151) — losing affinity *and* SCHED_FIFO. The action still exits 0 (it
-    does not hard-fail the launch, since ACTIVATE is gated on its exit), but it
-    logs a loud ERROR distinguishing this from the harmless shield-off skip.
-    isolcpus isolation is *not* this trap: explicit ``sched_setaffinity`` to an
-    isolcpus core succeeds, so that path falls through to the benign warning.
+    **The exit code is the contract** (issue #344). Benign skips exit 0 and the
+    caller should proceed: the process is gone, the script is missing, or no
+    shield is active (the ``adopt`` subcommand itself no-ops in the last case, so
+    shield-off runs keep the CM at full affinity and its existing self-pin path
+    is unchanged).
+
+    Non-zero means the adopt was *needed and failed*, and the caller must not
+    activate. Two ways to get there: passwordless sudo is unavailable while a cset
+    shield is already active (e.g. relaunching after a manual ``sudo cpu_shield.sh
+    on``), or ``cpu_shield.sh adopt`` itself failed to move the process. Either
+    way the CM stays in the "system" cpuset, and its self-pin to the shielded RT
+    cores then EINVALs — losing affinity *and* SCHED_FIFO, because
+    ``ApplyThreadConfig`` returns before it sets the policy. isolcpus isolation is
+    *not* this trap: explicit ``sched_setaffinity`` to an isolcpus core succeeds,
+    so that path falls through to the benign warning.
+
+    :func:`rtc_tools.launch.cpu_shield.shield_adopt_then_activate` is the wiring
+    that consumes this contract; launch files should use it rather than calling
+    this directly, so the ordering and the exit-code check stay in one place.
 
     ``gated=False`` drops the ``use_cpu_affinity`` :class:`IfCondition` so the
     action always runs (and always exits): a caller gating ACTIVATE on its exit
@@ -368,12 +375,18 @@ def adopt_process_into_shield(
             f'{label} shield adopt skipped"; exit 0; '
             "fi; "
             "if sudo -n true 2>/dev/null; then "
+            # Exit status of the `if` is this command's, so cpu_shield.sh's
+            # non-zero adopt failure reaches the caller unchanged (issue #344).
             '  sudo "$SHIELD" adopt "$PID"; '
             'elif command -v cset >/dev/null 2>&1 && cset shield -s 2>/dev/null | grep -q "user"; then '
             f'  echo "[RT] ERROR: cset CPU shield is ACTIVE but passwordless sudo is unavailable — '
             f"{label} stays in the system cpuset and its RT thread pinning WILL fail "
             "(setaffinity EINVAL, issue #151). Configure passwordless sudo (install.sh "
             'setup_rt_sudoers + realtime group), or release the shield: sudo $SHIELD off"; '
+            # Non-zero: this is the one branch that is NOT a benign skip, so a
+            # caller gating ACTIVATE on this action must be able to tell it apart
+            # from "no shield, nothing to do" below (issue #344).
+            "  exit 1; "
             "else "
             f'  echo "[RT] WARNING: sudo requires a password — {label} shield adopt '
             'skipped (no active cset shield — CM keeps full affinity)"; '

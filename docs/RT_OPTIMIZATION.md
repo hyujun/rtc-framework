@@ -202,9 +202,24 @@ SCHED_OTHER 이되 그 안의 CM 제어 루프만 CM 파라미터로 FIFO 50 + �
 `system` 을 상속해 RT 코어에 접근 불가(EINVAL) 다. 그래서 런치는 CM 의
 configure 완료 후 · activate(=RT 스레드 생성) *전* 에 `cpu_shield.sh adopt <pid>`
 (= `cset shield --shield --pid <pid> --threads`) 로 CM 을 `user` cpuset 으로 옮기고,
-ACTIVATE 를 그 adopt 프로세스의 종료에 게이트한다 (async sudo vs 스레드 생성 race
-제거). shield-off / no-sudo / cset-미설치 런은 adopt 가 no-op 이고 CM 은 full
-affinity 로 기존 self-pin 경로를 그대로 탄다.
+ACTIVATE 를 그 adopt 프로세스의 **종료 코드**에 게이트한다 (async sudo vs 스레드 생성
+race 제거). shield-off / no-sudo / cset-미설치 런은 adopt 가 no-op(exit 0) 이고 CM 은
+full affinity 로 기존 self-pin 경로를 그대로 탄다.
+
+> **fail-closed (issue #344).** adopt 가 *필요했는데 실패*하면 (active shield +
+> passwordless sudo 부재, 또는 `cset shield --shield` 자체 실패) 런치는 ACTIVATE 를
+> **emit 하지 않고** 컨트롤러를 `inactive` 에 둔다. 그대로 활성화하면 실기 500 Hz
+> 모션 제어가 CFS 로, 핀 없이 도는데 — `ApplyThreadConfig` 가 affinity 실패 시
+> SCHED_FIFO 설정 *전에* return 하기 때문 — 그 상태가 조용했다. 조용한 이유가
+> 핵심이다: 이름 설정(`pthread_setname_np`)도 그 return 뒤에 있어 **RT 스레드에
+> 이름이 안 붙고**, 이름으로 스레드를 찾는 `verify_rt_runtime.sh` 가 정책·affinity
+> 검사를 통째로 건너뛰었다. 그래서 검증기도 함께 고쳤다 — **필수 스레드 미발견은
+> 이제 FAIL** 이다.
+>
+> 이 배선(감지·adopt·게이트)의 단일 구현은 `rtc_tools.launch.cpu_shield` 이며
+> real 2 + sim 3, 다섯 런치가 공유한다. 예전에는 런치마다 복붙돼 있었고 #151 →
+> #233 → cset 감지 세 번의 수정이 `robot_ur5e_p1b` 에만 들어갔다. 배선을 고정하는
+> 테스트는 `integrated_bringup/test/test_launch_shield_wiring.py`.
 
 ### 우선순위 계층
 

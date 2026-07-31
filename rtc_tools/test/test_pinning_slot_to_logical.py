@@ -363,7 +363,7 @@ def test_adopt_snippet_resolves_pid_and_calls_cpu_shield(_stub_script_paths):
     # so it cannot resolve to the launch's own wrapper bash / forks (#151).
     assert 'pgrep -nx "integrated_rt_c"' in snippet
     assert '"$SHIELD" adopt "$PID"' in snippet
-    # Guards: missing PID / missing script / password-required sudo all exit 0.
+    # Benign guards (missing PID / missing script) exit 0 so the caller proceeds.
     assert "shield adopt skipped" in snippet
     assert action.cmd[2][0].text.count("exit 0") >= 2
 
@@ -387,6 +387,10 @@ def test_adopt_no_sudo_distinguishes_active_shield_from_shield_off(_stub_script_
     # Active shield + no sudo → loud ERROR naming the EINVAL failure mode.
     assert "[RT] ERROR:" in snippet
     assert "setaffinity EINVAL" in snippet
+    # ...and a non-zero exit, so a caller gating ACTIVATE can tell this apart from
+    # the benign skips (issue #344). Without it the two are indistinguishable and
+    # the controller activates into the state the ERROR is warning about.
+    assert "exit 1" in snippet
     # No active shield → benign WARNING, CM keeps full affinity.
     assert "CM keeps full affinity" in snippet
 
