@@ -217,8 +217,9 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
 8. response `ok=true, message="ok"` (또는 "switched -> name")
 
 조회용 `/rtc_cm/list_controllers` (`ListControllers.srv`) — empty request, response =
-`ControllerState[]` (name/state="active|inactive"/type/is_active/claimed_groups). 두 srv
-모두 `cb_group_nrt_callback_` (RT path와 분리), `rmw_qos_profile_services_default`.
+`ControllerState[]` (name/state="active|inactive"/type/is_active/claimed_groups + 진단 4필드,
+아래 §진단 필드). 두 srv 모두 `cb_group_nrt_callback_` (RT path와 분리),
+`rmw_qos_profile_services_default`.
 
 ### 게인 채널 (per-controller ROS 2 parameter)
 
@@ -377,8 +378,24 @@ CM 자체는 고정 게인 토픽을 더 이상 구독하지 않는다 (게인 �
 | 서비스 | 타입 | 콜백 그룹 | 설명 |
 |--------|------|-----------|------|
 | `/rtc_cm/switch_controller` | `rtc_msgs/srv/SwitchController` | aux | 활성 컨트롤러 전환 (sync, single-active, E-STOP guard) |
-| `/rtc_cm/list_controllers` | `rtc_msgs/srv/ListControllers` | aux | 모든 컨트롤러 lifecycle state 조회 |
+| `/rtc_cm/list_controllers` | `rtc_msgs/srv/ListControllers` | aux | 모든 컨트롤러 lifecycle state + 진단 4필드 조회 (#287) |
 | `/rtc_cm/reset_fault` | `rtc_msgs/srv/ResetFault` | aux | latched **controller-local** fault 해제 (#260, sync, active 한정 + 이름 명시 필수) |
+
+#### `/rtc_cm/list_controllers` 진단 필드 (#287)
+
+응답의 각 `ControllerState` 는 lifecycle 메타데이터 외에 컨트롤러별 진단 4필드를 싣는다. 넷은 구현이 아니라 **발현 형태**로 묶인다 — 전부 오퍼레이터에게 "goal 을 보냈는데 안 움직인다" 로만 보이고, 이 필드들이 없으면 넷 중 무엇이 일어났는지 구분할 수 없다.
+
+| 필드 | 접근자 | 의미 |
+|---|---|---|
+| `has_latched_fault` | `HasLatchedFault()` | controller-local fault 래치가 올라가 있다 → `/rtc_cm/reset_fault` 로 해제 |
+| `target_drop_count` | `GetTargetDropCount()` | goal 은 유효했으나 큐 포화로 유실 — producer 의 **rate** 문제 |
+| `target_reject_count` | `GetTargetRejectCount()` | 형식 불량 / `device_idx` 범위 밖으로 ingress 에서 거부 — producer 의 **payload** 문제 |
+| `target_unhandled_count` | `GetTargetUnhandledCount()` | 컨트롤러가 mailbox 에 push 하면서 `ApplyPendingTarget` 을 override 하지 않았다 — **컨트롤러 자신의 배선 결함** |
+
+- **컨트롤러별 override 를 요구하지 않는다.** 넷 다 `RTControllerInterface` 가 이미 모든 컨트롤러에 대해 추적하므로 CM 이 base 접근자에서 직접 읽는다. 새 컨트롤러는 아무것도 구현하지 않아도 이 네 칸이 정직하게 채워진다.
+- **카운터 3종은 monotonic** (생성 시점 누적, 조회가 소비하지 않는다). 포화 진단은 두 번의 폴링 사이에서 값이 **움직이는지**로 하며, 절대값 자체는 의미가 약하다.
+- **응답은 트랜잭션이 아니라 스냅샷**이다. 각 접근자는 독립적인 relaxed atomic load 라 한 응답 안의 두 카운터가 서로 다른 tick 에서 왔을 수 있다. 이보다 강한 보장은 RT tick 이 SeqLock 으로 진단을 publish 해야 하는데, 위 용법(연속 폴링의 순서만 필요)에는 monotonic 성질로 충분하다.
+- `has_latched_fault` 는 **비활성 컨트롤러에 대해서도 보고**된다. `/rtc_cm/reset_fault` 는 active 대상만 받으므로, 어느 컨트롤러가 잠겼는지 먼저 알아야 그 이름을 댈 수 있다 (#260 이 남긴 후속 (a)).
 
 #### `/rtc_cm/reset_fault` (#260)
 

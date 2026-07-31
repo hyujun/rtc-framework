@@ -33,7 +33,7 @@ rtc_msgs/
 │   ├── GraspState.msg         <- 파지 상태 판정 (접촉/힘/grasp 감지)
 │   ├── WbcState.msg           <- TSID 기반 WBC 컨트롤러 파지 상태 (GraspState의 WBC 대응)
 │   ├── RobotTarget.msg        <- 관절/태스크 공간 목표
-│   ├── ControllerState.msg    <- 컨트롤러 lifecycle 상태 스냅샷 (list_controllers 응답용)
+│   ├── ControllerState.msg    <- 컨트롤러 lifecycle 상태 + 진단 4필드 (list_controllers 응답용)
 │   ├── DeviceStateLog.msg     <- 디바이스 상태 종합 로그
 │   ├── DeviceSensorLog.msg    <- 디바이스 센서 로그
 │   ├── SimSensor.msg          <- MuJoCo 단일 센서 출력 (로봇 비의존적)
@@ -224,6 +224,12 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | `type` | `string` | 컨트롤러 타입 -- `RTC_REGISTER_CONTROLLER`의 registry plugin 이름 키 |
 | `is_active` | `bool` | `state == "active"`와 동일한 정보의 편의 플래그 |
 | `claimed_groups` | `string[]` | 이 컨트롤러가 인지하는 디바이스 토픽 그룹 이름 (`controller_topic_configs_[i].groups` 키, ownership 무관). 진단용 -- 독점 소유를 의미하지 않음 |
+| `has_latched_fault` | `bool` | controller-local fault 래치 상태 (`RTControllerInterface::HasLatchedFault()`). `/rtc_cm/reset_fault` 는 active 대상만 받으므로, **비활성 컨트롤러의 래치도 보고**해 어느 이름을 대야 하는지 알려준다 |
+| `target_drop_count` | `uint64` | 큐 포화로 유실된 goal 수 (`GetTargetDropCount()`). goal 은 유효했고 producer 의 **rate** 가 문제 |
+| `target_reject_count` | `uint64` | ingress 에서 거부된 goal 수 (`GetTargetRejectCount()`) -- 형식 불량 또는 `device_idx` 범위 밖. producer 의 **payload** 가 문제 |
+| `target_unhandled_count` | `uint64` | base default `ApplyPendingTarget` 에 도달한 entry 수 (`GetTargetUnhandledCount()`). 0 이 아니면 그 **컨트롤러 자신**이 mailbox 에 push 하면서 override 를 안 한 것 |
+
+진단 4필드(#287)는 넷 다 `RTControllerInterface` 가 이미 추적하는 값을 CM 이 base 접근자에서 직접 읽어 채운다 -- 컨트롤러별 override 를 요구하지 않는다. 카운터 3종은 생성 시점부터 monotonic 이고 조회가 값을 소비하지 않으므로, 포화 진단은 두 번의 폴링 사이 **증가 여부**로 한다. 한 응답 안의 네 값은 서로 다른 tick 에서 왔을 수 있는 **스냅샷**이다 (각각 독립 atomic load). 필드별 배경은 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §진단 필드.
 
 ---
 
