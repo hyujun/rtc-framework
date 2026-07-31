@@ -117,11 +117,13 @@ colcon test --packages-select <pkg> --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-**두 가지 계측 함정 — 비교 가능한 수치를 낼 때 필수:**
+**계측 함정 — 비교 가능한 수치를 낼 때 필수:**
 
 - **`colcon test-result` 는 디렉토리에 남아 있는 XML 을 전부 합산한다.** CMakeLists 에서 타깃을 빼거나 브랜치를 되돌린 뒤 재측정하면 **사라진 타깃의 옛 결과가 그대로 더해진다** — 숫자가 그럴듯해서 자체 검산 없이는 안 걸린다 (#236 슬라이스 3 에서 baseline 을 298 대신 300 으로 오측하고 존재하지 않는 drift 원인까지 보고했다).
 - **gtest case 수와 ctest entry 수를 함께 센다.** `rtc_controllers 333` = gtest 315 + ctest 18. 옛 수치와 비교할 땐 **단위가 같은지** 먼저 확인한다.
 - **lint 도 소스 파일당 1 entry 를 낸다.** `cppcheck.xunit.xml` 의 `tests="N"` 은 그 패키지의 소스 파일 수이고 전부 **skipped** 로 집계된다. 따라서 테스트 `.cpp` 를 한 개 추가하면 총계는 **1(케이스가 1개일 때) + 1(ctest 타깃) + 1(cppcheck 파일)** 로 오르고 skipped 도 +1 이 된다 — 델타를 gtest 케이스 수만으로 예측하면 매번 어긋난다. 증감을 "삭제·신설 목록과 1:1" 로 설명해야 하는 슬라이스에서는 이 세 항을 분리해 적는다.
+
+- **`--test-result-base <경로>` 를 기본값 아닌 곳으로 주면 총계가 조용히 바이너리 수로 줄어든다.** 각 gtest 타깃의 `--gtest_output=xml:...` 경로는 **configure 시점에 `build/<pkg>/test_results/` 로 박히므로** 이 옵션을 따라오지 않는다. 커스텀 경로에는 CTest 의 `Test.xml` 만 떨어지고, `colcon test-result --test-result-base <그 경로>` 는 그것만 합산해 **바이너리 1개당 1건** 을 보고한다 (실측: 189 대신 20). 실패가 아니라 *그럴듯하게 작은 수*라 자체 검산 없이는 회귀로 오독하기 쉽다. CLAUDE.md §9.1 cwd drift 를 피하려고 절대경로 result-base 를 습관화하면 정확히 이 함정을 밟는다 — cwd 는 `cd <rtc_ws> &&` 로 고정하고 **result-base 는 건드리지 않는 것**이 맞다. 굳이 분리하려면 판정을 `build/<pkg>/test_results/*.gtest.xml` 의 per-file `tests="N"` 으로 한다.
 
 신규 테스트 개수를 주장할 땐 총계 차이가 아니라 `grep -c '^TEST(' <파일>` 또는 per-target XML 의 `tests="N"` 으로 교차검증한다.
 
@@ -151,7 +153,7 @@ rm -rf build/<pkg> install/<pkg> && colcon build --packages-select <pkg>
 
 > **`rtc_mpc` 측정 함정**: 위 recipe 의 `-DCMAKE_BUILD_TYPE=Debug` 를 `rtc_mpc` 에 그대로 쓰면 안 된다. (1) Debug 빌드가 proxsuite all-zero-C assert 를 표면화한다 (Release 는 NDEBUG 로 숨김 — `feedback_proxsuite_zero_c_rejection`). (2) aligator 0.19.0 의 contact_rich MPC 는 `LD_PRELOAD=$DEPS/install/lib/libmimalloc.so` 없이는 `free(): invalid pointer` 로 죽는다 (`feedback_aligator_requires_mimalloc`). `ENABLE_COVERAGE` 옵션 추가 자체(default OFF)는 무해하나, 실제 측정은 두 우회를 모두 적용해야 한다.
 
-> **`integrated_bringup` 측정 함정 — Debug 에서 `test_demo_task_controller` 가 abort 한다.** `NonFiniteJacobianHoldsInsteadOfSolvingWithAStaleInverse` 가 의도적으로 non-finite Jacobian 을 주입하는데, 그 결과 회전행렬이 비유니터리가 되어 pinocchio `rpy.hxx` 의 `assert(R.isUnitary())` 가 발동한다 (Release 는 NDEBUG 로 무력 — 위 proxsuite 항과 **같은 범주**: Debug-only assert 가 coverage 빌드에서만 표면화). 증상은 그 바이너리 하나가 통째로 죽어 `test-result` 총계가 77 만큼 줄고 (`625 → 549`) gcda 도 안 남는 것이다. **coverage run 의 이 실패는 회귀가 아니므로 자기 변경 탓으로 오진하지 말 것** — 판정은 Release 재실행으로 한다.
+> **`integrated_bringup` 측정 함정 — Debug 에서 `test_demo_task_controller` 가 abort 한다.** `NonFiniteJacobianHoldsInsteadOfSolvingWithAStaleInverse` 가 의도적으로 non-finite Jacobian 을 주입하는데, 그 결과 회전행렬이 비유니터리가 되어 pinocchio `rpy.hxx` 의 `assert(R.isUnitary())` 가 발동한다 (Release 는 NDEBUG 로 무력 — 위 proxsuite 항과 **같은 범주**: Debug-only assert 가 coverage 빌드에서만 표면화). 증상은 그 바이너리 하나가 통째로 죽어 `test-result` 총계가 **그 바이너리의 케이스 수만큼** 줄고 gcda 도 안 남는 것이다 (절대 수치는 박제하지 않는다 — 그 XML 의 `tests="N"` 을 직접 읽는다). **coverage run 의 이 실패는 회귀가 아니므로 자기 변경 탓으로 오진하지 말 것** — 판정은 Release 재실행으로 한다.
 
 > **정규 트리를 오염시키지 말고 `--build-base`/`--install-base` 를 분리하라.** 위 recipe 의 "측정 후 clean Release 재빌드" 대신, coverage 빌드를 **scratchpad 절대경로**의 별도 트리로 내보내면 (`--build-base /tmp/.../cov/build --install-base /tmp/.../cov/install`) ws-root incremental cache 가 애초에 안 더러워지므로 원복 재빌드가 불필요하다 (CLAUDE.md §9.1 은 그대로 — 호출은 여전히 ws root 에서). 이때 `gcovr --object-directory` 도 그 트리를 가리켜야 한다. `gcovr` 없이 `gcov` 만 있을 때는 `gcov -b -p <build>/CMakeFiles/<target>.dir/<path>/<file>.cpp.gcno` — 확장자 포함 `*.cpp.gcno` 를 **직접** 넘겨야 한다 (`-o <dir>` + 소스 경로 조합은 `<file>.gcno` 를 찾아 "cannot open notes file" 로 실패).
 
