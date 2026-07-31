@@ -413,6 +413,38 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
   const rtc::compliance::DifferentialIk::Result ik =
       gains.control_6dof ? ik_6d_.Compute(J_full_, sigma0, lambda_max)
                          : ik_3d_.Compute(J_pos_, sigma0, lambda_max);
+
+  // ── §6.5 observability (#310) ────────────────────────────────────────────
+  // σ_min and λ² are computed unconditionally inside Compute() above and were
+  // previously discarded by every caller, so driving the arm into a wrist
+  // singularity damped correctly but surfaced nothing: no fault, no warning,
+  // no diagnostic — the operator saw only degraded tracking. Stage both for the
+  // Phase C task_diag row at the tail of Compute(). Written before the !ok gate
+  // so a held tick logs a row too (ik_ok=0) instead of a gap.
+  // t_relative_s is NOT stamped here — the push site stamps it from the tick's
+  // own state, so a row emitted on a tick that skipped this function carries
+  // that tick's time with valid=0 rather than a stale timestamp.
+  task_diag_staging_.valid = true;
+  task_diag_staging_.sigma_min = ik.sigma_min;
+  task_diag_staging_.lambda_sq = ik.lambda_sq;
+  task_diag_staging_.sigma0 = sigma0;
+  task_diag_staging_.lambda_max = lambda_max;
+  task_diag_staging_.ik_ok = ik.ok;
+  task_diag_staging_.control_6dof = gains.control_6dof;
+
+  // λ² > 0 is exactly `sigma_min < sigma0` (AdaptiveDampingSquared returns 0
+  // otherwise), so this fires precisely when §6.5 damping is engaged. NOT a
+  // fault — that IS the law's operating region, and promoting it would fire on
+  // every intended activation; the operator needs to know the arm is being
+  // damped near a singularity, not that something broke. RT-3's throttle
+  // exception applies: primitive-only format, no string assembly.
+  if (ik.ok && ik.lambda_sq > 0.0) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "task CLIK near singularity: sigma_min=%.3e < sigma0=%.3e, "
+                         "DLS damping lambda^2=%.3e engaged (control_6dof=%d)",
+                         ik.sigma_min, sigma0, ik.lambda_sq, static_cast<int>(gains.control_6dof));
+  }
+
   if (!ik.ok) {
     // A non-finite Jacobian — a NaN joint state that reached FK. J⁺ and N still
     // hold the PREVIOUS tick's contents by contract, so solving with them would

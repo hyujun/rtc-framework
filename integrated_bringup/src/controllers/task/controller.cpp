@@ -349,6 +349,12 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // reader — including ReadState's ExtractFullState gate and the Stage-1 cache
   // refresh below — sees one consistent value for this tick.
   estop_active_ = estopped_.load(std::memory_order_acquire);
+  // #310: cleared before ComputeControl so the staged §6.5 row is marked stale
+  // by default. ComputeControl sets it true only after the IK solve, and it
+  // early-returns on E-STOP / unreadable arm / invalid reorder — clearing here
+  // rather than at those gates keeps the flag correct without restating that
+  // compound condition in two places.
+  task_diag_staging_.valid = false;
   // F5 gate (#236 S7b), loaded beside estop_active_ for the same reason: every
   // phase below has to agree on whether device 0 is usable this tick, and both
   // output lanes — the CLIK path and ComputeEstop — honour it.
@@ -437,6 +443,12 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
         ForceFilterLogView{fingertip_force_filt_, fingertip_force_guarded_, force_guard_rejected_},
         pod);
     secondary_sensor_log_handle_.Push(pod);
+  }
+  if (task_diag_log_handle_) {
+    // Staged by ComputeControl this tick (#310), stamped here so the row carries
+    // THIS tick's time even when ComputeControl early-returned (valid=0).
+    task_diag_staging_.t_relative_s = state.t_relative_s;
+    task_diag_log_handle_.Push(task_diag_staging_);
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                        state.iteration);
@@ -1084,7 +1096,8 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
         e.instance = entry["instance"].as<std::string>();
       }
       if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
-          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType) {
+          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType &&
+          e.msg_type != integrated_bringup::kTaskDiagLogMsgType) {
         throw std::runtime_error("DemoTaskController: unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));

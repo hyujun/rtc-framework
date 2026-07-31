@@ -29,6 +29,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
+#include "integrated_bringup/logging/task_diag_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 
@@ -129,6 +130,17 @@ struct LogRegistrationContext {
   // mask column names so a stored CSV decodes without that run's ROS log
   // (#234 P-14). Empty is tolerated — the columns then carry no suffix.
   std::vector<std::string> pull_estimator_roles;
+
+  // TaskDiagLog (#310) — §6.5 σ_min/λ² diagnostics for the task controller.
+  // A single fixed instance (kTaskDiagLogInstance) with a fixed-width header,
+  // so a bool gates it rather than a map carrying header context.
+  //
+  // ⚠ Appended at the END on purpose: the joint/task controllers brace-init this
+  // struct POSITIONALLY, so inserting a field mid-struct silently reassigns
+  // their arguments (it did — `pull_estimator_roles` landed in this bool and
+  // only failed to compile because the types happened to disagree). New fields
+  // go last.
+  bool task_diag_enabled{false};
 };
 
 // ── Returned handles (caller assigns to its own typed members) ─────────────
@@ -140,6 +152,8 @@ struct RegisteredLogHandles {
   // Single fixed instance (kPullEstimatorLogInstance) — no map keyed on a name
   // the caller already knows.
   rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator;
+  // Single fixed instance (kTaskDiagLogInstance), same reason.
+  rtc::LogHandle<integrated_bringup::TaskDiagLogPod> task_diag;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -292,10 +306,28 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.pull_estimator = std::move(handle);
+    } else if (entry.msg_type == kTaskDiagLogMsgType) {
+      if (!ctx.task_diag_enabled || entry.instance != kTaskDiagLogInstance) {
+        // Not a task-controller registration (or unexpected instance) —
+        // silently skip like any unregistered instance.
+        continue;
+      }
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::TaskDiagLogPod>(
+          entry.instance, [](std::ostream& os) { integrated_bringup::WriteTaskDiagLogHeader(os); },
+          [](std::ostream& os, const integrated_bringup::TaskDiagLogPod& pod) {
+            integrated_bringup::WriteTaskDiagLogRow(os, pod);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open task_diag CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.task_diag = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
-    // PullEstimatorLog}; reaching here is a YAML parser bug. Silently ignore.
+    // PullEstimatorLog, TaskDiagLog}; reaching here is a YAML parser bug.
+    // Silently ignore.
   }
 
   return result;

@@ -106,6 +106,12 @@ topics:
 logs:
   - msg_type: rtc_msgs/DeviceStateLog
     instance: iiwa7_state
+  # #310: pins the TaskDiagLog msg_type string against LoadConfig's closed set.
+  # The deployed YAMLs carry this entry, so a drift between the literal here and
+  # kTaskDiagLogMsgType would otherwise only surface as a configure throw at
+  # launch — this fixture turns that into a test failure.
+  - msg_type: integrated_bringup/TaskDiagLog
+    instance: task_diag
 )";
 
 // ZYX (yaw·pitch·roll) rotation — matches DrainTargetSlot's 6-DOF target

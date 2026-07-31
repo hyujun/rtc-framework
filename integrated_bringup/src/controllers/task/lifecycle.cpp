@@ -107,6 +107,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
         {},                      // wbc_diag_logs  — WBC controller only
         pull_wiring_.enabled(),  // pull_estimator_enabled
         pull_wiring_.roles,      // pull_estimator_roles (mask bit order)
+        true,                    // task_diag_enabled (#310) — §6.5 σ_min/λ² lane
     };
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -127,6 +128,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
       }
     }
     pull_estimator_log_handle_ = std::move(reg.handles.pull_estimator);
+    task_diag_log_handle_ = std::move(reg.handles.task_diag);
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -238,6 +240,7 @@ void DemoTaskController::ResetLogState() noexcept {
   secondary_state_log_handle_ = {};
   secondary_sensor_log_handle_ = {};
   pull_estimator_log_handle_ = {};
+  task_diag_log_handle_ = {};
 }
 
 RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
