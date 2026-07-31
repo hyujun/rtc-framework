@@ -775,6 +775,80 @@ test_slot_to_logical_cpu() {
   unset PHYSICAL_CORE_SLOTS
 }
 
+# ── mask_to_cpus / rt_classify_external_rt_threads (verify_rt_runtime.sh 소비) ──
+# 분류기는 external driver 프로세스의 RT 루프가 계획된 코어에 FIFO 로 앉아
+# 있는지 판정한다. 이름으로 못 고르므로 (controller_manager 는 루프 스레드에
+# pthread 이름을 안 준다 — 전 TID 가 같은 comm) 정책+우선순위가 선택자다.
+# 아래 fixture 는 issue #343 이 실제로 관측한 네 상태를 고정한다.
+
+test_mask_to_cpus() {
+  expect_eq "mask.single"  "3"     "$(mask_to_cpus 8)"
+  expect_eq "mask.multi"   "0,1"   "$(mask_to_cpus 3)"
+  expect_eq "mask.all12"   "0,1,2,3,4,5,6,7,8,9,10,11" "$(mask_to_cpus fff)"
+  expect_eq "mask.none"    "none"  "$(mask_to_cpus 0)"
+  expect_eq "mask.high"    "10"    "$(mask_to_cpus 400)"
+}
+
+test_classify_external_rt_ok() {
+  # 수정 후 기대 상태: cpu_affinity 가 루프 스레드 하나만 logical 10 으로 옮긴다.
+  # 나머지 TID (executor, DDS) 는 로밍하며 판정에 관여하지 않는다.
+  local out
+  out=$(printf '%s\n' \
+    "100 SCHED_OTHER 0 fff" \
+    "101 SCHED_FIFO 50 400" \
+    "102 SCHED_OTHER 0 fff" | rt_classify_external_rt_threads 50 10)
+  expect_eq "cls.ok.verdict" "OK" "${out%%|*}"
+  expect_eq "cls.ok.detail"  "1/1 SCHED_FIFO prio 50 on cpu 10" "${out#*|}"
+}
+
+test_classify_external_rt_no_fifo() {
+  # issue #343 의 사각지대: FIFO 요청이 EPERM 으로 거부되면 affinity 는 그대로
+  # 적용되므로 위치만 보는 검사는 통과한다. 실제로 로컬에서 재현된 상태다.
+  local out
+  out=$(printf '%s\n' \
+    "100 SCHED_OTHER 0 fff" \
+    "101 SCHED_OTHER 0 400" | rt_classify_external_rt_threads 50 10)
+  expect_eq "cls.nofifo.verdict" "NO_FIFO" "${out%%|*}"
+  expect_eq "cls.nofifo.detail"  "2 threads, none SCHED_FIFO" "${out#*|}"
+}
+
+test_classify_external_rt_wrong_cpu() {
+  # 수정 전 상태: 루프는 FIFO 지만 핀이 안 걸려 전 코어를 로밍한다.
+  local out
+  out=$(printf '%s\n' \
+    "100 SCHED_OTHER 0 400" \
+    "101 SCHED_FIFO 50 fff" | rt_classify_external_rt_threads 50 10)
+  expect_eq "cls.wrongcpu.verdict" "WRONG_CPU" "${out%%|*}"
+  case "${out#*|}" in
+    *"101:{0,1,2,3,4,5,6,7,8,9,10,11}"*) pass ;;
+    *) fail "[cls.wrongcpu.detail] offending tid/cpus 누락: ${out#*|}" ;;
+  esac
+}
+
+test_classify_external_rt_wrong_prio() {
+  # 주입한 thread_priority 와 실제가 갈린 경우 — 값이 조용히 달라지는 것을 막는다.
+  local out
+  out=$(printf '%s\n' \
+    "101 SCHED_FIFO 20 400" | rt_classify_external_rt_threads 50 10)
+  expect_eq "cls.wrongprio.verdict" "WRONG_PRIO" "${out%%|*}"
+  case "${out#*|}" in
+    *"20"*"expected 50"*) pass ;;
+    *) fail "[cls.wrongprio.detail] 실제/기대 우선순위 누락: ${out#*|}" ;;
+  esac
+}
+
+test_classify_external_rt_ignores_non_rt_threads() {
+  # RTDE 워커·DDS 가 아무 코어에 있어도 OK 여야 한다. 이들을 함께 강제하는 것이
+  # #163 Phase 4 가 유예한 taskset -a 전면 적용이고, 이 fix 의 전제가 아니다.
+  local out
+  out=$(printf '%s\n' \
+    "100 SCHED_OTHER 0 1" \
+    "101 SCHED_FIFO 50 400" \
+    "102 SCHED_OTHER 0 2" \
+    "103 SCHED_OTHER 0 fff" | rt_classify_external_rt_threads 50 10)
+  expect_eq "cls.ignore.verdict" "OK" "${out%%|*}"
+}
+
 # ── cpu_shield.sh::compute_shield_cores → get_rt_shield_cpus (slot→logical+sibling) ─
 # The shield set is the LOGICAL CPUs RT threads pin to (via PHYSICAL_CORE_SLOTS,
 # the same map C++ ApplyThreadConfig uses) plus HT siblings — NOT the raw slot
@@ -934,6 +1008,12 @@ test_get_rt_cores_with_siblings_non_smt
 test_get_rt_cores_with_siblings_smt_6c12t
 test_get_rt_cores_with_siblings_smt_12c24t
 test_slot_to_logical_cpu
+test_mask_to_cpus
+test_classify_external_rt_ok
+test_classify_external_rt_no_fifo
+test_classify_external_rt_wrong_cpu
+test_classify_external_rt_wrong_prio
+test_classify_external_rt_ignores_non_rt_threads
 test_get_rt_shield_cpus_non_smt
 test_get_rt_shield_cpus_smt_primaries_first
 test_get_rt_shield_cpus_smt_interleaved

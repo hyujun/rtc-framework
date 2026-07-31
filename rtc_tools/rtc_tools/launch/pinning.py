@@ -37,6 +37,7 @@ and ``<exec_depend>rtc_tools</exec_depend>``, so this adds no new dependency.
 from __future__ import annotations
 
 import os
+import subprocess
 
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import ExecuteProcess
@@ -207,6 +208,53 @@ def _resolve_slot_prelude(label: str, slot: int) -> str:
     )
 
 
+def resolve_logical_cpu(slot: int) -> int | None:
+    """Resolve a slot index to its kernel logical CPU id *now*, via ``rt_common.sh``.
+
+    The eager twin of :func:`_resolve_slot_prelude`: same translation, same "no
+    third mirror" rule (module docstring) — the number comes out of
+    ``rt_common.sh::slot_to_logical_cpu`` and is never re-derived in Python — but
+    the answer is needed at launch-*build* time instead of inside a spawned
+    action. ``controller_manager``'s native ``cpu_affinity`` parameter takes a
+    logical CPU id and must be written into a YAML file before the driver
+    process exists, so the bash-snippet form cannot serve it (issue #343).
+
+    Returns ``None`` — never a guess — for the no-pin sentinel, a missing
+    helper, or a failed lookup. Callers must then omit the pin entirely: writing
+    an unverified number into ``cpu_affinity`` is exactly what issue #163 was.
+    """
+    if slot < 0:
+        return None
+
+    rt_common = rt_common_path()
+    if not os.path.isfile(rt_common):
+        return None
+
+    # ``int(slot)`` also serves as the injection guard for the interpolation.
+    script = (
+        f'. "{rt_common}" || exit 1; '
+        "detect_hybrid_capability >/dev/null 2>&1 || true; "
+        f"slot_to_logical_cpu {int(slot)}"
+    )
+    try:
+        completed = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        cpu = int(completed.stdout.strip())
+    except ValueError:
+        return None
+    return cpu if cpu >= 0 else None
+
+
 def pin_process_to_slot(
     label: str, process_grep: str, slot: int, *, all_threads: bool = False
 ) -> ExecuteProcess:
@@ -219,10 +267,18 @@ def pin_process_to_slot(
 
     * ``False`` (default) → ``taskset -p`` pins the *main thread only*
       (``sched_setaffinity`` takes a TID, not a process). Existing worker threads
-      keep their inherited mask. Correct for the **UR arm driver**: widening it to
-      the whole process would sweep every RTDE worker onto one E-core and may
-      regress its 500 Hz loop — that trade-off is gated on NUC13 E-core
-      measurements (issue #163 Phase 4).
+      keep their inherited mask, and threads created *later* inherit the new one.
+      Correct only where the main thread is the work: the **MuJoCo simulator**,
+      whose physics stepping runs on it.
+
+      This scope is **not** usable for a process whose real-time work lives in a
+      worker thread — it pins the wrong TID while looking successful. The UR arm
+      driver was pinned this way until issue #343: ``ros2_control_node``'s main
+      thread is the (idle) executor and its 500 Hz loop is a separate
+      ``cm_thread`` created before this timer fires, so the pin never reached it
+      and the verifier, reading the same main thread, reported PASS. It now uses
+      ``controller_manager``'s native ``cpu_affinity`` parameter, which is
+      applied *inside* that thread — see :mod:`rtc_tools.launch.cm_rt_params`.
     * ``True`` → ``taskset -ap`` pins *every existing thread* of the process. This
       is required for the **hand driver**: its CommLoop RT thread (``hand_udp_recv``,
       SCHED_FIFO 65) and failure detector self-set ``cpu_core=-1`` and rely on

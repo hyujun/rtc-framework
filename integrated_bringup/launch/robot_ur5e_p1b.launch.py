@@ -8,12 +8,15 @@
 #   5. DDS thread pinning runs 5 s after the CM process starts
 #
 # Core allocation optimizations applied:
-#   C) UR driver + udp_hand_node processes pinned via tier-aware taskset
-#      (rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core; SSoT in
+#   C) udp_hand_node pinned via tier-aware taskset, and the UR driver's RT loop
+#      via controller_manager's native cpu_affinity parameter — taskset reaches
+#      only a process's main thread, which for ros2_control_node is the executor,
+#      not the 500 Hz loop (issue #343). Slots come from
+#      rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core (SSoT in
 #      rtc::SystemThreadConfigs.{arm,hand}_driver) when use_cpu_affinity:=true.
 #      The hand pin uses taskset -a (all threads) so the CommLoop RT thread and
 #      failure detector — spawned in on_activate with cpu_core=-1 — land on the
-#      hand core too; the arm pin stays main-thread-only (issue #163/#245).
+#      hand core too (issue #163/#245).
 #   D) integrated_rt_controller DDS threads co-pinned to the rt_callback core
 #      (tier-aware via rtc_tools.launch.thread_layout.get_rt_callback_core)
 #      so DDS dispatch and the FIFO 70 rt_callback executor share L1/L2 cache.
@@ -60,6 +63,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from rtc_tools.launch.cm_rt_params import control_rate_from_yaml, write_cm_rt_param_file
 from rtc_tools.launch.pinning import (
     adopt_process_into_shield,
     pin_dds_threads_to_slot,
@@ -93,13 +97,53 @@ def _load_hand_params(pkg, *relpath):
         return {}
 
 
-def _launch_setup(context):
+def _build_cm_rt_params(context, session_dir, config_variant):
+    """Write this run's controller_manager RT parameter file; return (path, LogInfo).
+
+    Replaces the arm-driver ``taskset`` action. ``ros2_control_node``'s 500 Hz
+    loop runs in a thread that is created before any launch timer can fire and
+    is never the main thread, so a process pin moved the executor instead and the
+    verifier — reading that same main thread — called it PASS (issue #343). The
+    native ``cpu_affinity`` parameter is applied from *inside* the loop thread,
+    which is the only place its TID is knowable.
+
+    ``use_cpu_affinity:=false`` drops only ``cpu_affinity``; ``update_rate`` still
+    has to reach the node, and priority/memory settings are not affinity.
+    """
+    pin_enabled = context.launch_configurations.get("use_cpu_affinity", "true") == "true"
+    base_yaml = os.path.join(
+        get_package_share_directory("integrated_bringup"), "config", config_variant, "_base.yaml"
+    )
+    params_file, params = write_cm_rt_param_file(
+        session_dir,
+        control_rate=control_rate_from_yaml(base_yaml),
+        slot=get_arm_driver_core() if pin_enabled else None,
+    )
+    if "cpu_affinity" in params:
+        detail = f"cpu_affinity=logical {params['cpu_affinity']} (slot {get_arm_driver_core()})"
+    elif pin_enabled:
+        detail = "cpu_affinity OMITTED — slot could not be resolved to a logical cpu"
+    else:
+        detail = "cpu_affinity disabled (use_cpu_affinity:=false)"
+    log = LogInfo(
+        msg=(
+            f"[RT] UR controller_manager RT params → {params_file}: "
+            f"update_rate={params['update_rate']}, {detail}, "
+            f"thread_priority={params['thread_priority']}, lock_memory={params['lock_memory']}"
+        )
+    )
+    return params_file, log
+
+
+def _launch_setup(context, *, session_dir):
     """Resolve launch arguments and build actions that need runtime values."""
     # ROS 2 Jazzy renamed use_fake_hardware -> use_mock_hardware.
     # Accept either flag; if either is 'true', enable mock hardware.
     use_mock = context.launch_configurations.get("use_mock_hardware", "false")
     use_fake = context.launch_configurations.get("use_fake_hardware", "false")
     mock_enabled = "true" if use_mock == "true" or use_fake == "true" else "false"
+
+    cm_rt_params_file, cm_rt_params_log = _build_cm_rt_params(context, session_dir, "ur5e_p1b")
 
     # Humble uses 'use_fake_hardware', Jazzy+ uses 'use_mock_hardware'.
     # Pass both so the correct one is picked up regardless of ROS distro.
@@ -129,13 +173,18 @@ def _launch_setup(context):
             "controller_spawner_timeout": LaunchConfiguration("controller_spawner_timeout"),
             "activate_joint_controller": LaunchConfiguration("activate_joint_controller"),
             "initial_joint_controller": LaunchConfiguration("initial_joint_controller"),
+            # Upstream declares this argument and passes it as the node's FIRST
+            # parameter file; the default carries update_rate alone. Ours adds
+            # the RT contract (cpu_affinity / thread_priority / lock_memory) —
+            # see rtc_tools.launch.cm_rt_params, issue #343.
+            "update_rate_config_file": cm_rt_params_file,
         }.items(),
     )
     # ── Activate forward_position_controller (mock hardware only) ────────────
     # For real robots, the UR driver's controller_stopper_node handles activation
     # via initial_joint_controller when play is pressed on the teach pendant.
     # For mock hardware, there is no controller_stopper, so we must switch manually.
-    actions = [ur_driver_launch]
+    actions = [cm_rt_params_log, ur_driver_launch]
     if mock_enabled == "true":
         activate_fwd_controller = TimerAction(
             period=3.0,
@@ -363,7 +412,12 @@ def generate_launch_description():
     set_rmw = SetEnvironmentVariable(name="RMW_IMPLEMENTATION", value="rmw_cyclonedds_cpp")
 
     # ── UR robot driver launch (via OpaqueFunction for mock_hardware compat) ──
-    ur_driver_launch_action = OpaqueFunction(function=_launch_setup)
+    # session_dir goes in as a kwarg because the CM RT parameter file is written
+    # next to this run's logs, and only the OpaqueFunction can read the resolved
+    # use_cpu_affinity value that decides whether it carries a pin (issue #343).
+    ur_driver_launch_action = OpaqueFunction(
+        function=_launch_setup, kwargs={"session_dir": session_dir}
+    )
 
     # ── CPU Shield ────────────────────────────────────────────────────────────
     _pkg_prefix = get_package_share_directory("repo_scripts")
@@ -409,14 +463,11 @@ def generate_launch_description():
     # is the C++ SSoT; rtc_tools.launch.thread_layout mirrors it for launch.
     # These are slot indices — pin_process_to_slot resolves them to logical CPU
     # ids via rt_common.sh::slot_to_logical_cpu (issue #163).
-    arm_driver_slot = get_arm_driver_core()
+    #
+    # The arm driver is NOT here: taskset cannot reach its RT loop, so it is
+    # pinned through controller_manager's own cpu_affinity parameter instead
+    # (_build_cm_rt_params above, issue #343).
     hand_driver_slot = get_hand_driver_core()
-    pin_ur_driver = TimerAction(
-        period=3.0,
-        actions=[
-            pin_process_to_slot("UR ros2_control_node", "ros2_control_node", arm_driver_slot)
-        ],
-    )
     # all_threads=True: the hand driver's CommLoop RT thread (hand_udp_recv) and
     # failure detector are created in on_activate with cpu_core=-1 and inherit the
     # process pin, so a main-thread-only taskset would leave them behind. `-a`
@@ -686,7 +737,6 @@ def generate_launch_description():
             # 3) Infrastructure (parallel)
             enable_cpu_shield,
             ur_driver_launch_action,
-            pin_ur_driver,
             fake_hand_firmware_node,
             udp_hand_node,
             pin_hand_driver,

@@ -70,8 +70,15 @@ struct MpcThreadConfig {
 // SystemThreadConfigs.
 //
 // process-level threads (arm_driver, hand_driver, sim_thread, viewer) are
-// SCHED_OTHER prio 0; only their cpu_core is consumed (taskset pin), all
+// SCHED_OTHER prio 0; only their cpu_core is consumed (launch-time pin), all
 // other fields are passed through ApplyThreadConfig as no-op.
+//
+// These entries model the *process*, not whatever RT thread runs inside it, and
+// must stay SCHED_OTHER for that reason. The UR arm driver is the sharp case:
+// its controller_manager control loop is SCHED_FIFO 50, but that thread belongs
+// to upstream and is configured by CM parameters the launch file generates, not
+// by ApplyThreadConfig (issue #343). Raising kArmDriverConfig* to FIFO would
+// claim the process's main/executor thread is RT, which it is not.
 //
 // ── Tier block ordering ─────────────────────────────────────────────────────
 // Tier blocks are listed in ascending core count: 4 → 6 → 8 → 10 → 12 → 14 → 16.
