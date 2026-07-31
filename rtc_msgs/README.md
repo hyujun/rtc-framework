@@ -45,6 +45,7 @@ rtc_msgs/
     ├── GraspCommand.srv       <- Force-PI 그래스프 one-shot 이벤트 (start/release)
     ├── ListControllers.srv    <- 등록된 컨트롤러 lifecycle 상태 조회 (/rtc_cm/list_controllers)
     ├── ResetFault.srv         <- latched controller-local fault 해제 (/rtc_cm/reset_fault)
+    ├── ClearEstop.srv         <- global E-STOP 래치 해제 (/rtc_cm/clear_estop)
     └── SwitchController.srv   <- 컨트롤러 activate/deactivate 요청 (/rtc_cm/switch_controller)
 ```
 
@@ -456,6 +457,28 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 ---
 
+### `ClearEstop.srv`
+
+`/rtc_cm/clear_estop` -- CM **global** E-STOP 래치를 해제합니다 (#288). `ResetFault` 의 글로벌 판 대응물이며, 이전에는 프로덕션 호출자가 `on_deactivate` 하나뿐이라 프로세스 재시작이 유일한 출구였습니다. 둘은 **양방향으로 분리**돼 서로를 풀지 않습니다 (E-8).
+
+**Request:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `reason_ack` | `string` | **현재 걸린 사유를 그대로 echo**. 필수 -- 이름이 없는 글로벌 래치에서 오퍼레이터 확인을 대신합니다. 빈 값으로 호출하면 거부 메시지가 사유를 알려줍니다 |
+
+**Response:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `ok` | `bool` | 래치가 실제로 내려갔고 관측 창 동안 그대로였는지 (애초에 안 걸려 있던 no-op 도 `true`) |
+| `message` | `string` | 결과 설명. controller-local fault 가 아직 래치돼 있으면 함께 알림 |
+
+- **관측 창이 `ResetFault` 보다 깁니다** -- `watchdog_check_divisor_ + 2` tick. 가장 느린 원인 detector 가 디바이스 워치독(50 Hz)이라, 2-tick 로 답하면 죽은 디바이스를 "복구됨" 으로 보고하게 됩니다.
+- 거부 4종이 구분됩니다: ack 누락/불일치 (아무것도 안 건드림) · **전파 중 재트리거** (해제를 포기하고 래치 유지) · 원인 잔존 (창 안에서 재래치) · tick 미소비. 마지막은 `ResetFault` 와 달리 **래치가 이미 내려간 상태**이고 검증만 없는 것이라 `message` 가 그 점을 명시합니다.
+
+---
+
 ## 빌드
 
 ```bash
@@ -494,7 +517,8 @@ source install/setup.bash
 ├── ControllerState                 (list_controllers 응답 요소: name/state/type/is_active)
 ├── ListControllers.srv             /rtc_cm/list_controllers  → ControllerState[]
 ├── SwitchController.srv            /rtc_cm/switch_controller → activate/deactivate
-└── ResetFault.srv                  /rtc_cm/reset_fault       → controller-local fault 해제
+├── ResetFault.srv                  /rtc_cm/reset_fault       → controller-local fault 해제
+└── ClearEstop.srv                  /rtc_cm/clear_estop       → global E-STOP 래치 해제
 
 로깅 (CSV 세션 기록)                ToF 스냅샷 (형상 추정용)
 ├── DeviceStateLog                  └── ToFSnapshot

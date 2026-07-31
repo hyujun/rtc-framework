@@ -30,6 +30,16 @@
 //   RtTickCount() — not on the clock — and re-reading HasLatchedFault(), so
 //   "the fault cause is still present" and "nothing consumed the request" are
 //   distinguishable answers rather than one ambiguous timeout.
+//
+// clear_estop — clear the GLOBAL E-STOP latch (issue #288). The counterpart of
+//   reset_fault for the other latch, and separate from it in both directions
+//   (E-8). Same three-part shape — operator confirmation (echo the latched
+//   reason, since there is no controller name to give), then act, then confirm
+//   against the RT loop — with two differences that follow from what it is
+//   clearing. The observation window spans a full device-watchdog period
+//   rather than two ticks, because that is the slowest cause detector and a
+//   two-tick answer would call a dead device recovered. And an unverified
+//   reply here means the latch is already DOWN, not untouched, so it says so.
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <algorithm>
@@ -265,7 +275,135 @@ void RtControllerNode::CreateServices() {
       },
       srv_qos, cb_group_nrt_callback_);
 
+  clear_estop_srv_ = create_service<rtc_msgs::srv::ClearEstop>(
+      "/rtc_cm/clear_estop",
+      [this](const std::shared_ptr<rtc_msgs::srv::ClearEstop::Request> req,
+             std::shared_ptr<rtc_msgs::srv::ClearEstop::Response> resp) {
+        // The other latch, read at REPLY time for the same reason reset_fault
+        // reads the global one there: it can latch while we wait, and a reply
+        // that omitted it would report recovery at the moment the arm stopped
+        // for the other reason.
+        const auto fault_note = [this]() -> std::string {
+          const int idx = active_controller_idx_.load(std::memory_order_acquire);
+          if (idx < 0 || static_cast<std::size_t>(idx) >= controllers_.size()) {
+            return "";
+          }
+          auto& active = *controllers_[static_cast<std::size_t>(idx)];
+          if (!active.HasLatchedFault()) {
+            return "";
+          }
+          return " (controller '" + std::string(active.Name()) +
+                 "' still has a latched fault — /rtc_cm/reset_fault clears that one)";
+        };
+
+        if (!IsGlobalEstopped()) {
+          resp->ok = true;
+          resp->message = "global E-STOP is not latched (no-op)" + fault_note();
+          return;
+        }
+
+        // Captured before the clear: DrainLog wipes the buffer once it logs a
+        // cleared latch, so the reply would otherwise quote an empty reason.
+        const std::string latched_reason = GlobalEstopReason();
+
+        // Echoing the reason is the operator confirmation step (see
+        // ClearEstop.srv). An empty request is a refusal, not a convenience
+        // default — and the refusal is what hands the caller the string to
+        // echo, so this doubles as the discovery path.
+        if (req->reason_ack.empty()) {
+          resp->ok = false;
+          resp->message = "reason_ack is required — echo the latched reason to confirm: '" +
+                          latched_reason + "'";
+          return;
+        }
+        if (req->reason_ack != latched_reason) {
+          resp->ok = false;
+          resp->message = "reason_ack '" + req->reason_ack +
+                          "' does not match the latched reason '" + latched_reason + "'";
+          return;
+        }
+
+        // Enough ticks for the CAUSE DETECTORS to get a turn, which is a
+        // different quantity from reset_fault's two-tick proof: the slowest
+        // one here is the device watchdog, and it only runs every
+        // watchdog_check_divisor_ ticks (kWatchdogCheckHz). Two ticks would
+        // report "cleared" on a dead device every time, because the check that
+        // would have re-latched had not run yet.
+        //
+        // The +2 on top of the watchdog period is reset_fault's proof term and
+        // is there for the same reason: the tick that produces the first
+        // increment may have started before our store.
+        static constexpr std::uint64_t kProofTicks = 2;
+        // Deadline, not a bound on the RT loop — expiring is itself a
+        // diagnosis. 4× leaves room for overrun and jitter on top of a window
+        // that is already tens of periods long.
+        static constexpr long kDeadlineMultiple = 4;
+        const auto ticks_proving =
+            static_cast<std::uint64_t>(watchdog_check_divisor_) + kProofTicks;
+        const auto period = ControlPeriod();
+        const auto poll_interval = std::max(period / 4, std::chrono::microseconds(100));
+        const std::uint64_t ticks_before = RtTickCount();
+
+        const auto outcome = ClearGlobalEstop();
+        if (outcome == EstopClearOutcome::kRetriggered) {
+          resp->ok = false;
+          resp->message =
+              "an E-STOP was requested while the clear was propagating — the clear was abandoned "
+              "and the latch is still set (was: '" +
+              latched_reason + "')" + fault_note();
+          return;
+        }
+        if (outcome == EstopClearOutcome::kNotLatched) {
+          // Another caller cleared it between our check and this call.
+          resp->ok = true;
+          resp->message =
+              "global E-STOP was already cleared by another caller (no-op)" + fault_note();
+          return;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() +
+                              period * (static_cast<long>(ticks_proving) * kDeadlineMultiple);
+        bool rt_observed = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(poll_interval);
+          if (RtTickCount() - ticks_before >= ticks_proving) {
+            rt_observed = true;
+            break;
+          }
+        }
+
+        // Checked before the tick verdict: a re-latch is conclusive on its own,
+        // however few ticks we counted.
+        if (IsGlobalEstopped()) {
+          resp->ok = false;
+          resp->message =
+              "cleared, then re-latched within the observation window — the cause is "
+              "still present: '" +
+              GlobalEstopReason() + "'" + fault_note();
+          return;
+        }
+
+        // NOT the same case as reset_fault's: there the latch was untouched, so
+        // "nothing consumed it" was the whole answer. Here the latch IS down
+        // and only the verification is missing, which the message has to say
+        // outright — an operator who reads this as "nothing happened" would
+        // re-issue it and then be surprised by an unlatched arm.
+        if (!rt_observed) {
+          resp->ok = false;
+          resp->message =
+              "the latch is DOWN (was: '" + latched_reason +
+              "') but unverified — the RT loop completed no tick within the deadline, so no "
+              "detector re-evaluated the cause (loop stalled, overrunning, or not running)" +
+              fault_note();
+          return;
+        }
+
+        resp->ok = true;
+        resp->message = "global E-STOP cleared (was: '" + latched_reason + "')" + fault_note();
+      },
+      srv_qos, cb_group_nrt_callback_);
+
   RCLCPP_INFO(get_logger(),
               "Services ready: /rtc_cm/list_controllers, "
-              "/rtc_cm/switch_controller, /rtc_cm/reset_fault");
+              "/rtc_cm/switch_controller, /rtc_cm/reset_fault, /rtc_cm/clear_estop");
 }

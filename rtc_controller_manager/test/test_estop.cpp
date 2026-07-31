@@ -223,6 +223,94 @@ TEST_F(EstopOrderTest, TriggerRaisesTheLatchBeforePropagating) {
   EXPECT_TRUE(obs_b_->LatchDuringTrigger());
 }
 
+// ── Swallowed-trigger refusal (issue #288) ───────────────────────────────────
+//
+// An external entry point onto ClearGlobalEstop makes it concurrent with the RT
+// thread, which is where every trigger comes from. Two of those call sites are
+// unguarded (ControlLoopThread::OnOverrun, OnLoopAborted), so one can land while
+// a clear holds the latch up (#299 ordering): its CAS fails, it returns without
+// propagating or recording a reason, and the clear then lowers the latch — the
+// safety event leaves no trace at all. Counting requests at TriggerGlobalEstop's
+// entry rather than at its CAS is what makes that visible.
+
+// Calls TriggerGlobalEstop from INSIDE its own ClearEstop(), which is exactly
+// where an unguarded RT-side trigger would land. One-shot, so the re-assert
+// loop that follows the refusal cannot re-enter it.
+class TriggeringOnClearController : public MockController {
+ public:
+  TriggeringOnClearController(std::string name, RtControllerNode& node)
+      : MockController(std::move(name)), node_(node) {}
+
+  void ClearEstop() noexcept override {
+    MockController::ClearEstop();
+    if (!fired_) {
+      fired_ = true;
+      ControllerLifecycleTestAccess::CallTriggerEstop(node_, "consecutive_overrun");
+    }
+  }
+
+ private:
+  RtControllerNode& node_;
+  bool fired_{false};
+};
+
+TEST_F(EstopTest, TriggerCountsTheRequestsItsCasTurnsAway) {
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node_, "first");
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node_, "second");
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node_, "third");
+
+  // Propagation still happens once (the CAS guard), but all three ASKED — and
+  // the two the CAS turned away are the ones a concurrent clear must notice.
+  EXPECT_EQ(1, ctrl_a_->TriggerEstopCount());
+  EXPECT_EQ(3U, ControllerLifecycleTestAccess::GetEstopTriggerRequestCount(*node_));
+}
+
+TEST_F(EstopTest, ClearReportsNotLatchedRatherThanSilentlyDoingNothing) {
+  EXPECT_EQ(ControllerLifecycleTestAccess::EstopClearOutcome::kNotLatched,
+            ControllerLifecycleTestAccess::CallClearEstop(*node_));
+}
+
+TEST_F(EstopTest, ClearReportsClearedOnTheNormalPath) {
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node_, "unit_test");
+  EXPECT_EQ(ControllerLifecycleTestAccess::EstopClearOutcome::kCleared,
+            ControllerLifecycleTestAccess::CallClearEstop(*node_));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node_));
+}
+
+TEST_F(EstopTest, ClearRefusesAndReassertsWhenATriggerLandsMidPropagation) {
+  auto node = std::make_shared<RtControllerNode>("test_estop_retrigger_node");
+  std::vector<std::unique_ptr<RTControllerInterface>> ctrls;
+  auto a = std::make_unique<TriggeringOnClearController>("ctrl_a", *node);
+  auto b = std::make_unique<MockController>("ctrl_b");
+  auto* obs_a = a.get();
+  auto* obs_b = b.get();
+  ctrls.push_back(std::move(a));
+  ctrls.push_back(std::move(b));
+  ControllerLifecycleTestAccess::InjectControllers(*node, std::move(ctrls), {"type_a", "type_b"});
+  ControllerLifecycleTestAccess::EnsureEstopPublisher(*node);
+
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node, "device_timeout");
+  ControllerLifecycleTestAccess::ClearEstopLogPending(*node);
+
+  EXPECT_EQ(ControllerLifecycleTestAccess::EstopClearOutcome::kRetriggered,
+            ControllerLifecycleTestAccess::CallClearEstop(*node));
+
+  // The latch stays UP, so the RT loop keeps substituting hold_output_.
+  EXPECT_TRUE(ControllerLifecycleTestAccess::IsEstopped(*node));
+  // Propagation ran once and was then undone, so the controllers agree with the
+  // latch again rather than resting in "latch up, controllers cleared" — safe
+  // as a transient inside the loop, not as a state nothing will leave.
+  EXPECT_EQ(1, obs_a->ClearEstopCount());
+  EXPECT_EQ(1, obs_b->ClearEstopCount());
+  EXPECT_EQ(2, obs_a->TriggerEstopCount());  // the original + the re-assert
+  EXPECT_EQ(2, obs_b->TriggerEstopCount());
+  EXPECT_TRUE(obs_a->HandEstop());
+  EXPECT_TRUE(obs_b->HandEstop());
+  // No deferred log — announcing a clear that was abandoned is worse than
+  // saying nothing.
+  EXPECT_FALSE(ControllerLifecycleTestAccess::GetEstopLogPending(*node));
+}
+
 // ── Device liveness: startup gate + watchdog (issue #198 §1/§2) ──────────────
 //
 // Liveness now comes from the backend's own LastStateStamp(), so these tests

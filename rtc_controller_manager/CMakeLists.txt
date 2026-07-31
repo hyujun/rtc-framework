@@ -230,6 +230,17 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib)
   endif()
 
+  ament_add_gtest(test_clear_estop_service
+    test/test_clear_estop_service.cpp)
+  if(TARGET test_clear_estop_service)
+    target_include_directories(test_clear_estop_service PRIVATE include test)
+    ament_target_dependencies(test_clear_estop_service
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
+      rtc_controller_interface rtc_base rtc_msgs)
+    target_link_libraries(test_clear_estop_service
+      rtc_controller_manager_lib)
+  endif()
+
   ament_add_gtest(test_eventfd_teardown_order
     test/test_eventfd_teardown_order.cpp)
   if(TARGET test_eventfd_teardown_order)
