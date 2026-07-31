@@ -32,14 +32,12 @@
 //   distinguishable answers rather than one ambiguous timeout.
 //
 // clear_estop — clear the GLOBAL E-STOP latch (issue #288). The counterpart of
-//   reset_fault for the other latch, and separate from it in both directions
-//   (E-8). Same three-part shape — operator confirmation (echo the latched
-//   reason, since there is no controller name to give), then act, then confirm
-//   against the RT loop — with two differences that follow from what it is
-//   clearing. The observation window spans a full device-watchdog period
-//   rather than two ticks, because that is the slowest cause detector and a
-//   two-tick answer would call a dead device recovered. And an unverified
-//   reply here means the latch is already DOWN, not untouched, so it says so.
+//   reset_fault for the other latch. Same three-part shape: confirm, act,
+//   verify against the RT loop. The wire contract — what reason_ack is for,
+//   what ok means, and how the four refusals differ — is ClearEstop.srv;
+//   the window arithmetic and the re-trigger counter are in
+//   rtc_controller_manager/README.md §"글로벌 E-STOP 해제". Neither is restated
+//   here (conventions.md §Documentation Requirements).
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <algorithm>

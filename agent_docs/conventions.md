@@ -96,6 +96,12 @@ RT path logging 금지 규칙과 SPSC 우회 패턴은 [invariants.md](invariant
 - **Math formulas**: LaTeX in Doxygen (`@f$..@f$`), paper reference (author, year, eq number), units + frame per parameter
 - **FSM**: Document valid transitions, entry/exit conditions, timeout behaviors
 - **Thread safety**: 공유 data member는 sync 메커니즘 명시 (SeqLock, SPSC, atomic, mutex)
+- **서비스·메시지 계약의 소유자** (AP-DOC-1 적용): 한 서비스는 최대 **네 곳**에서 설명될 수 있다 — `.srv`/`.msg` 파일 · 구현 `.cpp` 파일 헤더 주석 · `rtc_msgs/README.md` · 소비 패키지 README. 같은 문장을 네 번 쓰지 말고 **축을 나눈다**:
+  - **`.srv` / `.msg` 주석 = wire 계약 SSoT** — 필드 의미, 응답 필드의 판정 기준, 거부 조건 분류, 권한(무엇을 확인해야 호출이 성립하는가). *호출자가 알아야 하는 전부*가 여기 있고, 다른 곳은 이걸 재서술하지 않는다
+  - **소비 패키지 README = 그 패키지 쪽 메커니즘** — 왜 그 수치인지의 산술, 내부 카운터·경합 차단 같은 구현 근거. 계약은 `.srv` 를 링크
+  - **`rtc_msgs/README.md` = 색인** — request/response 필드 표 + "상세 계약은 `srv/X.srv` 가 SSoT" 한 줄. 근거 산문 금지
+  - **`.cpp` 파일 헤더 = 구현 선택** — 왜 이렇게 구현했는지. 계약 재서술 금지, `.srv` 로 위임
+  실제 위반: `/rtc_cm/clear_estop` 의 관측 창 산술이 네 곳에 동시에 존재했다 (#288 직후 정리)
 
 ## Commit Message Conventions
 
