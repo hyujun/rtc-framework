@@ -853,8 +853,8 @@ done
 
 **원인 3**: DDS 스레드가 RT 코어 사용
 ```bash
-# CycloneDDS 0.11+ (Jazzy): <Internal><Threads> XML은 더 이상 지원되지 않음.
-# 대신 taskset으로 DDS 스레드를 비-RT 코어에 고정 (robot_ur5e_p1a.launch.py에서 자동 처리).
+# CycloneDDS 에는 CPU affinity 설정 자체가 없다 (0.10.5 의 <Threads> 는 StackSize/scheduling 전용).
+# 그래서 taskset 으로 DDS 스레드를 고정한다 (robot_ur5e_p1a.launch.py 에서 자동 처리, #164).
 # 수동 확인:
 PID=$(pgrep -nf "integrated_rt_controller")
 for TID in $(ls /proc/$PID/task/); do
@@ -933,8 +933,9 @@ export CYCLONEDDS_URI=file://$(ros2 pkg prefix rtc_controller_manager)/share/rtc
 | `SynchronousDeliveryLatencyBound` | `inf` | subscriber 콜백 wake-up 지연 제거 |
 | `MaxQueuedRexmitMessages` | `256` | 버스트 퍼블리시 시 패킷 병합 |
 
-> **NOTE**: CycloneDDS 0.11+ (Jazzy)에서 `<Internal><Threads>` 제거됨.
-> DDS 스레드 affinity는 `taskset`으로 처리 (`robot_ur5e_p1a.launch.py` 참조).
+> **NOTE**: CycloneDDS 에는 CPU affinity 설정이 없다 — `<Threads><Thread>` 는 0.10.5 에 존재하지만
+> `StackSize` 와 scheduling 만 담는다. 따라서 affinity 는 `taskset` 소관이다
+> (`robot_ur5e_p1a.launch.py` 참조). "0.11+ 에서 제거됨" 이라는 이전 서술은 틀렸다 (#164).
 
 #### Fast DDS
 ```xml

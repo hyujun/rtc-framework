@@ -63,6 +63,17 @@ declare -A EXTERNAL_DRIVER_ALLTHREADS  # name → 1 if taskset -a (all threads) 
 declare -A EXTERNAL_DRIVER_COMMS       # name → space-separated comm candidates
 declare -A EXTERNAL_DRIVER_PIDS        # name → discovered PID (empty if absent)
 
+# ── CycloneDDS thread names (issue #164) ──────────────────────────────────────
+# The threads the launch DDS sweep co-pins onto the rt_callback core. Duplicated
+# from rtc_tools/rtc_tools/launch/pinning.py::CYCLONEDDS_THREAD_NAMES (the SSoT)
+# because bash cannot import it — kept honest by a drift test, the same
+# arrangement RTC_OWNED_THREAD_NAMES has with thread_config.hpp.
+#
+# Measured against CycloneDDS 0.10.5, not read from the library: `strings
+# libddsc.so` reports the prefix `dq.builtin`, while the thread's real comm is
+# `dq.builtins`. `recvMC` exists only with multicast enabled.
+CYCLONEDDS_THREAD_NAMES="dq.builtins dq.user gc recv recvMC recvUC tev"
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 show_help() {
   echo ""
@@ -712,6 +723,71 @@ check_cpu_affinity() {
       _category_update "cpu_affinity" "FAIL"
     fi
   done
+
+  # ── CycloneDDS 스레드 co-pin (issue #164) ────────────────────────────────────
+  # Layout v4.1 은 DDS dispatch 와 rt_callback 이 L1/L2 를 공유하도록 launch 의
+  # pin_dds_threads_to_slot 이 DDS 스레드를 rt_callback 코어로 옮긴다. 그런데
+  # 지금까지 그 결과를 검사하는 곳이 없었다 — launch 는 옮긴 개수만 찍고,
+  # 위 EXPECTED_THREADS 표는 RTC 가 이름을 붙인 스레드만 담는다. 즉 sweep 이
+  # 아무것도 못 옮겨도 (타이머가 DDS domain init 보다 빨랐거나 CycloneDDS 가
+  # 이름을 바꿨거나) 이 스크립트는 조용히 green 이었다.
+  #
+  # 이름은 CycloneDDS 0.10.5 실측 (rtc_tools/.../pinning.py CYCLONEDDS_THREAD_NAMES
+  # 가 SSoT). recvMC 는 멀티캐스트 활성일 때만 존재하므로 부재는 정상이고,
+  # "하나도 없음" 만 문제다 — DDS 를 쓰는 프로세스에 DDS 스레드가 없을 수는 없다.
+  local dds_slot="" dds_entry
+  for dds_entry in "${EXPECTED_THREADS[@]}"; do
+    if [[ "$(echo "$dds_entry" | cut -d: -f1)" == "rt_callback" ]]; then
+      dds_slot=$(echo "$dds_entry" | cut -d: -f2)
+      break
+    fi
+  done
+
+  if [[ -n "$dds_slot" ]]; then
+    local dds_logical dds_mask_dec dds_pin_label
+    dds_logical=$(slot_to_logical_cpu "$dds_slot")
+    dds_mask_dec=$((1 << dds_logical))
+    if [[ "$dds_slot" == "$dds_logical" ]]; then
+      dds_pin_label="Core ${dds_logical}"
+    else
+      dds_pin_label="slot ${dds_slot} → logical cpu ${dds_logical}"
+    fi
+
+    local dds_seen=0 dds_on=0 dds_off=""
+    local dtdir dtid dcomm dmask dmask_dec
+    for dtdir in "/proc/${CONTROLLER_PID}/task"/*/; do
+      dtid=$(basename "$dtdir")
+      [[ "$dtid" =~ ^[0-9]+$ ]] || continue
+      dcomm=$(cat "${dtdir}comm" 2>/dev/null || echo "")
+      case " ${CYCLONEDDS_THREAD_NAMES} " in
+        *" ${dcomm} "*) ;;
+        *) continue ;;
+      esac
+      ((dds_seen++)) || true
+      dmask=$(get_thread_cpu_affinity "$dtid" 2>/dev/null || echo "")
+      [[ -z "$dmask" ]] && continue
+      dmask_dec=$((16#${dmask}))
+      if [[ "$dmask_dec" -eq "$dds_mask_dec" ]]; then
+        ((dds_on++)) || true
+      else
+        dds_off="${dds_off} ${dcomm}:{$(mask_to_cpus "$dmask")}"
+      fi
+    done
+
+    ((total++)) || true
+    if [[ "$dds_seen" -eq 0 ]]; then
+      # DDS 를 쓰는 프로세스에 DDS 스레드가 하나도 없다 = 이름 집합이 실제와
+      # 어긋났다는 뜻. sweep 도 같은 집합을 쓰므로 둘 다 침묵했을 것이다.
+      _fail "CycloneDDS 스레드 0개 발견 (PID ${CONTROLLER_PID}) — 이름 집합이 실제와 불일치? 기대: ${CYCLONEDDS_THREAD_NAMES}"
+      _category_update "cpu_affinity" "FAIL"
+    elif [[ "$dds_on" -eq "$dds_seen" ]]; then
+      _pass "CycloneDDS 스레드 ${dds_on}/${dds_seen} co-pinned on ${dds_pin_label} (rt_callback)"
+      ((ok++)) || true
+    else
+      _fail "CycloneDDS 스레드 ${dds_on}/${dds_seen} 만 ${dds_pin_label} — off:${dds_off}"
+      _category_update "cpu_affinity" "FAIL"
+    fi
+  fi
 
   # ── External driver 프로세스 (arm_driver / hand_driver) ──────────────────────
   # 이들은 컨트롤러 밖 별도 PID이며 launch taskset 으로 프로세스-레벨 pin 된다.

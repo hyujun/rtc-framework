@@ -14,8 +14,13 @@
 #   D) integrated_rt_controller DDS threads co-pinned to the rt_callback core
 #      (tier-aware via rtc_tools.launch.thread_layout.get_rt_callback_core)
 #      so DDS dispatch and the FIFO 70 rt_callback executor share L1/L2 cache.
-#   E) CycloneDDS threads also fall under the launch taskset above (no
-#      separate CYCLONEDDS_URI thread affinity since CycloneDDS 0.11+)
+#   E) CycloneDDS threads also fall under the launch taskset above, because
+#      CycloneDDS has no CPU-affinity setting to hand it to: <Threads><Thread>
+#      exists in 0.10.5 (the version in use) but carries StackSize and
+#      scheduling only. An earlier note here blamed "removed in 0.11+", which
+#      was wrong on all three counts and invited a downgrade (issue #164).
+#      The sweep is one-shot because CycloneDDS creates its threads at domain
+#      init and adds none for later discovery or node creation (measured).
 #
 # The numbers thread_layout returns are *slot indices*, not logical CPU ids;
 # rtc_tools.launch.pinning resolves them through rt_common.sh::slot_to_logical_cpu

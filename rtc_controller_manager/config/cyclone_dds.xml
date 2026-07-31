@@ -8,8 +8,19 @@
     2. Discovery tuning — reduced lease/heartbeat for faster failover
     3. Nack delay minimized — faster reliable data delivery
 
-  Thread affinity: handled by taskset in robot_ur5e_p1a.launch.py (CycloneDDS 0.11+
-  removed <Internal><Threads> XML support).
+  Thread affinity: handled by taskset in the robot launch files, because
+  CycloneDDS has no CPU-affinity setting to hand it to. Its <Threads><Thread>
+  element does exist (0.10.5, the version in use) but carries StackSize and
+  scheduling class/priority only — `strings libddsc.so.0.10.5 | grep -i affinity`
+  returns nothing. An earlier note here said "CycloneDDS 0.11+ removed
+  <Internal><Threads> XML support"; that was wrong on all three counts (the
+  installed version is 0.10.5, Threads is present, and affinity was never in it),
+  and it invited the false repair of downgrading. Issue #164.
+
+  Also measured there: CycloneDDS creates its threads (recv/recvUC/recvMC/tev/
+  gc/dq.*) at domain init and adds none for later discovery, matching, or
+  in-process node creation — which is why the launch sweep is a one-shot and not
+  a periodic re-pin.
 
   Loaded automatically via CYCLONEDDS_URI env var set in launch files.
   Reference: https://cyclonedds.io/docs/cyclonedds/latest/config/index.html
