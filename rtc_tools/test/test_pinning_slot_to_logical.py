@@ -223,11 +223,93 @@ def test_dds_pin_snippet_excludes_every_rtc_thread(_stub_script_paths):
         "integrated_rt_controller", "integrated_rt_controller", 2
     )
     snippet = action.cmd[2][0].text
-    # The exclusion is applied via a case-match against $COMM.
-    assert 'case "$RTC_OWNED" in *" $COMM "*) continue' in snippet
+    # The exclusion is applied via a case-match against $COMM that skips the
+    # thread. Asserted as two facts rather than one literal: issue #164 added a
+    # bookkeeping statement between the match and the `continue`, so pinning the
+    # contiguous text would fail on a change that leaves the contract intact.
+    # The contract is "matched ⇒ skipped", and that is what is checked.
+    match_at = snippet.find('case "$RTC_OWNED" in *" $COMM "*)')
+    assert match_at != -1, "RTC_OWNED case-match missing"
+    branch = snippet[match_at : snippet.find(";; esac", match_at)]
+    assert "continue" in branch, f"RTC_OWNED match no longer skips the thread: {branch}"
+    assert "taskset" not in branch, f"RTC_OWNED match falls through to a pin: {branch}"
     # Every RTC-owned name — especially the SCHED_OTHER nrt_* pair — is listed.
     for name in pinning.RTC_OWNED_THREAD_NAMES:
         assert f" {name} " in snippet, f"{name} missing from RTC_OWNED list"
+
+
+# ── CycloneDDS co-pin verification (issue #164) ──────────────────────────────
+
+
+def _verify_script_dds_names() -> set[str]:
+    """The CycloneDDS name list as verify_rt_runtime.sh spells it."""
+    text = (_REPO_ROOT / "repo_scripts" / "scripts" / "verify_rt_runtime.sh").read_text()
+    match = re.search(r'^CYCLONEDDS_THREAD_NAMES="([^"]+)"', text, re.MULTILINE)
+    assert match, "CYCLONEDDS_THREAD_NAMES not found in verify_rt_runtime.sh"
+    return set(match.group(1).split())
+
+
+def test_cyclonedds_names_mirror_verify_rt_runtime_sh():
+    """The Python SSoT and the bash copy of the DDS thread names stay equal.
+
+    verify_rt_runtime.sh cannot import Python, so it duplicates the set. If the
+    two drift, the launch sweep and the verifier disagree about what a DDS
+    thread is — and the verifier would keep passing while the sweep silently
+    stopped covering something (or the reverse). Same arrangement as
+    RTC_OWNED_THREAD_NAMES vs thread_config.hpp above.
+    """
+    assert _verify_script_dds_names() == pinning.CYCLONEDDS_THREAD_NAMES
+
+
+def test_dds_pin_snippet_reports_which_cyclonedds_threads_it_moved(_stub_script_paths):
+    """The sweep names the DDS threads it co-pinned, not just how many.
+
+    A bare count cannot distinguish "6 DDS threads moved" from "6 unrelated aux
+    threads moved and every DDS thread was missed", which is precisely the state
+    a timer firing before domain init would produce.
+    """
+    action = pinning.pin_dds_threads_to_slot(
+        "integrated_rt_controller", "integrated_rt_controller", 2
+    )
+    snippet = action.cmd[2][0].text
+    for name in pinning.CYCLONEDDS_THREAD_NAMES:
+        assert f" {name} " in snippet, f"{name} missing from DDS_NAMES list"
+    assert "CycloneDDS threads co-pinned:" in snippet
+    assert 'DDS_PINNED="$DDS_PINNED $COMM"' in snippet
+
+
+def test_dds_pin_snippet_warns_when_it_covered_no_dds_thread(_stub_script_paths):
+    """Covering zero DDS threads is reported, not passed over in silence.
+
+    This is the one outcome that means the sweep did nothing useful, and it is
+    invisible in the pinned-count line because aux threads still get moved.
+    """
+    action = pinning.pin_dds_threads_to_slot(
+        "integrated_rt_controller", "integrated_rt_controller", 2
+    )
+    snippet = action.cmd[2][0].text
+    assert 'if [ -z "$DDS_PINNED" ]; then' in snippet
+    assert "no CycloneDDS thread was co-pinned" in snippet
+    # A DDS thread seen but left behind is a distinct, separately reported case.
+    assert 'if [ -n "$DDS_MISSED" ]; then' in snippet
+    assert "present but NOT co-pinned" in snippet
+
+
+def test_dds_pin_sweep_stays_one_shot(_stub_script_paths):
+    """The sweep must not become a periodic re-pin.
+
+    #164 originally proposed repeating it. Measurement showed CycloneDDS creates
+    its threads at domain init and adds none afterwards, so a repeat pass has
+    nothing to catch — while re-running an *exclusion* filter forever would drag
+    every later non-RTC thread onto the rt_callback core, which is the #163
+    regression. Lock the shape so that reasoning cannot be quietly undone.
+    """
+    action = pinning.pin_dds_threads_to_slot(
+        "integrated_rt_controller", "integrated_rt_controller", 2
+    )
+    snippet = action.cmd[2][0].text
+    assert "while" not in snippet, "sweep grew a loop — see #164 before making it periodic"
+    assert "sleep" not in snippet, "sweep grew a sleep — see #164 before making it periodic"
 
 
 # ── Process-pin thread scope: all_threads flag (issue #245) ──────────────────

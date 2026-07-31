@@ -606,7 +606,10 @@ CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로
 | NACK/Heartbeat | `NackDelay=10ms`, `HeartbeatInterval=100ms` | 빠른 재전송 |
 | 동기 전달 | `SynchronousDeliveryLatencyBound=inf` | 콜백 wake-up 지연 제거 |
 
-> DDS 스레드 affinity는 `taskset`으로 처리 (CycloneDDS 0.11+에서 XML `<Threads>` 제거됨).
+> DDS 스레드 affinity는 `taskset`으로 처리한다 — CycloneDDS 에 **CPU affinity 설정이 없기 때문**이다.
+> `<Threads><Thread>` 엘리먼트는 0.10.5(사용 중 버전)에 존재하나 `StackSize` 와 scheduling 만 담는다
+> (`strings libddsc.so.0.10.5 | grep -i affinity` → 0건). 이전 판은 "0.11+ 에서 제거됨" 이라고 적었는데
+> 세 겹으로 틀렸고(버전·존재 여부·affinity 유무) 다운그레이드라는 잘못된 수리를 유도했다 (#164).
 
 ---
 

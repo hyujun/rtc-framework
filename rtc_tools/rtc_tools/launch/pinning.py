@@ -72,6 +72,40 @@ RTC_OWNED_THREAD_NAMES = frozenset(
     }
 )
 
+# CycloneDDS' own threads, as they appear in ``/proc/*/comm``.
+#
+# This is a *verification* set, not a selection set: the sweep still decides
+# what to move by exclusion (RTC_OWNED_THREAD_NAMES + SCHED_FIFO), which is what
+# issue #163 tuned. This set answers the different question of whether the sweep
+# actually covered the DDS threads it exists for — previously the sweep reported
+# only a count, and nothing anywhere checked which threads that count contained.
+#
+# Measured, not read out of the library (issue #164). ``strings libddsc.so``
+# shows the prefix ``dq.builtin``; the thread's real ``comm`` is ``dq.builtins``,
+# so a set built from the binary would silently never match. The measurement
+# also established that CycloneDDS creates these at domain init and adds none
+# afterwards: three rounds of participant discovery/matching/departure plus
+# eight nodes created late in the same process produced zero new TIDs. That is
+# why the one-shot sweep is sound in kind and this file does not re-pin
+# periodically — see the issue for the probe and its limits (rclpy process,
+# loopback, CycloneDDS 0.10.5; FastDDS not measured).
+#
+# ``recvMC`` appears only when multicast is enabled (the robot configs set
+# ``AllowMulticast=spdp``), so absence is not an error — the sweep reports which
+# of these are present and unpinned, never that a name is missing outright.
+# All names are < 15 chars, so ``/proc/*/comm`` truncation does not apply.
+CYCLONEDDS_THREAD_NAMES = frozenset(
+    {
+        "recv",
+        "recvMC",
+        "recvUC",
+        "tev",
+        "gc",
+        "dq.builtins",
+        "dq.user",
+    }
+)
+
 
 def rt_common_path() -> str:
     """Absolute path to the installed ``rt_common.sh``.
@@ -306,6 +340,19 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
     rt_callback core (issue #163). The FIFO check stays as a belt-and-suspenders
     guard for any RT thread whose name was not set. The main thread (TID == PID)
     is covered by the same loop, so it too is protected by the name filter.
+
+    The sweep is one-shot on purpose. CycloneDDS creates its threads at domain
+    init and adds none for later discovery, matching, or in-process node
+    creation (measured — see ``CYCLONEDDS_THREAD_NAMES``), so a repeat pass has
+    nothing to catch, while repeating an *exclusion* filter would drag every
+    later non-RTC thread onto this core — the #163 regression again.
+
+    What was missing is not repetition but evidence: this used to report a bare
+    count, and nothing checked what that count contained. It now also names the
+    CycloneDDS threads it moved and warns about any that were present and left
+    behind — which is what a timer firing before domain init, or a CycloneDDS
+    rename, would actually look like. The durable verdict lives in
+    ``verify_rt_runtime.sh`` (issue #164).
     """
     _reject_quotes(label=label, process_grep=process_grep)
 
@@ -313,6 +360,7 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
         return _skip_action(f"[RT] {label}: cpu_core={slot}, no DDS thread pinning")
 
     owned = " ".join(sorted(RTC_OWNED_THREAD_NAMES))
+    dds = " ".join(sorted(CYCLONEDDS_THREAD_NAMES))
     return ExecuteProcess(
         cmd=[
             "bash",
@@ -323,16 +371,44 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
             f'  echo "[RT] WARNING: {label} not found — DDS thread pinning skipped"; exit 0; '
             "fi; "
             f'RTC_OWNED=" {owned} "; '
-            "PINNED=0; "
+            f'DDS_NAMES=" {dds} "; '
+            'PINNED=0; DDS_PINNED=""; DDS_MISSED=""; '
             "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
             '  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null || echo ""); '
-            '  case "$RTC_OWNED" in *" $COMM "*) continue ;; esac; '
+            '  IS_DDS=""; '
+            '  case "$DDS_NAMES" in *" $COMM "*) IS_DDS=1 ;; esac; '
+            # A DDS thread landing in either skip branch is the interesting
+            # case: it means the name filter or the FIFO guard is shadowing a
+            # thread this sweep exists to move, so record it rather than
+            # silently dropping it out of the count.
+            '  case "$RTC_OWNED" in *" $COMM "*) '
+            '    [ -n "$IS_DDS" ] && DDS_MISSED="$DDS_MISSED $COMM(rtc-owned)"; continue ;; esac; '
             '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
-            '  if [ -n "$POLICY" ]; then continue; fi; '
-            '  taskset -cp "$CPU" "$TID" >/dev/null 2>&1 && PINNED=$((PINNED+1)); '
+            '  if [ -n "$POLICY" ]; then '
+            '    [ -n "$IS_DDS" ] && DDS_MISSED="$DDS_MISSED $COMM(fifo)"; continue; '
+            "  fi; "
+            '  if taskset -cp "$CPU" "$TID" >/dev/null 2>&1; then '
+            "    PINNED=$((PINNED+1)); "
+            '    [ -n "$IS_DDS" ] && DDS_PINNED="$DDS_PINNED $COMM"; '
+            "  else "
+            '    [ -n "$IS_DDS" ] && DDS_MISSED="$DDS_MISSED $COMM(taskset-failed)"; '
+            "  fi; "
             "done; "
             f'echo "[RT] {label} (PID=$PID): $PINNED DDS/aux threads pinned to '
-            f'slot {slot} -> logical CPU $CPU"',
+            f'slot {slot} -> logical CPU $CPU"; '
+            f'echo "[RT] {label}: CycloneDDS threads co-pinned:${{DDS_PINNED:- (none)}}"; '
+            # Absence of a name is not reported: recvMC only exists with
+            # multicast, and the set is a superset by design. Only a DDS thread
+            # that was seen and NOT moved is a defect.
+            'if [ -n "$DDS_MISSED" ]; then '
+            f'  echo "[RT] WARNING: {label}: CycloneDDS threads present but NOT co-pinned:'
+            '$DDS_MISSED — DDS dispatch will not share cache with rt_callback"; '
+            "fi; "
+            'if [ -z "$DDS_PINNED" ]; then '
+            f'  echo "[RT] WARNING: {label}: no CycloneDDS thread was co-pinned. Either the '
+            "sweep ran before DDS domain init, or the thread names changed (expected one of:"
+            f' {dds}). See issue #164."; '
+            "fi",
         ],
         output="screen",
         condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
