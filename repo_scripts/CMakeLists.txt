@@ -44,6 +44,11 @@ if(BUILD_TESTING)
     TIMEOUT 60
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
+  ament_add_test(test_install_deps
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_install_deps.sh
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
 endif()
 
 ament_package()

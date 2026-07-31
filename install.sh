@@ -57,6 +57,9 @@ ALIGATOR_VERSION="0.19.0"
 MJ_VERSION="3.7.0"
 
 # ── ONNX Runtime version (install_onnxruntime 에서 소비) ────────────────────
+# ⚠ 이 값을 올리면 lib/install_deps.sh 의 ONNXRT_SHA256 에 `<새버전>:<arch>`
+#   digest 를 추가해야 한다 (거기 bump 절차 주석 참조). 누락 시 tarball 경로는
+#   검증 없이 통과하는 대신 fail-closed 로 skip 된다.
 ONNXRT_VERSION="1.17.1"
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
