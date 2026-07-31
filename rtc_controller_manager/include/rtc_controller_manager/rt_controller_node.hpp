@@ -177,10 +177,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // CreateDeviceBackends, this helper patches `controller_slot_mappings_`
   // with `slot_to_capability_` so the RT loop has correct gating bits.
   void PropagateCapabilitiesIntoMappings();
-  // Refuses a controller whose command type no backend behind it can honour.
+  // Judges every (controller, backend) pairing: refuses the ones no backend
+  // behind the controller can honour, and warns about the one it accepts but
+  // cannot hold safely (torque — see the sag advisory in the definition).
   // Runs after CreateDeviceBackends (which is when the backends exist) and
   // after controller on_configure (which is when GetCommandType() is final).
-  [[nodiscard]] bool ValidateCommandTypeSupport();
+  [[nodiscard]] bool ValidateCommandTypePairing();
 
   // ── System model configuration (top-level "urdf:" YAML) ──────────────────
   void ParseSystemModelConfig(rtc_urdf_bridge::ModelConfig& config);

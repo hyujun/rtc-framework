@@ -138,7 +138,12 @@ class DeviceBackend {
   /// would have commanded the arm to its zero configuration instead of
   /// releasing it. The backend's source claimed the pairing was "validated at
   /// YAML time"; nothing validated it anywhere. CM now checks this at
-  /// configure and refuses the mismatch (ValidateCommandTypeSupport).
+  /// configure and refuses the mismatch (ValidateCommandTypePairing).
+  ///
+  /// Declaring a mode answers "the wire carries this", not "the wire carries
+  /// this safely". kTorque in particular still gets CM's 0 N·m hold on E-STOP,
+  /// because CM has no dynamic model; the same configure pass warns about that
+  /// separately rather than reading it out of this answer (issue #339).
   ///
   /// Not RT — called once during configure.
   [[nodiscard]] virtual bool AcceptsCommandType(CommandType ct) const noexcept {

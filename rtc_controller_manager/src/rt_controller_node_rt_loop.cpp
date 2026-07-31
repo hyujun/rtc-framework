@@ -89,8 +89,17 @@ bool RtControllerNode::BuildHoldOutput(const urtc::ControllerState& state,
       // model, so it cannot synthesise a gravity-compensating torque and 0 N·m
       // is the only value it can honestly emit. That means a torque-mode arm
       // sags under gravity for up to kOutputRejectEstopSeconds before the
-      // E-STOP escalation lands — configurations with torque-mode devices
-      // should tune that window down.
+      // E-STOP escalation lands.
+      //
+      // That window is NOT tunable — kOutputRejectEstopSeconds is a
+      // compile-time constant with no YAML knob, and above the tick floor a
+      // higher control_rate leaves the wall-clock window unchanged. An earlier
+      // version of this comment told torque configurations to "tune that window
+      // down", which pointed at a knob that does not exist. What exists is the
+      // configure-time advisory in ValidateCommandTypePairing() (issue #339):
+      // the exposure is reported, not silently inherited. Making it tunable
+      // would change when the latch trips and is therefore an E-8 decision, not
+      // a comment fix.
       dout.commands[c] = (cmd_type == urtc::CommandType::kTorque) ? 0.0 : measured;
       // Position-semantics telemetry stays position-valued in every mode so
       // the GUI/log lanes show where the hold is parked, not a 0 that would

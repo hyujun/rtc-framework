@@ -1,0 +1,14 @@
+# Test fixture — loaded ONLY by rtc_controller_manager unit tests via
+# config_variant=test_fixtures. The no-false-positive half of the command-type
+# pairing tests: same wiring as rtc_cm_torque_test, position mode instead.
+#
+# The `topics:` block is load-bearing for the same reason it is there: without
+# it this controller declares no device group, so the pairing walk never
+# reaches it and "no sag warning was emitted for a position controller" would
+# be true of an empty loop rather than of the guard.
+rtc_cm_position_test:
+  command_type: "position"
+  topics:
+    arm:
+      subscribe:
+        - {topic: "target", role: "target"}

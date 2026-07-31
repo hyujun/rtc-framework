@@ -679,17 +679,32 @@ void RtControllerNode::CreateDeviceBackends() {
 
 // ── Controller command type vs backend capability ───────────────────────────
 //
-// WriteCommand's `command_type` argument was advisory: a backend is free to
-// ignore it, and ur_driver_native does, publishing every value it is handed
-// into a forward_position_controller Float64MultiArray. So a torque-mode
+// Two different questions are asked of the same (controller, backend) pairing,
+// and they have independent answers:
+//
+//   transport — can this wire carry the mode at all?  (AcceptsCommandType)
+//   safety    — if it can, is CM's E-STOP substitution still a *stop*?
+//
+// The first is a refusal, the second an advisory. A backend answering "yes" to
+// transport says nothing about safety, so the advisory cannot be folded into
+// the capability declaration.
+//
+// Transport: WriteCommand's `command_type` argument was advisory: a backend is
+// free to ignore it, and ur_driver_native does, publishing every value it is
+// handed into a forward_position_controller Float64MultiArray. So a torque-mode
 // controller bound to it would have put newton-metres on the wire as joint
 // angles — and CM's own hold command, which emits 0.0 for kTorque because it
 // has no dynamic model, would have commanded the arm to its zero
 // configuration rather than releasing it. That backend's source asserted the
 // pairing was "validated at YAML time"; no such validation existed anywhere.
-// Every shipped controller config says command_type: "position", so this is
-// one YAML word away rather than live — which is exactly when to close it.
-bool RtControllerNode::ValidateCommandTypeSupport() {
+// DeviceBackend::AcceptsCommandType therefore defaults to position-only, which
+// makes torque fail-closed for every backend that has not opted in — in-tree
+// that is mujoco_native alone.
+//
+// Both checks share one walk of the pairings on purpose: a second nested loop
+// over the same (controller, slot) set is a drift candidate, and the names the
+// messages need are already in hand here.
+bool RtControllerNode::ValidateCommandTypePairing() {
   bool ok = true;
   for (std::size_t ci = 0; ci < controllers_.size(); ++ci) {
     const auto ct = controllers_[ci]->GetCommandType();
@@ -700,16 +715,52 @@ bool RtControllerNode::ValidateCommandTypeSupport() {
         continue;  // backend bring-up already failed or was refused elsewhere
       }
       const auto& backend = backends_[static_cast<std::size_t>(slot)];
+      const char* group = slot < static_cast<int>(slot_to_group_name_.size())
+                              ? slot_to_group_name_[static_cast<std::size_t>(slot)].c_str()
+                              : "?";
       if (!backend->AcceptsCommandType(ct)) {
         RCLCPP_ERROR(get_logger(),
                      "Controller '%s' emits command_type '%s', which the backend on slot %d "
                      "(group '%s') cannot honour — it would be reinterpreted on the wire. "
                      "Refusing to configure.",
-                     controllers_[ci]->Name().data(), urtc::CommandTypeToString(ct), slot,
-                     slot < static_cast<int>(slot_to_group_name_.size())
-                         ? slot_to_group_name_[static_cast<std::size_t>(slot)].c_str()
-                         : "?");
+                     controllers_[ci]->Name().data(), urtc::CommandTypeToString(ct), slot, group);
         ok = false;
+        continue;  // refused already; the sag advisory below would be noise
+      }
+
+      // Safety advisory (issue #339). The pairing is legal, so this does not
+      // refuse — refusing would also block torque development in sim, which is
+      // the only in-tree configuration that reaches here.
+      //
+      // What the operator is not otherwise told: BuildHoldOutput() servos
+      // kPosition / kPdFeedforward to the measured position, which is a true
+      // stop, but has no equivalent for kTorque. CM carries no dynamic model,
+      // so 0 N·m is the only value it can honestly emit and the arm sags under
+      // gravity until the escalation lands.
+      //
+      // The exposure window is reported as measured rather than described,
+      // because it is rate-derived: DeclareAndLoadParameters() has already run
+      // (on_configure calls it before this), so control_rate_ and
+      // invalid_output_estop_ticks_ are both final here.
+      //
+      // It deliberately does NOT tell the operator to shorten that window.
+      // kOutputRejectEstopSeconds is a compile-time constant with no YAML knob,
+      // and above the tick floor a higher control_rate leaves the wall-clock
+      // window unchanged — advice to "tune it down" would point at nothing.
+      if (ct == urtc::CommandType::kTorque) {
+        const double window_ms =
+            control_rate_ > 0.0
+                ? 1000.0 * static_cast<double>(invalid_output_estop_ticks_) / control_rate_
+                : 0.0;
+        RCLCPP_WARN(get_logger(),
+                    "Controller '%s' emits command_type 'torque' on slot %d (group '%s'), and the "
+                    "backend honours it — but CM's E-STOP substitution for torque is 0 N.m, not a "
+                    "stop: it has no dynamic model to synthesise gravity compensation, so this "
+                    "group sags for up to %.0f ms (%lu ticks at %.0f Hz) before the escalation "
+                    "lands. That window is a compile-time constant and cannot be shortened from "
+                    "config. Ensure this group's actuators are safe to release.",
+                    controllers_[ci]->Name().data(), slot, group, window_ms,
+                    static_cast<unsigned long>(invalid_output_estop_ticks_), control_rate_);
       }
     }
   }

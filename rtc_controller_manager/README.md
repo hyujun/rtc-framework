@@ -265,13 +265,24 @@ CAS 성공 시에만 세는 카운터로는 **원리적으로 못 잡는다** �
 
 `DeviceBackend::AcceptsCommandType(CommandType)` — **기본값은 position-only** 다. 아무 선언도 하지 않은 backend 는 이 트리의 모든 actuator lane 이 하는 그 하나를 한다고 간주한다. 더 넓게 선언하는 것은 opt-in 이며, "`WriteCommand` 가 enum 을 받는다" 가 아니라 **wire format 이 그 구분을 실어 나른다** 는 뜻이다.
 
-CM 은 `on_configure` 에서 (backend 생성 후 + controller `on_configure` 후 — 양쪽이 다 확정된 최초 시점) 등록된 **모든** controller 의 `GetCommandType()` 을 그 controller 가 구동하는 group 의 backend 와 대조하고, 불일치면 configure 를 거부한다 (`ValidateCommandTypeSupport`).
+CM 은 `on_configure` 에서 (backend 생성 후 + controller `on_configure` 후 — 양쪽이 다 확정된 최초 시점) 등록된 **모든** controller 의 `GetCommandType()` 을 그 controller 가 구동하는 group 의 backend 와 대조하고, 불일치면 configure 를 거부한다 (`ValidateCommandTypePairing`).
+
+같은 walk 가 서로 다른 두 질문에 답한다 — 답이 독립이기 때문이다:
+
+| 질문 | 판정 | 결과 |
+|---|---|---|
+| **전송** — 이 wire 가 그 모드를 실을 수 있나 | `AcceptsCommandType` | 거짓이면 **거부** (configure FAILURE) |
+| **안전** — 실을 수 있다면 E-STOP 치환이 여전히 "정지" 인가 | `kTorque` 여부 | 아니면 **경고** (아래 sag advisory) |
+
+backend 가 전송에 "예" 라고 답하는 것이 안전에 대해 아무것도 말해주지 않으므로, 두 번째를 capability 선언 안으로 접을 수 없다.
 
 왜 필요했나: `WriteCommand` 의 `command_type` 인자는 **권고**였다. `ur_driver_native` 는 그것을 무시하고 받은 값을 전부 `forward_position_controller` 의 `Float64MultiArray` 로 발행한다. 따라서 torque 모드 controller 가 거기 묶이면 **N·m 가 관절 각도로 wire 에 나가고**, CM 자신의 hold command 는 (동역학 모델이 없어 kTorque 를 0.0 으로 낸다) 팔을 **놓아주는 대신 zero configuration 으로 이동시킨다.** 그 backend 소스는 이 페어링이 "validated at YAML time" 이라고 적어 두었으나 실제로 검증하는 곳은 어디에도 없었다.
 
-현재 shipped controller config 9개는 전부 `command_type: "position"` 이라 도달 상태는 아니었다 — YAML 한 단어 거리였고, 그래서 지금 닫는다.
+현재 `integrated_bringup/config/**` 의 shipped controller config 9개는 전부 `command_type: "position"` 이라 도달 상태는 아니었다 — YAML 한 단어 거리였고, 그래서 지금 닫는다. (`rtc_controllers/examples/controllers/direct/` 의 `joint_pd_controller.yaml` · `operational_space_controller.yaml` 은 `torque` 지만 둘 다 orphan 이다 — 대응 controller 가 삭제돼 `RTC_REGISTER_CONTROLLER` 가 없다.)
 
-> **한계**: 이 검사는 controller-level `GetCommandType()` 만 본다. `ControllerOutput::devices[i].command_type` 의 per-device override 는 RT tick 마다 결정되므로 configure 시점에 알 수 없다. mixed-mode controller 를 도입할 때 이 구멍을 함께 닫아야 한다.
+기본값이 position-only 라는 점이 실질적 효력이다: **선언하지 않은 backend 는 torque 를 fail-closed 로 거부**하므로, torque 구성은 YAML 한 단어가 아니라 *YAML 한 단어 + opt-in 한 backend* 를 요구한다. in-tree 에서 opt-in 한 것은 `mujoco_native` (sim) 하나뿐이다.
+
+> **한계**: 이 검사는 controller-level `GetCommandType()` 만 본다. `ControllerOutput::devices[i].command_type` 의 per-device override 는 RT tick 마다 결정되므로 configure 시점에 알 수 없다 — RT loop 가 backend 에 실제로 넘기는 것은 `gc.command_type = dout.command_type.value_or(output.command_type)` 로 해소한 값이다. 이 한계는 "mixed-mode controller 를 도입할 때 함께 닫아야 한다" 고 적혀 있었고 **그 조건은 이미 발생했다** — WBC 가 hand 에 `kPdFeedforward` 를 per-device override 로 건다 (`wbc/compute.cpp`). 오늘 무해한 이유는 그 조합이 문서화된 graceful fallback 이기 때문이지 (feedforward 를 모르는 backend 는 position tracking, 위 §per-group command type 해석) 게이트가 잡아서가 아니다. 같은 구멍으로 per-device `kTorque` 가 지나가면 이 절이 닫은 결함이 재개봉된다.
 
 ### Backend safe-output 계약 (#198 Phase 4)
 
@@ -287,7 +298,18 @@ pure virtual 인 이유: 아무것도 안 하는 default 는 이것이 대체하
 
 ### E-STOP 시 actuator command 차단 (#198 Phase 3)
 
-latch 가 서면 controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildHoldOutput()` (측정 위치 hold; torque 모드는 0 N·m) 로 치환된다.
+latch 가 서면 controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildHoldOutput()` 로 치환되는데, **치환의 물리적 의미는 lane 마다 다르다**:
+
+| command type | hold 값 | 물리적 의미 |
+|---|---|---|
+| `kPosition` / `kPdFeedforward` | 측정 위치 | **진짜 정지** — 드라이브가 자세를 잡는다 |
+| `kTorque` | `0 N·m` | 팔이 중력에 **sag** 한다 |
+
+`kTorque` 에 등가물이 없는 이유: CM 은 동역학 모델을 들고 있지 않아 중력 보상 토크를 합성할 수 없고, `0 N·m` 이 정직하게 낼 수 있는 유일한 값이다.
+
+**노출 창과 그 고지 (#339)** — sag 는 escalation 이 걸릴 때까지 이어지며 그 길이는 `invalid_output_estop_ticks_` 다 (rate 유도, 10-tick floor). **이 창은 설정으로 줄일 수 없다** — `kOutputRejectEstopSeconds` 는 compile-time 상수이고, tick floor 위에서는 `control_rate` 를 올려도 벽시계 길이가 그대로다. 그래서 `ValidateCommandTypePairing` 은 torque 페어링이 *허용될 때* configure 에서 WARN 을 낸다: 어느 controller / group / slot 인지, 치환이 `0 N·m` 라는 것, **실측 노출 창** (ms + tick + Hz), 그리고 그 창이 고정이라는 것. 거부된 페어링에는 내지 않는다 (허용되지 않는 조합에 대해 "허용되지만 위험" 으로 읽힌다).
+
+> 창을 tunable 로 만드는 것은 래치가 언제 걸리는지를 바꾸므로 **E-8 결정**이지 이 고지의 연장이 아니다. #223 이 "후퇴는 짓지 않는다" 로 닫았고, 진짜 해답은 drive-disable 을 선언하는 backend 의 `WriteSafeCommand()` 쪽이다 (위 Phase 4 계약).
 
 - **왜 CM 이 하는가**: actuator 안전이 각 controller 의 E-STOP hook 구현 정확성에 의존해서는 안 된다. **과거 실측 (S7c 이전, #236)** — 당시 in-tree 반례가 둘 있었다: `OperationalSpaceController` 의 E-STOP 경로는 자기 주석으로 "position-scale 값을 kTorque command 로 낸다 (Do NOT rely on this as a safe torque E-STOP)" 고 명시했고, `PController` 는 `SetHandEstop` 을 override 하지 않아 base no-op 으로 빠졌다. 두 클래스는 삭제됐고 현재 in-tree 바인딩은 전부 `SetHandEstop` 을 override 한다 — 그러나 그것은 **오늘의 집합에 대한 관찰이지 계약이 아니다.** `RTControllerInterface` 는 레지스트리로 로드되는 out-of-tree 계약이고 `SetHandEstop` 의 base 는 여전히 no-op 이므로, 반례가 in-tree 에 없다는 사실은 이 가드를 없앨 근거가 되지 못한다 (없앴다면 반례는 다음 바인딩과 함께 조용히 돌아온다)
 - **의도적으로 버리는 것**: in-tree `ComputeEstop` 은 전부 hold 가 아니라 설정된 `safe_position_` 으로의 slew 다. 그 후퇴는 controller 단위 정책이고 CM 은 검증할 모델이 없다. 복원은 Phase 4 의 backend safe-output 계약 (position / torque / hand 각각의 semantics) 소관이다
