@@ -446,6 +446,38 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── demo_wbc_controller TSID-path tests (#189) ─────────────────────────────
+  # The only DemoWbcController test that brings up a real TSID + CLIK stack:
+  # it drives the iiwa7_leap URDF fixture through LoadConfig(tsid:) AND
+  # on_configure (where InitClik lives), so the TSID routing subtree of
+  # src/controllers/wbc/compute.cpp actually executes. That means a
+  # LifecycleNode and therefore DDS, so it gets a dedicated ROS_DOMAIN_ID —
+  # colcon test runs packages in parallel and discovery churn on the default
+  # domain breaks other packages' pub/sub matching tests (the isolation idiom
+  # rtc_controller_manager's full-pipeline tests use; domains 44–51 are theirs).
+  # Slower than the model-less wbc tests: 4-contact QP solves at 2 ms over
+  # multi-tick FSM scenarios, so the default 60 s ctest timeout is lifted.
+  ament_add_gtest(test_demo_wbc_tsid_path
+    test/test_demo_wbc_tsid_path.cpp
+    ENV ROS_DOMAIN_ID=52
+    TIMEOUT 300)
+  target_link_libraries(test_demo_wbc_tsid_path
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_wbc_tsid_path
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    rtc_tsid
+    rtc_mpc
+    Eigen3
+  )
+
   # ── demo_wbc_controller shipped-config lint (C-0.2) ────────────────────────
   # Parses the shipped YAML directly (no model / lifecycle); RTC_WBC_CONFIG_DIR
   # points at integrated_bringup/config.
