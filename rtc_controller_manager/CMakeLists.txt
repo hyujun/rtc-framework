@@ -168,6 +168,22 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
 
+  # #287 /rtc_cm/list_controllers diagnostics: the fault latch + the three
+  # mailbox counters, driven through the wire. Separate binary from
+  # test_switch_service because the mock has to USE the base mailbox (and has
+  # to be missing an ApplyPendingTarget override) to move the counters at all.
+  ament_add_gtest(test_list_controllers_diagnostics
+    test/test_list_controllers_diagnostics.cpp)
+  if(TARGET test_list_controllers_diagnostics)
+    target_include_directories(test_list_controllers_diagnostics PRIVATE include)
+    ament_target_dependencies(test_list_controllers_diagnostics
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_list_controllers_diagnostics
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
   # #260 /rtc_cm/reset_fault: the only external exit from a latched
   # controller-local SAFE_STOP. Authority (name required, active-only), outcome
   # reporting, and E-8 separation from the global E-STOP in both directions.

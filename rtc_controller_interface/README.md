@@ -106,7 +106,7 @@ off-RT ingress → RT drain marshal 이 이 패키지 소유다. 같은 스켈�
 
 depth 는 4 (usable 3 — ring 이 한 칸을 full/empty 구분에 쓴다), 포화 정책은 **FIFO + newest-drop** 이라 이미 받아들인 goal 을 나중 것이 밀어내지 않는다. `SeqLock<TargetSlot>` · self-init seed · 궤적 재초기화 플래그 · joint/task 슬롯 독립성은 **derived 소유**로 남는다 — 모든 controller 를 수용하는 canonical slot 은 WBC 의 사적 의미를 base 계약으로 승격시키므로 기각됐다 (#206 §2).
 
-> **계측의 현재 한계** — 위 세 카운터는 **프로세스 밖 소비자가 없다.** 진단 토픽으로 나가는 것이 없으므로 원격 operator 가 얻는 신호는 로그 한 줄이 전부다. 토픽 노출은 후속 작업이며, 그때까지 "관측 가능해졌다" 는 *계측과 로그* 까지를 뜻한다.
+> **프로세스 밖 노출 (#287)** — 위 세 카운터는 `/rtc_cm/list_controllers` 응답 (`rtc_msgs/msg/ControllerState`) 의 `target_drop_count` / `target_reject_count` / `target_unhandled_count` 로 나간다. CM 이 이 base 접근자들을 직접 읽으므로 **controller 는 아무것도 override 하지 않는다** — 새 바인딩도 이 세 칸이 자동으로 정직하게 채워진다. 폴링 서비스이지 진단 토픽이 아니므로 신호는 여전히 pull 이고, 포화 판정은 두 응답 사이에서 값이 움직이는지로 한다 (카운터는 monotonic, 조회가 소비하지 않는다). 필드 의미·스냅샷 한계는 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §진단 필드.
 
 > **사본은 이제 base 것 하나다** (#236 S7c). `rtc_controllers` 가 들고 있던 어댑터 사본은 삭제됐고 — `grep -rn "SpscQueue<PendingTarget" rtc_controllers/include rtc_controllers/src` 가 비어야 한다 — 그중 일부가 선언해 base 의 동명 메서드를 **가리던** private `DiscardPendingTargets()` 도 함께 사라졌다. 그 이름 충돌은 한때 실질적이었다: 선언이 원래 `DrainPendingTargets()` 라 base 의 *apply* 와 이름이 겹쳤고, 그 클래스들 안에서 base 의 `DiscardPendingTargets()` 는 항상 빈 큐를 비우는 no-op 이었다. 지금 파생은 integration 패키지의 바인딩과 테스트 mock 뿐이고 전부 위 표의 base 메서드를 그대로 쓴다. 배치 규칙의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 표다.
 
@@ -174,7 +174,7 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 | `IsEstopped()` | `false` 반환 | 비상 정지 상태 확인 |
 | `SetHandEstop(bool)` | no-op | 핸드 비상 정지 설정 |
 | `ResetFault()` | no-op | **controller-local** fault latch 해제 요청 (#260). 비-RT 에서 호출, wait-free (atomic flag store) — 실제 해제는 다음 `Compute()` tick 이 하고, 원인이 남아 있으면 거기서 거부된다 |
-| `HasLatchedFault()` | `false` 반환 | controller-local fault latch 가 올라가 있는가. 비-RT read, non-blocking |
+| `HasLatchedFault()` | `false` 반환 | controller-local fault latch 가 올라가 있는가. 비-RT read, non-blocking. `/rtc_cm/list_controllers` 의 `has_latched_fault` 로 노출된다 (#287) — 비활성 controller 도 보고되므로 `/rtc_cm/reset_fault` 에 댈 이름을 여기서 찾는다 |
 | `LoadConfig(const YAML::Node&)` | 디바이스 플래그 경고 + 토픽 파싱 | YAML 설정 로드. `noexcept`가 아님 (throw 가능) |
 | `GetCommandType()` | `CommandType::kPosition` | 커맨드 타입 (`kPosition` 또는 `kTorque`) |
 

@@ -404,9 +404,11 @@ class RTControllerInterface {
   // with no trace at all (#206 §4); the drop now both increments this counter
   // and emits one throttled warning naming the controller.
   //
-  // No ROS surface yet — nothing publishes it on a diagnostics topic, so a
-  // remote operator still learns about saturation from the log rather than from
-  // a message. Wiring it into a controller snapshot is follow-up work.
+  // Reported out of the process as ControllerState.target_drop_count in the
+  // /rtc_cm/list_controllers response (#287), read straight off this accessor —
+  // no controller override is involved. It is a POLLED surface, not a
+  // diagnostics topic: a remote operator sees saturation by watching the value
+  // move between two requests, which is what monotonicity is for.
   [[nodiscard]] std::uint64_t GetTargetDropCount() const noexcept {
     return pending_targets_.drop_count();
   }

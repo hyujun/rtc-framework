@@ -2,6 +2,17 @@
 //
 // list_controllers — read-only snapshot of controllers_ + controller_states_.
 //   Aux thread; no blocking on RT path. Response order matches controllers_.
+//   Also carries the four per-controller diagnostics (#287) read straight off
+//   the base accessors: the latch flag plus the three mailbox counters. No
+//   controller override is involved — RTControllerInterface already tracks all
+//   four for every controller, and each accessor is a relaxed atomic load (the
+//   latch is an acquire load of the controller's own flag), so reading them
+//   from this callback adds no synchronisation with the RT thread. The values
+//   are therefore a SNAPSHOT, not a transaction: two counters in one response
+//   may come from different ticks. That is deliberate — anything stronger
+//   would need the RT tick to publish through a SeqLock it does not have, to
+//   answer a question ("has this been growing?") that only needs successive
+//   polls to be ordered, which monotonicity already gives.
 //
 // switch_controller — single-active D-A1 wrapper around
 //   SwitchActiveController(name, message). STRICT validates inputs and
@@ -53,6 +64,11 @@ void RtControllerNode::CreateServices() {
               cs.claimed_groups.push_back(group_name);
             }
           }
+          // Per-controller diagnostics (#287) — see the file header.
+          cs.has_latched_fault = controllers_[i]->HasLatchedFault();
+          cs.target_drop_count = controllers_[i]->GetTargetDropCount();
+          cs.target_reject_count = controllers_[i]->GetTargetRejectCount();
+          cs.target_unhandled_count = controllers_[i]->GetTargetUnhandledCount();
           resp->controllers.push_back(std::move(cs));
         }
       },
