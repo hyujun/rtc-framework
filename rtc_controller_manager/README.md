@@ -251,13 +251,15 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 
 ### 글로벌 E-STOP 해제 (`/rtc_cm/clear_estop` 서비스, #288)
 
-걸린 래치를 밖에서 내리는 유일한 경로. 이전에는 프로덕션 호출자가 `on_deactivate` 하나뿐이라 **프로세스 재시작이 유일한 출구**였다. `/rtc_cm/reset_fault` (#260) 의 글로벌 판 대응물이며 **양방향으로 분리돼 있다 (E-8)** — 어느 쪽도 다른 쪽 래치를 풀지 않고, 응답 `message` 가 나머지 한쪽이 아직 걸려 있는지 알린다.
+걸린 래치를 밖에서 내리는 유일한 경로 (#288). 이전에는 프로덕션 호출자가 `on_deactivate` 하나뿐이라 **프로세스 재시작이 유일한 출구**였다. `/rtc_cm/reset_fault` (#260) 의 글로벌 판 대응물이며 **양방향으로 분리돼 있다 (E-8)**.
 
-- **권한** — 요청 `reason_ack` 이 **현재 걸린 사유와 정확히 일치**해야 한다. `reset_fault` 가 컨트롤러 이름을 요구해 얻는 operator 확인을, 이름이 없는 글로벌 판에서는 사유 echo 로 얻는다. 빈 ack 은 거부이자 **사유를 알려주는 발견 경로**다
-- **`ok` 의 의미** — "요청 전달" 이 아니라 "래치가 실제로 내려갔고 그대로 있다". 해제 후 **원인 detector 가 한 번은 돌 만큼** tick 을 기다렸다가 `IsGlobalEstopped()` 를 재판독한다. 창은 `watchdog_check_divisor_ + 2` tick — `reset_fault` 의 2-tick 로는 **워치독이 아직 안 돌아서** 죽은 디바이스를 "복구됨" 으로 보고한다
-- **거부 4종이 구분된다** — ack 불일치/누락 (아무것도 안 건드림) · **전파 중 재트리거** (아래) · 원인 잔존 (창 안에서 재래치) · tick 미소비 (**래치는 이미 내려갔고 검증만 없음** — `reset_fault` 와 여기가 다르다. `message` 가 명시)
+> **wire 계약** — 요청 `reason_ack` 의 의미, `ok` 의 판정 기준, 거부 4종의 구분은 [`rtc_msgs/srv/ClearEstop.srv`](../rtc_msgs/srv/ClearEstop.srv) 주석이 SSoT. 아래는 **CM 쪽 메커니즘**만 다룬다 ([conventions.md](../agent_docs/conventions.md) §Documentation Requirements).
+
+**관측 창 = `watchdog_check_divisor_ + 2` tick** (deadline 은 그 4배). 해제 후 원인 detector 가 한 번은 돌아야 `IsGlobalEstopped()` 재판독이 의미를 갖는데, 가장 느린 detector 가 디바이스 워치독이고 그것은 `watchdog_check_divisor_` tick 마다만 돈다 (위 워치독 절). `reset_fault` 의 2-tick 을 그대로 쓰면 **워치독이 아직 안 돌아** 죽은 디바이스가 "복구됨" 으로 보고된다. default 500 Hz 기준 (10+2)×4×2 ms ≈ 96 ms.
 
 **전파 중 재트리거 (`kRetriggered`)** — clear 는 래치를 든 채 전파하므로 (#299), 그 사이 도착한 trigger 는 CAS 실패로 early-return 하며 **사유도 전파도 남기지 않는다**. 그대로 래치를 내리면 그 안전 이벤트는 흔적 없이 사라진다. 그래서 `TriggerGlobalEstop` 은 **CAS 앞에서** `estop_trigger_requests_` 를 올리고, `ClearGlobalEstop` 은 전파 전후로 그 값을 대조해 달라졌으면 **해제를 포기하고 래치를 유지**한 뒤 컨트롤러를 다시 estop 상태로 되돌린다 (fail-closed). 되돌리는 이유는 "래치 up + 컨트롤러 cleared" 가 전파 루프 안의 안전한 *과도 상태*일 뿐, **머무는 상태로는 스스로 낫지 않기** 때문이다. 위 트리거 표에서 이 경로에 걸릴 수 있는 것은 **가드가 없는 `consecutive_overrun` / `sim_sync_timeout`** 뿐이다 — `{group}_timeout` 과 output validation 은 호출 전에 `IsGlobalEstopped()` 를 검사한다.
+
+CAS 성공 시에만 세는 카운터로는 **원리적으로 못 잡는다** — 삼켜진 호출은 CAS 를 통과하지 못한다. 이것이 `estop_trigger_requests_` 를 진입 시점에서 올리는 이유다.
 
 ### Backend command-type 선언 (#198)
 

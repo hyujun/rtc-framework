@@ -451,9 +451,7 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 | `ok` | `bool` | latch 가 실제로 사라졌음이 확인됐는지 (원래 latch 가 없던 no-op 도 `true`) |
 | `message` | `string` | 결과 설명. global E-STOP 이 아직 래치돼 있으면 그 사실을 함께 알림 |
 
-- 응답은 동기(sync)이고 **"전달됨"이 아니라 실제 결과**를 보고합니다 -- 요청 후 `1.5 × dt` 대기하고 latch 를 다시 읽어 해제 / no-op / 재래치(원인 잔존)를 구분합니다.
-- 빈 `controller_name`, active 가 아닌 이름, 알 수 없는 이름은 모두 `ok=false` 로 거부되며 latch 는 그대로입니다. wildcard 는 없습니다.
-- global E-STOP 활성 상태에서도 호출은 성립합니다 (RT 루프가 E-STOP 중에도 `Compute()` 를 계속 호출하므로) -- 다만 팔은 global latch 가 따로 풀릴 때까지 유지됩니다.
+> 거부 조건·확인 절차·`ok` 의 정확한 판정 기준은 [`srv/ResetFault.srv`](srv/ResetFault.srv) 주석이 SSoT 입니다 (conventions.md §Documentation Requirements).
 
 ---
 
@@ -474,8 +472,7 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 | `ok` | `bool` | 래치가 실제로 내려갔고 관측 창 동안 그대로였는지 (애초에 안 걸려 있던 no-op 도 `true`) |
 | `message` | `string` | 결과 설명. controller-local fault 가 아직 래치돼 있으면 함께 알림 |
 
-- **관측 창이 `ResetFault` 보다 깁니다** -- `watchdog_check_divisor_ + 2` tick. 가장 느린 원인 detector 가 디바이스 워치독(50 Hz)이라, 2-tick 로 답하면 죽은 디바이스를 "복구됨" 으로 보고하게 됩니다.
-- 거부 4종이 구분됩니다: ack 누락/불일치 (아무것도 안 건드림) · **전파 중 재트리거** (해제를 포기하고 래치 유지) · 원인 잔존 (창 안에서 재래치) · tick 미소비. 마지막은 `ResetFault` 와 달리 **래치가 이미 내려간 상태**이고 검증만 없는 것이라 `message` 가 그 점을 명시합니다.
+> 거부 4종의 구분과 `ok` 의 판정 기준은 [`srv/ClearEstop.srv`](srv/ClearEstop.srv) 주석이 SSoT 이고, 관측 창 산술과 재트리거 차단 메커니즘은 [`rtc_controller_manager/README.md`](../rtc_controller_manager/README.md) §글로벌 E-STOP 해제 가 소유합니다 (conventions.md §Documentation Requirements).
 
 ---
 
