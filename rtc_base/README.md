@@ -339,7 +339,7 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 | **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
 | **mpc_worker_0** (FIFO 55) | — | — | — | Core 4 | Core 4 | Core 4 | Core 4 |
 | **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 5 | Core 5 | Core 5 |
-| **arm_driver** (CFS 0) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
+| **arm_driver** (CFS 0⁴) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
 | **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 6 | Core 7 | Core 7 | Core 7 |
 | **nrt_logging** (CFS -5) | Core 0 | Core 5 | Core 6 | Core 7 | Core 8 | Core 8 | Core 8 |
 | **nrt_callback** (CFS 0) | Core 0 | Core 5 | Core 7 | Core 8 | Core 9 | Core 9 | Core 9 |
@@ -349,6 +349,7 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 > ¹ 4코어는 degraded mode — mpc 가 CFS 로 강등 (RT 자원 부족). Core 0 에 nrt + driver 모두 합쳐짐.
 > ² 6코어는 degraded mode — arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유, mpc_workers 없음.
 > ³ `cpu_core = -1` sentinel: pin 없음. sim_thread / viewer 는 모든 tier 에서 cpu_shield 가 해제한 코어에서 CFS 로 roam (v4.1 통일).
+> ⁴ `arm_driver` 의 CFS 0 은 *프로세스* 모델이다 — `ApplyThreadConfig` 대상이 아니라 launch 가 소비하는 코어 배치 값이고, 프로세스의 main/executor 는 실제로 CFS 다. 그 안의 upstream `controller_manager` 제어 루프는 FIFO 50 이며, 이 표의 코어에 핀되는 것은 프로세스가 아니라 그 루프다 (`taskset` 은 main thread 밖에 못 옮긴다 — issue #343). 핀은 launch 가 생성하는 CM 파라미터 파일이 나른다.
 >
 > **v4.1 의 핵심 변화**: RT cluster 가 Core 1 부터 시작 (Core 0 = OS / DDS / IRQ 전용); nrt_logging / nrt_callback 이 모든 ≥ 6c tier 에서 Core 0 와 분리; arm/hand 알파벳 순; sim/viewer 모든 tier 에서 cpu_core=-1; 16c 의 cset shield "user" (Core 4-8) 제거.
 >

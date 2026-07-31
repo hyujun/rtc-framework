@@ -16,9 +16,12 @@
 #              sim_thread/viewer (cpu_core=-1, no pin), spare
 #
 # Modes:
-#   --robot (default): same shield range as --sim. driver processes pin via
-#                      taskset (rtc_tools.launch.thread_layout) and run on
-#                      SCHED_OTHER — they do not need cset protection.
+#   --robot (default): same shield range as --sim. driver processes sit on their
+#                      own cores outside the shield and run on SCHED_OTHER — they
+#                      do not need cset protection. (The UR driver's internal
+#                      control loop is FIFO 50 and is pinned by controller_manager
+#                      parameters, not taskset — issue #343; it is an accepted
+#                      degraded exception that its core is not cset-isolated.)
 #   --sim:             identical shield. MuJoCo physics + viewer roam over the
 #                      released cores under CFS (cpu_core=-1 on every tier).
 #
@@ -41,7 +44,10 @@ make_logger "SHIELD"
 # Core 1, rt_callback Core 2) plus MPC main + workers (Core 3 + 4 + 5).
 # Process-level driver cores (arm_driver, hand_driver) are *not* shielded —
 # the driver processes themselves run there under SCHED_OTHER, so isolating
-# them from "user" tasks gains nothing and wastes a core. sim_thread /
+# them from "user" tasks gains nothing and wastes a core. The one RT thread on
+# those cores (the UR driver's FIFO 50 control loop, and the hand CommLoop's
+# FIFO 65) therefore gets affinity + priority but no cpuset isolation — an
+# accepted degraded exception, gated on measurement (issue #343). sim_thread /
 # viewer cores are -1 (no pin) on every tier; MuJoCo roams over the released
 # cores under CFS.
 #

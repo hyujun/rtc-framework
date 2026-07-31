@@ -695,9 +695,15 @@ inline int GetPhysicalCpuCount() noexcept {
 //                    non-RT-boundary subs
 //   * nrt_logging  = non-RT CSV drain
 //
-// Process-level pins (taskset at launch time, no ApplyThreadConfig call;
+// Process-level pins (applied at launch time, no ApplyThreadConfig call;
 // SCHED_OTHER prio 0):
-//   * arm_driver / hand_driver = external driver processes.
+//   * arm_driver / hand_driver = external driver processes. hand_driver is a
+//     taskset -a sweep (its RT thread inherits the process mask, issue #245).
+//     arm_driver is NOT: ros2_control_node's main thread is the executor and
+//     its 500 Hz loop is a separate thread that taskset cannot reach, so the
+//     cpu_core here is handed to controller_manager's own cpu_affinity
+//     parameter, which the loop applies to itself (issue #343). The entry still
+//     models the process — the loop's FIFO 50 is upstream's, not ours.
 //   * sim_thread / viewer      = MuJoCo physics + GLFW rendering threads in
 //                                sim mode. cpu_core may be -1 (no pinning;
 //                                launch script releases the cpu_shield for

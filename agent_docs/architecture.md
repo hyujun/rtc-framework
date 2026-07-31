@@ -33,7 +33,7 @@ Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_utils.hpp`
 - **Actuator command publish inline**: `rt_control` thread (Core 1 FIFO 90, v4.1) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). v3 의 별도 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거
 - **MPC main < rt_callback**: sensor callback (rt_callback) 이 long MPC solve 를 항상 preempt
 - **hand-private UDP receive thread** (FIFO 65, hand_driver 프로세스 내부) 는 launch-level taskset 으로 affinity 상속 — `SystemThreadConfigs` 에 필드 없음. 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1) 기본값으로 caller 가 명시 핀
-- **arm_driver / hand_driver / sim_thread / viewer** 는 process-level taskset pin (SCHED_OTHER, priority 0) — launch script 가 적용. sim_thread/viewer 의 cpu_core=-1 sentinel 은 모든 tier 에서 "no pin" (v4.1, cpu_shield --sim 모드에서 격리 해제된 코어 사용)
+- **arm_driver / hand_driver / sim_thread / viewer** 는 process-level pin (SCHED_OTHER, priority 0) — launch script 가 적용. sim_thread/viewer 의 cpu_core=-1 sentinel 은 모든 tier 에서 "no pin" (v4.1, cpu_shield --sim 모드에서 격리 해제된 코어 사용). 단 `arm_driver` 는 taskset 이 아니다 — 그 프로세스(`ros2_control_node`)의 제어 루프는 main thread 가 아닌 별도 스레드라 taskset 이 닿지 않으므로, upstream `controller_manager` 의 `cpu_affinity`/`thread_priority` 파라미터로 그 루프만 FIFO 50 + 코어에 핀한다 (issue #343). 이 값은 `SystemThreadConfigs.arm_driver` 가 아니라 launch 가 생성하는 CM 파라미터 파일이 나른다
 
 세부 thread 종류·core 번호·priority 값은 위 header + `cpu_topology.hpp` 참조. Hybrid-CPU 감지 + BIOS 체크리스트는 [`docs/NUC_HYBRID_SUPPORT.md`](../docs/NUC_HYBRID_SUPPORT.md) (layout 분기는 v4.1 `physical_core_slots` 추상화가 처리 — 별도 hybrid config 없음).
 

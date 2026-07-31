@@ -783,6 +783,74 @@ slot_to_logical_cpu() {
   echo "${_slot_arr[$slot]}"
 }
 
+# hex affinity mask → comma-separated CPU list ("none" when empty). Canonical
+# home; verify_rt_runtime.sh consumed a local copy until rt_classify_external_rt_threads
+# (below) needed the same conversion from a sourceable location.
+mask_to_cpus() {
+  local mask_hex="$1"
+  local mask_dec=$((16#${mask_hex}))
+  local cpus=""
+  local i=0
+  while [[ $((mask_dec >> i)) -gt 0 ]]; do
+    if (( mask_dec & (1 << i) )); then
+      cpus="${cpus:+${cpus},}${i}"
+    fi
+    ((i++))
+  done
+  echo "${cpus:-none}"
+}
+
+# Judge whether an *external driver* process has its RT loop where the config
+# says it should be. Pure (no /proc, no globals) so it can be fixture-tested;
+# verify_rt_runtime.sh collects the records and calls this.
+#
+#   stdin : one "<tid> <policy> <prio> <mask_hex>" record per thread
+#   args  : <expected_prio> <expected_logical_cpu>
+#   stdout: "<VERDICT>|<detail>"  — OK / NO_FIFO / WRONG_PRIO / WRONG_CPU
+#
+# Selection is by scheduling policy, not thread name, and that is forced rather
+# than chosen: controller_manager gives its loop thread no pthread name, so every
+# non-DDS TID in the process shares the comm "ros2_control_no" (measured, 29
+# threads). SCHED_FIFO at the configured priority is the only usable selector.
+#
+# NO_FIFO is a FAIL condition, not a WARN: the loop thread requests SCHED_FIFO at
+# startup and a denied request (missing realtime group / RLIMIT_RTPRIO) leaves it
+# on SCHED_OTHER with one warning buried in the launch log, while its affinity
+# still applies. Checking affinity alone therefore passes a process whose RT loop
+# has silently degraded to a fair-scheduled thread — the sag this verdict exists
+# to surface (issue #343).
+rt_classify_external_rt_threads() {
+  local expected_prio="$1" expected_cpu="$2"
+  local expected_mask=$((1 << expected_cpu))
+
+  local total=0 fifo=0 matched=0 off="" prios=""
+  local tid policy prio mask_hex mask_dec
+  while read -r tid policy prio mask_hex; do
+    [[ -z "$tid" ]] && continue
+    ((total++)) || true
+    [[ "$policy" != "SCHED_FIFO" ]] && continue
+    ((fifo++)) || true
+    prios="${prios} ${prio}"
+    [[ "$prio" != "$expected_prio" ]] && continue
+    mask_dec=$((16#${mask_hex}))
+    if [[ "$mask_dec" -eq "$expected_mask" ]]; then
+      ((matched++)) || true
+    else
+      off="${off} ${tid}:{$(mask_to_cpus "$mask_hex")}"
+    fi
+  done
+
+  if [[ "$fifo" -eq 0 ]]; then
+    echo "NO_FIFO|${total} threads, none SCHED_FIFO"
+  elif [[ "$matched" -eq 0 && -z "$off" ]]; then
+    echo "WRONG_PRIO|SCHED_FIFO prio present:${prios} (expected ${expected_prio})"
+  elif [[ -n "$off" ]]; then
+    echo "WRONG_CPU|prio ${expected_prio} off cpu ${expected_cpu} —${off}"
+  else
+    echo "OK|${matched}/${fifo} SCHED_FIFO prio ${expected_prio} on cpu ${expected_cpu}"
+  fi
+}
+
 # Expand a CSV/range list of LOGICAL cpu ids to include each one's SMT siblings
 # (cpus sharing the same physical_package_id + core_id), sorted + range-collapsed.
 # Distinct from _rt_expand_smt_siblings(), which takes *physical core ids* and

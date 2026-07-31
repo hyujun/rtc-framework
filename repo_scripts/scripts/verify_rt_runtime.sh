@@ -60,6 +60,7 @@ declare -A THREAD_NAMES   # tid → name
 declare -a EXTERNAL_DRIVER_NAMES=("arm_driver" "hand_driver")
 declare -A EXTERNAL_DRIVER_SLOTS       # name → expected slot index
 declare -A EXTERNAL_DRIVER_ALLTHREADS  # name → 1 if taskset -a (all threads) pin
+declare -A EXTERNAL_DRIVER_RT_PRIO     # name → SCHED_FIFO prio of its RT loop ("" = n/a)
 declare -A EXTERNAL_DRIVER_COMMS       # name → space-separated comm candidates
 declare -A EXTERNAL_DRIVER_PIDS        # name → discovered PID (empty if absent)
 
@@ -240,9 +241,23 @@ build_external_drivers() {
 
   # hand_driver 는 `taskset -a` (전 스레드) pin — CommLoop RT thread + failure
   # detector 가 on_activate 에서 cpu_core=-1 로 생성돼 프로세스 pin 을 상속하기
-  # 때문 (issue #245). arm_driver 는 main-thread-only pin.
+  # 때문 (issue #245). arm_driver 는 0 이지만 이제 "main thread 만 검사" 라는
+  # 뜻이 아니다 — 아래 EXTERNAL_DRIVER_RT_PRIO 가 채워져 있으면 그 축이 이긴다.
   EXTERNAL_DRIVER_ALLTHREADS[arm_driver]=0
   EXTERNAL_DRIVER_ALLTHREADS[hand_driver]=1
+
+  # RT-loop 계약 (SCHED_FIFO 우선순위). 값이 있으면 affinity 대신 *그 우선순위의
+  # FIFO 스레드* 를 찾아 검사한다 — arm_driver 는 프로세스 affinity 를 봐선 안
+  # 된다: main thread 는 executor 이고 500 Hz 루프는 별도 스레드다 (issue #343).
+  # 50 은 launch 가 controller_manager 에 주입하는 thread_priority 와 같은 값이며
+  # (rtc_tools.launch.cm_rt_params.DEFAULT_THREAD_PRIORITY), 둘은 함께 움직여야
+  # 한다. RTC_ARM_DRIVER_RT_PRIO 로 override 가능.
+  #
+  # hand_driver 는 비어 있다 = 아직 이 축으로 검사하지 않는다. FIFO 65 CommLoop
+  # 계약은 #345 가 스레드 모델을 재편하며 채운다. 그때까지는 위의 all-threads
+  # affinity 검사가 그대로 유효하다.
+  EXTERNAL_DRIVER_RT_PRIO[arm_driver]="${RTC_ARM_DRIVER_RT_PRIO:-50}"
+  EXTERNAL_DRIVER_RT_PRIO[hand_driver]=""
 
   local arm_slot hand_slot
   if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
@@ -316,20 +331,9 @@ get_thread_cpu_affinity() {
   fi
 }
 
-# hex mask → CPU 리스트 문자열
-mask_to_cpus() {
-  local mask_hex="$1"
-  local mask_dec=$((16#${mask_hex}))
-  local cpus=""
-  local i=0
-  while [[ $((mask_dec >> i)) -gt 0 ]]; do
-    if (( mask_dec & (1 << i) )); then
-      cpus="${cpus:+${cpus},}${i}"
-    fi
-    ((i++))
-  done
-  echo "${cpus:-none}"
-}
+# mask_to_cpus (hex mask → CPU 리스트) 는 rt_common.sh 로 이관됐다 —
+# rt_classify_external_rt_threads 가 같은 변환을 쓰는데 그 함수는 fixture 테스트를
+# 위해 sourceable 해야 하기 때문. slot_to_logical_cpu 와 같은 이유·같은 자리.
 
 # ── External driver 프로세스 발견 ─────────────────────────────────────────────
 # 각 driver 를 process comm 으로 매칭 (pgrep -nx, 정확 comm — rtc_tools.launch.
@@ -835,6 +839,53 @@ check_cpu_affinity() {
         _fail "${ename} (PID ${pid}): ${on_core}/${total_t} 스레드만 ${pin_label} — off:${off_list}"
         _category_update "cpu_affinity" "FAIL"
       fi
+    elif [[ -n "${EXTERNAL_DRIVER_RT_PRIO[$ename]:-}" ]]; then
+      # RT-loop pin (issue #343): 프로세스 affinity 를 보면 안 된다 — main thread
+      # 는 executor 이고 제어 루프는 별도 스레드다. 이름이 없으므로
+      # (전 TID 가 같은 comm) 설정된 우선순위의 SCHED_FIFO 스레드로 찾는다.
+      local eprio="${EXTERNAL_DRIVER_RT_PRIO[$ename]}"
+      local records="" rtid rdir rpolicy rprio rmask
+      for rdir in "/proc/${pid}/task"/*/; do
+        rtid=$(basename "$rdir")
+        [[ "$rtid" =~ ^[0-9]+$ ]] || continue
+        rpolicy=$(get_thread_sched_policy "$rtid" 2>/dev/null || echo "")
+        [[ -z "$rpolicy" ]] && continue
+        rprio=$(get_thread_sched_priority "$rtid" 2>/dev/null || echo "0")
+        rmask=$(get_thread_cpu_affinity "$rtid" 2>/dev/null || echo "")
+        [[ -z "$rmask" ]] && continue
+        records+="${rtid} ${rpolicy} ${rprio} ${rmask}"$'\n'
+      done
+
+      if [[ -z "$records" ]]; then
+        _skip "${ename} (PID ${pid}): 스레드 상태 읽기 실패"
+        continue
+      fi
+
+      local verdict detail
+      verdict=$(printf '%s' "$records" | rt_classify_external_rt_threads "$eprio" "$elogical")
+      detail="${verdict#*|}"
+      verdict="${verdict%%|*}"
+
+      case "$verdict" in
+        OK)
+          _pass "${ename} (PID ${pid}): RT loop ${detail} (${pin_label})"
+          ((ok++)) || true
+          ;;
+        NO_FIFO)
+          # FIFO 요청이 EPERM 으로 거부돼도 affinity 는 적용된다 — 그래서 위치만
+          # 보는 검사는 이 상태를 통과시킨다. realtime 그룹 / RLIMIT_RTPRIO 확인.
+          _fail "${ename} (PID ${pid}): SCHED_FIFO 스레드 없음 (${detail}) — RT 권한 미설정? 제어 루프가 CFS 로 강등됐다"
+          _category_update "cpu_affinity" "FAIL"
+          ;;
+        WRONG_PRIO)
+          _fail "${ename} (PID ${pid}): ${detail} — 주입한 thread_priority 와 불일치"
+          _category_update "cpu_affinity" "FAIL"
+          ;;
+        *)
+          _fail "${ename} (PID ${pid}): RT loop ${detail} (기대값: ${pin_label})"
+          _category_update "cpu_affinity" "FAIL"
+          ;;
+      esac
     else
       # main-thread-only pin: taskset -p <pid> 가 main thread mask 를 준다.
       local mask_hex
@@ -929,6 +980,29 @@ check_memory_locking() {
       _pass "Minor page faults: ${minflt}"
     fi
   fi
+
+  # ── External driver 의 mlockall (issue #343) ────────────────────────────────
+  # launch 가 controller_manager 에 lock_memory:true 를 주입하므로 arm_driver 는
+  # 자기 페이지를 잠가야 한다. RT_PRIO 계약이 있는 드라이버 = 프로세스 안에서
+  # RT 루프를 도는 드라이버이므로 같은 조건을 건다. 실패는 WARN 이다 — FIFO 와
+  # 달리 mlockall 부재는 지터를 키울 뿐 루프를 강등시키지는 않는다.
+  local ename
+  for ename in "${EXTERNAL_DRIVER_NAMES[@]}"; do
+    local epid="${EXTERNAL_DRIVER_PIDS[$ename]:-}"
+    [[ -z "$epid" ]] && continue
+    [[ -z "${EXTERNAL_DRIVER_RT_PRIO[$ename]:-}" ]] && continue
+
+    local evmlck
+    evmlck=$(grep "^VmLck:" "/proc/${epid}/status" 2>/dev/null | awk '{print $2}')
+    if [[ -z "$evmlck" ]]; then
+      _skip "${ename} (PID ${epid}): VmLck 정보 없음"
+    elif [[ "$evmlck" -gt 0 ]]; then
+      _pass "${ename} (PID ${epid}): mlockall 적용됨 (VmLck = ${evmlck} kB)"
+    else
+      _warn "${ename} (PID ${epid}): mlockall 미적용 (VmLck = 0) — lock_memory 주입 실패?"
+      _category_update "memory_locking" "WARN"
+    fi
+  done
 
   _category_set_detail "memory_locking" "VmLck=${vmlck}${vmlck_unit}"
 }
@@ -1243,14 +1317,19 @@ print_json() {
     eslot="${EXTERNAL_DRIVER_SLOTS[$ename]}"
     pid="${EXTERNAL_DRIVER_PIDS[$ename]:-}"
     [[ "$efirst" -eq 0 ]] && echo ","
+    # rt_loop_prio: 이 드라이버가 RT-loop 축으로 검사됐으면 그 우선순위, 아니면
+    # null. actual_affinity 는 main thread 값이므로 rt_loop_prio 가 non-null 인
+    # 드라이버에서는 판정 근거가 아니다 (issue #343) — 진단용으로만 남긴다.
+    local eprio_json="${EXTERNAL_DRIVER_RT_PRIO[$ename]:-}"
+    [[ -z "$eprio_json" ]] && eprio_json="null"
     if [[ -n "$pid" ]]; then
       local amask
       amask=$(get_thread_cpu_affinity "$pid" 2>/dev/null || echo "0")
-      printf "    \"%s\": {\"pid\": %s, \"expected_slot\": %s, \"all_threads_pin\": %s, \"actual_affinity\": \"0x%s\"}" \
-        "$ename" "$pid" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "${amask:-0}"
+      printf "    \"%s\": {\"pid\": %s, \"expected_slot\": %s, \"all_threads_pin\": %s, \"rt_loop_prio\": %s, \"main_thread_affinity\": \"0x%s\"}" \
+        "$ename" "$pid" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "$eprio_json" "${amask:-0}"
     else
-      printf "    \"%s\": {\"pid\": null, \"expected_slot\": %s, \"all_threads_pin\": %s}" \
-        "$ename" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}"
+      printf "    \"%s\": {\"pid\": null, \"expected_slot\": %s, \"all_threads_pin\": %s, \"rt_loop_prio\": %s}" \
+        "$ename" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "$eprio_json"
     fi
     efirst=0
   done

@@ -42,7 +42,7 @@
 3. **DeviceBackend cb_group injection**: 모든 backend (UR / udp_hand / mujoco) 의 state/motor/sensor subscription 이 `Configure(node, cfg, state_cb_group)` 로 받은 `cb_group_rt_callback_` 에 attach — `SubscriptionOptions.callback_group` 으로 RT 경계 subs 가 `rt_callback_executor` (FIFO 70) 에서 dispatch. MutuallyExclusive 그룹 강제 (SeqLock single-writer 보호)
 4. **3 executor 모델**: `rt_callback_executor` (RT 경계 subs) · `nrt_callback_executor` (controller-owned subs · services · nrt_publish drain) · `nrt_logging_executor` (CSV drain · 지연 E-STOP log). RT loop · nrt_publish 는 `std::jthread` + eventfd
 5. **Overrun recovery**: 놓친 tick skip + 다음 경계 재정렬, 연속 10회 시 E-STOP
-6. **CPU Affinity**: 각 스레드를 전용 CPU 코어에 고정. `rt_callback` (Core 2 FIFO 70) 는 DDS receive thread (CFS) 와 **같은 Core 2 공유** — launch-time taskset 으로 controller process 의 비-RT thread 를 Core 2 로 다시 핀해 cache locality 확보. `arm_driver` / `hand_driver` 는 process-level taskset 으로 분리 코어. Core 0 은 OS / DDS / IRQ 전용 (user-space thread 금지, v4.1)
+6. **CPU Affinity**: 각 스레드를 전용 CPU 코어에 고정. `rt_callback` (Core 2 FIFO 70) 는 DDS receive thread (CFS) 와 **같은 Core 2 공유** — launch-time taskset 으로 controller process 의 비-RT thread 를 Core 2 로 다시 핀해 cache locality 확보. `hand_driver` 는 process-level taskset, `arm_driver` 는 CM 파라미터 (내부 RT 루프만, issue #343) 로 분리 코어. Core 0 은 OS / DDS / IRQ 전용 (user-space thread 금지, v4.1)
 7. **RT 스케줄링**: SCHED_FIFO (RT thread), SCHED_OTHER (non-RT) 명시 설정. priority hierarchy `90 > 70 > 60 > 55` 강제 (`ValidateSystemThreadConfigs` invariant)
 8. **메모리 잠금**: `mlockall(MCL_CURRENT | MCL_FUTURE)` 로 페이지 폴트 방지 (rclcpp::init 이전)
 9. **시뮬레이션 동기 모드**: CV 기반 wakeup 으로 시뮬레이터 step 과 1:1 동기화 (sim_thread → ControlLoop)
@@ -100,6 +100,8 @@ nrt_logging_executor (Core 5 on 6c shared / Core 6+ dedicated on ≥ 8c,
 
 ── Hardware/sim driver (process-level pin) ──────────────────────────
 arm_driver (Core 4 on 6c shared / dedicated on ≥ 8c, SCHED_OTHER) — UR ros2_control driver
+  └─ 내부 controller_manager RT 루프 (FIFO 50, 500 Hz) — 프로세스 taskset 이 아니라
+     launch 가 생성하는 CM 파라미터 (cpu_affinity/thread_priority) 로 핀 (issue #343)
 hand_driver (Core 4 on 6c shared / dedicated on ≥ 8c, SCHED_OTHER) — udp_hand_node 프로세스
   └─ 내부 kHandUdpRecvConfig (FIFO 65, cpu_core=-1 sentinel — 프로세스 affinity 상속)
 
@@ -127,7 +129,7 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 | **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
 | **mpc_worker_0** (FIFO 55) | — | — | — | Core 4 | Core 4 | Core 4 | Core 4 |
 | **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 5 | Core 5 | Core 5 |
-| **arm_driver** (CFS 0) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
+| **arm_driver** (CFS 0⁴) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
 | **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 6 | Core 7 | Core 7 | Core 7 |
 | **nrt_logging** (CFS -5) | Core 0 | Core 5 | Core 6 | Core 7 | Core 8 | Core 8 | Core 8 |
 | **nrt_callback** (CFS 0) | Core 0 | Core 5 | Core 7 | Core 8 | Core 9 | Core 9 | Core 9 |
@@ -137,6 +139,7 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 > ¹ **4-core 는 degraded mode** — `mpc_main` 이 CFS 로 강등 (RT 자원 부족). 결정적 RT 보장 X, demo / smoke 용도만 권장. Core 0 에 nrt + driver 가 모두 합쳐짐 (capacity 한계).
 > ² **6-core 는 degraded mode** — `arm_driver` / `hand_driver` 가 Core 4 공유, `nrt_logging` / `nrt_callback` 이 Core 5 공유, mpc_workers 없음, `sim_thread` `cpu_core=-1` (cpu_shield 해제된 코어에서 roam).
 > ³ **`cpu_core = -1` sentinel** — pthread affinity 호출 skip, scheduler/priority/nice/name 만 적용. process-level taskset (launch script) 가 박은 affinity 를 상속. v4.1 부터 모든 tier 에서 `sim_thread` / `viewer` 가 -1.
+> ⁴ **`arm_driver` 의 CFS 0 은 *프로세스* 모델이다** — `SystemThreadConfigs.arm_driver` 는 `ApplyThreadConfig` 대상이 아니라 launch 가 소비하는 코어 배치 값이고, 그 프로세스의 main/executor 는 실제로 CFS 다. 다만 그 안에서 도는 upstream `controller_manager` 제어 루프는 **FIFO 50** 이며, 이 표의 코어에 핀되는 것은 (프로세스가 아니라) 그 루프다 — `taskset` 은 main thread 밖에 못 옮기기 때문 (issue #343). 핀·우선순위는 launch 가 생성하는 CM 파라미터 파일이 정하고 (`rtc_tools.launch.cm_rt_params`), `verify_rt_runtime.sh` 가 그 우선순위의 FIFO 스레드를 찾아 검증한다.
 >
 > **v4.1 의 핵심 변화**:
 > - **RT cluster 가 Core 1 부터 시작** (Core 0 은 OS / DDS / IRQ 전용). 모든 tier 에서 `rt_control = Core 1`, `rt_callback = Core 2`, `mpc_main = Core 3` 으로 통일.
@@ -146,7 +149,7 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 > - **16-core 의 cset shield "user" (Core 4-8) 제거** — RT cluster 가 10-14c 와 동일 패턴으로 응집되어 cache locality 회복.
 >
 > **v4 의 핵심 변화 (참고)**: `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 제거, DDS co-pin on Core 2 — §개요 "v4 아키텍처 변경" 노트 참조.
-> - `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 가 `SystemThreadConfigs` 의 1급 필드. Python helper (`rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core() / get_sim_core() / get_viewer_core() / get_rt_callback_core()`) 가 동일 tier dispatch 미러링 — launch script 가 process-level taskset 으로 사용.
+> - `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 가 `SystemThreadConfigs` 의 1급 필드. Python helper (`rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core() / get_sim_core() / get_viewer_core() / get_rt_callback_core()`) 가 동일 tier dispatch 미러링 — launch script 가 process-level pin 으로 사용 (arm 만 taskset 대신 CM 파라미터, issue #343).
 >
 > **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp` 의 `TierIsolationMonotonicity` · `LayoutV4RtCallbackPinning` · `LayoutV4ArmHandDriverDisjoint` · `LayoutV3ValidatorCatchesArmHandCollision` · `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + sentinel 처리를 강제한다. drift gate: Python helper 결과 ≡ C++ `SelectThreadConfigs()` 결과는 `rtc_tools/test/test_thread_layout.py` 가 보장.
 
@@ -170,9 +173,22 @@ SSoT: `rt_common.sh::get_cm_shield_cpus` = `get_rt_shield_cpus` ∪ `get_nrt_cor
 | 12–15 | `1-5,8-9` | `2-9,12-13` | Core 0, 6-7 · 10-11 (driver) |
 | 16+ | `1-5,8-9` | `2-9,12-13` | Core 0, 6+ |
 
-driver core (`arm_driver` / `hand_driver`) 는 **별도 프로세스** 이며 SCHED_OTHER +
-launch taskset 으로 logical 10,11 (= system cpuset) 에 pin 된다 — CM 스레드가 아니라
-cset 보호 대상이 아니다.
+driver core (`arm_driver` / `hand_driver`) 는 **별도 프로세스** 이며 logical 10,11
+(= system cpuset) 에 pin 된다 — CM 스레드가 아니라 cset 보호 대상이 아니다.
+`hand_driver` 는 launch taskset (`-a`, 전 스레드), `arm_driver` 는 프로세스 자체는
+SCHED_OTHER 이되 그 안의 CM 제어 루프만 CM 파라미터로 FIFO 50 + 해당 코어에 핀된다
+(issue #343). 나머지 UR 스레드 (executor, RTDE 워커, DDS) 는 핀되지 않는다.
+
+> **RT-HOST-3 격리의 degraded 예외 (arm RT 루프).** driver core 는 shield 밖
+> (`system` cpuset) 이므로 이 루프는 affinity + FIFO 만 보장받고 다른 system
+> task / IRQ 로부터 격리되지는 않는다. cpuset 을 재설계해 arm 코어까지 보호하는
+> 대신 **degraded 예외로 인정하고 실측 게이트를 두는 쪽을 택했다** — RTDE 는
+> 어차피 커널 네트워크 스택과 소켓을 공유하므로 코어 격리만으로 닫히지 않고,
+> shield 를 arm 코어까지 넓히면 CM adopt 계약 (`cset shield` 는 user/system 2분할)
+> 과 충돌한다. 게이트: NUC13 에서 `verify_rt_runtime.sh` 통과 + `cm_timing_log.csv`
+> 지터 회귀 없음. 6코어 tier 는 arm 과 hand 가 slot 4 를 공유하고 hand `CommLoop`
+> (FIFO 65) 가 arm 루프 (FIFO 50) 보다 높으므로, 그 tier 의 측정은 반드시
+> **arm + hand 동시 구동**에서 한다.
 
 > **nrt 코어(slot 8,9)는 CM 전용이다 (issue #151).** cset exclusive cpuset 은 코어를
 > 한 cpuset 에만 넣으므로, nrt 코어가 shield 에 들어가면 그 코어에 pin 하려는 *다른
@@ -560,7 +576,7 @@ void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
 
 - `rt_control` (FIFO 90) · `rt_callback` (FIFO 70, DDS recv co-pin) — RT 경계
 - `nrt_logging` (CFS -5) · `nrt_callback` (CFS 0)
-- `arm_driver` · `hand_driver` (process-level taskset) · `sim_thread` · `viewer` (`cpu_core=-1` sentinel, 모든 tier)
+- `arm_driver` (CM 파라미터로 내부 RT 루프 pin) · `hand_driver` (process-level taskset) · `sim_thread` · `viewer` (`cpu_core=-1` sentinel, 모든 tier)
 - `mpc` (mpc_main + workers[0..2])
 
 `SelectThreadConfigs()` 는 `GetPhysicalCpuCount()` 로 7-tier (≥16 / 14 / 12 / 10 / 8 / 6 / else 4-core fallback) 를 dispatch 한다. 각 tier 상수는 `kRtControlConfig*` / `kRtCallbackConfig*` / `kNrtCallbackConfig*` / `kNrtLoggingConfig*` / `kArmDriverConfig*` / `kHandDriverConfig*` / `kSimThreadConfig*` / `kViewerConfig*`.
@@ -631,7 +647,7 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
 
 ### 0. 자동 런타임 검증 (verify_rt_runtime.sh — 권장 시작점)
 
-컨트롤러가 구동 중일 때, 각 live thread 의 RT 설정 (scheduling policy · priority · CPU affinity · memory lock · context switch · CPU migration · RT throttling) 을 `thread_config.hpp` 의 tier 기대값과 자동 대조한다. `arm_driver` / `hand_driver` 는 컨트롤러 내부 스레드가 아니라 별도 프로세스(`ros2_control_node` / `udp_hand_node`)이므로 process comm 으로 발견해 프로세스-레벨 affinity 를 검증한다 (sim 은 driver 프로세스가 없어 SKIP; comm override 는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM`). 정적 시스템 설정을 보는 `check_rt_setup.sh` 와 달리 *실행 중 프로세스의 런타임 상태* 를 검증하므로, 아래 수동 `ps -T` / `taskset` 절차 (§1–§2) 를 돌리기 전에 먼저 실행한다.
+컨트롤러가 구동 중일 때, 각 live thread 의 RT 설정 (scheduling policy · priority · CPU affinity · memory lock · context switch · CPU migration · RT throttling) 을 `thread_config.hpp` 의 tier 기대값과 자동 대조한다. `arm_driver` / `hand_driver` 는 컨트롤러 내부 스레드가 아니라 별도 프로세스(`ros2_control_node` / `udp_hand_node`)이므로 process comm 으로 발견해 검증한다 (sim 은 driver 프로세스가 없어 SKIP; comm override 는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM`). `hand_driver` 는 전-스레드 affinity, `arm_driver` 는 **RT 루프 축**으로 본다 — 설정된 우선순위(50)의 SCHED_FIFO 스레드가 존재하고 그 스레드가 arm 코어에 있는지. FIFO 스레드 부재는 FAIL 이다: FIFO 요청이 거부돼도 affinity 는 적용되므로 위치만 보는 검사는 강등된 루프를 통과시킨다 (issue #343). 정적 시스템 설정을 보는 `check_rt_setup.sh` 와 달리 *실행 중 프로세스의 런타임 상태* 를 검증하므로, 아래 수동 `ps -T` / `taskset` 절차 (§1–§2) 를 돌리기 전에 먼저 실행한다.
 
 ```bash
 ./repo_scripts/scripts/verify_rt_runtime.sh              # 상세 출력
@@ -686,9 +702,18 @@ ps -T -p $(pgrep -f udp_hand_node) -o tid,comm,rtprio,psr,cls
 taskset -cp <TID>
 # 예: rt_callback TID → "current affinity list: 2"
 
-# 프로세스 전체 (arm/hand_driver process-level pin 검증)
-taskset -cp $(pgrep -f udp_hand_node)
-taskset -cp $(pgrep -f ur_ros2_control_node)   # UR driver
+# 프로세스 전체 (hand_driver process-level pin 검증)
+taskset -cp $(pgrep -nx udp_hand_node)
+
+# arm_driver 는 프로세스 affinity 를 봐서는 안 된다 (issue #343): main thread 는
+# executor 이고 500 Hz 루프는 별도 스레드다. 그 스레드는 pthread 이름이 없어
+# (전 TID 가 comm 'ros2_control_no') SCHED_FIFO 로만 골라낼 수 있다.
+PID=$(pgrep -nx ros2_control_no)
+for t in /proc/$PID/task/*/; do
+  tid=$(basename "$t")
+  chrt -p "$tid" 2>/dev/null | grep -q SCHED_FIFO &&
+    printf "%s %s %s\n" "$tid" "$(chrt -p "$tid" | tail -1)" "$(taskset -cp "$tid")"
+done
 ```
 
 ### 3. 실시간 지터 측정
