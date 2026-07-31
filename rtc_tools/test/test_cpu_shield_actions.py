@@ -16,12 +16,23 @@ import pytest
 from launch.actions import EmitEvent
 from launch_ros.actions import LifecycleNode
 
-from rtc_tools.launch import cpu_shield
+from rtc_tools.launch import cpu_shield, pinning
 
 
 @pytest.fixture(autouse=True)
 def _stub_script_path(monkeypatch):
+    """Resolve script paths without an installed ``repo_scripts``.
+
+    Both modules must be stubbed, and the second one is easy to miss: the chain
+    calls ``pinning.adopt_process_into_shield``, which resolves the path through
+    ``pinning``'s own reference — patching only this module's name leaves that
+    call hitting the real ``ament_index``. The CI Python-test job installs just
+    ``rtc_tools`` / ``rtc_msgs`` / ``rtc_digital_twin``, so the lookup raises
+    ``PackageNotFoundError`` there while passing on a full local workspace.
+    """
     monkeypatch.setattr(cpu_shield, "cpu_shield_path", lambda: "/opt/stub/cpu_shield.sh")
+    monkeypatch.setattr(pinning, "cpu_shield_path", lambda: "/opt/stub/cpu_shield.sh")
+    monkeypatch.setattr(pinning, "rt_common_path", lambda: "/opt/stub/rt_common.sh")
 
 
 def _text(action) -> str:
