@@ -119,7 +119,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // Backends exist now, and controller on_configure (Pass 3, inside
   // DeclareAndLoadParameters) has already fixed each GetCommandType() — the
   // first point where the pairing can be checked at all.
-  if (!ValidateCommandTypeSupport()) {
+  if (!ValidateCommandTypePairing()) {
     RCLCPP_ERROR(get_logger(),
                  "RtControllerNode configure refused — controller/backend command-type mismatch");
     return CallbackReturn::FAILURE;
