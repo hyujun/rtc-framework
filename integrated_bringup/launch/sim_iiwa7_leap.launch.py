@@ -30,7 +30,6 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
-    ExecuteProcess,
     OpaqueFunction,
     RegisterEventHandler,
     SetEnvironmentVariable,
@@ -43,6 +42,7 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from rtc_tools.launch import cpu_shield as shield
 from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
 from rtc_tools.launch.thread_layout import get_rt_callback_core, get_sim_core
 from rtc_tools.launch.trace_action import make_trace_action
@@ -191,32 +191,7 @@ def launch_setup(context, *args, **kwargs):
         # Mirror robot_ur5e_p1a.launch.py: probe `sudo -n true` first.  Launch's stdin
         # isn't a tty so an interactive sudo prompt would silently hang and
         # leave the cores un-isolated — better to warn loudly and skip.
-        enable_sim_cpu_shield = ExecuteProcess(
-            cmd=[
-                "bash",
-                "-c",
-                'SCRIPT_DIR="$(ros2 pkg prefix repo_scripts 2>/dev/null)/lib/repo_scripts" && '
-                'SHIELD="$SCRIPT_DIR/cpu_shield.sh" && '
-                'if [ -f "$SHIELD" ]; then '
-                "  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
-                '  if [ -z "$ISOLATED" ]; then '
-                '    echo "[SIM] CPU shield not active — enabling sim mode Tier 1 isolation..."; '
-                "    if sudo -n true 2>/dev/null; then "
-                '      sudo "$SHIELD" on --sim; '
-                "    else "
-                '      echo "[SIM] WARNING: sudo requires a password — skipping CPU shield. '
-                "Configure passwordless sudo for cpu_shield.sh or run beforehand: "
-                'sudo $SHIELD on --sim"; '
-                "    fi; "
-                "  else "
-                '    echo "[SIM] CPU shield already active: Core $ISOLATED isolated"; '
-                "  fi; "
-                "else "
-                '  echo "[SIM] WARNING: cpu_shield.sh not found at $SHIELD"; '
-                "fi",
-            ],
-            output="screen",
-        )
+        enable_sim_cpu_shield = shield.enable_cpu_shield("--sim", log_prefix="[SIM]", gated=False)
         actions.append(enable_sim_cpu_shield)
 
     # ── Node 1: MuJoCo Simulator (LifecycleNode) ────────────────────────────
@@ -288,20 +263,14 @@ def launch_setup(context, *args, **kwargs):
             ],
         )
     )
-    rt_auto_activate = RegisterEventHandler(
-        OnStateTransition(
-            target_lifecycle_node=rt_controller_node,
-            start_state="configuring",
-            goal_state="inactive",
-            entities=[
-                EmitEvent(
-                    event=ChangeState(
-                        lifecycle_node_matcher=lambda n: n == rt_controller_node,
-                        transition_id=Transition.TRANSITION_ACTIVATE,
-                    )
-                )
-            ],
-        )
+    # Adopt the controller into the cset shield between configure and
+    # activate, then gate ACTIVATE on that adopt's exit code. Same reason as
+    # the robot launches: RT threads are spawned in on_activate and only
+    # inherit the shielded cpuset if the process moved first, and a failed
+    # adopt must not activate (issues #151, #344). --sim and --robot shield
+    # the same CM-spanning range, so the sim path has the same exposure.
+    _, rt_adopt_after_configure, rt_activate_after_adopt = shield.shield_adopt_then_activate(
+        rt_controller_node, log_prefix="[SIM]"
     )
     trigger_mujoco_configure = EmitEvent(
         event=ChangeState(
@@ -316,7 +285,8 @@ def launch_setup(context, *args, **kwargs):
             rt_controller_node,
             mujoco_auto_activate,
             chain_rt_after_mujoco,
-            rt_auto_activate,
+            rt_adopt_after_configure,
+            rt_activate_after_adopt,
             trigger_mujoco_configure,
         ]
     )

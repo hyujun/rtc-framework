@@ -60,6 +60,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from rtc_tools.launch import cpu_shield as shield
 from rtc_tools.launch.cm_rt_params import control_rate_from_yaml, write_cm_rt_param_file
 from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
 from rtc_tools.launch.thread_layout import (
@@ -420,36 +421,9 @@ def generate_launch_description():
     )
 
     # ── CPU Shield ────────────────────────────────────────────────────────────
-    _pkg_prefix = get_package_share_directory("repo_scripts")
-    _shield_script = os.path.join(
-        os.path.dirname(os.path.dirname(_pkg_prefix)), "lib", "repo_scripts", "cpu_shield.sh"
-    )
-
-    enable_cpu_shield = ExecuteProcess(
-        cmd=[
-            "bash",
-            "-c",
-            f'if [ -f "{_shield_script}" ]; then '
-            "  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
-            '  if [ -z "$ISOLATED" ]; then '
-            '    echo "[RT] CPU shield not active — enabling robot mode..."; '
-            "    if sudo -n true 2>/dev/null; then "
-            f'      sudo "{_shield_script}" on --robot; '
-            "    else "
-            '      echo "[RT] WARNING: sudo requires a password — skipping CPU shield. '
-            "Configure passwordless sudo for cpu_shield.sh or run: "
-            f'sudo {_shield_script} on --robot"; '
-            "    fi; "
-            "  else "
-            '    echo "[RT] CPU shield already active: Core $ISOLATED isolated"; '
-            "  fi; "
-            "else "
-            f'  echo "[RT] WARNING: cpu_shield.sh not found: {_shield_script}"; '
-            "fi",
-        ],
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
-    )
+    # Probe + enable live in rtc_tools.launch.cpu_shield so all five launches
+    # share one cset-aware implementation (issues #151, #344).
+    enable_cpu_shield = shield.enable_cpu_shield("--robot", log_prefix="[RT]")
 
     # ── External driver CPU pinning (Phase 6) ─────────────────────────────────
     # Pins via tier-aware slot resolution. SystemThreadConfigs.{arm,hand}_driver
@@ -592,21 +566,14 @@ def generate_launch_description():
         )
     )
 
-    # ── Lifecycle auto-configure/activate for integrated_rt_controller ──────────────
-    rt_auto_activate = RegisterEventHandler(
-        OnStateTransition(
-            target_lifecycle_node=rt_controller_node,
-            start_state="configuring",
-            goal_state="inactive",
-            entities=[
-                EmitEvent(
-                    event=ChangeState(
-                        lifecycle_node_matcher=lambda n: n == rt_controller_node,
-                        transition_id=Transition.TRANSITION_ACTIVATE,
-                    )
-                )
-            ],
-        )
+    # ── Lifecycle: configure → adopt into shield → activate ───────────────────
+    # The adopt has to land between configure and activate: the RT threads are
+    # spawned in on_activate, and they only inherit the shielded "user" cpuset if
+    # the process was moved first. ACTIVATE is gated on the adopt action's exit
+    # code, so a failed adopt holds the controller in `inactive` rather than
+    # running the loop unpinned and off SCHED_FIFO (issues #151, #344).
+    _, rt_adopt_after_configure, rt_activate_after_adopt = shield.shield_adopt_then_activate(
+        rt_controller_node
     )
     rt_trigger_configure = EmitEvent(
         event=ChangeState(
@@ -669,7 +636,8 @@ def generate_launch_description():
             on_exit=[
                 LogInfo(msg="[RT] Readiness gate passed — launching integrated_rt_controller"),
                 rt_controller_node,
-                rt_auto_activate,
+                rt_adopt_after_configure,
+                rt_activate_after_adopt,
                 rt_trigger_configure,
             ],
         )

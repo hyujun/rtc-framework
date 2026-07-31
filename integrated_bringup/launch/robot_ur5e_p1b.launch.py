@@ -63,9 +63,9 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from rtc_tools.launch import cpu_shield as shield
 from rtc_tools.launch.cm_rt_params import control_rate_from_yaml, write_cm_rt_param_file
 from rtc_tools.launch.pinning import (
-    adopt_process_into_shield,
     pin_dds_threads_to_slot,
     pin_process_to_slot,
 )
@@ -420,43 +420,9 @@ def generate_launch_description():
     )
 
     # ── CPU Shield ────────────────────────────────────────────────────────────
-    _pkg_prefix = get_package_share_directory("repo_scripts")
-    _shield_script = os.path.join(
-        os.path.dirname(os.path.dirname(_pkg_prefix)), "lib", "repo_scripts", "cpu_shield.sh"
-    )
-
-    # Active-shield detection must be cset-aware: cset shield writes NO entry to
-    # /sys/devices/system/cpu/isolated (that file is isolcpus-only), so gating on
-    # it read every cset run as "not active" and re-invoked `on --robot` each
-    # launch (issue #151). Treat the shield as active when either a cset "user"
-    # cpuset exists OR isolcpus reserved cores (both are valid isolation methods).
-    enable_cpu_shield = ExecuteProcess(
-        cmd=[
-            "bash",
-            "-c",
-            f'if [ ! -f "{_shield_script}" ]; then '
-            f'  echo "[RT] WARNING: cpu_shield.sh not found: {_shield_script}"; exit 0; '
-            "fi; "
-            "ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
-            "if command -v cset >/dev/null 2>&1 && "
-            '   cset shield -s 2>/dev/null | grep -q "user"; then '
-            '  echo "[RT] CPU shield already active (cset user cpuset present)"; '
-            'elif [ -n "$ISOLATED" ]; then '
-            '  echo "[RT] CPU shield already active: Core $ISOLATED isolated (isolcpus)"; '
-            "else "
-            '  echo "[RT] CPU shield not active — enabling robot mode..."; '
-            "  if sudo -n true 2>/dev/null; then "
-            f'    sudo "{_shield_script}" on --robot; '
-            "  else "
-            '    echo "[RT] WARNING: sudo requires a password — skipping CPU shield. '
-            "Configure passwordless sudo for cpu_shield.sh or run: "
-            f'sudo {_shield_script} on --robot"; '
-            "  fi; "
-            "fi",
-        ],
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
-    )
+    # Probe + enable live in rtc_tools.launch.cpu_shield so all five launches
+    # share one cset-aware implementation (issues #151, #344).
+    enable_cpu_shield = shield.enable_cpu_shield("--robot", log_prefix="[RT]")
 
     # ── External driver CPU pinning (Phase 6) ─────────────────────────────────
     # Pins via tier-aware slot resolution. SystemThreadConfigs.{arm,hand}_driver
@@ -608,32 +574,13 @@ def generate_launch_description():
     # creation. adopt runs ungated (it must fire, and exit, even when
     # use_cpu_affinity:=false — where it finds no shield and no-ops) so the
     # controller still activates in fake-hardware / CI runs.
-    adopt_rt_controller = adopt_process_into_shield(
-        "integrated_rt_controller", "integrated_rt_controller", gated=False
-    )
-    rt_adopt_after_configure = RegisterEventHandler(
-        OnStateTransition(
-            target_lifecycle_node=rt_controller_node,
-            start_state="configuring",
-            goal_state="inactive",
-            entities=[
-                LogInfo(msg="[RT] configured — adopting CM into CPU shield before activate"),
-                adopt_rt_controller,
-            ],
-        )
-    )
-    rt_activate_after_adopt = RegisterEventHandler(
-        OnProcessExit(
-            target_action=adopt_rt_controller,
-            on_exit=[
-                EmitEvent(
-                    event=ChangeState(
-                        lifecycle_node_matcher=lambda n: n == rt_controller_node,
-                        transition_id=Transition.TRANSITION_ACTIVATE,
-                    )
-                )
-            ],
-        )
+    # ACTIVATE is now gated on the adopt action's *exit code*, not merely on it
+    # having exited: a failed adopt under an active shield holds the controller in
+    # `inactive` instead of running the RT loop unpinned and off SCHED_FIFO
+    # (issue #344). Shared with p1a and the sim launches, which drifted for three
+    # consecutive fixes while this chain lived only here.
+    _, rt_adopt_after_configure, rt_activate_after_adopt = shield.shield_adopt_then_activate(
+        rt_controller_node
     )
     rt_trigger_configure = EmitEvent(
         event=ChangeState(

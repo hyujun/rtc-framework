@@ -201,8 +201,14 @@ do_adopt() {
     success "PID ${pid} (comm='${pcomm}', +threads) moved into user cpuset — RT self-pin will land in-set"
     return 0
   fi
-  warn "PID ${pid} adopt 실패 (cset shield --shield) — shield-on 런에서 RT pin 이 EINVAL 날 수 있음"
-  return 0
+  # 여기까지 왔다 = shield 가 활성인데 이동에 실패했다. 위의 return 0 들과 달리
+  # 이건 양성 no-op 이 아니다 — 호출자가 그대로 activate 하면 RT 스레드가 affinity
+  # 와 SCHED_FIFO 를 함께 잃은 채 (setaffinity EINVAL → ApplyThreadConfig 가
+  # SCHED_FIFO 설정 전에 return) 500 Hz 로 돈다. non-zero 로 알린다 (issue #344).
+  # warn (error 아님): rt_common.sh 의 error() 는 exit 1 이라 함수의 return 계약을
+  # 깬다. 심각도는 반환 코드가 나르고, 호출자(런치)가 ERROR 로 표면화한다.
+  warn "PID ${pid} adopt 실패 (cset shield --shield) — RT pin 이 EINVAL 난다. 호출자는 activate 를 거부해야 한다"
+  return 1
 }
 
 # ── Command: off ─────────────────────────────────────────────────────────────

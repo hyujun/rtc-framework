@@ -467,7 +467,6 @@ check_process_discovery() {
       fi
     done
   elif [[ "$known_count" -gt 0 ]]; then
-    _warn "thread_config.hpp 스레드 일부 감지: ${known_count}/${expected_count}"
     # 누락된 필수 스레드 표시
     local _missing_required=0
     for entry in "${EXPECTED_THREADS[@]}"; do
@@ -478,12 +477,26 @@ check_process_discovery() {
         if [[ "$eopt" == "optional" ]]; then
           _skip "  선택적 스레드 미활성: ${ename}"
         else
-          _warn "  미발견: ${ename}"
+          _fail "  미발견: ${ename}"
           ((_missing_required++)) || true
         fi
       fi
     done
-    _category_update "process_discovery" "WARN"
+
+    # 필수 스레드 미발견은 FAIL 이다 (issue #344). WARN 이었을 때 이 경로가 정확히
+    # 무엇을 감췄는지가 승격 근거다: ApplyThreadConfig 는 ① affinity → ② sched
+    # policy → ③ pthread_setname_np 순서인데 ① 실패 시 ②③ 을 건너뛴다. 즉 shield
+    # 활성 상태에서 adopt 가 빠지면 RT 스레드가 SCHED_FIFO 를 못 얻는 동시에
+    # **이름도 안 붙어**, 이름으로 찾는 이 발견 단계가 실패하고 아래 정책·affinity
+    # 검사가 그 스레드들을 통째로 건너뛴다 (total 도 안 센다). 그래서 500 Hz 루프가
+    # CFS 로 도는 상태가 WARN 한 줄로 지나갔다.
+    if (( _missing_required > 0 )); then
+      _fail "thread_config.hpp 필수 스레드 미발견: ${known_count}/${expected_count} — 이름 미설정(ApplyThreadConfig early-return) 의심"
+      _category_update "process_discovery" "FAIL"
+    else
+      _warn "thread_config.hpp 스레드 일부 감지: ${known_count}/${expected_count} (필수는 전부 있음)"
+      _category_update "process_discovery" "WARN"
+    fi
 
     # 진단 보조: 필수 스레드가 미발견이면 controller process 의 모든 RT-like
     # thread comm 을 dump. 이름이 박힌 thread 가 어떤 게 있고, EXPECTED 와

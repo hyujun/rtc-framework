@@ -169,7 +169,7 @@ repo_scripts/
 
 쉘 스크립트와 `rtc_base/threading/thread_config.hpp` 사이에 **단일 소스 진실**을 유지하기 위한 헬퍼입니다. v4.1 Layout SSoT 통합 후:
 
-- `cpu_shield.sh::compute_shield_cores()` 는 `get_cm_shield_cpus()` 를 호출 (자체 tier 분기 없음). CM 프로세스 전체가 cpuset 에 들어가야 하므로 shield 는 RT ∪ nrt span 을 덮는다 (issue #151). shield 는 cpuset 만 만들고, 런치가 `cpu_shield.sh adopt <pid>` 로 CM 을 그 안에 넣는다.
+- `cpu_shield.sh::compute_shield_cores()` 는 `get_cm_shield_cpus()` 를 호출 (자체 tier 분기 없음). CM 프로세스 전체가 cpuset 에 들어가야 하므로 shield 는 RT ∪ nrt span 을 덮는다 (issue #151). shield 는 cpuset 만 만들고, 런치가 `cpu_shield.sh adopt <pid>` 로 CM 을 그 안에 넣는다. **`adopt` 의 종료 코드가 계약이다** (issue #344): 양성 no-op(cset 미설치 / shield 비활성 / PID 부재)은 0, *필요했는데 실패*하면 non-zero 이고 런치는 그때 ACTIVATE 를 거부한다 — 그대로 활성화하면 RT 스레드가 affinity 와 SCHED_FIFO 를 함께 잃은 채 돈다.
 - `setup_grub_rt.sh` 는 `get_rt_cores_with_siblings()` 를 호출하여 `nohz_full` / `rcu_nocbs` 값으로 RT thread 가 실행되는 코어만 (SMT 시 sibling 포함) 한정.
 - `setup_irq_affinity.sh` / `check_rt_setup.sh` / `verify_rt_runtime.sh` 는 `compute_cpu_layout()` 기반으로 동작하여 tier 분기가 없습니다 (OS/RT 코어 범위가 layout v4.1 에서 모든 tier 공통: OS=0, RT=1..N-1).
 

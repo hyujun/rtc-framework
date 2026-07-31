@@ -32,6 +32,11 @@ rtc_tools/
 │   ├── launch/
 │   │   ├── thread_layout.py            ← 스레드 코어 배치 SSoT의 Python mirror
 │   │   │                                  (rtc_base SelectThreadConfigs, drift-tested)
+│   │   ├── pinning.py                  ← taskset pin / DDS co-pin / shield adopt 액션
+│   │   ├── cpu_shield.py               ← cset shield 감지 + adopt→ACTIVATE 체인
+│   │   │                                  (다섯 bringup launch 공유, fail-closed)
+│   │   ├── cm_rt_params.py             ← controller_manager RT 파라미터 파일 생성
+│   │   │                                  (UR arm 루프 pin, issue #343)
 │   │   └── trace_action.py             ← ros2_tracing (LTTng) capture 액션 헬퍼
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
