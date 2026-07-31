@@ -180,6 +180,8 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 
 > **`ResetFault()` ↔ `ClearEstop()` 는 의도적으로 분리돼 있다 (E-8).** 전자는 컨트롤러가 스스로 건 latch (compliance 계열의 `SAFE_STOP`, §10.6 "자동 복구 금지") 를, 후자는 CM global E-STOP 을 푼다. **어느 쪽도 다른 쪽을 풀지 않는다** — 하나의 bool 로 합치면 global clear 가 지나가는 모든 컨트롤러 fault 를 세탁하게 되므로 #236 슬라이스 1 이 그 설계를 거부했다. 기본 구현이 둘 다 no-op / `false` 이므로, 자체 latch 가 없는 컨트롤러는 아무것도 override 하지 않고 `/rtc_cm/reset_fault` 에 "latch 없음" 으로 응답된다. `ResetFault()` 가 `void` 인 이유는 해제 판정이 RT tick 소유이기 때문이며, 결과는 `HasLatchedFault()` 로 확인한다. **latch 가 올라가 있지 않을 때의 `ResetFault()` 는 상태를 바꾸지 않아야 한다** — public virtual 이라 CM 외의 호출자도 닿을 수 있으므로, 이 판정은 호출자가 아니라 구현이 쥔다 (compliance 계열은 `ComplianceStateMachine::ResetFault()` 가 `SAFE_STOP` 이 아니면 no-op).
 
+> **`TriggerEstop()` / `ClearEstop()` override 는 CM global latch 를 읽지 않는다 (#299).** CM 은 두 방향 모두 **latch 가 `true` 인 동안** 전파한다 — `TriggerGlobalEstop` 은 latch 를 세운 뒤 전파하고, `ClearGlobalEstop` 은 전파를 마친 뒤 내린다. 이 대칭이 요구되는 이유는 RT 루프가 치환 여부를 global latch **하나로만** 판정하기 때문이며 (`rt_controller_node_rt_loop.cpp` Phase 2c), 어느 쪽이든 전파 중 tick 은 `hold_output_` 으로 치환된다. 따라서 override 가 `IsGlobalEstopped()` 를 되읽어 분기하면 **두 경로에서 같은 값(`true`)을 보게 되어** clear 를 trigger 와 구분하지 못한다. 자기 상태는 자기 atomic 에 store 하고 반환할 것 — in-tree 구현 3종 (`integrated_bringup` wbc / joint / task) 이 그렇게 돼 있고, out-of-tree 구현은 registry 로 로드되므로 이 문장이 그 계약이다.
+
 > **`LoadConfig()` 기본 구현 동작:**
 > 1. `cfg["enable_ur5e"]` / `cfg["enable_hand"]` 존재 시 deprecated 경고 출력 후 무시
 > 2. `cfg["topics"]` 존재 시 `ParseTopicConfig()` 호출, 없으면 기본 토픽 유지

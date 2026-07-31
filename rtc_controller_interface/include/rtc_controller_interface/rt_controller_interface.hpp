@@ -262,6 +262,15 @@ class RTControllerInterface {
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 
   // E-STOP interface — default no-ops for controllers that do not need it.
+  //
+  // The CM propagates BOTH directions while its global latch still reads true
+  // (issue #299): TriggerGlobalEstop raises the latch then propagates,
+  // ClearGlobalEstop propagates then lowers it. That symmetry is what keeps a
+  // tick landing mid-propagation on the substituting side, since the RT loop
+  // decides substitution from the latch alone. The consequence for
+  // implementers: an override must NOT branch on the global latch — it reads
+  // the same value in both, so it cannot tell a clear from a trigger. Store
+  // your own atomic and return.
   virtual void TriggerEstop() noexcept {}
 
   virtual void ClearEstop() noexcept {}
