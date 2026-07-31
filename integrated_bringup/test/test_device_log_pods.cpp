@@ -8,6 +8,7 @@
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
+#include "integrated_bringup/logging/task_diag_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 
 #include <Eigen/Core>
@@ -606,4 +607,79 @@ TEST(PullEstimatorLogPod, FillMirrorsPullEstimate) {
   EXPECT_TRUE(pod.estimate.slip_risk);
   EXPECT_FALSE(pod.estimate.any_saturated);
   EXPECT_TRUE(pod.estimate.baseline_applied);
+}
+
+// ── TaskDiagLogPod (#310) ──────────────────────────────────────────────────
+
+TEST(TaskDiagLogPod, IsTriviallyCopyable) {
+  EXPECT_TRUE(std::is_trivially_copyable_v<integrated_bringup::TaskDiagLogPod>);
+}
+
+TEST(TaskDiagLogPod, HeaderColumnsMatchRow) {
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteTaskDiagLogHeader(hdr_os);
+  const std::string hdr = hdr_os.str();
+
+  integrated_bringup::TaskDiagLogPod pod{};
+  pod.t_relative_s = 1.25;
+  pod.valid = true;
+  pod.sigma_min = 0.004;
+  pod.lambda_sq = 1e-4;
+  pod.sigma0 = 0.02;
+  pod.lambda_max = 0.05;
+  pod.ik_ok = true;
+  pod.control_6dof = true;
+  std::ostringstream row_os;
+  integrated_bringup::WriteTaskDiagLogRow(row_os, pod);
+  const std::string row = row_os.str();
+
+  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_NE(hdr.find("sigma_min"), std::string::npos);
+  EXPECT_NE(hdr.find("lambda_sq"), std::string::npos);
+  // σ₀/λ_max ride along so a stored CSV decodes without that run's YAML — the
+  // gains are live-writable through set_gains()/the parameter callback.
+  EXPECT_NE(hdr.find("sigma0"), std::string::npos);
+  EXPECT_NE(hdr.find("lambda_max"), std::string::npos);
+}
+
+TEST(TaskDiagLogPod, FirstColumnIsTRelativeS) {
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteTaskDiagLogHeader(hdr_os);
+  EXPECT_EQ(hdr_os.str().rfind("t_relative_s", 0), 0u);
+}
+
+TEST(TaskDiagLogPod, DampingActiveTracksLambdaSqOnValidTicks) {
+  // damping_active is the column the file exists for: it must be 1 exactly when
+  // §6.5 damping is engaged on a tick that actually solved.
+  integrated_bringup::TaskDiagLogPod pod{};
+  pod.valid = true;
+  pod.lambda_sq = 0.0;  // far from singular
+  std::ostringstream off_os;
+  integrated_bringup::WriteTaskDiagLogRow(off_os, pod);
+  const std::string off = off_os.str();
+  EXPECT_EQ(off.substr(off.rfind(',') + 1), "0");
+
+  pod.lambda_sq = 2.5e-5;  // damping engaged
+  std::ostringstream on_os;
+  integrated_bringup::WriteTaskDiagLogRow(on_os, pod);
+  const std::string on = on_os.str();
+  EXPECT_EQ(on.substr(on.rfind(',') + 1), "1");
+}
+
+TEST(TaskDiagLogPod, StaleRowIsNotReportedAsDamping) {
+  // A tick that skipped ComputeControl (E-STOP / unreadable arm / invalid
+  // reorder) keeps the PREVIOUS tick's σ fields. valid=0 must both appear and
+  // suppress damping_active, or a held tick reads as live damping.
+  integrated_bringup::TaskDiagLogPod pod{};
+  pod.valid = false;
+  pod.lambda_sq = 2.5e-5;  // stale leftover from the last solved tick
+  std::ostringstream row_os;
+  integrated_bringup::WriteTaskDiagLogRow(row_os, pod);
+  const std::string row = row_os.str();
+
+  EXPECT_EQ(row.substr(row.rfind(',') + 1), "0") << "stale row must not claim damping: " << row;
+  // valid is the 2nd column.
+  const auto first = row.find(',');
+  const auto second = row.find(',', first + 1);
+  EXPECT_EQ(row.substr(first + 1, second - first - 1), "0");
 }

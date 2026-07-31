@@ -8,6 +8,7 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
+#include "integrated_bringup/logging/task_diag_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
@@ -407,6 +408,15 @@ class DemoTaskController final : public RTControllerInterface {
   // Set after ComputeControl's E-STOP early-return, so it is valid only on
   // non-E-STOP ticks — every reader must sit behind an `estop_active_` guard.
   bool control_6dof_cached_{false};
+
+  /// §6.5 singularity diagnostics staged by ComputeControl for the Phase C push
+  /// at the tail of Compute() (#310). DifferentialIk::Result is a local there
+  /// and both fields are recomputed every tick, so the staging buffer is what
+  /// carries them across to the log push — the WBC controller stages its diag
+  /// row the same way. RT-thread-only; written on every non-E-STOP tick
+  /// INCLUDING the `!ok` hold, so a held tick still produces a row rather than
+  /// a gap the reader has to interpret.
+  integrated_bringup::TaskDiagLogPod task_diag_staging_{};
 
   // ── Hand fingertip FK dispatch (serial hand_handle_ ↔ closed_hand_fk_) ────
   // #121: single branch point for closed-chain vs serial hand FK so every call
@@ -897,6 +907,7 @@ class DemoTaskController final : public RTControllerInterface {
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> secondary_state_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;
   rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator_log_handle_;
+  rtc::LogHandle<integrated_bringup::TaskDiagLogPod> task_diag_log_handle_;
 
   std::vector<std::string> primary_joint_names_;
   std::vector<std::string> secondary_joint_names_;

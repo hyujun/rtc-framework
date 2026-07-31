@@ -76,11 +76,17 @@ class DifferentialIk {
   /// A false `ok` means the m×m normal-equation matrix would not factor. Note
   /// what does NOT trigger it: J J^T is positive SEMI-definite for any real J,
   /// and Eigen's LLT accepts a singular one, so a rank-deficient pose reports
-  /// ok WITH σ_min ≈ 0 — the σ_min faults, not this flag, are what catch it. The
-  /// reachable failure is a non-finite J (a NaN joint state propagating through
-  /// FK). J⁺ and N then keep their previous contents on purpose: overwriting
-  /// them would let a caller that ignores `ok` command a NaN joint velocity
-  /// instead of the last good inverse.
+  /// ok WITH σ_min ≈ 0 — `sigma_min`, not this flag, is what reports it. That is
+  /// a DIAGNOSTIC, not a fault (#310): σ_min < σ₀ is precisely the condition
+  /// that switches λ² on, so it marks §6.5 damping working as designed, and a
+  /// caller that promoted it to a fault would fault on every intended
+  /// activation. Callers are expected to surface `sigma_min` / `lambda_sq`
+  /// (throttled log + CSV lane); the actual safety net for a rank-deficient
+  /// pose is the damping itself, and for a NaN one the `ok` hold below.
+  /// The reachable failure is a non-finite J (a NaN joint state propagating
+  /// through FK). J⁺ and N then keep their previous contents on purpose:
+  /// overwriting them would let a caller that ignores `ok` command a NaN joint
+  /// velocity instead of the last good inverse.
   [[nodiscard]] Result Compute(const Eigen::Ref<const Eigen::MatrixXd>& J_S, double sigma0,
                                double lambda_max) noexcept {
     Result r;
