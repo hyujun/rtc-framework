@@ -1,0 +1,54 @@
+# /rtc_cm/clear_estop — clear the CM GLOBAL E-STOP latch (issue #288).
+#
+# Until this service existed the global latch could be raised (device timeout,
+# consecutive overrun, unholdable output) but never lowered from outside: the
+# only production caller of ClearGlobalEstop() was on_deactivate, so a process
+# restart was the only exit. #260 closed exactly this shape for the
+# controller-local fault latch (/rtc_cm/reset_fault); this is its counterpart
+# for the global one.
+#
+# Deliberately SEPARATE from /rtc_cm/reset_fault (E-8): clearing the global
+# E-STOP does NOT clear a controller-local fault, and clearing a
+# controller-local fault does NOT clear the global E-STOP. Both may be latched
+# at once and each needs its own clear. `message` says when the other one is
+# still up, so a reply is never read as "the arm is free to move" when it is
+# not.
+#
+# Authority: the caller must echo the CURRENT latched reason. That is the
+# operator confirmation step, and the global analogue of reset_fault requiring
+# the active controller's name — there is no wildcard, so a script that never
+# observed why the arm stopped cannot clear it. The reason is the string
+# reported on /system/estop_status's log line and by the refusal message below.
+
+# The currently latched E-STOP reason, echoed back verbatim. REQUIRED.
+# Obtain it from the refusal message of a call with an empty ack, or from the
+# "GLOBAL E-STOP triggered: <reason>" log line.
+string reason_ack
+
+---
+
+# True iff the latch is confirmed down — it was lowered AND enough RT ticks
+# completed for the cause detectors to have had a turn AND it was still down
+# afterwards. Also true for the no-op case (nothing was latched).
+#
+# False means the arm is still held, and `message` distinguishes:
+#   - reason_ack was empty or did not match the latched reason (nothing was
+#     touched);
+#   - something asked for an E-STOP while the clear was propagating to the
+#     controllers, so the clear was abandoned and the latch LEFT UP. The
+#     unguarded trigger paths (consecutive overrun, sim-sync abort) can land
+#     here; the watchdog and output-validation paths test the latch first and
+#     cannot;
+#   - the cause is still present: a detector re-latched within the observation
+#     window. The window spans at least one device-watchdog check, which is
+#     slower than the control period — reset_fault's two-tick proof would not
+#     have covered it;
+#   - the RT loop completed no tick within the deadline, so nothing
+#     re-evaluated the cause. NOTE the asymmetry with reset_fault here: the
+#     latch IS down in this case, it is only unverified. `message` says so
+#     explicitly.
+bool ok
+
+# Human-readable outcome, including the reason that was latched and whether a
+# controller-local fault is still latched AT REPLY TIME.
+string message

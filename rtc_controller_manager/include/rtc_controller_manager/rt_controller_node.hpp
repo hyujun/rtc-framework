@@ -13,6 +13,7 @@
 #include "rtc_urdf_bridge/types.hpp"
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rtc_msgs/msg/robot_target.hpp>
+#include <rtc_msgs/srv/clear_estop.hpp>
 #include <rtc_msgs/srv/list_controllers.hpp>
 #include <rtc_msgs/srv/reset_fault.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
@@ -29,6 +30,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstring>  // ::strnlen — bounded read of the fixed-size E-STOP reason buffer
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -271,11 +273,42 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   /// Trigger a global E-Stop that propagates to all subsystems.
   /// Safe to call from any thread. Idempotent — second call is a no-op.
   void TriggerGlobalEstop(std::string_view reason) noexcept;
+
+  /// What a ClearGlobalEstop() call actually did. The latch is only down after
+  /// kCleared — the other two leave it exactly as it was found (issue #288).
+  enum class EstopClearOutcome : std::uint8_t {
+    kCleared,      ///< Latch was up, controllers were told, latch is now down.
+    kNotLatched,   ///< Nothing was latched; no controller was touched.
+    kRetriggered,  ///< A trigger arrived mid-propagation — latch LEFT UP.
+  };
+
   /// Clear global E-Stop and re-enable all subsystems.
-  void ClearGlobalEstop() noexcept;
+  /// Refuses (kRetriggered) if anything requested an E-STOP while the clear was
+  /// propagating; see the implementation for why that request would otherwise
+  /// be lost. Safe to call from any thread.
+  [[nodiscard]] EstopClearOutcome ClearGlobalEstop() noexcept;
 
   [[nodiscard]] bool IsGlobalEstopped() const noexcept {
     return global_estop_.load(std::memory_order_acquire);
+  }
+
+  /// Every TriggerGlobalEstop() ENTRY, including the calls its CAS turns away
+  /// because the latch is already up. Monotonic for the node's lifetime, never
+  /// reset by a clear. ClearGlobalEstop() compares it across its propagation
+  /// loop; that is the only thing that can see a trigger the CAS swallowed.
+  [[nodiscard]] std::uint64_t EstopTriggerRequestCount() const noexcept {
+    return estop_trigger_requests_.load(std::memory_order_acquire);
+  }
+
+  /// Copy of the reason captured by the most recent trigger ("" once a cleared
+  /// latch has been drained). Aux-thread read of a buffer the RT thread writes
+  /// with snprintf, so a copy taken during a concurrent re-trigger can mix two
+  /// reasons — the same tolerance DrainLog's deferred log line already takes,
+  /// and bounded here because the read never runs past the array. Callers use
+  /// it for operator-facing text and confirmation, never for control flow that
+  /// has to be exact.
+  [[nodiscard]] std::string GlobalEstopReason() const {
+    return std::string(estop_reason_.data(), ::strnlen(estop_reason_.data(), estop_reason_.size()));
   }
 
   /// One configured control period. Every aux-thread wait that has to let the
@@ -349,6 +382,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<rtc_msgs::srv::ListControllers>::SharedPtr list_controllers_srv_;
   rclcpp::Service<rtc_msgs::srv::SwitchController>::SharedPtr switch_controller_srv_;
   rclcpp::Service<rtc_msgs::srv::ResetFault>::SharedPtr reset_fault_srv_;
+  rclcpp::Service<rtc_msgs::srv::ClearEstop>::SharedPtr clear_estop_srv_;
 
   // The controller-output publish role (kRobotTransforms — the only one left
   // after issue #196 Phase 5) is owned by each controller's LifecycleNode via
@@ -602,6 +636,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ── Global E-Stop ──────────────────────────────────────────────────────────
   std::atomic<bool> global_estop_{false};
+  // Every TriggerGlobalEstop() entry, counted before its CAS so the swallowed
+  // calls are counted too (issue #288). See EstopTriggerRequestCount().
+  std::atomic<std::uint64_t> estop_trigger_requests_{0};
   std::array<char, 128> estop_reason_{};        // fixed-size — no heap alloc on RT path
   std::atomic<bool> estop_log_pending_{false};  // deferred logging flag
   // Deferred /system/estop_status publish. TriggerGlobalEstop /

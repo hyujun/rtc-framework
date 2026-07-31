@@ -9,6 +9,22 @@ namespace urtc = rtc;
 // ── Global E-Stop
 // ──────────────────────────────────────────────────────────────
 void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
+  // Counted on EVERY entry, BEFORE the CAS — the calls the CAS turns away are
+  // exactly the ones this has to see (issue #288). A trigger that arrives while
+  // ClearGlobalEstop is mid-propagation finds the latch still up (that is the
+  // #299 ordering) and returns here without propagating or recording a reason;
+  // if the clear then lowered the latch, the safety event would be gone with no
+  // trace. ClearGlobalEstop compares this counter across its propagation loop
+  // and abandons the clear on any change.
+  //
+  // Only the UNGUARDED call sites can land here mid-clear —
+  // ControlLoopThread::OnOverrun (consecutive_overrun) and OnLoopAborted
+  // (sim_sync_timeout). CheckTimeouts and the output-validation escalation both
+  // test IsGlobalEstopped() before calling, so they never reach the CAS while a
+  // clear holds the latch up. Counting at entry rather than at those two sites
+  // keeps the guarantee independent of which caller is guarded today.
+  estop_trigger_requests_.fetch_add(1, std::memory_order_acq_rel);
+
   // Idempotent — only the first call logs and propagates.
   bool expected = false;
   if (!global_estop_.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
@@ -36,10 +52,16 @@ void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
   estop_log_pending_.store(true, std::memory_order_release);
 }
 
-void RtControllerNode::ClearGlobalEstop() noexcept {
+RtControllerNode::EstopClearOutcome RtControllerNode::ClearGlobalEstop() noexcept {
   if (!global_estop_.load(std::memory_order_acquire)) {
-    return;
+    return EstopClearOutcome::kNotLatched;
   }
+  // Sampled before the propagation loop and re-read after it (issue #288). This
+  // is the only guard against a trigger the CAS swallows while we hold the
+  // latch up — see TriggerGlobalEstop's counter comment for why the swallowed
+  // call leaves no other trace.
+  const std::uint64_t requests_before = estop_trigger_requests_.load(std::memory_order_acquire);
+
   // Mirror of TriggerGlobalEstop: the latch changes on the far side of the
   // propagation loop, not the near side. The RT loop decides substitution from
   // the latch alone (rt_controller_node_rt_loop.cpp Phase 2c), so lowering it
@@ -58,8 +80,29 @@ void RtControllerNode::ClearGlobalEstop() noexcept {
     ctrl->SetHandEstop(false);
   }
 
+  if (estop_trigger_requests_.load(std::memory_order_acquire) != requests_before) {
+    // Something asked for an E-STOP while we were clearing. Abandon: leave the
+    // latch UP so the RT loop keeps substituting hold_output_, and put the
+    // controllers back where the latch says they are. Re-asserting matters
+    // because the alternative is a state that no longer heals — "latch up,
+    // controllers cleared" is a safe TRANSIENT during a propagation loop, but
+    // as a resting state it means the next successful clear finds nothing to
+    // clear while the arm is still held.
+    //
+    // Neither pending flag is raised: the latch's value did not change, so the
+    // /system/estop_status drain has nothing new to publish, and the deferred
+    // log line would announce a clear that did not happen. The caller reports
+    // this outcome instead (/rtc_cm/clear_estop).
+    for (auto& ctrl : controllers_) {
+      ctrl->TriggerEstop();
+      ctrl->SetHandEstop(true);
+    }
+    return EstopClearOutcome::kRetriggered;
+  }
+
   global_estop_.store(false, std::memory_order_release);
   estop_status_pending_.store(true, std::memory_order_release);
   // Defer the RCLCPP_INFO to the non-RT log thread (DrainLog).
   estop_log_pending_.store(true, std::memory_order_release);
+  return EstopClearOutcome::kCleared;
 }

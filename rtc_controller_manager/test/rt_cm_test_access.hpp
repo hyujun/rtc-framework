@@ -104,6 +104,10 @@ class MockController : public RTControllerInterface {
 // the private-member injection / call wrappers used by Tier 1 tests.
 class ControllerLifecycleTestAccess {
  public:
+  // Re-exported because the enum is private on the node and only a friend can
+  // name it. Tests spell it ControllerLifecycleTestAccess::EstopClearOutcome.
+  using EstopClearOutcome = RtControllerNode::EstopClearOutcome;
+
   static void InjectControllers(RtControllerNode& node,
                                 std::vector<std::unique_ptr<RTControllerInterface>> ctrls,
                                 const std::vector<std::string>& types) {
@@ -155,7 +159,20 @@ class ControllerLifecycleTestAccess {
     node.TriggerGlobalEstop(reason);
   }
 
-  static void CallClearEstop(RtControllerNode& node) { node.ClearGlobalEstop(); }
+  // Returns the outcome (issue #288) — a test that only wants the side effects
+  // may still discard it, but "was the clear refused?" is now an answer the
+  // node gives rather than one inferred from the latch afterwards.
+  static RtControllerNode::EstopClearOutcome CallClearEstop(RtControllerNode& node) {
+    return node.ClearGlobalEstop();
+  }
+
+  static std::uint64_t GetEstopTriggerRequestCount(const RtControllerNode& node) {
+    return node.EstopTriggerRequestCount();
+  }
+
+  static std::string GetGlobalEstopReason(const RtControllerNode& node) {
+    return node.GlobalEstopReason();
+  }
 
   static bool IsEstopped(const RtControllerNode& node) { return node.IsGlobalEstopped(); }
 
@@ -255,6 +272,16 @@ class ControllerLifecycleTestAccess {
   }
 
   static void CallCreateDeviceBackends(RtControllerNode& node) { node.CreateDeviceBackends(); }
+
+  // Bring the services online without driving the full lifecycle.
+  // CreateServices() requires cb_group_nrt_callback_ to be bound first.
+  static void BringServicesOnline(RtControllerNode& node) {
+    if (!node.cb_group_nrt_callback_) {
+      node.cb_group_nrt_callback_ =
+          node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    }
+    node.CreateServices();
+  }
 
   static void CallPropagateCapabilities(RtControllerNode& node) {
     node.PropagateCapabilitiesIntoMappings();

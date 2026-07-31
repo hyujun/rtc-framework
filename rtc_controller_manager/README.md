@@ -197,7 +197,7 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
 | 소유 lane | 생성 주체 | 역할 예시 | QoS 경로 |
 |-----------|-----------|-----------|---------|
 | DeviceBackend | `DeviceBackend` (CM이 group마다 1 instance 보유) | HW/sim ↔ controller 경계 트래픽: `state`, `motor_state`, `sensor_state`, `joint_command`, `ros2_command` (`devices.<group>.backend:` 선언) | Backend 자체 sub/pub + SeqLock state cache. RT loop → `WriteCommand(slot, cmd_type)` |
-| CM 고정 | `RtControllerNode` (hardcode, YAML 무관) | digital twin republish (`/rtc_cm/<group>/joint_states`), `/system/estop_status`, `/rtc_cm/active_controller_name`, `/rtc_cm/list_controllers`, `/rtc_cm/switch_controller`, `/rtc_cm/reset_fault` | CM 직접 publish / service |
+| CM 고정 | `RtControllerNode` (hardcode, YAML 무관) | digital twin republish (`/rtc_cm/<group>/joint_states`), `/system/estop_status`, `/rtc_cm/active_controller_name`, `/rtc_cm/list_controllers`, `/rtc_cm/switch_controller`, `/rtc_cm/reset_fault`, `/rtc_cm/clear_estop` | CM 직접 publish / service |
 | controller-owned | 컨트롤러별 `LifecycleNode` (YAML `topics:` entry 전부) | 컨트롤러 입력/출력: `target`, `grasp_state`, `wbc_state`, `tof_snapshot`, `robot_transforms` | 컨트롤러가 on_configure에서 sub/pub 생성, publish 스레드가 SPSC 소비 후 `controllers_[active]->PublishNonRtSnapshot(snap)` 호출 |
 
 원칙: CM은 **CM 고정 토픽** + **controller-node 관리** (switch / active / E-STOP) 만 소유하고, controller YAML 의 sub/pub 은 만들지 않는다 (issue #138: manager-target 경로 폐기). 컨트롤러가 생산하거나 소비하는 의미적 데이터(목표·GUI·grasp·wbc·tof) 는 컨트롤러 LifecycleNode가 직접 sub/pub. Target topic은 controller가 자체 sub하고 그 콜백에서 `DeliverTargetMessage` → `SetDeviceTarget`을 호출 — SetDeviceTarget은 SPSC 큐로 marshal한 뒤 RT thread가 `Compute()` 안에서 drain한다 (single-writer SeqLock invariant, 2026-05-17 RT-4 cleanup).
@@ -248,6 +248,16 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 - `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조)
 - RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
 - **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음). RCLCPP 로깅은 `estop_log_pending_`, `/system/estop_status` publish 는 `estop_status_pending_` atomic 플래그를 통해 non-RT `DrainLog()` (100 Hz) 에서 지연 수행 — `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT 루프에서 도달 가능하므로 plain publisher 를 그 자리에서 호출하면 RT-10 위반이다 (#198 Phase 3). 드레인은 *드레인 시점의* `global_estop_` 값을 발행하므로 두 드레인 사이의 trigger/clear 쌍은 stale 값이 아니라 최종 상태로 수렴한다. lifecycle teardown 은 `drain_timer_` 를 없애므로 `FlushEstopStatus()` 가 마지막 전이를 직접 흘린다
+
+### 글로벌 E-STOP 해제 (`/rtc_cm/clear_estop` 서비스, #288)
+
+걸린 래치를 밖에서 내리는 유일한 경로. 이전에는 프로덕션 호출자가 `on_deactivate` 하나뿐이라 **프로세스 재시작이 유일한 출구**였다. `/rtc_cm/reset_fault` (#260) 의 글로벌 판 대응물이며 **양방향으로 분리돼 있다 (E-8)** — 어느 쪽도 다른 쪽 래치를 풀지 않고, 응답 `message` 가 나머지 한쪽이 아직 걸려 있는지 알린다.
+
+- **권한** — 요청 `reason_ack` 이 **현재 걸린 사유와 정확히 일치**해야 한다. `reset_fault` 가 컨트롤러 이름을 요구해 얻는 operator 확인을, 이름이 없는 글로벌 판에서는 사유 echo 로 얻는다. 빈 ack 은 거부이자 **사유를 알려주는 발견 경로**다
+- **`ok` 의 의미** — "요청 전달" 이 아니라 "래치가 실제로 내려갔고 그대로 있다". 해제 후 **원인 detector 가 한 번은 돌 만큼** tick 을 기다렸다가 `IsGlobalEstopped()` 를 재판독한다. 창은 `watchdog_check_divisor_ + 2` tick — `reset_fault` 의 2-tick 로는 **워치독이 아직 안 돌아서** 죽은 디바이스를 "복구됨" 으로 보고한다
+- **거부 4종이 구분된다** — ack 불일치/누락 (아무것도 안 건드림) · **전파 중 재트리거** (아래) · 원인 잔존 (창 안에서 재래치) · tick 미소비 (**래치는 이미 내려갔고 검증만 없음** — `reset_fault` 와 여기가 다르다. `message` 가 명시)
+
+**전파 중 재트리거 (`kRetriggered`)** — clear 는 래치를 든 채 전파하므로 (#299), 그 사이 도착한 trigger 는 CAS 실패로 early-return 하며 **사유도 전파도 남기지 않는다**. 그대로 래치를 내리면 그 안전 이벤트는 흔적 없이 사라진다. 그래서 `TriggerGlobalEstop` 은 **CAS 앞에서** `estop_trigger_requests_` 를 올리고, `ClearGlobalEstop` 은 전파 전후로 그 값을 대조해 달라졌으면 **해제를 포기하고 래치를 유지**한 뒤 컨트롤러를 다시 estop 상태로 되돌린다 (fail-closed). 되돌리는 이유는 "래치 up + 컨트롤러 cleared" 가 전파 루프 안의 안전한 *과도 상태*일 뿐, **머무는 상태로는 스스로 낫지 않기** 때문이다. 위 트리거 표에서 이 경로에 걸릴 수 있는 것은 **가드가 없는 `consecutive_overrun` / `sim_sync_timeout`** 뿐이다 — `{group}_timeout` 과 output validation 은 호출 전에 `IsGlobalEstopped()` 를 검사한다.
 
 ### Backend command-type 선언 (#198)
 

@@ -260,7 +260,15 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
     }
   }
 
-  ClearGlobalEstop();
+  // StopRtLoop() above already joined the RT thread, so no trigger can race
+  // this propagation and kRetriggered is unreachable here. Reported rather than
+  // discarded because if it ever does fire the latch is left set and the next
+  // on_activate starts estopped — a silent one would be diagnosed as the
+  // watchdog re-firing at startup.
+  if (ClearGlobalEstop() == EstopClearOutcome::kRetriggered) {
+    RCLCPP_WARN(get_logger(),
+                "on_deactivate: global E-STOP was re-requested while clearing — latch left set");
+  }
   // drain_timer_ survives on_deactivate, but the clear must be observable
   // even if the node is cleaned up before the next 10 ms drain fires.
   FlushEstopStatus();
