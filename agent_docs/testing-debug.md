@@ -21,7 +21,7 @@
 | `rtc_communication/` | UDP loopback + CAN/CANFD loopback (vcan0 없으면 skip) + RS485 serial loopback (PTY, 상시 실행) + Transceiver lifecycle/decode/callback | vcan0 셋업 후 CAN 테스트 실행 (`sudo modprobe vcan && sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0`), RS485는 PTY라 셋업 불필요, 실제 HW UDP/CAN/RS485(USB-RS485+Dynamixel) 테스트 (선택) |
 | `rtc_digital_twin/` | pytest + RViz2 smoke | `/rtc_cm/{group}/joint_states` hz |
 | `rtc_tools/` (pytest) | pytest | GUI/plot 수동 smoke |
-| `repo_scripts/` | `test_rt_common` + shell unit test | `check_rt_setup.sh --summary` |
+| `repo_scripts/` | `test_rt_common` + `test_install_deps` (ONNX tarball digest 검증) + shell unit test | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape_estimation/snapshot` topic echo |
 | `integrated_bringup/` demo FSM | demo_wbc FSM/integration/output + demo_joint grasp·URDF paths + demo_task CLIK/contact_stop (URDF-backed iiwa7_leap fixture 공유, 노드 비생성) + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
 | `udp_hand_driver/` | 단위 gtest (hand_packets, codec, FT, failure detector) + UDP loopback | `ros2 topic hz /p1a/joint_states` (ur5e_p1a; 드라이버 standalone 기본은 `/hand/`) |
