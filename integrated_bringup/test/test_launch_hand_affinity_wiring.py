@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import ast
 import os
+import re
+from pathlib import Path
 
 import pytest
 from ament_index_python.packages import get_package_share_directory
@@ -33,6 +35,32 @@ SIM_LAUNCH_FILES = [
     "sim_ur5e_p1b.launch.py",
     "sim_iiwa7_leap.launch.py",
 ]
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_UDP_HAND_NODE_HPP = (
+    _REPO_ROOT / "udp_hand_driver" / "include" / "udp_hand_driver" / "udp_hand_node.hpp"
+)
+
+
+def _aux_thread_name() -> str:
+    """The aux-lane thread name as C++ spells it (``kHandAuxIoConfig.name``).
+
+    The name crosses a language boundary: udp_hand_node applies it with
+    pthread_setname_np, and the launch files hand the same literal to
+    pin_dds_threads_to_slot so the DDS sweep skips that TID. Nothing but this
+    test couples the two — hand_aux_io is package-local, so it sits outside the
+    RTC_OWNED_THREAD_NAMES ↔ thread_config.hpp mirror that protects every
+    framework-owned thread. Rename one side and the compiler stays silent while
+    the sweep drags the aux lane back onto the hand_driver core (the failure
+    #345 actually shipped into and had to back out).
+    """
+    text = _UDP_HAND_NODE_HPP.read_text()
+    block = re.search(r"kHandAuxIoConfig\s*\{(.*?)\}", text, re.DOTALL)
+    assert block, f"kHandAuxIoConfig not found in {_UDP_HAND_NODE_HPP}"
+    name = re.search(r'\.name\s*=\s*"([^"]+)"', block.group(1))
+    assert name, f"kHandAuxIoConfig has no .name initializer: {block.group(1)!r}"
+    return name.group(1)
 
 
 def _source(filename: str) -> str:
@@ -178,11 +206,16 @@ def test_hand_pin_uses_the_dds_helper(filename: str) -> None:
 
 @pytest.mark.parametrize("filename", HAND_LAUNCH_FILES)
 def test_hand_pin_protects_the_aux_thread(filename: str) -> None:
-    """hand_aux_io must be named explicitly.
+    """The aux lane must be named explicitly, using the name C++ actually sets.
 
     It is SCHED_OTHER and absent from thread_config.hpp, so the helper's two
     default filters — the RTC-owned name mirror and the FIFO guard — both miss
     it. Without this argument the sweep silently re-collapses the lane split.
+
+    Read from kHandAuxIoConfig rather than spelled as a literal here: that makes
+    this the cross-language drift lock (#353). A literal would keep passing
+    after the C++ side is renamed, which is precisely the state that breaks the
+    pin.
     """
     call = _hand_pin_call(_source(filename))
     assert call is not None
@@ -193,8 +226,10 @@ def test_hand_pin_protects_the_aux_thread(filename: str) -> None:
         for element in ast.walk(kw.value):
             if isinstance(element, ast.Constant) and isinstance(element.value, str):
                 protected.add(element.value)
-    assert "hand_aux_io" in protected, (
-        f"{filename} does not protect hand_aux_io from the DDS sweep (found {protected or 'none'})"
+    aux_name = _aux_thread_name()
+    assert aux_name in protected, (
+        f"{filename} does not protect {aux_name} (kHandAuxIoConfig.name) from the "
+        f"DDS sweep (found {protected or 'none'})"
     )
 
 
