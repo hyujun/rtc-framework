@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -279,6 +280,107 @@ TEST_F(UdpHandNodeLifecycleTest, CalibrationRequestsWithoutAnInferencerAreConsum
 
   ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
   ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+
+  exec_.remove_node(probe);
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// The aux lane as *behaviour*, not wiring. test_udp_hand_node_lanes proves
+// cb_group_aux_ can be claimed by a second executor; nothing proved that a timer
+// created inside that group during on_activate is ever serviced. Both aux timers
+// are created after the group has already been handed out, and the group is built
+// with automatically_add_to_executor_with_node=false, so the node's own executor
+// never touches them — if that hand-off broke, the stats/timing drain would die
+// silently in production while every other test stayed green (issue #345).
+//
+// Discriminator: the timing CSV. While the node is Active the 1 Hz aux timer is
+// its only writer (on_deactivate's straggler drain is the other caller, and this
+// test asserts before deactivating), and ThreadTimingCsvLogger::Log flushes per
+// row — so growth means the timer fired on aux_thread.
+TEST_F(UdpHandNodeLifecycleTest, AuxTimerFiresOnItsOwnExecutor) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+
+  // Claim the aux group before add_node, the ordering test_udp_hand_node_lanes
+  // pins as safe, then service it from a thread of its own — the hand_aux_io
+  // lane's shape in main().
+  rclcpp::executors::SingleThreadedExecutor aux_exec;
+  aux_exec.add_callback_group(node->GetAuxCallbackGroup(), node->get_node_base_interface());
+  exec_.add_node(node->get_node_base_interface());
+
+  std::thread aux_thread([&aux_exec] { aux_exec.spin(); });
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+
+  const auto csv = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  ASSERT_TRUE(std::filesystem::exists(csv));
+  const auto size_before_drain = std::filesystem::file_size(csv);
+
+  // Deliberately sleep instead of SpinUntil: pumping exec_ here would service the
+  // node's default callback group too, so a drain timer wrongly created outside
+  // cb_group_aux_ would still run and the growth below would prove nothing. With
+  // only aux_thread spinning, growth can come from nothing but the aux lane. The
+  // CommLoop keeps filling the SPSC on its own thread either way.
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  bool drained = false;
+  while (!drained && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(50ms);
+    drained = std::filesystem::file_size(csv) > size_before_drain;
+  }
+  EXPECT_TRUE(drained) << "the 1 Hz aux timer never drained the timing CSV — cb_group_aux_ "
+                          "is not being serviced by the aux executor";
+
+  // Tear the runtime down while the aux executor is still spinning: this is the
+  // window StopRuntime()'s quiesce barrier exists for. Note loopmodel disables
+  // the failure detector (enable_fd && !use_fake_hand_), so the detector-reset
+  // ordering inside that barrier is exercised only on real/firmware SIL paths.
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+
+  aux_exec.cancel();
+  aux_thread.join();
+  aux_exec.remove_callback_group(node->GetAuxCallbackGroup());
+  exec_.remove_node(node->get_node_base_interface());
+}
+
+// shutdown() from Active must run the deactivate path. rclcpp_lifecycle dispatches
+// a transition callback only after the machine has entered the transition state,
+// so on_shutdown's former `get_current_state() == PRIMARY_STATE_ACTIVE` guard was
+// never true: shutdown-from-Active skipped deactivate entirely (issue #345).
+//
+// Discriminator: the timing CSV again, made timing-independent by never spinning
+// the aux executor here — with cb_group_aux_ unserviced the 1 Hz drain cannot run
+// at all, so the file cannot grow while Active and the only remaining writer is
+// on_deactivate's straggler drain. Growth across shutdown() therefore proves the
+// deactivate path ran.
+TEST_F(UdpHandNodeLifecycleTest, ShutdownFromActiveRunsTheDeactivatePath) {
+  auto node = std::make_shared<UdpHandNode>(LoopmodelOptions());
+  auto probe = std::make_shared<rclcpp::Node>("hand_shutdown_probe");
+
+  int joint_count = 0;
+  auto joint_sub = probe->create_subscription<sensor_msgs::msg::JointState>(
+      "/hand/joint_states", rclcpp::QoS(rclcpp::KeepLast(10)).best_effort(),
+      [&](sensor_msgs::msg::JointState::SharedPtr) { ++joint_count; });
+
+  exec_.add_node(node->get_node_base_interface());
+  exec_.add_node(probe);
+
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+
+  // Several published states means thousands of 2 kHz CommLoop ticks have pushed
+  // timing samples, so the SPSC certainly holds undrained rows.
+  ASSERT_TRUE(SpinUntil([&] { return joint_count >= 5; }, 10s));
+
+  const auto csv = session_dir_ / "timing" / "hand_udp_timing_log.csv";
+  ASSERT_TRUE(std::filesystem::exists(csv));
+  const auto size_before_shutdown = std::filesystem::file_size(csv);
+
+  ASSERT_EQ(node->shutdown().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_FINALIZED);
+
+  EXPECT_GT(std::filesystem::file_size(csv), size_before_shutdown)
+      << "shutdown() from Active never drained the timing CSV — on_deactivate was "
+         "skipped, so the runtime was released without the deactivate path";
 
   exec_.remove_node(probe);
   exec_.remove_node(node->get_node_base_interface());
