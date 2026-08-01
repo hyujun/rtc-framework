@@ -330,20 +330,63 @@ def test_process_pin_defaults_to_main_thread_only(_stub_script_paths):
     assert "main thread" in snippet
 
 
-def test_process_pin_all_threads_uses_taskset_dash_a(_stub_script_paths):
-    """all_threads=True (hand driver) sweeps every TID — taskset -acp.
+def test_process_pin_has_no_all_threads_scope(_stub_script_paths):
+    """The ``-a`` sweep is gone, not merely unused (issue #345).
 
-    The hand CommLoop RT thread + failure detector self-set cpu_core=-1 and are
-    created in on_activate before the pin timer fires, so only -a reaches them
-    (#245). Assert the flag flips the taskset scope.
+    It existed for the hand driver, whose CommLoop and detector inherit the
+    process pin. That process now pins its own threads and deliberately puts
+    ``hand_aux_io`` on a *different* core, so a blanket all-thread sweep would
+    undo the split. Removing the parameter is what stops it coming back: an
+    unused-but-tested knob is an invitation, and the failure it causes is silent
+    (everything runs, on one core again).
+    """
+    with pytest.raises(TypeError):
+        pinning.pin_process_to_slot(
+            "udp_hand_node",
+            "udp_hand_node",
+            7,
+            all_threads=True,  # type: ignore[call-arg]
+        )
+
+
+# ── Process-specific DDS-pin exclusions (issue #345) ─────────────────────────
+
+
+def test_dds_pin_protects_extra_names(_stub_script_paths):
+    """``extra_protected_names`` reaches the rendered exclusion list.
+
+    ``hand_aux_io`` is SCHED_OTHER and lives outside thread_config.hpp, so
+    neither the FIFO guard nor the name mirror would skip it — the sweep would
+    pull it off the aux slot back onto the hand_driver core, which is precisely
+    the ``taskset -a`` harm this replaced.
     """
     snippet = (
-        pinning.pin_process_to_slot("udp_hand_node", "udp_hand_node", 7, all_threads=True)
+        pinning.pin_dds_threads_to_slot(
+            "udp_hand_node", "udp_hand_node", 7, extra_protected_names={"hand_aux_io"}
+        )
         .cmd[2][0]
         .text
     )
-    assert 'taskset -acp "$CPU" "$PID"' in snippet
-    assert "all threads" in snippet
+    assert " hand_aux_io " in snippet
+    # And the baseline exclusions survive the merge.
+    for name in pinning.RTC_OWNED_THREAD_NAMES:
+        assert f" {name} " in snippet
+
+
+def test_dds_pin_extra_names_do_not_leak_into_the_shared_set(_stub_script_paths):
+    """Per-call only. A mutated module-level frozenset would silently protect
+    ``hand_aux_io`` in the *controller* process too, where no such thread exists
+    today but a future one with that name would be skipped for no reason."""
+    pinning.pin_dds_threads_to_slot(
+        "udp_hand_node", "udp_hand_node", 7, extra_protected_names={"hand_aux_io"}
+    )
+    assert "hand_aux_io" not in pinning.RTC_OWNED_THREAD_NAMES
+    snippet = (
+        pinning.pin_dds_threads_to_slot("integrated_rt_controller", "integrated_rt_controller", 2)
+        .cmd[2][0]
+        .text
+    )
+    assert " hand_aux_io " not in snippet
 
 
 # ── Shield adopt action (issue #151) ─────────────────────────────────────────

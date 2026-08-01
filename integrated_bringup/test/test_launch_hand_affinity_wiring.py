@@ -96,7 +96,7 @@ def _parameter_expr(call: ast.Call, key: str) -> ast.expr | None:
         for element in ast.walk(kw.value):
             if not isinstance(element, ast.Dict):
                 continue
-            for dict_key, dict_value in zip(element.keys, element.values):
+            for dict_key, dict_value in zip(element.keys, element.values, strict=True):
                 if isinstance(dict_key, ast.Constant) and dict_key.value == key:
                     return dict_value
     return None
@@ -138,3 +138,71 @@ def test_use_cpu_affinity_is_forwarded_as_a_bool(filename: str) -> None:
 @pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
 def test_sim_launches_have_no_hand_driver_process(filename: str) -> None:
     assert _hand_node_call(_source(filename)) is None
+
+
+# ── The hand pin is a DDS co-pin, not an all-thread sweep (issue #345) ───────
+
+
+def _hand_pin_call(source: str) -> ast.Call | None:
+    """The pinning call whose first argument labels the hand node."""
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if not node.func.id.startswith("pin_"):
+            continue
+        if (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "udp_hand_node"
+        ):
+            return node
+    return None
+
+
+@pytest.mark.parametrize("filename", HAND_LAUNCH_FILES)
+def test_hand_pin_uses_the_dds_helper(filename: str) -> None:
+    """``pin_process_to_slot`` pinned every TID onto the hand_driver core.
+
+    That is now wrong: the aux lane belongs on a different core, and the process
+    pins its own threads. The remaining job is the DDS threads rclcpp::init()
+    creates before the node exists.
+    """
+    call = _hand_pin_call(_source(filename))
+    assert call is not None, f"{filename} no longer pins udp_hand_node at all"
+    assert isinstance(call.func, ast.Name)
+    assert call.func.id == "pin_dds_threads_to_slot", (
+        f"{filename} pins the hand process with {call.func.id}; an all-thread "
+        "sweep would drag hand_aux_io back onto the hand_driver core"
+    )
+
+
+@pytest.mark.parametrize("filename", HAND_LAUNCH_FILES)
+def test_hand_pin_protects_the_aux_thread(filename: str) -> None:
+    """hand_aux_io must be named explicitly.
+
+    It is SCHED_OTHER and absent from thread_config.hpp, so the helper's two
+    default filters — the RTC-owned name mirror and the FIFO guard — both miss
+    it. Without this argument the sweep silently re-collapses the lane split.
+    """
+    call = _hand_pin_call(_source(filename))
+    assert call is not None
+    protected: set[str] = set()
+    for kw in call.keywords:
+        if kw.arg != "extra_protected_names":
+            continue
+        for element in ast.walk(kw.value):
+            if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                protected.add(element.value)
+    assert "hand_aux_io" in protected, (
+        f"{filename} does not protect hand_aux_io from the DDS sweep (found {protected or 'none'})"
+    )
+
+
+@pytest.mark.parametrize("filename", HAND_LAUNCH_FILES)
+def test_no_launch_requests_an_all_thread_sweep(filename: str) -> None:
+    """Belt-and-suspenders against the flag returning under any caller."""
+    source = _source(filename)
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                assert kw.arg != "all_threads", f"{filename} still requests an all-thread sweep"

@@ -67,7 +67,6 @@ from rtc_tools.launch import cpu_shield as shield
 from rtc_tools.launch.cm_rt_params import control_rate_from_yaml, write_cm_rt_param_file
 from rtc_tools.launch.pinning import (
     pin_dds_threads_to_slot,
-    pin_process_to_slot,
 )
 from rtc_tools.launch.thread_layout import (
     get_arm_driver_core,
@@ -427,22 +426,32 @@ def generate_launch_description():
     # ── External driver CPU pinning (Phase 6) ─────────────────────────────────
     # Pins via tier-aware slot resolution. SystemThreadConfigs.{arm,hand}_driver
     # is the C++ SSoT; rtc_tools.launch.thread_layout mirrors it for launch.
-    # These are slot indices — pin_process_to_slot resolves them to logical CPU
+    # These are slot indices — the pinning helpers resolve them to logical CPU
     # ids via rt_common.sh::slot_to_logical_cpu (issue #163).
     #
     # The arm driver is NOT here: taskset cannot reach its RT loop, so it is
     # pinned through controller_manager's own cpu_affinity parameter instead
     # (_build_cm_rt_params above, issue #343).
     hand_driver_slot = get_hand_driver_core()
-    # all_threads=True: the hand driver's CommLoop RT thread (hand_udp_recv) and
-    # failure detector are created in on_activate with cpu_core=-1 and inherit the
-    # process pin, so a main-thread-only taskset would leave them behind. `-a`
-    # sweeps every existing thread onto the hand_driver core (issue #245).
+    # The `taskset -a` sweep this replaces is gone (issue #345). The hand process
+    # now pins its own threads from inside — main to hand_driver, hand_aux_io to
+    # the aux slot — so the sweep is both redundant and harmful: `-a` would drag
+    # hand_aux_io back onto the hand_driver core.
+    #
+    # What still needs an outside pin is the DDS threads. rclcpp::init() creates
+    # them before the node exists, so no in-process self-pin can reach them, and
+    # the acceptance criterion still puts them on the hand_driver slot. This is
+    # the same helper the controller process uses; it skips RTC-placed threads by
+    # name and any SCHED_FIFO thread, with hand_aux_io named explicitly because it
+    # lives outside the thread_config.hpp SSoT the default list mirrors.
     pin_hand_driver = TimerAction(
         period=3.0,
         actions=[
-            pin_process_to_slot(
-                "udp_hand_node", "udp_hand_node", hand_driver_slot, all_threads=True
+            pin_dds_threads_to_slot(
+                "udp_hand_node",
+                "udp_hand_node",
+                hand_driver_slot,
+                extra_protected_names={"hand_aux_io"},
             )
         ],
     )
