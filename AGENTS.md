@@ -119,11 +119,17 @@ grep 이 정당한 코드를 invariant 위반으로 잘못 잡았다고 판단�
 
 `colcon build`와 `colcon test`는 반드시 colcon workspace root(`<rtc_ws>` = `~/ros2_ws/rtc_ws`)에서 실행한다. repository root(`src/rtc-framework`)에서 실행하면 그 안에 별도 `build/`·`install/`·`log/` 트리가 생기고, 이후 호출마다 두 트리를 오가게 된다.
 
-**모든 colcon 호출을 `cd <rtc_ws> &&` 로 시작한다.** 환경은 절대 경로로 source 한다 — `source <rtc_ws>/src/rtc-framework/repo_scripts/scripts/setup_env.sh`. ws-root 로 갈 수 없으면 절대경로 `--build-base` / `--install-base` 를 지정한다. `build.sh` / `install.sh` 는 내부에서 workspace 로 이동하므로 안전하다.
+**표준형은 서브셸이다:**
+
+```bash
+( cd <rtc_ws> && source <rtc_ws>/src/rtc-framework/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && colcon … )
+```
+
+ws-root cwd 와 절대경로 source 를 둘 다 만족하면서 **호출이 끝나면 cwd 를 원래 위치로 되돌린다**. `cd <rtc_ws> &&` 로 시작만 해도 규칙 자체는 지켜지지만 그 다음 호출부터 cwd 가 ws root 에 남아, 세션 인계 노트가 "cd 금지" 라는 반대 규율을 따로 만들어 내는 원인이 됐다. ws-root 로 갈 수 없으면 절대경로 `--build-base` / `--install-base` 를 지정한다. `build.sh` / `install.sh` 는 내부에서 workspace 로 이동하므로 안전하다.
 
 이 규칙은 몰라서가 아니라 **cwd drift** 로 재발한다. 셸의 cwd 는 호출 사이에 유지되므로, grep 하려고 repo 로 이동한 뒤 *다음* 호출에서 colcon 을 치면 그게 이미 위반이다. 증상이 빌드 실패가 아니라는 점이 비싸다 — **같은 세션의 검증들이 서로 모순되는 결과를 낸다** (한 테스트는 수정된 코드로, 다른 테스트는 stale 바이너리로 돈다). 검증 결과가 설명 불가하게 엇갈리면 코드를 의심하기 전에 `ls src/rtc-framework/build` 부터 확인한다.
 
-**`source` 를 파이프라인에 넣지 않는다.** `source setup_env.sh 2>&1 | tail -2 && colcon build …` 처럼 쓰면 source 가 subshell 에서 실행돼 환경이 부모 셸에 반영되지 않는다. 조용히 성공한 것처럼 보이는 게 함정이다 — `colcon` 자체는 PATH 에 있어 빌드가 시작되고, 한참 뒤 CMake 안에서 `ModuleNotFoundError: No module named 'ament_package'` 같은 **원인을 가리키지 않는 에러**로 죽는다. 출력을 줄이려면 리다이렉션(`source … >/dev/null 2>&1`)을 쓴다. 이 실패를 `Python3_EXECUTABLE` 탓으로 오진하기 쉬운데, 감별은 `/usr/bin/python3 -c "import ament_package"` 한 줄이면 된다.
+**`source` 를 파이프라인에 넣지 않는다.** `source setup_env.sh 2>&1 | tail -2 && colcon build …` 처럼 쓰면 source 가 subshell 에서 실행돼 환경이 부모 셸에 반영되지 않는다. 위 표준형과 상충하지 않는다 — 거기서는 `source` 와 `colcon` 이 **같은** 서브셸 안에 있고, 문제는 파이프가 만든 서브셸에 `colcon` 이 안 들어가는 것이다. 조용히 성공한 것처럼 보이는 게 함정이다 — `colcon` 자체는 PATH 에 있어 빌드가 시작되고, 한참 뒤 CMake 안에서 `ModuleNotFoundError: No module named 'ament_package'` 같은 **원인을 가리키지 않는 에러**로 죽는다. 출력을 줄이려면 리다이렉션(`source … >/dev/null 2>&1`)을 쓴다. 이 실패를 `Python3_EXECUTABLE` 탓으로 오진하기 쉬운데, 감별은 `/usr/bin/python3 -c "import ament_package"` 한 줄이면 된다.
 
 repository 안에 잘못 생성된 `build/`, `install/`, `log/`는 잘못된 CWD의 신호다. **이 repo-local 트리는 재생성 가능하므로 확인 없이 삭제한다.** 절대 건드리지 않아야 하는 것은 workspace root(`<rtc_ws>/{build,install,log}`)의 정상 incremental cache 이며, 둘을 혼동하지 않는다.
 
