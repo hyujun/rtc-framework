@@ -110,7 +110,7 @@ jobs:
           echo "build=${BUILD}"
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@v4.37.3
         with:
           languages: cpp
           # queries 미지정 → v4 기본 default suite (security only) 사용.
@@ -170,6 +170,6 @@ jobs:
           label: post-build
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@v4.37.3
         with:
           category: "/language:cpp"
