@@ -679,6 +679,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::S
 }
 
 UdpHandNode::CallbackReturn UdpHandNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
+  // Unconditional, not state-conditional: ReleaseResources() must never run
+  // while an aux-lane callback can still be in flight, and StopRuntime() is the
+  // only thing that guarantees that. Making every caller responsible for
+  // ordering it left the guarantee resting on an invariant nothing enforced —
+  // and on_shutdown's guard silently failed to hold it (issue #345). Every
+  // branch inside StopRuntime() is null-guarded and both Stop()s are idempotent,
+  // so the configure -> cleanup path (controller built, never started) is a
+  // no-op beyond one "stopped: 0 cycles" log line.
+  StopRuntime();
   SaveCommStats();
   ReleaseResources();
 
@@ -687,7 +696,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_cleanup(const rclcpp_lifecycle::Stat
 }
 
 UdpHandNode::CallbackReturn UdpHandNode::on_shutdown(const rclcpp_lifecycle::State& state) {
-  if (get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+  // `state` — NOT get_current_state(). rclcpp_lifecycle dispatches transition
+  // callbacks after moving the machine into the transition state, so inside this
+  // callback get_current_state() is TRANSITION_STATE_SHUTTINGDOWN and never
+  // PRIMARY_STATE_ACTIVE; the previous primary state arrives as the argument.
+  // The old get_current_state() form was therefore dead, and shutdown-from-active
+  // skipped the deactivate path entirely (issue #345).
+  if (state.id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
     on_deactivate(state);
   }
   return on_cleanup(state);
@@ -710,7 +725,7 @@ void UdpHandNode::StopRuntime() {
   // Quiesce the aux lane first. cancel() guarantees no *further* invocation, but
   // says nothing about one already running on the hand_aux_io thread, so take
   // aux_lane_mutex_ empty as a barrier once no new callback can start. The
-  // detector is stopped before the barrier because its failure callback is the
+  // detector is joined before the barrier because its failure callback is the
   // third SaveCommStats caller — joining it first makes the barrier conclusive
   // rather than a snapshot (issue #345).
   if (stats_save_timer_) {
@@ -724,10 +739,20 @@ void UdpHandNode::StopRuntime() {
     hand_udp_timing_timer_.reset();
   }
   if (failure_detector_) {
+    // Join outside the lock: the detector's failure callback is itself a
+    // SaveCommStats caller, so it can be blocked on aux_lane_mutex_ — joining
+    // while holding that mutex would deadlock against the thread being joined.
     failure_detector_->Stop();
+  }
+  {
+    // Barrier and destruction share one critical section. An aux callback that
+    // already entered SaveCommStats holds this mutex and dereferences
+    // failure_detector_ directly (it is a unique_ptr, so the reader gets no
+    // ownership), which means a reset placed before the barrier frees the
+    // object out from under a live reader.
+    std::lock_guard<std::mutex> quiesce(aux_lane_mutex_);
     failure_detector_.reset();
   }
-  { std::lock_guard<std::mutex> quiesce(aux_lane_mutex_); }
   // Call Stop() unconditionally (it is idempotent). The IsRunning() guard was
   // removed because the E-Stop self-exit path now clears running_ from inside
   // the CommLoop (#4), so a guarded Stop() would skip the required Join() +
@@ -740,8 +765,15 @@ void UdpHandNode::StopRuntime() {
 void UdpHandNode::ReleaseResources() {
   // Aux-lane timers first, for the same reason StopRuntime() cancels them: their
   // callbacks run on the hand_aux_io thread and touch controller_, which this
-  // function resets below (issue #345). on_cleanup reaches here without
-  // StopRuntime(), so the reset cannot rely on that path alone.
+  // function resets below (issue #345).
+  //
+  // Precondition — every caller (on_cleanup, on_error) runs StopRuntime() first,
+  // so by the time controller_ is reset the aux timers are gone, the detector is
+  // joined, and the quiesce barrier has waited out any in-flight callback. That
+  // ordering is what makes the reset below safe; it is deliberately not
+  // re-established here, because controller_'s destructor joins the CommLoop and
+  // holding aux_lane_mutex_ across a join is the deadlock shape StopRuntime()
+  // documents.
   stats_save_timer_.reset();
   hand_udp_timing_timer_.reset();
   calib_status_timer_.reset();
