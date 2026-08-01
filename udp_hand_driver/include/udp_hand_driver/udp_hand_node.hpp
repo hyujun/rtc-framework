@@ -204,7 +204,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   void PublishCalibrationStatus();
 
   // Persist comm/timing stats to <session>/device/hand_udp_stats.json.
-  // Three concurrent call contexts, serialized by save_stats_mutex_:
+  // Three concurrent call contexts, serialized by aux_lane_mutex_:
   //   1. the periodic timer, on the `hand_aux_io` thread (cb_group_aux_)
   //   2. the failure-detector thread, from its failure callback
   //   3. lifecycle teardown (on_deactivate / on_cleanup / on_error / ~UdpHandNode),

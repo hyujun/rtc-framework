@@ -8,10 +8,13 @@
 #   5. DDS thread pinning runs 5 s after the CM process starts
 #
 # Core allocation optimizations applied:
-#   C) udp_hand_node pinned via tier-aware taskset, and the UR driver's RT loop
-#      via controller_manager's native cpu_affinity parameter — taskset reaches
-#      only a process's main thread, which for ros2_control_node is the executor,
-#      not the 500 Hz loop (issue #343). Slots come from
+#   C) udp_hand_node pins its own threads from inside — main to the hand_driver
+#      slot, hand_aux_io to the aux slot (issue #345) — so the launch only
+#      co-pins the DDS threads rclcpp::init() creates before the node exists.
+#      The UR driver's RT loop goes through controller_manager's native
+#      cpu_affinity parameter — taskset reaches only a process's main thread,
+#      which for ros2_control_node is the executor, not the 500 Hz loop
+#      (issue #343). Slots come from
 #      rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core (SSoT in
 #      rtc::SystemThreadConfigs.{arm,hand}_driver) when use_cpu_affinity:=true
 #   D) integrated_rt_controller DDS threads co-pinned to the rt_callback core

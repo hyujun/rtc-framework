@@ -100,6 +100,8 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
 
 `use_cpu_affinity:=false` 는 프로세스 안의 두 pin(main → `hand_driver`, `hand_aux_io` → aux)을 건너뛴다. **스케줄링 정책은 유지되므로** CommLoop 은 그대로 SCHED_FIFO 65 다 — 코어 confinement 만 사라진다.
 
+> ⚠️ **실기 RT 배포에서는 `use_cpu_affinity:=false` 를 쓰지 말 것.** 정책이 남는다는 바로 그 성질이 위험이다 — pin 이 없는 FIFO 65 CommLoop 은 스케줄러가 고르는 아무 코어로나 이주할 수 있고, `mpc_main`(FIFO 60)이나 `mpc_workers`(FIFO 55)가 핀된 코어에 올라가면 **우선순위가 더 높으므로 그 컨트롤러 tick 을 선점**한다 (`rt_control` 90 · `rt_callback` 70 은 65 보다 높아 영향 없음). 이 스위치는 격리가 아예 없는 환경 — 개발 노트북, 컨테이너, cpuset 없는 CI — 전용이다.
+
 ### NRT publish mailbox
 
 publish 는 CommLoop 이 호출하는 콜백(push)이 아니라 executor 가 당겨가는 **pull** 이다. RT tick 은 `state_seqlock_` / `ft_seqlock_` 에 고정 크기 POD 를 store 만 하고, `now()` · 메시지 작성 · publish 는 전부 NRT 레인에서 일어난다.
@@ -409,6 +411,12 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `fake_lpf_time_constant_s` | `0.1` | (fake) 1차 LPF 시정수 τ [s] — read-back position 이 command 를 추종하는 지연 |
 | `fake_effort_stiffness` | `1.0` | (fake) effort kp: `kp·(cmd−pos)` |
 | `fake_effort_damping` | `0.1` | (fake) effort kd: `−kd·vel` (PD-torque placeholder) |
+| `aux_cpu_slot` | `0` | `hand_aux_io` 스레드가 붙을 slot (blocking 파일 I/O 레인, 위 "스레드 모델" 참조). slot 인덱스이며 shell SSoT 는 `rt_common.sh::get_os_cores()`. `-1` = 이 레인 pin 안 함 |
+| `use_cpu_affinity` | `true` | 프로세스 내부 pin 2개(main → `hand_driver` slot, `hand_aux_io` → aux slot) 활성화. 스케줄링 정책은 무관 — `false` 여도 CommLoop 은 SCHED_FIFO 65 |
+
+> 위 두 파라미터만 노드 **생성자**에서 declare 된다 — `main()` 이 spin 전에, 즉 어떤
+> lifecycle transition 보다 먼저 읽어야 하는 프로세스 스레드 배치이기 때문이다.
+> 나머지는 전부 `on_configure`(Tier 1) 에서 declare 된다.
 
 > 참고: `joint_mode`는 사용되지 않습니다 (코드에서 항상 write=kJoint, read=kMotor+kJoint dual read).
 
@@ -461,6 +469,7 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 | `recv_timeout_ms` | `0.4` | ppoll 수신 타임아웃 (ms) |
 | `protocol_version` | `1a` | `"1a"` (int32 baro/ToF, bulk 259B) 또는 `"1b"` (float force, bulk 99B). 노드+firmware 양쪽 전파 |
 | `sil_mode` | `off` | SIL 진입점 (아래 "SIL 모드" 참조): `off` (실 HW) / `loopmodel` (controller-side LPF) / `firmware` (device-side loopback) |
+| `use_cpu_affinity` | `true` | 프로세스 내부 pin 2개(main → `hand_driver` slot, `hand_aux_io` → aux slot) 활성화. `false` 는 pin 만 끄고 SCHED_FIFO 65 는 유지 (위 "스레드 모델" 경고 참조). `aux_cpu_slot` 은 launch 인자가 아니라 yaml 전용 |
 
 > launch 인자는 모두 yaml 값의 **override** 다 — 값을 주지 않으면(빈 문자열) 해당
 > yaml 파라미터를 그대로 쓴다(입력 config 는 `config/udp_hand_node.yaml` 1개 + 예시

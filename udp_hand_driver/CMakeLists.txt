@@ -27,6 +27,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(lifecycle_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rtc_base REQUIRED)
@@ -58,6 +59,7 @@ target_link_libraries(udp_hand_node udp_hand_protocol)
 ament_target_dependencies(udp_hand_node
   rclcpp
   rclcpp_lifecycle
+  lifecycle_msgs
   sensor_msgs
   std_msgs
   rtc_base
