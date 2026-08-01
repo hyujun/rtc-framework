@@ -28,9 +28,12 @@
 // device at loop_rate_hz (default 500 Hz):
 //   [write position (only when commanded)] -> read motors -> read sensors
 //
-// Publishes full state directly from the CommLoop callback (no ROS timer). The
-// read/state-publish rate is autonomous at loop_rate_hz and does not depend on
-// command arrival; the write UDP runs only when /…/joint_command was received.
+// The CommLoop publishes nothing itself: it stores a POD snapshot into a SeqLock
+// and a timer on the executor thread polls that sequence and publishes (issue
+// #345 — before it, now() + message fill + five publishes ran on the SCHED_FIFO
+// 65 thread). The read/state-publish rate is autonomous at loop_rate_hz and does
+// not depend on command arrival; the write UDP runs only when /…/joint_command
+// was received.
 //
 // Pre-allocated messages avoid dynamic allocation on the publish path.
 // Receives commands on the command_topic (default /hand/joint_command).
@@ -40,7 +43,7 @@
 //   Active -> on_deactivate -> Inactive -> on_cleanup -> Unconfigured
 //
 // Tier 1 (on_configure): parameters, controller, publishers, subscribers,
-//   timers, pre-allocated messages, EventLoop callback.
+//   timers (including the NRT publish poll), pre-allocated messages.
 // Tier 2 (on_activate): controller Start, fake tick timer, failure detector.
 // Tier 0 (constructor): *only* what main() must know before it spins — the aux
 //   callback group and the thread-layout parameter. See UdpHandNode().
@@ -245,7 +248,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Per-joint position offset (URDF/controller frame − firmware zero), radians.
   // Parsed once in on_configure from the `joint_position_offsets_deg` YAML list
   // (degrees, joint_state_names order). Applied at the two ROS boundaries only:
-  //   read/publish : controller_pos = udp_pos + offset  (PublishFromEventLoop)
+  //   read/publish : controller_pos = udp_pos + offset  (PublishState)
   //   command/write: udp_cmd        = controller_cmd − offset  (command sub)
   // so the round-trip is identity. Zero by default → backward compatible.
   // Position-only: velocity/effort and motor-space positions are untouched.

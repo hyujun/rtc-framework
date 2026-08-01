@@ -312,7 +312,7 @@ def test_dds_pin_sweep_stays_one_shot(_stub_script_paths):
     assert "sleep" not in snippet, "sweep grew a sleep — see #164 before making it periodic"
 
 
-# ── Process-pin thread scope: all_threads flag (issue #245) ──────────────────
+# ── Process-pin thread scope (issue #245 -> removed by #345) ─────────────────
 
 
 def test_process_pin_defaults_to_main_thread_only(_stub_script_paths):
