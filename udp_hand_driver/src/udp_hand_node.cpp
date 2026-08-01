@@ -24,24 +24,36 @@ int main(int argc, char** argv) {
     RCLCPP_WARN(logger, "mlockall failed (errno=%d: %s)", errno, strerror(errno));
   }
 
+  // Construct before pinning (issue #345, decision D3). The self-pin used to run
+  // here, *before* the node existed, and therefore could not read
+  // `use_cpu_affinity` — the old comment admitted as much, calling it correct
+  // "even when use_cpu_affinity:=false". That made the switch a launch-only
+  // concept the process itself ignored. The node declares the two thread-layout
+  // parameters in its constructor, so from this line on they are readable, and
+  // the pin still lands before any worker thread exists (on_activate creates
+  // them) — inheritance is unaffected.
+  auto node = std::make_shared<UdpHandNode>();
+
   // Pin the main thread (ROS2 executor + DDS) to the tier-aware hand_driver
   // core so the worker threads spawned later in on_activate — the CommLoop RT
   // thread (hand_udp_recv, SCHED_FIFO 65) and the failure detector — INHERIT
-  // that affinity. Both self-set cpu_core=-1 and rely on inheriting the hand
-  // process affinity (thread_config.hpp: "hand UDP recv inherits affinity from
-  // the launch-level taskset, NOT represented in SystemThreadConfigs"). Pinning
-  // here rather than the old hardcoded {0,1} makes that inheritance land on the
-  // planned core (12-core NUC13: hand slot 7 -> logical 11) even before the
-  // launch taskset fires — and correctly even when use_cpu_affinity:=false, so
-  // the RT comm loop is never left on the shared OS/DDS cores. The launch-level
-  // `taskset -a` remains as belt-and-suspenders (it also sweeps the DDS threads
-  // rclcpp spawned during init(), before this pin). cpu_core is a *slot index*;
-  // SlotToLogicalCpu translates it to a logical CPU (identity when sysfs is
-  // unavailable, e.g. a container) — the same translation ApplyThreadConfig and
-  // the launch pinning use (issue #163). Affinity only: the thread name stays
-  // "udp_hand_node" so the launch pgrep -nx match is unaffected.
-  {
-    const int hand_slot = rtc::SelectThreadConfigs().hand_driver.cpu_core;
+  // that affinity. Both keep cpu_core=-1 and rely on inheriting the process
+  // affinity; hand_udp_recv deliberately still does, because giving it an
+  // explicit slot would add a failure path where ApplyThreadConfig's affinity
+  // step fails and takes SCHED_FIFO 65 *and* the thread name down with it
+  // (it returns early on affinity failure), and a thread with no name is a
+  // thread verify_rt_runtime.sh cannot find.
+  //
+  // cpu_core is a *slot index*; SlotToLogicalCpu translates it to a logical CPU
+  // (identity when sysfs is unavailable, e.g. a container) — the same
+  // translation ApplyThreadConfig and the launch pinning use (issue #163).
+  // Affinity only: the thread name stays "udp_hand_node" so the launch pgrep -nx
+  // match is unaffected.
+  const int hand_slot = udp_hand_driver::ResolvePinSlot(
+      rtc::SelectThreadConfigs().hand_driver.cpu_core, node->UseCpuAffinity());
+  if (hand_slot < 0) {
+    RCLCPP_INFO(logger, "Main thread CPU affinity disabled (use_cpu_affinity:=false)");
+  } else {
     const int logical_cpu = rtc::SlotToLogicalCpu(hand_slot);
     if (logical_cpu < 0) {
       RCLCPP_WARN(logger, "Main thread CPU affinity skipped (hand slot %d unresolved)", hand_slot);
@@ -57,8 +69,6 @@ int main(int argc, char** argv) {
       }
     }
   }
-
-  auto node = std::make_shared<UdpHandNode>();
 
   // ── Lane split (issue #345) ────────────────────────────────────────────────
   // Two SingleThreadedExecutors over one node:

@@ -514,6 +514,16 @@ def generate_launch_description():
             # so an unqualified LaunchConfiguration coerces to bool and clashes with
             # the node's string declaration during on_configure.
             {"sil_mode": ParameterValue(LaunchConfiguration("sil_mode"), value_type=str)},
+            # The hand process pins its own threads now (issue #345): the main
+            # thread to the hand_driver slot and hand_aux_io to the aux slot. It
+            # has to see the same switch the launch-level pinning obeys, or
+            # use_cpu_affinity:=false would silently leave the in-process pins
+            # in place. value_type=bool converts the "true"/"false" arg string.
+            {
+                "use_cpu_affinity": ParameterValue(
+                    LaunchConfiguration("use_cpu_affinity"), value_type=bool
+                )
+            },
         ],
         emulate_tty=True,
     )

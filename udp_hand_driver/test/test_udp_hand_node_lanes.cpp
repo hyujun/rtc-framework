@@ -98,11 +98,50 @@ TEST_F(UdpHandNodeLaneTest, AuxCpuSlotHonoursParameterOverride) {
 
 // A negative slot is the repo-wide "do not pin" sentinel (thread_config.hpp
 // cpu_core == -1); ApplyThreadConfig skips the affinity step entirely for it.
-// Phase 4 (use_cpu_affinity:=false) relies on this passing through unclamped.
 TEST_F(UdpHandNodeLaneTest, AuxCpuSlotPassesThroughTheNoPinSentinel) {
   auto node = MakeNode();
   node->set_parameter(rclcpp::Parameter("aux_cpu_slot", -1));
-  EXPECT_EQ(node->AuxCpuSlot(), -1);
+  EXPECT_EQ(node->AuxCpuSlot(), udp_hand_driver::kNoPinSlot);
+}
+
+// ── use_cpu_affinity contract (issue #345) ──────────────────────────────────
+
+TEST_F(UdpHandNodeLaneTest, CpuAffinityIsEnabledByDefault) {
+  auto node = MakeNode();
+  EXPECT_TRUE(node->UseCpuAffinity());
+}
+
+// The switch has to reach *both* lanes. Before this change the process pinned
+// its main thread before the node existed, so the parameter could not be read
+// at all and the pin happened regardless.
+TEST_F(UdpHandNodeLaneTest, DisablingAffinitySuppressesTheAuxPin) {
+  auto node = MakeNode();
+  node->set_parameter(rclcpp::Parameter("aux_cpu_slot", 3));
+  ASSERT_EQ(node->AuxCpuSlot(), 3);
+
+  node->set_parameter(rclcpp::Parameter("use_cpu_affinity", false));
+  EXPECT_EQ(node->AuxCpuSlot(), udp_hand_driver::kNoPinSlot);
+}
+
+TEST(UdpHandPinPolicy, ResolvePinSlotHonoursTheAffinitySwitch) {
+  EXPECT_EQ(udp_hand_driver::ResolvePinSlot(7, true), 7);
+  EXPECT_EQ(udp_hand_driver::ResolvePinSlot(0, true), 0);
+  EXPECT_EQ(udp_hand_driver::ResolvePinSlot(7, false), udp_hand_driver::kNoPinSlot);
+  EXPECT_EQ(udp_hand_driver::ResolvePinSlot(0, false), udp_hand_driver::kNoPinSlot);
+}
+
+// Already-unpinned stays unpinned — the switch can only remove pinning, never
+// introduce it.
+TEST(UdpHandPinPolicy, ResolvePinSlotKeepsAnAlreadyNegativeSlotNegative) {
+  EXPECT_LT(udp_hand_driver::ResolvePinSlot(udp_hand_driver::kNoPinSlot, true), 0);
+  EXPECT_LT(udp_hand_driver::ResolvePinSlot(udp_hand_driver::kNoPinSlot, false), 0);
+}
+
+// The sentinel must stay the value ApplyThreadConfig and pinning.py agree on:
+// cpu_core < 0 means "skip affinity, keep policy", which is what makes
+// use_cpu_affinity:=false leave the CommLoop at SCHED_FIFO 65.
+TEST(UdpHandPinPolicy, NoPinSlotMatchesTheRepoWideSentinel) {
+  EXPECT_EQ(udp_hand_driver::kNoPinSlot, -1);
 }
 
 // The thread config the aux lane is built from: CFS (never preempts the

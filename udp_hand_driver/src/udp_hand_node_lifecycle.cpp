@@ -21,16 +21,22 @@ UdpHandNode::UdpHandNode() : LifecycleNode("udp_hand_node") {
   // occur (issue #345):
   //   - cb_group_aux_ is handed to the aux executor at startup, and must be the
   //     same object across an on_cleanup -> on_configure cycle (see the member).
-  //   - aux_cpu_slot configures the hand_aux_io thread main() creates. Launch /
-  //     YAML values are applied at declare time, so declaring here still picks
-  //     up the configured value.
+  //   - aux_cpu_slot / use_cpu_affinity configure the threads main() pins before
+  //     it spins. Launch / YAML values are applied at declare time, so declaring
+  //     here still picks up the configured value.
   cb_group_aux_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
                                         /*automatically_add_to_executor_with_node=*/false);
   declare_parameter("aux_cpu_slot", 0);
+  declare_parameter("use_cpu_affinity", true);
+}
+
+bool UdpHandNode::UseCpuAffinity() const {
+  return get_parameter("use_cpu_affinity").as_bool();
 }
 
 int UdpHandNode::AuxCpuSlot() const {
-  return static_cast<int>(get_parameter("aux_cpu_slot").as_int());
+  return udp_hand_driver::ResolvePinSlot(static_cast<int>(get_parameter("aux_cpu_slot").as_int()),
+                                         UseCpuAffinity());
 }
 
 UdpHandNode::~UdpHandNode() {

@@ -14,6 +14,15 @@
 #                 (프로세스 spawn 은 launch 전용 — 노드는 peer 프로세스를 못 띄운다).
 #
 # `sil_mode:=firmware` 처럼 CLI 로 준 값이 yaml 의 sil_mode 를 이긴다.
+#
+# ── 지원 범위 (issue #345) ────────────────────────────────────────────────
+# 이 런치는 **프로세스 내부 pin 만** 다룬다 — 노드가 스스로 main 스레드를
+# hand_driver slot 에, hand_aux_io 를 aux slot 에 붙이고, `use_cpu_affinity`
+# 로 그것을 끌 수 있다. integrated_bringup 의 robot 런치에 있는 것들 —
+# cset shield, CM adopt, DDS 스레드 co-pin — 은 **여기 없다.** 즉 이 런치로
+# 띄운 프로세스는 shield 밖에서 돌고, DDS 스레드는 어디로든 흩어진다.
+# 실기 RT 구성은 robot_ur5e_p1{a,b}.launch.py 를 쓸 것. 이 런치는 개발 PC
+# 에서 노드 하나만 띄워 보는 용도다.
 import os
 
 import yaml
@@ -37,7 +46,22 @@ VALID_SIL_MODES = ("off", "loopmodel", "firmware")
 _FW_PORT_DEFAULT = 55151
 _FW_PROTO_DEFAULT = "1a"
 
+
 # launch arg → (yaml key, python caster). 빈 문자열이면 override 하지 않음(yaml 우선).
+def _as_bool(val):
+    """launch 문자열 → bool.
+
+    `bool("false")` 는 True 이므로 직접 매핑한다. YAML 1.1 이 "off"/"on" 도 boolean
+    으로 읽는 것과 맞춰 두어, sil_mode 와 달리 여기서는 그 coercion 이 의도된 것이다.
+    """
+    lowered = val.strip().lower()
+    if lowered in ("true", "1", "yes", "on"):
+        return True
+    if lowered in ("false", "0", "no", "off"):
+        return False
+    raise RuntimeError(f"invalid boolean launch value '{val}' (expected true/false)")
+
+
 _OVERRIDE_ARGS = [
     ("target_ip", str),
     ("target_port", int),
@@ -45,6 +69,7 @@ _OVERRIDE_ARGS = [
     ("communication_mode", str),
     ("recv_timeout_ms", float),
     ("protocol_version", str),
+    ("use_cpu_affinity", _as_bool),
 ]
 
 
@@ -184,6 +209,15 @@ def generate_launch_description():
             "protocol_version",
             default_value="",
             description="yaml protocol_version override (빈 값=yaml). firmware peer 에도 전파.",
+        ),
+        DeclareLaunchArgument(
+            "use_cpu_affinity",
+            default_value="",
+            description=(
+                "yaml use_cpu_affinity override (빈 값=yaml, 노드 기본 true). "
+                "false 면 프로세스 내부 pin(main → hand_driver slot, hand_aux_io → aux slot)을 "
+                "건너뛴다. 스케줄링 정책은 유지되므로 CommLoop 은 SCHED_FIFO 65 그대로다."
+            ),
         ),
     ]
     return LaunchDescription([*override_arg_decls, OpaqueFunction(function=_launch_setup)])

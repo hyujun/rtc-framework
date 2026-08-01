@@ -56,6 +56,25 @@
 // which `get_cm_shield_cpus` excludes from the shield — so pinning here needs no
 // cpuset change and cannot EINVAL under an active `cset shield`).
 namespace udp_hand_driver {
+// "Do not pin" sentinel. Mirrors ThreadConfig::cpu_core == -1
+// (rtc_base/threading/thread_config.hpp), which ApplyThreadConfig reads as
+// "skip the affinity step and keep policy/priority", and NO_PIN_SENTINEL in
+// rtc_tools/launch/pinning.py on the launch side.
+inline constexpr int kNoPinSlot = -1;
+
+/// The slot a thread should actually pin to, given the configured slot and the
+/// process-wide affinity switch.
+///
+/// One rule, two callers — main()'s own thread and the hand_aux_io thread — so
+/// `use_cpu_affinity:=false` cannot end up honoured in one lane and ignored in
+/// the other. Disabling affinity is deliberately *not* disabling the scheduler
+/// policy: ApplyThreadConfig skips only the affinity step for a negative slot,
+/// so the CommLoop keeps SCHED_FIFO 65 and merely stops being confined to a
+/// core (issue #345).
+[[nodiscard]] constexpr int ResolvePinSlot(int configured_slot, bool affinity_enabled) noexcept {
+  return affinity_enabled ? configured_slot : kNoPinSlot;
+}
+
 // How much faster than loop_rate_hz the NRT publish lane polls the state
 // SeqLock. The mailbox is latest-wins, so a poll can carry at most one publish:
 // sampling at exactly the production rate loses a sample every time two comm
@@ -129,10 +148,18 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
     return cb_group_aux_;
   }
 
-  /// Slot index for the aux lane, or a negative value meaning "do not pin".
-  /// Read from the `aux_cpu_slot` parameter; slot -> logical CPU translation is
-  /// ApplyThreadConfig's job (issue #163).
+  /// Slot the `hand_aux_io` thread should pin to — the `aux_cpu_slot` parameter
+  /// passed through ResolvePinSlot, so it is kNoPinSlot when affinity is off.
+  /// Slot -> logical CPU translation is ApplyThreadConfig's job (issue #163).
   [[nodiscard]] int AuxCpuSlot() const;
+
+  /// Whether this process pins threads at all (`use_cpu_affinity`, default true).
+  ///
+  /// Declared in the constructor rather than on_configure because main() applies
+  /// it before spinning — see UdpHandNode(). This is what closes the gap the old
+  /// main() self-pin left: it ran before the node existed, so it could not read
+  /// the switch and pinned unconditionally (issue #345, decision D3).
+  [[nodiscard]] bool UseCpuAffinity() const;
 
   CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
   CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
