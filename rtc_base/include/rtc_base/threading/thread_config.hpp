@@ -65,13 +65,20 @@ struct MpcThreadConfig {
 // (RT-safe contract on backends). DDS receive thread is co-pinned to the same
 // core as rt_callback (Core 2 on every tier except 4-core fallback) via
 // launch-time taskset for cache locality. Hand-private UDP receive thread
-// (priority 65) lives inside the hand_driver process and inherits affinity
-// from the launch-level taskset, so it is NOT represented in
-// SystemThreadConfigs.
+// (priority 65) lives inside the hand_driver process and inherits that
+// process's affinity, so it is NOT represented in SystemThreadConfigs. Since
+// issue #345 that affinity comes from the process pinning its own main thread
+// to hand_driver.cpu_core before it spins — not from a launch-level taskset
+// sweep. The sweep was removed because `-a` also dragged the same process's
+// blocking-file-I/O lane (hand_aux_io, a package-local ThreadConfig placed on
+// the OS slot) back onto the hand core, undoing the split it needs.
 //
 // process-level threads (arm_driver, hand_driver, sim_thread, viewer) are
-// SCHED_OTHER prio 0; only their cpu_core is consumed (launch-time pin), all
-// other fields are passed through ApplyThreadConfig as no-op.
+// SCHED_OTHER prio 0; only their cpu_core is consumed, all other fields are
+// passed through ApplyThreadConfig as no-op. The launch files apply that pin
+// for every entry except hand_driver, whose process reads this cpu_core itself
+// in main() (issue #345); launch then only co-pins its DDS threads, which
+// rclcpp::init() creates before the node exists.
 //
 // These entries model the *process*, not whatever RT thread runs inside it, and
 // must stay SCHED_OTHER for that reason. The UR arm driver is the sharp case:
