@@ -849,6 +849,102 @@ test_classify_external_rt_ignores_non_rt_threads() {
   expect_eq "cls.ignore.verdict" "OK" "${out%%|*}"
 }
 
+# ── rt_classify_external_thread_layout (issue #345, udp_hand_node) ────────────
+# 위 분류기는 "RT 스레드 하나 + 무명 나머지" 를, all-threads 검사는 "전부 같은
+# 코어" 를 가정한다. hand 는 셋 다 아니다 — CommLoop 은 FIFO 65 로 hand 코어,
+# hand_aux_io 는 CFS 로 aux 코어, 나머지(executor/DDS)는 CFS 로 hand 코어.
+# 여기서 external driver 의 **이름별 policy/priority** 를 처음으로 검사한다.
+
+# hand 코어 = logical 11 (12코어 NUC13 slot 7), aux = logical 0.
+_HAND_SPEC="hand_udp_recv:11:SCHED_FIFO:65 hand_aux_io:0:SCHED_OTHER:0"
+
+test_classify_layout_ok() {
+  local out
+  out=$(printf '%s\n' \
+    "100 udp_hand_node SCHED_OTHER 0 800" \
+    "101 hand_udp_recv SCHED_FIFO 65 800" \
+    "102 hand_aux_io SCHED_OTHER 0 1" \
+    "103 recv SCHED_OTHER 0 800" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  expect_eq "layout.ok.verdict" "OK" "${out%%|*}"
+}
+
+test_classify_layout_aux_dragged_back() {
+  # `taskset -a` 스윕이 되살아나면 정확히 이 모양이 된다 — aux 가 hand 코어로.
+  local out
+  out=$(printf '%s\n' \
+    "101 hand_udp_recv SCHED_FIFO 65 800" \
+    "102 hand_aux_io SCHED_OTHER 0 800" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  expect_eq "layout.aux_dragged.verdict" "WRONG_CPU" "${out%%|*}"
+}
+
+test_classify_layout_commloop_lost_fifo() {
+  # ApplyThreadConfig 가 affinity 실패로 조기 반환하면 정책이 안 붙는다.
+  local out
+  out=$(printf '%s\n' \
+    "101 hand_udp_recv SCHED_OTHER 0 800" \
+    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  expect_eq "layout.no_fifo.verdict" "WRONG_SCHED" "${out%%|*}"
+}
+
+test_classify_layout_wrong_prio() {
+  local out
+  out=$(printf '%s\n' \
+    "101 hand_udp_recv SCHED_FIFO 50 800" \
+    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  expect_eq "layout.wrong_prio.verdict" "WRONG_SCHED" "${out%%|*}"
+}
+
+test_classify_layout_aux_became_realtime() {
+  # 정책 검사가 *유일하게* 필요한 방향: OTHER 를 기대한 레인이 FIFO 로 도는 경우.
+  # 반대 방향(FIFO 기대인데 OTHER)은 prio 검사가 덤으로 잡으므로, 이 케이스가
+  # 없으면 정책 검사를 통째로 지워도 테스트가 전부 통과한다 (실측으로 확인함).
+  # 실제 위험도 있다 — aux 가 RT 로 승격되면 aux 코어를 선점할 뿐 아니라
+  # pin_dds_threads_to_slot 의 FIFO 가드가 그것을 조용히 건너뛰게 된다.
+  local out
+  out=$(printf '%s\n' \
+    "101 hand_udp_recv SCHED_FIFO 65 800" \
+    "102 hand_aux_io SCHED_FIFO 65 1" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  expect_eq "layout.aux_rt.verdict" "WRONG_SCHED" "${out%%|*}"
+}
+
+test_classify_layout_missing_thread() {
+  # 이름이 안 붙었거나(=ApplyThreadConfig 조기 반환) 레인이 안 떴을 때. 코어가
+  # 맞는지보다 먼저 보고돼야 한다 — 없는 스레드는 더 나쁜 발견이다.
+  local out
+  out=$(printf '%s\n' \
+    "101 hand_udp_recv SCHED_FIFO 65 800" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  expect_eq "layout.missing.verdict" "MISSING" "${out%%|*}"
+}
+
+test_classify_layout_unnamed_thread_must_be_on_driver_core() {
+  # spec 에 없는 TID (executor, DDS) 는 driver 코어에 있어야 한다 — 수용 기준의
+  # "그 외 steady state TID 는 hand_driver slot" 이 이 줄이다.
+  local out
+  out=$(printf '%s\n' \
+    "100 udp_hand_node SCHED_OTHER 0 1" \
+    "101 hand_udp_recv SCHED_FIFO 65 800" \
+    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  expect_eq "layout.stray.verdict" "WRONG_CPU" "${out%%|*}"
+}
+
+test_classify_layout_degraded_tier_collapse() {
+  # <=5 코어 tier: hand slot 과 OS slot 이 둘 다 0 이라 두 기대가 같은 논리 CPU 로
+  # 풀린다. 예외 처리 없이 통과해야 한다 — 그 tier 는 원래 Core 0 에 전부 모인다.
+  local out
+  out=$(printf '%s\n' \
+    "100 udp_hand_node SCHED_OTHER 0 1" \
+    "101 hand_udp_recv SCHED_FIFO 65 1" \
+    "102 hand_aux_io SCHED_OTHER 0 1" \
+    | rt_classify_external_thread_layout 0 "hand_udp_recv:0:SCHED_FIFO:65 hand_aux_io:0:SCHED_OTHER:0")
+  expect_eq "layout.degraded.verdict" "OK" "${out%%|*}"
+}
+
+test_classify_layout_no_threads() {
+  local out
+  out=$(printf '' | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  expect_eq "layout.empty.verdict" "NO_THREADS" "${out%%|*}"
+}
+
 # ── cpu_shield.sh::compute_shield_cores → get_rt_shield_cpus (slot→logical+sibling) ─
 # The shield set is the LOGICAL CPUs RT threads pin to (via PHYSICAL_CORE_SLOTS,
 # the same map C++ ApplyThreadConfig uses) plus HT siblings — NOT the raw slot
@@ -1014,6 +1110,15 @@ test_classify_external_rt_no_fifo
 test_classify_external_rt_wrong_cpu
 test_classify_external_rt_wrong_prio
 test_classify_external_rt_ignores_non_rt_threads
+test_classify_layout_ok
+test_classify_layout_aux_dragged_back
+test_classify_layout_commloop_lost_fifo
+test_classify_layout_wrong_prio
+test_classify_layout_aux_became_realtime
+test_classify_layout_missing_thread
+test_classify_layout_unnamed_thread_must_be_on_driver_core
+test_classify_layout_degraded_tier_collapse
+test_classify_layout_no_threads
 test_get_rt_shield_cpus_non_smt
 test_get_rt_shield_cpus_smt_primaries_first
 test_get_rt_shield_cpus_smt_interleaved

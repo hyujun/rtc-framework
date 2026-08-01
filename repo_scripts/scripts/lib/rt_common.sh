@@ -851,6 +851,100 @@ rt_classify_external_rt_threads() {
   fi
 }
 
+# Classify an external driver whose threads are NOT uniform (issue #345).
+#
+# rt_classify_external_rt_threads() above assumes one interesting RT thread and
+# an anonymous remainder; the all-threads affinity check assumes every TID shares
+# one core. udp_hand_node is neither: after the RT/non-RT split its CommLoop is
+# SCHED_FIFO 65 on the hand_driver core, its hand_aux_io lane is SCHED_OTHER on
+# the aux core, and everything else (executor, DDS) is SCHED_OTHER on the
+# hand_driver core. A single verdict has to cover all three.
+#
+#   $1  default logical cpu for threads with no named expectation
+#   $2  spec: space-separated "comm:cpu:policy:prio" entries. policy is
+#       SCHED_FIFO or SCHED_OTHER; prio is compared only for SCHED_FIFO.
+#   stdin: one "<tid> <comm> <policy> <prio> <mask_hex>" record per line.
+#          comm must not contain spaces (/proc/<pid>/task/<tid>/comm never does
+#          for RTC threads — pthread_setname_np names are single tokens).
+#
+# stdout: "<verdict>|<detail>" with verdict in OK / MISSING / WRONG_SCHED /
+# WRONG_CPU / NO_THREADS. Ordering is deliberate: a thread that is absent, or
+# running under the wrong scheduler, is a worse finding than one merely on the
+# wrong core, and reporting the worst first keeps the message actionable.
+#
+# Note the tier collapse is not special-cased. On <=5 physical cores the
+# hand_driver slot IS the OS slot, so the caller resolves both expectations to
+# the same logical cpu and every thread legitimately shares it — the spec then
+# passes by construction rather than by an exemption that could rot.
+rt_classify_external_thread_layout() {
+  local default_cpu="$1" spec="$2"
+  local -a spec_comms=() spec_cpus=() spec_policies=() spec_prios=() spec_seen=()
+  local entry
+  for entry in $spec; do
+    IFS=':' read -r _c _cpu _pol _prio <<<"$entry"
+    spec_comms+=("$_c")
+    spec_cpus+=("$_cpu")
+    spec_policies+=("$_pol")
+    spec_prios+=("$_prio")
+    spec_seen+=(0)
+  done
+
+  local total=0 wrong_cpu="" wrong_sched="" i
+  local tid comm policy prio mask_hex mask_dec want_cpu want_pol want_prio idx
+  while read -r tid comm policy prio mask_hex; do
+    [[ -z "$tid" ]] && continue
+    ((total++)) || true
+
+    idx=-1
+    for i in "${!spec_comms[@]}"; do
+      if [[ "$comm" == "${spec_comms[$i]}" ]]; then
+        idx=$i
+        break
+      fi
+    done
+
+    if [[ "$idx" -ge 0 ]]; then
+      spec_seen[$idx]=1
+      want_cpu="${spec_cpus[$idx]}"
+      want_pol="${spec_policies[$idx]}"
+      want_prio="${spec_prios[$idx]}"
+      if [[ "$policy" != "$want_pol" ]]; then
+        wrong_sched="${wrong_sched} ${comm}:${policy}(want ${want_pol})"
+      elif [[ "$want_pol" == "SCHED_FIFO" && "$prio" != "$want_prio" ]]; then
+        wrong_sched="${wrong_sched} ${comm}:prio${prio}(want ${want_prio})"
+      fi
+    else
+      want_cpu="$default_cpu"
+    fi
+
+    [[ -z "$mask_hex" ]] && continue
+    mask_dec=$((16#${mask_hex}))
+    if [[ "$mask_dec" -ne $((1 << want_cpu)) ]]; then
+      wrong_cpu="${wrong_cpu} ${comm}(${tid}):{$(mask_to_cpus "$mask_hex")}(want cpu ${want_cpu})"
+    fi
+  done
+
+  if [[ "$total" -eq 0 ]]; then
+    echo "NO_THREADS|스레드 상태를 하나도 읽지 못했다"
+    return 0
+  fi
+
+  local missing=""
+  for i in "${!spec_comms[@]}"; do
+    [[ "${spec_seen[$i]}" -eq 0 ]] && missing="${missing} ${spec_comms[$i]}"
+  done
+
+  if [[ -n "$missing" ]]; then
+    echo "MISSING|기대한 스레드 없음:${missing} (총 ${total} 스레드)"
+  elif [[ -n "$wrong_sched" ]]; then
+    echo "WRONG_SCHED|스케줄러 불일치:${wrong_sched}"
+  elif [[ -n "$wrong_cpu" ]]; then
+    echo "WRONG_CPU|코어 불일치:${wrong_cpu}"
+  else
+    echo "OK|${total} 스레드, 명명된 ${#spec_comms[@]}개 정책·코어 일치, 나머지 cpu ${default_cpu}"
+  fi
+}
+
 # Expand a CSV/range list of LOGICAL cpu ids to include each one's SMT siblings
 # (cpus sharing the same physical_package_id + core_id), sorted + range-collapsed.
 # Distinct from _rt_expand_smt_siblings(), which takes *physical core ids* and
@@ -989,53 +1083,53 @@ print_thread_layout() {
   # MPC CFS), {6,7} → 6-core(MPC FIFO). ncpu=5 를 6-core 블록으로 그리면 런타임이
   # 실제로 쓰지 않는 hard-RT MPC 를 표시하게 된다 (dispatch 는 5 를 degraded 로 처리).
   if [[ "$ncpu" -le 5 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (degraded)"
+    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver + hand_aux_io (degraded)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin, degraded)"
     echo "    Core 3:   mpc_main     (CFS, degraded)"
   elif [[ "$ncpu" -le 7 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3:   mpc_main     (SCHED_FIFO 60)"
-    echo "    Core 4:   arm_driver + hand_driver (shared, degraded)"
+    echo "    Core 4:   arm_driver + hand_driver (shared, degraded; hand_udp_recv FIFO 65)"
     echo "    Core 5:   nrt_logging (CFS -5) + nrt_callback (CFS 0) shared (degraded)"
   elif [[ "$ncpu" -le 9 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3:   mpc_main     (SCHED_FIFO 60)"
     echo "    Core 4:   arm_driver   (CFS, taskset pin)"
-    echo "    Core 5:   hand_driver  (CFS, taskset pin; internal recv thread FIFO 65)"
+    echo "    Core 5:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 6:   nrt_logging  (CFS -5)"
     echo "    Core 7:   nrt_callback (CFS 0)"
   elif [[ "$ncpu" -le 11 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3-4: mpc_main + worker_0 (SCHED_FIFO 60 / 55)"
     echo "    Core 5:   arm_driver   (CFS, taskset pin)"
-    echo "    Core 6:   hand_driver  (CFS, taskset pin)"
+    echo "    Core 6:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 7:   nrt_logging  (CFS -5)"
     echo "    Core 8:   nrt_callback (CFS 0)"
     echo "    Core 9:   spare"
   elif [[ "$ncpu" -le 13 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3-5: mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
     echo "    Core 6:   arm_driver   (CFS, taskset pin)"
-    echo "    Core 7:   hand_driver  (CFS, taskset pin)"
+    echo "    Core 7:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 8:   nrt_logging  (CFS -5)"
     echo "    Core 9:   nrt_callback (CFS 0)"
     echo "    Core 10-${ncpu}: spare"
   elif [[ "$ncpu" -le 15 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3-5: mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
     echo "    Core 6:   arm_driver   (CFS, taskset pin)"
-    echo "    Core 7:   hand_driver  (CFS, taskset pin)"
+    echo "    Core 7:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 8:   nrt_logging  (CFS -5)"
     echo "    Core 9:   nrt_callback (CFS 0)"
     echo "    Core 10-${ncpu}: spare / user shield"
@@ -1045,7 +1139,7 @@ print_thread_layout() {
     echo "    Core 2:     rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3-5:   mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
     echo "    Core 6:     arm_driver   (CFS, taskset pin)"
-    echo "    Core 7:     hand_driver  (CFS, taskset pin)"
+    echo "    Core 7:     hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 8:     nrt_logging  (CFS -5)"
     echo "    Core 9:     nrt_callback (CFS 0)"
     echo "    Core 10-15: spare / user shield"
