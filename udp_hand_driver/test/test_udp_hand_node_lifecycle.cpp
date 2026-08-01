@@ -386,4 +386,34 @@ TEST_F(UdpHandNodeLifecycleTest, ShutdownFromActiveRunsTheDeactivatePath) {
   exec_.remove_node(node->get_node_base_interface());
 }
 
+// Configure must REJECT a non-positive loop_rate_hz, not absorb it. The NRT
+// publish timer's period is 1 / (rate * kPublishPollOversampling), so rate == 0
+// makes that +inf and duration_cast<nanoseconds> performs an out-of-range
+// double -> int64 conversion (UB); PrepareRun()'s own guard runs at on_activate,
+// after the timer was already built (issue #345).
+//
+// What this test does and does not pin, measured rather than assumed: replacing
+// the guard with a silent fallback — the `(rate > 0.0) ? rate : default` shape
+// used by the two sibling rate computations in the same function — turns this
+// red, which is the regression worth guarding. Deleting the guard outright
+// leaves it green, because rcl_timer_init2 also rejects the resulting negative
+// period and the transition still ends Unconfigured; the guard's remaining value
+// there is avoiding the UB and emitting an actionable message instead of
+// "timer period must be non-negative".
+TEST_F(UdpHandNodeLifecycleTest, NonPositiveLoopRateIsRejectedAtConfigure) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+      rclcpp::Parameter("sil_mode", "loopmodel"),
+      rclcpp::Parameter("loop_rate_hz", 0.0),
+  });
+  auto node = std::make_shared<UdpHandNode>(options);
+  exec_.add_node(node->get_node_base_interface());
+
+  EXPECT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+      << "configure() accepted loop_rate_hz = 0 and built a publish timer from an "
+         "infinite period";
+
+  exec_.remove_node(node->get_node_base_interface());
+}
+
 }  // namespace
