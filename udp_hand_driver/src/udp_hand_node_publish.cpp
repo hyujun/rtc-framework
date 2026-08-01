@@ -6,8 +6,10 @@
 #include <string>
 
 namespace {
-// Cycles between the periodic "cycles: N" DEBUG line.
-constexpr std::size_t kCycleLogInterval = 500;
+// Cycles between the periodic "cycles: N" DEBUG line. `int` so it can be passed
+// to AdvanceDecimation, which shares the accumulate-and-carry arithmetic with
+// the link decimation below.
+constexpr int kCycleLogInterval = 500;
 }  // namespace
 
 void UdpHandNode::PreallocateMessages() {
@@ -181,10 +183,9 @@ void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
 
   // Same accumulate-and-carry reason as the link decimation above: `% 500` on an
   // invocation counter would fire at an unrelated rate once one invocation
-  // stopped meaning one cycle.
-  publish_count_ += cycles;
-  if (publish_count_ >= kCycleLogInterval) {
-    publish_count_ %= kCycleLogInterval;
+  // stopped meaning one cycle. Same helper too — this used to hand-copy the
+  // arithmetic because the counter was std::size_t and the helper takes int&.
+  if (udp_hand_driver::AdvanceDecimation(publish_count_, cycles, kCycleLogInterval)) {
     RCLCPP_DEBUG(::udp_hand_driver::logging::NodeLogger(), "cycles: %zu",
                  controller_->cycle_count());
   }

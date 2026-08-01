@@ -316,7 +316,10 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   int link_decimation_{5};
   int link_cycle_counter_{0};
 
-  std::size_t publish_count_{0};
+  // Cycle-log decimation. Same type as link_cycle_counter_ so both feed
+  // AdvanceDecimation; both carry modulo their interval, so the value range is
+  // bounded by that interval and never approaches the int range.
+  int publish_count_{0};
 
   // Fake-hand standalone support. The controller's CommLoop RT thread self-clocks
   // and runs the LPF model in fake mode (UdpHandController::RunFakeCommCycle), so
