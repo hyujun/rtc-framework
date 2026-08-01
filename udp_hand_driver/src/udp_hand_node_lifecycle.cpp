@@ -13,8 +13,24 @@
 using namespace std::chrono_literals;
 
 UdpHandNode::UdpHandNode() : LifecycleNode("udp_hand_node") {
-  // Lifecycle design: constructor is intentionally empty.
-  // All resource allocation happens in on_configure().
+  // Lifecycle design: the constructor allocates no *resources* — publishers,
+  // subscriptions, timers and the controller are on_configure's job.
+  //
+  // The two exceptions below describe the process *thread layout*, which main()
+  // must know before it spins and therefore before any lifecycle transition can
+  // occur (issue #345):
+  //   - cb_group_aux_ is handed to the aux executor at startup, and must be the
+  //     same object across an on_cleanup -> on_configure cycle (see the member).
+  //   - aux_cpu_slot configures the hand_aux_io thread main() creates. Launch /
+  //     YAML values are applied at declare time, so declaring here still picks
+  //     up the configured value.
+  cb_group_aux_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
+                                        /*automatically_add_to_executor_with_node=*/false);
+  declare_parameter("aux_cpu_slot", 0);
+}
+
+int UdpHandNode::AuxCpuSlot() const {
+  return static_cast<int>(get_parameter("aux_cpu_slot").as_int());
 }
 
 UdpHandNode::~UdpHandNode() {
@@ -568,11 +584,19 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // most 10 s stale after SIGKILL / power loss. Quiet (verbose=false).
   {
     constexpr auto kStatsSavePeriod = std::chrono::seconds(10);
-    stats_save_timer_ = create_wall_timer(kStatsSavePeriod, [this]() { SaveCommStats(false); });
+    // cb_group_aux_: blocking JSON write. Off the default executor thread, which
+    // also serves the joint-command subscription (issue #345).
+    stats_save_timer_ =
+        create_wall_timer(kStatsSavePeriod, [this]() { SaveCommStats(false); }, cb_group_aux_);
   }
 
-  // ── Per-tick timing CSV: open + start drain timer ──────────────────
-  if (!hand_udp_timing_initialized_) {
+  // ── Per-tick timing CSV: open once, (re)start the drain timer ──────
+  // Two lifetimes, deliberately separated (issue #345). The logger opens on the
+  // first activation only. The drain timer is recreated on *every* activation
+  // because StopRuntime() now cancels it to quiesce the aux lane — keeping both
+  // on one flag would either skip on_deactivate's straggler drain (if the flag
+  // were cleared) or leave the timer dead after deactivate -> activate (if not).
+  if (!hand_udp_timing_opened_) {
     if (!hand_udp_timing_logger_.Open()) {
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                   "UdpHandTimingLogger::Open() failed — timing CSV disabled");
@@ -580,16 +604,26 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
       RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand UDP tick-timing CSV: %s",
                   hand_udp_timing_logger_.Path().c_str());
     }
-    hand_udp_timing_timer_ =
-        create_wall_timer(std::chrono::seconds(1), [this]() { DrainHandUdpTiming(); });
-    hand_udp_timing_initialized_ = true;
+    hand_udp_timing_opened_ = true;
   }
+  // cb_group_aux_: this is the heaviest callback in the process — one 1 Hz
+  // burst writes up to kHandUdpTimingBufferCapacity (512) CSV rows, two orders
+  // of magnitude more per invocation than CM's equivalent drain, which its own
+  // nrt_logging thread runs at 100 Hz (rt_tick_timing_sample.hpp) (issue #345).
+  hand_udp_timing_timer_ =
+      create_wall_timer(std::chrono::seconds(1), [this]() { DrainHandUdpTiming(); }, cb_group_aux_);
 
   RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "UdpHandNode activated");
   return CallbackReturn::SUCCESS;
 }
 
 void UdpHandNode::DrainHandUdpTiming() noexcept {
+  // Two callers now: the 1 Hz aux timer (hand_aux_io thread) and on_deactivate's
+  // straggler drain (executor thread). hand_udp_timing_producer_ is SPSC — a
+  // *single* consumer — so the two must never overlap. StopRuntime() cancels the
+  // timer and waits out any in-flight callback before on_deactivate drains, and
+  // this lock enforces the invariant rather than relying on that ordering (#345).
+  std::lock_guard lock(aux_lane_mutex_);
   if (!controller_)
     return;
   hand_udp_timing_producer_.Drain(
@@ -611,8 +645,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::S
     // potentially-recreated buffer on a future activation.
     controller_->SetTimingProducer(nullptr);
   }
-  // Drain any stragglers so the CSV reflects everything pushed before stop.
-  if (hand_udp_timing_initialized_) {
+  // Drain any stragglers so the CSV reflects everything pushed before stop. Safe
+  // as the sole consumer here: StopRuntime() above cancelled the aux timer and
+  // waited out any in-flight aux callback (issue #345).
+  if (hand_udp_timing_opened_) {
     DrainHandUdpTiming();
   }
 
@@ -652,14 +688,27 @@ UdpHandNode::CallbackReturn UdpHandNode::on_error(const rclcpp_lifecycle::State&
 // ── Teardown helpers (shared by on_deactivate / on_cleanup / on_error) ───────
 
 void UdpHandNode::StopRuntime() {
+  // Quiesce the aux lane first. cancel() guarantees no *further* invocation, but
+  // says nothing about one already running on the hand_aux_io thread, so take
+  // aux_lane_mutex_ empty as a barrier once no new callback can start. The
+  // detector is stopped before the barrier because its failure callback is the
+  // third SaveCommStats caller — joining it first makes the barrier conclusive
+  // rather than a snapshot (issue #345).
   if (stats_save_timer_) {
     stats_save_timer_->cancel();
     stats_save_timer_.reset();
+  }
+  // Timer only — `hand_udp_timing_opened_` stays true so a later on_activate
+  // reuses the open CSV instead of re-running Open().
+  if (hand_udp_timing_timer_) {
+    hand_udp_timing_timer_->cancel();
+    hand_udp_timing_timer_.reset();
   }
   if (failure_detector_) {
     failure_detector_->Stop();
     failure_detector_.reset();
   }
+  { std::lock_guard<std::mutex> quiesce(aux_lane_mutex_); }
   // Call Stop() unconditionally (it is idempotent). The IsRunning() guard was
   // removed because the E-Stop self-exit path now clears running_ from inside
   // the CommLoop (#4), so a guarded Stop() would skip the required Join() +
@@ -670,7 +719,12 @@ void UdpHandNode::StopRuntime() {
 }
 
 void UdpHandNode::ReleaseResources() {
+  // Aux-lane timers first, for the same reason StopRuntime() cancels them: their
+  // callbacks run on the hand_aux_io thread and touch controller_, which this
+  // function resets below (issue #345). on_cleanup reaches here without
+  // StopRuntime(), so the reset cannot rely on that path alone.
   stats_save_timer_.reset();
+  hand_udp_timing_timer_.reset();
   calib_status_timer_.reset();
   calib_cmd_sub_.reset();
   joint_command_sub_.reset();

@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <thread>
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
@@ -58,8 +59,52 @@ int main(int argc, char** argv) {
   }
 
   auto node = std::make_shared<UdpHandNode>();
-  // Constructor is empty — launch event handler triggers configure/activate.
-  rclcpp::spin(node->get_node_base_interface());
+
+  // ── Lane split (issue #345) ────────────────────────────────────────────────
+  // Two SingleThreadedExecutors over one node:
+  //
+  //   main thread   default callback group — joint/calib command subs, calib
+  //                 status timer, lifecycle services, and (Phase 3) the NRT
+  //                 publish consumer. Stays on the hand_driver core.
+  //   hand_aux_io   cb_group_aux_ only — the blocking file writes (timing CSV
+  //                 drain, stats JSON). Moves to the aux slot.
+  //
+  // Deliberately NOT the controller_manager bootstrap shape
+  // (rt_controller_main_impl.cpp), which spins a *temporary* lifecycle executor
+  // until Active and then hands off: there on_configure runs on a thread that is
+  // subsequently joined and destroyed, so anything pinned or bound to it would
+  // be pinning a corpse. Here the main thread spins the node from start to
+  // finish, which is what lets the Phase 4 self-pin land on the executor thread.
+  //
+  // Order matters: the aux group is claimed before add_node so that adding the
+  // node cannot sweep it into the main executor.
+  rclcpp::executors::SingleThreadedExecutor aux_executor;
+  aux_executor.add_callback_group(node->GetAuxCallbackGroup(), node->get_node_base_interface());
+
+  rclcpp::executors::SingleThreadedExecutor main_executor;
+  main_executor.add_node(node->get_node_base_interface());
+
+  rtc::ThreadConfig aux_cfg = udp_hand_driver::kHandAuxIoConfig;
+  aux_cfg.cpu_core = node->AuxCpuSlot();
+  std::thread aux_thread([&aux_executor, aux_cfg]() {
+    // Applied on the aux thread itself: affinity, policy and name all act on
+    // pthread_self(). Verbose because a failure here is not fatal — the lane
+    // still runs, just on the inherited core — and must not be silent.
+    (void)rtc::ApplyThreadConfigVerbose(aux_cfg);
+    aux_executor.spin();
+  });
+
+  // Launch event handler triggers configure/activate; both run on this thread.
+  main_executor.spin();
+
+  // Explicit cancel before join: spin() returns on context shutdown, but an
+  // executor blocked in its wait set does not always observe that promptly on
+  // Jazzy + FastDDS.
+  aux_executor.cancel();
+  aux_thread.join();
+  aux_executor.remove_callback_group(node->GetAuxCallbackGroup());
+  main_executor.remove_node(node->get_node_base_interface());
+
   rclcpp::shutdown();
   return 0;
 }

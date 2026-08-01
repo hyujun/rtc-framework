@@ -42,12 +42,47 @@
 // Tier 1 (on_configure): parameters, controller, publishers, subscribers,
 //   timers, pre-allocated messages, EventLoop callback.
 // Tier 2 (on_activate): controller Start, fake tick timer, failure detector.
+// Tier 0 (constructor): *only* what main() must know before it spins — the aux
+//   callback group and the thread-layout parameter. See UdpHandNode().
+
+// Non-RT auxiliary I/O lane (issue #345). The blocking file writes — the timing
+// CSV drain (up to kHandUdpTimingBufferCapacity rows in a single 1 Hz burst) and
+// the stats JSON save — run here instead of the node's default executor thread,
+// which also serves the joint-command subscription. CFS: this lane must never
+// preempt the CommLoop, and it is the only hand thread that leaves the
+// hand_driver core. `cpu_core` is filled at runtime from the `aux_cpu_slot`
+// parameter, whose default 0 mirrors the shell SSoT
+// repo_scripts/scripts/lib/rt_common.sh::get_os_cores (the OS/housekeeping slot,
+// which `get_cm_shield_cpus` excludes from the shield — so pinning here needs no
+// cpuset change and cannot EINVAL under an active `cset shield`).
+namespace udp_hand_driver {
+inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
+                                                .sched_policy = SCHED_OTHER,
+                                                .sched_priority = 0,
+                                                .nice_value = 0,
+                                                .name = "hand_aux_io"};
+}  // namespace udp_hand_driver
+
 class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
  public:
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
   UdpHandNode();
   ~UdpHandNode() override;
+
+  /// Callback group holding the blocking file-I/O timers (timing CSV drain,
+  /// stats JSON save). main() services it on the dedicated `hand_aux_io`
+  /// executor thread, so it is created with
+  /// `automatically_add_to_executor_with_node = false` — otherwise the executor
+  /// that adds this node would claim it and the lane split would be a no-op.
+  [[nodiscard]] rclcpp::CallbackGroup::SharedPtr GetAuxCallbackGroup() const {
+    return cb_group_aux_;
+  }
+
+  /// Slot index for the aux lane, or a negative value meaning "do not pin".
+  /// Read from the `aux_cpu_slot` parameter; slot -> logical CPU translation is
+  /// ApplyThreadConfig's job (issue #163).
+  [[nodiscard]] int AuxCpuSlot() const;
 
   CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
   CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
@@ -58,7 +93,8 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
 
  private:
   // Drain the EventLoop's timing producer into the CSV (1 Hz, non-RT).
-  // Runs on the LifecycleNode's default executor thread.
+  // Runs on the `hand_aux_io` executor thread via cb_group_aux_ (issue #345),
+  // NOT on the default executor thread — the burst is a blocking file write.
   void DrainHandUdpTiming() noexcept;
 
   // Pre-allocate ROS2 messages once in on_configure (non-RT).
@@ -73,8 +109,13 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   void PublishCalibrationStatus();
 
   // Persist comm/timing stats to <session>/device/hand_udp_stats.json.
-  // Callable from the executor thread (lifecycle, periodic timer) and the
-  // failure-detector callback thread — serialized by save_stats_mutex_.
+  // Three concurrent call contexts, serialized by save_stats_mutex_:
+  //   1. the periodic timer, on the `hand_aux_io` thread (cb_group_aux_)
+  //   2. the failure-detector thread, from its failure callback
+  //   3. lifecycle teardown (on_deactivate / on_cleanup / on_error / ~UdpHandNode),
+  //      on the default executor thread
+  // The lane split moved (1) off the default executor thread, so (1) and (3) are
+  // now genuinely concurrent rather than serialized by being the same thread.
   // verbose=false (periodic saves) skips the INFO summary logs.
   // Defined in udp_hand_node_stats.cpp.
   void SaveCommStats(bool verbose = true) const;
@@ -171,7 +212,14 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // written only on graceful teardown and is lost on SIGKILL/crash. Interval
   // is a fixed constant — see on_activate (no ROS param on purpose).
   rclcpp::TimerBase::SharedPtr stats_save_timer_;
-  mutable std::mutex save_stats_mutex_;
+
+  // Guards every aux-lane callback body (stats JSON save, timing CSV drain) and
+  // is taken empty by StopRuntime() as a quiesce barrier. Before the lane split
+  // these callbacks and lifecycle teardown were the same thread and could not
+  // overlap; now they can, and they share `controller_` and the SPSC timing ring
+  // (single-consumer). One mutex rather than two: neither callback calls the
+  // other, so there is no lock order to get wrong, and both are non-RT (issue #345).
+  mutable std::mutex aux_lane_mutex_;
 
   // Cached config for on_activate logging
   std::string target_ip_;
@@ -182,11 +230,20 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Producer (filled on the EventLoop thread) → 1 Hz drain on aux timer →
   // rtc::ThreadTimingCsvLogger writes one row per tick to
   // <session>/timing/hand_udp_timing_log.csv. Open() runs once on the first
-  // on_activate and is gated by `hand_udp_timing_initialized_` so reactivation
-  // does not truncate or re-write the header.
+  // on_activate and is gated by `hand_udp_timing_opened_` so reactivation does
+  // not truncate or re-write the header. The *timer* has a shorter lifetime than
+  // the logger — StopRuntime() cancels it to quiesce the aux lane and every
+  // on_activate recreates it — so the two are separate members (issue #345).
   rtc::HandUdpTimingBuffer hand_udp_timing_producer_;
   udp_hand_driver::UdpHandTimingLogger hand_udp_timing_logger_;
   rclcpp::TimerBase::SharedPtr hand_udp_timing_timer_;
-  bool hand_udp_timing_initialized_{false};
+  bool hand_udp_timing_opened_{false};
   std::uint64_t hand_udp_timing_drop_baseline_{0};
+
+  // Aux lane (issue #345). Created in the constructor, NOT on_configure: the
+  // group is handed to main()'s aux executor before the first lifecycle
+  // transition, and it must survive an on_cleanup -> on_configure cycle. A group
+  // recreated in on_configure would be a *different* object that the executor
+  // never saw, and the aux timers would silently stop firing.
+  rclcpp::CallbackGroup::SharedPtr cb_group_aux_;
 };

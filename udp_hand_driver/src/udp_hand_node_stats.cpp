@@ -15,12 +15,17 @@
 #include <system_error>
 
 void UdpHandNode::SaveCommStats(bool verbose) const {
+  // Serialize concurrent saves (aux-lane timer / failure callback / teardown) so
+  // two writers cannot interleave into a corrupt JSON.
+  //
+  // The `controller_` null check is INSIDE the lock on purpose: the periodic
+  // save now runs on the hand_aux_io thread, so a check outside would race with
+  // ReleaseResources() resetting the pointer on the executor thread — read the
+  // guard and dereference under the same critical section that teardown's
+  // quiesce barrier waits on (issue #345).
+  std::lock_guard lock(aux_lane_mutex_);
   if (!controller_)
     return;
-
-  // Serialize concurrent saves (periodic timer / failure callback / teardown)
-  // so two writers cannot interleave into a corrupt JSON.
-  std::lock_guard lock(save_stats_mutex_);
 
   const auto stats = controller_->comm_stats();
   const bool fd_failed = failure_detector_ ? failure_detector_->failed() : false;

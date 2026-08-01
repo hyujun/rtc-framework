@@ -175,6 +175,20 @@ if(BUILD_TESTING)
   target_link_libraries(test_udp_hand_failure_detector udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_failure_detector rtc_base rtc_inference rclcpp)
 
+  # ── Tier 2b: Node-level lane wiring (issue #345) ──────────────────────────
+  # Compiles the node's non-main translation units directly: udp_hand_node.cpp
+  # owns main(), so the executable cannot be linked into a gtest binary.
+  ament_add_gtest(test_udp_hand_node_lanes
+    test/test_udp_hand_node_lanes.cpp
+    src/udp_hand_node_lifecycle.cpp
+    src/udp_hand_node_publish.cpp
+    src/udp_hand_node_stats.cpp)
+  target_include_directories(test_udp_hand_node_lanes PRIVATE include)
+  target_link_libraries(test_udp_hand_node_lanes udp_hand_protocol)
+  ament_target_dependencies(test_udp_hand_node_lanes
+    rtc_base rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
+    sensor_msgs std_msgs ament_index_cpp)
+
   # ── Tier 3: FT inferencer stub tests ──────────────────────────────────────
   ament_add_gtest(test_fingertip_ft_inferencer test/test_fingertip_ft_inferencer.cpp)
   target_include_directories(test_fingertip_ft_inferencer PRIVATE include)
