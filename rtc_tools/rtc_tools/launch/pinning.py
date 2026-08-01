@@ -255,47 +255,40 @@ def resolve_logical_cpu(slot: int) -> int | None:
     return cpu if cpu >= 0 else None
 
 
-def pin_process_to_slot(
-    label: str, process_grep: str, slot: int, *, all_threads: bool = False
-) -> ExecuteProcess:
+def pin_process_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProcess:
     """Pin the newest process matching ``process_grep`` to ``slot``'s logical CPU.
 
     ``slot < 0`` is the "no pinning" sentinel from ``select_thread_layout``; the
     returned action then only logs the skip, so launch files need no own guard.
 
-    ``all_threads`` selects the ``taskset`` scope:
+    ``taskset -p`` pins the *main thread only* (``sched_setaffinity`` takes a TID,
+    not a process). Existing worker threads keep their inherited mask, and
+    threads created *later* inherit the new one. Correct only where the main
+    thread is the work: the **MuJoCo simulator**, whose physics stepping runs on
+    it, is the only remaining caller.
 
-    * ``False`` (default) → ``taskset -p`` pins the *main thread only*
-      (``sched_setaffinity`` takes a TID, not a process). Existing worker threads
-      keep their inherited mask, and threads created *later* inherit the new one.
-      Correct only where the main thread is the work: the **MuJoCo simulator**,
-      whose physics stepping runs on it.
+    This scope is **not** usable for a process whose real-time work lives in a
+    worker thread — it pins the wrong TID while looking successful. The UR arm
+    driver was pinned this way until issue #343: ``ros2_control_node``'s main
+    thread is the (idle) executor and its 500 Hz loop is a separate ``cm_thread``
+    created before this timer fires, so the pin never reached it and the verifier,
+    reading the same main thread, reported PASS. It now uses
+    ``controller_manager``'s native ``cpu_affinity`` parameter, which is applied
+    *inside* that thread — see :mod:`rtc_tools.launch.cm_rt_params`.
 
-      This scope is **not** usable for a process whose real-time work lives in a
-      worker thread — it pins the wrong TID while looking successful. The UR arm
-      driver was pinned this way until issue #343: ``ros2_control_node``'s main
-      thread is the (idle) executor and its 500 Hz loop is a separate
-      ``cm_thread`` created before this timer fires, so the pin never reached it
-      and the verifier, reading the same main thread, reported PASS. It now uses
-      ``controller_manager``'s native ``cpu_affinity`` parameter, which is
-      applied *inside* that thread — see :mod:`rtc_tools.launch.cm_rt_params`.
-    * ``True`` → ``taskset -ap`` pins *every existing thread* of the process. This
-      is required for the **hand driver**: its CommLoop RT thread (``hand_udp_recv``,
-      SCHED_FIFO 65) and failure detector self-set ``cpu_core=-1`` and rely on
-      inheriting the process-level pin (thread_config.hpp), but they are created in
-      ``on_activate`` *before* this timer fires, so a main-thread-only pin never
-      reaches them and they stay stuck on whatever mask the main thread held at
-      their creation. ``-a`` moves them onto the planned hand_driver core.
+    An ``all_threads`` flag rendering ``taskset -acp`` existed for the hand driver
+    until issue #345. It is gone rather than merely unused: the sweep it produced
+    is now actively wrong. The hand process pins its own threads, and the aux lane
+    (``hand_aux_io``) deliberately sits on a *different* core, so a blanket
+    all-thread sweep would drag it back onto the hand_driver core — undoing the
+    split it exists to protect. Use :func:`pin_dds_threads_to_slot`, which skips
+    threads RTC placed itself.
     """
     _reject_quotes(label=label, process_grep=process_grep)
 
     if slot < 0:
         return _skip_action(f"[RT] {label}: cpu_core={slot}, no taskset pinning")
 
-    # ``-a`` widens the affinity set to every thread (TID) of the process, not
-    # just the main thread. See the ``all_threads`` docstring above.
-    taskset_flags = "-acp" if all_threads else "-cp"
-    scope = "all threads" if all_threads else "main thread"
     return ExecuteProcess(
         cmd=[
             "bash",
@@ -305,8 +298,9 @@ def pin_process_to_slot(
             + 'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — CPU pinning skipped"; exit 0; '
             "fi; "
-            f'taskset {taskset_flags} "$CPU" "$PID" >/dev/null 2>&1 && '
-            f'  echo "[RT] {label} (PID=$PID, {scope}) pinned to slot {slot} -> logical CPU $CPU" || '
+            f'taskset -cp "$CPU" "$PID" >/dev/null 2>&1 && '
+            f'  echo "[RT] {label} (PID=$PID, main thread) pinned to slot {slot} '
+            f'-> logical CPU $CPU" || '
             f'  echo "[RT] WARNING: {label} (PID=$PID) taskset to logical CPU $CPU failed"',
         ],
         output="screen",
@@ -397,8 +391,23 @@ def adopt_process_into_shield(
     )
 
 
-def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProcess:
+def pin_dds_threads_to_slot(
+    label: str,
+    process_grep: str,
+    slot: int,
+    *,
+    extra_protected_names: frozenset[str] | set[str] = frozenset(),
+) -> ExecuteProcess:
     """Co-pin a node's DDS / aux threads onto ``slot``'s logical CPU.
+
+    ``extra_protected_names`` adds process-specific thread names to the exclusion
+    set for this call only. ``RTC_OWNED_THREAD_NAMES`` cannot absorb them: it is
+    drift-locked to the ``.name`` fields in ``thread_config.hpp``
+    (``test_rtc_owned_names_mirror_thread_config_hpp``), and a package-local
+    thread has no entry there by definition. ``udp_hand_node``'s ``hand_aux_io``
+    is the case this exists for — it is SCHED_OTHER and named outside the C++
+    SSoT, so both the name filter and the FIFO guard would miss it and the sweep
+    would pull it off the aux slot onto the hand_driver core (issue #345).
 
     Layout v4.1 co-pins the DDS receive thread with ``rt_callback`` so message
     dispatch and state-callback execution share L1/L2. Only threads that RTC did
@@ -428,7 +437,9 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
     if slot < 0:
         return _skip_action(f"[RT] {label}: cpu_core={slot}, no DDS thread pinning")
 
-    owned = " ".join(sorted(RTC_OWNED_THREAD_NAMES))
+    for name in extra_protected_names:
+        _reject_quotes(**{f"extra_protected_name[{name}]": name})
+    owned = " ".join(sorted(RTC_OWNED_THREAD_NAMES | set(extra_protected_names)))
     dds = " ".join(sorted(CYCLONEDDS_THREAD_NAMES))
     return ExecuteProcess(
         cmd=[

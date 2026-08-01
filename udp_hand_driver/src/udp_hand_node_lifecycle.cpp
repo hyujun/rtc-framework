@@ -12,18 +12,45 @@
 
 using namespace std::chrono_literals;
 
-UdpHandNode::UdpHandNode() : LifecycleNode("udp_hand_node") {
-  // Lifecycle design: constructor is intentionally empty.
-  // All resource allocation happens in on_configure().
+UdpHandNode::UdpHandNode(const rclcpp::NodeOptions& options)
+    : LifecycleNode("udp_hand_node", options) {
+  // Lifecycle design: the constructor allocates no *resources* — publishers,
+  // subscriptions, timers and the controller are on_configure's job.
+  //
+  // The two exceptions below describe the process *thread layout*, which main()
+  // must know before it spins and therefore before any lifecycle transition can
+  // occur (issue #345):
+  //   - cb_group_aux_ is handed to the aux executor at startup, and must be the
+  //     same object across an on_cleanup -> on_configure cycle (see the member).
+  //   - aux_cpu_slot / use_cpu_affinity configure the threads main() pins before
+  //     it spins. Launch / YAML values are applied at declare time, so declaring
+  //     here still picks up the configured value.
+  cb_group_aux_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
+                                        /*automatically_add_to_executor_with_node=*/false);
+  declare_parameter("aux_cpu_slot", 0);
+  declare_parameter("use_cpu_affinity", true);
+}
+
+bool UdpHandNode::UseCpuAffinity() const {
+  return get_parameter("use_cpu_affinity").as_bool();
+}
+
+int UdpHandNode::AuxCpuSlot() const {
+  return udp_hand_driver::ResolvePinSlot(static_cast<int>(get_parameter("aux_cpu_slot").as_int()),
+                                         UseCpuAffinity());
 }
 
 UdpHandNode::~UdpHandNode() {
   // Safety net — idempotent cleanup in case lifecycle callbacks were not
   // invoked (e.g. SIGTERM without graceful shutdown).
-  if (failure_detector_)
-    failure_detector_->Stop();
-  if (controller_ && controller_->IsRunning())
-    controller_->Stop();
+  //
+  // Reuse StopRuntime() instead of open-coding the teardown: it is the one place
+  // that cancels the aux timers, joins the detector and then takes the quiesce
+  // barrier in that order, so a destructor running while the aux executor is
+  // still live cannot free controller_ under an in-flight callback. Open-coding
+  // it here previously skipped the barrier entirely and only worked because
+  // main() happens to cancel and join the aux executor first (issue #345).
+  StopRuntime();
   SaveCommStats();
 }
 
@@ -207,6 +234,16 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   const int comm_decimation = static_cast<int>(get_parameter("comm_decimation").as_int());
   const int sensor_decimation = static_cast<int>(get_parameter("sensor_decimation").as_int());
   const double loop_rate_hz = get_parameter("loop_rate_hz").as_double();
+  // Reject here rather than at Start(). UdpHandController::PrepareRun() already
+  // treats a non-positive rate as a hard error, but that runs at on_activate —
+  // by then the NRT publish timer below has turned 1.0 / (rate * oversampling)
+  // into +inf and cast it to nanoseconds, and an out-of-range double -> int64
+  // conversion is UB. The `!(x > 0.0)` form also rejects NaN (issue #345).
+  if (!(loop_rate_hz > 0.0)) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "loop_rate_hz must be > 0 (got %.3f)",
+                 loop_rate_hz);
+    return CallbackReturn::FAILURE;
+  }
   const double fake_lpf_time_constant_s = get_parameter("fake_lpf_time_constant_s").as_double();
   const double fake_effort_stiffness = get_parameter("fake_effort_stiffness").as_double();
   const double fake_effort_damping = get_parameter("fake_effort_damping").as_double();
@@ -361,11 +398,23 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // ── Pre-allocate ROS2 messages ─────────────────────────────────────
   PreallocateMessages();
 
-  // ── EventLoop callback ─────────────────────────────────────────────
-  controller_->SetCallback([this](const udp_hand_driver::UdpHandState& state,
-                                  const udp_hand_driver::FingertipFTState& ft_state) {
-    PublishFromEventLoop(state, ft_state);
-  });
+  // ── NRT publish lane ───────────────────────────────────────────────
+  // Pull, not push (issue #345). The CommLoop stores a POD snapshot into the
+  // SeqLock and nothing else; this timer polls the sequence from the default
+  // executor thread and publishes whatever the latest snapshot is.
+  //
+  // Poll faster than the producer. With a same-rate poll, producer and consumer
+  // drift in and out of phase and every coincidence where two comm cycles land
+  // between two polls costs a publish that is never recovered — the topic rate
+  // would sit measurably below loop_rate_hz. Oversampling makes "at most one new
+  // sample per poll" the common case instead of the lossy one, at the price of
+  // wakeups that cost one atomic load when there is nothing new.
+  last_published_seq_ = controller_->state_sequence();
+  const auto publish_period = std::chrono::duration<double>(
+      1.0 / (loop_rate_hz * udp_hand_driver::kPublishPollOversampling));
+  publish_timer_ =
+      create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(publish_period),
+                        [this]() { PollAndPublish(); });
 
   // ── Subscriptions ──────────────────────────────────────────────────
   rclcpp::QoS cmd_sub_qos{1};
@@ -568,11 +617,19 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // most 10 s stale after SIGKILL / power loss. Quiet (verbose=false).
   {
     constexpr auto kStatsSavePeriod = std::chrono::seconds(10);
-    stats_save_timer_ = create_wall_timer(kStatsSavePeriod, [this]() { SaveCommStats(false); });
+    // cb_group_aux_: blocking JSON write. Off the default executor thread, which
+    // also serves the joint-command subscription (issue #345).
+    stats_save_timer_ =
+        create_wall_timer(kStatsSavePeriod, [this]() { SaveCommStats(false); }, cb_group_aux_);
   }
 
-  // ── Per-tick timing CSV: open + start drain timer ──────────────────
-  if (!hand_udp_timing_initialized_) {
+  // ── Per-tick timing CSV: open once, (re)start the drain timer ──────
+  // Two lifetimes, deliberately separated (issue #345). The logger opens on the
+  // first activation only. The drain timer is recreated on *every* activation
+  // because StopRuntime() now cancels it to quiesce the aux lane — keeping both
+  // on one flag would either skip on_deactivate's straggler drain (if the flag
+  // were cleared) or leave the timer dead after deactivate -> activate (if not).
+  if (!hand_udp_timing_opened_) {
     if (!hand_udp_timing_logger_.Open()) {
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                   "UdpHandTimingLogger::Open() failed — timing CSV disabled");
@@ -580,16 +637,26 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
       RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand UDP tick-timing CSV: %s",
                   hand_udp_timing_logger_.Path().c_str());
     }
-    hand_udp_timing_timer_ =
-        create_wall_timer(std::chrono::seconds(1), [this]() { DrainHandUdpTiming(); });
-    hand_udp_timing_initialized_ = true;
+    hand_udp_timing_opened_ = true;
   }
+  // cb_group_aux_: this is the heaviest callback in the process — one 1 Hz
+  // burst writes up to kHandUdpTimingBufferCapacity (512) CSV rows, two orders
+  // of magnitude more per invocation than CM's equivalent drain, which its own
+  // nrt_logging thread runs at 100 Hz (rt_tick_timing_sample.hpp) (issue #345).
+  hand_udp_timing_timer_ =
+      create_wall_timer(std::chrono::seconds(1), [this]() { DrainHandUdpTiming(); }, cb_group_aux_);
 
   RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "UdpHandNode activated");
   return CallbackReturn::SUCCESS;
 }
 
-void UdpHandNode::DrainHandUdpTiming() noexcept {
+void UdpHandNode::DrainHandUdpTiming() {
+  // Two callers now: the 1 Hz aux timer (hand_aux_io thread) and on_deactivate's
+  // straggler drain (executor thread). hand_udp_timing_producer_ is SPSC — a
+  // *single* consumer — so the two must never overlap. StopRuntime() cancels the
+  // timer and waits out any in-flight callback before on_deactivate drains, and
+  // this lock enforces the invariant rather than relying on that ordering (#345).
+  std::lock_guard lock(aux_lane_mutex_);
   if (!controller_)
     return;
   hand_udp_timing_producer_.Drain(
@@ -611,8 +678,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::S
     // potentially-recreated buffer on a future activation.
     controller_->SetTimingProducer(nullptr);
   }
-  // Drain any stragglers so the CSV reflects everything pushed before stop.
-  if (hand_udp_timing_initialized_) {
+  // Drain any stragglers so the CSV reflects everything pushed before stop. Safe
+  // as the sole consumer here: StopRuntime() above cancelled the aux timer and
+  // waited out any in-flight aux callback (issue #345).
+  if (hand_udp_timing_opened_) {
     DrainHandUdpTiming();
   }
 
@@ -624,6 +693,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::S
 }
 
 UdpHandNode::CallbackReturn UdpHandNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
+  // Unconditional, not state-conditional: ReleaseResources() must never run
+  // while an aux-lane callback can still be in flight, and StopRuntime() is the
+  // only thing that guarantees that. Making every caller responsible for
+  // ordering it left the guarantee resting on an invariant nothing enforced —
+  // and on_shutdown's guard silently failed to hold it (issue #345). Every
+  // branch inside StopRuntime() is null-guarded and both Stop()s are idempotent,
+  // so the configure -> cleanup path (controller built, never started) is a
+  // no-op beyond one "stopped: 0 cycles" log line.
+  StopRuntime();
   SaveCommStats();
   ReleaseResources();
 
@@ -632,7 +710,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_cleanup(const rclcpp_lifecycle::Stat
 }
 
 UdpHandNode::CallbackReturn UdpHandNode::on_shutdown(const rclcpp_lifecycle::State& state) {
-  if (get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+  // `state` — NOT get_current_state(). rclcpp_lifecycle dispatches transition
+  // callbacks after moving the machine into the transition state, so inside this
+  // callback get_current_state() is TRANSITION_STATE_SHUTTINGDOWN and never
+  // PRIMARY_STATE_ACTIVE; the previous primary state arrives as the argument.
+  // The old get_current_state() form was therefore dead, and shutdown-from-active
+  // skipped the deactivate path entirely (issue #345).
+  if (state.id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
     on_deactivate(state);
   }
   return on_cleanup(state);
@@ -652,12 +736,35 @@ UdpHandNode::CallbackReturn UdpHandNode::on_error(const rclcpp_lifecycle::State&
 // ── Teardown helpers (shared by on_deactivate / on_cleanup / on_error) ───────
 
 void UdpHandNode::StopRuntime() {
+  // Quiesce the aux lane first. cancel() guarantees no *further* invocation, but
+  // says nothing about one already running on the hand_aux_io thread, so take
+  // aux_lane_mutex_ empty as a barrier once no new callback can start. The
+  // detector is joined before the barrier because its failure callback is the
+  // third SaveCommStats caller — joining it first makes the barrier conclusive
+  // rather than a snapshot (issue #345).
   if (stats_save_timer_) {
     stats_save_timer_->cancel();
     stats_save_timer_.reset();
   }
+  // Timer only — `hand_udp_timing_opened_` stays true so a later on_activate
+  // reuses the open CSV instead of re-running Open().
+  if (hand_udp_timing_timer_) {
+    hand_udp_timing_timer_->cancel();
+    hand_udp_timing_timer_.reset();
+  }
   if (failure_detector_) {
+    // Join outside the lock: the detector's failure callback is itself a
+    // SaveCommStats caller, so it can be blocked on aux_lane_mutex_ — joining
+    // while holding that mutex would deadlock against the thread being joined.
     failure_detector_->Stop();
+  }
+  {
+    // Barrier and destruction share one critical section. An aux callback that
+    // already entered SaveCommStats holds this mutex and dereferences
+    // failure_detector_ directly (it is a unique_ptr, so the reader gets no
+    // ownership), which means a reset placed before the barrier frees the
+    // object out from under a live reader.
+    std::lock_guard<std::mutex> quiesce(aux_lane_mutex_);
     failure_detector_.reset();
   }
   // Call Stop() unconditionally (it is idempotent). The IsRunning() guard was
@@ -670,7 +777,19 @@ void UdpHandNode::StopRuntime() {
 }
 
 void UdpHandNode::ReleaseResources() {
+  // Aux-lane timers first, for the same reason StopRuntime() cancels them: their
+  // callbacks run on the hand_aux_io thread and touch controller_, which this
+  // function resets below (issue #345).
+  //
+  // Precondition — every caller (on_cleanup, on_error) runs StopRuntime() first,
+  // so by the time controller_ is reset the aux timers are gone, the detector is
+  // joined, and the quiesce barrier has waited out any in-flight callback. That
+  // ordering is what makes the reset below safe; it is deliberately not
+  // re-established here, because controller_'s destructor joins the CommLoop and
+  // holding aux_lane_mutex_ across a join is the deadlock shape StopRuntime()
+  // documents.
   stats_save_timer_.reset();
+  hand_udp_timing_timer_.reset();
   calib_status_timer_.reset();
   calib_cmd_sub_.reset();
   joint_command_sub_.reset();

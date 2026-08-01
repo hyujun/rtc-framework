@@ -81,6 +81,22 @@
     # loop_rate_hz / publish_rate 비율로 decimation됨 (예: 500/100=5 -> ~100Hz link_status).
     publish_rate: 100.0
 
+    # -- 스레드 레이아웃 / CPU affinity (issue #345) --
+    # 이 둘만 노드 *생성자* 에서 declare 된다 — main() 이 spin 하기 전에, 즉 어떤
+    # lifecycle transition 보다 먼저 읽어야 하는 프로세스 스레드 배치이기 때문이다.
+    #   aux_cpu_slot     : blocking 파일 I/O 전용 hand_aux_io 스레드(타이밍 CSV
+    #                      drain + stats JSON)가 붙을 slot. slot 인덱스이며 shell
+    #                      쪽 SSoT 는 rt_common.sh::get_os_cores() (= 0). -1 이면
+    #                      이 레인만 pin 하지 않는다. main 스레드(executor+DDS)는
+    #                      별도로 hand_driver slot 에 붙는다 (SSoT 는
+    #                      rtc::SystemThreadConfigs.hand_driver).
+    #   use_cpu_affinity : 위 두 pin 을 한꺼번에 끈다. 스케줄링 *정책* 은 그대로라
+    #                      CommLoop 은 여전히 SCHED_FIFO 65 다 — 코어 confinement
+    #                      만 사라지므로 실기 RT 배포에서는 끄지 말 것
+    #                      (README "스레드 모델" 절의 경고 참조).
+    aux_cpu_slot: 0
+    use_cpu_affinity: true
+
     # -- 센서 LPF 설정 (4차 Bessel LPF) --
     # 유효 센서 샘플링 레이트 = loop_rate_hz / (comm_decimation * sensor_decimation)
     baro_lpf_enabled: true            # Barometer 센서 Low-Pass Filter 활성화

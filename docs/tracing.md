@@ -174,9 +174,14 @@ hand_comm_tick                           (CommLoop 1 tick; raw PeriodicRtThread 
 │  또는 hand_read_pos / hand_read_joint_pos / hand_read_vel / hand_read_sensor  (individual)
 └─ hand_comm_tail
    ├─ hand_sensor_postproc               (PreFilter → ApplyFilters → DetectDrift)
-   ├─ hand_ft_infer                      (FT calibration/Infer)
-   └─ hand_callback                      (StateCallback → node publish 핸드오프)
+   └─ hand_ft_infer                      (FT calibration/Infer)
 ```
+
+tail 끝에 publish span 이 없는 것은 의도된 것이다 (issue #345). 예전에는
+`hand_callback` 이 `StateCallback` → 노드 publish 핸드오프를 이 FIFO 65 스레드 위에서
+감쌌지만, 지금 publish 는 **pull** 이다 — tick 은 SeqLock 에 store 만 하고 NRT executor
+가 `state_sequence()` 를 폴링해 가져간다. 따라서 publish 비용은 이 lane 의 trace 에
+나타나지 않으며, 찾으려면 executor 스레드를 봐야 한다.
 
 fake 모드(`use_fake_hand`)는 read 대신 `hand_comm_tick └─ hand_fake_cycle └─ hand_fake_step`
 (LPF 모델) 이 찍히고, tail 은 실모드와 공유한다. decimated-skip / E-Stop tick 도

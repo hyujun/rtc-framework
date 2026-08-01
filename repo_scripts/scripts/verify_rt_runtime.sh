@@ -61,6 +61,7 @@ declare -a EXTERNAL_DRIVER_NAMES=("arm_driver" "hand_driver")
 declare -A EXTERNAL_DRIVER_SLOTS       # name → expected slot index
 declare -A EXTERNAL_DRIVER_ALLTHREADS  # name → 1 if taskset -a (all threads) pin
 declare -A EXTERNAL_DRIVER_RT_PRIO     # name → SCHED_FIFO prio of its RT loop ("" = n/a)
+declare -A EXTERNAL_DRIVER_THREAD_LAYOUT  # name → "comm:cpu:policy:prio ..." ("" = n/a)
 declare -A EXTERNAL_DRIVER_COMMS       # name → space-separated comm candidates
 declare -A EXTERNAL_DRIVER_PIDS        # name → discovered PID (empty if absent)
 
@@ -239,12 +240,12 @@ build_external_drivers() {
   EXTERNAL_DRIVER_COMMS[arm_driver]="${RTC_ARM_DRIVER_COMM:-ros2_control_no}"
   EXTERNAL_DRIVER_COMMS[hand_driver]="${RTC_HAND_DRIVER_COMM:-udp_hand_node}"
 
-  # hand_driver 는 `taskset -a` (전 스레드) pin — CommLoop RT thread + failure
-  # detector 가 on_activate 에서 cpu_core=-1 로 생성돼 프로세스 pin 을 상속하기
-  # 때문 (issue #245). arm_driver 는 0 이지만 이제 "main thread 만 검사" 라는
-  # 뜻이 아니다 — 아래 EXTERNAL_DRIVER_RT_PRIO 가 채워져 있으면 그 축이 이긴다.
+  # 전 스레드가 같은 코어에 있어야 한다는 축. hand_driver 는 #345 로 **끝났다**
+  # — 이제 프로세스 안에서 스레드마다 다른 코어에 붙으므로(hand_aux_io 는 aux
+  # 코어) 균일 검사는 정상 배치를 FAIL 로 만든다. 아래 THREAD_LAYOUT 가 그 자리를
+  # 대신하며, 세 축(ALLTHREADS / RT_PRIO / THREAD_LAYOUT)은 배타적이다.
   EXTERNAL_DRIVER_ALLTHREADS[arm_driver]=0
-  EXTERNAL_DRIVER_ALLTHREADS[hand_driver]=1
+  EXTERNAL_DRIVER_ALLTHREADS[hand_driver]=0
 
   # RT-loop 계약 (SCHED_FIFO 우선순위). 값이 있으면 affinity 대신 *그 우선순위의
   # FIFO 스레드* 를 찾아 검사한다 — arm_driver 는 프로세스 affinity 를 봐선 안
@@ -253,9 +254,8 @@ build_external_drivers() {
   # (rtc_tools.launch.cm_rt_params.DEFAULT_THREAD_PRIORITY), 둘은 함께 움직여야
   # 한다. RTC_ARM_DRIVER_RT_PRIO 로 override 가능.
   #
-  # hand_driver 는 비어 있다 = 아직 이 축으로 검사하지 않는다. FIFO 65 CommLoop
-  # 계약은 #345 가 스레드 모델을 재편하며 채운다. 그때까지는 위의 all-threads
-  # affinity 검사가 그대로 유효하다.
+  # hand_driver 는 이 축도 쓰지 않는다 — 단일 RT 스레드가 아니라 세 레인이므로
+  # THREAD_LAYOUT 로 검사한다. 65 는 거기 spec 안에 있다.
   EXTERNAL_DRIVER_RT_PRIO[arm_driver]="${RTC_ARM_DRIVER_RT_PRIO:-50}"
   EXTERNAL_DRIVER_RT_PRIO[hand_driver]=""
 
@@ -273,6 +273,25 @@ build_external_drivers() {
   fi
   EXTERNAL_DRIVER_SLOTS[arm_driver]=$arm_slot
   EXTERNAL_DRIVER_SLOTS[hand_driver]=$hand_slot
+
+  # ── Per-thread layout 기대 (issue #345) ───────────────────────────────────
+  # udp_hand_node 는 세 레인이라 균일 검사도, 단일 RT 스레드 검사도 표현하지
+  # 못한다. spec 은 "comm:logical_cpu:policy:prio" 이고, spec 에 없는 TID
+  # (executor, DDS 등)는 driver slot 에 있어야 한다.
+  #
+  # aux 는 OS slot (get_os_cores) 이며 노드의 aux_cpu_slot 기본값과 같은 값이다.
+  # 두 곳이 이 사실을 알게 되는 drift 는 감수한 설계 결정이고(#345 D2), 이
+  # 주석이 shell 쪽 SSoT 를 가리킨다. RTC_HAND_AUX_SLOT 로 override 가능.
+  #
+  # <=5 코어 tier 에서는 hand slot 과 OS slot 이 둘 다 0 이라 두 기대가 같은
+  # 논리 CPU 로 풀린다 — 예외 처리 없이 통과한다 (그 tier 는 원래 Core 0 에
+  # OS/DDS/nrt/arm/hand 가 전부 모이는 degraded 배치다).
+  local hand_logical aux_slot aux_logical
+  hand_logical=$(slot_to_logical_cpu "$hand_slot")
+  aux_slot="${RTC_HAND_AUX_SLOT:-$(get_os_cores)}"
+  aux_logical=$(slot_to_logical_cpu "$aux_slot")
+  EXTERNAL_DRIVER_THREAD_LAYOUT[hand_driver]="hand_udp_recv:${hand_logical}:SCHED_FIFO:65 hand_aux_io:${aux_logical}:SCHED_OTHER:0"
+  EXTERNAL_DRIVER_THREAD_LAYOUT[arm_driver]=""
 }
 
 build_expected_threads
@@ -852,6 +871,42 @@ check_cpu_affinity() {
         _fail "${ename} (PID ${pid}): ${on_core}/${total_t} 스레드만 ${pin_label} — off:${off_list}"
         _category_update "cpu_affinity" "FAIL"
       fi
+    elif [[ -n "${EXTERNAL_DRIVER_THREAD_LAYOUT[$ename]:-}" ]]; then
+      # Per-thread layout (issue #345): 스레드마다 기대 코어·정책이 다르다.
+      # 이름별 policy/priority 검사는 여기가 처음이다 — check_scheduling_policy 는
+      # 컨트롤러 내부 EXPECTED_THREADS 만 순회하므로 external driver 의 스레드는
+      # 지금까지 어떤 정책으로 도는지 아무도 보지 않았다.
+      local lspec="${EXTERNAL_DRIVER_THREAD_LAYOUT[$ename]}"
+      local lrecords="" ltid ldir lcomm lpolicy lprio lmask
+      for ldir in "/proc/${pid}/task"/*/; do
+        ltid=$(basename "$ldir")
+        [[ "$ltid" =~ ^[0-9]+$ ]] || continue
+        lcomm=$(cat "/proc/${pid}/task/${ltid}/comm" 2>/dev/null || echo "")
+        [[ -z "$lcomm" ]] && continue
+        lpolicy=$(get_thread_sched_policy "$ltid" 2>/dev/null || echo "")
+        [[ -z "$lpolicy" ]] && continue
+        lprio=$(get_thread_sched_priority "$ltid" 2>/dev/null || echo "0")
+        lmask=$(get_thread_cpu_affinity "$ltid" 2>/dev/null || echo "")
+        lrecords+="${ltid} ${lcomm} ${lpolicy} ${lprio} ${lmask}"$'\n'
+      done
+
+      local lverdict ldetail
+      lverdict=$(printf '%s' "$lrecords" | rt_classify_external_thread_layout "$elogical" "$lspec")
+      ldetail="${lverdict#*|}"
+      lverdict="${lverdict%%|*}"
+      case "$lverdict" in
+        OK)
+          _pass "${ename} (PID ${pid}): ${ldetail}"
+          ((ok++)) || true
+          ;;
+        NO_THREADS)
+          _skip "${ename} (PID ${pid}): ${ldetail}"
+          ;;
+        *)
+          _fail "${ename} (PID ${pid}): [${lverdict}] ${ldetail}"
+          _category_update "cpu_affinity" "FAIL"
+          ;;
+      esac
     elif [[ -n "${EXTERNAL_DRIVER_RT_PRIO[$ename]:-}" ]]; then
       # RT-loop pin (issue #343): 프로세스 affinity 를 보면 안 된다 — main thread
       # 는 executor 이고 제어 루프는 별도 스레드다. 이름이 없으므로
@@ -1335,14 +1390,23 @@ print_json() {
     # 드라이버에서는 판정 근거가 아니다 (issue #343) — 진단용으로만 남긴다.
     local eprio_json="${EXTERNAL_DRIVER_RT_PRIO[$ename]:-}"
     [[ -z "$eprio_json" ]] && eprio_json="null"
+    # thread_layout 은 판정에 실제로 쓰인 spec 이라 null 이 아니면 all_threads_pin /
+    # rt_loop_prio 보다 그쪽이 근거다 (issue #345).
+    local elayout_json="${EXTERNAL_DRIVER_THREAD_LAYOUT[$ename]:-}"
+    if [[ -z "$elayout_json" ]]; then
+      elayout_json="null"
+    else
+      elayout_json="\"${elayout_json}\""
+    fi
     if [[ -n "$pid" ]]; then
       local amask
       amask=$(get_thread_cpu_affinity "$pid" 2>/dev/null || echo "0")
-      printf "    \"%s\": {\"pid\": %s, \"expected_slot\": %s, \"all_threads_pin\": %s, \"rt_loop_prio\": %s, \"main_thread_affinity\": \"0x%s\"}" \
-        "$ename" "$pid" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "$eprio_json" "${amask:-0}"
+      printf "    \"%s\": {\"pid\": %s, \"expected_slot\": %s, \"all_threads_pin\": %s, \"rt_loop_prio\": %s, \"thread_layout\": %s, \"main_thread_affinity\": \"0x%s\"}" \
+        "$ename" "$pid" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "$eprio_json" \
+        "$elayout_json" "${amask:-0}"
     else
-      printf "    \"%s\": {\"pid\": null, \"expected_slot\": %s, \"all_threads_pin\": %s, \"rt_loop_prio\": %s}" \
-        "$ename" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "$eprio_json"
+      printf "    \"%s\": {\"pid\": null, \"expected_slot\": %s, \"all_threads_pin\": %s, \"rt_loop_prio\": %s, \"thread_layout\": %s}" \
+        "$ename" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "$eprio_json" "$elayout_json"
     fi
     efirst=0
   done

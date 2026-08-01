@@ -27,6 +27,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(lifecycle_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rtc_base REQUIRED)
@@ -58,6 +59,7 @@ target_link_libraries(udp_hand_node udp_hand_protocol)
 ament_target_dependencies(udp_hand_node
   rclcpp
   rclcpp_lifecycle
+  lifecycle_msgs
   sensor_msgs
   std_msgs
   rtc_base
@@ -174,6 +176,36 @@ if(BUILD_TESTING)
   target_include_directories(test_udp_hand_failure_detector PRIVATE include)
   target_link_libraries(test_udp_hand_failure_detector udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_failure_detector rtc_base rtc_inference rclcpp)
+
+  # ── Tier 2b: Node-level lane wiring (issue #345) ──────────────────────────
+  # Compiles the node's non-main translation units directly: udp_hand_node.cpp
+  # owns main(), so the executable cannot be linked into a gtest binary.
+  ament_add_gtest(test_udp_hand_node_lanes
+    test/test_udp_hand_node_lanes.cpp
+    src/udp_hand_node_lifecycle.cpp
+    src/udp_hand_node_publish.cpp
+    src/udp_hand_node_stats.cpp)
+  target_include_directories(test_udp_hand_node_lanes PRIVATE include)
+  target_link_libraries(test_udp_hand_node_lanes udp_hand_protocol)
+  ament_target_dependencies(test_udp_hand_node_lanes
+    rtc_base rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
+    sensor_msgs std_msgs ament_index_cpp)
+
+  # Lifecycle behaviour in sil_mode=loopmodel: configure/activate bring up the
+  # real CommLoop + NRT publish lane, so this binary talks DDS and gets a
+  # dedicated ROS_DOMAIN_ID (the isolation idiom above rtc_controller_manager /
+  # test_demo_wbc_tsid_path use; domains 44-52 are taken).
+  ament_add_gtest(test_udp_hand_node_lifecycle
+    test/test_udp_hand_node_lifecycle.cpp
+    src/udp_hand_node_lifecycle.cpp
+    src/udp_hand_node_publish.cpp
+    src/udp_hand_node_stats.cpp
+    ENV ROS_DOMAIN_ID=53)
+  target_include_directories(test_udp_hand_node_lifecycle PRIVATE include)
+  target_link_libraries(test_udp_hand_node_lifecycle udp_hand_protocol)
+  ament_target_dependencies(test_udp_hand_node_lifecycle
+    rtc_base rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
+    sensor_msgs std_msgs ament_index_cpp)
 
   # ── Tier 3: FT inferencer stub tests ──────────────────────────────────────
   ament_add_gtest(test_fingertip_ft_inferencer test/test_fingertip_ft_inferencer.cpp)

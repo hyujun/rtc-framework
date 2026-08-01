@@ -824,6 +824,8 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_robot_profiles test/test_robot_profiles.py)
   ament_add_pytest_test(test_cm_rt_params_wiring test/test_cm_rt_params_wiring.py)
   ament_add_pytest_test(test_launch_shield_wiring test/test_launch_shield_wiring.py)
+  ament_add_pytest_test(test_launch_hand_affinity_wiring
+    test/test_launch_hand_affinity_wiring.py)
   ament_add_pytest_test(test_demo_gui_catalog test/test_demo_gui_catalog.py)
   ament_add_pytest_test(test_demo_gui_presets test/test_demo_gui_presets.py)
   ament_add_pytest_test(test_demo_gui_pull test/test_demo_gui_pull.py)
