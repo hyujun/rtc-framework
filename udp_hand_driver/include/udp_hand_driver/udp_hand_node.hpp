@@ -179,7 +179,10 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Drain the EventLoop's timing producer into the CSV (1 Hz, non-RT).
   // Runs on the `hand_aux_io` executor thread via cb_group_aux_ (issue #345),
   // NOT on the default executor thread — the burst is a blocking file write.
-  void DrainHandUdpTiming() noexcept;
+  // Deliberately not noexcept: the body takes aux_lane_mutex_, and
+  // std::mutex::lock may throw std::system_error — under noexcept that would be
+  // std::terminate() instead of a catchable error.
+  void DrainHandUdpTiming();
 
   // Pre-allocate ROS2 messages once in on_configure (non-RT).
   // Avoids dynamic allocation on the EventLoop publish path.
@@ -220,6 +223,20 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Release all publisher/subscription/timer handles and the controller.
   // Idempotent; shared by on_cleanup and on_error.
   void ReleaseResources();
+
+  // Guards every aux-lane callback body (stats JSON save, timing CSV drain) and
+  // is taken empty by StopRuntime() as a quiesce barrier. Before the lane split
+  // these callbacks and lifecycle teardown were the same thread and could not
+  // overlap; now they can, and they share `controller_` and the SPSC timing ring
+  // (single-consumer). One mutex rather than two: neither callback calls the
+  // other, so there is no lock order to get wrong, and both are non-RT (issue #345).
+  //
+  // Declared before every member it guards on purpose: members are destroyed in
+  // reverse declaration order, so a mutex declared after controller_ / the aux
+  // timers would be destroyed while they still exist — an aux callback racing
+  // ~UdpHandNode would then lock a destroyed mutex rather than merely observe a
+  // half-torn-down node.
+  mutable std::mutex aux_lane_mutex_;
 
   std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
   std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;
@@ -313,14 +330,6 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // written only on graceful teardown and is lost on SIGKILL/crash. Interval
   // is a fixed constant — see on_activate (no ROS param on purpose).
   rclcpp::TimerBase::SharedPtr stats_save_timer_;
-
-  // Guards every aux-lane callback body (stats JSON save, timing CSV drain) and
-  // is taken empty by StopRuntime() as a quiesce barrier. Before the lane split
-  // these callbacks and lifecycle teardown were the same thread and could not
-  // overlap; now they can, and they share `controller_` and the SPSC timing ring
-  // (single-consumer). One mutex rather than two: neither callback calls the
-  // other, so there is no lock order to get wrong, and both are non-RT (issue #345).
-  mutable std::mutex aux_lane_mutex_;
 
   // Cached config for on_activate logging
   std::string target_ip_;

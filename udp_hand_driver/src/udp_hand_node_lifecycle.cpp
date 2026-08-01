@@ -43,10 +43,14 @@ int UdpHandNode::AuxCpuSlot() const {
 UdpHandNode::~UdpHandNode() {
   // Safety net — idempotent cleanup in case lifecycle callbacks were not
   // invoked (e.g. SIGTERM without graceful shutdown).
-  if (failure_detector_)
-    failure_detector_->Stop();
-  if (controller_ && controller_->IsRunning())
-    controller_->Stop();
+  //
+  // Reuse StopRuntime() instead of open-coding the teardown: it is the one place
+  // that cancels the aux timers, joins the detector and then takes the quiesce
+  // barrier in that order, so a destructor running while the aux executor is
+  // still live cannot free controller_ under an in-flight callback. Open-coding
+  // it here previously skipped the barrier entirely and only worked because
+  // main() happens to cancel and join the aux executor first (issue #345).
+  StopRuntime();
   SaveCommStats();
 }
 
@@ -230,6 +234,16 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   const int comm_decimation = static_cast<int>(get_parameter("comm_decimation").as_int());
   const int sensor_decimation = static_cast<int>(get_parameter("sensor_decimation").as_int());
   const double loop_rate_hz = get_parameter("loop_rate_hz").as_double();
+  // Reject here rather than at Start(). UdpHandController::PrepareRun() already
+  // treats a non-positive rate as a hard error, but that runs at on_activate —
+  // by then the NRT publish timer below has turned 1.0 / (rate * oversampling)
+  // into +inf and cast it to nanoseconds, and an out-of-range double -> int64
+  // conversion is UB. The `!(x > 0.0)` form also rejects NaN (issue #345).
+  if (!(loop_rate_hz > 0.0)) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "loop_rate_hz must be > 0 (got %.3f)",
+                 loop_rate_hz);
+    return CallbackReturn::FAILURE;
+  }
   const double fake_lpf_time_constant_s = get_parameter("fake_lpf_time_constant_s").as_double();
   const double fake_effort_stiffness = get_parameter("fake_effort_stiffness").as_double();
   const double fake_effort_damping = get_parameter("fake_effort_damping").as_double();
@@ -636,7 +650,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   return CallbackReturn::SUCCESS;
 }
 
-void UdpHandNode::DrainHandUdpTiming() noexcept {
+void UdpHandNode::DrainHandUdpTiming() {
   // Two callers now: the 1 Hz aux timer (hand_aux_io thread) and on_deactivate's
   // straggler drain (executor thread). hand_udp_timing_producer_ is SPSC — a
   // *single* consumer — so the two must never overlap. StopRuntime() cancels the
