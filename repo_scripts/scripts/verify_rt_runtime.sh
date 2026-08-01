@@ -258,18 +258,12 @@ build_external_drivers() {
   EXTERNAL_DRIVER_RT_PRIO[arm_driver]="${RTC_ARM_DRIVER_RT_PRIO:-50}"
   EXTERNAL_DRIVER_RT_PRIO[hand_driver]=""
 
+  # 기대 slot 은 rt_common.sh 의 get_{arm,hand}_driver_slot 이 유일한 shell 출처다.
+  # 이 tier 표를 여기 다시 적으면 표가 바뀔 때 검증기만 옛 기대값을 들고 **PASS 를
+  # 낸다** — 센서가 거짓말하는 방향이라 그냥 틀린 것보다 비싸다 (issue #353).
   local arm_slot hand_slot
-  if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
-    arm_slot=6; hand_slot=7
-  elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
-    arm_slot=5; hand_slot=6
-  elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
-    arm_slot=4; hand_slot=5
-  elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
-    arm_slot=4; hand_slot=4
-  else
-    arm_slot=0; hand_slot=0
-  fi
+  arm_slot=$(get_arm_driver_slot "$PHYSICAL_CORES")
+  hand_slot=$(get_hand_driver_slot "$PHYSICAL_CORES")
   EXTERNAL_DRIVER_SLOTS[arm_driver]=$arm_slot
   EXTERNAL_DRIVER_SLOTS[hand_driver]=$hand_slot
 
@@ -1454,4 +1448,11 @@ main() {
   fi
 }
 
-main
+# Executed → run. Sourced → define only, so test_rt_common.sh can call
+# build_external_drivers() and assert the expected slots against
+# get_{arm,hand}_driver_slot directly. Without this guard that check could only
+# be a text grep, which cannot tell a live call from a comment mentioning one
+# (issue #353).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main
+fi

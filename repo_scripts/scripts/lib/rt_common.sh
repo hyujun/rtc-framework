@@ -680,6 +680,53 @@ get_nrt_cores() {
   esac
 }
 
+# ── External driver slots (arm_driver / hand_driver) ────────────────────────
+# The *slot index* each external driver process belongs on. Slots, NOT logical
+# cpu ids — run the result through slot_to_logical_cpu before comparing against
+# a /proc affinity mask.
+#
+# These two are the shell mirror of the same tier table that lives in:
+#   1. rtc_base/include/rtc_base/threading/thread_config.hpp  ← SSoT
+#      (kArmDriverConfig / kHandDriverConfig .cpu_core, per SelectThreadConfigs tier)
+#   2. rtc_tools/rtc_tools/launch/thread_layout.py
+#      (get_arm_driver_core / get_hand_driver_core — the launch-side taskset target)
+#   3. here — consumed by verify_rt_runtime.sh (expected slot) and
+#      print_thread_layout (the operator-facing diagram)
+# A tier change must move all three. Getting 3 wrong is the expensive one: the
+# verifier then checks a *stale expectation* and reports PASS for a process that
+# is on the wrong core (issue #353).
+#
+#   ≤5    → 0 / 0   (degraded: everything collapses onto OS Core 0)
+#   6-7   → 4 / 4   (arm and hand share one core)
+#   8-9   → 4 / 5
+#   10-11 → 5 / 6
+#   12+   → 6 / 7
+#
+# $1 — physical core count (optional; defaults to get_physical_cores). The
+# argument exists so print_thread_layout can render a tier other than this
+# machine's, which is also what makes these unit-testable without fake sysfs.
+get_arm_driver_slot() {
+  local ncpu="${1:-$(get_physical_cores)}"
+  case "$ncpu" in
+    1|2|3|4|5)  echo "0" ;;
+    6|7)        echo "4" ;;
+    8|9)        echo "4" ;;
+    10|11)      echo "5" ;;
+    *)          echo "6" ;;
+  esac
+}
+
+get_hand_driver_slot() {
+  local ncpu="${1:-$(get_physical_cores)}"
+  case "$ncpu" in
+    1|2|3|4|5)  echo "0" ;;
+    6|7)        echo "4" ;;
+    8|9)        echo "5" ;;
+    10|11)      echo "6" ;;
+    *)          echo "7" ;;
+  esac
+}
+
 # Expand a CSV / range list of physical core ids into a CSV of logical CPU ids
 # that includes each core's HT sibling (when SMT is enabled).
 #
@@ -1088,8 +1135,13 @@ print_thread_layout() {
   # 경계는 SelectThreadConfigs() dispatch 와 일치해야 한다: <6 → degraded(4-core,
   # MPC CFS), {6,7} → 6-core(MPC FIFO). ncpu=5 를 6-core 블록으로 그리면 런타임이
   # 실제로 쓰지 않는 hard-RT MPC 를 표시하게 된다 (dispatch 는 5 를 degraded 로 처리).
+  # arm/hand_driver 코어는 get_{arm,hand}_driver_slot 이 shell 쪽 유일 출처다.
+  # 이 다이어그램은 그 표의 미러이므로 숫자를 다시 적지 않는다 (issue #353).
+  local arm hand
+  arm=$(get_arm_driver_slot "$ncpu")
+  hand=$(get_hand_driver_slot "$ncpu")
   if [[ "$ncpu" -le 5 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver + hand_aux_io (degraded)"
+    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (slot ${arm}/${hand}) + hand_aux_io (degraded)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin, degraded)"
     echo "    Core 3:   mpc_main     (CFS, degraded)"
@@ -1098,15 +1150,15 @@ print_thread_layout() {
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3:   mpc_main     (SCHED_FIFO 60)"
-    echo "    Core 4:   arm_driver + hand_driver (shared, degraded; hand_udp_recv FIFO 65)"
+    echo "    Core ${arm}:   arm_driver + hand_driver (shared, degraded; hand_udp_recv FIFO 65)"
     echo "    Core 5:   nrt_logging (CFS -5) + nrt_callback (CFS 0) shared (degraded)"
   elif [[ "$ncpu" -le 9 ]]; then
     echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3:   mpc_main     (SCHED_FIFO 60)"
-    echo "    Core 4:   arm_driver   (CFS, taskset pin)"
-    echo "    Core 5:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
+    echo "    Core ${arm}:   arm_driver   (CFS, taskset pin)"
+    echo "    Core ${hand}:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 6:   nrt_logging  (CFS -5)"
     echo "    Core 7:   nrt_callback (CFS 0)"
   elif [[ "$ncpu" -le 11 ]]; then
@@ -1114,8 +1166,8 @@ print_thread_layout() {
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3-4: mpc_main + worker_0 (SCHED_FIFO 60 / 55)"
-    echo "    Core 5:   arm_driver   (CFS, taskset pin)"
-    echo "    Core 6:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
+    echo "    Core ${arm}:   arm_driver   (CFS, taskset pin)"
+    echo "    Core ${hand}:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 7:   nrt_logging  (CFS -5)"
     echo "    Core 8:   nrt_callback (CFS 0)"
     echo "    Core 9:   spare"
@@ -1124,8 +1176,8 @@ print_thread_layout() {
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3-5: mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
-    echo "    Core 6:   arm_driver   (CFS, taskset pin)"
-    echo "    Core 7:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
+    echo "    Core ${arm}:   arm_driver   (CFS, taskset pin)"
+    echo "    Core ${hand}:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 8:   nrt_logging  (CFS -5)"
     echo "    Core 9:   nrt_callback (CFS 0)"
     echo "    Core 10-${ncpu}: spare"
@@ -1134,8 +1186,8 @@ print_thread_layout() {
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3-5: mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
-    echo "    Core 6:   arm_driver   (CFS, taskset pin)"
-    echo "    Core 7:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
+    echo "    Core ${arm}:   arm_driver   (CFS, taskset pin)"
+    echo "    Core ${hand}:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 8:   nrt_logging  (CFS -5)"
     echo "    Core 9:   nrt_callback (CFS 0)"
     echo "    Core 10-${ncpu}: spare / user shield"
@@ -1144,8 +1196,8 @@ print_thread_layout() {
     echo "    Core 1:     rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:     rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
     echo "    Core 3-5:   mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
-    echo "    Core 6:     arm_driver   (CFS, taskset pin)"
-    echo "    Core 7:     hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
+    echo "    Core ${arm}:     arm_driver   (CFS, taskset pin)"
+    echo "    Core ${hand}:     hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
     echo "    Core 8:     nrt_logging  (CFS -5)"
     echo "    Core 9:     nrt_callback (CFS 0)"
     echo "    Core 10-15: spare / user shield"

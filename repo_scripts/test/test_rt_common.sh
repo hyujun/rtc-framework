@@ -1238,6 +1238,137 @@ test_with_temporary_disable_missing_hook() {
   rm -rf -- "$tmp_root"
 }
 
+# ── External driver slot table (issue #353) ─────────────────────────────────
+# get_{arm,hand}_driver_slot 는 thread_config.hpp tier 표의 shell 미러이고,
+# verify_rt_runtime.sh 의 기대값과 print_thread_layout 의 다이어그램이 둘 다
+# 이것을 소비한다. 아래 fixture 가 **경계마다** 값을 박으므로, 표를 고치면서
+# 소비자를 안 고치는 대신 표 자체를 잘못 고치면 여기서 red 가 난다.
+
+test_external_driver_slots_per_tier() {
+  # 경계는 SelectThreadConfigs() dispatch 와 같다: <6 degraded, {6,7} 공유,
+  # {8,9} 분리 시작, {10,11}, 12+ 고정.
+  expect_eq "drvslot.arm.4"   "0" "$(get_arm_driver_slot 4)"
+  expect_eq "drvslot.hand.4"  "0" "$(get_hand_driver_slot 4)"
+  expect_eq "drvslot.arm.5"   "0" "$(get_arm_driver_slot 5)"
+  expect_eq "drvslot.hand.5"  "0" "$(get_hand_driver_slot 5)"
+  expect_eq "drvslot.arm.6"   "4" "$(get_arm_driver_slot 6)"
+  expect_eq "drvslot.hand.6"  "4" "$(get_hand_driver_slot 6)"
+  expect_eq "drvslot.arm.7"   "4" "$(get_arm_driver_slot 7)"
+  expect_eq "drvslot.hand.7"  "4" "$(get_hand_driver_slot 7)"
+  expect_eq "drvslot.arm.8"   "4" "$(get_arm_driver_slot 8)"
+  expect_eq "drvslot.hand.8"  "5" "$(get_hand_driver_slot 8)"
+  expect_eq "drvslot.arm.9"   "4" "$(get_arm_driver_slot 9)"
+  expect_eq "drvslot.hand.9"  "5" "$(get_hand_driver_slot 9)"
+  expect_eq "drvslot.arm.10"  "5" "$(get_arm_driver_slot 10)"
+  expect_eq "drvslot.hand.10" "6" "$(get_hand_driver_slot 10)"
+  expect_eq "drvslot.arm.11"  "5" "$(get_arm_driver_slot 11)"
+  expect_eq "drvslot.hand.11" "6" "$(get_hand_driver_slot 11)"
+  expect_eq "drvslot.arm.12"  "6" "$(get_arm_driver_slot 12)"
+  expect_eq "drvslot.hand.12" "7" "$(get_hand_driver_slot 12)"
+  expect_eq "drvslot.arm.16"  "6" "$(get_arm_driver_slot 16)"
+  expect_eq "drvslot.hand.16" "7" "$(get_hand_driver_slot 16)"
+  expect_eq "drvslot.arm.24"  "6" "$(get_arm_driver_slot 24)"
+  expect_eq "drvslot.hand.24" "7" "$(get_hand_driver_slot 24)"
+}
+
+test_external_driver_slots_share_a_core_only_on_the_degraded_tiers() {
+  # 6-7 tier 의 print_thread_layout 은 "arm_driver + hand_driver (shared)" 를
+  # 한 줄로 그린다. 그 줄이 참이려면 두 슬롯이 같아야 하고, 8+ 부터는 달라야
+  # 한다 — 다이어그램이 조용히 거짓말하지 않게 그 전제를 박는다.
+  local n
+  for n in 4 5 6 7; do
+    expect_eq "drvslot.shared.${n}" "$(get_arm_driver_slot "$n")" "$(get_hand_driver_slot "$n")"
+  done
+  for n in 8 10 12 16; do
+    if [[ "$(get_arm_driver_slot "$n")" == "$(get_hand_driver_slot "$n")" ]]; then
+      fail "[drvslot.split.${n}] arm 과 hand 가 같은 slot ($(get_arm_driver_slot "$n")) — 전용 코어 tier 인데 공유"
+    else
+      pass
+    fi
+  done
+}
+
+test_print_thread_layout_uses_the_slot_helpers() {
+  # print_thread_layout 은 이 표의 세 번째 미러다. 숫자를 다시 적으면 헬퍼를
+  # 고쳐도 다이어그램만 옛 배치를 계속 그린다 — 그래서 배선을 확인한다
+  # (값 자체는 위 fixture 가 소유한다).
+  local out n arm hand
+  for n in 8 10 12 16; do
+    arm=$(get_arm_driver_slot "$n")
+    hand=$(get_hand_driver_slot "$n")
+    out=$(print_thread_layout "$n")
+    if grep -qE "Core ${arm}: +arm_driver" <<<"$out"; then
+      pass
+    else
+      fail "[layout.arm.${n}] 'Core ${arm}: arm_driver' 줄이 없다 — 다이어그램이 헬퍼를 안 쓴다"
+    fi
+    if grep -qE "Core ${hand}: +hand_driver" <<<"$out"; then
+      pass
+    else
+      fail "[layout.hand.${n}] 'Core ${hand}: hand_driver' 줄이 없다 — 다이어그램이 헬퍼를 안 쓴다"
+    fi
+  done
+}
+
+test_verifier_expected_slots_track_the_helpers() {
+  # 이 슬라이스의 본체: verify_rt_runtime.sh 가 tier 표를 자체 복제하면
+  # **틀린 기대값으로 PASS** 를 낸다 (센서가 거짓말하는 방향). 스크립트를
+  # source 해서 build_external_drivers 를 직접 돌리고, 채워진 기대 slot 이
+  # 헬퍼와 같은지 본다 — grep 이 아니라 실제 호출 결과다.
+  local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
+  local n out
+  for n in 4 6 8 10 12 16; do
+    # 서브셸: 검증기는 top-level 에서 자기 상태(색상, 리포터, PHYSICAL_CORES)를
+    # 세팅하므로 이 테스트 프로세스의 상태와 섞이면 안 된다.
+    # `|| true`: 가드가 사라져 source 가 run_checks 를 돌리면 서브셸이 검증기의
+    # exit code (2/3) 로 죽는다. set -e 아래서는 그게 이 스크립트 전체를
+    # **요약 출력 전에** 끝내 버려서, 진짜 red 가 침묵한 red 로 보인다.
+    # 여기서 삼키고 아래 populated 검사가 사람이 읽을 메시지를 내게 한다.
+    out=$(
+      set +eu
+      # shellcheck disable=SC1090
+      source "$verifier" >/dev/null 2>&1
+      PHYSICAL_CORES="$n"
+      build_external_drivers >/dev/null 2>&1
+      printf '%s %s %s %s' \
+        "${EXTERNAL_DRIVER_SLOTS[arm_driver]}" "$(get_arm_driver_slot "$n")" \
+        "${EXTERNAL_DRIVER_SLOTS[hand_driver]}" "$(get_hand_driver_slot "$n")"
+    ) || true
+    local varm earm vhand ehand
+    read -r varm earm vhand ehand <<<"$out"
+    # source 나 build_external_drivers 가 죽으면 네 값이 전부 빈 문자열이 되고
+    # expect_eq "" "" 는 **통과한다** — 비교 전에 실제로 슬롯을 받았는지 본다.
+    if [[ "$varm" =~ ^[0-9]+$ && "$vhand" =~ ^[0-9]+$ && "$earm" =~ ^[0-9]+$ && "$ehand" =~ ^[0-9]+$ ]]; then
+      pass
+    else
+      fail "[verifier.populated.${n}] 기대 slot 을 못 읽었다 (out='${out}') — source/build_external_drivers 실패"
+      continue
+    fi
+    expect_eq "verifier.arm.${n}"  "$earm"  "$varm"
+    expect_eq "verifier.hand.${n}" "$ehand" "$vhand"
+  done
+}
+
+test_verifier_is_sourceable_without_running() {
+  # 위 테스트가 성립하려면 source 가 검증을 *실행하지* 않아야 한다. 가드가
+  # 사라지면 source 한 순간 run_checks 가 돌고 exit 로 테스트를 끌고 나간다.
+  local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
+  local sentinel=""
+  sentinel=$(
+    set +eu
+    # shellcheck disable=SC1090
+    source "$verifier" >/dev/null 2>&1
+    echo "still-here"
+  ) || true
+  expect_eq "verifier.sourceable" "still-here" "$sentinel"
+}
+
+test_external_driver_slots_per_tier
+test_external_driver_slots_share_a_core_only_on_the_degraded_tiers
+test_print_thread_layout_uses_the_slot_helpers
+test_verifier_expected_slots_track_the_helpers
+test_verifier_is_sourceable_without_running
+
 test_write_file_if_changed_creates_new
 test_write_file_if_changed_skips_identical
 test_write_file_if_changed_preserves_mode
