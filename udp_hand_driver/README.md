@@ -30,7 +30,7 @@ udp_hand_driver/
 ├── src/
 │   ├── udp_hand_node.cpp           -- main() (mlockall, CPU affinity, spin)
 │   ├── udp_hand_node_lifecycle.cpp -- 6 lifecycle 콜백 + dtor + Drain + teardown helper
-│   ├── udp_hand_node_publish.cpp   -- Preallocate / PublishFromEventLoop / PublishCalibrationStatus
+│   ├── udp_hand_node_publish.cpp   -- Preallocate / PollAndPublish / PublishState / PublishCalibrationStatus
 │   ├── udp_hand_node_stats.cpp     -- SaveCommStats (hand_udp_stats.json writer)
 │   ├── fake_hand_firmware_main.cpp -- fake_hand_firmware 실행파일 (socket/param/log 껍데기)
 │   └── protocol/
@@ -72,9 +72,41 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
                     -> ReadAllMotors(joint_io_mode) -- joint pos/vel/cur
                     -> ReadSensors (sensor_decimation cycle마다)
                     -> FT Inference (sensor cycle + calibrated)
-                    -> state_seqlock_ 갱신 (lock-free)
-                    -> ROS2 직접 publish (timer 없음)
+                    -> state_seqlock_ 갱신 (lock-free) — tick 종료
+
+[hand_driver core] main executor (CFS) -- publish_timer_ 폴링 (loop_rate_hz × 2)
+                    -> state_sequence() 가 전진했으면 snapshot 을 publish
+                    -> now() · 메시지 작성 · joint/motor/sensor/link publish
+                    -> joint/calib command 구독, calib status 5 Hz
+
+[aux core (OS slot)] hand_aux_io executor (CFS)
+                    -> 타이밍 CSV drain (1 Hz, 버스트당 최대 512행)
+                    -> stats JSON 저장 (10 s)
 ```
+
+### 스레드 모델 (issue #345)
+
+프로세스는 RTC 스레드 3개 + DDS 스레드를 가진다. 분리 축은 core 소속이 아니라 **연산량**이다 — 가벼운 CFS 레인은 CommLoop 과 같은 코어에 둬도 FIFO 65 가 항상 선점하므로 문제가 없고, blocking 파일 I/O 만 다른 코어로 뺀다.
+
+| 스레드 | core | 스케줄러 | 하는 일 |
+|---|---|---|---|
+| `hand_udp_recv` (CommLoop) | `hand_driver` slot | **SCHED_FIFO 65** | UDP I/O · 센서 처리 · ONNX 추론 · SeqLock store |
+| main = executor | `hand_driver` slot | CFS | NRT publish 소비자, command/calib 구독, calib status |
+| failure detector | `hand_driver` slot (상속) | CFS nice −5 | 50 Hz SeqLock 폴링 감시 |
+| `hand_aux_io` | **aux slot** (`aux_cpu_slot`, 기본 0) | CFS | 타이밍 CSV drain, stats JSON — blocking 파일 쓰기 |
+| DDS | `hand_driver` slot | CFS | launch `pin_dds_threads_to_slot` 이 co-pin |
+
+`hand_udp_recv` 와 detector 는 `cpu_core = -1` 로 **프로세스 affinity 를 상속**한다. `hand_udp_recv` 에 명시 slot 을 주지 않는 것은 의도적이다 — `ApplyThreadConfig` 는 affinity → 정책 → 이름 순서로 진행하고 affinity 실패 시 조기 반환하므로, 명시 pin 은 배치를 바꾸지 않으면서 **affinity 실패가 FIFO 65 와 스레드 이름을 함께 날리는 경로만** 새로 만든다 (이름 없는 스레드는 `verify_rt_runtime.sh` 가 찾지 못한다).
+
+`use_cpu_affinity:=false` 는 프로세스 안의 두 pin(main → `hand_driver`, `hand_aux_io` → aux)을 건너뛴다. **스케줄링 정책은 유지되므로** CommLoop 은 그대로 SCHED_FIFO 65 다 — 코어 confinement 만 사라진다.
+
+### NRT publish mailbox
+
+publish 는 CommLoop 이 호출하는 콜백(push)이 아니라 executor 가 당겨가는 **pull** 이다. RT tick 은 `state_seqlock_` / `ft_seqlock_` 에 고정 크기 POD 를 store 만 하고, `now()` · 메시지 작성 · publish 는 전부 NRT 레인에서 일어난다.
+
+- **latest-wins / overwrite**: mailbox 는 큐가 아니다. 폴 한 번은 publish 한 번이며, 그 사이 여러 tick 이 지났다면 **가장 최신 snapshot 만** 나가고 중간 것은 덮인다. 손실은 카운터로 보이지 않는다 — 관측하려면 `state_sequence()` 증가분과 publish 수를 대조한다.
+- **폴링 주기 = `loop_rate_hz × kPublishPollOversampling(2.0)`**. 생산과 같은 레이트로 폴링하면 두 tick 이 두 폴 사이에 들어갈 때마다 한 샘플이 영구 손실돼 토픽 레이트가 `loop_rate_hz` 아래로 내려앉는다. 오버샘플링은 그 손실 꼬리를 wakeup 비용(새 데이터가 없으면 atomic load 1회)과 맞바꾼다.
+- **카운터는 호출 횟수가 아니라 cycle 수**. `SeqLock` 은 Store 당 sequence 를 2 증가시키므로 완료된 tick 수는 `(현재 − 직전) / 2` 이고, 홀수 값은 쓰기 진행 중이라는 뜻이라 baseline 으로 삼으면 이후 모든 차분이 한 스텝 어긋난다 (`LastCompletedWrite` 로 내림). `link_status` 감쇠와 주기 로그는 이 cycle 수를 누적하고 **나머지를 carry** 하므로, 폴이 밀린 구간에서도 유효 레이트가 떨어지지 않는다.
 
 **Command-gated write**: write(`WritePosition`)는 **per-command** 게이트다 — `event_pending_`가 set 된 cycle 에서 `pending_cmd_`를 latch 하고 `has_pending_write_`를 세운 뒤, 1회 write 시도 후 성공/실패 무관 clear 한다. 명령이 끊긴 구간은 read-only cycle 만 돌고 펌웨어는 마지막 위치를 hold 한다(이전의 영구 latch → stale 재전송 문제 제거).
 
@@ -190,7 +222,7 @@ skip 사이클의 동작:
 
 ### UdpHandController (`udp_hand_controller.hpp`)
 
-핵심 드라이버 클래스. Event-driven jthread (hand_driver core, SCHED_FIFO/65) 로 동작합니다. 코어 번호는 tier-aware (`rtc_base/threading/thread_config.hpp::SelectThreadConfigs().hand_driver.cpu_core` — 6-core 에서 Core 1, ≥ 8-core 에서 dedicated; SSoT 참조). 프로세스가 launch-level taskset 으로 pin 되고 내부 receive thread (priority 65) 가 affinity 상속.
+핵심 드라이버 클래스. Event-driven jthread (hand_driver core, SCHED_FIFO/65) 로 동작합니다. 코어 번호는 tier-aware (`rtc_base/threading/thread_config.hpp::SelectThreadConfigs().hand_driver.cpu_core` — 6-core 에서 Core 1, ≥ 8-core 에서 dedicated; SSoT 참조). 프로세스가 **스스로** main 스레드를 그 코어에 pin 하고 (issue #345 — launch 의 `taskset -a` 스윕은 제거됐다) 내부 receive thread (priority 65) 가 affinity 상속. launch 는 `rclcpp::init()` 이 노드 생성 전에 만드는 DDS 스레드만 co-pin 한다.
 
 - **SeqLock** 기반 lock-free 상태 공유 (priority inversion 방지)
 - **per-command write gate**: `event_pending_`(release) → CommLoop latch(acquire); 1회 write 후 clear (stale 재전송 없음)

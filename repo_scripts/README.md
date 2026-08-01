@@ -91,7 +91,7 @@ repo_scripts/
 | `check_rt_setup.sh` | 정적 환경 검증 -- 커널, CPU, IRQ, 네트워크 등 (9개 카테고리) | 선택 |
 | `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 (7개 카테고리) | 선택 |
 
-> **External driver 프로세스 검증 (`arm_driver` / `hand_driver`).** 이 둘은 컨트롤러 내부 스레드가 아니라 launch 가 taskset 으로 pin 하는 **별도 프로세스**다 (`arm_driver`=`ros2_control_node`, `hand_driver`=`udp_hand_node`; thread_config.hpp §process-level threads). `verify_rt_runtime.sh` 는 이들을 process comm 으로 발견해 검증하되 **축이 다르다**: `hand_driver` 는 전-스레드 affinity (`taskset -a` pin, issue #245), `arm_driver` 는 **RT 루프** — 설정된 우선순위(50)의 SCHED_FIFO 스레드가 존재하고 그것이 arm 코어에 있는지. arm 은 프로세스 affinity 를 봐서는 안 된다: main thread 는 executor 이고 500 Hz 루프는 별도 스레드이며, 예전에는 launch 가 그 main thread 를 핀하고 검증기가 같은 스레드를 읽어 서로를 확인해 주고 있었다 (issue #343). FIFO 스레드 부재는 WARN 이 아니라 FAIL 이다 — FIFO 요청이 EPERM 으로 거부돼도 affinity 는 적용되므로, 위치만 보는 검사는 CFS 로 강등된 제어 루프를 통과시킨다. 우선순위 기대값은 `RTC_ARM_DRIVER_RT_PRIO` 로 override. sim launch 는 mujoco 만 pin 하고 driver 프로세스가 없으므로 **SKIP** 처리된다. 다른 로봇/드라이버는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM` env (공백 구분 comm 후보 리스트) 로 override.
+> **External driver 프로세스 검증 (`arm_driver` / `hand_driver`).** 이 둘은 컨트롤러 내부 스레드가 아니라 launch 가 taskset 으로 pin 하는 **별도 프로세스**다 (`arm_driver`=`ros2_control_node`, `hand_driver`=`udp_hand_node`; thread_config.hpp §process-level threads). `verify_rt_runtime.sh` 는 이들을 process comm 으로 발견해 검증하되 **축이 다르다**: `arm_driver` 는 **RT 루프** — 설정된 우선순위(50)의 SCHED_FIFO 스레드가 존재하고 그것이 arm 코어에 있는지. `hand_driver` 는 **per-thread layout** — `hand_udp_recv` 는 hand 코어에 SCHED_FIFO 65, `hand_aux_io` 는 aux 코어(= OS slot)에 CFS, 그 외 TID(executor, DDS)는 hand 코어에 있어야 한다 (issue #345). 이름별 policy/priority 를 보는 것은 external driver 에 대해 이 검사가 처음이다 — `check_scheduling_policy` 는 컨트롤러 *내부* 스레드만 순회한다. 판정 우선순위는 `MISSING` > `WRONG_SCHED` > `WRONG_CPU` 이며, 스레드가 아예 없거나 스케줄러가 틀린 것이 코어 오배치보다 나쁜 발견이다. aux slot 은 `RTC_HAND_AUX_SLOT` 로 override 하며 기본값은 `get_os_cores()`(= 0) 로 노드의 `aux_cpu_slot` 기본값과 같다. ≤5코어 tier 에서는 hand slot 과 OS slot 이 둘 다 0 이라 두 기대가 같은 논리 CPU 로 풀려 그대로 통과한다(예외 처리 아님). hand 의 옛 전-스레드 affinity 검사(`taskset -a` pin, issue #245)는 **폐기됐다** — 프로세스 안에서 스레드마다 다른 코어에 붙으므로 균일 검사는 정상 배치를 FAIL 로 만든다. arm 은 프로세스 affinity 를 봐서는 안 된다: main thread 는 executor 이고 500 Hz 루프는 별도 스레드이며, 예전에는 launch 가 그 main thread 를 핀하고 검증기가 같은 스레드를 읽어 서로를 확인해 주고 있었다 (issue #343). FIFO 스레드 부재는 WARN 이 아니라 FAIL 이다 — FIFO 요청이 EPERM 으로 거부돼도 affinity 는 적용되므로, 위치만 보는 검사는 CFS 로 강등된 제어 루프를 통과시킨다. 우선순위 기대값은 `RTC_ARM_DRIVER_RT_PRIO` 로 override. sim launch 는 mujoco 만 pin 하고 driver 프로세스가 없으므로 **SKIP** 처리된다. 다른 로봇/드라이버는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM` env (공백 구분 comm 후보 리스트) 로 override.
 
 > **Intel hybrid 감지 (`[2.5/9]`) 전제조건 — `cpuid` 패키지 (`sudo apt install -y cpuid`).**
 > Raptor/Meteor/Arrow Lake 등 P+E 하이브리드는 3-path 캐스케이드로 감지한다: ① primary = `/sys/.../cpu/types/` sysfs (**커널 >= 6.9 + `nuc` 프로파일 재빌드** 필요 — `build_rt_kernel.sh` 참조), ② fallback = CPUID leaf 0x1A (**`cpuid` 툴 필요**), ③ fallback = cpuinfo_max_freq 클러스터링. 세 경로가 모두 실패하면 hybrid CPU가 "homogeneous" 로 **오검출**된다. `cpuid` 는 재이미징 시 누락되기 쉬운 필수 도구이므로 신규/재설치 머신 프로비저닝에 반드시 포함한다 (미설치 시 `check_rt_setup.sh` 가 Intel CPU 에 한해 오검출 경고를 출력한다).
@@ -192,6 +192,8 @@ Tier별 매핑 (layout v4.1 — SSoT: `rtc_base/threading/thread_config.hpp::Sel
 - **12–13코어**: + mpc_worker_1 Core 5, arm Core 6, hand Core 7, nrt_logging Core 8, nrt_callback Core 9.
 - **14–15코어**: 12-core 와 동일 매핑 + Core 10-13 spare.
 - **16+코어**: 12-core 와 동일 RT cluster (Core 1-5) + driver Core 6-7 + nrt Core 8-9 + Core 10-15 spare. v4.1 부터 과거 16c-only "user cset shield Core 4-8" 잔재는 제거.
+
+**hand aux lane (issue #345)**: `udp_hand_node` 는 위 `hand_driver` 코어에 더해 **OS slot(Core 0)에 `hand_aux_io` 스레드 하나**를 둔다 — 타이밍 CSV drain(1 Hz, 버스트당 최대 512행)과 stats JSON 저장 같은 blocking 파일 I/O 전용 CFS 레인이다. shield 밖 `system` cpuset 안이라 cpuset 재설계가 필요 없고 `cset shield` 활성 상태에서도 EINVAL 이 나지 않는다. slot 은 노드 param `aux_cpu_slot`(기본 0) 이며 shell 쪽 SSoT 는 `get_os_cores()` 다. ≤5코어 tier 에서는 `hand_driver` slot 도 0 이라 두 레인이 같은 코어로 합쳐진다 (그 tier 는 원래 Core 0 에 전부 모이는 degraded 배치다).
 
 **v4.1 의 핵심 변화 (모든 tier 공통)**: RT cluster 가 Core 1 부터 시작 (Core 0 = OS/DDS/IRQ 전용), nrt_logging / nrt_callback 이 모든 ≥ 6c tier 에서 Core 0 와 분리, arm/hand 알파벳 순, sim_thread / viewer 가 모든 tier 에서 `cpu_core = -1`. 단조성 불변식은 `rtc_base/test/test_mpc_thread_config.cpp` 의 tier 쌍 + sentinel 처리 테스트가 회귀 방지.
 
@@ -394,7 +396,7 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 | Tier | 스레드 | 격리 |
 |------|--------|------|
 | Tier 1 (RT-critical) | rt_control + rt_callback (FIFO 70) + mpc_main + mpc_workers | 항상 |
-| Tier 2 (driver / IO) | arm_driver, hand_driver, nrt_logging, nrt_callback | SCHED_OTHER — shield 밖 dedicated core. hand/sim 은 taskset, arm 은 CM 파라미터로 내부 RT 루프만 FIFO 50 + pin (issue #343) |
+| Tier 2 (driver / IO) | arm_driver, hand_driver, hand_aux_io, nrt_logging, nrt_callback | SCHED_OTHER — shield 밖 dedicated core. arm 은 CM 파라미터로 내부 RT 루프만 FIFO 50 + pin (issue #343). hand 는 프로세스가 스스로 pin 하고 (`use_cpu_affinity` param) 내부 `hand_udp_recv` 만 FIFO 65, `hand_aux_io` 는 OS slot 으로 분리 (issue #345); launch 는 DDS 스레드만 co-pin 한다. sim 은 taskset |
 | Tier 3 (Flexible) | sim_thread, viewer, monitoring, build | 격리 안 함 (`cpu_core = -1`, no pin) |
 
 > Layout v4.1 에서 `--robot` / `--sim` 두 모드의 shield 범위가 동일해짐 (RT + MPC only). driver / IO 코어는 shield 밖에서 SCHED_OTHER 로 직접 핀 — 별도 tier 격리 불필요. 두 옵션은 forward-compat 용으로 유지.
