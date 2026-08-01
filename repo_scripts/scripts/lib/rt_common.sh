@@ -918,6 +918,12 @@ rt_classify_external_thread_layout() {
     fi
 
     [[ -z "$mask_hex" ]] && continue
+    # A negative expectation is the documented "no pin" sentinel (thread_config.hpp
+    # cpu_core = -1; slot_to_logical_cpu passes negatives through unchanged), so
+    # the thread is deliberately unconfined and there is no mask to match. Without
+    # this guard $((1 << -1)) silently evaluates to -9223372036854775808 and every
+    # real mask compares unequal — a false WRONG_CPU for a correct configuration.
+    [[ "$want_cpu" -lt 0 ]] && continue
     mask_dec=$((16#${mask_hex}))
     if [[ "$mask_dec" -ne $((1 << want_cpu)) ]]; then
       wrong_cpu="${wrong_cpu} ${comm}(${tid}):{$(mask_to_cpus "$mask_hex")}(want cpu ${want_cpu})"

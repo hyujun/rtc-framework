@@ -907,6 +907,19 @@ test_classify_layout_aux_became_realtime() {
   expect_eq "layout.aux_rt.verdict" "WRONG_SCHED" "${out%%|*}"
 }
 
+test_classify_layout_unpinned_sentinel_is_not_a_failure() {
+  # RTC_HAND_AUX_SLOT=-1 는 "aux 를 고정하지 않는다" 는 문서화된 sentinel
+  # (thread_config.hpp cpu_core=-1, slot_to_logical_cpu 는 음수를 그대로 통과).
+  # 가드가 없으면 $((1 << -1)) 이 조용히 거대한 음수가 되어, 올바르게 설정된
+  # 스레드가 어떤 마스크를 갖든 WRONG_CPU 로 오탐된다 — 잡아야 할 오설정이
+  # 아니라 verifier 가 만들어내는 가짜 FAIL 이다.
+  local out spec="hand_udp_recv:11:SCHED_FIFO:65 hand_aux_io:-1:SCHED_OTHER:0"
+  out=$(printf '%s\n' \
+    "101 hand_udp_recv SCHED_FIFO 65 800" \
+    "102 hand_aux_io SCHED_OTHER 0 fff" | rt_classify_external_thread_layout 11 "$spec")
+  expect_eq "layout.unpinned_sentinel.verdict" "OK" "${out%%|*}"
+}
+
 test_classify_layout_missing_thread() {
   # 이름이 안 붙었거나(=ApplyThreadConfig 조기 반환) 레인이 안 떴을 때. 코어가
   # 맞는지보다 먼저 보고돼야 한다 — 없는 스레드는 더 나쁜 발견이다.
@@ -1115,6 +1128,7 @@ test_classify_layout_aux_dragged_back
 test_classify_layout_commloop_lost_fifo
 test_classify_layout_wrong_prio
 test_classify_layout_aux_became_realtime
+test_classify_layout_unpinned_sentinel_is_not_a_failure
 test_classify_layout_missing_thread
 test_classify_layout_unnamed_thread_must_be_on_driver_core
 test_classify_layout_degraded_tier_collapse
