@@ -59,7 +59,6 @@ declare -A THREAD_NAMES   # tid → name
 # are discovered as their own PIDs by process comm. See build_external_drivers().
 declare -a EXTERNAL_DRIVER_NAMES=("arm_driver" "hand_driver")
 declare -A EXTERNAL_DRIVER_SLOTS       # name → expected slot index
-declare -A EXTERNAL_DRIVER_ALLTHREADS  # name → 1 if taskset -a (all threads) pin
 declare -A EXTERNAL_DRIVER_RT_PRIO     # name → SCHED_FIFO prio of its RT loop ("" = n/a)
 declare -A EXTERNAL_DRIVER_THREAD_LAYOUT  # name → "comm:cpu:policy:prio ..." ("" = n/a)
 declare -A EXTERNAL_DRIVER_COMMS       # name → space-separated comm candidates
@@ -240,12 +239,12 @@ build_external_drivers() {
   EXTERNAL_DRIVER_COMMS[arm_driver]="${RTC_ARM_DRIVER_COMM:-ros2_control_no}"
   EXTERNAL_DRIVER_COMMS[hand_driver]="${RTC_HAND_DRIVER_COMM:-udp_hand_node}"
 
-  # 전 스레드가 같은 코어에 있어야 한다는 축. hand_driver 는 #345 로 **끝났다**
-  # — 이제 프로세스 안에서 스레드마다 다른 코어에 붙으므로(hand_aux_io 는 aux
-  # 코어) 균일 검사는 정상 배치를 FAIL 로 만든다. 아래 THREAD_LAYOUT 가 그 자리를
-  # 대신하며, 세 축(ALLTHREADS / RT_PRIO / THREAD_LAYOUT)은 배타적이다.
-  EXTERNAL_DRIVER_ALLTHREADS[arm_driver]=0
-  EXTERNAL_DRIVER_ALLTHREADS[hand_driver]=0
+  # "전 스레드가 같은 코어에" 축(EXTERNAL_DRIVER_ALLTHREADS, taskset -a, issue
+  # #245)은 은퇴했다. hand_driver 는 #345 로 프로세스 안에서 스레드마다 다른
+  # 코어에 붙으므로(hand_aux_io 는 aux 코어) 균일 검사가 정상 배치를 FAIL 로
+  # 만들고, arm_driver 는 #343 으로 RT_PRIO 축으로 옮겨갔다. 둘 다 0 이 된
+  # 시점에 소비 분기는 도달 불가가 됐다 (#353). 남은 두 축(RT_PRIO /
+  # THREAD_LAYOUT)은 여전히 배타적이다.
 
   # RT-loop 계약 (SCHED_FIFO 우선순위). 값이 있으면 affinity 대신 *그 우선순위의
   # FIFO 스레드* 를 찾아 검사한다 — arm_driver 는 프로세스 affinity 를 봐선 안
@@ -844,34 +843,7 @@ check_cpu_affinity() {
 
     ((total++)) || true
 
-    if [[ "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" -eq 1 ]]; then
-      # taskset -a pin (issue #245): 프로세스의 모든 스레드가 driver core 에
-      # 있어야 한다. 하나라도 벗어나면 FAIL.
-      local total_t=0 on_core=0 off_list=""
-      local tdir ttid m md
-      for tdir in "/proc/${pid}/task"/*/; do
-        ttid=$(basename "$tdir")
-        [[ "$ttid" =~ ^[0-9]+$ ]] || continue
-        m=$(get_thread_cpu_affinity "$ttid" 2>/dev/null || echo "")
-        [[ -z "$m" ]] && continue
-        ((total_t++)) || true
-        md=$((16#${m}))
-        if [[ "$md" -eq "$expected_mask_dec" ]]; then
-          ((on_core++)) || true
-        else
-          off_list="${off_list} ${ttid}:{$(mask_to_cpus "$m")}"
-        fi
-      done
-      if [[ "$total_t" -eq 0 ]]; then
-        _skip "${ename} (PID ${pid}): affinity 읽기 실패"
-      elif [[ "$on_core" -eq "$total_t" ]]; then
-        _pass "${ename} (PID ${pid}): 전 스레드 ${on_core}/${total_t} on ${pin_label}"
-        ((ok++)) || true
-      else
-        _fail "${ename} (PID ${pid}): ${on_core}/${total_t} 스레드만 ${pin_label} — off:${off_list}"
-        _category_update "cpu_affinity" "FAIL"
-      fi
-    elif [[ -n "${EXTERNAL_DRIVER_THREAD_LAYOUT[$ename]:-}" ]]; then
+    if [[ -n "${EXTERNAL_DRIVER_THREAD_LAYOUT[$ename]:-}" ]]; then
       # Per-thread layout (issue #345): 스레드마다 기대 코어·정책이 다르다.
       # 이름별 policy/priority 검사는 여기가 처음이다 — check_scheduling_policy 는
       # 컨트롤러 내부 EXPECTED_THREADS 만 순회하므로 external driver 의 스레드는
@@ -1390,8 +1362,8 @@ print_json() {
     # 드라이버에서는 판정 근거가 아니다 (issue #343) — 진단용으로만 남긴다.
     local eprio_json="${EXTERNAL_DRIVER_RT_PRIO[$ename]:-}"
     [[ -z "$eprio_json" ]] && eprio_json="null"
-    # thread_layout 은 판정에 실제로 쓰인 spec 이라 null 이 아니면 all_threads_pin /
-    # rt_loop_prio 보다 그쪽이 근거다 (issue #345).
+    # thread_layout 은 판정에 실제로 쓰인 spec 이라 null 이 아니면 rt_loop_prio
+    # 보다 그쪽이 근거다 (issue #345).
     local elayout_json="${EXTERNAL_DRIVER_THREAD_LAYOUT[$ename]:-}"
     if [[ -z "$elayout_json" ]]; then
       elayout_json="null"
@@ -1401,12 +1373,11 @@ print_json() {
     if [[ -n "$pid" ]]; then
       local amask
       amask=$(get_thread_cpu_affinity "$pid" 2>/dev/null || echo "0")
-      printf "    \"%s\": {\"pid\": %s, \"expected_slot\": %s, \"all_threads_pin\": %s, \"rt_loop_prio\": %s, \"thread_layout\": %s, \"main_thread_affinity\": \"0x%s\"}" \
-        "$ename" "$pid" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "$eprio_json" \
-        "$elayout_json" "${amask:-0}"
+      printf "    \"%s\": {\"pid\": %s, \"expected_slot\": %s, \"rt_loop_prio\": %s, \"thread_layout\": %s, \"main_thread_affinity\": \"0x%s\"}" \
+        "$ename" "$pid" "$eslot" "$eprio_json" "$elayout_json" "${amask:-0}"
     else
-      printf "    \"%s\": {\"pid\": null, \"expected_slot\": %s, \"all_threads_pin\": %s, \"rt_loop_prio\": %s, \"thread_layout\": %s}" \
-        "$ename" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "$eprio_json" "$elayout_json"
+      printf "    \"%s\": {\"pid\": null, \"expected_slot\": %s, \"rt_loop_prio\": %s, \"thread_layout\": %s}" \
+        "$ename" "$eslot" "$eprio_json" "$elayout_json"
     fi
     efirst=0
   done
