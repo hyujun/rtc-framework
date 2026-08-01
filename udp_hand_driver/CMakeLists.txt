@@ -189,6 +189,22 @@ if(BUILD_TESTING)
     rtc_base rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
     sensor_msgs std_msgs ament_index_cpp)
 
+  # Lifecycle behaviour in sil_mode=loopmodel: configure/activate bring up the
+  # real CommLoop + NRT publish lane, so this binary talks DDS and gets a
+  # dedicated ROS_DOMAIN_ID (the isolation idiom above rtc_controller_manager /
+  # test_demo_wbc_tsid_path use; domains 44-52 are taken).
+  ament_add_gtest(test_udp_hand_node_lifecycle
+    test/test_udp_hand_node_lifecycle.cpp
+    src/udp_hand_node_lifecycle.cpp
+    src/udp_hand_node_publish.cpp
+    src/udp_hand_node_stats.cpp
+    ENV ROS_DOMAIN_ID=53)
+  target_include_directories(test_udp_hand_node_lifecycle PRIVATE include)
+  target_link_libraries(test_udp_hand_node_lifecycle udp_hand_protocol)
+  ament_target_dependencies(test_udp_hand_node_lifecycle
+    rtc_base rtc_inference rtc_msgs rclcpp rclcpp_lifecycle lifecycle_msgs
+    sensor_msgs std_msgs ament_index_cpp)
+
   # ── Tier 3: FT inferencer stub tests ──────────────────────────────────────
   ament_add_gtest(test_fingertip_ft_inferencer test/test_fingertip_ft_inferencer.cpp)
   target_include_directories(test_fingertip_ft_inferencer PRIVATE include)

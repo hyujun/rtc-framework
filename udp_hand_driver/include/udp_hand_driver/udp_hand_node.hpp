@@ -139,7 +139,11 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
  public:
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
-  UdpHandNode();
+  /// `options` exists for parameter_overrides injection (tests, composition):
+  /// most parameters — sil_mode above all — are declared in on_configure, so an
+  /// override in NodeOptions is the only way to set them before the first
+  /// lifecycle transition. main() constructs with the default.
+  explicit UdpHandNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
   ~UdpHandNode() override;
 
   /// Callback group holding the blocking file-I/O timers (timing CSV drain,

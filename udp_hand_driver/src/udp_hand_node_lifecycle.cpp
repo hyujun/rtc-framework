@@ -12,7 +12,8 @@
 
 using namespace std::chrono_literals;
 
-UdpHandNode::UdpHandNode() : LifecycleNode("udp_hand_node") {
+UdpHandNode::UdpHandNode(const rclcpp::NodeOptions& options)
+    : LifecycleNode("udp_hand_node", options) {
   // Lifecycle design: the constructor allocates no *resources* — publishers,
   // subscriptions, timers and the controller are on_configure's job.
   //
