@@ -377,11 +377,23 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // ── Pre-allocate ROS2 messages ─────────────────────────────────────
   PreallocateMessages();
 
-  // ── EventLoop callback ─────────────────────────────────────────────
-  controller_->SetCallback([this](const udp_hand_driver::UdpHandState& state,
-                                  const udp_hand_driver::FingertipFTState& ft_state) {
-    PublishFromEventLoop(state, ft_state);
-  });
+  // ── NRT publish lane ───────────────────────────────────────────────
+  // Pull, not push (issue #345). The CommLoop stores a POD snapshot into the
+  // SeqLock and nothing else; this timer polls the sequence from the default
+  // executor thread and publishes whatever the latest snapshot is.
+  //
+  // Poll faster than the producer. With a same-rate poll, producer and consumer
+  // drift in and out of phase and every coincidence where two comm cycles land
+  // between two polls costs a publish that is never recovered — the topic rate
+  // would sit measurably below loop_rate_hz. Oversampling makes "at most one new
+  // sample per poll" the common case instead of the lossy one, at the price of
+  // wakeups that cost one atomic load when there is nothing new.
+  last_published_seq_ = controller_->state_sequence();
+  const auto publish_period = std::chrono::duration<double>(
+      1.0 / (loop_rate_hz * udp_hand_driver::kPublishPollOversampling));
+  publish_timer_ =
+      create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(publish_period),
+                        [this]() { PollAndPublish(); });
 
   // ── Subscriptions ──────────────────────────────────────────────────
   rclcpp::QoS cmd_sub_qos{1};

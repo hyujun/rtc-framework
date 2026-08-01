@@ -311,47 +311,61 @@ TEST(LinkDownDecision, ZeroThresholdDisablesChannelClass) {
                                                   0, kSensorThr));
 }
 
-// ── Callback ────────────────────────────────────────────────────────────────
-// The callback runs on the CommLoop thread, so it is set BEFORE Start() (the
-// loop reads callback_ each tick) and its state is shared via atomics.
+// ── State mailbox ───────────────────────────────────────────────────────────
+// These two tests used to observe the loop through SetCallback(), a
+// std::function the CommLoop invoked on the SCHED_FIFO 65 thread. Issue #345
+// removed it — the node now pulls from the SeqLock — so they observe the same
+// two behaviours through the mailbox that replaced it. The assertions are not
+// weakened: state_sequence() is the exact quantity the NRT consumer counts
+// cycles with, so a loop that stops ticking or stops reflecting commands still
+// fails here, and it fails one level closer to the mechanism.
 
-TEST_F(FakeHandControllerTest, Callback_Invoked) {
-  std::atomic<int> callback_count{0};
-  std::atomic<float> last_pos0{0.0f};
-  controller_->SetCallback(
-      [&](const UdpHandState& state, const udp_hand_driver::FingertipFTState& /*ft*/) {
-        callback_count.fetch_add(1);
-        last_pos0.store(state.motor_positions[0]);
-      });
-
+TEST_F(FakeHandControllerTest, Mailbox_CarriesCommandedState) {
   ASSERT_TRUE(controller_->Start());
 
   std::array<float, kNumHandMotors> cmd{};
   cmd[0] = 42.0f;
   SendAndSettle(*controller_, cmd);
 
-  // CommLoop publishes state (state_seqlock_.Store) BEFORE invoking callback_,
-  // so a settled GetLatestState() does not imply the callback already ran this
-  // tick — nor that the latest callback carried the settled position. Poll for
-  // both instead of asserting instantly (race observed as a CI failure under
-  // parallel package tests, PR #187).
+  // Poll rather than assert instantly: the loop is self-clocked and
+  // asynchronous, so the settle above does not pin which tick published last
+  // (race observed as a CI failure under parallel package tests, PR #187).
   EXPECT_TRUE(
-      PollUntil([&] { return callback_count.load() > 0 && last_pos0.load() == 42.0f; }, 1s));
-  EXPECT_GT(callback_count.load(), 0);
-  EXPECT_FLOAT_EQ(last_pos0.load(), 42.0f);
+      PollUntil([&] { return controller_->GetLatestState().motor_positions[0] == 42.0f; }, 1s));
+  EXPECT_FLOAT_EQ(controller_->GetLatestState().motor_positions[0], 42.0f);
 }
 
-TEST_F(FakeHandControllerTest, Callback_MultipleInvocations) {
-  std::atomic<int> callback_count{0};
-  controller_->SetCallback(
-      [&](const UdpHandState& /*state*/, const udp_hand_driver::FingertipFTState& /*ft*/) {
-        callback_count.fetch_add(1);
-      });
-
+TEST_F(FakeHandControllerTest, Mailbox_SequenceAdvancesPerTick) {
   ASSERT_TRUE(controller_->Start());
-  // Self-clocked: the callback fires once per tick, no command needed.
-  ASSERT_TRUE(PollUntil([&] { return callback_count.load() >= 5; }, 1s));
-  EXPECT_GE(callback_count.load(), 5);
+
+  // Self-clocked: the sequence advances without any command. SeqLock steps by 2
+  // per Store, so >= 5 completed cycles is a delta of >= 10.
+  const std::uint32_t s0 = controller_->state_sequence() & ~1U;
+  ASSERT_TRUE(PollUntil([&] { return ((controller_->state_sequence() & ~1U) - s0) >= 10U; }, 1s));
+
+  // And it is monotonic: a second window advances further, never backwards.
+  const std::uint32_t s1 = controller_->state_sequence() & ~1U;
+  EXPECT_GE(s1 - s0, 10U);
+  ASSERT_TRUE(PollUntil([&] { return ((controller_->state_sequence() & ~1U) - s1) >= 10U; }, 1s));
+}
+
+// The low bit is the writer-in-progress flag, never cycle progress. The NRT
+// consumer masks it off before differencing; a Store() that left the sequence
+// odd would make every consumer poll see phantom progress.
+TEST_F(FakeHandControllerTest, Mailbox_SequenceIsEvenBetweenWrites) {
+  ASSERT_TRUE(controller_->Start());
+  ASSERT_TRUE(PollUntil([&] { return controller_->state_sequence() >= 4U; }, 1s));
+
+  int odd_observations = 0;
+  for (int i = 0; i < 200; ++i) {
+    if ((controller_->state_sequence() & 1U) != 0U) {
+      ++odd_observations;
+    }
+  }
+  // A 500 Hz loop whose Store() is two atomic stores plus one memcpy leaves the
+  // odd window vanishingly small; catching it in every one of 200 samples would
+  // mean the sequence is parked odd, i.e. a Store never completed.
+  EXPECT_LT(odd_observations, 200);
 }
 
 // ── FT inference (stub) ─────────────────────────────────────────────────────

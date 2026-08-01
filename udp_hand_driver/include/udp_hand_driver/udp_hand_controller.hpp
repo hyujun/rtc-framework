@@ -169,9 +169,6 @@ struct UdpHandControllerConfig {
 
 class UdpHandController {
  public:
-  using StateCallback =
-      std::function<void(const UdpHandState&, const udp_hand_driver::FingertipFTState&)>;
-
   explicit UdpHandController(UdpHandControllerConfig cfg) noexcept
       : thread_cfg_(cfg.thread_cfg),
         loop_rate_hz_(cfg.loop_rate_hz),
@@ -439,10 +436,6 @@ class UdpHandController {
     sensor_protocol_ = std::move(proto);
   }
 
-  // ── Callback ───────────────────────────────────────────────────────────
-
-  void SetCallback(StateCallback cb) noexcept { callback_ = std::move(cb); }
-
   // ── Timing producer (per-tick CSV output, optional) ────────────────────
 
   /// Inject a producer for the unified per-tick timing CSV (see
@@ -548,6 +541,15 @@ class UdpHandController {
   // ── State access ───────────────────────────────────────────────────────
 
   [[nodiscard]] UdpHandState GetLatestState() const noexcept { return state_seqlock_.Load(); }
+
+  /// Version of the latest published state snapshot. SeqLock increments by 2 per
+  /// Store (odd = write in progress), so `(state_sequence() - previous) / 2` is
+  /// the number of comm cycles that completed in between — the pull-side
+  /// replacement for "one state callback == one comm cycle" (issue #345). Wrap
+  /// is handled by unsigned subtraction. An odd value means a write is in flight;
+  /// callers that count cycles should mask the low bit to the last completed
+  /// write rather than treating the odd value as progress.
+  [[nodiscard]] std::uint32_t state_sequence() const noexcept { return state_seqlock_.sequence(); }
 
   [[nodiscard]] std::array<float, kNumHandMotors> GetLatestPositions() const noexcept {
     return state_seqlock_.Load().motor_positions;
@@ -1232,8 +1234,8 @@ class UdpHandController {
   // Intermediate timestamps + FT cost from RunCommCycleTail, so each mode's
   // caller can fill its own PhaseTiming (the phase fields differ per mode).
   struct CommCycleTailResult {
-    std::chrono::steady_clock::time_point compute_done;   // end of sensor post-process
-    std::chrono::steady_clock::time_point callback_done;  // end of store + callback
+    std::chrono::steady_clock::time_point compute_done;  // end of sensor post-process
+    std::chrono::steady_clock::time_point tail_done;     // end of the SeqLock store
     double ft_infer_us{0.0};
   };
 
@@ -1290,11 +1292,11 @@ class UdpHandController {
                            "First hand state received (write commands now enabled)");
     }
 
-    if (callback_) {
-      RTC_TRACE_SCOPE("hand_callback");
-      callback_(state, ft_seqlock_.Load());
-    }
-    result.callback_done = std::chrono::steady_clock::now();
+    // No consumer call here. Publishing is a pull: the node polls
+    // state_sequence() from its executor thread and reads the SeqLock snapshot
+    // (issue #345). Before that, RunCommCycleTail invoked a std::function that
+    // did now() + ROS message fill + 5 publishes on this SCHED_FIFO 65 thread.
+    result.tail_done = std::chrono::steady_clock::now();
     return result;
   }
 
@@ -1310,7 +1312,7 @@ class UdpHandController {
         std::chrono::duration<double, std::micro>(tail.compute_done - sensor_proc_base).count() -
         tail.ft_infer_us;
     pt.ft_infer_us = tail.ft_infer_us;
-    pt.total_us = std::chrono::duration<double, std::micro>(tail.callback_done - t0).count();
+    pt.total_us = std::chrono::duration<double, std::micro>(tail.tail_done - t0).count();
     pt.is_sensor_cycle = is_sensor_cycle;
     timing_profiler_.Update(pt);
   }
@@ -1454,7 +1456,6 @@ class UdpHandController {
   std::array<float, kNumHandMotors> fake_pos_{};         // filtered pose (LPF state)
   double fake_alpha_{0.0};                               // LPF coeff dt/(τ+dt)
   double fake_dt_{0.0};                                  // 1/loop_rate_hz (s)
-  StateCallback callback_;
   rtc::HandUdpTimingBuffer* timing_producer_{nullptr};
   rtc::SeqLock<UdpHandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};

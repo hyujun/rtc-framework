@@ -56,6 +56,56 @@
 // which `get_cm_shield_cpus` excludes from the shield — so pinning here needs no
 // cpuset change and cannot EINVAL under an active `cset shield`).
 namespace udp_hand_driver {
+// How much faster than loop_rate_hz the NRT publish lane polls the state
+// SeqLock. The mailbox is latest-wins, so a poll can carry at most one publish:
+// sampling at exactly the production rate loses a sample every time two comm
+// cycles fall between two polls, and the topic rate lands measurably under
+// loop_rate_hz. 2x makes the lossless case the common one; raising it trades
+// wakeups (one atomic load each when idle) for a smaller loss tail.
+inline constexpr double kPublishPollOversampling = 2.0;
+
+/// Round a raw SeqLock sequence sample down to the last *completed* write.
+///
+/// SeqLock steps the sequence twice per Store and leaves it odd while the write
+/// is in flight. The consumer must carry an even baseline forward: adopting an
+/// odd sample as the baseline permanently offsets every later difference by one
+/// step, so cycles are silently lost from then on (the counting itself tolerates
+/// an odd input — integer division discards the low bit — which is exactly why
+/// this belongs in its own named step rather than folded into the subtraction).
+[[nodiscard]] constexpr std::uint32_t LastCompletedWrite(std::uint32_t seq) noexcept {
+  return seq & ~1U;
+}
+
+/// Comm cycles completed between two `LastCompletedWrite` values.
+///
+/// A completed cycle is 2 sequence steps. Unsigned arithmetic wraps correctly at
+/// 2^32, which a 500 Hz loop reaches after ~99 days of continuous running.
+[[nodiscard]] constexpr std::uint32_t CyclesBetween(std::uint32_t prev,
+                                                    std::uint32_t current) noexcept {
+  return (current - prev) / 2U;
+}
+
+/// Rate-derived decimation under a pull consumer.
+///
+/// Adds `cycles` to `accum` and reports whether the decimated event is due,
+/// carrying the remainder rather than zeroing it — otherwise a poll that
+/// observed 3 cycles would reset the same as one that observed 1, and the
+/// effective rate would drift below the configured one. Returns true at most
+/// once per call by design: a decimated publish reports current state, so a
+/// poll that jumped several cycles still emits one message, not several.
+[[nodiscard]] constexpr bool AdvanceDecimation(int& accum, std::uint32_t cycles,
+                                               int decimation) noexcept {
+  if (decimation <= 0) {
+    return true;  // no decimation configured — every cycle is due
+  }
+  accum += static_cast<int>(cycles);
+  if (accum < decimation) {
+    return false;
+  }
+  accum %= decimation;
+  return true;
+}
+
 inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
                                                 .sched_policy = SCHED_OTHER,
                                                 .sched_priority = 0,
@@ -101,10 +151,18 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Avoids dynamic allocation on the EventLoop publish path.
   void PreallocateMessages();
 
-  // Called directly from EventLoop thread — publishes state at EventLoop rate.
+  // NRT publish lane (issue #345). Runs on the default executor thread, driven
+  // by publish_timer_: reads the CommLoop's SeqLock sequence and publishes the
+  // latest snapshot when it has advanced. Nothing here runs on the RT thread.
+  void PollAndPublish();
+
+  // Publish one snapshot. `cycles` is how many comm cycles the snapshot advanced
+  // by — 1 in the common case, more when polling lost a race, 0 never. Rate-
+  // derived decimation accumulates it instead of counting invocations, because
+  // "one invocation == one comm cycle" stopped being true with the pull model.
   // Uses pre-allocated messages to avoid dynamic allocation.
-  void PublishFromEventLoop(const udp_hand_driver::UdpHandState& state,
-                            const udp_hand_driver::FingertipFTState& ft_state);
+  void PublishState(const udp_hand_driver::UdpHandState& state,
+                    const udp_hand_driver::FingertipFTState& ft_state, std::uint32_t cycles);
 
   void PublishCalibrationStatus();
 
@@ -143,6 +201,15 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::CalibrationStatus>::SharedPtr
       calib_status_pub_;
   rclcpp::TimerBase::SharedPtr calib_status_timer_;
+
+  // NRT publish lane (issue #345). Default callback group, so this runs on the
+  // main executor thread — the same hand_driver core the CommLoop is on, which
+  // is fine because that lane is light once the file I/O left for hand_aux_io.
+  // `last_published_seq_` is the last *completed* SeqLock write consumed (always
+  // even); it is re-baselined in on_configure because a new controller restarts
+  // its sequence at 0.
+  rclcpp::TimerBase::SharedPtr publish_timer_;
+  std::uint32_t last_published_seq_{0};
   std::vector<std::string> joint_names_;
   std::vector<std::string> motor_names_;
   std::vector<std::string> fingertip_names_;

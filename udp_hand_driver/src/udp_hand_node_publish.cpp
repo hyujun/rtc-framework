@@ -2,7 +2,13 @@
 #include "udp_hand_driver/udp_hand_node.hpp"
 
 #include <array>
+#include <cstddef>
 #include <string>
+
+namespace {
+// Cycles between the periodic "cycles: N" DEBUG line.
+constexpr std::size_t kCycleLogInterval = 500;
+}  // namespace
 
 void UdpHandNode::PreallocateMessages() {
   joint_js_msg_.name = joint_names_;
@@ -24,8 +30,29 @@ void UdpHandNode::PreallocateMessages() {
   }
 }
 
-void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& state,
-                                       const udp_hand_driver::FingertipFTState& ft_state) {
+void UdpHandNode::PollAndPublish() {
+  if (!controller_)
+    return;
+
+  // Mask the low bit down to the last *completed* write: an odd sequence means
+  // the CommLoop is mid-Store, and treating that as progress would both
+  // mis-count cycles and desynchronise the even-valued baseline. Load() itself
+  // retries past a torn read, so the snapshot below is at least as new as `seq`.
+  const std::uint32_t seq = udp_hand_driver::LastCompletedWrite(controller_->state_sequence());
+  const std::uint32_t cycles = udp_hand_driver::CyclesBetween(last_published_seq_, seq);
+  if (cycles == 0)
+    return;  // no comm cycle completed since the last poll
+  last_published_seq_ = seq;
+
+  PublishState(controller_->GetLatestState(), controller_->GetLatestFTState(), cycles);
+}
+
+void UdpHandNode::PublishState(const udp_hand_driver::UdpHandState& state,
+                               const udp_hand_driver::FingertipFTState& ft_state,
+                               std::uint32_t cycles) {
+  // Stamped on the consumer thread. This is the publish time, not the sample
+  // time — the CommLoop does not call now() (RT-1), and UdpHandState carries no
+  // timestamp field, so adding one would change the POD and the SeqLock payload.
   const auto stamp = this->now();
 
   if (state.joint_valid) {
@@ -126,10 +153,13 @@ void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& stat
   // Link status (decimated — not every cycle).
   // Published via standalone rclcpp::Publisher (not LifecyclePublisher),
   // so it works regardless of lifecycle state.
-  ++link_cycle_counter_;
-  if (link_cycle_counter_ >= link_decimation_) {
-    link_cycle_counter_ = 0;
-
+  // Accumulate comm cycles, not invocations (issue #345). Under the old push
+  // model one callback was exactly one comm cycle, so ++ was the cycle count;
+  // under polling an invocation can carry several. `%=` rather than `= 0` keeps
+  // the remainder, so the intended link_status rate holds even when polls slip.
+  // The publish itself stays capped at once per invocation — a poll that jumped
+  // three cycles reports link state once, not three times.
+  if (udp_hand_driver::AdvanceDecimation(link_cycle_counter_, cycles, link_decimation_)) {
     // Strict per-channel link health (#1): mirrors the detector's E-STOP decision
     // exactly (same UdpHandController::LinkDown, same thresholds) so the
     // link_status Bool never disagrees with hand_udp_link_down.
@@ -149,7 +179,12 @@ void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& stat
     link_status_pub_->publish(link_msg_);
   }
 
-  if (++publish_count_ % 500 == 0) {
+  // Same accumulate-and-carry reason as the link decimation above: `% 500` on an
+  // invocation counter would fire at an unrelated rate once one invocation
+  // stopped meaning one cycle.
+  publish_count_ += cycles;
+  if (publish_count_ >= kCycleLogInterval) {
+    publish_count_ %= kCycleLogInterval;
     RCLCPP_DEBUG(::udp_hand_driver::logging::NodeLogger(), "cycles: %zu",
                  controller_->cycle_count());
   }

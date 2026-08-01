@@ -117,4 +117,110 @@ TEST_F(UdpHandNodeLaneTest, AuxThreadConfigIsNonRealtimeAndNameable) {
   EXPECT_EQ(udp_hand_driver::kHandAuxIoConfig.cpu_core, -1);
 }
 
+// ── Pull-model arithmetic (issue #345) ──────────────────────────────────────
+// The publish lane stopped being "one callback == one comm cycle" when it
+// became a poll. These two pure functions carry that reinterpretation, so they
+// are pinned directly rather than through a fully configured node.
+
+TEST(UdpHandPublishMath, CyclesBetweenCountsTwoSequenceStepsPerCycle) {
+  EXPECT_EQ(udp_hand_driver::CyclesBetween(0, 0), 0U);
+  EXPECT_EQ(udp_hand_driver::CyclesBetween(0, 2), 1U);
+  EXPECT_EQ(udp_hand_driver::CyclesBetween(0, 6), 3U);
+  EXPECT_EQ(udp_hand_driver::CyclesBetween(100, 110), 5U);
+}
+
+// An odd sample means the writer is mid-Store. Counting tolerates it for free
+// (integer division drops the low bit), so the load-bearing use is the
+// *baseline*: PollAndPublish stores this result, and an odd baseline offsets
+// every later difference by one step, losing cycles from then on. Pinned as its
+// own step because a mutation that drops the mask is invisible in the counting.
+TEST(UdpHandPublishMath, LastCompletedWriteDropsAnInFlightWrite) {
+  EXPECT_EQ(udp_hand_driver::LastCompletedWrite(0), 0U);
+  EXPECT_EQ(udp_hand_driver::LastCompletedWrite(1), 0U);
+  EXPECT_EQ(udp_hand_driver::LastCompletedWrite(4), 4U);
+  EXPECT_EQ(udp_hand_driver::LastCompletedWrite(5), 4U);
+  EXPECT_EQ(udp_hand_driver::LastCompletedWrite(0xFFFFFFFFU), 0xFFFFFFFEU);
+}
+
+// The failure an odd baseline actually causes: a completed cycle reads as zero
+// progress, so the publish is skipped and never recovered.
+TEST(UdpHandPublishMath, OddBaselineWouldSwallowACompletedCycle) {
+  // Correct: baseline masked to the last completed write.
+  EXPECT_EQ(udp_hand_driver::CyclesBetween(udp_hand_driver::LastCompletedWrite(5), 6), 1U);
+  // What an unmasked baseline would report for the very same tick.
+  EXPECT_EQ(udp_hand_driver::CyclesBetween(5, 6), 0U);
+}
+
+// A 500 Hz loop wraps uint32 in ~99 days of continuous running; unsigned
+// subtraction has to carry it, and a signed reading would go hugely negative.
+TEST(UdpHandPublishMath, CyclesBetweenWrapsAroundUint32) {
+  constexpr std::uint32_t kNearMax = 0xFFFFFFFEU;
+  EXPECT_EQ(udp_hand_driver::CyclesBetween(kNearMax, 0), 1U);
+  EXPECT_EQ(udp_hand_driver::CyclesBetween(kNearMax, 4), 3U);
+}
+
+TEST(UdpHandPublishMath, AdvanceDecimationFiresOnReachingTheThreshold) {
+  int accum = 0;
+  EXPECT_FALSE(udp_hand_driver::AdvanceDecimation(accum, 1, 5));
+  EXPECT_FALSE(udp_hand_driver::AdvanceDecimation(accum, 3, 5));
+  EXPECT_TRUE(udp_hand_driver::AdvanceDecimation(accum, 1, 5));
+  EXPECT_EQ(accum, 0);
+}
+
+// The reason for `%=` over `= 0`: polls that observe several cycles must not
+// throw the surplus away, or the decimated rate drifts below the configured
+// one exactly when the consumer is running late.
+TEST(UdpHandPublishMath, AdvanceDecimationCarriesTheRemainder) {
+  int accum = 0;
+  EXPECT_TRUE(udp_hand_driver::AdvanceDecimation(accum, 7, 5));
+  EXPECT_EQ(accum, 2);
+  EXPECT_TRUE(udp_hand_driver::AdvanceDecimation(accum, 3, 5));
+  EXPECT_EQ(accum, 0);
+}
+
+// Over a long run the decimated rate must equal cycles/decimation regardless of
+// how the cycles are chunked across polls — this is the property the old
+// invocation counter had for free and the pull model has to earn.
+TEST(UdpHandPublishMath, AdvanceDecimationHoldsRateUnderLumpyPolling) {
+  constexpr int kDecimation = 5;
+  const std::uint32_t chunks[] = {1, 1, 3, 1, 2, 1, 1, 4, 1, 1, 2, 2, 1, 1, 3, 1};
+  int accum = 0;
+  int fired = 0;
+  std::uint32_t total = 0;
+  for (const auto c : chunks) {
+    total += c;
+    if (udp_hand_driver::AdvanceDecimation(accum, c, kDecimation)) {
+      ++fired;
+    }
+  }
+  // 26 cycles / 5 == 5 completed intervals, with 1 cycle of remainder pending.
+  EXPECT_EQ(total, 26U);
+  EXPECT_EQ(fired, 5);
+  EXPECT_EQ(accum, 1);
+}
+
+// comm_decimation > 1 lowers the effective state cadence, and link_decimation_
+// is derived from it (on_configure). decimation == 1 must publish every cycle.
+TEST(UdpHandPublishMath, AdvanceDecimationOfOnePublishesEveryCycle) {
+  int accum = 0;
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_TRUE(udp_hand_driver::AdvanceDecimation(accum, 1, 1));
+  }
+  EXPECT_EQ(accum, 0);
+}
+
+// on_configure clamps to >= 1, but a zero/negative decimation must degrade to
+// "publish every cycle" rather than dividing by zero.
+TEST(UdpHandPublishMath, AdvanceDecimationTreatsNonPositiveAsEveryCycle) {
+  int accum = 0;
+  EXPECT_TRUE(udp_hand_driver::AdvanceDecimation(accum, 1, 0));
+  EXPECT_TRUE(udp_hand_driver::AdvanceDecimation(accum, 1, -3));
+}
+
+// The oversampling constant is the difference between "topic rate tracks
+// loop_rate_hz" and "topic rate sits under it"; > 1 is the load-bearing part.
+TEST(UdpHandPublishMath, PublishPollOversamplesTheProducer) {
+  EXPECT_GT(udp_hand_driver::kPublishPollOversampling, 1.0);
+}
+
 }  // namespace
