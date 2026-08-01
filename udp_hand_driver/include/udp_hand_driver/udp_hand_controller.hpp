@@ -1322,17 +1322,25 @@ class UdpHandController {
     const PendingCalibration req = pending_calib_;
     calib_request_pending_.store(false, std::memory_order_release);
 
+    // Calibration START/ABORT are externally triggered, but the dispatch runs
+    // on the CommLoop hot path. Throttle *every* site as a defensive RT-safety
+    // net even though duplicate requests are already de-duped upstream (RT-3).
+    // The clock is only the time source — rcutils keeps the throttle state in a
+    // static local per call site, so sharing it does not couple the sites.
+    // Hoisted to function scope so the error paths below reach it too: the two
+    // failure WARNs used to be the only unthrottled logs on this path, which is
+    // exactly backwards — a repeating request with no inferencer, or an unknown
+    // sensor_type, is precisely the case that floods the RT thread (issue #345).
+    static rclcpp::Clock calib_clock(RCL_STEADY_TIME);
+
     switch (req.sensor_type) {
       case calibration::kSensorBarometer: {
         if (!ft_inferencer_) {
-          RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
-                      "Calibration: barometer request ignored (no inferencer)");
+          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
+                               ::udp_hand_driver::logging::kThrottleSlowMs,
+                               "Calibration: barometer request ignored (no inferencer)");
           return;
         }
-        // Calibration START/ABORT are externally triggered, but the dispatch
-        // runs on the CommLoop hot path. Throttle as a defensive RT-safety
-        // net even though duplicate requests are already de-duped upstream.
-        static rclcpp::Clock calib_clock(RCL_STEADY_TIME);
         if (req.action == calibration::kActionStart) {
           RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
                                ::udp_hand_driver::logging::kThrottleSlowMs,
@@ -1350,8 +1358,10 @@ class UdpHandController {
       }
       // Future sensors: add cases here.
       default:
-        RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
-                    "Calibration: unknown sensor_type=%u", static_cast<unsigned>(req.sensor_type));
+        RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
+                             ::udp_hand_driver::logging::kThrottleSlowMs,
+                             "Calibration: unknown sensor_type=%u",
+                             static_cast<unsigned>(req.sensor_type));
         break;
     }
   }
