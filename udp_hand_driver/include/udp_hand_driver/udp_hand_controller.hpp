@@ -714,8 +714,7 @@ class UdpHandController {
     // E-Stop (checked every tick, before the decimation skip): zero-write once
     // and self-stop the loop. Terminal — semantically the old EventLoop `break`.
     if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
-      static rclcpp::Clock estop_clock(RCL_STEADY_TIME);
-      RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), estop_clock,
+      RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
                            ::udp_hand_driver::logging::kThrottleFastMs,
                            "RunCommCycle: E-Stop active, sending zero and stopping loop");
       // #4 Mark not-running so command / calibration subscriber callbacks (which
@@ -1090,9 +1089,8 @@ class UdpHandController {
         // string literal + primitive args only (RT-safe).
         const auto failed_mask = static_cast<uint8_t>(attempted_mask & ~ok_mask);
         const int first_failed = (failed_mask != 0) ? std::countr_zero(failed_mask) : -1;
-        static rclcpp::Clock onset_clock(RCL_STEADY_TIME);
         RCLCPP_WARN_THROTTLE(
-            ::udp_hand_driver::logging::ControllerLogger(), onset_clock,
+            ::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
             ::udp_hand_driver::logging::kThrottleFastMs,
             "RunCommCycle: recv failure onset: first_failed=%s attempted=0x%02X ok=0x%02X "
             "last_unexpected_cmd=0x%02X last_unexpected_len=%u",
@@ -1102,8 +1100,7 @@ class UdpHandController {
             static_cast<unsigned>(attempted_mask), static_cast<unsigned>(ok_mask),
             static_cast<unsigned>(last_cmd), static_cast<unsigned>(last_len));
       } else if (failures >= 5) {
-        static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-        RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), steady_clock,
+        RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
                              ::udp_hand_driver::logging::kThrottleFastMs,
                              "RunCommCycle: consecutive recv failures=%lu (attempted=0x%02X "
                              "ok=0x%02X last_unexpected_cmd=0x%02X)",
@@ -1286,8 +1283,7 @@ class UdpHandController {
       state_read_once_.store(true, std::memory_order_release);
       // Throttled as a defensive RT-safety net; the state_read_once_ gate
       // already guarantees this fires at most once per Start().
-      static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
-      RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
+      RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
                            ::udp_hand_driver::logging::kThrottleIdleMs,
                            "First hand state received (write commands now enabled)");
     }
@@ -1327,30 +1323,28 @@ class UdpHandController {
     // Calibration START/ABORT are externally triggered, but the dispatch runs
     // on the CommLoop hot path. Throttle *every* site as a defensive RT-safety
     // net even though duplicate requests are already de-duped upstream (RT-3).
-    // The clock is only the time source — rcutils keeps the throttle state in a
-    // static local per call site, so sharing it does not couple the sites.
-    // Hoisted to function scope so the error paths below reach it too: the two
-    // failure WARNs used to be the only unthrottled logs on this path, which is
-    // exactly backwards — a repeating request with no inferencer, or an unknown
-    // sensor_type, is precisely the case that floods the RT thread (issue #345).
-    static rclcpp::Clock calib_clock(RCL_STEADY_TIME);
+    // The error paths below throttle too: the two failure WARNs used to be the
+    // only unthrottled logs on this path, which is exactly backwards — a
+    // repeating request with no inferencer, or an unknown sensor_type, is
+    // precisely the case that floods the RT thread (issue #345). They all share
+    // throttle_clock_ (see its declaration for why sharing is free).
 
     switch (req.sensor_type) {
       case calibration::kSensorBarometer: {
         if (!ft_inferencer_) {
-          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
+          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
                                ::udp_hand_driver::logging::kThrottleSlowMs,
                                "Calibration: barometer request ignored (no inferencer)");
           return;
         }
         if (req.action == calibration::kActionStart) {
-          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
+          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
                                ::udp_hand_driver::logging::kThrottleSlowMs,
                                "Calibration: barometer START (sample_count=%u)",
                                static_cast<unsigned>(req.sample_count));
           ft_inferencer_->ResetCalibration(req.sample_count);
         } else if (req.action == calibration::kActionAbort) {
-          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
+          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
                                ::udp_hand_driver::logging::kThrottleSlowMs,
                                "Calibration: barometer ABORT (noop)");
           // Currently barometer cal has no externally-visible abort state;
@@ -1360,7 +1354,7 @@ class UdpHandController {
       }
       // Future sensors: add cases here.
       default:
-        RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
+        RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), throttle_clock_,
                              ::udp_hand_driver::logging::kThrottleSlowMs,
                              "Calibration: unknown sensor_type=%u",
                              static_cast<unsigned>(req.sensor_type));
@@ -1530,6 +1524,29 @@ class UdpHandController {
 
   PendingCalibration pending_calib_{};
   std::atomic<bool> calib_request_pending_{false};
+
+  // Time source for every RCLCPP_*_THROTTLE on the CommLoop hot path.
+  //
+  // These used to be function-local `static rclcpp::Clock`s, which are
+  // *dynamically* initialized — the constructor runs the first time control
+  // reaches that line. rclcpp::Clock holds a std::unique_ptr<Impl>, so that
+  // constructor heap-allocates, and the "first time" for all five call sites is
+  // a tick on the SCHED_FIFO CommLoop thread (first E-Stop, first recv failure,
+  // first state read, first calibration dispatch). That is an RT-1 violation
+  // that only fires once, on the least convenient tick. As a member it is
+  // constructed here, off the RT path.
+  //
+  // One clock serves all five sites because it is only the time source: rcutils
+  // keeps each site's throttle state in a `static` local at the macro expansion
+  // point (RCUTILS_LOG_CONDITION_THROTTLE_BEFORE), not in the clock. Sharing it
+  // neither couples the sites nor changes any throttle period. By the same
+  // token, moving these off `static` does NOT make throttle state per-instance —
+  // that state is shared across UdpHandController instances either way.
+  //
+  // The enclosing constructor is noexcept: an rcl steady-clock init failure
+  // terminates. It did before too (the lazy init sat inside noexcept
+  // RunCommCycle) — this only moves the terminate off the RT loop.
+  rclcpp::Clock throttle_clock_{RCL_STEADY_TIME};
 
   // Self-clocked comm thread. Declared last so ~PeriodicRtThread joins the loop
   // before any member it touches (transport_, sensor_processor_, …) is

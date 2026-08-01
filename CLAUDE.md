@@ -140,7 +140,15 @@ Critical 은 E-1(invariant 일반)·E-2(ARCH-1)·E-3(msgs ABI)·E-6(test asserti
 
 > **`colcon build` / `colcon test` 는 반드시 colcon workspace root (`<rtc_ws>` = `~/ros2_ws/rtc_ws`) 에서 실행한다.** repo (`src/rtc-framework`) 안에서 호출하면 `build/` · `install/` · `log/` 트리가 그 위치에 생기고 — `.clangd` 의 CompilationDatabase 가 잘못된 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다. `build.sh` / `install.sh` 는 내부에서 `cd "$WORKSPACE"` 하므로 안전. 직접 `colcon` 을 칠 때는 **항상 `cd <rtc_ws>` 또는 절대경로 `--build-base` / `--install-base` 지정**, 그리고 `source ${repo_ws}/repo_scripts/scripts/setup_env.sh` (`${repo_ws}` = `<rtc_ws>/src/rtc-framework` = `~/ros2_ws/rtc_ws/src/rtc-framework`; `repo_scripts` 는 repo 안에 있으므로 ws-root cwd 기준 상대경로 `repo_scripts/...` 는 안 풀린다 — 절대경로 또는 이 prefix 필수). env 미source 상태로 `colcon`/`cmake` 호출 시 컴파일러·ROS·deps·venv PATH 누락으로 `colcon test` 가 silent fail 하거나 build 가 즉시 비정상 종료한다.
 
-실제 위반은 룰을 몰라서가 아니라 **cwd drift** 로 재발한다 — 편집하러 패키지 dir 로 `cd` 한 shell 에서 그대로 colcon 을 치거나, `cd src/rtc-framework && source src/rtc-framework/...` 처럼 한 줄에 체이닝해 상대경로 source 가 silent fail 한 채 빌드가 repo 안에서 도는 경로다. 따라서 **모든 colcon 호출을 `cd <rtc_ws> &&` 로 시작한다** (source 의 stderr 도 삼키지 않는다).
+실제 위반은 룰을 몰라서가 아니라 **cwd drift** 로 재발한다 — 편집하러 패키지 dir 로 `cd` 한 shell 에서 그대로 colcon 을 치거나, `cd src/rtc-framework && source src/rtc-framework/...` 처럼 한 줄에 체이닝해 상대경로 source 가 silent fail 한 채 빌드가 repo 안에서 도는 경로다.
+
+**표준형은 서브셸이다** — 이 한 줄이 위 두 요구(ws root cwd + 절대경로 source)를 만족하면서 **호출이 끝나면 cwd 를 원래대로 돌려준다**:
+
+```bash
+( cd <rtc_ws> && source <절대경로>/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 && colcon … )
+```
+
+`cd <rtc_ws> &&` 로 시작하기만 하면 규칙은 지켜지지만 **그 다음 호출부터 셸 cwd 가 ws root 에 남는다**. 그 부작용이 아래층에서 "cd 금지" 라는 반대 규율을 만들어 냈고(실제로 #345 인계 노트가 그랬다), 두 규칙이 충돌하는 상태로 시작한 세션이 있었다. 서브셸은 그 충돌 자체를 없앤다. `source` 와 `colcon` 이 **같은 서브셸 안**에 있으므로 아래 "파이프라인 금지" 와도 상충하지 않는다 — 문제는 서브셸이 아니라 *파이프*가 만드는 서브셸에 colcon 이 안 들어가는 것이다.
 
 "독립 call 로 내면 된다" 는 오해다 — **에이전트 shell 의 cwd 는 호출 간에 유지**되므로, grep 하나 하려고 repo 로 `cd` 한 뒤 *다음* 호출에서 colcon 을 치면 그게 이미 위반이다. 증상이 빌드 실패가 아니라는 점이 이 경로를 비싸게 만든다: repo 안에 별도 트리가 생기고 그 뒤로는 호출마다 두 트리를 오가므로, **같은 세션의 검증들이 서로 모순되는 결과를 낸다** (한 test 는 수정 후 코드로, 다른 test 는 stale 바이너리로 도는 식). 코드에 없는 논리 버그를 쫓게 되니, 검증 결과가 설명 불가하게 엇갈리면 코드를 의심하기 전에 `ls src/rtc-framework/build` 부터 친다.
 
