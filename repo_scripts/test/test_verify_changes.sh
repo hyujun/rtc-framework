@@ -310,6 +310,30 @@ out=$(run_hook "$dir")
 expect_contains "untracked scratch is not routed to a build" "$out" "BUILD_PKGS=[]"
 rm -rf "$dir"
 
+# 15a. A brand-new test source must be BUILT (#358). The location axis replaced
+#      the tracked-ness axis precisely because a never-compiled new file reads as
+#      green, but the replacement listed src/ and include/ and not test/ -- so the
+#      same hole stayed open on the path this repo touches most often. A new test
+#      is the case where "the hook was green" is most misleading: the whole point
+#      of the turn was the assertions nobody ran.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/test"
+printf '#include <gtest/gtest.h>\nTEST(F, G) { EXPECT_TRUE(true); }\n' >"$dir/rtc_demo/test/test_fresh.cpp"
+out=$(run_hook "$dir")
+expect_contains "untracked test source is routed to a build" "$out" "BUILD_PKGS=[rtc_demo]"
+rm -rf "$dir"
+
+# 15b. Same for a test-only header under <pkg>/test/include/ -- the never-installed
+#      layout sibling packages consume by source-tree path (rtc_base/testing/).
+#      Deeper nesting than 15a, so it also pins that the filter keys on $2 rather
+#      than on the path depth.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/test/include/rtc_demo/testing"
+printf '#pragma once\nint fresh();\n' >"$dir/rtc_demo/test/include/rtc_demo/testing/fresh.hpp"
+out=$(run_hook "$dir")
+expect_contains "untracked test-only header is routed to a build" "$out" "BUILD_PKGS=[rtc_demo]"
+rm -rf "$dir"
+
 # --- ARCH-7 target-name scope ------------------------------------------------
 
 # 16. Re-touching an existing target must not read as introducing one. CMake
