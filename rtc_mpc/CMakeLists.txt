@@ -179,9 +179,17 @@ if(BUILD_TESTING)
     target_link_libraries(test_mpc_timing_logger rtc_mpc)
   endif()
 
+  # rtc_base/testing/wait_until.hpp: the sleep-poll wait these thread tests use,
+  # a test-only, never-installed header pulled in by source-tree path (#356 —
+  # promoted out of this package's own test/wait_until.hpp). Same sibling-package
+  # layout rtc_controllers uses for rtc_base/testing/no_malloc_scope.hpp.
+  set(rtc_base_test_include "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include")
+
   ament_add_gtest(test_mpc_thread_skeleton
     test/test_mpc_thread_skeleton.cpp)
   if(TARGET test_mpc_thread_skeleton)
+    target_include_directories(test_mpc_thread_skeleton PRIVATE
+      ${rtc_base_test_include})
     target_link_libraries(test_mpc_thread_skeleton rtc_mpc)
   endif()
 
@@ -238,7 +246,7 @@ if(BUILD_TESTING)
     test/test_mpc_thread_integration.cpp)
   if(TARGET test_mpc_thread_integration)
     target_include_directories(test_mpc_thread_integration PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/test)
+      ${CMAKE_CURRENT_SOURCE_DIR}/test ${rtc_base_test_include})
     target_link_libraries(test_mpc_thread_integration rtc_mpc)
   endif()
 

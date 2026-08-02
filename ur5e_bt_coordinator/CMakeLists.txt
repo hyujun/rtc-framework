@@ -142,9 +142,14 @@ if(BUILD_TESTING)
     cmake_parse_arguments(ARG "" "" "EXTRA_DEPS;EXTRA_SOURCES" ${ARGN})
     ament_add_gtest(${test_name} test/${test_name}.cpp ${ARG_EXTRA_SOURCES})
     target_link_libraries(${test_name} bt_nodes)
+    # The third path reaches rtc_base/testing/wait_until.hpp, the shared
+    # sleep-poll wait test_helpers.hpp binds its default timeout onto (#356). It
+    # is test-only and never installed, so it comes in by source-tree path — the
+    # same sibling-package layout rtc_controllers uses for no_malloc_scope.hpp.
     target_include_directories(${test_name} PRIVATE
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include>
     )
     ament_target_dependencies(${test_name} ${BT_TEST_DEPS} ${ARG_EXTRA_DEPS})
   endfunction()

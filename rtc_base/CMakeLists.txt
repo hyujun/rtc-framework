@@ -21,12 +21,18 @@ add_compile_options(
 
 find_package(ament_cmake REQUIRED)
 
-# Only include/ ships. The zero-allocation gate (rtc_base/testing/) lives under
-# test/include, NOT here: it pulls in Eigen, which rtc_base deliberately does not
-# export (the runtime library stays Eigen-free, see the BUILD_TESTING block), so
-# it must never reach rtc_base's public include surface. Sibling packages consume
-# it via a source-tree include path (../rtc_base/test/include), the same layout
-# the rtc_urdf_bridge/test headers use (see rtc_controllers/CMakeLists.txt).
+# Only include/ ships. The test-only headers (rtc_base/testing/) live under
+# test/include, NOT here — nothing there may reach the runtime install tree,
+# and ament's symlink install ignores install(PATTERN EXCLUDE), so placing them
+# under include/ would ship them:
+#   - no_malloc_scope.hpp  — pulls in Eigen, which rtc_base deliberately does
+#     not export (the runtime library stays Eigen-free, see the BUILD_TESTING
+#     block), so it must never reach rtc_base's public include surface.
+#   - wait_until.hpp       — sleep-poll wait shared by sibling test suites
+#     (#356); test scaffolding with no runtime consumer.
+# Sibling packages consume both via a source-tree include path
+# (../rtc_base/test/include), the same layout the rtc_urdf_bridge/test headers
+# use (see rtc_controllers/CMakeLists.txt).
 install(DIRECTORY include/ DESTINATION include)
 ament_export_include_directories(include)
 
@@ -141,7 +147,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_periodic_rt_thread test/test_periodic_rt_thread.cpp)
   if(TARGET test_periodic_rt_thread)
-    target_include_directories(test_periodic_rt_thread PRIVATE include)
+    # test/include also holds testing/wait_until.hpp (never-installed, shared
+    # with rtc_mpc / rtc_communication / ur5e_bt_coordinator — see #356).
+    target_include_directories(test_periodic_rt_thread PRIVATE include test/include)
     target_link_libraries(test_periodic_rt_thread pthread)
   endif()
 

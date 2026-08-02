@@ -10,6 +10,7 @@
 //   - Callback path: registered callback is invoked per decoded packet
 //   - Send path: Transceiver::Send() reaches an external receiver
 // ─────────────────────────────────────────────────────────────────────────────
+#include "rtc_base/testing/wait_until.hpp"
 #include "rtc_communication/transceiver.hpp"
 #include "rtc_communication/udp/udp_socket.hpp"
 #include "rtc_communication/udp/udp_transport.hpp"
@@ -54,16 +55,14 @@ constexpr auto kPollDeadline = std::chrono::milliseconds(500);
   return GetBoundPort(probe.fd());
 }
 
-// Spins until predicate() returns true or the deadline elapses.
+// Waits until predicate() returns true or the deadline elapses. Thin wrapper so
+// the two call sites below keep this suite's own budget (500 ms deadline / 2 ms
+// poll — a loopback packet lands in single-digit ms, and StartRecv's jthread is
+// already up) instead of the shared helper's 2 s / 1 ms defaults; the polling
+// loop itself lives in rtc_base/testing/wait_until.hpp (#356).
 template <typename Pred>
 [[nodiscard]] bool WaitUntil(Pred pred) {
-  const auto deadline = std::chrono::steady_clock::now() + kPollDeadline;
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (pred())
-      return true;
-    std::this_thread::sleep_for(kPollInterval);
-  }
-  return false;
+  return rtc::testing::WaitUntil(std::move(pred), kPollDeadline, kPollInterval);
 }
 
 // ── Transceiver: receives a packet sent by an external UDP socket ───────────

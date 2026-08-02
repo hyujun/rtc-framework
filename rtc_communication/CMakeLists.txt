@@ -55,9 +55,14 @@ if(BUILD_TESTING)
     target_link_libraries(test_rs485_transport pthread)
   endif()
 
+  # rtc_base/testing/wait_until.hpp is test-only and never installed, so
+  # ${rtc_base_INCLUDE_DIRS} (the installed surface) does not reach it — it comes
+  # in by source-tree path, the same sibling-package layout rtc_controllers uses
+  # for rtc_base/testing/no_malloc_scope.hpp (#356).
   ament_add_gtest(test_transceiver test/test_transceiver.cpp)
   if(TARGET test_transceiver)
-    target_include_directories(test_transceiver PRIVATE include ${rtc_base_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(test_transceiver PRIVATE include ${rtc_base_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}
+      "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include")
     target_link_libraries(test_transceiver pthread)
   endif()
 endif()

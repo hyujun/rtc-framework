@@ -7,9 +7,8 @@
 //   * With no MpcThreadLaunchConfig::target_frequency_hz override, the
 //     default 20 Hz produces a sensible number of iterations over ~250 ms.
 
+#include "rtc_base/testing/wait_until.hpp"
 #include "rtc_mpc/thread/mpc_thread.hpp"
-
-#include "wait_until.hpp"
 
 #include <Eigen/Core>
 #include <gtest/gtest.h>
@@ -61,7 +60,7 @@ TEST(MpcThreadLifecycle, StartAndStopCleanly) {
   thread.Start();
   EXPECT_TRUE(thread.Running());
 
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() >= 5; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.solve_count.load() >= 5; }))
       << "fewer than 5 solves within timeout";
 
   thread.RequestStop();
@@ -86,7 +85,7 @@ TEST(MpcThreadLifecycle, DoubleJoinIsSafe) {
   NopMPCThread thread;
   thread.Init(mgr, launch);
   thread.Start();
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() >= 1; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.solve_count.load() >= 1; }))
       << "thread never solved before Join";
   thread.Join();
   thread.Join();  // idempotent
@@ -116,7 +115,7 @@ TEST(MpcThreadLifecycle, PauseFreezesSolveLoop) {
   EXPECT_FALSE(thread.Paused());
 
   // Let the loop spin up.
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() > 0; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.solve_count.load() > 0; }))
       << "loop never solved before Pause";
   const int before_pause = thread.solve_count.load();
   EXPECT_GT(before_pause, 0);
@@ -135,7 +134,7 @@ TEST(MpcThreadLifecycle, PauseFreezesSolveLoop) {
   // Resume and verify the loop wakes up.
   thread.Resume();
   EXPECT_FALSE(thread.Paused());
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() > while_paused; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.solve_count.load() > while_paused; }))
       << "solve_count did not advance after Resume within timeout";
   const int after_resume = thread.solve_count.load();
   EXPECT_GT(after_resume, while_paused) << "solve_count did not advance after Resume";
@@ -157,7 +156,7 @@ TEST(MpcThreadLifecycle, PauseResumeIdempotent) {
   NopMPCThread thread;
   thread.Init(mgr, launch);
   thread.Start();
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() >= 1; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.solve_count.load() >= 1; }))
       << "thread never solved before Pause";
 
   thread.Pause();
@@ -169,7 +168,7 @@ TEST(MpcThreadLifecycle, PauseResumeIdempotent) {
 
   thread.Resume();
   thread.Resume();  // idempotent
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() > frozen; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.solve_count.load() > frozen; }))
       << "solve_count did not advance after Resume within timeout";
   EXPECT_GT(thread.solve_count.load(), frozen);
 
