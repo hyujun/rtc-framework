@@ -27,6 +27,13 @@
   <depend>ament_index_cpp</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
+  <!-- Test-only: the e2e fixture (test/test_helpers.hpp) waits on
+       rtc_base/testing/wait_until.hpp (#356). Deliberately NOT <depend> — no
+       production TU here includes rtc_base, so a runtime edge would overstate
+       the coupling; but the edge must exist so colcon orders the build and a
+       partial checkout fails at dependency resolution rather than at a
+       source-tree include path that CMake accepts silently. -->
+  <test_depend>rtc_base</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
