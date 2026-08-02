@@ -176,12 +176,22 @@ CHANGED_SRC_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '\.(cpp|hpp|h|cc|py)$' |
 CHANGED_META_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
 # Untracked source that belongs to a package, so it is built rather than treated
 # as scratch. Real source lives under <pkg>/src/ or <pkg>/include/ (ament_cmake)
+# OR <pkg>/test/ (gtest sources and the never-installed test-only headers under
+# <pkg>/test/include/ that sibling packages consume by source-tree path)
 # OR under <pkg>/<pkg>/ (ament_python packages -- rtc_tools, rtc_digital_twin --
 # keep their modules in a same-named subdir, which the src|include-only regex
 # missed, so a brand-new untracked module was ARCH-grepped but never built).
+#
+# test/ was the last hole of the original tracked-ness axis (#358): a brand-new
+# test file was ARCH-grepped, CMake-gated, and then never compiled or run, so the
+# turn whose entire purpose was adding assertions is the turn the gate verifies
+# least. Both #356 additions -- a test-only header and a 9-case suite -- landed on
+# that path. Widening here can only cost a build of a package that owns an
+# untracked .py probe under test/; the other direction costs a silent green.
 # A backreference is not portable across grep flavours, so match with awk.
 CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ '
-  NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ && ($2 == "src" || $2 == "include" || $2 == $1)' \
+  NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ \
+    && ($2 == "src" || $2 == "include" || $2 == "test" || $2 == $1)' \
   || true)
 CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRACKED" \
   | grep -v '^[[:space:]]*$' | sort -u || true)
@@ -473,39 +483,6 @@ if [ -n "$INTEGRATION_TOUCHED" ]; then
   done <<< "$INTEGRATION_TOUCHED"
 fi
 
-# --- Phase 0b: PROC-8 — the shared test wait helper stays sleep-only ---
-# rtc_base/test/include/rtc_base/testing/ holds sleep-poll waits four packages
-# share. Teaching one to pump an executor conflates two different primitives:
-# ur5e_bt_coordinator's fixture owns the sole spinner thread (a second driver of
-# the same executor is UB in rclcpp), and udp_hand_driver's aux-lane test proves
-# a timer sits OUTSIDE the default callback group — pumping the default executor
-# there would service it and the assertion would prove nothing. The repo merged
-# and reverted that conflation once already (#356). Until this gate existed the
-# only thing standing in the way was a header comment, which the next person to
-# trim comments would have removed with no sensor firing.
-#
-# Scoped to the helper headers themselves, not their callers: "caller must not
-# wrap this in a spin loop" is the other half of PROC-8, but greppable forms of
-# it (a spin_some anywhere in a test that also waits) are overwhelmingly
-# legitimate. That half stays prose. Deliberately NOT skipped on PURE_FORMAT —
-# clang-format cannot introduce a spin call, so there is no false-positive class
-# to suppress, and a real one must never ride in under a format commit.
-WAIT_HELPERS=$(echo "$CHANGED" | grep -E '^rtc_base/test/include/rtc_base/testing/.*\.hpp$' || true)
-if [ -n "$WAIT_HELPERS" ]; then
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    [ -f "$f" ] || continue
-    # Comments are stripped first so the header may keep explaining WHY it must
-    # not spin without tripping the gate that enforces it.
-    HITS=$(sed 's://.*::' "$f" 2>/dev/null \
-            | grep -nE '\b(spin_some|spin_once|spin_until_future_complete|spin_node_some|spin_node_once|add_node)\b' \
-            || true)
-    if [ -n "$HITS" ]; then
-      ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - PROC-8 (shared test wait helper must stay sleep-only — it must never drive an executor): ${f}\n${HITS}\n"
-    fi
-  done <<< "$WAIT_HELPERS"
-fi
-
 # --- Phase 0a: ARCH-5 / ARCH-7 build-metadata sensors ---
 # ARCH-5: robot_descriptions is a data-only package -- consumers get it at
 #   runtime via ament_index, never as a build dependency.
@@ -606,6 +583,45 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
       QOS_VIOLATIONS="${QOS_VIOLATIONS}  - ARCH-6 (topic QoS depth != 1): ${f}\n${ALL}\n"
     fi
   done <<< "$QOS_SRC"
+fi
+
+# --- Phase 0c: PROC-8 — the shared test wait helper stays sleep-only ---
+# rtc_base/test/include/rtc_base/testing/ holds sleep-poll waits four packages
+# share. Teaching one to pump an executor conflates two different primitives:
+# ur5e_bt_coordinator's fixture owns the sole spinner thread (a second driver of
+# the same executor is UB in rclcpp), and udp_hand_driver's aux-lane test proves
+# a timer sits OUTSIDE the default callback group — pumping the default executor
+# there would service it and the assertion would prove nothing. The repo merged
+# and reverted that conflation once already (#356). Until this gate existed the
+# only thing standing in the way was a header comment, which the next person to
+# trim comments would have removed with no sensor firing.
+#
+# Scoped to the helper headers themselves, not their callers: "caller must not
+# wrap this in a spin loop" is the other half of PROC-8, but greppable forms of
+# it (a spin_some anywhere in a test that also waits) are overwhelmingly
+# legitimate. That half stays prose. Deliberately NOT skipped on PURE_FORMAT —
+# clang-format cannot introduce a spin call, so there is no false-positive class
+# to suppress, and a real one must never ride in under a format commit.
+#
+# Labelled 0c and placed last of the Phase 0 sensors so the section labels run in
+# file order (#358). It arrived as a second "Phase 0b" next to the ARCH-6 sensor,
+# and invariants.md PROC-8 pointed at that ambiguous name. Position is free here:
+# every Phase 0 sensor only appends to ARCH_VIOLATIONS, which is not read until
+# the report.
+WAIT_HELPERS=$(echo "$CHANGED" | grep -E '^rtc_base/test/include/rtc_base/testing/.*\.hpp$' || true)
+if [ -n "$WAIT_HELPERS" ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -f "$f" ] || continue
+    # Comments are stripped first so the header may keep explaining WHY it must
+    # not spin without tripping the gate that enforces it.
+    HITS=$(sed 's://.*::' "$f" 2>/dev/null \
+            | grep -nE '\b(spin_some|spin_once|spin_until_future_complete|spin_node_some|spin_node_once|add_node)\b' \
+            || true)
+    if [ -n "$HITS" ]; then
+      ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - PROC-8 (shared test wait helper must stay sleep-only — it must never drive an executor): ${f}\n${HITS}\n"
+    fi
+  done <<< "$WAIT_HELPERS"
 fi
 
 # --- Phase 1: Doc/metadata co-update check ---
