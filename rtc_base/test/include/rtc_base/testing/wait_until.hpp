@@ -37,8 +37,18 @@ namespace rtc::testing {
 /// already-satisfied condition reports success even if the budget is spent.
 /// The generous default timeout only bounds a genuine hang — the happy path
 /// returns within a few poll intervals.
+///
+/// `pred` binds by forwarding reference and is NOT copied: the helper polls the
+/// caller's own predicate, so mutations a stateful predicate makes (a call
+/// counter, a captured latch, a `mutable` lambda) survive the wait and are
+/// visible to the caller afterwards. Taking it by value would poll a copy and
+/// silently discard those — a footgun to bake into a helper four packages
+/// share. Not `const Pred&` either: that cannot invoke a `mutable` lambda.
+/// `std::forward` is deliberately absent — the predicate is invoked repeatedly,
+/// so it must stay an lvalue for the whole loop.
 template <typename Pred>
-[[nodiscard]] bool WaitUntil(Pred pred, std::chrono::milliseconds timeout = std::chrono::seconds(2),
+[[nodiscard]] bool WaitUntil(Pred&& pred,
+                             std::chrono::milliseconds timeout = std::chrono::seconds(2),
                              std::chrono::milliseconds poll = std::chrono::milliseconds(1)) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (!pred()) {

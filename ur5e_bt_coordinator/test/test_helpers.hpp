@@ -28,6 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
