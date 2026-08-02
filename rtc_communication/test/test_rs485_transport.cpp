@@ -23,6 +23,7 @@
 //   - discard_echo consumes the transmitted frame's self-echo
 //   - Transceiver<DynamixelTestCodec> over Rs485Transport: full stack decode
 // ─────────────────────────────────────────────────────────────────────────────
+#include "rtc_base/testing/wait_until.hpp"
 #include "rtc_communication/packet_codec.hpp"
 #include "rtc_communication/rs485/rs485_transport.hpp"
 #include "rtc_communication/transceiver.hpp"
@@ -452,11 +453,10 @@ TEST(Rs485TransportTest, TransceiverDecodesFramedStatus) {
   const auto frame = BuildStatusFrame(0x07, 0x00, params);
   ASSERT_EQ(::write(pty.master_fd, frame.data(), frame.size()), static_cast<ssize_t>(frame.size()));
 
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
-  while (xcvr.recv_count() == 0 && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  ASSERT_GT(xcvr.recv_count(), 0u);
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return xcvr.recv_count() > 0; },
+                                      std::chrono::milliseconds(1000),
+                                      std::chrono::milliseconds(2)))
+      << "Transceiver decoded no frame from the pty within the deadline";
 
   const auto state = xcvr.GetLatestState();
   EXPECT_TRUE(state.valid);
