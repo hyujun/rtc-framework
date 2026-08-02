@@ -380,8 +380,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_task_dls_convergence test/test_task_dls_convergence.cpp)
   target_include_directories(test_task_dls_convergence PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/test"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  rtc_base_add_test_includes(test_task_dls_convergence)
   target_link_libraries(test_task_dls_convergence
     ${PROJECT_NAME}_demo_controllers
   )

@@ -30,11 +30,16 @@ find_package(ament_cmake REQUIRED)
 #     block), so it must never reach rtc_base's public include surface.
 #   - wait_until.hpp       — sleep-poll wait shared by sibling test suites
 #     (#356); test scaffolding with no runtime consumer.
-# Sibling packages consume both via a source-tree include path
-# (../rtc_base/test/include), the same layout the rtc_urdf_bridge/test headers
-# use (see rtc_controllers/CMakeLists.txt).
+# Sibling packages consume both via a source-tree include path, but they do NOT
+# spell that path themselves — cmake/rtc_base-test-include.cmake.in exports it
+# (and a fail-loud helper) to every find_package(rtc_base). See that file.
 install(DIRECTORY include/ DESTINATION include)
 ament_export_include_directories(include)
+
+# Baked into the CONFIG_EXTRAS template at the bottom of this file (@ONLY), so
+# consumers receive rtc_base's real source location instead of guessing one
+# relative to themselves.
+set(RTC_BASE_TEST_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/include")
 
 # ── RT tracing (LTTng UST) — opt-in, compile-time gated ──────────────────────
 # Default OFF: RTC_TRACE_SCOPE (rtc_base/tracing/trace_scope.hpp) expands to a
@@ -183,4 +188,4 @@ if(BUILD_TESTING)
   endif()
 endif()
 
-ament_package()
+ament_package(CONFIG_EXTRAS "cmake/rtc_base-test-include.cmake.in")

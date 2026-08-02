@@ -168,12 +168,10 @@ if(BUILD_TESTING)
 
   # ── Tier 2: Component integration tests (fake_hand mode) ──────────────────
   ament_add_gtest(test_udp_hand_controller test/test_udp_hand_controller.cpp)
-  # rtc_base/testing/wait_until.hpp is test-only and never installed, so
-  # rtc_base's exported include dirs do not reach it — it comes in by
-  # source-tree path (#356), the same sibling-package layout rtc_communication
-  # and rtc_controllers use.
-  target_include_directories(test_udp_hand_controller PRIVATE include
-    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include")
+  target_include_directories(test_udp_hand_controller PRIVATE include)
+  # PollUntil waits on rtc_base/testing/wait_until.hpp, which is test-only and
+  # never installed — rtc_base's exported include dirs do not reach it (#356).
+  rtc_base_add_test_includes(test_udp_hand_controller)
   target_link_libraries(test_udp_hand_controller udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_controller rtc_base rtc_inference rclcpp)
 

@@ -180,10 +180,10 @@ if(BUILD_TESTING)
   endif()
 
   # rtc_base/testing/wait_until.hpp: the sleep-poll wait these thread tests use,
-  # a test-only, never-installed header pulled in by source-tree path (#356 —
-  # promoted out of this package's own test/wait_until.hpp). Same sibling-package
-  # layout rtc_controllers uses for rtc_base/testing/no_malloc_scope.hpp.
-  set(rtc_base_test_include "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include")
+  # a test-only, never-installed header (#356 — promoted out of this package's
+  # own test/wait_until.hpp). rtc_base owns the path and fails loudly if its
+  # source tree is not reachable — see rtc_base/cmake/rtc_base-test-include.cmake.in.
+  rtc_base_test_include_dir(rtc_base_test_include)
 
   ament_add_gtest(test_mpc_thread_skeleton
     test/test_mpc_thread_skeleton.cpp)

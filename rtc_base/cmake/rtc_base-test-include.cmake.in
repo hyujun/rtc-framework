@@ -1,0 +1,51 @@
+# Consumed by every find_package(rtc_base) via ament_package(CONFIG_EXTRAS).
+# Configured at rtc_base's own configure time (@ONLY), so the path below is the
+# real location of rtc_base's source tree rather than a "../rtc_base" guess made
+# from the consumer's directory.
+#
+# Why this file exists: rtc_base/test/include holds test-only headers that are
+# deliberately never installed (ament's symlink install ignores
+# install(PATTERN EXCLUDE), so anything under include/ would ship — see the
+# install() note in rtc_base/CMakeLists.txt). Sibling test suites therefore
+# consume them by source-tree path. That path used to be spelled out in six
+# CMakeLists in four different forms, which is the same drift #356 set out to
+# remove at the C++ level, reproduced at the build level.
+
+set(rtc_base_TEST_INCLUDE_DIRS "@RTC_BASE_TEST_INCLUDE_DIR@")
+
+# Both entry points below fail loudly when the source tree is not reachable —
+# with a binary/installed rtc_base or a partial checkout, the directory simply
+# is not there. A bare target_include_directories() would accept the missing
+# path in silence and surface it much later as "rtc_base/testing/wait_until.hpp:
+# No such file or directory" from every test TU. The check lives here, in the
+# one place that knows the path, and only test code calls in, so
+# production-only consumers of rtc_base are unaffected.
+macro(_rtc_base_assert_test_includes _caller)
+  if(NOT EXISTS "${rtc_base_TEST_INCLUDE_DIRS}")
+    message(FATAL_ERROR
+      "${_caller}: rtc_base's test-only include dir is not reachable at "
+      "'${rtc_base_TEST_INCLUDE_DIRS}'. These headers are never installed, so "
+      "the consumer needs rtc_base as a sibling SOURCE package, not merely an "
+      "installed one.")
+  endif()
+endmacro()
+
+# Attach rtc_base's never-installed test headers to one or more targets.
+# Preferred form: the path never enters the consumer's variable space.
+function(rtc_base_add_test_includes)
+  _rtc_base_assert_test_includes("rtc_base_add_test_includes()")
+  foreach(target ${ARGV})
+    if(NOT TARGET ${target})
+      message(FATAL_ERROR "rtc_base_add_test_includes(): no such target '${target}'")
+    endif()
+    target_include_directories(${target} PRIVATE "${rtc_base_TEST_INCLUDE_DIRS}")
+  endforeach()
+endfunction()
+
+# Hand the validated path back in `out_var`. For consumers that compose it into
+# a longer include list alongside their own test-include dirs (rtc_controllers,
+# rtc_mpc), where naming the list entry keeps the surrounding call readable.
+function(rtc_base_test_include_dir out_var)
+  _rtc_base_assert_test_includes("rtc_base_test_include_dir()")
+  set(${out_var} "${rtc_base_TEST_INCLUDE_DIRS}" PARENT_SCOPE)
+endfunction()

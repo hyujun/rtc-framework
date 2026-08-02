@@ -55,16 +55,6 @@ constexpr auto kPollDeadline = std::chrono::milliseconds(500);
   return GetBoundPort(probe.fd());
 }
 
-// Waits until predicate() returns true or the deadline elapses. Thin wrapper so
-// the two call sites below keep this suite's own budget (500 ms deadline / 2 ms
-// poll — a loopback packet lands in single-digit ms, and StartRecv's jthread is
-// already up) instead of the shared helper's 2 s / 1 ms defaults; the polling
-// loop itself lives in rtc_base/testing/wait_until.hpp (#356).
-template <typename Pred>
-[[nodiscard]] bool WaitUntil(Pred pred) {
-  return rtc::testing::WaitUntil(std::move(pred), kPollDeadline, kPollInterval);
-}
-
 // ── Transceiver: receives a packet sent by an external UDP socket ───────────
 TEST(TransceiverTest, ReceivesExternalPacket) {
   const int port = PickFreeLoopbackPort();
@@ -88,7 +78,8 @@ TEST(TransceiverTest, ReceivesExternalPacket) {
   std::memcpy(buf.data(), &pkt, sizeof(FakePacket));
   ASSERT_EQ(sender.Send(buf), static_cast<ssize_t>(sizeof(FakePacket)));
 
-  ASSERT_TRUE(WaitUntil([&] { return rx.recv_count() >= 1; }))
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return rx.recv_count() >= 1; }, kPollDeadline,
+                                      kPollInterval))
       << "Transceiver did not decode any packet within deadline";
 
   const FakePacket got = rx.GetLatestState();
@@ -131,7 +122,8 @@ TEST(TransceiverTest, InvokesCallbackOnDecode) {
     ASSERT_EQ(sender.Send(buf), static_cast<ssize_t>(sizeof(FakePacket)));
   }
 
-  ASSERT_TRUE(WaitUntil([&] { return cb_count.load(std::memory_order_relaxed) >= 3; }));
+  ASSERT_TRUE(rtc::testing::WaitUntil(
+      [&] { return cb_count.load(std::memory_order_relaxed) >= 3; }, kPollDeadline, kPollInterval));
   EXPECT_EQ(last_payload.load(), 300);
 
   rx.Stop();
