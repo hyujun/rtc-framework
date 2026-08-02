@@ -98,6 +98,13 @@ if(BUILD_TESTING)
     target_link_libraries(test_no_malloc_scope Eigen3::Eigen)
   endif()
 
+  # Self-test for the shared sleep-poll wait, the sibling of the gate header
+  # above under test/include. No Eigen, so it needs no extra link.
+  ament_add_gtest(test_wait_until test/test_wait_until.cpp)
+  if(TARGET test_wait_until)
+    target_include_directories(test_wait_until PRIVATE include test/include)
+  endif()
+
   ament_add_gtest(test_session_dir test/test_session_dir.cpp)
   if(TARGET test_session_dir)
     target_include_directories(test_session_dir PRIVATE include)
