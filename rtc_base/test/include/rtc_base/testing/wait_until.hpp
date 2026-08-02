@@ -10,19 +10,18 @@
 // source-tree include path (../rtc_base/test/include), the same layout
 // testing/no_malloc_scope.hpp uses (see rtc_base/CMakeLists.txt).
 //
-// ⚠ This helper ONLY sleeps. It must never learn to drive an executor
-// (spin_some / spin_once), and callers must not wrap it into one. Waiting by
-// sleeping and waiting by pumping an executor are different primitives, and
-// this repo has already been burnt twice by conflating them:
-//   - ur5e_bt_coordinator's fixture owns the sole spinner thread; a helper that
-//     also spun drove the same executor concurrently, which rclcpp forbids
-//     (the removed SpinUntil — see ur5e_bt_coordinator/test/test_helpers.hpp).
-//   - udp_hand_driver's aux-lane test proves a timer lives outside the default
-//     callback group; pumping the default executor there would service it too
-//     and the assertion would prove nothing (see
-//     udp_hand_driver/test/test_udp_hand_node_lifecycle.cpp).
-// A test that genuinely needs an executor pump keeps its own local SpinUntil,
-// where the choice of what to spin stays visible next to the assertion.
+// ⚠ This helper ONLY sleeps — see PROC-8 in agent_docs/invariants.md, which
+// owns the rule, both failure modes it prevents, and the history (#356). It
+// must never learn to drive an executor, and callers must not wrap it into one;
+// a test that genuinely needs a pump keeps its own local SpinUntil, where the
+// choice of what to spin stays visible next to the assertion. Enforced, not
+// merely documented: verify-changes.sh Phase 0b greps this directory.
+//
+// The rule's rationale deliberately does NOT name the two leaf test files that
+// motivated it. rtc_base sits at the bottom of the dependency graph and has no
+// build- or test-time link to those leaves, so a rename there would rot this
+// comment silently — and one such pointer had already gone stale, aiming at a
+// symbol that no longer exists. PROC-8 and the issue stay reachable; paths do not.
 #ifndef RTC_BASE_TESTING_WAIT_UNTIL_HPP_
 #define RTC_BASE_TESTING_WAIT_UNTIL_HPP_
 
