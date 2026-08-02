@@ -21,14 +21,25 @@ add_compile_options(
 
 find_package(ament_cmake REQUIRED)
 
-# Only include/ ships. The zero-allocation gate (rtc_base/testing/) lives under
-# test/include, NOT here: it pulls in Eigen, which rtc_base deliberately does not
-# export (the runtime library stays Eigen-free, see the BUILD_TESTING block), so
-# it must never reach rtc_base's public include surface. Sibling packages consume
-# it via a source-tree include path (../rtc_base/test/include), the same layout
-# the rtc_urdf_bridge/test headers use (see rtc_controllers/CMakeLists.txt).
+# Only include/ ships. The test-only headers (rtc_base/testing/) live under
+# test/include, NOT here — nothing there may reach the runtime install tree,
+# and ament's symlink install ignores install(PATTERN EXCLUDE), so placing them
+# under include/ would ship them:
+#   - no_malloc_scope.hpp  — pulls in Eigen, which rtc_base deliberately does
+#     not export (the runtime library stays Eigen-free, see the BUILD_TESTING
+#     block), so it must never reach rtc_base's public include surface.
+#   - wait_until.hpp       — sleep-poll wait shared by sibling test suites
+#     (#356); test scaffolding with no runtime consumer.
+# Sibling packages consume both via a source-tree include path, but they do NOT
+# spell that path themselves — cmake/rtc_base-test-include.cmake.in exports it
+# (and a fail-loud helper) to every find_package(rtc_base). See that file.
 install(DIRECTORY include/ DESTINATION include)
 ament_export_include_directories(include)
+
+# Baked into the CONFIG_EXTRAS template at the bottom of this file (@ONLY), so
+# consumers receive rtc_base's real source location instead of guessing one
+# relative to themselves.
+set(RTC_BASE_TEST_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/include")
 
 # ── RT tracing (LTTng UST) — opt-in, compile-time gated ──────────────────────
 # Default OFF: RTC_TRACE_SCOPE (rtc_base/tracing/trace_scope.hpp) expands to a
@@ -92,6 +103,13 @@ if(BUILD_TESTING)
     target_link_libraries(test_no_malloc_scope Eigen3::Eigen)
   endif()
 
+  # Self-test for the shared sleep-poll wait, the sibling of the gate header
+  # above under test/include. No Eigen, so it needs no extra link.
+  ament_add_gtest(test_wait_until test/test_wait_until.cpp)
+  if(TARGET test_wait_until)
+    target_include_directories(test_wait_until PRIVATE include test/include)
+  endif()
+
   ament_add_gtest(test_session_dir test/test_session_dir.cpp)
   if(TARGET test_session_dir)
     target_include_directories(test_session_dir PRIVATE include)
@@ -141,7 +159,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_periodic_rt_thread test/test_periodic_rt_thread.cpp)
   if(TARGET test_periodic_rt_thread)
-    target_include_directories(test_periodic_rt_thread PRIVATE include)
+    # test/include also holds testing/wait_until.hpp (never-installed, shared
+    # with rtc_mpc / rtc_communication / ur5e_bt_coordinator — see #356).
+    target_include_directories(test_periodic_rt_thread PRIVATE include test/include)
     target_link_libraries(test_periodic_rt_thread pthread)
   endif()
 
@@ -168,4 +188,4 @@ if(BUILD_TESTING)
   endif()
 endif()
 
-ament_package()
+ament_package(CONFIG_EXTRAS "cmake/rtc_base-test-include.cmake.in")

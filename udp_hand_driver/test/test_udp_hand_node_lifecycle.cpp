@@ -76,6 +76,14 @@ class UdpHandNodeLifecycleTest : public ::testing::Test {
     std::filesystem::remove_all(session_dir_, ec);
   }
 
+  // Stays local instead of moving to the shared rtc::testing::WaitUntil (#356):
+  // that helper only sleeps, and this fixture has no other spinner — the node's
+  // publish lane runs on exec_, so a sleep-poll wait here would never observe
+  // progress and every test would time out. Pumping the executor is a different
+  // primitive from sleeping, and which one a wait uses is load-bearing in this
+  // file: the aux-lane test below deliberately sleeps instead of calling this,
+  // because pumping exec_ there would service the default callback group and
+  // void the assertion.
   template <typename Pred>
   bool SpinUntil(Pred&& pred, std::chrono::nanoseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;

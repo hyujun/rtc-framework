@@ -12,6 +12,7 @@
 ///                     matching mock automatically.
 
 #include "hand_joint_names.hpp"
+#include "rtc_base/testing/wait_until.hpp"
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
 #include <rtc_msgs/srv/grasp_command.hpp>
 
@@ -27,6 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -43,21 +45,18 @@ inline constexpr std::chrono::milliseconds kDefaultWaitTimeout{2000};
 inline constexpr double kJointMatchTol = 1e-6;  // rad
 
 /// Poll `condition` until it holds or `timeout` expires; returns whether it
-/// held. Deliberately does NOT call rclcpp::spin_some — the fixture's dedicated
-/// background thread is the sole spinner (see RosTestFixture::spin_thread_).
-/// Spinning here too would drive the same executor concurrently, which rclcpp
-/// does not permit; the removed SpinUntil made exactly that mistake. Callers
-/// observe delivery through the bridge's thread-safe cached-state getters, which
-/// the background spin populates.
+/// held. This tier waits on rtc::testing::WaitUntil (#356) — same 1 ms poll and
+/// predicate-first loop the local copy had — and that helper deliberately does
+/// NOT call rclcpp::spin_some: the fixture's dedicated background thread is the
+/// sole spinner (see RosTestFixture::spin_thread_). Spinning from a wait too
+/// would drive the same executor concurrently, which rclcpp does not permit; the
+/// removed SpinUntil made exactly that mistake, which is why the shared helper
+/// is sleep-only and must stay that way. Callers observe delivery through the
+/// bridge's thread-safe cached-state getters, which the background spin
+/// populates.
 inline bool WaitUntil(const std::function<bool()>& condition,
                       std::chrono::milliseconds timeout = kDefaultWaitTimeout) {
-  const auto start = std::chrono::steady_clock::now();
-  while (!condition()) {
-    if (std::chrono::steady_clock::now() - start > timeout)
-      return false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  return true;
+  return rtc::testing::WaitUntil(condition, timeout);
 }
 
 /// Publish via `publish`, then wait (polling `observed`) for the bridge to cache

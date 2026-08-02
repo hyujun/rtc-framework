@@ -86,6 +86,14 @@ robot 모델이 필요한 gtest fixture 는 URDF 를 **`robot_descriptions/robot
 
 > **CI install set ≠ local — cross-package ament lookup 은 stub/mock 필수.** CI **Python Test** 잡은 `rtc_tools` / `rtc_msgs` / `rtc_digital_twin` 만 install/source 한다. `rtc_tools` 테스트가 **다른 패키지**를 `ament_index` 로 resolve 하면 (예: `get_package_share_directory("repo_scripts")` — 런치 pinning 의 `rt_common_path()` / `cpu_shield_path()`) CI 에서만 `PackageNotFoundError` 로 실패한다. **로컬은 전 패키지가 install 돼 있어 통과하므로 이 회귀는 로컬 sensor 로 안 잡힌다** (#151 에서 실제 발현). 해석 경로 자체가 아니라 렌더된 산출물(bash snippet 등)만 검증하는 테스트는 경로 헬퍼를 monkeypatch 로 stub 한다 — production 런치는 전 패키지 install 상태라 무해. (동일 축의 C++ 판이 바로 위 URDF fixture 함정.)
 
+## 비동기 결과를 기다리는 법 — sleep 대기와 executor pump 는 다른 원시다
+
+고정 sleep 대신 **관측 가능한 진행** (tick / solve / recv 카운터) 을 폴링한다. 공유 헬퍼는 `rtc::testing::WaitUntil` (`rtc_base/test/include/rtc_base/testing/wait_until.hpp`, `rtc_base/test/test_wait_until.cpp` 가 계약을 pin) 이며, 설치되지 않으므로 소비자는 `../rtc_base/test/include` **소스 트리 경로**로 가져온다 (`no_malloc_scope.hpp` 와 동일 레이아웃; ament symlink install 이 `install(PATTERN EXCLUDE)` 를 무시해 `include/` 에 두면 런타임 트리로 실려 나간다).
+
+이 헬퍼는 **오직 잔다**. Executor 를 pump 해야 하는 테스트는 자기 TU 에 local spin 헬퍼를 두며, 둘을 섞지 않는 것이 [invariants.md](invariants.md) **PROC-8** 이다 (근거·양쪽 실패 모드·자동 gate 는 그쪽이 SSoT).
+
+Suite 고유의 poll 예산이 있으면 헬퍼를 감싸지 말고 **인자로 넘긴다** — `WaitUntil(pred, timeout, poll)`. 예산이 assertion 옆에 보이는 편이 낫고, 같은 이름의 wrapper 는 `using namespace rtc::testing;` 이 들어오는 순간 모호해진다. 호출 지점이 많아 예산을 한 곳에 묶어야 한다면 **다른 이름**으로 얇게 감싸고 그 값의 근거를 상수 옆에 남긴다 (`udp_hand_driver` 의 `PollUntil` = CommLoop 한 tick).
+
 ## RT-1 zero-allocation 게이트 — 두 종류이고 서로의 맹점을 덮는다
 
 RT tick 이 heap 을 안 만진다는 주장(RT-1)을 재는 sensor 는 **두 개**이고, 어느 것을 쓸지는 취향이 아니라 두 질문으로 결정된다: **(a) 측정 대상이 Eigen 을 쓰는가, (b) 측정 대상 코드가 테스트와 같은 TU 에 인스턴스화되는가.**

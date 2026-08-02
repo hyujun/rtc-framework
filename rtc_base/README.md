@@ -50,18 +50,29 @@ rtc_base/
     │   ├── periodic_rt_thread.hpp <- 고정 주파수 RT 루프 base (CM/MPC 공유)
     │   ├── publish_buffer.hpp     <- 락-프리 SPSC 퍼블리시 버퍼
     │   └── seqlock.hpp            <- 락-프리 단일 쓰기/다중 읽기 동기화
-    ├── utils/
-    │   ├── clamp_commands.hpp     <- ClampSymmetric/ClampRange: RT-safe 커맨드 클램프
-    │   └── device_passthrough.hpp <- PassthroughSecondaryDevices: secondary device joint passthrough
-    └── testing/
-        └── no_malloc_scope.hpp    <- ScopedNoMalloc: RT 경로 zero-allocation 게이트 (test-only, Eigen)
+    └── utils/
+        ├── clamp_commands.hpp     <- ClampSymmetric/ClampRange: RT-safe 커맨드 클램프
+        └── device_passthrough.hpp <- PassthroughSecondaryDevices: secondary device joint passthrough
+
+rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
+└── testing/
+    ├── no_malloc_scope.hpp        <- ScopedNoMalloc: RT 경로 zero-allocation 게이트 (Eigen)
+    └── wait_until.hpp             <- WaitUntil: sleep-poll 조건 대기 (형제 패키지 공용)
 ```
 
-> `testing/no_malloc_scope.hpp` 는 **test 전용** 헤더다. Eigen 의
-> `set_is_malloc_allowed` 로 RT tick 의 heap 할당(RT-1)을 위반으로 기록한다. Eigen 은
-> rtc_base 의 **test_depend** 일 뿐 런타임 라이브러리는 Eigen-free 로 유지된다.
-> 사용 계약(모든 Eigen include 보다 먼저 include, Release/-DNDEBUG 에서도 fail-closed,
-> 동일 TU 한정)은 헤더 상단 주석이 SSoT.
+> `test/include/` 아래 두 헤더는 **test 전용**이며 런타임 install 트리에 실리지 않는다
+> (`install(DIRECTORY include/ ...)` 만 돈다 — ament 의 symlink install 은
+> `install(PATTERN EXCLUDE)` 를 무시하므로 `include/` 에 두면 그대로 배포된다).
+> 형제 패키지는 소스 트리 경로 `../rtc_base/test/include` 로 소비한다.
+>
+> - `testing/no_malloc_scope.hpp` — Eigen 의 `set_is_malloc_allowed` 로 RT tick 의 heap
+>   할당(RT-1)을 위반으로 기록한다. Eigen 은 rtc_base 의 **test_depend** 일 뿐 런타임
+>   라이브러리는 Eigen-free 로 유지된다. 사용 계약(모든 Eigen include 보다 먼저 include,
+>   Release/-DNDEBUG 에서도 fail-closed, 동일 TU 한정)은 헤더 상단 주석이 SSoT.
+> - `testing/wait_until.hpp` — 술어가 참이 될 때까지 sleep 하며 폴링한다 (기본 1 ms 간격,
+>   2 s 상한; 둘 다 인자로 조정 가능). 고정 sleep 을 동기화 수단으로 쓰는 flakiness 를
+>   대체한다. **오직 sleep 만 한다** — executor 를 돌리지 않으며, spin 이 필요한 대기는
+>   다른 primitive 이므로 그 fixture 가 자기 헬퍼를 갖는다 (근거는 헤더 상단 주석).
 
 ---
 

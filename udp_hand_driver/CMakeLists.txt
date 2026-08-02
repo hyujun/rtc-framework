@@ -169,6 +169,9 @@ if(BUILD_TESTING)
   # ── Tier 2: Component integration tests (fake_hand mode) ──────────────────
   ament_add_gtest(test_udp_hand_controller test/test_udp_hand_controller.cpp)
   target_include_directories(test_udp_hand_controller PRIVATE include)
+  # PollUntil waits on rtc_base/testing/wait_until.hpp, which is test-only and
+  # never installed — rtc_base's exported include dirs do not reach it (#356).
+  rtc_base_add_test_includes(test_udp_hand_controller)
   target_link_libraries(test_udp_hand_controller udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_controller rtc_base rtc_inference rclcpp)
 

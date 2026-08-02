@@ -473,6 +473,39 @@ if [ -n "$INTEGRATION_TOUCHED" ]; then
   done <<< "$INTEGRATION_TOUCHED"
 fi
 
+# --- Phase 0b: PROC-8 — the shared test wait helper stays sleep-only ---
+# rtc_base/test/include/rtc_base/testing/ holds sleep-poll waits four packages
+# share. Teaching one to pump an executor conflates two different primitives:
+# ur5e_bt_coordinator's fixture owns the sole spinner thread (a second driver of
+# the same executor is UB in rclcpp), and udp_hand_driver's aux-lane test proves
+# a timer sits OUTSIDE the default callback group — pumping the default executor
+# there would service it and the assertion would prove nothing. The repo merged
+# and reverted that conflation once already (#356). Until this gate existed the
+# only thing standing in the way was a header comment, which the next person to
+# trim comments would have removed with no sensor firing.
+#
+# Scoped to the helper headers themselves, not their callers: "caller must not
+# wrap this in a spin loop" is the other half of PROC-8, but greppable forms of
+# it (a spin_some anywhere in a test that also waits) are overwhelmingly
+# legitimate. That half stays prose. Deliberately NOT skipped on PURE_FORMAT —
+# clang-format cannot introduce a spin call, so there is no false-positive class
+# to suppress, and a real one must never ride in under a format commit.
+WAIT_HELPERS=$(echo "$CHANGED" | grep -E '^rtc_base/test/include/rtc_base/testing/.*\.hpp$' || true)
+if [ -n "$WAIT_HELPERS" ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -f "$f" ] || continue
+    # Comments are stripped first so the header may keep explaining WHY it must
+    # not spin without tripping the gate that enforces it.
+    HITS=$(sed 's://.*::' "$f" 2>/dev/null \
+            | grep -nE '\b(spin_some|spin_once|spin_until_future_complete|spin_node_some|spin_node_once|add_node)\b' \
+            || true)
+    if [ -n "$HITS" ]; then
+      ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - PROC-8 (shared test wait helper must stay sleep-only — it must never drive an executor): ${f}\n${HITS}\n"
+    fi
+  done <<< "$WAIT_HELPERS"
+fi
+
 # --- Phase 0a: ARCH-5 / ARCH-7 build-metadata sensors ---
 # ARCH-5: robot_descriptions is a data-only package -- consumers get it at
 #   runtime via ament_index, never as a build dependency.

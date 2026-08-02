@@ -8,6 +8,7 @@
 // deterministically (thread-free) by the FakeLpfStep suite. rclcpp::init() is
 // NOT required — rclcpp logging works without node context.
 
+#include "rtc_base/testing/wait_until.hpp"
 #include "udp_hand_driver/udp_hand_controller.hpp"
 
 #include <arpa/inet.h>
@@ -32,17 +33,17 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Polls `pred` every 2 ms up to `timeout`, returning the final predicate value.
+// One CommLoop tick at the fixture's default 500 Hz — polling faster than the
+// loop can produce just burns wakeups, and polling slower blurs the "advanced
+// by N cycles" assertions below.
+inline constexpr std::chrono::milliseconds kCommTickPoll{2};
+
+// Polls `pred` every CommLoop tick up to `timeout`, returning the final
+// predicate value. Binds this suite's poll budget for its 17 call sites; the
+// loop itself is rtc::testing::WaitUntil (#356).
 template <typename Pred>
-[[nodiscard]] bool PollUntil(Pred pred, std::chrono::milliseconds timeout) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (!pred()) {
-    if (std::chrono::steady_clock::now() >= deadline) {
-      return false;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  return true;
+[[nodiscard]] bool PollUntil(Pred&& pred, std::chrono::milliseconds timeout) {
+  return rtc::testing::WaitUntil(pred, timeout, kCommTickPoll);
 }
 
 // Wait for the self-clocked fake CommLoop to publish at least one valid state.

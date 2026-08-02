@@ -33,6 +33,7 @@
 #pragma GCC diagnostic pop
 
 #include "mock_phase_manager.hpp"
+#include "rtc_base/testing/wait_until.hpp"
 #include "rtc_mpc/handler/contact_light_mpc.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
@@ -41,7 +42,6 @@
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
-#include "wait_until.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -210,7 +210,7 @@ TEST_F(MpcThreadIntegrationTest, NullHandlerLogsOnceAndSkips) {
   thread.Configure(model_handler_, nullptr, nullptr);
   thread.Init(mgr, MakeLaunchCfg(100.0));
   thread.Start();
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.FailedSolves() > 0u; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.FailedSolves() > 0u; }))
       << "null-handler path never logged a failed solve within timeout";
   thread.RequestStop();
   thread.Join();
@@ -237,7 +237,7 @@ TEST_F(MpcThreadIntegrationTest, DefaultPhaseConvergesFreeFlight) {
   thread.Configure(model_handler_, std::move(handler), std::move(mock));
   thread.Init(mgr, MakeLaunchCfg(20.0));
   thread.Start();
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.TotalSolves() >= 5u; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.TotalSolves() >= 5u; }))
       << "fewer than 5 solves within timeout";
   thread.RequestStop();
   thread.Join();
@@ -270,7 +270,7 @@ TEST_F(MpcThreadIntegrationTest, PhaseTransitionPickedUpWithinOneTick) {
   // 20 Hz × 5 ticks = ~250 ms for auto-transition; poll until the phase id
   // flips to 1 or we exceed the 1-second safety bound.
   const bool transitioned =
-      rtc::test::WaitUntil([&] { return thread.LastPhaseId() == 1; }, std::chrono::seconds(1));
+      rtc::testing::WaitUntil([&] { return thread.LastPhaseId() == 1; }, std::chrono::seconds(1));
 
   // After the FSM flipped, give the thread one more 50 ms window so the
   // next solve with phase B has time to land, then stop.
@@ -309,8 +309,8 @@ TEST_F(MpcThreadIntegrationTest, ForcePhaseOverridesGuards) {
 
   mock_raw->ForcePhase(1);
 
-  const bool saw_phase_b = rtc::test::WaitUntil([&] { return thread.LastPhaseId() == 1; },
-                                                std::chrono::milliseconds(500));
+  const bool saw_phase_b = rtc::testing::WaitUntil([&] { return thread.LastPhaseId() == 1; },
+                                                   std::chrono::milliseconds(500));
   thread.RequestStop();
   thread.Join();
 
@@ -339,7 +339,7 @@ TEST_F(MpcThreadIntegrationTest, HandlerSurvivesStateDimMismatch) {
   thread.Configure(model_handler_, std::move(handler), std::move(mock));
   thread.Init(mgr, MakeLaunchCfg(50.0));
   thread.Start();
-  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.FailedSolves() > 0u; }))
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.FailedSolves() > 0u; }))
       << "state-dim mismatch never produced a failed solve within timeout";
   thread.RequestStop();
   thread.Join();
@@ -467,7 +467,7 @@ mpc:
   // Wait for the auto-transition (tick=5 at 20 Hz ≈ 250 ms) + a few more
   // ticks for the swap + first `contact_rich` solve to land.
   const bool saw_phase_b =
-      rtc::test::WaitUntil([&] { return thread.LastPhaseId() == 1; }, std::chrono::seconds(2));
+      rtc::testing::WaitUntil([&] { return thread.LastPhaseId() == 1; }, std::chrono::seconds(2));
   // One extra window so the swapped `contact_rich` handler can run at least
   // one warm solve after `SeedWarmStart`.
   std::this_thread::sleep_for(std::chrono::milliseconds(200));

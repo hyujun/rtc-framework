@@ -10,6 +10,7 @@
 //   - Callback path: registered callback is invoked per decoded packet
 //   - Send path: Transceiver::Send() reaches an external receiver
 // ─────────────────────────────────────────────────────────────────────────────
+#include "rtc_base/testing/wait_until.hpp"
 #include "rtc_communication/transceiver.hpp"
 #include "rtc_communication/udp/udp_socket.hpp"
 #include "rtc_communication/udp/udp_transport.hpp"
@@ -54,18 +55,6 @@ constexpr auto kPollDeadline = std::chrono::milliseconds(500);
   return GetBoundPort(probe.fd());
 }
 
-// Spins until predicate() returns true or the deadline elapses.
-template <typename Pred>
-[[nodiscard]] bool WaitUntil(Pred pred) {
-  const auto deadline = std::chrono::steady_clock::now() + kPollDeadline;
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (pred())
-      return true;
-    std::this_thread::sleep_for(kPollInterval);
-  }
-  return false;
-}
-
 // ── Transceiver: receives a packet sent by an external UDP socket ───────────
 TEST(TransceiverTest, ReceivesExternalPacket) {
   const int port = PickFreeLoopbackPort();
@@ -89,7 +78,8 @@ TEST(TransceiverTest, ReceivesExternalPacket) {
   std::memcpy(buf.data(), &pkt, sizeof(FakePacket));
   ASSERT_EQ(sender.Send(buf), static_cast<ssize_t>(sizeof(FakePacket)));
 
-  ASSERT_TRUE(WaitUntil([&] { return rx.recv_count() >= 1; }))
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return rx.recv_count() >= 1; }, kPollDeadline,
+                                      kPollInterval))
       << "Transceiver did not decode any packet within deadline";
 
   const FakePacket got = rx.GetLatestState();
@@ -132,7 +122,8 @@ TEST(TransceiverTest, InvokesCallbackOnDecode) {
     ASSERT_EQ(sender.Send(buf), static_cast<ssize_t>(sizeof(FakePacket)));
   }
 
-  ASSERT_TRUE(WaitUntil([&] { return cb_count.load(std::memory_order_relaxed) >= 3; }));
+  ASSERT_TRUE(rtc::testing::WaitUntil(
+      [&] { return cb_count.load(std::memory_order_relaxed) >= 3; }, kPollDeadline, kPollInterval));
   EXPECT_EQ(last_payload.load(), 300);
 
   rx.Stop();

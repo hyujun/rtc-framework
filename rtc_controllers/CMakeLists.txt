@@ -113,7 +113,9 @@ if(BUILD_TESTING)
   # (rtc_base keeps its runtime Eigen-free and does not ship testing/), pulled in
   # by source-tree path — the same sibling-package layout used for the
   # rtc_urdf_bridge/test fixture headers above.
-  set(rtc_base_test_include "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include")
+  # Path owned by rtc_base (cmake/rtc_base-test-include.cmake.in), which fails
+  # loudly if its source tree is not reachable — see #356.
+  rtc_base_test_include_dir(rtc_base_test_include)
 
   # This package's own test-only headers (bitwise-comparison primitives shared
   # by the #236 extraction golden-vector suites). Same never-installed,

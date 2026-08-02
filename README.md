@@ -90,6 +90,7 @@ robot_descriptions (독립, data-only — <exec_depend> only, ARCH-5)
 udp_hand_driver ← rtc_communication, rtc_inference, rtc_base
 ur5e_bt_coordinator ← rtc_msgs, shape_estimation_msgs, tf2/tf2_ros,
                       BehaviorTree.CPP v4, Eigen3
+                      + <test_depend> rtc_base (test/testing/wait_until.hpp only)
 
 integrated_bringup ← rtc_controller_manager, rtc_controller_interface, rtc_controllers,
                      rtc_tsid, rtc_mpc, rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge

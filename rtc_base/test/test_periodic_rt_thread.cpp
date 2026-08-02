@@ -12,6 +12,7 @@
 // remains fast on a busy CI host. Scheduler determinism isn't required —
 // only that the lifecycle / counters / hooks behave as documented.
 
+#include "rtc_base/testing/wait_until.hpp"
 #include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
@@ -28,22 +29,11 @@ namespace {
 
 using namespace std::chrono_literals;
 
-// Polls `pred` every millisecond until it holds or `timeout` elapses, returning
-// the final predicate value. Replaces blind sleep-as-sync: the suite reacts to
-// observable progress (tick / overrun counters) instead of a fixed wall-clock
-// guess, which removes timing flakiness on a busy CI host. The generous 2 s
-// ceiling only bounds a genuine hang — the happy path returns in a few ms.
-template <typename Pred>
-[[nodiscard]] bool WaitUntil(Pred pred, std::chrono::milliseconds timeout = 2s) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (!pred()) {
-    if (std::chrono::steady_clock::now() >= deadline) {
-      return false;
-    }
-    std::this_thread::sleep_for(1ms);
-  }
-  return true;
-}
+// Waiting is sleep-poll on rtc::testing::WaitUntil (1 ms poll, 2 s ceiling) —
+// the suite reacts to observable progress (tick / overrun counters) instead of
+// a fixed wall-clock guess, which removes timing flakiness on a busy CI host.
+// The ceiling only bounds a genuine hang; the happy path returns in a few ms.
+using rtc::testing::WaitUntil;
 
 rtc::ThreadConfig MakeNonRtConfig(const char* name) {
   // SCHED_OTHER + nice 0 keeps the test runnable without RT permissions.

@@ -122,6 +122,10 @@ install(DIRECTORY config launch trees
 # ── Tests ──────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  # Test-only (<test_depend> in package.xml, no production TU here includes
+  # rtc_base): brings in rtc_base_add_test_includes() for the e2e fixture's
+  # sleep-poll wait. See rtc_base/cmake/rtc_base-test-include.cmake.in.
+  find_package(rtc_base REQUIRED)
 
   # Tier 1: Pure computation tests (no ROS2 fixture needed)
   # Every test here links bt_nodes, sees the same include roots, and needs the
@@ -189,6 +193,21 @@ if(BUILD_TESTING)
   foreach(test_name ${TIER2_INJECT} ${TIER2_E2E})
     add_bt_gtest(${test_name})
   endforeach()
+
+  # test_helpers.hpp waits on rtc_base/testing/wait_until.hpp — test-only and
+  # never installed, so rtc_base's exported include dirs do not reach it (#356).
+  # Scoped to the three suites that actually include test_helpers.hpp rather
+  # than added inside add_bt_gtest(): the other ~19 targets never touch it, and
+  # a package-wide source-tree coupling to rtc_base is not free — it is exactly
+  # the kind of edge that outlives the reason it was added. Note this list is
+  # NOT all of TIER2_E2E (test_service_singlethread does not include the
+  # header), and inject_fixture.hpp only mentions test_helpers.hpp in prose, so
+  # TIER2_INJECT does not pull it in either.
+  rtc_base_add_test_includes(
+    test_switch_controller
+    test_set_gains
+    test_grasp_control
+  )
 
   # Tier 3: XML tree validation — ament_index_cpp resolves the tree share dir.
   add_bt_gtest(test_tree_validation EXTRA_DEPS ament_index_cpp)
