@@ -51,13 +51,15 @@ RT 핫패스 절대금지 규칙은 **RT-1 ~ RT-10** (RT-7 은 은퇴 → PROC-6
 - 수치 특이점: damped pseudoinverse (NUM-1), zero guard (NUM-2, NUM-4)
 - 폐쇄 체인 사영은 **residual 로 조립 분기를 판정할 수 없다** — 점 구속 loop 은 분기가 여럿이고 모두 φ=0 을 만족하므로 seed 증분 제한이 필수 (NUM-5). 완화 장치를 넣을 때는 발동한 경우에만 적용하고, 그로 인한 `held` 를 자기 치유로 가정하지 않는다
 
+ARCH 규칙의 **편집 시 자동 로드되는 요약**은 RT 와 같은 채널에 있다 — 소스 축은 [.claude/rules/arch-source.md](.claude/rules/arch-source.md) (ARCH-1·2·3·4·6), build metadata 축은 [.claude/rules/arch-build-meta.md](.claude/rules/arch-build-meta.md) (ARCH-2·5·7). 어떤 파일에서 로드되는지는 각 rule 의 frontmatter glob 이 SSoT (AP-DOC-1: 여기 박제 금지). **탐지 패턴의 SSoT 는 hook** 이고 rule 은 판정만 갖는다 — RT 와 반대 방향이다 (#213).
+
 세부 규칙·grep 패턴·복구 절차: [agent_docs/invariants.md](agent_docs/invariants.md). 위반 필요시 §6 Escalation 의 `[CONCERN]` 포맷 보고.
 
 ## 4. Workflow Loop
 
 7단계: **Type → Locate → Read → Edit → Build → Test → Verify**. 규모에 맞춰 압축한다 — 오타·포매팅·자명한 단일 라인 수정은 단계를 합쳐도 되나, **검증(Build/Test/Verify)을 생략했다면 최종 보고에 무엇을·왜 생략했는지 명시**한다. 다파일·다패키지·`rtc_base`/`rtc_msgs` 변경에서 검증 단계를 건너뛰는 것은 §6 escalation 사유. 실패 시 절대 **"try harder" 금지** — 누락된 capability (test, lint, interface) 를 엔지니어링하거나 §6 escalate.
 
-**Type 분기**: "수정" 인가 "추가 (새 기능 / 컨트롤러 / 메시지 / 디바이스 / 스레드)" 인가? 추가 task 는 단계 1 진입 전에 [agent_docs/design-principles.md](agent_docs/design-principles.md) 5원칙 + [agent_docs/modification-guide.md](agent_docs/modification-guide.md) "Adding a New ..." 절을 먼저 읽는다 (rtc_* 추가는 P1·P2 + ARCH-3 결합; integration package 또는 `shape_estimation*` 추가 시 rtc_* 일반화 가능성부터 검토).
+**Type 분기**: "수정" 인가 "추가 (새 기능 / 컨트롤러 / 메시지 / 디바이스 / 스레드 / 패키지)" 인가? **추가면 `adding-component` skill 이 진입점이다** — 절차 SSoT 는 여전히 [agent_docs/modification-guide.md](agent_docs/modification-guide.md) 이고 skill 은 그 앞의 판정(P5 일반화 · ARCH-3 · spec 필요 여부)과 그 추가에서 발화하는 게이트만 갖는다. skill 이 없는 도구는 단계 1 진입 전에 [agent_docs/design-principles.md](agent_docs/design-principles.md) 5원칙 + modification-guide.md "Adding a New ..." 절을 먼저 읽는다 (rtc_* 추가는 P1·P2 + ARCH-3 결합; integration package 또는 `shape_estimation*` 추가 시 rtc_* 일반화 가능성부터 검토).
 
 **계획 전 분석**: 대응하는 GitHub issue 가 있으면 계획을 세우기 전에 그 issue (본문 + 코멘트) 를 먼저 참고한다 — issue 는 durable 결정 기록이자 cross-tool 인계면이므로 (§6.6, [agent_docs/handoff.md](agent_docs/handoff.md) §5) 이전 세션·다른 tool 의 acceptance criteria·결정·미완료 상태가 거기 남아 있다. 단 issue 본문의 진단·근거는 **미검증 가설**로 취급하고 착수 전 grep/코드로 반증한다 (틀렸으면 issue 를 먼저 갱신). 구현 완료 후 그 issue 를 갱신하는 규칙은 §11.
 
