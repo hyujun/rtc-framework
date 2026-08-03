@@ -1,19 +1,13 @@
 ---
 paths:
-  - "*/CMakeLists.txt"
-  - "*/package.xml"
-  - "*/setup.py"
-  - "*/**/CMakeLists.txt"
-  - "*/**/package.xml"
   - "**/CMakeLists.txt"
   - "**/package.xml"
   - "**/setup.py"
-  - "CMakeLists.txt"
 ---
 
 # Architecture invariants — build metadata 편집 시 (ARCH-2 · ARCH-5 · ARCH-7)
 
-이 rule 은 `CMakeLists.txt` · `package.xml` · `setup.py` 를 편집할 때 reminder 로 로드된다. glob 이 여러 형태로 중복된 이유는 [arch-source.md](arch-source.md) 와 같다 — 어느 앵커가 매칭되는지는 관측으로만 확인되고, 중복 매칭은 비용이 아니다. 소스 축 (ARCH-1 · ARCH-3 · ARCH-4 · ARCH-6) 은 [arch-source.md](arch-source.md) 가 갖는다. 규칙 전문·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
+이 rule 은 `CMakeLists.txt` · `package.xml` · `setup.py` 를 **읽거나 편집할 때** reminder 로 로드된다. glob 형태와 그 검증 수단은 [arch-source.md](arch-source.md) 와 같다. 소스 축 (ARCH-1 · ARCH-3 · ARCH-4 · ARCH-6) 은 [arch-source.md](arch-source.md) 가 갖는다. 규칙 전문·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
 
 **탐지 패턴을 여기 복제하지 않는다** — SSoT 는 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) (ARCH-5 · ARCH-7 은 Phase 0a). 이 파일이 갖는 것은 **판정**이다.
 

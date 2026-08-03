@@ -370,6 +370,46 @@ out=$(run_hook "$dir")
 expect_contains "untracked .py under config/ is not routed to a build" "$out" "BUILD_PKGS=[]"
 rm -rf "$dir"
 
+# --- path-scoped rule glob gate ----------------------------------------------
+
+# 15f. A .claude/rules/*.md whose globs match nothing must BLOCK. A rule that
+#      cannot fire is guidance that silently never arrives -- the same shape as
+#      the constitution copy that stopped at 7 of 9 RT rules (#213). The gate
+#      exists because the runtime side of this (did it load?) is invisible from
+#      inside the authoring session.
+dir=$(make_fixture)
+mkdir -p "$dir/.claude/rules"
+printf -- '---\npaths:\n  - "nonexistent_dir/**/*.zzz"\n---\n\n# dead rule\n' \
+  >"$dir/.claude/rules/dead.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a rule whose globs match nothing is reported" "$out" "can never load"
+expect_exit "a rule whose globs match nothing blocks the turn" "$rc" 2
+rm -rf "$dir"
+
+# 15g. ...while a rule that matches real files is silent. Without this the gate
+#      could be a constant blocker and 15f would still pass.
+dir=$(make_fixture)
+mkdir -p "$dir/.claude/rules"
+printf -- '---\npaths:\n  - "**/*.cpp"\n---\n\n# live rule\n' \
+  >"$dir/.claude/rules/live.md"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "a rule matching real files is not reported" "$out" "can never load"
+expect_exit "a rule matching real files does not block" "$rc" 0
+rm -rf "$dir"
+
+# 15h. Redundant anchors are a hedge, not a defect: a rule stays green as long as
+#      ONE pattern matches. rt-path.md carries 16 patterns of which 8 match
+#      nothing (no .h/.cc in this tree), so per-pattern strictness would block on
+#      the repo's own working rule.
+dir=$(make_fixture)
+mkdir -p "$dir/.claude/rules"
+printf -- '---\npaths:\n  - "**/*.cpp"\n  - "**/*.cc"\n---\n\n# partly dead\n' \
+  >"$dir/.claude/rules/hedged.md"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "a partially matching rule is not reported" "$out" "can never load"
+expect_exit "a partially matching rule does not block" "$rc" 0
+rm -rf "$dir"
+
 # --- ARCH-7 target-name scope ------------------------------------------------
 
 # 16. Re-touching an existing target must not read as introducing one. CMake

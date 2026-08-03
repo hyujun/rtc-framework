@@ -813,6 +813,47 @@ with open(sys.argv[1], encoding="utf-8") as fh:
   fi
 fi
 
+# --- Phase 1c: path-scoped rules must be able to fire ---
+# A .claude/rules/*.md whose `paths:` globs match nothing never loads, and the
+# failure is silent: the file is present, readable and reviewable, and the only
+# symptom is guidance quietly not arriving. That is the same shape as the
+# constitution copy that stopped at 7 of 9 RT rules (#213), so it blocks.
+#
+# This gate is the half of the sensor pair that needs no session. The other
+# half -- did the rule ACTUALLY load -- is the InstructionsLoaded hook
+# (.claude/hooks/log-instructions-loaded.sh), whose log is the ground truth,
+# because the glob semantics here are an independent reimplementation of the
+# runtime matcher rather than the matcher itself.
+#
+# Scoped to the changed rule files, like every other Phase 1 sensor: a rule
+# that was already dead in a file this turn did not touch is not this turn's
+# to repair.
+RULES_FAILURES=""
+CHANGED_RULES=$(echo "$CHANGED_DOCS" | grep -E '(^|/)\.claude/rules/.*\.md$' || true)
+if [ -n "$CHANGED_RULES" ]; then
+  RULE_FILES=()
+  while IFS= read -r rf; do
+    [ -n "$rf" ] && [ -f "$rf" ] && RULE_FILES+=("$rf")
+  done <<< "$CHANGED_RULES"
+  if [ "${#RULE_FILES[@]}" -gt 0 ]; then
+    # Resolved relative to this hook first, like validate_docs.py above, so the
+    # routing tests can point PROJECT_DIR at a fixture that has no scripts.
+    HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    VALIDATE_RULES="$HOOK_DIR/../../repo_scripts/scripts/validate_claude_rules.py"
+    [ -f "$VALIDATE_RULES" ] || VALIDATE_RULES="$PROJECT_DIR/repo_scripts/scripts/validate_claude_rules.py"
+    if [ -f "$VALIDATE_RULES" ]; then
+      RULES_RC=0
+      RULES_OUT=$(python3 "$VALIDATE_RULES" --root "$PROJECT_DIR" --files "${RULE_FILES[@]}" 2>&1) \
+        || RULES_RC=$?
+      if [ "$RULES_RC" -ne 0 ]; then
+        RULES_FAILURES=$(echo "$RULES_OUT" | grep -E '\[R[0-9]+\]' || echo "$RULES_OUT")
+      fi
+    else
+      echo "verify-changes: validate_claude_rules.py not found; rule glob gate skipped." >&2
+    fi
+  fi
+fi
+
 # --- Phase 2: Build + test, with PROC-3 fallback for rtc_base / rtc_msgs ---
 # RTC_VERIFY_SKIP_BUILD lets repo_scripts/test/test_verify_changes.sh exercise
 # the routing without a colcon workspace. It is never set in normal operation.
@@ -951,6 +992,9 @@ if [ -n "$DOC_FAILURES" ]; then
 fi
 if [ -n "$YAML_FAILURES" ]; then
   REPORT="${REPORT}YAML parse failures:\n${YAML_FAILURES}\n"
+fi
+if [ -n "$RULES_FAILURES" ]; then
+  REPORT="${REPORT}Path-scoped rule cannot fire (repo_scripts/scripts/validate_claude_rules.py):\n${RULES_FAILURES}\n"
 fi
 if [ -n "$TEST_FAILURES" ]; then
   REPORT="${REPORT}Test/build failures:\n${TEST_FAILURES}\n"
