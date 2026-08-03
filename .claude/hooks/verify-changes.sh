@@ -188,10 +188,30 @@ CHANGED_META_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '(^|/)(CMakeLists\.txt|
 # least. Both #356 additions -- a test-only header and a 9-case suite -- landed on
 # that path. Widening here can only cost a build of a package that owns an
 # untracked .py probe under test/; the other direction costs a silent green.
+#
+# launch/ and scripts/ are installed artifacts too (#360), and a new file lands in
+# the install tree with NO metadata edit: launch/ is DIRECTORY-installed in five
+# ament_cmake packages and globbed by rtc_digital_twin's setup.py, and rtc_math
+# installs scripts/ the same way. No CMakeLists change means CHANGED_META_TRACKED
+# does not route them either, so a new launch file was the one artifact that could
+# reach the install tree without any part of this hook building its package --
+# while *editing* that same file once tracked did build it. That asymmetry is what
+# this list closes; it is not a claim that the build validates these files.
+# It does not: install(DIRECTORY) copies, so no .py here is parsed or compiled, and
+# the launch-wiring suites (test_launch_shield_wiring.py and siblings) hardcode
+# their filenames rather than globbing, so a new launch file is not covered until
+# someone adds it to those lists. What the build buys is an install tree that
+# matches the source tree and a rerun of the owning package's tests.
+#
+# The list stays an ALLOWLIST of installed-source dirs. config/ is deliberately
+# absent: it holds YAML, which the parse gate already covers, and admitting it
+# would turn this into "any directory under a package" -- the unbounded reading the
+# scratch exclusion exists to prevent.
 # A backreference is not portable across grep flavours, so match with awk.
 CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ '
   NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ \
-    && ($2 == "src" || $2 == "include" || $2 == "test" || $2 == $1)' \
+    && ($2 == "src" || $2 == "include" || $2 == "test" \
+        || $2 == "launch" || $2 == "scripts" || $2 == $1)' \
   || true)
 CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRACKED" \
   | grep -v '^[[:space:]]*$' | sort -u || true)
