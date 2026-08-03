@@ -334,6 +334,42 @@ out=$(run_hook "$dir")
 expect_contains "untracked test-only header is routed to a build" "$out" "BUILD_PKGS=[rtc_demo]"
 rm -rf "$dir"
 
+# 15c. A brand-new launch file must be BUILT (#360). launch/ is DIRECTORY-installed
+#      (install(DIRECTORY launch/ ...) in five ament_cmake packages, glob("launch/*.py")
+#      in rtc_digital_twin's setup.py), so a new file becomes an installed artifact
+#      with no CMakeLists edit -- which also means CHANGED_META_TRACKED does not
+#      catch it either. Editing that same file once it is tracked DOES build the
+#      package, and nothing justifies the two answers differing.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/launch"
+printf 'def generate_launch_description():\n    return None\n' \
+  >"$dir/rtc_demo/launch/fresh.launch.py"
+out=$(run_hook "$dir")
+expect_contains "untracked launch file is routed to a build" "$out" "BUILD_PKGS=[rtc_demo]"
+rm -rf "$dir"
+
+# 15d. Same for scripts/. Whether a new script needs a CMakeLists edit is a
+#      per-package accident -- integrated_bringup installs them one by one with
+#      install(PROGRAMS ...) (so the edit routes the package anyway), rtc_math
+#      installs the directory (so nothing routes it). The axis must not depend on
+#      which of those two a package happens to use.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/scripts"
+printf 'x = 1\n' >"$dir/rtc_demo/scripts/fresh.py"
+out=$(run_hook "$dir")
+expect_contains "untracked script is routed to a build" "$out" "BUILD_PKGS=[rtc_demo]"
+rm -rf "$dir"
+
+# 15e. ...and the widening stays an allowlist. A .py under <pkg>/config/ is not
+#      package source: config/ holds YAML that the parse gate already covers, and
+#      admitting it would make the filter "any directory under a package", which is
+#      the unbounded reading 15 exists to rule out.
+dir=$(make_fixture)
+printf 'x = 1\n' >"$dir/rtc_demo/config/fresh.py"
+out=$(run_hook "$dir")
+expect_contains "untracked .py under config/ is not routed to a build" "$out" "BUILD_PKGS=[]"
+rm -rf "$dir"
+
 # --- ARCH-7 target-name scope ------------------------------------------------
 
 # 16. Re-touching an existing target must not read as introducing one. CMake
