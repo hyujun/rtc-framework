@@ -24,7 +24,7 @@
 | **Sensors** (feedback, inferential) | 의미 검증 (LLM-as-judge, on-demand) | §5.5 |
 | **Orchestration** | Workflow | §4, [agent_docs/modification-guide.md](agent_docs/modification-guide.md) |
 | **Escalation** | Human gate | §6, §6.5 Sprint Contract |
-| **Enforcement** (자동) | 무인 실행/차단 | [.claude/hooks/format-code.sh](.claude/hooks/format-code.sh) (PostToolUse: clang-format / ruff), [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) (Stop: doc·CMake·build·test gate, exit 2 차단) |
+| **Enforcement** (자동) | 무인 실행/차단 | [.claude/hooks/format-code.sh](.claude/hooks/format-code.sh) (PostToolUse: clang-format / ruff), [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) (Stop: doc·CMake·build·test gate, exit 2 차단), [.claude/hooks/log-instructions-loaded.sh](.claude/hooks/log-instructions-loaded.sh) (InstructionsLoaded: 어떤 CLAUDE.md·rule 이 왜 로드됐는지 `.claude/instructions-loaded.log` 에 기록 — 차단 없음) |
 
 **첫 방문 에이전트**: §3 → §4 → §6 순으로 읽고 작업 시작.
 **수정 작업 중**: §5 검증 + §6 escalation 확인. Invariant 위반 의심 시 즉시 §6.
@@ -52,6 +52,8 @@ RT 핫패스 절대금지 규칙은 **RT-1 ~ RT-10** (RT-7 은 은퇴 → PROC-6
 - 폐쇄 체인 사영은 **residual 로 조립 분기를 판정할 수 없다** — 점 구속 loop 은 분기가 여럿이고 모두 φ=0 을 만족하므로 seed 증분 제한이 필수 (NUM-5). 완화 장치를 넣을 때는 발동한 경우에만 적용하고, 그로 인한 `held` 를 자기 치유로 가정하지 않는다
 
 ARCH 규칙의 **편집 시 자동 로드되는 요약**은 RT 와 같은 채널에 있다 — 소스 축은 [.claude/rules/arch-source.md](.claude/rules/arch-source.md) (ARCH-1·2·3·4·6), build metadata 축은 [.claude/rules/arch-build-meta.md](.claude/rules/arch-build-meta.md) (ARCH-2·5·7). 어떤 파일에서 로드되는지는 각 rule 의 frontmatter glob 이 SSoT (AP-DOC-1: 여기 박제 금지). **탐지 패턴의 SSoT 는 hook** 이고 rule 은 판정만 갖는다 — RT 와 반대 방향이다 (#213).
+
+**rule 채널은 두 센서로 검증한다** — glob 이 실제 파일을 잡는지는 `validate_claude_rules.py` (변경된 rule 한정, **0건이면 차단**), 실제로 로드됐는지는 `.claude/instructions-loaded.log` (InstructionsLoaded hook). rule 을 새로 쓰거나 glob 을 고쳤으면 매칭 파일을 하나 열고 그 로그를 grep 해 발화를 확인한다 — rule 이 안 뜨는 실패는 파일이 멀쩡해 보이므로 **증상이 "규칙이 조용히 없는 것"** 뿐이다.
 
 세부 규칙·grep 패턴·복구 절차: [agent_docs/invariants.md](agent_docs/invariants.md). 위반 필요시 §6 Escalation 의 `[CONCERN]` 포맷 보고.
 

@@ -1,20 +1,11 @@
 ---
 paths:
-  - "*/**/*.cpp"
-  - "*/**/*.hpp"
-  - "*/**/*.h"
-  - "*/**/*.cc"
-  - "*/**/*.py"
-  - "**/*.cpp"
-  - "**/*.hpp"
-  - "**/*.h"
-  - "**/*.cc"
-  - "**/*.py"
+  - "**/*.{cpp,hpp,h,cc,py}"
 ---
 
 # Architecture invariants — 소스 편집 시 (ARCH-1 · ARCH-2 · ARCH-3 · ARCH-4 · ARCH-6)
 
-이 rule 은 **소스 파일**을 편집할 때 reminder 로 로드된다. glob 이 두 형태로 중복된 이유는 [rt-path.md](rt-path.md) 가 검증된 형태 (`rtc_*/**/*.cpp` 와 `**/rtc_*/**/*.cpp`) 를 둘 다 갖고 있기 때문이다 — 어느 앵커가 실제로 매칭되는지가 관측으로만 확인되고, rule 은 매칭이 여러 개여도 한 번만 로드되므로 중복은 비용이 아니다. 패키지 이름을 열거하지 않는 것은 패키지 추가·rename 시 drift 를 만들지 않기 위함이다 (AP-DOC-1). build metadata (`CMakeLists.txt` / `package.xml` / `setup.py`) 축의 ARCH-5 · ARCH-7 은 [arch-build-meta.md](arch-build-meta.md) 가 갖는다. 규칙 전문·severity·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
+이 rule 은 **소스 파일을 읽거나 편집할 때** reminder 로 로드된다 (path-scoped rule 은 read 에서도 발화한다). `**/*.ext` 는 모든 디렉토리의 그 확장자를 매칭하므로 앵커를 여러 벌 적을 필요가 없고, 패키지 이름은 열거하지 않는다 — 추가·rename 시 drift 가 되기 때문이다 (AP-DOC-1). 이 glob 이 실제로 파일을 잡는지는 `repo_scripts/scripts/validate_claude_rules.py` 가 검사하고 (0건이면 hook 이 차단), 실제로 *로드됐는지* 는 `.claude/instructions-loaded.log` 가 기록한다. build metadata (`CMakeLists.txt` / `package.xml` / `setup.py`) 축의 ARCH-5 · ARCH-7 은 [arch-build-meta.md](arch-build-meta.md) 가 갖는다. 규칙 전문·severity·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
 
 **탐지 패턴을 여기 복제하지 않는다** — 정규식·스코프·면제의 SSoT 는 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) 다 (#213: 문서가 들고 있던 divergent copy 가 hook 보다 낡은 스코프를 담은 채 썩었다). 이 파일이 갖는 것은 **판정**이다.
 
