@@ -1,11 +1,24 @@
 ---
 paths:
-  - "**/*.{cpp,hpp,h,cc,py}"
+  - "**/*.cpp"
+  - "**/*.hpp"
+  - "**/*.h"
+  - "**/*.cc"
+  - "**/*.py"
+  - "*/**/*.cpp"
+  - "*/**/*.hpp"
+  - "*/**/*.h"
+  - "*/**/*.cc"
+  - "*/**/*.py"
 ---
 
 # Architecture invariants — 소스 편집 시 (ARCH-1 · ARCH-2 · ARCH-3 · ARCH-4 · ARCH-6)
 
-이 rule 은 **소스 파일을 읽거나 편집할 때** reminder 로 로드된다 (path-scoped rule 은 read 에서도 발화한다). `**/*.ext` 는 모든 디렉토리의 그 확장자를 매칭하므로 앵커를 여러 벌 적을 필요가 없고, 패키지 이름은 열거하지 않는다 — 추가·rename 시 drift 가 되기 때문이다 (AP-DOC-1). 이 glob 이 실제로 파일을 잡는지는 `repo_scripts/scripts/validate_claude_rules.py` 가 검사하고 (0건이면 hook 이 차단), 실제로 *로드됐는지* 는 `.claude/instructions-loaded.log` 가 기록한다. build metadata (`CMakeLists.txt` / `package.xml` / `setup.py`) 축의 ARCH-5 · ARCH-7 은 [arch-build-meta.md](arch-build-meta.md) 가 갖는다. 규칙 전문·severity·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
+이 rule 은 **소스 파일을 읽거나 편집할 때** reminder 로 로드된다 (path-scoped rule 은 read 에서도 발화한다). 패키지 이름은 열거하지 않는다 — 추가·rename 시 drift 가 되기 때문이다 (AP-DOC-1).
+
+**`**/*.ext` 한 벌로 끝나지 않는다 (#229, 세션 16 실측).** `rtc_base/src/tracing/rtc_tracepoints.cpp` 를 한 번 Read 했을 때 앵커 있는 glob 을 쓰는 `rt-path.md`(`rtc_*/**/*.cpp`)는 발화했고 이 rule 의 `**/*.{cpp,hpp,h,cc,py}` 는 **같은 파일에서 발화하지 않았다** (`**/CMakeLists.txt` 도 마찬가지). 그래서 앵커 있는 형태(`*/**/*.ext`)를 함께 싣고, brace expansion 은 변수를 줄이려 **펼쳐서** 적는다. 어느 형태가 실제로 매칭되는지는 아래 로그가 유일한 판정 수단이다.
+
+**두 센서는 등가가 아니다.** `repo_scripts/scripts/validate_claude_rules.py` 는 *로드될 수 있는가* 를 Python `glob` 의미론으로 검사하고 (0건이면 hook 이 차단), 위 죽은 형태에 대해서도 **clean 을 냈다** — 즉 false green 이 가능하다. *실제로 로드됐는가* 의 ground truth 는 `.claude/instructions-loaded.log` (InstructionsLoaded hook) 뿐이다. 그리고 **rule 집합은 세션 시작 시 스냅샷**이라 (같은 세션에서 만든 probe rule 은 검증된 형태의 glob 으로도 발화하지 않았다), glob 을 고쳤으면 **다음 세션에서** 매칭 파일을 열고 그 로그를 grep 해 확인한다. build metadata (`CMakeLists.txt` / `package.xml` / `setup.py`) 축의 ARCH-5 · ARCH-7 은 [arch-build-meta.md](arch-build-meta.md) 가 갖는다. 규칙 전문·severity·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
 
 **탐지 패턴을 여기 복제하지 않는다** — 정규식·스코프·면제의 SSoT 는 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) 다 (#213: 문서가 들고 있던 divergent copy 가 hook 보다 낡은 스코프를 담은 채 썩었다). 이 파일이 갖는 것은 **판정**이다.
 
