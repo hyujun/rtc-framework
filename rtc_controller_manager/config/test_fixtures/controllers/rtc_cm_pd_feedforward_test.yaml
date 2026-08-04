@@ -1,0 +1,22 @@
+# Test fixture — loaded ONLY by rtc_controller_manager unit tests via
+# config_variant=test_fixtures. Third command-type shape on the same wiring as
+# rtc_cm_torque_test / rtc_cm_position_test: the mode that the configure gate
+# and the tick gate used to disagree about (issue #342 review).
+#
+# kPdFeedforward's commands[] carries a position target and the feedforward
+# overlay is an additive channel a position-only backend does not transmit, so
+# the pairing is the documented graceful fallback — legal in both gates now
+# that they share one predicate.
+#
+# The `topics:` block is load-bearing for the same reason it is in the two
+# siblings, and this fixture is the reason to say it a third time: without it
+# the controller declares no device group, the pairing walk never reaches it,
+# and "no refusal was logged for the pd_feedforward controller" would be true
+# of an empty loop rather than of the gate. That vacuity was observed here —
+# the first cut of this test passed against a deliberately reverted gate.
+rtc_cm_pd_feedforward_test:
+  command_type: "pd_feedforward"
+  topics:
+    arm:
+      subscribe:
+        - {topic: "target", role: "target"}

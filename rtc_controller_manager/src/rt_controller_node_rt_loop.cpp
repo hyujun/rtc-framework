@@ -147,6 +147,21 @@ RtControllerNode::CommandTypeRejection RtControllerNode::FindUnhonouredCommandTy
       continue;  // no backend on this group — nothing of this device reaches a wire
     }
     const auto& dout = out.devices[static_cast<std::size_t>(di)];
+    // Same exemption, second cause: a zero-length device is SilenceDeviceOutput's
+    // "no update" answer (F5), every backend early-returns on it, and this file
+    // says so itself at the WriteCommand dispatch below. Its mode selector is
+    // therefore inert — it names a quantity for an array of length zero.
+    //
+    // The precedent is not an analogy: ValidateControllerOutput bounds its own
+    // finiteness loop by `dout.num_channels`, so a silenced device's commands[]
+    // is already unscreened there. Judging it here would make this the one
+    // guard that reads a field of a device that is not being commanded — and
+    // the cost is not a spurious log line but the whole output replaced by a
+    // hold, escalating after invalid_output_estop_ticks_ to a global E-STOP,
+    // for a device that put nothing on a wire.
+    if (dout.num_channels <= 0) {
+      continue;
+    }
     // The one line the configure gate cannot see — same resolution the
     // publish snapshot performs, kept identical on purpose.
     const urtc::CommandType resolved = dout.command_type.value_or(out.command_type);
@@ -162,28 +177,49 @@ RtControllerNode::CommandTypeRejection RtControllerNode::FindUnhonouredCommandTy
 // group, which is the entire content of the fix.
 void RtControllerNode::ReportUnhonouredCommandType(const urtc::RTControllerInterface& controller,
                                                    const CommandTypeRejection& rej) noexcept {
-  // Skip while a line is still queued. That is the rate limit: at worst one
-  // format per DrainLog period, and the first offending tick is never the one
-  // dropped. A relaxed load suffices — the store below is the only writer and
-  // it is this same thread.
+  // Two gates, and neither alone is the rate limit.
   //
+  // The pending flag protects the BUFFER: while a line is queued the drain side
+  // still owns those bytes. A relaxed load suffices — the store below is the
+  // only writer of the flag on this side and it is this same thread.
+  //
+  // The deadline protects the OPERATOR. DrainLog clears the flag every 10 ms,
+  // so the flag by itself admits ~100 lines/second for as long as the pairing
+  // is wrong — which is forever, since it is a deployment fault, and the
+  // escalation does not stop it (only TriggerGlobalEstop is latch-guarded;
+  // this check keeps running in the terminal state on purpose). Ticks are the
+  // clock rather than steady_clock because the RT loop already maintains one
+  // and reading it costs a relaxed load.
+  if (command_type_log_pending_.load(std::memory_order_relaxed)) {
+    ++command_type_log_suppressed_;
+    return;
+  }
+  const uint64_t tick = loop_count_.load(std::memory_order_relaxed);
+  if (tick < command_type_log_next_tick_) {
+    ++command_type_log_suppressed_;
+    return;
+  }
+
   // The format stays in the class the E-STOP reason line already uses on this
   // thread: a fixed destination buffer and %s / %.*s / %d conversions over
   // pointers the caller already holds. Nothing here builds a std::string or
   // takes a lock; the names come from a string_view and a std::string fixed at
   // configure (slot_to_group_name_ is cleared only after StopRtLoop joins).
-  if (command_type_log_pending_.load(std::memory_order_relaxed)) {
-    return;
-  }
+  //
+  // The suppressed tally rides on the line rather than being dropped: without
+  // it a bounded reprint cadence cannot be told from a fault that fired once,
+  // which is the distinction the whole lane exists to report.
   const auto uslot = static_cast<std::size_t>(rej.slot);
   const char* group = uslot < slot_to_group_name_.size() ? slot_to_group_name_[uslot].c_str() : "?";
   const auto name = controller.Name();
   static_cast<void>(std::snprintf(
       command_type_reject_reason_.data(), command_type_reject_reason_.size(),
       "controller '%.*s' set command_type '%s' on device %d (group '%s', slot %d), which that "
-      "backend does not declare; output held",
+      "backend does not declare; output held (%lu further rejected ticks suppressed)",
       static_cast<int>(name.size()), name.data(), urtc::CommandTypeToString(rej.resolved),
-      rej.device_idx, group, rej.slot));
+      rej.device_idx, group, rej.slot, static_cast<unsigned long>(command_type_log_suppressed_)));
+  command_type_log_suppressed_ = 0;
+  command_type_log_next_tick_ = tick + command_type_log_interval_ticks_;
   command_type_log_pending_.store(true, std::memory_order_release);
 }
 
@@ -504,9 +540,14 @@ void RtControllerNode::ControlLoop() {
   const bool estopped = IsGlobalEstopped();
   if (estopped) {
     estop_substituted_outputs_.fetch_add(1, std::memory_order_relaxed);
-    if (validation.Ok()) {
-      // Phase 2b already rebuilt hold_output_ from this tick's state when the
-      // validation failed; rebuilding it would be redundant, not different.
+    if (validation.Ok() && !ct_reject.Rejected()) {
+      // Phase 2b already rebuilt hold_output_ from this tick's state when it
+      // rejected the output — for EITHER cause. Rebuilding it would be
+      // redundant, not different: same `state`, same controller-global type,
+      // byte-identical result. The command-type cause has to be named here
+      // explicitly because the steady state right after it escalates is
+      // exactly "latch set AND still rejecting", so omitting it pays
+      // BuildHoldOutput's device × channel walk twice on every tick of it.
       static_cast<void>(BuildHoldOutput(state, active_controller.GetCommandType()));
     }
   }
@@ -688,6 +729,34 @@ void RtControllerNode::ControlLoop() {
   }
 }
 
+// Deferred command-type rejection line (issue #342). WARN, not ERROR: the tick
+// was held, so nothing unsafe reached the wire — but the pairing is a
+// deployment fault that will keep repeating and escalate, and the escalation's
+// reason token cannot carry the controller and group names.
+//
+// The read happens BEFORE the flag is cleared, and that order is the contract,
+// not a style choice: clearing it is what re-arms the RT-side writer, so
+// clearing first hands the RT thread permission to snprintf into this very
+// buffer while RCLCPP_WARN is still reading it — one tick later at 500 Hz. The
+// symptom would be a spliced line (controller name from one rejection, group
+// from the previous), on top of being a data race on a plain char array. The
+// E-STOP lane above gets away with clear-then-read only because its writer is
+// CAS-guarded and fires once per latch transition; this one writes per tick.
+//
+// Separate from DrainLog so the lifecycle teardown paths can call it before
+// they drop drain_timer_ — otherwise a line formatted in the last few
+// milliseconds of a session is printed by the FIRST drain of the next one,
+// naming a controller/group pairing that may no longer exist.
+void RtControllerNode::FlushCommandTypeLog() {
+  if (!command_type_log_pending_.load(std::memory_order_acquire)) {
+    return;
+  }
+  RCLCPP_WARN(get_logger(), "Command-type rejected on the RT path: %s",
+              command_type_reject_reason_.data());
+  command_type_reject_reason_.fill('\0');
+  command_type_log_pending_.store(false, std::memory_order_release);
+}
+
 // File I/O and diagnostic logging stay exclusively in the log thread (Core 4).
 void RtControllerNode::DrainLog() {
   // L2 under the log-timer executor's ros2:callback_* (L1) — the CSV drain +
@@ -722,16 +791,8 @@ void RtControllerNode::DrainLog() {
     }
   }
 
-  // Drain the deferred command-type rejection line (issue #342). WARN, not
-  // ERROR: the tick was held, so nothing unsafe reached the wire — but the
-  // pairing is a deployment fault that will keep repeating and escalate, and
-  // the escalation's reason token cannot carry the controller and group names.
-  // Clearing the flag is what re-arms the RT-side format, so a persistent
-  // fault reprints at the drain cadence rather than once per process.
-  if (command_type_log_pending_.exchange(false, std::memory_order_acquire)) {
-    RCLCPP_WARN(get_logger(), "Command-type rejected on the RT path: %s",
-                command_type_reject_reason_.data());
-  }
+  // Drain the deferred command-type rejection line (issue #342).
+  FlushCommandTypeLog();
 
   // Print timing summary when signalled by the RT thread. Each print is
   // followed by a Reset() so the reported mean/max reflect the most recent

@@ -273,8 +273,10 @@ CM 은 `on_configure` 에서 (backend 생성 후 + controller `on_configure` 후
 
 | 질문 | 판정 | 결과 |
 |---|---|---|
-| **전송** — 이 wire 가 그 모드를 실을 수 있나 | `AcceptsCommandType` | 거짓이면 **거부** (configure FAILURE) |
+| **전송** — 이 wire 가 그 모드를 실을 수 있나 | `CommandTypeIsHonoured(slot 마스크, ct)` | 거짓이면 **거부** (configure FAILURE) |
 | **안전** — 실을 수 있다면 E-STOP 치환이 여전히 "정지" 인가 | `kTorque` 여부 | 아니면 **경고** (아래 sag advisory) |
+
+전송 판정이 `AcceptsCommandType` **직접 호출이 아닌** 이유는 tick-path 검사와 같은 술어여야 하기 때문이다 (#342 리뷰) — 근거는 아래 §해소된 per-device command type 의 tick-path 검사 §두 게이트는 한 술어다. backend 선언 자체의 의미는 그대로이고, 마스크는 그 선언을 slot 당 3비트로 캐시한 것이다.
 
 backend 가 전송에 "예" 라고 답하는 것이 안전에 대해 아무것도 말해주지 않으므로, 두 번째를 capability 선언 안으로 접을 수 없다.
 
@@ -294,6 +296,10 @@ configure 게이트가 볼 수 없는 값 — 컨트롤러가 매 tick 자유롭
 
 **통과 기준은 backend 예외표가 아니라 `commands[]` 의 값 의미다.** `kPosition` 과 `kPdFeedforward` 는 둘 다 **위치 목표**를 싣고 feedforward 는 backend 가 전송하지 않아도 되는 *추가 채널*이므로, position-only backend 가 `kPdFeedforward` 를 받는 것은 위 §per-group command type 해석이 문서화한 graceful fallback 이다 — 계속 허용되고 **wire 의 `command_type` 문자열도 강등하지 않는다** (backend 가 그 값을 그대로 실으므로, 강등은 컨트롤러의 의도를 rosbag 에서 지운다). `kTorque` 만 `commands[]` 의 물리량이 다르고, 그것이 #198 이 지목한 위험 그 자체다. 이 구분은 enum 의 성질이라 out-of-tree 페어링에도 같이 적용된다.
 
+**두 게이트는 한 술어다.** enum 의 성질이라면 값이 *어느 축으로* 도착했는지에 따라 달라질 수 없는데, 첫 구현은 configure 가 `AcceptsCommandType` 을 직접 묻고 tick 만 `CommandTypeIsHonoured` 를 써서 **같은 wire 동작을 축에 따라 다르게 판정**했다 — 전역 타입이 `pd_feedforward` 면 configure FAILURE, 같은 pair 에 per-device override 로 오면 tick 통과. 지금은 `ValidateCommandTypePairing` 도 캐시된 마스크를 같은 술어로 읽는다. 부수 효과로 `AcceptsCommandType` 을 부르는 곳이 `CacheSlotCommandTypeMasks` **하나**가 되어, 그 함수가 순수하지 않은 backend (Configure 에서 세운 멤버를 참조하는 등) 가 두 호출자에게 다르게 답하는 경로도 사라진다. fail-closed 방향은 그대로다 — opt-in 하지 않은 backend 의 `kTorque` 는 양쪽에서 여전히 거부된다.
+
+**침묵된 device 는 판정 대상이 아니다.** `num_channels == 0` 은 `SilenceDeviceOutput` 의 "no update" 답 (F5) 이고 모든 backend 가 early-return 하므로, 그 device 의 mode selector 는 **길이 0인 배열의 물리량을 지칭**한다. `ValidateControllerOutput` 이 유한성 루프를 `num_channels` 로 이미 bound 하는 것과 같은 축이다. 판정했다면 비용이 로그 한 줄이 아니라 — 출력 **전체**가 hold 로 치환되고 창이 지나면 wire 에 아무것도 안 내보낸 device 때문에 글로벌 E-STOP 이다.
+
 **걸렸을 때**: 그 tick 의 출력은 #196 Phase 2b 와 **같은 hold 로 치환**되고, 지속되면 **같은 consecutive 창**으로 E-STOP 에 승격한다 (사유 토큰 `unhonoured_command_type_<mode>`). hold 치환이 정답인 이유는 구성상이다 — `BuildHoldOutput` 은 per-device override 를 전부 지우고 controller-global 타입을 stamp 하는데, 그 값은 `ValidateCommandTypePairing` 이 이미 모든 backend 와 대조한 값이다. 즉 치환된 tick 은 **configure-검증된 봉투 안**이며, 창을 riding out 하는 근거인 "hold 가 그동안 안전하다" 가 여기서는 논증이 아니라 보장이다. 위반 tick 이 wire 에 도달하는 일은 없다.
 
 | 축 | 카운터 | 왜 따로 세는가 |
@@ -304,7 +310,11 @@ configure 게이트가 볼 수 없는 값 — 컨트롤러가 매 tick 자유롭
 
 consecutive 카운터는 **공유**한다 — 두 사유 모두 "이 tick 의 출력은 보낼 수 없다" 이고, 사유가 번갈아 나타나며 지속되는 것도 똑같이 안전 이벤트이기 때문이다.
 
-**승격 아래 구간의 관측**: 창 안에서 자기 소멸하는 거부는 `TriggerGlobalEstop` 에 도달하지 않아 사유 토큰이 남지 않고, 카운터는 *어느 컨트롤러가 어느 group 에 어느 모드를* 냈는지 말하지 못한다 — 그래서 RT 쪽이 고정 버퍼에 한 줄을 적고 `DrainLog()` 가 WARN 으로 내보낸다 (E-STOP 사유와 같은 deferred lane). throttle 매크로가 아닌 이유: `RCLCPP_*_THROTTLE` 의 창은 **매크로 전개점의 static** 이라 프로세스 전역이고, 한 프로세스의 두 노드가 서로를 침묵시킨다. pending 플래그는 노드 멤버라 그 문제가 없고, "직전 줄이 drain 되기 전에는 포맷하지 않는다" 가 그대로 rate limit 이 된다.
+**승격 아래 구간의 관측**: 창 안에서 자기 소멸하는 거부는 `TriggerGlobalEstop` 에 도달하지 않아 사유 토큰이 남지 않고, 카운터는 *어느 컨트롤러가 어느 group 에 어느 모드를* 냈는지 말하지 못한다 — 그래서 RT 쪽이 고정 버퍼에 한 줄을 적고 `DrainLog()` 가 WARN 으로 내보낸다 (E-STOP 사유와 같은 deferred lane). throttle 매크로가 아닌 이유: `RCLCPP_*_THROTTLE` 의 창은 **매크로 전개점의 static** 이라 프로세스 전역이고, 한 프로세스의 두 노드가 서로를 침묵시킨다. pending 플래그는 노드 멤버라 그 문제가 없다.
+
+**단, pending 플래그는 rate limit 이 아니다.** `DrainLog` 가 10 ms 마다 그것을 내리므로 플래그만으로는 초당 ~100줄이고, 그 상한은 **E-STOP 이 걸려도 유지된다** — 승격 후에도 검증과 이 검사는 설계대로 계속 돌고 `TriggerGlobalEstop` 만 래치로 막히기 때문이다. 그래서 `loop_count_` tick 으로 센 **재출력 deadline** (`kCommandTypeLogIntervalSeconds`, rate 유도) 을 둔다: 첫 위반 tick 은 절대 버려지지 않고, 그 사이 억제된 tick 수가 다음 줄 꼬리에 실려 "지속" 과 "1회" 가 구별된다. tick 을 시계로 쓰는 이유는 RT loop 이 이미 그것을 유지하고 있어 relaxed load 한 번이기 때문이다.
+
+**buffer 는 읽고 나서 재무장한다.** 플래그를 먼저 내리면 그 순간 RT writer 가 풀리므로, WARN 이 아직 그 배열을 포맷하는 중에 다음 tick (500 Hz 면 2 ms) 이 같은 배열에 `snprintf` 를 건다 — plain `char` 배열에 대한 data race 이고 증상은 controller 이름과 group 이 서로 다른 거부에서 온 **섞인 한 줄**이다. E-STOP lane 이 반대 순서로도 무사한 것은 그 writer 가 CAS 로 걸러져 래치 전이당 1회만 쓰기 때문이며, 이 lane 은 tick 마다 쓴다. 같은 이유로 lifecycle teardown (`on_deactivate` / `on_cleanup` / `on_error`) 은 `drain_timer_` 를 놓기 전에 이 lane 을 flush 한다 — 안 하면 세션 마지막 수 ms 에 포맷된 줄이 **다음 활성화의 첫 drain** 에서 출력돼, 그 세션에서 일어나지도 않은 거부를 이미 사라진 구성 이름으로 보고한다.
 
 ### Backend safe-output 계약 (#198 Phase 4)
 

@@ -717,8 +717,33 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Cached because AcceptsCommandType is a configure-time call by contract.
   // CommandType has three values, so a slot's answer is three bits and the RT
   // test is a bit test — not a virtual call.
+  //
+  // The enumerator set lives here rather than in CacheSlotCommandTypeMasks so
+  // the walk that BUILDS a mask and the screen that INDEXES into one read the
+  // same list: a fourth CommandType that reached only one of them would either
+  // silently never be cached or silently shift out of range.
+  static constexpr std::array<rtc::CommandType, 3> kAllCommandTypes{
+      rtc::CommandType::kPosition, rtc::CommandType::kTorque, rtc::CommandType::kPdFeedforward};
+  static_assert(static_cast<unsigned>(rtc::CommandType::kPosition) == 0U &&
+                    static_cast<unsigned>(rtc::CommandType::kTorque) == 1U &&
+                    static_cast<unsigned>(rtc::CommandType::kPdFeedforward) == 2U,
+                "CommandTypeBit indexes a bit position by enumerator value — the enumerators must "
+                "stay contiguous from 0, or the cached mask and the RT-path screen disagree.");
+
+  // Zero for any value outside the enumerator set, which fails every mask test
+  // and is therefore fail-closed.
+  //
+  // The screen is not defensive decoration: on the tick path `ct` comes from
+  // ControllerOutput, and ValidateControllerOutput checks the `valid` flag,
+  // the counts and finiteness — never the mode selector. An out-of-tree
+  // controller filling it from a message field or a reinterpreted buffer can
+  // hand us a value the enum never named, and `1U << 200` is undefined
+  // behaviour inside the RT tick, not merely a wrong answer. Values that
+  // truncate away (>= 8) were already fail-closed; this makes the whole range
+  // so, and the reason token falls through to CommandTypeToString's "unknown".
   static constexpr uint8_t CommandTypeBit(rtc::CommandType ct) noexcept {
-    return static_cast<uint8_t>(1U << static_cast<unsigned>(ct));
+    const auto value = static_cast<unsigned>(ct);
+    return value < kAllCommandTypes.size() ? static_cast<uint8_t>(1U << value) : uint8_t{0};
   }
 
   std::array<uint8_t, kMaxDevices> slot_command_type_mask_{};
@@ -761,11 +786,18 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
       const rtc::ControllerOutput& out, const ControllerSlotMapping& mapping) const noexcept;
 
   // Formats one deferred operator line for `rej` into
-  // command_type_reject_reason_, or does nothing when the previous line has
-  // not been drained yet. RT-safe: fixed buffer, scalar/string-literal format,
-  // no allocation, no logging macro.
+  // command_type_reject_reason_, or counts the tick as suppressed when a line
+  // is still queued or the interval has not elapsed. RT-safe: fixed buffer,
+  // scalar/string-literal format, no allocation, no logging macro.
   void ReportUnhonouredCommandType(const rtc::RTControllerInterface& controller,
                                    const CommandTypeRejection& rej) noexcept;
+
+  // Emits the queued line, if any, and re-arms the RT-side writer. DrainLog
+  // calls it at the drain cadence; the lifecycle teardown paths call it before
+  // dropping drain_timer_, which is the only reason a queued line would
+  // otherwise survive into the next activation and be attributed to it.
+  // Non-RT (log thread / lifecycle thread) — it is the one that logs.
+  void FlushCommandTypeLog();
 
   std::atomic<uint64_t> rejected_command_type_count_{0};
 
@@ -779,14 +811,34 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // macro: RCLCPP_*_THROTTLE keeps its window in a static at the macro's
   // expansion point, which is process-global and would make two nodes in one
   // process silence each other. The pending flag is a node member, so it does
-  // not. It also rate-limits for free — the RT side only formats when the
-  // previous line has been drained (DrainLog, 100 Hz).
+  // not.
+  //
+  // The pending flag alone is NOT the rate limit, which an earlier version of
+  // this comment claimed. DrainLog clears it every 10 ms, so a fault that
+  // persists — and a mis-paired mode always does, it is a deployment fault —
+  // re-formats on the next rejected tick and prints ~100 lines/second for as
+  // long as the node runs. That is not bounded by the escalation either: after
+  // the latch trips, validation and this check keep running by design and only
+  // TriggerGlobalEstop is guarded, so the flood outlives the E-STOP. Hence a
+  // deadline in loop_count_ ticks, which is a node member and so keeps the
+  // property that made the pending flag preferable to THROTTLE. The first
+  // offending tick is never the one dropped, and the suppressed count rides on
+  // the next line so "persistent" is still distinguishable from "once".
+  static constexpr double kCommandTypeLogIntervalSeconds = 1.0;
   // Wider than kEstopReasonBufferSize because this line names the controller
   // and the group, not just a reason token. snprintf truncates and
   // NUL-terminates regardless, so an over-long name costs detail, not safety.
   static constexpr std::size_t kCommandTypeReasonBufferSize = 192;
   std::array<char, kCommandTypeReasonBufferSize> command_type_reject_reason_{};
   std::atomic<bool> command_type_log_pending_{false};
+  // Rate-derived like invalid_output_estop_ticks_; final once
+  // DeclareAndLoadParameters has run.
+  uint64_t command_type_log_interval_ticks_{
+      static_cast<uint64_t>(kCommandTypeLogIntervalSeconds * rtc::kDefaultControlRateHz)};
+  // RT-thread-only (written and read in ReportUnhonouredCommandType), so plain
+  // scalars: the drain side never touches them.
+  uint64_t command_type_log_next_tick_{0};
+  uint64_t command_type_log_suppressed_{0};
 
   // Size of the fixed E-STOP reason buffer built on the RT path. Sized to fit
   // the longest reason this file formats, with room to spare; std::snprintf

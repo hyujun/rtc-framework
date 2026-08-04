@@ -139,7 +139,7 @@ CM 측 정책(호출부는 `rt_controller_node_rt_loop.cpp` 의 `Compute()` 반�
 
 > **`kTorque` hold 의 수용된 리스크**: CM 은 동역학 모델이 없어 중력보상 토크를 만들 수 없고, 0 N·m 는 중력 sag 를 뜻한다. 최대 노출은 `0.1 s` + E-STOP 전파 지연이다. **이 window 는 튜닝 대상이 아니다** — `kOutputRejectEstopSeconds` 는 YAML 노브가 없는 compile-time 상수이고, tick floor 위에서는 `control_rate` 를 올려도 벽시계 길이가 `0.1 s` 그대로다 (floor 아래, 즉 100 Hz 미만에서만 rate 를 올리는 것이 window 를 줄인다). 이전 판이 여기 "낮추는 튜닝 여지가 있다" 고 적었으나 가리킬 노브가 없었다 — 실제 고지는 `ValidateCommandTypePairing` 의 configure WARN 이고 (#339), 창을 tunable 로 만드는 것은 래치 시점을 바꾸므로 E-8 결정이다.
 
-> **이 lane 의 두 번째 사유 (#342)**: 같은 호출부가 `ValidateControllerOutput` 이 통과시킨 출력에 대해 **해소된 per-device `command_type` 이 그 slot 의 backend 가 받는 모드인지**도 본다. 위 정책 다섯 줄이 그대로 적용되며 (hold 대체 · write 유지 · 같은 연속 window · 승격 후에도 계속 · hold 불가면 즉시), 카운터와 E-STOP 사유 토큰만 갈라진다 (`RejectedCommandTypeCount` / `unhonoured_command_type_*`). 판정과 근거는 `rtc_controller_manager/README.md` §해소된 per-device command type 의 tick-path 검사.
+> **이 lane 의 두 번째 사유 (#342)**: 같은 호출부가 `ValidateControllerOutput` 이 통과시킨 출력에 대해 **해소된 per-device `command_type` 이 그 slot 의 backend 가 받는 모드인지**도 본다. 위 정책 다섯 줄이 그대로 적용되며 (hold 대체 · write 유지 · 같은 연속 window · 승격 후에도 계속 · hold 불가면 즉시), 카운터와 E-STOP 사유 토큰만 갈라진다 (`RejectedCommandTypeCount` / `unhonoured_command_type_*`). **`num_channels == 0` 인 device 는 대상 밖** — `SilenceDeviceOutput` 의 답이라 그 mode selector 는 길이 0인 배열을 지칭하며, 위 유한성 검사가 `num_channels` 로 bound 되는 것과 같은 축이다. 판정과 근거는 `rtc_controller_manager/README.md` §해소된 per-device command type 의 tick-path 검사.
 
 `rt_controller_node_rt_loop.cpp` 의 `BoundedCount` clamp 는 삭제되지 않고 defense-in-depth 로 남는다 — validator 를 통과한 출력과 hold 경로, 그리고 backend 가 보고한 state 쪽 count 에 계속 적용된다.
 
