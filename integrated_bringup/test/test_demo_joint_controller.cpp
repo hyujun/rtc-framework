@@ -307,12 +307,14 @@ TEST_F(JointGraspTest, ContactStopHoldUsesFilteredPosition) {
 namespace {
 // Minimal LoadConfig payload that BUILDS the Force-PI controller — the
 // whitelisted type AND a `force_pi_grasp` block, the two conditions
-// BuildGraspController ANDs. `arm_safe_position` is 6 wide to match MakeState's
-// 6 arm channels so the arm stays readable. Under an empty config_variant the
+// BuildGraspController ANDs. `arm_dof` is 6 to match MakeState's 6 arm channels
+// so the arm stays readable, and `arm_safe_position` is the same width because
+// the parser cross-checks it against `arm_dof` (#340). Under an empty config_variant the
 // shared demo_shared.yaml path does not resolve, so the built-in defaults plus
 // this block are the whole configuration (3 fingers, joint map {0,1,2}/{3,4,5}/
 // {6,7,8}) — nothing here depends on an installed YAML.
 const char* const kForcePiYaml = R"(
+arm_dof: 6
 estop:
   arm_safe_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 fsm:

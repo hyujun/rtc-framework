@@ -1,4 +1,10 @@
 demo_task_controller:
+  # ── Arm DoF (required) ─────────────────────────────────────────────────────
+  # Authoritative arm joint count at LoadConfig time (#340). The length of
+  # `estop.arm_safe_position` is validated against this key — not the reverse,
+  # which is what used to make that cross-check vacuous.
+  arm_dof: 6
+
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
   kp_translation: [5.0, 5.0, 5.0]         # Translation proportional gain (x, y, z) [1/s]
   kp_rotation: [2.0, 2.0, 2.0]            # Rotation proportional gain (rx, ry, rz) [1/s]
@@ -40,7 +46,7 @@ demo_task_controller:
   # Joint position the E-STOP path drives the arm toward (rad, length = arm DoF).
   # Required — LoadConfig throws if missing or wrong length.
   estop:
-    arm_safe_position:           # rad, 6 values = arm DoF (UR5e home pose)
+    arm_safe_position:           # rad, 6 values (must equal arm_dof); UR5e home pose
       - 0.0
       - -1.57
       - 1.57

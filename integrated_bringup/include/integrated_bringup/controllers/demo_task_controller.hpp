@@ -835,7 +835,7 @@ class DemoTaskController final : public RTControllerInterface {
   std::array<double, kDemoTaskMaxArmDof> safe_position_{};
 
   // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
-  // device configs). arm_dof_ from `estop.arm_safe_position` length;
+  // device configs). arm_dof_ from the required YAML `arm_dof` key;
   // hand_dof_ from secondary device joint_state_names size (0 when absent).
   int arm_dof_{0};
   int hand_dof_{0};

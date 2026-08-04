@@ -8,6 +8,12 @@
 # MPC disabled by default; enable via launch arg `enable_mpc:=true` after
 # verifying TSID self-hold.
 demo_wbc_controller:
+  # ── Arm DoF (required) ─────────────────────────────────────────────────────
+  # Authoritative arm joint count at LoadConfig time (#340). The length of
+  # `estop.arm_safe_position` is validated against this key — not the reverse,
+  # which is what used to make that cross-check vacuous.
+  arm_dof: 7
+
   command_type: "position"
 
   # ── Trajectory speeds ──────────────────────────────────────────────────────
@@ -372,7 +378,7 @@ demo_wbc_controller:
 
   # ── E-STOP target ──────────────────────────────────────────────────────────
   estop:
-    arm_safe_position:           # rad, 7 values = iiwa7 DoF (home pose)
+    arm_safe_position:           # rad, 7 values (must equal arm_dof); iiwa7 home pose
       [0.0, 0.7, 0.0, -1.4, 0.0, 0.7, 0.0]
 
   # ── MPC integration ────────────────────────────────────────────────────────

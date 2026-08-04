@@ -602,7 +602,7 @@ class DemoWbcController final : public RTControllerInterface {
   CombinedModelCache combined_cache_;
 
   // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
-  // device configs). arm_dof_ from `estop.arm_safe_position` length;
+  // device configs). arm_dof_ from the required YAML `arm_dof` key;
   // hand_dof_ from secondary device joint_state_names size (0 when absent).
   // full_dof_ = arm_dof_ + hand_dof_. All RT-path loops iterate over these.
   int arm_dof_{0};

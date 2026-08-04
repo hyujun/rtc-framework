@@ -74,6 +74,7 @@ using integrated_bringup::testfx::SharedIiwa7LeapModelConfig;
 // from kArmHome. Trajectory speeds are faster than the shipped iiwa7_leap
 // config to keep tick counts small; the control law is speed-agnostic.
 const char* const kTaskYaml = R"(
+arm_dof: 7
 kp_translation: [5.0, 5.0, 5.0]
 kp_rotation: [2.0, 2.0, 2.0]
 singularity_threshold: 0.02
@@ -1788,6 +1789,7 @@ TEST(TaskControllerNoModelTest, EstopComputeWithoutModelIsSafe) {
 
 YAML::Node MinimalValidYaml() {
   return YAML::Load(R"(
+arm_dof: 7
 estop:
   arm_safe_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 fsm:
@@ -2043,6 +2045,8 @@ TEST(TaskControllerLoadConfigTest, UnknownLogMsgTypeThrows) {
   EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
 }
 
+// Since #340 this lands on the length cross-check (arm_dof stays 7) rather than
+// on the old range check the length itself used to trip.
 TEST(TaskControllerLoadConfigTest, OversizedSafePositionThrows) {
   DemoTaskController ctrl{"", DemoTaskController::Gains{}};
   auto cfg = MinimalValidYaml();
@@ -2052,6 +2056,59 @@ TEST(TaskControllerLoadConfigTest, OversizedSafePositionThrows) {
   }
   cfg["estop"]["arm_safe_position"] = big;
   EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
+}
+
+// ── #340: `arm_dof` is the DoF source, and the cross-check is finally live ────
+//
+// arm_dof_ used to BE the length of estop.arm_safe_position, so the two could
+// not disagree and every throw inside ParseArmSafePosition was unreachable from
+// production. Each config below is one the old code accepted in silence.
+//
+// The message is asserted, not just the throw: LoadConfig has many other ways
+// to fail and a bare EXPECT_THROW would go green on any of them.
+
+// Applies `mutate` to MinimalValidYaml() and returns LoadConfig's error
+// message, or "" on success.
+std::string TaskLoadConfigError(const std::function<void(YAML::Node&)>& mutate) {
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  auto cfg = MinimalValidYaml();
+  mutate(cfg);
+  try {
+    ctrl.LoadConfig(cfg);
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return "";
+}
+
+TEST(TaskArmDofSourceTest, UnmutatedFixtureLoads) {
+  EXPECT_EQ(TaskLoadConfigError([](YAML::Node&) {}), "");
+}
+
+TEST(TaskArmDofSourceTest, SafePositionLengthDisagreeingWithArmDofThrows) {
+  const std::string msg = TaskLoadConfigError([](YAML::Node& cfg) { cfg["arm_dof"] = 6; });
+  EXPECT_NE(msg.find("demo_task_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("arm_safe_position"), std::string::npos) << msg;
+}
+
+TEST(TaskArmDofSourceTest, MissingArmDofThrowsWithMigrationInstructions) {
+  const std::string msg = TaskLoadConfigError([](YAML::Node& cfg) { cfg.remove("arm_dof"); });
+  EXPECT_NE(msg.find("demo_task_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("arm_dof: 7"), std::string::npos)
+      << "the message must name the value implied by the safe-position length: " << msg;
+}
+
+TEST(TaskArmDofSourceTest, MissingEstopSectionThrowsFromTheSharedParser) {
+  const std::string msg = TaskLoadConfigError([](YAML::Node& cfg) { cfg.remove("estop"); });
+  EXPECT_NE(msg.find("demo_task_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("estop"), std::string::npos) << msg;
+}
+
+TEST(TaskArmDofSourceTest, ArmDofAboveTheControllerCapThrows) {
+  const std::string msg = TaskLoadConfigError(
+      [](YAML::Node& cfg) { cfg["arm_dof"] = integrated_bringup::kDemoTaskMaxArmDof + 1; });
+  EXPECT_NE(msg.find("arm_dof"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("out of range"), std::string::npos) << msg;
 }
 
 // ── E-STOP telemetry freshness (#234 P-1) ──────────────────────────────────

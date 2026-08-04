@@ -56,12 +56,14 @@ double SafeArm(std::size_t i) {
   return 1.30 - 0.09 * static_cast<double>(i);
 }
 
-// Minimal YAML DemoJointController::LoadConfig accepts: the two required
-// sections (estop.arm_safe_position, fsm) and nothing else. No model_config, so
-// no URDF is parsed. arm_dof_ is the safe-position length — that is what makes
-// a narrower device refusable.
+// Minimal YAML DemoJointController::LoadConfig accepts: the required `arm_dof`
+// key plus the two required sections (estop.arm_safe_position, fsm) and nothing
+// else. No model_config, so no URDF is parsed. arm_dof_ comes from `arm_dof`
+// (#340) — that is what makes a narrower device refusable. The safe-position
+// sequence stays kArmDof wide because the E-STOP ramp assertions below read its
+// VALUES; its width is now cross-checked against arm_dof rather than defining it.
 std::string MinimalJointYaml() {
-  std::string yaml = "estop:\n  arm_safe_position: [";
+  std::string yaml = "arm_dof: " + std::to_string(kArmDof) + "\nestop:\n  arm_safe_position: [";
   for (int i = 0; i < kArmDof; ++i) {
     yaml += (i ? ", " : "") + std::to_string(SafeArm(static_cast<std::size_t>(i)));
   }
@@ -339,7 +341,7 @@ TEST_F(DemoJointGateTest, AWideDeviceIsNotTreatedAsAFault) {
 // precisely the state in which the tail policy has to be right anyway.
 
 std::string MinimalTaskYaml() {
-  std::string yaml = "estop:\n  arm_safe_position: [";
+  std::string yaml = "arm_dof: " + std::to_string(kArmDof) + "\nestop:\n  arm_safe_position: [";
   for (int i = 0; i < kArmDof; ++i) {
     yaml += (i ? ", " : "") + std::to_string(SafeArm(static_cast<std::size_t>(i)));
   }

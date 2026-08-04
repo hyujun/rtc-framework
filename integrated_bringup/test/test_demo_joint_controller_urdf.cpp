@@ -17,7 +17,10 @@
 
 #include <array>
 #include <cmath>
+#include <exception>
+#include <functional>
 #include <memory>
+#include <string>
 
 namespace {
 
@@ -37,9 +40,10 @@ using integrated_bringup::testfx::SetFingertipForce;
 using integrated_bringup::testfx::SharedIiwa7LeapBuilder;
 using integrated_bringup::testfx::SharedIiwa7LeapModelConfig;
 
-// Required keys (estop / fsm) + test-friendly trajectory speeds. All-zero safe
-// position so the E-STOP test observes motion away from kArmHome.
+// Required keys (arm_dof / estop / fsm) + test-friendly trajectory speeds.
+// All-zero safe position so the E-STOP test observes motion away from kArmHome.
 const char* const kJointYaml = R"(
+arm_dof: 7
 robot_trajectory_speed: 2.0
 hand_trajectory_speed: 3.0
 robot_max_traj_velocity: 3.14
@@ -255,6 +259,61 @@ TEST(JointControllerLoadConfigTest, ForceGuardOutOfRangeThrows) {
   auto bad_ticks = YAML::Load(kJointYaml);
   bad_ticks["fsm"]["contact_stop_force_guard_max_hold_ticks"] = 5000;
   EXPECT_THROW(ctrl.LoadConfig(bad_ticks), std::runtime_error);
+}
+
+// ── #340: `arm_dof` is the DoF source, and the cross-check is finally live ────
+//
+// arm_dof_ used to BE the length of estop.arm_safe_position, so the two could
+// not disagree and every throw inside ParseArmSafePosition was unreachable from
+// production. Each config below is one the old code accepted in silence.
+//
+// The message is asserted, not just the throw: LoadConfig has many other ways
+// to fail and a bare EXPECT_THROW would go green on any of them.
+
+// Applies `mutate` to kJointYaml and returns LoadConfig's error message, or ""
+// on success.
+std::string JointLoadConfigError(const std::function<void(YAML::Node&)>& mutate) {
+  DemoJointController ctrl{""};
+  ctrl.SetControlRate(1.0 / kDt);
+  YAML::Node cfg = YAML::Load(kJointYaml);
+  mutate(cfg);
+  try {
+    ctrl.LoadConfig(cfg);
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return "";
+}
+
+TEST(JointArmDofSourceTest, UnmutatedFixtureLoads) {
+  EXPECT_EQ(JointLoadConfigError([](YAML::Node&) {}), "");
+}
+
+TEST(JointArmDofSourceTest, SafePositionLengthDisagreeingWithArmDofThrows) {
+  const std::string msg =
+      JointLoadConfigError([](YAML::Node& cfg) { cfg["arm_dof"] = kArmDof - 1; });
+  EXPECT_NE(msg.find("demo_joint_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("arm_safe_position"), std::string::npos) << msg;
+}
+
+TEST(JointArmDofSourceTest, MissingArmDofThrowsWithMigrationInstructions) {
+  const std::string msg = JointLoadConfigError([](YAML::Node& cfg) { cfg.remove("arm_dof"); });
+  EXPECT_NE(msg.find("demo_joint_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("arm_dof: " + std::to_string(kArmDof)), std::string::npos)
+      << "the message must name the value implied by the safe-position length: " << msg;
+}
+
+TEST(JointArmDofSourceTest, MissingEstopSectionThrowsFromTheSharedParser) {
+  const std::string msg = JointLoadConfigError([](YAML::Node& cfg) { cfg.remove("estop"); });
+  EXPECT_NE(msg.find("demo_joint_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("estop"), std::string::npos) << msg;
+}
+
+TEST(JointArmDofSourceTest, ArmDofAboveTheControllerCapThrows) {
+  const std::string msg = JointLoadConfigError(
+      [](YAML::Node& cfg) { cfg["arm_dof"] = integrated_bringup::kDemoJointMaxArmDof + 1; });
+  EXPECT_NE(msg.find("arm_dof"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("out of range"), std::string::npos) << msg;
 }
 
 }  // namespace

@@ -52,6 +52,7 @@ class StubController : public rtc::RTControllerInterface {
 
   // Expose protected statics for direct testing.
   using RTControllerInterface::LoadDeviceLimitsFromConfig;
+  using RTControllerInterface::ParseArmDof;
   using RTControllerInterface::ParseArmSafePosition;
   using RTControllerInterface::ParseTopicConfig;
 
@@ -1290,6 +1291,115 @@ TEST(LoadDeviceLimitsFromConfig, EmptyJointLimitVectorsTreatedAsMissing) {
   EXPECT_DOUBLE_EQ(upper[0][0], 9.0);
   ASSERT_EQ(vel[0].size(), static_cast<std::size_t>(rtc::kMaxDeviceChannels));
   EXPECT_DOUBLE_EQ(vel[0][0], 4.0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// L2: ParseArmDof — the explicit arm-DoF source (#340)
+//
+// Before this key existed, arm_dof_ WAS the length of estop.arm_safe_position,
+// so ParseArmSafePosition below could never disagree with its caller and all
+// three of its throws were unreachable outside this file. These tests pin the
+// new key's contract; the reachability of the cross-check itself is pinned in
+// integrated_bringup (configure-time throw, one test per controller).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(ParseArmDof, ParsesValidValue) {
+  YAML::Node cfg;
+  cfg["arm_dof"] = 6;
+  EXPECT_EQ(StubController::ParseArmDof(cfg, 32, "test_ctrl"), 6);
+}
+
+TEST(ParseArmDof, AcceptsArbitraryDof) {
+  // Robot-agnostic: 7-DOF iiwa and 1-DOF stage are both valid.
+  YAML::Node cfg;
+  cfg["arm_dof"] = 7;
+  EXPECT_EQ(StubController::ParseArmDof(cfg, 32, "test_ctrl"), 7);
+  cfg["arm_dof"] = 1;
+  EXPECT_EQ(StubController::ParseArmDof(cfg, 32, "test_ctrl"), 1);
+}
+
+TEST(ParseArmDof, IsIndependentOfSafePositionLength) {
+  // The whole point of the key: it does NOT read arm_safe_position. A config
+  // whose two axes disagree still yields the declared value here — the
+  // disagreement is caught later, by ParseArmSafePosition.
+  YAML::Node cfg;
+  cfg["arm_dof"] = 6;
+  for (int i = 0; i < 3; ++i) {
+    cfg["estop"]["arm_safe_position"].push_back(0.0);
+  }
+  EXPECT_EQ(StubController::ParseArmDof(cfg, 32, "test_ctrl"), 6);
+  EXPECT_THROW(StubController::ParseArmSafePosition(cfg, 6, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmDof, ThrowsWhenMissing) {
+  YAML::Node cfg;
+  cfg["other_key"] = 6;
+  EXPECT_THROW(StubController::ParseArmDof(cfg, 32, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmDof, ThrowsOnNullValue) {
+  // `arm_dof:` with nothing after it is a defined-but-null node in yaml-cpp,
+  // so operator bool alone would let it through as "present".
+  const YAML::Node cfg = YAML::Load("arm_dof:\n");
+  EXPECT_THROW(StubController::ParseArmDof(cfg, 32, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmDof, ThrowsOnNonScalar) {
+  YAML::Node cfg;
+  cfg["arm_dof"].push_back(6);
+  EXPECT_THROW(StubController::ParseArmDof(cfg, 32, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmDof, ThrowsOnNonInteger) {
+  YAML::Node cfg;
+  cfg["arm_dof"] = "six";
+  EXPECT_THROW(StubController::ParseArmDof(cfg, 32, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmDof, ThrowsOutOfRange) {
+  YAML::Node cfg;
+  cfg["arm_dof"] = 0;
+  EXPECT_THROW(StubController::ParseArmDof(cfg, 32, "test_ctrl"), std::runtime_error);
+  cfg["arm_dof"] = -1;
+  EXPECT_THROW(StubController::ParseArmDof(cfg, 32, "test_ctrl"), std::runtime_error);
+  cfg["arm_dof"] = 33;
+  EXPECT_THROW(StubController::ParseArmDof(cfg, 32, "test_ctrl"), std::runtime_error);
+  cfg["arm_dof"] = 32;
+  EXPECT_EQ(StubController::ParseArmDof(cfg, 32, "test_ctrl"), 32);
+}
+
+// [SPRINT] criterion 5: required means required, so the absence message has to
+// carry the migration itself — controller name, the key to add, and the value
+// implied by the existing safe-position length. It must NOT adopt that value.
+TEST(ParseArmDof, MissingKeyMessageDictatesTheMigration) {
+  YAML::Node cfg;
+  for (int i = 0; i < 6; ++i) {
+    cfg["estop"]["arm_safe_position"].push_back(0.0);
+  }
+  try {
+    StubController::ParseArmDof(cfg, 32, "my_special_ctrl");
+    FAIL() << "Expected runtime_error";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("my_special_ctrl"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("arm_dof"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("arm_dof: 6"), std::string::npos)
+        << "the suggested value must come from the safe-position length: " << msg;
+    EXPECT_NE(msg.find("estop.arm_safe_position"), std::string::npos) << msg;
+  }
+}
+
+TEST(ParseArmDof, MissingKeyMessageStaysUsefulWithoutSafePosition) {
+  YAML::Node cfg;
+  cfg["other_key"] = 1;
+  try {
+    StubController::ParseArmDof(cfg, 32, "my_special_ctrl");
+    FAIL() << "Expected runtime_error";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("my_special_ctrl"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("arm_dof"), std::string::npos) << msg;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
