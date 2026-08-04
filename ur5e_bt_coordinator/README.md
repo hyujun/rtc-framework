@@ -88,7 +88,7 @@ child frame 은 **고정이 아니다**. `virtual_tcp_mode` 가 켜진 task 컨�
 
 - **`IsTcpPoseValid()` 를 반드시 함께 본다.** rewire 직후 캐시는 *이전* 컨트롤러의 pose 다. `MoveToPose` / `TrackTrajectory` 는 live 가 아니면 수렴 판정을 보류하고 RUNNING 을 유지한다 — 그러지 않으면 우연히 tolerance 안에 든 stale pose 로 **움직이지도 않은 동작이 SUCCESS** 로 보고된다.
 - rewire 는 task frame 선택·pose validity·tf buffer 를 모두 리셋한다.
-- **절대 waypoint 를 조용히 변환하지 않는다.** 트리의 절대 waypoint 는 거의 확실히 tool0 authoring 인데 wire 에 frame 필드가 없어 vtcp 컨트롤러에 tool0 목표를 보낼 방법이 없다. 제어 frame 이 vtcp 로 latch 되면 WARN 으로 노출하고, waypoint authoring 의미 자체는 미결 (#292 — (a) BT 를 non-vtcp 컨트롤러에서만 운용 / (b) 브릿지가 `T_tcp_vtcp` 로 변환 / (c) 감지 후 실패, 현재는 (c) + 읽기 frame 정합).
+- **절대 waypoint 를 조용히 변환하지 않는다 — 그리고 변환할 것이 없다 (#294 종결).** #292 는 트리의 절대 waypoint 가 tool0 authoring 이라고 **가정**하고 vtcp latch 시 WARN 을 냈다. 감사 결과 그런 waypoint 는 **없다**: `trees/*.xml` 의 `MoveToPose` target 은 예외 없이 `{blackboard_var}` 이고, 그 변수를 채우는 것은 둘뿐이다 — (1) `GetCurrentPose → ComputeOffsetPose` 상대 체인 (#292 가 읽기를 active controller 기준으로 만든 뒤로 **구성상 frame-consistent**), (2) `{object_pose}` (위치는 `/world_target_info`, 자세는 현재 제어 frame). vision publisher 는 저장소 밖이며 그 `(x, y, z)` 는 **물체 중심**으로 확인됐다 ⇒ vtcp(fingertip centroid)를 거기 보내는 것이 파지 의도에 **더 가깝다**. 따라서 (a)/(b) 는 고칠 필요 없는 것을 고치는 것이고 현행 (c) 를 유지한다. latch 시의 한 줄은 **INFO 로 남는다** — 트리의 상대 offset 이 어느 점 기준인지, 그리고 나중에 절대 waypoint 를 추가하면 어디에 떨어지는지를 알리는 용도이며, 기본 UR5e 운용마다 발화하는 WARN 은 읽히지 않게 되어 진짜 경고가 필요한 날 비용이 더 크다.
 
 ## BT 트리
 

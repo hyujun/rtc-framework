@@ -235,16 +235,29 @@ void BtRosBridge::OnTransforms(tf2_msgs::msg::TFMessage::SharedPtr msg) {
   }
 
   if (latched_virtual_tcp) {
-    // The absolute waypoints in a tree come from vision or config and are
-    // almost certainly authored against tool0, but the wire has no frame field,
-    // so there is no way to send a tool0 goal to a vtcp-configured controller.
-    // Surface the mismatch loudly rather than converting silently — a silent
-    // conversion here would be the same class of defect this issue fixes, and
-    // choosing the conversion is a human decision (see #292).
-    RCLCPP_WARN(node_->get_logger(),
-                "active controller controls '%s', not '%s': absolute waypoints authored against "
-                "the tool0 frame will be interpreted at the virtual TCP. Verify the tree's "
-                "waypoint frame before running it.",
+    // NOT a mismatch — #294 resolved the premise this line was written on.
+    //
+    // #292 left it a WARN because the tree's absolute waypoints were assumed to
+    // be tool0-authored, which would make a vtcp control point a silent
+    // `T_tcp_vtcp` error. The audit found no such waypoint: every MoveToPose
+    // target in trees/*.xml is a `{blackboard_var}`, and the two things that
+    // fill those vars are (1) the GetCurrentPose → ComputeOffsetPose chain,
+    // frame-consistent by construction since #292 made the read follow the
+    // active controller, and (2) `{object_pose}`, whose position comes from
+    // /world_target_info and whose orientation is the current control frame's.
+    // The vision publisher is out of tree; its (x, y, z) was confirmed to be
+    // the OBJECT CENTRE, so commanding the fingertip centroid there is what a
+    // grasp wants — closer to the intent than putting the wrist flange on it.
+    //
+    // It stays as a line, at INFO, for the two things it still tells an
+    // operator: which point every relative offset in the tree is measured from,
+    // and where an absolute waypoint would land if one were ever added. Neither
+    // is a fault, and a warning that fires on every default UR5e run stops
+    // being read — which would cost more than it saves the day one is real.
+    RCLCPP_INFO(node_->get_logger(),
+                "active controller controls '%s', not '%s': poses are read and commanded at the "
+                "virtual TCP, so the vision target places the fingertip centroid at the object "
+                "centre and tree offsets are measured from there (#294).",
                 kVirtualTcpFrame, tf_fallback_child_frame_.c_str());
   }
 
