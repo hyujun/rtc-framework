@@ -26,6 +26,7 @@ using rtc::DeviceState;
 using rtc::FillCommandTail;
 using rtc::HoldTelemetryAtMeasured;
 using rtc::IsDeviceReadable;
+using rtc::IsGateClosedByWidth;
 using rtc::kMaxDeviceChannels;
 using rtc::ModelChannelBound;
 using rtc::SilenceDeviceOutput;
@@ -74,6 +75,50 @@ TEST(IsDeviceReadableTest, UnresolvedModelDimDegradesToAValidityCheck) {
   // bypass YAML, or the first tick before self-init) knows of nothing missing.
   EXPECT_TRUE(IsDeviceReadable(MakeDevice(3), 0));
   EXPECT_FALSE(IsDeviceReadable(MakeDevice(3, /*valid=*/false), 0));
+}
+
+// ── IsGateClosedByWidth — why a closed gate is closed (issue #307) ───────────
+
+TEST(IsGateClosedByWidthTest, IsExactlyTheReportableHalfOfAClosedGate) {
+  // The predicate's whole job is to split IsDeviceReadable's false into the
+  // cause an operator can act on and the one CM already diagnoses. Pinning it
+  // as a partition rather than as two independent cases is what makes it
+  // falsifiable: an implementation that reported on `!valid` too, or that
+  // dropped the `valid` term, satisfies neither direction below.
+  for (const int reported : {0, 1, 5, 6, 7, 16}) {
+    for (const bool valid : {false, true}) {
+      const DeviceState dev = MakeDevice(reported, valid);
+      const bool closed = !IsDeviceReadable(dev, 6);
+      const bool reportable = IsGateClosedByWidth(dev, 6);
+      EXPECT_TRUE(!reportable || closed) << "reported a gate that is open";
+      EXPECT_EQ(reportable, closed && dev.valid) << "the two causes must partition the closure";
+    }
+  }
+}
+
+TEST(IsGateClosedByWidthTest, StaysSilentOnADeviceThatHasNotReported) {
+  // §3.7: CM's startup gate refuses to run Compute() until every configured
+  // device has reported, so a binding only sees this for a group with no
+  // backend at all — which CM's init timeout already names. Reporting it here
+  // would duplicate that and fire on every fixture that bypasses YAML.
+  EXPECT_FALSE(IsGateClosedByWidth(MakeDevice(0, /*valid=*/false), 6));
+  EXPECT_FALSE(IsGateClosedByWidth(MakeDevice(6, /*valid=*/false), 6));
+}
+
+TEST(IsGateClosedByWidthTest, StaysSilentWhileTheModelDimIsUnresolved) {
+  // The gate itself degrades to a validity check at model_dim <= 0 (nothing is
+  // known to be missing), so there is nothing to report either. Without this,
+  // every fixture that bypasses YAML would warn on its first tick.
+  EXPECT_FALSE(IsGateClosedByWidth(MakeDevice(3), 0));
+  EXPECT_FALSE(IsGateClosedByWidth(MakeDevice(0), 0));
+}
+
+TEST(IsGateClosedByWidthTest, DoesNotFireOnOverReporting) {
+  // Over-reporting is a normal input (see the gate's own test above); a
+  // diagnostic that fired on it would warn on correct hardware with a broad
+  // state topic.
+  EXPECT_FALSE(IsGateClosedByWidth(MakeDevice(16), 6));
+  EXPECT_FALSE(IsGateClosedByWidth(MakeDevice(6), 6));
 }
 
 // ── ModelChannelBound — OOB defence only ─────────────────────────────────────

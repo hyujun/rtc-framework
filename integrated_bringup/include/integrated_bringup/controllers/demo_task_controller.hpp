@@ -835,10 +835,14 @@ class DemoTaskController final : public RTControllerInterface {
   std::array<double, kDemoTaskMaxArmDof> safe_position_{};
 
   // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
-  // device configs). arm_dof_ from the required YAML `arm_dof` key;
-  // hand_dof_ from secondary device joint_state_names size (0 when absent).
+  // device configs). arm_dof_ from the required YAML `arm_dof` key (one
+  // source, #340); hand_dof_ from the secondary group's joint_state_names size
+  // when declared, else the device's own first reported num_channels.
   int arm_dof_{0};
   int hand_dof_{0};
+  // Which of hand_dof_'s two sources won (#307) — see demo_joint_controller.hpp
+  // for why the diagnostic cannot name one key unconditionally.
+  bool hand_dof_from_config_{false};
 
   // Sensor capability cache — populated in OnDeviceConfigsSet from
   // GetSensorLayout(secondary). See demo_joint_controller.hpp for rationale.

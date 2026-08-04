@@ -226,6 +226,12 @@ void DemoJointController::OnDeviceConfigsSet() {
                  hand_dof_, kDemoJointMaxHandDof);
     hand_dof_ = std::min(std::max(hand_dof_, 0), kDemoJointMaxHandDof);
   }
+  // #307: `> 0` HERE is exactly "the config won", because the RT fallback below
+  // fires only on `hand_dof_ == 0`. Reading it off the final value rather than
+  // off the branch keeps the two in step through the clamp — a group that
+  // declares an empty joint_state_names leaves 0 and gets the device's width,
+  // so the diagnostic must not send its operator to that key either.
+  hand_dof_from_config_ = hand_dof_ > 0;
 
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
@@ -344,6 +350,43 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   // may still be 0 in a fixture that bypasses YAML, and IsDeviceReadable then
   // degrades to the plain validity check those sites used before.
   hand_readable_ = state.num_devices > 1 && rtc::IsDeviceReadable(state.devices[1], hand_dof_);
+  // #307: a gate closed by WIDTH is closed from the first tick and never opens,
+  // and its only other trace is an absence (the arm-tip frame stops appearing).
+  // Name the pair AND the key to fix. The two axes are NOT symmetric there:
+  // #340 made `arm_dof` a required YAML key with no fallback, so the arm has
+  // exactly one source and one unconditional prescription. hand_dof_ has two
+  // (the declared joint_state_names, else the device's own first report), and
+  // naming joint_state_names unconditionally would send the operator to a key
+  // that does not exist on the second path — where the fault is not a config
+  // mismatch at all, but a backend that narrowed mid-session.
+  // RT-3's throttle exception: primitive-only format, no assembly.
+  // The macro is expanded HERE rather than inside the base predicate on
+  // purpose — RCLCPP_*_THROTTLE keeps its state at the expansion point, so a
+  // shared helper would give all three bindings one window and let a switch
+  // swallow the new controller's first report.
+  if (rtc::IsGateClosedByWidth(state.devices[0], arm_dof_)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: arm device reports num_channels=%d < arm_dof=%d — "
+                         "the arm is silenced every tick; fix the 'arm_dof' key or the backend's "
+                         "reported channel count",
+                         state.devices[0].num_channels, arm_dof_);
+  }
+  if (state.num_devices > 1 && rtc::IsGateClosedByWidth(state.devices[1], hand_dof_)) {
+    // The tail is SELECTED, not assembled — a `const char*` argument is on
+    // RT-3's allowed list, and one format string keeps this call site at one
+    // expansion point, so both variants share the single throttle window the
+    // site is entitled to. An if/else around two macros would split it in two.
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: hand device reports num_channels=%d < hand_dof=%d — "
+                         "the hand is silenced every tick; %s",
+                         state.devices[1].num_channels, hand_dof_,
+                         hand_dof_from_config_
+                             ? "fix the hand group's 'joint_state_names' or the backend's "
+                               "reported channel count"
+                             : "hand_dof came from this device's own first report, so the "
+                               "backend has narrowed mid-session; declare the hand group's "
+                               "'joint_state_names' to pin the expected width");
+  }
 
   ReadState(state);
   // RT-thread-only: refresh current_target_slot_ + run self-init if needed.
@@ -503,6 +546,9 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
     if (state.num_devices <= 1) {
       hand_target_initialized_.store(true, std::memory_order_release);
     } else if (hand_readable_) {
+      // The OTHER source of hand_dof_ (#307). hand_dof_from_config_ stays false
+      // here by construction — OnDeviceConfigsSet set it from `hand_dof_ > 0`,
+      // and reaching this line means it was 0.
       if (hand_dof_ == 0) {
         hand_dof_ = std::min(state.devices[1].num_channels, kDemoJointMaxHandDof);
       }

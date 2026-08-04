@@ -276,7 +276,7 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 `rtc_controller_interface/include/rtc_controller_interface/device_readability.hpp` 가 소유하며
 (3계층표의 "device 판독가능성 게이트" 행 —
 [design-principles.md](../../agent_docs/design-principles.md) §3계층 배치), 노출되는 것은
-**술어 2개 + 원시연산 3개**다.
+**술어 3개 + 원시연산 3개**다.
 
 > **계약 문장의 소유 층위 — 이 절이다 (#297 결정, 2026-07-30).** 같은 계약이 §3.7 · 패키지
 > README · 헤더 주석 세 곳에 문장 단위로 복제돼 있었고, #291 이 한 문장의 뜻을 좁힐 때 세 파일을
@@ -290,9 +290,43 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 |---|---|---|
 | `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어, 정책 없음 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 (`num_channels` 는 wire 길이) |
 | `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태를 읽기 **전**. false 면 아래 침묵 |
+| `IsGateClosedByWidth(dev, model_dim)` | "닫힌 게이트가 **왜** 닫혔는가" — 진단 전용, 출력에 관여하지 않음 | 게이트 판정 **직후**. true 면 아래 진단 로그 (#307) |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | **그 게이트가 판정한 device 에만.** primary 게이트는 primary 만 침묵시키고 secondary 는 그대로 둔다 — secondary 가 *자기* 폭으로 판독 불가일 때는 secondary 도 침묵한다 (#291, 아래 표) |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane (`target_*` / `trajectory_*`) 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** — 아래 참조 |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → 0.0 / position → 측정값) | 명령 조립 시. 미기입은 fresh-zero = "원점으로" |
+
+**닫힌 게이트의 진단 — 폭 불일치만 보고한다 (#307).** 침묵한 tick 의 유일한 관측 흔적은 `/<key>/transforms`
+에서 **arm-tip frame 이 사라지는 것**이고, 부재는 원인을 가리키지 않는다 (게이트 폐쇄 / 컨트롤러 비활성 /
+TF slot 미설정을 구별하지 못한다). 명령 lane 은 더 조용하다 — zero-length 는 "갱신 없음" 이고
+`HoldTelemetryAtMeasured` 가 로그 lane 을 측정값으로 채우므로 CSV·GUI 상 "팔이 가만히 있다" 와 같다.
+그래서 바인딩은 게이트 판정 직후 `IsGateClosedByWidth` 가 참인 tick 에 **throttled WARN** 을 낸다.
+
+보고 대상을 폭 불일치로 **좁히는 것이 이 진단의 계약**이다. 위 "왜 타이머를 두지 않는가" 가 이미
+`!valid` 를 배제했다 — CM 의 startup gate 가 모든 device 보고 전에는 `Compute()` 를 돌리지 않으므로
+바인딩이 보는 `!valid` 는 백엔드가 아예 없는 그룹뿐이고 그건 init timeout 이 이름을 대며 잡는다. 남는
+`num_channels < nv` 는 첫 tick 부터 닫힌 채 열리지 않으므로 **지속 판정용 카운터도 시간 임계도 두지
+않는다** — 두 원인이 항으로 분리되므로 첫 보고 tick 이 이미 정직하고, 시간 임계는 이 절이 거부한
+타이머를 진단 축으로 되들여오는 것이다.
+
+메시지는 **선언 폭·보고 폭·고칠 키**를 함께 싣는다. **두 축은 이 지점에서 대칭이 아니다.** `arm_dof` 는
+#340 이후 required YAML 키이고 fallback 이 없으므로 arm 의 폭은 출처가 하나뿐이고 처방도 무조건이다.
+반면 hand 는 출처가 **둘**이다 — device 그룹이 선언한 `joint_state_names` 의 길이, 또는 그 키가 없을 때
+**그 device 가 첫 tick 에 보고한 `num_channels`** (CM 의 파서는 이 키를 optional 로 읽는다). 그래서 hand
+메시지의 처방은 실제로 이긴 출처를 따라간다:
+
+| `hand_dof_` 출처 | 폭 미달이 뜻하는 것 | 처방 |
+|---|---|---|
+| 선언된 `joint_state_names` | 설정 불일치 | 그 키 또는 백엔드 보고 폭을 고친다 |
+| device 의 첫 보고 | **백엔드가 세션 중 폭을 줄였다** — 고칠 키가 없다 | `joint_state_names` 를 선언해 기대 폭을 고정한다 |
+
+출처 무관하게 `joint_state_names` 를 지목하면 두 번째 경로에서 **존재하지 않는 키로 운영자를 보낸다** —
+게다가 그 경로의 고장은 설정 불일치가 아예 아니다. 판정은 `hand_dof_ > 0` (config 해석 종료 시점) 이며,
+RT fallback 이 `hand_dof_ == 0` 에서만 발동하므로 이 한 항이 두 출처를 정확히 가른다.
+
+꼬리 문장은 **조립하지 않고 선택**한다 (`%s` + string literal — RT-3 의 허용 목록). 매크로는 base 헬퍼
+안이 아니라 **바인딩 호출부에서 전개**하고, 그 호출부에서도 if/else 로 매크로를 둘 두지 않는다 —
+`RCLCPP_*_THROTTLE` 은 상태를 매크로 전개점에 두므로 공용 헬퍼 안에 두면 세 바인딩이 창 하나를 공유해
+컨트롤러 전환 직후 첫 보고가 삼켜지고, 매크로를 둘로 쪼개면 한 호출부가 창을 둘 갖게 된다.
 
 **침묵은 wire 만 침묵시킨다 — 로그는 아니다.** device state 로그 POD 는 출력이 아니라 **device 의**
 `num_channels` 로 bound 하고 (`integrated_bringup/logging/pod_fill.hpp`) 실제로 내보낸 폭을 담는 필드가
@@ -359,8 +393,12 @@ F5 답으로 쓰면 안 된다. 이 성질은 계약 테스트
 `ValidateControllerOutput` 의 egress bound 로 이미 쓰이고 있다). 해법은 새 필드 또는 새 술어이며
 **issue #284** 가 소유한다. S7b 는 이 갭을 닫지 않는다.
 
-남은 실제 구멍은 토크 정책이 아니라 **진단**이다 — `num_channels < nv` 는 낫지 않는 영구
-DEGRADED 인데 이를 알리는 경로가 없다 (issue #261).
+여기서 남는 구멍은 토크 정책이 아니라 **진단**이었다 — `num_channels < nv` 는 낫지 않는 영구
+DEGRADED 인데 이를 알리는 경로가 없었다 (issue #261 → **#307 에서 닫힘**). 지금은 위
+"닫힌 게이트의 진단" 이 그 경로를 소유한다. **이 문단이 가리키는 것은 그 진단이 덮지 *않는* 축이다** —
+위 진단은 `IsDeviceReadable` 이 false 인 경우만 보고하므로, 이 절이 말하는 "필요조건일 뿐" 인 실패
+(게이트가 **통과시킨** 상태에 reorder 로 인한 구멍이 남는 경우) 는 여전히 조용하고 **issue #284** 가
+소유한다.
 
 ### 부록 A — position-domain E-STOP seed 행의 유래 (#236 S7c, E-8 결정 A)
 

@@ -329,6 +329,54 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── The closed gate's diagnostic (#307) ───────────────────────────────────
+  # A SEPARATE executable from test_device_readability_gate on purpose:
+  # RCLCPP_*_THROTTLE keeps its window in a static at the macro's expansion
+  # point, so it is per-process, and that suite drives the same call sites with
+  # narrow devices many times. Sharing a binary would let a suppressed line
+  # masquerade as a line that was never written. See the file header.
+  #
+  # ONE executable, TWO ctest registrations. hand_dof_ has two sources and the
+  # diagnostic names a different fix for each, but both variants leave the same
+  # three call sites — so observing both needs two PROCESSES, and a second gtest
+  # case in the same process would assert against a window the first one
+  # consumed. Registering the same binary twice is cheaper than a second link
+  # (pinocchio) and keeps the fixtures in one file.
+  #
+  # The second filter is the COMPLEMENT of the first, not a second positive
+  # pattern. That makes the partition total: a test whose name matches neither
+  # intent still runs, instead of being silently skipped by both registrations
+  # while the suite reports green. ament_add_gtest_test derives its result XML
+  # from TEST_NAME, so the two runs cannot overwrite each other's report.
+  #
+  # Neither run tolerates --gtest_repeat: log_clock_ is RCL_STEADY_TIME, so a
+  # second iteration finds every throttle window already consumed. See the file
+  # header.
+  ament_add_gtest_executable(test_gate_closure_diagnostic
+    test/test_gate_closure_diagnostic.cpp
+  )
+  target_link_libraries(test_gate_closure_diagnostic
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_gate_closure_diagnostic
+    ament_index_cpp
+    rclcpp
+    rtc_controller_interface
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+  ament_add_gtest_test(test_gate_closure_diagnostic
+    TEST_NAME test_gate_closure_diagnostic_declared_width
+    ENV "GTEST_FILTER=*DeclaredWidth*"
+  )
+  ament_add_gtest_test(test_gate_closure_diagnostic
+    TEST_NAME test_gate_closure_diagnostic_device_report
+    ENV "GTEST_FILTER=-*DeclaredWidth*"
+  )
+
   # ── The same gate on the shared model scatter (#236 S7b, audit S1) ─────────
   # URDF-backed on purpose: the claim it pins ("a bound leaves the skipped slots
   # at their previous value") is about a buffer that persists between calls, so
