@@ -119,6 +119,11 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // Backends exist now, and controller on_configure (Pass 3, inside
   // DeclareAndLoadParameters) has already fixed each GetCommandType() — the
   // first point where the pairing can be checked at all.
+  //
+  // The cache goes first and unconditionally: the RT loop's per-device check
+  // (issue #342) reads it every tick, and it is the only configure-time
+  // question the tick path is allowed to ask.
+  CacheSlotCommandTypeMasks();
   if (!ValidateCommandTypePairing()) {
     RCLCPP_ERROR(get_logger(),
                  "RtControllerNode configure refused — controller/backend command-type mismatch");
@@ -270,13 +275,22 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
                 "on_deactivate: global E-STOP was re-requested while clearing — latch left set");
   }
   // drain_timer_ survives on_deactivate, but the clear must be observable
-  // even if the node is cleaned up before the next 10 ms drain fires.
+  // even if the node is cleaned up before the next 10 ms drain fires. The
+  // command-type line rides along for the same reason (issue #342) — and the
+  // RT thread is joined by now, so nothing can queue another one behind it.
   FlushEstopStatus();
+  FlushCommandTypeLog();
 
   // Reset initialization state for clean re-activate
   init_complete_ = false;
   init_wait_ticks_ = 0;
   loop_count_.store(0, std::memory_order_release);
+  // The command-type log deadline is denominated in loop_count_ ticks, so it
+  // has to be rewound with it — a deadline left at the old session's tick
+  // number would suppress the next session's first rejection lines until the
+  // counter climbed back past it.
+  command_type_log_next_tick_ = 0;
+  command_type_log_suppressed_ = 0;
   last_summary_wall_ = {};
   // Base PeriodicRtThread counters (overrun_count / skip_count /
   // consecutive_overruns) reset implicitly when StartRtLoop spawns a fresh
@@ -297,8 +311,12 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   // not before them. See the note at the close() below — issue #224.
 
   // 6. timers — flush the deferred E-STOP status first; once the drain timer
-  //    is gone nothing else will publish it.
+  //    is gone nothing else will publish it. Same for the command-type line
+  //    (issue #342): left queued it would be printed by the first drain of the
+  //    NEXT activation, naming a pairing from a configuration that is being
+  //    torn down here.
   FlushEstopStatus();
+  FlushCommandTypeLog();
   drain_timer_.reset();
 
   // 5. parameter callback
@@ -404,6 +422,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
 
   // Full cleanup for recovery to Unconfigured state
   FlushEstopStatus();
+  FlushCommandTypeLog();
   drain_timer_.reset();
   param_callback_handle_.reset();
   for (auto& backend : backends_) {

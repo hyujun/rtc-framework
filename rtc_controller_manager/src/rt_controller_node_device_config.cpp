@@ -677,6 +677,38 @@ void RtControllerNode::CreateDeviceBackends() {
   }
 }
 
+// ── Per-slot command-type capability cache (issue #342) ─────────────────────
+//
+// The pairing walk below judges the controller-global GetCommandType(). The RT
+// loop needs the same answer for a value that does not exist yet at configure
+// — the per-device override the controller resolves each tick — so it cannot
+// ask the backend when it needs to know. AcceptsCommandType is "Not RT —
+// called once during configure" by its own contract, and calling it per tick
+// would break that contract rather than merely cost a virtual call.
+//
+// So the answer is taken here, exhaustively: CommandType has three values, so
+// a slot's full capability is three bits and the tick-path check becomes a bit
+// test. Deliberately a separate walk from ValidateCommandTypePairing's — that
+// one is indexed by (controller, slot) because its messages name a controller,
+// while this cache is a property of the slot alone. It is nonetheless the ONLY
+// place AcceptsCommandType is called: the pairing walk reads this mask, so the
+// two gates cannot answer differently about the same slot.
+void RtControllerNode::CacheSlotCommandTypeMasks() noexcept {
+  slot_command_type_mask_.fill(0U);
+  for (std::size_t slot = 0; slot < backends_.size(); ++slot) {
+    if (!backends_[slot]) {
+      continue;  // no backend on this slot — the RT loop skips it too
+    }
+    uint8_t mask = 0U;
+    for (const auto ct : kAllCommandTypes) {
+      if (backends_[slot]->AcceptsCommandType(ct)) {
+        mask = static_cast<uint8_t>(mask | CommandTypeBit(ct));
+      }
+    }
+    slot_command_type_mask_[slot] = mask;
+  }
+}
+
 // ── Controller command type vs backend capability ───────────────────────────
 //
 // Two different questions are asked of the same (controller, backend) pairing,
@@ -704,6 +736,30 @@ void RtControllerNode::CreateDeviceBackends() {
 // Both checks share one walk of the pairings on purpose: a second nested loop
 // over the same (controller, slot) set is a drift candidate, and the names the
 // messages need are already in hand here.
+//
+// The transport judgment is CommandTypeIsHonoured against the cached mask, not
+// a second AcceptsCommandType call (issue #342 review). Two reasons, and the
+// first is a defect this fixed:
+//
+//   * The two gates disagreed. CommandTypeIsHonoured passes kPdFeedforward on
+//     a position-only backend — the graceful fallback types.hpp documents and
+//     the shipped WBC→hand lane rides on — while raw AcceptsCommandType does
+//     not. So the identical wire behaviour was REFUSED when it came from a
+//     controller-global type and PERMITTED when it came from a per-device
+//     override on the same pairing. The tolerance is a property of the enum
+//     (kPosition and kPdFeedforward both carry a position target in
+//     commands[]; only kTorque changes the physical quantity), so it cannot
+//     depend on which axis the value arrived through.
+//   * CacheSlotCommandTypeMasks has already asked every backend about every
+//     mode by the time this runs (on_configure orders it first). Re-asking the
+//     virtual makes AcceptsCommandType's purity load-bearing: a backend whose
+//     answer depended on a member set during Configure could reply differently
+//     to the two callers, leaving the configure refusal and the tick gate
+//     permanently inconsistent with nothing to observe it by.
+//
+// What did NOT change is the fail-closed direction that matters: kTorque on a
+// backend that has not opted in is still refused here, and still rejected on
+// the tick path.
 bool RtControllerNode::ValidateCommandTypePairing() {
   bool ok = true;
   for (std::size_t ci = 0; ci < controllers_.size(); ++ci) {
@@ -714,11 +770,10 @@ bool RtControllerNode::ValidateCommandTypePairing() {
       if (slot < 0 || slot >= kMaxDevices || !backends_[static_cast<std::size_t>(slot)]) {
         continue;  // backend bring-up already failed or was refused elsewhere
       }
-      const auto& backend = backends_[static_cast<std::size_t>(slot)];
       const char* group = slot < static_cast<int>(slot_to_group_name_.size())
                               ? slot_to_group_name_[static_cast<std::size_t>(slot)].c_str()
                               : "?";
-      if (!backend->AcceptsCommandType(ct)) {
+      if (!CommandTypeIsHonoured(slot_command_type_mask_[static_cast<std::size_t>(slot)], ct)) {
         RCLCPP_ERROR(get_logger(),
                      "Controller '%s' emits command_type '%s', which the backend on slot %d "
                      "(group '%s') cannot honour — it would be reinterpreted on the wire. "

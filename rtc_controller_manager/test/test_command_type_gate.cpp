@@ -62,6 +62,23 @@ class PositionTestController : public PipelineTestController {
   std::string_view Name() const noexcept override { return kName; }
 };
 
+// Mixed-mode sibling. kPdFeedforward's commands[] carries a position target
+// and the feedforward overlay is an additive channel a position-only backend
+// simply does not transmit — the graceful fallback types.hpp documents and the
+// shipped WBC→hand lane rides on. The tick-path guard (#342) passes it for
+// that reason, so the configure gate has to as well: the wire behaviour is
+// identical whether the mode arrives as a controller-global type or as a
+// per-device override, and a policy that depends on which axis it came through
+// is not a policy.
+class PdFeedforwardTestController : public PipelineTestController {
+ public:
+  static constexpr const char* kName = "rtc_cm_pd_feedforward_test";
+
+  std::string_view Name() const noexcept override { return kName; }
+
+  CommandType GetCommandType() const noexcept override { return CommandType::kPdFeedforward; }
+};
+
 // Position-only backend: keeps DeviceBackend::AcceptsCommandType's default,
 // which is what every hardware backend in this tree relies on.
 class PositionOnlyBackend : public PipelineStubBackend {};
@@ -76,6 +93,8 @@ RTC_REGISTER_CONTROLLER(rtc_cm_torque_test, "", "rtc_controller_manager",
                         std::make_unique<TorqueTestController>())
 RTC_REGISTER_CONTROLLER(rtc_cm_position_test, "", "rtc_controller_manager",
                         std::make_unique<PositionTestController>())
+RTC_REGISTER_CONTROLLER(rtc_cm_pd_feedforward_test, "", "rtc_controller_manager",
+                        std::make_unique<PdFeedforwardTestController>())
 RTC_REGISTER_DEVICE_BACKEND(cm_position_only_backend, std::make_unique<PositionOnlyBackend>())
 RTC_REGISTER_DEVICE_BACKEND(cm_any_type_backend, std::make_unique<AnyCommandTypeBackend>())
 
@@ -276,7 +295,9 @@ TEST_F(CommandTypeGateTest, DoesNotWarnAboutTheSameNodesPositionModeController) 
   // Guard against a vacuous pass on two axes: the position controller must
   // exist in this node at all, and the pass must have reached the point where
   // an advisory is possible — which the sibling torque advisory demonstrates.
-  ASSERT_EQ(2U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  // Three since the pd_feedforward fixture joined this TU; the number is the
+  // registry's contents, not a claim about this test.
+  ASSERT_EQ(3U, ControllerLifecycleTestAccess::GetControllerCount(*node));
   ASSERT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"0 N.m"}).size());
   EXPECT_TRUE(LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {PositionTestController::kName}).empty())
       << "position-mode controller drew an E-STOP sag advisory";
@@ -299,6 +320,43 @@ TEST_F(CommandTypeGateTest, DoesNotAdviseOnAPairingItAlreadyRefused) {
                     .size());
   EXPECT_TRUE(LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"0 N.m"}).empty())
       << "refused pairing also emitted the sag advisory";
+}
+
+// ── One predicate for both gates (issue #342 review) ────────────────────────
+
+TEST_F(CommandTypeGateTest, DoesNotRefuseAPdFeedforwardControllerOnAPositionOnlyBackend) {
+  // The configure gate used to ask the backend directly while the tick gate
+  // asked CommandTypeIsHonoured, so this pairing was REFUSED when the mode came
+  // from GetCommandType() and PERMITTED when the identical mode came from a
+  // per-device override on the same slot. Both now read the cached mask through
+  // the same predicate.
+  //
+  // The node still fails to configure — the torque fixture in this TU is
+  // refused, which is the point of the sibling test above. What is asserted is
+  // WHICH pairing drew the refusal.
+  auto node = MakeNode("cm_position_only_backend");
+  ASSERT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+
+  // Vacuity guard AND the regression itself: two refusals here would mean the
+  // pd_feedforward pairing was judged by a second, stricter rule.
+  ASSERT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {"cannot honour"}).size());
+  EXPECT_TRUE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {PdFeedforwardTestController::kName}).empty())
+      << "the documented position/pd_feedforward fallback was refused at configure";
+}
+
+TEST_F(CommandTypeGateTest, StillRefusesTorqueWhenTheGatesShareAPredicate) {
+  // The tolerance is kPdFeedforward-shaped, not a general loosening: kTorque is
+  // the one mode whose commands[] carries a different physical quantity, which
+  // is the substitution #198 named as the hazard. Pinned separately so a fix
+  // that widened CommandTypeIsHonoured to "anything the mask does not name"
+  // could not pass the test above.
+  auto node = MakeNode("cm_position_only_backend");
+  ASSERT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+
+  EXPECT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                                  {TorqueTestController::kName, "torque", "cannot honour"})
+                    .size());
 }
 
 }  // namespace

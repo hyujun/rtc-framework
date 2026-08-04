@@ -309,6 +309,14 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       kMaxConsecutiveOverruns,
       static_cast<uint64_t>(std::lround(kOutputRejectEstopSeconds * control_rate_)));
 
+  // Rate-derived reprint interval for the deferred command-type rejection line
+  // (issue #342). Same reasoning as the threshold above — the operator is owed
+  // a fixed wall-clock cadence, not a fixed tick count. Floored at 1 so a
+  // pathological rate cannot turn the interval into "every tick", which is the
+  // unbounded flood this deadline exists to bound.
+  command_type_log_interval_ticks_ = std::max<uint64_t>(
+      1, static_cast<uint64_t>(std::lround(kCommandTypeLogIntervalSeconds * control_rate_)));
+
   // Rate-derived watchdog cadence, same reasoning as the threshold above:
   // CheckTimeouts() owes a fixed kWatchdogCheckHz, not a fixed tick count.
   watchdog_check_divisor_ = std::max<std::uint32_t>(
