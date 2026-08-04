@@ -10,7 +10,7 @@ paths:
 
 # Architecture invariants — build metadata 편집 시 (ARCH-2 · ARCH-5 · ARCH-7)
 
-이 rule 은 `CMakeLists.txt` · `package.xml` · `setup.py` 를 **읽거나 편집할 때** reminder 로 로드된다. glob 형태와 그 검증 수단은 [arch-source.md](arch-source.md) 와 같다 — 특히 `**/CMakeLists.txt` 만으로는 발화하지 않았다는 실측(#229, 세션 16)과 "정적 게이트 clean ≠ 로드됨" 을 그쪽에서 읽는다. 이 저장소의 build metadata 는 전부 `<pkg>/` 바로 아래(depth 2)이므로 앵커 형태는 `*/X` 로 충분하다. 소스 축 (ARCH-1 · ARCH-3 · ARCH-4 · ARCH-6) 은 [arch-source.md](arch-source.md) 가 갖는다. 규칙 전문·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
+이 rule 은 `CMakeLists.txt` · `package.xml` · `setup.py` 를 **읽거나 편집할 때** reminder 로 로드된다. glob 형태와 그 검증 수단은 [arch-source.md](arch-source.md) 와 같다 — 특히 `**/CMakeLists.txt` 만으로는 발화하지 않았다는 실측(#229, 세션 16)과 "정적 게이트 clean ≠ 로드됨" 을 그쪽에서 읽는다. 이 저장소의 build metadata 는 전부 `<pkg>/` 바로 아래(depth 2)이므로 앵커 형태는 `*/X` 로 충분하다. **현재 형태의 발화는 2026-08-04 에 확인됐다** (#229 종결; `rtc_base/CMakeLists.txt` · `rtc_msgs/CMakeLists.txt` 에서 두 세션 독립 관측) — 어느 패턴이 매칭됐는지는 로그가 남기지 않으므로 형태를 줄이지 않는다. 소스 축 (ARCH-1 · ARCH-3 · ARCH-4 · ARCH-6) 은 [arch-source.md](arch-source.md) 가 갖는다. 규칙 전문·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
 
 **탐지 패턴을 여기 복제하지 않는다** — SSoT 는 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) (ARCH-5 · ARCH-7 은 Phase 0a). 이 파일이 갖는 것은 **판정**이다.
 
