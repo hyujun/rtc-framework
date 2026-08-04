@@ -19,7 +19,7 @@ RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 �
 | `include/rtc_controller_interface/rt_controller_interface.hpp` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) |
 | `include/rtc_controller_interface/controller_registry.hpp` | 싱글톤 레지스트리 (`ControllerRegistry`) + `RTC_REGISTER_CONTROLLER` 매크로 |
 | `include/rtc_controller_interface/controller_types.hpp` | `rtc_base/types/types.hpp` 재수출 (편의 헤더) |
-| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b, secondary 축 #291) — 술어 `ModelChannelBound` / `IsDeviceReadable` + 원시연산 `SilenceDeviceOutput` / `HoldTelemetryAtMeasured` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
+| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b, secondary 축 #291, 진단 #307) — 술어 `ModelChannelBound` / `IsDeviceReadable` / `IsGateClosedByWidth` + 원시연산 `SilenceDeviceOutput` / `HoldTelemetryAtMeasured` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
 | `include/rtc_controller_interface/controller_log_set.hpp` | Controller-owned CSV 로그 집합 헬퍼 (`ControllerLogSet` + `LogHandle<PodT>`) — opt-in. `rtc::ThreadCsvProducer/Logger` 페어를 typed handle 로 묶어 `<session>/controllers/<config_key>/<instance>.csv` 에 기록. 같은 LogSet 안에서 동일 `instance` 를 두 번 등록하면 `RegisterLog` 가 unbound `LogHandle` 반환 (Q-MSG-3 path-uniqueness enforcement) |
 
 ### 소스 파일
@@ -151,6 +151,7 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 |---|---|
 | `ModelChannelBound(nc0, model_dim)` | 인덱싱 상한 — 순수 OOB 방어, 정책 없음. **항상** 적용 |
 | `IsDeviceReadable(dev, model_dim)` | **게이트** — 이 device 를 이번 tick 에 써도 되는가. 조인트 상태 판독 전 |
+| `IsGateClosedByWidth(dev, model_dim)` | 닫힌 게이트가 **왜** 닫혔는가 — 진단 전용, 출력에 관여하지 않는다. 게이트 판정 직후 (#307) |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length. 판정한 그 device 에만 |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane 을 측정값으로. `SilenceDeviceOutput` 과 **항상 짝** |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → `0.0` / position → 측정값) |
@@ -160,10 +161,11 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 - **bound 는 게이트가 아니다** (#265 결정 B). `min(nc0, nv)` 는 crash 만 없애고 hazard 는 남긴다.
 - **침묵은 fail-safe 가 아니고, wire 만 침묵시킨다.** zero-length 는 "no update"(직전 setpoint 유지)이지 정지가 아니며, 로그 lane 은 `HoldTelemetryAtMeasured` 가 따로 채워야 한다.
 - **"primary 에만" 은 device 축이 아니라 게이트 축이다** (#291). secondary 도 *자기* 폭으로 게이트를 갖는다.
+- **진단은 폭 미달만 보고한다** (#307). `IsGateClosedByWidth` 는 `!valid` 를 배제한다 — 그건 CM 의 init timeout 이 이미 이름을 대며 잡는 startup 형태이고, 여기서 보고하면 YAML 을 우회하는 fixture 마다 발화한다.
 
 **한계 — `IsDeviceReadable` 은 필요조건만 판정한다** (#265 D1-a → **issue #284**). reorder map 이 활성이면 `nc0 >= model_dim` 이어도 슬롯에 구멍이 남을 수 있다. 이 갭은 #284 가 소유한다.
 
-테스트: `test/test_device_readability.cpp` (술어·원시연산 계약, URDF 없음) · `integrated_bringup/test/test_device_readability_gate.cpp` (바인딩 3종) · `integrated_bringup/test/test_combined_model_cache_gate.cpp` (공유 모델 scatter).
+테스트: `test/test_device_readability.cpp` (술어·원시연산 계약, URDF 없음) · `integrated_bringup/test/test_device_readability_gate.cpp` (바인딩 3종) · `integrated_bringup/test/test_combined_model_cache_gate.cpp` (공유 모델 scatter) · `integrated_bringup/test/test_gate_closure_diagnostic.cpp` (진단 문구 — throttle 창이 프로세스 단위라 별도 실행 파일 + ctest 등록 2개, #307).
 
 ### 가상 메서드 (기본 구현 제공)
 
