@@ -329,6 +329,27 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── The closed gate's diagnostic (#307) ───────────────────────────────────
+  # A SEPARATE executable from test_device_readability_gate on purpose:
+  # RCLCPP_*_THROTTLE keeps its window in a static at the macro's expansion
+  # point, so it is per-process, and that suite drives the same call sites with
+  # narrow devices many times. Sharing a binary would let a suppressed line
+  # masquerade as a line that was never written. See the file header.
+  ament_add_gtest(test_gate_closure_diagnostic test/test_gate_closure_diagnostic.cpp)
+  target_link_libraries(test_gate_closure_diagnostic
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_gate_closure_diagnostic
+    ament_index_cpp
+    rclcpp
+    rtc_controller_interface
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── The same gate on the shared model scatter (#236 S7b, audit S1) ─────────
   # URDF-backed on purpose: the claim it pins ("a bound leaves the skipped slots
   # at their previous value") is about a buffer that persists between calls, so

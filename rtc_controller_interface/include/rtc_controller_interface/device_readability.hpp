@@ -35,6 +35,10 @@
 // Collapsing them is the trap this header exists to close: a bound removes the
 // crash and keeps the hazard, because skipped slots in a PERSISTENT buffer hold
 // their previous value. Worked example and the pinning tests: §3.7.
+//
+// IsGateClosedByWidth (issue #307) is a third predicate but not a third member
+// of that pair — it decides nothing about this tick's output. It answers WHY a
+// closed gate is closed, for the bindings' diagnostic log only.
 
 namespace rtc {
 
@@ -79,6 +83,48 @@ namespace rtc {
 // YAML) should see: nothing is known to be missing.
 [[nodiscard]] inline bool IsDeviceReadable(const DeviceState& dev, int model_dim) noexcept {
   return dev.valid && dev.num_channels >= model_dim;
+}
+
+// WHY the gate is closed, for the one cause an operator can act on (issue
+// #307). Decision table and the "no timer" rationale it rests on: §3.7.
+//
+// A false IsDeviceReadable has two causes and they are NOT equally reportable:
+//
+//   !dev.valid                      the backend has not reported. §3.7 records
+//                                   that CM's startup gate refuses to run
+//                                   Compute() until every configured device
+//                                   has reported at least once, so a binding
+//                                   only sees this for a group with no backend
+//                                   at all — and CM's init timeout already
+//                                   names that group and shuts down. Reporting
+//                                   it here would duplicate that diagnosis and
+//                                   fire on every fixture that bypasses YAML.
+//
+//   num_channels < model_dim        the width mismatch. §3.7 calls this the
+//                                   gate's one real trigger (기동시 설정
+//                                   불일치) — it is closed from the first tick
+//                                   and never opens, and nothing else in the
+//                                   process says so.
+//
+// THIS IS WHY THERE IS NO COUNTER. The obvious shape for "the gate has been
+// closed a while" is a duration or a tick threshold, and both are wrong here:
+// §3.7 deliberately puts NO time bound on the closed state (a timer would make
+// every misconfigured startup drop the arm N seconds in), and the two causes
+// above are already separable by term — startup does not need to be waited out
+// because in production it never reaches Compute() at all. Splitting the terms
+// is what makes the first reportable tick honest.
+//
+// Returns a plain bool rather than the (declared, reported) pair the message
+// needs: both integers are already in the caller's hand, and the KEY TO FIX
+// differs per axis (`arm_dof` is a required YAML key since #340; hand width
+// comes from the device group's `joint_state_names` length), so the sentence
+// that names it belongs at the binding, not here.
+//
+// Deliberately NOT folded into IsDeviceReadable's return. The gate answers
+// "may I use this device"; a binding that conflated the two would start
+// treating an unreported device as usable.
+[[nodiscard]] inline bool IsGateClosedByWidth(const DeviceState& dev, int model_dim) noexcept {
+  return dev.valid && dev.num_channels < model_dim;
 }
 
 // The F5 answer: this device contributes no command this tick.

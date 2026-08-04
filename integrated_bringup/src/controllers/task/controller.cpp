@@ -365,6 +365,29 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // hand_dof_ channels its own loops read. `num_devices > 1` folds in here so
   // the read sites carry one predicate instead of a two-term guard.
   hand_readable_ = state.num_devices > 1 && rtc::IsDeviceReadable(state.devices[1], hand_dof_);
+  // #307: a gate closed by WIDTH is closed from the first tick and never opens,
+  // and its only other trace is an absence (the arm-tip frame stops appearing).
+  // Name the pair AND the key to fix — since #340 the declared width is a
+  // required YAML key, so the message can point at the edit, not just the
+  // mismatch. RT-3's throttle exception: primitive-only format, no assembly.
+  // The macro is expanded HERE rather than inside the base predicate on
+  // purpose — RCLCPP_*_THROTTLE keeps its state at the expansion point, so a
+  // shared helper would give all three bindings one window and let a switch
+  // swallow the new controller's first report.
+  if (rtc::IsGateClosedByWidth(state.devices[0], arm_dof_)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: arm device reports num_channels=%d < arm_dof=%d — "
+                         "the arm is silenced every tick; fix the 'arm_dof' key or the backend's "
+                         "reported channel count",
+                         state.devices[0].num_channels, arm_dof_);
+  }
+  if (state.num_devices > 1 && rtc::IsGateClosedByWidth(state.devices[1], hand_dof_)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: hand device reports num_channels=%d < hand_dof=%d — "
+                         "the hand is silenced every tick; fix the hand group's "
+                         "joint_state_names or the backend's reported channel count",
+                         state.devices[1].num_channels, hand_dof_);
+  }
 
   ReadState(state);
 
