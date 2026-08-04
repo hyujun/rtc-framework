@@ -249,6 +249,9 @@ void DemoTaskController::OnDeviceConfigsSet() {
                  hand_dof_, kDemoTaskMaxHandDof);
     hand_dof_ = std::min(std::max(hand_dof_, 0), kDemoTaskMaxHandDof);
   }
+  // #307: `> 0` here is exactly "the config won" — the RT fallback fires only
+  // on `hand_dof_ == 0`. See joint/controller.cpp for the full rationale.
+  hand_dof_from_config_ = hand_dof_ > 0;
 
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
@@ -367,9 +370,14 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   hand_readable_ = state.num_devices > 1 && rtc::IsDeviceReadable(state.devices[1], hand_dof_);
   // #307: a gate closed by WIDTH is closed from the first tick and never opens,
   // and its only other trace is an absence (the arm-tip frame stops appearing).
-  // Name the pair AND the key to fix — since #340 the declared width is a
-  // required YAML key, so the message can point at the edit, not just the
-  // mismatch. RT-3's throttle exception: primitive-only format, no assembly.
+  // Name the pair AND the key to fix. The two axes are NOT symmetric there:
+  // #340 made `arm_dof` a required YAML key with no fallback, so the arm has
+  // exactly one source and one unconditional prescription. hand_dof_ has two
+  // (the declared joint_state_names, else the device's own first report), and
+  // naming joint_state_names unconditionally would send the operator to a key
+  // that does not exist on the second path — where the fault is not a config
+  // mismatch at all, but a backend that narrowed mid-session.
+  // RT-3's throttle exception: primitive-only format, no assembly.
   // The macro is expanded HERE rather than inside the base predicate on
   // purpose — RCLCPP_*_THROTTLE keeps its state at the expansion point, so a
   // shared helper would give all three bindings one window and let a switch
@@ -382,11 +390,19 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
                          state.devices[0].num_channels, arm_dof_);
   }
   if (state.num_devices > 1 && rtc::IsGateClosedByWidth(state.devices[1], hand_dof_)) {
+    // The tail is SELECTED, not assembled — see joint/controller.cpp for why
+    // one format string (not an if/else around two macros) keeps this call
+    // site at the single throttle window it is entitled to.
     RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
                          "F5 gate closed: hand device reports num_channels=%d < hand_dof=%d — "
-                         "the hand is silenced every tick; fix the hand group's "
-                         "joint_state_names or the backend's reported channel count",
-                         state.devices[1].num_channels, hand_dof_);
+                         "the hand is silenced every tick; %s",
+                         state.devices[1].num_channels, hand_dof_,
+                         hand_dof_from_config_
+                             ? "fix the hand group's 'joint_state_names' or the backend's "
+                               "reported channel count"
+                             : "hand_dof came from this device's own first report, so the "
+                               "backend has narrowed mid-session; declare the hand group's "
+                               "'joint_state_names' to pin the expected width");
   }
 
   ReadState(state);
@@ -593,6 +609,8 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
     if (state.num_devices <= 1) {
       hand_target_initialized_.store(true, std::memory_order_release);
     } else if (hand_readable_) {
+      // The OTHER source of hand_dof_ (#307) — hand_dof_from_config_ stays
+      // false here by construction. See joint/controller.cpp.
       if (hand_dof_ == 0) {
         hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
       }

@@ -602,12 +602,16 @@ class DemoWbcController final : public RTControllerInterface {
   CombinedModelCache combined_cache_;
 
   // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
-  // device configs). arm_dof_ from the required YAML `arm_dof` key;
-  // hand_dof_ from secondary device joint_state_names size (0 when absent).
+  // device configs). arm_dof_ from the required YAML `arm_dof` key (one
+  // source, #340); hand_dof_ from the secondary group's joint_state_names size
+  // when declared, else the device's own first reported num_channels.
   // full_dof_ = arm_dof_ + hand_dof_. All RT-path loops iterate over these.
   int arm_dof_{0};
   int hand_dof_{0};
   int full_dof_{0};
+  // Which of hand_dof_'s two sources won (#307) — see demo_joint_controller.hpp
+  // for why the diagnostic cannot name one key unconditionally.
+  bool hand_dof_from_config_{false};
 
   // ── Posture task split gains (arm vs hand) ──────────────────────────────
   // Parsed from `tsid.tasks.posture.{arm,hand}.{kp,kd}` (ParsePostureSplitGains)

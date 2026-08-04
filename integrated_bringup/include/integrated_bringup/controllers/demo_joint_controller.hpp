@@ -646,11 +646,20 @@ class DemoJointController final : public RTControllerInterface {
   std::array<double, kDemoJointMaxArmDof> safe_position_{};
 
   // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
-  // device configs). arm_dof_ from the required YAML `arm_dof` key;
-  // hand_dof_ from secondary device joint_state_names size (0 when absent).
-  // RT-path loops iterate over these.
+  // device configs). arm_dof_ has ONE source — the YAML `arm_dof` key, which
+  // #340 made required with no fallback. hand_dof_ has TWO: the secondary
+  // group's joint_state_names size when that group declares them (CM's parser
+  // treats the key as optional), otherwise the device's own first reported
+  // num_channels, filled on the RT path. RT-path loops iterate over these.
   int arm_dof_{0};
   int hand_dof_{0};
+  // Which of hand_dof_'s two sources won (#307). The diagnostic needs it: a
+  // shortfall against a DECLARED width is a config mismatch the operator fixes
+  // in joint_state_names, while a shortfall against the device's own first
+  // report means the backend narrowed mid-session and there is no key to edit.
+  // Written off-RT in OnDeviceConfigsSet, read on the RT path — same lifetime
+  // and same thread story as hand_dof_ itself.
+  bool hand_dof_from_config_{false};
 
   // Sensor capability cache — populated in OnDeviceConfigsSet from
   // GetSensorLayout(secondary). RT path (ReadState) reads only these bools,
