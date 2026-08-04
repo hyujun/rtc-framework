@@ -13,10 +13,22 @@
 // drives narrow devices through the same call sites many times, which would
 // consume the window before any assertion here ran, and a suppressed line is
 // indistinguishable from a line that was never written. A separate executable
-// is a separate process, so every window below starts fresh. For the same
-// reason each test asserts the SILENT case first, while its window is provably
-// untouched: silence measured after a fire would be satisfied by the throttle
-// rather than by the code under test.
+// is a separate process, so every window below starts fresh.
+//
+// WHY ONE TEST PER BINDING RATHER THAN ONE PER CLAIM. The window is a property
+// of the PROCESS, so ordering that lives across gtest cases is not ordering the
+// suite controls: a silence assertion in case N is only honest if no earlier
+// case fired that same call site, and gtest is free to reorder cases. Putting
+// the whole sequence in one body makes the ordering structural — every silence
+// assertion below sits on a window this process has provably not touched, and
+// each call site fires exactly once per run. That also makes the suite safe
+// under --gtest_shuffle, which the previous split was not.
+//
+// WHAT THIS SHAPE STILL CANNOT DO: --gtest_repeat. The bindings' log_clock_ is
+// an RCL_STEADY_TIME clock (demo_joint_controller.hpp and siblings), so nothing
+// in-process can advance past kThrottleSlowMs, and a second run of the same
+// body would find every window already consumed. Repetition needs a new
+// process, not a new iteration.
 
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
@@ -161,11 +173,15 @@ class LogSink {
   static void Handler(const rcutils_log_location_t* /*location*/, int severity,
                       const char* /*name*/, rcutils_time_point_value_t /*timestamp*/,
                       const char* format, va_list* args) {
-    char buffer[kBufferSize];
+    // Value-initialised, not merely declared: vsnprintf truncates and
+    // NUL-terminates on overflow, but on an ENCODING failure it returns
+    // negative and need not write a terminator at all, and std::string(buffer)
+    // would then read past the array. Zeroing degrades that to an empty
+    // capture, which is what test_command_type_gate.cpp does for the same
+    // reason.
+    char buffer[kBufferSize]{};
     va_list copy;
     va_copy(copy, *args);
-    // Truncates and NUL-terminates on overflow, so an overlong line degrades to
-    // a short capture rather than corrupting the sink.
     std::vsnprintf(buffer, sizeof(buffer), format, copy);
     va_end(copy);
     const std::lock_guard<std::mutex> lock(Mutex());
@@ -188,130 +204,100 @@ class LogSink {
   }
 };
 
+// The needles every binding's arm message must carry: both widths, and the KEY
+// to edit. #340 made the declared width a required YAML key, which is what lets
+// the message name the fix instead of only the mismatch.
+//
+// The key needle is the QUOTED form. Bare "arm_dof" would be satisfied by the
+// "arm_dof=6" needle above it — the whole "fix the 'arm_dof' key ..." clause
+// could be deleted and this vector would still match, which is exactly the
+// vacuity this file previously shipped.
+std::vector<std::string> ArmNeedles() {
+  return {"num_channels=" + std::to_string(kNarrowArm), "arm_dof=" + std::to_string(kArmDof),
+          "'arm_dof'"};
+}
+
+std::vector<std::string> HandNeedles() {
+  return {"num_channels=" + std::to_string(kNarrowHand),
+          "hand_dof=" + std::to_string(kHandChannels), "joint_state_names"};
+}
+
+// Any F5 diagnostic at all, regardless of axis or values. Used for the silent
+// cases, where the claim is that NOTHING was said.
+std::vector<std::string> AnyDiagnostic() {
+  return {"F5 gate closed"};
+}
+
+// The whole per-binding sequence, in the one order that keeps every assertion
+// honest. Templated rather than virtual-dispatched because the three bindings
+// share no base that exposes Compute() the way this needs it, and because the
+// point is to run the IDENTICAL sequence against each — a divergence between
+// them is the failure mode #307's fourth acceptance criterion names.
+template <typename Controller>
+void ExerciseBothAxes(Controller& ctrl) {
+  {
+    // Resolves hand_dof_ (and, where YAML was bypassed, arm_dof_) from the
+    // first readable tick — without it hand_dof_ stays 0 and the hand gate
+    // cannot close. Both windows are untouched here, so this silence is real.
+    SCOPED_TRACE("step 1 — a fully readable tick says nothing");
+    static_cast<void>(ctrl.Compute(MakeState(kArmDof)));
+    ASSERT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty());
+  }
+  {
+    // The arm is narrow AND unreported: the width term is true and the validity
+    // term is false, so this tick is refused by the half that must NOT be
+    // reported. A full-width invalid device would not test that at all — the
+    // width term alone already decides there, and the `dev.valid` term could be
+    // deleted from IsGateClosedByWidth with this suite still green.
+    //
+    // In production CM's startup gate means a binding never sees an unreported
+    // device (§3.7); a fixture that bypasses YAML does, and diagnosing it here
+    // would duplicate CM's init timeout and fire on every such fixture.
+    SCOPED_TRACE("step 2 — an unreported device is the startup shape, not a misconfiguration");
+    static_cast<void>(ctrl.Compute(MakeState(kNarrowArm, kHandChannels, /*arm_valid=*/false)));
+    ASSERT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty());
+  }
+  {
+    // First and only fire of this binding's arm site in this process.
+    SCOPED_TRACE("step 3 — the arm width shortfall names both widths and the key to fix");
+    static_cast<void>(ctrl.Compute(MakeState(kNarrowArm)));
+    EXPECT_EQ(LogSink::WarningsMatching(ArmNeedles()).size(), 1u);
+  }
+  {
+    // The arm is full width again, so this fires the hand site only.
+    SCOPED_TRACE("step 4 — the secondary axis is diagnosed like the arm, with its own key (#291)");
+    static_cast<void>(ctrl.Compute(MakeState(kArmDof, kNarrowHand)));
+    EXPECT_EQ(LogSink::WarningsMatching(HandNeedles()).size(), 1u);
+  }
+}
+
 class GateDiagnosticTest : public ::testing::Test {
  protected:
   void SetUp() override { LogSink::Install(); }
 
   void TearDown() override { LogSink::Restore(); }
-
-  // The needles every binding's arm message must carry: both widths, and the
-  // KEY to edit. #340 made the declared width a required YAML key, which is
-  // what lets the message name the fix instead of only the mismatch.
-  static std::vector<std::string> ArmNeedles() {
-    return {"num_channels=" + std::to_string(kNarrowArm), "arm_dof=" + std::to_string(kArmDof),
-            "arm_dof"};
-  }
-
-  static std::vector<std::string> HandNeedles() {
-    return {"num_channels=" + std::to_string(kNarrowHand),
-            "hand_dof=" + std::to_string(kHandChannels), "joint_state_names"};
-  }
-
-  // Any F5 diagnostic at all, regardless of axis or values. Used for the
-  // silent cases, where the claim is that NOTHING was said.
-  static std::vector<std::string> AnyDiagnostic() { return {"F5 gate closed"}; }
 };
 
-// ── demo_joint ───────────────────────────────────────────────────────────────
-
-TEST_F(GateDiagnosticTest, DemoJointStaysSilentOnAnUnreportedDeviceAndNamesAWidthShortfall) {
+TEST_F(GateDiagnosticTest, DemoJointReportsTheWidthShortfallOnBothAxes) {
   DemoJointController ctrl{""};
   ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalJointYaml())));
-
-  // 1. Unreported device — the gate is closed, and this must NOT be reported.
-  //    In production CM's startup gate means a binding never sees this at all
-  //    (§3.7); a fixture that bypasses YAML does, and diagnosing it here would
-  //    duplicate CM's init timeout and fire on every such fixture. Asserted
-  //    FIRST, while the throttle window is provably untouched.
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof, kHandChannels, /*arm_valid=*/false)));
-  EXPECT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty())
-      << "an unreported device is the startup shape, not a misconfiguration";
-
-  // 2. A device that reported, but narrower than the declared arm_dof — the one
-  //    cause an operator can act on. The window is still fresh here, so a miss
-  //    is a real miss.
-  static_cast<void>(ctrl.Compute(MakeState(kNarrowArm)));
-  EXPECT_EQ(LogSink::WarningsMatching(ArmNeedles()).size(), 1u)
-      << "the width shortfall must name both widths and the key to fix";
+  ExerciseBothAxes(ctrl);
 }
 
-TEST_F(GateDiagnosticTest, DemoJointNamesAHandWidthShortfall) {
-  DemoJointController ctrl{""};
-  ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalJointYaml())));
-
-  // hand_dof_ is resolved from the first readable tick when no device config
-  // was supplied, so the full-width tick below is what makes the narrow one
-  // refusable — without it hand_dof_ stays 0 and the gate cannot close.
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof)));
-  ASSERT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty())
-      << "a fully readable tick says nothing";
-
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof, kNarrowHand)));
-  EXPECT_EQ(LogSink::WarningsMatching(HandNeedles()).size(), 1u)
-      << "the secondary axis is diagnosed like the arm, with its own key (#291)";
-}
-
-// ── demo_task ────────────────────────────────────────────────────────────────
-
-TEST_F(GateDiagnosticTest, DemoTaskStaysSilentOnAnUnreportedDeviceAndNamesAWidthShortfall) {
+TEST_F(GateDiagnosticTest, DemoTaskReportsTheWidthShortfallOnBothAxes) {
   DemoTaskController ctrl{"", DemoTaskController::Gains{}};
   ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalTaskYaml())));
-
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof, kHandChannels, /*arm_valid=*/false)));
-  EXPECT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty())
-      << "an unreported device is the startup shape, not a misconfiguration";
-
-  static_cast<void>(ctrl.Compute(MakeState(kNarrowArm)));
-  EXPECT_EQ(LogSink::WarningsMatching(ArmNeedles()).size(), 1u)
-      << "the width shortfall must name both widths and the key to fix";
+  ExerciseBothAxes(ctrl);
 }
 
-TEST_F(GateDiagnosticTest, DemoTaskNamesAHandWidthShortfall) {
-  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
-  ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalTaskYaml())));
-
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof)));
-  ASSERT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty())
-      << "a fully readable tick says nothing";
-
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof, kNarrowHand)));
-  EXPECT_EQ(LogSink::WarningsMatching(HandNeedles()).size(), 1u)
-      << "the secondary axis is diagnosed like the arm, with its own key (#291)";
-}
-
-// ── demo_wbc ─────────────────────────────────────────────────────────────────
-//
 // No LoadConfig here, mirroring test_device_readability_gate.cpp: this binding
-// resolves arm_dof_ from the first readable tick when YAML is bypassed. That
-// tick is also a negative assertion — arm_dof_ is still 0 while the diagnostic
-// runs, so a helper that reported on `num_channels < 0` would surface here.
-
-TEST_F(GateDiagnosticTest, DemoWbcStaysSilentOnAnUnreportedDeviceAndNamesAWidthShortfall) {
+// resolves arm_dof_ from the first readable tick when YAML is bypassed. Step 1
+// therefore carries an extra claim for this binding — arm_dof_ is still 0 while
+// the diagnostic runs, so a helper that reported on `num_channels < 0` would
+// surface as a step-1 failure here and nowhere else.
+TEST_F(GateDiagnosticTest, DemoWbcReportsTheWidthShortfallOnBothAxes) {
   DemoWbcController ctrl{""};
-
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof)));
-  ASSERT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty())
-      << "a fully readable tick says nothing";
-
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof, kHandChannels, /*arm_valid=*/false)));
-  EXPECT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty())
-      << "an unreported device is the startup shape, not a misconfiguration";
-
-  static_cast<void>(ctrl.Compute(MakeState(kNarrowArm)));
-  EXPECT_EQ(LogSink::WarningsMatching(ArmNeedles()).size(), 1u)
-      << "the width shortfall must name both widths and the key to fix";
-}
-
-TEST_F(GateDiagnosticTest, DemoWbcNamesAHandWidthShortfall) {
-  DemoWbcController ctrl{""};
-
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof)));
-  ASSERT_TRUE(LogSink::WarningsMatching(AnyDiagnostic()).empty())
-      << "a fully readable tick says nothing";
-
-  static_cast<void>(ctrl.Compute(MakeState(kArmDof, kNarrowHand)));
-  EXPECT_EQ(LogSink::WarningsMatching(HandNeedles()).size(), 1u)
-      << "the secondary axis is diagnosed like the arm, with its own key (#291)";
+  ExerciseBothAxes(ctrl);
 }
 
 }  // namespace
