@@ -39,19 +39,16 @@ RT 핫패스 절대금지 규칙은 **RT-1 ~ RT-10** (RT-7 은 은퇴 → PROC-6
 
 ### Architecture / Process / Numerical
 
-- `rtc_*` 패키지에 robot name / joint count / HW ID 하드코딩 금지 (ARCH-1)
-- 의존성 그래프 상향 의존 금지 (ARCH-2)
-- 두 번째 구체 구현은 abstract interface / concept 정의 후에만 추가 (ARCH-3) — `#ifdef` / hardcoded switch 금지
-- `rtc_*` 는 RT 제어 루프를 구동하는 exec 를 소유하지 않는다 (ARCH-7) — 진입 *함수* 만 export. robot-agnostic standalone 노드·example 은 예외 ([agent_docs/design-principles.md](agent_docs/design-principles.md))
-- `robot_descriptions` 는 data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 (ARCH-5)
+Architecture 규칙은 **ARCH-1 ~ ARCH-7** 이며, 전문은 [agent_docs/invariants.md](agent_docs/invariants.md) §Architecture Invariants, 편집 시 자동 로드되는 요약은 RT 와 같은 채널 — 소스 축 [.claude/rules/arch-source.md](.claude/rules/arch-source.md) (ARCH-1·2·3·4·6), build metadata 축 [.claude/rules/arch-build-meta.md](.claude/rules/arch-build-meta.md) (ARCH-2·5·7) — 에 있다. 목록을 여기 박제하지 않는 이유는 RT 와 같은 AP-DOC-1 이고 **이 자리에서 이미 발현했다**: 여기 있던 5줄 사본은 ARCH-4 (integration 패키지의 `rtc_*/src/` private 헤더 include 금지, **Critical**) 와 ARCH-6 (QoS depth 1) 을 통째로 빠뜨린 채 굳어 있었다 — RT-9·RT-10 이 사라졌던 것과 같은 양식이다 (#229). 어떤 파일 편집 시 로드되는지는 각 rule 의 frontmatter glob 이 SSoT (AP-DOC-1: 여기 박제 금지). **탐지 패턴의 SSoT 는 hook** 이고 rule 은 판정만 갖는다 — RT 와 반대 방향이다 (#213).
+
+설계원칙 P5 · Process · Numerical:
+
 - 새 utility 작성 전 기존 `rtc_*` 패키지에 유사 기능 검색 — 맞지 않으면 fork 대신 일반화 ([agent_docs/design-principles.md](agent_docs/design-principles.md) P5)
 - 코드 변경 → 대응 문서·YAML·CMakeLists·package.xml 동기화 필수 (PROC-1)
 - 기존 test assertion 을 통과시키려 **약화 금지** — 새 코드를 고치되, test 가 진짜 틀렸거나 spec 이 바뀌면 별도 commit + 근거 (PROC-6, §6 E-6)
 - `rtc_base` / `rtc_msgs` 변경 시 전체 빌드·테스트 (PROC-3)
 - 수치 특이점: damped pseudoinverse (NUM-1), zero guard (NUM-2, NUM-4)
 - 폐쇄 체인 사영은 **residual 로 조립 분기를 판정할 수 없다** — 점 구속 loop 은 분기가 여럿이고 모두 φ=0 을 만족하므로 seed 증분 제한이 필수 (NUM-5). 완화 장치를 넣을 때는 발동한 경우에만 적용하고, 그로 인한 `held` 를 자기 치유로 가정하지 않는다
-
-ARCH 규칙의 **편집 시 자동 로드되는 요약**은 RT 와 같은 채널에 있다 — 소스 축은 [.claude/rules/arch-source.md](.claude/rules/arch-source.md) (ARCH-1·2·3·4·6), build metadata 축은 [.claude/rules/arch-build-meta.md](.claude/rules/arch-build-meta.md) (ARCH-2·5·7). 어떤 파일에서 로드되는지는 각 rule 의 frontmatter glob 이 SSoT (AP-DOC-1: 여기 박제 금지). **탐지 패턴의 SSoT 는 hook** 이고 rule 은 판정만 갖는다 — RT 와 반대 방향이다 (#213).
 
 **rule 채널은 두 센서로 검증한다** — glob 이 실제 파일을 잡는지는 `validate_claude_rules.py` (변경된 rule 한정, **0건이면 차단**), 실제로 로드됐는지는 `.claude/instructions-loaded.log` (InstructionsLoaded hook). rule 을 새로 쓰거나 glob 을 고쳤으면 매칭 파일을 하나 열고 그 로그를 grep 해 발화를 확인한다 — rule 이 안 뜨는 실패는 파일이 멀쩡해 보이므로 **증상이 "규칙이 조용히 없는 것"** 뿐이다.
 

@@ -27,12 +27,8 @@
 
 규칙 ID 를 함께 적는다 — escalation 번호와 severity 가 ID 로 연결되고 (§5), 위반 보고도 ID 로 한다.
 
-- **ARCH-1** — `rtc_*` 패키지에 robot name, joint count, hardware ID를 하드코딩하지 않는다.
-- **ARCH-2** — 의존성 그래프를 거슬러 상위 계층에 의존하지 않는다.
-- **ARCH-3** — 두 번째 구체 구현을 추가하기 전 abstract interface 또는 concept를 정의한다. `#ifdef`나 하드코딩 switch로 우회하지 않는다.
-- **ARCH-5** — `robot_descriptions`는 data-only 패키지다. 소비자는 `<exec_depend>`와 ament index 런타임 lookup을 사용한다. 테스트가 그 런타임 lookup 을 쓰면 설치 순서 보장 목적의 `<test_depend>` 도 허용된다 — `find_package` · `<depend>` · `<build_depend>` · `ament_target_dependencies` 는 금지.
-- **ARCH-6** — 컨트롤러 토픽 QoS depth 는 1 이 기본이다. 예외는 코드에 `// ARCH-6-exempt` 마커와 사유를 남긴다.
-- **ARCH-7** — `rtc_*` 는 RT 제어 루프를 구동하는 실행파일을 소유하지 않는다. 진입 *함수*만 export 하고, exec 는 downstream (integration package) 이 만든다. robot-agnostic standalone 노드·`example_*` 는 예외이며 그 목록은 [agent_docs/design-principles.md](agent_docs/design-principles.md) 가 SSoT.
+Architecture 규칙은 **ARCH-1 ~ ARCH-7** 이다. 개별 규칙의 조건, 허용/금지 목록, 판정 절차는 [agent_docs/invariants.md](agent_docs/invariants.md) §Architecture Invariants 가 단일 출처이며, 목록을 여기에 복제하지 않는다 — 이전에 이 자리에 있던 복제본은 **ARCH-4** (integration 패키지가 `rtc_*/src/` private 헤더를 include 하는 것, Critical) 를 빠뜨린 채 굳어 있었다. 위 RT 절이 기록한 RT-9·RT-10 실종과 같은 실패 양식이다.
+
 - **P5 (설계원칙 5)** — 새 utility 작성 전 기존 `rtc_*`에 유사 기능이 있는지 검색하고, 맞지 않으면 fork보다 일반화를 우선 검토한다.
 - **PROC-1** — 코드 변경 시 필요한 문서, YAML, `CMakeLists.txt`, `package.xml`을 함께 갱신한다.
 - **PROC-3** — `rtc_base` 또는 `rtc_msgs` 변경 시 전체 downstream 빌드·테스트를 수행한다.

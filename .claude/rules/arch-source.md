@@ -16,7 +16,9 @@ paths:
 
 이 rule 은 **소스 파일을 읽거나 편집할 때** reminder 로 로드된다 (path-scoped rule 은 read 에서도 발화한다). 패키지 이름은 열거하지 않는다 — 추가·rename 시 drift 가 되기 때문이다 (AP-DOC-1).
 
-**`**/*.ext` 한 벌로 끝나지 않는다 (#229, 세션 16 실측).** `rtc_base/src/tracing/rtc_tracepoints.cpp` 를 한 번 Read 했을 때 앵커 있는 glob 을 쓰는 `rt-path.md`(`rtc_*/**/*.cpp`)는 발화했고 이 rule 의 `**/*.{cpp,hpp,h,cc,py}` 는 **같은 파일에서 발화하지 않았다** (`**/CMakeLists.txt` 도 마찬가지). 그래서 앵커 있는 형태(`*/**/*.ext`)를 함께 싣고, brace expansion 은 변수를 줄이려 **펼쳐서** 적는다. 어느 형태가 실제로 매칭되는지는 아래 로그가 유일한 판정 수단이다.
+**`**/*.ext` 한 벌로 끝나지 않는다 (#229, 세션 16 실측).** `rtc_base/src/tracing/rtc_tracepoints.cpp` 를 한 번 Read 했을 때 앵커 있는 glob 을 쓰는 `rt-path.md`(`rtc_*/**/*.cpp`)는 발화했고 이 rule 의 `**/*.{cpp,hpp,h,cc,py}` 는 **같은 파일에서 발화하지 않았다** (`**/CMakeLists.txt` 도 마찬가지). 그래서 앵커 있는 형태(`*/**/*.ext`)를 함께 싣고, brace expansion 은 변수를 줄이려 **펼쳐서** 적는다.
+
+**현재 형태의 발화는 2026-08-04 에 확인됐다 (#229 종결).** 두 세션에서 독립적으로, `rtc_base/src/tracing/rtc_tracepoints.cpp` · `rtc_base/include/.../rtc_tracepoints.hpp` Read 에 이 rule 이, `rtc_base/CMakeLists.txt` · `rtc_msgs/CMakeLists.txt` 에 [arch-build-meta.md](arch-build-meta.md) 가 찍혔다. **단 로그의 `globs` 필드는 frontmatter 배열 전체를 그대로 싣고 어느 패턴이 매칭됐는지는 남기지 않는다** — 그래서 "안 쓰인 형태 정리" 의 근거로는 쓸 수 없다. 관측 없이 형태를 줄이는 것이 #363 의 회귀였으므로, 줄이려면 한 형태만 남긴 probe rule 로 별도 확인한다.
 
 **두 센서는 등가가 아니다.** `repo_scripts/scripts/validate_claude_rules.py` 는 *로드될 수 있는가* 를 Python `glob` 의미론으로 검사하고 (0건이면 hook 이 차단), 위 죽은 형태에 대해서도 **clean 을 냈다** — 즉 false green 이 가능하다. *실제로 로드됐는가* 의 ground truth 는 `.claude/instructions-loaded.log` (InstructionsLoaded hook) 뿐이다. 그리고 **rule 집합은 세션 시작 시 스냅샷**이라 (같은 세션에서 만든 probe rule 은 검증된 형태의 glob 으로도 발화하지 않았다), glob 을 고쳤으면 **다음 세션에서** 매칭 파일을 열고 그 로그를 grep 해 확인한다. build metadata (`CMakeLists.txt` / `package.xml` / `setup.py`) 축의 ARCH-5 · ARCH-7 은 [arch-build-meta.md](arch-build-meta.md) 가 갖는다. 규칙 전문·severity·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
 
