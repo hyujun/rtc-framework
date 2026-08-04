@@ -183,6 +183,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Runs after CreateDeviceBackends (which is when the backends exist) and
   // after controller on_configure (which is when GetCommandType() is final).
   [[nodiscard]] bool ValidateCommandTypePairing();
+  // Caches slot_command_type_mask_ by asking each live backend about every
+  // CommandType once. Must run after CreateDeviceBackends and before the RT
+  // loop starts; AcceptsCommandType is documented "Not RT — called once during
+  // configure", so querying it here is what keeps the tick-path check legal.
+  void CacheSlotCommandTypeMasks() noexcept;
 
   // ── System model configuration (top-level "urdf:" YAML) ──────────────────
   void ParseSystemModelConfig(rtc_urdf_bridge::ModelConfig& config);
@@ -352,6 +357,16 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   /// indistinguishable at the backend. Monotonic for the node's lifetime.
   [[nodiscard]] uint64_t EstopSubstitutedOutputCount() const noexcept {
     return estop_substituted_outputs_.load(std::memory_order_relaxed);
+  }
+
+  /// Total ticks whose output was replaced by a hold *because a device's
+  /// resolved command type is one the backend on that slot cannot honour*
+  /// (issue #342). Counted separately from RejectedOutputCount for the same
+  /// reason EstopSubstitutedOutputCount is: all three emit the identical hold,
+  /// so a test of any one of them needs its own counter to see which guard
+  /// fired. Monotonic for the node's lifetime.
+  [[nodiscard]] uint64_t RejectedCommandTypeCount() const noexcept {
+    return rejected_command_type_count_.load(std::memory_order_relaxed);
   }
 
   /// Consecutive-reject count at which the hold escalates to a global E-STOP.
@@ -686,6 +701,92 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::atomic<uint64_t> rejected_output_count_{0};
   std::atomic<uint64_t> consecutive_rejected_outputs_{0};
   std::atomic<uint64_t> estop_substituted_outputs_{0};
+
+  // ── Resolved per-device command type vs backend capability (issue #342) ───
+  //
+  // ValidateCommandTypePairing() judges the controller-global GetCommandType()
+  // at configure. What the RT loop actually hands to WriteCommand is
+  // `dout.command_type.value_or(output.command_type)` — a per-device override
+  // the controller is free to pick each tick, which the configure gate cannot
+  // see. That override went to the wire unchecked, so the defect #198 closed
+  // (newton-metres reinterpreted as joint angles, and a 0 N·m "hold" that
+  // commands the arm to its zero configuration) was reachable again through
+  // it. The tick-path check below closes that, and it is the only place it
+  // can be closed: the value does not exist before the tick.
+  //
+  // Cached because AcceptsCommandType is a configure-time call by contract.
+  // CommandType has three values, so a slot's answer is three bits and the RT
+  // test is a bit test — not a virtual call.
+  static constexpr uint8_t CommandTypeBit(rtc::CommandType ct) noexcept {
+    return static_cast<uint8_t>(1U << static_cast<unsigned>(ct));
+  }
+
+  std::array<uint8_t, kMaxDevices> slot_command_type_mask_{};
+
+  // Whether a backend advertising `mask` can be handed `ct` without the wire
+  // changing meaning.
+  //
+  // Not simply `mask & bit`: kPosition and kPdFeedforward put the SAME thing
+  // in commands[] — a position target — and the feedforward overlay is an
+  // additive channel a position-only backend just does not transmit. That is
+  // the graceful fallback types.hpp documents and the shipped WBC→hand lane
+  // relies on, so it must stay legal. kTorque is the one mode whose commands[]
+  // carries a different physical quantity, which is exactly the substitution
+  // #198 named as the hazard. So the tolerance is a property of the enum, not
+  // an allow-list of today's backends: it holds for out-of-tree pairings too.
+  [[nodiscard]] static constexpr bool CommandTypeIsHonoured(uint8_t mask,
+                                                            rtc::CommandType ct) noexcept {
+    if ((mask & CommandTypeBit(ct)) != 0U) {
+      return true;
+    }
+    return ct == rtc::CommandType::kPdFeedforward &&
+           (mask & CommandTypeBit(rtc::CommandType::kPosition)) != 0U;
+  }
+
+  // First offending device of a tick, or `Rejected() == false`.
+  struct CommandTypeRejection {
+    int device_idx{-1};
+    int slot{-1};
+    rtc::CommandType resolved{rtc::CommandType::kPosition};
+
+    [[nodiscard]] constexpr bool Rejected() const noexcept { return device_idx >= 0; }
+  };
+
+  // Screens the resolved per-device command types of `out` against
+  // slot_command_type_mask_. RT-safe: bounded loop, bit tests, no allocation,
+  // no logging. Returns on the first offender — the reaction (discard the
+  // whole output) is the same however many there are, matching
+  // ValidateControllerOutput.
+  [[nodiscard]] CommandTypeRejection FindUnhonouredCommandType(
+      const rtc::ControllerOutput& out, const ControllerSlotMapping& mapping) const noexcept;
+
+  // Formats one deferred operator line for `rej` into
+  // command_type_reject_reason_, or does nothing when the previous line has
+  // not been drained yet. RT-safe: fixed buffer, scalar/string-literal format,
+  // no allocation, no logging macro.
+  void ReportUnhonouredCommandType(const rtc::RTControllerInterface& controller,
+                                   const CommandTypeRejection& rej) noexcept;
+
+  std::atomic<uint64_t> rejected_command_type_count_{0};
+
+  // Deferred log for the sub-escalation window. A rejection that clears before
+  // invalid_output_estop_ticks_ never reaches TriggerGlobalEstop, so without
+  // this the only trace is a counter — and the counter cannot say WHICH
+  // controller put WHICH mode on WHICH group, which is the whole content of
+  // an operator's fix.
+  //
+  // Same lane as estop_reason_ / estop_log_pending_ rather than a throttled
+  // macro: RCLCPP_*_THROTTLE keeps its window in a static at the macro's
+  // expansion point, which is process-global and would make two nodes in one
+  // process silence each other. The pending flag is a node member, so it does
+  // not. It also rate-limits for free — the RT side only formats when the
+  // previous line has been drained (DrainLog, 100 Hz).
+  // Wider than kEstopReasonBufferSize because this line names the controller
+  // and the group, not just a reason token. snprintf truncates and
+  // NUL-terminates regardless, so an over-long name costs detail, not safety.
+  static constexpr std::size_t kCommandTypeReasonBufferSize = 192;
+  std::array<char, kCommandTypeReasonBufferSize> command_type_reject_reason_{};
+  std::atomic<bool> command_type_log_pending_{false};
 
   // Size of the fixed E-STOP reason buffer built on the RT path. Sized to fit
   // the longest reason this file formats, with room to spare; std::snprintf

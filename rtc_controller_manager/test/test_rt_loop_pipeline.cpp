@@ -463,6 +463,185 @@ TEST_F(OutputValidationTest, ValidationKeepsHoldingAfterEstop) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// ── Resolved per-device command type vs backend capability (issue #342) ──────
+//
+// The configure gate (#198) judges the controller-global GetCommandType().
+// What the tick hands to WriteCommand is the per-device override resolved on
+// the RT path, which the gate cannot see — so a controller that passes
+// configure could still put newton-metres on a position-only wire.
+//
+// PipelineTestController leaves GetCommandType() at the kPosition default and
+// PipelineStubBackend leaves AcceptsCommandType at the position-only default,
+// so the violating configuration was already assembled here: only the override
+// was missing. That is also why these tests need no binary of their own the
+// way the configure-gate tests do — nothing registered here emits a
+// torque-mode *controller*, so no other node built in this TU changes.
+
+TEST_F(OutputValidationTest, PositionOnlyBackendMaskExcludesTorque) {
+  // The mask the RT check reads, taken once at configure. Asserted directly:
+  // if it were empty the guard below would reject every tick and still look
+  // like it was working.
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  const uint8_t mask = ControllerLifecycleTestAccess::GetSlotCommandTypeMask(*node, 0);
+  EXPECT_NE(0U, mask & (1U << static_cast<unsigned>(CommandType::kPosition)));
+  EXPECT_EQ(0U, mask & (1U << static_cast<unsigned>(CommandType::kTorque)));
+  EXPECT_EQ(0U, mask & (1U << static_cast<unsigned>(CommandType::kPdFeedforward)));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, PerDeviceTorqueOverrideNeverReachesTheBackend) {
+  PipelineTestController::device0_command_type.store(static_cast<int>(CommandType::kTorque),
+                                                     std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  // A count, not "the last write was not torque": the guard's claim is that no
+  // tick ever carried it, and only a tally over the whole run can say that.
+  EXPECT_EQ(0, backend->TorqueWriteCount());
+  EXPECT_EQ(CommandType::kPosition, backend->LastCommandType());
+  ExpectHeldAtMeasuredPosition(backend);
+
+  // Counters diverge, which is what tells this guard from the validator that
+  // emits the identical hold.
+  EXPECT_GT(ControllerLifecycleTestAccess::GetRejectedCommandTypeCount(*node), 0U);
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, PerDeviceFeedforwardOverrideIsForwardedUnchanged) {
+  // The documented graceful fallback, and the one the shipped WBC→hand lane
+  // rides on: kPdFeedforward's commands[] carries a position target, so a
+  // position-only backend reading it as one loses the overlay, not the
+  // meaning. Rejecting this would break a shipping configuration; demoting it
+  // to kPosition would erase the controller's intent from the wire and the
+  // rosbag, since backends stamp the resolved mode into the message.
+  PipelineTestController::device0_command_type.store(static_cast<int>(CommandType::kPdFeedforward),
+                                                     std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(
+      WaitFor([&] { return backend->LastCommands()[0] == PipelineTestController::kCmd0; }, 2000ms));
+
+  // The controller's own output reached the wire — no hold, no substitution.
+  EXPECT_DOUBLE_EQ(PipelineTestController::kCmd1, backend->LastCommands()[1]);
+  EXPECT_EQ(CommandType::kPdFeedforward, backend->LastCommandType());
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetRejectedCommandTypeCount(*node));
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, TorqueOverrideBelowThresholdDoesNotEstopAndDoesNotLatch) {
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  const uint64_t threshold = ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*node);
+  ASSERT_EQ(25U, threshold);
+
+  PipelineTestController::device0_command_type.store(static_cast<int>(CommandType::kTorque),
+                                                     std::memory_order_relaxed);
+  PipelineTestController::device0_command_type_ticks.store(static_cast<int>(threshold) - 1,
+                                                           std::memory_order_relaxed);
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  // The hold does not latch: once the override stops, the controller's command
+  // reaches the backend again on the very next tick.
+  ASSERT_TRUE(
+      WaitFor([&] { return backend->LastCommands()[0] == PipelineTestController::kCmd0; }, 2000ms));
+
+  EXPECT_EQ(threshold - 1, ControllerLifecycleTestAccess::GetRejectedCommandTypeCount(*node));
+  EXPECT_EQ(static_cast<int>(threshold) - 1,
+            PipelineTestController::injected_command_type_ticks.load(std::memory_order_relaxed));
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetConsecutiveRejectedOutputCount(*node));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node));
+  EXPECT_EQ(0, backend->TorqueWriteCount());
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, SustainedTorqueOverrideEscalatesWithItsOwnReason) {
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  const uint64_t threshold = ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*node);
+
+  PipelineTestController::device0_command_type.store(static_cast<int>(CommandType::kTorque),
+                                                     std::memory_order_relaxed);
+  PipelineTestController::device0_command_type_ticks.store(static_cast<int>(threshold),
+                                                           std::memory_order_relaxed);
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::IsEstopped(*node); }, 2000ms));
+  // The reason names this guard and the offending mode. A shared token would
+  // leave the operator unable to tell a NaN command from a mis-paired mode.
+  EXPECT_EQ("unhonoured_command_type_torque", ControllerLifecycleTestAccess::GetEstopReason(*node));
+  EXPECT_EQ(threshold, ControllerLifecycleTestAccess::GetRejectedCommandTypeCount(*node));
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+  EXPECT_EQ(0, backend->TorqueWriteCount());
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, RejectionLineNamesTheControllerGroupAndMode) {
+  // The sub-escalation window has no other trace: a rejection that clears
+  // before the threshold never reaches TriggerGlobalEstop, and a counter
+  // cannot say which controller put which mode on which group.
+  PipelineTestController::device0_command_type.store(static_cast<int>(CommandType::kTorque),
+                                                     std::memory_order_relaxed);
+  PipelineTestController::device0_command_type_ticks.store(1, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor(
+      [&] { return ControllerLifecycleTestAccess::GetCommandTypeLogPending(*node); }, 2000ms));
+
+  const std::string line = ControllerLifecycleTestAccess::GetCommandTypeRejectReason(*node);
+  EXPECT_NE(std::string::npos, line.find("rtc_cm_cfg_test")) << line;
+  EXPECT_NE(std::string::npos, line.find("torque")) << line;
+  EXPECT_NE(std::string::npos, line.find(backend->GroupName())) << line;
+
+  // Draining re-arms the RT side, which is what keeps a persistent fault
+  // reprinting instead of falling silent after one line.
+  ControllerLifecycleTestAccess::CallDrainLog(*node);
+  EXPECT_FALSE(ControllerLifecycleTestAccess::GetCommandTypeLogPending(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // ── E-STOP command substitution (issue #198 Phase 3) ─────────────────────────
 //
 // PipelineTestController never overrides TriggerEstop / ClearEstop, so the

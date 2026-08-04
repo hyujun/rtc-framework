@@ -677,6 +677,38 @@ void RtControllerNode::CreateDeviceBackends() {
   }
 }
 
+// ── Per-slot command-type capability cache (issue #342) ─────────────────────
+//
+// The pairing walk below judges the controller-global GetCommandType(). The RT
+// loop needs the same answer for a value that does not exist yet at configure
+// — the per-device override the controller resolves each tick — so it cannot
+// ask the backend when it needs to know. AcceptsCommandType is "Not RT —
+// called once during configure" by its own contract, and calling it per tick
+// would break that contract rather than merely cost a virtual call.
+//
+// So the answer is taken here, exhaustively: CommandType has three values, so
+// a slot's full capability is three bits and the tick-path check becomes a bit
+// test. Deliberately a separate walk from ValidateCommandTypePairing's — that
+// one is indexed by (controller, slot) because its messages name a controller,
+// while this cache is a property of the slot alone.
+void RtControllerNode::CacheSlotCommandTypeMasks() noexcept {
+  static constexpr std::array<urtc::CommandType, 3> kAllCommandTypes{
+      urtc::CommandType::kPosition, urtc::CommandType::kTorque, urtc::CommandType::kPdFeedforward};
+  slot_command_type_mask_.fill(0U);
+  for (std::size_t slot = 0; slot < backends_.size(); ++slot) {
+    if (!backends_[slot]) {
+      continue;  // no backend on this slot — the RT loop skips it too
+    }
+    uint8_t mask = 0U;
+    for (const auto ct : kAllCommandTypes) {
+      if (backends_[slot]->AcceptsCommandType(ct)) {
+        mask = static_cast<uint8_t>(mask | CommandTypeBit(ct));
+      }
+    }
+    slot_command_type_mask_[slot] = mask;
+  }
+}
+
 // ── Controller command type vs backend capability ───────────────────────────
 //
 // Two different questions are asked of the same (controller, backend) pairing,

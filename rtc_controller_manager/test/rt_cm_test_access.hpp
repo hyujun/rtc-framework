@@ -214,6 +214,28 @@ class ControllerLifecycleTestAccess {
     return node.OutputRejectEstopTicks();
   }
 
+  // Resolved per-device command type vs backend capability (issue #342). Its
+  // own tally, because the guard emits the same hold as the two above.
+  static uint64_t GetRejectedCommandTypeCount(const RtControllerNode& node) {
+    return node.RejectedCommandTypeCount();
+  }
+
+  static uint8_t GetSlotCommandTypeMask(const RtControllerNode& node, std::size_t slot) {
+    return node.slot_command_type_mask_[slot];
+  }
+
+  // The deferred operator line, read without installing a process-global log
+  // handler (which is what the #198 gate binary needs a whole TU of its own
+  // for). The buffer's content is the load-bearing half — it is the only place
+  // that names the controller, group and mode.
+  static std::string GetCommandTypeRejectReason(const RtControllerNode& node) {
+    return std::string(node.command_type_reject_reason_.data());
+  }
+
+  static bool GetCommandTypeLogPending(const RtControllerNode& node) {
+    return node.command_type_log_pending_.load(std::memory_order_acquire);
+  }
+
   static void ClearEstopLogPending(RtControllerNode& node) {
     node.estop_log_pending_.store(false, std::memory_order_release);
   }

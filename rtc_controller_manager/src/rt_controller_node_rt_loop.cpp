@@ -125,6 +125,68 @@ bool RtControllerNode::BuildHoldOutput(const urtc::ControllerState& state,
   return complete;
 }
 
+// ── Resolved per-device command type vs backend capability (issue #342) ─────
+//
+// The configure gate (ValidateCommandTypePairing) judges the controller-global
+// GetCommandType(). This judges what the tick actually hands to WriteCommand,
+// which is the per-device override resolved below — a value that does not
+// exist until Compute() returns, so no configure-time check can reach it.
+//
+// Runs on `raw_output`, before the substitution: on a substituted tick the
+// command is BuildHoldOutput's, which clears every per-device override and
+// stamps the controller-global type the configure gate already validated, so
+// the hold cannot be the thing that violates this.
+RtControllerNode::CommandTypeRejection RtControllerNode::FindUnhonouredCommandType(
+    const urtc::ControllerOutput& out, const ControllerSlotMapping& mapping) const noexcept {
+  const int nd = std::min({out.num_devices, mapping.num_groups,
+                           static_cast<int>(ControllerSlotMapping::kMaxSlots),
+                           static_cast<int>(urtc::ControllerOutput::kMaxDevices)});
+  for (int di = 0; di < nd; ++di) {
+    const int slot = mapping.slots[static_cast<std::size_t>(di)];
+    if (slot < 0 || slot >= kMaxDevices || !backends_[static_cast<std::size_t>(slot)]) {
+      continue;  // no backend on this group — nothing of this device reaches a wire
+    }
+    const auto& dout = out.devices[static_cast<std::size_t>(di)];
+    // The one line the configure gate cannot see — same resolution the
+    // publish snapshot performs, kept identical on purpose.
+    const urtc::CommandType resolved = dout.command_type.value_or(out.command_type);
+    if (!CommandTypeIsHonoured(slot_command_type_mask_[static_cast<std::size_t>(slot)], resolved)) {
+      return CommandTypeRejection{di, slot, resolved};
+    }
+  }
+  return CommandTypeRejection{};
+}
+
+// Deferred operator line for a rejection that may never escalate. The counter
+// says how often; only this says which controller put which mode on which
+// group, which is the entire content of the fix.
+void RtControllerNode::ReportUnhonouredCommandType(const urtc::RTControllerInterface& controller,
+                                                   const CommandTypeRejection& rej) noexcept {
+  // Skip while a line is still queued. That is the rate limit: at worst one
+  // format per DrainLog period, and the first offending tick is never the one
+  // dropped. A relaxed load suffices — the store below is the only writer and
+  // it is this same thread.
+  //
+  // The format stays in the class the E-STOP reason line already uses on this
+  // thread: a fixed destination buffer and %s / %.*s / %d conversions over
+  // pointers the caller already holds. Nothing here builds a std::string or
+  // takes a lock; the names come from a string_view and a std::string fixed at
+  // configure (slot_to_group_name_ is cleared only after StopRtLoop joins).
+  if (command_type_log_pending_.load(std::memory_order_relaxed)) {
+    return;
+  }
+  const auto uslot = static_cast<std::size_t>(rej.slot);
+  const char* group = uslot < slot_to_group_name_.size() ? slot_to_group_name_[uslot].c_str() : "?";
+  const auto name = controller.Name();
+  static_cast<void>(std::snprintf(
+      command_type_reject_reason_.data(), command_type_reject_reason_.size(),
+      "controller '%.*s' set command_type '%s' on device %d (group '%s', slot %d), which that "
+      "backend does not declare; output held",
+      static_cast<int>(name.size()), name.data(), urtc::CommandTypeToString(rej.resolved),
+      rej.device_idx, group, rej.slot));
+  command_type_log_pending_.store(true, std::memory_order_release);
+}
+
 // ── 50 Hz watchdog (E-STOP)
 // ───────────────────────────────────────────────────
 bool RtControllerNode::DeviceLive(const DeviceTimeoutEntry& entry,
@@ -350,9 +412,27 @@ void RtControllerNode::ControlLoop() {
   // actuator lane and the telemetry lane together.
   const urtc::ControllerOutputValidation validation =
       urtc::ValidateControllerOutput(raw_output, state);
-  if (!validation.Ok()) {
+  // Second rejection cause, on the same lane (issue #342). Only asked when the
+  // output is otherwise in contract: an output whose device/channel counts
+  // already failed is discarded wholesale, and reading a mode selector out of
+  // it would be reading data the check above just declared untrustworthy —
+  // the same reason BuildHoldOutput refuses to salvage the override.
+  const CommandTypeRejection ct_reject = validation.Ok()
+                                             ? FindUnhonouredCommandType(raw_output, slot_mapping)
+                                             : CommandTypeRejection{};
+  if (!validation.Ok() || ct_reject.Rejected()) {
     const bool hold_complete = BuildHoldOutput(state, active_controller.GetCommandType());
-    rejected_output_count_.fetch_add(1, std::memory_order_relaxed);
+    // Each guard keeps its own total: all of them emit the identical hold, so
+    // a test of any one of them can only tell which fired from its counter.
+    // The consecutive count is deliberately shared — both causes mean "this
+    // tick's output cannot be sent", and sustained unusability is a safety
+    // event whether or not the cause alternates between them.
+    if (ct_reject.Rejected()) {
+      rejected_command_type_count_.fetch_add(1, std::memory_order_relaxed);
+      ReportUnhonouredCommandType(active_controller, ct_reject);
+    } else {
+      rejected_output_count_.fetch_add(1, std::memory_order_relaxed);
+    }
     const uint64_t consecutive =
         consecutive_rejected_outputs_.fetch_add(1, std::memory_order_relaxed) + 1;
     // A hold masks a bad tick; it cannot fix a controller that keeps
@@ -362,14 +442,28 @@ void RtControllerNode::ControlLoop() {
     // out the window. The window is only defensible because the hold makes
     // the interim safe, and that premise is exactly what fails when no hold
     // can be built from the state.
+    //
+    // A command-type rejection inherits that window on the same premise, and
+    // for it the premise is structural rather than argued: the hold clears
+    // every per-device override and stamps the controller-global type, which
+    // ValidateCommandTypePairing has already checked against every backend
+    // this controller drives. The interim is inside the configure-validated
+    // envelope by construction.
     if ((consecutive >= invalid_output_estop_ticks_ || !hold_complete) && !IsGlobalEstopped()) {
       // Fixed-size buffer, scalar-only format — no allocation on the RT path
       // (same pattern TriggerGlobalEstop uses for the reason string).
       std::array<char, kEstopReasonBufferSize> reason{};
-      static_cast<void>(std::snprintf(
-          reason.data(), reason.size(), "%s_%s",
-          hold_complete ? "invalid_controller_output" : "unholdable_controller_output",
-          urtc::OutputRejectReasonToString(validation.reason)));
+      if (ct_reject.Rejected()) {
+        static_cast<void>(std::snprintf(
+            reason.data(), reason.size(), "%s_%s",
+            hold_complete ? "unhonoured_command_type" : "unholdable_unhonoured_command_type",
+            urtc::CommandTypeToString(ct_reject.resolved)));
+      } else {
+        static_cast<void>(std::snprintf(
+            reason.data(), reason.size(), "%s_%s",
+            hold_complete ? "invalid_controller_output" : "unholdable_controller_output",
+            urtc::OutputRejectReasonToString(validation.reason)));
+      }
       TriggerGlobalEstop(reason.data());
     }
   } else {
@@ -416,7 +510,10 @@ void RtControllerNode::ControlLoop() {
       static_cast<void>(BuildHoldOutput(state, active_controller.GetCommandType()));
     }
   }
-  const bool substituted = estopped || !validation.Ok();
+  // Every cause that rebuilt hold_output_ above must appear here, or the hold
+  // is built and then not used — the rejection would be counted, logged and
+  // escalated while the offending output went to the wire anyway.
+  const bool substituted = estopped || !validation.Ok() || ct_reject.Rejected();
   const urtc::ControllerOutput& output = substituted ? hold_output_ : raw_output;
 
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
@@ -623,6 +720,17 @@ void RtControllerNode::DrainLog() {
       RCLCPP_INFO(get_logger(), "GLOBAL E-STOP cleared (was: %s)", estop_reason_.data());
       estop_reason_.fill('\0');
     }
+  }
+
+  // Drain the deferred command-type rejection line (issue #342). WARN, not
+  // ERROR: the tick was held, so nothing unsafe reached the wire — but the
+  // pairing is a deployment fault that will keep repeating and escalate, and
+  // the escalation's reason token cannot carry the controller and group names.
+  // Clearing the flag is what re-arms the RT-side format, so a persistent
+  // fault reprints at the drain cadence rather than once per process.
+  if (command_type_log_pending_.exchange(false, std::memory_order_acquire)) {
+    RCLCPP_WARN(get_logger(), "Command-type rejected on the RT path: %s",
+                command_type_reject_reason_.data());
   }
 
   // Print timing summary when signalled by the RT thread. Each print is

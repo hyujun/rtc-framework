@@ -119,6 +119,11 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // Backends exist now, and controller on_configure (Pass 3, inside
   // DeclareAndLoadParameters) has already fixed each GetCommandType() — the
   // first point where the pairing can be checked at all.
+  //
+  // The cache goes first and unconditionally: the RT loop's per-device check
+  // (issue #342) reads it every tick, and it is the only configure-time
+  // question the tick path is allowed to ask.
+  CacheSlotCommandTypeMasks();
   if (!ValidateCommandTypePairing()) {
     RCLCPP_ERROR(get_logger(),
                  "RtControllerNode configure refused — controller/backend command-type mismatch");

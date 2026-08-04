@@ -97,6 +97,31 @@ class PipelineTestController : public RTControllerInterface {
   // node's reject counter is compared against.
   static inline std::atomic<int> injected_fault_ticks{0};
 
+  // Per-device command_type override for device 0 (issue #342). Negative
+  // leaves it unset, so the device inherits the controller-global type;
+  // otherwise the value is a CommandType.
+  //
+  // Deliberately NOT an OutputFault. One of the two cases it has to express —
+  // kPdFeedforward onto a position-only backend — is not a fault at all but
+  // the documented graceful fallback the shipped WBC→hand lane depends on, and
+  // folding it into the fault enum would put "must be rejected" and "must be
+  // forwarded untouched" behind one knob whose name asserts the first.
+  //
+  // GetCommandType() stays kPosition (the base default) throughout, which is
+  // the whole point: this controller passes ValidateCommandTypePairing, so the
+  // configure gate cannot see the mode it actually emits — and neither can any
+  // other TU that builds a node here.
+  static inline std::atomic<int> device0_command_type{-1};
+
+  // How many ticks the override lasts, on the same terms as
+  // output_fault_ticks: negative → until reset. A finite budget is what makes
+  // "exactly N-1 rejected ticks" assertable against a free-running loop.
+  static inline std::atomic<int> device0_command_type_ticks{-1};
+
+  // Ticks on which the override was actually emitted — ground truth for the
+  // node's own tally.
+  static inline std::atomic<int> injected_command_type_ticks{0};
+
   // Instances the registry factory has built (issue #196 Phase 5). The
   // duplicate-config_key scan runs before Pass 1, so a refused bring-up must
   // leave this at zero — that is what separates "rejected before creating
@@ -124,6 +149,9 @@ class PipelineTestController : public RTControllerInterface {
     output_fault.store(OutputFault::kNone, std::memory_order_relaxed);
     output_fault_ticks.store(-1, std::memory_order_relaxed);
     injected_fault_ticks.store(0, std::memory_order_relaxed);
+    device0_command_type.store(-1, std::memory_order_relaxed);
+    device0_command_type_ticks.store(-1, std::memory_order_relaxed);
+    injected_command_type_ticks.store(0, std::memory_order_relaxed);
     instances_created.store(0, std::memory_order_relaxed);
   }
 
@@ -172,6 +200,7 @@ class PipelineTestController : public RTControllerInterface {
     out.devices[0].num_channels = output_num_channels.load(std::memory_order_relaxed);
     out.devices[0].commands[0] = kCmd0;
     out.devices[0].commands[1] = kCmd1;
+    InjectDevice0CommandType(out);
     InjectOutputFault(out);
     return out;
   }
@@ -181,6 +210,27 @@ class PipelineTestController : public RTControllerInterface {
   std::string_view Name() const noexcept override { return "rtc_cm_cfg_test"; }
 
  private:
+  // Applies the per-device command_type override to `out`, honouring its own
+  // tick budget (issue #342). Separate from InjectOutputFault so the budgets
+  // do not interfere: a test may want a mode override on a tick that is
+  // otherwise in contract, which is the only shape that reaches the RT-path
+  // command-type guard at all.
+  static void InjectDevice0CommandType(ControllerOutput& out) noexcept {
+    const int ct = device0_command_type.load(std::memory_order_relaxed);
+    if (ct < 0) {
+      return;
+    }
+    const int budget = device0_command_type_ticks.load(std::memory_order_relaxed);
+    if (budget == 0) {
+      return;  // budget spent — inherit the global type again
+    }
+    if (budget > 0) {
+      device0_command_type_ticks.fetch_sub(1, std::memory_order_relaxed);
+    }
+    injected_command_type_ticks.fetch_add(1, std::memory_order_relaxed);
+    out.devices[0].command_type = static_cast<CommandType>(ct);
+  }
+
   // Applies the configured fault to `out`, honouring the tick budget. Called
   // from Compute() on the RT thread — relaxed atomics only, no allocation.
   static void InjectOutputFault(ControllerOutput& out) noexcept {
@@ -344,7 +394,16 @@ class PipelineStubBackend : public DeviceBackend {
   }
 
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
-                    CommandType /*command_type*/) noexcept override {
+                    CommandType command_type) noexcept override {
+    // The mode is recorded, not ignored (issue #342). This backend keeps
+    // AcceptsCommandType's position-only default, so a kTorque argument
+    // arriving here IS the defect — a counter is the only way an assertion can
+    // say "it never reached the wire" rather than "it was not the last thing
+    // to reach the wire".
+    last_command_type_ = command_type;
+    if (command_type == CommandType::kTorque) {
+      torque_write_count_.fetch_add(1, std::memory_order_relaxed);
+    }
     last_num_channels_ = slot.num_channels;
     last_actual_num_channels_ = slot.actual_num_channels;
     last_commands_[0] = slot.commands[0];
@@ -395,15 +454,23 @@ class PipelineStubBackend : public DeviceBackend {
 
   const std::array<double, 2>& LastActualPositions() const { return last_actual_positions_; }
 
+  CommandType LastCommandType() const { return last_command_type_; }
+
+  /// Ticks on which this position-only backend was handed kTorque — the count
+  /// the #342 guard must hold at zero for the whole run.
+  int TorqueWriteCount() const { return torque_write_count_.load(std::memory_order_relaxed); }
+
   const std::string& GroupName() const { return group_name_; }
 
  private:
   std::string group_name_;
   std::atomic<int> write_count_{0};
   std::atomic<int> safe_write_count_{0};
+  std::atomic<int> torque_write_count_{0};
   std::atomic<std::int64_t> last_state_ns_{0};
   int last_num_channels_{0};
   int last_actual_num_channels_{0};
+  CommandType last_command_type_{CommandType::kPosition};
   std::array<double, 2> last_commands_{};
   std::array<double, 2> last_actual_positions_{};
 };
