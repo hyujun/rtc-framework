@@ -474,7 +474,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 #### YAML 구조 (`config/ur5e_p1a/controllers/demo_wbc_controller.yaml`)
 
-주요 최상위 키: `tsid.tasks` (posture/se3_tcp/force/contact_consistency/object_wrench/internal_force/object_se3), `tsid.constraints` (eom/joint_limit/friction_cone/torque_limit), `tsid.contacts.*`/`tsid.force_pi`/`tsid.object_frame` (contact·force-PI·object 옵션), `tsid.phase_presets`, `tsid.wqp.solver`, `integration` (`force_rate_alpha` 등 필수 키), `fsm`, **`estop.arm_safe_position`** (필수 — 길이가 런타임 arm DoF를 결정), **`mpc`** (`enabled`/`engine`/`max_stale_solutions`/`phase_config_path`+`contact_light_path`+`contact_rich_path`/`riccati.*`). `mpc.enabled: false`가 기본값이라 MPC는 inert이고 TSID가 self-hold한다. 각 키의 의미·기본값·제약은 YAML 자체의 인라인 주석 + [agent_docs/controllers.md](../agent_docs/controllers.md)를 SSoT로 참조.
+주요 최상위 키: `tsid.tasks` (posture/se3_tcp/force/contact_consistency/object_wrench/internal_force/object_se3), `tsid.constraints` (eom/joint_limit/friction_cone/torque_limit), `tsid.contacts.*`/`tsid.force_pi`/`tsid.object_frame` (contact·force-PI·object 옵션), `tsid.phase_presets`, `tsid.wqp.solver`, `integration` (`force_rate_alpha` 등 필수 키), `fsm`, **`arm_dof`** (필수 — 런타임 arm DoF), **`estop.arm_safe_position`** (필수 — 길이가 `arm_dof`와 일치해야 하며 불일치 시 configure 에서 throw), **`mpc`** (`enabled`/`engine`/`max_stale_solutions`/`phase_config_path`+`contact_light_path`+`contact_rich_path`/`riccati.*`). `mpc.enabled: false`가 기본값이라 MPC는 inert이고 TSID가 self-hold한다. 각 키의 의미·기본값·제약은 YAML 자체의 인라인 주석 + [agent_docs/controllers.md](../agent_docs/controllers.md)를 SSoT로 참조.
 
 #### MPC 통합 동작
 
@@ -525,7 +525,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 - **Deformation**: `||displacement||` > `deformation_threshold` (기본 0.015 m)
 - **QP 실패** (fallback 분리): position 백본인 **Kinematic (CLIK) QP** 실패만 critical — 연속 `max_qp_fail_before_fallback`회 (기본 5) → `kFallback` 진입. **Dynamic (TSID) QP** 실패는 non-critical — 해당 tick hand τ_ff 만 drop (position 은 CLIK 가 계속 소유), `kFallback` 미진입. 두 카운터는 `dyn_qp_fail_count_` / `kin_qp_fail_count_` 로 분리되며 `wbc_diag.csv` 에 `qp_fail_count`(dynamic) + `kin_qp_fail_count` 컬럼으로 기록
 
-**E-STOP:** `estop.arm_safe_position` (YAML 필수 키, 기본 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad)로 이동, 핸드는 현재 위치 유지, contact 비활성화
+**E-STOP:** `estop.arm_safe_position` (YAML 필수 키, 기본 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad — 길이는 `arm_dof` 와 일치해야 한다)로 이동, 핸드는 현재 위치 유지, contact 비활성화
 
 ---
 

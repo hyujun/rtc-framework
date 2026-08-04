@@ -203,14 +203,14 @@ void DemoJointController::OnDeviceConfigsSet() {
   const auto secondary = GetSecondaryDeviceName();
 
   // ── Runtime DoF resolution ─────────────────────────────────────────────
-  // arm_dof_ was set from YAML `estop.arm_safe_position` in LoadConfig.
+  // arm_dof_ was set from the YAML `arm_dof` key in LoadConfig.
   // Resolve hand_dof_ from secondary device joint_state_names size and
   // cross-validate arm DoF against the primary device's joint_state_names.
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     const auto js_size = static_cast<int>(cfg->joint_state_names.size());
     if (js_size > 0 && arm_dof_ > 0 && js_size != arm_dof_) {
       RCLCPP_ERROR(logger_,
-                   "[joint] arm DoF mismatch: estop.arm_safe_position=%d but primary device "
+                   "[joint] arm DoF mismatch: arm_dof=%d but primary device "
                    "'%s' joint_state_names size=%d",
                    arm_dof_, primary.c_str(), js_size);
     }
@@ -590,27 +590,24 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
     (void)combined_cache_.InitModel(*builder_, /*contact_frame_ids=*/{}, "[joint]", logger_);
   }
 
-  // ── L2: E-STOP arm safe position (required) ──────────────────────────
+  // ── L2: arm DoF + E-STOP arm safe position (both required) ───────────
   //
-  // Runtime arm_dof_ is established from the YAML's `estop.arm_safe_position`
-  // length (authoritative source at LoadConfig time; device configs arrive
-  // later in OnDeviceConfigsSet, which cross-checks joint_state_names size).
-  if (!cfg["estop"] || !cfg["estop"]["arm_safe_position"] ||
-      !cfg["estop"]["arm_safe_position"].IsSequence()) {
-    throw std::runtime_error(
-        "demo_joint_controller: required 'estop.arm_safe_position' must be a sequence");
-  }
+  // Runtime arm_dof_ comes from the required top-level `arm_dof` key. It used
+  // to be the LENGTH of `estop.arm_safe_position`, which made every check in
+  // ParseArmSafePosition unreachable in production — the definer cannot
+  // disagree with itself (#340). Now that the two are independent sources,
+  // that function's three throws (missing estop section / not a sequence /
+  // length mismatch) are live here. Do NOT pre-check them at this call site:
+  // preempting them is exactly what kept them dead before.
+  //
+  // Device configs arrive later in OnDeviceConfigsSet, which cross-checks
+  // joint_state_names size against arm_dof_.
   {
-    const auto seq_size = cfg["estop"]["arm_safe_position"].size();
-    if (seq_size == 0 || seq_size > static_cast<std::size_t>(kDemoJointMaxArmDof)) {
-      throw std::runtime_error("demo_joint_controller: 'estop.arm_safe_position' size " +
-                               std::to_string(seq_size) + " out of range [1, " +
-                               std::to_string(kDemoJointMaxArmDof) + "]");
-    }
-    arm_dof_ = static_cast<int>(seq_size);
-    const auto sp = ParseArmSafePosition(cfg, seq_size, "demo_joint_controller");
+    arm_dof_ = ParseArmDof(cfg, kDemoJointMaxArmDof, "demo_joint_controller");
+    const auto sp =
+        ParseArmSafePosition(cfg, static_cast<std::size_t>(arm_dof_), "demo_joint_controller");
     safe_position_.fill(0.0);
-    for (std::size_t i = 0; i < seq_size; ++i) {
+    for (std::size_t i = 0; i < sp.size(); ++i) {
       safe_position_[i] = sp[i];
     }
   }

@@ -71,6 +71,55 @@ TEST(DemoWbcConfigLint, Se3TaskNameMatchesMapKey) {
   }
 }
 
+// ── #340: the shipped `arm_dof` migration, pinned ────────────────────────────
+//
+// `arm_dof` became a required key with no fallback, so a shipped YAML that
+// misses it does not degrade — the controller throws at configure. Nothing else
+// in the suite reads the shipped controller files (every controller fixture is
+// an inline YAML string), so without this the 9-file migration is asserted only
+// by whoever ran the migration.
+//
+// Scope is all three controllers, not just wbc — this file is where shipped-YAML
+// parsing already lives, and forking a second lint harness for the same corpus
+// would be the duplication P5 exists to prevent. The robot list is explicit for
+// the same reason ShippedConfigs() is: no filesystem walk in a unit test.
+std::vector<ConfigCase> AllShippedControllerConfigs() {
+  const std::string dir = RTC_WBC_CONFIG_DIR;
+  std::vector<ConfigCase> out;
+  for (const char* robot : {"ur5e_p1a", "ur5e_p1b", "iiwa7_leap"}) {
+    for (const char* ctrl :
+         {"demo_joint_controller", "demo_task_controller", "demo_wbc_controller"}) {
+      out.push_back(
+          {std::string(robot) + "/" + ctrl, dir + "/" + robot + "/controllers/" + ctrl + ".yaml"});
+    }
+  }
+  return out;
+}
+
+TEST(DemoControllerConfigLint, ArmDofIsPresentAndMatchesSafePositionLength) {
+  const auto configs = AllShippedControllerConfigs();
+  ASSERT_EQ(configs.size(), 9U) << "the shipped controller corpus changed — update this list";
+
+  for (const auto& cfg : configs) {
+    YAML::Node root = YAML::LoadFile(cfg.path);
+    const auto key = cfg.robot.substr(cfg.robot.find('/') + 1);
+    const YAML::Node ctrl = root[key];
+    ASSERT_TRUE(ctrl) << cfg.robot << ": missing top-level key '" << key << "'";
+
+    ASSERT_TRUE(ctrl["arm_dof"]) << cfg.robot
+                                 << ": required key 'arm_dof' is missing — this config throws at "
+                                    "configure (#340)";
+    const int arm_dof = ctrl["arm_dof"].as<int>();
+    EXPECT_GT(arm_dof, 0) << cfg.robot;
+
+    const YAML::Node safe = ctrl["estop"]["arm_safe_position"];
+    ASSERT_TRUE(safe && safe.IsSequence()) << cfg.robot << ": estop.arm_safe_position missing";
+    EXPECT_EQ(static_cast<int>(safe.size()), arm_dof)
+        << cfg.robot << ": estop.arm_safe_position length " << safe.size() << " != arm_dof "
+        << arm_dof << " — LoadConfig throws on this";
+  }
+}
+
 // Cross-check: every task key referenced in a phase_preset must be defined under
 // tsid.tasks (by map key). Catches preset typos that would silently no-op.
 TEST(DemoWbcConfigLint, PhasePresetTaskKeysExist) {

@@ -2,6 +2,12 @@
 # CLIK task-space tracking for the arm + hand joint passthrough. Grasp
 # controller deactivated (see demo_shared.yaml grasp_controller_type: "none").
 demo_task_controller:
+  # ── Arm DoF (required) ─────────────────────────────────────────────────────
+  # Authoritative arm joint count at LoadConfig time (#340). The length of
+  # `estop.arm_safe_position` is validated against this key — not the reverse,
+  # which is what used to make that cross-check vacuous.
+  arm_dof: 7
+
   # ── CLIK gains ─────────────────────────────────────────────────────────────
   kp_translation: [5.0, 5.0, 5.0]
   kp_rotation: [2.0, 2.0, 2.0]
@@ -36,7 +42,7 @@ demo_task_controller:
 
   # ── E-STOP ─────────────────────────────────────────────────────────────────
   estop:
-    arm_safe_position:           # rad, 7 values = iiwa7 DoF (home pose)
+    arm_safe_position:           # rad, 7 values (must equal arm_dof); iiwa7 home pose
       - 0.0
       - 0.7
       - 0.0

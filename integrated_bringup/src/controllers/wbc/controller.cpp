@@ -955,28 +955,24 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     }
   }
 
-  // ── 4b. Lift L2: E-STOP arm safe position (required) ─────────────────
+  // ── 4b. Lift L2: arm DoF + E-STOP arm safe position (both required) ──
   //
-  // Runtime arm_dof_ is established from the YAML's `estop.arm_safe_position`
-  // length. This is the authoritative arm DoF at LoadConfig time (device
-  // configs aren't yet available — they arrive in OnDeviceConfigsSet, which
-  // cross-checks joint_state_names size against arm_dof_).
-  if (!cfg["estop"] || !cfg["estop"]["arm_safe_position"] ||
-      !cfg["estop"]["arm_safe_position"].IsSequence()) {
-    throw std::runtime_error(
-        "demo_wbc_controller: required 'estop.arm_safe_position' must be a sequence");
-  }
+  // Runtime arm_dof_ comes from the required top-level `arm_dof` key. It used
+  // to be the LENGTH of `estop.arm_safe_position`; because the length defined
+  // the DoF, ParseArmSafePosition could never disagree with it and all three
+  // of its throws were unreachable in production (#340). The sources are
+  // independent now, so those throws are live here — do NOT pre-check them at
+  // this call site.
+  //
+  // Device configs aren't yet available at LoadConfig time — they arrive in
+  // OnDeviceConfigsSet, which cross-checks joint_state_names size against
+  // arm_dof_.
   {
-    const auto seq_size = cfg["estop"]["arm_safe_position"].size();
-    if (seq_size == 0 || seq_size > static_cast<std::size_t>(kMaxArmDof)) {
-      throw std::runtime_error("demo_wbc_controller: 'estop.arm_safe_position' size " +
-                               std::to_string(seq_size) + " out of range [1, " +
-                               std::to_string(kMaxArmDof) + "]");
-    }
-    arm_dof_ = static_cast<int>(seq_size);
-    const auto sp = ParseArmSafePosition(cfg, seq_size, "demo_wbc_controller");
+    arm_dof_ = ParseArmDof(cfg, kMaxArmDof, "demo_wbc_controller");
+    const auto sp =
+        ParseArmSafePosition(cfg, static_cast<std::size_t>(arm_dof_), "demo_wbc_controller");
     safe_position_.fill(0.0);
-    for (std::size_t i = 0; i < seq_size; ++i) {
+    for (std::size_t i = 0; i < sp.size(); ++i) {
       safe_position_[i] = sp[i];
     }
   }
@@ -1218,7 +1214,7 @@ void DemoWbcController::ConfigureMpc(const YAML::Node& cfg) {
 
 void DemoWbcController::OnDeviceConfigsSet() {
   // ── Runtime DoF resolution ─────────────────────────────────────────────
-  // arm_dof_ was set from YAML `estop.arm_safe_position` in LoadConfig.
+  // arm_dof_ was set from the YAML `arm_dof` key in LoadConfig.
   // Here we resolve hand_dof_ from the secondary device's joint_state_names
   // (0 when no secondary device exists), cap-check, and cross-validate the
   // arm side against the primary device's joint_state_names.
@@ -1226,7 +1222,7 @@ void DemoWbcController::OnDeviceConfigsSet() {
     const auto js_size = static_cast<int>(primary_cfg->joint_state_names.size());
     if (js_size > 0 && js_size != arm_dof_) {
       RCLCPP_ERROR(logger_,
-                   "[wbc] arm DoF mismatch: estop.arm_safe_position=%d but primary device "
+                   "[wbc] arm DoF mismatch: arm_dof=%d but primary device "
                    "'%s' joint_state_names size=%d",
                    arm_dof_, GetPrimaryDeviceName().c_str(), js_size);
     }

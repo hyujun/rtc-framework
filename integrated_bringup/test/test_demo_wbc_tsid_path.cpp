@@ -42,6 +42,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <exception>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -72,6 +74,7 @@ using integrated_bringup::testfx::SharedIiwa7LeapModelConfig;
 // the only route to a wired pull estimator (ApplyDemoSharedConfig(cfg, shared)).
 // MPC stays disabled — the MPC bindings already have test_demo_wbc_mpc_integration.
 const char* const kWbcYaml = R"(
+arm_dof: 7
 command_type: "position"
 
 arm_trajectory_speed: 0.5
@@ -762,6 +765,64 @@ TEST_F(WbcTsidPathTest, HandTauffOverlayStaysOffInIdle) {
   for (std::size_t i = 0; i < static_cast<std::size_t>(kHandDof); ++i) {
     EXPECT_DOUBLE_EQ(out.devices[1].feedforward[i], 0.0) << "hand τ_ff " << i;
   }
+}
+
+// ── #340: `arm_dof` is the DoF source, and the cross-check is finally live ────
+//
+// arm_dof_ used to BE the length of estop.arm_safe_position, so the two could
+// not disagree and every throw inside ParseArmSafePosition was unreachable from
+// production. Each config below is one the old code accepted in silence.
+//
+// The message is asserted, not just the throw: a LoadConfig this large has many
+// ways to fail, and a bare EXPECT_THROW would go green on any of them.
+
+// Applies `mutate` to kWbcYaml and returns LoadConfig's error message, or "" on
+// success. Same bring-up order as WbcTsidPathTest::SetUp up to LoadConfig.
+std::string WbcLoadConfigError(const std::function<void(YAML::Node&)>& mutate) {
+  DemoWbcController ctrl{""};
+  ctrl.SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+  ctrl.SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+  ctrl.SetControlRate(1.0 / kDt);
+  YAML::Node cfg = YAML::Load(kWbcYaml);
+  mutate(cfg);
+  try {
+    ctrl.LoadConfig(cfg);
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return "";
+}
+
+// Baseline: without this, every assertion below could be green for the wrong
+// reason (a fixture that no longer loads at all).
+TEST(WbcArmDofSourceTest, UnmutatedFixtureLoads) {
+  EXPECT_EQ(WbcLoadConfigError([](YAML::Node&) {}), "");
+}
+
+TEST(WbcArmDofSourceTest, SafePositionLengthDisagreeingWithArmDofThrows) {
+  const std::string msg = WbcLoadConfigError([](YAML::Node& cfg) { cfg["arm_dof"] = kArmDof - 1; });
+  EXPECT_NE(msg.find("demo_wbc_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("arm_safe_position"), std::string::npos) << msg;
+}
+
+TEST(WbcArmDofSourceTest, MissingArmDofThrowsWithMigrationInstructions) {
+  const std::string msg = WbcLoadConfigError([](YAML::Node& cfg) { cfg.remove("arm_dof"); });
+  EXPECT_NE(msg.find("demo_wbc_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("arm_dof: " + std::to_string(kArmDof)), std::string::npos)
+      << "the message must name the value implied by the safe-position length: " << msg;
+}
+
+TEST(WbcArmDofSourceTest, MissingEstopSectionThrowsFromTheSharedParser) {
+  const std::string msg = WbcLoadConfigError([](YAML::Node& cfg) { cfg.remove("estop"); });
+  EXPECT_NE(msg.find("demo_wbc_controller"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("estop"), std::string::npos) << msg;
+}
+
+TEST(WbcArmDofSourceTest, ArmDofAboveTheControllerCapThrows) {
+  const std::string msg = WbcLoadConfigError(
+      [](YAML::Node& cfg) { cfg["arm_dof"] = DemoWbcController::kMaxArmDof + 1; });
+  EXPECT_NE(msg.find("arm_dof"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("out of range"), std::string::npos) << msg;
 }
 
 }  // namespace

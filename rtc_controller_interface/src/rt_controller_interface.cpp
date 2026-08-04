@@ -782,6 +782,41 @@ void RTControllerInterface::LoadDeviceLimitsFromConfig(
   }
 }
 
+int RTControllerInterface::ParseArmDof(const YAML::Node& cfg, int max_arm_dof,
+                                       const std::string& controller_name) {
+  const auto dof_node = cfg["arm_dof"];
+  if (!dof_node || dof_node.IsNull()) {
+    // Migration aid (#340): name the exact line to add. The value implied by
+    // the old implicit source is reported, never adopted — adopting it would
+    // be a fallback, and on that path ParseArmSafePosition's length check
+    // would go vacuous again, which is the whole point of this key.
+    std::string suggested = "<arm joint count>";
+    std::string origin = "the arm joint count";
+    const auto estop_node = cfg["estop"];
+    if (estop_node && estop_node.IsMap() && estop_node["arm_safe_position"] &&
+        estop_node["arm_safe_position"].IsSequence()) {
+      suggested = std::to_string(estop_node["arm_safe_position"].size());
+      origin = "matching estop.arm_safe_position length";
+    }
+    throw std::runtime_error(controller_name + ": required key 'arm_dof' is missing - add " +
+                             "'arm_dof: " + suggested + "' (" + origin + ")");
+  }
+  if (!dof_node.IsScalar()) {
+    throw std::runtime_error(controller_name + ": 'arm_dof' must be an integer");
+  }
+  int arm_dof = 0;
+  try {
+    arm_dof = dof_node.as<int>();
+  } catch (const YAML::Exception&) {
+    throw std::runtime_error(controller_name + ": 'arm_dof' must be an integer");
+  }
+  if (arm_dof < 1 || arm_dof > max_arm_dof) {
+    throw std::runtime_error(controller_name + ": 'arm_dof' " + std::to_string(arm_dof) +
+                             " out of range [1, " + std::to_string(max_arm_dof) + "]");
+  }
+  return arm_dof;
+}
+
 std::vector<double> RTControllerInterface::ParseArmSafePosition(
     const YAML::Node& cfg, std::size_t expected_size, const std::string& controller_name) {
   if (!cfg["estop"] || !cfg["estop"].IsMap()) {

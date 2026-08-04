@@ -709,11 +709,34 @@ class RTControllerInterface {
       std::array<std::vector<double>, ControllerState::kMaxDevices>& max_velocity,
       double default_lower, double default_upper, double default_velocity) const;
 
+  // ── L2: arm DOF YAML parser ────────────────────────────────────────────
+  //   Reads the REQUIRED top-level `cfg["arm_dof"]` scalar and range-checks it
+  //   against the caller's own maximum (`max_arm_dof` — base assumes no
+  //   specific count; 6-DOF UR5/UR10, 7-DOF KUKA iiwa, etc. all valid).
+  //
+  //   This is the single source of the runtime arm DOF at LoadConfig time.
+  //   It used to be the LENGTH of `estop.arm_safe_position`, which made
+  //   ParseArmSafePosition's cross-check vacuous — the definer cannot
+  //   disagree with itself (#340). With an independent source, all three of
+  //   that function's throws become reachable in production.
+  //
+  //   The key is required with NO fallback: on absence the error message
+  //   spells out the migration (controller name, key to add, and the value
+  //   implied by the existing `estop.arm_safe_position` length). It does not
+  //   adopt that value — adopting it would BE the fallback, and the guard
+  //   would go vacuous again on exactly the configs that need it.
+  //
+  //   Throws std::runtime_error on missing / wrong-type / out-of-range input.
+  static int ParseArmDof(const YAML::Node& cfg, int max_arm_dof,
+                         const std::string& controller_name);
+
   // ── L2: E-STOP safe-position YAML parser ───────────────────────────────
   //   Extracts and validates a fixed-length sequence under
   //   `cfg["estop"]["arm_safe_position"]`. `expected_size` is the controller's
   //   own arm DOF (caller-supplied — base does not assume any specific count;
-  //   6-DOF UR5/UR10, 7-DOF KUKA iiwa, etc. all valid).
+  //   6-DOF UR5/UR10, 7-DOF KUKA iiwa, etc. all valid). Pass the value from
+  //   ParseArmDof(), never the sequence's own length — the latter makes the
+  //   length check below unreachable (#340).
   //
   //   `controller_name` is included in error messages so users can locate
   //   the offending YAML quickly.

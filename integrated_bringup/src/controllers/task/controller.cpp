@@ -226,14 +226,14 @@ void DemoTaskController::OnDeviceConfigsSet() {
   const auto secondary = GetSecondaryDeviceName();
 
   // ── Runtime DoF resolution ─────────────────────────────────────────────
-  // arm_dof_ was set from YAML `estop.arm_safe_position` in LoadConfig.
+  // arm_dof_ was set from the YAML `arm_dof` key in LoadConfig.
   // Resolve hand_dof_ from secondary device joint_state_names and
   // cross-validate arm DoF against primary device joint_state_names.
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     const auto js_size = static_cast<int>(cfg->joint_state_names.size());
     if (js_size > 0 && arm_dof_ > 0 && js_size != arm_dof_) {
       RCLCPP_ERROR(logger_,
-                   "[task] arm DoF mismatch: estop.arm_safe_position=%d but primary device "
+                   "[task] arm DoF mismatch: arm_dof=%d but primary device "
                    "'%s' joint_state_names size=%d",
                    arm_dof_, primary.c_str(), js_size);
     }
@@ -806,28 +806,23 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
     (void)combined_cache_.InitModel(*builder_, /*contact_frame_ids=*/{}, "[task]", logger_);
   }
 
-  // ── E-STOP arm safe position (required) ─────────────────────────────
+  // ── arm DoF + E-STOP arm safe position (both required) ──────────────
   // Lift L2: estop arm safe position parsing.
   //
-  // Runtime arm_dof_ is established from the YAML's `estop.arm_safe_position`
-  // length (authoritative at LoadConfig time; device configs arrive later in
-  // OnDeviceConfigsSet, which cross-checks joint_state_names size).
-  if (!cfg["estop"] || !cfg["estop"]["arm_safe_position"] ||
-      !cfg["estop"]["arm_safe_position"].IsSequence()) {
-    throw std::runtime_error(
-        "demo_task_controller: required 'estop.arm_safe_position' must be a sequence");
-  }
+  // Runtime arm_dof_ comes from the required top-level `arm_dof` key, not from
+  // the length of `estop.arm_safe_position` — that length used to define the
+  // DoF, which made ParseArmSafePosition's own checks unreachable in
+  // production (#340). The two sources are independent now, so that function's
+  // three throws are live here; do NOT pre-check them at this call site.
+  //
+  // Device configs arrive later in OnDeviceConfigsSet, which cross-checks
+  // joint_state_names size against arm_dof_.
   {
-    const auto seq_size = cfg["estop"]["arm_safe_position"].size();
-    if (seq_size == 0 || seq_size > static_cast<std::size_t>(kDemoTaskMaxArmDof)) {
-      throw std::runtime_error("demo_task_controller: 'estop.arm_safe_position' size " +
-                               std::to_string(seq_size) + " out of range [1, " +
-                               std::to_string(kDemoTaskMaxArmDof) + "]");
-    }
-    arm_dof_ = static_cast<int>(seq_size);
-    const auto sp = ParseArmSafePosition(cfg, seq_size, "demo_task_controller");
+    arm_dof_ = ParseArmDof(cfg, kDemoTaskMaxArmDof, "demo_task_controller");
+    const auto sp =
+        ParseArmSafePosition(cfg, static_cast<std::size_t>(arm_dof_), "demo_task_controller");
     safe_position_.fill(0.0);
-    for (std::size_t i = 0; i < seq_size; ++i) {
+    for (std::size_t i = 0; i < sp.size(); ++i) {
       safe_position_[i] = sp[i];
     }
   }

@@ -31,7 +31,7 @@
 
 Config는 세 단계에 분산되며 호출 순서가 중요하다.
 
-1. **`LoadConfig`** (Tier 1, device config 도착 전) — Pinocchio 모델, TSID init, task/constraint factory, phase preset 사전 해석. **arm DoF는 `estop.arm_safe_position` 길이에서 확정**한다.
+1. **`LoadConfig`** (Tier 1, device config 도착 전) — Pinocchio 모델, TSID init, task/constraint factory, phase preset 사전 해석. **arm DoF는 필수 키 `arm_dof` 에서 확정**하고, `estop.arm_safe_position` 의 길이는 그 값에 대해 *검증*된다 (#340 — 이전에는 길이가 DoF를 정의해 이 교차검증이 도달 불가였다).
 2. **`OnDeviceConfigsSet`** (device config 도착 후) — `hand_dof_`/`full_dof_` 및 joint reorder map 구성, `se3_tcp.base_frame` ↔ `urdf.root_link` 검증. 이 콜백은 throw할 수 없으므로 mismatch는 `base_frame_mismatch_` 플래그로 지연시킨다.
 3. **`on_configure`** — 플래그가 서 있으면 transition FAIL. owned topic/TF slot/CSV log/service 등록, `DeclareGainParameters`, `InitClik`. **TSID가 init됐는데 CLIK enable에 실패하면 configure를 FAIL시킨다** — CLIK이 유일한 위치 backbone이기 때문이다.
 
