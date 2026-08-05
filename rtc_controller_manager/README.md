@@ -433,8 +433,10 @@ slot 2 (`rt_callback`, SCHED_FIFO 70) 는 **RT 스레드 중 유일하게 계측
 | `t_state_us` | decode + SeqLock store (콜백 진입 → `NotifyStateReady()`) |
 | `t_compute_us` | 0 — 이 lane 은 제어 법칙을 돌리지 않는다 |
 | `t_publish_us` | mailbox hand-off (dirty bit + eventfd). **notify 하지 않는 lane (hand motor/sensor) 은 0** |
-| `t_total_us` | 콜백 전체 — slot 2 duty 의 분자 |
+| `t_total_us` | **콜백 본문 전체** — 아래 주의 참조 |
 | `jitter_us` | 0 — 이벤트 구동이라 deadline 이 없다. **dispatch 간격은 연속 행의 `t_wall_ns` 차분으로 복원**한다 |
+
+**`t_total_us` 는 스레드 점유율이 아니라 콜백 본문 시간이다.** 스코프는 사용자 콜백의 첫 문장에서 열리므로 rclcpp executor 의 dispatch (rmw_wait · `take_type_erased` · 역직렬화) 는 span **밖**이다 — 그 비용은 같은 스레드에서 소모되지만 이 CSV 에 안 잡힌다. 따라서 `Σ t_total_us / 관측창` 은 slot 2 duty 의 **하한**이며, aux 통합 여유를 판정할 때는 `/proc/<rt_callback tid>/stat` 의 utime+stime 과 교차 검증한다. 계측 대상은 backend 의 state lane 콜백 전부 — arm joint, hand joint/motor/sensor, MuJoCo joint + fingertip wrench — 이며 같은 그룹의 콜백을 하나라도 빠뜨리면 분자가 그만큼 더 작아진다.
 
 CM은 `StartRtLoop`에서 `rt_loop_.SetTimingProducer<>` 한 줄로 base에 ring을 위임 — base가 매 tick payload를 push한다. `ControlLoop()` 내부의 t1/t2 마킹은 `rt_loop_.StampStateAcquired()` / `StampComputeDone()` 두 줄. `DrainLog()`가 `cm_timing_producer_.Drain(...)`로 CSV에 기록. 윈도우 INFO summary에 `timing_drops` (producer overflow 카운터)가 `pub_drops`와 함께 출력된다.
 

@@ -121,6 +121,12 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
   // L2 under the rt_callback executor's ros2:callback_* (L1) — the fingertip
   // wrench SeqLock write on the rt_callback lane.
   RTC_TRACE_SCOPE("MujocoNativeBackend::OnWrench");
+  // This is a sensor lane on the same FIFO 70 thread as the joint lane, so it
+  // belongs in the same CSV: #349 reads the sum of t_total_us as slot 2's
+  // load, and a group with fingertip_wrench_topics configured runs one of
+  // these per fingertip per sample. Leaving it out understated that load by
+  // however many fingertip lanes were enabled.
+  StateLaneTimingScope timing_scope(*this);
   if (finger_idx < 0 || finger_idx >= static_cast<int>(kMaxSensorGroups)) {
     return;
   }

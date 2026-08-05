@@ -1047,7 +1047,7 @@ print_thread_layout() {
   local ncpu="${1:-$(get_physical_cores)}"
   echo -e "  ${BOLD}Thread layout (${ncpu}-core, layout ${RTC_THREAD_LAYOUT_VERSION})${NC}"
 
-  local os_slot rt_ctl rt_cb mpc_main arm hand nrt_log nrt_cb
+  local os_slot rt_ctl rt_cb mpc_main arm hand nrt_log nrt_cb nrt_pub
   os_slot=$(get_os_cores)
   rt_ctl=$(get_role_slot rt_control "$ncpu")
   rt_cb=$(get_role_slot rt_callback "$ncpu")
@@ -1056,6 +1056,11 @@ print_thread_layout() {
   hand=$(get_hand_driver_slot "$ncpu")
   nrt_log=$(get_role_slot nrt_logging "$ncpu")
   nrt_cb=$(get_role_slot nrt_callback "$ncpu")
+  # nrt_publish is its own thread with its own comm name (#349 D15), not part
+  # of nrt_callback. Omitting it here showed the operator one thread on a core
+  # where verify_rt_runtime.sh now expects two -- the same class of drift the
+  # header warns about, one layer up from the numbers.
+  nrt_pub=$(get_role_slot nrt_publish "$ncpu")
 
   # MPC lane: main alone, or main + however many workers this tier declares.
   local mpc_cores mpc_last mpc_label mpc_sched mpc_policy idx prios prio
@@ -1078,7 +1083,7 @@ print_thread_layout() {
 
   if [[ "$ncpu" -le 5 ]]; then
     # Degraded: everything that is not RT collapses onto the OS slot.
-    _ptl_row "Core ${os_slot}" "OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (slot ${arm}/${hand}) + hand_aux_io (degraded)"
+    _ptl_row "Core ${os_slot}" "OS / DDS / NIC IRQ + nrt_logging + nrt_callback + nrt_publish + arm/hand_driver (slot ${arm}/${hand}) + hand_aux_io (degraded)"
     _ptl_row "Core ${rt_ctl}" "rt_control   ($(_ptl_sched rt_control "$ncpu"))"
     _ptl_row "Core ${rt_cb}" "rt_callback  ($(_ptl_sched rt_callback "$ncpu"); DDS recv co-pin, degraded)"
     _ptl_row "$(_ptl_span "$mpc_main" "$mpc_last")" "${mpc_label}     (${mpc_sched})"
@@ -1095,17 +1100,28 @@ print_thread_layout() {
     _ptl_row "Core ${arm}" "arm_driver   (CFS, taskset pin)"
     _ptl_row "Core ${hand}" "hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
   fi
+  # nrt_publish rides nrt_callback's slot on every tier today; derive the
+  # comparison rather than assume it, so a tier that ever splits them prints
+  # a third row instead of hiding the thread.
+  local nrt_cb_label
+  nrt_cb_label="nrt_callback ($(_ptl_sched nrt_callback "$ncpu"))"
+  if [[ "$nrt_pub" == "$nrt_cb" ]]; then
+    nrt_cb_label="${nrt_cb_label} + nrt_publish ($(_ptl_sched nrt_publish "$ncpu"))"
+  fi
   if [[ "$nrt_log" == "$nrt_cb" ]]; then
-    _ptl_row "Core ${nrt_log}" "nrt_logging ($(_ptl_sched nrt_logging "$ncpu")) + nrt_callback ($(_ptl_sched nrt_callback "$ncpu")) shared (degraded)"
+    _ptl_row "Core ${nrt_log}" "nrt_logging ($(_ptl_sched nrt_logging "$ncpu")) + ${nrt_cb_label} shared (degraded)"
   else
     _ptl_row "Core ${nrt_log}" "nrt_logging  ($(_ptl_sched nrt_logging "$ncpu"))"
-    _ptl_row "Core ${nrt_cb}" "nrt_callback ($(_ptl_sched nrt_callback "$ncpu"))"
+    _ptl_row "Core ${nrt_cb}" "${nrt_cb_label}"
+  fi
+  if [[ "$nrt_pub" != "$nrt_cb" && "$nrt_pub" != "$nrt_log" ]]; then
+    _ptl_row "Core ${nrt_pub}" "nrt_publish  ($(_ptl_sched nrt_publish "$ncpu"))"
   fi
 
   # Slots past the highest claimed one are spare. Derived, so a tier that grows
   # a role automatically shrinks the spare span instead of overstating it.
   local highest spare_lo last
-  highest=$(printf '%s\n' "$rt_ctl" "$rt_cb" "$mpc_last" "$arm" "$hand" "$nrt_log" "$nrt_cb" |
+  highest=$(printf '%s\n' "$rt_ctl" "$rt_cb" "$mpc_last" "$arm" "$hand" "$nrt_log" "$nrt_cb" "$nrt_pub" |
     sort -n | tail -1)
   spare_lo=$((highest + 1))
   last=$((ncpu - 1))

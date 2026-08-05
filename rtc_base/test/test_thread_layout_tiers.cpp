@@ -448,21 +448,97 @@ TEST(ThreadLayoutTiers, InactiveMpcWorkersDoNotCollideWithDrivers) {
       << "inactive worker reported as a collision partner: " << err;
 }
 
+// A synthetic layout for the co-residency cases below, built by hand instead
+// of taken from SelectThreadConfigsForCoreCount(host).
+//
+// Binding those cases to the host's own tier made two of them host-dependent:
+//
+//   - The 4/5-core tiers demote mpc_main to SCHED_OTHER, so "collide
+//     rt_callback with mpc_main" puts two RT roles on one core on a 12-core
+//     box and one RT role next to a CFS one on a 4-core box. The rule
+//     correctly stays silent there and the assertion fails -- for an
+//     environment reason, on a machine where nothing is wrong.
+//   - ValidateThreadConfig range-checks cpu_core against *this host*, so on a
+//     box with fewer cores than the lowest tier's highest slot the
+//     precondition "the base layout is clean" is false before any mutation.
+//
+// The shape below mirrors the 4-core tier (RT on slots 1-3, everything CFS
+// collapsed onto the OS slot), so it is clean on any host with four physical
+// cores and, being fixed, exercises the same rule on every machine. Each case
+// asserts its own substring appears only *after* the mutation rather than
+// asserting the whole error string is empty, so a host smaller than four
+// cores adds "Invalid CPU core slot" noise without flipping any verdict.
+// Whether the shipped tiers themselves are clean is a separate question,
+// covered by TiersThatFitThisHostPassTheValidator (host-gated) and by
+// gen_thread_layout.py --self-test (host-independent, every tier).
+rtc::SystemThreadConfigs MakeCoResidencyFixture() {
+  const auto cfs = [](int slot, int nice, const char* name) {
+    return rtc::ThreadConfig{.cpu_core = slot,
+                             .sched_policy = SCHED_OTHER,
+                             .sched_priority = 0,
+                             .nice_value = nice,
+                             .name = name};
+  };
+  rtc::SystemThreadConfigs cfg{};
+  cfg.rt_control = {.cpu_core = 1,
+                    .sched_policy = SCHED_FIFO,
+                    .sched_priority = 90,
+                    .nice_value = 0,
+                    .name = "rt_control"};
+  cfg.rt_callback = {.cpu_core = 2,
+                     .sched_policy = SCHED_FIFO,
+                     .sched_priority = 70,
+                     .nice_value = 0,
+                     .name = "rt_callback"};
+  cfg.mpc.main = {.cpu_core = 3,
+                  .sched_policy = SCHED_FIFO,
+                  .sched_priority = 60,
+                  .nice_value = 0,
+                  .name = "mpc_main"};
+  cfg.mpc.num_workers = 0;
+  cfg.nrt_logging = cfs(rtc::kOsSlot, -5, "nrt_logging");
+  cfg.nrt_callback = cfs(rtc::kOsSlot, 0, "nrt_callback");
+  cfg.nrt_publish = cfs(rtc::kOsSlot, 0, "nrt_publish");
+  cfg.arm_driver = cfs(rtc::kOsSlot, 0, "arm_driver");
+  cfg.hand_driver = cfs(rtc::kOsSlot, 0, "hand_driver");
+  cfg.sim_thread = cfs(-1, 0, "sim_thread");
+  cfg.viewer = cfs(-1, 0, "viewer");
+  return cfg;
+}
+
 // Co-residency rules (issue #349 D-co). These mirror
 // gen_thread_layout.py::run_self_test; the C++ copy is what a deployment box
 // evaluates at startup for its own tier, the Python copy is what CI can reach
 // for every tier. Both are needed -- neither covers the other's blind spot.
 TEST(ThreadLayoutTiers, ValidatorRejectsCoResidencyViolations) {
-  const int host_cores = rtc::GetPhysicalCpuCount();
-  rtc::SystemThreadConfigs base = rtc::SelectThreadConfigsForCoreCount(host_cores);
-  ASSERT_TRUE(rtc::ValidateSystemThreadConfigs(base).empty())
-      << "this host's own tier must be clean before mutating it";
+  const rtc::SystemThreadConfigs base = MakeCoResidencyFixture();
+
+  // Negative control: the fixture must not already carry the signatures the
+  // mutations below look for, or every case would pass without mutating
+  // anything. Asserted per-substring rather than on emptiness so this stays
+  // meaningful on a host too small to represent slot 3.
+  const std::string clean = rtc::ValidateSystemThreadConfigs(base);
+  for (const char* signature :
+       {"shares rt_control's core", "carries two RT roles", "is RT on the OS/DDS/IRQ core"}) {
+    ASSERT_EQ(clean.find(signature), std::string::npos)
+        << "fixture already trips '" << signature << "': " << clean;
+  }
 
   // 1. Nothing may share rt_control's core.
   {
     rtc::SystemThreadConfigs bad = base;
     bad.nrt_logging.cpu_core = bad.rt_control.cpu_core;
     EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("shares rt_control's core"),
+              std::string::npos);
+  }
+  // 1b. Including nrt_publish. It is the role #349 added, it shares
+  //     nrt_callback's slot on every shipped tier, and it was invisible to
+  //     this validator until it joined the all_configs table -- so the rule
+  //     that guards the control loop's core skipped it entirely.
+  {
+    rtc::SystemThreadConfigs bad = base;
+    bad.nrt_publish.cpu_core = bad.rt_control.cpu_core;
+    EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("'nrt_publish' shares rt_control's core"),
               std::string::npos);
   }
   // 2. Two RT roles on one core, even at different priorities.
@@ -477,6 +553,15 @@ TEST(ThreadLayoutTiers, ValidatorRejectsCoResidencyViolations) {
     rtc::SystemThreadConfigs bad = base;
     bad.rt_callback.cpu_core = rtc::kOsSlot;
     EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("is RT on the OS/DDS/IRQ core"),
+              std::string::npos);
+  }
+  // 4. Per-config validation reaches nrt_publish too: an out-of-range slot on
+  //    that role used to slip past ValidateSystemThreadConfigs entirely and
+  //    only surface as an ApplyThreadConfig failure at thread start.
+  {
+    rtc::SystemThreadConfigs bad = base;
+    bad.nrt_publish.cpu_core = 1 << 20;
+    EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("Invalid CPU core slot"),
               std::string::npos);
   }
 }

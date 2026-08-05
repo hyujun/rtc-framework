@@ -1510,6 +1510,15 @@ test_print_thread_layout_derives_every_core_number() {
     else
       fail "[layout.nrt_logging.${n}] nrt_logging slot 이 다이어그램에 없다"
     fi
+    # nrt_publish 는 자기 comm 이름을 가진 별개 스레드다 (#349 D15). 역할
+    # 목록은 손으로 쓰는 부분이라 여기 빠지면 다이어그램은 코어에 스레드
+    # 하나를 보여주는데 verify_rt_runtime.sh 는 둘을 기대한다 — 운영자가
+    # co-residency 를 진단하는 바로 그 화면에서 갈린다.
+    if grep -qE "Core $(get_role_slot nrt_publish "$n")[:-].*nrt_publish" <<<"$out"; then
+      pass
+    else
+      fail "[layout.nrt_publish.${n}] nrt_publish 가 자기 slot 행에 없다"
+    fi
     # MPC lane 은 단일 코어면 "Core 3", worker 가 있으면 "Core 3-5" 로 그린다.
     local first last
     first=$(get_mpc_cores "$n" | cut -d',' -f1)

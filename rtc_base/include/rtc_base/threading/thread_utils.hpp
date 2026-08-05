@@ -699,6 +699,12 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
   errors += ValidateThreadConfig(configs.rt_callback);
   errors += ValidateThreadConfig(configs.nrt_logging);
   errors += ValidateThreadConfig(configs.nrt_callback);
+  // nrt_publish is a real in-process thread (the controller-owned publish
+  // jthread, issue #349 D15), not a process-level pin, so it gets the same
+  // per-config check as its executor sibling. Omitting it left its slot,
+  // policy and name unvalidated until ApplyThreadConfig refused them at
+  // thread start.
+  errors += ValidateThreadConfig(configs.nrt_publish);
   // Process-level configs (arm_driver / hand_driver / sim_thread / viewer)
   // are applied as taskset pins by the launch script (not via
   // ApplyThreadConfig), and sim_thread / viewer may carry cpu_core = -1 to
@@ -752,16 +758,22 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
     bool active;
   };
 
-  // Layout v4: 4 fixed thread roles + 4 process-level pins (arm/hand,
+  // Layout v4: 5 fixed thread roles + 4 process-level pins (arm/hand,
   // sim/viewer) + mpc main + up to kMpcMaxWorkers. Process-level configs are
   // included so their cpu_core participates in the disjointness sweep below,
   // but their SCHED_OTHER policy means they cannot trigger an RT/RT
   // same-priority conflict (the only error condition).
-  const std::array<NamedConfig, 8 + 1 + kMpcMaxWorkers> all_configs = {{
+  //
+  // Every role in SystemThreadConfigs must appear here. nrt_publish did not
+  // when it was added (issue #349 D15) and was therefore skipped by every
+  // rule in this function, including the three co-residency rules added by
+  // the same change -- the sensor had a hole exactly where the new role sat.
+  const std::array<NamedConfig, 9 + 1 + kMpcMaxWorkers> all_configs = {{
       {"rt_control", &configs.rt_control, true},
       {"rt_callback", &configs.rt_callback, true},
       {"nrt_logging", &configs.nrt_logging, true},
       {"nrt_callback", &configs.nrt_callback, true},
+      {"nrt_publish", &configs.nrt_publish, true},
       {"arm_driver", &configs.arm_driver, true},
       {"hand_driver", &configs.hand_driver, true},
       {"sim_thread", &configs.sim_thread, true},

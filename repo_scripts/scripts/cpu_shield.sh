@@ -93,8 +93,24 @@ SHIELD_MODE_FILE="/tmp/cpu_shield_mode"
 # space-separated ids. Pure string→string, no I/O: this is the part the tests
 # drive (test_cpu_shield_mask.sh), because the reader below cannot be tested
 # on a box without cset.
+#
+# Whitespace is folded to commas first because `_rt_parse_cpulist` splits on
+# commas only and then *strips* spaces inside each field: " 2 3 " reached it as
+# one field and came back as the single id 23. That made this function
+# non-idempotent — its own output ("2 3 4 ...") fed back in collapsed to one
+# nonexistent cpu id — and made the third example in the line above false. No
+# caller passes a space-separated list today; one that did would have compared
+# the desired mask against a bogus id, never matched, and reset a shield that
+# was already correct on every launch.
 normalise_cpu_set() {
   local raw="${1:-}"
+  [[ -z "$raw" ]] && { echo ""; return 0; }
+  # Collapse any whitespace run to a single comma, then drop the empty fields
+  # that leading/trailing whitespace produces.
+  raw="${raw//[[:space:]]/,}"
+  while [[ "$raw" == *,,* ]]; do raw="${raw//,,/,}"; done
+  raw="${raw#,}"
+  raw="${raw%,}"
   [[ -z "$raw" ]] && { echo ""; return 0; }
   local ids
   ids=$(_rt_parse_cpulist "$raw") || return 1
@@ -126,8 +142,13 @@ shield_actual_user_cpus() {
   command -v cset &>/dev/null || return 1
   # Fall back to parsing cset's own status. Accept any line naming the user
   # cpuset and take the first CPUSPEC(...) / cpus: <list> / bare list on it.
-  local line spec
-  line=$(cset shield -s 2>/dev/null | grep -i 'user' | head -1) || return 1
+  # Capture first and filter in the shell rather than piping through `head`:
+  # under `set -o pipefail` a `grep | head -1` pipeline reports 141 when grep
+  # is SIGPIPE'd writing the second matching line, which would turn a
+  # perfectly readable mask into "cannot tell" and trigger a needless rebuild.
+  local status_out line spec
+  status_out=$(cset shield -s 2>/dev/null) || return 1
+  line=$(grep -i -m1 'user' <<<"$status_out") || return 1
   [[ -z "$line" ]] && return 1
   spec=$(sed -nE 's/.*CPUSPEC\(([0-9,-]+)\).*/\1/p' <<<"$line")
   [[ -z "$spec" ]] && spec=$(sed -nE 's/.*cpus:[[:space:]]*([0-9,-]+).*/\1/p' <<<"$line")
@@ -136,8 +157,16 @@ shield_actual_user_cpus() {
 }
 
 # Exit 0 when the active shield already matches `desired` for `mode`.
-# Anything else — no shield, unreadable mask, different cores, different mode
-# — exits non-zero so the caller reconfigures.
+#
+# Exit 2 is the narrow middle case: the cores are exactly right and only the
+# mode marker disagrees (missing file after a /tmp cleanup, or a previous run
+# in the other mode). It is separated from exit 1 because the remedy differs —
+# rewriting a marker costs nothing, whereas `cset shield --reset` evicts every
+# process already adopted into the user cpuset. Both modes currently compute
+# the same core range, so a mode-only mismatch never implies a wrong mask.
+#
+# Exit 1 for everything else — no shield, unreadable mask, different cores —
+# so the caller reconfigures.
 shield_matches_desired() {
   local mode="${1:-robot}" desired="${2:-}"
   local want have
@@ -151,7 +180,7 @@ shield_matches_desired() {
   # diverge again later and a stale marker would misreport `status`.
   local current_mode=""
   [[ -f "$SHIELD_MODE_FILE" ]] && current_mode=$(cat "$SHIELD_MODE_FILE" 2>/dev/null || echo "")
-  [[ "$current_mode" == "$mode" ]]
+  [[ "$current_mode" == "$mode" ]] || return 2
 }
 
 # ── Command: on ──────────────────────────────────────────────────────────────
@@ -176,8 +205,19 @@ do_on() {
   # version compared only the mode string, so a layout change left the wide
   # shield in place while logging the narrow one.
   if command -v cset &>/dev/null; then
-    if shield_matches_desired "$mode" "$shield_cores"; then
+    local match_rc=0
+    shield_matches_desired "$mode" "$shield_cores" || match_rc=$?
+    if [[ "$match_rc" -eq 0 ]]; then
       info "Shield already active and current (mode: ${mode}, cores: ${shield_cores})"
+      return 0
+    fi
+    if [[ "$match_rc" -eq 2 ]]; then
+      # Cores are already exactly right; only the marker is stale or gone.
+      # Tearing the shield down here would evict every adopted process to fix
+      # a text file, and the old message said the shield "differs" while
+      # printing the identical core list twice.
+      info "Shield cores already correct (${shield_cores}); refreshing mode marker → ${mode}"
+      echo "$mode" >"$SHIELD_MODE_FILE"
       return 0
     fi
     local actual
