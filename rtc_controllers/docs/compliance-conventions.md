@@ -293,6 +293,7 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 | `IsGateClosedByWidth(dev, model_dim)` | "닫힌 게이트가 **왜** 닫혔는가" — 폭 축. 진단 전용, 출력에 관여하지 않음 | 게이트 판정 **직후**. true 면 아래 진단 로그 (#307) |
 | `IsGateClosedByHoles(dev, model_dim)` | 같은 질문의 **구멍 축** (#284). 폭 판정을 *통과한* device 만 대상이라 위 술어와 배타적 | 같은 자리. 둘은 `valid` 한 device 의 폐쇄를 전수 분할한다 |
 | `FirstHoleSlot(dev, model_dim)` | 모델 폭 안에서 **안 써진 가장 낮은 슬롯** (없으면 -1) — 진단 메시지가 지목할 자리 | `IsGateClosedByHoles` 가 true 인 tick 의 로그 인자 |
+| `IsSlotFresh(dev, slot)` | "이 **한 슬롯**을 이번 tick 에 써도 되는가" — prefix 가 아닌 특정 `(device, channel)` 을 읽는 reader 용 (#284 후속) | 명명된 관절을 임의 위치에서 뽑는 자리 (closed-chain q 브릿지 등). 게이트로 물으면 과잉거부/미검사 둘 중 하나가 된다 |
 | `SelfReportedChannelBound(dev, cap)` | "선언된 폭이 없을 때 device **자기 보고에서 어떤 폭을 채택**해도 되는가" — 구멍 없는 prefix, `min(nc0, cap)` 이 **아니다** | 바인딩의 deferred self-init 처럼 폭을 **latch** 하는 자리. 근거는 아래 §per-slot freshness |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | **그 게이트가 판정한 device 에만.** primary 게이트는 primary 만 침묵시키고 secondary 는 그대로 둔다 — secondary 가 *자기* 폭으로 판독 불가일 때는 secondary 도 침묵한다 (#291, 아래 표) |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane (`target_*` / `trajectory_*`) 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** — 아래 참조 |
@@ -434,6 +435,16 @@ bound 되므로 방금 통과한 게이트를 다시 닫을 수 없다"* 를 근
 prefix** 로 자른다 — 구멍이 없는 device 는 예전과 같은 답을 받으므로 기존 테스트는 불변이다.
 불변식 `IsDeviceReadable(dev, SelfReportedChannelBound(dev, cap))` 은 `test_device_readability.cpp`
 의 `TheAdoptedWidthAlwaysPassesTheGate` 가 pin 한다.
+
+**접은 항의 도달 범위는 "이 술어를 부르는 소비자" 까지다.** #284 는 세 번째 항을 게이트에 접으면
+모든 소비자가 편집 없이 강한 답을 받는다고 적었고 그건 참이지만, **술어를 부르지 않고 본문을 손수
+재구현한 reader** 는 그 밖이다. 실제로 하나 있었다 — `ClosedChainHandFk::Update`
+(`integrated_bringup/src/support/closed_chain_hand_fk.cpp`) 가 소스 채널마다
+`valid && channel < num_channels` 를 손수 검사해 구멍 난 슬롯의 직전 값을 측정값으로 사영했고,
+같은 파일의 `IsDeviceReadable` 호출은 **serial 경로 전용**이라 closed 경로를 덮지 않았다.
+그 reader 는 prefix 가 아니라 특정 `(device, channel)` 쌍을 읽으므로 맞는 짝은 게이트가 아니라
+**`IsSlotFresh`** 이고, 그래서 그 형태에 이름을 줬다 (손수 만든 사본은 원본의 변경이 못 미친다).
+전수 훑기 결과 그런 reader 는 저장소에 그 하나였다.
 
 **이 원인이 startup 전용은 아니다.** 마스크는 메시지마다 대입되므로 나중 메시지가 앞선 메시지의
 슬롯을 구멍으로 만들 수 있다. 보통은 `num_channels` 도 함께 좁아져 **폭** 축이 발화하지만, 넓은
