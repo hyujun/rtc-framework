@@ -60,9 +60,13 @@ if(BUILD_TESTING)
   # Python mirror, the two README tables) is stale or was edited by hand. CI
   # runs the same command; registering it here means `colcon test` and the Stop
   # hook catch it too, without waiting for a push.
+  # TIMEOUT covers the slow path, not the normal one: with a system clang-format
+  # this runs in well under a second, but on a box without one the generator
+  # falls back to the pinned clang-format through uvx (the same fallback the
+  # PostToolUse hook uses) and the first run downloads it.
   ament_add_test(test_gen_thread_layout_check
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_thread_layout.py --check
-    TIMEOUT 60
+    TIMEOUT 180
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
   # The generator's own invariants: emitters are formatter-stable (so the
@@ -70,7 +74,7 @@ if(BUILD_TESTING)
   # keeps its structural rules on every tier.
   ament_add_test(test_gen_thread_layout_self_test
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_thread_layout.py --self-test
-    TIMEOUT 60
+    TIMEOUT 180
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
   # Semantic equivalence, not just fresh files: manifest vs *executed* shell

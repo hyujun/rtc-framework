@@ -20,6 +20,12 @@
 
 namespace rtc {
 
+// kMpcMaxWorkers sizes MpcThreadConfig::workers and is hand-written in
+// thread_config.hpp (it has to precede the struct that uses it, so it cannot
+// come from this file). The manifest declares the same number; without this
+// assert, lowering max_workers below it silently over-allocates the array.
+static_assert(kMpcMaxWorkers == 2, "kMpcMaxWorkers must match max_workers in thread_layout.yaml");
+
 // ── 4-core fallback (layout v4.1) ──
 //   Slot 0: OS / DDS / IRQ + arm_driver (CFS 0) + hand_driver (CFS 0) + nrt_callback (CFS 0)
 //            + nrt_logging (CFS -5)
@@ -614,38 +620,80 @@ inline const ThreadConfig kViewerConfig16Core{.cpu_core = -1,
 // tests can sweep tiers the host machine does not have.
 inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
   if (ncpu >= 16) {
-    return {kRtControlConfig16Core,   kRtCallbackConfig16Core, kNrtLoggingConfig16Core,
-            kNrtCallbackConfig16Core, kArmDriverConfig16Core,  kHandDriverConfig16Core,
-            kSimThreadConfig16Core,   kViewerConfig16Core,     kMpcConfig16Core};
+    return {.rt_control = kRtControlConfig16Core,
+            .rt_callback = kRtCallbackConfig16Core,
+            .nrt_logging = kNrtLoggingConfig16Core,
+            .nrt_callback = kNrtCallbackConfig16Core,
+            .arm_driver = kArmDriverConfig16Core,
+            .hand_driver = kHandDriverConfig16Core,
+            .sim_thread = kSimThreadConfig16Core,
+            .viewer = kViewerConfig16Core,
+            .mpc = kMpcConfig16Core};
   }
   if (ncpu >= 14) {
-    return {kRtControlConfig14Core,   kRtCallbackConfig14Core, kNrtLoggingConfig14Core,
-            kNrtCallbackConfig14Core, kArmDriverConfig14Core,  kHandDriverConfig14Core,
-            kSimThreadConfig14Core,   kViewerConfig14Core,     kMpcConfig14Core};
+    return {.rt_control = kRtControlConfig14Core,
+            .rt_callback = kRtCallbackConfig14Core,
+            .nrt_logging = kNrtLoggingConfig14Core,
+            .nrt_callback = kNrtCallbackConfig14Core,
+            .arm_driver = kArmDriverConfig14Core,
+            .hand_driver = kHandDriverConfig14Core,
+            .sim_thread = kSimThreadConfig14Core,
+            .viewer = kViewerConfig14Core,
+            .mpc = kMpcConfig14Core};
   }
   if (ncpu >= 12) {
-    return {kRtControlConfig12Core,   kRtCallbackConfig12Core, kNrtLoggingConfig12Core,
-            kNrtCallbackConfig12Core, kArmDriverConfig12Core,  kHandDriverConfig12Core,
-            kSimThreadConfig12Core,   kViewerConfig12Core,     kMpcConfig12Core};
+    return {.rt_control = kRtControlConfig12Core,
+            .rt_callback = kRtCallbackConfig12Core,
+            .nrt_logging = kNrtLoggingConfig12Core,
+            .nrt_callback = kNrtCallbackConfig12Core,
+            .arm_driver = kArmDriverConfig12Core,
+            .hand_driver = kHandDriverConfig12Core,
+            .sim_thread = kSimThreadConfig12Core,
+            .viewer = kViewerConfig12Core,
+            .mpc = kMpcConfig12Core};
   }
   if (ncpu >= 10) {
-    return {kRtControlConfig10Core,   kRtCallbackConfig10Core, kNrtLoggingConfig10Core,
-            kNrtCallbackConfig10Core, kArmDriverConfig10Core,  kHandDriverConfig10Core,
-            kSimThreadConfig10Core,   kViewerConfig10Core,     kMpcConfig10Core};
+    return {.rt_control = kRtControlConfig10Core,
+            .rt_callback = kRtCallbackConfig10Core,
+            .nrt_logging = kNrtLoggingConfig10Core,
+            .nrt_callback = kNrtCallbackConfig10Core,
+            .arm_driver = kArmDriverConfig10Core,
+            .hand_driver = kHandDriverConfig10Core,
+            .sim_thread = kSimThreadConfig10Core,
+            .viewer = kViewerConfig10Core,
+            .mpc = kMpcConfig10Core};
   }
   if (ncpu >= 8) {
-    return {kRtControlConfig8Core,   kRtCallbackConfig8Core, kNrtLoggingConfig8Core,
-            kNrtCallbackConfig8Core, kArmDriverConfig8Core,  kHandDriverConfig8Core,
-            kSimThreadConfig8Core,   kViewerConfig8Core,     kMpcConfig8Core};
+    return {.rt_control = kRtControlConfig8Core,
+            .rt_callback = kRtCallbackConfig8Core,
+            .nrt_logging = kNrtLoggingConfig8Core,
+            .nrt_callback = kNrtCallbackConfig8Core,
+            .arm_driver = kArmDriverConfig8Core,
+            .hand_driver = kHandDriverConfig8Core,
+            .sim_thread = kSimThreadConfig8Core,
+            .viewer = kViewerConfig8Core,
+            .mpc = kMpcConfig8Core};
   }
   if (ncpu >= 6) {
-    return {kRtControlConfig,   kRtCallbackConfig, kNrtLoggingConfig,
-            kNrtCallbackConfig, kArmDriverConfig,  kHandDriverConfig,
-            kSimThreadConfig,   kViewerConfig,     kMpcConfig6Core};
+    return {.rt_control = kRtControlConfig,
+            .rt_callback = kRtCallbackConfig,
+            .nrt_logging = kNrtLoggingConfig,
+            .nrt_callback = kNrtCallbackConfig,
+            .arm_driver = kArmDriverConfig,
+            .hand_driver = kHandDriverConfig,
+            .sim_thread = kSimThreadConfig,
+            .viewer = kViewerConfig,
+            .mpc = kMpcConfig6Core};
   }
-  return {kRtControlConfig4Core,   kRtCallbackConfig4Core, kNrtLoggingConfig4Core,
-          kNrtCallbackConfig4Core, kArmDriverConfig4Core,  kHandDriverConfig4Core,
-          kSimThreadConfig4Core,   kViewerConfig4Core,     kMpcConfig4Core};
+  return {.rt_control = kRtControlConfig4Core,
+          .rt_callback = kRtCallbackConfig4Core,
+          .nrt_logging = kNrtLoggingConfig4Core,
+          .nrt_callback = kNrtCallbackConfig4Core,
+          .arm_driver = kArmDriverConfig4Core,
+          .hand_driver = kHandDriverConfig4Core,
+          .sim_thread = kSimThreadConfig4Core,
+          .viewer = kViewerConfig4Core,
+          .mpc = kMpcConfig4Core};
 }
 
 }  // namespace rtc

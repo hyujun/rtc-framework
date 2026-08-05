@@ -23,15 +23,19 @@ Usage::
     python3 repo_scripts/scripts/gen_thread_layout.py --self-test
 
 ``--check`` compares byte-for-byte, so it catches both a stale artifact (someone
-edited the manifest and forgot to regenerate) and a hand-edited artifact.  It
-needs no external formatter: the emitters produce clang-format/ruff-clean text
-by construction, and ``--self-test`` asserts that property wherever those tools
-are installed.
+edited the manifest and forgot to regenerate) and a hand-edited artifact.  The
+C++ header is compared *after* clang-format, so that one axis does need the
+formatter -- resolved exactly the way ``.claude/hooks/format-code.sh`` resolves
+it (system binary first, then the pinned release through ``uvx``), because that
+hook keeps rewriting the header on boxes where the system binary is missing.  If
+no candidate exists at all the header is reported as skipped rather than falsely
+stale, and CI installs clang-format so all five artifacts stay in scope there.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -181,12 +185,42 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
         )
     tiers.sort(key=lambda t: t.min_cores)
 
+    # `in_controller_process` declares which roles verify_rt_runtime.sh may hunt
+    # for inside the controller process, but nothing consumed it: verifier_order
+    # alone drove the generated table.  Listing an external process there
+    # (arm/hand/sim/viewer) emits a row the verifier can never match and WARNs
+    # forever on a healthy box -- issue #353 verbatim, which the comment above
+    # verifier_order claims to prevent.  The reverse hole is worse: dropping an
+    # in-process thread from verifier_order removes it from the expected table
+    # with no other signal.  Enforce the two sides against each other.
+    verifier_order = tuple(data["verifier_order"])
+    in_process: list[str] = []
+    for entry in roles:
+        if entry.get("kind") == "mpc":
+            if entry["main"].get("in_controller_process"):
+                in_process.append(str(entry["main"]["key"]))
+            if entry["worker"].get("in_controller_process"):
+                in_process.extend(
+                    f"{entry['worker']['key_prefix']}{index}" for index in range(max_workers)
+                )
+        elif entry.get("in_controller_process"):
+            in_process.append(str(entry["key"]))
+    if set(verifier_order) != set(in_process):
+        missing = sorted(set(in_process) - set(verifier_order)) or ["-"]
+        extra = sorted(set(verifier_order) - set(in_process)) or ["-"]
+        raise SystemExit(
+            f"{path.relative_to(REPO_ROOT)}: verifier_order must list exactly the roles "
+            "carrying in_controller_process: true.\n"
+            f"  in-process but unverified: {', '.join(missing)}\n"
+            f"  listed but not in-process (would false-WARN, #353): {', '.join(extra)}"
+        )
+
     return Manifest(
         layout_version=str(data["layout_version"]),
         os_slot=int(data["os_slot"]),
         roles=roles,
         tiers=tiers,
-        verifier_order=tuple(data["verifier_order"]),
+        verifier_order=verifier_order,
         max_workers=max_workers,
         outputs=dict(data["outputs"]),
         doc_blocks=list(data.get("doc_blocks", [])),
@@ -347,6 +381,15 @@ def emit_cpp(m: Manifest) -> str:
     out.append("#include <sched.h>  // SCHED_FIFO, SCHED_OTHER, SCHED_RR")
     out.append("")
     out.append("namespace rtc {")
+    out.append("")
+    out.append("// kMpcMaxWorkers sizes MpcThreadConfig::workers and is hand-written in")
+    out.append("// thread_config.hpp (it has to precede the struct that uses it, so it cannot")
+    out.append("// come from this file). The manifest declares the same number; without this")
+    out.append("// assert, lowering max_workers below it silently over-allocates the array.")
+    out.append(
+        f"static_assert(kMpcMaxWorkers == {m.max_workers},"
+        ' "kMpcMaxWorkers must match max_workers in thread_layout.yaml");'
+    )
 
     for tier in m.tiers:
         out.append("")
@@ -400,6 +443,12 @@ def emit_cpp(m: Manifest) -> str:
     out.append("// runtime-probing wrapper; this overload takes the core count explicitly so")
     out.append("// tests can sweep tiers the host machine does not have.")
     out.append("inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {")
+    # SystemThreadConfigs' member order. Eight of its nine members share the
+    # ThreadConfig type, so a positional aggregate init still compiled with the
+    # roles permuted and every thread silently took its neighbour's slot and
+    # priority. The emitted designated initializers make that a compile error
+    # (C++20 requires them in declaration order); the set check below closes the
+    # other half -- a manifest role that never reaches the struct at all.
     field_order = [
         "rt_control",
         "rt_callback",
@@ -411,10 +460,19 @@ def emit_cpp(m: Manifest) -> str:
         "viewer",
         "mpc",
     ]
+    declared_roles = {str(entry["key"]) for entry in m.roles}
+    if set(field_order) != declared_roles:
+        missing = sorted(declared_roles - set(field_order)) or ["-"]
+        extra = sorted(set(field_order) - declared_roles) or ["-"]
+        raise SystemExit(
+            "gen_thread_layout.py: field_order and the manifest's roles disagree; "
+            "SelectThreadConfigsForCoreCount() would leave a member default-initialised.\n"
+            f"  in the manifest, not emitted: {', '.join(missing)}\n"
+            f"  emitted, not in the manifest: {', '.join(extra)}"
+        )
     tiers_desc = m.tiers_desc
     for index, tier in enumerate(tiers_desc):
-        symbols = [_cpp_symbol(m, key, tier) for key in field_order]
-        body = ", ".join(symbols)
+        body = ", ".join(f".{key} = {_cpp_symbol(m, key, tier)}" for key in field_order)
         if index == len(tiers_desc) - 1:
             out.append(f"  return {{{body}}};")
         else:
@@ -760,9 +818,15 @@ def _end(block: str) -> str:
     return f"<!-- END GENERATED: {block} -->"
 
 
-def render_doc(m: Manifest, path: Path, block: str) -> str:
-    """Return ``path``'s content with ``block`` refreshed from the manifest."""
-    text = path.read_text(encoding="utf-8")
+def render_doc(m: Manifest, path: Path, block: str, text: str | None = None) -> str:
+    """Return ``path``'s content with ``block`` refreshed from the manifest.
+
+    ``text`` carries the result of an earlier block in the same file; without it
+    a second block would be rendered against the on-disk text and the first
+    block's refresh would be dropped on the floor.
+    """
+    if text is None:
+        text = path.read_text(encoding="utf-8")
     begin, end = _begin(block), _end(block)
     if begin not in text or end not in text:
         raise SystemExit(
@@ -806,23 +870,66 @@ def build_targets(m: Manifest) -> tuple[dict[Path, str], list[str]]:
         targets[cpp_path] = formatted
     for entry in m.doc_blocks:
         path = REPO_ROOT / entry["file"]
-        targets[path] = render_doc(m, path, entry["block"])
+        # Chain, never overwrite: two blocks in one file must both survive.
+        targets[path] = render_doc(m, path, entry["block"], targets.get(path))
     return targets, skipped
 
 
+# Formatter lookup mirrors .claude/hooks/format-code.sh. That hook keeps
+# reformatting these artifacts on boxes without a system binary -- it falls back
+# to the pinned clang-format through uvx and finds ruff inside the workspace
+# venv -- so a generator that only consulted PATH would stop gating precisely
+# the files the hook keeps rewriting.
+_CLANG_FORMAT_PIN = "18.1.8"  # keep in sync with .claude/hooks/format-code.sh
+
+
+def _clang_format_candidates(path: Path) -> list[list[str]]:
+    tail = ["--style=file", f"--assume-filename={path}"]
+    return [
+        ["clang-format", *tail],
+        ["uvx", "--from", f"clang-format=={_CLANG_FORMAT_PIN}", "clang-format", *tail],
+    ]
+
+
+def _ruff_candidates(target: str) -> list[list[str]]:
+    tail = ["format", "--stdin-filename", target, "-"]
+    candidates: list[list[str]] = []
+    venv = os.environ.get("VIRTUAL_ENV")
+    if venv:
+        candidates.append([str(Path(venv) / "bin" / "ruff"), *tail])
+    # <rtc_ws>/.venv, the isolated env install.sh creates beside this checkout.
+    candidates.append([str(REPO_ROOT.parents[1] / ".venv" / "bin" / "ruff"), *tail])
+    candidates.append(["ruff", *tail])
+    return candidates
+
+
+def _run_formatter(candidates: list[list[str]], text: str) -> tuple[str | None, str | None]:
+    """Run the first available formatter; return ``(stdout, error)``.
+
+    ``(None, None)`` means no candidate exists at all -- a skip, not a failure.
+    """
+    error: str | None = None
+    for argv in candidates:
+        # uvx may have to download the pinned release on its first run.
+        timeout = 120 if argv[0] == "uvx" else 60
+        try:
+            result = subprocess.run(
+                argv, input=text, capture_output=True, text=True, check=False, timeout=timeout
+            )
+        except FileNotFoundError:
+            continue
+        except subprocess.TimeoutExpired:
+            error = f"{argv[0]} timed out after {timeout}s"
+            continue
+        if result.returncode == 0:
+            return result.stdout, None
+        error = f"{argv[0]} failed: {result.stderr.strip()[:200]}"
+    return None, error
+
+
 def _clang_format(text: str, path: Path) -> str | None:
-    try:
-        result = subprocess.run(
-            ["clang-format", "--style=file", f"--assume-filename={path}"],
-            input=text,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    return result.stdout if result.returncode == 0 else None
+    formatted, _ = _run_formatter(_clang_format_candidates(path), text)
+    return formatted
 
 
 def run_check(m: Manifest) -> int:
@@ -858,7 +965,8 @@ def run_write(m: Manifest) -> int:
         for note in skipped:
             print(f"cannot generate {note}", file=sys.stderr)
         print(
-            "Install clang-format (apt install clang-format) and re-run --write: "
+            "Install clang-format (apt install clang-format, or uv so the pinned "
+            f"clang-format=={_CLANG_FORMAT_PIN} can run through uvx) and re-run --write: "
             "emitting unformatted C++ would make --check fail everywhere else.",
             file=sys.stderr,
         )
@@ -877,19 +985,12 @@ def run_write(m: Manifest) -> int:
     return 0
 
 
-def _formatter_clean(argv: list[str], text: str, label: str) -> str | None:
+def _formatter_clean(candidates: list[list[str]], text: str, label: str) -> str | None:
     """Run a formatter over ``text``; return its output, or None when unavailable."""
-    try:
-        result = subprocess.run(
-            argv, input=text, capture_output=True, text=True, check=False, timeout=60
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        print(f"  skip  {label}: formatter unavailable")
-        return None
-    if result.returncode != 0:
-        print(f"  skip  {label}: formatter failed ({result.stderr.strip()[:200]})")
-        return None
-    return result.stdout
+    formatted, error = _run_formatter(candidates, text)
+    if formatted is None:
+        print(f"  skip  {label}: {error or 'formatter unavailable'}")
+    return formatted
 
 
 def run_self_test(m: Manifest) -> int:
@@ -908,17 +1009,13 @@ def run_self_test(m: Manifest) -> int:
     cpp = targets.get(REPO_ROOT / m.outputs["cpp"])
     if cpp is not None:
         formatted = _formatter_clean(
-            ["clang-format", "--style=file", f"--assume-filename={REPO_ROOT / m.outputs['cpp']}"],
-            cpp,
-            "clang-format",
+            _clang_format_candidates(REPO_ROOT / m.outputs["cpp"]), cpp, "clang-format"
         )
         if formatted is not None and formatted != cpp:
             failures.append("emit_cpp output is not clang-format stable")
 
     py = emit_python(m)
-    formatted = _formatter_clean(
-        ["ruff", "format", "--stdin-filename", m.outputs["python"], "-"], py, "ruff format"
-    )
+    formatted = _formatter_clean(_ruff_candidates(m.outputs["python"]), py, "ruff format")
     if formatted is not None and formatted != py:
         failures.append("emit_python output is not ruff-format stable")
 
@@ -941,6 +1038,19 @@ def run_self_test(m: Manifest) -> int:
             worker = tier.specs[f"mpc_worker_{index}"]
             if worker.priority > mpc_main.priority:
                 failures.append(f"tier {tier.id}: mpc_worker_{index} priority > mpc_main")
+        # arm/hand must not land on an RT controller slot -- the same rule
+        # ValidateSystemThreadConfigs() enforces, asserted here because that
+        # validator range-checks slots against *this host's* core count, so the
+        # C++ test can only reach tiers the host is big enough to represent. A
+        # bad slot on the 12/14/16-core tiers would otherwise ship green from
+        # every gate and only surface on a deployment box.
+        rt_slots = {slot for slot in rt_cores(m, tier) if slot >= 0}
+        for role in ("arm_driver", "hand_driver"):
+            slot = tier.specs[role].slot
+            if slot >= 0 and slot in rt_slots:
+                failures.append(
+                    f"tier {tier.id}: {role} slot {slot} collides with an RT controller slot"
+                )
 
     if failures:
         print("self-test FAILED:", file=sys.stderr)
