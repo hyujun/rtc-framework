@@ -166,6 +166,19 @@ build_expected_threads() {
   # 거짓말하는 방향이라 그냥 틀린 것보다 비싸다 (issue #353 이 arm/hand 축에서
   # 겪은 것과 같은 실패이고, #153 M1 이 나머지 축을 같은 자리로 모았다).
   mapfile -t EXPECTED_THREADS < <(rtc_expected_threads "$PHYSICAL_CORES")
+
+  # 빈 표는 fail-open 이다: 아래 감지 루프는 EXPECTED_THREADS 를 순회하며
+  # known_count 를 세므로, 표가 비면 known_count 도 expected_count 도 0 이 되어
+  # `0 -eq 0` 으로 _pass "스레드 전체 감지: 0/0" 을 내고 이후 모든 affinity /
+  # policy / migration 루프가 0회 돈다 — 코어가 전부 틀린 박스를 green 으로
+  # 통과시킨다. 리터럴 배열이던 시절엔 불가능했던 상태이고, 지금은 생성 파일
+  # 미로드 (설치 누락 · rename) 하나로 도달한다. 미검증은 PASS 가 아니다.
+  if [[ ${#EXPECTED_THREADS[@]} -eq 0 ]]; then
+    echo "ERROR: rtc_expected_threads(${PHYSICAL_CORES}) 가 빈 표를 반환했다." >&2
+    echo "       repo_scripts/scripts/lib/thread_layout_generated.sh 가 rt_common.sh 와" >&2
+    echo "       함께 설치돼 있는지 확인할 것 (source 실패는 set -e 없이 조용히 지나간다)." >&2
+    exit 2
+  fi
 }
 
 # ── External driver process 기대값 (arm_driver / hand_driver) ─────────────────

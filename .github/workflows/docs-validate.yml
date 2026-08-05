@@ -66,8 +66,14 @@ jobs:
       # generator *skips* that artifact rather than reporting a false STALE --
       # which would make this job quietly stop gating the header it exists to
       # gate. Installing it keeps all five artifacts in scope here.
+      # apt-get update first: runner images ship with a pruned
+      # /var/lib/apt/lists, where a bare install dies with "Unable to locate
+      # package" and takes this whole job down with it. .github/actions/
+      # setup-rtc-env does the same for the same reason.
       - name: Install clang-format
-        run: sudo apt-get install -y --no-install-recommends clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format
 
       # Fails when any generated artifact (C++ tier constants, shell helpers,
       # Python launch mirror, the two README tables) is stale or hand-edited.

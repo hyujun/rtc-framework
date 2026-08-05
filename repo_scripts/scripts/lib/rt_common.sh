@@ -1058,7 +1058,7 @@ print_thread_layout() {
   nrt_cb=$(get_role_slot nrt_callback "$ncpu")
 
   # MPC lane: main alone, or main + however many workers this tier declares.
-  local mpc_cores mpc_last mpc_label mpc_sched idx prios
+  local mpc_cores mpc_last mpc_label mpc_sched mpc_policy idx prios prio
   mpc_cores=$(get_mpc_cores "$ncpu")
   mpc_last="${mpc_cores##*,}"
   prios=$(get_role_priority mpc_main "$ncpu")
@@ -1069,24 +1069,25 @@ print_thread_layout() {
     mpc_label="mpc_main + workers"
     idx=$((idx + 1))
   done
-  if [[ "$(get_role_policy mpc_main "$ncpu")" == "SCHED_OTHER" ]]; then
+  mpc_policy=$(get_role_policy mpc_main "$ncpu")
+  if [[ "$mpc_policy" == "SCHED_OTHER" ]]; then
     mpc_sched="CFS, degraded"
   else
-    mpc_sched="SCHED_FIFO ${prios}"
+    mpc_sched="${mpc_policy} ${prios}"
   fi
 
   if [[ "$ncpu" -le 5 ]]; then
     # Degraded: everything that is not RT collapses onto the OS slot.
     _ptl_row "Core ${os_slot}" "OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (slot ${arm}/${hand}) + hand_aux_io (degraded)"
-    _ptl_row "Core ${rt_ctl}" "rt_control   (SCHED_FIFO $(get_role_priority rt_control "$ncpu"))"
-    _ptl_row "Core ${rt_cb}" "rt_callback  (SCHED_FIFO $(get_role_priority rt_callback "$ncpu"); DDS recv co-pin, degraded)"
+    _ptl_row "Core ${rt_ctl}" "rt_control   ($(_ptl_sched rt_control "$ncpu"))"
+    _ptl_row "Core ${rt_cb}" "rt_callback  ($(_ptl_sched rt_callback "$ncpu"); DDS recv co-pin, degraded)"
     _ptl_row "$(_ptl_span "$mpc_main" "$mpc_last")" "${mpc_label}     (${mpc_sched})"
     return 0
   fi
 
   _ptl_row "Core ${os_slot}" "OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
-  _ptl_row "Core ${rt_ctl}" "rt_control   (SCHED_FIFO $(get_role_priority rt_control "$ncpu"))"
-  _ptl_row "Core ${rt_cb}" "rt_callback  (SCHED_FIFO $(get_role_priority rt_callback "$ncpu"); DDS recv co-pin via taskset, CFS)"
+  _ptl_row "Core ${rt_ctl}" "rt_control   ($(_ptl_sched rt_control "$ncpu"))"
+  _ptl_row "Core ${rt_cb}" "rt_callback  ($(_ptl_sched rt_callback "$ncpu"); DDS recv co-pin via taskset, CFS)"
   _ptl_row "$(_ptl_span "$mpc_main" "$mpc_last")" "${mpc_label} (${mpc_sched})"
   if [[ "$arm" == "$hand" ]]; then
     _ptl_row "Core ${arm}" "arm_driver + hand_driver (shared, degraded; hand_udp_recv FIFO 65)"
@@ -1095,10 +1096,10 @@ print_thread_layout() {
     _ptl_row "Core ${hand}" "hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
   fi
   if [[ "$nrt_log" == "$nrt_cb" ]]; then
-    _ptl_row "Core ${nrt_log}" "nrt_logging (CFS $(get_role_nice nrt_logging "$ncpu")) + nrt_callback (CFS $(get_role_nice nrt_callback "$ncpu")) shared (degraded)"
+    _ptl_row "Core ${nrt_log}" "nrt_logging ($(_ptl_sched nrt_logging "$ncpu")) + nrt_callback ($(_ptl_sched nrt_callback "$ncpu")) shared (degraded)"
   else
-    _ptl_row "Core ${nrt_log}" "nrt_logging  (CFS $(get_role_nice nrt_logging "$ncpu"))"
-    _ptl_row "Core ${nrt_cb}" "nrt_callback (CFS $(get_role_nice nrt_callback "$ncpu"))"
+    _ptl_row "Core ${nrt_log}" "nrt_logging  ($(_ptl_sched nrt_logging "$ncpu"))"
+    _ptl_row "Core ${nrt_cb}" "nrt_callback ($(_ptl_sched nrt_callback "$ncpu"))"
   fi
 
   # Slots past the highest claimed one are spare. Derived, so a tier that grows
@@ -1110,6 +1111,20 @@ print_thread_layout() {
   last=$((ncpu - 1))
   if [[ "$spare_lo" -le "$last" ]]; then
     _ptl_row "$(_ptl_span "$spare_lo" "$last")" "spare / user shield"
+  fi
+}
+
+# Scheduler label for one role: "SCHED_FIFO 90" for an RT policy, "CFS -5" for
+# SCHED_OTHER. Derived rather than written out, so a manifest policy change
+# cannot leave this diagram telling the operator a policy the layout dropped
+# (the numbers were already generated; the policy words were not).
+_ptl_sched() {
+  local role="$1" ncpu="$2" policy
+  policy=$(get_role_policy "$role" "$ncpu") || return 1
+  if [[ "$policy" == "SCHED_OTHER" ]]; then
+    echo "CFS $(get_role_nice "$role" "$ncpu")"
+  else
+    echo "${policy} $(get_role_priority "$role" "$ncpu")"
   fi
 }
 
