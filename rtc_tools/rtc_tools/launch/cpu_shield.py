@@ -57,11 +57,20 @@ def enable_cpu_shield(
     (``cpu_shield.sh::compute_shield_cores`` funnels both to
     ``get_cm_shield_cpus``), so the flag only selects the mode-specific extras.
 
-    The active-shield test checks ``cset shield -s`` **before** falling back to
-    ``/sys/devices/system/cpu/isolated``. That order is the #151 fix: a cset
+    The active-shield test runs ``cpu_shield.sh check`` **before** falling back
+    to ``/sys/devices/system/cpu/isolated``. That order is the #151 fix: a cset
     shield writes nothing to ``isolated`` — that file is for isolcpus — so an
     isolcpus-only test reads an active cset shield as "not active" and re-runs
     ``on`` on every launch.
+
+    ``check`` rather than a local ``cset shield -s | grep user`` (issue #349
+    D14): presence is not currency. After a layout change the old, wider shield
+    is still "present", so the grep skipped the reconfigure and the cores were
+    never returned — while the log said the shield was active. ``check``
+    compares the active mask against the desired one and exits non-zero when
+    they differ *or when it cannot tell*, so the fall-through re-applies. It
+    needs no root, which is why this stays a cheap pre-test rather than always
+    paying the sudo path.
 
     ``gated=False`` drops the ``use_cpu_affinity`` :class:`IfCondition`, for
     callers that already decided in Python whether to build this action at all.
@@ -84,8 +93,8 @@ def enable_cpu_shield(
             "fi; "
             "ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
             "if command -v cset >/dev/null 2>&1 && "
-            '   cset shield -s 2>/dev/null | grep -q "user"; then '
-            f'  echo "{log_prefix} CPU shield already active (cset user cpuset present)"; '
+            f'   "$SHIELD" check {mode} >/dev/null 2>&1; then '
+            f'  echo "{log_prefix} CPU shield already active and current"; '
             'elif [ -n "$ISOLATED" ]; then '
             f'  echo "{log_prefix} CPU shield already active: Core $ISOLATED isolated (isolcpus)"; '
             "else "

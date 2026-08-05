@@ -236,7 +236,8 @@ SCHED_FIFO prio 55  mpc_worker_0..1     ← parallel rollout / linear solve
 ─────────────────────── RT / NRT 경계 ───────────────────────
 SCHED_FIFO prio 65  kHandUdpRecvConfig  ← hand_driver 프로세스 내부 (분리 프로세스)
 SCHED_OTHER nice -5 nrt_logging         ← CSV drain (I/O bound)
-SCHED_OTHER nice  0 nrt_callback        ← controller subs · services · nrt_publish_thread
+SCHED_OTHER nice  0 nrt_callback        ← controller subs · services (executor)
+SCHED_OTHER nice  0 nrt_publish         ← controller-owned publish jthread; nrt_callback 과 같은 코어, comm 이름은 별개 (#349 D15)
 SCHED_OTHER nice  0 arm/hand_driver     ← process-level (taskset only)
 SCHED_OTHER nice  0 sim_thread · viewer ← MuJoCo physics · GLFW
 ```

@@ -70,6 +70,13 @@ inline constexpr std::size_t kMpcTimingBufferCapacity = 128;
 /// 500 Hz; drained at 1 Hz by the node's aux timer.
 inline constexpr std::size_t kHandUdpTimingBufferCapacity = 512;
 
+/// SPSC ring capacity for the rt_callback lane (issue #349). Sized above the
+/// CM lane because this producer is fed by EVERY device state callback on the
+/// thread, not one periodic tick: an arm joint lane plus a hand joint / motor /
+/// sensor triple all push here. 2048 slots ≈ 1 s of headroom for four lanes at
+/// 500 Hz; drained at 100 Hz alongside cm_timing_log.csv.
+inline constexpr std::size_t kRtCallbackTimingBufferCapacity = 2048;
+
 using RtTickTimingSample = ThreadTimingSample<RtTickTimingPayload>;
 
 using CmTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kCmTimingBufferCapacity>;
@@ -77,6 +84,24 @@ using CmTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kCmTimingBuffer
 using MpcTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kMpcTimingBufferCapacity>;
 
 using HandUdpTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kHandUdpTimingBufferCapacity>;
+
+/// Per-callback timing for the rt_callback thread (SCHED_FIFO 70, layout v4.1
+/// slot 2). Single-producer holds because CM hands every backend the SAME
+/// MutuallyExclusive callback group, so the lanes are serialised onto one
+/// thread — the same invariant the backends' SeqLock single-writer rule
+/// already leans on. Field mapping for this lane:
+///
+///   t_state_us    decode + SeqLock store (callback entry → NotifyStateReady)
+///   t_compute_us  0 — this lane runs no control law
+///   t_publish_us  the mailbox hand-off (dirty bit + eventfd), 0 on lanes that
+///                 do not notify
+///   t_total_us    whole callback span — the numerator of slot-2 duty
+///   jitter_us     0 — arrivals are event-driven, not deadline-scheduled, so
+///                 the schema's "non-deadline wakeup producers emit 0" rule
+///                 applies. Dispatch cadence is recoverable from consecutive
+///                 `t_wall_ns` deltas, which every row already carries.
+using RtCallbackTimingBuffer =
+    ThreadTimingProducer<RtTickTimingPayload, kRtCallbackTimingBufferCapacity>;
 
 }  // namespace rtc
 

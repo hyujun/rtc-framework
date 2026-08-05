@@ -556,6 +556,19 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rtc::CmTimingBuffer cm_timing_producer_{};
   rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> cm_timing_logger_{};
 
+  // Per-callback rt_callback-lane timing → <session>/timing/rt_callback_timing_log.csv
+  // (issue #349). Producer is the rt_callback thread (FIFO 70, slot 2): every
+  // backend state callback pushes one row via DeviceBackend::StateLaneTimingScope.
+  // Consumer is the same DrainLog() at 100 Hz that drains the CM lane.
+  //
+  // This lane exists because slot 2 is the thread #349 proposes to merge the
+  // nrt lanes onto, and it was the one RT thread with no measurement channel —
+  // the 93%-idle figure that motivated the merge is rt_control on slot 1, a
+  // different core. Sharing RtTickTimingPayload keeps it joinable with
+  // cm_timing_log.csv in the same analysis pass.
+  rtc::RtCallbackTimingBuffer rt_callback_timing_producer_{};
+  rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> rt_callback_timing_logger_{};
+
   // ── Shared state ──────────────────────────────────────────────────────────
   // Device state lives inside each DeviceBackend (per-device SeqLock,
   // lock-free single-writer/multi-reader). Writer: backend's own sub

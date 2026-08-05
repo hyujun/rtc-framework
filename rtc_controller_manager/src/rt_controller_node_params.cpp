@@ -827,6 +827,17 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                     "CSV disabled",
                     timing_path.string().c_str());
       }
+
+      // rt_callback lane (issue #349) — one row per backend state callback on
+      // slot 2, same schema so it joins with the CM lane above.
+      const auto rt_cb_timing_path = timing_dir / "rt_callback_timing_log.csv";
+      if (!rt_callback_timing_logger_.Open(rt_cb_timing_path, &urtc::WriteRtTickTimingHeader,
+                                           &urtc::WriteRtTickTimingRow)) {
+        RCLCPP_WARN(get_logger(),
+                    "Failed to open rt_callback_timing_log.csv at %s — "
+                    "rt_callback lane timing CSV disabled",
+                    rt_cb_timing_path.string().c_str());
+      }
     }
 
     RCLCPP_INFO(get_logger(), "Session dir: %s (max_sessions=%d)", session_dir.string().c_str(),

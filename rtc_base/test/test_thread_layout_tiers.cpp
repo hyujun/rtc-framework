@@ -314,6 +314,14 @@ TEST(ThreadLayoutTiers, EveryRoleMatchesTheSpecOnEveryTier) {
     ExpectMatches(ncpu + " hand_driver", cfgs.hand_driver, tier.hand_driver);
     ExpectMatches(ncpu + " nrt_logging", cfgs.nrt_logging, tier.nrt_logging);
     ExpectMatches(ncpu + " nrt_callback", cfgs.nrt_callback, tier.nrt_callback);
+    // nrt_publish is specified *relative* to nrt_callback — same slot, same
+    // policy, same priority, different name — so it is pinned that way rather
+    // than by an 18th column of literals repeating the one beside it. The
+    // value is still nailed down: tier.nrt_callback above is a literal, so a
+    // wrong manifest slot for either role fails one of these two checks.
+    // Should nrt_publish ever earn its own core, this is the assertion that
+    // forces the change to be deliberate.
+    ExpectMatches(ncpu + " nrt_publish", cfgs.nrt_publish, tier.nrt_callback);
     ExpectMatches(ncpu + " sim_thread", cfgs.sim_thread, tier.sim_thread);
     ExpectMatches(ncpu + " viewer", cfgs.viewer, tier.viewer);
 
@@ -339,6 +347,11 @@ TEST(ThreadLayoutTiers, ThreadNamesAreStableAndWithinTaskCommLen) {
     EXPECT_STREQ(cfgs.rt_callback.name, "rt_callback") << ncpu;
     EXPECT_STREQ(cfgs.nrt_logging.name, "nrt_logging") << ncpu;
     EXPECT_STREQ(cfgs.nrt_callback.name, "nrt_callback") << ncpu;
+    // The whole reason nrt_publish exists as its own role: a distinct comm.
+    // If this ever equals "nrt_callback" again, verify_rt_runtime.sh silently
+    // goes back to checking one of the two threads (issue #349 D15).
+    EXPECT_STREQ(cfgs.nrt_publish.name, "nrt_publish") << ncpu;
+    EXPECT_STRNE(cfgs.nrt_publish.name, cfgs.nrt_callback.name) << ncpu;
     EXPECT_STREQ(cfgs.arm_driver.name, "arm_driver") << ncpu;
     EXPECT_STREQ(cfgs.hand_driver.name, "hand_driver") << ncpu;
     EXPECT_STREQ(cfgs.sim_thread.name, "sim_thread") << ncpu;
@@ -354,52 +367,44 @@ TEST(ThreadLayoutTiers, ThreadNamesAreStableAndWithinTaskCommLen) {
     // the verifier would match a prefix it never expects.
     for (const rtc::ThreadConfig* cfg :
          {&cfgs.rt_control, &cfgs.rt_callback, &cfgs.nrt_logging, &cfgs.nrt_callback,
-          &cfgs.arm_driver, &cfgs.hand_driver, &cfgs.sim_thread, &cfgs.viewer, &cfgs.mpc.main}) {
+          &cfgs.nrt_publish, &cfgs.arm_driver, &cfgs.hand_driver, &cfgs.sim_thread, &cfgs.viewer,
+          &cfgs.mpc.main}) {
       EXPECT_LE(std::string(cfg->name).size(), 15U) << ncpu << ": " << cfg->name;
     }
   }
 }
 
-// A manifest edit must not introduce an RT/RT same-priority collision or an
-// arm/hand pin that lands on an RT controller core.
+// A manifest edit must not introduce an RT/RT collision, an arm/hand pin that
+// lands on an RT controller core, or a co-residency violation (issue #349).
 //
-// Two pre-existing properties of the validator bound what this can assert, and
-// neither is something M1 introduced (M1 changed no layout value):
+// One pre-existing property of the validator still bounds what this can
+// assert, and it is not something M1 introduced (M1 changed no layout value):
+// ValidateThreadConfig() range-checks cpu_core against *this host's* online CPU
+// count, so a tier above the host's size always fails. That is why
+// test_mpc_thread_config.cpp gates its own validation on the host tier; the
+// same gate applies here.
 //
-//  1. ValidateThreadConfig() range-checks cpu_core against *this host's* online
-//     CPU count, so a tier above the host's size always fails. That is why
-//     test_mpc_thread_config.cpp gates its own validation on the host tier;
-//     the same gate applies here.
-//  2. On tiers with num_workers == 0 the inactive workers[] entries are
-//     zero-initialised, so their cpu_core is 0 -- and the arm/hand
-//     disjointness sweep keys off the hard-coded NamedConfig *name*
-//     ("mpc_worker_0"), not on whether that worker is active. On every tier
-//     where arm/hand also sit on slot 0 (ncpu <= 5) the validator therefore
-//     reports a collision against a worker that does not exist. The comment
-//     above that array reasons only about the RT/RT same-priority check, which
-//     the all-zero policy does make unreachable -- the disjointness check was
-//     not considered. Reported on issue #153; fixing it changes validator
-//     behaviour, which is outside M1's "pure representation change" scope.
+// The second bound is gone. Tiers with num_workers == 0 used to be skipped
+// because the zero-initialised workers[] entries sat on cpu_core 0 and the
+// arm/hand disjointness sweep classified them by hard-coded name, reporting
+// collisions against workers that do not exist. #349 marks inactive workers
+// inactive in the NamedConfig table, so those tiers are now checked like any
+// other -- which is the point: the 4-core tier is exactly the one that parks
+// arm/hand on slot 0, and it was the one this fixture could not look at.
 TEST(ThreadLayoutTiers, TiersThatFitThisHostPassTheValidator) {
   const int host_cores = rtc::GetPhysicalCpuCount();
   int checked = 0;
   int skipped_too_large = 0;
-  int skipped_false_positive = 0;
   for (const TierExpectation& tier : AllTiers()) {
     const rtc::SystemThreadConfigs cfgs = rtc::SelectThreadConfigsForCoreCount(tier.ncpu);
 
-    // (1) skip tiers whose slots this host cannot represent.
+    // Skip tiers whose slots this host cannot represent.
     const int highest =
         std::max({cfgs.rt_control.cpu_core, cfgs.rt_callback.cpu_core, cfgs.mpc.main.cpu_core,
                   cfgs.arm_driver.cpu_core, cfgs.hand_driver.cpu_core, cfgs.nrt_logging.cpu_core,
                   cfgs.nrt_callback.cpu_core});
     if (highest >= host_cores) {
       ++skipped_too_large;
-      continue;
-    }
-    // (2) skip the degraded tiers where the inactive-worker false positive fires.
-    if (cfgs.mpc.num_workers == 0 && cfgs.arm_driver.cpu_core == 0) {
-      ++skipped_false_positive;
       continue;
     }
 
@@ -409,20 +414,155 @@ TEST(ThreadLayoutTiers, TiersThatFitThisHostPassTheValidator) {
   }
   // A fixture that silently checks nothing is the failure mode this guards --
   // but on this axis "checked nothing" is a property of the *host*, not of the
-  // code under review. (2) excludes the 4-core tier, so the lowest tier that
-  // survives is the 6-core one, whose highest slot is 5: every host below six
-  // physical cores skips all of them. Failing there would turn the gated merge
-  // job red for an environment reason (a CI runner is far smaller than a
-  // control box). Report it as a skip instead -- visible in the test report,
-  // never a silent pass -- and note where the axis stays covered: the
-  // arm/hand-vs-RT disjointness rule is asserted at the manifest level by
-  // `gen_thread_layout.py --self-test`, which needs no host at all.
+  // code under review. The lowest tier is now reachable (highest slot 3), so
+  // this only trips on a host with fewer than four physical cores. Failing
+  // there would turn the gated merge job red for an environment reason.
+  // Report it as a skip instead -- visible in the test report, never a silent
+  // pass -- and note where the axis stays covered: every rule asserted here is
+  // also asserted at the manifest level by `gen_thread_layout.py --self-test`,
+  // which needs no host at all.
   if (checked == 0) {
-    GTEST_SKIP() << "no tier both fits this " << host_cores
-                 << "-core host and avoids the inactive-worker false positive ("
-                 << skipped_too_large << " tiers larger than the host, " << skipped_false_positive
-                 << " hit the false positive); the disjointness rule is covered "
+    GTEST_SKIP() << "no tier fits this " << host_cores << "-core host (" << skipped_too_large
+                 << " tiers larger than the host); the same rules are covered "
                     "host-independently by gen_thread_layout.py --self-test";
+  }
+}
+
+// The inactive-worker false positive itself (issue #349). The 4-core tier is
+// the shape that triggered it: num_workers == 0, so workers[] is
+// zero-initialised onto slot 0, and arm/hand are pinned to slot 0 by design.
+// Before the fix the validator reported four collisions here against
+// mpc_worker_0/1, which do not exist on this tier.
+//
+// Asserted independently of the host gate above, because the whole point is
+// that this tier used to be excluded from that sweep.
+TEST(ThreadLayoutTiers, InactiveMpcWorkersDoNotCollideWithDrivers) {
+  const rtc::SystemThreadConfigs cfgs = rtc::SelectThreadConfigsForCoreCount(4);
+  ASSERT_EQ(cfgs.mpc.num_workers, 0) << "4-core tier is expected to have no MPC worker";
+  ASSERT_EQ(cfgs.arm_driver.cpu_core, 0) << "4-core tier is expected to park arm_driver on slot 0";
+
+  const std::string err = rtc::ValidateSystemThreadConfigs(cfgs);
+  EXPECT_EQ(err.find("mpc_worker_0"), std::string::npos)
+      << "inactive worker reported as a collision partner: " << err;
+  EXPECT_EQ(err.find("mpc_worker_1"), std::string::npos)
+      << "inactive worker reported as a collision partner: " << err;
+}
+
+// A synthetic layout for the co-residency cases below, built by hand instead
+// of taken from SelectThreadConfigsForCoreCount(host).
+//
+// Binding those cases to the host's own tier made two of them host-dependent:
+//
+//   - The 4/5-core tiers demote mpc_main to SCHED_OTHER, so "collide
+//     rt_callback with mpc_main" puts two RT roles on one core on a 12-core
+//     box and one RT role next to a CFS one on a 4-core box. The rule
+//     correctly stays silent there and the assertion fails -- for an
+//     environment reason, on a machine where nothing is wrong.
+//   - ValidateThreadConfig range-checks cpu_core against *this host*, so on a
+//     box with fewer cores than the lowest tier's highest slot the
+//     precondition "the base layout is clean" is false before any mutation.
+//
+// The shape below mirrors the 4-core tier (RT on slots 1-3, everything CFS
+// collapsed onto the OS slot), so it is clean on any host with four physical
+// cores and, being fixed, exercises the same rule on every machine. Each case
+// asserts its own substring appears only *after* the mutation rather than
+// asserting the whole error string is empty, so a host smaller than four
+// cores adds "Invalid CPU core slot" noise without flipping any verdict.
+// Whether the shipped tiers themselves are clean is a separate question,
+// covered by TiersThatFitThisHostPassTheValidator (host-gated) and by
+// gen_thread_layout.py --self-test (host-independent, every tier).
+rtc::SystemThreadConfigs MakeCoResidencyFixture() {
+  const auto cfs = [](int slot, int nice, const char* name) {
+    return rtc::ThreadConfig{.cpu_core = slot,
+                             .sched_policy = SCHED_OTHER,
+                             .sched_priority = 0,
+                             .nice_value = nice,
+                             .name = name};
+  };
+  rtc::SystemThreadConfigs cfg{};
+  cfg.rt_control = {.cpu_core = 1,
+                    .sched_policy = SCHED_FIFO,
+                    .sched_priority = 90,
+                    .nice_value = 0,
+                    .name = "rt_control"};
+  cfg.rt_callback = {.cpu_core = 2,
+                     .sched_policy = SCHED_FIFO,
+                     .sched_priority = 70,
+                     .nice_value = 0,
+                     .name = "rt_callback"};
+  cfg.mpc.main = {.cpu_core = 3,
+                  .sched_policy = SCHED_FIFO,
+                  .sched_priority = 60,
+                  .nice_value = 0,
+                  .name = "mpc_main"};
+  cfg.mpc.num_workers = 0;
+  cfg.nrt_logging = cfs(rtc::kOsSlot, -5, "nrt_logging");
+  cfg.nrt_callback = cfs(rtc::kOsSlot, 0, "nrt_callback");
+  cfg.nrt_publish = cfs(rtc::kOsSlot, 0, "nrt_publish");
+  cfg.arm_driver = cfs(rtc::kOsSlot, 0, "arm_driver");
+  cfg.hand_driver = cfs(rtc::kOsSlot, 0, "hand_driver");
+  cfg.sim_thread = cfs(-1, 0, "sim_thread");
+  cfg.viewer = cfs(-1, 0, "viewer");
+  return cfg;
+}
+
+// Co-residency rules (issue #349 D-co). These mirror
+// gen_thread_layout.py::run_self_test; the C++ copy is what a deployment box
+// evaluates at startup for its own tier, the Python copy is what CI can reach
+// for every tier. Both are needed -- neither covers the other's blind spot.
+TEST(ThreadLayoutTiers, ValidatorRejectsCoResidencyViolations) {
+  const rtc::SystemThreadConfigs base = MakeCoResidencyFixture();
+
+  // Negative control: the fixture must not already carry the signatures the
+  // mutations below look for, or every case would pass without mutating
+  // anything. Asserted per-substring rather than on emptiness so this stays
+  // meaningful on a host too small to represent slot 3.
+  const std::string clean = rtc::ValidateSystemThreadConfigs(base);
+  for (const char* signature :
+       {"shares rt_control's core", "carries two RT roles", "is RT on the OS/DDS/IRQ core"}) {
+    ASSERT_EQ(clean.find(signature), std::string::npos)
+        << "fixture already trips '" << signature << "': " << clean;
+  }
+
+  // 1. Nothing may share rt_control's core.
+  {
+    rtc::SystemThreadConfigs bad = base;
+    bad.nrt_logging.cpu_core = bad.rt_control.cpu_core;
+    EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("shares rt_control's core"),
+              std::string::npos);
+  }
+  // 1b. Including nrt_publish. It is the role #349 added, it shares
+  //     nrt_callback's slot on every shipped tier, and it was invisible to
+  //     this validator until it joined the all_configs table -- so the rule
+  //     that guards the control loop's core skipped it entirely.
+  {
+    rtc::SystemThreadConfigs bad = base;
+    bad.nrt_publish.cpu_core = bad.rt_control.cpu_core;
+    EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("'nrt_publish' shares rt_control's core"),
+              std::string::npos);
+  }
+  // 2. Two RT roles on one core, even at different priorities.
+  {
+    rtc::SystemThreadConfigs bad = base;
+    bad.rt_callback.cpu_core = bad.mpc.main.cpu_core;
+    EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("carries two RT roles"),
+              std::string::npos);
+  }
+  // 3. An RT role on the OS / DDS / IRQ core.
+  {
+    rtc::SystemThreadConfigs bad = base;
+    bad.rt_callback.cpu_core = rtc::kOsSlot;
+    EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("is RT on the OS/DDS/IRQ core"),
+              std::string::npos);
+  }
+  // 4. Per-config validation reaches nrt_publish too: an out-of-range slot on
+  //    that role used to slip past ValidateSystemThreadConfigs entirely and
+  //    only surface as an ApplyThreadConfig failure at thread start.
+  {
+    rtc::SystemThreadConfigs bad = base;
+    bad.nrt_publish.cpu_core = 1 << 20;
+    EXPECT_NE(rtc::ValidateSystemThreadConfigs(bad).find("Invalid CPU core slot"),
+              std::string::npos);
   }
 }
 

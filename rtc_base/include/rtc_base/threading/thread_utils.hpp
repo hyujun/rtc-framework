@@ -699,6 +699,12 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
   errors += ValidateThreadConfig(configs.rt_callback);
   errors += ValidateThreadConfig(configs.nrt_logging);
   errors += ValidateThreadConfig(configs.nrt_callback);
+  // nrt_publish is a real in-process thread (the controller-owned publish
+  // jthread, issue #349 D15), not a process-level pin, so it gets the same
+  // per-config check as its executor sibling. Omitting it left its slot,
+  // policy and name unvalidated until ApplyThreadConfig refused them at
+  // thread start.
+  errors += ValidateThreadConfig(configs.nrt_publish);
   // Process-level configs (arm_driver / hand_driver / sim_thread / viewer)
   // are applied as taskset pins by the launch script (not via
   // ApplyThreadConfig), and sim_thread / viewer may carry cpu_core = -1 to
@@ -734,32 +740,47 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
               std::to_string(configs.rt_callback.sched_priority) + "); ";
   }
 
-  // Collect all configs with names for conflict analysis. MPC main + up
-  // to kMpcMaxWorkers workers are always included; inactive worker slots
-  // have cpu_core == 0 but also sched_policy == 0 (SCHED_OTHER priority 0),
-  // which cannot trigger an RT/RT same-priority conflict.
+  // Collect all configs with names for conflict analysis.
+  //
+  // `active` exists because inactive MPC worker slots are zero-initialised:
+  // cpu_core == 0, which is a real slot. The original note here argued they
+  // were harmless because sched_policy == 0 (SCHED_OTHER) cannot trigger an
+  // RT/RT same-priority conflict — true, but it only considered that one
+  // rule. The arm/hand disjointness sweep below classifies by hardcoded
+  // NAME, so on every tier with num_workers == 0 it saw two phantom RT
+  // controllers sitting on slot 0 and reported four collisions that do not
+  // exist (issue #349; the 4-core tier parks arm/hand on slot 0 by design).
+  // Marking them inactive is what actually removes them from every rule,
+  // present and future, instead of relying on each rule to notice.
   struct NamedConfig {
     const char* name;
     const ThreadConfig* config;
+    bool active;
   };
 
-  // Layout v4: 4 fixed thread roles + 4 process-level pins (arm/hand,
+  // Layout v4: 5 fixed thread roles + 4 process-level pins (arm/hand,
   // sim/viewer) + mpc main + up to kMpcMaxWorkers. Process-level configs are
   // included so their cpu_core participates in the disjointness sweep below,
   // but their SCHED_OTHER policy means they cannot trigger an RT/RT
   // same-priority conflict (the only error condition).
-  const std::array<NamedConfig, 8 + 1 + kMpcMaxWorkers> all_configs = {{
-      {"rt_control", &configs.rt_control},
-      {"rt_callback", &configs.rt_callback},
-      {"nrt_logging", &configs.nrt_logging},
-      {"nrt_callback", &configs.nrt_callback},
-      {"arm_driver", &configs.arm_driver},
-      {"hand_driver", &configs.hand_driver},
-      {"sim_thread", &configs.sim_thread},
-      {"viewer", &configs.viewer},
-      {"mpc_main", &configs.mpc.main},
-      {"mpc_worker_0", &configs.mpc.workers[0]},
-      {"mpc_worker_1", &configs.mpc.workers[1]},
+  //
+  // Every role in SystemThreadConfigs must appear here. nrt_publish did not
+  // when it was added (issue #349 D15) and was therefore skipped by every
+  // rule in this function, including the three co-residency rules added by
+  // the same change -- the sensor had a hole exactly where the new role sat.
+  const std::array<NamedConfig, 9 + 1 + kMpcMaxWorkers> all_configs = {{
+      {"rt_control", &configs.rt_control, true},
+      {"rt_callback", &configs.rt_callback, true},
+      {"nrt_logging", &configs.nrt_logging, true},
+      {"nrt_callback", &configs.nrt_callback, true},
+      {"nrt_publish", &configs.nrt_publish, true},
+      {"arm_driver", &configs.arm_driver, true},
+      {"hand_driver", &configs.hand_driver, true},
+      {"sim_thread", &configs.sim_thread, true},
+      {"viewer", &configs.viewer, true},
+      {"mpc_main", &configs.mpc.main, true},
+      {"mpc_worker_0", &configs.mpc.workers[0], configs.mpc.num_workers > 0},
+      {"mpc_worker_1", &configs.mpc.workers[1], configs.mpc.num_workers > 1},
   }};
 
   auto is_rt = [](const ThreadConfig* c) {
@@ -774,6 +795,9 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
       const auto& a = all_configs[i];
       const auto& b = all_configs[j];
 
+      if (!a.active || !b.active) {
+        continue;  // inactive MPC worker slot — not a real placement
+      }
       if (a.config->cpu_core < 0 || b.config->cpu_core < 0) {
         continue;  // unpinned thread — disjointness rule N/A
       }
@@ -818,13 +842,61 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
       if (driver_name == nc.name) {
         continue;
       }
-      if (!is_rt_controller(nc.name)) {
+      if (!nc.active || !is_rt_controller(nc.name)) {
         continue;
       }
       if (nc.config->cpu_core == driver->cpu_core) {
         errors += driver_name + " core " + std::to_string(driver->cpu_core) +
                   " collides with RT controller '" + nc.name + "'; ";
       }
+    }
+  }
+
+  // ── Co-residency (issue #349 D-co) ────────────────────────────────────────
+  // Three rules that already hold on every tier and still hold after the aux
+  // merge, so they detect regressions rather than impose new constraints.
+  // The same invariants are asserted host-independently in
+  // gen_thread_layout.py::run_self_test, because this validator range-checks
+  // cpu_core against the *running host* and therefore cannot reach tiers
+  // larger than the machine it runs on.
+
+  // 1. rt_control owns its core outright — no co-tenant at any policy. The
+  //    500 Hz control loop is the one thread whose deadline nothing may share.
+  for (const auto& nc : all_configs) {
+    if (!nc.active || std::string(nc.name) == "rt_control") {
+      continue;
+    }
+    if (nc.config->cpu_core >= 0 && nc.config->cpu_core == configs.rt_control.cpu_core) {
+      errors += "'" + std::string(nc.name) + "' shares rt_control's core " +
+                std::to_string(configs.rt_control.cpu_core) + "; ";
+    }
+  }
+
+  // 2. At most one RT (FIFO/RR) role per core, regardless of priority. The
+  //    equal-priority check above catches the starvation case; this also
+  //    catches the unequal one, where the lower-priority thread simply never
+  //    runs while the higher one is runnable.
+  for (std::size_t i = 0; i < all_configs.size(); ++i) {
+    for (std::size_t j = i + 1; j < all_configs.size(); ++j) {
+      const auto& a = all_configs[i];
+      const auto& b = all_configs[j];
+      if (!a.active || !b.active || a.config->cpu_core < 0) {
+        continue;
+      }
+      if (a.config->cpu_core == b.config->cpu_core && is_rt(a.config) && is_rt(b.config)) {
+        errors += "core " + std::to_string(a.config->cpu_core) + " carries two RT roles ('" +
+                  a.name + "', '" + b.name + "'); at most one is allowed; ";
+      }
+    }
+  }
+
+  // 3. The OS / DDS / IRQ core never carries an RT role. Degraded tiers do
+  //    park CFS work there by design; an RT thread contending with the
+  //    network stack and timer IRQs is what this reserves the core against.
+  for (const auto& nc : all_configs) {
+    if (nc.active && nc.config->cpu_core == kOsSlot && is_rt(nc.config)) {
+      errors += "'" + std::string(nc.name) + "' is RT on the OS/DDS/IRQ core " +
+                std::to_string(kOsSlot) + "; ";
     }
   }
 

@@ -118,6 +118,14 @@ struct MpcThreadConfig {
 //                    90), so no separate output thread is required.
 //   * nrt_callback = non-RT callback dispatcher for services / lifecycle /
 //                    non-RT-boundary subs
+//   * nrt_publish  = the controller-owned publish jthread (PublishNonRtSnapshot
+//                    drain). Shares nrt_callback's slot and policy by design —
+//                    it is a distinct ENTRY, not a distinct core. It exists
+//                    because the jthread used to apply nrt_callback's config
+//                    verbatim, so two threads reported the same
+//                    pthread_setname_np name and verify_rt_runtime.sh, which
+//                    stores one TID per name, checked whichever it saw last
+//                    and never noticed the other (issue #349 D15)
 //   * nrt_logging  = non-RT CSV drain
 //
 // Process-level pins (applied at launch time, no ApplyThreadConfig call;
@@ -147,6 +155,7 @@ struct SystemThreadConfigs {
   ThreadConfig rt_callback;
   ThreadConfig nrt_logging;
   ThreadConfig nrt_callback;
+  ThreadConfig nrt_publish;  // controller-owned publish jthread; shares nrt_callback's slot
   ThreadConfig arm_driver;   // external arm driver process pin (SCHED_OTHER)
   ThreadConfig hand_driver;  // external hand driver process pin (SCHED_OTHER)
   ThreadConfig sim_thread;   // MuJoCo physics thread (SCHED_OTHER, cpu_core may be -1)

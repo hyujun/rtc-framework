@@ -70,6 +70,7 @@ void UdpHandNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr 
   // L2 under the rt_callback executor's ros2:callback_* (L1) — the joint-lane
   // decode + SeqLock write on the rt_callback lane.
   RTC_TRACE_SCOPE("UdpHandNativeBackend::OnJointState");
+  StateLaneTimingScope timing_scope(*this);
   if (msg->position.empty())
     return;
 
@@ -97,6 +98,7 @@ void UdpHandNativeBackend::OnMotorState(sensor_msgs::msg::JointState::SharedPtr 
   // L2 under the rt_callback executor's ros2:callback_* (L1) — the motor-lane
   // decode + SeqLock write on the rt_callback lane.
   RTC_TRACE_SCOPE("UdpHandNativeBackend::OnMotorState");
+  StateLaneTimingScope timing_scope(*this);
   if (msg->position.empty())
     return;
 
@@ -122,6 +124,7 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
   // L2 under the rt_callback executor's ros2:callback_* (L1) — the sensor-lane
   // decode + SeqLock write on the rt_callback lane.
   RTC_TRACE_SCOPE("UdpHandNativeBackend::OnSensorState");
+  StateLaneTimingScope timing_scope(*this);
   if (!sensor_layout_.has_value())
     return;  // YAML did not configure the layout.
 

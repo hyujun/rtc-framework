@@ -49,6 +49,7 @@ ROLES = (
     "arm_driver",
     "hand_driver",
     "nrt_callback",
+    "nrt_publish",
     "nrt_logging",
     "sim_thread",
     "viewer",

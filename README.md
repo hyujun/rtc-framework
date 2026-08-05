@@ -283,8 +283,8 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 |--------|------|------|----------|----------|------|
 | `rt_control` | jthread (clock_nanosleep) | 1 | SCHED_FIFO | 90 | ControlLoop @ `control_rate` (default 500Hz, design 100Hz–5kHz) + CheckTimeouts 50Hz + inline `DeviceBackend.WriteCommand` (actuator publish, RT-safe contract) |
 | `rt_callback` | ROS2 Executor | 2 | SCHED_FIFO | 70 | DeviceBackend state subs (/joint_states, hand state/motor/sensor) via `Configure(node, cfg, state_cb_group)` 주입. DDS receive thread 가 launch-time taskset 으로 같은 Core 2 에 co-pin (CFS) |
-| `nrt_publish_thread` | jthread (SPSC drain, cap 16) | nrt_callback core | SCHED_OTHER | 0 | controller-owned non-RT 토픽 (`Transforms` / `grasp_state` / `wbc_state` / `tof_snapshot`) — `controller.PublishNonRtSnapshot` 호출 |
-| `nrt_logging_executor` | ROS2 Executor | tier-aware (4c: 0 / ≥ 6c: dedicated) | SCHED_OTHER | nice -5 | `cm_timing_log.csv` 드레인 + deferred E-STOP 로그 |
+| `nrt_publish` | jthread (SPSC drain, cap 16) | nrt_callback core (공유) | SCHED_OTHER | 0 | controller-owned non-RT 토픽 (`Transforms` / `grasp_state` / `wbc_state` / `tof_snapshot`) — `controller.PublishNonRtSnapshot` 호출. 코어는 `nrt_callback` 과 같지만 **이름은 별개** (`cfgs.nrt_publish`) — 같은 이름이면 `verify_rt_runtime.sh` 가 이름당 TID 하나만 들어 둘 중 하나만 검증한다 (#349 D15) |
+| `nrt_logging_executor` | ROS2 Executor | tier-aware (4c: 0 / ≥ 6c: dedicated) | SCHED_OTHER | nice -5 | `cm_timing_log.csv` + `rt_callback_timing_log.csv` 드레인 + deferred E-STOP 로그 |
 | `nrt_callback_executor` | ROS2 Executor | tier-aware (4c: 0 / ≥ 6c: dedicated) | SCHED_OTHER | 0 | E-STOP 상태 + lifecycle services + CM/controller default group (RobotTarget subs, grasp_command services) |
 | `mpc_main` | jthread | 3 | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (모든 ≥ 6c tier 에서 Core 3 dedicated; 4c 는 CFS degraded) |
 | `hand_driver` (process) | external process | tier-aware (6c shared with arm / ≥ 8c dedicated) | SCHED_OTHER | 0 (process pin); internal recv FIFO 65 | hand UDP receive thread 는 hand_driver 프로세스 내부 (`kHandUdpRecvConfig`, cpu_core=-1 sentinel → process taskset 상속) |
@@ -306,7 +306,7 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 | 서브디렉토리 | 내용 |
 |---|---|
 | `controllers/<config_key>/` | per-controller 데이터 CSV (`<instance>.csv`; Phase C에서 controller-owned 경로로 일원화) |
-| `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log — 동일 7열 RtTickTimingPayload 스키마) |
+| `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log, rt_callback_timing_log — 동일 7열 RtTickTimingPayload 스키마) |
 | `device/` | 디바이스 통계 JSON (예: udp_hand_driver 의 `hand_udp_stats.json`) |
 | `monitor/` | 모니터링 로그 (생성만 되고 현재 기록 주체 없음) |
 | `tracing/` | LTTng trace 세션 (`--tracing` 빌드 시, [docs/tracing.md](docs/tracing.md)) |

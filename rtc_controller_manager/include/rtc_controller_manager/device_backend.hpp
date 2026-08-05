@@ -2,6 +2,7 @@
 #define RTC_CONTROLLER_MANAGER_DEVICE_BACKEND_H_
 
 #include "rtc_base/threading/publish_buffer.hpp"
+#include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_base/types/types.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 
@@ -9,6 +10,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -246,16 +248,120 @@ class DeviceBackend {
     state_ready_cb_ = std::move(callback);
   }
 
+  /// Install the rt_callback-lane timing sink (issue #349). CM owns the
+  /// producer and drains it on the log thread; backends only push.
+  ///
+  /// Null — the default — disables instrumentation entirely: the scope below
+  /// then does nothing but one predictable null test, so a backend built
+  /// without a sink pays no clock reads. Not RT; call before Configure().
+  ///
+  /// Every backend CM configures shares ONE sink, which is safe only because
+  /// they also share one MutuallyExclusive callback group (see Configure()).
+  /// That serialisation is what makes the single-producer contract of the
+  /// underlying SPSC ring hold across backends, not just within one.
+  void SetStateLaneTimingSink(RtCallbackTimingBuffer* sink) noexcept { state_lane_timing_ = sink; }
+
  protected:
   /// Backends call this at the end of each sub callback (joint / motor /
   /// sensor lane). Safe to call when no callback is registered.
+  ///
+  /// Also marks the state/publish split for StateLaneTimingScope: everything
+  /// before this point is decode, everything after is the mailbox hand-off.
+  /// Stamped before the callback runs so the callback's own cost lands in
+  /// `t_publish_us`.
   void NotifyStateReady() noexcept {
+    if (state_lane_timing_ != nullptr) {
+      state_lane_notify_ns_ = StateLaneNowNs();
+    }
     if (state_ready_cb_)
       state_ready_cb_();
   }
 
+  /// RAII span covering one state-lane callback, pushed to the rt_callback
+  /// timing CSV (issue #349). Declare it as the first statement of every
+  /// joint / motor / sensor callback:
+  ///
+  ///     void MyBackend::OnJointState(Msg::SharedPtr msg) {
+  ///       RTC_TRACE_SCOPE("MyBackend::OnJointState");
+  ///       StateLaneTimingScope timing_scope(*this);
+  ///       ...
+  ///
+  /// RAII rather than a begin/end pair because these callbacks early-return
+  /// on empty payloads; a paired call would leak an unmatched begin on every
+  /// such message and silently skew the lane.
+  ///
+  /// RT-safe (this runs on cb_group_rt_callback_, SCHED_FIFO 70): two
+  /// steady_clock reads, one wait-free SPSC push, no allocation, no lock, no
+  /// logging. On a full ring the sample is dropped and CM reports the count
+  /// in its timing summary.
+  class StateLaneTimingScope {
+   public:
+    explicit StateLaneTimingScope(DeviceBackend& backend) noexcept
+        : backend_(backend.state_lane_timing_ != nullptr ? &backend : nullptr) {
+      if (backend_ != nullptr) {
+        // No need to clear the split marker here: steady_clock is monotonic,
+        // so a stamp left by an earlier callback necessarily predates
+        // t_begin_ns_ and the destructor's range check rejects it. A reset
+        // was tried and removed — mutation testing showed nothing could
+        // distinguish it, because the range check is the actual defence.
+        t_begin_ns_ = StateLaneNowNs();
+      }
+    }
+
+    ~StateLaneTimingScope() noexcept {
+      if (backend_ == nullptr) {
+        return;
+      }
+      const std::uint64_t t_end_ns = StateLaneNowNs();
+      const std::uint64_t notify_ns = backend_->state_lane_notify_ns_;
+      // Lanes that do not notify (and early returns taken before the notify)
+      // collapse the split to the end of the callback: all decode, no
+      // hand-off.
+      //
+      // The range check carries that case. `state_lane_notify_ns_` persists
+      // across callbacks, so on a non-notifying lane it still holds whatever
+      // the previous callback wrote; being older than t_begin_ns_ it falls
+      // outside the span and is discarded. Dropping this check does not merely
+      // mis-split — `split_ns - t_begin_ns_` is unsigned, so a stale stamp
+      // wraps t_state_us to a ~10^10 µs value. That is the failure this
+      // guards, and test_state_lane_timing_scope pins it.
+      const std::uint64_t split_ns =
+          (notify_ns >= t_begin_ns_ && notify_ns <= t_end_ns) ? notify_ns : t_end_ns;
+
+      constexpr double kNsToUs = 1e-3;
+      RtTickTimingPayload payload{};
+      payload.t_state_us = static_cast<double>(split_ns - t_begin_ns_) * kNsToUs;
+      payload.t_publish_us = static_cast<double>(t_end_ns - split_ns) * kNsToUs;
+      payload.t_total_us = static_cast<double>(t_end_ns - t_begin_ns_) * kNsToUs;
+      // t_compute_us / jitter_us stay 0 — see RtCallbackTimingBuffer.
+      static_cast<void>(backend_->state_lane_timing_->Push(payload));
+    }
+
+    StateLaneTimingScope(const StateLaneTimingScope&) = delete;
+    StateLaneTimingScope& operator=(const StateLaneTimingScope&) = delete;
+    StateLaneTimingScope(StateLaneTimingScope&&) = delete;
+    StateLaneTimingScope& operator=(StateLaneTimingScope&&) = delete;
+
+   private:
+    /// Null when instrumentation is off — the whole scope is then inert.
+    DeviceBackend* backend_;
+    std::uint64_t t_begin_ns_{0};
+  };
+
  private:
+  static std::uint64_t StateLaneNowNs() noexcept {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+  }
+
   StateReadyCallback state_ready_cb_;
+
+  /// rt_callback-lane instrumentation (issue #349). Both members are touched
+  /// only from the state-lane callbacks, which the MutuallyExclusive group
+  /// serialises onto the rt_callback thread — single accessor, no atomics.
+  RtCallbackTimingBuffer* state_lane_timing_{nullptr};
+  std::uint64_t state_lane_notify_ns_{0};
 };
 
 }  // namespace rtc

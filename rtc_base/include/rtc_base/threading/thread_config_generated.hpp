@@ -11,6 +11,7 @@
 //   rt_callback  DDS recv co-pin (CFS) via launch taskset
 //   arm_driver   external process; CM cpu_affinity param (#343)
 //   hand_driver  external process; in-process self-pin (#345)
+//   nrt_publish  controller-owned publish jthread; shares the nrt_callback slot
 #ifndef RTC_BASE_THREAD_CONFIG_GENERATED_HPP_
 #define RTC_BASE_THREAD_CONFIG_GENERATED_HPP_
 
@@ -26,9 +27,14 @@ namespace rtc {
 // assert, lowering max_workers below it silently over-allocates the array.
 static_assert(kMpcMaxWorkers == 2, "kMpcMaxWorkers must match max_workers in thread_layout.yaml");
 
+// Slot reserved for OS / DDS / NIC IRQ. ValidateSystemThreadConfigs uses it
+// to reject an RT role parked there (issue #349 D-co); emitted from the
+// manifest so the rule cannot drift from the layout it guards.
+inline constexpr int kOsSlot = 0;
+
 // ── 4-core fallback (layout v4.1) ──
 //   Slot 0: OS / DDS / IRQ + arm_driver (CFS 0) + hand_driver (CFS 0) + nrt_callback (CFS 0)
-//            + nrt_logging (CFS -5)
+//            + nrt_publish (CFS 0) + nrt_logging (CFS -5)
 //   Slot 1: rt_control (FIFO 90)
 //   Slot 2: rt_callback (FIFO 70)
 //   Slot 3: mpc_main (CFS -5)
@@ -80,6 +86,12 @@ inline const ThreadConfig kNrtCallbackConfig4Core{.cpu_core = 0,
                                                   .nice_value = 0,
                                                   .name = "nrt_callback"};
 
+inline const ThreadConfig kNrtPublishConfig4Core{.cpu_core = 0,
+                                                 .sched_policy = SCHED_OTHER,
+                                                 .sched_priority = 0,
+                                                 .nice_value = 0,
+                                                 .name = "nrt_publish"};
+
 inline const ThreadConfig kNrtLoggingConfig4Core{.cpu_core = 0,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
@@ -104,7 +116,7 @@ inline const ThreadConfig kViewerConfig4Core{.cpu_core = -1,
 //   Slot 2: rt_callback (FIFO 70)
 //   Slot 3: mpc_main (FIFO 60)
 //   Slot 4: arm_driver (CFS 0) + hand_driver (CFS 0)
-//   Slot 5: nrt_callback (CFS 0) + nrt_logging (CFS -5)
+//   Slot 5: nrt_callback (CFS 0) + nrt_publish (CFS 0) + nrt_logging (CFS -5)
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // degraded mode — no deterministic RT guarantee.
 // Trade-off: no mpc_worker, arm/hand share one slot, nrt_* share one slot.
@@ -152,6 +164,12 @@ inline const ThreadConfig kNrtCallbackConfig{.cpu_core = 5,
                                              .nice_value = 0,
                                              .name = "nrt_callback"};
 
+inline const ThreadConfig kNrtPublishConfig{.cpu_core = 5,
+                                            .sched_policy = SCHED_OTHER,
+                                            .sched_priority = 0,
+                                            .nice_value = 0,
+                                            .name = "nrt_publish"};
+
 inline const ThreadConfig kNrtLoggingConfig{.cpu_core = 5,
                                             .sched_policy = SCHED_OTHER,
                                             .sched_priority = 0,
@@ -178,7 +196,7 @@ inline const ThreadConfig kViewerConfig{.cpu_core = -1,
 //   Slot 4: arm_driver (CFS 0)
 //   Slot 5: hand_driver (CFS 0)
 //   Slot 6: nrt_logging (CFS -5)
-//   Slot 7: nrt_callback (CFS 0)
+//   Slot 7: nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // First tier where arm_driver and hand_driver get dedicated slots.
 
@@ -225,6 +243,12 @@ inline const ThreadConfig kNrtCallbackConfig8Core{.cpu_core = 7,
                                                   .nice_value = 0,
                                                   .name = "nrt_callback"};
 
+inline const ThreadConfig kNrtPublishConfig8Core{.cpu_core = 7,
+                                                 .sched_policy = SCHED_OTHER,
+                                                 .sched_priority = 0,
+                                                 .nice_value = 0,
+                                                 .name = "nrt_publish"};
+
 inline const ThreadConfig kNrtLoggingConfig8Core{.cpu_core = 6,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
@@ -252,7 +276,7 @@ inline const ThreadConfig kViewerConfig8Core{.cpu_core = -1,
 //   Slot 5: arm_driver (CFS 0)
 //   Slot 6: hand_driver (CFS 0)
 //   Slot 7: nrt_logging (CFS -5)
-//   Slot 8: nrt_callback (CFS 0)
+//   Slot 8: nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //   Slot 9: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // First tier with a parallel MPC worker.
@@ -310,6 +334,12 @@ inline const ThreadConfig kNrtCallbackConfig10Core{.cpu_core = 8,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
+inline const ThreadConfig kNrtPublishConfig10Core{.cpu_core = 8,
+                                                  .sched_policy = SCHED_OTHER,
+                                                  .sched_priority = 0,
+                                                  .nice_value = 0,
+                                                  .name = "nrt_publish"};
+
 inline const ThreadConfig kNrtLoggingConfig10Core{.cpu_core = 7,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
@@ -338,7 +368,7 @@ inline const ThreadConfig kViewerConfig10Core{.cpu_core = -1,
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
 //   Slot 8: nrt_logging (CFS -5)
-//   Slot 9: nrt_callback (CFS 0)
+//   Slot 9: nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //   Slot 10: spare
 //   Slot 11: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
@@ -403,6 +433,12 @@ inline const ThreadConfig kNrtCallbackConfig12Core{.cpu_core = 9,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
+inline const ThreadConfig kNrtPublishConfig12Core{.cpu_core = 9,
+                                                  .sched_policy = SCHED_OTHER,
+                                                  .sched_priority = 0,
+                                                  .nice_value = 0,
+                                                  .name = "nrt_publish"};
+
 inline const ThreadConfig kNrtLoggingConfig12Core{.cpu_core = 8,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
@@ -431,7 +467,7 @@ inline const ThreadConfig kViewerConfig12Core{.cpu_core = -1,
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
 //   Slot 8: nrt_logging (CFS -5)
-//   Slot 9: nrt_callback (CFS 0)
+//   Slot 9: nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //   Slot 10: spare
 //   Slot 11: spare
 //   Slot 12: spare
@@ -498,6 +534,12 @@ inline const ThreadConfig kNrtCallbackConfig14Core{.cpu_core = 9,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
+inline const ThreadConfig kNrtPublishConfig14Core{.cpu_core = 9,
+                                                  .sched_policy = SCHED_OTHER,
+                                                  .sched_priority = 0,
+                                                  .nice_value = 0,
+                                                  .name = "nrt_publish"};
+
 inline const ThreadConfig kNrtLoggingConfig14Core{.cpu_core = 8,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
@@ -526,7 +568,7 @@ inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
 //   Slot 8: nrt_logging (CFS -5)
-//   Slot 9: nrt_callback (CFS 0)
+//   Slot 9: nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //   Slot 10: spare
 //   Slot 11: spare
 //   Slot 12: spare
@@ -597,6 +639,12 @@ inline const ThreadConfig kNrtCallbackConfig16Core{.cpu_core = 9,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
+inline const ThreadConfig kNrtPublishConfig16Core{.cpu_core = 9,
+                                                  .sched_policy = SCHED_OTHER,
+                                                  .sched_priority = 0,
+                                                  .nice_value = 0,
+                                                  .name = "nrt_publish"};
+
 inline const ThreadConfig kNrtLoggingConfig16Core{.cpu_core = 8,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
@@ -624,6 +672,7 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
             .rt_callback = kRtCallbackConfig16Core,
             .nrt_logging = kNrtLoggingConfig16Core,
             .nrt_callback = kNrtCallbackConfig16Core,
+            .nrt_publish = kNrtPublishConfig16Core,
             .arm_driver = kArmDriverConfig16Core,
             .hand_driver = kHandDriverConfig16Core,
             .sim_thread = kSimThreadConfig16Core,
@@ -635,6 +684,7 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
             .rt_callback = kRtCallbackConfig14Core,
             .nrt_logging = kNrtLoggingConfig14Core,
             .nrt_callback = kNrtCallbackConfig14Core,
+            .nrt_publish = kNrtPublishConfig14Core,
             .arm_driver = kArmDriverConfig14Core,
             .hand_driver = kHandDriverConfig14Core,
             .sim_thread = kSimThreadConfig14Core,
@@ -646,6 +696,7 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
             .rt_callback = kRtCallbackConfig12Core,
             .nrt_logging = kNrtLoggingConfig12Core,
             .nrt_callback = kNrtCallbackConfig12Core,
+            .nrt_publish = kNrtPublishConfig12Core,
             .arm_driver = kArmDriverConfig12Core,
             .hand_driver = kHandDriverConfig12Core,
             .sim_thread = kSimThreadConfig12Core,
@@ -657,6 +708,7 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
             .rt_callback = kRtCallbackConfig10Core,
             .nrt_logging = kNrtLoggingConfig10Core,
             .nrt_callback = kNrtCallbackConfig10Core,
+            .nrt_publish = kNrtPublishConfig10Core,
             .arm_driver = kArmDriverConfig10Core,
             .hand_driver = kHandDriverConfig10Core,
             .sim_thread = kSimThreadConfig10Core,
@@ -668,6 +720,7 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
             .rt_callback = kRtCallbackConfig8Core,
             .nrt_logging = kNrtLoggingConfig8Core,
             .nrt_callback = kNrtCallbackConfig8Core,
+            .nrt_publish = kNrtPublishConfig8Core,
             .arm_driver = kArmDriverConfig8Core,
             .hand_driver = kHandDriverConfig8Core,
             .sim_thread = kSimThreadConfig8Core,
@@ -679,6 +732,7 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
             .rt_callback = kRtCallbackConfig,
             .nrt_logging = kNrtLoggingConfig,
             .nrt_callback = kNrtCallbackConfig,
+            .nrt_publish = kNrtPublishConfig,
             .arm_driver = kArmDriverConfig,
             .hand_driver = kHandDriverConfig,
             .sim_thread = kSimThreadConfig,
@@ -689,6 +743,7 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
           .rt_callback = kRtCallbackConfig4Core,
           .nrt_logging = kNrtLoggingConfig4Core,
           .nrt_callback = kNrtCallbackConfig4Core,
+          .nrt_publish = kNrtPublishConfig4Core,
           .arm_driver = kArmDriverConfig4Core,
           .hand_driver = kHandDriverConfig4Core,
           .sim_thread = kSimThreadConfig4Core,

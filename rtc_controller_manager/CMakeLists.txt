@@ -209,6 +209,16 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib)
   endif()
 
+  ament_add_gtest(test_state_lane_timing_scope
+    test/test_state_lane_timing_scope.cpp)
+  if(TARGET test_state_lane_timing_scope)
+    target_include_directories(test_state_lane_timing_scope PRIVATE include)
+    ament_target_dependencies(test_state_lane_timing_scope
+      rclcpp rclcpp_lifecycle rtc_base)
+    target_link_libraries(test_state_lane_timing_scope
+      rtc_controller_manager_lib)
+  endif()
+
   ament_add_gtest(test_device_backend_cb_group_injection
     test/test_device_backend_cb_group_injection.cpp)
   if(TARGET test_device_backend_cb_group_injection)

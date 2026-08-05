@@ -647,6 +647,12 @@ void RtControllerNode::CreateDeviceBackends() {
       }
     });
 
+    // Per-callback timing for the rt_callback lane (issue #349). All backends
+    // share one producer: they also share cb_group_rt_callback_ below, which
+    // is MutuallyExclusive, so the pushes are serialised onto a single thread
+    // and the SPSC single-producer contract holds across backends.
+    backend->SetStateLaneTimingSink(&rt_callback_timing_producer_);
+
     // Inject cb_group_rt_callback_ so backend state-lane subs (joint /
     // motor / sensor) are dispatched on the rt_callback executor (FIFO 70,
     // Core 2), matching the controller↔hardware RT boundary (layout v4.1).

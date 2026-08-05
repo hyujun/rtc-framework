@@ -1442,19 +1442,19 @@ test_rtc_expected_threads_table_per_tier() {
   # verify_rt_runtime.sh 의 기대 표. 행 수·policy·priority 를 tier 마다 박는다 —
   # 이 표가 조용히 틀리면 검증기가 **PASS 를 내며** 잘못 배치된 스레드를 통과시킨다.
   expect_eq "exp.4" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:0:0 nrt_logging:0:0:0 nrt_callback:0:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:0:0 nrt_logging:0:0:0 nrt_callback:0:0:0 nrt_publish:0:0:0" \
     "$(rtc_expected_threads 4 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.6" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:5:0:0 nrt_callback:5:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:5:0:0 nrt_callback:5:0:0 nrt_publish:5:0:0" \
     "$(rtc_expected_threads 6 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.8" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:6:0:0 nrt_callback:7:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:6:0:0 nrt_callback:7:0:0 nrt_publish:7:0:0" \
     "$(rtc_expected_threads 8 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.10" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional nrt_logging:7:0:0 nrt_callback:8:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional nrt_logging:7:0:0 nrt_callback:8:0:0 nrt_publish:8:0:0" \
     "$(rtc_expected_threads 10 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.12" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional mpc_worker_1:5:1:55:optional nrt_logging:8:0:0 nrt_callback:9:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional mpc_worker_1:5:1:55:optional nrt_logging:8:0:0 nrt_callback:9:0:0 nrt_publish:9:0:0" \
     "$(rtc_expected_threads 12 | tr '\n' ' ' | sed 's/ $//')"
   # 4-core 만 mpc 가 CFS 로 강등된다 (policy 필드 0). 그 구분이 사라지면 검증기가
   # degraded 박스에서 존재하지 않는 FIFO 60 을 요구한다.
@@ -1509,6 +1509,15 @@ test_print_thread_layout_derives_every_core_number() {
       pass
     else
       fail "[layout.nrt_logging.${n}] nrt_logging slot 이 다이어그램에 없다"
+    fi
+    # nrt_publish 는 자기 comm 이름을 가진 별개 스레드다 (#349 D15). 역할
+    # 목록은 손으로 쓰는 부분이라 여기 빠지면 다이어그램은 코어에 스레드
+    # 하나를 보여주는데 verify_rt_runtime.sh 는 둘을 기대한다 — 운영자가
+    # co-residency 를 진단하는 바로 그 화면에서 갈린다.
+    if grep -qE "Core $(get_role_slot nrt_publish "$n")[:-].*nrt_publish" <<<"$out"; then
+      pass
+    else
+      fail "[layout.nrt_publish.${n}] nrt_publish 가 자기 slot 행에 없다"
     fi
     # MPC lane 은 단일 코어면 "Core 3", worker 가 있으면 "Core 3-5" 로 그린다.
     local first last

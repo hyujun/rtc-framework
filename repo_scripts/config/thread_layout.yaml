@@ -100,6 +100,13 @@ roles:
     kind: thread
     in_controller_process: true
 
+  - key: nrt_publish
+    thread_name: nrt_publish
+    cpp_symbol: NrtPublishConfig
+    kind: thread
+    in_controller_process: true
+    map_note: "controller-owned publish jthread; shares the nrt_callback slot"
+
   - key: nrt_logging
     thread_name: nrt_logging
     cpp_symbol: NrtLoggingConfig
@@ -129,6 +136,11 @@ verifier_order:
   - mpc_worker_1
   - nrt_logging
   - nrt_callback
+  # Same slot as nrt_callback, separate row on purpose: the verifier stores one
+  # TID per name, so while both threads answered to "nrt_callback" it checked
+  # only whichever it walked last and the other's policy/affinity went
+  # unverified (#349 D15).
+  - nrt_publish
 
 # ── Markdown rendering ──────────────────────────────────────────────────────
 # Decoration only. Every *number* in a generated table is derived from the tier
@@ -176,6 +188,7 @@ tiers:
       arm_driver:   {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 0,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 0,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
@@ -196,6 +209,7 @@ tiers:
       arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 5,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 5,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
@@ -214,6 +228,7 @@ tiers:
       arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 7,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 6,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
@@ -233,6 +248,7 @@ tiers:
       arm_driver:   {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 8,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 8,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 7,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
@@ -253,6 +269,7 @@ tiers:
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 9,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
@@ -273,6 +290,7 @@ tiers:
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 9,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
@@ -295,6 +313,7 @@ tiers:
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 9,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
