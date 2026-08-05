@@ -223,7 +223,13 @@ RtControllerNode::CallbackReturn RtControllerNode::on_activate(
   // nrt_callback core (SCHED_OTHER nice 0) and forwards
   // controller.PublishNonRtSnapshot. The actuator command lane is inline in
   // ControlLoop() since layout v4 — no separate publish thread.
-  StartNrtPublishLoop(cfgs.nrt_callback);
+  //
+  // Its own config, not nrt_callback's: same slot and policy, different NAME.
+  // Passing nrt_callback here gave two threads the same comm, and
+  // verify_rt_runtime.sh keys its expected table by name with one TID per
+  // entry — so it validated whichever it walked last and never checked the
+  // other (issue #349 D15).
+  StartNrtPublishLoop(cfgs.nrt_publish);
 
   RCLCPP_INFO(get_logger(),
               "RtControllerNode active — initial controller '%s', RT loop + "

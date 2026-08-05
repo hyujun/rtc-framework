@@ -80,6 +80,80 @@ compute_shield_cores() {
 # ── Status mode marker file ──────────────────────────────────────────────────
 SHIELD_MODE_FILE="/tmp/cpu_shield_mode"
 
+# ── Stale-shield detection (issue #349 D14) ──────────────────────────────────
+#
+# The reason this exists: `do_on` used to treat "a user cpuset exists" as "the
+# shield is correct" and return early, comparing only the MODE string in
+# SHIELD_MODE_FILE. It computed the desired core list, never compared it, and
+# then printed it — so after a layout change a re-launch logged the new,
+# narrower core list while the kernel still held the old wide one. The shield
+# does not shrink and the log actively claims it did.
+#
+# normalise_cpu_set: "2-9,12-13" / "12,13,2-9" / " 2 3 " → canonical sorted
+# space-separated ids. Pure string→string, no I/O: this is the part the tests
+# drive (test_cpu_shield_mask.sh), because the reader below cannot be tested
+# on a box without cset.
+normalise_cpu_set() {
+  local raw="${1:-}"
+  [[ -z "$raw" ]] && { echo ""; return 0; }
+  local ids
+  ids=$(_rt_parse_cpulist "$raw") || return 1
+  [[ -z "$ids" ]] && { echo ""; return 0; }
+  # shellcheck disable=SC2086
+  printf '%s\n' $ids | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# Best-effort read of the ACTIVE user cpuset. Prints the cpu list on success.
+#
+# Fails (non-zero, empty output) when cset is absent, no shield is up, or the
+# output cannot be parsed. Callers MUST treat that as "unknown", never as
+# "matches" — an unreadable mask is exactly the state that produced the stale
+# shield in the first place. cset's status format is not stable across
+# versions and this repo's dev boxes do not all have cset installed, so the
+# cpuset filesystem is tried first: it is the kernel's own record and does not
+# depend on how cset chooses to print.
+shield_actual_user_cpus() {
+  local path
+  for path in /sys/fs/cgroup/cpuset/user/cpuset.cpus /sys/fs/cgroup/cpuset/user/cpus \
+    /cpusets/user/cpuset.cpus /cpusets/user/cpus; do
+    if [[ -r "$path" ]]; then
+      local raw
+      raw=$(tr -d '[:space:]' <"$path" 2>/dev/null || true)
+      [[ -n "$raw" ]] && { normalise_cpu_set "$raw"; return $?; }
+    fi
+  done
+
+  command -v cset &>/dev/null || return 1
+  # Fall back to parsing cset's own status. Accept any line naming the user
+  # cpuset and take the first CPUSPEC(...) / cpus: <list> / bare list on it.
+  local line spec
+  line=$(cset shield -s 2>/dev/null | grep -i 'user' | head -1) || return 1
+  [[ -z "$line" ]] && return 1
+  spec=$(sed -nE 's/.*CPUSPEC\(([0-9,-]+)\).*/\1/p' <<<"$line")
+  [[ -z "$spec" ]] && spec=$(sed -nE 's/.*cpus:[[:space:]]*([0-9,-]+).*/\1/p' <<<"$line")
+  [[ -z "$spec" ]] && return 1
+  normalise_cpu_set "$spec"
+}
+
+# Exit 0 when the active shield already matches `desired` for `mode`.
+# Anything else — no shield, unreadable mask, different cores, different mode
+# — exits non-zero so the caller reconfigures.
+shield_matches_desired() {
+  local mode="${1:-robot}" desired="${2:-}"
+  local want have
+  want=$(normalise_cpu_set "$desired") || return 1
+  [[ -z "$want" ]] && return 1
+  have=$(shield_actual_user_cpus) || return 1
+  [[ -z "$have" ]] && return 1
+  [[ "$want" == "$have" ]] || return 1
+
+  # Cores agree; the mode marker still decides, because --sim and --robot may
+  # diverge again later and a stale marker would misreport `status`.
+  local current_mode=""
+  [[ -f "$SHIELD_MODE_FILE" ]] && current_mode=$(cat "$SHIELD_MODE_FILE" 2>/dev/null || echo "")
+  [[ "$current_mode" == "$mode" ]]
+}
+
 # ── Command: on ──────────────────────────────────────────────────────────────
 do_on() {
   local mode="${1:-robot}"
@@ -96,22 +170,24 @@ do_on() {
   local shield_cores
   shield_cores=$(compute_shield_cores "$mode" "$phys_cores")
 
-  # Check if already shielded with same cores
+  # Already shielded with exactly these cores, in this mode? Then nothing to
+  # do. Any other state — including "a shield exists but we cannot read its
+  # mask" — falls through to a reset + re-apply (issue #349 D14). The old
+  # version compared only the mode string, so a layout change left the wide
+  # shield in place while logging the narrow one.
   if command -v cset &>/dev/null; then
-    local current_shield
-    current_shield=$(cset shield -s 2>/dev/null | grep "^system" | grep -oP 'cpus: \K[^ ]+' || true)
-    if [[ -n "$current_shield" ]]; then
-      # Shield already active — check if same mode
-      if [[ -f "$SHIELD_MODE_FILE" ]]; then
-        local current_mode
-        current_mode=$(cat "$SHIELD_MODE_FILE" 2>/dev/null || echo "")
-        if [[ "$current_mode" == "$mode" ]]; then
-          info "Shield already active (mode: ${mode}, cores: ${shield_cores})"
-          return 0
-        fi
-      fi
-      # Different mode — reset and re-apply
-      info "Resetting existing shield for mode change..."
+    if shield_matches_desired "$mode" "$shield_cores"; then
+      info "Shield already active and current (mode: ${mode}, cores: ${shield_cores})"
+      return 0
+    fi
+    local actual
+    actual=$(shield_actual_user_cpus || true)
+    if [[ -n "$actual" ]]; then
+      info "Existing shield differs (active: ${actual} / desired: ${shield_cores}) — reconfiguring..."
+      cset shield --reset 2>/dev/null || true
+    elif cset shield -s 2>/dev/null | grep -qi 'user'; then
+      # A shield is up but its mask is unreadable. Rebuild rather than assume.
+      warn "Existing shield present but its cpu mask could not be read — reconfiguring to be sure."
       cset shield --reset 2>/dev/null || true
     fi
   fi
@@ -327,6 +403,8 @@ usage() {
   echo "  on [--robot|--sim]  Activate CPU isolation (default: --robot)"
   echo "    --robot           Shield RT + MPC cores (driver cores released)"
   echo "    --sim             Same shield as --robot; sim_thread runs outside"
+  echo "  check [--robot|--sim]  Exit 0 if the active shield already matches this mode"
+  echo "                      (no root needed; non-zero also means \"cannot tell\")"
   echo "  adopt <pid>         Move a running process (+threads) into the user cpuset"
   echo "  off                 Deactivate CPU isolation"
   echo "  status              Show current isolation status"
@@ -356,6 +434,21 @@ case "$COMMAND" in
       esac
     done
     do_on "$MODE"
+    ;;
+  check)
+    # Root-free query: does the ACTIVE shield already match what `on <mode>`
+    # would build? Exit 0 = yes (caller can skip sudo), non-zero = no / unknown.
+    # Exists so the launch helper has exactly one implementation of the mask
+    # comparison to consult instead of a second copy of the logic (#349 D14).
+    MODE="robot"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --robot) MODE="robot"; shift ;;
+        --sim)   MODE="sim"; shift ;;
+        *)       error "Unknown option: $1"; usage ;;
+      esac
+    done
+    shield_matches_desired "$MODE" "$(compute_shield_cores "$MODE" "$(get_physical_cores)")"
     ;;
   adopt)
     do_adopt "${1:-}"

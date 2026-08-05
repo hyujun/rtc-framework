@@ -54,6 +54,13 @@ if(BUILD_TESTING)
     TIMEOUT 60
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
+  # Stale-shield detection (issue #349 D14). Drives the pure comparison only —
+  # cset is not installed on every dev box, so the mask *reader* is stubbed.
+  ament_add_test(test_cpu_shield_mask
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_cpu_shield_mask.sh
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
 
   # ── Thread layout manifest (issue #153 M1) ────────────────────────────────
   # The drift gate: fails if any checked-in artifact (C++ header, shell table,

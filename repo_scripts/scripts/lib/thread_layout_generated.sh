@@ -51,6 +51,7 @@ get_role_spec() {
     "4|arm_driver") echo "0 SCHED_OTHER 0 0" ;;
     "4|hand_driver") echo "0 SCHED_OTHER 0 0" ;;
     "4|nrt_callback") echo "0 SCHED_OTHER 0 0" ;;
+    "4|nrt_publish") echo "0 SCHED_OTHER 0 0" ;;
     "4|nrt_logging") echo "0 SCHED_OTHER 0 -5" ;;
     "4|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "4|viewer") echo "-1 SCHED_OTHER 0 0" ;;
@@ -60,6 +61,7 @@ get_role_spec() {
     "6|arm_driver") echo "4 SCHED_OTHER 0 0" ;;
     "6|hand_driver") echo "4 SCHED_OTHER 0 0" ;;
     "6|nrt_callback") echo "5 SCHED_OTHER 0 0" ;;
+    "6|nrt_publish") echo "5 SCHED_OTHER 0 0" ;;
     "6|nrt_logging") echo "5 SCHED_OTHER 0 -5" ;;
     "6|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "6|viewer") echo "-1 SCHED_OTHER 0 0" ;;
@@ -69,6 +71,7 @@ get_role_spec() {
     "8|arm_driver") echo "4 SCHED_OTHER 0 0" ;;
     "8|hand_driver") echo "5 SCHED_OTHER 0 0" ;;
     "8|nrt_callback") echo "7 SCHED_OTHER 0 0" ;;
+    "8|nrt_publish") echo "7 SCHED_OTHER 0 0" ;;
     "8|nrt_logging") echo "6 SCHED_OTHER 0 -5" ;;
     "8|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "8|viewer") echo "-1 SCHED_OTHER 0 0" ;;
@@ -79,6 +82,7 @@ get_role_spec() {
     "10|arm_driver") echo "5 SCHED_OTHER 0 0" ;;
     "10|hand_driver") echo "6 SCHED_OTHER 0 0" ;;
     "10|nrt_callback") echo "8 SCHED_OTHER 0 0" ;;
+    "10|nrt_publish") echo "8 SCHED_OTHER 0 0" ;;
     "10|nrt_logging") echo "7 SCHED_OTHER 0 -5" ;;
     "10|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "10|viewer") echo "-1 SCHED_OTHER 0 0" ;;
@@ -90,6 +94,7 @@ get_role_spec() {
     "12|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "12|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
     "12|nrt_callback") echo "9 SCHED_OTHER 0 0" ;;
+    "12|nrt_publish") echo "9 SCHED_OTHER 0 0" ;;
     "12|nrt_logging") echo "8 SCHED_OTHER 0 -5" ;;
     "12|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "12|viewer") echo "-1 SCHED_OTHER 0 0" ;;
@@ -101,6 +106,7 @@ get_role_spec() {
     "14|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "14|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
     "14|nrt_callback") echo "9 SCHED_OTHER 0 0" ;;
+    "14|nrt_publish") echo "9 SCHED_OTHER 0 0" ;;
     "14|nrt_logging") echo "8 SCHED_OTHER 0 -5" ;;
     "14|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "14|viewer") echo "-1 SCHED_OTHER 0 0" ;;
@@ -112,6 +118,7 @@ get_role_spec() {
     "16|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "16|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
     "16|nrt_callback") echo "9 SCHED_OTHER 0 0" ;;
+    "16|nrt_publish") echo "9 SCHED_OTHER 0 0" ;;
     "16|nrt_logging") echo "8 SCHED_OTHER 0 -5" ;;
     "16|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "16|viewer") echo "-1 SCHED_OTHER 0 0" ;;
@@ -247,6 +254,7 @@ rtc_expected_threads() {
       echo "mpc_main:3:0:0"
       echo "nrt_logging:0:0:0"
       echo "nrt_callback:0:0:0"
+      echo "nrt_publish:0:0:0"
       ;;
     6)
       echo "rt_control:1:1:90"
@@ -254,6 +262,7 @@ rtc_expected_threads() {
       echo "mpc_main:3:1:60"
       echo "nrt_logging:5:0:0"
       echo "nrt_callback:5:0:0"
+      echo "nrt_publish:5:0:0"
       ;;
     8)
       echo "rt_control:1:1:90"
@@ -261,6 +270,7 @@ rtc_expected_threads() {
       echo "mpc_main:3:1:60"
       echo "nrt_logging:6:0:0"
       echo "nrt_callback:7:0:0"
+      echo "nrt_publish:7:0:0"
       ;;
     10)
       echo "rt_control:1:1:90"
@@ -269,6 +279,7 @@ rtc_expected_threads() {
       echo "mpc_worker_0:4:1:55:optional"
       echo "nrt_logging:7:0:0"
       echo "nrt_callback:8:0:0"
+      echo "nrt_publish:8:0:0"
       ;;
     12)
       echo "rt_control:1:1:90"
@@ -278,6 +289,7 @@ rtc_expected_threads() {
       echo "mpc_worker_1:5:1:55:optional"
       echo "nrt_logging:8:0:0"
       echo "nrt_callback:9:0:0"
+      echo "nrt_publish:9:0:0"
       ;;
     14)
       echo "rt_control:1:1:90"
@@ -287,6 +299,7 @@ rtc_expected_threads() {
       echo "mpc_worker_1:5:1:55:optional"
       echo "nrt_logging:8:0:0"
       echo "nrt_callback:9:0:0"
+      echo "nrt_publish:9:0:0"
       ;;
     16)
       echo "rt_control:1:1:90"
@@ -296,6 +309,7 @@ rtc_expected_threads() {
       echo "mpc_worker_1:5:1:55:optional"
       echo "nrt_logging:8:0:0"
       echo "nrt_callback:9:0:0"
+      echo "nrt_publish:9:0:0"
       ;;
   esac
 }

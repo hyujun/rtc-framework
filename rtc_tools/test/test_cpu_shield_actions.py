@@ -75,12 +75,30 @@ def _on_exit_of(handler):
 def test_shield_probe_is_cset_aware_before_isolcpus(mode):
     snippet = _text(cpu_shield.enable_cpu_shield(mode))
 
-    cset_probe = snippet.index('cset shield -s 2>/dev/null | grep -q "user"')
+    cset_probe = snippet.index(f'"$SHIELD" check {mode}')
     isolcpus_probe = snippet.index('elif [ -n "$ISOLATED" ]')
     # Order is the fix, not a style choice: the isolcpus branch must be the
     # fallback, never the sole test (issue #151).
     assert cset_probe < isolcpus_probe
     assert f"on {mode}" in snippet
+
+
+@pytest.mark.parametrize("mode", ["--robot", "--sim"])
+def test_shield_probe_tests_currency_not_mere_presence(mode):
+    """The probe must ask "is the shield *right*", not "is a shield up".
+
+    This assertion replaced one that pinned the literal
+    ``cset shield -s | grep -q "user"``. That probe answered presence only, so
+    after a layout change the previous, wider shield satisfied it, the
+    reconfigure was skipped, and the cores were never returned — while the
+    launch log reported the shield as active (issue #349 D14). Delegating to
+    ``cpu_shield.sh check`` keeps the mask comparison in one place and makes
+    "cannot tell" fall through to a re-apply.
+    """
+    snippet = _text(cpu_shield.enable_cpu_shield(mode))
+
+    assert 'grep -q "user"' not in snippet, "presence-only probe is back"
+    assert f'"$SHIELD" check {mode}' in snippet
 
 
 def test_shield_rejects_unknown_mode():

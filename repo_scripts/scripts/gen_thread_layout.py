@@ -390,6 +390,11 @@ def emit_cpp(m: Manifest) -> str:
         f"static_assert(kMpcMaxWorkers == {m.max_workers},"
         ' "kMpcMaxWorkers must match max_workers in thread_layout.yaml");'
     )
+    out.append("")
+    out.append("// Slot reserved for OS / DDS / NIC IRQ. ValidateSystemThreadConfigs uses it")
+    out.append("// to reject an RT role parked there (issue #349 D-co); emitted from the")
+    out.append("// manifest so the rule cannot drift from the layout it guards.")
+    out.append(f"inline constexpr int kOsSlot = {m.os_slot};")
 
     for tier in m.tiers:
         out.append("")
@@ -454,6 +459,7 @@ def emit_cpp(m: Manifest) -> str:
         "rt_callback",
         "nrt_logging",
         "nrt_callback",
+        "nrt_publish",
         "arm_driver",
         "hand_driver",
         "sim_thread",
@@ -1050,6 +1056,58 @@ def run_self_test(m: Manifest) -> int:
             if slot >= 0 and slot in rt_slots:
                 failures.append(
                     f"tier {tier.id}: {role} slot {slot} collides with an RT controller slot"
+                )
+
+        # Co-residency (issue #349 D-co). All three hold on every tier today
+        # and still hold after the aux merge, so these are regression
+        # detectors, not new constraints: #349 puts CFS lanes onto the
+        # rt_callback slot, which rules 2 and 3 permit, while rule 1 catches
+        # the edit that would let one drift onto the control loop's core.
+        #
+        # Asserted here rather than only in ValidateSystemThreadConfigs
+        # because that validator range-checks slots against *this host's*
+        # core count: on a box with fewer than six physical cores every tier
+        # is skipped and the C++ test reports GTEST_SKIP, so a CI runner can
+        # check none of this. run_self_test needs no host at all.
+        active_roles = [
+            key
+            for key in tier.specs
+            if not key.startswith("mpc_worker_") or int(key.rsplit("_", 1)[1]) < tier.num_workers
+        ]
+
+        # 1. rt_control owns its slot outright — nothing else, any policy.
+        rt_control_slot = tier.specs["rt_control"].slot
+        for key in active_roles:
+            if key == "rt_control":
+                continue
+            if tier.specs[key].slot == rt_control_slot:
+                failures.append(
+                    f"tier {tier.id}: {key} shares rt_control's slot {rt_control_slot}"
+                )
+
+        # 2. At most one FIFO/RR role per slot. Two equal-priority RT threads
+        #    on one core starve each other; unequal ones invert silently.
+        rt_by_slot: dict[int, list[str]] = {}
+        for key in active_roles:
+            spec = tier.specs[key]
+            if spec.slot >= 0 and spec.policy in ("FIFO", "RR"):
+                rt_by_slot.setdefault(spec.slot, []).append(key)
+        for slot, keys in sorted(rt_by_slot.items()):
+            if len(keys) > 1:
+                failures.append(
+                    f"tier {tier.id}: slot {slot} carries {len(keys)} RT roles "
+                    f"({', '.join(sorted(keys))}); at most one is allowed"
+                )
+
+        # 3. The OS/DDS/IRQ slot never carries an RT role. Degraded tiers may
+        #    park CFS work there (4-core does), but an RT thread competing
+        #    with the network stack and timer IRQs is the failure this
+        #    reserves the slot against.
+        for slot, keys in sorted(rt_by_slot.items()):
+            if slot == m.os_slot:
+                failures.append(
+                    f"tier {tier.id}: os_slot {slot} carries RT role(s) "
+                    f"({', '.join(sorted(keys))})"
                 )
 
     if failures:

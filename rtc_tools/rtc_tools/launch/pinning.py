@@ -66,6 +66,11 @@ RTC_OWNED_THREAD_NAMES = frozenset(
         "mpc_worker_1",
         "nrt_logging",
         "nrt_callback",
+        # Shares nrt_callback's core but self-pins under its own name since
+        # issue #349 D15. It must be listed here for the same reason as the
+        # rest: the DDS sweep moves by exclusion, so a thread missing from
+        # this set is a thread the sweep is free to drag off its slot.
+        "nrt_publish",
         "arm_driver",
         "hand_driver",
         "sim_thread",
