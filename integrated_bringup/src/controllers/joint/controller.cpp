@@ -533,10 +533,15 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
   // below; the two answers in this one function are now the same answer.
   if (!arm_target_initialized_.load(std::memory_order_acquire) && arm_readable_) {
     // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
-    // dimensions (e.g. unit tests that bypass YAML). Bounded by nc0, so the
-    // resolved arm_dof_ can never re-open the gate this branch just passed.
+    // dimensions (e.g. unit tests that bypass YAML). Bounded by the device's
+    // READABLE width, not by nc0: since #284 the gate has a term nc0 does not
+    // bound, so a DOF taken from the wire length can be one the gate refuses on
+    // the very next tick — and this branch latches, so that would silence the
+    // arm permanently with a seed frozen on slots that were never written.
+    // SelfReportedChannelBound keeps the property this comment used to assert
+    // by nc0 alone (rtc_controller_interface/device_readability.hpp).
     if (arm_dof_ == 0 && state.num_devices > 0) {
-      arm_dof_ = std::min(state.devices[0].num_channels, kDemoJointMaxArmDof);
+      arm_dof_ = rtc::SelfReportedChannelBound(state.devices[0], kDemoJointMaxArmDof);
     }
 
     const auto& dev0 = state.devices[0];
@@ -574,8 +579,12 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
       // The OTHER source of hand_dof_ (#307). hand_dof_from_config_ stays false
       // here by construction — OnDeviceConfigsSet set it from `hand_dof_ > 0`,
       // and reaching this line means it was 0.
+      // Readable width, not wire width — same #284 reason as the arm above, and
+      // this is the axis where it is reachable outside fixtures: a hand group
+      // that declares `joint_command_names` without `joint_state_names` lands
+      // here with an active reorder map.
       if (hand_dof_ == 0) {
-        hand_dof_ = std::min(state.devices[1].num_channels, kDemoJointMaxHandDof);
+        hand_dof_ = rtc::SelfReportedChannelBound(state.devices[1], kDemoJointMaxHandDof);
       }
       for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
         const auto& dev = state.devices[d];

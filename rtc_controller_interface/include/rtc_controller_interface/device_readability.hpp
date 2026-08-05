@@ -84,8 +84,8 @@ namespace rtc {
 // command, which on a torque-mode arm is a drop rather than a stop; §3.7 is
 // where that decision and its alternatives are recorded.
 //
-// THREE TERMS, and the third one is why this predicate is now sufficient
-// (issue #265 decision D1-a → issue #284, closed). Width alone did NOT prove
+// THREE TERMS, and the third one closes the coverage gap the first two left
+// (issue #265 decision D1-a → issue #284). Width alone did NOT prove
 // that slots [0, model_dim) were written: with an active reorder map the
 // written slots are the MATCHED reference indices, so holes survived a passing
 // gate. `hole_mask` is the per-slot record the producer keeps for exactly that
@@ -95,6 +95,14 @@ namespace rtc {
 // this repository actually hit (auditing "the three controllers" and missing
 // the two support-layer readers) cannot recur. The counterexample, the
 // rejected alternatives and the polarity argument are in §3.7.
+//
+// THE THIRD TERM IS BOUNDED TWO WAYS, and neither bound is closed here — do not
+// read it as "the state this gate passes is fully fresh". It covers the
+// `positions` lane only (velocity and effort are copied under their own message
+// lengths, so a slot can be fresh in q and stale in q_dot), and the polarity leaves
+// a producer that never fills the mask indistinguishable from a hole-free one.
+// Both limits are stated at the field itself (rtc_base/types/types.hpp), which
+// is the SSoT for what the mask does and does not claim.
 //
 // `model_dim <= 0` degrades to a plain validity check, which is what a
 // controller whose runtime DOF is not resolved yet (unit fixtures that bypass
@@ -164,11 +172,26 @@ namespace rtc {
 // #307 was raised to end. The three causes now partition a closed gate: not
 // reported, too narrow, holed.
 //
-// Same trigger profile as the width cause, so the same reasoning about not
-// having a timer applies (see above): the reorder map is built once from the
-// first named message and never rebuilt, so a device whose declared names do
-// not cover the model is holed from the first tick and stays holed. It is a
-// startup configuration fault, not a dropout.
+// The DOMINANT trigger is the same as the width cause, and the same reasoning
+// about not having a timer applies (see above): the reorder map is built once
+// from the first named message and never rebuilt, so a device whose declared
+// names do not cover the model is holed from the first tick and stays holed.
+//
+// It is NOT only a startup fault, though — an earlier draft of this comment
+// said so and was wrong. The mask is ASSIGNED per message, so a later message
+// can hole a slot an earlier one filled. Usually that narrows `num_channels` in
+// lockstep and the WIDTH cause fires instead (which is why the narrowing test
+// in integrated_bringup pins the mask rather than this predicate) — but not
+// always: with a map built from a broad first message whose model slots sit at
+// high message indices, a shorter follow-up leaves [0, model_dim) unwritten
+// while `num_channels >= model_dim` still holds, and this cause fires
+// mid-session with no width shortfall behind it.
+//
+// That case still wants NO hysteresis, for a different reason than startup:
+// those slots really are stale on that tick, so silencing is the correct answer
+// and a debounce would spend the gap feeding the control law values the device
+// did not send. A publisher that flaps makes the gate flap, and that is the
+// gate reporting the publisher.
 //
 // The bindings pair this with FirstHoleSlot to name a slot. Unlike the width
 // cause the KEY TO FIX does NOT differ per axis: a hole means the incoming
@@ -199,6 +222,35 @@ namespace rtc {
 [[nodiscard]] inline int FirstHoleSlot(const DeviceState& dev, int model_dim) noexcept {
   const uint64_t holes = dev.hole_mask & SlotMaskBelow(model_dim);
   return (holes == 0) ? -1 : std::countr_zero(holes);
+}
+
+// The width a binding may adopt when it has NO declared model_dim and has to
+// take one from the device's own report — the deferred self-init in the shipped
+// bindings (a fixture that bypassed YAML, or a hand group that declared no
+// `joint_state_names`).
+//
+// `min(num_channels, cap)` was that answer until #284 and is no longer. Those
+// call sites justify the wire length with "bounded by nc0, so the resolved DOF
+// can never re-open the gate this branch just passed", and that held while the
+// gate was width-only — it does NOT hold against a term the wire length does not
+// bound. A reorder map leaves holes INSIDE [0, num_channels), so a width taken
+// from the wire can be one the gate then refuses.
+//
+// It matters more here than at an ordinary read site because these callers
+// LATCH: they seed a hold target once and never re-seed. Adopting a width that
+// closes the gate therefore silences the device permanently AND freezes the seed
+// on slots that were never written — the poisoned-seed failure those blocks
+// already exist to prevent, arriving through the new term instead of the old.
+//
+// Trimming to the hole-free prefix restores the property those comments claim:
+// IsDeviceReadable(dev, SelfReportedChannelBound(dev, cap)) is true for every
+// `valid` device. A device with no holes — every producer that predates this
+// field, every fixture that leaves the mask zero — gets exactly the old answer,
+// which is why adopting this changed no existing test.
+[[nodiscard]] inline int SelfReportedChannelBound(const DeviceState& dev, int cap) noexcept {
+  const int wire = ModelChannelBound(dev.num_channels, cap);
+  const int hole = FirstHoleSlot(dev, wire);
+  return (hole < 0) ? wire : hole;
 }
 
 // The F5 answer: this device contributes no command this tick.

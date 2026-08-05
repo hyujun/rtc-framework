@@ -550,8 +550,10 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
   // — "hold at the origin" — and arm_target_initialized_ makes that permanent.
   if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ && arm_readable_ &&
       combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
+    // Readable width, not wire width (#284) — see joint/controller.cpp for why
+    // a latching branch must not adopt a DOF the gate can refuse next tick.
     if (arm_dof_ == 0 && state.num_devices > 0) {
-      arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
+      arm_dof_ = rtc::SelfReportedChannelBound(state.devices[0], kDemoTaskMaxArmDof);
     }
 
     const auto& dev0 = state.devices[0];
@@ -637,7 +639,7 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
       // The OTHER source of hand_dof_ (#307) — hand_dof_from_config_ stays
       // false here by construction. See joint/controller.cpp.
       if (hand_dof_ == 0) {
-        hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
+        hand_dof_ = rtc::SelfReportedChannelBound(state.devices[1], kDemoTaskMaxHandDof);
       }
       for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
         const auto& dev = state.devices[d];

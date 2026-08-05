@@ -293,6 +293,7 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 | `IsGateClosedByWidth(dev, model_dim)` | "닫힌 게이트가 **왜** 닫혔는가" — 폭 축. 진단 전용, 출력에 관여하지 않음 | 게이트 판정 **직후**. true 면 아래 진단 로그 (#307) |
 | `IsGateClosedByHoles(dev, model_dim)` | 같은 질문의 **구멍 축** (#284). 폭 판정을 *통과한* device 만 대상이라 위 술어와 배타적 | 같은 자리. 둘은 `valid` 한 device 의 폐쇄를 전수 분할한다 |
 | `FirstHoleSlot(dev, model_dim)` | 모델 폭 안에서 **안 써진 가장 낮은 슬롯** (없으면 -1) — 진단 메시지가 지목할 자리 | `IsGateClosedByHoles` 가 true 인 tick 의 로그 인자 |
+| `SelfReportedChannelBound(dev, cap)` | "선언된 폭이 없을 때 device **자기 보고에서 어떤 폭을 채택**해도 되는가" — 구멍 없는 prefix, `min(nc0, cap)` 이 **아니다** | 바인딩의 deferred self-init 처럼 폭을 **latch** 하는 자리. 근거는 아래 §per-slot freshness |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | **그 게이트가 판정한 device 에만.** primary 게이트는 primary 만 침묵시키고 secondary 는 그대로 둔다 — secondary 가 *자기* 폭으로 판독 불가일 때는 secondary 도 침묵한다 (#291, 아래 표) |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane (`target_*` / `trajectory_*`) 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** — 아래 참조 |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → 0.0 / position → 측정값) | 명령 조립 시. 미기입은 fresh-zero = "원점으로" |
@@ -422,6 +423,24 @@ pin 하고 있다 (`{j2, ghost, j1}` → `num_channels == 3` 인데 슬롯 0 은
 `BuildJointStateReorder` 에 넘기는 참조 리스트가 그것이고, 따라서 보고되는 **슬롯 인덱스도 그
 리스트 기준**이다. CM 파서는 이 키가 없으면 `joint_state_names` 로 default 하므로 메시지는 둘 다
 지목한다. 폭 축과 달리 처방은 arm/hand **대칭**이다.
+
+**세 번째 항이 깬 것 — 자기 보고에서 폭을 채택하는 자리 (`SelfReportedChannelBound`).** 선언된
+DOF 가 없는 바인딩은 device 의 첫 보고에서 폭을 latch 한다 (YAML 을 우회한 fixture, 또는
+`joint_state_names` 를 선언하지 않은 hand 그룹). 그 자리들은 `min(nc0, cap)` 을 쓰면서 *"nc0 로
+bound 되므로 방금 통과한 게이트를 다시 닫을 수 없다"* 를 근거로 삼았는데, 이는 **폭 항에 대해서만
+참**이다 — 구멍 항은 `nc0` 가 bound 하지 않으므로 wire 길이에서 채택한 폭이 다음 tick 에 거부될 수
+있다. 이 자리들은 **latch** 하므로 결과가 영구 침묵 + 안 써진 슬롯으로 굳은 seed 다 (그 seed 오염은
+이 블록들이 원래 막으려던 실패이며, 새 항을 통해 되돌아온다). 그래서 채택 폭은 **구멍 없는
+prefix** 로 자른다 — 구멍이 없는 device 는 예전과 같은 답을 받으므로 기존 테스트는 불변이다.
+불변식 `IsDeviceReadable(dev, SelfReportedChannelBound(dev, cap))` 은 `test_device_readability.cpp`
+의 `TheAdoptedWidthAlwaysPassesTheGate` 가 pin 한다.
+
+**이 원인이 startup 전용은 아니다.** 마스크는 메시지마다 대입되므로 나중 메시지가 앞선 메시지의
+슬롯을 구멍으로 만들 수 있다. 보통은 `num_channels` 도 함께 좁아져 **폭** 축이 발화하지만, 넓은
+첫 메시지로 map 이 고정되고 모델 슬롯이 메시지의 뒤쪽 인덱스에 있으면 짧은 후속 메시지가
+`nc0 ≥ nv` 를 유지한 채 `[0, nv)` 를 통째로 비운다. 그 tick 도 **hysteresis 를 두지 않는다** —
+슬롯이 실제로 stale 이므로 침묵이 옳은 답이고, 디바운스는 device 가 보내지 않은 값을 제어 법칙에
+먹이는 데 그 시간을 쓴다.
 
 ### 부록 A — position-domain E-STOP seed 행의 유래 (#236 S7c, E-8 결정 A)
 

@@ -1,4 +1,4 @@
-// ── F5 gate closure diagnostic, at the binding (issue #307) ──────────────────
+// ── F5 gate closure diagnostic, at the binding (issues #307, #284) ───────────
 //
 // A gate closed by WIDTH stays closed for the life of the process and its only
 // other trace is an absence — the arm-tip frame stops appearing in
@@ -6,6 +6,14 @@
 // inactive" from "TF slot unset". §3.7 of rtc_controllers/docs/
 // compliance-conventions.md owns the contract; this file pins that all three
 // shipped bindings actually emit it, and that they agree on WHEN.
+//
+// #284 added a THIRD closure cause — wide enough, but with slots the model
+// reads that this message never wrote — and it inherits the same problem for
+// the same reason: `valid` is true, the width message stays silent, and the
+// only symptom is the same absence. So it is pinned here on the same terms.
+// The base package tests the predicates themselves; what cannot be tested there
+// is that each binding hands them the right device and the right width, which
+// is the half a copy-paste between three near-identical blocks gets wrong.
 //
 // WHY THIS IS ITS OWN TEST BINARY. RCLCPP_*_THROTTLE keeps its state in a
 // static at the macro's expansion point, so the window is per-process and per
@@ -47,6 +55,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <map>
 #include <mutex>
@@ -65,6 +74,14 @@ constexpr int kHandChannels = 10;
 constexpr int kNarrowArm = 4;
 constexpr int kNarrowHand = 8;
 constexpr double kDt = 0.002;
+
+// The holed slots (#284). DIFFERENT per axis on purpose: the slot number is the
+// one datum the operator acts on, and it is the only thing distinguishing "the
+// hand branch read devices[1] against hand_dof_" from a copy-paste that reached
+// for the arm's device or the arm's width. Both sit inside their axis' model
+// width, so the width term stays satisfied and only the hole term fires.
+constexpr int kArmHoleSlot = 2;
+constexpr int kHandHoleSlot = 7;
 
 double MeasuredArm(std::size_t i) {
   return 0.11 + 0.07 * static_cast<double>(i);
@@ -102,6 +119,16 @@ ControllerState MakeState(int arm_channels, int hand_channels = kHandChannels,
   for (std::size_t i = 0; i < static_cast<std::size_t>(hand_channels); ++i) {
     dev1.positions[i] = MeasuredHand(i);
   }
+  return state;
+}
+
+// The same tick, plus a record that one slot the model reads was not written by
+// this message (issue #284). Kept apart from MakeState so the width axis stays
+// untouched: the hole cause requires `num_channels >= model_dim`, so a state
+// that closes the gate this way is one the WIDTH site provably cannot fire on,
+// and the two causes' call sites stay independently observable in one process.
+ControllerState WithHole(ControllerState state, std::size_t dev_idx, int slot) {
+  state.devices[dev_idx].hole_mask = uint64_t{1} << slot;
   return state;
 }
 
@@ -275,6 +302,38 @@ std::vector<std::string> HandNeedlesFromDeviceReport() {
           "hand_dof=" + std::to_string(kHandChannels), "narrowed mid-session"};
 }
 
+// The hole axis (#284). Three claims per needle set, and each is separately
+// falsifiable: WHICH slot (a wrong device or a wrong width in the FirstHoleSlot
+// call changes it), that the width pair is quoted even though neither width is
+// at fault (without it the operator cannot tell this apart from the width
+// message), and the KEY — `joint_command_names`, because that is the reference
+// list BuildJointStateReorder is actually built against and therefore what
+// defines the slot index being reported.
+//
+// Unlike the hand's WIDTH message this prescription does NOT vary with the
+// source of hand_dof_, and that is deliberate rather than an oversight: a hole
+// is always "the message carried no joint of that name", so the fix is always
+// to reconcile the declared names with the publisher's. The declared-width
+// process below asserts the identical text to pin that non-variation.
+std::vector<std::string> ArmHoleNeedles() {
+  return {"arm device slot " + std::to_string(kArmHoleSlot),
+          "num_channels=" + std::to_string(kArmDof), "arm_dof=" + std::to_string(kArmDof),
+          "'joint_command_names'"};
+}
+
+std::vector<std::string> HandHoleNeedles() {
+  return {"hand device slot " + std::to_string(kHandHoleSlot),
+          "num_channels=" + std::to_string(kHandChannels),
+          "hand_dof=" + std::to_string(kHandChannels), "'joint_command_names'"};
+}
+
+// Any hole diagnostic on either axis. Used where the claim is "not on this
+// axis" — the axis word is what a binding that passed the wrong device would
+// get wrong, so matching only "device slot" would let that through.
+std::vector<std::string> AnyHoleDiagnostic() {
+  return {"was never written although"};
+}
+
 // Any F5 diagnostic at all, regardless of axis or values. Used for the silent
 // cases, where the claim is that NOTHING was said.
 std::vector<std::string> AnyDiagnostic() {
@@ -327,6 +386,34 @@ void ExerciseBothAxes(Controller& ctrl) {
     EXPECT_TRUE(LogSink::WarningsMatching(HandNeedlesFromDeclaredWidth()).empty())
         << "sent the operator to a key this configuration never declared";
   }
+  {
+    // The gate's THIRD closure cause (#284), and the reason it needs a binding
+    // test of its own rather than the base predicate tests it already has:
+    // those prove the predicate, not that these three bindings call it with the
+    // right device and the right width. A holed tick has no other trace — the
+    // width message does not fire, the device is `valid`, and the arm simply
+    // stops appearing — so a binding that never wired it up looks identical to
+    // one that did until an operator is staring at a silent arm.
+    //
+    // Both hole sites are untouched at this point, so the hand silence below is
+    // a real observation rather than a consumed window.
+    SCOPED_TRACE("step 5 — a hole inside a wide-enough arm names the slot, not the width");
+    static_cast<void>(ctrl.Compute(WithHole(MakeState(kArmDof), 0, kArmHoleSlot)));
+    EXPECT_EQ(LogSink::WarningsMatching(ArmHoleNeedles()).size(), 1u);
+    EXPECT_EQ(LogSink::WarningsMatching(AnyHoleDiagnostic()).size(), 1u)
+        << "the arm's hole was also reported on another axis";
+  }
+  {
+    // The hand's hole site, at a DIFFERENT slot from the arm's. A binding that
+    // reached for devices[0], or for arm_dof_, on this axis either reports slot
+    // 2 or reports nothing at all — both fail the needle, and neither would be
+    // caught by a fixture that used one slot number for both axes.
+    SCOPED_TRACE("step 6 — the secondary axis reports its own slot (#291 + #284)");
+    static_cast<void>(ctrl.Compute(WithHole(MakeState(kArmDof), 1, kHandHoleSlot)));
+    EXPECT_EQ(LogSink::WarningsMatching(HandHoleNeedles()).size(), 1u);
+    EXPECT_EQ(LogSink::WarningsMatching(AnyHoleDiagnostic()).size(), 2u)
+        << "one hole per axis, each from its own call site";
+  }
 }
 
 // The other source (#307). Hand axis only: the arm's prescription is
@@ -346,6 +433,19 @@ void ExerciseDeclaredHandWidth(Controller& ctrl) {
     EXPECT_TRUE(LogSink::WarningsMatching(HandNeedlesFromDeviceReport()).empty())
         << "blamed the backend for a width this configuration declared itself";
   }
+  {
+    // The hole prescription does NOT branch on where hand_dof_ came from, and
+    // this is the assertion that makes that a decision rather than an omission:
+    // the needles are byte-identical to the ones ExerciseBothAxes uses on a
+    // config that declared nothing. The width axis two lines above is the
+    // counterexample in the same file — it DOES branch, because only one of its
+    // two sources has a key to edit. A hole always has one: the slot index is
+    // an index into the declared reference list, so that list is always the
+    // thing to reconcile.
+    SCOPED_TRACE("step 3 — the hole prescription is the same whichever key declared the width");
+    static_cast<void>(ctrl.Compute(WithHole(MakeState(kArmDof), 1, kHandHoleSlot)));
+    EXPECT_EQ(LogSink::WarningsMatching(HandHoleNeedles()).size(), 1u);
+  }
 }
 
 class GateDiagnosticTest : public ::testing::Test {
@@ -355,13 +455,13 @@ class GateDiagnosticTest : public ::testing::Test {
   void TearDown() override { LogSink::Restore(); }
 };
 
-TEST_F(GateDiagnosticTest, DemoJointReportsTheWidthShortfallOnBothAxes) {
+TEST_F(GateDiagnosticTest, DemoJointReportsEveryClosureCauseOnBothAxes) {
   DemoJointController ctrl{""};
   ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalJointYaml())));
   ExerciseBothAxes(ctrl);
 }
 
-TEST_F(GateDiagnosticTest, DemoTaskReportsTheWidthShortfallOnBothAxes) {
+TEST_F(GateDiagnosticTest, DemoTaskReportsEveryClosureCauseOnBothAxes) {
   DemoTaskController ctrl{"", DemoTaskController::Gains{}};
   ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalTaskYaml())));
   ExerciseBothAxes(ctrl);
@@ -372,7 +472,7 @@ TEST_F(GateDiagnosticTest, DemoTaskReportsTheWidthShortfallOnBothAxes) {
 // therefore carries an extra claim for this binding — arm_dof_ is still 0 while
 // the diagnostic runs, so a helper that reported on `num_channels < 0` would
 // surface as a step-1 failure here and nowhere else.
-TEST_F(GateDiagnosticTest, DemoWbcReportsTheWidthShortfallOnBothAxes) {
+TEST_F(GateDiagnosticTest, DemoWbcReportsEveryClosureCauseOnBothAxes) {
   DemoWbcController ctrl{""};
   ExerciseBothAxes(ctrl);
 }

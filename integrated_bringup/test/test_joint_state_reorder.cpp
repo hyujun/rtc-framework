@@ -188,9 +188,18 @@ TEST(WriteJointStateToCache, WithReorder_PlacesByDeviceSlot) {
 }
 
 // 5b. Freshness is a statement about THIS message, so a narrower follow-up
-//     retires the slots the wider one filled. The cache is persistent: without
-//     this the values from the first message would keep a passing gate open
-//     forever on a device that has since stopped reporting them.
+//     retires the slots the wider one filled — the mask is ASSIGNED per call,
+//     never accumulated.
+//
+//     WHAT THIS CASE DOES AND DOES NOT SHOW. The mask assertions below are the
+//     point; the `IsDeviceReadable(…, 3)` line is NOT, and reading it as the
+//     sensor for this behaviour would be wrong. With an identity-shaped map a
+//     narrowing message narrows `num_channels` in lockstep, so the old WIDTH
+//     term already closes that gate — delete the hole term entirely and the
+//     line still passes. What only the mask can say here is WHICH slot went
+//     stale (`FirstHoleSlot`) and that the narrower model is still served.
+//     The closure the mask alone produces needs a map whose model slots sit at
+//     high message indices; case 5 is the pinned counterexample for that.
 TEST(WriteJointStateToCache, NarrowingMessageRetiresPreviouslyWrittenSlots) {
   rtc::JointStateReorder r;
   BuildJointStateReorder({"j0", "j1", "j2"}, {"j0", "j1", "j2"}, r);

@@ -1684,13 +1684,15 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     // dimensions (e.g. unit tests that bypass YAML). Resolved AFTER the defer
     // guard so hand_dof_/full_dof_ are computed only once the hand device is
     // valid — otherwise full_dof_ would latch to arm_dof_ and never grow.
+    // Readable width, not wire width (#284) — see joint/controller.cpp for why
+    // a latching branch must not adopt a DOF the gate can refuse next tick.
     if (arm_dof_ == 0 && state.num_devices > 0) {
-      arm_dof_ = std::min(state.devices[0].num_channels, kMaxArmDof);
+      arm_dof_ = rtc::SelfReportedChannelBound(state.devices[0], kMaxArmDof);
     }
     // The OTHER source of hand_dof_ (#307) — hand_dof_from_config_ stays false
     // here by construction. See joint/controller.cpp.
     if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
-      hand_dof_ = std::min(state.devices[1].num_channels, kMaxHandDof);
+      hand_dof_ = rtc::SelfReportedChannelBound(state.devices[1], kMaxHandDof);
     }
     if (full_dof_ == 0) {
       full_dof_ = arm_dof_ + hand_dof_;

@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <span>
@@ -32,6 +33,7 @@ using rtc::IsGateClosedByHoles;
 using rtc::IsGateClosedByWidth;
 using rtc::kMaxDeviceChannels;
 using rtc::ModelChannelBound;
+using rtc::SelfReportedChannelBound;
 using rtc::SilenceDeviceOutput;
 
 namespace {
@@ -256,6 +258,66 @@ TEST(FirstHoleSlotTest, NamesTheLowestHoleTheModelActuallyReaches) {
 TEST(FirstHoleSlotTest, ReturnsMinusOneWhenThereIsNothingToName) {
   EXPECT_EQ(-1, FirstHoleSlot(MakeDevice(6), 6));
   EXPECT_EQ(-1, FirstHoleSlot(MakeDeviceWithHoles(6, ~0ULL), 0));
+}
+
+// ── SelfReportedChannelBound — the width a LATCHING caller may adopt ─────────
+
+TEST(SelfReportedChannelBoundTest, GivesTheOldAnswerOnAHoleFreeDevice) {
+  // Every producer that predates hole_mask and every fixture that leaves the
+  // mask zero must be unaffected — this is why adopting the helper at the six
+  // self-init sites changed no existing test.
+  EXPECT_EQ(6, SelfReportedChannelBound(MakeDevice(6), 32));
+  EXPECT_EQ(32, SelfReportedChannelBound(MakeDevice(40), 32));
+  EXPECT_EQ(4, SelfReportedChannelBound(MakeDevice(4), 32));
+  EXPECT_EQ(0, SelfReportedChannelBound(MakeDevice(0), 32));
+}
+
+TEST(SelfReportedChannelBoundTest, TrimsToTheHoleFreePrefix) {
+  // The wire says 22 channels, but the reorder map only ever wrote 16 of them.
+  // Adopting 22 is what silences the device from the next tick onward.
+  EXPECT_EQ(16, SelfReportedChannelBound(MakeDeviceWithHoles(22, ~((1ULL << 16) - 1)), 32));
+  // The prefix ends at the LOWEST hole, not the highest written slot.
+  EXPECT_EQ(3, SelfReportedChannelBound(MakeDeviceWithHoles(22, (1ULL << 3) | (1ULL << 9)), 32));
+  // A hole at slot 0 leaves nothing adoptable; the gate then degrades to the
+  // plain validity check, which is the honest answer while nothing is known.
+  EXPECT_EQ(0, SelfReportedChannelBound(MakeDeviceWithHoles(22, 1ULL << 0), 32));
+}
+
+TEST(SelfReportedChannelBoundTest, IgnoresHolesTheCapAlreadyExcludes) {
+  // A hole at slot 40 is not a 32-DOF caller's business — trimming for it would
+  // hand back a narrower DOF than the device can actually serve.
+  EXPECT_EQ(32, SelfReportedChannelBound(MakeDeviceWithHoles(40, 1ULL << 40), 32));
+  // Nor is a hole past what the device reported at all.
+  EXPECT_EQ(6, SelfReportedChannelBound(MakeDeviceWithHoles(6, 1ULL << 9), 32));
+}
+
+TEST(SelfReportedChannelBoundTest, TheAdoptedWidthAlwaysPassesTheGate) {
+  // THE PROPERTY THE CALL SITES REST ON. Their comments assert that a DOF
+  // resolved from the device's own report "can never re-open the gate this
+  // branch just passed" — true of the width term alone, and false of the hole
+  // term, which is what this helper repairs. Those branches LATCH, so a width
+  // the gate refuses is permanent silence plus a seed frozen on unwritten slots.
+  for (const int reported : {0, 1, 6, 22, 40, static_cast<int>(kMaxDeviceChannels)}) {
+    for (const uint64_t holes : {uint64_t{0}, uint64_t{1}, uint64_t{1} << 3, uint64_t{1} << 21,
+                                 ~uint64_t{0}, uint64_t{0xDEADBEEF}}) {
+      for (const int cap : {1, 6, 32, static_cast<int>(kMaxDeviceChannels)}) {
+        const DeviceState dev = MakeDeviceWithHoles(reported, holes);
+        const int adopted = SelfReportedChannelBound(dev, cap);
+        EXPECT_TRUE(IsDeviceReadable(dev, adopted))
+            << "reported=" << reported << " holes=" << holes << " cap=" << cap;
+        EXPECT_GE(adopted, 0);
+        EXPECT_LE(adopted, std::min(reported, cap));
+      }
+    }
+  }
+}
+
+TEST(SelfReportedChannelBoundTest, StillReportsAWidthForADeviceThatHasNotReported) {
+  // Deliberately NOT gated on `valid`: the callers check readability themselves
+  // before adopting, and folding validity in here would return 0 for a device
+  // that simply has not arrived yet — indistinguishable from one whose slot 0
+  // is holed.
+  EXPECT_EQ(6, SelfReportedChannelBound(MakeDevice(6, /*valid=*/false), 32));
 }
 
 // ── ModelChannelBound — OOB defence only ─────────────────────────────────────

@@ -156,6 +156,7 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 | `IsGateClosedByWidth(dev, model_dim)` | 닫힌 게이트가 **왜** 닫혔는가 — 폭 축. 진단 전용, 출력에 관여하지 않는다. 게이트 판정 직후 (#307) |
 | `IsGateClosedByHoles(dev, model_dim)` | 같은 질문의 **구멍 축** (#284). 폭 판정을 통과한 device 만 대상이라 위와 배타적 |
 | `FirstHoleSlot(dev, model_dim)` | 모델 폭 안에서 안 써진 가장 낮은 슬롯 (없으면 `-1`) — 진단이 지목할 자리 |
+| `SelfReportedChannelBound(dev, cap)` | 선언된 `model_dim` 이 없어 **device 자기 보고에서 폭을 채택**할 때 쓸 값 (#284). `min(nc0, cap)` 이 아니라 구멍 없는 prefix — 채택 폭은 반드시 게이트를 통과해야 한다 |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length. 판정한 그 device 에만 |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane 을 측정값으로. `SilenceDeviceOutput` 과 **항상 짝** |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → `0.0` / position → 측정값) |
