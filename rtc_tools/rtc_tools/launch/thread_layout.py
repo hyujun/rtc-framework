@@ -1,28 +1,30 @@
 """Python mirror of ``rtc::SelectThreadConfigs`` core-tier dispatch.
 
-C++ SSoT lives in ``rtc_base/include/rtc_base/threading/thread_config.hpp`` and
-``thread_utils.hpp::SelectThreadConfigs``. Launch files (Python) need to make
-the same per-tier decisions for ``taskset`` pinning of external driver and
-simulator processes, so this module re-encodes the same tier breakpoints and
-returns the matching ``cpu_core`` values.
+The tier table itself is GENERATED into :mod:`rtc_tools.launch.thread_layout_generated`
+from ``repo_scripts/config/thread_layout.yaml`` -- the same manifest that
+generates the C++ tier constants and the shell helpers (issue #153 M1). This
+module is the hand-written adapter: it keeps the stable, launch-facing API
+(:class:`ThreadLayout` and the ``get_*_core`` accessors) on top of that table.
 
-Drift between this module and the C++ SSoT is caught by
-``test/test_thread_layout.py`` — the test fixture pins the expected mapping
-per tier; any divergence (here or in ``thread_config.hpp``) breaks the test.
+Launch files need the same per-tier decisions the C++ side makes, for
+``taskset`` pinning of external driver and simulator processes.
 
-Tier source (layout v4.1):
-  - 4-core fallback  : arm=0,  hand=0,  sim=-1, viewer=-1, rt_callback=2
-  - 6-core (degraded): arm=4,  hand=4,  sim=-1, viewer=-1, rt_callback=2
-  - 8-core           : arm=4,  hand=5,  sim=-1, viewer=-1, rt_callback=2
-  - 10-core          : arm=5,  hand=6,  sim=-1, viewer=-1, rt_callback=2
-  - 12-core          : arm=6,  hand=7,  sim=-1, viewer=-1, rt_callback=2
-  - 14-core          : arm=6,  hand=7,  sim=-1, viewer=-1, rt_callback=2
-  - 16-core+         : arm=6,  hand=7,  sim=-1, viewer=-1, rt_callback=2
+Drift between the three languages is caught by the generator's ``--check``
+mode, not by a test in this package::
 
-``cpu_core == -1`` is a sentinel meaning "do not pin" — the launch script
-treats it as a no-op (skip taskset call entirely). ``rt_callback_core`` is
-exposed so launch files can co-pin the DDS receive thread to the same core
-as the ``rt_callback`` RT thread for cache locality (layout v4 invariant).
+    python3 repo_scripts/scripts/gen_thread_layout.py --check
+
+``test/test_thread_layout.py`` is a different sensor: it pins the expected
+per-tier values as hand-written literals, so it catches a *generator* bug that
+``--check`` cannot see (a wrong table matches itself in all three languages).
+
+``cpu_core == -1`` is a sentinel meaning "do not pin" -- the launch script
+treats it as a no-op (skip the taskset call entirely). ``rt_callback_core`` is
+exposed so launch files can co-pin the DDS receive thread to the same core as
+the ``rt_callback`` RT thread for cache locality (layout v4 invariant).
+
+Every value here is a *slot index*, not a kernel logical CPU id; resolving a
+slot to a logical CPU is the launch helper's job (``pin_*_to_slot``).
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
+
+from rtc_tools.launch.thread_layout_generated import ROLE_SPECS, tier_for_cores
 
 
 @dataclass(frozen=True)
@@ -39,77 +43,6 @@ class ThreadLayout:
     sim_thread_core: int
     viewer_core: int
     rt_callback_core: int
-
-
-_TIERS: tuple[tuple[int, ThreadLayout], ...] = (
-    (
-        16,
-        ThreadLayout(
-            arm_driver_core=6,
-            hand_driver_core=7,
-            sim_thread_core=-1,
-            viewer_core=-1,
-            rt_callback_core=2,
-        ),
-    ),
-    (
-        14,
-        ThreadLayout(
-            arm_driver_core=6,
-            hand_driver_core=7,
-            sim_thread_core=-1,
-            viewer_core=-1,
-            rt_callback_core=2,
-        ),
-    ),
-    (
-        12,
-        ThreadLayout(
-            arm_driver_core=6,
-            hand_driver_core=7,
-            sim_thread_core=-1,
-            viewer_core=-1,
-            rt_callback_core=2,
-        ),
-    ),
-    (
-        10,
-        ThreadLayout(
-            arm_driver_core=5,
-            hand_driver_core=6,
-            sim_thread_core=-1,
-            viewer_core=-1,
-            rt_callback_core=2,
-        ),
-    ),
-    (
-        8,
-        ThreadLayout(
-            arm_driver_core=4,
-            hand_driver_core=5,
-            sim_thread_core=-1,
-            viewer_core=-1,
-            rt_callback_core=2,
-        ),
-    ),
-    (
-        6,
-        ThreadLayout(
-            arm_driver_core=4,
-            hand_driver_core=4,
-            sim_thread_core=-1,
-            viewer_core=-1,
-            rt_callback_core=2,
-        ),
-    ),
-)
-_FALLBACK_4CORE = ThreadLayout(
-    arm_driver_core=0,
-    hand_driver_core=0,
-    sim_thread_core=-1,
-    viewer_core=-1,
-    rt_callback_core=2,
-)
 
 
 def get_physical_cpu_count() -> int:
@@ -147,16 +80,20 @@ def get_physical_cpu_count() -> int:
 def select_thread_layout(physical_cores: int | None = None) -> ThreadLayout:
     """Return the ``ThreadLayout`` for the given (or detected) physical core count.
 
-    Mirrors ``rtc::SelectThreadConfigs()`` tier breakpoints. Any change to the
-    C++ tier table must be reflected here (and caught by the drift test).
+    Mirrors ``rtc::SelectThreadConfigsForCoreCount()``; both read the same
+    manifest, so a tier change only has to be made once.
     """
     if physical_cores is None:
         physical_cores = get_physical_cpu_count()
 
-    for threshold, layout in _TIERS:
-        if physical_cores >= threshold:
-            return layout
-    return _FALLBACK_4CORE
+    specs = ROLE_SPECS[tier_for_cores(physical_cores)]
+    return ThreadLayout(
+        arm_driver_core=specs["arm_driver"].slot,
+        hand_driver_core=specs["hand_driver"].slot,
+        sim_thread_core=specs["sim_thread"].slot,
+        viewer_core=specs["viewer"].slot,
+        rt_callback_core=specs["rt_callback"].slot,
+    )
 
 
 def get_arm_driver_core(physical_cores: int | None = None) -> int:

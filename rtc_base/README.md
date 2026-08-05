@@ -337,14 +337,19 @@ O(1) 슬라이딩 윈도우 OLS(최소자승법) 기반 실시간 드리프트 �
 
 `ThreadConfig` 구조체는 CPU 어피니티, 스케줄러 정책, 우선순위, nice 값, 스레드 이름을 정의합니다.
 
+> **레이아웃 값의 SSoT 는 이 헤더가 아니라 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 입니다** (issue #153 M1). tier 상수 (`k*Config*`) 와 `SelectThreadConfigsForCoreCount()` 는 `thread_config_generated.hpp` 로 생성되고, 이 헤더는 구조체 정의와 설계 산문을 갖습니다. 같은 manifest 가 shell 헬퍼 (`repo_scripts/scripts/lib/thread_layout_generated.sh`) 와 Python launch 미러 (`rtc_tools/rtc_tools/launch/thread_layout_generated.py`), 그리고 아래 매트릭스까지 생성합니다.
+
 CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4, 6, 8, 10, 12, 14, 16코어).
 
 > **헤더 내 선언 순서**: tier 블록은 코어 수 오름차순 (4 → 6 → 8 → 10 → 12 → 14 → 16), 각 tier 내부는 `sched_priority` 내림차순 (rt_control 90 → rt_callback 70 → mpc 60/55 → SCHED_OTHER 0 그룹), priority 동률 시 심볼명 알파벳 순 (Arm → Hand → NrtCallback → NrtLogging → SimThread → Viewer).
 
 **코어 수별 스레드 레이아웃 (layout v4.1):**
 
+<!-- BEGIN GENERATED: thread-layout-matrix -->
+<!-- Generated from repo_scripts/config/thread_layout.yaml by repo_scripts/scripts/gen_thread_layout.py. Do not edit by hand. -->
+
 | 스레드 | 4코어¹ | 6코어² | 8코어 | 10코어 | 12코어 | 14코어 | 16코어 |
-|--------|-------|-------|-------|--------|--------|--------|--------|
+|--------|-------|-------|-------|-------|-------|-------|-------|
 | **rt_control** (FIFO 90) | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
 | **rt_callback** (FIFO 70) | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
 | **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
@@ -352,10 +357,12 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 | **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 5 | Core 5 | Core 5 |
 | **arm_driver** (CFS 0⁴) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
 | **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 6 | Core 7 | Core 7 | Core 7 |
-| **nrt_logging** (CFS -5) | Core 0 | Core 5 | Core 6 | Core 7 | Core 8 | Core 8 | Core 8 |
 | **nrt_callback** (CFS 0) | Core 0 | Core 5 | Core 7 | Core 8 | Core 9 | Core 9 | Core 9 |
+| **nrt_logging** (CFS -5) | Core 0 | Core 5 | Core 6 | Core 7 | Core 8 | Core 8 | Core 8 |
 | **sim_thread** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
 | **viewer** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
+
+<!-- END GENERATED: thread-layout-matrix -->
 
 > ¹ 4코어는 degraded mode — mpc 가 CFS 로 강등 (RT 자원 부족). Core 0 에 nrt + driver 모두 합쳐짐.
 > ² 6코어는 degraded mode — arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유, mpc_workers 없음.
@@ -400,7 +407,7 @@ Phase 5 이후 `SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (
 - `main`: MPC solve 스레드의 `ThreadConfig`.
 - `num_workers`: 활성 worker 수 (`0 ≤ n ≤ kMpcMaxWorkers == 2`).
 - `workers`: `std::array<ThreadConfig, 2>` — 앞쪽 `num_workers`개만 유효.
-- `SelectThreadConfigs()`가 물리 코어 수에 맞는 `kMpcConfig{4,6,8,10,12,14,16}Core` 프리셋을 채워 반환 (tier dispatch는 `>=` 계단식이므로 `ncpu >= 14` 분기 유지 필수).
+- `SelectThreadConfigs()`가 물리 코어 수에 맞는 `kMpcConfig{4,6,8,10,12,14,16}Core` 프리셋을 채워 반환 (tier dispatch는 `>=` 계단식). 상수와 dispatch 는 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 에서 생성되므로 tier 를 바꾸려면 manifest 를 고치고 `gen_thread_layout.py --write` 를 돌린다.
 - `ValidateSystemThreadConfigs()`는 (1) MPC main priority < rt_callback priority, (2) worker priority ≤ main priority, (3) `num_workers ∈ [0, kMpcMaxWorkers]`, (4) `arm_driver` / `hand_driver` cpu_core 가 모든 RT controller thread (rt_control/rt_callback/mpc_*) 와 disjoint, (5) cpu_core=-1 sentinel 은 disjointness sweep 에서 skip 등의 불변식을 검증.
 
 `ThreadMetrics` 구조체: `min_latency_us`, `max_latency_us`, `avg_latency_us`, `jitter_us`, `percentile_95_us`, `percentile_99_us`.

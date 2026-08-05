@@ -1,0 +1,320 @@
+# RTC thread / CPU layout manifest — the SINGLE source of truth (issue #153 M1).
+#
+# Every executable encoding of "which role sits on which slot at which policy"
+# is GENERATED from this file. Before M1 the same table was re-encoded by hand
+# in six places (C++ tier constants + SelectThreadConfigs, three rt_common.sh
+# helpers, verify_rt_runtime.sh::build_expected_threads, and the Python launch
+# mirror); five of them had no direct unit test, so a tier edit could land in
+# one encoding and silently skip the others.
+#
+#   generator : repo_scripts/scripts/gen_thread_layout.py
+#   check     : python3 repo_scripts/scripts/gen_thread_layout.py --check
+#   write     : python3 repo_scripts/scripts/gen_thread_layout.py --write
+#
+# Generated artifacts are CHECKED IN — install.sh sources the shell helpers
+# *before* the workspace is built, so build-time generation would break
+# bootstrap. `--check` is the drift gate (CI + colcon test).
+#
+# ── What this file does NOT own ─────────────────────────────────────────────
+# `cpu_core` here is a *slot index*, never a kernel logical CPU id. The
+# slot -> logical translation (SlotToLogicalCpu / slot_to_logical_cpu /
+# PHYSICAL_CORE_SLOTS) is a separate concern owned by the #151/#152/#163 layer
+# and is deliberately out of scope. `-1` is the "do not pin" sentinel.
+#
+# ── Editing ─────────────────────────────────────────────────────────────────
+# Changing a value here changes the runtime layout on every tier. That is an
+# E-7 (thread model) decision, not a refactor — see CLAUDE.md §6. After any
+# edit run the generator with --write and commit the regenerated artifacts in
+# the same commit.
+
+layout_version: "v4.1"
+
+# Slot reserved for OS / DDS / NIC IRQ. Never shielded, never a pin target for
+# user-space RT threads (v4.1: the RT cluster starts at slot 1).
+os_slot: 0
+
+# ── Roles ───────────────────────────────────────────────────────────────────
+# Declaration order here IS the emission order: C++ constants within a tier,
+# and the verifier's expected-thread table. Do not reorder casually — the C++
+# ordering convention is documented in rtc_base/README.md (priority descending,
+# alphabetical tie-break).
+#
+#   key                 manifest/shell/Python identifier
+#   thread_name         pthread_setname_np name (max 15 chars) == C++ .name
+#   cpp_symbol          k<cpp_symbol><tier suffix>  (e.g. kRtControlConfig8Core)
+#   kind                thread  = ApplyThreadConfig target inside the controller
+#                       process = external process pin applied by launch taskset
+#                       mpc     = the MpcThreadConfig aggregate (main + workers)
+#   in_controller_process  appears in verify_rt_runtime.sh's expected table
+#   verifier_optional      missing thread => SKIP instead of WARN
+#   map_note            annotation appended to the generated core-map comment
+roles:
+  - key: rt_control
+    thread_name: rt_control
+    cpp_symbol: RtControlConfig
+    kind: thread
+    in_controller_process: true
+
+  - key: rt_callback
+    thread_name: rt_callback
+    cpp_symbol: RtCallbackConfig
+    kind: thread
+    in_controller_process: true
+    map_note: "DDS recv co-pin (CFS) via launch taskset"
+
+  - key: mpc
+    cpp_symbol: MpcConfig
+    kind: mpc
+    main:
+      key: mpc_main
+      thread_name: mpc_main
+      in_controller_process: true
+    worker:
+      # mpc_worker_<i>; kMpcMaxWorkers in thread_config.hpp must match max_workers.
+      key_prefix: mpc_worker_
+      thread_name_prefix: mpc_worker_
+      in_controller_process: true
+      # The worker jthread calls ApplyThreadConfigVerbose and returns
+      # immediately, so it is usually gone by the time the verifier walks
+      # /proc — absence must not WARN.
+      verifier_optional: true
+    max_workers: 2
+
+  - key: arm_driver
+    thread_name: arm_driver
+    cpp_symbol: ArmDriverConfig
+    kind: process
+    in_controller_process: false
+    map_note: "external process; CM cpu_affinity param (#343)"
+
+  - key: hand_driver
+    thread_name: hand_driver
+    cpp_symbol: HandDriverConfig
+    kind: process
+    in_controller_process: false
+    map_note: "external process; in-process self-pin (#345)"
+
+  - key: nrt_callback
+    thread_name: nrt_callback
+    cpp_symbol: NrtCallbackConfig
+    kind: thread
+    in_controller_process: true
+
+  - key: nrt_logging
+    thread_name: nrt_logging
+    cpp_symbol: NrtLoggingConfig
+    kind: thread
+    in_controller_process: true
+
+  - key: sim_thread
+    thread_name: sim_thread
+    cpp_symbol: SimThreadConfig
+    kind: process
+    in_controller_process: false
+
+  - key: viewer
+    thread_name: viewer
+    cpp_symbol: ViewerConfig
+    kind: process
+    in_controller_process: false
+
+# Emission order of verify_rt_runtime.sh's expected-thread table. Only roles
+# with in_controller_process: true may appear — arm/hand/sim/viewer are external
+# processes discovered by PID, and listing them here always false-WARNed (#353).
+verifier_order:
+  - rt_control
+  - rt_callback
+  - mpc_main
+  - mpc_worker_0
+  - mpc_worker_1
+  - nrt_logging
+  - nrt_callback
+
+# ── Markdown rendering ──────────────────────────────────────────────────────
+# Decoration only. Every *number* in a generated table is derived from the tier
+# data above; these strings carry the footnote markers whose prose lives in the
+# hand-written text below each generated block.
+doc:
+  unpinned_cell: "-1³"
+  tier_header_suffixes:
+    4: "¹"
+    6: "²"
+  role_label_suffixes:
+    arm_driver: "⁴"
+  cell_suffixes:
+    "4|mpc_main": " (CFS¹)"
+
+# ── Tiers ───────────────────────────────────────────────────────────────────
+# Listed in ASCENDING min_cores (C++ emission order). Dispatch selects the
+# highest tier whose min_cores <= physical core count; below the lowest
+# min_cores the first tier is the fallback.
+#
+#   cpp_suffix       k<cpp_symbol><cpp_suffix>
+#   cpp_suffix_mpc   override for kMpcConfig* only. The 6-core tier is a
+#                    historical irregularity: every other symbol is unsuffixed
+#                    there (kRtControlConfig) but the MPC aggregate is
+#                    kMpcConfig6Core. Preserved verbatim — those symbols are
+#                    referenced by rtc_base/test/test_mpc_thread_config.cpp.
+#   notes            free prose emitted under the generated core map
+#
+# policy: FIFO | RR | OTHER.  priority: 1-99 for FIFO/RR, 0 otherwise.
+# nice: -20..19, honoured only for OTHER.  slot: -1 = do not pin.
+tiers:
+  - id: 4
+    min_cores: 1
+    label: "4-core fallback"
+    cpp_suffix: "4Core"
+    notes:
+      - "degraded — no deterministic RT guarantee."
+      - "Only 4 slots exist, so nrt_* and both driver processes collapse onto"
+      - "the OS slot and mpc_main is demoted to CFS."
+    roles:
+      rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
+      rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
+      mpc_main:     {slot: 3,  policy: OTHER, priority: 0,  nice: -5}
+      mpc_workers:  []
+      arm_driver:   {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_callback: {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 0,  policy: OTHER, priority: 0,  nice: -5}
+      sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+      viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+
+  - id: 6
+    min_cores: 6
+    label: "6-core"
+    cpp_suffix: ""
+    cpp_suffix_mpc: "6Core"
+    notes:
+      - "degraded mode — no deterministic RT guarantee."
+      - "Trade-off: no mpc_worker, arm/hand share one slot, nrt_* share one slot."
+    roles:
+      rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
+      rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
+      mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
+      mpc_workers:  []
+      arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_callback: {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 5,  policy: OTHER, priority: 0,  nice: -5}
+      sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+      viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+
+  - id: 8
+    min_cores: 8
+    label: "8-core"
+    cpp_suffix: "8Core"
+    notes:
+      - "First tier where arm_driver and hand_driver get dedicated slots."
+    roles:
+      rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
+      rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
+      mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
+      mpc_workers:  []
+      arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_callback: {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 6,  policy: OTHER, priority: 0,  nice: -5}
+      sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+      viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+
+  - id: 10
+    min_cores: 10
+    label: "10-core"
+    cpp_suffix: "10Core"
+    notes:
+      - "First tier with a parallel MPC worker."
+    roles:
+      rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
+      rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
+      mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
+      mpc_workers:
+        - {slot: 4, policy: FIFO, priority: 55, nice: 0}
+      arm_driver:   {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_callback: {slot: 8,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 7,  policy: OTHER, priority: 0,  nice: -5}
+      sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+      viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+
+  - id: 12
+    min_cores: 12
+    label: "12-core (primary target)"
+    cpp_suffix: "12Core"
+    notes:
+      - "Primary deployment tier. Both MPC workers active."
+    roles:
+      rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
+      rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
+      mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
+      mpc_workers:
+        - {slot: 4, policy: FIFO, priority: 55, nice: 0}
+        - {slot: 5, policy: FIFO, priority: 55, nice: 0}
+      arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
+      sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+      viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+
+  - id: 14
+    min_cores: 14
+    label: "14-core"
+    cpp_suffix: "14Core"
+    notes:
+      - "Same assignment as the 12-core tier; slots 10+ stay free."
+    roles:
+      rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
+      rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
+      mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
+      mpc_workers:
+        - {slot: 4, policy: FIFO, priority: 55, nice: 0}
+        - {slot: 5, policy: FIFO, priority: 55, nice: 0}
+      arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
+      sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+      viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+
+  - id: 16
+    min_cores: 16
+    label: "16-core"
+    cpp_suffix: "16Core"
+    notes:
+      - "Highest tier — 16+ core machines all use this assignment."
+      - "v4.1 removed the prior cset shield \"user\" on slots 4-8 for RT cluster"
+      - "cache locality; slots 10+ remain free for user-level workloads."
+    roles:
+      rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
+      rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
+      mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
+      mpc_workers:
+        - {slot: 4, policy: FIFO, priority: 55, nice: 0}
+        - {slot: 5, policy: FIFO, priority: 55, nice: 0}
+      arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
+      sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+      viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
+
+# ── Generated artifacts ─────────────────────────────────────────────────────
+# Paths are repo-relative. Each is fully generated; hand edits are rejected by
+# --check. The hand-written adapters that consume them (thread_config.hpp,
+# rt_common.sh, thread_layout.py, verify_rt_runtime.sh) keep their prose and
+# are NOT generated.
+outputs:
+  cpp: rtc_base/include/rtc_base/threading/thread_config_generated.hpp
+  shell: repo_scripts/scripts/lib/thread_layout_generated.sh
+  python: rtc_tools/rtc_tools/launch/thread_layout_generated.py
+
+# Markdown tables regenerated in place between the marker pair
+#   <!-- BEGIN GENERATED: <block> --> ... <!-- END GENERATED: <block> -->
+# Docs that only mention core numbers in prose are NOT listed here; they stay
+# hand-maintained under PROC-1.
+doc_blocks:
+  - file: rtc_base/README.md
+    block: thread-layout-matrix
+  - file: repo_scripts/README.md
+    block: thread-layout-tiers

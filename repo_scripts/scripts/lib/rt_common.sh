@@ -30,6 +30,20 @@ fi
 [[ -n "${_RT_COMMON_LOADED:-}" ]] && return 0
 _RT_COMMON_LOADED=1
 
+# ── Generated CPU layout table ──────────────────────────────────────────────
+# tier → slot/policy/priority/nice assignment for every role, generated from
+# repo_scripts/config/thread_layout.yaml (issue #153 M1). Provides:
+#   get_role_spec / get_role_slot / get_role_policy / get_role_priority /
+#   get_role_nice / get_mpc_cores / get_rt_cores / get_nrt_cores /
+#   get_arm_driver_slot / get_hand_driver_slot / get_os_cores /
+#   rtc_expected_threads
+# Never edit the generated file: change the manifest and run
+#   python3 repo_scripts/scripts/gen_thread_layout.py --write
+# It is pure (core count in, slots out) so install.sh can source it before the
+# workspace is built.
+# shellcheck source=repo_scripts/scripts/lib/thread_layout_generated.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/thread_layout_generated.sh"
+
 # ── Colors ──────────────────────────────────────────────────────────────────
 # 호출 스크립트에서 직접 사용할 수 있도록 export하지 않고 전역 변수로 설정.
 setup_colors() {
@@ -600,131 +614,25 @@ get_robot_packages() {
   echo "udp_hand_driver integrated_bringup ur5e_bt_coordinator"
 }
 
-# ── MPC core layout helpers (layout v4.1) ────────────────────────────────────
-# Single source of truth for MPC thread core assignment. Must stay in sync
-# with rtc_base/threading/thread_config.hpp (SelectThreadConfigs dispatch).
-#
-# Layout v4.1 policy (RT cluster starts at Core 1; Core 0 = OS/DDS/IRQ only):
-#   ≤4 cores  → MPC on Core 3, SCHED_OTHER (degraded).
-#   5-9      → Core 3 dedicated to MPC main (FIFO 60).
-#   10-11    → Core 3 main + Core 4 worker 0.
-#   12-13    → Core 3 main + Core 4-5 workers (2 workers).
-#   14-15    → Same as 12-13.
-#   16+      → Same as 12-13 (cset shield "user" removed in v4.1).
-#
-# Prints a comma-separated list of cores. First entry is always the MPC
-# main thread's core.
-get_mpc_cores() {
-  local ncpu
-  ncpu=$(get_physical_cores)
-  case "$ncpu" in
-    1|2|3|4)      echo "3" ;;
-    5|6|7)        echo "3" ;;
-    8|9)          echo "3" ;;
-    10|11)        echo "3,4" ;;
-    12|13)        echo "3,4,5" ;;
-    14|15)        echo "3,4,5" ;;
-    *)            echo "3,4,5" ;;
-  esac
-}
-
-# Print just the main MPC core (first entry of get_mpc_cores).
-get_mpc_main_core() {
-  get_mpc_cores | cut -d',' -f1
-}
-
-# Print the list of RT cores (rt_control + rt_callback + MPC main + workers).
-# Used by IRQ affinity and GRUB nohz_full/rcu_nocbs. Order is not guaranteed.
-# Layout v4.1: rt_control=1, rt_callback=2 (DDS recv co-pin via launch taskset,
-# CFS — not an RT thread), MPC follows from Core 3. hand UDP receive thread
-# lives inside the hand_driver process (cpu_core=-1 sentinel) and is not
-# represented here. SSoT: rtc_base/threading/thread_config.hpp.
-get_rt_cores() {
-  local ncpu
-  ncpu=$(get_physical_cores)
-  local mpc
-  mpc=$(get_mpc_cores)
-  case "$ncpu" in
-    1|2|3|4)      echo "1,2,${mpc}" ;;       # rt_control=1, rt_callback=2 (FIFO 70), MPC=3 (CFS, degraded)
-    *)            echo "1,2,${mpc}" ;;       # rt_control=1, rt_callback=2, MPC starts at 3
-  esac
-}
-
-# Print the list of OS cores (complement of get_rt_cores).
-# Layout v4.1: Core 0 alone is reserved for OS / DDS / IRQ; nrt_* moved to
-# dedicated cores in every ≥ 6-core tier.
-get_os_cores() {
-  echo "0"
-}
-
-# Print the nrt_* thread *slot indices* (nrt_logging + nrt_callback) for the
-# current physical-core tier. Mirrors thread_config.hpp per-tier kNrt*Config
-# .cpu_core fields (SSoT); order is not guaranteed. Slots, NOT logical cpu ids.
-# On the degraded (<6-core) tier nrt shares Core 0 with the OS — callers that
-# shield must drop the OS slot (get_cm_shield_cpus does), never widening the
-# shield onto Core 0.
-#   ≤5   → 0     (degraded: nrt shares OS Core 0)
-#   6-7  → 5     (shared dedicated core)
-#   8-9  → 6,7
-#   10-11→ 7,8
-#   12+  → 8,9
-get_nrt_cores() {
-  local ncpu
-  ncpu=$(get_physical_cores)
-  case "$ncpu" in
-    1|2|3|4|5)  echo "0" ;;
-    6|7)        echo "5" ;;
-    8|9)        echo "6,7" ;;
-    10|11)      echo "7,8" ;;
-    *)          echo "8,9" ;;
-  esac
-}
-
-# ── External driver slots (arm_driver / hand_driver) ────────────────────────
-# The *slot index* each external driver process belongs on. Slots, NOT logical
-# cpu ids — run the result through slot_to_logical_cpu before comparing against
+# ── MPC / RT / NRT core layout helpers ──────────────────────────────────────
+# get_mpc_cores, get_rt_cores, get_nrt_cores, get_arm_driver_slot,
+# get_hand_driver_slot and get_os_cores are GENERATED into
+# thread_layout_generated.sh (sourced above) from
+# repo_scripts/config/thread_layout.yaml, which is also the source of the C++
+# tier constants and the Python launch mirror. Each takes an optional physical
+# core count as $1 so callers (print_thread_layout, the unit tests) can render a
+# tier this machine does not have. Every value is a *slot index*, not a kernel
+# logical CPU id -- run it through slot_to_logical_cpu before comparing against
 # a /proc affinity mask.
-#
-# These two are the shell mirror of the same tier table that lives in:
-#   1. rtc_base/include/rtc_base/threading/thread_config.hpp  ← SSoT
-#      (kArmDriverConfig / kHandDriverConfig .cpu_core, per SelectThreadConfigs tier)
-#   2. rtc_tools/rtc_tools/launch/thread_layout.py
-#      (get_arm_driver_core / get_hand_driver_core — the launch-side taskset target)
-#   3. here — consumed by verify_rt_runtime.sh (expected slot) and
-#      print_thread_layout (the operator-facing diagram)
-# A tier change must move all three. Getting 3 wrong is the expensive one: the
-# verifier then checks a *stale expectation* and reports PASS for a process that
-# is on the wrong core (issue #353).
-#
-#   ≤5    → 0 / 0   (degraded: everything collapses onto OS Core 0)
-#   6-7   → 4 / 4   (arm and hand share one core)
-#   8-9   → 4 / 5
-#   10-11 → 5 / 6
-#   12+   → 6 / 7
-#
-# $1 — physical core count (optional; defaults to get_physical_cores). The
-# argument exists so print_thread_layout can render a tier other than this
-# machine's, which is also what makes these unit-testable without fake sysfs.
-get_arm_driver_slot() {
-  local ncpu="${1:-$(get_physical_cores)}"
-  case "$ncpu" in
-    1|2|3|4|5)  echo "0" ;;
-    6|7)        echo "4" ;;
-    8|9)        echo "4" ;;
-    10|11)      echo "5" ;;
-    *)          echo "6" ;;
-  esac
-}
 
-get_hand_driver_slot() {
-  local ncpu="${1:-$(get_physical_cores)}"
-  case "$ncpu" in
-    1|2|3|4|5)  echo "0" ;;
-    6|7)        echo "4" ;;
-    8|9)        echo "5" ;;
-    10|11)      echo "6" ;;
-    *)          echo "7" ;;
-  esac
+# get_rt_cores() feeds IRQ affinity and GRUB nohz_full/rcu_nocbs. Order is not
+# guaranteed. The hand UDP receive thread lives inside the hand_driver process
+# (cpu_core = -1 sentinel) and is deliberately not represented there.
+#
+# Print just the main MPC core (first entry of get_mpc_cores). Derived, so it
+# stays here rather than in the generated file.
+get_mpc_main_core() {
+  get_mpc_cores "$@" | cut -d',' -f1
 }
 
 # Expand a CSV / range list of physical core ids into a CSV of logical CPU ids
@@ -1118,10 +1026,16 @@ get_cm_shield_cpus() {
 }
 
 # ── Canonical thread layout printout ───────────────────────────────────────
-# Mirrors rtc_base/threading/thread_config.hpp::SelectThreadConfigs().
-# Callers (cpu_shield.sh::do_status, setup_irq_affinity.sh) used to keep
-# their own copies of this table; consolidating it here removes the drift
-# risk between the shell- and C++-side views.
+# Operator-facing view of the same table the C++ constants and the launch
+# mirror use. Callers (cpu_shield.sh::do_status, setup_irq_affinity.sh) used to
+# keep their own copies; consolidating it here removed that drift risk.
+#
+# Every number below comes from the generated helpers -- no core id is written
+# out by hand. #353 was the expensive lesson: a re-typed tier table turns the
+# *verifier* into a liar (it reports PASS against a stale expectation), and the
+# same applies to a diagram operators read to decide whether a box is healthy.
+# The prose annotations (which lane is degraded, which shares a core) stay hand
+# written; only the placement is derived.
 #
 # Usage:
 #   print_thread_layout                  # auto-detect physical core count
@@ -1131,78 +1045,81 @@ get_cm_shield_cpus() {
 # the output blends with the surrounding [PREFIX] log lines.
 print_thread_layout() {
   local ncpu="${1:-$(get_physical_cores)}"
-  echo -e "  ${BOLD}Thread layout (${ncpu}-core, layout v4.1)${NC}"
-  # 경계는 SelectThreadConfigs() dispatch 와 일치해야 한다: <6 → degraded(4-core,
-  # MPC CFS), {6,7} → 6-core(MPC FIFO). ncpu=5 를 6-core 블록으로 그리면 런타임이
-  # 실제로 쓰지 않는 hard-RT MPC 를 표시하게 된다 (dispatch 는 5 를 degraded 로 처리).
-  # arm/hand_driver 코어는 get_{arm,hand}_driver_slot 이 shell 쪽 유일 출처다.
-  # 이 다이어그램은 그 표의 미러이므로 숫자를 다시 적지 않는다 (issue #353).
-  local arm hand
+  echo -e "  ${BOLD}Thread layout (${ncpu}-core, layout ${RTC_THREAD_LAYOUT_VERSION})${NC}"
+
+  local os_slot rt_ctl rt_cb mpc_main arm hand nrt_log nrt_cb
+  os_slot=$(get_os_cores)
+  rt_ctl=$(get_role_slot rt_control "$ncpu")
+  rt_cb=$(get_role_slot rt_callback "$ncpu")
+  mpc_main=$(get_role_slot mpc_main "$ncpu")
   arm=$(get_arm_driver_slot "$ncpu")
   hand=$(get_hand_driver_slot "$ncpu")
-  if [[ "$ncpu" -le 5 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (slot ${arm}/${hand}) + hand_aux_io (degraded)"
-    echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin, degraded)"
-    echo "    Core 3:   mpc_main     (CFS, degraded)"
-  elif [[ "$ncpu" -le 7 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
-    echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
-    echo "    Core 3:   mpc_main     (SCHED_FIFO 60)"
-    echo "    Core ${arm}:   arm_driver + hand_driver (shared, degraded; hand_udp_recv FIFO 65)"
-    echo "    Core 5:   nrt_logging (CFS -5) + nrt_callback (CFS 0) shared (degraded)"
-  elif [[ "$ncpu" -le 9 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
-    echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
-    echo "    Core 3:   mpc_main     (SCHED_FIFO 60)"
-    echo "    Core ${arm}:   arm_driver   (CFS, taskset pin)"
-    echo "    Core ${hand}:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
-    echo "    Core 6:   nrt_logging  (CFS -5)"
-    echo "    Core 7:   nrt_callback (CFS 0)"
-  elif [[ "$ncpu" -le 11 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
-    echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
-    echo "    Core 3-4: mpc_main + worker_0 (SCHED_FIFO 60 / 55)"
-    echo "    Core ${arm}:   arm_driver   (CFS, taskset pin)"
-    echo "    Core ${hand}:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
-    echo "    Core 7:   nrt_logging  (CFS -5)"
-    echo "    Core 8:   nrt_callback (CFS 0)"
-    echo "    Core 9:   spare"
-  elif [[ "$ncpu" -le 13 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
-    echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
-    echo "    Core 3-5: mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
-    echo "    Core ${arm}:   arm_driver   (CFS, taskset pin)"
-    echo "    Core ${hand}:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
-    echo "    Core 8:   nrt_logging  (CFS -5)"
-    echo "    Core 9:   nrt_callback (CFS 0)"
-    echo "    Core 10-${ncpu}: spare"
-  elif [[ "$ncpu" -le 15 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
-    echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
-    echo "    Core 3-5: mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
-    echo "    Core ${arm}:   arm_driver   (CFS, taskset pin)"
-    echo "    Core ${hand}:   hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
-    echo "    Core 8:   nrt_logging  (CFS -5)"
-    echo "    Core 9:   nrt_callback (CFS 0)"
-    echo "    Core 10-${ncpu}: spare / user shield"
+  nrt_log=$(get_role_slot nrt_logging "$ncpu")
+  nrt_cb=$(get_role_slot nrt_callback "$ncpu")
+
+  # MPC lane: main alone, or main + however many workers this tier declares.
+  local mpc_cores mpc_last mpc_label mpc_sched idx prios
+  mpc_cores=$(get_mpc_cores "$ncpu")
+  mpc_last="${mpc_cores##*,}"
+  prios=$(get_role_priority mpc_main "$ncpu")
+  mpc_label="mpc_main"
+  idx=0
+  while prio=$(get_role_priority "mpc_worker_${idx}" "$ncpu" 2>/dev/null); do
+    prios="${prios} / ${prio}"
+    mpc_label="mpc_main + workers"
+    idx=$((idx + 1))
+  done
+  if [[ "$(get_role_policy mpc_main "$ncpu")" == "SCHED_OTHER" ]]; then
+    mpc_sched="CFS, degraded"
   else
-    echo "    Core 0:     OS / DDS / NIC IRQ"
-    echo "    Core 1:     rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:     rt_callback  (SCHED_FIFO 70; DDS recv co-pin via taskset, CFS)"
-    echo "    Core 3-5:   mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
-    echo "    Core ${arm}:     arm_driver   (CFS, taskset pin)"
-    echo "    Core ${hand}:     hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
-    echo "    Core 8:     nrt_logging  (CFS -5)"
-    echo "    Core 9:     nrt_callback (CFS 0)"
-    echo "    Core 10-15: spare / user shield"
-    echo "    Core 16+:   spare / monitoring"
+    mpc_sched="SCHED_FIFO ${prios}"
   fi
+
+  if [[ "$ncpu" -le 5 ]]; then
+    # Degraded: everything that is not RT collapses onto the OS slot.
+    _ptl_row "Core ${os_slot}" "OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (slot ${arm}/${hand}) + hand_aux_io (degraded)"
+    _ptl_row "Core ${rt_ctl}" "rt_control   (SCHED_FIFO $(get_role_priority rt_control "$ncpu"))"
+    _ptl_row "Core ${rt_cb}" "rt_callback  (SCHED_FIFO $(get_role_priority rt_callback "$ncpu"); DDS recv co-pin, degraded)"
+    _ptl_row "$(_ptl_span "$mpc_main" "$mpc_last")" "${mpc_label}     (${mpc_sched})"
+    return 0
+  fi
+
+  _ptl_row "Core ${os_slot}" "OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
+  _ptl_row "Core ${rt_ctl}" "rt_control   (SCHED_FIFO $(get_role_priority rt_control "$ncpu"))"
+  _ptl_row "Core ${rt_cb}" "rt_callback  (SCHED_FIFO $(get_role_priority rt_callback "$ncpu"); DDS recv co-pin via taskset, CFS)"
+  _ptl_row "$(_ptl_span "$mpc_main" "$mpc_last")" "${mpc_label} (${mpc_sched})"
+  if [[ "$arm" == "$hand" ]]; then
+    _ptl_row "Core ${arm}" "arm_driver + hand_driver (shared, degraded; hand_udp_recv FIFO 65)"
+  else
+    _ptl_row "Core ${arm}" "arm_driver   (CFS, taskset pin)"
+    _ptl_row "Core ${hand}" "hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
+  fi
+  if [[ "$nrt_log" == "$nrt_cb" ]]; then
+    _ptl_row "Core ${nrt_log}" "nrt_logging (CFS $(get_role_nice nrt_logging "$ncpu")) + nrt_callback (CFS $(get_role_nice nrt_callback "$ncpu")) shared (degraded)"
+  else
+    _ptl_row "Core ${nrt_log}" "nrt_logging  (CFS $(get_role_nice nrt_logging "$ncpu"))"
+    _ptl_row "Core ${nrt_cb}" "nrt_callback (CFS $(get_role_nice nrt_callback "$ncpu"))"
+  fi
+
+  # Slots past the highest claimed one are spare. Derived, so a tier that grows
+  # a role automatically shrinks the spare span instead of overstating it.
+  local highest spare_lo last
+  highest=$(printf '%s\n' "$rt_ctl" "$rt_cb" "$mpc_last" "$arm" "$hand" "$nrt_log" "$nrt_cb" |
+    sort -n | tail -1)
+  spare_lo=$((highest + 1))
+  last=$((ncpu - 1))
+  if [[ "$spare_lo" -le "$last" ]]; then
+    _ptl_row "$(_ptl_span "$spare_lo" "$last")" "spare / user shield"
+  fi
+}
+
+# "Core 3:" / "Core 3-5:" padded to a common column so the lanes line up.
+_ptl_row() {
+  printf '    %-9s %s\n' "$1:" "$2"
+}
+
+_ptl_span() {
+  if [[ "$1" == "$2" ]]; then echo "Core $1"; else echo "Core $1-$2"; fi
 }
 
 # ── Intel hybrid CPU detection (Stage A) ────────────────────────────────────

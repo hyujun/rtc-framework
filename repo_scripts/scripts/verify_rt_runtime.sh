@@ -130,97 +130,42 @@ detect_hybrid_capability
 # same translator cpu_shield.sh::get_rt_shield_cpus uses, so the shield set and
 # the runtime affinity check agree by construction. (Previously duplicated here.)
 
-# ── thread_config.hpp 기반 기대값 테이블 ──────────────────────────────────────
-# 코어 수에 따라 기대값이 달라진다.
-# 형식: "thread_name:expected_cpu:expected_policy:expected_priority"
+# ── 기대값 테이블 (생성물 소비) ──────────────────────────────────────────────
+# 형식: "thread_name:expected_slot:expected_policy:expected_priority[:optional]"
 # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
+#
+# IMPORTANT: expected_slot 은 ThreadConfig::cpu_core 와 동일한 *slot index*
+# (physical core 번호) 이며, kernel logical CPU id 가 아니다. check_cpu_affinity
+# 가 slot_to_logical_cpu() 로 변환해 실제 affinity mask 와 비교한다. SMT-on
+# hybrid (NUC13/14, i9-13900K) 에서 slot 1 → logical cpu 2 (P-core 1 primary),
+# SMT-off / 4-core CI 에서 slot 1 → logical cpu 1 (identity). 같은 표가 양쪽
+# 환경 모두에서 올바르게 동작.
+#
+# 이 표는 컨트롤러의 **in-process 스레드만** 담는다 (rt_control, rt_callback,
+# mpc_main, mpc_worker_*, nrt_logging, nrt_callback) — 전부 pthread_setname_np
+# 되어 /proc/<controller>/task 에 보인다. arm_driver / hand_driver 는 launch 가
+# taskset 으로 pin 하는 **별도 프로세스**라 여기 있으면 항상 false-WARN 이었고,
+# build_external_drivers() + discover_external_drivers() 가 PID 로 발견한다.
+#
+# optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리한다.
+#   - mpc_worker_*: MPCThread::Start (rtc_mpc/src/thread/mpc_thread.cpp) 의 worker
+#                   생성 lambda 가 ApplyThreadConfig 호출 후 즉시 종료하는 구조라
+#                   (parallel solver 가 별도로 thread 를 spawn 하는 패턴)
+#                   std::jthread destructor 가 join 하고, verify 의 process
+#                   discovery 시점엔 이미 사라져 매칭 불가. 실제 worker 활용
+#                   여부는 별도 진단 task.
+#   - hand_udp_recv: hand_driver 프로세스 내부의 receive thread.
+#                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
+#                    별도 cpu pin 검증 skip (priority 65 만 확인).
 declare -a EXPECTED_THREADS
 
 build_expected_threads() {
-  # thread_config.hpp / SelectThreadConfigs() 기반 기대값 (layout v4.1).
-  # 형식: "thread_name:expected_slot:expected_policy:expected_priority[:optional]"
-  # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
-  # optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리.
-  #   - hand_udp_recv: hand_driver 프로세스 내부의 receive thread.
-  #                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
-  #                    별도 cpu pin 검증 skip (priority 65 만 확인).
-  #
-  # IMPORTANT: expected_slot 은 ThreadConfig::cpu_core 와 동일한 *slot index*
-  # (physical core 번호) 이며, kernel logical CPU id 가 아니다. check_cpu_affinity
-  # 가 slot_to_logical_cpu() 로 변환해 실제 affinity mask 와 비교한다. SMT-on
-  # hybrid (NUC13/14, i9-13900K) 에서 slot 1 → logical cpu 2 (P-core 1 primary),
-  # SMT-off / 4-core CI 에서 slot 1 → logical cpu 1 (identity). 같은 표가 양쪽
-  # 환경 모두에서 올바르게 동작.
-  #
-  # Layout v4.1: rt_control=1, rt_callback=2, mpc_main=3, workers=4-5.
-  # nrt_logging / nrt_callback: 4c=0, 6c=5 (shared), 8c=6/7, 10c=7/8, 12c+=8/9.
-  # Mirrors thread_config.hpp::kMpcConfig*Core + per-tier nrt configs.
-  # This table holds ONLY the controller's in-process threads (rt_control,
-  # rt_callback, mpc_main, mpc_worker_*, nrt_logging, nrt_callback) — all
-  # pthread_setname_np'd and therefore visible in /proc/<controller>/task.
-  # arm_driver / hand_driver were REMOVED from this table: they are external
-  # processes (ros2_control_node / udp_hand_node) pinned by launch-time taskset,
-  # never threads in the controller, so matching them here always false-WARNed.
-  # They are now discovered as separate PIDs by build_external_drivers() +
-  # discover_external_drivers().
-  # NOTE: mpc_worker_* 는 ":optional" 로 표시 — MPCThread::Start (rtc_mpc/src/
-  # thread/mpc_thread.cpp) 의 worker 생성 lambda 가 ApplyThreadConfig 호출 후
-  # 즉시 종료하는 구조 (parallel solver 가 별도로 thread 를 spawn 하는 패턴).
-  # std::jthread destructor 가 join 하므로 verify 의 process discovery 시점에
-  # 이미 사라져 매칭 불가. 미발견을 WARN 이 아닌 SKIP 으로 처리해 false
-  # negative 방지. 실제 worker 활용 여부는 별도 진단 task.
-  EXPECTED_THREADS=()
-  if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
-    # 12-16+: rt_control/callback 1-2, mpc_main 3, workers 4-5,
-    # nrt_logging 8, nrt_callback 9. (arm 6 / hand 7 are external — see below.)
-    EXPECTED_THREADS=(
-      "rt_control:1:1:90"
-      "rt_callback:2:1:70"
-      "mpc_main:3:1:60"
-      "mpc_worker_0:4:1:55:optional"
-      "mpc_worker_1:5:1:55:optional"
-      "nrt_logging:8:0:0"
-      "nrt_callback:9:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
-    # 10-11: rt 1-2, mpc_main 3, single worker 4, nrt_log 7, nrt_cb 8.
-    EXPECTED_THREADS=(
-      "rt_control:1:1:90"
-      "rt_callback:2:1:70"
-      "mpc_main:3:1:60"
-      "mpc_worker_0:4:1:55:optional"
-      "nrt_logging:7:0:0"
-      "nrt_callback:8:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
-    # 8-9: rt 1-2, mpc_main 3, nrt_log 6, nrt_cb 7. No workers.
-    EXPECTED_THREADS=(
-      "rt_control:1:1:90"
-      "rt_callback:2:1:70"
-      "mpc_main:3:1:60"
-      "nrt_logging:6:0:0"
-      "nrt_callback:7:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
-    # 6-7 (degraded): rt 1-2, mpc_main 3, nrt_log+nrt_cb share 5.
-    EXPECTED_THREADS=(
-      "rt_control:1:1:90"
-      "rt_callback:2:1:70"
-      "mpc_main:3:1:60"
-      "nrt_logging:5:0:0"
-      "nrt_callback:5:0:0"
-    )
-  else
-    # 4-core fallback (degraded): rt 1-2, mpc_main CFS slot 3, nrt
-    # all share OS Core 0 — no RT determinism.
-    EXPECTED_THREADS=(
-      "rt_control:1:1:90"
-      "rt_callback:2:1:70"
-      "mpc_main:3:0:0"
-      "nrt_logging:0:0:0"
-      "nrt_callback:0:0:0"
-    )
-  fi
+  # 표 자체는 rt_common.sh 가 source 하는 thread_layout_generated.sh 의
+  # rtc_expected_threads() 가 갖는다 (SSoT: repo_scripts/config/thread_layout.yaml).
+  # 여기 tier 표를 다시 적으면 검증기만 옛 기대값을 들고 **PASS 를 낸다** — 센서가
+  # 거짓말하는 방향이라 그냥 틀린 것보다 비싸다 (issue #353 이 arm/hand 축에서
+  # 겪은 것과 같은 실패이고, #153 M1 이 나머지 축을 같은 자리로 모았다).
+  mapfile -t EXPECTED_THREADS < <(rtc_expected_threads "$PHYSICAL_CORES")
 }
 
 # ── External driver process 기대값 (arm_driver / hand_driver) ─────────────────

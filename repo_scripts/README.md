@@ -24,9 +24,13 @@ RTC 프레임워크의 **로봇 비의존(robot-agnostic) RT 시스템 구성·�
 repo_scripts/
 ├── CMakeLists.txt
 ├── package.xml
+├── config/
+│   └── thread_layout.yaml               <- **CPU 레이아웃 SSoT** (선언형 manifest, issue #153 M1)
 └── scripts/
+    ├── gen_thread_layout.py             <- manifest -> C++/shell/Python/README 생성 + --check 드리프트 게이트
     ├── lib/
     │   ├── rt_common.sh                  <- 공유 유틸리티 라이브러리 (모든 스크립트가 source)
+    │   ├── thread_layout_generated.sh    <- **생성물** (직접 편집 금지) — tier -> slot/policy/priority 표
     │   ├── rt_report.sh                  <- check_rt_setup.sh / verify_rt_runtime.sh 공유 PASS/WARN/FAIL 리포트 인프라
     │   ├── bootstrap.sh                  <- build.sh/install.sh 공통 entry-script 초기화 (setup_env.sh 자동 source)
     │   │
@@ -167,31 +171,49 @@ repo_scripts/
 
 ### RT/MPC 코어 레이아웃 함수 (Layout SSoT)
 
-쉘 스크립트와 `rtc_base/threading/thread_config.hpp` 사이에 **단일 소스 진실**을 유지하기 위한 헬퍼입니다. v4.1 Layout SSoT 통합 후:
+**값의 SSoT 는 [config/thread_layout.yaml](config/thread_layout.yaml)** 이고, 아래 tier 의존 헬퍼들은 그 manifest 에서 [scripts/lib/thread_layout_generated.sh](scripts/lib/thread_layout_generated.sh) 로 **생성**됩니다 (issue #153 M1 — 그 전에는 같은 표가 여기 셋, C++, Python, 검증기에 손으로 인코딩돼 있었습니다). `rt_common.sh` 가 그 파일을 source 하므로 호출부는 달라진 게 없고, 생성 파일을 직접 편집하면 `gen_thread_layout.py --check` 가 CI 와 `colcon test` 에서 차단합니다. 이 파일들은 순수 함수(코어 수 in, slot out)라 `install.sh` 가 workspace 빌드 **전에** source 할 수 있습니다.
+
+각 함수는 `$1` 로 물리 코어 수를 받을 수 있습니다 (미지정 시 `get_physical_cores`) — 이 머신에 없는 tier 를 테스트·출력할 때 씁니다. v4.1 Layout SSoT 통합 후:
 
 - `cpu_shield.sh::compute_shield_cores()` 는 `get_cm_shield_cpus()` 를 호출 (자체 tier 분기 없음). CM 프로세스 전체가 cpuset 에 들어가야 하므로 shield 는 RT ∪ nrt span 을 덮는다 (issue #151). shield 는 cpuset 만 만들고, 런치가 `cpu_shield.sh adopt <pid>` 로 CM 을 그 안에 넣는다. **`adopt` 의 종료 코드가 계약이다** (issue #344): 양성 no-op(cset 미설치 / shield 비활성 / PID 부재)은 0, *필요했는데 실패*하면 non-zero 이고 런치는 그때 ACTIVATE 를 거부한다 — 그대로 활성화하면 RT 스레드가 affinity 와 SCHED_FIFO 를 함께 잃은 채 돈다.
 - `setup_grub_rt.sh` 는 `get_rt_cores_with_siblings()` 를 호출하여 `nohz_full` / `rcu_nocbs` 값으로 RT thread 가 실행되는 코어만 (SMT 시 sibling 포함) 한정.
 - `setup_irq_affinity.sh` / `check_rt_setup.sh` / `verify_rt_runtime.sh` 는 `compute_cpu_layout()` 기반으로 동작하여 tier 분기가 없습니다 (OS/RT 코어 범위가 layout v4.1 에서 모든 tier 공통: OS=0, RT=1..N-1).
 
-| 함수 | 상태 | 설명 | 반환 예시 (6 / 8 / 10 / 12 / 14 / 16 코어) |
-|------|------|------|--------------------------------------------|
-| `get_mpc_cores()` | active | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `3` / `3` / `3,4` / `3,4,5` / `3,4,5` / `3,4,5` |
-| `get_mpc_main_core()` | dormant | MPC main 코어만 (get_mpc_cores의 첫 항목). | `3` / `3` / `3` / `3` / `3` / `3` |
-| `get_rt_cores()` | active | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `get_rt_cores_with_siblings()` / `get_rt_shield_cpus()` 의 base. | `1,2,3` / `1,2,3` / `1,2,3,4` / `1,2,3,4,5` / `1,2,3,4,5` / `1,2,3,4,5` |
-| `get_nrt_cores()` | active | nrt_logging + nrt_callback 슬롯 (thread_config.hpp SSoT). `get_cm_shield_cpus()` 가 RT 와 union. degraded 는 Core 0 공유. | `5` / `6,7` / `7,8` / `8,9` / `8,9` / `8,9` |
-| `get_rt_cores_with_siblings()` | active | `get_rt_cores()` 출력에 SMT HT 시블링까지 포함, range-collapse. `setup_grub_rt.sh` 의 `nohz_full` / `rcu_nocbs` 값. non-SMT 시 입력과 동일 cpu 집합 (range 표기). | non-SMT: `1-3` / `1-3` / `1-4` / `1-5` / `1-5` / `1-5` |
-| `get_rt_shield_cpus()` | active | RT 슬롯 → **logical cpu** (slot→logical) + HT 시블링. RT-only 격리/검증 (verify_rt_runtime). | non-SMT: `1-3` / `1-3` / `1-4` / `1-5` / `1-5` / `1-5` |
-| `get_cm_shield_cpus()` | active | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위 (issue #151). | non-SMT: `1-3,5` / `1-3,6-7` / `1-4,7-8` / `1-5,8-9` / `1-5,8-9` / `1-5,8-9` · NUC13 12c hybrid: `2-9,12-13` |
-| `get_os_cores()` | active (informational) | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). `get_cm_shield_cpus()` 가 shield 에서 제외할 slot 판정에 사용. | `0` / `0` / `0` / `0` / `0` / `0` |
+| 함수 | 출처 | 설명 |
+|------|------|------|
+| `get_role_spec()` / `get_role_slot()` / `get_role_policy()` / `get_role_priority()` / `get_role_nice()` | 생성 | `<role> [ncpu]` 로 임의 role 의 배치를 조회. 그 tier 에 없는 role (예: 8코어의 `mpc_worker_0`) 은 **비0 종료** — 없는 스레드를 기대 목록에 넣지 않기 위한 계약이다 |
+| `get_mpc_cores()` | 생성 | MPC 코어 (main + workers) CSV. 첫 항목이 항상 MPC main |
+| `get_mpc_main_core()` | 파생 | MPC main 코어만 (`get_mpc_cores` 의 첫 항목) |
+| `get_rt_cores()` | 생성 | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `get_rt_cores_with_siblings()` / `get_rt_shield_cpus()` 의 base |
+| `get_nrt_cores()` | 생성 | nrt_logging + nrt_callback 슬롯 (중복 제거, 오름차순). `get_cm_shield_cpus()` 가 RT 와 union. degraded tier 는 Core 0 공유 |
+| `get_arm_driver_slot()` / `get_hand_driver_slot()` | 생성 | 외부 driver 프로세스의 slot (launch taskset / in-process self-pin 대상) |
+| `get_os_cores()` | 생성 | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). `get_cm_shield_cpus()` 가 shield 에서 제외할 slot 판정에 사용 |
+| `rtc_expected_threads()` | 생성 | `verify_rt_runtime.sh` 의 기대 표 (`name:slot:policy:priority[:optional]`). 컨트롤러 **in-process 스레드만** — arm/hand 는 별도 프로세스라 여기 있으면 항상 false-WARN 이다 (#353) |
+| `get_rt_cores_with_siblings()` | 파생 | `get_rt_cores()` 출력에 SMT HT 시블링까지 포함, range-collapse. `setup_grub_rt.sh` 의 `nohz_full` / `rcu_nocbs` 값. non-SMT 시 입력과 동일 cpu 집합 (range 표기) |
+| `get_rt_shield_cpus()` | 파생 | RT 슬롯 → **logical cpu** (slot→logical) + HT 시블링. RT-only 격리/검증 (verify_rt_runtime) |
+| `get_cm_shield_cpus()` | 파생 | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위 (issue #151). 예: non-SMT 12c `1-5,8-9` · NUC13 12c hybrid `2-9,12-13` |
 
-Tier별 매핑 (layout v4.1 — SSoT: `rtc_base/threading/thread_config.hpp::SelectThreadConfigs()`):
-- **≤4코어 (degraded)**: rt_control Core 1, rt_callback Core 2 (FIFO 70 + DDS recv co-pin, degraded), mpc Core 3 (CFS). RT 결정성 보장 X.
-- **6코어 (degraded)**: rt_control Core 1, rt_callback Core 2, mpc Core 3. arm/hand_driver Core 4 공유, nrt_logging + nrt_callback Core 5 공유.
-- **8–9코어**: 위 layout + arm_driver **Core 4**, hand_driver **Core 5**, nrt_logging Core 6, nrt_callback Core 7.
-- **10–11코어**: + mpc_worker_0 Core 4, arm Core 5, hand Core 6, nrt_logging Core 7, nrt_callback Core 8.
-- **12–13코어**: + mpc_worker_1 Core 5, arm Core 6, hand Core 7, nrt_logging Core 8, nrt_callback Core 9.
-- **14–15코어**: 12-core 와 동일 매핑 + Core 10-13 spare.
-- **16+코어**: 12-core 와 동일 RT cluster (Core 1-5) + driver Core 6-7 + nrt Core 8-9 + Core 10-15 spare. v4.1 부터 과거 16c-only "user cset shield Core 4-8" 잔재는 제거.
+**"생성"** = manifest 에서 나온다 (직접 편집 금지). **"파생"** = `rt_common.sh` 에 손으로 쓰여 있고 위 생성 함수를 호출한다. tier 별 반환값은 아래 생성된 표가 SSoT 이므로 여기 중복해 적지 않는다 — 예전엔 이 열이 tier 표의 일곱 번째 사본이었다.
+
+Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는 그 manifest 에서 생성된다):
+
+<!-- BEGIN GENERATED: thread-layout-tiers -->
+<!-- Generated from repo_scripts/config/thread_layout.yaml by repo_scripts/scripts/gen_thread_layout.py. Do not edit by hand. -->
+
+| tier (물리 코어) | `get_rt_cores()` | `get_mpc_cores()` | `get_nrt_cores()` | `get_os_cores()` | arm / hand slot |
+|---|---|---|---|---|---|
+| ≤5 | `1,2,3` | `3` | `0` | `0` | 0 / 0 |
+| 6–7 | `1,2,3` | `3` | `5` | `0` | 4 / 4 |
+| 8–9 | `1,2,3` | `3` | `6,7` | `0` | 4 / 5 |
+| 10–11 | `1,2,3,4` | `3,4` | `7,8` | `0` | 5 / 6 |
+| 12–13 | `1,2,3,4,5` | `3,4,5` | `8,9` | `0` | 6 / 7 |
+| 14–15 | `1,2,3,4,5` | `3,4,5` | `8,9` | `0` | 6 / 7 |
+| 16+ | `1,2,3,4,5` | `3,4,5` | `8,9` | `0` | 6 / 7 |
+
+<!-- END GENERATED: thread-layout-tiers -->
+
+- **≤5코어 / 6–7코어는 degraded** — RT 결정성 보장 X. 전자는 nrt·driver 가 전부 OS Core 0 으로 접히고 mpc 가 CFS 로 강등되며, 후자는 arm/hand 가 한 코어를, nrt_logging + nrt_callback 이 또 한 코어를 공유하고 mpc_worker 가 없다.
+- **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯을 얻고, **10코어 이상**에서 mpc_worker_0, **12코어 이상**에서 mpc_worker_1 이 붙는다. 14/16 tier 는 12 와 같은 배치이고 남는 슬롯이 spare 다 (16c 의 과거 "user cset shield Core 4-8" 잔재는 v4.1 에서 제거).
 
 **hand aux lane (issue #345)**: `udp_hand_node` 는 위 `hand_driver` 코어에 더해 **OS slot(Core 0)에 `hand_aux_io` 스레드 하나**를 둔다 — 타이밍 CSV drain(1 Hz, 버스트당 최대 512행)과 stats JSON 저장 같은 blocking 파일 I/O 전용 CFS 레인이다. shield 밖 `system` cpuset 안이라 cpuset 재설계가 필요 없고 `cset shield` 활성 상태에서도 EINVAL 이 나지 않는다. slot 은 노드 param `aux_cpu_slot`(기본 0) 이며 shell 쪽 SSoT 는 `get_os_cores()` 다. ≤5코어 tier 에서는 `hand_driver` slot 도 0 이라 두 레인이 같은 코어로 합쳐진다 (그 tier 는 원래 Core 0 에 전부 모이는 degraded 배치다).
 

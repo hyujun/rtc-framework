@@ -18,7 +18,7 @@
 
 ## Threading Model
 
-Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_utils.hpp` (`SystemThreadConfigs` 정의 + `SelectThreadConfigs()` core-tier 분기; tier 상수값은 `thread_config.hpp`). 4/6/8/10/12/14/16-core 레이아웃을 자동 선택. 문서엔 *불변 원칙*만 박는다.
+Thread roster·core·priority 의 SSoT 는 **`repo_scripts/config/thread_layout.yaml`** (선언형 manifest) 다. C++ tier 상수 + `SelectThreadConfigsForCoreCount()` (`thread_config_generated.hpp`), shell 헬퍼 (`repo_scripts/scripts/lib/thread_layout_generated.sh`), Python launch 미러 (`rtc_tools/rtc_tools/launch/thread_layout_generated.py`) 가 전부 거기서 **생성**되며, `gen_thread_layout.py --check` 가 드리프트를 CI 에서 차단한다 (issue #153 M1 — 그 전에는 같은 표가 실행 코드 6곳에 손으로 인코딩돼 있었고 그중 5곳에 직접 테스트가 없었다). `SystemThreadConfigs` 구조체 정의와 런타임 wrapper `SelectThreadConfigs()` 는 각각 `thread_config.hpp` / `thread_utils.hpp` 에 남는다. 4/6/8/10/12/14/16-core 레이아웃을 자동 선택. 문서엔 *불변 원칙*만 박는다.
 
 **RT thread 정의 (layout v4)**: "RT thread" = controller ↔ hardware/sim 경계의 결정적 tick 만. 즉 `rt_control` (정기 tick + inline actuator WriteCommand) 과 `rt_callback` (backend state sub 처리) — 둘이 SCHED_FIFO 로 묶이는 그룹이다. 다른 thread (`nrt_callback`, `nrt_logging`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`) 는 RT 가 아니다 (mpc_main/workers 는 별도 RT 그룹 — controller 가 producer/consumer 양쪽).
 

@@ -1,11 +1,28 @@
-"""Drift test: Python ``select_thread_layout`` ≡ C++ ``SelectThreadConfigs``.
+"""Value oracle for the Python side of the generated thread layout.
 
-The expected per-tier values are hard-coded here as the *contract* between the
-Python helper and the C++ SSoT. If either side changes a tier breakpoint or a
-``cpu_core`` value, this test fails — preventing silent launch-time drift.
+**This test does not read the C++ side, and does not claim to.** It used to say
+it caught "C++ drift", which was never true: it imports
+``rtc_tools.launch.thread_layout`` and compares against the ``_EXPECTED`` table
+below — no subprocess, no C++ parsing — so a C++-only change passed it (issue
+#153 M1 re-measured this at HEAD ``f7bbf1e4``).
 
-The C++ SSoT is ``rtc_base/include/rtc_base/threading/thread_config.hpp`` plus
-``rtc_base/include/rtc_base/threading/thread_utils.hpp::SelectThreadConfigs``.
+Cross-language drift is now caught by the generator instead. All three
+encodings (C++ constants, shell helpers, this Python mirror) are generated from
+``repo_scripts/config/thread_layout.yaml``, and::
+
+    python3 repo_scripts/scripts/gen_thread_layout.py --check
+
+fails if any checked-in artifact is stale or hand-edited. That runs in CI and
+as ``repo_scripts``' ``test_gen_thread_layout`` test.
+
+What ``--check`` *cannot* catch is a wrong manifest or a generator bug: a bad
+table matches itself in all three languages. That is this file's job. The
+values below are deliberately **hand-written literals**, never derived from the
+manifest — turning them into generated values would make the test compare a
+table against itself and remove every mutation it can detect. The C++ and shell
+sides keep their own literal oracles for the same reason
+(``rtc_base/test/test_mpc_thread_config.cpp``,
+``repo_scripts/test/test_rt_common.sh``).
 """
 
 from __future__ import annotations
@@ -23,8 +40,10 @@ from rtc_tools.launch.thread_layout import (
     select_thread_layout,
 )
 
-# Per-tier expected mapping. Mirrors the table at the top of
-# rtc_tools/launch/thread_layout.py and the C++ kXxxConfigNCore constants.
+# Per-tier expected mapping — hand-written on purpose (see the module docstring).
+# These are the same values the C++ kXxxConfigNCore constants and the shell
+# get_{arm,hand}_driver_slot helpers carry; each language pins them separately so
+# a single wrong manifest entry cannot pass everywhere at once.
 _EXPECTED: dict[int, ThreadLayout] = {
     4: ThreadLayout(
         arm_driver_core=0,
