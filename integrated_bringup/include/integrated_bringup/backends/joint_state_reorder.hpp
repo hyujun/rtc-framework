@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,21 @@ inline void BuildJointStateReorder(const std::vector<std::string>& msg_names,
 // kMaxDeviceChannels — the RT loop copy_n's num_channels elements out of the
 // fixed cache arrays (rt_controller_node_rt_loop.cpp), so an oversized wire
 // value must never escape the cache.
+//
+// ALSO PRODUCES ds.hole_mask (issue #284) — the per-slot companion to
+// num_channels. The cache is PERSISTENT, so a slot this message does not reach
+// keeps its previous value, and with an active reorder map that is a normal
+// outcome rather than an error: BuildJointStateReorder maps only the names the
+// reference list has, so a message carrying names the device does not declare
+// leaves the unmatched device slots untouched while still counting toward the
+// wire length. `num_channels >= model_dim` therefore passes on a device whose
+// slot 0 was never written — the counterexample pinned in
+// test_joint_state_reorder.cpp's WithReorder_PlacesByDeviceSlot.
+//
+// ASSIGNED, NEVER OR-ACCUMULATED. Freshness is a statement about THIS message,
+// so the mask is rebuilt from scratch every call. Accumulating it across
+// messages would let one lucky early message mark a slot fresh forever and
+// reopen the gap this field exists to close.
 inline void WriteJointStateToCache(const sensor_msgs::msg::JointState& msg,
                                    const JointStateReorder& reorder,
                                    DeviceStateCache& ds) noexcept {
@@ -66,6 +82,7 @@ inline void WriteJointStateToCache(const sensor_msgs::msg::JointState& msg,
 
   if (reorder.size > 0) {
     const std::size_t n = std::min(msg.position.size(), static_cast<std::size_t>(reorder.size));
+    uint64_t written = 0;
     for (std::size_t src = 0; src < n; ++src) {
       const int idx = reorder.map[src];
       if (idx < 0 || idx >= kMaxDeviceChannels)
@@ -76,12 +93,24 @@ inline void WriteJointStateToCache(const sensor_msgs::msg::JointState& msg,
         ds.velocities[uidx] = msg.velocity[src];
       if (src < msg.effort.size())
         ds.efforts[uidx] = msg.effort[src];
+      // The POSITION lane only — hole_mask tracks q, which is what every
+      // IsDeviceReadable consumer indexes. The two guarded lanes above have
+      // their own (different) hole structure and are out of this field's
+      // scope; see DeviceState::hole_mask.
+      written |= (static_cast<uint64_t>(1) << uidx);
     }
+    ds.hole_mask = ~written;
   } else {
     const std::size_t n =
         std::min(msg.position.size(), static_cast<std::size_t>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < n; ++i)
       ds.positions[i] = msg.position[i];
+    // Identity write: the fresh slots are exactly the prefix [0, n), which is
+    // also what num_channels reports — so on this path the mask never closes a
+    // gate the width test would have left open. It is still computed rather
+    // than left alone, because the cache is persistent and a message that
+    // NARROWS must retire the slots the previous wider one filled.
+    ds.hole_mask = ~SlotMaskBelow(static_cast<int>(n));
     const std::size_t nv =
         std::min(msg.velocity.size(), static_cast<std::size_t>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < nv; ++i)

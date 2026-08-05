@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -24,8 +25,10 @@ using rtc::CommandType;
 using rtc::DeviceOutput;
 using rtc::DeviceState;
 using rtc::FillCommandTail;
+using rtc::FirstHoleSlot;
 using rtc::HoldTelemetryAtMeasured;
 using rtc::IsDeviceReadable;
+using rtc::IsGateClosedByHoles;
 using rtc::IsGateClosedByWidth;
 using rtc::kMaxDeviceChannels;
 using rtc::ModelChannelBound;
@@ -43,6 +46,16 @@ DeviceState MakeDevice(int n, bool valid = true) {
   for (int i = 0; i < n && i < static_cast<int>(kMaxDeviceChannels); ++i) {
     dev.positions[static_cast<std::size_t>(i)] = 1.0 + static_cast<double>(i);
   }
+  return dev;
+}
+
+// The same device, plus a record of which slots this tick's message missed
+// (issue #284). Kept apart from MakeDevice so every pre-existing case above
+// keeps testing the hole-free default, which is the state every producer that
+// predates the field reports.
+DeviceState MakeDeviceWithHoles(int n, uint64_t holes) {
+  DeviceState dev = MakeDevice(n);
+  dev.hole_mask = holes;
   return dev;
 }
 
@@ -119,6 +132,130 @@ TEST(IsGateClosedByWidthTest, DoesNotFireOnOverReporting) {
   // state topic.
   EXPECT_FALSE(IsGateClosedByWidth(MakeDevice(16), 6));
   EXPECT_FALSE(IsGateClosedByWidth(MakeDevice(6), 6));
+}
+
+// ── Per-slot freshness — the gate's third term (issue #284) ──────────────────
+//
+// The width test alone was NECESSARY, NOT SUFFICIENT: with an active reorder
+// map the slots actually written are the matched reference indices, so a
+// message wide enough to pass could still leave holes behind it. These pin the
+// term that closed that, including the two boundaries where a mask and an int
+// width meet — an unresolved model_dim and a model wider than the capacity.
+
+TEST(IsDeviceReadableTest, RefusesADeviceWithAHoleInsideTheModelWidth) {
+  // The shape of the counterexample pinned in integrated_bringup's
+  // test_joint_state_reorder: three channels reported, slot 0 never written.
+  // Before this term the device passed at model_dim 3 and the control law read
+  // a stale sentinel as if it were a measurement.
+  DeviceState dev = MakeDevice(3);
+  dev.hole_mask = 1ULL << 0;
+  EXPECT_FALSE(IsDeviceReadable(dev, 3));
+  // The same device is usable by anything that does not reach the holed slot —
+  // there is no such width here (model_dim counts from slot 0), so only the
+  // degenerate width qualifies.
+  EXPECT_TRUE(IsDeviceReadable(dev, 0));
+}
+
+TEST(IsDeviceReadableTest, IgnoresHolesOutsideTheModelWidth) {
+  // A broad state topic leaves the slots past the model unwritten as a matter
+  // of course, and the persistent cache keeps whatever was there. That is not
+  // this gate's business: the consumer never indexes them. A mask term applied
+  // unbounded would turn every correctly over-reporting device into a
+  // permanent degrade — the exact failure the width test is careful to avoid.
+  DeviceState dev = MakeDevice(16);
+  dev.hole_mask = (1ULL << 6) | (1ULL << 40) | (1ULL << 63);
+  EXPECT_TRUE(IsDeviceReadable(dev, 6));
+  EXPECT_FALSE(IsGateClosedByHoles(dev, 6));
+  // One slot lower and the same mask does close it — the boundary is exclusive.
+  EXPECT_FALSE(IsDeviceReadable(dev, 7));
+}
+
+TEST(IsDeviceReadableTest, AHoleFreeMaskIsTheDefaultAndChangesNothing) {
+  // Polarity check, and the reason this term could be folded into the existing
+  // predicate instead of shipped as a second one: DeviceState is an aggregate
+  // built with {} all over the repository and by every producer that predates
+  // the field. Zero must mean "no claim", not "nothing is fresh".
+  const DeviceState untouched{};
+  EXPECT_EQ(0U, untouched.hole_mask);
+  for (const int reported : {0, 1, 5, 6, 7, 16}) {
+    for (const bool valid : {false, true}) {
+      const DeviceState dev = MakeDevice(reported, valid);
+      EXPECT_EQ(valid && reported >= 6, IsDeviceReadable(dev, 6))
+          << "a device that fills no mask must be judged exactly as before";
+    }
+  }
+}
+
+TEST(IsDeviceReadableTest, UnresolvedModelDimIgnoresTheMaskToo) {
+  // The model_dim <= 0 degrade has to survive the new term, or every fixture
+  // that bypasses YAML starts failing the moment a backend reports holes.
+  DeviceState dev = MakeDevice(3);
+  dev.hole_mask = ~0ULL;
+  EXPECT_TRUE(IsDeviceReadable(dev, 0));
+  EXPECT_TRUE(IsDeviceReadable(dev, -1));
+  EXPECT_FALSE(IsGateClosedByHoles(dev, 0));
+}
+
+TEST(IsDeviceReadableTest, AModelWiderThanTheCapacitySaturatesRatherThanShifting) {
+  // 1ULL << 64 is undefined behaviour and 64 is the DEFAULT capacity here, not
+  // a corner. The saturating branch also has to keep the verdict honest: a
+  // model wider than the device can ever report is unreadable on the width
+  // term alone, so the mask must not accidentally rescue it.
+  DeviceState dev = MakeDevice(static_cast<int>(kMaxDeviceChannels));
+  EXPECT_TRUE(IsDeviceReadable(dev, static_cast<int>(kMaxDeviceChannels)));
+  EXPECT_FALSE(IsDeviceReadable(dev, static_cast<int>(kMaxDeviceChannels) + 1));
+  dev.hole_mask = 1ULL << (kMaxDeviceChannels - 1);
+  EXPECT_FALSE(IsDeviceReadable(dev, static_cast<int>(kMaxDeviceChannels)));
+}
+
+TEST(SlotMaskBelowTest, SaturatesAtBothEnds) {
+  EXPECT_EQ(0U, rtc::SlotMaskBelow(0));
+  EXPECT_EQ(0U, rtc::SlotMaskBelow(-5));
+  EXPECT_EQ(0b1U, rtc::SlotMaskBelow(1));
+  EXPECT_EQ(0b111111U, rtc::SlotMaskBelow(6));
+  EXPECT_EQ(~0ULL, rtc::SlotMaskBelow(static_cast<int>(kMaxDeviceChannels)));
+  EXPECT_EQ(~0ULL, rtc::SlotMaskBelow(static_cast<int>(kMaxDeviceChannels) + 1000));
+}
+
+// ── IsGateClosedByHoles / FirstHoleSlot — the third diagnosis (issue #284) ───
+
+TEST(IsGateClosedByHolesTest, ThreeCausesPartitionAClosedGate) {
+  // Same partition property the width diagnostic is pinned by, extended to the
+  // cause this issue added. A closed gate with NO diagnosis is the failure
+  // #307 exists to prevent, and adding a term to the gate without a matching
+  // diagnostic would have reintroduced it silently.
+  for (const int reported : {0, 3, 6, 16}) {
+    for (const bool valid : {false, true}) {
+      for (const uint64_t holes : {uint64_t{0}, uint64_t{1} << 2, ~uint64_t{0}}) {
+        DeviceState dev = MakeDevice(reported, valid);
+        dev.hole_mask = holes;
+        const bool closed = !IsDeviceReadable(dev, 6);
+        const int diagnosed = static_cast<int>(IsGateClosedByWidth(dev, 6)) +
+                              static_cast<int>(IsGateClosedByHoles(dev, 6));
+        EXPECT_LE(diagnosed, 1) << "the two reportable causes must be mutually exclusive";
+        // An open gate is never diagnosed; a closed one is diagnosed unless the
+        // cause is the unreported device, which CM names instead.
+        EXPECT_EQ(closed && dev.valid, diagnosed == 1)
+            << "reported=" << reported << " valid=" << valid << " holes=" << holes;
+      }
+    }
+  }
+}
+
+TEST(FirstHoleSlotTest, NamesTheLowestHoleTheModelActuallyReaches) {
+  DeviceState dev = MakeDevice(16);
+  dev.hole_mask = (1ULL << 2) | (1ULL << 4);
+  // Lowest, not any — the operator repairs one declared name at a time.
+  EXPECT_EQ(2, FirstHoleSlot(dev, 6));
+  // Bounded to the model: a hole past the width is not this gate's business,
+  // so reporting it would send the operator after a name that is working.
+  EXPECT_EQ(-1, FirstHoleSlot(dev, 2));
+  EXPECT_EQ(4, FirstHoleSlot(MakeDeviceWithHoles(16, 1ULL << 4), 6));
+}
+
+TEST(FirstHoleSlotTest, ReturnsMinusOneWhenThereIsNothingToName) {
+  EXPECT_EQ(-1, FirstHoleSlot(MakeDevice(6), 6));
+  EXPECT_EQ(-1, FirstHoleSlot(MakeDeviceWithHoles(6, ~0ULL), 0));
 }
 
 // ── ModelChannelBound — OOB defence only ─────────────────────────────────────

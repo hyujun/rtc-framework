@@ -20,6 +20,18 @@ struct DeviceStateCache {
   std::array<double, kMaxDeviceChannels> positions{};
   std::array<double, kMaxDeviceChannels> velocities{};
   std::array<double, kMaxDeviceChannels> efforts{};
+  // Per-slot freshness for the three arrays above. Same field, same polarity
+  // (bit set = slot NOT written by the latest message) and same rationale as
+  // DeviceState::hole_mask in rtc_base/types/types.hpp — that declaration owns
+  // the contract; this one exists because the cache is where the backends
+  // write and DeviceState is where the controllers read, and the two are
+  // separate PODs joined by a field-by-field copy in RtControllerNode.
+  //
+  // This mirror is the reason the copy needs a test: a new field added here
+  // and forgotten there compiles, and the ingress keeps working, but the
+  // controllers see a permanent 0 — which under this polarity reads as
+  // "hole-free" and silently restores the very gap #284 closed.
+  uint64_t hole_mask{0};
   // Motor-space data (separate from joint-space)
   int num_motor_channels{0};
   std::array<double, kMaxDeviceChannels> motor_positions{};

@@ -19,7 +19,7 @@ RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 �
 | `include/rtc_controller_interface/rt_controller_interface.hpp` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) |
 | `include/rtc_controller_interface/controller_registry.hpp` | 싱글톤 레지스트리 (`ControllerRegistry`) + `RTC_REGISTER_CONTROLLER` 매크로 |
 | `include/rtc_controller_interface/controller_types.hpp` | `rtc_base/types/types.hpp` 재수출 (편의 헤더) |
-| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b, secondary 축 #291, 진단 #307) — 술어 `ModelChannelBound` / `IsDeviceReadable` / `IsGateClosedByWidth` + 원시연산 `SilenceDeviceOutput` / `HoldTelemetryAtMeasured` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
+| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b, secondary 축 #291, 진단 #307, per-slot freshness #284) — 술어 `ModelChannelBound` / `IsDeviceReadable` / `IsGateClosedByWidth` / `IsGateClosedByHoles` / `FirstHoleSlot` + 원시연산 `SilenceDeviceOutput` / `HoldTelemetryAtMeasured` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
 | `include/rtc_controller_interface/controller_log_set.hpp` | Controller-owned CSV 로그 집합 헬퍼 (`ControllerLogSet` + `LogHandle<PodT>`) — opt-in. `rtc::ThreadCsvProducer/Logger` 페어를 typed handle 로 묶어 `<session>/controllers/<config_key>/<instance>.csv` 에 기록. 같은 LogSet 안에서 동일 `instance` 를 두 번 등록하면 `RegisterLog` 가 unbound `LogHandle` 반환 (Q-MSG-3 path-uniqueness enforcement) |
 
 ### 소스 파일
@@ -145,15 +145,17 @@ CM 측 정책(호출부는 `rt_controller_node_rt_loop.cpp` 의 `Compute()` 반�
 
 ### F5 device-readability 게이트 (#236 S7b)
 
-egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게이트는 "컨트롤러가 **읽어도 되는가**" 를 본다. `ControllerState::devices[0]` 이 이번 tick 에 쓸 수 없는 상태 — `!valid` 또는 `num_channels < 모델 DOF` — 이면 미보고 채널이 **유한한 `0`** 으로 읽히고, FK·Jacobian·제어 법칙 전체가 부분 ZERO configuration 에서 돌아 전 관절을 원점으로 당기는 명령이 나간다. 모든 수가 유한하므로 위의 actuator-boundary validator 도 fault 도 이를 잡지 않는다.
+egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게이트는 "컨트롤러가 **읽어도 되는가**" 를 본다. `ControllerState::devices[0]` 이 이번 tick 에 쓸 수 없는 상태 — `!valid`, `num_channels < 모델 DOF`, 또는 모델 폭 안에 **이번 tick 에 안 써진 슬롯**이 있는 경우 (#284) — 이면 미보고 채널이 **유한한 `0`** (또는 직전 값) 으로 읽히고, FK·Jacobian·제어 법칙 전체가 부분 ZERO configuration 에서 돌아 전 관절을 원점으로 당기는 명령이 나간다. 모든 수가 유한하므로 위의 actuator-boundary validator 도 fault 도 이를 잡지 않는다.
 
 **계약 SSoT 는 `rtc_controllers/docs/compliance-conventions.md` §3.7 이다** (#297 결정) — 판정식, 침묵의 의미와 그 대가, secondary 축 규칙, 알려진 한계는 전부 거기 있다. **아래는 이 패키지가 노출하는 이름의 색인이지 계약 전문이 아니다.** 구현은 헤더 전용 `device_readability.hpp` (3계층 배치표의 "device 판독가능성 게이트" 행 — `agent_docs/design-principles.md`).
 
 | 이름 | 한 줄 요약 |
 |---|---|
 | `ModelChannelBound(nc0, model_dim)` | 인덱싱 상한 — 순수 OOB 방어, 정책 없음. **항상** 적용 |
-| `IsDeviceReadable(dev, model_dim)` | **게이트** — 이 device 를 이번 tick 에 써도 되는가. 조인트 상태 판독 전 |
-| `IsGateClosedByWidth(dev, model_dim)` | 닫힌 게이트가 **왜** 닫혔는가 — 진단 전용, 출력에 관여하지 않는다. 게이트 판정 직후 (#307) |
+| `IsDeviceReadable(dev, model_dim)` | **게이트** — 이 device 를 이번 tick 에 써도 되는가. 조인트 상태 판독 전. 항 3개 (보고됨 · 폭 충분 · 구멍 없음) |
+| `IsGateClosedByWidth(dev, model_dim)` | 닫힌 게이트가 **왜** 닫혔는가 — 폭 축. 진단 전용, 출력에 관여하지 않는다. 게이트 판정 직후 (#307) |
+| `IsGateClosedByHoles(dev, model_dim)` | 같은 질문의 **구멍 축** (#284). 폭 판정을 통과한 device 만 대상이라 위와 배타적 |
+| `FirstHoleSlot(dev, model_dim)` | 모델 폭 안에서 안 써진 가장 낮은 슬롯 (없으면 `-1`) — 진단이 지목할 자리 |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length. 판정한 그 device 에만 |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane 을 측정값으로. `SilenceDeviceOutput` 과 **항상 짝** |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → `0.0` / position → 측정값) |
@@ -163,9 +165,8 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 - **bound 는 게이트가 아니다** (#265 결정 B). `min(nc0, nv)` 는 crash 만 없애고 hazard 는 남긴다.
 - **침묵은 fail-safe 가 아니고, wire 만 침묵시킨다.** zero-length 는 "no update"(직전 setpoint 유지)이지 정지가 아니며, 로그 lane 은 `HoldTelemetryAtMeasured` 가 따로 채워야 한다.
 - **"primary 에만" 은 device 축이 아니라 게이트 축이다** (#291). secondary 도 *자기* 폭으로 게이트를 갖는다.
-- **진단은 폭 미달만 보고한다** (#307). `IsGateClosedByWidth` 는 `!valid` 를 배제한다 — 그건 CM 의 init timeout 이 이미 이름을 대며 잡는 startup 형태이고, 여기서 보고하면 YAML 을 우회하는 fixture 마다 발화한다.
-
-**한계 — `IsDeviceReadable` 은 필요조건만 판정한다** (#265 D1-a → **issue #284**). reorder map 이 활성이면 `nc0 >= model_dim` 이어도 슬롯에 구멍이 남을 수 있다. 이 갭은 #284 가 소유한다.
+- **진단은 `!valid` 를 배제한다** (#307). 그건 CM 의 init timeout 이 이미 이름을 대며 잡는 startup 형태이고, 여기서 보고하면 YAML 을 우회하는 fixture 마다 발화한다. 남는 두 원인 (폭 / 구멍) 은 술어 둘로 **배타적·전수** 분할된다.
+- **freshness 는 별도 술어가 아니다** (#284). `hole_mask` 항이 `IsDeviceReadable` **안에** 접혀 있으므로 소비자는 아무것도 바꾸지 않고 강화된 판정을 받는다 — 이 갭의 착수 감사가 "컨트롤러 3종" 패턴으로 훑어 support 계층 2곳을 빠뜨렸고, 별도 술어였다면 그 둘이 옛 판정을 계속 썼을 것이다. 마스크는 `positions` lane 한정이고 zero = "구멍 주장 없음" 이다 (채우지 않는 생산자의 판정 불변).
 
 테스트: `test/test_device_readability.cpp` (술어·원시연산 계약, URDF 없음) · `integrated_bringup/test/test_device_readability_gate.cpp` (바인딩 3종) · `integrated_bringup/test/test_combined_model_cache_gate.cpp` (공유 모델 scatter) · `integrated_bringup/test/test_gate_closure_diagnostic.cpp` (진단 문구 — throttle 창이 프로세스 단위라 별도 실행 파일 + ctest 등록 2개, #307).
 

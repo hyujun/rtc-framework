@@ -128,6 +128,12 @@ class PipelineTestController : public RTControllerInterface {
   // controllers and LifecycleNodes" from "rejected after".
   static inline std::atomic<int> instances_created{0};
 
+  // DeviceState::hole_mask as seen by Compute on the last tick (issue #284).
+  // The read end of PipelineStubBackend::state_hole_mask — together they span
+  // the whole ingress→controller path, which is the only span that can catch a
+  // dropped field in the two PODs' field-by-field copy.
+  static inline std::atomic<uint64_t> observed_hole_mask{0};
+
   // Not noexcept: the base RTControllerInterface ctor is not, and marking this
   // one noexcept would turn a throwing base subobject into std::terminate
   // inside the registry factory instead of a catchable bring-up failure.
@@ -153,6 +159,7 @@ class PipelineTestController : public RTControllerInterface {
     device0_command_type_ticks.store(-1, std::memory_order_relaxed);
     injected_command_type_ticks.store(0, std::memory_order_relaxed);
     instances_created.store(0, std::memory_order_relaxed);
+    observed_hole_mask.store(0, std::memory_order_relaxed);
   }
 
   void LoadConfig(const YAML::Node& cfg) override {
@@ -190,7 +197,13 @@ class PipelineTestController : public RTControllerInterface {
     }
   }
 
-  ControllerOutput Compute(const ControllerState& /*state*/) noexcept override {
+  ControllerOutput Compute(const ControllerState& state) noexcept override {
+    // What the RT loop actually handed this controller for device 0 (#284).
+    // Recorded from INSIDE Compute rather than read off the backend, because
+    // the field's whole risk is the DeviceStateCache→DeviceState copy that
+    // sits between the two — an assertion on the cache would pass with that
+    // copy deleted.
+    observed_hole_mask.store(state.devices[0].hole_mask, std::memory_order_relaxed);
     const int sleep_us = compute_sleep_us.load(std::memory_order_relaxed);
     if (sleep_us > 0) {
       std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
@@ -344,9 +357,15 @@ class PipelineStubBackend : public DeviceBackend {
   // condition the validator exists to keep off the wire.
   static inline std::atomic<bool> state_position_nan{false};
 
+  // Per-slot freshness ReadState() reports (issue #284). Defaults to 0 — "no
+  // holes claimed" — so every pre-existing test in every TU that shares this
+  // fixture keeps the state it already asserted against.
+  static inline std::atomic<uint64_t> state_hole_mask{0};
+
   static void ResetStateChannels() {
     state_num_channels.store(2, std::memory_order_relaxed);
     state_position_nan.store(false, std::memory_order_relaxed);
+    state_hole_mask.store(0, std::memory_order_relaxed);
   }
 
   // Full per-test reset for this backend — the counterpart to
@@ -367,6 +386,7 @@ class PipelineStubBackend : public DeviceBackend {
     cache.velocities[1] = 2.0;
     cache.efforts[0] = 0.5;
     cache.efforts[1] = 0.6;
+    cache.hole_mask = state_hole_mask.load(std::memory_order_relaxed);
     cache.valid = true;
     return true;
   }

@@ -240,9 +240,9 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 
 ## 3.7 F5 device-validity 게이트 · 판독 불가 시의 출력 (#236 E-8)
 
-`ControllerState::devices[0]` 이 이번 tick 에 쓸 수 없는 상태 —`valid == false` 또는
-`num_channels < nv`— 일 때 세 compliance 컨트롤러가 무엇을 내보내는가. 세 곳에 흩어지면
-서로 다른 답을 내므로 여기가 SSoT 다.
+`ControllerState::devices[0]` 이 이번 tick 에 쓸 수 없는 상태 —`valid == false`,
+`num_channels < nv`, 또는 `[0, nv)` 에 **이번 tick 에 안 써진 슬롯**이 있는 경우 (#284)— 일 때
+세 compliance 컨트롤러가 무엇을 내보내는가. 세 곳에 흩어지면 서로 다른 답을 내므로 여기가 SSoT 다.
 
 | 항목 | 결정 | 근거 |
 |---|---|---|
@@ -289,8 +289,10 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 | 이름 | 무엇을 답하는가 | 언제 적용하는가 |
 |---|---|---|
 | `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어, 정책 없음 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 (`num_channels` 는 wire 길이) |
-| `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태를 읽기 **전**. false 면 아래 침묵 |
-| `IsGateClosedByWidth(dev, model_dim)` | "닫힌 게이트가 **왜** 닫혔는가" — 진단 전용, 출력에 관여하지 않음 | 게이트 판정 **직후**. true 면 아래 진단 로그 (#307) |
+| `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트. **항 3개**: 보고됨 · 폭 충분 · `[0, model_dim)` 에 구멍 없음 | 조인트 상태를 읽기 **전**. false 면 아래 침묵 |
+| `IsGateClosedByWidth(dev, model_dim)` | "닫힌 게이트가 **왜** 닫혔는가" — 폭 축. 진단 전용, 출력에 관여하지 않음 | 게이트 판정 **직후**. true 면 아래 진단 로그 (#307) |
+| `IsGateClosedByHoles(dev, model_dim)` | 같은 질문의 **구멍 축** (#284). 폭 판정을 *통과한* device 만 대상이라 위 술어와 배타적 | 같은 자리. 둘은 `valid` 한 device 의 폐쇄를 전수 분할한다 |
+| `FirstHoleSlot(dev, model_dim)` | 모델 폭 안에서 **안 써진 가장 낮은 슬롯** (없으면 -1) — 진단 메시지가 지목할 자리 | `IsGateClosedByHoles` 가 true 인 tick 의 로그 인자 |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | **그 게이트가 판정한 device 에만.** primary 게이트는 primary 만 침묵시키고 secondary 는 그대로 둔다 — secondary 가 *자기* 폭으로 판독 불가일 때는 secondary 도 침묵한다 (#291, 아래 표) |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane (`target_*` / `trajectory_*`) 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** — 아래 참조 |
 | `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → 0.0 / position → 측정값) | 명령 조립 시. 미기입은 fresh-zero = "원점으로" |
@@ -382,23 +384,44 @@ secondary 축에서 특히 주의할 세 가지:
 F5 답으로 쓰면 안 된다. 이 성질은 계약 테스트
 `rtc_controller_interface/test/test_device_readability.cpp` 의 `GateVsBoundTest` 2건이 pin 한다.
 
-**한계 — `IsDeviceReadable` 은 필요조건만 판정한다 (#265 D1-a → issue #284)**
+**per-slot freshness — 폭 판정만으로는 충분조건이 아니었다 (#265 D1-a → issue #284, 닫힘)**
 
-판정식 `!dev.valid || dev.num_channels < nv` 는 **필요조건이지 충분조건이 아니다.** true 가
+`!dev.valid || dev.num_channels < nv` 두 항만으로는 **필요조건이지 충분조건이 아니었다.** true 가
 "슬롯 `[0, nv)` 가 이번 tick 에 갱신됐다" 를 뜻하지 않기 때문이다 — `num_channels` 는 wire
 길이이고, reorder map 이 활성이면 실제로 써지는 슬롯은 *매칭된 ref 인덱스*라 `nc0 ≥ nv` 여도
-구멍이 남을 수 있다. 반례는 `integrated_bringup/test/test_joint_state_reorder.cpp` 가 의도된
-동작으로 이미 pin 하고 있고 (`{j2, ghost, j1}` → `num_channels == 3` 인데 슬롯 0 은 sentinel
-잔존), `num_channels` 의 의미를 좁히는 안은 기각됐다 (결정 B — 그 필드는
-`ValidateControllerOutput` 의 egress bound 로 이미 쓰이고 있다). 해법은 새 필드 또는 새 술어이며
-**issue #284** 가 소유한다. S7b 는 이 갭을 닫지 않는다.
+구멍이 남는다. 반례는 `integrated_bringup/test/test_joint_state_reorder.cpp` 가 의도된 동작으로
+pin 하고 있다 (`{j2, ghost, j1}` → `num_channels == 3` 인데 슬롯 0 은 sentinel 잔존).
 
-여기서 남는 구멍은 토크 정책이 아니라 **진단**이었다 — `num_channels < nv` 는 낫지 않는 영구
-DEGRADED 인데 이를 알리는 경로가 없었다 (issue #261 → **#307 에서 닫힘**). 지금은 위
-"닫힌 게이트의 진단" 이 그 경로를 소유한다. **이 문단이 가리키는 것은 그 진단이 덮지 *않는* 축이다** —
-위 진단은 `IsDeviceReadable` 이 false 인 경우만 보고하므로, 이 절이 말하는 "필요조건일 뿐" 인 실패
-(게이트가 **통과시킨** 상태에 reorder 로 인한 구멍이 남는 경우) 는 여전히 조용하고 **issue #284** 가
-소유한다.
+`num_channels` 의 의미를 좁히는 안은 기각됐고 (**결정 B**, 재논의 금지 — 그 필드는
+`ValidateControllerOutput` 의 egress bound 로 이미 쓰이고, 반례가 *의도된 동작*으로 pin 돼
+있으므로 계약을 좁히면 옳은 테스트가 깨진다 → PROC-6), 대신 **`DeviceState::hole_mask`** 를
+신설했다 (`rtc_base/types/types.hpp`). 계약은 넷이다.
+
+| 항목 | 계약 |
+|---|---|
+| **의미** | 비트 `i` set = 슬롯 `i` 가 **직전 state 메시지에서 안 써짐**. `positions` lane 한정 |
+| **극성** | set 이 나쁜 소식 — aggregate zero-init 이 "구멍 주장 없음" 이 되어, 이 필드를 채우지 않는 생산자(테스트 fixture·미래 백엔드)의 판정이 도입 전과 **동일**하다. 반대 극성이면 `DeviceState{}` 전부가 fail-closed 가 된다 |
+| **생산** | ingress 공유 헬퍼 `WriteJointStateToCache` **한 곳**. 메시지마다 **대입**하며 누적(OR)하지 않는다 — 누적하면 한 번 써진 슬롯이 영구히 fresh 로 남아 갭이 다시 열린다. 백엔드 3종이 이 헬퍼를 공유하므로 한 곳이 셋을 정합시킨다 |
+| **판정** | 별도 술어가 아니라 **`IsDeviceReadable` 의 세 번째 항**으로 접힌다 |
+
+**왜 별도 술어가 아니라 게이트 안인가.** 소비자를 빠뜨리는 것을 원리적으로 불가능하게 만들기
+위해서다. 이 갭의 착수 감사조차 "컨트롤러 3종" 패턴으로 훑어 support 계층 2곳
+(`combined_model_cache` · `closed_chain_hand_fk`) 을 빠뜨렸다 — 게이트에 접힌 항은 모든 소비자에게
+구조적으로 도달하고, 별도 술어는 *누군가 기억한* 소비자에게만 도달한다.
+
+`positions` **lane 한정**인 것도 계약이다. velocity/effort 는 각자 메시지 길이로 복사되므로 슬롯
+하나가 fresh position + stale velocity 일 수 있는데, 그건 다른 축의 결함이고 이 필드가 덮지
+않는다. 같은 이유로 motor/sensor lane 도 범위 밖이다 — motor lane 은 reorder 를 타지 않아 이
+기전이 없고, sensor lane 은 동형의 갭이 있으나 폭이 `kMaxSensorChannels`(128)이라 `uint64_t`
+하나에 안 들어가고 이 게이트의 소비자도 아니다.
+
+**닫힌 게이트의 세 번째 진단.** 게이트에 항을 늘리면서 진단을 안 늘리면 *조용한 폐쇄*가 생기고,
+그건 위 "닫힌 게이트의 진단" 이 없애려던 실패 그 자체다. 그래서 `IsGateClosedByHoles` +
+`FirstHoleSlot` 이 함께 신설됐고, `valid` 한 device 의 폐쇄 원인은 이제 **폭 / 구멍** 둘로
+분할된다 (배타적·전수). 메시지가 지목하는 키는 `joint_command_names` 다 — 세 백엔드가
+`BuildJointStateReorder` 에 넘기는 참조 리스트가 그것이고, 따라서 보고되는 **슬롯 인덱스도 그
+리스트 기준**이다. CM 파서는 이 키가 없으면 `joint_state_names` 로 default 하므로 메시지는 둘 다
+지목한다. 폭 축과 달리 처방은 arm/hand **대칭**이다.
 
 ### 부록 A — position-domain E-STOP seed 행의 유래 (#236 S7c, E-8 결정 A)
 

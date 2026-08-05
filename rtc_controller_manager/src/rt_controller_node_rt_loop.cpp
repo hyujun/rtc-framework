@@ -371,6 +371,19 @@ void RtControllerNode::ControlLoop() {
       std::copy_n(cache.positions.data(), nc, dev.positions.data());
       std::copy_n(cache.velocities.data(), nc, dev.velocities.data());
       std::copy_n(cache.efforts.data(), nc, dev.efforts.data());
+      // Per-slot freshness travels with the values it describes (#284). Copied
+      // whole rather than bounded by nc: the mask's own slots [nc, 64) are
+      // legitimately "not written this message", and clipping them to 0 would
+      // report the tail as hole-free precisely where the persistent cache is
+      // most likely to be holding stale values from a wider earlier message.
+      //
+      // This assignment is the mirror seam between the two PODs. Dropping it
+      // still compiles and still passes every ingress test — the controllers
+      // would just read a permanent 0, which this field's polarity spells
+      // "no holes" and hands the #284 gap straight back. The sensor for that
+      // is PerSlotFreshnessReachesTheControllerUnclipped in this package's
+      // test_rt_loop_pipeline.cpp; it is the only test that spans this seam.
+      dev.hole_mask = cache.hole_mask;
       if (urtc::HasCapability(cap, urtc::DeviceCapability::kMotorState) &&
           cache.num_motor_channels > 0) {
         const auto nmc = BoundedCount(cache.num_motor_channels, urtc::kMaxDeviceChannels);

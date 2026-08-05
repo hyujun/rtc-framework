@@ -4,7 +4,9 @@
 #include "rtc_base/types/types.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 // ── F5 device-readability gate (issue #236 S7b) ─────────────────────────────
@@ -36,9 +38,20 @@
 // crash and keeps the hazard, because skipped slots in a PERSISTENT buffer hold
 // their previous value. Worked example and the pinning tests: §3.7.
 //
-// IsGateClosedByWidth (issue #307) is a third predicate but not a third member
-// of that pair — it decides nothing about this tick's output. It answers WHY a
-// closed gate is closed, for the bindings' diagnostic log only.
+// IsGateClosedByWidth (issue #307), IsGateClosedByHoles and FirstHoleSlot
+// (issue #284) are further predicates but not further members of that pair —
+// they decide nothing about this tick's output. They answer WHY a closed gate
+// is closed, for the bindings' diagnostic log only, and they partition the
+// closed state so that no cause is silent: not reported (!valid, diagnosed by
+// the controller manager instead), too narrow, or holed.
+//
+// The gate itself stayed at ONE predicate through both of those issues, and
+// that is a load-bearing choice rather than an accident. Freshness could have
+// shipped as a second gate for the bindings to && together, and the audit that
+// prepared #284 shows what that costs: it enumerated "the three controllers"
+// and missed two support-layer readers of this same gate. A term folded into
+// IsDeviceReadable reaches every consumer by construction; a second predicate
+// reaches the ones somebody remembered.
 
 namespace rtc {
 
@@ -71,24 +84,33 @@ namespace rtc {
 // command, which on a torque-mode arm is a drop rather than a stop; §3.7 is
 // where that decision and its alternatives are recorded.
 //
-// NECESSARY, NOT SUFFICIENT (issue #265 decision D1-a → issue #284). A true
-// answer does NOT prove that slots [0, num_channels) were written this tick —
-// with an active reorder map the written slots are the MATCHED reference
-// indices, so holes survive a passing gate. Closing that gap needs a new field
-// or a new predicate and is owned by issue #284; the counterexample and the
-// rejected alternatives are in §3.7.
+// THREE TERMS, and the third one is why this predicate is now sufficient
+// (issue #265 decision D1-a → issue #284, closed). Width alone did NOT prove
+// that slots [0, model_dim) were written: with an active reorder map the
+// written slots are the MATCHED reference indices, so holes survived a passing
+// gate. `hole_mask` is the per-slot record the producer keeps for exactly that
+// (rtc_base/types/types.hpp), and folding it in HERE rather than exposing a
+// second predicate for the bindings to call is deliberate — every consumer of
+// this gate gets the stronger answer without being edited, so the failure mode
+// this repository actually hit (auditing "the three controllers" and missing
+// the two support-layer readers) cannot recur. The counterexample, the
+// rejected alternatives and the polarity argument are in §3.7.
 //
 // `model_dim <= 0` degrades to a plain validity check, which is what a
 // controller whose runtime DOF is not resolved yet (unit fixtures that bypass
-// YAML) should see: nothing is known to be missing.
+// YAML) should see: nothing is known to be missing. SlotMaskBelow(<=0) == 0
+// keeps the new term out of that degrade rather than re-deriving the rule.
 [[nodiscard]] inline bool IsDeviceReadable(const DeviceState& dev, int model_dim) noexcept {
-  return dev.valid && dev.num_channels >= model_dim;
+  return dev.valid && dev.num_channels >= model_dim &&
+         (dev.hole_mask & SlotMaskBelow(model_dim)) == 0;
 }
 
 // WHY the gate is closed, for the one cause an operator can act on (issue
 // #307). Decision table and the "no timer" rationale it rests on: §3.7.
 //
-// A false IsDeviceReadable has two causes and they are NOT equally reportable:
+// A false IsDeviceReadable has THREE causes and they are not equally
+// reportable. This predicate owns the second; IsGateClosedByHoles below owns
+// the third:
 //
 //   !dev.valid                      the backend has not reported. §3.7 records
 //                                   that CM's startup gate refuses to run
@@ -106,11 +128,16 @@ namespace rtc {
 //                                   and never opens, and nothing else in the
 //                                   process says so.
 //
+//   holes inside [0, model_dim)     wide enough, but slots the model reads were
+//                                   never written this message. Same startup
+//                                   profile as the width cause; owned by
+//                                   IsGateClosedByHoles (#284).
+//
 // THIS IS WHY THERE IS NO COUNTER. The obvious shape for "the gate has been
 // closed a while" is a duration or a tick threshold, and both are wrong here:
 // §3.7 deliberately puts NO time bound on the closed state (a timer would make
-// every misconfigured startup drop the arm N seconds in), and the two causes
-// above are already separable by term — startup does not need to be waited out
+// every misconfigured startup drop the arm N seconds in), and the causes above
+// are already separable by term — startup does not need to be waited out
 // because in production it never reaches Compute() at all. Splitting the terms
 // is what makes the first reportable tick honest.
 //
@@ -125,6 +152,53 @@ namespace rtc {
 // treating an unreported device as usable.
 [[nodiscard]] inline bool IsGateClosedByWidth(const DeviceState& dev, int model_dim) noexcept {
   return dev.valid && dev.num_channels < model_dim;
+}
+
+// WHY the gate is closed, third cause: wide enough, but with holes (#284).
+//
+// This exists because the alternative is a SILENT closure. Before hole_mask a
+// closed gate had exactly two causes and IsGateClosedByWidth separated the one
+// an operator can act on; adding a third term to IsDeviceReadable without a
+// matching diagnostic would produce ticks that are !valid == false and
+// width-closed == false and still emit nothing, which is the failure shape
+// #307 was raised to end. The three causes now partition a closed gate: not
+// reported, too narrow, holed.
+//
+// Same trigger profile as the width cause, so the same reasoning about not
+// having a timer applies (see above): the reorder map is built once from the
+// first named message and never rebuilt, so a device whose declared names do
+// not cover the model is holed from the first tick and stays holed. It is a
+// startup configuration fault, not a dropout.
+//
+// The bindings pair this with FirstHoleSlot to name a slot. Unlike the width
+// cause the KEY TO FIX does NOT differ per axis: a hole means the incoming
+// state message never carried the name the device group declared for that
+// slot, so the prescription on both axes is to reconcile the group's declared
+// names with the publisher's. The key named there is `joint_command_names` —
+// that is the reference list BuildJointStateReorder is actually built against
+// in all three backends, and it is what defines the SLOT INDEX this reports.
+// CM defaults it to `joint_state_names` when a group does not declare it
+// (rt_controller_node_device_config.cpp), which is why the message has to name
+// both rather than the more familiar one alone.
+[[nodiscard]] inline bool IsGateClosedByHoles(const DeviceState& dev, int model_dim) noexcept {
+  return dev.valid && dev.num_channels >= model_dim &&
+         (dev.hole_mask & SlotMaskBelow(model_dim)) != 0;
+}
+
+// Lowest model slot the device did not write, or -1 when there is none.
+//
+// The one number that turns "the hand is silenced" into something an operator
+// can act on: with a reorder map the holed slot is an INDEX INTO THE DEVICE's
+// declared order, so naming it points straight at the entry of
+// joint_state_names whose name never arrived. Returns the lowest rather than a
+// count because the fix is per-name and the operator repairs them one at a
+// time; a count would say how bad it is and not where.
+//
+// Bounded to the model's slots — a hole at slot 40 of a 6-DOF arm is not this
+// gate's business and must not be reported as if it were.
+[[nodiscard]] inline int FirstHoleSlot(const DeviceState& dev, int model_dim) noexcept {
+  const uint64_t holes = dev.hole_mask & SlotMaskBelow(model_dim);
+  return (holes == 0) ? -1 : std::countr_zero(holes);
 }
 
 // The F5 answer: this device contributes no command this tick.
