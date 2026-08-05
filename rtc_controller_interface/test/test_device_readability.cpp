@@ -31,6 +31,7 @@ using rtc::HoldTelemetryAtMeasured;
 using rtc::IsDeviceReadable;
 using rtc::IsGateClosedByHoles;
 using rtc::IsGateClosedByWidth;
+using rtc::IsSlotFresh;
 using rtc::kMaxDeviceChannels;
 using rtc::ModelChannelBound;
 using rtc::SelfReportedChannelBound;
@@ -258,6 +259,51 @@ TEST(FirstHoleSlotTest, NamesTheLowestHoleTheModelActuallyReaches) {
 TEST(FirstHoleSlotTest, ReturnsMinusOneWhenThereIsNothingToName) {
   EXPECT_EQ(-1, FirstHoleSlot(MakeDevice(6), 6));
   EXPECT_EQ(-1, FirstHoleSlot(MakeDeviceWithHoles(6, ~0ULL), 0));
+}
+
+// ── IsSlotFresh — per-slot, for readers that need specific channels ──────────
+
+TEST(IsSlotFreshTest, AnswersPerSlotRatherThanPerPrefix) {
+  // The whole reason this exists: a reader that wants slot 7 must not be
+  // refused by a hole at slot 3, and must not be served a hole at slot 7 just
+  // because the slots below it are fine. IsDeviceReadable cannot express either
+  // — it is a prefix question.
+  const DeviceState dev = MakeDeviceWithHoles(16, 1ULL << 3);
+  EXPECT_FALSE(IsSlotFresh(dev, 3));
+  EXPECT_TRUE(IsSlotFresh(dev, 7));
+  EXPECT_TRUE(IsSlotFresh(dev, 0));
+  // The prefix predicate refuses slot 7's reader here, which is the over-refusal
+  // the per-slot form avoids.
+  EXPECT_FALSE(IsDeviceReadable(dev, 8));
+}
+
+TEST(IsSlotFreshTest, RefusesUnreportedDevicesAndOutOfRangeSlots) {
+  EXPECT_FALSE(IsSlotFresh(MakeDevice(16, /*valid=*/false), 3));
+  // Past what the device reported — the mask says nothing about slots the
+  // device does not have, so the honest answer is "not fresh", not "no hole".
+  EXPECT_FALSE(IsSlotFresh(MakeDevice(6), 6));
+  EXPECT_FALSE(IsSlotFresh(MakeDevice(6), 99));
+  EXPECT_FALSE(IsSlotFresh(MakeDevice(6), -1));
+  // The shift must not run at or past the mask's width even if a device somehow
+  // reports more channels than the capacity.
+  DeviceState wide = MakeDevice(static_cast<int>(kMaxDeviceChannels));
+  wide.num_channels = static_cast<int>(kMaxDeviceChannels) + 8;
+  EXPECT_FALSE(IsSlotFresh(wide, static_cast<int>(kMaxDeviceChannels)));
+  EXPECT_TRUE(IsSlotFresh(wide, static_cast<int>(kMaxDeviceChannels) - 1));
+}
+
+TEST(IsSlotFreshTest, AgreesWithTheGateOnEverySlotOfAPrefix) {
+  // The two predicates are different questions, but they must not contradict:
+  // a readable prefix means every slot in it is fresh, and a slot the gate's
+  // width covers is holed exactly when the gate's mask term says so.
+  for (const uint64_t holes : {uint64_t{0}, uint64_t{1} << 2, uint64_t{1} << 5, ~uint64_t{0}}) {
+    const DeviceState dev = MakeDeviceWithHoles(8, holes);
+    bool all_fresh = true;
+    for (int i = 0; i < 8; ++i) {
+      all_fresh = all_fresh && IsSlotFresh(dev, i);
+    }
+    EXPECT_EQ(IsDeviceReadable(dev, 8), all_fresh) << "holes=" << holes;
+  }
 }
 
 // ── SelfReportedChannelBound — the width a LATCHING caller may adopt ─────────

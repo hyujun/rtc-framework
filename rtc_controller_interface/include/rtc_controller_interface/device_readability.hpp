@@ -224,6 +224,37 @@ namespace rtc {
   return (holes == 0) ? -1 : std::countr_zero(holes);
 }
 
+// PER-SLOT freshness, for readers that need SPECIFIC channels rather than a
+// prefix (issue #284 follow-up).
+//
+// IsDeviceReadable asks "are slots [0, model_dim) all usable?", which is the
+// right question for FK/Jacobian/control-law consumers that copy a contiguous
+// model-width block. It is the WRONG question for a reader that pulls named
+// joints out of arbitrary (device, channel) positions — a closed-chain bridge
+// mapping independent joints across two devices, say. Such a reader that asks
+// the prefix question either over-refuses (a hole at slot 3 blocks a reader
+// that only wants slot 7) or, if it narrows model_dim to fit, silently stops
+// checking the slots it actually reads.
+//
+// THIS PREDICATE EXISTS BECAUSE THE ALTERNATIVE WAS OBSERVED. #284 folded the
+// hole term into the gate on the argument that every consumer then gets the
+// stronger answer without being edited — true, but only for consumers that CALL
+// the gate. ClosedChainHandFk::Update had hand-rolled the pre-#284 two terms
+// (`valid && channel < num_channels`) per source channel, so folding reached it
+// on one path and not the other, and it kept projecting holed slots as measured
+// until a later audit found it. A hand-rolled copy is out of reach of any
+// change to the original; the repair is to give that shape a name.
+//
+// `valid` is folded in for the same reason it is in IsDeviceReadable: a device
+// that has not reported has no fresh slots, whatever its mask says. Out-of-range
+// slots answer false rather than reading past the mask.
+[[nodiscard]] inline bool IsSlotFresh(const DeviceState& dev, int slot) noexcept {
+  if (!dev.valid || slot < 0 || slot >= dev.num_channels || slot >= kMaxDeviceChannels) {
+    return false;
+  }
+  return (dev.hole_mask & (static_cast<uint64_t>(1) << slot)) == 0;
+}
+
 // The width a binding may adopt when it has NO declared model_dim and has to
 // take one from the device's own report — the deferred self-init in the shipped
 // bindings (a fixture that bypassed YAML, or a hand group that declared no

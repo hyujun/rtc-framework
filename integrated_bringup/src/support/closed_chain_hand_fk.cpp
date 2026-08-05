@@ -126,14 +126,20 @@ void ClosedChainHandFk::Update(const rtc::ControllerState& state) noexcept {
   }
   // 독립 관절 순서로 device 전반에서 측정 q 를 모은다. 소스 device 가 invalid 이거나 channel 이
   // 범위를 벗어나면 이 tick 은 신뢰 불가로 표시(#5).
+  //
+  // 판정은 base 의 `IsSlotFresh` 로 한다 — 이 세 조건(valid · 범위 · 이번 메시지에 써짐)을 여기서
+  // 손으로 재구현한 것이 #284 를 놓친 경로였다. 그때 게이트에 접힌 세 번째 항(per-slot freshness)이
+  // 이 루프에는 도달하지 못했고, 구멍 난 슬롯이 sources_ok 를 통과해 직전 값이 측정값으로 사영에
+  // 들어갔다. 이 reader 가 필요로 하는 것은 prefix `[0, model_dim)` 가 아니라 특정 (device,
+  // channel) 쌍이므로 `IsDeviceReadable` 이 아니라 per-slot 술어가 맞는 짝이다.
   bool sources_ok = true;
   for (std::size_t i = 0; i < bridge_.size(); ++i) {
     const QSource& s = bridge_[i];
     const auto d = static_cast<std::size_t>(s.device);
     const auto c = static_cast<std::size_t>(s.channel);
     double v = 0.0;
-    if (d < static_cast<std::size_t>(state.num_devices) && state.devices[d].valid &&
-        s.channel < state.devices[d].num_channels) {
+    if (d < static_cast<std::size_t>(state.num_devices) &&
+        rtc::IsSlotFresh(state.devices[d], s.channel)) {
       v = state.devices[d].positions[c];
     } else {
       sources_ok = false;

@@ -137,6 +137,39 @@ TEST(ClosedChainHandFk, UntrustworthyTickHoldsLastGood) {
   EXPECT_LT((held.translation() - good.translation()).norm(), 1e-15) << "hold 직전 유효 해";
 }
 
+// ── #284 후속: 소스 슬롯이 이번 메시지에 안 써졌으면 그것도 신뢰 불가다 ────────────
+//   위 케이스와 같은 결론을 **다른 축**으로 요구한다. device 는 `valid` 이고 채널 수도 충분해
+//   pre-#284 두 항은 통과하는데, 그 슬롯은 reorder map 이 건드리지 않아 positions[] 에 직전
+//   값이 남아 있다. 그 값은 유한하고 그럴듯하므로 사영은 조용히 성공하고, warm-start seed 가
+//   stale 형상으로 commit 된다 — 이 래퍼가 sources_ok 로 막으려던 바로 그 오염이 새 축으로
+//   들어온 것이다. 값을 0.25 로 *바꿔* 두는 것이 이 테스트의 급소다: hold 가 아니라 갱신이
+//   일어났다면 pose 가 움직이므로 단언이 진다.
+TEST(ClosedChainHandFk, HoledSourceSlotHoldsLastGood) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  const Eigen::VectorXd seed = ConvergedSeed(ccm, model);
+
+  ib::ClosedChainHandFk fk;
+  ASSERT_EQ(fk.Configure(model, ccm.constraints, ccm.actuated_joint_ids, seed, {{"j_crank"}},
+                         std::vector<std::string>{"c1"}, kHandRoot),
+            ib::HandFkWiringResult::kActive);
+
+  fk.Update(MakeState(0.2));
+  pinocchio::SE3 good;
+  ASSERT_TRUE(fk.GetFingertipHandRootPose(0, good));
+
+  rtc::ControllerState holed = MakeState(0.25);
+  holed.devices[0].hole_mask = 1ULL << 0;  // 이 tick 에 슬롯 0 은 안 써졌다
+  ASSERT_TRUE(holed.devices[0].valid) << "폭·유효성 축은 통과해야 이 테스트가 구멍 축을 잰다";
+  ASSERT_GE(holed.devices[0].num_channels, 1);
+
+  fk.Update(holed);
+  pinocchio::SE3 held;
+  ASSERT_TRUE(fk.GetFingertipHandRootPose(0, held));
+  EXPECT_LT((held.translation() - good.translation()).norm(), 1e-15)
+      << "구멍 난 슬롯의 직전 값을 측정값으로 사영했다";
+}
+
 // ── review #3: loop-untrustworthy tick 에도 비하류 fingertip 은 계속 서비스된다 ────
 //   비하류(serial 등가) tip 의 pose 는 actuated q 만의 함수라 loop 미수렴/특이와 무관. threshold=0
 //   으로 모든 tick 을 loop-untrustworthy 로 만들어 하류=hold / 비하류=live 를 확인한다.
