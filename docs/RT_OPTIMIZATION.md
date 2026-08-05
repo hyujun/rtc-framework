@@ -7,7 +7,9 @@
 > **Thread layout SSoT**:
 > - [agent_docs/architecture.md](../agent_docs/architecture.md) §Threading Model — RT 정의·priority hierarchy·callback_group↔executor binding 매트릭스
 > - [rtc_base/README.md](../rtc_base/README.md) §스레드 구성 — 코어 수별 tier 표 (4/6/8/10/12/14/16)
-> - [rtc_base/include/rtc_base/threading/thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) — `SystemThreadConfigs` 정의 + `SelectThreadConfigs()` 분기 (tier 상수값은 [thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp))
+> - [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) — **레이아웃 값의 SSoT** (선언형 manifest). C++ tier 상수 + `SelectThreadConfigsForCoreCount()`, shell 헬퍼, Python launch 미러가 전부 여기서 생성된다 (issue #153 M1)
+> - [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) — `ThreadConfig` / `MpcThreadConfig` / `SystemThreadConfigs` 구조체 + 설계 산문 (생성된 `thread_config_generated.hpp` 를 include)
+> - [rtc_base/include/rtc_base/threading/thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) — `ValidateSystemThreadConfigs()` + 런타임 wrapper `SelectThreadConfigs()`
 > - 본 문서는 *왜* (rationale + 시스템 설정 + 검증 + 튜닝 가이드) 를 담는다. *무엇* (필드/상수 값) 은 SSoT 가 단일 출처.
 
 ---
@@ -118,7 +120,7 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 
 ## CPU 코어 할당
 
-`SelectThreadConfigs()` 가 `GetPhysicalCpuCount()` 로 물리 코어 수를 감지해 7-tier (`4 / 6 / 8 / 10 / 12 / 14 / 16+`) 중 적합한 `SystemThreadConfigs` 를 반환한다. 값의 SSoT 는 [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) — 본 표는 그 미러.
+`SelectThreadConfigs()` 가 `GetPhysicalCpuCount()` 로 물리 코어 수를 감지해 7-tier (`4 / 6 / 8 / 10 / 12 / 14 / 16+`) 중 적합한 `SystemThreadConfigs` 를 반환한다. 값의 SSoT 는 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) — 본 표는 그 미러이고, 생성된 정본 매트릭스는 [rtc_base/README.md](../rtc_base/README.md) 에 있다.
 
 > **"Core N" 은 *slot index* — kernel logical CPU id 가 아님**. `ApplyThreadConfig` 가 `CpuTopology::physical_core_slots` 룩업으로 slot → 실제 logical id 를 변환한다. slot 은 항상 physical core 의 *primary* logical 만 가리켜 SMT sibling 회피를 보장한다. Slot ordering: **hybrid** → P-physical (asc) → E-core (asc) → LP-E (asc); **non-hybrid** → physical core first-logicals (asc); **SMT off** → identity. 예: NUC13 Pro (4P+8E, HT on) 의 Core 1 = logical cpu 2 (P-core 1 의 primary), 사이블링 cpu 3 회피. i9-13900K (8P+16E) 의 Core 3 = logical cpu 6. 자세한 정의: [rtc_base/include/rtc_base/threading/thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) `SlotToLogicalCpu()`.
 
@@ -151,7 +153,7 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 > **v4 의 핵심 변화 (참고)**: `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 제거, DDS co-pin on Core 2 — §개요 "v4 아키텍처 변경" 노트 참조.
 > - `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 가 `SystemThreadConfigs` 의 1급 필드. Python helper (`rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core() / get_sim_core() / get_viewer_core() / get_rt_callback_core()`) 가 동일 tier dispatch 미러링 — launch script 가 process-level pin 으로 사용 (arm 만 taskset 대신 CM 파라미터, issue #343).
 >
-> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp` 의 `TierIsolationMonotonicity` · `LayoutV4RtCallbackPinning` · `LayoutV4ArmHandDriverDisjoint` · `LayoutV3ValidatorCatchesArmHandCollision` · `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + sentinel 처리를 강제한다. drift gate: Python helper 결과 ≡ C++ `SelectThreadConfigs()` 결과는 `rtc_tools/test/test_thread_layout.py` 가 보장.
+> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp` 의 `TierIsolationMonotonicity` · `LayoutV4RtCallbackPinning` · `LayoutV4ArmHandDriverDisjoint` · `LayoutV3ValidatorCatchesArmHandCollision` · `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + sentinel 처리를 강제한다. drift gate: 세 언어(C++/shell/Python)가 같은 manifest 에서 생성되고 `gen_thread_layout.py --check` 가 stale/수동편집을 차단하며, 의미 등가성은 `repo_scripts/test/test_thread_layout_equivalence.py` 가 ncpu 1..17·24 로 확인한다. 각 언어의 값 oracle 은 손으로 쓴 리터럴이다 (`test_thread_layout_tiers.cpp` · `test_rt_common.sh` · `test_thread_layout.py`) — 생성물끼리 대조하면 잘못된 표가 세 언어에서 일치하므로 잡히지 않기 때문.
 
 ### cset shield 범위 + CM adopt (cpu_shield.sh, issue #151)
 
@@ -587,14 +589,14 @@ void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
 
 ### 스레드 설정 ([thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp))
 
-`SystemThreadConfigs` struct 와 `SelectThreadConfigs()` selector 는 [thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) 에, per-tier 값은 [thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) 의 `k*Config*` inline const 에 있다. struct 는 아래 1급 필드로 각 thread 를 표현한다 (필드 주석·값은 헤더 직접 참조 — 본 문서는 박제하지 않는다):
+`SystemThreadConfigs` struct 는 [thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) 에, 런타임 selector `SelectThreadConfigs()` 는 [thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) 에 있다. per-tier 값 (`k*Config*` inline const) 과 순수 dispatch `SelectThreadConfigsForCoreCount()` 는 manifest 에서 생성된 `thread_config_generated.hpp` 에 있다. struct 는 아래 1급 필드로 각 thread 를 표현한다 (필드 주석·값은 헤더 직접 참조 — 본 문서는 박제하지 않는다):
 
 - `rt_control` (FIFO 90) · `rt_callback` (FIFO 70, DDS recv co-pin) — RT 경계
 - `nrt_logging` (CFS -5) · `nrt_callback` (CFS 0)
 - `arm_driver` (CM 파라미터로 내부 RT 루프 pin) · `hand_driver` (process-level taskset) · `sim_thread` · `viewer` (`cpu_core=-1` sentinel, 모든 tier)
 - `mpc` (mpc_main + workers[0..2])
 
-`SelectThreadConfigs()` 는 `GetPhysicalCpuCount()` 로 7-tier (≥16 / 14 / 12 / 10 / 8 / 6 / else 4-core fallback) 를 dispatch 한다. 각 tier 상수는 `kRtControlConfig*` / `kRtCallbackConfig*` / `kNrtCallbackConfig*` / `kNrtLoggingConfig*` / `kArmDriverConfig*` / `kHandDriverConfig*` / `kSimThreadConfig*` / `kViewerConfig*`.
+`SelectThreadConfigs()` 는 `GetPhysicalCpuCount()` 를 `SelectThreadConfigsForCoreCount()` 에 넘기고, 그쪽이 7-tier (≥16 / 14 / 12 / 10 / 8 / 6 / else 4-core fallback) 를 dispatch 한다 (core 수를 인자로 받으므로 호스트에 없는 tier 도 테스트가 훑을 수 있다). 각 tier 상수는 `kRtControlConfig*` / `kRtCallbackConfig*` / `kNrtCallbackConfig*` / `kNrtLoggingConfig*` / `kArmDriverConfig*` / `kHandDriverConfig*` / `kSimThreadConfig*` / `kViewerConfig*`.
 
 - **v4 단일화**: v3 의 `rt_inbound` + `rt_outbound` 필드는 `rt_callback` 으로 통합 (§개요 "v4 아키텍처 변경" 노트 참조).
 - **`udp_recv` 필드 / `kUdpRecvConfig*` 상수 완전 삭제** (v3 부터). 대체:

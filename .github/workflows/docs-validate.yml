@@ -59,3 +59,37 @@ jobs:
       # got through.
       - name: verify-changes.sh routing
         run: bash repo_scripts/test/test_verify_changes.sh
+
+      # ── Thread layout manifest (issue #153 M1) ───────────────────────────
+      # The C++ artifact is emitted through clang-format so the checked-in file
+      # matches what the repo's format hook would produce. Without the tool the
+      # generator *skips* that artifact rather than reporting a false STALE --
+      # which would make this job quietly stop gating the header it exists to
+      # gate. Installing it keeps all five artifacts in scope here.
+      # apt-get update first: runner images ship with a pruned
+      # /var/lib/apt/lists, where a bare install dies with "Unable to locate
+      # package" and takes this whole job down with it. .github/actions/
+      # setup-rtc-env does the same for the same reason.
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format
+
+      # Fails when any generated artifact (C++ tier constants, shell helpers,
+      # Python launch mirror, the two README tables) is stale or hand-edited.
+      # This is the cross-language drift gate that replaced six hand-maintained
+      # copies of the tier table.
+      - name: Thread layout artifacts in sync
+        run: python3 repo_scripts/scripts/gen_thread_layout.py --check
+
+      # The generator's own invariants -- emitters are formatter-stable, and the
+      # layout keeps its structural rules (worker <= main, mpc < rt_callback, no
+      # RT slot collisions) on every tier.
+      - name: Thread layout generator self-test
+        run: python3 repo_scripts/scripts/gen_thread_layout.py --self-test
+
+      # Semantic equivalence: manifest vs *executed* shell helpers vs the
+      # imported Python mirror for ncpu 1..17 and 24. --check only proves the
+      # files are fresh; this proves they mean the same thing.
+      - name: Thread layout cross-language equivalence
+        run: python3 repo_scripts/test/test_thread_layout_equivalence.py

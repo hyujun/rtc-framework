@@ -191,15 +191,24 @@ def test_sentinel_slot_is_left_unpinned(tmp_path, monkeypatch):
 
 # ── DDS-pin RTC-owned thread filter (issue #163 Phase 3) ─────────────────────
 
-_THREAD_CONFIG_HPP = (
-    _REPO_ROOT / "rtc_base" / "include" / "rtc_base" / "threading" / "thread_config.hpp"
+_THREADING_DIR = _REPO_ROOT / "rtc_base" / "include" / "rtc_base" / "threading"
+# The tier constants (and therefore every `.name =`) moved into the generated
+# header when the layout manifest landed (issue #153 M1); thread_config.hpp now
+# holds the structs and prose. Scan both so this keeps working whichever file a
+# future thread is declared in -- reading only one of them would silently start
+# comparing against an empty set, which passes nothing but looks green.
+_THREAD_CONFIG_HEADERS = (
+    _THREADING_DIR / "thread_config.hpp",
+    _THREADING_DIR / "thread_config_generated.hpp",
 )
 
 
 def _thread_config_names() -> set[str]:
-    """Every ``.name = "..."`` value declared in thread_config.hpp."""
-    text = _THREAD_CONFIG_HPP.read_text()
-    return set(re.findall(r'\.name = "([^"]+)"', text))
+    """Every ``.name = "..."`` value declared across the thread config headers."""
+    names: set[str] = set()
+    for header in _THREAD_CONFIG_HEADERS:
+        names |= set(re.findall(r'\.name = "([^"]+)"', header.read_text()))
+    return names
 
 
 def test_rtc_owned_names_mirror_thread_config_hpp():
@@ -209,7 +218,11 @@ def test_rtc_owned_names_mirror_thread_config_hpp():
     RTC_OWNED_THREAD_NAMES, pin_dds_threads_to_slot could yank it off its
     dedicated core — the exact class of bug as #163. Lock the two together.
     """
-    assert _thread_config_names() == pinning.RTC_OWNED_THREAD_NAMES
+    names = _thread_config_names()
+    # A regex that stops matching (headers moved again, initializer restyled)
+    # would make the comparison trivially wrong rather than loudly wrong.
+    assert names, f"no `.name =` declarations found in {_THREAD_CONFIG_HEADERS} — regex is stale"
+    assert names == pinning.RTC_OWNED_THREAD_NAMES
 
 
 def test_dds_pin_snippet_excludes_every_rtc_thread(_stub_script_paths):

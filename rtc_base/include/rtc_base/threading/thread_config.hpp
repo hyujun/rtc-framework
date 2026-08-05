@@ -87,590 +87,77 @@ struct MpcThreadConfig {
 // by ApplyThreadConfig (issue #343). Raising kArmDriverConfig* to FIFO would
 // claim the process's main/executor thread is RT, which it is not.
 //
-// ── Tier block ordering ─────────────────────────────────────────────────────
-// Tier blocks are listed in ascending core count: 4 → 6 → 8 → 10 → 12 → 14 → 16.
-// Within each tier, entries are sorted by sched_priority descending, with
-// alphabetical tie-break on the symbol name (Arm < Hand < NrtCallback <
-// NrtLogging < SimThread < Viewer for the priority-0 group). MpcThreadConfig
-// occupies its main.sched_priority slot (60 on RT tiers, 0 on 4-core).
-
-// ── 4-core fallback (degraded — no deterministic RT guarantee) ──────────────
-// Core 0:   OS / DDS / IRQ + nrt_logging + nrt_callback + arm/hand_driver
-// Core 1:   rt_control                     FIFO 90
-// Core 2:   rt_callback                    FIFO 70
-// Core 3:   mpc_main (SCHED_OTHER nice -5 — degraded)
-
-inline const ThreadConfig kRtControlConfig4Core{.cpu_core = 1,
-                                                .sched_policy = SCHED_FIFO,
-                                                .sched_priority = 90,
-                                                .nice_value = 0,
-                                                .name = "rt_control"};
-
-// Layout v4 promotes rt_callback to SCHED_FIFO 70 on the 4-core fallback
-// (v3 kept rt_outbound on CFS). On a 4-core box DDS receive co-pins to
-// Core 2 (no spare core), so DDS dispatch shares the same FIFO 70 queue
-// as the rt_callback executor. Because both serve the controller↔hardware
-// state-input boundary, this co-residency is acceptable; the 4-core tier
-// is explicitly "degraded — no deterministic RT guarantee" (header above).
-inline const ThreadConfig kRtCallbackConfig4Core{.cpu_core = 2,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 70,
-                                                 .nice_value = 0,
-                                                 .name = "rt_callback"};
-
-inline const MpcThreadConfig kMpcConfig4Core{
-    .main =
-        ThreadConfig{
-            .cpu_core = 3,
-            .sched_policy = SCHED_OTHER,
-            .sched_priority = 0,
-            .nice_value = -5,
-            .name = "mpc_main",
-        },
-    .num_workers = 0,
-    .workers = {},
-};
-
-inline const ThreadConfig kArmDriverConfig4Core{.cpu_core = 0,
-                                                .sched_policy = SCHED_OTHER,
-                                                .sched_priority = 0,
-                                                .nice_value = 0,
-                                                .name = "arm_driver"};
-
-inline const ThreadConfig kHandDriverConfig4Core{.cpu_core = 0,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "hand_driver"};
-
-inline const ThreadConfig kNrtCallbackConfig4Core{.cpu_core = 0,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = 0,
-                                                  .name = "nrt_callback"};
-
-inline const ThreadConfig kNrtLoggingConfig4Core{.cpu_core = 0,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = -5,
-                                                 .name = "nrt_logging"};
-
-inline const ThreadConfig kSimThreadConfig4Core{.cpu_core = -1,
-                                                .sched_policy = SCHED_OTHER,
-                                                .sched_priority = 0,
-                                                .nice_value = 0,
-                                                .name = "sim_thread"};
-
-inline const ThreadConfig kViewerConfig4Core{.cpu_core = -1,
-                                             .sched_policy = SCHED_OTHER,
-                                             .sched_priority = 0,
-                                             .nice_value = 0,
-                                             .name = "viewer"};
-
-// ── 6-core configuration (degraded mode — no deterministic RT guarantee) ────
-// Core 0:  OS / DDS / IRQ
-// Core 1:  rt_control                       FIFO 90
-// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 3:  mpc_main                         FIFO 60
-// Core 4:  arm_driver + hand_driver (shared, degraded)
-// Core 5:  nrt_logging + nrt_callback (shared, degraded)
+// ── Tier blocks ─────────────────────────────────────────────────────────────
+// The per-tier constants (kRtControlConfig8Core, kMpcConfig12Core, ...) and the
+// SelectThreadConfigsForCoreCount() dispatch are GENERATED from
+// repo_scripts/config/thread_layout.yaml into thread_config_generated.hpp,
+// included at the bottom of this header. Do not add tier constants here by
+// hand: edit the manifest and run
+//   python3 repo_scripts/scripts/gen_thread_layout.py --write
+// The manifest is the single source of truth shared with the shell helpers
+// (repo_scripts/scripts/lib/thread_layout_generated.sh) and the launch mirror
+// (rtc_tools/rtc_tools/launch/thread_layout_generated.py); `--check` is the
+// drift gate (issue #153 M1).
 //
-// Trade-off: mpc_worker absent, arm/hand share Core 4, nrt_* share Core 5.
-// "degraded mode" label required — no deterministic RT guarantee. Core 0 is
-// reserved for OS / DDS / IRQ; user-space threads start at Core 1.
+// Emission order: tiers ascending by core count (4 → 6 → 8 → 10 → 12 → 14 →
+// 16); within a tier, entries follow the manifest's role declaration order,
+// which is sched_priority descending with an alphabetical tie-break on the
+// symbol name (Arm < Hand < NrtCallback < NrtLogging < SimThread < Viewer for
+// the priority-0 group). MpcThreadConfig occupies its main.sched_priority slot.
 
-inline const ThreadConfig kRtControlConfig{.cpu_core = 1,
-                                           .sched_policy = SCHED_FIFO,
-                                           .sched_priority = 90,
-                                           .nice_value = 0,
-                                           .name = "rt_control"};
-
-inline const ThreadConfig kRtCallbackConfig{.cpu_core = 2,
-                                            .sched_policy = SCHED_FIFO,
-                                            .sched_priority = 70,
-                                            .nice_value = 0,
-                                            .name = "rt_callback"};
-
-inline const MpcThreadConfig kMpcConfig6Core{
-    .main =
-        ThreadConfig{
-            .cpu_core = 3,
-            .sched_policy = SCHED_FIFO,
-            .sched_priority = 60,
-            .nice_value = 0,
-            .name = "mpc_main",
-        },
-    .num_workers = 0,
-    .workers = {},
-};
-
-inline const ThreadConfig kArmDriverConfig{.cpu_core = 4,
-                                           .sched_policy = SCHED_OTHER,
-                                           .sched_priority = 0,
-                                           .nice_value = 0,
-                                           .name = "arm_driver"};
-
-inline const ThreadConfig kHandDriverConfig{.cpu_core = 4,
-                                            .sched_policy = SCHED_OTHER,
-                                            .sched_priority = 0,
-                                            .nice_value = 0,
-                                            .name = "hand_driver"};
-
-inline const ThreadConfig kNrtCallbackConfig{.cpu_core = 5,
-                                             .sched_policy = SCHED_OTHER,
-                                             .sched_priority = 0,
-                                             .nice_value = 0,
-                                             .name = "nrt_callback"};
-
-inline const ThreadConfig kNrtLoggingConfig{.cpu_core = 5,
-                                            .sched_policy = SCHED_OTHER,
-                                            .sched_priority = 0,
-                                            .nice_value = -5,
-                                            .name = "nrt_logging"};
-
-// sim_thread / viewer cpu_core = -1: caller-controlled, no pinning on any
-// tier. cpu_shield --sim releases the shield so MuJoCo physics + GLFW viewer
-// may roam over freed cores under CFS.
-inline const ThreadConfig kSimThreadConfig{.cpu_core = -1,
-                                           .sched_policy = SCHED_OTHER,
-                                           .sched_priority = 0,
-                                           .nice_value = 0,
-                                           .name = "sim_thread"};
-
-inline const ThreadConfig kViewerConfig{.cpu_core = -1,
-                                        .sched_policy = SCHED_OTHER,
-                                        .sched_priority = 0,
-                                        .nice_value = 0,
-                                        .name = "viewer"};
-
-// ── 8-core configuration (layout v4.1) ──────────────────────────────────────
-// Core 0:  OS / DDS / IRQ
-// Core 1:  rt_control                       FIFO 90
-// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 3:  mpc_main                         FIFO 60
-// Core 4:  arm_driver (dedicated)
-// Core 5:  hand_driver (dedicated)
-// Core 6:  nrt_logging
-// Core 7:  nrt_callback
-
-inline const ThreadConfig kRtControlConfig8Core{.cpu_core = 1,
-                                                .sched_policy = SCHED_FIFO,
-                                                .sched_priority = 90,
-                                                .nice_value = 0,
-                                                .name = "rt_control"};
-
-inline const ThreadConfig kRtCallbackConfig8Core{.cpu_core = 2,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 70,
-                                                 .nice_value = 0,
-                                                 .name = "rt_callback"};
-
-inline const MpcThreadConfig kMpcConfig8Core{
-    .main =
-        ThreadConfig{
-            .cpu_core = 3,
-            .sched_policy = SCHED_FIFO,
-            .sched_priority = 60,
-            .nice_value = 0,
-            .name = "mpc_main",
-        },
-    .num_workers = 0,
-    .workers = {},
-};
-
-inline const ThreadConfig kArmDriverConfig8Core{.cpu_core = 4,
-                                                .sched_policy = SCHED_OTHER,
-                                                .sched_priority = 0,
-                                                .nice_value = 0,
-                                                .name = "arm_driver"};
-
-inline const ThreadConfig kHandDriverConfig8Core{.cpu_core = 5,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "hand_driver"};
-
-inline const ThreadConfig kNrtCallbackConfig8Core{.cpu_core = 7,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = 0,
-                                                  .name = "nrt_callback"};
-
-inline const ThreadConfig kNrtLoggingConfig8Core{.cpu_core = 6,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = -5,
-                                                 .name = "nrt_logging"};
-
-inline const ThreadConfig kSimThreadConfig8Core{.cpu_core = -1,
-                                                .sched_policy = SCHED_OTHER,
-                                                .sched_priority = 0,
-                                                .nice_value = 0,
-                                                .name = "sim_thread"};
-
-inline const ThreadConfig kViewerConfig8Core{.cpu_core = -1,
-                                             .sched_policy = SCHED_OTHER,
-                                             .sched_priority = 0,
-                                             .nice_value = 0,
-                                             .name = "viewer"};
-
-// ── 10-core configuration (layout v4.1) ─────────────────────────────────────
-// Core 0:  OS / DDS / IRQ
-// Core 1:  rt_control                       FIFO 90
-// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 3:  mpc_main                         FIFO 60
-// Core 4:  mpc_worker_0                     FIFO 55
-// Core 5:  arm_driver
-// Core 6:  hand_driver
-// Core 7:  nrt_logging
-// Core 8:  nrt_callback
-// Core 9:  spare
-
-inline const ThreadConfig kRtControlConfig10Core{.cpu_core = 1,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 90,
-                                                 .nice_value = 0,
-                                                 .name = "rt_control"};
-
-inline const ThreadConfig kRtCallbackConfig10Core{.cpu_core = 2,
-                                                  .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 70,
-                                                  .nice_value = 0,
-                                                  .name = "rt_callback"};
-
-inline const MpcThreadConfig kMpcConfig10Core{
-    .main =
-        ThreadConfig{
-            .cpu_core = 3,
-            .sched_policy = SCHED_FIFO,
-            .sched_priority = 60,
-            .nice_value = 0,
-            .name = "mpc_main",
-        },
-    .num_workers = 1,
-    .workers =
-        {
-            ThreadConfig{
-                .cpu_core = 4,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_0",
-            },
-            ThreadConfig{},
-        },
-};
-
-inline const ThreadConfig kArmDriverConfig10Core{.cpu_core = 5,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "arm_driver"};
-
-inline const ThreadConfig kHandDriverConfig10Core{.cpu_core = 6,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = 0,
-                                                  .name = "hand_driver"};
-
-inline const ThreadConfig kNrtCallbackConfig10Core{.cpu_core = 8,
-                                                   .sched_policy = SCHED_OTHER,
-                                                   .sched_priority = 0,
-                                                   .nice_value = 0,
-                                                   .name = "nrt_callback"};
-
-inline const ThreadConfig kNrtLoggingConfig10Core{.cpu_core = 7,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = -5,
-                                                  .name = "nrt_logging"};
-
-inline const ThreadConfig kSimThreadConfig10Core{.cpu_core = -1,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "sim_thread"};
-
-inline const ThreadConfig kViewerConfig10Core{.cpu_core = -1,
-                                              .sched_policy = SCHED_OTHER,
-                                              .sched_priority = 0,
-                                              .nice_value = 0,
-                                              .name = "viewer"};
-
-// ── 12-core configuration (primary target, layout v4.1) ─────────────────────
-// Core 0:  OS / DDS / IRQ
-// Core 1:  rt_control                       FIFO 90
-// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 3:  mpc_main                         FIFO 60
-// Core 4:  mpc_worker_0                     FIFO 55
-// Core 5:  mpc_worker_1                     FIFO 55
-// Core 6:  arm_driver
-// Core 7:  hand_driver
-// Core 8:  nrt_logging
-// Core 9:  nrt_callback
-// Core 10: spare
-// Core 11: spare / user shield
-
-inline const ThreadConfig kRtControlConfig12Core{.cpu_core = 1,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 90,
-                                                 .nice_value = 0,
-                                                 .name = "rt_control"};
-
-inline const ThreadConfig kRtCallbackConfig12Core{.cpu_core = 2,
-                                                  .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 70,
-                                                  .nice_value = 0,
-                                                  .name = "rt_callback"};
-
-inline const MpcThreadConfig kMpcConfig12Core{
-    .main =
-        ThreadConfig{
-            .cpu_core = 3,
-            .sched_policy = SCHED_FIFO,
-            .sched_priority = 60,
-            .nice_value = 0,
-            .name = "mpc_main",
-        },
-    .num_workers = 2,
-    .workers =
-        {
-            ThreadConfig{
-                .cpu_core = 4,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_0",
-            },
-            ThreadConfig{
-                .cpu_core = 5,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_1",
-            },
-        },
-};
-
-inline const ThreadConfig kArmDriverConfig12Core{.cpu_core = 6,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "arm_driver"};
-
-inline const ThreadConfig kHandDriverConfig12Core{.cpu_core = 7,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = 0,
-                                                  .name = "hand_driver"};
-
-inline const ThreadConfig kNrtCallbackConfig12Core{.cpu_core = 9,
-                                                   .sched_policy = SCHED_OTHER,
-                                                   .sched_priority = 0,
-                                                   .nice_value = 0,
-                                                   .name = "nrt_callback"};
-
-inline const ThreadConfig kNrtLoggingConfig12Core{.cpu_core = 8,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = -5,
-                                                  .name = "nrt_logging"};
-
-inline const ThreadConfig kSimThreadConfig12Core{.cpu_core = -1,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "sim_thread"};
-
-inline const ThreadConfig kViewerConfig12Core{.cpu_core = -1,
-                                              .sched_policy = SCHED_OTHER,
-                                              .sched_priority = 0,
-                                              .nice_value = 0,
-                                              .name = "viewer"};
-
-// ── 14-core configuration (layout v4.1) ─────────────────────────────────────
-// Core 0:  OS / DDS / IRQ
-// Core 1:  rt_control                       FIFO 90
-// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 3:  mpc_main                         FIFO 60
-// Core 4:  mpc_worker_0                     FIFO 55
-// Core 5:  mpc_worker_1                     FIFO 55
-// Core 6:  arm_driver
-// Core 7:  hand_driver
-// Core 8:  nrt_logging
-// Core 9:  nrt_callback
-// Core 10-13: spare / user shield
-
-inline const ThreadConfig kRtControlConfig14Core{.cpu_core = 1,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 90,
-                                                 .nice_value = 0,
-                                                 .name = "rt_control"};
-
-inline const ThreadConfig kRtCallbackConfig14Core{.cpu_core = 2,
-                                                  .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 70,
-                                                  .nice_value = 0,
-                                                  .name = "rt_callback"};
-
-inline const MpcThreadConfig kMpcConfig14Core{
-    .main =
-        ThreadConfig{
-            .cpu_core = 3,
-            .sched_policy = SCHED_FIFO,
-            .sched_priority = 60,
-            .nice_value = 0,
-            .name = "mpc_main",
-        },
-    .num_workers = 2,
-    .workers =
-        {
-            ThreadConfig{
-                .cpu_core = 4,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_0",
-            },
-            ThreadConfig{
-                .cpu_core = 5,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_1",
-            },
-        },
-};
-
-inline const ThreadConfig kArmDriverConfig14Core{.cpu_core = 6,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "arm_driver"};
-
-inline const ThreadConfig kHandDriverConfig14Core{.cpu_core = 7,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = 0,
-                                                  .name = "hand_driver"};
-
-inline const ThreadConfig kNrtCallbackConfig14Core{.cpu_core = 9,
-                                                   .sched_policy = SCHED_OTHER,
-                                                   .sched_priority = 0,
-                                                   .nice_value = 0,
-                                                   .name = "nrt_callback"};
-
-inline const ThreadConfig kNrtLoggingConfig14Core{.cpu_core = 8,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = -5,
-                                                  .name = "nrt_logging"};
-
-inline const ThreadConfig kSimThreadConfig14Core{.cpu_core = -1,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "sim_thread"};
-
-inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
-                                              .sched_policy = SCHED_OTHER,
-                                              .sched_priority = 0,
-                                              .nice_value = 0,
-                                              .name = "viewer"};
-
-// ── 16-core configuration (layout v4.1) ─────────────────────────────────────
-// Core 0:   OS / DDS / IRQ
-// Core 1:   rt_control                      FIFO 90
-// Core 2:   rt_callback + DDS recv          FIFO 70 (RT) / CFS (DDS)
-// Core 3:   mpc_main                        FIFO 60
-// Core 4:   mpc_worker_0                    FIFO 55
-// Core 5:   mpc_worker_1                    FIFO 55
-// Core 6:   arm_driver
-// Core 7:   hand_driver
-// Core 8:   nrt_logging
-// Core 9:   nrt_callback
-// Core 10-15: spare / user shield
+// Aggregated thread configs selected at runtime for all threads.
 //
-// v4.1: prior cset shield "user" on Core 4-8 removed for RT cluster cache
-// locality. Cores 10-15 remain free for user-level workloads.
-
-inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 1,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 90,
-                                                 .nice_value = 0,
-                                                 .name = "rt_control"};
-
-inline const ThreadConfig kRtCallbackConfig16Core{.cpu_core = 2,
-                                                  .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 70,
-                                                  .nice_value = 0,
-                                                  .name = "rt_callback"};
-
-inline const MpcThreadConfig kMpcConfig16Core{
-    .main =
-        ThreadConfig{
-            .cpu_core = 3,
-            .sched_policy = SCHED_FIFO,
-            .sched_priority = 60,
-            .nice_value = 0,
-            .name = "mpc_main",
-        },
-    .num_workers = 2,
-    .workers =
-        {
-            ThreadConfig{
-                .cpu_core = 4,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_0",
-            },
-            ThreadConfig{
-                .cpu_core = 5,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_1",
-            },
-        },
+// Field naming (layout v4.1):
+//   * rt_callback  = single RT callback dispatcher thread (Core 2 FIFO 70 on
+//                    every tier; Core 0 = OS/DDS/IRQ only, RT cluster starts
+//                    at Core 1). Hosts the executor that dispatches state
+//                    subscriptions bound to the rt_callback callback group.
+//                    Replaces the former rt_inbound (FIFO 70) + rt_outbound
+//                    (FIFO 65) pair: actuator command publish is performed
+//                    inline in the rt_loop tick on rt_control (Core 1 FIFO
+//                    90), so no separate output thread is required.
+//   * nrt_callback = non-RT callback dispatcher for services / lifecycle /
+//                    non-RT-boundary subs
+//   * nrt_logging  = non-RT CSV drain
+//
+// Process-level pins (applied at launch time, no ApplyThreadConfig call;
+// SCHED_OTHER prio 0):
+//   * arm_driver / hand_driver = external driver processes. hand_driver is a
+//     taskset -a sweep (its RT thread inherits the process mask, issue #245).
+//     arm_driver is NOT: ros2_control_node's main thread is the executor and
+//     its 500 Hz loop is a separate thread that taskset cannot reach, so the
+//     cpu_core here is handed to controller_manager's own cpu_affinity
+//     parameter, which the loop applies to itself (issue #343). The entry still
+//     models the process — the loop's FIFO 50 is upstream's, not ours.
+//   * sim_thread / viewer      = MuJoCo physics + GLFW rendering threads in
+//                                sim mode. cpu_core may be -1 (no pinning;
+//                                launch script releases the cpu_shield for
+//                                MuJoCo).
+//
+// DDS receive thread (CycloneDDS / Fast-RTPS) is co-pinned to the rt_callback
+// core (Core 2 in v4.1) via launch-time taskset for cache locality. Its CFS policy is
+// preserved; the launch script pins only non-RT threads of the controller
+// process. The hand UDP receive thread (RT priority 65) lives privately
+// inside udp_hand_controller and inherits affinity from the launch-level
+// taskset on the hand_driver core. Generic UDP receivers using
+// rtc_communication::Transceiver pick up the kRtUdpRecvConfig default
+// (cpu_core = -1, caller pins explicitly).
+struct SystemThreadConfigs {
+  ThreadConfig rt_control;
+  ThreadConfig rt_callback;
+  ThreadConfig nrt_logging;
+  ThreadConfig nrt_callback;
+  ThreadConfig arm_driver;   // external arm driver process pin (SCHED_OTHER)
+  ThreadConfig hand_driver;  // external hand driver process pin (SCHED_OTHER)
+  ThreadConfig sim_thread;   // MuJoCo physics thread (SCHED_OTHER, cpu_core may be -1)
+  ThreadConfig viewer;       // GLFW viewer thread     (SCHED_OTHER, cpu_core may be -1)
+  MpcThreadConfig mpc;       // MPC main + optional workers
 };
-
-inline const ThreadConfig kArmDriverConfig16Core{.cpu_core = 6,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "arm_driver"};
-
-inline const ThreadConfig kHandDriverConfig16Core{.cpu_core = 7,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = 0,
-                                                  .name = "hand_driver"};
-
-inline const ThreadConfig kNrtCallbackConfig16Core{.cpu_core = 9,
-                                                   .sched_policy = SCHED_OTHER,
-                                                   .sched_priority = 0,
-                                                   .nice_value = 0,
-                                                   .name = "nrt_callback"};
-
-inline const ThreadConfig kNrtLoggingConfig16Core{.cpu_core = 8,
-                                                  .sched_policy = SCHED_OTHER,
-                                                  .sched_priority = 0,
-                                                  .nice_value = -5,
-                                                  .name = "nrt_logging"};
-
-inline const ThreadConfig kSimThreadConfig16Core{.cpu_core = -1,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
-                                                 .nice_value = 0,
-                                                 .name = "sim_thread"};
-
-inline const ThreadConfig kViewerConfig16Core{.cpu_core = -1,
-                                              .sched_policy = SCHED_OTHER,
-                                              .sched_priority = 0,
-                                              .nice_value = 0,
-                                              .name = "viewer"};
 
 }  // namespace rtc
+
+// Generated tier constants + SelectThreadConfigsForCoreCount(). Included last:
+// it needs ThreadConfig / MpcThreadConfig / SystemThreadConfigs above.
+#include "rtc_base/threading/thread_config_generated.hpp"
 
 #endif  // RTC_BASE_THREAD_CONFIG_HPP_

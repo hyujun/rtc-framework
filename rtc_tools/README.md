@@ -31,7 +31,7 @@ rtc_tools/
 │   │   └── ctf_to_chrome_trace.py      ← LTTng CTF trace → Chrome Trace JSON (Perfetto UI)
 │   ├── launch/
 │   │   ├── thread_layout.py            ← 스레드 코어 배치 SSoT의 Python mirror
-│   │   │                                  (rtc_base SelectThreadConfigs, drift-tested)
+│   │   │                                  (generated from thread_layout.yaml)
 │   │   ├── pinning.py                  ← taskset pin / DDS co-pin / shield adopt 액션
 │   │   ├── cpu_shield.py               ← cset shield 감지 + adopt→ACTIVATE 체인
 │   │   │                                  (다섯 bringup launch 공유, fail-closed)
@@ -426,7 +426,7 @@ plots = get_session_subdir('plots')  # 환경변수 읽기 전용, None 반환 �
 
 ### `thread_layout.py` — 스레드 코어 배치 SSoT의 Python mirror
 
-C++ SSoT (`rtc_base/include/rtc_base/threading/thread_config.hpp` + `thread_utils.hpp::SelectThreadConfigs`)의 코어 티어 breakpoint 를 Python 으로 재인코딩합니다. Launch 파일(Python)이 외부 driver/simulator 프로세스에 `taskset` 핀을 적용할 때 C++ RT 루프와 동일한 코어 배치 결정을 내리기 위해 사용됩니다.
+코어 티어 breakpoint 의 Python 미러입니다. **재인코딩이 아니라 생성물**이며 (issue #153 M1), 표 자체는 `thread_layout_generated.py` 에 선언형 manifest [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 로부터 생성됩니다 — C++ tier 상수·shell 헬퍼와 같은 출처입니다. Launch 파일(Python)이 외부 driver/simulator 프로세스에 `taskset` 핀을 적용할 때 C++ RT 루프와 동일한 코어 배치 결정을 내리기 위해 사용됩니다.
 
 ```python
 from rtc_tools.launch.thread_layout import select_thread_layout, get_physical_cpu_count

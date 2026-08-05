@@ -7,6 +7,11 @@
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- gen_thread_layout.py (issue #153 M1) parses config/thread_layout.yaml, and
+       three ament tests run it. Declared so rosdep installs it on a machine that
+       provisions from package.xml alone. -->
+  <test_depend>python3-yaml</test_depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>

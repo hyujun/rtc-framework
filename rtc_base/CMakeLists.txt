@@ -142,6 +142,15 @@ if(BUILD_TESTING)
     target_include_directories(test_mpc_thread_config PRIVATE include)
   endif()
 
+  # C++ value oracle for the generated tier table (issue #153 M1). Pins every
+  # role's slot/policy/priority/nice on every core count in 1..17 and 24, which
+  # test_mpc_thread_config.cpp does not: that file pins relations plus the MPC
+  # main core, so arm/hand/nrt slots were unpinned in C++ before this.
+  ament_add_gtest(test_thread_layout_tiers test/test_thread_layout_tiers.cpp)
+  if(TARGET test_thread_layout_tiers)
+    target_include_directories(test_thread_layout_tiers PRIVATE include)
+  endif()
+
   ament_add_gtest(test_cpu_topology test/test_cpu_topology.cpp)
   if(TARGET test_cpu_topology)
     target_include_directories(test_cpu_topology PRIVATE include)

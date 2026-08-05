@@ -680,55 +680,6 @@ inline int GetPhysicalCpuCount() noexcept {
   return GetOnlineCpuCount();
 }
 
-// Aggregated thread configs selected at runtime for all threads.
-//
-// Field naming (layout v4.1):
-//   * rt_callback  = single RT callback dispatcher thread (Core 2 FIFO 70 on
-//                    every tier; Core 0 = OS/DDS/IRQ only, RT cluster starts
-//                    at Core 1). Hosts the executor that dispatches state
-//                    subscriptions bound to the rt_callback callback group.
-//                    Replaces the former rt_inbound (FIFO 70) + rt_outbound
-//                    (FIFO 65) pair: actuator command publish is performed
-//                    inline in the rt_loop tick on rt_control (Core 1 FIFO
-//                    90), so no separate output thread is required.
-//   * nrt_callback = non-RT callback dispatcher for services / lifecycle /
-//                    non-RT-boundary subs
-//   * nrt_logging  = non-RT CSV drain
-//
-// Process-level pins (applied at launch time, no ApplyThreadConfig call;
-// SCHED_OTHER prio 0):
-//   * arm_driver / hand_driver = external driver processes. hand_driver is a
-//     taskset -a sweep (its RT thread inherits the process mask, issue #245).
-//     arm_driver is NOT: ros2_control_node's main thread is the executor and
-//     its 500 Hz loop is a separate thread that taskset cannot reach, so the
-//     cpu_core here is handed to controller_manager's own cpu_affinity
-//     parameter, which the loop applies to itself (issue #343). The entry still
-//     models the process — the loop's FIFO 50 is upstream's, not ours.
-//   * sim_thread / viewer      = MuJoCo physics + GLFW rendering threads in
-//                                sim mode. cpu_core may be -1 (no pinning;
-//                                launch script releases the cpu_shield for
-//                                MuJoCo).
-//
-// DDS receive thread (CycloneDDS / Fast-RTPS) is co-pinned to the rt_callback
-// core (Core 2 in v4.1) via launch-time taskset for cache locality. Its CFS policy is
-// preserved; the launch script pins only non-RT threads of the controller
-// process. The hand UDP receive thread (RT priority 65) lives privately
-// inside udp_hand_controller and inherits affinity from the launch-level
-// taskset on the hand_driver core. Generic UDP receivers using
-// rtc_communication::Transceiver pick up the kRtUdpRecvConfig default
-// (cpu_core = -1, caller pins explicitly).
-struct SystemThreadConfigs {
-  ThreadConfig rt_control;
-  ThreadConfig rt_callback;
-  ThreadConfig nrt_logging;
-  ThreadConfig nrt_callback;
-  ThreadConfig arm_driver;   // external arm driver process pin (SCHED_OTHER)
-  ThreadConfig hand_driver;  // external hand driver process pin (SCHED_OTHER)
-  ThreadConfig sim_thread;   // MuJoCo physics thread (SCHED_OTHER, cpu_core may be -1)
-  ThreadConfig viewer;       // GLFW viewer thread     (SCHED_OTHER, cpu_core may be -1)
-  MpcThreadConfig mpc;       // MPC main + optional workers
-};
-
 // Validate SystemThreadConfigs for conflicts and invalid configurations.
 // Returns empty string if valid, error messages if invalid.
 //
@@ -880,53 +831,17 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
   return errors;
 }
 
-// Selects the appropriate ThreadConfig set based on the number of physical CPU
-// cores. Uses GetPhysicalCpuCount() (not GetOnlineCpuCount()) to avoid SMT/HT
-// over-counting. Example: i7-8700 (6C/12T) correctly selects 6-core layout,
-// not 12-core.
+// Selects the appropriate ThreadConfig set for this machine. Uses
+// GetPhysicalCpuCount() (not GetOnlineCpuCount()) to avoid SMT/HT over-counting:
+// an i7-8700 (6C/12T) correctly selects the 6-core layout, not the 12-core one.
 //
-// Layout v4.1: rt_callback (Core 2 FIFO 70) unifies former rt_inbound +
-// rt_outbound on every tier above the 4-core fallback; RT cluster starts at
-// Core 1 (Core 0 reserved for OS/DDS/IRQ only). Process-level
-// arm_driver/hand_driver pins are claimed for tiers ≥ 8 (alphabetical: arm <
-// hand); smaller tiers fall back to shared cores. MuJoCo sim_thread / viewer
-// always use cpu_core = -1 (no pin, all tiers) and rely on cpu_shield --sim
-// releasing the shield so MuJoCo can roam under CFS.
+// The tier table and the breakpoints themselves live in the generated
+// thread_config_generated.hpp (source of truth:
+// repo_scripts/config/thread_layout.yaml). This wrapper only supplies the
+// runtime core count -- call SelectThreadConfigsForCoreCount() directly to
+// evaluate a tier this machine does not have (that is what the tests do).
 inline SystemThreadConfigs SelectThreadConfigs() noexcept {
-  const int ncpu = GetPhysicalCpuCount();
-  if (ncpu >= 16) {
-    return {kRtControlConfig16Core,   kRtCallbackConfig16Core, kNrtLoggingConfig16Core,
-            kNrtCallbackConfig16Core, kArmDriverConfig16Core,  kHandDriverConfig16Core,
-            kSimThreadConfig16Core,   kViewerConfig16Core,     kMpcConfig16Core};
-  }
-  if (ncpu >= 14) {
-    return {kRtControlConfig14Core,   kRtCallbackConfig14Core, kNrtLoggingConfig14Core,
-            kNrtCallbackConfig14Core, kArmDriverConfig14Core,  kHandDriverConfig14Core,
-            kSimThreadConfig14Core,   kViewerConfig14Core,     kMpcConfig14Core};
-  }
-  if (ncpu >= 12) {
-    return {kRtControlConfig12Core,   kRtCallbackConfig12Core, kNrtLoggingConfig12Core,
-            kNrtCallbackConfig12Core, kArmDriverConfig12Core,  kHandDriverConfig12Core,
-            kSimThreadConfig12Core,   kViewerConfig12Core,     kMpcConfig12Core};
-  }
-  if (ncpu >= 10) {
-    return {kRtControlConfig10Core,   kRtCallbackConfig10Core, kNrtLoggingConfig10Core,
-            kNrtCallbackConfig10Core, kArmDriverConfig10Core,  kHandDriverConfig10Core,
-            kSimThreadConfig10Core,   kViewerConfig10Core,     kMpcConfig10Core};
-  }
-  if (ncpu >= 8) {
-    return {kRtControlConfig8Core,   kRtCallbackConfig8Core, kNrtLoggingConfig8Core,
-            kNrtCallbackConfig8Core, kArmDriverConfig8Core,  kHandDriverConfig8Core,
-            kSimThreadConfig8Core,   kViewerConfig8Core,     kMpcConfig8Core};
-  }
-  if (ncpu >= 6) {
-    return {kRtControlConfig,   kRtCallbackConfig, kNrtLoggingConfig,
-            kNrtCallbackConfig, kArmDriverConfig,  kHandDriverConfig,
-            kSimThreadConfig,   kViewerConfig,     kMpcConfig6Core};
-  }
-  return {kRtControlConfig4Core,   kRtCallbackConfig4Core, kNrtLoggingConfig4Core,
-          kNrtCallbackConfig4Core, kArmDriverConfig4Core,  kHandDriverConfig4Core,
-          kSimThreadConfig4Core,   kViewerConfig4Core,     kMpcConfig4Core};
+  return SelectThreadConfigsForCoreCount(GetPhysicalCpuCount());
 }
 
 }  // namespace rtc

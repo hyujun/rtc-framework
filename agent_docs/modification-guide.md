@@ -102,9 +102,15 @@ Group 이름은 config YAML 밖에도 박혀 있어서, `devices:` 블록만 고
 
 ## Adding a New Thread
 
-1. Define `ThreadConfig` for all core tiers in `rtc_base/threading/thread_config.hpp`
-2. Add to `SystemThreadConfigs`, update `ValidateSystemThreadConfigs()` + `SelectThreadConfigs()`
-3. Call `ApplyThreadConfig()` at thread entry; use SCHED_FIFO for RT threads
+스레드 배치는 **선언형 manifest 한 곳**이 소유한다 — tier 상수를 손으로 쓰지 않는다 (issue #153 M1).
+
+1. **[repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml)** 에 role 을 추가하고 **모든 tier** 에 slot/policy/priority/nice 를 준다. 새 스레드가 컨트롤러 프로세스 안에서 돌면 `in_controller_process: true` + `verifier_order` 에도 넣는다 (그래야 `verify_rt_runtime.sh` 가 검사한다)
+2. `python3 repo_scripts/scripts/gen_thread_layout.py --write` — C++ 상수·shell 헬퍼·Python 미러·README 표가 함께 갱신된다. 생성 파일은 **직접 편집 금지**이며 `--check` 가 CI 에서 차단한다
+3. `SystemThreadConfigs` ([thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp)) 에 필드를 추가하고, generator 의 `field_order` 에 **구조체 선언 순서 그대로** 같은 키를 넣는다. 어긋남은 손이 아니라 게이트가 잡는다 — manifest role 과 `field_order` 가 불일치하면 생성기가 즉시 멈추고, 구조체 순서와 `field_order` 가 어긋나면 designated initializer 가 컴파일 에러를 낸다 (positional init 이던 시절엔 같은 타입이라 조용히 이웃 role 의 slot·priority 를 가져갔다). 관계 규칙이 필요하면 `ValidateSystemThreadConfigs()` ([thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp)) 에 넣되, 호스트보다 큰 tier 는 그 validator 로 검사할 수 없으므로 (`cpu_core` 를 호스트 코어 수와 대조한다) manifest 레벨 불변식은 `gen_thread_layout.py` 의 `run_self_test()` 에 함께 넣는다
+4. **각 언어의 리터럴 oracle 을 갱신**한다 — `rtc_base/test/test_thread_layout_tiers.cpp` · `repo_scripts/test/test_rt_common.sh` · `rtc_tools/test/test_thread_layout.py`. 이 셋은 생성물이 아니라 손으로 쓴 기대값이며, 잘못된 manifest 는 세 언어에서 사이좋게 일치하므로 **`--check` 로는 절대 잡히지 않는다**. 여기를 안 고치면 새 스레드는 검증 없이 배포된다
+5. 스레드 진입점에서 `ApplyThreadConfig()` 호출; RT 스레드는 SCHED_FIFO
+
+레이아웃 **값** 변경 (기존 role 의 코어 이동) 은 리팩터가 아니라 thread model 변경이므로 [CLAUDE.md](../CLAUDE.md) §6 **E-7** 대상이다.
 
 ## Adding a New Package (new colcon directory)
 

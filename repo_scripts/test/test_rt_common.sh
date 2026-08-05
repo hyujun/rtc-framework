@@ -1363,11 +1363,183 @@ test_verifier_is_sourceable_without_running() {
   expect_eq "verifier.sourceable" "still-here" "$sentinel"
 }
 
+# ── Layout tier tables (issue #153 M1) ──────────────────────────────────────
+# get_mpc_cores / get_rt_cores / get_nrt_cores 는 이제 manifest 에서 생성되지만,
+# **이 fixture 의 리터럴이 생성기의 oracle 이다**. 생성물끼리 대조하면 잘못된
+# 표가 세 언어에서 사이좋게 일치하므로 mutation 이 없다 — 그래서 기대값을 손으로
+# 박는다. M1 전에는 이 세 함수에 직접 단위 테스트가 아예 없었다 (파생 함수인
+# get_cm_shield_cpus / get_rt_cores_with_siblings 만 덮여 있었다).
+
+test_layout_tier_tables_per_tier() {
+  local n
+  # ≤5 (degraded) — nrt 가 OS Core 0 을 공유한다.
+  for n in 1 4 5; do
+    expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
+    expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
+    expect_eq "nrt.${n}" "0"     "$(get_nrt_cores "$n")"
+  done
+  # 6-7 — nrt 두 레인이 한 코어를 공유, worker 없음.
+  for n in 6 7; do
+    expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
+    expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
+    expect_eq "nrt.${n}" "5"     "$(get_nrt_cores "$n")"
+  done
+  # 8-9 — nrt 전용 코어, 아직 worker 없음.
+  for n in 8 9; do
+    expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
+    expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
+    expect_eq "nrt.${n}" "6,7"   "$(get_nrt_cores "$n")"
+  done
+  # 10-11 — worker 하나가 붙으면서 RT 집합이 넓어진다.
+  for n in 10 11; do
+    expect_eq "mpc.${n}" "3,4"     "$(get_mpc_cores "$n")"
+    expect_eq "rt.${n}"  "1,2,3,4" "$(get_rt_cores "$n")"
+    expect_eq "nrt.${n}" "7,8"     "$(get_nrt_cores "$n")"
+  done
+  # 12+ — 두 번째 worker 까지. 14/16/24 는 12 와 같은 배치다.
+  for n in 12 13 14 15 16 17 24; do
+    expect_eq "mpc.${n}" "3,4,5"     "$(get_mpc_cores "$n")"
+    expect_eq "rt.${n}"  "1,2,3,4,5" "$(get_rt_cores "$n")"
+    expect_eq "nrt.${n}" "8,9"       "$(get_nrt_cores "$n")"
+  done
+  # OS slot 은 모든 tier 공통 (v4.1) — shield 가 절대 덮으면 안 되는 코어.
+  for n in 1 4 6 8 10 12 16 24; do
+    expect_eq "os.${n}" "0" "$(get_os_cores)"
+  done
+  # get_mpc_main_core 는 파생이므로 첫 항목과 항상 같아야 한다.
+  for n in 4 8 12 16; do
+    expect_eq "mpcmain.${n}" "3" "$(get_mpc_main_core "$n")"
+  done
+}
+
+test_layout_worker_roles_absent_below_their_tier() {
+  # get_role_spec 은 없는 role 에 비0 을 낸다. 이게 무너지면 rtc_expected_threads
+  # 가 존재하지 않는 worker 를 기대 목록에 넣고, 검증기가 영영 안 나타날 스레드를
+  # 찾다 WARN 을 뿜는다.
+  local n
+  for n in 4 6 8 9; do
+    if get_role_spec mpc_worker_0 "$n" >/dev/null 2>&1; then
+      fail "[worker.absent.${n}] mpc_worker_0 이 ${n}-core tier 에 존재한다고 보고 — worker 는 10 코어부터"
+    else
+      pass
+    fi
+  done
+  for n in 10 11; do
+    expect_eq "worker0.${n}" "4" "$(get_role_slot mpc_worker_0 "$n")"
+    if get_role_spec mpc_worker_1 "$n" >/dev/null 2>&1; then
+      fail "[worker1.absent.${n}] mpc_worker_1 이 ${n}-core tier 에 존재한다고 보고 — 두 번째는 12 코어부터"
+    else
+      pass
+    fi
+  done
+  for n in 12 16 24; do
+    expect_eq "worker0.${n}" "4" "$(get_role_slot mpc_worker_0 "$n")"
+    expect_eq "worker1.${n}" "5" "$(get_role_slot mpc_worker_1 "$n")"
+  done
+}
+
+test_rtc_expected_threads_table_per_tier() {
+  # verify_rt_runtime.sh 의 기대 표. 행 수·policy·priority 를 tier 마다 박는다 —
+  # 이 표가 조용히 틀리면 검증기가 **PASS 를 내며** 잘못 배치된 스레드를 통과시킨다.
+  expect_eq "exp.4" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:0:0 nrt_logging:0:0:0 nrt_callback:0:0:0" \
+    "$(rtc_expected_threads 4 | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "exp.6" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:5:0:0 nrt_callback:5:0:0" \
+    "$(rtc_expected_threads 6 | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "exp.8" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:6:0:0 nrt_callback:7:0:0" \
+    "$(rtc_expected_threads 8 | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "exp.10" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional nrt_logging:7:0:0 nrt_callback:8:0:0" \
+    "$(rtc_expected_threads 10 | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "exp.12" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional mpc_worker_1:5:1:55:optional nrt_logging:8:0:0 nrt_callback:9:0:0" \
+    "$(rtc_expected_threads 12 | tr '\n' ' ' | sed 's/ $//')"
+  # 4-core 만 mpc 가 CFS 로 강등된다 (policy 필드 0). 그 구분이 사라지면 검증기가
+  # degraded 박스에서 존재하지 않는 FIFO 60 을 요구한다.
+  expect_eq "exp.mpc_policy.4"  "0" "$(rtc_expected_threads 4 | grep '^mpc_main:' | cut -d: -f3)"
+  expect_eq "exp.mpc_policy.16" "1" "$(rtc_expected_threads 16 | grep '^mpc_main:' | cut -d: -f3)"
+  # arm/hand 는 별도 프로세스라 이 표에 있으면 안 된다 (있으면 항상 false-WARN).
+  local n
+  for n in 4 8 12 16; do
+    if rtc_expected_threads "$n" | grep -qE '^(arm|hand)_driver:'; then
+      fail "[exp.external.${n}] arm/hand_driver 가 in-process 기대 표에 있다 — 항상 false-WARN 이다"
+    else
+      pass
+    fi
+  done
+}
+
+test_rtc_expected_threads_tracks_the_role_helpers() {
+  # 표의 각 행이 get_role_* 와 같은 값을 내는지 — 배선 확인. 위 fixture 가 값을
+  # 소유하고, 이건 표가 같은 manifest 를 읽는지를 본다.
+  local n row name slot policy prio
+  for n in 4 6 8 10 12 16; do
+    while IFS=: read -r name slot policy prio _; do
+      expect_eq "exp.wire.${n}.${name}.slot" "$(get_role_slot "$name" "$n")" "$slot"
+      expect_eq "exp.wire.${n}.${name}.prio" "$(get_role_priority "$name" "$n")" "$prio"
+      if [[ "$(get_role_policy "$name" "$n")" == "SCHED_FIFO" ]]; then
+        expect_eq "exp.wire.${n}.${name}.pol" "1" "$policy"
+      else
+        expect_eq "exp.wire.${n}.${name}.pol" "0" "$policy"
+      fi
+    done < <(rtc_expected_threads "$n")
+  done
+}
+
+test_print_thread_layout_derives_every_core_number() {
+  # #353 은 arm/hand 축에서만 이 배선을 박았다. M1 이 나머지 축(rt_control,
+  # rt_callback, mpc, nrt)도 헬퍼에서 끌어오게 했으므로 그 전부를 확인한다 —
+  # 다이어그램은 운영자가 박스 상태를 판단하는 화면이라 조용히 낡으면 비싸다.
+  local out n
+  for n in 6 8 10 12 16; do
+    out=$(print_thread_layout "$n")
+    if grep -qE "Core $(get_role_slot rt_control "$n"): +rt_control" <<<"$out"; then
+      pass
+    else
+      fail "[layout.rt_control.${n}] rt_control 줄이 헬퍼 slot 을 안 쓴다"
+    fi
+    if grep -qE "Core $(get_role_slot rt_callback "$n"): +rt_callback" <<<"$out"; then
+      pass
+    else
+      fail "[layout.rt_callback.${n}] rt_callback 줄이 헬퍼 slot 을 안 쓴다"
+    fi
+    if grep -qE "Core $(get_role_slot nrt_logging "$n")[:-]" <<<"$out"; then
+      pass
+    else
+      fail "[layout.nrt_logging.${n}] nrt_logging slot 이 다이어그램에 없다"
+    fi
+    # MPC lane 은 단일 코어면 "Core 3", worker 가 있으면 "Core 3-5" 로 그린다.
+    local first last
+    first=$(get_mpc_cores "$n" | cut -d',' -f1)
+    last=$(get_mpc_cores "$n" | tr ',' '\n' | tail -1)
+    if [[ "$first" == "$last" ]]; then
+      grep -qE "Core ${first}: +mpc_main" <<<"$out" && pass ||
+        fail "[layout.mpc.${n}] 'Core ${first}: mpc_main' 줄이 없다"
+    else
+      grep -qE "Core ${first}-${last}: +mpc_main" <<<"$out" && pass ||
+        fail "[layout.mpc.${n}] 'Core ${first}-${last}' MPC lane 이 없다"
+    fi
+    # 존재하지 않는 코어를 spare 로 그리면 안 된다 (ncpu-1 이 마지막 슬롯).
+    if grep -qE "Core ${n}[:-]" <<<"$out"; then
+      fail "[layout.spare.${n}] ${n}-core 박스인데 Core ${n} 을 그렸다 — 슬롯은 0..$((n - 1))"
+    else
+      pass
+    fi
+  done
+}
+
 test_external_driver_slots_per_tier
 test_external_driver_slots_share_a_core_only_on_the_degraded_tiers
 test_print_thread_layout_uses_the_slot_helpers
 test_verifier_expected_slots_track_the_helpers
 test_verifier_is_sourceable_without_running
+test_layout_tier_tables_per_tier
+test_layout_worker_roles_absent_below_their_tier
+test_rtc_expected_threads_table_per_tier
+test_rtc_expected_threads_tracks_the_role_helpers
+test_print_thread_layout_derives_every_core_number
 
 test_write_file_if_changed_creates_new
 test_write_file_if_changed_skips_identical
