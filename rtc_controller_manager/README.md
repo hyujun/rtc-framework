@@ -61,7 +61,7 @@ rtc_controller_manager/
 |--------|------|----------|--------|------|
 | **rt_loop** (rt_control) | 1 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push |
 | **rt_callback_executor** | 2 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch-time taskset 으로 같은 Core 2 에 co-pin (CFS 유지) |
-| **nrt_logging_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
+| **nrt_logging_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` + `rt_callback_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
 | **nrt_publish_thread** | tier-aware (4c: 0 / ≥6c: dedicated, nrt_callback core 공유) | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` (cap 16) SPSC 드레인 → `controller.PublishNonRtSnapshot` (Transforms / grasp_state / wbc_state / tof_snapshot). std::jthread + eventfd wakeup |
 | **nrt_callback_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, RobotTarget 외부 입력, lifecycle services, 컨트롤러 LifecycleNode default group (owned subs) |
 
@@ -408,9 +408,9 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 | 예산 | `1e6 / control_rate` µs (예: 500 Hz → 2000 µs) — sim 모드 `elapsed` 계산에 사용 |
 | `elapsed` 의미 | **robot**: 직전 print와의 wall-clock delta (CM 측정 실제 시간). **sim** (`use_sim_time_sync=true`): `count × period` (컨트롤러가 sim step과 lock-step이라 dt 기준 가상 시간이 컨트롤러 관점의 진실). 첫 print는 fallback으로 sim과 동일 식 |
 | 리셋 주기 | RT 루프가 1 000 tick(≈ 2 s @ 500 Hz)마다 로그 스레드에 Summary 출력 요청 → 로그 스레드는 `RCLCPP_INFO` 직후 `timing_profiler_.Reset()`을 호출. 따라서 각 출력은 **직전 윈도우**(elapsed로 표시)의 mean/max이며, 세션 시작 시점의 스파이크가 영구 반영되지 않음 |
-| Console summary 형식 | `<ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N` — 의도적으로 슬림. 상세 percentile / over_budget / per-tick 값은 `cm_timing_log.csv`에서 사후 분석 |
+| Console summary 형식 | `<ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N  rt_cb_timing_drops=N` — 의도적으로 슬림. 상세 percentile / over_budget / per-tick 값은 `cm_timing_log.csv`에서 사후 분석 |
 
-누적 over-run 카운터(`overruns`, `skips`, `nrt_pub_drops`, `timing_drops`)는 `rt_controller_node`가 별도 원자 변수로 관리 — Summary 리셋에 영향 없음.
+누적 over-run 카운터(`overruns`, `skips`, `nrt_pub_drops`, `timing_drops`, `rt_cb_timing_drops`)는 `rt_controller_node`가 별도 원자 변수로 관리 — Summary 리셋에 영향 없음. `rt_cb_timing_drops` 는 rt_callback lane 의 SPSC ring 이 넘친 횟수 — 그 lane 은 tick 당 1행이 아니라 **state 콜백 당 1행**이라 CM lane 보다 빠르게 채워질 수 있다 (issue #349).
 
 ### Per-thread Timing CSV (generic infra)
 
@@ -420,8 +420,21 @@ CM RT loop와 MPC thread 모두 두 가지 base 인프라를 공유한다: (1) [
 |------|--------------|--------|----------|----------------------|
 | CM RT loop (@ `control_rate`) | `cm_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 512>`) | `cm_timing_logger_` | `<session>/timing/cm_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
 | MPC thread (≤ 100 Hz, per-controller) | `MPCThread::TimingProducer()` (`ThreadTimingProducer<RtTickTimingPayload, 128>`) | `MpcTimingLogger` (controller-owned) | `<session>/timing/mpc_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
+| rt_callback lane (state 콜백 당 1행) | `rt_callback_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 2048>`) | `rt_callback_timing_logger_` | `<session>/timing/rt_callback_timing_log.csv` | 동일 5컬럼, 단 의미가 lane-specific — 아래 |
 
-공통 컬럼 `t_wall_ns, tick_count`는 `ThreadTimingCsvLogger`가 자동으로 emit. `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용). CM/MPC 두 thread가 동일한 5-컬럼 payload schema (`rtc_base/timing/rt_tick_timing_sample.hpp`)를 공유하므로 cross-thread 분석 도구 한 세트가 두 CSV를 모두 처리한다.
+공통 컬럼 `t_wall_ns, tick_count`는 `ThreadTimingCsvLogger`가 자동으로 emit. `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용). 세 thread가 동일한 5-컬럼 payload schema (`rtc_base/timing/rt_tick_timing_sample.hpp`)를 공유하므로 cross-thread 분석 도구 한 세트가 모든 CSV를 처리한다.
+
+#### rt_callback lane (issue #349)
+
+slot 2 (`rt_callback`, SCHED_FIFO 70) 는 **RT 스레드 중 유일하게 계측 채널이 없던 lane** 이었다 — #349 가 인용하는 "93% 유휴" 수치는 slot 1 의 `rt_control` 이고, aux 통합이 부하를 얹으려는 대상은 slot 2 다. 이 lane 은 tick 이 아니라 **디바이스 state 콜백마다** 1행을 낸다 (arm joint + hand joint/motor/sensor). 계측 지점은 `DeviceBackend::StateLaneTimingScope` — 각 콜백 첫 줄의 RAII 스코프이며, 모든 backend 가 **같은 producer** 를 공유한다 (같은 MutuallyExclusive 그룹이 콜백을 한 스레드로 직렬화하므로 SPSC single-producer 계약이 성립).
+
+| 컬럼 | 이 lane 에서의 의미 |
+|---|---|
+| `t_state_us` | decode + SeqLock store (콜백 진입 → `NotifyStateReady()`) |
+| `t_compute_us` | 0 — 이 lane 은 제어 법칙을 돌리지 않는다 |
+| `t_publish_us` | mailbox hand-off (dirty bit + eventfd). **notify 하지 않는 lane (hand motor/sensor) 은 0** |
+| `t_total_us` | 콜백 전체 — slot 2 duty 의 분자 |
+| `jitter_us` | 0 — 이벤트 구동이라 deadline 이 없다. **dispatch 간격은 연속 행의 `t_wall_ns` 차분으로 복원**한다 |
 
 CM은 `StartRtLoop`에서 `rt_loop_.SetTimingProducer<>` 한 줄로 base에 ring을 위임 — base가 매 tick payload를 push한다. `ControlLoop()` 내부의 t1/t2 마킹은 `rt_loop_.StampStateAcquired()` / `StampComputeDone()` 두 줄. `DrainLog()`가 `cm_timing_producer_.Drain(...)`로 CSV에 기록. 윈도우 INFO summary에 `timing_drops` (producer overflow 카운터)가 `pub_drops`와 함께 출력된다.
 

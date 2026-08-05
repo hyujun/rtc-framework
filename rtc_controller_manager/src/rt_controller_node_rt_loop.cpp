@@ -770,6 +770,13 @@ void RtControllerNode::DrainLog() {
   cm_timing_producer_.Drain(
       [this](const urtc::RtTickTimingSample& s) { cm_timing_logger_.Log(s); });
 
+  // Drain the rt_callback lane the same way (issue #349). Producer is the
+  // rt_callback thread rather than the RT loop, so this can outpace the CM
+  // lane: one row per device state callback, i.e. per active state lane per
+  // arrival, not one per tick.
+  rt_callback_timing_producer_.Drain(
+      [this](const urtc::RtTickTimingSample& s) { rt_callback_timing_logger_.Log(s); });
+
   // Drain the deferred /system/estop_status publish (issue #198 Phase 3).
   // The latch is what stops the actuators; this topic reports it, so it rides
   // the aux lane rather than a plain publish on the RT thread. Publishing the
@@ -809,6 +816,7 @@ void RtControllerNode::DrainLog() {
     const auto skips = rt_loop_.SkipCount();
     const auto nrt_pub_drops = nrt_publish_buffer_.drop_count();
     const auto timing_drops = cm_timing_producer_.DropCount();
+    const auto rt_callback_timing_drops = rt_callback_timing_producer_.DropCount();
 
     // Window elapsed semantics differ by mode:
     //   sim   — controller is in lock-step with the simulator step, so the
@@ -830,12 +838,15 @@ void RtControllerNode::DrainLog() {
     last_summary_wall_ = wall_now;
 
     RCLCPP_INFO(
-        get_logger(), "%s  overruns=%lu  skips=%lu  nrt_pub_drops=%lu  timing_drops=%lu",
+        get_logger(),
+        "%s  overruns=%lu  skips=%lu  nrt_pub_drops=%lu  timing_drops=%lu  "
+        "rt_cb_timing_drops=%lu",
         timing_profiler_
             .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()), elapsed_s)
             .c_str(),
         static_cast<unsigned long>(overruns), static_cast<unsigned long>(skips),
-        static_cast<unsigned long>(nrt_pub_drops), static_cast<unsigned long>(timing_drops));
+        static_cast<unsigned long>(nrt_pub_drops), static_cast<unsigned long>(timing_drops),
+        static_cast<unsigned long>(rt_callback_timing_drops));
     timing_profiler_.Reset();
   }
 }

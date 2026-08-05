@@ -205,6 +205,7 @@ void MujocoNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr m
   // L2 under the rt_callback executor's ros2:callback_* (L1) — the joint-state
   // decode + SeqLock write on the rt_callback lane.
   RTC_TRACE_SCOPE("MujocoNativeBackend::OnJointState");
+  StateLaneTimingScope timing_scope(*this);
   if (msg->position.empty())
     return;
 
