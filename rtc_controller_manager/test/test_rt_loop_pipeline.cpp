@@ -137,6 +137,44 @@ TEST_F(RtLoopPipelineTest, TickCopiesStateAndWritesCommandInline) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// ── Per-slot freshness survives the cache→state copy (issue #284) ────────────
+//
+// hole_mask is produced by the backends and consumed by IsDeviceReadable in
+// the controllers, but DeviceStateCache and DeviceState are two SEPARATE PODs
+// joined by a field-by-field copy in ControlLoop. That copy is the one place
+// the field can go missing without breaking a build or any ingress test — the
+// controllers would simply read a permanent 0, which this field's polarity
+// spells "no holes", handing back the exact gap #284 closed. Every other test
+// of this field lives on one side of that seam or the other; this one spans it.
+//
+// The injected value holes slot 0 (inside the reported width) AND slot 63
+// (past it) on purpose. The low bit is what the gate reads. The high bit pins
+// that the mask is copied WHOLE rather than clipped to num_channels — the
+// clipped variant looks more careful and is wrong, because the slots past the
+// width are where the persistent cache's stale values actually sit.
+TEST_F(RtLoopPipelineTest, PerSlotFreshnessReachesTheControllerUnclipped) {
+  constexpr uint64_t kHoles = (1ULL << 0) | (1ULL << 63);
+  PipelineStubBackend::state_hole_mask.store(kHoles, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  // A completed write means a full tick ran, so Compute() has observed this
+  // tick's ControllerState — the loop reads state before it dispatches.
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(kHoles, PipelineTestController::observed_hole_mask.load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // ── Out-of-contract channel counts are bounded before any copy (issue #196) ──
 //
 // ControllerOutput::num_channels and DeviceStateCache::num_channels are filled

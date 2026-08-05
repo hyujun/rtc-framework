@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -99,6 +100,36 @@ concept TriviallyCopyableType = std::is_trivially_copyable_v<T>;
 // ── Data structures (aggregate, zero-initialised by default)
 // ──────────────────
 
+// A per-slot device mask is one uint64_t, so the slot capacity must fit in it.
+// Raising kMaxDeviceChannels past 64 is allowed by the "never branch on it"
+// rule above, but it silently truncates every hole_mask — so it has to fail
+// here instead, and the fix is a wider mask type, not a wider bound alone.
+static_assert(kMaxDeviceChannels <= std::numeric_limits<uint64_t>::digits,
+              "DeviceState::hole_mask is a uint64_t — widen it with kMaxDeviceChannels");
+
+// Bits [0, n) of a per-slot device mask, saturating at both ends.
+//
+// The one place the two boundary rules of DeviceState::hole_mask live, because
+// both the producer (integrated_bringup's WriteJointStateToCache) and the
+// consumer (rtc_controller_interface's IsDeviceReadable) need the same answer
+// and neither package includes the other:
+//
+//   n <= 0                    → 0         no slot is required / none was
+//       written. For the gate this is what makes an unresolved model_dim
+//       degrade to a plain validity check instead of demanding bits.
+//   n >= kMaxDeviceChannels   → all ones  that many slots exist and no more,
+//       so asking for more is asking for all of them. Writing the shift
+//       directly would be undefined behaviour once n reaches the mask's width,
+//       and at today's capacity those two bounds COINCIDE — the saturating
+//       branch is the DEFAULT path for a full-width model, not a corner.
+[[nodiscard]] constexpr uint64_t SlotMaskBelow(int n) noexcept {
+  if (n <= 0)
+    return 0;
+  if (n >= kMaxDeviceChannels)
+    return ~static_cast<uint64_t>(0);
+  return (static_cast<uint64_t>(1) << n) - 1;
+}
+
 // Unified device state — used for all device groups (robot arm, hand, gripper,
 // …)
 struct DeviceState {
@@ -106,6 +137,41 @@ struct DeviceState {
   std::array<double, kMaxDeviceChannels> positions{};
   std::array<double, kMaxDeviceChannels> velocities{};
   std::array<double, kMaxDeviceChannels> efforts{};  // torques for robot arm
+  // Per-slot freshness of the `positions` lane (issue #284).
+  //
+  // Bit i set  ⇒ slot i was NOT written by the most recent state message, so
+  //              positions[i] still holds whatever the PERSISTENT cache had
+  //              before (initially 0).
+  // Bit i clear⇒ no such claim.
+  //
+  // POSITIONS, not all three lanes. That is what the gate's consumers index —
+  // every IsDeviceReadable binding reads q for FK/Jacobian/control-law — and
+  // the velocity/effort lanes have a DIFFERENT hole structure: they are copied
+  // under their own message lengths, so a slot can have a fresh position and a
+  // stale velocity. That axis is real but is not this gap and is not covered
+  // here (#284 scoping decision, 2026-08-05).
+  //
+  // `num_channels` cannot express this: it is the WIRE length, and with an
+  // active reorder map the slots actually written are the MATCHED reference
+  // indices, so a message can be wide enough to pass the width gate while
+  // leaving holes behind it. That is the whole of issue #284, and narrowing
+  // `num_channels` to mean "fresh" was rejected (#265 decision B) because the
+  // same field is already the egress bound in ValidateControllerOutput.
+  //
+  // POLARITY IS DELIBERATE — a set bit is BAD NEWS, so the aggregate's
+  // zero-init means "no holes claimed", which is exactly the answer every
+  // producer that predates this field should give. The opposite convention
+  // (bit = written) would turn every `DeviceState{}` in the repository into a
+  // fully-stale device and fail the gate closed on fixtures and future
+  // backends alike. The cost of this choice is that a producer which forgets
+  // to fill the mask is silently indistinguishable from a hole-free one; the
+  // propagation test in rtc_controller_manager is what covers that.
+  //
+  // Produced by WriteJointStateToCache (integrated_bringup), carried across
+  // the DeviceStateCache→DeviceState copy by RtControllerNode's ReadDeviceState,
+  // and consumed by rtc::IsDeviceReadable. kMaxDeviceChannels == 64 is what
+  // makes one uint64_t exactly enough — raise both together or not at all.
+  uint64_t hole_mask{0};
   // Motor-space data (separate from joint-space, e.g. hand motor encoder
   // values)
   int num_motor_channels{0};

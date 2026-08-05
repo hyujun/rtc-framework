@@ -829,6 +829,7 @@ if(BUILD_TESTING)
   )
   ament_target_dependencies(test_joint_state_reorder
     rtc_controller_manager
+    rtc_controller_interface
     rtc_base
     sensor_msgs
   )

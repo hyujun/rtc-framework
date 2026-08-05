@@ -404,6 +404,31 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
                                "backend has narrowed mid-session; declare the hand group's "
                                "'joint_state_names' to pin the expected width");
   }
+  // #284: the gate's third closure cause. Separate from the width branch above
+  // and not an else-if — the two are mutually exclusive by construction
+  // (IsGateClosedByHoles requires the width test to have PASSED), so chaining
+  // them would only hide that. Reported at all because a holed gate has no
+  // other trace: the width message does not fire, the device is `valid`, and
+  // the arm just stops appearing. Same throttle-at-expansion-point rule as
+  // above — one macro per axis per binding.
+  if (rtc::IsGateClosedByHoles(state.devices[0], arm_dof_)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: arm device slot %d was never written although "
+                         "num_channels=%d >= arm_dof=%d — the arm is silenced every tick; the "
+                         "state message carries no joint named at that position of the arm "
+                         "group's 'joint_command_names' (defaults to 'joint_state_names')",
+                         rtc::FirstHoleSlot(state.devices[0], arm_dof_),
+                         state.devices[0].num_channels, arm_dof_);
+  }
+  if (state.num_devices > 1 && rtc::IsGateClosedByHoles(state.devices[1], hand_dof_)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: hand device slot %d was never written although "
+                         "num_channels=%d >= hand_dof=%d — the hand is silenced every tick; the "
+                         "state message carries no joint named at that position of the hand "
+                         "group's 'joint_command_names' (defaults to 'joint_state_names')",
+                         rtc::FirstHoleSlot(state.devices[1], hand_dof_),
+                         state.devices[1].num_channels, hand_dof_);
+  }
 
   ReadState(state);
 
@@ -525,8 +550,10 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
   // — "hold at the origin" — and arm_target_initialized_ makes that permanent.
   if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ && arm_readable_ &&
       combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
+    // Readable width, not wire width (#284) — see joint/controller.cpp for why
+    // a latching branch must not adopt a DOF the gate can refuse next tick.
     if (arm_dof_ == 0 && state.num_devices > 0) {
-      arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
+      arm_dof_ = rtc::SelfReportedChannelBound(state.devices[0], kDemoTaskMaxArmDof);
     }
 
     const auto& dev0 = state.devices[0];
@@ -612,7 +639,7 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
       // The OTHER source of hand_dof_ (#307) — hand_dof_from_config_ stays
       // false here by construction. See joint/controller.cpp.
       if (hand_dof_ == 0) {
-        hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
+        hand_dof_ = rtc::SelfReportedChannelBound(state.devices[1], kDemoTaskMaxHandDof);
       }
       for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
         const auto& dev = state.devices[d];

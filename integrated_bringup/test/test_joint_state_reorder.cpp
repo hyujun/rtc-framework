@@ -10,8 +10,13 @@
 //      run inside the rt_callback lane (RT callback rule: mailbox-only), so
 //      neither may touch the heap. Guarded by a TU-global operator new
 //      counter sampled around the calls.
+//   3. Per-slot freshness (issue #284) — the write records which device slots
+//      it actually reached, and the F5 gate refuses a device with holes inside
+//      the model's width. Case 5 is the counterexample that named this defect;
+//      it now asserts the verdict as well as the values.
 
 #include "integrated_bringup/backends/joint_state_reorder.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -23,6 +28,26 @@
 #include <new>
 #include <string>
 #include <vector>
+
+// The three DeviceState fields the F5 gate reads, lifted off a cache the
+// ingress just wrote (issue #284). Lets a producer test assert the VERDICT the
+// consumer will reach, so the counterexample's mask cannot silently drift from
+// what the gate needs.
+//
+// NOT a stand-in for the real cache→state copy in RtControllerNode. This hand
+// copy would keep passing if that one dropped a field, which is why the copy
+// has its own test (PerSlotFreshnessReachesTheControllerUnclipped in
+// rtc_controller_manager). Three links, pinned separately: produced here,
+// carried there, judged by device_readability.
+namespace {
+rtc::DeviceState GateViewOf(const rtc::DeviceStateCache& ds) {
+  rtc::DeviceState dev;
+  dev.valid = ds.valid;
+  dev.num_channels = ds.num_channels;
+  dev.hole_mask = ds.hole_mask;
+  return dev;
+}
+}  // namespace
 
 // ── TU-global allocation counter ─────────────────────────────────────────────
 // Replaces the global plain (non-aligned) new/delete pair. All overloads
@@ -143,6 +168,57 @@ TEST(WriteJointStateToCache, WithReorder_PlacesByDeviceSlot) {
   EXPECT_DOUBLE_EQ(ds.velocities[2], 22.0);
   EXPECT_DOUBLE_EQ(ds.efforts[1], 31.0);
   EXPECT_DOUBLE_EQ(ds.efforts[2], 32.0);
+
+  // #284: the same tick, now also SAID. Every assertion above is unchanged —
+  // this write's behaviour is correct and stays pinned; what was missing was
+  // any record that slot 0 is untouched, so `num_channels == 3 >= nv` passed
+  // the F5 gate while positions[0] was a sentinel from before the message.
+  // hole_mask is that record: bit 0 set, bits 1 and 2 clear.
+  EXPECT_EQ(ds.hole_mask & 0b111U, 0b001U);
+  // And the device is now correctly judged unusable at 3 channels, which is
+  // the whole point of the field. This is the assertion that fails if the
+  // producer is deleted.
+  EXPECT_FALSE(rtc::IsDeviceReadable(GateViewOf(ds), 3));
+  EXPECT_TRUE(rtc::IsGateClosedByHoles(GateViewOf(ds), 3));
+  EXPECT_EQ(0, rtc::FirstHoleSlot(GateViewOf(ds), 3));
+  // A model that only needs slots 1..2 does not exist here — model_dim counts
+  // from 0 — so any width that reaches slot 0 is holed, and a width of 0 is
+  // the degrade case that must stay open.
+  EXPECT_TRUE(rtc::IsDeviceReadable(GateViewOf(ds), 0));
+}
+
+// 5b. Freshness is a statement about THIS message, so a narrower follow-up
+//     retires the slots the wider one filled — the mask is ASSIGNED per call,
+//     never accumulated.
+//
+//     WHAT THIS CASE DOES AND DOES NOT SHOW. The mask assertions below are the
+//     point; the `IsDeviceReadable(…, 3)` line is NOT, and reading it as the
+//     sensor for this behaviour would be wrong. With an identity-shaped map a
+//     narrowing message narrows `num_channels` in lockstep, so the old WIDTH
+//     term already closes that gate — delete the hole term entirely and the
+//     line still passes. What only the mask can say here is WHICH slot went
+//     stale (`FirstHoleSlot`) and that the narrower model is still served.
+//     The closure the mask alone produces needs a map whose model slots sit at
+//     high message indices; case 5 is the pinned counterexample for that.
+TEST(WriteJointStateToCache, NarrowingMessageRetiresPreviouslyWrittenSlots) {
+  rtc::JointStateReorder r;
+  BuildJointStateReorder({"j0", "j1", "j2"}, {"j0", "j1", "j2"}, r);
+
+  rtc::DeviceStateCache ds{};
+  WriteJointStateToCache(MakeMsg({"j0", "j1", "j2"}, {1.0, 2.0, 3.0}), r, ds);
+  ASSERT_EQ(ds.hole_mask & 0b111U, 0U);
+  ASSERT_TRUE(rtc::IsDeviceReadable(GateViewOf(ds), 3));
+
+  // Same reorder map, message now carries only the first two names. Slot 2
+  // keeps 3.0 — that value is exactly as stale as the sentinel in case 5.
+  WriteJointStateToCache(MakeMsg({"j0", "j1"}, {1.5, 2.5}), r, ds);
+
+  EXPECT_DOUBLE_EQ(ds.positions[2], 3.0);
+  EXPECT_EQ(ds.hole_mask & 0b111U, 0b100U);
+  EXPECT_FALSE(rtc::IsDeviceReadable(GateViewOf(ds), 3));
+  EXPECT_EQ(2, rtc::FirstHoleSlot(GateViewOf(ds), 3));
+  // The narrower model is still served — slots 0..1 did arrive this message.
+  EXPECT_TRUE(rtc::IsDeviceReadable(GateViewOf(ds), 2));
 }
 
 // 6. Identity write (size == 0): direct copy, shorter velocity/effort lanes

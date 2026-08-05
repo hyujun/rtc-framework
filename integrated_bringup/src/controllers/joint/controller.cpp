@@ -387,6 +387,31 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
                                "backend has narrowed mid-session; declare the hand group's "
                                "'joint_state_names' to pin the expected width");
   }
+  // #284: the gate's third closure cause. Separate from the width branch above
+  // and not an else-if — the two are mutually exclusive by construction
+  // (IsGateClosedByHoles requires the width test to have PASSED), so chaining
+  // them would only hide that. Reported at all because a holed gate has no
+  // other trace: the width message does not fire, the device is `valid`, and
+  // the arm just stops appearing. Same throttle-at-expansion-point rule as
+  // above — one macro per axis per binding.
+  if (rtc::IsGateClosedByHoles(state.devices[0], arm_dof_)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: arm device slot %d was never written although "
+                         "num_channels=%d >= arm_dof=%d — the arm is silenced every tick; the "
+                         "state message carries no joint named at that position of the arm "
+                         "group's 'joint_command_names' (defaults to 'joint_state_names')",
+                         rtc::FirstHoleSlot(state.devices[0], arm_dof_),
+                         state.devices[0].num_channels, arm_dof_);
+  }
+  if (state.num_devices > 1 && rtc::IsGateClosedByHoles(state.devices[1], hand_dof_)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "F5 gate closed: hand device slot %d was never written although "
+                         "num_channels=%d >= hand_dof=%d — the hand is silenced every tick; the "
+                         "state message carries no joint named at that position of the hand "
+                         "group's 'joint_command_names' (defaults to 'joint_state_names')",
+                         rtc::FirstHoleSlot(state.devices[1], hand_dof_),
+                         state.devices[1].num_channels, hand_dof_);
+  }
 
   ReadState(state);
   // RT-thread-only: refresh current_target_slot_ + run self-init if needed.
@@ -508,10 +533,15 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
   // below; the two answers in this one function are now the same answer.
   if (!arm_target_initialized_.load(std::memory_order_acquire) && arm_readable_) {
     // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
-    // dimensions (e.g. unit tests that bypass YAML). Bounded by nc0, so the
-    // resolved arm_dof_ can never re-open the gate this branch just passed.
+    // dimensions (e.g. unit tests that bypass YAML). Bounded by the device's
+    // READABLE width, not by nc0: since #284 the gate has a term nc0 does not
+    // bound, so a DOF taken from the wire length can be one the gate refuses on
+    // the very next tick — and this branch latches, so that would silence the
+    // arm permanently with a seed frozen on slots that were never written.
+    // SelfReportedChannelBound keeps the property this comment used to assert
+    // by nc0 alone (rtc_controller_interface/device_readability.hpp).
     if (arm_dof_ == 0 && state.num_devices > 0) {
-      arm_dof_ = std::min(state.devices[0].num_channels, kDemoJointMaxArmDof);
+      arm_dof_ = rtc::SelfReportedChannelBound(state.devices[0], kDemoJointMaxArmDof);
     }
 
     const auto& dev0 = state.devices[0];
@@ -549,8 +579,12 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
       // The OTHER source of hand_dof_ (#307). hand_dof_from_config_ stays false
       // here by construction — OnDeviceConfigsSet set it from `hand_dof_ > 0`,
       // and reaching this line means it was 0.
+      // Readable width, not wire width — same #284 reason as the arm above, and
+      // this is the axis where it is reachable outside fixtures: a hand group
+      // that declares `joint_command_names` without `joint_state_names` lands
+      // here with an active reorder map.
       if (hand_dof_ == 0) {
-        hand_dof_ = std::min(state.devices[1].num_channels, kDemoJointMaxHandDof);
+        hand_dof_ = rtc::SelfReportedChannelBound(state.devices[1], kDemoJointMaxHandDof);
       }
       for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
         const auto& dev = state.devices[d];
