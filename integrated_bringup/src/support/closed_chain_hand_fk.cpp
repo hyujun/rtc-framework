@@ -6,6 +6,7 @@
 #include <rclcpp/logging.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <exception>
 #include <utility>
@@ -14,13 +15,7 @@ namespace integrated_bringup {
 
 namespace rub = rtc_urdf_bridge;
 
-HandFkWiringResult ClosedChainHandFk::Configure(
-    std::shared_ptr<const pinocchio::Model> model,
-    std::vector<pinocchio::RigidConstraintModel> constraints,
-    std::vector<pinocchio::JointIndex> actuated_joint_ids, Eigen::VectorXd q_seed,
-    const std::vector<std::vector<std::string>>& device_joint_names,
-    std::span<const std::string> fingertip_links, std::string_view hand_root_link,
-    double closure_error_threshold) {
+void ClosedChainHandFk::ResetWiring() noexcept {
   active_ = false;
   use_hand_root_ = false;
   hand_root_fid_ = 0;
@@ -31,6 +26,55 @@ HandFkWiringResult ClosedChainHandFk::Configure(
   bridge_.clear();
   missing_joint_.clear();
   handle_.reset();
+  src_ = nullptr;
+}
+
+HandFkWiringResult ClosedChainHandFk::ResolveFrames(std::span<const std::string> fingertip_links,
+                                                    std::string_view hand_root_link) {
+  // (a) hand-root 프레임 해석 (full model 기준). closed 핸들은 arm-base world 이므로 fingertip 을
+  //     hand-root 상대로 표현해야 serial 합성(tcp_pose.act)과 정합한다. 해결 안 되면 비활성(#3).
+  if (!hand_root_link.empty()) {
+    hand_root_fid_ = src_->GetFrameId(hand_root_link);
+    use_hand_root_ = (hand_root_fid_ != 0);
+  }
+  if (!use_hand_root_) {
+    return HandFkWiringResult::kInactiveNoHandRoot;  // serial 경로가 정합 (byte-for-byte)
+  }
+
+  // (b) fingertip 프레임 해석. 활성화되면 **모든 valid-frame fingertip** 을 서비스한다 —
+  //     loop 하류는 loop-consistent, 비하류는 full-model FK(serial 등가). topology 판정은
+  //     "적어도 하나의 fingertip 이 하류인가"(=보정이 필요한가)로 전체 활성화만 게이트한다 (#1).
+  bool any_downstream = false;
+  const std::size_t n_ft = std::min(fingertip_links.size(), kMaxFingertips);
+  for (std::size_t f = 0; f < n_ft; ++f) {
+    if (fingertip_links[f].empty()) {
+      continue;
+    }
+    const pinocchio::FrameIndex fid = src_->GetFrameId(fingertip_links[f]);
+    if (fid == 0) {
+      continue;  // full model 에 없는 프레임 — 서비스 불가 (serial 도 id==0 이면 inactive)
+    }
+    fingertip_fid_[f] = fid;
+    fingertip_active_[f] = true;
+    if (src_->IsFrameDownstreamOfLoop(fid)) {
+      fingertip_downstream_[f] = true;
+      any_downstream = true;
+    }
+  }
+  if (!any_downstream) {
+    return HandFkWiringResult::kInactiveNoDownstream;  // serial 경로가 이미 정확 (byte-for-byte)
+  }
+  return HandFkWiringResult::kActive;
+}
+
+HandFkWiringResult ClosedChainHandFk::Configure(
+    std::shared_ptr<const pinocchio::Model> model,
+    std::vector<pinocchio::RigidConstraintModel> constraints,
+    std::vector<pinocchio::JointIndex> actuated_joint_ids, Eigen::VectorXd q_seed,
+    const std::vector<std::vector<std::string>>& device_joint_names,
+    std::span<const std::string> fingertip_links, std::string_view hand_root_link,
+    double closure_error_threshold) {
+  ResetWiring();
   closure_error_threshold_ = closure_error_threshold;
 
   // closure 없음(plain URDF) → serial 경로 유지 (byte-for-byte).
@@ -47,44 +91,12 @@ HandFkWiringResult ClosedChainHandFk::Configure(
     handle_.reset();
     return HandFkWiringResult::kInactiveConstructionFailed;
   }
+  src_ = handle_.get();
 
-  // (a) hand-root 프레임 해석 (full model 기준). closed 핸들은 arm-base world 이므로 fingertip 을
-  //     hand-root 상대로 표현해야 serial 합성(tcp_pose.act)과 정합한다. 해결 안 되면 비활성(#3).
-  if (!hand_root_link.empty()) {
-    hand_root_fid_ = handle_->GetFrameId(hand_root_link);
-    use_hand_root_ = (hand_root_fid_ != 0);
-  }
-  if (!use_hand_root_) {
-    handle_.reset();
-    return HandFkWiringResult::kInactiveNoHandRoot;  // serial 경로가 정합 (byte-for-byte)
-  }
-
-  // (b) fingertip 프레임 해석. 활성화되면 **모든 valid-frame fingertip** 을 서비스한다 —
-  //     loop 하류는 loop-consistent, 비하류는 full-model FK(serial 등가). topology 판정은
-  //     "적어도 하나의 fingertip 이 하류인가"(=보정이 필요한가)로 전체 활성화만 게이트한다 (#1).
-  bool any_downstream = false;
-  const std::size_t n_ft = std::min(fingertip_links.size(), kMaxFingertips);
-  for (std::size_t f = 0; f < n_ft; ++f) {
-    if (fingertip_links[f].empty()) {
-      continue;
-    }
-    const pinocchio::FrameIndex fid = handle_->GetFrameId(fingertip_links[f]);
-    if (fid == 0) {
-      continue;  // full model 에 없는 프레임 — 서비스 불가 (serial 도 id==0 이면 inactive)
-    }
-    fingertip_fid_[f] = fid;
-    fingertip_active_[f] = true;
-    if (handle_->IsFrameDownstreamOfLoop(fid)) {
-      fingertip_downstream_[f] = true;
-      any_downstream = true;
-    }
-  }
-  if (!any_downstream) {
-    handle_.reset();
-    fingertip_fid_ = {};
-    fingertip_active_ = {};
-    fingertip_downstream_ = {};
-    return HandFkWiringResult::kInactiveNoDownstream;  // serial 경로가 이미 정확 (byte-for-byte)
+  if (const auto frames = ResolveFrames(fingertip_links, hand_root_link);
+      frames != HandFkWiringResult::kActive) {
+    ResetWiring();
+    return frames;
   }
 
   // (c) 독립 관절 이름 → (device, channel) 브릿지. 하나라도 못 찾으면 비활성.
@@ -105,11 +117,8 @@ HandFkWiringResult ClosedChainHandFk::Configure(
       }
     }
     if (!found) {
+      ResetWiring();  // 사유는 리셋 뒤에 다시 적는다 (ResetWiring 이 missing_joint_ 도 지운다).
       missing_joint_ = name;
-      handle_.reset();
-      bridge_.clear();
-      fingertip_fid_ = {};
-      fingertip_active_ = {};
       return HandFkWiringResult::kInactiveBridgeIncomplete;
     }
     bridge_.push_back(src);
@@ -120,8 +129,33 @@ HandFkWiringResult ClosedChainHandFk::Configure(
   return HandFkWiringResult::kActive;
 }
 
+HandFkWiringResult ClosedChainHandFk::ConfigureBorrowed(
+    const rub::RtClosedChainHandle& projection, std::span<const std::string> fingertip_links,
+    std::string_view hand_root_link, double closure_error_threshold) {
+  ResetWiring();
+  closure_error_threshold_ = closure_error_threshold;
+  // 핸들을 만들지 않는다 — 사영은 남이 소유하고 이 래퍼는 읽기만 한다. q_a 브릿지도 필요 없다
+  // (사영 입력은 빌려준 쪽이 채우므로, 이 래퍼가 device 에서 q 를 다시 모으면 그 사영과 다른
+  // 입력을 보는 셈이 된다). 그래서 owning 이 (c) 에서 하는 일이 여기엔 없다.
+  src_ = &projection;
+
+  if (const auto frames = ResolveFrames(fingertip_links, hand_root_link);
+      frames != HandFkWiringResult::kActive) {
+    ResetWiring();
+    return frames;
+  }
+  active_ = true;
+  return HandFkWiringResult::kActive;
+}
+
 void ClosedChainHandFk::Update(const rtc::ControllerState& state) noexcept {
   if (!active_) {
+    return;
+  }
+  // borrowed 모드가 이 진입점으로 새면 남의 사영을 이 래퍼의 q_a 로 덮어쓰려 시도하게 된다
+  // (핸들이 없으므로 실제로는 null 역참조). Release 는 컴파일 아웃 — 아래 guard 가 남는다.
+  assert(handle_ != nullptr && "borrowed 모드는 UpdateFromProjection 을 쓴다 (#175)");
+  if (handle_ == nullptr) {
     return;
   }
   // 독립 관절 순서로 device 전반에서 측정 q 를 모은다. 소스 device 가 invalid 이거나 channel 이
@@ -155,18 +189,36 @@ void ClosedChainHandFk::Update(const rtc::ControllerState& state) noexcept {
     // 반환 status 는 아래에서 GetStatus() 로 다시 읽는다 (nodiscard 무시 명시).
     static_cast<void>(handle_->Update(
         std::span<const double>(q_a_.data(), static_cast<std::size_t>(q_a_.size()))));
+    ++projection_count_;  // wrapper 축 계측: 이 래퍼가 직접 돌린 사영 (#175)
   }
 
   // status 소비를 래퍼가 내부화(#4): 신뢰 가능한 tick 에서만 fingertip pose 캐시를 갱신하고,
   // 아니면(미수렴/특이/held/소스 이상) 직전 유효 pose 를 유지한다. sources_ok 가 false 면 아래
   // trustworthy 가 반드시 false 이므로, Update 를 건너뛴 stale status 를 읽어도 안전하다.
-  const rub::RtClosedChainHandle::Status st = handle_->GetStatus();
-  // 결과가 유한(소스 유효 && !held && finite closure)하면 handle 내부 data_ 는 현재 actuated q 를
+  ApplyProjection(sources_ok, handle_->GetStatus());
+}
+
+void ClosedChainHandFk::UpdateFromProjection(
+    bool projection_fresh, const rub::RtClosedChainHandle::Status& kin_status) noexcept {
+  if (!active_) {
+    return;
+  }
+  // owning 모드가 이 진입점으로 새면 사영이 아무도 안 돌린 채 정책만 돌아 pose 가 조용히 stale
+  // 이 된다 (조회는 성공하므로 증상이 "값이 안 변한다" 뿐이다). Release 는 컴파일 아웃.
+  assert(handle_ == nullptr && "owning 모드는 Update(state) 를 쓴다 (#175)");
+  // 사영은 이미 남이 돌렸다 — 이 래퍼는 정책만 적용한다. `projection_fresh` 의 두 축(사영이
+  // 이번 tick 에 돌았는가 · 그 입력이 이번 tick 측정값인가)은 호출측이 AND 해서 넘긴다.
+  ApplyProjection(projection_fresh, kin_status);
+}
+
+void ClosedChainHandFk::ApplyProjection(bool inputs_ok,
+                                        const rub::RtClosedChainHandle::Status& st) noexcept {
+  // 결과가 유한(입력 유효 && !held && finite closure)하면 사영 내부 data_ 는 현재 actuated q 를
   // 반영한다(사영은 passive 열만 이동, actuated 열은 측정값 고정). 비하류(serial 등가) fingertip 의
   // pose 는 actuated q 만의 함수라 이 조건만으로 유효하다 (#3).
-  const bool finite_result = sources_ok && !st.held && std::isfinite(st.closure_error);
+  const bool finite_result = inputs_ok && !st.held && std::isfinite(st.closure_error);
   if (!finite_result) {
-    return;  // 캐시(last_pose_) 유지 — 소스 이상/비유한
+    return;  // 캐시(last_pose_) 유지 — 입력 이상/비유한
   }
   // loop 하류 fingertip 은 loop-consistency 까지 신뢰돼야 갱신 (미수렴/특이 tick 은 hold).
   const bool loop_trustworthy = !st.singular && st.closure_error < closure_error_threshold_;
@@ -177,8 +229,8 @@ void ClosedChainHandFk::Update(const rtc::ControllerState& state) noexcept {
     if (fingertip_downstream_[f] && !loop_trustworthy) {
       continue;  // 하류 tip 은 loop-untrustworthy tick 에서 직전 유효 pose 유지
     }
-    const pinocchio::SE3& tip = handle_->GetFramePlacement(fingertip_fid_[f]);
-    last_pose_[f] = handle_->GetFramePlacement(hand_root_fid_).actInv(tip);  // hand-root 상대
+    const pinocchio::SE3& tip = src_->GetFramePlacement(fingertip_fid_[f]);
+    last_pose_[f] = src_->GetFramePlacement(hand_root_fid_).actInv(tip);  // hand-root 상대
     last_pose_valid_[f] = true;
   }
 }
@@ -193,10 +245,12 @@ bool ClosedChainHandFk::GetFingertipHandRootPose(std::size_t f,
 }
 
 rub::RtClosedChainHandle::Status ClosedChainHandFk::status() const noexcept {
-  if (!active_) {
+  if (!active_ || src_ == nullptr) {
     return {};
   }
-  return handle_->GetStatus();
+  // borrowed 모드에서는 사영 소유자의 **공용** status 다 — 동역학 사유 held 가 섞여 있을 수 있다.
+  // fingertip 정책이 쓰는 값은 이것이 아니라 `UpdateFromProjection` 에 넘어온 운동학 스냅샷이다.
+  return src_->GetStatus();
 }
 
 // ── 컨트롤러 wiring 공용 dispatch (task/joint 공유) ───────────────────────────
