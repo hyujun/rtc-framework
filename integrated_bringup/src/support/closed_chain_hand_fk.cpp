@@ -27,6 +27,10 @@ void ClosedChainHandFk::ResetWiring() noexcept {
   missing_joint_.clear();
   handle_.reset();
   borrowed_model_ = nullptr;
+  // 계측 카운터도 배선과 함께 되돌린다 (PR #374 리뷰). owning 으로 M tick 돌린 래퍼를 borrowed 로
+  // 다시 배선하면 "borrowed 는 절대 증가하지 않는다" 는 계약이 이전 배선의 잔량 때문에 깨져
+  // 보인다 — 소비자(2→1 계측)는 현재 배선의 사영 횟수를 묻는 것이다.
+  projection_count_ = 0;
 }
 
 HandFkWiringResult ClosedChainHandFk::ResolveFrames(const rub::RtClosedChainHandle& src,
@@ -274,6 +278,15 @@ bool RunHandForwardKinematics(ClosedChainHandFk& fk, rub::RtModelHandle* hand_ha
   // device 1 valid 를 진입 게이트로 강제하지 않고, 각 소스 유효성은 ClosedChainHandFk::Update 가
   // tick 내에서 확인해 unfit tick 을 hold 로 내부 처리한다 (#8).
   if (fk.active()) {
+    // borrowed 래퍼는 이 dispatch 로 구동할 수 없다 — 사영을 소유하지 않으므로 `Update(state)` 가
+    // 즉시 반환하고(Release 는 assert 컴파일 아웃), 그런데도 true 를 돌리면 호출측은 FK 가 돈
+    // 것으로 알고 **얼어붙은 pose 캐시를 유효한 TF 로 발행**한다. 증상이 "TF 가 안 움직인다" 뿐인
+    // 조용한 stale 이므로, 여기서 withhold 로 떨어뜨려 배선 실수를 관측 가능하게 만든다.
+    // (WBC 의 borrowed 경로는 이 dispatch 를 우회하고 UpdateFromProjection 을 직접 부른다 — 그쪽은
+    // provenance 소스가 컨트롤러 전용이라 helper 로 접을 수 없다, #175.)
+    if (!fk.owns_projection()) {
+      return false;
+    }
     fk.Update(state);  // measured actuated q → loop-consistent full FK (per-source hold 내부화)
     return true;
   }

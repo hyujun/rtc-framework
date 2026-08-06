@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <span>
 
@@ -898,11 +899,18 @@ bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
     // 사영은 **매 tick 소유자에게서 다시 받는다** — provider 가 재구성되면(lifecycle 전이가
     // config 를 다시 로드하는 경로가 실재한다) 이전 핸들은 파괴되므로, 래퍼가 포인터를 들고
     // 있었다면 조용히 쓰레기 placement 를 읽는다.
-    if (const auto* projection = wbc_reduced_dynamics_.projection(); projection != nullptr) {
-      closed_hand_fk_.UpdateFromProjection(
-          *projection, projected_this_tick && arm_readable_ && hand_readable_,
-          wbc_reduced_dynamics_.kinematic_status());
+    const auto* projection = wbc_reduced_dynamics_.projection();
+    if (projection == nullptr) {
+      // borrowed 로 배선됐는데 빌릴 사영이 사라졌다 — provider 가 배선(OnDeviceConfigsSet) 이후에
+      // 비활성화된 경우뿐이고 설계상 열리지 않는 상태다. 조용히 지나가면 래퍼가 직전 pose 를
+      // 무기한 유효한 것으로 계속 서비스하므로(자기 사영을 돌릴 수단이 없다) **withhold** 한다:
+      // 호출측이 이번 tick 의 fingertip_pose_valid_ 를 이미 전부 false 로 리셋했으므로 여기서
+      // 빠져나가면 TF 가 관측 lane 에서 사라진다. RT tick 이라 로깅으로는 못 알린다 (RT-1/RT-3).
+      return false;
     }
+    closed_hand_fk_.UpdateFromProjection(*projection,
+                                         projected_this_tick && arm_readable_ && hand_readable_,
+                                         wbc_reduced_dynamics_.kinematic_status());
   } else if (!RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state)) {
     return false;
   }

@@ -72,6 +72,11 @@ enum class HandFkWiringResult {
 /// 핸들이 해를 커밋하지 않아 **같은 입력이 계속 들어오면 무기한** 이어질 수 있다. 그 구간 내내
 /// fingertip pose 는 조용히 stale 이므로, 오래가는 held 는 `status().held_ticks` 로 관측해
 /// off-RT 진단으로 넘긴다 (예상 walk-in ≈ `⌈Δ/max_seed_increment⌉` tick).
+///
+/// ⚠ 위 진단 처방은 **owning 모드에 한정**된다. borrowed 모드(@ref ConfigureBorrowed)에서는 이
+/// 래퍼가 핸들을 들고 있지 않으므로 @ref status 가 답할 수 없고 기본값(held=false·held_ticks=0)을
+/// 돌린다 — "건강함" 이 아니라 **"모름"** 이다. 그 모드의 진단은 사영 소유자에게 묻는다
+/// (`WbcReducedDynamicsProvider::kinematic_status()`).
 class ClosedChainHandFk {
  public:
   static constexpr std::size_t kMaxFingertips = 4;
@@ -149,11 +154,15 @@ class ClosedChainHandFk {
       const rtc_urdf_bridge::RtClosedChainHandle& projection, bool projection_fresh,
       const rtc_urdf_bridge::RtClosedChainHandle::Status& kin_status) noexcept;
 
-  /// @brief 이 래퍼가 사영 핸들을 **소유**하는가 (false = borrowed). 배선 단언용.
+  /// @brief 이 래퍼가 사영 핸들을 **소유**하는가. 배선 단언용.
+  /// @note 술어는 "핸들을 갖고 있는가" 이므로 **비활성 래퍼도 false** 다 — false 를 곧바로
+  ///   "borrowed" 로 읽지 말 것. borrowed 판정은 `active() && !owns_projection()` 이다
+  ///   (모든 호출처가 그 형태를 쓴다).
   [[nodiscard]] bool owns_projection() const noexcept { return handle_ != nullptr; }
 
   /// @brief 이 래퍼가 직접 돌린 사영 횟수. borrowed 모드에서는 절대 증가하지 않으므로
   ///   "tick 당 사영 1회" 를 wrapper 축에서 재는 계측 지점이다 (`rtc_urdf_bridge` 무변경).
+  ///   재배선(`Configure`/`ConfigureBorrowed`) 시 0 으로 돌아간다 — 현재 배선의 횟수다.
   [[nodiscard]] std::uint32_t projection_count() const noexcept { return projection_count_; }
 
   /// @brief fingertip @p f 의 **hand-root 상대** placement(직전 신뢰 tick 값)를 @p out 에 기록.
@@ -164,6 +173,10 @@ class ClosedChainHandFk {
   [[nodiscard]] bool GetFingertipHandRootPose(std::size_t f, pinocchio::SE3& out) const noexcept;
 
   /// @brief 직전 Update 의 loop-consistency/특이 상태.
+  /// @note **owning 모드 전용**이다. borrowed 모드/비활성에서는 핸들이 없어 답할 수 없고
+  ///   기본값(held=false · held_ticks=0 · closure_error=0)을 돌린다 — "건강함" 이 아니라 "모름"
+  ///   이므로 그대로 진단에 쓰면 무기한 held 를 수렴 중으로 읽는다. borrowed 소비자는 사영
+  ///   소유자의 status 를 읽는다 (#175).
   [[nodiscard]] rtc_urdf_bridge::RtClosedChainHandle::Status status() const noexcept;
 
   /// @brief 브릿지 미완성 시(kInactiveBridgeIncomplete) 매핑 실패한 관절 이름 (로깅용).
@@ -223,6 +236,11 @@ class ClosedChainHandFk {
 /// @brief 이번 tick 의 hand FK 를 실행한다: closed 활성이면 @p fk.Update(state), 아니면 serial
 ///   @p hand_handle 의 ComputeForwardKinematics(measured hand q). **RT-safe.**
 /// @return hand device(devices[1]) 가 유효해 FK 를 돌렸으면 true.
+/// @note **owning 래퍼만 구동한다** — borrowed 래퍼(@ref ClosedChainHandFk::ConfigureBorrowed)를
+///   넘기면 사영할 수단이 없으므로 false 를 돌려 withhold 시킨다 (조용한 stale 방지). WBC 의
+///   borrowed 경로는 이 dispatch 를 **우회**하고 `UpdateFromProjection` 을 직접 부른다: 채택
+///   판정에 필요한 provenance(사영 소유자의 실행 카운터 · 컨트롤러의 device readability)가
+///   task/joint 에는 없는 WBC 전용 상태라 여기 접을 수 없다 (#175).
 [[nodiscard]] bool RunHandForwardKinematics(ClosedChainHandFk& fk,
                                             rtc_urdf_bridge::RtModelHandle* hand_handle,
                                             Eigen::VectorXd& hand_q,
