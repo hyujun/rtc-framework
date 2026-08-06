@@ -36,7 +36,7 @@ Architecture 규칙은 **ARCH-1 ~ ARCH-7** 이다. 개별 규칙의 조건, 허�
 - **NUM-1·NUM-2·NUM-4** — 수치 특이점은 damped pseudoinverse, `dt` zero guard, 게인 zero guard 규칙을 따른다.
 - **NUM-5** — 폐쇄 체인 사영은 **residual 로 조립 분기를 판정할 수 없다**. 점 구속 loop 은 분기가 여럿이고 모두 φ=0 을 만족하므로 seed 증분 제한이 필수다. 완화 장치는 발동한 경우에만 적용하고, 그로 인한 `held` 를 자기 치유로 가정하지 않는다.
 
-전체 규칙 (RT-1~RT-10, ARCH-1~7, PROC-1~7, NUM-1~6) 과 탐지 grep·복구 절차는 [agent_docs/invariants.md](agent_docs/invariants.md) 가 SSoT다. 위는 발현 빈도가 높은 것만 추린 요약이다.
+전체 규칙 (RT-1~RT-10, ARCH-1~7, PROC-1~8, NUM-1~7) 과 탐지 grep·복구 절차는 [agent_docs/invariants.md](agent_docs/invariants.md) 가 SSoT다. 위는 발현 빈도가 높은 것만 추린 요약이다.
 
 ### 반복 실수 (사전 신호)
 
