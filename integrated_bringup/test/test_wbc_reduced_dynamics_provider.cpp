@@ -23,6 +23,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -318,7 +319,7 @@ TEST(WbcReducedDynamicsProvider, KinematicStatusSurvivesNonFiniteVelocity) {
 TEST(WbcReducedDynamicsProvider, ProjectionSeqCountsEveryProjection) {
   CrankRockerProviderFixture fx;
   ASSERT_TRUE(fx.Configure());
-  EXPECT_EQ(fx.provider.projection_seq(), 0U) << "Configure 는 카운터를 되돌린다";
+  EXPECT_EQ(fx.provider.projection_seq(), 0U) << "새로 만든 provider 는 0 에서 시작한다";
 
   ASSERT_TRUE(fx.Tick(0.2, 0.1));
   EXPECT_EQ(fx.provider.projection_seq(), 1U) << "tick 당 사영 1회";
@@ -342,4 +343,36 @@ TEST(WbcReducedDynamicsProvider, ProjectionSeqCountsEveryProjection) {
   EXPECT_FALSE(inactive.FillReducedDynamics(pinocchio::neutral(*full),
                                             Eigen::VectorXd::Zero(full->nv), M, h, g));
   EXPECT_EQ(inactive.projection_seq(), 0U) << "비활성은 사영하지 않는다";
+}
+
+// ── (7b) 재배선이 카운터를 **되돌리지 않는다** (PR #374 리뷰) ────────────────────
+//   소비자는 이 값을 자기 baseline 과의 **차이**로 "이번 tick 에 사영이 돌았는가"를 판정한다.
+//   Configure 가 0 으로 되돌리면, 이미 N tick 을 돈 소비자의 baseline(N)이 남아 있어 **한 번도
+//   사영하지 않은 새 핸들의 seq(0)** 가 "달라졌다 = 이번 tick 에 돌았다"로 읽히고, 그 tick 의
+//   placement(생성자 seed = closure reference 형상)가 유효한 fingertip TF 로 나간다. 소비자 쪽
+//   재동기로는 못 막는다 — FK 배선(OnDeviceConfigsSet)이 이 Configure(on_configure 의 두 번째
+//   LoadConfig)보다 먼저 끝나기 때문. 그래서 계약을 provider 쪽에 둔다.
+TEST(WbcReducedDynamicsProvider, ProjectionSeqNeverGoesBackwardsAcrossReconfigure) {
+  CrankRockerProviderFixture fx;
+  ASSERT_TRUE(fx.Configure());
+  constexpr int kTicks = 5;
+  for (int t = 0; t < kTicks; ++t) {
+    ASSERT_TRUE(fx.Tick(0.2 + 0.001 * t, 0.1));
+  }
+  const std::uint32_t before = fx.provider.projection_seq();
+  ASSERT_EQ(before, static_cast<std::uint32_t>(kTicks));
+
+  // 프로덕션의 재배선 경로: 같은 입력으로 Configure 를 다시 돈다 (핸들이 새로 만들어진다).
+  ASSERT_TRUE(fx.Configure());
+  EXPECT_GE(fx.provider.projection_seq(), before)
+      << "재배선이 카운터를 되돌렸다 — 소비자의 stale baseline 이 '한 번도 사영하지 않은 핸들' 을 "
+         "이번 tick 사영으로 채택한다";
+
+  // 그리고 새 핸들이 아직 사영하지 않았으므로 소비자가 보는 값은 **변하지 않아야** 한다.
+  EXPECT_EQ(fx.provider.projection_seq(), before)
+      << "사영하지 않았는데 카운터가 움직이면 소비자가 반대 방향으로 오채택한다";
+
+  // 재배선 후 첫 사영은 정상적으로 증가시킨다 (hold 가 latch 되지 않는다).
+  ASSERT_TRUE(fx.Tick(0.2, 0.1));
+  EXPECT_EQ(fx.provider.projection_seq(), before + 1U);
 }

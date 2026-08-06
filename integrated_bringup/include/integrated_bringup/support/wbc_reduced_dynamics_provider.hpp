@@ -145,6 +145,10 @@ class WbcReducedDynamicsProvider final : public rtc::tsid::ReducedDynamicsProvid
   /// (`PinocchioCache::Update()` 가 실행되지 않은 tick 방어). ⚠ 이것은 **입력 provenance 가
   /// 아니다** — 사영이 이번 tick 에 돌았다는 것만 말하고, 그 입력 q 가 신선했는지는 말하지
   /// 않는다. 두 축을 모두 걸어야 한다 (#175).
+  ///
+  /// @note `Configure` 를 넘어 **단조 증가**한다 (되돌리지 않는다). 되돌리면 소비자의 baseline 이
+  ///   새 핸들의 seq 보다 커져, 아직 한 번도 사영하지 않은 핸들의 생성자 seed 형상이 "이번 tick
+  ///   사영" 으로 채택된다. 사유 전문은 `Configure` 구현의 주석에 있다.
   [[nodiscard]] std::uint32_t projection_seq() const noexcept { return projection_seq_; }
 
   // ── ReducedDynamicsProvider ────────────────────────────────────────────────

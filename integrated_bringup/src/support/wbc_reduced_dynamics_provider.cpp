@@ -20,10 +20,17 @@ bool WbcReducedDynamicsProvider::Configure(std::shared_ptr<const pinocchio::Mode
                                            const pinocchio::Model& control_model) {
   active_ = false;
   have_last_ = false;
-  // (#175) 재배선 시 사영 view 상태도 처음으로 되돌린다 — 이전 배선의 status 스냅샷이 남아 있으면
-  // 새 핸들이 아직 한 번도 사영하지 않은 tick 에 소비자가 그것을 fresh 로 읽는다.
+  // (#175) 재배선 시 status 스냅샷은 되돌린다 — 이전 배선의 값이 남아 있으면 새 핸들이 아직 한
+  // 번도 사영하지 않은 tick 에 소비자가 그것을 읽는다.
   kin_status_ = {};
-  projection_seq_ = 0;
+  // ⚠ `projection_seq_` 는 **되돌리지 않는다** (PR #374 리뷰). 소비자는 이 값을 자기 baseline 과의
+  // **차이**로 "이번 tick 에 사영이 돌았는가"를 판정한다. 여기서 0 으로 되돌리면 이미 N tick 을 돈
+  // 소비자의 baseline(N)이 남아 있어, **한 번도 사영하지 않은 새 핸들의 seq(0)** 가 "달라졌다 =
+  // 이번 tick 에 돌았다"로 읽힌다 — 그 tick 의 placement 는 생성자 seed(closure reference 형상)라
+  // 로봇이 취한 적 없는 손 형상이 유효한 fingertip TF 로 나간다. 소비자 쪽 재동기로는 못 막는다:
+  // FK 배선(`OnDeviceConfigsSet`)이 이 Configure(`on_configure` 의 두 번째 `LoadConfig`)보다
+  // **먼저** 끝나므로 배선 시점에 맞춘 baseline 이 그 뒤 리셋에 다시 어긋난다. 단조 카운터면 새
+  // 핸들이 사영하지 않은 tick 은 seq 불변이라 소비자가 hold 로 떨어진다.
   missing_joint_.clear();
 
   if (!full_model || constraints.empty()) {
