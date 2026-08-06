@@ -9,10 +9,19 @@
 //   latency delta between what joint/task pay today (baseline, arm-only reduced
 //   model) and the unified full-compute (combined model).
 //
+//   #175 Phase 0 (closed-chain robots only) adds a second, independent question
+//   on the same harness: what does ONE RtClosedChainHandle K-step projection
+//   cost? WBC runs that projection twice per tick today (see the block guarded by
+//   bc.extended below), so the "closed-proj-kin" median IS the saving a 2→1
+//   unification would buy — the go/no-go input for that issue.
+//
 //   ⚠ Absolute numbers are machine-dependent (build flags, load, affinity) —
 //   REPORT ONLY, no hard timing asserts (mirrors
 //   rtc_urdf_bridge/test/test_closed_chain_fk_measurement.cpp::UpdateComputeTime,
-//   which ends in SUCCEED()). Only model nq/nv is asserted (confirms model path).
+//   which ends in SUCCEED()). The only hard asserts are path guards, not
+//   thresholds: model nq/nv (confirms the model path) and held==0 on the closed
+//   chain (confirms the timed ticks really ran the projection, not a hold
+//   short-circuit).
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include <gtest/gtest.h>
@@ -40,6 +49,7 @@
 
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_closed_chain_handle.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 
@@ -239,6 +249,83 @@ void RunBench(const BenchConfig& bc) {
   Stats s_unified = Bench([&](int i) { q_comb(0) += 1e-6 * static_cast<double>(1 + (i % 7)); },
                           [&]() { cache.Update(q_comb, v_comb); });
   sink += cache.M(0, 0);
+
+  // ── #175 Phase 0: one RtClosedChainHandle K-step projection (closed chain) ───
+  //   WBC pays this projection TWICE per tick on a loop-closed robot. Both owners
+  //   build their handle from the SAME four closure inputs with the same default
+  //   K/λ/seed-clamp (wbc/controller.cpp:214-217 vs :238-241), so one handle here
+  //   is representative of either:
+  //     - WbcReducedDynamicsProvider — Update(q_a) + UpdateDynamics(v_a)
+  //       (wbc_reduced_dynamics_provider.cpp:116-127) → M_a/h_a/g_a + contact J/oMf
+  //     - ClosedChainHandFk          — Update(q_a) only
+  //       (closed_chain_hand_fk.cpp:156)              → fingertip pose
+  //   Unification removes exactly one Update(); UpdateDynamics() is already called
+  //   once. Hence "closed-proj-kin" = the 2→1 saving, "closed-proj+dyn" = what the
+  //   surviving unified handle still costs per tick.
+  bool proj_measured = false;
+  Stats s_proj_kin;
+  Stats s_proj_dyn;
+  if (bc.extended) {
+    rub::RtClosedChainHandle handle(builder->GetFullModel(), builder->GetConstraintModels(),
+                                    builder->GetClosureActuatedJointIds(),
+                                    builder->GetClosureReferenceConfig());
+    const pinocchio::Model& full = handle.GetModel();
+    const int n_a = handle.nv_independent();
+    ASSERT_GT(n_a, 0) << bc.label << ": closure exposes no independent joints";
+    std::printf("[closure] full: nq=%d nv=%d  n_a=%d  m=%d (constraint rows)\n", full.nq, full.nv,
+                n_a, handle.constraint_dim());
+
+    // q_a starts at the closure reference configuration (the handle's warm-start
+    // seed), restricted to the independent joints — so the first projection starts
+    // loop-consistent instead of walking in from neutral.
+    const std::vector<std::string> indep_names = handle.GetIndependentJointNames();
+    const Eigen::VectorXd& q_ref = builder->GetClosureReferenceConfig();
+    std::vector<double> q_a(static_cast<std::size_t>(n_a), 0.0);
+    if (q_ref.size() == full.nq) {
+      for (std::size_t k = 0; k < indep_names.size(); ++k) {
+        const auto jid = full.getJointId(indep_names[k]);
+        q_a[k] = q_ref[full.joints[jid].idx_q()];
+      }
+    }
+    // Non-zero v_a: UpdateDynamics takes the have_velocity branch on size alone,
+    // but a moving robot is what the provider actually feeds (rnea + Jc central
+    // difference drift), so keep the samples representative.
+    const std::vector<double> v_a(static_cast<std::size_t>(n_a), 0.1);
+    const std::span<const double> q_a_span(q_a.data(), q_a.size());
+    const std::span<const double> v_a_span(v_a.data(), v_a.size());
+
+    // Path guard, not a threshold: 1e-6 rad steps can never trip the seed clamp
+    // (kDefaultActuatedIncrement = 0.05) or the passive-deviation guard (0.5), so
+    // every timed tick must run the full K=2 projection. A held tick returns early
+    // and would silently deflate the median we are about to report.
+    int held_ticks = 0;
+    s_proj_kin = Bench([&](int i) { q_a[0] += 1e-6 * static_cast<double>(1 + (i % 7)); },
+                       [&]() {
+                         if (handle.Update(q_a_span).held) {
+                           ++held_ticks;
+                         }
+                       });
+    sink += handle.GetFullConfiguration()(0);
+
+    s_proj_dyn = Bench([&](int i) { q_a[0] += 1e-6 * static_cast<double>(1 + (i % 7)); },
+                       [&]() {
+                         const bool kin_held = handle.Update(q_a_span).held;
+                         if (kin_held || handle.UpdateDynamics(v_a_span).held) {
+                           ++held_ticks;
+                         }
+                       });
+    sink += handle.GetMassMatrix()(0, 0);
+
+    ASSERT_EQ(held_ticks, 0) << bc.label
+                             << ": projection held on some ticks — timings below would not be "
+                                "measuring the K-step projection";
+    EXPECT_FALSE(handle.GetStatus().singular)
+        << bc.label << ": projection reported singular — damped path, timings not representative";
+    std::printf("[closure] closure_error after %d+%d projections = %.3e (held=%d, singular=%d)\n",
+                kWarm + kN, kWarm + kN, handle.GetStatus().closure_error, held_ticks,
+                static_cast<int>(handle.GetStatus().singular));
+    proj_measured = true;
+  }
   (void)sink;
 
   // ── Report ───────────────────────────────────────────────────────────────────
@@ -258,6 +345,23 @@ void RunBench(const BenchConfig& bc) {
       delta, 100.0 * delta / kBudget500, 100.0 * delta / kBudget1k);
   std::printf("[budget] baseline-task  = %.3f us  →  %.2f%% of 1kHz(1000us)\n", s_task.median,
               100.0 * s_task.median / kBudget1k);
+
+  if (proj_measured) {
+    PrintRow("closed-proj-kin", s_proj_kin);
+    PrintRow("closed-proj+dyn", s_proj_dyn);
+    std::printf(
+        "[budget] closed-proj-kin = %.3f us  →  %.2f%% of 500Hz(2000us) | %.2f%% of 1kHz(1000us)"
+        "  [#175: per-tick saving of 2→1]\n",
+        s_proj_kin.median, 100.0 * s_proj_kin.median / kBudget500,
+        100.0 * s_proj_kin.median / kBudget1k);
+    std::printf(
+        "[budget] closed-proj+dyn = %.3f us  →  %.2f%% of 500Hz(2000us) | %.2f%% of 1kHz(1000us)"
+        "  [#175: cost the unified handle still pays]\n",
+        s_proj_dyn.median, 100.0 * s_proj_dyn.median / kBudget500,
+        100.0 * s_proj_dyn.median / kBudget1k);
+    std::printf("[delta]  closed-proj+dyn - closed-proj-kin (median) = %.3f us  [dynamics-only]\n",
+                s_proj_dyn.median - s_proj_kin.median);
+  }
 }
 
 }  // namespace
