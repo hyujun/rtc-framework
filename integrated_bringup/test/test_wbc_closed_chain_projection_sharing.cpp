@@ -24,8 +24,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cmath>
-#include <limits>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -129,7 +129,7 @@ TEST_F(ClosedChainProjectionTest, FingertipFkSharesTheReducedDynamicsProjection)
   ASSERT_TRUE(ctrl_->HandFkSharesProjectionForTesting())
       << "closed-chain 로봇인데 fingertip FK 가 자기 사영을 갖고 있다 — 2→1 이 배선되지 않았다";
 
-  WarmUpUntilFingertipValid();
+  ASSERT_NO_FATAL_FAILURE(WarmUpUntilFingertipValid());
 
   const std::uint32_t seq0 = ctrl_->ReducedProjectionSeqForTesting();
   constexpr int kTicks = 20;
@@ -160,7 +160,7 @@ TEST_F(ClosedChainProjectionTest, FingertipFkSharesTheReducedDynamicsProjection)
 //   전달된다는 것 — fingertip 이 언젠가 자기 q 를 다시 모으는 쪽으로 바뀌면 이 단언이 진다.
 //   게이트 자체의 센서는 아래 MixedFreshnessTick 이다.
 TEST_F(ClosedChainProjectionTest, NarrowArmDoesNotRefreshFingertipPose) {
-  WarmUpUntilFingertipValid();
+  ASSERT_NO_FATAL_FAILURE(WarmUpUntilFingertipValid());
   const ControllerOutput good = last_out_;
 
   // 게이트를 닫고 클램프 안쪽으로 민다.
@@ -188,7 +188,7 @@ TEST_F(ClosedChainProjectionTest, NarrowArmDoesNotRefreshFingertipPose) {
 //   fixture 로는 원리적으로 재현되지 않는 축이다. 위와 같은 이유로 이것도 게이트의 mutation
 //   센서가 아니라 **구멍이 게이트를 닫는다**는 사실(#284)이 이 경로까지 도달하는지의 센서다.
 TEST_F(ClosedChainProjectionTest, HoledArmSlotDoesNotRefreshFingertipPose) {
-  WarmUpUntilFingertipValid();
+  ASSERT_NO_FATAL_FAILURE(WarmUpUntilFingertipValid());
   const ControllerOutput good = last_out_;
 
   state_.devices[0].hole_mask = (static_cast<std::uint64_t>(1) << 2);  // 슬롯 2 미기입
@@ -212,13 +212,27 @@ TEST_F(ClosedChainProjectionTest, HoledArmSlotDoesNotRefreshFingertipPose) {
 //       캐시되는데 그 상대 변환은 손 관절만의 함수라(팔 관절은 hand-root 상류) 팔이 움직여도
 //       변하지 않는다. 즉 시각이 섞여도 관측값이 갈리지 않는다.
 //
-//   갈리는 것은 **처음부터 신선한 적이 없는** 입력이다. 손이 한 번도 읽히지 않으면 cache 의 손
-//   블록은 측정된 적 없는 초기값에 머무는데, 사영은 그것으로도 성공하고 유한한 pose 를 낸다.
-//   게이트가 없으면 그 pose 가 tick 1 부터 **유효한 fingertip TF 로 발행**된다 — 로봇이 한 번도
-//   취한 적 없는 손 형상이 관측 lane 에 나간다. 통합 전 owning 모드는 소스가 unfresh 면 사영을
-//   건너뛰어 캐시가 비고, TF 가 아예 withheld 됐다. 그 계약을 지키는 것이 provenance 게이트다.
+//   갈리는 것은 **손 블록이 그 뒤로 한 번도 갱신되지 않는** 경우다. SetUp 의 첫 tick(정상 폭)이
+//   cache 손 블록에 측정값을 한 번 넣고, 그 뒤 게이트가 닫힌 채 팔만 계속 움직인다. 사영은 매 tick
+//   그 손 블록으로 성공해 유한한 pose 를 내므로, 게이트가 없으면 walk-in 이 끝나는 순간부터
+//   **유효한 fingertip TF 로 발행**된다 — 손이 그 사이 무엇을 하든 tick 1 의 형상이 관측 lane 에
+//   계속 나간다. 통합 전 owning 모드는 소스가 unfresh 면 사영을 건너뛰어 캐시가 비고 TF 가 아예
+//   withheld 됐다. 그 계약을 지키는 것이 provenance 게이트이고, 게이트를 `true` 로 고정하면 이
+//   테스트만 죽는다 (실측).
+//
+//   ⚠ **전제를 문자 그대로 만들면(첫 tick 부터 손 게이트를 닫으면) 이 센서는 사라진다** — PR #374
+//   리뷰가 그 처방을 냈고 실행해서 반증했다. 손이 한 번도 안 읽히면 컨트롤러가 target slot 을
+//   seed 하지 못해(`arm_ready && hand_ready` 요구, wbc/controller.cpp) tick 전체가 early-return
+//   하고 `combined_cache_.Update()` 조차 안 돈다 (실측: 600 tick 내내 projection_seq == 0). 그러면
+//   TF 미발행은 provenance 게이트가 아니라 target-init 게이트가 만든 결과라 게이트 mutation 에
+//   둔감해진다. 그래서 손 블록은 **정확히 한 번** 측정되고 그 뒤로 영영 갱신되지 않는 이 형태가
+//   맞다 — 아래 첫 단언이 그 전제(첫 tick 은 정상 폭이었다)를 명시적으로 고정한다.
 TEST_F(ClosedChainProjectionTest, NeverFreshHandNeverPublishesAFingertipTf) {
-  // 손을 처음부터 좁게(게이트 닫힘) 둔다 — 팔은 정상이라 cache·사영·TSID 는 계속 돈다.
+  // 전제: SetUp 의 첫 tick 은 정상 폭이었고, 그래서 컨트롤러가 살아 움직인다.
+  ASSERT_GT(ctrl_->ReducedProjectionSeqForTesting(), 0U)
+      << "첫 tick 부터 사영이 안 돌면 이 테스트는 게이트가 아니라 target-init 을 잰다";
+
+  // 이후로는 손 게이트를 닫아 둔다 — 팔은 정상이라 cache·사영·TSID 는 계속 돈다.
   state_.devices[1].num_channels = fx::kP1bHandDof - 1;
 
   constexpr int kTicks = 600;  // WarmUp 과 같은 예산: 열려 있었다면 진작 유효해졌을 시간
@@ -234,13 +248,13 @@ TEST_F(ClosedChainProjectionTest, NeverFreshHandNeverPublishesAFingertipTf) {
 
   // 게이트가 열리면 정상적으로 나오기 시작한다 — withhold 가 latch 가 아님을 함께 고정한다.
   state_.devices[1].num_channels = fx::kP1bHandDof;
-  WarmUpUntilFingertipValid();
+  ASSERT_NO_FATAL_FAILURE(WarmUpUntilFingertipValid());
   EXPECT_TRUE(last_out_.task_link_pose_valid[0]);
 }
 
 // ── 복구: provenance 가 돌아오면 즉시 반영된다 (hold 가 latch 되지 않는다) ────
 TEST_F(ClosedChainProjectionTest, FingertipRecoversAfterTheGateReopens) {
-  WarmUpUntilFingertipValid();
+  ASSERT_NO_FATAL_FAILURE(WarmUpUntilFingertipValid());
   const ControllerOutput good = last_out_;
 
   state_.devices[0].valid = false;
@@ -260,7 +274,7 @@ TEST_F(ClosedChainProjectionTest, FingertipRecoversAfterTheGateReopens) {
 //   통합의 위험 지점이다 — 이제 fingertip 이 provider 의 핸들을 읽으므로, UpdateDynamics 가
 //   공용 status 에 세운 held 를 그대로 보면 유효한 pose 를 버린다 (운동학 스냅샷이 그것을 막는다).
 TEST_F(ClosedChainProjectionTest, NonFiniteVelocityKeepsFingertipPoseAlive) {
-  WarmUpUntilFingertipValid();
+  ASSERT_NO_FATAL_FAILURE(WarmUpUntilFingertipValid());
   const ControllerOutput good = last_out_;
 
   // 측정 속도만 오염시킨다 (위치는 유한하게 유지 — 운동학은 성립하는 tick).

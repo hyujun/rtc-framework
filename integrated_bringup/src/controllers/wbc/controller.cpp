@@ -182,22 +182,6 @@ void DemoWbcController::ConfigureClosedChainHandFk() {
   const auto primary = GetPrimaryDeviceName();
   const auto secondary = GetSecondaryDeviceName();
 
-  // device_joint_names index order must match ExtractFullState's dev0/dev1:
-  // primary=0, secondary=1. The closed handle's independent joints may span both.
-  std::vector<std::vector<std::string>> dev_names;
-  if (const auto* c = GetDeviceNameConfig(primary)) {
-    dev_names.push_back(c->joint_state_names);
-  } else {
-    dev_names.emplace_back();
-  }
-  if (!secondary.empty()) {
-    if (const auto* c = GetDeviceNameConfig(secondary)) {
-      dev_names.push_back(c->joint_state_names);
-    } else {
-      dev_names.emplace_back();
-    }
-  }
-
   // fingertip links + hand-root frame from the secondary tree-model definition.
   std::vector<std::string> tips;
   std::string hand_root;
@@ -242,6 +226,23 @@ void DemoWbcController::ConfigureClosedChainHandFk() {
   // provider 비활성(비-closed-chain · 좌표 미매칭) → 기존 owning 경로. configure-time fallback 은
   // 이 한 축뿐이다 (per-tick 비대칭은 없다 — fingertip 블록의 게이트가 cache.Update 의 게이트와
   // 같은 조건이라 "provider 는 쉬는데 fingertip 만 도는" tick 이 생기지 않는다).
+  //
+  // q_a 브릿지 소스는 **이 경로에서만** 필요하다 (borrowed 는 사영 입력을 빌려준 쪽이 채운다).
+  // device_joint_names index order must match ExtractFullState's dev0/dev1:
+  // primary=0, secondary=1. The closed handle's independent joints may span both.
+  std::vector<std::vector<std::string>> dev_names;
+  if (const auto* c = GetDeviceNameConfig(primary)) {
+    dev_names.push_back(c->joint_state_names);
+  } else {
+    dev_names.emplace_back();
+  }
+  if (!secondary.empty()) {
+    if (const auto* c = GetDeviceNameConfig(secondary)) {
+      dev_names.push_back(c->joint_state_names);
+    } else {
+      dev_names.emplace_back();
+    }
+  }
   const auto res =
       closed_hand_fk_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
                                 builder_->GetClosureActuatedJointIds(),
