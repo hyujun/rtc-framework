@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <span>
 
 using integrated_bringup::ClassifyFrameTransition;
@@ -156,6 +157,67 @@ TEST(VirtualTcpTest, WeightedAllInactiveReturnsInvalid) {
 
   std::array<FingertipVtcpInput, 4> fts{};  // all inactive → total_weight = 0
   auto result = ComputeVirtualTcp(cfg, pinocchio::SE3::Identity(), fts);
+  EXPECT_FALSE(result.valid);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Non-finite inputs (#316) — the count/total_weight guards are magnitude
+// tests, and a NaN fails EVERY comparison: `NaN <= 0.0` is false, so a NaN
+// weight walks straight past the weighted guard, and a NaN position never
+// touches the centroid count at all. Both used to emit valid=true with a NaN
+// pose, which the caller then latches as its control point.
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST(VirtualTcpTest, WeightedNonFiniteForceReturnsInvalid) {
+  VirtualTcpConfig cfg;
+  cfg.mode = VirtualTcpMode::kWeighted;
+
+  auto fts = MakeBalancedFingertips();
+  fts[1].force_magnitude = std::numeric_limits<double>::quiet_NaN();
+
+  auto result = ComputeVirtualTcp(cfg, pinocchio::SE3::Identity(), fts);
+  EXPECT_FALSE(result.valid);
+  EXPECT_TRUE(result.T_tcp_vtcp.translation().allFinite());
+  EXPECT_TRUE(result.world_pose.translation().allFinite());
+}
+
+TEST(VirtualTcpTest, WeightedInfiniteForceReturnsInvalid) {
+  VirtualTcpConfig cfg;
+  cfg.mode = VirtualTcpMode::kWeighted;
+
+  auto fts = MakeBalancedFingertips();
+  fts[2].force_magnitude = std::numeric_limits<double>::infinity();
+
+  auto result = ComputeVirtualTcp(cfg, pinocchio::SE3::Identity(), fts);
+  EXPECT_FALSE(result.valid);
+}
+
+// The centroid branch is the SHIPPED mode (demo_shared.yaml), so this is the
+// reachable half of the same defect.
+TEST(VirtualTcpTest, CentroidNonFinitePositionReturnsInvalid) {
+  VirtualTcpConfig cfg;
+  cfg.mode = VirtualTcpMode::kCentroid;
+
+  auto fts = MakeBalancedFingertips();
+  fts[0].position_in_tcp.y() = std::numeric_limits<double>::quiet_NaN();
+
+  auto result = ComputeVirtualTcp(cfg, pinocchio::SE3::Identity(), fts);
+  EXPECT_FALSE(result.valid);
+  EXPECT_TRUE(result.T_tcp_vtcp.translation().allFinite());
+}
+
+// A finite fingertip set composed against a non-finite arm TCP pose is still a
+// non-finite control point — the gate reads the value it publishes, not just
+// its own inputs.
+TEST(VirtualTcpTest, NonFiniteBaseTcpPoseReturnsInvalid) {
+  VirtualTcpConfig cfg;
+  cfg.mode = VirtualTcpMode::kCentroid;
+
+  pinocchio::SE3 T_base_tcp = pinocchio::SE3::Identity();
+  T_base_tcp.translation().x() = std::numeric_limits<double>::quiet_NaN();
+
+  auto fts = MakeBalancedFingertips();
+  auto result = ComputeVirtualTcp(cfg, T_base_tcp, fts);
   EXPECT_FALSE(result.valid);
 }
 

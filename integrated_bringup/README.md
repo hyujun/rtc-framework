@@ -406,6 +406,11 @@ J_vtcp_angular = J_tcp_angular
 
 > **주의:** Centroid/Weighted 모드는 `tree_models`가 활성화되어 있어야 합니다 (hand FK 필요).
 
+모드와 무관하게, 계산된 제어점이나 그것이 딛는 arm TCP pose 에 비유한(non-finite) 값이 섞이면
+`ComputeVirtualTcp` 는 **invalid 을 반환**하고 그 tick 의 vtcp 갱신은 건너뛴다 (직전 제어점 유지).
+가중 평균의 `total_weight` 검사나 centroid 의 활성 개수 검사는 크기 비교라 NaN 을 통과시키므로,
+판정은 발행 직전 값에서 한 번 이뤄진다 (#316).
+
 ##### 제어 frame 계약 (#292)
 
 Virtual TCP 는 **매 tick 유효한 것이 아니다** — hand FK 가 fingertip pose 를 못 내는 tick (closed-chain walk-in, hand device invalid) 에는 제어점이 tool0 로 떨어진다. 이때 목표를 그대로 두면 두 frame 의 차이가 CLIK task error 로 소비되어 arm 이 튄다 (실측 p1b: 0.21 m + ~90°). 따라서 목표에는 **authoring 된 제어 frame** (`ControlFrameId` — vtcp 여부 + 참여 fingertip mask) 이 태깅되고, CLIK 는 그 frame 이 이번 tick 의 제어 frame 과 일치할 때만 돈다 ([support/virtual_tcp.hpp](include/integrated_bringup/support/virtual_tcp.hpp) `ClassifyFrameTransition`).
