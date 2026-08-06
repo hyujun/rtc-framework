@@ -582,6 +582,9 @@ class DemoWbcController final : public RTControllerInterface {
   std::array<bool, kNumFingertips> fingertip_pose_valid_{};
   Eigen::VectorXd hand_q_;  // pre-allocated for serial hand FK
   ClosedChainHandFk closed_hand_fk_;
+  /// #175: 직전 tick 에 본 provider 사영 카운터. borrowed 모드에서 "이번 tick 에 사영이 돌았는가"
+  /// 를 이 값과의 차이로 판정한다 (입력 provenance 는 별개 축 — arm_readable_ && hand_readable_).
+  std::uint32_t last_projection_seq_{0};
 
   // #120: closed-chain 축약 동역학 provider (extended 로봇의 TSID EOM M/h/g 대체). 활성 시
   // combined_cache_.cache().reduced_provider 가 이것을 가리킨다 → 수명은 controller 가 보장.

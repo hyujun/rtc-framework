@@ -211,6 +211,37 @@ void DemoWbcController::ConfigureClosedChainHandFk() {
     }
   }
 
+  // #175: provider 가 활성이면 그 사영을 **빌린다** — 이 컨트롤러는 tick 당 같은 closure 를 두 번
+  // 사영하고 있었다 (provider 가 M/h/g·contact 용으로, 이 래퍼가 fingertip 용으로). 둘은 같은 4개
+  // closure 입력·같은 기본값으로 만들어지므로 사영 결과가 같고, 한쪽을 읽으면 된다.
+  //
+  // 이 분기가 성립하는 이유는 배선 순서다: provider 는 LoadConfig 에서, 이 함수는
+  // OnDeviceConfigsSet 에서 돌므로 여기 도달할 때 provider 활성 여부가 이미 확정돼 있다. 순서가
+  // 뒤집히면 projection() 이 nullptr 이라 아래 owning 경로로 안전하게 떨어진다 (최적화만 잃는다).
+  const auto* projection = wbc_reduced_dynamics_.projection();
+  // 빌린 사영이 **이 컨트롤러가 쓰는 full 모델** 위에 서 있어야 fingertip 이름→fid 해석이 owning
+  // 모드와 같다. 둘 다 builder_ 산출이라 현재는 항상 참이지만, 아니면 조용히 엉뚱한 프레임을
+  // 읽게 되므로 owning 으로 떨어뜨린다.
+  const bool same_model =
+      projection != nullptr && &projection->GetModel() == builder_->GetFullModel().get();
+  if (projection != nullptr && same_model) {
+    const auto res = closed_hand_fk_.ConfigureBorrowed(*projection, tips, hand_root);
+    LogHandFkWiring(logger_, "[wbc]", res, closed_hand_fk_.missing_joint());
+    if (res == HandFkWiringResult::kActive) {
+      RCLCPP_INFO(logger_,
+                  "[wbc] closed-chain hand FK 가 축약 동역학 사영을 공유한다 — tick 당 사영 1회");
+    }
+    return;
+  }
+  if (projection != nullptr) {
+    RCLCPP_WARN(logger_,
+                "[wbc] 축약 동역학 사영이 다른 full 모델 위에 있어 공유하지 않는다 — hand FK 가 "
+                "자기 사영을 돌린다 (tick 당 2회)");
+  }
+
+  // provider 비활성(비-closed-chain · 좌표 미매칭) → 기존 owning 경로. configure-time fallback 은
+  // 이 한 축뿐이다 (per-tick 비대칭은 없다 — fingertip 블록의 게이트가 cache.Update 의 게이트와
+  // 같은 조건이라 "provider 는 쉬는데 fingertip 만 도는" tick 이 생기지 않는다).
   const auto res =
       closed_hand_fk_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
                                 builder_->GetClosureActuatedJointIds(),

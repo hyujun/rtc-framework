@@ -877,7 +877,27 @@ pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noe
 bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
                                                const pinocchio::SE3& tcp) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeHandFingertipFk");
-  if (!RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state)) {
+  if (closed_hand_fk_.active() && !closed_hand_fk_.owns_projection()) {
+    // #175 borrowed: 사영은 이번 tick 의 combined_cache_.Update() 안에서 provider 가 이미 돌렸다.
+    // 여기서 하는 일은 그 결과를 채택할지 판정하는 것뿐이고, 두 축을 AND 한다:
+    //
+    //  (a) 실행 — provider 의 사영 카운터가 이번 tick 에 증가했는가. Stage-1 게이트가 닫혀
+    //      cache.Update 가 아예 안 돈 tick 에는 증가하지 않으므로, 직전 tick 형상을 이번 tick
+    //      것으로 오인하지 않는다.
+    //  (b) 입력 provenance — 그 사영의 **입력 q** 가 전부 이번 tick 측정값인가. cache 는 블록
+    //      단위로 hold 하므로(arm 게이트가 닫히면 전량, hand 게이트가 닫히면 hand 블록) 사영은
+    //      돌았는데 입력이 직전 tick 값인 경우가 있다. (a) 는 이것을 구분하지 못한다.
+    //
+    // (b) 의 술어는 cache 가 블록을 갱신하는 조건 그 자체다 — 같은 IsDeviceReadable 3항(valid ·
+    // 폭 · per-slot freshness)이라 폭 축과 구멍 축이 함께 닫힌다. owning 모드의 per-slot 브릿지
+    // 판정보다 **엄격**하다 (읽지 않는 슬롯의 구멍도 게이트를 닫는다): 채택하던 것을 hold 할 수는
+    // 있어도, hold 하던 것을 채택하지는 않는 방향이다.
+    const std::uint32_t seq = wbc_reduced_dynamics_.projection_seq();
+    const bool projected_this_tick = (seq != last_projection_seq_);
+    last_projection_seq_ = seq;
+    closed_hand_fk_.UpdateFromProjection(projected_this_tick && arm_readable_ && hand_readable_,
+                                         wbc_reduced_dynamics_.kinematic_status());
+  } else if (!RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state)) {
     return false;
   }
   for (std::size_t f = 0; f < kNumFingertips; ++f) {
