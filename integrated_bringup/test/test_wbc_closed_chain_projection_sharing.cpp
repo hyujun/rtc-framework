@@ -152,10 +152,13 @@ TEST_F(ClosedChainProjectionTest, FingertipFkSharesTheReducedDynamicsProjection)
   EXPECT_TRUE(any_valid) << "fingertip TF 가 하나도 안 실린다 — 공유가 pose 를 죽였다";
 }
 
-// ── provenance: 폭 축 (arm narrow) ──────────────────────────────────────────
-//   cache 는 arm 게이트가 닫히면 **어느 블록도** 갱신하지 않는다. 그래도 provider 는 사영을
-//   돌리므로(입력은 직전 tick q) 실행 카운터는 증가한다 — fingertip 이 그것을 fresh 로 채택하면
-//   안 된다.
+// ── arm 게이트가 닫힌 tick (폭 축) ──────────────────────────────────────────
+//   ⚠ 이 테스트가 무엇을 재는지 정확히: arm 게이트가 닫히면 cache 는 **어느 블록도** 갱신하지
+//   않으므로 사영 입력 q 가 직전 tick 과 같고, 따라서 출력도 같다 — 채택하든 hold 하든 값이
+//   동일하다. 즉 이것은 provenance 게이트의 mutation 센서가 **아니다** (게이트를 true 로 고정해도
+//   통과한다. 실측 확인함). 여기서 지키는 것은 cache 의 블록-hold 계약이 fingertip 까지 그대로
+//   전달된다는 것 — fingertip 이 언젠가 자기 q 를 다시 모으는 쪽으로 바뀌면 이 단언이 진다.
+//   게이트 자체의 센서는 아래 MixedFreshnessTick 이다.
 TEST_F(ClosedChainProjectionTest, NarrowArmDoesNotRefreshFingertipPose) {
   WarmUpUntilFingertipValid();
   const ControllerOutput good = last_out_;
@@ -180,9 +183,10 @@ TEST_F(ClosedChainProjectionTest, NarrowArmDoesNotRefreshFingertipPose) {
       << "positive control 실패 — 섭동 자체가 관측 불가능해서 위 단언이 공허하다";
 }
 
-// ── provenance: 구멍 축 (#284) ──────────────────────────────────────────────
-//   폭은 정상인데 이번 메시지가 안 쓴 슬롯이 있는 경우. num_channels 가 멀쩡하므로 폭만 좁히는
-//   fixture 로는 원리적으로 재현되지 않는 축이다.
+// ── arm 게이트가 닫힌 tick (구멍 축, #284) ──────────────────────────────────
+//   폭은 정상인데 이번 메시지가 안 쓴 슬롯이 있는 경우 — num_channels 가 멀쩡하므로 폭만 좁히는
+//   fixture 로는 원리적으로 재현되지 않는 축이다. 위와 같은 이유로 이것도 게이트의 mutation
+//   센서가 아니라 **구멍이 게이트를 닫는다**는 사실(#284)이 이 경로까지 도달하는지의 센서다.
 TEST_F(ClosedChainProjectionTest, HoledArmSlotDoesNotRefreshFingertipPose) {
   WarmUpUntilFingertipValid();
   const ControllerOutput good = last_out_;
@@ -199,22 +203,39 @@ TEST_F(ClosedChainProjectionTest, HoledArmSlotDoesNotRefreshFingertipPose) {
       << "positive control 실패 — 구멍만 메웠는데도 pose 가 안 움직인다";
 }
 
-// ── provenance: hand 축 (#291 all-or-nothing) ───────────────────────────────
-//   arm 은 신선한데 hand 블록만 hold 되는 tick — cache 가 **시간이 섞인** q 를 사영에 넘긴다.
-TEST_F(ClosedChainProjectionTest, NarrowHandDoesNotRefreshFingertipPose) {
-  WarmUpUntilFingertipValid();
-  const ControllerOutput good = last_out_;
-
+// ── ★ 게이트의 진짜 방어선: 한 번도 신선하지 않았던 입력은 TF 를 만들지 못한다 ────
+//
+//   먼저 왜 다른 후보들이 센서가 못 되는지 (실측으로 확인한 것):
+//     - arm 게이트가 닫히면 cache 는 전 블록을 hold 하므로 사영 입력이 직전 tick 과 같다 →
+//       채택하든 hold 하든 값이 같다.
+//     - hand 게이트만 닫히고 팔이 움직인 tick 도 마찬가지다. fingertip 은 **hand-root 상대** 로
+//       캐시되는데 그 상대 변환은 손 관절만의 함수라(팔 관절은 hand-root 상류) 팔이 움직여도
+//       변하지 않는다. 즉 시각이 섞여도 관측값이 갈리지 않는다.
+//
+//   갈리는 것은 **처음부터 신선한 적이 없는** 입력이다. 손이 한 번도 읽히지 않으면 cache 의 손
+//   블록은 측정된 적 없는 초기값에 머무는데, 사영은 그것으로도 성공하고 유한한 pose 를 낸다.
+//   게이트가 없으면 그 pose 가 tick 1 부터 **유효한 fingertip TF 로 발행**된다 — 로봇이 한 번도
+//   취한 적 없는 손 형상이 관측 lane 에 나간다. 통합 전 owning 모드는 소스가 unfresh 면 사영을
+//   건너뛰어 캐시가 비고, TF 가 아예 withheld 됐다. 그 계약을 지키는 것이 provenance 게이트다.
+TEST_F(ClosedChainProjectionTest, NeverFreshHandNeverPublishesAFingertipTf) {
+  // 손을 처음부터 좁게(게이트 닫힘) 둔다 — 팔은 정상이라 cache·사영·TSID 는 계속 돈다.
   state_.devices[1].num_channels = fx::kP1bHandDof - 1;
-  NudgeHand();
-  Tick();
-  EXPECT_TRUE(SamePosition(last_out_, good))
-      << "hand 블록이 hold 된 tick 의 사영을 fingertip 이 fresh 로 채택했다";
 
+  constexpr int kTicks = 600;  // WarmUp 과 같은 예산: 열려 있었다면 진작 유효해졌을 시간
+  for (int i = 0; i < kTicks; ++i) {
+    Tick();
+    ASSERT_FALSE(last_out_.task_link_pose_valid[0])
+        << "tick " << i
+        << ": 손이 한 번도 읽히지 않았는데 fingertip TF 가 발행됐다 — 측정된 적 없는 손 형상이 "
+           "관측 lane 으로 나간다";
+  }
+  EXPECT_GT(ctrl_->ReducedProjectionSeqForTesting(), 0U)
+      << "전제: 그 동안 사영 자체는 계속 돌았다 (실행 카운터만으로는 이 결함을 못 막는다)";
+
+  // 게이트가 열리면 정상적으로 나오기 시작한다 — withhold 가 latch 가 아님을 함께 고정한다.
   state_.devices[1].num_channels = fx::kP1bHandDof;
-  Tick();
-  EXPECT_FALSE(SamePosition(last_out_, good))
-      << "positive control 실패 — hand 폭만 되돌렸는데 pose 가 안 움직인다";
+  WarmUpUntilFingertipValid();
+  EXPECT_TRUE(last_out_.task_link_pose_valid[0]);
 }
 
 // ── 복구: provenance 가 돌아오면 즉시 반영된다 (hold 가 latch 되지 않는다) ────
