@@ -26,15 +26,16 @@ void ClosedChainHandFk::ResetWiring() noexcept {
   bridge_.clear();
   missing_joint_.clear();
   handle_.reset();
-  src_ = nullptr;
+  borrowed_model_ = nullptr;
 }
 
-HandFkWiringResult ClosedChainHandFk::ResolveFrames(std::span<const std::string> fingertip_links,
+HandFkWiringResult ClosedChainHandFk::ResolveFrames(const rub::RtClosedChainHandle& src,
+                                                    std::span<const std::string> fingertip_links,
                                                     std::string_view hand_root_link) {
   // (a) hand-root 프레임 해석 (full model 기준). closed 핸들은 arm-base world 이므로 fingertip 을
   //     hand-root 상대로 표현해야 serial 합성(tcp_pose.act)과 정합한다. 해결 안 되면 비활성(#3).
   if (!hand_root_link.empty()) {
-    hand_root_fid_ = src_->GetFrameId(hand_root_link);
+    hand_root_fid_ = src.GetFrameId(hand_root_link);
     use_hand_root_ = (hand_root_fid_ != 0);
   }
   if (!use_hand_root_) {
@@ -50,13 +51,13 @@ HandFkWiringResult ClosedChainHandFk::ResolveFrames(std::span<const std::string>
     if (fingertip_links[f].empty()) {
       continue;
     }
-    const pinocchio::FrameIndex fid = src_->GetFrameId(fingertip_links[f]);
+    const pinocchio::FrameIndex fid = src.GetFrameId(fingertip_links[f]);
     if (fid == 0) {
       continue;  // full model 에 없는 프레임 — 서비스 불가 (serial 도 id==0 이면 inactive)
     }
     fingertip_fid_[f] = fid;
     fingertip_active_[f] = true;
-    if (src_->IsFrameDownstreamOfLoop(fid)) {
+    if (src.IsFrameDownstreamOfLoop(fid)) {
       fingertip_downstream_[f] = true;
       any_downstream = true;
     }
@@ -91,9 +92,7 @@ HandFkWiringResult ClosedChainHandFk::Configure(
     handle_.reset();
     return HandFkWiringResult::kInactiveConstructionFailed;
   }
-  src_ = handle_.get();
-
-  if (const auto frames = ResolveFrames(fingertip_links, hand_root_link);
+  if (const auto frames = ResolveFrames(*handle_, fingertip_links, hand_root_link);
       frames != HandFkWiringResult::kActive) {
     ResetWiring();
     return frames;
@@ -137,9 +136,13 @@ HandFkWiringResult ClosedChainHandFk::ConfigureBorrowed(
   // 핸들을 만들지 않는다 — 사영은 남이 소유하고 이 래퍼는 읽기만 한다. q_a 브릿지도 필요 없다
   // (사영 입력은 빌려준 쪽이 채우므로, 이 래퍼가 device 에서 q 를 다시 모으면 그 사영과 다른
   // 입력을 보는 셈이 된다). 그래서 owning 이 (c) 에서 하는 일이 여기엔 없다.
-  src_ = &projection;
+  //
+  // 참조도 남기지 않는다: 프레임 해석만 지금 하고, 매 tick 쓸 사영은 UpdateFromProjection 이
+  // 받는다. 소유자가 재구성하면 저장해 둔 포인터는 dangling 이 되고 — 크래시가 아니라 placement
+  // 가 조용히 쓰레기값이 되므로 pose 가 그럴듯하게 틀린다.
+  borrowed_model_ = &projection.GetModel();
 
-  if (const auto frames = ResolveFrames(fingertip_links, hand_root_link);
+  if (const auto frames = ResolveFrames(projection, fingertip_links, hand_root_link);
       frames != HandFkWiringResult::kActive) {
     ResetWiring();
     return frames;
@@ -195,23 +198,30 @@ void ClosedChainHandFk::Update(const rtc::ControllerState& state) noexcept {
   // status 소비를 래퍼가 내부화(#4): 신뢰 가능한 tick 에서만 fingertip pose 캐시를 갱신하고,
   // 아니면(미수렴/특이/held/소스 이상) 직전 유효 pose 를 유지한다. sources_ok 가 false 면 아래
   // trustworthy 가 반드시 false 이므로, Update 를 건너뛴 stale status 를 읽어도 안전하다.
-  ApplyProjection(sources_ok, handle_->GetStatus());
+  ApplyProjection(*handle_, sources_ok, handle_->GetStatus());
 }
 
 void ClosedChainHandFk::UpdateFromProjection(
-    bool projection_fresh, const rub::RtClosedChainHandle::Status& kin_status) noexcept {
+    const rub::RtClosedChainHandle& projection, bool projection_fresh,
+    const rub::RtClosedChainHandle::Status& kin_status) noexcept {
   if (!active_) {
     return;
+  }
+  // 배선 때와 다른 모델의 사영이 오면 프레임 id 가 다른 것을 가리킨다 (id 는 모델 종속).
+  assert(borrowed_model_ == &projection.GetModel() &&
+         "빌린 사영이 배선 시점과 다른 모델 위에 있다 (#175)");
+  if (borrowed_model_ != &projection.GetModel()) {
+    return;  // 캐시 유지 — 엉뚱한 프레임을 읽느니 직전 pose 를 지킨다
   }
   // owning 모드가 이 진입점으로 새면 사영이 아무도 안 돌린 채 정책만 돌아 pose 가 조용히 stale
   // 이 된다 (조회는 성공하므로 증상이 "값이 안 변한다" 뿐이다). Release 는 컴파일 아웃.
   assert(handle_ == nullptr && "owning 모드는 Update(state) 를 쓴다 (#175)");
   // 사영은 이미 남이 돌렸다 — 이 래퍼는 정책만 적용한다. `projection_fresh` 의 두 축(사영이
   // 이번 tick 에 돌았는가 · 그 입력이 이번 tick 측정값인가)은 호출측이 AND 해서 넘긴다.
-  ApplyProjection(projection_fresh, kin_status);
+  ApplyProjection(projection, projection_fresh, kin_status);
 }
 
-void ClosedChainHandFk::ApplyProjection(bool inputs_ok,
+void ClosedChainHandFk::ApplyProjection(const rub::RtClosedChainHandle& src, bool inputs_ok,
                                         const rub::RtClosedChainHandle::Status& st) noexcept {
   // 결과가 유한(입력 유효 && !held && finite closure)하면 사영 내부 data_ 는 현재 actuated q 를
   // 반영한다(사영은 passive 열만 이동, actuated 열은 측정값 고정). 비하류(serial 등가) fingertip 의
@@ -229,8 +239,8 @@ void ClosedChainHandFk::ApplyProjection(bool inputs_ok,
     if (fingertip_downstream_[f] && !loop_trustworthy) {
       continue;  // 하류 tip 은 loop-untrustworthy tick 에서 직전 유효 pose 유지
     }
-    const pinocchio::SE3& tip = src_->GetFramePlacement(fingertip_fid_[f]);
-    last_pose_[f] = src_->GetFramePlacement(hand_root_fid_).actInv(tip);  // hand-root 상대
+    const pinocchio::SE3& tip = src.GetFramePlacement(fingertip_fid_[f]);
+    last_pose_[f] = src.GetFramePlacement(hand_root_fid_).actInv(tip);  // hand-root 상대
     last_pose_valid_[f] = true;
   }
 }
@@ -245,12 +255,12 @@ bool ClosedChainHandFk::GetFingertipHandRootPose(std::size_t f,
 }
 
 rub::RtClosedChainHandle::Status ClosedChainHandFk::status() const noexcept {
-  if (!active_ || src_ == nullptr) {
+  // borrowed 모드는 사영을 들고 있지 않으므로 여기서 답할 수 없다 (소유자에게 물어야 한다).
+  // owning 모드의 소비자만 이 접근자를 쓴다.
+  if (!active_ || handle_ == nullptr) {
     return {};
   }
-  // borrowed 모드에서는 사영 소유자의 **공용** status 다 — 동역학 사유 held 가 섞여 있을 수 있다.
-  // fingertip 정책이 쓰는 값은 이것이 아니라 `UpdateFromProjection` 에 넘어온 운동학 스냅샷이다.
-  return src_->GetStatus();
+  return handle_->GetStatus();
 }
 
 // ── 컨트롤러 wiring 공용 dispatch (task/joint 공유) ───────────────────────────

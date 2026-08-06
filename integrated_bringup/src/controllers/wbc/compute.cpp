@@ -895,8 +895,14 @@ bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
     const std::uint32_t seq = wbc_reduced_dynamics_.projection_seq();
     const bool projected_this_tick = (seq != last_projection_seq_);
     last_projection_seq_ = seq;
-    closed_hand_fk_.UpdateFromProjection(projected_this_tick && arm_readable_ && hand_readable_,
-                                         wbc_reduced_dynamics_.kinematic_status());
+    // 사영은 **매 tick 소유자에게서 다시 받는다** — provider 가 재구성되면(lifecycle 전이가
+    // config 를 다시 로드하는 경로가 실재한다) 이전 핸들은 파괴되므로, 래퍼가 포인터를 들고
+    // 있었다면 조용히 쓰레기 placement 를 읽는다.
+    if (const auto* projection = wbc_reduced_dynamics_.projection(); projection != nullptr) {
+      closed_hand_fk_.UpdateFromProjection(
+          *projection, projected_this_tick && arm_readable_ && hand_readable_,
+          wbc_reduced_dynamics_.kinematic_status());
+    }
   } else if (!RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state)) {
     return false;
   }

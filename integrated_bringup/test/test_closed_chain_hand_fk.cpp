@@ -302,7 +302,7 @@ TEST(ClosedChainHandFk, BorrowedMatchesOwningBitForBit) {
     owning.Update(MakeState(q));
     // 빌려준 쪽이 사영한다 → 그 직후 status 가 운동학 스냅샷이다.
     const auto kin = external.Update(std::vector<double>{q});
-    borrowed.UpdateFromProjection(/*projection_fresh=*/true, kin);
+    borrowed.UpdateFromProjection(external, /*projection_fresh=*/true, kin);
 
     for (std::size_t f = 0; f < 2; ++f) {
       pinocchio::SE3 a, b;
@@ -330,7 +330,7 @@ TEST(ClosedChainHandFk, BorrowedHoldsWhenProjectionNotFresh) {
             ib::HandFkWiringResult::kActive);
 
   const auto kin0 = external.Update(std::vector<double>{0.2});
-  fk.UpdateFromProjection(true, kin0);
+  fk.UpdateFromProjection(external, true, kin0);
   pinocchio::SE3 good;
   ASSERT_TRUE(fk.GetFingertipHandRootPose(0, good));
 
@@ -343,7 +343,7 @@ TEST(ClosedChainHandFk, BorrowedHoldsWhenProjectionNotFresh) {
   constexpr double kStep = 0.23;  // |0.23 - 0.2| = 0.03 < 0.05
   const auto kin1 = external.Update(std::vector<double>{kStep});
   ASSERT_FALSE(kin1.held) << "클램프에 걸리면 이 테스트는 provenance 축을 재지 못한다";
-  fk.UpdateFromProjection(/*projection_fresh=*/false, kin1);
+  fk.UpdateFromProjection(external, /*projection_fresh=*/false, kin1);
   pinocchio::SE3 held;
   ASSERT_TRUE(fk.GetFingertipHandRootPose(0, held));
   EXPECT_EQ(held.translation(), good.translation())
@@ -352,7 +352,7 @@ TEST(ClosedChainHandFk, BorrowedHoldsWhenProjectionNotFresh) {
   // provenance 가 돌아오면 즉시 반영된다 (hold 가 latch 되지 않는다).
   const auto kin2 = external.Update(std::vector<double>{kStep});
   ASSERT_FALSE(kin2.held);
-  fk.UpdateFromProjection(true, kin2);
+  fk.UpdateFromProjection(external, true, kin2);
   pinocchio::SE3 fresh;
   ASSERT_TRUE(fk.GetFingertipHandRootPose(0, fresh));
   EXPECT_NE(fresh.translation(), good.translation());
@@ -360,7 +360,7 @@ TEST(ClosedChainHandFk, BorrowedHoldsWhenProjectionNotFresh) {
   // 운동학 스냅샷이 held 면 (예: 사영 입력 비유한) 역시 직전 값을 지킨다.
   const auto kin_held = external.Update(std::vector<double>{std::nan("")});
   ASSERT_TRUE(kin_held.held);
-  fk.UpdateFromProjection(true, kin_held);
+  fk.UpdateFromProjection(external, true, kin_held);
   pinocchio::SE3 after_nan;
   ASSERT_TRUE(fk.GetFingertipHandRootPose(0, after_nan));
   EXPECT_EQ(after_nan.translation(), fresh.translation()) << "held 사영은 채택하지 않는다";

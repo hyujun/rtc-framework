@@ -298,6 +298,24 @@ class DemoWbcController final : public RTControllerInterface {
     return pod;
   }
 
+  // #175: "closed-chain 사영이 tick 당 1회" 는 밖에서 관측할 물리량이 없다 — 두 소비자가 같은
+  // 사영을 읽으면 값이 같아서 pose 만 보고는 1회인지 2회인지 알 수 없다. 그래서 wrapper 축
+  // 카운터를 노출한다 (rtc_urdf_bridge 에는 virtual seam 도 rtc_base 의존도 없어 그 패키지에
+  // 계측을 넣을 수 없다). 배선 축: fingertip FK 가 provider 사영을 빌렸는가.
+  [[nodiscard]] bool HandFkSharesProjectionForTesting() const noexcept {
+    return closed_hand_fk_.active() && !closed_hand_fk_.owns_projection();
+  }
+
+  /// fingertip FK 가 **직접** 돌린 사영 횟수 (공유 중이면 영원히 0).
+  [[nodiscard]] std::uint32_t HandFkProjectionCountForTesting() const noexcept {
+    return closed_hand_fk_.projection_count();
+  }
+
+  /// 축약 동역학 provider 가 돌린 사영 횟수 (tick 당 1 증가).
+  [[nodiscard]] std::uint32_t ReducedProjectionSeqForTesting() const noexcept {
+    return wbc_reduced_dynamics_.projection_seq();
+  }
+
   [[nodiscard]] int GetReleaseStageForTesting() const noexcept { return release_stage_; }
 
   [[nodiscard]] double GetReleaseElapsedSecForTesting() const noexcept {
