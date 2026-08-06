@@ -373,6 +373,65 @@ TEST_F(ClikReferenceTest, VelocityLimitClampsPerJoint) {
   EXPECT_LE(gen.VRef().cwiseAbs().maxCoeff(), v_limit + 1e-5);
 }
 
+// Position box, already-violating joint: the inverted-box collapse must stay
+// velocity-bounded in BOTH directions and be symmetric between them.
+//
+// The consumer wires this box to the MARGIN-CLAMPED envelope (q_limit ∓
+// position_margin, shipped 0.02 rad), so "already violating" is an ordinary
+// pose parked inside the margin band, not a joint past its hard limit — and
+// v_ref leaves as the device command velocity. The collapse lands on `hi` in
+// both directions: that is +v_limit below q_min (bounded) but the raw
+// (q_max − q)/dt above q_max, which grows without bound as dt shrinks. Only
+// the upper case regresses when the re-clamp is removed; the lower case
+// passes either way, and that asymmetry is the defect this pins.
+TEST_F(ClikReferenceTest, PositionBoxRecoveryIsVelocityBoundedBothDirections) {
+  constexpr double kVLimit = 0.2;
+  constexpr double kDt = 0.01;
+  constexpr double kHalfWidth = 0.1;   // envelope half-width around home
+  constexpr double kViolation = 0.05;  // past the envelope → 5 rad/s if unclamped
+
+  const Eigen::VectorXd q_min = q_home_.array() - kHalfWidth;
+  const Eigen::VectorXd q_max = q_home_.array() + kHalfWidth;
+
+  auto make_boxed = [&]() {
+    ClikReferenceGenerator gen;
+    ClikReferenceGenerator::Config cfg;
+    cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+    cfg.hand_v_idx = {7, 8};
+    cfg.damping_sq = 1e-6;
+    cfg.v_limit = kVLimit;
+    cfg.q_min = q_min;
+    cfg.q_max = q_max;
+    gen.Init(robot_info_.nv, cfg);
+    return gen;
+  };
+
+  // Drive joint 0 out of the envelope with every reference term zeroed (desired
+  // pose = current, posture target = measured), so v_ref(0) is the box alone.
+  auto solve_at = [&](const Eigen::VectorXd& q) {
+    cache_.Update(q, v_zero_);
+    auto gen = make_boxed();
+    EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, TipInBase(), q, kDt));
+    return gen.VRef()(0);
+  };
+
+  Eigen::VectorXd q_below = q_home_;
+  q_below(0) -= kHalfWidth + kViolation;
+  const double v_below = solve_at(q_below);
+
+  Eigen::VectorXd q_above = q_home_;
+  q_above(0) += kHalfWidth + kViolation;
+  const double v_above = solve_at(q_above);
+
+  // Recovery still runs at the full velocity limit — bounded, not disabled.
+  EXPECT_LE(std::abs(v_below), kVLimit + 1e-5);
+  EXPECT_LE(std::abs(v_above), kVLimit + 1e-5);
+  EXPECT_NEAR(v_below, kVLimit, 1e-4);
+  EXPECT_NEAR(v_above, -kVLimit, 1e-4);
+  // Same violation on either side → same recovery speed, opposite sign.
+  EXPECT_NEAR(v_below, -v_above, 1e-4);
+}
+
 // ── ⑤ RT zero-alloc Compute ───────────────────────────────────────────────
 TEST_F(ClikReferenceTest, ComputeIsAllocationFree) {
   auto gen = MakeGenerator(1e-6, 1.5);
