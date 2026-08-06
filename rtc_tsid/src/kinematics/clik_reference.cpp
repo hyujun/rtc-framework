@@ -198,10 +198,17 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
     }
     // NUM guard: an already-limit-violating joint can invert the box (lo > hi).
     // Collapse onto the limit-respecting bound so only motion back toward the
-    // feasible set is allowed (v_limit may be exceeded in that recovery
-    // direction — intentional, the violation must be corrected).
+    // feasible set is allowed, then re-apply the velocity box to the collapsed
+    // value. The collapse lands on `hi` in BOTH directions, and that is
+    // +v_limit below q_min but the raw (q_max − qᵢ)/dt above q_max — unbounded
+    // in the violation size and growing as dt shrinks (a joint ε past the
+    // envelope would command −ε/dt, and v_ref leaves as the device command
+    // velocity). Recovery still runs at the full limit; only its magnitude is
+    // bounded, and the two directions become symmetric. With the velocity box
+    // off (v_limit ≤ 0) there is no bound to fall back on, so it stays raw.
     if (lo > hi) {
-      lo = hi;
+      lo = vel_box ? std::clamp(hi, -v_limit_, v_limit_) : hi;
+      hi = lo;
     }
     l(i) = lo;
     u(i) = hi;

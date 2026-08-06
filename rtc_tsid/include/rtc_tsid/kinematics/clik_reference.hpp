@@ -43,9 +43,12 @@ namespace rtc::tsid {
 //   lᵢ = max(−v_limit, (q_minᵢ − qᵢ)/dt),  uᵢ = min(+v_limit, (q_maxᵢ − qᵢ)/dt).
 // When already limit-violating (qᵢ out of [q_min,q_max]) the box can invert
 // (lᵢ > uᵢ); it is forced feasible by lᵢ ← min(lᵢ, uᵢ) so only motion back
-// toward the feasible set is allowed (v_limit may be exceeded in that
-// recovery direction — intentional). v_limit ≤ 0 disables the velocity bound;
-// an empty q_min/q_max disables the position bound (±∞).
+// toward the feasible set is allowed, and the collapsed value is re-clamped to
+// [−v_limit, +v_limit] — recovery runs at the full limit but never past it, in
+// either direction (the raw collapse is bounded below q_min and unbounded
+// above q_max). v_limit ≤ 0 disables the velocity bound, which also leaves the
+// collapsed recovery unbounded; an empty q_min/q_max disables the position
+// bound (±∞).
 //
 // Error convention: the SHARED helper kinematics/se3_error.hpp
 // (ComputeTaskPoseError) — identical to SE3Task / ObjectSE3Task (dynamics WBC),

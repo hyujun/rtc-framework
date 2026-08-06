@@ -187,6 +187,23 @@ struct VirtualTcpResult {
   }
 
   result.world_pose = T_base_tcp.act(result.T_tcp_vtcp);
+
+  // Finiteness gate. Every guard above is a MAGNITUDE test and a NaN fails all
+  // of them: `total_weight <= 0.0` is false for a NaN weight (one non-finite
+  // force_magnitude poisons the whole sum), and a non-finite position_in_tcp
+  // never reaches the centroid `count` at all. Without this the result leaves
+  // with valid=true and a NaN pose, which the caller latches as its control
+  // point. Judging the published value once, here, covers all three modes plus
+  // a non-finite T_base_tcp with one branch; invalid keeps the caller's
+  // existing hold-last-good behaviour, and the reset keeps the "invalid ⇒
+  // untouched identity" shape the disabled/inactive paths already return.
+  if (!result.T_tcp_vtcp.translation().allFinite() || !result.T_tcp_vtcp.rotation().allFinite() ||
+      !result.world_pose.translation().allFinite() || !result.world_pose.rotation().allFinite()) {
+    result.T_tcp_vtcp = pinocchio::SE3::Identity();
+    result.world_pose = pinocchio::SE3::Identity();
+    return result;
+  }
+
   result.valid = true;
   return result;
 }
