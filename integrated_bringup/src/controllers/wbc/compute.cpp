@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <span>
 
@@ -877,7 +878,40 @@ pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noe
 bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
                                                const pinocchio::SE3& tcp) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeHandFingertipFk");
-  if (!RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state)) {
+  if (closed_hand_fk_.active() && !closed_hand_fk_.owns_projection()) {
+    // #175 borrowed: 사영은 이번 tick 의 combined_cache_.Update() 안에서 provider 가 이미 돌렸다.
+    // 여기서 하는 일은 그 결과를 채택할지 판정하는 것뿐이고, 두 축을 AND 한다:
+    //
+    //  (a) 실행 — provider 의 사영 카운터가 이번 tick 에 증가했는가. Stage-1 게이트가 닫혀
+    //      cache.Update 가 아예 안 돈 tick 에는 증가하지 않으므로, 직전 tick 형상을 이번 tick
+    //      것으로 오인하지 않는다.
+    //  (b) 입력 provenance — 그 사영의 **입력 q** 가 전부 이번 tick 측정값인가. cache 는 블록
+    //      단위로 hold 하므로(arm 게이트가 닫히면 전량, hand 게이트가 닫히면 hand 블록) 사영은
+    //      돌았는데 입력이 직전 tick 값인 경우가 있다. (a) 는 이것을 구분하지 못한다.
+    //
+    // (b) 의 술어는 cache 가 블록을 갱신하는 조건 그 자체다 — 같은 IsDeviceReadable 3항(valid ·
+    // 폭 · per-slot freshness)이라 폭 축과 구멍 축이 함께 닫힌다. owning 모드의 per-slot 브릿지
+    // 판정보다 **엄격**하다 (읽지 않는 슬롯의 구멍도 게이트를 닫는다): 채택하던 것을 hold 할 수는
+    // 있어도, hold 하던 것을 채택하지는 않는 방향이다.
+    const std::uint32_t seq = wbc_reduced_dynamics_.projection_seq();
+    const bool projected_this_tick = (seq != last_projection_seq_);
+    last_projection_seq_ = seq;
+    // 사영은 **매 tick 소유자에게서 다시 받는다** — provider 가 재구성되면(lifecycle 전이가
+    // config 를 다시 로드하는 경로가 실재한다) 이전 핸들은 파괴되므로, 래퍼가 포인터를 들고
+    // 있었다면 조용히 쓰레기 placement 를 읽는다.
+    const auto* projection = wbc_reduced_dynamics_.projection();
+    if (projection == nullptr) {
+      // borrowed 로 배선됐는데 빌릴 사영이 사라졌다 — provider 가 배선(OnDeviceConfigsSet) 이후에
+      // 비활성화된 경우뿐이고 설계상 열리지 않는 상태다. 조용히 지나가면 래퍼가 직전 pose 를
+      // 무기한 유효한 것으로 계속 서비스하므로(자기 사영을 돌릴 수단이 없다) **withhold** 한다:
+      // 호출측이 이번 tick 의 fingertip_pose_valid_ 를 이미 전부 false 로 리셋했으므로 여기서
+      // 빠져나가면 TF 가 관측 lane 에서 사라진다. RT tick 이라 로깅으로는 못 알린다 (RT-1/RT-3).
+      return false;
+    }
+    closed_hand_fk_.UpdateFromProjection(*projection,
+                                         projected_this_tick && arm_readable_ && hand_readable_,
+                                         wbc_reduced_dynamics_.kinematic_status());
+  } else if (!RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state)) {
     return false;
   }
   for (std::size_t f = 0; f < kNumFingertips; ++f) {

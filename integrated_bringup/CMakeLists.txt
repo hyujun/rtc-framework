@@ -534,6 +534,31 @@ if(BUILD_TESTING)
   target_compile_definitions(test_demo_wbc_config_lint PRIVATE
     RTC_WBC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
 
+  # ── #175: closed-chain 사영 공유 (컨트롤러 레벨) ───────────────────────────
+  # 실제 ur5e_p1b URDF+closure 와 shipped WBC config 로 bring-up 을 재생한다 —
+  # 사영 2→1 계측과 입력 provenance 는 URDF 없는 하네스에서는 관측되지 않는다.
+  ament_add_gtest(test_wbc_closed_chain_projection_sharing
+    test/test_wbc_closed_chain_projection_sharing.cpp
+    ENV ROS_DOMAIN_ID=53
+    TIMEOUT 300)
+  target_link_libraries(test_wbc_closed_chain_projection_sharing
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_wbc_closed_chain_projection_sharing PRIVATE
+    RTC_WBC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_wbc_closed_chain_projection_sharing
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    rtc_tsid
+    pinocchio
+    Eigen3
+  )
+
   # ── demo_wbc_controller MPC integration tests (Phase 5) ────────────────────
   ament_add_gtest(test_demo_wbc_mpc_integration
     test/test_demo_wbc_mpc_integration.cpp)

@@ -21,6 +21,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -71,6 +72,11 @@ enum class HandFkWiringResult {
 /// 핸들이 해를 커밋하지 않아 **같은 입력이 계속 들어오면 무기한** 이어질 수 있다. 그 구간 내내
 /// fingertip pose 는 조용히 stale 이므로, 오래가는 held 는 `status().held_ticks` 로 관측해
 /// off-RT 진단으로 넘긴다 (예상 walk-in ≈ `⌈Δ/max_seed_increment⌉` tick).
+///
+/// ⚠ 위 진단 처방은 **owning 모드에 한정**된다. borrowed 모드(@ref ConfigureBorrowed)에서는 이
+/// 래퍼가 핸들을 들고 있지 않으므로 @ref status 가 답할 수 없고 기본값(held=false·held_ticks=0)을
+/// 돌린다 — "건강함" 이 아니라 **"모름"** 이다. 그 모드의 진단은 사영 소유자에게 묻는다
+/// (`WbcReducedDynamicsProvider::kinematic_status()`).
 class ClosedChainHandFk {
  public:
   static constexpr std::size_t kMaxFingertips = 4;
@@ -110,6 +116,55 @@ class ClosedChainHandFk {
   /// 유효 해)를 유지한다 — status 소비를 래퍼가 내부화한다.
   void Update(const rtc::ControllerState& state) noexcept;
 
+  // ── (#175) borrowed 모드 — 사영을 남이 돌리고 이 래퍼는 정책만 적용한다 ────────
+  //
+  // WBC 는 closed-chain tick 마다 `WbcReducedDynamicsProvider` 가 이미 같은 closure 를 사영한다.
+  // 그 tick 에 이 래퍼까지 자기 핸들로 한 번 더 사영하면 사영이 2회가 된다 — borrowed 모드는
+  // 그 두 번째를 지운다. **정책(하류 판정 · finite/trust 게이트 · hand-root 상대 · last_pose
+  // hold)은 owning 모드와 같은 코드**를 타고, 달라지는 것은 사영을 누가 돌렸는가 하나뿐이다.
+
+  /// @brief 외부 사영을 **빌려** 배선한다 (핸들 비소유, non-RT).
+  ///
+  /// ⚠ 이 래퍼는 @p projection 을 **저장하지 않는다** — 프레임 id·하류 판정만 뽑아 두고, 매 tick
+  /// 쓸 사영은 @ref UpdateFromProjection 이 인자로 받는다. 포인터를 들고 있으면 소유자가
+  /// 재구성(예: lifecycle 전이가 config 를 다시 로드)하는 순간 dangling 이 되는데, 그 증상은
+  /// 크래시가 아니라 **placement 가 조용히 쓰레기값**이라 pose 가 그럴듯하게 틀린다.
+  /// @param projection 배선 시점의 사영 — 프레임 해석에만 쓰이고 참조는 남지 않는다.
+  /// @param fingertip_links / @param hand_root_link / @param closure_error_threshold — owning
+  ///   @ref Configure 와 동일 의미. q_a 브릿지는 만들지 않는다 (사영 입력은 빌려준 쪽 소관).
+  /// @return `kActive` 또는 프레임 해결 실패 사유. 소유 모드 전용 사유
+  ///   (`kInactiveNoClosure`/`kInactiveConstructionFailed`/`kInactiveBridgeIncomplete`)는 나오지
+  ///   않는다 — 호출측이 이미 활성 사영을 갖고 있을 때만 부르기 때문.
+  [[nodiscard]] HandFkWiringResult ConfigureBorrowed(
+      const rtc_urdf_bridge::RtClosedChainHandle& projection,
+      std::span<const std::string> fingertip_links, std::string_view hand_root_link,
+      double closure_error_threshold = 1e-3);
+
+  /// @brief 빌린 사영 결과로 fingertip pose 캐시를 갱신한다 (**사영하지 않는다**). **RT-safe.**
+  /// @param projection 이번 tick 에 쓸 사영. 호출측이 매 tick 소유자에게서 다시 얻어 넘긴다 —
+  ///   그래야 소유자가 재구성해도 이 래퍼가 죽은 핸들을 읽지 않는다.
+  /// @param projection_fresh 이 tick 의 사영을 신뢰해도 되는가. 호출측이 **두 사실을 AND** 해서
+  ///   넘겨야 한다: (a) 이번 tick 에 사영이 실제로 돌았고(사영 소유자의 실행 카운터 증가),
+  ///   (b) 그 사영의 입력 q 가 전부 이번 tick 측정값이다(**입력 provenance** — 캐시가 블록을
+  ///   hold 한 tick 은 false). (a) 만으로는 부족하다: 사영이 이번 tick 에 돌아도 입력이 직전
+  ///   tick 값이면 결과는 stale 인데 실행 사실만으로는 그것을 구분할 수 없다.
+  /// @param kin_status 사영 **직후**(동역학 갱신 전) status. 동역학 사유의 held 를 여기 넘기면
+  ///   유효한 pose 를 버리게 된다 — 사영 소유자가 스냅샷을 제공한다.
+  void UpdateFromProjection(
+      const rtc_urdf_bridge::RtClosedChainHandle& projection, bool projection_fresh,
+      const rtc_urdf_bridge::RtClosedChainHandle::Status& kin_status) noexcept;
+
+  /// @brief 이 래퍼가 사영 핸들을 **소유**하는가. 배선 단언용.
+  /// @note 술어는 "핸들을 갖고 있는가" 이므로 **비활성 래퍼도 false** 다 — false 를 곧바로
+  ///   "borrowed" 로 읽지 말 것. borrowed 판정은 `active() && !owns_projection()` 이다
+  ///   (모든 호출처가 그 형태를 쓴다).
+  [[nodiscard]] bool owns_projection() const noexcept { return handle_ != nullptr; }
+
+  /// @brief 이 래퍼가 직접 돌린 사영 횟수. borrowed 모드에서는 절대 증가하지 않으므로
+  ///   "tick 당 사영 1회" 를 wrapper 축에서 재는 계측 지점이다 (`rtc_urdf_bridge` 무변경).
+  ///   재배선(`Configure`/`ConfigureBorrowed`) 시 0 으로 돌아간다 — 현재 배선의 횟수다.
+  [[nodiscard]] std::uint32_t projection_count() const noexcept { return projection_count_; }
+
   /// @brief fingertip @p f 의 **hand-root 상대** placement(직전 신뢰 tick 값)를 @p out 에 기록.
   /// @return 활성 fingertip 이고 유효 캐시가 있으면 true. 비활성/OOB/캐시없음이면 false (out
   /// 미변경).
@@ -118,6 +173,10 @@ class ClosedChainHandFk {
   [[nodiscard]] bool GetFingertipHandRootPose(std::size_t f, pinocchio::SE3& out) const noexcept;
 
   /// @brief 직전 Update 의 loop-consistency/특이 상태.
+  /// @note **owning 모드 전용**이다. borrowed 모드/비활성에서는 핸들이 없어 답할 수 없고
+  ///   기본값(held=false · held_ticks=0 · closure_error=0)을 돌린다 — "건강함" 이 아니라 "모름"
+  ///   이므로 그대로 진단에 쓰면 무기한 held 를 수렴 중으로 읽는다. borrowed 소비자는 사영
+  ///   소유자의 status 를 읽는다 (#175).
   [[nodiscard]] rtc_urdf_bridge::RtClosedChainHandle::Status status() const noexcept;
 
   /// @brief 브릿지 미완성 시(kInactiveBridgeIncomplete) 매핑 실패한 관절 이름 (로깅용).
@@ -129,7 +188,28 @@ class ClosedChainHandFk {
     int channel{0};  ///< device.positions 내 channel (= joint_state_names 위치)
   };
 
+  /// Configure 의 (a) hand-root · (b) fingertip 프레임 해석 — owning/borrowed 공용 (non-RT).
+  /// 넘어온 사영 위에서 판정하므로 두 모드가 같은 topology 결론을 얻는다.
+  [[nodiscard]] HandFkWiringResult ResolveFrames(const rtc_urdf_bridge::RtClosedChainHandle& src,
+                                                 std::span<const std::string> fingertip_links,
+                                                 std::string_view hand_root_link);
+
+  /// 사영 결과에 정책을 적용해 fingertip pose 캐시를 갱신한다 — **두 모드의 유일한 정책 코드**.
+  /// @param inputs_ok 이번 tick 사영 입력을 신뢰하는가 (owning: 소스 per-slot freshness /
+  ///   borrowed: 호출측이 준 provenance).
+  void ApplyProjection(const rtc_urdf_bridge::RtClosedChainHandle& src, bool inputs_ok,
+                       const rtc_urdf_bridge::RtClosedChainHandle::Status& st) noexcept;
+
+  /// 모든 배선 상태를 초기화 (threshold 제외 — Configure 진입 시 설정된다).
+  void ResetWiring() noexcept;
+
   std::unique_ptr<rtc_urdf_bridge::RtClosedChainHandle> handle_;
+  /// borrowed 모드에서 배선 시점 사영이 서 있던 모델. 매 tick 넘어오는 사영이 같은 모델 위에
+  /// 있는지 debug 빌드에서 확인한다 (프레임 id 는 모델 종속이므로 다른 모델이면 엉뚱한 프레임을
+  /// 읽는다). **핸들 자체는 저장하지 않는다** — 소유자가 재구성하면 dangling 이 된다.
+  const pinocchio::Model* borrowed_model_{nullptr};
+  /// 이 래퍼가 직접 돌린 사영 횟수 (borrowed 모드에서는 증가하지 않는다). @ref projection_count.
+  std::uint32_t projection_count_{0};
   bool active_{false};
   bool use_hand_root_{false};
   double closure_error_threshold_{1e-3};
@@ -156,6 +236,11 @@ class ClosedChainHandFk {
 /// @brief 이번 tick 의 hand FK 를 실행한다: closed 활성이면 @p fk.Update(state), 아니면 serial
 ///   @p hand_handle 의 ComputeForwardKinematics(measured hand q). **RT-safe.**
 /// @return hand device(devices[1]) 가 유효해 FK 를 돌렸으면 true.
+/// @note **owning 래퍼만 구동한다** — borrowed 래퍼(@ref ClosedChainHandFk::ConfigureBorrowed)를
+///   넘기면 사영할 수단이 없으므로 false 를 돌려 withhold 시킨다 (조용한 stale 방지). WBC 의
+///   borrowed 경로는 이 dispatch 를 **우회**하고 `UpdateFromProjection` 을 직접 부른다: 채택
+///   판정에 필요한 provenance(사영 소유자의 실행 카운터 · 컨트롤러의 device readability)가
+///   task/joint 에는 없는 WBC 전용 상태라 여기 접을 수 없다 (#175).
 [[nodiscard]] bool RunHandForwardKinematics(ClosedChainHandFk& fk,
                                             rtc_urdf_bridge::RtModelHandle* hand_handle,
                                             Eigen::VectorXd& hand_q,

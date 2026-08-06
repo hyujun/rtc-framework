@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -267,4 +268,185 @@ TEST(ClosedChainHandFk, NoClosureInactive) {
   fk.Update(MakeState(0.2));
   pinocchio::SE3 out;
   EXPECT_FALSE(fk.GetFingertipHandRootPose(0, out));
+}
+
+// ── (#175) borrowed 모드 — 사영은 남이 돌리고 이 래퍼는 정책만 적용한다 ──────────
+
+// 두 모드가 **같은 궤적에서 비트 동일한 fingertip pose** 를 낸다 (#175 exact 항목).
+//   owning 은 자기 핸들을 사영하고 borrowed 는 외부 핸들의 결과를 읽는데, 둘에 같은 q 를 먹이면
+//   결과가 갈릴 이유가 없어야 한다 — 갈린다면 정책 코드가 두 벌로 갈라진 것이다.
+//   ⚠ 이 테스트가 덮지 **못하는** 축: 두 모드의 입력 provenance 차이. 여기서는 같은 q 를 손으로
+//   먹이므로 그 축은 원리적으로 관측되지 않는다 (컨트롤러 레벨 테스트의 몫).
+TEST(ClosedChainHandFk, BorrowedMatchesOwningBitForBit) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  const Eigen::VectorXd seed = ConvergedSeed(ccm, model);
+
+  ib::ClosedChainHandFk owning;
+  ASSERT_EQ(owning.Configure(model, ccm.constraints, ccm.actuated_joint_ids, seed, {{"j_crank"}},
+                             std::vector<std::string>{"c1", "crank_link"}, kHandRoot),
+            ib::HandFkWiringResult::kActive);
+  EXPECT_TRUE(owning.owns_projection());
+
+  // borrowed: 사영은 테스트가 소유한 외부 핸들이 돌린다 (프로덕션에서는 provider).
+  rub::RtClosedChainHandle external(model, ccm.constraints, ccm.actuated_joint_ids, seed);
+  ib::ClosedChainHandFk borrowed;
+  ASSERT_EQ(
+      borrowed.ConfigureBorrowed(external, std::vector<std::string>{"c1", "crank_link"}, kHandRoot),
+      ib::HandFkWiringResult::kActive);
+  EXPECT_FALSE(borrowed.owns_projection()) << "borrowed 는 핸들을 소유하지 않는다";
+
+  constexpr int kTicks = 200;
+  constexpr double kCenter = 0.2, kAmp = 0.05;
+  for (int t = 0; t < kTicks; ++t) {
+    const double q = kCenter + kAmp * std::sin(0.05 * t);
+    owning.Update(MakeState(q));
+    // 빌려준 쪽이 사영한다 → 그 직후 status 가 운동학 스냅샷이다.
+    const auto kin = external.Update(std::vector<double>{q});
+    borrowed.UpdateFromProjection(external, /*projection_fresh=*/true, kin);
+
+    for (std::size_t f = 0; f < 2; ++f) {
+      pinocchio::SE3 a, b;
+      ASSERT_EQ(owning.GetFingertipHandRootPose(f, a), borrowed.GetFingertipHandRootPose(f, b))
+          << "tick " << t << " fingertip " << f << ": 유효성 판정이 갈렸다";
+      EXPECT_EQ(a.translation(), b.translation()) << "tick " << t << " fingertip " << f;
+      EXPECT_EQ(a.rotation(), b.rotation()) << "tick " << t << " fingertip " << f;
+    }
+  }
+
+  // 계측 축(#175): owning 은 tick 마다 사영하고 borrowed 는 한 번도 사영하지 않는다.
+  EXPECT_EQ(owning.projection_count(), static_cast<std::uint32_t>(kTicks));
+  EXPECT_EQ(borrowed.projection_count(), 0U) << "borrowed 가 사영하면 2→1 이 무너진다";
+}
+
+// borrowed 모드도 정책은 같다: untrustworthy 사영이면 직전 유효 pose 를 hold ────────
+TEST(ClosedChainHandFk, BorrowedHoldsWhenProjectionNotFresh) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  const Eigen::VectorXd seed = ConvergedSeed(ccm, model);
+
+  rub::RtClosedChainHandle external(model, ccm.constraints, ccm.actuated_joint_ids, seed);
+  ib::ClosedChainHandFk fk;
+  ASSERT_EQ(fk.ConfigureBorrowed(external, std::vector<std::string>{"c1"}, kHandRoot),
+            ib::HandFkWiringResult::kActive);
+
+  const auto kin0 = external.Update(std::vector<double>{0.2});
+  fk.UpdateFromProjection(external, true, kin0);
+  pinocchio::SE3 good;
+  ASSERT_TRUE(fk.GetFingertipHandRootPose(0, good));
+
+  // 사영은 정상인데 **입력 provenance 가 아니다** → 캐시 hold. 이것이 컨트롤러가 cache-hold
+  // 블록으로 돌린 사영을 fingertip 이 fresh 로 채택하지 않게 만드는 지점이다 (#175).
+  //
+  // 스텝은 seed clamp(kDefaultActuatedIncrement = 0.05) 안에 둔다 — 넘기면 사영이 walk-in 으로
+  // held 가 되어 아래 "provenance 복귀 = 즉시 반영" 이 held 때문에 통과/실패하게 되고, 재려던
+  // provenance 축이 아니라 클램프 축을 재게 된다.
+  constexpr double kStep = 0.23;  // |0.23 - 0.2| = 0.03 < 0.05
+  const auto kin1 = external.Update(std::vector<double>{kStep});
+  ASSERT_FALSE(kin1.held) << "클램프에 걸리면 이 테스트는 provenance 축을 재지 못한다";
+  fk.UpdateFromProjection(external, /*projection_fresh=*/false, kin1);
+  pinocchio::SE3 held;
+  ASSERT_TRUE(fk.GetFingertipHandRootPose(0, held));
+  EXPECT_EQ(held.translation(), good.translation())
+      << "provenance 가 아니면 사영이 신선해도 채택하면 안 된다";
+
+  // provenance 가 돌아오면 즉시 반영된다 (hold 가 latch 되지 않는다).
+  const auto kin2 = external.Update(std::vector<double>{kStep});
+  ASSERT_FALSE(kin2.held);
+  fk.UpdateFromProjection(external, true, kin2);
+  pinocchio::SE3 fresh;
+  ASSERT_TRUE(fk.GetFingertipHandRootPose(0, fresh));
+  EXPECT_NE(fresh.translation(), good.translation());
+
+  // 운동학 스냅샷이 held 면 (예: 사영 입력 비유한) 역시 직전 값을 지킨다.
+  const auto kin_held = external.Update(std::vector<double>{std::nan("")});
+  ASSERT_TRUE(kin_held.held);
+  fk.UpdateFromProjection(external, true, kin_held);
+  pinocchio::SE3 after_nan;
+  ASSERT_TRUE(fk.GetFingertipHandRootPose(0, after_nan));
+  EXPECT_EQ(after_nan.translation(), fresh.translation()) << "held 사영은 채택하지 않는다";
+}
+
+// 프레임 해결 실패는 borrowed 에서도 같은 사유로 비활성이 된다 (owning 과 대칭) ──────
+TEST(ClosedChainHandFk, BorrowedFrameResolutionFailures) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  const Eigen::VectorXd seed = ConvergedSeed(ccm, model);
+  rub::RtClosedChainHandle external(model, ccm.constraints, ccm.actuated_joint_ids, seed);
+
+  {
+    ib::ClosedChainHandFk fk;
+    EXPECT_EQ(fk.ConfigureBorrowed(external, std::vector<std::string>{"c1"}, "no_such_link"),
+              ib::HandFkWiringResult::kInactiveNoHandRoot);
+    EXPECT_FALSE(fk.active());
+  }
+  {
+    ib::ClosedChainHandFk fk;
+    // crank_link 은 loop 비하류 — 하류가 하나도 없으면 serial 이 이미 정확하다.
+    EXPECT_EQ(fk.ConfigureBorrowed(external, std::vector<std::string>{"crank_link"}, kHandRoot),
+              ib::HandFkWiringResult::kInactiveNoDownstream);
+    EXPECT_FALSE(fk.active());
+  }
+}
+
+// ── borrowed 래퍼는 공용 dispatch 로 구동되지 않는다 (PR #374 리뷰) ──────────────
+//   `RunHandForwardKinematics` 는 owning 전용이다. borrowed 래퍼를 넘기면 사영할 수단이 없어
+//   `Update(state)` 가 즉시 반환하는데(Release 는 assert 컴파일 아웃), 그런데도 true 를 돌리면
+//   호출측은 FK 가 돈 것으로 알고 **얼어붙은 pose 캐시를 유효한 TF 로 발행**한다. 증상이 "TF 가
+//   안 움직인다" 뿐인 조용한 stale 이므로 withhold(false)로 떨어뜨린다.
+TEST(ClosedChainHandFk, SharedDispatchWithholdsForABorrowedWrapper) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  const Eigen::VectorXd seed = ConvergedSeed(ccm, model);
+  rub::RtClosedChainHandle external(model, ccm.constraints, ccm.actuated_joint_ids, seed);
+
+  ib::ClosedChainHandFk borrowed;
+  ASSERT_EQ(borrowed.ConfigureBorrowed(external, std::vector<std::string>{"c1"}, kHandRoot),
+            ib::HandFkWiringResult::kActive);
+  ASSERT_TRUE(borrowed.active());
+  ASSERT_FALSE(borrowed.owns_projection());
+
+  // hand_handle 은 dispatch 진입 조건일 뿐이다 (closed 활성 경로는 그것을 쓰지 않는다).
+  rub::RtModelHandle hand_handle(model);
+  Eigen::VectorXd hand_q = Eigen::VectorXd::Zero(model->nq);
+  EXPECT_FALSE(RunHandForwardKinematics(borrowed, &hand_handle, hand_q, MakeState(0.2)))
+      << "borrowed 를 공용 dispatch 로 구동하면 조용한 stale 이 된다 — withhold 여야 한다";
+  EXPECT_EQ(borrowed.projection_count(), 0U) << "dispatch 가 borrowed 를 사영시켰다";
+
+  // owning 은 같은 dispatch 로 정상 구동된다 (대조군 — 위 단언이 '무조건 false' 가 아님을 고정).
+  ib::ClosedChainHandFk owning;
+  ASSERT_EQ(owning.Configure(model, ccm.constraints, ccm.actuated_joint_ids, seed, {{"j_crank"}},
+                             std::vector<std::string>{"c1"}, kHandRoot),
+            ib::HandFkWiringResult::kActive);
+  EXPECT_TRUE(RunHandForwardKinematics(owning, &hand_handle, hand_q, MakeState(0.2)));
+  EXPECT_EQ(owning.projection_count(), 1U);
+}
+
+// ── 재배선은 계측 카운터도 되돌린다 (PR #374 리뷰) ──────────────────────────────
+//   "borrowed 는 절대 사영하지 않는다"(2→1 의 wrapper 축 증거)가 이전 배선의 잔량 때문에 깨져
+//   보이면 안 된다 — 소비자는 **현재 배선**의 사영 횟수를 묻는다.
+TEST(ClosedChainHandFk, RewiringResetsTheProjectionCounter) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  const Eigen::VectorXd seed = ConvergedSeed(ccm, model);
+
+  ib::ClosedChainHandFk fk;
+  ASSERT_EQ(fk.Configure(model, ccm.constraints, ccm.actuated_joint_ids, seed, {{"j_crank"}},
+                         std::vector<std::string>{"c1"}, kHandRoot),
+            ib::HandFkWiringResult::kActive);
+  constexpr int kTicks = 3;
+  for (int t = 0; t < kTicks; ++t) {
+    fk.Update(MakeState(0.2 + 0.001 * t));
+  }
+  ASSERT_EQ(fk.projection_count(), static_cast<std::uint32_t>(kTicks));
+
+  rub::RtClosedChainHandle external(model, ccm.constraints, ccm.actuated_joint_ids, seed);
+  ASSERT_EQ(fk.ConfigureBorrowed(external, std::vector<std::string>{"c1"}, kHandRoot),
+            ib::HandFkWiringResult::kActive);
+  EXPECT_EQ(fk.projection_count(), 0U)
+      << "owning 시절의 잔량이 남아 borrowed 계측 단언이 잘못된 이유로 진다";
+
+  const auto kin = external.Update(std::vector<double>{0.2});
+  fk.UpdateFromProjection(external, true, kin);
+  EXPECT_EQ(fk.projection_count(), 0U) << "borrowed 는 사영하지 않는다";
 }
