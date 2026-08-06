@@ -206,3 +206,140 @@ TEST(WbcReducedDynamicsProvider, InactiveAndFirstTickFallback) {
     EXPECT_EQ(M(0, 0), 7.0) << "최초 held → open-chain 유지 (미변경)";
   }
 }
+
+// ── (#175) 사영 view — fingertip FK 가 같은 tick 의 사영을 재사용하기 위한 창구 ────
+//   아래 세 테스트가 P1 의 계약이다: (5) view 가 provider 사영과 같은 형상을 준다,
+//   (6) dynamics 사유 held 가 운동학 status 를 오염시키지 않는다, (7) 사영 실행이 세어진다.
+
+namespace {
+
+/// crank_rocker 고정물 + 활성 provider 한 벌. 신규 테스트 3개가 같은 배선을 쓰므로 묶는다.
+struct CrankRockerProviderFixture {
+  rub::ClosedChainModel ccm{rtc::test::CrankRocker()};
+  std::shared_ptr<pinocchio::Model> full{std::make_shared<pinocchio::Model>(ccm.model)};
+  Eigen::VectorXd seed;
+  pinocchio::Model control;
+  ib::WbcReducedDynamicsProvider provider;
+  int qi{0};
+  int vk{0};
+
+  CrankRockerProviderFixture() {
+    rub::ClosedChainHandle seedh(full, ccm.constraints, ccm.actuated_joint_ids, {});
+    seedh.Update(std::vector<double>{0.2});
+    seed = seedh.GetFullConfiguration();
+    control = MakeControlModel(*full, seed, "j_crank");
+    const auto jid = control.getJointId("j_crank");
+    qi = static_cast<int>(control.idx_qs[jid]);
+    vk = static_cast<int>(control.idx_vs[jid]);
+  }
+
+  [[nodiscard]] bool Configure() {
+    return provider.Configure(full, ccm.constraints, ccm.actuated_joint_ids, seed, control);
+  }
+
+  /// q_a=crank, v_a=vel 로 한 tick 돌린다 (M/h/g 는 버린다 — 여기 관심사는 사영/뷰다).
+  bool Tick(double crank, double vel) {
+    Eigen::VectorXd q = pinocchio::neutral(control);
+    Eigen::VectorXd v = Eigen::VectorXd::Zero(control.nv);
+    q[qi] = crank;
+    v[vk] = vel;
+    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(control.nv, control.nv);
+    Eigen::VectorXd h = Eigen::VectorXd::Zero(control.nv);
+    Eigen::VectorXd g = Eigen::VectorXd::Zero(control.nv);
+    return provider.FillReducedDynamics(q, v, M, h, g);
+  }
+};
+
+}  // namespace
+
+// ── (5) view 는 비활성이면 nullptr, 활성이면 provider 가 방금 돌린 사영 형상 ──────
+TEST(WbcReducedDynamicsProvider, ProjectionViewExposesTheSameProjection) {
+  // 비활성(구속 없음) → nullptr. 소비자는 이것으로 configure-time fallback 을 판정한다.
+  {
+    const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+    auto full = std::make_shared<pinocchio::Model>(ccm.model);
+    const pinocchio::Model control = *full;
+    ib::WbcReducedDynamicsProvider provider;
+    EXPECT_FALSE(provider.Configure(full, /*constraints=*/{}, /*actuated=*/{}, {}, control));
+    EXPECT_EQ(provider.projection(), nullptr) << "비활성 provider 는 사영을 노출하지 않는다";
+  }
+
+  CrankRockerProviderFixture fx;
+  ASSERT_TRUE(fx.Configure());
+  ASSERT_NE(fx.provider.projection(), nullptr);
+
+  const double vval = 0.31;
+  ASSERT_TRUE(fx.Tick(0.2, vval));
+
+  // 동일 파라미터 참조 핸들 — 같은 seed·같은 q_a 이므로 결과는 **비트 동일**이어야 한다.
+  // (같은 코드 경로·같은 연산 순서. 근사 비교로 두면 view 가 엉뚱한 tick 의 형상을 줘도 통과한다.)
+  rub::RtClosedChainHandle ref(fx.full, fx.ccm.constraints, fx.ccm.actuated_joint_ids, fx.seed, 2);
+  ASSERT_FALSE(ref.Update(std::vector<double>{0.2}).held);
+  ASSERT_FALSE(ref.UpdateDynamics(std::vector<double>{vval}).held);
+
+  const auto fid = static_cast<pinocchio::FrameIndex>(fx.full->frames.size() - 1);
+  const pinocchio::SE3& seen = fx.provider.projection()->GetFramePlacement(fid);
+  const pinocchio::SE3& want = ref.GetFramePlacement(fid);
+  EXPECT_EQ(seen.translation(), want.translation()) << "view placement 는 참조 사영과 비트 동일";
+  EXPECT_EQ(seen.rotation(), want.rotation());
+
+  // 사영된 full configuration 도 같아야 한다 (view 가 다른 tick 의 형상을 들고 있지 않다는 증거).
+  EXPECT_EQ(fx.provider.projection()->GetFullConfiguration(), ref.GetFullConfiguration());
+}
+
+// ── (6) 유한 q + 비유한 v: 공용 status 는 held 여도 **운동학** status 는 성공 ─────
+//   이것이 #175 의 D4 다. fingertip pose 는 dynamics 사유로 버려지면 안 된다 — 핸들이 같은
+//   q_full_ 로 2차 FK 를 복원하므로 그 tick 의 placement 는 유효하기 때문.
+TEST(WbcReducedDynamicsProvider, KinematicStatusSurvivesNonFiniteVelocity) {
+  CrankRockerProviderFixture fx;
+  ASSERT_TRUE(fx.Configure());
+
+  EXPECT_FALSE(fx.Tick(0.2, std::numeric_limits<double>::quiet_NaN()))
+      << "최초 tick 의 dynamics 가 held → last-good 없음 → open-chain fallback";
+
+  ASSERT_NE(fx.provider.projection(), nullptr);
+  EXPECT_TRUE(fx.provider.projection()->GetStatus().held)
+      << "공용 status 는 UpdateDynamics 사유로 held";
+  EXPECT_FALSE(fx.provider.kinematic_status().held)
+      << "운동학 사영 자체는 성공했다 — 스냅샷이 dynamics hold 를 먹으면 fingertip 이 죽는다";
+  EXPECT_TRUE(std::isfinite(fx.provider.kinematic_status().closure_error))
+      << "held 로 세팅되는 inf closure_error 가 스냅샷에 새면 안 된다";
+
+  // 그리고 placement 는 실제로 이번 q 의 것이다 — 운동학만 돌린 참조와 비트 동일.
+  rub::RtClosedChainHandle ref(fx.full, fx.ccm.constraints, fx.ccm.actuated_joint_ids, fx.seed, 2);
+  ASSERT_FALSE(ref.Update(std::vector<double>{0.2}).held);
+  const auto fid = static_cast<pinocchio::FrameIndex>(fx.full->frames.size() - 1);
+  EXPECT_EQ(fx.provider.projection()->GetFramePlacement(fid).translation(),
+            ref.GetFramePlacement(fid).translation())
+      << "NaN v tick 에도 fingertip 이 읽을 placement 는 이번 tick 형상";
+}
+
+// ── (7) 사영 실행 카운터 — "이번 tick 에 사영이 돌았는가" 의 증거 ─────────────────
+TEST(WbcReducedDynamicsProvider, ProjectionSeqCountsEveryProjection) {
+  CrankRockerProviderFixture fx;
+  ASSERT_TRUE(fx.Configure());
+  EXPECT_EQ(fx.provider.projection_seq(), 0U) << "Configure 는 카운터를 되돌린다";
+
+  ASSERT_TRUE(fx.Tick(0.2, 0.1));
+  EXPECT_EQ(fx.provider.projection_seq(), 1U) << "tick 당 사영 1회";
+  ASSERT_TRUE(fx.Tick(0.21, 0.1));
+  EXPECT_EQ(fx.provider.projection_seq(), 2U);
+
+  // held tick 도 사영은 돌았다 (핸들 Update 는 호출된다) — 소비자는 seq 증가만으로 fresh 를
+  // 결론지으면 안 되고, 입력 provenance 를 따로 봐야 한다 (#175 D5).
+  ASSERT_TRUE(fx.Tick(std::numeric_limits<double>::quiet_NaN(), 0.1));
+  EXPECT_EQ(fx.provider.projection_seq(), 3U) << "held tick 도 사영 실행은 1회로 센다";
+
+  // 비활성 provider 는 사영하지 않으므로 증가하지 않는다.
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto full = std::make_shared<pinocchio::Model>(ccm.model);
+  const pinocchio::Model control = *full;
+  ib::WbcReducedDynamicsProvider inactive;
+  EXPECT_FALSE(inactive.Configure(full, /*constraints=*/{}, /*actuated=*/{}, {}, control));
+  Eigen::MatrixXd M = Eigen::MatrixXd::Zero(full->nv, full->nv);
+  Eigen::VectorXd h = Eigen::VectorXd::Zero(full->nv);
+  Eigen::VectorXd g = Eigen::VectorXd::Zero(full->nv);
+  EXPECT_FALSE(inactive.FillReducedDynamics(pinocchio::neutral(*full),
+                                            Eigen::VectorXd::Zero(full->nv), M, h, g));
+  EXPECT_EQ(inactive.projection_seq(), 0U) << "비활성은 사영하지 않는다";
+}

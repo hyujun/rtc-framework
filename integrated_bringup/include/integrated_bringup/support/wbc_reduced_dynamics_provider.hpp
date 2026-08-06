@@ -16,6 +16,7 @@
 
 #include <Eigen/Core>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -114,6 +115,38 @@ class WbcReducedDynamicsProvider final : public rtc::tsid::ReducedDynamicsProvid
     return unmapped_contact_frames_;
   }
 
+  // ── (#175) 사영 view — 같은 tick 의 사영을 다른 소비자가 재사용하는 창구 ─────
+
+  /// @brief 이 provider 가 소유한 사영 핸들 (비활성이면 nullptr).
+  ///
+  /// **const 로만 준다**: `Update`/`UpdateDynamics` 가 non-const 이므로 소비자는 이 창구로
+  /// 재사영할 수 없다 — 읽기 전용이 타입으로 강제된다. fingertip FK 가 이것을 읽어 tick 당
+  /// 사영 2회를 1회로 줄인다 (#175). placement 는 `FillReducedDynamics` 가 돈 뒤에만 이번 tick
+  /// 값이므로, 소비자는 @ref projection_seq 증가와 **입력 provenance** 를 함께 확인해야 한다.
+  [[nodiscard]] const rtc_urdf_bridge::RtClosedChainHandle* projection() const noexcept {
+    return active_ ? handle_.get() : nullptr;
+  }
+
+  /// @brief 직전 `FillReducedDynamics` 의 **운동학 사영 직후** status 스냅샷.
+  ///
+  /// 핸들의 `GetStatus()` 를 그대로 읽으면 안 되는 이유: 유한 q + 비유한 v tick 에서
+  /// `UpdateDynamics` 가 공용 status 에 `held` 를 세우는데, 그 tick 의 **placement 는 유효**하다
+  /// (핸들이 같은 `q_full_` 로 2차 FK 를 복원한다). 운동학만 소비하는 쪽이 dynamics 사유로
+  /// 유효한 pose 를 버리지 않도록 사영 직후 값을 따로 남긴다 (#175 — `rtc_urdf_bridge` 의 공용
+  /// status 를 쪼개지 않고 소비 지점에서 분리).
+  [[nodiscard]] const rtc_urdf_bridge::RtClosedChainHandle::Status& kinematic_status()
+      const noexcept {
+    return kin_status_;
+  }
+
+  /// @brief `handle_->Update()` 실행 횟수 (사영 1회당 1 증가, wrap-around 무해).
+  ///
+  /// 소비자는 이 값이 **이번 tick 에 증가했는지**로 "사영이 이번 tick 에 돌았는가"를 판정한다
+  /// (`PinocchioCache::Update()` 가 실행되지 않은 tick 방어). ⚠ 이것은 **입력 provenance 가
+  /// 아니다** — 사영이 이번 tick 에 돌았다는 것만 말하고, 그 입력 q 가 신선했는지는 말하지
+  /// 않는다. 두 축을 모두 걸어야 한다 (#175).
+  [[nodiscard]] std::uint32_t projection_seq() const noexcept { return projection_seq_; }
+
   // ── ReducedDynamicsProvider ────────────────────────────────────────────────
   [[nodiscard]] bool FillReducedDynamics(const Eigen::VectorXd& q, const Eigen::VectorXd& v,
                                          Eigen::MatrixXd& M, Eigen::VectorXd& h,
@@ -154,6 +187,12 @@ class WbcReducedDynamicsProvider final : public rtc::tsid::ReducedDynamicsProvid
   Eigen::VectorXd h_last_;  ///< n_a
   Eigen::VectorXd g_last_;  ///< n_a
   bool have_last_{false};
+
+  // ── (#175) 사영 view 상태 ──────────────────────────────────────────────────
+  /// `handle_->Update()` **직후** status (UpdateDynamics 의 held 오염 전). @ref kinematic_status.
+  rtc_urdf_bridge::RtClosedChainHandle::Status kin_status_{};
+  /// 사영 실행 카운터. @ref projection_seq — "이번 tick 사영인가" 전용, provenance 아님.
+  std::uint32_t projection_seq_{0};
 
   // ── Phase ③ contact frame loop-consistent override (ConfigureContactFrames 산출) ──
   /// 축약 J_a(핸들 독립좌표 순서, 6×n_a)를 cache 좌표(cache_v_idx_) J(6×nv)로 열 흩뿌림. RT-safe.

@@ -20,6 +20,10 @@ bool WbcReducedDynamicsProvider::Configure(std::shared_ptr<const pinocchio::Mode
                                            const pinocchio::Model& control_model) {
   active_ = false;
   have_last_ = false;
+  // (#175) 재배선 시 사영 view 상태도 처음으로 되돌린다 — 이전 배선의 status 스냅샷이 남아 있으면
+  // 새 핸들이 아직 한 번도 사영하지 않은 tick 에 소비자가 그것을 fresh 로 읽는다.
+  kin_status_ = {};
+  projection_seq_ = 0;
   missing_joint_.clear();
 
   if (!full_model || constraints.empty()) {
@@ -119,6 +123,12 @@ bool WbcReducedDynamicsProvider::FillReducedDynamics(const Eigen::VectorXd& q,
   // 같은 Update() 안에서 이 사영을 재사용해도 안전. held tick 도 data_ 는 직전 유효 q_full_ 로
   // 복원돼 유효하므로 여기서 set (frame kin 은 자체 held 판정으로 last-good hold).
   dynamics_projected_ = true;
+  // (#175) 운동학만 소비하는 쪽(fingertip FK)을 위한 사영 직후 스냅샷 + 실행 카운터. 아래
+  // UpdateDynamics 는 비유한 v 에서 공용 status 에 held 를 세우는데, 그 tick 의 placement 는
+  // 여전히 유효하므로 그 오염 **전** 값을 남겨야 한다 (핸들 공용 status 를 쪼개지 않는 대신
+  // 소비 지점에서 분리 — rtc_urdf_bridge 무변경).
+  kin_status_ = st;
+  ++projection_seq_;
   bool ok = !st.held && !st.singular;
   if (ok) {
     const rub::RtClosedChainHandle::Status dst = handle_->UpdateDynamics(
