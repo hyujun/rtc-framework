@@ -421,7 +421,11 @@ def generate_launch_description():
     # ── CPU Shield ────────────────────────────────────────────────────────────
     # Probe + enable live in rtc_tools.launch.cpu_shield so all five launches
     # share one cset-aware implementation (issues #151, #344).
-    enable_cpu_shield = shield.enable_cpu_shield("--robot", log_prefix="[RT]")
+    enable_cpu_shield = shield.enable_cpu_shield(
+        "--robot",
+        log_prefix="[RT]",
+        enable_mpc=LaunchConfiguration("enable_mpc"),
+    )
 
     # ── External driver CPU pinning (Phase 6) ─────────────────────────────────
     # Pins via tier-aware slot resolution. SystemThreadConfigs.{arm,hand}_driver

@@ -68,6 +68,32 @@ def test_uses_shared_shield_probe(filename):
 
 
 @pytest.mark.parametrize("filename", LAUNCH_FILES)
+def test_shield_probe_receives_the_mpc_profile(filename):
+    """The shield must be built for the profile this launch actually runs (#350).
+
+    ``enable_mpc`` reached the controller override and stopped there, so the cset
+    shield reserved the MPC cores on every launch no matter what. Omitting the
+    keyword is silent — the helper defaults to reserving — which is exactly the
+    shape of drift this module exists to catch: the fix would land in one launch
+    and the other four would keep isolating cores nobody runs on.
+    """
+    tree = ast.parse(_source(filename))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "enable_cpu_shield"
+    ]
+    assert calls, "no enable_cpu_shield call found"
+    for call in calls:
+        assert "enable_mpc" in {kw.arg for kw in call.keywords}, (
+            f"{filename}: enable_cpu_shield must be passed enable_mpc, otherwise the "
+            "shield keeps reserving the MPC cores regardless of the launch argument"
+        )
+
+
+@pytest.mark.parametrize("filename", LAUNCH_FILES)
 def test_activate_is_gated_on_shield_adopt(filename):
     """ACTIVATE must come from the shared adopt chain, never straight from configure.
 

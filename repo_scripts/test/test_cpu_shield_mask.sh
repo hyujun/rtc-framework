@@ -32,13 +32,19 @@ source "${SCRIPTS_DIR}/lib/rt_common.sh"
 # sed 범위는 함수 시그니처 기준이며, 함수명이 바뀌면 아래 assert가 즉시 깨진다.
 eval "$(sed -n '/^normalise_cpu_set() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
 eval "$(sed -n '/^shield_matches_desired() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
+# 마커 판독은 #350 에서 "<mode> <profile>" 로 바뀌었고 shield_matches_desired 가
+# 그것을 호출한다 — 함께 뽑지 않으면 판정이 아니라 미정의 함수를 테스트하게 된다.
+eval "$(sed -n '/^shield_marker_read() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
+eval "$(sed -n '/^shield_marker_write() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
 SHIELD_MODE_FILE="$(mktemp)"
 trap 'rm -f "$SHIELD_MODE_FILE"' EXIT
 
-if ! declare -F normalise_cpu_set >/dev/null || ! declare -F shield_matches_desired >/dev/null; then
-  echo "FAIL: cpu_shield.sh에서 판정 함수를 추출하지 못했다 (함수명 변경?)" >&2
-  exit 1
-fi
+for _fn in normalise_cpu_set shield_matches_desired shield_marker_read shield_marker_write; do
+  if ! declare -F "$_fn" >/dev/null; then
+    echo "FAIL: cpu_shield.sh에서 ${_fn} 을 추출하지 못했다 (함수명 변경?)" >&2
+    exit 1
+  fi
+done
 
 PASS=0
 FAIL=0
@@ -122,6 +128,29 @@ expect_rc "빈 mask → 비0" 1 shield_matches_desired robot "2-9,12-13"
 # desired가 비면 판정 불가 — 조용히 통과시키면 shield 없이 RT가 돈다.
 STUB_ACTUAL="2-9"
 expect_rc "desired 비어있음 → 비0" 1 shield_matches_desired robot ""
+
+# ── launch profile 축 (issue #350) ──────────────────────────────────────────
+# 마커는 이제 "<mode> <profile>" 이다. 세 가지를 고정한다: (1) #350 이전에 쓰인
+# bare 마커가 default profile 로 읽혀야 하고 (안 그러면 업그레이드 직후 모든
+# 박스가 shield 를 한 번씩 재구성한다), (2) profile 만 달라도 rc 2 여야 하며,
+# (3) profile 전환은 코어까지 달라지므로 rc 1 (재구성) 로 떨어진다.
+STUB_RC=0; STUB_ACTUAL="2-9"
+echo "robot" >"$SHIELD_MODE_FILE"   # #350 이전 형식
+expect_rc "구형 마커 = default profile → 0" 0 shield_matches_desired robot "2-9" mpc_on
+expect_eq "구형 마커 판독" "robot mpc_on" "$(shield_marker_read)"
+
+shield_marker_write robot mpc_off
+expect_eq "신형 마커 판독" "robot mpc_off" "$(shield_marker_read)"
+# 코어는 우연히 같고 profile 만 다른 상태 — 마커만 갱신하면 되는 등급이다.
+expect_rc "profile 만 불일치 → 2" 2 shield_matches_desired robot "2-9" mpc_on
+# 실제 전환은 코어가 함께 바뀌므로 재구성 등급이어야 한다.
+expect_rc "profile 전환(코어 축소) → 1" 1 shield_matches_desired robot "2-5" mpc_off
+STUB_ACTUAL="2-5"
+expect_rc "축소된 shield + off 마커 → 0" 0 shield_matches_desired robot "2-5" mpc_off
+# profile 인자를 생략하면 default 로 떨어진다 (profile 을 모르는 기존 호출자).
+shield_marker_write robot mpc_on
+expect_rc "인자 생략 = default → 0" 0 shield_matches_desired robot "2-5"
+STUB_ACTUAL="2-9"
 
 # ── 결과 ────────────────────────────────────────────────────────────────────
 echo "PASS=${PASS} FAIL=${FAIL}"

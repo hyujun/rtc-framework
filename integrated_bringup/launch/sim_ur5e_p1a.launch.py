@@ -199,7 +199,14 @@ def launch_setup(context, *args, **kwargs):
         # Mirror robot_ur5e_p1a.launch.py: probe `sudo -n true` first.  Launch's stdin
         # isn't a tty so an interactive sudo prompt would silently hang and
         # leave the cores un-isolated — better to warn loudly and skip.
-        enable_sim_cpu_shield = shield.enable_cpu_shield("--sim", log_prefix="[SIM]", gated=False)
+        enable_sim_cpu_shield = shield.enable_cpu_shield(
+            "--sim",
+            log_prefix="[SIM]",
+            gated=False,
+            # Same tri-state value the controller override above reads, so the
+            # shield reserves MPC cores exactly when the MPC thread may spawn (#350).
+            enable_mpc=enable_mpc,
+        )
         actions.append(enable_sim_cpu_shield)
 
     # ── Node 1: MuJoCo Simulator (LifecycleNode) ────────────────────────────

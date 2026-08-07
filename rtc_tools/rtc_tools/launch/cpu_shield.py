@@ -49,13 +49,27 @@ SHIELD_MODES = ("--robot", "--sim")
 
 
 def enable_cpu_shield(
-    mode: str, *, log_prefix: str = "[RT]", gated: bool = True
+    mode: str, *, log_prefix: str = "[RT]", gated: bool = True, enable_mpc=None
 ) -> ExecuteProcess:
     """Enable the cset CPU shield for ``mode`` unless one is already active.
 
     ``mode`` is ``--robot`` or ``--sim``; both shield the same CM-spanning range
     (``cpu_shield.sh::compute_shield_cores`` funnels both to
     ``get_cm_shield_cpus``), so the flag only selects the mode-specific extras.
+
+    ``enable_mpc`` (issue #350) carries the launch's tri-state ``enable_mpc``
+    argument — a substitution, a plain string, or ``None`` — and selects the
+    layout *profile* the shield is built for. Only an explicit false disables
+    MPC: an empty value means "defer to the controller YAML", and deferring must
+    keep reserving the MPC cores, because the YAML can be overridden and a
+    controller switch can spawn the MPC thread mid-session. Reserving cores
+    nobody uses wastes them; not reserving cores someone does use puts a
+    SCHED_FIFO thread on an unshielded core, so the tie breaks toward reserving.
+
+    It is passed as a positional argument to ``bash -c`` rather than baked into
+    the script text so both launch styles can use one call shape: the robot
+    launches have no ``OpaqueFunction`` and so cannot ``perform()`` a
+    ``LaunchConfiguration`` while building their description.
 
     The active-shield test runs ``cpu_shield.sh check`` **before** falling back
     to ``/sys/devices/system/cpu/isolated``. That order is the #151 fix: a cset
@@ -91,22 +105,31 @@ def enable_cpu_shield(
             'if [ ! -f "$SHIELD" ]; then '
             f'  echo "{log_prefix} WARNING: cpu_shield.sh not found: $SHIELD"; exit 0; '
             "fi; "
+            # Tri-state enable_mpc -> layout profile. Only an explicit false
+            # opts out; "" (defer to YAML) keeps the MPC reservation.
+            'PROFILE="mpc_on"; '
+            'case "$(echo "${1:-}" | tr "[:upper:]" "[:lower:]")" in '
+            '  false|0|no) PROFILE="mpc_off" ;; '
+            "esac; "
             "ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
             "if command -v cset >/dev/null 2>&1 && "
-            f'   "$SHIELD" check {mode} >/dev/null 2>&1; then '
-            f'  echo "{log_prefix} CPU shield already active and current"; '
+            f'   "$SHIELD" check {mode} --profile "$PROFILE" >/dev/null 2>&1; then '
+            f'  echo "{log_prefix} CPU shield already active and current (profile: $PROFILE)"; '
             'elif [ -n "$ISOLATED" ]; then '
             f'  echo "{log_prefix} CPU shield already active: Core $ISOLATED isolated (isolcpus)"; '
             "else "
-            f'  echo "{log_prefix} CPU shield not active — enabling {mode} mode..."; '
+            f'  echo "{log_prefix} CPU shield not active — enabling {mode} mode '
+            '(profile: $PROFILE)..."; '
             "  if sudo -n true 2>/dev/null; then "
-            f'    sudo "$SHIELD" on {mode}; '
+            f'    sudo "$SHIELD" on {mode} --profile "$PROFILE"; '
             "  else "
             f'    echo "{log_prefix} WARNING: sudo requires a password — skipping CPU shield. '
             "Configure passwordless sudo for cpu_shield.sh or run: "
-            f'sudo $SHIELD on {mode}"; '
+            f'sudo $SHIELD on {mode} --profile $PROFILE"; '
             "  fi; "
             "fi",
+            "rtc_cpu_shield",  # $0 for the script above
+            enable_mpc if enable_mpc is not None else "",
         ],
         output="screen",
         **kwargs,
