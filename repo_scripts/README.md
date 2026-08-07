@@ -181,8 +181,8 @@ repo_scripts/
 
 | 함수 | 출처 | 설명 |
 |------|------|------|
-| `get_role_spec()` / `get_role_slot()` / `get_role_policy()` / `get_role_priority()` / `get_role_nice()` | 생성 | `<role> [ncpu]` 로 임의 role 의 배치를 조회. 그 tier 에 없는 role (예: 8코어의 `mpc_worker_0`) 은 **비0 종료** — 없는 스레드를 기대 목록에 넣지 않기 위한 계약이다 |
-| `get_mpc_cores()` | 생성 | MPC 코어 (main + workers) CSV. 첫 항목이 항상 MPC main |
+| `get_role_spec()` / `get_role_slot()` / `get_role_policy()` / `get_role_priority()` / `get_role_nice()` | 생성 | `<role> [ncpu]` 로 임의 role 의 배치를 조회. 그 tier 에 없는 role 은 **비0 종료** — 없는 스레드를 기대 목록에 넣지 않기 위한 계약이다 |
+| `get_mpc_cores()` | 생성 | MPC 슬롯 CSV. #380 이 worker 슬롯을 회수한 뒤로 항목은 `mpc_main` 하나이며, MPC 를 떨어뜨리는 profile 에서는 빈 목록 |
 | `get_mpc_main_core()` | 파생 | MPC main 코어만 (`get_mpc_cores` 의 첫 항목) |
 | `get_rt_cores()` | 생성 | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `get_rt_cores_with_siblings()` / `get_rt_shield_cpus()` 의 base |
 | `get_nrt_cores()` | 생성 | nrt_logging + nrt_callback + nrt_publish 슬롯 (중복 제거, 오름차순). `get_cm_shield_cpus()` 가 RT 와 union. layout v5 부터 tier ≥ 6 은 aux slot (= rt_callback slot 2) 이라 RT 의 부분집합이고, degraded tier 는 Core 0 공유 — 어느 쪽이든 union 이 RT span 을 넘지 않는다 |
@@ -193,7 +193,7 @@ repo_scripts/
 | `rtc_layout_profiles()` / `rtc_default_profile()` / `rtc_is_layout_profile()` | 생성 | 선언된 launch profile 목록 · 기본값 · 유효성 검사 (#350) |
 | `get_rt_cores_with_siblings()` | 파생 | `get_rt_cores()` 출력에 SMT HT 시블링까지 포함, range-collapse. `setup_grub_rt.sh` 의 `nohz_full` / `rcu_nocbs` 값. non-SMT 시 입력과 동일 cpu 집합 (range 표기) |
 | `get_rt_shield_cpus()` | 파생 | RT 슬롯 → **logical cpu** (slot→logical) + HT 시블링. RT-only 격리/검증 (verify_rt_runtime) |
-| `get_cm_shield_cpus()` | 파생 | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위 (issue #151). 예: non-SMT 12c `1-5,8-9` · NUC13 12c hybrid `2-9,12-13` |
+| `get_cm_shield_cpus()` | 파생 | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위 (issue #151). 예: non-SMT 는 전 tier `1-3` · NUC13 12c hybrid `2-7` |
 
 **"생성"** = manifest 에서 나온다 (직접 편집 금지). **"파생"** = `rt_common.sh` 에 손으로 쓰여 있고 위 생성 함수를 호출한다. tier 별 반환값은 아래 생성된 표가 SSoT 이므로 여기 중복해 적지 않는다 — 예전엔 이 열이 tier 표의 일곱 번째 사본이었다.
 
@@ -207,20 +207,20 @@ Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는
 | ≤5 | `1,2,3` | `1,2` | `3` | `0` | `0` | 0 / 0 |
 | 6–7 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 4 |
 | 8–9 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 5 |
-| 10–11 | `1,2,3,4` | `1,2` | `3,4` | `2` | `0` | 5 / 6 |
-| 12–13 | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
-| 14–15 | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
-| 16+ | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
+| 10–11 | `1,2,3` | `1,2` | `3` | `2` | `0` | 5 / 6 |
+| 12–13 | `1,2,3` | `1,2` | `3` | `2` | `0` | 6 / 7 |
+| 14–15 | `1,2,3` | `1,2` | `3` | `2` | `0` | 6 / 7 |
+| 16+ | `1,2,3` | `1,2` | `3` | `2` | `0` | 6 / 7 |
 
 <!-- END GENERATED: thread-layout-tiers -->
 
-- **≤5코어 / 6–7코어는 degraded** — RT 결정성 보장 X. 전자는 nrt·driver 가 전부 OS Core 0 으로 접히고 mpc 가 CFS 로 강등되며, 후자는 arm/hand 가 한 코어를, nrt_logging + nrt_callback 이 또 한 코어를 공유하고 mpc_worker 가 없다.
-- **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯을 얻고, **10코어 이상**에서 mpc_worker_0, **12코어 이상**에서 mpc_worker_1 이 붙는다. 14/16 tier 는 12 와 같은 배치이고 남는 슬롯이 spare 다 (16c 의 과거 "user cset shield Core 4-8" 잔재는 v4.1 에서 제거).
+- **≤5코어 / 6–7코어는 degraded** — RT 결정성 보장 X. 전자는 nrt·driver 가 전부 OS Core 0 으로 접히고 mpc 가 CFS 로 강등되며, 후자는 arm/hand 가 한 코어를, nrt_logging + nrt_callback 이 또 한 코어를 공유한다.
+- **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯을 얻는다. 10+ tier 가 예약하던 `mpc_worker_0/1` (slot 4·5) 은 #380 이 회수했고 그 슬롯은 이제 비어 있다 — arm/hand 를 당겨 재번호하지 않은 것은 그것이 드라이버 프로세스를 다른 물리 코어로 옮기는 별개의 배치 결정이기 때문이다. 14/16 tier 는 12 와 같은 배치이고 남는 슬롯이 spare 다 (16c 의 과거 "user cset shield Core 4-8" 잔재는 v4.1 에서 제거).
 
 **launch profile (issue #350)** — 위 표의 `(mpc_off)` 열은 **두 번째 축**이다. tier 는 "어느 role 이 어느 슬롯에 앉는가", profile 은 "이번 실행에서 어느 role 이 도는가" 를 정한다. MPC 활성은 host 속성이 아니라 controller YAML (`mpc.enabled`) 이고 스레드는 `on_activate` 에서 뜨므로 런타임 자동 감지가 불가능하다 — 그래서 launch 단계의 **명시적 opt-out** 이다.
 
 - profile 축을 받는 함수는 `get_rt_cores` · `get_mpc_cores` · `rtc_expected_threads` · `rtc_forbidden_threads` 넷이며, 전부 **`$2`** 로 받고 기본값은 `rtc_default_profile()` (= `mpc_on`) 이다. 인자를 안 주는 기존 호출자는 종전 레이아웃을 그대로 받는다. 선언된 profile 목록은 `rtc_layout_profiles()`, 검사는 `rtc_is_layout_profile <id>` — 알 수 없는 id 는 조용히 default 로 떨어지지 않고 **비0** 이다.
-- `mpc_off` 는 MPC role (main + workers) 만 떨어뜨린다. `get_nrt_cores` / `get_arm_driver_slot` / `get_hand_driver_slot` 은 profile 축을 받지 않으므로 값이 변하지 않는다 — 이들이 함께 좁아지면 그 스레드의 self-pin 이 EINVAL 로 죽는다 (#151).
+- `mpc_off` 는 MPC role (`mpc_main`) 만 떨어뜨린다. `get_nrt_cores` / `get_arm_driver_slot` / `get_hand_driver_slot` 은 profile 축을 받지 않으므로 값이 변하지 않는다 — 이들이 함께 좁아지면 그 스레드의 self-pin 이 EINVAL 로 죽는다 (#151).
 - `rtc_forbidden_threads()` 는 `rtc_expected_threads()` 의 거울이다. off 에서 mpc 행을 기대 표에서 빼기만 하면 "MPC 꺼짐" 과 "MPC 가 방금 반환한 코어에서 돌고 있음" 이 검증기에 똑같이 보이므로 (둘 다 행이 없다), 떨어뜨린 role 은 **존재하면 FAIL** 인 목록으로 옮겨간다.
 - **`cpu_shield.sh status` 는 shield 를 먼저 묻는다** — 격리 탐지가 `/sys/devices/system/cpu/isolated` 를 게이트로 삼고 있었는데 **그 파일은 isolcpus 만 쓴다**. cset shield 는 아무것도 안 쓰므로, shield 가 `CPUSPEC(1-3,7-9)` 로 살아 있는데도 "Isolated cores: none" 이 나왔다 (dev PC 에 cset 설치 후 실측, 2026-08-07). 이제 `shield_isolation_method()` 가 실제 cpuset → isolcpus 순으로 판정한다. 같은 오탐이 `check_rt_setup.sh` 의 `CPU Isolation` 항목에도 남아 있다 (별도 후속)
 - **GRUB 은 profile 을 타지 않는다 (결정 D11(a))** — `get_rt_cores_with_siblings()` 는 `$2` 를 무시하고 항상 default profile 기준 최광 집합을 낸다. `nohz_full` / `rcu_nocbs` 는 boot-static 이라 profile 을 반영하려면 재부팅이 필요하고, 그러면 "재부팅 없는 profile 전환" 이 깨진다. 반환된 코어에 `nohz_full` 마킹이 남는 비용은 공짜가 아니다 (runnable task 가 둘 이상이면 scheduler tick 이 재개되고 RCU/housekeeping 이 offload 된다) — 다만 커널 커맨드라인과 런타임 레이아웃이 어긋나는 것보다 싸다.
@@ -289,7 +289,7 @@ sudo ./setup_grub_rt.sh --help
 
 | 파라미터 | 값 | 효과 |
 |---------|-----|------|
-| `nohz_full` | RT thread core (SMT sibling 포함) | SCHED_FIFO 가 실제로 실행되는 코어에서 타이머 틱 제거. 값은 `get_rt_cores_with_siblings()` SSoT — 예: 6c "1-3", 12c "1-5", SMT 6C/12T 시 "1-3,7-9". nrt / driver (CFS) 는 제외. |
+| `nohz_full` | RT thread core (SMT sibling 포함) | SCHED_FIFO 가 실제로 실행되는 코어에서 타이머 틱 제거. 값은 `get_rt_cores_with_siblings()` SSoT — 예: non-SMT 는 전 tier "1-3", SMT 6C/12T 시 "1-3,7-9", SMT 12C/24T 시 "1-3,13-15". nrt / driver (CFS) 는 제외. |
 | `rcu_nocbs` | RT thread core (SMT sibling 포함) | RCU 콜백을 RT 코어 밖으로 오프로드 (동일 범위). |
 | `processor.max_cstate` | 1 | 깊은 C-state 진입 방지 |
 | `clocksource` | tsc | HPET 대비 50-100x 빠른 타이머 |
@@ -427,7 +427,7 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 
 | Tier | 스레드 | 격리 |
 |------|--------|------|
-| Tier 1 (RT-critical) | rt_control + rt_callback (FIFO 70) + mpc_main + mpc_workers | 항상 |
+| Tier 1 (RT-critical) | rt_control + rt_callback (FIFO 70) + mpc_main | 항상 |
 | Tier 2 (driver / IO) | arm_driver, hand_driver, hand_aux_io, nrt_logging, nrt_callback | SCHED_OTHER — shield 밖 dedicated core. arm 은 CM 파라미터로 내부 RT 루프만 FIFO 50 + pin (issue #343). hand 는 프로세스가 스스로 pin 하고 (`use_cpu_affinity` param) 내부 `hand_udp_recv` 만 FIFO 65, `hand_aux_io` 는 OS slot 으로 분리 (issue #345); launch 는 DDS 스레드만 co-pin 한다. sim 은 taskset |
 | Tier 3 (Flexible) | sim_thread, viewer, monitoring, build | 격리 안 함 (`cpu_core = -1`, no pin) |
 
@@ -435,12 +435,12 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 
 **코어 수별 격리 범위 (`--robot` / `--sim` 동일):**
 
-| 코어 수 | shield cores |
-|---------|--------------|
-| 4코어 이하 | 1,3 |
-| 6-9코어 | 1-3 |
-| 10-11코어 | 1-4 |
-| 12코어+ | 1-5 |
+전 tier 동일하게 **`1-3`** 이다 — RT 그룹은 `rt_control`(1) + `rt_callback`(2) +
+`mpc_main`(3) 셋이고 코어가 늘어도 늘지 않는다. 10-11코어 `1-4` · 12코어+ `1-5` 였던
+두 행은 `mpc_worker_0/1` 몫이었고 **#380 이 회수**했다 (오라클:
+`test_rt_common.sh::test_get_rt_shield_cpus_non_smt`). 물리 코어가 슬롯보다 적은
+박스(예: 2코어)에서는 존재하지 않는 코어가 떨어져 `1` 로 좁혀진다 — cset/taskset 에
+없는 core id 를 넘기지 않기 위한 phantom drop 이다.
 
 > Launch 파일 (`ur_control.launch.py`, `mujoco_sim.launch.py`)에서 자동 호출됩니다.
 > `build.sh` / `install.sh`에서 빌드 전 자동 해제됩니다.

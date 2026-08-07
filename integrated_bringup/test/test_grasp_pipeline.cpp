@@ -147,7 +147,6 @@ rtc::mpc::MpcThreadLaunchConfig MakeLaunchCfg(double hz) {
   launch.main.name = "mpc_main";  // non-null, <=15 chars: ApplyThreadConfig rejects
                                   // a null name (default-init MpcThreadLaunchConfig
                                   // leaves main.name == nullptr otherwise).
-  launch.num_workers = 0;
   launch.target_frequency_hz = hz;
   return launch;
 }

@@ -353,8 +353,6 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 | **rt_control** (FIFO 90) | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
 | **rt_callback** (FIFO 70) | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
 | **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
-| **mpc_worker_0** (FIFO 55) | — | — | — | Core 4 | Core 4 | Core 4 | Core 4 |
-| **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 5 | Core 5 | Core 5 |
 | **arm_driver** (CFS 0⁴) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
 | **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 6 | Core 7 | Core 7 | Core 7 |
 | **nrt_callback** (CFS 0) | Core 0 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
@@ -366,7 +364,7 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 <!-- END GENERATED: thread-layout-matrix -->
 
 > ¹ 4코어는 degraded mode — mpc 가 CFS 로 강등 (RT 자원 부족). Core 0 에 nrt + driver 모두 합쳐짐.
-> ² 6코어는 degraded mode — arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유, mpc_workers 없음.
+> ² 6코어는 degraded mode — arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유.
 > ³ `cpu_core = -1` sentinel: pin 없음. sim_thread / viewer 는 모든 tier 에서 cpu_shield 가 해제한 코어에서 CFS 로 roam (v4.1 통일).
 > ⁴ `arm_driver` 의 CFS 0 은 *프로세스* 모델이다 — `ApplyThreadConfig` 대상이 아니라 launch 가 소비하는 코어 배치 값이고, 프로세스의 main/executor 는 실제로 CFS 다. 그 안의 upstream `controller_manager` 제어 루프는 FIFO 50 이며, 이 표의 코어에 핀되는 것은 프로세스가 아니라 그 루프다 (`taskset` 은 main thread 밖에 못 옮긴다 — issue #343). 핀은 launch 가 생성하는 CM 파라미터 파일이 나른다.
 >
@@ -405,11 +403,9 @@ Phase 5 이후 `SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (
 `SystemThreadConfigs` 구조체: `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`). `rt_outbound`/`udp_recv` 필드는 없음 — actuator publish 는 `rt_control` 이 rt_loop tick 안에서 inline 으로 수행하고, hand UDP receive thread 는 hand_driver 프로세스 내부 (`udp_hand_driver/udp_hand_constants.hpp::kHandUdpRecvConfig`) 에 있으며, 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1 sentinel) 을 caller 가 명시적으로 사용한다.
 
 `MpcThreadConfig` 구조체:
-- `main`: MPC solve 스레드의 `ThreadConfig`.
-- `num_workers`: 활성 worker 수 (`0 ≤ n ≤ kMpcMaxWorkers == 2`).
-- `workers`: `std::array<ThreadConfig, 2>` — 앞쪽 `num_workers`개만 유효.
+- `main`: MPC solve 스레드의 `ThreadConfig`. **필드는 이것 하나다** — `num_workers` / `workers` 는 #380 이 제거했다. worker jthread 들은 설정을 적용한 직후 반환해 실제로는 아무것도 실행하지 않았고, 애초에 어떤 solver 도 그것을 쓸 수 없었다 (Aligator 의 병렬화는 OpenMP 이며 자기 스레드를 직접 소유·생성하므로 외부 핸들을 받지 않는다). 병렬 MPC 를 되살린다면 `SolverProxDDP::setNumThreads` + 그 OpenMP 풀의 pinning 이지 여기 ThreadConfig 를 추가하는 것이 아니다.
 - `SelectThreadConfigs()`가 물리 코어 수에 맞는 `kMpcConfig{4,6,8,10,12,14,16}Core` 프리셋을 채워 반환 (tier dispatch는 `>=` 계단식). 상수와 dispatch 는 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 에서 생성되므로 tier 를 바꾸려면 manifest 를 고치고 `gen_thread_layout.py --write` 를 돌린다.
-- `ValidateSystemThreadConfigs()`는 (1) MPC main priority < rt_callback priority, (2) worker priority ≤ main priority, (3) `num_workers ∈ [0, kMpcMaxWorkers]`, (4) `arm_driver` / `hand_driver` cpu_core 가 모든 RT controller thread (rt_control/rt_callback/mpc_*) 와 disjoint, (5) cpu_core=-1 sentinel 은 disjointness sweep 에서 skip 등의 불변식을 검증.
+- `ValidateSystemThreadConfigs()`는 (1) MPC main priority < rt_callback priority, (2) `arm_driver` / `hand_driver` cpu_core 가 모든 RT controller thread (rt_control/rt_callback/mpc_main) 와 disjoint, (3) cpu_core=-1 sentinel 은 disjointness sweep 에서 skip 등의 불변식을 검증.
 
 `ThreadMetrics` 구조체: `min_latency_us`, `max_latency_us`, `avg_latency_us`, `jitter_us`, `percentile_95_us`, `percentile_99_us`.
 

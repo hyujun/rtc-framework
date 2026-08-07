@@ -40,6 +40,10 @@ RT_COMMON = REPO_ROOT / "repo_scripts" / "scripts" / "lib" / "rt_common.sh"
 # Sampled core counts: every value across the tier boundaries plus the clamp.
 CORE_COUNTS = list(range(1, 18)) + [24]
 
+# mpc_worker_0/1 are listed although #380 deleted them from the manifest: with
+# no spec behind them the loop below asserts they are absent from BOTH mirrors
+# on every tier, which is the regression that matters now. Reserving slots for
+# threads nothing runs is the defect #380 fixed.
 ROLES = (
     "rt_control",
     "rt_callback",
@@ -146,9 +150,9 @@ def main() -> int:
             shell_value = shell[ncpu][f"role:{role}"]
 
             if spec is None:
-                # Absent in the manifest => absent in both mirrors. An mpc_worker
-                # that leaks onto a tier without it makes the verifier hunt a
-                # thread that is never created.
+                # Absent in the manifest => absent in both mirrors. A role that
+                # leaks into a mirror makes the verifier hunt a thread that is
+                # never created.
                 fail.check(f"ncpu={ncpu} {role} shell absence", "ABSENT", shell_value)
                 if role in py_specs:
                     fail.items.append(f"ncpu={ncpu} {role}: present in Python, absent in manifest")
@@ -217,10 +221,7 @@ def main() -> int:
             if spec is None:
                 continue
             name = key
-            row = f"{name}:{spec.slot}:{spec.policy_verifier}:{spec.priority}"
-            if key.startswith("mpc_worker_"):
-                row += ":optional"
-            rows.append(row)
+            rows.append(f"{name}:{spec.slot}:{spec.policy_verifier}:{spec.priority}")
         fail.check(f"ncpu={ncpu} rtc_expected_threads", " ".join(rows), shell[ncpu]["expected"])
 
     return fail.report()

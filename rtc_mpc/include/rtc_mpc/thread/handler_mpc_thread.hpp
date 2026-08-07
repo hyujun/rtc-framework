@@ -22,8 +22,8 @@
 ///
 /// Ownership — `HandlerMPCThread` takes unique-ownership of both the handler
 /// and the phase manager via `Configure`. The `RobotModelHandler` reference
-/// is non-owning and must outlive this thread. Worker-thread span from the
-/// base class is unused (Aligator's shift-warm-start path is single-threaded).
+/// is non-owning and must outlive this thread. `Solve` is single-threaded —
+/// Aligator's shift-warm-start path runs on the calling thread.
 ///
 /// Cross-mode swap (stretch scope, §Phase 6 Step 6) — on phase transition
 /// where `ctx.ocp_type` differs from the current handler's dispatch key,
@@ -71,7 +71,6 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <span>
 
 namespace rtc::mpc {
 
@@ -138,8 +137,7 @@ class HandlerMPCThread final : public MPCThread {
   }
 
  protected:
-  bool Solve(const MPCStateSnapshot& state, MPCSolution& out,
-             std::span<std::jthread> workers) override;
+  bool Solve(const MPCStateSnapshot& state, MPCSolution& out) override;
 
  private:
   /// @brief Execute the cross-mode handler swap. Non-noexcept internally;

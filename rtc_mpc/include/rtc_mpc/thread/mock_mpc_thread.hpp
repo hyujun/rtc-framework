@@ -37,8 +37,7 @@ class MockMPCThread final : public MPCThread {
   void SetTarget(const Eigen::Ref<const Eigen::VectorXd>& q_target) noexcept;
 
  protected:
-  bool Solve(const MPCStateSnapshot& state, MPCSolution& out_sol,
-             std::span<std::jthread> workers) override;
+  bool Solve(const MPCStateSnapshot& state, MPCSolution& out_sol) override;
 
  private:
   mutable std::mutex mutex_;  // protects q_target_; called off RT path

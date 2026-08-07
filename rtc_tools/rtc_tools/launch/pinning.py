@@ -62,8 +62,6 @@ RTC_OWNED_THREAD_NAMES = frozenset(
         "rt_control",
         "rt_callback",
         "mpc_main",
-        "mpc_worker_0",
-        "mpc_worker_1",
         "nrt_logging",
         "nrt_callback",
         # Shares nrt_callback's core but self-pins under its own name since

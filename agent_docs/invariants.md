@@ -196,7 +196,7 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 | # | 규칙 | 이유 | 검증/구현 |
 |---|------|------|----------|
 | RT-HOST-1 | RT 프로세스는 main 진입 또는 `on_configure` 종료 시점에 `mlockall(MCL_CURRENT \| MCL_FUTURE)` 1회 호출 | Major/minor page fault → ms 단위 jitter | `controller_manager` 의 `lock_memory: true` 파라미터 또는 자체 `mlockall` 래퍼. `repo_scripts/scripts/verify_rt_runtime.sh` 가 `VmLck>0` 검증 |
-| RT-HOST-2 | RT thread 는 SCHED_FIFO priority ∈ [50, 95] 로 `on_activate` 시점에 설정. **99 금지** (kernel watchdog 영역) | CFS 비결정성 제거 | `rtc_base/threading/thread_config.hpp` 의 `SystemThreadConfigs` SSoT 사용. 현 layout 은 55~90 을 쓴다 (mpc_workers 55 가 하한 — 외부 thread 를 아래에 끼우려면 이 하한부터 확인). 외부 라이브러리 (`realtime_tools` 등) 가 자체 dedicated thread 생성 시 이 layout 과 정합 필수 |
+| RT-HOST-2 | RT thread 는 SCHED_FIFO priority ∈ [50, 95] 로 `on_activate` 시점에 설정. **99 금지** (kernel watchdog 영역) | CFS 비결정성 제거 | `rtc_base/threading/thread_config.hpp` 의 `SystemThreadConfigs` SSoT 사용. 현 layout 은 60~90 을 쓴다 (mpc_main 60 이 하한 — 외부 thread 를 아래에 끼우려면 이 하한부터 확인; #380 이 FIFO 55 의 mpc_workers 를 제거했다). 외부 라이브러리 (`realtime_tools` 등) 가 자체 dedicated thread 생성 시 이 layout 과 정합 필수 |
 | RT-HOST-3 | RT thread 는 `thread_config.hpp` + `cpu_shield.sh` 가 정의한 CPU core 에 affinity 고정 | DDS receive thread / ROS executor / IRQ 와 동일 core 공유 시 cache pollution + 선점 jitter | `thread_config.hpp` 의 `SystemThreadConfigs::cpu_affinity` 또는 `cpu_shield.sh` runtime 격리. 외부 라이브러리 thread 생성 시 동일 정책 적용 필수 |
 
 **System-level** (수치 박제 X, script 위임): 다음은 배포 환경 책임이며, controller 시작 시 sensor 로 확인하고 timing log 헤더에 결과를 기록한다:

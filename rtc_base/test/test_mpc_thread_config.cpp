@@ -26,39 +26,22 @@ struct TierExpectation {
   const char* label;
   const MpcThreadConfig* mpc;
   int expected_main_core;
-  int expected_num_workers;
 };
 
 const std::array<TierExpectation, 7> kTiers = {{
-    {"4-core", &kMpcConfig4Core, 3, 0},
-    {"6-core", &kMpcConfig6Core, 3, 0},
-    {"8-core", &kMpcConfig8Core, 3, 0},
-    {"10-core", &kMpcConfig10Core, 3, 1},
-    {"12-core", &kMpcConfig12Core, 3, 2},
-    {"14-core", &kMpcConfig14Core, 3, 2},
-    {"16-core", &kMpcConfig16Core, 3, 2},
+    {"4-core", &kMpcConfig4Core, 3},
+    {"6-core", &kMpcConfig6Core, 3},
+    {"8-core", &kMpcConfig8Core, 3},
+    {"10-core", &kMpcConfig10Core, 3},
+    {"12-core", &kMpcConfig12Core, 3},
+    {"14-core", &kMpcConfig14Core, 3},
+    {"16-core", &kMpcConfig16Core, 3},
 }};
 
 TEST(MpcThreadConfig, MainCoreMatchesSpec) {
   for (const auto& tier : kTiers) {
     EXPECT_EQ(tier.mpc->main.cpu_core, tier.expected_main_core)
         << tier.label << ": MPC main core mismatch";
-    EXPECT_EQ(tier.mpc->num_workers, tier.expected_num_workers)
-        << tier.label << ": worker count mismatch";
-  }
-}
-
-TEST(MpcThreadConfig, WorkerPriorityNotAboveMain) {
-  for (const auto& tier : kTiers) {
-    const auto& mpc = *tier.mpc;
-    if (mpc.main.sched_policy != SCHED_FIFO && mpc.main.sched_policy != SCHED_RR) {
-      continue;  // Non-RT tier (4-core)
-    }
-    for (int i = 0; i < mpc.num_workers; ++i) {
-      const auto& worker = mpc.workers[static_cast<std::size_t>(i)];
-      EXPECT_LE(worker.sched_priority, mpc.main.sched_priority)
-          << tier.label << " worker " << i << ": priority > main";
-    }
   }
 }
 
@@ -114,11 +97,17 @@ TEST(MpcThreadConfig, DedicatedTiersDoNotShareWithSensorOrRt) {
   }
 }
 
-// Monotonicity invariant: as physical core count grows, RT/MPC isolation
-// quality must never regress. Each tier ≥ 8-core must keep MPC main on a
-// dedicated core (distinct from rt_control / rt_callback / nrt_logging /
-// nrt_callback), and worker count must be monotonic.
-TEST(MpcThreadConfig, TierIsolationMonotonicity) {
+// Every tier from 8-core up keeps MPC solve off both CFS lanes, so a long
+// solve never contends with logging or the non-RT executor.
+//
+// This was a monotonicity fixture until #380: it walked consecutive tier pairs
+// because worker count had to be non-decreasing as cores grew. With the worker
+// slots gone the only surviving property is per-tier, so the loop no longer
+// holds a `lo` snapshot and the name says what the body checks. The guard was
+// also `>= 10` while the comment above it claimed `>= 8`; the tier list starts
+// at 8 and the 8-core tier satisfies the rule (mpc_main slot 3, nrt lanes on
+// the aux slot 2), so the check now covers what was always claimed.
+TEST(MpcThreadConfig, DedicatedTiersDoNotShareWithNrtLanes) {
   struct TierSnapshot {
     int ncpu;
     const MpcThreadConfig* mpc;
@@ -141,27 +130,18 @@ TEST(MpcThreadConfig, TierIsolationMonotonicity) {
        &kNrtLoggingConfig16Core, &kNrtCallbackConfig16Core},
   }};
 
-  for (std::size_t i = 1; i < tiers.size(); ++i) {
-    const TierSnapshot& lo = tiers[i - 1];
-    const TierSnapshot& hi = tiers[i];
-
-    EXPECT_GE(hi.mpc->num_workers, lo.mpc->num_workers)
-        << hi.ncpu << "-core has fewer MPC workers than " << lo.ncpu << "-core";
-
-    // Tiers ≥ 10 keep MPC main off both nrt lanes. What this no longer asserts
-    // is that the two nrt lanes are on cores of their own: layout v5 (#349)
-    // deliberately folds nrt_logging / nrt_callback / nrt_publish onto the
-    // rt_callback slot, so `nrt_logging != nrt_callback` became a statement
-    // about the OLD layout rather than about isolation quality. Removed under
-    // PROC-6 / E-6 with the spec change, not to make new code pass -- the
-    // property that still matters (MPC solve never shares a core with a CFS
-    // lane) is exactly what the two surviving assertions pin.
-    if (hi.ncpu >= 10) {
-      EXPECT_NE(hi.mpc->main.cpu_core, hi.nrt_logging->cpu_core)
-          << hi.ncpu << "-core: MPC main shares nrt_logging core";
-      EXPECT_NE(hi.mpc->main.cpu_core, hi.nrt_callback->cpu_core)
-          << hi.ncpu << "-core: MPC main shares nrt_callback core";
-    }
+  // What this does NOT assert is that the two nrt lanes sit on cores of their
+  // own: layout v5 (#349) deliberately folds nrt_logging / nrt_callback /
+  // nrt_publish onto the rt_callback slot, so `nrt_logging != nrt_callback`
+  // became a statement about the OLD layout rather than about isolation
+  // quality. Removed under PROC-6 / E-6 with the spec change, not to make new
+  // code pass -- the property that still matters (MPC solve never shares a
+  // core with a CFS lane) is exactly what the two assertions below pin.
+  for (const TierSnapshot& tier : tiers) {
+    EXPECT_NE(tier.mpc->main.cpu_core, tier.nrt_logging->cpu_core)
+        << tier.ncpu << "-core: MPC main shares nrt_logging core";
+    EXPECT_NE(tier.mpc->main.cpu_core, tier.nrt_callback->cpu_core)
+        << tier.ncpu << "-core: MPC main shares nrt_callback core";
   }
 }
 
@@ -269,13 +249,6 @@ TEST(MpcThreadConfig, LayoutV4ArmHandDriverDisjoint) {
     EXPECT_NE(t.hand->cpu_core, t.rt_callback->cpu_core)
         << t.label << ": hand shares rt_callback core";
     EXPECT_NE(t.hand->cpu_core, t.mpc->main.cpu_core) << t.label << ": hand shares mpc_main core";
-    for (int i = 0; i < t.mpc->num_workers; ++i) {
-      const int worker_core = t.mpc->workers[static_cast<std::size_t>(i)].cpu_core;
-      EXPECT_NE(t.arm->cpu_core, worker_core)
-          << t.label << ": arm shares mpc_worker_" << i << " core";
-      EXPECT_NE(t.hand->cpu_core, worker_core)
-          << t.label << ": hand shares mpc_worker_" << i << " core";
-    }
     // Arm and hand on dedicated tiers also get distinct cores from each other.
     EXPECT_NE(t.arm->cpu_core, t.hand->cpu_core)
         << t.label << ": arm and hand share a core on a tier that should have dedicated pins";
@@ -301,7 +274,7 @@ TEST(MpcThreadConfig, LayoutV3ValidateAllTiersWhenHostFits) {
 }
 
 TEST(MpcThreadConfig, NoRtPriorityConflicts) {
-  // Validate the MPC-specific invariants directly (priority / worker rules)
+  // Validate the MPC-specific invariants directly (priority rules)
   // without going through ValidateThreadConfig, which cross-checks cpu_core
   // against the host's live core count — not meaningful for tiers larger
   // than the test machine.

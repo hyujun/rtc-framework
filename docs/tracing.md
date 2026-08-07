@@ -212,8 +212,10 @@ mpc_tick                                 (MPC solve tick; raw PeriodicRtThread �
 └─ mpc_publish                            (PublishSolution SPSC 핸드오프)
 ```
 
-MPC **workers 는 계측 제외** — jthread body 가 config apply 후 즉시 종료하는 passive
-placeholder 이고, 실제 병렬성은 solver 라이브러리(aligator) 내부에 있다.
+MPC solve 는 **단일 스레드**다 — `mpc_worker_*` 는 config 만 적용하고 즉시 종료하는
+placeholder 였고 #380 이 그 스레드와 슬롯을 함께 제거했다. 트레이스에 worker span 이
+없는 것은 계측 누락이 아니라 그런 스레드가 없기 때문이다. 병렬 MPC 를 도입하면 그
+병렬성은 aligator 의 OpenMP 풀 안에 있고, 계측 지점도 이 목록이 아니라 그 풀이 된다.
 
 Non-RT publish 스레드 (`integrated_rt_controller` 의 `nrt_publish`):
 
@@ -258,7 +260,6 @@ ros2_tracing 의 `ros2:callback_start/end` 가 이미 각 executor 콜백 바깥
 * **DDS / rclcpp 내부 스레드** — kernel `sched_switch` timeline 으로 관측 (UST span 불필요).
 * **프로세스 main 스레드** — 노드 구성 후 50 ms sleep 루프만 도는 대기 스레드.
 * **일시적 lifecycle 스레드** — on_configure/on_activate 1회성 경로.
-* **MPC workers** — 위 참조 (passive placeholder).
 * **python 노드** (target generator / GUI 등) — `RTC_TRACE_SCOPE` 는 C++ 매크로.
 * **`rtc_communication::Transceiver::RecvLoop`** — production 사용처 0. 첫 실사용
   driver 도입 시 계측.

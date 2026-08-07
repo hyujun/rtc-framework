@@ -164,7 +164,7 @@ detect_hybrid_capability
 # the runtime affinity check agree by construction. (Previously duplicated here.)
 
 # ── 기대값 테이블 (생성물 소비) ──────────────────────────────────────────────
-# 형식: "thread_name:expected_slot:expected_policy:expected_priority[:optional]"
+# 형식: "thread_name:expected_slot:expected_policy:expected_priority"
 # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
 #
 # IMPORTANT: expected_slot 은 ThreadConfig::cpu_core 와 동일한 *slot index*
@@ -175,21 +175,18 @@ detect_hybrid_capability
 # 환경 모두에서 올바르게 동작.
 #
 # 이 표는 컨트롤러의 **in-process 스레드만** 담는다 (rt_control, rt_callback,
-# mpc_main, mpc_worker_*, nrt_logging, nrt_callback) — 전부 pthread_setname_np
+# mpc_main, nrt_logging, nrt_callback) — 전부 pthread_setname_np
 # 되어 /proc/<controller>/task 에 보인다. arm_driver / hand_driver 는 launch 가
 # taskset 으로 pin 하는 **별도 프로세스**라 여기 있으면 항상 false-WARN 이었고,
 # build_external_drivers() + discover_external_drivers() 가 PID 로 발견한다.
 #
-# optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리한다.
-#   - mpc_worker_*: MPCThread::Start (rtc_mpc/src/thread/mpc_thread.cpp) 의 worker
-#                   생성 lambda 가 ApplyThreadConfig 호출 후 즉시 종료하는 구조라
-#                   (parallel solver 가 별도로 thread 를 spawn 하는 패턴)
-#                   std::jthread destructor 가 join 하고, verify 의 process
-#                   discovery 시점엔 이미 사라져 매칭 불가. 실제 worker 활용
-#                   여부는 별도 진단 task.
-#   - hand_udp_recv: hand_driver 프로세스 내부의 receive thread.
-#                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
-#                    별도 cpu pin 검증 skip (priority 65 만 확인).
+# 이 표의 모든 행은 **필수**다. 미발견 시 SKIP 으로 넘기는 5번째 `optional`
+# 필드가 있었으나, 유일한 생산자가 `mpc_worker_*` 였고 그 슬롯이 사라지면서
+# (#380) 함께 제거했다 — 그 필드의 존재 이유 자체가 "설정만 적용하고 즉시
+# 죽는 스레드를 미발견 처리한다" 였다. hand_driver 프로세스 내부의
+# `hand_udp_recv` 는 이 표가 아니라 EXTERNAL_DRIVER_THREAD_LAYOUT 에 있고
+# 그쪽은 이 필드를 쓰지 않는다. 다시 optional 이 필요해지면 그때는 "왜 없어도
+# 되는가" 를 manifest 에 근거로 남기고 되살릴 것.
 declare -a EXPECTED_THREADS
 declare -a FORBIDDEN_THREADS
 
@@ -207,8 +204,8 @@ build_expected_threads() {
   # verifiable rather than merely quiet.
   mapfile -t FORBIDDEN_THREADS < <(rtc_forbidden_threads "$PHYSICAL_CORES" "$LAYOUT_PROFILE")
 
-  # 빈 표는 fail-open 이다: 아래 감지 루프는 EXPECTED_THREADS 를 순회하며
-  # known_count 를 세므로, 표가 비면 known_count 도 expected_count 도 0 이 되어
+  # 빈 표는 fail-open 이다: 아래 감지 단계는 EXPECTED_THREADS 를 순회하며
+  # required_count / required_found 를 세므로, 표가 비면 둘 다 0 이 되어
   # `0 -eq 0` 으로 _pass "스레드 전체 감지: 0/0" 을 내고 이후 모든 affinity /
   # policy / migration 루프가 0회 돈다 — 코어가 전부 틀린 박스를 green 으로
   # 통과시킨다. 리터럴 배열이던 시절엔 불가능했던 상태이고, 지금은 생성 파일
@@ -442,54 +439,43 @@ check_process_discovery() {
     _warn "PHYSICAL_CORE_SLOTS 미감지 — slot→logical 변환이 identity fallback (sysfs topology 미가용 / 비-Intel 비-hybrid 시스템)"
   fi
 
-  # 알려진 스레드 매칭 결과 — optional 스레드 미발견은 SKIP 처리
+  # 알려진 스레드 매칭 결과 — 표의 모든 행이 필수다 (위 형식 주석 참조).
+  #
+  # 판정 축은 **이름**(required_found)이지 TID(known_count)가 아니다. 위 순회는
+  # 매칭될 때마다 known_count 를 올리는 반면 THREAD_TIDS 는 이름으로 덮어쓰므로,
+  # 같은 comm 을 가진 스레드가 둘 있으면 필수 스레드 하나가 없어도 known_count 는
+  # 표의 행 수에 도달한다 — 즉 TID 축으로 PASS 를 판정하면 "6/6 전체 감지" 를
+  # 내면서 nrt_publish 가 아예 안 떠 있을 수 있다. 이 파일의 실패 양식은 fail-open
+  # 이고 (#344 가 이 단계를 WARN 에서 FAIL 로 승격한 이유 자체), 같은 comm 이
+  # 여럿인 상황은 가정이 아니라 아래 진단 dump 가 이미 dedupe 로 다루고 있다.
   local required_count=0
   local required_found=0
-  local optional_missing=0
   for entry in "${EXPECTED_THREADS[@]}"; do
-    local ename eopt
+    local ename
     ename=$(echo "$entry" | cut -d: -f1)
-    eopt=$(echo "$entry" | cut -d: -f5 -s)
-    if [[ "$eopt" == "optional" ]]; then
-      if [[ -z "${THREAD_TIDS[$ename]:-}" ]]; then
-        ((optional_missing++)) || true
-      fi
-    else
-      ((required_count++)) || true
-      if [[ -n "${THREAD_TIDS[$ename]:-}" ]]; then
-        ((required_found++)) || true
-      fi
+    ((required_count++)) || true
+    if [[ -n "${THREAD_TIDS[$ename]:-}" ]]; then
+      ((required_found++)) || true
     fi
   done
 
-  local expected_count=${#EXPECTED_THREADS[@]}
-  if [[ "$known_count" -eq "$expected_count" ]]; then
-    _pass "thread_config.hpp 스레드 전체 감지: ${known_count}/${expected_count}"
-  elif [[ "$required_found" -eq "$required_count" ]]; then
-    _pass "필수 스레드 전체 감지: ${required_found}/${required_count}"
-    # optional 스레드 미발견은 정보성 표시
-    for entry in "${EXPECTED_THREADS[@]}"; do
-      local ename eopt
-      ename=$(echo "$entry" | cut -d: -f1)
-      eopt=$(echo "$entry" | cut -d: -f5 -s)
-      if [[ "$eopt" == "optional" && -z "${THREAD_TIDS[$ename]:-}" ]]; then
-        _skip "  선택적 스레드 미활성: ${ename}"
-      fi
-    done
-  elif [[ "$known_count" -gt 0 ]]; then
+  # 같은 comm 을 가진 스레드가 여럿이면 두 축이 갈라진다. 그 자체는 FAIL 이 아니지만
+  # (아래 dump 도 dedupe 로 이미 다룬다) 판정 축이 무엇인지 로그에 남겨둔다.
+  if (( known_count > required_found )); then
+    _warn "같은 이름의 스레드가 여럿이다 (매칭 TID ${known_count} > 고유 이름 ${required_found}) — 판정은 이름 축 기준"
+  fi
+
+  if [[ "$required_found" -eq "$required_count" ]]; then
+    _pass "thread_config.hpp 스레드 전체 감지: ${required_found}/${required_count}"
+  elif [[ "$required_found" -gt 0 ]]; then
     # 누락된 필수 스레드 표시
     local _missing_required=0
     for entry in "${EXPECTED_THREADS[@]}"; do
-      local ename eopt
+      local ename
       ename=$(echo "$entry" | cut -d: -f1)
-      eopt=$(echo "$entry" | cut -d: -f5 -s)
       if [[ -z "${THREAD_TIDS[$ename]:-}" ]]; then
-        if [[ "$eopt" == "optional" ]]; then
-          _skip "  선택적 스레드 미활성: ${ename}"
-        else
-          _fail "  미발견: ${ename}"
-          ((_missing_required++)) || true
-        fi
+        _fail "  미발견: ${ename}"
+        ((_missing_required++)) || true
       fi
     done
 
@@ -500,13 +486,11 @@ check_process_discovery() {
     # **이름도 안 붙어**, 이름으로 찾는 이 발견 단계가 실패하고 아래 정책·affinity
     # 검사가 그 스레드들을 통째로 건너뛴다 (total 도 안 센다). 그래서 500 Hz 루프가
     # CFS 로 도는 상태가 WARN 한 줄로 지나갔다.
-    if (( _missing_required > 0 )); then
-      _fail "thread_config.hpp 필수 스레드 미발견: ${known_count}/${expected_count} — 이름 미설정(ApplyThreadConfig early-return) 의심"
-      _category_update "process_discovery" "FAIL"
-    else
-      _warn "thread_config.hpp 스레드 일부 감지: ${known_count}/${expected_count} (필수는 전부 있음)"
-      _category_update "process_discovery" "WARN"
-    fi
+    # 이 분기에 들어왔다는 것이 곧 필수 스레드 누락이다 (표의 모든 행이 필수이므로
+    # required_found < required_count). optional 행이 있던 시절의 "일부 감지지만
+    # 필수는 전부 있음" WARN 갈래는 그 필드와 함께 사라졌다 (#380).
+    _fail "thread_config.hpp 필수 스레드 미발견: ${required_found}/${required_count} — 이름 미설정(ApplyThreadConfig early-return) 의심"
+    _category_update "process_discovery" "FAIL"
 
     # 진단 보조: 필수 스레드가 미발견이면 controller process 의 모든 RT-like
     # thread comm 을 dump. 이름이 박힌 thread 가 어떤 게 있고, EXPECTED 와
@@ -581,7 +565,7 @@ check_process_discovery() {
       fi
     fi
   else
-    _fail "thread_config.hpp 스레드 감지 실패 (${known_count}/${expected_count})"
+    _fail "thread_config.hpp 스레드 감지 실패 (${required_found}/${required_count})"
     _category_update "process_discovery" "FAIL"
   fi
 
@@ -614,7 +598,7 @@ check_process_discovery() {
     fi
   done
   _category_set_detail "process_discovery" \
-    "PID ${CONTROLLER_PID}, profile ${LAYOUT_PROFILE}, ${known_count}/${expected_count} threads, ${ext_found}/${#EXTERNAL_DRIVER_NAMES[@]} ext drivers"
+    "PID ${CONTROLLER_PID}, profile ${LAYOUT_PROFILE}, ${required_found}/${required_count} threads, ${ext_found}/${#EXTERNAL_DRIVER_NAMES[@]} ext drivers"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════

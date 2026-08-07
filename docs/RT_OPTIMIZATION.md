@@ -31,7 +31,7 @@
 
 본 저장소는 **clock_nanosleep RT 루프 + inline actuator publish + 1 non-RT publish lane + 다중 callback_group/executor** 아키텍처를 사용한다. RT 제어 루프는 ROS 2 executor 를 거치지 않고 `clock_nanosleep(TIMER_ABSTIME)` 절대시간 루프로 직접 실행되어 executor dispatch 지터가 제거된다.
 
-**RT 정의 (v4)**: "RT thread" = controller ↔ hardware/sim 경계의 결정적 tick 만. 구체적으로 `rt_control` (정기 tick + inline actuator publish) · `rt_callback` (backend state sub 처리) 둘이 SCHED_FIFO 그룹. `nrt_callback` / `nrt_logging` / `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 는 RT 가 아니다 (MPC main/workers 는 별도 RT 그룹).
+**RT 정의 (v4)**: "RT thread" = controller ↔ hardware/sim 경계의 결정적 tick 만. 구체적으로 `rt_control` (정기 tick + inline actuator publish) · `rt_callback` (backend state sub 처리) 둘이 SCHED_FIFO 그룹. `nrt_callback` / `nrt_logging` / `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 는 RT 가 아니다 (`mpc_main` 은 별도 RT 그룹 — #380 이후 MPC solve 는 단일 스레드다).
 
 > **v4 아키텍처 변경 (SSoT — 본 문서의 이하 "v4 변경" 언급은 모두 이 노트를 가리킨다)**:
 > - **v3 → v4**: `rt_outbound` (FIFO 65) jthread + actuator `publish_buffer_` SPSC + eventfd **제거**. actuator publish 는 `rt_control` 이 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 **inline 호출** (RT-safe contract). cross-core hand-off / eventfd wake / jthread 한 세트가 사라져 latency·자원 동시 감소. `rt_inbound` + `rt_outbound` 필드는 `rt_callback` (FIFO 70) 으로 통합. controller-owned non-RT 토픽만 `nrt_publish_buffer_` (cap 16) → `nrt_publish_thread` lane 으로 유지.
@@ -79,9 +79,6 @@ mpc_main (Core 3, SCHED_FIFO prio 60) ← std::jthread, 20-100Hz
   ├─ Solve() ← Aligator-based handler
   └─ PublishSolution() → rtc::mpc::TripleBuffer (zero-copy publish)
 
-mpc_worker_0..1 (10+/12+ core only, SCHED_FIFO prio 55)
-  └─ 솔버가 spawn 한 parallel rollout / linear solve
-
 ── Non-RT executor 그룹 ──────────────────────────────────────────────
 nrt_callback_executor (Core 5 on 6c shared / Core 7+ dedicated on ≥ 8c,
                        SCHED_OTHER nice 0) ← rclcpp::Executor + jthread
@@ -111,10 +108,10 @@ sim_thread (cpu_core=-1, SCHED_OTHER) — MuJoCo physics, 모든 tier 에서 cpu
 viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공유
 ```
 
-> - **RT priority hierarchy (v4)**: `90 (rt_control) > 70 (rt_callback) > 60 (mpc_main) > 55 (mpc_workers)`. `ValidateSystemThreadConfigs()` invariant 가 강제. (v3 `rt_outbound` FIFO 65 제거 — §개요 "v4 아키텍처 변경" 노트)
+> - **RT priority hierarchy (v4)**: `90 (rt_control) > 70 (rt_callback) > 60 (mpc_main)`. `ValidateSystemThreadConfigs()` invariant 가 강제. (v4 의 `55 mpc_workers` 는 #380 이 제거 — 아래 표 참조.) (v3 `rt_outbound` FIFO 65 제거 — §개요 "v4 아키텍처 변경" 노트)
 > - **rt_callback + DDS co-pin on Core 2 (v4.1)**: launch-time taskset 이 controller process 의 비-RT thread (DDS receive 등) 를 Core 2 로 다시 핀해 `rt_callback` (FIFO 70) 와 cache locality 공유. SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성은 영향 없음. v4 의 Core 3 → v4.1 의 Core 2 로 이동 (RT cluster 가 Core 1 부터 시작).
 > - **Core 0 은 OS / DDS / IRQ 전용 (v4.1)**: ≥ 6-core 모든 tier 에서 nrt_logging / nrt_callback 은 Core 0 와 분리. user-space thread 가 Core 0 에 들어가지 않음.
-> - **6-core 는 degraded mode**: arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유, mpc_workers 없음, sim_thread cpu_core=-1. 결정적 RT 보장은 ≥ 8-core tier 부터.
+> - **6-core 는 degraded mode**: arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유, sim_thread cpu_core=-1. 결정적 RT 보장은 ≥ 8-core tier 부터.
 
 ---
 
@@ -129,8 +126,6 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 | **rt_control** (FIFO 90) | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
 | **rt_callback** (FIFO 70) | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
 | **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
-| **mpc_worker_0** (FIFO 55) | — | — | — | Core 4 | Core 4 | Core 4 | Core 4 |
-| **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 5 | Core 5 | Core 5 |
 | **arm_driver** (CFS 0⁴) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
 | **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 6 | Core 7 | Core 7 | Core 7 |
 | **nrt_logging** (CFS -5) | Core 0 | Core 5 | Core 6 | Core 7 | Core 8 | Core 8 | Core 8 |
@@ -139,7 +134,7 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 | **viewer** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
 
 > ¹ **4-core 는 degraded mode** — `mpc_main` 이 CFS 로 강등 (RT 자원 부족). 결정적 RT 보장 X, demo / smoke 용도만 권장. Core 0 에 nrt + driver 가 모두 합쳐짐 (capacity 한계).
-> ² **6-core 는 degraded mode** — `arm_driver` / `hand_driver` 가 Core 4 공유, `nrt_logging` / `nrt_callback` 이 Core 5 공유, mpc_workers 없음, `sim_thread` `cpu_core=-1` (cpu_shield 해제된 코어에서 roam).
+> ² **6-core 는 degraded mode** — `arm_driver` / `hand_driver` 가 Core 4 공유, `nrt_logging` / `nrt_callback` 이 Core 5 공유, `sim_thread` `cpu_core=-1` (cpu_shield 해제된 코어에서 roam).
 > ³ **`cpu_core = -1` sentinel** — pthread affinity 호출 skip, scheduler/priority/nice/name 만 적용. process-level taskset (launch script) 가 박은 affinity 를 상속. v4.1 부터 모든 tier 에서 `sim_thread` / `viewer` 가 -1.
 > ⁴ **`arm_driver` 의 CFS 0 은 *프로세스* 모델이다** — `SystemThreadConfigs.arm_driver` 는 `ApplyThreadConfig` 대상이 아니라 launch 가 소비하는 코어 배치 값이고, 그 프로세스의 main/executor 는 실제로 CFS 다. 다만 그 안에서 도는 upstream `controller_manager` 제어 루프는 **FIFO 50** 이며, 이 표의 코어에 핀되는 것은 (프로세스가 아니라) 그 루프다 — `taskset` 은 main thread 밖에 못 옮기기 때문 (issue #343). 핀·우선순위는 launch 가 생성하는 CM 파라미터 파일이 정하고 (`rtc_tools.launch.cm_rt_params`), `verify_rt_runtime.sh` 가 그 우선순위의 FIFO 스레드를 찾아 검증한다.
 >
@@ -153,27 +148,33 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 > **v4 의 핵심 변화 (참고)**: `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 제거, DDS co-pin on Core 2 — §개요 "v4 아키텍처 변경" 노트 참조.
 > - `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 가 `SystemThreadConfigs` 의 1급 필드. Python helper (`rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core() / get_sim_core() / get_viewer_core() / get_rt_callback_core()`) 가 동일 tier dispatch 미러링 — launch script 가 process-level pin 으로 사용 (arm 만 taskset 대신 CM 파라미터, issue #343).
 >
-> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp` 의 `TierIsolationMonotonicity` · `LayoutV4RtCallbackPinning` · `LayoutV4ArmHandDriverDisjoint` · `LayoutV3ValidatorCatchesArmHandCollision` · `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + sentinel 처리를 강제한다. drift gate: 세 언어(C++/shell/Python)가 같은 manifest 에서 생성되고 `gen_thread_layout.py --check` 가 stale/수동편집을 차단하며, 의미 등가성은 `repo_scripts/test/test_thread_layout_equivalence.py` 가 ncpu 1..17·24 로 확인한다. 각 언어의 값 oracle 은 손으로 쓴 리터럴이다 (`test_thread_layout_tiers.cpp` · `test_rt_common.sh` · `test_thread_layout.py`) — 생성물끼리 대조하면 잘못된 표가 세 언어에서 일치하므로 잡히지 않기 때문.
+> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp` 의 `DedicatedTiersDoNotShareWithNrtLanes` · `LayoutV4RtCallbackPinning` · `LayoutV4ArmHandDriverDisjoint` · `LayoutV3ValidatorCatchesArmHandCollision` · `CpuCoreSentinelValidatesAsRtConfig` 가 tier 별 배치 + sentinel 처리를 강제한다 (tier *쌍* 을 걷던 단조성 루프는 worker 개수와 함께 사라졌다 — #380). drift gate: 세 언어(C++/shell/Python)가 같은 manifest 에서 생성되고 `gen_thread_layout.py --check` 가 stale/수동편집을 차단하며, 의미 등가성은 `repo_scripts/test/test_thread_layout_equivalence.py` 가 ncpu 1..17·24 로 확인한다. 각 언어의 값 oracle 은 손으로 쓴 리터럴이다 (`test_thread_layout_tiers.cpp` · `test_rt_common.sh` · `test_thread_layout.py`) — 생성물끼리 대조하면 잘못된 표가 세 언어에서 일치하므로 잡히지 않기 때문.
 
 ### cset shield 범위 + CM adopt (cpu_shield.sh, issue #151)
 
 `repo_scripts/scripts/cpu_shield.sh` 의 `user` cpuset 은 **integrated_rt_controller
 프로세스 전체가 들어갈 크기** 여야 한다. cset 은 *프로세스* 를 cpuset 에 가두므로
 (모든 스레드 포함), cpuset 은 RT 스레드 코어뿐 아니라 같은 프로세스의
-`nrt_logging` / `nrt_callback` 코어까지 덮어야 한다. NUC13 12c 에서 RT 스레드는
-logical `{2,4,6,8,9}`, nrt 는 `{12,13}` 에 pin 되는데 nrt 가 RT-only shield(2-9)
-밖이면 nrt self-pin 이 EINVAL → `thread_utils.hpp` 가 SCHED_FIFO 설정 전 return.
+`nrt_logging` / `nrt_callback` 코어까지 덮어야 한다. NUC13 12c 에서 RT 스레드는 logical `{2,4,6}`
+에 pin 된다. layout v5 (#349) 부터 nrt 세 lane 은 aux slot 2 (logical 4) 를 타므로
+RT span 안에 들어오지만, 그 포함은 **레이아웃의 우연이지 계산의 전제가 아니다** —
+nrt 가 RT-only shield 밖으로 나가는 tier 가 다시 생기면 nrt self-pin 이 EINVAL →
+`thread_utils.hpp` 가 SCHED_FIFO 설정 전 return 한다. 그래서 union 은 유지된다.
 SSoT: `rt_common.sh::get_cm_shield_cpus` = `get_rt_shield_cpus` ∪ `get_nrt_cores`
 (OS slot 제외).
+
+RT 그룹이 `rt_control + rt_callback + mpc_main` 셋으로 평평해지고 (v5 의 aux 병합 +
+#380 의 worker 슬롯 회수) nrt 가 그 안의 slot 2 를 타면서, **slot 표기 cpuset 은 모든
+tier 에서 `1-3`** 이다. tier 마다 다른 것은 driver 슬롯과 그래서 풀려나는 코어 범위뿐이다.
 
 | 물리 코어 | CM cpuset — slot 표기 (RT ∪ nrt) | logical (NUC13 hybrid) | 격리 해제 영역 |
 |---|---|---|---|
 | 4 (degraded) | `1-3` (nrt slot 0 = OS, 제외) | — | Core 0 — OS · driver |
-| 6–7 | `1-3,5` (nrt Core 5 공유) | — | Core 0, 4 |
-| 8–9 | `1-3,6-7` | — | Core 0, 4-5 |
-| 10–11 | `1-4,7-8` | — | Core 0, 5-6 |
-| 12–15 | `1-5,8-9` | `2-9,12-13` | Core 0, 6-7 · 10-11 (driver) |
-| 16+ | `1-5,8-9` | `2-9,12-13` | Core 0, 6+ |
+| 6–7 | `1-3` (nrt = aux slot 2) | — | Core 0, 4-5 (4 = driver) |
+| 8–9 | `1-3` | — | Core 0, 4-7 (4·5 = driver) |
+| 10–11 | `1-3` | — | Core 0, 4-9 (5·6 = driver) |
+| 12–15 | `1-3` | `2-7` | Core 0, 4-11 (6·7 = driver) |
+| 16+ | `1-3` | — | Core 0, 4+ (6·7 = driver) |
 
 driver core (`arm_driver` / `hand_driver`) 는 **별도 프로세스** 이며 logical 10,11
 (= system cpuset) 에 pin 된다 — CM 스레드가 아니라 cset 보호 대상이 아니다.
@@ -230,9 +231,7 @@ SCHED_FIFO prio 90  rt_control          ← controller tick (정기)
                      ↓ preempt
 SCHED_FIFO prio 70  rt_callback          ← backend state subs (joint/motor/sensor)
                      ↓ preempt
-SCHED_FIFO prio 60  mpc_main            ← MPC solve (rt_callback 미만)
-                     ↓ preempt
-SCHED_FIFO prio 55  mpc_worker_0..1     ← parallel rollout / linear solve
+SCHED_FIFO prio 60  mpc_main            ← MPC solve (rt_callback 미만, 단일 스레드)
 ─────────────────────── RT / NRT 경계 ───────────────────────
 SCHED_FIFO prio 65  kHandUdpRecvConfig  ← hand_driver 프로세스 내부 (분리 프로세스)
 SCHED_OTHER nice -5 nrt_logging         ← CSV drain (I/O bound)
@@ -245,9 +244,8 @@ SCHED_OTHER nice  0 sim_thread · viewer ← MuJoCo physics · GLFW
 **설계 원칙**:
 
 - **RT thread = controller↔hardware/sim 경계만**: rt_control · rt_callback · mpc_*. 다른 thread 는 NRT.
-- **priority 간격 5–10**: `90/70/60/55` — `cgroup.cpu.rt_runtime_us` 가 압박해도 hierarchy 유지. 우선순위 inflation 금지 (CLAUDE.md §3 E-1 escalation). v3 의 priority 65 슬롯 (rt_outbound) 은 v4 에서 빈 채로 두어 hand_driver 내부 UDP recv (FIFO 65) 가 유일.
+- **priority 간격 10**: `90/70/60` — `cgroup.cpu.rt_runtime_us` 가 압박해도 hierarchy 유지. 우선순위 inflation 금지 (CLAUDE.md §3 E-1 escalation). v3 의 priority 65 슬롯 (rt_outbound) 은 v4 에서 빈 채로 두어 hand_driver 내부 UDP recv (FIFO 65) 가 유일.
 - **`mpc_main < rt_callback` 강제** (`ValidateSystemThreadConfigs`): 긴 MPC solve 가 sensor callback latency 를 늘리지 않도록 보장.
-- **`mpc_worker_*.priority ≤ mpc_main.priority` 강제**: parallel solver 가 main loop 를 역 preempt 하지 않도록.
 - **`arm_driver` / `hand_driver` vs RT controller core disjoint** 강제 (v3 신규): 같은 코어에 배치 시 ValidateSystemThreadConfigs 가 reject. driver 프로세스가 RT thread 코어를 침범하지 못하도록.
 
 ---
@@ -282,7 +280,7 @@ v4.1 기준 권장 흐름은 **`isolcpus` 직접 편집 없이** 두 도구로 �
 
 - **`sudo ./repo_scripts/scripts/setup_grub_rt.sh`** — `nohz_full` / `rcu_nocbs` 자동 산출
   (`get_rt_cores_with_siblings()` SSoT). RT thread 가 실행되는 코어 (rt_control,
-  rt_callback, mpc_main + workers) 만 tickless 로 만들고, SMT 시 HT 시블링은 자동 포함하여
+  rt_callback, mpc_main) 만 tickless 로 만들고, SMT 시 HT 시블링은 자동 포함하여
   cache invalidation 을 방지합니다. nrt / arm_driver / hand_driver (CFS) 는 RT 코어가
   아니므로 nohz_full 에서 제외 — 정기 tick 이 정상 작동.
 - **`sudo ./repo_scripts/scripts/cpu_shield.sh on --robot`** — 런타임에 cset shield 로
@@ -294,9 +292,12 @@ v4.1 기준 권장 흐름은 **`isolcpus` 직접 편집 없이** 두 도구로 �
 
 | 코어 수 | `nohz_full` / `rcu_nocbs` (non-SMT) | cset shield |
 |---------|--------------------------------------|-------------|
-| 4–9c    | `1-3`                                | `1-3`       |
-| 10–11c  | `1-4`                                | `1-4`       |
-| 12c+    | `1-5`                                | `1-5`       |
+| 전 tier | `1-3`                                | `1-3`       |
+
+10-11c 가 `1-4`, 12c+ 가 `1-5` 이던 시절의 두 행은 **#380 이 회수**했다 — 그 상위
+슬롯에 앉아 있던 것은 `mpc_worker_0/1` 뿐이었고, 그 스레드들은 아무것도 실행하지
+않았다. 코어가 늘어도 RT 그룹은 `rt_control + rt_callback + mpc_main` 셋이므로 격리
+범위는 tier 와 무관하다 (오라클: `test_rt_common.sh::test_get_rt_cores_with_siblings_non_smt`).
 
 SMT 가 켜져 있으면 `setup_grub_rt.sh` 가 시블링 logical CPU 까지 자동으로 합집합에
 포함합니다. 예: 6C/12T 시스템에서 RT 물리 코어 1-3 → `nohz_full=1-3,7-9`.
@@ -312,7 +313,7 @@ sudo nano /etc/default/grub
 
 # 6-core 시스템 예시 (cpu_shield 로 격리하지 않고 부팅 시 고정 격리하려면)
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nohz_full=1-3 rcu_nocbs=1-3"
-# 12-core 시스템: nohz_full=1-5 rcu_nocbs=1-5
+# 코어 수가 늘어도 동일: RT 클러스터는 전 tier 에서 Core 1-3 이다 (#380)
 # (isolcpus 는 cpu_shield 로 대체되어 비권장)
 
 sudo update-grub
@@ -500,7 +501,7 @@ sudo ./repo_scripts/scripts/setup_irq_affinity.sh
 
 수동 설정:
 ```bash
-# 모든 IRQ를 Core 0-1로 제한 (RT 코어 1-5를 보호)
+# 모든 IRQ를 Core 0-1로 제한 (RT 코어 1-3 을 보호)
 for irq in $(ls /proc/irq/); do
     [ -d "/proc/irq/$irq" ] && echo 3 | sudo tee /proc/irq/$irq/smp_affinity > /dev/null 2>&1
 done
@@ -595,7 +596,7 @@ void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
 - `rt_control` (FIFO 90) · `rt_callback` (FIFO 70, DDS recv co-pin) — RT 경계
 - `nrt_logging` (CFS -5) · `nrt_callback` (CFS 0)
 - `arm_driver` (CM 파라미터로 내부 RT 루프 pin) · `hand_driver` (process-level taskset) · `sim_thread` · `viewer` (`cpu_core=-1` sentinel, 모든 tier)
-- `mpc` (mpc_main + workers[0..2])
+- `mpc` (`MpcThreadConfig` — 필드는 `main` 하나. worker 슬롯은 #380 이 제거했다)
 
 `SelectThreadConfigs()` 는 `GetPhysicalCpuCount()` 를 `SelectThreadConfigsForCoreCount()` 에 넘기고, 그쪽이 7-tier (≥16 / 14 / 12 / 10 / 8 / 6 / else 4-core fallback) 를 dispatch 한다 (core 수를 인자로 받으므로 호스트에 없는 tier 도 테스트가 훑을 수 있다). 각 tier 상수는 `kRtControlConfig*` / `kRtCallbackConfig*` / `kNrtCallbackConfig*` / `kNrtLoggingConfig*` / `kArmDriverConfig*` / `kHandDriverConfig*` / `kSimThreadConfig*` / `kViewerConfig*`.
 

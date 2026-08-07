@@ -1033,12 +1033,12 @@ get_rt_shield_cpus() {
 # on the degraded (<6-core) tier nrt shares Core 0 with the OS, and Core 0 must
 # never be shielded — dropping the OS slot collapses this to the RT-only span
 # there. Each surviving slot → logical cpu (slot_to_logical_cpu) + HT siblings.
-# Range-collapsed CSV (e.g. "2-9" NUC13, "1-5" non-SMT 12c).
+# Range-collapsed CSV (e.g. "2-7" NUC13, "1-3" non-SMT — every tier since #380).
 #
 # v5 (#349) narrowed the result on every tier: the nrt lanes now sit on the
 # rt_callback slot, so the union no longer widens past the RT span and the
 # NUC13 shield went "2-9,12-13" -> "2-9", handing logical 12,13 back to the
-# system cpuset. The union is deliberately NOT collapsed into
+# system cpuset; #380 then reclaimed the mpc_worker slots, taking it to "2-7". The union is deliberately NOT collapsed into
 # get_rt_shield_cpus() — keeping it is what makes a future tier that splits an
 # nrt lane back out widen the cpuset automatically instead of silently leaving
 # that thread outside the shield. Issue #151's condition is dormant, not gone.
@@ -1113,18 +1113,12 @@ print_thread_layout() {
   # header warns about, one layer up from the numbers.
   nrt_pub=$(get_role_slot nrt_publish "$ncpu")
 
-  # MPC lane: main alone, or main + however many workers this tier declares.
-  local mpc_cores mpc_last mpc_label mpc_sched mpc_policy idx prios prio
+  # MPC lane: a single thread on every tier (#380 removed the worker slots).
+  local mpc_cores mpc_last mpc_label mpc_sched mpc_policy prios
   mpc_cores=$(get_mpc_cores "$ncpu")
   mpc_last="${mpc_cores##*,}"
   prios=$(get_role_priority mpc_main "$ncpu")
   mpc_label="mpc_main"
-  idx=0
-  while prio=$(get_role_priority "mpc_worker_${idx}" "$ncpu" 2>/dev/null); do
-    prios="${prios} / ${prio}"
-    mpc_label="mpc_main + workers"
-    idx=$((idx + 1))
-  done
   mpc_policy=$(get_role_policy mpc_main "$ncpu")
   if [[ "$mpc_policy" == "SCHED_OTHER" ]]; then
     mpc_sched="CFS, degraded"

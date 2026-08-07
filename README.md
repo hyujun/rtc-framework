@@ -292,7 +292,7 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 > **Core 0 전용**: OS / DDS / NIC IRQ (isolcpus 대신 런타임 `cset shield` 사용). user-space thread 는 모두 Core 1 이상.
 > DDS receive thread 는 `taskset` 으로 `rt_callback` core (Core 2) 에 co-pin 되어 cache locality 공유 (SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성 영향 없음).
 > CycloneDDS 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK 지연 최소화.
-> **RT priority hierarchy**: 90 (rt_control) > 70 (rt_callback) > 60 (mpc_main) > 55 (mpc_workers). MPC 가 rt_callback 보다 낮으므로 sensor callback 이 항상 preempt — 긴 solve 가 RT 루프에 영향을 주지 않음. 10+코어 tier 는 MPC main + 1–2 worker (SCHED_FIFO 55) 로 병렬 solve 지원. 전체 tier (4/6/8/10/12/14/16) 레이아웃 + `kMpcConfig{4,6,8,10,12,14,16}Core` 는 `rtc_base` README 참조.
+> **RT priority hierarchy**: 90 (rt_control) > 70 (rt_callback) > 60 (mpc_main). MPC 가 rt_callback 보다 낮으므로 sensor callback 이 항상 preempt — 긴 solve 가 RT 루프에 영향을 주지 않음. MPC solve 는 모든 tier 에서 단일 스레드다 (#380 이 FIFO 55 의 `mpc_worker_*` 슬롯 예약을 회수했다 — 병렬화를 되살리는 경로는 Aligator 의 OpenMP 풀이지 별도 ThreadConfig 가 아니다). 전체 tier (4/6/8/10/12/14/16) 레이아웃 + `kMpcConfig{4,6,8,10,12,14,16}Core` 는 `rtc_base` README 참조.
 >
 > **v4 (단일화)**: v3 의 `rt_inbound` (FIFO 70) + `rt_outbound` (FIFO 65) jthread + `publish_buffer_` SPSC + eventfd → `rt_callback` (FIFO 70) 단일화. actuator publish 는 `rt_control` 이 rt_loop tick 안에서 inline 호출 (RT-safe contract).
 > **v4.1**: RT cluster 가 Core 1 부터 시작 (이전 Core 2). Core 0 = OS / DDS / IRQ 전용, nrt_* 가 ≥ 6c 모든 tier 에서 Core 0 와 분리, arm/hand 알파벳 순, sim/viewer 항상 `cpu_core=-1`.
@@ -329,8 +329,9 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 
 최대 RT 성능을 위한 CPU 격리:
 ```bash
-# /etc/default/grub의 GRUB_CMDLINE_LINUX_DEFAULT에 추가 (6코어 기준)
-# isolcpus=1-5 nohz_full=1-5 rcu_nocbs=1-5  # layout v4.1: RT cluster Core 1-5 (6c 기준)
+# /etc/default/grub의 GRUB_CMDLINE_LINUX_DEFAULT에 추가
+# isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-3  # RT cluster = Core 1-3, 전 tier 동일 (#380)
+# 값 산출은 repo_scripts/scripts/setup_grub_rt.sh 가 자동으로 한다 (SMT 시블링 포함)
 sudo update-grub && sudo reboot
 ```
 

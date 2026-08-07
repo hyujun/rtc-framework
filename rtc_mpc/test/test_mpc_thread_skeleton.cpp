@@ -26,8 +26,7 @@ class NopMPCThread final : public MPCThread {
   std::atomic<int> solve_count{0};
 
  protected:
-  bool Solve(const MPCStateSnapshot& /*state*/, MPCSolution& out_sol,
-             std::span<std::jthread> /*workers*/) override {
+  bool Solve(const MPCStateSnapshot& /*state*/, MPCSolution& out_sol) override {
     ++solve_count;
     out_sol.horizon_length = 1;
     out_sol.dt_node = 0.01;
@@ -52,7 +51,6 @@ TEST(MpcThreadLifecycle, StartAndStopCleanly) {
   MpcThreadLaunchConfig launch{};
   launch.main.cpu_core = -1;     // no pinning
   launch.main.sched_policy = 0;  // SCHED_OTHER fallback via ApplyThreadConfig
-  launch.num_workers = 0;
   launch.target_frequency_hz = 100.0;  // fast for the test
 
   NopMPCThread thread;

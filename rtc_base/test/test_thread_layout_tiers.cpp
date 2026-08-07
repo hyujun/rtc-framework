@@ -9,9 +9,9 @@
 // one.
 //
 // It complements test_mpc_thread_config.cpp rather than duplicating it. That
-// file pins relations (worker <= main, mpc < rt_callback, nrt off Core 0,
-// arm/hand disjoint from RT, monotonicity across tiers) plus the MPC main core
-// and worker count. What no C++ test pinned before M1 was the *exact* per-tier
+// file pins relations (mpc < rt_callback, nrt off Core 0, arm/hand disjoint
+// from RT, monotonicity across tiers) plus the MPC main core. What no C++ test
+// pinned before M1 was the *exact* per-tier
 // slot of arm_driver / hand_driver / nrt_logging / nrt_callback -- verified by
 // mutation: moving nrt_logging from slot 8 to 7 on the 12-core tier left every
 // C++ test green while the shell oracle went red on three axes.
@@ -29,6 +29,7 @@
 #include <sched.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -46,9 +47,6 @@ struct TierExpectation {
   Expected rt_control;
   Expected rt_callback;
   Expected mpc_main;
-  int num_workers;
-  Expected worker0;  // ignored when num_workers < 1
-  Expected worker1;  // ignored when num_workers < 2
   Expected arm_driver;
   Expected hand_driver;
   Expected nrt_logging;
@@ -70,9 +68,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kOther, 0, -5},
-       0,
-       {},
-       {},
        {0, kOther, 0, 0},
        {0, kOther, 0, 0},
        {0, kOther, 0, -5},
@@ -83,9 +78,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kOther, 0, -5},
-       0,
-       {},
-       {},
        {0, kOther, 0, 0},
        {0, kOther, 0, 0},
        {0, kOther, 0, -5},
@@ -96,9 +88,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kOther, 0, -5},
-       0,
-       {},
-       {},
        {0, kOther, 0, 0},
        {0, kOther, 0, 0},
        {0, kOther, 0, -5},
@@ -112,9 +101,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       0,
-       {},
-       {},
        {4, kOther, 0, 0},
        {4, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -125,9 +111,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       0,
-       {},
-       {},
        {4, kOther, 0, 0},
        {4, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -135,15 +118,12 @@ const std::vector<TierExpectation>& AllTiers() {
        {-1, kOther, 0, 0},
        {-1, kOther, 0, 0}},
 
-      // ── 8-core (8-9): arm/hand get dedicated slots. No workers. nrt_* stay on
-      //    the aux slot, so slots 6-7 are spare here (v4.1 spent them on nrt).
+      // ── 8-core (8-9): arm/hand get dedicated slots. nrt_* stay on the aux
+      //    slot, so slots 6-7 are spare here (v4.1 spent them on nrt).
       {8,
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       0,
-       {},
-       {},
        {4, kOther, 0, 0},
        {5, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -154,9 +134,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       0,
-       {},
-       {},
        {4, kOther, 0, 0},
        {5, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -164,14 +141,12 @@ const std::vector<TierExpectation>& AllTiers() {
        {-1, kOther, 0, 0},
        {-1, kOther, 0, 0}},
 
-      // ── 10-core (10-11): first parallel MPC worker.
+      // ── 10-core (10-11): arm/hand move up one slot. Slot 4 is unassigned —
+      //    it held mpc_worker_0 until #380 and now leaves the RT group.
       {10,
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       1,
-       {4, kFifo, 55, 0},
-       {},
        {5, kOther, 0, 0},
        {6, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -182,9 +157,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       1,
-       {4, kFifo, 55, 0},
-       {},
        {5, kOther, 0, 0},
        {6, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -192,14 +164,11 @@ const std::vector<TierExpectation>& AllTiers() {
        {-1, kOther, 0, 0},
        {-1, kOther, 0, 0}},
 
-      // ── 12-core (12-13): primary target, both workers.
+      // ── 12-core (12-13): primary target. Slots 4-5 unassigned (ex-workers).
       {12,
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       2,
-       {4, kFifo, 55, 0},
-       {5, kFifo, 55, 0},
        {6, kOther, 0, 0},
        {7, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -210,9 +179,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       2,
-       {4, kFifo, 55, 0},
-       {5, kFifo, 55, 0},
        {6, kOther, 0, 0},
        {7, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -226,9 +192,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       2,
-       {4, kFifo, 55, 0},
-       {5, kFifo, 55, 0},
        {6, kOther, 0, 0},
        {7, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -239,9 +202,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       2,
-       {4, kFifo, 55, 0},
-       {5, kFifo, 55, 0},
        {6, kOther, 0, 0},
        {7, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -252,9 +212,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       2,
-       {4, kFifo, 55, 0},
-       {5, kFifo, 55, 0},
        {6, kOther, 0, 0},
        {7, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -265,9 +222,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       2,
-       {4, kFifo, 55, 0},
-       {5, kFifo, 55, 0},
        {6, kOther, 0, 0},
        {7, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -278,9 +232,6 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       2,
-       {4, kFifo, 55, 0},
-       {5, kFifo, 55, 0},
        {6, kOther, 0, 0},
        {7, kOther, 0, 0},
        {2, kOther, 0, -5},
@@ -326,14 +277,6 @@ TEST(ThreadLayoutTiers, EveryRoleMatchesTheSpecOnEveryTier) {
     ExpectMatches(ncpu + " nrt_publish", cfgs.nrt_publish, tier.nrt_callback);
     ExpectMatches(ncpu + " sim_thread", cfgs.sim_thread, tier.sim_thread);
     ExpectMatches(ncpu + " viewer", cfgs.viewer, tier.viewer);
-
-    EXPECT_EQ(cfgs.mpc.num_workers, tier.num_workers) << ncpu << ": mpc.num_workers";
-    if (tier.num_workers >= 1) {
-      ExpectMatches(ncpu + " mpc_worker_0", cfgs.mpc.workers[0], tier.worker0);
-    }
-    if (tier.num_workers >= 2) {
-      ExpectMatches(ncpu + " mpc_worker_1", cfgs.mpc.workers[1], tier.worker1);
-    }
   }
 }
 
@@ -359,11 +302,6 @@ TEST(ThreadLayoutTiers, ThreadNamesAreStableAndWithinTaskCommLen) {
     EXPECT_STREQ(cfgs.sim_thread.name, "sim_thread") << ncpu;
     EXPECT_STREQ(cfgs.viewer.name, "viewer") << ncpu;
     EXPECT_STREQ(cfgs.mpc.main.name, "mpc_main") << ncpu;
-    for (int i = 0; i < cfgs.mpc.num_workers; ++i) {
-      EXPECT_EQ(std::string(cfgs.mpc.workers[static_cast<std::size_t>(i)].name),
-                "mpc_worker_" + std::to_string(i))
-          << ncpu;
-    }
 
     // TASK_COMM_LEN - 1. A longer name is silently truncated by the kernel, so
     // the verifier would match a prefix it never expects.
@@ -386,13 +324,15 @@ TEST(ThreadLayoutTiers, ThreadNamesAreStableAndWithinTaskCommLen) {
 // test_mpc_thread_config.cpp gates its own validation on the host tier; the
 // same gate applies here.
 //
-// The second bound is gone. Tiers with num_workers == 0 used to be skipped
+// The second bound is gone. Tiers without MPC workers used to be skipped
 // because the zero-initialised workers[] entries sat on cpu_core 0 and the
 // arm/hand disjointness sweep classified them by hard-coded name, reporting
-// collisions against workers that do not exist. #349 marks inactive workers
-// inactive in the NamedConfig table, so those tiers are now checked like any
-// other -- which is the point: the 4-core tier is exactly the one that parks
-// arm/hand on slot 0, and it was the one this fixture could not look at.
+// collisions against workers that do not exist. #349 gated those entries out
+// of the NamedConfig table; #380 removed the worker slots outright, so the
+// shape cannot recur. Either way the 4-core tier -- the one that parks
+// arm/hand on slot 0, and the one this fixture could not look at -- is now
+// checked like any other, and `err.empty()` below is a strictly stronger
+// assertion than the dedicated #349 regression test it replaced.
 TEST(ThreadLayoutTiers, TiersThatFitThisHostPassTheValidator) {
   const int host_cores = rtc::GetPhysicalCpuCount();
   int checked = 0;
@@ -430,24 +370,83 @@ TEST(ThreadLayoutTiers, TiersThatFitThisHostPassTheValidator) {
   }
 }
 
-// The inactive-worker false positive itself (issue #349). The 4-core tier is
-// the shape that triggered it: num_workers == 0, so workers[] is
-// zero-initialised onto slot 0, and arm/hand are pinned to slot 0 by design.
-// Before the fix the validator reported four collisions here against
-// mpc_worker_0/1, which do not exist on this tier.
+// Drops the "Invalid CPU core slot ..." entries from a validator verdict.
 //
-// Asserted independently of the host gate above, because the whole point is
-// that this tier used to be excluded from that sweep.
-TEST(ThreadLayoutTiers, InactiveMpcWorkersDoNotCollideWithDrivers) {
+// That single rule range-checks cpu_core against *this host* (see
+// ValidateThreadConfig in thread_utils.hpp) instead of against the layout, so
+// a box with fewer physical slots than a tier uses trips it for an
+// environment reason. Every other thing the validator says -- co-residency,
+// RT-priority ordering, driver collisions, nice range, names -- is a property
+// of the layout alone and must hold on any host.
+//
+// Entries are appended with a "; " terminator. One message ("carries two RT
+// roles (...); at most one is allowed; ") contains that separator internally
+// and therefore splits into two fragments; both are kept, because only a
+// fragment that *starts* with the host-range prefix is dropped.
+std::string DropHostRangeErrors(const std::string& errors) {
+  std::string kept;
+  std::size_t pos = 0;
+  while (pos < errors.size()) {
+    const std::size_t sep = errors.find("; ", pos);
+    const std::size_t next = (sep == std::string::npos) ? errors.size() : sep + 2;
+    const std::string entry = errors.substr(pos, next - pos);
+    if (entry.rfind("Invalid CPU core slot", 0) != 0) {
+      kept += entry;
+    }
+    pos = next;
+  }
+  return kept;
+}
+
+// The 4-core tier still needs its own unconditional check. It is the one that
+// parks arm/hand on slot 0, and the host gate above skips whatever a small box
+// cannot represent -- so on a large host this is redundant and on a 3-core one
+// it is the only thing left. It replaces the #349 regression test that pinned
+// the inactive-worker false positive: that shape is gone with the worker slots
+// (#380), and asserting the rest of the validator is silent subsumes asserting
+// that it merely omits two names.
+//
+// The verdict is filtered rather than compared against "" because slot 3 does
+// not exist on a host with fewer than four physical cores -- the gated CI
+// runner is exactly that box, and comparing against "" turned the merge job
+// red there while nothing was wrong with the layout. The predecessor test
+// asserted substring *absence* and was host-independent for that reason; the
+// filter keeps the stronger claim (no error of any kind, not just two names)
+// without reintroducing the host dependency this file warns about twenty
+// lines below, where MakeCoResidencyFixture documents the same trap.
+TEST(ThreadLayoutTiers, FourCoreTierWithDriversOnTheOsSlotPassesTheValidator) {
   const rtc::SystemThreadConfigs cfgs = rtc::SelectThreadConfigsForCoreCount(4);
-  ASSERT_EQ(cfgs.mpc.num_workers, 0) << "4-core tier is expected to have no MPC worker";
   ASSERT_EQ(cfgs.arm_driver.cpu_core, 0) << "4-core tier is expected to park arm_driver on slot 0";
+  ASSERT_EQ(cfgs.hand_driver.cpu_core, 0)
+      << "4-core tier is expected to park hand_driver on slot 0";
 
   const std::string err = rtc::ValidateSystemThreadConfigs(cfgs);
-  EXPECT_EQ(err.find("mpc_worker_0"), std::string::npos)
-      << "inactive worker reported as a collision partner: " << err;
-  EXPECT_EQ(err.find("mpc_worker_1"), std::string::npos)
-      << "inactive worker reported as a collision partner: " << err;
+  EXPECT_EQ(DropHostRangeErrors(err), "") << "4-core tier failed validation: " << err;
+}
+
+// DropHostRangeErrors is what keeps the test above honest on a box smaller
+// than the lowest tier -- which is exactly the box this test suite does not
+// run on when it would matter. Pin the filter itself against synthetic
+// verdicts so the mechanism is covered on every host, not just small ones.
+TEST(ThreadLayoutTiers, DropHostRangeErrorsRemovesOnlyTheHostRangeRule) {
+  const std::string range = "Invalid CPU core slot 3 (valid range: -1, 0-1); ";
+
+  EXPECT_EQ(DropHostRangeErrors(""), "");
+  EXPECT_EQ(DropHostRangeErrors(range), "");
+  EXPECT_EQ(DropHostRangeErrors(range + range), "");
+
+  // A layout-level finding survives, alone and mixed with host-range noise.
+  // If it did not, the filter would have turned the 4-core check vacuous --
+  // the failure mode that matters more than the red job it replaced.
+  const std::string real = "'nrt_publish' shares rt_control's core 1; ";
+  EXPECT_EQ(DropHostRangeErrors(real), real);
+  EXPECT_EQ(DropHostRangeErrors(range + real), real);
+  EXPECT_EQ(DropHostRangeErrors(real + range), real);
+
+  // The one validator message that embeds "; " internally must survive whole.
+  const std::string two_rt = "core 2 carries two RT roles ('a', 'b'); at most one is allowed; ";
+  EXPECT_EQ(DropHostRangeErrors(two_rt), two_rt);
+  EXPECT_EQ(DropHostRangeErrors(range + two_rt), two_rt);
 }
 
 // A synthetic layout for the co-residency cases below, built by hand instead
@@ -497,7 +496,6 @@ rtc::SystemThreadConfigs MakeCoResidencyFixture() {
                   .sched_priority = 60,
                   .nice_value = 0,
                   .name = "mpc_main"};
-  cfg.mpc.num_workers = 0;
   cfg.nrt_logging = cfs(rtc::kOsSlot, -5, "nrt_logging");
   cfg.nrt_callback = cfs(rtc::kOsSlot, 0, "nrt_callback");
   cfg.nrt_publish = cfs(rtc::kOsSlot, 0, "nrt_publish");
@@ -577,7 +575,6 @@ TEST(ThreadLayoutTiers, RuntimeWrapperAgreesWithTheExplicitOverload) {
   EXPECT_EQ(probed.rt_control.cpu_core, explicit_count.rt_control.cpu_core);
   EXPECT_EQ(probed.rt_callback.cpu_core, explicit_count.rt_callback.cpu_core);
   EXPECT_EQ(probed.mpc.main.cpu_core, explicit_count.mpc.main.cpu_core);
-  EXPECT_EQ(probed.mpc.num_workers, explicit_count.mpc.num_workers);
   EXPECT_EQ(probed.nrt_logging.cpu_core, explicit_count.nrt_logging.cpu_core);
   EXPECT_EQ(probed.nrt_callback.cpu_core, explicit_count.nrt_callback.cpu_core);
   EXPECT_EQ(probed.arm_driver.cpu_core, explicit_count.arm_driver.cpu_core);

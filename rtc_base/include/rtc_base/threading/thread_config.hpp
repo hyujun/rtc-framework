@@ -3,8 +3,6 @@
 
 #include <sched.h>  // SCHED_FIFO, SCHED_OTHER, SCHED_RR
 
-#include <array>
-
 namespace rtc {
 
 // Thread configuration for RT control and scheduling
@@ -27,26 +25,21 @@ struct ThreadConfig {
 };
 
 // ── MPC thread configuration ────────────────────────────────────────────────
-// Holds the main MPC solve thread plus optional worker threads used by
-// parallel solvers (e.g. Aligator's parallel rollout). Only the first
-// `num_workers` entries of `workers` are valid.
+// Holds the MPC solve thread. Worker slots lived here until #380: their
+// threads applied a config and exited immediately, and no solver could have
+// used them anyway — Aligator parallelises through OpenMP, which spawns and
+// owns its own threads and accepts no external handles. Reintroducing
+// parallel MPC means pinning that pool, not adding thread configs here.
 //
-// Invariants (checked by ValidateSystemThreadConfigs):
+// Invariant (checked by ValidateSystemThreadConfigs):
 //   * `main.sched_priority` < rt_callback thread priority (rt_callback preempts MPC).
-//   * Each worker `sched_priority` ≤ `main.sched_priority` (workers never
-//     preempt the main solve).
-//   * `0 ≤ num_workers ≤ 2` (matches 12-/16-core capacity).
-
-inline constexpr int kMpcMaxWorkers = 2;
 
 struct MpcThreadConfig {
   ThreadConfig main{};
-  int num_workers{0};
-  std::array<ThreadConfig, kMpcMaxWorkers> workers{};
 };
 
 // ── RT priority hierarchy (layout v5) ───────────────────────────────────────
-//   90 (rt_control)  > 70 (rt_callback) > 60 (mpc_main) > 55 (mpc_workers)
+//   90 (rt_control)  > 70 (rt_callback) > 60 (mpc_main)
 //
 // IMPORTANT — "Core N" below is a *slot index*, not a kernel logical CPU id.
 // ApplyThreadConfig translates the slot through CpuTopology::physical_core_slots
@@ -59,7 +52,7 @@ struct MpcThreadConfig {
 // Layout v4 unified former rt_inbound (FIFO 70) + rt_outbound (FIFO 65) into
 // a single rt_callback thread. v4.1 shifts the RT cluster down to start at
 // Core 1 (Core 0 is reserved for OS / DDS / IRQ only) — rt_control = Core 1,
-// rt_callback + DDS recv co-pin = Core 2, mpc_main = Core 3, workers follow.
+// rt_callback + DDS recv co-pin = Core 2, mpc_main = Core 3.
 //
 // v5 (issue #349) makes Core 2 the *aux slot*: the three CFS lanes
 // (nrt_logging, nrt_callback, nrt_publish) fold onto it on every tier >= 6
@@ -183,7 +176,7 @@ struct SystemThreadConfigs {
   ThreadConfig hand_driver;  // external hand driver process pin (SCHED_OTHER)
   ThreadConfig sim_thread;   // MuJoCo physics thread (SCHED_OTHER, cpu_core may be -1)
   ThreadConfig viewer;       // GLFW viewer thread     (SCHED_OTHER, cpu_core may be -1)
-  MpcThreadConfig mpc;       // MPC main + optional workers
+  MpcThreadConfig mpc;       // MPC solve thread
 };
 
 }  // namespace rtc
