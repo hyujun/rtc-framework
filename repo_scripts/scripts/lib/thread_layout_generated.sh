@@ -13,7 +13,7 @@
 # against a /proc affinity mask.
 # shellcheck shell=bash
 
-RTC_THREAD_LAYOUT_VERSION="v5"
+RTC_THREAD_LAYOUT_VERSION="v6"
 
 # Tier id for a physical core count. Mirrors
 # SelectThreadConfigsForCoreCount() in thread_config_generated.hpp.
@@ -77,8 +77,8 @@ get_role_spec() {
     "10|rt_control") echo "1 SCHED_FIFO 90 0" ;;
     "10|rt_callback") echo "2 SCHED_FIFO 70 0" ;;
     "10|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
-    "10|arm_driver") echo "5 SCHED_OTHER 0 0" ;;
-    "10|hand_driver") echo "6 SCHED_OTHER 0 0" ;;
+    "10|arm_driver") echo "4 SCHED_OTHER 0 0" ;;
+    "10|hand_driver") echo "5 SCHED_OTHER 0 0" ;;
     "10|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
     "10|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
     "10|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
@@ -87,8 +87,8 @@ get_role_spec() {
     "12|rt_control") echo "1 SCHED_FIFO 90 0" ;;
     "12|rt_callback") echo "2 SCHED_FIFO 70 0" ;;
     "12|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
-    "12|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
-    "12|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
+    "12|arm_driver") echo "4 SCHED_OTHER 0 0" ;;
+    "12|hand_driver") echo "5 SCHED_OTHER 0 0" ;;
     "12|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
     "12|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
     "12|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
@@ -97,8 +97,8 @@ get_role_spec() {
     "14|rt_control") echo "1 SCHED_FIFO 90 0" ;;
     "14|rt_callback") echo "2 SCHED_FIFO 70 0" ;;
     "14|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
-    "14|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
-    "14|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
+    "14|arm_driver") echo "4 SCHED_OTHER 0 0" ;;
+    "14|hand_driver") echo "5 SCHED_OTHER 0 0" ;;
     "14|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
     "14|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
     "14|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
@@ -107,8 +107,8 @@ get_role_spec() {
     "16|rt_control") echo "1 SCHED_FIFO 90 0" ;;
     "16|rt_callback") echo "2 SCHED_FIFO 70 0" ;;
     "16|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
-    "16|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
-    "16|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
+    "16|arm_driver") echo "4 SCHED_OTHER 0 0" ;;
+    "16|hand_driver") echo "5 SCHED_OTHER 0 0" ;;
     "16|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
     "16|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
     "16|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
@@ -254,10 +254,10 @@ get_arm_driver_slot() {
     4) echo "0" ;;
     6) echo "4" ;;
     8) echo "4" ;;
-    10) echo "5" ;;
-    12) echo "6" ;;
-    14) echo "6" ;;
-    16) echo "6" ;;
+    10) echo "4" ;;
+    12) echo "4" ;;
+    14) echo "4" ;;
+    16) echo "4" ;;
   esac
 }
 
@@ -270,10 +270,10 @@ get_hand_driver_slot() {
     4) echo "0" ;;
     6) echo "4" ;;
     8) echo "5" ;;
-    10) echo "6" ;;
-    12) echo "7" ;;
-    14) echo "7" ;;
-    16) echo "7" ;;
+    10) echo "5" ;;
+    12) echo "5" ;;
+    14) echo "5" ;;
+    16) echo "5" ;;
   esac
 }
 

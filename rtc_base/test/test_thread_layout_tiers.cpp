@@ -118,8 +118,9 @@ const std::vector<TierExpectation>& AllTiers() {
        {-1, kOther, 0, 0},
        {-1, kOther, 0, 0}},
 
-      // ── 8-core (8-9): arm/hand get dedicated slots. nrt_* stay on the aux
-      //    slot, so slots 6-7 are spare here (v4.1 spent them on nrt).
+      // ── 8-core (8-9): arm/hand get dedicated slots (4-5). nrt_* stay on the
+      //    aux slot, so slots 6-7 are spare here (v4.1 spent them on nrt).
+      //    Since v6 (#383) every tier above repeats this exact pair.
       {8,
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
@@ -141,14 +142,16 @@ const std::vector<TierExpectation>& AllTiers() {
        {-1, kOther, 0, 0},
        {-1, kOther, 0, 0}},
 
-      // ── 10-core (10-11): arm/hand move up one slot. Slot 4 is unassigned —
-      //    it held mpc_worker_0 until #380 and now leaves the RT group.
+      // ── 10-core (10-11): identical to 8-core. Slot 4 held mpc_worker_0 until
+      //    #380 and stood empty until #383 moved arm_driver into it, so nothing
+      //    shifts between tiers any more -- the rows below 10 and above it are
+      //    the same assignment, and only the spare tail grows.
       {10,
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
+       {4, kOther, 0, 0},
        {5, kOther, 0, 0},
-       {6, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},
@@ -157,20 +160,22 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
+       {4, kOther, 0, 0},
        {5, kOther, 0, 0},
-       {6, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},
        {-1, kOther, 0, 0}},
 
-      // ── 12-core (12-13): primary target. Slots 4-5 unassigned (ex-workers).
+      // ── 12-core (12-13): primary target. Slots 4-5 are the driver pair
+      //    since v6 (#383); they held mpc_worker_0/1 until #380. On NUC13
+      //    (4P+8E) that is logical 8,9 -- E-cores, outside the shield.
       {12,
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       {6, kOther, 0, 0},
-       {7, kOther, 0, 0},
+       {4, kOther, 0, 0},
+       {5, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},
@@ -179,8 +184,8 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       {6, kOther, 0, 0},
-       {7, kOther, 0, 0},
+       {4, kOther, 0, 0},
+       {5, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},
@@ -192,8 +197,8 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       {6, kOther, 0, 0},
-       {7, kOther, 0, 0},
+       {4, kOther, 0, 0},
+       {5, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},
@@ -202,8 +207,8 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       {6, kOther, 0, 0},
-       {7, kOther, 0, 0},
+       {4, kOther, 0, 0},
+       {5, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},
@@ -212,8 +217,8 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       {6, kOther, 0, 0},
-       {7, kOther, 0, 0},
+       {4, kOther, 0, 0},
+       {5, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},
@@ -222,8 +227,8 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       {6, kOther, 0, 0},
-       {7, kOther, 0, 0},
+       {4, kOther, 0, 0},
+       {5, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},
@@ -232,8 +237,8 @@ const std::vector<TierExpectation>& AllTiers() {
        {1, kFifo, 90, 0},
        {2, kFifo, 70, 0},
        {3, kFifo, 60, 0},
-       {6, kOther, 0, 0},
-       {7, kOther, 0, 0},
+       {4, kOther, 0, 0},
+       {5, kOther, 0, 0},
        {2, kOther, 0, -5},
        {2, kOther, 0, 0},
        {-1, kOther, 0, 0},

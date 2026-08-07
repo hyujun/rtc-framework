@@ -353,8 +353,8 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 | **rt_control** (FIFO 90) | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
 | **rt_callback** (FIFO 70) | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
 | **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
-| **arm_driver** (CFS 0⁴) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
-| **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 6 | Core 7 | Core 7 | Core 7 |
+| **arm_driver** (CFS 0⁴) | Core 0 | Core 4 | Core 4 | Core 4 | Core 4 | Core 4 | Core 4 |
+| **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 5 | Core 5 | Core 5 | Core 5 |
 | **nrt_callback** (CFS 0) | Core 0 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
 | **nrt_publish** (CFS 0) | Core 0 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
 | **nrt_logging** (CFS -5) | Core 0 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
@@ -364,11 +364,13 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 <!-- END GENERATED: thread-layout-matrix -->
 
 > ¹ 4코어는 degraded mode — mpc 가 CFS 로 강등 (RT 자원 부족). Core 0 에 nrt + driver 모두 합쳐짐.
-> ² 6코어는 degraded mode — arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유.
+> ² 6코어는 degraded mode — arm/hand_driver 가 Core 4 공유. (nrt 3 레인은 v5/#349 부터 모든 ≥6c tier 에서 aux slot Core 2 이며 6코어 특례가 아니다.)
 > ³ `cpu_core = -1` sentinel: pin 없음. sim_thread / viewer 는 모든 tier 에서 cpu_shield 가 해제한 코어에서 CFS 로 roam (v4.1 통일).
 > ⁴ `arm_driver` 의 CFS 0 은 *프로세스* 모델이다 — `ApplyThreadConfig` 대상이 아니라 launch 가 소비하는 코어 배치 값이고, 프로세스의 main/executor 는 실제로 CFS 다. 그 안의 upstream `controller_manager` 제어 루프는 FIFO 50 이며, 이 표의 코어에 핀되는 것은 프로세스가 아니라 그 루프다 (`taskset` 은 main thread 밖에 못 옮긴다 — issue #343). 핀은 launch 가 생성하는 CM 파라미터 파일이 나른다.
 >
 > **v4.1 의 핵심 변화**: RT cluster 가 Core 1 부터 시작 (Core 0 = OS / DDS / IRQ 전용); nrt_logging / nrt_callback 이 모든 ≥ 6c tier 에서 Core 0 와 분리; arm/hand 알파벳 순; sim/viewer 모든 tier 에서 cpu_core=-1; 16c 의 cset shield "user" (Core 4-8) 제거.
+>
+> **이후 변화**: **v5 (#349)** — nrt 3 레인(logging / callback / publish)이 전용 슬롯을 반납하고 aux slot Core 2 에서 `rt_callback` 과 동거. **v6 (#383)** — arm/hand_driver 가 #380 이 비운 슬롯 4·5 로 내려와 **8코어 이상 전 tier 에서 동일**해졌다 (이전에는 8→10, 10→12 에서 매번 이동). 규칙은 OS 0 → RT 1-3 → 드라이버는 그 위 가장 낮은 빈 슬롯(알파벳 순) → 나머지 spare 이고, tier 8 이 이미 따르던 것을 나머지에 복원한 것이다.
 >
 > **v4 의 핵심 변화 (참고)**: v3 의 `rt_outbound` (FIFO 65) jthread + `publish_buffer_` SPSC + eventfd 제거 — actuator publish 는 `rt_control` 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 (RT-safe contract). DDS receive thread 는 launch-time taskset 으로 `rt_callback` 와 같은 코어 (v4.1: Core 2) 로 co-pin. hand UDP receive thread 는 hand_driver 프로세스 내부 (`kHandUdpRecvConfig`, cpu_core=-1).
 >

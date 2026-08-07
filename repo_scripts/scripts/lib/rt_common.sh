@@ -1044,8 +1044,10 @@ get_rt_shield_cpus() {
 # that thread outside the shield. Issue #151's condition is dormant, not gone.
 #
 # NOTE: arm_driver / hand_driver are *separate processes* pinned by launch
-# taskset (logical 10,11 in "system"); they are not CM threads and are
-# deliberately excluded from this cpuset.
+# taskset (slots 4,5 since v6/#383 -> logical 8,9 on NUC13, both in "system");
+# they are not CM threads and are deliberately excluded from this cpuset. That
+# exclusion is why #383 could move them without touching this function: a full
+# tier x profile sweep of the result was byte-identical before and after.
 #
 # $1 = launch profile (issue #350), default `rtc_default_profile`. Only the RT
 # half narrows: get_nrt_cores() is profile-blind, so the three CFS lanes stay in
