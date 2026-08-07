@@ -78,6 +78,11 @@ def test_shield_probe_receives_the_mpc_profile(filename):
     and the other four would keep isolating cores nobody runs on.
     """
     tree = ast.parse(_source(filename))
+    called = _called_functions(_source(filename))
+    assert "mpc_layout_profile" in called, (
+        f"{filename}: the profile must come from cpu_shield.mpc_layout_profile — deriving "
+        "it locally is how the shield and the controller gate drift apart"
+    )
     calls = [
         node
         for node in ast.walk(tree)
@@ -87,10 +92,16 @@ def test_shield_probe_receives_the_mpc_profile(filename):
     ]
     assert calls, "no enable_cpu_shield call found"
     for call in calls:
-        assert "enable_mpc" in {kw.arg for kw in call.keywords}, (
-            f"{filename}: enable_cpu_shield must be passed enable_mpc, otherwise the "
+        assert "layout_profile" in {kw.arg for kw in call.keywords}, (
+            f"{filename}: enable_cpu_shield must be passed layout_profile, otherwise the "
             "shield keeps reserving the MPC cores regardless of the launch argument"
         )
+    # The controller has to hear the same decision: the shield shrinking without
+    # the gate knowing is the combination that puts mpc_main on an unshielded core.
+    assert "rt_layout_profile" in _source(filename), (
+        f"{filename}: the resolved profile must reach the controller as the "
+        "rt_layout_profile parameter, not only the cset shield"
+    )
 
 
 @pytest.mark.parametrize("filename", LAUNCH_FILES)

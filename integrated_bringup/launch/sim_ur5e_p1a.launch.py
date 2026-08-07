@@ -154,6 +154,10 @@ def launch_setup(context, *args, **kwargs):
         ctrl_overrides["kd"] = float(kd)
 
     ctrl_overrides["log_dir"] = session_dir
+    # The controller refuses to activate a structurally MPC-enabled config under
+    # a profile that dropped the MPC cores — otherwise the shield hands those
+    # cores back while a SCHED_FIFO thread still runs on one (#350).
+    ctrl_overrides["rt_layout_profile"] = layout_profile
 
     # Optional: override initial_controller (e.g. select demo_wbc_controller)
     initial_controller = LaunchConfiguration("initial_controller").perform(context)
@@ -166,6 +170,9 @@ def launch_setup(context, *args, **kwargs):
     # topic (index 7) can also toggle MPC on/off dynamically without
     # restarting the launch.
     enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
+    # One mapping for both consumers: the cset shield and the controller's
+    # activation gate must agree on which profile is in force (#350).
+    layout_profile = shield.mpc_layout_profile(enable_mpc)
     if enable_mpc.lower() in ("true", "1", "yes"):
         ctrl_overrides["demo_wbc_controller.mpc.enabled"] = True
     elif enable_mpc.lower() in ("false", "0", "no"):
@@ -203,9 +210,7 @@ def launch_setup(context, *args, **kwargs):
             "--sim",
             log_prefix="[SIM]",
             gated=False,
-            # Same tri-state value the controller override above reads, so the
-            # shield reserves MPC cores exactly when the MPC thread may spawn (#350).
-            enable_mpc=enable_mpc,
+            layout_profile=layout_profile,
         )
         actions.append(enable_sim_cpu_shield)
 

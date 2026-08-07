@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 from launch.actions import EmitEvent
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import LifecycleNode
 
 from rtc_tools.launch import cpu_shield, pinning
@@ -116,53 +116,71 @@ def test_shield_probe_carries_the_layout_profile(mode):
     assert f'sudo "$SHIELD" on {mode} --profile "$PROFILE"' in snippet
 
 
-def test_shield_profile_defaults_to_reserving_mpc_cores():
-    """Only an explicit false opts out; empty means "defer to YAML" (#350).
+@pytest.mark.parametrize(
+    ("enable_mpc", "expected"),
+    [
+        ("false", cpu_shield.MPC_OFF),
+        ("False", cpu_shield.MPC_OFF),
+        ("0", cpu_shield.MPC_OFF),
+        ("no", cpu_shield.MPC_OFF),
+        (" FALSE ", cpu_shield.MPC_OFF),
+        ("", cpu_shield.MPC_ON),
+        ("true", cpu_shield.MPC_ON),
+        ("1", cpu_shield.MPC_ON),
+        (None, cpu_shield.MPC_ON),
+    ],
+)
+def test_only_an_explicit_false_opts_out(enable_mpc, expected):
+    """Empty means "defer to the controller YAML", and deferring keeps reserving.
 
-    The tie breaks toward reserving because the two errors are not symmetric.
-    Reserving cores nobody uses wastes them; failing to reserve cores someone
-    does use puts a SCHED_FIFO thread on a core the shield just handed back to
-    the system cpuset.
+    The two errors are not symmetric. Reserving cores nobody uses wastes them;
+    failing to reserve cores someone does use puts a SCHED_FIFO thread on a core
+    the shield just handed back to the system cpuset. Anything that is not a
+    recognised false therefore reserves.
     """
-    snippet = _text(cpu_shield.enable_cpu_shield("--robot"))
-
-    assert 'PROFILE="mpc_on"' in snippet
-    assert 'PROFILE="mpc_off"' in snippet
-    # The opt-out is keyed off the launch argument, not off anything the host
-    # can observe — MPC activation is a controller-YAML decision.
-    assert "false|0|no" in snippet
+    assert cpu_shield.mpc_layout_profile(enable_mpc) == expected
 
 
-@pytest.mark.parametrize("value", ["", "false", "true"])
-def test_shield_passes_enable_mpc_as_a_positional_argument(value):
-    """The tri-state value rides argv, so both launch styles share one call.
+def test_profile_mapping_survives_an_unresolved_substitution():
+    """The robot launches map a ``LaunchConfiguration``, resolved at run time.
 
-    The robot launches build their description without an ``OpaqueFunction``, so
-    they cannot ``perform()`` a ``LaunchConfiguration`` — baking the resolved
-    string into the script text would work for the sim launches only.
+    A string-only contract would pass every sim test and fail on exactly the two
+    launches that cannot resolve the value while building their description.
     """
-    action = cpu_shield.enable_cpu_shield("--robot", enable_mpc=value)
+    profile = cpu_shield.mpc_layout_profile(LaunchConfiguration("enable_mpc"))
+
+    assert isinstance(profile, PythonExpression)
+    # Both outcomes have to be reachable from the emitted expression, otherwise
+    # it collapses to a constant and the launch argument stops mattering.
+    expression = "".join(
+        part.text if hasattr(part, "text") else str(part) for part in profile.expression
+    )
+    assert cpu_shield.MPC_OFF in expression
+    assert cpu_shield.MPC_ON in expression
+
+
+@pytest.mark.parametrize("profile", [cpu_shield.MPC_ON, cpu_shield.MPC_OFF])
+def test_shield_passes_the_profile_as_a_positional_argument(profile):
+    """The id rides argv, so both launch styles share one call shape."""
+    action = cpu_shield.enable_cpu_shield("--robot", layout_profile=profile)
 
     assert action.cmd[3][0].text == "rtc_cpu_shield"  # $0 for bash -c
-    assert action.cmd[4][0].text == value
+    assert action.cmd[4][0].text == profile
 
 
-def test_shield_accepts_an_unresolved_substitution():
-    """The robot launches pass a ``LaunchConfiguration``, resolved at run time.
+def test_shield_accepts_an_unresolved_profile():
+    action = cpu_shield.enable_cpu_shield(
+        "--robot", layout_profile=cpu_shield.mpc_layout_profile(LaunchConfiguration("enable_mpc"))
+    )
 
-    A plain-string-only contract would silently work in the sim tests and fail
-    on the robot files, which are the ones that cannot resolve it early.
-    """
-    action = cpu_shield.enable_cpu_shield("--robot", enable_mpc=LaunchConfiguration("enable_mpc"))
-
-    assert isinstance(action.cmd[4][0], LaunchConfiguration)
+    assert isinstance(action.cmd[4][0], PythonExpression)
 
 
-def test_shield_without_enable_mpc_still_builds():
+def test_shield_without_a_profile_reserves():
     """Omitting the keyword must not crash — it reserves, like it always did."""
     action = cpu_shield.enable_cpu_shield("--robot")
 
-    assert action.cmd[4][0].text == ""
+    assert action.cmd[4][0].text == cpu_shield.MPC_ON
 
 
 def test_shield_rejects_unknown_mode():

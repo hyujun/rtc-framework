@@ -226,6 +226,15 @@ if(BUILD_TESTING)
       ABSOLUTE)
   set(RTC_PANDA_URDF_PATH "${_rtc_panda_default}"
       CACHE FILEPATH "Path to panda.urdf used by integrated_bringup tests")
+
+  # UR5e fixture for tests that need DemoWbcController::LoadConfig to actually
+  # build a model: its fallback branch hardcodes base_link -> tool0, which this
+  # URDF has and panda.urdf does not (panda_link0 / panda_link8).
+  get_filename_component(_rtc_ur5e_default
+      "${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots/ur5e/urdf/ur5e.urdf"
+      ABSOLUTE)
+  set(RTC_UR5E_URDF_PATH "${_rtc_ur5e_default}"
+      CACHE FILEPATH "Path to ur5e.urdf used by integrated_bringup tests")
   if(DEFINED ENV{RTC_PANDA_URDF_PATH})
     set(RTC_PANDA_URDF_PATH "$ENV{RTC_PANDA_URDF_PATH}" CACHE FILEPATH
         "Path to panda.urdf used by integrated_bringup tests" FORCE)
@@ -577,6 +586,27 @@ if(BUILD_TESTING)
   )
 
   # ── GraspPhaseManager FSM tests (Phase 7a) ─────────────────────────────────
+    ament_add_gtest(test_wbc_layout_profile_gate
+    test/test_wbc_layout_profile_gate.cpp)
+  target_link_libraries(test_wbc_layout_profile_gate
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_wbc_layout_profile_gate PRIVATE
+    RTC_UR5E_URDF_PATH="${RTC_UR5E_URDF_PATH}"
+    RTC_WBC_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/ur5e_p1a/controllers/demo_wbc_controller.yaml")
+  ament_target_dependencies(test_wbc_layout_profile_gate
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    rtc_tsid
+    rtc_mpc
+    Eigen3
+  )
+
+  # ── GraspPhaseManager FSM tests (Phase 7a) ─────────────────────────────────
+
   ament_add_gtest(test_grasp_phase_manager test/test_grasp_phase_manager.cpp)
   target_link_libraries(test_grasp_phase_manager
     ${PROJECT_NAME}_demo_controllers
