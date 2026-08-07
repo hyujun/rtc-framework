@@ -148,14 +148,19 @@ TEST(MpcThreadConfig, TierIsolationMonotonicity) {
     EXPECT_GE(hi.mpc->num_workers, lo.mpc->num_workers)
         << hi.ncpu << "-core has fewer MPC workers than " << lo.ncpu << "-core";
 
-    // Tiers ≥ 10 keep MPC main, nrt_logging, nrt_callback all on dedicated cores.
+    // Tiers ≥ 10 keep MPC main off both nrt lanes. What this no longer asserts
+    // is that the two nrt lanes are on cores of their own: layout v5 (#349)
+    // deliberately folds nrt_logging / nrt_callback / nrt_publish onto the
+    // rt_callback slot, so `nrt_logging != nrt_callback` became a statement
+    // about the OLD layout rather than about isolation quality. Removed under
+    // PROC-6 / E-6 with the spec change, not to make new code pass -- the
+    // property that still matters (MPC solve never shares a core with a CFS
+    // lane) is exactly what the two surviving assertions pin.
     if (hi.ncpu >= 10) {
       EXPECT_NE(hi.mpc->main.cpu_core, hi.nrt_logging->cpu_core)
           << hi.ncpu << "-core: MPC main shares nrt_logging core";
       EXPECT_NE(hi.mpc->main.cpu_core, hi.nrt_callback->cpu_core)
           << hi.ncpu << "-core: MPC main shares nrt_callback core";
-      EXPECT_NE(hi.nrt_logging->cpu_core, hi.nrt_callback->cpu_core)
-          << hi.ncpu << "-core: nrt_logging shares nrt_callback core";
     }
   }
 }
