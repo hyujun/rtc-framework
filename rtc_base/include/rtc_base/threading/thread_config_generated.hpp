@@ -32,7 +32,7 @@ static_assert(kMpcMaxWorkers == 2, "kMpcMaxWorkers must match max_workers in thr
 // manifest so the rule cannot drift from the layout it guards.
 inline constexpr int kOsSlot = 0;
 
-// ── 4-core fallback (layout v4.1) ──
+// ── 4-core fallback (layout v5) ──
 //   Slot 0: OS / DDS / IRQ + arm_driver (CFS 0) + hand_driver (CFS 0) + nrt_callback (CFS 0)
 //            + nrt_publish (CFS 0) + nrt_logging (CFS -5)
 //   Slot 1: rt_control (FIFO 90)
@@ -110,16 +110,17 @@ inline const ThreadConfig kViewerConfig4Core{.cpu_core = -1,
                                              .nice_value = 0,
                                              .name = "viewer"};
 
-// ── 6-core (layout v4.1) ──
+// ── 6-core (layout v5) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
-//   Slot 2: rt_callback (FIFO 70)
+//   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
 //   Slot 4: arm_driver (CFS 0) + hand_driver (CFS 0)
-//   Slot 5: nrt_callback (CFS 0) + nrt_publish (CFS 0) + nrt_logging (CFS -5)
+//   Slot 5: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // degraded mode — no deterministic RT guarantee.
-// Trade-off: no mpc_worker, arm/hand share one slot, nrt_* share one slot.
+// Trade-off: no mpc_worker, arm/hand share one slot.
 
 inline const ThreadConfig kRtControlConfig{.cpu_core = 1,
                                            .sched_policy = SCHED_FIFO,
@@ -158,19 +159,19 @@ inline const ThreadConfig kHandDriverConfig{.cpu_core = 4,
                                             .nice_value = 0,
                                             .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig{.cpu_core = 5,
+inline const ThreadConfig kNrtCallbackConfig{.cpu_core = 2,
                                              .sched_policy = SCHED_OTHER,
                                              .sched_priority = 0,
                                              .nice_value = 0,
                                              .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtPublishConfig{.cpu_core = 5,
+inline const ThreadConfig kNrtPublishConfig{.cpu_core = 2,
                                             .sched_policy = SCHED_OTHER,
                                             .sched_priority = 0,
                                             .nice_value = 0,
                                             .name = "nrt_publish"};
 
-inline const ThreadConfig kNrtLoggingConfig{.cpu_core = 5,
+inline const ThreadConfig kNrtLoggingConfig{.cpu_core = 2,
                                             .sched_policy = SCHED_OTHER,
                                             .sched_priority = 0,
                                             .nice_value = -5,
@@ -188,15 +189,16 @@ inline const ThreadConfig kViewerConfig{.cpu_core = -1,
                                         .nice_value = 0,
                                         .name = "viewer"};
 
-// ── 8-core (layout v4.1) ──
+// ── 8-core (layout v5) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
-//   Slot 2: rt_callback (FIFO 70)
+//   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
 //   Slot 4: arm_driver (CFS 0)
 //   Slot 5: hand_driver (CFS 0)
-//   Slot 6: nrt_logging (CFS -5)
-//   Slot 7: nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//   Slot 6: spare
+//   Slot 7: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // First tier where arm_driver and hand_driver get dedicated slots.
 
@@ -237,19 +239,19 @@ inline const ThreadConfig kHandDriverConfig8Core{.cpu_core = 5,
                                                  .nice_value = 0,
                                                  .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig8Core{.cpu_core = 7,
+inline const ThreadConfig kNrtCallbackConfig8Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
                                                   .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtPublishConfig8Core{.cpu_core = 7,
+inline const ThreadConfig kNrtPublishConfig8Core{.cpu_core = 2,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
                                                  .name = "nrt_publish"};
 
-inline const ThreadConfig kNrtLoggingConfig8Core{.cpu_core = 6,
+inline const ThreadConfig kNrtLoggingConfig8Core{.cpu_core = 2,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = -5,
@@ -267,16 +269,17 @@ inline const ThreadConfig kViewerConfig8Core{.cpu_core = -1,
                                              .nice_value = 0,
                                              .name = "viewer"};
 
-// ── 10-core (layout v4.1) ──
+// ── 10-core (layout v5) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
-//   Slot 2: rt_callback (FIFO 70)
+//   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
 //   Slot 4: mpc_worker_0 (FIFO 55)
 //   Slot 5: arm_driver (CFS 0)
 //   Slot 6: hand_driver (CFS 0)
-//   Slot 7: nrt_logging (CFS -5)
-//   Slot 8: nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//   Slot 7: spare
+//   Slot 8: spare
 //   Slot 9: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // First tier with a parallel MPC worker.
@@ -328,19 +331,19 @@ inline const ThreadConfig kHandDriverConfig10Core{.cpu_core = 6,
                                                   .nice_value = 0,
                                                   .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig10Core{.cpu_core = 8,
+inline const ThreadConfig kNrtCallbackConfig10Core{.cpu_core = 2,
                                                    .sched_policy = SCHED_OTHER,
                                                    .sched_priority = 0,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtPublishConfig10Core{.cpu_core = 8,
+inline const ThreadConfig kNrtPublishConfig10Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
                                                   .name = "nrt_publish"};
 
-inline const ThreadConfig kNrtLoggingConfig10Core{.cpu_core = 7,
+inline const ThreadConfig kNrtLoggingConfig10Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = -5,
@@ -358,17 +361,18 @@ inline const ThreadConfig kViewerConfig10Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 12-core (primary target) (layout v4.1) ──
+// ── 12-core (primary target) (layout v5) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
-//   Slot 2: rt_callback (FIFO 70)
+//   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
 //   Slot 4: mpc_worker_0 (FIFO 55)
 //   Slot 5: mpc_worker_1 (FIFO 55)
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
-//   Slot 8: nrt_logging (CFS -5)
-//   Slot 9: nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//   Slot 8: spare
+//   Slot 9: spare
 //   Slot 10: spare
 //   Slot 11: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
@@ -427,19 +431,19 @@ inline const ThreadConfig kHandDriverConfig12Core{.cpu_core = 7,
                                                   .nice_value = 0,
                                                   .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig12Core{.cpu_core = 9,
+inline const ThreadConfig kNrtCallbackConfig12Core{.cpu_core = 2,
                                                    .sched_policy = SCHED_OTHER,
                                                    .sched_priority = 0,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtPublishConfig12Core{.cpu_core = 9,
+inline const ThreadConfig kNrtPublishConfig12Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
                                                   .name = "nrt_publish"};
 
-inline const ThreadConfig kNrtLoggingConfig12Core{.cpu_core = 8,
+inline const ThreadConfig kNrtLoggingConfig12Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = -5,
@@ -457,23 +461,24 @@ inline const ThreadConfig kViewerConfig12Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 14-core (layout v4.1) ──
+// ── 14-core (layout v5) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
-//   Slot 2: rt_callback (FIFO 70)
+//   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
 //   Slot 4: mpc_worker_0 (FIFO 55)
 //   Slot 5: mpc_worker_1 (FIFO 55)
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
-//   Slot 8: nrt_logging (CFS -5)
-//   Slot 9: nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//   Slot 8: spare
+//   Slot 9: spare
 //   Slot 10: spare
 //   Slot 11: spare
 //   Slot 12: spare
 //   Slot 13: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
-// Same assignment as the 12-core tier; slots 10+ stay free.
+// Same assignment as the 12-core tier; slots 8+ stay free.
 
 inline const ThreadConfig kRtControlConfig14Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
@@ -528,19 +533,19 @@ inline const ThreadConfig kHandDriverConfig14Core{.cpu_core = 7,
                                                   .nice_value = 0,
                                                   .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig14Core{.cpu_core = 9,
+inline const ThreadConfig kNrtCallbackConfig14Core{.cpu_core = 2,
                                                    .sched_policy = SCHED_OTHER,
                                                    .sched_priority = 0,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtPublishConfig14Core{.cpu_core = 9,
+inline const ThreadConfig kNrtPublishConfig14Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
                                                   .name = "nrt_publish"};
 
-inline const ThreadConfig kNrtLoggingConfig14Core{.cpu_core = 8,
+inline const ThreadConfig kNrtLoggingConfig14Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = -5,
@@ -558,17 +563,18 @@ inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 16-core (layout v4.1) ──
+// ── 16-core (layout v5) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
-//   Slot 2: rt_callback (FIFO 70)
+//   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
 //   Slot 4: mpc_worker_0 (FIFO 55)
 //   Slot 5: mpc_worker_1 (FIFO 55)
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
-//   Slot 8: nrt_logging (CFS -5)
-//   Slot 9: nrt_callback (CFS 0) + nrt_publish (CFS 0)
+//   Slot 8: spare
+//   Slot 9: spare
 //   Slot 10: spare
 //   Slot 11: spare
 //   Slot 12: spare
@@ -578,7 +584,8 @@ inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // Highest tier — 16+ core machines all use this assignment.
 // v4.1 removed the prior cset shield "user" on slots 4-8 for RT cluster
-// cache locality; slots 10+ remain free for user-level workloads.
+// cache locality; v5 folded the nrt lanes onto slot 2, so slots 8+ now
+// remain free for user-level workloads.
 
 inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
@@ -633,19 +640,19 @@ inline const ThreadConfig kHandDriverConfig16Core{.cpu_core = 7,
                                                   .nice_value = 0,
                                                   .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig16Core{.cpu_core = 9,
+inline const ThreadConfig kNrtCallbackConfig16Core{.cpu_core = 2,
                                                    .sched_policy = SCHED_OTHER,
                                                    .sched_priority = 0,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtPublishConfig16Core{.cpu_core = 9,
+inline const ThreadConfig kNrtPublishConfig16Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
                                                   .name = "nrt_publish"};
 
-inline const ThreadConfig kNrtLoggingConfig16Core{.cpu_core = 8,
+inline const ThreadConfig kNrtLoggingConfig16Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = -5,

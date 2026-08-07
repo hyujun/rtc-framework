@@ -13,7 +13,7 @@
 # against a /proc affinity mask.
 # shellcheck shell=bash
 
-RTC_THREAD_LAYOUT_VERSION="v4.1"
+RTC_THREAD_LAYOUT_VERSION="v5"
 
 # Tier id for a physical core count. Mirrors
 # SelectThreadConfigsForCoreCount() in thread_config_generated.hpp.
@@ -60,9 +60,9 @@ get_role_spec() {
     "6|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
     "6|arm_driver") echo "4 SCHED_OTHER 0 0" ;;
     "6|hand_driver") echo "4 SCHED_OTHER 0 0" ;;
-    "6|nrt_callback") echo "5 SCHED_OTHER 0 0" ;;
-    "6|nrt_publish") echo "5 SCHED_OTHER 0 0" ;;
-    "6|nrt_logging") echo "5 SCHED_OTHER 0 -5" ;;
+    "6|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
+    "6|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
+    "6|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
     "6|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "6|viewer") echo "-1 SCHED_OTHER 0 0" ;;
     "8|rt_control") echo "1 SCHED_FIFO 90 0" ;;
@@ -70,9 +70,9 @@ get_role_spec() {
     "8|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
     "8|arm_driver") echo "4 SCHED_OTHER 0 0" ;;
     "8|hand_driver") echo "5 SCHED_OTHER 0 0" ;;
-    "8|nrt_callback") echo "7 SCHED_OTHER 0 0" ;;
-    "8|nrt_publish") echo "7 SCHED_OTHER 0 0" ;;
-    "8|nrt_logging") echo "6 SCHED_OTHER 0 -5" ;;
+    "8|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
+    "8|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
+    "8|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
     "8|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "8|viewer") echo "-1 SCHED_OTHER 0 0" ;;
     "10|rt_control") echo "1 SCHED_FIFO 90 0" ;;
@@ -81,9 +81,9 @@ get_role_spec() {
     "10|mpc_worker_0") echo "4 SCHED_FIFO 55 0" ;;
     "10|arm_driver") echo "5 SCHED_OTHER 0 0" ;;
     "10|hand_driver") echo "6 SCHED_OTHER 0 0" ;;
-    "10|nrt_callback") echo "8 SCHED_OTHER 0 0" ;;
-    "10|nrt_publish") echo "8 SCHED_OTHER 0 0" ;;
-    "10|nrt_logging") echo "7 SCHED_OTHER 0 -5" ;;
+    "10|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
+    "10|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
+    "10|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
     "10|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "10|viewer") echo "-1 SCHED_OTHER 0 0" ;;
     "12|rt_control") echo "1 SCHED_FIFO 90 0" ;;
@@ -93,9 +93,9 @@ get_role_spec() {
     "12|mpc_worker_1") echo "5 SCHED_FIFO 55 0" ;;
     "12|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "12|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
-    "12|nrt_callback") echo "9 SCHED_OTHER 0 0" ;;
-    "12|nrt_publish") echo "9 SCHED_OTHER 0 0" ;;
-    "12|nrt_logging") echo "8 SCHED_OTHER 0 -5" ;;
+    "12|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
+    "12|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
+    "12|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
     "12|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "12|viewer") echo "-1 SCHED_OTHER 0 0" ;;
     "14|rt_control") echo "1 SCHED_FIFO 90 0" ;;
@@ -105,9 +105,9 @@ get_role_spec() {
     "14|mpc_worker_1") echo "5 SCHED_FIFO 55 0" ;;
     "14|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "14|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
-    "14|nrt_callback") echo "9 SCHED_OTHER 0 0" ;;
-    "14|nrt_publish") echo "9 SCHED_OTHER 0 0" ;;
-    "14|nrt_logging") echo "8 SCHED_OTHER 0 -5" ;;
+    "14|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
+    "14|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
+    "14|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
     "14|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "14|viewer") echo "-1 SCHED_OTHER 0 0" ;;
     "16|rt_control") echo "1 SCHED_FIFO 90 0" ;;
@@ -117,9 +117,9 @@ get_role_spec() {
     "16|mpc_worker_1") echo "5 SCHED_FIFO 55 0" ;;
     "16|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "16|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
-    "16|nrt_callback") echo "9 SCHED_OTHER 0 0" ;;
-    "16|nrt_publish") echo "9 SCHED_OTHER 0 0" ;;
-    "16|nrt_logging") echo "8 SCHED_OTHER 0 -5" ;;
+    "16|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
+    "16|nrt_publish") echo "2 SCHED_OTHER 0 0" ;;
+    "16|nrt_logging") echo "2 SCHED_OTHER 0 -5" ;;
     "16|sim_thread") echo "-1 SCHED_OTHER 0 0" ;;
     "16|viewer") echo "-1 SCHED_OTHER 0 0" ;;
     *) return 1 ;;
@@ -185,21 +185,23 @@ get_rt_cores() {
   esac
 }
 
-# nrt_logging + nrt_callback slots, deduplicated and ascending. On the
-# degraded tier both share the OS slot -- callers that shield must drop
-# the OS slot (get_cm_shield_cpus does), never widen onto it.
+# nrt_logging + nrt_callback + nrt_publish slots, deduplicated and
+# ascending. Layout v5 folds all three onto the rt_callback slot, so
+# this is a subset of get_rt_cores() on tiers >= 6; on the degraded
+# tier they share the OS slot instead. Either way callers that shield
+# must drop the OS slot (get_cm_shield_cpus does), never widen onto it.
 get_nrt_cores() {
   local ncpu="${1:-$(get_physical_cores)}"
   local tier
   tier=$(_rtc_layout_tier "$ncpu")
   case "$tier" in
     4) echo "0" ;;
-    6) echo "5" ;;
-    8) echo "6,7" ;;
-    10) echo "7,8" ;;
-    12) echo "8,9" ;;
-    14) echo "8,9" ;;
-    16) echo "8,9" ;;
+    6) echo "2" ;;
+    8) echo "2" ;;
+    10) echo "2" ;;
+    12) echo "2" ;;
+    14) echo "2" ;;
+    16) echo "2" ;;
   esac
 }
 
@@ -260,26 +262,26 @@ rtc_expected_threads() {
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
-      echo "nrt_logging:5:0:0"
-      echo "nrt_callback:5:0:0"
-      echo "nrt_publish:5:0:0"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
       ;;
     8)
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
-      echo "nrt_logging:6:0:0"
-      echo "nrt_callback:7:0:0"
-      echo "nrt_publish:7:0:0"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
       ;;
     10)
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
       echo "mpc_worker_0:4:1:55:optional"
-      echo "nrt_logging:7:0:0"
-      echo "nrt_callback:8:0:0"
-      echo "nrt_publish:8:0:0"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
       ;;
     12)
       echo "rt_control:1:1:90"
@@ -287,9 +289,9 @@ rtc_expected_threads() {
       echo "mpc_main:3:1:60"
       echo "mpc_worker_0:4:1:55:optional"
       echo "mpc_worker_1:5:1:55:optional"
-      echo "nrt_logging:8:0:0"
-      echo "nrt_callback:9:0:0"
-      echo "nrt_publish:9:0:0"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
       ;;
     14)
       echo "rt_control:1:1:90"
@@ -297,9 +299,9 @@ rtc_expected_threads() {
       echo "mpc_main:3:1:60"
       echo "mpc_worker_0:4:1:55:optional"
       echo "mpc_worker_1:5:1:55:optional"
-      echo "nrt_logging:8:0:0"
-      echo "nrt_callback:9:0:0"
-      echo "nrt_publish:9:0:0"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
       ;;
     16)
       echo "rt_control:1:1:90"
@@ -307,9 +309,9 @@ rtc_expected_threads() {
       echo "mpc_main:3:1:60"
       echo "mpc_worker_0:4:1:55:optional"
       echo "mpc_worker_1:5:1:55:optional"
-      echo "nrt_logging:8:0:0"
-      echo "nrt_callback:9:0:0"
-      echo "nrt_publish:9:0:0"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
       ;;
   esac
 }

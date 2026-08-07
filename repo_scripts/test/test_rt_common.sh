@@ -1028,13 +1028,25 @@ test_get_rt_shield_cpus_low_core_no_phantom() {
 
 # ── cpu_shield.sh cpuset span → get_cm_shield_cpus (RT ∪ nrt, OS slot dropped) ─
 # The cset "user" cpuset must fit the WHOLE CM process (RT + nrt threads), not
-# just the RT cores get_rt_shield_cpus returns — cset moves a process, and the
-# CM's nrt threads pin outside the RT-only span. Issue #151.
+# just the RT cores get_rt_shield_cpus returns — cset moves a process, and under
+# v4.1 the CM's nrt threads pinned outside the RT-only span. Issue #151.
+#
+# v5 (#349) dissolved that condition: nrt sits on aux slot 2 (⊂ RT) on tiers ≥ 6
+# and on the OS slot (dropped) on tier 4, so the union now equals the RT span on
+# EVERY tier. The union is kept rather than collapsed into get_rt_shield_cpus —
+# it is what makes a future tier that splits nrt back out widen the cpuset
+# automatically instead of silently leaving those threads outside the shield.
+# These cases therefore pin "union == RT span" as a *result*, not as an identity.
 
 test_get_cm_shield_cpus_nuc13_hybrid() {
   # NUC13 Pro (Raptor Lake-P 4P+8E, HT on): P-cores 0-3 → logical 0-7,
-  # E-cores 4-11 → logical 8-15. RT slots 1-5 → logical {2,4,6,8,9}; nrt slots
-  # 8,9 → logical {12,13}. CM cpuset = union + P-core HT siblings = "2-9,12-13".
+  # E-cores 4-11 → logical 8-15. RT slots 1-5 → logical {2,4,6,8,9}; v5 부터
+  # nrt 는 aux slot 2 → logical 4 로 **이미 RT 집합 안**이라 union 이 넓어지지
+  # 않는다. CM cpuset = RT + P-core HT siblings = "2-9".
+  #
+  # 이 한 줄이 #349 AC-5 ("shield 2-9,12-13 → 2-9, 논리 12·13 반환") 를 실기
+  # 이전에 데스크톱에서 결정적으로 검증하는 유일한 센서다. v4.1 에서는
+  # "2-9,12-13" 이었다 — 이 값이 되돌아오면 코어 반환이 일어나지 않은 것이다.
   local root="$TMP/cm_nuc13"
   mock_reset "$root"
   local i
@@ -1051,17 +1063,19 @@ test_get_cm_shield_cpus_nuc13_hybrid() {
   local got
   got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/cm_nuc13_cpuinfo" \
         RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus)
-  expect_eq "cm_shield.nuc13_hybrid.12c" "2-9,12-13" "$got"
+  expect_eq "cm_shield.nuc13_hybrid.12c" "2-9" "$got"
 }
 
 test_get_cm_shield_cpus_non_smt() {
-  # Non-SMT: RT slots 1-5 (identity) + nrt slots per tier, no siblings.
-  #   6-7c:  RT 1-3 + nrt 5              → "1-3,5"
-  #   8-9c:  RT 1-3 + nrt 6,7            → "1-3,6-7"
-  #   10-11c:RT 1-4 + nrt 7,8            → "1-4,7-8"
-  #   12c+:  RT 1-5 + nrt 8,9            → "1-5,8-9"
+  # Non-SMT: RT slots (identity, no siblings). v5 부터 nrt 는 aux slot 2 라
+  # RT 집합의 부분집합이고, union 은 RT span 그대로다 — v4.1 이 여기 붙이던
+  # 꼬리(",5" / ",6-7" / ",7-8" / ",8-9")가 tier 마다 사라진다.
+  #   6-7c:  RT 1-3 + nrt 2 ⊂ RT  → "1-3"
+  #   8-9c:  RT 1-3 + nrt 2 ⊂ RT  → "1-3"
+  #   10-11c:RT 1-4 + nrt 2 ⊂ RT  → "1-4"
+  #   12c+:  RT 1-5 + nrt 2 ⊂ RT  → "1-5"
   local root="$TMP/cm_nonsmt"
-  declare -A expected=( [6]="1-3,5" [8]="1-3,6-7" [10]="1-4,7-8" [12]="1-5,8-9" [16]="1-5,8-9" )
+  declare -A expected=( [6]="1-3" [8]="1-3" [10]="1-4" [12]="1-5" [16]="1-5" )
   local n
   for n in 6 8 10 12 16; do
     _mock_sysfs_non_smt "$root" "$n"
@@ -1378,29 +1392,34 @@ test_layout_tier_tables_per_tier() {
     expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
     expect_eq "nrt.${n}" "0"     "$(get_nrt_cores "$n")"
   done
-  # 6-7 — nrt 두 레인이 한 코어를 공유, worker 없음.
+  # 6-7 — worker 없음. v5 부터 nrt 3 레인은 aux slot 2 (rt_callback 슬롯) 위다.
   for n in 6 7; do
     expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
     expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "5"     "$(get_nrt_cores "$n")"
+    expect_eq "nrt.${n}" "2"     "$(get_nrt_cores "$n")"
   done
-  # 8-9 — nrt 전용 코어, 아직 worker 없음.
+  # 8-9 — arm/hand 전용 슬롯, 아직 worker 없음.
   for n in 8 9; do
     expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
     expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "6,7"   "$(get_nrt_cores "$n")"
+    expect_eq "nrt.${n}" "2"     "$(get_nrt_cores "$n")"
   done
   # 10-11 — worker 하나가 붙으면서 RT 집합이 넓어진다.
   for n in 10 11; do
     expect_eq "mpc.${n}" "3,4"     "$(get_mpc_cores "$n")"
     expect_eq "rt.${n}"  "1,2,3,4" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "7,8"     "$(get_nrt_cores "$n")"
+    expect_eq "nrt.${n}" "2"       "$(get_nrt_cores "$n")"
   done
   # 12+ — 두 번째 worker 까지. 14/16/24 는 12 와 같은 배치다.
   for n in 12 13 14 15 16 17 24; do
     expect_eq "mpc.${n}" "3,4,5"     "$(get_mpc_cores "$n")"
     expect_eq "rt.${n}"  "1,2,3,4,5" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "8,9"       "$(get_nrt_cores "$n")"
+    expect_eq "nrt.${n}" "2"         "$(get_nrt_cores "$n")"
+  done
+  # v5 는 nrt 를 RT 집합의 부분집합으로 만든다 (aux slot = rt_callback slot).
+  # 이 관계가 깨지면 get_cm_shield_cpus 의 union 이 다시 넓어지므로 함께 박는다.
+  for n in 6 8 10 12 16 24; do
+    expect_eq "nrt_subset_of_rt.${n}" "2" "$(get_role_slot rt_callback "$n")"
   done
   # OS slot 은 모든 tier 공통 (v4.1) — shield 가 절대 덮으면 안 되는 코어.
   for n in 1 4 6 8 10 12 16 24; do
@@ -1445,23 +1464,30 @@ test_rtc_expected_threads_table_per_tier() {
     "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:0:0 nrt_logging:0:0:0 nrt_callback:0:0:0 nrt_publish:0:0:0" \
     "$(rtc_expected_threads 4 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.6" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:5:0:0 nrt_callback:5:0:0 nrt_publish:5:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
     "$(rtc_expected_threads 6 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.8" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:6:0:0 nrt_callback:7:0:0 nrt_publish:7:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
     "$(rtc_expected_threads 8 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.10" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional nrt_logging:7:0:0 nrt_callback:8:0:0 nrt_publish:8:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
     "$(rtc_expected_threads 10 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.12" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional mpc_worker_1:5:1:55:optional nrt_logging:8:0:0 nrt_callback:9:0:0 nrt_publish:9:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional mpc_worker_1:5:1:55:optional nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
     "$(rtc_expected_threads 12 | tr '\n' ' ' | sed 's/ $//')"
+  # v5 이후 nrt 3행이 전부 slot 2 로 수렴하므로, 이 표만으로는 "세 행이 각각
+  # 존재하는가" 가 슬롯 축에서 무뎌진다. 행 수를 따로 박아 verifier 가 세 TID 를
+  # 모두 요구한다는 사실을 지킨다 (#349 D15 — 이름이 갈려야 각 행이 산다).
+  local n
+  for n in 6 8 10 12 16; do
+    expect_eq "exp.nrt_rows.${n}" "3" \
+      "$(rtc_expected_threads "$n" | grep -c '^nrt_')"
+  done
   # 4-core 만 mpc 가 CFS 로 강등된다 (policy 필드 0). 그 구분이 사라지면 검증기가
   # degraded 박스에서 존재하지 않는 FIFO 60 을 요구한다.
   expect_eq "exp.mpc_policy.4"  "0" "$(rtc_expected_threads 4 | grep '^mpc_main:' | cut -d: -f3)"
   expect_eq "exp.mpc_policy.16" "1" "$(rtc_expected_threads 16 | grep '^mpc_main:' | cut -d: -f3)"
   # arm/hand 는 별도 프로세스라 이 표에 있으면 안 된다 (있으면 항상 false-WARN).
-  local n
   for n in 4 8 12 16; do
     if rtc_expected_threads "$n" | grep -qE '^(arm|hand)_driver:'; then
       fail "[exp.external.${n}] arm/hand_driver 가 in-process 기대 표에 있다 — 항상 false-WARN 이다"

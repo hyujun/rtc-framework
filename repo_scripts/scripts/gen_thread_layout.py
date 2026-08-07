@@ -277,7 +277,17 @@ def rt_cores(m: Manifest, tier: Tier) -> list[int]:
 
 
 def nrt_cores(m: Manifest, tier: Tier) -> list[int]:
-    slots = {tier.specs["nrt_logging"].slot, tier.specs["nrt_callback"].slot}
+    # All three CFS lanes, not just logging+callback. nrt_publish has ridden
+    # nrt_callback's slot on every tier so far, so including it changes no value
+    # today -- but get_cm_shield_cpus() unions this into the cpuset the whole CM
+    # process is moved into, and a tier that ever split nrt_publish out would
+    # otherwise leave that thread's self-pin outside the shield (EINVAL, the
+    # #151 failure mode). Derive from the roles rather than assume the sharing.
+    slots = {
+        tier.specs["nrt_logging"].slot,
+        tier.specs["nrt_callback"].slot,
+        tier.specs["nrt_publish"].slot,
+    }
     return sorted(slots)
 
 
@@ -617,9 +627,11 @@ def emit_shell(m: Manifest) -> str:
     out += _tier_case(
         "get_nrt_cores",
         [
-            "nrt_logging + nrt_callback slots, deduplicated and ascending. On the",
-            "degraded tier both share the OS slot -- callers that shield must drop",
-            "the OS slot (get_cm_shield_cpus does), never widen onto it.",
+            "nrt_logging + nrt_callback + nrt_publish slots, deduplicated and",
+            "ascending. Layout v5 folds all three onto the rt_callback slot, so",
+            "this is a subset of get_rt_cores() on tiers >= 6; on the degraded",
+            "tier they share the OS slot instead. Either way callers that shield",
+            "must drop the OS slot (get_cm_shield_cpus does), never widen onto it.",
         ],
         lambda t: _csv(nrt_cores(m, t)),
     )
