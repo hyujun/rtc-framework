@@ -231,12 +231,12 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 sim 단일 실행으로 대체 불가 ([design-principles.md](design-principles.md) sim-noise 원칙).
 
 ```bash
-# 1) shield cpuset 이 CM 전체 span 을 덮는가 (NUC13 12c → user=2-9,12-13)
+# 1) shield cpuset 이 CM 전체 span 을 덮는가 (NUC13 12c → user=2-7, #380 이후)
 sudo ./repo_scripts/scripts/cpu_shield.sh on --robot
 cset shield -s          # "user" == get_cm_shield_cpus 출력과 일치해야
 # 2) 런치(shield-on) 후 CM 이 user cpuset 에 들어갔는가
 CM=$(pgrep -nf integrated_rt_controller)
-grep Cpus_allowed_list /proc/$CM/status      # ⊆ {2-9,12-13}
+grep Cpus_allowed_list /proc/$CM/status      # == 2-7 (부분집합 비교는 shield 축소를 놓친다)
 # 3) activate 후 RT/nrt 스레드가 제대로 pin·FIFO 되었는가
 ps -eLo comm,psr,cls,rtprio -p $CM | grep -E "rt_control|rt_callback|nrt_"
 #   기대: rt_control psr=2/FF/90, rt_callback psr=4, nrt psr=12·13

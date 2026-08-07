@@ -483,7 +483,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 #### MPC 통합 동작
 
-`mpc.enabled: true`일 때 `on_activate`에서 aux 스레드로 MPC 스레드가 기동되며, `mpc.engine`이 `"mock"`(`MockMPCThread` placeholder — 선형 trajectory + identity Riccati gain, TSID self-hold와 bit-identical) 또는 `"handler"`(`HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` — 실제 Aligator ProxDDP solve, 초기화 실패 시 mock으로 자동 폴백)를 선택한다. `rtc::mpc::MPCThread`는 CM RT loop과 같은 `PeriodicRtThread` 기반 timing 인프라를 공유하며, per-MPC-tick 샘플이 `<session>/timing/mpc_timing_log.csv`에 쌓인다. 매 RT tick `ComputeTSIDPosition`이 최신 `(q, v)`를 MPC 스레드에 WriteState하고, MPC solution을 cubic-Hermite 보간한 `q_ref/v_ref/a_ff` + Riccati 피드백을 TSID reference로 주입한다 — solution 부재/stale 시 TSID self-hold로 자동 폴백. Shutdown 순서·dim-mismatch gate·worker thread 구성 등 구현 세부는 `src/controllers/wbc/` 소스와 [agent_docs/controllers.md](../agent_docs/controllers.md) 참조.
+`mpc.enabled: true`일 때 `on_activate`에서 aux 스레드로 MPC 스레드가 기동되며, `mpc.engine`이 `"mock"`(`MockMPCThread` placeholder — 선형 trajectory + identity Riccati gain, TSID self-hold와 bit-identical) 또는 `"handler"`(`HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` — 실제 Aligator ProxDDP solve, 초기화 실패 시 mock으로 자동 폴백)를 선택한다. `rtc::mpc::MPCThread`는 CM RT loop과 같은 `PeriodicRtThread` 기반 timing 인프라를 공유하며, per-MPC-tick 샘플이 `<session>/timing/mpc_timing_log.csv`에 쌓인다. 매 RT tick `ComputeTSIDPosition`이 최신 `(q, v)`를 MPC 스레드에 WriteState하고, MPC solution을 cubic-Hermite 보간한 `q_ref/v_ref/a_ff` + Riccati 피드백을 TSID reference로 주입한다 — solution 부재/stale 시 TSID self-hold로 자동 폴백. Shutdown 순서·dim-mismatch gate 등 구현 세부는 `src/controllers/wbc/` 소스와 [agent_docs/controllers.md](../agent_docs/controllers.md) 참조.
 
 ##### GraspPhaseManager 연동
 

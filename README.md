@@ -329,8 +329,9 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 
 최대 RT 성능을 위한 CPU 격리:
 ```bash
-# /etc/default/grub의 GRUB_CMDLINE_LINUX_DEFAULT에 추가 (6코어 기준)
-# isolcpus=1-5 nohz_full=1-5 rcu_nocbs=1-5  # layout v4.1: RT cluster Core 1-5 (6c 기준)
+# /etc/default/grub의 GRUB_CMDLINE_LINUX_DEFAULT에 추가
+# isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-3  # RT cluster = Core 1-3, 전 tier 동일 (#380)
+# 값 산출은 repo_scripts/scripts/setup_grub_rt.sh 가 자동으로 한다 (SMT 시블링 포함)
 sudo update-grub && sudo reboot
 ```
 

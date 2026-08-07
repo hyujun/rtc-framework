@@ -68,11 +68,12 @@ make_logger "SHIELD"
 # *process* — all its threads. The CM hosts nrt_logging / nrt_callback /
 # nrt_publish too. get_cm_shield_cpus() = get_rt_shield_cpus() ∪ nrt cores (OS
 # slot dropped) so an nrt self-pin does not EINVAL against a too-narrow cpuset.
-# Compact range notation (e.g. "1-3" non-SMT 6c, "2-9" NUC13 hybrid 12c).
+# Compact range notation (e.g. "1-3" non-SMT any tier, "2-7" NUC13 hybrid 12c).
 #
 # Layout v5 (#349) folded the nrt lanes onto the rt_callback slot, so that union
 # no longer widens past the RT span — the NUC13 shield narrowed from
-# "2-9,12-13" to "2-9". NOTE for upgrades: cpu_shield.sh returns early when a
+# "2-9,12-13" to "2-9", and #380 took it to "2-7" by reclaiming the two
+# mpc_worker slots. NOTE for upgrades: cpu_shield.sh returns early when a
 # "user" cpuset already exists without comparing the desired mask, so a box
 # still holding a v4.1 shield keeps 12,13 after a plain relaunch. Tear the
 # shield down (`cpu_shield.sh off`) and re-arm it to actually reclaim them.
