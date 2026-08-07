@@ -68,6 +68,43 @@ def test_uses_shared_shield_probe(filename):
 
 
 @pytest.mark.parametrize("filename", LAUNCH_FILES)
+def test_shield_probe_receives_the_mpc_profile(filename):
+    """The shield must be built for the profile this launch actually runs (#350).
+
+    ``enable_mpc`` reached the controller override and stopped there, so the cset
+    shield reserved the MPC cores on every launch no matter what. Omitting the
+    keyword is silent — the helper defaults to reserving — which is exactly the
+    shape of drift this module exists to catch: the fix would land in one launch
+    and the other four would keep isolating cores nobody runs on.
+    """
+    tree = ast.parse(_source(filename))
+    called = _called_functions(_source(filename))
+    assert "mpc_layout_profile" in called, (
+        f"{filename}: the profile must come from cpu_shield.mpc_layout_profile — deriving "
+        "it locally is how the shield and the controller gate drift apart"
+    )
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "enable_cpu_shield"
+    ]
+    assert calls, "no enable_cpu_shield call found"
+    for call in calls:
+        assert "layout_profile" in {kw.arg for kw in call.keywords}, (
+            f"{filename}: enable_cpu_shield must be passed layout_profile, otherwise the "
+            "shield keeps reserving the MPC cores regardless of the launch argument"
+        )
+    # The controller has to hear the same decision: the shield shrinking without
+    # the gate knowing is the combination that puts mpc_main on an unshielded core.
+    assert "rt_layout_profile" in _source(filename), (
+        f"{filename}: the resolved profile must reach the controller as the "
+        "rt_layout_profile parameter, not only the cset shield"
+    )
+
+
+@pytest.mark.parametrize("filename", LAUNCH_FILES)
 def test_activate_is_gated_on_shield_adopt(filename):
     """ACTIVATE must come from the shared adopt chain, never straight from configure.
 

@@ -629,6 +629,32 @@ get_robot_packages() {
 # guaranteed. The hand UDP receive thread lives inside the hand_driver process
 # (cpu_core = -1 sentinel) and is deliberately not represented there.
 #
+# ── CPU shield marker (issue #350) ─────────────────────────────────────────
+# cpu_shield.sh writes "<mode> <profile>" here on `on`, and removes it on `off`.
+# The path lives here rather than in cpu_shield.sh because verify_rt_runtime.sh
+# has to read it too, and sourcing cpu_shield.sh would run its CLI dispatch.
+RTC_SHIELD_MARKER_FILE="${RTC_SHIELD_MARKER_FILE:-/tmp/cpu_shield_mode}"
+
+# Layout profile of the ACTIVE shield. Falls back to the default profile when
+# there is no marker, when it cannot be read, or when it predates #350 and
+# carries a bare mode — all three describe a box whose shield was built with the
+# full MPC reservation, which IS the default profile.
+#
+# An unparseable profile string also falls back rather than failing: this is a
+# diagnostic input, and refusing to verify because a marker got corrupted would
+# turn a cosmetic problem into "no RT verification at all".
+shield_marker_profile() {
+  local raw mode profile
+  if [[ -r "$RTC_SHIELD_MARKER_FILE" ]] && raw=$(cat "$RTC_SHIELD_MARKER_FILE" 2>/dev/null); then
+    read -r mode profile <<<"$raw"
+    if [[ -n "${profile:-}" ]] && rtc_is_layout_profile "$profile"; then
+      echo "$profile"
+      return 0
+    fi
+  fi
+  rtc_default_profile
+}
+
 # Print just the main MPC core (first entry of get_mpc_cores). Derived, so it
 # stays here rather than in the generated file.
 get_mpc_main_core() {
@@ -972,13 +998,21 @@ _rt_expand_logical_siblings() {
 # core_id, not slot→logical. The two agree on primaries-first enumeration but can
 # diverge on interleaved/hybrid layouts — unifying GRUB onto this logical basis is
 # tracked as a follow-up (needs its own real-hardware validation).
+#
+# $1 = launch profile (issue #350), default `rtc_default_profile`. A profile
+# that drops MPC narrows this to the rt_control + rt_callback span.
 get_rt_shield_cpus() {
+  local profile="${1:-$(rtc_default_profile)}"
+  if ! rtc_is_layout_profile "$profile"; then
+    echo "get_rt_shield_cpus: unknown layout profile '${profile}' (declared: $(rtc_layout_profiles))" >&2
+    return 1
+  fi
   detect_hybrid_capability >/dev/null 2>&1 || true
   # Build a CSV of logical cpus (_rt_expand_logical_siblings / _rt_parse_cpulist
   # split on commas, not whitespace — a space-joined list would collapse to one
   # token, e.g. "1 2 3" → "123").
   local slot logicals="" lg
-  for slot in $(_rt_parse_cpulist "$(get_rt_cores)"); do
+  for slot in $(_rt_parse_cpulist "$(get_rt_cores "" "$profile")"); do
     lg=$(slot_to_logical_cpu "$slot")
     logicals="${logicals:+$logicals,}$lg"
   done
@@ -1012,7 +1046,18 @@ get_rt_shield_cpus() {
 # NOTE: arm_driver / hand_driver are *separate processes* pinned by launch
 # taskset (logical 10,11 in "system"); they are not CM threads and are
 # deliberately excluded from this cpuset.
+#
+# $1 = launch profile (issue #350), default `rtc_default_profile`. Only the RT
+# half narrows: get_nrt_cores() is profile-blind, so the three CFS lanes stay in
+# the cpuset no matter which profile is active and never lose their self-pin
+# target (the #151 EINVAL). On NUC13 tier 12 this is "2-9" under mpc_on and
+# "2-5" under mpc_off — the P3 pair and two E cores go back to "system".
 get_cm_shield_cpus() {
+  local profile="${1:-$(rtc_default_profile)}"
+  if ! rtc_is_layout_profile "$profile"; then
+    echo "get_cm_shield_cpus: unknown layout profile '${profile}' (declared: $(rtc_layout_profiles))" >&2
+    return 1
+  fi
   detect_hybrid_capability >/dev/null 2>&1 || true
   local os_slots
   os_slots=" $(_rt_parse_cpulist "$(get_os_cores)") "
@@ -1020,7 +1065,7 @@ get_cm_shield_cpus() {
   # slot list — a space-join would fuse the boundary tokens ("5" + "8" → "5 8"
   # → "58" after whitespace strip).
   local combined
-  combined="$(get_rt_cores),$(get_nrt_cores)"
+  combined="$(get_rt_cores "" "$profile"),$(get_nrt_cores)"
   local slot logicals="" lg
   for slot in $(_rt_parse_cpulist "$combined"); do
     # Never shield the OS core, even if a degraded-tier nrt slot lands on it.

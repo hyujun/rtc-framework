@@ -143,9 +143,55 @@ roles:
     kind: process
     in_controller_process: false
 
+# ── Launch profiles (issue #350) ────────────────────────────────────────────
+# A profile is the SECOND axis of the layout: the tier says *where* every role
+# sits, the profile says *which roles run at all* on this launch. It exists
+# because MPC activation is not a host property — `mpc.enabled` lives in the
+# controller YAML and the thread is spawned in on_activate, so a session can
+# turn it on by switching controllers. Nothing can detect that from the host,
+# hence an explicit launch-level opt-out.
+#
+# Dropping a role removes it from the RT core set (so the cset shield hands
+# those cores back to the system cpuset), from the verifier's expected table,
+# and adds it to the verifier's *forbidden* list — a thread that must not exist
+# is a FAIL, not a missing row, otherwise "MPC is off" and "MPC is running on an
+# unshielded core" look identical to the verifier.
+#
+# What a profile does NOT touch: the tier table itself. Every role keeps its
+# slot, policy and priority on every tier, so the C++ constants, the Python
+# launch mirror and SelectThreadConfigs() are profile-independent and stay
+# byte-identical to the pre-#350 artifacts. The C++ side already gates the
+# actual spawn on `mpc_enabled_` (DemoWbcController::SpawnMpcThreadIfNeeded);
+# the profile is what makes the *reservation* follow that decision.
+#
+# GRUB (nohz_full / rcu_nocbs, setup_grub_rt.sh) deliberately ignores profiles:
+# those are boot-static kernel parameters and a profile switch must not require
+# a reboot, so they keep marking the widest (default-profile) RT set. Leaving a
+# core marked nohz_full while CFS runs on it is not free — the scheduler tick
+# resumes for multiple runnable tasks and RCU/housekeeping work is offloaded —
+# but it is correct, which a per-profile GRUB entry would not be at the moment
+# the two disagree.
+#
+#   id       profile identifier used by the shell helpers and the launch args
+#   default  the profile assumed when no caller says otherwise (exactly one)
+#   drops    role keys that do not run under this profile; a `kind: mpc` role
+#            drops its main thread and every worker together
+profiles:
+  - id: mpc_on
+    default: true
+    label: "MPC enabled — the historical layout, MPC cores reserved"
+    drops: []
+
+  - id: mpc_off
+    label: "MPC disabled — MPC cores return to the system cpuset"
+    drops:
+      - mpc
+
 # Emission order of verify_rt_runtime.sh's expected-thread table. Only roles
 # with in_controller_process: true may appear — arm/hand/sim/viewer are external
 # processes discovered by PID, and listing them here always false-WARNed (#353).
+# Rows for roles a profile drops are emitted under that profile's *forbidden*
+# table instead.
 verifier_order:
   - rt_control
   - rt_callback

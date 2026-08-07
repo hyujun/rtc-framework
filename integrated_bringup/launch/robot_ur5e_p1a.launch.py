@@ -426,7 +426,16 @@ def generate_launch_description():
     # ── CPU Shield ────────────────────────────────────────────────────────────
     # Probe + enable live in rtc_tools.launch.cpu_shield so all five launches
     # share one cset-aware implementation (issues #151, #344).
-    enable_cpu_shield = shield.enable_cpu_shield("--robot", log_prefix="[RT]")
+    # One mapping for both consumers: the cset shield and the controller's
+    # activation gate must agree on which profile is in force (#350). Still an
+    # unresolved substitution here — this launch builds its description outside
+    # an OpaqueFunction, so there is no context to perform() against.
+    layout_profile = shield.mpc_layout_profile(LaunchConfiguration("enable_mpc"))
+    enable_cpu_shield = shield.enable_cpu_shield(
+        "--robot",
+        log_prefix="[RT]",
+        layout_profile=layout_profile,
+    )
 
     # ── External driver CPU pinning (Phase 6) ─────────────────────────────────
     # Pins via tier-aware slot resolution. SystemThreadConfigs.{arm,hand}_driver
@@ -497,6 +506,11 @@ def generate_launch_description():
             ur_control_config,
             {
                 "log_dir": session_dir,
+                # The controller refuses to activate a structurally MPC-enabled
+                # config under a profile that dropped the MPC cores — otherwise
+                # the shield hands those cores back while a SCHED_FIFO thread
+                # still runs on one (#350).
+                "rt_layout_profile": layout_profile,
             },
         ],
         emulate_tty=True,

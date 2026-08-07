@@ -7,10 +7,20 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace integrated_bringup {
+
+// ── Launch layout profile (issue #350) ────────────────────────────────────
+bool DemoWbcController::LayoutProfileDropsMpc(std::string_view profile) noexcept {
+  return profile == kMpcOffLayoutProfile;
+}
+
+void DemoWbcController::SetLayoutProfile(std::string_view profile) noexcept {
+  layout_profile_drops_mpc_ = LayoutProfileDropsMpc(profile);
+}
 
 // ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
 RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
@@ -28,6 +38,19 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure: %s",
                  base_frame_mismatch_detail_.c_str());
     return CallbackReturn::FAILURE;
+  }
+  // Launch layout profile (issue #350). Node-level, not per-controller: it
+  // describes the cset shield this whole process is running under, so it is
+  // declared with has_parameter() guarded re-entry like the gains are.
+  // Unknown or absent means the historical layout, with the MPC cores
+  // reserved — the same thing every launch got before the profile existed.
+  {
+    constexpr const char* kProfileParam = "rt_layout_profile";
+    const std::string profile = node->has_parameter(kProfileParam)
+                                    ? node->get_parameter(kProfileParam).as_string()
+                                    : node->declare_parameter<std::string>(
+                                          kProfileParam, std::string(kDefaultLayoutProfile));
+    SetLayoutProfile(profile);
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
@@ -261,6 +284,30 @@ void DemoWbcController::ResetLogState() noexcept {
 
 RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
     const rclcpp_lifecycle::State& prev) noexcept {
+  // Launch-profile gate (issue #350). MUST stay the first statement: on a
+  // failed on_activate the controller manager leaves the previous controller
+  // active and never calls on_deactivate for this one, so anything that runs
+  // before a FAILURE leaks half-activated — publishers enabled on a controller
+  // that is not, in fact, active.
+  //
+  // Refusing is the safe direction. Under a profile that dropped the MPC cores
+  // the cset shield has already handed them back to the system cpuset;
+  // spawning the MPC thread anyway puts SCHED_FIFO 60 on a core shared with
+  // arbitrary user work, which is worse than not running MPC at all. The
+  // remedy is in the message because the two ways out are opposite (relaunch
+  // without the opt-out, or use a TSID-only config).
+  if (mpc_enabled_ && layout_profile_drops_mpc_) {
+    RCLCPP_ERROR(logger_,
+                 "DemoWbcController on_activate refused: this launch ran with layout profile "
+                 "'%s' (enable_mpc:=false), which returned the MPC cores to the system cpuset, "
+                 "but this controller's config has mpc.enabled: true. Activating would spawn "
+                 "mpc_main (SCHED_FIFO) onto a core the CPU shield no longer protects. "
+                 "Relaunch without enable_mpc:=false, or activate a controller whose config "
+                 "sets mpc.enabled: false.",
+                 std::string(kMpcOffLayoutProfile).c_str());
+    return CallbackReturn::FAILURE;
+  }
+
   ActivateOwnedTopics(prev, owned_topics_);
 
   // Pull-estimator latches (grasp edge, contact/touch hysteresis, filter tail,

@@ -32,13 +32,21 @@ source "${SCRIPTS_DIR}/lib/rt_common.sh"
 # sed 범위는 함수 시그니처 기준이며, 함수명이 바뀌면 아래 assert가 즉시 깨진다.
 eval "$(sed -n '/^normalise_cpu_set() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
 eval "$(sed -n '/^shield_matches_desired() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
+# 마커 판독은 #350 에서 "<mode> <profile>" 로 바뀌었고 shield_matches_desired 가
+# 그것을 호출한다 — 함께 뽑지 않으면 판정이 아니라 미정의 함수를 테스트하게 된다.
+eval "$(sed -n '/^shield_marker_read() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
+eval "$(sed -n '/^shield_isolation_method() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
+eval "$(sed -n '/^shield_marker_write() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
 SHIELD_MODE_FILE="$(mktemp)"
 trap 'rm -f "$SHIELD_MODE_FILE"' EXIT
 
-if ! declare -F normalise_cpu_set >/dev/null || ! declare -F shield_matches_desired >/dev/null; then
-  echo "FAIL: cpu_shield.sh에서 판정 함수를 추출하지 못했다 (함수명 변경?)" >&2
-  exit 1
-fi
+for _fn in normalise_cpu_set shield_matches_desired shield_marker_read shield_marker_write \
+  shield_isolation_method; do
+  if ! declare -F "$_fn" >/dev/null; then
+    echo "FAIL: cpu_shield.sh에서 ${_fn} 을 추출하지 못했다 (함수명 변경?)" >&2
+    exit 1
+  fi
+done
 
 PASS=0
 FAIL=0
@@ -122,6 +130,63 @@ expect_rc "빈 mask → 비0" 1 shield_matches_desired robot "2-9,12-13"
 # desired가 비면 판정 불가 — 조용히 통과시키면 shield 없이 RT가 돈다.
 STUB_ACTUAL="2-9"
 expect_rc "desired 비어있음 → 비0" 1 shield_matches_desired robot ""
+
+# ── launch profile 축 (issue #350) ──────────────────────────────────────────
+# 마커는 이제 "<mode> <profile>" 이다. 세 가지를 고정한다: (1) #350 이전에 쓰인
+# bare 마커가 default profile 로 읽혀야 하고 (안 그러면 업그레이드 직후 모든
+# 박스가 shield 를 한 번씩 재구성한다), (2) profile 만 달라도 rc 2 여야 하며,
+# (3) profile 전환은 코어까지 달라지므로 rc 1 (재구성) 로 떨어진다.
+STUB_RC=0; STUB_ACTUAL="2-9"
+echo "robot" >"$SHIELD_MODE_FILE"   # #350 이전 형식
+expect_rc "구형 마커 = default profile → 0" 0 shield_matches_desired robot "2-9" mpc_on
+expect_eq "구형 마커 판독" "robot mpc_on" "$(shield_marker_read)"
+
+shield_marker_write robot mpc_off
+expect_eq "신형 마커 판독" "robot mpc_off" "$(shield_marker_read)"
+# 코어는 우연히 같고 profile 만 다른 상태 — 마커만 갱신하면 되는 등급이다.
+expect_rc "profile 만 불일치 → 2" 2 shield_matches_desired robot "2-9" mpc_on
+# 실제 전환은 코어가 함께 바뀌므로 재구성 등급이어야 한다.
+expect_rc "profile 전환(코어 축소) → 1" 1 shield_matches_desired robot "2-5" mpc_off
+STUB_ACTUAL="2-5"
+expect_rc "축소된 shield + off 마커 → 0" 0 shield_matches_desired robot "2-5" mpc_off
+# profile 인자를 생략하면 default 로 떨어진다 (profile 을 모르는 기존 호출자).
+shield_marker_write robot mpc_on
+expect_rc "인자 생략 = default → 0" 0 shield_matches_desired robot "2-5"
+STUB_ACTUAL="2-9"
+
+# ── shield_isolation_method (실측 기반, 2026-08-07) ─────────────────────────
+# dev PC 에 cset 을 설치하고 shield 를 세운 실측에서, do_status 가 살아 있는
+# shield 를 "Isolated cores: none" 으로 보고했다. 격리 탐지 전체가
+# /sys/devices/system/cpu/isolated 를 게이트로 삼았는데 **그 파일은 isolcpus 만
+# 쓴다** — cset shield 는 아무것도 안 쓴다. 그래서 우선순위를 뒤집었고, 그
+# 순서를 여기 박는다.
+#
+# 읽기 두 축을 모두 스텁으로 가린다. 이 박스의 실제 /sys/.../isolated 는 비어
+# 있어서, 그걸 가리지 않으면 "둘 다 활성" 케이스를 만들 수 없고 우선순위가
+# 검증되지 않은 채 통과한다 (실제로 그렇게 짰다가 순서를 뒤집는 mutation 이
+# 통과했다).
+STUB_ISOLCPUS=""
+isolcpus_isolated_cpus() { echo "$STUB_ISOLCPUS"; }
+
+# 둘 다 활성 — 동적 shield 가 이겨야 한다. **이 케이스가 우선순위의 유일한
+# 증인이다**: 한쪽만 켜면 어느 순서로 물어도 같은 답이 나온다.
+STUB_RC=0; STUB_ACTUAL="1-3,7-9"; STUB_ISOLCPUS="2-5"
+expect_eq "isolation.둘 다면 cset 우선" "cset 1 2 3 7 8 9" "$(shield_isolation_method)"
+
+# cset 단독
+STUB_ISOLCPUS=""
+expect_eq "isolation.cset 단독" "cset 1 2 3 7 8 9" "$(shield_isolation_method)"
+
+# shield 를 못 읽을 때만 isolcpus 축으로 내려간다.
+STUB_ACTUAL=""; STUB_RC=1; STUB_ISOLCPUS="2-5"
+expect_eq "isolation.isolcpus fallback" "isolcpus 2-5" "$(shield_isolation_method)"
+
+# 둘 다 없으면 none — 이게 "격리 없음" 의 유일한 정의여야 한다.
+STUB_ISOLCPUS=""
+expect_eq "isolation.none" "none" "$(shield_isolation_method)"
+
+# 원상복구 (아래 결과 집계에 영향 없도록)
+STUB_RC=0; STUB_ACTUAL="2-9"
 
 # ── 결과 ────────────────────────────────────────────────────────────────────
 echo "PASS=${PASS} FAIL=${FAIL}"

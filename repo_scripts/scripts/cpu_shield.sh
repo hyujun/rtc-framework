@@ -5,7 +5,7 @@
 # isolcpus GRUB 파라미터 없이도 RT 코어를 동적으로 보호한다.
 #
 # Usage:
-#   sudo cpu_shield.sh on [--robot|--sim]  # 격리 활성화
+#   sudo cpu_shield.sh on [--robot|--sim] [--profile <id>]  # 격리 활성화
 #   sudo cpu_shield.sh off                 # 격리 해제
 #   cpu_shield.sh status                   # 상태 확인 (sudo 불필요)
 #
@@ -76,15 +76,37 @@ make_logger "SHIELD"
 # "user" cpuset already exists without comparing the desired mask, so a box
 # still holding a v4.1 shield keeps 12,13 after a plain relaunch. Tear the
 # shield down (`cpu_shield.sh off`) and re-arm it to actually reclaim them.
+#
+# $3 (launch profile, issue #350) is the axis that actually narrows the mask:
+# under a profile that drops MPC the reserved MPC cores go back to "system".
+# $1 (mode) and $2 (phys_cores) are still accepted for legacy callers — both
+# modes share the same range, and get_cm_shield_cpus auto-detects core count +
+# topology via rt_common.sh.
 compute_shield_cores() {
-  # Args $1 (mode) and $2 (phys_cores) are accepted for forward compat with
-  # legacy callers; both modes share the same shield range, and get_cm_shield_cpus
-  # auto-detects core count + topology via rt_common.sh.
-  get_cm_shield_cpus
+  get_cm_shield_cpus "${3:-$(rtc_default_profile)}"
 }
 
-# ── Status mode marker file ──────────────────────────────────────────────────
-SHIELD_MODE_FILE="/tmp/cpu_shield_mode"
+# ── Status marker file ───────────────────────────────────────────────────────
+# Holds "<mode> <profile>". Files written before #350 carry the bare mode, which
+# reads back as the default profile — exactly right, since that is the layout
+# they were built with.
+# Path owned by rt_common.sh — verify_rt_runtime.sh reads the same marker and
+# cannot source this file (its CLI dispatch would run).
+SHIELD_MODE_FILE="$RTC_SHIELD_MARKER_FILE"
+
+shield_marker_write() {
+  printf '%s %s\n' "$1" "$2" >"$SHIELD_MODE_FILE"
+}
+
+# Echo "<mode> <profile>" for the active marker, or "" when there is none.
+shield_marker_read() {
+  [[ -f "$SHIELD_MODE_FILE" ]] || return 1
+  local raw mode profile
+  raw=$(cat "$SHIELD_MODE_FILE" 2>/dev/null) || return 1
+  read -r mode profile <<<"$raw"
+  [[ -n "$mode" ]] || return 1
+  printf '%s %s\n' "$mode" "${profile:-$(rtc_default_profile)}"
+}
 
 # ── Stale-shield detection (issue #349 D14) ──────────────────────────────────
 #
@@ -162,6 +184,39 @@ shield_actual_user_cpus() {
   normalise_cpu_set "$spec"
 }
 
+# Which isolation is ACTUALLY in force. Echoes "cset <cpus>", "isolcpus <cpus>"
+# or "none"; never fails.
+#
+# The cset shield is asked first and independently of
+# /sys/devices/system/cpu/isolated, because **only isolcpus writes that file**.
+# do_status used to gate its whole method-detection block on it, so on a box
+# running a live cset shield it took the else branch and reported "Isolated
+# cores: none / All N cores available for general use" while the kernel held
+# CPUSPEC(1-3,7-9) — measured on the 6-core dev box once cset was installed.
+# The nested `elif ... cset shield -s | grep user` branch could not save it: it
+# required `isolated` to be non-empty *and* the cmdline to lack isolcpus, which
+# together essentially never happen.
+# Cores isolcpus took out at boot, "" when none. A named function so the
+# precedence below can be exercised without a real /sys read.
+isolcpus_isolated_cpus() {
+  cat /sys/devices/system/cpu/isolated 2>/dev/null || echo ""
+}
+
+shield_isolation_method() {
+  local cset_cpus isolated
+  cset_cpus=$(shield_actual_user_cpus 2>/dev/null || true)
+  if [[ -n "$cset_cpus" ]]; then
+    echo "cset ${cset_cpus}"
+    return 0
+  fi
+  isolated=$(isolcpus_isolated_cpus)
+  if [[ -n "$isolated" ]]; then
+    echo "isolcpus ${isolated}"
+    return 0
+  fi
+  echo "none"
+}
+
 # Exit 0 when the active shield already matches `desired` for `mode`.
 #
 # Exit 2 is the narrow middle case: the cores are exactly right and only the
@@ -174,7 +229,7 @@ shield_actual_user_cpus() {
 # Exit 1 for everything else — no shield, unreadable mask, different cores —
 # so the caller reconfigures.
 shield_matches_desired() {
-  local mode="${1:-robot}" desired="${2:-}"
+  local mode="${1:-robot}" desired="${2:-}" profile="${3:-$(rtc_default_profile)}"
   local want have
   want=$(normalise_cpu_set "$desired") || return 1
   [[ -z "$want" ]] && return 1
@@ -182,16 +237,20 @@ shield_matches_desired() {
   [[ -z "$have" ]] && return 1
   [[ "$want" == "$have" ]] || return 1
 
-  # Cores agree; the mode marker still decides, because --sim and --robot may
-  # diverge again later and a stale marker would misreport `status`.
-  local current_mode=""
-  [[ -f "$SHIELD_MODE_FILE" ]] && current_mode=$(cat "$SHIELD_MODE_FILE" 2>/dev/null || echo "")
-  [[ "$current_mode" == "$mode" ]] || return 2
+  # Cores agree; the marker still decides, because --sim and --robot may diverge
+  # again later and a stale marker would misreport `status`. The profile rides
+  # the same marker: today every profile yields a different mask so a profile
+  # switch already fails the comparison above, but that is a property of the
+  # current layout, not a guarantee — two profiles that happened to shield the
+  # same cores would otherwise leave `status` reporting the wrong one.
+  local current
+  current=$(shield_marker_read) || return 2
+  [[ "$current" == "$mode $profile" ]] || return 2
 }
 
 # ── Command: on ──────────────────────────────────────────────────────────────
 do_on() {
-  local mode="${1:-robot}"
+  local mode="${1:-robot}" profile="${2:-$(rtc_default_profile)}"
 
   if [[ "$EUID" -ne 0 ]]; then
     fatal "Root privileges required. Run: sudo $0 on --${mode}"
@@ -203,7 +262,7 @@ do_on() {
     warn "물리 코어 ${phys_cores}개 (<6) — degraded layout: RT 결정성이 보장되지 않는다 (RTC 권장 ≥6코어)."
   fi
   local shield_cores
-  shield_cores=$(compute_shield_cores "$mode" "$phys_cores")
+  shield_cores=$(compute_shield_cores "$mode" "$phys_cores" "$profile") || exit 1
 
   # Already shielded with exactly these cores, in this mode? Then nothing to
   # do. Any other state — including "a shield exists but we cannot read its
@@ -212,9 +271,9 @@ do_on() {
   # shield in place while logging the narrow one.
   if command -v cset &>/dev/null; then
     local match_rc=0
-    shield_matches_desired "$mode" "$shield_cores" || match_rc=$?
+    shield_matches_desired "$mode" "$shield_cores" "$profile" || match_rc=$?
     if [[ "$match_rc" -eq 0 ]]; then
-      info "Shield already active and current (mode: ${mode}, cores: ${shield_cores})"
+      info "Shield already active and current (mode: ${mode}, profile: ${profile}, cores: ${shield_cores})"
       return 0
     fi
     if [[ "$match_rc" -eq 2 ]]; then
@@ -222,8 +281,8 @@ do_on() {
       # Tearing the shield down here would evict every adopted process to fix
       # a text file, and the old message said the shield "differs" while
       # printing the identical core list twice.
-      info "Shield cores already correct (${shield_cores}); refreshing mode marker → ${mode}"
-      echo "$mode" >"$SHIELD_MODE_FILE"
+      info "Shield cores already correct (${shield_cores}); refreshing marker → ${mode} ${profile}"
+      shield_marker_write "$mode" "$profile"
       return 0
     fi
     local actual
@@ -238,7 +297,7 @@ do_on() {
     fi
   fi
 
-  info "Activating CPU shield (mode: ${mode}, cores: ${shield_cores}, ${phys_cores}-core system)"
+  info "Activating CPU shield (mode: ${mode}, profile: ${profile}, cores: ${shield_cores}, ${phys_cores}-core system)"
 
   # Disable RT throttling (sched_rt_runtime_us=-1) so RT threads can use 100% CPU
   local current_rt_runtime
@@ -251,9 +310,9 @@ do_on() {
   # Try cset shield first
   if command -v cset &>/dev/null; then
     if cset shield --cpu="${shield_cores}" --kthread=on 2>/dev/null; then
-      echo "$mode" > "$SHIELD_MODE_FILE"
+      shield_marker_write "$mode" "$profile"
       success "cset shield activated: Core ${shield_cores} isolated"
-      success "Mode: ${mode} (${phys_cores}-core system)"
+      success "Mode: ${mode} / profile: ${profile} (${phys_cores}-core system)"
       return 0
     else
       warn "cset shield failed — trying cpuset fallback"
@@ -403,8 +462,9 @@ do_status() {
   logical_cores=$(nproc --all)
   local available_cores
   available_cores=$(nproc)
-  local isolated
-  isolated=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo "")
+  local method cpus isolcpus_now
+  read -r method cpus <<<"$(shield_isolation_method)"
+  isolcpus_now=$(isolcpus_isolated_cpus)
 
   echo ""
   info "CPU Shield Status"
@@ -412,27 +472,34 @@ do_status() {
   info "  Logical cores:  ${logical_cores}"
   info "  Available cores: ${available_cores}"
 
-  if [[ -n "$isolated" ]]; then
-    info "  Isolated cores: ${isolated}"
-
-    # Detect isolation method
-    if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
-      info "  Method: isolcpus (GRUB — static, reboot required to change)"
-      warn "  Recommendation: switch to cset shield for dynamic isolation"
-    elif command -v cset &>/dev/null && cset shield -s 2>/dev/null | grep -q "user"; then
-      local shield_mode="unknown"
-      if [[ -f "$SHIELD_MODE_FILE" ]]; then
-        shield_mode=$(cat "$SHIELD_MODE_FILE" 2>/dev/null || echo "unknown")
+  case "$method" in
+    cset)
+      # shellcheck disable=SC2086  # word splitting intended: normalised id list
+      info "  Isolated cores: $(_format_cpu_range $cpus)"
+      local shield_marker shield_mode="unknown" shield_profile="unknown"
+      if shield_marker=$(shield_marker_read); then
+        read -r shield_mode shield_profile <<<"$shield_marker"
       fi
       info "  Method: cset shield (dynamic)"
       info "  Mode: ${shield_mode}"
-    else
-      info "  Method: unknown (cpuset or other)"
-    fi
-  else
-    info "  Isolated cores: none"
-    info "  All ${available_cores} cores available for general use"
-  fi
+      info "  Layout profile: ${shield_profile}"
+      # Both can be in force at once; the shield is the one that just moved.
+      [[ -n "$isolcpus_now" ]] && info "  Also isolcpus (GRUB): ${isolcpus_now}"
+      ;;
+    isolcpus)
+      info "  Isolated cores: ${cpus}"
+      if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
+        info "  Method: isolcpus (GRUB — static, reboot required to change)"
+        warn "  Recommendation: switch to cset shield for dynamic isolation"
+      else
+        info "  Method: unknown (cpuset or other)"
+      fi
+      ;;
+    *)
+      info "  Isolated cores: none"
+      info "  All ${available_cores} cores available for general use"
+      ;;
+  esac
 
   # Show expected layout for this core count (SSoT: rt_common::print_thread_layout)
   echo ""
@@ -458,6 +525,7 @@ usage() {
   echo "Examples:"
   echo "  sudo cpu_shield.sh on --robot    # Full RT isolation"
   echo "  sudo cpu_shield.sh on --sim      # Lightweight simulation isolation"
+  echo "  sudo cpu_shield.sh on --sim --profile mpc_off  # MPC cores stay in 'system' (#350)"
   echo "  sudo cpu_shield.sh adopt 12345   # Put RT controller PID under the shield"
   echo "  sudo cpu_shield.sh off           # Release all isolation"
   echo "  cpu_shield.sh status             # Check current state"
@@ -472,14 +540,19 @@ shift || true
 case "$COMMAND" in
   on)
     MODE="robot"
+    PROFILE="$(rtc_default_profile)"
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --robot) MODE="robot"; shift ;;
         --sim)   MODE="sim"; shift ;;
+        --profile) PROFILE="${2:-}"; shift 2 || true ;;
+        --profile=*) PROFILE="${1#--profile=}"; shift ;;
         *)       error "Unknown option: $1"; usage ;;
       esac
     done
-    do_on "$MODE"
+    rtc_is_layout_profile "$PROFILE" ||
+      error "Unknown layout profile: '${PROFILE}' (declared: $(rtc_layout_profiles))"
+    do_on "$MODE" "$PROFILE"
     ;;
   check)
     # Root-free query: does the ACTIVE shield already match what `on <mode>`
@@ -487,14 +560,20 @@ case "$COMMAND" in
     # Exists so the launch helper has exactly one implementation of the mask
     # comparison to consult instead of a second copy of the logic (#349 D14).
     MODE="robot"
+    PROFILE="$(rtc_default_profile)"
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --robot) MODE="robot"; shift ;;
         --sim)   MODE="sim"; shift ;;
+        --profile) PROFILE="${2:-}"; shift 2 || true ;;
+        --profile=*) PROFILE="${1#--profile=}"; shift ;;
         *)       error "Unknown option: $1"; usage ;;
       esac
     done
-    shield_matches_desired "$MODE" "$(compute_shield_cores "$MODE" "$(get_physical_cores)")"
+    rtc_is_layout_profile "$PROFILE" ||
+      error "Unknown layout profile: '${PROFILE}' (declared: $(rtc_layout_profiles))"
+    shield_matches_desired "$MODE" \
+      "$(compute_shield_cores "$MODE" "$(get_physical_cores)" "$PROFILE")" "$PROFILE"
     ;;
   adopt)
     do_adopt "${1:-}"

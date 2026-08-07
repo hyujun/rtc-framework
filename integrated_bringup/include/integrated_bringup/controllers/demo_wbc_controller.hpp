@@ -351,6 +351,30 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── Registry hooks ──────────────────────────────────────────────────────
   void LoadConfig(const YAML::Node& cfg) override;
+
+  /// Layout profile ids. Mirror of repo_scripts/config/thread_layout.yaml's
+  /// `profiles:` block — the launch resolves the id (rtc_tools.launch.cpu_shield
+  /// ::mpc_layout_profile) and hands the same string to both the cset shield and
+  /// this controller, so the two cannot disagree about what is reserved.
+  static constexpr std::string_view kDefaultLayoutProfile = "mpc_on";
+  static constexpr std::string_view kMpcOffLayoutProfile = "mpc_off";
+
+  /// Record this run's layout profile (issue #350).
+  ///
+  /// Called from on_configure with the `rt_layout_profile` node parameter. The
+  /// launch owns the decision because MPC activation is not observable from the
+  /// host: `mpc.enabled` is controller YAML and the thread is spawned in
+  /// on_activate, so a controller switch can turn it on mid-session.
+  void SetLayoutProfile(std::string_view profile) noexcept;
+
+  /// True when `profile` returns the MPC cores to the system cpuset.
+  ///
+  /// Anything other than a recognised opt-out — including an empty or
+  /// misspelled id — reads as the default profile, with the cores reserved.
+  /// That direction is deliberate: reserving cores nobody uses wastes them,
+  /// while treating an unrecognised id as an opt-out would refuse activation
+  /// on a box whose shield still holds those cores.
+  [[nodiscard]] static bool LayoutProfileDropsMpc(std::string_view profile) noexcept;
   void OnDeviceConfigsSet() override;
 
   [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }
@@ -1024,6 +1048,19 @@ class DemoWbcController final : public RTControllerInterface {
   enum class MpcEngine { kMock, kHandler };
 
   bool mpc_enabled_{false};
+  // Launch-profile opt-out (issue #350). True when this run's layout profile
+  // dropped the MPC cores, i.e. the cset shield handed them back to the system
+  // cpuset. Read once at configure from the `rt_layout_profile` node parameter
+  // — the launch owns that decision because MPC activation is not observable
+  // from the host: `mpc.enabled` is controller YAML and the thread is spawned
+  // in on_activate, so a controller switch can turn it on mid-session.
+  //
+  // With this true, on_activate refuses a structurally MPC-enabled config
+  // instead of spawning a SCHED_FIFO thread onto a core that is no longer
+  // shielded. It does NOT refuse the controller: a TSID-only configuration
+  // (`mpc.enabled: false`) activates normally, which is the whole point of the
+  // profile.
+  bool layout_profile_drops_mpc_{false};
   MpcEngine mpc_engine_{MpcEngine::kMock};
   // MPC solve-loop frequency (Hz). Loaded from YAML `mpc.target_frequency_hz`
   // and forwarded to MpcThreadLaunchConfig in SpawnMpcThreadIfNeeded. Default
