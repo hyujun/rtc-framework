@@ -36,7 +36,8 @@
 # they cover only the callback body, not rmw_wait/take/deserialize).
 #
 # v5 folds all three onto slot 2, so the shield shrinks to the RT cluster and
-# the nrt slots return to the system cpuset (NUC13: "2-9,12-13" -> "2-9").
+# the nrt slots return to the system cpuset (NUC13: "2-9,12-13" -> "2-9";
+# #380 then reclaimed the mpc_worker slots, taking it to "2-7").
 # SCHED_FIFO preempts SCHED_OTHER unconditionally, so rt_callback keeps its
 # latency contract; the residual risk is cache pollution and DDS-side (CFS)
 # delay, which the on-robot AC watches via the drop counters, not via t_total.
@@ -64,8 +65,14 @@ os_slot: 0
 #                       process = external process pin applied by launch taskset
 #                       mpc     = the MpcThreadConfig aggregate
 #   in_controller_process  appears in verify_rt_runtime.sh's expected table
-#   verifier_optional      missing thread => SKIP instead of WARN
 #   map_note            annotation appended to the generated core-map comment
+#
+# There was a `verifier_optional` field ("missing thread => SKIP instead of
+# WARN"). Its only producer was mpc_worker_*, whose threads applied a config
+# and exited, and it went with those slots in #380 -- generator reader and the
+# verifier's 5th expected-table field included. Every row is required now. A
+# future role that may legitimately be absent needs the field re-implemented,
+# not just re-declared here, plus the reason it may be absent recorded below.
 roles:
   - key: rt_control
     thread_name: rt_control
