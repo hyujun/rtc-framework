@@ -1113,18 +1113,12 @@ print_thread_layout() {
   # header warns about, one layer up from the numbers.
   nrt_pub=$(get_role_slot nrt_publish "$ncpu")
 
-  # MPC lane: main alone, or main + however many workers this tier declares.
-  local mpc_cores mpc_last mpc_label mpc_sched mpc_policy idx prios prio
+  # MPC lane: a single thread on every tier (#380 removed the worker slots).
+  local mpc_cores mpc_last mpc_label mpc_sched mpc_policy prios
   mpc_cores=$(get_mpc_cores "$ncpu")
   mpc_last="${mpc_cores##*,}"
   prios=$(get_role_priority mpc_main "$ncpu")
   mpc_label="mpc_main"
-  idx=0
-  while prio=$(get_role_priority "mpc_worker_${idx}" "$ncpu" 2>/dev/null); do
-    prios="${prios} / ${prio}"
-    mpc_label="mpc_main + workers"
-    idx=$((idx + 1))
-  done
   mpc_policy=$(get_role_policy mpc_main "$ncpu")
   if [[ "$mpc_policy" == "SCHED_OTHER" ]]; then
     mpc_sched="CFS, degraded"

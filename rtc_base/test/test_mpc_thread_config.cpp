@@ -26,39 +26,22 @@ struct TierExpectation {
   const char* label;
   const MpcThreadConfig* mpc;
   int expected_main_core;
-  int expected_num_workers;
 };
 
 const std::array<TierExpectation, 7> kTiers = {{
-    {"4-core", &kMpcConfig4Core, 3, 0},
-    {"6-core", &kMpcConfig6Core, 3, 0},
-    {"8-core", &kMpcConfig8Core, 3, 0},
-    {"10-core", &kMpcConfig10Core, 3, 1},
-    {"12-core", &kMpcConfig12Core, 3, 2},
-    {"14-core", &kMpcConfig14Core, 3, 2},
-    {"16-core", &kMpcConfig16Core, 3, 2},
+    {"4-core", &kMpcConfig4Core, 3},
+    {"6-core", &kMpcConfig6Core, 3},
+    {"8-core", &kMpcConfig8Core, 3},
+    {"10-core", &kMpcConfig10Core, 3},
+    {"12-core", &kMpcConfig12Core, 3},
+    {"14-core", &kMpcConfig14Core, 3},
+    {"16-core", &kMpcConfig16Core, 3},
 }};
 
 TEST(MpcThreadConfig, MainCoreMatchesSpec) {
   for (const auto& tier : kTiers) {
     EXPECT_EQ(tier.mpc->main.cpu_core, tier.expected_main_core)
         << tier.label << ": MPC main core mismatch";
-    EXPECT_EQ(tier.mpc->num_workers, tier.expected_num_workers)
-        << tier.label << ": worker count mismatch";
-  }
-}
-
-TEST(MpcThreadConfig, WorkerPriorityNotAboveMain) {
-  for (const auto& tier : kTiers) {
-    const auto& mpc = *tier.mpc;
-    if (mpc.main.sched_policy != SCHED_FIFO && mpc.main.sched_policy != SCHED_RR) {
-      continue;  // Non-RT tier (4-core)
-    }
-    for (int i = 0; i < mpc.num_workers; ++i) {
-      const auto& worker = mpc.workers[static_cast<std::size_t>(i)];
-      EXPECT_LE(worker.sched_priority, mpc.main.sched_priority)
-          << tier.label << " worker " << i << ": priority > main";
-    }
   }
 }
 
@@ -117,7 +100,7 @@ TEST(MpcThreadConfig, DedicatedTiersDoNotShareWithSensorOrRt) {
 // Monotonicity invariant: as physical core count grows, RT/MPC isolation
 // quality must never regress. Each tier ≥ 8-core must keep MPC main on a
 // dedicated core (distinct from rt_control / rt_callback / nrt_logging /
-// nrt_callback), and worker count must be monotonic.
+// nrt_callback).
 TEST(MpcThreadConfig, TierIsolationMonotonicity) {
   struct TierSnapshot {
     int ncpu;
@@ -144,9 +127,6 @@ TEST(MpcThreadConfig, TierIsolationMonotonicity) {
   for (std::size_t i = 1; i < tiers.size(); ++i) {
     const TierSnapshot& lo = tiers[i - 1];
     const TierSnapshot& hi = tiers[i];
-
-    EXPECT_GE(hi.mpc->num_workers, lo.mpc->num_workers)
-        << hi.ncpu << "-core has fewer MPC workers than " << lo.ncpu << "-core";
 
     // Tiers ≥ 10 keep MPC main off both nrt lanes. What this no longer asserts
     // is that the two nrt lanes are on cores of their own: layout v5 (#349)
@@ -269,13 +249,6 @@ TEST(MpcThreadConfig, LayoutV4ArmHandDriverDisjoint) {
     EXPECT_NE(t.hand->cpu_core, t.rt_callback->cpu_core)
         << t.label << ": hand shares rt_callback core";
     EXPECT_NE(t.hand->cpu_core, t.mpc->main.cpu_core) << t.label << ": hand shares mpc_main core";
-    for (int i = 0; i < t.mpc->num_workers; ++i) {
-      const int worker_core = t.mpc->workers[static_cast<std::size_t>(i)].cpu_core;
-      EXPECT_NE(t.arm->cpu_core, worker_core)
-          << t.label << ": arm shares mpc_worker_" << i << " core";
-      EXPECT_NE(t.hand->cpu_core, worker_core)
-          << t.label << ": hand shares mpc_worker_" << i << " core";
-    }
     // Arm and hand on dedicated tiers also get distinct cores from each other.
     EXPECT_NE(t.arm->cpu_core, t.hand->cpu_core)
         << t.label << ": arm and hand share a core on a tier that should have dedicated pins";
@@ -301,7 +274,7 @@ TEST(MpcThreadConfig, LayoutV3ValidateAllTiersWhenHostFits) {
 }
 
 TEST(MpcThreadConfig, NoRtPriorityConflicts) {
-  // Validate the MPC-specific invariants directly (priority / worker rules)
+  // Validate the MPC-specific invariants directly (priority rules)
   // without going through ValidateThreadConfig, which cross-checks cpu_core
   // against the host's live core count — not meaningful for tiers larger
   // than the test machine.

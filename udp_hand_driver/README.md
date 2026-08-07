@@ -100,7 +100,7 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
 
 `use_cpu_affinity:=false` 는 프로세스 안의 두 pin(main → `hand_driver`, `hand_aux_io` → aux)을 건너뛴다. **스케줄링 정책은 유지되므로** CommLoop 은 그대로 SCHED_FIFO 65 다 — 코어 confinement 만 사라진다.
 
-> ⚠️ **실기 RT 배포에서는 `use_cpu_affinity:=false` 를 쓰지 말 것.** 정책이 남는다는 바로 그 성질이 위험이다 — pin 이 없는 FIFO 65 CommLoop 은 스케줄러가 고르는 아무 코어로나 이주할 수 있고, `mpc_main`(FIFO 60)이나 `mpc_workers`(FIFO 55)가 핀된 코어에 올라가면 **우선순위가 더 높으므로 그 컨트롤러 tick 을 선점**한다 (`rt_control` 90 · `rt_callback` 70 은 65 보다 높아 영향 없음). 이 스위치는 격리가 아예 없는 환경 — 개발 노트북, 컨테이너, cpuset 없는 CI — 전용이다.
+> ⚠️ **실기 RT 배포에서는 `use_cpu_affinity:=false` 를 쓰지 말 것.** 정책이 남는다는 바로 그 성질이 위험이다 — pin 이 없는 FIFO 65 CommLoop 은 스케줄러가 고르는 아무 코어로나 이주할 수 있고, `mpc_main`(FIFO 60)이 핀된 코어에 올라가면 **우선순위가 더 높으므로 그 solve 를 선점**한다 (`rt_control` 90 · `rt_callback` 70 은 65 보다 높아 영향 없음). 이 스위치는 격리가 아예 없는 환경 — 개발 노트북, 컨테이너, cpuset 없는 CI — 전용이다.
 
 ### NRT publish mailbox
 

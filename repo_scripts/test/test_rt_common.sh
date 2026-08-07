@@ -723,11 +723,14 @@ _force_physical_cores() {
 test_get_rt_cores_with_siblings_non_smt() {
   local root="$TMP/rtcs_nonsmt"
   local n
-  # tier → expected output (matches docs/RT_OPTIMIZATION.md table)
+  # tier → expected output (matches docs/RT_OPTIMIZATION.md table).
+  # #380 이 mpc_worker 슬롯 4·5 를 회수한 뒤로 RT 집합은 tier 와 무관하게
+  # slot 1-3 이다. 10+ 가 "1-4"/"1-5" 로 되돌아오면 아무도 실행하지 않는
+  # 코어를 다시 격리하고 있다는 뜻이다.
   declare -A expected=(
     [4]="1-3" [6]="1-3" [8]="1-3" [9]="1-3"
-    [10]="1-4" [11]="1-4"
-    [12]="1-5" [13]="1-5" [14]="1-5" [15]="1-5" [16]="1-5"
+    [10]="1-3" [11]="1-3"
+    [12]="1-3" [13]="1-3" [14]="1-3" [15]="1-3" [16]="1-3"
   )
   for n in 4 6 8 9 10 11 12 13 14 15 16; do
     _mock_sysfs_non_smt "$root" "$n"
@@ -751,15 +754,15 @@ test_get_rt_cores_with_siblings_smt_6c12t() {
 }
 
 test_get_rt_cores_with_siblings_smt_12c24t() {
-  # 12 physical cores, SMT enabled. RT physical cores: 1,2,3,4,5.
-  # Siblings: cpu 13..17 (share core_id with cpu 1..5).
-  # Expected output: "1-5,13-17".
+  # 12 physical cores, SMT enabled. RT physical cores: 1,2,3 (#380 회수 이후).
+  # Siblings: cpu 13..15 (share core_id with cpu 1..3).
+  # Expected output: "1-3,13-15".
   local root="$TMP/rtcs_smt_12c"
   _mock_sysfs_smt "$root" 12
   _force_physical_cores 12
   local got
   got=$(RTC_SYSFS_ROOT="$root" get_rt_cores_with_siblings)
-  expect_eq "rtcs_smt.12c24t" "1-5,13-17" "$got"
+  expect_eq "rtcs_smt.12c24t" "1-3,13-15" "$got"
 }
 
 # ── slot→logical translation (canonical rt_common.sh helper) ─────────────────
@@ -965,7 +968,8 @@ test_classify_layout_no_threads() {
 
 test_get_rt_shield_cpus_non_smt() {
   local root="$TMP/shield_nonsmt"
-  declare -A expected=( [6]="1-3" [8]="1-3" [9]="1-3" [10]="1-4" [11]="1-4" [12]="1-5" [16]="1-5" )
+  # 전 tier 동일 — #380 이후 RT 슬롯은 1-3 뿐이다.
+  declare -A expected=( [6]="1-3" [8]="1-3" [9]="1-3" [10]="1-3" [11]="1-3" [12]="1-3" [16]="1-3" )
   local n
   for n in 6 8 9 10 11 12 16; do
     _mock_sysfs_non_smt "$root" "$n"
@@ -1040,13 +1044,15 @@ test_get_rt_shield_cpus_low_core_no_phantom() {
 
 test_get_cm_shield_cpus_nuc13_hybrid() {
   # NUC13 Pro (Raptor Lake-P 4P+8E, HT on): P-cores 0-3 → logical 0-7,
-  # E-cores 4-11 → logical 8-15. RT slots 1-5 → logical {2,4,6,8,9}; v5 부터
+  # E-cores 4-11 → logical 8-15. RT slots 1-3 → logical {2,4,6}; v5 부터
   # nrt 는 aux slot 2 → logical 4 로 **이미 RT 집합 안**이라 union 이 넓어지지
-  # 않는다. CM cpuset = RT + P-core HT siblings = "2-9".
+  # 않는다. CM cpuset = RT + P-core HT siblings = "2-7".
   #
-  # 이 한 줄이 #349 AC-5 ("shield 2-9,12-13 → 2-9, 논리 12·13 반환") 를 실기
-  # 이전에 데스크톱에서 결정적으로 검증하는 유일한 센서다. v4.1 에서는
-  # "2-9,12-13" 이었다 — 이 값이 되돌아오면 코어 반환이 일어나지 않은 것이다.
+  # 이 한 줄이 primary target tier 의 shield 를 실기 이전에 데스크톱에서
+  # 결정적으로 검증하는 유일한 센서다. 값의 역사가 곧 코어 반환의 역사다:
+  # v4.1 "2-9,12-13" → #349 가 nrt 를 aux slot 으로 접어 "2-9" → #380 이
+  # mpc_worker 슬롯 4·5 (logical 8,9) 를 회수해 "2-7". 앞의 값이 되돌아오면
+  # 그만큼의 반환이 취소된 것이다. E 코어 8·9 는 이제 system cpuset 에 남는다.
   local root="$TMP/cm_nuc13"
   mock_reset "$root"
   local i
@@ -1063,19 +1069,17 @@ test_get_cm_shield_cpus_nuc13_hybrid() {
   local got
   got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/cm_nuc13_cpuinfo" \
         RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus)
-  expect_eq "cm_shield.nuc13_hybrid.12c" "2-9" "$got"
+  expect_eq "cm_shield.nuc13_hybrid.12c" "2-7" "$got"
 }
 
 test_get_cm_shield_cpus_non_smt() {
   # Non-SMT: RT slots (identity, no siblings). v5 부터 nrt 는 aux slot 2 라
   # RT 집합의 부분집합이고, union 은 RT span 그대로다 — v4.1 이 여기 붙이던
   # 꼬리(",5" / ",6-7" / ",7-8" / ",8-9")가 tier 마다 사라진다.
-  #   6-7c:  RT 1-3 + nrt 2 ⊂ RT  → "1-3"
-  #   8-9c:  RT 1-3 + nrt 2 ⊂ RT  → "1-3"
-  #   10-11c:RT 1-4 + nrt 2 ⊂ RT  → "1-4"
-  #   12c+:  RT 1-5 + nrt 2 ⊂ RT  → "1-5"
+  # #380 이 worker 슬롯을 회수한 뒤로는 tier 축까지 평평해진다 — 모든 tier 가
+  # RT 1-3 + nrt 2 ⊂ RT → "1-3".
   local root="$TMP/cm_nonsmt"
-  declare -A expected=( [6]="1-3" [8]="1-3" [10]="1-4" [12]="1-5" [16]="1-5" )
+  declare -A expected=( [6]="1-3" [8]="1-3" [10]="1-3" [12]="1-3" [16]="1-3" )
   local n
   for n in 6 8 10 12 16; do
     _mock_sysfs_non_smt "$root" "$n"
@@ -1423,8 +1427,8 @@ test_verifier_follows_the_shield_marker_profile() {
     pass
   fi
   expect_eq "verifier.forbidden.off" \
-    "forbidden=mpc_main,mpc_worker_0,mpc_worker_1," "$(grep '^forbidden=' <<<"$out")"
-  expect_eq "verifier.forbidden_n.off" "forbidden_n=3" "$(grep '^forbidden_n=' <<<"$out")"
+    "forbidden=mpc_main," "$(grep '^forbidden=' <<<"$out")"
+  expect_eq "verifier.forbidden_n.off" "forbidden_n=1" "$(grep '^forbidden_n=' <<<"$out")"
 
   # 기본 profile 에서는 mpc 가 기대 표에 있고 금지 목록은 비어야 한다.
   out=$(_verifier_tables "robot mpc_on" 12)
@@ -1465,29 +1469,25 @@ test_layout_tier_tables_per_tier() {
     expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
     expect_eq "nrt.${n}" "0"     "$(get_nrt_cores "$n")"
   done
-  # 6-7 — worker 없음. v5 부터 nrt 3 레인은 aux slot 2 (rt_callback 슬롯) 위다.
+  # 6-7 — v5 부터 nrt 3 레인은 aux slot 2 (rt_callback 슬롯) 위다.
   for n in 6 7; do
     expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
     expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
     expect_eq "nrt.${n}" "2"     "$(get_nrt_cores "$n")"
   done
-  # 8-9 — arm/hand 전용 슬롯, 아직 worker 없음.
+  # 8-9 — arm/hand 전용 슬롯.
   for n in 8 9; do
     expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
     expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
     expect_eq "nrt.${n}" "2"     "$(get_nrt_cores "$n")"
   done
-  # 10-11 — worker 하나가 붙으면서 RT 집합이 넓어진다.
-  for n in 10 11; do
-    expect_eq "mpc.${n}" "3,4"     "$(get_mpc_cores "$n")"
-    expect_eq "rt.${n}"  "1,2,3,4" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "2"       "$(get_nrt_cores "$n")"
-  done
-  # 12+ — 두 번째 worker 까지. 14/16/24 는 12 와 같은 배치다.
-  for n in 12 13 14 15 16 17 24; do
-    expect_eq "mpc.${n}" "3,4,5"     "$(get_mpc_cores "$n")"
-    expect_eq "rt.${n}"  "1,2,3,4,5" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "2"         "$(get_nrt_cores "$n")"
+  # 10+ — #380 이 mpc_worker 슬롯을 회수한 뒤로 RT 집합은 tier 와 무관하게
+  # rt_control + rt_callback + mpc_main 셋이다. 이 행들이 다시 넓어지면 shield 가
+  # 아무도 안 쓰는 코어를 격리한다는 뜻이므로 tier 마다 따로 박는다.
+  for n in 10 11 12 13 14 15 16 17 24; do
+    expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
+    expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
+    expect_eq "nrt.${n}" "2"     "$(get_nrt_cores "$n")"
   done
   # v5 는 nrt 를 RT 집합의 부분집합으로 만든다 (aux slot = rt_callback slot).
   # 이 관계가 깨지면 get_cm_shield_cpus 의 union 이 다시 넓어지므로 함께 박는다.
@@ -1504,29 +1504,24 @@ test_layout_tier_tables_per_tier() {
   done
 }
 
-test_layout_worker_roles_absent_below_their_tier() {
-  # get_role_spec 은 없는 role 에 비0 을 낸다. 이게 무너지면 rtc_expected_threads
-  # 가 존재하지 않는 worker 를 기대 목록에 넣고, 검증기가 영영 안 나타날 스레드를
-  # 찾다 WARN 을 뿜는다.
+test_layout_worker_roles_absent_on_every_tier() {
+  # #380 이 mpc_worker 를 manifest 에서 지웠다. 이 테스트는 그 전에 "worker 는 10
+  # 코어부터" 를 박던 자리이며, 지금은 **어느 tier 에서도 존재하지 않음**을 박는다.
+  # get_role_spec 이 다시 성공하면 누군가 manifest 에 슬롯을 되살렸다는 뜻이고,
+  # rtc_expected_threads 가 영영 안 나타날 스레드를 검증기에 넘긴다 — worker 가
+  # 죽은 채 예약만 남아 있던 것이 #380 의 결함 그 자체다.
   local n
-  for n in 4 6 8 9; do
+  for n in 4 6 8 9 10 11 12 16 24; do
     if get_role_spec mpc_worker_0 "$n" >/dev/null 2>&1; then
-      fail "[worker.absent.${n}] mpc_worker_0 이 ${n}-core tier 에 존재한다고 보고 — worker 는 10 코어부터"
+      fail "[worker.absent.${n}] mpc_worker_0 이 ${n}-core tier 에 존재한다고 보고 — #380 이 제거했다"
     else
       pass
     fi
-  done
-  for n in 10 11; do
-    expect_eq "worker0.${n}" "4" "$(get_role_slot mpc_worker_0 "$n")"
     if get_role_spec mpc_worker_1 "$n" >/dev/null 2>&1; then
-      fail "[worker1.absent.${n}] mpc_worker_1 이 ${n}-core tier 에 존재한다고 보고 — 두 번째는 12 코어부터"
+      fail "[worker.absent1.${n}] mpc_worker_1 이 ${n}-core tier 에 존재한다고 보고 — #380 이 제거했다"
     else
       pass
     fi
-  done
-  for n in 12 16 24; do
-    expect_eq "worker0.${n}" "4" "$(get_role_slot mpc_worker_0 "$n")"
-    expect_eq "worker1.${n}" "5" "$(get_role_slot mpc_worker_1 "$n")"
   done
 }
 
@@ -1543,10 +1538,10 @@ test_rtc_expected_threads_table_per_tier() {
     "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
     "$(rtc_expected_threads 8 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.10" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
     "$(rtc_expected_threads 10 | tr '\n' ' ' | sed 's/ $//')"
   expect_eq "exp.12" \
-    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:55:optional mpc_worker_1:5:1:55:optional nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
     "$(rtc_expected_threads 12 | tr '\n' ' ' | sed 's/ $//')"
   # v5 이후 nrt 3행이 전부 slot 2 로 수렴하므로, 이 표만으로는 "세 행이 각각
   # 존재하는가" 가 슬롯 축에서 무뎌진다. 행 수를 따로 박아 verifier 가 세 TID 를
@@ -1645,14 +1640,14 @@ test_layout_profile_verifier_tables_partition() {
       fail "[profile.forbidden.on.${n}] default profile 인데 금지 스레드가 있다"
     fi
   done
-  # off 금지 목록은 그 tier 에 실제로 존재하는 mpc role 전부다 — worker 가 없는
-  # tier 에서 없는 worker 를 금지하면 검증기가 영영 안 나올 이름을 든다.
-  expect_eq "profile.forbidden.4"  "mpc_main" "$(rtc_forbidden_threads 4 mpc_off | tr '\n' ' ' | sed 's/ $//')"
-  expect_eq "profile.forbidden.8"  "mpc_main" "$(rtc_forbidden_threads 8 mpc_off | tr '\n' ' ' | sed 's/ $//')"
-  expect_eq "profile.forbidden.10" "mpc_main mpc_worker_0" \
-    "$(rtc_forbidden_threads 10 mpc_off | tr '\n' ' ' | sed 's/ $//')"
-  expect_eq "profile.forbidden.12" "mpc_main mpc_worker_0 mpc_worker_1" \
-    "$(rtc_forbidden_threads 12 mpc_off | tr '\n' ' ' | sed 's/ $//')"
+  # off 금지 목록은 그 tier 에 실제로 존재하는 mpc role 전부다. #380 이 worker 를
+  # 지운 뒤로 그것은 모든 tier 에서 mpc_main 하나이며, 여기에 다시 이름이 붙으면
+  # 검증기가 영영 안 나올 스레드를 금지 대상으로 든다.
+  local n
+  for n in 4 8 10 12 16; do
+    expect_eq "profile.forbidden.${n}" "mpc_main" \
+      "$(rtc_forbidden_threads "$n" mpc_off | tr '\n' ' ' | sed 's/ $//')"
+  done
 }
 
 test_rtc_expected_threads_tracks_the_role_helpers() {
@@ -1703,7 +1698,8 @@ test_print_thread_layout_derives_every_core_number() {
     else
       fail "[layout.nrt_publish.${n}] nrt_publish 가 자기 slot 행에 없다"
     fi
-    # MPC lane 은 단일 코어면 "Core 3", worker 가 있으면 "Core 3-5" 로 그린다.
+    # MPC lane 은 #380 이후 모든 tier 에서 단일 코어라 "Core 3" 으로 그려진다.
+    # 범위 분기는 남겨 둔다 — manifest 가 다시 여러 슬롯을 주면 그때 발화한다.
     local first last
     first=$(get_mpc_cores "$n" | cut -d',' -f1)
     last=$(get_mpc_cores "$n" | tr ',' '\n' | tail -1)
@@ -1730,7 +1726,7 @@ test_verifier_expected_slots_track_the_helpers
 test_verifier_is_sourceable_without_running
 test_verifier_follows_the_shield_marker_profile
 test_layout_tier_tables_per_tier
-test_layout_worker_roles_absent_below_their_tier
+test_layout_worker_roles_absent_on_every_tier
 test_rtc_expected_threads_table_per_tier
 test_layout_profile_mpc_off_frees_the_mpc_slots
 test_layout_profile_verifier_tables_partition

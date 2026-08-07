@@ -62,7 +62,7 @@ os_slot: 0
 #   cpp_symbol          k<cpp_symbol><tier suffix>  (e.g. kRtControlConfig8Core)
 #   kind                thread  = ApplyThreadConfig target inside the controller
 #                       process = external process pin applied by launch taskset
-#                       mpc     = the MpcThreadConfig aggregate (main + workers)
+#                       mpc     = the MpcThreadConfig aggregate
 #   in_controller_process  appears in verify_rt_runtime.sh's expected table
 #   verifier_optional      missing thread => SKIP instead of WARN
 #   map_note            annotation appended to the generated core-map comment
@@ -83,20 +83,16 @@ roles:
   - key: mpc
     cpp_symbol: MpcConfig
     kind: mpc
+    # Single thread. A worker sub-role existed until #380: its jthreads applied
+    # a ThreadConfig and returned immediately, so nothing ever ran on the two
+    # slots they reserved, and no solver could have used them either — Aligator
+    # parallelises through OpenMP, which owns and spawns its own threads and
+    # takes no external handles. Reintroducing parallel MPC means pinning that
+    # OpenMP pool, not handing out std::jthread.
     main:
       key: mpc_main
       thread_name: mpc_main
       in_controller_process: true
-    worker:
-      # mpc_worker_<i>; kMpcMaxWorkers in thread_config.hpp must match max_workers.
-      key_prefix: mpc_worker_
-      thread_name_prefix: mpc_worker_
-      in_controller_process: true
-      # The worker jthread calls ApplyThreadConfigVerbose and returns
-      # immediately, so it is usually gone by the time the verifier walks
-      # /proc — absence must not WARN.
-      verifier_optional: true
-    max_workers: 2
 
   - key: arm_driver
     thread_name: arm_driver
@@ -174,8 +170,7 @@ roles:
 #
 #   id       profile identifier used by the shell helpers and the launch args
 #   default  the profile assumed when no caller says otherwise (exactly one)
-#   drops    role keys that do not run under this profile; a `kind: mpc` role
-#            drops its main thread and every worker together
+#   drops    role keys that do not run under this profile
 profiles:
   - id: mpc_on
     default: true
@@ -196,8 +191,6 @@ verifier_order:
   - rt_control
   - rt_callback
   - mpc_main
-  - mpc_worker_0
-  - mpc_worker_1
   - nrt_logging
   - nrt_callback
   # Same slot as nrt_callback, separate row on purpose: the verifier stores one
@@ -248,7 +241,6 @@ tiers:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: OTHER, priority: 0,  nice: -5}
-      mpc_workers:  []
       arm_driver:   {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 0,  policy: OTHER, priority: 0,  nice: 0}
@@ -264,12 +256,11 @@ tiers:
     cpp_suffix_mpc: "6Core"
     notes:
       - "degraded mode — no deterministic RT guarantee."
-      - "Trade-off: no mpc_worker, arm/hand share one slot."
+      - "Trade-off: arm/hand share one slot."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      mpc_workers:  []
       arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
@@ -288,7 +279,6 @@ tiers:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      mpc_workers:  []
       arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
@@ -302,13 +292,14 @@ tiers:
     label: "10-core"
     cpp_suffix: "10Core"
     notes:
-      - "First tier with a parallel MPC worker."
+      - "Slot 4 is deliberately unassigned: it held mpc_worker_0 until #380."
+      - "arm/hand keep their slots rather than shifting down — renumbering"
+      - "them would move driver processes to different physical cores, which"
+      - "is a separate placement decision from reclaiming a dead slot."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      mpc_workers:
-        - {slot: 4, policy: FIFO, priority: 55, nice: 0}
       arm_driver:   {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
@@ -322,14 +313,14 @@ tiers:
     label: "12-core (primary target)"
     cpp_suffix: "12Core"
     notes:
-      - "Primary deployment tier. Both MPC workers active."
+      - "Primary deployment tier."
+      - "Slots 4-5 are deliberately unassigned: they held mpc_worker_0/1"
+      - "until #380. They now leave the RT shield instead of being reused,"
+      - "for the same reason as the 10-core tier."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      mpc_workers:
-        - {slot: 4, policy: FIFO, priority: 55, nice: 0}
-        - {slot: 5, policy: FIFO, priority: 55, nice: 0}
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
@@ -348,9 +339,6 @@ tiers:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      mpc_workers:
-        - {slot: 4, policy: FIFO, priority: 55, nice: 0}
-        - {slot: 5, policy: FIFO, priority: 55, nice: 0}
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
@@ -372,9 +360,6 @@ tiers:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      mpc_workers:
-        - {slot: 4, policy: FIFO, priority: 55, nice: 0}
-        - {slot: 5, policy: FIFO, priority: 55, nice: 0}
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}

@@ -181,7 +181,7 @@ repo_scripts/
 
 | 함수 | 출처 | 설명 |
 |------|------|------|
-| `get_role_spec()` / `get_role_slot()` / `get_role_policy()` / `get_role_priority()` / `get_role_nice()` | 생성 | `<role> [ncpu]` 로 임의 role 의 배치를 조회. 그 tier 에 없는 role (예: 8코어의 `mpc_worker_0`) 은 **비0 종료** — 없는 스레드를 기대 목록에 넣지 않기 위한 계약이다 |
+| `get_role_spec()` / `get_role_slot()` / `get_role_policy()` / `get_role_priority()` / `get_role_nice()` | 생성 | `<role> [ncpu]` 로 임의 role 의 배치를 조회. 그 tier 에 없는 role 은 **비0 종료** — 없는 스레드를 기대 목록에 넣지 않기 위한 계약이다 |
 | `get_mpc_cores()` | 생성 | MPC 코어 (main + workers) CSV. 첫 항목이 항상 MPC main |
 | `get_mpc_main_core()` | 파생 | MPC main 코어만 (`get_mpc_cores` 의 첫 항목) |
 | `get_rt_cores()` | 생성 | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `get_rt_cores_with_siblings()` / `get_rt_shield_cpus()` 의 base |
@@ -207,15 +207,15 @@ Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는
 | ≤5 | `1,2,3` | `1,2` | `3` | `0` | `0` | 0 / 0 |
 | 6–7 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 4 |
 | 8–9 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 5 |
-| 10–11 | `1,2,3,4` | `1,2` | `3,4` | `2` | `0` | 5 / 6 |
-| 12–13 | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
-| 14–15 | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
-| 16+ | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
+| 10–11 | `1,2,3` | `1,2` | `3` | `2` | `0` | 5 / 6 |
+| 12–13 | `1,2,3` | `1,2` | `3` | `2` | `0` | 6 / 7 |
+| 14–15 | `1,2,3` | `1,2` | `3` | `2` | `0` | 6 / 7 |
+| 16+ | `1,2,3` | `1,2` | `3` | `2` | `0` | 6 / 7 |
 
 <!-- END GENERATED: thread-layout-tiers -->
 
-- **≤5코어 / 6–7코어는 degraded** — RT 결정성 보장 X. 전자는 nrt·driver 가 전부 OS Core 0 으로 접히고 mpc 가 CFS 로 강등되며, 후자는 arm/hand 가 한 코어를, nrt_logging + nrt_callback 이 또 한 코어를 공유하고 mpc_worker 가 없다.
-- **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯을 얻고, **10코어 이상**에서 mpc_worker_0, **12코어 이상**에서 mpc_worker_1 이 붙는다. 14/16 tier 는 12 와 같은 배치이고 남는 슬롯이 spare 다 (16c 의 과거 "user cset shield Core 4-8" 잔재는 v4.1 에서 제거).
+- **≤5코어 / 6–7코어는 degraded** — RT 결정성 보장 X. 전자는 nrt·driver 가 전부 OS Core 0 으로 접히고 mpc 가 CFS 로 강등되며, 후자는 arm/hand 가 한 코어를, nrt_logging + nrt_callback 이 또 한 코어를 공유한다.
+- **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯을 얻는다. 10+ tier 가 예약하던 `mpc_worker_0/1` (slot 4·5) 은 #380 이 회수했고 그 슬롯은 이제 비어 있다 — arm/hand 를 당겨 재번호하지 않은 것은 그것이 드라이버 프로세스를 다른 물리 코어로 옮기는 별개의 배치 결정이기 때문이다. 14/16 tier 는 12 와 같은 배치이고 남는 슬롯이 spare 다 (16c 의 과거 "user cset shield Core 4-8" 잔재는 v4.1 에서 제거).
 
 **launch profile (issue #350)** — 위 표의 `(mpc_off)` 열은 **두 번째 축**이다. tier 는 "어느 role 이 어느 슬롯에 앉는가", profile 은 "이번 실행에서 어느 role 이 도는가" 를 정한다. MPC 활성은 host 속성이 아니라 controller YAML (`mpc.enabled`) 이고 스레드는 `on_activate` 에서 뜨므로 런타임 자동 감지가 불가능하다 — 그래서 launch 단계의 **명시적 opt-out** 이다.
 
@@ -427,7 +427,7 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 
 | Tier | 스레드 | 격리 |
 |------|--------|------|
-| Tier 1 (RT-critical) | rt_control + rt_callback (FIFO 70) + mpc_main + mpc_workers | 항상 |
+| Tier 1 (RT-critical) | rt_control + rt_callback (FIFO 70) + mpc_main | 항상 |
 | Tier 2 (driver / IO) | arm_driver, hand_driver, hand_aux_io, nrt_logging, nrt_callback | SCHED_OTHER — shield 밖 dedicated core. arm 은 CM 파라미터로 내부 RT 루프만 FIFO 50 + pin (issue #343). hand 는 프로세스가 스스로 pin 하고 (`use_cpu_affinity` param) 내부 `hand_udp_recv` 만 FIFO 65, `hand_aux_io` 는 OS slot 으로 분리 (issue #345); launch 는 DDS 스레드만 co-pin 한다. sim 은 taskset |
 | Tier 3 (Flexible) | sim_thread, viewer, monitoring, build | 격리 안 함 (`cpu_core = -1`, no pin) |
 

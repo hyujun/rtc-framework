@@ -21,12 +21,6 @@
 
 namespace rtc {
 
-// kMpcMaxWorkers sizes MpcThreadConfig::workers and is hand-written in
-// thread_config.hpp (it has to precede the struct that uses it, so it cannot
-// come from this file). The manifest declares the same number; without this
-// assert, lowering max_workers below it silently over-allocates the array.
-static_assert(kMpcMaxWorkers == 2, "kMpcMaxWorkers must match max_workers in thread_layout.yaml");
-
 // Slot reserved for OS / DDS / NIC IRQ. ValidateSystemThreadConfigs uses it
 // to reject an RT role parked there (issue #349 D-co); emitted from the
 // manifest so the rule cannot drift from the layout it guards.
@@ -64,8 +58,6 @@ inline const MpcThreadConfig kMpcConfig4Core{
             .nice_value = -5,
             .name = "mpc_main",
         },
-    .num_workers = 0,
-    .workers = {},
 };
 
 inline const ThreadConfig kArmDriverConfig4Core{.cpu_core = 0,
@@ -120,7 +112,7 @@ inline const ThreadConfig kViewerConfig4Core{.cpu_core = -1,
 //   Slot 5: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // degraded mode — no deterministic RT guarantee.
-// Trade-off: no mpc_worker, arm/hand share one slot.
+// Trade-off: arm/hand share one slot.
 
 inline const ThreadConfig kRtControlConfig{.cpu_core = 1,
                                            .sched_policy = SCHED_FIFO,
@@ -143,8 +135,6 @@ inline const MpcThreadConfig kMpcConfig6Core{
             .nice_value = 0,
             .name = "mpc_main",
         },
-    .num_workers = 0,
-    .workers = {},
 };
 
 inline const ThreadConfig kArmDriverConfig{.cpu_core = 4,
@@ -223,8 +213,6 @@ inline const MpcThreadConfig kMpcConfig8Core{
             .nice_value = 0,
             .name = "mpc_main",
         },
-    .num_workers = 0,
-    .workers = {},
 };
 
 inline const ThreadConfig kArmDriverConfig8Core{.cpu_core = 4,
@@ -275,14 +263,17 @@ inline const ThreadConfig kViewerConfig8Core{.cpu_core = -1,
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
-//   Slot 4: mpc_worker_0 (FIFO 55)
+//   Slot 4: spare
 //   Slot 5: arm_driver (CFS 0)
 //   Slot 6: hand_driver (CFS 0)
 //   Slot 7: spare
 //   Slot 8: spare
 //   Slot 9: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
-// First tier with a parallel MPC worker.
+// Slot 4 is deliberately unassigned: it held mpc_worker_0 until #380.
+// arm/hand keep their slots rather than shifting down — renumbering
+// them would move driver processes to different physical cores, which
+// is a separate placement decision from reclaiming a dead slot.
 
 inline const ThreadConfig kRtControlConfig10Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
@@ -304,18 +295,6 @@ inline const MpcThreadConfig kMpcConfig10Core{
             .sched_priority = 60,
             .nice_value = 0,
             .name = "mpc_main",
-        },
-    .num_workers = 1,
-    .workers =
-        {
-            ThreadConfig{
-                .cpu_core = 4,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_0",
-            },
-            ThreadConfig{},
         },
 };
 
@@ -367,8 +346,8 @@ inline const ThreadConfig kViewerConfig10Core{.cpu_core = -1,
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
-//   Slot 4: mpc_worker_0 (FIFO 55)
-//   Slot 5: mpc_worker_1 (FIFO 55)
+//   Slot 4: spare
+//   Slot 5: spare
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
 //   Slot 8: spare
@@ -376,7 +355,10 @@ inline const ThreadConfig kViewerConfig10Core{.cpu_core = -1,
 //   Slot 10: spare
 //   Slot 11: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
-// Primary deployment tier. Both MPC workers active.
+// Primary deployment tier.
+// Slots 4-5 are deliberately unassigned: they held mpc_worker_0/1
+// until #380. They now leave the RT shield instead of being reused,
+// for the same reason as the 10-core tier.
 
 inline const ThreadConfig kRtControlConfig12Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
@@ -398,24 +380,6 @@ inline const MpcThreadConfig kMpcConfig12Core{
             .sched_priority = 60,
             .nice_value = 0,
             .name = "mpc_main",
-        },
-    .num_workers = 2,
-    .workers =
-        {
-            ThreadConfig{
-                .cpu_core = 4,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_0",
-            },
-            ThreadConfig{
-                .cpu_core = 5,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_1",
-            },
         },
 };
 
@@ -467,8 +431,8 @@ inline const ThreadConfig kViewerConfig12Core{.cpu_core = -1,
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
-//   Slot 4: mpc_worker_0 (FIFO 55)
-//   Slot 5: mpc_worker_1 (FIFO 55)
+//   Slot 4: spare
+//   Slot 5: spare
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
 //   Slot 8: spare
@@ -500,24 +464,6 @@ inline const MpcThreadConfig kMpcConfig14Core{
             .sched_priority = 60,
             .nice_value = 0,
             .name = "mpc_main",
-        },
-    .num_workers = 2,
-    .workers =
-        {
-            ThreadConfig{
-                .cpu_core = 4,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_0",
-            },
-            ThreadConfig{
-                .cpu_core = 5,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_1",
-            },
         },
 };
 
@@ -569,8 +515,8 @@ inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
-//   Slot 4: mpc_worker_0 (FIFO 55)
-//   Slot 5: mpc_worker_1 (FIFO 55)
+//   Slot 4: spare
+//   Slot 5: spare
 //   Slot 6: arm_driver (CFS 0)
 //   Slot 7: hand_driver (CFS 0)
 //   Slot 8: spare
@@ -607,24 +553,6 @@ inline const MpcThreadConfig kMpcConfig16Core{
             .sched_priority = 60,
             .nice_value = 0,
             .name = "mpc_main",
-        },
-    .num_workers = 2,
-    .workers =
-        {
-            ThreadConfig{
-                .cpu_core = 4,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_0",
-            },
-            ThreadConfig{
-                .cpu_core = 5,
-                .sched_policy = SCHED_FIFO,
-                .sched_priority = 55,
-                .nice_value = 0,
-                .name = "mpc_worker_1",
-            },
         },
 };
 

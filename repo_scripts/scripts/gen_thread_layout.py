@@ -95,16 +95,14 @@ class Tier:
     cpp_suffix: str
     cpp_suffix_mpc: str
     notes: tuple[str, ...]
-    specs: dict[str, Spec]  # role key -> spec (mpc_worker_N included)
-    num_workers: int
+    specs: dict[str, Spec]  # role key -> spec
 
 
 @dataclass(frozen=True)
 class Profile:
     """Which roles run at all on a given launch (issue #350).
 
-    The second layout axis. ``drops`` names top-level role keys, so dropping the
-    ``mpc`` role takes its main thread and every worker with it.
+    The second layout axis. ``drops`` names top-level role keys.
     """
 
     id: str
@@ -121,7 +119,6 @@ class Manifest:
     tiers: list[Tier]  # ascending min_cores
     profiles: tuple[Profile, ...]  # default first
     verifier_order: tuple[str, ...]
-    max_workers: int
     outputs: dict[str, str]
     doc_blocks: list[dict]
     doc: dict
@@ -175,20 +172,10 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     roles = data["roles"]
-    mpc_role = next(r for r in roles if r.get("kind") == "mpc")
-    max_workers = int(mpc_role["max_workers"])
 
     tiers: list[Tier] = []
     for raw_tier in data["tiers"]:
-        raw_roles = dict(raw_tier["roles"])
-        workers = raw_roles.pop("mpc_workers", []) or []
-        if len(workers) > max_workers:
-            raise ValueError(
-                f"tier {raw_tier['id']}: {len(workers)} workers exceeds max_workers={max_workers}"
-            )
-        specs = {key: _spec(value) for key, value in raw_roles.items()}
-        for index, worker in enumerate(workers):
-            specs[f"{mpc_role['worker']['key_prefix']}{index}"] = _spec(worker)
+        specs = {key: _spec(value) for key, value in raw_tier["roles"].items()}
         cpp_suffix = str(raw_tier.get("cpp_suffix", ""))
         tiers.append(
             Tier(
@@ -199,7 +186,6 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
                 cpp_suffix_mpc=str(raw_tier.get("cpp_suffix_mpc", cpp_suffix)),
                 notes=tuple(raw_tier.get("notes", ())),
                 specs=specs,
-                num_workers=len(workers),
             )
         )
     tiers.sort(key=lambda t: t.min_cores)
@@ -218,10 +204,6 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
         if entry.get("kind") == "mpc":
             if entry["main"].get("in_controller_process"):
                 in_process.append(str(entry["main"]["key"]))
-            if entry["worker"].get("in_controller_process"):
-                in_process.extend(
-                    f"{entry['worker']['key_prefix']}{index}" for index in range(max_workers)
-                )
         elif entry.get("in_controller_process"):
             in_process.append(str(entry["key"]))
     if set(verifier_order) != set(in_process):
@@ -279,7 +261,6 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
         tiers=tiers,
         profiles=tuple(profiles),
         verifier_order=verifier_order,
-        max_workers=max_workers,
         outputs=dict(data["outputs"]),
         doc_blocks=list(data.get("doc_blocks", [])),
         doc=dict(data.get("doc", {})),
@@ -295,7 +276,6 @@ def _thread_role_keys(m: Manifest) -> list[str]:
     for entry in m.roles:
         if entry.get("kind") == "mpc":
             keys.append(entry["main"]["key"])
-            keys.extend(f"{entry['worker']['key_prefix']}{i}" for i in range(m.max_workers))
         else:
             keys.append(entry["key"])
     return keys
@@ -306,19 +286,9 @@ def _thread_name(m: Manifest, key: str) -> str:
         if entry.get("kind") == "mpc":
             if entry["main"]["key"] == key:
                 return str(entry["main"]["thread_name"])
-            prefix = entry["worker"]["key_prefix"]
-            if key.startswith(prefix):
-                return f"{entry['worker']['thread_name_prefix']}{key[len(prefix) :]}"
         elif entry["key"] == key:
             return str(entry["thread_name"])
     raise KeyError(key)
-
-
-def _verifier_optional(m: Manifest, key: str) -> bool:
-    mpc = next(r for r in m.roles if r.get("kind") == "mpc")
-    return key.startswith(mpc["worker"]["key_prefix"]) and bool(
-        mpc["worker"].get("verifier_optional")
-    )
 
 
 def _csv(values: list[int]) -> str:
@@ -326,21 +296,20 @@ def _csv(values: list[int]) -> str:
 
 
 def dropped_keys(m: Manifest, profile: Profile) -> frozenset[str]:
-    """Concrete role keys ``profile`` does not run (mpc expands to main+workers)."""
+    """Concrete role keys ``profile`` does not run."""
     keys: set[str] = set()
     for entry in m.roles:
         if entry["key"] not in profile.drops:
             continue
         if entry.get("kind") == "mpc":
             keys.add(str(entry["main"]["key"]))
-            keys.update(f"{entry['worker']['key_prefix']}{i}" for i in range(m.max_workers))
         else:
             keys.add(str(entry["key"]))
     return frozenset(keys)
 
 
 def mpc_cores(m: Manifest, tier: Tier, profile: Profile | None = None) -> list[int]:
-    keys = ["mpc_main"] + [f"mpc_worker_{i}" for i in range(tier.num_workers)]
+    keys = ["mpc_main"]
     dropped = dropped_keys(m, profile) if profile is not None else frozenset()
     return [tier.specs[k].slot for k in keys if k not in dropped]
 
@@ -467,15 +436,6 @@ def emit_cpp(m: Manifest) -> str:
     out.append("")
     out.append("namespace rtc {")
     out.append("")
-    out.append("// kMpcMaxWorkers sizes MpcThreadConfig::workers and is hand-written in")
-    out.append("// thread_config.hpp (it has to precede the struct that uses it, so it cannot")
-    out.append("// come from this file). The manifest declares the same number; without this")
-    out.append("// assert, lowering max_workers below it silently over-allocates the array.")
-    out.append(
-        f"static_assert(kMpcMaxWorkers == {m.max_workers},"
-        ' "kMpcMaxWorkers must match max_workers in thread_layout.yaml");'
-    )
-    out.append("")
     out.append("// Slot reserved for OS / DDS / NIC IRQ. ValidateSystemThreadConfigs uses it")
     out.append("// to reject an RT role parked there (issue #349 D-co); emitted from the")
     out.append("// manifest so the rule cannot drift from the layout it guards.")
@@ -498,26 +458,6 @@ def emit_cpp(m: Manifest) -> str:
                 out.append(f"            .nice_value = {main.nice},")
                 out.append(f'            .name = "{_thread_name(m, "mpc_main")}",')
                 out.append("        },")
-                out.append(f"    .num_workers = {tier.num_workers},")
-                if tier.num_workers == 0:
-                    out.append("    .workers = {},")
-                else:
-                    out.append("    .workers =")
-                    out.append("        {")
-                    for index in range(m.max_workers):
-                        key = f"mpc_worker_{index}"
-                        spec = tier.specs.get(key)
-                        if spec is None:
-                            out.append("            ThreadConfig{},")
-                            continue
-                        out.append("            ThreadConfig{")
-                        out.append(f"                .cpu_core = {spec.slot},")
-                        out.append(f"                .sched_policy = {spec.policy_cpp},")
-                        out.append(f"                .sched_priority = {spec.priority},")
-                        out.append(f"                .nice_value = {spec.nice},")
-                        out.append(f'                .name = "{_thread_name(m, key)}",')
-                        out.append("            },")
-                    out.append("        },")
                 out.append("};")
             else:
                 key = entry["key"]
@@ -619,8 +559,7 @@ def emit_shell(m: Manifest) -> str:
     # ── generic per-role lookup ────────────────────────────────────────
     out += [
         '# get_role_spec <role> [ncpu] -> "<slot> <policy> <priority> <nice>"',
-        "# Returns non-zero for a role that does not exist on the tier (e.g. an",
-        "# mpc_worker below the 10-core tier).",
+        "# Returns non-zero for a role that does not exist on the tier.",
         "get_role_spec() {",
         '  local role="$1"',
         '  local ncpu="${2:-$(get_physical_cores)}"',
@@ -735,7 +674,7 @@ def emit_shell(m: Manifest) -> str:
     out += _tier_profile_case(
         "get_mpc_cores",
         [
-            "MPC slots (main first, then workers) as CSV. $1 overrides the detected",
+            "MPC slots as CSV. $1 overrides the detected",
             "physical core count so print_thread_layout and the tests can render a",
             "tier this machine does not have; $2 selects the launch profile, and a",
             "profile that drops MPC yields an empty list on every tier.",
@@ -745,7 +684,7 @@ def emit_shell(m: Manifest) -> str:
     out += _tier_profile_case(
         "get_rt_cores",
         [
-            "RT group slots: rt_control + rt_callback + MPC (main + workers).",
+            "RT group slots: rt_control + rt_callback + MPC.",
             "Base for get_rt_cores_with_siblings() / get_cm_shield_cpus().",
             "",
             "$2 (launch profile) is what shrinks the cset shield when MPC is off.",
@@ -784,8 +723,10 @@ def emit_shell(m: Manifest) -> str:
         "}",
         "",
         "# Expected in-process controller threads for verify_rt_runtime.sh, one",
-        '# "name:slot:policy:priority[:optional]" per line. policy: 1=SCHED_FIFO,',
-        '# 0=SCHED_OTHER. "optional" means a missing thread is SKIP, not WARN.',
+        '# "name:slot:policy:priority" per line. policy: 1=SCHED_FIFO,',
+        '# 0=SCHED_OTHER. Every row is required: a missing thread is a FAIL. The',
+        '# former ":optional" suffix went with the mpc_worker slots (#380) -- it',
+        '# existed to excuse threads that applied a config and exited immediately.',
         "# $2 selects the launch profile; roles it drops move to",
         "# rtc_forbidden_threads() below.",
         "rtc_expected_threads() {",
@@ -804,8 +745,6 @@ def emit_shell(m: Manifest) -> str:
                 if spec is None or key in dropped:
                     continue
                 row = f"{_thread_name(m, key)}:{spec.slot}:{spec.policy_verifier}:{spec.priority}"
-                if _verifier_optional(m, key):
-                    row += ":optional"
                 out.append(f'      echo "{row}"')
             out.append("      ;;")
     out += ["    *) return 1 ;;", "  esac", "}", ""]
@@ -870,7 +809,6 @@ def emit_python(m: Manifest) -> str:
         "",
         f'LAYOUT_VERSION = "{m.layout_version}"',
         f"OS_SLOT = {m.os_slot}",
-        f"MAX_WORKERS = {m.max_workers}",
         "",
         "# Dispatch order: the first tier whose threshold is met wins; the last entry",
         "# is the fallback used below every threshold.",
@@ -1214,10 +1152,6 @@ def run_self_test(m: Manifest) -> int:
         rt_cb = tier.specs["rt_callback"]
         if mpc_main.policy != "OTHER" and mpc_main.priority >= rt_cb.priority:
             failures.append(f"tier {tier.id}: mpc_main priority >= rt_callback")
-        for index in range(tier.num_workers):
-            worker = tier.specs[f"mpc_worker_{index}"]
-            if worker.priority > mpc_main.priority:
-                failures.append(f"tier {tier.id}: mpc_worker_{index} priority > mpc_main")
         # arm/hand must not land on an RT controller slot -- the same rule
         # ValidateSystemThreadConfigs() enforces, asserted here because that
         # validator range-checks slots against *this host's* core count, so the
@@ -1243,11 +1177,7 @@ def run_self_test(m: Manifest) -> int:
         # core count: on a box with fewer than six physical cores every tier
         # is skipped and the C++ test reports GTEST_SKIP, so a CI runner can
         # check none of this. run_self_test needs no host at all.
-        active_roles = [
-            key
-            for key in tier.specs
-            if not key.startswith("mpc_worker_") or int(key.rsplit("_", 1)[1]) < tier.num_workers
-        ]
+        active_roles = list(tier.specs)
 
         # 1. rt_control owns its slot outright — nothing else, any policy.
         rt_control_slot = tier.specs["rt_control"].slot

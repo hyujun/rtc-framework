@@ -27,7 +27,6 @@ class RoleSpec(NamedTuple):
 
 LAYOUT_VERSION = "v5"
 OS_SLOT = 0
-MAX_WORKERS = 2
 
 # Dispatch order: the first tier whose threshold is met wins; the last entry
 # is the fallback used below every threshold.
@@ -82,7 +81,6 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
         "rt_control": RoleSpec(1, "FIFO", 90, 0),
         "rt_callback": RoleSpec(2, "FIFO", 70, 0),
         "mpc_main": RoleSpec(3, "FIFO", 60, 0),
-        "mpc_worker_0": RoleSpec(4, "FIFO", 55, 0),
         "arm_driver": RoleSpec(5, "OTHER", 0, 0),
         "hand_driver": RoleSpec(6, "OTHER", 0, 0),
         "nrt_callback": RoleSpec(2, "OTHER", 0, 0),
@@ -95,8 +93,6 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
         "rt_control": RoleSpec(1, "FIFO", 90, 0),
         "rt_callback": RoleSpec(2, "FIFO", 70, 0),
         "mpc_main": RoleSpec(3, "FIFO", 60, 0),
-        "mpc_worker_0": RoleSpec(4, "FIFO", 55, 0),
-        "mpc_worker_1": RoleSpec(5, "FIFO", 55, 0),
         "arm_driver": RoleSpec(6, "OTHER", 0, 0),
         "hand_driver": RoleSpec(7, "OTHER", 0, 0),
         "nrt_callback": RoleSpec(2, "OTHER", 0, 0),
@@ -109,8 +105,6 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
         "rt_control": RoleSpec(1, "FIFO", 90, 0),
         "rt_callback": RoleSpec(2, "FIFO", 70, 0),
         "mpc_main": RoleSpec(3, "FIFO", 60, 0),
-        "mpc_worker_0": RoleSpec(4, "FIFO", 55, 0),
-        "mpc_worker_1": RoleSpec(5, "FIFO", 55, 0),
         "arm_driver": RoleSpec(6, "OTHER", 0, 0),
         "hand_driver": RoleSpec(7, "OTHER", 0, 0),
         "nrt_callback": RoleSpec(2, "OTHER", 0, 0),
@@ -123,8 +117,6 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
         "rt_control": RoleSpec(1, "FIFO", 90, 0),
         "rt_callback": RoleSpec(2, "FIFO", 70, 0),
         "mpc_main": RoleSpec(3, "FIFO", 60, 0),
-        "mpc_worker_0": RoleSpec(4, "FIFO", 55, 0),
-        "mpc_worker_1": RoleSpec(5, "FIFO", 55, 0),
         "arm_driver": RoleSpec(6, "OTHER", 0, 0),
         "hand_driver": RoleSpec(7, "OTHER", 0, 0),
         "nrt_callback": RoleSpec(2, "OTHER", 0, 0),

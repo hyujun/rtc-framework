@@ -217,7 +217,7 @@ check_cpu_isolation() {
 # FAIL 조건:
 #   - NUC_GENERATION == "raptor_lake_p_ht_off"
 #     (hybrid이지만 P-core SMT가 없음 → BIOS에서 Hyper-Threading 비활성 상태.
-#      Stage B에서 mpc_worker의 SMT sibling 배치가 불가능해지므로 FAIL.)
+#      Stage B에서 RT 코어의 SMT sibling 격리가 불가능해지므로 FAIL.)
 #
 # WARN 조건:
 #   - RTC_FORCE_HYBRID_GENERATION 환경변수가 설정됨 (production에서 남으면 위험)
@@ -303,7 +303,7 @@ check_hybrid_cpu() {
         _category_set_detail "hybrid_cpu" "${platform_id} (silicon has no HT, Phase 3 pending)"
       else
         _fail "Intel hybrid 감지되었으나 Hyper-Threading이 비활성 상태입니다 (${platform_id})"
-        _fail "MPC worker의 SMT sibling 배치가 불가능 — BIOS에서 HT를 활성화해야 합니다"
+        _fail "RT 코어의 SMT sibling 격리가 불가능 — BIOS에서 HT를 활성화해야 합니다"
         _fix "Reboot → BIOS/UEFI 설정 → Advanced → CPU Configuration → Hyper-Threading = Enabled"
         _category_update "hybrid_cpu" "FAIL"
         _category_set_detail "hybrid_cpu" "${platform_id} (BIOS HT disabled)"

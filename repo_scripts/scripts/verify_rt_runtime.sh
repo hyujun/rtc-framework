@@ -164,7 +164,7 @@ detect_hybrid_capability
 # the runtime affinity check agree by construction. (Previously duplicated here.)
 
 # ── 기대값 테이블 (생성물 소비) ──────────────────────────────────────────────
-# 형식: "thread_name:expected_slot:expected_policy:expected_priority[:optional]"
+# 형식: "thread_name:expected_slot:expected_policy:expected_priority"
 # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
 #
 # IMPORTANT: expected_slot 은 ThreadConfig::cpu_core 와 동일한 *slot index*
@@ -175,21 +175,18 @@ detect_hybrid_capability
 # 환경 모두에서 올바르게 동작.
 #
 # 이 표는 컨트롤러의 **in-process 스레드만** 담는다 (rt_control, rt_callback,
-# mpc_main, mpc_worker_*, nrt_logging, nrt_callback) — 전부 pthread_setname_np
+# mpc_main, nrt_logging, nrt_callback) — 전부 pthread_setname_np
 # 되어 /proc/<controller>/task 에 보인다. arm_driver / hand_driver 는 launch 가
 # taskset 으로 pin 하는 **별도 프로세스**라 여기 있으면 항상 false-WARN 이었고,
 # build_external_drivers() + discover_external_drivers() 가 PID 로 발견한다.
 #
-# optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리한다.
-#   - mpc_worker_*: MPCThread::Start (rtc_mpc/src/thread/mpc_thread.cpp) 의 worker
-#                   생성 lambda 가 ApplyThreadConfig 호출 후 즉시 종료하는 구조라
-#                   (parallel solver 가 별도로 thread 를 spawn 하는 패턴)
-#                   std::jthread destructor 가 join 하고, verify 의 process
-#                   discovery 시점엔 이미 사라져 매칭 불가. 실제 worker 활용
-#                   여부는 별도 진단 task.
-#   - hand_udp_recv: hand_driver 프로세스 내부의 receive thread.
-#                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
-#                    별도 cpu pin 검증 skip (priority 65 만 확인).
+# 이 표의 모든 행은 **필수**다. 미발견 시 SKIP 으로 넘기는 5번째 `optional`
+# 필드가 있었으나, 유일한 생산자가 `mpc_worker_*` 였고 그 슬롯이 사라지면서
+# (#380) 함께 제거했다 — 그 필드의 존재 이유 자체가 "설정만 적용하고 즉시
+# 죽는 스레드를 미발견 처리한다" 였다. hand_driver 프로세스 내부의
+# `hand_udp_recv` 는 이 표가 아니라 EXTERNAL_DRIVER_THREAD_LAYOUT 에 있고
+# 그쪽은 이 필드를 쓰지 않는다. 다시 optional 이 필요해지면 그때는 "왜 없어도
+# 되는가" 를 manifest 에 근거로 남기고 되살릴 것.
 declare -a EXPECTED_THREADS
 declare -a FORBIDDEN_THREADS
 
@@ -442,23 +439,15 @@ check_process_discovery() {
     _warn "PHYSICAL_CORE_SLOTS 미감지 — slot→logical 변환이 identity fallback (sysfs topology 미가용 / 비-Intel 비-hybrid 시스템)"
   fi
 
-  # 알려진 스레드 매칭 결과 — optional 스레드 미발견은 SKIP 처리
+  # 알려진 스레드 매칭 결과 — 표의 모든 행이 필수다 (위 형식 주석 참조).
   local required_count=0
   local required_found=0
-  local optional_missing=0
   for entry in "${EXPECTED_THREADS[@]}"; do
-    local ename eopt
+    local ename
     ename=$(echo "$entry" | cut -d: -f1)
-    eopt=$(echo "$entry" | cut -d: -f5 -s)
-    if [[ "$eopt" == "optional" ]]; then
-      if [[ -z "${THREAD_TIDS[$ename]:-}" ]]; then
-        ((optional_missing++)) || true
-      fi
-    else
-      ((required_count++)) || true
-      if [[ -n "${THREAD_TIDS[$ename]:-}" ]]; then
-        ((required_found++)) || true
-      fi
+    ((required_count++)) || true
+    if [[ -n "${THREAD_TIDS[$ename]:-}" ]]; then
+      ((required_found++)) || true
     fi
   done
 
@@ -467,29 +456,15 @@ check_process_discovery() {
     _pass "thread_config.hpp 스레드 전체 감지: ${known_count}/${expected_count}"
   elif [[ "$required_found" -eq "$required_count" ]]; then
     _pass "필수 스레드 전체 감지: ${required_found}/${required_count}"
-    # optional 스레드 미발견은 정보성 표시
-    for entry in "${EXPECTED_THREADS[@]}"; do
-      local ename eopt
-      ename=$(echo "$entry" | cut -d: -f1)
-      eopt=$(echo "$entry" | cut -d: -f5 -s)
-      if [[ "$eopt" == "optional" && -z "${THREAD_TIDS[$ename]:-}" ]]; then
-        _skip "  선택적 스레드 미활성: ${ename}"
-      fi
-    done
   elif [[ "$known_count" -gt 0 ]]; then
     # 누락된 필수 스레드 표시
     local _missing_required=0
     for entry in "${EXPECTED_THREADS[@]}"; do
-      local ename eopt
+      local ename
       ename=$(echo "$entry" | cut -d: -f1)
-      eopt=$(echo "$entry" | cut -d: -f5 -s)
       if [[ -z "${THREAD_TIDS[$ename]:-}" ]]; then
-        if [[ "$eopt" == "optional" ]]; then
-          _skip "  선택적 스레드 미활성: ${ename}"
-        else
-          _fail "  미발견: ${ename}"
-          ((_missing_required++)) || true
-        fi
+        _fail "  미발견: ${ename}"
+        ((_missing_required++)) || true
       fi
     done
 

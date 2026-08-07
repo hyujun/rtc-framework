@@ -37,8 +37,7 @@ _rtc_layout_tier() {
 }
 
 # get_role_spec <role> [ncpu] -> "<slot> <policy> <priority> <nice>"
-# Returns non-zero for a role that does not exist on the tier (e.g. an
-# mpc_worker below the 10-core tier).
+# Returns non-zero for a role that does not exist on the tier.
 get_role_spec() {
   local role="$1"
   local ncpu="${2:-$(get_physical_cores)}"
@@ -78,7 +77,6 @@ get_role_spec() {
     "10|rt_control") echo "1 SCHED_FIFO 90 0" ;;
     "10|rt_callback") echo "2 SCHED_FIFO 70 0" ;;
     "10|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
-    "10|mpc_worker_0") echo "4 SCHED_FIFO 55 0" ;;
     "10|arm_driver") echo "5 SCHED_OTHER 0 0" ;;
     "10|hand_driver") echo "6 SCHED_OTHER 0 0" ;;
     "10|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
@@ -89,8 +87,6 @@ get_role_spec() {
     "12|rt_control") echo "1 SCHED_FIFO 90 0" ;;
     "12|rt_callback") echo "2 SCHED_FIFO 70 0" ;;
     "12|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
-    "12|mpc_worker_0") echo "4 SCHED_FIFO 55 0" ;;
-    "12|mpc_worker_1") echo "5 SCHED_FIFO 55 0" ;;
     "12|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "12|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
     "12|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
@@ -101,8 +97,6 @@ get_role_spec() {
     "14|rt_control") echo "1 SCHED_FIFO 90 0" ;;
     "14|rt_callback") echo "2 SCHED_FIFO 70 0" ;;
     "14|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
-    "14|mpc_worker_0") echo "4 SCHED_FIFO 55 0" ;;
-    "14|mpc_worker_1") echo "5 SCHED_FIFO 55 0" ;;
     "14|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "14|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
     "14|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
@@ -113,8 +107,6 @@ get_role_spec() {
     "16|rt_control") echo "1 SCHED_FIFO 90 0" ;;
     "16|rt_callback") echo "2 SCHED_FIFO 70 0" ;;
     "16|mpc_main") echo "3 SCHED_FIFO 60 0" ;;
-    "16|mpc_worker_0") echo "4 SCHED_FIFO 55 0" ;;
-    "16|mpc_worker_1") echo "5 SCHED_FIFO 55 0" ;;
     "16|arm_driver") echo "6 SCHED_OTHER 0 0" ;;
     "16|hand_driver") echo "7 SCHED_OTHER 0 0" ;;
     "16|nrt_callback") echo "2 SCHED_OTHER 0 0" ;;
@@ -174,7 +166,7 @@ rtc_is_layout_profile() {
   return 1
 }
 
-# MPC slots (main first, then workers) as CSV. $1 overrides the detected
+# MPC slots as CSV. $1 overrides the detected
 # physical core count so print_thread_layout and the tests can render a
 # tier this machine does not have; $2 selects the launch profile, and a
 # profile that drops MPC yields an empty list on every tier.
@@ -190,19 +182,19 @@ get_mpc_cores() {
     "6|mpc_off") echo "" ;;
     "8|mpc_on") echo "3" ;;
     "8|mpc_off") echo "" ;;
-    "10|mpc_on") echo "3,4" ;;
+    "10|mpc_on") echo "3" ;;
     "10|mpc_off") echo "" ;;
-    "12|mpc_on") echo "3,4,5" ;;
+    "12|mpc_on") echo "3" ;;
     "12|mpc_off") echo "" ;;
-    "14|mpc_on") echo "3,4,5" ;;
+    "14|mpc_on") echo "3" ;;
     "14|mpc_off") echo "" ;;
-    "16|mpc_on") echo "3,4,5" ;;
+    "16|mpc_on") echo "3" ;;
     "16|mpc_off") echo "" ;;
     *) return 1 ;;
   esac
 }
 
-# RT group slots: rt_control + rt_callback + MPC (main + workers).
+# RT group slots: rt_control + rt_callback + MPC.
 # Base for get_rt_cores_with_siblings() / get_cm_shield_cpus().
 # 
 # $2 (launch profile) is what shrinks the cset shield when MPC is off.
@@ -221,13 +213,13 @@ get_rt_cores() {
     "6|mpc_off") echo "1,2" ;;
     "8|mpc_on") echo "1,2,3" ;;
     "8|mpc_off") echo "1,2" ;;
-    "10|mpc_on") echo "1,2,3,4" ;;
+    "10|mpc_on") echo "1,2,3" ;;
     "10|mpc_off") echo "1,2" ;;
-    "12|mpc_on") echo "1,2,3,4,5" ;;
+    "12|mpc_on") echo "1,2,3" ;;
     "12|mpc_off") echo "1,2" ;;
-    "14|mpc_on") echo "1,2,3,4,5" ;;
+    "14|mpc_on") echo "1,2,3" ;;
     "14|mpc_off") echo "1,2" ;;
-    "16|mpc_on") echo "1,2,3,4,5" ;;
+    "16|mpc_on") echo "1,2,3" ;;
     "16|mpc_off") echo "1,2" ;;
     *) return 1 ;;
   esac
@@ -291,8 +283,10 @@ get_os_cores() {
 }
 
 # Expected in-process controller threads for verify_rt_runtime.sh, one
-# "name:slot:policy:priority[:optional]" per line. policy: 1=SCHED_FIFO,
-# 0=SCHED_OTHER. "optional" means a missing thread is SKIP, not WARN.
+# "name:slot:policy:priority" per line. policy: 1=SCHED_FIFO,
+# 0=SCHED_OTHER. Every row is required: a missing thread is a FAIL. The
+# former ":optional" suffix went with the mpc_worker slots (#380) -- it
+# existed to excuse threads that applied a config and exited immediately.
 # $2 selects the launch profile; roles it drops move to
 # rtc_forbidden_threads() below.
 rtc_expected_threads() {
@@ -350,7 +344,6 @@ rtc_expected_threads() {
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
-      echo "mpc_worker_0:4:1:55:optional"
       echo "nrt_logging:2:0:0"
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
@@ -366,8 +359,6 @@ rtc_expected_threads() {
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
-      echo "mpc_worker_0:4:1:55:optional"
-      echo "mpc_worker_1:5:1:55:optional"
       echo "nrt_logging:2:0:0"
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
@@ -383,8 +374,6 @@ rtc_expected_threads() {
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
-      echo "mpc_worker_0:4:1:55:optional"
-      echo "mpc_worker_1:5:1:55:optional"
       echo "nrt_logging:2:0:0"
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
@@ -400,8 +389,6 @@ rtc_expected_threads() {
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
-      echo "mpc_worker_0:4:1:55:optional"
-      echo "mpc_worker_1:5:1:55:optional"
       echo "nrt_logging:2:0:0"
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
@@ -449,28 +436,21 @@ rtc_forbidden_threads() {
       ;;
     "10|mpc_off")
       echo "mpc_main"
-      echo "mpc_worker_0"
       ;;
     "12|mpc_on")
       ;;
     "12|mpc_off")
       echo "mpc_main"
-      echo "mpc_worker_0"
-      echo "mpc_worker_1"
       ;;
     "14|mpc_on")
       ;;
     "14|mpc_off")
       echo "mpc_main"
-      echo "mpc_worker_0"
-      echo "mpc_worker_1"
       ;;
     "16|mpc_on")
       ;;
     "16|mpc_off")
       echo "mpc_main"
-      echo "mpc_worker_0"
-      echo "mpc_worker_1"
       ;;
     *) return 1 ;;
   esac
