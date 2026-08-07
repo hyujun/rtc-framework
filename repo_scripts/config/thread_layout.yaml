@@ -26,8 +26,26 @@
 # E-7 (thread model) decision, not a refactor — see CLAUDE.md §6. After any
 # edit run the generator with --write and commit the regenerated artifacts in
 # the same commit.
+#
+# ── v5: slot 2 is the aux slot (issue #349) ─────────────────────────────────
+# Up to v4.1 the three CFS lanes (nrt_logging / nrt_callback / nrt_publish) each
+# owned a slot of their own on tiers >= 8. Slot 2 already hosts rt_callback
+# (FIFO 70) plus the co-pinned DDS receive threads, and NUC13 12-core telemetry
+# put that slot at ~1.5% duty while the three nrt lanes together drew ~5.6%
+# (/proc/<tid>/stat differencing — the CSV timing scopes read ~6x low because
+# they cover only the callback body, not rmw_wait/take/deserialize).
+#
+# v5 folds all three onto slot 2, so the shield shrinks to the RT cluster and
+# the nrt slots return to the system cpuset (NUC13: "2-9,12-13" -> "2-9").
+# SCHED_FIFO preempts SCHED_OTHER unconditionally, so rt_callback keeps its
+# latency contract; the residual risk is cache pollution and DDS-side (CFS)
+# delay, which the on-robot AC watches via the drop counters, not via t_total.
+#
+# Tier 4 is deliberately NOT folded: its nrt lanes already share the OS slot, so
+# moving them to slot 2 would return no core while loading the most constrained
+# tier's RT slot. "Fold" only pays where it hands a slot back.
 
-layout_version: "v4.1"
+layout_version: "v5"
 
 # Slot reserved for OS / DDS / NIC IRQ. Never shielded, never a pin target for
 # user-space RT threads (v4.1: the RT cluster starts at slot 1).
@@ -200,7 +218,7 @@ tiers:
     cpp_suffix_mpc: "6Core"
     notes:
       - "degraded mode — no deterministic RT guarantee."
-      - "Trade-off: no mpc_worker, arm/hand share one slot, nrt_* share one slot."
+      - "Trade-off: no mpc_worker, arm/hand share one slot."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
@@ -208,9 +226,9 @@ tiers:
       mpc_workers:  []
       arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_callback: {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_publish:  {slot: 5,   policy: OTHER, priority: 0,  nice: 0}
-      nrt_logging:  {slot: 5,  policy: OTHER, priority: 0,  nice: -5}
+      nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
 
@@ -227,9 +245,9 @@ tiers:
       mpc_workers:  []
       arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_callback: {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_publish:  {slot: 7,   policy: OTHER, priority: 0,  nice: 0}
-      nrt_logging:  {slot: 6,  policy: OTHER, priority: 0,  nice: -5}
+      nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
 
@@ -247,9 +265,9 @@ tiers:
         - {slot: 4, policy: FIFO, priority: 55, nice: 0}
       arm_driver:   {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_callback: {slot: 8,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_publish:  {slot: 8,   policy: OTHER, priority: 0,  nice: 0}
-      nrt_logging:  {slot: 7,  policy: OTHER, priority: 0,  nice: -5}
+      nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
 
@@ -268,9 +286,9 @@ tiers:
         - {slot: 5, policy: FIFO, priority: 55, nice: 0}
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_publish:  {slot: 9,   policy: OTHER, priority: 0,  nice: 0}
-      nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
+      nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
 
@@ -279,7 +297,7 @@ tiers:
     label: "14-core"
     cpp_suffix: "14Core"
     notes:
-      - "Same assignment as the 12-core tier; slots 10+ stay free."
+      - "Same assignment as the 12-core tier; slots 8+ stay free."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
@@ -289,9 +307,9 @@ tiers:
         - {slot: 5, policy: FIFO, priority: 55, nice: 0}
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_publish:  {slot: 9,   policy: OTHER, priority: 0,  nice: 0}
-      nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
+      nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
 
@@ -302,7 +320,8 @@ tiers:
     notes:
       - "Highest tier — 16+ core machines all use this assignment."
       - "v4.1 removed the prior cset shield \"user\" on slots 4-8 for RT cluster"
-      - "cache locality; slots 10+ remain free for user-level workloads."
+      - "cache locality; v5 folded the nrt lanes onto slot 2, so slots 8+ now"
+      - "remain free for user-level workloads."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
@@ -312,9 +331,9 @@ tiers:
         - {slot: 5, policy: FIFO, priority: 55, nice: 0}
       arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
       hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_callback: {slot: 9,  policy: OTHER, priority: 0,  nice: 0}
-      nrt_publish:  {slot: 9,   policy: OTHER, priority: 0,  nice: 0}
-      nrt_logging:  {slot: 8,  policy: OTHER, priority: 0,  nice: -5}
+      nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
+      nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
+      nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
       sim_thread:   {slot: -1, policy: OTHER, priority: 0,  nice: 0}
       viewer:       {slot: -1, policy: OTHER, priority: 0,  nice: 0}
 

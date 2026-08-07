@@ -45,7 +45,7 @@ struct MpcThreadConfig {
   std::array<ThreadConfig, kMpcMaxWorkers> workers{};
 };
 
-// ── RT priority hierarchy (layout v4.1) ─────────────────────────────────────
+// ── RT priority hierarchy (layout v5) ───────────────────────────────────────
 //   90 (rt_control)  > 70 (rt_callback) > 60 (mpc_main) > 55 (mpc_workers)
 //
 // IMPORTANT — "Core N" below is a *slot index*, not a kernel logical CPU id.
@@ -60,6 +60,21 @@ struct MpcThreadConfig {
 // a single rt_callback thread. v4.1 shifts the RT cluster down to start at
 // Core 1 (Core 0 is reserved for OS / DDS / IRQ only) — rt_control = Core 1,
 // rt_callback + DDS recv co-pin = Core 2, mpc_main = Core 3, workers follow.
+//
+// v5 (issue #349) makes Core 2 the *aux slot*: the three CFS lanes
+// (nrt_logging, nrt_callback, nrt_publish) fold onto it on every tier >= 6
+// instead of owning slots of their own. On-robot NUC13 telemetry put Core 2 at
+// ~1.5% duty and the three nrt lanes together at ~5.6% (/proc/<tid>/stat
+// differencing — the CSV timing scopes read ~6x low because they cover only the
+// callback body, not rmw_wait/take/deserialize), so the fold lands Core 2 near
+// ~7% and hands the vacated slots back to the system cpuset (the cset shield
+// narrowed from "2-9,12-13" to "2-9" on the 12-core target). SCHED_FIFO
+// preempts SCHED_OTHER unconditionally, so rt_callback keeps its latency
+// contract; the residual risk is cache pollution and DDS-side (CFS) delay,
+// watched on-robot through the drop counters rather than through t_total.
+// The 4-core fallback is deliberately NOT folded — its nrt lanes already share
+// the OS slot, so moving them would return no core while loading the most
+// constrained tier's RT slot.
 // The rt_outbound jthread + publish_buffer_ SPSC + eventfd wakeup are removed;
 // rt_control performs DeviceBackend.WriteCommand inline in the rt_loop tick
 // (RT-safe contract on backends). DDS receive thread is co-pinned to the same
@@ -107,7 +122,7 @@ struct MpcThreadConfig {
 
 // Aggregated thread configs selected at runtime for all threads.
 //
-// Field naming (layout v4.1):
+// Field naming (layout v5):
 //   * rt_callback  = single RT callback dispatcher thread (Core 2 FIFO 70 on
 //                    every tier; Core 0 = OS/DDS/IRQ only, RT cluster starts
 //                    at Core 1). Hosts the executor that dispatches state
@@ -115,7 +130,10 @@ struct MpcThreadConfig {
 //                    Replaces the former rt_inbound (FIFO 70) + rt_outbound
 //                    (FIFO 65) pair: actuator command publish is performed
 //                    inline in the rt_loop tick on rt_control (Core 1 FIFO
-//                    90), so no separate output thread is required.
+//                    90), so no separate output thread is required. Since v5
+//                    this slot is also the aux slot shared by the three CFS
+//                    lanes below (tiers >= 6; the 4-core fallback keeps them
+//                    on the OS slot).
 //   * nrt_callback = non-RT callback dispatcher for services / lifecycle /
 //                    non-RT-boundary subs
 //   * nrt_publish  = the controller-owned publish jthread (PublishNonRtSnapshot
@@ -127,6 +145,11 @@ struct MpcThreadConfig {
 //                    stores one TID per name, checked whichever it saw last
 //                    and never noticed the other (issue #349 D15)
 //   * nrt_logging  = non-RT CSV drain
+//
+// The three nrt_* lanes are separate ENTRIES that happen to resolve to the same
+// slot under v5. They keep distinct nice values (nrt_logging -5, the other two
+// 0) and distinct thread names, which is what lets the runtime verifier demand
+// three TIDs on the aux slot rather than one.
 //
 // Process-level pins (applied at launch time, no ApplyThreadConfig call;
 // SCHED_OTHER prio 0):
@@ -143,7 +166,7 @@ struct MpcThreadConfig {
 //                                MuJoCo).
 //
 // DDS receive thread (CycloneDDS / Fast-RTPS) is co-pinned to the rt_callback
-// core (Core 2 in v4.1) via launch-time taskset for cache locality. Its CFS policy is
+// core (Core 2, the v5 aux slot) via launch-time taskset for cache locality. Its CFS policy is
 // preserved; the launch script pins only non-RT threads of the controller
 // process. The hand UDP receive thread (RT priority 65) lives privately
 // inside udp_hand_controller and inherits affinity from the launch-level

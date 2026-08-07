@@ -185,7 +185,7 @@ repo_scripts/
 | `get_mpc_cores()` | 생성 | MPC 코어 (main + workers) CSV. 첫 항목이 항상 MPC main |
 | `get_mpc_main_core()` | 파생 | MPC main 코어만 (`get_mpc_cores` 의 첫 항목) |
 | `get_rt_cores()` | 생성 | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `get_rt_cores_with_siblings()` / `get_rt_shield_cpus()` 의 base |
-| `get_nrt_cores()` | 생성 | nrt_logging + nrt_callback 슬롯 (중복 제거, 오름차순). `get_cm_shield_cpus()` 가 RT 와 union. degraded tier 는 Core 0 공유 |
+| `get_nrt_cores()` | 생성 | nrt_logging + nrt_callback + nrt_publish 슬롯 (중복 제거, 오름차순). `get_cm_shield_cpus()` 가 RT 와 union. layout v5 부터 tier ≥ 6 은 aux slot (= rt_callback slot 2) 이라 RT 의 부분집합이고, degraded tier 는 Core 0 공유 — 어느 쪽이든 union 이 RT span 을 넘지 않는다 |
 | `get_arm_driver_slot()` / `get_hand_driver_slot()` | 생성 | 외부 driver 프로세스의 slot (launch taskset / in-process self-pin 대상) |
 | `get_os_cores()` | 생성 | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). `get_cm_shield_cpus()` 가 shield 에서 제외할 slot 판정에 사용 |
 | `rtc_expected_threads()` | 생성 | `verify_rt_runtime.sh` 의 기대 표 (`name:slot:policy:priority[:optional]`). 컨트롤러 **in-process 스레드만** — arm/hand 는 별도 프로세스라 여기 있으면 항상 false-WARN 이다 (#353) |
@@ -203,12 +203,12 @@ Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는
 | tier (물리 코어) | `get_rt_cores()` | `get_mpc_cores()` | `get_nrt_cores()` | `get_os_cores()` | arm / hand slot |
 |---|---|---|---|---|---|
 | ≤5 | `1,2,3` | `3` | `0` | `0` | 0 / 0 |
-| 6–7 | `1,2,3` | `3` | `5` | `0` | 4 / 4 |
-| 8–9 | `1,2,3` | `3` | `6,7` | `0` | 4 / 5 |
-| 10–11 | `1,2,3,4` | `3,4` | `7,8` | `0` | 5 / 6 |
-| 12–13 | `1,2,3,4,5` | `3,4,5` | `8,9` | `0` | 6 / 7 |
-| 14–15 | `1,2,3,4,5` | `3,4,5` | `8,9` | `0` | 6 / 7 |
-| 16+ | `1,2,3,4,5` | `3,4,5` | `8,9` | `0` | 6 / 7 |
+| 6–7 | `1,2,3` | `3` | `2` | `0` | 4 / 4 |
+| 8–9 | `1,2,3` | `3` | `2` | `0` | 4 / 5 |
+| 10–11 | `1,2,3,4` | `3,4` | `2` | `0` | 5 / 6 |
+| 12–13 | `1,2,3,4,5` | `3,4,5` | `2` | `0` | 6 / 7 |
+| 14–15 | `1,2,3,4,5` | `3,4,5` | `2` | `0` | 6 / 7 |
+| 16+ | `1,2,3,4,5` | `3,4,5` | `2` | `0` | 6 / 7 |
 
 <!-- END GENERATED: thread-layout-tiers -->
 

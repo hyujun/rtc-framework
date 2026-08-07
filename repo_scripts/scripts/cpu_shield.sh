@@ -65,11 +65,17 @@ make_logger "SHIELD"
 #
 # The cpuset must fit the WHOLE integrated_rt_controller process, because
 # do_on moves that process into the "user" cpuset (issue #151) and cset moves a
-# *process* — all its threads. The CM hosts nrt_logging / nrt_callback too, and
-# on the NUC13 hybrid those pin to logical {12,13}, outside the RT-only span
-# 2-9. get_cm_shield_cpus() = get_rt_shield_cpus() ∪ nrt cores (OS slot dropped)
-# so nrt self-pin does not EINVAL against a too-narrow cpuset. Compact range
-# notation (e.g. "1-3,5" non-SMT 6c, "2-9,12-13" NUC13 hybrid 12c).
+# *process* — all its threads. The CM hosts nrt_logging / nrt_callback /
+# nrt_publish too. get_cm_shield_cpus() = get_rt_shield_cpus() ∪ nrt cores (OS
+# slot dropped) so an nrt self-pin does not EINVAL against a too-narrow cpuset.
+# Compact range notation (e.g. "1-3" non-SMT 6c, "2-9" NUC13 hybrid 12c).
+#
+# Layout v5 (#349) folded the nrt lanes onto the rt_callback slot, so that union
+# no longer widens past the RT span — the NUC13 shield narrowed from
+# "2-9,12-13" to "2-9". NOTE for upgrades: cpu_shield.sh returns early when a
+# "user" cpuset already exists without comparing the desired mask, so a box
+# still holding a v4.1 shield keeps 12,13 after a plain relaunch. Tear the
+# shield down (`cpu_shield.sh off`) and re-arm it to actually reclaim them.
 compute_shield_cores() {
   # Args $1 (mode) and $2 (phys_cores) are accepted for forward compat with
   # legacy callers; both modes share the same shield range, and get_cm_shield_cpus

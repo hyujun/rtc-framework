@@ -988,20 +988,26 @@ get_rt_shield_cpus() {
 # The LOGICAL CPU set that a cset "user" cpuset must allow so the WHOLE
 # integrated_rt_controller process fits inside it. Distinct from
 # get_rt_shield_cpus(), which returns only the RT threads' cores: the CM
-# process also hosts nrt_logging / nrt_callback, and cset moves a *process*
-# (all its threads) into one cpuset. On the NUC13 12-core hybrid the RT threads
-# pin to logical {2,4,6,8,9} but nrt pins to {12,13} — outside the RT-only
-# shield 2-9. If the cpuset omitted 12,13 the nrt threads' self-pin would hit
-# the same EINVAL that RT threads hit when the CM is trapped in "system"
-# (thread_utils.hpp returns before SCHED_FIFO on affinity failure). So the
-# cpuset that the CM is moved into (cpu_shield.sh) must be the union of RT +
-# nrt cores. Issue #151.
+# process also hosts nrt_logging / nrt_callback / nrt_publish, and cset moves a
+# *process* (all its threads) into one cpuset. If the cpuset omitted a core an
+# nrt thread self-pins to, that self-pin would hit the same EINVAL RT threads
+# hit when the CM is trapped in "system" (thread_utils.hpp returns before
+# SCHED_FIFO on affinity failure). So the cpuset the CM is moved into
+# (cpu_shield.sh) must be the union of RT + nrt cores. Issue #151.
 #
 # Union = get_rt_cores() ∪ get_nrt_cores(), minus OS slots (get_os_cores):
 # on the degraded (<6-core) tier nrt shares Core 0 with the OS, and Core 0 must
 # never be shielded — dropping the OS slot collapses this to the RT-only span
 # there. Each surviving slot → logical cpu (slot_to_logical_cpu) + HT siblings.
-# Range-collapsed CSV (e.g. "2-9,12-13" NUC13, "1-5,8-9" non-SMT 12c).
+# Range-collapsed CSV (e.g. "2-9" NUC13, "1-5" non-SMT 12c).
+#
+# v5 (#349) narrowed the result on every tier: the nrt lanes now sit on the
+# rt_callback slot, so the union no longer widens past the RT span and the
+# NUC13 shield went "2-9,12-13" -> "2-9", handing logical 12,13 back to the
+# system cpuset. The union is deliberately NOT collapsed into
+# get_rt_shield_cpus() — keeping it is what makes a future tier that splits an
+# nrt lane back out widen the cpuset automatically instead of silently leaving
+# that thread outside the shield. Issue #151's condition is dormant, not gone.
 #
 # NOTE: arm_driver / hand_driver are *separate processes* pinned by launch
 # taskset (logical 10,11 in "system"); they are not CM threads and are
@@ -1090,9 +1096,21 @@ print_thread_layout() {
     return 0
   fi
 
+  # v5 (#349): the three CFS nrt lanes fold onto the rt_callback slot, which is
+  # then the "aux slot". Build that row's tail here so a co-resident lane is
+  # listed on the core it actually runs on instead of getting a second row for
+  # the same core. Derived per-role, not hardcoded to slot 2 -- a tier that
+  # splits a lane back out still gets its own row from the block below.
+  local aux_tail="" role
+  for role in nrt_logging nrt_callback nrt_publish; do
+    if [[ "$(get_role_slot "$role" "$ncpu")" == "$rt_cb" ]]; then
+      aux_tail="${aux_tail} + ${role} ($(_ptl_sched "$role" "$ncpu"))"
+    fi
+  done
+
   _ptl_row "Core ${os_slot}" "OS / DDS / NIC IRQ + hand_aux_io (CFS; hand aux lane, issue #345)"
   _ptl_row "Core ${rt_ctl}" "rt_control   ($(_ptl_sched rt_control "$ncpu"))"
-  _ptl_row "Core ${rt_cb}" "rt_callback  ($(_ptl_sched rt_callback "$ncpu"); DDS recv co-pin via taskset, CFS)"
+  _ptl_row "Core ${rt_cb}" "rt_callback  ($(_ptl_sched rt_callback "$ncpu"); DDS recv co-pin via taskset, CFS)${aux_tail:+${aux_tail} [aux slot]}"
   _ptl_row "$(_ptl_span "$mpc_main" "$mpc_last")" "${mpc_label} (${mpc_sched})"
   if [[ "$arm" == "$hand" ]]; then
     _ptl_row "Core ${arm}" "arm_driver + hand_driver (shared, degraded; hand_udp_recv FIFO 65)"
@@ -1100,23 +1118,29 @@ print_thread_layout() {
     _ptl_row "Core ${arm}" "arm_driver   (CFS, taskset pin)"
     _ptl_row "Core ${hand}" "hand_driver  (CFS, in-process self-pin; hand_udp_recv FIFO 65)"
   fi
-  # nrt_publish rides nrt_callback's slot on every tier today; derive the
-  # comparison rather than assume it, so a tier that ever splits them prints
-  # a third row instead of hiding the thread.
-  local nrt_cb_label
-  nrt_cb_label="nrt_callback ($(_ptl_sched nrt_callback "$ncpu"))"
-  if [[ "$nrt_pub" == "$nrt_cb" ]]; then
-    nrt_cb_label="${nrt_cb_label} + nrt_publish ($(_ptl_sched nrt_publish "$ncpu"))"
-  fi
-  if [[ "$nrt_log" == "$nrt_cb" ]]; then
-    _ptl_row "Core ${nrt_log}" "nrt_logging ($(_ptl_sched nrt_logging "$ncpu")) + ${nrt_cb_label} shared (degraded)"
-  else
-    _ptl_row "Core ${nrt_log}" "nrt_logging  ($(_ptl_sched nrt_logging "$ncpu"))"
-    _ptl_row "Core ${nrt_cb}" "${nrt_cb_label}"
-  fi
-  if [[ "$nrt_pub" != "$nrt_cb" && "$nrt_pub" != "$nrt_log" ]]; then
-    _ptl_row "Core ${nrt_pub}" "nrt_publish  ($(_ptl_sched nrt_publish "$ncpu"))"
-  fi
+  # Any nrt lane that did NOT fold onto the aux slot gets its own row, grouped
+  # by slot so two lanes on one core print once instead of twice. Under v5 every
+  # tier >= 6 folds all three, so this block emits nothing; it stays because it
+  # is what makes a tier that splits a lane back out show it rather than hide it.
+  #
+  # The old "shared (degraded)" label lived here and keyed off nrt_logging ==
+  # nrt_callback. v5 makes that condition true on EVERY tier, which would have
+  # printed the primary 12-core target as degraded -- the co-residency is the
+  # design now, so the label is gone. Genuine degradation is still labelled on
+  # the arm/hand row above and in the tier notes.
+  local slot seen_slots="" label
+  for slot in "$nrt_log" "$nrt_cb" "$nrt_pub"; do
+    [[ "$slot" == "$rt_cb" ]] && continue
+    case " ${seen_slots} " in *" ${slot} "*) continue ;; esac
+    seen_slots="${seen_slots} ${slot}"
+    label=""
+    for role in nrt_logging nrt_callback nrt_publish; do
+      if [[ "$(get_role_slot "$role" "$ncpu")" == "$slot" ]]; then
+        label="${label:+${label} + }${role} ($(_ptl_sched "$role" "$ncpu"))"
+      fi
+    done
+    _ptl_row "Core ${slot}" "${label}"
+  done
 
   # Slots past the highest claimed one are spare. Derived, so a tier that grows
   # a role automatically shrinks the spare span instead of overstating it.
