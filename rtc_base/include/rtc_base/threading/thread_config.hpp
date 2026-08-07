@@ -3,7 +3,6 @@
 
 #include <sched.h>  // SCHED_FIFO, SCHED_OTHER, SCHED_RR
 
-
 namespace rtc {
 
 // Thread configuration for RT control and scheduling

@@ -29,6 +29,7 @@
 #include <sched.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -369,19 +370,83 @@ TEST(ThreadLayoutTiers, TiersThatFitThisHostPassTheValidator) {
   }
 }
 
+// Drops the "Invalid CPU core slot ..." entries from a validator verdict.
+//
+// That single rule range-checks cpu_core against *this host* (see
+// ValidateThreadConfig in thread_utils.hpp) instead of against the layout, so
+// a box with fewer physical slots than a tier uses trips it for an
+// environment reason. Every other thing the validator says -- co-residency,
+// RT-priority ordering, driver collisions, nice range, names -- is a property
+// of the layout alone and must hold on any host.
+//
+// Entries are appended with a "; " terminator. One message ("carries two RT
+// roles (...); at most one is allowed; ") contains that separator internally
+// and therefore splits into two fragments; both are kept, because only a
+// fragment that *starts* with the host-range prefix is dropped.
+std::string DropHostRangeErrors(const std::string& errors) {
+  std::string kept;
+  std::size_t pos = 0;
+  while (pos < errors.size()) {
+    const std::size_t sep = errors.find("; ", pos);
+    const std::size_t next = (sep == std::string::npos) ? errors.size() : sep + 2;
+    const std::string entry = errors.substr(pos, next - pos);
+    if (entry.rfind("Invalid CPU core slot", 0) != 0) {
+      kept += entry;
+    }
+    pos = next;
+  }
+  return kept;
+}
+
 // The 4-core tier still needs its own unconditional check. It is the one that
 // parks arm/hand on slot 0, and the host gate above skips whatever a small box
 // cannot represent -- so on a large host this is redundant and on a 3-core one
 // it is the only thing left. It replaces the #349 regression test that pinned
 // the inactive-worker false positive: that shape is gone with the worker slots
-// (#380), and asserting the whole validator is empty subsumes asserting that
-// it merely omits two names.
+// (#380), and asserting the rest of the validator is silent subsumes asserting
+// that it merely omits two names.
+//
+// The verdict is filtered rather than compared against "" because slot 3 does
+// not exist on a host with fewer than four physical cores -- the gated CI
+// runner is exactly that box, and comparing against "" turned the merge job
+// red there while nothing was wrong with the layout. The predecessor test
+// asserted substring *absence* and was host-independent for that reason; the
+// filter keeps the stronger claim (no error of any kind, not just two names)
+// without reintroducing the host dependency this file warns about twenty
+// lines below, where MakeCoResidencyFixture documents the same trap.
 TEST(ThreadLayoutTiers, FourCoreTierWithDriversOnTheOsSlotPassesTheValidator) {
   const rtc::SystemThreadConfigs cfgs = rtc::SelectThreadConfigsForCoreCount(4);
   ASSERT_EQ(cfgs.arm_driver.cpu_core, 0) << "4-core tier is expected to park arm_driver on slot 0";
-  ASSERT_EQ(cfgs.hand_driver.cpu_core, 0) << "4-core tier is expected to park hand_driver on slot 0";
+  ASSERT_EQ(cfgs.hand_driver.cpu_core, 0)
+      << "4-core tier is expected to park hand_driver on slot 0";
 
-  EXPECT_EQ(rtc::ValidateSystemThreadConfigs(cfgs), "") << "4-core tier failed validation";
+  const std::string err = rtc::ValidateSystemThreadConfigs(cfgs);
+  EXPECT_EQ(DropHostRangeErrors(err), "") << "4-core tier failed validation: " << err;
+}
+
+// DropHostRangeErrors is what keeps the test above honest on a box smaller
+// than the lowest tier -- which is exactly the box this test suite does not
+// run on when it would matter. Pin the filter itself against synthetic
+// verdicts so the mechanism is covered on every host, not just small ones.
+TEST(ThreadLayoutTiers, DropHostRangeErrorsRemovesOnlyTheHostRangeRule) {
+  const std::string range = "Invalid CPU core slot 3 (valid range: -1, 0-1); ";
+
+  EXPECT_EQ(DropHostRangeErrors(""), "");
+  EXPECT_EQ(DropHostRangeErrors(range), "");
+  EXPECT_EQ(DropHostRangeErrors(range + range), "");
+
+  // A layout-level finding survives, alone and mixed with host-range noise.
+  // If it did not, the filter would have turned the 4-core check vacuous --
+  // the failure mode that matters more than the red job it replaced.
+  const std::string real = "'nrt_publish' shares rt_control's core 1; ";
+  EXPECT_EQ(DropHostRangeErrors(real), real);
+  EXPECT_EQ(DropHostRangeErrors(range + real), real);
+  EXPECT_EQ(DropHostRangeErrors(real + range), real);
+
+  // The one validator message that embeds "; " internally must survive whole.
+  const std::string two_rt = "core 2 carries two RT roles ('a', 'b'); at most one is allowed; ";
+  EXPECT_EQ(DropHostRangeErrors(two_rt), two_rt);
+  EXPECT_EQ(DropHostRangeErrors(range + two_rt), two_rt);
 }
 
 // A synthetic layout for the co-residency cases below, built by hand instead

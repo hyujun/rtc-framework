@@ -97,11 +97,17 @@ TEST(MpcThreadConfig, DedicatedTiersDoNotShareWithSensorOrRt) {
   }
 }
 
-// Monotonicity invariant: as physical core count grows, RT/MPC isolation
-// quality must never regress. Each tier ≥ 8-core must keep MPC main on a
-// dedicated core (distinct from rt_control / rt_callback / nrt_logging /
-// nrt_callback).
-TEST(MpcThreadConfig, TierIsolationMonotonicity) {
+// Every tier from 8-core up keeps MPC solve off both CFS lanes, so a long
+// solve never contends with logging or the non-RT executor.
+//
+// This was a monotonicity fixture until #380: it walked consecutive tier pairs
+// because worker count had to be non-decreasing as cores grew. With the worker
+// slots gone the only surviving property is per-tier, so the loop no longer
+// holds a `lo` snapshot and the name says what the body checks. The guard was
+// also `>= 10` while the comment above it claimed `>= 8`; the tier list starts
+// at 8 and the 8-core tier satisfies the rule (mpc_main slot 3, nrt lanes on
+// the aux slot 2), so the check now covers what was always claimed.
+TEST(MpcThreadConfig, DedicatedTiersDoNotShareWithNrtLanes) {
   struct TierSnapshot {
     int ncpu;
     const MpcThreadConfig* mpc;
@@ -124,24 +130,18 @@ TEST(MpcThreadConfig, TierIsolationMonotonicity) {
        &kNrtLoggingConfig16Core, &kNrtCallbackConfig16Core},
   }};
 
-  for (std::size_t i = 1; i < tiers.size(); ++i) {
-    const TierSnapshot& lo = tiers[i - 1];
-    const TierSnapshot& hi = tiers[i];
-
-    // Tiers ≥ 10 keep MPC main off both nrt lanes. What this no longer asserts
-    // is that the two nrt lanes are on cores of their own: layout v5 (#349)
-    // deliberately folds nrt_logging / nrt_callback / nrt_publish onto the
-    // rt_callback slot, so `nrt_logging != nrt_callback` became a statement
-    // about the OLD layout rather than about isolation quality. Removed under
-    // PROC-6 / E-6 with the spec change, not to make new code pass -- the
-    // property that still matters (MPC solve never shares a core with a CFS
-    // lane) is exactly what the two surviving assertions pin.
-    if (hi.ncpu >= 10) {
-      EXPECT_NE(hi.mpc->main.cpu_core, hi.nrt_logging->cpu_core)
-          << hi.ncpu << "-core: MPC main shares nrt_logging core";
-      EXPECT_NE(hi.mpc->main.cpu_core, hi.nrt_callback->cpu_core)
-          << hi.ncpu << "-core: MPC main shares nrt_callback core";
-    }
+  // What this does NOT assert is that the two nrt lanes sit on cores of their
+  // own: layout v5 (#349) deliberately folds nrt_logging / nrt_callback /
+  // nrt_publish onto the rt_callback slot, so `nrt_logging != nrt_callback`
+  // became a statement about the OLD layout rather than about isolation
+  // quality. Removed under PROC-6 / E-6 with the spec change, not to make new
+  // code pass -- the property that still matters (MPC solve never shares a
+  // core with a CFS lane) is exactly what the two assertions below pin.
+  for (const TierSnapshot& tier : tiers) {
+    EXPECT_NE(tier.mpc->main.cpu_core, tier.nrt_logging->cpu_core)
+        << tier.ncpu << "-core: MPC main shares nrt_logging core";
+    EXPECT_NE(tier.mpc->main.cpu_core, tier.nrt_callback->cpu_core)
+        << tier.ncpu << "-core: MPC main shares nrt_callback core";
   }
 }
 

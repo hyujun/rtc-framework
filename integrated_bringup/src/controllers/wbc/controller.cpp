@@ -1958,10 +1958,8 @@ void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
         mpc_thread_ = std::move(hthread);
         mpc_manager_.SetEnabled(true);
         thread_started = true;
-        RCLCPP_INFO(logger_,
-                    "MPC thread started (handler): core=%d prio=%d freq=%.1f Hz",
-                    launch.main.cpu_core, launch.main.sched_priority,
-                    launch.target_frequency_hz);
+        RCLCPP_INFO(logger_, "MPC thread started (handler): core=%d prio=%d freq=%.1f Hz",
+                    launch.main.cpu_core, launch.main.sched_priority, launch.target_frequency_hz);
       }
     }
 
@@ -1974,10 +1972,8 @@ void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
       mock->Start();
       mpc_thread_ = std::move(mock);
       mpc_manager_.SetEnabled(true);
-      RCLCPP_INFO(logger_,
-                  "MPC thread started (mock): core=%d prio=%d freq=%.1f Hz",
-                  launch.main.cpu_core, launch.main.sched_priority,
-                  launch.target_frequency_hz);
+      RCLCPP_INFO(logger_, "MPC thread started (mock): core=%d prio=%d freq=%.1f Hz",
+                  launch.main.cpu_core, launch.main.sched_priority, launch.target_frequency_hz);
     }
   }
 }
