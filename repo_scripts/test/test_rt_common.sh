@@ -858,16 +858,18 @@ test_classify_external_rt_ignores_non_rt_threads() {
 # hand_aux_io 는 CFS 로 aux 코어, 나머지(executor/DDS)는 CFS 로 hand 코어.
 # 여기서 external driver 의 **이름별 policy/priority** 를 처음으로 검사한다.
 
-# hand 코어 = logical 11 (12코어 NUC13 slot 7), aux = logical 0.
-_HAND_SPEC="hand_udp_recv:11:SCHED_FIFO:65 hand_aux_io:0:SCHED_OTHER:0"
+# hand 코어 = logical 9 (12코어 NUC13 slot 5, v6/#383), aux = logical 0.
+# 이 두 숫자는 slot 이 아니라 **논리 CPU** 라서 생성기가 안 닿는다 — 마스크
+# 0x200 = bit 9 도 같다. layout 을 고치면 여기를 손으로 따라와야 한다.
+_HAND_SPEC="hand_udp_recv:9:SCHED_FIFO:65 hand_aux_io:0:SCHED_OTHER:0"
 
 test_classify_layout_ok() {
   local out
   out=$(printf '%s\n' \
-    "100 udp_hand_node SCHED_OTHER 0 800" \
-    "101 hand_udp_recv SCHED_FIFO 65 800" \
+    "100 udp_hand_node SCHED_OTHER 0 200" \
+    "101 hand_udp_recv SCHED_FIFO 65 200" \
     "102 hand_aux_io SCHED_OTHER 0 1" \
-    "103 recv SCHED_OTHER 0 800" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+    "103 recv SCHED_OTHER 0 200" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.ok.verdict" "OK" "${out%%|*}"
 }
 
@@ -875,8 +877,8 @@ test_classify_layout_aux_dragged_back() {
   # `taskset -a` 스윕이 되살아나면 정확히 이 모양이 된다 — aux 가 hand 코어로.
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 65 800" \
-    "102 hand_aux_io SCHED_OTHER 0 800" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "102 hand_aux_io SCHED_OTHER 0 200" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.aux_dragged.verdict" "WRONG_CPU" "${out%%|*}"
 }
 
@@ -884,16 +886,16 @@ test_classify_layout_commloop_lost_fifo() {
   # ApplyThreadConfig 가 affinity 실패로 조기 반환하면 정책이 안 붙는다.
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_OTHER 0 800" \
-    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+    "101 hand_udp_recv SCHED_OTHER 0 200" \
+    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.no_fifo.verdict" "WRONG_SCHED" "${out%%|*}"
 }
 
 test_classify_layout_wrong_prio() {
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 50 800" \
-    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+    "101 hand_udp_recv SCHED_FIFO 50 200" \
+    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.wrong_prio.verdict" "WRONG_SCHED" "${out%%|*}"
 }
 
@@ -905,8 +907,8 @@ test_classify_layout_aux_became_realtime() {
   # pin_dds_threads_to_slot 의 FIFO 가드가 그것을 조용히 건너뛰게 된다.
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 65 800" \
-    "102 hand_aux_io SCHED_FIFO 65 1" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "102 hand_aux_io SCHED_FIFO 65 1" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.aux_rt.verdict" "WRONG_SCHED" "${out%%|*}"
 }
 
@@ -916,10 +918,10 @@ test_classify_layout_unpinned_sentinel_is_not_a_failure() {
   # 가드가 없으면 $((1 << -1)) 이 조용히 거대한 음수가 되어, 올바르게 설정된
   # 스레드가 어떤 마스크를 갖든 WRONG_CPU 로 오탐된다 — 잡아야 할 오설정이
   # 아니라 verifier 가 만들어내는 가짜 FAIL 이다.
-  local out spec="hand_udp_recv:11:SCHED_FIFO:65 hand_aux_io:-1:SCHED_OTHER:0"
+  local out spec="hand_udp_recv:9:SCHED_FIFO:65 hand_aux_io:-1:SCHED_OTHER:0"
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 65 800" \
-    "102 hand_aux_io SCHED_OTHER 0 fff" | rt_classify_external_thread_layout 11 "$spec")
+    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "102 hand_aux_io SCHED_OTHER 0 fff" | rt_classify_external_thread_layout 9 "$spec")
   expect_eq "layout.unpinned_sentinel.verdict" "OK" "${out%%|*}"
 }
 
@@ -928,7 +930,7 @@ test_classify_layout_missing_thread() {
   # 맞는지보다 먼저 보고돼야 한다 — 없는 스레드는 더 나쁜 발견이다.
   local out
   out=$(printf '%s\n' \
-    "101 hand_udp_recv SCHED_FIFO 65 800" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+    "101 hand_udp_recv SCHED_FIFO 65 200" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.missing.verdict" "MISSING" "${out%%|*}"
 }
 
@@ -938,8 +940,8 @@ test_classify_layout_unnamed_thread_must_be_on_driver_core() {
   local out
   out=$(printf '%s\n' \
     "100 udp_hand_node SCHED_OTHER 0 1" \
-    "101 hand_udp_recv SCHED_FIFO 65 800" \
-    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+    "101 hand_udp_recv SCHED_FIFO 65 200" \
+    "102 hand_aux_io SCHED_OTHER 0 1" | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.stray.verdict" "WRONG_CPU" "${out%%|*}"
 }
 
@@ -957,7 +959,7 @@ test_classify_layout_degraded_tier_collapse() {
 
 test_classify_layout_no_threads() {
   local out
-  out=$(printf '' | rt_classify_external_thread_layout 11 "$_HAND_SPEC")
+  out=$(printf '' | rt_classify_external_thread_layout 9 "$_HAND_SPEC")
   expect_eq "layout.empty.verdict" "NO_THREADS" "${out%%|*}"
 }
 
@@ -1264,7 +1266,14 @@ test_with_temporary_disable_missing_hook() {
 
 test_external_driver_slots_per_tier() {
   # 경계는 SelectThreadConfigs() dispatch 와 같다: <6 degraded, {6,7} 공유,
-  # {8,9} 분리 시작, {10,11}, 12+ 고정.
+  # {8,9} 분리 시작, 8+ 고정.
+  #
+  # v6 (#383) 부터 8 이상은 값이 **평평하다** (arm 4 / hand 5). 그래서 이 표만으로는
+  # "ncpu=12 가 12-tier 로 갔는가" 를 더 이상 구별하지 못한다 — 구별할 차이가 layout
+  # 에서 사라졌기 때문이지 센서가 약해진 게 아니다. tier dispatch 축은 여전히
+  # test_layout_tier_tables_per_tier (아래) 와 test_thread_layout_equivalence.py
+  # (ncpu 1..17+24 마다 python/manifest 의 tier id 일치) 가 각각 독립으로 박는다.
+  # 여기서 남는 역할은 degraded→공유→전용 전이 두 곳(5→6, 7→8)의 고정이다.
   expect_eq "drvslot.arm.4"   "0" "$(get_arm_driver_slot 4)"
   expect_eq "drvslot.hand.4"  "0" "$(get_hand_driver_slot 4)"
   expect_eq "drvslot.arm.5"   "0" "$(get_arm_driver_slot 5)"
@@ -1277,16 +1286,16 @@ test_external_driver_slots_per_tier() {
   expect_eq "drvslot.hand.8"  "5" "$(get_hand_driver_slot 8)"
   expect_eq "drvslot.arm.9"   "4" "$(get_arm_driver_slot 9)"
   expect_eq "drvslot.hand.9"  "5" "$(get_hand_driver_slot 9)"
-  expect_eq "drvslot.arm.10"  "5" "$(get_arm_driver_slot 10)"
-  expect_eq "drvslot.hand.10" "6" "$(get_hand_driver_slot 10)"
-  expect_eq "drvslot.arm.11"  "5" "$(get_arm_driver_slot 11)"
-  expect_eq "drvslot.hand.11" "6" "$(get_hand_driver_slot 11)"
-  expect_eq "drvslot.arm.12"  "6" "$(get_arm_driver_slot 12)"
-  expect_eq "drvslot.hand.12" "7" "$(get_hand_driver_slot 12)"
-  expect_eq "drvslot.arm.16"  "6" "$(get_arm_driver_slot 16)"
-  expect_eq "drvslot.hand.16" "7" "$(get_hand_driver_slot 16)"
-  expect_eq "drvslot.arm.24"  "6" "$(get_arm_driver_slot 24)"
-  expect_eq "drvslot.hand.24" "7" "$(get_hand_driver_slot 24)"
+  expect_eq "drvslot.arm.10"  "4" "$(get_arm_driver_slot 10)"
+  expect_eq "drvslot.hand.10" "5" "$(get_hand_driver_slot 10)"
+  expect_eq "drvslot.arm.11"  "4" "$(get_arm_driver_slot 11)"
+  expect_eq "drvslot.hand.11" "5" "$(get_hand_driver_slot 11)"
+  expect_eq "drvslot.arm.12"  "4" "$(get_arm_driver_slot 12)"
+  expect_eq "drvslot.hand.12" "5" "$(get_hand_driver_slot 12)"
+  expect_eq "drvslot.arm.16"  "4" "$(get_arm_driver_slot 16)"
+  expect_eq "drvslot.hand.16" "5" "$(get_hand_driver_slot 16)"
+  expect_eq "drvslot.arm.24"  "4" "$(get_arm_driver_slot 24)"
+  expect_eq "drvslot.hand.24" "5" "$(get_hand_driver_slot 24)"
 }
 
 test_external_driver_slots_share_a_core_only_on_the_degraded_tiers() {

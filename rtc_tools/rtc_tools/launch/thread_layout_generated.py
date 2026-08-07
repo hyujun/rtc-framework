@@ -25,7 +25,7 @@ class RoleSpec(NamedTuple):
     nice: int
 
 
-LAYOUT_VERSION = "v5"
+LAYOUT_VERSION = "v6"
 OS_SLOT = 0
 
 # Dispatch order: the first tier whose threshold is met wins; the last entry
@@ -81,8 +81,8 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
         "rt_control": RoleSpec(1, "FIFO", 90, 0),
         "rt_callback": RoleSpec(2, "FIFO", 70, 0),
         "mpc_main": RoleSpec(3, "FIFO", 60, 0),
-        "arm_driver": RoleSpec(5, "OTHER", 0, 0),
-        "hand_driver": RoleSpec(6, "OTHER", 0, 0),
+        "arm_driver": RoleSpec(4, "OTHER", 0, 0),
+        "hand_driver": RoleSpec(5, "OTHER", 0, 0),
         "nrt_callback": RoleSpec(2, "OTHER", 0, 0),
         "nrt_publish": RoleSpec(2, "OTHER", 0, 0),
         "nrt_logging": RoleSpec(2, "OTHER", 0, -5),
@@ -93,8 +93,8 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
         "rt_control": RoleSpec(1, "FIFO", 90, 0),
         "rt_callback": RoleSpec(2, "FIFO", 70, 0),
         "mpc_main": RoleSpec(3, "FIFO", 60, 0),
-        "arm_driver": RoleSpec(6, "OTHER", 0, 0),
-        "hand_driver": RoleSpec(7, "OTHER", 0, 0),
+        "arm_driver": RoleSpec(4, "OTHER", 0, 0),
+        "hand_driver": RoleSpec(5, "OTHER", 0, 0),
         "nrt_callback": RoleSpec(2, "OTHER", 0, 0),
         "nrt_publish": RoleSpec(2, "OTHER", 0, 0),
         "nrt_logging": RoleSpec(2, "OTHER", 0, -5),
@@ -105,8 +105,8 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
         "rt_control": RoleSpec(1, "FIFO", 90, 0),
         "rt_callback": RoleSpec(2, "FIFO", 70, 0),
         "mpc_main": RoleSpec(3, "FIFO", 60, 0),
-        "arm_driver": RoleSpec(6, "OTHER", 0, 0),
-        "hand_driver": RoleSpec(7, "OTHER", 0, 0),
+        "arm_driver": RoleSpec(4, "OTHER", 0, 0),
+        "hand_driver": RoleSpec(5, "OTHER", 0, 0),
         "nrt_callback": RoleSpec(2, "OTHER", 0, 0),
         "nrt_publish": RoleSpec(2, "OTHER", 0, 0),
         "nrt_logging": RoleSpec(2, "OTHER", 0, -5),
@@ -117,8 +117,8 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
         "rt_control": RoleSpec(1, "FIFO", 90, 0),
         "rt_callback": RoleSpec(2, "FIFO", 70, 0),
         "mpc_main": RoleSpec(3, "FIFO", 60, 0),
-        "arm_driver": RoleSpec(6, "OTHER", 0, 0),
-        "hand_driver": RoleSpec(7, "OTHER", 0, 0),
+        "arm_driver": RoleSpec(4, "OTHER", 0, 0),
+        "hand_driver": RoleSpec(5, "OTHER", 0, 0),
         "nrt_callback": RoleSpec(2, "OTHER", 0, 0),
         "nrt_publish": RoleSpec(2, "OTHER", 0, 0),
         "nrt_logging": RoleSpec(2, "OTHER", 0, -5),

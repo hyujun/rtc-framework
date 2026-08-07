@@ -112,7 +112,7 @@ def _build_smt_off_8core(root: Path) -> None:
 
 # (label, builder, physical_core_count, {slot: expected_logical_cpu})
 _FIXTURES = [
-    ("nuc13_4p8e", _build_nuc13, 12, {0: 0, 1: 2, 2: 4, 3: 6, 6: 10, 7: 11}),
+    ("nuc13_4p8e", _build_nuc13, 12, {0: 0, 1: 2, 2: 4, 3: 6, 4: 8, 5: 9}),
     ("ryzen_5600x", _build_ryzen_5600x, 6, {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5}),
     ("smt_off_8core", _build_smt_off_8core, 8, {0: 0, 2: 2, 4: 4, 5: 5, 7: 7}),
 ]
@@ -162,8 +162,11 @@ def test_nuc13_actual_layout_slots_land_off_the_rt_cluster(tmp_path, monkeypatch
     """Regression guard for #163 on the real control PC (NUC 13 Pro, 12-core).
 
     The arm/hand driver and rt_callback-copin slots must resolve to E-cores /
-    the P2 core — NOT the raw slot values, which are rt_control (2) and
-    mpc_main's P-core + sibling (6, 7).
+    the P2 core — NOT the raw slot values. Reading a slot as a logical CPU id
+    lands every one of them back inside the shield: since v6 (#383) the driver
+    slots are 4 and 5, whose raw values are rt_callback's own logical CPU and
+    its HT sibling. The bug this guards against got *worse* when the drivers
+    moved down, not better.
     """
     root = tmp_path / "nuc13"
     _build_nuc13(root)
@@ -173,11 +176,11 @@ def test_nuc13_actual_layout_slots_land_off_the_rt_cluster(tmp_path, monkeypatch
     hand = _resolve_via_launch(layout.hand_driver_core, root, monkeypatch)
     dds = _resolve_via_launch(layout.rt_callback_core, root, monkeypatch)
 
-    # Documented NUC13 mapping (issue #163).
-    assert (arm, hand, dds) == (10, 11, 4)
+    # Documented NUC13 mapping (issue #163); driver slots per v6 (#383).
+    assert (arm, hand, dds) == (8, 9, 4)
     # The bug would have pinned to the raw slots — assert we did NOT.
-    assert arm != layout.arm_driver_core  # slot 6 (mpc_main P-core)
-    assert hand != layout.hand_driver_core  # slot 7 (mpc_main HT sibling)
+    assert arm != layout.arm_driver_core  # slot 4 (rt_callback's own P-core)
+    assert hand != layout.hand_driver_core  # slot 5 (rt_callback HT sibling)
     assert dds != layout.rt_callback_core  # slot 2 (rt_control P-core)
 
 

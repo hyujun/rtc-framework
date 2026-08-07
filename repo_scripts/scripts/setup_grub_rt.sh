@@ -108,8 +108,10 @@ fi
 # nohz_full과 rcu_nocbs는 isolcpus와 독립적으로 유효하므로 유지.
 #
 # v4.1 note: RT_CORES = get_rt_cores_with_siblings() — RT cluster (rt_control,
-# rt_callback, mpc_main + workers) 와 그 HT 시블링만 포함. nrt / driver (CFS)
-# 는 제외 — RT-only feature 인 nohz_full / rcu_nocbs 의 의도와 일치.
+# rt_callback, mpc_main) 와 그 HT 시블링만 포함. #380 이 mpc_worker 를 없앤 뒤로
+# MPC 는 단일 스레드다. nrt / driver (CFS) 는 제외 — RT-only feature 인
+# nohz_full / rcu_nocbs 의 의도와 일치하며, 그래서 v6(#383)의 driver 슬롯 이동은
+# 이 값을 건드리지 않는다.
 declare -A GRUB_PARAMS_WITH_VALUE=(
   ["nohz_full"]="${RT_CORES}"
   ["rcu_nocbs"]="${RT_CORES}"

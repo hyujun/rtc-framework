@@ -26,7 +26,7 @@ namespace rtc {
 // manifest so the rule cannot drift from the layout it guards.
 inline constexpr int kOsSlot = 0;
 
-// ── 4-core fallback (layout v5) ──
+// ── 4-core fallback (layout v6) ──
 //   Slot 0: OS / DDS / IRQ + arm_driver (CFS 0) + hand_driver (CFS 0) + nrt_callback (CFS 0)
 //            + nrt_publish (CFS 0) + nrt_logging (CFS -5)
 //   Slot 1: rt_control (FIFO 90)
@@ -102,7 +102,7 @@ inline const ThreadConfig kViewerConfig4Core{.cpu_core = -1,
                                              .nice_value = 0,
                                              .name = "viewer"};
 
-// ── 6-core (layout v5) ──
+// ── 6-core (layout v6) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
@@ -179,7 +179,7 @@ inline const ThreadConfig kViewerConfig{.cpu_core = -1,
                                         .nice_value = 0,
                                         .name = "viewer"};
 
-// ── 8-core (layout v5) ──
+// ── 8-core (layout v6) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
@@ -191,6 +191,8 @@ inline const ThreadConfig kViewerConfig{.cpu_core = -1,
 //   Slot 7: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // First tier where arm_driver and hand_driver get dedicated slots.
+// Slots 4-5. Every tier above uses the same pair since v6 (#383), so
+// this is where the driver placement stops depending on the tier.
 
 inline const ThreadConfig kRtControlConfig8Core{.cpu_core = 1,
                                                 .sched_policy = SCHED_FIFO,
@@ -257,23 +259,22 @@ inline const ThreadConfig kViewerConfig8Core{.cpu_core = -1,
                                              .nice_value = 0,
                                              .name = "viewer"};
 
-// ── 10-core (layout v5) ──
+// ── 10-core (layout v6) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
-//   Slot 4: spare
-//   Slot 5: arm_driver (CFS 0)
-//   Slot 6: hand_driver (CFS 0)
+//   Slot 4: arm_driver (CFS 0)
+//   Slot 5: hand_driver (CFS 0)
+//   Slot 6: spare
 //   Slot 7: spare
 //   Slot 8: spare
 //   Slot 9: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
-// Slot 4 is deliberately unassigned: it held mpc_worker_0 until #380.
-// arm/hand keep their slots rather than shifting down — renumbering
-// them would move driver processes to different physical cores, which
-// is a separate placement decision from reclaiming a dead slot.
+// Slot 4 held mpc_worker_0 until #380 and stood empty until #383, which
+// made the placement decision #380 deferred: arm/hand move down into it.
+// Same pair as every tier from 8 up; slots 6+ are spare.
 
 inline const ThreadConfig kRtControlConfig10Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
@@ -298,13 +299,13 @@ inline const MpcThreadConfig kMpcConfig10Core{
         },
 };
 
-inline const ThreadConfig kArmDriverConfig10Core{.cpu_core = 5,
+inline const ThreadConfig kArmDriverConfig10Core{.cpu_core = 4,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
                                                  .name = "arm_driver"};
 
-inline const ThreadConfig kHandDriverConfig10Core{.cpu_core = 6,
+inline const ThreadConfig kHandDriverConfig10Core{.cpu_core = 5,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
@@ -340,25 +341,25 @@ inline const ThreadConfig kViewerConfig10Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 12-core (primary target) (layout v5) ──
+// ── 12-core (primary target) (layout v6) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
-//   Slot 4: spare
-//   Slot 5: spare
-//   Slot 6: arm_driver (CFS 0)
-//   Slot 7: hand_driver (CFS 0)
+//   Slot 4: arm_driver (CFS 0)
+//   Slot 5: hand_driver (CFS 0)
+//   Slot 6: spare
+//   Slot 7: spare
 //   Slot 8: spare
 //   Slot 9: spare
 //   Slot 10: spare
 //   Slot 11: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // Primary deployment tier.
-// Slots 4-5 are deliberately unassigned: they held mpc_worker_0/1
-// until #380. They now leave the RT shield instead of being reused,
-// for the same reason as the 10-core tier.
+// Slots 4-5 held mpc_worker_0/1 until #380 and are now the driver pair
+// (#383). On NUC13 (4P+8E, HT on) that is logical 8,9 — E-cores in the
+// same L2 module as the 10,11 they replace, and outside the shield.
 
 inline const ThreadConfig kRtControlConfig12Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
@@ -383,13 +384,13 @@ inline const MpcThreadConfig kMpcConfig12Core{
         },
 };
 
-inline const ThreadConfig kArmDriverConfig12Core{.cpu_core = 6,
+inline const ThreadConfig kArmDriverConfig12Core{.cpu_core = 4,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
                                                  .name = "arm_driver"};
 
-inline const ThreadConfig kHandDriverConfig12Core{.cpu_core = 7,
+inline const ThreadConfig kHandDriverConfig12Core{.cpu_core = 5,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
@@ -425,16 +426,16 @@ inline const ThreadConfig kViewerConfig12Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 14-core (layout v5) ──
+// ── 14-core (layout v6) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
-//   Slot 4: spare
-//   Slot 5: spare
-//   Slot 6: arm_driver (CFS 0)
-//   Slot 7: hand_driver (CFS 0)
+//   Slot 4: arm_driver (CFS 0)
+//   Slot 5: hand_driver (CFS 0)
+//   Slot 6: spare
+//   Slot 7: spare
 //   Slot 8: spare
 //   Slot 9: spare
 //   Slot 10: spare
@@ -442,7 +443,7 @@ inline const ThreadConfig kViewerConfig12Core{.cpu_core = -1,
 //   Slot 12: spare
 //   Slot 13: spare
 //   unpinned (cpu_core = -1): sim_thread, viewer
-// Same assignment as the 12-core tier; slots 8+ stay free.
+// Same assignment as the 12-core tier; slots 6+ stay free.
 
 inline const ThreadConfig kRtControlConfig14Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
@@ -467,13 +468,13 @@ inline const MpcThreadConfig kMpcConfig14Core{
         },
 };
 
-inline const ThreadConfig kArmDriverConfig14Core{.cpu_core = 6,
+inline const ThreadConfig kArmDriverConfig14Core{.cpu_core = 4,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
                                                  .name = "arm_driver"};
 
-inline const ThreadConfig kHandDriverConfig14Core{.cpu_core = 7,
+inline const ThreadConfig kHandDriverConfig14Core{.cpu_core = 5,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
@@ -509,16 +510,16 @@ inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 16-core (layout v5) ──
+// ── 16-core (layout v6) ──
 //   Slot 0: OS / DDS / IRQ
 //   Slot 1: rt_control (FIFO 90)
 //   Slot 2: rt_callback (FIFO 70) + nrt_callback (CFS 0) + nrt_publish (CFS 0)
 //            + nrt_logging (CFS -5)
 //   Slot 3: mpc_main (FIFO 60)
-//   Slot 4: spare
-//   Slot 5: spare
-//   Slot 6: arm_driver (CFS 0)
-//   Slot 7: hand_driver (CFS 0)
+//   Slot 4: arm_driver (CFS 0)
+//   Slot 5: hand_driver (CFS 0)
+//   Slot 6: spare
+//   Slot 7: spare
 //   Slot 8: spare
 //   Slot 9: spare
 //   Slot 10: spare
@@ -530,8 +531,8 @@ inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
 //   unpinned (cpu_core = -1): sim_thread, viewer
 // Highest tier — 16+ core machines all use this assignment.
 // v4.1 removed the prior cset shield "user" on slots 4-8 for RT cluster
-// cache locality; v5 folded the nrt lanes onto slot 2, so slots 8+ now
-// remain free for user-level workloads.
+// cache locality; v5 folded the nrt lanes onto slot 2 and v6 pulled the
+// drivers down to 4-5, so slots 6+ are one contiguous free block.
 
 inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
@@ -556,13 +557,13 @@ inline const MpcThreadConfig kMpcConfig16Core{
         },
 };
 
-inline const ThreadConfig kArmDriverConfig16Core{.cpu_core = 6,
+inline const ThreadConfig kArmDriverConfig16Core{.cpu_core = 4,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
                                                  .name = "arm_driver"};
 
-inline const ThreadConfig kHandDriverConfig16Core{.cpu_core = 7,
+inline const ThreadConfig kHandDriverConfig16Core{.cpu_core = 5,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,

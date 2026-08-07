@@ -46,7 +46,37 @@
 # moving them to slot 2 would return no core while loading the most constrained
 # tier's RT slot. "Fold" only pays where it hands a slot back.
 
-layout_version: "v5"
+# ── v6: the drivers move down into the reclaimed slots (issue #383) ─────────
+# #380 removed the mpc_worker frames, which had reserved slot 4 on the 10-core
+# tier and slots 4-5 on 12 and above. It left arm/hand where they were, calling
+# the shift a separate placement decision (D3) rather than part of reclaiming a
+# dead slot. v6 is that decision: arm_driver -> 4 and hand_driver -> 5 on every
+# tier from 8 up, which is where the 8-core tier already had them.
+#
+# This restores one rule instead of inventing one: OS slot 0, RT cluster 1-3,
+# drivers on the lowest free slots above it (alphabetical, so arm < hand), and
+# everything above that is spare. The tier axis then goes flat -- nothing moves
+# between 8 and 16 any more, where before both drivers shifted at 8->10 and
+# again at 10->12 -- and the spare region becomes one contiguous block from 6 up
+# instead of a {4,5} hole plus a tail.
+#
+# What this does NOT touch, measured rather than assumed (issue #383):
+#   * the cset shield and GRUB nohz_full/rcu_nocbs. get_cm_shield_cpus is
+#     RT u nrt - OS and excludes the drivers by construction (see rt_common.sh);
+#     get_rt_cores_with_siblings is RT-only; the IRQ mask is OS-only. A full
+#     tier x profile sweep of all five derived values is byte-identical.
+#   * the core *class* on the primary target. On NUC13 (4P+8E, HT on) the
+#     drivers go from logical 10,11 to 8,9 -- still E-cores, still the same
+#     L2 module, still outside the shield. That neutrality is a property of
+#     4P+8E, not of the change: a topology whose P/E boundary falls between
+#     slots 4 and 7 would move hand_driver across it.
+#
+# Side effect worth knowing about: test_thread_layout_tiers.cpp skips any tier
+# whose highest slot the running host cannot represent, and that highest slot is
+# hand_driver's. Dropping it from 7 to 5 lets a 6-core box validate every tier
+# instead of only 4/6/8.
+
+layout_version: "v6"
 
 # Slot reserved for OS / DDS / NIC IRQ. Never shielded, never a pin target for
 # user-space RT threads (v4.1: the RT cluster starts at slot 1).
@@ -282,6 +312,8 @@ tiers:
     cpp_suffix: "8Core"
     notes:
       - "First tier where arm_driver and hand_driver get dedicated slots."
+      - "Slots 4-5. Every tier above uses the same pair since v6 (#383), so"
+      - "this is where the driver placement stops depending on the tier."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
@@ -299,16 +331,15 @@ tiers:
     label: "10-core"
     cpp_suffix: "10Core"
     notes:
-      - "Slot 4 is deliberately unassigned: it held mpc_worker_0 until #380."
-      - "arm/hand keep their slots rather than shifting down — renumbering"
-      - "them would move driver processes to different physical cores, which"
-      - "is a separate placement decision from reclaiming a dead slot."
+      - "Slot 4 held mpc_worker_0 until #380 and stood empty until #383, which"
+      - "made the placement decision #380 deferred: arm/hand move down into it."
+      - "Same pair as every tier from 8 up; slots 6+ are spare."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      arm_driver:   {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
-      hand_driver:  {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
+      arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
       nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
@@ -321,15 +352,15 @@ tiers:
     cpp_suffix: "12Core"
     notes:
       - "Primary deployment tier."
-      - "Slots 4-5 are deliberately unassigned: they held mpc_worker_0/1"
-      - "until #380. They now leave the RT shield instead of being reused,"
-      - "for the same reason as the 10-core tier."
+      - "Slots 4-5 held mpc_worker_0/1 until #380 and are now the driver pair"
+      - "(#383). On NUC13 (4P+8E, HT on) that is logical 8,9 — E-cores in the"
+      - "same L2 module as the 10,11 they replace, and outside the shield."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
-      hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
+      arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
       nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
@@ -341,13 +372,13 @@ tiers:
     label: "14-core"
     cpp_suffix: "14Core"
     notes:
-      - "Same assignment as the 12-core tier; slots 8+ stay free."
+      - "Same assignment as the 12-core tier; slots 6+ stay free."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
-      hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
+      arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
       nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
@@ -361,14 +392,14 @@ tiers:
     notes:
       - "Highest tier — 16+ core machines all use this assignment."
       - "v4.1 removed the prior cset shield \"user\" on slots 4-8 for RT cluster"
-      - "cache locality; v5 folded the nrt lanes onto slot 2, so slots 8+ now"
-      - "remain free for user-level workloads."
+      - "cache locality; v5 folded the nrt lanes onto slot 2 and v6 pulled the"
+      - "drivers down to 4-5, so slots 6+ are one contiguous free block."
     roles:
       rt_control:   {slot: 1,  policy: FIFO,  priority: 90, nice: 0}
       rt_callback:  {slot: 2,  policy: FIFO,  priority: 70, nice: 0}
       mpc_main:     {slot: 3,  policy: FIFO,  priority: 60, nice: 0}
-      arm_driver:   {slot: 6,  policy: OTHER, priority: 0,  nice: 0}
-      hand_driver:  {slot: 7,  policy: OTHER, priority: 0,  nice: 0}
+      arm_driver:   {slot: 4,  policy: OTHER, priority: 0,  nice: 0}
+      hand_driver:  {slot: 5,  policy: OTHER, priority: 0,  nice: 0}
       nrt_callback: {slot: 2,  policy: OTHER, priority: 0,  nice: 0}
       nrt_publish:  {slot: 2,   policy: OTHER, priority: 0,  nice: 0}
       nrt_logging:  {slot: 2,  policy: OTHER, priority: 0,  nice: -5}
