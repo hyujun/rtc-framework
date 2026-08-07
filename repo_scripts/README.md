@@ -189,6 +189,8 @@ repo_scripts/
 | `get_arm_driver_slot()` / `get_hand_driver_slot()` | 생성 | 외부 driver 프로세스의 slot (launch taskset / in-process self-pin 대상) |
 | `get_os_cores()` | 생성 | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). `get_cm_shield_cpus()` 가 shield 에서 제외할 slot 판정에 사용 |
 | `rtc_expected_threads()` | 생성 | `verify_rt_runtime.sh` 의 기대 표 (`name:slot:policy:priority[:optional]`). 컨트롤러 **in-process 스레드만** — arm/hand 는 별도 프로세스라 여기 있으면 항상 false-WARN 이다 (#353) |
+| `rtc_forbidden_threads()` | 생성 | 이번 profile 이 떨어뜨린 in-process 스레드 이름 (존재하면 FAIL). default profile 에서는 비어 있다 (#350) |
+| `rtc_layout_profiles()` / `rtc_default_profile()` / `rtc_is_layout_profile()` | 생성 | 선언된 launch profile 목록 · 기본값 · 유효성 검사 (#350) |
 | `get_rt_cores_with_siblings()` | 파생 | `get_rt_cores()` 출력에 SMT HT 시블링까지 포함, range-collapse. `setup_grub_rt.sh` 의 `nohz_full` / `rcu_nocbs` 값. non-SMT 시 입력과 동일 cpu 집합 (range 표기) |
 | `get_rt_shield_cpus()` | 파생 | RT 슬롯 → **logical cpu** (slot→logical) + HT 시블링. RT-only 격리/검증 (verify_rt_runtime) |
 | `get_cm_shield_cpus()` | 파생 | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위 (issue #151). 예: non-SMT 12c `1-5,8-9` · NUC13 12c hybrid `2-9,12-13` |
@@ -200,20 +202,27 @@ Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는
 <!-- BEGIN GENERATED: thread-layout-tiers -->
 <!-- Generated from repo_scripts/config/thread_layout.yaml by repo_scripts/scripts/gen_thread_layout.py. Do not edit by hand. -->
 
-| tier (물리 코어) | `get_rt_cores()` | `get_mpc_cores()` | `get_nrt_cores()` | `get_os_cores()` | arm / hand slot |
-|---|---|---|---|---|---|
-| ≤5 | `1,2,3` | `3` | `0` | `0` | 0 / 0 |
-| 6–7 | `1,2,3` | `3` | `2` | `0` | 4 / 4 |
-| 8–9 | `1,2,3` | `3` | `2` | `0` | 4 / 5 |
-| 10–11 | `1,2,3,4` | `3,4` | `2` | `0` | 5 / 6 |
-| 12–13 | `1,2,3,4,5` | `3,4,5` | `2` | `0` | 6 / 7 |
-| 14–15 | `1,2,3,4,5` | `3,4,5` | `2` | `0` | 6 / 7 |
-| 16+ | `1,2,3,4,5` | `3,4,5` | `2` | `0` | 6 / 7 |
+| tier (물리 코어) | `get_rt_cores()` | `get_rt_cores()` (mpc_off) | `get_mpc_cores()` | `get_nrt_cores()` | `get_os_cores()` | arm / hand slot |
+|---|---|---|---|---|---|---|
+| ≤5 | `1,2,3` | `1,2` | `3` | `0` | `0` | 0 / 0 |
+| 6–7 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 4 |
+| 8–9 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 5 |
+| 10–11 | `1,2,3,4` | `1,2` | `3,4` | `2` | `0` | 5 / 6 |
+| 12–13 | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
+| 14–15 | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
+| 16+ | `1,2,3,4,5` | `1,2` | `3,4,5` | `2` | `0` | 6 / 7 |
 
 <!-- END GENERATED: thread-layout-tiers -->
 
 - **≤5코어 / 6–7코어는 degraded** — RT 결정성 보장 X. 전자는 nrt·driver 가 전부 OS Core 0 으로 접히고 mpc 가 CFS 로 강등되며, 후자는 arm/hand 가 한 코어를, nrt_logging + nrt_callback 이 또 한 코어를 공유하고 mpc_worker 가 없다.
 - **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯을 얻고, **10코어 이상**에서 mpc_worker_0, **12코어 이상**에서 mpc_worker_1 이 붙는다. 14/16 tier 는 12 와 같은 배치이고 남는 슬롯이 spare 다 (16c 의 과거 "user cset shield Core 4-8" 잔재는 v4.1 에서 제거).
+
+**launch profile (issue #350)** — 위 표의 `(mpc_off)` 열은 **두 번째 축**이다. tier 는 "어느 role 이 어느 슬롯에 앉는가", profile 은 "이번 실행에서 어느 role 이 도는가" 를 정한다. MPC 활성은 host 속성이 아니라 controller YAML (`mpc.enabled`) 이고 스레드는 `on_activate` 에서 뜨므로 런타임 자동 감지가 불가능하다 — 그래서 launch 단계의 **명시적 opt-out** 이다.
+
+- profile 축을 받는 함수는 `get_rt_cores` · `get_mpc_cores` · `rtc_expected_threads` · `rtc_forbidden_threads` 넷이며, 전부 **`$2`** 로 받고 기본값은 `rtc_default_profile()` (= `mpc_on`) 이다. 인자를 안 주는 기존 호출자는 종전 레이아웃을 그대로 받는다. 선언된 profile 목록은 `rtc_layout_profiles()`, 검사는 `rtc_is_layout_profile <id>` — 알 수 없는 id 는 조용히 default 로 떨어지지 않고 **비0** 이다.
+- `mpc_off` 는 MPC role (main + workers) 만 떨어뜨린다. `get_nrt_cores` / `get_arm_driver_slot` / `get_hand_driver_slot` 은 profile 축을 받지 않으므로 값이 변하지 않는다 — 이들이 함께 좁아지면 그 스레드의 self-pin 이 EINVAL 로 죽는다 (#151).
+- `rtc_forbidden_threads()` 는 `rtc_expected_threads()` 의 거울이다. off 에서 mpc 행을 기대 표에서 빼기만 하면 "MPC 꺼짐" 과 "MPC 가 방금 반환한 코어에서 돌고 있음" 이 검증기에 똑같이 보이므로 (둘 다 행이 없다), 떨어뜨린 role 은 **존재하면 FAIL** 인 목록으로 옮겨간다.
+- **GRUB 은 profile 을 타지 않는다 (결정 D11(a))** — `get_rt_cores_with_siblings()` 는 `$2` 를 무시하고 항상 default profile 기준 최광 집합을 낸다. `nohz_full` / `rcu_nocbs` 는 boot-static 이라 profile 을 반영하려면 재부팅이 필요하고, 그러면 "재부팅 없는 profile 전환" 이 깨진다. 반환된 코어에 `nohz_full` 마킹이 남는 비용은 공짜가 아니다 (runnable task 가 둘 이상이면 scheduler tick 이 재개되고 RCU/housekeeping 이 offload 된다) — 다만 커널 커맨드라인과 런타임 레이아웃이 어긋나는 것보다 싸다.
 
 **hand aux lane (issue #345)**: `udp_hand_node` 는 위 `hand_driver` 코어에 더해 **OS slot(Core 0)에 `hand_aux_io` 스레드 하나**를 둔다 — 타이밍 CSV drain(1 Hz, 버스트당 최대 512행)과 stats JSON 저장 같은 blocking 파일 I/O 전용 CFS 레인이다. shield 밖 `system` cpuset 안이라 cpuset 재설계가 필요 없고 `cset shield` 활성 상태에서도 EINVAL 이 나지 않는다. slot 은 노드 param `aux_cpu_slot`(기본 0) 이며 shell 쪽 SSoT 는 `get_os_cores()` 다. ≤5코어 tier 에서는 `hand_driver` slot 도 0 이라 두 레인이 같은 코어로 합쳐진다 (그 tier 는 원래 Core 0 에 전부 모이는 degraded 배치다).
 

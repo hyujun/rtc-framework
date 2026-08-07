@@ -1497,6 +1497,91 @@ test_rtc_expected_threads_table_per_tier() {
   done
 }
 
+test_layout_profile_mpc_off_frees_the_mpc_slots() {
+  # #350 — profile 축의 oracle. 손으로 박는 이유는 위 tier 표와 같다: 생성물끼리
+  # 대조하면 잘못된 표가 세 언어에서 사이좋게 일치하므로 mutation 이 없다.
+  local n
+  # MPC 를 끄면 RT 집합은 rt_control + rt_callback 만 남는다 — 전 tier 공통이다
+  # (tier 마다 반환하는 슬롯 수는 다르지만 남는 집합은 같다).
+  for n in 1 4 5 6 7 8 9 10 11 12 13 14 15 16 17 24; do
+    expect_eq "rt.off.${n}"  "1,2" "$(get_rt_cores "$n" mpc_off)"
+    expect_eq "mpc.off.${n}" ""    "$(get_mpc_cores "$n" mpc_off)"
+  done
+  # mpc_on 은 default 이므로 무인자 호출과 반드시 같다. 이게 갈리면 profile 을
+  # 모르는 기존 호출자 (setup_grub_rt.sh, check_rt_setup.sh, IRQ affinity) 가
+  # 조용히 다른 레이아웃을 받는다 — #350 이 절대 건드리지 않기로 한 축이다.
+  for n in 4 6 8 10 12 16 24; do
+    expect_eq "rt.on_is_default.${n}"  "$(get_rt_cores "$n")"  "$(get_rt_cores "$n" mpc_on)"
+    expect_eq "mpc.on_is_default.${n}" "$(get_mpc_cores "$n")" "$(get_mpc_cores "$n" mpc_on)"
+  done
+  # profile 은 MPC role 만 떨어뜨린다. nrt / arm / hand 는 profile 축을 아예 안
+  # 받으므로 $2 를 줘도 무시해야 한다 — 이들이 함께 움직이면 shield union 이
+  # 엉뚱하게 좁아져 그 스레드들의 self-pin 이 EINVAL 로 죽는다 (#151).
+  for n in 6 8 10 12 16; do
+    expect_eq "nrt.profile_blind.${n}"  "$(get_nrt_cores "$n")"  "$(get_nrt_cores "$n" mpc_off)"
+    expect_eq "arm.profile_blind.${n}" \
+      "$(get_arm_driver_slot "$n")" "$(get_arm_driver_slot "$n" mpc_off)"
+    expect_eq "hand.profile_blind.${n}" \
+      "$(get_hand_driver_slot "$n")" "$(get_hand_driver_slot "$n" mpc_off)"
+  done
+  # 알 수 없는 profile 은 조용히 default 로 떨어지면 안 된다 — 오타 하나가
+  # "MPC 껐다고 생각했는데 코어는 그대로 예약" 을 만든다.
+  local out
+  for out in get_rt_cores get_mpc_cores rtc_expected_threads rtc_forbidden_threads; do
+    if "$out" 12 mpc_offf >/dev/null 2>&1; then
+      fail "[profile.unknown.${out}] 알 수 없는 profile 을 받아들였다 — 비0 이어야 한다"
+    else
+      pass
+    fi
+  done
+  if rtc_is_layout_profile mpc_off && rtc_is_layout_profile mpc_on &&
+    ! rtc_is_layout_profile mpc_offf; then
+    pass
+  else
+    fail "[profile.predicate] rtc_is_layout_profile 이 선언된 profile 집합과 어긋난다"
+  fi
+  expect_eq "profile.default" "mpc_on" "$(rtc_default_profile)"
+
+  # D11(a) — GRUB (nohz_full / rcu_nocbs) 는 boot-static 이므로 profile 을 타면
+  # 안 된다. 인자를 줘도 무시하고 항상 가장 넓은 집합이어야 재부팅 없이 profile
+  # 전환이 가능하다. 이 등식이 깨지는 순간 커널 커맨드라인과 런타임 레이아웃의
+  # 계약이 갈라진다.
+  expect_eq "grub.profile_blind" \
+    "$(get_rt_cores_with_siblings)" "$(get_rt_cores_with_siblings mpc_off)"
+}
+
+test_layout_profile_verifier_tables_partition() {
+  # off 에서 mpc 행은 기대 표에서 빠지고 forbidden 표로 옮겨간다. 한쪽만 하면
+  # "MPC 꺼짐" 과 "MPC 가 방금 반환한 코어에서 돌고 있음" 이 검증기에게 똑같이
+  # 보인다 — 둘 다 그냥 행이 없는 상태이기 때문이다.
+  local n
+  for n in 4 6 8 10 12 16; do
+    if rtc_expected_threads "$n" mpc_off | grep -q '^mpc_'; then
+      fail "[profile.exp.${n}] mpc_off 기대 표에 mpc 행이 남아 있다"
+    else
+      pass
+    fi
+    # RT 두 레인과 nrt 3 레인은 profile 과 무관하게 그대로 기대된다.
+    expect_eq "profile.exp.rows.${n}" \
+      "$(rtc_expected_threads "$n" | grep -cvE '^mpc_')" \
+      "$(rtc_expected_threads "$n" mpc_off | grep -c .)"
+    # 반대로 on 에서는 금지 목록이 비어야 한다 — 아무 role 도 안 떨어뜨린다.
+    if [[ -z "$(rtc_forbidden_threads "$n" mpc_on)" ]]; then
+      pass
+    else
+      fail "[profile.forbidden.on.${n}] default profile 인데 금지 스레드가 있다"
+    fi
+  done
+  # off 금지 목록은 그 tier 에 실제로 존재하는 mpc role 전부다 — worker 가 없는
+  # tier 에서 없는 worker 를 금지하면 검증기가 영영 안 나올 이름을 든다.
+  expect_eq "profile.forbidden.4"  "mpc_main" "$(rtc_forbidden_threads 4 mpc_off | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "profile.forbidden.8"  "mpc_main" "$(rtc_forbidden_threads 8 mpc_off | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "profile.forbidden.10" "mpc_main mpc_worker_0" \
+    "$(rtc_forbidden_threads 10 mpc_off | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "profile.forbidden.12" "mpc_main mpc_worker_0 mpc_worker_1" \
+    "$(rtc_forbidden_threads 12 mpc_off | tr '\n' ' ' | sed 's/ $//')"
+}
+
 test_rtc_expected_threads_tracks_the_role_helpers() {
   # 표의 각 행이 get_role_* 와 같은 값을 내는지 — 배선 확인. 위 fixture 가 값을
   # 소유하고, 이건 표가 같은 manifest 를 읽는지를 본다.
@@ -1573,6 +1658,8 @@ test_verifier_is_sourceable_without_running
 test_layout_tier_tables_per_tier
 test_layout_worker_roles_absent_below_their_tier
 test_rtc_expected_threads_table_per_tier
+test_layout_profile_mpc_off_frees_the_mpc_slots
+test_layout_profile_verifier_tables_partition
 test_rtc_expected_threads_tracks_the_role_helpers
 test_print_thread_layout_derives_every_core_number
 

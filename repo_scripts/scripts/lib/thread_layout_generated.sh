@@ -150,38 +150,86 @@ get_role_nice() {
   echo "$spec" | cut -d" " -f4
 }
 
+# Launch profiles (issue #350): the second layout axis. The tier says
+# where every role sits, the profile says which roles run at all. Every
+# profile-aware helper takes it as $2 and defaults to the profile below,
+# so a profile-unaware caller keeps the historical layout verbatim.
+rtc_layout_profiles() {
+  echo "mpc_on mpc_off"
+}
+
+rtc_default_profile() {
+  echo "mpc_on"
+}
+
+# Non-zero for a profile id this layout does not declare. Callers that
+# accept a profile from a CLI flag or a marker file validate here first --
+# the per-tier lookups below reject it too, but "get_rt_cores returned
+# nothing" is a much worse diagnostic than "unknown profile".
+rtc_is_layout_profile() {
+  local candidate="$1" known
+  for known in $(rtc_layout_profiles); do
+    [[ "$candidate" == "$known" ]] && return 0
+  done
+  return 1
+}
+
 # MPC slots (main first, then workers) as CSV. $1 overrides the detected
 # physical core count so print_thread_layout and the tests can render a
-# tier this machine does not have.
+# tier this machine does not have; $2 selects the launch profile, and a
+# profile that drops MPC yields an empty list on every tier.
 get_mpc_cores() {
   local ncpu="${1:-$(get_physical_cores)}"
+  local profile="${2:-mpc_on}"
   local tier
   tier=$(_rtc_layout_tier "$ncpu")
-  case "$tier" in
-    4) echo "3" ;;
-    6) echo "3" ;;
-    8) echo "3" ;;
-    10) echo "3,4" ;;
-    12) echo "3,4,5" ;;
-    14) echo "3,4,5" ;;
-    16) echo "3,4,5" ;;
+  case "$tier|$profile" in
+    "4|mpc_on") echo "3" ;;
+    "4|mpc_off") echo "" ;;
+    "6|mpc_on") echo "3" ;;
+    "6|mpc_off") echo "" ;;
+    "8|mpc_on") echo "3" ;;
+    "8|mpc_off") echo "" ;;
+    "10|mpc_on") echo "3,4" ;;
+    "10|mpc_off") echo "" ;;
+    "12|mpc_on") echo "3,4,5" ;;
+    "12|mpc_off") echo "" ;;
+    "14|mpc_on") echo "3,4,5" ;;
+    "14|mpc_off") echo "" ;;
+    "16|mpc_on") echo "3,4,5" ;;
+    "16|mpc_off") echo "" ;;
+    *) return 1 ;;
   esac
 }
 
 # RT group slots: rt_control + rt_callback + MPC (main + workers).
 # Base for get_rt_cores_with_siblings() / get_cm_shield_cpus().
+# 
+# $2 (launch profile) is what shrinks the cset shield when MPC is off.
+# get_rt_cores_with_siblings() deliberately does NOT forward it: that
+# path feeds GRUB nohz_full / rcu_nocbs, which are boot-static and must
+# stay the widest set so a profile switch never needs a reboot.
 get_rt_cores() {
   local ncpu="${1:-$(get_physical_cores)}"
+  local profile="${2:-mpc_on}"
   local tier
   tier=$(_rtc_layout_tier "$ncpu")
-  case "$tier" in
-    4) echo "1,2,3" ;;
-    6) echo "1,2,3" ;;
-    8) echo "1,2,3" ;;
-    10) echo "1,2,3,4" ;;
-    12) echo "1,2,3,4,5" ;;
-    14) echo "1,2,3,4,5" ;;
-    16) echo "1,2,3,4,5" ;;
+  case "$tier|$profile" in
+    "4|mpc_on") echo "1,2,3" ;;
+    "4|mpc_off") echo "1,2" ;;
+    "6|mpc_on") echo "1,2,3" ;;
+    "6|mpc_off") echo "1,2" ;;
+    "8|mpc_on") echo "1,2,3" ;;
+    "8|mpc_off") echo "1,2" ;;
+    "10|mpc_on") echo "1,2,3,4" ;;
+    "10|mpc_off") echo "1,2" ;;
+    "12|mpc_on") echo "1,2,3,4,5" ;;
+    "12|mpc_off") echo "1,2" ;;
+    "14|mpc_on") echo "1,2,3,4,5" ;;
+    "14|mpc_off") echo "1,2" ;;
+    "16|mpc_on") echo "1,2,3,4,5" ;;
+    "16|mpc_off") echo "1,2" ;;
+    *) return 1 ;;
   esac
 }
 
@@ -245,12 +293,15 @@ get_os_cores() {
 # Expected in-process controller threads for verify_rt_runtime.sh, one
 # "name:slot:policy:priority[:optional]" per line. policy: 1=SCHED_FIFO,
 # 0=SCHED_OTHER. "optional" means a missing thread is SKIP, not WARN.
+# $2 selects the launch profile; roles it drops move to
+# rtc_forbidden_threads() below.
 rtc_expected_threads() {
   local ncpu="${1:-$(get_physical_cores)}"
+  local profile="${2:-mpc_on}"
   local tier
   tier=$(_rtc_layout_tier "$ncpu")
-  case "$tier" in
-    4)
+  case "$tier|$profile" in
+    "4|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:0:0"
@@ -258,7 +309,14 @@ rtc_expected_threads() {
       echo "nrt_callback:0:0:0"
       echo "nrt_publish:0:0:0"
       ;;
-    6)
+    "4|mpc_off")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "nrt_logging:0:0:0"
+      echo "nrt_callback:0:0:0"
+      echo "nrt_publish:0:0:0"
+      ;;
+    "6|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
@@ -266,7 +324,14 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
-    8)
+    "6|mpc_off")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "8|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
@@ -274,7 +339,14 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
-    10)
+    "8|mpc_off")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "10|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
@@ -283,7 +355,14 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
-    12)
+    "10|mpc_off")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "12|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
@@ -293,7 +372,14 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
-    14)
+    "12|mpc_off")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "14|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
@@ -303,7 +389,14 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
-    16)
+    "14|mpc_off")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "16|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
@@ -313,6 +406,73 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
+    "16|mpc_off")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# In-process threads that must NOT exist under this profile, one name per
+# line (empty for the default profile, which drops nothing).
+#
+# The mirror image of rtc_expected_threads(): dropping a role from the
+# expected table alone would make "MPC is off" and "MPC is running on a
+# core the shield just handed back to the system cpuset" indistinguishable
+# -- both simply lack the row. A thread found here is a hard FAIL.
+rtc_forbidden_threads() {
+  local ncpu="${1:-$(get_physical_cores)}"
+  local profile="${2:-mpc_on}"
+  local tier
+  tier=$(_rtc_layout_tier "$ncpu")
+  case "$tier|$profile" in
+    "4|mpc_on")
+      ;;
+    "4|mpc_off")
+      echo "mpc_main"
+      ;;
+    "6|mpc_on")
+      ;;
+    "6|mpc_off")
+      echo "mpc_main"
+      ;;
+    "8|mpc_on")
+      ;;
+    "8|mpc_off")
+      echo "mpc_main"
+      ;;
+    "10|mpc_on")
+      ;;
+    "10|mpc_off")
+      echo "mpc_main"
+      echo "mpc_worker_0"
+      ;;
+    "12|mpc_on")
+      ;;
+    "12|mpc_off")
+      echo "mpc_main"
+      echo "mpc_worker_0"
+      echo "mpc_worker_1"
+      ;;
+    "14|mpc_on")
+      ;;
+    "14|mpc_off")
+      echo "mpc_main"
+      echo "mpc_worker_0"
+      echo "mpc_worker_1"
+      ;;
+    "16|mpc_on")
+      ;;
+    "16|mpc_off")
+      echo "mpc_main"
+      echo "mpc_worker_0"
+      echo "mpc_worker_1"
+      ;;
+    *) return 1 ;;
   esac
 }
 

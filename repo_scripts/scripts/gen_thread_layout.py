@@ -100,16 +100,35 @@ class Tier:
 
 
 @dataclass(frozen=True)
+class Profile:
+    """Which roles run at all on a given launch (issue #350).
+
+    The second layout axis. ``drops`` names top-level role keys, so dropping the
+    ``mpc`` role takes its main thread and every worker with it.
+    """
+
+    id: str
+    label: str
+    default: bool
+    drops: frozenset[str]
+
+
+@dataclass(frozen=True)
 class Manifest:
     layout_version: str
     os_slot: int
     roles: list[dict]
     tiers: list[Tier]  # ascending min_cores
+    profiles: tuple[Profile, ...]  # default first
     verifier_order: tuple[str, ...]
     max_workers: int
     outputs: dict[str, str]
     doc_blocks: list[dict]
     doc: dict
+
+    @property
+    def default_profile(self) -> Profile:
+        return self.profiles[0]
 
     # ── convenience ────────────────────────────────────────────────────
     @property
@@ -215,11 +234,50 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
             f"  listed but not in-process (would false-WARN, #353): {', '.join(extra)}"
         )
 
+    # Profiles (issue #350). Exactly one default, and `drops` may only name a
+    # declared top-level role -- a typo there would otherwise drop nothing and
+    # the profile would silently be an alias of the default, which is precisely
+    # the failure this axis exists to make impossible (a shield that still
+    # reserves cores nobody runs on).
+    role_keys = {str(entry["key"]) for entry in roles}
+    profiles: list[Profile] = []
+    for raw_profile in data["profiles"]:
+        drops = frozenset(str(key) for key in raw_profile.get("drops", ()) or ())
+        unknown = sorted(drops - role_keys)
+        if unknown:
+            raise SystemExit(
+                f"{path.relative_to(REPO_ROOT)}: profile '{raw_profile['id']}' drops "
+                f"undeclared role(s): {', '.join(unknown)}"
+            )
+        profiles.append(
+            Profile(
+                id=str(raw_profile["id"]),
+                label=str(raw_profile["label"]),
+                default=bool(raw_profile.get("default", False)),
+                drops=drops,
+            )
+        )
+    defaults = [p for p in profiles if p.default]
+    if len(defaults) != 1:
+        raise SystemExit(
+            f"{path.relative_to(REPO_ROOT)}: exactly one profile must carry "
+            f"default: true (found {len(defaults)})"
+        )
+    if defaults[0].drops:
+        raise SystemExit(
+            f"{path.relative_to(REPO_ROOT)}: the default profile '{defaults[0].id}' must "
+            "drop nothing -- it is the layout every profile-unaware caller gets."
+        )
+    # Default first: every generated `case` falls back to profiles[0] and the
+    # doc tables render it as the baseline column.
+    profiles.sort(key=lambda p: not p.default)
+
     return Manifest(
         layout_version=str(data["layout_version"]),
         os_slot=int(data["os_slot"]),
         roles=roles,
         tiers=tiers,
+        profiles=tuple(profiles),
         verifier_order=verifier_order,
         max_workers=max_workers,
         outputs=dict(data["outputs"]),
@@ -267,13 +325,30 @@ def _csv(values: list[int]) -> str:
     return ",".join(str(v) for v in values)
 
 
-def mpc_cores(m: Manifest, tier: Tier) -> list[int]:
+def dropped_keys(m: Manifest, profile: Profile) -> frozenset[str]:
+    """Concrete role keys ``profile`` does not run (mpc expands to main+workers)."""
+    keys: set[str] = set()
+    for entry in m.roles:
+        if entry["key"] not in profile.drops:
+            continue
+        if entry.get("kind") == "mpc":
+            keys.add(str(entry["main"]["key"]))
+            keys.update(f"{entry['worker']['key_prefix']}{i}" for i in range(m.max_workers))
+        else:
+            keys.add(str(entry["key"]))
+    return frozenset(keys)
+
+
+def mpc_cores(m: Manifest, tier: Tier, profile: Profile | None = None) -> list[int]:
     keys = ["mpc_main"] + [f"mpc_worker_{i}" for i in range(tier.num_workers)]
-    return [tier.specs[k].slot for k in keys]
+    dropped = dropped_keys(m, profile) if profile is not None else frozenset()
+    return [tier.specs[k].slot for k in keys if k not in dropped]
 
 
-def rt_cores(m: Manifest, tier: Tier) -> list[int]:
-    return [tier.specs["rt_control"].slot, tier.specs["rt_callback"].slot] + mpc_cores(m, tier)
+def rt_cores(m: Manifest, tier: Tier, profile: Profile | None = None) -> list[int]:
+    dropped = dropped_keys(m, profile) if profile is not None else frozenset()
+    base = [k for k in ("rt_control", "rt_callback") if k not in dropped]
+    return [tier.specs[k].slot for k in base] + mpc_cores(m, tier, profile)
 
 
 def nrt_cores(m: Manifest, tier: Tier) -> list[int]:
@@ -607,22 +682,78 @@ def emit_shell(m: Manifest) -> str:
         block += ["  esac", "}", ""]
         return block
 
-    out += _tier_case(
+    def _tier_profile_case(name: str, doc: list[str], value_of) -> list[str]:
+        """A tier x profile lookup (issue #350).
+
+        Unknown profile returns non-zero rather than falling through to the
+        default: a caller that misspells the profile must not silently get the
+        MPC-on layout, which is exactly the reservation the opt-out removes.
+        """
+        block = [f"# {line}" for line in doc]
+        block += [
+            f"{name}() {{",
+            '  local ncpu="${1:-$(get_physical_cores)}"',
+            f'  local profile="${{2:-{m.default_profile.id}}}"',
+            "  local tier",
+            '  tier=$(_rtc_layout_tier "$ncpu")',
+            '  case "$tier|$profile" in',
+        ]
+        for tier in m.tiers:
+            for profile in m.profiles:
+                arm = f'"{tier.id}|{profile.id}")'
+                block.append(f'    {arm} echo "{value_of(tier, profile)}" ;;')
+        block += ["    *) return 1 ;;", "  esac", "}", ""]
+        return block
+
+    out += [
+        "# Launch profiles (issue #350): the second layout axis. The tier says",
+        "# where every role sits, the profile says which roles run at all. Every",
+        "# profile-aware helper takes it as $2 and defaults to the profile below,",
+        "# so a profile-unaware caller keeps the historical layout verbatim.",
+        "rtc_layout_profiles() {",
+        f'  echo "{" ".join(p.id for p in m.profiles)}"',
+        "}",
+        "",
+        "rtc_default_profile() {",
+        f'  echo "{m.default_profile.id}"',
+        "}",
+        "",
+        "# Non-zero for a profile id this layout does not declare. Callers that",
+        "# accept a profile from a CLI flag or a marker file validate here first --",
+        '# the per-tier lookups below reject it too, but "get_rt_cores returned',
+        '# nothing" is a much worse diagnostic than "unknown profile".',
+        "rtc_is_layout_profile() {",
+        '  local candidate="$1" known',
+        "  for known in $(rtc_layout_profiles); do",
+        '    [[ "$candidate" == "$known" ]] && return 0',
+        "  done",
+        "  return 1",
+        "}",
+        "",
+    ]
+
+    out += _tier_profile_case(
         "get_mpc_cores",
         [
             "MPC slots (main first, then workers) as CSV. $1 overrides the detected",
             "physical core count so print_thread_layout and the tests can render a",
-            "tier this machine does not have.",
+            "tier this machine does not have; $2 selects the launch profile, and a",
+            "profile that drops MPC yields an empty list on every tier.",
         ],
-        lambda t: _csv(mpc_cores(m, t)),
+        lambda t, p: _csv(mpc_cores(m, t, p)),
     )
-    out += _tier_case(
+    out += _tier_profile_case(
         "get_rt_cores",
         [
             "RT group slots: rt_control + rt_callback + MPC (main + workers).",
             "Base for get_rt_cores_with_siblings() / get_cm_shield_cpus().",
+            "",
+            "$2 (launch profile) is what shrinks the cset shield when MPC is off.",
+            "get_rt_cores_with_siblings() deliberately does NOT forward it: that",
+            "path feeds GRUB nohz_full / rcu_nocbs, which are boot-static and must",
+            "stay the widest set so a profile switch never needs a reboot.",
         ],
-        lambda t: _csv(rt_cores(m, t)),
+        lambda t, p: _csv(rt_cores(m, t, p)),
     )
     out += _tier_case(
         "get_nrt_cores",
@@ -655,24 +786,54 @@ def emit_shell(m: Manifest) -> str:
         "# Expected in-process controller threads for verify_rt_runtime.sh, one",
         '# "name:slot:policy:priority[:optional]" per line. policy: 1=SCHED_FIFO,',
         '# 0=SCHED_OTHER. "optional" means a missing thread is SKIP, not WARN.',
+        "# $2 selects the launch profile; roles it drops move to",
+        "# rtc_forbidden_threads() below.",
         "rtc_expected_threads() {",
         '  local ncpu="${1:-$(get_physical_cores)}"',
+        f'  local profile="${{2:-{m.default_profile.id}}}"',
         "  local tier",
         '  tier=$(_rtc_layout_tier "$ncpu")',
-        '  case "$tier" in',
+        '  case "$tier|$profile" in',
     ]
     for tier in m.tiers:
-        out.append(f"    {tier.id})")
-        for key in m.verifier_order:
-            spec = tier.specs.get(key)
-            if spec is None:
-                continue
-            row = f"{_thread_name(m, key)}:{spec.slot}:{spec.policy_verifier}:{spec.priority}"
-            if _verifier_optional(m, key):
-                row += ":optional"
-            out.append(f'      echo "{row}"')
-        out.append("      ;;")
-    out += ["  esac", "}", ""]
+        for profile in m.profiles:
+            dropped = dropped_keys(m, profile)
+            out.append(f'    "{tier.id}|{profile.id}")')
+            for key in m.verifier_order:
+                spec = tier.specs.get(key)
+                if spec is None or key in dropped:
+                    continue
+                row = f"{_thread_name(m, key)}:{spec.slot}:{spec.policy_verifier}:{spec.priority}"
+                if _verifier_optional(m, key):
+                    row += ":optional"
+                out.append(f'      echo "{row}"')
+            out.append("      ;;")
+    out += ["    *) return 1 ;;", "  esac", "}", ""]
+
+    out += [
+        "# In-process threads that must NOT exist under this profile, one name per",
+        "# line (empty for the default profile, which drops nothing).",
+        "#",
+        "# The mirror image of rtc_expected_threads(): dropping a role from the",
+        '# expected table alone would make "MPC is off" and "MPC is running on a',
+        '# core the shield just handed back to the system cpuset" indistinguishable',
+        "# -- both simply lack the row. A thread found here is a hard FAIL.",
+        "rtc_forbidden_threads() {",
+        '  local ncpu="${1:-$(get_physical_cores)}"',
+        f'  local profile="${{2:-{m.default_profile.id}}}"',
+        "  local tier",
+        '  tier=$(_rtc_layout_tier "$ncpu")',
+        '  case "$tier|$profile" in',
+    ]
+    for tier in m.tiers:
+        for profile in m.profiles:
+            dropped = dropped_keys(m, profile)
+            out.append(f'    "{tier.id}|{profile.id}")')
+            for key in m.verifier_order:
+                if key in dropped and tier.specs.get(key) is not None:
+                    out.append(f'      echo "{_thread_name(m, key)}"')
+            out.append("      ;;")
+    out += ["    *) return 1 ;;", "  esac", "}", ""]
     return "\n".join(out) + "\n"
 
 
@@ -801,24 +962,25 @@ def emit_doc_matrix(m: Manifest) -> str:
 
 
 def emit_doc_tiers(m: Manifest) -> str:
-    """repo_scripts/README.md — per-tier helper outputs."""
+    """repo_scripts/README.md — per-tier helper outputs, one column per profile."""
+    alt_profiles = [p for p in m.profiles if not p.default]
+    headers = ["tier (물리 코어)", "`get_rt_cores()`"]
+    headers += [f"`get_rt_cores()` ({p.id})" for p in alt_profiles]
+    headers += ["`get_mpc_cores()`", "`get_nrt_cores()`", "`get_os_cores()`", "arm / hand slot"]
     rows = [
-        "| tier (물리 코어) | `get_rt_cores()` | `get_mpc_cores()` | `get_nrt_cores()`"
-        " | `get_os_cores()` | arm / hand slot |",
-        "|---|---|---|---|---|---|",
+        "| " + " | ".join(headers) + " |",
+        "|" + "|".join(["---"] * len(headers)) + "|",
     ]
     for tier in m.tiers:
-        rows.append(
-            "| {label} | `{rt}` | `{mpc}` | `{nrt}` | `{os}` | {arm} / {hand} |".format(
-                label=_tier_range_label(m, tier),
-                rt=_csv(rt_cores(m, tier)),
-                mpc=_csv(mpc_cores(m, tier)),
-                nrt=_csv(nrt_cores(m, tier)),
-                os=m.os_slot,
-                arm=tier.specs["arm_driver"].slot,
-                hand=tier.specs["hand_driver"].slot,
-            )
-        )
+        cells = [_tier_range_label(m, tier), f"`{_csv(rt_cores(m, tier))}`"]
+        cells += [f"`{_csv(rt_cores(m, tier, p))}`" for p in alt_profiles]
+        cells += [
+            f"`{_csv(mpc_cores(m, tier))}`",
+            f"`{_csv(nrt_cores(m, tier))}`",
+            f"`{m.os_slot}`",
+            f"{tier.specs['arm_driver'].slot} / {tier.specs['hand_driver'].slot}",
+        ]
+        rows.append("| " + " | ".join(cells) + " |")
     return "\n".join(rows)
 
 
@@ -1120,6 +1282,37 @@ def run_self_test(m: Manifest) -> int:
                 failures.append(
                     f"tier {tier.id}: os_slot {slot} carries RT role(s) "
                     f"({', '.join(sorted(keys))})"
+                )
+
+    # 5. Profile invariants (issue #350). A profile may only ever *free* cores:
+    #    it selects which declared roles run, it never moves one or invents a
+    #    slot. Asserted per tier because a drop that emptied the RT set (or that
+    #    somehow widened it) would still generate valid-looking shell.
+    for profile in m.profiles:
+        dropped = dropped_keys(m, profile)
+        for required in ("rt_control", "rt_callback"):
+            if required in dropped:
+                failures.append(f"profile {profile.id}: drops {required}; the RT loop must run")
+        for tier in m.tiers:
+            base = set(rt_cores(m, tier))
+            scoped = set(rt_cores(m, tier, profile))
+            if not scoped <= base:
+                failures.append(
+                    f"profile {profile.id}, tier {tier.id}: RT slots {sorted(scoped - base)} "
+                    "are not in the default profile's set; a profile may only free cores"
+                )
+            if not scoped:
+                failures.append(f"profile {profile.id}, tier {tier.id}: empty RT slot set")
+            # The verifier's two tables must partition the in-process roles:
+            # a name in both would be required and forbidden at once, a name in
+            # neither would go unchecked under that profile.
+            present = {k for k in m.verifier_order if tier.specs.get(k) is not None}
+            expected = {k for k in present if k not in dropped}
+            forbidden = {k for k in present if k in dropped}
+            if expected & forbidden or expected | forbidden != present:
+                failures.append(
+                    f"profile {profile.id}, tier {tier.id}: expected/forbidden thread tables "
+                    "do not partition the in-process roles"
                 )
 
     if failures:
