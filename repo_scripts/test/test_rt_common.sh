@@ -1377,6 +1377,79 @@ test_verifier_is_sourceable_without_running() {
   expect_eq "verifier.sourceable" "still-here" "$sentinel"
 }
 
+_verifier_tables() {
+  # verify_rt_runtime.sh 를 source 해 (실행은 아래 main 가드가 막는다) 검증기가
+  # 실제로 만드는 표 두 개를 꺼낸다. 소스 텍스트를 grep 하지 않는 이유: grep 은
+  # 자기 주석을 읽을 뿐 배선이 살아 있는지 못 본다 — profile 을 안 넘기는 회귀는
+  # 호출 라인이 그대로 남은 채 발생한다.
+  #
+  # `set --` 은 필수다. 인자 없는 `source` 는 **호출자의 위치인자를 물려주므로**,
+  # 이걸 빼면 이 함수의 $1 이 검증기의 CLI 파서에 알 수 없는 옵션으로 들어가
+  # show_help → exit 0 으로 서브셸이 조용히 죽고 표는 빈 채 비교된다.
+  local marker_content="$1" ncpu="$2"
+  shift 2
+  local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
+  local marker
+  marker=$(mktemp)
+  printf '%s\n' "$marker_content" >"$marker"
+  (
+    set +eu
+    RTC_SHIELD_MARKER_FILE="$marker"
+    set -- "$@"
+    # shellcheck disable=SC1090
+    source "$verifier" >/dev/null 2>&1
+    PHYSICAL_CORES="$ncpu"
+    build_expected_threads
+    echo "profile=${LAYOUT_PROFILE}"
+    echo "source=${PROFILE_SOURCE}"
+    echo "expected=$(printf '%s,' "${EXPECTED_THREADS[@]}")"
+    # 빈 배열에 printf 를 걸면 포맷이 한 번 찍혀 "," 가 남으므로 개수를 따로 낸다.
+    echo "forbidden_n=${#FORBIDDEN_THREADS[@]}"
+    echo "forbidden=$(printf '%s,' "${FORBIDDEN_THREADS[@]}")"
+  )
+  rm -f "$marker"
+}
+
+test_verifier_follows_the_shield_marker_profile() {
+  # #350 — 검증기의 기본 profile 은 활성 shield 의 marker 다. 이 배선이 끊기면
+  # MPC-off 로 띄운 박스에서 mpc_main 미발견이 하드 FAIL 로 돌아온다 (착수 전 상태).
+  local out
+  out=$(_verifier_tables "sim mpc_off" 12)
+  expect_eq "verifier.profile.off" "profile=mpc_off" "$(grep '^profile=' <<<"$out")"
+  expect_eq "verifier.source.off" "source=shield marker" "$(grep '^source=' <<<"$out")"
+  if grep '^expected=' <<<"$out" | grep -q 'mpc_'; then
+    fail "[verifier.exp.off] mpc_off 인데 기대 표에 mpc 행이 남아 있다 — 미발견이 FAIL 로 돌아온다"
+  else
+    pass
+  fi
+  expect_eq "verifier.forbidden.off" \
+    "forbidden=mpc_main,mpc_worker_0,mpc_worker_1," "$(grep '^forbidden=' <<<"$out")"
+  expect_eq "verifier.forbidden_n.off" "forbidden_n=3" "$(grep '^forbidden_n=' <<<"$out")"
+
+  # 기본 profile 에서는 mpc 가 기대 표에 있고 금지 목록은 비어야 한다.
+  out=$(_verifier_tables "robot mpc_on" 12)
+  expect_eq "verifier.profile.on" "profile=mpc_on" "$(grep '^profile=' <<<"$out")"
+  if grep '^expected=' <<<"$out" | grep -q 'mpc_main:3:1:60'; then
+    pass
+  else
+    fail "[verifier.exp.on] mpc_on 인데 기대 표에 mpc_main 이 없다"
+  fi
+  expect_eq "verifier.forbidden.on" "forbidden_n=0" "$(grep '^forbidden_n=' <<<"$out")"
+
+  # #350 이전 marker (bare mode) 는 default profile 로 읽혀야 한다 — 그 marker 가
+  # 만들어진 shield 가 실제로 MPC 예약을 포함한 레이아웃이기 때문이다.
+  out=$(_verifier_tables "robot" 12)
+  expect_eq "verifier.profile.legacy" "profile=mpc_on" "$(grep '^profile=' <<<"$out")"
+
+  # --profile 은 marker 를 이긴다 — shield 가 없는 박스(cset 미설치 dev PC)에서
+  # 검증기를 돌리거나 반대 profile 을 일부러 확인할 때의 유일한 통로다.
+  out=$(_verifier_tables "robot mpc_on" 12 --profile mpc_off)
+  expect_eq "verifier.flag.wins" "profile=mpc_off" "$(grep '^profile=' <<<"$out")"
+  expect_eq "verifier.flag.source" "source=--profile" "$(grep '^source=' <<<"$out")"
+  out=$(_verifier_tables "robot mpc_on" 12 --profile=mpc_off)
+  expect_eq "verifier.flag.eq_form" "profile=mpc_off" "$(grep '^profile=' <<<"$out")"
+}
+
 # ── Layout tier tables (issue #153 M1) ──────────────────────────────────────
 # get_mpc_cores / get_rt_cores / get_nrt_cores 는 이제 manifest 에서 생성되지만,
 # **이 fixture 의 리터럴이 생성기의 oracle 이다**. 생성물끼리 대조하면 잘못된
@@ -1655,6 +1728,7 @@ test_external_driver_slots_share_a_core_only_on_the_degraded_tiers
 test_print_thread_layout_uses_the_slot_helpers
 test_verifier_expected_slots_track_the_helpers
 test_verifier_is_sourceable_without_running
+test_verifier_follows_the_shield_marker_profile
 test_layout_tier_tables_per_tier
 test_layout_worker_roles_absent_below_their_tier
 test_rtc_expected_threads_table_per_tier

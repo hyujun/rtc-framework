@@ -87,7 +87,13 @@ show_help() {
   echo "  --summary     카테고리당 1줄 요약"
   echo "  --json        JSON 출력 (CI용)"
   echo "  --watch [N]   N초 간격 반복 모니터링 (기본 3초)"
+  echo "  --profile ID  layout profile 강제 (기본: 활성 shield 의 marker, 없으면 default)"
   echo "  --help        이 도움말"
+  echo ""
+  echo "Layout profiles (issue #350):"
+  echo "  어느 role 이 이번 실행에서 도는가. mpc_off 는 MPC 스레드가 없어야 정상이고"
+  echo "  (있으면 FAIL — 그 코어는 shield 밖이다), mpc_on 은 있어야 정상이다."
+  echo "  기본값은 cpu_shield.sh 가 남긴 marker 라 launch 가 정한 profile 을 따라간다."
   echo ""
   echo "Exit codes:"
   echo "  0  모든 항목 PASS"
@@ -109,6 +115,14 @@ while [[ $# -gt 0 ]]; do
         WATCH_INTERVAL="$1"; shift
       fi
       ;;
+    --profile)
+      LAYOUT_PROFILE="${2:-}"; shift 2 || true
+      PROFILE_SOURCE="--profile"
+      ;;
+    --profile=*)
+      LAYOUT_PROFILE="${1#--profile=}"; shift
+      PROFILE_SOURCE="--profile"
+      ;;
     -h|--help)  show_help ;;
     *)          echo "Unknown option: $1"; show_help ;;
   esac
@@ -117,6 +131,25 @@ done
 # ── CPU layout ───────────────────────────────────────────────────────────────
 compute_cpu_layout
 PHYSICAL_CORES="$TOTAL_CORES"
+
+# ── Launch profile (issue #350) ──────────────────────────────────────────────
+# Which roles are supposed to be running at all. Without it this script cannot
+# tell "MPC is off by design" from "the MPC thread failed to start": both look
+# like a missing thread, and it hard-FAILed on every MPC-less run.
+#
+# The active shield's marker is the default source because that is what the
+# cpuset was actually built for -- asking the operator to repeat a flag the
+# launch already decided is how the two drift apart. `--profile` overrides it
+# for a box with no shield (no cset, dev machine) or to check the other profile
+# deliberately.
+if [[ -z "${LAYOUT_PROFILE:-}" ]]; then
+  LAYOUT_PROFILE="$(shield_marker_profile)"
+  PROFILE_SOURCE="shield marker"
+fi
+if ! rtc_is_layout_profile "$LAYOUT_PROFILE"; then
+  echo "ERROR: 알 수 없는 layout profile '${LAYOUT_PROFILE}' (선언된 profile: $(rtc_layout_profiles))" >&2
+  exit 2
+fi
 
 # Populate PHYSICAL_CORE_SLOTS (rt_common.sh::detect_hybrid_capability) so the
 # slot→logical-id translator below can map ThreadConfig::cpu_core (a *slot
@@ -158,6 +191,7 @@ detect_hybrid_capability
 #                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
 #                    별도 cpu pin 검증 skip (priority 65 만 확인).
 declare -a EXPECTED_THREADS
+declare -a FORBIDDEN_THREADS
 
 build_expected_threads() {
   # 표 자체는 rt_common.sh 가 source 하는 thread_layout_generated.sh 의
@@ -165,7 +199,13 @@ build_expected_threads() {
   # 여기 tier 표를 다시 적으면 검증기만 옛 기대값을 들고 **PASS 를 낸다** — 센서가
   # 거짓말하는 방향이라 그냥 틀린 것보다 비싸다 (issue #353 이 arm/hand 축에서
   # 겪은 것과 같은 실패이고, #153 M1 이 나머지 축을 같은 자리로 모았다).
-  mapfile -t EXPECTED_THREADS < <(rtc_expected_threads "$PHYSICAL_CORES")
+  mapfile -t EXPECTED_THREADS < <(rtc_expected_threads "$PHYSICAL_CORES" "$LAYOUT_PROFILE")
+  # Roles this profile drops. Dropping them from EXPECTED_THREADS alone would
+  # make "MPC is off" and "MPC is running on a core the shield just handed back
+  # to the system cpuset" the same observation -- neither has a row. A thread
+  # found here is a hard FAIL, which is the half that makes the opt-out
+  # verifiable rather than merely quiet.
+  mapfile -t FORBIDDEN_THREADS < <(rtc_forbidden_threads "$PHYSICAL_CORES" "$LAYOUT_PROFILE")
 
   # 빈 표는 fail-open 이다: 아래 감지 루프는 EXPECTED_THREADS 를 순회하며
   # known_count 를 세므로, 표가 비면 known_count 도 expected_count 도 0 이 되어
@@ -545,6 +585,25 @@ check_process_discovery() {
     _category_update "process_discovery" "FAIL"
   fi
 
+  # ── 이 profile 이 금지한 스레드 (issue #350) ────────────────────────────────
+  # 위 기대 표에서 빠지는 것만으로는 부족하다: "MPC 를 껐다" 와 "MPC 가 방금
+  # system 으로 반환된 코어 위에서 돌고 있다" 가 둘 다 "행이 없다" 로 보인다.
+  # 후자는 shield 밖 SCHED_FIFO 스레드라 정확히 이 검증기가 잡아야 할 상태다.
+  local _forbidden_found=0 fname
+  for fname in "${FORBIDDEN_THREADS[@]}"; do
+    [[ -z "$fname" ]] && continue
+    if [[ -n "${THREAD_TIDS[$fname]:-}" ]]; then
+      _fail "  profile '${LAYOUT_PROFILE}' 이 배제한 스레드가 실행 중: ${fname} (TID ${THREAD_TIDS[$fname]}) — 이 코어는 shield 밖이다"
+      ((_forbidden_found++)) || true
+    fi
+  done
+  if (( _forbidden_found > 0 )); then
+    _fail "profile '${LAYOUT_PROFILE}' 위반: 배제된 스레드 ${_forbidden_found}개가 실행 중 — launch 의 enable_mpc 와 실제 controller 설정이 어긋났다"
+    _category_update "process_discovery" "FAIL"
+  elif [[ ${#FORBIDDEN_THREADS[@]} -gt 0 ]]; then
+    _pass "profile '${LAYOUT_PROFILE}' (${PROFILE_SOURCE}): 배제 스레드 ${#FORBIDDEN_THREADS[@]}개 모두 부재"
+  fi
+
   # External driver 프로세스(arm_driver / hand_driver)는 컨트롤러 밖의 별도 PID다.
   discover_external_drivers
 
@@ -555,7 +614,7 @@ check_process_discovery() {
     fi
   done
   _category_set_detail "process_discovery" \
-    "PID ${CONTROLLER_PID}, ${known_count}/${expected_count} threads, ${ext_found}/${#EXTERNAL_DRIVER_NAMES[@]} ext drivers"
+    "PID ${CONTROLLER_PID}, profile ${LAYOUT_PROFILE}, ${known_count}/${expected_count} threads, ${ext_found}/${#EXTERNAL_DRIVER_NAMES[@]} ext drivers"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════

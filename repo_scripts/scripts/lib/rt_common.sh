@@ -629,6 +629,32 @@ get_robot_packages() {
 # guaranteed. The hand UDP receive thread lives inside the hand_driver process
 # (cpu_core = -1 sentinel) and is deliberately not represented there.
 #
+# ── CPU shield marker (issue #350) ─────────────────────────────────────────
+# cpu_shield.sh writes "<mode> <profile>" here on `on`, and removes it on `off`.
+# The path lives here rather than in cpu_shield.sh because verify_rt_runtime.sh
+# has to read it too, and sourcing cpu_shield.sh would run its CLI dispatch.
+RTC_SHIELD_MARKER_FILE="${RTC_SHIELD_MARKER_FILE:-/tmp/cpu_shield_mode}"
+
+# Layout profile of the ACTIVE shield. Falls back to the default profile when
+# there is no marker, when it cannot be read, or when it predates #350 and
+# carries a bare mode — all three describe a box whose shield was built with the
+# full MPC reservation, which IS the default profile.
+#
+# An unparseable profile string also falls back rather than failing: this is a
+# diagnostic input, and refusing to verify because a marker got corrupted would
+# turn a cosmetic problem into "no RT verification at all".
+shield_marker_profile() {
+  local raw mode profile
+  if [[ -r "$RTC_SHIELD_MARKER_FILE" ]] && raw=$(cat "$RTC_SHIELD_MARKER_FILE" 2>/dev/null); then
+    read -r mode profile <<<"$raw"
+    if [[ -n "${profile:-}" ]] && rtc_is_layout_profile "$profile"; then
+      echo "$profile"
+      return 0
+    fi
+  fi
+  rtc_default_profile
+}
+
 # Print just the main MPC core (first entry of get_mpc_cores). Derived, so it
 # stays here rather than in the generated file.
 get_mpc_main_core() {

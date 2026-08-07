@@ -90,7 +90,9 @@ compute_shield_cores() {
 # Holds "<mode> <profile>". Files written before #350 carry the bare mode, which
 # reads back as the default profile — exactly right, since that is the layout
 # they were built with.
-SHIELD_MODE_FILE="/tmp/cpu_shield_mode"
+# Path owned by rt_common.sh — verify_rt_runtime.sh reads the same marker and
+# cannot source this file (its CLI dispatch would run).
+SHIELD_MODE_FILE="$RTC_SHIELD_MARKER_FILE"
 
 shield_marker_write() {
   printf '%s %s\n' "$1" "$2" >"$SHIELD_MODE_FILE"
