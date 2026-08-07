@@ -184,6 +184,39 @@ shield_actual_user_cpus() {
   normalise_cpu_set "$spec"
 }
 
+# Which isolation is ACTUALLY in force. Echoes "cset <cpus>", "isolcpus <cpus>"
+# or "none"; never fails.
+#
+# The cset shield is asked first and independently of
+# /sys/devices/system/cpu/isolated, because **only isolcpus writes that file**.
+# do_status used to gate its whole method-detection block on it, so on a box
+# running a live cset shield it took the else branch and reported "Isolated
+# cores: none / All N cores available for general use" while the kernel held
+# CPUSPEC(1-3,7-9) — measured on the 6-core dev box once cset was installed.
+# The nested `elif ... cset shield -s | grep user` branch could not save it: it
+# required `isolated` to be non-empty *and* the cmdline to lack isolcpus, which
+# together essentially never happen.
+# Cores isolcpus took out at boot, "" when none. A named function so the
+# precedence below can be exercised without a real /sys read.
+isolcpus_isolated_cpus() {
+  cat /sys/devices/system/cpu/isolated 2>/dev/null || echo ""
+}
+
+shield_isolation_method() {
+  local cset_cpus isolated
+  cset_cpus=$(shield_actual_user_cpus 2>/dev/null || true)
+  if [[ -n "$cset_cpus" ]]; then
+    echo "cset ${cset_cpus}"
+    return 0
+  fi
+  isolated=$(isolcpus_isolated_cpus)
+  if [[ -n "$isolated" ]]; then
+    echo "isolcpus ${isolated}"
+    return 0
+  fi
+  echo "none"
+}
+
 # Exit 0 when the active shield already matches `desired` for `mode`.
 #
 # Exit 2 is the narrow middle case: the cores are exactly right and only the
@@ -429,8 +462,9 @@ do_status() {
   logical_cores=$(nproc --all)
   local available_cores
   available_cores=$(nproc)
-  local isolated
-  isolated=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo "")
+  local method cpus isolcpus_now
+  read -r method cpus <<<"$(shield_isolation_method)"
+  isolcpus_now=$(isolcpus_isolated_cpus)
 
   echo ""
   info "CPU Shield Status"
@@ -438,14 +472,10 @@ do_status() {
   info "  Logical cores:  ${logical_cores}"
   info "  Available cores: ${available_cores}"
 
-  if [[ -n "$isolated" ]]; then
-    info "  Isolated cores: ${isolated}"
-
-    # Detect isolation method
-    if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
-      info "  Method: isolcpus (GRUB — static, reboot required to change)"
-      warn "  Recommendation: switch to cset shield for dynamic isolation"
-    elif command -v cset &>/dev/null && cset shield -s 2>/dev/null | grep -q "user"; then
+  case "$method" in
+    cset)
+      # shellcheck disable=SC2086  # word splitting intended: normalised id list
+      info "  Isolated cores: $(_format_cpu_range $cpus)"
       local shield_marker shield_mode="unknown" shield_profile="unknown"
       if shield_marker=$(shield_marker_read); then
         read -r shield_mode shield_profile <<<"$shield_marker"
@@ -453,13 +483,23 @@ do_status() {
       info "  Method: cset shield (dynamic)"
       info "  Mode: ${shield_mode}"
       info "  Layout profile: ${shield_profile}"
-    else
-      info "  Method: unknown (cpuset or other)"
-    fi
-  else
-    info "  Isolated cores: none"
-    info "  All ${available_cores} cores available for general use"
-  fi
+      # Both can be in force at once; the shield is the one that just moved.
+      [[ -n "$isolcpus_now" ]] && info "  Also isolcpus (GRUB): ${isolcpus_now}"
+      ;;
+    isolcpus)
+      info "  Isolated cores: ${cpus}"
+      if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
+        info "  Method: isolcpus (GRUB — static, reboot required to change)"
+        warn "  Recommendation: switch to cset shield for dynamic isolation"
+      else
+        info "  Method: unknown (cpuset or other)"
+      fi
+      ;;
+    *)
+      info "  Isolated cores: none"
+      info "  All ${available_cores} cores available for general use"
+      ;;
+  esac
 
   # Show expected layout for this core count (SSoT: rt_common::print_thread_layout)
   echo ""
