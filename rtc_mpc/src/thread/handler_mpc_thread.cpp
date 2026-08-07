@@ -103,8 +103,7 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext& ctx) {
   return true;
 }
 
-bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out,
-                             std::span<std::jthread> /*workers*/) {
+bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   // ── Null-handler guard ────────────────────────────────────────────────
   if (handler_ == nullptr || phase_manager_ == nullptr || model_ == nullptr) {
     if (!null_logged_.exchange(true, std::memory_order_relaxed)) {

@@ -184,7 +184,6 @@ contact_frames:
     rtc::mpc::MpcThreadLaunchConfig launch{};
     launch.main.cpu_core = -1;  // no pinning in unit tests
     launch.main.sched_policy = 0;
-    launch.num_workers = 0;
     launch.target_frequency_hz = hz;
     return launch;
   }

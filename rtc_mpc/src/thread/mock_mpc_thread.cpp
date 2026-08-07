@@ -24,8 +24,7 @@ void MockMPCThread::SetTarget(const Eigen::Ref<const Eigen::VectorXd>& q_target)
   q_target_.head(n) = q_target.head(n);
 }
 
-bool MockMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out_sol,
-                          std::span<std::jthread> /*workers*/) {
+bool MockMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out_sol) {
   // Snapshot target under lock so SetTarget() can't tear the read. The
   // Solve method runs off the RT path, so a mutex here is acceptable.
   Eigen::VectorXd target;
