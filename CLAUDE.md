@@ -50,7 +50,7 @@ Architecture 규칙은 **ARCH-1 ~ ARCH-7** 이며, 전문은 [agent_docs/invaria
 - 수치 특이점: damped pseudoinverse (NUM-1), zero guard (NUM-2, NUM-4)
 - 폐쇄 체인 사영은 **residual 로 조립 분기를 판정할 수 없다** — 점 구속 loop 은 분기가 여럿이고 모두 φ=0 을 만족하므로 seed 증분 제한이 필수 (NUM-5). 완화 장치를 넣을 때는 발동한 경우에만 적용하고, 그로 인한 `held` 를 자기 치유로 가정하지 않는다
 
-**rule 채널은 두 센서로 검증한다** — glob 이 실제 파일을 잡는지는 `validate_claude_rules.py` (변경된 rule 한정, **0건이면 차단**), 실제로 로드됐는지는 `.claude/instructions-loaded.log` (InstructionsLoaded hook). rule 을 새로 쓰거나 glob 을 고쳤으면 매칭 파일을 하나 열고 그 로그를 grep 해 발화를 확인한다 — rule 이 안 뜨는 실패는 파일이 멀쩡해 보이므로 **증상이 "규칙이 조용히 없는 것"** 뿐이다.
+**rule 채널은 두 센서로 검증한다** — glob 이 실제 파일을 잡는지는 `validate_claude_rules.py` (변경된 rule 한정, **0건이면 차단**), 실제로 로드됐는지는 `.claude/instructions-loaded.log` (InstructionsLoaded hook). rule 을 새로 쓰거나 glob 을 고쳤으면 매칭 파일을 하나 열고 그 로그를 grep 해 발화를 확인한다 — rule 이 안 뜨는 실패는 파일이 멀쩡해 보이므로 **증상이 "규칙이 조용히 없는 것"** 뿐이다. 이때 로그는 **세션 경계 없이 append** 되므로 반드시 자기 `session_id` 로 거른다 — 안 그러면 직전 세션의 발화를 자기 것으로 읽는다. 자기 id 는 scratchpad 경로의 마지막 세그먼트다.
 
 세부 규칙·grep 패턴·복구 절차: [agent_docs/invariants.md](agent_docs/invariants.md). 위반 필요시 §6 Escalation 의 `[CONCERN]` 포맷 보고.
 

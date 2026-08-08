@@ -47,6 +47,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup environment
+        timeout-minutes: 15
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
@@ -119,6 +120,7 @@ jobs:
           config-file: ./.github/codeql/codeql-config.yml
 
       - name: Setup environment
+        timeout-minutes: 15
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}

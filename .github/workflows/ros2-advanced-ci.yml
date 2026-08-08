@@ -57,6 +57,12 @@ jobs:
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    # 잡 timeout 은 상한이 아니라 진단 도구다 — 하나라도 없으면 그 잡이 기본 6시간을
+    # 잡고 run 을 열어둔 채 앉아 있고, run 이 in_progress 인 동안에는
+    # `gh run rerun --job <id>` 이 거부되어 **게이트 잡의 개별 재실행 자체가 봉쇄**된다
+    # (2026-08-07 run 31188282031 실측: apt 정체로 gated-test 가 cancelled 됐는데
+    # timeout 없는 python-test 가 run 을 붙들어 재실행을 못 걸었다).
+    timeout-minutes: 10
     outputs:
       cpp: ${{ steps.filter.outputs.cpp }}
       python: ${{ steps.filter.outputs.python }}
@@ -103,6 +109,7 @@ jobs:
   packages:
     name: Load Package Lists
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       build: ${{ steps.load.outputs.build }}
       test_cpp: ${{ steps.load.outputs.test_cpp }}
@@ -157,6 +164,12 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup environment
+        # step-level timeout: apt 미러가 정체하면 이 composite 하나가 잡의 예산을
+        # 통째로 먹는다. 그러면 결과가 `cancelled` 로 남고 빌드·테스트 step 은
+        # `skipped` 이라 **진짜 실패와 한눈에 구분되지 않는다** — 신호가 사라지는 게
+        # 시간을 잃는 것보다 비싸다. 형제 잡들이 같은 composite 를 3분 안에 끝내므로
+        # 15분은 5배 여유이고, 넘으면 그건 코드가 아니라 인프라 정체다.
+        timeout-minutes: 15
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
@@ -182,10 +195,12 @@ jobs:
     needs: [changes, packages]
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
       - name: Setup environment
+        timeout-minutes: 15
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
@@ -234,10 +249,12 @@ jobs:
     needs: [changes, packages]
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
       - name: Setup environment
+        timeout-minutes: 15
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
@@ -343,6 +360,7 @@ jobs:
           label: after-cleanup
 
       - name: Setup environment
+        timeout-minutes: 15
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
@@ -481,6 +499,7 @@ jobs:
       # 빈 coverage.info 업로드를 연쇄 생성한다 (2026-07-20 run 29717918811).
       # always() 의 의도는 "테스트가 실패해도 .gcda 는 수집" 이지 "환경이 없어도 강행" 이 아니다.
       - name: Setup environment
+        timeout-minutes: 15
         id: setup
         uses: ./.github/actions/setup-rtc-env
         with:
