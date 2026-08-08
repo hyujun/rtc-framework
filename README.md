@@ -306,14 +306,14 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 | 서브디렉토리 | 내용 |
 |---|---|
 | `controllers/<config_key>/` | per-controller 데이터 CSV (`<instance>.csv`; Phase C에서 controller-owned 경로로 일원화) |
-| `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log, rt_callback_timing_log — 동일 7열 RtTickTimingPayload 스키마) |
+| `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log, rt_callback_timing_log — 동일 8열 `t_wall_ns,tick_count,run_id` + RtTickTimingPayload 5열 스키마. `run_id` 는 같은 분에 재기동해 한 디렉토리를 공유한 두 런을 가른다 — #376) |
 | `device/` | 디바이스 통계 JSON (예: udp_hand_driver 의 `hand_udp_stats.json`) |
 | `monitor/` | 모니터링 로그 (생성만 되고 현재 기록 주체 없음) |
 | `tracing/` | LTTng trace 세션 (`--tracing` 빌드 시, [docs/tracing.md](docs/tracing.md)) |
 | `sim/` | screenshot_*.ppm (MuJoCo 전용) |
 | `plots/`, `motions/` | rtc_tools 출력 |
 
-환경변수 `RTC_SESSION_DIR` 로 모든 노드에 세션 경로 자동 전파.
+환경변수 `RTC_SESSION_DIR` 로 모든 노드에 세션 경로 자동 전파. 같은 분에 재기동하면 세션 디렉토리(분 해상도)가 재사용되므로, launch 는 `RTC_RUN_ID` 도 함께 전파해 타이밍 CSV 안에서 두 런을 가른다 (#376).
 
 ---
 

@@ -6,7 +6,7 @@
 // Sibling of rtc::ThreadTimingCsvLogger (rtc_base/timing/), differing in
 // two ways:
 //   - The header line is written verbatim by the caller-supplied
-//     HeaderWriter — there is no `t_wall_ns,tick_count` prefix the way
+//     HeaderWriter — there is no `t_wall_ns,tick_count,run_id` prefix the way
 //     the timing logger has. The Payload owns the entire row (timestamp
 //     column included if the producer chose to put one there).
 //   - Log() invokes the caller-supplied RowWriter on the whole row —

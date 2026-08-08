@@ -278,7 +278,7 @@ EventLoop 단계별 소요시간 추적. 히스토그램 기반 p95/p99 백분�
 
 ### UdpHandTimingLogger (`udp_hand_timing_logger.hpp`)
 
-CommLoop per-tick 타이밍을 `<session>/timing/hand_udp_timing_log.csv` 로 기록한다. CM (`cm_timing_log.csv`) 및 MPC (`mpc_timing_log.csv`) 와 동일한 통합 스키마 (`t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 를 사용 — `rtc_base/timing/rt_tick_timing_sample.hpp` 의 `RtTickTimingPayload` 직접 재사용.
+CommLoop per-tick 타이밍을 `<session>/timing/hand_udp_timing_log.csv` 로 기록한다. CM (`cm_timing_log.csv`) 및 MPC (`mpc_timing_log.csv`) 와 동일한 통합 스키마 (`t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 를 사용 — `rtc_base/timing/rt_tick_timing_sample.hpp` 의 `RtTickTimingPayload` 직접 재사용. 접두 3열은 로거 소유이고 `run_id` 는 한 세션 디렉토리를 공유한 두 기동을 가른다 (#376).
 
 데이터 흐름:
 - producer: `RunCommCycle` 이 UDP read 직후 `MarkState()`, sensor 후처리+FT 직후 `MarkCompute()` 를 호출하면 `rtc::PeriodicRtThread` (CommLoop) 기반이 매 tick 1개 `RtTickTimingPayload` 를 `HandUdpTimingBuffer` 에 push (RT-safe, wait-free)

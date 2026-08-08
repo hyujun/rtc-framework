@@ -75,6 +75,7 @@ from rtc_tools.launch.trace_action import make_trace_action
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
     create_session_dir,
+    generate_run_id,
     resolve_logging_root,
 )
 
@@ -413,6 +414,11 @@ def generate_launch_description():
 
     set_session_dir = SetEnvironmentVariable(name="RTC_SESSION_DIR", value=session_dir)
 
+    # 세션 디렉토리는 분 해상도라 같은 분의 재기동이 같은 디렉토리를 얻고,
+    # 타이밍 CSV 는 거기에 append 된다. 이 런 ID 가 그 파일 안의 런 경계이며,
+    # 한 launch 의 모든 노드가 같은 값을 받아야 CSV 간 join 이 성립한다 (#376).
+    set_run_id = SetEnvironmentVariable(name="RTC_RUN_ID", value=generate_run_id())
+
     set_rmw = SetEnvironmentVariable(name="RMW_IMPLEMENTATION", value="rmw_cyclonedds_cpp")
 
     # ── UR robot driver launch (via OpaqueFunction for mock_hardware compat) ──
@@ -709,6 +715,7 @@ def generate_launch_description():
             sil_mode_arg,
             # 2) Environment
             set_session_dir,
+            set_run_id,
             set_rmw,
             set_cyclone_uri,
             # 3) Infrastructure (parallel)

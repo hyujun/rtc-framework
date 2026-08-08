@@ -14,7 +14,7 @@ CSV 컬럼 카테고리:
   - *_state_log.csv                    → state_log (DeviceStateLog, robot)
   - *_sensor_log.csv                   → sensor_log (DeviceSensorLog, hand)
   - cm_timing_log*.csv                 → CM RT loop timing
-  - mpc_timing_log*.csv                → MPC main-loop timing (same 7-col schema)
+  - mpc_timing_log*.csv                → MPC main-loop timing (same 8-col schema)
 
 이 파일은 thin orchestration layer다 — actual implementations live in:
   - io/         CSV load, log-type detect, save-dir resolve
@@ -34,11 +34,13 @@ import pandas as pd
 from rtc_tools.plotting import layout
 from rtc_tools.plotting.columns import invalidate_column_cache
 from rtc_tools.plotting.io import (
+    UnknownRunIdError,
     detect_log_type,
     detect_log_type_by_columns,
     load_log_csv,
     peek_csv_header,
     resolve_default_save_dir,
+    select_run,
 )
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -71,6 +73,15 @@ def main():
         "then forces the Agg backend and only PNGs are written.",
     )
     parser.add_argument("--stats", action="store_true", help="Print statistics only (no plots)")
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        default=None,
+        help="Timing CSV only: plot this run instead of the last one. A session "
+        "directory is minute-resolution, so restarting inside one minute appends "
+        "a second run to the same file (#376); the loader keeps the last run and "
+        "prints what it dropped.",
+    )
     parser.add_argument(
         "--error",
         action="store_true",
@@ -154,7 +165,10 @@ def main():
 
     print(f"Loading ({log_type}): {args.csv_file}")
     try:
-        df = load_log_csv(args.csv_file, log_type)
+        df = load_log_csv(args.csv_file, log_type, run_id=args.run_id)
+    except UnknownRunIdError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     except pd.errors.EmptyDataError:
         print(f"Error: CSV file is empty or has no columns: {args.csv_file}")
         print("The log file may not have been written (e.g. controller crashed before logging).")
@@ -166,6 +180,13 @@ def main():
             print(f"Error: No valid rows after skipping malformed lines: {args.csv_file}")
             sys.exit(1)
         print(f"Loaded {len(df)} valid rows (some malformed lines were skipped).")
+        # The degraded path still has to split runs — a malformed file is the
+        # last place where silently merging two runs would be noticed (#376).
+        try:
+            df = select_run(df, args.csv_file, args.run_id)
+        except UnknownRunIdError as run_err:
+            print(f"Error: {run_err}")
+            sys.exit(1)
 
     if df.empty:
         print(f"Error: No valid data rows in {args.csv_file}")

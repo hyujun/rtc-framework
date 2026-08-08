@@ -424,7 +424,7 @@ CM RT loop와 MPC thread 모두 두 가지 base 인프라를 공유한다: (1) [
 | MPC thread (≤ 100 Hz, per-controller) | `MPCThread::TimingProducer()` (`ThreadTimingProducer<RtTickTimingPayload, 128>`) | `MpcTimingLogger` (controller-owned) | `<session>/timing/mpc_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
 | rt_callback lane (state 콜백 당 1행) | `rt_callback_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 2048>`) | `rt_callback_timing_logger_` | `<session>/timing/rt_callback_timing_log.csv` | 동일 5컬럼, 단 의미가 lane-specific — 아래 |
 
-공통 컬럼 `t_wall_ns, tick_count`는 `ThreadTimingCsvLogger`가 자동으로 emit. `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용). 세 thread가 동일한 5-컬럼 payload schema (`rtc_base/timing/rt_tick_timing_sample.hpp`)를 공유하므로 cross-thread 분석 도구 한 세트가 모든 CSV를 처리한다.
+공통 컬럼 `t_wall_ns, tick_count, run_id`는 `ThreadTimingCsvLogger`가 자동으로 emit (CSV 는 8-col). `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용) 이고, `run_id`는 이번 기동의 식별자다 — 세션 디렉토리가 분 해상도라 같은 분의 재기동이 같은 파일에 append 되며, 그 경계가 없으면 `n / span` 레이트가 조용히 틀린다 (#376, `rtc_base/logging/run_id.hpp`). 한 launch 의 모든 프로세스가 `$RTC_RUN_ID` 로 같은 값을 받으므로 채널 간 join 도 성립한다. 세 thread가 동일한 5-컬럼 payload schema (`rtc_base/timing/rt_tick_timing_sample.hpp`)를 공유하므로 cross-thread 분석 도구 한 세트가 모든 CSV를 처리한다.
 
 #### rt_callback lane (issue #349)
 

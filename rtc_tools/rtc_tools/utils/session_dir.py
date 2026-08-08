@@ -16,6 +16,10 @@ C++ ``rtc_base/logging/session_dir.hpp`` 와 동일한 결정 로직을 Python �
 
     1. $RTC_SESSION_DIR
     2. resolve_logging_root() / "YYMMDD_HHMM"
+
+런 ID (``generate_run_id``) 는 그 세션 디렉토리 *안에서* 이번 기동을 식별합니다.
+launch 가 ``$RTC_RUN_ID`` 로 실어 보내고 C++ 쪽 소비자는
+``rtc_base/logging/run_id.hpp`` 의 ``ResolveRunId()`` 입니다 (#376).
 """
 
 import os
@@ -104,6 +108,25 @@ def cleanup_old_sessions(logging_root: str, max_sessions: int) -> None:
     while len(dirs) > max_sessions:
         oldest = os.path.join(logging_root, dirs.pop(0))
         shutil.rmtree(oldest, ignore_errors=True)
+
+
+def generate_run_id() -> str:
+    """이번 launch 를 식별하는 런 ID (``YYMMDDHHMMSS`` 숫자 문자열).
+
+    세션 디렉토리는 분 해상도라 같은 분 안의 두 기동이 한 디렉토리를 공유하고,
+    per-tick 타이밍 CSV 로거는 의도적으로 append 로 연다 (재시작 세션
+    이어쓰기). 그 파일 안에서 런을 가르는 유일한 표식이 이 값이다 — 없으면
+    ``n / span`` 레이트 분석이 두 런을 한 런으로 읽고도 아무 센서가 발화하지
+    않는다 (#376).
+
+    한 launch 의 모든 노드가 같은 값을 ``$RTC_RUN_ID`` 로 받으므로 cm / mpc /
+    hand_udp / rt_callback 네 CSV 를 run 단위로 join 할 수 있다.
+
+    C++ 소비자 ``rtc::ResolveRunId()`` 는 이 값을 uint64 로 **완전 파싱**한다 —
+    숫자 아닌 문자가 섞이면 거부하고 PID 폴백으로 떨어지므로 (경계는 남지만
+    파일 간 join 은 깨진다) 숫자만 담아야 한다.
+    """
+    return datetime.now().strftime("%y%m%d%H%M%S")
 
 
 def get_session_dir() -> str | None:

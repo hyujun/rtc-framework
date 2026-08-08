@@ -15,6 +15,11 @@
 //   t_publish_us  state rtc::SeqLock store + EventLoop callback
 //   t_total_us    end-of-tick − start-of-tick
 //   jitter_us     |actual_period − expected_period| against previous tick
+//
+// CSV schema:
+//   t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us
+// The first three columns come from `ThreadTimingCsvLogger` (`run_id`
+// separates restarts that share a session directory — #376).
 
 #include "rtc_base/logging/session_dir.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
