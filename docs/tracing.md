@@ -32,7 +32,19 @@ sudo usermod -a -G tracing "$USER"
 검증: `./repo_scripts/scripts/check_rt_setup.sh --summary` →
 `Tracing  lttng=1 kmod=1 group=1 launch=1`
 
-`kmod=0` 이면 `sudo dkms status lttng-modules` 로 빌드 상태 확인. `group=0` 이면 logout/login 또는 `newgrp tracing`.
+`group=0` 이면 logout/login 또는 `newgrp tracing`.
+
+`kmod=0` 이면 **사유가 함께 나온다** (`kmod_block=…`) — 사유마다 처방이 다르고, 그 중
+하나는 재시도로 해결되지 않는다:
+
+| `kmod_block` | 뜻 | 처방 |
+|---|---|---|
+| `not_built` | 모듈이 아직 설치·빌드되지 않음 | `./install.sh --tracing` (또는 `sudo dkms status lttng-modules`) |
+| `unsigned` | `.ko` 는 있으나 Secure Boot 서명 없음 | §Secure Boot 호스트 |
+| `kernel_incompat` | **이 커널을 지원하는 `lttng-modules` 가 배포판에 없음** | §Kernel timeline 가용성 — `./install.sh --tracing` 은 몇 번을 돌려도 같은 자리에서 실패한다 |
+
+`install.sh --tracing` 은 `kernel_incompat` 인 커널에서는 DKMS 설치를 **시도하지 않고
+건너뛴다** (600초 타임아웃을 기다린 뒤 무효한 복구 절차를 안내하던 자리였다).
 
 ### Secure Boot 호스트 (NUC / 최신 노트북 다수)
 
@@ -505,6 +517,99 @@ sudo apt install ros-jazzy-tracetools-analysis
 
 `enable_tracing:=true` + kernel events 가 EPERM 으로 실패하면 → `groups` 출력 확인 → `newgrp tracing` 또는 logout/login.
 
+## Kernel timeline 가용성 (커널 × lttng-modules)
+
+UST (`ros2:*` · `rtc:*`) 는 커널 모듈과 무관하게 항상 동작한다. 이 절은 **kernel
+events (`sched_switch` · IRQ) 가 가능한 조합**만 다룬다.
+
+`lttng-modules` 는 커널 tracepoint 프로토타입을 자기 헤더에 재선언한다. 커널이 그
+프로토타입을 바꾸면 **결정론적 컴파일 실패**가 나고, 재시도·`dpkg --configure -a`·
+재부팅 어느 것도 해결하지 못한다. 실측된 경계 (issue #190):
+
+| 커널 | 배포판 `lttng-modules 2.14.0` | 비고 |
+|---|---|---|
+| 6.1.175+ · 6.6.141+ · **6.12.91+** · 6.18.33+ · 7.0.10+ | **빌드 실패** | `hrtimer_start` 가 3번째 인자 `bool was_armed` 를 얻은 stable 계열. **`build_rt_kernel.sh` 기본값 `6.12.91` 이 여기 든다** |
+| 그 밖 (예: 6.12.90 이하, 6.17.x) | 빌드 성공 | |
+
+대응 가드는 upstream **v2.14.6** (2026-06-19) 에서 들어왔고, `ppa:lttng/stable-2.14`
+로는 해결되지 않는다 — 그 PPA 의 최신 게시가 `2.14.4` 라 가드가 없다.
+
+판정은 자동이다. `install.sh --tracing` 과 `check_rt_setup.sh` 가 **커널 헤더의
+`VERSION/PATCHLEVEL/SUBLEVEL`** 로 위 표를 조회한다 (`uname -r` 이 아니다 — noble 의
+`7.0.0-28-generic` 은 헤더상 실제로 `7.0.12` 이고, `uname` 을 믿으면 비호환을 호환으로
+오판한다). 표와 판정의 SSoT 는 `repo_scripts/scripts/lib/rt_common.sh` 의
+`lttng_modules_compat_verdict` 이며, 배포판이 upstream 버전을 올리지 않은 채 수정을
+backport 한 경우를 위해 `RTC_LTTNG_SKIP_COMPAT_GATE=1` 로 게이트를 우회할 수 있다.
+
+### 지원되지 않는 커널에서의 운용 — UST-only
+
+패키지 변경 없이 즉시 성립하고, 이 저장소의 **현재 정책**이다.
+
+```bash
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py \
+    enable_tracing:=true trace_events_kernel:=
+```
+
+이때 못 보는 것은 **코어별 thread-run 레인 (Perfetto `Cpus`) · IRQ · `sched_switch`
+로만 보이는 비-UST 스레드 (DDS / rclcpp 내부)** 다. `rtc:*` span 과 ROS 2 callback
+timing 은 UST 라 영향이 없다. 스레드가 *어느 코어에 앉아 있는지* 는 커널 타임라인
+없이도 `verify_rt_runtime.sh` 가 `/proc` 로 읽는다 — 커널 모듈이 필요한 것은
+"언제 run 했는가" 쪽이다.
+
+### 커널 타임라인이 필요해지면 — upstream lttng-modules 를 DKMS 로 등록
+
+**아래는 실행 절차이지 현재 설정이 아니다.** 필요해진 시점에 수행한다. 이 저장소는
+자동화하지 않는다 — MOK 단계가 사람의 개입(재부팅 + 펌웨어 화면)을 요구해서
+자동화해도 반쯤만 자동이고, 안 도는 스크립트는 커널이 오르면 조용히 썩는다.
+
+사전 확인 — 필요한 최소 버전은 위 표가 아니라 도구가 답한다:
+
+```bash
+source repo_scripts/scripts/lib/rt_common.sh
+lttng_modules_min_version_for_kernel "$(lttng_kernel_build_version "$(uname -r)")"
+# → 예: 2.14.6
+```
+
+1. **소스와 `dkms.conf` 를 합친다.** upstream git 저장소에는 `dkms.conf` 가 없지만
+   **배포판 deb 는 완성품을 갖고 있다** (커널 `.config` 를 읽어 모듈 목록을 조건부로
+   조립한다). 2.14.0 과 2.14.6 의 소스 모듈 집합은 **동일**하므로 그대로 재사용하고
+   버전 문자열만 바꾼다:
+
+   ```bash
+   VER=2.14.6
+   git clone -b v${VER} --depth 1 https://github.com/lttng/lttng-modules.git /tmp/lttng-${VER}
+   apt-get download lttng-modules-dkms && dpkg-deb -x lttng-modules-dkms_*.deb /tmp/lttng-deb
+   cp /tmp/lttng-deb/usr/src/lttng-modules-*/dkms.conf /tmp/lttng-${VER}/
+   sed -i "s/^PACKAGE_VERSION=.*/PACKAGE_VERSION=\"${VER}\"/" /tmp/lttng-${VER}/dkms.conf
+   ```
+
+2. **빌드가 되는지 먼저 확인한다** (등록 전, 시스템 변경 0):
+
+   ```bash
+   ( cd /tmp/lttng-${VER} && KERNELDIR=/lib/modules/$(uname -r)/build make -j"$(nproc)" modules )
+   ```
+
+   2026-08-08 실측: `v2.14.6` × `7.0.0-28-generic` (헤더 7.0.12) → 0 error, 46 `.ko`.
+
+3. **DKMS 등록:**
+
+   ```bash
+   sudo cp -r /tmp/lttng-${VER} /usr/src/lttng-modules-${VER}
+   sudo dkms add -m lttng-modules -v ${VER}
+   sudo dkms build -m lttng-modules -v ${VER}
+   sudo dkms install -m lttng-modules -v ${VER}
+   ```
+
+4. **Secure Boot 호스트면 여기서 끝나지 않는다** — 빌드가 되어도 서명 없이는 load 가
+   거부된다. §Secure Boot 호스트 의 `enroll_lttng_mok.sh` 를 이어서 수행한다.
+
+5. 검증: `check_rt_setup.sh --summary` 가 `kmod=1` 로 바뀐다.
+
+**유지 비용을 알고 시작한다** — 커널이 오를 때마다 upstream 가드를 다시 확인하고
+재빌드해야 하며, `lttng-tools`/UST 는 배포판 2.13 계열에 남으므로 LTTng 가 "테스트하지
+않는다" 고 명시한 minor 조합이 된다. dual-kernel 호스트라면 DKMS postinst 가
+*current + newest installed* 를 대상으로 잡는다는 점도 함께 본다.
+
 ## Limits
 
 * **자동 모드**로는 콜백 내부 함수 breakdown 도, RT pthread tick 경계도 안 보인다
@@ -519,5 +624,8 @@ sudo apt install ros-jazzy-tracetools-analysis
   빌드에는 존재하지 않는다. 기본 프로덕션 빌드는 RT hot-path 비용 0.
 * Trace 파일 크기는 캡처 시간 + UST/kernel event volume 에 선형. 1 분 캡처 ~ 10–100 MB.
   너무 길게 캡처하면 `lttng-sessiond` 가 디스크 부담을 받음.
-* `lttng-modules` 가 빌드되지 않은 환경 (DKMS 실패 / 비표준 kernel) 에서는 kernel
-  events 가 캡처되지 않는다. `trace_events_kernel:=` 로 빈 값 주면 UST only 로 fallback.
+* `lttng-modules` 가 빌드되지 않은 환경에서는 kernel events 가 캡처되지 않는다.
+  `trace_events_kernel:=` 로 빈 값 주면 UST only 로 fallback.
+  **이것은 "비표준 커널" 만의 이야기가 아니다** — Ubuntu noble HWE 의 표준 커널에서도
+  배포판 `lttng-modules` 가 그 커널을 지원하지 않으면 같은 상태가 된다. 어떤 커널이
+  해당하는지와 그때 못 보는 것은 §Kernel timeline 가용성.

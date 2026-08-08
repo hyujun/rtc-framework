@@ -1015,6 +1015,9 @@ check_tracing_setup() {
   _category_start "tracing_setup"
 
   local lttng_ok=0 kmod_ok=0 group_ok=0 launch_ok=0
+  # kmod=0 의 *사유*. kmod 자체는 0|1 계약을 유지한다 — 이 필드는 추가이지 교체가
+  # 아니다 (docs/tracing.md 가 kmod=0|1 을 문서화한 유일한 소비자다).
+  local kmod_block="none"
   if command -v lttng >/dev/null 2>&1; then
     lttng_ok=1
     _pass "lttng-tools: $(lttng --version 2>&1 | head -1)"
@@ -1035,6 +1038,7 @@ check_tracing_setup() {
     _pass "lttng-tracer kernel module: loadable ($(modinfo -F version lttng-tracer 2>/dev/null | head -1 || echo '?'))"
   elif modinfo lttng-tracer >/dev/null 2>&1; then
     # file 은 있는데 load 불가 — Secure Boot MOK 미서명 가능성 가장 큼.
+    kmod_block="unsigned"
     _warn "lttng-tracer kernel module: .ko 존재하나 load 불가 (Secure Boot MOK 미서명 의심)"
     if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
       _fix "./repo_scripts/scripts/enroll_lttng_mok.sh  # Secure Boot 서명 enrollment"
@@ -1043,8 +1047,24 @@ check_tracing_setup() {
     fi
     _category_update "tracing_setup" "WARN"
   else
-    _warn "lttng-tracer kernel module 미빌드 (kernel tracing 불가)"
-    _fix "./install.sh --tracing  # 또는 sudo dkms status lttng-modules 로 빌드 상태 확인"
+    # 미빌드의 사유는 하나가 아니다. "./install.sh --tracing" 는 **설치하면 되는**
+    # 경우에만 성립하는 처방이고, 커널이 배포판 후보와 tracepoint 프로토타입에서
+    # 어긋나면 그 명령은 몇 번을 돌려도 같은 자리에서 죽는다 (issue #190) —
+    # 센서가 성립 불가능한 처방을 내는 것은 그 자체로 결함이다.
+    local _v _kv _rq _cand
+    _cand=$(apt-cache policy lttng-modules-dkms 2>/dev/null \
+              | awk '/Candidate:/ {print $2; exit}')
+    read -r _v _kv _rq < <(lttng_modules_compat_verdict "$(uname -r)" "${_cand:-0}")
+    if [[ "$_v" == "incompatible" ]]; then
+      kmod_block="kernel_incompat"
+      _warn "lttng-tracer kernel module 미빌드 — 커널 ${_kv} 에는 lttng-modules >= ${_rq} 필요 (배포판 후보 ${_cand:-없음})"
+      _fix "trace_events_kernel:= 로 UST-only 사용 (kernel timeline 은 이 커널에서 불가)"
+      _fix "커널 타임라인이 필요하면 docs/tracing.md §Kernel timeline 가용성 의 upstream DKMS 절차"
+    else
+      kmod_block="not_built"
+      _warn "lttng-tracer kernel module 미빌드 (kernel tracing 불가)"
+      _fix "./install.sh --tracing  # 또는 sudo dkms status lttng-modules 로 빌드 상태 확인"
+    fi
     _category_update "tracing_setup" "WARN"
   fi
 
@@ -1072,8 +1092,10 @@ check_tracing_setup() {
     _category_update "tracing_setup" "WARN"
   fi
 
+  local _kmod_detail=""
+  [[ "$kmod_ok" -eq 0 && "$kmod_block" != "none" ]] && _kmod_detail=" kmod_block=${kmod_block}"
   _category_set_detail "tracing_setup" \
-    "lttng=${lttng_ok} kmod=${kmod_ok} group=${group_ok} launch=${launch_ok}"
+    "lttng=${lttng_ok} kmod=${kmod_ok}${_kmod_detail} group=${group_ok} launch=${launch_ok}"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════

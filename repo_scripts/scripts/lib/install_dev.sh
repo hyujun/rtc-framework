@@ -5,8 +5,9 @@
 #   install_vscode_debug_tools         — gdb + ptrace_scope policy (VS Code Attach)
 #   install_code_intelligence_tools    — clangd + LLVM OpenMP headers (libomp-dev)
 #                                         + resource-dir omp.h verification
-#   install_tracing_tools              — lttng-tools + lttng-modules-dkms (DKMS
-#                                         build w/ timeout + dpkg retry) +
+#   install_tracing_tools              — lttng-tools + lttng-modules-dkms (커널
+#                                         호환 판정 → DKMS build w/ timeout +
+#                                         dpkg retry) +
 #                                         ${ROS_PKG_PREFIX}-ros2trace +
 #                                         tracetools-launch/read + python3-bt2
 #                                         + tracing group + modprobe verify
@@ -143,23 +144,48 @@ install_tracing_tools() {
       > /dev/null 2>&1 \
     || warn "LTTng userspace install reported an error — re-run with verbose apt to inspect"
 
-  # ── L2b: LTTng kernel module (DKMS build — verbose + timeout + retry) ───
-  # dkms postinst has been observed to stall silently on fresh Ubuntu 24.04
-  # (lttng-modules-dkms 2.14.0 + kernel 6.17 HWE) — `dkms status` shows
-  # "added" without kernel/arch row, build/ directory empty, dkms-build
-  # process idle with zero syscalls. The cause is in dpkg/debconf chain, not
-  # kernel compatibility: `sudo dpkg --configure -a` consistently retries
-  # and the DKMS build completes. The timeout below bounds the stall so
-  # non-interactive runs do not hang forever.
-  local DKMS_TIMEOUT=600
-  info "Installing lttng-modules-dkms (DKMS build, up to ${DKMS_TIMEOUT}s; output kept for progress)..."
-  if ! sudo timeout --kill-after=30 "$DKMS_TIMEOUT" apt-get install -y lttng-modules-dkms; then
-    warn "lttng-modules-dkms install timed out or was killed — retrying via 'sudo dpkg --configure -a'"
-    if sudo dpkg --configure -a; then
-      success "dpkg --configure -a recovered the lttng-modules postinst (DKMS build completed on retry)"
-    else
-      warn "dpkg --configure -a also failed — lttng-tracer kernel module unavailable"
-      warn "  Manual recovery: sudo apt-get remove --purge lttng-modules-dkms && sudo reboot && re-run --tracing"
+  # ── L2b: LTTng kernel module (DKMS build — 호환 판정 → build w/ timeout) ─
+  #
+  # 시도 *전에* 판정한다. lttng-modules 는 커널 tracepoint 프로토타입을 재선언
+  # 하므로 커널이 그것을 바꾸면 결정론적 컴파일 실패이고, 그 경우 아래의
+  # timeout·재시도·재부팅 안내는 전부 무효다 — 사용자는 600초를 기다린 뒤
+  # 고칠 수 없는 복구 절차를 안내받는다 (issue #190).
+  #
+  # 판정 로직은 rt_common.sh 가 소유한다 (check_rt_setup.sh 와 공유; upstream
+  # DKMS 등록 경로도 같은 표를 "어느 태그가 필요한가" 로 읽는다).
+  local _lttng_candidate _verdict _kver _req
+  _lttng_candidate=$(apt-cache policy lttng-modules-dkms 2>/dev/null \
+                       | awk '/Candidate:/ {print $2; exit}')
+  read -r _verdict _kver _req < <(
+    lttng_modules_compat_verdict "$KERNEL_RELEASE" "${_lttng_candidate:-0}")
+
+  if [[ "$_verdict" == "incompatible" ]]; then
+    # 설치를 시도하지 않는다. **머신에 되돌릴 상태를 만들지 않는 것이 이 분기의
+    # 계약이다** — apt-mark hold 도, modprobe blacklist 도, purge 도 하지 않는다.
+    # 호환 모듈이 생기면(배포판 갱신이든 upstream 등록이든) 그냥 설치하면 된다.
+    warn "lttng-modules-dkms 건너뜀 — 커널 ${_kver} 는 lttng-modules >= ${_req} 필요 (후보: ${_lttng_candidate:-없음})"
+    warn "  이 조합은 재시도·재부팅으로 해결되지 않는다 (tracepoint 프로토타입 비호환)"
+    warn "  UST 트레이싱은 정상: ros2 launch ... enable_tracing:=true trace_events_kernel:="
+    warn "  커널 타임라인이 필요하면 docs/tracing.md §Kernel timeline 가용성 참조"
+  else
+    # dkms postinst has been observed to stall silently on fresh Ubuntu 24.04
+    # (lttng-modules-dkms 2.14.0 + kernel 6.17 HWE) — `dkms status` shows
+    # "added" without kernel/arch row, build/ directory empty, dkms-build
+    # process idle with zero syscalls. **That** failure is in the dpkg/debconf
+    # chain: `sudo dpkg --configure -a` consistently retries and the DKMS build
+    # completes. 위 게이트가 커널 비호환을 이미 걸러냈으므로 여기 남는 실패는
+    # 그 stall 계열이고, 따라서 재시도가 유효하다 — 게이트 없이 이 주석을 읽으면
+    # 모든 DKMS 실패를 stall 로 오귀속하게 된다 (#190 이 그 자리였다).
+    local DKMS_TIMEOUT=600
+    info "Installing lttng-modules-dkms (DKMS build, up to ${DKMS_TIMEOUT}s; output kept for progress)..."
+    if ! sudo timeout --kill-after=30 "$DKMS_TIMEOUT" apt-get install -y lttng-modules-dkms; then
+      warn "lttng-modules-dkms install timed out or was killed — retrying via 'sudo dpkg --configure -a'"
+      if sudo dpkg --configure -a; then
+        success "dpkg --configure -a recovered the lttng-modules postinst (DKMS build completed on retry)"
+      else
+        warn "dpkg --configure -a also failed — lttng-tracer kernel module unavailable"
+        warn "  Manual recovery: sudo apt-get remove --purge lttng-modules-dkms && sudo reboot && re-run --tracing"
+      fi
     fi
   fi
 

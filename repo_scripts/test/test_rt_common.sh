@@ -2011,6 +2011,89 @@ test_print_thread_layout_derives_every_core_number() {
   done
 }
 
+# ── lttng-modules ↔ kernel 호환 게이트 (issue #190) ─────────────────────────
+#
+# 이 판정은 `install.sh --tracing` 이 600초짜리 실패를 시도할지 말지를 정하고,
+# check_rt_setup.sh 가 낼 처방을 정한다. 순수 함수(문자열→문자열)라 host 스텁이
+# 필요 없다 — 헤더 트리만 fixture 로 깐다.
+#
+# **fixture 의 값은 upstream v2.14.6 timer.h 의 hrtimer_start 가드에서 왔고,
+# 경계는 손으로 박았다** (표를 다시 읽어 기대값을 만들면 표가 자기 자신을 검사한다).
+# 6.12.90/6.12.91 경계는 Linux stable 이 3-인자 tracepoint 를 backport 한 지점과
+# 일치한다 — 이 두 줄이 이 슬라이스에서 가장 값비싼 리터럴이다.
+
+_mk_headers() {
+  # $1=root $2=release $3=VERSION $4=PATCHLEVEL $5=SUBLEVEL
+  local d="$1/$2/build"
+  mkdir -p "$d"
+  printf 'VERSION = %s\nPATCHLEVEL = %s\nSUBLEVEL = %s\nEXTRAVERSION =\n' "$3" "$4" "$5" >"$d/Makefile"
+}
+
+test_lttng_guard_table_boundaries() {
+  # 표 조회는 순수하다 — 헤더도 apt 도 안 본다.
+  expect_eq "guard 7.0.12 (이 박스)"      "2.14.6" "$(lttng_modules_min_version_for_kernel 7.0.12)"
+  expect_eq "guard 7.0.10 (하한 포함)"    "2.14.6" "$(lttng_modules_min_version_for_kernel 7.0.10)"
+  expect_eq "guard 7.0.9 (하한 직전)"     ""       "$(lttng_modules_min_version_for_kernel 7.0.9)"
+  # 저장소 기본 RT 커널이 정확히 이 경계에 앉아 있다 (build_rt_kernel.sh 6.12.91).
+  expect_eq "guard 6.12.91 (RT 기본)"     "2.14.6" "$(lttng_modules_min_version_for_kernel 6.12.91)"
+  expect_eq "guard 6.12.90 (직전)"        ""       "$(lttng_modules_min_version_for_kernel 6.12.90)"
+  expect_eq "guard 6.13.0 (상한 배제)"    ""       "$(lttng_modules_min_version_for_kernel 6.13.0)"
+  # archive 2.14.0 이 실제로 빌드에 성공한 계열 — 제약이 없어야 한다.
+  expect_eq "guard 6.17.13 (제약 없음)"   ""       "$(lttng_modules_min_version_for_kernel 6.17.13)"
+  expect_eq "guard 7.5.0 (>=7.1 열린 행)" "2.14.6" "$(lttng_modules_min_version_for_kernel 7.5.0)"
+  # 파싱 불가 입력은 조용히 빈 값 (호출측이 unknown 으로 강등한다).
+  expect_eq "guard 비버전 문자열"         ""       "$(lttng_modules_min_version_for_kernel 7.0.0-28-generic)"
+}
+
+test_lttng_kernel_version_comes_from_headers_not_uname() {
+  # 이 박스가 정확히 그 함정이다: uname -r 은 7.0.0 인데 헤더는 7.0.12 다.
+  # uname 을 믿으면 7.0.0 이 [7.0.10, 7.1.0) 밖이라 **비호환을 호환으로 오판**한다.
+  local root; root=$(mktemp -d)
+  _mk_headers "$root" "7.0.0-28-generic" 7 0 12
+  expect_eq "헤더에서 읽은 버전" "7.0.12" "$(lttng_kernel_build_version 7.0.0-28-generic "$root")"
+  expect_eq "uname 문자열이 아님" "incompatible 7.0.12 2.14.6" \
+    "$(lttng_modules_compat_verdict 7.0.0-28-generic '2.14.0-1ubuntu1.1~24.04.1' "$root")"
+  # SUBLEVEL 이 없는 Makefile 은 .0 으로 (그리고 그 값이 판정을 뒤집는다).
+  _mk_headers "$root" "7.0.0-99-generic" 7 0 ""
+  expect_eq "SUBLEVEL 결측 → .0"  "7.0.0" "$(lttng_kernel_build_version 7.0.0-99-generic "$root")"
+  expect_eq "7.0.0 은 가드 밖"    "ok 7.0.0 -" \
+    "$(lttng_modules_compat_verdict 7.0.0-99-generic '2.14.0-1ubuntu1.1~24.04.1' "$root")"
+  rm -rf "$root"
+}
+
+test_lttng_compat_verdict_is_three_valued() {
+  local root; root=$(mktemp -d)
+  _mk_headers "$root" "7.0.0-28-generic"  7 0 12
+  _mk_headers "$root" "6.17.0-40-generic" 6 17 13
+
+  # 막는 것은 표에 양성으로 걸릴 때뿐이다.
+  expect_eq "archive 2.14.0 x 7.0.12" "incompatible 7.0.12 2.14.6" \
+    "$(lttng_modules_compat_verdict 7.0.0-28-generic '2.14.0-1ubuntu1.1~24.04.1' "$root")"
+  # upstream 등록 후에는 같은 커널이 통과해야 한다 — A2 회귀 경로가 이 줄이다.
+  expect_eq "upstream 2.14.6 x 7.0.12" "ok 7.0.12 2.14.6" \
+    "$(lttng_modules_compat_verdict 7.0.0-28-generic '2.14.6' "$root")"
+  expect_eq "2.14.7 (상위) x 7.0.12" "ok 7.0.12 2.14.6" \
+    "$(lttng_modules_compat_verdict 7.0.0-28-generic '2.14.7-1ubuntu1' "$root")"
+  # 제약 없는 커널은 후보가 뭐든 시도한다.
+  expect_eq "archive 2.14.0 x 6.17.13" "ok 6.17.13 -" \
+    "$(lttng_modules_compat_verdict 6.17.0-40-generic '2.14.0-1ubuntu1.1~24.04.1' "$root")"
+  # 헤더가 없으면 판정 불가 — 막지 않고 시도한다 (편향 방향 고정).
+  expect_eq "헤더 없음 → unknown" "unknown - -" \
+    "$(lttng_modules_compat_verdict 9.9.9-nonexistent '2.14.0' "$root")"
+  rm -rf "$root"
+}
+
+test_lttng_compat_gate_has_an_escape_hatch() {
+  # 배포판이 upstream 버전을 안 올린 채 수정을 backport 하면 (2.14.0-1ubuntu1.2 가
+  # 가드를 포함) 버전 비교로는 알 수 없다. 그때 게이트가 되는 조합을 막는 유일한
+  # 경우가 되므로, 탈출구가 없으면 이 슬라이스 자체가 회귀를 만든다.
+  local root; root=$(mktemp -d)
+  _mk_headers "$root" "7.0.0-28-generic" 7 0 12
+  expect_eq "게이트 우회 시 unknown" "unknown - -" \
+    "$(RTC_LTTNG_SKIP_COMPAT_GATE=1 lttng_modules_compat_verdict 7.0.0-28-generic '2.14.0' "$root")"
+  rm -rf "$root"
+}
+
 test_external_driver_slots_per_tier
 test_external_driver_slots_share_a_core_only_on_the_degraded_tiers
 test_print_thread_layout_uses_the_slot_helpers
@@ -2027,6 +2110,11 @@ test_layout_profile_mpc_off_frees_the_mpc_slots
 test_layout_profile_verifier_tables_partition
 test_rtc_expected_threads_tracks_the_role_helpers
 test_print_thread_layout_derives_every_core_number
+
+test_lttng_guard_table_boundaries
+test_lttng_kernel_version_comes_from_headers_not_uname
+test_lttng_compat_verdict_is_three_valued
+test_lttng_compat_gate_has_an_escape_hatch
 
 test_write_file_if_changed_creates_new
 test_write_file_if_changed_skips_identical
