@@ -23,6 +23,21 @@ inputs:
     description: Extra arguments forwarded via `--pytest-args`
     required: false
     default: ""
+  ctest-args:
+    description: |
+      Extra arguments forwarded via `--ctest-args`, e.g. `-R <regex>` to run a
+      named subset of a package's ctest registrations.
+
+      Pair any `-R` with `--no-tests=error`. A regex that matches nothing makes
+      ctest exit 0 by default, so a renamed test would leave the caller looking
+      green while running nothing — the exact silent-skip this input exists to
+      let callers avoid.
+
+      Mutually exclusive with `pytest-args` in practice: both colcon options
+      consume the remaining argv, so only the last one on the command line is
+      parsed as intended.
+    required: false
+    default: ""
   summary-title:
     description: Heading shown in job summary
     required: false
@@ -43,6 +58,7 @@ runs:
         ROS_DISTRO: ${{ inputs.ros-distro }}
         DEPS_INSTALL: ${{ inputs.deps-install-path }}
         PYTEST_ARGS: ${{ inputs.pytest-args }}
+        CTEST_ARGS: ${{ inputs.ctest-args }}
       run: |
         set -eo pipefail
         source "/opt/ros/${ROS_DISTRO}/setup.bash"
@@ -61,9 +77,18 @@ runs:
           export LD_LIBRARY_PATH="${DEPS_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
         fi
 
+        # Both options are nargs='*' and swallow the rest of argv, so at most
+        # one may be appended — and it has to come last.
         EXTRA=""
         if [ -n "${PYTEST_ARGS}" ]; then
           EXTRA="--pytest-args ${PYTEST_ARGS}"
+        fi
+        if [ -n "${CTEST_ARGS}" ]; then
+          if [ -n "${EXTRA}" ]; then
+            echo "::error title=colcon-test-report misuse::pytest-args and ctest-args cannot both be set"
+            exit 1
+          fi
+          EXTRA="--ctest-args ${CTEST_ARGS}"
         fi
 
         # shellcheck disable=SC2086

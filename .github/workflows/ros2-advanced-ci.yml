@@ -77,6 +77,15 @@ jobs:
               - '**/*.cpp'
               - '**/*.h'
               - '**/CMakeLists.txt'
+              # integrated_bringup 의 launch/ 와 test/ 는 .py 지만 python 축이
+              # 아니다 — python 필터는 rtc_tools / rtc_digital_twin 한정이고, 이
+              # 패키지의 테스트는 cpp 축 잡에서만 돈다. 이 줄이 없으면 launch
+              # 파일만 고친 PR 이 **어떤 잡도 트리거하지 않아** docs-validate 만
+              # 돌고 끝난다 (#397: sim 3개가 기동 즉시 죽은 채 CI 는 조용했다).
+              # 대가는 launch-only PR 이 이제 전체 C++ 빌드 잡을 깨운다는 것이다 —
+              # 그 테스트를 돌리려면 integrated_bringup 을 빌드해야 하고 그게 곧
+              # 이 잡이라, 더 싼 경로가 없다 (`*.yaml` 이 이미 같은 값을 치른다).
+              - 'integrated_bringup/**/*.py'
               - '**/package.xml'
               - '**/*.yaml'
               - '**/*.yml'
@@ -491,6 +500,30 @@ jobs:
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
           summary-title: C++ Gated Test Results
           artifact-suffix: cpp-gated-test
+
+      # GATE: launch description 이 실제로 평가되는가 (#397).
+      #
+      # integrated_bringup 은 GraspPipelineTest 가 CI-fragile 해서 통째로
+      # test_cpp_besteffort 에 있고, 그게 도는 coverage-cpp 는 non-blocking 이다
+      # (그 잡 주석: "required 로 두지 말 것"). 결과적으로 이 패키지의 테스트는
+      # 지금까지 **하나도 merge 를 막지 못했다** — launch wiring 테스트 셋 포함.
+      # 패키지를 통째로 승격하면 fragile 한 grasp 테스트까지 gate 로 끌려오므로,
+      # launch 평가 테스트만 이름으로 골라 이 빠른 gate 잡에서 돌린다. 빌드는 위
+      # "Build packages" 가 이미 끝냈으므로 추가 비용은 초 단위 (로컬 실측 1.8 s).
+      #
+      # --no-tests=error 가 이 step 의 안전장치다: -R 이 0건 매칭하면 ctest 는
+      # 기본적으로 exit 0 이라, 테스트 이름이 바뀌는 순간 이 gate 가 아무것도 안
+      # 돌리면서 green 을 낸다. 이름은 integrated_bringup/CMakeLists.txt 의
+      # ament_add_pytest_test 타깃과 같아야 한다.
+      - name: Run gated launch-evaluation test (merge gate)
+        uses: ./.github/actions/colcon-test-report
+        with:
+          packages: integrated_bringup
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          ctest-args: "-R test_launch_description_evaluates --no-tests=error"
+          summary-title: Launch Evaluation Gate
+          artifact-suffix: launch-eval-gate
 
       # always(): ENOSPC 로 죽은 run 이야말로 이 수치가 필요하다.
       - name: Disk report (post-build)

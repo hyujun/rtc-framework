@@ -7,10 +7,17 @@ through all three fixes — because nothing anywhere asserted that a launch file
 was wired correctly. ``rtc_tools/test/test_cpu_shield_actions.py`` tests the
 helpers; these tests assert the launches actually *call* them.
 
-The checks are deliberately structural rather than behavioural: building a real
-launch description would need a running ROS graph, while what drifted was always
-which helper a file called. Both the import and the call are asserted, so
-deleting the call while keeping the import (or vice versa) fails.
+The checks are structural (AST) because what drifted was always *which helper a
+file called* — a fact that survives no matter what the helper returns, so
+reading the source is the direct way to see it. Both the import and the call are
+asserted, so deleting the call while keeping the import (or vice versa) fails.
+
+This module used to justify itself differently — "building a real launch
+description would need a running ROS graph" — and that was wrong. A bare
+``LaunchContext`` evaluates every one of these launches with no graph at all,
+and while that claim stood nobody wrote the behavioural sensor, so all three sim
+launches shipped broken (#397). ``test_launch_description_evaluates`` is that
+sensor now; the two are complements, not alternatives.
 """
 
 from __future__ import annotations
