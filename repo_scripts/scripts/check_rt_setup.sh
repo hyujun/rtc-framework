@@ -162,49 +162,64 @@ check_cpu_isolation() {
   _section "2/9" "CPU Isolation"
   _category_start "cpu_isolation"
 
-  local isolated_file="/sys/devices/system/cpu/isolated"
-  if [[ ! -f "$isolated_file" ]]; then
-    _skip "파일 없음: ${isolated_file}"
-    _category_set_detail "cpu_isolation" "unknown"
-    return
-  fi
+  # 무엇이 격리를 실제로 걸고 있는지는 rt_common.sh::shield_isolation_method 가
+  # 판정한다 (cset shield → isolcpus → none). 이 함수는 그 답을 기대값과 대조만
+  # 한다 — 예전에는 /sys/devices/system/cpu/isolated 하나만 보고 판정했는데
+  # **그 파일은 isolcpus 만 쓴다**. 그래서 CPUSPEC(1-3,7-9) 로 살아 있는 cset
+  # shield 를 "격리 미활성 — 실행 시 자동 활성화됩니다" 로 보고했고, 그 아래
+  # "cset shield 탐지" 분기는 `isolated` 가 비어있지 않고 동시에 cmdline 에
+  # isolcpus 가 없을 것을 요구해 사실상 도달 불가였다 (라벨 오귀속, issue #386 A).
+  local method cpus
+  read -r method cpus <<<"$(shield_isolation_method)"
 
-  local isolated
-  isolated=$(cat "$isolated_file" 2>/dev/null || echo "")
-
-  if [[ -z "$isolated" ]]; then
+  if [[ "$method" == "none" ]]; then
     _warn "CPU 격리 미활성 — 로봇/시뮬 실행 시 자동 활성화됩니다"
     _fix "수동 활성화: sudo ${SCRIPT_DIR}/cpu_shield.sh on [--robot|--sim]"
     _category_update "cpu_isolation" "WARN"
     _category_set_detail "cpu_isolation" "none (auto-activate on launch)"
-  elif [[ "$isolated" == "$EXPECTED_ISOLATED" ]]; then
-    # Detect isolation method
-    if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
-      _pass "CPU 격리 일치 (isolcpus): ${isolated}"
+    return
+  fi
+
+  # 양변을 정규화해서 비교한다. 두 축의 표기가 다르기 때문이다: cset 축은
+  # normalise_cpu_set 을 통과한 공백 구분 목록("1 2 3 7 8 9"), isolcpus 축은
+  # /sys 원문("2-5"), 기대값은 _format_cpu_range 산출물("2-5,8-11"). 문자열로
+  # 직접 비교하면 cset 축이 **항상 불일치**로 떨어져 오귀속이 형태만 바꾼다.
+  local want have display
+  want=$(normalise_cpu_set "$EXPECTED_ISOLATED")
+  have=$(normalise_cpu_set "$cpus")
+  # shellcheck disable=SC2086  # word splitting intended: normalised id list
+  display=$(_format_cpu_range $have)
+
+  if [[ "$have" == "$want" ]]; then
+    if [[ "$method" == "isolcpus" ]]; then
+      _pass "CPU 격리 일치 (isolcpus): ${display}"
       _warn "isolcpus는 빌드 성능에 영향. cset shield 전환 권장"
       _fix "GRUB에서 isolcpus 제거 후 sudo cpu_shield.sh on --robot 사용"
       _category_update "cpu_isolation" "WARN"
     else
-      _pass "CPU 격리 일치 (cset shield): ${isolated}"
+      _pass "CPU 격리 일치 (cset shield): ${display}"
     fi
     if [[ "$HAS_SMT" -eq 1 ]]; then
       _pass "SMT/HT 시블링 포함 격리 확인됨 (${LOGICAL_CORES} logical CPUs)"
     fi
-    _category_set_detail "cpu_isolation" "${isolated}"
+    _category_set_detail "cpu_isolation" "${display} (${method})"
   else
-    # 부분 일치 여부 확인: 기대값의 코어가 모두 포함되어 있는지
-    local partial_ok=1
-    # EXPECTED_ISOLATED의 범위를 파싱하여 actual에 모두 포함되는지 확인
-    # (단순 문자열 불일치이지만 실제로는 기능적으로 충분할 수 있음)
-    _warn "CPU 격리 불일치: ${isolated} (기대값: ${EXPECTED_ISOLATED})"
+    local expected_display
+    # shellcheck disable=SC2086  # word splitting intended: normalised id list
+    expected_display=$(_format_cpu_range $want)
+    _warn "CPU 격리 불일치: ${display} (기대값: ${expected_display})"
     if [[ "$HAS_SMT" -eq 1 ]]; then
       _warn "SMT/HT 시스템: 물리 ${TOTAL_CORES}코어 / 논리 ${LOGICAL_CORES}코어"
       _warn "isolcpus는 논리 CPU 번호를 사용해야 합니다 (HT 시블링 포함)"
     fi
-    _fix "GRUB의 isolcpus=${isolated} → isolcpus=${EXPECTED_ISOLATED} 로 변경"
-    _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+    if [[ "$method" == "cset" ]]; then
+      _fix "shield 재구성: sudo ${SCRIPT_DIR}/cpu_shield.sh off && sudo ${SCRIPT_DIR}/cpu_shield.sh on --robot"
+    else
+      _fix "GRUB의 isolcpus=${display} → isolcpus=${expected_display} 로 변경"
+      _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+    fi
     _category_update "cpu_isolation" "WARN"
-    _category_set_detail "cpu_isolation" "${isolated} (expected ${EXPECTED_ISOLATED})"
+    _category_set_detail "cpu_isolation" "${display} (${method}, expected ${expected_display})"
   fi
 }
 
@@ -1231,4 +1246,12 @@ main() {
   fi
 }
 
-main
+# Executed → run. Sourced → define only, so test_rt_common.sh can drive
+# check_cpu_isolation() against a stubbed shield_isolation_method and observe the
+# category it writes. Same guard, same reason, as verify_rt_runtime.sh (#353): a
+# text grep cannot tell a live call from a comment mentioning one, and the
+# isolation-detection bug this file just fixed (#386 A) was exactly a wiring
+# error — the right helper existed and nothing called it.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main
+fi

@@ -28,22 +28,35 @@ _RT_LOG_PREFIX="test"
 # shellcheck disable=SC1091
 source "${SCRIPTS_DIR}/lib/rt_common.sh"
 
-# cpu_shield.sh 본문에서 판정 함수 3개만 추출해 정의한다 (dispatch 실행 회피).
+# cpu_shield.sh 본문에서 판정 함수만 추출해 정의한다 (dispatch 실행 회피).
 # sed 범위는 함수 시그니처 기준이며, 함수명이 바뀌면 아래 assert가 즉시 깨진다.
-eval "$(sed -n '/^normalise_cpu_set() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
+#
+# normalise_cpu_set / shield_isolation_method 는 여기서 뽑지 않는다 — #386 A 가
+# 둘을 (isolcpus_isolated_cpus · shield_actual_user_cpus 와 함께) rt_common.sh
+# 로 올렸고, 그건 위에서 이미 source 된다.
 eval "$(sed -n '/^shield_matches_desired() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
 # 마커 판독은 #350 에서 "<mode> <profile>" 로 바뀌었고 shield_matches_desired 가
 # 그것을 호출한다 — 함께 뽑지 않으면 판정이 아니라 미정의 함수를 테스트하게 된다.
 eval "$(sed -n '/^shield_marker_read() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
-eval "$(sed -n '/^shield_isolation_method() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
 eval "$(sed -n '/^shield_marker_write() {/,/^}/p' "${SCRIPTS_DIR}/cpu_shield.sh")"
 SHIELD_MODE_FILE="$(mktemp)"
 trap 'rm -f "$SHIELD_MODE_FILE"' EXIT
 
-for _fn in normalise_cpu_set shield_matches_desired shield_marker_read shield_marker_write \
-  shield_isolation_method; do
+# 가드를 두 목록으로 나눈 이유 — **하나로 두면 이동을 못 본다.** #386 이 위 네
+# 함수를 rt_common.sh 로 옮길 때 이 가드가 red 를 낼 것으로 예상했으나, source
+# 가 sed 추출보다 **먼저** 실행되므로 추출이 빈 문자열이어도 declare -F 는
+# source 된 정의를 보고 통과했다 (실측). 즉 옛 단일 목록은 "cpu_shield.sh 에서
+# 뽑았다" 를 주장하면서 실제로는 어느 파일에서 왔는지 구분하지 못한다.
+for _fn in shield_matches_desired shield_marker_read shield_marker_write; do
   if ! declare -F "$_fn" >/dev/null; then
     echo "FAIL: cpu_shield.sh에서 ${_fn} 을 추출하지 못했다 (함수명 변경?)" >&2
+    exit 1
+  fi
+done
+for _fn in normalise_cpu_set shield_isolation_method shield_actual_user_cpus \
+  isolcpus_isolated_cpus; do
+  if ! declare -F "$_fn" >/dev/null; then
+    echo "FAIL: rt_common.sh 가 ${_fn} 을 정의하지 않는다 (#386 A 의 이동이 되돌려졌나?)" >&2
     exit 1
   fi
 done

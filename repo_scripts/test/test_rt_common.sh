@@ -1463,6 +1463,85 @@ test_verifier_follows_the_shield_marker_profile() {
   expect_eq "verifier.flag.eq_form" "profile=mpc_off" "$(grep '^profile=' <<<"$out")"
 }
 
+# ── check_rt_setup.sh::check_cpu_isolation (issue #386 A) ───────────────────
+# 이동한 shield_isolation_method 의 **새 소비처**. 이동만 검증하면 반쪽이다 —
+# 이 검사가 예전에 틀렸던 이유는 함수가 없어서가 아니라 아무도 안 불러서였고,
+# 그 배선은 소스 grep 으로는 죽었는지 살았는지 구분되지 않는다 (#353 과 같은 축).
+#
+# 판정 두 축(method · 코어 일치)을 모두 스텁으로 가린다. 이 박스는 cset 도 없고
+# /sys/.../isolated 도 비어 있어서, 안 가리면 네 케이스 중 "none" 하나만 관측된다.
+_isolation_category() {
+  # $1 = shield_isolation_method 가 낼 문자열, $2 = EXPECTED_ISOLATED
+  local method_out="$1" expected="$2"
+  local checker="${SCRIPT_DIR}/../scripts/check_rt_setup.sh"
+  (
+    set +eu
+    # 인자 없는 source 는 호출자의 위치인자를 물려준다 — 검사기의 CLI 파서가
+    # 그걸 unknown option 으로 받아 show_help → exit 0 으로 조용히 죽는다.
+    set --
+    # shellcheck disable=SC1090
+    source "$checker" >/dev/null 2>&1
+    shield_isolation_method() { echo "$method_out"; }
+    EXPECTED_ISOLATED="$expected"
+    OUTPUT_MODE="verbose"
+    # 출력을 $(...) 로 받으면 안 된다 — 명령 치환은 서브셸이라 CATEGORY_* 갱신이
+    # 호출자에게 안 돌아오고, 카테고리 단언이 전부 빈 문자열 비교로 공허해진다.
+    local tmp
+    tmp=$(mktemp)
+    check_cpu_isolation >"$tmp" 2>&1
+    echo "status=${CATEGORY_STATUS[cpu_isolation]:-}"
+    echo "detail=${CATEGORY_DETAIL[cpu_isolation]:-}"
+    echo "out=$(tr '\n' ' ' <"$tmp")"
+    rm -f "$tmp"
+  )
+}
+
+test_check_cpu_isolation_sees_a_live_cset_shield() {
+  local out
+
+  # 이 이슈의 본체: cset shield 가 기대값대로 서 있는데 "격리 미활성" 이 나오던
+  # 자리다. /sys/.../isolated 는 여전히 비어 있다 (cset 은 거기 안 쓴다).
+  out=$(_isolation_category "cset 1 2 3 7 8 9" "1-3,7-9")
+  expect_eq "isolcheck.cset.status" "status=PASS" "$(grep '^status=' <<<"$out")"
+  expect_eq "isolcheck.cset.detail" "detail=1-3,7-9 (cset)" "$(grep '^detail=' <<<"$out")"
+  if grep -q 'cset shield' <<<"$out" && ! grep -q '격리 미활성' <<<"$out"; then
+    pass
+  else
+    fail "[isolcheck.cset.msg] 살아 있는 cset shield 를 격리 미활성으로 보고했다: $out"
+  fi
+
+  # 표기가 다른 같은 집합 — 기대값은 범위 표기, method 출력은 정규화된 목록.
+  # 문자열로 직접 비교하면 여기서 불일치가 난다.
+  out=$(_isolation_category "cset 2 3 4 5 8 9 10 11" "2-5,8-11")
+  expect_eq "isolcheck.cset.normalised" "status=PASS" "$(grep '^status=' <<<"$out")"
+
+  # isolcpus 축은 PASS 하되 빌드 성능 경고 때문에 카테고리는 WARN 이다.
+  out=$(_isolation_category "isolcpus 1-3,7-9" "1-3,7-9")
+  expect_eq "isolcheck.isolcpus.status" "status=WARN" "$(grep '^status=' <<<"$out")"
+  expect_eq "isolcheck.isolcpus.detail" "detail=1-3,7-9 (isolcpus)" "$(grep '^detail=' <<<"$out")"
+  if grep -q 'isolcpus' <<<"$out"; then
+    pass
+  else
+    fail "[isolcheck.isolcpus.msg] isolcpus 로 격리됐는데 그 이름이 안 나온다: $out"
+  fi
+
+  # 둘 다 없을 때만 "미활성" 이다.
+  out=$(_isolation_category "none" "1-3,7-9")
+  expect_eq "isolcheck.none.status" "status=WARN" "$(grep '^status=' <<<"$out")"
+  expect_eq "isolcheck.none.detail" "detail=none (auto-activate on launch)" \
+    "$(grep '^detail=' <<<"$out")"
+
+  # 코어가 기대와 다르면 method 와 무관하게 불일치다. cset 축의 처방은 GRUB 이
+  # 아니라 shield 재구성이어야 한다 — 옛 코드는 cset 상태에도 GRUB 을 안내했다.
+  out=$(_isolation_category "cset 1 2 3" "1-3,7-9")
+  expect_eq "isolcheck.mismatch.status" "status=WARN" "$(grep '^status=' <<<"$out")"
+  if grep -q '불일치' <<<"$out"; then
+    pass
+  else
+    fail "[isolcheck.mismatch.msg] 코어가 다른데 불일치 보고가 없다: $out"
+  fi
+}
+
 # ── Layout tier tables (issue #153 M1) ──────────────────────────────────────
 # get_mpc_cores / get_rt_cores / get_nrt_cores 는 이제 manifest 에서 생성되지만,
 # **이 fixture 의 리터럴이 생성기의 oracle 이다**. 생성물끼리 대조하면 잘못된
@@ -1734,6 +1813,7 @@ test_print_thread_layout_uses_the_slot_helpers
 test_verifier_expected_slots_track_the_helpers
 test_verifier_is_sourceable_without_running
 test_verifier_follows_the_shield_marker_profile
+test_check_cpu_isolation_sees_a_live_cset_shield
 test_layout_tier_tables_per_tier
 test_layout_worker_roles_absent_on_every_tier
 test_rtc_expected_threads_table_per_tier

@@ -136,6 +136,17 @@ repo_scripts/
 | `compute_expected_isolated()` | 비-OS 코어 전체 범위 (RT + nrt + driver, SMT 시블링 포함). cset shield 검증 (`check_rt_setup.sh`) 에 사용 — nohz_full / rcu_nocbs 는 `get_rt_cores_with_siblings()` 를 사용 (좁은 범위) |
 | `get_os_logical_cpus()` | OS 물리 코어에 속하는 논리 CPU 번호 목록 |
 
+### 격리 상태 탐지 함수 (issue #386)
+
+`cpu_shield.sh` 에 있던 것을 옮겨 왔습니다. 소비자가 둘인데 서로 다른 파일을 source 하기 때문입니다 — `cpu_shield.sh` (stale-shield 판정 · `status`) 와 `check_rt_setup.sh` (CPU Isolation 카테고리). 옮기기 전에는 후자가 `/sys/devices/system/cpu/isolated` 하나로 판정했고, **그 파일은 isolcpus 만 쓰므로** 살아 있는 cset shield 를 "격리 미활성" 으로 보고했습니다.
+
+| 함수 | 설명 |
+|------|------|
+| `normalise_cpu_set()` | `"2-9,12-13"` / `" 2 3 "` → 정렬·중복제거된 공백 구분 id 목록. 순수 문자열 변환 (I/O 없음) |
+| `shield_actual_user_cpus()` | 활성 user cpuset 의 실제 mask. cgroup cpuset 파일 우선, 실패 시 `cset shield -s` 파싱. 읽기 실패는 "일치" 가 아니라 **"모름"** (non-zero) |
+| `isolcpus_isolated_cpus()` | 부팅 시 `isolcpus=` 가 뺀 코어. `$RTC_SYSFS_ROOT` 존중 |
+| `shield_isolation_method()` | **지금 무엇이 격리를 걸고 있는가** — `cset <cpus>` / `isolcpus <cpus>` / `none`. cset 을 **먼저** 묻는 순서가 계약이며 `test_cpu_shield_mask.sh` 가 "둘 다 활성" 케이스로 고정한다 |
+
 ### NIC/네트워크 함수
 
 | 함수 | 설명 |
