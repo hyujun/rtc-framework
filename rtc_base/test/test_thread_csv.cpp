@@ -3,7 +3,8 @@
 //   ThreadCsvProducer<P, N>  (rtc_base/logging/thread_csv_producer.hpp)
 //   ThreadCsvLogger<P>       (rtc_base/logging/thread_csv_logger.hpp)
 //
-// Distinct from ThreadTiming* (which auto-emits t_wall_ns / tick_count) —
+// Distinct from ThreadTiming* (which auto-emits t_wall_ns / tick_count /
+// run_id) —
 // here the Payload owns the entire CSV row.
 
 #include "rtc_base/logging/thread_csv_logger.hpp"

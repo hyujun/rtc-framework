@@ -11,7 +11,10 @@
 // and a thread-specific `Payload`. The header columns are common across
 // every CSV produced by ThreadTimingCsvLogger so cross-thread analysis
 // scripts can assume their presence; payload columns are entirely up to
-// the producing thread.
+// the producing thread. The CSV additionally carries a `run_id` column, but
+// that one is stamped by the logger rather than travelling in the sample —
+// it identifies the process/launch, not the tick (rtc_base/logging/run_id.hpp),
+// so it must not cost the RT producer a field.
 //
 // Constraints on `Payload`:
 //   - Must be trivially copyable (RT-safe SPSC push/pop).

@@ -40,7 +40,7 @@ rtc_tools/
 │   │   └── trace_action.py             ← ros2_tracing (LTTng) capture 액션 헬퍼
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
-│       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (RTC_SESSION_DIR 관리)
+│       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (RTC_SESSION_DIR / RTC_RUN_ID 관리)
 │       └── hand_data_plot.py            ← 손 CSV 데이터 시각화
 ├── test/                                 ← pytest 유닛 테스트 (Testing 섹션 참조)
 ├── resource/
@@ -87,9 +87,12 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv
 # Sensor 로그 (DeviceSensorLog) 시각화
 ros2 run rtc_tools plot_rtc_log <device>_sensor_log.csv
 
-# 타이밍 로그 시각화 (CM RT loop / MPC main loop — 동일 7-col 스키마)
+# 타이밍 로그 시각화 (CM RT loop / MPC main loop — 동일 8-col 스키마)
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv
 ros2 run rtc_tools plot_rtc_log mpc_timing_log.csv
+
+# 한 파일에 두 런이 있을 때 (같은 분 재기동) 특정 런 선택 — 기본은 마지막 런
+ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --run-id 260808143052
 
 # 플롯 파일로 저장
 ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --save-dir /tmp/plots
@@ -109,6 +112,12 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 > 저장 없이 GUI 표시만 합니다.
 >
 > `--save-dir` 지정 시 Agg backend 자동 사용 (GUI 없이 렌더링).
+>
+> 타이밍 CSV 가 `run_id` 를 여러 개 담고 있으면 (세션 디렉토리는 분 해상도라
+> 같은 분의 재기동이 같은 파일에 append 된다) **마지막 런만** 그리고 무엇을
+> 버렸는지 stdout 에 출력합니다 — 파일 전체로 `n / span` 을 내면 어느 런에도
+> 없던 레이트가 나오기 때문입니다 (#376). 다른 런은 `--run-id <값>` 으로
+> 선택하고, 없는 값이면 사용 가능한 목록과 함께 에러로 죽습니다.
 
 **파일 이름 자동 감지:**
 
@@ -418,6 +427,7 @@ plots = get_session_subdir('plots')  # 환경변수 읽기 전용, None 반환 �
 | `resolve_logging_root()` | 3단 체인으로 `logging_data` 루트 경로 결정 |
 | `create_session_dir(root=None)` | `YYMMDD_HHMM` 세션과 6개 서브디렉토리 생성 |
 | `cleanup_old_sessions(root, max)` | `YYMMDD_HHMM` 패턴 세션만 대상으로 개수 제한 |
+| `generate_run_id()` | 이번 launch 의 런 ID (`YYMMDDHHMMSS`). launch 가 `RTC_RUN_ID` 로 전파하고 C++ `rtc::ResolveRunId()` 가 소비 (#376) |
 | `get_session_dir()` | `RTC_SESSION_DIR` 읽기 (없으면 `None`) |
 | `get_or_create_session_dir()` | env 우선, 없으면 새 세션 생성 |
 | `get_session_subdir(name)` | 현재 세션 하위 폴더 경로 반환 (자동 생성, 세션 미설정 시 `None`) |

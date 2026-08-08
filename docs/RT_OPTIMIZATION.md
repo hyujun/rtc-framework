@@ -761,7 +761,7 @@ ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --stats   # 통계만 (plot �
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv           # plot + 통계
 ```
 
-`plot_rtc_log` 의 cm_timing 파이프라인 (`rtc_tools/plotting/plotters/timing.py`) 이 first-tick init spike (mlockall page touch + 첫 RCLCPP_INFO) 와 outlier 를 `detect_outlier_indices()` (median 기반) 로 **자동 제외**해 p99 / max 가 한 tick 스파이크에 왜곡되지 않는다. `--stats` 는 plot 없이 mean / p50 / p95 / p99 / max + counter 만 출력. (구 `rtc_tools.utils.cm_timing_analysis` 모듈은 plotting 파이프라인으로 통합되어 폐기됨.)
+`plot_rtc_log` 의 cm_timing 파이프라인 (`rtc_tools/plotting/plotters/timing.py`) 이 first-tick init spike (mlockall page touch + 첫 RCLCPP_INFO) 와 outlier 를 `detect_outlier_indices()` (median 기반) 로 **자동 제외**해 p99 / max 가 한 tick 스파이크에 왜곡되지 않는다. `--stats` 는 plot 없이 mean / p50 / p95 / p99 / max + counter 만 출력. **레이트를 볼 때는 `run_id` 를 먼저 본다** — 같은 분에 재기동하면 두 런이 한 CSV 에 append 되고, 파일 전체로 `n / span` 을 내면 어느 런에도 없던 값이 나온다 (#349 에서 500 Hz 루프가 413 Hz 로 보였다). 로더가 마지막 런을 자동 선택하고 버린 런을 출력하며, `--run-id` 로 다른 런을 고른다 (#376). (구 `rtc_tools.utils.cm_timing_analysis` 모듈은 plotting 파이프라인으로 통합되어 폐기됨.)
 
 **목표** (500 Hz @ 2 ms budget):
 - `t_total_us` p99 ≪ 2000 µs (헤드룸 50% 이상)

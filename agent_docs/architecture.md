@@ -46,9 +46,10 @@ CM RT loop · MPC thread · hand UDP receiver 가 *동일* generic transport + *
 SSoT 파일:
 - `rtc_base/threading/periodic_rt_thread.hpp` — loop/lifecycle base
 - `rtc_base/timing/rt_tick_timing_sample.hpp` — unified `RtTickTimingPayload`
+- `rtc_base/logging/run_id.hpp` — `ResolveRunId()` (`$RTC_RUN_ID` → `getpid()`); 로거가 매 행에 찍어 한 세션 디렉토리 안의 두 기동을 가른다 (#376)
 - `rtc_base/timing/thread_timing_{sample,producer,csv_logger}.hpp` — generic transport
 
-CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_log.csv` / `rt_callback_timing_log.csv`), `<session>/timing/` 아래 저장. Aggregate stats 는 INFO summary 만, percentile 은 post-process.
+CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_log.csv` / `rt_callback_timing_log.csv`), `<session>/timing/` 아래 저장. Aggregate stats 는 INFO summary 만, percentile 은 post-process. 네 CSV 모두 `t_wall_ns,tick_count,run_id` 접두 3열을 로거가 자동 emit 하며, 한 launch 의 모든 프로세스가 같은 `run_id` 를 받으므로 채널 간 join 이 성립한다.
 
 ## Lock-Free Rules
 

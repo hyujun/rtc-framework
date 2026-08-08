@@ -552,7 +552,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Producer (RT thread, ControlLoop) pushes one RtTickTimingPayload per
   // tick; consumer (log thread, DrainLog at 100 Hz) drains into the CSV
   // logger. Schema is shared with the MPC thread — see
-  // rtc_base/timing/rt_tick_timing_sample.hpp.
+  // rtc_base/timing/rt_tick_timing_sample.hpp. Both loggers below stamp the
+  // same run_id (one process ⇒ one id), so a restart inside one session
+  // directory is separable in both files (#376).
   rtc::CmTimingBuffer cm_timing_producer_{};
   rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> cm_timing_logger_{};
 

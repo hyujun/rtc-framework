@@ -5,7 +5,7 @@
 //
 // Sibling of rtc::ThreadTimingProducer (rtc_base/timing/), but unlike
 // the timing variant this template:
-//   - Does NOT emit `t_wall_ns` / `tick_count` auto-columns. The caller's
+//   - Does NOT emit `t_wall_ns` / `tick_count` / `run_id` auto-columns. The caller's
 //     Payload owns the entire CSV row — every column the writer emits
 //     comes from the Payload itself. Controllers that want a timestamp
 //     embed `state.t_relative_s` (filled by CM RT loop) into the Payload

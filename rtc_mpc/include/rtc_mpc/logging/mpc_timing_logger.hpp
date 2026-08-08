@@ -12,9 +12,10 @@
 // scripts can join across threads).
 //
 // CSV schema:
-//   t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us
-// One row per MPC main-loop iteration. The first two columns come from
-// `ThreadTimingCsvLogger`, the next five from `WriteRtTickTimingRow`.
+//   t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us
+// One row per MPC main-loop iteration. The first three columns come from
+// `ThreadTimingCsvLogger` (`run_id` separates restarts that share a session
+// directory — #376), the next five from `WriteRtTickTimingRow`.
 
 #include "rtc_base/logging/session_dir.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"

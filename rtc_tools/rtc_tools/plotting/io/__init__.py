@@ -1,9 +1,11 @@
-from .csv_loader import load_log_csv
+from .csv_loader import UnknownRunIdError, load_log_csv, select_run
 from .log_type import detect_log_type, detect_log_type_by_columns, peek_csv_header
 from .session import find_enclosing_session, resolve_default_save_dir
 
 __all__ = [
     "load_log_csv",
+    "select_run",
+    "UnknownRunIdError",
     "detect_log_type",
     "detect_log_type_by_columns",
     "peek_csv_header",

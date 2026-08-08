@@ -631,7 +631,7 @@ ros2 launch integrated_bringup robot_ur5e_p1a.launch.py use_mock_hardware:=true 
 **Launch 순서:**
 
 1. 세션 디렉토리 생성 (`rtc_tools.utils.session_dir.resolve_logging_root()` 의 4단 체인으로 결정: `$RTC_SESSION_DIR` → `$COLCON_PREFIX_PATH` → cwd 상위 `install/+src/` 탐색 → `$PWD`. 보통 `source install/setup.bash` 를 한 상태라면 ws 의 `logging_data/YYMMDD_HHMM/`, 최근 10개 유지)
-2. 환경 변수 설정 (`CYCLONEDDS_URI`, `RMW_IMPLEMENTATION`, `RTC_SESSION_DIR`)
+2. 환경 변수 설정 (`CYCLONEDDS_URI`, `RMW_IMPLEMENTATION`, `RTC_SESSION_DIR`, `RTC_RUN_ID` — 이번 launch 의 런 ID. 같은 분의 재기동이 같은 세션 디렉토리를 얻으므로 타이밍 CSV 안의 런 경계가 된다, #376)
 3. `cpu_shield.sh on --robot` -- CPU 격리 활성화
 4. UR 드라이버 launch (`ur_robot_driver/ur_control.launch.py`)
 5. Mock 모드인 경우 `forward_position_controller` 활성화 (3초 지연)

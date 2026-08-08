@@ -447,7 +447,7 @@ RT 스레드(producer)에서 비-RT 스레드(consumer)로 데이터를 전달�
 
 #### Per-thread timing 인프라 (`timing/thread_timing_*`)
 
-`timing/thread_timing_sample.hpp` + `thread_timing_producer.hpp` + `thread_timing_csv_logger.hpp` 3개 헤더가 임의 RT/soft-RT thread에 대한 per-tick CSV 로깅을 일반화한다. 새 timing 채널을 추가하려면:
+`timing/thread_timing_sample.hpp` + `thread_timing_producer.hpp` + `thread_timing_csv_logger.hpp` 3개 헤더가 임의 RT/soft-RT thread에 대한 per-tick CSV 로깅을 일반화한다 (`t_wall_ns,tick_count,run_id` 접두 3열은 logger 가 자동 emit — payload 가 아니므로 RT producer 는 비용을 내지 않는다). 새 timing 채널을 추가하려면:
 
 1. `Payload` POD struct 정의 (trivially copyable).
 2. header writer (`",col1,col2"`) + row writer (`",<v1>,<v2>"`) 자유 함수.
@@ -480,7 +480,7 @@ CM, MPC, udp_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. �
 
 ### 로깅 (`logging/`)
 
-CM-side 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `integrated_bringup/include/integrated_bringup/logging/`) 가 담당한다. CM 자신은 `cm_timing_log.csv` (per-tick scheduling timing) 만 소유하며, schema 는 `t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 7-col `RtTickTimingPayload` 를 사용한다 (`rtc_base/timing/rt_tick_timing_sample.hpp`).
+CM-side 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `integrated_bringup/include/integrated_bringup/logging/`) 가 담당한다. CM 자신은 `cm_timing_log.csv` (per-tick scheduling timing) 만 소유하며, schema 는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 8-col (접두 3열 + `RtTickTimingPayload` 5열) 을 사용한다 (`rtc_base/timing/rt_tick_timing_sample.hpp`). `run_id` 는 로거가 `Open()` 에서 한 번 해석해 (`logging/run_id.hpp`) 매 행에 찍으며, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못하게 한다 (#376).
 
 `PeriodicRtThread::JitterMeaningful()` 가상 함수로 producer가 자기 wakeup이 deadline-driven 인지 선언한다. CM `ControlLoopThread` 는 `use_sim_time_sync=true` 일 때 `false` 를 반환해 `jitter_us` 를 0.0 으로 고정한다 (CV cadence 대비 budget 차이는 RT 잡음 지표가 아니므로). MPC / hand_udp 는 default `true` 유지. 나머지 6개 컬럼은 두 모드 동일.
 

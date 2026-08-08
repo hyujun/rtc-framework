@@ -22,7 +22,11 @@ from rtc_tools.plotting.columns.detect import (
     invalidate_column_cache as _invalidate_column_cache,
 )
 from rtc_tools.plotting.io import detect_log_type
-from rtc_tools.plotting.io.csv_loader import LegacyCsvError, load_log_csv
+from rtc_tools.plotting.io.csv_loader import (
+    LegacyCsvError,
+    UnknownRunIdError,
+    load_log_csv,
+)
 from rtc_tools.plotting.io.log_type import (
     detect_log_type_by_columns,
     peek_csv_header as _peek_csv_header,
@@ -519,6 +523,105 @@ class TestLoadLogCsv:
         df = load_log_csv(str(path), "sensor_log")
         assert df["timestamp"].iloc[0] == 10.0
         assert df["timestamp"].iloc[1] == pytest.approx(10.002)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 런 경계 (#376) — 한 세션 디렉토리에 append 된 두 기동의 분리
+# ═══════════════════════════════════════════════════════════════════════════
+
+_RUN_HEADER = ["t_wall_ns", "tick_count", "run_id", "t_total_us", "jitter_us"]
+
+
+def _two_run_rows():
+    """앞 런 3행(2 ms 간격) + 35 s 공백 + 본 런 5행.
+
+    #349 실기 관측의 축소판이다: 두 구간 다 주기가 정확한데 파일 전체로
+    레이트를 내면 어느 구간에도 없던 값이 나온다.
+    """
+    first = [[1_000_000_000 + i * 2_000_000, 5976 + i, 11, 100.0, 0.2] for i in range(3)]
+    second = [[36_500_000_000 + i * 2_000_000, i + 1, 22, 110.0, 0.3] for i in range(5)]
+    return first + second
+
+
+class TestRunBoundary:
+    """load_log_csv: run_id 열이 있으면 런을 분리하고, 없으면 한 런으로 읽는다."""
+
+    def test_multi_run_keeps_last_run(self, tmp_path, capsys):
+        path = tmp_path / "cm_timing_log.csv"
+        _write_csv(path, _RUN_HEADER, _two_run_rows())
+
+        df = load_log_csv(str(path), "cm_timing")
+
+        assert len(df) == 5
+        assert set(df["run_id"]) == {22}
+        assert df.attrs["run_id"] == 22
+        assert df.attrs["runs"] == [(11, 3), (22, 5)]
+        out = capsys.readouterr().out
+        assert "2 runs" in out
+        assert "run 11 (3 rows)" in out
+
+    def test_timestamp_origin_is_the_selected_run(self, tmp_path):
+        """런 선택이 timestamp 파생보다 먼저여야 한다.
+
+        순서가 뒤집히면 origin 이 *버려진* 런의 첫 행이 되어 선택된 런의
+        timestamp 가 35 s 에서 시작한다 — 플롯 x축과 span 기반 레이트가 둘 다
+        조용히 틀어진다.
+        """
+        path = tmp_path / "cm_timing_log.csv"
+        _write_csv(path, _RUN_HEADER, _two_run_rows())
+
+        df = load_log_csv(str(path), "cm_timing")
+
+        assert df["timestamp"].iloc[0] == pytest.approx(0.0)
+        assert df["timestamp"].iloc[-1] == pytest.approx(0.008)
+
+    def test_explicit_run_id_selects_that_run(self, tmp_path):
+        path = tmp_path / "cm_timing_log.csv"
+        _write_csv(path, _RUN_HEADER, _two_run_rows())
+
+        df = load_log_csv(str(path), "cm_timing", run_id=11)
+
+        assert len(df) == 3
+        assert set(df["run_id"]) == {11}
+        assert df["timestamp"].iloc[0] == pytest.approx(0.0)
+
+    def test_unknown_run_id_raises(self, tmp_path):
+        """오타는 조용히 다른 런을 그리는 대신 죽어야 한다."""
+        path = tmp_path / "cm_timing_log.csv"
+        _write_csv(path, _RUN_HEADER, _two_run_rows())
+
+        with pytest.raises(UnknownRunIdError, match="11, 22"):
+            load_log_csv(str(path), "cm_timing", run_id=99)
+
+    def test_single_run_is_silent(self, tmp_path, capsys):
+        path = tmp_path / "cm_timing_log.csv"
+        _write_csv(
+            path,
+            _RUN_HEADER,
+            [[1_000_000_000 + i * 2_000_000, i + 1, 7, 100.0, 0.2] for i in range(4)],
+        )
+
+        df = load_log_csv(str(path), "cm_timing")
+
+        assert len(df) == 4
+        assert df.attrs["runs"] == [(7, 4)]
+        assert df.attrs["run_id"] == 7
+        assert "WARNING" not in capsys.readouterr().out
+
+    def test_archived_csv_without_run_id_loads_whole(self, tmp_path, capsys):
+        """#376 이전 세션은 7열이고 정의상 한 런이다 — 거부하거나 비우지 않는다."""
+        path = tmp_path / "cm_timing_log.csv"
+        _write_csv(
+            path,
+            ["t_wall_ns", "tick_count", "t_total_us", "jitter_us"],
+            [[1_000_000_000 + i * 2_000_000, i + 1, 100.0, 0.2] for i in range(4)],
+        )
+
+        df = load_log_csv(str(path), "cm_timing")
+
+        assert len(df) == 4
+        assert "run_id" not in df.columns
+        assert "WARNING" not in capsys.readouterr().out
 
 
 # ═══════════════════════════════════════════════════════════════════════════

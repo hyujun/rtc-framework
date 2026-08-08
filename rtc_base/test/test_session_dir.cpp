@@ -1,13 +1,17 @@
 // ── test_session_dir.cpp ─────────────────────────────────────────────────────
-// rtc::ResolveLoggingRoot() / ResolveSessionDir() 4단 체인 검증.
+// rtc::ResolveLoggingRoot() / ResolveSessionDir() 4단 체인 검증 +
+// rtc::ResolveRunId() 2단 체인 (그 헤더의 형제이고 같은 env 규율을 쓴다).
 //
-// 각 테스트는 환경변수(COLCON_PREFIX_PATH, RTC_SESSION_DIR)
+// 각 테스트는 환경변수(COLCON_PREFIX_PATH, RTC_SESSION_DIR, RTC_RUN_ID)
 // 와 cwd 를 독립적으로 세팅하도록 scoped fixture 로 관리합니다.
 // ─────────────────────────────────────────────────────────────────────────────
+#include <rtc_base/logging/run_id.hpp>
 #include <rtc_base/logging/session_dir.hpp>
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -234,4 +238,43 @@ TEST_F(SessionDirTest, CleanupOldSessions_KeepsOnlyMaxSessions) {
   EXPECT_TRUE(fs::exists(root / "260104_1200"));
   EXPECT_TRUE(fs::exists(root / "260105_1300"));
   EXPECT_TRUE(fs::exists(root / "not_a_session"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ResolveRunId — $RTC_RUN_ID → getpid() 2단 체인 (#376)
+//
+// 세션 디렉토리가 분 해상도라 같은 분의 두 기동은 같은 timing CSV 에 append
+// 된다. run_id 가 그 경계이므로, 이 체인이 조용히 상수로 떨어지면 (예: 파싱
+// 실패를 0 으로 읽어 두 런이 같은 값을 갖는 경우) 경계가 다시 사라진다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ResolveRunId, UsesEnvWhenSet) {
+  const ScopedEnv run_id{"RTC_RUN_ID", "260808143052"};
+  EXPECT_EQ(rtc::ResolveRunId(), 260808143052ULL);
+}
+
+TEST(ResolveRunId, FallsBackToPidWhenUnset) {
+  const ScopedUnsetEnv clear_run_id{"RTC_RUN_ID"};
+  const auto pid = static_cast<std::uint64_t>(::getpid());
+  EXPECT_EQ(rtc::ResolveRunId(), pid);
+  // 한 프로세스 안에서 상수여야 한다 — 같은 런의 두 로거(cm / rt_callback)가
+  // 다른 값을 받으면 한 런이 두 런으로 보인다.
+  EXPECT_EQ(rtc::ResolveRunId(), rtc::ResolveRunId());
+}
+
+TEST(ResolveRunId, EmptyEnvFallsBackToPid) {
+  const ScopedEnv run_id{"RTC_RUN_ID", ""};
+  EXPECT_EQ(rtc::ResolveRunId(), static_cast<std::uint64_t>(::getpid()));
+}
+
+TEST(ResolveRunId, PartialParseIsRejected) {
+  // "12abc" 를 12 로 읽으면 오타가 조용히 유효한 런 번호가 된다. 거부하고
+  // PID 폴백으로 떨어져야 경계가 남는다.
+  const ScopedEnv run_id{"RTC_RUN_ID", "12abc"};
+  EXPECT_EQ(rtc::ResolveRunId(), static_cast<std::uint64_t>(::getpid()));
+}
+
+TEST(ResolveRunId, NonNumericFallsBackToPid) {
+  const ScopedEnv run_id{"RTC_RUN_ID", "not-a-number"};
+  EXPECT_EQ(rtc::ResolveRunId(), static_cast<std::uint64_t>(::getpid()));
 }

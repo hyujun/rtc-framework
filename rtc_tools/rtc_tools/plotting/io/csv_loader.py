@@ -1,9 +1,15 @@
-"""CSV loading + numeric coercion.
+"""CSV loading + numeric coercion + run-boundary selection.
 
 Legacy CSVs with truncated headers (sensor_log files written before the
 inference columns were appended to the writer) are no longer supported. They
 are rejected with a clear error so silent column padding cannot mask
 regressions. Re-record sessions with the current code.
+
+Timing CSVs additionally carry a `run_id` column (#376). Session directories
+are minute-resolution and the timing logger appends, so two starts within one
+minute land in the same file; loading such a file whole makes every `n / span`
+rate 17%-ish wrong with no other symptom. `select_run` keeps the LAST run and
+says so loudly. Files without the column (archived sessions) load as one run.
 """
 
 import csv
@@ -12,6 +18,10 @@ import re
 
 class LegacyCsvError(ValueError):
     """Raised when a CSV's header column count does not match its data rows."""
+
+
+class UnknownRunIdError(ValueError):
+    """Raised when an explicitly requested run_id is not present in the CSV."""
 
 
 def _check_header_matches_data(filepath: str) -> None:
@@ -141,12 +151,72 @@ def _ensure_timestamp_column(df):
     return df
 
 
-def load_log_csv(filepath, log_type):
+def select_run(df, filepath, run_id=None):
+    """Reduce a multi-run timing CSV to one run; announce what was dropped.
+
+    The `run_id` column (#376) is what a restart inside one minute-resolution
+    session directory leaves behind. Merging the runs is never right — the
+    interesting failure is not that the plot looks odd but that `n / span`
+    silently reports a rate that never happened (#349: 413 Hz for a loop that
+    ticked at 500 Hz, with jitter p99 of 0.225 µs insisting the period was
+    fine). So: keep the last run, name the ones dropped.
+
+    `run_id=None` selects the last run; an explicit value selects that run and
+    raises UnknownRunIdError when it is absent (a typo must not silently plot
+    a different run than the one asked for).
+
+    Publishes ``df.attrs["runs"]`` — the (run_id, row count) pairs seen, in
+    file order — and ``df.attrs["run_id"]`` for the one selected, so callers
+    can report on runs they did not get. No-op for files without the column:
+    they predate #376 and are one run by definition.
+
+    Returns the selected frame, which is `df` itself when the file holds a
+    single run. Row data is never modified; only ``attrs`` is written.
+    """
+    if "run_id" not in df.columns or len(df) == 0:
+        return df
+
+    counts = df["run_id"].value_counts(sort=False, dropna=False)
+    runs = [(rid, int(n)) for rid, n in counts.items()]
+    df.attrs["runs"] = runs
+
+    if run_id is None:
+        if len(runs) <= 1:
+            df.attrs["run_id"] = runs[0][0]
+            return df
+        selected = df["run_id"].iloc[-1]
+        dropped = ", ".join(f"run {rid} ({n} rows)" for rid, n in runs if rid != selected)
+        print(
+            f"  WARNING: {filepath} holds {len(runs)} runs — the controller was "
+            f"restarted inside one session directory. Plotting the LAST run "
+            f"(run {selected}, {int(counts[selected])} rows) and dropping: {dropped}. "
+            f"Pass --run-id to pick another; rates computed over the whole file "
+            f"would be meaningless."
+        )
+    else:
+        selected = type(df["run_id"].iloc[0])(run_id)
+        if selected not in set(df["run_id"]):
+            available = ", ".join(str(rid) for rid, _ in runs)
+            raise UnknownRunIdError(
+                f"run_id {run_id} is not in {filepath} (available: {available})"
+            )
+
+    out = df[df["run_id"] == selected].reset_index(drop=True)
+    out.attrs.update(df.attrs)
+    out.attrs["run_id"] = selected
+    return out
+
+
+def load_log_csv(filepath, log_type, run_id=None):
     """Load a CSV by log_type.
+
+    `run_id` picks one run out of a timing CSV that holds several (#376);
+    the default keeps the last one. See `select_run`.
 
     Returns the DataFrame. Raises:
       - pd.errors.EmptyDataError on empty input.
       - LegacyCsvError if header column count is shorter than data rows.
+      - UnknownRunIdError if an explicit run_id is not in the file.
     Caller handles ParserError fallback if desired.
     """
     import pandas as pd
@@ -157,5 +227,9 @@ def load_log_csv(filepath, log_type):
     # still has them, and the bare names are what _STR_COLS is keyed on.
     _normalize_mask_columns(df)
     _coerce_numeric_columns(df)
+    # Run selection precedes timestamp derivation on purpose: `timestamp` is
+    # measured from the first row's t_wall_ns, and that origin must be the
+    # start of the run being plotted, not of the run that was discarded.
+    df = select_run(df, filepath, run_id)
     _ensure_timestamp_column(df)
     return df

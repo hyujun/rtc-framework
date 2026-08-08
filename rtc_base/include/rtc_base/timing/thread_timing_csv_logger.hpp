@@ -6,18 +6,27 @@
 // a non-RT consumer.
 //
 // Schema:
-//   t_wall_ns,tick_count,<payload columns…>
+//   t_wall_ns,tick_count,run_id,<payload columns…>
 //
-// The first two columns are always written by this logger so cross-thread
+// The first three columns are always written by this logger so cross-thread
 // analysis scripts can rely on them. Payload columns are emitted by the
 // caller-provided `extra_header` / `row_writer`. CM and MPC both bind
 // rtc::RtTickTimingPayload (5 phase-timing columns) — see
 // rtc_base/timing/rt_tick_timing_sample.hpp — so a single set of tooling
 // consumes both CSVs.
 //
+// `run_id` is what makes the append mode below readable (#376). Session dirs
+// are minute-resolution, so two starts within one minute land in the SAME
+// file; without a per-run stamp `n / span` rate analysis reads both as one
+// run and no sensor fires (the drop counters are honestly 0 — nothing was
+// dropped). The column costs the RT path nothing: Log() runs on the draining
+// consumer (CM log thread @ 100 Hz, MPC / hand_udp aux timers @ 1 Hz), never
+// on the producer. See rtc_base/logging/run_id.hpp for the resolution chain.
+//
 // Writer side:
 //   - `Open(path)` creates the file, writes the schema header, opens in
-//     append mode for restartable sessions (no duplicate header on reopen).
+//     append mode for restartable sessions (no duplicate header on reopen),
+//     and stamps every row it writes with the current run id.
 //   - `Log(sample)` appends one row + flushes (so an aborted session still
 //     produces a readable file).
 //   - Header-only; one writer per file. Not thread-safe.
@@ -27,8 +36,10 @@
 //     samples FIFO into Log(). See examples in rtc_mpc /
 //     rtc_controller_manager.
 
+#include "rtc_base/logging/run_id.hpp"
 #include "rtc_base/timing/thread_timing_sample.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -63,6 +74,11 @@ class ThreadTimingCsvLogger {
   /// On first creation the schema header is written; on append (file
   /// already exists) the existing header is preserved. Returns false on
   /// filesystem errors — caller may retry or skip.
+  ///
+  /// The run id is resolved here, not per row: a reopen within the same
+  /// launch (e.g. a lifecycle reconfigure) keeps the same id and reads as
+  /// one continuous run, while a restart of the process — or a new launch —
+  /// yields a different one and marks the boundary.
   [[nodiscard]] bool Open(const std::filesystem::path& path, const HeaderWriter& header_writer,
                           RowWriter row_writer) noexcept {
     try {
@@ -76,8 +92,9 @@ class ThreadTimingCsvLogger {
       if (!out_) {
         return false;
       }
+      run_id_ = ResolveRunId();
       if (is_new) {
-        out_ << "t_wall_ns,tick_count";
+        out_ << "t_wall_ns,tick_count,run_id";
         if (header_writer) {
           header_writer(out_);
         }
@@ -100,7 +117,7 @@ class ThreadTimingCsvLogger {
     if (!out_.is_open()) {
       return;
     }
-    out_ << s.t_wall_ns << ',' << s.tick_count;
+    out_ << s.t_wall_ns << ',' << s.tick_count << ',' << run_id_;
     if (row_writer_) {
       row_writer_(out_, s.payload);
     }
@@ -112,6 +129,10 @@ class ThreadTimingCsvLogger {
   std::filesystem::path path_;
   std::ofstream out_;
   RowWriter row_writer_;
+
+  // Stamped onto every row so appended runs stay separable (#376). Resolved
+  // at Open() — see the note there on reopen vs restart.
+  std::uint64_t run_id_{0};
 };
 
 }  // namespace rtc
