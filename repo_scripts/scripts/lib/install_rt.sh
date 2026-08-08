@@ -101,6 +101,15 @@ install_rt_permissions() {
 # ── Passwordless sudo for RT scripts (robot + full) ────────────────────────
 # cpu_shield.sh는 launch 파일에서 비대화형으로 sudo 호출되므로
 # 비밀번호 없이 실행 가능하도록 sudoers drop-in 파일을 설정한다.
+#
+# 아래 세 줄이 이 저장소가 발급하는 권한의 전부다. launch 쪽 게이트
+# (rtc_tools/launch/cpu_shield.py · pinning.py) 는 **정확히 이것만으로 통과해야
+# 한다** — 예전에는 `sudo -n true` 로 물었고 /usr/bin/true 는 여기 없으므로,
+# 설계된 설정만 가진 머신에서 게이트가 통과할 수 없어 shield 가 조용히 안 켜졌다
+# (issue #386 B). 처방은 `/usr/bin/true` 추가가 아니라 **게이트가 실제 명령을
+# 묻게** 하는 것이었다 (`sudo -n -l "$SHIELD" ...`): 권한 표면을 안 넓히고,
+# 이미 설치된 머신도 install.sh 재실행 없이 고쳐진다. 게이트를 통과시키려고
+# 여기에 명령을 더하지 말 것 — 그 방향은 이 파일이 발급하는 권한만 넓힌다.
 setup_rt_sudoers() {
   info "Configuring passwordless sudo for RT scripts..."
 
