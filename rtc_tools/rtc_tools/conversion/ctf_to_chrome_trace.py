@@ -1069,14 +1069,19 @@ def _report_capture_gaps(census: dict[str, int]) -> list[str]:
         )
     if not switches:
         lines.append(
-            "[ctf_to_chrome] WARNING: 0 sched_switch. The Cpus swimlanes "
+            "[ctf_to_chrome] NOTE: 0 sched_switch. The Cpus swimlanes "
             "(which thread ran on which core, and for how long) CANNOT be "
             "built — that view is reconstructed entirely from sched_switch. "
-            "Kernel events were not captured: check 'groups' contains "
-            "'tracing' IN THE SHELL THAT LAUNCHED (membership needs a "
-            "re-login; 'newgrp tracing'), that lttng-modules is loadable "
-            "('lttng list --kernel'), and that trace_events_kernel was not "
-            "overridden to empty. See docs/tracing.md §Permissions."
+            "This is EXPECTED for a UST-only capture "
+            "(trace_events_kernel:=none), and on hosts where no "
+            "lttng-modules build supports the running kernel it is the only "
+            "capture available — run check_rt_setup.sh and look for "
+            "kmod_block=kernel_incompat before treating this as a "
+            "misconfiguration (docs/tracing.md §Kernel timeline 가용성). "
+            "Otherwise: check 'groups' contains 'tracing' IN THE SHELL THAT "
+            "LAUNCHED (membership needs a re-login; 'newgrp tracing') and "
+            "that lttng-modules is loadable ('lttng list --kernel'). "
+            "See docs/tracing.md §Permissions."
         )
     if callbacks and not with_vpid:
         lines.append(
