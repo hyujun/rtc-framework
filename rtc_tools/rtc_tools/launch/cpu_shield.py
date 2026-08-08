@@ -151,12 +151,21 @@ def enable_cpu_shield(
             "else "
             f'  echo "{log_prefix} CPU shield not active — enabling {mode} mode '
             '(profile: $PROFILE)..."; '
-            "  if sudo -n true 2>/dev/null; then "
+            # Probe the command we are about to run, not `true` (issue #386 B).
+            # `sudo -l <cmd>` asks "may I run this", it does not run it, so this
+            # costs nothing and widens no permission surface. `sudo -n true` used
+            # to stand in for it and could not pass on a machine configured by
+            # install_rt.sh::setup_rt_sudoers, whose NOPASSWD grants are exactly
+            # the shield (installed + source paths) and `cset shield` — no
+            # /usr/bin/true. The gate therefore failed on precisely the boxes it
+            # was written for, and the shield silently never came up.
+            f'  if sudo -n -l "$SHIELD" on {mode} --profile "$PROFILE" >/dev/null 2>&1; then '
             f'    sudo "$SHIELD" on {mode} --profile "$PROFILE"; '
             "  else "
-            f'    echo "{log_prefix} WARNING: sudo requires a password — skipping CPU shield. '
-            "Configure passwordless sudo for cpu_shield.sh or run: "
-            f'sudo $SHIELD on {mode} --profile $PROFILE"; '
+            f'    echo "{log_prefix} WARNING: passwordless sudo for $SHIELD is unavailable '
+            "— skipping CPU shield. "
+            "Configure passwordless sudo for cpu_shield.sh (install.sh setup_rt_sudoers "
+            f'+ realtime group) or run: sudo $SHIELD on {mode} --profile $PROFILE"; '
             "  fi; "
             "fi",
             "rtc_cpu_shield",  # $0 for the script above

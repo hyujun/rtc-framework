@@ -1399,12 +1399,19 @@ _verifier_tables() {
   # `set --` 은 필수다. 인자 없는 `source` 는 **호출자의 위치인자를 물려주므로**,
   # 이걸 빼면 이 함수의 $1 이 검증기의 CLI 파서에 알 수 없는 옵션으로 들어가
   # show_help → exit 0 으로 서브셸이 조용히 죽고 표는 빈 채 비교된다.
+  # marker_content == __NONE__ 이면 marker 파일을 아예 만들지 않는다 — #386 C 가
+  # 문제 삼는 경로이고, 이 헬퍼가 늘 mktemp 로 파일을 만들었기 때문에 여태
+  # 단언이 하나도 없던 갈래다.
   local marker_content="$1" ncpu="$2"
   shift 2
   local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
   local marker
   marker=$(mktemp)
-  printf '%s\n' "$marker_content" >"$marker"
+  if [[ "$marker_content" == "__NONE__" ]]; then
+    rm -f "$marker"
+  else
+    printf '%s\n' "$marker_content" >"$marker"
+  fi
   (
     set +eu
     RTC_SHIELD_MARKER_FILE="$marker"
@@ -1453,6 +1460,20 @@ test_verifier_follows_the_shield_marker_profile() {
   # 만들어진 shield 가 실제로 MPC 예약을 포함한 레이아웃이기 때문이다.
   out=$(_verifier_tables "robot" 12)
   expect_eq "verifier.profile.legacy" "profile=mpc_on" "$(grep '^profile=' <<<"$out")"
+  # 값은 추론이지만 **근거는 있다** — marker 가 있다는 것은 shield 가 실제로 섰다는
+  # 뜻이다. 그래서 출처는 여전히 marker 이고, 아래 "marker 부재" 와 구분돼야 한다.
+  if grep -q '^source=shield marker' <<<"$out"; then pass; else
+    fail "[verifier.source.legacy] 구형 marker 는 shield 가 섰다는 증거다: $(grep '^source=' <<<"$out")"
+  fi
+
+  # marker 자체가 없는 경우 (#386 C). 값은 그대로 default 로 떨어지되 — 검증기가
+  # 안 도는 것이 더 나쁘다 — 출처가 "shield marker" 라고 주장하면 안 된다.
+  # 그건 shield 가 없다는 뜻일 뿐 MPC 구성에 대해서는 아무것도 말해주지 않는다.
+  out=$(_verifier_tables "__NONE__" 12)
+  expect_eq "verifier.profile.nomarker" "profile=mpc_on" "$(grep '^profile=' <<<"$out")"
+  if grep -q '^source=default' <<<"$out"; then pass; else
+    fail "[verifier.source.nomarker] marker 가 없는데 출처를 marker 라고 보고했다: $(grep '^source=' <<<"$out")"
+  fi
 
   # --profile 은 marker 를 이긴다 — shield 가 없는 박스(cset 미설치 dev PC)에서
   # 검증기를 돌리거나 반대 profile 을 일부러 확인할 때의 유일한 통로다.
@@ -1461,6 +1482,268 @@ test_verifier_follows_the_shield_marker_profile() {
   expect_eq "verifier.flag.source" "source=--profile" "$(grep '^source=' <<<"$out")"
   out=$(_verifier_tables "robot mpc_on" 12 --profile=mpc_off)
   expect_eq "verifier.flag.eq_form" "profile=mpc_off" "$(grep '^profile=' <<<"$out")"
+}
+
+# ── check_rt_setup.sh::check_cpu_isolation (issue #386 A) ───────────────────
+# 이동한 shield_isolation_method 의 **새 소비처**. 이동만 검증하면 반쪽이다 —
+# 이 검사가 예전에 틀렸던 이유는 함수가 없어서가 아니라 아무도 안 불러서였고,
+# 그 배선은 소스 grep 으로는 죽었는지 살았는지 구분되지 않는다 (#353 과 같은 축).
+#
+# 판정 두 축(method · 코어 일치)을 모두 스텁으로 가린다. 이 박스는 cset 도 없고
+# /sys/.../isolated 도 비어 있어서, 안 가리면 네 케이스 중 "none" 하나만 관측된다.
+_isolation_category() {
+  # $1 = shield_isolation_method 가 낼 문자열, $2 = EXPECTED_ISOLATED
+  local method_out="$1" expected="$2"
+  local checker="${SCRIPT_DIR}/../scripts/check_rt_setup.sh"
+  (
+    set +eu
+    # 인자 없는 source 는 호출자의 위치인자를 물려준다 — 검사기의 CLI 파서가
+    # 그걸 unknown option 으로 받아 show_help → exit 0 으로 조용히 죽는다.
+    set --
+    # shellcheck disable=SC1090
+    source "$checker" >/dev/null 2>&1
+    shield_isolation_method() { echo "$method_out"; }
+    EXPECTED_ISOLATED="$expected"
+    OUTPUT_MODE="verbose"
+    # 출력을 $(...) 로 받으면 안 된다 — 명령 치환은 서브셸이라 CATEGORY_* 갱신이
+    # 호출자에게 안 돌아오고, 카테고리 단언이 전부 빈 문자열 비교로 공허해진다.
+    local tmp
+    tmp=$(mktemp)
+    check_cpu_isolation >"$tmp" 2>&1
+    echo "status=${CATEGORY_STATUS[cpu_isolation]:-}"
+    echo "detail=${CATEGORY_DETAIL[cpu_isolation]:-}"
+    echo "out=$(tr '\n' ' ' <"$tmp")"
+    rm -f "$tmp"
+  )
+}
+
+test_check_cpu_isolation_sees_a_live_cset_shield() {
+  local out
+
+  # 이 이슈의 본체: cset shield 가 기대값대로 서 있는데 "격리 미활성" 이 나오던
+  # 자리다. /sys/.../isolated 는 여전히 비어 있다 (cset 은 거기 안 쓴다).
+  out=$(_isolation_category "cset 1 2 3 7 8 9" "1-3,7-9")
+  expect_eq "isolcheck.cset.status" "status=PASS" "$(grep '^status=' <<<"$out")"
+  expect_eq "isolcheck.cset.detail" "detail=1-3,7-9 (cset)" "$(grep '^detail=' <<<"$out")"
+  if grep -q 'cset shield' <<<"$out" && ! grep -q '격리 미활성' <<<"$out"; then
+    pass
+  else
+    fail "[isolcheck.cset.msg] 살아 있는 cset shield 를 격리 미활성으로 보고했다: $out"
+  fi
+
+  # 표기가 다른 같은 집합 — 기대값은 범위 표기, method 출력은 정규화된 목록.
+  # 문자열로 직접 비교하면 여기서 불일치가 난다.
+  out=$(_isolation_category "cset 2 3 4 5 8 9 10 11" "2-5,8-11")
+  expect_eq "isolcheck.cset.normalised" "status=PASS" "$(grep '^status=' <<<"$out")"
+
+  # isolcpus 축은 PASS 하되 빌드 성능 경고 때문에 카테고리는 WARN 이다.
+  out=$(_isolation_category "isolcpus 1-3,7-9" "1-3,7-9")
+  expect_eq "isolcheck.isolcpus.status" "status=WARN" "$(grep '^status=' <<<"$out")"
+  expect_eq "isolcheck.isolcpus.detail" "detail=1-3,7-9 (isolcpus)" "$(grep '^detail=' <<<"$out")"
+  if grep -q 'isolcpus' <<<"$out"; then
+    pass
+  else
+    fail "[isolcheck.isolcpus.msg] isolcpus 로 격리됐는데 그 이름이 안 나온다: $out"
+  fi
+
+  # 둘 다 없을 때만 "미활성" 이다.
+  out=$(_isolation_category "none" "1-3,7-9")
+  expect_eq "isolcheck.none.status" "status=WARN" "$(grep '^status=' <<<"$out")"
+  expect_eq "isolcheck.none.detail" "detail=none (auto-activate on launch)" \
+    "$(grep '^detail=' <<<"$out")"
+
+  # 코어가 기대와 다르면 method 와 무관하게 불일치다. cset 축의 처방은 GRUB 이
+  # 아니라 shield 재구성이어야 한다 — 옛 코드는 cset 상태에도 GRUB 을 안내했다.
+  out=$(_isolation_category "cset 1 2 3" "1-3,7-9")
+  expect_eq "isolcheck.mismatch.status" "status=WARN" "$(grep '^status=' <<<"$out")"
+  if grep -q '불일치' <<<"$out"; then
+    pass
+  else
+    fail "[isolcheck.mismatch.msg] 코어가 다른데 불일치 보고가 없다: $out"
+  fi
+}
+
+# ── verify_rt_runtime.sh::check_process_discovery (issue #386 D) ────────────
+# 이 함수는 pgrep 과 실 /proc/<pid>/task/ 를 직접 걸어서 테스트가 전무했다.
+# #380 이 이 안의 PASS 게이트를 TID 축에서 이름 축으로 고쳤을 때 그 변경이 통과한
+# 센서는 `bash -n` 과 source 뿐이었다 — 판정 로직 자체는 한 번도 실행되지 않았다.
+#
+# $RTC_PROC_ROOT 로 /proc 트리를, discover_controller_pid 스텁으로 pgrep 을 가린다
+# (pgrep 은 실 커널 테이블을 보므로 fixture 로 대체되지 않는 유일한 입력이다).
+#
+# fixture 의 스레드 이름을 EXPECTED_THREADS 에서 파생시키는 것은 순환이 아니다 —
+# 여기서 고정하는 것은 표의 *내용*이 아니라 **표를 훑는 판정**이고, 표 자체의
+# oracle 은 손으로 박은 리터럴을 쓰는 test_rtc_expected_threads_table_per_tier 다.
+_discovery_run() {
+  # $1 = fixture 트리를 만드는 콜백 이름 (인자로 task_dir 을 받는다)
+  # $2 = discover_controller_pid 가 낼 pid ("" 면 미발견)
+  # $3 = shield marker 내용 (기본 "robot mpc_on", "__NONE__" 이면 marker 없음).
+  #      이 박스의 실제 /tmp/cpu_shield_mode 를 읽으면 결과가 호스트에 따라 갈린다.
+  local builder="$1" pid="$2" marker_content="${3:-robot mpc_on}"
+  local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
+  local root marker
+  root=$(mktemp -d)
+  marker=$(mktemp)
+  if [[ "$marker_content" == "__NONE__" ]]; then
+    rm -f "$marker"
+  else
+    printf '%s\n' "$marker_content" >"$marker"
+  fi
+  [[ -n "$pid" ]] && "$builder" "${root}/${pid}/task"
+  (
+    set +eu
+    set --
+    RTC_PROC_ROOT="$root"
+    RTC_SHIELD_MARKER_FILE="$marker"
+    # external driver 탐색은 실 pgrep 을 쓰므로, 로봇이 떠 있는 박스에서 이 테스트가
+    # 다른 답을 내지 않도록 존재할 수 없는 comm 으로 고정한다 (경로는 그대로 돈다).
+    RTC_ARM_DRIVER_COMM="rtc_no_such_arm"
+    RTC_HAND_DRIVER_COMM="rtc_no_such_hand"
+    # shellcheck disable=SC1090
+    source "$verifier" >/dev/null 2>&1
+    discover_controller_pid() { echo "$pid"; }
+    PHYSICAL_CORES=12
+    build_expected_threads
+    OUTPUT_MODE="verbose"
+    # 명령 치환은 서브셸이라 CATEGORY_* / 종료코드를 함께 관측할 수 없다.
+    local tmp rc
+    tmp=$(mktemp)
+    check_process_discovery >"$tmp" 2>&1
+    rc=$?
+    echo "rc=${rc}"
+    echo "status=${CATEGORY_STATUS[process_discovery]:-}"
+    echo "detail=${CATEGORY_DETAIL[process_discovery]:-}"
+    echo "out=$(tr '\n' ' ' <"$tmp")"
+    rm -f "$tmp"
+  )
+  rm -rf "$root"
+  rm -f "$marker"
+}
+
+# 기대 표의 모든 이름에 tid 를 하나씩 준다 (정상 기동).
+_fixture_all_threads() {
+  local task_dir="$1" tid=1000 name
+  while read -r name; do
+    mkdir -p "${task_dir}/${tid}"
+    printf '%s\n' "$name" >"${task_dir}/${tid}/comm"
+    tid=$((tid + 1))
+  done < <(rtc_expected_threads 12 mpc_on | cut -d: -f1)
+}
+
+# 필수 이름 하나(nrt_publish)를 빼고, 그 자리를 **같은 comm 의 중복**으로 채운다.
+# 이러면 매칭 TID 수(known_count)는 표의 행 수에 도달하는데 고유 이름은 모자란다
+# — TID 축으로 PASS 를 판정하면 "6/6 전체 감지" 를 내면서 nrt_publish 가 아예
+# 안 떠 있는 상태가 통과한다. #380 이 고친 fail-open 이 정확히 이것이다.
+_fixture_duplicate_comm() {
+  local task_dir="$1" tid=1000 name
+  while read -r name; do
+    [[ "$name" == "nrt_publish" ]] && continue
+    mkdir -p "${task_dir}/${tid}"
+    printf '%s\n' "$name" >"${task_dir}/${tid}/comm"
+    tid=$((tid + 1))
+  done < <(rtc_expected_threads 12 mpc_on | cut -d: -f1)
+  mkdir -p "${task_dir}/${tid}"
+  printf '%s\n' "rt_control" >"${task_dir}/${tid}/comm"
+}
+
+_fixture_no_task_dir() { :; }
+
+# mpc 행만 빠진 트리 — MPC 를 안 띄운 정상 구성이 이 모습이다.
+_fixture_missing_mpc_only() {
+  local task_dir="$1" tid=1000 name
+  while read -r name; do
+    [[ "$name" == mpc_* ]] && continue
+    mkdir -p "${task_dir}/${tid}"
+    printf '%s\n' "$name" >"${task_dir}/${tid}/comm"
+    tid=$((tid + 1))
+  done < <(rtc_expected_threads 12 mpc_on | cut -d: -f1)
+}
+
+# mpc 행 + 진짜 RT 스레드 하나가 함께 빠진 트리 — 이건 profile 추론으로 설명되지
+# 않는다 (rt_control 은 어느 profile 에서도 필수다).
+_fixture_missing_mpc_and_rt() {
+  local task_dir="$1" tid=1000 name
+  while read -r name; do
+    [[ "$name" == mpc_* || "$name" == "rt_control" ]] && continue
+    mkdir -p "${task_dir}/${tid}"
+    printf '%s\n' "$name" >"${task_dir}/${tid}/comm"
+    tid=$((tid + 1))
+  done < <(rtc_expected_threads 12 mpc_on | cut -d: -f1)
+}
+
+test_check_process_discovery_judges_by_name() {
+  local out
+
+  # ① 전원 기동 — 이름 축으로 6/6.
+  out=$(_discovery_run _fixture_all_threads 4242)
+  expect_eq "discovery.ok.rc" "rc=0" "$(grep '^rc=' <<<"$out")"
+  expect_eq "discovery.ok.status" "status=PASS" "$(grep '^status=' <<<"$out")"
+  if grep -q '6/6' <<<"$out"; then pass; else
+    fail "[discovery.ok.msg] 전원 기동인데 6/6 이 아니다: $out"
+  fi
+
+  # ② 중복 comm + 필수 1개 누락 → **FAIL 이어야 한다** (fail-open 회귀 고정).
+  out=$(_discovery_run _fixture_duplicate_comm 4242)
+  expect_eq "discovery.dup.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  if grep -q 'nrt_publish' <<<"$out"; then pass; else
+    fail "[discovery.dup.missing] 누락된 필수 스레드 이름이 보고되지 않았다: $out"
+  fi
+  if grep -q '같은 이름의 스레드가 여럿' <<<"$out"; then pass; else
+    fail "[discovery.dup.warn] 두 축이 갈렸는데 판정 축 로그가 없다: $out"
+  fi
+  if grep -q '6/6' <<<"$out"; then
+    fail "[discovery.dup.failopen] 중복 TID 로 6/6 을 냈다 — TID 축 판정 회귀: $out"
+  else
+    pass
+  fi
+
+  # ③ task dir 부재 (프로세스가 방금 죽음) → FAIL, rc 1.
+  out=$(_discovery_run _fixture_no_task_dir 4242)
+  expect_eq "discovery.notask.rc" "rc=1" "$(grep '^rc=' <<<"$out")"
+  expect_eq "discovery.notask.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  expect_eq "discovery.notask.detail" "detail=PID 4242, no task dir" \
+    "$(grep '^detail=' <<<"$out")"
+
+  # ④ controller 미발견 → FAIL, rc 1. 미검증은 PASS 가 아니다.
+  out=$(_discovery_run _fixture_all_threads "")
+  expect_eq "discovery.nopid.rc" "rc=1" "$(grep '^rc=' <<<"$out")"
+  expect_eq "discovery.nopid.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  expect_eq "discovery.nopid.detail" "detail=not running" "$(grep '^detail=' <<<"$out")"
+}
+
+# ── 추론된 profile 의 mpc FAIL (issue #386 C) ────────────────────────────────
+# marker 가 없으면 profile 은 rtc_default_profile() = mpc_on 으로 접힌다. 값 자체는
+# 유지한다 (기대값을 낮추면 진짜로 죽은 mpc_main 을 놓친다 — 미검증은 PASS 가
+# 아니다). 대신 그 값이 확정이 아니라 가정이라는 사실이 FAIL 옆에 붙어야 한다.
+test_inferred_profile_says_so_when_only_mpc_is_missing() {
+  local out
+
+  # ① marker 없음 + mpc 행만 누락 → FAIL 은 유지, 추론 안내가 붙는다.
+  out=$(_discovery_run _fixture_missing_mpc_only 4242 "__NONE__")
+  expect_eq "infer.nomarker.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  if grep -q '추론이다' <<<"$out" && grep -q 'mpc_off' <<<"$out"; then pass; else
+    fail "[infer.nomarker.msg] profile 이 추론인데 그 사실도 확인 수단도 없다: $out"
+  fi
+
+  # ② marker 가 mpc_on 을 명시 → 같은 누락이지만 이건 진짜 회귀다. 안내가 붙으면
+  #    운영자가 실재하는 고장을 "구성 문제인가" 로 오독한다.
+  out=$(_discovery_run _fixture_missing_mpc_only 4242 "robot mpc_on")
+  expect_eq "infer.marker.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  if grep -q '추론이다' <<<"$out"; then
+    fail "[infer.marker.msg] marker 가 profile 을 명시했는데 추론이라고 했다: $out"
+  else
+    pass
+  fi
+
+  # ③ marker 없음 + mpc 아닌 필수 스레드도 누락 → 추론으로 설명되지 않으므로
+  #    안내가 붙으면 안 된다.
+  out=$(_discovery_run _fixture_missing_mpc_and_rt 4242 "__NONE__")
+  expect_eq "infer.notonlympc.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  if grep -q '추론이다' <<<"$out"; then
+    fail "[infer.notonlympc.msg] rt_control 도 없는데 profile 추론 탓으로 돌렸다: $out"
+  else
+    pass
+  fi
 }
 
 # ── Layout tier tables (issue #153 M1) ──────────────────────────────────────
@@ -1734,6 +2017,9 @@ test_print_thread_layout_uses_the_slot_helpers
 test_verifier_expected_slots_track_the_helpers
 test_verifier_is_sourceable_without_running
 test_verifier_follows_the_shield_marker_profile
+test_check_cpu_isolation_sees_a_live_cset_shield
+test_check_process_discovery_judges_by_name
+test_inferred_profile_says_so_when_only_mpc_is_missing
 test_layout_tier_tables_per_tier
 test_layout_worker_roles_absent_on_every_tier
 test_rtc_expected_threads_table_per_tier

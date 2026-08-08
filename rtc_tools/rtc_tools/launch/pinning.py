@@ -371,7 +371,11 @@ def adopt_process_into_shield(
             f'  echo "[RT] WARNING: cpu_shield.sh not found at $SHIELD — '
             f'{label} shield adopt skipped"; exit 0; '
             "fi; "
-            "if sudo -n true 2>/dev/null; then "
+            # Probe the actual command (issue #386 B). `sudo -l <cmd>` only asks
+            # whether it is permitted; `sudo -n true` asked about a command no
+            # sudoers file here ever grants, so the gate could not pass on a
+            # machine set up by install_rt.sh::setup_rt_sudoers.
+            'if sudo -n -l "$SHIELD" adopt "$PID" >/dev/null 2>&1; then '
             # Exit status of the `if` is this command's, so cpu_shield.sh's
             # non-zero adopt failure reaches the caller unchanged (issue #344).
             '  sudo "$SHIELD" adopt "$PID"; '
@@ -385,7 +389,7 @@ def adopt_process_into_shield(
             # from "no shield, nothing to do" below (issue #344).
             "  exit 1; "
             "else "
-            f'  echo "[RT] WARNING: sudo requires a password — {label} shield adopt '
+            f'  echo "[RT] WARNING: passwordless sudo for $SHIELD is unavailable — {label} shield adopt '
             'skipped (no active cset shield — CM keeps full affinity)"; '
             "fi",
         ],

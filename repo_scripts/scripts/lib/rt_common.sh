@@ -635,24 +635,158 @@ get_robot_packages() {
 # has to read it too, and sourcing cpu_shield.sh would run its CLI dispatch.
 RTC_SHIELD_MARKER_FILE="${RTC_SHIELD_MARKER_FILE:-/tmp/cpu_shield_mode}"
 
-# Layout profile of the ACTIVE shield. Falls back to the default profile when
-# there is no marker, when it cannot be read, or when it predates #350 and
-# carries a bare mode — all three describe a box whose shield was built with the
-# full MPC reservation, which IS the default profile.
+# Layout profile of the ACTIVE shield, plus WHERE that answer came from:
+# echoes "<profile> <source>". Never fails.
+#
+# The three fallback cases are not equally well-founded and #386 C is about the
+# gap between them:
+#
+#   marker + valid profile  → evidence. The shield was built for this profile.
+#   marker, no profile field → still evidence. A pre-#350 marker means a shield
+#       IS up and it was built with the full MPC reservation, which is the
+#       default profile. Inference, but grounded in an observed shield.
+#   no marker at all         → NOT evidence. It means "no shield is up", which
+#       says nothing about whether MPC was configured. Folding it into the
+#       default silently turned "unknown" into "mpc_on is confirmed", and a box
+#       that legitimately runs without MPC got a hard FAIL for a missing
+#       mpc_main. The default is kept (a verifier that refuses to run is worse),
+#       but the caller now has the string it needs to say so out loud.
 #
 # An unparseable profile string also falls back rather than failing: this is a
 # diagnostic input, and refusing to verify because a marker got corrupted would
 # turn a cosmetic problem into "no RT verification at all".
-shield_marker_profile() {
+shield_marker_profile_with_source() {
   local raw mode profile
   if [[ -r "$RTC_SHIELD_MARKER_FILE" ]] && raw=$(cat "$RTC_SHIELD_MARKER_FILE" 2>/dev/null); then
     read -r mode profile <<<"$raw"
     if [[ -n "${profile:-}" ]] && rtc_is_layout_profile "$profile"; then
-      echo "$profile"
+      printf '%s %s\n' "$profile" "shield marker"
       return 0
     fi
+    printf '%s %s\n' "$(rtc_default_profile)" "shield marker (pre-#350, profile 필드 없음)"
+    return 0
   fi
-  rtc_default_profile
+  printf '%s %s\n' "$(rtc_default_profile)" "default (shield marker 부재 — profile 미확인)"
+}
+
+# Profile only. Kept because most callers do not care where it came from; the
+# classification lives in exactly one place so the two answers cannot drift.
+shield_marker_profile() {
+  local profile _src
+  read -r profile _src <<<"$(shield_marker_profile_with_source)"
+  echo "$profile"
+}
+
+# ── Active-isolation detection (issue #349 D14, moved here by #386) ─────────
+#
+# Which cores are ACTUALLY held away from the general scheduler, and by which
+# mechanism. Two consumers need the same answer and they source different
+# files: cpu_shield.sh (stale-shield judgement, do_status) and
+# check_rt_setup.sh (the CPU Isolation category). While these lived in
+# cpu_shield.sh only the first could reuse them, and the second re-implemented
+# the question as "is /sys/devices/system/cpu/isolated non-empty" — which only
+# isolcpus ever answers yes to, so a live cset shield read as "no isolation".
+# normalise_cpu_set: "2-9,12-13" / "12,13,2-9" / " 2 3 " → canonical sorted
+# space-separated ids. Pure string→string, no I/O: this is the part the tests
+# drive (test_cpu_shield_mask.sh), because the reader below cannot be tested
+# on a box without cset.
+#
+# Whitespace is folded to commas first because `_rt_parse_cpulist` splits on
+# commas only and then *strips* spaces inside each field: " 2 3 " reached it as
+# one field and came back as the single id 23. That made this function
+# non-idempotent — its own output ("2 3 4 ...") fed back in collapsed to one
+# nonexistent cpu id — and made the third example in the line above false. No
+# caller passes a space-separated list today; one that did would have compared
+# the desired mask against a bogus id, never matched, and reset a shield that
+# was already correct on every launch.
+normalise_cpu_set() {
+  local raw="${1:-}"
+  [[ -z "$raw" ]] && { echo ""; return 0; }
+  # Collapse any whitespace run to a single comma, then drop the empty fields
+  # that leading/trailing whitespace produces.
+  raw="${raw//[[:space:]]/,}"
+  while [[ "$raw" == *,,* ]]; do raw="${raw//,,/,}"; done
+  raw="${raw#,}"
+  raw="${raw%,}"
+  [[ -z "$raw" ]] && { echo ""; return 0; }
+  local ids
+  ids=$(_rt_parse_cpulist "$raw") || return 1
+  [[ -z "$ids" ]] && { echo ""; return 0; }
+  # shellcheck disable=SC2086
+  printf '%s\n' $ids | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# Best-effort read of the ACTIVE user cpuset. Prints the cpu list on success.
+#
+# Fails (non-zero, empty output) when cset is absent, no shield is up, or the
+# output cannot be parsed. Callers MUST treat that as "unknown", never as
+# "matches" — an unreadable mask is exactly the state that produced the stale
+# shield in the first place. cset's status format is not stable across
+# versions and this repo's dev boxes do not all have cset installed, so the
+# cpuset filesystem is tried first: it is the kernel's own record and does not
+# depend on how cset chooses to print.
+shield_actual_user_cpus() {
+  local path
+  for path in /sys/fs/cgroup/cpuset/user/cpuset.cpus /sys/fs/cgroup/cpuset/user/cpus \
+    /cpusets/user/cpuset.cpus /cpusets/user/cpus; do
+    if [[ -r "$path" ]]; then
+      local raw
+      raw=$(tr -d '[:space:]' <"$path" 2>/dev/null || true)
+      [[ -n "$raw" ]] && { normalise_cpu_set "$raw"; return $?; }
+    fi
+  done
+
+  command -v cset &>/dev/null || return 1
+  # Fall back to parsing cset's own status. Accept any line naming the user
+  # cpuset and take the first CPUSPEC(...) / cpus: <list> / bare list on it.
+  # Capture first and filter in the shell rather than piping through `head`:
+  # under `set -o pipefail` a `grep | head -1` pipeline reports 141 when grep
+  # is SIGPIPE'd writing the second matching line, which would turn a
+  # perfectly readable mask into "cannot tell" and trigger a needless rebuild.
+  local status_out line spec
+  status_out=$(cset shield -s 2>/dev/null) || return 1
+  line=$(grep -i -m1 'user' <<<"$status_out") || return 1
+  [[ -z "$line" ]] && return 1
+  spec=$(sed -nE 's/.*CPUSPEC\(([0-9,-]+)\).*/\1/p' <<<"$line")
+  [[ -z "$spec" ]] && spec=$(sed -nE 's/.*cpus:[[:space:]]*([0-9,-]+).*/\1/p' <<<"$line")
+  [[ -z "$spec" ]] && return 1
+  normalise_cpu_set "$spec"
+}
+
+# Which isolation is ACTUALLY in force. Echoes "cset <cpus>", "isolcpus <cpus>"
+# or "none"; never fails.
+#
+# The cset shield is asked first and independently of
+# /sys/devices/system/cpu/isolated, because **only isolcpus writes that file**.
+# do_status used to gate its whole method-detection block on it, so on a box
+# running a live cset shield it took the else branch and reported "Isolated
+# cores: none / All N cores available for general use" while the kernel held
+# CPUSPEC(1-3,7-9) — measured on the 6-core dev box once cset was installed.
+# The nested `elif ... cset shield -s | grep user` branch could not save it: it
+# required `isolated` to be non-empty *and* the cmdline to lack isolcpus, which
+# together essentially never happen.
+# Cores isolcpus took out at boot, "" when none. A named function so the
+# precedence below can be exercised without a real /sys read, and $RTC_SYSFS_ROOT
+# so a fixture tree can drive it the way the rest of this file is driven --
+# stubbing the function is still what test_cpu_shield_mask.sh does, because the
+# *precedence* it fixes needs both axes faked at once, not one real file.
+isolcpus_isolated_cpus() {
+  cat "${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu/isolated" 2>/dev/null || echo ""
+}
+
+shield_isolation_method() {
+  local cset_cpus isolated
+  cset_cpus=$(shield_actual_user_cpus 2>/dev/null || true)
+  if [[ -n "$cset_cpus" ]]; then
+    echo "cset ${cset_cpus}"
+    return 0
+  fi
+  isolated=$(isolcpus_isolated_cpus)
+  if [[ -n "$isolated" ]]; then
+    echo "isolcpus ${isolated}"
+    return 0
+  fi
+  echo "none"
 }
 
 # Print just the main MPC core (first entry of get_mpc_cores). Derived, so it

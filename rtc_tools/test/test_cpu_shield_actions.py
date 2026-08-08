@@ -277,3 +277,142 @@ def test_adopt_targets_the_named_process():
     )
     # comm is truncated to 15 chars by the kernel; the helper must match that.
     assert 'pgrep -nx "integrated_rt_c"' in _text(adopt)
+
+
+# ── The sudo gate, executed (issue #386 B) ───────────────────────────────────
+#
+# These run the generated bash against a fake `sudo` that emulates the ONLY
+# sudoers file this repo ships: install_rt.sh::setup_rt_sudoers grants NOPASSWD
+# for the shield (installed + source paths) and `cset shield`, and nothing else.
+# On such a machine the old gate — `sudo -n true` — could not pass, so
+# `enable_cpu_shield` printed "sudo requires a password" and never brought the
+# shield up. Asserting on the snippet *text* cannot catch that: the old text was
+# perfectly well-formed, it just asked about the wrong command.
+
+_FAKE_SUDO = """#!/bin/bash
+printf '%s\\n' "$*" >>"$FAKE_SUDO_LOG"
+allowed="${ALLOWED_CMD:-}"
+if [ "$1" = "-n" ] && [ "$2" = "-l" ]; then
+  # `sudo -l <cmd>` answers "may I", without running anything.
+  shift 2
+  if [ -n "$allowed" ] && [ "$1" = "$allowed" ]; then exit 0; fi
+  echo "sudo: a password is required" >&2; exit 1
+fi
+if [ "$1" = "-n" ]; then shift; fi
+if [ -n "$allowed" ] && [ "$1" = "$allowed" ]; then shift; exec "$allowed" "$@"; fi
+echo "sudo: a password is required" >&2; exit 1
+"""
+
+# The host must not decide the outcome: a box booted with isolcpus= has a
+# non-empty isolated file and would take the "already active" branch instead of
+# ever reaching the gate.
+_FAKE_CAT = """#!/bin/bash
+printf '%s\\n' "$*" >>"$FAKE_CAT_LOG"
+if [ "$1" = "/sys/devices/system/cpu/isolated" ]; then exit 0; fi
+exec /bin/cat "$@"
+"""
+
+_FAKE_PGREP = '#!/bin/bash\necho "${FAKE_PGREP_PID:-}"\n'
+
+# `check` reports "not current" so the snippet always reaches the gate whether or
+# not the host has cset installed.
+_SHIELD_STUB = """#!/bin/bash
+printf '%s\\n' "$*" >>"$SHIELD_LOG"
+[ "$1" = "check" ] && exit 1
+exit 0
+"""
+
+
+def _bin(tmp_path, name, body):
+    p = tmp_path / name
+    p.write_text(body)
+    p.chmod(0o755)
+    return p
+
+
+@pytest.fixture
+def gate_env(tmp_path, monkeypatch):
+    """A fake machine + the shield path both launch modules resolve to."""
+    binz = tmp_path / "bin"
+    binz.mkdir()
+    shield = _bin(binz, "cpu_shield.sh", _SHIELD_STUB)
+    _bin(binz, "sudo", _FAKE_SUDO)
+    _bin(binz, "cat", _FAKE_CAT)
+    _bin(binz, "pgrep", _FAKE_PGREP)
+    monkeypatch.setattr(cpu_shield, "cpu_shield_path", lambda: str(shield))
+    monkeypatch.setattr(pinning, "cpu_shield_path", lambda: str(shield))
+    return {
+        "bin": binz,
+        "shield": shield,
+        "shield_log": tmp_path / "shield.log",
+        "sudo_log": tmp_path / "sudo.log",
+        "cat_log": tmp_path / "cat.log",
+    }
+
+
+def _run_action(action, gate_env, *, allowed, pid="", extra_env=None):
+    import subprocess
+
+    argv = [el[0].text for el in action.cmd]
+    env = {
+        "PATH": f"{gate_env['bin']}:/usr/bin:/bin",
+        "ALLOWED_CMD": str(gate_env["shield"]) if allowed else "",
+        "SHIELD_LOG": str(gate_env["shield_log"]),
+        "FAKE_SUDO_LOG": str(gate_env["sudo_log"]),
+        "FAKE_CAT_LOG": str(gate_env["cat_log"]),
+        "FAKE_PGREP_PID": pid,
+        **(extra_env or {}),
+    }
+    done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+    log = gate_env["shield_log"]
+    return done, (log.read_text() if log.exists() else "")
+
+
+def test_gate_passes_with_only_the_sudoers_this_repo_installs(gate_env):
+    action = cpu_shield.enable_cpu_shield("--robot", layout_profile="mpc_on")
+    done, shield_log = _run_action(action, gate_env, allowed=True)
+
+    assert done.returncode == 0, done.stderr
+    assert "on --robot --profile mpc_on" in shield_log, (
+        f"gate blocked the shield on a machine whose sudoers allows it: "
+        f"{done.stdout}{done.stderr}"
+    )
+    assert "WARNING" not in done.stdout
+    # The fixture read the isolated file through the fake, so the branch this
+    # test drives is the one the fixture controls — not whatever the host booted.
+    assert "/sys/devices/system/cpu/isolated" in gate_env["cat_log"].read_text()
+    # Regression pin: probing `true` is what made the gate unpassable.
+    assert "-n true" not in gate_env["sudo_log"].read_text()
+
+
+def test_gate_still_refuses_when_the_shield_is_not_permitted(gate_env):
+    action = cpu_shield.enable_cpu_shield("--robot", layout_profile="mpc_on")
+    done, shield_log = _run_action(action, gate_env, allowed=False)
+
+    assert done.returncode == 0
+    assert "on --robot" not in shield_log
+    assert "WARNING" in done.stdout and "setup_rt_sudoers" in done.stdout
+
+
+def test_adopt_runs_when_the_shield_is_permitted(gate_env):
+    action = pinning.adopt_process_into_shield(
+        label="CM", process_grep="integrated_rt_controller"
+    )
+    done, shield_log = _run_action(action, gate_env, allowed=True, pid="4242")
+
+    assert done.returncode == 0, done.stderr
+    assert "adopt 4242" in shield_log
+
+
+def test_adopt_fails_closed_when_a_live_shield_cannot_be_joined(gate_env):
+    # sudo refuses AND a cset shield is up: the one branch that must NOT be a
+    # benign skip, because the node would run outside the cpuset (#344, #151).
+    _bin(gate_env["bin"], "cset", '#!/bin/bash\necho "  user cpuset"\n')
+    action = pinning.adopt_process_into_shield(
+        label="CM", process_grep="integrated_rt_controller"
+    )
+    done, shield_log = _run_action(action, gate_env, allowed=False, pid="4242")
+
+    assert done.returncode == 1, done.stdout
+    assert "adopt" not in shield_log
+    assert "ERROR" in done.stdout

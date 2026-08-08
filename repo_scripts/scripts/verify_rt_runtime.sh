@@ -34,6 +34,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/rt_common.sh
 source "${SCRIPT_DIR}/lib/rt_common.sh"
 
+# ── /proc root (test hook) ───────────────────────────────────────────────────
+# Per-process /proc paths go through this so a fixture tree can drive the
+# discovery judgement. Same pattern, same reason, as $RTC_SYSFS_ROOT /
+# $RTC_PROC_CPUINFO in rt_common.sh: the alternative is to have no test at all,
+# and this file's failure mode is fail-open (a green run that verified nothing).
+#
+# Deliberately narrow: only check_process_discovery honours it today, because
+# that is the function this hook was introduced to cover (#386 D). Kernel-global
+# paths (/proc/cmdline, /proc/sched_debug, /proc/sys/...) are NOT rooted here —
+# they describe the machine, not a process, and faking them would be a different
+# fixture. Other per-process readers adopt it as they gain fixtures.
+RTC_PROC_ROOT="${RTC_PROC_ROOT:-/proc}"
+
 # ── Output mode ──────────────────────────────────────────────────────────────
 OUTPUT_MODE="verbose"   # verbose | summary | json
 WATCH_MODE=0
@@ -143,8 +156,10 @@ PHYSICAL_CORES="$TOTAL_CORES"
 # for a box with no shield (no cset, dev machine) or to check the other profile
 # deliberately.
 if [[ -z "${LAYOUT_PROFILE:-}" ]]; then
-  LAYOUT_PROFILE="$(shield_marker_profile)"
-  PROFILE_SOURCE="shield marker"
+  # PROFILE_SOURCE 를 "shield marker" 로 박아 두면 **marker 가 없을 때 거짓말이
+  # 된다** — 그 경우 값은 마커가 아니라 rtc_default_profile() 에서 온 추론이고,
+  # MPC 를 구성하지 않은 박스에서 mpc_main 부재가 하드 FAIL 로 돌아왔다 (#386 C).
+  read -r LAYOUT_PROFILE PROFILE_SOURCE <<<"$(shield_marker_profile_with_source)"
 fi
 if ! rtc_is_layout_profile "$LAYOUT_PROFILE"; then
   echo "ERROR: 알 수 없는 layout profile '${LAYOUT_PROFILE}' (선언된 profile: $(rtc_layout_profiles))" >&2
@@ -365,6 +380,17 @@ discover_external_drivers() {
   done
 }
 
+# Robot bringup의 RT controller exec 찾기. 현재 컨벤션: <robot>_rt_controller
+# (예: integrated_rt_controller). pgrep -f는 전체 커맨드라인에 매칭. ROS2 실행 시
+# --ros-args 등이 붙으므로 공백 또는 문자열 끝( |$)으로 실행파일명의 끝을 매칭.
+#
+# 한 줄짜리를 굳이 함수로 뺀 이유는 $RTC_PROC_ROOT 로 가릴 수 없는 유일한 입력이기
+# 때문이다 — pgrep 은 실제 커널 프로세스 테이블을 보므로 fixture 트리로 대체되지
+# 않는다. 테스트가 이 함수만 스텁하면 나머지 판정 경로 전체가 fixture 위에서 돈다.
+discover_controller_pid() {
+  pgrep -f '(^|/)[a-zA-Z0-9_]+_rt_controller( |$)' 2>/dev/null | head -1 || true
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # [1/7] Process Discovery
 # ══════════════════════════════════════════════════════════════════════════════
@@ -372,11 +398,7 @@ check_process_discovery() {
   _section "1/7" "Process Discovery"
   _category_start "process_discovery"
 
-  # Robot bringup의 RT controller exec 찾기. 현재 컨벤션: <robot>_rt_controller
-  # (예: integrated_rt_controller). pgrep -f는 전체 커맨드라인에 매칭.
-  # ROS2 실행 시 --ros-args 등이 붙으므로 공백 또는 문자열 끝( |$)으로
-  # 실행파일명의 끝을 매칭.
-  CONTROLLER_PID=$(pgrep -f '(^|/)[a-zA-Z0-9_]+_rt_controller( |$)' 2>/dev/null | head -1 || true)
+  CONTROLLER_PID=$(discover_controller_pid)
 
   if [[ -z "$CONTROLLER_PID" ]]; then
     _fail "RT controller exec(*_rt_controller) 프로세스 미발견 — 제어기가 실행 중이 아닙니다"
@@ -388,7 +410,7 @@ check_process_discovery() {
   _pass "RT controller PID: ${CONTROLLER_PID}"
 
   # 스레드 목록 수집 (/proc/<pid>/task/)
-  local task_dir="/proc/${CONTROLLER_PID}/task"
+  local task_dir="${RTC_PROC_ROOT}/${CONTROLLER_PID}/task"
   if [[ ! -d "$task_dir" ]]; then
     _fail "스레드 정보 접근 불가: ${task_dir}"
     _category_update "process_discovery" "FAIL"
@@ -491,6 +513,25 @@ check_process_discovery() {
     # 필수는 전부 있음" WARN 갈래는 그 필드와 함께 사라졌다 (#380).
     _fail "thread_config.hpp 필수 스레드 미발견: ${required_found}/${required_count} — 이름 미설정(ApplyThreadConfig early-return) 의심"
     _category_update "process_discovery" "FAIL"
+
+    # 누락된 것이 mpc 행뿐이고 profile 이 marker 가 아니라 기본값에서 왔다면,
+    # 이 FAIL 은 "MPC 가 죽었다" 가 아니라 "MPC 를 안 띄웠는데 검증기가 띄웠다고
+    # 가정했다" 일 수 있다. 기대값을 낮추지는 않는다 (미검증은 PASS 가 아니다) —
+    # 대신 가정을 명시하고 확인 수단을 준다 (#386 C).
+    if [[ "$PROFILE_SOURCE" != "--profile" && "$PROFILE_SOURCE" != "shield marker" ]]; then
+      local _missing_mpc_only=1 _m
+      for entry in "${EXPECTED_THREADS[@]}"; do
+        _m=$(echo "$entry" | cut -d: -f1)
+        if [[ -z "${THREAD_TIDS[$_m]:-}" && "$_m" != mpc_* ]]; then
+          _missing_mpc_only=0
+          break
+        fi
+      done
+      if [[ "$_missing_mpc_only" -eq 1 ]]; then
+        _warn "  ↑ profile '${LAYOUT_PROFILE}' 는 확정이 아니라 추론이다 (${PROFILE_SOURCE})."
+        _warn "     MPC 를 안 띄우는 구성이면 미발견이 정상이다: --profile mpc_off 로 재실행해 확인할 것"
+      fi
+    fi
 
     # 진단 보조: 필수 스레드가 미발견이면 controller process 의 모든 RT-like
     # thread comm 을 dump. 이름이 박힌 thread 가 어떤 게 있고, EXPECTED 와

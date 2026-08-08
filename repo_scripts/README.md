@@ -136,6 +136,17 @@ repo_scripts/
 | `compute_expected_isolated()` | 비-OS 코어 전체 범위 (RT + nrt + driver, SMT 시블링 포함). cset shield 검증 (`check_rt_setup.sh`) 에 사용 — nohz_full / rcu_nocbs 는 `get_rt_cores_with_siblings()` 를 사용 (좁은 범위) |
 | `get_os_logical_cpus()` | OS 물리 코어에 속하는 논리 CPU 번호 목록 |
 
+### 격리 상태 탐지 함수 (issue #386)
+
+`cpu_shield.sh` 에 있던 것을 옮겨 왔습니다. 소비자가 둘인데 서로 다른 파일을 source 하기 때문입니다 — `cpu_shield.sh` (stale-shield 판정 · `status`) 와 `check_rt_setup.sh` (CPU Isolation 카테고리). 옮기기 전에는 후자가 `/sys/devices/system/cpu/isolated` 하나로 판정했고, **그 파일은 isolcpus 만 쓰므로** 살아 있는 cset shield 를 "격리 미활성" 으로 보고했습니다.
+
+| 함수 | 설명 |
+|------|------|
+| `normalise_cpu_set()` | `"2-9,12-13"` / `" 2 3 "` → 정렬·중복제거된 공백 구분 id 목록. 순수 문자열 변환 (I/O 없음) |
+| `shield_actual_user_cpus()` | 활성 user cpuset 의 실제 mask. cgroup cpuset 파일 우선, 실패 시 `cset shield -s` 파싱. 읽기 실패는 "일치" 가 아니라 **"모름"** (non-zero) |
+| `isolcpus_isolated_cpus()` | 부팅 시 `isolcpus=` 가 뺀 코어. `$RTC_SYSFS_ROOT` 존중 |
+| `shield_isolation_method()` | **지금 무엇이 격리를 걸고 있는가** — `cset <cpus>` / `isolcpus <cpus>` / `none`. cset 을 **먼저** 묻는 순서가 계약이며 `test_cpu_shield_mask.sh` 가 "둘 다 활성" 케이스로 고정한다 |
+
 ### NIC/네트워크 함수
 
 | 함수 | 설명 |
@@ -222,7 +233,7 @@ Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는
 - profile 축을 받는 함수는 `get_rt_cores` · `get_mpc_cores` · `rtc_expected_threads` · `rtc_forbidden_threads` 넷이며, 전부 **`$2`** 로 받고 기본값은 `rtc_default_profile()` (= `mpc_on`) 이다. 인자를 안 주는 기존 호출자는 종전 레이아웃을 그대로 받는다. 선언된 profile 목록은 `rtc_layout_profiles()`, 검사는 `rtc_is_layout_profile <id>` — 알 수 없는 id 는 조용히 default 로 떨어지지 않고 **비0** 이다.
 - `mpc_off` 는 MPC role (`mpc_main`) 만 떨어뜨린다. `get_nrt_cores` / `get_arm_driver_slot` / `get_hand_driver_slot` 은 profile 축을 받지 않으므로 값이 변하지 않는다 — 이들이 함께 좁아지면 그 스레드의 self-pin 이 EINVAL 로 죽는다 (#151).
 - `rtc_forbidden_threads()` 는 `rtc_expected_threads()` 의 거울이다. off 에서 mpc 행을 기대 표에서 빼기만 하면 "MPC 꺼짐" 과 "MPC 가 방금 반환한 코어에서 돌고 있음" 이 검증기에 똑같이 보이므로 (둘 다 행이 없다), 떨어뜨린 role 은 **존재하면 FAIL** 인 목록으로 옮겨간다.
-- **`cpu_shield.sh status` 는 shield 를 먼저 묻는다** — 격리 탐지가 `/sys/devices/system/cpu/isolated` 를 게이트로 삼고 있었는데 **그 파일은 isolcpus 만 쓴다**. cset shield 는 아무것도 안 쓰므로, shield 가 `CPUSPEC(1-3,7-9)` 로 살아 있는데도 "Isolated cores: none" 이 나왔다 (dev PC 에 cset 설치 후 실측, 2026-08-07). 이제 `shield_isolation_method()` 가 실제 cpuset → isolcpus 순으로 판정한다. 같은 오탐이 `check_rt_setup.sh` 의 `CPU Isolation` 항목에도 남아 있다 (별도 후속)
+- **`cpu_shield.sh status` 는 shield 를 먼저 묻는다** — 격리 탐지가 `/sys/devices/system/cpu/isolated` 를 게이트로 삼고 있었는데 **그 파일은 isolcpus 만 쓴다**. cset shield 는 아무것도 안 쓰므로, shield 가 `CPUSPEC(1-3,7-9)` 로 살아 있는데도 "Isolated cores: none" 이 나왔다 (dev PC 에 cset 설치 후 실측, 2026-08-07). 이제 `shield_isolation_method()` 가 실제 cpuset → isolcpus 순으로 판정한다. `check_rt_setup.sh` 의 `CPU Isolation` 항목에 남아 있던 같은 오탐은 #386 A 가 해소했다 — 그 함수가 `rt_common.sh` 로 올라가 두 소비자가 같은 답을 쓴다
 - **GRUB 은 profile 을 타지 않는다 (결정 D11(a))** — `get_rt_cores_with_siblings()` 는 `$2` 를 무시하고 항상 default profile 기준 최광 집합을 낸다. `nohz_full` / `rcu_nocbs` 는 boot-static 이라 profile 을 반영하려면 재부팅이 필요하고, 그러면 "재부팅 없는 profile 전환" 이 깨진다. 반환된 코어에 `nohz_full` 마킹이 남는 비용은 공짜가 아니다 (runnable task 가 둘 이상이면 scheduler tick 이 재개되고 RCU/housekeeping 이 offload 된다) — 다만 커널 커맨드라인과 런타임 레이아웃이 어긋나는 것보다 싸다.
 
 **hand aux lane (issue #345)**: `udp_hand_node` 는 위 `hand_driver` 코어에 더해 **OS slot(Core 0)에 `hand_aux_io` 스레드 하나**를 둔다 — 타이밍 CSV drain(1 Hz, 버스트당 최대 512행)과 stats JSON 저장 같은 blocking 파일 I/O 전용 CFS 레인이다. shield 밖 `system` cpuset 안이라 cpuset 재설계가 필요 없고 `cset shield` 활성 상태에서도 EINVAL 이 나지 않는다. slot 은 노드 param `aux_cpu_slot`(기본 0) 이며 shell 쪽 SSoT 는 `get_os_cores()` 다. ≤5코어 tier 에서는 `hand_driver` slot 도 0 이라 두 레인이 같은 코어로 합쳐진다 (그 tier 는 원래 Core 0 에 전부 모이는 degraded 배치다).
