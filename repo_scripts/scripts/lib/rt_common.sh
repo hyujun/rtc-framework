@@ -19,6 +19,9 @@
 #   check_workspace_structure — ROS2 워크스페이스 구조 검증
 #   ensure_ros2_sourced       — ROS2 환경 자동 탐색 및 소싱
 #   create_oneshot_service    — systemd oneshot 서비스 생성 헬퍼
+#   lttng_kernel_build_version      — 커널 헤더 Makefile 에서 V.P.S (uname 아님)
+#   lttng_modules_min_version_for_kernel — 그 커널이 요구하는 lttng-modules 최소 버전
+#   lttng_modules_compat_verdict    — ok|incompatible|unknown 3-값 판정 (issue #190)
 
 # 이 파일은 직접 실행하지 않는다.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
@@ -1947,3 +1950,130 @@ get_cpu_model()           { echo "${CPU_MODEL:-0}"; }
 get_platform_label()      { echo "${PLATFORM_LABEL:-}"; }
 get_platform_no_ht_by_design() { echo "${PLATFORM_NO_HT_BY_DESIGN:-0}"; }
 get_physical_core_slots() { echo "${PHYSICAL_CORE_SLOTS:-}"; }
+
+# ── LTTng kernel module ↔ kernel 호환 판정 (issue #190) ─────────────────────
+#
+# lttng-modules 는 커널 tracepoint 프로토타입을 자기 헤더에 재선언하므로, 커널이
+# 그 프로토타입을 바꾸면 **결정론적 컴파일 실패**가 난다 (재시도·재부팅 무효).
+# 실측: `hrtimer_start` 가 3번째 인자 `bool was_armed` 를 얻은 커널에서
+# lttng-modules 2.14.0 의 `probes/lttng-probe-timer.o` 가
+# `conflicting types for 'trace_hrtimer_start'` 로 죽는다. 대응 가드는
+# upstream v2.14.6 (2026-06-19) 에서 들어왔다.
+#
+# 이 함수들이 표로 갖는 것은 **upstream `include/instrumentation/events/timer.h`
+# 의 가드 그 자체**이지 "이 커널은 나쁘다" 가 아니다 — 그래야 커널 타임라인을
+# 되살리는 쪽(upstream DKMS 등록)이 같은 표를 "그럼 어느 버전이 필요한가" 로
+# 읽는다. 소비 지점이 둘이지 판정이 둘이 아니다.
+#
+# **판정은 3-값이고 두 개는 "시도한다" 다.** 막는 것(incompatible)은 표의 규칙에
+# *양성으로* 걸릴 때뿐이다 — 표는 외부 사실의 사본이라 반드시 stale 해지는데,
+# 그때 나는 오류가 "되는 조합을 막는 것"(사용자가 커널 트레이싱을 잃고, 게다가
+# 안내까지 틀림)이면 지금보다 나빠지고, "안 되는 조합을 시도하는 것"(600초 낭비)
+# 이면 지금과 같기 때문이다. 편향을 후자로 둔다.
+#
+# 표 밖의 한계 — 미래 커널이 *다른* tracepoint 로 깨지면 이 표는 모른다. 그리고
+# `>= 7.1.0` 행이 요구하는 2.14.6 은 **하한이지 보증이 아니다** (7.1 이 또 다른
+# 가드를 요구할 수 있다). 하한을 과소평가해도 C 경로의 skip 판정은 옳고 (2.14.0
+# < 2.14.6 은 여전히 참), 틀리는 것은 upstream 등록 시의 태그 힌트뿐이다.
+#
+# 표 갱신 시: upstream 태그의 timer.h `hrtimer_start` 가드를 그대로 옮긴다.
+#   https://github.com/lttng/lttng-modules/blob/v2.14.6/include/instrumentation/events/timer.h
+
+# `hrtimer_start` 3-인자 가드 (upstream v2.14.6 기준).
+# 각 행: "<min> <max_exclusive|-> <필요한 lttng-modules 최소 버전>"
+LTTNG_KERNEL_GUARD_TABLE=(
+  "7.1.0    -        2.14.6"
+  "7.0.10   7.1.0    2.14.6"
+  "6.18.33  6.19.0   2.14.6"
+  "6.12.91  6.13.0   2.14.6"
+  "6.6.141  6.7.0    2.14.6"
+  "6.1.175  6.2.0    2.14.6"
+)
+
+# lttng_kernel_build_version <kernel_release> [headers_root]
+#
+# 판정에 쓸 커널 버전을 **헤더 Makefile** 에서 읽는다. `uname -r` 을 쓰면 안 된다 —
+# 이 박스가 정확히 그 함정이다: `uname -r` 은 `7.0.0-28-generic` 인데 헤더의
+# 실제 값은 `VERSION=7 PATCHLEVEL=0 SUBLEVEL=12` (= 7.0.12) 다. 가드가 보는 것은
+# `LINUX_VERSION_CODE`, 즉 헤더 쪽이므로 `uname -r` 로 판정하면 7.0.0 이
+# `[7.0.10, 7.1.0)` 에 안 들어가 **비호환을 호환으로 오판**한다.
+#
+# stdout: "V.P.S" (읽었을 때) 또는 빈 문자열 (헤더 없음 → 판정 불가).
+lttng_kernel_build_version() {
+  local release="$1" root="${2:-/lib/modules}"
+  local makefile="${root}/${release}/build/Makefile"
+  [[ -r "$makefile" ]] || return 0
+
+  local v p s
+  v=$(sed -n 's/^VERSION[[:space:]]*=[[:space:]]*\([0-9]\+\).*/\1/p'    "$makefile" | head -1)
+  p=$(sed -n 's/^PATCHLEVEL[[:space:]]*=[[:space:]]*\([0-9]\+\).*/\1/p' "$makefile" | head -1)
+  s=$(sed -n 's/^SUBLEVEL[[:space:]]*=[[:space:]]*\([0-9]\+\).*/\1/p'   "$makefile" | head -1)
+  [[ -n "$v" && -n "$p" ]] || return 0
+  echo "${v}.${p}.${s:-0}"
+}
+
+# lttng_modules_min_version_for_kernel <kernel_version>
+#
+# stdout: 그 커널이 요구하는 lttng-modules 최소 버전, 제약이 없으면 빈 문자열.
+# 이것이 **upstream DKMS 등록 경로가 소비할 함수**다 ("어느 태그를 가져오나").
+lttng_modules_min_version_for_kernel() {
+  local kver="$1" row min max req
+  [[ "$kver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 0
+
+  for row in "${LTTNG_KERNEL_GUARD_TABLE[@]}"; do
+    read -r min max req <<<"$row"
+    dpkg --compare-versions "$kver" ge "$min" || continue
+    if [[ "$max" != "-" ]]; then
+      dpkg --compare-versions "$kver" lt "$max" || continue
+    fi
+    echo "$req"
+    return 0
+  done
+}
+
+# lttng_modules_compat_verdict <kernel_release> <candidate_version> [headers_root]
+#
+# stdout 한 줄: "<verdict> <kernel_version> <required>"
+#   ok           — 알려진 제약 없음, 또는 candidate 가 이미 충족 (→ 설치 시도)
+#   incompatible — 표에 양성으로 걸리고 candidate 가 미달        (→ 시도 금지)
+#   unknown      — 커널 버전을 못 읽음                            (→ 설치 시도)
+# `<kernel_version>`/`<required>` 는 해당 없으면 "-".
+#
+# candidate 는 apt 후보 문자열 그대로 받아도 된다 — Debian revision
+# (`2.14.0-1ubuntu1.1~24.04.1` 의 `-1ubuntu...`) 은 upstream 버전이 아니므로
+# 잘라내고 비교한다.
+#
+# 탈출구: `RTC_LTTNG_SKIP_COMPAT_GATE=1` 이면 항상 unknown 을 내 시도로 되돌린다.
+# 배포판이 upstream 버전을 안 올린 채 수정을 backport 하면 (예:
+# `2.14.0-1ubuntu1.2` 가 가드를 포함) 버전 비교로는 그것을 알 수 없고, 그때
+# 게이트가 되는 조합을 막는 유일한 경우가 되기 때문이다.
+lttng_modules_compat_verdict() {
+  local release="$1" candidate="$2" root="${3:-/lib/modules}"
+
+  if [[ "${RTC_LTTNG_SKIP_COMPAT_GATE:-0}" == "1" ]]; then
+    echo "unknown - -"
+    return 0
+  fi
+
+  local kver
+  kver=$(lttng_kernel_build_version "$release" "$root")
+  if [[ -z "$kver" ]]; then
+    echo "unknown - -"
+    return 0
+  fi
+
+  local req
+  req=$(lttng_modules_min_version_for_kernel "$kver")
+  if [[ -z "$req" ]]; then
+    echo "ok ${kver} -"
+    return 0
+  fi
+
+  # upstream 버전만 남긴다: "2.14.0-1ubuntu1.1~24.04.1" → "2.14.0"
+  local upstream="${candidate%%-*}"
+  if [[ -n "$upstream" ]] && dpkg --compare-versions "$upstream" ge "$req"; then
+    echo "ok ${kver} ${req}"
+  else
+    echo "incompatible ${kver} ${req}"
+  fi
+}

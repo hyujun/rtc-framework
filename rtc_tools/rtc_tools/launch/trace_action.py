@@ -36,9 +36,27 @@ from launch.substitutions import LaunchConfiguration
 RTC_UST_EVENTS = ("rtc:span_begin", "rtc:span_end")
 
 
+# Values that mean "no kernel events" (UST-only capture).
+#
+# The obvious spelling — an empty value — is **unreachable from the command
+# line**: ros2launch rejects `name:=` outright (`ros2launch.api.api` raises
+# "malformed launch argument" when the token ends with ':='), so
+# `trace_events_kernel:=` can never be typed even though docs instructed it for
+# a long while. An empty string still arrives from launch-file defaults, so both
+# spellings have to work; only these sentinels are typable (issue #190).
+KERNEL_EVENTS_OFF = frozenset({"none", "off", "false", "0"})
+
+
 def _split_csv(value: str) -> list[str]:
     """Comma-separated string → stripped non-empty list."""
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _kernel_events(raw: str) -> list[str]:
+    """Kernel-event list from the raw launch argument, honouring the off sentinels."""
+    if raw.strip().lower() in KERNEL_EVENTS_OFF:
+        return []
+    return _split_csv(raw) if raw else []
 
 
 def _with_rtc_events(base: list[str]) -> list[str]:
@@ -78,7 +96,8 @@ def make_trace_action(
             are always appended regardless, so RT-tick spans are captured
             whenever tracing is on.
         events_kernel_arg: LaunchArgument carrying a comma-separated list
-            of kernel events. Empty list disables kernel tracing — common
+            of kernel events. ``none`` (or an empty value, which only a
+            launch-file default can supply) disables kernel tracing — common
             choices are ``sched_switch,sched_waking,sched_wakeup,
             irq_handler_entry,irq_handler_exit``.
 
@@ -126,7 +145,7 @@ def make_trace_action(
     trace_kwargs["events_ust"] = _with_rtc_events(base_ust)
 
     events_kernel_raw = LaunchConfiguration(events_kernel_arg).perform(context)
-    trace_kwargs["events_kernel"] = _split_csv(events_kernel_raw) if events_kernel_raw else []
+    trace_kwargs["events_kernel"] = _kernel_events(events_kernel_raw)
 
     trace = Trace(**trace_kwargs)
 
