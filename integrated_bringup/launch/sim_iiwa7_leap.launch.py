@@ -201,9 +201,11 @@ def launch_setup(context, *args, **kwargs):
     actions = [set_session_dir, set_run_id]
 
     if use_affinity.lower() in ("true", "1", "yes"):
-        # Mirror robot_ur5e_p1a.launch.py: probe `sudo -n true` first.  Launch's stdin
-        # isn't a tty so an interactive sudo prompt would silently hang and
-        # leave the cores un-isolated — better to warn loudly and skip.
+        # Mirror robot_ur5e_p1a.launch.py.  The helper probes whether sudo will
+        # run *the shield* without a password (`sudo -n -l "$SHIELD" ...`, #386 B)
+        # before invoking it: launch's stdin isn't a tty, so an interactive sudo
+        # prompt would silently hang and leave the cores un-isolated — better to
+        # warn loudly and skip.
         enable_sim_cpu_shield = shield.enable_cpu_shield(
             "--sim",
             log_prefix="[SIM]",
