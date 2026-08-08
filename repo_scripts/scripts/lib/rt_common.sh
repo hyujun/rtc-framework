@@ -635,24 +635,46 @@ get_robot_packages() {
 # has to read it too, and sourcing cpu_shield.sh would run its CLI dispatch.
 RTC_SHIELD_MARKER_FILE="${RTC_SHIELD_MARKER_FILE:-/tmp/cpu_shield_mode}"
 
-# Layout profile of the ACTIVE shield. Falls back to the default profile when
-# there is no marker, when it cannot be read, or when it predates #350 and
-# carries a bare mode — all three describe a box whose shield was built with the
-# full MPC reservation, which IS the default profile.
+# Layout profile of the ACTIVE shield, plus WHERE that answer came from:
+# echoes "<profile> <source>". Never fails.
+#
+# The three fallback cases are not equally well-founded and #386 C is about the
+# gap between them:
+#
+#   marker + valid profile  → evidence. The shield was built for this profile.
+#   marker, no profile field → still evidence. A pre-#350 marker means a shield
+#       IS up and it was built with the full MPC reservation, which is the
+#       default profile. Inference, but grounded in an observed shield.
+#   no marker at all         → NOT evidence. It means "no shield is up", which
+#       says nothing about whether MPC was configured. Folding it into the
+#       default silently turned "unknown" into "mpc_on is confirmed", and a box
+#       that legitimately runs without MPC got a hard FAIL for a missing
+#       mpc_main. The default is kept (a verifier that refuses to run is worse),
+#       but the caller now has the string it needs to say so out loud.
 #
 # An unparseable profile string also falls back rather than failing: this is a
 # diagnostic input, and refusing to verify because a marker got corrupted would
 # turn a cosmetic problem into "no RT verification at all".
-shield_marker_profile() {
+shield_marker_profile_with_source() {
   local raw mode profile
   if [[ -r "$RTC_SHIELD_MARKER_FILE" ]] && raw=$(cat "$RTC_SHIELD_MARKER_FILE" 2>/dev/null); then
     read -r mode profile <<<"$raw"
     if [[ -n "${profile:-}" ]] && rtc_is_layout_profile "$profile"; then
-      echo "$profile"
+      printf '%s %s\n' "$profile" "shield marker"
       return 0
     fi
+    printf '%s %s\n' "$(rtc_default_profile)" "shield marker (pre-#350, profile 필드 없음)"
+    return 0
   fi
-  rtc_default_profile
+  printf '%s %s\n' "$(rtc_default_profile)" "default (shield marker 부재 — profile 미확인)"
+}
+
+# Profile only. Kept because most callers do not care where it came from; the
+# classification lives in exactly one place so the two answers cannot drift.
+shield_marker_profile() {
+  local profile _src
+  read -r profile _src <<<"$(shield_marker_profile_with_source)"
+  echo "$profile"
 }
 
 # ── Active-isolation detection (issue #349 D14, moved here by #386) ─────────

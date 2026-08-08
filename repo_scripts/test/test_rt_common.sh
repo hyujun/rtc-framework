@@ -1399,12 +1399,19 @@ _verifier_tables() {
   # `set --` 은 필수다. 인자 없는 `source` 는 **호출자의 위치인자를 물려주므로**,
   # 이걸 빼면 이 함수의 $1 이 검증기의 CLI 파서에 알 수 없는 옵션으로 들어가
   # show_help → exit 0 으로 서브셸이 조용히 죽고 표는 빈 채 비교된다.
+  # marker_content == __NONE__ 이면 marker 파일을 아예 만들지 않는다 — #386 C 가
+  # 문제 삼는 경로이고, 이 헬퍼가 늘 mktemp 로 파일을 만들었기 때문에 여태
+  # 단언이 하나도 없던 갈래다.
   local marker_content="$1" ncpu="$2"
   shift 2
   local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
   local marker
   marker=$(mktemp)
-  printf '%s\n' "$marker_content" >"$marker"
+  if [[ "$marker_content" == "__NONE__" ]]; then
+    rm -f "$marker"
+  else
+    printf '%s\n' "$marker_content" >"$marker"
+  fi
   (
     set +eu
     RTC_SHIELD_MARKER_FILE="$marker"
@@ -1453,6 +1460,20 @@ test_verifier_follows_the_shield_marker_profile() {
   # 만들어진 shield 가 실제로 MPC 예약을 포함한 레이아웃이기 때문이다.
   out=$(_verifier_tables "robot" 12)
   expect_eq "verifier.profile.legacy" "profile=mpc_on" "$(grep '^profile=' <<<"$out")"
+  # 값은 추론이지만 **근거는 있다** — marker 가 있다는 것은 shield 가 실제로 섰다는
+  # 뜻이다. 그래서 출처는 여전히 marker 이고, 아래 "marker 부재" 와 구분돼야 한다.
+  if grep -q '^source=shield marker' <<<"$out"; then pass; else
+    fail "[verifier.source.legacy] 구형 marker 는 shield 가 섰다는 증거다: $(grep '^source=' <<<"$out")"
+  fi
+
+  # marker 자체가 없는 경우 (#386 C). 값은 그대로 default 로 떨어지되 — 검증기가
+  # 안 도는 것이 더 나쁘다 — 출처가 "shield marker" 라고 주장하면 안 된다.
+  # 그건 shield 가 없다는 뜻일 뿐 MPC 구성에 대해서는 아무것도 말해주지 않는다.
+  out=$(_verifier_tables "__NONE__" 12)
+  expect_eq "verifier.profile.nomarker" "profile=mpc_on" "$(grep '^profile=' <<<"$out")"
+  if grep -q '^source=default' <<<"$out"; then pass; else
+    fail "[verifier.source.nomarker] marker 가 없는데 출처를 marker 라고 보고했다: $(grep '^source=' <<<"$out")"
+  fi
 
   # --profile 은 marker 를 이긴다 — shield 가 없는 박스(cset 미설치 dev PC)에서
   # 검증기를 돌리거나 반대 profile 을 일부러 확인할 때의 유일한 통로다.
@@ -1556,15 +1577,24 @@ test_check_cpu_isolation_sees_a_live_cset_shield() {
 _discovery_run() {
   # $1 = fixture 트리를 만드는 콜백 이름 (인자로 task_dir 을 받는다)
   # $2 = discover_controller_pid 가 낼 pid ("" 면 미발견)
-  local builder="$1" pid="$2"
+  # $3 = shield marker 내용 (기본 "robot mpc_on", "__NONE__" 이면 marker 없음).
+  #      이 박스의 실제 /tmp/cpu_shield_mode 를 읽으면 결과가 호스트에 따라 갈린다.
+  local builder="$1" pid="$2" marker_content="${3:-robot mpc_on}"
   local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
-  local root
+  local root marker
   root=$(mktemp -d)
+  marker=$(mktemp)
+  if [[ "$marker_content" == "__NONE__" ]]; then
+    rm -f "$marker"
+  else
+    printf '%s\n' "$marker_content" >"$marker"
+  fi
   [[ -n "$pid" ]] && "$builder" "${root}/${pid}/task"
   (
     set +eu
     set --
     RTC_PROC_ROOT="$root"
+    RTC_SHIELD_MARKER_FILE="$marker"
     # external driver 탐색은 실 pgrep 을 쓰므로, 로봇이 떠 있는 박스에서 이 테스트가
     # 다른 답을 내지 않도록 존재할 수 없는 comm 으로 고정한다 (경로는 그대로 돈다).
     RTC_ARM_DRIVER_COMM="rtc_no_such_arm"
@@ -1573,7 +1603,6 @@ _discovery_run() {
     source "$verifier" >/dev/null 2>&1
     discover_controller_pid() { echo "$pid"; }
     PHYSICAL_CORES=12
-    LAYOUT_PROFILE="mpc_on"
     build_expected_threads
     OUTPUT_MODE="verbose"
     # 명령 치환은 서브셸이라 CATEGORY_* / 종료코드를 함께 관측할 수 없다.
@@ -1588,6 +1617,7 @@ _discovery_run() {
     rm -f "$tmp"
   )
   rm -rf "$root"
+  rm -f "$marker"
 }
 
 # 기대 표의 모든 이름에 tid 를 하나씩 준다 (정상 기동).
@@ -1617,6 +1647,29 @@ _fixture_duplicate_comm() {
 }
 
 _fixture_no_task_dir() { :; }
+
+# mpc 행만 빠진 트리 — MPC 를 안 띄운 정상 구성이 이 모습이다.
+_fixture_missing_mpc_only() {
+  local task_dir="$1" tid=1000 name
+  while read -r name; do
+    [[ "$name" == mpc_* ]] && continue
+    mkdir -p "${task_dir}/${tid}"
+    printf '%s\n' "$name" >"${task_dir}/${tid}/comm"
+    tid=$((tid + 1))
+  done < <(rtc_expected_threads 12 mpc_on | cut -d: -f1)
+}
+
+# mpc 행 + 진짜 RT 스레드 하나가 함께 빠진 트리 — 이건 profile 추론으로 설명되지
+# 않는다 (rt_control 은 어느 profile 에서도 필수다).
+_fixture_missing_mpc_and_rt() {
+  local task_dir="$1" tid=1000 name
+  while read -r name; do
+    [[ "$name" == mpc_* || "$name" == "rt_control" ]] && continue
+    mkdir -p "${task_dir}/${tid}"
+    printf '%s\n' "$name" >"${task_dir}/${tid}/comm"
+    tid=$((tid + 1))
+  done < <(rtc_expected_threads 12 mpc_on | cut -d: -f1)
+}
 
 test_check_process_discovery_judges_by_name() {
   local out
@@ -1656,6 +1709,41 @@ test_check_process_discovery_judges_by_name() {
   expect_eq "discovery.nopid.rc" "rc=1" "$(grep '^rc=' <<<"$out")"
   expect_eq "discovery.nopid.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
   expect_eq "discovery.nopid.detail" "detail=not running" "$(grep '^detail=' <<<"$out")"
+}
+
+# ── 추론된 profile 의 mpc FAIL (issue #386 C) ────────────────────────────────
+# marker 가 없으면 profile 은 rtc_default_profile() = mpc_on 으로 접힌다. 값 자체는
+# 유지한다 (기대값을 낮추면 진짜로 죽은 mpc_main 을 놓친다 — 미검증은 PASS 가
+# 아니다). 대신 그 값이 확정이 아니라 가정이라는 사실이 FAIL 옆에 붙어야 한다.
+test_inferred_profile_says_so_when_only_mpc_is_missing() {
+  local out
+
+  # ① marker 없음 + mpc 행만 누락 → FAIL 은 유지, 추론 안내가 붙는다.
+  out=$(_discovery_run _fixture_missing_mpc_only 4242 "__NONE__")
+  expect_eq "infer.nomarker.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  if grep -q '추론이다' <<<"$out" && grep -q 'mpc_off' <<<"$out"; then pass; else
+    fail "[infer.nomarker.msg] profile 이 추론인데 그 사실도 확인 수단도 없다: $out"
+  fi
+
+  # ② marker 가 mpc_on 을 명시 → 같은 누락이지만 이건 진짜 회귀다. 안내가 붙으면
+  #    운영자가 실재하는 고장을 "구성 문제인가" 로 오독한다.
+  out=$(_discovery_run _fixture_missing_mpc_only 4242 "robot mpc_on")
+  expect_eq "infer.marker.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  if grep -q '추론이다' <<<"$out"; then
+    fail "[infer.marker.msg] marker 가 profile 을 명시했는데 추론이라고 했다: $out"
+  else
+    pass
+  fi
+
+  # ③ marker 없음 + mpc 아닌 필수 스레드도 누락 → 추론으로 설명되지 않으므로
+  #    안내가 붙으면 안 된다.
+  out=$(_discovery_run _fixture_missing_mpc_and_rt 4242 "__NONE__")
+  expect_eq "infer.notonlympc.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  if grep -q '추론이다' <<<"$out"; then
+    fail "[infer.notonlympc.msg] rt_control 도 없는데 profile 추론 탓으로 돌렸다: $out"
+  else
+    pass
+  fi
 }
 
 # ── Layout tier tables (issue #153 M1) ──────────────────────────────────────
@@ -1931,6 +2019,7 @@ test_verifier_is_sourceable_without_running
 test_verifier_follows_the_shield_marker_profile
 test_check_cpu_isolation_sees_a_live_cset_shield
 test_check_process_discovery_judges_by_name
+test_inferred_profile_says_so_when_only_mpc_is_missing
 test_layout_tier_tables_per_tier
 test_layout_worker_roles_absent_on_every_tier
 test_rtc_expected_threads_table_per_tier

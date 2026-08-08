@@ -156,8 +156,10 @@ PHYSICAL_CORES="$TOTAL_CORES"
 # for a box with no shield (no cset, dev machine) or to check the other profile
 # deliberately.
 if [[ -z "${LAYOUT_PROFILE:-}" ]]; then
-  LAYOUT_PROFILE="$(shield_marker_profile)"
-  PROFILE_SOURCE="shield marker"
+  # PROFILE_SOURCE 를 "shield marker" 로 박아 두면 **marker 가 없을 때 거짓말이
+  # 된다** — 그 경우 값은 마커가 아니라 rtc_default_profile() 에서 온 추론이고,
+  # MPC 를 구성하지 않은 박스에서 mpc_main 부재가 하드 FAIL 로 돌아왔다 (#386 C).
+  read -r LAYOUT_PROFILE PROFILE_SOURCE <<<"$(shield_marker_profile_with_source)"
 fi
 if ! rtc_is_layout_profile "$LAYOUT_PROFILE"; then
   echo "ERROR: 알 수 없는 layout profile '${LAYOUT_PROFILE}' (선언된 profile: $(rtc_layout_profiles))" >&2
@@ -511,6 +513,25 @@ check_process_discovery() {
     # 필수는 전부 있음" WARN 갈래는 그 필드와 함께 사라졌다 (#380).
     _fail "thread_config.hpp 필수 스레드 미발견: ${required_found}/${required_count} — 이름 미설정(ApplyThreadConfig early-return) 의심"
     _category_update "process_discovery" "FAIL"
+
+    # 누락된 것이 mpc 행뿐이고 profile 이 marker 가 아니라 기본값에서 왔다면,
+    # 이 FAIL 은 "MPC 가 죽었다" 가 아니라 "MPC 를 안 띄웠는데 검증기가 띄웠다고
+    # 가정했다" 일 수 있다. 기대값을 낮추지는 않는다 (미검증은 PASS 가 아니다) —
+    # 대신 가정을 명시하고 확인 수단을 준다 (#386 C).
+    if [[ "$PROFILE_SOURCE" != "--profile" && "$PROFILE_SOURCE" != "shield marker" ]]; then
+      local _missing_mpc_only=1 _m
+      for entry in "${EXPECTED_THREADS[@]}"; do
+        _m=$(echo "$entry" | cut -d: -f1)
+        if [[ -z "${THREAD_TIDS[$_m]:-}" && "$_m" != mpc_* ]]; then
+          _missing_mpc_only=0
+          break
+        fi
+      done
+      if [[ "$_missing_mpc_only" -eq 1 ]]; then
+        _warn "  ↑ profile '${LAYOUT_PROFILE}' 는 확정이 아니라 추론이다 (${PROFILE_SOURCE})."
+        _warn "     MPC 를 안 띄우는 구성이면 미발견이 정상이다: --profile mpc_off 로 재실행해 확인할 것"
+      fi
+    fi
 
     # 진단 보조: 필수 스레드가 미발견이면 controller process 의 모든 RT-like
     # thread comm 을 dump. 이름이 박힌 thread 가 어떤 게 있고, EXPECTED 와
