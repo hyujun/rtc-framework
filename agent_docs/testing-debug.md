@@ -26,7 +26,8 @@
 | `integrated_bringup/` demo FSM | demo_wbc FSM/integration/output + demo_joint grasp·URDF paths + demo_task CLIK/contact_stop (URDF-backed iiwa7_leap fixture 공유, 노드 비생성) + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
 | `udp_hand_driver/` | 단위 gtest (hand_packets, codec, FT, failure detector) + UDP loopback | `ros2 topic hz /p1a/joint_states` (ur5e_p1a; 드라이버 standalone 기본은 `/hand/`) |
 | `ur5e_bt_coordinator/` | BT gtest — Tier-2 는 inject(DDS-free, `inject_fixture.hpp`)/e2e(real-DDS, `test_helpers.hpp`) 분리, suite 목록은 CMakeLists `TIER2_INJECT`/`TIER2_E2E` (#154) | 실제 grasp 시나리오 smoke |
-| Launch / YAML | `ros2 launch ... --print` + 짧은 smoke | config 로드 검증 |
+| Launch (`integrated_bringup/launch/*.py`) | `colcon test --packages-select integrated_bringup --ctest-args -R 'test_launch_'` — 평가 센서 `test_launch_description_evaluates` (5개 launch × 4 인자 조합을 `LaunchContext` 만으로 실제 평가; ROS 그래프 불요, ~1.4 s) + AST 센서 `test_launch_shield_wiring` · `test_launch_hand_affinity_wiring` (어느 헬퍼를 부르는가). **import 스모크(`rtc_tools/test/test_launch_imports.py`)로는 `OpaqueFunction` 본문이 안 돈다** — #397 이 그 틈으로 sim 3개를 죽인 채 전 배터리 green 이었다 | 짧은 실기/sim smoke (`ros2 launch ...`) |
+| Launch / YAML config | 위 + 변경 YAML parse | config 로드 검증 |
 | Threading (`ApplyThreadConfig`) | `rtc_base` thread-config gtest + RT perms | `check_rt_setup.sh --summary` |
 | RT 회귀 의심 / RT path 미상 | `mpc_timing_log.csv`·`cm_timing_log.csv` p99 검사 | `enable_tracing:=true` + Perfetto 분석 (§Tracing) |
 | RT host 환경 검증 | `check_rt_setup.sh --summary` + `verify_rt_runtime.sh` | `cyclictest --mlockall --smp -p 80 -i 200` / `rtla osnoise top` — [invariants.md](invariants.md) §RT Host / Runtime Preconditions RT-HOST-1~3 |

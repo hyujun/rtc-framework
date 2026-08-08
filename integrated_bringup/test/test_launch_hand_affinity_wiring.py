@@ -8,9 +8,12 @@ still launches, the topics still publish, and ``use_cpu_affinity:=false`` quietl
 keeps pinning: the exact silent-drift shape that made #344's wiring tests
 necessary in the first place.
 
-Structural (AST) rather than behavioural for the same reason as
-``test_launch_shield_wiring``: a real launch description needs a running ROS
-graph, and what drifts is which arguments a launch file passes.
+Structural (AST) for the same reason as ``test_launch_shield_wiring``: what
+drifts is which arguments a launch file passes, and the source says that
+directly. Not because behaviour is out of reach — the "a real launch description
+needs a running ROS graph" this file used to claim is false, and believing it is
+part of why #397 went unnoticed. ``test_launch_description_evaluates`` evaluates
+all five launches without one.
 """
 
 from __future__ import annotations
