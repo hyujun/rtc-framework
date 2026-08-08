@@ -337,7 +337,14 @@ jobs:
     needs: [changes, packages, build-deps]
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    # 예산 60 의 근거 (#388) — coverage-cpp 와 동일한 기준: 예산은 **콜드 경로**가
+    # 완주할 수 있어야 한다 (콜드 run 이 잘리면 캐시를 못 채워 다음 run 도 콜드다).
+    # 이 잡의 콜드 실측은 #389 검증에서 처음 나왔다: 44.9분(run 31234173159) ·
+    # 43.4분(run 31235008568), 둘 다 build 만 39분대. 50 이었을 때 여유가 10%뿐이라
+    # coverage-cpp 가 60 에서 만료했던 것과 같은 벼랑이었고, 이쪽은 merge gate 라
+    # 만료가 PR 을 막는다. 새 구조의 콜드 상한 = preamble 4.3 + build 39.2 +
+    # save 1.2 + test 0.4 ≈ 45.1분 → 60 은 그 위 25%.
+    timeout-minutes: 60
     # ccache: RelWithDebInfo flavor 전용 캐시 디렉토리. CCACHE_COMPILERCHECK=content 로
     # runner image 의 컴파일러가 바뀌면 (ident 가 아니라 내용 기준) 자동 무효화 → stale
     # object 재사용 방지. maxsize 는 repo 10GB actions-cache 예산 안에서 넉넉히.
