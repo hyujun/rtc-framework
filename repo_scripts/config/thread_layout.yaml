@@ -126,6 +126,13 @@ roles:
     # parallelises through OpenMP, which owns and spawns its own threads and
     # takes no external handles. Reintroducing parallel MPC means pinning that
     # OpenMP pool, not handing out std::jthread.
+    #
+    # `kind: mpc` therefore wraps a single sub-role. That is deliberate, not
+    # leftover: #382 costed the collapse (this axis, cpp_suffix_mpc, 8 branches
+    # in gen_thread_layout.py, 6 non-test C++ consumers) and kept it. The
+    # reasoning lives above `struct MpcThreadConfig` in
+    # rtc_base/include/rtc_base/threading/thread_config.hpp; reopen #382 rather
+    # than collapsing this axis here.
     main:
       key: mpc_main
       thread_name: mpc_main
