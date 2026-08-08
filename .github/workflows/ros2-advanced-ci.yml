@@ -384,8 +384,21 @@ jobs:
           name: rtc-deps-${{ env.ROS_DISTRO }}
           path: _rtc_ws/deps/install
 
-      - name: Cache colcon workspace
-        uses: actions/cache@v6
+      # 캐시 정책 (#388, 2026-08-08) — restore/save 분리 + main 에서만 save.
+      #   ① 10GB repo 예산에 한 run 이 8.9GB(colcon×2 + ccache×2)를 생산해 두 run 이
+      #      공존할 수 없었다. 게다가 PR-ref 캐시는 main·타 PR 에서 원리적으로 읽지
+      #      못하므로(ref scoping) 사장 용량이면서 축출 압력만 만든다 — 실측 시점에
+      #      예산의 53%가 이미 머지된 PR 의 ref 에 앉아 있었다. → PR 은 restore 만 한다.
+      #   ② `actions/cache@v6` 의 post 는 `post-if: success()` 다. 잡이 실패하면 저장이
+      #      통째로 skip 되므로 "step timeout 으로 post 몫을 남긴다" 는 처방은 cancelled
+      #      를 skipped 로 바꿀 뿐이었다. save 를 명시 step 으로 분리해 `always()` 를 건다.
+      #   ③ save 를 **build 직후**로 올린다. 이로써 잡 끝의 비싼 post-step 이 사라지고
+      #      (restore-only 는 post 가 없다) 만료 cliff 가 캐시를 앗아갈 구간 자체가
+      #      없어진다 — #388 되먹임 고리(만료 → 미저장 → 다음 run 콜드 → 재만료)를
+      #      예산 산술이 아니라 구조로 끊는다. 덤으로 test 전 저장이라 .gcda 가 안 섞인다.
+      - name: Restore colcon workspace
+        id: colcon-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             build/
@@ -396,11 +409,12 @@ jobs:
 
       # ccache 는 build/ colcon 캐시와 상보적이다: colcon 키는 소스 한 줄만 바뀌어도
       # hashFiles 가 달라져 전량 재빌드하지만, ccache 는 per-TU content hash 라 바뀐
-      # translation unit 만 재컴파일한다 (warm-cache 시간 단축의 실제 메커니즘). run_id
-      # 로 매 run 새 엔트리를 저장하고 flavor prefix restore-key 로 직전 캐시를 상속.
-      # coverage-cpp 와 flavor prefix(relwithdebinfo vs debug-gcov)가 달라 namespace 미공유.
-      - name: Cache ccache (RelWithDebInfo)
-        uses: actions/cache@v6
+      # translation unit 만 재컴파일한다 (warm-cache 시간 단축의 실제 메커니즘). main
+      # push 마다 run_id 로 새 엔트리를 저장하고 flavor prefix restore-key 로 직전 캐시를
+      # 상속. coverage-cpp 와 flavor prefix(relwithdebinfo vs debug-gcov)가 달라 namespace 미공유.
+      - name: Restore ccache (RelWithDebInfo)
+        id: ccache-cache
+        uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.ccache/gated
           key: ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-relwithdebinfo-v1-${{ github.run_id }}
@@ -425,6 +439,26 @@ jobs:
           enable-testing: "true"
           use-ccache: "true"
           artifact-suffix: cpp-build
+
+      # 캐시 저장 — build 직후 (위 restore step 주석 ①②③). test 이후가 아니라 여기서
+      # 저장하므로 뒤따르는 어떤 실패·만료도 다음 run 의 캐시를 앗아가지 못한다.
+      # cache-primary-key 를 되받아 restore 와 키 동일성을 보장한다 (수식 중복 금지).
+      - name: Save colcon workspace
+        if: always() && github.ref == 'refs/heads/main' && steps.colcon-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            build/
+            install/
+          key: ${{ steps.colcon-cache.outputs.cache-primary-key }}
+
+      # ccache 키는 run_id 라 정확 히트가 원리적으로 없다 → cache-hit 조건 불요.
+      - name: Save ccache (RelWithDebInfo)
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ github.workspace }}/.ccache/gated
+          key: ${{ steps.ccache-cache.outputs.cache-primary-key }}
 
       # GATE: CI 실측 통과 패키지. --return-code-on-test-failure 가 job 을 그대로
       # 실패시킨다 (continue-on-error 없음) → 여기 red 면 PR merge 차단. 비계측
@@ -460,14 +494,21 @@ jobs:
   #  test 가 red 여도 PR merge 는 차단하지 않는다 (branch protection 에서 이 job 을
   #  required 로 두지 말 것). 실 결함 신호는 gated-test job 이 담당한다.
   #  빌드 캐시: gated-test 와 분리된 키(coverage-v1, Debug+gcov), restore-keys 로 증분.
-  #  캐시 복원분의 stale .gcda 는 test 직전 정리 (커버리지 카운트 오염 방지).
+  #  캐시 복원분의 stale .gcda 는 build 직후·캐시 save 직전 정리 (카운트 오염 방지 +
+  #  저장되는 캐시가 카운터를 물고 다니지 않게).
   # ============================================================
   coverage-cpp:
     name: C++ Coverage
     needs: [changes, packages, build-deps]
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # 예산 75 의 근거 (#388) — 웜 캐시 정상상태는 18~29분(실측 3회)이라 60% 이상 여유가
+    # 남지만, 예산은 **콜드 경로**가 완주할 수 있어야 한다: 콜드 run 이 중간에 잘리면
+    # 캐시를 못 채워 다음 run 도 콜드가 되기 때문이다. 콜드 실측 p100 은 기능 step 합
+    # 59.3분(run 31188282031)이고 이제 비싼 post-step 이 없으므로(restore-only 는 post
+    # 부재, save 는 build 직후 명시 step) 61분이 상한이다 → 75 는 그 위 19% 여유.
+    # 60 이었을 때 그 여유가 -2% 여서 만료했다.
+    timeout-minutes: 75
     # NOTE: job-level continue-on-error 는 의도적으로 두지 않는다. "non-blocking" 은
     # branch protection 에서 이 job 을 required 로 두지 않음으로 달성하고, coverage
     # 파이프라인 자체의 고장(계측 빌드 실패 / lcov 단계 오류 / 인프라 flake)은 run
@@ -475,7 +516,7 @@ jobs:
     # 개별 test 실패만 non-blocking (아래 step-level continue-on-error).
     # ccache: Debug+gcov flavor 전용 디렉토리 — gated(RelWithDebInfo) 와 CCACHE_DIR·
     # 캐시 키 prefix 를 분리해 계측 산출물이 gated namespace 를 오염시키지 못하게 한다.
-    # ccache 는 컴파일 산출(.o/.gcno)만 재사용하고, .gcda(실행 카운터)는 test 직전
+    # ccache 는 컴파일 산출(.o/.gcno)만 재사용하고, .gcda(실행 카운터)는 build 직후
     # 별도 reset 되므로 커버리지 카운트 오염 경로가 겹치지 않는다.
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache/coverage
@@ -486,7 +527,13 @@ jobs:
 
       # issue #210: Debug+gcov 오브젝트는 gated 의 RelWithDebInfo 보다 크므로 이 job 은
       # 아직 안 터졌더라도 헤드룸이 더 얇다. gated 와 동일하게 확보 + 계측한다.
+      #
+      # 아래 step-level timeout 들(#388)은 **단일 step 의 hang 상한**이지 가산 예산이
+      # 아니다 — 합(119분)은 잡 예산(75분)을 넘고 그게 의도다. 각 값은 실측 p100 의
+      # 1.3~3배로, 정상 run 에서는 절대 발화하지 않고 무한정 붙잡힌 step 만 잘라낸다.
+      # 캐시 보전은 이 값들이 아니라 save step 의 위치가 보장한다 (build 직후).
       - name: Free disk space
+        timeout-minutes: 5
         uses: ./.github/actions/free-disk-space
 
       - name: Disk report (after cleanup)
@@ -527,8 +574,10 @@ jobs:
 
       # gated-test 와 분리된 키 (Debug + gcov 계측이라 산출물이 다름). restore-keys
       # prefix 매치로 colcon 증분 빌드 → 변경 패키지만 재컴파일 (cold 33min 단축).
-      - name: Cache colcon workspace (coverage)
-        uses: actions/cache@v6
+      # 정책은 gated-test 의 "캐시 정책 (#388)" 주석이 SSoT — 여기 복제하지 않는다.
+      - name: Restore colcon workspace (coverage)
+        id: colcon-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             build/
@@ -539,9 +588,10 @@ jobs:
 
       # gated 와 분리된 flavor prefix(debug-gcov). ccache 는 -ftest-coverage 빌드의
       # .gcno 를 object 와 함께 캐시하므로 계측이 유지된다. 런타임 .gcda 는 아래
-      # "Reset stale coverage counters" 가 test 직전 지우므로 카운트 오염과 무관.
-      - name: Cache ccache (Debug + gcov)
-        uses: actions/cache@v6
+      # "Reset stale coverage counters" 가 build 직후·save 직전에 지우므로 카운트 오염과 무관.
+      - name: Restore ccache (Debug + gcov)
+        id: ccache-cache
+        uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.ccache/coverage
           key: ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-debug-gcov-v1-${{ github.run_id }}
@@ -554,6 +604,7 @@ jobs:
           label: pre-build
 
       - name: Build packages (coverage-instrumented)
+        timeout-minutes: 50
         uses: ./.github/actions/colcon-build
         with:
           packages: ${{ needs.packages.outputs.test_cpp }}
@@ -564,7 +615,36 @@ jobs:
           use-ccache: "true"
           artifact-suffix: cpp-coverage-build
 
+      # build 직후 · save 직전으로 올렸다 (#388): 복원분에 섞여 온 이전 run 의 .gcda 를
+      # 지우고 저장해야 캐시가 카운터를 물고 다니지 않는다. 이번 run 의 coverage 는
+      # 여전히 아래 test step 실행분만 반영한다 (baseline 은 --initial 이라 .gcno 만 읽어
+      # 이 순서에 무관). .gcno(빌드 산출)는 보존하므로 instrumentation 은 유지된다.
+      - name: Reset stale coverage counters (.gcda)
+        if: always()
+        shell: bash
+        run: find build -name '*.gcda' -delete 2>/dev/null || true
+
+      # build 직후 저장 (gated-test 의 정책 주석 ③). 이 job 이 #388 의 당사자다 —
+      # 이전 구조에서는 여기서부터 잡 끝까지 ~15분을 더 간 뒤에야 post-step 이 3.5GB 를
+      # 올리려다 만료에 잘렸다.
+      - name: Save colcon workspace (coverage)
+        if: always() && github.ref == 'refs/heads/main' && steps.colcon-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            build/
+            install/
+          key: ${{ steps.colcon-cache.outputs.cache-primary-key }}
+
+      - name: Save ccache (Debug + gcov)
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ github.workspace }}/.ccache/coverage
+          key: ${{ steps.ccache-cache.outputs.cache-primary-key }}
+
       - name: Capture baseline (zero-coverage) lcov
+        timeout-minutes: 8
         shell: bash
         run: |
           set -eo pipefail
@@ -576,17 +656,11 @@ jobs:
             --rc geninfo_unexecuted_blocks=1 \
             --ignore-errors mismatch,source,gcov,negative,unused,empty 2>&1 | tail -20 || true
 
-      # 캐시 복원 시 이전 run 의 .gcda 가 남아 gcov 카운트를 오염시킬 수 있으므로
-      # 테스트 직전 모두 제거 → coverage 는 이번 run 의 실행만 반영. .gcno(빌드 산출)
-      # 는 보존하므로 instrumentation 은 유지된다.
-      - name: Reset stale coverage counters (.gcda)
-        shell: bash
-        run: find build -name '*.gcda' -delete 2>/dev/null || true
-
       # COVERAGE-ONLY: merge gate 는 gated-test job 으로 이전됐다. 여기서는 동일
       # gated 패키지를 계측 빌드로 다시 돌려 coverage .gcda 를 얻되, continue-on-error
       # 로 job 은 실패시키지 않는다(non-blocking). 실 결함 차단은 gated-test 담당.
       - name: Run gated C++ tests (coverage only)
+        timeout-minutes: 15
         if: always() && steps.setup.outcome == 'success'
         continue-on-error: true
         uses: ./.github/actions/colcon-test-report
@@ -602,6 +676,7 @@ jobs:
       # GITHUB_STEP_SUMMARY annotation 으로 계속 노출(가시성 유지). always() 로 gated
       # 실패 여부와 무관하게 실행해 coverage 를 최대한 수집한다.
       - name: Run best-effort C++ tests (coverage only)
+        timeout-minutes: 15
         if: always() && steps.setup.outcome == 'success'
         continue-on-error: true
         uses: ./.github/actions/colcon-test-report
@@ -620,6 +695,7 @@ jobs:
           label: post-build
 
       - name: Capture & filter lcov coverage
+        timeout-minutes: 8
         if: always() && steps.setup.outcome == 'success'
         shell: bash
         env:
@@ -664,6 +740,7 @@ jobs:
       # 환경 부재로 coverage.info 가 아예 없을 때 빈 리포트를 올려 Codecov 추세를
       # 0% 로 오염시키지 않도록 setup 성공 시에만 업로드한다.
       - name: Upload C++ coverage to Codecov
+        timeout-minutes: 8
         if: always() && steps.setup.outcome == 'success'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
