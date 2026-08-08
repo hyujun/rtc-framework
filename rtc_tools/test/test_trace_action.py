@@ -73,15 +73,44 @@ class _RecordingTrace:
         type(self).last_kwargs = dict(kwargs)
 
 
+# Stand-in for tracetools_trace's ros2:* default set. Its *content* is not what
+# these tests own (test_rtc_events_appended_to_ros_defaults pins the append rule
+# against an explicit base); what matters is that it is a non-empty list of names
+# distinct from RTC_UST_EVENTS, so "rtc:* got appended to the defaults" stays a
+# real assertion rather than a tautology.
+_STUB_DEFAULT_EVENTS_ROS = ["ros2:callback_start", "ros2:callback_end"]
+
+
 @pytest.fixture
 def recording_trace(monkeypatch):
-    """Make the lazy `from tracetools_launch.action import Trace` resolve to the recorder."""
-    mod = types.ModuleType("tracetools_launch.action")
-    mod.Trace = _RecordingTrace
-    pkg = types.ModuleType("tracetools_launch")
-    pkg.action = mod
-    monkeypatch.setitem(sys.modules, "tracetools_launch", pkg)
-    monkeypatch.setitem(sys.modules, "tracetools_launch.action", mod)
+    """Resolve the lazy ros2_tracing imports in make_trace_action to local stand-ins.
+
+    Both modules the function imports are stubbed, not just ``tracetools_launch``.
+    Stubbing half of them is what broke CI after issue #190: the guarded
+    ``tracetools_launch.action`` import succeeded off the stub, execution carried
+    on past the graceful-decline branch, and the unstubbed
+    ``tracetools_trace.tools.names`` import then raised ModuleNotFoundError on
+    every host without the ros2_tracing stack installed. The dev PC had it (from
+    ``./install.sh --tracing``, run for #190 itself) so the gap was invisible
+    locally and only surfaced on the CI runner.
+    """
+    action_mod = types.ModuleType("tracetools_launch.action")
+    action_mod.Trace = _RecordingTrace
+    launch_pkg = types.ModuleType("tracetools_launch")
+    launch_pkg.action = action_mod
+    monkeypatch.setitem(sys.modules, "tracetools_launch", launch_pkg)
+    monkeypatch.setitem(sys.modules, "tracetools_launch.action", action_mod)
+
+    names_mod = types.ModuleType("tracetools_trace.tools.names")
+    names_mod.DEFAULT_EVENTS_ROS = list(_STUB_DEFAULT_EVENTS_ROS)
+    tools_mod = types.ModuleType("tracetools_trace.tools")
+    tools_mod.names = names_mod
+    trace_pkg = types.ModuleType("tracetools_trace")
+    trace_pkg.tools = tools_mod
+    monkeypatch.setitem(sys.modules, "tracetools_trace", trace_pkg)
+    monkeypatch.setitem(sys.modules, "tracetools_trace.tools", tools_mod)
+    monkeypatch.setitem(sys.modules, "tracetools_trace.tools.names", names_mod)
+
     _RecordingTrace.last_kwargs = {}
     return _RecordingTrace
 
@@ -169,3 +198,47 @@ def test_disabled_tracing_builds_no_action(recording_trace, tmp_path):
 
     assert actions == []
     assert recording_trace.last_kwargs == {}
+
+
+# ── ros2_tracing availability seam ──────────────────────────────────────────
+
+
+def test_partial_ros2_tracing_install_declines_gracefully(monkeypatch, tmp_path):
+    """Missing tracetools_trace must hit the decline branch, not a raw ImportError.
+
+    `recording_trace` deliberately makes both imports succeed; this test covers
+    the opposite host — `tracetools_launch` importable, `tracetools_trace` not.
+    Before both imports shared one guard, that combination sailed past the
+    graceful-decline branch and raised out of make_trace_action, which at launch
+    time takes the whole launch file down instead of continuing without capture.
+    """
+    action_mod = types.ModuleType("tracetools_launch.action")
+    action_mod.Trace = _RecordingTrace
+    launch_pkg = types.ModuleType("tracetools_launch")
+    launch_pkg.action = action_mod
+    monkeypatch.setitem(sys.modules, "tracetools_launch", launch_pkg)
+    monkeypatch.setitem(sys.modules, "tracetools_launch.action", action_mod)
+    # None in sys.modules makes the import machinery raise ImportError for the
+    # name, so this holds on hosts that do have the real module installed.
+    monkeypatch.setitem(sys.modules, "tracetools_trace", None)
+    _RecordingTrace.last_kwargs = {}
+
+    actions = make_trace_action(_context(), session_dir=str(tmp_path))
+
+    assert actions == []
+    assert _RecordingTrace.last_kwargs == {}
+
+
+def test_real_default_events_symbol_exists_where_it_is_imported_from():
+    """Where the stack *is* installed, pin the real import the stub stands in for.
+
+    The fixture satisfies `tracetools_trace.tools.names.DEFAULT_EVENTS_ROS` itself,
+    so a rename or move upstream would leave every stubbed test green while
+    make_trace_action declines at runtime — tracing silently off, no failing
+    sensor. Skips (does not fail) where ros2_tracing is absent, e.g. CI.
+    """
+    pytest.importorskip("tracetools_trace")
+    from tracetools_trace.tools.names import DEFAULT_EVENTS_ROS
+
+    assert DEFAULT_EVENTS_ROS, "ros2_tracing default UST event set is empty"
+    assert all(isinstance(ev, str) for ev in DEFAULT_EVENTS_ROS)

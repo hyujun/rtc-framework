@@ -467,7 +467,7 @@ def launch_setup(context):
     return actions
 ```
 
-- `tracetools_launch.action.Trace` 를 lazy import — ros2_tracing 미설치 환경에서도 launch 파싱은 가능하며, `enable_tracing:=true`인데 미설치면 `./install.sh --tracing` 안내 메시지 후 no-op
+- ros2_tracing 심볼 (`tracetools_launch.action.Trace` + `tracetools_trace.tools.names.DEFAULT_EVENTS_ROS`) 을 **하나의 guard 안에서** lazy import — ros2_tracing 미설치 환경에서도 launch 파싱은 가능하며, `enable_tracing:=true`인데 미설치 (부분 설치 포함) 면 `./install.sh --tracing` 안내 메시지 후 no-op
 - Trace 결과물은 `<session_dir>/tracing/<session_name>/` (CSV timing log 와 같은 세션 트리) 에 저장 — `~/.ros/tracing/`의 ros2_tracing 기본 경로가 아님
 - `enable_tracing:=false` 시 빈 리스트 반환 (no-op)
 
