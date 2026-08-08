@@ -6,7 +6,9 @@ Bringup packages declare their own LaunchArguments
 an ``OpaqueFunction`` once the session directory is known.
 
 The helper:
-    * imports ``tracetools_launch.action.Trace`` lazily (so the launch file
+    * imports what it needs from ros2_tracing lazily and under a single
+      guard — ``tracetools_launch.action.Trace`` and
+      ``tracetools_trace.tools.names.DEFAULT_EVENTS_ROS`` (so the launch file
       can be parsed even when ros2_tracing is not installed)
     * writes traces to ``<session_dir>/tracing/<session_name>/`` — the same
       session tree as the CSV timing logs, so trace and CSV cross-reference
@@ -110,11 +112,18 @@ def make_trace_action(
         return []
 
     # Lazy import — declining gracefully if ros2_tracing is not installed.
+    #
+    # Both modules ship in the ros2_tracing stack (`ros-<distro>-tracetools-launch`
+    # depends on `tracetools-trace`), but they are imported under one guard rather
+    # than assuming co-installation: a partial install — or a test that stubs only
+    # one of them — otherwise escapes this branch and dies on a raw ImportError
+    # deeper in, past the point where the graceful message could still be printed.
     try:
         from tracetools_launch.action import Trace
+        from tracetools_trace.tools.names import DEFAULT_EVENTS_ROS
     except ImportError:
         print(
-            "[trace_action] tracetools_launch not installed — "
+            "[trace_action] ros2_tracing not installed — "
             "run ./install.sh --tracing to enable ros2_tracing capture. "
             "Skipping trace; launch will continue."
         )
@@ -136,10 +145,7 @@ def make_trace_action(
     # events_ust = (user list if given, else ros2_tracing's DEFAULT_EVENTS_ROS)
     # + rtc:* spans. We always pass an explicit list — the previous "omit kwarg
     # to inherit the default" path would silently drop rtc:* (the default set is
-    # ros2:* only), so the RT-tick spans never got recorded. DEFAULT_EVENTS_ROS
-    # is imported here (same package family as Trace, guarded by the import above).
-    from tracetools_trace.tools.names import DEFAULT_EVENTS_ROS
-
+    # ros2:* only), so the RT-tick spans never got recorded.
     events_ust_raw = LaunchConfiguration(events_ust_arg).perform(context)
     base_ust = _split_csv(events_ust_raw) if events_ust_raw else list(DEFAULT_EVENTS_ROS)
     trace_kwargs["events_ust"] = _with_rtc_events(base_ust)
