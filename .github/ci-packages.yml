@@ -55,6 +55,12 @@ test_cpp_gated:
 test_cpp_besteffort:
   # rtc_tsid           : TSIDPerformanceTest.*SolveTime — CI 러너에서 solve-time 초과로 실패
   # integrated_bringup : GraspPipelineTest — contact_rich/mimalloc grasp (10~20s) CI-fragile
+  #
+  # 주의 — integrated_bringup 은 여기 있지만 **전부가 non-gating 인 것은 아니다**:
+  # gated-test job 이 `test_launch_description_evaluates` 하나를 이름으로 골라
+  # merge gate 로 돌린다 (#397 — launch 가 기동조차 못 하는데 CI 가 조용했다).
+  # 패키지를 통째로 승격하지 않는 이유는 위 GraspPipelineTest 뿐이므로, 그게
+  # 안정화되면 이 항목째 gated 로 옮기고 그 step 을 지우는 것이 맞다.
   - rtc_tsid
   - integrated_bringup
 
