@@ -33,6 +33,21 @@ struct ThreadConfig {
 //
 // Invariant (checked by ValidateSystemThreadConfigs):
 //   * `main.sched_priority` < rt_callback thread priority (rt_callback preempts MPC).
+//
+// Why this stays a one-field struct (#382 — collapse evaluated, kept):
+// It carries nothing a bare `ThreadConfig mpc_main` would not, and the entire
+// cost of the special case is on the reading side. The collapse was costed so
+// the next reader need not re-derive it: 6 non-test `.mpc.main` consumers in 2
+// files (5 in thread_utils.hpp — ValidateSystemThreadConfigs and the
+// name→config table — plus the launch-config copy in integrated_bringup's wbc
+// controller), 8 `kind: mpc` branches in gen_thread_layout.py, the manifest's
+// `cpp_suffix_mpc` override, and test_mpc_thread_config.cpp, a suite for this
+// type alone. Issue #382 is the decision record: reopen it rather than
+// collapsing the aggregate ad hoc during unrelated work.
+//
+// One argument does NOT support keeping it — "parallel MPC will re-add slots
+// here". Per the paragraph above that path pins an OpenMP pool and adds no
+// ThreadConfig, so it would not restore this aggregate.
 
 struct MpcThreadConfig {
   ThreadConfig main{};
