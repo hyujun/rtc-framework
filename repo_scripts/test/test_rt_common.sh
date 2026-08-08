@@ -1542,6 +1542,122 @@ test_check_cpu_isolation_sees_a_live_cset_shield() {
   fi
 }
 
+# ── verify_rt_runtime.sh::check_process_discovery (issue #386 D) ────────────
+# 이 함수는 pgrep 과 실 /proc/<pid>/task/ 를 직접 걸어서 테스트가 전무했다.
+# #380 이 이 안의 PASS 게이트를 TID 축에서 이름 축으로 고쳤을 때 그 변경이 통과한
+# 센서는 `bash -n` 과 source 뿐이었다 — 판정 로직 자체는 한 번도 실행되지 않았다.
+#
+# $RTC_PROC_ROOT 로 /proc 트리를, discover_controller_pid 스텁으로 pgrep 을 가린다
+# (pgrep 은 실 커널 테이블을 보므로 fixture 로 대체되지 않는 유일한 입력이다).
+#
+# fixture 의 스레드 이름을 EXPECTED_THREADS 에서 파생시키는 것은 순환이 아니다 —
+# 여기서 고정하는 것은 표의 *내용*이 아니라 **표를 훑는 판정**이고, 표 자체의
+# oracle 은 손으로 박은 리터럴을 쓰는 test_rtc_expected_threads_table_per_tier 다.
+_discovery_run() {
+  # $1 = fixture 트리를 만드는 콜백 이름 (인자로 task_dir 을 받는다)
+  # $2 = discover_controller_pid 가 낼 pid ("" 면 미발견)
+  local builder="$1" pid="$2"
+  local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
+  local root
+  root=$(mktemp -d)
+  [[ -n "$pid" ]] && "$builder" "${root}/${pid}/task"
+  (
+    set +eu
+    set --
+    RTC_PROC_ROOT="$root"
+    # external driver 탐색은 실 pgrep 을 쓰므로, 로봇이 떠 있는 박스에서 이 테스트가
+    # 다른 답을 내지 않도록 존재할 수 없는 comm 으로 고정한다 (경로는 그대로 돈다).
+    RTC_ARM_DRIVER_COMM="rtc_no_such_arm"
+    RTC_HAND_DRIVER_COMM="rtc_no_such_hand"
+    # shellcheck disable=SC1090
+    source "$verifier" >/dev/null 2>&1
+    discover_controller_pid() { echo "$pid"; }
+    PHYSICAL_CORES=12
+    LAYOUT_PROFILE="mpc_on"
+    build_expected_threads
+    OUTPUT_MODE="verbose"
+    # 명령 치환은 서브셸이라 CATEGORY_* / 종료코드를 함께 관측할 수 없다.
+    local tmp rc
+    tmp=$(mktemp)
+    check_process_discovery >"$tmp" 2>&1
+    rc=$?
+    echo "rc=${rc}"
+    echo "status=${CATEGORY_STATUS[process_discovery]:-}"
+    echo "detail=${CATEGORY_DETAIL[process_discovery]:-}"
+    echo "out=$(tr '\n' ' ' <"$tmp")"
+    rm -f "$tmp"
+  )
+  rm -rf "$root"
+}
+
+# 기대 표의 모든 이름에 tid 를 하나씩 준다 (정상 기동).
+_fixture_all_threads() {
+  local task_dir="$1" tid=1000 name
+  while read -r name; do
+    mkdir -p "${task_dir}/${tid}"
+    printf '%s\n' "$name" >"${task_dir}/${tid}/comm"
+    tid=$((tid + 1))
+  done < <(rtc_expected_threads 12 mpc_on | cut -d: -f1)
+}
+
+# 필수 이름 하나(nrt_publish)를 빼고, 그 자리를 **같은 comm 의 중복**으로 채운다.
+# 이러면 매칭 TID 수(known_count)는 표의 행 수에 도달하는데 고유 이름은 모자란다
+# — TID 축으로 PASS 를 판정하면 "6/6 전체 감지" 를 내면서 nrt_publish 가 아예
+# 안 떠 있는 상태가 통과한다. #380 이 고친 fail-open 이 정확히 이것이다.
+_fixture_duplicate_comm() {
+  local task_dir="$1" tid=1000 name
+  while read -r name; do
+    [[ "$name" == "nrt_publish" ]] && continue
+    mkdir -p "${task_dir}/${tid}"
+    printf '%s\n' "$name" >"${task_dir}/${tid}/comm"
+    tid=$((tid + 1))
+  done < <(rtc_expected_threads 12 mpc_on | cut -d: -f1)
+  mkdir -p "${task_dir}/${tid}"
+  printf '%s\n' "rt_control" >"${task_dir}/${tid}/comm"
+}
+
+_fixture_no_task_dir() { :; }
+
+test_check_process_discovery_judges_by_name() {
+  local out
+
+  # ① 전원 기동 — 이름 축으로 6/6.
+  out=$(_discovery_run _fixture_all_threads 4242)
+  expect_eq "discovery.ok.rc" "rc=0" "$(grep '^rc=' <<<"$out")"
+  expect_eq "discovery.ok.status" "status=PASS" "$(grep '^status=' <<<"$out")"
+  if grep -q '6/6' <<<"$out"; then pass; else
+    fail "[discovery.ok.msg] 전원 기동인데 6/6 이 아니다: $out"
+  fi
+
+  # ② 중복 comm + 필수 1개 누락 → **FAIL 이어야 한다** (fail-open 회귀 고정).
+  out=$(_discovery_run _fixture_duplicate_comm 4242)
+  expect_eq "discovery.dup.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  if grep -q 'nrt_publish' <<<"$out"; then pass; else
+    fail "[discovery.dup.missing] 누락된 필수 스레드 이름이 보고되지 않았다: $out"
+  fi
+  if grep -q '같은 이름의 스레드가 여럿' <<<"$out"; then pass; else
+    fail "[discovery.dup.warn] 두 축이 갈렸는데 판정 축 로그가 없다: $out"
+  fi
+  if grep -q '6/6' <<<"$out"; then
+    fail "[discovery.dup.failopen] 중복 TID 로 6/6 을 냈다 — TID 축 판정 회귀: $out"
+  else
+    pass
+  fi
+
+  # ③ task dir 부재 (프로세스가 방금 죽음) → FAIL, rc 1.
+  out=$(_discovery_run _fixture_no_task_dir 4242)
+  expect_eq "discovery.notask.rc" "rc=1" "$(grep '^rc=' <<<"$out")"
+  expect_eq "discovery.notask.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  expect_eq "discovery.notask.detail" "detail=PID 4242, no task dir" \
+    "$(grep '^detail=' <<<"$out")"
+
+  # ④ controller 미발견 → FAIL, rc 1. 미검증은 PASS 가 아니다.
+  out=$(_discovery_run _fixture_all_threads "")
+  expect_eq "discovery.nopid.rc" "rc=1" "$(grep '^rc=' <<<"$out")"
+  expect_eq "discovery.nopid.status" "status=FAIL" "$(grep '^status=' <<<"$out")"
+  expect_eq "discovery.nopid.detail" "detail=not running" "$(grep '^detail=' <<<"$out")"
+}
+
 # ── Layout tier tables (issue #153 M1) ──────────────────────────────────────
 # get_mpc_cores / get_rt_cores / get_nrt_cores 는 이제 manifest 에서 생성되지만,
 # **이 fixture 의 리터럴이 생성기의 oracle 이다**. 생성물끼리 대조하면 잘못된
@@ -1814,6 +1930,7 @@ test_verifier_expected_slots_track_the_helpers
 test_verifier_is_sourceable_without_running
 test_verifier_follows_the_shield_marker_profile
 test_check_cpu_isolation_sees_a_live_cset_shield
+test_check_process_discovery_judges_by_name
 test_layout_tier_tables_per_tier
 test_layout_worker_roles_absent_on_every_tier
 test_rtc_expected_threads_table_per_tier
