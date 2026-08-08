@@ -50,9 +50,11 @@ sudo usermod -a -G tracing "$USER"
 
 `modprobe lttng-tracer` 가 `Key was rejected by service` 로 실패하고
 `lttng list --kernel` 이 `Kernel tracer not available` 을 내면, DKMS 가 빌드한
-서명되지 않은 module 을 Secure Boot 가 거부하는 상태다. `check_rt_setup.sh` 의
-`kmod=1` 은 module 파일이 디스크에 있다는 뜻이지 로드 가능 여부가 아니므로
-이 단계에서는 통과한 것처럼 보인다.
+서명되지 않은 module 을 Secure Boot 가 거부하는 상태다. `check_rt_setup.sh` 는
+`lsmod` → `modprobe --dry-run`(서명 검증 포함) → `modinfo`(파일 존재만) 순으로 보므로
+**이 상태는 `kmod=0 kmod_block=unsigned` 로 나온다** — `.ko` 는 디스크에 있지만
+로드가 안 되는 자리다. (`kmod=1` 이 "파일만 있어도 통과" 라는 옛 서술은 틀렸다:
+dry-run 이 서명까지 확인하므로 서명 없는 module 은 `kmod=1` 을 못 만든다.)
 
 해결 — MOK (Machine Owner Key) 등록:
 
