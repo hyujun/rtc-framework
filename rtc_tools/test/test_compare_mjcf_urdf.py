@@ -359,6 +359,10 @@ class TestParseMjcf:
 class TestCompare:
     def test_identical_models_zero_mismatches(self, tmp_path, capsys):
         """동일한 파라미터를 가진 MJCF/URDF 비교 시 mismatch=0."""
+        # mujoco 부재 시 _compare_structure() 가 통째로 skip 되고 (0, 1) 을 돌려주므로
+        # `mismatches == 0` 이 "비교했더니 일치" 인지 "비교를 안 함" 인지 구분되지 않는다.
+        # compare() 의 반환은 -> int 라 그 사실이 호출자 경계를 못 넘는다 → skip 으로 드러낸다 (#385).
+        pytest.importorskip("mujoco")
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(MJCF_TEMPLATE)
         urdf = tmp_path / "test.urdf"
@@ -406,6 +410,7 @@ class TestCompare:
 
     def test_custom_tolerance(self, tmp_path):
         """큰 tolerance 사용 시 작은 차이가 무시됨."""
+        pytest.importorskip("mujoco")  # == 0 단언이 구조 비교를 실제로 태워야 한다 (#385)
         # mass를 아주 약간만 변경
         mjcf_text = MJCF_TEMPLATE.replace('mass="4.0"', 'mass="4.001"', 1)
         mjcf = tmp_path / "test.xml"
@@ -470,7 +475,66 @@ class TestCompare:
 
         compare(mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE)
         captured = capsys.readouterr()
-        assert "WARN" in captured.out
+        # 맨 "WARN" 은 mujoco 부재 시의 폴백 경고 문구로도 충족되므로 (#385) 이 테스트가
+        # 겨냥한 경고를 지목한다 — 없는 body 를 link_map 이 가리킬 때 나오는 것이다.
+        assert "shoulder_link: not found in MJCF" in captured.out
+
+    def test_link_map_naming_difference_not_reported_missing(self, tmp_path, capsys):
+        """MJCF body 와 URDF link 이름이 다를 뿐이면 missing-link 오탐이 없어야 한다.
+
+        픽스처는 MJCF body ``base`` ↔ URDF link ``base_link_inertia`` 로 의도적으로
+        다르게 짓고 LINK_MAP_FIXTURE 로 잇는다 — ``--link-map`` 이 지원하는 바로 그
+        경우다.  구조 비교가 그 map 을 못 받던 시절엔 원시 이름 차집합이라 흡수가
+        없는데도 MISMATCH 를 냈고, 툴 자신의 fusestatic Hint 가 오진을 유도했다 (#385).
+        """
+        pytest.importorskip("mujoco")
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(MJCF_TEMPLATE)
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(URDF_TEMPLATE)
+
+        compare(mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE)
+
+        captured = capsys.readouterr()
+        assert "absent from MJCF" not in captured.out
+        # 질량이 하나도 안 샜다는 것이 "흡수가 아니라 이름 차이" 라는 증거다.
+        assert "total mass" in captured.out
+        assert "[MISMATCH] total mass" not in captured.out
+
+    def test_mapped_link_absorbed_still_reported(self, tmp_path, capsys):
+        """link_map 이 가리켜도 컴파일된 모델에 없으면 여전히 MISMATCH 여야 한다.
+
+        위 테스트의 오탐 제거가 *filter* 가 아니라 *translate* 임을 고정한다 —
+        실제로 흡수된 body 는 컴파일 결과에 없으므로 map 의 역참조가 실패하고,
+        진짜 질량 손실 신호는 살아남는다.  이 단언이 없으면 훗날 "단순화" 가
+        map 에 있는 링크를 통째로 면제해 진짜 결함을 조용히 삼킬 수 있다.
+        """
+        pytest.importorskip("mujoco")
+        # shoulder_link 를 지운 MJCF — link_map 은 여전히 그것을 가리킨다.
+        mjcf_text = """\
+<mujoco model="test">
+  <worldbody>
+    <body name="base" pos="0 0 0">
+      <inertial mass="4.0" pos="0 0 0.025" diaginertia="0.00443 0.00443 0.0072"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(mjcf_text)
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(URDF_TEMPLATE)
+
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
+
+        captured = capsys.readouterr()
+        assert "absent from MJCF" in captured.out
+        assert "shoulder_link" in captured.out
+        assert "mass=3.7 kg lost" in captured.out
+        assert mismatches >= 1
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════

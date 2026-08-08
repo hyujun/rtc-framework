@@ -891,6 +891,7 @@ def _compare_structure(
     mjcf_path: Path,
     urdf_path: Path,
     tolerance: float,
+    link_map: dict[str, str] | None = None,
 ) -> tuple[int, int]:
     """Compare structural counts and mass conservation between MJCF and URDF.
 
@@ -908,6 +909,11 @@ def _compare_structure(
       * Missing links: URDF links absent from MJCF body list — these
         usually indicate MuJoCo's ``fusestatic`` optimization absorbed
         the link, taking its mass with it.
+
+    Args:
+        link_map: Optional ``{<mjcf_body>: <urdf_link>}`` mapping.  Used only
+            to resolve deliberate naming differences in the missing-link
+            check; ``None`` compares raw names.
 
     Returns:
         ``(mismatches, warnings)`` counts contributed by this section.
@@ -1016,8 +1022,22 @@ def _compare_structure(
         else:
             print(f"  meshes: {model.nmesh}  OK")
 
-    # Missing links — the strong signal for fusestatic regression
-    missing = sorted(urdf_links - mjcf_bodies)
+    # Missing links — the strong signal for fusestatic regression.
+    #
+    # A URDF link counts as present when its own name is a compiled body, or
+    # when link_map points at one: the map exists precisely for models whose
+    # MJCF bodies and URDF links are named differently (--link-map), and every
+    # other section of compare() already bridges names through it.
+    #
+    # This *translates*, it does not *filter* — a body that fusestatic really
+    # absorbed is absent from the compiled model, so the lookup below fails and
+    # the loss is still reported even for a mapped link (#385).
+    mapped_urdf_links = {
+        urdf_name
+        for mjcf_name, urdf_name in (link_map or {}).items()
+        if mjcf_name in mjcf_bodies
+    }
+    missing = sorted(urdf_links - mjcf_bodies - mapped_urdf_links)
     if missing:
         print(f"\n  [MISMATCH] URDF links absent from MJCF ({len(missing)}):")
         for name in missing:
@@ -1078,7 +1098,7 @@ def compare(
     print("=" * 78)
 
     # ── Structural comparison (counts, mass, missing links) ──
-    s_mis, s_warn = _compare_structure(mjcf_path, urdf_path, tolerance)
+    s_mis, s_warn = _compare_structure(mjcf_path, urdf_path, tolerance, link_map)
     mismatches += s_mis
     warnings += s_warn
 

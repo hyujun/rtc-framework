@@ -262,7 +262,10 @@ jobs:
           install-numpy: "false"
 
       - name: Install Python test dependencies
-        run: pip install pytest pytest-cov coverage pandas numpy matplotlib
+        # mujoco 는 test_compare_mjcf_urdf 의 구조 비교(컴파일된 MJCF vs URDF)가
+        # 실제로 돌게 하는 데 필요하다. 없으면 _compare_structure() 가 통째로
+        # skip 되고 `assert mismatches == 0` 이 "비교를 안 해서" 통과한다 (#385).
+        run: pip install pytest pytest-cov coverage pandas numpy matplotlib mujoco
 
       - name: Build Python packages
         uses: ./.github/actions/colcon-build
