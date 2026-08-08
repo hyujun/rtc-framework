@@ -350,7 +350,8 @@ def generate_launch_description():
         description=(
             "Comma-separated kernel events. Default = sched_switch + IRQ "
             "entry/exit, enough to see which thread ran on which core when. "
-            "Empty disables kernel tracing (UST only). Requires "
+            "'none' disables kernel tracing (UST only) — an empty value "
+            "cannot be passed on the ros2 launch command line. Requires "
             "lttng-modules-dkms and 'tracing' group membership."
         ),
     )

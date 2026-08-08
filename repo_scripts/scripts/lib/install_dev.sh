@@ -165,7 +165,7 @@ install_tracing_tools() {
     # 호환 모듈이 생기면(배포판 갱신이든 upstream 등록이든) 그냥 설치하면 된다.
     warn "lttng-modules-dkms 건너뜀 — 커널 ${_kver} 는 lttng-modules >= ${_req} 필요 (후보: ${_lttng_candidate:-없음})"
     warn "  이 조합은 재시도·재부팅으로 해결되지 않는다 (tracepoint 프로토타입 비호환)"
-    warn "  UST 트레이싱은 정상: ros2 launch ... enable_tracing:=true trace_events_kernel:="
+    warn "  UST 트레이싱은 정상: ros2 launch ... enable_tracing:=true trace_events_kernel:=none"
     warn "  커널 타임라인이 필요하면 docs/tracing.md §Kernel timeline 가용성 참조"
   else
     # dkms postinst has been observed to stall silently on fresh Ubuntu 24.04

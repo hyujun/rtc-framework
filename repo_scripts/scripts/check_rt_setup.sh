@@ -1058,7 +1058,7 @@ check_tracing_setup() {
     if [[ "$_v" == "incompatible" ]]; then
       kmod_block="kernel_incompat"
       _warn "lttng-tracer kernel module 미빌드 — 커널 ${_kv} 에는 lttng-modules >= ${_rq} 필요 (배포판 후보 ${_cand:-없음})"
-      _fix "trace_events_kernel:= 로 UST-only 사용 (kernel timeline 은 이 커널에서 불가)"
+      _fix "trace_events_kernel:=none 으로 UST-only 사용 (kernel timeline 은 이 커널에서 불가)"
       _fix "커널 타임라인이 필요하면 docs/tracing.md §Kernel timeline 가용성 의 upstream DKMS 절차"
     else
       kmod_block="not_built"

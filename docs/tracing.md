@@ -313,8 +313,12 @@ LaunchArgument:
   `ros2:callback_start,ros2:callback_end`.
 * `trace_events_kernel:=<comma-separated>` — kernel events. 기본은
   `sched_switch,sched_waking,sched_wakeup,irq_handler_entry,irq_handler_exit` —
-  "어느 thread 가 어느 core 에서 언제 run 했나" 를 보기에 충분. **빈 값 = kernel
-  tracing 비활성화 (UST only)** — kernel 권한 없을 때 fallback.
+  "어느 thread 가 어느 core 에서 언제 run 했나" 를 보기에 충분. **`none` = kernel
+  tracing 비활성화 (UST only)** — kernel 권한이 없거나 이 커널을 지원하는 모듈이
+  없을 때의 fallback. `none` / `off` / `false` / `0` 을 받는다. **빈 값
+  (`trace_events_kernel:=`) 은 쓸 수 없다** — `ros2launch` 가 `name:=` 로 끝나는
+  토큰을 "malformed launch argument" 로 거부하므로 CLI 에서 도달 불가능하다
+  (launch 파일 default 로는 빈 값도 유효하다).
 
 ## Examples
 
@@ -323,8 +327,9 @@ LaunchArgument:
 ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true
 
 # UST only (kernel module / tracing group 없을 때)
+# 값은 반드시 'none' — 빈 값 `trace_events_kernel:=` 는 ros2launch 가 거부한다.
 ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
-    trace_events_kernel:=
+    trace_events_kernel:=none
 
 # callback timing 만 (좁은 UST + 풀 kernel)
 # rclcpp_callback_register 를 빼면 callback 이름이 symbol 대신 주소로만 표시된다.
@@ -364,7 +369,7 @@ metadata (프로세스·스레드 이름) 는 파일 **앞**에, 슬라이스는
 ./repo_scripts/scripts/timeline.sh --focus-proc integrated_rt
 
 # 3순위: 캡처 자체를 좁힌다 (rtc:* span 만 필요하면 kernel event 끄기)
-ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true trace_events_kernel:=
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true trace_events_kernel:=none
 ```
 
 `timeline.sh` 가 babeltrace2 (또는 `python3-bt2` binding) 로 CTF 를 읽어 Chrome trace JSON 으로 변환한다. 출력은 `<trace_dir>/trace.json`.
@@ -549,7 +554,7 @@ backport 한 경우를 위해 `RTC_LTTNG_SKIP_COMPAT_GATE=1` 로 게이트를 �
 
 ```bash
 ros2 launch integrated_bringup sim_ur5e_p1a.launch.py \
-    enable_tracing:=true trace_events_kernel:=
+    enable_tracing:=true trace_events_kernel:=none
 ```
 
 이때 못 보는 것은 **코어별 thread-run 레인 (Perfetto `Cpus`) · IRQ · `sched_switch`
