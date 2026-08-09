@@ -119,13 +119,19 @@ CASE_IDS = [f"{filename}-{combo_id}" for filename, combo_id, _ in CASES]
 def _isolated_logging_root(monkeypatch, tmp_path):
     """Point the session tree at ``tmp_path`` — and prove the redirect took.
 
-    Building a launch description is **not** side-effect free. The robot
-    launches call ``create_session_dir()`` and ``cleanup_old_sessions(root, 10)``
-    from ``generate_launch_description()`` itself, so merely evaluating one
-    creates a session directory and *deletes* every session past the tenth; the
-    sim launches do the same one level down, inside ``launch_setup``. Run
-    unisolated under ``colcon test`` and this file quietly truncates the
-    developer's ``logging_data``.
+    Still load-bearing after #402, for a narrower reason than before. Building
+    a description is now side-effect free in all five launches: the robot ones
+    no longer call ``create_session_dir()`` / ``cleanup_old_sessions()`` from
+    ``generate_launch_description()`` itself. But every launch still opens its
+    session from inside an ``OpaqueFunction``, and *executing those* is exactly
+    what this file does — so an unisolated run would still create a session
+    directory and delete every session past the configured count. What changed
+    is that the exposure now needs `_evaluate`; the sibling
+    ``test_combo_keys_are_declared_arguments``, which only builds descriptions,
+    no longer has it.
+
+    ``test_launch_session_wiring.py`` owns the assertion that building stays
+    clean; this fixture only keeps the evaluation from reaching real data.
 
     ``resolve_logging_root`` prefers ``$COLCON_PREFIX_PATH``'s first entry, but
     it falls back to walking the cwd for an ``install/`` + ``src/`` pair — which

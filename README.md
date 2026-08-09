@@ -301,7 +301,7 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 
 ## 세션 기반 로깅
 
-로그는 `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 자동 저장됩니다 (`max_log_sessions: 10`):
+로그는 `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 자동 저장됩니다. 보관 개수는 로봇 config 의 `max_log_sessions` (기본 10) 가 SSoT 이며, 5개 bringup launch 가 모두 이 값을 동명의 launch 인자 default 로 읽으므로 `ros2 launch ... max_log_sessions:=N` 으로 한 번에 바꿀 수 있습니다 (#402):
 
 | 서브디렉토리 | 내용 |
 |---|---|

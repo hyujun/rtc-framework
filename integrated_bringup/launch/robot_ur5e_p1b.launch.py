@@ -68,18 +68,13 @@ from rtc_tools.launch.cm_rt_params import control_rate_from_yaml, write_cm_rt_pa
 from rtc_tools.launch.pinning import (
     pin_dds_threads_to_slot,
 )
+from rtc_tools.launch.session import max_log_sessions_from_yaml, open_session
 from rtc_tools.launch.thread_layout import (
     get_arm_driver_core,
     get_hand_driver_core,
     get_rt_callback_core,
 )
 from rtc_tools.launch.trace_action import make_trace_action
-from rtc_tools.utils.session_dir import (
-    cleanup_old_sessions,
-    create_session_dir,
-    generate_run_id,
-    resolve_logging_root,
-)
 
 
 def _load_hand_params(pkg, *relpath):
@@ -97,6 +92,18 @@ def _load_hand_params(pkg, *relpath):
         return {}
 
 
+def _base_yaml_path(config_variant):
+    """Installed path of the variant's mode-agnostic node parameter file.
+
+    Read at launch-build time by everything whose default has to track that
+    YAML instead of drifting from it: ``control_rate`` for the CM RT contract
+    below, ``max_log_sessions`` for the session retention count (#402).
+    """
+    return os.path.join(
+        get_package_share_directory("integrated_bringup"), "config", config_variant, "_base.yaml"
+    )
+
+
 def _build_cm_rt_params(context, session_dir, config_variant):
     """Write this run's controller_manager RT parameter file; return (path, LogInfo).
 
@@ -111,9 +118,7 @@ def _build_cm_rt_params(context, session_dir, config_variant):
     has to reach the node, and priority/memory settings are not affinity.
     """
     pin_enabled = context.launch_configurations.get("use_cpu_affinity", "true") == "true"
-    base_yaml = os.path.join(
-        get_package_share_directory("integrated_bringup"), "config", config_variant, "_base.yaml"
-    )
+    base_yaml = _base_yaml_path(config_variant)
     params_file, params = write_cm_rt_param_file(
         session_dir,
         control_rate=control_rate_from_yaml(base_yaml),
@@ -135,8 +140,26 @@ def _build_cm_rt_params(context, session_dir, config_variant):
     return params_file, log
 
 
-def _launch_setup(context, *, session_dir):
+def _open_session(context):
+    """Create this run's session directory and export it to the child processes.
+
+    Deliberately an ``OpaqueFunction`` body rather than a line in
+    ``generate_launch_description()``: building a description must not create
+    or delete anything, and only a context can read ``max_log_sessions``
+    (#402 — see :mod:`rtc_tools.launch.session`).
+    """
+    return open_session(context).actions
+
+
+def _build_trace_action(context):
+    """Wrap ``make_trace_action``, which needs both a context and the session."""
+    return make_trace_action(context, session_dir=context.launch_configurations["session_dir"])
+
+
+def _launch_setup(context):
     """Resolve launch arguments and build actions that need runtime values."""
+    # Published by _open_session, which runs earlier in the description.
+    session_dir = context.launch_configurations["session_dir"]
     # ROS 2 Jazzy renamed use_fake_hardware -> use_mock_hardware.
     # Accept either flag; if either is 'true', enable mock hardware.
     use_mock = context.launch_configurations.get("use_mock_hardware", "false")
@@ -211,10 +234,8 @@ def _launch_setup(context, *, session_dir):
 
 
 def generate_launch_description():
-    # ── Session directory (YYMMDD_HHMM) ──────────────────────────────────────
-    logging_root = resolve_logging_root()
-    session_dir = create_session_dir(logging_root)
-    cleanup_old_sessions(logging_root, 10)
+    # Building a description is side-effect free: the session directory is
+    # opened by _open_session below, from inside an OpaqueFunction (#402).
 
     # ── Arguments ──────────────────────────────────────────────────────────────
     robot_ip_arg = DeclareLaunchArgument(
@@ -230,6 +251,19 @@ def generate_launch_description():
         "use_fake_hardware",
         default_value="false",
         description="[Deprecated — use use_mock_hardware] Alias kept for compatibility",
+    )
+
+    # Default is read from the same YAML the RT node reads, so the launch-side
+    # prune and the node's on_configure prune cannot disagree; overriding this
+    # on the command line moves both (#402).
+    max_log_sessions_arg = DeclareLaunchArgument(
+        "max_log_sessions",
+        default_value=str(max_log_sessions_from_yaml(_base_yaml_path("ur5e_p1b"))),
+        description=(
+            "Maximum number of session folders to keep (YYMMDD_HHMM). Default "
+            "comes from config/ur5e_p1b/_base.yaml, which is also the SSoT for "
+            "the RT node's own max_log_sessions parameter."
+        ),
     )
 
     use_cpu_affinity_arg = DeclareLaunchArgument(
@@ -356,11 +390,6 @@ def generate_launch_description():
         ),
     )
 
-    # Closure-bound helper: trace_action.make_trace_action needs a launch context.
-    # session_dir is captured from the enclosing scope.
-    def _build_trace_action(context):
-        return make_trace_action(context, session_dir=session_dir)
-
     trace_action = OpaqueFunction(function=_build_trace_action)
 
     # ── Paths ──────────────────────────────────────────────────────────────────
@@ -408,22 +437,18 @@ def generate_launch_description():
         name="CYCLONEDDS_URI", value=["file://", cyclone_dds_xml]
     )
 
-    set_session_dir = SetEnvironmentVariable(name="RTC_SESSION_DIR", value=session_dir)
-
-    # 세션 디렉토리는 분 해상도라 같은 분의 재기동이 같은 디렉토리를 얻고,
-    # 타이밍 CSV 는 거기에 append 된다. 이 런 ID 가 그 파일 안의 런 경계이며,
-    # 한 launch 의 모든 노드가 같은 값을 받아야 CSV 간 join 이 성립한다 (#376).
-    set_run_id = SetEnvironmentVariable(name="RTC_RUN_ID", value=generate_run_id())
+    # Opens this run's session directory and exports $RTC_SESSION_DIR /
+    # $RTC_RUN_ID. Must sit after the argument declarations (it reads
+    # max_log_sessions) and before every consumer of the session path (#402).
+    open_session_action = OpaqueFunction(function=_open_session)
 
     set_rmw = SetEnvironmentVariable(name="RMW_IMPLEMENTATION", value="rmw_cyclonedds_cpp")
 
     # ── UR robot driver launch (via OpaqueFunction for mock_hardware compat) ──
-    # session_dir goes in as a kwarg because the CM RT parameter file is written
-    # next to this run's logs, and only the OpaqueFunction can read the resolved
+    # The CM RT parameter file is written next to this run's logs, and only an
+    # OpaqueFunction can read both the session path and the resolved
     # use_cpu_affinity value that decides whether it carries a pin (issue #343).
-    ur_driver_launch_action = OpaqueFunction(
-        function=_launch_setup, kwargs={"session_dir": session_dir}
-    )
+    ur_driver_launch_action = OpaqueFunction(function=_launch_setup)
 
     # ── CPU Shield ────────────────────────────────────────────────────────────
     # Probe + enable live in rtc_tools.launch.cpu_shield so all five launches
@@ -507,7 +532,15 @@ def generate_launch_description():
             base_config,
             ur_control_config,
             {
-                "log_dir": session_dir,
+                # Substitutions, not strings: this node is built while the
+                # description is, so the session path does not exist yet — it is
+                # resolved when the node action executes (#402).
+                "log_dir": ParameterValue(LaunchConfiguration("session_dir"), value_type=str),
+                # Same number the launch pruned with, so the node's own
+                # on_configure prune cannot fight it (#402).
+                "max_log_sessions": ParameterValue(
+                    LaunchConfiguration("max_log_sessions"), value_type=int
+                ),
                 # The controller refuses to activate a structurally MPC-enabled
                 # config under a profile that dropped the MPC cores — otherwise
                 # the shield hands those cores back while a SCHED_FIFO thread
@@ -717,9 +750,10 @@ def generate_launch_description():
             trace_events_ust_arg,
             trace_events_kernel_arg,
             sil_mode_arg,
-            # 2) Environment
-            set_session_dir,
-            set_run_id,
+            max_log_sessions_arg,
+            # 2) Session + environment. open_session_action must stay below the
+            #    arguments and above every consumer of the session path (#402).
+            open_session_action,
             set_rmw,
             set_cyclone_uri,
             # 3) Infrastructure (parallel)

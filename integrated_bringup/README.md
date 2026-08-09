@@ -613,6 +613,7 @@ ros2 launch integrated_bringup robot_ur5e_p1a.launch.py use_mock_hardware:=true 
 | `use_mock_hardware` | `false` | 모의 하드웨어 사용 (Jazzy) |
 | `use_fake_hardware` | `false` | [호환성] Humble용 별칭 |
 | `use_cpu_affinity` | `true` | CPU 격리 + DDS 핀닝 활성화 |
+| `max_log_sessions` | `10` (= `config/ur5e_p1a/_base.yaml`) | 세션 폴더 최대 보관 수. default 를 그 YAML 에서 읽고 값을 RT 노드 파라미터로도 넘기므로, launch 쪽 정리와 노드 `on_configure` 정리가 같은 수를 본다 (#402) |
 | `kinematics_params_file` | `$HOME/ur5e_calibration.yaml` | `ur_calibration` 산출 factory calibration YAML. nested `ur_rsp.launch.py`가 소비 → 드라이버의 `robot_description`/TF에 실측 반영. 아래 [UR 캘리브레이션](#ur-캘리브레이션-kinematics_params_file) 참조 |
 | `headless_mode` | `true` | Teach Pendant의 External Control play 없이 headless 제어. 실로봇 운용 기본 true |
 | `reverse_ip` | `0.0.0.0` | UR 컨트롤러가 PC로 reverse connection 시 사용할 PC IP. multi-NIC/RT 전용 NIC에서는 명시값 권장 |
@@ -630,7 +631,7 @@ ros2 launch integrated_bringup robot_ur5e_p1a.launch.py use_mock_hardware:=true 
 
 **Launch 순서:**
 
-1. 세션 디렉토리 생성 (`rtc_tools.utils.session_dir.resolve_logging_root()` 의 4단 체인으로 결정: `$RTC_SESSION_DIR` → `$COLCON_PREFIX_PATH` → cwd 상위 `install/+src/` 탐색 → `$PWD`. 보통 `source install/setup.bash` 를 한 상태라면 ws 의 `logging_data/YYMMDD_HHMM/`, 최근 10개 유지)
+1. 세션 디렉토리 생성 — **launch 실행 시점**에 `OpaqueFunction` 이 수행한다 (description 을 만들기만 하는 `--show-args` 등은 파일시스템을 건드리지 않는다, #402). 루트는 `rtc_tools.utils.session_dir.resolve_logging_root()` 의 3단 체인: `$COLCON_PREFIX_PATH` 첫 entry 의 parent → cwd 상위 `install/+src/` 탐색 → `$PWD`. (`$RTC_SESSION_DIR` 는 이 체인이 아니라 그 위의 세션 결정 단계에 있다 — launch 가 *내보내는* 값이다.) 보통 `source install/setup.bash` 상태면 ws 의 `logging_data/YYMMDD_HHMM/`, 보관 수는 `max_log_sessions`
 2. 환경 변수 설정 (`CYCLONEDDS_URI`, `RMW_IMPLEMENTATION`, `RTC_SESSION_DIR`, `RTC_RUN_ID` — 이번 launch 의 런 ID. 같은 분의 재기동이 같은 세션 디렉토리를 얻으므로 타이밍 CSV 안의 런 경계가 된다, #376)
 3. `cpu_shield.sh on --robot` -- CPU 격리 활성화
 4. UR 드라이버 launch (`ur_robot_driver/ur_control.launch.py`)
@@ -687,7 +688,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 | `kp` | `""` (YAML 사용) | PD 게인 Kp 오버라이드 |
 | `kd` | `""` (YAML 사용) | PD 게인 Kd 오버라이드 |
 | `use_cpu_affinity` | `true` | Tier 1 CPU 격리 + MuJoCo 핀닝 |
-| `max_log_sessions` | `10` | 세션 폴더 최대 보관 수 |
+| `max_log_sessions` | `10` (= 그 변종의 노드 config YAML) | 세션 폴더 최대 보관 수. default 를 `_base.yaml` (iiwa7_leap 은 `sim.yaml`) 에서 읽고 값을 RT 노드 파라미터로도 넘긴다 — launch 와 노드가 같은 트리를 각자 정리하므로 (#402) |
 | `initial_controller` | `""` (YAML 사용) | 시작 컨트롤러 이름 (예: `demo_wbc_controller`) 오버라이드 |
 | `enable_mpc` | `""` (YAML 사용) | DemoWbcController의 `mpc.enabled` YAML 키를 launch 시점에 오버라이드. `true`/`false` 명시. `initial_controller:=demo_wbc_controller`와 함께 사용. 런타임 토글은 gains topic index 7로도 가능. |
 | `mpc_engine` | `""` (YAML 사용) | DemoWbcController의 `mpc.engine` 오버라이드: `"mock"` = `MockMPCThread` placeholder, `"handler"` = `HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` (실제 Aligator ProxDDP solve, `mpc/phase_config.yaml`+`mpc/contact_light.yaml`+`mpc/contact_rich.yaml` 필요). 빈 값 = YAML 기본값 (현재 `demo_wbc_controller.yaml`은 `"handler"`) |
@@ -702,7 +703,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 **Launch 순서:**
 
-1. 세션 디렉토리 생성 (워크스페이스 내 `logging_data/YYMMDD_HHMM/`)
+1. 세션 디렉토리 생성 — launch 실행 시점 (`launch_setup` 안, #402). 워크스페이스 내 `logging_data/YYMMDD_HHMM/`, 보관 수는 `max_log_sessions`
 2. `cpu_shield.sh on --sim` -- 경량 CPU 격리 (Tier 1)
 3. MuJoCo 시뮬레이터 노드 launch (`rtc_mujoco_sim/mujoco_simulator_node`)
 4. RT 컨트롤러 노드 launch (실행 파일 = ROS 노드 이름 = `integrated_rt_controller` — 정렬됨, params: `ur5e_p1a/_base.yaml` + `sim.yaml` + `mujoco_simulator.yaml`)
