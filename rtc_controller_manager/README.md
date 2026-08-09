@@ -549,7 +549,7 @@ Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointComman
 | `enable_timing_log` | bool | `true` | 타이밍 CSV 로깅 활성화 |
 | `enable_device_log` | bool | `true` | 디바이스별 CSV 로깅 활성화 |
 | `log_dir` | string | `""` | 로그 디렉토리 (빈 문자열이면 자동 생성) |
-| `max_log_sessions` | int | `10` | 최대 로그 세션 보관 수 |
+| `max_log_sessions` | int | `10` | 최대 로그 세션 보관 수. `on_configure` 가 `log_dir` 의 부모를 루트로 삼아 정리한다. **bringup launch 도 같은 트리를 정리하므로** 5개 launch 는 이 값을 자기 `max_log_sessions` 인자의 default 로 읽어 노드에도 다시 넘긴다 — 두 정리 주체가 항상 같은 수를 보게 하기 위해서다 (#402). 따라서 이 YAML 값이 SSoT 이고, CLI `max_log_sessions:=N` 은 양쪽을 함께 움직인다 |
 | `use_sim_time_sync` | bool | `false` | MuJoCo 동기 루프 CV 기반 wakeup 모드 |
 | `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) |
 | `kp` | double | `5.0` | (레거시) 기본 P 게인 |

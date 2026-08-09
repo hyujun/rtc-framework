@@ -937,6 +937,8 @@ if(BUILD_TESTING)
   # --no-tests=error there turns into a red job rather than a silent skip.
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
+  ament_add_pytest_test(test_launch_session_wiring
+    test/test_launch_session_wiring.py)
   ament_add_pytest_test(test_demo_gui_catalog test/test_demo_gui_catalog.py)
   ament_add_pytest_test(test_demo_gui_presets test/test_demo_gui_presets.py)
   ament_add_pytest_test(test_demo_gui_pull test/test_demo_gui_pull.py)

@@ -33,7 +33,6 @@ from launch.actions import (
     EmitEvent,
     OpaqueFunction,
     RegisterEventHandler,
-    SetEnvironmentVariable,
     TimerAction,
 )
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -45,25 +44,17 @@ from lifecycle_msgs.msg import Transition
 
 from rtc_tools.launch import cpu_shield as shield
 from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
+from rtc_tools.launch.session import max_log_sessions_from_yaml, open_session
 from rtc_tools.launch.thread_layout import get_rt_callback_core, get_sim_core
 from rtc_tools.launch.trace_action import make_trace_action
-from rtc_tools.utils.session_dir import (
-    cleanup_old_sessions,
-    create_session_dir,
-    generate_run_id,
-    resolve_logging_root,
-)
 
 
 def launch_setup(context, *args, **kwargs):
     """Setup function executed with launch context for conditional parameter loading."""
 
     # ── Session directory (YYMMDD_HHMM) ──────────────────────────────────────
-    logging_root = resolve_logging_root()
-    session_dir = create_session_dir(logging_root)
-
-    max_sessions = int(LaunchConfiguration("max_log_sessions").perform(context) or "10")
-    cleanup_old_sessions(logging_root, max_sessions)
+    session = open_session(context)
+    session_dir = session.directory
 
     # ── Package paths ─────────────────────────────────────────────────────────
     pkg_sim = FindPackageShare("rtc_mujoco_sim")
@@ -155,6 +146,10 @@ def launch_setup(context, *args, **kwargs):
         ctrl_overrides["kd"] = float(kd)
 
     ctrl_overrides["log_dir"] = session_dir
+    # Same number the launch pruned with: the RT node prunes this tree again in
+    # on_configure, and two independent numbers made the effective retention
+    # min(launch, node) (#402).
+    ctrl_overrides["max_log_sessions"] = session.max_sessions
     # `enable_mpc` drives the `demo_wbc_controller.mpc.enabled` ROS parameter,
     # which integrated_rt_controller's `ApplyControllerParamOverrides` helper
     # writes into the YAML::Node handed to `LoadConfig`. The runtime gains
@@ -197,17 +192,10 @@ def launch_setup(context, *args, **kwargs):
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
 
-    # ── Environment variables ─────────────────────────────────────────────────
-    set_session_dir = SetEnvironmentVariable(name="RTC_SESSION_DIR", value=session_dir)
-
-    # 세션 디렉토리는 분 해상도라 같은 분의 재기동이 같은 디렉토리를 얻고,
-    # 타이밍 CSV 는 거기에 append 된다. 이 런 ID 가 그 파일 안의 런 경계이며,
-    # 한 launch 의 모든 노드가 같은 값을 받아야 CSV 간 join 이 성립한다 (#376).
-    set_run_id = SetEnvironmentVariable(name="RTC_RUN_ID", value=generate_run_id())
-
     # ── CPU Shield (Tier 1 only for simulation) ───────────────────────────────
     use_affinity = LaunchConfiguration("use_cpu_affinity").perform(context)
-    actions = [set_session_dir, set_run_id]
+    # $RTC_SESSION_DIR + $RTC_RUN_ID, built by open_session above.
+    actions = list(session.actions)
 
     if use_affinity.lower() in ("true", "1", "yes"):
         # Mirror robot_ur5e_p1a.launch.py.  The helper probes whether sudo will
@@ -434,10 +422,26 @@ def generate_launch_description():
         ),
     )
 
+    # Default is read from the same YAML the RT node reads, so the launch-side
+    # prune and the node's on_configure prune cannot disagree; overriding this
+    # on the command line moves both (#402).
     max_log_sessions_arg = DeclareLaunchArgument(
         "max_log_sessions",
-        default_value="10",
-        description="Maximum number of session folders to keep (YYMMDD_HHMM)",
+        default_value=str(
+            max_log_sessions_from_yaml(
+                os.path.join(
+                    get_package_share_directory("integrated_bringup"),
+                    "config",
+                    "ur5e_p1a",
+                    "_base.yaml",
+                )
+            )
+        ),
+        description=(
+            "Maximum number of session folders to keep (YYMMDD_HHMM). Default "
+            "comes from config/ur5e_p1a/_base.yaml, which is also the SSoT for "
+            "the RT node's own max_log_sessions parameter."
+        ),
     )
 
     use_cpu_affinity_arg = DeclareLaunchArgument(
