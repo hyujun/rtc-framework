@@ -528,7 +528,7 @@ ros2 launch rtc_mujoco_sim mujoco_sim.launch.py model_path:=... enable_viewer:=f
 | `max_rtf` | `""` | 최대 실시간 비율 (빈값 = YAML, 0.0 = 무제한) |
 | `max_log_sessions` | (robot config) | 최대 보관 세션 폴더 수. default 는 그 변종의 노드 config YAML (`_base.yaml` / `sim.yaml`) 에서 읽고, 값은 RT 노드 파라미터로도 전달된다 — launch 와 노드가 같은 트리를 각자 정리하므로 (#402) |
 
-세션 디렉토리 (`YYMMDD_HHMM`)를 자동 생성하고 `RTC_SESSION_DIR` 환경변수로 전파합니다. 세션 루트 결정 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()`의 4단 체인을 따릅니다 (자세한 내용: [rtc_tools/README.md](../rtc_tools/README.md)).
+세션 디렉토리 (`YYMMDD_HHMM`)를 launch 실행 시점에 자동 생성하고 `RTC_SESSION_DIR` 환경변수로 전파합니다. 세션 루트 결정 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()`의 **3단** 체인 (`$COLCON_PREFIX_PATH` → cwd 상위 `install/+src/` → `$PWD`) 을 따릅니다 — `$RTC_SESSION_DIR` 는 이 체인이 아니라 그 위의 세션 결정 단계에 있고, launch 가 *내보내는* 값입니다 (자세한 내용: [rtc_tools/README.md](../rtc_tools/README.md)).
 
 ---
 
