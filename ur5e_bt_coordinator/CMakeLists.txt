@@ -140,11 +140,34 @@ if(BUILD_TESTING)
   # the LifecycleNode plus the tf/sensor types on the bridge's own surface.
   set(BT_BRIDGE_DEPS rclcpp_lifecycle sensor_msgs tf2 tf2_ros tf2_msgs)
 
+  # Every tier above Tier 1 builds a LifecycleNode per TEST (inject_fixture.hpp
+  # and test_helpers.hpp both do), so one binary opens and closes ~20 DDS
+  # participants. Without this the whole package ran on the default domain 0,
+  # sharing a discovery bus and the Fast DDS SHM port objects with every other
+  # unisolated node-creating test in the battery -- #401 is a suite that hung
+  # inside rmw node/endpoint create-destroy until ctest killed it at 60 s with
+  # no result file (3 occurrences on this box). Under load, with participants
+  # being killed on the shared domain, that hang reproduces 13/38; with the
+  # victim on its own domain and the same pressure outside, 0/20. See #401 for
+  # what that does and does NOT establish about the three field occurrences.
+  #
+  # ONE id for the whole package, not one per target: colcon parallelises
+  # PACKAGES, while ctest runs this package's tests sequentially (the #401 logs
+  # show "12/24", "14/24", "15/24" in order), so siblings never overlap.
+  # validate_test_domains.py enforces cross-package uniqueness and permits this
+  # repeat; if ctest is ever run with -j here, that assumption is what breaks.
+  #
+  # The id is a literal, not a `set()` variable: the gate reads CMakeLists as
+  # text, so `ENV ROS_DOMAIN_ID=${SOME_VAR}` would make this package look like
+  # it claims nothing and 55 look free. The gate rejects the non-literal form
+  # for that reason -- it is one call site, so there is nothing to de-duplicate.
+  #
   # add_bt_gtest(<name> [EXTRA_DEPS ...] [EXTRA_SOURCES ...])
   #   Sources default to test/<name>.cpp.
   function(add_bt_gtest test_name)
     cmake_parse_arguments(ARG "" "" "EXTRA_DEPS;EXTRA_SOURCES" ${ARGN})
-    ament_add_gtest(${test_name} test/${test_name}.cpp ${ARG_EXTRA_SOURCES})
+    ament_add_gtest(${test_name} test/${test_name}.cpp ${ARG_EXTRA_SOURCES}
+      ENV ROS_DOMAIN_ID=55)
     target_link_libraries(${test_name} bt_nodes)
     target_include_directories(${test_name} PRIVATE
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

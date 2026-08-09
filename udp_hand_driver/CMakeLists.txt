@@ -196,14 +196,20 @@ if(BUILD_TESTING)
 
   # Lifecycle behaviour in sil_mode=loopmodel: configure/activate bring up the
   # real CommLoop + NRT publish lane, so this binary talks DDS and gets a
-  # dedicated ROS_DOMAIN_ID (the isolation idiom above rtc_controller_manager /
-  # test_demo_wbc_tsid_path use; domains 44-52 are taken).
+  # dedicated ROS_DOMAIN_ID (the isolation idiom rtc_controller_manager /
+  # test_demo_wbc_tsid_path use).
+  # This comment used to assert "domains 44-52 are taken" and pick 53, which
+  # integrated_bringup's test_wbc_closed_chain_projection_sharing already held
+  # (#401) -- a hand-copied range cannot stay true. Do not restate the
+  # allocation here; `repo_scripts/scripts/validate_test_domains.py --list`
+  # derives it from the CMakeLists, and the gate of the same name fails the
+  # build on a collision.
   ament_add_gtest(test_udp_hand_node_lifecycle
     test/test_udp_hand_node_lifecycle.cpp
     src/udp_hand_node_lifecycle.cpp
     src/udp_hand_node_publish.cpp
     src/udp_hand_node_stats.cpp
-    ENV ROS_DOMAIN_ID=53)
+    ENV ROS_DOMAIN_ID=54)
   target_include_directories(test_udp_hand_node_lifecycle PRIVATE include)
   target_link_libraries(test_udp_hand_node_lifecycle udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_node_lifecycle

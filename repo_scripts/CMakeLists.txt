@@ -92,6 +92,26 @@ if(BUILD_TESTING)
     TIMEOUT 120
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
+
+  # ── Test DDS domain allocation (issue #401) ───────────────────────────────
+  # Two packages on one ROS_DOMAIN_ID share a discovery bus and Fast DDS SHM
+  # port objects while colcon runs them in parallel; #401 is the suite that hung
+  # in rmw endpoint create/destroy until ctest killed it at 60 s. Lives here
+  # rather than in any one package because the invariant is cross-package --
+  # no single CMakeLists can see the collision (udp_hand_driver's comment
+  # asserted "44-52 are taken" and was wrong).
+  ament_add_test(test_domain_allocation
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate_test_domains.py
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
+  # The gate's own firing proof: it must still report a duplicate, reject a
+  # non-literal id, and not read its own explanatory comments as claims.
+  ament_add_test(test_domain_allocation_self_test
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate_test_domains.py --self-test
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
 endif()
 
 ament_package()
