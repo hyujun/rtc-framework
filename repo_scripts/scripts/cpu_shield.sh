@@ -26,8 +26,12 @@
 #                      released cores under CFS (cpu_core=-1 on every tier).
 #
 # 실행 시점:
-#   - 로봇 런치: ur_control.launch.py에서 자동 호출
-#   - 시뮬 런치: mujoco_sim.launch.py에서 자동 호출
+#   - 런치: integrated_bringup 의 launch 파일 5개가 rtc_tools.launch.cpu_shield 를 통해
+#           자동 호출 (robot_ur5e_p1a/p1b · sim_ur5e_p1a/p1b · sim_iiwa7_leap).
+#           rtc_mujoco_sim/launch/mujoco_sim.launch.py 는 agnostic 단독 launch 라 호출하지
+#           않는다 (design-principles P1).
+#           ⚠ 그 호출은 노드 기동 *뒤*라, 먼저 핀된 arm_driver 의 cpu_affinity 가 cset
+#           이주로 지워진다 (issue #405). 실기 검증은 launch 앞에서 미리 무장할 것.
 #   - 빌드 전:   build.sh / install.sh에서 자동 해제
 
 set -euo pipefail
