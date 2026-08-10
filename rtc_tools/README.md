@@ -264,7 +264,17 @@ ros2 run rtc_tools compare_mjcf_urdf \
 
 # tolerance 조정 (기본: 1e-4)
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
+
+# 두 파일의 world frame 이 다를 때 공통 기준 프레임 선언 (아래 참조)
+ros2 run rtc_tools compare_mjcf_urdf --align-frames world base \
+    --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf
 ```
+
+**`--align-frames <MJCF_FRAME> <URDF_FRAME>`** — MJCF 는 로봇 루트 body 를 씬 작성자가 정한 자리에 mount 하고 URDF 의 world 는 루트 링크다. 두 world 가 다르면 world-frame FK 비교가 **로봇 전체 오프셋**을 뿜는데, 그건 모델 발산이 아니라 mounting 규약이다 (ur5e: MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link` → 6개 관절 전부 x 부호가 뒤집혀 보였다, #392). 물리적으로 같은 프레임을 **양쪽에서 하나씩 선언**하면 그 갭이 닫힌다. **이름이 엇갈리는 데 주의** — ur5e 의 MJCF body `base` 는 URDF 링크 `base` 가 아니라 `base_link` 에 대응한다. 미지정 시 두 world 가 일치한다고 가정한다.
+
+> 추정이 아니라 선언인 이유: 변환을 데이터에 최소자승으로 맞추면 **진짜 발산이 그 fit 에 흡수된다** — 이 센서가 잡으려는 바로 그 실패다.
+
+**관절 위치는 축 *직선* 으로 비교한다** (#392). Revolute 관절의 원점은 자기 축 위 어디에 놓든 물리가 안 바뀌고, MJCF 는 visual-mesh 기준·URDF 는 DH 기준으로 원점을 다르게 놓는 것이 정상이다. 따라서 두 축 직선의 **수직 거리**만 mismatch 로 세고 축 방향 성분은 `[NOTE]` 로 알린다 (ur5e 실측: 축 방향 성분 최대 138 mm, 수직 성분 전부 0.8 mm 미만). Prismatic 관절은 원점이 곧 zero position 이므로 **점 비교를 유지**한다.
 
 **비교 항목:**
 

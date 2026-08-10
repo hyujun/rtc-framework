@@ -7,7 +7,9 @@ Parses both model files and reports differences in:
   - Joint position limits (range; sign-swapped for anti-parallel axes)
   - Joint effort / force limits
   - Joint axis vectors (world-frame FK, parallelism check)
-  - Joint positions (world-frame FK)
+  - Joint axis lines (world-frame FK; a revolute origin may slide along its
+    own axis without changing the physics, so only the perpendicular offset
+    counts as a mismatch — see _axis_line_offset)
 
 Robot-agnostic — link/joint name sets and the MJCF default class are auto-
 detected from the MJCF root (`<mujoco model="...">` / `<default class="...">`)
@@ -29,6 +31,11 @@ Usage:
   # Override link name mapping when MJCF body names differ from URDF link
   # names (provide a YAML/JSON file with {<mjcf_body>: <urdf_link>, ...}):
   ros2 run rtc_tools compare_mjcf_urdf --link-map link_map.yaml ...
+
+  # Declare a common base frame when the two files mount the robot
+  # differently (see _resolve_alignment). For ur5e, MJCF's world is the UR
+  # "Base" (DH) frame while the URDF's world is REP-103 'base_link':
+  ros2 run rtc_tools compare_mjcf_urdf --align-frames world base ...
 """
 
 import argparse
@@ -261,15 +268,15 @@ def _mjcf_body_rotation(body: ET.Element) -> list[list[float]]:
 # ── FK chain computation ─────────────────────────────────────────────────────
 
 
-def _compute_urdf_world_frames(
+def _urdf_joint_tree(
     path: Path,
-    joint_names: set[str],
-) -> dict[str, tuple[list[float], list[float]]]:
-    """Compute world-frame (position, axis) for each URDF joint via FK.
+) -> tuple[dict[str, tuple[str, str, list, list, list]], dict[str, str]]:
+    """Parse the URDF joint graph once.
 
-    Traces the full URDF kinematic chain (including fixed joints) from the
-    root link to each target joint, accumulating SE(3) transforms.  Returns
-    joint position and axis expressed in the world frame at zero configuration.
+    Returns ``(all_joints, child_to_joint)`` where ``all_joints`` maps a joint
+    name to ``(parent_link, child_link, xyz, rpy, axis)`` and
+    ``child_to_joint`` maps a link to the joint that parents it.  Shared by the
+    link-frame and joint-frame FK helpers so the graph is walked once.
     """
     root = ET.parse(path).getroot()
 
@@ -295,6 +302,21 @@ def _compute_urdf_world_frames(
         all_joints[jname] = (parent_link, child_link, xyz, rpy, axis)
         child_to_joint[child_link] = jname
 
+    return all_joints, child_to_joint
+
+
+def _urdf_link_world_frames(
+    path: Path,
+) -> dict[str, tuple[list[list[float]], list[float]]]:
+    """Compute the world-frame pose ``(R, p)`` of every URDF link at zero config.
+
+    Traces the full kinematic chain (including fixed joints) outward from each
+    root link.  Links that are not a joint's child (roots) and links caught in
+    a cycle resolve to identity, matching the joint-FK helper's behaviour.
+    """
+    root = ET.parse(path).getroot()
+    all_joints, child_to_joint = _urdf_joint_tree(path)
+
     link_frames: dict[str, tuple[list[list[float]], list[float]]] = {}
     _in_progress: set[str] = set()
 
@@ -314,17 +336,40 @@ def _compute_urdf_world_frames(
         _in_progress.discard(link_name)
         return child_r, child_p
 
+    for link_elem in root.findall("link"):
+        name = link_elem.get("name")
+        if name:
+            get_link_frame(name)
+    for parent_link, child_link, _, _, _ in all_joints.values():
+        get_link_frame(parent_link)
+        get_link_frame(child_link)
+
+    return link_frames
+
+
+def _compute_urdf_world_frames(
+    path: Path,
+    joint_names: set[str],
+) -> dict[str, tuple[list[float], list[float]]]:
+    """Compute world-frame (position, axis) for each URDF joint via FK.
+
+    Traces the full URDF kinematic chain (including fixed joints) from the
+    root link to each target joint, accumulating SE(3) transforms.  Returns
+    joint position and axis expressed in the world frame at zero configuration.
+    """
+    all_joints, _ = _urdf_joint_tree(path)
+    link_frames = _urdf_link_world_frames(path)
+
     result: dict[str, tuple[list[float], list[float]]] = {}
     for jname in joint_names:
         if jname not in all_joints:
             continue
-        parent_link, child_link, xyz, rpy, axis = all_joints[jname]
-        parent_r, parent_p = get_link_frame(parent_link)
+        parent_link, _child_link, xyz, rpy, axis = all_joints[jname]
+        parent_r, parent_p = link_frames.get(parent_link, (_identity_3x3(), [0.0, 0.0, 0.0]))
         local_r = _rpy_to_rot3(rpy[0], rpy[1], rpy[2])
         joint_r, joint_p = _compose_transform(parent_r, parent_p, local_r, xyz)
         world_axis = _mat_vec_3(joint_r, axis)
         result[jname] = (joint_p, world_axis)
-        link_frames[child_link] = (joint_r, joint_p)
 
     return result
 
@@ -428,6 +473,180 @@ def _detect_root_class(root: ET.Element) -> str | None:
         if cls:
             return cls
     return None
+
+
+def _mjcf_body_world_frames(
+    path: Path,
+) -> dict[str, tuple[list[list[float]], list[float]]]:
+    """Compute the world-frame pose ``(R, p)`` of every MJCF body.
+
+    ``"world"`` is included as identity so it can be named as an alignment
+    frame — in MJCF the worldbody *is* a frame, whereas a URDF's equivalent is
+    a named root link.
+    """
+    root = ET.parse(path).getroot()
+    frames: dict[str, tuple[list[list[float]], list[float]]] = {
+        "world": (_identity_3x3(), [0.0, 0.0, 0.0])
+    }
+
+    def traverse(elem: ET.Element, parent_r: list[list[float]], parent_p: list[float]) -> None:
+        for body in elem.findall("body"):
+            pos = _parse_floats(body.get("pos", "0 0 0"))
+            r_local = _mjcf_body_rotation(body)
+            r_world, p_world = _compose_transform(parent_r, parent_p, r_local, pos)
+            name = body.get("name")
+            if name:
+                frames[name] = (r_world, p_world)
+            traverse(body, r_world, p_world)
+
+    worldbody = root.find("worldbody")
+    if worldbody is not None:
+        traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0])
+
+    return frames
+
+
+def _invert_transform(
+    r: list[list[float]], p: list[float]
+) -> tuple[list[list[float]], list[float]]:
+    """Invert an SE(3) transform: ``(R, p)`` -> ``(Rᵀ, -Rᵀp)``."""
+    r_inv = [[r[j][i] for j in range(3)] for i in range(3)]
+    p_inv = [-v for v in _mat_vec_3(r_inv, p)]
+    return r_inv, p_inv
+
+
+def _resolve_alignment(
+    mjcf_path: Path,
+    urdf_path: Path,
+    mjcf_frame: str,
+    urdf_frame: str,
+) -> tuple[list[list[float]], list[float]]:
+    """Return ``T_urdfworld←mjcfworld`` making two declared frames coincide.
+
+    The two formats need not agree on where "world" is.  MJCF mounts the
+    robot's root body wherever the scene author chose; a URDF's world is its
+    root link.  Comparing world-frame FK across that gap reports a whole-robot
+    offset that is a *mounting* convention, not a model divergence — on the
+    ur5e pair it manifested as an apparent sign flip in x on all six joints
+    (#392), because MJCF's world is the UR "Base" (DH) frame while the URDF's
+    is REP-103 ``base_link``.
+
+    The caller declares one physically identical frame per side rather than
+    letting the tool infer the transform: a best-fit would silently absorb a
+    genuine divergence into the fit, which is exactly the failure mode this
+    sensor exists to catch.
+
+    Raises:
+        SystemExit: when either declared frame name is absent from its file.
+    """
+    mjcf_frames = _mjcf_body_world_frames(mjcf_path)
+    urdf_frames = _urdf_link_world_frames(urdf_path)
+
+    if mjcf_frame not in mjcf_frames:
+        raise SystemExit(
+            f"--align-frames: MJCF has no body named '{mjcf_frame}'. "
+            f"Available: {', '.join(sorted(mjcf_frames))}"
+        )
+    if urdf_frame not in urdf_frames:
+        raise SystemExit(
+            f"--align-frames: URDF has no link named '{urdf_frame}'. "
+            f"Available: {', '.join(sorted(urdf_frames))}"
+        )
+
+    r_m, p_m = mjcf_frames[mjcf_frame]
+    r_u, p_u = urdf_frames[urdf_frame]
+    r_m_inv, p_m_inv = _invert_transform(r_m, p_m)
+    return _compose_transform(r_u, p_u, r_m_inv, p_m_inv)
+
+
+_REVOLUTE_URDF_TYPES = frozenset({"revolute", "continuous"})
+
+
+def _detect_joint_types(
+    mjcf_path: Path,
+    urdf_path: Path,
+    joint_names: set[str],
+) -> dict[str, str]:
+    """Classify each joint ``"revolute"`` only when BOTH files agree it is one.
+
+    The distinction matters for the position comparison: a revolute joint's
+    origin may sit anywhere on its own axis, but a prismatic joint's origin
+    sets its zero position, so a prismatic origin must be compared as a point.
+    Anything not confirmed revolute on both sides falls back to the stricter
+    point comparison.
+    """
+    urdf_root = ET.parse(urdf_path).getroot()
+    urdf_types = {
+        j.get("name"): j.get("type", "") for j in urdf_root.findall("joint") if j.get("name")
+    }
+
+    mjcf_root = ET.parse(mjcf_path).getroot()
+    root_class = _detect_root_class(mjcf_root)
+    class_types: dict[str, str] = {}
+    for default_elem in mjcf_root.iter("default"):
+        cls = default_elem.get("class")
+        if cls is None:
+            continue
+        jelem = default_elem.find("joint")
+        if jelem is not None and jelem.get("type"):
+            class_types[cls] = jelem.get("type", "")
+
+    mjcf_types: dict[str, str] = {}
+    for body in mjcf_root.iter("body"):
+        childclass = body.get("childclass", root_class or "")
+        for jelem in body.findall("joint"):
+            name = jelem.get("name")
+            if not name:
+                continue
+            explicit = jelem.get("type")
+            if explicit:
+                mjcf_types[name] = explicit
+            else:
+                cls = jelem.get("class", childclass)
+                # MuJoCo's <joint> type defaults to "hinge".
+                mjcf_types[name] = class_types.get(cls, class_types.get(root_class or "", "hinge"))
+
+    return {
+        jname: (
+            "revolute"
+            if urdf_types.get(jname) in _REVOLUTE_URDF_TYPES
+            and mjcf_types.get(jname, "hinge") == "hinge"
+            else "other"
+        )
+        for jname in joint_names
+    }
+
+
+def _axis_line_offset(
+    p_mjcf: list[float],
+    p_urdf: list[float],
+    axis: list[float],
+) -> tuple[float, list[float], float]:
+    """Split the origin difference into along-axis and perpendicular parts.
+
+    A revolute joint is physically defined by its axis *line*, not by where the
+    origin sits on that line — sliding the origin along the axis changes no
+    dynamics and no reachable set.  MJCF and URDF routinely place the origin
+    differently on the same line (MJCF at the visual-mesh datum, URDF at the DH
+    frame), so only the perpendicular part is evidence of a real disagreement.
+
+    On the ur5e pair the along-axis part reaches 138 mm while every
+    perpendicular offset stays under 0.8 mm (#392): comparing origins as points
+    reported six mismatches where the axis lines in fact agree.
+
+    Returns:
+        ``(along, perp_vec, perp_magnitude)``.  A degenerate (zero-length) axis
+        yields ``along=0`` and the full difference as the perpendicular part,
+        so a broken axis cannot silently pass.
+    """
+    dv = [p_urdf[i] - p_mjcf[i] for i in range(3)]
+    mag = math.sqrt(sum(v * v for v in axis))
+    if mag < 1e-15:
+        return 0.0, dv, math.sqrt(sum(v * v for v in dv))
+    unit = [v / mag for v in axis]
+    along = sum(dv[i] * unit[i] for i in range(3))
+    perp = [dv[i] - along * unit[i] for i in range(3)]
+    return along, perp, math.sqrt(sum(v * v for v in perp))
 
 
 def parse_mjcf(
@@ -1033,9 +1252,7 @@ def _compare_structure(
     # absorbed is absent from the compiled model, so the lookup below fails and
     # the loss is still reported even for a mapped link (#385).
     mapped_urdf_links = {
-        urdf_name
-        for mjcf_name, urdf_name in (link_map or {}).items()
-        if mjcf_name in mjcf_bodies
+        urdf_name for mjcf_name, urdf_name in (link_map or {}).items() if mjcf_name in mjcf_bodies
     }
     missing = sorted(urdf_links - mjcf_bodies - mapped_urdf_links)
     if missing:
@@ -1065,6 +1282,7 @@ def compare(
     tolerance: float = 1e-4,
     mjcf_class: str | None = None,
     robot_label: str = "",
+    align: tuple[list[list[float]], list[float]] | None = None,
 ) -> int:
     """Compare MJCF and URDF parameters. Returns number of mismatches.
 
@@ -1076,6 +1294,9 @@ def compare(
         tolerance: Numerical tolerance.
         mjcf_class: Optional MJCF default class override; auto-detected if None.
         robot_label: Optional human label printed in the header.
+        align: Optional ``(R, p)`` mapping MJCF world coordinates into the URDF
+            world frame, from :func:`_resolve_alignment`.  ``None`` assumes the
+            two world frames already coincide.
     """
     mjcf_link_names = set(link_map.keys())
     urdf_link_names = set(link_map.values())
@@ -1095,6 +1316,8 @@ def compare(
     print(f"  MJCF: {mjcf_path}")
     print(f"  URDF: {urdf_path}")
     print(f"  Tolerance: {tolerance}")
+    if align is not None:
+        print("  Base alignment: declared (MJCF world FK lifted into URDF world frame)")
     print("=" * 78)
 
     # ── Structural comparison (counts, mass, missing links) ──
@@ -1214,6 +1437,19 @@ def compare(
 
     urdf_world = _compute_urdf_world_frames(urdf_path, joint_set)
     mjcf_world = _compute_mjcf_world_frames(mjcf_path, joint_set)
+    joint_types = _detect_joint_types(mjcf_path, urdf_path, joint_set)
+
+    # Lift MJCF world FK into the URDF world frame when the caller declared an
+    # alignment; identity otherwise.  See _resolve_alignment for why the two
+    # files' world frames can legitimately differ.
+    r_align, p_align = align if align is not None else (_identity_3x3(), [0.0, 0.0, 0.0])
+    mjcf_world = {
+        name: (
+            _vec_add_3(p_align, _mat_vec_3(r_align, pos)),
+            _mat_vec_3(r_align, axis),
+        )
+        for name, (pos, axis) in mjcf_world.items()
+    }
 
     for jname in joint_names:
         mjcf_jp = mjcf_joints.get(jname)
@@ -1259,9 +1495,47 @@ def compare(
                 axis_str = " ".join(_fmt(v) for v in m_world_axis)
                 print(f"    axis (world): [{axis_str}]  OK")
 
-            # World-frame position comparison (FK-based)
-            origins_match = _vec_close_3(m_world_pos, u_world_pos, tolerance)
-            if not origins_match:
+            # World-frame position comparison (FK-based).
+            #
+            # For a revolute joint with a confirmed-parallel axis, the physical
+            # object is the axis LINE — the origin may sit anywhere on it.  We
+            # therefore compare the perpendicular offset between the two lines
+            # and report the along-axis part as a note.  Comparing origins as
+            # points instead reported six false mismatches on the ur5e pair
+            # whose axis lines agree to sub-millimetre (#392).
+            #
+            # Prismatic joints (and anything whose axes are not parallel, where
+            # "the line" is not well defined) keep the stricter point test: a
+            # prismatic origin sets its zero position, so sliding it matters.
+            if joint_types.get(jname) == "revolute" and is_parallel:
+                along, _perp_vec, perp_mag = _axis_line_offset(
+                    m_world_pos, u_world_pos, u_world_axis
+                )
+                if perp_mag > tolerance:
+                    m_pos_s = " ".join(_fmt(v) for v in m_world_pos)
+                    u_pos_s = " ".join(_fmt(v) for v in u_world_pos)
+                    print(
+                        f"    AXIS-LINE MISMATCH (world frame):  "
+                        f"perpendicular offset={_fmt(perp_mag)}"
+                    )
+                    print(f"      origins: MJCF=[{m_pos_s}]  URDF=[{u_pos_s}]")
+                    m_local_o = " ".join(_fmt(v) for v in mjcf_jp.origin_xyz)
+                    u_local_o = " ".join(_fmt(v) for v in urdf_jp.origin_xyz)
+                    print(f"      local origins: MJCF=[{m_local_o}]  URDF=[{u_local_o}]")
+                    mismatches += 1
+                else:
+                    pos_str = " ".join(_fmt(v) for v in m_world_pos)
+                    print(f"    axis line (world): through [{pos_str}]  OK")
+                    if abs(along) > tolerance:
+                        print(
+                            f"    [NOTE] origins differ by {_fmt(along)} m along the joint "
+                            "axis; not a disagreement (a revolute origin may sit anywhere "
+                            "on its own axis)."
+                        )
+            elif _vec_close_3(m_world_pos, u_world_pos, tolerance):
+                pos_str = " ".join(_fmt(v) for v in m_world_pos)
+                print(f"    position (world): [{pos_str}]  OK")
+            else:
                 m_pos_s = " ".join(_fmt(v) for v in m_world_pos)
                 u_pos_s = " ".join(_fmt(v) for v in u_world_pos)
                 print(f"    POSITION MISMATCH (world frame):  MJCF=[{m_pos_s}]  URDF=[{u_pos_s}]")
@@ -1269,9 +1543,6 @@ def compare(
                 u_local_o = " ".join(_fmt(v) for v in urdf_jp.origin_xyz)
                 print(f"      local origins: MJCF=[{m_local_o}]  URDF=[{u_local_o}]")
                 mismatches += 1
-            else:
-                pos_str = " ".join(_fmt(v) for v in m_world_pos)
-                print(f"    position (world): [{pos_str}]  OK")
         else:
             print("    [WARN] FK unavailable — falling back to local-frame comparison")
             warnings += 1
@@ -1352,6 +1623,7 @@ def compare_mjcf_urdf(
     urdf_path: str | Path,
     tolerance: float = 1e-4,
     robot_label: str = "",
+    align_frames: tuple[str, str] | None = None,
 ) -> int:
     """Convenience wrapper: auto-detect link map + joint list and run compare.
 
@@ -1359,6 +1631,11 @@ def compare_mjcf_urdf(
     validation — e.g. ``urdf_to_mjcf`` invoking validation right after
     conversion.  Falls back gracefully when no shared links/joints are
     detected (returns 0 with a printed warning rather than crashing).
+
+    Args:
+        align_frames: Optional ``(<mjcf_body>, <urdf_link>)`` naming one
+            physically identical frame per side, for pairs whose world frames
+            differ.  See :func:`_resolve_alignment`.
 
     Returns:
         Number of mismatches reported by :func:`compare`.
@@ -1384,6 +1661,11 @@ def compare_mjcf_urdf(
         joint_names=joint_names,
         tolerance=tolerance,
         robot_label=robot_label,
+        align=(
+            _resolve_alignment(mjcf_path, urdf_path, align_frames[0], align_frames[1])
+            if align_frames
+            else None
+        ),
     )
 
 
@@ -1531,6 +1813,21 @@ def main():
         help="Explicit joint name list to compare. Auto-detected (MJCF ∩ URDF) if omitted.",
     )
     parser.add_argument(
+        "--align-frames",
+        type=str,
+        nargs=2,
+        metavar=("MJCF_FRAME", "URDF_FRAME"),
+        default=None,
+        help="Declare one physically identical frame per side so joint FK is "
+        "compared in a common base frame: an MJCF body name (or 'world') and a "
+        "URDF link name. Needed when the two files mount the robot differently "
+        "-- e.g. for ur5e, MJCF's world is the UR 'Base' (DH) frame while the "
+        "URDF's world is REP-103 'base_link', so `--align-frames world base` "
+        "reconciles them. Note the names cross: MJCF body 'base' corresponds to "
+        "URDF link 'base_link', NOT to URDF link 'base'. Omitted: the two world "
+        "frames are assumed to coincide.",
+    )
+    parser.add_argument(
         "--tolerance",
         type=float,
         default=1e-4,
@@ -1584,6 +1881,12 @@ def main():
 
     robot_label = args.robot_name or ""
 
+    align = None
+    if args.align_frames:
+        align = _resolve_alignment(
+            mjcf_path, urdf_path, args.align_frames[0], args.align_frames[1]
+        )
+
     mismatches = compare(
         mjcf_path,
         urdf_path,
@@ -1592,6 +1895,7 @@ def main():
         tolerance=args.tolerance,
         mjcf_class=args.mjcf_class,
         robot_label=robot_label,
+        align=align,
     )
     sys.exit(1 if mismatches > 0 else 0)
 

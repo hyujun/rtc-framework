@@ -267,6 +267,13 @@ ros2 run rtc_tools compare_mjcf_urdf --mjcf robots/ur5e/mjcf/ur5e.xml --urdf rob
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 ```
 
+**`ur5e` 는 `--align-frames world base` 가 필요합니다** — 이 쌍은 두 파일의 world frame 이 다릅니다 (MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link`). 선언 없이 돌리면 관절 6개 전부 x 부호가 뒤집힌 것처럼 보이는데, 그건 모델 발산이 아니라 mounting 규약입니다 (#392). 옵션 의미·이름이 엇갈리는 함정은 [rtc_tools/README.md](../rtc_tools/README.md#compare_mjcf_urdfpy--mjcf-vs-urdf-파라미터-비교-검증) 참조.
+
+```bash
+ros2 run rtc_tools compare_mjcf_urdf --align-frames world base \
+    --mjcf robots/ur5e/mjcf/ur5e.xml --urdf robots/ur5e/urdf/ur5e.urdf
+```
+
 ---
 
 ## 의존성 그래프 내 위치
