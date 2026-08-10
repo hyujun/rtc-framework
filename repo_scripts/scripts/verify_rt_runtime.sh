@@ -538,6 +538,16 @@ check_process_discovery() {
     # 어떻게 다른지 즉시 확인 가능 — pthread_setname_np 실패(silent),
     # ApplyThreadConfig early-return (FIFO priority permission 부족, affinity
     # 실패), thread 미생성, race condition 등 가설을 좁힘.
+    #
+    # 블록 전체가 stderr 다 (닫는 `fi >&2`, issue #406). 이 줄들은 리포터
+    # (_pass/_warn/_fail) 를 안 거치므로 OUTPUT_MODE 가드가 없었고, --json 에서
+    # print_json 의 `{` 앞에 섞여 나가 출력을 통째로 파싱 불가로 만들었다.
+    # 발화 조건이 `_missing_required > 0` 이라 **실패했을 때만** 깨졌다 — CI
+    # 소비자가 JSON 을 읽을 이유가 있는 유일한 경우다.
+    #
+    # verbose 가드가 아니라 stderr 인 이유: 이 진단은 --summary 에서도 나오고
+    # 있고 (실기 로그로 확인), 사람이 읽는 모드에서 없애는 것은 회귀다.
+    # stderr 면 터미널 출력은 그대로이고 stdout 리다이렉트만 깨끗해진다.
     if (( _missing_required > 0 )); then
       local rt_like_threads="" other_threads=""
       local seen_comms=""
@@ -604,7 +614,7 @@ check_process_discovery() {
           fi
         fi
       fi
-    fi
+    fi >&2
   else
     _fail "thread_config.hpp 스레드 감지 실패 (${required_found}/${required_count})"
     _category_update "process_discovery" "FAIL"
