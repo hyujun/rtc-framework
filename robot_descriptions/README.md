@@ -178,20 +178,23 @@ find robot_descriptions/robots -iname "*.xml"                                   
 
 **핑거팁 프레임 (fixed link):** `thumb_tip_link`, `index_tip_link`, `middle_tip_link`, `ring_tip_link`
 
-### 링크 질량 비교
+### 링크 질량 (URDF = MJCF, 합계 21.7 kg)
 
-| 링크 | URDF (kg) | MJCF (kg) | 비고 |
-|------|-----------|-----------|------|
-| base_link_inertia | 4.0 | 4.0 | 고정 베이스 |
-| shoulder_link | 3.761 | 3.7 | -- |
-| upper_arm_link | 8.058 | 8.393 | MJCF +0.335 kg 차이 |
-| forearm_link | 2.846 | 2.275 | MJCF -0.571 kg 차이 |
-| wrist_1_link | 1.37 | 1.219 | -- |
-| wrist_2_link | 1.3 | 1.219 | -- |
-| wrist_3_link | 0.365 | 0.1889 | MJCF 51% 가벼움 |
+| 링크 | 질량 (kg) |
+|------|-----------|
+| base_link_inertia (MJCF: `base`) | 4.0 |
+| shoulder_link | 3.761 |
+| upper_arm_link | 8.058 |
+| forearm_link | 2.846 |
+| wrist_1_link | 1.37 |
+| wrist_2_link | 1.3 |
+| wrist_3_link | 0.365 |
 
-> URDF는 UR 공식 xacro 기반, MJCF는 MuJoCo Menagerie 기반이므로 mass/inertia 값에 차이가 있습니다.
-> `ros2 run rtc_tools compare_mjcf_urdf` 명령으로 상세 비교가 가능합니다.
+> **URDF 가 SSoT 다** (#392 결정 #1). URDF 는 UR 공식 `ur_description` 의 `ur.urdf.xacro` 에서 기계 생성된 것이고, mass·inertia·kinematics 가 `config/ur5e/{physical_parameters,default_kinematics}.yaml` 과 일치한다. MJCF (MuJoCo Menagerie 유래) 는 한때 **UR5e 가 아니라 레거시 UR5 (CB3) 의 관성 세트**를 싣고 있었고 (shoulder 3.7 / upper_arm 8.393 / forearm 2.275 / wrist 1.219·1.219·0.1889), DH 길이도 소수 3자리로 반올림돼 있었다. 그 상태의 실측 비용은 중력 토크 상대오차 mean 14.5% · p95 24.9%, tool 위치 오차 최대 1.49 mm 였다 — sim(MJCF)과 컨트롤러 모델(URDF)이 어긋나므로 sim 에서 튜닝한 게인이 존재하지 않는 모델 오차를 보상하게 된다. 현재는 두 MJCF (`ur5e/mjcf/ur5e.xml`, `ur5e_assm_v1/mjcf/ur5e_with_hand.xml`) 가 URDF 에 정렬돼 있다.
+>
+> **MJCF 에만 있는 것**: 6관절 전부의 `armature=0.1` (로터 관성, URDF 무대응) — 의도적이며 수정 대상이 아니다. **프레임 배치 규약은 다르게 유지**한다 — MJCF 는 body frame 을 UR 이 visual mesh 를 놓는 자리(`shoulder_offset=0.138`, `elbow_offset=0.007`)에, URDF 는 DH frame 에 놓는다. 축 직선이 같으면 물리가 같으므로 정상이며, 이 차이 때문에 `compare_mjcf_urdf` 는 관절 원점을 점이 아니라 **축 직선**으로 비교한다.
+>
+> `ros2 run rtc_tools compare_mjcf_urdf --align-frames world base` 로 상세 비교가 가능합니다 (ur5e 는 `--align-frames` 필수 — 위 §"MJCF vs URDF 파라미터 비교" 참조).
 
 ### 메시 파일 (UR5e)
 
