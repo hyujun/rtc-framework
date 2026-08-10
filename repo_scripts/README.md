@@ -426,8 +426,8 @@ sudo ./setup_display_rt.sh --help
 런타임 CPU 격리를 동적으로 관리합니다. `isolcpus` GRUB 파라미터 없이 재부팅 불필요합니다.
 
 ```bash
-sudo cpu_shield.sh on --robot    # 전체 격리 (Tier 1+2)
-sudo cpu_shield.sh on --sim      # 경량 격리 (Tier 1만)
+sudo cpu_shield.sh on --robot    # 격리 활성화 (robot 모드)
+sudo cpu_shield.sh on --sim      # 격리 활성화 (sim 모드 — 범위는 --robot 과 동일)
 sudo cpu_shield.sh off           # 격리 해제
 cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 ```
@@ -453,8 +453,14 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 박스(예: 2코어)에서는 존재하지 않는 코어가 떨어져 `1` 로 좁혀진다 — cset/taskset 에
 없는 core id 를 넘기지 않기 위한 phantom drop 이다.
 
-> Launch 파일 (`ur_control.launch.py`, `mujoco_sim.launch.py`)에서 자동 호출됩니다.
-> `build.sh` / `install.sh`에서 빌드 전 자동 해제됩니다.
+> `integrated_bringup` 의 launch 파일 다섯 개가 `rtc_tools.launch.cpu_shield` 를 통해 자동
+> 호출합니다 (`robot_ur5e_p1a` · `robot_ur5e_p1b` · `sim_ur5e_p1a` · `sim_ur5e_p1b` ·
+> `sim_iiwa7_leap`). `rtc_mujoco_sim/launch/mujoco_sim.launch.py` 는 agnostic 단독 launch 라
+> 호출하지 **않습니다** (design-principles P1). `build.sh` / `install.sh` 는 빌드 전 자동 해제합니다.
+>
+> ⚠️ 현재 launch 는 이 무장을 노드 기동 **뒤에** 수행하므로, 그보다 먼저 핀된 `arm_driver` 의
+> `cpu_affinity` 가 cset 이주로 지워집니다 (**issue #405**). 실기 검증 전에는 launch 앞에서
+> `sudo cpu_shield.sh off && sudo cpu_shield.sh on --robot` 으로 미리 무장하십시오.
 
 ---
 
@@ -612,13 +618,13 @@ source setup_env.sh
   ./check_rt_setup.sh --summary
 
 [로봇 실행]
-  sudo cpu_shield.sh on --robot           # Tier 1+2 격리
-  ros2 launch integrated_bringup ur_control.launch.py
+  sudo cpu_shield.sh on --robot           # launch 보다 먼저 무장 (issue #405)
+  ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
   ./verify_rt_runtime.sh --watch 3        # 런타임 모니터링
 
 [시뮬레이션 실행]
-  sudo cpu_shield.sh on --sim             # Tier 1만 격리
-  ros2 launch integrated_bringup mujoco_sim.launch.py
+  sudo cpu_shield.sh on --sim             # 범위는 --robot 과 동일
+  ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 
 [종료]
   sudo cpu_shield.sh off                  # 격리 해제
