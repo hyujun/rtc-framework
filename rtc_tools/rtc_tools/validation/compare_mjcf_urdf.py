@@ -1176,17 +1176,53 @@ def _compare_structure(
     mjcf_bodies.discard("world")
     mjcf_total_mass = float(sum(model.body_mass))
 
-    # Body / link count
-    expected_bodies = len(urdf_links)
+    # ── Which URDF links does the compiled MJCF actually carry? ──
+    #
+    # A link counts as present when link_map points at a compiled body, or when
+    # its own name is a compiled body that the map has not already claimed for
+    # a different link.  That last clause matters: ur5e's URDF has BOTH a
+    # massless frame named `base` and the 4 kg `base_link_inertia`, while the
+    # MJCF has one body named `base` that is the 4 kg link.  Matching on raw
+    # names alone silently paired the massless frame with the massive body and
+    # counted the real link as lost (#392).
+    claimed_mjcf = {mjcf_name for mjcf_name in (link_map or {}) if mjcf_name in mjcf_bodies}
+    mapped_urdf_links = {
+        urdf_name for mjcf_name, urdf_name in (link_map or {}).items() if mjcf_name in mjcf_bodies
+    }
+    present = mapped_urdf_links | {
+        name for name in urdf_links if name in mjcf_bodies and name not in claimed_mjcf
+    }
+    missing = sorted(urdf_links - present)
+
+    # Massless URDF links are pure coordinate frames (tool0, flange, ft_frame,
+    # the world anchor).  MuJoCo not creating a body for one is correct
+    # behaviour, not a defect, so they are reported but not counted.  This is
+    # NOT a relaxation of the fusestatic signal #385 cared about: a link that
+    # carries mass and disappears still counts, because its mass was silently
+    # folded into a parent.
+    missing_massive = [n for n in missing if urdf_link_mass.get(n, 0.0) > 0]
+    missing_massless = [n for n in missing if urdf_link_mass.get(n, 0.0) <= 0]
+
+    # Body / link count, on the same basis as the missing-link check above:
+    # massless frames MuJoCo legitimately dropped are excused, everything else
+    # must have a body.  Excusing them wholesale would break models that DO
+    # materialise their massless frames (iiwa7 has 1, leap_hand 5).
+    expected_bodies = len(urdf_links) - len(missing_massless)
     actual_bodies = model.nbody - 1  # exclude world
     if actual_bodies != expected_bodies:
+        excused = (
+            f" ({len(missing_massless)} massless frame(s) excused)" if missing_massless else ""
+        )
         print(
-            f"  [MISMATCH] body count: URDF links={expected_bodies}  "
+            f"  [MISMATCH] body count: URDF links={expected_bodies}{excused}  "
             f"MJCF bodies (excl. world)={actual_bodies}"
         )
         mismatches += 1
     else:
-        print(f"  body count: {actual_bodies}  OK")
+        excused = (
+            f"  ({len(missing_massless)} massless frame(s) excused)" if missing_massless else ""
+        )
+        print(f"  body count: {actual_bodies}  OK{excused}")
 
     # DoF / actuator
     if model.nv != len(urdf_active_joints):
@@ -1243,24 +1279,13 @@ def _compare_structure(
 
     # Missing links — the strong signal for fusestatic regression.
     #
-    # A URDF link counts as present when its own name is a compiled body, or
-    # when link_map points at one: the map exists precisely for models whose
-    # MJCF bodies and URDF links are named differently (--link-map), and every
-    # other section of compare() already bridges names through it.
-    #
-    # This *translates*, it does not *filter* — a body that fusestatic really
-    # absorbed is absent from the compiled model, so the lookup below fails and
-    # the loss is still reported even for a mapped link (#385).
-    mapped_urdf_links = {
-        urdf_name for mjcf_name, urdf_name in (link_map or {}).items() if mjcf_name in mjcf_bodies
-    }
-    missing = sorted(urdf_links - mjcf_bodies - mapped_urdf_links)
-    if missing:
-        print(f"\n  [MISMATCH] URDF links absent from MJCF ({len(missing)}):")
-        for name in missing:
-            m = urdf_link_mass.get(name, 0.0)
-            note = f"  mass={_fmt(m)} kg lost" if m > 0 else "  (massless)"
-            print(f"    - {name}{note}")
+    # `present` (computed above) *translates* through link_map, it does not
+    # *filter* — a body that fusestatic really absorbed is absent from the
+    # compiled model, so it lands in `missing` even for a mapped link (#385).
+    if missing_massive:
+        print(f"\n  [MISMATCH] URDF links with mass absent from MJCF ({len(missing_massive)}):")
+        for name in missing_massive:
+            print(f"    - {name}  mass={_fmt(urdf_link_mass.get(name, 0.0))} kg lost")
         print(
             "    Hint: MuJoCo's compiler defaults absorb fixed-joint child "
             'links into their parent (fusestatic="true") and silently drop '
@@ -1269,6 +1294,17 @@ def _compare_structure(
             "to preserve 1:1 link → body mapping."
         )
         mismatches += 1
+
+    if missing_massless:
+        # Reported, not counted: a zero-mass URDF link is a pure coordinate
+        # frame and MuJoCo is right not to give it a body.  Still listed so the
+        # set stays visible rather than silently disappearing from the report.
+        print(f"\n  [NOTE] massless URDF frames with no MJCF body ({len(missing_massless)}):")
+        print(f"    {', '.join(missing_massless)}")
+        print(
+            "    Not counted as mismatches — these carry no physics, so MuJoCo "
+            "omitting them changes nothing the simulator integrates."
+        )
 
     print()
     return mismatches, warnings

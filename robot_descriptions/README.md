@@ -270,12 +270,21 @@ ros2 run rtc_tools compare_mjcf_urdf --mjcf robots/ur5e/mjcf/ur5e.xml --urdf rob
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 ```
 
-**`ur5e` 는 `--align-frames world base` 가 필요합니다** — 이 쌍은 두 파일의 world frame 이 다릅니다 (MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link`). 선언 없이 돌리면 관절 6개 전부 x 부호가 뒤집힌 것처럼 보이는데, 그건 모델 발산이 아니라 mounting 규약입니다 (#392). 옵션 의미·이름이 엇갈리는 함정은 [rtc_tools/README.md](../rtc_tools/README.md#compare_mjcf_urdfpy--mjcf-vs-urdf-파라미터-비교-검증) 참조.
+**`ur5e` 는 선언 두 개가 필요합니다** (둘 다 이름·프레임이 엇갈려 자동 탐지로 풀리지 않습니다, #392):
+
+- **`--align-frames world base`** — 두 파일의 world frame 이 다릅니다 (MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link`). 없으면 관절 6개 전부 x 부호가 뒤집힌 것처럼 보이는데, 모델 발산이 아니라 mounting 규약입니다.
+- **`--link-map robots/ur5e/ur5e.link_map.yaml`** — MJCF body `base` 는 URDF `base_link_inertia`(4 kg) 인데 URDF 에도 **massless** `base` 프레임이 따로 있습니다. 자동 탐지는 이름이 같은 쌍만 맺으므로 그 둘을 잘못 짝지어 `base_link_inertia` 를 "mass=4 kg lost" 로 보고했습니다. 선언하면 base 링크 관성 검증이 켜지고(양쪽 값은 이미 동일) 허위 손실 보고가 사라집니다.
 
 ```bash
-ros2 run rtc_tools compare_mjcf_urdf --align-frames world base \
-    --mjcf robots/ur5e/mjcf/ur5e.xml --urdf robots/ur5e/urdf/ur5e.urdf
+ros2 run rtc_tools compare_mjcf_urdf \
+    --mjcf robots/ur5e/mjcf/ur5e.xml --urdf robots/ur5e/urdf/ur5e.urdf \
+    --align-frames world base --link-map robots/ur5e/ur5e.link_map.yaml
+# -> Mismatches: 0  (Warnings: 2 — 아래 참조)
 ```
+
+남는 warning 2건은 정당한 차이라 유지합니다: MJCF 가 링크당 visual mesh 를 쪼개고(20 vs 14) collision 을 capsule 로 따로 두기 때문입니다(29 vs 14).
+
+**massless 프레임은 mismatch 로 세지 않습니다** — `base_link`·`flange`·`ft_frame`·`tool0`·`world`·`base` 는 질량 0 의 순수 좌표 프레임이고 MuJoCo 가 body 를 안 만드는 것이 정상 동작입니다. 다만 **MuJoCo 가 실제로 만들지 않은 것만** 면제하며(iiwa7 은 1개, leap_hand 는 5개의 massless 프레임을 실제 body 로 갖고 있습니다), **질량을 가진 링크가 사라지면 여전히 mismatch** 입니다 — fusestatic 이 질량을 부모로 흡수한 경우가 그것이고, 그 신호는 그대로 남습니다 (#385).
 
 ---
 

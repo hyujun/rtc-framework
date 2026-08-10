@@ -13,6 +13,9 @@ find_package(ament_cmake REQUIRED)
 #   urdf/    — URDF and *.urdf.xacro  (Pinocchio / RViz / ros2_control)
 #   mjcf/    — MuJoCo XML scenes      (rtc_mujoco_sim)
 #   meshes/  — DAE / STL / OBJ        (RViz visual, MuJoCo collision/visual)
+#   <name>.link_map.yaml — optional MJCF-body ↔ URDF-link declaration, only
+#            when the two files name the same link differently
+#            (compare_mjcf_urdf --link-map; see robots/ur5e/ for the case)
 #
 # Currently shipped:
 #   robots/ur5e/         — UR5e 6-DoF arm (urdf pre-generated from

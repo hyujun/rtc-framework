@@ -1064,3 +1064,150 @@ class TestCompareWithAlignment:
         assert "AXIS-LINE MISMATCH" not in captured.out
         assert "Base alignment: declared" in captured.out
         assert mismatches == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Structural comparison: massless frames and the link_map-aware presence test
+# (#392)
+#
+# A zero-mass URDF link is a pure coordinate frame; MuJoCo not giving it a body
+# is correct behaviour.  Excusing them must NOT weaken the fusestatic signal
+# #385 added, and must not break models that DO materialise their massless
+# frames (iiwa7 has 1, leap_hand 5).
+# ═══════════════════════════════════════════════════════════════════════════
+
+URDF_STRUCT = """\
+<?xml version="1.0"?>
+<robot name="struct_test">
+  <link name="base_link_inertia">
+    <inertial>
+      <mass value="4.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="shoulder_link">
+    <inertial>
+      <mass value="3.7"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.02" iyy="0.02" izz="0.02" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="tool0"/>
+  <joint name="shoulder_pan_joint" type="revolute">
+    <parent link="base_link_inertia"/>
+    <child link="shoulder_link"/>
+    <origin xyz="0 0 0.1625" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+  </joint>
+  <joint name="tool_fixed" type="fixed">
+    <parent link="shoulder_link"/>
+    <child link="tool0"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+</robot>
+"""
+
+MJCF_STRUCT = """\
+<mujoco model="struct_test">
+  <compiler angle="radian" autolimits="true"/>
+  <worldbody>
+    <body name="base">
+      <inertial mass="4.0" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+      <body name="shoulder_link" pos="0 0 0.1625">
+        <inertial mass="3.7" pos="0 0 0" diaginertia="0.02 0.02 0.02"/>
+        <joint name="shoulder_pan_joint" axis="0 0 1" range="-3.14 3.14"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general joint="shoulder_pan_joint" forcerange="-100 100"/>
+  </actuator>
+</mujoco>
+"""
+
+STRUCT_LINK_MAP = {"base": "base_link_inertia", "shoulder_link": "shoulder_link"}
+STRUCT_JOINTS = ["shoulder_pan_joint"]
+
+
+class TestMasslessFrameAccounting:
+    def _run(self, tmp_path, capsys, urdf_text=URDF_STRUCT, mjcf_text=MJCF_STRUCT):
+        mjcf = tmp_path / "s.xml"
+        mjcf.write_text(mjcf_text)
+        urdf = tmp_path / "s.urdf"
+        urdf.write_text(urdf_text)
+        n = compare(mjcf, urdf, link_map=STRUCT_LINK_MAP, joint_names=STRUCT_JOINTS)
+        return n, capsys.readouterr().out
+
+    def test_massless_frame_absent_is_noted_not_counted(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys)
+        assert "massless URDF frames with no MJCF body" in out
+        assert "tool0" in out
+        assert "body count: 2  OK" in out
+        assert n == 0
+
+    def test_massive_link_absent_is_still_counted(self, tmp_path, capsys):
+        """The #385 fusestatic signal must survive the massless exemption."""
+        # Structural comparison needs the compiled model; without mujoco
+        # _compare_structure() returns (0, 1) and asserts nothing (#385).
+        pytest.importorskip("mujoco")
+        urdf = URDF_STRUCT.replace(
+            '<link name="tool0"/>',
+            '<link name="tool0"><inertial><mass value="0.5"/>'
+            '<origin xyz="0 0 0" rpy="0 0 0"/>'
+            '<inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/>'
+            "</inertial></link>",
+        )
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf)
+        assert "URDF links with mass absent from MJCF" in out
+        assert "0.5 kg lost" in out
+        assert n >= 1
+
+    def test_materialised_massless_frame_still_counts_toward_body_count(self, tmp_path, capsys):
+        """iiwa7 / leap_hand shape: MuJoCo DOES create bodies for their massless
+        frames, so a blanket 'ignore massless links' rule would break them."""
+        pytest.importorskip("mujoco")
+        urdf = URDF_STRUCT.replace(
+            "</robot>",
+            '  <link name="ee_frame"/>\n'
+            '  <joint name="ee_fixed" type="fixed">\n'
+            '    <parent link="shoulder_link"/><child link="ee_frame"/>\n'
+            '    <origin xyz="0 0 0.2" rpy="0 0 0"/>\n'
+            "  </joint>\n</robot>",
+        )
+        mjcf = MJCF_STRUCT.replace(
+            '<joint name="shoulder_pan_joint" axis="0 0 1" range="-3.14 3.14"/>',
+            '<joint name="shoulder_pan_joint" axis="0 0 1" range="-3.14 3.14"/>\n'
+            '        <body name="ee_frame" pos="0 0 0.2">\n'
+            '          <inertial mass="0" pos="0 0 0" diaginertia="0 0 0"/>\n'
+            "        </body>",
+        )
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf, mjcf_text=mjcf)
+        # 4 URDF links, tool0 excused, ee_frame materialised -> 3 expected bodies
+        assert "body count: 3  OK" in out
+        assert n == 0
+
+    def test_name_collision_does_not_hide_a_massive_link(self, tmp_path, capsys):
+        """ur5e shape: URDF has BOTH a massless `base` frame and the massive
+        `base_link_inertia`; the MJCF's single `base` body is the massive one.
+        Raw-name matching paired the massless frame with it and reported the
+        real link as lost (#392)."""
+        pytest.importorskip("mujoco")
+        urdf = URDF_STRUCT.replace(
+            '<link name="tool0"/>',
+            '<link name="tool0"/>\n  <link name="base"/>\n'
+            '  <joint name="base_fixed" type="fixed">\n'
+            '    <parent link="base_link_inertia"/><child link="base"/>\n'
+            '    <origin xyz="0 0 0" rpy="0 0 0"/>\n'
+            "  </joint>",
+        )
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf)
+        # The massless `base` frame is what went missing — not the 4 kg link.
+        assert "URDF links with mass absent" not in out
+        assert "base, tool0" in out
+        # And the massive link is actually compared, via link_map.
+        assert "[base (URDF: base_link_inertia)]" in out
+        assert "body count: 2  OK" in out
+        assert n == 0

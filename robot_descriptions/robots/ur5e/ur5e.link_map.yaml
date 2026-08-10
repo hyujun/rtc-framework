@@ -1,0 +1,34 @@
+# ur5e — MJCF body ↔ URDF link 대응 선언 (`compare_mjcf_urdf --link-map`)
+#
+# 이름이 엇갈리기 때문에 자동 탐지로는 풀 수 없다 (#392):
+#
+#   MJCF body `base`  ==  URDF link `base_link_inertia`  (4 kg, 관성 보유)
+#   URDF link `base`  ==  massless 좌표 프레임 (MJCF 에 대응 body 없음)
+#
+# 자동 탐지는 이름이 같은 쌍만 맺으므로 URDF 의 **massless** `base` 를 MJCF 의
+# **4 kg** `base` 와 우연히 짝지어 버리고, 그 결과 진짜 링크
+# `base_link_inertia` 가 "mass=4 kg lost" 로 보고됐다. 이 선언이 그 둘을
+# 갈라놓아 base 링크의 관성 검증을 켜고(양쪽 값은 이미 동일) 허위 손실 보고를
+# 없앤다.
+#
+# 함께 필요한 것: `--align-frames world base`
+#   MJCF 의 world 는 UR "Base"(DH) 프레임, URDF 의 world 는 REP-103
+#   `base_link` 라 두 world frame 이 z축 180° 만큼 다르다.
+#
+# 사용:
+#   ros2 run rtc_tools compare_mjcf_urdf \
+#       --mjcf <...>/robots/ur5e/mjcf/ur5e.xml \
+#       --urdf <...>/robots/ur5e/urdf/ur5e.urdf \
+#       --align-frames world base \
+#       --link-map <...>/robots/ur5e/ur5e.link_map.yaml
+#
+# 주의: `ros2 run` 은 시스템 python 으로 실행되어 mujoco 가 없으면 구조 비교가
+# 조용히 스킵된다 (#392). 전체 검증에는 mujoco 가 import 되는 인터프리터를 쓸 것.
+
+base: base_link_inertia
+shoulder_link: shoulder_link
+upper_arm_link: upper_arm_link
+forearm_link: forearm_link
+wrist_1_link: wrist_1_link
+wrist_2_link: wrist_2_link
+wrist_3_link: wrist_3_link
