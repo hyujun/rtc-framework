@@ -7,6 +7,7 @@ MJCF/URDF 파서, 데이터 클래스, 비교 로직, 유틸리티 함수를 검
 from __future__ import annotations
 
 import math
+import sys
 
 import pytest
 
@@ -25,6 +26,7 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     _invert_transform,
     _mjcf_body_rotation,
     _mjcf_body_world_frames,
+    _mjcf_named_frames,
     _parse_floats,
     _quat_to_rot3,
     _resolve_alignment,
@@ -1211,3 +1213,130 @@ class TestMasslessFrameAccounting:
         assert "[base (URDF: base_link_inertia)]" in out
         assert "body count: 2  OK" in out
         assert n == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UNVERIFIED accounting (#392)
+#
+# Without mujoco the structural section checks nothing, yet the run used to end
+# in "Mismatches: 0" and exit 0.  That is the false green this issue is about,
+# and it is the path colcon actually takes (it runs pytest under
+# /usr/bin/python3, which cannot see the venv where mujoco lives).
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestUnverifiedAccounting:
+    def _run(self, tmp_path, capsys, **kw):
+        mjcf = tmp_path / "s.xml"
+        mjcf.write_text(MJCF_STRUCT)
+        urdf = tmp_path / "s.urdf"
+        urdf.write_text(URDF_STRUCT)
+        n = compare(mjcf, urdf, link_map=STRUCT_LINK_MAP, joint_names=STRUCT_JOINTS, **kw)
+        return n, capsys.readouterr().out
+
+    def test_missing_mujoco_is_reported_as_unverified(self, tmp_path, capsys, monkeypatch):
+        # None in sys.modules makes `import mujoco` raise ImportError.
+        monkeypatch.setitem(sys.modules, "mujoco", None)
+        n, out = self._run(tmp_path, capsys)
+        assert "[UNVERIFIED]" in out
+        assert "UNVERIFIED: 1" in out
+        assert "NOT a clean pass" in out
+        assert "ALL PARAMETERS MATCH" not in out
+        assert n == 0  # default stays permissive for interactive use
+
+    def test_fail_on_unverified_makes_it_count(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setitem(sys.modules, "mujoco", None)
+        n, out = self._run(tmp_path, capsys, fail_on_unverified=True)
+        assert "treated as failure" in out
+        assert n >= 1
+
+    def test_clean_run_says_so(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys, fail_on_unverified=True)
+        assert "UNVERIFIED" not in out
+        assert n == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool / tip frame comparison (#392)
+#
+# The joint section compares axis LINES, which cannot see an offset applied
+# past the last joint: it slides along that joint's own axis and (measured)
+# moves no link COM either.  Only the tool frame observes it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+MJCF_TIP = MJCF_ALIGN.replace(
+    '<joint name="j1" axis="0 0 1" range="-3.14 3.14"/>',
+    '<joint name="j1" axis="0 0 1" range="-3.14 3.14"/>\n'
+    '        <site name="tcp" pos="0 0 0.15"/>',
+)
+
+URDF_TIP = URDF_ALIGN.replace(
+    "</robot>",
+    '  <link name="tcp"/>\n'
+    '  <joint name="tcp_fixed" type="fixed">\n'
+    '    <parent link="link1"/><child link="tcp"/>\n'
+    '    <origin xyz="0 0 0.15" rpy="0 0 0"/>\n'
+    "  </joint>\n</robot>",
+)
+
+
+class TestTipFrame:
+    def _run(self, tmp_path, capsys, urdf_text=URDF_TIP, tip=("tcp", "tcp")):
+        mjcf = tmp_path / "t.xml"
+        mjcf.write_text(MJCF_TIP)
+        urdf = tmp_path / "t.urdf"
+        urdf.write_text(urdf_text)
+        align = _resolve_alignment(mjcf, urdf, "base", "base_link")
+        n = compare(
+            mjcf,
+            urdf,
+            link_map=ALIGN_LINK_MAP,
+            joint_names=["j1"],
+            align=align,
+            tip_frames=tip,
+        )
+        return n, capsys.readouterr().out
+
+    def test_site_frame_is_found_and_matches(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys)
+        assert "[tcp (URDF: tcp)]" in out
+        assert "TIP POSITION MISMATCH" not in out
+        assert n == 0
+
+    def test_tail_offset_is_caught(self, tmp_path, capsys):
+        """The d6 shape: an offset past the last joint, along its own axis.
+        The joint section stays clean; only this check sees it."""
+        urdf = URDF_TIP.replace('xyz="0 0 0.15" rpy="0 0 0"', 'xyz="0 0 0.1504" rpy="0 0 0"')
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf)
+        assert "TIP POSITION MISMATCH" in out
+        assert "AXIS-LINE MISMATCH" not in out  # invisible to the joint section
+        assert n >= 1
+
+    def test_orientation_difference_is_caught(self, tmp_path, capsys):
+        urdf = URDF_TIP.replace('xyz="0 0 0.15" rpy="0 0 0"', 'xyz="0 0 0.15" rpy="0 0 0.5"')
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf)
+        assert "TIP ORIENTATION MISMATCH" in out
+        assert n >= 1
+
+    def test_unknown_name_warns_rather_than_silently_passing(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys, tip=("nope", "tcp"))
+        assert "no body or site named 'nope'" in out
+        assert n == 0
+
+
+class TestMjcfNamedFrames:
+    def test_sites_are_included(self, tmp_path):
+        mjcf = tmp_path / "t.xml"
+        mjcf.write_text(MJCF_TIP)
+        frames = _mjcf_named_frames(mjcf)
+        assert "tcp" in frames
+        # base carries Rz(pi); link1 sits at local (0.3, 0, 0.2), site +0.15 z
+        assert _vec_close_3(frames["tcp"][1], [-0.3, 0, 0.35], 1e-12)
+
+    def test_bodies_still_present(self, tmp_path):
+        mjcf = tmp_path / "t.xml"
+        mjcf.write_text(MJCF_TIP)
+        frames = _mjcf_named_frames(mjcf)
+        assert "world" in frames and "base" in frames and "link1" in frames

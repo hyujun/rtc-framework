@@ -278,9 +278,17 @@ ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 ```bash
 ros2 run rtc_tools compare_mjcf_urdf \
     --mjcf robots/ur5e/mjcf/ur5e.xml --urdf robots/ur5e/urdf/ur5e.urdf \
-    --align-frames world base --link-map robots/ur5e/ur5e.link_map.yaml
+    --align-frames world base --link-map robots/ur5e/ur5e.link_map.yaml \
+    --tip-frames attachment_site tool0 --fail-on-unverified
 # -> Mismatches: 0  (Warnings: 2 — 아래 참조)
 ```
+
+**이 비교는 자동으로 돕니다** — [`robots/model_pairs.yaml`](robots/model_pairs.yaml) 이 대상 쌍과 각 쌍의 선언을 갖고, [`rtc_tools/test/test_real_model_pairs.py`](../rtc_tools/test/test_real_model_pairs.py) 가 그걸 읽어 발사합니다. **여기의 MJCF/URDF 를 고쳤다면 그 테스트가 해당 sensor 입니다.** 로봇을 새로 들이면 `model_pairs.yaml` 에 한 줄 추가하세요 — 어떤 MJCF 가 어떤 URDF 와 짝인지는 자동 탐지로 추측할 수 없습니다 (`ur5e` 는 `ur5e.xml`·`scene.xml` 둘을 갖고, `ur5e_assm_v1` 의 URDF 는 런타임 처리가 필요한 xacro 입니다).
+
+> ⚠️ **로컬 `colcon test` 에서는 이 게이트가 skip 됩니다.** colcon 이 pytest 를 `/usr/bin/python3` 로 돌리는데 (colcon 자체의 shebang) 이 저장소는 mujoco 를 `.venv` 에 둡니다. CI 는 `pip install ... mujoco` 를 하므로 실제로 실행됩니다. 로컬에서 직접 돌리려면:
+> ```bash
+> PYTHONPATH=rtc_tools .venv/bin/python -m pytest rtc_tools/test/test_real_model_pairs.py
+> ```
 
 남는 warning 2건은 정당한 차이라 유지합니다: MJCF 가 링크당 visual mesh 를 쪼개고(20 vs 14) collision 을 capsule 로 따로 두기 때문입니다(29 vs 14).
 

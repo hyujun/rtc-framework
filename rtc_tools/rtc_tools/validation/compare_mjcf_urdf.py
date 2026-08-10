@@ -475,6 +475,50 @@ def _detect_root_class(root: ET.Element) -> str | None:
     return None
 
 
+def _mjcf_world_frames_by_kind(
+    path: Path,
+) -> tuple[
+    dict[str, tuple[list[list[float]], list[float]]],
+    dict[str, tuple[list[list[float]], list[float]]],
+]:
+    """Walk ``<worldbody>`` once, returning ``(bodies, sites)`` world poses.
+
+    Sites are collected too because a model's tool/flange frame is often a
+    ``<site>`` rather than a body (ur5e's ``attachment_site``), and that frame
+    is the only thing a downstream offset like the DH ``d6`` moves — it changes
+    neither any joint axis line nor any link COM, so nothing else in this file
+    can see it (#392).
+    """
+    root = ET.parse(path).getroot()
+    bodies: dict[str, tuple[list[list[float]], list[float]]] = {
+        "world": (_identity_3x3(), [0.0, 0.0, 0.0])
+    }
+    sites: dict[str, tuple[list[list[float]], list[float]]] = {}
+
+    def traverse(elem: ET.Element, parent_r: list[list[float]], parent_p: list[float]) -> None:
+        for body in elem.findall("body"):
+            pos = _parse_floats(body.get("pos", "0 0 0"))
+            r_local = _mjcf_body_rotation(body)
+            r_world, p_world = _compose_transform(parent_r, parent_p, r_local, pos)
+            name = body.get("name")
+            if name:
+                bodies[name] = (r_world, p_world)
+            for site in body.findall("site"):
+                sname = site.get("name")
+                if not sname:
+                    continue
+                s_pos = _parse_floats(site.get("pos", "0 0 0"))
+                s_rot = _mjcf_body_rotation(site)
+                sites[sname] = _compose_transform(r_world, p_world, s_rot, s_pos)
+            traverse(body, r_world, p_world)
+
+    worldbody = root.find("worldbody")
+    if worldbody is not None:
+        traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0])
+
+    return bodies, sites
+
+
 def _mjcf_body_world_frames(
     path: Path,
 ) -> dict[str, tuple[list[list[float]], list[float]]]:
@@ -484,26 +528,20 @@ def _mjcf_body_world_frames(
     frame — in MJCF the worldbody *is* a frame, whereas a URDF's equivalent is
     a named root link.
     """
-    root = ET.parse(path).getroot()
-    frames: dict[str, tuple[list[list[float]], list[float]]] = {
-        "world": (_identity_3x3(), [0.0, 0.0, 0.0])
-    }
+    return _mjcf_world_frames_by_kind(path)[0]
 
-    def traverse(elem: ET.Element, parent_r: list[list[float]], parent_p: list[float]) -> None:
-        for body in elem.findall("body"):
-            pos = _parse_floats(body.get("pos", "0 0 0"))
-            r_local = _mjcf_body_rotation(body)
-            r_world, p_world = _compose_transform(parent_r, parent_p, r_local, pos)
-            name = body.get("name")
-            if name:
-                frames[name] = (r_world, p_world)
-            traverse(body, r_world, p_world)
 
-    worldbody = root.find("worldbody")
-    if worldbody is not None:
-        traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0])
+def _mjcf_named_frames(
+    path: Path,
+) -> dict[str, tuple[list[list[float]], list[float]]]:
+    """Bodies and sites in one lookup; a body wins a name clash.
 
-    return frames
+    MuJoCo namespaces bodies and sites separately, so the same name can denote
+    both.  Bodies take precedence and the clash is vanishingly rare in practice;
+    callers that need to disambiguate should rename in the model.
+    """
+    bodies, sites = _mjcf_world_frames_by_kind(path)
+    return {**sites, **bodies}
 
 
 def _invert_transform(
@@ -1111,7 +1149,7 @@ def _compare_structure(
     urdf_path: Path,
     tolerance: float,
     link_map: dict[str, str] | None = None,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Compare structural counts and mass conservation between MJCF and URDF.
 
     Uses ``mujoco.MjModel`` to read the *compiled* MJCF (matching what the
@@ -1135,7 +1173,9 @@ def _compare_structure(
             check; ``None`` compares raw names.
 
     Returns:
-        ``(mismatches, warnings)`` counts contributed by this section.
+        ``(mismatches, warnings, unverified)`` counts contributed by this
+        section.  ``unverified`` is non-zero when a check could not be
+        performed at all — a distinct outcome from "passed".
     """
     urdf_root = ET.parse(urdf_path).getroot()
     urdf_link_mass = _urdf_link_mass(urdf_root)
@@ -1157,18 +1197,29 @@ def _compare_structure(
     try:
         import mujoco  # noqa: PLC0415
     except ImportError:
+        # UNVERIFIED, not "passed".  Without the compiled model this section
+        # checks nothing at all — body count, total mass and missing links all
+        # go unexamined — yet the run would still end in "Mismatches: 0" and
+        # exit 0.  That is the false green #392 is about, and it is not
+        # hypothetical: colcon invokes pytest as `/usr/bin/python3 -m pytest`
+        # (colcon's own shebang), which cannot see the venv where mujoco is
+        # installed, so this branch is what the repo's test harness actually
+        # takes.  Callers that gate on this run must pass
+        # fail_on_unverified=True.
         print(
-            "  [WARN] 'mujoco' module not importable — skipping compiled-model "
-            "structural comparison.  Install with `pip install mujoco` for "
-            "full validation."
+            "  [UNVERIFIED] 'mujoco' module not importable — the compiled-model "
+            "structural comparison did not run.  Body count, total mass and "
+            "missing-link checks were NOT performed.  Use an interpreter that "
+            "can import mujoco (this repo installs it into .venv via "
+            "requirements.lock)."
         )
-        return 0, 1
+        return 0, 0, 1
 
     try:
         model = mujoco.MjModel.from_xml_path(str(mjcf_path))
     except Exception as e:
         print(f"  [MISMATCH] MJCF failed to compile under MuJoCo: {e}")
-        return 1, 0
+        return 1, 0, 0
 
     mjcf_bodies = {
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(model.nbody)
@@ -1307,7 +1358,7 @@ def _compare_structure(
         )
 
     print()
-    return mismatches, warnings
+    return mismatches, warnings, 0
 
 
 def compare(
@@ -1319,6 +1370,8 @@ def compare(
     mjcf_class: str | None = None,
     robot_label: str = "",
     align: tuple[list[list[float]], list[float]] | None = None,
+    fail_on_unverified: bool = False,
+    tip_frames: tuple[str, str] | None = None,
 ) -> int:
     """Compare MJCF and URDF parameters. Returns number of mismatches.
 
@@ -1333,6 +1386,14 @@ def compare(
         align: Optional ``(R, p)`` mapping MJCF world coordinates into the URDF
             world frame, from :func:`_resolve_alignment`.  ``None`` assumes the
             two world frames already coincide.
+        fail_on_unverified: Count checks that could not run (e.g. the compiled-
+            model structural comparison when ``mujoco`` is unimportable) as
+            mismatches, so the caller's exit status reflects them.  Any gate
+            that treats a zero return as "validated" must set this.
+        tip_frames: Optional ``(<mjcf_body_or_site>, <urdf_link>)`` naming the
+            tool frame on each side.  Closes the chain-tail blind spot: an
+            offset past the last joint (the DH ``d6``) moves neither a joint
+            axis line nor a link COM, so nothing else here can observe it.
     """
     mjcf_link_names = set(link_map.keys())
     urdf_link_names = set(link_map.values())
@@ -1357,7 +1418,7 @@ def compare(
     print("=" * 78)
 
     # ── Structural comparison (counts, mass, missing links) ──
-    s_mis, s_warn = _compare_structure(mjcf_path, urdf_path, tolerance, link_map)
+    s_mis, s_warn, unverified = _compare_structure(mjcf_path, urdf_path, tolerance, link_map)
     mismatches += s_mis
     warnings += s_warn
 
@@ -1637,13 +1698,78 @@ def compare(
 
         print()
 
+    # ── Tool / tip frame ──
+    #
+    # The joint section compares axis LINES, which is correct but blind to the
+    # tail of the chain: an offset applied after the last joint slides along
+    # that joint's own axis, and it shifts no COM either (measured).  Only the
+    # tool frame moves, so it has to be compared directly (#392).
+    if tip_frames:
+        mjcf_tip, urdf_tip = tip_frames
+        print("--- Tool Frame ---\n")
+        m_frames = _mjcf_named_frames(mjcf_path)
+        u_frames = _urdf_link_world_frames(urdf_path)
+        if mjcf_tip not in m_frames:
+            print(f"  [WARN] MJCF has no body or site named '{mjcf_tip}' — skipped")
+            warnings += 1
+        elif urdf_tip not in u_frames:
+            print(f"  [WARN] URDF has no link named '{urdf_tip}' — skipped")
+            warnings += 1
+        else:
+            r_m, p_m = m_frames[mjcf_tip]
+            r_m = _mat_mul_33(r_align, r_m)
+            p_m = _vec_add_3(p_align, _mat_vec_3(r_align, p_m))
+            r_u, p_u = u_frames[urdf_tip]
+
+            label = f"{mjcf_tip} (URDF: {urdf_tip})"
+            if not _vec_close_3(p_m, p_u, tolerance):
+                delta = math.sqrt(sum((p_m[i] - p_u[i]) ** 2 for i in range(3)))
+                print(
+                    f"  [{label}]\n"
+                    f"    TIP POSITION MISMATCH:  MJCF=[{' '.join(_fmt(v) for v in p_m)}]"
+                    f"  URDF=[{' '.join(_fmt(v) for v in p_u)}]  (|delta|={_fmt(delta)})"
+                )
+                mismatches += 1
+            else:
+                print(f"  [{label}]\n    position: [{' '.join(_fmt(v) for v in p_m)}]  OK")
+
+            # Relative rotation angle: frame-invariant, so a differing tool-frame
+            # convention shows up as an angle rather than as axis-by-axis noise.
+            r_rel = _mat_mul_33([[r_m[j][i] for j in range(3)] for i in range(3)], r_u)
+            cos_a = max(-1.0, min(1.0, (r_rel[0][0] + r_rel[1][1] + r_rel[2][2] - 1.0) / 2.0))
+            angle = math.degrees(math.acos(cos_a))
+            if angle > math.degrees(tolerance):
+                print(f"    TIP ORIENTATION MISMATCH:  {_fmt(angle)} deg between the two frames")
+                mismatches += 1
+            else:
+                print(f"    orientation: {_fmt(angle)} deg  OK")
+        print()
+
     # ── Summary ──
+    #
+    # `unverified` is deliberately NOT folded into `warnings`: a warning means
+    # "we looked and it is probably fine", whereas unverified means "we did not
+    # look".  Collapsing them is how a skipped section ends up reported as a
+    # pass (#392).
     print("=" * 78)
     print("  SUMMARY")
     print(f"  Mismatches: {mismatches}")
     print(f"  Warnings:   {warnings}")
+    if unverified:
+        print(f"  UNVERIFIED: {unverified}  (checks that could not run — see above)")
 
-    if mismatches == 0 and warnings == 0:
+    if unverified and fail_on_unverified:
+        mismatches += unverified
+        print(
+            f"  Result: {unverified} check(s) UNVERIFIED and --fail-on-unverified "
+            "is set — treated as failure"
+        )
+    elif unverified:
+        print(
+            f"  Result: {mismatches} mismatch(es), but {unverified} check(s) never ran "
+            "— this is NOT a clean pass"
+        )
+    elif mismatches == 0 and warnings == 0:
         print(f"  Result: ALL PARAMETERS MATCH within tolerance {tolerance}")
     elif mismatches == 0:
         print(f"  Result: Parameters match but {warnings} warning(s) — review notes above")
@@ -1660,6 +1786,8 @@ def compare_mjcf_urdf(
     tolerance: float = 1e-4,
     robot_label: str = "",
     align_frames: tuple[str, str] | None = None,
+    fail_on_unverified: bool = False,
+    tip_frames: tuple[str, str] | None = None,
 ) -> int:
     """Convenience wrapper: auto-detect link map + joint list and run compare.
 
@@ -1702,6 +1830,8 @@ def compare_mjcf_urdf(
             if align_frames
             else None
         ),
+        fail_on_unverified=fail_on_unverified,
+        tip_frames=tip_frames,
     )
 
 
@@ -1864,6 +1994,26 @@ def main():
         "frames are assumed to coincide.",
     )
     parser.add_argument(
+        "--tip-frames",
+        type=str,
+        nargs=2,
+        metavar=("MJCF_FRAME", "URDF_FRAME"),
+        default=None,
+        help="Compare the tool frame: an MJCF body or site name and a URDF link "
+        "name. Needed because the joint comparison uses axis LINES, which "
+        "cannot see an offset applied past the last joint (the DH d6) -- it "
+        "slides along that joint's own axis and moves no COM. For ur5e: "
+        "`--tip-frames attachment_site tool0`.",
+    )
+    parser.add_argument(
+        "--fail-on-unverified",
+        action="store_true",
+        help="Exit non-zero when a check could not run at all (e.g. the "
+        "compiled-model structural comparison, which needs an importable "
+        "mujoco). Without this a skipped section still reports 'Mismatches: 0' "
+        "and exits 0 -- a false green. Required for any automated gate.",
+    )
+    parser.add_argument(
         "--tolerance",
         type=float,
         default=1e-4,
@@ -1932,6 +2082,8 @@ def main():
         mjcf_class=args.mjcf_class,
         robot_label=robot_label,
         align=align,
+        fail_on_unverified=args.fail_on_unverified,
+        tip_frames=tuple(args.tip_frames) if args.tip_frames else None,
     )
     sys.exit(1 if mismatches > 0 else 0)
 

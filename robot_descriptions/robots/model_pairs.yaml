@@ -1,0 +1,47 @@
+# MJCF ↔ URDF 비교 게이트의 대상 목록 (#392 acceptance criteria 5)
+#
+# `rtc_tools/test/test_real_model_pairs.py` 가 이 파일을 읽어 실제 모델 쌍에
+# `compare_mjcf_urdf` 를 돌린다. 합성 픽스처 단위 테스트는 *툴의 로직*만
+# 검증하므로, 이 게이트가 없으면 툴이 겨냥한 대상에 한 번도 발사되지 않는다.
+#
+# **왜 자동 탐지가 아니라 명시 목록인가** — 어떤 MJCF 가 어떤 URDF 와 짝인지는
+# 그 자체가 판단이다. ur5e 는 `ur5e.xml` 과 `scene.xml` 두 MJCF 를 갖고
+# (후자는 지면·조명을 더한 씬), `ur5e_assm_v1` 의 URDF 는 런타임 처리가 필요한
+# xacro 라 직접 비교 대상이 아니다. 탐지로 추측하면 조용히 엉뚱한 쌍을 비교한다.
+#
+# 필드
+#   mjcf / urdf   : `robots/` 기준 상대경로 (필수)
+#   align_frames  : [<MJCF body|site|world>, <URDF link>] — 두 파일의 world
+#                   frame 이 다를 때 물리적으로 같은 프레임을 선언
+#   link_map      : `robots/` 기준 상대경로 — MJCF body ↔ URDF link 이름이
+#                   엇갈릴 때
+#   tip_frames    : [<MJCF body|site>, <URDF link>] — 마지막 관절 이후의
+#                   오프셋(DH d6)은 축 직선에도 COM 에도 안 나타나므로 tool
+#                   프레임을 직접 비교해야 잡힌다
+#   expect_warnings: 정당한 warning 개수 (초과하면 실패)
+#
+# 선언이 필요 없는 쌍은 필드를 비워 둔다 — iiwa7·leap_hand 는 두 파일의
+# world frame 과 링크 이름이 일치해 인자 없이 통과한다.
+
+pairs:
+  - name: ur5e
+    mjcf: ur5e/mjcf/ur5e.xml
+    urdf: ur5e/urdf/ur5e.urdf
+    # MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 base_link.
+    align_frames: [world, base]
+    # MJCF body `base` 는 URDF `base` 가 아니라 `base_link_inertia` 다.
+    link_map: ur5e/ur5e.link_map.yaml
+    tip_frames: [attachment_site, tool0]
+    # MJCF 가 링크당 visual mesh 를 쪼개고(20 vs 14) collision 을 capsule 로
+    # 따로 둔다(29 vs 14) — 정당한 차이라 warning 으로 남긴다.
+    expect_warnings: 2
+
+  - name: iiwa7
+    mjcf: iiwa7/mjcf/iiwa7.xml
+    urdf: iiwa7/urdf/iiwa7.urdf
+    expect_warnings: 1
+
+  - name: leap_hand_left
+    mjcf: leap_hand/mjcf/leap_hand_left.xml
+    urdf: leap_hand/urdf/leap_hand_left.urdf
+    expect_warnings: 0
