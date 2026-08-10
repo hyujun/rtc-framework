@@ -20,7 +20,7 @@
 | `rtc_inference/` | ONNX engine unit test | 실제 모델 로드 smoke |
 | `rtc_communication/` | UDP loopback + CAN/CANFD loopback (vcan0 없으면 skip) + RS485 serial loopback (PTY, 상시 실행) + Transceiver lifecycle/decode/callback | vcan0 셋업 후 CAN 테스트 실행 (`sudo modprobe vcan && sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0`), RS485는 PTY라 셋업 불필요, 실제 HW UDP/CAN/RS485(USB-RS485+Dynamixel) 테스트 (선택) |
 | `rtc_digital_twin/` | pytest + RViz2 smoke | `/rtc_cm/{group}/joint_states` hz |
-| `rtc_tools/` (pytest) | pytest | GUI/plot 수동 smoke |
+| `rtc_tools/` (pytest) | pytest. **`robot_descriptions/` 의 MJCF/URDF 를 고쳤다면 `test_real_model_pairs.py` 가 실제 게이트다** — `robots/model_pairs.yaml` 의 쌍마다 `compare_mjcf_urdf` 를 발사한다 (#392). 로컬 colcon 은 pytest 를 `/usr/bin/python3` 로 돌려 mujoco 를 못 보므로 **skip 된다** — 실제로 돌리려면 `PYTHONPATH=rtc_tools .venv/bin/python -m pytest rtc_tools/test/test_real_model_pairs.py` | GUI/plot 수동 smoke |
 | `repo_scripts/` | `test_rt_common` + `test_install_deps` (ONNX tarball digest 검증) + shell unit test | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape_estimation/snapshot` topic echo |
 | `integrated_bringup/` demo FSM | demo_wbc FSM/integration/output + demo_joint grasp·URDF paths + demo_task CLIK/contact_stop (URDF-backed iiwa7_leap fixture 공유, 노드 비생성) + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |

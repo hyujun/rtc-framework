@@ -264,7 +264,25 @@ ros2 run rtc_tools compare_mjcf_urdf \
 
 # tolerance 조정 (기본: 1e-4)
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
+
+# 두 파일의 world frame 이 다를 때 공통 기준 프레임 선언 (아래 참조)
+ros2 run rtc_tools compare_mjcf_urdf --align-frames world base \
+    --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf
 ```
+
+**`--align-frames <MJCF_FRAME> <URDF_FRAME>`** — MJCF 는 로봇 루트 body 를 씬 작성자가 정한 자리에 mount 하고 URDF 의 world 는 루트 링크다. 두 world 가 다르면 world-frame FK 비교가 **로봇 전체 오프셋**을 뿜는데, 그건 모델 발산이 아니라 mounting 규약이다 (ur5e: MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link` → 6개 관절 전부 x 부호가 뒤집혀 보였다, #392). 물리적으로 같은 프레임을 **양쪽에서 하나씩 선언**하면 그 갭이 닫힌다. **이름이 엇갈리는 데 주의** — ur5e 의 MJCF body `base` 는 URDF 링크 `base` 가 아니라 `base_link` 에 대응한다. 미지정 시 두 world 가 일치한다고 가정한다.
+
+> 추정이 아니라 선언인 이유: 변환을 데이터에 최소자승으로 맞추면 **진짜 발산이 그 fit 에 흡수된다** — 이 센서가 잡으려는 바로 그 실패다.
+
+**massless URDF 프레임은 mismatch 로 세지 않는다** (#392). 질량 0 의 링크는 순수 좌표 프레임이라 MuJoCo 가 body 를 안 만드는 것이 정상이므로 `[NOTE]` 로만 알린다. 단 면제는 **MuJoCo 가 실제로 만들지 않은 것에 한정**된다 — iiwa7 은 1개, leap_hand 는 5개의 massless 프레임을 실제 body 로 갖고 있어서 일괄 제외하면 그쪽 body count 가 깨진다. **질량을 가진 링크의 소실은 여전히 mismatch** 이며 (fusestatic 이 질량을 부모로 흡수한 경우), #385 가 넣은 신호는 그대로다.
+
+**링크 존재 판정은 `--link-map` 을 거친다** — 같은 이름이 서로 다른 것을 가리킬 수 있기 때문이다. ur5e 의 URDF 에는 massless `base` 프레임과 4 kg `base_link_inertia` 가 둘 다 있고 MJCF 의 `base` body 는 후자다. 이름만으로 맺으면 massless 프레임이 무거운 body 를 차지해 진짜 링크가 "lost" 로 보고된다.
+
+**`--tip-frames <MJCF_FRAME> <URDF_FRAME>`** — tool 프레임을 직접 비교한다. 관절 비교가 축 *직선* 기준이라 **마지막 관절 이후의 오프셋(DH `d6`)을 원리적으로 못 본다** — 그 오프셋은 마지막 관절 자신의 축과 평행하고, 링크 COM 도 움직이지 않는다(실측 확인). ur5e 는 `--tip-frames attachment_site tool0`. MJCF 쪽은 body 또는 **site** 이름을 받는다.
+
+**`--fail-on-unverified`** — 아예 실행되지 못한 검사가 있으면 exit 1. 없으면 mujoco 를 import 못 해도 구조 비교가 통째로 빠진 채 `Mismatches: 0` / exit 0 이 나온다 — **게이트에는 필수**다. 이 플래그 없이도 요약은 `UNVERIFIED: N` 과 "this is NOT a clean pass" 를 찍는다 (warning 과 합치지 않는다 — warning 은 "봤는데 괜찮다", unverified 는 "안 봤다").
+
+**관절 위치는 축 *직선* 으로 비교한다** (#392). Revolute 관절의 원점은 자기 축 위 어디에 놓든 물리가 안 바뀌고, MJCF 는 visual-mesh 기준·URDF 는 DH 기준으로 원점을 다르게 놓는 것이 정상이다. 따라서 두 축 직선의 **수직 거리**만 mismatch 로 세고 축 방향 성분은 `[NOTE]` 로 알린다 (ur5e 실측: 축 방향 성분 최대 138 mm, 수직 성분 전부 0.8 mm 미만). Prismatic 관절은 원점이 곧 zero position 이므로 **점 비교를 유지**한다.
 
 **비교 항목:**
 

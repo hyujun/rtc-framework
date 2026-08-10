@@ -178,20 +178,23 @@ find robot_descriptions/robots -iname "*.xml"                                   
 
 **핑거팁 프레임 (fixed link):** `thumb_tip_link`, `index_tip_link`, `middle_tip_link`, `ring_tip_link`
 
-### 링크 질량 비교
+### 링크 질량 (URDF = MJCF, 합계 21.7 kg)
 
-| 링크 | URDF (kg) | MJCF (kg) | 비고 |
-|------|-----------|-----------|------|
-| base_link_inertia | 4.0 | 4.0 | 고정 베이스 |
-| shoulder_link | 3.761 | 3.7 | -- |
-| upper_arm_link | 8.058 | 8.393 | MJCF +0.335 kg 차이 |
-| forearm_link | 2.846 | 2.275 | MJCF -0.571 kg 차이 |
-| wrist_1_link | 1.37 | 1.219 | -- |
-| wrist_2_link | 1.3 | 1.219 | -- |
-| wrist_3_link | 0.365 | 0.1889 | MJCF 51% 가벼움 |
+| 링크 | 질량 (kg) |
+|------|-----------|
+| base_link_inertia (MJCF: `base`) | 4.0 |
+| shoulder_link | 3.761 |
+| upper_arm_link | 8.058 |
+| forearm_link | 2.846 |
+| wrist_1_link | 1.37 |
+| wrist_2_link | 1.3 |
+| wrist_3_link | 0.365 |
 
-> URDF는 UR 공식 xacro 기반, MJCF는 MuJoCo Menagerie 기반이므로 mass/inertia 값에 차이가 있습니다.
-> `ros2 run rtc_tools compare_mjcf_urdf` 명령으로 상세 비교가 가능합니다.
+> **URDF 가 SSoT 다** (#392 결정 #1). URDF 는 UR 공식 `ur_description` 의 `ur.urdf.xacro` 에서 기계 생성된 것이고, mass·inertia·kinematics 가 `config/ur5e/{physical_parameters,default_kinematics}.yaml` 과 일치한다. MJCF (MuJoCo Menagerie 유래) 는 한때 **UR5e 가 아니라 레거시 UR5 (CB3) 의 관성 세트**를 싣고 있었고 (shoulder 3.7 / upper_arm 8.393 / forearm 2.275 / wrist 1.219·1.219·0.1889), DH 길이도 소수 3자리로 반올림돼 있었다. 그 상태의 실측 비용은 중력 토크 상대오차 mean 14.5% · p95 24.9%, tool 위치 오차 최대 1.49 mm 였다 — sim(MJCF)과 컨트롤러 모델(URDF)이 어긋나므로 sim 에서 튜닝한 게인이 존재하지 않는 모델 오차를 보상하게 된다. 현재는 두 MJCF (`ur5e/mjcf/ur5e.xml`, `ur5e_assm_v1/mjcf/ur5e_with_hand.xml`) 가 URDF 에 정렬돼 있다.
+>
+> **MJCF 에만 있는 것**: 6관절 전부의 `armature=0.1` (로터 관성, URDF 무대응) — 의도적이며 수정 대상이 아니다. **프레임 배치 규약은 다르게 유지**한다 — MJCF 는 body frame 을 UR 이 visual mesh 를 놓는 자리(`shoulder_offset=0.138`, `elbow_offset=0.007`)에, URDF 는 DH frame 에 놓는다. 축 직선이 같으면 물리가 같으므로 정상이며, 이 차이 때문에 `compare_mjcf_urdf` 는 관절 원점을 점이 아니라 **축 직선**으로 비교한다.
+>
+> `ros2 run rtc_tools compare_mjcf_urdf --align-frames world base` 로 상세 비교가 가능합니다 (ur5e 는 `--align-frames` 필수 — 위 §"MJCF vs URDF 파라미터 비교" 참조).
 
 ### 메시 파일 (UR5e)
 
@@ -266,6 +269,30 @@ ros2 run rtc_tools compare_mjcf_urdf --mjcf robots/ur5e/mjcf/ur5e.xml --urdf rob
 # tolerance 조정
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 ```
+
+**`ur5e` 는 선언 두 개가 필요합니다** (둘 다 이름·프레임이 엇갈려 자동 탐지로 풀리지 않습니다, #392):
+
+- **`--align-frames world base`** — 두 파일의 world frame 이 다릅니다 (MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link`). 없으면 관절 6개 전부 x 부호가 뒤집힌 것처럼 보이는데, 모델 발산이 아니라 mounting 규약입니다.
+- **`--link-map robots/ur5e/ur5e.link_map.yaml`** — MJCF body `base` 는 URDF `base_link_inertia`(4 kg) 인데 URDF 에도 **massless** `base` 프레임이 따로 있습니다. 자동 탐지는 이름이 같은 쌍만 맺으므로 그 둘을 잘못 짝지어 `base_link_inertia` 를 "mass=4 kg lost" 로 보고했습니다. 선언하면 base 링크 관성 검증이 켜지고(양쪽 값은 이미 동일) 허위 손실 보고가 사라집니다.
+
+```bash
+ros2 run rtc_tools compare_mjcf_urdf \
+    --mjcf robots/ur5e/mjcf/ur5e.xml --urdf robots/ur5e/urdf/ur5e.urdf \
+    --align-frames world base --link-map robots/ur5e/ur5e.link_map.yaml \
+    --tip-frames attachment_site tool0 --fail-on-unverified
+# -> Mismatches: 0  (Warnings: 2 — 아래 참조)
+```
+
+**이 비교는 자동으로 돕니다** — [`robots/model_pairs.yaml`](robots/model_pairs.yaml) 이 대상 쌍과 각 쌍의 선언을 갖고, [`rtc_tools/test/test_real_model_pairs.py`](../rtc_tools/test/test_real_model_pairs.py) 가 그걸 읽어 발사합니다. **여기의 MJCF/URDF 를 고쳤다면 그 테스트가 해당 sensor 입니다.** 로봇을 새로 들이면 `model_pairs.yaml` 에 한 줄 추가하세요 — 어떤 MJCF 가 어떤 URDF 와 짝인지는 자동 탐지로 추측할 수 없습니다 (`ur5e` 는 `ur5e.xml`·`scene.xml` 둘을 갖고, `ur5e_assm_v1` 의 URDF 는 런타임 처리가 필요한 xacro 입니다).
+
+> ⚠️ **로컬 `colcon test` 에서는 이 게이트가 skip 됩니다.** colcon 이 pytest 를 `/usr/bin/python3` 로 돌리는데 (colcon 자체의 shebang) 이 저장소는 mujoco 를 `.venv` 에 둡니다. CI 는 `pip install ... mujoco` 를 하므로 실제로 실행됩니다. 로컬에서 직접 돌리려면:
+> ```bash
+> PYTHONPATH=rtc_tools .venv/bin/python -m pytest rtc_tools/test/test_real_model_pairs.py
+> ```
+
+남는 warning 2건은 정당한 차이라 유지합니다: MJCF 가 링크당 visual mesh 를 쪼개고(20 vs 14) collision 을 capsule 로 따로 두기 때문입니다(29 vs 14).
+
+**massless 프레임은 mismatch 로 세지 않습니다** — `base_link`·`flange`·`ft_frame`·`tool0`·`world`·`base` 는 질량 0 의 순수 좌표 프레임이고 MuJoCo 가 body 를 안 만드는 것이 정상 동작입니다. 다만 **MuJoCo 가 실제로 만들지 않은 것만** 면제하며(iiwa7 은 1개, leap_hand 는 5개의 massless 프레임을 실제 body 로 갖고 있습니다), **질량을 가진 링크가 사라지면 여전히 mismatch** 입니다 — fusestatic 이 질량을 부모로 흡수한 경우가 그것이고, 그 신호는 그대로 남습니다 (#385).
 
 ---
 

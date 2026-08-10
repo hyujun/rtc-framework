@@ -7,6 +7,7 @@ MJCF/URDF 파서, 데이터 클래스, 비교 로직, 유틸리티 함수를 검
 from __future__ import annotations
 
 import math
+import sys
 
 import pytest
 
@@ -14,16 +15,23 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     InertialParams,
     JointParams,
     _axes_parallel,
+    _axis_line_offset,
     _close,
     _compose_transform,
     _compute_mjcf_world_frames,
     _compute_urdf_world_frames,
+    _detect_joint_types,
     _fmt,
     _identity_3x3,
+    _invert_transform,
     _mjcf_body_rotation,
+    _mjcf_body_world_frames,
+    _mjcf_named_frames,
     _parse_floats,
     _quat_to_rot3,
+    _resolve_alignment,
     _rpy_to_rot3,
+    _urdf_link_world_frames,
     _vec_close_3,
     compare,
     parse_mjcf,
@@ -536,7 +544,6 @@ class TestCompare:
         assert mismatches >= 1
 
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # SE(3) transform utilities
 # ═══════════════════════════════════════════════════════════════════════════
@@ -771,3 +778,565 @@ class TestMjcfBodyRotation:
         assert abs(R[0][0] - (-1.0)) < 1e-12
         assert abs(R[1][1] - (-1.0)) < 1e-12
         assert abs(R[2][2] - 1.0) < 1e-12
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Axis-line joint comparison (#392)
+#
+# A revolute joint is defined by its axis LINE, not by where its origin sits
+# on that line.  MJCF and URDF routinely place the origin differently on the
+# same line, so only the perpendicular offset is a real disagreement.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAxisLineOffset:
+    def test_pure_along_axis(self):
+        along, perp, mag = _axis_line_offset([0, 0, 0], [0, 0, 0.5], [0, 0, 1])
+        assert abs(along - 0.5) < 1e-12
+        assert mag < 1e-12
+        assert _vec_close_3(perp, [0, 0, 0], 1e-12)
+
+    def test_pure_perpendicular(self):
+        along, _perp, mag = _axis_line_offset([0, 0, 0], [0.3, 0, 0], [0, 0, 1])
+        assert abs(along) < 1e-12
+        assert abs(mag - 0.3) < 1e-12
+
+    def test_mixed(self):
+        along, _perp, mag = _axis_line_offset([0, 0, 0], [0.3, 0, 0.5], [0, 0, 1])
+        assert abs(along - 0.5) < 1e-12
+        assert abs(mag - 0.3) < 1e-12
+
+    def test_unnormalized_axis(self):
+        """Magnitude of the axis vector must not scale the decomposition."""
+        along, _perp, mag = _axis_line_offset([0, 0, 0], [0.3, 0, 0.5], [0, 0, 7.0])
+        assert abs(along - 0.5) < 1e-12
+        assert abs(mag - 0.3) < 1e-12
+
+    def test_degenerate_axis_reports_full_difference(self):
+        """A zero-length axis must not silently absorb the difference."""
+        along, perp, mag = _axis_line_offset([0, 0, 0], [0, 0, 0.5], [0, 0, 0])
+        assert along == 0.0
+        assert _vec_close_3(perp, [0, 0, 0.5], 1e-12)
+        assert abs(mag - 0.5) < 1e-12
+
+
+class TestAxisLineCompare:
+    """compare() must accept origin slide along the axis but catch any offset
+    perpendicular to it — right down to the tolerance boundary."""
+
+    def _files(self, tmp_path, urdf_origin, *, prismatic=False):
+        mjcf_text = MJCF_TEMPLATE
+        urdf_text = URDF_TEMPLATE.replace('xyz="0 0 0.1625"', f'xyz="{urdf_origin}"')
+        if prismatic:
+            mjcf_text = mjcf_text.replace(
+                '<joint name="shoulder_pan_joint" class="test_robot"',
+                '<joint name="shoulder_pan_joint" type="slide" class="test_robot"',
+            )
+            urdf_text = urdf_text.replace(
+                '<joint name="shoulder_pan_joint" type="revolute">',
+                '<joint name="shoulder_pan_joint" type="prismatic">',
+            )
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(mjcf_text)
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(urdf_text)
+        return mjcf, urdf
+
+    def test_slide_along_axis_is_not_a_mismatch(self, tmp_path, capsys):
+        """URDF origin 0.5 m further along its own Z axis — same axis line."""
+        pytest.importorskip("mujoco")
+        mjcf, urdf = self._files(tmp_path, "0 0 0.6625")
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
+        captured = capsys.readouterr()
+        assert "AXIS-LINE MISMATCH" not in captured.out
+        assert "along the joint axis" in captured.out
+        assert mismatches == 0
+
+    def test_perpendicular_offset_above_tolerance_is_caught(self, tmp_path, capsys):
+        """2e-4 perpendicular, just above the 1e-4 default tolerance."""
+        mjcf, urdf = self._files(tmp_path, "0.0002 0 0.1625")
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
+        captured = capsys.readouterr()
+        assert "AXIS-LINE MISMATCH" in captured.out
+        assert mismatches >= 1
+
+    def test_perpendicular_offset_below_tolerance_passes(self, tmp_path, capsys):
+        """5e-5 perpendicular, just under tolerance — the boundary is tight,
+        so the test above is not passing on gross magnitude alone."""
+        pytest.importorskip("mujoco")
+        mjcf, urdf = self._files(tmp_path, "0.00005 0 0.1625")
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
+        captured = capsys.readouterr()
+        assert "AXIS-LINE MISMATCH" not in captured.out
+        assert mismatches == 0
+
+    def test_prismatic_slide_along_axis_is_still_a_mismatch(self, tmp_path, capsys):
+        """A prismatic origin sets its zero position, so it stays a POINT test."""
+        mjcf, urdf = self._files(tmp_path, "0 0 0.6625", prismatic=True)
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
+        captured = capsys.readouterr()
+        assert "POSITION MISMATCH" in captured.out
+        assert "AXIS-LINE MISMATCH" not in captured.out
+        assert mismatches >= 1
+
+
+class TestDetectJointTypes:
+    def test_revolute_when_both_agree(self, tmp_path):
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(MJCF_TEMPLATE)
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(URDF_TEMPLATE)
+        types = _detect_joint_types(mjcf, urdf, JOINT_NAMES_SET)
+        assert types["shoulder_pan_joint"] == "revolute"
+
+    def test_not_revolute_when_urdf_is_prismatic(self, tmp_path):
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(MJCF_TEMPLATE)
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(URDF_TEMPLATE.replace('type="revolute"', 'type="prismatic"'))
+        types = _detect_joint_types(mjcf, urdf, JOINT_NAMES_SET)
+        assert types["shoulder_pan_joint"] == "other"
+
+    def test_not_revolute_when_mjcf_is_slide(self, tmp_path):
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(
+            MJCF_TEMPLATE.replace(
+                '<joint name="shoulder_pan_joint" class="test_robot"',
+                '<joint name="shoulder_pan_joint" type="slide" class="test_robot"',
+            )
+        )
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(URDF_TEMPLATE)
+        types = _detect_joint_types(mjcf, urdf, JOINT_NAMES_SET)
+        assert types["shoulder_pan_joint"] == "other"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Declared base-frame alignment (#392)
+#
+# The two formats need not agree on where "world" is.  The caller declares one
+# physically identical frame per side rather than letting the tool fit the
+# transform, which would absorb a genuine divergence into the fit.
+# ═══════════════════════════════════════════════════════════════════════════
+
+MJCF_ALIGN = """\
+<mujoco model="align_test">
+  <compiler angle="radian" autolimits="true"/>
+  <worldbody>
+    <body name="base" quat="0 0 0 -1">
+      <inertial mass="1.0" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+      <body name="link1" pos="0.3 0 0.2">
+        <inertial mass="2.0" pos="0 0 0" diaginertia="0.02 0.02 0.02"/>
+        <joint name="j1" axis="0 0 1" range="-3.14 3.14"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general joint="j1" forcerange="-100 100"/>
+  </actuator>
+</mujoco>
+"""
+
+URDF_ALIGN = """\
+<?xml version="1.0"?>
+<robot name="align_test">
+  <link name="base_link">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="link1">
+    <inertial>
+      <mass value="2.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.02" iyy="0.02" izz="0.02" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <joint name="j1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0.3 0 0.2" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+  </joint>
+</robot>
+"""
+
+ALIGN_LINK_MAP = {"base": "base_link", "link1": "link1"}
+
+
+class TestFrameCollections:
+    def test_mjcf_world_is_identity(self, tmp_path):
+        mjcf = tmp_path / "a.xml"
+        mjcf.write_text(MJCF_ALIGN)
+        frames = _mjcf_body_world_frames(mjcf)
+        r, p = frames["world"]
+        assert r == _identity_3x3()
+        assert _vec_close_3(p, [0, 0, 0], 1e-12)
+
+    def test_mjcf_body_pose_accumulates(self, tmp_path):
+        """base carries Rz(pi), so link1's local +x lands on world -x."""
+        mjcf = tmp_path / "a.xml"
+        mjcf.write_text(MJCF_ALIGN)
+        _r, p = _mjcf_body_world_frames(mjcf)["link1"]
+        assert _vec_close_3(p, [-0.3, 0, 0.2], 1e-12)
+
+    def test_urdf_link_frames_include_roots(self, tmp_path):
+        urdf = tmp_path / "a.urdf"
+        urdf.write_text(URDF_ALIGN)
+        frames = _urdf_link_world_frames(urdf)
+        assert _vec_close_3(frames["base_link"][1], [0, 0, 0], 1e-12)
+        assert _vec_close_3(frames["link1"][1], [0.3, 0, 0.2], 1e-12)
+
+    def test_invert_transform_round_trips(self):
+        r = _rpy_to_rot3(0.3, -0.7, 1.1)
+        p = [0.4, -0.2, 0.9]
+        r_inv, p_inv = _invert_transform(r, p)
+        r_back, p_back = _compose_transform(r, p, r_inv, p_inv)
+        for i in range(3):
+            assert abs(p_back[i]) < 1e-12
+            for j in range(3):
+                assert abs(r_back[i][j] - _identity_3x3()[i][j]) < 1e-12
+
+
+class TestResolveAlignment:
+    def test_recovers_rz180(self, tmp_path):
+        mjcf = tmp_path / "a.xml"
+        mjcf.write_text(MJCF_ALIGN)
+        urdf = tmp_path / "a.urdf"
+        urdf.write_text(URDF_ALIGN)
+        r, p = _resolve_alignment(mjcf, urdf, "base", "base_link")
+        expected = _quat_to_rot3(0, 0, 0, 1)
+        for i in range(3):
+            assert abs(p[i]) < 1e-12
+            for j in range(3):
+                assert abs(r[i][j] - expected[i][j]) < 1e-12
+
+    def test_unknown_mjcf_frame_raises(self, tmp_path):
+        mjcf = tmp_path / "a.xml"
+        mjcf.write_text(MJCF_ALIGN)
+        urdf = tmp_path / "a.urdf"
+        urdf.write_text(URDF_ALIGN)
+        with pytest.raises(SystemExit, match="no body named 'nope'"):
+            _resolve_alignment(mjcf, urdf, "nope", "base_link")
+
+    def test_unknown_urdf_frame_raises(self, tmp_path):
+        mjcf = tmp_path / "a.xml"
+        mjcf.write_text(MJCF_ALIGN)
+        urdf = tmp_path / "a.urdf"
+        urdf.write_text(URDF_ALIGN)
+        with pytest.raises(SystemExit, match="no link named 'nope'"):
+            _resolve_alignment(mjcf, urdf, "base", "nope")
+
+
+class TestCompareWithAlignment:
+    """The same pair must fail without the declaration and pass with it —
+    otherwise --align-frames could be a no-op and nothing would reveal it."""
+
+    def _files(self, tmp_path):
+        mjcf = tmp_path / "a.xml"
+        mjcf.write_text(MJCF_ALIGN)
+        urdf = tmp_path / "a.urdf"
+        urdf.write_text(URDF_ALIGN)
+        return mjcf, urdf
+
+    def test_without_alignment_reports_the_whole_robot_offset(self, tmp_path, capsys):
+        mjcf, urdf = self._files(tmp_path)
+        mismatches = compare(mjcf, urdf, link_map=ALIGN_LINK_MAP, joint_names=["j1"])
+        captured = capsys.readouterr()
+        assert "AXIS-LINE MISMATCH" in captured.out
+        assert mismatches >= 1
+
+    def test_with_alignment_matches(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        mjcf, urdf = self._files(tmp_path)
+        align = _resolve_alignment(mjcf, urdf, "base", "base_link")
+        mismatches = compare(mjcf, urdf, link_map=ALIGN_LINK_MAP, joint_names=["j1"], align=align)
+        captured = capsys.readouterr()
+        assert "AXIS-LINE MISMATCH" not in captured.out
+        assert "Base alignment: declared" in captured.out
+        assert mismatches == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Structural comparison: massless frames and the link_map-aware presence test
+# (#392)
+#
+# A zero-mass URDF link is a pure coordinate frame; MuJoCo not giving it a body
+# is correct behaviour.  Excusing them must NOT weaken the fusestatic signal
+# #385 added, and must not break models that DO materialise their massless
+# frames (iiwa7 has 1, leap_hand 5).
+# ═══════════════════════════════════════════════════════════════════════════
+
+URDF_STRUCT = """\
+<?xml version="1.0"?>
+<robot name="struct_test">
+  <link name="base_link_inertia">
+    <inertial>
+      <mass value="4.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="shoulder_link">
+    <inertial>
+      <mass value="3.7"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.02" iyy="0.02" izz="0.02" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="tool0"/>
+  <joint name="shoulder_pan_joint" type="revolute">
+    <parent link="base_link_inertia"/>
+    <child link="shoulder_link"/>
+    <origin xyz="0 0 0.1625" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+  </joint>
+  <joint name="tool_fixed" type="fixed">
+    <parent link="shoulder_link"/>
+    <child link="tool0"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+</robot>
+"""
+
+MJCF_STRUCT = """\
+<mujoco model="struct_test">
+  <compiler angle="radian" autolimits="true"/>
+  <worldbody>
+    <body name="base">
+      <inertial mass="4.0" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+      <body name="shoulder_link" pos="0 0 0.1625">
+        <inertial mass="3.7" pos="0 0 0" diaginertia="0.02 0.02 0.02"/>
+        <joint name="shoulder_pan_joint" axis="0 0 1" range="-3.14 3.14"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general joint="shoulder_pan_joint" forcerange="-100 100"/>
+  </actuator>
+</mujoco>
+"""
+
+STRUCT_LINK_MAP = {"base": "base_link_inertia", "shoulder_link": "shoulder_link"}
+STRUCT_JOINTS = ["shoulder_pan_joint"]
+
+
+class TestMasslessFrameAccounting:
+    def _run(self, tmp_path, capsys, urdf_text=URDF_STRUCT, mjcf_text=MJCF_STRUCT):
+        mjcf = tmp_path / "s.xml"
+        mjcf.write_text(mjcf_text)
+        urdf = tmp_path / "s.urdf"
+        urdf.write_text(urdf_text)
+        n = compare(mjcf, urdf, link_map=STRUCT_LINK_MAP, joint_names=STRUCT_JOINTS)
+        return n, capsys.readouterr().out
+
+    def test_massless_frame_absent_is_noted_not_counted(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys)
+        assert "massless URDF frames with no MJCF body" in out
+        assert "tool0" in out
+        assert "body count: 2  OK" in out
+        assert n == 0
+
+    def test_massive_link_absent_is_still_counted(self, tmp_path, capsys):
+        """The #385 fusestatic signal must survive the massless exemption."""
+        # Structural comparison needs the compiled model; without mujoco
+        # _compare_structure() returns (0, 1) and asserts nothing (#385).
+        pytest.importorskip("mujoco")
+        urdf = URDF_STRUCT.replace(
+            '<link name="tool0"/>',
+            '<link name="tool0"><inertial><mass value="0.5"/>'
+            '<origin xyz="0 0 0" rpy="0 0 0"/>'
+            '<inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/>'
+            "</inertial></link>",
+        )
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf)
+        assert "URDF links with mass absent from MJCF" in out
+        assert "0.5 kg lost" in out
+        assert n >= 1
+
+    def test_materialised_massless_frame_still_counts_toward_body_count(self, tmp_path, capsys):
+        """iiwa7 / leap_hand shape: MuJoCo DOES create bodies for their massless
+        frames, so a blanket 'ignore massless links' rule would break them."""
+        pytest.importorskip("mujoco")
+        urdf = URDF_STRUCT.replace(
+            "</robot>",
+            '  <link name="ee_frame"/>\n'
+            '  <joint name="ee_fixed" type="fixed">\n'
+            '    <parent link="shoulder_link"/><child link="ee_frame"/>\n'
+            '    <origin xyz="0 0 0.2" rpy="0 0 0"/>\n'
+            "  </joint>\n</robot>",
+        )
+        mjcf = MJCF_STRUCT.replace(
+            '<joint name="shoulder_pan_joint" axis="0 0 1" range="-3.14 3.14"/>',
+            '<joint name="shoulder_pan_joint" axis="0 0 1" range="-3.14 3.14"/>\n'
+            '        <body name="ee_frame" pos="0 0 0.2">\n'
+            '          <inertial mass="0" pos="0 0 0" diaginertia="0 0 0"/>\n'
+            "        </body>",
+        )
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf, mjcf_text=mjcf)
+        # 4 URDF links, tool0 excused, ee_frame materialised -> 3 expected bodies
+        assert "body count: 3  OK" in out
+        assert n == 0
+
+    def test_name_collision_does_not_hide_a_massive_link(self, tmp_path, capsys):
+        """ur5e shape: URDF has BOTH a massless `base` frame and the massive
+        `base_link_inertia`; the MJCF's single `base` body is the massive one.
+        Raw-name matching paired the massless frame with it and reported the
+        real link as lost (#392)."""
+        pytest.importorskip("mujoco")
+        urdf = URDF_STRUCT.replace(
+            '<link name="tool0"/>',
+            '<link name="tool0"/>\n  <link name="base"/>\n'
+            '  <joint name="base_fixed" type="fixed">\n'
+            '    <parent link="base_link_inertia"/><child link="base"/>\n'
+            '    <origin xyz="0 0 0" rpy="0 0 0"/>\n'
+            "  </joint>",
+        )
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf)
+        # The massless `base` frame is what went missing — not the 4 kg link.
+        assert "URDF links with mass absent" not in out
+        assert "base, tool0" in out
+        # And the massive link is actually compared, via link_map.
+        assert "[base (URDF: base_link_inertia)]" in out
+        assert "body count: 2  OK" in out
+        assert n == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UNVERIFIED accounting (#392)
+#
+# Without mujoco the structural section checks nothing, yet the run used to end
+# in "Mismatches: 0" and exit 0.  That is the false green this issue is about,
+# and it is the path colcon actually takes (it runs pytest under
+# /usr/bin/python3, which cannot see the venv where mujoco lives).
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestUnverifiedAccounting:
+    def _run(self, tmp_path, capsys, **kw):
+        mjcf = tmp_path / "s.xml"
+        mjcf.write_text(MJCF_STRUCT)
+        urdf = tmp_path / "s.urdf"
+        urdf.write_text(URDF_STRUCT)
+        n = compare(mjcf, urdf, link_map=STRUCT_LINK_MAP, joint_names=STRUCT_JOINTS, **kw)
+        return n, capsys.readouterr().out
+
+    def test_missing_mujoco_is_reported_as_unverified(self, tmp_path, capsys, monkeypatch):
+        # None in sys.modules makes `import mujoco` raise ImportError.
+        monkeypatch.setitem(sys.modules, "mujoco", None)
+        n, out = self._run(tmp_path, capsys)
+        assert "[UNVERIFIED]" in out
+        assert "UNVERIFIED: 1" in out
+        assert "NOT a clean pass" in out
+        assert "ALL PARAMETERS MATCH" not in out
+        assert n == 0  # default stays permissive for interactive use
+
+    def test_fail_on_unverified_makes_it_count(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setitem(sys.modules, "mujoco", None)
+        n, out = self._run(tmp_path, capsys, fail_on_unverified=True)
+        assert "treated as failure" in out
+        assert n >= 1
+
+    def test_clean_run_says_so(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys, fail_on_unverified=True)
+        assert "UNVERIFIED" not in out
+        assert n == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool / tip frame comparison (#392)
+#
+# The joint section compares axis LINES, which cannot see an offset applied
+# past the last joint: it slides along that joint's own axis and (measured)
+# moves no link COM either.  Only the tool frame observes it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+MJCF_TIP = MJCF_ALIGN.replace(
+    '<joint name="j1" axis="0 0 1" range="-3.14 3.14"/>',
+    '<joint name="j1" axis="0 0 1" range="-3.14 3.14"/>\n'
+    '        <site name="tcp" pos="0 0 0.15"/>',
+)
+
+URDF_TIP = URDF_ALIGN.replace(
+    "</robot>",
+    '  <link name="tcp"/>\n'
+    '  <joint name="tcp_fixed" type="fixed">\n'
+    '    <parent link="link1"/><child link="tcp"/>\n'
+    '    <origin xyz="0 0 0.15" rpy="0 0 0"/>\n'
+    "  </joint>\n</robot>",
+)
+
+
+class TestTipFrame:
+    def _run(self, tmp_path, capsys, urdf_text=URDF_TIP, tip=("tcp", "tcp")):
+        mjcf = tmp_path / "t.xml"
+        mjcf.write_text(MJCF_TIP)
+        urdf = tmp_path / "t.urdf"
+        urdf.write_text(urdf_text)
+        align = _resolve_alignment(mjcf, urdf, "base", "base_link")
+        n = compare(
+            mjcf,
+            urdf,
+            link_map=ALIGN_LINK_MAP,
+            joint_names=["j1"],
+            align=align,
+            tip_frames=tip,
+        )
+        return n, capsys.readouterr().out
+
+    def test_site_frame_is_found_and_matches(self, tmp_path, capsys):
+        pytest.importorskip("mujoco")
+        n, out = self._run(tmp_path, capsys)
+        assert "[tcp (URDF: tcp)]" in out
+        assert "TIP POSITION MISMATCH" not in out
+        assert n == 0
+
+    def test_tail_offset_is_caught(self, tmp_path, capsys):
+        """The d6 shape: an offset past the last joint, along its own axis.
+        The joint section stays clean; only this check sees it."""
+        urdf = URDF_TIP.replace('xyz="0 0 0.15" rpy="0 0 0"', 'xyz="0 0 0.1504" rpy="0 0 0"')
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf)
+        assert "TIP POSITION MISMATCH" in out
+        assert "AXIS-LINE MISMATCH" not in out  # invisible to the joint section
+        assert n >= 1
+
+    def test_orientation_difference_is_caught(self, tmp_path, capsys):
+        urdf = URDF_TIP.replace('xyz="0 0 0.15" rpy="0 0 0"', 'xyz="0 0 0.15" rpy="0 0 0.5"')
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf)
+        assert "TIP ORIENTATION MISMATCH" in out
+        assert n >= 1
+
+    def test_unknown_name_warns_rather_than_silently_passing(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys, tip=("nope", "tcp"))
+        assert "no body or site named 'nope'" in out
+        assert n == 0
+
+
+class TestMjcfNamedFrames:
+    def test_sites_are_included(self, tmp_path):
+        mjcf = tmp_path / "t.xml"
+        mjcf.write_text(MJCF_TIP)
+        frames = _mjcf_named_frames(mjcf)
+        assert "tcp" in frames
+        # base carries Rz(pi); link1 sits at local (0.3, 0, 0.2), site +0.15 z
+        assert _vec_close_3(frames["tcp"][1], [-0.3, 0, 0.35], 1e-12)
+
+    def test_bodies_still_present(self, tmp_path):
+        mjcf = tmp_path / "t.xml"
+        mjcf.write_text(MJCF_TIP)
+        frames = _mjcf_named_frames(mjcf)
+        assert "world" in frames and "base" in frames and "link1" in frames
