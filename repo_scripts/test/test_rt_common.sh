@@ -1108,6 +1108,101 @@ test_get_cm_shield_cpus_degraded_drops_os_slot() {
   expect_eq "cm_shield.degraded.4c.no_os_slot" "1-3" "$got"
 }
 
+# ── 두 shield 헬퍼의 profile 축 (#379) ──────────────────────────────────────
+# 위 네 케이스는 전부 **무인자** 호출이라, 두 함수가 $1 을 통째로 무시하도록
+# mutate 해도 green 이다 — profile 축이 실제로 코어를 반환시키는지 보는 단언이
+# 하나도 없었다. #350 이 깐 profile 테스트는 slot 층(get_rt_cores /
+# get_mpc_cores)에서 멈췄고, 그 slot 을 logical+sibling 으로 번역하는 이 두
+# 래퍼는 덮이지 않았다. #379 가 `DegradationMode::SERIAL_MPC` 를 지우면서
+# launch profile 이 MPC 강등의 **유일한** 축이 됐으므로, 그 축의 파생값을
+# 여기서 박는다.
+#
+# 값은 manifest 에서 손으로 유도한다 (이웃 케이스와 같은 방식): mpc_off 는 RT
+# 집합에서 mpc_main 슬롯 3 을 뺀다 → 남는 슬롯 {1,2} → logical 번역 + HT sibling.
+# 두 함수의 기대값이 같은 것은 우연이 아니라 v5 이후 nrt ⊂ RT 라서이며, 위
+# cm_shield 블록 주석이 그 관계를 이미 설명한다.
+test_shield_helpers_follow_the_layout_profile() {
+  # ① NUC13 Pro (4P+8E, HT on) tier 12 — primary target.
+  #    mpc_on : 슬롯 1,2,3 → logical 2,4,6 + sibling 3,5,7 → "2-7"
+  #    mpc_off: 슬롯 1,2   → logical 2,4   + sibling 3,5   → "2-5"  (P3 쌍 반환)
+  local root="$TMP/profile_nuc13"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5000000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5000000
+  done
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((8+i)) $((4+i)) 3800000
+  done
+  mock_set_types "$root" "0,1,2,3,4,5,6,7" "8,9,10,11,12,13,14,15"
+  mock_write_cpuinfo "$TMP/profile_nuc13_cpuinfo" "true" "6" "186"  # 0xBA
+  _force_physical_cores 12
+
+  local ci="$TMP/profile_nuc13_cpuinfo"
+  expect_eq "profile.shield.rt.nuc13.on" "2-7" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus mpc_on)"
+  expect_eq "profile.shield.rt.nuc13.off" "2-5" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus mpc_off)"
+  expect_eq "profile.shield.cm.nuc13.on" "2-7" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus mpc_on)"
+  expect_eq "profile.shield.cm.nuc13.off" "2-5" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus mpc_off)"
+
+  # ② 무인자 == mpc_on. 이게 갈리면 profile 을 모르는 기존 호출자
+  #    (cpu_shield.sh 의 legacy 경로, check_rt_setup.sh) 가 조용히 다른 shield 를
+  #    받는다 — #350 이 절대 건드리지 않기로 한 축이다.
+  expect_eq "profile.shield.rt.default_is_on" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus)" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus mpc_on)"
+  expect_eq "profile.shield.cm.default_is_on" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus)" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus mpc_on)"
+
+  # ③ 알 수 없는 profile 은 비0 으로 거부. 두 함수는 자체 rtc_is_layout_profile
+  #    가드를 갖지만 그 가드가 단언된 적이 없다 — 조용히 default 로 떨어지면
+  #    오타 하나가 "MPC 껐다고 생각했는데 코어는 그대로 예약" 을 만든다.
+  local fn
+  for fn in get_rt_shield_cpus get_cm_shield_cpus; do
+    if RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 "$fn" mpc_offf >/dev/null 2>&1; then
+      fail "[profile.shield.unknown.${fn}] 알 수 없는 profile 을 받아들였다 — 비0 이어야 한다"
+    else
+      pass
+    fi
+  done
+
+  # ④ non-SMT 전 tier + degraded. sibling 확장이 없으므로 슬롯이 그대로 보이고,
+  #    degraded 4c 는 nrt 가 OS 슬롯이라 union 이 RT 로 collapse 하는 경로까지
+  #    profile 을 탄다.
+  local n root2="$TMP/profile_nonsmt" ci2="$TMP/profile_nonsmt_cpuinfo"
+  for n in 4 6 8 12 16; do
+    _mock_sysfs_non_smt "$root2" "$n"
+    mock_write_cpuinfo "$ci2" "false"
+    _force_physical_cores "$n"
+    expect_eq "profile.shield.rt.nonsmt.${n}.on" "1-3" \
+      "$(RTC_SYSFS_ROOT="$root2" RTC_PROC_CPUINFO="$ci2" \
+         RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus mpc_on)"
+    expect_eq "profile.shield.rt.nonsmt.${n}.off" "1-2" \
+      "$(RTC_SYSFS_ROOT="$root2" RTC_PROC_CPUINFO="$ci2" \
+         RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus mpc_off)"
+    expect_eq "profile.shield.cm.nonsmt.${n}.on" "1-3" \
+      "$(RTC_SYSFS_ROOT="$root2" RTC_PROC_CPUINFO="$ci2" \
+         RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus mpc_on)"
+    expect_eq "profile.shield.cm.nonsmt.${n}.off" "1-2" \
+      "$(RTC_SYSFS_ROOT="$root2" RTC_PROC_CPUINFO="$ci2" \
+         RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus mpc_off)"
+  done
+}
+
 # ── Run all ─────────────────────────────────────────────────────────────────
 test_cpulist_parser
 test_nuc13_i7_1360p
@@ -1160,6 +1255,7 @@ test_get_rt_shield_cpus_low_core_no_phantom
 test_get_cm_shield_cpus_nuc13_hybrid
 test_get_cm_shield_cpus_non_smt
 test_get_cm_shield_cpus_degraded_drops_os_slot
+test_shield_helpers_follow_the_layout_profile
 
 # ── Phase 1 safety primitives: write_file_if_changed / with_temporary_disable ──
 

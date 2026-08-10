@@ -1189,8 +1189,12 @@ get_rt_shield_cpus() {
 # $1 = launch profile (issue #350), default `rtc_default_profile`. Only the RT
 # half narrows: get_nrt_cores() is profile-blind, so the three CFS lanes stay in
 # the cpuset no matter which profile is active and never lose their self-pin
-# target (the #151 EINVAL). On NUC13 tier 12 this is "2-9" under mpc_on and
-# "2-5" under mpc_off — the P3 pair and two E cores go back to "system".
+# target (the #151 EINVAL). On NUC13 tier 12 this is "2-7" under mpc_on and
+# "2-5" under mpc_off — the P3 pair (logical 6,7) goes back to "system". The
+# "2-9" once written here was the pre-#380 value, from when the mpc_worker
+# slots still widened the union; both numbers are pinned by
+# test_get_cm_shield_cpus_nuc13_hybrid so prose that drifts off them is
+# detectable rather than merely wrong (#379).
 get_cm_shield_cpus() {
   local profile="${1:-$(rtc_default_profile)}"
   if ! rtc_is_layout_profile "$profile"; then
