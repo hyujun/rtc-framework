@@ -53,13 +53,23 @@ enum class NucGeneration {
                          // Stage A surfaces this as FAIL in check_rt_setup.sh.
 };
 
-// Aligator fallback when P-core worker budget is insufficient. Phase 1
-// defines the enum; Stage C wires the Aligator runner switch. Phase 1 tier
-// (NUC 13 4P minimum) never produces SERIAL_MPC.
-enum class DegradationMode {
-  NONE = 0,
-  SERIAL_MPC,
-};
+// A `DegradationMode { NONE, SERIAL_MPC }` enum sat here from Stage A until
+// #379 removed it. It declared an Aligator fallback "when the P-core worker
+// budget is insufficient", to be wired by a Stage C that never came — and #380
+// dissolved its premise: MPC solve is single-threaded on every tier, and
+// parallel solving would go through the solver's own OpenMP pool
+// (`SolverProxDDP::setNumThreads`), which no code calls. "Serial MPC" was
+// therefore not a degraded state but the unconditional current one, so nothing
+// could branch on it; it never gained a consumer in either meaning.
+//
+// If a degradation axis returns, it is derived from the solver's OpenMP thread
+// budget and belongs next to that budget, not in CPU topology detection. The
+// re-introduction path is recorded in agent_docs/architecture.md alongside the
+// parallel-MPC path. Re-declaring the enum here is not that path — same rule
+// #380 recorded for the manifest's `verifier_optional` field.
+//
+// "Run MPC, but without a dedicated core" is a *layout* question and lives on
+// the launch-profile axis (repo_scripts/config/thread_layout.yaml), not here.
 
 // Which detection path populated the hybrid fields. Surfaced so callers
 // (check_rt_setup.sh, diagnostic logging) can warn when the primary sysfs
@@ -679,16 +689,6 @@ inline std::string_view NucGenerationToString(NucGeneration g) noexcept {
       return "raptor_lake_p_ht_off";
     case NucGeneration::NOT_NUC_HYBRID:
       return "none";
-  }
-  return "none";
-}
-
-inline std::string_view DegradationModeToString(DegradationMode m) noexcept {
-  switch (m) {
-    case DegradationMode::NONE:
-      return "none";
-    case DegradationMode::SERIAL_MPC:
-      return "serial_mpc";
   }
   return "none";
 }
