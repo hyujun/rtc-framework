@@ -31,11 +31,13 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
+    LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
     TimerAction,
 )
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.event_handlers import OnProcessExit
 from launch_ros.actions import LifecycleNode
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
@@ -196,6 +198,15 @@ def launch_setup(context, *args, **kwargs):
     # $RTC_SESSION_DIR + $RTC_RUN_ID, built by open_session above.
     actions = list(session.actions)
 
+    # Issue #405: attaching a task to a cpuset overwrites that task's affinity
+    # with the cpuset mask, so any pin applied before `cset shield` lands is
+    # silently replaced. Everything below therefore waits for the shield action
+    # to EXIT rather than starting beside it. When the shield is not built at
+    # all (use_cpu_affinity:=false) there is no exit event to wait for, so the
+    # same list is appended directly — sim decides in Python, unlike the robot
+    # launches which need enable_cpu_shield(gated=False, pin_enabled=...).
+    shield_action = None
+    post_shield = []
     if use_affinity.lower() in ("true", "1", "yes"):
         # Mirror robot_ur5e_p1a.launch.py.  The helper probes whether sudo will
         # run *the shield* without a password (`sudo -n -l "$SHIELD" ...`, #386 B)
@@ -209,6 +220,7 @@ def launch_setup(context, *args, **kwargs):
             layout_profile=layout_profile,
         )
         actions.append(enable_sim_cpu_shield)
+        shield_action = enable_sim_cpu_shield
 
     # ── Node 1: MuJoCo Simulator (LifecycleNode) ────────────────────────────
     # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg in
@@ -295,7 +307,7 @@ def launch_setup(context, *args, **kwargs):
         )
     )
 
-    actions.extend(
+    post_shield.extend(
         [
             mujoco_node,
             rt_controller_node,
@@ -319,7 +331,7 @@ def launch_setup(context, *args, **kwargs):
     if use_affinity.lower() in ("true", "1", "yes"):
         sim_slot = get_sim_core()
         if sim_slot >= 0:
-            actions.append(
+            post_shield.append(
                 TimerAction(
                     period=2.0,
                     actions=[
@@ -335,7 +347,7 @@ def launch_setup(context, *args, **kwargs):
         # DDS-internal reader/writer threads that are spawned outside our
         # control. exec name = ROS node name = "integrated_rt_controller".
         rt_callback_slot = get_rt_callback_core()
-        actions.append(
+        post_shield.append(
             TimerAction(
                 period=5.0,
                 actions=[
@@ -347,6 +359,19 @@ def launch_setup(context, *args, **kwargs):
         )
 
     # ── ros2_tracing capture (LTTng UST + kernel, opt-in) ────────────────────
+    if shield_action is not None:
+        actions.append(
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=shield_action,
+                    on_exit=[LogInfo(msg="[SIM] CPU shield settled — launching nodes")]
+                    + post_shield,
+                )
+            )
+        )
+    else:
+        actions.extend(post_shield)
+
     actions.extend(make_trace_action(context, session_dir=session_dir))
 
     return actions

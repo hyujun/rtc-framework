@@ -1711,6 +1711,80 @@ test_check_process_discovery_judges_by_name() {
   expect_eq "discovery.nopid.detail" "detail=not running" "$(grep '^detail=' <<<"$out")"
 }
 
+# ── --json 은 파싱 가능해야 한다 (issue #406) ───────────────────────────────
+# _discovery_run 은 `>"$tmp" 2>&1` 로 두 스트림을 합치므로 이 축을 볼 수 없다.
+# 여기서 보는 것이 정확히 **어느 스트림으로 나갔는가** 이므로 별도 러너를 둔다.
+#
+# 이 검사가 필요한 이유: 진단 블록은 `_missing_required > 0` 일 때만 발화한다.
+# 즉 성공 경로만 파싱해 보는 테스트는 이 결함을 **원리적으로** 못 잡는다 —
+# 실기에서 --json 이 깨진 것도 실패한 런이었다.
+#
+# $1=fixture builder  $2=pid  $3=OUTPUT_MODE
+# stdout / stderr 를 각각 파일로 받아 경로 두 개를 출력한다 (호출자가 지운다).
+_discovery_stream_run() {
+  local builder="$1" pid="$2" mode="$3"
+  local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
+  local root out err
+  root=$(mktemp -d); out=$(mktemp); err=$(mktemp)
+  "$builder" "${root}/${pid}/task"
+  (
+    set +eu
+    set --
+    RTC_PROC_ROOT="$root"
+    RTC_ARM_DRIVER_COMM="rtc_no_such_arm"
+    RTC_HAND_DRIVER_COMM="rtc_no_such_hand"
+    # shellcheck disable=SC1090
+    source "$verifier" >/dev/null 2>&1
+    discover_controller_pid() { echo "$pid"; }
+    PHYSICAL_CORES=12
+    build_expected_threads
+    OUTPUT_MODE="$mode"
+    # 실제 소비 순서 그대로: discovery 가 진단을 뱉고 그 뒤 print_json 이 문서를
+    # 연다. 두 호출을 한 리다이렉트 안에 두어야 `{` 앞의 오염을 재현한다.
+    { check_process_discovery; [[ "$mode" == "json" ]] && print_json; } >"$out" 2>"$err"
+  )
+  rm -rf "$root"
+  printf '%s %s\n' "$out" "$err"
+}
+
+test_json_output_stays_parseable_when_discovery_fails() {
+  local paths out err
+  paths=$(_discovery_stream_run _fixture_duplicate_comm 4242 json)
+  out="${paths%% *}"; err="${paths##* }"
+
+  # ① stdout 이 JSON 이다. 오라클은 파서이지 grep 이 아니다 — `{` 로 시작하는지만
+  #    보면 뒤쪽 오염을 놓친다.
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -m json.tool <"$out" >/dev/null 2>&1; then pass; else
+      fail "[json.parse] --json stdout 이 파싱되지 않는다 (issue #406): $(head -c 200 "$out")"
+    fi
+  else
+    fail "[json.parse] python3 부재 — 이 오라클은 대체 불가다"
+  fi
+
+  # ② 진단이 **사라지지 않았다.** 이게 없으면 블록을 통째로 지우는 것으로도
+  #    ①이 통과한다 — 고쳐야 할 것은 위치이지 존재가 아니다.
+  if grep -q '\[diag\]' "$err" && grep -q '\[hint\]' "$err"; then pass; else
+    fail "[json.diag] 진단이 stderr 에도 없다 — 삭제로 통과한 것이다: $(head -c 200 "$err")"
+  fi
+
+  # ③ stdout 에는 진단이 없다 (①의 대우지만, 파서가 관대해질 미래에 대비).
+  if grep -q '\[diag\]' "$out"; then
+    fail "[json.leak] 진단이 stdout 으로 샜다: $(head -c 200 "$out")"
+  else
+    pass
+  fi
+  rm -f "$out" "$err"
+
+  # ④ verbose 는 무변이어야 한다 — 사람이 읽는 경로에서 진단이 없어지면 회귀다.
+  paths=$(_discovery_stream_run _fixture_duplicate_comm 4242 verbose)
+  out="${paths%% *}"; err="${paths##* }"
+  if grep -q '\[diag\]' "$err"; then pass; else
+    fail "[json.verbose] verbose 에서 진단이 사라졌다: $(head -c 200 "$err")"
+  fi
+  rm -f "$out" "$err"
+}
+
 # ── 추론된 profile 의 mpc FAIL (issue #386 C) ────────────────────────────────
 # marker 가 없으면 profile 은 rtc_default_profile() = mpc_on 으로 접힌다. 값 자체는
 # 유지한다 (기대값을 낮추면 진짜로 죽은 mpc_main 을 놓친다 — 미검증은 PASS 가
@@ -2102,6 +2176,7 @@ test_verifier_is_sourceable_without_running
 test_verifier_follows_the_shield_marker_profile
 test_check_cpu_isolation_sees_a_live_cset_shield
 test_check_process_discovery_judges_by_name
+test_json_output_stays_parseable_when_discovery_fails
 test_inferred_profile_says_so_when_only_mpc_is_missing
 test_layout_tier_tables_per_tier
 test_layout_worker_roles_absent_on_every_tier

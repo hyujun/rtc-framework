@@ -43,7 +43,13 @@ from typing import Any
 import pytest
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchContext, LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    OpaqueFunction,
+    RegisterEventHandler,
+)
+from launch.event_handlers import OnProcessExit
 from launch.utilities import perform_substitutions
 
 from rtc_tools.utils.session_dir import resolve_logging_root
@@ -196,6 +202,78 @@ def _seeded_context(description: LaunchDescription, overrides: dict[str, str]) -
     return context
 
 
+def _on_exit_entities(handler: OnProcessExit) -> list:
+    """Actions an ``OnProcessExit`` would run, without firing the event."""
+    return list(handler.describe()[1] or [])
+
+
+def _on_exit_target(handler: OnProcessExit):
+    """The action this handler waits for.
+
+    ``launch`` keeps it in a name-mangled slot and exposes no accessor. Reading
+    it is a deliberate coupling to launch's internals: the alternative is
+    fabricating a ``ProcessExited`` event just to ask "does this match?", which
+    couples harder. If a launch upgrade renames the slot this raises instead of
+    silently reporting "nothing waits for the shield" — a false green here is
+    exactly the #405 regression this file is meant to catch.
+    """
+    try:
+        return handler._OnActionEventBase__action_matcher
+    except AttributeError as exc:  # pragma: no cover - launch API change
+        raise AssertionError(
+            "launch's OnProcessExit no longer stores its target in "
+            "_OnActionEventBase__action_matcher; this sensor must be reworked "
+            "rather than deleted (issue #405)"
+        ) from exc
+
+
+def _shield_actions(entities) -> list:
+    """The cset-shield ``ExecuteProcess`` among ``entities``.
+
+    Matched on the ``$0`` the helper passes its inline script
+    (``rtc_cpu_shield``), which is the one token in that command line that
+    exists to name it.
+    """
+
+    def _text(token) -> str:
+        # ExecuteProcess normalises cmd into List[List[Substitution]], so a
+        # plain str never survives to here — the literal lives in a
+        # TextSubstitution's .text. str() on the list yields repr addresses and
+        # would silently match nothing, which is how this helper first shipped.
+        if isinstance(token, (list, tuple)):
+            return "".join(_text(part) for part in token)
+        return str(getattr(token, "text", token))
+
+    found = []
+    for entity in entities:
+        if not isinstance(entity, ExecuteProcess):
+            continue
+        if any("rtc_cpu_shield" in _text(token) for token in entity.cmd or []):
+            found.append(entity)
+    return found
+
+
+def _walk(entities, context) -> list:
+    """Flatten ``entities``, running OpaqueFunctions and descending into handlers.
+
+    Descending is load-bearing, not tidiness. #405 moved the robot launches'
+    ``_launch_setup`` OpaqueFunction inside an ``OnProcessExit``; a scan that
+    only looks at ``description.entities`` would stop evaluating it and this
+    file would keep passing while covering strictly less than #397 built it to
+    cover. The sensor follows the actions wherever they are declared.
+    """
+    out: list = []
+    for entity in entities:
+        out.append(entity)
+        if isinstance(entity, OpaqueFunction):
+            out.extend(_walk(entity.execute(context) or [], context))
+        elif isinstance(entity, RegisterEventHandler) and isinstance(
+            entity.event_handler, OnProcessExit
+        ):
+            out.extend(_walk(_on_exit_entities(entity.event_handler), context))
+    return out
+
+
 def _evaluate(filename: str, overrides: dict[str, str]) -> list:
     """Build the description and run its OpaqueFunctions; return their actions.
 
@@ -206,7 +284,7 @@ def _evaluate(filename: str, overrides: dict[str, str]) -> list:
     assert isinstance(description, LaunchDescription)
     context = _seeded_context(description, overrides)
 
-    opaque = [e for e in description.entities if isinstance(e, OpaqueFunction)]
+    opaque = [e for e in _walk(description.entities, context) if isinstance(e, OpaqueFunction)]
     assert opaque, (
         f"{filename} declares no OpaqueFunction — either the launch was "
         "restructured (and this sensor no longer evaluates anything) or it "
@@ -269,3 +347,106 @@ def test_invalid_mpc_engine_is_rejected(filename):
     """
     with pytest.raises(RuntimeError, match="Invalid mpc_engine"):
         _evaluate(filename, {"mpc_engine": "definitely-not-an-engine"})
+
+
+# ── Shield-first ordering (issue #405) ───────────────────────────────────────
+# The launches already listed `enable_cpu_shield` above the drivers, and that
+# bought nothing: it is an ExecuteProcess, so declaration order is not
+# completion order. `cset` spent seconds moving hundreds of tasks while
+# ros2_control_node was already up, and attaching that task to the "system"
+# cpuset overwrote the cpu_affinity its 500 Hz loop had applied — measured on
+# NUC13 tier 12 as `0-1,8-15` where the layout says `8`.
+#
+# No value-axis test can see this. The slot tables were right, the resolved
+# logical cpu was right (`ros2 param get /controller_manager cpu_affinity` → 8),
+# the launch logged the right number. Only the *shape* of the description is
+# wrong, so the shape is what this asserts.
+@pytest.mark.parametrize(("filename", "combo_id", "overrides"), CASES, ids=CASE_IDS)
+def test_pinning_starts_only_after_the_cpu_shield(filename, combo_id, overrides):
+    description = _load_launch_module(filename).generate_launch_description()
+    context = _seeded_context(description, overrides)
+
+    # Top level only — deliberately NOT _walk: the question is what sits beside
+    # the shield, and descending would hide exactly that.
+    top: list = []
+    for entity in description.entities:
+        top.append(entity)
+        if isinstance(entity, OpaqueFunction):
+            top.extend(entity.execute(context) or [])
+
+    shields = _shield_actions(top)
+
+    if not shields:
+        # sim + use_cpu_affinity:=false: the action is never built, so there is
+        # no exit event to wait for and the nodes are top-level by design. The
+        # robot launches must NOT reach here — they pass gated=False precisely
+        # so the chain's target always exists (#405).
+        assert filename in SIM_LAUNCH_FILES and overrides.get("use_cpu_affinity") == "false", (
+            f"{filename} [{combo_id}] builds no cpu-shield action. A robot launch "
+            "that skips it has re-gated the action with IfCondition, which "
+            "suppresses the OnProcessExit event and with it every node below."
+        )
+        return
+
+    assert len(shields) == 1, f"{filename} [{combo_id}] builds {len(shields)} shield actions"
+    shield = shields[0]
+
+    waiters = [
+        entity
+        for entity in top
+        if isinstance(entity, RegisterEventHandler)
+        and isinstance(entity.event_handler, OnProcessExit)
+        and _on_exit_target(entity.event_handler) is shield
+    ]
+    assert waiters, (
+        f"{filename} [{combo_id}] starts the cpu shield but nothing waits for its "
+        "exit — the drivers race cset and lose their pin (issue #405)"
+    )
+
+    waited = [e for handler in waiters for e in _on_exit_entities(handler.event_handler)]
+    assert waited, f"{filename} [{combo_id}] waits for the shield but runs nothing afterwards"
+
+    # The chain's target may not carry an IfCondition. A false condition does not
+    # make the action a no-op — it makes it never start, so ProcessExited never
+    # fires and every entity in on_exit is dropped. The launch would come up
+    # empty on `use_cpu_affinity:=false`, which is why the robot launches pass
+    # gated=False and hand the flag to the script as argv instead (#405).
+    assert shield.condition is None, (
+        f"{filename} [{combo_id}] gates the cpu-shield action with a condition "
+        "while other actions wait for its exit — when that condition is false "
+        "the exit event never arrives and the launch starts nothing at all. "
+        "Use gated=False + pin_enabled=... so the script no-ops with exit 0."
+    )
+
+    # Nothing that spawns or pins may sit beside the shield. OpaqueFunctions are
+    # named because two of them legitimately stay top-level: the session dir has
+    # to exist before anything reads it (#402), and tracing is opt-in and
+    # unpinned.
+    # ``launch_setup`` is the sim launches' single top-level OpaqueFunction —
+    # the container whose *output* the scan above already expanded, not an
+    # action that starts anything. The robot launches' UR-driver body is
+    # ``_launch_setup`` (leading underscore, a different function) and is NOT
+    # exempt: it is exactly what has to move behind the shield. If either is
+    # ever renamed this list stops matching and the test fails loudly.
+    top_level_ok = {"launch_setup", "_open_session", "_build_trace_action"}
+    beside = []
+    for entity in top:
+        if entity is shield or isinstance(entity, (DeclareLaunchArgument, RegisterEventHandler)):
+            continue
+        if isinstance(entity, OpaqueFunction):
+            name = getattr(entity._OpaqueFunction__function, "__name__", "?")
+            if name not in top_level_ok:
+                beside.append(name)
+            continue
+        if type(entity).__name__ in (
+            "Node",
+            "LifecycleNode",
+            "IncludeLaunchDescription",
+            "TimerAction",
+            "ExecuteProcess",
+        ):
+            beside.append(type(entity).__name__)
+    assert not beside, (
+        f"{filename} [{combo_id}] starts {beside} beside the shield instead of "
+        "after it. Declaration order is not completion order — see issue #405."
+    )

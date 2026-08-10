@@ -30,8 +30,9 @@
 #           자동 호출 (robot_ur5e_p1a/p1b · sim_ur5e_p1a/p1b · sim_iiwa7_leap).
 #           rtc_mujoco_sim/launch/mujoco_sim.launch.py 는 agnostic 단독 launch 라 호출하지
 #           않는다 (design-principles P1).
-#           ⚠ 그 호출은 노드 기동 *뒤*라, 먼저 핀된 arm_driver 의 cpu_affinity 가 cset
-#           이주로 지워진다 (issue #405). 실기 검증은 launch 앞에서 미리 무장할 것.
+#           핀을 거는 액션은 전부 이 프로세스의 OnProcessExit 에 걸려 있어 무장이
+#           먼저 끝난다 (issue #405) — cpuset attach 가 affinity 를 mask 로 덮으므로
+#           나란히 시작하면 먼저 핀된 arm_driver 가 그 핀을 잃는다.
 #   - 빌드 전:   build.sh / install.sh에서 자동 해제
 
 set -euo pipefail
