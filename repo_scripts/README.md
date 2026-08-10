@@ -458,9 +458,11 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 > `sim_iiwa7_leap`). `rtc_mujoco_sim/launch/mujoco_sim.launch.py` 는 agnostic 단독 launch 라
 > 호출하지 **않습니다** (design-principles P1). `build.sh` / `install.sh` 는 빌드 전 자동 해제합니다.
 >
-> ⚠️ 현재 launch 는 이 무장을 노드 기동 **뒤에** 수행하므로, 그보다 먼저 핀된 `arm_driver` 의
-> `cpu_affinity` 가 cset 이주로 지워집니다 (**issue #405**). 실기 검증 전에는 launch 앞에서
-> `sudo cpu_shield.sh off && sudo cpu_shield.sh on --robot` 으로 미리 무장하십시오.
+> 무장은 **노드 기동보다 먼저 끝난다** — 핀을 거는 액션이 전부 이 프로세스의 `OnProcessExit`
+> 에 걸려 있습니다 (#405). 선언 순서만으로는 부족했습니다: `ExecuteProcess` 라 나란히 시작하고,
+> `cset` 이 수백 태스크를 옮기는 동안 이미 뜬 `ros2_control_node` 가 `system` cpuset 에 붙으면서
+> 그 500 Hz 루프의 `cpu_affinity` 가 cpuset mask 로 덮였습니다 (NUC13 tier 12 실측: `8` → `0-1,8-15`).
+> 그래서 launch 시작이 cset 소요만큼 늦어집니다 — 정상입니다.
 
 ---
 
@@ -618,7 +620,7 @@ source setup_env.sh
   ./check_rt_setup.sh --summary
 
 [로봇 실행]
-  sudo cpu_shield.sh on --robot           # launch 보다 먼저 무장 (issue #405)
+  sudo cpu_shield.sh on --robot           # 선택: launch 가 알아서 먼저 무장한다 (#405)
   ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
   ./verify_rt_runtime.sh --watch 3        # 런타임 모니터링
 

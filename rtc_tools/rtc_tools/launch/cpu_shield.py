@@ -89,7 +89,12 @@ def mpc_layout_profile(enable_mpc):
 
 
 def enable_cpu_shield(
-    mode: str, *, log_prefix: str = "[RT]", gated: bool = True, layout_profile=None
+    mode: str,
+    *,
+    log_prefix: str = "[RT]",
+    gated: bool = True,
+    layout_profile=None,
+    pin_enabled=None,
 ) -> ExecuteProcess:
     """Enable the cset CPU shield for ``mode`` unless one is already active.
 
@@ -124,6 +129,15 @@ def enable_cpu_shield(
 
     ``gated=False`` drops the ``use_cpu_affinity`` :class:`IfCondition`, for
     callers that already decided in Python whether to build this action at all.
+
+    ``pin_enabled`` is the ``gated=False`` caller's replacement for that
+    condition: the flag rides argv as ``$2`` and the script no-ops (exit 0) when
+    it is falsey, instead of the action never starting. That distinction is the
+    whole point of issue #405 — once other actions hang off this one's
+    ``OnProcessExit``, a condition that suppresses the process suppresses the
+    *entire launch*, because the exit event never arrives. A no-op that still
+    exits keeps the chain intact. Callers that pass ``gated=True`` (the
+    historical default) must not build such a chain.
     """
     if mode not in SHIELD_MODES:
         raise ValueError(f"mode must be one of {SHIELD_MODES}, got {mode!r}")
@@ -142,6 +156,14 @@ def enable_cpu_shield(
             f'  echo "{log_prefix} WARNING: cpu_shield.sh not found: $SHIELD"; exit 0; '
             "fi; "
             f'PROFILE="${{1:-{MPC_ON}}}"; '
+            # $2 is the use_cpu_affinity flag for gated=False callers (#405).
+            # Exit 0, not "never start" — the OnProcessExit chain downstream
+            # needs the exit event even when pinning is off.
+            'PIN="${2:-true}"; '
+            'case "$PIN" in '
+            "  false|False|FALSE|0|no|off) "
+            f'    echo "{log_prefix} CPU shield skipped (use_cpu_affinity:=$PIN)"; exit 0 ;; '
+            "esac; "
             "ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
             "if command -v cset >/dev/null 2>&1 && "
             f'   "$SHIELD" check {mode} --profile "$PROFILE" >/dev/null 2>&1; then '
@@ -170,6 +192,7 @@ def enable_cpu_shield(
             "fi",
             "rtc_cpu_shield",  # $0 for the script above
             layout_profile if layout_profile is not None else MPC_ON,
+            pin_enabled if pin_enabled is not None else "true",
         ],
         output="screen",
         **kwargs,

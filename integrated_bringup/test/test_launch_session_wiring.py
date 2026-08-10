@@ -45,6 +45,7 @@ from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     OpaqueFunction,
+    RegisterEventHandler,
     SetEnvironmentVariable,
     SetLaunchConfiguration,
 )
@@ -163,6 +164,20 @@ def _evaluate_in_order(
             for returned in entity.execute(context) or []:
                 produced.append(returned)
                 apply(returned)
+        elif isinstance(entity, RegisterEventHandler):
+            # #405 moved the robot launches' UR-driver OpaqueFunction behind the
+            # shield's OnProcessExit, so a scan that stops at the top level stops
+            # writing controller_manager_rt.yaml — and this file's assertion,
+            # which is about exactly that file, would go quietly vacuous. The
+            # handler's entities run in a real launch too; they just run later.
+            #
+            # They hang off describe_conditional_sub_entities(), not
+            # describe_sub_entities() — the latter returns [] for a
+            # RegisterEventHandler, which is the same trap _walk above already
+            # sidesteps by calling both.
+            for _, conditional in entity.describe_conditional_sub_entities():
+                for sub in conditional:
+                    apply(sub)
 
     for entity in description.entities:
         apply(entity)

@@ -2,7 +2,9 @@
 #
 # Launch order (event-driven):
 #   1. Environment vars (RMW, CycloneDDS, session dir)
-#   2. CPU shield, UR driver, udp_hand_node  (parallel)
+#   2. CPU shield — alone. UR driver and udp_hand_node start from its exit,
+#      not beside it: a cpuset attach overwrites affinity, so a shield that
+#      lands after the arm driver wipes its cpu_affinity pin (issue #405)
 #   3. Readiness gate: polls /joint_states and /p1b/joint_states publishers
 #   4. integrated_rt_controller node starts ONLY after gate exits successfully
 #   5. DDS thread pinning runs 5 s after the CM process starts
@@ -458,10 +460,17 @@ def generate_launch_description():
     # unresolved substitution here — this launch builds its description outside
     # an OpaqueFunction, so there is no context to perform() against.
     layout_profile = shield.mpc_layout_profile(LaunchConfiguration("enable_mpc"))
+    # gated=False + pin_enabled, NOT the use_cpu_affinity IfCondition (#405).
+    # Every node below now starts from this action's OnProcessExit, and a
+    # condition that suppresses the process suppresses the exit event with it —
+    # `use_cpu_affinity:=false` would launch nothing at all. The flag rides argv
+    # instead and the script no-ops with exit 0, so the chain always fires.
     enable_cpu_shield = shield.enable_cpu_shield(
         "--robot",
         log_prefix="[RT]",
+        gated=False,
         layout_profile=layout_profile,
+        pin_enabled=LaunchConfiguration("use_cpu_affinity"),
     )
 
     # ── External driver CPU pinning (Phase 6) ─────────────────────────────────
@@ -730,6 +739,40 @@ def generate_launch_description():
         )
     )
 
+    # ── Shield-first ordering (issue #405) ────────────────────────────────────
+    # Declaration order is not completion order. enable_cpu_shield is an
+    # ExecuteProcess, so listing it above the drivers only started it first —
+    # `cset` then spent seconds moving hundreds of tasks while ros2_control_node
+    # was already up and had applied controller_manager's cpu_affinity to its
+    # 500 Hz loop. Attaching a task to a cpuset overwrites that task's affinity
+    # with the cpuset mask, so the pin was silently replaced by the whole
+    # "system" span (measured on NUC13 tier 12: `0-1,8-15` instead of `8`).
+    #
+    # Only the arm driver was hit: hand pins itself and the controller's DDS
+    # sweep runs *after* the shield, so both survive. Waiting for the exit event
+    # removes the race for all three rather than re-pinning arm afterwards —
+    # taskset cannot reach that loop thread, which is why #343 moved it to the
+    # cpu_affinity parameter in the first place.
+    #
+    # on_exit fires for ANY exit code, deliberately: a box without cset or
+    # passwordless sudo still launches, exactly as before. Whether the robot is
+    # allowed to *move* without a shield stays with the adopt exit-code
+    # contract (#344), which is a different question from whether it boots.
+    start_infra_after_shield = RegisterEventHandler(
+        OnProcessExit(
+            target_action=enable_cpu_shield,
+            on_exit=[
+                LogInfo(msg="[RT] CPU shield settled — launching drivers"),
+                ur_driver_launch_action,
+                fake_hand_firmware_node,
+                udp_hand_node,
+                pin_hand_driver,
+                hand_auto_activate,
+                hand_trigger_configure,
+            ],
+        )
+    )
+
     return LaunchDescription(
         [
             # 1) Arguments
@@ -756,14 +799,10 @@ def generate_launch_description():
             open_session_action,
             set_rmw,
             set_cyclone_uri,
-            # 3) Infrastructure (parallel)
+            # 3) Infrastructure — the shield runs alone; everything that pins
+            #    hangs off its exit (start_infra_after_shield, issue #405).
             enable_cpu_shield,
-            ur_driver_launch_action,
-            fake_hand_firmware_node,
-            udp_hand_node,
-            pin_hand_driver,
-            hand_auto_activate,
-            hand_trigger_configure,
+            start_infra_after_shield,
             # 4) Event-driven chain:
             #    udp_hand_node started → comm_readiness_gate
             #    → gate exits OK → integrated_rt_controller
