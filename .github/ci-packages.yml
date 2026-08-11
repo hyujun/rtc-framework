@@ -17,10 +17,14 @@
 # 누락된 패키지 (의도적):
 #   rtc_mujoco_sim       : MuJoCo 미설치 (D-2)
 #   rtc_mpc              : integrated_bringup transitive 로만 build (직접 test X)
-#   robot_descriptions   : URDF/MJCF 데이터만. 단 그 모델들은 rtc_tools 의
-#                          test_real_model_pairs.py 가 검증한다 (#392) — 그 테스트는
-#                          ament 대신 in-source 경로로 robots/ 를 찾으므로 이 잡이
-#                          robot_descriptions 를 install 하지 않아도 동작한다.
+#   robot_descriptions   : (더 이상 누락 아님 — test_python 에 있다) URDF/MJCF
+#                          데이터만이지만 그 모델들을 rtc_tools 의
+#                          test_real_model_pairs.py 가 검증하고 (#392), 그중
+#                          xacro 쌍이 `$(find robot_descriptions)` 를 푼다 —
+#                          in-source 경로로는 안 되고 ament index 에 실제로
+#                          설치돼 있어야 한다 (#414). 이전 주석은 "in-source 로
+#                          찾으므로 install 불필요" 였는데 xacro 확장이 들어오며
+#                          그 근거가 만료됐다.
 #   rtc_msgs / shape_estimation_msgs : msg 정의만 (lint_cpp 의 ament_cppcheck 가
 #                                       include/src 부재 시 자동 skip)
 #   repo_scripts / rtc_tools / rtc_digital_twin : C++ 빌드 대상 아님
@@ -70,6 +74,10 @@ test_cpp_besteffort:
 test_python:
   - rtc_tools
   - rtc_digital_twin
+  # 테스트 대상이 아니라 **의존성**이다 — test_real_model_pairs.py 의 xacro 쌍이
+  # `$(find robot_descriptions)` 를 ament index 로 푼다 (#414). 데이터 전용
+  # 패키지라 install(DIRECTORY) 뿐이고 자체 테스트는 0건이다.
+  - robot_descriptions
 
 lint_cpp:
   - rtc_base

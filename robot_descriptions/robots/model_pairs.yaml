@@ -46,3 +46,40 @@ pairs:
     mjcf: leap_hand/mjcf/leap_hand_left.xml
     urdf: leap_hand/urdf/leap_hand_left.urdf
     expect_warnings: 0
+
+  - name: leap_hand_right
+    mjcf: leap_hand/mjcf/leap_hand_right.xml
+    urdf: leap_hand/urdf/leap_hand_right.urdf
+    expect_warnings: 0
+
+  # 팔+손 조합 모델. 부착 오프셋이 검사 대상에 들어오는 유일한 쌍들이다 —
+  # 단독 모델만 게이트에 있으면 두 모델이 각각 맞으면서 결합부만 틀린 상태가
+  # 통과한다.
+  - name: iiwa7_with_leap_left
+    mjcf: iiwa7_leap/mjcf/iiwa7_with_leap_left.xml
+    urdf: iiwa7_leap/urdf/iiwa7_with_leap_left.urdf.xacro
+    expect_warnings: 1
+
+  - name: iiwa7_with_leap_right
+    mjcf: iiwa7_leap/mjcf/iiwa7_with_leap_right.xml
+    urdf: iiwa7_leap/urdf/iiwa7_with_leap_right.urdf.xacro
+    expect_warnings: 1
+
+  - name: assm_v1_hand
+    mjcf: assm_v1/mjcf/hand.xml
+    urdf: assm_v1/urdf/hand.urdf.xacro
+    # MJCF body `hand_base` 는 URDF `hand_base_link`, 손끝 4개는 부모 distal 에
+    # 접혀 있다 (#412 · #413).
+    link_map: assm_v1/assm_v1.link_map.yaml
+    # URDF 가 visual+collision 을 따로 두는데 MJCF 는 geom 하나씩(30 vs 15),
+    # palm 의 URDF 관성이 등방 placeholder — 둘 다 정당한 차이라 warning.
+    expect_warnings: 2
+
+  - name: ur5e_assm_v1
+    mjcf: ur5e_assm_v1/mjcf/ur5e_with_hand.xml
+    urdf: ur5e_assm_v1/urdf/ur5e_with_hand.urdf.xacro
+    align_frames: [world, base]
+    link_map: ur5e_assm_v1/ur5e_assm_v1.link_map.yaml
+    tip_frames: [attachment_site, tool0]
+    # MJCF 가 visual mesh 를 쪼개고(20 vs 14), palm placeholder 관성.
+    expect_warnings: 2

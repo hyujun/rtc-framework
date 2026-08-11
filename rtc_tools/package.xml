@@ -20,6 +20,9 @@
        패키지이므로 <depend> 가 아니라 test 축으로만 건다 (ARCH-5). -->
   <test_depend>robot_descriptions</test_depend>
   <test_depend>python3-yaml</test_depend>
+  <!-- 조합 모델(ur5e_assm_v1, iiwa7_leap, assm_v1)의 URDF 는 *.urdf.xacro 라
+       게이트가 테스트 시점에 확장한다 (#414). -->
+  <test_depend>xacro</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

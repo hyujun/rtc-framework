@@ -10,7 +10,14 @@
 에 둔다. CI 는 `pip install ... mujoco` 를 하므로 실제로 실행된다. skip 은
 조용한 통과가 아니라 pytest 리포트에 남는다. 로컬에서 직접 돌리려면::
 
-    PYTHONPATH=rtc_tools .venv/bin/python -m pytest rtc_tools/test/test_real_model_pairs.py
+    ( cd <rtc_ws> && source <repo>/repo_scripts/scripts/setup_env.sh \
+      && cd <repo> \
+      && PYTHONPATH=rtc_tools:$PYTHONPATH \
+         <rtc_ws>/.venv/bin/python -m pytest rtc_tools/test/test_real_model_pairs.py )
+
+``PYTHONPATH`` 는 **덮어쓰지 말고 이어붙인다** — xacro 쌍이 ``import xacro`` 를
+하는데 그 모듈은 ROS 가 ``PYTHONPATH`` 로만 노출하므로, ``PYTHONPATH=rtc_tools``
+로 대입하면 ``ModuleNotFoundError: xacro`` 가 난다 (#414).
 """
 
 from __future__ import annotations
@@ -64,16 +71,38 @@ def test_manifest_is_present_and_non_empty():
     assert PAIRS, "model_pairs.yaml 에 쌍이 하나도 없다"
 
 
+def _resolve_urdf(path: Path, tmp_path: Path) -> Path:
+    """`*.urdf.xacro` 를 확장한다. 평범한 `.urdf` 는 그대로 통과.
+
+    확장 실패는 **skip 이 아니라 테스트 실패**다. URDF 를 만들지 못한 쌍은
+    검사하지 않은 쌍이고, 그것이 통과처럼 보이는 것이 #392 의 주제다.
+    xacro import 도 여기서 한다 — 모듈 최상단에 두면 xacro 부재가 collection
+    error 가 되어 이 파일의 다른 테스트까지 함께 죽는다.
+    """
+    if path.suffix != ".xacro":
+        return path
+
+    import xacro
+
+    # `$(find robot_descriptions)` 를 쓰므로 ament index 에 그 패키지가 있어야
+    # 한다 — in-source 경로만으로는 안 된다 (.github/ci-packages.yml 참조).
+    doc = xacro.process_file(str(path))
+    out = tmp_path / f"{path.stem.removesuffix('.urdf')}.urdf"
+    out.write_text(doc.toprettyxml(indent="  "))
+    return out
+
+
 @pytest.mark.parametrize("pair", PAIRS, ids=[p["name"] for p in PAIRS])
-def test_real_pair_has_no_mismatches(pair, capsys):
+def test_real_pair_has_no_mismatches(pair, capsys, tmp_path):
     # 구조 비교는 컴파일된 모델이 필요하다. 없으면 body count / total mass /
     # missing links 가 통째로 빠진 채 "Mismatches: 0" 이 찍힌다 (#385, #392).
     pytest.importorskip("mujoco")
 
     mjcf = ROBOTS / pair["mjcf"]
-    urdf = ROBOTS / pair["urdf"]
+    urdf_src = ROBOTS / pair["urdf"]
     assert mjcf.is_file(), f"MJCF 없음: {mjcf}"
-    assert urdf.is_file(), f"URDF 없음: {urdf}"
+    assert urdf_src.is_file(), f"URDF 없음: {urdf_src}"
+    urdf = _resolve_urdf(urdf_src, tmp_path)
 
     if pair.get("link_map"):
         link_map, fuse = _load_link_map(ROBOTS / pair["link_map"])
