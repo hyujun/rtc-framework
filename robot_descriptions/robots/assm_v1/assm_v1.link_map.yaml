@@ -1,0 +1,31 @@
+# assm_v1 hand — MJCF body ↔ URDF link 대응 선언 (`compare_mjcf_urdf --link-map`)
+#
+# 이 파일은 **예외 목록**이지 비교 대상 목록이 아니다 (#411) — 여기 없는 동명
+# 쌍도 전부 비교되므로, 일부만 적어도 검사 범위가 좁아지지 않는다.
+#
+# links — 이름이 엇갈리는 쌍
+#   MJCF body `hand_base`  ==  URDF link `hand_base_link` (0.3 kg palm)
+#
+# fuse — MJCF 가 부모 body 에 접은 fixed joint 자식 (#412)
+#   손끝 4개는 MJCF 에 별도 body 가 없고 부모 distal 에 합쳐져 있다
+#   (예: index_dip_fe_link 가 0.02 → 0.03 kg). 정당한 병합이며 평행축
+#   합성이 MJCF 값과 정확히 일치함을 확인했다 (#412):
+#     m 0.02+0.01 = 0.03, com_z 0.0208333, Ixx 5.26667e-6, Izz 2e-7
+#
+# 사용 (URDF 가 xacro 이므로 먼저 확장한다):
+#   xacro <...>/robots/assm_v1/urdf/hand.urdf.xacro > /tmp/hand.urdf
+#   ros2 run rtc_tools compare_mjcf_urdf \
+#       --mjcf <...>/robots/assm_v1/mjcf/hand.xml --urdf /tmp/hand.urdf \
+#       --link-map <...>/robots/assm_v1/assm_v1.link_map.yaml
+#
+# 주의: `ros2 run` 은 시스템 python 으로 실행되어 mujoco 가 없으면 구조 비교가
+# 조용히 스킵된다 (#392). 전체 검증에는 mujoco 가 import 되는 인터프리터를 쓸 것.
+
+links:
+  hand_base: hand_base_link
+
+fuse:
+  index_dip_fe_link: [index_tip_link]
+  middle_dip_fe_link: [middle_tip_link]
+  ring_mcp_fe_link: [ring_tip_link]
+  thumb_mcp_fe_link: [thumb_tip_link]

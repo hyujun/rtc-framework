@@ -292,6 +292,15 @@ ros2 run rtc_tools compare_mjcf_urdf \
 
 남는 warning 2건은 정당한 차이라 유지합니다: MJCF 가 링크당 visual mesh 를 쪼개고(20 vs 14) collision 을 capsule 로 따로 두기 때문입니다(29 vs 14).
 
+### assm_v1 hand 의 선언 (`assm_v1.link_map.yaml` · `ur5e_assm_v1.link_map.yaml`)
+
+hand 쪽은 두 가지가 더 필요합니다 (#413):
+
+- **`hand_base: hand_base_link`** — palm 도 이름이 엇갈립니다.
+- **`fuse:`** — 손끝 4개(`*_tip_link`, 각 0.01 kg)는 MJCF 에 별도 body 가 없고 부모 distal 에 접혀 있습니다(0.02 → 0.03 kg). 정당한 병합이며, 평행축 합성이 MJCF 값과 정확히 일치함을 확인했습니다 (#412: `m=0.03`, `com_z=0.0208333`, `Ixx=5.26667e-6`, `Izz=2e-7`). 선언하면 합성값으로 비교되고, 선언 없이는 "질량 손실 + 부모 과중" 2중 오탐이 납니다.
+
+> **palm 질량이 MJCF 에 없었습니다** (#413). URDF `hand_base_link` 는 0.3 kg 인데 조합 MJCF 의 `hand_base` 에는 `<inertial>` 이 없어 geom density 로 0.2 kg 이 추론됐고, 단독 `hand.xml` 은 palm 이 worldbody geom 이라 아예 0 kg (손 전체 0.54 kg 중 56% 소실) 이었습니다. box 치수·위치는 양쪽이 정확히 일치했으므로 형상은 맞고 관성 선언만 빠진 상태였습니다. 실측 비용: **arm 중력 토크 최대 0.93 Nm (6.42%) · mean 0.40 Nm (1.41%)** — digital twin 이 로드하는 모델이라 sim 에서 튜닝한 게인이 이 오차를 보상하게 됩니다. 현재는 양쪽 MJCF 모두 URDF 를 미러합니다. 다만 URDF 의 `diag(1e-4, 1e-4, 1e-4)` 자체가 등방 placeholder 이며(균질 박스 계산값은 `diag(2.66e-4, 1.76e-4, 4.10e-4)`), 그 사실은 plausibility warning 이 계속 알립니다 — 텐서를 물리값으로 고치는 것은 URDF(SSoT)를 바꾸는 일이라 별도 축입니다.
+
 **massless 프레임은 mismatch 로 세지 않습니다** — `base_link`·`flange`·`ft_frame`·`tool0`·`world`·`base` 는 질량 0 의 순수 좌표 프레임이고 MuJoCo 가 body 를 안 만드는 것이 정상 동작입니다. 다만 **MuJoCo 가 실제로 만들지 않은 것만** 면제하며(iiwa7 은 1개, leap_hand 는 5개의 massless 프레임을 실제 body 로 갖고 있습니다), **질량을 가진 링크가 사라지면 여전히 mismatch** 입니다 — fusestatic 이 질량을 부모로 흡수한 경우가 그것이고, 그 신호는 그대로 남습니다 (#385).
 
 ---
