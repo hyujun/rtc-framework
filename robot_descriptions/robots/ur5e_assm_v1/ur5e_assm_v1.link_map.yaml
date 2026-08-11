@@ -1,0 +1,36 @@
+# ur5e + assm_v1 hand (조합 모델) — MJCF body ↔ URDF link 대응 선언
+#
+# arm 쪽은 `robots/ur5e/ur5e.link_map.yaml`, hand 쪽은
+# `robots/assm_v1/assm_v1.link_map.yaml` 과 같은 내용이다. YAML 에 include 가
+# 없고 도구 스키마도 합성을 지원하지 않아 여기 펼쳐 적는다 — 세 파일이
+# 갈라지면 조합 모델만 조용히 다른 것을 검사하게 되므로, 한쪽을 고치면
+# 나머지도 같이 본다.
+#
+# links — 이름이 엇갈리는 쌍
+#   `base`      == URDF `base_link_inertia` (4 kg). URDF 에는 massless `base`
+#                  프레임이 따로 있어 이름만으로는 잘못 짝지어진다 (#392)
+#   `hand_base` == URDF `hand_base_link` (0.3 kg palm)
+#
+# fuse — MJCF 가 부모 body 에 접은 fixed joint 자식 (#412). 상세는
+#        assm_v1.link_map.yaml 헤더 참조
+#
+# 함께 필요한 것: `--align-frames world base`
+#   MJCF 의 world 는 UR "Base"(DH) 프레임, URDF 의 world 는 REP-103
+#   `base_link` 라 두 world frame 이 z축 180° 만큼 다르다 (#392).
+#
+# 사용 (URDF 가 xacro 이므로 먼저 확장한다):
+#   xacro <...>/robots/ur5e_assm_v1/urdf/ur5e_with_hand.urdf.xacro > /tmp/c.urdf
+#   ros2 run rtc_tools compare_mjcf_urdf \
+#       --mjcf <...>/robots/ur5e_assm_v1/mjcf/ur5e_with_hand.xml \
+#       --urdf /tmp/c.urdf --align-frames world base \
+#       --link-map <...>/robots/ur5e_assm_v1/ur5e_assm_v1.link_map.yaml
+
+links:
+  base: base_link_inertia
+  hand_base: hand_base_link
+
+fuse:
+  index_dip_fe_link: [index_tip_link]
+  middle_dip_fe_link: [middle_tip_link]
+  ring_mcp_fe_link: [ring_tip_link]
+  thumb_mcp_fe_link: [thumb_tip_link]

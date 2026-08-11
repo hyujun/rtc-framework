@@ -24,60 +24,68 @@
   </default>
 
   <worldbody>
-    <geom size="0.04 0.05 0.0125" pos="0 0 0.0125" type="box" rgba="0.3 0.3 0.3 1"/>
-    <body name="thumb_cmc_aa_link" pos="-0.035 -0.03 0.025" quat="0.988771 0 -0.149438 0">
-      <inertial pos="0 0 0.015" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
-      <joint name="thumb_cmc_aa" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
-      <geom size="0.008 0.015" pos="0 0 0.015" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-      <body name="thumb_cmc_fe_link" pos="0 0 0.03">
+    <!-- Palm.  Mirrors URDF hand_base_link (#413): it used to be a bare
+         worldbody geom, i.e. static scenery with no mass at all, so this
+         model carried 0.24 kg against the URDF's 0.54 — 56% of the hand
+         missing.  The finger bodies keep their world poses because this
+         body sits at the identity. -->
+    <body name="hand_base">
+      <inertial mass="0.3" pos="0 0 0.0125" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom size="0.04 0.05 0.0125" pos="0 0 0.0125" type="box" rgba="0.3 0.3 0.3 1"/>
+      <body name="thumb_cmc_aa_link" pos="-0.035 -0.03 0.025" quat="0.988771 0 -0.149438 0">
+        <inertial pos="0 0 0.015" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
+        <joint name="thumb_cmc_aa" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+        <geom size="0.008 0.015" pos="0 0 0.015" type="cylinder" rgba="0.7 0.7 0.7 1"/>
+        <body name="thumb_cmc_fe_link" pos="0 0 0.03">
+          <inertial pos="0 0 0.0175" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
+          <joint name="thumb_cmc_fe" pos="0 0 0" axis="0 1 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+          <geom size="0.008 0.0175" pos="0 0 0.0175" type="cylinder" rgba="0.7 0.7 0.7 1"/>
+          <body name="thumb_mcp_fe_link" pos="0 0 0.035">
+            <inertial pos="0 0 0.0241667" mass="0.03" diaginertia="6.14167e-06 6.14167e-06 2e-07"/>
+            <joint name="thumb_mcp_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+            <geom size="0.008 0.015" pos="0 0 0.015" type="cylinder" rgba="0.7 0.7 0.7 1"/>
+            <geom size="0.009" pos="0 0 0.0425" rgba="0.2 0.4 0.8 1"/>
+          </body>
+        </body>
+      </body>
+      <body name="index_mcp_aa_link" pos="-0.025 0.04 0.025">
         <inertial pos="0 0 0.0175" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
-        <joint name="thumb_cmc_fe" pos="0 0 0" axis="0 1 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+        <joint name="index_mcp_aa" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
         <geom size="0.008 0.0175" pos="0 0 0.0175" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-        <body name="thumb_mcp_fe_link" pos="0 0 0.035">
-          <inertial pos="0 0 0.0241667" mass="0.03" diaginertia="6.14167e-06 6.14167e-06 2e-07"/>
-          <joint name="thumb_mcp_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+        <body name="index_mcp_fe_link" pos="0 0 0.035">
+          <inertial pos="0 0 0.015" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
+          <joint name="index_mcp_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
           <geom size="0.008 0.015" pos="0 0 0.015" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-          <geom size="0.009" pos="0 0 0.0425" rgba="0.2 0.4 0.8 1"/>
+          <body name="index_dip_fe_link" pos="0 0 0.03">
+            <inertial pos="0 0 0.0208333" mass="0.03" diaginertia="5.26667e-06 5.26667e-06 2e-07"/>
+            <joint name="index_dip_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+            <geom size="0.008 0.0125" pos="0 0 0.0125" type="cylinder" rgba="0.7 0.7 0.7 1"/>
+            <geom size="0.009" pos="0 0 0.0375" rgba="0.2 0.4 0.8 1"/>
+          </body>
         </body>
       </body>
-    </body>
-    <body name="index_mcp_aa_link" pos="-0.025 0.04 0.025">
-      <inertial pos="0 0 0.0175" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
-      <joint name="index_mcp_aa" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
-      <geom size="0.008 0.0175" pos="0 0 0.0175" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-      <body name="index_mcp_fe_link" pos="0 0 0.035">
-        <inertial pos="0 0 0.015" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
-        <joint name="index_mcp_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
-        <geom size="0.008 0.015" pos="0 0 0.015" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-        <body name="index_dip_fe_link" pos="0 0 0.03">
-          <inertial pos="0 0 0.0208333" mass="0.03" diaginertia="5.26667e-06 5.26667e-06 2e-07"/>
-          <joint name="index_dip_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
-          <geom size="0.008 0.0125" pos="0 0 0.0125" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-          <geom size="0.009" pos="0 0 0.0375" rgba="0.2 0.4 0.8 1"/>
+      <body name="middle_mcp_aa_link" pos="0 0.04 0.025">
+        <inertial pos="0 0 0.0175" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
+        <joint name="middle_mcp_aa" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+        <geom size="0.008 0.0175" pos="0 0 0.0175" type="cylinder" rgba="0.7 0.7 0.7 1"/>
+        <body name="middle_mcp_fe_link" pos="0 0 0.035">
+          <inertial pos="0 0 0.015" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
+          <joint name="middle_mcp_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+          <geom size="0.008 0.015" pos="0 0 0.015" type="cylinder" rgba="0.7 0.7 0.7 1"/>
+          <body name="middle_dip_fe_link" pos="0 0 0.03">
+            <inertial pos="0 0 0.0208333" mass="0.03" diaginertia="5.26667e-06 5.26667e-06 2e-07"/>
+            <joint name="middle_dip_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+            <geom size="0.008 0.0125" pos="0 0 0.0125" type="cylinder" rgba="0.7 0.7 0.7 1"/>
+            <geom size="0.009" pos="0 0 0.0375" rgba="0.2 0.4 0.8 1"/>
+          </body>
         </body>
       </body>
-    </body>
-    <body name="middle_mcp_aa_link" pos="0 0.04 0.025">
-      <inertial pos="0 0 0.0175" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
-      <joint name="middle_mcp_aa" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
-      <geom size="0.008 0.0175" pos="0 0 0.0175" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-      <body name="middle_mcp_fe_link" pos="0 0 0.035">
-        <inertial pos="0 0 0.015" mass="0.02" diaginertia="1e-06 1e-06 1e-07"/>
-        <joint name="middle_mcp_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
-        <geom size="0.008 0.015" pos="0 0 0.015" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-        <body name="middle_dip_fe_link" pos="0 0 0.03">
-          <inertial pos="0 0 0.0208333" mass="0.03" diaginertia="5.26667e-06 5.26667e-06 2e-07"/>
-          <joint name="middle_dip_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
-          <geom size="0.008 0.0125" pos="0 0 0.0125" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-          <geom size="0.009" pos="0 0 0.0375" rgba="0.2 0.4 0.8 1"/>
-        </body>
+      <body name="ring_mcp_fe_link" pos="0.025 0.035 0.025">
+        <inertial pos="0 0 0.0275" mass="0.03" diaginertia="7.1e-06 7.1e-06 2e-07"/>
+        <joint name="ring_mcp_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
+        <geom size="0.008 0.0175" pos="0 0 0.0175" type="cylinder" rgba="0.7 0.7 0.7 1"/>
+        <geom size="0.009" pos="0 0 0.0475" rgba="0.2 0.4 0.8 1"/>
       </body>
-    </body>
-    <body name="ring_mcp_fe_link" pos="0.025 0.035 0.025">
-      <inertial pos="0 0 0.0275" mass="0.03" diaginertia="7.1e-06 7.1e-06 2e-07"/>
-      <joint name="ring_mcp_fe" pos="0 0 0" axis="1 0 0" range="-1.5708 1.5708" damping="0.01" frictionloss="0.01"/>
-      <geom size="0.008 0.0175" pos="0 0 0.0175" type="cylinder" rgba="0.7 0.7 0.7 1"/>
-      <geom size="0.009" pos="0 0 0.0475" rgba="0.2 0.4 0.8 1"/>
     </body>
   </worldbody>
 
