@@ -18,9 +18,6 @@ void GraspController::Init(std::span<const FingerConfig> configs, const GraspPar
   params_ = params;
   active_target_force_ = params_.f_target;
 
-  force_filter_.Init(params_.lpf_cutoff_hz, params_.control_rate_hz);
-  force_filter_.Reset();
-
   ResetFingers();
   phase_ = GraspPhase::kIdle;
   initialized_ = true;
@@ -51,11 +48,9 @@ void GraspController::Reset() noexcept {
   // enter kApproaching still carrying the release, and abort the new grasp on the
   // next tick.
   release_requested_.store(false, std::memory_order_release);
-  // Same pair Init() clears, and for the same reason: the per-finger s / force
-  // history and the filter tail describe an object this controller may no longer
-  // be touching.
+  // Same as Init(), and for the same reason: the per-finger s / force history
+  // describes an object this controller may no longer be touching.
   ResetFingers();
-  force_filter_.Reset();
 }
 
 void GraspController::set_target_force(double f) noexcept {
@@ -66,15 +61,16 @@ void GraspController::set_target_force(double f) noexcept {
 
 void GraspController::set_params(const GraspParams& params) noexcept {
   params_ = params;
-  // LPF 재계산은 Init에서만 — RT path에서 Init 호출 불가
-  // cutoff가 변경되면 다음 Init에서 반영
+  // 모든 필드가 즉시 발효한다. 예외였던 lpf_cutoff_hz 는 이제 이 구조체에 없다
+  // (필터가 상류로 이동) — 그 필드만 다음 Init 까지 반영되지 않는 비대칭이
+  // 사라졌다.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Update (RT-safe, 매 제어 주기 호출)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-GraspJointCommands GraspController::Update(std::span<const double> f_raw, double dt) noexcept {
+GraspJointCommands GraspController::Update(std::span<const double> f_filtered, double dt) noexcept {
   GraspJointCommands output{};
   output.num_fingers = num_fingers_;
   for (int f = 0; f < num_fingers_; ++f) {
@@ -90,20 +86,16 @@ GraspJointCommands GraspController::Update(std::span<const double> f_raw, double
     return output;
   }
 
-  // ── 1. Force filtering ──────────────────────────────────────────────────
-  // One filter channel per finger; unused channels (≥ num_fingers_) stay 0.
-  // Missing f_raw entries are treated as 0 (RT-safe: no throw on short span).
-  std::array<double, kMaxGraspFingers> raw_arr{};
-  for (int f = 0; f < num_fingers_; ++f) {
-    raw_arr[static_cast<std::size_t>(f)] =
-        (static_cast<std::size_t>(f) < f_raw.size()) ? f_raw[static_cast<std::size_t>(f)] : 0.0;
-  }
-  const auto filtered = force_filter_.Apply(raw_arr);
+  // ── 1. Latch this tick's force ──────────────────────────────────────────
+  // Already filtered by the caller — see Update()'s contract. Missing entries
+  // are treated as 0 (RT-safe: no throw on short span).
   for (int f = 0; f < num_fingers_; ++f) {
     auto& fs = fingers_[static_cast<std::size_t>(f)];
     fs.f_prev = fs.f_measured;
     fs.s_prev = fs.s;
-    fs.f_measured = filtered[static_cast<std::size_t>(f)];
+    fs.f_measured = (static_cast<std::size_t>(f) < f_filtered.size())
+                        ? f_filtered[static_cast<std::size_t>(f)]
+                        : 0.0;
   }
 
   // ── 2. State machine update ─────────────────────────────────────────────
@@ -144,7 +136,6 @@ GraspJointCommands GraspController::Update(std::span<const double> f_raw, double
 void GraspController::UpdateIdle() noexcept {
   if (grasp_requested_.exchange(false, std::memory_order_acq_rel)) {
     ResetFingers();
-    force_filter_.Reset();
     phase_ = GraspPhase::kApproaching;
   }
   // release_requested 무시 (이미 Idle)

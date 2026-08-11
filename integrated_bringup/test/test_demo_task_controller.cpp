@@ -851,6 +851,35 @@ TEST_F(TaskContactStopTest, FilteredForceLagsRawWhilePublishedStaysRaw) {
   EXPECT_NEAR(ctrl_->GetContactStopAggregatesForTesting().max_force, 5.0f, 1e-2f);
 }
 
+// Task-side wiring of the shared-guard / own-bank change. The laws it protects
+// (rectification bias, wire spike, NaN) are pinned once in
+// test_demo_joint_controller.cpp; what this pins is that THIS controller's
+// Force-PI feed is the filtered bank rather than grasp_state_.force_magnitude.
+// The swap lives in two files and only a per-file assertion catches one of them
+// being missed.
+TEST_F(TaskContactStopTest, ForcePiFeedIsTheFilteredBankNotTheRawMagnitude) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 0.0f);
+  SetFingertipForce(state_, 1, 0.0f);
+  RunTicks(60);
+
+  SetFingertipForce(state_, 0, 5.0f);
+  SetFingertipForce(state_, 1, 5.0f);
+  // Past the guard's max_hold_ticks, so what remains between raw and feed is the
+  // filter and nothing else.
+  RunTicks(5);
+
+  EXPECT_NEAR(ctrl_->GetGraspStateForTesting().max_force, 5.0f, 1e-4f)
+      << "published aggregate must stay raw";
+  EXPECT_LT(ctrl_->GetForcePiFeedForTesting()[0], 4.0f)
+      << "the servo feed must lag the step — a raw feed would already be at 5 N";
+
+  RunTicks(200);
+  EXPECT_NEAR(ctrl_->GetForcePiFeedForTesting()[0], 5.0f, 1e-2f)
+      << "…and converge, so the filter costs delay, not gain";
+}
+
 // An invalid fingertip must not advance its filter with the zeroed force
 // ReadState writes: an IIR would carry that phantom sample for several ticks
 // after the lane recovers. Re-entry seeds to the live force instead — erring

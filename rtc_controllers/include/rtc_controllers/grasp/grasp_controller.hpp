@@ -1,7 +1,6 @@
 #ifndef RTC_CONTROLLERS_GRASP_GRASP_CONTROLLER_HPP_
 #define RTC_CONTROLLERS_GRASP_GRASP_CONTROLLER_HPP_
 
-#include "rtc_base/filters/bessel_filter.hpp"
 #include "rtc_controllers/grasp/grasp_types.hpp"
 
 #include <algorithm>
@@ -28,18 +27,29 @@ class GraspController {
   GraspController() = default;
 
   /// Initialise with finger configurations and parameters.
-  /// Must be called before Update().  Not RT-safe (may compute filter coeffs).
-  /// The number of fingers is configs.size() (clamped to kMaxGraspFingers) and
-  /// each finger's DoF is FingerConfig::dof.
+  /// Must be called before Update().  The number of fingers is configs.size()
+  /// (clamped to kMaxGraspFingers) and each finger's DoF is FingerConfig::dof.
   void Init(std::span<const FingerConfig> configs, const GraspParams& params);
 
   /// Main control update — call once per control cycle on the RT thread.
-  /// @param f_raw  Force magnitude [N] per finger (3-axis norm); one entry per
-  ///               finger, in the same order as the Init() configs. Extra
-  ///               entries are ignored; missing entries are treated as 0.
-  /// @param dt     Control period [s].
+  ///
+  /// FILTERING IS THE CALLER'S JOB. This class holds no filter: the force it is
+  /// handed is what the PI law, the online stiffness estimate and the per-tick
+  /// slip derivative all see, unsmoothed. The filter used to live here and was
+  /// moved out because the only correct place for it is upstream — `‖LPF(F)‖`
+  /// needs the three axes, and this interface has already collapsed them to a
+  /// magnitude. Low-passing a magnitude cannot undo the collapse: |F| rectifies
+  /// zero-mean axis noise into a positive DC offset (≈1.6σ for 3-axis Gaussian)
+  /// that sits under f_contact_threshold forever. A caller that skips filtering
+  /// entirely also puts raw wire artefacts — spikes, NaN — straight into an
+  /// integrator and, through s, into joint commands.
+  ///
+  /// @param f_filtered  Filtered force magnitude [N] per finger; one entry per
+  ///                    finger, in the same order as the Init() configs. Extra
+  ///                    entries are ignored; missing entries are treated as 0.
+  /// @param dt          Control period [s].
   /// @return Joint position commands (num_fingers × per-finger dof).
-  [[nodiscard]] GraspJointCommands Update(std::span<const double> f_raw, double dt) noexcept;
+  [[nodiscard]] GraspJointCommands Update(std::span<const double> f_filtered, double dt) noexcept;
 
   /// Request grasp start.  If target_force > 0, overrides params_.f_target.
   void CommandGrasp(double target_force = 0.0) noexcept;
@@ -60,10 +70,12 @@ class GraspController {
   /// "the FSM is idle whenever this controller is not running it" into an
   /// unconditional property instead of one that depends on every caller path.
   ///
-  /// RT-safe: fixed-size loops, no allocation, no logging, no filter-coefficient
-  /// recompute (the coefficients are Init()'s business and stay valid). The
-  /// active target force is deliberately kept — it is a setpoint, not state, and
-  /// a GRASP always supplies its own.
+  /// RT-safe: fixed-size loops, no allocation, no logging. The active target
+  /// force is deliberately kept — it is a setpoint, not state, and a GRASP
+  /// always supplies its own. Note that this no longer discards a filter tail:
+  /// the upstream filter is shared with whatever else consumes fingertip force
+  /// and is deliberately kept warm, so the first tick back under this law reads
+  /// the settled force instead of ramping up from zero.
   void Reset() noexcept;
 
   /// Current state machine phase.
@@ -113,10 +125,6 @@ class GraspController {
   std::array<FingerConfig, kMaxGraspFingers> configs_{};
   GraspParams params_{};
   std::array<FingerState, kMaxGraspFingers> fingers_{};
-
-  // Per-channel Bessel 4th-order LPF for force filtering (one channel per
-  // finger; only the first num_fingers_ channels carry real signal).
-  BesselFilterN<kMaxGraspFingers> force_filter_;
 
   // Timers
   double contact_settle_timer_{0.0};

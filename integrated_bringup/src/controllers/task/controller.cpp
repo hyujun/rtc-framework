@@ -44,16 +44,23 @@ DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
   // (unit tests). LoadConfig re-Inits at the runtime-configured rate/cutoff.
   hand_pos_filter_.Init(gains.contact_stop_lpf_cutoff_hz, 1.0 / GetDefaultDt());
   hand_pos_filter_.Reset();
-  InitFingertipForceFilters(gains.contact_stop_force_lpf_cutoff_hz);
+  InitFingertipForceFilters(gains.contact_stop_force_lpf_cutoff_hz, kDefaultForcePiLpfCutoffHz);
 }
 
 // BesselFilterN::Apply() before Init() silently returns 0 for every channel, so
 // an un-Init'd force filter would not fail loudly — it would report "no force"
 // forever and quietly disable contact_stop. Both the constructor and LoadConfig
 // call this for that reason.
-void DemoTaskController::InitFingertipForceFilters(double cutoff_hz) {
+void DemoTaskController::InitFingertipForceFilters(double cutoff_hz, double grasp_cutoff_hz) {
   for (auto& lpf : force_lpf_) {
     lpf.Init(cutoff_hz, 1.0 / GetDefaultDt());
+    lpf.Reset();
+  }
+  // Same input, same lifecycle, different cutoff. Init'd from the same call so
+  // there is no state in which one bank has coefficients and the other silently
+  // returns 0 for every channel.
+  for (auto& lpf : force_lpf_grasp_) {
+    lpf.Init(grasp_cutoff_hz, 1.0 / GetDefaultDt());
     lpf.Reset();
   }
   for (auto& guard : force_guard_) {
@@ -64,6 +71,7 @@ void DemoTaskController::InitFingertipForceFilters(double cutoff_hz) {
   fingertip_force_guarded_.fill(0.0F);
   fingertip_force_filt_.fill(0.0F);
   fingertip_force_mag_filt_.fill(0.0F);
+  fingertip_force_mag_filt_grasp_.fill(0.0F);
   contact_stop_max_force_ = 0.0F;
   contact_stop_active_count_ = 0;
 }
@@ -1110,7 +1118,7 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 
-  BuildGraspController(shared, 1.0 / GetDefaultDt(), grasp_controller_);
+  BuildGraspController(shared, grasp_controller_);
 
   // ── #167 P3: pull estimator + tip-link → FK slot resolve ────────────────
   // Slot order = tree-model tip_links order (the fingertip_data_ /
@@ -1124,11 +1132,24 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
     LogPullEstimatorWiring(logger_, pull_wiring_, shared);
   }
 
+  // The Force-PI force LPF shares the fsm cutoffs' Nyquist bound but not their
+  // YAML home: it is `force_pi_grasp.lpf_cutoff_hz` in demo_shared.yaml, where
+  // it has always been. Checked explicitly rather than left to
+  // BesselFilterN::Init so the failure names the key an operator has to edit.
+  {
+    const double nyquist = 0.5 / GetDefaultDt();
+    if (!(shared.force_pi_lpf_cutoff_hz > 0.0 && shared.force_pi_lpf_cutoff_hz < nyquist)) {
+      throw std::runtime_error(
+          "demo_task_controller: 'force_pi_grasp.lpf_cutoff_hz' out of range "
+          "(0, control_rate/2)");
+    }
+  }
+
   // contact_stop hold LPF: Init at config time (may throw) so Apply() on the RT
   // path stays allocation- and throw-free. Reset the latch to a clean state.
   hand_pos_filter_.Init(g.contact_stop_lpf_cutoff_hz, 1.0 / GetDefaultDt());
   hand_pos_filter_.Reset();
-  InitFingertipForceFilters(g.contact_stop_force_lpf_cutoff_hz);
+  InitFingertipForceFilters(g.contact_stop_force_lpf_cutoff_hz, shared.force_pi_lpf_cutoff_hz);
   contact_latched_ = false;
   hand_hold_position_.fill(0.0);
   // The quiet gate's two mirrors go with the state they mirror. A re-configure

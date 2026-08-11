@@ -16,10 +16,13 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numbers>
+#include <string>
 
 namespace {
 
@@ -1008,6 +1011,221 @@ TEST_F(JointGraspTest, NonFiniteForceNeverReachesTheFilter) {
   (void)ctrl_.Compute(state_);
   EXPECT_FALSE(ctrl_.WasForceGuardRejectedForTesting(0));
   EXPECT_NEAR(ctrl_.GetGuardedFingertipForceForTesting()[2], 0.6f, 1e-4f);
+}
+
+// ── Force-PI force feed: shared guard, own bank, own cutoff ──────────────────
+//
+// The PI law used to servo on grasp_state_.force_magnitude — the raw wire |F|,
+// with no guard in front of it and a scalar LPF applied AFTER the norm, inside
+// GraspController. Three separate defects lived in that arrangement and each
+// gets its own test here: the norm rectifies zero-mean axis noise into a bias no
+// low-pass can remove, a wire spike reached a servo whose slip detector is a
+// per-tick derivative, and a NaN rode an IIR all the way to the joint commands
+// (std::clamp launders NaN instead of trapping it, and nothing on the command
+// path checks finiteness).
+//
+// The guard is shared with contact_stop because rejecting wire artefacts is a
+// property of the signal, not of the consumer. The cutoff is NOT shared.
+
+// Full 3-axis write. SetFingertipForce covers the fz-only shape most tests want;
+// the rectification argument does not exist in one axis.
+void SetFingertipForceXyz(ControllerState& s, int f, float fx, float fy, float fz) {
+  auto& dev1 = s.devices[1];
+  dev1.inference_enable[static_cast<std::size_t>(f)] = true;
+  const int base = f * static_cast<int>(kHandInferenceValuesPerFingertipCapacity);
+  dev1.inference_data[static_cast<std::size_t>(base)] = 0.0f;
+  dev1.inference_data[static_cast<std::size_t>(base + 1)] = fx;
+  dev1.inference_data[static_cast<std::size_t>(base + 2)] = fy;
+  dev1.inference_data[static_cast<std::size_t>(base + 3)] = fz;
+}
+
+// The rectification defect, made deterministic. A 200 Hz vector of constant
+// length (fx = A*sin, fy = A*cos) has |F| == A on EVERY sample, so a filter
+// applied to the magnitude returns A forever, at any cutoff — a 1 N phantom
+// force sitting above the 0.8 N f_contact_threshold, produced by a signal whose
+// mean is zero on both axes. Filtering per axis first removes it entirely.
+// Random noise shows the same effect at ~1.6 sigma; this shape makes it exact.
+TEST_F(JointGraspTest, RotatingHighFrequencyForceIsConstantInMagnitudeButFiltersAway) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  constexpr double kAmp = 1.0;
+  constexpr double kFreqHz = 200.0;
+  constexpr double kTickDt = 0.002;
+
+  for (int i = 0; i < 400; ++i) {
+    const double t = static_cast<double>(i) * kTickDt;
+    const auto fx = static_cast<float>(kAmp * std::sin(2.0 * std::numbers::pi * kFreqHz * t));
+    const auto fy = static_cast<float>(kAmp * std::cos(2.0 * std::numbers::pi * kFreqHz * t));
+    SetFingertipForceXyz(state_, 0, fx, fy, 0.0f);
+    SetFingertipForceXyz(state_, 1, fx, fy, 0.0f);
+    state_.iteration = i + 1;
+    (void)ctrl_.Compute(state_);
+  }
+
+  // Control group: the value any magnitude-domain filter converges to.
+  EXPECT_NEAR(ctrl_.GetGraspStateForTesting().force_magnitude[0], 1.0f, 1e-3f)
+      << "raw |F| is constant, so filtering AFTER the norm cannot remove it";
+  EXPECT_LT(ctrl_.GetForcePiFeedForTesting()[0], 0.02f);
+  EXPECT_LT(ctrl_.GetContactStopAggregatesForTesting().max_force, 0.02f);
+}
+
+// NaN at the servo's input. The raw lane still carries it — that is the point:
+// the guard is the only barrier between the wire and the joint commands.
+TEST_F(JointGraspTest, NonFiniteForceNeverReachesTheForcePiFeed) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 0.5f);
+  SetFingertipForce(state_, 1, 0.5f);
+  for (int i = 0; i < 150; ++i) {
+    state_.iteration = i + 1;
+    (void)ctrl_.Compute(state_);
+  }
+  ASSERT_NEAR(ctrl_.GetForcePiFeedForTesting()[0], 0.5f, 1e-3f);
+
+  SetFingertipForce(state_, 0, std::numeric_limits<float>::quiet_NaN());
+  for (int i = 0; i < 20; ++i) {
+    state_.iteration = 151 + i;
+    (void)ctrl_.Compute(state_);
+    const float feed = ctrl_.GetForcePiFeedForTesting()[0];
+    EXPECT_TRUE(std::isfinite(feed)) << "tick " << i;
+    EXPECT_NEAR(feed, 0.5f, 1e-3f) << "tick " << i;
+  }
+  EXPECT_TRUE(std::isnan(ctrl_.GetGraspStateForTesting().force_magnitude[0]))
+      << "raw stays raw — the guard, not the publisher, is what protects the servo";
+}
+
+// Peak Force-PI feed across the 260730_1017 p1b spike (6.406 then 6.058 N on an
+// otherwise ~0.02 N lane). `max_hold_ticks == 0` disables the delta hold —
+// NaN/Inf are still rejected — which makes this helper its own control group:
+// same samples, same filter, guard off.
+float PeakForcePiFeedOverSpike(int max_hold_ticks) {
+  DemoJointController ctrl{""};
+  ControllerState st = MakeState();
+  (void)ctrl.Compute(st);
+  auto g = ctrl.get_gains();
+  g.contact_stop_force_guard_max_hold_ticks = max_hold_ticks;
+  ctrl.set_gains(g);
+
+  st.devices[1].num_inference_groups = 2;
+  st.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(st, 0, 0.02f);
+  SetFingertipForce(st, 1, 0.02f);
+  int tick = 1;
+  for (int i = 0; i < 200; ++i) {
+    st.iteration = tick++;
+    (void)ctrl.Compute(st);
+  }
+
+  float peak = 0.0F;
+  for (const float v : {6.406f, 6.058f, 0.04f}) {
+    SetFingertipForce(st, 0, v);
+    st.iteration = tick++;
+    (void)ctrl.Compute(st);
+    peak = std::max(peak, ctrl.GetForcePiFeedForTesting()[0]);
+  }
+  for (int i = 0; i < 200; ++i) {
+    st.iteration = tick++;
+    (void)ctrl.Compute(st);
+    peak = std::max(peak, ctrl.GetForcePiFeedForTesting()[0]);
+  }
+  return peak;
+}
+
+// Measured on this fixture: guarded 0.040 N (i.e. the post-spike level itself —
+// the spike contributes nothing), unguarded 1.740 N. The unguarded figure is the
+// reason this test exists rather than being a formality: 1.74 N is 2.2x the
+// 0.8 N f_contact_threshold and 87 % of the default 2 N f_target, and its decay
+// over the filter's settling window is ~-43 N/s against a -5 N/s
+// df_slip_threshold — so an unguarded wire spike does not merely blur the
+// feedback, it fakes a contact and then fakes the slip that tightens the grip.
+TEST(JointForcePiFeedTest, TwoTickSpikeIsKeptOutOfTheForcePiFeed) {
+  const float guarded = PeakForcePiFeedOverSpike(2);
+  const float unguarded = PeakForcePiFeedOverSpike(0);
+  EXPECT_LT(guarded, 0.06f) << "guarded peak " << guarded;
+  // Control group. Stated as "crosses the contact threshold" rather than as a
+  // ratio: a ratio would still pass if both collapsed toward zero and the test
+  // stopped exercising the guard at all.
+  EXPECT_GT(unguarded, 0.8f) << "guard off must let the spike past f_contact_threshold — guarded "
+                             << guarded << " unguarded " << unguarded;
+}
+
+// The independence the two-bank layout exists for. contact_stop is a latch whose
+// delay is hand travel; force_pi is a servo whose slip detector is a per-tick
+// derivative. They want opposite ends of the noise/latency trade, so each owns
+// its cutoff — `fsm.contact_stop_force_lpf_cutoff_hz` and
+// `force_pi_grasp.lpf_cutoff_hz`. A single shared filter would silently put one
+// consumer on the other's operating point, and nothing would fail loudly.
+std::string MakeCutoffYaml(double contact_stop_cutoff_hz, double force_pi_cutoff_hz) {
+  return std::string(R"(
+arm_dof: 6
+estop:
+  arm_safe_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+fsm:
+  contact_stop_release_eps: 0.005
+  contact_stop_force_lpf_cutoff_hz: )") +
+         std::to_string(contact_stop_cutoff_hz) + R"(
+grasp_controller_type: "force_pi"
+force_pi_grasp:
+  f_target: 2.5
+  lpf_cutoff_hz: )" +
+         std::to_string(force_pi_cutoff_hz) + R"(
+  fingers:
+    thumb:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+    index:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+    middle:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.5, 1.0, 0.7]
+)";
+}
+
+struct BankOutputs {
+  float contact_stop{0.0F};
+  float force_pi{0.0F};
+};
+
+// Both decision variables sampled mid-transient after a 0 -> 5 N step, where a
+// cutoff difference is visible. (The step is >4 N so the guard holds it for
+// max_hold_ticks first; that delay is common to both banks and cancels out.)
+BankOutputs RunStepWithCutoffs(double contact_stop_cutoff_hz, double force_pi_cutoff_hz) {
+  DemoJointController ctrl{""};
+  ctrl.SetControlRate(1.0 / 0.002);
+  ctrl.LoadConfig(YAML::Load(MakeCutoffYaml(contact_stop_cutoff_hz, force_pi_cutoff_hz)));
+
+  ControllerState st = MakeState();
+  st.devices[1].num_inference_groups = 2;
+  st.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(st, 0, 0.0f);
+  SetFingertipForce(st, 1, 0.0f);
+  int tick = 1;
+  for (int i = 0; i < 80; ++i) {
+    st.iteration = tick++;
+    (void)ctrl.Compute(st);
+  }
+  SetFingertipForce(st, 0, 5.0f);
+  SetFingertipForce(st, 1, 5.0f);
+  for (int i = 0; i < 12; ++i) {
+    st.iteration = tick++;
+    (void)ctrl.Compute(st);
+  }
+  return {ctrl.GetContactStopAggregatesForTesting().max_force, ctrl.GetForcePiFeedForTesting()[0]};
+}
+
+TEST(JointForcePiFeedTest, TheTwoBanksHaveIndependentCutoffs) {
+  const auto base = RunStepWithCutoffs(50.0, 25.0);
+  const auto slow_force_pi = RunStepWithCutoffs(50.0, 5.0);
+  const auto slow_contact_stop = RunStepWithCutoffs(10.0, 25.0);
+
+  EXPECT_FLOAT_EQ(slow_force_pi.contact_stop, base.contact_stop)
+      << "the force_pi cutoff must not move the contact_stop decision variable";
+  EXPECT_LT(slow_force_pi.force_pi, base.force_pi * 0.9f) << "...but it must move its own";
+
+  EXPECT_FLOAT_EQ(slow_contact_stop.force_pi, base.force_pi)
+      << "and the reverse: the contact_stop cutoff must not move the servo's feed";
+  EXPECT_LT(slow_contact_stop.contact_stop, base.contact_stop * 0.9f);
 }
 
 }  // namespace

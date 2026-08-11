@@ -162,6 +162,10 @@ quiet 조건을 고른 이유 (2026-07-30 확정): 대안이던 "항상 허용 +
 
 **non-force_pi tick 은 FSM 을 리셋한다** (리뷰 후속 C2). `GraspController::Reset()` 을 모드가 force_pi 가 아닌 매 tick + `on_activate` 에서 호출하므로 **"이 컨트롤러가 PI 법칙을 돌리지 않는 동안 FSM 은 항상 kIdle"** 이 무조건 성립한다. 조건부였을 때 실제로 깨졌다: GRASP 수락 → RT tick 이 FSM 을 kApproaching 으로 step → 그 뒤 모드 전환 Store 가 착지하면, 아무도 FSM 을 step 하지 않으므로 phase 미러가 non-Idle 로 얼고 quiet gate 가 이후 **모든** 전환을 거부하며 `grasp_command` 는 모드가 force_pi 가 아니라 RELEASE 도 거부한다 (복구 불가). 미러도 분기 밖에서 **매 tick** store 한다. 같은 이유로 `grasp_command` 는 Inactive 컨트롤러에서 거부된다 — 서비스가 deactivate 를 넘어 살아 있어 요청만 arm 되고 다음 활성화 첫 tick 에 발화했다.
 
+**힘 피드백은 컨트롤러가 만들어 넘긴다** — `GraspController` 는 필터를 갖지 않는다. fingertip 원시 triplet은 delta-spike 가드(NaN/Inf 포함)를 지난 뒤 **축별** Bessel LPF 를 거치고, magnitude 는 그 다음에 취해진다. 순서가 뒤집히면 (`LPF(‖F‖)`) |F| 의 정류로 zero-mean 축 노이즈가 양의 DC — 3축 가우시안이면 ≈1.6σ — 로 남아 `f_contact_threshold` 밑에 영구히 깔린다. 필터가 상류에 있는 것은 취향이 아니라 강제다: `‖LPF(F)‖` 는 3축을 봐야 하는데 `Update()` 는 이미 magnitude 로 접힌 값만 받는다.
+
+**가드는 공유, cutoff 는 독립.** 같은 guarded triplet 을 뱅크 두 벌이 받아 contact_stop 은 `fsm.contact_stop_force_lpf_cutoff_hz`(기본 50 Hz), force_pi 는 `force_pi_grasp.lpf_cutoff_hz`(기본 25 Hz)로 각자 돈다. wire 아티팩트 거부는 신호원의 성질이라 소비자별로 다를 이유가 없지만, 대역은 요구가 반대다 — contact_stop 은 지연이 곧 손 이동 거리인 래치, force_pi 는 tick 당 미분(500 Hz 에서 0.01 N)으로 slip 을 보는 서보다. 가드가 없을 때 실측된 비용: 2-tick 배선 스파이크(6.406/6.058 N)가 서보 피드를 **1.740 N** 까지 밀어 올려 `f_contact_threshold` 0.8 N 을 2.2배 넘기고, 하강 df/dt ≈ -43 N/s 가 `df_slip_threshold` -5 N/s 를 넘겨 grip tightening 까지 부른다. 발행되는 `GraspState.force_magnitude` / `max_force` 는 그대로 raw 이며(BT 계약 불변), `finger_filtered_force` 가 서보가 실제로 본 값이다.
+
 **FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
 
 PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/include/.../grasp_types.hpp` 가 SSoT — controller-specific YAML 로 override 가능.

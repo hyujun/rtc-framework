@@ -1,8 +1,11 @@
 #ifndef INTEGRATED_BRINGUP_CONTROLLERS_FINGERTIP_FORCE_GUARD_HPP_
 #define INTEGRATED_BRINGUP_CONTROLLERS_FINGERTIP_FORCE_GUARD_HPP_
 
-// Delta-spike guard on the raw fingertip force triplet, applied ONLY on the
-// path into the contact_stop per-axis force LPF.
+// Delta-spike guard on the raw fingertip force triplet, applied on the path into
+// the per-axis force LPF banks — BOTH of them: contact_stop's and force_pi's.
+// Rejecting wire artefacts is a property of the signal source, not of the
+// consumer, so the two banks share one guard instance per fingertip and differ
+// only in cutoff.
 //
 // Why this exists (260730_1017 p1b session, ~123 s / 122864 ticks): six samples
 // exceeded 6 N on `fz` at the index / ring fingertips, each lasting exactly
@@ -15,7 +18,10 @@
 // Contract:
 //   * The guard NEVER touches the raw force. `ft.force`, GraspState,
 //     the pull estimator and the CSV `ft_<name>_fx|fy|fz` columns keep the
-//     driver's wire value — this type only chooses what the LPF is fed.
+//     driver's wire value — this type only chooses what the LPFs are fed.
+//   * The output is NOT a filtered signal. Every value it emits is a triplet the
+//     sensor actually reported (this one, or the last accepted one), so a
+//     consumer downstream of the guard is still looking at unsmoothed samples.
 //   * Rejection is per TRIPLET, not per axis: one bad axis holds all three, so
 //     the vector fed to the filter is always a triplet the sensor actually
 //     reported and never a mix of two epochs.
@@ -26,8 +32,9 @@
 // Escape hatch (`max_hold_ticks`) — the part that is NOT in the original spec.
 // Holding forever whenever |Δ| stays above the threshold makes a genuine fast
 // contact step unobservable: raw 6 N sustained is `|6-0| > 4` on EVERY tick, so
-// the filter would stay pinned at the pre-contact value and contact_stop would
-// never fire (fail-dangerous, and pinned by the existing
+// the filters would stay pinned at the pre-contact value, contact_stop would
+// never fire and the Force-PI law would never see the object it is squeezing
+// (fail-dangerous, and pinned by the existing
 // FilteredForceLagsRawWhilePublishedStaysRaw tests). After `max_hold_ticks`
 // consecutive rejections the raw triplet is accepted and becomes the new base:
 // the observed 2-tick spikes are still fully suppressed, while a real step
@@ -36,7 +43,10 @@
 //
 // NaN / Inf never escape. A non-finite sample admitted into an IIR poisons the
 // delay line permanently, and downstream `std::max` / clamp arithmetic launders
-// the NaN into a plausible-looking number instead of failing loudly.
+// the NaN into a plausible-looking number instead of failing loudly. On the
+// force_pi side that laundering runs all the way out: `std::clamp` passes NaN
+// through (both of its comparisons are false), no controller checks finiteness
+// on the command path, and `s` reaches the hand as a joint command.
 //
 // RT-safe: fixed-size state, no allocation, no logging, no locks. Header-only
 // so the no-malloc gate can instantiate it in the test TU.
