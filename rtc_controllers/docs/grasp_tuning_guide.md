@@ -27,7 +27,7 @@
 
 ### 1.1 손가락 역할 비대칭 (thumb + index 중심)
 
-현재 구현은 **thumb(0) + index(1) 두 손가락만으로 grasp 성공/실패를 판정**한다. middle(2) 은 접촉 여부와 무관하게 phase 진행을 막지 않는다. 이는 다음 두 가지 설계 의도를 반영한다.
+현재 구현은 **thumb(0) + index(1) 두 손가락의 접촉만으로 phase 진행을 판정**한다. middle(2) 은 접촉 여부와 무관하게 phase 진행을 막지 않는다. 이는 다음 두 가지 설계 의도를 반영한다.
 
 1. **2-finger pinch grasp 를 1급으로 지원** — thumb/index 대향 파지가 실제 조작 대부분을 차지.
 2. **middle 의 late contact 을 선택적 참여로** — 접촉하면 force control 에 편입, 접촉 못 해도 grasp 실패로 판정하지 않음.
@@ -43,7 +43,9 @@
 Idle ───────────────────► Approaching ─────────────────────────► Contact ────────────────────┐
    ▲                            │                                                             │
    │                            │ thumb 또는 index 가 s≥1.0 & 미접촉                            │
-   │                            └────► (실패) Idle                                              │
+   │                            └────► s=1.0 에서 대기 (접촉 판정 계속) ──┐                      │
+   │                            │                                      └─► 늦은 접촉 → Contact  │
+   │                            └──── CommandRelease ──► Releasing                             │
    │                                                                                          ▼
    │                          CommandRelease                                             ForceControl
    │              ┌──────────────────────────────────────────────────────────────────┐        │
@@ -67,8 +69,14 @@ Idle ───────────────────► Approaching �
 - 접촉되지 않은 finger 만 `s += approach_speed · dt`, `s ≤ 1.0` clamp
 - finger 별 `f_measured > f_contact_threshold` 면 `contact_detected=true` latch, `s_at_contact`/`integral_error`/`K_contact_est=1.0` 초기화
 - **전이 조건 (현재 구현)**: `fingers_[0].contact_detected && fingers_[1].contact_detected` → `kContact`
-- **실패 조건 (현재 구현)**: thumb 또는 index 가 `s ≥ 1.0` 에 도달했는데 미접촉 → `kIdle`
-  - middle 의 `s=1.0` 도달은 실패를 유발하지 않음
+- **실패 조건 없음**: thumb/index 가 `s = 1.0` 까지 닫혔는데 미접촉이어도 **이 phase 에 머무르며 접촉 판정을 계속 돌린다**.
+  접촉은 시간 제한이 아니라 사건이고 힘은 늦게 들어올 수 있기 때문 (물체가 미끄러져 들어옴 / 팔이 이동 중 /
+  fingertip lane 의 뒤늦은 복구). 늦은 접촉이 잡히면 `s_at_contact = 1.0` 이 되고, 이후 force control 은
+  `s` 상한에 막혀 **여는 방향으로만** 권한을 갖는다 (deformation guard 보다 clamp 가 먼저 작용)
+- **RELEASE 를 소비한다** — phase 함수 *맨 앞*에서 (`kForceControl`/`kHolding` 은 맨 뒤). 여기에는 경쟁 전이
+  (`kContact`) 가 있어 뒤에 두면 접촉 성립 tick 의 early return 이 플래그를 건너뛰기 때문. 위 "실패 조건 없음"
+  과 한 세트다 — 접촉 없는 grasp 를 빠져나오는 유일한 길이며, 없으면 phase 미러가 non-Idle 로 남아
+  `grasp_controller_type` 전환(quiet gate)과 BT `ForcePIRelease`(phase==idle 대기)가 함께 막힌다
 - middle 의 동작: 전이 시점에 middle 의 `s` 가 어떤 값이든 그대로 freeze 된 채 다음 phase 로 진입
 
 ### 2.3 Contact (`UpdateContact`)
@@ -224,7 +232,9 @@ guarded 입력을 받는 별개 뱅크이며, 요구가 반대이기 때문에 �
 - **설정**: `f_contact_threshold ≥ 5σ`. 기본 0.2 N 은 대부분의 경우 안전하나 sensor noise 가 큰 개체에서는 상향 필요.
 
 ### Step 2 — Approach 단독 검증
-- 테스트 물체 없이 `CommandGrasp()` → `s` 가 `s=1.0` 까지 ramp 되는지 확인 (실패 후 kIdle 로 abort 되어야 함)
+- 테스트 물체 없이 `CommandGrasp()` → `s` 가 `s=1.0` 까지 ramp 된 뒤 **kApproaching 에 머무르는지** 확인
+  (kIdle 로 abort 되지 않는다). 되돌리려면 `CommandRelease()` — 이 검증이 곧 release 경로 점검이다
+- 이어서 손 안에 물체를 넣어 늦은 접촉이 잡히는지 확인 → `s_at_contact = 1.0` 으로 Contact 전이
 - 테스트 물체 있음 → Contact 전이 시점에 thumb/index 의 `f_measured` 가 노이즈 수준을 충분히 넘는지 확인
 - 충격이 크면 `approach_speed` ↓ (0.1 1/s 등)
 

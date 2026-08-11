@@ -21,9 +21,9 @@ static constexpr int kMaxDoFPerFinger = 8;
 // ── State Machine ────────────────────────────────────────────────────────────
 
 enum class GraspPhase : uint8_t {
-  kIdle,          // 대기 상태, s 유지
-  kApproaching,   // 일정 속도로 closing (position ramp)
-  kContact,       // 전 finger 접촉 대기 + 안정화
+  kIdle,         // 대기 상태, s 유지
+  kApproaching,  // 일정 속도로 closing (position ramp); s=1.0 에서 접촉을 계속 기다린다
+  kContact,      // 전 finger 접촉 대기 + 안정화
   kForceControl,  // PI force regulation 활성화 + force ramp
   kHolding,       // Force 유지 + anomaly monitoring
   kReleasing      // 역방향 position ramp
