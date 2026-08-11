@@ -280,6 +280,19 @@ ros2 run rtc_tools compare_mjcf_urdf --align-frames world base \
 
 **`--link-map` 은 예외 목록이지 작업 목록이 아니다** (#411). 파일에 적힌 것은 *이름이 엇갈리는 쌍*뿐이고, 나머지 동명 쌍은 그대로 전부 비교된다 — 선언이 비교 범위를 **좁히지 않는다**. 예전에는 좁혔고, 그래서 ur5e+hand 조합 모델에 7개짜리 arm 맵을 주면 hand 의 실제 질량 발산 4건이 per-link 비교에서 빠진 채 `Mismatches: 3` 이 나왔다. 충돌 시 선언이 이긴다 — 어떤 URDF 링크를 명시 항목이 이미 가리키면 동명 body 가 그것을 다시 채가지 못한다. 리포트는 `Link pairs compared: N` 과 짝을 못 찾은 body/link 목록을 찍으므로, 좁아졌다는 사실 자체가 관측된다.
 
+**병합된 링크는 `fuse:` 로 선언한다** (#412). MJCF 가 fixed joint 자식을 부모 body 에 접는 것은 정당한 모델링인데, 선언 수단이 없으면 도구가 이를 **2중 오탐**한다 — 자식이 "mass lost" 로, 부모가 "MASS MISMATCH" 로. 그러면 그런 모델은 게이트에 못 넣는다. link_map 파일의 structured form 이 이를 표현한다:
+
+```yaml
+links:                                   # 이름이 엇갈리는 쌍 (생략 가능)
+  base: base_link_inertia
+fuse:                                    # MJCF body ← 접혀 들어간 URDF 링크들
+  index_dip_fe_link: [index_tip_link]
+```
+
+flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 mapping 인지**로 두 형식을 구분하므로 `links` · `fuse` 라는 이름의 링크를 가진 로봇도 안전하다.
+
+선언된 자식은 비교 **전에 합성**된다: 질량 합, 질량가중 COM, 평행축 정리로 옮긴 관성 텐서 합. 합성은 URDF world frame (zero configuration) 에서 수행한 뒤 부모 링크 프레임으로 되돌리므로 fixed joint 의 `rpy` 와 임의 깊이의 체인이 추가 코드 없이 처리된다. **선언이 검사를 무력화하지 않는다** — 합성된 질량·COM·주모멘트가 전부 그대로 비교되고, 자식으로 향하는 경로에 fixed 가 아닌 관절이 하나라도 있으면 선언 자체가 mismatch 다 (그게 없으면 "접었다고 선언" 이 임의의 발산을 지우는 수단이 된다). 합성 body 에 대해서는 collision-geometry plausibility 추정이 부모 링크의 형상만 보므로 검사를 돌리지 않고 그 사실을 `[NOTE]` 로 알린다.
+
 **링크 COM 은 world frame 에서 비교한다** (#416). 로컬 프레임 COM 은 비교 대상이 아니다 — MJCF 는 body 원점을 visual mesh 기준, URDF 는 DH 기준으로 두므로 같은 물리적 COM 이 두 프레임에서 다르게 읽힌다 (ur5e `forearm_link` 실측 0.242 m 차이, 전부 규약). zero configuration 기준 world 로 올리면 그 차이가 사라진다 (같은 3쌍 실측: 최대 5e-7). 관절을 축 *직선* 으로 비교하는 것과 같은 이유다. `--align-frames` 는 COM 비교에도 적용된다. 이 검사가 없으면 **질량과 주모멘트가 그대로인 채 COM 만 옮겨진 발산이 조용히 통과**한다 — 주모멘트는 COM 기준 회전불변량이라 평행이동에 반응하지 않는다.
 
 **`--tip-frames <MJCF_FRAME> <URDF_FRAME>`** — tool 프레임을 직접 비교한다. 관절 비교가 축 *직선* 기준이라 **마지막 관절 이후의 오프셋(DH `d6`)을 원리적으로 못 본다** — 그 오프셋은 마지막 관절 자신의 축과 평행하고, 링크 COM 도 움직이지 않는다(실측 확인). ur5e 는 `--tip-frames attachment_site tool0`. MJCF 쪽은 body 또는 **site** 이름을 받는다.

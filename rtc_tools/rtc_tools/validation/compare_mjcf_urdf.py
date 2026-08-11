@@ -133,6 +133,15 @@ def _mat_mul_33(a: list[list[float]], b: list[list[float]]) -> list[list[float]]
     return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
 
 
+def _mat_transpose_33(m: list[list[float]]) -> list[list[float]]:
+    return [[m[j][i] for j in range(3)] for i in range(3)]
+
+
+def _rotate_tensor_33(r: list[list[float]], t: list[list[float]]) -> list[list[float]]:
+    """``R · T · Rᵀ`` — express a second-order tensor in a rotated frame."""
+    return _mat_mul_33(_mat_mul_33(r, t), _mat_transpose_33(r))
+
+
 def _mat_vec_3(r: list[list[float]], v: list[float]) -> list[float]:
     return [sum(r[i][k] * v[k] for k in range(3)) for i in range(3)]
 
@@ -942,6 +951,152 @@ def _urdf_principal_moments(params: "InertialParams") -> list[float]:
         return sorted((ixx, iyy, izz), reverse=True)
 
 
+# ── Fused links (MJCF folded a fixed-joint child into its parent) ────────────
+
+
+def _urdf_inertia_tensor(params: "InertialParams") -> list[list[float]]:
+    """Full symmetric inertia matrix as stored by URDF, in its inertial frame."""
+    ixx, iyy, izz = params.diag_inertia
+    ixy, ixz, iyz = params.off_diag_inertia
+    return [[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]]
+
+
+def _shift_inertia(tensor: list[list[float]], mass: float, d: list[float]) -> list[list[float]]:
+    """Parallel-axis theorem: inertia about a point ``d`` away from the COM."""
+    d2 = sum(x * x for x in d)
+    return [
+        [tensor[i][j] + mass * ((d2 if i == j else 0.0) - d[i] * d[j]) for j in range(3)]
+        for i in range(3)
+    ]
+
+
+def _urdf_joint_types(path: Path) -> dict[str, str]:
+    """``{<joint_name>: <type>}`` for every URDF joint."""
+    root = ET.parse(path).getroot()
+    return {j.get("name", ""): j.get("type", "") for j in root.findall("joint")}
+
+
+def _fuse_urdf_inertials(
+    parent_link: str,
+    child_links: list[str],
+    urdf_links: dict[str, "InertialParams"],
+    urdf_frames: dict[str, tuple[list[list[float]], list[float]]],
+) -> "InertialParams":
+    """Combine a URDF parent and the links folded into it, as MJCF sees them.
+
+    Composition runs in the URDF **world** frame at zero configuration and the
+    result is rotated back into the parent link frame.  Going through world is
+    not a detour: it makes the fixed joints' rotations fall out of the existing
+    FK, so an arbitrarily deep chain of folded links needs no extra bookkeeping
+    and an ``rpy`` on any of those joints is handled for free.
+
+    The result is expressed with ``origin_rpy = 0`` because the tensor is
+    already in the parent link frame — the comparison downstream takes
+    principal moments, so no principal-axis normalisation is needed here.
+    """
+    members = [parent_link, *child_links]
+
+    total_mass = sum(urdf_links[name].mass for name in members)
+    com_world = [0.0, 0.0, 0.0]
+    coms: dict[str, list[float]] = {}
+    for name in members:
+        ip = urdf_links[name]
+        r, p = urdf_frames[name]
+        c = _vec_add_3(p, _mat_vec_3(r, ip.origin_xyz))
+        coms[name] = c
+        for k in range(3):
+            com_world[k] += ip.mass * c[k]
+    if total_mass > 0:
+        com_world = [v / total_mass for v in com_world]
+
+    inertia_world = [[0.0] * 3 for _ in range(3)]
+    for name in members:
+        ip = urdf_links[name]
+        r, _ = urdf_frames[name]
+        # About its own COM: inertial frame → link frame → world frame.
+        t = _rotate_tensor_33(_rpy_to_rot3(*ip.origin_rpy), _urdf_inertia_tensor(ip))
+        t = _rotate_tensor_33(r, t)
+        d = [coms[name][k] - com_world[k] for k in range(3)]
+        shifted = _shift_inertia(t, ip.mass, d)
+        for i in range(3):
+            for j in range(3):
+                inertia_world[i][j] += shifted[i][j]
+
+    r_p, p_p = urdf_frames[parent_link]
+    r_pt = _mat_transpose_33(r_p)
+    com_local = _mat_vec_3(r_pt, [com_world[k] - p_p[k] for k in range(3)])
+    inertia_local = _rotate_tensor_33(r_pt, inertia_world)
+
+    return InertialParams(
+        mass=total_mass,
+        origin_xyz=com_local,
+        diag_inertia=[inertia_local[0][0], inertia_local[1][1], inertia_local[2][2]],
+        off_diag_inertia=[inertia_local[0][1], inertia_local[0][2], inertia_local[1][2]],
+        origin_rpy=[0.0, 0.0, 0.0],
+    )
+
+
+def _validate_fuse(
+    urdf_path: Path,
+    fuse: dict[str, list[str]],
+    link_map: dict[str, str],
+) -> list[str]:
+    """Reject fuse declarations that would disable checking instead of explaining it.
+
+    A declaration says "MuJoCo folded these fixed children into that body".  If
+    it is allowed to name a *movable* child, it becomes a way to make any
+    mismatch disappear — the shape of hole #392 closed.  So the path from each
+    child up to the parent must consist of fixed joints only.
+    """
+    all_joints, child_to_joint = _urdf_joint_tree(urdf_path)
+    joint_types = _urdf_joint_types(urdf_path)
+    urdf_link_names = {
+        el.get("name") for el in ET.parse(urdf_path).getroot().findall("link") if el.get("name")
+    }
+    errors: list[str] = []
+
+    for mjcf_body, children in fuse.items():
+        if mjcf_body not in link_map:
+            errors.append(f"fuse: '{mjcf_body}' is not a mapped MJCF body")
+            continue
+        parent_link = link_map[mjcf_body]
+        for child in children:
+            if child not in urdf_link_names:
+                errors.append(
+                    f"fuse: '{mjcf_body}' names URDF link '{child}', which does not exist"
+                )
+                continue
+            errors.extend(
+                _fixed_path_error(child, parent_link, all_joints, child_to_joint, joint_types)
+            )
+
+    return errors
+
+
+def _fixed_path_error(
+    child: str,
+    parent_link: str,
+    all_joints: dict[str, tuple[str, str, list, list, list]],
+    child_to_joint: dict[str, str],
+    joint_types: dict[str, str],
+) -> list[str]:
+    """Empty when ``child`` reaches ``parent_link`` through fixed joints only."""
+    node = child
+    for _ in range(len(child_to_joint) + 1):
+        if node == parent_link:
+            return []
+        jname = child_to_joint.get(node)
+        if jname is None:
+            break
+        if joint_types.get(jname) != "fixed":
+            return [
+                f"fuse: '{child}' reaches '{parent_link}' through joint '{jname}' of "
+                f"type '{joint_types.get(jname)}' — only fixed joints may be folded"
+            ]
+        node = all_joints[jname][0]
+    return [f"fuse: '{child}' is not a descendant of '{parent_link}'"]
+
+
 # ── Physical plausibility (URDF inertia vs collision-shape mass distribution) ─
 
 
@@ -1150,6 +1305,7 @@ def _compare_structure(
     urdf_path: Path,
     tolerance: float,
     link_map: dict[str, str] | None = None,
+    fused_children: set[str] | None = None,
 ) -> tuple[int, int, int]:
     """Compare structural counts and mass conservation between MJCF and URDF.
 
@@ -1172,6 +1328,10 @@ def _compare_structure(
         link_map: Optional ``{<mjcf_body>: <urdf_link>}`` mapping.  Used only
             to resolve deliberate naming differences in the missing-link
             check; ``None`` compares raw names.
+        fused_children: URDF links declared as folded into a parent body.  They
+            have no body of their own by design, so they are excused from the
+            missing-link check — their mass is verified by the composition in
+            :func:`compare` instead, not waived (#412).
 
     Returns:
         ``(mismatches, warnings, unverified)`` counts contributed by this
@@ -1252,28 +1412,33 @@ def _compare_structure(
     # NOT a relaxation of the fusestatic signal #385 cared about: a link that
     # carries mass and disappears still counts, because its mass was silently
     # folded into a parent.
-    missing_massive = [n for n in missing if urdf_link_mass.get(n, 0.0) > 0]
-    missing_massless = [n for n in missing if urdf_link_mass.get(n, 0.0) <= 0]
+    # Links declared as folded into a parent are excused here and verified by
+    # the composition in compare() instead — the mass is checked, just against
+    # the combined body rather than one of its own.
+    fused = fused_children or set()
+    missing_fused = sorted(n for n in missing if n in fused)
+    missing_massive = [n for n in missing if n not in fused and urdf_link_mass.get(n, 0.0) > 0]
+    missing_massless = [n for n in missing if n not in fused and urdf_link_mass.get(n, 0.0) <= 0]
 
     # Body / link count, on the same basis as the missing-link check above:
     # massless frames MuJoCo legitimately dropped are excused, everything else
     # must have a body.  Excusing them wholesale would break models that DO
     # materialise their massless frames (iiwa7 has 1, leap_hand 5).
-    expected_bodies = len(urdf_links) - len(missing_massless)
+    expected_bodies = len(urdf_links) - len(missing_massless) - len(missing_fused)
     actual_bodies = model.nbody - 1  # exclude world
+    excused_parts = []
+    if missing_massless:
+        excused_parts.append(f"{len(missing_massless)} massless frame(s)")
+    if missing_fused:
+        excused_parts.append(f"{len(missing_fused)} fused link(s)")
+    excused = f" ({', '.join(excused_parts)} excused)" if excused_parts else ""
     if actual_bodies != expected_bodies:
-        excused = (
-            f" ({len(missing_massless)} massless frame(s) excused)" if missing_massless else ""
-        )
         print(
             f"  [MISMATCH] body count: URDF links={expected_bodies}{excused}  "
             f"MJCF bodies (excl. world)={actual_bodies}"
         )
         mismatches += 1
     else:
-        excused = (
-            f"  ({len(missing_massless)} massless frame(s) excused)" if missing_massless else ""
-        )
         print(f"  body count: {actual_bodies}  OK{excused}")
 
     # DoF / actuator
@@ -1347,6 +1512,12 @@ def _compare_structure(
         )
         mismatches += 1
 
+    if missing_fused:
+        # Reported, not counted: these were declared as folded into a parent
+        # and their mass is checked there, by composition (#412).
+        print(f"\n  [FUSED] URDF links folded into a parent body ({len(missing_fused)}):")
+        print(f"    {', '.join(missing_fused)}")
+
     if missing_massless:
         # Reported, not counted: a zero-mass URDF link is a pure coordinate
         # frame and MuJoCo is right not to give it a body.  Still listed so the
@@ -1373,6 +1544,7 @@ def compare(
     align: tuple[list[list[float]], list[float]] | None = None,
     fail_on_unverified: bool = False,
     tip_frames: tuple[str, str] | None = None,
+    fuse: dict[str, list[str]] | None = None,
 ) -> int:
     """Compare MJCF and URDF parameters. Returns number of mismatches.
 
@@ -1398,10 +1570,18 @@ def compare(
             tool frame on each side.  Closes the chain-tail blind spot: an
             offset past the last joint (the DH ``d6``) moves neither a joint
             axis line nor a link COM, so nothing else here can observe it.
+        fuse: Optional ``{<mjcf_body>: [<urdf_link>, ...]}`` declaring URDF
+            links that MuJoCo folded into that body through fixed joints.  The
+            named links are composed into the parent before comparison instead
+            of being reported as lost mass plus an overweight parent (#412).
     """
     link_map, unpaired_mjcf, unpaired_urdf = _resolve_link_map(mjcf_path, urdf_path, link_map)
+    fuse = dict(fuse or {})
     mjcf_link_names = set(link_map.keys())
-    urdf_link_names = set(link_map.values())
+    # The folded links must be parsed too — they are inputs to the composition
+    # even though no MJCF body corresponds to them.
+    fused_children = {child for children in fuse.values() for child in children}
+    urdf_link_names = set(link_map.values()) | fused_children
     joint_set = set(joint_names)
 
     mjcf_links, mjcf_joints = parse_mjcf(
@@ -1422,8 +1602,25 @@ def compare(
         print("  Base alignment: declared (MJCF world FK lifted into URDF world frame)")
     print("=" * 78)
 
+    # ── Fused-link declarations ──
+    #
+    # Checked before anything uses them: a declaration that names a movable
+    # child would otherwise silently absorb a real mismatch into a composition.
+    if fuse:
+        fuse_errors = _validate_fuse(urdf_path, fuse, link_map)
+        for err in fuse_errors:
+            print(f"  [MISMATCH] {err}")
+        mismatches += len(fuse_errors)
+        # Drop the bad entries so the rest of the run still reports something
+        # useful rather than composing from a declaration we just rejected.
+        if fuse_errors:
+            fuse = {b: c for b, c in fuse.items() if b in link_map}
+            fused_children = {child for children in fuse.values() for child in children}
+
     # ── Structural comparison (counts, mass, missing links) ──
-    s_mis, s_warn, unverified = _compare_structure(mjcf_path, urdf_path, tolerance, link_map)
+    s_mis, s_warn, unverified = _compare_structure(
+        mjcf_path, urdf_path, tolerance, link_map, fused_children
+    )
     mismatches += s_mis
     warnings += s_warn
 
@@ -1434,6 +1631,13 @@ def compare(
     # that reached only half the model is indistinguishable from one that
     # reached all of it — both end in "Mismatches: 0" (#411).
     print(f"  Link pairs compared: {len(link_map)}")
+    if fuse:
+        folded = ", ".join(
+            f"{body} ← {'+'.join(children)}" for body, children in sorted(fuse.items())
+        )
+        print(f"  [FUSED] composed before comparison ({len(fuse)}): {folded}")
+    # A folded link has a counterpart — it is inside its parent, not missing.
+    unpaired_urdf = [name for name in unpaired_urdf if name not in fused_children]
     if unpaired_mjcf:
         print(
             f"  [NOTE] no name counterpart, not compared per-link — "
@@ -1475,6 +1679,24 @@ def compare(
         label = mjcf_name
         if mjcf_name != urdf_name:
             label = f"{mjcf_name} (URDF: {urdf_name})"
+
+        # Compose the folded children in before comparing, so mass / COM /
+        # principal moments are all checked against the same rigid body the
+        # compiled MJCF carries.  Composing only the mass would let a wrong
+        # fused inertia through under a declaration — the opposite of the point.
+        children = fuse.get(mjcf_name)
+        if children:
+            missing_frames = [
+                n
+                for n in (urdf_name, *children)
+                if n not in urdf_link_frames or n not in urdf_links
+            ]
+            if missing_frames:
+                print(f"  [WARN] {label}: cannot compose fused links {missing_frames}")
+                warnings += 1
+            else:
+                urdf_ip = _fuse_urdf_inertials(urdf_name, children, urdf_links, urdf_link_frames)
+                label = f"{label} + {' + '.join(children)}"
 
         print(f"  [{label}]")
 
@@ -1573,10 +1795,20 @@ def compare(
         # are taken about the link origin and are rotation-invariant, so a
         # large ratio (declared << geometric) usually means the URDF inertia
         # was a placeholder, not a proper rigid-body computation.
-        plaus_warn = _check_inertia_plausibility(urdf_root_cached, urdf_name, urdf_ip)
-        if plaus_warn:
-            print(plaus_warn)
-            warnings += 1
+        if children:
+            # Not run, and said so rather than skipped quietly.  The estimate
+            # only sees `urdf_name`'s own collision shapes, while `urdf_ip` now
+            # also carries the folded children's mass at a distance — the two
+            # sides measure different bodies, so every fused link would warn.
+            print(
+                "    [NOTE] plausibility not checked: the collision-geometry "
+                "estimate covers only the parent link, not the fused body"
+            )
+        else:
+            plaus_warn = _check_inertia_plausibility(urdf_root_cached, urdf_name, urdf_ip)
+            if plaus_warn:
+                print(plaus_warn)
+                warnings += 1
 
         print()
 
@@ -2018,8 +2250,26 @@ def _detect_joints(mjcf_path: Path, urdf_path: Path) -> list[str]:
     return sorted(mjcf_joints & urdf_joints)
 
 
-def _load_link_map(path: Path) -> dict[str, str]:
-    """Load a link-name mapping from YAML or JSON."""
+def _load_link_map(path: Path) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Load a link-name mapping, and any fused-link declarations, from YAML/JSON.
+
+    Two accepted shapes::
+
+        base: base_link_inertia                 # flat: name → name
+
+        links:                                  # structured
+          base: base_link_inertia
+          fuse:
+            index_dip_fe_link: [index_tip_link]
+
+    The structured form is recognised by a value that is itself a mapping;
+    flat files always map a name to a name, so the two cannot be confused and
+    a robot may still own a link literally called ``links`` or ``fuse``.
+
+    Returns:
+        ``(links, fuse)`` where ``fuse`` maps an MJCF body to the URDF links
+        MuJoCo folded into it.
+    """
     text = path.read_text()
     try:
         import yaml
@@ -2033,7 +2283,30 @@ def _load_link_map(path: Path) -> dict[str, str]:
         raise SystemExit(
             f"--link-map file {path} must contain a mapping {{<mjcf_body>: <urdf_link>, ...}}"
         )
-    return {str(k): str(v) for k, v in data.items()}
+
+    if any(isinstance(v, dict) for v in data.values()):
+        unknown = sorted(set(data) - {"links", "fuse"})
+        if unknown:
+            raise SystemExit(
+                f"--link-map file {path}: unknown top-level key(s) {unknown}; "
+                "the structured form accepts only 'links' and 'fuse'"
+            )
+        links_raw = data.get("links") or {}
+        fuse_raw = data.get("fuse") or {}
+    else:
+        links_raw, fuse_raw = data, {}
+
+    fuse: dict[str, list[str]] = {}
+    for body, children in fuse_raw.items():
+        if isinstance(children, str):
+            children = [children]
+        if not isinstance(children, list):
+            raise SystemExit(
+                f"--link-map file {path}: fuse['{body}'] must be a URDF link name or a list of them"
+            )
+        fuse[str(body)] = [str(c) for c in children]
+
+    return {str(k): str(v) for k, v in links_raw.items()}, fuse
 
 
 def main():
@@ -2154,9 +2427,9 @@ def main():
         sys.exit(1)
 
     if args.link_map is not None:
-        link_map = _load_link_map(args.link_map)
+        link_map, fuse = _load_link_map(args.link_map)
     else:
-        link_map = _detect_link_mapping(mjcf_path, urdf_path)
+        link_map, fuse = _detect_link_mapping(mjcf_path, urdf_path), {}
 
     if not link_map:
         print(
@@ -2197,6 +2470,7 @@ def main():
         align=align,
         fail_on_unverified=args.fail_on_unverified,
         tip_frames=tuple(args.tip_frames) if args.tip_frames else None,
+        fuse=fuse,
     )
     sys.exit(1 if mismatches > 0 else 0)
 

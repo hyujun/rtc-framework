@@ -22,8 +22,10 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     _compute_urdf_world_frames,
     _detect_joint_types,
     _fmt,
+    _fuse_urdf_inertials,
     _identity_3x3,
     _invert_transform,
+    _load_link_map,
     _mjcf_body_rotation,
     _mjcf_body_world_frames,
     _mjcf_named_frames,
@@ -33,6 +35,7 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     _resolve_link_map,
     _rpy_to_rot3,
     _urdf_link_world_frames,
+    _validate_fuse,
     _vec_close_3,
     compare,
     parse_mjcf,
@@ -1577,3 +1580,276 @@ class TestPartialLinkMapDoesNotNarrow:
         _, out = self._run(tmp_path, capsys)
         assert "[base (URDF: base_link_inertia)]" in out
         assert "not compared per-link" not in out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fused links — MJCF folded a fixed-joint child into its parent (#412)
+#
+# Folding is legitimate modelling, but the tool used to report it as two
+# defects at once (child's mass "lost" + parent overweight), so such a model
+# could not be gated at all.  A `fuse:` declaration composes the children in
+# before comparison — mass, COM and inertia all against the combined body, so
+# declaring cannot be used to make a real mismatch disappear.
+#
+# The numbers mirror the real assm_v1 hand (verified by hand against its MJCF)
+# scaled up so the inertia terms clear the 1e-4 default tolerance:
+#   parent  m=2  com_z=0.125   I=diag(0.01,  0.01,  0.001)
+#   tip     m=1  com_z=0.125   I=diag(0.001, 0.001, 0.0005)   fixed @ z=0.25
+#   fused   m=3  com_z=(2·0.125 + 1·0.375)/3 = 0.2083333
+#           Ixx = [0.01 + 2·0.0833333²] + [0.001 + 1·0.1666667²] = 0.0526667
+#           Izz = 0.001 + 0.0005 = 0.0015          (displacement is along z)
+# ═══════════════════════════════════════════════════════════════════════════
+
+URDF_FUSE = """\
+<?xml version="1.0"?>
+<robot name="fuse_test">
+  <link name="base_link_inertia">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="distal_link">
+    <inertial>
+      <mass value="2.0"/>
+      <origin xyz="0 0 0.125" rpy="0 0 0"/>
+      <inertia ixx="0.01" iyy="0.01" izz="0.001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="tip_link">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 0.125" rpy="0 0 0"/>
+      <inertia ixx="0.001" iyy="0.001" izz="0.0005" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <joint name="distal_joint" type="revolute">
+    <parent link="base_link_inertia"/>
+    <child link="distal_link"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="1"/>
+  </joint>
+  <joint name="tip_joint" type="fixed">
+    <parent link="distal_link"/>
+    <child link="tip_link"/>
+    <origin xyz="0 0 0.25" rpy="0 0 0"/>
+  </joint>
+</robot>
+"""
+
+MJCF_FUSE = """\
+<mujoco model="fuse_test">
+  <compiler angle="radian" autolimits="true"/>
+  <worldbody>
+    <body name="base">
+      <inertial mass="1.0" pos="0 0 0" diaginertia="0.001 0.001 0.001"/>
+      <body name="distal_link" pos="0 0 0.1">
+        <inertial mass="3.0" pos="0 0 0.2083333333"
+                  diaginertia="0.0526666667 0.0526666667 0.0015"/>
+        <joint name="distal_joint" axis="0 0 1" range="-3.14 3.14"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general joint="distal_joint" forcerange="-10 10"/>
+  </actuator>
+</mujoco>
+"""
+
+FUSE_LINK_MAP = {"base": "base_link_inertia"}
+FUSE_DECL = {"distal_link": ["tip_link"]}
+FUSE_JOINTS = ["distal_joint"]
+
+
+class TestFuseUrdfInertials:
+    """The composition itself, against hand-computed values."""
+
+    def _params(self, tmp_path, urdf_text=URDF_FUSE):
+        urdf = tmp_path / "f.urdf"
+        urdf.write_text(urdf_text)
+        links, _ = parse_urdf(urdf, {"distal_link", "tip_link"}, set())
+        return _fuse_urdf_inertials(
+            "distal_link", ["tip_link"], links, _urdf_link_world_frames(urdf)
+        )
+
+    def test_mass_is_summed(self, tmp_path):
+        assert _close(self._params(tmp_path).mass, 3.0, 1e-12)
+
+    def test_com_is_mass_weighted(self, tmp_path):
+        com = self._params(tmp_path).origin_xyz
+        assert _vec_close_3(com, [0.0, 0.0, 0.2083333333], 1e-9)
+
+    def test_inertia_uses_the_parallel_axis_theorem(self, tmp_path):
+        p = self._params(tmp_path)
+        assert _close(p.diag_inertia[0], 0.0526666667, 1e-9)
+        assert _close(p.diag_inertia[1], 0.0526666667, 1e-9)
+        # No parallel-axis term along the displacement direction.
+        assert _close(p.diag_inertia[2], 0.0015, 1e-12)
+
+    def test_summing_inertia_without_the_shift_would_be_wrong(self, tmp_path):
+        """Guards the shift specifically: a naive tensor sum gives 0.011."""
+        assert not _close(self._params(tmp_path).diag_inertia[0], 0.011, 1e-6)
+
+    #: URDF_FUSE with Rx(pi/2) on the fixed joint.
+    ROTATED = (
+        '<origin xyz="0 0 0.25" rpy="0 0 0"/>',
+        '<origin xyz="0 0 0.25" rpy="1.5707963268 0 0"/>',
+    )
+
+    def test_fixed_joint_rotation_moves_the_composed_com(self, tmp_path):
+        """Rx(pi/2) swings the tip onto -y.  With the rotation dropped both
+        links stay on z and the composed COM has no y component at all."""
+        com = self._params(tmp_path, urdf_text=URDF_FUSE.replace(*self.ROTATED)).origin_xyz
+        # tip COM lands at (0, -0.125, 0.25); (2·0 + 1·-0.125)/3 = -0.0416667
+        assert _vec_close_3(com, [0.0, -0.0416666667, 0.1666666667], 1e-9)
+
+    def test_fixed_joint_rotation_reorients_the_child_tensor(self, tmp_path):
+        """The child's inertia must be rotated into the shared frame before it
+        is summed, not just its COM.
+
+        The trace cannot see this — ``trace(R·I·Rᵀ) == trace(I)`` and the
+        parallel-axis additions are identical either way — so the individual
+        components are the only witness.  Values below were derived by hand
+        (Rx(pi/2) maps the tip's diag(0.001, 0.001, 0.0005) to
+        diag(0.001, 0.0005, 0.001)) and agree with the implementation to 1e-10.
+        """
+        p = self._params(tmp_path, urdf_text=URDF_FUSE.replace(*self.ROTATED))
+        assert _close(p.diag_inertia[0], 0.0318333333, 1e-9)
+        assert _close(p.diag_inertia[1], 0.0209166667, 1e-9)
+        assert _close(p.diag_inertia[2], 0.0124166667, 1e-9)
+        assert _close(p.off_diag_inertia[2], 0.0104166667, 1e-9)  # Iyz
+        # Skipping the child's rotation would give yy=0.0214166667,
+        # zz=0.0119166667 — same trace, wrong distribution.
+        assert not _close(p.diag_inertia[1], 0.0214166667, 1e-9)
+
+
+class TestValidateFuse:
+    """A declaration must not become a way to switch checking off."""
+
+    def _urdf(self, tmp_path, text=URDF_FUSE):
+        urdf = tmp_path / "v.urdf"
+        urdf.write_text(text)
+        return urdf
+
+    def test_valid_declaration_has_no_errors(self, tmp_path):
+        assert (
+            _validate_fuse(self._urdf(tmp_path), FUSE_DECL, {"distal_link": "distal_link"}) == []
+        )
+
+    def test_movable_child_is_rejected(self, tmp_path):
+        """The whole point: folding is only legitimate across fixed joints."""
+        text = URDF_FUSE.replace(
+            '<joint name="tip_joint" type="fixed">',
+            '<joint name="tip_joint" type="revolute">',
+        )
+        errors = _validate_fuse(
+            self._urdf(tmp_path, text), FUSE_DECL, {"distal_link": "distal_link"}
+        )
+        assert len(errors) == 1
+        assert "only fixed joints may be folded" in errors[0]
+
+    def test_unknown_child_is_rejected(self, tmp_path):
+        errors = _validate_fuse(
+            self._urdf(tmp_path), {"distal_link": ["nope"]}, {"distal_link": "distal_link"}
+        )
+        assert len(errors) == 1 and "does not exist" in errors[0]
+
+    def test_unmapped_parent_is_rejected(self, tmp_path):
+        errors = _validate_fuse(self._urdf(tmp_path), FUSE_DECL, {})
+        assert len(errors) == 1 and "not a mapped MJCF body" in errors[0]
+
+    def test_non_descendant_is_rejected(self, tmp_path):
+        """Folding runs child → parent.  Naming an *ancestor* as the folded
+        link walks off the top of the tree and must not be accepted."""
+        errors = _validate_fuse(
+            self._urdf(tmp_path),
+            {"distal_link": ["base_link_inertia"]},
+            {"distal_link": "distal_link"},
+        )
+        assert len(errors) == 1 and "not a descendant" in errors[0]
+
+
+class TestCompareWithFusedLinks:
+    def _run(self, tmp_path, capsys, *, mjcf_text=MJCF_FUSE, fuse=FUSE_DECL):
+        pytest.importorskip("mujoco")
+        mjcf = tmp_path / "f.xml"
+        mjcf.write_text(mjcf_text)
+        urdf = tmp_path / "f.urdf"
+        urdf.write_text(URDF_FUSE)
+        n = compare(mjcf, urdf, link_map=FUSE_LINK_MAP, joint_names=FUSE_JOINTS, fuse=fuse)
+        return n, capsys.readouterr().out
+
+    def test_declared_model_is_clean(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys)
+        assert "[FUSED]" in out
+        assert "kg lost" not in out
+        assert n == 0
+
+    def test_without_the_declaration_the_same_model_fails(self, tmp_path, capsys):
+        """Otherwise `fuse` could be a no-op and nothing would reveal it."""
+        n, out = self._run(tmp_path, capsys, fuse=None)
+        assert "tip_link  mass=1 kg lost" in out
+        assert "MASS MISMATCH" in out
+        assert n >= 2
+
+    def test_wrong_fused_mass_is_still_caught(self, tmp_path, capsys):
+        """Declaring must not waive the check — only redirect it at the
+        combined body."""
+        mjcf_text = MJCF_FUSE.replace('mass="3.0"', 'mass="2.5"')
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "MASS MISMATCH" in out
+        assert n >= 1
+
+    def test_wrong_fused_inertia_is_still_caught(self, tmp_path, capsys):
+        """The naive tensor sum (no parallel-axis shift) must not pass."""
+        mjcf_text = MJCF_FUSE.replace(
+            'diaginertia="0.0526666667 0.0526666667 0.0015"',
+            'diaginertia="0.011 0.011 0.0015"',
+        )
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "INERTIA MISMATCH" in out
+        assert n >= 1
+
+    def test_wrong_fused_com_is_still_caught(self, tmp_path, capsys):
+        mjcf_text = MJCF_FUSE.replace('pos="0 0 0.2083333333"', 'pos="0 0 0.19"')
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "COM MISMATCH (world)" in out
+        assert n >= 1
+
+    def test_invalid_declaration_is_a_mismatch(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys, fuse={"distal_link": ["nope"]})
+        assert "does not exist" in out
+        assert n >= 1
+
+
+class TestLoadLinkMapSchema:
+    def _write(self, tmp_path, text):
+        path = tmp_path / "m.yaml"
+        path.write_text(text)
+        return path
+
+    def test_flat_form_still_loads(self, tmp_path):
+        links, fuse = _load_link_map(self._write(tmp_path, "base: base_link_inertia\n"))
+        assert links == {"base": "base_link_inertia"} and fuse == {}
+
+    def test_structured_form(self, tmp_path):
+        text = "links:\n  base: base_link_inertia\nfuse:\n  distal_link: [tip_link]\n"
+        links, fuse = _load_link_map(self._write(tmp_path, text))
+        assert links == {"base": "base_link_inertia"}
+        assert fuse == {"distal_link": ["tip_link"]}
+
+    def test_fuse_accepts_a_bare_name(self, tmp_path):
+        _, fuse = _load_link_map(self._write(tmp_path, "fuse:\n  distal_link: tip_link\n"))
+        assert fuse == {"distal_link": ["tip_link"]}
+
+    def test_unknown_top_level_key_is_rejected(self, tmp_path):
+        text = "links:\n  a: b\nfused:\n  c: [d]\n"
+        with pytest.raises(SystemExit, match="unknown top-level key"):
+            _load_link_map(self._write(tmp_path, text))
+
+    def test_a_link_named_links_is_not_mistaken_for_the_schema(self, tmp_path):
+        """The discriminator is the value type, so a robot may own such a link."""
+        links, fuse = _load_link_map(self._write(tmp_path, "links: links\nfuse: fuse\n"))
+        assert links == {"links": "links", "fuse": "fuse"} and fuse == {}

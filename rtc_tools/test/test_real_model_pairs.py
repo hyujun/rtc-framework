@@ -75,11 +75,10 @@ def test_real_pair_has_no_mismatches(pair, capsys):
     assert mjcf.is_file(), f"MJCF 없음: {mjcf}"
     assert urdf.is_file(), f"URDF 없음: {urdf}"
 
-    link_map = (
-        _load_link_map(ROBOTS / pair["link_map"])
-        if pair.get("link_map")
-        else _detect_link_mapping(mjcf, urdf)
-    )
+    if pair.get("link_map"):
+        link_map, fuse = _load_link_map(ROBOTS / pair["link_map"])
+    else:
+        link_map, fuse = _detect_link_mapping(mjcf, urdf), {}
     align = (
         _resolve_alignment(mjcf, urdf, *pair["align_frames"]) if pair.get("align_frames") else None
     )
@@ -93,6 +92,7 @@ def test_real_pair_has_no_mismatches(pair, capsys):
         align=align,
         tip_frames=tuple(pair["tip_frames"]) if pair.get("tip_frames") else None,
         fail_on_unverified=True,
+        fuse=fuse,
     )
     out = capsys.readouterr().out
     # 실패 시 비교 리포트를 그대로 보여준다 — 어느 파라미터인지 알아야 고친다.
