@@ -28,8 +28,9 @@ Usage:
   # Override the MJCF default class root if it differs from the model name:
   ros2 run rtc_tools compare_mjcf_urdf --mjcf-class my_robot ...
 
-  # Override link name mapping when MJCF body names differ from URDF link
-  # names (provide a YAML/JSON file with {<mjcf_body>: <urdf_link>, ...}):
+  # Declare the pairs whose MJCF body name differs from the URDF link name
+  # (YAML/JSON, {<mjcf_body>: <urdf_link>, ...}).  It is an exception list —
+  # every other same-name pair is still compared:
   ros2 run rtc_tools compare_mjcf_urdf --link-map link_map.yaml ...
 
   # Declare a common base frame when the two files mount the robot
@@ -1377,8 +1378,11 @@ def compare(
 
     Args:
         mjcf_path / urdf_path: Model file paths.
-        link_map: Mapping {<mjcf_body_name>: <urdf_link_name>, ...} of which
-            link pairs to compare.
+        link_map: Mapping {<mjcf_body_name>: <urdf_link_name>, ...} declaring
+            the pairs whose names *differ*.  It is an exception list, not the
+            worklist: :func:`_resolve_link_map` widens it with every remaining
+            same-name pair, so a partial map cannot silently narrow the
+            comparison (#411).
         joint_names: Joint names to compare (assumed identical in both files).
         tolerance: Numerical tolerance.
         mjcf_class: Optional MJCF default class override; auto-detected if None.
@@ -1395,6 +1399,7 @@ def compare(
             offset past the last joint (the DH ``d6``) moves neither a joint
             axis line nor a link COM, so nothing else here can observe it.
     """
+    link_map, unpaired_mjcf, unpaired_urdf = _resolve_link_map(mjcf_path, urdf_path, link_map)
     mjcf_link_names = set(link_map.keys())
     urdf_link_names = set(link_map.values())
     joint_set = set(joint_names)
@@ -1424,6 +1429,22 @@ def compare(
 
     # ── Link inertial comparison ──
     print("\n--- Link Inertial Parameters ---\n")
+
+    # State the coverage before the per-link output.  Without it, a comparison
+    # that reached only half the model is indistinguishable from one that
+    # reached all of it — both end in "Mismatches: 0" (#411).
+    print(f"  Link pairs compared: {len(link_map)}")
+    if unpaired_mjcf:
+        print(
+            f"  [NOTE] no name counterpart, not compared per-link — "
+            f"MJCF bodies ({len(unpaired_mjcf)}): {', '.join(unpaired_mjcf)}"
+        )
+    if unpaired_urdf:
+        print(
+            f"  [NOTE] no name counterpart, not compared per-link — "
+            f"URDF links ({len(unpaired_urdf)}): {', '.join(unpaired_urdf)}"
+        )
+    print()
 
     # Cache parsed URDF root so the plausibility helper doesn't reparse per link.
     urdf_root_cached = ET.parse(urdf_path).getroot()
@@ -1869,6 +1890,26 @@ def _resolve_robot_layout(
     return None, None
 
 
+def _mjcf_inertial_bodies(mjcf_path: Path) -> set[str]:
+    """MJCF body names carrying an explicit ``<inertial>``."""
+    root = ET.parse(mjcf_path).getroot()
+    return {
+        b.get("name")
+        for b in root.iter("body")
+        if b.get("name") and b.find("inertial") is not None
+    }
+
+
+def _urdf_inertial_links(urdf_path: Path) -> set[str]:
+    """URDF link names carrying an ``<inertial>``."""
+    root = ET.parse(urdf_path).getroot()
+    return {
+        el.get("name")
+        for el in root.findall("link")
+        if el.get("name") and el.find("inertial") is not None
+    }
+
+
 def _detect_link_mapping(
     mjcf_path: Path,
     urdf_path: Path,
@@ -1878,21 +1919,53 @@ def _detect_link_mapping(
     with no same-named URDF link are skipped (caller can supply --link-map for
     cases where MJCF and URDF use different naming).
     """
-    mjcf_root = ET.parse(mjcf_path).getroot()
-    urdf_root = ET.parse(urdf_path).getroot()
-
-    mjcf_inertial_bodies = {
-        b.get("name")
-        for b in mjcf_root.iter("body")
-        if b.get("name") and b.find("inertial") is not None
-    }
-    urdf_inertial_links = {
-        el.get("name")
-        for el in urdf_root.findall("link")
-        if el.get("name") and el.find("inertial") is not None
+    return {
+        name: name
+        for name in sorted(_mjcf_inertial_bodies(mjcf_path) & _urdf_inertial_links(urdf_path))
     }
 
-    return {name: name for name in sorted(mjcf_inertial_bodies & urdf_inertial_links)}
+
+def _resolve_link_map(
+    mjcf_path: Path,
+    urdf_path: Path,
+    explicit: dict[str, str] | None,
+) -> tuple[dict[str, str], list[str], list[str]]:
+    """Widen an explicit link map with the same-name pairs it does not claim.
+
+    An explicit map declares **exceptions** — pairs whose names differ, or a
+    name that means different things on the two sides.  It is not the worklist.
+    Treating it as one is a false green: on ur5e+hand, a 7-entry arm map left
+    four real hand mass mismatches out of the per-link comparison, and nothing
+    in the report said the comparison had been narrowed (#411).
+
+    Explicit entries win over same-name pairing on both sides, which is what
+    keeps ur5e's ``base: base_link_inertia`` from being undone by the URDF's
+    unrelated massless ``base`` frame.
+
+    Returns:
+        ``(effective_map, unpaired_mjcf, unpaired_urdf)`` — the last two list
+        bodies/links that carry an inertial but found no counterpart by name,
+        so the caller can report what is *not* being compared.
+    """
+    mjcf_names = _mjcf_inertial_bodies(mjcf_path)
+    urdf_names = _urdf_inertial_links(urdf_path)
+    explicit = dict(explicit or {})
+
+    # Same-name pairing fills in whatever the exception list does not cover.
+    # A candidate whose URDF link an explicit entry already targets is dropped,
+    # so ur5e's `base: base_link_inertia` cannot be undone by re-pairing
+    # `base_link_inertia` with a same-named body.  Collisions on the MJCF side
+    # need no guard: candidates are keyed by body name, so the update below
+    # overwrites them (a guard there survives mutation — it is inert).
+    claimed_urdf = set(explicit.values())
+    effective = {
+        name: name for name in sorted(mjcf_names & urdf_names) if name not in claimed_urdf
+    }
+    effective.update(explicit)
+
+    unpaired_mjcf = sorted(mjcf_names - set(effective))
+    unpaired_urdf = sorted(urdf_names - set(effective.values()))
+    return effective, unpaired_mjcf, unpaired_urdf
 
 
 def _detect_joints(mjcf_path: Path, urdf_path: Path) -> list[str]:
@@ -1967,9 +2040,10 @@ def main():
         "--link-map",
         type=Path,
         default=None,
-        help="YAML/JSON file with {<mjcf_body>: <urdf_link>, ...}. Required "
-        "only when MJCF body names differ from URDF link names; "
-        "otherwise same-name links are matched automatically.",
+        help="YAML/JSON file with {<mjcf_body>: <urdf_link>, ...}. An "
+        "exception list for pairs whose names differ, not a worklist: every "
+        "remaining same-name pair is compared as well, so a partial file "
+        "cannot narrow the comparison.",
     )
     parser.add_argument(
         "--joints",

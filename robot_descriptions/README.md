@@ -273,7 +273,7 @@ ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 **`ur5e` 는 선언 두 개가 필요합니다** (둘 다 이름·프레임이 엇갈려 자동 탐지로 풀리지 않습니다, #392):
 
 - **`--align-frames world base`** — 두 파일의 world frame 이 다릅니다 (MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link`). 없으면 관절 6개 전부 x 부호가 뒤집힌 것처럼 보이는데, 모델 발산이 아니라 mounting 규약입니다.
-- **`--link-map robots/ur5e/ur5e.link_map.yaml`** — MJCF body `base` 는 URDF `base_link_inertia`(4 kg) 인데 URDF 에도 **massless** `base` 프레임이 따로 있습니다. 자동 탐지는 이름이 같은 쌍만 맺으므로 그 둘을 잘못 짝지어 `base_link_inertia` 를 "mass=4 kg lost" 로 보고했습니다. 선언하면 base 링크 관성 검증이 켜지고(양쪽 값은 이미 동일) 허위 손실 보고가 사라집니다.
+- **`--link-map robots/ur5e/ur5e.link_map.yaml`** — MJCF body `base` 는 URDF `base_link_inertia`(4 kg) 인데 URDF 에도 **massless** `base` 프레임이 따로 있습니다. 자동 탐지는 이름이 같은 쌍만 맺으므로 그 둘을 잘못 짝지어 `base_link_inertia` 를 "mass=4 kg lost" 로 보고했습니다. 선언하면 base 링크 관성 검증이 켜지고(양쪽 값은 이미 동일) 허위 손실 보고가 사라집니다. 이 파일은 **예외 목록**이라 여기 없는 동명 쌍도 그대로 비교됩니다 (#411) — 일부만 적어도 비교 범위가 좁아지지 않습니다.
 
 ```bash
 ros2 run rtc_tools compare_mjcf_urdf \
