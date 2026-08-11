@@ -280,6 +280,8 @@ ros2 run rtc_tools compare_mjcf_urdf --align-frames world base \
 
 **`--link-map` 은 예외 목록이지 작업 목록이 아니다** (#411). 파일에 적힌 것은 *이름이 엇갈리는 쌍*뿐이고, 나머지 동명 쌍은 그대로 전부 비교된다 — 선언이 비교 범위를 **좁히지 않는다**. 예전에는 좁혔고, 그래서 ur5e+hand 조합 모델에 7개짜리 arm 맵을 주면 hand 의 실제 질량 발산 4건이 per-link 비교에서 빠진 채 `Mismatches: 3` 이 나왔다. 충돌 시 선언이 이긴다 — 어떤 URDF 링크를 명시 항목이 이미 가리키면 동명 body 가 그것을 다시 채가지 못한다. 리포트는 `Link pairs compared: N` 과 짝을 못 찾은 body/link 목록을 찍으므로, 좁아졌다는 사실 자체가 관측된다.
 
+**링크 COM 은 world frame 에서 비교한다** (#416). 로컬 프레임 COM 은 비교 대상이 아니다 — MJCF 는 body 원점을 visual mesh 기준, URDF 는 DH 기준으로 두므로 같은 물리적 COM 이 두 프레임에서 다르게 읽힌다 (ur5e `forearm_link` 실측 0.242 m 차이, 전부 규약). zero configuration 기준 world 로 올리면 그 차이가 사라진다 (같은 3쌍 실측: 최대 5e-7). 관절을 축 *직선* 으로 비교하는 것과 같은 이유다. `--align-frames` 는 COM 비교에도 적용된다. 이 검사가 없으면 **질량과 주모멘트가 그대로인 채 COM 만 옮겨진 발산이 조용히 통과**한다 — 주모멘트는 COM 기준 회전불변량이라 평행이동에 반응하지 않는다.
+
 **`--tip-frames <MJCF_FRAME> <URDF_FRAME>`** — tool 프레임을 직접 비교한다. 관절 비교가 축 *직선* 기준이라 **마지막 관절 이후의 오프셋(DH `d6`)을 원리적으로 못 본다** — 그 오프셋은 마지막 관절 자신의 축과 평행하고, 링크 COM 도 움직이지 않는다(실측 확인). ur5e 는 `--tip-frames attachment_site tool0`. MJCF 쪽은 body 또는 **site** 이름을 받는다.
 
 **`--fail-on-unverified`** — 아예 실행되지 못한 검사가 있으면 exit 1. 없으면 mujoco 를 import 못 해도 구조 비교가 통째로 빠진 채 `Mismatches: 0` / exit 0 이 나온다 — **게이트에는 필수**다. 이 플래그 없이도 요약은 `UNVERIFIED: N` 과 "this is NOT a clean pass" 를 찍는다 (warning 과 합치지 않는다 — warning 은 "봤는데 괜찮다", unverified 는 "안 봤다").
@@ -291,6 +293,7 @@ ros2 run rtc_tools compare_mjcf_urdf --align-frames world base \
 | 항목 | MJCF 소스 | URDF 소스 |
 |------|-----------|-----------|
 | Link mass | `<inertial mass>` | `<mass value>` |
+| Link COM (**world frame**) | `<inertial pos>` + body FK | `<inertial><origin xyz>` + link FK |
 | Diagonal inertia | `diaginertia` | `ixx, iyy, izz` |
 | Off-diagonal inertia | 없음 (0 가정) | `ixy, ixz, iyz` (비정상 시 경고) |
 | Inertial frame rotation | quaternion | rpy (회전 시 경고) |
