@@ -59,22 +59,41 @@ struct GraspParams {
   double integral_clamp{0.1};  // integrator saturation
 
   // State machine timing
-  double approach_speed{0.2};       // [1/s] approaching ds/dt
-  double release_speed{0.3};        // [1/s] releasing ds/dt
+  double approach_speed{0.2};  // [1/s] approaching ds/dt
+  double release_speed{0.3};   // [1/s] releasing ds/dt
+  // settle_epsilon / settle_time are the tolerance and dwell of the ForceControl
+  // -> Holding promotion, and they are measured on the error against f_target —
+  // NOT against the mid-ramp reference. UpdateForceControl will not start the
+  // dwell until the ramp has reached active_target_force_, so these two need no
+  // relation to f_ramp_rate. They did before: the dwell used to run during the
+  // ramp, so any (settle_time < 2*settle_epsilon / f_ramp_rate) promoted while
+  // the reference was merely passing through the measured force, and Holding —
+  // which has no ramp — then froze the reference there. Measured on a deployed
+  // set (settle_epsilon 0.5, f_ramp_rate 2.0, settle_time 0.3), that landed
+  // Holding at f_desired 0.60-0.68 N against a 2.0 N target, every grasp.
   double settle_epsilon{0.1};       // [N] force convergence threshold
   double settle_time{0.3};          // [s] convergence hold time
   double contact_settle_time{0.1};  // [s] Contact phase dwell
 
   // Anomaly detection
-  double df_slip_threshold{5.0};       // [N/s] slip df/dt threshold (negative direction)
-  double grip_tightening_ratio{0.15};  // force increase ratio on slip
-  double grip_decay_rate{0.1};         // [N/s] force decay rate toward target after tightening
-  double f_max_multiplier{2.0};        // max force = f_target * multiplier
+  double df_slip_threshold{5.0};     // [N/s] slip df/dt threshold (negative direction)
+  double f_slip_fraction{0.5};       // [0,1] grip is "lost" below f_target * this
+  double grip_tightening_rate{0.5};  // [N/s] reference increase rate while grip is lost
+  double grip_decay_rate{0.1};       // [N/s] force decay rate toward target after tightening
+  double f_max_multiplier{2.0};      // max force = f_target * multiplier
 
   // NOTE: there is no filter cutoff here. Update() consumes an ALREADY FILTERED
   // force — see GraspController::Update. The fields were removed rather than
   // deprecated on purpose: the span signature cannot express the change, so a
   // compile error at the assignment is the only reliable notice a caller gets.
+  //
+  // grip_tightening_rate replaced grip_tightening_ratio for the same reason, and
+  // the rename is deliberate rather than a value change: the old field was
+  // applied ONCE PER TICK as f_desired *= (1 + ratio), so the grip force a slip
+  // produced was a function of control_rate — 0.15 reached the f_max_multiplier
+  // cap in ~11 ticks, i.e. 22 ms at 500 Hz and 11 ms at 1 kHz. A rate in N/s is
+  // rate-independent and symmetric with grip_decay_rate. Keeping the old name
+  // would have let a YAML carrying 0.15 be silently reinterpreted as 0.15 N/s.
 };
 
 // ── Per-finger runtime state ─────────────────────────────────────────────────

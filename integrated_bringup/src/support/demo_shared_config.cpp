@@ -130,8 +130,24 @@ void ApplyForcePiBlock(const YAML::Node& fp, DemoSharedConfig& cfg) {
     gp.contact_settle_time = fp["contact_settle_time"].as<double>();
   if (fp["df_slip_threshold"])
     gp.df_slip_threshold = fp["df_slip_threshold"].as<double>();
-  if (fp["grip_tightening_ratio"])
-    gp.grip_tightening_ratio = fp["grip_tightening_ratio"].as<double>();
+  if (fp["f_slip_fraction"])
+    gp.f_slip_fraction = fp["f_slip_fraction"].as<double>();
+  // 제거된 키를 조용히 넘기지 않는다. 이 로더는 모르는 키를 무시하므로, 의미가
+  // ratio(per tick) -> rate(N/s) 로 바뀐 상황에서 침묵은 곧 "YAML 이 지정한
+  // 값이 사라지고 default 가 대신 도는" 것이다. 값이 아니라 단위가 바뀌었으니
+  // 자동 변환도 불가능하다 — 실패시키는 것이 유일하게 옳다 (비-RT, LoadConfig).
+  if (fp["grip_tightening_ratio"]) {
+    throw std::runtime_error(
+        "force_pi_grasp.grip_tightening_ratio was removed: it was applied once per tick, so the "
+        "grip force a slip produced depended on control_rate. Use grip_tightening_rate [N/s].");
+  }
+  if (fp["grip_tightening_rate"])
+    gp.grip_tightening_rate = fp["grip_tightening_rate"].as<double>();
+  // grip_decay_rate 는 이 블록에 없어서 **YAML 로 설정할 수 없었다** — 키를 적어도
+  // 조용히 무시되고 default 0.1 N/s 가 돌았다. tightening 이 rate 가 된 지금
+  // 둘은 같은 축의 짝이므로 함께 노출한다.
+  if (fp["grip_decay_rate"])
+    gp.grip_decay_rate = fp["grip_decay_rate"].as<double>();
   if (fp["f_max_multiplier"])
     gp.f_max_multiplier = fp["f_max_multiplier"].as<double>();
   // Same key, same meaning, same tuning advice — the filter it configures lives

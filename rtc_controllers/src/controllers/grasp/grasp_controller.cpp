@@ -242,8 +242,20 @@ void GraspController::UpdateForceControl(double dt) noexcept {
     fs.s += ds * dt;
     fs.s = std::clamp(fs.s, 0.0, 1.0);
 
-    // 수렴 판정
-    if (std::abs(fs.f_desired - fs.f_measured) > params_.settle_epsilon) {
+    // 수렴 판정 — 램프가 목표에 닿기 전에는 절대 성립하지 않는다.
+    //
+    // 오차를 램프 중인 f_desired 에 대고 재면, 판정하는 것이 "목표힘에 수렴했다"
+    // 가 아니라 "램프가 지금 측정힘 근처를 지나간다" 가 된다. 램프는 폭 2*eps 인
+    // 창을 2*eps/f_ramp_rate 초에 통과하므로, settle_time 이 그보다 짧으면 승급은
+    // 램프 도중에 일어나고 — kHolding 에는 램프가 없으므로 — 기준값이 거기서
+    // 얼어붙는다. 실제로 배포된 조합(eps 0.5, rate 2.0, settle 0.3)에서 통과에
+    // 0.5 s 가 걸려 0.3 s 를 넘으므로 이 조건은 예외가 아니라 상시였다: 실측
+    // kHolding 진입 f_desired 0.60~0.68 N (목표 2.0 N), 물체 강성 무관.
+    //
+    // f_desired 는 std::min 으로 정확히 active_target_force_ 에 안착하므로
+    // 부등호 비교로 충분하다 (epsilon 불필요).
+    if (fs.f_desired < active_target_force_ ||
+        std::abs(fs.f_desired - fs.f_measured) > params_.settle_epsilon) {
       all_settled = false;
     }
   }
@@ -281,14 +293,26 @@ void GraspController::UpdateHolding(double dt) noexcept {
     fs.s += ds * dt;
     fs.s = std::clamp(fs.s, 0.0, 1.0);
 
-    // Force anomaly detection
+    // Force anomaly detection.
+    //
+    // 두 조건의 성격이 다르다: df/dt 는 사건(슬립의 순간)이고, f_slip_fraction
+    // 비교는 상태(지금 grip 을 잃고 있다)다. 후자는 조건이 참인 동안 매 tick
+    // 재발화하므로 **보정량은 반드시 rate 여야 한다** — per-tick 비율이었을 때
+    // grip force 가 control_rate 의 함수가 됐다 (0.15/tick 이면 500 Hz 에서
+    // 22 ms 만에 f_max_multiplier 상한 도달). 이제 grip_decay_rate 와 같은
+    // 단위·같은 축이며, 둘의 비가 곧 조임/풀림의 비대칭이다.
     if (dt > 0.0) {
       const double df_dt = (fs.f_measured - fs.f_prev) / dt;
-      if (df_dt < -params_.df_slip_threshold || fs.f_measured < active_target_force_ * 0.5) {
-        // Grip tightening
-        fs.f_desired = std::min(fs.f_desired * (1.0 + params_.grip_tightening_ratio),
+      if (df_dt < -params_.df_slip_threshold ||
+          fs.f_measured < active_target_force_ * params_.f_slip_fraction) {
+        fs.f_desired = std::min(fs.f_desired + params_.grip_tightening_rate * dt,
                                 active_target_force_ * params_.f_max_multiplier);
-        fs.integrator_frozen = false;  // 추가 closing 허용
+        // 여기서 integrator_frozen 을 풀지 않는다. 동결의 유일한 권한은 이 tick
+        // 앞에서 이미 돈 ApplyDeformationGuard 이고, 그것이 얼렸다는 것은 "더
+        // 닫지 말라" 는 뜻이다. 풀어주면 guard 가 얼리고 이 분기가 녹이는 교착이
+        // 매 tick 반복된다 — 실측: 연체(K=3)에서 f_desired 가 상한 4.0 N 에
+        // 영구 고정된 채 Δs 는 delta_s_max 에 붙어 힘은 0.85 N 에서 멈췄고,
+        // 그 상태로 빠져나오지 못했다. guard 는 여유가 회복되면 스스로 푼다.
       }
     }
   }

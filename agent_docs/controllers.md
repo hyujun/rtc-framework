@@ -172,7 +172,11 @@ quiet 조건을 고른 이유 (2026-07-30 확정): 대안이던 "항상 허용 +
 
 **따라서 kApproaching 도 RELEASE 를 소비한다** — kForceControl / kHolding 과 달리 phase 함수 *맨 앞*에서 (경쟁 전이 kContact 의 early return 이 플래그를 건너뛰지 않도록). 접촉 없는 grasp 를 빠져나오는 유일한 길이므로 위 변경과 한 세트다: 없으면 FSM 이 kApproaching 에 영구히 남아 quiet gate (`GraspModeChangeRejectReason`) 가 모드 전환을 영구 거부하고, BT `ForcePIRelease` (phase==idle 대기) 가 타임아웃까지 매달린다.
 
-PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/include/.../grasp_types.hpp` 가 SSoT — controller-specific YAML 로 override 가능.
+**ForceControl -> Holding 승급은 램프 완료를 요구한다.** dwell (`settle_time`) 은 `f_desired` 가 `f_target` 에 닿은 뒤에만 돌기 시작하므로, 수렴 판정이 재는 것은 목표힘 대비 오차다. 그 조건이 없던 시절에는 `settle_time < 2·settle_epsilon/f_ramp_rate` 인 설정이 램프가 측정힘 근처를 *지나가는 도중*에 승급했고, Holding 에는 램프가 없어 기준값이 거기서 얼어붙었다 — 배포 `ur5e_p1a` 가 그 영역이었고 실측 진입 `f_desired` 는 강성과 무관하게 **0.60~0.68 N (목표 2.0 N)** 이었다. 대가는 정직해진 소요 시간이다: 실측 Holding 진입이 K=200 에서 2.2 s, K=20 에서 5.5 s, K=10 에서 9.3 s 이고, 예산 내 도달 가능한 최대 힘 (`≈ f_contact_threshold + K·delta_s_max`) 이 모자라는 무른 물체 (K≲7) 는 **거짓 Holding 대신 kForceControl 에 머문다** — BT `grasp_timeout_ms` 가 실패로 처리한다.
+
+**Holding 의 grip tightening 은 rate 다** (`grip_tightening_rate` [N/s], `grip_decay_rate` 와 같은 축의 짝). 슬립 판정 두 조건 중 `f_measured < f_target · f_slip_fraction` 은 사건이 아니라 **상태**라 조건이 참인 동안 매 tick 재발화하므로, per-tick 비율이던 시절 grip force 는 `control_rate` 의 함수였다 (0.15/tick → 500 Hz 에서 22 ms 만에 `f_max_multiplier` 상한). 이 분기는 **integrator 동결을 건드리지 않는다** — 동결은 `ApplyDeformationGuard` 가 걸고 푸는 닫힌 계약이고, 여기서 풀면 guard 와 매 tick 교착한다 (실측: 연체에서 기준값 4.0 N 고정 · `Δs` 는 `delta_s_max` 포화 · 힘 0.85 N 정지).
+
+PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/include/.../grasp_types.hpp` 가 SSoT — controller-specific YAML 로 override 가능. `grip_tightening_ratio` 는 **제거**됐고, YAML 에 남아 있으면 `LoadConfig` 가 throw 한다 (단위가 ratio → N/s 로 바뀌어 자동 변환이 불가능하고, 이 로더는 모르는 키를 조용히 무시하므로 침묵하면 값이 사라진다). 같은 정리에서 `grip_decay_rate` 도 로더에 추가됐다 — 그전에는 YAML 에 적어도 무시되고 default 가 돌았다.
 
 **Grasp detection thresholds (capability-aware).** `grasp_contact_threshold` · `grasp_force_threshold` · `grasp_min_fingertips` 는 데모 컨트롤러 (위 §Controller Table 의 `Demo*`) 전반에서 동일한 키로 노출되며, `devices.<hand>.sensor_layout.has_native_contact` (robot/sim yaml) 에 따라 분기한다 — sensor A (native 접촉 확률 보유) 는 두 threshold 의 AND, sensor B (force-only) 는 force_threshold 단독. 전체 표는 [integrated_bringup/README.md](../integrated_bringup/README.md) 의 "Grasp threshold capability matrix" 섹션.
 
