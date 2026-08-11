@@ -825,9 +825,26 @@ class TestAxisLineCompare:
     """compare() must accept origin slide along the axis but catch any offset
     perpendicular to it — right down to the tolerance boundary."""
 
-    def _files(self, tmp_path, urdf_origin, *, prismatic=False):
+    #: The joint origin URDF_TEMPLATE ships with.
+    DEFAULT_ORIGIN = (0.0, 0.0, 0.1625)
+
+    def _files(self, tmp_path, urdf_origin, *, prismatic=False, compensate_com=True):
         mjcf_text = MJCF_TEMPLATE
         urdf_text = URDF_TEMPLATE.replace('xyz="0 0 0.1625"', f'xyz="{urdf_origin}"')
+        if compensate_com:
+            # Moving the joint origin carries the child link with it, so the
+            # child's mass ends up somewhere else in the world.  A real model
+            # that shifts a joint origin along its axis compensates the child's
+            # inertial origin to keep the physics put (ur5e agrees to 5e-11);
+            # do the same here so these tests keep isolating the *joint*
+            # signal instead of also tripping the world-COM check (#416).
+            dx, dy, dz = (
+                float(v) - d for v, d in zip(urdf_origin.split(), self.DEFAULT_ORIGIN, strict=True)
+            )
+            urdf_text = urdf_text.replace(
+                '<origin xyz="0 0 0" rpy="0 0 0"/>',
+                f'<origin xyz="{-dx} {-dy} {-dz}" rpy="0 0 0"/>',
+            )
         if prismatic:
             mjcf_text = mjcf_text.replace(
                 '<joint name="shoulder_pan_joint" class="test_robot"',
@@ -877,6 +894,23 @@ class TestAxisLineCompare:
         assert "AXIS-LINE MISMATCH" not in captured.out
         assert mismatches == 0
 
+    def test_uncompensated_slide_moves_the_link_and_is_caught(self, tmp_path, capsys):
+        """The axis-line relaxation must not excuse a link that actually moved.
+
+        Sliding the joint origin without compensating the child's inertial
+        origin puts 3.7 kg half a metre away.  The axis *line* is unchanged and
+        the joint section is right to stay quiet — the world-COM check is the
+        only thing that sees it (#416)."""
+        pytest.importorskip("mujoco")
+        mjcf, urdf = self._files(tmp_path, "0 0 0.6625", compensate_com=False)
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
+        captured = capsys.readouterr()
+        assert "AXIS-LINE MISMATCH" not in captured.out
+        assert "COM MISMATCH (world)" in captured.out
+        assert mismatches >= 1
+
     def test_prismatic_slide_along_axis_is_still_a_mismatch(self, tmp_path, capsys):
         """A prismatic origin sets its zero position, so it stays a POINT test."""
         mjcf, urdf = self._files(tmp_path, "0 0 0.6625", prismatic=True)
@@ -887,6 +921,69 @@ class TestAxisLineCompare:
         assert "POSITION MISMATCH" in captured.out
         assert "AXIS-LINE MISMATCH" not in captured.out
         assert mismatches >= 1
+
+
+class TestWorldComComparison:
+    """The COM is only comparable in a frame both files agree on (#416)."""
+
+    def _run(self, tmp_path, capsys, *, mjcf_text=MJCF_TEMPLATE, urdf_text=URDF_TEMPLATE):
+        pytest.importorskip("mujoco")
+        mjcf = tmp_path / "c.xml"
+        mjcf.write_text(mjcf_text)
+        urdf = tmp_path / "c.urdf"
+        urdf.write_text(urdf_text)
+        n = compare(mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE)
+        return n, capsys.readouterr().out
+
+    def test_matching_models_report_com_ok(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys)
+        assert "COM (world)" in out
+        assert "COM MISMATCH" not in out
+        assert n == 0
+
+    def test_shifted_com_is_caught_while_mass_and_inertia_stay_put(self, tmp_path, capsys):
+        """Mass and principal moments are blind to a translated COM — moving it
+        by 1 cm changes neither, so this fires only if the COM axis exists."""
+        mjcf_text = MJCF_TEMPLATE.replace(
+            '<inertial mass="3.7" pos="0 0 0" diaginertia',
+            '<inertial mass="3.7" pos="0 0 0.01" diaginertia',
+        )
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "COM MISMATCH (world)" in out
+        assert "MASS MISMATCH" not in out
+        assert "INERTIA MISMATCH" not in out
+        assert n >= 1
+
+    def test_body_frame_convention_difference_is_not_flagged(self, tmp_path, capsys):
+        """ur5e's shape: MJCF puts the body origin 5 cm further along the joint
+        axis and pulls the inertial origin back by the same amount.  Local COMs
+        then differ by 0.05 while the physics is identical — comparing the raw
+        local vectors would false-positive on every such model."""
+        mjcf_text = MJCF_TEMPLATE.replace(
+            '<body name="shoulder_link" pos="0 0 0.1625">',
+            '<body name="shoulder_link" pos="0 0 0.2125">',
+        ).replace(
+            '<inertial mass="3.7" pos="0 0 0" diaginertia',
+            '<inertial mass="3.7" pos="0 0 -0.05" diaginertia',
+        )
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "COM MISMATCH" not in out
+        assert n == 0
+
+    def test_alignment_is_applied_to_the_com(self, tmp_path, capsys):
+        """Without --align-frames the Rz(pi) base makes every COM disagree;
+        declaring the common frame must fix the COM axis too, not just joints."""
+        pytest.importorskip("mujoco")
+        mjcf = tmp_path / "a.xml"
+        mjcf.write_text(MJCF_ALIGN)
+        urdf = tmp_path / "a.urdf"
+        urdf.write_text(URDF_ALIGN)
+        compare(mjcf, urdf, link_map=ALIGN_LINK_MAP, joint_names=["j1"])
+        assert "COM MISMATCH (world)" in capsys.readouterr().out
+
+        align = _resolve_alignment(mjcf, urdf, "base", "base_link")
+        compare(mjcf, urdf, link_map=ALIGN_LINK_MAP, joint_names=["j1"], align=align)
+        assert "COM MISMATCH" not in capsys.readouterr().out
 
 
 class TestDetectJointTypes:

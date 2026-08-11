@@ -1449,6 +1449,16 @@ def compare(
     # Cache parsed URDF root so the plausibility helper doesn't reparse per link.
     urdf_root_cached = ET.parse(urdf_path).getroot()
 
+    # Link frames for the COM comparison below.  A COM is only comparable in a
+    # frame both files agree on: MJCF puts a body origin where the visual mesh
+    # wants it and URDF puts it on the DH point, so the same physical COM reads
+    # differently in each local frame (ur5e forearm_link: 0.242 m apart, all of
+    # it convention).  Lifting both to world at zero configuration removes that
+    # — the same reasoning that made joints compare as axis *lines* (#392).
+    mjcf_link_frames = _mjcf_body_world_frames(mjcf_path)
+    urdf_link_frames = _urdf_link_world_frames(urdf_path)
+    r_com_align, p_com_align = align if align is not None else (_identity_3x3(), [0.0, 0.0, 0.0])
+
     for mjcf_name, urdf_name in link_map.items():
         mjcf_ip = mjcf_links.get(mjcf_name)
         urdf_ip = urdf_links.get(urdf_name)
@@ -1477,6 +1487,35 @@ def compare(
             mismatches += 1
         else:
             print(f"    mass: {_fmt(mjcf_ip.mass)}  OK")
+
+        # Centre of mass, in the URDF world frame at zero configuration.
+        #
+        # Nothing else here observes it: principal moments are taken about the
+        # COM, so translating it leaves them unchanged, and total mass is blind
+        # to where the mass sits.  A link whose COM slid while its mass and
+        # inertia stayed put used to pass silently (#416).
+        mjcf_frame = mjcf_link_frames.get(mjcf_name)
+        urdf_frame = urdf_link_frames.get(urdf_name)
+        if mjcf_frame is None or urdf_frame is None:
+            print("    [WARN] COM not compared: link frame missing on one side")
+            warnings += 1
+        else:
+            r_m, p_m = mjcf_frame
+            com_m = _vec_add_3(p_m, _mat_vec_3(r_m, mjcf_ip.origin_xyz))
+            com_m = _vec_add_3(p_com_align, _mat_vec_3(r_com_align, com_m))
+            r_u, p_u = urdf_frame
+            com_u = _vec_add_3(p_u, _mat_vec_3(r_u, urdf_ip.origin_xyz))
+            if _vec_close_3(com_m, com_u, tolerance):
+                print(f"    COM (world): [{', '.join(_fmt(v) for v in com_u)}]  OK")
+            else:
+                delta = max(abs(a - b) for a, b in zip(com_m, com_u, strict=False))
+                print(
+                    f"    COM MISMATCH (world):"
+                    f"  MJCF=[{', '.join(_fmt(v) for v in com_m)}]"
+                    f"  URDF=[{', '.join(_fmt(v) for v in com_u)}]"
+                    f"  (max delta={_fmt(delta)})"
+                )
+                mismatches += 1
 
         # Inertia comparison via principal moments
         #
