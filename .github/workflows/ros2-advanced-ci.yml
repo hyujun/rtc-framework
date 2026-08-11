@@ -111,6 +111,11 @@ jobs:
               # 않고 skip 된다 (cpp 필터가 .github/ci-packages.yml·actions 를 포함하는 것과 대칭).
               - '.github/workflows/ros2-advanced-ci.yml'
               - '.github/actions/**'
+              # MJCF/URDF 모델 자체. 이 잡이 test_real_model_pairs.py 를 돌리는데
+              # (#392), 모델만 바꾼 PR 은 여기에 안 걸려 **게이트가 지키려는 바로
+              # 그 변경에서 skip** 됐다 — #413 PR 에서 실측으로 발현했다. mesh 도
+              # 포함한다: geom / mesh asset 개수가 비교 항목이다.
+              - 'robot_descriptions/robots/**'
 
   # ============================================================
   #  Package list loader — .github/ci-packages.yml 을 4개 output 으로 노출
