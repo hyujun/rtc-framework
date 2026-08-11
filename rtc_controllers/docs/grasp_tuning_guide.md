@@ -16,8 +16,12 @@
 - **제어 변수**: 손가락별 스칼라 grasp parameter `s ∈ [0, 1]`
   - `q(s) = (1 − s) · q_open + s · q_close` 선형 보간
   - PI 출력은 관절 토크가 아니라 closing 진행도의 미분 `ds` → 위치 제어 하드웨어에서도 힘 제어 가능
-- **피드백**: fingertip force sensor 의 norm `f_raw[3]` → Bessel 4차 LPF → `f_measured`
-- **호스팅**: 500 Hz RT 루프에서 `Update(f_raw, dt)` 호출 ([demo_joint_controller.cpp:421](../../integrated_bringup/src/controllers/joint/controller.cpp#L421), [demo_task_controller.cpp:664](../../integrated_bringup/src/controllers/task/controller.cpp#L664))
+- **피드백**: fingertip force sensor → delta-spike 가드 → **축별** Bessel 4차 LPF → norm → `f_measured`.
+  **필터는 이 클래스가 갖지 않는다** — 호출자(컨트롤러)가 필터해서 넘긴다. `‖LPF(F)‖` 는 3축을
+  봐야 하는데 `Update()` 는 이미 magnitude 로 접힌 값만 받기 때문이다. norm 이후에 필터를 걸면
+  zero-mean 축 노이즈가 양의 DC (3축 가우시안이면 ≈1.6σ) 로 정류돼 `f_contact_threshold` 바로
+  밑에 영구히 깔린다
+- **호스팅**: 500 Hz RT 루프에서 `Update(f_filtered, dt)` 호출 ([demo_joint_controller.cpp:421](../../integrated_bringup/src/controllers/joint/controller.cpp#L421), [demo_task_controller.cpp:664](../../integrated_bringup/src/controllers/task/controller.cpp#L664))
 - **활성 범위**: `phase() != kIdle` 일 때만 hand trajectory 출력의 finger 관절을 덮어씀
 - **명령 인터페이스**: `CommandGrasp(target_force)` / `CommandRelease()` (cross-thread atomic flag)
 
@@ -54,7 +58,9 @@ Idle ───────────────────► Approaching �
 ```
 
 ### 2.1 Idle (`UpdateIdle`)
-- `grasp_requested_` 플래그 set → finger state 전부 reset, force LPF reset 후 `kApproaching` 진입
+- `grasp_requested_` 플래그 set → finger state 전부 reset 후 `kApproaching` 진입.
+  리셋할 필터 tail 은 없다 (상류 뱅크는 contact_stop 과 수명을 공유하며 warm 하게 유지된다) —
+  즉 grasp 시작 첫 tick 의 `f_measured` 는 0 에서 램프하지 않고 실측값이다
 - 그 외는 현 자세 hold. `release_requested_` 는 consume 후 무시
 
 ### 2.2 Approaching (`UpdateApproaching`)
@@ -68,7 +74,7 @@ Idle ───────────────────► Approaching �
 ### 2.3 Contact (`UpdateContact`)
 - `contact_settle_timer_ ≥ contact_settle_time` 까지 자세 유지
 - 만료 시 `f_desired=0`, `integral_error=0`, `integrator_frozen=false` 로 **모든 finger** 재설정 후 `kForceControl` 진입
-- 목적: 충돌 직후 force 신호 transient/ringing 을 LPF + 시간으로 안정화
+- 목적: 충돌 직후 force 신호 transient/ringing 을 (상류) LPF + 시간으로 안정화
 - 튜닝 핸들: `contact_settle_time`
 
 ### 2.4 ForceControl (`UpdateForceControl`)
@@ -195,10 +201,17 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 
 | 파라미터 | 기본값 | 단위 | 의미 |
 |---|---|---|---|
-| `lpf_cutoff_hz` | 25.0 | Hz | Bessel 4차 LPF cutoff |
-| `control_rate_hz` | 500.0 | Hz | `BuildGraspController` 에서 런타임에 덮어씀 |
+| `lpf_cutoff_hz` | 25.0 | Hz | Bessel 4차 LPF cutoff. **`GraspParams` 에 없다** — YAML 키는
+`force_pi_grasp.lpf_cutoff_hz` 그대로이고, 값은 `DemoSharedConfig::force_pi_lpf_cutoff_hz` 를
+거쳐 컨트롤러의 축별 필터 뱅크로 간다 |
 
 25 Hz cutoff 의 group delay ≈ 20 ms 로 force PI 의 outer-loop bandwidth 대비 충분히 여유 있음.
+
+이 cutoff 는 contact_stop 의 `fsm.contact_stop_force_lpf_cutoff_hz` 와 **독립**이다. 둘은 같은
+guarded 입력을 받는 별개 뱅크이며, 요구가 반대이기 때문에 합치지 않는다 — contact_stop 은 지연이
+곧 손 이동 거리인 래치라 저지연을, force_pi 는 tick 당 미분(500 Hz 에서 0.01 N)으로 slip 을 보는
+서보라 저노이즈를 원한다. 가드(`fsm.contact_stop_force_guard_*`)는 반대로 **공유**한다: wire
+아티팩트 거부는 신호원의 성질이라 소비자별로 다를 이유가 없다.
 
 ---
 
@@ -218,7 +231,8 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 ### Step 3 — Open-loop ramp 검증
 - 임시로 `Kp_base=0`, `Ki_base=0` 으로 설정 (또는 테스트 YAML 분리)
 - Contact → ForceControl 진입 후 `s` 가 변하지 않아야 함 (PI 출력 0)
-- `f_measured` 가 LPF 통해 안정적으로 관측되는지 확인
+- `f_measured` 가 (상류) LPF 통해 안정적으로 관측되는지 확인. 발행되는
+  `GraspState.finger_filtered_force` 가 이 값이다
 - `f_desired` ramp 동작과 실제 `f_measured` 의 괴리 관찰
 
 ### Step 4 — P 이득 튜닝
@@ -266,7 +280,7 @@ Anomaly 가 사라져도 `f_desired` 는 자동으로 감소하지 않는다. `f
 
 ### 6.4 `K_contact_est` 초기 transient
 `Approaching → Contact` 진입 시 `K_contact_est = 1.0` 으로 reset 된다. 첫 update 의 `Δs = ds_max · dt = 1e-4` 정도로 매우 작아 `K_inst = ΔF/Δs` 가 크게 튈 수 있다. `kDeltaSEpsilon = 1e-6` 가드는 있으나 초기 PI transient 에서 EMA 가 spike 칠 가능성 존재.
-- 완화: `contact_settle_time` 중 LPF 가 안정화되는 동안은 문제 없음 (실제로는 f_desired=0 이므로 ds 도 작음)
+- 완화: `contact_settle_time` 중 (상류) LPF 가 안정화되는 동안은 문제 없음 (실제로는 f_desired=0 이므로 ds 도 작음)
 
 ### 6.5 Thumb/Index 비대칭의 함의
 Contact 전이가 thumb+index 2 손가락에 결정되므로:

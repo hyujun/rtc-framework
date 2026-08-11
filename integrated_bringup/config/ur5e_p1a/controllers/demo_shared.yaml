@@ -67,7 +67,11 @@ demo_shared:
     f_max_multiplier: 2.0       # max force = f_target * multiplier
 
     # Force filter
-    lpf_cutoff_hz: 25.0         # Bessel LPF cutoff [Hz]
+    # Bessel LPF cutoff [Hz] for the force this law servos on. Applied PER AXIS
+    # in the controller (before |F|), independently of the contact_stop bank's
+    # fsm.contact_stop_force_lpf_cutoff_hz. The delta-spike guard in front of
+    # both banks is shared and lives under fsm.contact_stop_force_guard_*.
+    lpf_cutoff_hz: 25.0
 
     # Finger postures {MCP_AA, MCP_FE, DIP_FE}
     # units: "deg" or "rad" (default "rad"). Internally always converted to rad.
