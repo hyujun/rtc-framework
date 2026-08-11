@@ -30,6 +30,7 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     _parse_floats,
     _quat_to_rot3,
     _resolve_alignment,
+    _resolve_link_map,
     _rpy_to_rot3,
     _urdf_link_world_frames,
     _vec_close_3,
@@ -1340,3 +1341,142 @@ class TestMjcfNamedFrames:
         mjcf.write_text(MJCF_TIP)
         frames = _mjcf_named_frames(mjcf)
         assert "world" in frames and "base" in frames and "link1" in frames
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# link_map is an exception list, not a worklist (#411)
+#
+# A partial map used to *filter* the per-link comparison: bodies it did not
+# name were parsed but never compared, and nothing in the report said so.  On
+# ur5e+hand that hid four real mass mismatches behind "Mismatches: 3".  The
+# fixture below reproduces the shape — one name-differing pair (declared) plus
+# one same-name pair (undeclared) whose mass disagrees.
+# ═══════════════════════════════════════════════════════════════════════════
+
+URDF_PARTIAL = """\
+<?xml version="1.0"?>
+<robot name="partial_map">
+  <link name="base_link_inertia">
+    <inertial>
+      <mass value="4.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="wrist_link">
+    <inertial>
+      <mass value="0.02"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <joint name="wrist_joint" type="revolute">
+    <parent link="base_link_inertia"/>
+    <child link="wrist_link"/>
+    <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+  </joint>
+</robot>
+"""
+
+# `wrist_link` carries 0.03 here against the URDF's 0.02 — the divergence the
+# narrowed comparison used to swallow.
+MJCF_PARTIAL = """\
+<mujoco model="partial_map">
+  <compiler angle="radian" autolimits="true"/>
+  <worldbody>
+    <body name="base">
+      <inertial mass="4.0" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+      <body name="wrist_link" pos="0 0 0.2">
+        <inertial mass="0.03" pos="0 0 0" diaginertia="0.001 0.001 0.001"/>
+        <joint name="wrist_joint" axis="0 0 1" range="-3.14 3.14"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general joint="wrist_joint" forcerange="-100 100"/>
+  </actuator>
+</mujoco>
+"""
+
+PARTIAL_MAP = {"base": "base_link_inertia"}
+
+
+class TestResolveLinkMap:
+    def _files(self, tmp_path):
+        mjcf = tmp_path / "p.xml"
+        mjcf.write_text(MJCF_PARTIAL)
+        urdf = tmp_path / "p.urdf"
+        urdf.write_text(URDF_PARTIAL)
+        return mjcf, urdf
+
+    def test_same_name_pair_outside_the_map_is_added(self, tmp_path):
+        mjcf, urdf = self._files(tmp_path)
+        effective, _, _ = _resolve_link_map(mjcf, urdf, PARTIAL_MAP)
+        assert effective == {"base": "base_link_inertia", "wrist_link": "wrist_link"}
+
+    def test_empty_map_falls_back_to_same_name_pairs(self, tmp_path):
+        mjcf, urdf = self._files(tmp_path)
+        for explicit in ({}, None):
+            effective, _, _ = _resolve_link_map(mjcf, urdf, explicit)
+            assert effective == {"wrist_link": "wrist_link"}
+
+    def test_urdf_link_an_explicit_entry_targets_is_not_re_paired(self, tmp_path):
+        """ur5e's shape.  `base: wrist_link` claims the URDF `wrist_link`, so
+        the same-named MJCF body must not grab it back — otherwise the
+        declaration is silently undone and one link is compared twice."""
+        mjcf, urdf = self._files(tmp_path)
+        effective, _, _ = _resolve_link_map(mjcf, urdf, {"base": "wrist_link"})
+        assert effective == {"base": "wrist_link"}
+
+    def test_explicit_entry_overrides_the_same_name_pair_for_its_body(self, tmp_path):
+        """An MJCF body named in the exception list is compared against the
+        link that entry names, not against its own name."""
+        mjcf, urdf = self._files(tmp_path)
+        effective, _, _ = _resolve_link_map(mjcf, urdf, {"wrist_link": "base_link_inertia"})
+        assert effective == {"wrist_link": "base_link_inertia"}
+
+    def test_unpaired_names_are_reported(self, tmp_path):
+        mjcf, urdf = self._files(tmp_path)
+        _, unpaired_mjcf, unpaired_urdf = _resolve_link_map(mjcf, urdf, None)
+        assert unpaired_mjcf == ["base"]
+        assert unpaired_urdf == ["base_link_inertia"]
+
+    def test_declared_pair_leaves_nothing_unpaired(self, tmp_path):
+        mjcf, urdf = self._files(tmp_path)
+        _, unpaired_mjcf, unpaired_urdf = _resolve_link_map(mjcf, urdf, PARTIAL_MAP)
+        assert unpaired_mjcf == [] and unpaired_urdf == []
+
+
+class TestPartialLinkMapDoesNotNarrow:
+    def _run(self, tmp_path, capsys, link_map=PARTIAL_MAP):
+        mjcf = tmp_path / "p.xml"
+        mjcf.write_text(MJCF_PARTIAL)
+        urdf = tmp_path / "p.urdf"
+        urdf.write_text(URDF_PARTIAL)
+        n = compare(mjcf, urdf, link_map=link_map, joint_names=["wrist_joint"])
+        return n, capsys.readouterr().out
+
+    def test_mismatch_outside_the_map_is_still_reported(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys)
+        assert "MASS MISMATCH" in out
+        assert "MJCF=0.03" in out and "URDF=0.02" in out
+        assert n >= 1
+
+    def test_coverage_is_stated(self, tmp_path, capsys):
+        _, out = self._run(tmp_path, capsys)
+        assert "Link pairs compared: 2" in out
+
+    def test_unpaired_links_are_listed(self, tmp_path, capsys):
+        """With no map at all, `base` / `base_link_inertia` go unpaired — the
+        report must say so instead of quietly comparing one link."""
+        _, out = self._run(tmp_path, capsys, link_map={})
+        assert "Link pairs compared: 1" in out
+        assert "not compared per-link — MJCF bodies (1): base" in out
+        assert "not compared per-link — URDF links (1): base_link_inertia" in out
+
+    def test_declared_pair_is_compared_under_its_own_name(self, tmp_path, capsys):
+        _, out = self._run(tmp_path, capsys)
+        assert "[base (URDF: base_link_inertia)]" in out
+        assert "not compared per-link" not in out
