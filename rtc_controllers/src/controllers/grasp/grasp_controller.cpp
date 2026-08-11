@@ -143,6 +143,17 @@ void GraspController::UpdateIdle() noexcept {
 }
 
 void GraspController::UpdateApproaching(double dt) noexcept {
+  // Release 를 이 phase 의 다른 무엇보다 먼저 본다 — kForceControl / kHolding 이
+  // 함수 끝에서 확인하는 것과 반대다. 그 둘과 달리 여기에는 경쟁하는 전이
+  // (kContact) 가 있어서, 끝에 두면 접촉이 성립한 tick 의 early return 이
+  // 플래그를 건너뛴다. 요청이 소실되지는 않지만 (다음 소비자는 kForceControl
+  // 이다) 그 사이 contact dwell 만큼 손은 계속 닫힌다. 먼저 소비하면 "RELEASE
+  // 는 지금 닫기를 멈춘다" 가 phase 와 무관하게 성립한다.
+  if (release_requested_.exchange(false, std::memory_order_acq_rel)) {
+    phase_ = GraspPhase::kReleasing;
+    return;
+  }
+
   for (int f = 0; f < num_fingers_; ++f) {
     auto& fs = fingers_[static_cast<std::size_t>(f)];
 
@@ -178,14 +189,18 @@ void GraspController::UpdateApproaching(double dt) noexcept {
     return;
   }
 
-  // Grasp 실패: primary 손가락이 s=1.0 까지 닫혔는데도 접촉 못 함
-  for (int f = 0; f < kPrimaryContacts; ++f) {
-    const auto& fs = fingers_[static_cast<std::size_t>(f)];
-    if (!fs.contact_detected && fs.s >= 1.0) {
-      phase_ = GraspPhase::kIdle;
-      return;
-    }
-  }
+  // s 가 1.0 에 도달했는데 접촉이 없어도 kIdle 로 낙하하지 않는다 — 손은 완전히
+  // 닫힌 자세에서 대기하고 접촉 판정은 위 루프에서 매 tick 계속 돈다. 접촉은
+  // 시간 제한이 아니라 사건이고 힘은 늦게 들어올 수 있다: 물체가 미끄러져 들어
+  // 오거나, 팔이 아직 움직이는 중이거나, fingertip lane 이 뒤늦게 살아나는
+  // 경우다. 늦은 접촉이 잡히면 s_at_contact = 1.0 이 되고, s 는 이미 1.0 에
+  // clamp 돼 있으므로 이어지는 force control 은 여는 방향으로만 권한을 갖는다
+  // (deformation guard 의 여유는 남지만 s 상한이 먼저 막는다).
+  //
+  // 대가는 이 phase 가 스스로 끝나지 않는다는 것이다. 나가는 길은 접촉 또는
+  // RELEASE 뿐이며, 그동안 phase 미러가 non-Idle 로 남아 grasp_controller_type
+  // 전환도 막힌다 (GraspModeChangeRejectReason 의 quiet gate). 위쪽 RELEASE
+  // 소비가 그 유일한 탈출구이므로 두 변경은 한 세트다.
 }
 
 void GraspController::UpdateContact(double dt) noexcept {
