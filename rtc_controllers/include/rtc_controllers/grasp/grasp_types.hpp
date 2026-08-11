@@ -71,9 +71,10 @@ struct GraspParams {
   double grip_decay_rate{0.1};         // [N/s] force decay rate toward target after tightening
   double f_max_multiplier{2.0};        // max force = f_target * multiplier
 
-  // Filter
-  double lpf_cutoff_hz{25.0};     // Bessel LPF cutoff [Hz]
-  double control_rate_hz{500.0};  // control loop rate [Hz]
+  // NOTE: there is no filter cutoff here. Update() consumes an ALREADY FILTERED
+  // force — see GraspController::Update. The fields were removed rather than
+  // deprecated on purpose: the span signature cannot express the change, so a
+  // compile error at the assignment is the only reliable notice a caller gets.
 };
 
 // ── Per-finger runtime state ─────────────────────────────────────────────────

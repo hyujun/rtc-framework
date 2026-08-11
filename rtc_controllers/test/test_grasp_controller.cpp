@@ -5,7 +5,6 @@
 
 #include <array>
 #include <cmath>
-#include <numbers>
 
 using namespace rtc::grasp;
 
@@ -50,8 +49,6 @@ class GraspControllerTest : public ::testing::Test {
     params_.Ki_base = 0.01;
     params_.alpha_ema = 0.95;
     params_.beta = 0.3;
-    params_.lpf_cutoff_hz = 100.0;  // high cutoff for tests (minimal filtering)
-    params_.control_rate_hz = 500.0;
     params_.df_slip_threshold = 5.0;
     params_.grip_tightening_ratio = 0.15;
     params_.f_max_multiplier = 2.0;
@@ -393,51 +390,48 @@ TEST_F(GraspControllerTest, AnomalyDetectionRespectsMaxMultiplier) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. LPF Tests
+// 5. Force input pass-through (was: LPF Tests)
 // ═══════════════════════════════════════════════════════════════════════════════
+//
+// SPEC CHANGE. LPFConvergesOnDCInput / LPFAttenuatesHighFrequency lived here and
+// are gone, in two pieces:
+//
+//   * the FILTER LAWS they asserted (DC convergence, 200 Hz attenuation, step
+//     overshoot, reset) are pinned at the primitive level in
+//     rtc_base/test/test_filters.cpp — those two tests were duplicating them
+//     through a controller that happened to own a BesselFilterN;
+//   * the WIRING they implied — "something filters the force this law servos
+//     on" — moved with the filter itself to the controller that owns the three
+//     axes, and is pinned in integrated_bringup/test/test_demo_joint_controller
+//     (RotatingHighFrequencyForceIsConstantInMagnitudeButFiltersAway,
+//     TheTwoBanksHaveIndependentCutoffs).
+//
+// What belongs here now is the new contract: the force arrives filtered and this
+// class must not alter it. That is the assertion a caller can be broken by.
 
-TEST_F(GraspControllerTest, LPFConvergesOnDCInput) {
-  // Use lower cutoff to see filter effect
-  params_.lpf_cutoff_hz = 25.0;
-  controller_.Init(finger_configs_, params_);
+TEST_F(GraspControllerTest, MeasuredForceIsTheCallerSInputVerbatim) {
+  // No CommandGrasp: the Idle→Approaching transition runs ResetFingers(), which
+  // zeroes f_measured for that one tick (unchanged behaviour, and not what this
+  // test is about). The force latch itself is unconditional at the top of
+  // Update(), so Idle is the cleanest place to observe it.
+  std::array<double, 3> force{1.5, 1.5, 1.5};
+  (void)controller_.Update(std::span<const double, 3>(force), kDt);
 
-  // Feed constant force
-  std::array<double, 3> dc_force{1.5, 1.5, 1.5};
-  for (int i = 0; i < 500; ++i) {  // 1 second at 500Hz
-    (void)controller_.Update(std::span<const double, 3>(dc_force), kDt);
-  }
-
-  // Filtered force should converge to DC value
+  // No settling loop on purpose: with no filter of its own, one tick is enough,
+  // and a filter reintroduced here would need many. The absence of the loop is
+  // the assertion.
   for (int f = 0; f < kNumFingers; ++f) {
-    EXPECT_NEAR(controller_.finger_states()[static_cast<std::size_t>(f)].f_measured, 1.5, 0.01)
-        << "Finger " << f << " LPF did not converge on DC input";
-  }
-}
-
-TEST_F(GraspControllerTest, LPFAttenuatesHighFrequency) {
-  params_.lpf_cutoff_hz = 25.0;
-  controller_.Init(finger_configs_, params_);
-
-  // Feed high-frequency sinusoidal noise (200 Hz, well above 25 Hz cutoff)
-  double max_filtered = 0.0;
-  for (int i = 0; i < 1000; ++i) {
-    const double t = static_cast<double>(i) * kDt;
-    const double noise = 1.0 * std::sin(2.0 * std::numbers::pi * 200.0 * t);
-    std::array<double, 3> noisy_force{noise, noise, noise};
-    (void)controller_.Update(std::span<const double, 3>(noisy_force), kDt);
-
-    // Track max filtered force after settling (skip first 100 samples)
-    if (i > 100) {
-      const double f_mag = std::abs(controller_.finger_states()[0].f_measured);
-      if (f_mag > max_filtered)
-        max_filtered = f_mag;
-    }
+    EXPECT_DOUBLE_EQ(controller_.finger_states()[static_cast<std::size_t>(f)].f_measured, 1.5)
+        << "Finger " << f << ": Update() must not transform the force it is given";
   }
 
-  // 200 Hz should be heavily attenuated by 25 Hz 4th-order Bessel
-  // Attenuation at 200/25 = 8x ratio, 4th order ~ -80 dB/decade beyond cutoff
-  EXPECT_LT(max_filtered, 0.05) << "High-frequency noise not sufficiently attenuated: "
-                                << max_filtered;
+  // …and it tracks a step immediately, in both directions.
+  std::array<double, 3> lower{0.25, 0.25, 0.25};
+  (void)controller_.Update(std::span<const double, 3>(lower), kDt);
+  for (int f = 0; f < kNumFingers; ++f) {
+    EXPECT_DOUBLE_EQ(controller_.finger_states()[static_cast<std::size_t>(f)].f_measured, 0.25)
+        << "Finger " << f;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -499,8 +493,6 @@ TEST(GraspControllerRaggedTest, HandlesHeterogeneousFingerDoF) {
 
   GraspParams params{};
   params.approach_speed = 0.5;
-  params.control_rate_hz = 500.0;
-  params.lpf_cutoff_hz = 100.0;
 
   GraspController controller;
   controller.Init(std::span<const FingerConfig>(configs), params);
@@ -538,8 +530,6 @@ TEST(GraspControllerRaggedTest, ShortForceSpanIsZeroPadded) {
     c.q_close = {1.0, 1.0};
   }
   GraspParams params{};
-  params.control_rate_hz = 500.0;
-  params.lpf_cutoff_hz = 100.0;
 
   GraspController controller;
   controller.Init(std::span<const FingerConfig>(configs), params);

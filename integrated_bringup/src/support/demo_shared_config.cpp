@@ -134,15 +134,11 @@ void ApplyForcePiBlock(const YAML::Node& fp, DemoSharedConfig& cfg) {
     gp.grip_tightening_ratio = fp["grip_tightening_ratio"].as<double>();
   if (fp["f_max_multiplier"])
     gp.f_max_multiplier = fp["f_max_multiplier"].as<double>();
-  // Same key, same meaning, same tuning advice — the filter it configures now
-  // lives in the controller (per axis, upstream of the |F| collapse) instead of
-  // inside GraspController. Kept on `gp` as well until the internal filter is
-  // removed, so this parse stays behaviour-preserving on its own.
-  if (fp["lpf_cutoff_hz"]) {
-    const double cutoff = fp["lpf_cutoff_hz"].as<double>();
-    gp.lpf_cutoff_hz = cutoff;
-    cfg.force_pi_lpf_cutoff_hz = cutoff;
-  }
+  // Same key, same meaning, same tuning advice — the filter it configures lives
+  // in the controller (per axis, upstream of the |F| collapse) rather than
+  // inside GraspController, which no longer holds one.
+  if (fp["lpf_cutoff_hz"])
+    cfg.force_pi_lpf_cutoff_hz = fp["lpf_cutoff_hz"].as<double>();
 
   if (fp["fingers"]) {
     const auto fingers_node = fp["fingers"];
@@ -465,7 +461,7 @@ void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_var
               static_cast<double>(cfg.grasp_force_threshold), cfg.grasp_min_fingertips);
 }
 
-void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
+void BuildGraspController(const DemoSharedConfig& cfg,
                           std::unique_ptr<rtc::grasp::GraspController>& grasp_controller) {
   // The block, not the mode, gates construction — rationale in the header. A
   // config that ships the block gets the PI capability whatever mode it starts
@@ -476,8 +472,7 @@ void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
     return;
   }
 
-  rtc::grasp::GraspParams gp = cfg.force_pi_params;
-  gp.control_rate_hz = control_rate_hz;
+  const rtc::grasp::GraspParams& gp = cfg.force_pi_params;
 
   grasp_controller = std::make_unique<rtc::grasp::GraspController>();
   const auto n =

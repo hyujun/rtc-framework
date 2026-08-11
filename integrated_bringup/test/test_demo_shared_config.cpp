@@ -245,7 +245,9 @@ force_pi_grasp:
   EXPECT_DOUBLE_EQ(cfg.force_pi_params.integral_clamp, 0.15);
   EXPECT_DOUBLE_EQ(cfg.force_pi_params.approach_speed, 0.3);
   EXPECT_DOUBLE_EQ(cfg.force_pi_params.release_speed, 0.4);
-  EXPECT_DOUBLE_EQ(cfg.force_pi_params.lpf_cutoff_hz, 30.0);
+  // Same YAML key, new home: the filter it configures is the controller's
+  // per-axis bank, not a GraspParams field.
+  EXPECT_DOUBLE_EQ(cfg.force_pi_lpf_cutoff_hz, 30.0);
 
   // Thumb (index 0)
   EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[0].q_open[0], 0.0);
@@ -354,7 +356,7 @@ TEST(BuildGraspControllerTest, ModeDoesNotGateTheBuildWhenTheBlockIsPresent) {
     }
 
     std::unique_ptr<rtc::grasp::GraspController> ctrl;
-    BuildGraspController(cfg, 500.0, ctrl);
+    BuildGraspController(cfg, ctrl);
     EXPECT_NE(ctrl.get(), nullptr) << "type " << type;
   }
 }
@@ -365,11 +367,11 @@ TEST(BuildGraspControllerTest, ForcePiWithoutBlockIsSkipped) {
   cfg.has_force_pi_block = false;
 
   std::unique_ptr<rtc::grasp::GraspController> ctrl;
-  BuildGraspController(cfg, 500.0, ctrl);
+  BuildGraspController(cfg, ctrl);
   EXPECT_EQ(ctrl.get(), nullptr);
 }
 
-TEST(BuildGraspControllerTest, ForcePiWithBlockBuildsControllerAtRequestedRate) {
+TEST(BuildGraspControllerTest, ForcePiWithBlockBuildsController) {
   DemoSharedConfig cfg;
   cfg.grasp_controller_type = "force_pi";
   cfg.has_force_pi_block = true;
@@ -377,7 +379,7 @@ TEST(BuildGraspControllerTest, ForcePiWithBlockBuildsControllerAtRequestedRate) 
   cfg.force_pi_params.Ki_base = 0.004;
   cfg.force_pi_params.f_target = 2.5;
   cfg.force_pi_params.f_ramp_rate = 1.0;
-  cfg.force_pi_params.lpf_cutoff_hz = 25.0;
+  cfg.force_pi_lpf_cutoff_hz = 25.0;
   // ds_max must be > 0 so the internal FSM can step; leave default (0.05).
 
   // Provide plausible finger postures so Init() doesn't misbehave.
@@ -387,18 +389,20 @@ TEST(BuildGraspControllerTest, ForcePiWithBlockBuildsControllerAtRequestedRate) 
   }
 
   std::unique_ptr<rtc::grasp::GraspController> ctrl;
-  BuildGraspController(cfg, 500.0, ctrl);
+  BuildGraspController(cfg, ctrl);
   ASSERT_NE(ctrl.get(), nullptr);
 
   // Init() seeds active_target_force_ from f_target and enters Idle.
   EXPECT_EQ(ctrl->phase(), rtc::grasp::GraspPhase::kIdle);
   EXPECT_DOUBLE_EQ(ctrl->target_force(), cfg.force_pi_params.f_target);
 
-  // BuildGraspController should overwrite control_rate_hz regardless of YAML.
-  // Pass a bogus stale rate; the builder must replace it with the argument.
-  cfg.force_pi_params.control_rate_hz = 123.0;
+  // SPEC CHANGE: the "builder overwrites control_rate_hz" half of this test is
+  // gone with the field. GraspController holds no filter, so it needs no sample
+  // rate; the rate now reaches only the controller's own filter bank, where
+  // GetDefaultDt() is its single source. Nothing is left unpinned — a wrong rate
+  // there is a wrong cutoff, which TheTwoBanksHaveIndependentCutoffs measures.
   std::unique_ptr<rtc::grasp::GraspController> ctrl2;
-  BuildGraspController(cfg, 250.0, ctrl2);
+  BuildGraspController(cfg, ctrl2);
   ASSERT_NE(ctrl2.get(), nullptr);
   // CommandGrasp immediately updates active_target_force_ (phase transition
   // only occurs on the next Update() tick, so we don't assert on phase here).
@@ -422,17 +426,17 @@ TEST(BuildGraspControllerTest, TheBlockOwnsTheResetDecisionNotTheMode) {
   }
 
   std::unique_ptr<rtc::grasp::GraspController> ctrl;
-  BuildGraspController(cfg, 500.0, ctrl);
+  BuildGraspController(cfg, ctrl);
   ASSERT_NE(ctrl.get(), nullptr);
 
   // Mode moves away from force_pi: the capability survives.
   cfg.grasp_controller_type = "contact_stop";
-  BuildGraspController(cfg, 500.0, ctrl);
+  BuildGraspController(cfg, ctrl);
   EXPECT_NE(ctrl.get(), nullptr);
 
   // The block goes away: the controller must go with it.
   cfg.has_force_pi_block = false;
-  BuildGraspController(cfg, 500.0, ctrl);
+  BuildGraspController(cfg, ctrl);
   EXPECT_EQ(ctrl.get(), nullptr);
 }
 

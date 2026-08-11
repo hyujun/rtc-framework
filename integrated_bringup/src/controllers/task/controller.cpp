@@ -1118,7 +1118,7 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 
-  BuildGraspController(shared, 1.0 / GetDefaultDt(), grasp_controller_);
+  BuildGraspController(shared, grasp_controller_);
 
   // ── #167 P3: pull estimator + tip-link → FK slot resolve ────────────────
   // Slot order = tree-model tip_links order (the fingertip_data_ /

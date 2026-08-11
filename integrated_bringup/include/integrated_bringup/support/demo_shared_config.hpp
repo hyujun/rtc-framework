@@ -163,7 +163,7 @@ void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_var
 // running" must therefore check the mode itself: the control law and the
 // diagnostics fill do (see the two controllers' compute paths), and the
 // grasp_command service uses GraspCommandRejectReason below.
-void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
+void BuildGraspController(const DemoSharedConfig& cfg,
                           std::unique_ptr<rtc::grasp::GraspController>& grasp_controller);
 
 /// Why a `grasp_command` (GRASP / RELEASE) must be refused right now, or nullptr
