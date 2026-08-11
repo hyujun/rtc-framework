@@ -134,8 +134,15 @@ void ApplyForcePiBlock(const YAML::Node& fp, DemoSharedConfig& cfg) {
     gp.grip_tightening_ratio = fp["grip_tightening_ratio"].as<double>();
   if (fp["f_max_multiplier"])
     gp.f_max_multiplier = fp["f_max_multiplier"].as<double>();
-  if (fp["lpf_cutoff_hz"])
-    gp.lpf_cutoff_hz = fp["lpf_cutoff_hz"].as<double>();
+  // Same key, same meaning, same tuning advice — the filter it configures now
+  // lives in the controller (per axis, upstream of the |F| collapse) instead of
+  // inside GraspController. Kept on `gp` as well until the internal filter is
+  // removed, so this parse stays behaviour-preserving on its own.
+  if (fp["lpf_cutoff_hz"]) {
+    const double cutoff = fp["lpf_cutoff_hz"].as<double>();
+    gp.lpf_cutoff_hz = cutoff;
+    cfg.force_pi_lpf_cutoff_hz = cutoff;
+  }
 
   if (fp["fingers"]) {
     const auto fingers_node = fp["fingers"];

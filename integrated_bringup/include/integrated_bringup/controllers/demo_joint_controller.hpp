@@ -229,6 +229,14 @@ class DemoJointController final : public RTControllerInterface {
     return f < force_guard_rejected_.size() && force_guard_rejected_[f] != 0;
   }
 
+  /// Test-only: the per-fingertip force magnitude the Force-PI law is fed. Its
+  /// own bank, so it is not the contact_stop aggregate and not the raw
+  /// GraspState magnitude — the two independence assertions need a handle that
+  /// is neither.
+  [[nodiscard]] std::span<const float> GetForcePiFeedForTesting() const noexcept {
+    return fingertip_force_mag_filt_grasp_;
+  }
+
   /// Test-only: the body the publish thread would Load right now (#234 P-1).
   /// Distinct from GetGraspStateForTesting(), which returns the RT staging
   /// buffer: a tick that fills the staging buffer but never stores it gets
@@ -314,7 +322,7 @@ class DemoJointController final : public RTControllerInterface {
                                   const FingertipForceGuardConfig& guard_cfg) noexcept;
   /// Config-time (throws): Init every per-fingertip force filter and clear the
   /// derived state. Called from the constructor and from LoadConfig.
-  void InitFingertipForceFilters(double cutoff_hz);
+  void InitFingertipForceFilters(double cutoff_hz, double grasp_cutoff_hz);
   void ComputeControl(const ControllerState& state, double dt) noexcept;
   // WriteOutput was split into 3 explicit-intent methods. The Compute()
   // dispatcher calls them in this order:
@@ -548,18 +556,31 @@ class DemoJointController final : public RTControllerInterface {
   /// LoadConfig (throws); Apply/Reset are noexcept + heap-free (RT-safe).
   rtc::BesselFilterN<kDemoJointMaxHandDof> hand_pos_filter_;
 
-  // ── Fingertip force LPF (contact_stop decision variable) ─────────────────
+  // ── Fingertip force LPF (contact_stop + force_pi decision variables) ─────
   //
   // One filter PER FINGERTIP rather than a single BesselFilterN<3*N>: an
   // invalid fingertip must not advance its own filter, and Apply() is
   // all-channels-or-nothing. Runs on every tick regardless of
   // grasp_controller_type so the logged column means the same thing in every
-  // run; force_pi keeps its own separate scalar filter over |F|.
+  // run.
   //
   // Per-axis, not on |F|: filtering the magnitude lets zero-mean axis noise
   // rectify into a positive bias that walks the aggregate toward the contact
   // threshold with no contact present.
+  //
+  // TWO BANKS, ONE GUARD. The guard removes wire artefacts (delta spikes,
+  // NaN/Inf) — that is a property of the signal source, so both consumers want
+  // exactly the same answer and share one instance. The cutoff is a per-consumer
+  // tuning axis and is NOT shared: contact_stop is a latch that trades noise for
+  // low latency (its freeze delay is hand travel), while force_pi closes a servo
+  // loop around a derivative-based slip detector (`df/dt < -df_slip_threshold`
+  // is 0.01 N per tick at 500 Hz) and trades latency for noise. Merging the two
+  // would force one of them onto the other's operating point.
   std::array<rtc::BesselFilterN<3>, rtc::kMaxSensorGroups> force_lpf_{};
+  /// Second bank at the Force-PI cutoff, fed the same guarded triplet, primed
+  /// and invalidated on exactly the same ticks as force_lpf_ (one shared
+  /// force_lpf_primed_ flag — they only ever differ in cutoff).
+  std::array<rtc::BesselFilterN<3>, rtc::kMaxSensorGroups> force_lpf_grasp_{};
   /// False until the next valid sample seeds the corresponding filter. Cleared
   /// whenever a fingertip goes invalid so re-entry seeds to the live force
   /// instead of ramping up from a delay line the world has left behind.
@@ -579,8 +600,12 @@ class DemoJointController final : public RTControllerInterface {
       fingertip_force_guarded_{};
   /// Per-fingertip guard verdict for the current tick (1 = raw was held out).
   std::array<std::uint8_t, rtc::kMaxSensorGroups> force_guard_rejected_{};
-  /// ‖filtered force‖ per fingertip [N].
+  /// ‖filtered force‖ per fingertip [N], contact_stop bank.
   std::array<float, rtc::kMaxSensorGroups> fingertip_force_mag_filt_{};
+  /// ‖filtered force‖ per fingertip [N], Force-PI bank. This is what the PI law
+  /// servos on — the norm is taken AFTER the per-axis filter, so unlike a filter
+  /// applied to |F| it carries no rectification bias.
+  std::array<float, rtc::kMaxSensorGroups> fingertip_force_mag_filt_grasp_{};
   /// contact_stop aggregates derived from the FILTERED magnitudes. Kept apart
   /// from grasp_state_.max_force / num_active_contacts, which stay raw so the
   /// published GraspState and its BT consumers see an unchanged contract.

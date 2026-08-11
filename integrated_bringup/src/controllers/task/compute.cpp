@@ -109,6 +109,11 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
 // valid sample seeds instead of ramping. Outputs go to zero to match raw
 // `ft.force`, which ReadState has already cleared.
 //
+// Both banks move together on every one of those decisions — one guard, one
+// primed flag, one invalidation. They differ in cutoff and nothing else, so any
+// path that primed or froze only one of them would make the two consumers
+// disagree about which epoch of the world they are looking at.
+//
 // The guard is invalidated on that same branch. Keeping its last-accepted
 // triplet across a dropout would compare the re-entry force against a base the
 // world has left behind — a lane that drops at 5 N and returns at 0.2 N is a
@@ -127,6 +132,7 @@ void DemoTaskController::UpdateFingertipForceFilter(
       fingertip_force_guarded_[base + j] = 0.0F;
     }
     fingertip_force_mag_filt_[f] = 0.0F;
+    fingertip_force_mag_filt_grasp_[f] = 0.0F;
     return;
   }
 
@@ -144,6 +150,8 @@ void DemoTaskController::UpdateFingertipForceFilter(
   if (!force_lpf_primed_[f]) {
     force_lpf_[f].Reset();
     force_lpf_[f].Seed(guarded.value);
+    force_lpf_grasp_[f].Reset();
+    force_lpf_grasp_[f].Seed(guarded.value);
     force_lpf_primed_[f] = true;
   }
   const std::array<double, 3> filt = force_lpf_[f].Apply(guarded.value);
@@ -152,6 +160,17 @@ void DemoTaskController::UpdateFingertipForceFilter(
   }
   fingertip_force_mag_filt_[f] =
       static_cast<float>(std::sqrt(filt[0] * filt[0] + filt[1] * filt[1] + filt[2] * filt[2]));
+
+  // Second bank, same guarded input, its own cutoff — see the header for why the
+  // cutoff is not shared. The norm is taken here, AFTER the per-axis filter:
+  // collapsing first and filtering the magnitude (what GraspController used to
+  // do internally) rectifies zero-mean axis noise into a positive offset that no
+  // amount of low-passing removes, and that offset sits directly under
+  // f_contact_threshold.
+  const std::array<double, 3> filt_grasp = force_lpf_grasp_[f].Apply(guarded.value);
+  fingertip_force_mag_filt_grasp_[f] =
+      static_cast<float>(std::sqrt(filt_grasp[0] * filt_grasp[0] + filt_grasp[1] * filt_grasp[1] +
+                                   filt_grasp[2] * filt_grasp[2]));
 }
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
@@ -840,14 +859,20 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
     }
 
     if (run_force_pi) {
-      std::array<double, rtc::grasp::kMaxGraspFingers> f_raw{};
+      // The Force-PI bank's output, not grasp_state_.force_magnitude: that field
+      // is the driver's wire value and stays raw for the published GraspState /
+      // BT contract. Feeding it here put the servo on an unguarded lane — a
+      // 2-tick wire spike reached the PI loop and its slip detector, and a single
+      // NaN sample would ride an IIR into the joint commands (clamp() launders
+      // NaN rather than trapping it, and nothing downstream checks finiteness).
+      std::array<double, rtc::grasp::kMaxGraspFingers> f_feed{};
       for (int f = 0; f < num_grasp_fingers_; ++f) {
-        f_raw[static_cast<std::size_t>(f)] =
-            static_cast<double>(grasp_state_.force_magnitude[static_cast<std::size_t>(f)]);
+        f_feed[static_cast<std::size_t>(f)] =
+            static_cast<double>(fingertip_force_mag_filt_grasp_[static_cast<std::size_t>(f)]);
       }
 
       const auto commands = grasp_controller_->Update(
-          std::span<const double>(f_raw.data(), static_cast<std::size_t>(num_grasp_fingers_)), dt);
+          std::span<const double>(f_feed.data(), static_cast<std::size_t>(num_grasp_fingers_)), dt);
 
       // Phase-transition log: rare event (gated by phase change), but still
       // throttled as a defensive RT-safety net in case the FSM oscillates.

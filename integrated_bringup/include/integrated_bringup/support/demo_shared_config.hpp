@@ -46,6 +46,12 @@ enum class PullPlaneNormalSource { kFixed, kPinchGeometry };
 // Canonical string for a source (logging). Never allocates.
 [[nodiscard]] const char* PullPlaneNormalSourceName(PullPlaneNormalSource source) noexcept;
 
+// Default cutoff for the Force-PI force feedback LPF. Named because the two
+// controllers need it before any YAML is read (their constructors Init the
+// filter bank so the RT path never sees un-Init'd coefficients) and because it
+// is now the sole home of a default that used to live in GraspParams.
+inline constexpr double kDefaultForcePiLpfCutoffHz = 25.0;
+
 // Parameters that DemoJointController and DemoTaskController share.
 // Defaults live in config/ur5e_p1a/controllers/demo_shared.yaml; per-controller YAMLs
 // may override individual keys via a second ApplyDemoSharedConfig() pass.
@@ -94,6 +100,15 @@ struct DemoSharedConfig {
   rtc::grasp::GraspParams force_pi_params{};
   std::array<rtc::grasp::FingerConfig, rtc::grasp::kMaxGraspFingers> force_pi_fingers{};
   bool has_force_pi_block{false};
+  /// Bessel LPF cutoff [Hz] for the force feedback the Force-PI law servos on.
+  /// YAML key is still `force_pi_grasp.lpf_cutoff_hz` — only the filter's
+  /// *location* moved. It is applied PER AXIS in the controller (upstream of the
+  /// |F| collapse) rather than to the already-collapsed magnitude inside
+  /// GraspController, because `‖LPF(F)‖` needs the three axes and
+  /// `GraspController::Update()` only ever sees a magnitude. Filtering after the
+  /// norm leaves a rectification bias: zero-mean sensor noise of σ per axis
+  /// shows up as a ≈1.6·σ phantom force floor that no low-pass can remove.
+  double force_pi_lpf_cutoff_hz{kDefaultForcePiLpfCutoffHz};
 
   // ── In-plane pull-force estimator (#167) ──────────────────────────────────
   // Parsed from the `pull_estimator` YAML block; consumed by
