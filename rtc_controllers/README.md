@@ -518,15 +518,16 @@ operational_space_controller:
 | `integral_clamp` | `double` | `0.1` | -- | 적분기 포화 한계 |
 | `approach_speed` | `double` | `0.2` | 1/s | Approaching 단계 ds/dt |
 | `release_speed` | `double` | `0.3` | 1/s | Releasing 단계 ds/dt |
-| `settle_epsilon` | `double` | `0.1` | N | 힘 수렴 판정 임계값 |
+| `settle_epsilon` | `double` | `0.1` | N | 힘 수렴 판정 임계값 (**램프 완료 후**의 목표력 대비 오차) |
 | `settle_time` | `double` | `0.3` | s | 수렴 유지 시간 |
 | `contact_settle_time` | `double` | `0.1` | s | Contact 단계 안정화 대기 시간 |
 | `df_slip_threshold` | `double` | `5.0` | N/s | 슬립 감지 df/dt 임계값 (음방향) |
-| `grip_tightening_ratio` | `double` | `0.15` | -- | 슬립 시 힘 증가 비율 |
+| `f_slip_fraction` | `double` | `0.5` | -- | `f_measured < f_target * this` 면 grip 상실로 판정 |
+| `grip_tightening_rate` | `double` | `0.5` | N/s | grip 상실 동안 기준력 상승 속도 |
 | `grip_decay_rate` | `double` | `0.1` | N/s | tightening 후 목표력으로 감쇄 속도 |
 | `f_max_multiplier` | `double` | `2.0` | -- | 최대 허용 힘 = f_target * multiplier |
-| `lpf_cutoff_hz` | `double` | `25.0` | Hz | Bessel 4차 LPF 차단 주파수 |
-| `control_rate_hz` | `double` | `500.0` | Hz | 제어 루프 주파수 |
+
+`lpf_cutoff_hz` · `control_rate_hz` 는 **`GraspParams` 필드가 아니다** — 필터가 호출자 (컨트롤러의 축별 뱅크) 로 옮겨가면서 제거됐다. `force_pi_grasp.lpf_cutoff_hz` YAML 키는 그대로이고 값은 `DemoSharedConfig::force_pi_lpf_cutoff_hz` 를 거친다. `grip_tightening_ratio` 도 제거됐다 (per-tick 비율이라 grip force 가 `control_rate` 에 의존했다 → `grip_tightening_rate` [N/s]); YAML 에 남아 있으면 `LoadConfig` 가 throw 한다.
 
 **Per-finger 제어 법칙 (적응형 PI):**
 

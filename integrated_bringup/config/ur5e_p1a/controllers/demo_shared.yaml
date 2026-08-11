@@ -63,7 +63,9 @@ demo_shared:
 
     # Anomaly detection
     df_slip_threshold: 5.0      # [N/s] slip df/dt threshold
-    grip_tightening_ratio: 0.15 # force increase ratio on slip
+    f_slip_fraction: 0.5        # grip "lost" below f_target * this
+    grip_tightening_rate: 0.5   # [N/s] reference increase rate while grip is lost
+    grip_decay_rate: 0.1        # [N/s] decay back toward f_target after tightening
     f_max_multiplier: 2.0       # max force = f_target * multiplier
 
     # Force filter

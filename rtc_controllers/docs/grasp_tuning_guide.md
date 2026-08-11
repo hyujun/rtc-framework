@@ -89,8 +89,9 @@ Idle ───────────────────► Approaching �
 - **접촉된 finger 만** 처리 (`if (!fs.contact_detected) continue;`)
   - `f_desired = min(f_desired + f_ramp_rate · dt, active_target_force)` (force reference ramp)
   - `ds = ComputeAdaptivePI(f, dt)` → `ApplyDeformationGuard(f, ds)` → `s += ds · dt`, clamp `[0,1]`
-- 접촉된 모든 finger 가 `|f_desired − f_measured| ≤ settle_epsilon` → `force_settle_timer_ += dt`
+- 접촉된 모든 finger 가 **`f_desired == active_target_force` (램프 완료) 이고** `|f_desired − f_measured| ≤ settle_epsilon` → `force_settle_timer_ += dt`
 - `force_settle_timer_ ≥ settle_time` → `kHolding` 전이
+- 램프 완료 조건이 없으면 판정하는 것이 "목표힘에 수렴했다" 가 아니라 "램프가 지금 측정힘 근처를 지나간다" 가 된다 — §4.5 참조
 - 어느 하나라도 미수렴이면 `force_settle_timer_ = 0` 리셋
 - 도중 `release_requested_` → `kReleasing` 즉시 전이
 
@@ -100,10 +101,12 @@ Idle ───────────────────► Approaching �
 - ForceControl 와 동일한 PI + deformation guard 로 `s` 유지 (접촉된 finger 만)
 - **이상감지 (per-finger)**:
   - `df/dt < -df_slip_threshold` (슬립 의심) OR
-  - `f_measured < 0.5 · active_target_force` (목표 절반 이하)
-  - 중 하나라도 만족하면 `f_desired ← min(f_desired · (1 + grip_tightening_ratio), f_target · f_max_multiplier)`, `integrator_frozen=false` 로 추가 closing 허용
+  - `f_measured < f_slip_fraction · active_target_force` (목표 대비 비율 이하)
+  - 중 하나라도 만족하면 `f_desired ← min(f_desired + grip_tightening_rate · dt, f_target · f_max_multiplier)`
+- 두 조건의 성격이 다르다: `df/dt` 는 **사건**, `f_slip_fraction` 비교는 **상태**(조건이 참인 동안 매 tick 재발화). 그래서 보정량은 반드시 rate 다 — per-tick 비율이었을 때 grip force 가 `control_rate` 의 함수였다 (0.15/tick → 500 Hz 에서 22 ms 만에 상한)
+- **integrator 동결은 건드리지 않는다.** 동결의 유일한 권한은 같은 tick 앞에서 이미 돈 `ApplyDeformationGuard` 이고, 여기서 풀면 guard 가 얼리고 이 분기가 녹이는 교착이 매 tick 반복된다 (실측: 연체 K=3 에서 `f_desired` 가 상한 4.0 N 에 영구 고정, `Δs` 는 `delta_s_max` 에 붙고 힘은 0.85 N 에서 정지)
+- anomaly 가 사라지면 `f_desired` 는 `grip_decay_rate` [N/s] 로 `f_target` 까지 되돌아온다
 - `release_requested_` → `kReleasing`
-- ⚠️ **설계상 한계**: anomaly 가 사라져도 `f_desired` 는 자동으로 내려오지 않는다. 누적 grip-tightening 은 영구 적용.
 
 ### 2.6 Releasing (`UpdateReleasing`)
 - **모든 finger** (접촉 여부 무관) `s -= release_speed · dt`, `s ≥ 0` clamp
@@ -173,9 +176,12 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 | `f_target` | 2.0 | N | 목표 grip force |
 | `f_ramp_rate` | 1.0 | N/s | f_desired ramp 속도 |
 | `f_max_multiplier` | 2.0 | — | Holding 시 최대 허용 force = `f_target · multiplier` |
-| `grip_tightening_ratio` | 0.15 | — | 슬립 감지 시 1회 force boost 비율 |
+| `f_slip_fraction` | 0.5 | — | `f_measured < f_target · this` 면 grip 상실로 판정 |
+| `grip_tightening_rate` | 0.5 | N/s | grip 상실 동안 `f_desired` 상승 속도 |
 | `grip_decay_rate` | 0.1 | N/s | Holding에서 tightening 후 f_desired 감쇠 속도 (f_target으로 복귀) |
 | `df_slip_threshold` | 5.0 | N/s | 슬립 판정 `df/dt` 임계 |
+
+`grip_tightening_rate` 와 `grip_decay_rate` 는 같은 축의 짝이고 **둘의 비가 조임/풀림 비대칭**이다 (기본 5:1). 순 상승률은 `tightening − decay`.
 
 튜닝 가이드:
 - `f_contact_threshold`: 센서 noise floor 의 3–5σ 위로 (false latch 방지). 너무 높으면 가벼운 물체 인식 실패.
@@ -203,7 +209,9 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 | `settle_epsilon` | **0.1** | N | ForceControl 수렴 판정 threshold (`f_target=2.0 N` 기준 5%) |
 | `settle_time` | 0.3 | s | ForceControl 수렴 유지 시간 |
 
-> **구조적 관찰**: `f_ramp_rate · settle_time = 1.0 · 0.3 = 0.3 N > settle_epsilon = 0.1 N`. ramp 가 진행되는 동안은 `all_settled` 가 성립하기 어려우므로, 실질적으로 **`f_desired` 가 `f_target` 에 도달한 이후** 에만 `force_settle_timer_` 가 꾸준히 누적된다. `f_ramp_rate` 를 크게 올리면 사실상 settle 검사가 ramp 끝까지 미뤄진다.
+> **`settle_*` 는 `f_ramp_rate` 와 무관하다.** dwell 은 램프가 `f_target` 에 닿은 뒤에만 시작하므로 (§2.4), 이 둘을 정할 때 램프 속도를 고려할 필요가 없다.
+>
+> 이 보장이 코드에 들어온 것은 나중이다. 그전에는 dwell 이 램프 중에도 돌아서 `settle_time < 2 · settle_epsilon / f_ramp_rate` 인 설정은 **램프가 측정힘 근처를 지나가는 도중에 승급**했고 — Holding 에는 램프가 없으므로 — 기준값이 거기서 얼어붙었다. 배포 `ur5e_p1a`(0.3 s vs 0.5 s)가 정확히 그 영역이었고, 실측 Holding 진입 `f_desired` 는 물체 강성과 무관하게 **0.60~0.68 N (목표 2.0 N)** 이었다.
 
 ### 4.6 필터
 
@@ -275,18 +283,17 @@ guarded 입력을 받는 별개 뱅크이며, 요구가 반대이기 때문에 �
 ## 6. 알려진 이슈 / 주의사항
 
 ### 6.1 Integrator freeze 가 영구화될 수 있음
-`ApplyDeformationGuard` 에서 `remaining` 이 한계에 근접하면 `integrator_frozen=true` 로 set 되지만, `remaining` 이 다시 커져도 자동 해제되지 않는다. Holding 단계에서 일시적 deformation 한계 근접 후 외란이 사라져도 I 항은 다시 누적되지 않을 수 있다.
-- 증상: Holding 중 steady-state 오차가 줄어들지 않음
-- 완화: slip anomaly 가 발생하면 해제되므로, 심각한 문제는 아님. 장기 hold 시나리오에서만 관찰 필요.
+`ApplyDeformationGuard` 는 `remaining ≥ 10% · delta_s_max` 로 여유가 회복되면 `integrator_frozen` 을 **스스로 해제한다** (else 분기). 즉 동결은 guard 가 걸고 guard 가 푸는 닫힌 계약이며, 다른 어떤 코드도 이 플래그를 건드리지 않는다 — anomaly 분기가 이걸 풀던 시절에 연체에서 영구 교착이 났다 (§2.5).
 
-### 6.2 Holding 의 grip-tightening 단방향성
-Anomaly 가 사라져도 `f_desired` 는 자동으로 감소하지 않는다. `f_max_multiplier` 에 의한 상한만 있음.
-- 영향: 반복 slip 시 `f_desired` 가 상한까지 계속 올라가고 유지
-- 완화 방향 (향후 개선): anomaly 해제 후 `f_desired` 를 `f_target` 로 decay 하는 로직 추가 고려
+### 6.2 물체가 물러서 목표힘에 도달할 수 없는 경우
+`delta_s_max` 는 접촉 후 추가 closing 을 제한하므로, 예산 내 도달 가능한 최대 힘은 대략 `f_contact_threshold + K · delta_s_max` 다 (K = 물체 강성 [N/Δs]). 이보다 `settle_epsilon` 이상 모자라면 `all_settled` 가 성립하지 않아 **kForceControl 에 머문다** — 거짓 Holding 대신 정직한 미수렴이다. BT 는 `grasp_timeout_ms` 로 이를 실패로 처리한다.
+- 실측 (배포 파라미터, `f_target=2.0`): K≥10 이면 도달, K≤7 이면 미도달
+- 조정 축은 `delta_s_max` ↑ 또는 `f_target` ↓ 이며, 전자는 물체 파괴 위험과 직접 맞바꾼다
 
-### 6.3 `f_ramp_rate` 와 `settle` 검사의 일관성
-§4.5 에서 서술한 대로 ramp 도중에는 `all_settled` 가 false 가 되기 쉽다. 실질적으로 ForceControl 의 실제 dwell 시간은 `(f_target / f_ramp_rate) + settle_time` 에 가까움.
-- 필요 시 "ramp 완료 후 settle timer 시작" 으로 semantic 변경 고려
+### 6.3 Holding 진입까지의 소요 시간
+수렴 판정이 정직해진 뒤로 Holding 진입은 폐루프 응답 속도가 정한다. 실측 (배포 파라미터, `f_target=2.0`): K=200 → 2.2 s, K=50 → 3.3 s, K=20 → 5.5 s, K=10 → 9.3 s.
+- 폐루프 시상수는 `K · Kp_base / (1 + beta · K)` 로 결정되며 K→∞ 에서 `Kp_base / beta` 로 **상한이 걸린다** (기본값 0.02/0.3 = 0.067 /s, 즉 τ ≥ 15 s). 강성을 아무리 올려도 이보다 빨라지지 않는다
+- BT `grasp_timeout_ms` (예: `pick_and_place_force_pi.xml` 의 10000) 와 함께 봐야 한다 — 무른 물체일수록 이 예산에 가까워진다
 
 ### 6.4 `K_contact_est` 초기 transient
 `Approaching → Contact` 진입 시 `K_contact_est = 1.0` 으로 reset 된다. 첫 update 의 `Δs = ds_max · dt = 1e-4` 정도로 매우 작아 `K_inst = ΔF/Δs` 가 크게 튈 수 있다. `kDeltaSEpsilon = 1e-6` 가드는 있으나 초기 PI transient 에서 EMA 가 spike 칠 가능성 존재.
