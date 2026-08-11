@@ -262,6 +262,44 @@ force_pi_grasp:
   EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[2].q_close[1], 1.2);
 }
 
+// Anomaly 축 세 키는 이 블록에서 따로 파싱된다. grip_decay_rate 는 원래 로더에
+// 아예 없어서 YAML 로 설정할 수 없었다 (적어도 조용히 무시되고 default 가 돌았다).
+TEST(DemoSharedConfigTest, ForcePiAnomalyParamsParse) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+force_pi_grasp:
+  df_slip_threshold: 4.0
+  f_slip_fraction: 0.6
+  grip_tightening_rate: 0.9
+  grip_decay_rate: 0.25
+  f_max_multiplier: 1.5
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  EXPECT_DOUBLE_EQ(cfg.force_pi_params.df_slip_threshold, 4.0);
+  EXPECT_DOUBLE_EQ(cfg.force_pi_params.f_slip_fraction, 0.6);
+  EXPECT_DOUBLE_EQ(cfg.force_pi_params.grip_tightening_rate, 0.9);
+  EXPECT_DOUBLE_EQ(cfg.force_pi_params.grip_decay_rate, 0.25);
+  EXPECT_DOUBLE_EQ(cfg.force_pi_params.f_max_multiplier, 1.5);
+}
+
+// 제거된 키는 조용히 무시되지 않고 실패한다. 로더가 모르는 키를 넘기는 구조라
+// 이 거부가 없으면 남아 있는 grip_tightening_ratio 가 사라지고 default rate 가
+// 대신 도는 것을 아무도 모른다. 단위가 바뀌었으므로 (per-tick 비율 -> N/s)
+// 자동 변환도 불가능하다.
+TEST(DemoSharedConfigTest, ForcePiRejectsRemovedGripTighteningRatio) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load("force_pi_grasp:\n  grip_tightening_ratio: 0.15\n");
+  // 메시지까지 고정한다 — 다른 이유로 throw 해도 EXPECT_THROW 는 green 이 된다.
+  try {
+    ApplyDemoSharedConfig(node, cfg);
+    FAIL() << "removed key was accepted";
+  } catch (const std::runtime_error& e) {
+    EXPECT_NE(std::string(e.what()).find("grip_tightening_rate"), std::string::npos)
+        << "메시지가 대체 키를 알려주지 않는다: " << e.what();
+  }
+}
+
 TEST(DemoSharedConfigTest, ForcePiBlockAbsentLeavesFlagFalse) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load("grasp_controller_type: force_pi\n");

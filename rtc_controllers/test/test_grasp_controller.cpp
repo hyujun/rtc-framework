@@ -50,7 +50,9 @@ class GraspControllerTest : public ::testing::Test {
     params_.alpha_ema = 0.95;
     params_.beta = 0.3;
     params_.df_slip_threshold = 5.0;
-    params_.grip_tightening_ratio = 0.15;
+    params_.f_slip_fraction = 0.5;
+    params_.grip_tightening_rate = 0.5;  // [N/s]
+    params_.grip_decay_rate = 0.1;       // [N/s] — 짝이므로 테스트도 명시한다
     params_.f_max_multiplier = 2.0;
 
     controller_.Init(finger_configs_, params_);
@@ -144,6 +146,44 @@ TEST_F(GraspControllerTest, ForceControlToHolding) {
   controller_.CommandGrasp();
   RunUntilPhase(GraspPhase::kHolding, 100000);
   EXPECT_EQ(controller_.phase(), GraspPhase::kHolding);
+}
+
+// 수렴 판정은 램프 중인 기준값이 아니라 f_target 에 대고 재야 한다.
+//
+// 측정힘을 **상수로 고정해 플랜트를 루프에서 뺀다**. fixture 의 Kelvin-Voigt
+// 모델을 끼우면 접촉 동역학이 오차를 흔들어 dwell 타이머를 계속 리셋해버려,
+// 파라미터가 조기 승급 영역에 있어도 그 경로를 타지 않는다 (실측: 회귀를 심어도
+// green). 상수 힘이면 남는 동역학은 램프뿐이라 판정이 결정적이다.
+//
+// 여기서 파라미터를 배포 ur5e_p1a 비율로 바꾸는 이유도 같다 — 조기 승급은
+// `settle_time < 2*settle_epsilon / f_ramp_rate` 일 때만 일어나고, fixture
+// 기본값(0.05 vs 0.02)은 안전한 쪽, 배포값(0.3 vs 0.5)은 위험한 쪽이다.
+TEST_F(GraspControllerTest, HoldingIsNotEnteredWhileForceIsShortOfTarget) {
+  params_.f_ramp_rate = 2.0;
+  params_.settle_epsilon = 0.5;
+  params_.settle_time = 0.3;
+  ASSERT_LT(params_.settle_time, 2.0 * params_.settle_epsilon / params_.f_ramp_rate)
+      << "이 파라미터 조합은 조기 승급 영역이 아니라 회귀를 잡지 못한다";
+  controller_.Init(finger_configs_, params_);
+  controller_.CommandGrasp();
+
+  // 목표(2.0)에 settle_epsilon(0.5)보다 멀리 떨어진 상수 힘 — 정의상 미수렴이다.
+  // 램프는 이 값을 지나쳐 2.0 까지 올라가므로, 판정을 램프 기준값에 대고 재던
+  // 옛 코드는 지나가는 도중에 승급했다 (f_desired ≈ 1.1 에서).
+  constexpr double kHeldForce = 1.0;
+  std::array<double, kNumFingers> forces{};
+  forces.fill(kHeldForce);
+  ASSERT_GT(std::abs(params_.f_target - kHeldForce), params_.settle_epsilon);
+
+  for (int i = 0; i < static_cast<int>(5.0 / kDt); ++i) {
+    (void)controller_.Update(std::span<const double, 3>(forces), kDt);
+  }
+
+  EXPECT_EQ(controller_.phase(), GraspPhase::kForceControl)
+      << "미수렴 상태에서 Holding 으로 승급했다 (phase=" << static_cast<int>(controller_.phase())
+      << ")";
+  EXPECT_DOUBLE_EQ(controller_.finger_states()[0].f_desired, params_.f_target)
+      << "램프는 목표까지 올라와 있어야 한다";
 }
 
 TEST_F(GraspControllerTest, HoldingToReleasingOnCommand) {
@@ -402,23 +442,65 @@ TEST_F(GraspControllerTest, DeformationGuardProportionalDeceleration) {
 // 4. Force Anomaly Detection Tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_F(GraspControllerTest, AnomalyDetectionIncreasesForceDesired) {
+// Grip tightening 은 **rate** 다. 힘을 잃은 동안 기준값은 (tightening − decay)
+// N/s 로 오르며, 그 값은 tick 수가 아니라 경과 시간이 정한다.
+TEST_F(GraspControllerTest, AnomalyDetectionRaisesForceDesiredAtConfiguredRate) {
   controller_.CommandGrasp();
   RunUntilPhase(GraspPhase::kHolding, 100000);
   ASSERT_EQ(controller_.phase(), GraspPhase::kHolding);
 
-  // Record f_desired before anomaly
   const double f_desired_before = controller_.finger_states()[0].f_desired;
 
   // Simulate sudden force drop (object slipping) by feeding zero forces
+  constexpr double kDropSeconds = 1.0;
+  const int steps = static_cast<int>(kDropSeconds / kDt);
   std::array<double, 3> zero_force{0.0, 0.0, 0.0};
-  for (int i = 0; i < 10; ++i) {
+  for (int i = 0; i < steps; ++i) {
     (void)controller_.Update(std::span<const double, 3>(zero_force), kDt);
   }
 
-  // f_desired should have increased due to grip tightening
-  const double f_desired_after = controller_.finger_states()[0].f_desired;
-  EXPECT_GT(f_desired_after, f_desired_before) << "f_desired did not increase after force anomaly";
+  // 첫 tick 은 f_desired == target 이라 decay 가 걸리지 않는다 — 1 tick 분의
+  // decay 만큼 오차가 남으므로 tolerance 는 그보다 넉넉히 잡는다.
+  const double expected =
+      f_desired_before + (params_.grip_tightening_rate - params_.grip_decay_rate) * kDropSeconds;
+  EXPECT_NEAR(controller_.finger_states()[0].f_desired, expected, 0.01)
+      << "grip tightening 이 rate 가 아니다 (per-tick 이면 상한까지 튄다)";
+}
+
+// 같은 결함의 직접 고정: per-tick 비율이었을 때 tightening 총량은 control_rate
+// 에 비례했다 (500 Hz 와 1 kHz 가 2배 차이). rate 로 바뀐 지금 같은 경과 시간은
+// 주기와 무관하게 같은 상승을 낸다.
+TEST_F(GraspControllerTest, GripTighteningIsIndependentOfControlRate) {
+  auto rise_after_one_second_of_zero_force = [this](double dt) {
+    GraspController c;
+    c.Init(finger_configs_, params_);
+    c.CommandGrasp();
+    // 이 헬퍼는 자체 dt 로 접촉 모델을 돌려야 하므로 fixture 루프를 쓰지 않는다.
+    for (int i = 0; i < 400000; ++i) {
+      std::array<double, kNumFingers> forces{};
+      const auto& st = c.finger_states();
+      for (int f = 0; f < kNumFingers; ++f) {
+        const auto idx = static_cast<std::size_t>(f);
+        forces[idx] =
+            SimulateContactForce(st[idx].s, contact_s_, (st[idx].s - st[idx].s_prev) / dt);
+      }
+      (void)c.Update(std::span<const double, 3>(forces), dt);
+      if (c.phase() == GraspPhase::kHolding)
+        break;
+    }
+    EXPECT_EQ(c.phase(), GraspPhase::kHolding) << "dt=" << dt << " 에서 Holding 미도달";
+    const double before = c.finger_states()[0].f_desired;
+    std::array<double, 3> zero_force{0.0, 0.0, 0.0};
+    for (int i = 0; i < static_cast<int>(1.0 / dt); ++i) {
+      (void)c.Update(std::span<const double, 3>(zero_force), dt);
+    }
+    return c.finger_states()[0].f_desired - before;
+  };
+
+  const double rise_500hz = rise_after_one_second_of_zero_force(0.002);
+  const double rise_1khz = rise_after_one_second_of_zero_force(0.001);
+  EXPECT_NEAR(rise_500hz, rise_1khz, 0.005)
+      << "500 Hz " << rise_500hz << " vs 1 kHz " << rise_1khz << " — control_rate 의존이 남아 있다";
 }
 
 TEST_F(GraspControllerTest, AnomalyDetectionRespectsMaxMultiplier) {
@@ -426,19 +508,40 @@ TEST_F(GraspControllerTest, AnomalyDetectionRespectsMaxMultiplier) {
   RunUntilPhase(GraspPhase::kHolding, 100000);
   ASSERT_EQ(controller_.phase(), GraspPhase::kHolding);
 
-  // Feed zero forces for many steps to trigger repeated tightening
+  // 상한까지 확실히 밀어붙인다: 순 상승률 (0.5 − 0.1) N/s 로 target 2.0 →
+  // cap 4.0 에 5 s 필요하므로 20 s 를 돌린다. 짧게 돌리면 상한 근처에 가지도
+  // 않은 채 EXPECT_LE 가 공허하게 통과한다.
   std::array<double, 3> zero_force{0.0, 0.0, 0.0};
-  for (int i = 0; i < 500; ++i) {
+  for (int i = 0; i < static_cast<int>(20.0 / kDt); ++i) {
     (void)controller_.Update(std::span<const double, 3>(zero_force), kDt);
   }
 
-  // f_desired should not exceed f_target * f_max_multiplier
   const double max_allowed = params_.f_target * params_.f_max_multiplier;
   for (int f = 0; f < kNumFingers; ++f) {
-    EXPECT_LE(controller_.finger_states()[static_cast<std::size_t>(f)].f_desired,
-              max_allowed + 0.01)
-        << "Finger " << f << " f_desired exceeded max multiplier";
+    const double fd = controller_.finger_states()[static_cast<std::size_t>(f)].f_desired;
+    EXPECT_LE(fd, max_allowed + 0.01) << "Finger " << f << " f_desired exceeded max multiplier";
+    // 공허 통과 가드 — 상한에 실제로 도달했는지 확인해야 위 단언이 의미를 갖는다.
+    EXPECT_NEAR(fd, max_allowed, 0.01) << "Finger " << f << " 가 상한까지 오르지 못했다";
   }
+}
+
+// deformation guard 가 얼린 integrator 를 anomaly 분기가 매 tick 녹이던 교착의
+// 회귀 방지. guard 가 한계에 닿은 뒤에는 힘을 잃은 상태가 계속돼도 integrator 는
+// 얼어 있어야 한다 (닫는 권한은 guard 만 갖는다).
+TEST_F(GraspControllerTest, AnomalyDoesNotThawDeformationGuardFreeze) {
+  controller_.CommandGrasp();
+  RunUntilPhase(GraspPhase::kHolding, 100000);
+  ASSERT_EQ(controller_.phase(), GraspPhase::kHolding);
+
+  // 힘을 0 으로 떨어뜨려 tightening 을 계속 발화시키면 s 가 guard 한계까지 간다.
+  std::array<double, 3> zero_force{0.0, 0.0, 0.0};
+  for (int i = 0; i < static_cast<int>(60.0 / kDt); ++i) {
+    (void)controller_.Update(std::span<const double, 3>(zero_force), kDt);
+  }
+
+  const auto& fs = controller_.finger_states()[0];
+  ASSERT_GE(fs.s - fs.s_at_contact, params_.delta_s_max - 1e-9) << "guard 한계에 도달하지 못했다";
+  EXPECT_TRUE(fs.integrator_frozen) << "guard 가 얼린 integrator 를 anomaly 분기가 녹였다";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
