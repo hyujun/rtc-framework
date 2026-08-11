@@ -170,13 +170,62 @@ TEST_F(GraspControllerTest, ReleasingToIdleOnComplete) {
   }
 }
 
-TEST_F(GraspControllerTest, GraspFailsWhenNoContact) {
+// s=1.0 까지 닫혔는데 접촉이 없으면 kApproaching 에서 **대기**한다. 이전 spec 은
+// 여기서 kIdle 로 낙하했으나, 그건 접촉을 시간 제한처럼 다루는 것이었다 — 힘은
+// 늦게 들어올 수 있고 (ApproachAcceptsContactAfterSaturating), 낙하는 호출측의
+// `phase() != kIdle` 게이트를 통해 손 명령을 한 tick 만에 trajectory 로 되돌려
+// 놓았다. 나가는 길은 접촉 또는 RELEASE (ReleaseFromApproaching) 뿐이다.
+TEST_F(GraspControllerTest, ApproachHoldsAtFullCloseWhenNoContact) {
   // Set contact_s very high (object unreachable before s=1.0)
   contact_s_ = 1.5;
 
   controller_.CommandGrasp();
+  // approach_speed 0.5 → s 0→1 에 2 s = 1000 tick. 그 2배를 돌려 포화를 확실히 한다.
+  RunSteps(2000);
+
+  EXPECT_EQ(controller_.phase(), GraspPhase::kApproaching);
+  for (int f = 0; f < kNumFingers; ++f) {
+    const auto& fs = controller_.finger_states()[static_cast<std::size_t>(f)];
+    EXPECT_DOUBLE_EQ(fs.s, 1.0);
+    EXPECT_FALSE(fs.contact_detected);
+  }
+}
+
+// 위 대기가 존재하는 이유: 완전히 닫힌 뒤에 들어온 힘도 접촉으로 잡혀야 한다.
+TEST_F(GraspControllerTest, ApproachAcceptsContactAfterSaturating) {
+  contact_s_ = 1.5;
+  controller_.CommandGrasp();
+  RunSteps(2000);
+  ASSERT_EQ(controller_.phase(), GraspPhase::kApproaching);
+
+  // 물체가 뒤늦게 손 안으로 들어옴 — s 는 이미 1.0 이므로 힘만 올라온다.
+  std::array<double, kNumFingers> forces{};
+  forces.fill(params_.f_contact_threshold * 2.0);
+  (void)controller_.Update(std::span<const double, 3>(forces), kDt);
+
+  EXPECT_NE(controller_.phase(), GraspPhase::kApproaching);
+  for (int f = 0; f < 2; ++f) {
+    const auto& fs = controller_.finger_states()[static_cast<std::size_t>(f)];
+    EXPECT_TRUE(fs.contact_detected);
+    // 포화 지점이 곧 접촉 지점이므로 이후 force control 은 닫는 여유가 없다.
+    EXPECT_DOUBLE_EQ(fs.s_at_contact, 1.0);
+  }
+}
+
+// RELEASE 는 kApproaching 에서도 즉시 소비된다. 이전에는 kForceControl /
+// kHolding 만 소비했으므로 접촉에 실패한 grasp 는 release 로 빠져나올 수 없었고,
+// BT 의 ForcePIRelease (phase==idle 대기) 가 타임아웃까지 매달렸다.
+TEST_F(GraspControllerTest, ReleaseFromApproaching) {
+  contact_s_ = 1.5;  // 접촉 없이 approach 중
+  controller_.CommandGrasp();
+  RunSteps(300);
+  ASSERT_EQ(controller_.phase(), GraspPhase::kApproaching);
+
+  controller_.CommandRelease();
+  RunSteps(1);
+  EXPECT_EQ(controller_.phase(), GraspPhase::kReleasing);
+
   RunUntilPhase(GraspPhase::kIdle, 50000);
-  // Should return to Idle because s maxed out without contact
   EXPECT_EQ(controller_.phase(), GraspPhase::kIdle);
 }
 
@@ -212,13 +261,15 @@ TEST_F(GraspControllerTest, ApproachingTransitionsWithoutMiddleContact) {
   EXPECT_FALSE(controller_.finger_states()[2].contact_detected);
 }
 
-// thumb 또는 index 가 s=1.0 까지 닫혀도 접촉 못 하면 grasp 실패.
-// (middle 의 s=1.0 도달은 더 이상 실패 트리거가 아니다.)
-TEST_F(GraspControllerTest, GraspFailsWhenThumbCannotContact) {
+// thumb 또는 index 가 s=1.0 까지 닫혀도 접촉 못 하면 grasp 는 진행되지 않는다 —
+// 다만 kIdle 로 낙하하는 대신 kApproaching 에서 대기한다 (위 두 테스트와 같은
+// spec). 이미 접촉한 index/middle 은 자기 접촉 지점에 동결된 채 남는다.
+// (middle 의 s=1.0 도달은 애초에 실패 트리거가 아니다.)
+TEST_F(GraspControllerTest, ApproachHoldsWhenThumbCannotContact) {
   controller_.CommandGrasp();
 
   // thumb 만 unreachable, index/middle 은 정상 접촉 가능.
-  for (int i = 0; i < 50000; ++i) {
+  for (int i = 0; i < 3000; ++i) {
     std::array<double, kNumFingers> forces{};
     const auto& states = controller_.finger_states();
     // thumb (0): 항상 0 (unreachable object)
@@ -230,12 +281,13 @@ TEST_F(GraspControllerTest, GraspFailsWhenThumbCannotContact) {
       forces[idx] = SimulateContactForce(states[idx].s, contact_s_, ds_dt);
     }
     (void)controller_.Update(std::span<const double, 3>(forces), kDt);
-
-    if (controller_.phase() == GraspPhase::kIdle && i > 10)
-      break;
   }
 
-  EXPECT_EQ(controller_.phase(), GraspPhase::kIdle);
+  EXPECT_EQ(controller_.phase(), GraspPhase::kApproaching);
+  EXPECT_FALSE(controller_.finger_states()[0].contact_detected);
+  EXPECT_DOUBLE_EQ(controller_.finger_states()[0].s, 1.0);
+  EXPECT_TRUE(controller_.finger_states()[1].contact_detected);
+  EXPECT_TRUE(controller_.finger_states()[2].contact_detected);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
