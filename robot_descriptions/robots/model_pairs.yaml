@@ -14,7 +14,8 @@
 #   align_frames  : [<MJCF body|site|world>, <URDF link>] — 두 파일의 world
 #                   frame 이 다를 때 물리적으로 같은 프레임을 선언
 #   link_map      : `robots/` 기준 상대경로 — MJCF body ↔ URDF link 이름이
-#                   엇갈릴 때
+#                   엇갈릴 때. structured form 이면 `fuse:` 로 "MJCF 가 부모에
+#                   접은 fixed joint 자식" 도 선언한다 (#412)
 #   tip_frames    : [<MJCF body|site>, <URDF link>] — 마지막 관절 이후의
 #                   오프셋(DH d6)은 축 직선에도 COM 에도 안 나타나므로 tool
 #                   프레임을 직접 비교해야 잡힌다
