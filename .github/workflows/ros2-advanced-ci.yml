@@ -272,8 +272,13 @@ jobs:
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
-          apt-cache-version: pytest-v1
+          apt-cache-version: pytest-v2
           install-numpy: "false"
+          # xacro 는 test_real_model_pairs.py 의 조합 모델 쌍이 URDF 를 만드는 데
+          # 쓴다 (#414). `ros-jazzy-desktop` 은 이것을 **의존하지 않으므로**
+          # 명시 설치가 필요하다 — 없으면 그 쌍들이 ModuleNotFoundError 로
+          # 죽는다 (skip 이 아니라 실패인 것은 의도된 설계다).
+          apt-packages: ros-jazzy-xacro
 
       - name: Install Python test dependencies
         # mujoco 는 test_compare_mjcf_urdf 의 구조 비교(컴파일된 MJCF vs URDF)가
