@@ -1915,3 +1915,233 @@ class TestMainSaveDirRouting:
 
         assert list(out.glob("*.png"))
         assert not list((session / "plots").glob("*.png"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# grasp_diag (#428) — Force-PI 진단 채널
+# ═══════════════════════════════════════════════════════════════════════════
+
+_GRASP_DIAG_FINGERS = ("thumb", "index", "middle")
+
+# Fixed (non-per-finger) columns, in the order WriteGraspDiagLogHeader emits.
+_GRASP_DIAG_FIXED = [
+    "t_relative_s",
+    "tick",
+    "valid",
+    "grasp_phase",
+    "target_force",
+    "beta",
+    "alpha_ema",
+    "K_est_max",
+]
+
+# Per-finger quantities, in header order. Kept in sync with the C++ writer by
+# _test_cpp_header_matches_this_list below rather than by hand.
+_GRASP_DIAG_QUANTITIES = [
+    "s",
+    "f_desired",
+    "f_measured",
+    "f_error",
+    "k_est",
+    "k_inst_raw",
+    "delta_s",
+    "delta_f",
+    "gain_scale",
+    "est_updated",
+    "integrator_frozen",
+    "contact",
+]
+
+
+def _grasp_diag_header(fingers=_GRASP_DIAG_FINGERS):
+    cols = list(_GRASP_DIAG_FIXED)
+    for q in _GRASP_DIAG_QUANTITIES:
+        cols.extend(f"{q}_{f}" for f in fingers)
+    return cols
+
+
+def _grasp_diag_rows(n=40, hold_from=10, sigma_source=None):
+    """Rows with an approach transient followed by a stationary hold.
+
+    The hold carries a deterministic ripple on f_measured so the reported sigma
+    is a known quantity rather than whatever the ramp happens to produce.
+    """
+    ripple = sigma_source if sigma_source is not None else [0.01, -0.01]
+    rows = []
+    for i in range(n):
+        holding = i >= hold_from
+        phase = 4 if holding else 1
+        f_meas = 2.0 + ripple[i % len(ripple)] if holding else 0.1 * i
+        row = [i * 0.002, i + 1, 1, phase, 2.0, 0.3, 0.95, 400.0]
+        per_finger = {
+            "s": 0.5,
+            "f_desired": 2.0,
+            "f_measured": f_meas,
+            "f_error": 2.0 - f_meas,
+            "k_est": 3.0,
+            "k_inst_raw": 7.5,
+            "delta_s": 0.001,
+            "delta_f": 0.002,
+            "gain_scale": 0.5,
+            "est_updated": 1,
+            "integrator_frozen": 0,
+            "contact": 1,
+        }
+        for q in _GRASP_DIAG_QUANTITIES:
+            row.extend([per_finger[q]] * len(_GRASP_DIAG_FINGERS))
+        rows.append(row)
+    return rows
+
+
+class TestGraspDiagDetection:
+    """grasp_diag.csv 가 파일명·컬럼 어느 경로로도 올바른 파이프라인을 탄다."""
+
+    def test_by_filename(self):
+        assert detect_log_type("/s/controllers/ur5e_p1a/grasp_diag.csv") == "grasp_diag"
+
+    def test_by_columns(self):
+        assert detect_log_type_by_columns(_grasp_diag_header()) == "grasp_diag"
+
+    def test_not_misread_as_sensor_log(self):
+        """`k_inst_raw_<finger>` 는 sensor_log 분기의 `_raw_` 토큰에 걸린다.
+
+        컬럼 지문 분기가 sensor_log 보다 뒤에 있으면 grasp_diag.csv 가 조용히
+        센서 로그로 분류되어 엉뚱한 파이프라인을 탄다 — 파일은 열리고 그림도
+        나오므로 증상이 "틀린 그림" 뿐이다.
+        """
+        header = _grasp_diag_header()
+        assert any("_raw_" in c for c in header), "이 테스트의 전제가 사라졌다"
+        assert detect_log_type_by_columns(header) == "grasp_diag"
+
+    def test_cpp_header_matches_this_list(self):
+        """C++ writer 의 컬럼 목록과 위 상수가 어긋나면 실패한다.
+
+        Python 쪽 지문은 C++ 이 쓴 헤더를 읽는 것이 유일한 용도이므로, 두 목록이
+        갈라지면 감지는 통과하는데 플로터가 빈 축을 그리는 형태로만 드러난다.
+        생성물을 자기 oracle 로 쓰지 않으려면 원본 헤더를 직접 읽어야 한다.
+        """
+        from pathlib import Path
+
+        hdr = (
+            Path(__file__).resolve().parents[2]
+            / "integrated_bringup"
+            / "include"
+            / "integrated_bringup"
+            / "logging"
+            / "grasp_diag_log_pod.hpp"
+        )
+        if not hdr.exists():  # pragma: no cover - 단독 배포 시
+            pytest.skip(f"C++ header not present at {hdr}")
+        text = hdr.read_text()
+        block = text.split("kPerFinger[] = {", 1)[1].split("};", 1)[0]
+        cpp_quantities = [tok.strip().strip('"') for tok in block.split(",") if tok.strip()]
+        assert cpp_quantities == _GRASP_DIAG_QUANTITIES, (
+            "C++ WriteGraspDiagLogHeader 의 per-finger 컬럼과 이 테스트의 목록이 다르다"
+        )
+        for col in _GRASP_DIAG_FIXED:
+            assert col in text, f"고정 컬럼 {col} 이 C++ 헤더에 없다"
+
+
+class TestGraspDiagStatistics:
+    """`--stats` 가 σ 를 숫자로 뱉는 것이 이 채널의 1차 산출물이다."""
+
+    def test_sigma_is_printed_for_the_hold_segment(self, capsys):
+        from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
+
+        df = pd.DataFrame(_grasp_diag_rows(), columns=_grasp_diag_header())
+        print_grasp_diag_statistics(df)
+        out = capsys.readouterr().out
+
+        assert "sigma=" in out
+        for f in _GRASP_DIAG_FINGERS:
+            assert f in out
+
+        # 값 자체를 파싱한다. `"10.1" in out` 같은 부분문자열 검사는 다른 줄
+        # (p2p·mean·k_inst_raw) 이 우연히 같은 숫자를 담으면 통과하므로, σ 를
+        # hold 가 아니라 전 구간으로 재는 회귀를 실제로 놓쳤다.
+        sigmas = {}
+        for line in out.splitlines():
+            if "sigma=" not in line or "k_inst_raw" in line:
+                continue
+            name = line.split()[0]
+            sigmas[name] = float(line.split("sigma=")[1].split("mN")[0])
+        assert set(sigmas) == set(_GRASP_DIAG_FINGERS), sigmas
+        # ±10 mN 리플 30 표본의 표본표준편차 ≈ 10.17 mN. 전 구간으로 재면
+        # approach 램프(0→0.9 N)가 섞여 수백 mN 이 된다.
+        for name, sigma_mn in sigmas.items():
+            assert 9.0 < sigma_mn < 11.5, f"{name}: {sigma_mn} mN — hold 구간이 아니다"
+
+    def test_hold_segment_excludes_the_approach_transient(self, capsys):
+        """σ 를 파일 전체로 재면 접근 램프를 노이즈로 오독한다."""
+        from rtc_tools.plotting.plotters.grasp import _hold_rows
+
+        df = pd.DataFrame(_grasp_diag_rows(), columns=_grasp_diag_header())
+        hold = _hold_rows(df)
+        assert len(hold) == 30
+        assert float(hold["f_measured_thumb"].std()) < float(df["f_measured_thumb"].std())
+
+    def test_estop_rows_are_not_counted_as_idle(self, capsys):
+        """valid=0 행의 grasp_phase 는 0 이지만 그것은 idle 이 아니라 부재다.
+
+        per-tick 블록이 동결이 아니라 0 으로 채워지므로(PROC-7), 이 행을 phase
+        occupancy 에 넣으면 정지된 tick 이 "idle 로 보낸 시간" 으로 보고된다 —
+        idle 은 하필 실제 FSM 상태 이름이라 오독이 눈에 안 띈다.
+        """
+        from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
+
+        header = _grasp_diag_header()
+        rows = _grasp_diag_rows()
+        estop = [0.0] * len(header)
+        estop[header.index("t_relative_s")] = 99.0
+        estop[header.index("tick")] = len(rows) + 1
+        rows.append(estop)
+
+        print_grasp_diag_statistics(pd.DataFrame(rows, columns=header))
+        occupancy = [ln for ln in capsys.readouterr().out.splitlines() if "Phase occupancy" in ln]
+        assert occupancy, "phase occupancy 줄이 없다"
+        assert "idle" not in occupancy[0], occupancy[0]
+
+    def test_invalid_rows_are_excluded(self):
+        """valid=0 행은 전 필드가 0 이므로 통계에 들어가면 평균을 끌어내린다."""
+        from rtc_tools.plotting.plotters.grasp import _valid_rows
+
+        header = _grasp_diag_header()
+        rows = _grasp_diag_rows()
+        estop = list(rows[-1])
+        estop[header.index("valid")] = 0
+        for q in _GRASP_DIAG_QUANTITIES:
+            for f in _GRASP_DIAG_FINGERS:
+                estop[header.index(f"{q}_{f}")] = 0
+        rows.append(estop)
+
+        df = pd.DataFrame(rows, columns=header)
+        assert len(_valid_rows(df)) == len(df) - 1
+
+    def test_constant_estimate_is_called_out(self, capsys):
+        """배포 상태의 k_est 는 pin 때문에 상수 1.0 이다 — 수렴과 구별되어야 한다."""
+        from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
+
+        df = pd.DataFrame(_grasp_diag_rows(), columns=_grasp_diag_header())
+        print_grasp_diag_statistics(df)
+        out = capsys.readouterr().out
+
+        # k_est 줄에 붙었는지 확인한다 — gain_scale 줄도 같은 마커를 쓰므로
+        # `"[CONSTANT]" in out` 만으로는 k_est 쪽 마커를 지워도 통과한다.
+        k_lines = [ln for ln in out.splitlines() if "k_est:" in ln]
+        assert k_lines, out
+        for ln in k_lines:
+            assert "[CONSTANT]" in ln, ln
+
+    def test_finger_names_come_from_the_header(self):
+        from rtc_tools.plotting.plotters.grasp import grasp_finger_names
+
+        df = pd.DataFrame(_grasp_diag_rows(), columns=_grasp_diag_header())
+        assert grasp_finger_names(df) == list(_GRASP_DIAG_FINGERS)
+
+
+def test_grasp_diag_is_registered_in_both_dispatch_tables():
+    """감지만 되고 파이프라인 행이 없으면 `unknown` 은 아닌데 아무것도 안 나온다."""
+    from rtc_tools.plotting.pipelines.registry import PIPELINES, STATS_PRINTERS
+
+    assert "grasp_diag" in STATS_PRINTERS
+    assert "grasp_diag" in PIPELINES

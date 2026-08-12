@@ -226,6 +226,7 @@ void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 
 void DemoJointController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoJointController::ComputeControl");
+  grasp_force_pi_ran_ = false;
   // ── Stage 1 (compute model): refresh the combined-model cache from the state
   // ReadState scattered into q_curr_full_/v_curr_full_ this tick. Reached only on
   // non-E-STOP ticks (Compute() E-STOP-early-returns before here), so the prior
@@ -424,6 +425,7 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     // controller failed to build (null) must still fall into the contact_stop
     // safety freeze, not silently become a no-op.
     const bool run_force_pi = grasp_controller_ && gains.grasp_hand_mode == GraspHandMode::kForcePi;
+    grasp_force_pi_ran_ = run_force_pi;
     const bool run_contact_stop = !run_force_pi && gains.grasp_hand_mode != GraspHandMode::kNone;
 
     // ── Race closure for the runtime mode switch ──────────────────────────

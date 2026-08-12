@@ -9,6 +9,7 @@
 
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp_lifecycle/state.hpp>
@@ -20,6 +21,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <numbers>
 #include <string>
@@ -1331,3 +1335,289 @@ TEST(JointForcePiFeedTest, TheTwoBanksHaveIndependentCutoffs) {
 }
 
 }  // namespace
+
+
+// ── grasp_diag.csv (#428) ───────────────────────────────────────────────────
+//
+// This channel exists because #426 has to measure the force noise sigma of the
+// 25 Hz Force-PI bank, and nothing in the session directory carries it today.
+// The tests below hold the properties that make the file usable as evidence: it
+// is lossless, its gaps mean exactly one thing, and its k_est column is the
+// controller's own estimate rather than a constant.
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// RTC_SESSION_DIR redirect, mirroring rtc_controller_interface's own log tests.
+class ScopedSessionDir {
+ public:
+  ScopedSessionDir() {
+    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
+      had_prev_ = true;
+      prev_value_ = prev;
+    }
+    auto base = fs::temp_directory_path() / "rtc_grasp_diag_test";
+    fs::create_directories(base);
+    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFU));
+    fs::create_directories(dir_);
+    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
+  }
+  ~ScopedSessionDir() {
+    if (had_prev_) {
+      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
+    } else {
+      ::unsetenv("RTC_SESSION_DIR");
+    }
+    std::error_code ec;
+    fs::remove_all(dir_, ec);
+  }
+  ScopedSessionDir(const ScopedSessionDir&) = delete;
+  ScopedSessionDir& operator=(const ScopedSessionDir&) = delete;
+
+ private:
+  fs::path dir_;
+  bool had_prev_{false};
+  std::string prev_value_;
+};
+
+std::vector<std::string> ReadLines(const fs::path& p) {
+  std::vector<std::string> out;
+  std::ifstream in(p);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty()) {
+      out.push_back(line);
+    }
+  }
+  return out;
+}
+
+std::vector<std::string> SplitCsv(const std::string& line) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (char c : line) {
+    if (c == ',') {
+      out.push_back(cur);
+      cur.clear();
+    } else {
+      cur.push_back(c);
+    }
+  }
+  out.push_back(cur);
+  return out;
+}
+
+std::size_t ColumnIndex(const std::vector<std::string>& header, const std::string& name) {
+  for (std::size_t i = 0; i < header.size(); ++i) {
+    if (header[i] == name) {
+      return i;
+    }
+  }
+  return header.size();
+}
+
+// Bind a real grasp_diag channel to the controller so the per-tick push in
+// Compute() reaches a file. Registration goes through RegisterControllerLogs,
+// not RegisterLog directly, so the msg_type dispatch and the enable gate are
+// on the tested path too.
+class JointGraspDiagLogTest : public JointForcePiBuiltTest {
+ protected:
+  ScopedSessionDir session_;
+  rtc::ControllerLogSet log_set_{"joint_diag_test"};
+  std::vector<std::string> finger_names_{"thumb", "index", "middle"};
+
+  struct Entry {
+    std::string msg_type;
+    std::string instance;
+  };
+
+  void BindGraspDiag(bool enabled) {
+    const std::vector<Entry> entries{
+        {std::string(integrated_bringup::kGraspDiagLogMsgType),
+         std::string(integrated_bringup::kGraspDiagLogInstance)}};
+    integrated_bringup::LogRegistrationContext ctx{
+        .logger = rclcpp::get_logger("grasp_diag_test"),
+        .log_set = log_set_,
+        .grasp_diag_enabled = enabled,
+        .grasp_diag_finger_names = enabled ? finger_names_ : std::vector<std::string>{},
+    };
+    auto reg = integrated_bringup::RegisterControllerLogs(entries, ctx);
+    ASSERT_EQ(reg.status, integrated_bringup::LogRegistrationStatus::kSuccess);
+    bound_ = static_cast<bool>(reg.handles.grasp_diag);
+    ctrl_.SetGraspDiagLogHandleForTesting(std::move(reg.handles.grasp_diag));
+  }
+
+  fs::path CsvPath() const {
+    for (const auto& ch : log_set_.Channels()) {
+      if (ch.first == integrated_bringup::kGraspDiagLogInstance) {
+        return ch.second;
+      }
+    }
+    return {};
+  }
+
+  bool bound_{false};
+};
+
+}  // namespace
+
+// The whole reason this channel exists instead of `ros2 topic echo --csv` is
+// that it must not drop samples. One row per tick, no gaps: a tick column that
+// skips is a dropped row by construction, so asserting continuity here is what
+// makes a gap in a hardware capture diagnosable rather than ambiguous.
+TEST_F(JointGraspDiagLogTest, EveryTickProducesExactlyOneRowWithNoGaps) {
+  BindGraspDiag(true);
+  ASSERT_TRUE(bound_) << "channel did not register — the rest of this test is vacuous";
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+
+  constexpr int kTicks = 200;
+  const auto first_tick = static_cast<std::uint64_t>(state_.iteration) + 1U;
+  for (int i = 0; i < kTicks; ++i) {
+    SetFingertipForce(state_, 0, 0.5F + 0.001F * static_cast<float>(i));
+    SetFingertipForce(state_, 1, 0.5F + 0.001F * static_cast<float>(i));
+    state_.iteration = first_tick + static_cast<std::uint64_t>(i);
+    (void)ctrl_.Compute(state_);
+  }
+  log_set_.DrainAll();
+  EXPECT_EQ(log_set_.TotalDropCount(), 0U) << "SPSC overflow — rows are missing from the file";
+
+  const auto lines = ReadLines(CsvPath());
+  ASSERT_GE(lines.size(), 1U);
+  EXPECT_EQ(lines.size(), static_cast<std::size_t>(kTicks) + 1U) << "header + one row per tick";
+
+  const auto header = SplitCsv(lines[0]);
+  const auto tick_col = ColumnIndex(header, "tick");
+  ASSERT_LT(tick_col, header.size());
+  for (std::size_t i = 1; i < lines.size(); ++i) {
+    const auto row = SplitCsv(lines[i]);
+    ASSERT_EQ(row.size(), header.size()) << "row " << i << " does not match the header width";
+    EXPECT_EQ(std::stoull(row[tick_col]), first_tick + (i - 1U)) << "gap at row " << i;
+  }
+}
+
+// PROC-7 / the pull_estimator convention: an E-STOP tick is a logged tick. If it
+// were a gap instead, a hardware capture could not tell "the controller was
+// halted" from "the ring overflowed", and those call for opposite responses.
+// The per-finger fields are zeroed rather than frozen, matching the published
+// GraspState (#424) — a stale k_est reads exactly like a live one.
+TEST_F(JointGraspDiagLogTest, EstopTickIsAZeroedValidZeroRowNotAGap) {
+  BindGraspDiag(true);
+  ASSERT_TRUE(bound_);
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+
+  auto tick = static_cast<std::uint64_t>(state_.iteration);
+  for (int i = 0; i < 50; ++i) {
+    SetFingertipForce(state_, 0, 0.5F + 0.001F * static_cast<float>(i));
+    SetFingertipForce(state_, 1, 0.5F + 0.001F * static_cast<float>(i));
+    state_.iteration = ++tick;
+    (void)ctrl_.Compute(state_);
+  }
+  // Same state, E-STOP asserted: Compute takes the ComputeEstop lane.
+  ctrl_.TriggerEstop();
+  state_.iteration = ++tick;
+  (void)ctrl_.Compute(state_);
+  log_set_.DrainAll();
+
+  const auto lines = ReadLines(CsvPath());
+  ASSERT_GE(lines.size(), 3U);
+  const auto header = SplitCsv(lines[0]);
+  const auto valid_col = ColumnIndex(header, "valid");
+  const auto tick_col = ColumnIndex(header, "tick");
+  const auto k_col = ColumnIndex(header, "k_est_thumb");
+  ASSERT_LT(valid_col, header.size());
+  ASSERT_LT(k_col, header.size());
+
+  const auto last = SplitCsv(lines.back());
+  const auto prev = SplitCsv(lines[lines.size() - 2U]);
+  EXPECT_EQ(std::stoull(last[tick_col]), tick) << "the E-STOP tick left no row at all";
+  EXPECT_EQ(last[valid_col], "0");
+  EXPECT_EQ(prev[valid_col], "1") << "the preceding servo tick must be valid, or this proves nothing";
+  EXPECT_FLOAT_EQ(std::stof(last[k_col]), 0.0F) << "estimate frozen instead of zeroed";
+  EXPECT_GT(std::stof(prev[k_col]), 0.0F) << "the previous row must carry the live estimate";
+}
+
+// The k_est column has to be the controller's own K_contact_est, not a constant.
+// With the shipped K_est_max pin in place both sides read 1.0 forever and a fill
+// hardcoded to the seed passes — the same trap #424 documented, so the pin comes
+// out and the force creeps (a constant force makes delta_f zero and every sample
+// is rejected, which is indistinguishable from a dead estimator).
+TEST_F(JointGraspDiagLogTest, KEstColumnTracksTheControllersOwnEstimate) {
+  BindGraspDiag(true);
+  ASSERT_TRUE(bound_);
+  ASSERT_TRUE(ctrl_.SetGraspKEstMaxForTesting(400.0));
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+
+  auto tick = static_cast<std::uint64_t>(state_.iteration);
+  for (int i = 0; i < 800; ++i) {
+    const float f = 0.5F + 0.001F * static_cast<float>(i);
+    SetFingertipForce(state_, 0, f);
+    SetFingertipForce(state_, 1, f);
+    state_.iteration = ++tick;
+    (void)ctrl_.Compute(state_);
+    // Drain inside the loop, as production's 10 Hz timer does. The SPSC ring
+    // holds 512 pods; 800 ticks behind a single trailing drain silently discards
+    // the tail, and the file's last row is then an early tick whose estimate is
+    // still at its seed — which reads exactly like a k_est column hardcoded to
+    // 1.0, the bug this test exists to catch.
+    if (i % 100 == 99) {
+      log_set_.DrainAll();
+    }
+  }
+  log_set_.DrainAll();
+  ASSERT_EQ(log_set_.TotalDropCount(), 0U) << "dropped rows — the tail below is not the last tick";
+
+  const auto fs_states = ctrl_.GetGraspFingerStatesForTesting();
+  ASSERT_FALSE(fs_states.empty());
+  const auto lines = ReadLines(CsvPath());
+  ASSERT_GT(lines.size(), 1U);
+  const auto header = SplitCsv(lines[0]);
+  const auto last = SplitCsv(lines.back());
+
+  bool left_seed = false;
+  for (std::size_t i = 0; i < fs_states.size() && i < finger_names_.size(); ++i) {
+    const auto col = ColumnIndex(header, "k_est_" + finger_names_[i]);
+    ASSERT_LT(col, header.size());
+    EXPECT_FLOAT_EQ(std::stof(last[col]), static_cast<float>(fs_states[i].K_contact_est))
+        << "finger " << finger_names_[i];
+    if (fs_states[i].K_contact_est != 1.0) {
+      left_seed = true;
+    }
+  }
+  EXPECT_TRUE(left_seed) << "estimate never left its 1.0 seed, so the equality above cannot "
+                            "tell a live column from a constant";
+
+  // The raw pre-clamp sample must be present and must differ from the EMA — it
+  // is the spread #426 argues about, and a column that merely mirrors k_est
+  // would carry none of that information.
+  const auto raw_col = ColumnIndex(header, "k_inst_raw_thumb");
+  ASSERT_LT(raw_col, header.size());
+  bool raw_differs = false;
+  for (std::size_t i = 1; i < lines.size(); ++i) {
+    const auto row = SplitCsv(lines[i]);
+    const auto k = ColumnIndex(header, "k_est_thumb");
+    if (std::stof(row[raw_col]) != 0.0F && std::stof(row[raw_col]) != std::stof(row[k])) {
+      raw_differs = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(raw_differs) << "k_inst_raw never differs from k_est — it is not the raw sample";
+}
+
+// A variant with no `force_pi_grasp` block must produce no file at all, rather
+// than an empty or all-zero one: an empty CSV in a session directory reads as a
+// logging bug, which is the failure pull_estimator_wiring had to fix once.
+TEST_F(JointGraspDiagLogTest, DisabledGateRegistersNoChannelAndWritesNoFile) {
+  BindGraspDiag(false);
+  EXPECT_FALSE(bound_);
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 20);
+  log_set_.DrainAll();
+
+  EXPECT_TRUE(log_set_.empty()) << "a disabled gate must not register the channel";
+  EXPECT_TRUE(CsvPath().empty());
+}

@@ -668,3 +668,146 @@ force_pi_grasp:
 
 같은 변경에서 `grip_decay_rate` 가 YAML 로 노출됐다 — 그 전에는 키를 적어도 무시되고 default
 0.1 N/s 가 돌았다. 둘은 같은 축의 짝이므로 함께 설정한다 (§4.3).
+
+## 8. 실기 계측 runbook — 힘 노이즈 σ 와 추정기 실측 (#428)
+
+§6.6 은 두 가지를 **가정**으로 남겼다: 실기 힘 노이즈 σ 의 값, 그리고 "단단한 물체에서 진동이
+난다" 는 전제. 저장소의 Kelvin-Voigt 플랜트는 관성이 없어 후자를 재현할 수 없으므로 둘 다
+실기에서만 답이 나온다. #426 (추정기 재설계) 의 수용 기준이 이 두 값에 의존하므로 **이 절이
+#426 의 선행조건**이다.
+
+계측 채널은 `grasp_diag.csv` 다 (#428). `ros2 topic echo --csv` 가 아닌 이유는 500 Hz 에서
+Python echo 가 샘플을 떨구기 때문이다 — σ 는 무작위 drop 을 견디지만 추정기 transient 는 손상된다.
+
+> ⚠ **`<device>_sensor.csv` 의 `force_filtered_*` 로 σ 를 재지 말 것.** 그것은 contact_stop
+> 뱅크(배포 50 Hz)이고, Force-PI 법칙과 추정기가 읽는 것은 **별개 뱅크**(`f_measured_*`,
+> 배포 25 Hz, 자체 YAML cutoff)다. 두 컬럼 이름이 모두 "force" 라서 틀린 레인에서 잰 σ 는
+> 아무 증상 없이 그럴듯한 숫자를 준다. `grasp_diag.csv` 의 `f_measured_*` 가 유일하게 옳은 출처다.
+
+### 8.0 Preflight — 배포 확인 (제어 PC)
+
+**env 재source 는 배포가 아니다.** 이전 실기 세션에서 옛 코드를 3회 재측정한 사례가 있고 그중
+한 번은 잔존 상태 때문에 `rc=0` 까지 나와 fix 가 통한 것처럼 보였다. **설치 트리를 직접 grep** 한다.
+
+```bash
+WS=~/ros2_ws/demo_ws                      # 제어 PC 워크스페이스 (rtc-framework 체크아웃)
+REPO=$WS/src/ur5e-rt-controller
+
+# 1) 같은 저장소인지 + b6c8dc00 이후인지
+git -C $REPO remote -v && git -C $REPO log --oneline -3
+
+# 2) 최신화 + 빌드 (colcon 은 반드시 ws root 에서 — CLAUDE.md §9.1)
+git -C $REPO pull
+( cd $WS && source $REPO/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 \
+    && colcon build --packages-select rtc_msgs rtc_controllers integrated_bringup rtc_tools )
+
+# 3) 설치 트리에 실제로 들어갔는지 — 셋 다 hit 이어야 한다
+grep -rl finger_stiffness_est $WS/install/rtc_msgs/          # #424 토픽 필드
+grep -rl GraspDiagLog        $WS/install/integrated_bringup/ # #428 POD + YAML
+grep -rl grasp_diag          $WS/install/rtc_tools/          # #428 플로터
+```
+
+셋 중 하나라도 비면 **측정하지 말고 빌드부터 고친다** — 없는 컬럼은 조용히 안 나올 뿐이다.
+
+기동 후 `on_configure` INFO 한 줄로 채널이 살았는지 확인한다:
+
+```
+[grasp_diag] enabled — grasp_diag.csv, 3 finger column set(s): thumb, index, middle. ...
+```
+
+`disabled` 로 뜨면 사유가 같은 줄에 있다 (`force_pi_grasp` 블록 부재 / 핑거 센서 없음).
+
+### 8.1 세션 3개
+
+세 시나리오 모두 `grasp_controller_type: force_pi` 에서 돈다. 모드가 다르면 행은 남되
+`valid=0` 이고 per-finger 값이 전부 0 이다 — 그 자체가 "PI 법칙이 안 돌았다" 는 판정이다.
+
+```bash
+ros2 param set /demo_joint_controller/demo_joint_controller grasp_controller_type force_pi
+ros2 service call /demo_joint_controller/grasp_command \
+  rtc_msgs/srv/GraspCommand "{command: 1, target_force: 2.0}"     # command 1 = GRASP
+# ... 시나리오 수행 ...
+ros2 service call /demo_joint_controller/grasp_command \
+  rtc_msgs/srv/GraspCommand "{command: 2, target_force: 0.0}"     # command 2 = RELEASE
+```
+
+| # | 무엇을 | 산출물 / 판정 |
+|---|---|---|
+| **S2** | **단단한 물체 파지, 배포 설정 그대로** (적응 OFF). 목표힘 도달 후 ≥20 s 유지 | **이 실험의 분기점.** ① `k_est_*` 가 전 구간 `1.000` 인가 (pin 유효 = #424 실기 AC) ② `gain_scale_*` 가 상수 0.769 인가 ③ **`f_measured_*` 에 진동/오버슈트가 실제로 나는가** ← #426 의 존재 이유를 결정한다 |
+| **S1** | 자유공간에서 파지 유지 (물체 없이 접촉 상태 ≥30 s), 정지 | Holding 구간 `f_measured_*` 의 표준편차 = **σ**. §6.6 표는 0/1/2/20 mN 을 가정했다 — 실제로 어디 떨어지는지가 산출물 |
+| **S3** | 벤치, `K_est_max` 상향 + `beta` 동반 인하 (**둘은 한 쌍**, §6.6) | `k_est_*` 가 seed 를 벗어나 물체 강성으로 수렴하는가 (#424 AC 나머지 절반) · `k_inst_raw_*` 의 산포가 §6.6 의 SNR ≲ 1 주장과 맞는가 |
+
+**S2 를 S1 보다 먼저 본다.** 진동이 안 나면 #426 의 범위는 재설계가 아니라 **적응 제거**가 되고,
+그 경우 S3 는 돌 필요조차 없다.
+
+S3 의 값 변경 — **ROS 파라미터가 아니라 YAML + 컨트롤러 재로드**다. `grasp_controller_type` 만
+파라미터로 노출돼 있고 `force_pi_grasp` 블록의 값(`K_est_max` · `beta` · 게인 전부)은 노출되지
+않는다. `set_params()` 는 C++ API 이며 ROS 표면이 없으므로, 실기에서 이 값을 바꾸는 경로는
+`on_configure` 재실행뿐이다 (§7 3번).
+
+```bash
+# 1) 제어 PC 에서 YAML 편집 — 두 값은 반드시 함께 움직인다.
+#    K_est_max 만 올리면 tau_min = beta/Kp_base 가 예산을 넘긴다 (§6.6 표)
+$EDITOR $REPO/integrated_bringup/config/ur5e_p1a/controllers/demo_shared.yaml
+#      force_pi_grasp:
+#        K_est_max: 400.0
+#        beta: 0.03
+
+# 2) --symlink-install 빌드(기본값)면 재빌드 불필요. --no-symlink 였다면 재빌드 (§7 2번)
+
+# 3) 컨트롤러를 재로드해 on_configure 를 다시 태운다 (controller switch)
+```
+
+반영 여부는 추측하지 말고 **CSV 로 확인한다** — 아래 §8.3 의 `beta` / `K_est_max` 줄이 그 run 의
+실효값을 그대로 찍는다. 값이 안 바뀌었으면 S3 는 S2 를 한 번 더 돌린 것에 불과하다.
+
+> `grasp_diag.csv` 는 `beta` · `alpha_ema` · `K_est_max` 를 **매 tick** 기록한다. 그 run 의 YAML
+> 없이도 어느 설정에서 나온 데이터인지 파일만 보고 알 수 있고, 재로드 없이 편집만 한 경우가
+> 데이터에서 바로 드러난다.
+
+### 8.2 수거 — 텍스트만
+
+```bash
+S=$(ls -dt $WS/logging_data/*/ | head -1)   # 방금 세션. RTC_SESSION_DIR 를 줬으면 그 경로
+tar czf ~/grasp_session_$(basename $S).tgz \
+  -C "$(dirname $S)" "$(basename $S)/controllers" \
+  "$(basename $S)"/*.yaml 2>/dev/null
+```
+
+`controllers/<config_key>/` 아래에 `grasp_diag.csv` · `<hand>_sensor.csv` · `pull_estimator.csv`
+가 함께 들어간다. 세 파일은 `tick` 컬럼 (CM RT loop iteration) 으로 정렬되므로 **같은 run 에서
+25 Hz 와 50 Hz 레인을 교차 검증**할 수 있다 — 위 ⚠ 의 함정을 데이터로 직접 확인하는 수단이다.
+
+### 8.3 dev PC 분석
+
+```bash
+tar xzf grasp_session_*.tgz
+plot_rtc_log <세션>/controllers/<config_key>/grasp_diag.csv --stats   # 1차 판정: 숫자
+plot_rtc_log <세션>/controllers/<config_key>/grasp_diag.csv --no-show # 그림 (세션 plots/ 로)
+```
+
+`--stats` 가 찍는 것과 각 줄이 답하는 질문:
+
+| 출력 | 무엇을 판정하는가 |
+|---|---|
+| `Dropped rows (tick gaps): N` | **0 이 아니면 그 run 은 무손실이 아니다.** 행 하나 = tick 하나이므로 gap 은 SPSC drop 이며, E-STOP tick 은 gap 이 아니라 `valid=0` 행으로 남는다 |
+| `valid: X% of ticks` | PI 법칙이 실제로 돈 비율. 낮으면 모드가 force_pi 가 아니었거나 E-STOP 이 걸렸다 |
+| `Phase occupancy` | Holding 구간이 실제로 존재하는지. 없으면 σ 는 **정의되지 않는다** (아래) |
+| `beta` / `alpha_ema` / `K_est_max` | 그 run 의 실효 설정. `CHANGED during run` 이면 구간을 나눠 봐야 한다 |
+| **`sigma= … mN`** (핑거별) | **§6.6 표의 σ 열.** #426 수용 기준 1 이 가설에서 실측으로 바뀌는 지점 |
+| `k_est: … [CONSTANT]` | `[CONSTANT]` 면 pin 이 살아 있다 (S2 기대값). S3 에서 이게 붙어 있으면 param set 이 안 먹은 것 |
+| `samples accepted by the guards: X%` | 가드가 표본을 얼마나 기각하는지. 낮으면 추정기는 "돌고 있지만 굶고 있는" 상태다 |
+| `k_inst_raw … sigma=` | 원시 표본의 산포. 이것이 `k_est` 자체 크기와 비슷하면 §6.6 의 **SNR ≲ 1** 이 실기에서 확인된 것 |
+
+> **σ 는 Holding 구간에서만 잰다.** approach·force ramp 는 설계상 transient 이므로 전 구간
+> 표준편차는 노이즈가 아니라 궤적을 재고 몇 배 크게 나온다. `--stats` 가 이 분리를 이미 하며,
+> Holding 구간이 없으면 σ 를 출력하는 대신 "undefined for this run" 이라고 말한다.
+
+별도 분석 스크립트를 새로 만들지 않는다 — 그 자리가 `print_grasp_diag_statistics` 다
+([design-principles.md](../../agent_docs/design-principles.md) P5).
+
+### 8.4 결과를 어디에 쓰는가
+
+1. **σ 실측값** → §6.6 의 표에 실기 행을 추가하고, #426 수용 기준 1 의 "가설" 표기를 걷는다
+2. **S2 의 진동 유무** → #426 의 범위 결정 (재설계 vs 적응 제거)
+3. **S2/S3 의 `k_est` 거동** → #424 가 남긴 실기 AC 종결

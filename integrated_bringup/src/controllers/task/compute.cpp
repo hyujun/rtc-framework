@@ -221,6 +221,7 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
                                         const Gains& gains) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ComputeControl");
+  grasp_force_pi_ran_ = false;
   // ── Arm TCP pose: cache once for this tick (Update() ran in Compute() before
   // ComputeControl). ArmTcpPoseFromCache is internally gated (Identity when the
   // cache is unconfigured/non-fresh), so this unconditional read reproduces what
@@ -815,6 +816,7 @@ void DemoTaskController::ComputeSecondary(const ControllerState& state, double d
     // controller failed to build (null) must still fall into the contact_stop
     // safety freeze, not silently become a no-op.
     const bool run_force_pi = grasp_controller_ && gains.grasp_hand_mode == GraspHandMode::kForcePi;
+    grasp_force_pi_ran_ = run_force_pi;
     const bool run_contact_stop = !run_force_pi && gains.grasp_hand_mode != GraspHandMode::kNone;
 
     // ── Race closure for the runtime mode switch ──────────────────────────

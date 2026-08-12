@@ -1,5 +1,6 @@
 // ── Includes: project header first, then C++ stdlib
 // ────────────────────────────
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
@@ -524,6 +525,8 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                        state.iteration);
+  PushGraspDiagLog(grasp_diag_log_handle_, grasp_controller_.get(), grasp_force_pi_ran_,
+                   state.t_relative_s, state.iteration);
   return output;
 }
 
@@ -1181,7 +1184,8 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
       }
       if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
           e.msg_type != integrated_bringup::kPullEstimatorLogMsgType &&
-          e.msg_type != integrated_bringup::kTaskDiagLogMsgType) {
+          e.msg_type != integrated_bringup::kTaskDiagLogMsgType &&
+          e.msg_type != integrated_bringup::kGraspDiagLogMsgType) {
         throw std::runtime_error("DemoTaskController: unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));

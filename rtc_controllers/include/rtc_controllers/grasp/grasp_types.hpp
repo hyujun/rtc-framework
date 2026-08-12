@@ -149,6 +149,32 @@ struct FingerState {
   double K_contact_est{1.0};   // estimated contact stiffness [N/delta_s]
   bool contact_detected{false};
   bool integrator_frozen{false};
+
+  // ── Estimator diagnostics (write-only; the control law never reads these) ──
+  //
+  // What the stiffness estimator actually saw this tick, recorded where it saw
+  // it. These exist because the pair cannot be reconstructed offline from a log
+  // of s and f: the estimator consumes s_{t-1} - s_{t-2} (see s_prev above),
+  // while a row written after Update() returns carries s_t and s_{t-1}, so a
+  // reader differencing the logged columns is one tick off. That skew is
+  // precisely what hid the estimator being dead for six months (#425), so
+  // reproducing it in the analysis tooling would be re-creating the bug on the
+  // other side of the file. #428 logs these instead.
+  //
+  // Cleared at the top of every Update() tick, so a phase that does not run the
+  // PI law (Idle / Approaching / Contact / Releasing) reports zeros and
+  // estimate_updated = false rather than the last force-control tick's values.
+  double delta_s_used{0.0};      // s increment the estimate was divided by
+  double delta_f_used{0.0};      // force step attributed to it [N]
+  // Instantaneous ratio BEFORE the K_est_max clamp. The clamped value is what
+  // enters the EMA, so logging only the post-clamp figure cannot show how far
+  // out the raw samples land — which is the quantity #426 is arguing about.
+  // Zero when |delta_s| did not clear the epsilon guard (no sample existed).
+  double K_inst_raw{0.0};
+  // The sample cleared both guards (|delta_s| > epsilon, K_inst > 0) and moved
+  // the EMA. Separates "no sample this tick" from "a sample that was rejected",
+  // which are the same all-zeros row otherwise.
+  bool estimate_updated{false};
 };
 
 // ── Output ───────────────────────────────────────────────────────────────────

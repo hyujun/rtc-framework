@@ -28,10 +28,12 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
+#include "rtc_controllers/grasp/grasp_controller.hpp"
 
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
@@ -90,7 +92,7 @@ struct LogRegistrationContext {
   // Map: DeviceStateLog instance string → (joint_names, motor_names) used by
   // the header writer. Entry omitted → that instance is not registered, even
   // if it appears in the parsed YAML (defensive against typos).
-  std::map<std::string, std::pair<std::vector<std::string>, std::vector<std::string>>> state_logs;
+  std::map<std::string, std::pair<std::vector<std::string>, std::vector<std::string>>> state_logs{};
 
   // DeviceSensorLog header context per instance.
   struct SensorLogInfo {
@@ -103,7 +105,7 @@ struct LogRegistrationContext {
   };
 
   // Map: DeviceSensorLog instance string → header context.
-  std::map<std::string, SensorLogInfo> sensor_logs;
+  std::map<std::string, SensorLogInfo> sensor_logs{};
 
   // ── WBC-specific channels (Path A: POD-only, integrated_bringup-private) ──
   // DeviceWbcLog header context per instance. role drives the arm/hand column
@@ -115,11 +117,11 @@ struct LogRegistrationContext {
     std::vector<std::string> fingertip_names;
   };
 
-  std::map<std::string, WbcStateLogInfo> wbc_state_logs;
+  std::map<std::string, WbcStateLogInfo> wbc_state_logs{};
 
   // Map: WbcDiagLog instance string → num_contact_vars (λ column count =
   // fixed QP contact dim, contact_mgr_config_.max_contact_vars).
-  std::map<std::string, std::size_t> wbc_diag_logs;
+  std::map<std::string, std::size_t> wbc_diag_logs{};
 
   // PullEstimatorLog (#167) — a single fixed instance
   // (kPullEstimatorLogInstance), so one bool gates registration. Caller sets it
@@ -129,19 +131,105 @@ struct LogRegistrationContext {
   // Configured tip roles in contact-index order. Stamps the bit order into the
   // mask column names so a stored CSV decodes without that run's ROS log
   // (#234 P-14). Empty is tolerated — the columns then carry no suffix.
-  std::vector<std::string> pull_estimator_roles;
+  std::vector<std::string> pull_estimator_roles{};
 
   // TaskDiagLog (#310) — §6.5 σ_min/λ² diagnostics for the task controller.
   // A single fixed instance (kTaskDiagLogInstance) with a fixed-width header,
   // so a bool gates it rather than a map carrying header context.
-  //
-  // ⚠ Appended at the END on purpose: the joint/task controllers brace-init this
-  // struct POSITIONALLY, so inserting a field mid-struct silently reassigns
-  // their arguments (it did — `pull_estimator_roles` landed in this bool and
-  // only failed to compile because the types happened to disagree). New fields
-  // go last.
   bool task_diag_enabled{false};
+
+  // GraspDiagLog (#428) — per-tick Force-PI servo + stiffness-estimator
+  // diagnostics for the joint/task controllers. Single fixed instance
+  // (kGraspDiagLogInstance).
+  //
+  // Gated on the force_pi_grasp BLOCK, not on `grasp_hand_mode` — deliberately
+  // the same rule BuildGraspController uses. The mode is runtime-writable
+  // through `grasp_controller_type` and controller switching never
+  // re-configures, so gating on the mode would silently produce no file for a
+  // session that started in contact_stop and switched to force_pi — which is
+  // exactly the "the data you needed is not in the session directory" failure
+  // this channel exists to remove. Ticks where the PI law was not the one
+  // driving the hand are logged as valid=0 rows instead.
+  bool grasp_diag_enabled{false};
+  // Configured grasp-finger order, stamped into the per-finger column names so
+  // a stored CSV decodes without that run's YAML (#234 P-14 rationale). Slot f
+  // is the fingertip sensor that feeds grasp finger f, so these are the hand's
+  // sensor names truncated to the grasp finger count. Empty is tolerated: the
+  // header then emits no per-finger columns at all, which is visible rather
+  // than mislabelled.
+  std::vector<std::string> grasp_diag_finger_names{};
 };
+
+// ⚠ Two separate hazards, two separate fixes — keep both (#428).
+//
+//   1. Every field above is reachable by POSITIONAL brace-init, which is how
+//      the three demo controllers used to build this struct. Inserting a field
+//      mid-struct then silently reassigned their arguments (it did:
+//      `pull_estimator_roles` landed in a bool and only failed to compile
+//      because the types happened to disagree). All three call sites now use
+//      DESIGNATED initializers, so order is not load-bearing and an omission is
+//      named rather than shifted. Keep them that way.
+//   2. Designated initializers do NOT silence -Wmissing-field-initializers —
+//      GCC warns for any omitted member that has no default member
+//      initializer, however it was written. That is why every aggregate member
+//      above carries an explicit `{}`: a call site that legitimately wants the
+//      empty map (the WBC controller wants four of them) can then leave it out
+//      instead of spelling it, which is what stops the next field addition from
+//      re-growing the warning at three sites.
+
+/// Push one row for this tick (RT tick path — noexcept, heap-free).
+///
+/// `ran` is whether the Force-PI law actually drove the hand this tick. When it
+/// is false — E-STOP, or any tick where another law owns the hand — a valid=0
+/// row is still pushed, so the file has no gaps to interpret and stays joinable
+/// with `pull_estimator.csv` on `tick`. A gap therefore means exactly one
+/// thing: a dropped row (#234 P-20 convention).
+inline void PushGraspDiagLog(rtc::LogHandle<GraspDiagLogPod>& handle,
+                             const rtc::grasp::GraspController* ctrl, bool ran,
+                             double t_relative_s, std::uint64_t tick) noexcept {
+  if (!handle) {
+    return;
+  }
+  GraspDiagLogPod pod{};
+  if (ran && ctrl != nullptr) {
+    FillGraspDiagLogPod(ctrl->finger_states(), ctrl->params(), ctrl->phase(),
+                        ctrl->target_force(), t_relative_s, tick, pod);
+  } else {
+    // Zero rather than freeze — see GraspDiagLogPod::valid.
+    pod.t_relative_s = t_relative_s;
+    pod.tick = tick;
+  }
+  handle.Push(pod);
+}
+
+// One-shot INFO describing whether the grasp_diag channel registered.
+//
+// Not an error either way: a hand-less variant, a config with no
+// `force_pi_grasp` block, or a hand reporting no fingertip sensors all land in
+// the disabled branch deliberately. Say so out loud anyway and name the file —
+// a missing grasp_diag.csv otherwise reads as a logging bug, which is the
+// failure mode `pull_estimator_wiring.cpp` already had to fix once (#234 P-20).
+inline void LogGraspDiagWiring(const rclcpp::Logger& logger, bool has_controller,
+                               const std::vector<std::string>& finger_names) {
+  if (!has_controller || finger_names.empty()) {
+    RCLCPP_INFO(logger,
+                "[grasp_diag] disabled — %s. No grasp_diag.csv will be written.",
+                !has_controller ? "no 'force_pi_grasp' block in demo_shared.yaml"
+                                : "hand reported no fingertip sensors to name the columns");
+    return;
+  }
+  std::string names;
+  for (const auto& n : finger_names) {
+    if (!names.empty()) {
+      names += ", ";
+    }
+    names += n;
+  }
+  RCLCPP_INFO(logger,
+              "[grasp_diag] enabled — grasp_diag.csv, %zu finger column set(s): %s. Ticks not "
+              "driven by the Force-PI law are logged as valid=0 rows.",
+              finger_names.size(), names.c_str());
+}
 
 // ── Returned handles (caller assigns to its own typed members) ─────────────
 struct RegisteredLogHandles {
@@ -154,6 +242,8 @@ struct RegisteredLogHandles {
   rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator;
   // Single fixed instance (kTaskDiagLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::TaskDiagLogPod> task_diag;
+  // Single fixed instance (kGraspDiagLogInstance), same reason.
+  rtc::LogHandle<integrated_bringup::GraspDiagLogPod> grasp_diag;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -323,11 +413,37 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.task_diag = std::move(handle);
+    } else if (entry.msg_type == kGraspDiagLogMsgType) {
+      if (!ctx.grasp_diag_enabled || entry.instance != kGraspDiagLogInstance) {
+        // No force_pi_grasp block on this variant (or unexpected instance) —
+        // silently skip like any unregistered instance. on_configure emits an
+        // INFO naming the absent file so the empty session directory does not
+        // read as a logging bug.
+        continue;
+      }
+      const auto finger_names = ctx.grasp_diag_finger_names;
+      // Both writers must agree on the per-finger column count or the row stops
+      // lining up with the header, so the same list sizes each.
+      const auto num_columns = finger_names.size();
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::GraspDiagLogPod>(
+          entry.instance,
+          [finger_names](std::ostream& os) {
+            integrated_bringup::WriteGraspDiagLogHeader(os, finger_names);
+          },
+          [num_columns](std::ostream& os, const integrated_bringup::GraspDiagLogPod& pod) {
+            integrated_bringup::WriteGraspDiagLogRow(os, pod, num_columns);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open grasp_diag CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.grasp_diag = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
-    // PullEstimatorLog, TaskDiagLog}; reaching here is a YAML parser bug.
-    // Silently ignore.
+    // PullEstimatorLog, TaskDiagLog, GraspDiagLog}; reaching here is a YAML
+    // parser bug. Silently ignore.
   }
 
   return result;

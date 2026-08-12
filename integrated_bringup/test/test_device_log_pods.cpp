@@ -6,6 +6,7 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
@@ -682,4 +683,134 @@ TEST(TaskDiagLogPod, StaleRowIsNotReportedAsDamping) {
   const auto first = row.find(',');
   const auto second = row.find(',', first + 1);
   EXPECT_EQ(row.substr(first + 1, second - first - 1), "0");
+}
+
+
+// ── GraspDiagLogPod (#428) ──────────────────────────────────────────────────
+
+TEST(GraspDiagLogPod, IsTriviallyCopyable) {
+  EXPECT_TRUE(std::is_trivially_copyable_v<integrated_bringup::GraspDiagLogPod>);
+}
+
+TEST(GraspDiagLogPod, HeaderColumnsMatchRowColumns) {
+  const std::vector<std::string> fingers{"thumb", "index", "middle"};
+
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteGraspDiagLogHeader(hdr_os, fingers);
+  integrated_bringup::GraspDiagLogPod pod{};
+  pod.num_fingers = static_cast<std::uint8_t>(fingers.size());
+  std::ostringstream row_os;
+  integrated_bringup::WriteGraspDiagLogRow(row_os, pod, fingers.size());
+
+  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+      << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
+}
+
+// A hand with fewer sensors than the POD's capacity must not emit columns for
+// fingers it cannot name: the row writer is driven by the same count the header
+// writer got, so a mismatch is a silent column shift for every reader.
+TEST(GraspDiagLogPod, HeaderAndRowAgreeForASingleFinger) {
+  const std::vector<std::string> fingers{"thumb"};
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteGraspDiagLogHeader(hdr_os, fingers);
+  integrated_bringup::GraspDiagLogPod pod{};
+  std::ostringstream row_os;
+  integrated_bringup::WriteGraspDiagLogRow(row_os, pod, fingers.size());
+  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()));
+}
+
+// The finger name is stamped into every per-finger column, so a stored CSV
+// decodes without that run's YAML (#234 P-14 rationale). Naming only the first
+// block would leave the rest positional.
+TEST(GraspDiagLogPod, HeaderStampsFingerNamesOnEveryQuantity) {
+  const std::vector<std::string> fingers{"thumb", "index"};
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteGraspDiagLogHeader(hdr_os, fingers);
+  const std::string hdr = hdr_os.str();
+
+  for (const char* q : {"s_", "f_desired_", "f_measured_", "f_error_", "k_est_", "k_inst_raw_",
+                        "delta_s_", "delta_f_", "gain_scale_", "est_updated_",
+                        "integrator_frozen_", "contact_"}) {
+    for (const auto& f : fingers) {
+      const std::string col = std::string(q) + f;
+      EXPECT_NE(hdr.find(col), std::string::npos) << "missing column " << col << " in " << hdr;
+    }
+  }
+}
+
+// The estimator's raw sample pair is the reason this channel exists — it cannot
+// be recovered from the s/f columns because the estimator consumes s_{t-1} -
+// s_{t-2} while a logged row carries s_t and s_{t-1} (#425). So the fill must
+// copy what FingerState recorded, not recompute anything.
+TEST(GraspDiagLogPod, FillCopiesTheEstimatorsOwnSamplePairAndPreClampRatio) {
+  std::array<rtc::grasp::FingerState, 2> fingers{};
+  fingers[0].s = 0.4;
+  fingers[0].f_desired = 2.0;
+  fingers[0].f_measured = 1.5;
+  fingers[0].K_contact_est = 3.0;
+  fingers[0].delta_s_used = 0.002;
+  fingers[0].delta_f_used = 0.5;
+  fingers[0].K_inst_raw = 250.0;  // far above K_est_max below — must survive
+  fingers[0].estimate_updated = true;
+  fingers[0].contact_detected = true;
+  fingers[0].integrator_frozen = true;
+
+  rtc::grasp::GraspParams params{};
+  params.beta = 0.3;
+  params.alpha_ema = 0.95;
+  params.K_est_max = 5.0;
+
+  integrated_bringup::GraspDiagLogPod pod{};
+  integrated_bringup::FillGraspDiagLogPod(fingers, params, rtc::grasp::GraspPhase::kHolding, 2.5,
+                                          /*t_relative_s=*/1.25, /*tick=*/77, pod);
+
+  EXPECT_TRUE(pod.valid);
+  EXPECT_EQ(pod.tick, 77U);
+  EXPECT_EQ(pod.grasp_phase, static_cast<std::uint8_t>(rtc::grasp::GraspPhase::kHolding));
+  EXPECT_FLOAT_EQ(pod.target_force, 2.5F);
+  EXPECT_FLOAT_EQ(pod.K_est_max, 5.0F);
+  EXPECT_FLOAT_EQ(pod.delta_s[0], 0.002F);
+  EXPECT_FLOAT_EQ(pod.delta_f[0], 0.5F);
+  // Pre-clamp: logging the post-clamp value instead would cap this at 5.0 and
+  // erase exactly the spread #426 is arguing about.
+  EXPECT_FLOAT_EQ(pod.k_inst_raw[0], 250.0F);
+  EXPECT_EQ(pod.est_updated[0], 1U);
+  EXPECT_FLOAT_EQ(pod.f_error[0], 0.5F);
+  // gain_scale is 1/(1 + beta*K), the multiplier actually applied to Kp/Ki.
+  EXPECT_FLOAT_EQ(pod.gain_scale[0], static_cast<float>(1.0 / (1.0 + 0.3 * 3.0)));
+  // Finger 1 was left default — its block must stay zeroed rather than repeat
+  // finger 0, which is the shape a copy-paste fill bug takes.
+  EXPECT_FLOAT_EQ(pod.k_inst_raw[1], 0.0F);
+  EXPECT_EQ(pod.est_updated[1], 0U);
+}
+
+// "No sample this tick" and "a sample that was rejected" are the same all-zeros
+// row without this flag, and they mean different things for #426: the first is
+// a converged loop, the second is a guard throwing data away.
+TEST(GraspDiagLogPod, RejectedSampleIsDistinguishableFromNoSample) {
+  std::array<rtc::grasp::FingerState, 1> rejected{};
+  rejected[0].delta_s_used = 0.001;
+  rejected[0].delta_f_used = -0.2;
+  rejected[0].K_inst_raw = -200.0;  // negative: cleared the epsilon guard, failed K_inst > 0
+  rejected[0].estimate_updated = false;
+
+  rtc::grasp::GraspParams params{};
+  integrated_bringup::GraspDiagLogPod pod{};
+  integrated_bringup::FillGraspDiagLogPod(rejected, params, rtc::grasp::GraspPhase::kForceControl,
+                                          1.0, 0.0, 1, pod);
+  EXPECT_EQ(pod.est_updated[0], 0U);
+  EXPECT_LT(pod.k_inst_raw[0], 0.0F) << "a rejected sample must still be visible in the file";
+  EXPECT_NE(pod.delta_s[0], 0.0F);
+}
+
+TEST(GraspDiagLogPod, FingerNamesTruncateToTheGraspFingerCount) {
+  const std::vector<std::string> sensors{"thumb", "index", "middle", "ring"};
+  const auto names = integrated_bringup::GraspDiagFingerNames(sensors, 3);
+  ASSERT_EQ(names.size(), 3U);
+  EXPECT_EQ(names[2], "middle");
+  // A hand reporting fewer sensors than configured grasp fingers yields the
+  // shorter list — the header must not name a finger with no force lane.
+  const auto short_names = integrated_bringup::GraspDiagFingerNames(
+      std::vector<std::string>{"thumb"}, 3);
+  EXPECT_EQ(short_names.size(), 1U);
 }
