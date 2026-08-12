@@ -669,6 +669,10 @@ if(BUILD_TESTING)
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
+  # Lets the deployed-tuning test parse the shipped YAML instead of a copy of it
+  # — see DeployedForcePiTuning in that file.
+  target_compile_definitions(test_demo_shared_config PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   ament_target_dependencies(test_demo_shared_config
     rclcpp
     rtc_controllers

@@ -103,6 +103,7 @@ GraspJointCommands GraspController::Update(std::span<const double> f_filtered, d
   }
 
   // ── 2. State machine update ─────────────────────────────────────────────
+  fingers_reset_this_tick_ = false;
   switch (phase_) {
     case GraspPhase::kIdle:
       UpdateIdle();
@@ -136,7 +137,17 @@ GraspJointCommands GraspController::Update(std::span<const double> f_filtered, d
     // still s_{t-1} once the tick returns) while giving ComputeAdaptivePI the
     // increment s_{t-1} - s_{t-2}, which is the one that produced the force
     // step f_t - f_{t-1} it is divided into.
-    fingers_[idx].s_prev = s_at_tick_start[idx];
+    // ...unless the FSM reset the fingers during this very tick. ResetFingers()
+    // zeroes the whole FingerState, s included, so restoring the pre-reset s
+    // into s_prev here would leave s = 0 beside s_prev = the s the finger held
+    // before the reset. Anything differencing the pair — which is how every
+    // plant model in the tests derives finger velocity — then reads a spurious
+    // -5 1/s for one tick after a release completes. It fires on the
+    // Releasing->Idle and Idle->Approaching transitions, and "ResetFingers
+    // means the finger state is zero" is the property that function exists for.
+    if (!fingers_reset_this_tick_) {
+      fingers_[idx].s_prev = s_at_tick_start[idx];
+    }
     output.q[idx] = InterpolatePosture(configs_[idx], fingers_[idx].s);
   }
 
@@ -382,9 +393,20 @@ double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept {
   const double delta_f = fs.f_measured - fs.f_prev;
   const double delta_s = fs.s - fs.s_prev;
   if (std::abs(delta_s) > kDeltaSEpsilon) {
+    // Clamped before it enters the EMA. delta_s goes to zero as the loop
+    // converges, so on a noisy force lane K_inst is a ratio of two quantities
+    // that are both sensor ripple, and one unbounded sample is enough to sink
+    // gain_scale for the rest of the grasp with no path back (a collapsed gain
+    // shrinks ds, which shrinks delta_s, which stops any corrective sample).
+    // The clamp bounds that failure; it does not remove it — at 500 Hz the
+    // per-tick force step is 0.4-1.4 mN against ~1.4 mN of filtered ripple, so
+    // the single-tick estimate is noise over noise on real hardware. See
+    // grasp_tuning_guide.md 6.6.
     const double K_inst = delta_f / delta_s;
     if (K_inst > 0.0) {
-      fs.K_contact_est = params_.alpha_ema * fs.K_contact_est + (1.0 - params_.alpha_ema) * K_inst;
+      const double K_bounded = std::min(K_inst, params_.K_est_max);
+      fs.K_contact_est =
+          params_.alpha_ema * fs.K_contact_est + (1.0 - params_.alpha_ema) * K_bounded;
     }
   }
 
@@ -431,6 +453,9 @@ void GraspController::ResetFingers() noexcept {
   for (int f = 0; f < num_fingers_; ++f) {
     fingers_[static_cast<std::size_t>(f)] = FingerState{};
   }
+  // Tell the s_prev write at the end of Update() to stand down for this tick —
+  // see there for why restoring a pre-reset s would undo part of this reset.
+  fingers_reset_this_tick_ = true;
   contact_settle_timer_ = 0.0;
   force_settle_timer_ = 0.0;
 }

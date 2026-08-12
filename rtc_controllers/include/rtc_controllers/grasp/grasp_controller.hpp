@@ -136,6 +136,9 @@ class GraspController {
   double active_target_force_{0.0};
 
   bool initialized_{false};
+  // Set by ResetFingers(), cleared at the top of each Update() FSM step. Guards
+  // the post-FSM s_prev write from resurrecting state the reset just cleared.
+  bool fingers_reset_this_tick_{false};
 
   // Small epsilon for stiffness estimation denominator check
   static constexpr double kDeltaSEpsilon = 1e-6;

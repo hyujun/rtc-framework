@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <random>
 
 using namespace rtc::grasp;
 
@@ -23,7 +24,9 @@ constexpr int kDoF = 3;
 class GraspControllerTest : public ::testing::Test {
  protected:
   static constexpr double kDt = 0.002;           // 500 Hz
-  static constexpr double kObjStiffness = 20.0;  // [N/delta_s]
+  // Not constexpr: tests that sweep object stiffness drive this fixture rather
+  // than standing up a private copy of the plant and tuning beside it.
+  double obj_stiffness_ = 20.0;  // [N/delta_s]
   static constexpr double kObjDamping = 1.0;     // [N*s/delta_s]
 
   void SetUp() override {
@@ -48,7 +51,12 @@ class GraspControllerTest : public ::testing::Test {
     params_.Kp_base = 0.05;
     params_.Ki_base = 0.01;
     params_.alpha_ema = 0.95;
-    params_.beta = 0.3;
+    // Tracks the deployed value. It was 0.3 while the stiffness estimator was
+    // inert, which made gain_scale the constant 1/(1 + beta) and the choice
+    // invisible; with the estimator live 0.3 is a tuning that ships nowhere and
+    // whose tau_min (15 s) exceeds the grasp budget, so the whole battery would
+    // have been exercising a gain schedule no robot runs. No assertion moved.
+    params_.beta = 0.03;
     params_.df_slip_threshold = 5.0;
     params_.f_slip_fraction = 0.5;
     params_.grip_tightening_rate = 0.5;  // [N/s]
@@ -63,7 +71,7 @@ class GraspControllerTest : public ::testing::Test {
     const double delta_s = s - s_at_contact;
     if (delta_s <= 0.0)
       return 0.0;
-    return kObjStiffness * delta_s + kObjDamping * std::max(ds_dt, 0.0);
+    return obj_stiffness_ * delta_s + kObjDamping * std::max(ds_dt, 0.0);
   }
 
   // Run simulation loop, returns forces at each step.
@@ -701,8 +709,10 @@ TEST(GraspControllerRaggedTest, ShortForceSpanIsZeroPadded) {
 
 namespace {
 
-// The fixture above pins its plant stiffness at a compile-time constant; these
-// tests have to sweep it, so they drive the controller directly.
+// These tests sweep object stiffness and tuning together, so they drive a
+// controller directly rather than through the fixture's phase helpers. The
+// configs and params below are the fixture's, factored out so the two cannot
+// drift; only the knobs each test varies are parameters.
 constexpr double kRigDt = 0.002;
 constexpr double kRigContactS = 0.3;
 constexpr double kRigDamping = 1.0;
@@ -882,5 +892,73 @@ TEST(GraspStiffnessEstimationTest, SPrevStillHoldsThePreviousTicksS) {
       s_at_last_return[f] = states[f].s;
     }
     have_previous = true;
+  }
+}
+
+// The estimate is bounded on purpose. K_inst = delta_f/delta_s divides by an
+// increment that vanishes as the loop converges, so on a noisy force lane both
+// operands are sensor ripple and a single sample can name an arbitrarily stiff
+// object. That state does not recover by itself: the collapsed gain_scale
+// shrinks ds, which shrinks delta_s, which stops any corrective sample being
+// taken. Unbounded, 20 mN of 25 Hz-filtered ripple measured 3364 here.
+TEST(GraspStiffnessEstimationTest, EstimateStaysWithinItsClamp) {
+  GraspParams p = DeployedParams();
+  p.K_est_max = 400.0;
+  GraspController c;
+  const auto cfgs = RigConfigs();
+  c.Init(cfgs, p);
+  c.CommandGrasp();
+  DriveToHolding(c, 20.0, 100000);
+
+  // Ripple through the same 1-pole 25 Hz filter the deployed force lane uses,
+  // scaled so what the controller sees has std == sigma.
+  constexpr double kFc = 25.0;
+  const double a = kRigDt / (1.0 / (2.0 * M_PI * kFc) + kRigDt);
+  const double lpf_gain = std::sqrt(a / (2.0 - a));
+  std::mt19937 rng(20260812);
+  std::normal_distribution<double> nd(0.0, 0.02 / lpf_gain);
+  double noise = 0.0;
+  for (int i = 0; i < 5000; ++i) {
+    noise += a * (nd(rng) - noise);
+    std::array<double, kRigFingers> forces{};
+    const auto& st = c.finger_states();
+    for (std::size_t f = 0; f < kRigFingers; ++f) {
+      const double ds_dt = (st[f].s - st[f].s_prev) / kRigDt;
+      const double d = st[f].s - kRigContactS;
+      forces[f] = (d <= 0.0) ? 0.0 : 20.0 * d + kRigDamping * std::max(ds_dt, 0.0) + noise;
+    }
+    (void)c.Update(std::span<const double, 3>(forces), kRigDt);
+    for (std::size_t f = 0; f < kRigFingers; ++f) {
+      ASSERT_LE(c.finger_states()[f].K_contact_est, p.K_est_max)
+          << "finger " << f << " tick " << i;
+    }
+  }
+}
+
+// ResetFingers() zeroes the whole FingerState. The s_prev write after the FSM
+// must not put the pre-reset s back, or s = 0 sits beside a non-zero s_prev and
+// anything differencing them - every plant model in this file - sees a spurious
+// finger velocity for one tick after a release completes.
+TEST(GraspStiffnessEstimationTest, ResetFingersLeavesNoStaleSPrev) {
+  GraspController c;
+  const auto cfgs = RigConfigs();
+  c.Init(cfgs, RigParams(0.03, 0.95));
+  c.CommandGrasp();
+  DriveToHolding(c, 20.0, 100000);
+  c.CommandRelease();
+
+  bool reached_idle = false;
+  for (int i = 0; i < 100000; ++i) {
+    PlantStep(c, 20.0);
+    if (c.phase() == GraspPhase::kIdle) {
+      reached_idle = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(reached_idle);
+  for (std::size_t f = 0; f < kRigFingers; ++f) {
+    EXPECT_DOUBLE_EQ(c.finger_states()[f].s, 0.0) << "finger " << f;
+    EXPECT_DOUBLE_EQ(c.finger_states()[f].s_prev, 0.0)
+        << "finger " << f << ": reset left s_prev holding the pre-reset s";
   }
 }

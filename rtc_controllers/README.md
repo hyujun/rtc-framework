@@ -509,7 +509,8 @@ operational_space_controller:
 | `Kp_base` | `double` | `0.02` | 1/(N*s) | PI 비례 게인 기본값 |
 | `Ki_base` | `double` | `0.002` | 1/(N*s^2) | PI 적분 게인 기본값 |
 | `alpha_ema` | `double` | `0.95` | [0,1] | 강성 EMA 계수 (1에 가까울수록 느린 적응) |
-| `beta` | `double` | `0.3` | -- | 적응 게인 감도 (높을수록 강한 물체에 게인 감소) |
+| `beta` | `double` | `0.03` | -- | 루프이득 상한 — `tau_min = beta/Kp_base` (배율이 아니다, [grasp_tuning_guide.md](docs/grasp_tuning_guide.md) §3.2) |
+| `K_est_max` | `double` | `400.0` | N/delta_s | `K_contact_est` 상한. 노이즈가 만든 발산을 가두는 안전장치 (§6.6) |
 | `f_contact_threshold` | `double` | `0.2` | N | 접촉 감지 힘 임계값 |
 | `f_target` | `double` | `2.0` | N | 목표 파지력 |
 | `f_ramp_rate` | `double` | `1.0` | N/s | 힘 레퍼런스 램프 속도 |
@@ -533,7 +534,7 @@ operational_space_controller:
 
 ```
 # 온라인 강성 추정 (EMA)
-K_inst   = delta_f / delta_s                       (|delta_s| > 1e-6 일 때만)
+K_inst   = min(delta_f / delta_s, K_est_max)       (|delta_s| > 1e-6 일 때만)
 K_est    = alpha_ema * K_est + (1 - alpha_ema) * K_inst   (K_inst > 0 일 때만)
 
 # 적응 게인 스케줄링

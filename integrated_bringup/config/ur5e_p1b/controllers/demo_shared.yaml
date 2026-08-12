@@ -49,6 +49,13 @@ demo_shared:
     # Kp_base/beta, so tau_min = beta/Kp_base = 1.5 s here. 0.3 gave 15 s and
     # was only survivable while the stiffness estimator was inert.
     beta: 0.03                  # adaptive gain sensitivity
+    # Damage bound on the stiffness estimate, not a tuning knob. K_inst =
+    # delta_f/delta_s divides by an increment that vanishes as the loop
+    # converges, so force-sensor ripple reads as a very stiff object and the
+    # inflated state cannot recover on its own. Measured: 2 mN of filtered
+    # ripple ran the estimate to 1075 and the grasp to 51 s. See
+    # grasp_tuning_guide.md 6.6 — this caps the stall, it does not remove it.
+    K_est_max: 400.0            # [N/delta_s] upper bound on K_contact_est
 
     # Force thresholds
     f_contact_threshold: 0.8    # [N] contact detection threshold

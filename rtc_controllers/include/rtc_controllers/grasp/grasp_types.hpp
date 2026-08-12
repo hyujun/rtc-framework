@@ -55,6 +55,19 @@ struct GraspParams {
   // was inert and K_contact_est sat at 1.0 — harmless then because the scale
   // was the constant 1/(1 + beta), fatal once the estimate tracks K.
   double beta{0.03};       // adaptive gain sensitivity
+  // Upper bound on a stiffness sample and on the running estimate. This is a
+  // damage bound, not a tuning knob: K_inst = delta_f/delta_s divides by an
+  // increment that goes to zero as the loop converges, so a force step made of
+  // pure sensor ripple reads as an arbitrarily stiff object. Unbounded, the
+  // resulting state is also absorbing — a collapsed gain_scale shrinks ds,
+  // which shrinks delta_s, so no corrective sample is ever taken. Measured on
+  // the deployed tuning with 2 mN of 25 Hz-filtered ripple, the estimate ran to
+  // 1075 and the grasp to 51 s; at 20 mN it reached 3364 and never converged.
+  // 400 is 2x the documented [10, 200] design range and floors gain_scale at
+  // 1/(1 + beta*400) = 0.077, i.e. it bounds the stall rather than preventing
+  // it — see grasp_tuning_guide.md 6.6 for why the noise case needs an
+  // estimator redesign that this clamp does not attempt.
+  double K_est_max{400.0};
 
   // Force thresholds
   double f_contact_threshold{0.2};  // [N] contact detection threshold
