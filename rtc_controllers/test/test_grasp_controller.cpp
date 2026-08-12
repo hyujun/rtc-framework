@@ -51,12 +51,12 @@ class GraspControllerTest : public ::testing::Test {
     params_.Kp_base = 0.05;
     params_.Ki_base = 0.01;
     params_.alpha_ema = 0.95;
-    // Tracks the deployed value. It was 0.3 while the stiffness estimator was
-    // inert, which made gain_scale the constant 1/(1 + beta) and the choice
-    // invisible; with the estimator live 0.3 is a tuning that ships nowhere and
-    // whose tau_min (15 s) exceeds the grasp budget, so the whole battery would
-    // have been exercising a gain schedule no robot runs. No assertion moved.
-    params_.beta = 0.03;
+    // Tracks the deployed value, and deployed means adaptation is pinned:
+    // K_est_max defaults to the 1.0 seed, so gain_scale is the constant
+    // 1/(1 + beta). This battery is FSM coverage and should run the schedule
+    // real robots run; the estimator mechanism is exercised by
+    // GraspStiffnessEstimationTest, which opts in explicitly.
+    params_.beta = 0.3;
     params_.df_slip_threshold = 5.0;
     params_.f_slip_fraction = 0.5;
     params_.grip_tightening_rate = 0.5;  // [N/s]
@@ -728,9 +728,13 @@ std::array<FingerConfig, kRigFingers> RigConfigs() {
   return cfgs;
 }
 
-// Same tuning as GraspControllerTest::SetUp, with beta/alpha_ema exposed.
+// Same tuning as GraspControllerTest::SetUp, with beta/alpha_ema exposed and
+// adaptation switched ON. These tests exercise the estimator itself, so they
+// opt out of the shipped pin (K_est_max == the 1.0 seed) that keeps
+// K_contact_est frozen everywhere else — see grasp_types.hpp.
 GraspParams RigParams(double beta, double alpha_ema) {
   GraspParams p{};
+  p.K_est_max = 400.0;
   p.f_contact_threshold = 0.2;
   p.f_target = 2.0;
   p.f_ramp_rate = 10.0;
@@ -758,7 +762,8 @@ GraspParams DeployedParams() {
   p.Kp_base = 0.02;
   p.Ki_base = 0.002;
   p.alpha_ema = 0.95;
-  p.beta = 0.03;
+  p.beta = 0.3;
+  p.K_est_max = 1.0;
   p.f_contact_threshold = 0.8;
   p.f_target = 2.0;
   p.f_ramp_rate = 2.0;
@@ -849,12 +854,66 @@ TEST(GraspStiffnessEstimationTest, AlphaEmaSetsEstimatorTimeConstant) {
   EXPECT_LT(fast, slow) << "fast=" << fast << " slow=" << slow;
 }
 
+// The shipped configuration keeps adaptation pinned, and that pin is the whole
+// reason this tuning is safe to deploy. K_est_max equals the seed, so
+// K_contact_est cannot rise, gain_scale is the constant 1/(1 + beta), and the
+// loop is therefore indifferent to force-sensor noise. Unpinned it is not:
+// measured at 2 mN of 25 Hz-filtered ripple the same grasps ran 10-30 s against
+// a 10 s budget. This test drives the deployed parameters through a noisy force
+// lane and asserts both halves — the estimate never leaves its seed, and the
+// grasp still lands inside the budget.
+TEST(GraspStiffnessEstimationTest, DeployedTuningIsPinnedAndNoiseImmune) {
+  constexpr double kFc = 25.0;
+  const double a = kRigDt / (1.0 / (2.0 * M_PI * kFc) + kRigDt);
+  const double lpf_gain = std::sqrt(a / (2.0 - a));
+
+  for (const double sigma : {0.0, 0.002, 0.02}) {
+    for (const double true_K : {10.0, 20.0, 50.0, 200.0}) {
+      GraspController c;
+      const auto cfgs = RigConfigs();
+      c.Init(cfgs, DeployedParams());
+      c.CommandGrasp();
+
+      std::mt19937 rng(4242);
+      std::normal_distribution<double> nd(0.0, sigma > 0.0 ? sigma / lpf_gain : 0.0);
+      double noise = 0.0;
+      int ticks = 100000;
+      for (int i = 0; i < 100000; ++i) {
+        if (sigma > 0.0) noise += a * (nd(rng) - noise);
+        std::array<double, kRigFingers> forces{};
+        const auto& st = c.finger_states();
+        for (std::size_t f = 0; f < kRigFingers; ++f) {
+          const double ds_dt = (st[f].s - st[f].s_prev) / kRigDt;
+          const double d = st[f].s - kRigContactS;
+          forces[f] =
+              (d <= 0.0) ? 0.0 : true_K * d + kRigDamping * std::max(ds_dt, 0.0) + noise;
+        }
+        (void)c.Update(std::span<const double, 3>(forces), kRigDt);
+        for (std::size_t f = 0; f < kRigFingers; ++f) {
+          ASSERT_LE(c.finger_states()[f].K_contact_est, 1.0)
+              << "estimate left its seed: sigma=" << sigma << " K=" << true_K;
+        }
+        if (c.phase() == GraspPhase::kHolding) {
+          ticks = i + 1;
+          break;
+        }
+      }
+      ASSERT_EQ(c.phase(), GraspPhase::kHolding) << "sigma=" << sigma << " K=" << true_K;
+      EXPECT_LT(static_cast<double>(ticks) * kRigDt, 10.0)
+          << "sigma=" << sigma << " K=" << true_K;
+    }
+  }
+}
+
 // beta caps the loop gain rather than merely scaling it: lambda =
 // K*Kp_base/(1 + beta*K) saturates at Kp_base/beta, so tau_min = beta/Kp_base
-// bounds the settling time no matter how stiff the object is. That bound is
-// what the deployed 0.03 buys — at the previous 0.3 (tau_min 15 s) a working
-// estimator would push every grasp past the behaviour tree's 10 s budget,
-// which is why the estimator fix and the retune are one commit.
+// bounds the settling time no matter how stiff the object is. Pinned, that
+// schedule degenerates to the constant 1/(1 + beta) and this test measures what
+// the robots actually run; the bound matters again in #426, where beta drops to
+// 0.03 (tau_min 1.5 s) at the same time K_est_max releases the estimate. The
+// pair is why neither may move alone: 0.3 with a live estimator puts every
+// grasp past the 10 s budget, and 0.03 while pinned changes every grasp's gain
+// by 26% for no adaptation.
 TEST(GraspStiffnessEstimationTest, DeployedTuningReachesHoldWithinBudget) {
   for (const double true_K : {10.0, 20.0, 50.0, 100.0, 200.0}) {
     GraspController c;
@@ -902,7 +961,9 @@ TEST(GraspStiffnessEstimationTest, SPrevStillHoldsThePreviousTicksS) {
 // shrinks ds, which shrinks delta_s, which stops any corrective sample being
 // taken. Unbounded, 20 mN of 25 Hz-filtered ripple measured 3364 here.
 TEST(GraspStiffnessEstimationTest, EstimateStaysWithinItsClamp) {
+  // The regime #426 is aiming at: adaptation on, beta retuned with it.
   GraspParams p = DeployedParams();
+  p.beta = 0.03;
   p.K_est_max = 400.0;
   GraspController c;
   const auto cfgs = RigConfigs();

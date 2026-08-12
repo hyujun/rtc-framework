@@ -45,17 +45,25 @@ demo_shared:
 
     # Adaptive gain scheduling
     alpha_ema: 0.95             # stiffness EMA coefficient [0,1]
-    # beta caps the loop gain: lambda = K*Kp_base/(1 + beta*K) saturates at
-    # Kp_base/beta, so tau_min = beta/Kp_base = 1.5 s here. 0.3 gave 15 s and
-    # was only survivable while the stiffness estimator was inert.
-    beta: 0.03                  # adaptive gain sensitivity
-    # Damage bound on the stiffness estimate, not a tuning knob. K_inst =
-    # delta_f/delta_s divides by an increment that vanishes as the loop
-    # converges, so force-sensor ripple reads as a very stiff object and the
-    # inflated state cannot recover on its own. Measured: 2 mN of filtered
-    # ripple ran the estimate to 1075 and the grasp to 51 s. See
-    # grasp_tuning_guide.md 6.6 — this caps the stall, it does not remove it.
-    K_est_max: 400.0            # [N/delta_s] upper bound on K_contact_est
+    # Adaptation is OFF here, and these two keys are the switch.
+    #
+    # K_est_max equals the seed K_contact_est starts from, so the estimate can
+    # never rise and gain_scale is the constant 1/(1 + beta) = 0.769 — bit for
+    # bit the behaviour this robot ran while the estimator was inert. beta stays
+    # at 0.3 for the same reason: pinned, it is the only thing setting that
+    # constant, so moving it to 0.03 would change every grasp's gain by 26%
+    # while buying no adaptation.
+    #
+    # Measured at 500 Hz with 2 mN of 25 Hz-filtered force ripple, running the
+    # estimator live took K in [10, 50] from 3.3-9.3 s to 10-30 s, past the
+    # behaviour tree's 10 s grasp budget; pinned it stays flat at 3.3-9.3 s
+    # across 0-20 mN of ripple. The single-tick estimator is noise over noise on
+    # real hardware and needs redesigning, not retuning.
+    #
+    # Released together in #426 (K_est_max 400 + beta 0.03). Do not raise one
+    # without the other. Rationale: grasp_tuning_guide.md 6.6.
+    beta: 0.3                   # loop-gain cap; only meaningful once adaptation is on
+    K_est_max: 1.0              # [N/delta_s] == seed -> estimate pinned, adaptation off
 
     # Force thresholds
     f_contact_threshold: 0.8    # [N] contact detection threshold

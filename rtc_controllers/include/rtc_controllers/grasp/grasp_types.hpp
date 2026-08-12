@@ -49,25 +49,39 @@ struct GraspParams {
   // beta is the maximum-loop-gain handle, not a free knob. The closed loop
   // converges at lambda = K*Kp_base/(1 + beta*K), which saturates at
   // Kp_base/beta as the contact stiffness K grows, so beta alone sets the
-  // fastest achievable settling: tau_min = beta/Kp_base. At 0.03 with the
-  // Kp_base above that is 1.5 s, which keeps the whole K in [10, 200] range
-  // inside a 10 s grasp budget. It was 0.3 (tau_min 15 s) while the estimator
-  // was inert and K_contact_est sat at 1.0 — harmless then because the scale
-  // was the constant 1/(1 + beta), fatal once the estimate tracks K.
-  double beta{0.03};       // adaptive gain sensitivity
-  // Upper bound on a stiffness sample and on the running estimate. This is a
-  // damage bound, not a tuning knob: K_inst = delta_f/delta_s divides by an
-  // increment that goes to zero as the loop converges, so a force step made of
-  // pure sensor ripple reads as an arbitrarily stiff object. Unbounded, the
-  // resulting state is also absorbing — a collapsed gain_scale shrinks ds,
-  // which shrinks delta_s, so no corrective sample is ever taken. Measured on
-  // the deployed tuning with 2 mN of 25 Hz-filtered ripple, the estimate ran to
-  // 1075 and the grasp to 51 s; at 20 mN it reached 3364 and never converged.
-  // 400 is 2x the documented [10, 200] design range and floors gain_scale at
-  // 1/(1 + beta*400) = 0.077, i.e. it bounds the stall rather than preventing
-  // it — see grasp_tuning_guide.md 6.6 for why the noise case needs an
-  // estimator redesign that this clamp does not attempt.
-  double K_est_max{400.0};
+  // fastest achievable settling: tau_min = beta/Kp_base. 0.03 (tau_min 1.5 s)
+  // is the value that keeps K in [10, 200] inside a 10 s grasp budget and is
+  // what this should become the moment adaptation is switched on.
+  //
+  // It stays at 0.3 while K_est_max pins the estimate at its 1.0 seed (see
+  // below), because pinned the whole schedule collapses to the constant
+  // 1/(1 + beta) and that constant IS the deployed behaviour: 1/1.3 = 0.769.
+  // Moving beta alone would therefore change the gain of every grasp on real
+  // hardware by 26% while buying nothing, since no adaptation is running.
+  // beta and K_est_max are released together, in #426.
+  double beta{0.3};        // adaptive gain sensitivity
+  // Upper bound on a stiffness sample and on the running estimate, and — at
+  // this default — the switch that keeps adaptation OFF.
+  //
+  // 1.0 equals the seed K_contact_est starts from, so the estimate can never
+  // rise and gain_scale is the constant 1/(1 + beta). That reproduces the
+  // behaviour this controller shipped with while the estimator was inert, bit
+  // for bit, and it is deliberately the DEFAULT rather than only a deployed
+  // override: a config that omits the key must not silently switch on a
+  // feature that is known to fail on hardware.
+  //
+  // Why it fails: K_inst = delta_f/delta_s divides by an increment that goes to
+  // zero as the loop converges, so a force step made of sensor ripple reads as
+  // an arbitrarily stiff object, and the resulting state is absorbing — the
+  // collapsed gain_scale shrinks ds, which shrinks delta_s, so no corrective
+  // sample is ever taken. Measured against the pinned behaviour at 500 Hz with
+  // 2 mN of 25 Hz-filtered ripple, K in [10, 50] went from 3.3-9.3 s to
+  // 10-30 s, i.e. past the behaviour tree's 10 s budget, while pinned stayed
+  // flat at 3.3-9.3 s across 0-20 mN. The estimator needs a different
+  // estimator, not a different constant: see grasp_tuning_guide.md 6.6 and
+  // #426. Raising this (400 gives 2x the documented [10, 200] design range) is
+  // what turns adaptation back on, and it belongs with the beta retune above.
+  double K_est_max{1.0};
 
   // Force thresholds
   double f_contact_threshold{0.2};  // [N] contact detection threshold

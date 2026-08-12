@@ -835,13 +835,18 @@ TEST(DeployedForcePiTuning, MatchesTheTuningRtcControllersAssertsAgainst) {
     ASSERT_TRUE(cfg.has_force_pi_block) << variant << ": force_pi_grasp block missing";
     const auto& gp = cfg.force_pi_params;
 
-    // beta is the loop-gain cap: tau_min = beta/Kp_base. At the historical 0.3
-    // a working stiffness estimator put every grasp past the 10 s budget.
-    EXPECT_DOUBLE_EQ(gp.beta, 0.03) << variant;
+    // beta and K_est_max ship as a pair and neither may move alone. K_est_max
+    // equals the seed K_contact_est starts from, so the estimate is pinned and
+    // gain_scale is the constant 1/(1 + beta) = 0.769 — the behaviour these
+    // robots ran while the estimator was inert. Releasing the estimate (400)
+    // without retuning beta to 0.03 puts every grasp past the behaviour tree's
+    // 10 s budget; retuning beta while pinned changes every grasp's gain by 26%
+    // for no adaptation. Both move together in #426.
+    EXPECT_DOUBLE_EQ(gp.beta, 0.3) << variant;
+    EXPECT_DOUBLE_EQ(gp.K_est_max, 1.0) << variant;
     EXPECT_DOUBLE_EQ(gp.Kp_base, 0.02) << variant;
     EXPECT_DOUBLE_EQ(gp.Ki_base, 0.002) << variant;
     EXPECT_DOUBLE_EQ(gp.alpha_ema, 0.95) << variant;
-    EXPECT_DOUBLE_EQ(gp.K_est_max, 400.0) << variant;
     EXPECT_DOUBLE_EQ(gp.f_contact_threshold, 0.8) << variant;
     EXPECT_DOUBLE_EQ(gp.f_target, 2.0) << variant;
     EXPECT_DOUBLE_EQ(gp.f_ramp_rate, 2.0) << variant;
