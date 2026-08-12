@@ -293,6 +293,8 @@ void BtRosBridge::OnGraspState(rtc_msgs::msg::GraspState::SharedPtr msg) {
                                               msg->finger_filtered_force.end());
     grasp_state_.finger_force_error.assign(msg->finger_force_error.begin(),
                                            msg->finger_force_error.end());
+    grasp_state_.finger_stiffness_est.assign(msg->finger_stiffness_est.begin(),
+                                             msg->finger_stiffness_est.end());
     grasp_state_.received_at = std::chrono::steady_clock::now();
   }
   {

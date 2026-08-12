@@ -76,6 +76,11 @@ struct GraspStateData {
   std::array<float, kMaxGraspFingertips> finger_s{};
   std::array<float, kMaxGraspFingertips> finger_filtered_force{};
   std::array<float, kMaxGraspFingertips> finger_force_error{};
+  // GraspController::FingerState::K_contact_est mirror (#424) — the estimator
+  // had no consumer at all for six months, which is why a latch-order bug kept
+  // it pinned at its seed without a single test noticing (#425). 0.0 means not
+  // computed this tick (E-STOP / non-Force-PI), never a real estimate.
+  std::array<float, kMaxGraspFingertips> finger_stiffness_est{};
   float grasp_target_force{0.0f};
 
   // In-plane pull-force estimate (#167) — mirrored onto the pull_* block of

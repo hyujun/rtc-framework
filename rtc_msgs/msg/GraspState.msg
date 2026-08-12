@@ -26,6 +26,15 @@ uint8     grasp_phase           # GraspPhase enum (0=Idle..5=Releasing)
 float32[] finger_s              # grasp parameter per finger [0,1]
 float32[] finger_filtered_force # filtered force per finger [N]
 float32[] finger_force_error    # force error per finger [N]
+# Contact stiffness estimate per finger [N/delta_s] — GraspController's
+# K_contact_est (#424). Seeds at 1.0 and is bounded above by the K_est_max
+# parameter; the shipped tuning sets K_est_max to that same 1.0 seed, so a
+# deployed robot publishes the pinned seed and adaptive gain scheduling is off
+# (#425, grasp_tuning_guide.md 6.6). Values below the seed are the estimator
+# tracking a soft contact, not a fault.
+# 0.0 is not reachable while the servo runs — it is the E-STOP / not-computed
+# sentinel written by FillEstopPublishState (PROC-7).
+float32[] finger_stiffness_est   # estimated contact stiffness per finger [N/delta_s]
 float32   grasp_target_force    # active target force [N]
 
 # In-plane pull-force estimate (#167) — rtc::grasp::PullForceEstimator 출력.

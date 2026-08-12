@@ -278,6 +278,34 @@ class DemoTaskController final : public RTControllerInterface {
     return grasp_state_lock_.Load();
   }
 
+  /// Test-only: per-finger states as the grasp controller itself holds them.
+  /// The point of comparing this against
+  /// GetPublishedGraspStateForTesting().finger_stiffness_est is that neither
+  /// side alone pins the wiring — under the shipped tuning the estimate sits
+  /// at its 1.0 seed, so a hardcoded constant satisfies any assertion made
+  /// about the published value on its own (#424).
+  [[nodiscard]] std::span<const ::rtc::grasp::FingerState> GetGraspFingerStatesForTesting()
+      const noexcept {
+    if (!grasp_controller_) {
+      return {};
+    }
+    return grasp_controller_->finger_states();
+  }
+
+  /// Test-only: lift the shipped K_est_max pin so the stiffness estimate can
+  /// leave its seed. The deployed value equals the seed (#425), which makes
+  /// the published mirror a constant and hides a fill that ignores its source.
+  /// Read-modify-write so the rest of the configured block survives.
+  bool SetGraspKEstMaxForTesting(double k_est_max) {
+    if (!grasp_controller_) {
+      return false;
+    }
+    auto p = grasp_controller_->params();
+    p.K_est_max = k_est_max;
+    grasp_controller_->set_params(p);
+    return true;
+  }
+
   /// Test-only: the FILTERED contact_stop aggregates. Distinct from
   /// GetGraspStateForTesting(), whose max_force / num_active_contacts stay raw
   /// — only these two drive the freeze decision, so a test that reads the

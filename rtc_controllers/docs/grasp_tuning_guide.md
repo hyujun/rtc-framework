@@ -311,6 +311,22 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 - 두 손잡이는 **축이 다르다**: `alpha_ema` 는 추정이 얼마나 빨리 옳아지는가, `beta` 는 옳아진
   추정으로 얼마나 이득을 깎는가. 진동을 잡을 때는 `beta`, 추정이 헛도는 것 같을 때는 `alpha_ema`
 
+> **무엇을 보고 이 둘을 움직이는가 (#424).** 추정치는 `<secondary>/grasp_state` 의
+> `finger_stiffness_est` 로 나온다 — `alpha_ema` 를 조정할 근거는 이 필드의 시계열이지
+> 도달 시간이 아니다. 도달 시간은 `beta` 와 뒤섞여 있어 어느 손잡이가 원인인지 못 가른다.
+>
+> | 관찰 | 해석 | 손잡이 |
+> |---|---|---|
+> | 파지 내내 정확히 `1.000` | `K_est_max` pin (현재 배포) — 적응 자체가 꺼져 있다 | 없음. §6.6 |
+> | 참값 근처에서 매끄럽게 수렴 | 정상 | 없음 |
+> | tick 마다 크게 요동 | 노이즈가 `ΔF/Δs` 를 지배 | `alpha_ema` ↑ (0.98) |
+> | 접촉 후에도 seed 부근에 오래 머묾 | 추정이 너무 느리다 | `alpha_ema` ↓ (0.9) |
+> | 단조 상승 후 안 내려옴 = 부풀어오름 | §6.6 의 흡수 상태. **튜닝으로 못 고친다** | #426 |
+> | `0.000` | 이번 tick 에 계산 안 함 (E-STOP). 무른 접촉이 아니다 | — |
+>
+> `finger_stiffness_est` 는 `finger_filtered_force` 와 **함께** 본다: 후자의 정지 구간
+> 표준편차가 §6.6 이 말하는 σ 이고, 요동의 원인이 추정기인지 센서인지를 그 둘의 대조가 가른다.
+
 ### 4.3 Force 임계/목표
 
 | 파라미터 | 코드 default | 배포 | 단위 | 의미 |
@@ -387,7 +403,7 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 ## 5. 권장 튜닝 워크플로 (배포 종속)
 
 단계마다 `<secondary>/grasp_state` 토픽 (`grasp_phase`, `finger_filtered_force`, `finger_s`,
-`finger_force_error`, `grasp_target_force`) 을 CSV 로 로깅하여 검증한다.
+`finger_force_error`, `finger_stiffness_est`, `grasp_target_force`) 을 CSV 로 로깅하여 검증한다.
 
 ### Step 1 — 센서 baseline
 - 자유공간에서 hand 를 여러 차례 open/close 시키며 `force_magnitude[..]` 의 noise σ 측정
@@ -514,6 +530,12 @@ feedforward 하한은 물체와 무관하게 고정이다 — `contact_settle_ti
 `Kp_base` ↓ (전 구간을 느리게 만드므로 마지막). 이 구간의 실기 거동은 아직 미검증이다 —
 저장소 테스트가 쓰는 Kelvin-Voigt 모델은 관성이 없어 구조적으로 오버슈트가 나지 않는다.
 
+이 transient 를 실기에서 보는 방법은 `finger_stiffness_est` 를 접촉 latch 시각 기준으로
+정렬해 보는 것이다 (#424) — seed 1.0 에서 출발해 언제 참값에 붙는지가 곧 `alpha_ema` 의
+유효 시상수다. **단 현재 배포에서는 이 곡선을 볼 수 없다**: `K_est_max` 가 seed 와 같아
+추정치가 1.0 을 못 벗어나므로, 이 절을 실기에서 확인하려면 벤치에서 `K_est_max` 를 먼저
+올려야 한다 (§6.6 의 표 — `beta` 를 함께 내리지 않으면 예산을 초과한다).
+
 ### 6.5 앞 두 손가락 비대칭의 함의
 전이가 인덱스 0·1 로 결정되므로 (§1.2):
 - **후행 손가락의 spurious latch 방지가 더 중요해진다**: false latch 는 `s_at_contact = 0` 인 상태로
@@ -581,7 +603,9 @@ DeployedTuningIsPinnedAndNoiseImmune` 이 이 두 성질(추정치가 seed 를 �
 
 **결론**: 적응을 실기에서 켜려면 tick 차분을 그대로 둔 채 상수를 조정하는 것으로는 안 되고,
 추정기 자체 (여기 조건을 반영한 가변 윈도우, 최소자승 누적, RLS/칼만 등) 를 다시 설계해야 한다
-— #426. 관측 수단은 #424 가 붙인다. 그때까지 §3.2 · §4.1 · §6.3 의 β=0.03 분석은 **적응이
+— #426. 관측 수단은 #424 가 붙였다: `GraspState.finger_stiffness_est` 가 per-finger 추정치를
+싣는다. pin 이 걸린 배포에서 이 필드가 계속 `1.000` 인 것이 위 `DeployedTuningIsPinnedAndNoiseImmune`
+의 런타임 대응물이며, 값이 움직이기 시작하면 pin 이 풀렸다는 뜻이다. 그때까지 §3.2 · §4.1 · §6.3 의 β=0.03 분석은 **적응이
 켜진 상태를 가정한 설계 문서**이며 현재 배포 거동이 아니다.
 
 ## 7. 파라미터 변경 절차

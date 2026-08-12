@@ -1193,6 +1193,78 @@ TEST_F(TaskContactStopWithPiBuiltTest, ReconfigureClearsTheLatchMirror) {
             static_cast<uint8_t>(rtc::grasp::GraspPhase::kIdle));
 }
 
+// #424 — same contract as the joint controller's
+// PublishedStiffnessEstimateTracksTheControllersOwn, and it has to stay
+// symmetric: the fill is duplicated in the two compute paths, so a fix applied
+// to one of them is exactly the drift this pair exists to catch. Rationale for
+// the lifted pin and the creeping force lives there.
+TEST_F(TaskForcePiBuiltTest, PublishedStiffnessEstimateTracksTheControllersOwn) {
+  ASSERT_TRUE(ctrl_->SetGraspKEstMaxForTesting(400.0)) << "fixture built no PI controller";
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+
+  constexpr int kTicks = 800;
+  for (int i = 0; i < kTicks; ++i) {
+    const float f = 0.5F + 0.001F * static_cast<float>(i);  // 0.5 N/s at 500 Hz
+    SetFingertipForce(state_, 0, f);
+    SetFingertipForce(state_, 1, f);
+    (void)RunTicks(1, /*feedback_hand=*/false);
+  }
+
+  const auto fs = ctrl_->GetGraspFingerStatesForTesting();
+  ASSERT_FALSE(fs.empty());
+  const auto published = ctrl_->GetPublishedGraspStateForTesting();
+
+  bool left_seed = false;
+  for (std::size_t i = 0; i < fs.size(); ++i) {
+    EXPECT_FLOAT_EQ(published.finger_stiffness_est[i], static_cast<float>(fs[i].K_contact_est))
+        << "finger " << i;
+    if (fs[i].K_contact_est != 1.0) {
+      left_seed = true;
+    }
+  }
+  EXPECT_TRUE(left_seed) << "estimate never left its 1.0 seed, so the equality above cannot "
+                            "tell a live mirror from a constant";
+}
+
+// Symmetric with the joint controller's EstopClearsAPopulatedForcePiDiagnostic;
+// rationale for why the base-fixture E-STOP test cannot cover this lives there.
+TEST_F(TaskForcePiBuiltTest, EstopClearsAPopulatedForcePiDiagnostic) {
+  ASSERT_TRUE(ctrl_->SetGraspKEstMaxForTesting(400.0)) << "fixture built no PI controller";
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+  for (int i = 0; i < 800; ++i) {
+    const float f = 0.5F + 0.001F * static_cast<float>(i);
+    SetFingertipForce(state_, 0, f);
+    SetFingertipForce(state_, 1, f);
+    (void)RunTicks(1, /*feedback_hand=*/false);
+  }
+
+  const auto fs = ctrl_->GetGraspFingerStatesForTesting();
+  ASSERT_FALSE(fs.empty());
+  const auto live = ctrl_->GetPublishedGraspStateForTesting();
+  bool any_nonzero = false;
+  for (std::size_t i = 0; i < fs.size(); ++i) {
+    if (live.finger_s[i] != 0.0F || live.finger_filtered_force[i] != 0.0F ||
+        live.finger_force_error[i] != 0.0F || live.finger_stiffness_est[i] != 0.0F) {
+      any_nonzero = true;
+    }
+  }
+  ASSERT_TRUE(any_nonzero) << "nothing was populated, so the E-STOP assertions below "
+                              "would hold against a controller that never filled at all";
+
+  ctrl_->TriggerEstop();
+  (void)RunTicks(1, /*feedback_hand=*/false);
+
+  const auto published = ctrl_->GetPublishedGraspStateForTesting();
+  for (std::size_t i = 0; i < published.finger_s.size(); ++i) {
+    EXPECT_FLOAT_EQ(published.finger_s[i], 0.0F) << "finger " << i;
+    EXPECT_FLOAT_EQ(published.finger_filtered_force[i], 0.0F) << "finger " << i;
+    EXPECT_FLOAT_EQ(published.finger_force_error[i], 0.0F) << "finger " << i;
+    EXPECT_FLOAT_EQ(published.finger_stiffness_est[i], 0.0F) << "finger " << i;
+  }
+}
+
 TEST_F(TaskForcePiBuiltTest, ReconfigureClearsThePhaseMirror) {
   ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
   PrimeContact();
@@ -2160,6 +2232,11 @@ TEST_F(TaskControllerUrdfTest, EstopTickPublishesThisTicksBody) {
   SetFingertipForce(state_, 1, 0.0f);
   RunTicks(2);
 
+  // NOTE: this fixture never loads the force_pi block, so grasp_hand_mode is the
+  // kContactStop default and the Force-PI fill below never ran in the first
+  // place. The zeros asserted here therefore pin "never filled", not "cleared"
+  // — the clearing itself is pinned by EstopClearsAPopulatedForcePiDiagnostic
+  // on the force_pi fixture, which is where a missing fill() actually shows up.
   const auto published = ctrl_->GetPublishedGraspStateForTesting();
   EXPECT_EQ(published.num_active_contacts, 0);
   EXPECT_FALSE(published.grasp_detected);
@@ -2170,6 +2247,11 @@ TEST_F(TaskControllerUrdfTest, EstopTickPublishesThisTicksBody) {
     EXPECT_FLOAT_EQ(published.finger_s[i], 0.0f) << "finger " << i;
     EXPECT_FLOAT_EQ(published.finger_filtered_force[i], 0.0f) << "finger " << i;
     EXPECT_FLOAT_EQ(published.finger_force_error[i], 0.0f) << "finger " << i;
+    // The stiffness estimate is the one field here that reads as live when
+    // frozen: it barely moves tick to tick, so a stale sample looks exactly
+    // like a fresh one. 0.0 is unreachable while the servo runs, which is what
+    // makes it a usable not-computed marker (#424).
+    EXPECT_FLOAT_EQ(published.finger_stiffness_est[i], 0.0f) << "finger " << i;
   }
 }
 

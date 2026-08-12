@@ -533,6 +533,9 @@ operational_space_controller:
 > 추정기가 실기 힘 노이즈에서 동작하지 않기 때문이며 (근거·실측: [grasp_tuning_guide.md](docs/grasp_tuning_guide.md) §6.6),
 > 재설계는 #426 이다. `beta` 와 `K_est_max` 는 **함께** 풀어야 한다 — 한쪽만 움직이면
 > 예산 초과(추정 활성 + beta 0.3) 또는 무의미한 이득 변경(pinned + beta 0.03)이 된다.
+>
+> 추정치는 `GraspState.finger_stiffness_est` 로 발행된다 (#424) — pin 이 걸린 배포에서
+> 실기가 1.0 을 계속 싣는 것이 곧 "적응이 꺼진 채 돌고 있다" 의 런타임 증거다.
 
 `lpf_cutoff_hz` · `control_rate_hz` 는 **`GraspParams` 필드가 아니다** — 필터가 호출자 (컨트롤러의 축별 뱅크) 로 옮겨가면서 제거됐다. `force_pi_grasp.lpf_cutoff_hz` YAML 키는 그대로이고 값은 `DemoSharedConfig::force_pi_lpf_cutoff_hz` 를 거친다. `grip_tightening_ratio` 도 제거됐다 (per-tick 비율이라 grip force 가 `control_rate` 에 의존했다 → `grip_tightening_rate` [N/s]); YAML 에 남아 있으면 `LoadConfig` 가 throw 한다.
 

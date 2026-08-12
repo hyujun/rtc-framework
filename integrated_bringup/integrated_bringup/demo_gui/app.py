@@ -277,6 +277,7 @@ class DemoControllerGUI(Node):
         self._fp_finger_s = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_filtered_force = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_force_error = [0.0] * len(FORCE_PI_FINGER_NAMES)
+        self._fp_stiffness_est = [0.0] * len(FORCE_PI_FINGER_NAMES)
         # Pull-force estimate (#167) — GraspState/WbcState 의 pull 블록은 동일한
         # PullEstimate 이므로 _store_pull_fields 하나로 양쪽 콜백을 커버.
         #
@@ -318,7 +319,7 @@ class DemoControllerGUI(Node):
         self._prev_ft = [["", "", ""] for _ in range(len(FINGERTIP_NAMES))]
         self._prev_fp_phase = ""
         self._prev_fp_target = ""
-        self._prev_fp_fingers = [["", "", "", ""] for _ in range(len(FORCE_PI_FINGER_NAMES))]
+        self._prev_fp_fingers = [[""] * 5 for _ in range(len(FORCE_PI_FINGER_NAMES))]
         # Pull panel dirty-check cache, keyed by the same field names as
         # _pull_labels — the panel grew past the positional-list pattern the
         # other caches use, and a key-addressed cache keeps adding a row from
@@ -618,6 +619,7 @@ class DemoControllerGUI(Node):
             self._fp_finger_s[i] = msg.finger_s[i]
             self._fp_filtered_force[i] = msg.finger_filtered_force[i]
             self._fp_force_error[i] = msg.finger_force_error[i]
+            self._fp_stiffness_est[i] = msg.finger_stiffness_est[i]
         self._store_pull_fields(msg, SOURCE_GRASP)
 
     def _store_pull_fields(self, msg, source: str) -> None:
@@ -1160,6 +1162,18 @@ class DemoControllerGUI(Node):
             if self._prev_fp_fingers[i][3] != desired_text:
                 self._prev_fp_fingers[i][3] = desired_text
                 self._fp_desired_labels[i].config(text=desired_text)
+
+            # Contact stiffness estimate (#424). The shipped tuning pins it at
+            # its 1.0 seed (adaptation off, #425/#426), so a steady 1.000 here
+            # is the expected reading and not a dead lane; 0.000 means the
+            # controller did not compute it this tick (E-STOP). Greyed while
+            # pinned so a value that starts moving is what draws the eye.
+            k_est = self._fp_stiffness_est[i]
+            k_text = f"{k_est:.3f}"
+            if self._prev_fp_fingers[i][4] != k_text:
+                self._prev_fp_fingers[i][4] = k_text
+                k_color = "#585b70" if k_est >= 1.0 else "#cdd6f4"
+                self._fp_k_est_labels[i].config(text=k_text, fg=k_color)
 
         # ── Sensor calibration status ──
         for stype, var in self._calib_status_vars.items():
@@ -2076,7 +2090,7 @@ class DemoControllerGUI(Node):
         fp_tbl = tk.Frame(fp_frame, bg="#1e1e2e")
         fp_tbl.pack(fill="x", padx=4)
 
-        for c, txt in enumerate(["Finger", "s", "Filtered F", "F Error", "F Desired"]):
+        for c, txt in enumerate(["Finger", "s", "Filtered F", "F Error", "F Desired", "K est"]):
             tk.Label(
                 fp_tbl,
                 text=txt,
@@ -2091,6 +2105,7 @@ class DemoControllerGUI(Node):
         self._fp_filt_labels: list[tk.Label] = []
         self._fp_err_labels: list[tk.Label] = []
         self._fp_desired_labels: list[tk.Label] = []
+        self._fp_k_est_labels: list[tk.Label] = []
 
         for i, name in enumerate(FORCE_PI_FINGER_NAMES):
             tk.Label(
@@ -2150,6 +2165,18 @@ class DemoControllerGUI(Node):
             )
             dl.grid(row=i + 1, column=4, padx=2, pady=1)
             self._fp_desired_labels.append(dl)
+
+            kl = tk.Label(
+                fp_tbl,
+                text="0.000",
+                bg="#313244",
+                fg="#585b70",
+                font=mono_font,
+                width=10,
+                anchor="center",
+            )
+            kl.grid(row=i + 1, column=5, padx=2, pady=1)
+            self._fp_k_est_labels.append(kl)
 
         # Command row: Grasp/Release buttons + target force input
         ttk.Separator(fp_frame, orient="horizontal").pack(fill="x", pady=2)
