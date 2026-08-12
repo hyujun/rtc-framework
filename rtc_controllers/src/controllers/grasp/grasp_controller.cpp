@@ -72,6 +72,10 @@ void GraspController::set_params(const GraspParams& params) noexcept {
 
 GraspJointCommands GraspController::Update(std::span<const double> f_filtered, double dt) noexcept {
   GraspJointCommands output{};
+  // s as it stands on entry, staged so that s_prev can be published *after* the
+  // FSM has moved s — see the write below the switch for why it cannot be
+  // latched here alongside f_prev.
+  std::array<double, kMaxGraspFingers> s_at_tick_start{};
   output.num_fingers = num_fingers_;
   for (int f = 0; f < num_fingers_; ++f) {
     output.dof[static_cast<std::size_t>(f)] = configs_[static_cast<std::size_t>(f)].dof;
@@ -92,7 +96,7 @@ GraspJointCommands GraspController::Update(std::span<const double> f_filtered, d
   for (int f = 0; f < num_fingers_; ++f) {
     auto& fs = fingers_[static_cast<std::size_t>(f)];
     fs.f_prev = fs.f_measured;
-    fs.s_prev = fs.s;
+    s_at_tick_start[static_cast<std::size_t>(f)] = fs.s;
     fs.f_measured = (static_cast<std::size_t>(f) < f_filtered.size())
                         ? f_filtered[static_cast<std::size_t>(f)]
                         : 0.0;
@@ -123,6 +127,16 @@ GraspJointCommands GraspController::Update(std::span<const double> f_filtered, d
   // ── 3. Compute joint commands from s ────────────────────────────────────
   for (int f = 0; f < num_fingers_; ++f) {
     const auto idx = static_cast<std::size_t>(f);
+    // s_prev is published here, not in the latch loop above. Latched next to
+    // f_prev it equalled s for the whole tick, so the stiffness estimator's
+    // delta_s = s - s_prev was identically zero, its |delta_s| > epsilon guard
+    // never passed, K_contact_est stayed pinned at the 1.0 seed and gain_scale
+    // degenerated to the constant 1/(1 + beta) — the adaptation never ran.
+    // Writing it here leaves the value observers read unchanged (s_prev is
+    // still s_{t-1} once the tick returns) while giving ComputeAdaptivePI the
+    // increment s_{t-1} - s_{t-2}, which is the one that produced the force
+    // step f_t - f_{t-1} it is divided into.
+    fingers_[idx].s_prev = s_at_tick_start[idx];
     output.q[idx] = InterpolatePosture(configs_[idx], fingers_[idx].s);
   }
 

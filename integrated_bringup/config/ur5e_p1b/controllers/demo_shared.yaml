@@ -45,7 +45,10 @@ demo_shared:
 
     # Adaptive gain scheduling
     alpha_ema: 0.95             # stiffness EMA coefficient [0,1]
-    beta: 0.3                   # adaptive gain sensitivity
+    # beta caps the loop gain: lambda = K*Kp_base/(1 + beta*K) saturates at
+    # Kp_base/beta, so tau_min = beta/Kp_base = 1.5 s here. 0.3 gave 15 s and
+    # was only survivable while the stiffness estimator was inert.
+    beta: 0.03                  # adaptive gain sensitivity
 
     # Force thresholds
     f_contact_threshold: 0.8    # [N] contact detection threshold

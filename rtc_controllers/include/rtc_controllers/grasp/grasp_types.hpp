@@ -46,7 +46,15 @@ struct GraspParams {
 
   // Adaptive gain scheduling (stiffness EMA)
   double alpha_ema{0.95};  // stiffness EMA coefficient [0,1]
-  double beta{0.3};        // adaptive gain sensitivity
+  // beta is the maximum-loop-gain handle, not a free knob. The closed loop
+  // converges at lambda = K*Kp_base/(1 + beta*K), which saturates at
+  // Kp_base/beta as the contact stiffness K grows, so beta alone sets the
+  // fastest achievable settling: tau_min = beta/Kp_base. At 0.03 with the
+  // Kp_base above that is 1.5 s, which keeps the whole K in [10, 200] range
+  // inside a 10 s grasp budget. It was 0.3 (tau_min 15 s) while the estimator
+  // was inert and K_contact_est sat at 1.0 — harmless then because the scale
+  // was the constant 1/(1 + beta), fatal once the estimate tracks K.
+  double beta{0.03};       // adaptive gain sensitivity
 
   // Force thresholds
   double f_contact_threshold{0.2};  // [N] contact detection threshold
@@ -101,6 +109,11 @@ struct GraspParams {
 struct FingerState {
   double s{0.0};               // grasp parameter [0, 1]
   double s_at_contact{0.0};    // s value at contact detection
+  // s as of the end of the previous tick. Written after the FSM has advanced s,
+  // so that during a tick it still holds s_{t-2} while s holds s_{t-1}: the
+  // stiffness estimator needs that pair, since it divides the force step
+  // f_t - f_{t-1} by the s increment that caused it. Latching it at tick entry
+  // instead makes it equal to s and the estimator silently stops updating.
   double s_prev{0.0};          // previous step s (for stiffness estimation)
   double f_desired{0.0};       // current force reference [N]
   double f_measured{0.0};      // filtered force [N]
