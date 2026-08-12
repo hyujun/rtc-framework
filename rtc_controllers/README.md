@@ -509,7 +509,8 @@ operational_space_controller:
 | `Kp_base` | `double` | `0.02` | 1/(N*s) | PI 비례 게인 기본값 |
 | `Ki_base` | `double` | `0.002` | 1/(N*s^2) | PI 적분 게인 기본값 |
 | `alpha_ema` | `double` | `0.95` | [0,1] | 강성 EMA 계수 (1에 가까울수록 느린 적응) |
-| `beta` | `double` | `0.3` | -- | 적응 게인 감도 (높을수록 강한 물체에 게인 감소) |
+| `beta` | `double` | `0.3` | -- | 루프이득 상한 — `tau_min = beta/Kp_base` (배율이 아니다, [grasp_tuning_guide.md](docs/grasp_tuning_guide.md) §3.2) |
+| `K_est_max` | `double` | `1.0` | N/delta_s | `K_contact_est` 상한. seed 와 같으므로 **적응이 꺼져 있다** (§6.6) |
 | `f_contact_threshold` | `double` | `0.2` | N | 접촉 감지 힘 임계값 |
 | `f_target` | `double` | `2.0` | N | 목표 파지력 |
 | `f_ramp_rate` | `double` | `1.0` | N/s | 힘 레퍼런스 램프 속도 |
@@ -527,13 +528,19 @@ operational_space_controller:
 | `grip_decay_rate` | `double` | `0.1` | N/s | tightening 후 목표력으로 감쇄 속도 |
 | `f_max_multiplier` | `double` | `2.0` | -- | 최대 허용 힘 = f_target * multiplier |
 
+> **적응 이득 스케줄링은 현재 비활성이다.** `K_est_max` 가 `K_contact_est` 의 seed(1.0)와 같아
+> 추정치가 오르지 못하므로 `gain_scale` 은 상수 `1/(1 + beta)` = 0.769 다. 단일 tick 차분
+> 추정기가 실기 힘 노이즈에서 동작하지 않기 때문이며 (근거·실측: [grasp_tuning_guide.md](docs/grasp_tuning_guide.md) §6.6),
+> 재설계는 #426 이다. `beta` 와 `K_est_max` 는 **함께** 풀어야 한다 — 한쪽만 움직이면
+> 예산 초과(추정 활성 + beta 0.3) 또는 무의미한 이득 변경(pinned + beta 0.03)이 된다.
+
 `lpf_cutoff_hz` · `control_rate_hz` 는 **`GraspParams` 필드가 아니다** — 필터가 호출자 (컨트롤러의 축별 뱅크) 로 옮겨가면서 제거됐다. `force_pi_grasp.lpf_cutoff_hz` YAML 키는 그대로이고 값은 `DemoSharedConfig::force_pi_lpf_cutoff_hz` 를 거친다. `grip_tightening_ratio` 도 제거됐다 (per-tick 비율이라 grip force 가 `control_rate` 에 의존했다 → `grip_tightening_rate` [N/s]); YAML 에 남아 있으면 `LoadConfig` 가 throw 한다.
 
 **Per-finger 제어 법칙 (적응형 PI):**
 
 ```
 # 온라인 강성 추정 (EMA)
-K_inst   = delta_f / delta_s                       (|delta_s| > 1e-6 일 때만)
+K_inst   = min(delta_f / delta_s, K_est_max)       (|delta_s| > 1e-6 일 때만)
 K_est    = alpha_ema * K_est + (1 - alpha_ema) * K_inst   (K_inst > 0 일 때만)
 
 # 적응 게인 스케줄링

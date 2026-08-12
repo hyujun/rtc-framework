@@ -806,3 +806,57 @@ TEST(BuildPullForceEstimatorTest, InvalidHysteresisThrows) {
   std::unique_ptr<rtc::grasp::PullForceEstimator> est;
   EXPECT_THROW(BuildPullForceEstimator(cfg, 500.0, est), std::invalid_argument);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Deployed force_pi tuning — the shipped YAML, not a copy of it
+// ═══════════════════════════════════════════════════════════════════════════
+
+// rtc_controllers' DeployedTuningReachesHoldWithinBudget asserts that the
+// deployed grasp tuning reaches kHolding inside the behaviour tree's 10 s
+// budget, but it runs against a hand-written mirror of this block, so on its
+// own a YAML edit cannot fail it. This test closes that loop from the other
+// side: it parses the shipped file and pins the values that mirror copies. If
+// it fails after a retune, update GraspStiffnessEstimationTest's
+// DeployedParams() to match and re-check the budget claim there.
+namespace {
+DemoSharedConfig LoadDeployedShared(const std::string& variant) {
+  const std::string path =
+      std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + variant + "/controllers/demo_shared.yaml";
+  const YAML::Node root = YAML::LoadFile(path);
+  DemoSharedConfig cfg;
+  ApplyDemoSharedConfig(root["demo_shared"], cfg);
+  return cfg;
+}
+}  // namespace
+
+TEST(DeployedForcePiTuning, MatchesTheTuningRtcControllersAssertsAgainst) {
+  for (const std::string variant : {"ur5e_p1a", "ur5e_p1b"}) {
+    const DemoSharedConfig cfg = LoadDeployedShared(variant);
+    ASSERT_TRUE(cfg.has_force_pi_block) << variant << ": force_pi_grasp block missing";
+    const auto& gp = cfg.force_pi_params;
+
+    // beta and K_est_max ship as a pair and neither may move alone. K_est_max
+    // equals the seed K_contact_est starts from, so the estimate is pinned and
+    // gain_scale is the constant 1/(1 + beta) = 0.769 — the behaviour these
+    // robots ran while the estimator was inert. Releasing the estimate (400)
+    // without retuning beta to 0.03 puts every grasp past the behaviour tree's
+    // 10 s budget; retuning beta while pinned changes every grasp's gain by 26%
+    // for no adaptation. Both move together in #426.
+    EXPECT_DOUBLE_EQ(gp.beta, 0.3) << variant;
+    EXPECT_DOUBLE_EQ(gp.K_est_max, 1.0) << variant;
+    EXPECT_DOUBLE_EQ(gp.Kp_base, 0.02) << variant;
+    EXPECT_DOUBLE_EQ(gp.Ki_base, 0.002) << variant;
+    EXPECT_DOUBLE_EQ(gp.alpha_ema, 0.95) << variant;
+    EXPECT_DOUBLE_EQ(gp.f_contact_threshold, 0.8) << variant;
+    EXPECT_DOUBLE_EQ(gp.f_target, 2.0) << variant;
+    EXPECT_DOUBLE_EQ(gp.f_ramp_rate, 2.0) << variant;
+    EXPECT_DOUBLE_EQ(gp.ds_max, 0.05) << variant;
+    EXPECT_DOUBLE_EQ(gp.delta_s_max, 0.15) << variant;
+    EXPECT_DOUBLE_EQ(gp.integral_clamp, 0.1) << variant;
+    EXPECT_DOUBLE_EQ(gp.approach_speed, 0.4) << variant;
+    EXPECT_DOUBLE_EQ(gp.release_speed, 0.3) << variant;
+    EXPECT_DOUBLE_EQ(gp.settle_epsilon, 0.5) << variant;
+    EXPECT_DOUBLE_EQ(gp.settle_time, 0.3) << variant;
+    EXPECT_DOUBLE_EQ(gp.contact_settle_time, 0.1) << variant;
+  }
+}

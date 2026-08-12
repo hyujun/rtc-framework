@@ -72,6 +72,10 @@ void GraspController::set_params(const GraspParams& params) noexcept {
 
 GraspJointCommands GraspController::Update(std::span<const double> f_filtered, double dt) noexcept {
   GraspJointCommands output{};
+  // s as it stands on entry, staged so that s_prev can be published *after* the
+  // FSM has moved s — see the write below the switch for why it cannot be
+  // latched here alongside f_prev.
+  std::array<double, kMaxGraspFingers> s_at_tick_start{};
   output.num_fingers = num_fingers_;
   for (int f = 0; f < num_fingers_; ++f) {
     output.dof[static_cast<std::size_t>(f)] = configs_[static_cast<std::size_t>(f)].dof;
@@ -92,13 +96,14 @@ GraspJointCommands GraspController::Update(std::span<const double> f_filtered, d
   for (int f = 0; f < num_fingers_; ++f) {
     auto& fs = fingers_[static_cast<std::size_t>(f)];
     fs.f_prev = fs.f_measured;
-    fs.s_prev = fs.s;
+    s_at_tick_start[static_cast<std::size_t>(f)] = fs.s;
     fs.f_measured = (static_cast<std::size_t>(f) < f_filtered.size())
                         ? f_filtered[static_cast<std::size_t>(f)]
                         : 0.0;
   }
 
   // ── 2. State machine update ─────────────────────────────────────────────
+  fingers_reset_this_tick_ = false;
   switch (phase_) {
     case GraspPhase::kIdle:
       UpdateIdle();
@@ -123,6 +128,26 @@ GraspJointCommands GraspController::Update(std::span<const double> f_filtered, d
   // ── 3. Compute joint commands from s ────────────────────────────────────
   for (int f = 0; f < num_fingers_; ++f) {
     const auto idx = static_cast<std::size_t>(f);
+    // s_prev is published here, not in the latch loop above. Latched next to
+    // f_prev it equalled s for the whole tick, so the stiffness estimator's
+    // delta_s = s - s_prev was identically zero, its |delta_s| > epsilon guard
+    // never passed, K_contact_est stayed pinned at the 1.0 seed and gain_scale
+    // degenerated to the constant 1/(1 + beta) — the adaptation never ran.
+    // Writing it here leaves the value observers read unchanged (s_prev is
+    // still s_{t-1} once the tick returns) while giving ComputeAdaptivePI the
+    // increment s_{t-1} - s_{t-2}, which is the one that produced the force
+    // step f_t - f_{t-1} it is divided into.
+    // ...unless the FSM reset the fingers during this very tick. ResetFingers()
+    // zeroes the whole FingerState, s included, so restoring the pre-reset s
+    // into s_prev here would leave s = 0 beside s_prev = the s the finger held
+    // before the reset. Anything differencing the pair — which is how every
+    // plant model in the tests derives finger velocity — then reads a spurious
+    // -5 1/s for one tick after a release completes. It fires on the
+    // Releasing->Idle and Idle->Approaching transitions, and "ResetFingers
+    // means the finger state is zero" is the property that function exists for.
+    if (!fingers_reset_this_tick_) {
+      fingers_[idx].s_prev = s_at_tick_start[idx];
+    }
     output.q[idx] = InterpolatePosture(configs_[idx], fingers_[idx].s);
   }
 
@@ -368,9 +393,20 @@ double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept {
   const double delta_f = fs.f_measured - fs.f_prev;
   const double delta_s = fs.s - fs.s_prev;
   if (std::abs(delta_s) > kDeltaSEpsilon) {
+    // Clamped before it enters the EMA. delta_s goes to zero as the loop
+    // converges, so on a noisy force lane K_inst is a ratio of two quantities
+    // that are both sensor ripple, and one unbounded sample is enough to sink
+    // gain_scale for the rest of the grasp with no path back (a collapsed gain
+    // shrinks ds, which shrinks delta_s, which stops any corrective sample).
+    // The clamp bounds that failure; it does not remove it — at 500 Hz the
+    // per-tick force step is 0.4-1.4 mN against ~1.4 mN of filtered ripple, so
+    // the single-tick estimate is noise over noise on real hardware. See
+    // grasp_tuning_guide.md 6.6.
     const double K_inst = delta_f / delta_s;
     if (K_inst > 0.0) {
-      fs.K_contact_est = params_.alpha_ema * fs.K_contact_est + (1.0 - params_.alpha_ema) * K_inst;
+      const double K_bounded = std::min(K_inst, params_.K_est_max);
+      fs.K_contact_est =
+          params_.alpha_ema * fs.K_contact_est + (1.0 - params_.alpha_ema) * K_bounded;
     }
   }
 
@@ -417,6 +453,9 @@ void GraspController::ResetFingers() noexcept {
   for (int f = 0; f < num_fingers_; ++f) {
     fingers_[static_cast<std::size_t>(f)] = FingerState{};
   }
+  // Tell the s_prev write at the end of Update() to stand down for this tick —
+  // see there for why restoring a pre-reset s would undo part of this reset.
+  fingers_reset_this_tick_ = true;
   contact_settle_timer_ = 0.0;
   force_settle_timer_ = 0.0;
 }

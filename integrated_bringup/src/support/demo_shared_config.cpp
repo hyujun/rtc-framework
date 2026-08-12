@@ -106,6 +106,8 @@ void ApplyForcePiBlock(const YAML::Node& fp, DemoSharedConfig& cfg) {
     gp.alpha_ema = fp["alpha_ema"].as<double>();
   if (fp["beta"])
     gp.beta = fp["beta"].as<double>();
+  if (fp["K_est_max"])
+    gp.K_est_max = fp["K_est_max"].as<double>();
   if (fp["f_contact_threshold"])
     gp.f_contact_threshold = fp["f_contact_threshold"].as<double>();
   if (fp["f_target"])

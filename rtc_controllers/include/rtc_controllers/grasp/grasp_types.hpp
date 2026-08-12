@@ -46,7 +46,42 @@ struct GraspParams {
 
   // Adaptive gain scheduling (stiffness EMA)
   double alpha_ema{0.95};  // stiffness EMA coefficient [0,1]
+  // beta is the maximum-loop-gain handle, not a free knob. The closed loop
+  // converges at lambda = K*Kp_base/(1 + beta*K), which saturates at
+  // Kp_base/beta as the contact stiffness K grows, so beta alone sets the
+  // fastest achievable settling: tau_min = beta/Kp_base. 0.03 (tau_min 1.5 s)
+  // is the value that keeps K in [10, 200] inside a 10 s grasp budget and is
+  // what this should become the moment adaptation is switched on.
+  //
+  // It stays at 0.3 while K_est_max pins the estimate at its 1.0 seed (see
+  // below), because pinned the whole schedule collapses to the constant
+  // 1/(1 + beta) and that constant IS the deployed behaviour: 1/1.3 = 0.769.
+  // Moving beta alone would therefore change the gain of every grasp on real
+  // hardware by 26% while buying nothing, since no adaptation is running.
+  // beta and K_est_max are released together, in #426.
   double beta{0.3};        // adaptive gain sensitivity
+  // Upper bound on a stiffness sample and on the running estimate, and — at
+  // this default — the switch that keeps adaptation OFF.
+  //
+  // 1.0 equals the seed K_contact_est starts from, so the estimate can never
+  // rise and gain_scale is the constant 1/(1 + beta). That reproduces the
+  // behaviour this controller shipped with while the estimator was inert, bit
+  // for bit, and it is deliberately the DEFAULT rather than only a deployed
+  // override: a config that omits the key must not silently switch on a
+  // feature that is known to fail on hardware.
+  //
+  // Why it fails: K_inst = delta_f/delta_s divides by an increment that goes to
+  // zero as the loop converges, so a force step made of sensor ripple reads as
+  // an arbitrarily stiff object, and the resulting state is absorbing — the
+  // collapsed gain_scale shrinks ds, which shrinks delta_s, so no corrective
+  // sample is ever taken. Measured against the pinned behaviour at 500 Hz with
+  // 2 mN of 25 Hz-filtered ripple, K in [10, 50] went from 3.3-9.3 s to
+  // 10-30 s, i.e. past the behaviour tree's 10 s budget, while pinned stayed
+  // flat at 3.3-9.3 s across 0-20 mN. The estimator needs a different
+  // estimator, not a different constant: see grasp_tuning_guide.md 6.6 and
+  // #426. Raising this (400 gives 2x the documented [10, 200] design range) is
+  // what turns adaptation back on, and it belongs with the beta retune above.
+  double K_est_max{1.0};
 
   // Force thresholds
   double f_contact_threshold{0.2};  // [N] contact detection threshold
@@ -101,6 +136,11 @@ struct GraspParams {
 struct FingerState {
   double s{0.0};               // grasp parameter [0, 1]
   double s_at_contact{0.0};    // s value at contact detection
+  // s as of the end of the previous tick. Written after the FSM has advanced s,
+  // so that during a tick it still holds s_{t-2} while s holds s_{t-1}: the
+  // stiffness estimator needs that pair, since it divides the force step
+  // f_t - f_{t-1} by the s increment that caused it. Latching it at tick entry
+  // instead makes it equal to s and the estimator silently stops updating.
   double s_prev{0.0};          // previous step s (for stiffness estimation)
   double f_desired{0.0};       // current force reference [N]
   double f_measured{0.0};      // filtered force [N]
