@@ -62,6 +62,9 @@ struct CachedGraspState {
   std::vector<float> finger_s;               // grasp parameter per finger [0,1]
   std::vector<float> finger_filtered_force;  // filtered force per finger [N]
   std::vector<float> finger_force_error;     // force error per finger [N]
+  // Contact stiffness estimate per finger [N/delta_s] (#424). 0.0 means the
+  // controller did not compute it this tick (E-STOP), not a soft contact.
+  std::vector<float> finger_stiffness_est;
 
   // steady_clock receive time of the message this state was decoded from.
   // Default (epoch) means never received; the staleness gate treats that as

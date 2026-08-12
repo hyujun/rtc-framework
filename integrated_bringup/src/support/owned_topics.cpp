@@ -57,6 +57,7 @@ void PrefillGraspMessage(const rtc::DeviceNameConfig* cfg, rtc_msgs::msg::GraspS
   msg.finger_s.assign(max_ft, 0.0F);
   msg.finger_filtered_force.assign(max_ft, 0.0F);
   msg.finger_force_error.assign(max_ft, 0.0F);
+  msg.finger_stiffness_est.assign(max_ft, 0.0F);
 }
 
 // Pre-populate WbcState per-finger arrays so publish() never resizes.
@@ -340,6 +341,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
       msg.finger_s[i] = gs.finger_s[i];
       msg.finger_filtered_force[i] = gs.finger_filtered_force[i];
       msg.finger_force_error[i] = gs.finger_force_error[i];
+      msg.finger_stiffness_est[i] = gs.finger_stiffness_est[i];
     }
     msg.num_active_contacts = gs.num_active_contacts;
     msg.max_force = gs.max_force;

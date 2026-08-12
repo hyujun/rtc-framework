@@ -90,6 +90,11 @@ class GraspController {
   /// Active target force [N].
   [[nodiscard]] double target_force() const noexcept { return active_target_force_; }
 
+  /// Parameters currently in force. Read-modify-write through this and
+  /// set_params() is how a caller changes one knob without restating the whole
+  /// block — restating it silently reverts whatever the YAML configured.
+  [[nodiscard]] const GraspParams& params() const noexcept { return params_; }
+
   /// Runtime parameter adjustment.
   void set_target_force(double f) noexcept;
   void set_params(const GraspParams& params) noexcept;

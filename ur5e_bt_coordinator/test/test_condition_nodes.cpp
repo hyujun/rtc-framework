@@ -65,6 +65,35 @@ class ConditionNodeTest : public InjectTestFixture {
 };
 
 // ══════════════════════════════════════════════════════════════════════════
+// GraspState decode — per-finger lanes
+// ══════════════════════════════════════════════════════════════════════════
+
+// OnGraspState is where a new per-finger lane silently goes missing: the field
+// can exist in the .msg, in CachedGraspState, and in the publishing fixture and
+// still never be assigned here, in which case every consumer reads a default-
+// constructed vector and nothing fails. #424 was filed because exactly that
+// shape of gap — an estimate with no consumer — hid a dead estimator for six
+// months, so the decode gets a test rather than a reviewer's attention.
+TEST_F(ConditionNodeTest, GraspStateDecodeCarriesEveryPerFingerLane) {
+  CachedGraspState gs = MakeGraspState(2, 5.0f, true);
+  gs.finger_s = {0.25f, 0.5f};
+  gs.finger_filtered_force = {1.5f, 2.5f};
+  gs.finger_force_error = {-0.5f, 0.25f};
+  // Distinct per finger and distinct from every other lane: a decode that
+  // assigns the wrong source vector has to show up as a value mismatch, not
+  // just a size match.
+  gs.finger_stiffness_est = {0.75f, 18.5f};
+  PublishGraspState(gs);
+  Spin();
+
+  const auto decoded = bridge_->GetGraspState();
+  EXPECT_EQ(decoded.finger_s, gs.finger_s);
+  EXPECT_EQ(decoded.finger_filtered_force, gs.finger_filtered_force);
+  EXPECT_EQ(decoded.finger_force_error, gs.finger_force_error);
+  EXPECT_EQ(decoded.finger_stiffness_est, gs.finger_stiffness_est);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // IsForceAbove
 // ══════════════════════════════════════════════════════════════════════════
 

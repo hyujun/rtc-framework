@@ -266,6 +266,7 @@ class InjectTestFixture : public ::testing::Test {
     msg.finger_s = gs.finger_s;
     msg.finger_filtered_force = gs.finger_filtered_force;
     msg.finger_force_error = gs.finger_force_error;
+    msg.finger_stiffness_est = gs.finger_stiffness_est;
     injector_->GraspState(std::move(msg));
   }
 

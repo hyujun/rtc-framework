@@ -486,6 +486,98 @@ TEST_F(JointForcePiBuiltTest, PhaseMirrorLeavesIdleOnceAGraspIsCommanded) {
       << "the quiet gate would admit a mode change mid-grasp";
 }
 
+// #424 — the estimator's published mirror. Two things have to hold at once and
+// neither is sufficient alone:
+//
+//   * the published value equals the controller's own K_contact_est, and
+//   * the estimate is somewhere other than its seed while that is checked.
+//
+// The shipped tuning pins K_est_max at the 1.0 seed (#425), so with the pin left
+// in place both sides read 1.0 forever and a fill hardcoded to the seed — or one
+// that copies the wrong finger — passes. Lifting the pin is what gives the
+// equality assertion something to fail on.
+//
+// The force has to CREEP rather than sit at a constant: the estimator only takes
+// a sample when delta_f and delta_s share a sign, and once the LPF settles on a
+// constant force delta_f is zero and every sample is rejected. That is the same
+// silence the original latch-order bug produced, so a constant-force version of
+// this test would go green against a completely dead estimator.
+TEST_F(JointForcePiBuiltTest, PublishedStiffnessEstimateTracksTheControllersOwn) {
+  ASSERT_TRUE(ctrl_.SetGraspKEstMaxForTesting(400.0)) << "fixture built no PI controller";
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+
+  constexpr int kTicks = 800;
+  for (int i = 0; i < kTicks; ++i) {
+    const float f = 0.5F + 0.001F * static_cast<float>(i);  // 0.5 N/s at 500 Hz
+    SetFingertipForce(state_, 0, f);
+    SetFingertipForce(state_, 1, f);
+    state_.iteration = static_cast<uint64_t>(i + 2);
+    (void)ctrl_.Compute(state_);
+  }
+
+  const auto fs = ctrl_.GetGraspFingerStatesForTesting();
+  ASSERT_FALSE(fs.empty());
+  const auto published = ctrl_.GetPublishedGraspStateForTesting();
+
+  bool left_seed = false;
+  for (std::size_t i = 0; i < fs.size(); ++i) {
+    EXPECT_FLOAT_EQ(published.finger_stiffness_est[i], static_cast<float>(fs[i].K_contact_est))
+        << "finger " << i;
+    if (fs[i].K_contact_est != 1.0) {
+      left_seed = true;
+    }
+  }
+  EXPECT_TRUE(left_seed) << "estimate never left its 1.0 seed, so the equality above cannot "
+                            "tell a live mirror from a constant";
+}
+
+// PROC-7 with the diagnostics actually populated first. The sibling test on
+// JointGraspTest cannot do this job: that fixture leaves grasp_hand_mode at the
+// kContactStop default, so the Force-PI fill never runs and its zeros hold even
+// if FillEstopPublishState clears nothing at all — deleting a fill() there is
+// invisible. Here the servo has run, so a frozen field stays at its last sample
+// and the difference is observable. The stiffness estimate is the reason this
+// matters: it moves so slowly that a stale value is indistinguishable from a
+// live one on a topic echo (#424).
+TEST_F(JointForcePiBuiltTest, EstopClearsAPopulatedForcePiDiagnostic) {
+  ASSERT_TRUE(ctrl_.SetGraspKEstMaxForTesting(400.0)) << "fixture built no PI controller";
+  ASSERT_TRUE(ctrl_.CommandGraspForTesting(2.0));
+  PrimeHandMotion(ctrl_, state_);
+  for (int i = 0; i < 800; ++i) {
+    const float f = 0.5F + 0.001F * static_cast<float>(i);
+    SetFingertipForce(state_, 0, f);
+    SetFingertipForce(state_, 1, f);
+    state_.iteration = static_cast<uint64_t>(i + 2);
+    (void)ctrl_.Compute(state_);
+  }
+
+  const auto fs = ctrl_.GetGraspFingerStatesForTesting();
+  ASSERT_FALSE(fs.empty());
+  const auto live = ctrl_.GetPublishedGraspStateForTesting();
+  bool any_nonzero = false;
+  for (std::size_t i = 0; i < fs.size(); ++i) {
+    if (live.finger_s[i] != 0.0F || live.finger_filtered_force[i] != 0.0F ||
+        live.finger_force_error[i] != 0.0F || live.finger_stiffness_est[i] != 0.0F) {
+      any_nonzero = true;
+    }
+  }
+  ASSERT_TRUE(any_nonzero) << "nothing was populated, so the E-STOP assertions below "
+                              "would hold against a controller that never filled at all";
+
+  ctrl_.TriggerEstop();
+  state_.iteration = 1000;
+  (void)ctrl_.Compute(state_);
+
+  const auto published = ctrl_.GetPublishedGraspStateForTesting();
+  for (std::size_t i = 0; i < published.finger_s.size(); ++i) {
+    EXPECT_FLOAT_EQ(published.finger_s[i], 0.0F) << "finger " << i;
+    EXPECT_FLOAT_EQ(published.finger_filtered_force[i], 0.0F) << "finger " << i;
+    EXPECT_FLOAT_EQ(published.finger_force_error[i], 0.0F) << "finger " << i;
+    EXPECT_FLOAT_EQ(published.finger_stiffness_est[i], 0.0F) << "finger " << i;
+  }
+}
+
 // The race the quiet gate cannot close by itself: the callback checks the mirror,
 // contact engages, and only then does the mode Store land. The tick that observes
 // the new mode stops running the hold — and hand_computed_ falls back to a
@@ -813,6 +905,11 @@ TEST_F(JointGraspTest, EstopTickClearsControlLawDerivedDiagnostics) {
   state_.iteration = 2;
   (void)ctrl_.Compute(state_);
 
+  // NOTE: this fixture never loads the force_pi block, so grasp_hand_mode is the
+  // kContactStop default and the Force-PI fill below never ran in the first
+  // place. The zeros asserted here therefore pin "never filled", not "cleared"
+  // — the clearing itself is pinned by EstopClearsAPopulatedForcePiDiagnostic
+  // on the force_pi fixture, which is where a missing fill() actually shows up.
   // The Force-PI servo was not stepped this tick, so its per-finger telemetry
   // is neutralized rather than frozen at the last pre-E-STOP sample.
   const auto published = ctrl_.GetPublishedGraspStateForTesting();
@@ -820,6 +917,11 @@ TEST_F(JointGraspTest, EstopTickClearsControlLawDerivedDiagnostics) {
     EXPECT_FLOAT_EQ(published.finger_s[i], 0.0f) << "finger " << i;
     EXPECT_FLOAT_EQ(published.finger_filtered_force[i], 0.0f) << "finger " << i;
     EXPECT_FLOAT_EQ(published.finger_force_error[i], 0.0f) << "finger " << i;
+    // The stiffness estimate is the one field here that reads as live when
+    // frozen: it barely moves tick to tick, so a stale sample looks exactly
+    // like a fresh one. 0.0 is unreachable while the servo runs, which is what
+    // makes it a usable not-computed marker (#424).
+    EXPECT_FLOAT_EQ(published.finger_stiffness_est[i], 0.0f) << "finger " << i;
   }
 }
 

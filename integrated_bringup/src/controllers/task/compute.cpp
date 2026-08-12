@@ -1324,6 +1324,12 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
       grasp_state_.finger_filtered_force[idx] = static_cast<float>(fs[idx].f_measured);
       grasp_state_.finger_force_error[idx] =
           static_cast<float>(fs[idx].f_desired - fs[idx].f_measured);
+      // #424 — the estimator's only consumer. Mirrored raw, with no floor or
+      // clamp of its own: the bound that matters is K_est_max inside the
+      // estimator, and re-imposing one here would hide the estimator drifting
+      // past it. Under the shipped pin this publishes the 1.0 seed, which is
+      // the runtime evidence that adaptation is off (grasp_tuning_guide.md 6.6).
+      grasp_state_.finger_stiffness_est[idx] = static_cast<float>(fs[idx].K_contact_est);
     }
   }
   grasp_state_lock_.Store(grasp_state_);
@@ -1408,6 +1414,12 @@ void DemoTaskController::FillEstopPublishState(double dt) noexcept {
   grasp_state_.finger_s.fill(0.0F);
   grasp_state_.finger_filtered_force.fill(0.0F);
   grasp_state_.finger_force_error.fill(0.0F);
+  // PROC-7: the estimate is exactly the kind of field that reads as live when
+  // frozen — it is slow-moving, so a stale sample is indistinguishable from a
+  // fresh one. 0.0 is unreachable while the servo runs (the seed is 1.0 and
+  // every update is a convex combination of positive terms), so it is an
+  // unambiguous not-computed marker rather than a plausible soft contact.
+  grasp_state_.finger_stiffness_est.fill(0.0F);
   StageEstopPullTick(pull_wiring_, dt, grasp_state_.pull);
   grasp_state_lock_.Store(grasp_state_);
   tof_snapshot_lock_.Store(tof_snapshot_);
