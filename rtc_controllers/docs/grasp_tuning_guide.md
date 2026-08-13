@@ -886,10 +886,20 @@ $EDITOR $REPO/integrated_bringup/config/ur5e_p1a/controllers/demo_shared.yaml
 
 ```bash
 S=$(ls -dt $WS/logging_data/*/ | head -1)   # 방금 세션. RTC_SESSION_DIR 를 줬으면 그 경로
+V=ur5e_p1b                                  # 그 run 의 variant
 tar czf ~/grasp_session_$(basename $S).tgz \
   -C "$(dirname $S)" "$(basename $S)/controllers" \
-  "$(basename $S)"/*.yaml 2>/dev/null
+  -C "$REPO/integrated_bringup/config" "$V/controllers"
 ```
+
+**세션 디렉토리는 YAML 스냅샷을 남기지 않는다** — 그래서 config 를 repo 에서 함께 싸야 한다.
+`grasp_diag.csv` 가 tick 마다 싣는 것은 `target_force` · `beta` · `alpha_ema` · `K_est_max`
+넷뿐이고, 유지 구간을 해독하는 데 필요한 `f_contact_threshold` · `settle_epsilon` ·
+`f_slip_fraction` · `f_max_multiplier` · `Kp_base` / `Ki_base` 는 CSV 에 없다. 없으면 예컨대
+"`f_desired` 가 왜 목표를 넘었는가" 를 `f_max_multiplier` 없이 판정할 수 없다.
+
+기동 콘솔 로그도 같이 보낸다 (`ros2 launch ... 2>&1 | tee ~/pc_log.txt`) — `[grasp_diag] enabled`
+줄, `on_configure` 가 찍은 실효 파라미터, 그리고 WARN/ERROR 가 거기에만 있다.
 
 `controllers/demo_joint_controller/` (task 컨트롤러를 썼으면 `demo_task_controller/`) 아래에
 `grasp_diag.csv` · `<hand>_sensor.csv` · `pull_estimator.csv` 가 함께 들어간다. 이 디렉토리 이름은
