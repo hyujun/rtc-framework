@@ -774,16 +774,19 @@ tar czf ~/grasp_session_$(basename $S).tgz \
   "$(basename $S)"/*.yaml 2>/dev/null
 ```
 
-`controllers/<config_key>/` 아래에 `grasp_diag.csv` · `<hand>_sensor.csv` · `pull_estimator.csv`
-가 함께 들어간다. 세 파일은 `tick` 컬럼 (CM RT loop iteration) 으로 정렬되므로 **같은 run 에서
+`controllers/demo_joint_controller/` (task 컨트롤러를 썼으면 `demo_task_controller/`) 아래에
+`grasp_diag.csv` · `<hand>_sensor.csv` · `pull_estimator.csv` 가 함께 들어간다. 이 디렉토리 이름은
+variant 가 아니라 **컨트롤러별 고정 문자열**이다 (`ControllerLogSet log_set_{"demo_joint_controller"}`)
+— `ur5e_p1a` 같은 variant 이름이 아니므로 찾을 때 헷갈리지 말 것. 세 파일은 `tick` 컬럼 (CM RT loop iteration) 으로 정렬되므로 **같은 run 에서
 25 Hz 와 50 Hz 레인을 교차 검증**할 수 있다 — 위 ⚠ 의 함정을 데이터로 직접 확인하는 수단이다.
 
 ### 8.3 dev PC 분석
 
 ```bash
 tar xzf grasp_session_*.tgz
-plot_rtc_log <세션>/controllers/<config_key>/grasp_diag.csv --stats   # 1차 판정: 숫자
-plot_rtc_log <세션>/controllers/<config_key>/grasp_diag.csv --no-show # 그림 (세션 plots/ 로)
+G=<세션>/controllers/demo_joint_controller/grasp_diag.csv
+plot_rtc_log $G --stats     # 1차 판정: 숫자
+plot_rtc_log $G --no-show   # 그림 (세션 plots/ 로)
 ```
 
 `--stats` 가 찍는 것과 각 줄이 답하는 질문:
