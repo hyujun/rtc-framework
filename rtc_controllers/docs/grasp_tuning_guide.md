@@ -76,6 +76,21 @@ YAML 에서 이름 목록을 바꾸는 방법은 §7.1.
 `ApproachingTransitionsWithoutMiddleContact` / `ApproachHoldsWhenThumbCannotContact` 가 양방향을
 못박는다.
 
+> ⚠ **"순서가 계약" 을 "`finger_names` 를 재정렬하면 다른 쌍으로 판정시킬 수 있다" 로 읽지 말 것.**
+> `finger_names` 는 **자세 블록(`q_open`/`q_close`)만** 고른다. 힘 입력은 `f_feed[f] =
+> fingertip_force_mag_filt_grasp_[f]` 로 **grasp 손가락 f ↔ 지문 센서 슬롯 f** 가 인덱스로 박혀
+> 있고, 구동 관절은 `hand_finger_joint_map[f]` 로 **위치 기반 시퀀스**이며 `finger_names` 와
+> 무관하게 파싱된다. 따라서 이름만 재정렬하면 **자세 · 센서 · 관절이 3중으로 어긋난다** — 컴파일도
+> 되고 기동도 되며 증상은 "왜 이 손가락이 이상하게 움직이지" 뿐이다.
+>
+> 셋을 함께 돌리는 것도 일반적으로는 불가능하다: `ur5e_p1b` 의 센서 레인 순서는 tree-model
+> `tip_links` 순서에 묶여 있다 (그 YAML 주석의 Stage A-3 — `fingertip_data_[f] ↔
+> fingertip_rotations_[f]` 페어링).
+>
+> **실제로 무는 쌍이 인덱스 0·1 이 아니면 처방은 물체 배치를 바꾸는 것이다** (§8.1 에 p1b 실측
+> 사례). 참고로 pull estimator 는 같은 문제를 매 tick `opposing_mask` 로 *관측해서* 푸는데
+> (§`pull_estimator` 블록의 `pinch_geometry`), grasp FSM 에는 그 대응물이 없다.
+
 ---
 
 ## 2. 상태 머신 (`GraspPhase`)
@@ -543,7 +558,8 @@ feedforward 하한은 물체와 무관하게 고정이다 — `contact_settle_ti
   floor 대비 충분한 마진으로 (§4.3)
 - **후행 손가락의 `s`**: Approaching 이 전이 시점에 freeze 한 값 그대로. 기하학적으로 이상한
   posture 가 나올 수 있으나 제어 로직 자체는 영향 없음
-- **비대칭 grasp 시나리오 지원**: 2-finger pinch 가 1급 use case 이므로 적극 활용 가능
+- **비대칭 grasp 시나리오 지원**: 2-finger pinch 가 1급 use case 이므로 적극 활용 가능. 단
+  "어느 두 손가락이 그 쌍인가" 는 **고정(인덱스 0·1)** 이며 재정렬로 바꿀 수 없다 — §1.2 경고
 
 ---
 
@@ -717,9 +733,63 @@ grep -rl grasp_diag          $WS/install/rtc_tools/          # #428 플로터
 
 `disabled` 로 뜨면 사유가 같은 줄에 있다 (`force_pi_grasp` 블록 부재 / 핑거 센서 없음).
 
-### 8.1 세션 3개
+### 8.1 접촉 성립 확인 (30초) — **긴 세션 전에 반드시**
 
-세 시나리오 모두 `grasp_controller_type: force_pi` 에서 돈다. 모드가 다르면 행은 남되
+긴 세션을 돌린 뒤 분석 단계에서야 "접촉이 한 번도 안 났다" 를 발견하면 그 세션은 통째로 버린다.
+2026-08-13 첫 실기 세션(p1b, 58036 tick)이 정확히 그렇게 소모됐다. 짧게 grasp 를 한 번 걸고
+`--stats` 두 줄만 본다.
+
+```bash
+# grasp 걸고 몇 초 유지 → release → 세션 종료 후
+plot_rtc_log <세션>/controllers/demo_joint_controller/grasp_diag.csv --stats | head -20
+```
+
+| 기대 | 실패 시그널 |
+|---|---|
+| `Phase occupancy` 에 **`holding`** 이 있다 | `idle`/`approaching`/`releasing` 만 있다 → **접촉 래치 실패** |
+| `Stationary hold: N ticks` 의 N > 0 | `0 ticks` → σ 를 못 잰다 |
+| | `force_control` 이 지배적인데 `holding` 이 없다 → 래치는 됐으나 **settle 불가** (아래) |
+
+**접촉 래치 실패면 손가락별 최대 힘을 `f_contact_threshold` 와 대조한다:**
+
+```bash
+python3 -c "
+import pandas as pd; d=pd.read_csv('<...>/grasp_diag.csv'); v=d[d.valid==1]
+print(v[[c for c in d.columns if c.startswith('f_measured_')]].max())
+print(v[[c for c in d.columns if c.startswith('s_')]].max())"
+```
+
+전이 판정은 **인덱스 0·1** 두 손가락만 본다 (§1.2). 그래서 *실제로 물체를 무는 쌍*과 *판정하는
+쌍*이 다르면 다른 손가락이 아무리 세게 눌려도 진행하지 않는다. 첫 세션의 실측이 그 사례다
+(p1b, `f_contact_threshold` 0.8 N):
+
+| | thumb | index | middle | ring |
+|---|---|---|---|---|
+| max force [N] | 0.983 ✓ | **0.446 ✗** | 1.359 ✓ | 0.125 ✗ |
+
+`s` 는 네 손가락 모두 1.0 (완전 폐쇄) 이었다. 즉 **다 닫아도 index 가 임계의 56% 에 그쳤고**,
+물체는 thumb–middle 사이에 물려 있었다. 판정 쌍은 thumb+index 이므로 래치가 안 걸린다.
+**처방은 물체를 index 쪽으로 옮기는 것**이지 손가락 순서를 바꾸는 것이 아니다 (§1.2 경고 참조).
+
+> ⚠ **`f_contact_threshold` 만 낮추지 말 것.** 임계를 내리면 래치는 되지만 그 손가락이 곧바로
+> settle 검사 대상이 되고(§2.4), `|f_target − f_measured| ≤ settle_epsilon` 을 만족 못 하면
+> **ForceControl 에 갇힌다**. 위 실측에서 임계만 0.3 으로 내렸다면 index 는 래치된 뒤
+> `f_target` 1.0 · `settle_epsilon` 0.5 기준 0.5 N 이 필요한데 최대가 0.446 이라 영원히
+> 미달이었을 것이다. 그리고 그 상태는 지금보다 **진단이 어렵다** — `force_control` 이 90% 로
+> 찍혀 "돌고는 있는데 왜 안 끝나지" 가 된다. 내려야 한다면 `f_target` 을 **함께** 내린다.
+
+> **s 가 1.0 에 포화한 채로도 σ 는 잴 수 있다** — 기계적으로 물려 정지한 유지 구간은 서보 운동이
+> 분산에 안 섞이므로 오히려 깨끗하다. 다만 **S2(진동 유무)는 그 상태로 판정할 수 없다**:
+> 서보가 조절하지 않으면 진동이 날 수도 안 날 수도 없다. S2 를 보려면 `s < 1.0` 에서 목표힘에
+> 도달해야 한다.
+
+### 8.2 세션 3개
+
+세 시나리오 모두 `grasp_controller_type: force_pi` 에서 돈다. **variant 마다 기본값이 다르다** —
+`ur5e_p1a` 는 `force_pi` 로 배포되지만 **`ur5e_p1b` 는 `none`** 이므로 아래 `param set` 이 선택이
+아니라 **필수**다 (게인·임계는 두 variant 가 동일하고 다른 것은 배포 모드와 손가락 구성뿐이다:
+p1a 3핑거 / p1b 4핑거 `[thumb, index, middle, ring]`). 아래 S3 의 YAML 경로도 실제 variant 로
+바꿔 읽는다. 모드가 다르면 행은 남되
 `valid=0` 이고 per-finger 값이 전부 0 이다 — 그 자체가 "PI 법칙이 안 돌았다" 는 판정이다.
 
 ```bash
@@ -758,14 +828,14 @@ $EDITOR $REPO/integrated_bringup/config/ur5e_p1a/controllers/demo_shared.yaml
 # 3) 컨트롤러를 재로드해 on_configure 를 다시 태운다 (controller switch)
 ```
 
-반영 여부는 추측하지 말고 **CSV 로 확인한다** — 아래 §8.3 의 `beta` / `K_est_max` 줄이 그 run 의
+반영 여부는 추측하지 말고 **CSV 로 확인한다** — 아래 §8.4 의 `beta` / `K_est_max` 줄이 그 run 의
 실효값을 그대로 찍는다. 값이 안 바뀌었으면 S3 는 S2 를 한 번 더 돌린 것에 불과하다.
 
 > `grasp_diag.csv` 는 `beta` · `alpha_ema` · `K_est_max` 를 **매 tick** 기록한다. 그 run 의 YAML
 > 없이도 어느 설정에서 나온 데이터인지 파일만 보고 알 수 있고, 재로드 없이 편집만 한 경우가
 > 데이터에서 바로 드러난다.
 
-### 8.2 수거 — 텍스트만
+### 8.3 수거 — 텍스트만
 
 ```bash
 S=$(ls -dt $WS/logging_data/*/ | head -1)   # 방금 세션. RTC_SESSION_DIR 를 줬으면 그 경로
@@ -780,7 +850,7 @@ variant 가 아니라 **컨트롤러별 고정 문자열**이다 (`ControllerLog
 — `ur5e_p1a` 같은 variant 이름이 아니므로 찾을 때 헷갈리지 말 것. 세 파일은 `tick` 컬럼 (CM RT loop iteration) 으로 정렬되므로 **같은 run 에서
 25 Hz 와 50 Hz 레인을 교차 검증**할 수 있다 — 위 ⚠ 의 함정을 데이터로 직접 확인하는 수단이다.
 
-### 8.3 dev PC 분석
+### 8.4 dev PC 분석
 
 ```bash
 tar xzf grasp_session_*.tgz
@@ -809,7 +879,7 @@ plot_rtc_log $G --no-show   # 그림 (세션 plots/ 로)
 별도 분석 스크립트를 새로 만들지 않는다 — 그 자리가 `print_grasp_diag_statistics` 다
 ([design-principles.md](../../agent_docs/design-principles.md) P5).
 
-### 8.4 결과를 어디에 쓰는가
+### 8.5 결과를 어디에 쓰는가
 
 1. **σ 실측값** → §6.6 의 표에 실기 행을 추가하고, #426 수용 기준 1 의 "가설" 표기를 걷는다
 2. **S2 의 진동 유무** → #426 의 범위 결정 (재설계 vs 적응 제거)
