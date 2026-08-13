@@ -72,6 +72,44 @@ def _hold_rows(df):
     return rows[rows["grasp_phase"].astype(float).round() == _PHASE_HOLDING]
 
 
+def _sigma_contamination_flags(hold, finger, sigma, p2p, n):
+    """Reasons the hold-segment standard deviation is NOT a sensor noise floor.
+
+    Both checks exist because a hold that is not actually stationary still
+    yields a plausible number, and nothing downstream says otherwise. On the
+    2026-08-13 hardware run the two contaminated fingers read 67 and 305 mN
+    against a real noise floor of 9-13 mN — reading either as sigma would have
+    put #426's budget off by more than an order of magnitude.
+    """
+    flags = []
+
+    # (1) The reference itself moved. Slip detection ramps f_desired toward
+    # f_target * f_max_multiplier, so a slipping grip makes f_measured track a
+    # moving setpoint — that variance is the controller acting, not noise. On
+    # hardware the index finger's f_desired std (437 mN) exceeded its
+    # f_measured std (305 mN), which is the unmistakable form of this.
+    des = hold.get(f"f_desired_{finger}")
+    if des is not None:
+        des = des.dropna()
+        if len(des) > 1:
+            des_mean = float(des.mean())
+            if des_mean > 1e-9 and float(des.std()) / des_mean > 0.01:
+                flags.append("[REF MOVED]")
+
+    # (2) The distribution is not a noise floor. For n samples of Gaussian noise
+    # the peak-to-peak spread is roughly 6-8 sigma (~7 at n in the thousands).
+    # Much larger means a transient excursion dominates; much smaller means the
+    # signal stepped between levels, which inflates sigma without widening the
+    # range. The band is deliberately generous — this flags shape, not scale.
+    if sigma > 1e-12 and n >= 100:
+        ratio = p2p / sigma
+        if ratio > 10.0:
+            flags.append(f"[SPIKE p2p/sigma={ratio:.1f}]")
+        elif ratio < 4.0:
+            flags.append(f"[STEPPED p2p/sigma={ratio:.1f}]")
+    return flags
+
+
 def print_grasp_diag_statistics(df):
     """Console summary. The force-noise sigma per finger is the headline number."""
     print("\n=== Force-PI Grasp Diagnostics ===")
@@ -132,6 +170,7 @@ def print_grasp_diag_statistics(df):
         print("  (Sigma is measured on the hold, not the approach/ramp transient.)")
     else:
         print("  Force noise sigma on the 25 Hz Force-PI bank (the estimator's own lane):")
+        usable, rejected = [], []
         for f in fingers:
             col = f"{_MEASURED_PREFIX}{f}"
             if col not in hold.columns:
@@ -140,10 +179,29 @@ def print_grasp_diag_statistics(df):
             if len(series) < 2:
                 continue
             sigma = float(series.std())
+            p2p = float(series.max() - series.min())
+            flags = _sigma_contamination_flags(hold, f, sigma, p2p, len(series))
             print(
                 f"    {f:<10} sigma={sigma * 1000.0:8.3f} mN   "
                 f"mean={float(series.mean()):7.4f} N   "
-                f"p2p={float(series.max() - series.min()) * 1000.0:8.3f} mN"
+                f"p2p={p2p * 1000.0:8.3f} mN"
+                + ("   " + " ".join(flags) if flags else "")
+            )
+            (rejected if flags else usable).append(f)
+        # Naming the usable set is the whole point: a hold that was not actually
+        # stationary still produces a confident-looking sigma, and on real
+        # hardware the contaminated fingers were 5-35x the clean ones.
+        if usable:
+            print(f"  → noise floor usable from: {', '.join(usable)}")
+        if rejected:
+            print(
+                f"  → NOT a noise floor: {', '.join(rejected)} — see flags above. "
+                "Do not read these as sensor noise."
+            )
+        if not usable:
+            print(
+                "  → No finger gives a clean noise floor in this run. Re-run with a grip that "
+                "does not slip, or read sigma from a finger that is not being servoed."
             )
 
     if live.empty:

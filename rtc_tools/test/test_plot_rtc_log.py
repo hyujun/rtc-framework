@@ -1960,18 +1960,22 @@ def _grasp_diag_header(fingers=_GRASP_DIAG_FINGERS):
     return cols
 
 
-def _grasp_diag_rows(n=40, hold_from=10, sigma_source=None):
+def _grasp_diag_rows(n=40, hold_from=10, seed=0, noise_n=0.010):
     """Rows with an approach transient followed by a stationary hold.
 
-    The hold carries a deterministic ripple on f_measured so the reported sigma
-    is a known quantity rather than whatever the ramp happens to produce.
+    The hold carries seeded GAUSSIAN noise (sigma = `noise_n` N) on f_measured,
+    not an alternating ripple. A two-level ripple has p2p/sigma ~ 2, which the
+    contamination check correctly rejects as "stepped" — the fixture has to look
+    like the noise floor it claims to be, or the clean-path test asserts against
+    a shape that never occurs on hardware.
     """
-    ripple = sigma_source if sigma_source is not None else [0.01, -0.01]
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, noise_n, n)
     rows = []
     for i in range(n):
         holding = i >= hold_from
         phase = 4 if holding else 1
-        f_meas = 2.0 + ripple[i % len(ripple)] if holding else 0.1 * i
+        f_meas = 2.0 + float(noise[i]) if holding else 0.1 * i
         row = [i * 0.002, i + 1, 1, phase, 2.0, 0.3, 0.95, 400.0]
         per_finger = {
             "s": 0.5,
@@ -2066,10 +2070,11 @@ class TestGraspDiagStatistics:
             name = line.split()[0]
             sigmas[name] = float(line.split("sigma=")[1].split("mN")[0])
         assert set(sigmas) == set(_GRASP_DIAG_FINGERS), sigmas
-        # ±10 mN 리플 30 표본의 표본표준편차 ≈ 10.17 mN. 전 구간으로 재면
-        # approach 램프(0→0.9 N)가 섞여 수백 mN 이 된다.
+        # σ=10 mN 가우시안 30 표본 → 표본표준편차의 표집오차가 ±13% 수준이라
+        # 밴드를 넓게 잡는다. 요점은 정확한 값이 아니라 자릿수다: 전 구간으로
+        # 재면 approach 램프(0→0.9 N)가 섞여 수백 mN 이 된다.
         for name, sigma_mn in sigmas.items():
-            assert 9.0 < sigma_mn < 11.5, f"{name}: {sigma_mn} mN — hold 구간이 아니다"
+            assert 6.0 < sigma_mn < 15.0, f"{name}: {sigma_mn} mN — hold 구간이 아니다"
 
     def test_hold_segment_excludes_the_approach_transient(self, capsys):
         """σ 를 파일 전체로 재면 접근 램프를 노이즈로 오독한다."""
@@ -2079,6 +2084,58 @@ class TestGraspDiagStatistics:
         hold = _hold_rows(df)
         assert len(hold) == 30
         assert float(hold["f_measured_thumb"].std()) < float(df["f_measured_thumb"].std())
+
+    def test_moving_reference_disqualifies_the_sigma(self, capsys):
+        """f_desired 가 유지 중 움직였으면 그 분산은 노이즈가 아니라 컨트롤러다.
+
+        슬립 감지가 f_desired 를 f_target*f_max_multiplier 까지 올리면 f_measured
+        는 움직이는 setpoint 를 따라간다. 2026-08-13 실기에서 index 의 f_desired
+        std(437 mN)가 f_measured std(305 mN)보다 컸다 — 그 305 를 σ 로 읽었으면
+        #426 예산이 한 자릿수 이상 틀어졌다.
+        """
+        from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
+
+        header = _grasp_diag_header()
+        rows = _grasp_diag_rows()
+        di = header.index("f_desired_thumb")
+        for i, r in enumerate(rows):
+            if r[header.index("grasp_phase")] == 4:
+                r[di] = 2.0 if i % 2 else 1.0      # 기준이 계단으로 움직인다
+
+        print_grasp_diag_statistics(pd.DataFrame(rows, columns=header))
+        out = capsys.readouterr().out
+        thumb = [ln for ln in out.splitlines() if ln.strip().startswith("thumb")]
+        assert thumb and "[REF MOVED]" in thumb[0], out
+        assert "NOT a noise floor" in out
+        # 기준이 고정인 형제 손가락은 여전히 쓸 수 있어야 한다 — 플래그가 전부를
+        # 싸잡으면 경고가 무의미해진다.
+        assert "usable from: index, middle" in out, out
+
+    def test_spike_disqualifies_the_sigma(self, capsys):
+        """단발 이탈이 지배하면 p2p/sigma 가 가우시안 범위를 크게 벗어난다."""
+        from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
+
+        header = _grasp_diag_header()
+        rows = _grasp_diag_rows(n=300, hold_from=10)
+        col = header.index("f_measured_thumb")
+        rows[200][col] = 12.0                       # thumb 만 한 번 크게 튄다
+
+        print_grasp_diag_statistics(pd.DataFrame(rows, columns=header))
+        out = capsys.readouterr().out
+        thumb = [ln for ln in out.splitlines() if ln.strip().startswith("thumb")]
+        assert thumb and "[SPIKE" in thumb[0], out
+
+    def test_clean_hold_is_reported_usable(self, capsys):
+        """오염이 없으면 플래그가 붙지 않고 전 손가락이 usable 로 나온다."""
+        from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
+
+        print_grasp_diag_statistics(
+            pd.DataFrame(_grasp_diag_rows(n=300, hold_from=10), columns=_grasp_diag_header())
+        )
+        out = capsys.readouterr().out
+        assert "[REF MOVED]" not in out and "[SPIKE" not in out and "[STEPPED" not in out
+        assert "usable from: thumb, index, middle" in out, out
+        assert "NOT a noise floor" not in out
 
     def test_estop_rows_are_not_counted_as_idle(self, capsys):
         """valid=0 행의 grasp_phase 는 0 이지만 그것은 idle 이 아니라 부재다.
