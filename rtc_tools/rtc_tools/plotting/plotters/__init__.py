@@ -13,6 +13,10 @@ from .device import (
     plot_device_velocities,
     print_device_statistics,
 )
+from .grasp import (
+    plot_grasp_diag,
+    print_grasp_diag_statistics,
+)
 from .motor import (
     plot_motor_efforts,
     plot_motor_positions,
@@ -75,6 +79,9 @@ __all__ = [
     "plot_motor_positions",
     "plot_motor_velocities",
     "print_motor_statistics",
+    # grasp diagnostics
+    "plot_grasp_diag",
+    "print_grasp_diag_statistics",
     # device
     "plot_device_positions",
     "plot_device_velocities",

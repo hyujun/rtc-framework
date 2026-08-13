@@ -129,3 +129,10 @@ demo_task_controller:
     # Controller-private POD (no rtc_msgs) — see logging/task_diag_log_pod.hpp.
     - msg_type: integrated_bringup/TaskDiagLog
       instance: task_diag
+
+    # Per-tick Force-PI servo + stiffness-estimator diagnostics (#428).
+    # Controller-private POD (no rtc_msgs) — see logging/grasp_diag_log_pod.hpp.
+    # Registered only when demo_shared.yaml carries a `force_pi_grasp` block;
+    # otherwise on_configure logs an INFO naming the absent file.
+    - msg_type: integrated_bringup/GraspDiagLog
+      instance: grasp_diag

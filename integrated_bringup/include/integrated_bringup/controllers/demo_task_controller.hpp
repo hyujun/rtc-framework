@@ -7,6 +7,7 @@
 #include "integrated_bringup/controllers/tof_snapshot.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
@@ -290,6 +291,16 @@ class DemoTaskController final : public RTControllerInterface {
       return {};
     }
     return grasp_controller_->finger_states();
+  }
+
+  /// Test-only: bind the grasp_diag CSV channel from a test-owned
+  /// ControllerLogSet. Production binds it in on_configure; the unit fixtures
+  /// build the controller through LoadConfig alone, so every log handle stays
+  /// unbound and PushGraspDiagLog early-returns. A row-count assertion written
+  /// against that state would pass with the push deleted outright — the exact
+  /// shape of the #424 fill() mutation that survived its own test.
+  void SetGraspDiagLogHandleForTesting(rtc::LogHandle<integrated_bringup::GraspDiagLogPod> h) {
+    grasp_diag_log_handle_ = std::move(h);
   }
 
   /// Test-only: lift the shipped K_est_max pin so the stiffness estimate can
@@ -798,6 +809,12 @@ class DemoTaskController final : public RTControllerInterface {
   /// fix is on both ends — the non-force_pi ticks now Reset() the FSM, and this
   /// mirror is stored unconditionally so it reports that.
   std::atomic<uint8_t> grasp_phase_pub_{0};
+  /// Did the Force-PI law actually drive the hand on this tick? RT-thread-only
+  /// (written in ComputeControl, read by the grasp_diag push at the tail of
+  /// Compute) — no atomic, both ends are the same tick on the same thread.
+  /// Cleared at the top of ComputeControl so a tick that early-returns before
+  /// the grasp block reports false rather than the previous tick's answer.
+  bool grasp_force_pi_ran_{false};
   /// Is this controller Active? Written by on_activate / on_deactivate, read by
   /// the grasp_command service — which outlives deactivation, so without this it
   /// answered "grasp started" for a controller whose ticks had stopped, arming a
@@ -965,6 +982,11 @@ class DemoTaskController final : public RTControllerInterface {
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;
   rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator_log_handle_;
   rtc::LogHandle<integrated_bringup::TaskDiagLogPod> task_diag_log_handle_;
+  /// Per-tick Force-PI servo + stiffness-estimator diagnostics (#428).
+  /// Bound only when a `force_pi_grasp` block is configured; see
+  /// LogRegistrationContext::grasp_diag_enabled for why the gate is the
+  /// block and not the current grasp_hand_mode.
+  rtc::LogHandle<integrated_bringup::GraspDiagLogPod> grasp_diag_log_handle_;
 
   std::vector<std::string> primary_joint_names_;
   std::vector<std::string> secondary_joint_names_;

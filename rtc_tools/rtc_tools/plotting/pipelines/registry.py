@@ -85,6 +85,12 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "pull_estimator": [
         PlotEntry("print_pull_stats", plotters.print_pull_estimator_statistics),
     ],
+    # The stats printer is the point of this channel, not the figure: the
+    # hardware session ships text back and #426's force-noise sigma has to be a
+    # number on stdout before anyone opens a plot (#428).
+    "grasp_diag": [
+        PlotEntry("print_grasp_diag_stats", plotters.print_grasp_diag_statistics),
+    ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
 }
@@ -189,6 +195,9 @@ PIPELINES: dict[str, list[PlotEntry]] = {
     ],
     "pull_estimator": [
         PlotEntry("pull_estimator", plotters.plot_pull_estimator),
+    ],
+    "grasp_diag": [
+        PlotEntry("grasp_diag", plotters.plot_grasp_diag),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

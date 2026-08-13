@@ -136,7 +136,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         std::min(static_cast<std::size_t>(std::max(contact_mgr_config_.max_contact_vars, 0)),
                  integrated_bringup::WbcDiagLogPod::kMaxContactVars);
 
-    LogRegistrationContext ctx{logger_, log_set_, {}, {}, {}, {}, {}};
+    LogRegistrationContext ctx{.logger = logger_, .log_set = log_set_};
     ctx.sensor_logs = {
         {secondary_sensor_key, {secondary_sensor_names_, secondary_sensor_values_per_group_}}};
     ctx.wbc_state_logs = {

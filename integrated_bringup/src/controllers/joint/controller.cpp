@@ -1,3 +1,4 @@
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
@@ -457,6 +458,11 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
     FillEstopPublishState(dt);
     PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                          state.iteration);
+    // grasp_diag row for THIS tick (#428): valid=0, every per-finger field
+    // zeroed. A gap here would be indistinguishable from a dropped row, and the
+    // file is joined to pull_estimator.csv on `tick`.
+    PushGraspDiagLog(grasp_diag_log_handle_, grasp_controller_.get(), /*ran=*/false,
+                     state.t_relative_s, state.iteration);
     return out;
   }
   ComputeControl(state, dt);
@@ -490,6 +496,8 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                        state.iteration);
+  PushGraspDiagLog(grasp_diag_log_handle_, grasp_controller_.get(), grasp_force_pi_ran_,
+                   state.t_relative_s, state.iteration);
   return output;
 }
 
@@ -885,7 +893,8 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
       }
       // Closed-set msg_type validation (typo = hard fail at parse time).
       if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
-          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType) {
+          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType &&
+          e.msg_type != integrated_bringup::kGraspDiagLogMsgType) {
         throw std::runtime_error("DemoJointController: unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));

@@ -97,6 +97,14 @@ GraspJointCommands GraspController::Update(std::span<const double> f_filtered, d
     auto& fs = fingers_[static_cast<std::size_t>(f)];
     fs.f_prev = fs.f_measured;
     s_at_tick_start[static_cast<std::size_t>(f)] = fs.s;
+    // Estimator diagnostics are per-tick, not sticky: ComputeAdaptivePI runs
+    // only in kForceControl / kHolding, so without this a logger reading them
+    // on an Approaching tick would report the last force-control sample as if
+    // it were fresh.
+    fs.delta_s_used = 0.0;
+    fs.delta_f_used = 0.0;
+    fs.K_inst_raw = 0.0;
+    fs.estimate_updated = false;
     fs.f_measured = (static_cast<std::size_t>(f) < f_filtered.size())
                         ? f_filtered[static_cast<std::size_t>(f)]
                         : 0.0;
@@ -392,6 +400,10 @@ double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept {
   // ── Online stiffness estimation (EMA) ─────────────────────────────────
   const double delta_f = fs.f_measured - fs.f_prev;
   const double delta_s = fs.s - fs.s_prev;
+  // Diagnostics (#428): stored where the estimator reads them, because the pair
+  // is not recoverable from a post-Update log — see FingerState.
+  fs.delta_s_used = delta_s;
+  fs.delta_f_used = delta_f;
   if (std::abs(delta_s) > kDeltaSEpsilon) {
     // Clamped before it enters the EMA. delta_s goes to zero as the loop
     // converges, so on a noisy force lane K_inst is a ratio of two quantities
@@ -403,10 +415,12 @@ double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept {
     // the single-tick estimate is noise over noise on real hardware. See
     // grasp_tuning_guide.md 6.6.
     const double K_inst = delta_f / delta_s;
+    fs.K_inst_raw = K_inst;
     if (K_inst > 0.0) {
       const double K_bounded = std::min(K_inst, params_.K_est_max);
       fs.K_contact_est =
           params_.alpha_ema * fs.K_contact_est + (1.0 - params_.alpha_ema) * K_bounded;
+      fs.estimate_updated = true;
     }
   }
 

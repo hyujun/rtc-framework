@@ -94,20 +94,25 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
 
     LogRegistrationContext ctx{
-        logger_,
-        log_set_,
-        {
-            {primary_state_key, {primary_joint_names_, std::vector<std::string>{}}},
-            {secondary_state_key, {secondary_joint_names_, secondary_motor_names_}},
-        },
-        {
-            {secondary_sensor_key, {secondary_sensor_names_, secondary_sensor_values_per_group_}},
-        },
-        {},                      // wbc_state_logs — WBC controller only
-        {},                      // wbc_diag_logs  — WBC controller only
-        pull_wiring_.enabled(),  // pull_estimator_enabled
-        pull_wiring_.roles,      // pull_estimator_roles (mask bit order)
-        true,                    // task_diag_enabled (#310) — §6.5 σ_min/λ² lane
+        .logger = logger_,
+        .log_set = log_set_,
+        .state_logs =
+            {
+                {primary_state_key, {primary_joint_names_, std::vector<std::string>{}}},
+                {secondary_state_key, {secondary_joint_names_, secondary_motor_names_}},
+            },
+        .sensor_logs =
+            {
+                {secondary_sensor_key,
+                 {secondary_sensor_names_, secondary_sensor_values_per_group_}},
+            },
+        // wbc_state_logs / wbc_diag_logs — WBC controller only.
+        .pull_estimator_enabled = pull_wiring_.enabled(),
+        .pull_estimator_roles = pull_wiring_.roles,
+        .task_diag_enabled = true,  // (#310) — §6.5 σ_min/λ² lane
+        .grasp_diag_enabled = grasp_controller_ != nullptr,
+        .grasp_diag_finger_names =
+            GraspDiagFingerNames(secondary_sensor_names_, num_grasp_fingers_),
     };
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -129,6 +134,9 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     }
     pull_estimator_log_handle_ = std::move(reg.handles.pull_estimator);
     task_diag_log_handle_ = std::move(reg.handles.task_diag);
+    grasp_diag_log_handle_ = std::move(reg.handles.grasp_diag);
+    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr,
+                       ctx.grasp_diag_finger_names);
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -241,6 +249,9 @@ void DemoTaskController::ResetLogState() noexcept {
   secondary_sensor_log_handle_ = {};
   pull_estimator_log_handle_ = {};
   task_diag_log_handle_ = {};
+  // #238: an unbound handle is what stops a re-configure from logging into a
+  // channel whose file the previous configure owned.
+  grasp_diag_log_handle_ = {};
 }
 
 RTControllerInterface::CallbackReturn DemoTaskController::on_activate(

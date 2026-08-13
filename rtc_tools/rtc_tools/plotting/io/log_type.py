@@ -32,6 +32,10 @@ def detect_log_type(filepath):
     # column fallback (which keys on the WBC-only `accel_*` columns).
     if stem == "wbc_diag" or stem.endswith("wbc_diag"):
         return "wbc_diag"
+    elif stem == "grasp_diag" or stem.endswith("grasp_diag"):
+        # Per-tick Force-PI servo + stiffness-estimator diagnostics (#428) —
+        # fixed instance stem shared by the joint and task demo controllers.
+        return "grasp_diag"
     elif stem == "pull_estimator" or stem.endswith("pull_estimator"):
         # In-plane pull-force estimator (#167) — fixed instance stem shared by
         # the three demo controllers.
@@ -67,6 +71,13 @@ def detect_log_type_by_columns(columns):
         "qp_converged" in cols or any(c.startswith("lambda_") for c in cols)
     ):
         return "wbc_diag"
+    # Force-PI grasp diagnostics (#428): per-tick grasp_diag.csv. MUST be
+    # checked before the sensor_log branch — `k_inst_raw_<finger>` contains the
+    # generic `_raw_` token that branch matches on, so a grasp_diag file reaching
+    # the fallback would be classified as a sensor log and plotted with the wrong
+    # pipeline. `k_est_` is the discriminating prefix: no other pod emits it.
+    if any(c.startswith("k_est_") for c in cols):
+        return "grasp_diag"
     # Pull-force estimator (#167): per-tick pull_estimator.csv. Must be
     # checked before the sensor_log branch — the legacy force_raw_* columns
     # would otherwise match the generic `_raw_` sensor token.

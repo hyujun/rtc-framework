@@ -76,6 +76,21 @@ YAML 에서 이름 목록을 바꾸는 방법은 §7.1.
 `ApproachingTransitionsWithoutMiddleContact` / `ApproachHoldsWhenThumbCannotContact` 가 양방향을
 못박는다.
 
+> ⚠ **"순서가 계약" 을 "`finger_names` 를 재정렬하면 다른 쌍으로 판정시킬 수 있다" 로 읽지 말 것.**
+> `finger_names` 는 **자세 블록(`q_open`/`q_close`)만** 고른다. 힘 입력은 `f_feed[f] =
+> fingertip_force_mag_filt_grasp_[f]` 로 **grasp 손가락 f ↔ 지문 센서 슬롯 f** 가 인덱스로 박혀
+> 있고, 구동 관절은 `hand_finger_joint_map[f]` 로 **위치 기반 시퀀스**이며 `finger_names` 와
+> 무관하게 파싱된다. 따라서 이름만 재정렬하면 **자세 · 센서 · 관절이 3중으로 어긋난다** — 컴파일도
+> 되고 기동도 되며 증상은 "왜 이 손가락이 이상하게 움직이지" 뿐이다.
+>
+> 셋을 함께 돌리는 것도 일반적으로는 불가능하다: `ur5e_p1b` 의 센서 레인 순서는 tree-model
+> `tip_links` 순서에 묶여 있다 (그 YAML 주석의 Stage A-3 — `fingertip_data_[f] ↔
+> fingertip_rotations_[f]` 페어링).
+>
+> **실제로 무는 쌍이 인덱스 0·1 이 아니면 처방은 물체 배치를 바꾸는 것이다** (§8.1 에 p1b 실측
+> 사례). 참고로 pull estimator 는 같은 문제를 매 tick `opposing_mask` 로 *관측해서* 푸는데
+> (§`pull_estimator` 블록의 `pinch_geometry`), grasp FSM 에는 그 대응물이 없다.
+
 ---
 
 ## 2. 상태 머신 (`GraspPhase`)
@@ -543,11 +558,12 @@ feedforward 하한은 물체와 무관하게 고정이다 — `contact_settle_ti
   floor 대비 충분한 마진으로 (§4.3)
 - **후행 손가락의 `s`**: Approaching 이 전이 시점에 freeze 한 값 그대로. 기하학적으로 이상한
   posture 가 나올 수 있으나 제어 로직 자체는 영향 없음
-- **비대칭 grasp 시나리오 지원**: 2-finger pinch 가 1급 use case 이므로 적극 활용 가능
+- **비대칭 grasp 시나리오 지원**: 2-finger pinch 가 1급 use case 이므로 적극 활용 가능. 단
+  "어느 두 손가락이 그 쌍인가" 는 **고정(인덱스 0·1)** 이며 재정렬로 바꿀 수 없다 — §1.2 경고
 
 ---
 
-### 6.6 추정기는 힘 노이즈에 구조적으로 취약하다 (실기 미해결)
+### 6.6 추정기는 힘 노이즈에 구조적으로 취약하다 (σ 실측은 §6.7)
 
 **이 절의 내용은 배포 전에 반드시 읽어야 한다.** §6.3 의 실측표는 노이즈가 **정확히 0** 인
 플랜트에서 나왔고, 그 조건은 실기에 존재하지 않는다.
@@ -607,6 +623,53 @@ DeployedTuningIsPinnedAndNoiseImmune` 이 이 두 성질(추정치가 seed 를 �
 싣는다. pin 이 걸린 배포에서 이 필드가 계속 `1.000` 인 것이 위 `DeployedTuningIsPinnedAndNoiseImmune`
 의 런타임 대응물이며, 값이 움직이기 시작하면 pin 이 풀렸다는 뜻이다. 그때까지 §3.2 · §4.1 · §6.3 의 β=0.03 분석은 **적응이
 켜진 상태를 가정한 설계 문서**이며 현재 배포 거동이 아니다.
+
+### 6.7 실기 실측 (2026-08-13, p1b) — σ 는 가정보다 5~6배 크다
+
+§6.6 의 표는 **시뮬레이션**이고 σ 는 입력 가정이었다. #428 의 `grasp_diag.csv` 로 처음 실측했다
+(`logging_data/260813_1421`, joint 컨트롤러, 적응 OFF = 배포 pin 상태, `f_target` 1.0 N,
+`f_contact_threshold` 0.4 N). 유지 구간 **6096 tick (12.2 s)**.
+
+| | σ [mN] | mean [N] | p2p [mN] | p2p/σ | 판정 |
+|---|---|---|---|---|---|
+| thumb | 67.1 | 0.763 | 1965 | 29.3 | **오염** — 기준 고정인데 측정이 2.64 N 까지 튐 (접촉 이벤트) |
+| index | 305.3 | 0.635 | 926 | 3.0 | **오염** — 슬립 감지로 `f_desired` 가 1.0→2.0 (= `f_max_multiplier` 상한) 이동 |
+| middle | **12.8** | 0.253 | 70.9 | 5.6 | 유효 |
+| ring | **8.7** | 0.033 | 59.1 | 6.8 | 유효 |
+
+**유효한 값은 middle · ring 뿐이다.** 이 둘은 `f_measured` 가 `f_contact_threshold` 미만이라
+`contact_detected == false` → PI 가 돌지 않는다. 즉 서보 운동이 안 섞인 순수 센서 읽기다. 반면
+thumb·index 는 서보가 실제로 개입한 구간이라 그 표준편차는 노이즈가 아니다 — index 는
+`f_desired` 의 std(437 mN)가 `f_measured` 의 std(305 mN)보다 커서, 흔들린 것이 측정값이 아니라
+**기준값**임이 데이터에 그대로 남았다. `print_grasp_diag_statistics` 가 이 두 오염을 각각
+`[REF MOVED]` · `[SPIKE]` 로 표시하고 쓸 수 있는 손가락을 이름으로 찍는다.
+
+> **σ ≈ 9–13 mN.** §6.6 이 가정한 2 mN 의 **5~6배**이고, 같은 표에서 20 mN 은 "미도달" 이었다.
+> 즉 실기는 σ=2 (Holding 51.5 s) 와 σ=20 (미도달) **사이**에 있다. 단서: 이 값은 **저부하**
+> (0.03~0.25 N) 손가락에서 나왔다. 부하 상태의 σ 는 이번 런에서 분리 불가였다.
+
+**SNR ≲ 1 이 확증됐고 예상보다 나쁘다.** `k_inst_raw` (clamp 전 순간 추정치) 의 산포:
+
+| | mean | σ | max |
+|---|---|---|---|
+| thumb | 313.9 | **863.4** | 29832.9 |
+| index | 545.9 | **883.0** | 12583.3 |
+| middle | 142.9 | 127.2 | 1080.0 |
+
+**표준편차가 평균보다 크다.** §6.6 의 "신호와 노이즈가 같은 크기" 는 실기에서 사실이고, thumb 의
+max 는 평균의 95배다 — §6.6 이 말한 "단 하나의 무한정 표본이 남은 파지 내내 `gain_scale` 을
+침몰시킨다" 가 바로 이 값이다. `K_est_max` 를 400 으로 풀면 이 표본은 400 으로 clamp 되지만 그것도
+seed 의 400배이고, β=0.03 에서 `gain_scale` 은 0.077 로 붕괴한다.
+
+**부수 관측: pin 은 완전한 pin 이 아니다.** `K_est_max` 는 위쪽만 막으므로 `K_inst < 1.0` 인
+표본(실측 min 0.018)은 EMA 를 **아래로** 끈다 — thumb `k_est` 평균 0.999, `gain_scale` 0.7692→0.7694.
+크기가 0.1% 라 실용적으로 무시할 수 있고 #424 의 실기 AC(추정치가 seed 를 벗어나지 않는다)는
+충족이지만, §6.6 의 "`gain_scale` 은 상수" 는 엄밀히는 위쪽 상수라는 뜻이다.
+
+**아직 답이 아닌 것 (S2).** 유지 구간이 조용하지 않았던 원인은 **슬립과 재조임**이지 gain-schedule
+진동이 아니다 (이 런은 적응 OFF). #426 이 묻는 "적응 때문에 진동하는가" 는 파지 자체가 불안정해서
+이 데이터로 판정할 수 없다 — **미끄러지지 않는 파지**로 다시 재야 한다. `integrator_frozen` 은 전
+손가락 0.0 이었으므로 §6.2(deformation guard 동결)는 원인에서 배제됐다.
 
 ## 7. 파라미터 변경 절차
 
@@ -668,3 +731,203 @@ force_pi_grasp:
 
 같은 변경에서 `grip_decay_rate` 가 YAML 로 노출됐다 — 그 전에는 키를 적어도 무시되고 default
 0.1 N/s 가 돌았다. 둘은 같은 축의 짝이므로 함께 설정한다 (§4.3).
+
+## 8. 실기 계측 runbook — 힘 노이즈 σ 와 추정기 실측 (#428)
+
+§6.6 은 두 가지를 **가정**으로 남겼다: 실기 힘 노이즈 σ 의 값, 그리고 "단단한 물체에서 진동이
+난다" 는 전제. 저장소의 Kelvin-Voigt 플랜트는 관성이 없어 후자를 재현할 수 없으므로 둘 다
+실기에서만 답이 나온다. #426 (추정기 재설계) 의 수용 기준이 이 두 값에 의존하므로 **이 절이
+#426 의 선행조건**이다.
+
+계측 채널은 `grasp_diag.csv` 다 (#428). `ros2 topic echo --csv` 가 아닌 이유는 500 Hz 에서
+Python echo 가 샘플을 떨구기 때문이다 — σ 는 무작위 drop 을 견디지만 추정기 transient 는 손상된다.
+
+> ⚠ **`<device>_sensor.csv` 의 `force_filtered_*` 로 σ 를 재지 말 것.** 그것은 contact_stop
+> 뱅크(배포 50 Hz)이고, Force-PI 법칙과 추정기가 읽는 것은 **별개 뱅크**(`f_measured_*`,
+> 배포 25 Hz, 자체 YAML cutoff)다. 두 컬럼 이름이 모두 "force" 라서 틀린 레인에서 잰 σ 는
+> 아무 증상 없이 그럴듯한 숫자를 준다. `grasp_diag.csv` 의 `f_measured_*` 가 유일하게 옳은 출처다.
+
+### 8.0 Preflight — 배포 확인 (제어 PC)
+
+**env 재source 는 배포가 아니다.** 이전 실기 세션에서 옛 코드를 3회 재측정한 사례가 있고 그중
+한 번은 잔존 상태 때문에 `rc=0` 까지 나와 fix 가 통한 것처럼 보였다. **설치 트리를 직접 grep** 한다.
+
+```bash
+WS=~/ros2_ws/demo_ws                      # 제어 PC 워크스페이스 (rtc-framework 체크아웃)
+REPO=$WS/src/ur5e-rt-controller
+
+# 1) 같은 저장소인지 + b6c8dc00 이후인지
+git -C $REPO remote -v && git -C $REPO log --oneline -3
+
+# 2) 최신화 + 빌드 (colcon 은 반드시 ws root 에서 — CLAUDE.md §9.1)
+git -C $REPO pull
+( cd $WS && source $REPO/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 \
+    && colcon build --packages-select rtc_msgs rtc_controllers integrated_bringup rtc_tools )
+
+# 3) 설치 트리에 실제로 들어갔는지 — 셋 다 hit 이어야 한다
+grep -rl finger_stiffness_est $WS/install/rtc_msgs/          # #424 토픽 필드
+grep -rl GraspDiagLog        $WS/install/integrated_bringup/ # #428 POD + YAML
+grep -rl grasp_diag          $WS/install/rtc_tools/          # #428 플로터
+```
+
+셋 중 하나라도 비면 **측정하지 말고 빌드부터 고친다** — 없는 컬럼은 조용히 안 나올 뿐이다.
+
+기동 후 `on_configure` INFO 한 줄로 채널이 살았는지 확인한다:
+
+```
+[grasp_diag] enabled — grasp_diag.csv, 3 finger column set(s): thumb, index, middle. ...
+```
+
+`disabled` 로 뜨면 사유가 같은 줄에 있다 (`force_pi_grasp` 블록 부재 / 핑거 센서 없음).
+
+### 8.1 접촉 성립 확인 (30초) — **긴 세션 전에 반드시**
+
+긴 세션을 돌린 뒤 분석 단계에서야 "접촉이 한 번도 안 났다" 를 발견하면 그 세션은 통째로 버린다.
+2026-08-13 첫 실기 세션(p1b, 58036 tick)이 정확히 그렇게 소모됐다. 짧게 grasp 를 한 번 걸고
+`--stats` 두 줄만 본다.
+
+```bash
+# grasp 걸고 몇 초 유지 → release → 세션 종료 후
+plot_rtc_log <세션>/controllers/demo_joint_controller/grasp_diag.csv --stats | head -20
+```
+
+| 기대 | 실패 시그널 |
+|---|---|
+| `Phase occupancy` 에 **`holding`** 이 있다 | `idle`/`approaching`/`releasing` 만 있다 → **접촉 래치 실패** |
+| `Stationary hold: N ticks` 의 N > 0 | `0 ticks` → σ 를 못 잰다 |
+| | `force_control` 이 지배적인데 `holding` 이 없다 → 래치는 됐으나 **settle 불가** (아래) |
+
+**접촉 래치 실패면 손가락별 최대 힘을 `f_contact_threshold` 와 대조한다:**
+
+```bash
+python3 -c "
+import pandas as pd; d=pd.read_csv('<...>/grasp_diag.csv'); v=d[d.valid==1]
+print(v[[c for c in d.columns if c.startswith('f_measured_')]].max())
+print(v[[c for c in d.columns if c.startswith('s_')]].max())"
+```
+
+전이 판정은 **인덱스 0·1** 두 손가락만 본다 (§1.2). 그래서 *실제로 물체를 무는 쌍*과 *판정하는
+쌍*이 다르면 다른 손가락이 아무리 세게 눌려도 진행하지 않는다. 첫 세션의 실측이 그 사례다
+(p1b, `f_contact_threshold` 0.8 N):
+
+| | thumb | index | middle | ring |
+|---|---|---|---|---|
+| max force [N] | 0.983 ✓ | **0.446 ✗** | 1.359 ✓ | 0.125 ✗ |
+
+`s` 는 네 손가락 모두 1.0 (완전 폐쇄) 이었다. 즉 **다 닫아도 index 가 임계의 56% 에 그쳤고**,
+물체는 thumb–middle 사이에 물려 있었다. 판정 쌍은 thumb+index 이므로 래치가 안 걸린다.
+**처방은 물체를 index 쪽으로 옮기는 것**이지 손가락 순서를 바꾸는 것이 아니다 (§1.2 경고 참조).
+
+> ⚠ **`f_contact_threshold` 만 낮추지 말 것.** 임계를 내리면 래치는 되지만 그 손가락이 곧바로
+> settle 검사 대상이 되고(§2.4), `|f_target − f_measured| ≤ settle_epsilon` 을 만족 못 하면
+> **ForceControl 에 갇힌다**. 위 실측에서 임계만 0.3 으로 내렸다면 index 는 래치된 뒤
+> `f_target` 1.0 · `settle_epsilon` 0.5 기준 0.5 N 이 필요한데 최대가 0.446 이라 영원히
+> 미달이었을 것이다. 그리고 그 상태는 지금보다 **진단이 어렵다** — `force_control` 이 90% 로
+> 찍혀 "돌고는 있는데 왜 안 끝나지" 가 된다. 내려야 한다면 `f_target` 을 **함께** 내린다.
+
+> **s 가 1.0 에 포화한 채로도 σ 는 잴 수 있다** — 기계적으로 물려 정지한 유지 구간은 서보 운동이
+> 분산에 안 섞이므로 오히려 깨끗하다. 다만 **S2(진동 유무)는 그 상태로 판정할 수 없다**:
+> 서보가 조절하지 않으면 진동이 날 수도 안 날 수도 없다. S2 를 보려면 `s < 1.0` 에서 목표힘에
+> 도달해야 한다.
+
+### 8.2 세션 3개
+
+세 시나리오 모두 `grasp_controller_type: force_pi` 에서 돈다. **variant 마다 기본값이 다르다** —
+`ur5e_p1a` 는 `force_pi` 로 배포되지만 **`ur5e_p1b` 는 `none`** 이므로 아래 `param set` 이 선택이
+아니라 **필수**다 (게인·임계는 두 variant 가 동일하고 다른 것은 배포 모드와 손가락 구성뿐이다:
+p1a 3핑거 / p1b 4핑거 `[thumb, index, middle, ring]`). 아래 S3 의 YAML 경로도 실제 variant 로
+바꿔 읽는다. 모드가 다르면 행은 남되
+`valid=0` 이고 per-finger 값이 전부 0 이다 — 그 자체가 "PI 법칙이 안 돌았다" 는 판정이다.
+
+```bash
+ros2 param set /demo_joint_controller/demo_joint_controller grasp_controller_type force_pi
+ros2 service call /demo_joint_controller/grasp_command \
+  rtc_msgs/srv/GraspCommand "{command: 1, target_force: 2.0}"     # command 1 = GRASP
+# ... 시나리오 수행 ...
+ros2 service call /demo_joint_controller/grasp_command \
+  rtc_msgs/srv/GraspCommand "{command: 2, target_force: 0.0}"     # command 2 = RELEASE
+```
+
+| # | 무엇을 | 산출물 / 판정 |
+|---|---|---|
+| **S2** | **단단한 물체 파지, 배포 설정 그대로** (적응 OFF). 목표힘 도달 후 ≥20 s 유지 | **이 실험의 분기점.** ① `k_est_*` 가 전 구간 `1.000` 인가 (pin 유효 = #424 실기 AC) ② `gain_scale_*` 가 상수 0.769 인가 ③ **`f_measured_*` 에 진동/오버슈트가 실제로 나는가** ← #426 의 존재 이유를 결정한다 |
+| **S1** | 자유공간에서 파지 유지 (물체 없이 접촉 상태 ≥30 s), 정지 | Holding 구간 `f_measured_*` 의 표준편차 = **σ**. §6.6 표는 0/1/2/20 mN 을 가정했다 — 실제로 어디 떨어지는지가 산출물 |
+| **S3** | 벤치, `K_est_max` 상향 + `beta` 동반 인하 (**둘은 한 쌍**, §6.6) | `k_est_*` 가 seed 를 벗어나 물체 강성으로 수렴하는가 (#424 AC 나머지 절반) · `k_inst_raw_*` 의 산포가 §6.6 의 SNR ≲ 1 주장과 맞는가 |
+
+**S2 를 S1 보다 먼저 본다.** 진동이 안 나면 #426 의 범위는 재설계가 아니라 **적응 제거**가 되고,
+그 경우 S3 는 돌 필요조차 없다.
+
+S3 의 값 변경 — **ROS 파라미터가 아니라 YAML + 컨트롤러 재로드**다. `grasp_controller_type` 만
+파라미터로 노출돼 있고 `force_pi_grasp` 블록의 값(`K_est_max` · `beta` · 게인 전부)은 노출되지
+않는다. `set_params()` 는 C++ API 이며 ROS 표면이 없으므로, 실기에서 이 값을 바꾸는 경로는
+`on_configure` 재실행뿐이다 (§7 3번).
+
+```bash
+# 1) 제어 PC 에서 YAML 편집 — 두 값은 반드시 함께 움직인다.
+#    K_est_max 만 올리면 tau_min = beta/Kp_base 가 예산을 넘긴다 (§6.6 표)
+$EDITOR $REPO/integrated_bringup/config/ur5e_p1a/controllers/demo_shared.yaml
+#      force_pi_grasp:
+#        K_est_max: 400.0
+#        beta: 0.03
+
+# 2) --symlink-install 빌드(기본값)면 재빌드 불필요. --no-symlink 였다면 재빌드 (§7 2번)
+
+# 3) 컨트롤러를 재로드해 on_configure 를 다시 태운다 (controller switch)
+```
+
+반영 여부는 추측하지 말고 **CSV 로 확인한다** — 아래 §8.4 의 `beta` / `K_est_max` 줄이 그 run 의
+실효값을 그대로 찍는다. 값이 안 바뀌었으면 S3 는 S2 를 한 번 더 돌린 것에 불과하다.
+
+> `grasp_diag.csv` 는 `beta` · `alpha_ema` · `K_est_max` 를 **매 tick** 기록한다. 그 run 의 YAML
+> 없이도 어느 설정에서 나온 데이터인지 파일만 보고 알 수 있고, 재로드 없이 편집만 한 경우가
+> 데이터에서 바로 드러난다.
+
+### 8.3 수거 — 텍스트만
+
+```bash
+S=$(ls -dt $WS/logging_data/*/ | head -1)   # 방금 세션. RTC_SESSION_DIR 를 줬으면 그 경로
+tar czf ~/grasp_session_$(basename $S).tgz \
+  -C "$(dirname $S)" "$(basename $S)/controllers" \
+  "$(basename $S)"/*.yaml 2>/dev/null
+```
+
+`controllers/demo_joint_controller/` (task 컨트롤러를 썼으면 `demo_task_controller/`) 아래에
+`grasp_diag.csv` · `<hand>_sensor.csv` · `pull_estimator.csv` 가 함께 들어간다. 이 디렉토리 이름은
+variant 가 아니라 **컨트롤러별 고정 문자열**이다 (`ControllerLogSet log_set_{"demo_joint_controller"}`)
+— `ur5e_p1a` 같은 variant 이름이 아니므로 찾을 때 헷갈리지 말 것. 세 파일은 `tick` 컬럼 (CM RT loop iteration) 으로 정렬되므로 **같은 run 에서
+25 Hz 와 50 Hz 레인을 교차 검증**할 수 있다 — 위 ⚠ 의 함정을 데이터로 직접 확인하는 수단이다.
+
+### 8.4 dev PC 분석
+
+```bash
+tar xzf grasp_session_*.tgz
+G=<세션>/controllers/demo_joint_controller/grasp_diag.csv
+plot_rtc_log $G --stats     # 1차 판정: 숫자
+plot_rtc_log $G --no-show   # 그림 (세션 plots/ 로)
+```
+
+`--stats` 가 찍는 것과 각 줄이 답하는 질문:
+
+| 출력 | 무엇을 판정하는가 |
+|---|---|
+| `Dropped rows (tick gaps): N` | **0 이 아니면 그 run 은 무손실이 아니다.** 행 하나 = tick 하나이므로 gap 은 SPSC drop 이며, E-STOP tick 은 gap 이 아니라 `valid=0` 행으로 남는다 |
+| `valid: X% of ticks` | PI 법칙이 실제로 돈 비율. 낮으면 모드가 force_pi 가 아니었거나 E-STOP 이 걸렸다 |
+| `Phase occupancy` | Holding 구간이 실제로 존재하는지. 없으면 σ 는 **정의되지 않는다** (아래) |
+| `beta` / `alpha_ema` / `K_est_max` | 그 run 의 실효 설정. `CHANGED during run` 이면 구간을 나눠 봐야 한다 |
+| **`sigma= … mN`** (핑거별) | **§6.6 표의 σ 열.** #426 수용 기준 1 이 가설에서 실측으로 바뀌는 지점 |
+| `k_est: … [CONSTANT]` | `[CONSTANT]` 면 pin 이 살아 있다 (S2 기대값). S3 에서 이게 붙어 있으면 param set 이 안 먹은 것 |
+| `samples accepted by the guards: X%` | 가드가 표본을 얼마나 기각하는지. 낮으면 추정기는 "돌고 있지만 굶고 있는" 상태다 |
+| `k_inst_raw … sigma=` | 원시 표본의 산포. 이것이 `k_est` 자체 크기와 비슷하면 §6.6 의 **SNR ≲ 1** 이 실기에서 확인된 것 |
+
+> **σ 는 Holding 구간에서만 잰다.** approach·force ramp 는 설계상 transient 이므로 전 구간
+> 표준편차는 노이즈가 아니라 궤적을 재고 몇 배 크게 나온다. `--stats` 가 이 분리를 이미 하며,
+> Holding 구간이 없으면 σ 를 출력하는 대신 "undefined for this run" 이라고 말한다.
+
+별도 분석 스크립트를 새로 만들지 않는다 — 그 자리가 `print_grasp_diag_statistics` 다
+([design-principles.md](../../agent_docs/design-principles.md) P5).
+
+### 8.5 결과를 어디에 쓰는가
+
+1. **σ 실측값** → §6.6 의 표에 실기 행을 추가하고, #426 수용 기준 1 의 "가설" 표기를 걷는다
+2. **S2 의 진동 유무** → #426 의 범위 결정 (재설계 vs 적응 제거)
+3. **S2/S3 의 `k_est` 거동** → #424 가 남긴 실기 AC 종결

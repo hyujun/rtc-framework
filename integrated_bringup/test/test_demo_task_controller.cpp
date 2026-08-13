@@ -20,6 +20,7 @@
 // the contact_stop scenarios, mirroring test_demo_joint_controller.
 
 #include "iiwa7_leap_test_fixture.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
@@ -30,6 +31,9 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
@@ -2256,3 +2260,203 @@ TEST_F(TaskControllerUrdfTest, EstopTickPublishesThisTicksBody) {
 }
 
 }  // namespace
+
+
+// ── grasp_diag.csv (#428), task lane ────────────────────────────────────────
+//
+// Symmetric to the joint controller's JointGraspDiagLogTest. The push site is
+// duplicated across the two controllers' Compute() tails, so a fix or a
+// deletion applied to only one of them is exactly the drift this pair exists to
+// catch — the same reason the #424 stiffness-mirror tests come in a pair.
+//
+// The task lane has a structural difference worth pinning: it has NO separate
+// E-STOP early-return, so its valid=0 rows come from ComputeSecondary being
+// skipped rather than from an explicit estop push. Both must reach the file.
+
+namespace {
+
+namespace grasp_diag_fs = std::filesystem;
+
+class TaskScopedSessionDir {
+ public:
+  TaskScopedSessionDir() {
+    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
+      had_prev_ = true;
+      prev_value_ = prev;
+    }
+    auto base = grasp_diag_fs::temp_directory_path() / "rtc_grasp_diag_task_test";
+    grasp_diag_fs::create_directories(base);
+    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFU));
+    grasp_diag_fs::create_directories(dir_);
+    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
+  }
+  ~TaskScopedSessionDir() {
+    if (had_prev_) {
+      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
+    } else {
+      ::unsetenv("RTC_SESSION_DIR");
+    }
+    std::error_code ec;
+    grasp_diag_fs::remove_all(dir_, ec);
+  }
+  TaskScopedSessionDir(const TaskScopedSessionDir&) = delete;
+  TaskScopedSessionDir& operator=(const TaskScopedSessionDir&) = delete;
+
+ private:
+  grasp_diag_fs::path dir_;
+  bool had_prev_{false};
+  std::string prev_value_;
+};
+
+std::vector<std::string> GraspDiagReadLines(const grasp_diag_fs::path& p) {
+  std::vector<std::string> out;
+  std::ifstream in(p);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty()) {
+      out.push_back(line);
+    }
+  }
+  return out;
+}
+
+std::vector<std::string> GraspDiagSplit(const std::string& line) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (char c : line) {
+    if (c == ',') {
+      out.push_back(cur);
+      cur.clear();
+    } else {
+      cur.push_back(c);
+    }
+  }
+  out.push_back(cur);
+  return out;
+}
+
+std::size_t GraspDiagColumn(const std::vector<std::string>& header, const std::string& name) {
+  for (std::size_t i = 0; i < header.size(); ++i) {
+    if (header[i] == name) {
+      return i;
+    }
+  }
+  return header.size();
+}
+
+class TaskGraspDiagLogTest : public TaskForcePiBuiltTest {
+ protected:
+  TaskScopedSessionDir session_;
+  rtc::ControllerLogSet log_set_{"task_diag_test"};
+  std::vector<std::string> finger_names_{"thumb", "index"};
+
+  struct Entry {
+    std::string msg_type;
+    std::string instance;
+  };
+
+  void BindGraspDiag() {
+    const std::vector<Entry> entries{
+        {std::string(integrated_bringup::kGraspDiagLogMsgType),
+         std::string(integrated_bringup::kGraspDiagLogInstance)}};
+    integrated_bringup::LogRegistrationContext ctx{
+        .logger = rclcpp::get_logger("grasp_diag_task_test"),
+        .log_set = log_set_,
+        .grasp_diag_enabled = true,
+        .grasp_diag_finger_names = finger_names_,
+    };
+    auto reg = integrated_bringup::RegisterControllerLogs(entries, ctx);
+    ASSERT_EQ(reg.status, integrated_bringup::LogRegistrationStatus::kSuccess);
+    bound_ = static_cast<bool>(reg.handles.grasp_diag);
+    ctrl_->SetGraspDiagLogHandleForTesting(std::move(reg.handles.grasp_diag));
+  }
+
+  grasp_diag_fs::path CsvPath() const {
+    for (const auto& ch : log_set_.Channels()) {
+      if (ch.first == integrated_bringup::kGraspDiagLogInstance) {
+        return ch.second;
+      }
+    }
+    return {};
+  }
+
+  bool bound_{false};
+};
+
+}  // namespace
+
+TEST_F(TaskGraspDiagLogTest, EveryTickProducesOneRowAndKEstTracksTheControllersOwn) {
+  BindGraspDiag();
+  ASSERT_TRUE(bound_) << "channel did not register — the rest of this test is vacuous";
+  ASSERT_TRUE(ctrl_->SetGraspKEstMaxForTesting(400.0));
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+
+  // 800, matching the sibling #424 test: the task lane's hand feedback path
+  // moves the estimate more slowly than the joint lane's, and at 400 the
+  // estimate is still sitting on its 1.0 seed — which would make the equality
+  // above pass against a column hardcoded to the seed.
+  constexpr int kTicks = 800;
+  for (int i = 0; i < kTicks; ++i) {
+    const float f = 0.5F + 0.001F * static_cast<float>(i);
+    SetFingertipForce(state_, 0, f);
+    SetFingertipForce(state_, 1, f);
+    (void)RunTicks(1, /*feedback_hand=*/false);
+    // Production drains on a 10 Hz timer; a single trailing drain would overrun
+    // the 512-deep ring and silently truncate the tail.
+    if (i % 100 == 99) {
+      log_set_.DrainAll();
+    }
+  }
+  log_set_.DrainAll();
+  ASSERT_EQ(log_set_.TotalDropCount(), 0U);
+
+  const auto lines = GraspDiagReadLines(CsvPath());
+  EXPECT_EQ(lines.size(), static_cast<std::size_t>(kTicks) + 1U) << "header + one row per tick";
+
+  const auto header = GraspDiagSplit(lines[0]);
+  const auto last = GraspDiagSplit(lines.back());
+  const auto fs_states = ctrl_->GetGraspFingerStatesForTesting();
+  ASSERT_FALSE(fs_states.empty());
+
+  bool left_seed = false;
+  for (std::size_t i = 0; i < fs_states.size() && i < finger_names_.size(); ++i) {
+    const auto col = GraspDiagColumn(header, "k_est_" + finger_names_[i]);
+    ASSERT_LT(col, header.size());
+    EXPECT_FLOAT_EQ(std::stof(last[col]), static_cast<float>(fs_states[i].K_contact_est))
+        << "finger " << finger_names_[i];
+    if (fs_states[i].K_contact_est != 1.0) {
+      left_seed = true;
+    }
+  }
+  EXPECT_TRUE(left_seed) << "estimate never left its seed — the equality cannot tell a live "
+                            "column from a constant";
+}
+
+// The task lane reaches valid=0 by a different route than the joint lane: there
+// is no E-STOP early return here, ComputeSecondary is simply skipped, so the
+// per-tick `ran` flag is the only thing marking the row. Pin that the row still
+// appears and still reports not-computed.
+TEST_F(TaskGraspDiagLogTest, EstopTickStillLeavesAValidZeroRow) {
+  BindGraspDiag();
+  ASSERT_TRUE(bound_);
+  ASSERT_TRUE(ctrl_->CommandGraspForTesting(2.0));
+  PrimeContact();
+  for (int i = 0; i < 50; ++i) {
+    SetFingertipForce(state_, 0, 0.5F + 0.001F * static_cast<float>(i));
+    SetFingertipForce(state_, 1, 0.5F + 0.001F * static_cast<float>(i));
+    (void)RunTicks(1, /*feedback_hand=*/false);
+  }
+  ctrl_->TriggerEstop();
+  (void)RunTicks(1, /*feedback_hand=*/false);
+  log_set_.DrainAll();
+
+  const auto lines = GraspDiagReadLines(CsvPath());
+  ASSERT_GE(lines.size(), 3U);
+  const auto header = GraspDiagSplit(lines[0]);
+  const auto valid_col = GraspDiagColumn(header, "valid");
+  ASSERT_LT(valid_col, header.size());
+  EXPECT_EQ(GraspDiagSplit(lines.back())[valid_col], "0");
+  EXPECT_EQ(GraspDiagSplit(lines[lines.size() - 2U])[valid_col], "1")
+      << "the preceding servo tick must be valid, or this proves nothing";
+}
