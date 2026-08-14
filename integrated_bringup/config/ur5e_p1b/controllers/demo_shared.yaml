@@ -164,9 +164,16 @@ demo_shared:
     # the values pinned here have been identified experimentally.
     alignment_error_rad: 0.035   # [rad] δθ for grip→in-plane leakage bound (~2°)
 
-    # Gravity model: m·g in base frame [N]. Keep zero while
-    # use_baseline_subtraction is on — the grasp-time baseline snapshot removes
-    # in-plane gravity AND constant calibration residual in one shot.
+    # Gravity model: m·g of the grasped object in base frame [N].
+    # This robot runs with `use_baseline_subtraction: false` (below) to mirror
+    # what the control PC deploys, so — unlike the p1a / iiwa7_leap configs,
+    # which keep it on — nothing here removes the object's in-plane weight or
+    # the tips' constant calibration residual. F̂ = -P∥(Σ f_obj) carries both:
+    # read it as absolute-with-offset, NOT as "pull since grasp".
+    # Kept zero deliberately rather than filled in: m is per-object and unknown
+    # at config time. Baseline OFF + gravity model zero is also precisely the
+    # combination #177 crit#4 (100 g plate) requires, so that rung reads the
+    # plate's own weight as pull instead of having it snapshotted away.
     gravity_force: [0.0, 0.0, 0.0]
 
     # In-plane x axis reference (base frame) — names the force_inplane pair.
@@ -181,6 +188,10 @@ demo_shared:
     # back to a world-axis seed and force_inplane[0] stops being the
     # reference-direction component. on_configure warns, and the published
     # basis_source reports SEED instead of REFERENCE when it happens.
+
+    # OFF on this robot (mirrors the control PC). Consequences for how the
+    # estimate must be read are on `gravity_force` above; the per-tick regime is
+    # recoverable from the `baseline_applied` column of pull_estimator.csv.
     use_baseline_subtraction: false
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
