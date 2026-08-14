@@ -510,8 +510,14 @@ if(BUILD_TESTING)
   # src/controllers/wbc/compute.cpp actually executes. That means a
   # LifecycleNode and therefore DDS, so it gets a dedicated ROS_DOMAIN_ID —
   # colcon test runs packages in parallel and discovery churn on the default
-  # domain breaks other packages' pub/sub matching tests (the isolation idiom
-  # rtc_controller_manager's full-pipeline tests use; domains 44–51 are theirs).
+  # domain breaks other packages' pub/sub matching tests, or hangs them outright
+  # in rmw endpoint create/destroy (#401). One id per package, shared by every
+  # test here that opens a participant -- ctest runs a package's tests
+  # sequentially, so siblings never overlap. Do not restate the allocation in a
+  # comment: `validate_test_domains.py --list` derives it, and the gate of the
+  # same name fails the build on a collision or on an unclaimed participant test
+  # (this comment used to say "domains 44-51 are theirs", which stopped being
+  # true the moment that package consolidated).
   # Slower than the model-less wbc tests: 4-contact QP solves at 2 ms over
   # multi-tick FSM scenarios, so the default 60 s ctest timeout is lifted.
   ament_add_gtest(test_demo_wbc_tsid_path
@@ -548,7 +554,7 @@ if(BUILD_TESTING)
   # 사영 2→1 계측과 입력 provenance 는 URDF 없는 하네스에서는 관측되지 않는다.
   ament_add_gtest(test_wbc_closed_chain_projection_sharing
     test/test_wbc_closed_chain_projection_sharing.cpp
-    ENV ROS_DOMAIN_ID=53
+    ENV ROS_DOMAIN_ID=52
     TIMEOUT 300)
   target_link_libraries(test_wbc_closed_chain_projection_sharing
     ${PROJECT_NAME}_demo_controllers
@@ -897,7 +903,8 @@ if(BUILD_TESTING)
   # Layer C: verifies HasSensorState / ReadSensorState / OnWrench contract —
   # stride-7 inference_data packing, stale detection, NaN guard, per-tip
   # miss counter independence, recovery, and dead-slot zero-fill.
-  ament_add_gtest(test_mujoco_native_backend test/test_mujoco_native_backend.cpp)
+  ament_add_gtest(test_mujoco_native_backend test/test_mujoco_native_backend.cpp
+    ENV ROS_DOMAIN_ID=52)
   target_link_libraries(test_mujoco_native_backend
     ${PROJECT_NAME}_demo_controllers
   )
@@ -915,7 +922,8 @@ if(BUILD_TESTING)
   # callback group (no SubscriptionOptions argument), so CM attaches it to
   # nrt_callback_executor instead of any RT-priority lane.
   ament_add_gtest(test_controller_target_cb_group_invariant
-    test/test_controller_target_cb_group_invariant.cpp)
+    test/test_controller_target_cb_group_invariant.cpp
+    ENV ROS_DOMAIN_ID=52)
   target_link_libraries(test_controller_target_cb_group_invariant
     ${PROJECT_NAME}_demo_controllers
   )

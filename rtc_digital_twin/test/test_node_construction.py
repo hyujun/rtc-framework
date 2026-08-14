@@ -10,10 +10,27 @@ paths on/off.
 """
 
 import contextlib
+import os
 
 import rclpy
 
 from rtc_digital_twin.digital_twin_node import DigitalTwinNode
+
+
+def test_dds_domain_is_isolated():
+    """These tests open a real participant, so they must not run on domain 0.
+
+    The text gate (repo_scripts/scripts/validate_test_domains.py) checks that
+    test/conftest.py *contains* the claim; this checks that pytest actually
+    applied it before a test ran, which is the part a text scan cannot see.
+    The number is deliberately not asserted -- the invariant is "not the shared
+    default", and pinning 58 here would make re-allocating the id a two-file
+    edit for no gain.
+    """
+    assert os.environ.get("ROS_DOMAIN_ID", "0") != "0", (
+        "test/conftest.py did not set ROS_DOMAIN_ID before the suite ran -- "
+        "these tests are on the shared default domain (issue #401)"
+    )
 
 
 @contextlib.contextmanager

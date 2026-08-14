@@ -187,7 +187,8 @@ if(BUILD_TESTING)
     test/test_udp_hand_node_lanes.cpp
     src/udp_hand_node_lifecycle.cpp
     src/udp_hand_node_publish.cpp
-    src/udp_hand_node_stats.cpp)
+    src/udp_hand_node_stats.cpp
+    ENV ROS_DOMAIN_ID=54)
   target_include_directories(test_udp_hand_node_lanes PRIVATE include)
   target_link_libraries(test_udp_hand_node_lanes udp_hand_protocol)
   ament_target_dependencies(test_udp_hand_node_lanes
@@ -202,8 +203,8 @@ if(BUILD_TESTING)
   # integrated_bringup's test_wbc_closed_chain_projection_sharing already held
   # (#401) -- a hand-copied range cannot stay true. Do not restate the
   # allocation here; `repo_scripts/scripts/validate_test_domains.py --list`
-  # derives it from the CMakeLists, and the gate of the same name fails the
-  # build on a collision.
+  # derives it from the sources, and the gate of the same name fails the build
+  # on a collision or on a participant test that claims nothing at all.
   ament_add_gtest(test_udp_hand_node_lifecycle
     test/test_udp_hand_node_lifecycle.cpp
     src/udp_hand_node_lifecycle.cpp
