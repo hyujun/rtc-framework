@@ -95,30 +95,84 @@ struct DeviceSensorLogPod {
 static_assert(std::is_trivially_copyable_v<DeviceSensorLogPod>,
               "DeviceSensorLogPod must be trivially copyable for SPSC ring");
 
-/// Emit the entire CSV header line. `sensor_names` length determines the
-/// per-fingertip column expansion (each fingertip gets `values_per_group` raw
-/// + filtered and kFTValuesPerFingertip inference columns, plus 3 LPF'd force,
-/// 3 guarded LPF-input and 1 guard-verdict column). The logger appends '\n'.
+/// Column geometry for one registered DeviceSensorLog channel, captured ONCE
+/// at registration and handed to BOTH writers.
 ///
-/// `values_per_group` is the device's runtime `DeviceSensorLayout` stride, NOT
-/// the compile-time capacity. A force-only hand declares 0 there and gets no
-/// raw/filt block at all — emitting the capacity unconditionally used to hand
-/// such a device 2 * names * 11 permanently-zero columns that read downstream
-/// as a barometer flatlining rather than as absent hardware. It defaults to the
-/// capacity so a caller that has no layout to hand keeps the old columns.
-inline void WriteDeviceSensorLogHeader(
-    std::ostream& os, std::span<const std::string> sensor_names,
+/// Bundled rather than passed as two positional sizes for the reason
+/// ForceFilterLogView is bundled (pod_fill.hpp): header and row must be sized
+/// from the same numbers, and a call site that handed one writer a different
+/// width than the other would still compile and still produce a well-formed
+/// file — just one whose columns mean something other than what the header
+/// says.
+///
+/// `fingertips` is a CONFIGURED width (sensor_names, clamped to the POD
+/// capacity), never the per-tick runtime count. The header is written once at
+/// first Open, before any pod exists, so a row sized by `pod.num_fingertips`
+/// diverges from it the moment the device reports a different number than the
+/// config named. That divergence is not hypothetical: a session whose hand
+/// reported 0 fingertips wrote a 59-column header over 3-column rows for
+/// 138,248 rows, and a reader resolving columns by header name then read
+/// `force_filtered_valid` (constant 1) as `ft_thumb_contact` — an absent
+/// sensor lane plotted as "thumb in contact for the whole session" (#440).
+///
+/// Rows therefore always carry `fingertips` blocks: slots the device did not
+/// report this tick carry 0, and the trailing `num_fingertips` column records
+/// what it actually reported, so a zero block is legible as absence rather
+/// than as a measured zero.
+struct DeviceSensorLogColumns {
+  /// Fingertip-block width. Both writers emit exactly this many blocks.
+  std::size_t fingertips{0};
+  /// Device's runtime DeviceSensorLayout stride for the raw/filt block.
+  std::size_t values_per_group{DeviceSensorLogPod::kSensorValuesPerFingertip};
+};
+
+/// Derive the geometry from the configured names + the device's runtime
+/// DeviceSensorLayout stride. The single place either width is computed, so
+/// the two writers cannot be handed different numbers.
+///
+/// `values_per_group` is the runtime stride, NOT the compile-time capacity. A
+/// force-only hand declares 0 there and gets no raw/filt block at all —
+/// emitting the capacity unconditionally used to hand such a device
+/// 2 * names * 11 permanently-zero columns that read downstream as a barometer
+/// flatlining rather than as absent hardware. It defaults to the capacity so a
+/// caller that has no layout to hand keeps the old columns.
+[[nodiscard]] inline DeviceSensorLogColumns DeviceSensorLogColumnsFor(
+    std::span<const std::string> sensor_names,
     std::size_t values_per_group = DeviceSensorLogPod::kSensorValuesPerFingertip) {
+  return {std::min(sensor_names.size(), DeviceSensorLogPod::kMaxFingertips),
+          std::min(values_per_group, DeviceSensorLogPod::kSensorValuesPerFingertip)};
+}
+
+/// Emit the entire CSV header line. Exactly `cols.fingertips` per-fingertip
+/// blocks are emitted (each fingertip gets `cols.values_per_group` raw +
+/// filtered and kFTValuesPerFingertip inference columns, plus 3 LPF'd force,
+/// 3 guarded LPF-input and 1 guard-verdict column), followed by the trailing
+/// `num_fingertips` column. The logger appends '\n'.
+///
+/// `sensor_names` supplies labels only — it does not size anything. A slot
+/// past the end of the list falls back to `ft<index>`, so the emitted width is
+/// `cols.fingertips` no matter what the two arguments say about each other.
+/// DeviceSensorLogColumnsFor keeps the fallback unreachable in practice.
+inline void WriteDeviceSensorLogHeader(std::ostream& os, std::span<const std::string> sensor_names,
+                                       const DeviceSensorLogColumns& cols) {
   os << "t_relative_s";
+
+  const auto n_ft = std::min(cols.fingertips, DeviceSensorLogPod::kMaxFingertips);
+  const auto stride =
+      std::min(cols.values_per_group, DeviceSensorLogPod::kSensorValuesPerFingertip);
+  // Header write is once-per-file and off the RT path, so building the label
+  // string here is free.
+  auto label = [&](std::size_t f) {
+    return f < sensor_names.size() ? sensor_names[f] : ("ft" + std::to_string(f));
+  };
 
   // Per-fingertip raw/filtered (each fingertip → values_per_group values,
   // named e.g. "thumb_baro_0..7", "thumb_tof_0..2"). We don't know the value
   // semantics here, so just index them.
-  const auto stride = std::min(values_per_group, DeviceSensorLogPod::kSensorValuesPerFingertip);
   auto emit_ft_block = [&](std::string_view kind) {
-    for (const auto& name : sensor_names) {
+    for (std::size_t f = 0; f < n_ft; ++f) {
       for (std::size_t v = 0; v < stride; ++v) {
-        os << ',' << name << '_' << kind << '_' << v;
+        os << ',' << label(f) << '_' << kind << '_' << v;
       }
     }
   };
@@ -129,9 +183,9 @@ inline void WriteDeviceSensorLogHeader(
   // Inference: per-fingertip 7 columns: contact, fx, fy, fz, ux, uy, uz
   static constexpr std::array<const char*, DeviceSensorLogPod::kFTValuesPerFingertip> kFtCols{
       "contact", "fx", "fy", "fz", "ux", "uy", "uz"};
-  for (const auto& name : sensor_names) {
+  for (std::size_t f = 0; f < n_ft; ++f) {
     for (const char* col : kFtCols) {
-      os << ',' << "ft_" << name << '_' << col;
+      os << ',' << "ft_" << label(f) << '_' << col;
     }
   }
 
@@ -141,9 +195,9 @@ inline void WriteDeviceSensorLogHeader(
   os << ",force_filtered_valid";
   static constexpr std::array<const char*, DeviceSensorLogPod::kForceAxes> kForceFiltCols{
       "fx_filt", "fy_filt", "fz_filt"};
-  for (const auto& name : sensor_names) {
+  for (std::size_t f = 0; f < n_ft; ++f) {
     for (const char* col : kForceFiltCols) {
-      os << ',' << "ft_" << name << '_' << col;
+      os << ',' << "ft_" << label(f) << '_' << col;
     }
   }
 
@@ -154,55 +208,80 @@ inline void WriteDeviceSensorLogHeader(
   // on (rtc_tools plotting/columns/detect.py).
   static constexpr std::array<const char*, DeviceSensorLogPod::kForceAxes> kForceGuardedCols{
       "fx_guarded", "fy_guarded", "fz_guarded"};
-  for (const auto& name : sensor_names) {
+  for (std::size_t f = 0; f < n_ft; ++f) {
     for (const char* col : kForceGuardedCols) {
-      os << ',' << "ft_" << name << '_' << col;
+      os << ',' << "ft_" << label(f) << '_' << col;
     }
   }
-  for (const auto& name : sensor_names) {
-    os << ',' << "ft_" << name << "_force_guard_rejected";
+  for (std::size_t f = 0; f < n_ft; ++f) {
+    os << ',' << "ft_" << label(f) << "_force_guard_rejected";
   }
+
+  // Appended last, same append-only rule as the guard block above. This is the
+  // column that keeps a padded (or truncated) row self-describing — see
+  // DeviceSensorLogColumns.
+  os << ",num_fingertips";
 }
 
-/// Emit one row. Column count must agree with the header writer's
-/// sensor_names span and `values_per_group` — caller's responsibility. Rows are
-/// narrower than the header whenever the device reports fewer fingertips than
-/// were named at configure time; that is the documented contract (see
-/// test_device_log_pods.cpp RowRespectsRuntimeNumFingertips), not padding this
-/// writer is missing.
-inline void WriteDeviceSensorLogRow(
-    std::ostream& os, const DeviceSensorLogPod& p,
-    std::size_t values_per_group = DeviceSensorLogPod::kSensorValuesPerFingertip) {
+/// Emit one row. Width is taken from the SAME `cols` the header was written
+/// with, so the two agree by construction rather than by the caller's care.
+///
+/// Fingertip slots the device did not report this tick are emitted as 0 rather
+/// than skipped; `num_fingertips` (last column) says how many were real. A
+/// device reporting MORE fingertips than the config named is truncated to the
+/// header's width — visible in the same column, since it then exceeds the
+/// number of blocks present.
+inline void WriteDeviceSensorLogRow(std::ostream& os, const DeviceSensorLogPod& p,
+                                    const DeviceSensorLogColumns& cols) {
   os << p.t_relative_s;
 
-  const auto stride = std::min(values_per_group, DeviceSensorLogPod::kSensorValuesPerFingertip);
-  const auto n_sensor = static_cast<std::size_t>(p.num_fingertips) * stride;
-  for (std::size_t i = 0; i < n_sensor; ++i) {
-    os << ',' << p.sensor_data_raw[i];
-  }
-  for (std::size_t i = 0; i < n_sensor; ++i) {
-    os << ',' << p.sensor_data[i];
-  }
+  const auto stride =
+      std::min(cols.values_per_group, DeviceSensorLogPod::kSensorValuesPerFingertip);
+  const auto n_ft = std::min(cols.fingertips, DeviceSensorLogPod::kMaxFingertips);
+  // Slots [reported, n_ft) are padding. Padding is written as a literal 0
+  // instead of reading the array: FillDeviceSensorLogPod copies the device's
+  // sensor lane at the CAPACITY stride while this writer indexes at the
+  // LAYOUT stride, so for a narrow layout the array tail past the reported
+  // fingertips can still hold live bytes from the device's packing.
+  const auto reported = std::min(static_cast<std::size_t>(p.num_fingertips), n_ft);
+
+  auto emit_sensor_block =
+      [&](const std::array<std::int32_t, DeviceSensorLogPod::kMaxSensorValues>& a) {
+        for (std::size_t f = 0; f < n_ft; ++f) {
+          for (std::size_t v = 0; v < stride; ++v) {
+            os << ',' << (f < reported ? a[f * stride + v] : 0);
+          }
+        }
+      };
+  emit_sensor_block(p.sensor_data_raw);
+  emit_sensor_block(p.sensor_data);
 
   os << ',' << (p.inference_valid ? 1 : 0);
-
-  const auto n_inf =
-      static_cast<std::size_t>(p.num_fingertips) * DeviceSensorLogPod::kFTValuesPerFingertip;
-  for (std::size_t i = 0; i < n_inf; ++i) {
-    os << ',' << p.inference_output[i];
+  for (std::size_t f = 0; f < n_ft; ++f) {
+    for (std::size_t v = 0; v < DeviceSensorLogPod::kFTValuesPerFingertip; ++v) {
+      os << ','
+         << (f < reported
+                 ? p.inference_output[f * DeviceSensorLogPod::kFTValuesPerFingertip + v]
+                 : 0.0F);
+    }
   }
 
   os << ',' << (p.force_filtered_valid ? 1 : 0);
-  const auto n_filt = static_cast<std::size_t>(p.num_fingertips) * DeviceSensorLogPod::kForceAxes;
-  for (std::size_t i = 0; i < n_filt; ++i) {
-    os << ',' << p.force_filtered[i];
+  auto emit_force_block =
+      [&](const std::array<float, DeviceSensorLogPod::kMaxForceFilteredValues>& a) {
+        for (std::size_t f = 0; f < n_ft; ++f) {
+          for (std::size_t v = 0; v < DeviceSensorLogPod::kForceAxes; ++v) {
+            os << ',' << (f < reported ? a[f * DeviceSensorLogPod::kForceAxes + v] : 0.0F);
+          }
+        }
+      };
+  emit_force_block(p.force_filtered);
+  emit_force_block(p.force_guarded);
+  for (std::size_t f = 0; f < n_ft; ++f) {
+    os << ',' << ((f < reported && p.force_guard_rejected[f] != 0) ? 1 : 0);
   }
-  for (std::size_t i = 0; i < n_filt; ++i) {
-    os << ',' << p.force_guarded[i];
-  }
-  for (std::size_t f = 0; f < static_cast<std::size_t>(p.num_fingertips); ++f) {
-    os << ',' << static_cast<int>(p.force_guard_rejected[f] != 0 ? 1 : 0);
-  }
+
+  os << ',' << static_cast<unsigned>(p.num_fingertips);
 }
 
 }  // namespace integrated_bringup

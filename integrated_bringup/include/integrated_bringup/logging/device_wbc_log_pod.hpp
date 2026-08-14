@@ -25,6 +25,7 @@
 // string used in the YAML `logs:` block is "integrated_bringup/DeviceWbcLog"
 // — an integrated_bringup-private channel id, not a published message.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -100,20 +101,66 @@ inline std::string_view DeviceWbcLogGoalTypeStr(std::uint8_t v) noexcept {
   return v == 0 ? "joint" : (v == 1 ? "task" : "unknown");
 }
 
+/// Column geometry for one registered DeviceWbcLog channel, captured ONCE at
+/// registration and handed to BOTH writers.
+///
+/// Only the joint / motor axes need carrying: the fingertip blocks are already
+/// fixed-width (see WriteDeviceWbcLogHeader). Both widths are CONFIGURED
+/// (joint_names / motor_names, clamped to the POD capacities), never the
+/// per-tick runtime counts — the header is written once at first Open, before
+/// any pod exists, so a row sized by `p.num_joints` / `p.num_motors` diverges
+/// from it whenever the backend reports a different channel count than the
+/// config named. The sibling sensor channel wrote 138,248 rows through exactly
+/// that gap (#440); the fixed-width fingertip block below was this POD's
+/// earlier answer to the same question on the axis where a configured width
+/// does not exist.
+///
+/// Rows therefore always carry `joints` / `motors` entries per array block:
+/// channels the device did not report carry 0, and the trailing `num_*`
+/// columns record what it actually reported.
+struct DeviceWbcLogColumns {
+  std::size_t joints{0};
+  std::size_t motors{0};
+};
+
+/// Derive the geometry from the configured names. The single place either
+/// width is computed, so the two writers cannot be handed different numbers.
+[[nodiscard]] inline DeviceWbcLogColumns DeviceWbcLogColumnsFor(
+    std::span<const std::string> joint_names, std::span<const std::string> motor_names) {
+  return {std::min(joint_names.size(), DeviceWbcLogPod::kMaxJoints),
+          std::min(motor_names.size(), DeviceWbcLogPod::kMaxMotors)};
+}
+
 /// Emit the entire CSV header line for a DeviceWbcLogPod. `role` selects the
 /// role-gated blocks (must equal the `role` field of every pushed pod for
 /// this channel). For role==0 (arm) `motor_names` / `fingertip_names` are
 /// ignored; for role==1 (hand) the SE3 task block is suppressed.
+///
+/// Joint / motor widths come from `cols`; the name spans supply labels only and
+/// fall back to `j<index>` / `m<index>` past the end of the list, so the
+/// emitted width is `cols` no matter what the arguments say about each other.
 /// The logger appends '\n'.
 inline void WriteDeviceWbcLogHeader(std::ostream& os, std::uint8_t role,
                                     std::span<const std::string> joint_names,
                                     std::span<const std::string> motor_names,
-                                    std::span<const std::string> fingertip_names) {
+                                    std::span<const std::string> fingertip_names,
+                                    const DeviceWbcLogColumns& cols) {
   os << "t_relative_s";
 
+  const auto n_j = std::min(cols.joints, DeviceWbcLogPod::kMaxJoints);
+  const auto n_m = std::min(cols.motors, DeviceWbcLogPod::kMaxMotors);
+  // Header write is once-per-file and off the RT path, so building the label
+  // string here is free.
+  auto joint_label = [&](std::size_t i) {
+    return i < joint_names.size() ? joint_names[i] : ("j" + std::to_string(i));
+  };
+  auto motor_label = [&](std::size_t i) {
+    return i < motor_names.size() ? motor_names[i] : ("m" + std::to_string(i));
+  };
+
   auto emit_joint_col = [&](std::string_view prefix) {
-    for (const auto& n : joint_names) {
-      os << ',' << prefix << '_' << n;
+    for (std::size_t i = 0; i < n_j; ++i) {
+      os << ',' << prefix << '_' << joint_label(i);
     }
   };
   emit_joint_col("actual_pos");
@@ -135,23 +182,23 @@ inline void WriteDeviceWbcLogHeader(std::ostream& os, std::uint8_t role,
     os << ",traj_task_vel_x,traj_task_vel_y,traj_task_vel_z";
     os << ",traj_task_vel_roll,traj_task_vel_pitch,traj_task_vel_yaw";
   } else {  // hand: motor + fingertip-force block
-    for (const auto& n : motor_names) {
-      os << ",motor_pos_" << n;
-    }
-    for (const auto& n : motor_names) {
-      os << ",motor_vel_" << n;
-    }
-    for (const auto& n : motor_names) {
-      os << ",motor_eff_" << n;
-    }
+    auto emit_motor_col = [&](std::string_view prefix) {
+      for (std::size_t i = 0; i < n_m; ++i) {
+        os << ',' << prefix << motor_label(i);
+      }
+    };
+    emit_motor_col("motor_pos_");
+    emit_motor_col("motor_vel_");
+    emit_motor_col("motor_eff_");
     // Fingertip-force columns are FIXED-WIDTH (kMaxFingertips). The active
     // fingertip count (`num_active_fingertips_`) is a per-tick runtime value
     // derived from backend inference groups — unknown when this header is
     // written (once, at registration) and not predictable from sensor_names
-    // (LEAP has 0 tactile sensors yet reports contact-force fingertips). A
-    // fixed block is the only width that guarantees header == row. Columns
-    // beyond the runtime count carry zeros. Label by fingertip_names when
-    // provided, else numeric index.
+    // (LEAP has 0 tactile sensors yet reports contact-force fingertips). Unlike
+    // the joint / motor axes above there is no configured count to size this
+    // block from, so a fixed block is the only width that guarantees
+    // header == row. Columns beyond the runtime count carry zeros. Label by
+    // fingertip_names when provided, else numeric index.
     auto emit_fingertip_block = [&](std::string_view prefix) {
       for (std::size_t i = 0; i < DeviceWbcLogPod::kMaxFingertips; ++i) {
         os << ',' << prefix;
@@ -169,17 +216,32 @@ inline void WriteDeviceWbcLogHeader(std::ostream& os, std::uint8_t role,
   }
 
   os << ",command_type,goal_type";
+  // Appended last: the columns that keep a padded (or truncated) row
+  // self-describing — see DeviceWbcLogColumns. Role-gated like the blocks they
+  // describe, so an arm file carries no hand-only counts.
+  os << ",num_joints";
+  if (role != 0) {
+    os << ",num_motors,num_fingertips";
+  }
 }
 
 /// Emit one row. Block selection reads `p.role` so it agrees with a header
-/// written for the same role. Per-array loops are bounded by the runtime
-/// num_* fields. The logger appends '\n' + flush.
-inline void WriteDeviceWbcLogRow(std::ostream& os, const DeviceWbcLogPod& p) {
+/// written for the same role, and the joint / motor widths come from the SAME
+/// `cols` that header was written with. Channels the device did not report
+/// this tick are emitted as 0; the trailing `num_*` columns say how many were
+/// real. The logger appends '\n' + flush.
+inline void WriteDeviceWbcLogRow(std::ostream& os, const DeviceWbcLogPod& p,
+                                 const DeviceWbcLogColumns& cols) {
   os << p.t_relative_s;
 
+  const auto n_j = std::min(cols.joints, DeviceWbcLogPod::kMaxJoints);
+  const auto n_m = std::min(cols.motors, DeviceWbcLogPod::kMaxMotors);
+  const auto reported_j = std::min(static_cast<std::size_t>(p.num_joints), n_j);
+  const auto reported_m = std::min(static_cast<std::size_t>(p.num_motors), n_m);
+
   auto emit_joint_array = [&](const std::array<double, DeviceWbcLogPod::kMaxJoints>& a) {
-    for (std::size_t i = 0; i < p.num_joints; ++i) {
-      os << ',' << a[i];
+    for (std::size_t i = 0; i < n_j; ++i) {
+      os << ',' << (i < reported_j ? a[i] : 0.0);
     }
   };
   emit_joint_array(p.actual_positions);
@@ -206,8 +268,8 @@ inline void WriteDeviceWbcLogRow(std::ostream& os, const DeviceWbcLogPod& p) {
     }
   } else {
     auto emit_motor_array = [&](const std::array<double, DeviceWbcLogPod::kMaxMotors>& a) {
-      for (std::size_t i = 0; i < p.num_motors; ++i) {
-        os << ',' << a[i];
+      for (std::size_t i = 0; i < n_m; ++i) {
+        os << ',' << (i < reported_m ? a[i] : 0.0);
       }
     };
     emit_motor_array(p.motor_positions);
@@ -229,6 +291,11 @@ inline void WriteDeviceWbcLogRow(std::ostream& os, const DeviceWbcLogPod& p) {
 
   os << ',' << DeviceWbcLogCommandTypeStr(p.command_type);
   os << ',' << DeviceWbcLogGoalTypeStr(p.goal_type);
+  os << ',' << static_cast<unsigned>(p.num_joints);
+  if (p.role != 0) {
+    os << ',' << static_cast<unsigned>(p.num_motors);
+    os << ',' << static_cast<unsigned>(p.num_fingertips);
+  }
 }
 
 }  // namespace integrated_bringup
