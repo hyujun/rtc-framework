@@ -80,6 +80,15 @@ class LoopbackDevice {
     ::sendto(fd_, data, len, 0, reinterpret_cast<const sockaddr*>(&client_addr_), client_addr_len_);
   }
 
+  // Source address of the last packet CaptureClientAddr() observed — the
+  // transport's local binding as it appears *on the wire*, which is what the
+  // hand controller's reply path actually keys on.
+  [[nodiscard]] std::string client_ip() const {
+    std::array<char, INET_ADDRSTRLEN> buf{};
+    inet_ntop(AF_INET, &client_addr_.sin_addr, buf.data(), buf.size());
+    return std::string(buf.data());
+  }
+
  private:
   int fd_{-1};
   int port_{0};
@@ -100,6 +109,52 @@ TEST(HandUdpTransportBinding, InvalidLocalIp_PreventsSocketOpen) {
 
 TEST(HandUdpTransportBinding, InvalidLocalInterface_PreventsSocketOpen) {
   UdpHandTransport transport("127.0.0.1", 55151, 10.0, "", "does-not-exist");
+  EXPECT_FALSE(transport.Open());
+  EXPECT_FALSE(transport.is_open());
+}
+
+// A bound socket must put the configured address on the wire, not merely open.
+// The oracle needs an address the kernel would *not* pick on its own, or a
+// no-op bind passes: every 127.0.0.0/8 address is local on Linux, so binding
+// 127.0.0.2 against a 127.0.0.1 peer discriminates (auto-select yields
+// 127.0.0.1). Asserting only that Open() succeeded would leave the whole
+// feature — the point of which is choosing the source address — unpinned.
+TEST(HandUdpTransportBinding, LocalIp_PutsTheBoundSourceAddressOnTheWire) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 20.0, "127.0.0.2");
+  ASSERT_TRUE(transport.Open());
+
+  std::thread dev_thread([&]() { device.CaptureClientAddr(); });
+  std::array<float, kMotorDataCount> out{};
+  // The device only captures; the request times out, which is fine — the send
+  // half is what carries the source address.
+  (void)transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor, nullptr,
+                                   RequestKind::kMotorRead);
+  dev_thread.join();
+
+  EXPECT_EQ(device.client_ip(), "127.0.0.2");
+}
+
+// Companion to the test above: unset local_ip must leave the kernel's choice
+// alone. Without this, "always bind 127.0.0.2" would pass the positive test.
+TEST(HandUdpTransportBinding, UnsetLocalIp_LeavesTheSourceAddressToTheKernel) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 20.0);
+  ASSERT_TRUE(transport.Open());
+
+  std::thread dev_thread([&]() { device.CaptureClientAddr(); });
+  std::array<float, kMotorDataCount> out{};
+  (void)transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor, nullptr,
+                                   RequestKind::kMotorRead);
+  dev_thread.join();
+
+  EXPECT_EQ(device.client_ip(), "127.0.0.1");
+}
+
+// The IFNAMSIZ guard runs before setsockopt, so an over-long name is rejected
+// by our own check rather than by the kernel truncating it to a real device.
+TEST(HandUdpTransportBinding, OverlongLocalInterface_PreventsSocketOpen) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0, "", std::string(IFNAMSIZ + 4, 'e'));
   EXPECT_FALSE(transport.Open());
   EXPECT_FALSE(transport.is_open());
 }

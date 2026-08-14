@@ -65,6 +65,8 @@ def _as_bool(val):
 _OVERRIDE_ARGS = [
     ("target_ip", str),
     ("target_port", int),
+    ("local_ip", str),
+    ("local_interface", str),
     ("publish_rate", float),
     ("communication_mode", str),
     ("recv_timeout_ms", float),
@@ -191,6 +193,21 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "target_port", default_value="", description="yaml target_port override (빈 값=yaml)"
+        ),
+        DeclareLaunchArgument(
+            "local_ip",
+            default_value="",
+            description=(
+                "yaml local_ip override (빈 값=yaml). 소켓 source address 를 이 IP 로 bind. "
+                "빈 값을 CLI 로 줘서 yaml 의 binding 을 해제할 수는 없다 (다른 override 와 동일)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "local_interface",
+            default_value="",
+            description=(
+                "yaml local_interface override (빈 값=yaml). SO_BINDTODEVICE 로 egress NIC 고정."
+            ),
         ),
         DeclareLaunchArgument(
             "publish_rate", default_value="", description="yaml publish_rate override (빈 값=yaml)"

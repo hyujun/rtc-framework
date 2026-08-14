@@ -42,6 +42,12 @@
     # -- UDP 통신 설정 --
     target_ip: "192.168.0.100"         # 핸드 컨트롤러 IP
     target_port: 55151                # 핸드 컨트롤러 포트
+    # 제어 PC 쪽 endpoint 고정 (기본 빈 값 = 커널 자동 선택). 같은 subnet 에 NIC 이
+    # 둘 이상일 때만 필요하다 — 라우팅이 hand 트래픽을 엉뚱한 NIC 로 내보내는 것을
+    # 막는다. local_ip 는 source address(bind), local_interface 는 egress 장치
+    # (SO_BINDTODEVICE). sil_mode=firmware 에서는 노드가 둘 다 해제한다 (아래 참조).
+    local_ip: ""                      # 제어 PC source IP ("" = 커널 선택)
+    local_interface: ""               # egress NIC 이름 ("" = 라우팅 테이블에 위임)
     recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 -> 400us
 
     # -- 통신 모드 --
