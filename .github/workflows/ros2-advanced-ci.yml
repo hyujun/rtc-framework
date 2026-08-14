@@ -213,21 +213,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # cppcheck 에는 프로젝트의 빌드 의존성이 필요 없다 — CI 가 `--include_dirs` 를
+      # 안 넘기므로 ament_cppcheck 는 `-I` 를 하나도 만들지 않고, 따라서 pinocchio /
+      # proxsuite / eigen 헤더는 파싱에 쓰이지 않는다. 그런데 이 잡은 `install-ros` 를
+      # 안 넘겨 기본값 "true" 로 **ros-jazzy-desktop 전체**를 받고 있었고, 캐시가 콜드인
+      # 런에서 apt 가 15분 timeout 을 그대로 소진했다 (런 31810486707: `Run cppcheck`
+      # 는 skipped 인데 잡은 failure 로 찍혀 "린트가 깨졌다" 로 읽혔다).
+      #
+      # 필요한 것은 ament_cppcheck 하나이고, 그 deb 이 cppcheck 와 ros-workspace
+      # (= /opt/ros/<distro>/setup.bash) 를 끌고 온다.
       - name: Setup environment
         timeout-minutes: 15
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
-          apt-cache-version: lint-v1
+          install-ros: "false"
+          apt-cache-version: lint-v2
           install-numpy: "false"
-          apt-packages: >-
-            ros-jazzy-pinocchio
-            ros-jazzy-proxsuite
-            ros-jazzy-behaviortree-cpp
-            ros-jazzy-tinyxml2-vendor
-            libyaml-cpp-dev
-            libtinyxml2-dev
-            libeigen3-dev
+          apt-packages: ros-${{ env.ROS_DISTRO }}-ament-cppcheck
 
       - name: Run cppcheck
         env:
