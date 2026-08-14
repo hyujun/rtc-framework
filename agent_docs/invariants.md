@@ -88,6 +88,16 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 
 각 블록의 `# probe:` 는 그 패턴이 **반드시 매치해야 하는** 라인이고 `# antiprobe:` 는 **매치하면 안 되는** 라인이다. [validate_docs.py](../repo_scripts/scripts/validate_docs.py) 가 CI 에서 정적 lint + 실행으로 검증하므로, 여기서 패턴이 다시 썩으면 빌드가 빨개진다.
 
+> **알려진 위반 1건 — 규칙의 예외가 아니라 실측 기록이다 (#222).** actuator lane 의
+> `DeviceBackend::WriteCommand` 는 tick 마다 **2회 / 156 B** 를 할당한다. 할당은 백엔드 코드가
+> 아니라 `libddsc`/`rmw_cyclonedds_cpp` 안에서 일어나고 (88 B serdata + 68 B CDR 버퍼), **QoS 와
+> 무관**하다 (best_effort 가 바이트까지 동일). 이 스레드에서 publish 하는 한 백엔드가 피할 수 있는
+> 것이 아니고, 비-RT 레인으로 옮기면 156 B 대신 밀리초급 비-RT 스케줄링을 얻는다 (layout v4.1 이
+> 그래서 SPSC 인계를 없앴다). **수용은 이 한 경로에 한정되며 새 코드에 대한 RT-1 은 그대로다** —
+> "DDS 도 하는데" 는 근거가 아니다. 측정 방법·대조·한계는 #222 코멘트가 SSoT 이고, 이 값을 다시
+> 재려면 거기 부록의 `LD_PRELOAD` interposer 를 쓴다 (기존 두 게이트는 **C 라이브러리 `malloc` 을
+> 원리적으로 못 본다** — testing-debug.md §게이트 표).
+
 ```detect id=RT-1
 grep -nE '(\bnew [A-Za-z_]|malloc\(|\.push_back\(|\.emplace_back\(|\.resize\()' <RT file>
 # probe: buffer.push_back(sample);

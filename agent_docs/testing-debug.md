@@ -101,7 +101,7 @@ RT tick 이 heap 을 안 만진다는 주장(RT-1)을 재는 sensor 는 **두 �
 
 | 게이트 | 보는 것 | 못 보는 것 |
 |---|---|---|
-| `rtc::testing::ScopedAllocGate` (`rtc_controllers/test/include/rtc_controllers/testing/alloc_gate.hpp`) — 전역 `operator new` 교체 | `operator new` 를 타는 모든 할당 (`std::vector`, header-inline helper, 다른 TU 포함) | **Eigen 할당 전부** — `internal::aligned_malloc` 이 `std::malloc` 을 직접 부르고 `operator new` 를 타지 않는다 |
+| `rtc::testing::ScopedAllocGate` (`rtc_controllers/test/include/rtc_controllers/testing/alloc_gate.hpp`) — 전역 `operator new` 교체 | `operator new` 를 타는 모든 할당 (`std::vector`, header-inline helper, 다른 TU 포함) | **Eigen 할당 전부** — `internal::aligned_malloc` 이 `std::malloc` 을 직접 부르고 `operator new` 를 타지 않는다. **그리고 C 라이브러리 `malloc` 전부** — `libddsc` 의 `ddsrt_malloc` 처럼 C 코드가 부르는 할당은 `operator new` 를 안 타므로 이 게이트에 안 잡힌다 (#222 가 이 구멍에서 tick 당 156 B 를 찾았다; 재려면 그 이슈 부록의 `LD_PRELOAD` interposer) |
 | `rtc::testing::ScopedNoMalloc` (`rtc_base/test/include/rtc_base/testing/no_malloc_scope.hpp`) — `eigen_assert` + `EIGEN_RUNTIME_NO_MALLOC` | Eigen 동적 할당 (Release 에서도 유효) | non-Eigen heap; **그리고 다른 TU 의 Eigen** — 이 매크로는 정의된 TU 안의 Eigen inline 만 계측한다 |
 
 따라서:
@@ -112,7 +112,7 @@ RT tick 이 heap 을 안 만진다는 주장(RT-1)을 재는 sensor 는 **두 �
 
 **게이트는 반드시 RAII 로 무장한다** — `g_alloc_active = true; … = false;` 같은 맨 대입은 측정 구역에 `ASSERT_*` 가 들어오는 순간 disarm 이 실행되지 않고, 읽는 곳이 없으므로 이후 모든 테스트가 계수되는 상태가 조용히 남는다.
 
-**추가한 게이트는 mutation 으로 fail-closed 를 확인한다** — 측정 구역에 `std::vector<double>`(→ operator-new 게이트만 발동) 과 runtime-sized `Eigen::VectorXd`(→ Eigen 게이트만 발동) 를 각각 넣어 본다. `new` + 즉시 `delete` 쌍은 컴파일러가 elide 하므로 mutation 이 성립하지 않는다 (외부 sink 로 값을 흘려야 한다).
+**추가한 게이트는 mutation 으로 fail-closed 를 확인한다** — 측정 구역에 `std::vector<double>`(→ operator-new 게이트만 발동) 과 runtime-sized `Eigen::VectorXd`(→ Eigen 게이트만 발동) 를 각각 넣어 본다. `new` + 즉시 `delete` 쌍은 컴파일러가 elide 하므로 mutation 이 성립하지 않는데, **외부 sink 로 포인터를 흘리는 것만으로는 부족하다** — gcc `-O3` 는 `malloc(상수)`+`memset`+`free` 를 volatile 전역에 포인터를 저장해도 통째로 지웠다 (#222 의 계측기 self-test 가 그래서 "할당 0" 을 보고했다). 살리려면 **크기도 volatile 로 두고 `asm volatile("" ::: "memory")`** 를 건다. 확인은 `nm -D <binary> | grep -w malloc` — 참조가 0이면 재려던 호출이 바이너리에 없다.
 
 `alloc_gate.hpp` 는 교체 `operator new` 를 **정의**하므로 바이너리당 정확히 한 TU 에서만 include 한다 (두 번째 TU 는 링크 에러 — fail-closed). 해당 타깃에는 `-Wno-mismatched-new-delete` 가 필요하다 (`new`→`malloc` / `delete`→`free` 짝에 GCC 가 program-wide false-positive).
 
