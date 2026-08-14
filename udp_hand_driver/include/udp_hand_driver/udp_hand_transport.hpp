@@ -26,6 +26,7 @@
 #include <rclcpp/logging.hpp>
 
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <poll.h>
@@ -110,10 +111,13 @@ struct UdpHandCommStats {
 
 class UdpHandTransport {
  public:
-  explicit UdpHandTransport(std::string target_ip, int target_port, double recv_timeout_ms) noexcept
+  explicit UdpHandTransport(std::string target_ip, int target_port, double recv_timeout_ms,
+                            std::string local_ip = {}, std::string local_interface = {}) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
-        recv_timeout_ms_(recv_timeout_ms) {}
+        recv_timeout_ms_(recv_timeout_ms),
+        local_ip_(std::move(local_ip)),
+        local_interface_(std::move(local_interface)) {}
 
   ~UdpHandTransport() { Close(); }
 
@@ -131,6 +135,44 @@ class UdpHandTransport {
     if (socket_fd_ < 0) {
       RCLCPP_ERROR(logger, "UDP socket creation failed (errno=%d: %s)", errno, strerror(errno));
       return false;
+    }
+
+    if (!local_interface_.empty()) {
+      if (local_interface_.size() >= IFNAMSIZ) {
+        RCLCPP_ERROR(logger, "UDP local interface name is too long: %s", local_interface_.c_str());
+        close(socket_fd_);
+        socket_fd_ = -1;
+        return false;
+      }
+      const socklen_t interface_len = static_cast<socklen_t>(local_interface_.size() + 1);
+      if (setsockopt(socket_fd_, SOL_SOCKET, SO_BINDTODEVICE, local_interface_.c_str(),
+                     interface_len) != 0) {
+        RCLCPP_ERROR(logger, "UDP interface bind failed (%s, errno=%d: %s)",
+                     local_interface_.c_str(), errno, strerror(errno));
+        close(socket_fd_);
+        socket_fd_ = -1;
+        return false;
+      }
+    }
+
+    if (!local_ip_.empty()) {
+      sockaddr_in local_addr{};
+      local_addr.sin_family = AF_INET;
+      local_addr.sin_port = htons(0);
+      if (inet_pton(AF_INET, local_ip_.c_str(), &local_addr.sin_addr) <= 0) {
+        RCLCPP_ERROR(logger, "Invalid local IP address: %s", local_ip_.c_str());
+        close(socket_fd_);
+        socket_fd_ = -1;
+        return false;
+      }
+      if (::bind(socket_fd_, reinterpret_cast<const sockaddr*>(&local_addr), sizeof(local_addr)) !=
+          0) {
+        RCLCPP_ERROR(logger, "UDP local address bind failed (%s, errno=%d: %s)", local_ip_.c_str(),
+                     errno, strerror(errno));
+        close(socket_fd_);
+        socket_fd_ = -1;
+        return false;
+      }
     }
 
     std::memset(&target_addr_, 0, sizeof(target_addr_));
@@ -225,8 +267,10 @@ class UdpHandTransport {
     recv_timeout_ts_.tv_sec = total_ns / 1'000'000'000;
     recv_timeout_ts_.tv_nsec = total_ns % 1'000'000'000;
 
-    RCLCPP_INFO(logger, "UDP socket opened: %s:%d (recv_timeout=%.2fms)", target_ip_.c_str(),
-                target_port_, recv_timeout_ms_);
+    RCLCPP_INFO(logger,
+                "UDP socket opened: %s:%d (local_ip=%s, local_interface=%s, recv_timeout=%.2fms)",
+                target_ip_.c_str(), target_port_, local_ip_.empty() ? "auto" : local_ip_.c_str(),
+                local_interface_.empty() ? "auto" : local_interface_.c_str(), recv_timeout_ms_);
     return true;
   }
 
@@ -743,6 +787,8 @@ class UdpHandTransport {
   int target_port_;
   int socket_fd_{-1};
   double recv_timeout_ms_;
+  std::string local_ip_;
+  std::string local_interface_;
   sockaddr_in target_addr_{};
 
   // ppoll timeout, precomputed from recv_timeout_ms_ in Open() (fixed for the

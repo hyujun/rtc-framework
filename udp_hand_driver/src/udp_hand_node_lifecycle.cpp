@@ -58,6 +58,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // ── Parameters ─────────────────────────────────────────────────────
   declare_parameter("target_ip", std::string{"192.168.1.2"});
   declare_parameter("target_port", 55151);
+  declare_parameter("local_ip", std::string{});
+  declare_parameter("local_interface", std::string{});
   declare_parameter("publish_rate", 100.0);
   // Self-clocked CommLoop cadence (Hz). Drives the autonomous read/state-publish
   // period; write is command-gated. Independent of publish_rate (which only sets
@@ -86,11 +88,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
 
   // SIL entry point. Device-side firmware-process spawn is the launch layer's
   // job (a node cannot spawn a peer process); this param drives the node-side
-  // effects, interpreted in the target_ip block below:
+  // effects, interpreted in the endpoint block below:
   //   off       — real hardware. use_fake_hand_=false, socket to target_ip.
   //   loopmodel — controller-side in-process LPF. use_fake_hand_=true, no socket.
   //   firmware  — device-side fake_hand_firmware over loopback. use_fake_hand_=false,
-  //               target_ip forced to 127.0.0.1 (launch spawns the peer process).
+  //               target_ip forced to 127.0.0.1 and the local binding dropped
+  //               (launch spawns the peer process).
   declare_parameter("sil_mode", std::string{"off"});
   // Fake-hand dynamics (sil_mode=loopmodel only). The CommLoop RT thread runs
   // exactly as in real mode; the commanded pose is driven through a first-order
@@ -139,7 +142,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     declare_parameter("ft_inferencer." + std::string(name) + "_max", std::vector<double>(16, 1.0));
   }
 
-  // ── SIL mode → use_fake_hand_ + effective target_ip ──────────────────
+  // ── SIL mode → use_fake_hand_ + effective network endpoint ───────────
   const std::string sil_mode = get_parameter("sil_mode").as_string();
   if (sil_mode != "off" && sil_mode != "loopmodel" && sil_mode != "firmware") {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
@@ -148,14 +151,27 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     return CallbackReturn::FAILURE;
   }
   use_fake_hand_ = (sil_mode == "loopmodel");
-  std::string target_ip = get_parameter("target_ip").as_string();
-  if (sil_mode == "firmware") {
-    if (target_ip != "127.0.0.1") {
-      RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-                  "sil_mode=firmware → target_ip forced to 127.0.0.1 (was %s)", target_ip.c_str());
-    }
-    target_ip = "127.0.0.1";
+  const udp_hand_driver::HandEndpoint configured_endpoint{
+      get_parameter("target_ip").as_string(), get_parameter("local_ip").as_string(),
+      get_parameter("local_interface").as_string()};
+  const udp_hand_driver::HandEndpoint endpoint =
+      udp_hand_driver::DeriveHandEndpoint(sil_mode, configured_endpoint);
+  if (endpoint.target_ip != configured_endpoint.target_ip) {
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                "sil_mode=%s → target_ip forced to %s (was %s)", sil_mode.c_str(),
+                endpoint.target_ip.c_str(), configured_endpoint.target_ip.c_str());
   }
+  if (endpoint.local_ip != configured_endpoint.local_ip ||
+      endpoint.local_interface != configured_endpoint.local_interface) {
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                "sil_mode=%s → local binding dropped (was local_ip=%s, local_interface=%s): a "
+                "NIC-pinned socket silently discards datagrams bound for the loopback peer",
+                sil_mode.c_str(), configured_endpoint.local_ip.c_str(),
+                configured_endpoint.local_interface.c_str());
+  }
+  const std::string& target_ip = endpoint.target_ip;
+  const std::string& local_ip = endpoint.local_ip;
+  const std::string& local_interface = endpoint.local_interface;
   const int target_port = static_cast<int>(get_parameter("target_port").as_int());
   const double recv_timeout_ms = get_parameter("recv_timeout_ms").as_double();
   const std::string comm_mode_str = get_parameter("communication_mode").as_string();
@@ -251,6 +267,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       std::make_unique<udp_hand_driver::UdpHandController>(udp_hand_driver::UdpHandControllerConfig{
           .target_ip = target_ip,
           .target_port = target_port,
+          .local_ip = local_ip,
+          .local_interface = local_interface,
           .recv_timeout_ms = recv_timeout_ms,
           .sensor_decimation = sensor_decimation,
           .num_fingertips = num_fingertips_,

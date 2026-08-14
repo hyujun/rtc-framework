@@ -123,6 +123,57 @@ TEST_F(UdpHandNodeLaneTest, DisablingAffinitySuppressesTheAuxPin) {
   EXPECT_EQ(node->AuxCpuSlot(), udp_hand_driver::kNoPinSlot);
 }
 
+// ── sil_mode → effective network endpoint ──────────────────────────────────
+//
+// The p1b hand yaml pins the socket to a real NIC (local_ip/local_interface) so
+// hand traffic cannot leave via the same-subnet monitoring NIC. `sil_mode=
+// firmware` moves the peer to loopback, which that pinning cannot reach:
+// SO_BINDTODEVICE forces egress out the NIC, so connect()/send() both succeed
+// while the datagram is dropped — the node would log "UDP socket opened" and
+// then time out every recv with nothing naming the cause. The derivation has to
+// drop the local binding together with the forced target_ip.
+
+TEST(UdpHandEndpointDerivation, FirmwareSilDropsTheLocalBindingWithTheForcedTargetIp) {
+  const auto endpoint =
+      udp_hand_driver::DeriveHandEndpoint("firmware", {"192.168.0.100", "192.168.0.46", "enp86s0"});
+
+  EXPECT_EQ(endpoint.target_ip, "127.0.0.1");
+  EXPECT_TRUE(endpoint.local_ip.empty());
+  EXPECT_TRUE(endpoint.local_interface.empty());
+}
+
+// `off` is the real-hardware path the local binding exists for: it must survive
+// the derivation untouched, or the feature is a no-op.
+TEST(UdpHandEndpointDerivation, RealHardwareKeepsTheConfiguredEndpoint) {
+  const auto endpoint =
+      udp_hand_driver::DeriveHandEndpoint("off", {"192.168.0.100", "192.168.0.46", "enp86s0"});
+
+  EXPECT_EQ(endpoint.target_ip, "192.168.0.100");
+  EXPECT_EQ(endpoint.local_ip, "192.168.0.46");
+  EXPECT_EQ(endpoint.local_interface, "enp86s0");
+}
+
+// loopmodel opens no socket, so the endpoint is moot — pass it through rather
+// than rewrite parameters the operator set.
+TEST(UdpHandEndpointDerivation, LoopmodelSilKeepsTheConfiguredEndpoint) {
+  const auto endpoint = udp_hand_driver::DeriveHandEndpoint(
+      "loopmodel", {"192.168.0.100", "192.168.0.46", "enp86s0"});
+
+  EXPECT_EQ(endpoint.target_ip, "192.168.0.100");
+  EXPECT_EQ(endpoint.local_ip, "192.168.0.46");
+  EXPECT_EQ(endpoint.local_interface, "enp86s0");
+}
+
+// An unbound endpoint (p1a and the generic driver yaml) is already loopback-safe
+// in firmware SIL; only target_ip moves.
+TEST(UdpHandEndpointDerivation, FirmwareSilOnAnUnboundEndpointOnlyMovesTargetIp) {
+  const auto endpoint = udp_hand_driver::DeriveHandEndpoint("firmware", {"192.168.0.100", "", ""});
+
+  EXPECT_EQ(endpoint.target_ip, "127.0.0.1");
+  EXPECT_TRUE(endpoint.local_ip.empty());
+  EXPECT_TRUE(endpoint.local_interface.empty());
+}
+
 TEST(UdpHandPinPolicy, ResolvePinSlotHonoursTheAffinitySwitch) {
   EXPECT_EQ(udp_hand_driver::ResolvePinSlot(7, true), 7);
   EXPECT_EQ(udp_hand_driver::ResolvePinSlot(0, true), 0);

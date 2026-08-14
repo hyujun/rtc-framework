@@ -481,7 +481,7 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 하나**로 선택한다. `sil_mode` 는
 각 hand yaml(`udp_hand_node*.yaml`)의 정식 노드 파라미터(SSoT)이고, 노드
 `on_configure` 가 이를 해석해 아래 표의 `use_fake_hand`(컨트롤러 config 내부 플래그)
-와 실효 `target_ip` 를 파생한다. launch 인자 `sil_mode:=` 는 yaml 값을 override(우선).
+와 실효 네트워크 endpoint(`target_ip` + local binding)를 파생한다. launch 인자 `sil_mode:=` 는 yaml 값을 override(우선).
 단, `firmware` 프로세스 spawn 은 노드가 못 하므로 launch 가 `sil_mode`(yaml+CLI)를
 읽어 `fake_hand_firmware` 노드를 조건부로 띄운다.
 
@@ -489,11 +489,11 @@ standalone `udp_hand.launch.py` 뿐 아니라 `integrated_bringup` 의
 `robot_ur5e_p1a.launch.py` / `robot_ur5e_p1b.launch.py` 도 동일하게 `sil_mode:=` 를
 지원한다 (각자의 per-robot yaml 이 default).
 
-| `sil_mode` | 계층 | `use_fake_hand` (파생) | firmware | `target_ip` (파생) | 검증 대상 |
+| `sil_mode` | 계층 | `use_fake_hand` (파생) | firmware | 네트워크 endpoint (파생) | 검증 대상 |
 |------------|------|:---:|:---:|------|-----------|
-| `off` (기본) | 실 하드웨어 | false | 미실행 | yaml 값 | — |
-| `loopmodel` | Mode A (controller-side loop-model SIL) | true | 미실행 | 무관 (소켓 미오픈) | thread/RT 구조 (실 모드와 동일 self-clock) |
-| `firmware` | Mode B (device-side network-level SIL) | false | 실행 | `127.0.0.1` (노드가 강제) | 전체 UDP transport (send/recv, framing, echo/MODE 검증, decode, publish) |
+| `off` (기본) | 실 하드웨어 | false | 미실행 | yaml 값 그대로 (`local_ip`/`local_interface` 포함) | — |
+| `loopmodel` | Mode A (controller-side loop-model SIL) | true | 미실행 | 무관 (소켓 미오픈) — yaml 값 유지 | thread/RT 구조 (실 모드와 동일 self-clock) |
+| `firmware` | Mode B (device-side network-level SIL) | false | 실행 | `target_ip` → `127.0.0.1`, `local_ip`/`local_interface` → 해제 (노드가 강제) | 전체 UDP transport (send/recv, framing, echo/MODE 검증, decode, publish) |
 
 **`loopmodel`** — UDP 소켓을 우회하고 command 를 노드 in-process 1차 LPF 모델에
 직접 통과시켜 read state(pos/vel/effort)를 생성한다. CommLoop RT 스레드는 실 모드와
@@ -508,6 +508,13 @@ ros2 topic echo /hand/joint_states --once     # LPF 추종 joint state 발행
 (펌웨어)을 시뮬레이션하고, 수정하지 않은 실제 `udp_hand_node`(`use_fake_hand=false`,
 `target_ip=127.0.0.1`)가 loopback UDP 소켓으로 통신한다. firmware bind 포트는
 `target_port`, wire 포맷은 `protocol_version` 으로 노드와 공유된다.
+
+> yaml 이 `local_ip`/`local_interface` 로 소켓을 실 NIC 에 고정해 뒀더라도 이 모드에서는
+> 노드가 그 binding 을 **해제**한다. `SO_BINDTODEVICE` 로 egress 가 실 NIC 에 묶인 소켓은
+> `127.0.0.1` 에 도달하지 못하는데, `connect()`/`send()` 는 성공을 반환하고 데이터그램만
+> 사라지므로 "소켓 열림" 로그 뒤 원인 표시 없는 recv 타임아웃으로만 나타난다 (해당 NIC 이
+> 없는 개발 PC 에서는 반대로 `Open()` 이 ENODEV 로 즉시 실패). 해제 시 `on_configure` 가
+> INFO 로 원래 값을 남긴다.
 
 ```bash
 ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=firmware protocol_version:=1a
