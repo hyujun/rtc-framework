@@ -94,6 +94,31 @@ class GraspControllerTest : public ::testing::Test {
     }
   }
 
+  // Drive the loop with only the fingers marked in `can_contact` able to feel
+  // the object; every other finger reads 0 N forever (unreachable object).
+  // Stops early once the FSM leaves kApproaching, and returns the phase it
+  // ended in — the transition-rule tests below differ only in that mask.
+  GraspPhase RunWithContactMask(const std::array<bool, kNumFingers>& can_contact, int max_steps) {
+    for (int i = 0; i < max_steps; ++i) {
+      std::array<double, kNumFingers> forces{};
+      const auto& states = controller_.finger_states();
+      for (int f = 0; f < kNumFingers; ++f) {
+        const auto idx = static_cast<std::size_t>(f);
+        if (!can_contact[idx]) {
+          continue;
+        }
+        const double ds_dt = (states[idx].s - states[idx].s_prev) / kDt;
+        forces[idx] = SimulateContactForce(states[idx].s, contact_s_, ds_dt);
+      }
+      (void)controller_.Update(std::span<const double, 3>(forces), kDt);
+      if (controller_.phase() != GraspPhase::kApproaching &&
+          controller_.phase() != GraspPhase::kIdle) {
+        break;
+      }
+    }
+    return controller_.phase();
+  }
+
   // Run N steps with force feedback
   void RunSteps(int n) {
     for (int i = 0; i < n; ++i) {
@@ -277,8 +302,10 @@ TEST_F(GraspControllerTest, ReleaseFromApproaching) {
   EXPECT_EQ(controller_.phase(), GraspPhase::kIdle);
 }
 
-// Approaching → Contact 전이는 thumb(0) + index(1) 기준만 본다.
-// middle(2) 가 영영 접촉하지 못해도 grasp 는 진행되어야 한다.
+// Approaching → Contact 전이는 thumb + 접촉한 아무 손가락 하나를 요구한다.
+// middle(2) 가 영영 접촉하지 못해도 thumb+index 가 물었으면 grasp 는 진행된다.
+// (규칙이 인덱스 0·1 고정이던 시절에도 통과하던 단언이다 — #432 가 바꾼 것은
+// 이 케이스가 아니라 아래 ...OnThumbPlusMiddle... 케이스다.)
 TEST_F(GraspControllerTest, ApproachingTransitionsWithoutMiddleContact) {
   controller_.CommandGrasp();
 
@@ -336,6 +363,74 @@ TEST_F(GraspControllerTest, ApproachHoldsWhenThumbCannotContact) {
   EXPECT_DOUBLE_EQ(controller_.finger_states()[0].s, 1.0);
   EXPECT_TRUE(controller_.finger_states()[1].contact_detected);
   EXPECT_TRUE(controller_.finger_states()[2].contact_detected);
+}
+
+// #432 회귀: 물체가 thumb-index 가 **아닌** 쌍에 물려도 전이해야 한다.
+//
+// 2026-08-13 실기(p1b)에서 물체가 thumb-middle 사이에 물렸고 index 는
+// f_contact_threshold 의 56%(0.446 / 0.8 N)에 그쳤다. 당시 규칙은 인덱스 0·1 을
+// 요구했으므로 thumb 0.983 N · middle 1.359 N 이 둘 다 문턱을 넘고도 58036
+// tick(116 s) 내내 approaching 이었다 — contact / force_control / holding 전부
+// 0%. 규칙을 kPrimaryContacts = min(2, num_fingers_) 로 되돌리면 이 테스트가
+// red 가 된다.
+TEST_F(GraspControllerTest, ApproachingTransitionsOnThumbPlusMiddleWhenIndexNeverContacts) {
+  controller_.CommandGrasp();
+  const auto phase = RunWithContactMask({true, false, true}, 50000);
+
+  EXPECT_NE(phase, GraspPhase::kApproaching);
+  EXPECT_NE(phase, GraspPhase::kIdle);
+  EXPECT_TRUE(controller_.finger_states()[0].contact_detected);
+  EXPECT_FALSE(controller_.finger_states()[1].contact_detected);
+  EXPECT_TRUE(controller_.finger_states()[2].contact_detected);
+}
+
+// 파트너는 여전히 필수다 — thumb 하나만 닿은 것은 파지가 아니다. 규칙을
+// "thumb 이 닿으면 전이" 로 약화시키면 red. (대향 쪽 절반, 즉 thumb 이 빠진
+// 경우는 ApproachHoldsWhenThumbCannotContact 가 본다.)
+TEST_F(GraspControllerTest, ApproachHoldsWhenOnlyTheThumbContacts) {
+  controller_.CommandGrasp();
+  const auto phase = RunWithContactMask({true, false, false}, 3000);
+
+  EXPECT_EQ(phase, GraspPhase::kApproaching);
+  EXPECT_TRUE(controller_.finger_states()[0].contact_detected);
+  EXPECT_FALSE(controller_.finger_states()[1].contact_detected);
+  EXPECT_FALSE(controller_.finger_states()[2].contact_detected);
+}
+
+// thumb 슬롯은 config 가 정한다 (#432). 같은 손을 thumb = 슬롯 2 로 선언하면
+// 전이 판정의 필수 손가락도 따라 옮겨간다 — 슬롯 0 은 특별하지 않다.
+TEST_F(GraspControllerTest, ThumbSlotFollowsConfiguredIndex) {
+  params_.thumb_finger_index = 2;
+  controller_.Init(finger_configs_, params_);
+
+  // 선언된 thumb(2) 이 빠진 쌍 — 슬롯 0·1 이 둘 다 물어도 전이 금지.
+  controller_.CommandGrasp();
+  EXPECT_EQ(RunWithContactMask({true, true, false}, 3000), GraspPhase::kApproaching);
+
+  // 선언된 thumb(2) + 파트너 0 — 전이해야 한다.
+  controller_.Reset();
+  controller_.CommandGrasp();
+  const auto phase = RunWithContactMask({true, false, true}, 50000);
+  EXPECT_NE(phase, GraspPhase::kApproaching);
+  EXPECT_NE(phase, GraspPhase::kIdle);
+}
+
+// 범위 밖 인덱스는 관례(슬롯 0)로 낙하한다. set_params() 는 noexcept 라 값을
+// 거부할 자리가 없고, 조용히 도달 불가능해진 Contact phase 가 더 나쁜 실패다.
+TEST_F(GraspControllerTest, OutOfRangeThumbIndexFallsBackToSlotZero) {
+  params_.thumb_finger_index = 7;  // num_fingers_ = 3 의 밖
+  controller_.Init(finger_configs_, params_);
+
+  // fallback thumb(0) 이 빠지면 전이 금지.
+  controller_.CommandGrasp();
+  EXPECT_EQ(RunWithContactMask({false, true, true}, 3000), GraspPhase::kApproaching);
+
+  // fallback thumb(0) + 파트너 2 — 전이해야 한다.
+  controller_.Reset();
+  controller_.CommandGrasp();
+  const auto phase = RunWithContactMask({true, false, true}, 50000);
+  EXPECT_NE(phase, GraspPhase::kApproaching);
+  EXPECT_NE(phase, GraspPhase::kIdle);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

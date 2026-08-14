@@ -2,7 +2,7 @@
 
 `rtc::grasp::GraspController` 는 손가락별 스칼라 파지 파라미터 `s ∈ [0,1]` 의 미분 `ds` 를
 outer-loop PI 출력으로 쓰는 **position-rate 힘 제어기**다. 관절 토크를 지령하지 않으므로 위치
-제어 하드웨어에서도 힘 제어가 성립한다. 앞 두 손가락의 접촉만으로 파지 성공을 판정하는 비대칭
+제어 하드웨어에서도 힘 제어가 성립한다. thumb + 접촉한 손가락 하나로 파지 성공을 판정하는 비대칭
 FSM 을 돌리고, deformation guard + anomaly-trigger grip tightening 으로 안전 한계를 건다.
 핵심 튜닝 축은 (1) `Kp`/`Ki` 의 응답 대 안정성, (2) `delta_s_max` 의 파손 한계,
 (3) `f_contact_threshold` 의 false-latch 마진, (4) `settle_*` 의 수렴 판정 엄격도다.
@@ -59,37 +59,56 @@ DoF 는 손가락마다 **달라도 된다** — 로더가 각 손가락의 post
 `GraspControllerRaggedTest` (`HandlesHeterogeneousFingerDoF`) 가 이 경로를 못박는다.
 YAML 에서 이름 목록을 바꾸는 방법은 §7.1.
 
-### 1.2 앞 두 손가락 접촉으로 진행을 판정한다
+### 1.2 thumb + 접촉한 손가락 하나로 진행을 판정한다
 
-전이 판정은 **인덱스 0·1 두 손가락**의 접촉만 요구한다 (`kPrimaryContacts = min(2, num_fingers)`).
-관례상 이 둘이 thumb·index 지만 **이름이 계약은 아니다** — 계약은 순서다. 손가락이 2개 미만인
-구성에서는 가용한 손가락 **전부**의 접촉을 요구한다. 나머지 손가락은 접촉 여부와 무관하게 진행을
-막지 않는다.
+전이 판정은 **thumb 의 접촉 + 그 밖의 아무 손가락 하나**의 접촉을 요구한다. 어느 슬롯이 thumb
+인지는 `finger_names` 에서 `"thumb"` 을 찾아 정하고 (`GraspParams::thumb_finger_index`),
+목록에 없으면 슬롯 0 으로 낙하하며 WARN 을 남긴다. 손가락이 2개 미만인 구성에서는 파트너가
+존재하지 않으므로 가용한 손가락 **전부**의 접촉을 요구한다. 나머지 손가락은 접촉 여부와
+무관하게 진행을 막지 않는다.
 
-설계 의도는 두 가지다.
+설계 의도는 세 가지다.
 
 1. **2-finger pinch grasp 를 1급으로 지원** — 대향 파지가 실제 조작 대부분을 차지.
 2. **후행 손가락의 late contact 을 선택적 참여로** — 접촉하면 force control 에 편입, 접촉 못 해도
    grasp 실패로 판정하지 않음.
+3. **어느 손가락이 대향인지는 판정 전에 알 수 없다** — thumb 만 고정하고 파트너는 열어 둔다.
 
 그 결과 각 phase 에서 후행 손가락은 "참여자" 또는 "관찰자" 역할을 가변적으로 수행한다 (§2 상세).
-`ApproachingTransitionsWithoutMiddleContact` / `ApproachHoldsWhenThumbCannotContact` 가 양방향을
-못박는다.
+`ApproachingTransitionsWithoutMiddleContact` / `ApproachHoldsWhenThumbCannotContact` /
+`ApproachingTransitionsOnThumbPlusMiddleWhenIndexNeverContacts` /
+`ApproachHoldsWhenOnlyTheThumbContacts` 가 네 방향을 못박는다.
 
-> ⚠ **"순서가 계약" 을 "`finger_names` 를 재정렬하면 다른 쌍으로 판정시킬 수 있다" 로 읽지 말 것.**
-> `finger_names` 는 **자세 블록(`q_open`/`q_close`)만** 고른다. 힘 입력은 `f_feed[f] =
-> fingertip_force_mag_filt_grasp_[f]` 로 **grasp 손가락 f ↔ 지문 센서 슬롯 f** 가 인덱스로 박혀
-> 있고, 구동 관절은 `hand_finger_joint_map[f]` 로 **위치 기반 시퀀스**이며 `finger_names` 와
-> 무관하게 파싱된다. 따라서 이름만 재정렬하면 **자세 · 센서 · 관절이 3중으로 어긋난다** — 컴파일도
-> 되고 기동도 되며 증상은 "왜 이 손가락이 이상하게 움직이지" 뿐이다.
+> ⚠ **이전 규칙 (인덱스 0·1 고정) 은 #432 로 은퇴했다.** 그 규칙은 무는 쌍이 thumb–index 가
+> 아니면 다른 손가락이 아무리 세게 눌려도 FSM 을 진행시키지 않았다. 2026-08-13 실기 (p1b,
+> `f_contact_threshold` 0.8 N) 에서 물체가 thumb–middle 사이에 물려 thumb 0.983 N ·
+> middle 1.359 N 이 둘 다 문턱을 넘고도 **58036 tick (116 s) 내내 approaching** 이었다 —
+> `contact` / `force_control` / `holding` 이 전부 0%. 같은 런에서 thumb ∧ middle 의
+> `contact_detected` 는 tick 35269 부터 11825 tick 성립해 있었으므로 **FSM 은 자기 신호만으로
+> 이미 답을 갖고 있었다**. 처방이 임계 인하나 `finger_names` 재정렬이 아닌 이유는 각각 §8.1 과
+> 아래 상자에 있다.
+
+> ⚠ **`finger_names` 재정렬로 판정 쌍을 바꾸려 하지 말 것.**
+> `finger_names` 는 **자세 블록(`q_open`/`q_close`) 과 thumb 슬롯만** 고른다. 힘 입력은
+> `f_feed[f] = fingertip_force_mag_filt_grasp_[f]` 로 **grasp 손가락 f ↔ 지문 센서 슬롯 f** 가
+> 인덱스로 박혀 있고, 구동 관절은 `hand_finger_joint_map[f]` 로 **위치 기반 시퀀스**이며
+> `finger_names` 와 무관하게 파싱된다. 따라서 이름만 재정렬하면 **자세 · 센서 · 관절이 3중으로
+> 어긋난다** — 컴파일도 되고 기동도 되며 증상은 "왜 이 손가락이 이상하게 움직이지" 뿐이다.
+> 애초에 재정렬할 이유도 사라졌다: 판정 쌍은 이제 순서가 아니라 접촉이 정한다.
 >
 > 셋을 함께 돌리는 것도 일반적으로는 불가능하다: `ur5e_p1b` 의 센서 레인 순서는 tree-model
 > `tip_links` 순서에 묶여 있다 (그 YAML 주석의 Stage A-3 — `fingertip_data_[f] ↔
 > fingertip_rotations_[f]` 페어링).
->
-> **실제로 무는 쌍이 인덱스 0·1 이 아니면 처방은 물체 배치를 바꾸는 것이다** (§8.1 에 p1b 실측
-> 사례). 참고로 pull estimator 는 같은 문제를 매 tick `opposing_mask` 로 *관측해서* 푸는데
-> (§`pull_estimator` 블록의 `pinch_geometry`), grasp FSM 에는 그 대응물이 없다.
+
+> **왜 pull estimator 의 `opposing_mask` 를 주입하지 않았는가** (#432 에서 검토 후 기각).
+> `contact_detected` 는 `UpdateApproaching` 안에서만 세워지고, phase 가 넘어가면 그 루프가 안
+> 돈다 — 전이 시점에 안 걸린 손가락은 그 파지 동안 force control 대상이 아니다
+> (`UpdateForceControl` 의 early continue). 따라서 관측 쌍이 `contact_detected` 를 **대체**하면
+> 파트너가 서보되지 않는 파지가 나오고, **대체하지 않으면** 마스크는 부분집합 필터로만 작동해
+> 위 규칙과 같은 tick 에 래치한다 (실기 런에서 실측 확인). 게다가 그 마스크는 `ring` 을 보지
+> 못한다 — `tips.tip_names` 는 WBC 의 `tsid.contacts` 와 같은 link 집합을 쓰므로 ring 을 넣을
+> 수 없다. 오프라인에서 두 관점을 대조하고 싶으면 `grasp_diag.csv` 의 `contact_<finger>` 와
+> `pull_estimator.csv` 의 `touch_mask`/`opposing_mask` 를 `tick` 단일 키로 병합한다 (§8.3).
 
 ---
 
@@ -949,8 +968,9 @@ force_pi_grasp:
       q_close: [45.0]
 ```
 
-- **`finger_names` 의 순서가 계약**이다 — 인덱스 0·1 이 전이 판정에 쓰이고 (§1.2),
-  `f_filtered` span 및 `GraspState` 배열도 같은 순서로 읽힌다
+- **`finger_names` 의 순서가 계약**이다 — `f_filtered` span 및 `GraspState` 배열이 같은 순서로
+  읽힌다. 목록 안의 `"thumb"` 위치가 전이 판정의 thumb 슬롯이 되고 (§1.2), 그 이름이 없으면
+  슬롯 0 + WARN 으로 낙하한다. **판정 쌍을 바꾸려고 재정렬하지 말 것** — §1.2 의 상자 참조
 - **DoF 는 `q_open`/`q_close` 배열 길이에서 추론**된다 (둘 중 긴 쪽, `kMaxDoFPerFinger`=8 상한).
   손가락마다 달라도 된다 — 위 예시가 `ur5e_p1b` 의 실제 구성 (4/3/2/1)
 - 이름이 `finger_names` 에 있으나 블록이 없으면 그 손가락은 건너뛴다 (DoF 0)
@@ -1045,17 +1065,20 @@ print(v[[c for c in d.columns if c.startswith('f_measured_')]].max())
 print(v[[c for c in d.columns if c.startswith('s_')]].max())"
 ```
 
-전이 판정은 **인덱스 0·1** 두 손가락만 본다 (§1.2). 그래서 *실제로 물체를 무는 쌍*과 *판정하는
-쌍*이 다르면 다른 손가락이 아무리 세게 눌려도 진행하지 않는다. 첫 세션의 실측이 그 사례다
-(p1b, `f_contact_threshold` 0.8 N):
+전이 판정은 **thumb + 접촉한 아무 손가락 하나**를 요구한다 (§1.2). 따라서 남은 실패 모드는
+"무는 쌍이 판정 쌍과 다르다" 가 아니라 **thumb 이 안 물었거나 파트너가 하나도 없다** 이다.
+첫 세션의 실측이 이 문단이 존재하는 이유다 (p1b, `f_contact_threshold` 0.8 N):
 
 | | thumb | index | middle | ring |
 |---|---|---|---|---|
 | max force [N] | 0.983 ✓ | **0.446 ✗** | 1.359 ✓ | 0.125 ✗ |
 
-`s` 는 네 손가락 모두 1.0 (완전 폐쇄) 이었다. 즉 **다 닫아도 index 가 임계의 56% 에 그쳤고**,
-물체는 thumb–middle 사이에 물려 있었다. 판정 쌍은 thumb+index 이므로 래치가 안 걸린다.
-**처방은 물체를 index 쪽으로 옮기는 것**이지 손가락 순서를 바꾸는 것이 아니다 (§1.2 경고 참조).
+`s` 는 네 손가락 모두 1.0 (완전 폐쇄) 이었다. 물체는 thumb–middle 사이에 물려 있었는데
+**당시 규칙은 thumb+index 를 요구**해 58036 tick 내내 래치가 안 걸렸다. 지금 규칙이라면
+thumb ∧ middle 이 성립한 tick 35269 (t=70.5 s) 에 래치된다 — 이것이 #432 다. 그러므로 위 표를
+읽는 법도 바뀌었다: **thumb 행이 ✓ 이고 나머지 중 하나라도 ✓ 면 래치는 됐어야 한다.** 그래도
+안 걸렸다면 임계·필터 쪽을 보고 (아래 상자), thumb 행이 ✗ 면 그때가 물체 배치를 옮길 때다.
+손가락 순서를 바꾸는 것은 어느 경우에도 처방이 아니다 (§1.2 경고 참조).
 
 > ⚠ **`f_contact_threshold` 만 낮추지 말 것.** 임계를 내리면 래치는 되지만 그 손가락이 곧바로
 > settle 검사 대상이 되고(§2.4), `|f_target − f_measured| ≤ settle_epsilon` 을 만족 못 하면

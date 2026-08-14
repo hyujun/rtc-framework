@@ -300,6 +300,58 @@ TEST(DemoSharedConfigTest, ForcePiRejectsRemovedGripTighteningRatio) {
   }
 }
 
+// #432: 전이 판정의 thumb 슬롯은 finger_names 에서 해석된다. 기본 순서라
+// 인덱스가 0 이더라도 "해석했다" 를 고정해야 한다 — 해석을 통째로 지워도
+// GraspParams 의 default 0 이 같은 값을 주기 때문이다.
+TEST(DemoSharedConfigTest, ForcePiThumbSlotResolvedFromFingerNames) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+force_pi_grasp:
+  fingers:
+    finger_names: ["index", "middle", "thumb", "ring"]
+    index:
+      q_open:  [0.0]
+      q_close: [1.0]
+    middle:
+      q_open:  [0.0]
+      q_close: [1.0]
+    thumb:
+      q_open:  [0.0]
+      q_close: [1.0]
+    ring:
+      q_open:  [0.0]
+      q_close: [1.0]
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  EXPECT_EQ(cfg.force_pi_params.thumb_finger_index, 2);
+}
+
+// "thumb" 이 없는 이름 목록은 구성 실패가 아니라 관례(슬롯 0)로 낙하한다 —
+// thumb 을 그렇게 부르지 않는 손도 계속 구성되어야 하고, 전이는 슬롯 0 을
+// 대향 손가락으로 삼아 계속 발화한다.
+TEST(DemoSharedConfigTest, ForcePiThumbSlotFallsBackWhenNoThumbNamed) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+force_pi_grasp:
+  fingers:
+    finger_names: ["left_jaw", "right_jaw"]
+    left_jaw:
+      q_open:  [0.0]
+      q_close: [1.0]
+    right_jaw:
+      q_open:  [0.0]
+      q_close: [1.0]
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  EXPECT_EQ(cfg.force_pi_params.thumb_finger_index, 0);
+  // num_grasp_fingers is deliberately NOT asserted here: it comes from
+  // hand_finger_joint_map, which is parsed independently of finger_names
+  // (grasp_tuning_guide.md 1.2). Tying the two in a test would pin a coupling
+  // the loader does not have.
+}
+
 TEST(DemoSharedConfigTest, ForcePiBlockAbsentLeavesFlagFalse) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load("grasp_controller_type: force_pi\n");

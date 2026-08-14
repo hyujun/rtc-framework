@@ -190,6 +190,26 @@ void ApplyForcePiBlock(const YAML::Node& fp, DemoSharedConfig& cfg) {
 
     const int n_fingers =
         std::min<int>(static_cast<int>(names.size()), rtc::grasp::kMaxGraspFingers);
+
+    // Which slot is the thumb (#432). The Approaching -> Contact transition
+    // needs the thumb plus any one other finger, and rtc::grasp::FingerConfig
+    // carries only geometry, so this is the one finger role the config has to
+    // hand over. Resolved from the same name list that keys the blocks below —
+    // no second knob to keep in sync.
+    //
+    // Absent "thumb" keeps index 0 (GraspParams' default and the convention
+    // every config here follows) and warns rather than failing: a hand without
+    // a named thumb still configures, and the transition still fires — it just
+    // treats slot 0 as the opposing digit. Silence would hide that.
+    const auto thumb_it = std::find(names.begin(), names.end(), "thumb");
+    if (thumb_it != names.end() && std::distance(names.begin(), thumb_it) < n_fingers) {
+      gp.thumb_finger_index = static_cast<int>(std::distance(names.begin(), thumb_it));
+    } else {
+      RCLCPP_WARN(::integrated_bringup::logging::SharedConfigLogger(),
+                  "force_pi_grasp.fingers.finger_names has no 'thumb' entry; the Contact "
+                  "transition will treat finger 0 ('%s') as the opposing digit",
+                  names.empty() ? "<none>" : names.front().c_str());
+    }
     for (int i = 0; i < n_fingers; ++i) {
       const auto fn = fingers_node[names[static_cast<std::size_t>(i)]];
       if (!fn) {

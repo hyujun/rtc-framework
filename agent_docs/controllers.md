@@ -168,7 +168,7 @@ quiet 조건을 고른 이유 (2026-07-30 확정): 대안이던 "항상 허용 +
 
 **FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
 
-**Approaching 은 스스로 실패하지 않는다.** primary finger (thumb=0 + index=1) 가 `s=1.0` 까지 닫혔는데 접촉이 없어도 kIdle 로 낙하하지 않고 **완전히 닫힌 자세에서 접촉 판정을 계속 돌린다**. 접촉은 시간 제한이 아니라 사건이고 힘은 늦게 들어올 수 있기 때문 — 물체가 미끄러져 들어오거나, 팔이 아직 움직이는 중이거나, fingertip lane 이 뒤늦게 살아나는 경우다. 낙하하던 이전 spec 은 호출측의 `phase() != kIdle` 게이트를 통해 손 명령을 한 tick 만에 trajectory 로 되돌려 놓았다 (GRASP 후 실패까지 `1/approach_speed` 초). 늦은 접촉이 잡히면 `s_at_contact = 1.0` 이 되고, `s` 상한이 deformation guard 보다 먼저 막으므로 이어지는 force control 은 여는 방향으로만 권한을 갖는다.
+**Approaching 은 스스로 실패하지 않는다.** 판정 손가락 (thumb + 접촉한 아무 손가락 하나 — #432, thumb 슬롯은 `finger_names` 가 정한다) 이 `s=1.0` 까지 닫혔는데 접촉이 없어도 kIdle 로 낙하하지 않고 **완전히 닫힌 자세에서 접촉 판정을 계속 돌린다**. 접촉은 시간 제한이 아니라 사건이고 힘은 늦게 들어올 수 있기 때문 — 물체가 미끄러져 들어오거나, 팔이 아직 움직이는 중이거나, fingertip lane 이 뒤늦게 살아나는 경우다. 낙하하던 이전 spec 은 호출측의 `phase() != kIdle` 게이트를 통해 손 명령을 한 tick 만에 trajectory 로 되돌려 놓았다 (GRASP 후 실패까지 `1/approach_speed` 초). 늦은 접촉이 잡히면 `s_at_contact = 1.0` 이 되고, `s` 상한이 deformation guard 보다 먼저 막으므로 이어지는 force control 은 여는 방향으로만 권한을 갖는다.
 
 **따라서 kApproaching 도 RELEASE 를 소비한다** — kForceControl / kHolding 과 달리 phase 함수 *맨 앞*에서 (경쟁 전이 kContact 의 early return 이 플래그를 건너뛰지 않도록). 접촉 없는 grasp 를 빠져나오는 유일한 길이므로 위 변경과 한 세트다: 없으면 FSM 이 kApproaching 에 영구히 남아 quiet gate (`GraspModeChangeRejectReason`) 가 모드 전환을 영구 거부하고, BT `ForcePIRelease` (phase==idle 대기) 가 타임아웃까지 매달린다.
 

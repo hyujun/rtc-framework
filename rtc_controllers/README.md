@@ -482,7 +482,7 @@ operational_space_controller:
 **상태 머신 (GraspPhase):**
 
 ```
-  Idle ──[CommandGrasp()]──> Approaching ──[primary fingers 접촉]──> Contact
+  Idle ──[CommandGrasp()]──> Approaching ──[thumb + 1 접촉]──> Contact
    ^                            |                                   |
    |                     [s=1.0, 미접촉]                    [settle_time 경과]
    |                            |                                   v
@@ -496,7 +496,7 @@ operational_space_controller:
 | 단계 | 설명 |
 |------|------|
 | `kIdle` | 대기 상태, `s` 유지. `CommandGrasp()` 시 Approaching으로 전이 |
-| `kApproaching` | `approach_speed` (1/s)로 `s`를 증가시키며 closing. `f_measured > f_contact_threshold`이면 접촉 감지. **Primary-contact gate**: `kPrimaryContacts = min(2, num_fingers_)`, 즉 `Init()` configs 순서상 앞 2개 finger (finger 수 < 2면 가용한 전부)가 모두 접촉하면 Contact로 전이 — 나머지 finger는 접촉 여부와 무관 |
+| `kApproaching` | `approach_speed` (1/s)로 `s`를 증가시키며 closing. `f_measured > f_contact_threshold`이면 접촉 감지. **Contact gate**: `thumb_finger_index` 가 가리키는 finger + **그 밖의 아무 finger 하나**가 접촉하면 Contact 로 전이 (finger 수 < 2 면 가용한 전부). 무는 쌍이 앞의 두 슬롯이 아니어도 진행한다 — 인덱스 0·1 고정이던 이전 규칙은 #432 로 은퇴 (실기에서 thumb–middle 파지가 116 초 내내 래치 실패) |
 | `kContact` | 안정화 대기 (`contact_settle_time` 초). 경과 후 ForceControl 진입 |
 | `kForceControl` | PI 힘 제어 활성화. `f_desired`를 `f_ramp_rate` (N/s)로 `f_target`까지 램프. 모든 finger가 `settle_epsilon` 이내로 `settle_time` 이상 수렴하면 Holding 전이 |
 | `kHolding` | 힘 유지 + 이상 감지. 슬립 (`df/dt < -df_slip_threshold`) 또는 힘 급감 시 grip tightening 적용 |
@@ -511,6 +511,7 @@ operational_space_controller:
 | `alpha_ema` | `double` | `0.95` | [0,1] | 강성 EMA 계수 (1에 가까울수록 느린 적응) |
 | `beta` | `double` | `0.3` | -- | 루프이득 상한 — `tau_min = beta/Kp_base` (배율이 아니다, [grasp_tuning_guide.md](docs/grasp_tuning_guide.md) §3.2). pin 상태에서는 이 값 혼자 상수 `gain_scale` 을 정한다 |
 | `K_est_max` | `double` | `1.0` | N/delta_s | `K_contact_est` 상한. seed 와 같으므로 **적응이 꺼져 있다 — 최종 처분** (§6.9) |
+| `thumb_finger_index` | `int` | `0` | -- | Contact 전이가 필수로 요구하는 finger 슬롯 (#432). `FingerConfig` 에 역할이 없으므로 호출자가 준다 — `integrated_bringup` 은 `finger_names` 의 `"thumb"` 위치에서 해석한다. 범위 밖이면 0 으로 낙하 (`set_params` 가 noexcept 라 거부할 자리가 없고, 도달 불가능한 Contact phase 가 더 나쁘다) |
 | `f_contact_threshold` | `double` | `0.2` | N | 접촉 감지 힘 임계값 |
 | `f_target` | `double` | `2.0` | N | 목표 파지력 |
 | `f_ramp_rate` | `double` | `1.0` | N/s | 힘 레퍼런스 램프 속도 |

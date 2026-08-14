@@ -208,15 +208,48 @@ void GraspController::UpdateApproaching(double dt) noexcept {
     // 접촉한 finger는 s 고정 (대기)
   }
 
-  // Contact 전이: 앞 두 손가락(관례상 thumb=0 + index=1)만 접촉하면 충분.
-  // 나머지 손가락은 접촉 여부와 무관하게 grasp 진행을 막지 않는다.
-  // 손가락이 2개 미만이면 가용한 손가락 전부의 접촉을 요구한다.
-  const int kPrimaryContacts = std::min(2, num_fingers_);
-  bool primaries_in_contact = kPrimaryContacts > 0;
-  for (int f = 0; f < kPrimaryContacts; ++f) {
-    primaries_in_contact &= fingers_[static_cast<std::size_t>(f)].contact_detected;
+  // Contact 전이: thumb + 접촉한 아무 손가락 하나 (#432).
+  //
+  // 이전 규칙은 인덱스 0·1 두 손가락(관례상 thumb + index)을 요구했다. 물체가
+  // 그 쌍이 아닌 곳에 물리면 다른 손가락이 아무리 세게 눌려도 FSM 이 진행하지
+  // 않는다. 2026-08-13 실기(p1b, f_contact_threshold 0.8 N)에서 그대로
+  // 발현했다: 물체가 thumb-middle 사이에 물려 max force 가 thumb 0.983 N /
+  // middle 1.359 N (둘 다 문턱 초과) 인데 index 는 0.446 N 에 그쳤고, 58036
+  // tick(116 s) 내내 approaching 이었다 — contact / force_control / holding 이
+  // 전부 0%. 같은 런에서 thumb ∧ middle 의 contact_detected 는 tick 35269 부터
+  // 11825 tick 성립해 있었으므로, 규칙만 바꿔도 그 시점에 래치된다.
+  //
+  // thumb 은 필수로 남는다 — 대향 없이 같은 방향 손가락들만 닿은 것은 파지가
+  // 아니다 (ApproachHoldsWhenThumbCannotContact 가 고정한다). 어느 슬롯이
+  // thumb 인지는 config 가 정한다 (params_.thumb_finger_index): FingerConfig
+  // 는 geometry 만 들고 있어 이 패키지 안에서는 알 수 없다.
+  //
+  // 관측된 대향 집합(PullForceEstimator 의 touch_mask, 배선의 opposing_mask)을
+  // 주입하는 안은 검토 후 채택하지 않았다. contact_detected 는 이 함수
+  // 안에서만 세워지므로 전이 시점에 안 걸린 손가락은 이 파지 동안 force
+  // control 대상이 아니고(UpdateForceControl 의 early continue), 따라서 관측
+  // 쌍이 contact_detected 를 대체하면 파트너가 서보되지 않는 파지가 나온다.
+  // 대체하지 않으면 마스크는 부분집합 필터로만 작동해 이 규칙과 같은 tick 에
+  // 래치한다 — 위 실기 런에서 실측으로 확인했다. 게다가 그 마스크는 ring 을
+  // 보지 못한다 (tsid.contacts 제약으로 tips.tip_names 에 없다).
+  //
+  // 손가락이 2개 미만이면 파트너가 존재하지 않으므로 가용한 손가락 전부의
+  // 접촉을 요구한다 (이전 규칙과 동일).
+  const int thumb = thumb_finger();
+  bool pair_in_contact = false;
+  if (num_fingers_ >= 2) {
+    if (fingers_[static_cast<std::size_t>(thumb)].contact_detected) {
+      for (int f = 0; f < num_fingers_; ++f) {
+        if (f != thumb && fingers_[static_cast<std::size_t>(f)].contact_detected) {
+          pair_in_contact = true;
+          break;
+        }
+      }
+    }
+  } else if (num_fingers_ == 1) {
+    pair_in_contact = fingers_[0].contact_detected;
   }
-  if (primaries_in_contact) {
+  if (pair_in_contact) {
     contact_settle_timer_ = 0.0;
     phase_ = GraspPhase::kContact;
     return;

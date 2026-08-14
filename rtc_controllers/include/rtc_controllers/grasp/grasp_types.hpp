@@ -97,6 +97,23 @@ struct GraspParams {
   // would have to change is the hand, not a constant.
   double K_est_max{1.0};
 
+  // Grasp shape — which configured finger is the thumb (#432).
+  //
+  // The Approaching -> Contact transition requires the thumb plus ANY one other
+  // finger, so this index is the only finger *role* the FSM knows. It lives in
+  // params rather than FingerConfig because it is a property of the hand as a
+  // whole, and it has to be supplied at all because FingerConfig carries only
+  // geometry (dof / q_open / q_close) — nothing in this package can tell which
+  // slot is the thumb.
+  //
+  // The default 0 is the historical convention (finger_names[0] == "thumb" in
+  // every config this repo ships), so a caller that never sets it keeps the
+  // behaviour it had. An index outside [0, num_fingers) falls back to 0 rather
+  // than disabling the transition: set_params() is noexcept and takes effect
+  // immediately, so there is no throwing choke point where a bad value could be
+  // rejected, and a silently unreachable Contact phase is the worse failure.
+  int thumb_finger_index{0};
+
   // Force thresholds
   double f_contact_threshold{0.2};  // [N] contact detection threshold
   double f_target{2.0};             // [N] target grip force
