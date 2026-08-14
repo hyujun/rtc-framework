@@ -105,6 +105,14 @@ demo_shared:
 
     # Finger postures are variable-length per finger DoF.
     # units: "deg" or "rad" (default "rad"). Internally always converted to rad.
+    #
+    # finger_names fixes slot order for the posture blocks below AND names the
+    # thumb: the Approaching -> Contact transition needs the thumb plus ANY one
+    # other finger that reached f_contact_threshold (#432), so "thumb" here is
+    # the one entry whose *name* is load-bearing. Drop it and the transition
+    # falls back to slot 0 with a WARN. Reordering this list does NOT re-point
+    # the transition at a different pair and never did — it silently desyncs
+    # posture / sensor lane / joint map three ways (grasp_tuning_guide.md 1.2).
     fingers:
       units: "deg"
       finger_names: ["thumb", "index", "middle", "ring"]

@@ -124,6 +124,16 @@ class GraspController {
   /// Reset all per-finger state.
   void ResetFingers() noexcept;
 
+  /// Effective thumb slot for the Approaching -> Contact rule (#432).
+  /// params_.thumb_finger_index when it names a configured finger, else 0 —
+  /// see GraspParams::thumb_finger_index for why an out-of-range value falls
+  /// back instead of throwing or blocking the transition.
+  [[nodiscard]] int thumb_finger() const noexcept {
+    return (params_.thumb_finger_index >= 0 && params_.thumb_finger_index < num_fingers_)
+               ? params_.thumb_finger_index
+               : 0;
+  }
+
   // ── State ──────────────────────────────────────────────────────────────────
   GraspPhase phase_{GraspPhase::kIdle};
   int num_fingers_{0};  // active finger count (set at Init, ≤ kMaxGraspFingers)
