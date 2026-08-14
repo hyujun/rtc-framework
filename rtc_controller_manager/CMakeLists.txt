@@ -145,7 +145,8 @@ if(BUILD_TESTING)
   endif()
 
   ament_add_gtest(test_controller_lifecycle
-    test/test_controller_lifecycle.cpp)
+    test/test_controller_lifecycle.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_controller_lifecycle)
     target_include_directories(test_controller_lifecycle PRIVATE include)
     ament_target_dependencies(test_controller_lifecycle
@@ -157,7 +158,8 @@ if(BUILD_TESTING)
   endif()
 
   ament_add_gtest(test_switch_service
-    test/test_switch_service.cpp)
+    test/test_switch_service.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_switch_service)
     target_include_directories(test_switch_service PRIVATE include)
     ament_target_dependencies(test_switch_service
@@ -173,7 +175,8 @@ if(BUILD_TESTING)
   # test_switch_service because the mock has to USE the base mailbox (and has
   # to be missing an ApplyPendingTarget override) to move the counters at all.
   ament_add_gtest(test_list_controllers_diagnostics
-    test/test_list_controllers_diagnostics.cpp)
+    test/test_list_controllers_diagnostics.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_list_controllers_diagnostics)
     target_include_directories(test_list_controllers_diagnostics PRIVATE include)
     ament_target_dependencies(test_list_controllers_diagnostics
@@ -188,7 +191,8 @@ if(BUILD_TESTING)
   # controller-local SAFE_STOP. Authority (name required, active-only), outcome
   # reporting, and E-8 separation from the global E-STOP in both directions.
   ament_add_gtest(test_reset_fault_service
-    test/test_reset_fault_service.cpp)
+    test/test_reset_fault_service.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_reset_fault_service)
     target_include_directories(test_reset_fault_service PRIVATE include)
     ament_target_dependencies(test_reset_fault_service
@@ -220,7 +224,8 @@ if(BUILD_TESTING)
   endif()
 
   ament_add_gtest(test_device_backend_cb_group_injection
-    test/test_device_backend_cb_group_injection.cpp)
+    test/test_device_backend_cb_group_injection.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_device_backend_cb_group_injection)
     target_include_directories(test_device_backend_cb_group_injection PRIVATE include)
     ament_target_dependencies(test_device_backend_cb_group_injection
@@ -230,7 +235,8 @@ if(BUILD_TESTING)
   endif()
 
   ament_add_gtest(test_estop
-    test/test_estop.cpp)
+    test/test_estop.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_estop)
     target_include_directories(test_estop PRIVATE include test)
     ament_target_dependencies(test_estop
@@ -241,7 +247,8 @@ if(BUILD_TESTING)
   endif()
 
   ament_add_gtest(test_clear_estop_service
-    test/test_clear_estop_service.cpp)
+    test/test_clear_estop_service.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_clear_estop_service)
     target_include_directories(test_clear_estop_service PRIVATE include test)
     ament_target_dependencies(test_clear_estop_service
@@ -252,7 +259,8 @@ if(BUILD_TESTING)
   endif()
 
   ament_add_gtest(test_eventfd_teardown_order
-    test/test_eventfd_teardown_order.cpp)
+    test/test_eventfd_teardown_order.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_eventfd_teardown_order)
     target_include_directories(test_eventfd_teardown_order PRIVATE include test)
     ament_target_dependencies(test_eventfd_teardown_order
@@ -263,7 +271,8 @@ if(BUILD_TESTING)
   endif()
 
   ament_add_gtest(test_on_configure
-    test/test_on_configure.cpp)
+    test/test_on_configure.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_on_configure)
     target_include_directories(test_on_configure PRIVATE include)
     ament_target_dependencies(test_on_configure
@@ -275,7 +284,8 @@ if(BUILD_TESTING)
   endif()
 
   ament_add_gtest(test_create_device_backends
-    test/test_create_device_backends.cpp)
+    test/test_create_device_backends.cpp
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_create_device_backends)
     target_include_directories(test_create_device_backends PRIVATE include test)
     ament_target_dependencies(test_create_device_backends
@@ -285,11 +295,19 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib)
   endif()
 
-  # Full-pipeline 테스트 2종은 실제 bring-up (다수 LifecycleNode + pub 생성/소멸
-  # 반복, RT 루프 tick) 을 돌리므로 전용 ROS_DOMAIN_ID 로 격리한다 — CI 의
-  # colcon test 는 패키지를 병렬 실행하고, 기본 도메인 공유 시 DDS discovery
-  # churn 이 동시 실행 중인 타 패키지의 pub/sub 매칭 테스트 (ur5e_bt_coordinator
-  # test_rewire_gate 가 PR #187 에서 실측 피해) 를 깨뜨린다.
+  # 이 패키지에서 ROS 노드를 만드는 테스트는 전부 전용 ROS_DOMAIN_ID=44 를 쓴다.
+  # colcon test 는 패키지를 병렬 실행하므로 기본 도메인 0 을 공유하면 DDS discovery
+  # churn 이 동시 실행 중인 타 패키지의 pub/sub 매칭 테스트를 깨뜨리고
+  # (ur5e_bt_coordinator test_rewire_gate 가 PR #187 에서 실측 피해), 심하면 rmw
+  # endpoint 생성·소멸에서 그대로 멈춘다 (#401).
+  #
+  # 배정 단위는 타깃이 아니라 패키지다 — colcon 이 병렬화하는 것은 패키지이고 한
+  # 패키지 안에서 ctest 는 직렬로 돌기 때문이다. 처음에는 full-pipeline 2종에만
+  # 44·45 를 주고 번호를 타깃마다 늘렸는데 (44–51), 그러는 동안 노드를 만드는 나머지
+  # 10개 타깃이 도메인 0 에 남아 있었다 — 격리한 것은 가해자가 아니라 피해자 하나뿐인
+  # 상태였다 (#401). 번호 하나로 합치고 나머지를 전부 편입한 것이 현재 형태다.
+  # 값은 literal 이어야 한다: validate_test_domains.py 가 CMakeLists 를 텍스트로 읽어
+  # 패키지 간 중복과 미주장(도메인 0)을 차단한다. 배정표는 --list 가 파생한다.
   ament_add_gtest(test_cm_config_pipeline
     test/test_cm_config_pipeline.cpp
     ENV ROS_DOMAIN_ID=44)
@@ -305,7 +323,7 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_rt_loop_pipeline
     test/test_rt_loop_pipeline.cpp
-    ENV ROS_DOMAIN_ID=45)
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_rt_loop_pipeline)
     target_include_directories(test_rt_loop_pipeline PRIVATE include test)
     ament_target_dependencies(test_rt_loop_pipeline
@@ -321,7 +339,7 @@ if(BUILD_TESTING)
   # TU (issue #198 §1).
   ament_add_gtest(test_device_readiness_gate
     test/test_device_readiness_gate.cpp
-    ENV ROS_DOMAIN_ID=50)
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_device_readiness_gate)
     target_include_directories(test_device_readiness_gate PRIVATE include test)
     ament_target_dependencies(test_device_readiness_gate
@@ -337,7 +355,7 @@ if(BUILD_TESTING)
   # position-only stub backend in every node of the pipeline TU.
   ament_add_gtest(test_command_type_gate
     test/test_command_type_gate.cpp
-    ENV ROS_DOMAIN_ID=51)
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_command_type_gate)
     target_include_directories(test_command_type_gate PRIVATE include test)
     ament_target_dependencies(test_command_type_gate
@@ -352,7 +370,7 @@ if(BUILD_TESTING)
   # 싱글턴이라, 이 테스트가 등록하는 중복 key 는 바이너리 수명 내내 남는다.
   ament_add_gtest(test_cm_duplicate_controller_key
     test/test_cm_duplicate_controller_key.cpp
-    ENV ROS_DOMAIN_ID=46)
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_cm_duplicate_controller_key)
     target_include_directories(test_cm_duplicate_controller_key PRIVATE include test)
     ament_target_dependencies(test_cm_duplicate_controller_key
@@ -367,7 +385,7 @@ if(BUILD_TESTING)
   # registry 는 바이너리 수명 내내 오염되므로 duplicate-key 테스트와 섞을 수 없다.
   ament_add_gtest(test_cm_controller_name_collision
     test/test_cm_controller_name_collision.cpp
-    ENV ROS_DOMAIN_ID=47)
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_cm_controller_name_collision)
     target_include_directories(test_cm_controller_name_collision PRIVATE include test)
     ament_target_dependencies(test_cm_controller_name_collision
@@ -383,7 +401,7 @@ if(BUILD_TESTING)
   # 가 같은 문자열이라 Tier 2 의 config_key 쪽 arm 을 건드리지 못한다.
   ament_add_gtest(test_cm_config_key_collision
     test/test_cm_config_key_collision.cpp
-    ENV ROS_DOMAIN_ID=48)
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_cm_config_key_collision)
     target_include_directories(test_cm_config_key_collision PRIVATE include test)
     ament_target_dependencies(test_cm_config_key_collision
@@ -399,7 +417,7 @@ if(BUILD_TESTING)
   # static 등록하므로 다른 테스트와 섞으면 그쪽 registry 크기 단언이 깨진다.
   ament_add_gtest(test_cm_identifier_resolution
     test/test_cm_identifier_resolution.cpp
-    ENV ROS_DOMAIN_ID=49)
+    ENV ROS_DOMAIN_ID=44)
   if(TARGET test_cm_identifier_resolution)
     target_include_directories(test_cm_identifier_resolution PRIVATE include test)
     ament_target_dependencies(test_cm_identifier_resolution

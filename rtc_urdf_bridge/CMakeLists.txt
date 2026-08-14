@@ -184,10 +184,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_closed_chain_fk_measurement ${PROJECT_NAME})
 
   # Compiles the viz node source directly (it is no longer in the core lib).
+  # It brings up a ROS context, hence this package's dedicated test domain: on
+  # the shared default 0 it would sit on the same discovery bus as every other
+  # unclaimed package colcon runs in parallel (#401).
   ament_add_gtest(test_closure_state_publisher
     test/test_closure_state_publisher.cpp
     src/closure_state_publisher.cpp
-  )
+    ENV ROS_DOMAIN_ID=57)
   ament_target_dependencies(test_closure_state_publisher sensor_msgs)
   target_link_libraries(test_closure_state_publisher ${PROJECT_NAME})
 

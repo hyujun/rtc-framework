@@ -98,7 +98,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_controller_registry test/test_controller_registry.cpp)
   target_link_libraries(test_controller_registry rtc_controller_interface)
 
-  ament_add_gtest(test_rt_controller_interface test/test_rt_controller_interface.cpp)
+  # Opens a ROS context, so it needs this package's dedicated test domain --
+  # unclaimed participant tests all land on the shared default 0 and can hang
+  # each other in rmw endpoint create/destroy (#401). Enforced by
+  # repo_scripts/scripts/validate_test_domains.py; `--list` shows the allocation.
+  ament_add_gtest(test_rt_controller_interface test/test_rt_controller_interface.cpp
+    ENV ROS_DOMAIN_ID=56)
   target_link_libraries(test_rt_controller_interface rtc_controller_interface)
   ament_target_dependencies(test_rt_controller_interface rtc_urdf_bridge)
 
