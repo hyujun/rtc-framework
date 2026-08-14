@@ -27,6 +27,18 @@
 // Producers may leave fields zero when not applicable to their thread (e.g.
 // a thread without a publish phase sets t_publish_us = 0). The schema stays
 // fixed so a single set of tooling consumes every CSV.
+//
+// The three phase fields do NOT have to sum to t_total_us. A producer that
+// calls PeriodicRtThread::MarkPublishDone() ends t_publish_us where its
+// publish work ends, and the leftover
+//
+//     t_total_us − (t_state_us + t_compute_us + t_publish_us)
+//
+// is that tick's post-publish tail — trailing per-tick work plus any time the
+// thread was not running. Read it before calling a long tick "publish-bound":
+// the CM lane's own worst traced overrun was 28 us of publish and 3.4 ms of
+// tail (issue #222). Producers that publish last do not call it and the
+// residual is exactly 0, which is the historical behaviour.
 
 #include "rtc_base/timing/thread_timing_csv_logger.hpp"
 #include "rtc_base/timing/thread_timing_producer.hpp"

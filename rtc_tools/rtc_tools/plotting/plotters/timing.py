@@ -14,6 +14,39 @@ import matplotlib.pyplot as plt
 DEFAULT_OUTLIER_FACTOR = 50.0
 DEFAULT_FIRST_TICKS_SUSPECT = 2
 
+# Column name for the derived post-publish tail. Not in the CSV — the RT
+# producer emits four independent numbers and this is what they leave over.
+TAIL_COLUMN = "t_tail_us"
+PHASE_COLUMNS = ("t_state_us", "t_compute_us", "t_publish_us")
+
+
+def add_tail_column(df):
+    """Attach the derived post-publish tail column, or return `df` unchanged.
+
+    ``t_total_us - (t_state_us + t_compute_us + t_publish_us)``. A producer
+    that stamps the end of its publish phase (PeriodicRtThread::
+    MarkPublishDone) leaves this positive; one that publishes last leaves it
+    at 0, which is what every CSV written before issue #222 shows.
+
+    This column is why the plot is worth reading on a long tick: the phase a
+    stall lands in is not the phase that caused it. The CM lane's own worst
+    traced overrun was 28 µs of publish and 3.4 ms of tail.
+
+    Clipped at 0 — the four numbers are separate ``steady_clock`` reads, so
+    rounding can put the sum a hair above the total, and a stackplot rejects
+    negative bands.
+    """
+    if TAIL_COLUMN in df.columns:
+        return df
+    if "t_total_us" not in df.columns:
+        return df
+    if not all(c in df.columns for c in PHASE_COLUMNS):
+        return df
+    df = df.copy()
+    phases = sum(df[c] for c in PHASE_COLUMNS)
+    df[TAIL_COLUMN] = (df["t_total_us"] - phases).clip(lower=0)
+    return df
+
 
 def detect_outlier_indices(
     df,
@@ -77,10 +110,14 @@ def plot_timing_breakdown(df, save_dir=None):
     fig, ax = plt.subplots(figsize=(14, 6))
     fig.suptitle("Control Loop Timing Breakdown", fontsize=16, fontweight="bold")
 
+    df = add_tail_column(df)
+
     t = df["timestamp"]
-    phases = ["t_state_us", "t_compute_us", "t_publish_us"]
-    labels = ["State Acquire", "Compute", "Publish"]
-    colors = ["#2196F3", "#FF9800", "#4CAF50"]
+    # Tail last so it sits on top of the stack: the band between the phases
+    # and t_total_us is exactly the time no phase claims.
+    phases = ["t_state_us", "t_compute_us", "t_publish_us", TAIL_COLUMN]
+    labels = ["State Acquire", "Compute", "Publish", "Tail (unattributed)"]
+    colors = ["#2196F3", "#FF9800", "#4CAF50", "#9E9E9E"]
 
     available = [
         (p, lbl, c) for p, lbl, c in zip(phases, labels, colors, strict=False) if p in df.columns
@@ -229,6 +266,7 @@ def print_timing_statistics(df):
     print("\n=== Timing Statistics ===")
     print(f"Duration: {duration:.2f} s | Samples: {len(df)} | Rate: {rate:.1f} Hz")
 
+    df = add_tail_column(df)
     df_clean, df_outliers = filter_outliers(df)
     if len(df_outliers) > 0:
         print(f"\nOutliers excluded from stats: {len(df_outliers)}")
@@ -238,9 +276,11 @@ def print_timing_statistics(df):
             t_state = row.get("t_state_us", float("nan"))
             t_compute = row.get("t_compute_us", float("nan"))
             t_publish = row.get("t_publish_us", float("nan"))
+            t_tail = row.get(TAIL_COLUMN, float("nan"))
             print(
                 f"  tick={tick:>6}  t_total={t_total:>10.1f} µs  "
-                f"(state={t_state:.1f} compute={t_compute:.1f} publish={t_publish:.1f})"
+                f"(state={t_state:.1f} compute={t_compute:.1f} "
+                f"publish={t_publish:.1f} tail={t_tail:.1f})"
             )
 
     # Budget estimation uses median(diff) on the cleaned dataframe so the
@@ -252,6 +292,7 @@ def print_timing_statistics(df):
         ("t_state_us", "State Acquire"),
         ("t_compute_us", "Compute"),
         ("t_publish_us", "Publish"),
+        (TAIL_COLUMN, "Tail (unattributed)"),
         ("t_total_us", "Total Loop"),
         ("jitter_us", "Jitter"),
     ]:

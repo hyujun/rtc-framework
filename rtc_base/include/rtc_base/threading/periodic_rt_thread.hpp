@@ -178,7 +178,8 @@ class PeriodicRtThread {
   /// Subclass tick body. Base captures t0 before this is called and t3
   /// immediately after. Subclasses should call MarkStateAcquired() after
   /// the state-acquisition phase and MarkComputeDone() after the compute
-  /// phase to record the intermediate breakpoints.
+  /// phase to record the intermediate breakpoints, and MarkPublishDone()
+  /// after the publish phase when the tick has work left after it.
   ///
   /// OnTick is called only when the loop is not paused and stop has not
   /// been requested.
@@ -191,6 +192,30 @@ class PeriodicRtThread {
   /// Stamp t2 — end of the compute phase. Call once per tick from inside
   /// OnTick().
   void MarkComputeDone() noexcept { t2_ = std::chrono::steady_clock::now(); }
+
+  /// Stamp t2p — end of the publish phase. Optional, at most once per tick
+  /// from inside OnTick().
+  ///
+  /// Without it, `t_publish_us` runs to t3 (end of OnTick) and the three
+  /// phase fields sum to `t_total_us` by construction — so the residual
+  /// carries no information and a tick that stalls anywhere after the
+  /// compute phase is reported as "publish". With it, `t_publish_us` ends
+  /// where the publish work ends and
+  ///
+  ///     t_total_us − (t_state_us + t_compute_us + t_publish_us)
+  ///
+  /// becomes the tick's post-publish tail: whatever the subclass still does
+  /// after publishing, plus any time the thread did not get to run. That
+  /// residual is what tells a reader whether a long tick was actually spent
+  /// publishing (issue #222 — a 3.4 ms CM tick attributed to "publish" was
+  /// 28 us of publish and 3.4 ms of tail).
+  ///
+  /// Producers that publish last (MPC solve, hand UDP EventLoop) simply do
+  /// not call it and keep the identity, and their residual stays exactly 0.
+  void MarkPublishDone() noexcept {
+    t2p_ = std::chrono::steady_clock::now();
+    have_t2p_ = true;
+  }
 
   /// Sleep until the next tick deadline. Default: clock_nanosleep
   /// TIMER_ABSTIME on CLOCK_MONOTONIC, advancing `next_wake_` by
@@ -296,6 +321,7 @@ class PeriodicRtThread {
       t0_ = std::chrono::steady_clock::now();
       t1_ = t0_;
       t2_ = t0_;
+      have_t2p_ = false;
 
       OnTick();
 
@@ -307,7 +333,11 @@ class PeriodicRtThread {
         RtTickTimingPayload p{};
         p.t_state_us = std::chrono::duration<double, std::micro>(t1_ - t0_).count();
         p.t_compute_us = std::chrono::duration<double, std::micro>(t2_ - t1_).count();
-        p.t_publish_us = std::chrono::duration<double, std::micro>(t3 - t2_).count();
+        // Unstamped publish phase runs to t3, which keeps the legacy identity
+        // t_state + t_compute + t_publish == t_total. Stamped, the difference
+        // is the post-publish tail — see MarkPublishDone().
+        const auto publish_end = have_t2p_ ? t2p_ : t3;
+        p.t_publish_us = std::chrono::duration<double, std::micro>(publish_end - t2_).count();
         p.t_total_us = std::chrono::duration<double, std::micro>(t3 - t0_).count();
         if (have_prev_t0_ && JitterMeaningful()) {
           const double actual_period_us =
@@ -413,6 +443,8 @@ class PeriodicRtThread {
   std::chrono::steady_clock::time_point t0_{};
   std::chrono::steady_clock::time_point t1_{};
   std::chrono::steady_clock::time_point t2_{};
+  std::chrono::steady_clock::time_point t2p_{};
+  bool have_t2p_{false};
   std::chrono::steady_clock::time_point prev_t0_{};
   bool have_prev_t0_{false};
 

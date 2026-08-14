@@ -182,6 +182,142 @@ TEST(PeriodicRtThread, TimingProducerReceivesPerTickSamples) {
   EXPECT_EQ(samples.front().payload.jitter_us, 0.0);
 }
 
+TEST(PeriodicRtThread, UnstampedPublishPhaseLeavesNoResidual) {
+  // A producer that never calls MarkPublishDone() keeps the historical
+  // identity t_state + t_compute + t_publish == t_total exactly, so its
+  // residual carries no signal. Pinned because MPC / hand UDP rely on it.
+  TimingThread t;
+  t.Start(MakeCfg("rtc_test_g", 100.0));
+  EXPECT_TRUE(WaitUntil([&] { return t.TickCount() >= 6; }))
+      << "fewer than 6 ticks produced within timeout";
+  t.RequestStop();
+  t.Join();
+
+  std::vector<rtc::RtTickTimingSample> samples;
+  t.producer.Drain([&](const rtc::RtTickTimingSample& s) { samples.push_back(s); });
+  ASSERT_GE(samples.size(), 5u);
+  for (const auto& s : samples) {
+    const double summed = s.payload.t_state_us + s.payload.t_compute_us + s.payload.t_publish_us;
+    EXPECT_NEAR(s.payload.t_total_us, summed, 1e-3)
+        << "unstamped tick must leave the phases summing to the total";
+  }
+}
+
+namespace {
+
+// Sleeps a known amount AFTER stamping the end of the publish phase, so the
+// residual the payload leaves over is that sleep and nothing else.
+inline constexpr auto kPublishSleep = 50us;
+inline constexpr auto kTailSleep = 600us;
+
+class PublishStampThread : public rtc::PeriodicRtThread {
+ public:
+  rtc::CmTimingBuffer producer;
+
+  PublishStampThread() { SetTimingProducer<rtc::kCmTimingBufferCapacity>(&producer); }
+
+ protected:
+  void OnTick() noexcept override {
+    MarkStateAcquired();
+    std::this_thread::sleep_for(50us);
+    MarkComputeDone();
+    std::this_thread::sleep_for(kPublishSleep);
+    MarkPublishDone();
+    std::this_thread::sleep_for(kTailSleep);
+  }
+};
+
+}  // namespace
+
+TEST(PeriodicRtThread, PublishStampMovesTrailingWorkOutOfThePublishPhase) {
+  // The point of the stamp (issue #222): without it a tick that stalls after
+  // publishing is reported as time spent publishing. Here the tail is an
+  // order of magnitude longer than the publish phase, and the payload has to
+  // say so — t_publish_us must stay near kPublishSleep while the residual
+  // carries kTailSleep.
+  PublishStampThread t;
+  t.Start(MakeCfg("rtc_test_h", 100.0));
+  EXPECT_TRUE(WaitUntil([&] { return t.TickCount() >= 6; }))
+      << "fewer than 6 ticks produced within timeout";
+  t.RequestStop();
+  t.Join();
+
+  std::vector<rtc::RtTickTimingSample> samples;
+  t.producer.Drain([&](const rtc::RtTickTimingSample& s) { samples.push_back(s); });
+  ASSERT_GE(samples.size(), 5u);
+  for (const auto& s : samples) {
+    const double summed = s.payload.t_state_us + s.payload.t_compute_us + s.payload.t_publish_us;
+    const double residual = s.payload.t_total_us - summed;
+    // sleep_for only ever overshoots, so these are one-sided bounds: the tail
+    // is at least what we slept, and the publish phase is well under it.
+    EXPECT_GE(residual, 300.0) << "post-publish tail did not land in the residual";
+    EXPECT_LT(s.payload.t_publish_us, residual)
+        << "t_publish_us absorbed the tail — the stamp did not take effect";
+  }
+}
+
+namespace {
+
+// Stamps on even ticks only — the shape CM actually has, where a tick that
+// bails at the readiness gate reaches no publish phase to stamp.
+class AlternatingStampThread : public rtc::PeriodicRtThread {
+ public:
+  rtc::CmTimingBuffer producer;
+
+  AlternatingStampThread() { SetTimingProducer<rtc::kCmTimingBufferCapacity>(&producer); }
+
+ protected:
+  void OnTick() noexcept override {
+    MarkStateAcquired();
+    std::this_thread::sleep_for(50us);
+    MarkComputeDone();
+    std::this_thread::sleep_for(kPublishSleep);
+    if (n_++ % 2 == 0) {
+      MarkPublishDone();
+      std::this_thread::sleep_for(kTailSleep);
+    }
+  }
+
+ private:
+  unsigned n_{0};
+};
+
+}  // namespace
+
+TEST(PeriodicRtThread, UnstampedTickDoesNotInheritThePreviousTicksStamp) {
+  // The stamp is per-tick state, so it has to be disarmed at the top of every
+  // tick. Carried over, an unstamped tick measures its publish phase against
+  // the PREVIOUS tick's stamp — which lies in the past, so t_publish_us goes
+  // negative and the residual swallows the whole tick.
+  AlternatingStampThread t;
+  t.Start(MakeCfg("rtc_test_i", 100.0));
+  EXPECT_TRUE(WaitUntil([&] { return t.TickCount() >= 8; }))
+      << "fewer than 8 ticks produced within timeout";
+  t.RequestStop();
+  t.Join();
+
+  std::vector<rtc::RtTickTimingSample> samples;
+  t.producer.Drain([&](const rtc::RtTickTimingSample& s) { samples.push_back(s); });
+  ASSERT_GE(samples.size(), 6u);
+
+  int stamped = 0;
+  int unstamped = 0;
+  for (const auto& s : samples) {
+    const double summed = s.payload.t_state_us + s.payload.t_compute_us + s.payload.t_publish_us;
+    const double residual = s.payload.t_total_us - summed;
+    EXPECT_GE(s.payload.t_publish_us, 0.0) << "publish phase measured against a stale stamp";
+    if (residual > 100.0) {
+      ++stamped;
+    } else {
+      // The unstamped tick keeps the identity exactly, as before #222.
+      EXPECT_NEAR(residual, 0.0, 1e-3) << "unstamped tick reported a residual";
+      ++unstamped;
+    }
+  }
+  EXPECT_GT(stamped, 0) << "no stamped tick observed — fixture did not exercise both paths";
+  EXPECT_GT(unstamped, 0) << "no unstamped tick observed — fixture did not exercise both paths";
+}
+
 namespace {
 
 class AbortingThread : public rtc::PeriodicRtThread {

@@ -59,7 +59,7 @@ rtc_controller_manager/
 
 | 스레드 | 코어 | 스케줄러 | 주파수 | 역할 |
 |--------|------|----------|--------|------|
-| **rt_loop** (rt_control) | 1 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push |
+| **rt_loop** (rt_control) | 1 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push. 그 push/eventfd 인계 직후 publish phase 를 끊으므로 (`StampPublishDone`), `cm_timing_log.csv` 의 `t_total_us − (t_state+t_compute+t_publish)` 잔차가 **그 tick 의 post-publish tail** 이다 — 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 먼저 본다 (#222) |
 | **rt_callback_executor** | 2 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch-time taskset 으로 같은 Core 2 에 co-pin (CFS 유지) |
 | **nrt_logging_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` + `rt_callback_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
 | **nrt_publish** | tier-aware (4c: 0 / ≥6c: dedicated, nrt_callback core 공유) | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` (cap 16) SPSC 드레인 → `controller.PublishNonRtSnapshot` (Transforms / grasp_state / wbc_state / tof_snapshot). std::jthread + eventfd wakeup. `cfgs.nrt_publish` 를 쓴다 — 코어·정책은 `nrt_callback` 과 같고 **이름만 다르다** (#349 D15: 같은 이름이면 verifier 가 둘 중 하나만 검사) |

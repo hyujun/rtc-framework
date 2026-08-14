@@ -137,6 +137,48 @@ TEST_F(RtLoopPipelineTest, TickCopiesStateAndWritesCommandInline) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// ── The tick's phase split leaves a post-publish tail (issue #222) ───────────
+//
+// cm_timing_log.csv used to report a tick that stalled ANYWHERE after Compute()
+// as time spent publishing, because t_publish_us ran to the end of the tick and
+// the three phases summed to t_total_us by construction. That is how a traced
+// 3.4 ms CM tick whose actuator publish took 28 us got filed under "publish".
+// ControlLoop now ends the publish phase at the SPSC/eventfd hand-off, so the
+// leftover is the tail — and this asserts on what a live tick actually pushed,
+// not on the stamping call, because deleting that one line is exactly the
+// regression and it leaves every other test in this file green.
+TEST_F(RtLoopPipelineTest, TickTimingLeavesAPostPublishResidual) {
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 2; }, 2000ms));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+
+  const auto samples = ControllerLifecycleTestAccess::DrainTimingSamples(*node);
+  ASSERT_FALSE(samples.empty());
+
+  int with_residual = 0;
+  for (const auto& s : samples) {
+    const double summed = s.payload.t_state_us + s.payload.t_compute_us + s.payload.t_publish_us;
+    // Idle ticks (readiness gate, pre-first-state) stamp nothing and keep the
+    // legacy identity, so the floor is the assertion that holds for every row.
+    EXPECT_GE(s.payload.t_total_us, summed - 1e-3);
+    if (s.payload.t_total_us > summed + 1e-3)
+      ++with_residual;
+  }
+  EXPECT_GT(with_residual, 0)
+      << "no tick left a post-publish residual — t_publish_us still runs to the "
+         "end of the tick, so a stall after WriteCommand reads as publish time";
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // ── Per-slot freshness survives the cache→state copy (issue #284) ────────────
 //
 // hole_mask is produced by the backends and consumed by IsDeviceReadable in

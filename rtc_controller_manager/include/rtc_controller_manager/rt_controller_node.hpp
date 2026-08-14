@@ -219,6 +219,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
     void StampComputeDone() noexcept { MarkComputeDone(); }
 
+    // Ends the publish phase at the SPSC/eventfd hand-off rather than at the
+    // end of the tick, so cm_timing_log.csv's phase residual carries the
+    // post-publish tail instead of being identically zero (issue #222).
+    void StampPublishDone() noexcept { MarkPublishDone(); }
+
    protected:
     void OnTick() noexcept override;
     WaitResult WaitForNextTick() noexcept override;
