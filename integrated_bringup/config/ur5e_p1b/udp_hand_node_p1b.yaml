@@ -29,9 +29,12 @@
 
     # -- UDP 통신 (p1b 핸드 하드웨어) --
     target_ip: "192.168.0.100"        # p1b 핸드 컨트롤러 IP
-    target_port: 55151                # TODO(confirm): p1b 포트 — 현재 p1a 와 동일값 유지
-    local_ip: "192.168.0.46"          # 제어 PC hand UDP endpoint
-    local_interface: "enp86s0"        # .6 monitoring NIC와 동일 subnet이므로 egress 고정
+    target_port: 55151                # p1b 핸드 컨트롤러 포트 (p1a 와 동일, 실기 확인됨)
+    # 제어 PC 에 192.168.0.0/24 NIC 이 둘 (hand: enp86s0 = .46, monitoring = .6) 있어
+    # 라우팅만으로는 hand 트래픽이 monitoring NIC 로 나갈 수 있다. source address 와
+    # egress 를 함께 못박는다. sil_mode=firmware 는 노드가 둘 다 해제한다.
+    local_ip: "192.168.0.46"          # 제어 PC hand UDP endpoint (enp86s0)
+    local_interface: "enp86s0"        # egress NIC 고정 (SO_BINDTODEVICE)
     recv_timeout_ms: 1.5              # ppoll 수신 타임아웃 (ms), 0.4 -> 400us
 
     # -- 통신/프로토콜 --

@@ -372,6 +372,8 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 |----------|--------|------|
 | `target_ip` | `"192.168.1.2"` | 핸드 컨트롤러 IP |
 | `target_port` | `55151` | 핸드 컨트롤러 포트 |
+| `local_ip` | `""` | 제어 PC 쪽 source address (`bind`). `""` = 커널 선택 |
+| `local_interface` | `""` | egress NIC 이름 (`SO_BINDTODEVICE`). `""` = 라우팅 테이블에 위임 |
 | `recv_timeout_ms` | `10.0` | ppoll 수신 타임아웃 (ms, sub-ms 지원) |
 | `loop_rate_hz` | `500.0` | self-clocked CommLoop 주기 (Hz) — read/state publish 자율 tick rate |
 | `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
@@ -464,6 +466,8 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 |----------|--------|------|
 | `target_ip` | `192.168.1.2` | 손 컨트롤러 IP |
 | `target_port` | `55151` | 손 컨트롤러 포트 |
+| `local_ip` | `""` (yaml) | 제어 PC source address override |
+| `local_interface` | `""` (yaml) | egress NIC override |
 | `loop_rate_hz` | `500.0` | self-clocked CommLoop 주기 (Hz) — read/state publish 자율 tick rate |
 | `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
 | `communication_mode` | `bulk` | `"individual"` 또는 `"bulk"` |
