@@ -678,11 +678,16 @@ void RtControllerNode::ControlLoop() {
     }
 
     // Layout v4.1: actuator command publish is performed inline on the
-    // rt_control thread (Core 1 FIFO 90) — DeviceBackend.WriteCommand is
-    // RT-safe by contract (see device_backend.hpp). Removing the SPSC
-    // hand-off to rt_outbound eliminates one rt_callback-core thread +
-    // eventfd and closes the cross-core path between RT loop and actuator
-    // publish.
+    // rt_control thread (Core 1 FIFO 90). Removing the SPSC hand-off to
+    // rt_outbound eliminates one rt_callback-core thread + eventfd and closes
+    // the cross-core path between RT loop and actuator publish.
+    //
+    // The cost of keeping it inline is measured, not assumed (issue #222):
+    // the rmw/CycloneDDS write allocates 156 B per call on this thread. It
+    // does not block, because the lane is KEEP_LAST(1). Moving the publish
+    // back off the RT thread would trade those 156 B for the non-RT lane's
+    // scheduling — the same traces show non-RT callbacks running for
+    // milliseconds — so the inline choice stands. See device_backend.hpp.
     //
     // Per-group device command publish is delegated to the backend bound to
     // each group's slot. Controller-owned non-RT topics still ride the SPSC

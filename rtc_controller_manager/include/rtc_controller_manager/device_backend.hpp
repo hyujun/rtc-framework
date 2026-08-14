@@ -120,8 +120,28 @@ class DeviceBackend {
   /// slot and hands the encoded message to its publisher path. `command_type`
   /// comes from the per-group GroupCommandSlot::command_type (kPosition /
   /// kTorque / kPdFeedforward) and lets backends emit JointCommand.command_type
-  /// or pick a different ros2_control chain if needed. Never blocks; never
-  /// allocates.
+  /// or pick a different ros2_control chain if needed.
+  ///
+  /// This used to read "Never blocks; never allocates." Both halves were
+  /// unverified assertions, and issue #222 measured them on the UR actuator
+  /// lane (RELIABLE depth 1, 6-double Float64MultiArray, 500 Hz):
+  ///
+  ///   - **It allocates.** Every call, 2 blocks / 156 B — an 88 B serdata
+  ///     object built by dds_write's sertype callback and a 68 B CDR buffer.
+  ///     The allocation is QoS-independent (a BEST_EFFORT arm matched it byte
+  ///     for byte) and lives inside libddsc/rmw_cyclonedds_cpp, so it is not
+  ///     something a backend can avoid while publishing on this thread. This
+  ///     is a known, accepted RT-1 violation, not a licence for new ones —
+  ///     see invariants.md §RT-1.
+  ///   - **It does not block**, and the reason is the QoS, not the code: a
+  ///     KEEP_LAST(1) writer drops unacked samples instead of retaining them,
+  ///     so the write history cache never approaches its high-water mark. A
+  ///     frozen reliable reader left the publish at 47 us max; the same
+  ///     harness with a KEEP_ALL writer blocked one publish for 2.9 s.
+  ///     **Raising this lane's history depth would reintroduce blocking.**
+  ///
+  /// Implementations must still not block, log, lock, or allocate anything of
+  /// their own — the measured 156 B is the rmw floor, not a budget.
   virtual void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
                             CommandType command_type) noexcept = 0;
 
