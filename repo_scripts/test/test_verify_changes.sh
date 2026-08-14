@@ -98,6 +98,54 @@ run_hook() {
       bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null )
 }
 
+# Phase 2's build branch is the one region SKIP_BUILD cannot reach: blanking
+# BUILD_PKGS is exactly what lets the suite run without colcon, so the build
+# classification had zero coverage (#435). RTC_VERIFY_BUILD_CMD injects a stub
+# in build.sh's place, so a bound-kill (124) and a compile error can be replayed
+# deterministically and in a second. $1 = exit code the stub returns.
+#
+# The stub must FAIL: a stub that succeeded would fall through to the real
+# `colcon test` call, which this fixture cannot serve.
+make_build_stub() {
+  local d rc="$1"
+  d=$(mktemp -d)
+  cat >"$d/build.sh" <<EOF
+#!/usr/bin/env bash
+echo "stub-build args: \$*"
+echo "-- filler line so the tail is not the whole log --"
+echo "error: fixture_file.cpp:7:3: expected ';' before '}'"
+exit $rc
+EOF
+  chmod +x "$d/build.sh"
+  echo "$d"
+}
+
+# Like run_hook but WITHOUT RTC_VERIFY_SKIP_BUILD, so Phase 2 actually runs and
+# routes its build through the stub.
+run_hook_build() {
+  local dir="$1" stub="$2"
+  ( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$stub/build.sh" \
+      bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null )
+}
+
+# make_fixture ships one package (rtc_demo), which routes to the per-package
+# branch. PROC-3 needs a package named rtc_base or rtc_msgs; the two branches
+# had the same defect and must be fixed together, so both get cases.
+add_rtc_base() {
+  local dir="$1"
+  mkdir -p "$dir/rtc_base/src"
+  sed 's/rtc_demo/rtc_base/' "$dir/rtc_demo/package.xml" >"$dir/rtc_base/package.xml"
+  cat >"$dir/rtc_base/CMakeLists.txt" <<'CMAKE'
+cmake_minimum_required(VERSION 3.16)
+project(rtc_base)
+add_library(rtc_base src/base.cpp)
+CMAKE
+  echo 'int base_fn() { return 0; }' >"$dir/rtc_base/src/base.cpp"
+  echo '# base' >"$dir/rtc_base/README.md"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm "add rtc_base"
+}
+
 expect_contains() {
   local name="$1" haystack="$2" needle="$3"
   if grep -qF -- "$needle" <<<"$haystack"; then
@@ -647,6 +695,69 @@ sed -i 's|</package>|  <depend>robot_descriptions</depend>\n</package>|' \
 out=$(run_hook "$dir")
 expect_contains "ARCH-5 still catches <depend>robot_descriptions" "$out" "ARCH-5"
 rm -rf "$dir"
+
+# --- Phase 2 build classification (#435) --------------------------------------
+#
+# One machine, one commit, one package: 179.4s (killed at the bound) while a
+# long build competed for CPU, 2.5s idle. Both used to print the byte-identical
+# "<pkg>: build failed", so the agent went debugging a change that was fine.
+# Every other branch in Phase 2 already classified by exit code; these did not.
+
+# 35. A build killed at the bound (124) must say so, must NOT read as a broken
+#     build, and must still block.
+dir=$(make_fixture)
+stub=$(make_build_stub 124)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_build "$dir" "$stub"); rc=$?
+expect_contains "a bound-killed build is reported as a timeout" "$out" "build TIMED OUT after 180s"
+expect_not_contains "a bound-killed build is not reported as broken code" "$out" "build FAILED"
+expect_exit "a bound-killed build still blocks the turn" "$rc" 2
+# 36. ...and carries the evidence that separates contention from a slow build.
+expect_contains "a build timeout reports loadavg" "$out" "loadavg"
+expect_contains "a build timeout reports the concurrent build count" "$out" "build/compiler processes"
+rm -rf "$dir" "$stub"
+
+# 37. A genuinely failing build must be distinguishable from 35 -- different
+#     string, the exit code, and the build output that says WHICH file broke.
+#     The output was discarded (>/dev/null 2>&1), so even a correctly classified
+#     failure told the agent nothing.
+dir=$(make_fixture)
+stub=$(make_build_stub 1)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_build "$dir" "$stub"); rc=$?
+expect_contains "a real build failure reports its exit code" "$out" "build FAILED (exit 1)"
+expect_not_contains "a real build failure is not reported as a timeout" "$out" "TIMED OUT"
+expect_contains "a real build failure carries the build output tail" "$out" "error: fixture_file.cpp:7:3"
+expect_contains "the tail shows how the build was invoked" "$out" "stub-build args: -p rtc_demo"
+expect_exit "a real build failure blocks the turn" "$rc" 2
+rm -rf "$dir" "$stub"
+
+# 38. The PROC-3 path (rtc_base / rtc_msgs -> ./build.sh full) had the same
+#     defect. Fixing only the per-package branch leaves it on the highest-impact
+#     path, so both are pinned.
+dir=$(make_fixture)
+add_rtc_base "$dir"
+stub=$(make_build_stub 124)
+echo 'int base_fn() { return 1; }' >"$dir/rtc_base/src/base.cpp"
+out=$(run_hook_build "$dir" "$stub"); rc=$?
+expect_contains "a bound-killed PROC-3 build is reported as a timeout" "$out" "PROC-3 broad build"
+expect_contains "the PROC-3 timeout names its own bound" "$out" "TIMED OUT after 300s"
+expect_contains "the PROC-3 timeout reports loadavg" "$out" "loadavg"
+expect_exit "a bound-killed PROC-3 build still blocks the turn" "$rc" 2
+rm -rf "$dir" "$stub"
+
+# 39. ...and a real PROC-3 build failure gets the same treatment as 37.
+dir=$(make_fixture)
+add_rtc_base "$dir"
+stub=$(make_build_stub 1)
+echo 'int base_fn() { return 1; }' >"$dir/rtc_base/src/base.cpp"
+out=$(run_hook_build "$dir" "$stub"); rc=$?
+expect_contains "a real PROC-3 build failure reports its exit code" "$out" "PROC-3 broad build (build.sh full) FAILED (exit 1,"
+expect_not_contains "a real PROC-3 build failure is not reported as a timeout" "$out" "TIMED OUT"
+expect_contains "a real PROC-3 build failure carries the build output tail" "$out" "error: fixture_file.cpp:7:3"
+expect_contains "the PROC-3 tail shows how the build was invoked" "$out" "stub-build args: full"
+expect_exit "a real PROC-3 build failure blocks the turn" "$rc" 2
+rm -rf "$dir" "$stub"
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
