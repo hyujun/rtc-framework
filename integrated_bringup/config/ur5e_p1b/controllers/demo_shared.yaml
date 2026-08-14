@@ -181,7 +181,7 @@ demo_shared:
     # back to a world-axis seed and force_inplane[0] stops being the
     # reference-direction component. on_configure warns, and the published
     # basis_source reports SEED instead of REFERENCE when it happens.
-    use_baseline_subtraction: true
+    use_baseline_subtraction: false
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
     # "pinch_geometry" — n = (centroid of the non-thumb tips *currently
@@ -239,19 +239,19 @@ demo_shared:
       tip_names: ["thumb", "index", "middle"]
       thumb:
         link: "l_thumb_tip_bracket"
-        friction_coeff: 0.7
-        force_saturation: 25.0     # [N] per-axis |raw| ≥ this ⇒ contact gated out
+        friction_coeff: 0.8
+        force_saturation: 15.0     # [N] per-axis |raw| ≥ this ⇒ contact gated out
         contact_on_threshold: 0.5  # [N] normal-force hysteresis ON
-        contact_off_threshold: 0.2 # [N] normal-force hysteresis OFF
+        contact_off_threshold: 0.3 # [N] normal-force hysteresis OFF
       index:
         link: "l_index_tip_bracket"
-        friction_coeff: 0.7
-        force_saturation: 25.0
+        friction_coeff: 0.8
+        force_saturation: 15.0
         contact_on_threshold: 0.5
-        contact_off_threshold: 0.2
+        contact_off_threshold: 0.3
       middle:
         link: "l_middle_tip_bracket"
-        friction_coeff: 0.7
-        force_saturation: 25.0
+        friction_coeff: 0.8
+        force_saturation: 15.0
         contact_on_threshold: 0.5
-        contact_off_threshold: 0.2
+        contact_off_threshold: 0.3
