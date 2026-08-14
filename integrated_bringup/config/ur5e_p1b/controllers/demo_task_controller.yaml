@@ -60,7 +60,7 @@ demo_task_controller:
                                     # |angle| > π - margin (stability near θ=π)
                                     # Range: [0, π/2]
     contact_stop_release_eps: 0.005 # rad, hand contact-stop release hysteresis
-    contact_stop_lpf_cutoff_hz: 20.0 # Hz, Bessel LPF cutoff for latched hold
+    contact_stop_lpf_cutoff_hz: 15.0 # Hz, Bessel LPF cutoff for latched hold
     # Per-axis LPF on the fingertip force contact_stop thresholds. Higher cutoff
     # than the hold LPF above on purpose: the 4th-order Bessel's DC group delay
     # is ~2.11/(2*pi*fc), so 20 Hz would delay the freeze by ~17 ms out of the
@@ -77,11 +77,12 @@ demo_task_controller:
     contact_stop_force_guard_delta_n: 4.0 # N, per-axis |Δ| reject threshold, (0, 1000]
     # Consecutive hold ticks before a sustained out-of-band raw value is accepted
     # anyway. Without this cap a genuine fast contact step (|Δ| > 4 N on every
-    # tick) would be rejected forever and contact_stop could never fire. 2 ticks
-    # suppresses the observed spikes in full while costing a real step ~2 ms of
-    # delay against the filter's own ~6.7 ms group delay. NaN/Inf never escape
-    # this cap. 0 disables the delta hold.
-    contact_stop_force_guard_max_hold_ticks: 2 # ticks, [0, 1000]
+    # tick) would be rejected forever and contact_stop could never fire. p1b runs
+    # 6 ticks (control_rate 500 Hz -> ~12 ms), raised from the 2 ticks that only
+    # covered the spikes above, so longer bursts are held too; a real step pays
+    # that delay on top of the filter's own ~6.7 ms group delay. NaN/Inf never
+    # escape this cap. 0 disables the delta hold.
+    contact_stop_force_guard_max_hold_ticks: 6 # ticks, [0, 1000]
                                     # (target↔actual delta to reject sensor noise)
                                     # Range: [0, 0.1]
 
