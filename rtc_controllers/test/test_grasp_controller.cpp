@@ -732,6 +732,11 @@ std::array<FingerConfig, kRigFingers> RigConfigs() {
 // adaptation switched ON. These tests exercise the estimator itself, so they
 // opt out of the shipped pin (K_est_max == the 1.0 seed) that keeps
 // K_contact_est frozen everywhere else — see grasp_types.hpp.
+//
+// Un-pinned is a characterisation rig, not a deployment target: #426 retired
+// adaptation (grasp_tuning_guide.md 6.9) and nothing is going to ship this
+// configuration. The tests remain because the code they cover remains, and a
+// clamp/EMA that is never exercised is a clamp/EMA nobody can refactor safely.
 GraspParams RigParams(double beta, double alpha_ema) {
   GraspParams p{};
   p.K_est_max = 400.0;
@@ -909,11 +914,10 @@ TEST(GraspStiffnessEstimationTest, DeployedTuningIsPinnedAndNoiseImmune) {
 // K*Kp_base/(1 + beta*K) saturates at Kp_base/beta, so tau_min = beta/Kp_base
 // bounds the settling time no matter how stiff the object is. Pinned, that
 // schedule degenerates to the constant 1/(1 + beta) and this test measures what
-// the robots actually run; the bound matters again in #426, where beta drops to
-// 0.03 (tau_min 1.5 s) at the same time K_est_max releases the estimate. The
-// pair is why neither may move alone: 0.3 with a live estimator puts every
-// grasp past the 10 s budget, and 0.03 while pinned changes every grasp's gain
-// by 26% for no adaptation.
+// the robots actually run — permanently, since #426 retired adaptation
+// (grasp_tuning_guide.md 6.9). The bound is why neither value may move alone:
+// 0.3 with a live estimator puts every grasp past the 10 s budget, and 0.03
+// while pinned changes every grasp's gain by 26% for no adaptation. Both stay.
 TEST(GraspStiffnessEstimationTest, DeployedTuningReachesHoldWithinBudget) {
   for (const double true_K : {10.0, 20.0, 50.0, 100.0, 200.0}) {
     GraspController c;
@@ -961,7 +965,9 @@ TEST(GraspStiffnessEstimationTest, SPrevStillHoldsThePreviousTicksS) {
 // shrinks ds, which shrinks delta_s, which stops any corrective sample being
 // taken. Unbounded, 20 mN of 25 Hz-filtered ripple measured 3364 here.
 TEST(GraspStiffnessEstimationTest, EstimateStaysWithinItsClamp) {
-  // The regime #426 is aiming at: adaptation on, beta retuned with it.
+  // The regime #426 considered and discarded: adaptation on, beta retuned with
+  // it. Kept as coverage because the clamp still has to bound the estimator
+  // code that remains — see RigParams and grasp_tuning_guide.md 6.9.
   GraspParams p = DeployedParams();
   p.beta = 0.03;
   p.K_est_max = 400.0;

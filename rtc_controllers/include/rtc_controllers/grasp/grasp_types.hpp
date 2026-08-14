@@ -50,15 +50,17 @@ struct GraspParams {
   // converges at lambda = K*Kp_base/(1 + beta*K), which saturates at
   // Kp_base/beta as the contact stiffness K grows, so beta alone sets the
   // fastest achievable settling: tau_min = beta/Kp_base. 0.03 (tau_min 1.5 s)
-  // is the value that keeps K in [10, 200] inside a 10 s grasp budget and is
-  // what this should become the moment adaptation is switched on.
+  // is the value that would keep K in [10, 200] inside a 10 s grasp budget if
+  // adaptation ever ran; it has never been deployed and is not going to be.
   //
-  // It stays at 0.3 while K_est_max pins the estimate at its 1.0 seed (see
-  // below), because pinned the whole schedule collapses to the constant
-  // 1/(1 + beta) and that constant IS the deployed behaviour: 1/1.3 = 0.769.
-  // Moving beta alone would therefore change the gain of every grasp on real
+  // It stays at 0.3 because K_est_max pins the estimate at its 1.0 seed (see
+  // below), and pinned the whole schedule collapses to the constant
+  // 1/(1 + beta) — that constant IS the deployed behaviour: 1/1.3 = 0.769.
+  // So beta is not a scheduling knob here, it is the sole author of a fixed
+  // gain de-rating: moving it alone changes the gain of every grasp on real
   // hardware by 26% while buying nothing, since no adaptation is running.
-  // beta and K_est_max are released together, in #426.
+  // The pairing that would have released both (K_est_max 400 + beta 0.03) was
+  // retired by #426; see K_est_max below and grasp_tuning_guide.md 6.9.
   double beta{0.3};        // adaptive gain sensitivity
   // Upper bound on a stiffness sample and on the running estimate, and — at
   // this default — the switch that keeps adaptation OFF.
@@ -78,9 +80,21 @@ struct GraspParams {
   // 2 mN of 25 Hz-filtered ripple, K in [10, 50] went from 3.3-9.3 s to
   // 10-30 s, i.e. past the behaviour tree's 10 s budget, while pinned stayed
   // flat at 3.3-9.3 s across 0-20 mN. The estimator needs a different
-  // estimator, not a different constant: see grasp_tuning_guide.md 6.6 and
-  // #426. Raising this (400 gives 2x the documented [10, 200] design range) is
-  // what turns adaptation back on, and it belongs with the beta retune above.
+  // estimator, not a different constant: see grasp_tuning_guide.md 6.6.
+  //
+  // Raising this is what would turn adaptation back on. Do not. #426 retired
+  // the feature on 2026-08-14 hardware data (grasp_tuning_guide.md 6.9), on
+  // three grounds that do not depend on the measured stiffness: (1) at the
+  // stiffest reachable contact — a metal box, i.e. a rigid body — the constant
+  // 0.769 gain showed no oscillation, so the thing adaptation exists to
+  // suppress was not there; (2) delta_s = Kp*dt*e makes K_inst proportional to
+  // 1/e, so the ratio tracks the loop error and carries no object term at all;
+  // (3) the hand's own series compliance (pads, tendons, sensor) caps K_total
+  // at ~11, where the intended beta of 0.03 could only pick gain_scale in
+  // [0.749, 1.000] — a band containing the deployed 0.769, i.e. a no-op. The
+  // documented [10, 200] design range came from a rigid-fingered sim plant and
+  // does not exist on this hardware; 400 is ~36x the physical ceiling. What
+  // would have to change is the hand, not a constant.
   double K_est_max{1.0};
 
   // Force thresholds
