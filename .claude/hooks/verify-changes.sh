@@ -80,17 +80,30 @@
 #          report; do not rely on any undocumented consecutive-block cap.
 # Limits : per-package bounds: 180s build + 60s test. PROC-3 path: 300s build +
 #          180s test. A build OR test that hits its timeout (exit 124) or fails
-#          to launch (exit >=125) is reported as a failure/unverified and blocks
-#          -- overrun is no longer silent. If a package's tests legitimately
-#          exceed the bound, raise it here rather than letting the gate pass
-#          blind. All within the Stop hook's 540s budget (settings.json).
+#          to launch (exit >=125) blocks as UNVERIFIED -- overrun is no longer
+#          silent -- and says so in a message DISTINCT from a real failure's.
+#          That distinction is what the build path lacked (#435): `if ! timeout
+#          180 ./build.sh ...` swallowed $? and the output, so a bound-kill and
+#          a compile error printed the same "<pkg>: build failed" and machine
+#          load could masquerade as broken code (measured: 179.4s killed under
+#          contention vs 2.5s idle, same commit). Now a 124 also reports loadavg
+#          and the live build/compiler count, and a real failure reports its
+#          exit code and the tail of the build log.
+#          If a package's TESTS legitimately exceed their bound, raise it here
+#          rather than letting the gate pass blind. That is NOT the answer to a
+#          BUILD 124: these bounds sit inside the per-package loop, so the worst
+#          case is (180 + 60) * N against the Stop hook's 540s budget
+#          (settings.json) -- "all within the budget" holds only for N <= 2, and
+#          raising a bound buys the SIGKILL the bounds exist to prevent.
 #          Doxygen / cross-package doc consistency NOT checked
 #          (modification-guide.md "Updating an Existing Package" 6 steps cover
 #          these manually). Changed set = tracked-vs-HEAD UNION untracked;
-#          build/test additionally requires an untracked file to live under
-#          <pkg>/src/ or <pkg>/include/, so a new header is compiled while a
-#          scratch file under rtc_base/ still cannot trigger a full-workspace
-#          rebuild. Routing behaviour is asserted end-to-end by
+#          build/test additionally requires an untracked file to live in one of
+#          the installed-source dirs allowlisted at CHANGED_SRC_UNTRACKED below
+#          (that comment is the SSoT -- this summary still said src|include only
+#          after four more dirs joined the list), so a new header is compiled
+#          while a scratch file under rtc_base/ still cannot trigger a
+#          full-workspace rebuild. Routing behaviour is asserted end-to-end by
 #          repo_scripts/test/test_verify_changes.sh.
 #          A path containing a newline is C-quoted by git regardless of
 #          core.quotePath and is NOT handled; paths with spaces are.
@@ -857,7 +870,60 @@ fi
 # --- Phase 2: Build + test, with PROC-3 fallback for rtc_base / rtc_msgs ---
 # RTC_VERIFY_SKIP_BUILD lets repo_scripts/test/test_verify_changes.sh exercise
 # the routing without a colcon workspace. It is never set in normal operation.
+#
+# RTC_VERIFY_BUILD_CMD is the same kind of seam for the build call itself: an
+# executable taking build.sh's arguments. The suite injects a stub that exits
+# with a chosen code, which is the only way to reach the branches below without
+# a colcon workspace -- they were the one region of this hook with zero
+# coverage, because SKIP_BUILD blanks BUILD_PKGS and skips Phase 2 whole. Same
+# risk profile as SKIP_BUILD: never set in normal operation.
 TEST_FAILURES=""
+BUILD_CMD="${RTC_VERIFY_BUILD_CMD:-./build.sh}"
+
+# Run the build, keeping BOTH things the old call threw away: the exit code and
+# the output. `if ! timeout 180 ./build.sh -p "$pkg" >/dev/null 2>&1` swallowed
+# $? in the `if !` and the log in the redirect, so a bound-kill (124) and a
+# compile error emitted the byte-identical "<pkg>: build failed" -- #435. Same
+# machine, same commit, same package: 179.4s killed while a long build competed
+# for CPU, 2.5s idle. The verdict was set by machine load, not by the code, and
+# nothing in the report said so.
+# Sets BUILD_RC and BUILD_LOG; callers must rm the log.
+run_build() {  # $1 = timeout seconds, rest = args for the build command
+  local secs="$1"; shift
+  BUILD_LOG=$(mktemp)
+  BUILD_RC=0
+  timeout "$secs" "$BUILD_CMD" "$@" >"$BUILD_LOG" 2>&1 || BUILD_RC=$?
+}
+
+# Last lines of a failed build, indented for the report. Backslashes are doubled
+# because the report is emitted with `echo -e`, which would otherwise eat the
+# "\n" inside a compiler-quoted string literal and mangle the very line the
+# agent needs to read.
+build_log_tail() {
+  tail -n 15 "$BUILD_LOG" | sed -e 's/\\/\\\\/g' -e 's/^/      /'
+}
+
+# What separates "this build is broken/too slow" from "it lost a CPU race": the
+# classification above only says WHICH kind of failure it was, not whether a
+# 124 was the code's fault. loadavg plus a live build/compiler count is the
+# cheapest thing that answers it at the moment of the kill.
+build_contention_evidence() {
+  local load busy
+  load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo "unavailable")
+  if command -v pgrep >/dev/null 2>&1; then
+    # Match process NAMES (-x), not command lines (-f). pgrep -f would also match
+    # any ancestor shell whose command line happens to contain this pattern --
+    # including the one that invoked the hook by hand, which reported 3 rivals on
+    # an idle box where exactly one build was running. An evidence line that
+    # inflates under the very conditions it exists to measure is worse than none.
+    # Counted after the kill, so this build's own dying children can still be in
+    # it -- an indicator of contention, not an exact count of rivals.
+    busy=$(pgrep -c -x '(colcon|cmake|ninja|make|cc1plus|cc1|ld)' 2>/dev/null || true)
+  else
+    busy="?"
+  fi
+  printf 'loadavg %s, %s build/compiler processes running at kill time' "$load" "${busy:-0}"
+}
 PROC3=$(echo "$BUILD_PKGS" | tr ' ' '\n' | grep -E '^(rtc_base|rtc_msgs)$' || true)
 if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
   # Emit the routing decision before discarding it. Blanking BUILD_PKGS is what
@@ -875,9 +941,15 @@ if [ -n "$PROC3" ]; then
   # a generous bound on the build and a per-package test timeout).
   # All colcon invocations run from $WORKSPACE so build/install/log land in the
   # colcon ws root (CLAUDE.md §9.1), not in this repo's cwd.
-  if ! timeout 300 ./build.sh full >/dev/null 2>&1; then
-    TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (./build.sh full) failed (rtc_base / rtc_msgs touched)\n"
+  run_build 300 full
+  if [ "$BUILD_RC" -eq 124 ]; then
+    TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) TIMED OUT after 300s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). This path is cold by construction (rtc_base / rtc_msgs touched); re-run './build.sh full' on an idle box before debugging the change.\n"
+    rm -f "$BUILD_LOG"
+  elif [ "$BUILD_RC" -ne 0 ]; then
+    TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) FAILED (exit ${BUILD_RC}, rtc_base / rtc_msgs touched):\n$(build_log_tail)\n"
+    rm -f "$BUILD_LOG"
   else
+    rm -f "$BUILD_LOG"
     # Preserve `colcon test`'s exit code: 124 = timed out, >=125 = could not
     # launch (env/build), 0 or 1 = ran (pass/fail read from test-result). Never
     # swallow it with `|| true`, or a killed run reads as "0 failures".
@@ -901,11 +973,23 @@ else
     # Without it a slow/hung single-package build is unbounded, so N changed
     # packages can blow past the Stop hook's 540s budget (settings.json) and get
     # SIGKILLed mid-build -> the turn ends with the gate silently skipped.
-    # A timeout-killed build (exit 124) is reported as a build failure -> exit 2.
-    if ! timeout 180 ./build.sh -p "$pkg" >/dev/null 2>&1; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build failed\n"
+    # A timeout-killed build (exit 124) is reported as UNVERIFIED, separately
+    # from a build that really broke -> both exit 2, different messages.
+    #
+    # Raising the bound is NOT the fix for a 124 here, because it is inside the
+    # loop: worst case (180 + 60) * N against that same 540s budget, already
+    # over at N=3. Growing it buys the SIGKILL this bound exists to prevent.
+    run_build 180 -p "$pkg"
+    if [ "$BUILD_RC" -eq 124 ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build TIMED OUT after 180s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). If the load is high this build lost a CPU race; re-run './build.sh -p ${pkg}' before debugging the change.\n"
+      rm -f "$BUILD_LOG"
+      continue
+    elif [ "$BUILD_RC" -ne 0 ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build FAILED (exit ${BUILD_RC}):\n$(build_log_tail)\n"
+      rm -f "$BUILD_LOG"
       continue
     fi
+    rm -f "$BUILD_LOG"
 
     # Preserve the exit code (see PROC-3 path above): distinguish timeout /
     # launch failure / real test failure instead of inferring from test-result.
