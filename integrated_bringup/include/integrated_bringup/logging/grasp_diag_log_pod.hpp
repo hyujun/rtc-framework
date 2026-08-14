@@ -6,10 +6,14 @@
 // `task_diag` / `pull_estimator` shape, not the per-device maps.
 //
 // Why this exists: every value here is already computed on every tick and then
-// dropped. #426 has to decide whether the online stiffness estimator is
-// salvageable on real hardware, and that decision needs the force noise σ of
+// dropped. #426 had to decide whether the online stiffness estimator was
+// salvageable on real hardware, and that decision needed the force noise σ of
 // the lane the estimator actually reads plus the spread of its raw samples.
-// Neither is obtainable today:
+// This file supplied both, and the answer was no — adaptation is retired and
+// pinned off (grasp_tuning_guide.md 6.9). The channel stays: it is how the
+// evidence for that call is still readable, and `plot_rtc_log` identifies this
+// log type by the `k_est_` column prefix. Neither quantity was obtainable from
+// what already shipped:
 //
 //   - `<device>_sensor.csv` carries `fingertip_force_filt_`, the contact_stop
 //     filter bank (deployed 50 Hz). The Force-PI law reads a SEPARATE bank,
@@ -93,7 +97,8 @@ struct GraspDiagLogPod {
   // live-writable through set_params(), so a stored CSV cannot be decoded from
   // that run's YAML alone. K_est_max in particular decides whether a flat
   // k_est trace means "converged" or "pinned at the cap", which is exactly the
-  // question the hardware session has to answer (#424 / #426).
+  // question the hardware sessions answered (#424 / #426). Post-#426 a flat
+  // trace at the seed is the expected reading on every deployed run.
   float beta{0.0F};       ///< gain-schedule coefficient: gain_scale = 1/(1+beta*K)
   float alpha_ema{0.0F};  ///< EMA retention on K_contact_est
   float K_est_max{0.0F};  ///< clamp applied to K_inst before it enters the EMA

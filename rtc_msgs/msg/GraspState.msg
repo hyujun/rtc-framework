@@ -30,8 +30,10 @@ float32[] finger_force_error    # force error per finger [N]
 # K_contact_est (#424). Seeds at 1.0 and is bounded above by the K_est_max
 # parameter; the shipped tuning sets K_est_max to that same 1.0 seed, so a
 # deployed robot publishes the pinned seed and adaptive gain scheduling is off
-# (#425, grasp_tuning_guide.md 6.6). Values below the seed are the estimator
-# tracking a soft contact, not a fault.
+# (#425). That pin is permanent — #426 retired adaptation on 2026-08-14
+# hardware data (grasp_tuning_guide.md 6.9), so a steady 1.000 here is the
+# expected reading for the life of this hand, not a pending state. Values below
+# the seed are the estimator tracking a soft contact, not a fault.
 # 0.0 is not reachable while the servo runs — it is the E-STOP / not-computed
 # sentinel written by FillEstopPublishState (PROC-7).
 float32[] finger_stiffness_est   # estimated contact stiffness per finger [N/delta_s]

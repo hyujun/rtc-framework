@@ -1164,8 +1164,9 @@ class DemoControllerGUI(Node):
                 self._fp_desired_labels[i].config(text=desired_text)
 
             # Contact stiffness estimate (#424). The shipped tuning pins it at
-            # its 1.0 seed (adaptation off, #425/#426), so a steady 1.000 here
-            # is the expected reading and not a dead lane; 0.000 means the
+            # its 1.0 seed (adaptation off #425, retired #426), so a steady
+            # 1.000 here is the permanent expected reading, not a lane waiting
+            # to be switched on; 0.000 means the
             # controller did not compute it this tick (E-STOP). Greyed while
             # pinned so a value that starts moving is what draws the eye.
             k_est = self._fp_stiffness_est[i]

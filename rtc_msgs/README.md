@@ -146,7 +146,7 @@ rtc_msgs/
 | `finger_s` | `float32[]` | 핑거별 그래스프 파라미터 [0,1] |
 | `finger_filtered_force` | `float32[]` | 핑거별 필터링된 힘 [N] |
 | `finger_force_error` | `float32[]` | 핑거별 힘 오차 [N] |
-| `finger_stiffness_est` | `float32[]` | 핑거별 접촉 강성 추정치 `K_contact_est` [N/Δs] (#424). seed 1.0 에서 출발하고 `K_est_max` 로 상한된다 — 배포 설정은 그 상한을 seed 와 같게 두므로 **실기에서는 1.0 에 고정**돼 보이는 것이 정상이며 적응이 꺼져 있다는 증거다 (`grasp_tuning_guide.md` §6.6). `0.0` 은 이번 tick 에 계산하지 않았다는 뜻 (E-STOP) 이지 무른 접촉이 아니다 |
+| `finger_stiffness_est` | `float32[]` | 핑거별 접촉 강성 추정치 `K_contact_est` [N/Δs] (#424). seed 1.0 에서 출발하고 `K_est_max` 로 상한된다 — 배포 설정은 그 상한을 seed 와 같게 두므로 **실기에서는 1.0 에 고정**돼 보이는 것이 정상이며 적응이 꺼져 있다는 증거다. 이 pin 은 **영구**다 — 적응은 #426 이 은퇴시켰다 (`grasp_tuning_guide.md` §6.9). `0.0` 은 이번 tick 에 계산하지 않았다는 뜻 (E-STOP) 이지 무른 접촉이 아니다 |
 | `grasp_target_force` | `float32` | 현재 목표 힘 [N] |
 
 **In-plane pull-force estimate** (#167) — `pull` 필드는 `PullEstimate.msg` 하위 메시지이며 `WbcState.msg` 도 같은 타입을 embed 한다 (소비자 저장 코드 공유 목적). `rtc::grasp::PullForceEstimator` 출력.

@@ -55,12 +55,19 @@ demo_shared:
     # estimator live took K in [10, 50] from 3.3-9.3 s to 10-30 s, past the
     # behaviour tree's 10 s grasp budget; pinned it stays flat at 3.3-9.3 s
     # across 0-20 mN of ripple. The single-tick estimator is noise over noise on
-    # real hardware and needs redesigning, not retuning.
+    # real hardware.
     #
-    # Released together in #426 (K_est_max 400 + beta 0.03). Do not raise one
-    # without the other. Rationale: grasp_tuning_guide.md 6.6.
-    beta: 0.3                   # loop-gain cap; only meaningful once adaptation is on
-    K_est_max: 1.0              # [N/delta_s] == seed -> estimate pinned, adaptation off
+    # This pin is FINAL, not a placeholder. #426 retired adaptation on
+    # 2026-08-14 hardware data: at the stiffest reachable contact (a rigid metal
+    # box) the constant 0.769 gain showed no oscillation, so the failure mode
+    # adaptation exists to suppress is not there; and the hand's own series
+    # compliance (pads, tendons, sensor) caps contact stiffness at ~11, where
+    # the once-intended beta of 0.03 could only pick gain_scale in
+    # [0.749, 1.000] — a band that already contains the deployed 0.769. The old
+    # plan of raising K_est_max to 400 is discarded; 400 is ~36x the physical
+    # ceiling. Do not raise either key. Rationale: grasp_tuning_guide.md 6.9.
+    beta: 0.3                   # sole author of the constant gain de-rating while pinned
+    K_est_max: 1.0              # [N/delta_s] == seed -> estimate pinned, adaptation retired
 
     # Force thresholds
     f_contact_threshold: 0.8    # [N] contact detection threshold

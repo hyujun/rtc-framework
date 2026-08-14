@@ -841,7 +841,9 @@ TEST(DeployedForcePiTuning, MatchesTheTuningRtcControllersAssertsAgainst) {
     // robots ran while the estimator was inert. Releasing the estimate (400)
     // without retuning beta to 0.03 puts every grasp past the behaviour tree's
     // 10 s budget; retuning beta while pinned changes every grasp's gain by 26%
-    // for no adaptation. Both move together in #426.
+    // for no adaptation. #426 retired the release these two were waiting on
+    // (grasp_tuning_guide.md 6.9), so this pair is now permanent rather than
+    // pending — a diff that moves either value is a regression, not a rollout.
     EXPECT_DOUBLE_EQ(gp.beta, 0.3) << variant;
     EXPECT_DOUBLE_EQ(gp.K_est_max, 1.0) << variant;
     EXPECT_DOUBLE_EQ(gp.Kp_base, 0.02) << variant;

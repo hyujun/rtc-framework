@@ -1339,8 +1339,10 @@ TEST(JointForcePiFeedTest, TheTwoBanksHaveIndependentCutoffs) {
 
 // ── grasp_diag.csv (#428) ───────────────────────────────────────────────────
 //
-// This channel exists because #426 has to measure the force noise sigma of the
-// 25 Hz Force-PI bank, and nothing in the session directory carries it today.
+// This channel exists because #426 had to measure the force noise sigma of the
+// 25 Hz Force-PI bank, and nothing else in the session directory carried it.
+// It did (9-13 mN, grasp_tuning_guide.md 6.7-6.9) and the file outlives the
+// question: it is the only readable form of that evidence.
 // The tests below hold the properties that make the file usable as evidence: it
 // is lossless, its gaps mean exactly one thing, and its k_est column is the
 // controller's own estimate rather than a constant.
