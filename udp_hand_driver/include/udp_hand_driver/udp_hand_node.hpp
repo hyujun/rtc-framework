@@ -128,6 +128,35 @@ inline constexpr double kPublishPollOversampling = 2.0;
   return true;
 }
 
+/// Network endpoint the transport actually opens, after `sil_mode` derivation.
+struct HandEndpoint {
+  std::string target_ip;
+  std::string local_ip;
+  std::string local_interface;
+};
+
+/// Apply the `sil_mode` overrides to the yaml-configured endpoint.
+///
+/// `firmware` SIL moves the device onto loopback, so the node forces
+/// `target_ip=127.0.0.1` — and has to drop the local binding with it. A socket
+/// pinned to a real NIC cannot reach 127.0.0.1: `SO_BINDTODEVICE` forces egress
+/// out that device, so `connect()` and `send()` both report success while every
+/// datagram is dropped, surfacing only as recv timeouts with no diagnostic (and
+/// on a host that lacks the NIC, as an ENODEV hard failure in `Open()`). The
+/// local binding exists solely to disambiguate same-subnet NICs against real
+/// hardware, so loopback is precisely the case where it must not apply.
+///
+/// `off` and `loopmodel` pass through unchanged (`loopmodel` opens no socket).
+[[nodiscard]] inline HandEndpoint DeriveHandEndpoint(const std::string& sil_mode,
+                                                     HandEndpoint configured) {
+  if (sil_mode == "firmware") {
+    configured.target_ip = "127.0.0.1";
+    configured.local_ip.clear();
+    configured.local_interface.clear();
+  }
+  return configured;
+}
+
 inline const rtc::ThreadConfig kHandAuxIoConfig{.cpu_core = -1,
                                                 .sched_policy = SCHED_OTHER,
                                                 .sched_priority = 0,

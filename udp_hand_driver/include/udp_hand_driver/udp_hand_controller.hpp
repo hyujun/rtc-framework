@@ -141,6 +141,8 @@ inline const rtc::ThreadConfig kHandUdpRecvConfig{.cpu_core = -1,
 struct UdpHandControllerConfig {
   std::string target_ip{};
   int target_port{0};
+  std::string local_ip{};
+  std::string local_interface{};
   rtc::ThreadConfig thread_cfg{kHandUdpRecvConfig};
   double recv_timeout_ms{10.0};
   int sensor_decimation{1};
@@ -185,7 +187,8 @@ class UdpHandController {
                                                      : cfg.fingertip_names),
         communication_mode_(cfg.communication_mode),
         ft_config_(std::move(cfg.ft_config)),
-        transport_(std::move(cfg.target_ip), cfg.target_port, cfg.recv_timeout_ms),
+        transport_(std::move(cfg.target_ip), cfg.target_port, cfg.recv_timeout_ms,
+                   std::move(cfg.local_ip), std::move(cfg.local_interface)),
         sensor_processor_(UdpHandSensorProcessorConfig{
             num_fingertips_, sensor_decimation_, cfg.tof_lpf_enabled, cfg.tof_lpf_cutoff_hz,
             cfg.baro_lpf_enabled, cfg.baro_lpf_cutoff_hz, cfg.drift_detection_enabled,

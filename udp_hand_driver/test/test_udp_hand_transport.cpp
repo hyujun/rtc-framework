@@ -92,6 +92,18 @@ constexpr std::size_t KindIdx(RequestKind k) {
   return static_cast<std::size_t>(k);
 }
 
+TEST(HandUdpTransportBinding, InvalidLocalIp_PreventsSocketOpen) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0, "not-an-ip");
+  EXPECT_FALSE(transport.Open());
+  EXPECT_FALSE(transport.is_open());
+}
+
+TEST(HandUdpTransportBinding, InvalidLocalInterface_PreventsSocketOpen) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0, "", "does-not-exist");
+  EXPECT_FALSE(transport.Open());
+  EXPECT_FALSE(transport.is_open());
+}
+
 // ── RequestMotorRead mode validation ────────────────────────────────────────────
 
 TEST(HandUdpTransportModeValidation, MotorRead_ModeMatch_ReturnsTrue) {
