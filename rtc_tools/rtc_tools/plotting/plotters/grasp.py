@@ -45,6 +45,12 @@ _PHASE_HOLDING = 4
 
 _MEASURED_PREFIX = "f_measured_"
 
+_DELTA_S_PREFIX = "delta_s_"
+
+# GraspController::kDeltaSEpsilon — the |delta_s| below which the estimator
+# accepts no sample. Reused here as "the servo did not measurably move".
+_DELTA_S_EPSILON = 1e-6
+
 
 def grasp_finger_names(df):
     """Finger names stamped into the per-finger column headers, in file order."""
@@ -75,11 +81,17 @@ def _hold_rows(df):
 def _sigma_contamination_flags(hold, finger, sigma, p2p, n):
     """Reasons the hold-segment standard deviation is NOT a sensor noise floor.
 
-    Both checks exist because a hold that is not actually stationary still
+    The checks exist because a hold that is not actually stationary still
     yields a plausible number, and nothing downstream says otherwise. On the
     2026-08-13 hardware run the two contaminated fingers read 67 and 305 mN
     against a real noise floor of 9-13 mN — reading either as sigma would have
     put #426's budget off by more than an order of magnitude.
+
+    Check (3) was added after 2026-08-14, where the shape checks passed on every
+    finger (p2p/sigma 4.1-7.5) and the summary called all four usable, but the
+    two servoed fingers read 147-235 and 58-103 mN against 7.4 mN on a finger
+    the law never touched. Shape alone cannot see this: a loop tracking a slow
+    disturbance produces a perfectly noise-shaped distribution.
     """
     flags = []
 
@@ -107,6 +119,30 @@ def _sigma_contamination_flags(hold, finger, sigma, p2p, n):
             flags.append(f"[SPIKE p2p/sigma={ratio:.1f}]")
         elif ratio < 4.0:
             flags.append(f"[STEPPED p2p/sigma={ratio:.1f}]")
+
+    # (3) The law was still driving this finger. s is a command, not a
+    # measurement — GraspController writes it only for fingers the Force-PI law
+    # acts on, so a finger whose s never moves had no law on it and its spread
+    # is the sensor alone. Any other finger's spread is closed-loop response to
+    # whatever the loop was chasing, and that is the larger quantity by 10-30x:
+    # 7.4 mN on a frozen finger against 147-235 mN on a servoed one, same hand,
+    # same 21 s hold, same run.
+    #
+    # Read delta_s rather than differencing s here. A hold is often several
+    # separate grasps, and s resumes each one wherever the approach left it, so
+    # the spread of s across the concatenated hold is dominated by the step
+    # between segments — on the 2026-08-14 run that made every finger look
+    # servoed, including the two whose s was bit-identical within each segment.
+    # delta_s is per tick by construction and carries no such step.
+    #
+    # The threshold is the estimator's own kDeltaSEpsilon rather than a new
+    # constant: below it no sample is ever accepted, so the loop is inert by the
+    # definition the controller already uses.
+    step = hold.get(f"{_DELTA_S_PREFIX}{finger}")
+    if step is not None:
+        step = step.dropna().abs()
+        if not step.empty and float(step.max()) > _DELTA_S_EPSILON:
+            flags.append(f"[SERVO ACTIVE max|ds|={float(step.max()):.1e}]")
     return flags
 
 
@@ -184,8 +220,7 @@ def print_grasp_diag_statistics(df):
             print(
                 f"    {f:<10} sigma={sigma * 1000.0:8.3f} mN   "
                 f"mean={float(series.mean()):7.4f} N   "
-                f"p2p={p2p * 1000.0:8.3f} mN"
-                + ("   " + " ".join(flags) if flags else "")
+                f"p2p={p2p * 1000.0:8.3f} mN" + ("   " + " ".join(flags) if flags else "")
             )
             (rejected if flags else usable).append(f)
         # Naming the usable set is the whole point: a hold that was not actually
@@ -225,8 +260,11 @@ def print_grasp_diag_statistics(df):
             accepted = float(live[upd_col].astype(float).mean()) * 100
             print(f"               samples accepted by the guards: {accepted:.1f}% of ticks")
         if raw_col in live.columns:
-            raw = live[live[upd_col].astype(float) > 0.5][raw_col] if upd_col in live.columns \
+            raw = (
+                live[live[upd_col].astype(float) > 0.5][raw_col]
+                if upd_col in live.columns
                 else live[raw_col]
+            )
             raw = raw.dropna()
             if len(raw) > 1:
                 # The spread of the raw samples against the EMA they feed is the
@@ -291,8 +329,15 @@ def plot_grasp_diag(df, save_dir=None):
         if meas in df.columns:
             ax.plot(t, df[meas], label=f"{f} measured", linewidth=1.2, color=color)
         if des in df.columns:
-            ax.plot(t, df[des], label=f"{f} desired", linewidth=1.0, color=color, linestyle="--",
-                    alpha=0.7)
+            ax.plot(
+                t,
+                df[des],
+                label=f"{f} desired",
+                linewidth=1.0,
+                color=color,
+                linestyle="--",
+                alpha=0.7,
+            )
     _phase_bands(ax, df)
     ax.set_ylabel("Force (N)")
     ax.legend(fontsize=8, ncol=2)
@@ -323,11 +368,24 @@ def plot_grasp_diag(df, save_dir=None):
             mask = df[upd_col].astype(float) > 0.5 if upd_col in df.columns else None
             sub = df[mask] if mask is not None else df
             if not sub.empty:
-                ax.scatter(sub["timestamp"], sub[raw_col], s=3, alpha=0.35, color=color,
-                           label=f"k_inst_raw_{f} (accepted)")
+                ax.scatter(
+                    sub["timestamp"],
+                    sub[raw_col],
+                    s=3,
+                    alpha=0.35,
+                    color=color,
+                    label=f"k_inst_raw_{f} (accepted)",
+                )
     if "K_est_max" in df.columns:
-        ax.plot(t, df["K_est_max"], color="red", linestyle="--", linewidth=1.0, alpha=0.6,
-                label="K_est_max (clamp)")
+        ax.plot(
+            t,
+            df["K_est_max"],
+            color="red",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.6,
+            label="K_est_max (clamp)",
+        )
     ax.set_ylabel("stiffness [N/delta_s]")
     ax.legend(fontsize=8, ncol=2)
     ax.grid(True, alpha=0.3)

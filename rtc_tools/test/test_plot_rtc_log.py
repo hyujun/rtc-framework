@@ -1960,7 +1960,7 @@ def _grasp_diag_header(fingers=_GRASP_DIAG_FINGERS):
     return cols
 
 
-def _grasp_diag_rows(n=40, hold_from=10, seed=0, noise_n=0.010):
+def _grasp_diag_rows(n=40, hold_from=10, seed=0, noise_n=0.010, delta_s=0.001, est_updated=1):
     """Rows with an approach transient followed by a stationary hold.
 
     The hold carries seeded GAUSSIAN noise (sigma = `noise_n` N) on f_measured,
@@ -1968,6 +1968,12 @@ def _grasp_diag_rows(n=40, hold_from=10, seed=0, noise_n=0.010):
     contamination check correctly rejects as "stepped" — the fixture has to look
     like the noise floor it claims to be, or the clean-path test asserts against
     a shape that never occurs on hardware.
+
+    `delta_s` decides which finger this is. The default models a CONTACTED
+    finger: the law is driving s, so the estimator takes samples. Pass
+    `delta_s=0.0, est_updated=0` for a finger the law never touches — that is
+    the only kind whose spread is a sensor noise floor, so the tests that assert
+    "usable" have to say so explicitly.
     """
     rng = np.random.default_rng(seed)
     noise = rng.normal(0.0, noise_n, n)
@@ -1984,10 +1990,10 @@ def _grasp_diag_rows(n=40, hold_from=10, seed=0, noise_n=0.010):
             "f_error": 2.0 - f_meas,
             "k_est": 3.0,
             "k_inst_raw": 7.5,
-            "delta_s": 0.001,
+            "delta_s": delta_s,
             "delta_f": 0.002,
             "gain_scale": 0.5,
-            "est_updated": 1,
+            "est_updated": est_updated,
             "integrator_frozen": 0,
             "contact": 1,
         }
@@ -2096,11 +2102,11 @@ class TestGraspDiagStatistics:
         from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
 
         header = _grasp_diag_header()
-        rows = _grasp_diag_rows()
+        rows = _grasp_diag_rows(delta_s=0.0, est_updated=0)
         di = header.index("f_desired_thumb")
         for i, r in enumerate(rows):
             if r[header.index("grasp_phase")] == 4:
-                r[di] = 2.0 if i % 2 else 1.0      # 기준이 계단으로 움직인다
+                r[di] = 2.0 if i % 2 else 1.0  # 기준이 계단으로 움직인다
 
         print_grasp_diag_statistics(pd.DataFrame(rows, columns=header))
         out = capsys.readouterr().out
@@ -2118,7 +2124,7 @@ class TestGraspDiagStatistics:
         header = _grasp_diag_header()
         rows = _grasp_diag_rows(n=300, hold_from=10)
         col = header.index("f_measured_thumb")
-        rows[200][col] = 12.0                       # thumb 만 한 번 크게 튄다
+        rows[200][col] = 12.0  # thumb 만 한 번 크게 튄다
 
         print_grasp_diag_statistics(pd.DataFrame(rows, columns=header))
         out = capsys.readouterr().out
@@ -2130,12 +2136,67 @@ class TestGraspDiagStatistics:
         from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
 
         print_grasp_diag_statistics(
-            pd.DataFrame(_grasp_diag_rows(n=300, hold_from=10), columns=_grasp_diag_header())
+            pd.DataFrame(
+                _grasp_diag_rows(n=300, hold_from=10, delta_s=0.0, est_updated=0),
+                columns=_grasp_diag_header(),
+            )
         )
         out = capsys.readouterr().out
         assert "[REF MOVED]" not in out and "[SPIKE" not in out and "[STEPPED" not in out
+        assert "[SERVO ACTIVE" not in out
         assert "usable from: thumb, index, middle" in out, out
         assert "NOT a noise floor" not in out
+
+    def test_servoed_finger_is_not_a_noise_floor(self, capsys):
+        """법칙이 s 를 몰고 있으면 그 분산은 센서가 아니라 폐루프다.
+
+        2026-08-14 실기에서 모양 검사(p2p/sigma 4.1~7.5)는 네 손가락 전부를
+        통과시켰고 요약은 전부 usable 이라고 했다. 실제로는 서보 중이던 둘이
+        147~235 / 58~103 mN, 법칙이 건드리지 않은 손가락이 7.4 mN 이었다.
+        느린 교란을 따라가는 루프는 완벽하게 노이즈처럼 생긴 분포를 만든다.
+        """
+        from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
+
+        header = _grasp_diag_header()
+        rows = _grasp_diag_rows(n=300, hold_from=10, delta_s=0.0, est_updated=0)
+        ds = header.index("delta_s_thumb")
+        for r in rows:
+            r[ds] = 1.0e-4  # thumb 만 법칙이 몰고 있다
+
+        print_grasp_diag_statistics(pd.DataFrame(rows, columns=header))
+        out = capsys.readouterr().out
+        thumb = [ln for ln in out.splitlines() if ln.strip().startswith("thumb")]
+        assert thumb and "[SERVO ACTIVE" in thumb[0], out
+        assert "usable from: index, middle" in out, out
+
+    def test_servo_flag_reads_delta_s_not_the_spread_of_s(self, capsys):
+        """유지 구간이 파지 여러 번이면 s 의 전체 폭은 구간 사이 계단이 지배한다.
+
+        s 는 접근이 끝난 자리에서 매번 다시 시작하므로, 이어붙인 hold 에서
+        s 를 차분하면 법칙이 한 번도 건드리지 않은 손가락까지 servoed 로 찍힌다
+        (2026-08-14 run 에서 실제로 네 손가락 전부가 그렇게 찍혔다). delta_s 는
+        구성상 tick 당이라 그 계단을 싣지 않는다.
+        """
+        from rtc_tools.plotting.plotters.grasp import print_grasp_diag_statistics
+
+        header = _grasp_diag_header()
+        rows = _grasp_diag_rows(n=300, hold_from=10, delta_s=0.0, est_updated=0)
+        ph = header.index("grasp_phase")
+        for i in range(150, 170):  # 유지 구간을 둘로 쪼갠다
+            rows[i][ph] = 1
+        for i in range(170, 300):  # 두 번째 파지는 다른 s 에서 잡는다
+            for f in _GRASP_DIAG_FINGERS:
+                rows[i][header.index(f"s_{f}")] = 0.9
+
+        df = pd.DataFrame(rows, columns=header)
+        hold = df[(df.grasp_phase == 4) & (df.valid == 1)]
+        # 전제 확인: s 를 차분했다면 걸렸을 폭이 실제로 존재한다
+        assert float(hold["s_thumb"].max() - hold["s_thumb"].min()) > 0.3
+
+        print_grasp_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "[SERVO ACTIVE" not in out, out
+        assert "usable from: thumb, index, middle" in out, out
 
     def test_estop_rows_are_not_counted_as_idle(self, capsys):
         """valid=0 행의 grasp_phase 는 0 이지만 그것은 idle 이 아니라 부재다.
