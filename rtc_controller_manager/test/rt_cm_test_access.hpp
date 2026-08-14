@@ -360,6 +360,15 @@ class ControllerLifecycleTestAccess {
     return node.sim_wake_eventfd_.load(std::memory_order_acquire);
   }
 
+  // ── Per-tick timing payload (issue #222) ──────────────────────────────────
+  // Drains what the RT loop pushed, so a test can assert on the phase split a
+  // live tick produced rather than on the stamping calls in isolation.
+  static std::vector<rtc::RtTickTimingSample> DrainTimingSamples(RtControllerNode& node) {
+    std::vector<rtc::RtTickTimingSample> out;
+    node.cm_timing_producer_.Drain([&out](const rtc::RtTickTimingSample& s) { out.push_back(s); });
+    return out;
+  }
+
   // Opens both fds exactly as on_configure does. Returns false if either
   // eventfd() call failed, so a test can report that rather than assert on a
   // sentinel it never actually installed.

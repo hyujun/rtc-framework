@@ -137,8 +137,9 @@ rt_control_tick                          (RT tick 전체; raw clock_nanosleep �
 │        ├─ ComputeKinematicWbc
 │        └─ ComputeDynamicWbc … (FSM 경로에 따라 PositionMode/ReleaseMode/Fallback)
 ├─ CM::FillPublishSnapshot                (PublishSnapshot group_commands 채우기)
-└─ CM::WriteCommand                       (inline actuator WriteCommand 루프 — actuator lane)
-   └─ <Backend>::WriteCommand              (per-backend RT actuator publish, L3)
+├─ CM::WriteCommand                       (inline actuator WriteCommand 루프 — actuator lane)
+│  └─ <Backend>::WriteCommand              (per-backend RT actuator publish, L3)
+└─ CM::PublishHandoff                     (nrt_publish_buffer_ push + eventfd — 비-RT 레인 인계)
 CM::CheckTimeouts                         (50 Hz watchdog; 10 tick 마다, rt_control_tick 밖 sibling)
 
 `<Backend>` = `UrDriverNativeBackend` / `UdpHandNativeBackend` / `MujocoNativeBackend`
@@ -149,6 +150,14 @@ read/write, 후자는 non-RT executor callback 의 SeqLock write 다.
 
 `CM::CheckTimeouts` 는 `ControlLoop()` 반환 **후** `OnTick` 에서 실행되므로
 `rt_control_tick` 의 자식이 아니라 같은 레인의 형제 span 이다 (10 tick 마다만 발생).
+
+`CM::PublishHandoff` 는 CSV 가 못 가르는 자리를 가르려고 둔 span 이다 (#222). `t_publish_us`
+는 `cm_timing_log.csv` 의 phase 열이고 CM 은 그 phase 를 이 handoff 끝에서 끊으므로, 남는
+잔차(`t_total_us` − 세 phase 합)는 **어느 span 도 덮지 않는 구간** = 스레드가 돌지 못한 시간이다.
+따라서 긴 tick 을 만나면 순서는: CSV 잔차로 tail 인지 판별 → tail 이면 trace 에서 그것이
+`CM::PublishHandoff` **안**(68 KB 스냅샷 복사)인지 **뒤**(스케줄 손실)인지 확인. 실측 표본에서는
+`CM::WriteCommand` 가 28 µs 인 tick 의 3.4 ms 가 전부 span 바깥이었고, 같은 시각 `nrt_callback`
+레인의 10 Hz 컨트롤러 로그 drain 이 7.9 ms 돌고 있었다.
 위 스택은 대표 경로다 — WBC `Compute` 아래에는 per-tick 헬퍼 span 도 함께 찍힌다
 (`ReadState` / `DrainTargetSlot` / `WriteJointCommand` / `FillLogOutput` /
 `FillPublishOutput` / `ExtractFullState` / `BuildTargetPosture` /

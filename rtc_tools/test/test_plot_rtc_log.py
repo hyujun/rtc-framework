@@ -831,6 +831,98 @@ class TestTimingOutlierFilter:
         assert len(idx) == 0
 
 
+class TestTailColumn:
+    """`add_tail_column` is what keeps a long tick from being read as a slow
+    publisher (issue #222): the CM lane's worst traced overrun was 28 µs of
+    publish and 3.4 ms of tail, and only the residual says so.
+    """
+
+    @staticmethod
+    def _df(n=10, state=1.0, compute=20.0, publish=5.0, total=30.0):
+        return pd.DataFrame(
+            {
+                "timestamp": np.arange(n) * 0.002,
+                "tick_count": np.arange(1, n + 1),
+                "t_state_us": np.full(n, state),
+                "t_compute_us": np.full(n, compute),
+                "t_publish_us": np.full(n, publish),
+                "t_total_us": np.full(n, total),
+                "jitter_us": np.zeros(n),
+            }
+        )
+
+    def test_residual_is_total_minus_phases(self):
+        from rtc_tools.plotting.plotters.timing import TAIL_COLUMN, add_tail_column
+
+        out = add_tail_column(self._df())
+        # 30 - (1 + 20 + 5)
+        assert (out[TAIL_COLUMN] == 4.0).all()
+
+    def test_legacy_csv_without_stamp_has_zero_tail(self):
+        from rtc_tools.plotting.plotters.timing import TAIL_COLUMN, add_tail_column
+
+        # Pre-#222 producers leave the phases summing exactly to the total.
+        out = add_tail_column(self._df(total=26.0))
+        assert (out[TAIL_COLUMN] == 0.0).all()
+
+    def test_rounding_never_produces_a_negative_band(self):
+        from rtc_tools.plotting.plotters.timing import TAIL_COLUMN, add_tail_column
+
+        # Four independent clock reads can put the sum a hair over the total;
+        # a stackplot rejects negative bands.
+        out = add_tail_column(self._df(total=25.999))
+        assert (out[TAIL_COLUMN] >= 0.0).all()
+
+    def test_does_not_mutate_input(self):
+        from rtc_tools.plotting.plotters.timing import TAIL_COLUMN, add_tail_column
+
+        df = self._df()
+        before = df.copy()
+        add_tail_column(df)
+        pd.testing.assert_frame_equal(df, before)
+        assert TAIL_COLUMN not in df.columns
+
+    def test_missing_phase_column_is_a_noop(self):
+        from rtc_tools.plotting.plotters.timing import TAIL_COLUMN, add_tail_column
+
+        df = self._df().drop(columns=["t_publish_us"])
+        assert TAIL_COLUMN not in add_tail_column(df).columns
+
+    def test_breakdown_plot_stacks_the_tail_band(self, tmp_path, monkeypatch):
+        # The stats block is not where a long tick gets noticed — the stacked
+        # area is. Without this band the figure silently stops adding up to
+        # t_total_us and the missing time looks like it was never spent.
+        import matplotlib.axes
+
+        from rtc_tools.plotting.plotters.timing import plot_timing_breakdown
+
+        captured = {}
+        real = matplotlib.axes.Axes.stackplot
+
+        def spy(self, *args, **kwargs):
+            captured["labels"] = list(kwargs.get("labels", []))
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(matplotlib.axes.Axes, "stackplot", spy)
+        plot_timing_breakdown(self._df(n=50, total=230.0), save_dir=str(tmp_path))
+
+        assert captured.get("labels"), "stackplot was never called"
+        # Last so the band sits between the phases and t_total_us.
+        assert captured["labels"][-1] == "Tail (unattributed)", captured["labels"]
+
+    def test_statistics_report_the_tail(self, capsys):
+        from rtc_tools.plotting.plotters.timing import print_timing_statistics
+
+        # A tick that is 90 % tail: "Publish" must not be what the reader sees.
+        df = self._df(n=200, publish=5.0, total=230.0)
+        print_timing_statistics(df)
+        out = capsys.readouterr().out
+
+        assert "Tail (unattributed):" in out
+        tail_block = out.split("Tail (unattributed):")[1].split("\n\n")[0]
+        assert "204.00" in tail_block, tail_block
+
+
 class TestInferBudget:
     """`infer_budget_us` must use median(diff) so a first-tick gap (340 ms
     in observed sim mode) does not poison the inferred period budget that

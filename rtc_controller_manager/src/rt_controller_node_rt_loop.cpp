@@ -721,19 +721,38 @@ void RtControllerNode::ControlLoop() {
         ++out_idx;
       }
     }
-    static_cast<void>(nrt_publish_buffer_.Push(snap));
-    // Single load — see the note on nrt_publish_eventfd_ (issue #224).
-    const int nrt_fd = nrt_publish_eventfd_.load(std::memory_order_acquire);
-    if (nrt_fd >= 0) {
-      static_cast<void>(eventfd_write(nrt_fd, 1));
+    {
+      // L2 span: the non-RT hand-off. Split out from the surrounding phase
+      // because the CSV cannot separate it — `t_publish_us` used to run to the
+      // end of the tick, so a stall anywhere after Compute() was reported as
+      // "publish" whether or not a publisher was involved (issue #222). With
+      // this span the trace says which of the two it was: inside the hand-off
+      // (the snapshot copy — PublishSnapshot is ~68 KB) or after it, in the
+      // gap that no span covers, which is thread-not-running time.
+      RTC_TRACE_SCOPE("CM::PublishHandoff");
+      static_cast<void>(nrt_publish_buffer_.Push(snap));
+      // Single load — see the note on nrt_publish_eventfd_ (issue #224).
+      const int nrt_fd = nrt_publish_eventfd_.load(std::memory_order_acquire);
+      if (nrt_fd >= 0) {
+        static_cast<void>(eventfd_write(nrt_fd, 1));
+      }
     }
   }
 
+  // Ends the publish phase here, not at the end of the tick: everything below
+  // (loop bookkeeping, the timing-summary nudge, the watchdog OnTick runs
+  // after ControlLoop returns) is not publishing, and neither is time the
+  // thread spends descheduled. What is left over lands in the CSV's phase
+  // residual — see MarkPublishDone() / issue #222.
+  rt_loop_.StampPublishDone();
+
   // Per-tick timing payload (t_state/t_compute/t_publish/t_total/jitter) is
   // captured by the base PeriodicRtThread automatically via the StampStateAcquired/
-  // StampComputeDone breakpoints earlier in this function and the cm_timing_producer_
-  // wired through SetTimingProducer<> in StartRtLoop. Controller-owned data CSVs
-  // are drained by each controller's own ControllerLogSet timer (Phase C).
+  // StampComputeDone/StampPublishDone breakpoints earlier in this function and the
+  // cm_timing_producer_ wired through SetTimingProducer<> in StartRtLoop. Ticks that
+  // return early (readiness gate / init wait) stamp none of the three, which leaves
+  // the whole tick in t_publish_us and the residual at 0 — unchanged from before. Controller-owned
+  // data CSVs are drained by each controller's own ControllerLogSet timer (Phase C).
 
   // Release: an aux thread that observes this new value (RtTickCount()) is
   // entitled to everything this tick published before it — the controllers'
