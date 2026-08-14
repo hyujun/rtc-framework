@@ -24,6 +24,7 @@
 #include <ostream>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace integrated_bringup {
@@ -69,17 +70,59 @@ struct DeviceStateLogPod {
 static_assert(std::is_trivially_copyable_v<DeviceStateLogPod>,
               "DeviceStateLogPod must be trivially copyable for SPSC ring");
 
-/// Emit the entire CSV header line for a DeviceStateLogPod.
-/// `joint_names` and `motor_names` must match the runtime num_joints /
-/// num_motors used during Push (captured once at on_configure, not RT).
+/// Column geometry for one registered DeviceStateLog channel, captured ONCE at
+/// registration and handed to BOTH writers.
+///
+/// Both widths are CONFIGURED (joint_names / motor_names, clamped to the POD
+/// capacities), never the per-tick runtime counts. The header is written once
+/// at first Open, before any pod exists, so a row sized by `p.num_joints` /
+/// `p.num_motors` diverges from it whenever the backend reports a different
+/// channel count than the config named — and it can: `num_channels` is
+/// whatever `ReadState` filled, which is 0 for a device whose backend never
+/// came up (rt_controller_node_rt_loop.cpp). The sibling sensor channel wrote
+/// 138,248 rows through exactly that gap before anyone noticed (#440).
+///
+/// Rows therefore always carry `joints` / `motors` entries per array block:
+/// channels the device did not report carry 0, and the trailing `num_joints` /
+/// `num_motors` columns record what it actually reported, so a zero column is
+/// legible as absence rather than as a measured zero.
+struct DeviceStateLogColumns {
+  std::size_t joints{0};
+  std::size_t motors{0};
+};
+
+/// Derive the geometry from the configured names. The single place either
+/// width is computed, so the two writers cannot be handed different numbers.
+[[nodiscard]] inline DeviceStateLogColumns DeviceStateLogColumnsFor(
+    std::span<const std::string> joint_names, std::span<const std::string> motor_names) {
+  return {std::min(joint_names.size(), DeviceStateLogPod::kMaxJoints),
+          std::min(motor_names.size(), DeviceStateLogPod::kMaxMotors)};
+}
+
+/// Emit the entire CSV header line for a DeviceStateLogPod. Widths come from
+/// `cols`; `joint_names` / `motor_names` supply labels only and fall back to
+/// `j<index>` / `m<index>` past the end of the list, so the emitted width is
+/// `cols` no matter what the arguments say about each other.
 /// The logger appends '\n'.
 inline void WriteDeviceStateLogHeader(std::ostream& os, std::span<const std::string> joint_names,
-                                      std::span<const std::string> motor_names) {
+                                      std::span<const std::string> motor_names,
+                                      const DeviceStateLogColumns& cols) {
   os << "t_relative_s";
 
+  const auto n_j = std::min(cols.joints, DeviceStateLogPod::kMaxJoints);
+  const auto n_m = std::min(cols.motors, DeviceStateLogPod::kMaxMotors);
+  // Header write is once-per-file and off the RT path, so building the label
+  // string here is free.
+  auto joint_label = [&](std::size_t i) {
+    return i < joint_names.size() ? joint_names[i] : ("j" + std::to_string(i));
+  };
+  auto motor_label = [&](std::size_t i) {
+    return i < motor_names.size() ? motor_names[i] : ("m" + std::to_string(i));
+  };
+
   auto emit_joint_col = [&](std::string_view prefix) {
-    for (const auto& n : joint_names) {
-      os << ',' << prefix << '_' << n;
+    for (std::size_t i = 0; i < n_j; ++i) {
+      os << ',' << prefix << '_' << joint_label(i);
     }
   };
   emit_joint_col("actual_pos");
@@ -95,17 +138,19 @@ inline void WriteDeviceStateLogHeader(std::ostream& os, std::span<const std::str
   os << ",task_pos_x,task_pos_y,task_pos_z";
   os << ",task_pos_roll,task_pos_pitch,task_pos_yaw";
 
-  for (const auto& n : motor_names) {
-    os << ",motor_pos_" << n;
-  }
-  for (const auto& n : motor_names) {
-    os << ",motor_vel_" << n;
-  }
-  for (const auto& n : motor_names) {
-    os << ",motor_eff_" << n;
-  }
+  auto emit_motor_col = [&](std::string_view prefix) {
+    for (std::size_t i = 0; i < n_m; ++i) {
+      os << ',' << prefix << motor_label(i);
+    }
+  };
+  emit_motor_col("motor_pos_");
+  emit_motor_col("motor_vel_");
+  emit_motor_col("motor_eff_");
 
   os << ",command_type,goal_type";
+  // Appended last: the columns that keep a padded (or truncated) row
+  // self-describing — see DeviceStateLogColumns.
+  os << ",num_joints,num_motors";
 }
 
 /// Translate enum-as-int back to string for the CSV row.
@@ -117,16 +162,23 @@ inline std::string_view DeviceStateLogGoalTypeStr(std::uint8_t v) noexcept {
   return v == 0 ? "joint" : (v == 1 ? "task" : "unknown");
 }
 
-/// Emit one row. Column count must match the header writer above (assert
-/// not possible at compile time because column count depends on runtime
-/// joint/motor counts — but the header *writer* and the row writer agree
-/// to read the *same* num_* fields). The logger appends '\n' + flush.
-inline void WriteDeviceStateLogRow(std::ostream& os, const DeviceStateLogPod& p) {
+/// Emit one row. Width is taken from the SAME `cols` the header was written
+/// with, so the two agree by construction rather than by the caller's care.
+/// Channels the device did not report this tick are emitted as 0; the trailing
+/// `num_joints` / `num_motors` columns say how many were real. The logger
+/// appends '\n' + flush.
+inline void WriteDeviceStateLogRow(std::ostream& os, const DeviceStateLogPod& p,
+                                   const DeviceStateLogColumns& cols) {
   os << p.t_relative_s;
 
+  const auto n_j = std::min(cols.joints, DeviceStateLogPod::kMaxJoints);
+  const auto n_m = std::min(cols.motors, DeviceStateLogPod::kMaxMotors);
+  const auto reported_j = std::min(static_cast<std::size_t>(p.num_joints), n_j);
+  const auto reported_m = std::min(static_cast<std::size_t>(p.num_motors), n_m);
+
   auto emit_joint_array = [&](const std::array<double, DeviceStateLogPod::kMaxJoints>& a) {
-    for (std::size_t i = 0; i < p.num_joints; ++i) {
-      os << ',' << a[i];
+    for (std::size_t i = 0; i < n_j; ++i) {
+      os << ',' << (i < reported_j ? a[i] : 0.0);
     }
   };
   emit_joint_array(p.actual_positions);
@@ -145,8 +197,8 @@ inline void WriteDeviceStateLogRow(std::ostream& os, const DeviceStateLogPod& p)
   }
 
   auto emit_motor_array = [&](const std::array<double, DeviceStateLogPod::kMaxMotors>& a) {
-    for (std::size_t i = 0; i < p.num_motors; ++i) {
-      os << ',' << a[i];
+    for (std::size_t i = 0; i < n_m; ++i) {
+      os << ',' << (i < reported_m ? a[i] : 0.0);
     }
   };
   emit_motor_array(p.motor_positions);
@@ -155,6 +207,8 @@ inline void WriteDeviceStateLogRow(std::ostream& os, const DeviceStateLogPod& p)
 
   os << ',' << DeviceStateLogCommandTypeStr(p.command_type);
   os << ',' << DeviceStateLogGoalTypeStr(p.goal_type);
+  os << ',' << static_cast<unsigned>(p.num_joints);
+  os << ',' << static_cast<unsigned>(p.num_motors);
 }
 
 }  // namespace integrated_bringup

@@ -153,8 +153,12 @@ inline void WriteGraspDiagLogHeader(std::ostream& os,
       "s",       "f_desired", "f_measured", "f_error",    "k_est",
       "k_inst_raw", "delta_s", "delta_f",   "gain_scale", "est_updated",
       "integrator_frozen", "contact"};
+  // Clamped exactly as WriteGraspDiagLogRow clamps `num_columns`: without it a
+  // finger list longer than the POD capacity makes the header wider than any
+  // row the writer can emit.
+  const auto n = std::min(finger_names.size(), kGraspDiagMaxFingers);
   for (const auto& quantity : kPerFinger) {
-    for (std::size_t i = 0; i < finger_names.size(); ++i) {
+    for (std::size_t i = 0; i < n; ++i) {
       os << ',' << quantity << '_' << finger_names[i];
     }
   }

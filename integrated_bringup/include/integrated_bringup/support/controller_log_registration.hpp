@@ -294,13 +294,17 @@ template <typename ParsedLogEntryT>
       // is gone (channel writes header on first Open).
       const auto joint_names = it->second.first;
       const auto motor_names = it->second.second;
+      // Both writers must be sized from the same numbers or the row stops
+      // lining up with the header (#440), so the geometry is derived once here
+      // and captured into each.
+      const auto cols = integrated_bringup::DeviceStateLogColumnsFor(joint_names, motor_names);
       auto handle = ctx.log_set.RegisterLog<integrated_bringup::DeviceStateLogPod>(
           entry.instance,
-          [joint_names, motor_names](std::ostream& os) {
-            integrated_bringup::WriteDeviceStateLogHeader(os, joint_names, motor_names);
+          [joint_names, motor_names, cols](std::ostream& os) {
+            integrated_bringup::WriteDeviceStateLogHeader(os, joint_names, motor_names, cols);
           },
-          [](std::ostream& os, const integrated_bringup::DeviceStateLogPod& pod) {
-            integrated_bringup::WriteDeviceStateLogRow(os, pod);
+          [cols](std::ostream& os, const integrated_bringup::DeviceStateLogPod& pod) {
+            integrated_bringup::WriteDeviceStateLogRow(os, pod, cols);
           });
       if (!handle) {
         RCLCPP_WARN(ctx.logger, "Failed to open device_state CSV for instance=%s",
@@ -314,16 +318,18 @@ template <typename ParsedLogEntryT>
         continue;
       }
       const auto sensor_names = it->second.sensor_names;
-      // Both writers must agree on the stride or the row stops lining up with
-      // the header, so the same value is captured into each.
-      const auto values_per_group = it->second.values_per_group;
+      // Both writers must agree on the stride AND on the fingertip-block width
+      // or the row stops lining up with the header, so the whole geometry is
+      // derived once here and captured into each (#440).
+      const auto cols = integrated_bringup::DeviceSensorLogColumnsFor(
+          sensor_names, it->second.values_per_group);
       auto handle = ctx.log_set.RegisterLog<integrated_bringup::DeviceSensorLogPod>(
           entry.instance,
-          [sensor_names, values_per_group](std::ostream& os) {
-            integrated_bringup::WriteDeviceSensorLogHeader(os, sensor_names, values_per_group);
+          [sensor_names, cols](std::ostream& os) {
+            integrated_bringup::WriteDeviceSensorLogHeader(os, sensor_names, cols);
           },
-          [values_per_group](std::ostream& os, const integrated_bringup::DeviceSensorLogPod& pod) {
-            integrated_bringup::WriteDeviceSensorLogRow(os, pod, values_per_group);
+          [cols](std::ostream& os, const integrated_bringup::DeviceSensorLogPod& pod) {
+            integrated_bringup::WriteDeviceSensorLogRow(os, pod, cols);
           });
       if (!handle) {
         RCLCPP_WARN(ctx.logger, "Failed to open device_sensor CSV for instance=%s",
@@ -340,14 +346,17 @@ template <typename ParsedLogEntryT>
       const auto joint_names = it->second.joint_names;
       const auto motor_names = it->second.motor_names;
       const auto fingertip_names = it->second.fingertip_names;
+      // Same reason as the DeviceStateLog channel above: one derivation, both
+      // writers (#440). The fingertip block is already fixed-width.
+      const auto cols = integrated_bringup::DeviceWbcLogColumnsFor(joint_names, motor_names);
       auto handle = ctx.log_set.RegisterLog<integrated_bringup::DeviceWbcLogPod>(
           entry.instance,
-          [role, joint_names, motor_names, fingertip_names](std::ostream& os) {
+          [role, joint_names, motor_names, fingertip_names, cols](std::ostream& os) {
             integrated_bringup::WriteDeviceWbcLogHeader(os, role, joint_names, motor_names,
-                                                        fingertip_names);
+                                                        fingertip_names, cols);
           },
-          [](std::ostream& os, const integrated_bringup::DeviceWbcLogPod& pod) {
-            integrated_bringup::WriteDeviceWbcLogRow(os, pod);
+          [cols](std::ostream& os, const integrated_bringup::DeviceWbcLogPod& pod) {
+            integrated_bringup::WriteDeviceWbcLogRow(os, pod, cols);
           });
       if (!handle) {
         RCLCPP_WARN(ctx.logger, "Failed to open device_wbc CSV for instance=%s",
@@ -366,8 +375,8 @@ template <typename ParsedLogEntryT>
           [num_contact_vars](std::ostream& os) {
             integrated_bringup::WriteWbcDiagLogHeader(os, num_contact_vars);
           },
-          [](std::ostream& os, const integrated_bringup::WbcDiagLogPod& pod) {
-            integrated_bringup::WriteWbcDiagLogRow(os, pod);
+          [num_contact_vars](std::ostream& os, const integrated_bringup::WbcDiagLogPod& pod) {
+            integrated_bringup::WriteWbcDiagLogRow(os, pod, num_contact_vars);
           });
       if (!handle) {
         RCLCPP_WARN(ctx.logger, "Failed to open wbc_diag CSV for instance=%s",

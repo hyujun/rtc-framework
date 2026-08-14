@@ -17,6 +17,7 @@
 // the runtime active dim for the writer. Path A: no rtc_msgs/.msg. YAML
 // `msg_type` id is "integrated_bringup/WbcDiagLog".
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -86,23 +87,34 @@ inline std::string_view WbcDiagLogPhaseStr(std::uint8_t v) noexcept {
   }
 }
 
-/// Emit the CSV header. `num_contact_vars` sets the λ column expansion
-/// (captured once at registration = contact_mgr_config_.max_contact_vars,
-/// the fixed QP dim). The logger appends '\n'.
+/// Emit the CSV header. `num_contact_vars` sets the λ column expansion. It is
+/// the CONFIGURED QP dim (captured once at registration =
+/// contact_mgr_config_.max_contact_vars) and the row writer must be handed the
+/// SAME value — the header is written before any pod exists, so a row sized by
+/// `p.num_contact_vars` diverges from it whenever the solver reports a
+/// different count. The sibling sensor channel wrote 138,248 rows through
+/// exactly that gap (#440). The logger appends '\n'.
 inline void WriteWbcDiagLogHeader(std::ostream& os, std::size_t num_contact_vars) {
   os << "t_relative_s,phase";
   os << ",solve_time_us,qp_converged,solve_levels,qp_fail_count,kin_qp_fail_count";
   os << ",num_active_contacts,grasp_detected,max_force";
   // Stage C-2: CLIK-QP (Kinematic WBC) diagnostic columns.
   os << ",clik_valid,clik_tcp_err,clik_manipulability";
-  for (std::size_t i = 0; i < num_contact_vars; ++i) {
+  const auto n = std::min(num_contact_vars, WbcDiagLogPod::kMaxContactVars);
+  for (std::size_t i = 0; i < n; ++i) {
     os << ",lambda_" << i;
   }
+  // Appended last: what the solver actually reported this tick, so a padded
+  // (or truncated) λ block stays self-describing.
+  os << ",num_contact_vars";
 }
 
-/// Emit one row. λ loop is bounded by p.num_contact_vars (must equal the
-/// count passed to the header writer). The logger appends '\n' + flush.
-inline void WriteWbcDiagLogRow(std::ostream& os, const WbcDiagLogPod& p) {
+/// Emit one row. The λ block is sized by the SAME `num_contact_vars` the
+/// header was written with, so the two agree by construction. Slots the solver
+/// did not report this tick carry 0; the trailing `num_contact_vars` column
+/// says how many were real. The logger appends '\n' + flush.
+inline void WriteWbcDiagLogRow(std::ostream& os, const WbcDiagLogPod& p,
+                               std::size_t num_contact_vars) {
   os << p.t_relative_s;
   os << ',' << WbcDiagLogPhaseStr(p.phase);
   os << ',' << p.solve_time_us;
@@ -117,9 +129,12 @@ inline void WriteWbcDiagLogRow(std::ostream& os, const WbcDiagLogPod& p) {
   os << ',' << (p.clik_valid ? 1 : 0);
   os << ',' << p.clik_tcp_err;
   os << ',' << p.clik_manipulability;
-  for (std::size_t i = 0; i < p.num_contact_vars; ++i) {
-    os << ',' << p.lambda_opt[i];
+  const auto n = std::min(num_contact_vars, WbcDiagLogPod::kMaxContactVars);
+  const auto reported = std::min(static_cast<std::size_t>(p.num_contact_vars), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    os << ',' << (i < reported ? p.lambda_opt[i] : 0.0);
   }
+  os << ',' << static_cast<unsigned>(p.num_contact_vars);
 }
 
 }  // namespace integrated_bringup

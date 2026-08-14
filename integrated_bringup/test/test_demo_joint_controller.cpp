@@ -1464,6 +1464,78 @@ class JointGraspDiagLogTest : public JointForcePiBuiltTest {
 
 }  // namespace
 
+// #440 end-to-end: the POD-level width tests in test_device_log_pods.cpp hand
+// both writers the same geometry by hand, which is exactly the thing that was
+// wrong in production — the header was sized from the config and the row from
+// the runtime pod, and only RegisterControllerLogs spans both. This one goes
+// through that registration and reads the file it actually produced.
+//
+// Config names 4 fingertips, the device reports 0: the shape of
+// logging_data/260808_2314, where a 59-column header sat over 3-column rows for
+// 138,248 rows with no error and no warning.
+TEST(DeviceSensorLogRegistration, HeaderAndRowWidthsAgreeWhenDeviceReportsNoFingertips) {
+  ScopedSessionDir session;
+  rtc::ControllerLogSet log_set{"sensor_width_test"};
+
+  struct Entry {
+    std::string msg_type;
+    std::string instance;
+  };
+  const std::string instance = "p1b_sensor";
+  const std::vector<Entry> entries{{"rtc_msgs/DeviceSensorLog", instance}};
+
+  integrated_bringup::LogRegistrationContext ctx{
+      .logger = rclcpp::get_logger("sensor_width_test"),
+      .log_set = log_set,
+      .sensor_logs = {{instance,
+                       {{"thumb", "index", "middle", "ring"}, /*values_per_group=*/0}}},
+  };
+  auto reg = integrated_bringup::RegisterControllerLogs(entries, ctx);
+  ASSERT_EQ(reg.status, integrated_bringup::LogRegistrationStatus::kSuccess);
+  auto it = reg.handles.sensor.find(instance);
+  ASSERT_NE(it, reg.handles.sensor.end());
+  ASSERT_TRUE(static_cast<bool>(it->second))
+      << "channel did not register — the rest of this test is vacuous";
+
+  // The run's own values: no fingertips reported, force_filtered_valid stuck at 1.
+  integrated_bringup::DeviceSensorLogPod pod{};
+  pod.num_fingertips = 0;
+  pod.force_filtered_valid = true;
+  for (int i = 0; i < 5; ++i) {
+    pod.t_relative_s = 0.001 * i;
+    it->second.Push(pod);
+  }
+  log_set.DrainAll();
+  ASSERT_EQ(log_set.TotalDropCount(), 0U);
+
+  fs::path csv;
+  for (const auto& ch : log_set.Channels()) {
+    if (ch.first == instance) {
+      csv = ch.second;
+    }
+  }
+  ASSERT_FALSE(csv.empty());
+
+  const auto lines = ReadLines(csv);
+  ASSERT_GE(lines.size(), 2U);
+  const auto header = SplitCsv(lines[0]);
+  for (std::size_t i = 1; i < lines.size(); ++i) {
+    EXPECT_EQ(SplitCsv(lines[i]).size(), header.size())
+        << "row " << i << " does not match the header width";
+  }
+
+  // The column a header-driven reader resolves for thumb contact must carry the
+  // absent-sensor 0, not the neighbouring force_filtered_valid flag.
+  const auto contact_col = ColumnIndex(header, "ft_thumb_contact");
+  ASSERT_LT(contact_col, header.size()) << lines[0];
+  EXPECT_EQ(SplitCsv(lines[1])[contact_col], "0") << lines[1];
+
+  // …and the row says why: the device reported no fingertips at all.
+  const auto count_col = ColumnIndex(header, "num_fingertips");
+  ASSERT_LT(count_col, header.size()) << lines[0];
+  EXPECT_EQ(SplitCsv(lines[1])[count_col], "0") << lines[1];
+}
+
 // The whole reason this channel exists instead of `ros2 topic echo --csv` is
 // that it must not drop samples. One row per tick, no gaps: a tick column that
 // skips is a dropped row by construction, so asserting continuity here is what
