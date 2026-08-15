@@ -20,7 +20,7 @@ struct DeviceStateCache {
   std::array<double, kMaxDeviceChannels> positions{};
   std::array<double, kMaxDeviceChannels> velocities{};
   std::array<double, kMaxDeviceChannels> efforts{};
-  // Per-slot freshness for the three arrays above. Same field, same polarity
+  // Per-slot freshness of the `positions` array. Same field, same polarity
   // (bit set = slot NOT written by the latest message) and same rationale as
   // DeviceState::hole_mask in rtc_base/types/types.hpp — that declaration owns
   // the contract; this one exists because the cache is where the backends
@@ -32,6 +32,15 @@ struct DeviceStateCache {
   // controllers see a permanent 0 — which under this polarity reads as
   // "hole-free" and silently restores the very gap #284 closed.
   uint64_t hole_mask{0};
+  // The other two lanes' masks (#446). Mirrors DeviceState::velocity_hole_mask
+  // and ::effort_hole_mask; that declaration owns the contract, including why
+  // an all-ones mask here is the NORMAL report for a driver that omits the
+  // lane. The mirror-seam warning above applies to these two identically —
+  // forgetting either in RtControllerNode's copy compiles, keeps the ingress
+  // working, and hands the controllers a permanent 0 that this polarity spells
+  // "hole-free".
+  uint64_t velocity_hole_mask{0};
+  uint64_t effort_hole_mask{0};
   // Motor-space data (separate from joint-space)
   int num_motor_channels{0};
   std::array<double, kMaxDeviceChannels> motor_positions{};

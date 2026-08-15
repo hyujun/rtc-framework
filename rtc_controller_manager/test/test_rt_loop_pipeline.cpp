@@ -217,6 +217,43 @@ TEST_F(RtLoopPipelineTest, PerSlotFreshnessReachesTheControllerUnclipped) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// The same seam for the velocity and effort lanes (#446).
+//
+// A SEPARATE TEST RATHER THAN THREE MASKS IN THE ONE ABOVE, and the reason is
+// what this seam fails like: dropping a field from RtControllerNode's copy
+// compiles and keeps every ingress test green, so the only thing that catches
+// it is an assertion on THAT field. Three DISTINCT patterns are used for the
+// same reason — a copy that assigns the position mask to all three would pass
+// a test that gave them equal values, and that is a plausible way to get this
+// wrong once the fields are adjacent lines.
+TEST_F(RtLoopPipelineTest, PerLaneFreshnessReachesTheControllerUnclipped) {
+  constexpr uint64_t kPosHoles = (1ULL << 0) | (1ULL << 63);
+  constexpr uint64_t kVelHoles = (1ULL << 1) | (1ULL << 5);
+  constexpr uint64_t kEffHoles = ~static_cast<uint64_t>(0);  // lane absent entirely
+  PipelineStubBackend::state_hole_mask.store(kPosHoles, std::memory_order_relaxed);
+  PipelineStubBackend::state_velocity_hole_mask.store(kVelHoles, std::memory_order_relaxed);
+  PipelineStubBackend::state_effort_hole_mask.store(kEffHoles, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(kPosHoles, PipelineTestController::observed_hole_mask.load(std::memory_order_relaxed));
+  EXPECT_EQ(kVelHoles,
+            PipelineTestController::observed_velocity_hole_mask.load(std::memory_order_relaxed));
+  EXPECT_EQ(kEffHoles,
+            PipelineTestController::observed_effort_hole_mask.load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // ── Out-of-contract channel counts are bounded before any copy (issue #196) ──
 //
 // ControllerOutput::num_channels and DeviceStateCache::num_channels are filled

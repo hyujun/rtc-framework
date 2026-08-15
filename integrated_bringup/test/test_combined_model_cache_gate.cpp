@@ -22,6 +22,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,6 +36,7 @@
 #pragma GCC diagnostic pop
 
 #include "rtc_base/types/types.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 
@@ -77,6 +79,29 @@ ControllerState MakeState(int arm_channels, double (*value)(std::size_t)) {
   return state;
 }
 
+// A device whose velocity lane carries its own per-slot record (#446). Kept
+// apart from MakeState so every case above keeps its zero-init masks, which is
+// what "a producer that predates the field" reports and therefore what pins
+// that the lane axis changed none of those verdicts.
+ControllerState MakeStateWithVelocity(int arm_channels, double (*pos)(std::size_t),
+                                      double (*vel)(std::size_t), uint64_t velocity_holes) {
+  ControllerState state = MakeState(arm_channels, pos);
+  auto& dev0 = state.devices[0];
+  for (std::size_t i = 0; i < static_cast<std::size_t>(arm_channels); ++i) {
+    dev0.velocities[i] = vel(i);
+  }
+  dev0.velocity_hole_mask = velocity_holes;
+  return state;
+}
+
+double MeasuredVel(std::size_t i) {
+  return 0.9 - 0.13 * static_cast<double>(i);
+}
+
+double SecondVel(std::size_t i) {
+  return -2.4 + 0.21 * static_cast<double>(i);
+}
+
 class CombinedModelCacheGateTest : public ::testing::Test {
  protected:
   CombinedModelCache cache_;
@@ -102,7 +127,69 @@ class CombinedModelCacheGateTest : public ::testing::Test {
 
   // The value the model currently holds for external arm index `i`.
   double ModelValue(int i) const { return cache_.q()[cache_.ext_to_pin_q(i)]; }
+  double ModelVelocity(int i) const { return cache_.v()[cache_.ext_to_pin_v(i)]; }
 };
+
+// ── The velocity lane is judged separately (#446) ────────────────────────────
+//
+// Until #446 this helper read `velocities` straight through a gate that judges
+// `positions`, so a device reporting q but not q_dot handed h(q, v) a velocity
+// vector nobody had written. These three cases are the lane's copy of the three
+// the positions gate already has, and the FIRST one is what makes the other two
+// mean anything.
+
+TEST_F(CombinedModelCacheGateTest, AReportedVelocityLaneIsScattered) {
+  ControllerState full = MakeStateWithVelocity(kArmDof, MeasuredArm, MeasuredVel, 0);
+  cache_.ExtractFullState(full, kArmDof, 0);
+
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(ModelVelocity(i), MeasuredVel(static_cast<std::size_t>(i)), 1e-12)
+        << "joint " << i;
+  }
+}
+
+TEST_F(CombinedModelCacheGateTest, AHoledVelocityLaneScattersNothingRatherThanASplice) {
+  ControllerState full = MakeStateWithVelocity(kArmDof, MeasuredArm, MeasuredVel, 0);
+  cache_.ExtractFullState(full, kArmDof, 0);
+
+  // Same width, same validity, positions all fresh — only the velocity lane is
+  // short by one slot. Writing the slots this message reached would leave the
+  // model with a velocity that is part this tick and part history, with nothing
+  // to mark the seam; h(q, v) is a function of the whole vector.
+  ControllerState holed =
+      MakeStateWithVelocity(kArmDof, SecondReading, SecondVel, 1ULL << (kArmDof - 1));
+  cache_.ExtractFullState(holed, kArmDof, 0);
+
+  for (int i = 0; i < kArmDof; ++i) {
+    // The POSITIONS gate is untouched by the velocity hole — q takes the new
+    // reading. This is the assertion that fails if the lane term is folded
+    // into IsDeviceReadable instead of asked separately.
+    EXPECT_NEAR(ModelValue(i), SecondReading(static_cast<std::size_t>(i)), 1e-12)
+        << "joint " << i << " lost a fresh position to a velocity-lane hole";
+    EXPECT_NEAR(ModelVelocity(i), MeasuredVel(static_cast<std::size_t>(i)), 1e-12)
+        << "joint " << i << " took part of a holed velocity lane";
+  }
+}
+
+TEST_F(CombinedModelCacheGateTest, AnUnreportedVelocityLaneLeavesTheModelVelocityAtZero) {
+  // The first-tick form, and the one that reaches hardware: JointState makes
+  // `velocity` optional and shipped drivers omit it, so the lane arrives all
+  // holes and the model's v has never been written. Zero is the honest state
+  // here — what must NOT happen is the device's zero-initialised array being
+  // scattered in as though it were a measurement, because then nothing
+  // downstream can tell "not reported" from "not moving".
+  ControllerState no_vel = MakeStateWithVelocity(kArmDof, MeasuredArm, MeasuredVel, ~0ULL);
+  cache_.ExtractFullState(no_vel, kArmDof, 0);
+
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(ModelValue(i), MeasuredArm(static_cast<std::size_t>(i)), 1e-12) << "joint " << i;
+    EXPECT_NEAR(ModelVelocity(i), 0.0, 1e-12) << "joint " << i;
+  }
+  // And the consumer that cannot live with that can see it — the same question
+  // ExtractFullState asked, available to anyone reading the device.
+  EXPECT_TRUE(rtc::IsDeviceReadable(no_vel.devices[0], kArmDof));
+  EXPECT_FALSE(rtc::IsLaneReadable(no_vel.devices[0], rtc::StateLane::kVelocity, kArmDof));
+}
 
 TEST_F(CombinedModelCacheGateTest, AReadableDeviceIsScattered) {
   // Positive control: without this the "unchanged" assertions below would pass

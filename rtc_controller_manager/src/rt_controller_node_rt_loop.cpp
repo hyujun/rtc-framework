@@ -384,6 +384,8 @@ void RtControllerNode::ControlLoop() {
       // is PerSlotFreshnessReachesTheControllerUnclipped in this package's
       // test_rt_loop_pipeline.cpp; it is the only test that spans this seam.
       dev.hole_mask = cache.hole_mask;
+      dev.velocity_hole_mask = cache.velocity_hole_mask;
+      dev.effort_hole_mask = cache.effort_hole_mask;
       if (urtc::HasCapability(cap, urtc::DeviceCapability::kMotorState) &&
           cache.num_motor_channels > 0) {
         const auto nmc = BoundedCount(cache.num_motor_channels, urtc::kMaxDeviceChannels);

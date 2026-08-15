@@ -381,7 +381,7 @@ if (backends_[slot]) {
 
 > `DeviceStateCache`는 trivially copyable (~4.3 KB). SeqLock writer는 wait-free (2회 atomic store + memcpy), reader는 writer 완료 시까지 spin-retry (writer ~1-2 µs). CM은 SeqLock을 직접 보유하지 않고 backend의 ReadState API를 통해 접근.
 
-> **`DeviceStateCache` → `DeviceState` 는 필드 열거 복사다** (`rt_controller_node_rt_loop.cpp`, `ReadDeviceState`). 두 POD 는 서로 다른 패키지가 소유하는 별개 타입이고 struct 대입이 아니므로, **한쪽에 필드를 추가하면 이 복사에도 한 줄을 넣어야 한다** — 빠뜨려도 빌드는 통과하고 ingress 테스트도 green 이며 컨트롤러만 영구 zero-init 값을 읽는다. `hole_mask` (#284) 처럼 zero 가 "이상 없음" 을 뜻하는 필드에서는 그 침묵이 곧 기능 소실이다. 이 이음매를 건너는 테스트는 `test_rt_loop_pipeline.cpp` 의 `PerSlotFreshnessReachesTheControllerUnclipped` 하나뿐이므로, 새 필드를 추가하면 같은 모양의 단언을 함께 넣는다.
+> **`DeviceStateCache` → `DeviceState` 는 필드 열거 복사다** (`rt_controller_node_rt_loop.cpp`, `ReadDeviceState`). 두 POD 는 서로 다른 패키지가 소유하는 별개 타입이고 struct 대입이 아니므로, **한쪽에 필드를 추가하면 이 복사에도 한 줄을 넣어야 한다** — 빠뜨려도 빌드는 통과하고 ingress 테스트도 green 이며 컨트롤러만 영구 zero-init 값을 읽는다. `hole_mask` (#284) 처럼 zero 가 "이상 없음" 을 뜻하는 필드에서는 그 침묵이 곧 기능 소실이다. 이 이음매를 건너는 테스트는 `test_rt_loop_pipeline.cpp` 의 `PerSlotFreshnessReachesTheControllerUnclipped` 와 `PerLaneFreshnessReachesTheControllerUnclipped` (#446 — `velocity_hole_mask` · `effort_hole_mask`) 뿐이므로, 새 필드를 추가하면 같은 모양의 단언을 함께 넣는다. 후자가 **세 lane 에 서로 다른 패턴**을 쓰는 것도 계약이다 — 값이 같으면 세 필드에 같은 소스를 대입한 오구현이 통과한다.
 
 ### eventfd 기반 Non-RT Publish Thread Wakeup
 

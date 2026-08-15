@@ -52,6 +52,18 @@
 // and missed two support-layer readers of this same gate. A term folded into
 // IsDeviceReadable reaches every consumer by construction; a second predicate
 // reaches the ones somebody remembered.
+//
+// THE LANE AXIS IS THE EXCEPTION, AND FOR THE REASON THAT RULE IMPLIES (#446).
+// Velocity and effort have their own per-slot masks, and folding those into
+// this gate would reach every consumer by construction — including the many
+// that read q ALONE, which would then be silenced by a hole in a lane they
+// never touch. "Reaches everyone" is a virtue only while the stronger answer
+// is the RIGHT answer for everyone; on this axis it is not, so the lane
+// question gets its own parameterised predicate (IsLaneReadable) and the gate
+// keeps asking the positions question it has always asked. Note what that
+// costs and where it is paid: a consumer that reads q_dot must ASK, and the
+// first one to get it wrong was already in the tree — ExtractFullState read
+// `velocities` straight through this gate for the whole of #284's life.
 
 namespace rtc {
 
@@ -76,6 +88,32 @@ namespace rtc {
   return std::max(0, std::min(num_channels, model_dim));
 }
 
+// PER-LANE readability: true when slots [0, model_dim) of `lane` are all usable
+// this tick (#446). The general form; THE GATE below is its kPosition instance.
+//
+// A CONSUMER MUST ASK FOR EVERY LANE IT READS. The gate answers for positions
+// and nothing else, so `IsDeviceReadable(dev, n)` followed by a loop over
+// `dev.velocities` is the shape this predicate exists to replace — it passed
+// review for the whole of #284's life inside CombinedModelCache::ExtractFullState
+// and put a lane no gate had judged into a shipped control law.
+//
+// SAME THREE TERMS as the gate, deliberately: `valid` because a device that has
+// not reported has no fresh lane whatever its masks say, and the width term
+// because `num_channels` bounds what may be INDEXED on every lane even though
+// it describes the length of only one of them. That makes each lane's answer
+// self-sufficient — a velocity consumer needs this call alone, not this call
+// AND the gate — which is what keeps the ask from being half-remembered.
+//
+// The gate is defined in terms of this function rather than beside it so the
+// three terms exist ONCE. Two copies of the same conjunction is how the next
+// term gets added to one of them (§3.7's standing complaint, and the reason
+// IsSlotFresh exists at all).
+[[nodiscard]] inline bool IsLaneReadable(const DeviceState& dev, StateLane lane,
+                                         int model_dim) noexcept {
+  return dev.valid && dev.num_channels >= model_dim &&
+         (LaneHoleMask(dev, lane) & SlotMaskBelow(model_dim)) == 0;
+}
+
 // THE GATE. True when `dev` can serve as this tick's joint state for a
 // consumer that needs `model_dim` channels.
 //
@@ -98,19 +136,20 @@ namespace rtc {
 //
 // THE THIRD TERM IS BOUNDED TWO WAYS, and neither bound is closed here — do not
 // read it as "the state this gate passes is fully fresh". It covers the
-// `positions` lane only (velocity and effort are copied under their own message
-// lengths, so a slot can be fresh in q and stale in q_dot), and the polarity leaves
-// a producer that never fills the mask indistinguishable from a hole-free one.
-// Both limits are stated at the field itself (rtc_base/types/types.hpp), which
-// is the SSoT for what the mask does and does not claim.
+// `positions` lane only, and the polarity leaves a producer that never fills
+// the mask indistinguishable from a hole-free one. Both limits are stated at
+// the field itself (rtc_base/types/types.hpp), which is the SSoT for what the
+// mask does and does not claim. The first bound now has a companion rather
+// than only a warning: a consumer that reads q_dot or tau asks IsLaneReadable
+// for that lane (#446). The warning stays because the ANSWER did not change —
+// this gate still says nothing about them.
 //
 // `model_dim <= 0` degrades to a plain validity check, which is what a
 // controller whose runtime DOF is not resolved yet (unit fixtures that bypass
 // YAML) should see: nothing is known to be missing. SlotMaskBelow(<=0) == 0
 // keeps the new term out of that degrade rather than re-deriving the rule.
 [[nodiscard]] inline bool IsDeviceReadable(const DeviceState& dev, int model_dim) noexcept {
-  return dev.valid && dev.num_channels >= model_dim &&
-         (dev.hole_mask & SlotMaskBelow(model_dim)) == 0;
+  return IsLaneReadable(dev, StateLane::kPosition, model_dim);
 }
 
 // WHY the gate is closed, for the one cause an operator can act on (issue
