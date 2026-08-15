@@ -70,6 +70,45 @@ inline constexpr double kDefaultMomentumObserverGain = 10.0;
 // opt in — the observer costs one arm-sized dynamics pass per tick (crba +
 // computeCoriolisMatrix + gravity), so it is not something a config should
 // acquire by accident.
+// The `momentum_observer.payload_estimator` sub-block (#135 Layer 2A). Nested
+// under the observer rather than a sibling because it consumes that observer's
+// residual and cannot run without it — a top-level block would let a config
+// enable payload estimation on a variant whose observer is off, and the failure
+// would be a silently absent channel.
+//
+// DEFAULTS ARE MEASURED, NOT GUESSED. The two velocity gates come from the
+// session-67 `sim_iiwa7_leap` logs, where the residual was binned by what was
+// moving: with the hand gate at 1e-4 rad/s the surviving max ‖r‖∞ is 0.048 N·m
+// (~10 g of payload at a 0.5 m lever arm) and loosening it to 2e-4 costs a
+// factor of five, while the arm gate is flat anywhere below 1e-2. They are
+// SIM-derived: real encoder velocity noise is larger, so hardware is expected
+// to re-tune both — which is why they are configuration and not constants.
+struct PayloadEstimatorParams {
+  bool has_block{false};
+  bool enabled{true};
+  // Frame the payload hangs from, resolved against the ARM sub-model. Empty ⇒
+  // disabled: there is no sensible default, and guessing the last link would
+  // silently estimate about the wrong point.
+  std::string frame{};
+  double sigma0{1e-3};        ///< §6.5 damping knee σ₀
+  double lambda_max{0.05};    ///< §6.5 damping ceiling λ_max
+  double min_sigma{1e-3};     ///< σ_min(J) below this ⇒ wrench unobservable
+  /// ‖Jᵀŵ − r‖∞ ceiling [N·m]. NOT measured, unlike the two velocity gates:
+  /// deriving it needs the reconstruction error, which the session-67 logs
+  /// cannot supply (they carry r, not the per-tick Jacobian). Deliberately
+  /// permissive so it rejects nothing before anyone has looked at
+  /// payload_fit_error on a real robot — at which point it should come DOWN.
+  double max_fit_error{5.0};
+  double min_gravity{1e-3};   ///< ‖ᵂg‖ floor [m/s²]
+  double max_arm_velocity{1e-3};         ///< ε_arm [rad/s]
+  double max_peripheral_velocity{1e-4};  ///< ε_hand [rad/s] — D14
+  // How many observer time constants (1/K_I) must pass after a re-seed before
+  // the residual is believed. The residual restarts at zero and re-converges
+  // over ~1/K_I, so a consumer that reads it too early sees "no load" on an
+  // arm that is in fact loaded. 5 τ is ~99.3 % settled.
+  double settle_time_constants{5.0};
+};
+
 struct MomentumObserverParams {
   bool has_block{false};
   bool enabled{true};
@@ -82,6 +121,8 @@ struct MomentumObserverParams {
   // rejected by MomentumObserver::Init (it would pin that component of r at 0
   // forever, which is indistinguishable from a measured absence of load).
   std::vector<double> gains{};
+  // #135 Layer 2A. Absent ⇒ residual only, exactly as Layer 1b shipped.
+  PayloadEstimatorParams payload{};
 };
 
 // Parameters that DemoJointController and DemoTaskController share.

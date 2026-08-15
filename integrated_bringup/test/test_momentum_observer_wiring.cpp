@@ -443,3 +443,253 @@ TEST(MomentumObserverWiringTest, RecoversTorqueWhileTheArmIsMoving) {
                               << ")";
   EXPECT_GT(MaxAbsDiff(r_loaded, zero), 0.2) << "loaded run produced no residual at all";
 }
+
+// ── Layer 2A: payload estimation through the wiring (#135) ──────────────────
+//
+// These run the FULL path — device lanes → reorder → observer → Jacobian →
+// [WRENCH-A]/[MASS-A] — because the failure this layer is most exposed to is
+// invisible to a unit test of the estimator: GetFrameJacobian's columns are in
+// Pinocchio order while the wiring's residual() accessor is in DEVICE order,
+// and pairing those two yields a finite, smooth, wrong wrench. Only a fixture
+// whose two orders DIFFER can tell the two wirings apart, so the tests below
+// deliberately pin a reversed device order.
+
+namespace {
+
+constexpr char kPayloadFrame[] = "tool0";
+
+/// A wiring with Layer 2A armed. `joint_names` fixes the DEVICE order, which
+/// the tests vary on purpose.
+integrated_bringup::MomentumObserverParams PayloadParams(double gain = 10.0) {
+  integrated_bringup::MomentumObserverParams p;
+  p.has_block = true;
+  p.enabled = true;
+  p.gains.assign(1, gain);
+  p.payload.has_block = true;
+  p.payload.enabled = true;
+  p.payload.frame = kPayloadFrame;
+  p.payload.max_arm_velocity = 1e-3;
+  p.payload.max_peripheral_velocity = 1e-4;
+  p.payload.settle_time_constants = 5.0;
+  p.payload.sigma0 = 1e-3;
+  p.payload.lambda_max = 0.05;
+  p.payload.min_sigma = 1e-4;
+  p.payload.max_fit_error = 1e-6;
+  p.payload.min_gravity = 1e-3;
+  return p;
+}
+
+/// τ_m a resting arm reports while `w` is applied to it at the payload frame.
+/// From the equation of motion at rest, g = τ_m + τ_ext with τ_ext = J_pᵀw, so
+/// τ_m = g − J_pᵀw. Built in DEVICE order, which is what a device reports.
+std::vector<double> MeasuredTorqueUnderPayload(rub::RtModelHandle& h,
+                                               const std::vector<double>& q_dev,
+                                               const Eigen::Matrix<double, 6, 1>& w) {
+  const std::vector<double> g_dev = GravityInDeviceOrder(h, q_dev);
+
+  h.ComputeJacobians(q_dev);
+  Eigen::MatrixXd J(6, kArmDof);
+  h.GetFrameJacobian(h.GetFrameId(kPayloadFrame), pinocchio::LOCAL_WORLD_ALIGNED, J);
+  const Eigen::VectorXd tau_ext_pin = J.transpose() * w;
+
+  std::vector<double> tau_ext_dev(static_cast<std::size_t>(kArmDof), 0.0);
+  h.ReorderOutput(tau_ext_pin, std::span<double>(tau_ext_dev.data(), tau_ext_dev.size()));
+
+  std::vector<double> tau(static_cast<std::size_t>(kArmDof), 0.0);
+  for (std::size_t i = 0; i < tau.size(); ++i)
+    tau[i] = g_dev[i] - tau_ext_dev[i];
+  return tau;
+}
+
+/// Drive the wiring to steady state under a constant payload and return it.
+void SettleUnderPayload(MomentumObserverWiring& wir, const std::vector<double>& q_dev,
+                        const std::vector<double>& tau_dev, int ticks = 4000) {
+  rtc::DeviceState dev = FullyReadableDevice();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    dev.positions[u] = q_dev[u];
+    dev.velocities[u] = 0.0;
+    dev.efforts[u] = tau_dev[u];
+  }
+  const rtc::ControllerState st = StateWith(dev);
+  for (int k = 0; k < ticks; ++k)
+    (void)integrated_bringup::UpdateMomentumObserver(st, wir);
+}
+
+}  // namespace
+
+// THE positive control, and the order test in one. A 3 kg payload hanging from
+// tool0 must come back as +3 kg through the whole wiring, with the DEVICE order
+// reversed relative to the model so that any implementation pairing the
+// device-order residual with the Pinocchio-order Jacobian reports a different
+// (and wrong) mass.
+TEST(PayloadEstimatorWiring, RecoversHangingMassUnderReversedDeviceOrder) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  std::vector<std::string> names = ArmJointNames(probe);
+  std::reverse(names.begin(), names.end());  // device order != model order
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+
+  const double mass = 3.0;
+  const Eigen::Vector3d g_world = model->gravity.linear();
+  Eigen::Matrix<double, 6, 1> w_true;
+  w_true.head<3>() = mass * g_world;
+  w_true.tail<3>().setZero();
+
+  const std::vector<double> tau = MeasuredTorqueUnderPayload(probe, q_dev, w_true);
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(PayloadParams(), model, names, 0, wir);
+  ASSERT_TRUE(wir.payload_enabled());
+
+  SettleUnderPayload(wir, q_dev, tau);
+
+  ASSERT_TRUE(wir.payload.valid())
+      << "reason " << static_cast<int>(wir.payload.invalid_reason());
+  EXPECT_NEAR(wir.payload.estimate().mass, mass, 1e-3)
+      << "a reversed device order must not change the recovered mass";
+  EXPECT_GT(wir.payload.estimate().mass, 0.0);
+}
+
+// An unloaded arm must read ~0 kg, not "some mass" — the negative control for
+// the same path.
+TEST(PayloadEstimatorWiring, UnloadedArmReportsNoPayload) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+  const std::vector<double> tau = GravityInDeviceOrder(probe, q_dev);  // holding only itself
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(PayloadParams(), model, names, 0, wir);
+  SettleUnderPayload(wir, q_dev, tau);
+
+  ASSERT_TRUE(wir.payload.valid());
+  EXPECT_NEAR(wir.payload.estimate().mass, 0.0, 1e-3);
+}
+
+// D14: a moving hand is an external torque to an arm sub-model that pins the
+// hand's joints, so the gate must close on a SECOND device's motion even though
+// the arm itself is still. Device 1 exists only in this test.
+TEST(PayloadEstimatorWiring, PeripheralDeviceMotionClosesTheGate) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+  const std::vector<double> tau = GravityInDeviceOrder(probe, q_dev);
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(PayloadParams(), model, names, 0, wir);
+  SettleUnderPayload(wir, q_dev, tau);
+  ASSERT_TRUE(wir.payload.valid()) << "precondition: gate open with one still device";
+
+  rtc::DeviceState arm = FullyReadableDevice();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    arm.positions[u] = q_dev[u];
+    arm.efforts[u] = tau[u];
+  }
+  rtc::ControllerState st = StateWith(arm);
+  st.num_devices = 2;
+  st.devices[1] = FullyReadableDevice(4);
+  st.devices[1].velocities[2] = 0.05;  // a finger moving, arm untouched
+
+  (void)integrated_bringup::UpdateMomentumObserver(st, wir);
+
+  EXPECT_FALSE(wir.payload.valid());
+  EXPECT_EQ(wir.payload.invalid_reason(), rtc::estimation::PayloadInvalidReason::kHandMoving);
+  EXPECT_NEAR(wir.payload.estimate().mass, 0.0, 1e-3) << "the last estimate must freeze, not zero";
+}
+
+TEST(PayloadEstimatorWiring, ArmMotionClosesTheGate) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+  const std::vector<double> tau = GravityInDeviceOrder(probe, q_dev);
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(PayloadParams(), model, names, 0, wir);
+  SettleUnderPayload(wir, q_dev, tau);
+  ASSERT_TRUE(wir.payload.valid());
+
+  rtc::DeviceState arm = FullyReadableDevice();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    arm.positions[u] = q_dev[u];
+    arm.efforts[u] = tau[u];
+  }
+  arm.velocities[1] = 0.5;
+  (void)integrated_bringup::UpdateMomentumObserver(StateWith(arm), wir);
+
+  EXPECT_EQ(wir.payload.invalid_reason(), rtc::estimation::PayloadInvalidReason::kArmMoving);
+}
+
+// The residual re-converges from zero after a re-seed, so an estimate read too
+// early measures the filter rather than the load.
+TEST(PayloadEstimatorWiring, EstimateIsWithheldUntilTheResidualHasSettled) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+  const std::vector<double> tau = GravityInDeviceOrder(probe, q_dev);
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(PayloadParams(), model, names, 0, wir);
+
+  SettleUnderPayload(wir, q_dev, tau, 10);  // 10 ticks << 5 tau (= 500 at K_I=10, dt=1ms)
+  EXPECT_FALSE(wir.payload.valid());
+  EXPECT_EQ(wir.payload.invalid_reason(), rtc::estimation::PayloadInvalidReason::kNotConverged);
+}
+
+// A frame the model does not carry must be refused loudly: pinocchio returns
+// frame 0 (universe) for an unknown name, which would project onto an all-zero
+// Jacobian for the life of the run and look like "no payload, ever".
+TEST(PayloadEstimatorWiring, UnknownPayloadFrameIsRejected) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+
+  auto params = PayloadParams();
+  params.payload.frame = "no_such_frame";
+  MomentumObserverWiring wir;
+  EXPECT_THROW(integrated_bringup::BuildMomentumObserverWiring(params, model, names, 0, wir),
+               std::invalid_argument);
+}
+
+// Absent sub-block ⇒ Layer 1b behaviour exactly: residual, no payload.
+TEST(PayloadEstimatorWiring, AbsentBlockLeavesTheObserverUntouched) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+
+  integrated_bringup::MomentumObserverParams params;
+  params.has_block = true;
+  params.enabled = true;
+  params.gains.assign(1, 10.0);
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(params, model, names, 0, wir);
+  EXPECT_TRUE(wir.enabled());
+  EXPECT_FALSE(wir.payload_enabled());
+}

@@ -61,6 +61,7 @@
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controllers/estimation/momentum_observer.hpp"
+#include "rtc_controllers/estimation/payload_estimator.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include "rtc_base/types/types.hpp"
@@ -116,6 +117,35 @@ struct MomentumObserverWiring {
   /// observer.valid(); frozen at its last accepted value otherwise.
   [[nodiscard]] std::span<const double> residual() const noexcept {
     return {residual_device.data(), residual_device.size()};
+  }
+
+  // ── Layer 2A: payload estimation (#135) ────────────────────────────────────
+  //
+  // IT LIVES HERE BECAUSE THE JOINT ORDER DOES. PayloadEstimator needs J and r
+  // in one order, and this struct is where the two orders are known to differ:
+  // GetFrameJacobian hands back PINOCCHIO-order columns while `residual()`
+  // above is DEVICE order. Running the estimator from a controller off
+  // `residual()` would therefore pair mismatched orders and produce a finite,
+  // smooth, wrong wrench — the same failure mode the header preamble opens
+  // with, one layer up. UpdateMomentumObserver runs it against the
+  // Pinocchio-order residual before ReorderOutput, and the wrench that comes
+  // out is Cartesian, so no joint order survives into the result at all.
+  rtc::estimation::PayloadEstimator payload;
+  bool payload_configured{false};
+  pinocchio::FrameIndex payload_frame{0};
+  double max_arm_velocity{0.0};
+  double max_peripheral_velocity{0.0};
+  double settle_time_constants{0.0};
+  /// Slowest observer gain [1/s] — the settle gate is stated in time constants
+  /// and the slowest joint is the one that decides when the residual is ready.
+  double min_gain{0.0};
+  /// ᵂg from the arm model, latched at configure (the model cannot change).
+  Eigen::Vector3d gravity_world{Eigen::Vector3d::Zero()};
+  /// 6×nv payload-frame Jacobian, preallocated — RT writes it every tick.
+  Eigen::MatrixXd J_payload;
+
+  [[nodiscard]] bool payload_enabled() const noexcept {
+    return configured && payload_configured;
   }
 };
 
@@ -222,6 +252,19 @@ inline void PushMomentumObserverLog(rtc::LogHandle<MomentumObserverLogPod>& hand
   pod.valid = w.observer.valid();
   pod.invalid_reason = static_cast<std::uint8_t>(w.observer.invalid_reason());
   pod.ticks_since_seed = w.observer.ticks_since_seed();
+
+  // Layer 2A. On an unconfigured wiring these stay zero with
+  // payload_reason = kNotInitialized, which is what "never asked for" reads
+  // like — as opposed to a gate that closed, which names itself.
+  const auto& est = w.payload.estimate();
+  pod.payload_wrench = est.wrench;
+  pod.payload_mass = est.mass;
+  pod.payload_sigma_min = est.sigma_min;
+  pod.payload_lambda_sq = est.lambda_sq;
+  pod.payload_fit_error = est.fit_error;
+  pod.payload_valid = w.payload.valid();
+  pod.payload_reason = static_cast<std::uint8_t>(w.payload.invalid_reason());
+
   handle.Push(pod);
 }
 
