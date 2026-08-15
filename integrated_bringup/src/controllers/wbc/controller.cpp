@@ -77,7 +77,8 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {
       break;
     }
   }
-  arm_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetReducedModel(arm_model_name));
+  arm_model_ = builder_->GetReducedModel(arm_model_name);
+  arm_handle_ = std::make_unique<rub::RtModelHandle>(arm_model_);
 
   // Control model. Prefer the passive-locked reduced tree `wbc` built by
   // PinocchioModelBuilder (Analyzer auto-classifies mimic/closed-chain/hint
@@ -985,6 +986,13 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       ConfigurePullEstimatorWiring(shared, 1.0 / GetDefaultDt(), contact_links, pull_wiring_);
       LogPullEstimatorWiring(logger_, pull_wiring_, shared);
     }
+
+    // ── #135 Layer 1b: momentum-observer params ───────────────────────────
+    // Only carried here. The wiring itself is built in on_configure: it pins
+    // the arm device's joint order on its own model handle, and
+    // joint_state_names do not exist yet at LoadConfig time (CM sends the
+    // device configs in between).
+    momentum_params_ = shared.momentum_observer;
   }
 
   // ── 4b. Lift L2: arm DoF + E-STOP arm safe position (both required) ──
@@ -1076,7 +1084,8 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
           e.msg_type != "integrated_bringup/DeviceWbcLog" &&
           e.msg_type != "integrated_bringup/WbcDiagLog" &&
-          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType) {
+          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType &&
+          e.msg_type != integrated_bringup::kMomentumObserverLogMsgType) {
         throw std::runtime_error("DemoWbcController: unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));
@@ -1388,6 +1397,28 @@ void DemoWbcController::OnDeviceConfigsSet() {
       }
     }
   }
+
+  // ── #135 Layer 1b: momentum observer over the ARM device ──────────────────
+  // Built here rather than in LoadConfig because the wiring pins the arm
+  // device's joint order on its OWN model handle, and joint_state_names first
+  // exist at this hook. Device index 0 is the primary (arm) group — the same
+  // slot every tick path in this controller reads as `state.devices[0]`.
+  //
+  // This hook is called straight from SetDeviceNameConfigs with no try/catch
+  // above it, so the throw is caught and latched: on_configure reads
+  // momentum_config_error_ and turns it into CallbackReturn::FAILURE. A gain
+  // list of the wrong length, or a joint the model does not carry, must fail
+  // the configure rather than leave an observer that silently never runs.
+  momentum_config_error_.clear();
+  try {
+    BuildMomentumObserverWiring(momentum_params_, arm_model_, primary_joint_names_,
+                                /*device_index=*/0, momentum_wiring_);
+    LogMomentumObserverWiring(logger_, momentum_wiring_, momentum_params_);
+  } catch (const std::exception& e) {
+    momentum_config_error_ = e.what();
+    RCLCPP_ERROR(logger_, "momentum_observer configuration failed: %s",
+                 momentum_config_error_.c_str());
+  }
 }
 
 DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesting(
@@ -1503,6 +1534,20 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
 
   // E-STOP takes priority over FSM
   estop_active_ = estopped_.load(std::memory_order_acquire);
+
+  // ── #135 Layer 1b: generalized-momentum observer ─────────────────────────
+  // Runs on THIS tick's state, before the control law — the residual is an
+  // estimate of what the arm is being pushed by, not a function of what we are
+  // about to command. E-STOP (and any tick that skips the law) holds instead of
+  // updating: the residual freezes, the observer arms a re-seed, and the CSV
+  // row carries valid=0. Zeroing it would assert "no external torque" on a tick
+  // nobody measured. No-op when the wiring is disabled.
+  if (estop_active_) {
+    HoldMomentumObserver(momentum_wiring_);
+  } else {
+    (void)UpdateMomentumObserver(state, momentum_wiring_);
+  }
+
   if (estop_active_) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
@@ -1523,6 +1568,8 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     FillEstopPublishState(dt);
     PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                          state.iteration);
+    PushMomentumObserverLog(momentum_observer_log_handle_, momentum_wiring_, state.t_relative_s,
+                            state.iteration);
     return out;
   }
 
@@ -1630,6 +1677,8 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                        state.iteration);
+  PushMomentumObserverLog(momentum_observer_log_handle_, momentum_wiring_, state.t_relative_s,
+                          state.iteration);
   return output;
 }
 

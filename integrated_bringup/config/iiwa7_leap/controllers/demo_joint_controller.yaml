@@ -67,6 +67,8 @@ demo_joint_controller:
       instance: leap_state
     - msg_type: integrated_bringup/PullEstimatorLog
       instance: pull_estimator
+    - msg_type: integrated_bringup/MomentumObserverLog
+      instance: momentum_observer
 
     # Per-tick Force-PI servo + stiffness-estimator diagnostics (#428).
     # Controller-private POD (no rtc_msgs) — see logging/grasp_diag_log_pod.hpp.

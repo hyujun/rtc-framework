@@ -142,24 +142,52 @@ TEST(MomentumObserverGate, AsksEveryLaneItReads) {
 
 TEST(MomentumObserverWiringTest, ConfigureRejectsBadArguments) {
   rub::RtModelHandle h(ArmModel());
+  const std::vector<std::string> names = ArmJointNames(h);
   const std::vector<double> gains(kArmDof, 30.0);
   MomentumObserverWiring w;
 
-  EXPECT_THROW(integrated_bringup::ConfigureMomentumObserverWiring(h, -1, kArmDof, gains, w),
+  EXPECT_THROW(integrated_bringup::ConfigureMomentumObserverWiring(nullptr, names, 0, gains, w),
+               std::invalid_argument);
+  EXPECT_THROW(integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), names, -1, gains, w),
                std::invalid_argument);
   EXPECT_THROW(integrated_bringup::ConfigureMomentumObserverWiring(
-                   h, rtc::ControllerState::kMaxDevices, kArmDof, gains, w),
+                   ArmModel(), names, rtc::ControllerState::kMaxDevices, gains, w),
                std::invalid_argument);
   // dof must equal nv — truncating would observe part of the arm and report the
   // rest of it as external torque.
-  EXPECT_THROW(integrated_bringup::ConfigureMomentumObserverWiring(h, 0, kArmDof - 1, gains, w),
-               std::invalid_argument);
-  EXPECT_FALSE(w.configured);
+  {
+    std::vector<std::string> short_names(names.begin(), names.end() - 1);
+    EXPECT_THROW(
+        integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), short_names, 0, gains, w),
+        std::invalid_argument);
+  }
+  // A name the model does not carry must be rejected rather than silently
+  // falling back to the memcpy reorder — that fallback is exactly the
+  // unverified identity assumption this wiring owns its handle to avoid.
+  {
+    std::vector<std::string> wrong = names;
+    wrong.back() = "not_a_joint_on_this_arm";
+    EXPECT_THROW(
+        integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), wrong, 0, gains, w),
+        std::invalid_argument);
+  }
+  EXPECT_FALSE(w.configured) << "a rejected configure left a tickable wiring";
+  EXPECT_FALSE(w.enabled());
 
-  EXPECT_NO_THROW(integrated_bringup::ConfigureMomentumObserverWiring(h, 0, kArmDof, gains, w));
+  EXPECT_NO_THROW(
+      integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), names, 0, gains, w));
   EXPECT_TRUE(w.configured);
+  EXPECT_TRUE(w.enabled());
   EXPECT_EQ(w.dof, kArmDof);
-  EXPECT_EQ(h.nv(), kArmDof);
+  ASSERT_NE(w.handle, nullptr);
+  EXPECT_EQ(w.handle->nv(), kArmDof);
+
+  // A configure that fails AFTER a successful one must not leave the previous
+  // observer tickable — the caller's next tick would otherwise run against a
+  // model it thinks it replaced.
+  EXPECT_THROW(integrated_bringup::ConfigureMomentumObserverWiring(nullptr, names, 0, gains, w),
+               std::invalid_argument);
+  EXPECT_FALSE(w.enabled());
 }
 
 // ── AC5 glue half — a closed gate freezes the observer ───────────────────────
@@ -167,7 +195,7 @@ TEST(MomentumObserverWiringTest, ConfigureRejectsBadArguments) {
 TEST(MomentumObserverWiringTest, ClosedLaneGateHoldsTheObserverAndFreezesTheResidual) {
   rub::RtModelHandle h(ArmModel());
   MomentumObserverWiring w;
-  integrated_bringup::ConfigureMomentumObserverWiring(h, 0, kArmDof,
+  integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), ArmJointNames(h), 0,
                                                       std::vector<double>(kArmDof, 40.0), w);
 
   const std::vector<double> q_dev(integrated_bringup::testfx::kUr5eHome.begin(),
@@ -216,7 +244,7 @@ TEST(MomentumObserverWiringTest, ClosedLaneGateHoldsTheObserverAndFreezesTheResi
 TEST(MomentumObserverWiringTest, GravityHoldAloneProducesNoResidual) {
   rub::RtModelHandle h(ArmModel());
   MomentumObserverWiring w;
-  integrated_bringup::ConfigureMomentumObserverWiring(h, 0, kArmDof,
+  integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), ArmJointNames(h), 0,
                                                       std::vector<double>(kArmDof, 40.0), w);
 
   const std::vector<double> q_dev(integrated_bringup::testfx::kUr5eHome.begin(),
@@ -245,7 +273,7 @@ TEST(MomentumObserverWiringTest, GravityHoldAloneProducesNoResidual) {
 TEST(MomentumObserverWiringTest, KnownExternalTorqueIsRecovered) {
   rub::RtModelHandle h(ArmModel());
   MomentumObserverWiring w;
-  integrated_bringup::ConfigureMomentumObserverWiring(h, 0, kArmDof,
+  integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), ArmJointNames(h), 0,
                                                       std::vector<double>(kArmDof, 40.0), w);
 
   const std::vector<double> q_dev(integrated_bringup::testfx::kUr5eHome.begin(),
@@ -288,8 +316,10 @@ TEST(MomentumObserverWiringTest, PermutedDeviceOrderStillRecoversTheTorquePerJoi
   ASSERT_TRUE(h.HasJointReorder());
 
   MomentumObserverWiring w;
-  integrated_bringup::ConfigureMomentumObserverWiring(h, 0, kArmDof,
+  // The wiring pins `names` on ITS OWN handle — nothing about `h` reaches it.
+  integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), names, 0,
                                                       std::vector<double>(kArmDof, 40.0), w);
+  ASSERT_TRUE(w.handle->HasJointReorder()) << "wiring did not pin the device order";
 
   // Posture and torques are now stated in the REVERSED (device) order.
   std::vector<double> q_dev(integrated_bringup::testfx::kUr5eHome.begin(),
@@ -349,7 +379,7 @@ TEST(MomentumObserverWiringTest, RecoversTorqueWhileTheArmIsMoving) {
   auto run = [&](const std::vector<double>& applied_ext) {
     rub::RtModelHandle h(ArmModel());
     MomentumObserverWiring w;
-    integrated_bringup::ConfigureMomentumObserverWiring(h, 0, kArmDof,
+    integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), ArmJointNames(h), 0,
                                                         std::vector<double>(kArmDof, 60.0), w);
 
     std::vector<double> q(integrated_bringup::testfx::kUr5eHome.begin(),

@@ -126,6 +126,8 @@ demo_task_controller:
       instance: p1b_sensor
     - msg_type: integrated_bringup/PullEstimatorLog
       instance: pull_estimator
+    - msg_type: integrated_bringup/MomentumObserverLog
+      instance: momentum_observer
     # §6.5 singularity diagnostics (#310): sigma_min / lambda^2 per tick.
     # Controller-private POD (no rtc_msgs) — see logging/task_diag_log_pod.hpp.
     - msg_type: integrated_bringup/TaskDiagLog

@@ -65,6 +65,8 @@ demo_wbc_controller:
       instance: wbc_diag
     - msg_type: integrated_bringup/PullEstimatorLog
       instance: pull_estimator
+    - msg_type: integrated_bringup/MomentumObserverLog
+      instance: momentum_observer
 
   # ── TSID QP configuration ─────────────────────────────────────────────────
   tsid:

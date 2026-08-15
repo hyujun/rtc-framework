@@ -228,3 +228,34 @@ demo_shared:
         force_saturation: 25.0
         contact_on_threshold: 0.5
         contact_off_threshold: 0.2
+
+  # ── Generalized-momentum observer (#135 Layer 1b) ──────────────────────────
+  # Joint-space residual r = LPF(tau_ext) from the arm's own proprioception
+  # (encoder + joint torque), with no wrist F/T sensor. Runs on the ARM
+  # sub-model (open chain) inside the controller tick, before the control law,
+  # and gates on the position/velocity/effort lanes being readable — a tick
+  # whose torque lane is missing HOLDS the residual instead of reading the
+  # absent torque as 0 N·m, which would drive r towards g(q) and read as a
+  # payload the size of the arm.
+  #
+  # Costs one arm-sized dynamics pass per tick (crba + computeCoriolisMatrix +
+  # gravity): 2.13-2.17 us measured on a 7-DoF arm, ~0.11 % of a 500 Hz tick.
+  #
+  # Output goes to controllers/<ctrl>/momentum_observer.csv only — there is no
+  # topic for it yet, because what a PayloadEstimate message exists to carry
+  # (mass / CoM / confidence) is Layer 2A's output and does not exist at this
+  # layer.
+  #
+  # PRECONDITION on the effort lane: DeviceState::efforts must be JOINT TORQUE
+  # in N.m and must account for every generalized force on the joints. Nothing
+  # downstream can check either half — a lane in the wrong unit, or one missing
+  # a term, is fresh and full and wrong, and the residual absorbs the
+  # difference as an external torque.
+  momentum_observer:
+    enabled: true
+    # K_I [1/s], per arm joint. A scalar broadcasts to every joint; a list must
+    # be exactly the arm's dof (anything else is refused at configure rather
+    # than padded). Larger converges faster and passes more sensor noise; the
+    # residual's first-order time constant is 1/K_I, so 10 /s settles in ~0.3 s.
+    # Not identified on hardware — expect to retune per robot.
+    gains: 10.0
