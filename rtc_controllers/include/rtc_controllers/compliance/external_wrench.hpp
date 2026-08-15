@@ -3,10 +3,21 @@
 // subscription and no message type (issue #236 scope contract, D8/D10). External
 // F/T data therefore arrives as an ARGUMENT through a non-RT setter, exactly the
 // idiom SetDeviceTarget already uses, and crosses to the RT tick through a
-// SeqLock (RT-4). Whoever reads the sensor — an F/T driver, a momentum observer
-// (#135), a fingertip estimator — is an outside caller, not a polymorphic
-// implementation inside the controller, which is why there is no WrenchSourceBase
-// here (D13; ARCH-3 fires on a second CONCRETE implementation, and there is none).
+// SeqLock (RT-4). Whoever reads the sensor is an outside caller, not a
+// polymorphic implementation inside the controller, which is why there is no
+// WrenchSourceBase here (D13; ARCH-3 fires on a second CONCRETE implementation,
+// and there is none).
+//
+// The named examples were WRONG about who calls Set(), and the correction
+// strengthens D13 rather than weakening it: neither #135's momentum observer nor
+// the fingertip estimator is a caller. The observer produces a JOINT-space
+// residual r(nv) that is consumed in-thread by the same tick that made it
+// (rtc::estimation::MomentumObserver), and its Layer 2A wrench is an
+// intermediate on the way to a payload mass, not an input to compliance. The
+// fingertip estimator (rtc::grasp::PullForceEstimator) likewise returns its
+// estimate to its caller. Outside the tests, Set() has NO callers at all — so
+// the "second concrete implementation" ARCH-3 waits for is further away than
+// this comment used to suggest, not closer.
 //
 // ── Staleness without a clock (D9) ──────────────────────────────────────────
 // §10.6 makes the staleness policy a MUST *and* forbids holding the last value

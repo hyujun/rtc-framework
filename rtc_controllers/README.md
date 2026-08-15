@@ -7,7 +7,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니다. 관절/태스크 공간 제어 법칙, compliance 계열 법칙과 그 공용 커널(`compliance/`), 적응형 PI 힘 제어 그래스프 컨트롤러, 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
+RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니다. 관절/태스크 공간 제어 법칙, compliance 계열 법칙과 그 공용 커널(`compliance/`), 적응형 PI 힘 제어 그래스프 컨트롤러, 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인), 그리고 in-thread estimator 코어(`grasp/pull_force_estimator.hpp` · `estimation/momentum_observer.hpp`)를 제공합니다.
 
 > **계약 (issue #236, 2026-07-26)**: 이 패키지는 **제어 법칙만** 소유합니다 — 노드·publisher·subscription 을 만들지 않고, `RTControllerInterface` 를 상속하지도 않습니다. 프레임워크 계약을 구현하는 클래스(= 바인딩)는 downstream integration 패키지가 소유합니다. 규칙·3계층 배치·경계 판정의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 이며, 여기서 반복하지 않습니다.
 >
@@ -152,6 +152,8 @@ rtc_controllers/
 │   │   ├── quintic_spline_trajectory.hpp     -- C4 글로벌 스플라인 궤적
 │   │   ├── task_space_blend_trajectory.hpp   -- SE(3) C2 via-point 블렌드
 │   │   └── task_space_spline_trajectory.hpp  -- SE(3) C4 글로벌 스플라인
+│   ├── estimation/
+│   │   └── momentum_observer.hpp             -- 일반화 운동량 관측기 잔차 `r` (#135 Layer 1). `M`/`C` 가 아니라 조립된 nv 벡터 (`p = M q̇` · `Cᵀq̇` · `g` · `τ_m`) 를 받는다 — 모델 순서와 device 순서를 섞을 자리를 관측기에서 없애기 위함이며, 그 좌표 계약은 호출자(`integrated_bringup/support/momentum_observer_wiring.hpp`)가 소유한다. `τ_m` 은 **관절 토크 [N·m]** 이고 관절에 작용하는 일반화력을 **전부** 담아야 한다 (모터 전류는 backend 경계에서 변환; `DeviceState::motor_efforts` 는 별도 lane). lane 판정도 호출자 몫 — `rtc::IsLaneReadable` 는 `rtc_controller_interface` 에 있고 이 패키지는 그것을 의존하지 않는다
 │   └── grasp/
 │       ├── grasp_types.hpp                   -- 그래스프 상태 머신 타입/파라미터
 │       ├── grasp_controller.hpp              -- 적응형 PI 힘 제어 그래스프 컨트롤러
@@ -161,6 +163,8 @@ rtc_controllers/
 │   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
 │   ├── params/                               -- 위 스키마 파서 6종 구현
 │   └── controllers/
+│       ├── estimation/
+│       │   └── momentum_observer.cpp
 │       └── grasp/
 │           ├── grasp_controller.cpp
 │           └── pull_force_estimator.cpp
