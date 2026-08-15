@@ -216,7 +216,7 @@ solver:
 
 모든 그룹은 동일한 메시지 타입을 사용합니다:
 - **커맨드**: `rtc_msgs/JointCommand` (joint_names + values + command_type + feedforward/kp/kd)
-- **상태**: `sensor_msgs/JointState` (position, velocity, effort)
+- **상태**: `sensor_msgs/JointState` (position, velocity, effort — `effort` 는 **관절 토크 [N·m]**, 아래 [제어 모드 자동 전환](#제어-모드-자동-전환-robot-그룹) 의 effort 정의 참조)
 - **센서** (선택): `rtc_msgs/SimSensorState` (MuJoCo XML 센서 데이터)
 
 ### 퍼블리시 토픽 (그룹별)
@@ -259,12 +259,14 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 
 Position servo 모드에서는 MuJoCo 의 per-body `body_gravcomp` 가 그룹의 link body 들에 대해 1.0 으로 설정되어 중력이 내부적으로 상쇄됩니다. 전역 `opt.gravity` 는 항상 원래 값으로 유지되므로, 같은 씬 안의 free body (들어올릴 객체 등) 는 정상적으로 떨어집니다 — lift / manipulation 시뮬레이션과 양립.
 
+> **`JointState.effort` 의 정의 (모드 무관)**: `qfrc_actuator + qfrc_applied + qfrc_gravcomp` — 즉 **그 관절에 작용하는 일반화력 전부**이며 단위는 관절 토크 [N·m] 입니다. `DeviceState::effort` lane 계약 (`rtc_base` `types.hpp`: "torques for robot arm") 이 실기·sim 양쪽에 동일하게 걸리고, 실기는 command mode 와 무관하게 관절 토크를 보고하므로 sim 도 모드에 따라 의미가 달라지면 안 됩니다. `gravcomp` 항이 빠지면 position 모드의 effort 는 "중력이 이미 상쇄된 뒤 PD 가 추가로 낸 토크" 가 되어 조용히 다른 물리량이 됩니다 (#447 — momentum observer 가 무부하에서 residual 이 `+g(q)` 로 수렴하는 것으로 발현). gravcomp 가 OFF 인 `torque` / `pd_feedforward` 에서는 MuJoCo 가 `qfrc_gravcomp` 를 **0 으로 기입**하므로 (미기입이 아니다 — `mj_passive` 는 `ngravcomp == 0` early-out 전에 배열을 0 으로 덮는다) 이 합산은 모드 분기 없이 안전합니다. `qfrc_passive` 를 통째로 더하지 않는 이유는 거기에 spring / damper / fluid 가 섞여 있어서입니다 (iiwa7 은 관절 damping 1.0–3.0 → `qvel=0.5` 에서 1.5 N·m) — 그건 모델의 마찰이고 관측기의 residual 에 남습니다.
+
 #### `pd_feedforward` 모드 (sim 전용)
 
 `command_type == "pd_feedforward"` 는 `position` 모드와 동일한 affine PD actuator (`kp·(q_d−q) − kd·qvel`, `values` = 위치 타겟 `q_d`) 에 per-joint feedforward torque 를 더합니다 (조인트당 총 일반화 힘 = `kp·(q_d−q) − kd·qvel + tau_ff`). 구현은 `tau_ff` 를 `data_->qfrc_applied[dofadr]` 에 주입하고 (MuJoCo 가 `qfrc_actuator + qfrc_applied` 합산), `body_gravcomp` 를 0 으로 둡니다 — **컨트롤러의 `feedforward` 가 중력 보상까지 전부 포함**해야 하며, 누락 시 팔이 무음으로 처집니다. 메시지 필드:
 
 - `feedforward[]` — `tau_ff` (Nm), gravity 포함. 비면 0. command joint 는 hinge/slide (1-dof) 만 지원.
-- `kp[]` / `kd[]` — 런타임 PD gain (둘 다 `>= 0`), **sticky** (비면 현재 게인 유지, 채우면 갱신 후 지속). **all-or-nothing**: kp/kd 중 하나만 채우거나 그룹 조인트 전체를 덮지 못하면 (또는 음수면) 무시 + throttled warning. `JointState.effort` 는 `qfrc_actuator + qfrc_applied` 합산이라 `tau_ff` 가 반영됩니다.
+- `kp[]` / `kd[]` — 런타임 PD gain (둘 다 `>= 0`), **sticky** (비면 현재 게인 유지, 채우면 갱신 후 지속). **all-or-nothing**: kp/kd 중 하나만 채우거나 그룹 조인트 전체를 덮지 못하면 (또는 음수면) 무시 + throttled warning. `JointState.effort` 는 `qfrc_actuator + qfrc_applied + qfrc_gravcomp` 합산이라 `tau_ff` 가 반영됩니다 (이 모드는 gravcomp OFF 라 마지막 항이 0).
 
 > **도달성 (Path A)**: `pd_feedforward` 는 현재 sim 수신측에서만 해석됩니다. 프레임워크 전역 `rtc::CommandType` enum 이 2-값 (`position`/`torque`) 이라 rtc 컨트롤러→백엔드 스택은 이 값을 발행하지 못하며, sim 테스트 / 직접 publish 로만 도달합니다. end-to-end 컨트롤 경로는 별도 작업 (rtc_base enum + ControllerOutput 확장).
 
@@ -801,7 +803,7 @@ GTest 스위트 (11 파일, `test/` 디렉토리). 최신 케이스 수·pass/fa
 | `test_command_state_io` | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
 | `test_lifecycle` | Start/Stop/Pause/Resume/Reset/StepOnce/SyncTimeout |
 | `test_runtime_controls` | atomic setter/getter, 클램핑, world gravity 토글 |
-| `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증 (`scene_with_object.xml`) |
+| `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (#447) (`scene_with_object.xml`) |
 | `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
 | `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
