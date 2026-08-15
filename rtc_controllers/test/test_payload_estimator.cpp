@@ -317,6 +317,18 @@ TEST(PayloadEstimatorTest, UseBeforeInitIsRejected) {
   EXPECT_EQ(est.invalid_reason(), PayloadInvalidReason::kNotInitialized);
   est.Hold(PayloadInvalidReason::kHandMoving);
   EXPECT_EQ(est.invalid_reason(), PayloadInvalidReason::kNotInitialized);
+
+  // Update() has its own entry guard, and it is the one that matters: Hold()
+  // touches nothing, while Update() would otherwise index buffers Init() never
+  // sized. A caller that skipped Init() is a wiring bug, so the estimator must
+  // say kNotInitialized rather than kShortInput — the latter would send whoever
+  // reads the reason looking at the Jacobian instead of at the missing Init().
+  const Eigen::MatrixXd J = Eigen::MatrixXd::Identity(6, kNv);
+  const std::vector<double> r(static_cast<std::size_t>(kNv), 0.0);
+  est.Update(J, std::span<const double>(r.data(), r.size()), kGravityZ);
+  EXPECT_FALSE(est.valid());
+  EXPECT_EQ(est.invalid_reason(), PayloadInvalidReason::kNotInitialized);
+  EXPECT_EQ(est.estimate().mass, 0.0);
 }
 
 // Every threshold is load-bearing, so none may be silently disabled. NaN is
