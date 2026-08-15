@@ -2,9 +2,13 @@
 
 #include "rtc_controller_interface/device_readability.hpp"
 
+#include <rclcpp/logging.hpp>
+
 #include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace integrated_bringup {
 
@@ -14,24 +18,52 @@ bool MomentumObserverInputsReadable(const rtc::DeviceState& dev, int dof) noexce
          rtc::IsLaneReadable(dev, rtc::StateLane::kEffort, dof);
 }
 
-void ConfigureMomentumObserverWiring(rtc_urdf_bridge::RtModelHandle& handle, int device_index,
-                                     int dof, std::span<const double> gains,
+void ConfigureMomentumObserverWiring(std::shared_ptr<const pinocchio::Model> arm_model,
+                                     std::span<const std::string> arm_joint_names,
+                                     int device_index, std::span<const double> gains,
                                      MomentumObserverWiring& w) {
+  // Disable first: every throw below must leave a wiring that cannot be ticked,
+  // including a re-configure that fails after a successful one.
+  w.configured = false;
+  w.handle.reset();
+
+  if (arm_model == nullptr) {
+    throw std::invalid_argument("ConfigureMomentumObserverWiring: null arm model");
+  }
   if (device_index < 0 || device_index >= rtc::ControllerState::kMaxDevices) {
     throw std::invalid_argument("ConfigureMomentumObserverWiring: device_index out of range: " +
                                 std::to_string(device_index));
   }
-  if (dof != handle.nv()) {
-    throw std::invalid_argument("ConfigureMomentumObserverWiring: dof (" + std::to_string(dof) +
-                                ") != handle.nv() (" + std::to_string(handle.nv()) +
-                                ") — the observer works in the model's velocity space");
+
+  const auto dof = static_cast<int>(arm_joint_names.size());
+  if (dof != arm_model->nv) {
+    throw std::invalid_argument(
+        "ConfigureMomentumObserverWiring: arm_joint_names size (" + std::to_string(dof) +
+        ") != arm model nv (" + std::to_string(arm_model->nv) +
+        ") — the observer works in the model's velocity space");
   }
 
-  // Init() first: it validates the gains and throws, and leaving the wiring
-  // unconfigured on that path keeps a half-built observer from being ticked.
+  auto handle = std::make_unique<rtc_urdf_bridge::RtModelHandle>(std::move(arm_model));
+
+  // Pin the device order. Without this the reorder falls back to memcpy, which
+  // is right only when the two orders coincide — see the header preamble.
+  if (!handle->SetJointOrder(arm_joint_names)) {
+    std::string names;
+    for (const auto& n : arm_joint_names) {
+      if (!names.empty())
+        names += ", ";
+      names += n;
+    }
+    throw std::invalid_argument(
+        "ConfigureMomentumObserverWiring: SetJointOrder failed — the arm model does not carry "
+        "every configured joint name in [" +
+        names + "]");
+  }
+
+  // Init() before latching anything else: it validates the gains and throws.
   w.observer.Init(dof, gains);
 
-  w.handle = &handle;
+  w.handle = std::move(handle);
   w.dof = dof;
   w.device_index = device_index;
 
@@ -44,9 +76,77 @@ void ConfigureMomentumObserverWiring(rtc_urdf_bridge::RtModelHandle& handle, int
   w.configured = true;
 }
 
+void BuildMomentumObserverWiring(const MomentumObserverParams& params,
+                                 std::shared_ptr<const pinocchio::Model> arm_model,
+                                 std::span<const std::string> arm_joint_names, int device_index,
+                                 MomentumObserverWiring& w) {
+  w = MomentumObserverWiring{};
+
+  if (!params.has_block || !params.enabled) {
+    return;
+  }
+  // Model-less / hand-less callers (unit tests, a variant with no arm sub-model)
+  // stay disabled rather than throwing: there is nothing misconfigured about a
+  // caller that has no arm to observe.
+  if (arm_model == nullptr || arm_joint_names.empty()) {
+    return;
+  }
+
+  const auto dof = static_cast<int>(arm_joint_names.size());
+  const auto& g = params.gains;
+  std::vector<double> gains;
+  if (g.empty()) {
+    gains.assign(static_cast<std::size_t>(dof), kDefaultMomentumObserverGain);
+  } else if (g.size() == 1) {
+    gains.assign(static_cast<std::size_t>(dof), g.front());
+  } else if (g.size() == static_cast<std::size_t>(dof)) {
+    gains = g;
+  } else {
+    throw std::invalid_argument(
+        "demo_shared: momentum_observer.gains has " + std::to_string(g.size()) +
+        " entries — expected 1 (broadcast) or " + std::to_string(dof) + " (arm dof)");
+  }
+
+  ConfigureMomentumObserverWiring(std::move(arm_model), arm_joint_names, device_index, gains, w);
+}
+
+void LogMomentumObserverWiring(const rclcpp::Logger& logger, const MomentumObserverWiring& w,
+                               const MomentumObserverParams& params) {
+  if (!w.enabled()) {
+    const char* why = !params.has_block
+                          ? "no 'momentum_observer' block in demo_shared.yaml"
+                          : (!params.enabled ? "block present but enabled: false"
+                                             : "no arm sub-model to observe");
+    RCLCPP_INFO(logger,
+                "[momentum_observer] disabled — %s. No momentum_observer.csv will be written.",
+                why);
+    return;
+  }
+  std::string gains;
+  for (const auto& v : params.gains) {
+    if (!gains.empty()) {
+      gains += ", ";
+    }
+    gains += std::to_string(v);
+  }
+  if (gains.empty()) {
+    gains = std::to_string(kDefaultMomentumObserverGain) + " (default)";
+  }
+  RCLCPP_INFO(logger,
+              "[momentum_observer] enabled — device %d, dof %d, K_I [%s]. Residual r is logged to "
+              "momentum_observer.csv; held/E-STOP ticks appear as valid=0 rows.",
+              w.device_index, w.dof, gains.c_str());
+}
+
 void ResetMomentumObserverRtState(MomentumObserverWiring& w) noexcept {
   w.observer.ResetRtState();
   std::fill(w.residual_device.begin(), w.residual_device.end(), 0.0);
+}
+
+void HoldMomentumObserver(MomentumObserverWiring& w) noexcept {
+  if (!w.configured)
+    return;
+  w.observer.Hold();
 }
 
 bool UpdateMomentumObserver(const rtc::ControllerState& state,

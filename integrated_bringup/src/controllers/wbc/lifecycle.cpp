@@ -136,6 +136,17 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         std::min(static_cast<std::size_t>(std::max(contact_mgr_config_.max_contact_vars, 0)),
                  integrated_bringup::WbcDiagLogPod::kMaxContactVars);
 
+    // ── #135 Layer 1b: consume the observer's configure verdict ──────────
+    // The wiring itself is built in OnDeviceConfigsSet (that is where the arm
+    // device's joint order first exists, and it has to precede the log
+    // registration below, which gates on whether the observer is enabled). That
+    // hook cannot fail a configure on its own, so a config error arrives here.
+    if (!momentum_config_error_.empty()) {
+      RCLCPP_ERROR(logger_, "momentum_observer configuration failed: %s",
+                   momentum_config_error_.c_str());
+      return CallbackReturn::FAILURE;
+    }
+
     LogRegistrationContext ctx{.logger = logger_, .log_set = log_set_};
     ctx.sensor_logs = {
         {secondary_sensor_key, {secondary_sensor_names_, secondary_sensor_values_per_group_}}};
@@ -147,6 +158,8 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     ctx.wbc_diag_logs = {{wbc_diag_key, num_contact_vars}};
     ctx.pull_estimator_enabled = pull_wiring_.enabled();
     ctx.pull_estimator_roles = pull_wiring_.roles;
+    ctx.momentum_observer_enabled = momentum_wiring_.enabled();
+    ctx.momentum_observer_joint_names = primary_joint_names_;
 
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -173,6 +186,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
       wbc_diag_log_handle_ = it->second;
     }
     pull_estimator_log_handle_ = reg.handles.pull_estimator;
+    momentum_observer_log_handle_ = reg.handles.momentum_observer;
     if (!log_set_.empty() && node) {
       log_drain_cb_group_ =
           node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -280,6 +294,7 @@ void DemoWbcController::ResetLogState() noexcept {
   secondary_sensor_log_handle_ = {};
   wbc_diag_log_handle_ = {};
   pull_estimator_log_handle_ = {};
+  momentum_observer_log_handle_ = {};
 }
 
 RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
@@ -315,6 +330,12 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
   // cycle — or the E-STOP path, which early-returns before the estimator tick —
   // would resume mid-grasp state against a possibly different object.
   ResetPullEstimatorRtState(pull_wiring_);
+  // Same argument for the momentum observer: its integrator, momentum reference
+  // and residual are per-tick latches. Resuming across a gap without dropping
+  // them bills the momentum change accumulated while nothing was ticking as an
+  // external torque — the residual would report a load that never existed and
+  // then decay over ~1/K_I, which reads exactly like a real transient.
+  ResetMomentumObserverRtState(momentum_wiring_);
 
   // MPC tick-timing CSV + 1 Hz aux timer: one-shot setup per controller
   // lifetime (gated on mpc_timing_initialized_). Re-activation after a

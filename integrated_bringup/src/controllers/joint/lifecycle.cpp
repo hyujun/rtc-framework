@@ -110,6 +110,17 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     const auto secondary_state_key = secondary.empty() ? std::string{} : secondary + "_state";
     const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
 
+    // ── #135 Layer 1b: consume the observer's configure verdict ──────────
+    // The wiring itself is built in OnDeviceConfigsSet (that is where the arm
+    // device's joint order first exists, and it has to precede the log
+    // registration below, which gates on whether the observer is enabled). That
+    // hook cannot fail a configure on its own, so a config error arrives here.
+    if (!momentum_config_error_.empty()) {
+      RCLCPP_ERROR(logger_, "momentum_observer configuration failed: %s",
+                   momentum_config_error_.c_str());
+      return CallbackReturn::FAILURE;
+    }
+
     LogRegistrationContext ctx{
         .logger = logger_,
         .log_set = log_set_,
@@ -130,6 +141,8 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         .grasp_diag_enabled = grasp_controller_ != nullptr,
         .grasp_diag_finger_names =
             GraspDiagFingerNames(secondary_sensor_names_, num_grasp_fingers_),
+        .momentum_observer_enabled = momentum_wiring_.enabled(),
+        .momentum_observer_joint_names = primary_joint_names_,
     };
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -150,6 +163,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
       }
     }
     pull_estimator_log_handle_ = std::move(reg.handles.pull_estimator);
+    momentum_observer_log_handle_ = std::move(reg.handles.momentum_observer);
     grasp_diag_log_handle_ = std::move(reg.handles.grasp_diag);
     LogGraspDiagWiring(logger_, grasp_controller_ != nullptr,
                        ctx.grasp_diag_finger_names);
@@ -263,6 +277,7 @@ void DemoJointController::ResetLogState() noexcept {
   secondary_state_log_handle_ = {};
   secondary_sensor_log_handle_ = {};
   pull_estimator_log_handle_ = {};
+  momentum_observer_log_handle_ = {};
   // #238: an unbound handle is what stops a re-configure from logging into a
   // channel whose file the previous configure owned.
   grasp_diag_log_handle_ = {};
@@ -275,6 +290,12 @@ RTControllerInterface::CallbackReturn DemoJointController::on_activate(
   // baseline) are otherwise only cleared at configure, so a deactivate/activate
   // cycle would resume mid-grasp state against a possibly different object.
   ResetPullEstimatorRtState(pull_wiring_);
+  // Same argument for the momentum observer: its integrator, momentum reference
+  // and residual are per-tick latches. Resuming across a gap without dropping
+  // them bills the momentum change accumulated while nothing was ticking as an
+  // external torque — the residual would report a load that never existed and
+  // then decay over ~1/K_I, which reads exactly like a real transient.
+  ResetMomentumObserverRtState(momentum_wiring_);
   // The identical argument, applied to the grasp FSM — which it was not, until a
   // review found the gap. A deactivate mid-grasp freezes the FSM (nothing steps
   // it while Inactive) with its request flags still armed, so the first tick after

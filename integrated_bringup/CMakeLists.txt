@@ -833,10 +833,10 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # Unified kin&dyn Phase 5: joint arm TCP FK cache equivalence (FK-only — the
-  # joint controller has no Jacobian consumer). Proves DemoJointController's move
-  # off arm_handle_ onto the combined-model PinocchioCache preserves the arm TCP
-  # oMf on both the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
+  # #135 Layer 1: the momentum-observer wiring — the lane gate plus the
+  # coordinate contract (device order in, Pinocchio order out), checked against
+  # a real ur5e arm sub-model because a mixed order produces a finite, smooth,
+  # wrong residual that no gate or NaN check would catch.
   ament_add_gtest(test_momentum_observer_wiring
     test/test_momentum_observer_wiring.cpp)
   target_link_libraries(test_momentum_observer_wiring
@@ -852,6 +852,35 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # #135 Layer 1b: the same observer inside the three production controllers.
+  # The residual has no consumer at this layer, so momentum_observer.csv is the
+  # only surface — these cases register the channel the way on_configure does
+  # and read the file back, which is also what keeps the header/row widths and
+  # the per-tick push on the tested path.
+  ament_add_gtest(test_momentum_observer_embedding
+    test/test_momentum_observer_embedding.cpp
+    TIMEOUT 180)
+  target_link_libraries(test_momentum_observer_embedding
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_momentum_observer_embedding
+    ament_index_cpp
+    rclcpp
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    rtc_tsid
+    rtc_mpc
+    pinocchio
+    Eigen3
+  )
+
+  # Unified kin&dyn Phase 5: joint arm TCP FK cache equivalence (FK-only — the
+  # joint controller has no Jacobian consumer). Proves DemoJointController's move
+  # off arm_handle_ onto the combined-model PinocchioCache preserves the arm TCP
+  # oMf on both the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
   ament_add_gtest(test_joint_arm_cache_equivalence
     test/test_joint_arm_cache_equivalence.cpp)
   target_link_libraries(test_joint_arm_cache_equivalence

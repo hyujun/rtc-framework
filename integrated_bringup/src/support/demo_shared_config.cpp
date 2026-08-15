@@ -362,6 +362,32 @@ void ApplyPullEstimatorBlock(const YAML::Node& pe, DemoSharedConfig& cfg) {
   }
 }
 
+// #135 Layer 1b — `momentum_observer` block. Presence of the block is what
+// enables the channel; `enabled: false` keeps the block (and its gains) around
+// while switching it off.
+void ApplyMomentumObserverBlock(const YAML::Node& mo, DemoSharedConfig& cfg) {
+  if (!mo || !mo.IsMap()) {
+    return;
+  }
+  auto& mp = cfg.momentum_observer;
+  mp.has_block = true;
+  if (mo["enabled"]) {
+    mp.enabled = mo["enabled"].as<bool>();
+  }
+  if (mo["gains"]) {
+    // A scalar is accepted as the one-entry broadcast form so a config does not
+    // have to spell the same number dof times.
+    if (mo["gains"].IsSequence()) {
+      mp.gains.clear();
+      for (const auto& g : mo["gains"]) {
+        mp.gains.push_back(g.as<double>());
+      }
+    } else {
+      mp.gains.assign(1, mo["gains"].as<double>());
+    }
+  }
+}
+
 }  // namespace
 
 void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
@@ -441,6 +467,10 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
 
   if (node["pull_estimator"]) {
     ApplyPullEstimatorBlock(node["pull_estimator"], cfg);
+  }
+
+  if (node["momentum_observer"]) {
+    ApplyMomentumObserverBlock(node["momentum_observer"], cfg);
   }
 }
 

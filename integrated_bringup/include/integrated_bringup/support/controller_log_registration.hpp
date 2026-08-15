@@ -29,6 +29,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
+#include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
@@ -158,6 +159,18 @@ struct LogRegistrationContext {
   // header then emits no per-finger columns at all, which is visible rather
   // than mislabelled.
   std::vector<std::string> grasp_diag_finger_names{};
+
+  // MomentumObserverLog (#135 Layer 1b) — single fixed instance
+  // (kMomentumObserverLogInstance). Gated on the wiring being configured, which
+  // is the `momentum_observer` block being present and enabled; a YAML entry on
+  // a variant without that block is silently skipped like any unregistered
+  // instance.
+  bool momentum_observer_enabled{false};
+  // Arm device joint order — the order the residual columns are in. Stamped
+  // into the column names so a stored CSV decodes without that run's YAML.
+  // Empty is tolerated: the header then emits no per-joint columns at all,
+  // which is visible rather than mislabelled.
+  std::vector<std::string> momentum_observer_joint_names{};
 };
 
 // ⚠ Two separate hazards, two separate fixes — keep both (#428).
@@ -244,6 +257,8 @@ struct RegisteredLogHandles {
   rtc::LogHandle<integrated_bringup::TaskDiagLogPod> task_diag;
   // Single fixed instance (kGraspDiagLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::GraspDiagLogPod> grasp_diag;
+  // Single fixed instance (kMomentumObserverLogInstance), same reason.
+  rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> momentum_observer;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -448,11 +463,37 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.grasp_diag = std::move(handle);
+    } else if (entry.msg_type == kMomentumObserverLogMsgType) {
+      if (!ctx.momentum_observer_enabled || entry.instance != kMomentumObserverLogInstance) {
+        // No momentum_observer block on this variant (or unexpected instance) —
+        // silently skip like any unregistered instance. on_configure emits an
+        // INFO naming the absent file so the empty session directory does not
+        // read as a logging bug.
+        continue;
+      }
+      const auto joint_names = ctx.momentum_observer_joint_names;
+      // Both writers must agree on the per-joint column count or the row stops
+      // lining up with the header, so the same list sizes each.
+      const auto num_columns = integrated_bringup::MomentumObserverLogColumns(joint_names);
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::MomentumObserverLogPod>(
+          entry.instance,
+          [joint_names](std::ostream& os) {
+            integrated_bringup::WriteMomentumObserverLogHeader(os, joint_names);
+          },
+          [num_columns](std::ostream& os, const integrated_bringup::MomentumObserverLogPod& pod) {
+            integrated_bringup::WriteMomentumObserverLogRow(os, pod, num_columns);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open momentum_observer CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.momentum_observer = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
-    // PullEstimatorLog, TaskDiagLog, GraspDiagLog}; reaching here is a YAML
-    // parser bug. Silently ignore.
+    // PullEstimatorLog, TaskDiagLog, GraspDiagLog, MomentumObserverLog};
+    // reaching here is a YAML parser bug. Silently ignore.
   }
 
   return result;

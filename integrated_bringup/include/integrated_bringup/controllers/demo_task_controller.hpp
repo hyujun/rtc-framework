@@ -15,6 +15,7 @@
 #include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
@@ -303,6 +304,23 @@ class DemoTaskController final : public RTControllerInterface {
     grasp_diag_log_handle_ = std::move(h);
   }
 
+  /// Test-only: bind the momentum_observer CSV channel from a test-owned
+  /// ControllerLogSet. The URDF fixtures stop at SetDeviceNameConfigs, so every
+  /// production-bound log handle is unbound and PushMomentumObserverLog
+  /// early-returns; a row assertion written against that state would pass with
+  /// the push deleted outright.
+  void SetMomentumObserverLogHandleForTesting(
+      rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> h) {
+    momentum_observer_log_handle_ = std::move(h);
+  }
+
+  /// Test-only: the configure-time error BuildMomentumObserverWiring raised, or
+  /// empty when the wiring resolved (enabled, or deliberately disabled).
+  /// on_configure consumes the same string — see OnDeviceConfigsSet.
+  [[nodiscard]] const std::string& MomentumObserverConfigErrorForTesting() const {
+    return momentum_config_error_;
+  }
+
   /// Test-only: lift the shipped K_est_max pin so the stiffness estimate can
   /// leave its seed. The deployed value equals the seed (#425), which makes
   /// the published mirror a constant and hides a fill that ignores its source.
@@ -530,6 +548,10 @@ class DemoTaskController final : public RTControllerInterface {
   std::string urdf_path_;  // stored from constructor, used in LoadConfig
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> arm_handle_;
+  // The same arm sub-model, kept as a shared_ptr so the momentum observer can
+  // build its OWN handle over it (RtModelHandle::GetModel() hands back a
+  // reference, not ownership).
+  std::shared_ptr<const pinocchio::Model> arm_model_;
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
@@ -764,6 +786,23 @@ class DemoTaskController final : public RTControllerInterface {
   // fingertip_rotations_ slot order). Disabled (null estimator) without a hand
   // tree-model or when the block is absent. Output rides grasp_state_.pull.
   PullEstimatorWiring pull_wiring_;
+
+  // ── Generalized-momentum observer (#135 Layer 1b) ─────────────────────────
+  // Parsed in LoadConfig (the YAML is there) and BUILT in OnDeviceConfigsSet,
+  // which is the first point the arm device's joint_state_names exist — the
+  // wiring pins that order on its own model handle, so it cannot be built any
+  // earlier. Disabled without a `momentum_observer` block. Output is the
+  // joint-space residual r; it goes to momentum_observer.csv and nowhere else
+  // this layer (#135 D12 — the PayloadEstimate wire surface arrives with
+  // Layer 2A, when there is a payload estimate to put in it).
+  MomentumObserverParams momentum_params_;
+  MomentumObserverWiring momentum_wiring_;
+  /// Non-empty when BuildMomentumObserverWiring threw in OnDeviceConfigsSet.
+  /// That hook cannot propagate — CM calls SetDeviceNameConfigs outside any
+  /// try/catch — so the failure is latched here and on_configure turns it into
+  /// CallbackReturn::FAILURE. A config error must not degrade to "the observer
+  /// quietly did not run".
+  std::string momentum_config_error_;
   /// Finger index → hand joint indices mapping (ragged; fingers may have
   /// different DoF). finger_joint_map_[f][0 .. finger_dof_[f]) valid for
   /// f < num_grasp_fingers_. Cached from `DemoSharedConfig` in LoadConfig.
@@ -981,6 +1020,7 @@ class DemoTaskController final : public RTControllerInterface {
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> secondary_state_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;
   rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator_log_handle_;
+  rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> momentum_observer_log_handle_;
   rtc::LogHandle<integrated_bringup::TaskDiagLogPod> task_diag_log_handle_;
   /// Per-tick Force-PI servo + stiffness-estimator diagnostics (#428).
   /// Bound only when a `force_pi_grasp` block is configured; see

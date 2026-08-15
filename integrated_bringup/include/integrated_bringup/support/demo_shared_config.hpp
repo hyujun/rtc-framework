@@ -11,6 +11,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace integrated_bringup {
 
@@ -51,6 +52,37 @@ enum class PullPlaneNormalSource { kFixed, kPinchGeometry };
 // filter bank so the RT path never sees un-Init'd coefficients) and because it
 // is now the sole home of a default that used to live in GraspParams.
 inline constexpr double kDefaultForcePiLpfCutoffHz = 25.0;
+
+// Default momentum-observer gain K_I [1/s] when a `momentum_observer` block
+// carries no `gains` key (#135 Layer 1b). 10 /s puts the residual's first-order
+// time constant at 0.1 s — slow enough that encoder/torque noise does not
+// dominate, fast enough that a quasi-static payload change settles inside a few
+// hundred ms. It is a starting point, not an identified value: K_I is the
+// responsiveness-vs-noise knob and every deployment is expected to set it.
+inline constexpr double kDefaultMomentumObserverGain = 10.0;
+
+// The `momentum_observer` YAML block (#135 Layer 1b), mirrored as a struct so
+// the three demo controllers can carry it from LoadConfig (where the YAML is
+// read) to OnDeviceConfigsSet (where the arm device's joint order first
+// exists), which is the earliest point the wiring can be built.
+//
+// No block ⇒ disabled, and that is the behaviour for any variant that does not
+// opt in — the observer costs one arm-sized dynamics pass per tick (crba +
+// computeCoriolisMatrix + gravity), so it is not something a config should
+// acquire by accident.
+struct MomentumObserverParams {
+  bool has_block{false};
+  bool enabled{true};
+  // K_I per arm joint [1/s]. Empty ⇒ kDefaultMomentumObserverGain, one entry
+  // broadcasts to every joint, otherwise exactly the arm's dof. Any other
+  // length is a config error the wiring rejects at configure rather than
+  // truncating or padding, since either would silently leave the tail joints
+  // on a gain nobody chose and the residual it produces looks reasonable.
+  // Larger is faster to converge and noisier; a zero or negative entry is
+  // rejected by MomentumObserver::Init (it would pin that component of r at 0
+  // forever, which is indistinguishable from a measured absence of load).
+  std::vector<double> gains{};
+};
 
 // Parameters that DemoJointController and DemoTaskController share.
 // Defaults live in config/ur5e_p1a/controllers/demo_shared.yaml; per-controller YAMLs
@@ -135,6 +167,9 @@ struct DemoSharedConfig {
   // Optional known pull direction (base frame) for the directional scalar F_d.
   bool pull_has_direction{false};
   Eigen::Vector3d pull_direction{Eigen::Vector3d::Zero()};
+
+  // ── Generalized-momentum observer (#135 Layer 1b) ─────────────────────────
+  MomentumObserverParams momentum_observer{};
 };
 
 // Overlay any keys present in `node` onto `cfg`. Missing keys are left
