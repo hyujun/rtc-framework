@@ -835,10 +835,17 @@ if(BUILD_TESTING)
 
   # #135 Layer 1: the momentum-observer wiring — the lane gate plus the
   # coordinate contract (device order in, Pinocchio order out), checked against
-  # a real ur5e arm sub-model because a mixed order produces a finite, smooth,
+  # a real iiwa7 arm sub-model because a mixed order produces a finite, smooth,
   # wrong residual that no gate or NaN check would catch.
+  #
+  # TIMEOUT because the cases here settle the observer over thousands of ticks,
+  # each a full dynamics + Jacobian evaluation. That is fast in the gated
+  # RelWithDebInfo build and roughly two orders slower under the coverage job's
+  # Debug+gcov build, where the default 60 s bound was actually hit — and a
+  # timeout there reads as "not verified", not as a slow pass.
   ament_add_gtest(test_momentum_observer_wiring
-    test/test_momentum_observer_wiring.cpp)
+    test/test_momentum_observer_wiring.cpp
+    TIMEOUT 180)
   target_link_libraries(test_momentum_observer_wiring
     ${PROJECT_NAME}_demo_controllers
   )

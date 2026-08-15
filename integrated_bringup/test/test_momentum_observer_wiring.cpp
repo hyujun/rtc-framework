@@ -770,7 +770,13 @@ void ArmWithASettledPayload(MomentumObserverWiring& wir, std::vector<double>& q_
   tau_out = MeasuredTorqueUnderPayload(probe, q_dev_out, w_true);
 
   integrated_bringup::BuildMomentumObserverWiring(PayloadParams(), model, names, 0, wir);
-  SettleUnderPayload(wir, q_dev_out, tau_out);
+  // 1500 rather than the 4000 the accuracy cases use: those pin the mass to
+  // 1e-3, these only need a valid, non-trivial estimate to then knock down. The
+  // settle gate opens at 5/(K_I·dt) = 500 ticks, so this is 3x past it and the
+  // observer (τ = 1/K_I = 100 ticks) is long converged. Each tick is a full
+  // dynamics + Jacobian evaluation and this helper runs once per case, which is
+  // what put the binary over its ctest bound under Debug+gcov.
+  SettleUnderPayload(wir, q_dev_out, tau_out, 1500);
 }
 
 /// The settled device, ready for one more tick.
