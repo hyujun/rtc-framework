@@ -109,7 +109,7 @@ runs:
     # cache 는 동일 hash 의 재실행에서 build_deps.sh 를 skip 하기 위함이고,
     # artifact 는 cross-job 전달 채널로 별도 역할.
     - name: Upload deps artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: rtc-deps-${{ inputs.ros-distro }}
         path: ${{ steps.paths.outputs.deps-install }}
