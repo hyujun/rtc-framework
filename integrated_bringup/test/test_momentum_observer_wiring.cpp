@@ -3,14 +3,29 @@
 //
 // Two kinds of case here, and the second is why this file uses a real URDF at
 // all. The gate cases are pure logic. The dynamics cases run the observer
-// against an ACTUAL ur5e arm sub-model, because the failure this wiring exists
-// to prevent — mixing the model's internal joint order with the device order —
+// against an ACTUAL arm sub-model, because the failure this wiring exists to
+// prevent — mixing the model's internal joint order with the device order —
 // produces a finite, smooth, wrong residual that no gate and no NaN check would
 // catch. Only an end-to-end oracle ("a known external torque comes back out")
 // separates a correct assembly from a plausible one.
+//
+// WHICH arm is not a free choice: iiwa7_leap, because its URDF ships in
+// `robot_descriptions` (this repo) while the ur5e_p1b profile resolves
+// `hand_description`, which lives outside it. This file used to sit on the
+// ur5e_p1b fixture and every model-backed case here threw "package
+// 'hand_description' not found" in CI — 13 of 14 red, invisible because
+// integrated_bringup runs in the continue-on-error best-effort lane. The oracle
+// above therefore never once ran off this machine. Any fixture used here must
+// resolve only in-repo packages; a case that genuinely needs the closed chain
+// belongs in test_wbc_closed_chain_projection_sharing.cpp instead.
+//
+// The move also un-vacuums one gate: on the 6-DOF ur5e, Jᵀ is square, so the
+// payload least-squares is exactly determined and `fit_error` is identically
+// zero — `max_fit_error` could never fire. iiwa7's 7 DOF make it
+// over-determined, which is the case the gate exists for.
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 
-#include "ur5e_p1b_test_fixture.hpp"
+#include "iiwa7_leap_test_fixture.hpp"
 
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -19,6 +34,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -29,8 +45,30 @@ namespace rub = rtc_urdf_bridge;
 using integrated_bringup::MomentumObserverInputsReadable;
 using integrated_bringup::MomentumObserverWiring;
 
-constexpr int kArmDof = integrated_bringup::testfx::kUr5eArmDof;  // 6
+constexpr int kArmDof = integrated_bringup::testfx::kArmDof;  // 7
 constexpr double kDt = 0.001;
+
+// The external torque the cases below must recover, and the swing torque the
+// moving case adds. Distinct per joint on purpose: a uniform vector would let a
+// wiring that permutes the residual pass by symmetry, which is the single
+// failure this file exists to catch.
+//
+// Deduced extent + static_assert, not std::array<double, kArmDof>: an array
+// whose size is FIXED accepts a short initialiser list and zero-fills, which is
+// exactly how four of these lists stayed 6 long while kArmDof became 7. Each
+// then indexed one past its own end — consistent garbage in the quasi-static
+// cases, and a diverged plant in the integrating one. Sized this way, a list
+// that does not match the arm is a compile error.
+constexpr double kQuasiStaticTauExt[]{2.0, -3.0, 1.0, 0.5, -0.25, 0.75, -1.5};
+static_assert(std::size(kQuasiStaticTauExt) == static_cast<std::size_t>(kArmDof),
+              "one quasi-static external torque per DOF");
+
+// Small distal components: the moving arm is gravity-compensated and undamped,
+// so a constant torque is a constant acceleration and a light distal joint
+// reaches the divergence guard long before the observer's answer can be read.
+constexpr double kMovingTauExt[]{0.5, -0.8, 0.3, 0.2, 0.05, -0.03, 0.02};
+static_assert(std::size(kMovingTauExt) == static_cast<std::size_t>(kArmDof),
+              "one moving-case external torque per DOF");
 
 // ── Gate fixtures (no model) ─────────────────────────────────────────────────
 
@@ -62,7 +100,7 @@ rtc::ControllerState StateWith(const rtc::DeviceState& dev) {
 // ── Model fixtures ───────────────────────────────────────────────────────────
 
 std::shared_ptr<const pinocchio::Model> ArmModel() {
-  return integrated_bringup::testfx::SharedUr5eP1bBuilder()->GetReducedModel("ur5e");
+  return integrated_bringup::testfx::SharedIiwa7LeapBuilder()->GetReducedModel("iiwa7");
 }
 
 /// Arm joint names in the model's own order.
@@ -198,10 +236,11 @@ TEST(MomentumObserverWiringTest, ClosedLaneGateHoldsTheObserverAndFreezesTheResi
   integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), ArmJointNames(h), 0,
                                                       std::vector<double>(kArmDof, 40.0), w);
 
-  const std::vector<double> q_dev(integrated_bringup::testfx::kUr5eHome.begin(),
-                                  integrated_bringup::testfx::kUr5eHome.end());
+  const std::vector<double> q_dev(integrated_bringup::testfx::kArmHome.begin(),
+                                  integrated_bringup::testfx::kArmHome.end());
   const std::vector<double> g_dev = GravityInDeviceOrder(h, q_dev);
-  const std::vector<double> tau_ext{2.0, -3.0, 1.0, 0.5, -0.25, 0.75};
+  const std::vector<double> tau_ext(std::begin(kQuasiStaticTauExt),
+                                   std::end(kQuasiStaticTauExt));
 
   rtc::DeviceState dev = FullyReadableDevice();
   for (int i = 0; i < kArmDof; ++i) {
@@ -247,8 +286,8 @@ TEST(MomentumObserverWiringTest, GravityHoldAloneProducesNoResidual) {
   integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), ArmJointNames(h), 0,
                                                       std::vector<double>(kArmDof, 40.0), w);
 
-  const std::vector<double> q_dev(integrated_bringup::testfx::kUr5eHome.begin(),
-                                  integrated_bringup::testfx::kUr5eHome.end());
+  const std::vector<double> q_dev(integrated_bringup::testfx::kArmHome.begin(),
+                                  integrated_bringup::testfx::kArmHome.end());
   const std::vector<double> g_dev = GravityInDeviceOrder(h, q_dev);
   ASSERT_GT(MaxAbsDiff(g_dev, std::vector<double>(kArmDof, 0.0)), 5.0)
       << "posture is gravity-neutral, so this case would be vacuous";
@@ -276,10 +315,11 @@ TEST(MomentumObserverWiringTest, KnownExternalTorqueIsRecovered) {
   integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), ArmJointNames(h), 0,
                                                       std::vector<double>(kArmDof, 40.0), w);
 
-  const std::vector<double> q_dev(integrated_bringup::testfx::kUr5eHome.begin(),
-                                  integrated_bringup::testfx::kUr5eHome.end());
+  const std::vector<double> q_dev(integrated_bringup::testfx::kArmHome.begin(),
+                                  integrated_bringup::testfx::kArmHome.end());
   const std::vector<double> g_dev = GravityInDeviceOrder(h, q_dev);
-  const std::vector<double> tau_ext{2.0, -3.0, 1.0, 0.5, -0.25, 0.75};
+  const std::vector<double> tau_ext(std::begin(kQuasiStaticTauExt),
+                                   std::end(kQuasiStaticTauExt));
 
   rtc::DeviceState dev = FullyReadableDevice();
   for (int i = 0; i < kArmDof; ++i) {
@@ -322,12 +362,13 @@ TEST(MomentumObserverWiringTest, PermutedDeviceOrderStillRecoversTheTorquePerJoi
   ASSERT_TRUE(w.handle->HasJointReorder()) << "wiring did not pin the device order";
 
   // Posture and torques are now stated in the REVERSED (device) order.
-  std::vector<double> q_dev(integrated_bringup::testfx::kUr5eHome.begin(),
-                            integrated_bringup::testfx::kUr5eHome.end());
+  std::vector<double> q_dev(integrated_bringup::testfx::kArmHome.begin(),
+                            integrated_bringup::testfx::kArmHome.end());
   std::reverse(q_dev.begin(), q_dev.end());
 
   const std::vector<double> g_dev = GravityInDeviceOrder(h, q_dev);
-  const std::vector<double> tau_ext{2.0, -3.0, 1.0, 0.5, -0.25, 0.75};
+  const std::vector<double> tau_ext(std::begin(kQuasiStaticTauExt),
+                                   std::end(kQuasiStaticTauExt));
 
   rtc::DeviceState dev = FullyReadableDevice();
   for (int i = 0; i < kArmDof; ++i) {
@@ -370,11 +411,14 @@ TEST(MomentumObserverWiringTest, PermutedDeviceOrderStillRecoversTheTorquePerJoi
 TEST(MomentumObserverWiringTest, RecoversTorqueWhileTheArmIsMoving) {
   // Scaled to the joints' inertias, unlike the quasi-static cases above. The arm
   // here is gravity-compensated and undamped, so a constant torque is a constant
-  // acceleration: 0.75 N·m on wrist_3 (~2e-3 kg·m²) reaches 50 rad/s in 0.12 s
-  // and the integrator leaves the arm's regime long before the observer's answer
-  // can be read. The distal components are therefore small — what this case
-  // needs is a MOVING arm, not a strongly loaded one.
-  const std::vector<double> tau_ext{0.5, -0.8, 0.3, 0.05, -0.03, 0.02};
+  // acceleration and a distal joint reaches the 50 rad/s guard below in a
+  // fraction of a second — long before the observer's answer can be read. The
+  // distal components are therefore small: what this case needs is a MOVING
+  // arm, not a strongly loaded one. One entry per DOF, and the length is
+  // asserted rather than assumed — a list sized for a different arm indexes
+  // past its own end here, which reads as a diverged plant rather than as the
+  // out-of-bounds read it is.
+  const std::vector<double> tau_ext(std::begin(kMovingTauExt), std::end(kMovingTauExt));
 
   auto run = [&](const std::vector<double>& applied_ext) {
     rub::RtModelHandle h(ArmModel());
@@ -382,8 +426,8 @@ TEST(MomentumObserverWiringTest, RecoversTorqueWhileTheArmIsMoving) {
     integrated_bringup::ConfigureMomentumObserverWiring(ArmModel(), ArmJointNames(h), 0,
                                                         std::vector<double>(kArmDof, 60.0), w);
 
-    std::vector<double> q(integrated_bringup::testfx::kUr5eHome.begin(),
-                          integrated_bringup::testfx::kUr5eHome.end());
+    std::vector<double> q(integrated_bringup::testfx::kArmHome.begin(),
+                          integrated_bringup::testfx::kArmHome.end());
     std::vector<double> v(static_cast<std::size_t>(kArmDof), 0.0);
     std::vector<double> tau_total(static_cast<std::size_t>(kArmDof), 0.0);
 
@@ -456,7 +500,7 @@ TEST(MomentumObserverWiringTest, RecoversTorqueWhileTheArmIsMoving) {
 
 namespace {
 
-constexpr char kPayloadFrame[] = "tool0";
+constexpr char kPayloadFrame[] = "ee_link";
 
 /// A wiring with Layer 2A armed. `joint_names` fixes the DEVICE order, which
 /// the tests vary on purpose.
@@ -519,7 +563,7 @@ void SettleUnderPayload(MomentumObserverWiring& wir, const std::vector<double>& 
 }  // namespace
 
 // THE positive control, and the order test in one. A 3 kg payload hanging from
-// tool0 must come back as +3 kg through the whole wiring, with the DEVICE order
+// the arm tip must come back as +3 kg through the whole wiring, with the DEVICE order
 // reversed relative to the model so that any implementation pairing the
 // device-order residual with the Pinocchio-order Jacobian reports a different
 // (and wrong) mass.
@@ -532,7 +576,7 @@ TEST(PayloadEstimatorWiring, RecoversHangingMassUnderReversedDeviceOrder) {
 
   std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
   for (int i = 0; i < kArmDof; ++i)
-    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
 
   const double mass = 3.0;
   const Eigen::Vector3d g_world = model->gravity.linear();
@@ -565,7 +609,7 @@ TEST(PayloadEstimatorWiring, UnloadedArmReportsNoPayload) {
 
   std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
   for (int i = 0; i < kArmDof; ++i)
-    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
   const std::vector<double> tau = GravityInDeviceOrder(probe, q_dev);  // holding only itself
 
   MomentumObserverWiring wir;
@@ -587,7 +631,7 @@ TEST(PayloadEstimatorWiring, PeripheralDeviceMotionClosesTheGate) {
 
   std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
   for (int i = 0; i < kArmDof; ++i)
-    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
   const std::vector<double> tau = GravityInDeviceOrder(probe, q_dev);
 
   MomentumObserverWiring wir;
@@ -621,7 +665,7 @@ TEST(PayloadEstimatorWiring, ArmMotionClosesTheGate) {
 
   std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
   for (int i = 0; i < kArmDof; ++i)
-    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
   const std::vector<double> tau = GravityInDeviceOrder(probe, q_dev);
 
   MomentumObserverWiring wir;
@@ -651,7 +695,7 @@ TEST(PayloadEstimatorWiring, EstimateIsWithheldUntilTheResidualHasSettled) {
 
   std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
   for (int i = 0; i < kArmDof; ++i)
-    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kUr5eHome[static_cast<std::size_t>(i)];
+    q_dev[static_cast<std::size_t>(i)] = integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
   const std::vector<double> tau = GravityInDeviceOrder(probe, q_dev);
 
   MomentumObserverWiring wir;
