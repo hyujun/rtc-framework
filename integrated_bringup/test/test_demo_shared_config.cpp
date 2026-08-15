@@ -914,3 +914,148 @@ TEST(DeployedForcePiTuning, MatchesTheTuningRtcControllersAssertsAgainst) {
     EXPECT_DOUBLE_EQ(gp.contact_settle_time, 0.1) << variant;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// momentum_observer block + payload_estimator sub-block parsing (#135)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The YAML→struct hop for these two blocks had no test at all, which is worse
+// here than the missing coverage suggests: every key is OPTIONAL and silently
+// falls back to its default, so a misspelled key, a key wired to the wrong
+// field, or a whole sub-block hung under the wrong parent all produce a
+// perfectly valid config that simply does not do what it says. The estimator
+// downstream cannot tell "the user asked for 0.02" from "nobody asked".
+//
+// Hence the shape below: every value differs from BOTH its own default and
+// every other value in the block. Equal-valued fixtures are the failure mode
+// this file is guarding — `num("min_sigma", pp.sigma0)` is one keystroke from
+// the real line and passes any fixture whose two numbers happen to match.
+
+TEST(DemoSharedConfigTest, MomentumObserverPayloadDefaults) {
+  const integrated_bringup::MomentumObserverParams mp;
+  EXPECT_FALSE(mp.has_block);
+  EXPECT_TRUE(mp.enabled);
+  EXPECT_TRUE(mp.gains.empty());
+
+  const integrated_bringup::PayloadEstimatorParams& pp = mp.payload;
+  EXPECT_FALSE(pp.has_block);
+  EXPECT_TRUE(pp.enabled);
+  // No default frame on purpose — guessing the last link would estimate about
+  // the wrong point rather than refusing.
+  EXPECT_TRUE(pp.frame.empty());
+  EXPECT_DOUBLE_EQ(pp.sigma0, 1e-3);
+  EXPECT_DOUBLE_EQ(pp.lambda_max, 0.05);
+  EXPECT_DOUBLE_EQ(pp.min_sigma, 1e-3);
+  EXPECT_DOUBLE_EQ(pp.max_fit_error, 5.0);
+  EXPECT_DOUBLE_EQ(pp.min_gravity, 1e-3);
+  EXPECT_DOUBLE_EQ(pp.max_arm_velocity, 1e-3);
+  EXPECT_DOUBLE_EQ(pp.max_peripheral_velocity, 1e-4);
+  EXPECT_DOUBLE_EQ(pp.settle_time_constants, 5.0);
+}
+
+TEST(DemoSharedConfigTest, MomentumObserverBlockAbsentLeavesFlagFalse) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load("grasp_controller_type: force_pi\n");
+  ApplyDemoSharedConfig(node, cfg);
+  EXPECT_FALSE(cfg.momentum_observer.has_block);
+  EXPECT_FALSE(cfg.momentum_observer.payload.has_block);
+}
+
+// Layer 1b behaviour must survive verbatim: an observer block with no
+// payload_estimator sub-block is "residual only", not "payload with defaults".
+TEST(DemoSharedConfigTest, MomentumObserverWithoutPayloadSubBlockStaysResidualOnly) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+momentum_observer:
+  enabled: true
+  gains: 25.0
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+  EXPECT_TRUE(cfg.momentum_observer.has_block);
+  EXPECT_TRUE(cfg.momentum_observer.enabled);
+  // A scalar gain broadcasts to every joint, so it arrives as a one-entry list.
+  ASSERT_EQ(cfg.momentum_observer.gains.size(), 1U);
+  EXPECT_DOUBLE_EQ(cfg.momentum_observer.gains[0], 25.0);
+  EXPECT_FALSE(cfg.momentum_observer.payload.has_block);
+}
+
+TEST(DemoSharedConfigTest, MomentumObserverGainListParsesPerJoint) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+momentum_observer:
+  gains: [11.0, 12.0, 13.0]
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+  ASSERT_EQ(cfg.momentum_observer.gains.size(), 3U);
+  EXPECT_DOUBLE_EQ(cfg.momentum_observer.gains[0], 11.0);
+  EXPECT_DOUBLE_EQ(cfg.momentum_observer.gains[1], 12.0);
+  EXPECT_DOUBLE_EQ(cfg.momentum_observer.gains[2], 13.0);
+}
+
+TEST(DemoSharedConfigTest, MomentumObserverPayloadSubBlockParsesEveryKey) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+momentum_observer:
+  enabled: true
+  gains: 30.0
+  payload_estimator:
+    enabled: false
+    frame: "wrist_3_link"
+    sigma0: 0.011
+    lambda_max: 0.022
+    min_sigma: 0.033
+    max_fit_error: 0.044
+    min_gravity: 0.055
+    max_arm_velocity: 0.066
+    max_peripheral_velocity: 0.077
+    settle_time_constants: 0.088
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  const integrated_bringup::PayloadEstimatorParams& pp = cfg.momentum_observer.payload;
+  EXPECT_TRUE(pp.has_block);
+  // `enabled: false` with the block present is the shipped configuration, and
+  // it must NOT read back as the struct default (true).
+  EXPECT_FALSE(pp.enabled);
+  EXPECT_EQ(pp.frame, "wrist_3_link");
+  EXPECT_DOUBLE_EQ(pp.sigma0, 0.011);
+  EXPECT_DOUBLE_EQ(pp.lambda_max, 0.022);
+  EXPECT_DOUBLE_EQ(pp.min_sigma, 0.033);
+  EXPECT_DOUBLE_EQ(pp.max_fit_error, 0.044);
+  EXPECT_DOUBLE_EQ(pp.min_gravity, 0.055);
+  EXPECT_DOUBLE_EQ(pp.max_arm_velocity, 0.066);
+  EXPECT_DOUBLE_EQ(pp.max_peripheral_velocity, 0.077);
+  EXPECT_DOUBLE_EQ(pp.settle_time_constants, 0.088);
+}
+
+// Presence of the sub-block is what arms Layer 2A; an empty map still counts,
+// and every unset key keeps its default rather than becoming zero.
+TEST(DemoSharedConfigTest, MomentumObserverPayloadPartialBlockKeepsDefaults) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+momentum_observer:
+  payload_estimator:
+    frame: "tool0"
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  const integrated_bringup::PayloadEstimatorParams& pp = cfg.momentum_observer.payload;
+  EXPECT_TRUE(pp.has_block);
+  EXPECT_EQ(pp.frame, "tool0");
+  EXPECT_TRUE(pp.enabled);
+  EXPECT_DOUBLE_EQ(pp.max_fit_error, 5.0);
+  EXPECT_DOUBLE_EQ(pp.settle_time_constants, 5.0);
+}
+
+// A sub-block that is present but not a map (a scalar typo, or a key left
+// dangling with no value) must leave the params untouched rather than throwing
+// mid-parse or half-applying.
+TEST(DemoSharedConfigTest, MomentumObserverPayloadNonMapSubBlockIsIgnored) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+momentum_observer:
+  payload_estimator: "yes"
+)YAML");
+  EXPECT_NO_THROW(ApplyDemoSharedConfig(node, cfg));
+  EXPECT_FALSE(cfg.momentum_observer.payload.has_block);
+}
