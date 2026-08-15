@@ -14,6 +14,12 @@
 //      it actually reached, and the F5 gate refuses a device with holes inside
 //      the model's width. Case 5 is the counterexample that named this defect;
 //      it now asserts the verdict as well as the values.
+//   4. PER-LANE freshness (issue #446) — the same record, kept once per lane,
+//      because a JointState carries position / velocity / effort at three
+//      independent lengths. The cases below pin the property that makes this
+//      more than bookkeeping: a short or absent velocity lane must leave the
+//      POSITIONS verdict untouched (nothing about q got worse) while making
+//      the velocity verdict false (a q_dot consumer must be able to refuse).
 
 #include "integrated_bringup/backends/joint_state_reorder.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
@@ -45,6 +51,8 @@ rtc::DeviceState GateViewOf(const rtc::DeviceStateCache& ds) {
   dev.valid = ds.valid;
   dev.num_channels = ds.num_channels;
   dev.hole_mask = ds.hole_mask;
+  dev.velocity_hole_mask = ds.velocity_hole_mask;
+  dev.effort_hole_mask = ds.effort_hole_mask;
   return dev;
 }
 }  // namespace
@@ -237,6 +245,83 @@ TEST(WriteJointStateToCache, IdentityWhenNoReorder_PartialLanes) {
   EXPECT_DOUBLE_EQ(ds.velocities[0], 10.0);
   EXPECT_DOUBLE_EQ(ds.velocities[1], 0.0);
   EXPECT_DOUBLE_EQ(ds.efforts[0], 0.0);
+
+  // #446: the three lanes are three prefixes, and each now says so. Slot 1's
+  // velocity above is the hazard in one line — it reads 0.0 because nobody
+  // wrote it, which is indistinguishable from a stopped joint to every
+  // consumer that does not ask.
+  EXPECT_EQ(ds.hole_mask & 0b111U, 0b000U);           // q: all three arrived
+  EXPECT_EQ(ds.velocity_hole_mask & 0b111U, 0b110U);  // q_dot: only slot 0
+  EXPECT_EQ(ds.effort_hole_mask & 0b111U, 0b111U);    // tau: none
+
+  const rtc::DeviceState dev = GateViewOf(ds);
+  // The gate is unchanged by any of it — this is the property that let the
+  // lane axis ship without touching a single existing consumer.
+  EXPECT_TRUE(rtc::IsDeviceReadable(dev, 3));
+  EXPECT_TRUE(rtc::IsLaneReadable(dev, rtc::StateLane::kPosition, 3));
+  // …and a lane consumer gets the answer the gate cannot give.
+  EXPECT_FALSE(rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, 3));
+  EXPECT_FALSE(rtc::IsLaneReadable(dev, rtc::StateLane::kEffort, 3));
+  // A one-channel velocity consumer is served, which is what makes this a
+  // per-slot record rather than a per-device flag.
+  EXPECT_TRUE(rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, 1));
+  EXPECT_FALSE(rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, 2));
+}
+
+// 6b. #446, reorder path. The identity path's lanes are plainly three prefixes;
+//     this one is where they are NOT, because `src` indexes the wire and the
+//     slot it lands in comes from the map. A velocity lane one entry short
+//     therefore holes a slot chosen by the MAP, not the tail.
+TEST(WriteJointStateToCache, WithReorder_ShortVelocityLaneHolesTheMappedSlot) {
+  rtc::JointStateReorder r;
+  BuildJointStateReorder({"j2", "j1", "j0"}, {"j0", "j1", "j2"}, r);
+
+  // Wire order j2, j1, j0 → device slots 2, 1, 0. Velocity carries two entries,
+  // so wire indices 0 and 1 — device slots 2 and 1. Slot 0 is the hole, and it
+  // is the FIRST device slot, not the last wire one.
+  const auto msg = MakeMsg({"j2", "j1", "j0"}, {12.0, 11.0, 10.0}, {22.0, 21.0});
+  rtc::DeviceStateCache ds{};
+  ds.velocities[0] = -7.0;  // sentinel: nothing may write this slot
+
+  WriteJointStateToCache(msg, r, ds);
+
+  EXPECT_DOUBLE_EQ(ds.velocities[0], -7.0);
+  EXPECT_DOUBLE_EQ(ds.velocities[1], 21.0);
+  EXPECT_DOUBLE_EQ(ds.velocities[2], 22.0);
+  EXPECT_EQ(ds.hole_mask & 0b111U, 0b000U);
+  EXPECT_EQ(ds.velocity_hole_mask & 0b111U, 0b001U);
+
+  const rtc::DeviceState dev = GateViewOf(ds);
+  EXPECT_TRUE(rtc::IsDeviceReadable(dev, 3));
+  EXPECT_FALSE(rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, 3));
+  // Narrowing the model does not rescue this one — the hole is at slot 0, so
+  // every non-degenerate width sees it. That asymmetry with case 6 is the
+  // reason the record is per-slot: a tail hole and a head hole are not the
+  // same fault, and only the mask can tell them apart.
+  EXPECT_FALSE(rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, 1));
+  EXPECT_TRUE(rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, 0));
+}
+
+// 6c. #446: the lane masks are ASSIGNED per message like hole_mask, so a
+//     follow-up that DROPS a lane retires it. Without this a driver that sends
+//     effort once at startup would leave every later tick certified fresh.
+TEST(WriteJointStateToCache, DroppingALaneRetiresIt) {
+  const rtc::JointStateReorder r{};  // identity path
+  rtc::DeviceStateCache ds{};
+
+  WriteJointStateToCache(MakeMsg({}, {1.0, 2.0}, {3.0, 4.0}, {5.0, 6.0}), r, ds);
+  ASSERT_EQ(ds.effort_hole_mask & 0b11U, 0b00U);
+  ASSERT_TRUE(rtc::IsLaneReadable(GateViewOf(ds), rtc::StateLane::kEffort, 2));
+
+  // Same width in q, effort now absent. The values stay — that is the point.
+  WriteJointStateToCache(MakeMsg({}, {1.5, 2.5}, {3.5, 4.5}), r, ds);
+
+  EXPECT_DOUBLE_EQ(ds.efforts[0], 5.0);
+  EXPECT_DOUBLE_EQ(ds.efforts[1], 6.0);
+  EXPECT_EQ(ds.effort_hole_mask & 0b11U, 0b11U);
+  EXPECT_TRUE(rtc::IsDeviceReadable(GateViewOf(ds), 2));
+  EXPECT_TRUE(rtc::IsLaneReadable(GateViewOf(ds), rtc::StateLane::kVelocity, 2));
+  EXPECT_FALSE(rtc::IsLaneReadable(GateViewOf(ds), rtc::StateLane::kEffort, 2));
 }
 
 // 7. Oversized message: num_channels clamps to kMaxDeviceChannels so the RT

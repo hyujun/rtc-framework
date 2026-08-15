@@ -144,12 +144,21 @@ struct DeviceState {
   //              before (initially 0).
   // Bit i clear⇒ no such claim.
   //
-  // POSITIONS, not all three lanes. That is what the gate's consumers index —
-  // every IsDeviceReadable binding reads q for FK/Jacobian/control-law — and
-  // the velocity/effort lanes have a DIFFERENT hole structure: they are copied
-  // under their own message lengths, so a slot can have a fresh position and a
-  // stale velocity. That axis is real but is not this gap and is not covered
-  // here (#284 scoping decision, 2026-08-05).
+  // POSITIONS ONLY — the other two lanes have their own masks below. The three
+  // are separate fields rather than one because the lanes have DIFFERENT hole
+  // structures: a JointState carries `position`, `velocity` and `effort` at
+  // three independent lengths, and WriteJointStateToCache copies each under its
+  // own, so a slot can be fresh in q and stale in q_dot from the same message.
+  //
+  // #284 scoped this field to positions (2026-08-05) on the argument that every
+  // consumer of the gate indexed q for FK/Jacobian/control-law. That premise
+  // did not survive: CombinedModelCache::ExtractFullState reads `velocities`
+  // immediately after passing the positions gate, so a lane the gate never
+  // judged was already reaching a shipped control law (#446). The scoping
+  // decision was right for the consumers of the day and is superseded, not
+  // reversed — the gate still asks the positions question, and the lane axis
+  // gets its own predicate (rtc::IsLaneReadable) rather than being folded in,
+  // so a consumer that only reads q is not closed by a hole in q_dot.
   //
   // `num_channels` cannot express this: it is the WIRE length, and with an
   // active reorder map the slots actually written are the MATCHED reference
@@ -172,6 +181,23 @@ struct DeviceState {
   // and consumed by rtc::IsDeviceReadable. kMaxDeviceChannels == 64 is what
   // makes one uint64_t exactly enough — raise both together or not at all.
   uint64_t hole_mask{0};
+  // Per-slot freshness of the `velocities` and `efforts` lanes (issue #446).
+  //
+  // Same polarity, same producer, same propagation seam and same "a producer
+  // that never fills it is indistinguishable from a hole-free one" cost as
+  // `hole_mask` above — read that comment for all of it. What is NOT the same
+  // is the width term: `num_channels` is the POSITION wire length and bounds
+  // none of these two, which is exactly why the lanes need their own record.
+  //
+  // An empty lane is the COMMON case, not a fault. `sensor_msgs/JointState`
+  // makes `velocity` and `effort` optional and shipped drivers routinely omit
+  // one or both, so a permanently all-ones mask here means "this device does
+  // not report that lane" and a consumer of it must refuse rather than read
+  // the zero-initialised array as a measurement (#446: an absent effort lane
+  // reads as tau_m == 0, which a momentum observer resolves into a fabricated
+  // payload rather than an error).
+  uint64_t velocity_hole_mask{0};
+  uint64_t effort_hole_mask{0};
   // Motor-space data (separate from joint-space, e.g. hand motor encoder
   // values)
   int num_motor_channels{0};
@@ -187,6 +213,35 @@ struct DeviceState {
   int num_inference_groups{0};
   bool valid{false};
 };
+
+// Which of the three joint-space lanes a freshness question is about (#446).
+//
+// Exists so the lane axis is one predicate with a parameter instead of three
+// near-identical predicates: the copies would be where the next lane-shaped
+// rule drifts, and `IsSlotFresh`'s history in device_readability.hpp is the
+// repository's worked example of a hand-rolled copy staying behind after the
+// original was strengthened.
+enum class StateLane { kPosition, kVelocity, kEffort };
+
+// The per-slot hole mask for `lane`. The one place the lane→field mapping
+// lives, because the producer (WriteJointStateToCache) and the consumers
+// (rtc::IsLaneReadable and the diagnostics beside it) must agree and neither
+// package includes the other — the same reason SlotMaskBelow sits here.
+//
+// An unknown enumerator answers "all holes" rather than "no holes": this is a
+// freshness claim, and the safe answer to a question this function does not
+// understand is to withhold the lane, not to certify it.
+[[nodiscard]] constexpr uint64_t LaneHoleMask(const DeviceState& dev, StateLane lane) noexcept {
+  switch (lane) {
+    case StateLane::kPosition:
+      return dev.hole_mask;
+    case StateLane::kVelocity:
+      return dev.velocity_hole_mask;
+    case StateLane::kEffort:
+      return dev.effort_hole_mask;
+  }
+  return ~static_cast<uint64_t>(0);
+}
 
 struct ControllerState {
   static constexpr int kMaxDevices = 8;

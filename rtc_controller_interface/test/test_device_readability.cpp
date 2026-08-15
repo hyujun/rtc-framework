@@ -31,7 +31,10 @@ using rtc::HoldTelemetryAtMeasured;
 using rtc::IsDeviceReadable;
 using rtc::IsGateClosedByHoles;
 using rtc::IsGateClosedByWidth;
+using rtc::IsLaneReadable;
 using rtc::IsSlotFresh;
+using rtc::LaneHoleMask;
+using rtc::StateLane;
 using rtc::kMaxDeviceChannels;
 using rtc::ModelChannelBound;
 using rtc::SelfReportedChannelBound;
@@ -56,6 +59,14 @@ DeviceState MakeDevice(int n, bool valid = true) {
 // (issue #284). Kept apart from MakeDevice so every pre-existing case above
 // keeps testing the hole-free default, which is the state every producer that
 // predates the field reports.
+DeviceState MakeDeviceWithLaneHoles(int n, uint64_t pos, uint64_t vel, uint64_t eff) {
+  DeviceState dev = MakeDevice(n);
+  dev.hole_mask = pos;
+  dev.velocity_hole_mask = vel;
+  dev.effort_hole_mask = eff;
+  return dev;
+}
+
 DeviceState MakeDeviceWithHoles(int n, uint64_t holes) {
   DeviceState dev = MakeDevice(n);
   dev.hole_mask = holes;
@@ -94,6 +105,68 @@ TEST(IsDeviceReadableTest, UnresolvedModelDimDegradesToAValidityCheck) {
 }
 
 // ── IsGateClosedByWidth — why a closed gate is closed (issue #307) ───────────
+
+// ── The lane axis (issue #446) ───────────────────────────────────────────────
+
+TEST(IsLaneReadableTest, ThePositionLaneIsExactlyTheGate) {
+  // The gate delegates, so this is a tautology on today's code — and that is
+  // the point. It fails the day someone gives IsDeviceReadable a private body
+  // again, which is how the two would start to drift.
+  for (const int n : {0, 1, 5, 6, 16}) {
+    for (const int dim : {0, 1, 6}) {
+      for (const uint64_t holes : {0ULL, 1ULL, 0b101000ULL, ~0ULL}) {
+        const DeviceState dev = MakeDeviceWithLaneHoles(n, holes, ~holes, 0);
+        EXPECT_EQ(IsDeviceReadable(dev, dim), IsLaneReadable(dev, StateLane::kPosition, dim))
+            << "n=" << n << " dim=" << dim << " holes=" << holes;
+      }
+    }
+  }
+}
+
+TEST(IsLaneReadableTest, EachLaneAnswersFromItsOwnMask) {
+  // q clean, q_dot holed at slot 2, tau absent altogether — the exact shape a
+  // JointState with three independent lane lengths produces.
+  const DeviceState dev = MakeDeviceWithLaneHoles(6, 0, 1ULL << 2, ~0ULL);
+
+  EXPECT_TRUE(IsLaneReadable(dev, StateLane::kPosition, 6));
+  EXPECT_FALSE(IsLaneReadable(dev, StateLane::kVelocity, 6));
+  EXPECT_FALSE(IsLaneReadable(dev, StateLane::kEffort, 6));
+
+  // A consumer that needs only the first two channels of q_dot is served; the
+  // lane answer is per-slot, not per-device.
+  EXPECT_TRUE(IsLaneReadable(dev, StateLane::kVelocity, 2));
+  EXPECT_FALSE(IsLaneReadable(dev, StateLane::kVelocity, 3));
+  // An absent lane is refused at every non-degenerate width.
+  EXPECT_FALSE(IsLaneReadable(dev, StateLane::kEffort, 1));
+}
+
+TEST(IsLaneReadableTest, CarriesTheGateSOtherTwoTermsOnEveryLane) {
+  // `valid` and the width term are not the position lane's private business:
+  // an unreported device has no fresh lane, and `num_channels` bounds what may
+  // be INDEXED on all three arrays even though it measures only one of them.
+  const DeviceState unreported = MakeDeviceWithLaneHoles(6, 0, 0, 0);
+  DeviceState invalid = unreported;
+  invalid.valid = false;
+  EXPECT_FALSE(IsLaneReadable(invalid, StateLane::kVelocity, 6));
+  EXPECT_FALSE(IsLaneReadable(invalid, StateLane::kEffort, 6));
+
+  const DeviceState narrow = MakeDeviceWithLaneHoles(3, 0, 0, 0);
+  EXPECT_FALSE(IsLaneReadable(narrow, StateLane::kVelocity, 6));
+  EXPECT_TRUE(IsLaneReadable(narrow, StateLane::kVelocity, 3));
+
+  // Same degrade as the gate: an unresolved model_dim asks for nothing.
+  EXPECT_TRUE(IsLaneReadable(MakeDeviceWithLaneHoles(3, ~0ULL, ~0ULL, ~0ULL), StateLane::kEffort, 0));
+}
+
+TEST(LaneHoleMaskTest, MapsEachEnumeratorToItsOwnField) {
+  // Three distinct values, so a mapping that returns the same field for two
+  // lanes cannot pass. This is the failure the enum makes possible and the
+  // switch has to rule out.
+  const DeviceState dev = MakeDeviceWithLaneHoles(6, 0b001, 0b010, 0b100);
+  EXPECT_EQ(0b001ULL, LaneHoleMask(dev, StateLane::kPosition));
+  EXPECT_EQ(0b010ULL, LaneHoleMask(dev, StateLane::kVelocity));
+  EXPECT_EQ(0b100ULL, LaneHoleMask(dev, StateLane::kEffort));
+}
 
 TEST(IsGateClosedByWidthTest, IsExactlyTheReportableHalfOfAClosedGate) {
   // The predicate's whole job is to split IsDeviceReadable's false into the

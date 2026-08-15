@@ -60,7 +60,8 @@ inline void BuildJointStateReorder(const std::vector<std::string>& msg_names,
 // fixed cache arrays (rt_controller_node_rt_loop.cpp), so an oversized wire
 // value must never escape the cache.
 //
-// ALSO PRODUCES ds.hole_mask (issue #284) — the per-slot companion to
+// ALSO PRODUCES ds.hole_mask, ds.velocity_hole_mask and ds.effort_hole_mask
+// (issues #284, #446) — the per-slot companions to
 // num_channels. The cache is PERSISTENT, so a slot this message does not reach
 // keeps its previous value, and with an active reorder map that is a normal
 // outcome rather than an error: BuildJointStateReorder maps only the names the
@@ -83,23 +84,36 @@ inline void WriteJointStateToCache(const sensor_msgs::msg::JointState& msg,
   if (reorder.size > 0) {
     const std::size_t n = std::min(msg.position.size(), static_cast<std::size_t>(reorder.size));
     uint64_t written = 0;
+    uint64_t written_v = 0;
+    uint64_t written_e = 0;
     for (std::size_t src = 0; src < n; ++src) {
       const int idx = reorder.map[src];
       if (idx < 0 || idx >= kMaxDeviceChannels)
         continue;
       const auto uidx = static_cast<std::size_t>(idx);
+      const uint64_t bit = static_cast<uint64_t>(1) << uidx;
       ds.positions[uidx] = msg.position[src];
-      if (src < msg.velocity.size())
+      written |= bit;
+      // ONE ACCUMULATOR PER LANE, set inside the guard that writes the value
+      // (#446). The three lanes diverge exactly here: `src` indexes the WIRE,
+      // and a message whose `velocity` is shorter than its `position` — or
+      // absent, which JointState allows and shipped drivers use — reaches this
+      // slot with a fresh q and leaves velocities[uidx] holding the persistent
+      // cache's previous value. Marking the slot written on the position lane
+      // alone is what made that state indistinguishable from a fully reported
+      // one for every reader of the mask.
+      if (src < msg.velocity.size()) {
         ds.velocities[uidx] = msg.velocity[src];
-      if (src < msg.effort.size())
+        written_v |= bit;
+      }
+      if (src < msg.effort.size()) {
         ds.efforts[uidx] = msg.effort[src];
-      // The POSITION lane only — hole_mask tracks q, which is what every
-      // IsDeviceReadable consumer indexes. The two guarded lanes above have
-      // their own (different) hole structure and are out of this field's
-      // scope; see DeviceState::hole_mask.
-      written |= (static_cast<uint64_t>(1) << uidx);
+        written_e |= bit;
+      }
     }
     ds.hole_mask = ~written;
+    ds.velocity_hole_mask = ~written_v;
+    ds.effort_hole_mask = ~written_e;
   } else {
     const std::size_t n =
         std::min(msg.position.size(), static_cast<std::size_t>(kMaxDeviceChannels));
@@ -111,14 +125,22 @@ inline void WriteJointStateToCache(const sensor_msgs::msg::JointState& msg,
     // than left alone, because the cache is persistent and a message that
     // NARROWS must retire the slots the previous wider one filled.
     ds.hole_mask = ~SlotMaskBelow(static_cast<int>(n));
+    // Each lane's fresh prefix is its OWN length (#446). On this path the three
+    // are plainly independent — `nv` and `ne` are read from the message, not
+    // derived from `n` — and `num_channels` reports only the first, so the
+    // width test says nothing about the other two. A driver that omits a lane
+    // lands here with nv == 0 and gets an all-ones mask, which is the honest
+    // report: no slot of that lane was written, ever.
     const std::size_t nv =
         std::min(msg.velocity.size(), static_cast<std::size_t>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < nv; ++i)
       ds.velocities[i] = msg.velocity[i];
+    ds.velocity_hole_mask = ~SlotMaskBelow(static_cast<int>(nv));
     const std::size_t ne =
         std::min(msg.effort.size(), static_cast<std::size_t>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < ne; ++i)
       ds.efforts[i] = msg.effort[i];
+    ds.effort_hole_mask = ~SlotMaskBelow(static_cast<int>(ne));
   }
   ds.valid = true;
 }

@@ -141,12 +141,34 @@ void CombinedModelCache::ExtractFullState(const rtc::ControllerState& state, int
   // ext_to_pin_q_ only has full_dof_ entries. This is the OOB half — see
   // rtc_controller_interface/device_readability.hpp for why it has its own name.
   const int narm = rtc::ModelChannelBound(arm_dof, dev0.num_channels);
+  // The velocity lane is judged SEPARATELY and refreshed ALL-OR-NOTHING (#446).
+  // The gate above answers for `positions` alone, and until #446 this loop read
+  // `velocities` straight through it — a lane whose holes the gate never sees,
+  // because a JointState carries the three lanes at three independent lengths
+  // and shipped drivers routinely omit `velocity` entirely.
+  //
+  // All-or-nothing for the same reason the hand block below is all-or-nothing:
+  // v_curr_full_ PERSISTS, so refreshing the slots this message reached and
+  // leaving the rest would build a SPLICED velocity — part of it from this
+  // tick, part from whenever that slot was last written — and h(q, v) is a
+  // function of the whole vector. A coherent v one tick old is a defensible
+  // input; a splice is not.
+  //
+  // WHAT THIS DOES NOT CLOSE, stated so nobody reads more into it: a device
+  // that never reports the lane leaves v at its zero-init forever, and that is
+  // indistinguishable HERE from a genuinely motionless robot. Refusing on
+  // behalf of consumers is not this helper's call — a consumer for which a
+  // fabricated zero velocity is unacceptable (a momentum observer, #135) asks
+  // rtc::IsLaneReadable itself, which is the same question this line asks.
+  const bool arm_v_fresh = rtc::IsLaneReadable(dev0, rtc::StateLane::kVelocity, arm_dof);
   for (int i = 0; i < narm; ++i) {
     const auto eidx = static_cast<std::size_t>(i);
     const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
     const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
     q_curr_full_[pq] = dev0.positions[eidx];
-    v_curr_full_[pv] = dev0.velocities[eidx];
+    if (arm_v_fresh) {
+      v_curr_full_[pv] = dev0.velocities[eidx];
+    }
   }
   // Secondary lane, gated on ITS OWN width (#291 — this is the decision #236
   // S7b deferred). The deferral's open question was what "which ticks refresh
@@ -173,12 +195,19 @@ void CombinedModelCache::ExtractFullState(const rtc::ControllerState& state, int
     const auto& dev1 = state.devices[1];
     // Still bounded, for the same over-reporting reason as the arm above.
     const int nhand = rtc::ModelChannelBound(hand_dof, dev1.num_channels);
+    // Per-lane, per-block: the hand's velocity lane is its own question (#446).
+    // A hand that reports positions but no velocities must not splice into the
+    // arm's velocity block, and an arm-only velocity report must not be widened
+    // to cover hand slots the message never carried.
+    const bool hand_v_fresh = rtc::IsLaneReadable(dev1, rtc::StateLane::kVelocity, hand_dof);
     for (int i = 0; i < nhand; ++i) {
       const auto eidx = static_cast<std::size_t>(arm_dof + i);
       const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
       const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
       q_curr_full_[pq] = dev1.positions[static_cast<std::size_t>(i)];
-      v_curr_full_[pv] = dev1.velocities[static_cast<std::size_t>(i)];
+      if (hand_v_fresh) {
+        v_curr_full_[pv] = dev1.velocities[static_cast<std::size_t>(i)];
+      }
     }
   }
 }

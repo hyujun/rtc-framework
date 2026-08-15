@@ -118,6 +118,7 @@ rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 
 | 열거형 | 값 | 설명 |
 |--------|---|------|
+| `StateLane` | `kPosition`, `kVelocity`, `kEffort` | `DeviceState` 의 세 조인트공간 lane 중 어느 것의 freshness 를 묻는지 (#446). 짝 헬퍼 `LaneHoleMask(dev, lane)` 가 lane→필드 매핑의 유일한 소유자이고, 판정은 `rtc::IsLaneReadable` 이 한다 |
 | `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` | 커맨드 모드. `kPdFeedforward`는 PD 위치 서보(`values`) + per-joint feedforward 토크(`DeviceOutput::feedforward`) 오버레이 — arm=kPosition, hand=kPdFeedforward 같은 mixed-command 출력에 사용 |
 | `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |
 | `PublishRole` | `kRobotTransforms` | YAML 로 선언하는 controller-owned 퍼블리시 역할. `kRobotTransforms`=`tf2_msgs/TFMessage` (controller가 사용하는 frame들을 묶어 발행). issue #196 Phase 5 에서 `kRobotTarget` / `kDigitalTwinState` 제거 — 파서는 매핑했으나 publisher 를 만드는 소비자가 없어 선언하면 조용히 죽은 토픽이 됐다. Device-wire 명령 발행은 `devices.<group>.backend`가, grasp/wbc/tof 상태는 각 controller가 소유하는 `SeqLock<T>` + `Setup*Publisher` 헬퍼가 담당하며 `PublishRole`을 거치지 않는다 |
@@ -134,7 +135,7 @@ rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 
 | 구조체 | 설명 |
 |--------|------|
-| `DeviceState` | 가변 채널 디바이스 상태 -- `positions[64]`, `velocities[64]`, `efforts[64]`, `hole_mask` (positions lane 의 per-slot freshness — 비트 set = 그 슬롯이 직전 state 메시지에서 안 써짐; **0 = 구멍 주장 없음**이라 채우지 않는 생산자의 판정이 불변이다. `rtc::IsDeviceReadable` 이 소비 — #284), 모터 공간 (`motor_positions[64]`, `motor_velocities[64]`, `motor_efforts[64]`), 센서 (`sensor_data[128]`, `sensor_data_raw[128]`), 추론 (`inference_data[64]`, `inference_enable[8]`, `num_inference_groups`) |
+| `DeviceState` | 가변 채널 디바이스 상태 -- `positions[64]`, `velocities[64]`, `efforts[64]`, `hole_mask` · `velocity_hole_mask` · `effort_hole_mask` (lane 별 per-slot freshness — 비트 set = 그 슬롯이 직전 state 메시지에서 안 써짐; **0 = 구멍 주장 없음**이라 채우지 않는 생산자의 판정이 불변이다. `positions` 는 `rtc::IsDeviceReadable` 이 소비하고 (#284), 나머지 둘은 `rtc::IsLaneReadable` 이 소비한다 — `JointState` 가 두 lane 을 optional 로 두므로 빈 lane 은 정상 입력이고 `num_channels` 는 그걸 말해주지 못한다, #446), 모터 공간 (`motor_positions[64]`, `motor_velocities[64]`, `motor_efforts[64]`), 센서 (`sensor_data[128]`, `sensor_data_raw[128]`), 추론 (`inference_data[64]`, `inference_enable[8]`, `num_inference_groups`) |
 | `ControllerState` | `devices[8]` (DeviceState 배열, `kMaxDevices`) + `num_devices`, `dt`, `iteration`, `t_relative_s` (CM 가 매 tick 채워주는 session-wide 상대 시간; controller 는 `chrono::*::now()` 대신 이 값을 읽어 로그 timestamp 으로 사용) |
 | `DeviceOutput` | 가변 채널 출력 -- `commands[64]`, `goal_positions[64]`, `target_positions[64]`, `target_velocities[64]`, `trajectory_positions[64]`, `trajectory_velocities[64]`, `feedforward[64]` (per-joint feedforward 토크 Nm, `kPdFeedforward` 전용, 그 외 모드는 무시), `goal_type`, `command_type` (`std::optional<CommandType>` — per-device override; `nullopt` 이면 `ControllerOutput::command_type` 전역 기본값을 상속) |
 | `ControllerOutput` | `devices[8]` (DeviceOutput 배열, `kMaxDevices`) + `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `valid`, `command_type` (전역 기본 `CommandType`), **TF 발행용 SE3** (`arm_tip_pose` + valid, `virtual_tcp_pose` + valid, `task_link_poses[8]` + valid). `grasp_state`/`wbc_state`/`tof_snapshot` 는 controller 별 SeqLock 으로 분리되어 ControllerOutput 에서 제거됨. |

@@ -19,7 +19,7 @@ RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 �
 | `include/rtc_controller_interface/rt_controller_interface.hpp` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) |
 | `include/rtc_controller_interface/controller_registry.hpp` | 싱글톤 레지스트리 (`ControllerRegistry`) + `RTC_REGISTER_CONTROLLER` 매크로 |
 | `include/rtc_controller_interface/controller_types.hpp` | `rtc_base/types/types.hpp` 재수출 (편의 헤더) |
-| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b, secondary 축 #291, 진단 #307, per-slot freshness #284) — 술어 `ModelChannelBound` / `IsDeviceReadable` / `IsGateClosedByWidth` / `IsGateClosedByHoles` / `FirstHoleSlot` + 원시연산 `SilenceDeviceOutput` / `HoldTelemetryAtMeasured` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
+| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b, secondary 축 #291, 진단 #307, per-slot freshness #284, per-lane freshness #446) — 술어 `ModelChannelBound` / `IsDeviceReadable` / `IsLaneReadable` / `IsGateClosedByWidth` / `IsGateClosedByHoles` / `FirstHoleSlot` / `IsSlotFresh` + 원시연산 `SilenceDeviceOutput` / `HoldTelemetryAtMeasured` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
 | `include/rtc_controller_interface/controller_log_set.hpp` | Controller-owned CSV 로그 집합 헬퍼 (`ControllerLogSet` + `LogHandle<PodT>`) — opt-in. `rtc::ThreadCsvProducer/Logger` 페어를 typed handle 로 묶어 `<session>/controllers/<config_key>/<instance>.csv` 에 기록. 같은 LogSet 안에서 동일 `instance` 를 두 번 등록하면 `RegisterLog` 가 unbound `LogHandle` 반환 (Q-MSG-3 path-uniqueness enforcement) |
 
 ### 소스 파일
@@ -157,6 +157,7 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 | `IsGateClosedByHoles(dev, model_dim)` | 같은 질문의 **구멍 축** (#284). 폭 판정을 통과한 device 만 대상이라 위와 배타적 |
 | `FirstHoleSlot(dev, model_dim)` | 모델 폭 안에서 안 써진 가장 낮은 슬롯 (없으면 `-1`) — 진단이 지목할 자리 |
 | `IsSlotFresh(dev, slot)` | **per-slot** 판정 — prefix 가 아니라 특정 `(device, channel)` 을 읽는 reader 용 (#284 후속). 게이트로 물으면 과잉거부하거나 실제 읽는 슬롯을 안 보게 된다 |
+| `IsLaneReadable(dev, lane, model_dim)` | **per-lane** 판정 (#446) — `velocities` / `efforts` 를 읽는 자리는 이걸 **추가로** 물어야 한다. 게이트는 이 술어의 `kPosition` 인스턴스다 |
 | `SelfReportedChannelBound(dev, cap)` | 선언된 `model_dim` 이 없어 **device 자기 보고에서 폭을 채택**할 때 쓸 값 (#284). `min(nc0, cap)` 이 아니라 구멍 없는 prefix — 채택 폭은 반드시 게이트를 통과해야 한다 |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length. 판정한 그 device 에만 |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane 을 측정값으로. `SilenceDeviceOutput` 과 **항상 짝** |
@@ -168,7 +169,8 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 - **침묵은 fail-safe 가 아니고, wire 만 침묵시킨다.** zero-length 는 "no update"(직전 setpoint 유지)이지 정지가 아니며, 로그 lane 은 `HoldTelemetryAtMeasured` 가 따로 채워야 한다.
 - **"primary 에만" 은 device 축이 아니라 게이트 축이다** (#291). secondary 도 *자기* 폭으로 게이트를 갖는다.
 - **진단은 `!valid` 를 배제한다** (#307). 그건 CM 의 init timeout 이 이미 이름을 대며 잡는 startup 형태이고, 여기서 보고하면 YAML 을 우회하는 fixture 마다 발화한다. 남는 두 원인 (폭 / 구멍) 은 술어 둘로 **배타적·전수** 분할된다.
-- **freshness 는 별도 술어가 아니다** (#284). `hole_mask` 항이 `IsDeviceReadable` **안에** 접혀 있으므로 소비자는 아무것도 바꾸지 않고 강화된 판정을 받는다 — 이 갭의 착수 감사가 "컨트롤러 3종" 패턴으로 훑어 support 계층 2곳을 빠뜨렸고, 별도 술어였다면 그 둘이 옛 판정을 계속 썼을 것이다. 마스크는 `positions` lane 한정이고 zero = "구멍 주장 없음" 이다 (채우지 않는 생산자의 판정 불변).
+- **positions freshness 는 별도 술어가 아니다** (#284). `hole_mask` 항이 `IsDeviceReadable` **안에** 접혀 있으므로 소비자는 아무것도 바꾸지 않고 강화된 판정을 받는다 — 이 갭의 착수 감사가 "컨트롤러 3종" 패턴으로 훑어 support 계층 2곳을 빠뜨렸고, 별도 술어였다면 그 둘이 옛 판정을 계속 썼을 것이다. zero = "구멍 주장 없음" 이다 (채우지 않는 생산자의 판정 불변).
+- **lane freshness 는 반대로 별도 술어다** (#446). 게이트는 `positions` 만 판정하므로 **`IsDeviceReadable` 통과가 `velocities` / `efforts` 에 대해 아무 말도 하지 않는다** — q̇ 나 τ 를 읽으면 `IsLaneReadable` 을 따로 물어야 한다. 접지 않은 이유는 위 규칙의 반대편이다: q 만 읽는 소비자를 q̇ 구멍으로 닫는 것은 과잉거부이고, 이 축에서는 강한 답이 옳은 답이 아니다. `JointState` 가 두 lane 을 optional 로 두므로 **빈 lane 은 정상 입력**이며, 빈 lane 의 zero-init 은 "정지" 와 구별되지 않는다.
 
 테스트: `test/test_device_readability.cpp` (술어·원시연산 계약, URDF 없음) · `integrated_bringup/test/test_device_readability_gate.cpp` (바인딩 3종) · `integrated_bringup/test/test_combined_model_cache_gate.cpp` (공유 모델 scatter) · `integrated_bringup/test/test_gate_closure_diagnostic.cpp` (진단 문구 — throttle 창이 프로세스 단위라 별도 실행 파일 + ctest 등록 2개, #307).
 

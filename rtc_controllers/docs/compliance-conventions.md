@@ -294,6 +294,7 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 | `IsGateClosedByHoles(dev, model_dim)` | 같은 질문의 **구멍 축** (#284). 폭 판정을 *통과한* device 만 대상이라 위 술어와 배타적 | 같은 자리. 둘은 `valid` 한 device 의 폐쇄를 전수 분할한다 |
 | `FirstHoleSlot(dev, model_dim)` | 모델 폭 안에서 **안 써진 가장 낮은 슬롯** (없으면 -1) — 진단 메시지가 지목할 자리 | `IsGateClosedByHoles` 가 true 인 tick 의 로그 인자 |
 | `IsSlotFresh(dev, slot)` | "이 **한 슬롯**을 이번 tick 에 써도 되는가" — prefix 가 아닌 특정 `(device, channel)` 을 읽는 reader 용 (#284 후속) | 명명된 관절을 임의 위치에서 뽑는 자리 (closed-chain q 브릿지 등). 게이트로 물으면 과잉거부/미검사 둘 중 하나가 된다 |
+| `IsLaneReadable(dev, lane, model_dim)` | "이 **lane** 의 `[0, model_dim)` 을 이번 tick 에 써도 되는가" — 게이트와 같은 항 3개를 lane 인자로 (#446). 게이트는 이 술어의 `kPosition` 인스턴스다 | `velocities` / `efforts` 를 읽는 **모든** 자리. 게이트는 `positions` 만 판정하므로 `IsDeviceReadable` 통과 후 q̇ 를 읽는 코드는 이 술어를 **추가로** 물어야 한다 |
 | `SelfReportedChannelBound(dev, cap)` | "선언된 폭이 없을 때 device **자기 보고에서 어떤 폭을 채택**해도 되는가" — 구멍 없는 prefix, `min(nc0, cap)` 이 **아니다** | 바인딩의 deferred self-init 처럼 폭을 **latch** 하는 자리. 근거는 아래 §per-slot freshness |
 | `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | **그 게이트가 판정한 device 에만.** primary 게이트는 primary 만 침묵시키고 secondary 는 그대로 둔다 — secondary 가 *자기* 폭으로 판독 불가일 때는 secondary 도 침묵한다 (#291, 아래 표) |
 | `HoldTelemetryAtMeasured(dev_out, nc0, measured)` | 침묵 tick 의 reference lane (`target_*` / `trajectory_*`) 을 이번 tick 측정값으로 | `SilenceDeviceOutput` 과 **항상 짝** — 아래 참조 |
@@ -412,10 +413,10 @@ pin 하고 있다 (`{j2, ghost, j1}` → `num_channels == 3` 인데 슬롯 0 은
 구조적으로 도달하고, 별도 술어는 *누군가 기억한* 소비자에게만 도달한다.
 
 `positions` **lane 한정**인 것도 계약이다. velocity/effort 는 각자 메시지 길이로 복사되므로 슬롯
-하나가 fresh position + stale velocity 일 수 있는데, 그건 다른 축의 결함이고 이 필드가 덮지
-않는다. 같은 이유로 motor/sensor lane 도 범위 밖이다 — motor lane 은 reorder 를 타지 않아 이
-기전이 없고, sensor lane 은 동형의 갭이 있으나 폭이 `kMaxSensorChannels`(128)이라 `uint64_t`
-하나에 안 들어가고 이 게이트의 소비자도 아니다.
+하나가 fresh position + stale velocity 일 수 있다. #284 는 이를 "다른 축" 으로 유예했고 **#446 이
+그 축을 열었다** (아래 절). motor/sensor lane 은 여전히 범위 밖이다 — motor lane 은 reorder 를
+타지 않아 이 기전이 없고, sensor lane 은 동형의 갭이 있으나 폭이 `kMaxSensorChannels`(128)이라
+`uint64_t` 하나에 안 들어가고 이 게이트의 소비자도 아니다.
 
 **닫힌 게이트의 세 번째 진단.** 게이트에 항을 늘리면서 진단을 안 늘리면 *조용한 폐쇄*가 생기고,
 그건 위 "닫힌 게이트의 진단" 이 없애려던 실패 그 자체다. 그래서 `IsGateClosedByHoles` +
@@ -445,6 +446,37 @@ prefix** 로 자른다 — 구멍이 없는 device 는 예전과 같은 답을 �
 그 reader 는 prefix 가 아니라 특정 `(device, channel)` 쌍을 읽으므로 맞는 짝은 게이트가 아니라
 **`IsSlotFresh`** 이고, 그래서 그 형태에 이름을 줬다 (손수 만든 사본은 원본의 변경이 못 미친다).
 전수 훑기 결과 그런 reader 는 저장소에 그 하나였다.
+
+**lane 축 — 게이트에 접지 *않은* 유일한 항 (issue #446)**
+
+`hole_mask` 가 `positions` 한정인 것은 #284 시점에 **참인 전제** 위에 서 있었다: 게이트의 소비자가
+전부 q 만 인덱싱한다는 것. 그 전제는 이미 깨져 있었다 — `CombinedModelCache::ExtractFullState` 가
+게이트를 통과한 **직후** `dev0.velocities` 를 읽고, 그 값이 `v_curr_full_` 을 거쳐 TSID · 자코비안
+제어 법칙에 들어간다. 게이트가 판정한 적 없는 lane 이 출하된 제어 법칙에 도달해 있었던 것이다.
+
+`sensor_msgs/JointState` 는 `velocity` · `effort` 를 **optional** 로 두고 출하 드라이버가 실제로
+생략하므로, 이 상태는 예외가 아니라 정상 입력이다. lane 이 비면 배열은 zero-init 에 머무는데
+소비자에겐 "정지한 관절" 과 구별되지 않는다.
+
+| 항목 | 계약 |
+|---|---|
+| **필드** | `DeviceState::velocity_hole_mask` · `::effort_hole_mask` — `hole_mask` 와 **같은 극성 · 같은 생산자 · 같은 대입(누적 아님) 규칙** |
+| **폭 항의 부재** | `num_channels` 는 **position** wire 길이이므로 두 lane 을 bound 하지 않는다. lane 이 짧거나 없는 것을 폭으로는 말할 수 없다는 것이 이 필드들이 필요한 이유다 |
+| **판정** | `IsLaneReadable(dev, lane, model_dim)` — **별도 술어**. `IsDeviceReadable` 은 이 술어의 `kPosition` 인스턴스로 정의되어 세 항의 사본이 하나만 존재한다 |
+
+**왜 이번엔 게이트에 접지 않는가 — #284 와 반대 방향이고, 그 규칙이 함의하는 대로다.** 접힌 항은
+모든 소비자에게 구조적으로 도달한다. 그건 *강한 답이 모두에게 옳은 답일 때만* 미덕이다. q 만 읽는
+소비자(대다수)에게 q̇ 의 구멍으로 게이트를 닫는 것은 과잉거부이며, 이 축에서는 강한 답이 옳은 답이
+아니다. 그래서 lane 질문은 자기 술어를 갖고 게이트는 늘 묻던 positions 질문을 계속 묻는다.
+**그 선택의 비용은 명시한다**: q̇ / τ 를 읽는 소비자는 **물어야** 하고, 그걸 처음 놓친 코드가 이미
+트리 안에 있었다 (`ExtractFullState`).
+
+**소비자 측 처방은 lane 도 all-or-nothing 이다.** `ExtractFullState` 는 hand 블록과 같은 이유로
+velocity 를 블록 단위로 갱신한다 — `v_curr_full_` 은 persistent 이므로 구멍 난 슬롯만 건너뛰면
+일부는 이번 tick, 일부는 과거인 **splice** 가 되고 `h(q, v)` 는 벡터 전체의 함수다. 다만 이것이
+닫지 *않는* 것도 적어 둔다: lane 을 아예 보고하지 않는 device 는 v 가 영원히 zero-init 이고 그건
+여기서 "정지" 와 구별되지 않는다. 그 구별이 필요한 소비자(momentum observer, #135)는 스스로
+`IsLaneReadable` 을 묻는다 — 남을 대신해 거부하는 것은 이 헬퍼의 권한이 아니다.
 
 **이 원인이 startup 전용은 아니다.** 마스크는 메시지마다 대입되므로 나중 메시지가 앞선 메시지의
 슬롯을 구멍으로 만들 수 있다. 보통은 `num_channels` 도 함께 좁아져 **폭** 축이 발화하지만, 넓은

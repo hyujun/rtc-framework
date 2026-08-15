@@ -133,6 +133,11 @@ class PipelineTestController : public RTControllerInterface {
   // the whole ingress→controller path, which is the only span that can catch a
   // dropped field in the two PODs' field-by-field copy.
   static inline std::atomic<uint64_t> observed_hole_mask{0};
+  // Same seam, the other two lanes (#446). Separate observers rather than one,
+  // because the defect they guard is a field DROPPED from the copy — a single
+  // combined value would let one survivor mask two losses.
+  static inline std::atomic<uint64_t> observed_velocity_hole_mask{0};
+  static inline std::atomic<uint64_t> observed_effort_hole_mask{0};
 
   // Not noexcept: the base RTControllerInterface ctor is not, and marking this
   // one noexcept would turn a throwing base subobject into std::terminate
@@ -160,6 +165,8 @@ class PipelineTestController : public RTControllerInterface {
     injected_command_type_ticks.store(0, std::memory_order_relaxed);
     instances_created.store(0, std::memory_order_relaxed);
     observed_hole_mask.store(0, std::memory_order_relaxed);
+    observed_velocity_hole_mask.store(0, std::memory_order_relaxed);
+    observed_effort_hole_mask.store(0, std::memory_order_relaxed);
   }
 
   void LoadConfig(const YAML::Node& cfg) override {
@@ -204,6 +211,9 @@ class PipelineTestController : public RTControllerInterface {
     // sits between the two — an assertion on the cache would pass with that
     // copy deleted.
     observed_hole_mask.store(state.devices[0].hole_mask, std::memory_order_relaxed);
+    observed_velocity_hole_mask.store(state.devices[0].velocity_hole_mask,
+                                      std::memory_order_relaxed);
+    observed_effort_hole_mask.store(state.devices[0].effort_hole_mask, std::memory_order_relaxed);
     const int sleep_us = compute_sleep_us.load(std::memory_order_relaxed);
     if (sleep_us > 0) {
       std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
@@ -361,11 +371,15 @@ class PipelineStubBackend : public DeviceBackend {
   // holes claimed" — so every pre-existing test in every TU that shares this
   // fixture keeps the state it already asserted against.
   static inline std::atomic<uint64_t> state_hole_mask{0};
+  static inline std::atomic<uint64_t> state_velocity_hole_mask{0};
+  static inline std::atomic<uint64_t> state_effort_hole_mask{0};
 
   static void ResetStateChannels() {
     state_num_channels.store(2, std::memory_order_relaxed);
     state_position_nan.store(false, std::memory_order_relaxed);
     state_hole_mask.store(0, std::memory_order_relaxed);
+    state_velocity_hole_mask.store(0, std::memory_order_relaxed);
+    state_effort_hole_mask.store(0, std::memory_order_relaxed);
   }
 
   // Full per-test reset for this backend — the counterpart to
@@ -387,6 +401,8 @@ class PipelineStubBackend : public DeviceBackend {
     cache.efforts[0] = 0.5;
     cache.efforts[1] = 0.6;
     cache.hole_mask = state_hole_mask.load(std::memory_order_relaxed);
+    cache.velocity_hole_mask = state_velocity_hole_mask.load(std::memory_order_relaxed);
+    cache.effort_hole_mask = state_effort_hole_mask.load(std::memory_order_relaxed);
     cache.valid = true;
     return true;
   }
