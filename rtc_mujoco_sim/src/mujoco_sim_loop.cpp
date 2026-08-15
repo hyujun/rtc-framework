@@ -81,11 +81,30 @@ void MuJoCoSimulator::ReadState() noexcept {
     for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_state_joints); ++i) {
       g->positions[i] = data_->qpos[g->state_qpos_indices[i]];
       g->velocities[i] = data_->qvel[g->state_qvel_indices[i]];
-      // Total joint generalized force = actuator (PD) + applied (feedforward).
-      // qfrc_applied is solely our pd_feedforward injection (external Cartesian
-      // perturbation uses xfrc_applied), so this is 0 in position/torque modes.
-      g->efforts[i] = data_->qfrc_actuator[g->state_qvel_indices[i]] +
-                      data_->qfrc_applied[g->state_qvel_indices[i]];
+      // Total joint generalized force = actuator (PD) + applied (feedforward)
+      // + gravity compensation. qfrc_applied is solely our pd_feedforward
+      // injection (external Cartesian perturbation uses xfrc_applied), so it is
+      // 0 in position/torque modes.
+      //
+      // The gravcomp term is load-bearing in kPosition: body_gravcomp=1 routes
+      // the gravity-holding force out of qfrc_actuator into MuJoCo's passive
+      // breakdown, so summing only actuator+applied reported "what the PD added
+      // on top of an already-cancelled gravity" — not what hardware reports.
+      // DeviceState::efforts is joint torque and must carry every generalized
+      // force acting on the joint (rtc_base types.hpp: "torques for robot arm").
+      //
+      // Summed unconditionally, no mode branch: with gravcomp OFF (kTorque /
+      // kPdFeedforward) MuJoCo *writes* qfrc_gravcomp as zero rather than
+      // leaving it stale — verified on 3.7.0 by poisoning the array and watching
+      // mj_forward/mj_step wipe it even with ngravcomp==0. A branch would also
+      // be wrong for mixed scenes, where only the position-mode group's dofs are
+      // filled. Only the gravcomp field is added, never qfrc_passive as a whole:
+      // that also carries spring/damper/fluid (1.5 N.m of joint damping on iiwa7
+      // at qvel=0.5), which is this model's friction and belongs in the
+      // observer's residual, not in the torque lane (#447).
+      const int dof = g->state_qvel_indices[i];
+      g->efforts[i] =
+          data_->qfrc_actuator[dof] + data_->qfrc_applied[dof] + data_->qfrc_gravcomp[dof];
     }
   }
 }

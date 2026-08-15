@@ -65,9 +65,13 @@ enum class MomentumInvalidReason : std::uint8_t {
 /// current has its own lane (DeviceState::motor_efforts) and does not belong
 /// here. Both halves are load-bearing and NEITHER is checkable from inside this
 /// class: a lane that is fresh, full and in the right unit but missing a force
-/// term reads as a genuine external torque. Known violation: MuJoCo's position
-/// mode omits its gravity-compensation term from `efforts`, which makes the
-/// residual converge to +g(q) under no load (#447).
+/// term reads as a genuine external torque. The one producer known to have
+/// broken this was MuJoCo's position mode, which left its gravity-compensation
+/// term out of `efforts` and so drove the residual to +g(q) under no load. It
+/// was closed at the producer (#447 — rtc_mujoco_sim now sums qfrc_gravcomp
+/// into the lane), not gated here: real hardware reports joint torque in every
+/// command mode, so a command-mode gate in this class would reject valid
+/// operation while still not detecting an incomplete lane.
 ///
 /// tau_f (friction) is not modeled — [MO-3a] omits it, which per #135 lumps
 /// friction into the residual along with model uncertainty. It enters as an
