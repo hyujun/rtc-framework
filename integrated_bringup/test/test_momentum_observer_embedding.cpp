@@ -6,13 +6,17 @@
 // `momentum_observer` YAML block, tick it before their control law, hold it on
 // E-STOP, and push a row to momentum_observer.csv every tick.
 //
-// The residual has no other observable at this layer — nothing consumes r yet
-// (Layer 2A does), and there is deliberately no topic for it (#135 D12) — so
-// the CSV IS the surface, and every controller-level case below goes through a
-// real RegisterControllerLogs registration and reads the file back. Asserting
-// on the wiring alone would leave the whole push/registration path untested,
-// and a row-count assertion against an unbound handle passes with the push
-// deleted outright.
+// The CSV is the surface these cases exercise, and every controller-level case
+// below goes through a real RegisterControllerLogs registration and reads the
+// file back. Asserting on the wiring alone would leave the whole
+// push/registration path untested, and a row-count assertion against an unbound
+// handle passes with the push deleted outright.
+//
+// The residual now has a second observable — `rtc_msgs/PayloadEstimate`, added
+// with Layer 2A (#135 D12) — but it is NOT covered here: publishing needs a
+// LifecycleNode and these fixtures deliberately stop short of one (see below).
+// That lane is owned by test_payload_estimate_topic.cpp, and the fill both
+// lanes share by test_momentum_observer_wiring.cpp §MomentumObserverChannels.
 //
 // No ROS node / DDS: the fixtures stop at SetDeviceNameConfigs, which is the
 // hook that builds the wiring, and bind the CSV channel through the test-only

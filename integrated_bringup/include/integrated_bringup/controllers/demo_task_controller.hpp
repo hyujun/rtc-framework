@@ -14,8 +14,8 @@
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
-#include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
+#include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
@@ -306,9 +306,10 @@ class DemoTaskController final : public RTControllerInterface {
 
   /// Test-only: bind the momentum_observer CSV channel from a test-owned
   /// ControllerLogSet. The URDF fixtures stop at SetDeviceNameConfigs, so every
-  /// production-bound log handle is unbound and PushMomentumObserverLog
-  /// early-returns; a row assertion written against that state would pass with
-  /// the push deleted outright.
+  /// production-bound log handle is unbound and UpdateMomentumObserverChannels
+  /// skips the CSV lane; a row assertion written against that state would pass
+  /// with the push deleted outright. (The topic lane is guarded separately and
+  /// is unaffected by this handle.)
   void SetMomentumObserverLogHandleForTesting(
       rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> h) {
     momentum_observer_log_handle_ = std::move(h);
@@ -797,6 +798,11 @@ class DemoTaskController final : public RTControllerInterface {
   // Layer 2A, when there is a payload estimate to put in it).
   MomentumObserverParams momentum_params_;
   MomentumObserverWiring momentum_wiring_;
+  /// RT → publish-thread egress for the PayloadEstimate topic (#135 D12).
+  /// Written on every enabled tick by UpdateMomentumObserverChannels, read by
+  /// PublishNonRtSnapshot. The SAME row the CSV lane pushes, so the file and
+  /// the topic cannot report different numbers for one tick.
+  rtc::SeqLock<integrated_bringup::MomentumObserverLogPod> payload_estimate_lock_;
   /// Non-empty when BuildMomentumObserverWiring threw in OnDeviceConfigsSet.
   /// That hook cannot propagate — CM calls SetDeviceNameConfigs outside any
   /// try/catch — so the failure is latched here and on_configure turns it into

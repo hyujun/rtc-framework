@@ -990,6 +990,24 @@ if(BUILD_TESTING)
     rtc_msgs
   )
 
+  # #135 D12 PayloadEstimate wire surface. Opens a participant (the publisher
+  # helpers create a real LifecyclePublisher on a LifecycleNode), so it takes
+  # the package's ROS_DOMAIN_ID like its siblings above.
+  ament_add_gtest(test_payload_estimate_topic
+    test/test_payload_estimate_topic.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_payload_estimate_topic
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_payload_estimate_topic
+    rclcpp
+    rclcpp_lifecycle
+    rtc_base
+    rtc_controller_interface
+    rtc_controllers
+    rtc_msgs
+  )
+
   # ── demo_controller_gui static robot profiles (pure-Python) ────────────────
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_robot_profiles test/test_robot_profiles.py)

@@ -1568,8 +1568,8 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     FillEstopPublishState(dt);
     PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                          state.iteration);
-    PushMomentumObserverLog(momentum_observer_log_handle_, momentum_wiring_, state.t_relative_s,
-                            state.iteration);
+    UpdateMomentumObserverChannels(momentum_observer_log_handle_, payload_estimate_lock_,
+                                   momentum_wiring_, state.t_relative_s, state.iteration);
     return out;
   }
 
@@ -1677,8 +1677,8 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                        state.iteration);
-  PushMomentumObserverLog(momentum_observer_log_handle_, momentum_wiring_, state.t_relative_s,
-                          state.iteration);
+  UpdateMomentumObserverChannels(momentum_observer_log_handle_, payload_estimate_lock_,
+                                 momentum_wiring_, state.t_relative_s, state.iteration);
   return output;
 }
 
@@ -2052,8 +2052,9 @@ void DemoWbcController::SetHandEstop(bool active) noexcept {
 
 void DemoWbcController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
   const auto wbc_loaded = wbc_state_lock_.Load();
+  const auto payload_loaded = payload_estimate_lock_.Load();
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_, /*grasp=*/nullptr, /*wbc=*/&wbc_loaded,
-                                 /*tof=*/nullptr);
+                                 /*tof=*/nullptr, /*payload=*/&payload_loaded);
 }
 
 }  // namespace integrated_bringup

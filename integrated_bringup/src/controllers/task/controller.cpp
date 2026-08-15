@@ -1,8 +1,8 @@
 // ── Includes: project header first, then C++ stdlib
 // ────────────────────────────
-#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
@@ -562,8 +562,8 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   }
   PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                        state.iteration);
-  PushMomentumObserverLog(momentum_observer_log_handle_, momentum_wiring_, state.t_relative_s,
-                          state.iteration);
+  UpdateMomentumObserverChannels(momentum_observer_log_handle_, payload_estimate_lock_,
+                                 momentum_wiring_, state.t_relative_s, state.iteration);
   PushGraspDiagLog(grasp_diag_log_handle_, grasp_controller_.get(), grasp_force_pi_ran_,
                    state.t_relative_s, state.iteration);
   return output;
@@ -1244,8 +1244,9 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
 void DemoTaskController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
   const auto grasp_loaded = grasp_state_lock_.Load();
   const auto tof_loaded = tof_snapshot_lock_.Load();
+  const auto payload_loaded = payload_estimate_lock_.Load();
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_, /*grasp=*/&grasp_loaded, /*wbc=*/nullptr,
-                                 /*tof=*/&tof_loaded);
+                                 /*tof=*/&tof_loaded, /*payload=*/&payload_loaded);
 }
 
 // ── Phase B: gain → ROS 2 parameter declaration & callback ────────────────

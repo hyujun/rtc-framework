@@ -12,10 +12,12 @@
 
 #include "integrated_bringup/controllers/tof_snapshot.hpp"
 #include "integrated_bringup/controllers/wbc/wbc_state.hpp"
+#include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include <rtc_base/threading/publish_buffer.hpp>
 #include <rtc_controller_interface/rt_controller_interface.hpp>
 #include <rtc_controllers/grasp/grasp_state.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
+#include <rtc_msgs/msg/payload_estimate.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <rtc_msgs/msg/wbc_state.hpp>
@@ -82,6 +84,13 @@ struct ControllerTopicHandles {
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::WbcState>::SharedPtr wbc_pub{};
   rtc_msgs::msg::WbcState wbc_msg{};
 
+  // Payload estimate publisher (#135 D12) — one per controller that wires a
+  // MomentumObserverWiring. Created via SetupPayloadEstimatePublisher, which
+  // pre-fills joint_names and sizes `residual` to match, so the publish path
+  // only ever writes into existing elements.
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::PayloadEstimate>::SharedPtr payload_pub{};
+  rtc_msgs::msg::PayloadEstimate payload_msg{};
+
   // ── Per-controller TF publisher (kRobotTransforms) ────────────────────
   // Single publisher per controller — D-2: controller당 1 토픽. The set of
   // frames is fixed at on_configure (parent/child frame_id + source slot)
@@ -124,7 +133,8 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
                                     ControllerTopicHandles& handles,
                                     const rtc::grasp::GraspStateData* grasp = nullptr,
                                     const WbcStateData* wbc = nullptr,
-                                    const ToFSnapshotData* tof = nullptr) noexcept;
+                                    const ToFSnapshotData* tof = nullptr,
+                                    const MomentumObserverLogPod* payload = nullptr) noexcept;
 
 // ── Helpers for controllers to register TF frame slots at on_configure ─────
 // Each helper appends one TfFrameSlot to handles.tf_slots[] (no-op when the
@@ -173,8 +183,27 @@ void SetupWbcStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHan
 void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
                                const std::string& topic_name);
 
-// Stamp the reference frame the GraspState / WbcState *vector* payloads are
-// expressed in — the FK reference the controller resolves fingertip rotations
+// Create the PayloadEstimate publisher (#135 D12) and pre-fill the two fields
+// that are fixed for the life of the configuration: `joint_names` — the arm
+// DEVICE order the residual is expressed in — and `payload_frame`, the frame
+// the estimated wrench acts at (empty when the payload estimator is not
+// configured; the residual half of the message is published either way).
+//
+// joint_names is carried on the WIRE rather than assumed by consumers because
+// the residual's order is the device order and a model Jacobian's columns are
+// in pinocchio order. The two coincide on some robots and not others, and a
+// consumer that pairs them wrongly gets a finite, smooth, wrong answer with no
+// symptom — the same trap the estimator's own preamble opens with.
+//
+// `residual` is sized here to match joint_names (and never resized afterwards),
+// so the publish path writes into existing elements only.
+void SetupPayloadEstimatePublisher(rtc::RTControllerInterface& ctrl,
+                                   ControllerTopicHandles& handles, const std::string& topic_name,
+                                   const std::vector<std::string>& joint_names,
+                                   const std::string& payload_frame);
+
+// Stamp the reference frame the GraspState / WbcState / PayloadEstimate *vector*
+// payloads are expressed in — the FK reference the controller resolves fingertip rotations
 // and positions into, i.e. the arm root link (#234 P-5). Call once from
 // on_configure after the Setup*Publisher calls; the string is stored in the
 // pre-filled message so the publish thread never touches it.

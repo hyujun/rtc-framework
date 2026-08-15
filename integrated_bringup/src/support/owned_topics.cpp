@@ -176,6 +176,12 @@ void SetOwnedStateFrameId(ControllerTopicHandles& handles, const std::string& fr
   // messages that are never published.
   handles.grasp_msg.header.frame_id = frame_id;
   handles.wbc_msg.header.frame_id = frame_id;
+  // PayloadEstimate carries TWO frames and they are not interchangeable: this
+  // one is the axis convention (LOCAL_WORLD_ALIGNED, i.e. the arm root's
+  // orientation), while `payload_frame` — set at SetupPayloadEstimatePublisher
+  // — is the point the wrench acts at. A wrench is a screw, so dropping either
+  // one makes the moment uninterpretable.
+  handles.payload_msg.header.frame_id = frame_id;
 }
 
 void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
@@ -196,6 +202,34 @@ void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopic
   rclcpp::QoS tof_qos{5};  // ARCH-6-exempt
   tof_qos.best_effort();
   handles.tof_pub = node->create_publisher<rtc_msgs::msg::ToFSnapshot>(topic_name, tof_qos);
+}
+
+void SetupPayloadEstimatePublisher(rtc::RTControllerInterface& ctrl,
+                                   ControllerTopicHandles& handles, const std::string& topic_name,
+                                   const std::vector<std::string>& joint_names,
+                                   const std::string& payload_frame) {
+  if (handles.payload_pub) {
+    return;
+  }
+  auto node = ctrl.get_lifecycle_node();
+  if (!node) {
+    throw std::runtime_error(
+        "SetupPayloadEstimatePublisher: controller has no LifecycleNode "
+        "(on_configure not yet called?)");
+  }
+  rclcpp::QoS payload_qos{1};
+  handles.payload_pub =
+      node->create_publisher<rtc_msgs::msg::PayloadEstimate>(topic_name, payload_qos);
+
+  // Truncate to the channel's own ceiling rather than the caller's list length:
+  // the POD the publish path reads from carries kMaxArmJoints entries, so a
+  // longer joint_names would name columns the row cannot supply. Same bound,
+  // and the same truncation, as the CSV header writer.
+  auto& msg = handles.payload_msg;
+  const std::size_t n = std::min(joint_names.size(), MomentumObserverLogPod::kMaxArmJoints);
+  msg.joint_names.assign(joint_names.begin(), joint_names.begin() + static_cast<std::ptrdiff_t>(n));
+  msg.residual.assign(n, 0.0);
+  msg.payload_frame = payload_frame;
 }
 
 // ── TfFrameSlot append helpers ───────────────────────────────────────────
@@ -278,6 +312,9 @@ void ActivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
   if (handles.wbc_pub) {
     handles.wbc_pub->on_activate();
   }
+  if (handles.payload_pub) {
+    handles.payload_pub->on_activate();
+  }
   if (handles.tf_pub) {
     handles.tf_pub->on_activate();
   }
@@ -294,6 +331,9 @@ void DeactivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
   if (handles.wbc_pub) {
     handles.wbc_pub->on_deactivate();
   }
+  if (handles.payload_pub) {
+    handles.payload_pub->on_deactivate();
+  }
   if (handles.tf_pub) {
     handles.tf_pub->on_deactivate();
   }
@@ -306,6 +346,7 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
   handles.grasp_pub.reset();
   handles.tof_pub.reset();
   handles.wbc_pub.reset();
+  handles.payload_pub.reset();
   handles.tf_pub.reset();
   handles.tf_msg.transforms.clear();
   for (auto& slot : handles.tf_slots) {
@@ -319,7 +360,8 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
 void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
                                     ControllerTopicHandles& handles,
                                     const rtc::grasp::GraspStateData* grasp,
-                                    const WbcStateData* wbc, const ToFSnapshotData* tof) noexcept {
+                                    const WbcStateData* wbc, const ToFSnapshotData* tof,
+                                    const MomentumObserverLogPod* payload) noexcept {
   // L2 under nrt_publish_drain — shared by every controller's
   // PublishNonRtSnapshot, so one span here covers the whole owned-topics path.
   RTC_TRACE_SCOPE("owned_topics_publish");
@@ -378,6 +420,47 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
     msg.qp_fail_count = ws.qp_fail_count;
     FillPullEstimateMsg(msg.pull, ws.pull);
     handles.wbc_pub->publish(msg);
+  }
+
+  // ── Payload estimate (#135 D12) ─────────────────────────────────────
+  // Published on EVERY tick the observer produced a row for, including held
+  // and E-STOP ones. A held tick is not a gap: it carries residual_valid=false
+  // plus the reason, and the residual frozen at its last accepted value. A
+  // consumer that saw nothing instead could not tell "the observer stopped
+  // looking" from "the publisher is late".
+  if (payload != nullptr && handles.payload_pub) {
+    const auto& pl = *payload;
+    auto& msg = handles.payload_msg;
+    msg.header.stamp.sec = sec;
+    msg.header.stamp.nanosec = nsec;
+    msg.tick = pl.tick;
+    msg.t_relative_s = pl.t_relative_s;
+
+    // Bound by the message's own pre-filled width, not by the POD's: the array
+    // was sized from joint_names at configure and must stay in lockstep with
+    // it, so a row is copied into the columns that have names and no further.
+    const std::size_t n = std::min(msg.residual.size(), MomentumObserverLogPod::kMaxArmJoints);
+    for (std::size_t i = 0; i < n; ++i) {
+      msg.residual[i] = pl.residual[i];
+    }
+    msg.residual_inf_norm = pl.residual_inf_norm;
+    msg.ticks_since_seed = pl.ticks_since_seed;
+    msg.residual_reason = pl.invalid_reason;
+    msg.residual_valid = pl.valid;
+
+    msg.wrench.force.x = pl.payload_wrench[0];
+    msg.wrench.force.y = pl.payload_wrench[1];
+    msg.wrench.force.z = pl.payload_wrench[2];
+    msg.wrench.torque.x = pl.payload_wrench[3];
+    msg.wrench.torque.y = pl.payload_wrench[4];
+    msg.wrench.torque.z = pl.payload_wrench[5];
+    msg.mass = pl.payload_mass;
+    msg.sigma_min = pl.payload_sigma_min;
+    msg.lambda_sq = pl.payload_lambda_sq;
+    msg.fit_error = pl.payload_fit_error;
+    msg.payload_reason = pl.payload_reason;
+    msg.payload_valid = pl.payload_valid;
+    handles.payload_pub->publish(msg);
   }
 
   // ── ToF snapshot ────────────────────────────────────────────────────
