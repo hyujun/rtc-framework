@@ -186,6 +186,13 @@ bool UpdateMomentumObserver(const rtc::ControllerState& state,
 /// A row logged from this tick therefore carries valid=0 and last tick's
 /// residual, which is what "the observer stopped looking" should read like.
 /// No-op on a disabled wiring.
+///
+/// The Layer 2A payload estimate goes down with it (kObserverInvalid). It is a
+/// function of `r`, so a tick that did not advance `r` carries no new payload
+/// evidence and leaving it valid would republish the last estimate as if it had
+/// just been measured. This is also why UpdateMomentumObserver's lane gate
+/// calls THIS rather than w.observer.Hold(): both hold paths must stay one
+/// call site or they drift apart, which they did once.
 void HoldMomentumObserver(MomentumObserverWiring& w) noexcept;
 
 /// Non-RT (on_activate). Drops every per-tick latch; keeps Init-time state.

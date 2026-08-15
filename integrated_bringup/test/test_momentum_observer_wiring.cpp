@@ -737,3 +737,125 @@ TEST(PayloadEstimatorWiring, AbsentBlockLeavesTheObserverUntouched) {
   EXPECT_TRUE(wir.enabled());
   EXPECT_FALSE(wir.payload_enabled());
 }
+
+// ── Layer 2A: the payload estimate must freeze with the residual ────────────
+//
+// Three ways a tick can stop producing a residual, and all three must take the
+// payload estimate down with it. The estimate is a function of `r`, so a tick
+// that did not advance `r` carries no new payload evidence — leaving
+// payload_valid standing republishes the LAST estimate as if it had been
+// measured now, and a consumer polling the topic cannot tell the two apart.
+//
+// Each way is its own case because they run through different code: the
+// caller's explicit hold (E-STOP), the observer rejecting its own tick, and the
+// input-lane gate refusing to feed it at all. The third is one branch earlier
+// than the second and needs its own hold.
+
+namespace {
+
+/// A wiring settled under a known hanging payload, so `payload.valid()` is true
+/// and the estimate is non-trivial before whatever each case does to it.
+void ArmWithASettledPayload(MomentumObserverWiring& wir, std::vector<double>& q_dev_out,
+                            std::vector<double>& tau_out) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+
+  q_dev_out.assign(integrated_bringup::testfx::kArmHome.begin(),
+                   integrated_bringup::testfx::kArmHome.end());
+
+  Eigen::Matrix<double, 6, 1> w_true;
+  w_true.head<3>() = 3.0 * model->gravity.linear();
+  w_true.tail<3>().setZero();
+  tau_out = MeasuredTorqueUnderPayload(probe, q_dev_out, w_true);
+
+  integrated_bringup::BuildMomentumObserverWiring(PayloadParams(), model, names, 0, wir);
+  SettleUnderPayload(wir, q_dev_out, tau_out);
+}
+
+/// The settled device, ready for one more tick.
+rtc::DeviceState SettledDevice(const std::vector<double>& q_dev, const std::vector<double>& tau) {
+  rtc::DeviceState dev = FullyReadableDevice();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    dev.positions[u] = q_dev[u];
+    dev.velocities[u] = 0.0;
+    dev.efforts[u] = tau[u];
+  }
+  return dev;
+}
+
+}  // namespace
+
+TEST(PayloadEstimatorWiring, ExplicitHoldFreezesThePayloadWithTheResidual) {
+  MomentumObserverWiring wir;
+  std::vector<double> q_dev;
+  std::vector<double> tau;
+  ArmWithASettledPayload(wir, q_dev, tau);
+  ASSERT_TRUE(wir.payload.valid()) << "nothing to freeze";
+  const double before = wir.payload.estimate().mass;
+
+  integrated_bringup::HoldMomentumObserver(wir);
+
+  EXPECT_FALSE(wir.payload.valid()) << "an E-STOP tick kept republishing the last payload";
+  EXPECT_EQ(wir.payload.invalid_reason(), rtc::estimation::PayloadInvalidReason::kObserverInvalid);
+  // Frozen, not cleared: the last value stays readable so a log carries what was
+  // there when the hold began. Only the validity flag changes.
+  EXPECT_DOUBLE_EQ(wir.payload.estimate().mass, before);
+}
+
+// The gate the observer applies to ITSELF — a tick whose inputs it cannot
+// integrate. Reached through dt = 0, which UpdateMomentumObserver forwards.
+TEST(PayloadEstimatorWiring, AnObserverThatRejectsItsOwnTickTakesThePayloadDown) {
+  MomentumObserverWiring wir;
+  std::vector<double> q_dev;
+  std::vector<double> tau;
+  ArmWithASettledPayload(wir, q_dev, tau);
+  ASSERT_TRUE(wir.payload.valid());
+
+  rtc::ControllerState st = StateWith(SettledDevice(q_dev, tau));
+  st.dt = 0.0;
+
+  EXPECT_FALSE(integrated_bringup::UpdateMomentumObserver(st, wir));
+  EXPECT_FALSE(wir.observer.valid());
+  EXPECT_FALSE(wir.payload.valid())
+      << "the observer rejected the tick but the payload stayed valid";
+  EXPECT_EQ(wir.payload.invalid_reason(), rtc::estimation::PayloadInvalidReason::kObserverInvalid);
+}
+
+// The lane gate — the device stopped reporting a lane [MO-3a]. This never
+// reaches the observer's own Update(), so the payload hold cannot ride along
+// with the one down there.
+TEST(PayloadEstimatorWiring, AClosedLaneGateTakesThePayloadDownToo) {
+  MomentumObserverWiring wir;
+  std::vector<double> q_dev;
+  std::vector<double> tau;
+  ArmWithASettledPayload(wir, q_dev, tau);
+  ASSERT_TRUE(wir.payload.valid());
+
+  rtc::DeviceState dev = SettledDevice(q_dev, tau);
+  dev.effort_hole_mask = 1ULL << 3;  // one slot stops reporting torque
+  const rtc::ControllerState st = StateWith(dev);
+
+  EXPECT_FALSE(integrated_bringup::UpdateMomentumObserver(st, wir));
+  EXPECT_FALSE(wir.observer.valid()) << "the lane gate did not freeze the residual";
+  EXPECT_FALSE(wir.payload.valid())
+      << "the residual froze but the payload kept reporting the last estimate";
+  EXPECT_EQ(wir.payload.invalid_reason(), rtc::estimation::PayloadInvalidReason::kObserverInvalid);
+}
+
+// on_activate drops the latches. A payload estimate surviving a deactivate /
+// activate cycle would have been measured against the previous session's state.
+TEST(PayloadEstimatorWiring, ResetRtStateClearsThePayloadEstimate) {
+  MomentumObserverWiring wir;
+  std::vector<double> q_dev;
+  std::vector<double> tau;
+  ArmWithASettledPayload(wir, q_dev, tau);
+  ASSERT_TRUE(wir.payload.valid());
+  ASSERT_GT(wir.payload.estimate().mass, 1.0);
+
+  integrated_bringup::ResetMomentumObserverRtState(wir);
+
+  EXPECT_FALSE(wir.payload.valid());
+  EXPECT_DOUBLE_EQ(wir.payload.estimate().mass, 0.0) << "a stale mass survived the reset";
+}

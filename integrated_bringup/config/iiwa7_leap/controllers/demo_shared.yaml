@@ -267,6 +267,17 @@ demo_shared:
       # surviving ||r||inf is ~0.048 N.m in the first place. Tune it DOWN once
       # payload_fit_error has been observed on the target robot -- a ceiling
       # that never fires is not a guard.
+      #
+      # SIM CANNOT SUPPLY THE NUMBER, measured 2026-08-16 (sim_iiwa7_leap,
+      # 21979 ticks with this block enabled): payload_fit_error has ZERO spread
+      # -- min = p50 = max = 1.2173e-07 N.m. The gate's own admit condition is
+      # why. What lets a tick through (arm still + hand still) is exactly the
+      # condition under which the MuJoCo plant and the observer's model agree
+      # to machine precision: peak |qdot| was 8.05e-18 rad/s and ||r||inf on
+      # valid ticks was 3.1e-05 N.m, three orders below the 0.048 N.m the real
+      # robot showed. Move the arm and the velocity gate closes, so the
+      # informative regime yields no valid ticks BY CONSTRUCTION. This value is
+      # therefore #177 hardware-lane work, alongside the m-hat accuracy check.
       max_fit_error: 5.0
       # ||Wg|| floor [m/s^2]. [MASS-A] divides by ||Wg||^2, so a gravity-free
       # model has no mass map at all (NUM-2 / NUM-4).

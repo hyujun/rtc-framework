@@ -291,7 +291,14 @@ bool UpdateMomentumObserver(const rtc::ControllerState& state,
   const int n = w.dof;
 
   if (!MomentumObserverInputsReadable(dev, n)) {
-    w.observer.Hold();
+    // Through HoldMomentumObserver, not w.observer.Hold() directly: a closed
+    // lane gate freezes the residual one branch EARLIER than the observer's own
+    // rejection below, so it cannot ride along with the payload hold down
+    // there. Holding only the observer here left payload_valid standing on a
+    // tick that produced no new residual — the estimate would keep publishing
+    // as if it had just been measured. One call site so the two hold paths
+    // cannot diverge again.
+    HoldMomentumObserver(w);
     return false;
   }
 
