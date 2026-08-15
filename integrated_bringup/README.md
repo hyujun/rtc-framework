@@ -33,7 +33,7 @@ integrated_bringup/
 │   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum
 │   │       ├── grasp_phase_manager.hpp    <- 5-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
 │   │       └── force_reference_updater.hpp <- Stage A-3 per-contact normal-force PI helper
-│   ├── support/                        <- controller 인프라 (로깅 매크로, owned topics, vTCP, log 등록 헬퍼)
+│   ├── support/                        <- controller 인프라 (로깅 매크로, owned topics, vTCP, log 등록 헬퍼, momentum-observer 배선)
 │   │   ├── bringup_logging.hpp
 │   │   ├── controller_log_registration.hpp
 │   │   ├── demo_shared_config.hpp

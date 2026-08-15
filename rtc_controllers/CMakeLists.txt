@@ -38,6 +38,9 @@ find_package(yaml-cpp REQUIRED)
 add_library(rtc_controllers STATIC
   src/controllers/grasp/grasp_controller.cpp
   src/controllers/grasp/pull_force_estimator.cpp
+  # Layer 1 of #135: robot-agnostic momentum-observer residual. Takes assembled
+  # nv-vectors (p, C^T v, g, tau_m) — no Pinocchio, no matrices, no robot facts.
+  src/controllers/estimation/momentum_observer.cpp
   # G2 schema layer (#236 S7c-1): gains PODs + YAML parsers, lifted out of the
   # controllers/{direct,indirect} adapters so they would outlive them — which
   # they now do, the adapters having been deleted at S7c-2. Non-RT, yaml-cpp
@@ -155,6 +158,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_pull_force_estimator test/test_pull_force_estimator.cpp)
   target_link_libraries(test_pull_force_estimator rtc_controllers)
+
+  ament_add_gtest(test_momentum_observer test/test_momentum_observer.cpp)
+  target_link_libraries(test_momentum_observer rtc_controllers)
 
   # #236 S1 golden-vector harness: the joint-space PD core pinned bit-for-bit
   # against a literal copy of the pre-extraction inline form. That literal oracle

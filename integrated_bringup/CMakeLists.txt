@@ -71,6 +71,10 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
+  # #135 Layer 1: momentum-observer wiring. Owns the coordinate contract
+  # (RtModelHandle takes device order, returns Pinocchio order) and the
+  # per-lane readability gate the observer itself cannot ask.
+  src/support/momentum_observer_wiring.cpp
   src/support/closed_chain_hand_fk.cpp
   src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
@@ -833,6 +837,21 @@ if(BUILD_TESTING)
   # joint controller has no Jacobian consumer). Proves DemoJointController's move
   # off arm_handle_ onto the combined-model PinocchioCache preserves the arm TCP
   # oMf on both the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
+  ament_add_gtest(test_momentum_observer_wiring
+    test/test_momentum_observer_wiring.cpp)
+  target_link_libraries(test_momentum_observer_wiring
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_momentum_observer_wiring
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   ament_add_gtest(test_joint_arm_cache_equivalence
     test/test_joint_arm_cache_equivalence.cpp)
   target_link_libraries(test_joint_arm_cache_equivalence
