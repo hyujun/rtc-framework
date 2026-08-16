@@ -40,6 +40,8 @@ pairs:
   - name: iiwa7
     mjcf: iiwa7/mjcf/iiwa7.xml
     urdf: iiwa7/urdf/iiwa7.urdf
+    # MJCF 가 mesh asset 을 쪼갠다 (URDF distinct 8 vs MJCF nmesh 16) — ur5e 와
+    # 같은 부류의 정당한 차이다. 2026-08-16 에 실행해 warning 본문으로 확인했다.
     expect_warnings: 1
 
   - name: leap_hand_left
@@ -58,11 +60,13 @@ pairs:
   - name: iiwa7_with_leap_left
     mjcf: iiwa7_leap/mjcf/iiwa7_with_leap_left.xml
     urdf: iiwa7_leap/urdf/iiwa7_with_leap_left.urdf.xacro
+    # 단독 iiwa7 과 같은 mesh asset count 차이 하나뿐 (19 vs 27). 2026-08-16 확인.
     expect_warnings: 1
 
   - name: iiwa7_with_leap_right
     mjcf: iiwa7_leap/mjcf/iiwa7_with_leap_right.xml
     urdf: iiwa7_leap/urdf/iiwa7_with_leap_right.urdf.xacro
+    # 좌수와 동일 (18 vs 26). 2026-08-16 확인.
     expect_warnings: 1
 
   - name: assm_v1_hand
@@ -73,6 +77,15 @@ pairs:
     link_map: assm_v1/assm_v1.link_map.yaml
     # URDF 가 visual+collision 을 따로 두는데 MJCF 는 geom 하나씩(30 vs 15),
     # palm 의 URDF 관성이 등방 placeholder — 둘 다 정당한 차이라 warning.
+    #
+    # **placeholder 를 안 고치는 것은 의도적이다 (#413).** `hand_base_link` 는
+    # `diag(1e-4, 1e-4, 1e-4)` 인데 균질 박스 계산값은
+    # `diag(2.66e-4, 1.76e-4, 4.10e-4)` 다. 고치려면 SSoT 인 URDF 를 건드려야 하고
+    # 다른 링크도 같은 상태일 가능성이 높은데, **어느 링크까지 물리값으로 갈지는
+    # 실기 측정 없이는 확정할 수 없다.** 그동안 정보를 잃지는 않는다 — 툴의
+    # plausibility warning 이 실행마다 이 링크를 이름으로 지목한다. 즉
+    # `compare_mjcf_urdf` 의 *일치* 검사와 이것은 다른 축이다: 두 파일을
+    # 일치시켜도 양쪽이 함께 틀릴 수 있고 여기가 그 상태다.
     expect_warnings: 2
 
   - name: ur5e_assm_v1
@@ -81,5 +94,6 @@ pairs:
     align_frames: [world, base]
     link_map: ur5e_assm_v1/ur5e_assm_v1.link_map.yaml
     tip_frames: [attachment_site, tool0]
-    # MJCF 가 visual mesh 를 쪼개고(20 vs 14), palm placeholder 관성.
+    # MJCF 가 visual mesh 를 쪼개고(20 vs 14), palm placeholder 관성
+    # (왜 안 고치는지는 위 assm_v1_hand 주석).
     expect_warnings: 2

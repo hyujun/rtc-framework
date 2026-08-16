@@ -95,6 +95,17 @@
 #          case is (180 + 60) * N against the Stop hook's 540s budget
 #          (settings.json) -- "all within the budget" holds only for N <= 2, and
 #          raising a bound buys the SIGKILL the bounds exist to prevent.
+#          The PROC-3 path is the measured case, not a hypothetical: this dev
+#          box runs `build.sh full` in 467s cold / 209s warm, and the path the
+#          hook ACTUALLY meets -- warm tree + an rtc_base HEADER touch ->
+#          downstream recompile -- measured 388.6s (rc=0, 21 pkgs, load ~9).
+#          All three exceed the 300s bound, so PROC-3 reports UNVERIFIED even
+#          for a one-line rtc_base header edit, not only on a cold tree. Fixing
+#          it means raising BOTH this bound and settings.json's 540s, and the
+#          price is a ~13min block on every rtc_base/rtc_msgs turn. DECIDED:
+#          keep as-is (user, 2026-08-14) -- UNVERIFIED is not a silent pass
+#          (#435), so it is accepted. Do not reopen without a new reason to
+#          accept that block.
 #          Doxygen / cross-package doc consistency NOT checked
 #          (modification-guide.md "Updating an Existing Package" 6 steps cover
 #          these manually). Changed set = tracked-vs-HEAD UNION untracked;

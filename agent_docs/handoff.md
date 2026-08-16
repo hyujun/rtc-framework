@@ -55,6 +55,7 @@
 - [ ] `git status` · HEAD · 핵심 evidence(build/test)가 artifact 와 **일치하는지 검증**한다
 - [ ] 불일치 시 **구현 전에 artifact 를 먼저 갱신**한다 (현실을 SSoT 에 반영)
 - [ ] Acceptance criteria · Out of scope 확인 후 Next action 부터 진행한다
+- [ ] 참조하는 issue 는 **본문보다 코멘트가 최신**이다 — 종결 이슈일수록 그렇고 (#339 는 본문 자체가 틀렸다), 본문의 진단을 근거로 쓰기 전에 코멘트 전체를 읽는다
 
 ## 5. Storage / retention (purpose 별)
 
