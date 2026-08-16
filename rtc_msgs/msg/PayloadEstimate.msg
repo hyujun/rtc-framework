@@ -132,3 +132,72 @@ uint8 PAYLOAD_RANK_DEFICIENT=11
 uint8 PAYLOAD_POOR_FIT=12
 uint8 payload_reason
 bool  payload_valid
+
+# ── Inertial block — Layer 2B (#455, RLS over the observable subspace) ────────
+#
+# FOUR PARAMETERS, NOT TEN, AND THAT IS A PHYSICAL FACT RATHER THAN A TODO.
+# The full payload set is [m, m·c, I(6)]. Under the quasi-static gate this
+# estimator shares with the block above, the regressor's six inertia columns are
+# IDENTICALLY ZERO — a body's rotational inertia enters the dynamics only
+# through I·a + v×I·v, so gravity alone carries no information about it. This is
+# not weak observability that more data would fix: stacking 60 poses gives rank
+# 4, not 10. Identifying I needs angular-acceleration excitation, which is a
+# different gate in a different lane, and this message deliberately does NOT
+# carry six fields that could only ever be published as zero.
+#
+# THE ESTIMATE ACCUMULATES ACROSS POSES; A SINGLE POSE IS NEVER ENOUGH. A
+# gravity-loaded body applies f = m·ᵂg and τ = (m·c) × ᵂg at the frame, and that
+# cross product annihilates the component of m·c ALONG gravity. One pose
+# therefore pins exactly 3 of the 4 parameters, on every robot and every pose
+# measured. `inertial_rank` sits at 3 and `inertial_valid` stays false until the
+# arm has visited poses that span the missing direction — that is the normal
+# startup state, not a fault. (The block above escapes this because it fits a
+# wrench through Jᵀ rather than the parameters behind it.)
+
+# m̂ [kg] from the regression. Distinct from `mass` above: that one inverts a
+# fitted wrench, this one solves accumulated normal equations. Carried
+# separately BECAUSE they are independent routes to the same quantity — a
+# disagreement between them is a signal, and collapsing them would erase it.
+float64 inertial_mass
+
+# m̂·ĉ [kg·m] at `payload_frame`, LOCAL axes. This is what the regression
+# actually solves for; ĉ below is derived from it.
+geometry_msgs/Vector3 first_moment
+
+# ĉ [m] — first_moment / inertial_mass, i.e. where the payload hangs relative to
+# `payload_frame`. Derivable, carried anyway: the division is guarded by the
+# estimator's minimum-mass threshold, and a consumer doing it itself would
+# reproduce that guard or divide by ~0.
+geometry_msgs/Vector3 com
+
+# σ_min of the accumulated 4×4 normal matrix — the POSE-DIVERSITY METER. It sits
+# near 0 while the arm holds one pose and climbs as it visits others. The gate is
+# stated on this rather than on a tick count on purpose: "moved for N ticks" and
+# "moved somewhere that helps" are different facts, and only this one is the
+# question being asked.
+float64 inertial_sigma_min
+
+# Numerical rank of that matrix, 0..4. 3 means "one pose so far" — see above.
+uint8 inertial_rank
+
+# ‖Y₄φ̂ − r‖∞ [N·m] — how well the fitted parameters explain this tick's
+# residual. Same role `fit_error` plays for the wrench block.
+float64 inertial_fit_error
+
+# rtc::estimation::InertialInvalidReason — WHICH gate closed, in evaluation
+# order. INERTIAL_INSUFFICIENT_POSE_DIVERSITY is expected after every re-seed and
+# is not an error; INERTIAL_DYNAMIC_EXCITATION means the tick was not
+# quasi-static and the four-parameter model was refused rather than misapplied.
+uint8 INERTIAL_NONE=0
+uint8 INERTIAL_NOT_INITIALIZED=1
+uint8 INERTIAL_HELD=2
+uint8 INERTIAL_SHORT_INPUT=3
+uint8 INERTIAL_NON_FINITE_INPUT=4
+uint8 INERTIAL_UPSTREAM_INVALID=5
+uint8 INERTIAL_INSUFFICIENT_POSE_DIVERSITY=6
+uint8 INERTIAL_DYNAMIC_EXCITATION=7
+uint8 INERTIAL_SOLVER_FAILED=8
+uint8 INERTIAL_NON_POSITIVE_MASS=9
+uint8 INERTIAL_COM_OUT_OF_BOUNDS=10
+uint8 inertial_reason
+bool  inertial_valid

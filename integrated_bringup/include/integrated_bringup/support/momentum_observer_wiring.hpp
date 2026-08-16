@@ -62,6 +62,7 @@
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/types/types.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
+#include "rtc_controllers/estimation/inertial_estimator.hpp"
 #include "rtc_controllers/estimation/momentum_observer.hpp"
 #include "rtc_controllers/estimation/payload_estimator.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -145,6 +146,37 @@ struct MomentumObserverWiring {
   Eigen::MatrixXd J_payload;
 
   [[nodiscard]] bool payload_enabled() const noexcept { return configured && payload_configured; }
+
+  // ── Layer 2B: payload inertial regression (#455) ───────────────────────────
+  //
+  // Rides the SAME quasi-static gates as Layer 2A above and runs off the SAME
+  // Pinocchio-order residual, for the same coordinate reason: Y's rows come
+  // from RtModelHandle in Pinocchio order and `residual()` is device order, so
+  // this cannot move up into a controller either.
+  //
+  // It is a SECOND estimator rather than an extension of the first because the
+  // two answer different questions from the same r: Layer 2A inverts a wrench
+  // per tick, Layer 2B accumulates normal equations across poses. Neither
+  // subsumes the other — a single pose can never identify m·c (the gravity
+  // cross product annihilates its component along ᵂg), while a wrench needs no
+  // pose diversity at all. Carrying both makes the disagreement visible.
+  rtc::estimation::InertialEstimator inertial;
+  bool inertial_configured{false};
+  /// v = a = 0 for the quasi-static regressor call. Preallocated because the RT
+  /// path may not build a vector; sized to dof at configure.
+  std::vector<double> quasi_static_zero;
+  /// −r in Pinocchio order. THE SIGN IS NOT COSMETIC. `r` is the EXTERNAL
+  /// torque the payload applies, r ≈ Jᵀw with w pointing down; Y_L·φ is the
+  /// payload's contribution to the GENERALIZED GRAVITY torque, i.e. what the
+  /// actuators must supply to hold it. At rest those are exact negatives
+  /// (g_arm = τ_m + Jᵀw and g_arm + Y_Lφ = τ_m give Y_Lφ = −Jᵀw), so feeding
+  /// `r` straight in returns −φ: a negative mass, which the [C3] gate would
+  /// reject as "not a payload" while the real fault is a sign.
+  std::vector<double> neg_residual_pin;
+
+  [[nodiscard]] bool inertial_enabled() const noexcept {
+    return payload_enabled() && inertial_configured;
+  }
 };
 
 /// Non-RT. Builds the wiring's own RtModelHandle over `arm_model` and pins
@@ -259,6 +291,21 @@ inline void FillMomentumObserverLogPod(const MomentumObserverWiring& w, double t
   pod.payload_fit_error = est.fit_error;
   pod.payload_valid = w.payload.valid();
   pod.payload_reason = static_cast<std::uint8_t>(w.payload.invalid_reason());
+
+  // Layer 2B (#455). Same "never asked for" convention: an unconfigured lane
+  // leaves these zero with inertial_reason = kNotInitialized. A CONFIGURED lane
+  // that has only seen one pose reads kInsufficientPoseDiversity instead, and
+  // the two must not be confused — the first means nobody enabled it, the
+  // second means the arm has not moved enough yet.
+  const auto& ie = w.inertial.estimate();
+  pod.inertial_mass = ie.mass;
+  pod.inertial_first_moment = ie.first_moment;
+  pod.inertial_com = ie.com;
+  pod.inertial_sigma_min = ie.param_sigma_min;
+  pod.inertial_fit_error = ie.fit_error;
+  pod.inertial_rank = ie.param_rank;
+  pod.inertial_valid = w.inertial.valid();
+  pod.inertial_reason = static_cast<std::uint8_t>(w.inertial.invalid_reason());
 }
 
 /// RT tick tail — noexcept, heap-free; a no-op when the wiring is disabled, so

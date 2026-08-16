@@ -931,3 +931,210 @@ TEST(MomentumObserverChannels, LeavesTheSlotAloneWhenTheWiringIsDisabled) {
   // publish tick 0 forever on a controller that simply has no observer.
   EXPECT_EQ(slot.Load().tick, 999U);
 }
+
+// ── Layer 2B: payload inertial regression through the wiring (#455) ──────────
+//
+// These exist because the layer's two hardest facts are BOTH invisible to a
+// unit test of the estimator:
+//
+//   1. THE SIGN. `r` is the external torque the payload applies (r ≈ Jᵀw, w
+//      pointing down) while Y_L·φ is the payload's contribution to the
+//      generalized GRAVITY torque. At rest those are exact negatives, so a
+//      wiring that forwards `r` unchanged recovers −φ — a negative mass. The
+//      [C3] gate would then report kNonPositiveMass, which reads like "that is
+//      not a payload" when the real fault is a sign flip. Only an end-to-end
+//      fixture with a KNOWN positive mass can tell those two apart.
+//   2. THE POSE DIVERSITY. One pose pins 3 of 4 parameters, so a test that
+//      settles at a single pose can never observe a correct m·c no matter how
+//      long it runs.
+
+namespace {
+
+/// PayloadParams() with Layer 2B armed on top.
+integrated_bringup::MomentumObserverParams InertialParams(double gain = 10.0) {
+  integrated_bringup::MomentumObserverParams p = PayloadParams(gain);
+  p.payload.inertial.has_block = true;
+  p.payload.inertial.enabled = true;
+  p.payload.inertial.forgetting_factor = 1.0;
+  p.payload.inertial.min_param_sigma = 1e-9;
+  p.payload.inertial.min_mass = 1e-3;
+  p.payload.inertial.max_com_offset = 1.0;
+  p.payload.inertial.max_inertia_column = 1e-6;
+  return p;
+}
+
+/// The wrench a payload of `mass` with CoM at `com` (PAYLOAD-FRAME coordinates)
+/// applies to the robot, expressed LOCAL_WORLD_ALIGNED as the 2A path wants:
+/// force is the weight, moment is the lever arm crossed into it. `com` must be
+/// rotated into world axes first — the moment is taken about the frame origin
+/// but its AXES are the world's.
+Eigen::Matrix<double, 6, 1> PayloadWrench(rub::RtModelHandle& h, const std::vector<double>& q_dev,
+                                          double mass, const Eigen::Vector3d& com,
+                                          const Eigen::Vector3d& g_world) {
+  h.ComputeForwardKinematics(q_dev);
+  const Eigen::Matrix3d R = h.GetFrameRotation(h.GetFrameId(kPayloadFrame));
+  const Eigen::Vector3d force = mass * g_world;
+  Eigen::Matrix<double, 6, 1> w;
+  w.head<3>() = force;
+  w.tail<3>() = (R * com).cross(force);
+  return w;
+}
+
+/// Settle the wiring at `q_dev` while the given payload hangs from the frame.
+void SettleWithPayloadAt(MomentumObserverWiring& wir, rub::RtModelHandle& probe,
+                         const std::vector<double>& q_dev, double mass, const Eigen::Vector3d& com,
+                         const Eigen::Vector3d& g_world, int ticks = 4000) {
+  const Eigen::Matrix<double, 6, 1> w = PayloadWrench(probe, q_dev, mass, com, g_world);
+  const std::vector<double> tau = MeasuredTorqueUnderPayload(probe, q_dev, w);
+  SettleUnderPayload(wir, q_dev, tau, ticks);
+}
+
+/// A pose that differs from home enough to rotate gravity in the frame.
+std::vector<double> ArmPoseB() {
+  std::vector<double> q(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i) {
+    q[static_cast<std::size_t>(i)] =
+        integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)] + 0.6;
+  }
+  return q;
+}
+
+}  // namespace
+
+// THE positive control. A 2 kg payload hanging 8 cm off the frame must come back
+// as +2 kg AND the right lever arm, through the whole wiring, with the device
+// order reversed so an order mix would show up as a different answer.
+TEST(InertialEstimatorWiring, RecoversHangingPayloadPose) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  std::vector<std::string> names = ArmJointNames(probe);
+  std::reverse(names.begin(), names.end());
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  const double mass = 2.0;
+  const Eigen::Vector3d com(0.0, 0.0, 0.08);
+  const Eigen::Vector3d g_world = model->gravity.linear();
+
+  std::vector<double> q_a(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_a[static_cast<std::size_t>(i)] =
+        integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(InertialParams(), model, names, 0, wir);
+  ASSERT_TRUE(wir.inertial_enabled());
+
+  // Pose A alone: rank 3, withheld. This is the structural fact, not a warm-up.
+  SettleWithPayloadAt(wir, probe, q_a, mass, com, g_world);
+  EXPECT_FALSE(wir.inertial.valid());
+  EXPECT_EQ(wir.inertial.invalid_reason(),
+            rtc::estimation::InertialInvalidReason::kInsufficientPoseDiversity);
+  EXPECT_EQ(wir.inertial.estimate().param_rank, 3);
+
+  // Pose B completes the rank.
+  SettleWithPayloadAt(wir, probe, ArmPoseB(), mass, com, g_world);
+
+  ASSERT_TRUE(wir.inertial.valid()) << "reason " << static_cast<int>(wir.inertial.invalid_reason());
+  EXPECT_EQ(wir.inertial.estimate().param_rank, 4);
+
+  // Positive, and the right magnitude — a forwarded-`r` sign error lands here.
+  EXPECT_GT(wir.inertial.estimate().mass, 0.0) << "negative mass means the sign flipped";
+  EXPECT_NEAR(wir.inertial.estimate().mass, mass, 5e-2);
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NEAR(wir.inertial.estimate().com[static_cast<std::size_t>(i)], com[i], 5e-2)
+        << "component " << i;
+  }
+}
+
+// The gates the two layers share must take BOTH lanes down together. A 2B lane
+// left un-held republishes its last parameters as if they had just been
+// measured, and an RLS estimate looks steadier the longer it is stale.
+TEST(InertialEstimatorWiring, HeldObserverTakesTheInertialLaneDownToo) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  const double mass = 2.0;
+  const Eigen::Vector3d com(0.0, 0.0, 0.08);
+  const Eigen::Vector3d g_world = model->gravity.linear();
+
+  std::vector<double> q_a(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_a[static_cast<std::size_t>(i)] =
+        integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(InertialParams(), model, names, 0, wir);
+  SettleWithPayloadAt(wir, probe, q_a, mass, com, g_world);
+  SettleWithPayloadAt(wir, probe, ArmPoseB(), mass, com, g_world);
+  ASSERT_TRUE(wir.inertial.valid());
+
+  integrated_bringup::HoldMomentumObserver(wir);
+
+  EXPECT_FALSE(wir.inertial.valid());
+  EXPECT_EQ(wir.inertial.invalid_reason(),
+            rtc::estimation::InertialInvalidReason::kUpstreamInvalid);
+  EXPECT_FALSE(wir.payload.valid());
+}
+
+// The CSV/topic row must carry the 2B block, not a default-constructed one.
+TEST(InertialEstimatorWiring, LogPodCarriesTheInertialBlock) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  const double mass = 2.0;
+  const Eigen::Vector3d com(0.0, 0.0, 0.08);
+  const Eigen::Vector3d g_world = model->gravity.linear();
+
+  std::vector<double> q_a(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_a[static_cast<std::size_t>(i)] =
+        integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(InertialParams(), model, names, 0, wir);
+  SettleWithPayloadAt(wir, probe, q_a, mass, com, g_world);
+  SettleWithPayloadAt(wir, probe, ArmPoseB(), mass, com, g_world);
+  ASSERT_TRUE(wir.inertial.valid());
+
+  integrated_bringup::MomentumObserverLogPod pod{};
+  integrated_bringup::FillMomentumObserverLogPod(wir, 1.0, 7, pod);
+
+  EXPECT_TRUE(pod.inertial_valid);
+  EXPECT_EQ(pod.inertial_rank, 4);
+  EXPECT_DOUBLE_EQ(pod.inertial_mass, wir.inertial.estimate().mass);
+  EXPECT_DOUBLE_EQ(pod.inertial_com[2], wir.inertial.estimate().com[2]);
+  EXPECT_GT(pod.inertial_sigma_min, 0.0);
+}
+
+// A wiring without the 2B block runs Layer 2A exactly as it shipped.
+TEST(InertialEstimatorWiring, AbsentBlockLeavesLayer2AUntouched) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+  ASSERT_TRUE(probe.SetJointOrder(names));
+
+  std::vector<double> q_dev(static_cast<std::size_t>(kArmDof));
+  for (int i = 0; i < kArmDof; ++i)
+    q_dev[static_cast<std::size_t>(i)] =
+        integrated_bringup::testfx::kArmHome[static_cast<std::size_t>(i)];
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(PayloadParams(), model, names, 0, wir);
+  ASSERT_TRUE(wir.payload_enabled());
+  ASSERT_FALSE(wir.inertial_enabled());
+
+  const Eigen::Vector3d g_world = model->gravity.linear();
+  Eigen::Matrix<double, 6, 1> w;
+  w.head<3>() = 3.0 * g_world;
+  w.tail<3>().setZero();
+  SettleUnderPayload(wir, q_dev, MeasuredTorqueUnderPayload(probe, q_dev, w));
+
+  EXPECT_TRUE(wir.payload.valid());
+  EXPECT_NEAR(wir.payload.estimate().mass, 3.0, 1e-3);
+  // And the 2B lane names itself "never asked for" rather than "gate closed".
+  EXPECT_EQ(wir.inertial.invalid_reason(), rtc::estimation::InertialInvalidReason::kNotInitialized);
+}

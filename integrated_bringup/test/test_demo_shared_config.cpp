@@ -1028,6 +1028,82 @@ momentum_observer:
   EXPECT_DOUBLE_EQ(pp.settle_time_constants, 0.088);
 }
 
+// #455 Layer 2B — the `inertial` sub-sub-block. Nested under payload_estimator
+// because it reuses that block's frame and velocity gates: it is the same
+// quasi-static lane with a different estimator on it.
+TEST(DemoSharedConfigTest, MomentumObserverInertialSubBlockParsesEveryKey) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+momentum_observer:
+  enabled: true
+  gains: 30.0
+  payload_estimator:
+    enabled: true
+    frame: "wrist_3_link"
+    inertial:
+      enabled: true
+      forgetting_factor: 0.995
+      min_param_sigma: 0.011
+      min_mass: 0.022
+      max_com_offset: 0.033
+      max_inertia_column: 0.044
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  const integrated_bringup::InertialEstimatorParams& ip = cfg.momentum_observer.payload.inertial;
+  EXPECT_TRUE(ip.has_block);
+  // The struct default is DISABLED (unlike Layer 2A's true), so an `enabled:
+  // true` that read back as the default would prove nothing — this asserts the
+  // key was actually consumed.
+  EXPECT_TRUE(ip.enabled);
+  EXPECT_DOUBLE_EQ(ip.forgetting_factor, 0.995);
+  EXPECT_DOUBLE_EQ(ip.min_param_sigma, 0.011);
+  EXPECT_DOUBLE_EQ(ip.min_mass, 0.022);
+  EXPECT_DOUBLE_EQ(ip.max_com_offset, 0.033);
+  EXPECT_DOUBLE_EQ(ip.max_inertia_column, 0.044);
+}
+
+// Layer 2A without the nested block is Layer 2A exactly as it shipped — the 2B
+// lane must not arm itself by inheriting its struct defaults.
+TEST(DemoSharedConfigTest, MomentumObserverInertialAbsentLeavesLayer2BDisarmed) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+momentum_observer:
+  enabled: true
+  gains: 30.0
+  payload_estimator:
+    enabled: true
+    frame: "wrist_3_link"
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  EXPECT_TRUE(cfg.momentum_observer.payload.has_block);
+  EXPECT_FALSE(cfg.momentum_observer.payload.inertial.has_block);
+  EXPECT_FALSE(cfg.momentum_observer.payload.inertial.enabled);
+}
+
+// A partial block keeps defaults rather than zeroing them — same contract the
+// 2A sub-block carries, and the one that makes a half-written YAML safe.
+TEST(DemoSharedConfigTest, MomentumObserverInertialPartialBlockKeepsDefaults) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+momentum_observer:
+  gains: 30.0
+  payload_estimator:
+    frame: "wrist_3_link"
+    inertial:
+      min_mass: 0.5
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  const integrated_bringup::InertialEstimatorParams& ip = cfg.momentum_observer.payload.inertial;
+  EXPECT_TRUE(ip.has_block);
+  EXPECT_DOUBLE_EQ(ip.min_mass, 0.5);
+  EXPECT_DOUBLE_EQ(ip.forgetting_factor, 1.0);
+  EXPECT_DOUBLE_EQ(ip.max_com_offset, 0.5);
+  EXPECT_DOUBLE_EQ(ip.max_inertia_column, 1.0e-6);
+}
+
 // Presence of the sub-block is what arms Layer 2A; an empty map still counts,
 // and every unset key keeps its default rather than becoming zero.
 TEST(DemoSharedConfigTest, MomentumObserverPayloadPartialBlockKeepsDefaults) {

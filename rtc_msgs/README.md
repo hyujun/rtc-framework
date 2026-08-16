@@ -15,7 +15,7 @@ RTC 프레임워크를 위한 **커스텀 ROS2 메시지 + 서비스 정의** �
 - 파지 상태: 컨트롤러 주기 (RT 정기 tick @ `control_rate`, default 500 Hz) 에서 계산된 접촉/힘/파지 판정 (Force-PI: GraspState, TSID-based WBC: WbcState)
 - 컨트롤러 관리: lifecycle 상태 조회(ListControllers) + activate/deactivate(SwitchController), `/rtc_cm/*` API
 - CSV 로깅 전용 메시지: 상태/커맨드/궤적 통합 (DeviceStateLog, DeviceSensorLog)
-- 추정기 출력: 준정적 payload wrench/질량 + 그것을 만든 관절공간 잔차를 한 메시지에 (PayloadEstimate)
+- 추정기 출력: 준정적 payload wrench/질량 + 관성 파라미터 회귀 + 그것을 만든 관절공간 잔차를 한 메시지에 (PayloadEstimate)
 - C++ 및 Python 바인딩 자동 생성 (rosidl)
 
 ---
@@ -40,7 +40,7 @@ rtc_msgs/
 │   ├── SimSensor.msg          <- MuJoCo 단일 센서 출력 (로봇 비의존적)
 │   ├── SimSensorState.msg     <- MuJoCo 센서 데이터 집계 (로봇 비의존적)
 │   ├── ToFSnapshot.msg        <- ToF 센서 + 핑거팁 SE3 자세 통합 스냅샷
-│   ├── PayloadEstimate.msg    <- 준정적 payload wrench/질량 추정 + 관절공간 잔차 (#135)
+│   ├── PayloadEstimate.msg    <- 준정적 payload wrench/질량·관성 추정 + 관절공간 잔차 (#135, #455)
 │   ├── CalibrationCommand.msg <- 센서 캘리브레이션 명령 (확장 가능 enum)
 │   └── CalibrationStatus.msg  <- 센서 캘리브레이션 진행/완료 상태
 └── srv/
@@ -226,6 +226,18 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | | `fit_error` | `float64` | max\|Jᵀŵ − r\| [N·m]. payload 와 미모델링 관절 토크 (마찰, MJCF armature) 를 가르는 유일한 지표 |
 | | `payload_reason` | `uint8` | `PAYLOAD_NONE=0` / `NOT_INITIALIZED=1` / `HELD=2` / `SHORT_INPUT=3` / `NON_FINITE_INPUT=4` / `OBSERVER_INVALID=5` / `NOT_CONVERGED=6` / `ARM_MOVING=7` / `PERIPHERAL_MOVING=8` / `DEGENERATE_GRAVITY=9` / `SOLVER_FAILED=10` / `RANK_DEFICIENT=11` / `POOR_FIT=12` |
 | | `payload_valid` | `bool` | — |
+| **관성 (Layer 2B)** | `inertial_mass` | `float64` | m̂ [kg], **회귀** 경로. 위 `mass` 는 fit 된 wrench 를 역산한 것이라 서로 **독립적인 두 경로** — 어긋나면 그 자체가 신호이므로 하나로 합치지 않습니다 |
+| | `first_moment` | `geometry_msgs/Vector3` | m̂·ĉ [kg·m], `payload_frame` 의 **LOCAL** 축. 회귀가 실제로 푸는 양 |
+| | `com` | `geometry_msgs/Vector3` | ĉ [m] — `first_moment / inertial_mass`. 파생값이지만 나눗셈이 최소질량 게이트로 보호되므로 함께 싣습니다 |
+| | `inertial_sigma_min` | `float64` | 누적 4×4 정규행렬의 σ_min = **자세 다양성 계기**. 한 자세에 머무는 동안 ~0 이고 다른 자세를 방문하면 오릅니다 |
+| | `inertial_rank` | `uint8` | 그 행렬의 수치 rank, 0..4. **3 이면 "아직 한 자세"** |
+| | `inertial_fit_error` | `float64` | max\|Y₄φ̂ − r\| [N·m] |
+| | `inertial_reason` | `uint8` | `INERTIAL_NONE=0` / `NOT_INITIALIZED=1` / `HELD=2` / `SHORT_INPUT=3` / `NON_FINITE_INPUT=4` / `UPSTREAM_INVALID=5` / `INSUFFICIENT_POSE_DIVERSITY=6` / `DYNAMIC_EXCITATION=7` / `SOLVER_FAILED=8` / `NON_POSITIVE_MASS=9` / `COM_OUT_OF_BOUNDS=10` |
+| | `inertial_valid` | `bool` | — |
+
+**Layer 2B 가 4개만 싣고 `I` 를 안 싣는 것은 범위가 아니라 물리입니다.** 전체 집합은 `[m, m·c, I(6)]` 이지만, 이 추정기가 Layer 2A 와 공유하는 준정적 게이트 아래에서 회귀자의 **관성 6열은 항등적으로 0** 입니다 — 회전 관성은 `I·a + v×I·v` 로만 동역학에 들어오므로 중력만으로는 정보가 없습니다. 자세를 60개 쌓아도 rank 는 10 이 아니라 **4** 입니다. `I` 를 식별하려면 각가속도 여기가 필요하고 그건 다른 게이트·다른 lane 이라, 이 메시지는 **영구히 0 으로만 나갈 6개 필드를 의도적으로 싣지 않습니다**.
+
+**그리고 한 자세로는 절대 안 됩니다.** 중력만 받는 강체는 프레임에 `f = m·ᵂg`, `τ = (m·c) × ᵂg` 를 가하는데 그 외적이 `m·c` 의 **ᵂg 방향 성분을 지웁니다**. 따라서 한 자세는 4개 중 정확히 3개만 고정하고 (실측: σ₄ = 0, 모든 자세·두 로봇), 팔이 그 방향을 채우는 자세들을 방문하기 전까지 `inertial_rank` 는 3 에 머물고 `inertial_valid` 는 false 입니다. **이것이 정상 기동 상태이며 결함이 아닙니다.** (Layer 2A 가 이 문제를 피하는 것은 파라미터가 아니라 Jᵀ 를 통해 wrench 를 맞추기 때문입니다.)
 
 - Per-controller 토픽: `/<config_key>/payload_estimate` (RT tick 에서 계산, ~50 Hz publish thread).
 - **추정기가 꺼져 있어도 이 토픽은 삽니다** — publisher 는 *관측기* 기준으로 만들어지고, payload 블록은 `payload_valid=false` + `payload_reason=PAYLOAD_NOT_INITIALIZED` 로 나갑니다 (출하 config 는 `payload_estimator.enabled: false`).
@@ -576,9 +588,10 @@ source install/setup.bash
 └── SetExternalWrench.srv           /sim/set_external_wrench  → 알려진 외력 부착/해제
 
 추정 (컨트롤러 RT tick 에서 계산)
-└── PayloadEstimate (#135)
+└── PayloadEstimate (#135, #455)
     ├── 잔차: joint_names/residual (device order) + residual_valid/reason
-    └── payload: wrench/mass + sigma_min/lambda_sq/fit_error + payload_valid/reason
+    ├── payload: wrench/mass + sigma_min/lambda_sq/fit_error + payload_valid/reason
+    └── 관성: inertial_mass/first_moment/com + sigma_min/rank (4-param; I 는 준정적에서 관측 불가)
 
 로깅 (CSV 세션 기록)                ToF 스냅샷 (형상 추정용)
 ├── DeviceStateLog                  └── ToFSnapshot

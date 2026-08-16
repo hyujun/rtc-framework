@@ -460,6 +460,20 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
     msg.fit_error = pl.payload_fit_error;
     msg.payload_reason = pl.payload_reason;
     msg.payload_valid = pl.payload_valid;
+    // Layer 2B (#455). Four parameters — I is absent because gravity carries no
+    // information about it, not because it is unimplemented.
+    msg.inertial_mass = pl.inertial_mass;
+    msg.first_moment.x = pl.inertial_first_moment[0];
+    msg.first_moment.y = pl.inertial_first_moment[1];
+    msg.first_moment.z = pl.inertial_first_moment[2];
+    msg.com.x = pl.inertial_com[0];
+    msg.com.y = pl.inertial_com[1];
+    msg.com.z = pl.inertial_com[2];
+    msg.inertial_sigma_min = pl.inertial_sigma_min;
+    msg.inertial_fit_error = pl.inertial_fit_error;
+    msg.inertial_rank = pl.inertial_rank;
+    msg.inertial_reason = pl.inertial_reason;
+    msg.inertial_valid = pl.inertial_valid;
     handles.payload_pub->publish(msg);
   }
 

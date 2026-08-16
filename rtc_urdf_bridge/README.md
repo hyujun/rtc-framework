@@ -283,7 +283,25 @@ handle.ComputeInverseDynamics(q, v, a);             // RNEA: τ = M·a + C·v + 
 handle.ComputeForwardDynamics(q, v, tau);           // ABA: a = M⁻¹(τ - C·v - g)
 handle.ComputeMassMatrix(q);                        // M(q)
 handle.ComputeConstraintDynamics(q, v, tau);        // 폐쇄 체인 구속 동역학
+
+// Payload 관성 회귀자 (#455 Layer 2B) — Y_L = J_F(LOCAL)ᵀ · frameBodyRegressor(F)
+handle.ComputePayloadRegressor(q, v, a, frame_id);  // nv × 10
+Eigen::Ref<const Eigen::MatrixXd> Y = handle.GetPayloadRegressor();
 ```
+
+`ComputePayloadRegressor` 는 프레임에 강체로 매달린 payload 의 10-parameter 관성 집합 `φ_L` 에
+대해 `τ_payload = Y_L · φ_L` 을 만족하는 회귀자를 만듭니다. 두 계약이 조용히 틀리기 쉬워
+`test_payload_regressor.cpp` 가 원소별로 고정합니다:
+
+- **열 순서는 `pinocchio::Inertia::toDynamicParameters()`** — `[m, m·c, I_xx, I_xy, I_yy, I_xz,
+  I_yz, I_zz]` 로 **lower-triangular column-major** 이며 (`I_xz` 가 `I_yy` 뒤), 그 `I` 는
+  **프레임 origin 기준**이지 CoM 기준이 아닙니다.
+- **행은 PINOCCHIO 순서** (`GetTau()` 와 동일). 반면 `q`/`v`/`a` 입력은 **device 순서**로 받아
+  내부에서 재배열합니다 — 이 비대칭은 이 클래스 전반의 규약입니다.
+
+`v = a = 0` (준정적) 으로 부르면 **`I` 6열이 정확히 0** 이 됩니다. 중력만으로는 회전 관성이
+관측되지 않기 때문이며 (자세를 60개 쌓아도 rank 는 10 이 아니라 4), Layer 2B 추정기가 4개만
+식별하는 근거입니다.
 
 ### 5. ClosedChainHandle (closed-chain 축약 동역학 질의, non-RT)
 
@@ -558,6 +576,7 @@ Reduced/Tree 모델은 `pinocchio::buildReducedModel()`을 사용하여 지정�
   ├─ ComputeJacobians(q)
   ├─ GetFrameJacobian(frame_id, ref, J)
   ├─ ComputeNonLinearEffects(q, v)
+  ├─ ComputePayloadRegressor(q, v, a, frame_id)   # 선택 — #455 Layer 2B
   └─ 제어 법칙 계산 → 토크 출력
 
 [Phase 3] 정리
