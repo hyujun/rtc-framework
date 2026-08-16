@@ -2355,3 +2355,276 @@ def test_grasp_diag_is_registered_in_both_dispatch_tables():
 
     assert "grasp_diag" in STATS_PRINTERS
     assert "grasp_diag" in PIPELINES
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MomentumObserverLog (#135 Layer 1b/2A, #455 Layer 2B)
+# — detection / gating / plot / stats round-trip
+# ═══════════════════════════════════════════════════════════════════════════
+
+_MOMENTUM_JOINTS = ("A1", "A2", "A3")
+
+
+def _momentum_header(joints=_MOMENTUM_JOINTS, inertial=True):
+    """Column order emitted by WriteMomentumObserverLogHeader.
+
+    `inertial=False` reproduces the pre-#455 schema (Layer 1b + 2A only), which
+    archived sessions carry and which must keep plotting.
+    """
+    cols = ["t_relative_s", "tick"]
+    cols += [f"r_{j}" for j in joints]
+    cols += ["residual_inf_norm", "valid", "invalid_reason", "ticks_since_seed"]
+    cols += [f"payload_{c}" for c in ("fx", "fy", "fz", "tx", "ty", "tz")]
+    cols += ["payload_mass", "payload_sigma_min", "payload_lambda_sq", "payload_fit_error"]
+    cols += ["payload_valid", "payload_reason"]
+    if inertial:
+        cols += ["inertial_mass", "inertial_mcx", "inertial_mcy", "inertial_mcz"]
+        cols += ["inertial_cx", "inertial_cy", "inertial_cz"]
+        cols += ["inertial_sigma_min", "inertial_fit_error", "inertial_rank"]
+        cols += ["inertial_valid", "inertial_reason"]
+    return cols
+
+
+def _momentum_df(n=6, joints=_MOMENTUM_JOINTS, inertial=True, **overrides):
+    """A frame with every gate open, then apply `overrides` per column."""
+    header = _momentum_header(joints, inertial)
+    data = {c: np.linspace(0.1, 1.0, n) for c in header}
+    data["t_relative_s"] = np.arange(n) * 0.002
+    data["tick"] = np.arange(n, dtype=np.int64)
+    data["ticks_since_seed"] = np.arange(1, n + 1, dtype=np.int64)
+    for flag in ("valid", "payload_valid", "inertial_valid"):
+        if flag in header:
+            data[flag] = np.ones(n, dtype=int)
+    for reason in ("invalid_reason", "payload_reason", "inertial_reason"):
+        if reason in header:
+            data[reason] = np.zeros(n, dtype=int)
+    if inertial:
+        data["inertial_rank"] = np.full(n, 4, dtype=int)
+    data.update(overrides)
+    df = pd.DataFrame(data, columns=header)
+    df["timestamp"] = df["t_relative_s"]
+    return df
+
+
+class TestMomentumObserverDetection:
+    def test_filename_detection(self):
+        assert (
+            detect_log_type("/s/controllers/demo_joint_controller/momentum_observer.csv")
+            == "momentum_observer"
+        )
+
+    def test_column_detection(self):
+        assert detect_log_type_by_columns(_momentum_header()) == "momentum_observer"
+
+    def test_column_detection_pre_455_schema(self):
+        """A Layer-1b/2A-only session predates the inertial block and must still
+        be recognised — the discriminating tokens are older than both layers."""
+        assert detect_log_type_by_columns(_momentum_header(inertial=False)) == "momentum_observer"
+
+    def test_column_detection_beats_sensor_log_raw_token(self):
+        """`r_<joint>` carries whatever the arm's joint names are, so a name
+        containing the generic `_raw_`/`_filt_` sensor token would fall into the
+        sensor_log branch and be plotted with the WRONG pipeline — silently,
+        since neither detection nor loading would error. The momentum branch has
+        to win, exactly as the grasp_diag / pull_estimator branches do."""
+        for joint in ("wrist_raw_link", "wrist_filt_link"):
+            cols = _momentum_header(joints=(joint,))
+            assert detect_log_type_by_columns(cols) == "momentum_observer", joint
+
+    def test_registered_in_both_dispatch_tables(self):
+        """감지만 되고 파이프라인 행이 없으면 `unknown` 은 아닌데 아무것도 안 나온다."""
+        from rtc_tools.plotting.pipelines.registry import PIPELINES, STATS_PRINTERS
+
+        assert "momentum_observer" in STATS_PRINTERS
+        assert "momentum_observer" in PIPELINES
+
+    def test_csv_round_trip_derives_timestamp(self, tmp_path):
+        header = _momentum_header()
+        rows = [[float(i)] * len(header) for i in range(3)]
+        path = tmp_path / "momentum_observer.csv"
+        _write_csv(str(path), header, rows)
+        df = load_log_csv(str(path), "momentum_observer")
+        assert "timestamp" in df.columns
+        assert df["timestamp"].iloc[1] == pytest.approx(1.0)
+
+
+class TestMomentumEstimatorGates:
+    def test_payload_gate_false_when_never_initialized(self):
+        """출하 기본은 `enabled: false` 라 컬럼은 있고 전 행 reason=1 이다 —
+        컬럼 존재로 게이트하면 그런 세션마다 빈 패널 4장이 나온다."""
+        from rtc_tools.plotting.columns import has_payload_estimate
+
+        df = _momentum_df(
+            payload_reason=np.ones(6, dtype=int), payload_valid=np.zeros(6, dtype=int)
+        )
+        assert has_payload_estimate(df) is False
+
+    def test_payload_gate_true_when_gated_but_configured(self):
+        """전 tick 이 게이트로 막혔어도 '어느 게이트가 닫혔는가' 는 튜너가 읽을
+        정보다 — valid 가 0 이라는 이유로 그림을 숨기면 안 된다."""
+        from rtc_tools.plotting.columns import has_payload_estimate
+
+        df = _momentum_df(
+            payload_reason=np.full(6, 8, dtype=int),  # kHandMoving
+            payload_valid=np.zeros(6, dtype=int),
+        )
+        assert has_payload_estimate(df) is True
+
+    def test_inertial_gate_false_on_pre_455_session(self):
+        from rtc_tools.plotting.columns import has_inertial_estimate
+
+        assert has_inertial_estimate(_momentum_df(inertial=False)) is False
+
+
+class TestMomentumObserverPlots:
+    def test_residual_plot_renders(self, tmp_path):
+        from rtc_tools.plotting.plotters.momentum import plot_momentum_observer
+
+        plot_momentum_observer(_momentum_df(), save_dir=str(tmp_path))
+        assert (tmp_path / "momentum_observer.png").exists()
+
+    def test_residual_plot_renders_with_held_ticks(self, tmp_path):
+        """Held 구간 음영은 별도 코드 경로다 (blended-transform fill_between)."""
+        from rtc_tools.plotting.plotters.momentum import plot_momentum_observer
+
+        df = _momentum_df(
+            valid=np.array([1, 1, 0, 0, 1, 1]),
+            invalid_reason=np.array([0, 0, 2, 2, 0, 0]),
+        )
+        plot_momentum_observer(df, save_dir=str(tmp_path))
+        assert (tmp_path / "momentum_observer.png").exists()
+
+    def test_payload_plot_renders(self, tmp_path):
+        from rtc_tools.plotting.plotters.momentum import plot_momentum_payload
+
+        plot_momentum_payload(_momentum_df(), save_dir=str(tmp_path))
+        assert (tmp_path / "momentum_payload.png").exists()
+
+    def test_payload_plot_renders_pre_455_schema(self, tmp_path):
+        """Layer 2B 컬럼이 없는 세션도 그려야 한다 — 해당 시리즈만 빠진다."""
+        from rtc_tools.plotting.plotters.momentum import plot_momentum_payload
+
+        plot_momentum_payload(_momentum_df(inertial=False), save_dir=str(tmp_path))
+        assert (tmp_path / "momentum_payload.png").exists()
+
+    def test_residual_plot_skipped_without_norm_column(self, tmp_path, capsys):
+        from rtc_tools.plotting.plotters.momentum import plot_momentum_observer
+
+        df = _momentum_df().drop(columns=["residual_inf_norm"])
+        plot_momentum_observer(df, save_dir=str(tmp_path))
+        assert not (tmp_path / "momentum_observer.png").exists()
+        assert "Skipping" in capsys.readouterr().out
+
+
+class TestMomentumObserverStatistics:
+    def test_basic_sections(self, capsys):
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        print_momentum_observer_statistics(_momentum_df())
+        out = capsys.readouterr().out
+        assert "Momentum Observer (Layer 1b)" in out
+        assert "‖r‖∞ over valid ticks" in out
+        assert "Payload estimate (Layer 2A)" in out
+        assert "Inertial regression (Layer 2B)" in out
+
+    def test_norm_statistics_exclude_held_ticks(self, capsys):
+        """Held 행의 residual 은 직전 값으로 **동결**된 것이라 측정이 아니다.
+        전체 행으로 통계를 내면 가장 오래 held 된 값이 통계를 끌고 간다."""
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        df = _momentum_df(
+            valid=np.array([1, 1, 1, 0, 0, 0]),
+            invalid_reason=np.array([0, 0, 0, 2, 2, 2]),
+            residual_inf_norm=np.array([0.1, 0.2, 0.3, 99.0, 99.0, 99.0]),
+        )
+        print_momentum_observer_statistics(df)
+        out = capsys.readouterr().out
+        norm_line = next(ln for ln in out.splitlines() if "‖r‖∞ over valid ticks" in ln)
+        # mean 을 함께 고정한다 — held 행이 섞이면 mean 49.6 / max 99 가 되므로
+        # 둘 중 하나만 봐도 걸리지만, `"99" not in` 류는 `p99=` 라벨과 충돌한다.
+        assert "max=0.3000" in norm_line, norm_line
+        assert "mean=0.2000" in norm_line, norm_line
+
+    def test_payload_mass_excludes_gated_ticks(self, capsys):
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        df = _momentum_df(
+            payload_valid=np.array([1, 1, 0, 0, 0, 0]),
+            payload_reason=np.array([0, 0, 8, 8, 8, 8]),
+            payload_mass=np.array([0.5, 0.5, 42.0, 42.0, 42.0, 42.0]),
+        )
+        print_momentum_observer_statistics(df)
+        out = capsys.readouterr().out
+        mass_lines = [ln for ln in out.splitlines() if ln.startswith("m̂ over valid ticks")]
+        assert mass_lines, out
+        assert "max=0.5000" in mass_lines[0], mass_lines[0]
+
+    def test_reasons_are_decoded_by_name(self, capsys):
+        """숫자 8 은 튜너가 못 읽는다 — 게이트 이름이 나와야 한다."""
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        df = _momentum_df(
+            valid=np.array([1, 1, 1, 1, 0, 0]),
+            invalid_reason=np.array([0, 0, 0, 0, 2, 2]),
+            payload_valid=np.zeros(6, dtype=int),
+            payload_reason=np.full(6, 8, dtype=int),
+            inertial_valid=np.zeros(6, dtype=int),
+            inertial_reason=np.full(6, 6, dtype=int),
+        )
+        print_momentum_observer_statistics(df)
+        out = capsys.readouterr().out
+        assert "held=" in out
+        assert "hand-moving=" in out
+        assert "insufficient-pose-diversity=" in out
+
+    def test_reseed_is_reported_with_its_caveat(self, capsys):
+        """재시딩 후 잔차는 0 에서 수렴 중이라 작은 ‖r‖ 이 아직 무부하가 아니다.
+        창(3/K_I)은 CSV 에 K_I 도 rate 도 없어 계산 불가하므로 경고로 대체한다."""
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        df = _momentum_df(ticks_since_seed=np.array([1, 2, 3, 1, 2, 3]))
+        print_momentum_observer_statistics(df)
+        out = capsys.readouterr().out
+        assert "Re-seeds: 1" in out
+
+    def test_no_reseed_line_when_counter_is_monotonic(self, capsys):
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        print_momentum_observer_statistics(_momentum_df())
+        assert "Re-seeds:" not in capsys.readouterr().out
+
+    def test_dropped_rows_reported_from_tick_gaps(self, capsys):
+        """행은 매 tick 남으므로 tick gap 은 SPSC ring drop 하나만 뜻한다."""
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        df = _momentum_df(tick=np.array([0, 1, 2, 9, 10, 11], dtype=np.int64))
+        print_momentum_observer_statistics(df)
+        assert "Dropped rows (tick gaps): 6" in capsys.readouterr().out
+
+    def test_disabled_payload_block_says_so(self, capsys):
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        df = _momentum_df(
+            payload_reason=np.ones(6, dtype=int),
+            payload_valid=np.zeros(6, dtype=int),
+            inertial_reason=np.ones(6, dtype=int),
+            inertial_valid=np.zeros(6, dtype=int),
+        )
+        print_momentum_observer_statistics(df)
+        out = capsys.readouterr().out
+        assert "Payload estimator (Layer 2A): not configured this run" in out
+        assert "Inertial regression (Layer 2B): not configured this run" in out
+
+    def test_all_held_run_does_not_report_a_bogus_norm(self, capsys):
+        """유효 tick 이 하나도 없으면 ‖r‖∞ 통계는 존재하지 않는다 — 0 으로
+        보고하면 '무부하' 라는 없는 측정을 만들어낸다."""
+        from rtc_tools.plotting.plotters.momentum import print_momentum_observer_statistics
+
+        df = _momentum_df(
+            valid=np.zeros(6, dtype=int),
+            invalid_reason=np.full(6, 2, dtype=int),
+        )
+        print_momentum_observer_statistics(df)
+        out = capsys.readouterr().out
+        assert "no valid ticks" in out
+        assert "‖r‖∞ over valid ticks" not in out

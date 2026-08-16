@@ -91,6 +91,10 @@ ros2 run rtc_tools plot_rtc_log <device>_sensor_log.csv
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv
 ros2 run rtc_tools plot_rtc_log mpc_timing_log.csv
 
+# 컨트롤러 소유 진단 CSV (<session>/controllers/<config_key>/ 아래)
+ros2 run rtc_tools plot_rtc_log momentum_observer.csv
+ros2 run rtc_tools plot_rtc_log momentum_observer.csv --stats   # ‖r‖∞ 통계만
+
 # 한 파일에 두 런이 있을 때 (같은 분 재기동) 특정 런 선택 — 기본은 마지막 런
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --run-id 260808143052
 
@@ -130,6 +134,8 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 | `<dev>_state.csv` (WBC, `accel_*` 컬럼) | wbc_log (DeviceWbcLog — state_log superset: TSID a_opt 가속도 + SE3 trajectory(arm) / fingertip force(hand)) |
 | `wbc_diag.csv` | wbc_diag (WbcDiagLog — per-tick TSID/QP 진단: solve time / λ / 수렴 / grasp) |
 | `pull_estimator.csv` | pull_estimator (PullEstimatorLog #167 — in-plane pull-force estimate: raw+filtered force / in-plane·magnitude·directional / friction util·leakage / validity 플래그 / 관측된 파지 형태 `opposing_mask`. 4×1 sharex 단일 figure + 통계) |
+| `grasp_diag.csv` | grasp_diag (GraspDiagLog #428 — per-tick Force-PI 서보 + 강성 추정 진단) |
+| `momentum_observer.csv` | momentum_observer (MomentumObserverLog #135/#455 — 일반화 운동량 관측기 잔차 `r_<joint>`·‖r‖∞·게이트, Layer 2A payload wrench/질량, Layer 2B 관성 회귀. `momentum_observer.png` + (2A/2B 가 구성된 run 에서만) `momentum_payload.png` + 통계) |
 
 > WBC `<dev>_state.csv` 는 파일명만으로 generic state_log 와 구분 불가 (둘 다 `_state`)
 > → `accel_*` 컬럼 fingerprint 로 컬럼 fallback 단계에서 wbc_log 로 분류된다. wbc_log
