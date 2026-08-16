@@ -1800,6 +1800,12 @@ def compare(
             # only sees `urdf_name`'s own collision shapes, while `urdf_ip` now
             # also carries the folded children's mass at a distance — the two
             # sides measure different bodies, so every fused link would warn.
+            #
+            # Reviving it means summing the fused children's collision shapes
+            # into the estimate so both sides describe the same body.  Left
+            # undone deliberately: the check is an extra, and a wrong estimate
+            # here would warn on every fused link, which is worse than the
+            # honest [NOTE] below.
             print(
                 "    [NOTE] plausibility not checked: the collision-geometry "
                 "estimate covers only the parent link, not the fused body"

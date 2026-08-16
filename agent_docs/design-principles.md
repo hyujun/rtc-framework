@@ -136,6 +136,14 @@ Concrete consequences:
 
 This layering pairs with the runtime contract in [architecture.md](architecture.md) §Threading Model: the same boundary that separates raw vs derived also separates the non-RT writer (backend `OnX` callback, MutuallyExclusive cb_group, SeqLock single-writer) from the RT reader (controller `ReadState` via `ControllerState`). Crossing the layering boundary in code (e.g. controller reaching into `dev1.sensor_data[]` to compute a value that the backend should have packed, or backend computing a derived value the controller should own) is an `[CONCERN] Severity: Warning` per [invariants.md](invariants.md) §Escalation Triggers.
 
+## 게이트에 접을 것인가 — fold 는 방향이 두 개다
+
+"강한 답을 게이트에 접으면 모든 소비자에 도달한다" 는 #284 에서 옳았다 — hole 항을 `IsDeviceReadable` 에 접었고, 그래서 마스크를 채우지 않는 backend 가 조용히 통과하지 못한다. **같은 근거가 반대 결론을 내는 축이 있다**: lane 축에서 q 만 읽는 다수를 q̇ 구멍으로 함께 닫으면 과잉거부다 (#446). 판정 기준은 **"도달 범위" 가 아니라 "그 강한 답이 이 소비자에게도 옳은가"** 이며, 아니면 접지 말고 소비자별로 남긴다.
+
+## 배치를 정하는 것이 예산이 아니라 좌표계일 수 있다
+
+새 계산을 RT 경로의 어디에 둘지 정할 때 µs 예산부터 재고 싶어지지만, **먼저 그 경로의 좌표계가 하나인지 본다.** Layer 1 (momentum observer) 배치를 정한 것은 실측 µs 가 아니라 좌표계였다 — `ReducedDynamicsProvider` 가 M/h/g 만 덮고 Coriolis 에는 축약 경로가 없어서, 폐쇄 체인 위에서 재면 축약 M·g 와 open-chain C 가 섞인 값을 재게 된다. **예산 실측이 배치를 정할 것 같으면 그 전에 좌표계 정합성을 확인한다** — 안 그러면 정확한 숫자로 틀린 배치를 고른다.
+
 ## When Generalization Requires a Design Change
 
 If you cannot satisfy all five principles with a local edit, STOP and:
