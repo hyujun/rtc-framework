@@ -208,11 +208,19 @@ demo_shared:
     #   m     = (f_ext . Wg) / ||Wg||^2                      [MASS-A]
     # Wg is the MODEL's gravity, so a URDF with non-Z gravity needs no change.
     #
-    # SHIPPED OFF ON PURPOSE. The gate thresholds below are derived from sim
-    # logs, and the sim has no way to hang a known mass (no object in the
-    # shipped scene, and MuJoCoSimulator::SetExternalForce has no ROS surface),
-    # so the ACCURACY of m has never been measured against a positive control.
-    # The algebra is pinned by unit tests; the number is not yet trusted.
+    # SHIPPED OFF ON PURPOSE -- but no longer for want of a positive control.
+    # /sim/set_external_wrench (#135) hangs a known load in sim, and against it
+    # m_hat came back within 0.3 % at 20 g and within 0.03 % from 50 g to 1 kg,
+    # with the sign contract confirmed (a DOWNWARD force yields a POSITIVE
+    # mass). A 1 kg load at palm_lower -- the real grasp geometry, rigidly
+    # attached below the payload frame -- reconstructed to 0.99997 kg, so the
+    # [A1]/[A4] attachment assumptions hold in sim rather than only on paper.
+    #
+    # What remains unmeasured is HARDWARE. Every number here, these gates
+    # included, comes from a plant whose model the observer knows exactly;
+    # encoder noise, friction and model error do not exist in it and all three
+    # attack this estimator directly ([MO-1u]). #177 owns that lane, and this
+    # stays off until it closes.
     # Turning this on also costs a frame Jacobian plus a 6x6 solve per tick.
     payload_estimator:
       enabled: false
@@ -259,26 +267,53 @@ demo_shared:
       # #135 [MO-1u]): those do not lie in the range of J^T, so no wrench
       # explains them and the leftover is large.
       #
-      # UNLIKE THE VELOCITY GATES ABOVE, THIS VALUE IS NOT MEASURED. Deriving it
-      # needs the reconstruction error itself, which the session-67 logs cannot
-      # give (they carry r, not the per-tick Jacobian). 5.0 is deliberately
-      # permissive so it does not silently reject valid ticks before anyone has
-      # looked; with the gates above it will essentially never fire, since the
-      # surviving ||r||inf is ~0.048 N.m in the first place. Tune it DOWN once
-      # payload_fit_error has been observed on the target robot -- a ceiling
-      # that never fires is not a guard.
+      # MEASURED 2026-08-16 on sim_iiwa7_leap, once /sim/set_external_wrench
+      # (#135) made a known load hangable. The earlier note here said sim could
+      # not supply this number; that was true only while every sim measurement
+      # was taken at ZERO load, where the admit condition (arm still + hand
+      # still) is also the condition under which the MuJoCo plant and the
+      # observer model agree to machine precision, so the spread was 0 by
+      # construction. Hanging a load breaks that degeneracy.
       #
-      # SIM CANNOT SUPPLY THE NUMBER, measured 2026-08-16 (sim_iiwa7_leap,
-      # 21979 ticks with this block enabled): payload_fit_error has ZERO spread
-      # -- min = p50 = max = 1.2173e-07 N.m. The gate's own admit condition is
-      # why. What lets a tick through (arm still + hand still) is exactly the
-      # condition under which the MuJoCo plant and the observer's model agree
-      # to machine precision: peak |qdot| was 8.05e-18 rad/s and ||r||inf on
-      # valid ticks was 3.1e-05 N.m, three orders below the 0.048 N.m the real
-      # robot showed. Move the arm and the velocity gate closes, so the
-      # informative regime yields no valid ticks BY CONSTRUCTION. This value is
-      # therefore #177 hardware-lane work, alongside the m-hat accuracy check.
-      max_fit_error: 5.0
+      # What the sweep found, at 22 s settle, 8 s windows, 100 % valid ticks:
+      #
+      #   load hung at              m_hat        ||r||inf   fit_error [N.m]
+      #   ------------------------  -----------  ---------  ---------------
+      #   none                      0.00003 kg   2.5e-03    1.20e-07
+      #   1.0 kg at ee_link         0.99998 kg   7.25       1.23e-07
+      #   1.0 kg at ee_link +10 cm  1.00002 kg   7.98       1.29e-07
+      #   1.0 kg at palm_lower      0.99997 kg   7.94       1.28e-07
+      #   0.2 kg at link_4          0.01975 kg   5.06e-01   5.25e-03
+      #   1.0 kg at link_4          0.09867 kg   2.53       2.62e-02
+      #   1.0 kg at link_6          0.99994 kg   6.42       9.53e-02
+      #
+      # Two things follow. First, a load anywhere RIGIDLY attached below the
+      # payload frame -- palm_lower is the real grasp case -- is reconstructed
+      # as the equivalent frame wrench with the right mass and stays at the
+      # numerical floor, which is [A1]/[A4] holding rather than a lucky pose.
+      # Second, a load the frame CANNOT explain lands 4-6 orders higher, and
+      # that gap is what this gate has to sit in.
+      #
+      # 5.0 sat ~50x above the largest signature measured here, so it could not
+      # have rejected any of them: it was not a permissive guard, it was no
+      # guard. 1.0e-3 keeps ~4 orders of headroom over the payload floor and
+      # ~5x margin under the smallest non-payload signature.
+      #
+      # TWO LIMITS, BOTH LOAD-BEARING. The signature scales with the disturbance
+      # (0.2 kg at link_4 gives 5.2e-03, 1.0 kg gives 2.6e-02), so this catches
+      # gross mis-attribution and nothing subtle -- a small mis-modelled load
+      # slips under any fixed ceiling. And separability is POSE-DEPENDENT: the
+      # same 1.0 kg at link_5 came back at 1.18e-07, indistinguishable from a
+      # true payload, because at that posture the residual happened to lie in
+      # the range of J^T. A quiet fit_error is evidence the residual is
+      # CONSISTENT with a payload, never proof that it is one.
+      #
+      # THESE ARE SIM NUMBERS, exactly as the velocity gates above are. The sim
+      # payload floor is model agreement to machine precision; on hardware,
+      # model error and friction set that floor instead and it will be orders
+      # higher, so this ceiling must be re-measured there before it is trusted
+      # (#177), not inherited.
+      max_fit_error: 1.0e-3
       # ||Wg|| floor [m/s^2]. [MASS-A] divides by ||Wg||^2, so a gravity-free
       # model has no mass map at all (NUM-2 / NUM-4).
       min_gravity: 1.0e-3
