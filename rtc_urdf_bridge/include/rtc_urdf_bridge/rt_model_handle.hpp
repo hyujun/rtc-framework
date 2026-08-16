@@ -98,6 +98,30 @@ class RtModelHandle {
   /// 질량 행렬: M(q)
   void ComputeMassMatrix(std::span<const double> q) noexcept;
 
+  /// Payload 관성 회귀자: Y_L = J_F(LOCAL)ᵀ · frameBodyRegressor(F) — nv × 10
+  ///
+  /// 프레임 `frame_id` 에 강체로 매달린 payload 의 10-parameter 관성 집합 φ_L 에 대해
+  /// τ_payload = Y_L · φ_L 을 만족한다 (#455 Layer 2B, `[MASS-B0]`).
+  ///
+  /// **열 순서는 `pinocchio::Inertia::toDynamicParameters()` 와 동일하다** —
+  ///   `[m, m·c_x, m·c_y, m·c_z, I_xx, I_xy, I_yy, I_xz, I_yz, I_zz]`
+  /// lower-triangular column-major 이므로 `I_xz` 가 `I_yy` **뒤**에 온다. 그리고 그 `I` 는
+  /// 프레임 ORIGIN 기준이지 CoM 기준이 아니다 (평행축 항이 이미 더해져 있다). 둘 중
+  /// 어느 쪽을 착각해도 유한하고 매끄러운 틀린 답이 나오므로 test_payload_regressor.cpp
+  /// 가 원소별로 고정한다.
+  ///
+  /// **행은 PINOCCHIO v-공간 순서다** (GetTau() 와 동일). device 순서가 필요하면 호출자가
+  /// ReorderOutput 한다. q/v/a 입력은 반대로 외부(device) 순서로 받아 내부에서 재배열한다.
+  ///
+  /// quasi-static (v=a=0) 에서 **`I` 6열은 정확히 0 이 된다** — 중력만으로는 회전 관성이
+  /// 관측되지 않는다 (#455 [C2]: 60자세를 쌓아도 rank 는 10 이 아니라 4). 그 자세에서
+  /// 나오는 어떤 `Î` 도 regularization 이 만든 숫자이므로 추정 대상이 아니다.
+  ///
+  /// @param q,v,a 외부(device) 순서 관절 상태
+  /// @param frame_id payload 가 부착된 프레임
+  void ComputePayloadRegressor(std::span<const double> q, std::span<const double> v,
+                               std::span<const double> a, pinocchio::FrameIndex frame_id) noexcept;
+
   /// 구속 동역학 (폐쇄 체인)
   void ComputeConstraintDynamics(std::span<const double> q, std::span<const double> v,
                                  std::span<const double> tau) noexcept;
@@ -128,6 +152,9 @@ class RtModelHandle {
 
   /// 코리올리 행렬 C(q, v) — nv × nv
   [[nodiscard]] Eigen::Ref<const Eigen::MatrixXd> GetCoriolisMatrix() const noexcept;
+
+  /// Payload 관성 회귀자 Y_L — nv × 10. ComputePayloadRegressor 후 유효.
+  [[nodiscard]] Eigen::Ref<const Eigen::MatrixXd> GetPayloadRegressor() const noexcept;
 
   /// 질량 행렬 (upper triangular → 대칭화 필요)
   [[nodiscard]] Eigen::Ref<const Eigen::MatrixXd> GetMassMatrix() const noexcept;
@@ -201,6 +228,7 @@ class RtModelHandle {
   Eigen::VectorXd a_;    // nv
   Eigen::VectorXd tau_;  // nv
   Eigen::MatrixXd J_;    // 6 x nv
+  Eigen::MatrixXd payload_regressor_;  // nv x 10 (Layer 2B, #455)
 
   // 폐쇄 체인 구속
   std::vector<pinocchio::RigidConstraintModel> constraint_models_;

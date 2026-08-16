@@ -317,3 +317,51 @@ demo_shared:
       # ||Wg|| floor [m/s^2]. [MASS-A] divides by ||Wg||^2, so a gravity-free
       # model has no mass map at all (NUM-2 / NUM-4).
       min_gravity: 1.0e-3
+
+      # ── Layer 2B: payload inertial regression (#455) ─────────────────────
+      # Rides the gates above and regresses the payload's inertial parameters
+      # from the same residual, giving m AND where it hangs (m.c) instead of
+      # mass alone.
+      #
+      # FOUR PARAMETERS, NOT TEN, AND THAT IS PHYSICS NOT SCOPE. The full set is
+      # [m, m.c, I(6)]. Under the quasi-static gate above, the regressor's six
+      # inertia columns are IDENTICALLY ZERO -- rotational inertia enters the
+      # dynamics only through I.a + v x I.v, so gravity carries no information
+      # about it. Measured: 60 stacked poses give rank 4, not 10. Estimating I
+      # needs angular-acceleration excitation, i.e. a different gate entirely,
+      # and no amount of tuning here reaches it.
+      #
+      # A SINGLE POSE IS NEVER ENOUGH EITHER. A gravity-loaded body applies
+      # f = m.Wg and tau = (m.c) x Wg, and that cross product annihilates the
+      # component of m.c ALONG gravity. One pose pins exactly 3 of the 4
+      # parameters (measured: sigma_4 = 0 exactly, every pose, both robots), so
+      # the estimate stays withheld with inertial_rank = 3 until the arm has
+      # visited poses spanning the missing direction. Expect invalid at startup
+      # and after every re-seed; that is the design, not a fault.
+      inertial:
+        # Shipped false for the same reason payload_estimator is: no hardware
+        # run has looked at these numbers yet (#177).
+        enabled: false
+        # Per-tick decay of the RLS accumulator, (0, 1]. 1.0 = never forget,
+        # correct only if the payload cannot change during a run. Below 1 it
+        # tracks pick-up/put-down, at the cost of needing pose diversity again
+        # after each change.
+        forgetting_factor: 1.0
+        # sigma_min floor on the accumulated 4x4 normal matrix -- the
+        # pose-diversity gate. Stated on sigma rather than a tick count because
+        # "moved for N ticks" and "moved somewhere that helps" are different
+        # facts and only the latter is the question. NOT measured on hardware;
+        # deliberately small so it withholds only when the arm genuinely has not
+        # moved, and it should come UP once inertial_sigma_min has been looked
+        # at on a real robot (#177).
+        min_param_sigma: 1.0e-6
+        # [C3] physical consistency, reduced to what 4 parameters can assert:
+        # with I unobserved the only realizability statements left are m > 0 and
+        # a bounded lever arm.
+        min_mass: 1.0e-3       # [kg]
+        max_com_offset: 0.5    # [m] -- payload envelope around the frame
+        # An inertia-column entry above this means the tick was NOT quasi-static
+        # and the 4-parameter model is refused rather than misapplied (#135
+        # AC 10). Not zero: Y is built from measured q/qdot that are never
+        # exactly zero.
+        max_inertia_column: 1.0e-6

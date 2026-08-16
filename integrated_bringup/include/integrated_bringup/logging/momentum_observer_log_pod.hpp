@@ -20,6 +20,7 @@
 // fixed-size array with an integrated_bringup-private cap, and a runtime column
 // count taken from the caller's joint-name list at registration.
 
+#include "rtc_controllers/estimation/inertial_estimator.hpp"
 #include "rtc_controllers/estimation/momentum_observer.hpp"
 #include "rtc_controllers/estimation/payload_estimator.hpp"
 
@@ -110,6 +111,26 @@ struct MomentumObserverLogPod {
   // them into payload_valid would hide the thing a tuner needs.
   std::uint8_t payload_reason{0};
   bool payload_valid{false};
+
+  // ── Layer 2B inertial estimate (#455) ─────────────────────────────────────
+  //
+  // Four parameters, not ten: under the quasi-static gate the regressor's six
+  // inertia columns are identically zero, so I is not estimated and gets no
+  // columns here (see PayloadEstimate.msg for the derivation). These columns
+  // stay at zero with inertial_valid=0 and
+  // inertial_reason=kInsufficientPoseDiversity until the arm has visited poses
+  // spanning the direction one pose cannot see — that is the normal startup
+  // state, and a reader that mistakes it for "no payload" has misread the row.
+  double inertial_mass{0.0};
+  std::array<double, 3> inertial_first_moment{};  ///< m̂·ĉ [kg·m], payload frame
+  std::array<double, 3> inertial_com{};           ///< ĉ [m], payload frame
+  /// σ_min of the accumulated 4×4 normal matrix — the pose-diversity meter, and
+  /// the column that explains WHY a row is invalid when nothing else moved.
+  double inertial_sigma_min{0.0};
+  double inertial_fit_error{0.0};
+  std::uint8_t inertial_rank{0};  ///< 0..4; 3 means "one pose so far"
+  std::uint8_t inertial_reason{0};
+  bool inertial_valid{false};
 };
 
 static_assert(std::is_trivially_copyable_v<MomentumObserverLogPod>,
@@ -121,6 +142,10 @@ static_assert(sizeof(rtc::estimation::MomentumInvalidReason) == sizeof(std::uint
 
 static_assert(sizeof(rtc::estimation::PayloadInvalidReason) == sizeof(std::uint8_t),
               "MomentumObserverLogPod::payload_reason mirrors PayloadInvalidReason — widen it "
+              "with the enum's underlying type");
+
+static_assert(sizeof(rtc::estimation::InertialInvalidReason) == sizeof(std::uint8_t),
+              "MomentumObserverLogPod::inertial_reason mirrors InertialInvalidReason — widen it "
               "with the enum's underlying type");
 
 /// Number of per-joint columns this channel will emit for `joint_names`.
@@ -144,6 +169,10 @@ inline void WriteMomentumObserverLogHeader(std::ostream& os,
   os << ",payload_fx,payload_fy,payload_fz,payload_tx,payload_ty,payload_tz";
   os << ",payload_mass,payload_sigma_min,payload_lambda_sq,payload_fit_error";
   os << ",payload_valid,payload_reason";
+  os << ",inertial_mass,inertial_mcx,inertial_mcy,inertial_mcz";
+  os << ",inertial_cx,inertial_cy,inertial_cz";
+  os << ",inertial_sigma_min,inertial_fit_error,inertial_rank";
+  os << ",inertial_valid,inertial_reason";
 }
 
 /// Emit one row. `num_columns` MUST be the value the header was built with —
@@ -173,6 +202,18 @@ inline void WriteMomentumObserverLogRow(std::ostream& os, const MomentumObserver
   os << ',' << p.payload_fit_error;
   os << ',' << (p.payload_valid ? 1 : 0);
   os << ',' << static_cast<unsigned>(p.payload_reason);
+  os << ',' << p.inertial_mass;
+  for (double v : p.inertial_first_moment) {
+    os << ',' << v;
+  }
+  for (double v : p.inertial_com) {
+    os << ',' << v;
+  }
+  os << ',' << p.inertial_sigma_min;
+  os << ',' << p.inertial_fit_error;
+  os << ',' << static_cast<unsigned>(p.inertial_rank);
+  os << ',' << (p.inertial_valid ? 1 : 0);
+  os << ',' << static_cast<unsigned>(p.inertial_reason);
 }
 
 }  // namespace integrated_bringup

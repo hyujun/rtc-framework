@@ -7,7 +7,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니다. 관절/태스크 공간 제어 법칙, compliance 계열 법칙과 그 공용 커널(`compliance/`), 적응형 PI 힘 제어 그래스프 컨트롤러, 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인), 그리고 in-thread estimator 코어(`grasp/pull_force_estimator.hpp` · `estimation/momentum_observer.hpp` · `estimation/payload_estimator.hpp`)를 제공합니다.
+RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니다. 관절/태스크 공간 제어 법칙, compliance 계열 법칙과 그 공용 커널(`compliance/`), 적응형 PI 힘 제어 그래스프 컨트롤러, 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인), 그리고 in-thread estimator 코어(`grasp/pull_force_estimator.hpp` · `estimation/momentum_observer.hpp` · `estimation/payload_estimator.hpp` · `estimation/inertial_estimator.hpp`)를 제공합니다.
 
 > **계약 (issue #236, 2026-07-26)**: 이 패키지는 **제어 법칙만** 소유합니다 — 노드·publisher·subscription 을 만들지 않고, `RTControllerInterface` 를 상속하지도 않습니다. 프레임워크 계약을 구현하는 클래스(= 바인딩)는 downstream integration 패키지가 소유합니다. 규칙·3계층 배치·경계 판정의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 이며, 여기서 반복하지 않습니다.
 >
@@ -154,6 +154,7 @@ rtc_controllers/
 │   │   └── task_space_spline_trajectory.hpp  -- SE(3) C4 글로벌 스플라인
 │   ├── estimation/
 │   │   ├── momentum_observer.hpp             -- 일반화 운동량 관측기 잔차 `r` (#135 Layer 1). `M`/`C` 가 아니라 조립된 nv 벡터 (`p = M q̇` · `Cᵀq̇` · `g` · `τ_m`) 를 받는다 — 모델 순서와 device 순서를 섞을 자리를 관측기에서 없애기 위함이며, 그 좌표 계약은 호출자(`integrated_bringup/support/momentum_observer_wiring.hpp`)가 소유한다. `τ_m` 은 **관절 토크 [N·m]** 이고 관절에 작용하는 일반화력을 **전부** 담아야 한다 (모터 전류는 backend 경계에서 변환; `DeviceState::motor_efforts` 는 별도 lane). lane 판정도 호출자 몫 — `rtc::IsLaneReadable` 는 `rtc_controller_interface` 에 있고 이 패키지는 그것을 의존하지 않는다
+│   │   ├── inertial_estimator.hpp            -- payload 관성 파라미터 회귀 (#455 Layer 2B). `r ≈ Y₄ φ₄` 를 누적 정규방정식(4×4)으로 푼다. **4 파라미터이고 `I` 는 없다** — 준정적 게이트 아래 회귀자의 관성 6열은 항등적으로 0 이라 (자세 60개를 쌓아도 rank 4) 중력만으로는 회전 관성에 정보가 없다. 그리고 **단일 자세로는 절대 안 된다**: 중력 wrench 가 `τ = (m·c) × ᵂg` 라 외적이 `m·c` 의 ᵂg 방향 성분을 지우므로 한 자세는 4개 중 정확히 3개만 고정한다 (실측 σ₄ = 0, 모든 자세·두 로봇). 그래서 per-tick LS 가 아니라 forgetting factor 를 둔 RLS 이고, σ_min 게이트가 4번째 방향이 채워지기 전에는 보고를 거부한다 — 기동 직후 invalid 는 정상 상태다. Layer 2A 가 이 문제를 피하는 것은 파라미터가 아니라 Jᵀ 로 wrench 를 맞추기 때문. 회귀자는 `rtc_urdf_bridge::RtModelHandle::ComputePayloadRegressor` 가 주고, 좌표 계약은 여기서도 호출자 소유
 │   │   └── payload_estimator.hpp             -- 준정적 payload wrench/질량 역산 (#135 Layer 2A). `ŵ = argmin‖J_pᵀw − r‖² + μ‖w‖²` [WRENCH-A] 와 `m̂ = (f̂·ᵂg)/‖ᵂg‖²` [MASS-A]. **부호 규약은 Layer 1 이 이미 고정**한다 — `[MO-3a]` 가 전제하는 `M q̈ + C q̇ + g = τ_m + τ_ext` 때문에 `r` 은 *환경이 로봇에 가하는* 토크이고, 따라서 매달린 질량은 **아래**를 향하는 힘을 준다. `ᵂg` 로 나누는 형태라 `up_axis` 파라미터가 없고 비-Z 중력 모델도 코드 변경 없이 동작한다 (ARCH-1). damped LS 는 신규 구현이 아니라 `compliance::DifferentialIk` 재사용 (P5) — `(J⁺)ᵀr` 이 곧 [WRENCH-A] 이고, NUM-1 §6.5 σ_min-adaptive 법칙과 NaN-pivot 가드를 그대로 상속한다. `J` 와 `r` 은 **같은 관절 순서**여야 하며 그 계약은 호출자 소유
 │   └── grasp/
 │       ├── grasp_types.hpp                   -- 그래스프 상태 머신 타입/파라미터
@@ -165,6 +166,7 @@ rtc_controllers/
 │   ├── params/                               -- 위 스키마 파서 6종 구현
 │   └── controllers/
 │       ├── estimation/
+│       │   ├── inertial_estimator.cpp
 │       │   ├── momentum_observer.cpp
 │       │   └── payload_estimator.cpp
 │       └── grasp/

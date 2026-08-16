@@ -14,6 +14,7 @@
 #include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/algorithm/regressor.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 #pragma GCC diagnostic pop
 
@@ -36,6 +37,7 @@ RtModelHandle::RtModelHandle(std::shared_ptr<const pinocchio::Model> model,
       a_(Eigen::VectorXd::Zero(model_->nv)),
       tau_(Eigen::VectorXd::Zero(model_->nv)),
       J_(Eigen::MatrixXd::Zero(6, model_->nv)),
+      payload_regressor_(Eigen::MatrixXd::Zero(model_->nv, 10)),
       constraint_models_(std::move(constraint_models)) {
   // 폐쇄 체인 구속 데이터 사전 생성
   constraint_datas_.reserve(constraint_models_.size());
@@ -148,6 +150,33 @@ void RtModelHandle::ComputeMassMatrix(std::span<const double> q) noexcept {
       data_.M.transpose().triangularView<Eigen::StrictlyLower>();
 }
 
+void RtModelHandle::ComputePayloadRegressor(std::span<const double> q, std::span<const double> v,
+                                            std::span<const double> a,
+                                            pinocchio::FrameIndex frame_id) noexcept {
+  CopyToEigenReordered(q, q_, q_reorder_map_);
+  CopyToEigenReordered(v, v_, v_reorder_map_);
+  CopyToEigenReordered(a, a_, v_reorder_map_);
+
+  // frameBodyRegressor 는 data_.v[parent] 와 data_.a_gf[parent] 를 읽고, 그 둘을 채우는
+  // 것은 rnea 다 — 따라서 **rnea 는 반드시 frameBodyRegressor 앞에** 있어야 한다 (빼면
+  // test_payload_regressor 의 oracle 이 red).
+  //
+  // 반면 자코비안과 rnea 사이의 순서는 무관하다: computeJointJacobians 의 위치-전용 FK 는
+  // data_.v / data_.a_gf 를 건드리지 않는다 (실측 확인, pinocchio 4.0.0). 둘을 바꿔도
+  // 결과는 비트 단위로 같으므로 여기 순서에 의존하는 코드를 쓰지 말 것.
+  pinocchio::computeJointJacobians(*model_, data_, q_);
+  pinocchio::updateFramePlacements(*model_, data_);
+  J_.setZero();
+  pinocchio::getFrameJacobian(*model_, data_, frame_id, pinocchio::LOCAL, J_);
+
+  pinocchio::rnea(*model_, data_, q_, v_, a_);
+
+  // frameBodyRegressor 는 결과를 data_.bodyRegressor 에 쓰고 **그 참조를 반환**한다.
+  // 다음 호출이 첫 결과를 덮으므로 참조를 들고 있지 않고 이 자리에서 소비한다 (RT-5).
+  payload_regressor_.noalias() =
+      J_.transpose() * pinocchio::frameBodyRegressor(*model_, data_, frame_id);
+}
+
 void RtModelHandle::ComputeConstraintDynamics(std::span<const double> q, std::span<const double> v,
                                               std::span<const double> tau) noexcept {
   if (constraint_models_.empty())
@@ -198,6 +227,10 @@ Eigen::Ref<const Eigen::VectorXd> RtModelHandle::GetGeneralizedGravity() const n
 
 Eigen::Ref<const Eigen::MatrixXd> RtModelHandle::GetCoriolisMatrix() const noexcept {
   return data_.C;
+}
+
+Eigen::Ref<const Eigen::MatrixXd> RtModelHandle::GetPayloadRegressor() const noexcept {
+  return payload_regressor_;
 }
 
 Eigen::Ref<const Eigen::MatrixXd> RtModelHandle::GetMassMatrix() const noexcept {

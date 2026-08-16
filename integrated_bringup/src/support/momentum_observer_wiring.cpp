@@ -119,6 +119,22 @@ void ConfigurePayloadEstimator(const PayloadEstimatorParams& pp,
   w.gravity_world = model.gravity.linear();
   w.J_payload = Eigen::MatrixXd::Zero(6, w.dof);
   w.payload_configured = true;
+
+  // #455 Layer 2B. Absent or disabled ⇒ Layer 2A only; the wiring costs one
+  // branch per tick in that state and nothing else.
+  const auto& ip = pp.inertial;
+  if (ip.has_block && ip.enabled) {
+    rtc::estimation::InertialEstimator::Config ic;
+    ic.forgetting_factor = ip.forgetting_factor;
+    ic.min_param_sigma = ip.min_param_sigma;
+    ic.min_mass = ip.min_mass;
+    ic.max_com_offset = ip.max_com_offset;
+    ic.max_inertia_column = ip.max_inertia_column;
+    w.inertial.Init(w.dof, ic);  // throws on any unusable threshold
+    w.quasi_static_zero.assign(static_cast<std::size_t>(w.dof), 0.0);
+    w.neg_residual_pin.assign(static_cast<std::size_t>(w.dof), 0.0);
+    w.inertial_configured = true;
+  }
 }
 
 /// Largest |q̇| across every device OTHER than the observed one.
@@ -143,6 +159,29 @@ void ConfigurePayloadEstimator(const PayloadEstimatorParams& pp,
   return worst;
 }
 
+/// RT. Hold BOTH payload lanes with one call.
+///
+/// ONE CALL SITE ON PURPOSE. Layer 2B consumes the same residual under the same
+/// gates as Layer 2A, so a gate that closes for one closes for the other; and
+/// this file has already paid once for letting two hold paths drift apart (see
+/// HoldMomentumObserver's preamble). A 2B lane left un-held would keep
+/// republishing its last accepted parameters as though they had just been
+/// measured — worse than 2A's equivalent bug, because the RLS estimate looks
+/// steadier the longer it is stale.
+///
+/// The 2B reason is always kUpstreamInvalid: the gates named here are stated in
+/// terms of the residual and the arm's motion, which is exactly what "upstream"
+/// means from the regression's point of view.
+void HoldPayloadLanes(MomentumObserverWiring& w,
+                      rtc::estimation::PayloadInvalidReason reason) noexcept {
+  if (w.payload_configured) {
+    w.payload.Hold(reason);
+  }
+  if (w.inertial_configured) {
+    w.inertial.Hold(rtc::estimation::InertialInvalidReason::kUpstreamInvalid);
+  }
+}
+
 /// RT. The quasi-static gates, then [WRENCH-A]/[MASS-A]. Called only on a tick
 /// whose residual advanced, with `r` in PINOCCHIO order.
 ///
@@ -159,7 +198,7 @@ void UpdatePayloadEstimate(const rtc::ControllerState& state, MomentumObserverWi
   // than a tick count that silently means something else at another rate.
   const double taus = static_cast<double>(w.observer.ticks_since_seed()) * w.min_gain * state.dt;
   if (taus < w.settle_time_constants) {
-    w.payload.Hold(PayloadInvalidReason::kNotConverged);
+    HoldPayloadLanes(w, PayloadInvalidReason::kNotConverged);
     return;
   }
 
@@ -171,14 +210,14 @@ void UpdatePayloadEstimate(const rtc::ControllerState& state, MomentumObserverWi
   if (arm_speed > w.max_arm_velocity) {
     // [WRENCH-A] drops M q̈ entirely; under motion the residual carries
     // acceleration and unmodelled joint-level terms that no wrench explains.
-    w.payload.Hold(PayloadInvalidReason::kArmMoving);
+    HoldPayloadLanes(w, PayloadInvalidReason::kArmMoving);
     return;
   }
   if (PeripheralSpeed(state, w.device_index) > w.max_peripheral_velocity) {
     // #135 D14: the hand's joints are PINNED in the arm sub-model, so its real
     // motion enters the residual as an external torque by construction and is
     // indistinguishable from a payload. Measured at ~6x the arm-motion term.
-    w.payload.Hold(PayloadInvalidReason::kHandMoving);
+    HoldPayloadLanes(w, PayloadInvalidReason::kHandMoving);
     return;
   }
 
@@ -191,6 +230,25 @@ void UpdatePayloadEstimate(const rtc::ControllerState& state, MomentumObserverWi
   w.handle->GetFrameJacobian(w.payload_frame, pinocchio::LOCAL_WORLD_ALIGNED, w.J_payload);
 
   w.payload.Update(w.J_payload, r, w.gravity_world);
+
+  if (!w.inertial_enabled()) {
+    return;
+  }
+  // v = a = 0: inside this gate the arm is quasi-static by construction, which
+  // is [C1]'s "gravity regressor only" branch. The estimator still INSPECTS the
+  // inertia columns and refuses the tick if they are not negligible — the gate
+  // above says the arm is slow, that check says the regressor agrees (AC 10).
+  //
+  // Safe to overwrite the handle's data here for the same RT-5 reason the
+  // Jacobian call above is: every Ref taken earlier this tick has been consumed.
+  w.handle->ComputePayloadRegressor(q, w.quasi_static_zero, w.quasi_static_zero, w.payload_frame);
+  // −r, not r — see MomentumObserverWiring::neg_residual_pin for why the sign
+  // flips between the observer's external-torque convention and the regressor's
+  // generalized-gravity one. Pinned by RecoversHangingPayloadPose.
+  for (int i = 0; i < n; ++i) {
+    w.neg_residual_pin[static_cast<std::size_t>(i)] = -r[static_cast<std::size_t>(i)];
+  }
+  w.inertial.Update(w.handle->GetPayloadRegressor(), w.neg_residual_pin);
 }
 
 }  // namespace
@@ -267,6 +325,8 @@ void ResetMomentumObserverRtState(MomentumObserverWiring& w) noexcept {
   std::fill(w.residual_device.begin(), w.residual_device.end(), 0.0);
   if (w.payload_configured)
     w.payload.ResetRtState();
+  if (w.inertial_configured)
+    w.inertial.ResetRtState();
 }
 
 void HoldMomentumObserver(MomentumObserverWiring& w) noexcept {
@@ -276,8 +336,7 @@ void HoldMomentumObserver(MomentumObserverWiring& w) noexcept {
   // The payload estimate is downstream of a residual that just froze, so it
   // must freeze with it — otherwise an E-STOP tick would keep republishing the
   // last payload as if it had been measured on this tick.
-  if (w.payload_configured)
-    w.payload.Hold(rtc::estimation::PayloadInvalidReason::kObserverInvalid);
+  HoldPayloadLanes(w, rtc::estimation::PayloadInvalidReason::kObserverInvalid);
 }
 
 bool UpdateMomentumObserver(const rtc::ControllerState& state,
@@ -336,8 +395,7 @@ bool UpdateMomentumObserver(const rtc::ControllerState& state,
                     std::span<const double>(w.tau_pin.data(), un), state.dt);
 
   if (!w.observer.valid()) {
-    if (w.payload_configured)
-      w.payload.Hold(rtc::estimation::PayloadInvalidReason::kObserverInvalid);
+    HoldPayloadLanes(w, rtc::estimation::PayloadInvalidReason::kObserverInvalid);
     return false;
   }
 

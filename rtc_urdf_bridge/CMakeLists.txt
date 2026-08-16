@@ -150,6 +150,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_rt_model_handle test/test_rt_model_handle.cpp)
   target_link_libraries(test_rt_model_handle ${PROJECT_NAME})
 
+  ament_add_gtest(test_payload_regressor test/test_payload_regressor.cpp)
+  target_link_libraries(test_payload_regressor ${PROJECT_NAME})
+
   ament_add_gtest(test_xacro_processor test/test_xacro_processor.cpp)
   target_link_libraries(test_xacro_processor ${PROJECT_NAME})
 

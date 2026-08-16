@@ -388,6 +388,27 @@ void ApplyPayloadEstimatorBlock(const YAML::Node& pe, PayloadEstimatorParams& pp
   num("max_arm_velocity", pp.max_arm_velocity);
   num("max_peripheral_velocity", pp.max_peripheral_velocity);
   num("settle_time_constants", pp.settle_time_constants);
+
+  // #455 Layer 2B — nested because it reuses this block's frame and velocity
+  // gates; it is the same quasi-static lane with a different estimator on it.
+  const YAML::Node in = pe["inertial"];
+  if (in && in.IsMap()) {
+    auto& ip = pp.inertial;
+    ip.has_block = true;
+    if (in["enabled"]) {
+      ip.enabled = in["enabled"].as<bool>();
+    }
+    const auto inum = [&in](const char* key, double& dst) {
+      if (in[key]) {
+        dst = in[key].as<double>();
+      }
+    };
+    inum("forgetting_factor", ip.forgetting_factor);
+    inum("min_param_sigma", ip.min_param_sigma);
+    inum("min_mass", ip.min_mass);
+    inum("max_com_offset", ip.max_com_offset);
+    inum("max_inertia_column", ip.max_inertia_column);
+  }
 }
 
 // #135 Layer 1b — `momentum_observer` block. Presence of the block is what

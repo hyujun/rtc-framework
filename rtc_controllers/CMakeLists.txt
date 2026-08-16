@@ -41,6 +41,7 @@ add_library(rtc_controllers STATIC
   # Layer 1 of #135: robot-agnostic momentum-observer residual. Takes assembled
   # nv-vectors (p, C^T v, g, tau_m) — no Pinocchio, no matrices, no robot facts.
   src/controllers/estimation/momentum_observer.cpp
+  src/controllers/estimation/inertial_estimator.cpp
   src/controllers/estimation/payload_estimator.cpp
   # G2 schema layer (#236 S7c-1): gains PODs + YAML parsers, lifted out of the
   # controllers/{direct,indirect} adapters so they would outlive them — which
@@ -165,6 +166,23 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_payload_estimator test/test_payload_estimator.cpp)
   target_link_libraries(test_payload_estimator rtc_controllers)
+
+  ament_add_gtest(test_inertial_estimator test/test_inertial_estimator.cpp)
+  target_link_libraries(test_inertial_estimator rtc_controllers)
+
+  # #455 RT-1 gate for the Layer 2B estimator. TWO complementary sensors, and
+  # the second one is the load-bearing half here: Update() forms Y₄ᵀY₄ from a
+  # block of a dynamically-sized Eigen::Ref and then runs a self-adjoint
+  # eigendecomposition + LDLT, so the allocation most likely to appear is
+  # Eigen's own — and Eigen calls std::malloc directly, which global
+  # operator-new counting cannot see. Hence ${rtc_base_test_include} alongside
+  # ${rtc_controllers_test_include}, with the same program-wide
+  # -Wmismatched-new-delete false positive the other alloc gates carry.
+  ament_add_gtest(test_inertial_estimator_alloc test/test_inertial_estimator_alloc.cpp)
+  target_link_libraries(test_inertial_estimator_alloc rtc_controllers)
+  target_include_directories(test_inertial_estimator_alloc PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_inertial_estimator_alloc PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S1 golden-vector harness: the joint-space PD core pinned bit-for-bit
   # against a literal copy of the pre-extraction inline form. That literal oracle

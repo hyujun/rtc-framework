@@ -83,6 +83,35 @@ inline constexpr double kDefaultMomentumObserverGain = 10.0;
 // factor of five, while the arm gate is flat anywhere below 1e-2. They are
 // SIM-derived: real encoder velocity noise is larger, so hardware is expected
 // to re-tune both — which is why they are configuration and not constants.
+// #455 Layer 2B — `momentum_observer.payload_estimator.inertial` sub-block.
+//
+// FOUR PARAMETERS, NOT TEN. Under the quasi-static gate this shares with Layer
+// 2A the regressor's six inertia columns are identically zero, so I is not
+// estimated at all — see rtc_controllers/estimation/inertial_estimator.hpp.
+// Shipped DISABLED for the same reason Layer 2A is: no hardware run has looked
+// at these numbers yet (#177).
+struct InertialEstimatorParams {
+  bool has_block{false};
+  bool enabled{false};
+  /// Per-tick decay of the RLS accumulator, (0, 1]. 1.0 = never forget, which
+  /// is right only if the payload cannot change during a run. Below 1 the
+  /// estimator tracks a payload that is picked up and put down, at the cost of
+  /// needing pose diversity again after each change.
+  double forgetting_factor{1.0};
+  /// σ_min floor on the accumulated 4×4 normal matrix. Below it the estimate is
+  /// withheld as kInsufficientPoseDiversity. NOT measured on hardware yet;
+  /// deliberately small so it withholds only when the arm genuinely has not
+  /// moved, and it should come UP once someone has looked at inertial_sigma_min
+  /// on a real robot.
+  double min_param_sigma{1.0e-6};
+  double min_mass{1.0e-3};     ///< [C3] m̂ floor [kg]
+  double max_com_offset{0.5};  ///< [C3] |ĉ| ceiling [m] — payload envelope
+  /// An inertia column entry above this means the tick was not quasi-static and
+  /// the four-parameter model is refused (#135 AC 10). Not zero: Y is built
+  /// from measured q̇/q̈ that are never exactly zero.
+  double max_inertia_column{1.0e-6};
+};
+
 struct PayloadEstimatorParams {
   bool has_block{false};
   bool enabled{true};
@@ -107,6 +136,8 @@ struct PayloadEstimatorParams {
   // over ~1/K_I, so a consumer that reads it too early sees "no load" on an
   // arm that is in fact loaded. 5 τ is ~99.3 % settled.
   double settle_time_constants{5.0};
+  // #455 Layer 2B. Absent ⇒ Layer 2A only, exactly as it shipped.
+  InertialEstimatorParams inertial{};
 };
 
 struct MomentumObserverParams {
