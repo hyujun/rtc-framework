@@ -553,7 +553,46 @@ class MuJoCoSimulator {
 
   // ── External forces / perturbation ────────────────────────────────────────
 
-  void SetExternalForce(int body_id, const std::array<double, 6>& wrench_world) noexcept;
+  /// MJCF body name -> body id, for callers that must not hard-code ids
+  /// (ARCH-1). Returns -1 for an unknown name AND for the world body, which is
+  /// the same set SetExternalWrench refuses: a wrench on the world body is
+  /// absorbed by the fixed base and would look identical to a dropped request.
+  /// Safe to call from any thread — reads the immutable compiled model only.
+  [[nodiscard]] int FindBodyId(const char* body_name) const noexcept;
+
+  /// Latch a world-frame wrench acting at `point_body` (in `body_id`'s LOCAL
+  /// frame, metres) until it is cleared, overwritten, or the sim is reset.
+  /// Returns false — and stages nothing — if `body_id` names no movable body.
+  ///
+  /// THE POINT IS HONOURED, WHICH IS NOT WHAT MuJoCo DOES ON ITS OWN.
+  /// mjData::xfrc_applied acts at the body CENTRE OF MASS (`xipos`), so a pure
+  /// force staged verbatim would pick up a moment equal to the CoM offset
+  /// crossed into it. That offset is not a corner case: it is non-zero on every
+  /// body of iiwa7_leap, 35 mm on `ee_link`, and non-zero even on the massless
+  /// bodies whose centre of mass is a compiler artefact rather than a physical
+  /// quantity. At 10 N that is 0.25 N.m of torque nobody asked for — five times
+  /// the payload estimator's measured noise floor, and indistinguishable from a
+  /// real payload hanging off-centre. SimLoop therefore re-derives the
+  /// CoM-referenced equivalent from `xpos`/`xipos`/`xmat` EVERY tick, which also
+  /// keeps the contract true as the body rotates; a correction computed once at
+  /// request time would go stale the moment the arm moved.
+  ///
+  /// Verified against pinocchio at the home pose: MuJoCo's `ee_link` body frame
+  /// origin and the pinocchio `ee_link` frame origin agree to 1e-9 m, so a
+  /// wrench requested here at point zero is the wrench a frame Jacobian of that
+  /// name projects — which is what makes this usable as an estimator positive
+  /// control (#135).
+  [[nodiscard]] bool SetExternalWrenchAtPoint(int body_id,
+                                              const std::array<double, 3>& point_body,
+                                              const std::array<double, 6>& wrench_world) noexcept;
+
+  /// SetExternalWrenchAtPoint at the body frame ORIGIN — the common case, and
+  /// the one that lines up with a model frame of the same name.
+  [[nodiscard]] bool SetExternalForce(int body_id,
+                                      const std::array<double, 6>& wrench_world) noexcept;
+
+  /// Drop every staged wrench in the scene. A single body's load is removed by
+  /// staging a zero wrench on it instead.
   void ClearExternalForce() noexcept;
   void UpdatePerturb(const mjvPerturb& pert) noexcept;
   void ClearPerturb() noexcept;
@@ -674,7 +713,12 @@ class MuJoCoSimulator {
   mutable std::mutex pert_mutex_;
   mjvPerturb shared_pert_{};
   bool pert_active_{false};
+  // Wrench AS REQUESTED (about ext_point_, world axes), nbody*6. Converted to
+  // the CoM-referenced xfrc_applied by PreparePhysicsStep, never stored
+  // converted: the conversion depends on the body's current pose.
   std::vector<double> ext_xfrc_{};
+  // Application point per body, in that body's LOCAL frame, nbody*3.
+  std::vector<double> ext_point_{};
   bool ext_xfrc_dirty_{false};
 
   // ── Internal helpers ───────────────────────────────────────────────────────
@@ -721,6 +765,9 @@ class MuJoCoSimulator {
   void ThrottleIfNeeded() noexcept;
   void HandleReset() noexcept;
   void PreparePhysicsStep() noexcept;
+  // Requested wrenches -> data_->xfrc_applied, re-referenced to each body's
+  // centre of mass. Caller holds pert_mutex_.
+  void StageExternalWrenches() noexcept;
   void ClearContactForces() noexcept;
 
   void SimLoop(std::stop_token stop) noexcept;

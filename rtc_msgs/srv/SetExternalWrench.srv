@@ -1,0 +1,60 @@
+# /sim/set_external_wrench — hang a KNOWN external wrench on a simulated body,
+# or take it off.
+#
+# WHY THIS EXISTS. The momentum observer and the payload estimator (#135) can
+# only be validated against a load whose true value is known, and the simulator
+# had no way to produce one: MuJoCoSimulator::SetExternalForce was reachable
+# from tests only, so every sim measurement of the estimator lane was taken at
+# zero load and had zero variance by construction (#135 D16). This service is
+# the positive control that breaks that degeneracy.
+#
+# THE WRENCH ACTS AT `point`, NOT AT THE BODY CENTRE OF MASS. This distinction
+# is the whole contract and it is not cosmetic: MuJoCo's mjData::xfrc_applied
+# is applied at the body's CoM (`xipos`), which on a real model sits centimetres
+# away from the body frame origin — 35 mm for `ee_link` on iiwa7_leap, and
+# non-zero on EVERY body of that model, massless ones included. Forwarding a
+# pure force there would silently add a moment (0.25 N.m at 10 N, five times the
+# estimator's noise floor) and read back as a payload with a centre-of-mass
+# offset that does not exist. The simulator therefore converts the request into
+# the CoM-referenced equivalent every tick, so a wrench named "at ee_link" means
+# the same thing here as it does to the pinocchio frame of that name — their
+# origins were measured to coincide.
+#
+# THE WRENCH IS LATCHED, NOT AN IMPULSE. It is re-applied every physics tick
+# until it is cleared, a zero wrench replaces it, or the simulator is reset. One
+# call is enough to hang a load; there is no need to republish it.
+
+# Body to apply to, as named in the MJCF. REQUIRED unless `clear` is true.
+# A name the model does not carry is REFUSED (accepted=false) rather than
+# ignored — a silently dropped request would leave the caller believing a load
+# is hanging while the estimator correctly reports nothing, which is the exact
+# failure this whole lane was built to make impossible.
+string body_name
+
+# Point the wrench acts at, in `body_name`'s LOCAL frame [m]. Zero — the
+# default for an unset field — is the body frame origin, which is what you want
+# whenever the wrench is meant to line up with a model frame of the same name.
+# A non-zero value hangs the load off a known offset, e.g. a mass held 10 cm
+# below the palm, without needing a body to exist at that spot.
+geometry_msgs/Vector3 point
+
+# Wrench about `point`, expressed in WORLD-frame axes [N, N.m]. It is the
+# wrench the environment applies TO the robot, matching the sign convention
+# PayloadEstimator inherits from the momentum observer: a hanging mass m is
+# force = m * g, pointing DOWN.
+geometry_msgs/Wrench wrench
+
+# True removes EVERY staged wrench in the scene, not just `body_name`'s, and
+# `body_name`/`point`/`wrench` are then ignored. To remove one body's load
+# while others stay, send that body a zero `wrench` instead.
+bool clear
+
+---
+
+# True iff the request was applied. False means nothing changed — the body name
+# was unknown or empty, or the simulator was not running.
+bool accepted
+
+# Human-readable outcome, including the resolved body id on success and the
+# reason for the refusal on failure.
+string message

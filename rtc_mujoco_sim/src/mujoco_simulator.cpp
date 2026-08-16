@@ -638,6 +638,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   viz_qpos_.assign(static_cast<std::size_t>(model_->nq), 0.0);
   ext_xfrc_.assign(static_cast<std::size_t>(model_->nbody) * 6, 0.0);
+  ext_point_.assign(static_cast<std::size_t>(model_->nbody) * 3, 0.0);
 
   // Save original actuator params
   orig_actuator_params_.resize(static_cast<std::size_t>(model_->nu));
@@ -1580,22 +1581,45 @@ MuJoCoSimulator::SolverStats MuJoCoSimulator::GetSolverStats() const noexcept {
 // ── External forces / perturbation
 // ────────────────────────────────────────────
 
-void MuJoCoSimulator::SetExternalForce(int body_id,
-                                       const std::array<double, 6>& wrench_world) noexcept {
-  if (body_id <= 0 || body_id >= model_->nbody) {
-    return;
+int MuJoCoSimulator::FindBodyId(const char* body_name) const noexcept {
+  if (!model_ || !body_name || body_name[0] == '\0') {
+    return -1;
+  }
+  const int id = mj_name2id(model_, mjOBJ_BODY, body_name);
+  // Fold the world body into the "no such target" answer deliberately: a
+  // wrench on body 0 is swallowed by the fixed base, so reporting it as
+  // accepted would be the silent no-op this API exists to rule out.
+  return id > 0 ? id : -1;
+}
+
+bool MuJoCoSimulator::SetExternalWrenchAtPoint(
+    int body_id, const std::array<double, 3>& point_body,
+    const std::array<double, 6>& wrench_world) noexcept {
+  if (!model_ || body_id <= 0 || body_id >= model_->nbody) {
+    return false;
   }
   std::lock_guard lock(pert_mutex_);
-  const std::size_t offset = static_cast<std::size_t>(body_id) * 6;
+  const std::size_t w_off = static_cast<std::size_t>(body_id) * 6;
+  const std::size_t p_off = static_cast<std::size_t>(body_id) * 3;
   for (std::size_t i = 0; i < 6; ++i) {
-    ext_xfrc_[offset + i] = wrench_world[i];
+    ext_xfrc_[w_off + i] = wrench_world[i];
+  }
+  for (std::size_t i = 0; i < 3; ++i) {
+    ext_point_[p_off + i] = point_body[i];
   }
   ext_xfrc_dirty_ = true;
+  return true;
+}
+
+bool MuJoCoSimulator::SetExternalForce(int body_id,
+                                       const std::array<double, 6>& wrench_world) noexcept {
+  return SetExternalWrenchAtPoint(body_id, {0.0, 0.0, 0.0}, wrench_world);
 }
 
 void MuJoCoSimulator::ClearExternalForce() noexcept {
   std::lock_guard lock(pert_mutex_);
   std::fill(ext_xfrc_.begin(), ext_xfrc_.end(), 0.0);
+  std::fill(ext_point_.begin(), ext_point_.end(), 0.0);
   ext_xfrc_dirty_ = false;
 }
 

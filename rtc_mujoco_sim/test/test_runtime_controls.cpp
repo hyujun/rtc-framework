@@ -88,12 +88,17 @@ TEST_F(RuntimeControls, WorldGravityRoundtrip) {
   EXPECT_TRUE(sim_->IsWorldGravityEnabled());
 }
 
-TEST_F(RuntimeControls, ExternalForceOnInvalidBodyIsNoOp) {
+// An out-of-range body must be REPORTED as rejected, not merely survived. The
+// call used to return void, so "no crash" was the whole assertion and a caller
+// had no way to learn its request went nowhere — the silent-failure path the
+// /sim/set_external_wrench service exists to close (#135).
+TEST_F(RuntimeControls, ExternalForceOnInvalidBodyIsRejected) {
   std::array<double, 6> wrench = {0, 0, 10, 0, 0, 0};
-  sim_->SetExternalForce(-1, wrench);    // body_id <= 0 → reject
-  sim_->SetExternalForce(9999, wrench);  // out of range → reject
-  sim_->ClearExternalForce();            // no crash
-  SUCCEED();
+  EXPECT_FALSE(sim_->SetExternalForce(-1, wrench));    // body_id <= 0
+  EXPECT_FALSE(sim_->SetExternalForce(0, wrench));     // world body
+  EXPECT_FALSE(sim_->SetExternalForce(9999, wrench));  // out of range
+  EXPECT_FALSE(sim_->SetExternalWrenchAtPoint(9999, {0.1, 0.0, 0.0}, wrench));
+  sim_->ClearExternalForce();  // no crash
 }
 
 TEST_F(RuntimeControls, CommandModeFlagRoundtrip) {

@@ -249,6 +249,39 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 
 > **QoS**: command subscriber와 state publisher 모두 `BEST_EFFORT` + depth 1을 사용합니다.
 
+### 서비스
+
+| 서비스 | 타입 | 설명 |
+|------|------|------|
+| `/sim/set_external_wrench` | `rtc_msgs/SetExternalWrench` | body 이름으로 지정한 곳에 알려진 외력 부착 / 전체 해제 |
+
+#### 외력 주입 (`/sim/set_external_wrench`)
+
+추정기·관측기 검증에는 **참값을 아는 부하**가 필요합니다 (#135). 이 서비스는 MJCF body 를 이름으로 지정해 world 축 wrench 를 매답니다.
+
+```bash
+# ee_link 프레임 원점에 1 kg 상당의 하중을 매단다 (아래 방향 9.81 N)
+ros2 service call /sim/set_external_wrench rtc_msgs/srv/SetExternalWrench \
+  "{body_name: ee_link, point: {x: 0.0, y: 0.0, z: 0.0},
+    wrench: {force: {x: 0.0, y: 0.0, z: -9.81}, torque: {x: 0.0, y: 0.0, z: 0.0}},
+    clear: false}"
+
+# 전부 해제
+ros2 service call /sim/set_external_wrench rtc_msgs/srv/SetExternalWrench "{clear: true}"
+```
+
+세 가지 성질이 계약이며, 어느 하나를 오해하면 **발산이 아니라 유한하고 매끄러운 틀린 답**이 나옵니다.
+
+1. **작용점은 `point` 이지 body 질량중심이 아닙니다.** MuJoCo 의 `mjData::xfrc_applied` 는 body 질량중심 (`xipos`) 에 걸립니다 — 문서가 아니라 실측으로 확인했습니다 (순수 힘을 걸고 `qfrc_smooth` 차분을 자코비안과 대조: `J(xipos)ᵀw` 와 1e-14, `J(xpos)ᵀw` 와는 1.7e-1). 그런데 그 질량중심은 body 프레임 원점과 다릅니다 — iiwa7_leap 에서는 **모든 body** 가 0 이 아닌 오프셋을 갖고 (`ee_link` 35 mm, 최대 13 cm), **질량이 0 인 body 도** 그렇습니다. 요청을 그대로 전달하면 10 N 당 0.25 N·m 의 모멘트가 따라붙어 payload 추정기의 노이즈 바닥 (0.048 N·m) 의 5 배가 되고, "실재하지 않는 CoM 오프셋을 가진 물체" 로 읽힙니다. 따라서 SimLoop 이 **매 tick** `xpos`/`xipos`/`xmat` 에서 CoM 기준 등가 wrench 를 다시 만듭니다 — 요청 시점에 한 번 계산해두면 팔이 움직이는 순간 stale 이 되기 때문입니다.
+
+   `point: {0,0,0}` 은 body 프레임 원점을 뜻하고, 이 점은 같은 이름의 pinocchio 프레임과 일치합니다 (home 자세에서 `ee_link` 기준 1e-9 m 이내 실측). 즉 `point` 를 비워두면 프레임 자코비안이 사영하는 바로 그 wrench 가 걸립니다.
+
+2. **latched 입니다.** 해제·덮어쓰기·시뮬레이터 리셋 전까지 매 물리 tick 재적용되므로 한 번만 호출하면 됩니다. 한 body 만 떼려면 그 body 에 0 wrench 를 보내고, 전부 떼려면 `clear: true` 를 보냅니다.
+
+3. **없는 body 이름은 거부됩니다.** `accepted=false` + 사유가 돌아오며 WARN 이 찍힙니다. 조용히 무시하면 호출자는 부하가 걸렸다고 믿고 추정기는 정확히 아무것도 못 보는, 서로 만나지 않는 상태가 됩니다. `world` body 도 같은 이유로 거부합니다 — 고정 베이스가 흡수해 아무 일도 일어나지 않기 때문입니다.
+
+> `JointState.effort` 에는 이 외력이 **들어가지 않습니다** (`qfrc_actuator + qfrc_applied + qfrc_gravcomp` 이고 `xfrc_applied` 는 별개). 관측기가 이를 미지의 외란 토크로 보아야 하므로 의도된 것입니다 — 만약 effort 에 섞이면 관측기 입력 `τ_m` 이 이미 외력을 포함해 residual 이 0 으로 남는, 조용한 실패가 됩니다.
+
 ### 제어 모드 자동 전환 (robot 그룹)
 
 | command_type | 제어 모드 | Robot Gravcomp | World Gravity |

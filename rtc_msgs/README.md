@@ -48,6 +48,7 @@ rtc_msgs/
     ├── ListControllers.srv    <- 등록된 컨트롤러 lifecycle 상태 조회 (/rtc_cm/list_controllers)
     ├── ResetFault.srv         <- latched controller-local fault 해제 (/rtc_cm/reset_fault)
     ├── ClearEstop.srv         <- global E-STOP 래치 해제 (/rtc_cm/clear_estop)
+    ├── SetExternalWrench.srv  <- sim body 에 알려진 외력 부착/해제 (/sim/set_external_wrench)
     └── SwitchController.srv   <- 컨트롤러 activate/deactivate 요청 (/rtc_cm/switch_controller)
 ```
 
@@ -508,6 +509,26 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 > 거부 4종의 구분과 `ok` 의 판정 기준은 [`srv/ClearEstop.srv`](srv/ClearEstop.srv) 주석이 SSoT 이고, 관측 창 산술과 재트리거 차단 메커니즘은 [`rtc_controller_manager/README.md`](../rtc_controller_manager/README.md) §글로벌 E-STOP 해제 가 소유합니다 (conventions.md §Documentation Requirements).
 
+### `SetExternalWrench.srv`
+
+`/sim/set_external_wrench` — 시뮬레이션 body 에 **알려진** 외력을 매달거나 떼어냅니다 (#135). 추정기 lane 은 참값을 아는 부하가 있어야 검증되는데, 그전까지 sim 에는 그 수단이 없어 모든 측정이 무부하에서 이뤄졌고 분산이 정의상 0 이었습니다 (D16). 이 서비스가 그 degeneracy 를 깨는 positive control 입니다.
+
+| 요청 필드 | 타입 | 의미 |
+|------|------|------|
+| `body_name` | `string` | MJCF body 이름. 모델에 없는 이름은 **거부** (조용한 무시 없음) |
+| `point` | `geometry_msgs/Vector3` | wrench 작용점, **body 로컬 프레임** [m]. 0 = body 프레임 원점 |
+| `wrench` | `geometry_msgs/Wrench` | `point` 기준 wrench, **world 축** [N, N·m]. 환경이 로봇에 가하는 부호 |
+| `clear` | `bool` | true 면 씬의 **모든** staged wrench 해제 (나머지 필드 무시) |
+
+| 응답 필드 | 타입 | 의미 |
+|------|------|------|
+| `accepted` | `bool` | 적용됐는지. false 면 아무것도 바뀌지 않음 |
+| `message` | `string` | 성공 시 해석된 body id, 실패 시 거부 사유 |
+
+> **wrench 는 body 질량중심이 아니라 `point` 에 작용합니다.** MuJoCo 의 `xfrc_applied` 자체는 body 질량중심(`xipos`)에 걸리고 그 점은 body 프레임 원점에서 iiwa7_leap 기준 최대 13 cm (`ee_link` 는 35 mm) 떨어져 있어, 요청을 그대로 전달하면 10 N 에 0.25 N·m 의 모멘트가 얹힙니다 — 추정기 노이즈 바닥의 5배이고 "존재하지 않는 CoM 오프셋을 가진 payload" 로 읽힙니다. `rtc_mujoco_sim` 이 매 tick CoM 기준 등가 wrench 를 재계산하는 이유이며, 계약의 SSoT 는 [`srv/SetExternalWrench.srv`](srv/SetExternalWrench.srv) 주석과 `rtc_mujoco_sim/README.md` §외력 주입 입니다.
+>
+> **latched 입니다** — 해제·덮어쓰기·리셋 전까지 매 물리 tick 재적용되므로 한 번만 호출하면 됩니다.
+
 ---
 
 ## 빌드
@@ -550,6 +571,9 @@ source install/setup.bash
 ├── SwitchController.srv            /rtc_cm/switch_controller → activate/deactivate
 ├── ResetFault.srv                  /rtc_cm/reset_fault       → controller-local fault 해제
 └── ClearEstop.srv                  /rtc_cm/clear_estop       → global E-STOP 래치 해제
+
+시뮬레이션 (rtc_mujoco_sim 전용)
+└── SetExternalWrench.srv           /sim/set_external_wrench  → 알려진 외력 부착/해제
 
 추정 (컨트롤러 RT tick 에서 계산)
 └── PayloadEstimate (#135)
