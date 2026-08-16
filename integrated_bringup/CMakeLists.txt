@@ -864,9 +864,13 @@ if(BUILD_TESTING)
   # only surface — these cases register the channel the way on_configure does
   # and read the file back, which is also what keeps the header/row widths and
   # the per-tick push on the tested path.
+  # §MomentumObserverLifecycleGate runs on_configure on a real LifecycleNode
+  # (the only place the PayloadEstimate gate branch lives), so this target opens
+  # a DDS participant and takes the package ROS_DOMAIN_ID like its siblings.
   ament_add_gtest(test_momentum_observer_embedding
     test/test_momentum_observer_embedding.cpp
-    TIMEOUT 180)
+    TIMEOUT 180
+    ENV ROS_DOMAIN_ID=52)
   target_link_libraries(test_momentum_observer_embedding
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
@@ -874,6 +878,7 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_momentum_observer_embedding
     ament_index_cpp
     rclcpp
+    rclcpp_lifecycle
     rtc_urdf_bridge
     rtc_controllers
     rtc_controller_interface

@@ -313,6 +313,18 @@ class DemoJointController final : public RTControllerInterface {
     momentum_observer_log_handle_ = std::move(h);
   }
 
+  /// Test-only: whether on_configure actually built the PayloadEstimate
+  /// publisher. That call sits behind `if (momentum_wiring_.enabled())`, and the
+  /// disabled side of that branch had no observable at all — the CSV lane is
+  /// bound through a different path, so a gate that leaked (publisher created
+  /// with the observer off) or over-gated (no publisher with it on) looked
+  /// identical from every other fixture. Distinct from
+  /// MomentumObserverConfigErrorForTesting(), which reports whether the WIRING
+  /// resolved, not whether the lifecycle acted on it (#454, from #135).
+  [[nodiscard]] bool HasPayloadEstimatePublisherForTesting() const noexcept {
+    return static_cast<bool>(owned_topics_.payload_pub);
+  }
+
   /// Test-only: the configure-time error BuildMomentumObserverWiring raised, or
   /// empty when the wiring resolved (enabled, or deliberately disabled).
   /// on_configure consumes the same string — see OnDeviceConfigsSet.

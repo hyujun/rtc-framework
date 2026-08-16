@@ -12,15 +12,21 @@
 // push/registration path untested, and a row-count assertion against an unbound
 // handle passes with the push deleted outright.
 //
-// The residual now has a second observable — `rtc_msgs/PayloadEstimate`, added
-// with Layer 2A (#135 D12) — but it is NOT covered here: publishing needs a
-// LifecycleNode and these fixtures deliberately stop short of one (see below).
-// That lane is owned by test_payload_estimate_topic.cpp, and the fill both
-// lanes share by test_momentum_observer_wiring.cpp §MomentumObserverChannels.
+// The residual has a second observable — `rtc_msgs/PayloadEstimate`, added with
+// Layer 2A (#135 D12). Its FILL is owned by test_payload_estimate_topic.cpp and
+// the shared row by test_momentum_observer_wiring.cpp §MomentumObserverChannels.
+// What belongs here instead is the lifecycle GATE that decides whether that
+// publisher is built at all — `if (momentum_wiring_.enabled())` in each
+// controller's on_configure. That is an embedding property, not a wire property,
+// and it had no observable on either side: with the observer off nothing is
+// created, and the CSV lane binds through a different path, so a gate that
+// leaked or over-gated looked identical from every other fixture (#454, from
+// #135's non-AC residue).
 //
-// No ROS node / DDS: the fixtures stop at SetDeviceNameConfigs, which is the
-// hook that builds the wiring, and bind the CSV channel through the test-only
-// handle setters.
+// So the CSV cases stop at SetDeviceNameConfigs — the hook that builds the
+// wiring — with no ROS node, and the §MomentumObserverLifecycleGate cases at the
+// bottom go one step further and run on_configure on a real LifecycleNode. Only
+// those need DDS, which is why this target claims the package ROS_DOMAIN_ID.
 
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
@@ -29,6 +35,9 @@
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
+
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -152,6 +161,7 @@ class ScopedSessionDir {
     fs::create_directories(dir_);
     ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
   }
+
   ~ScopedSessionDir() {
     if (had_prev_) {
       ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
@@ -161,6 +171,7 @@ class ScopedSessionDir {
     std::error_code ec;
     fs::remove_all(dir_, ec);
   }
+
   ScopedSessionDir(const ScopedSessionDir&) = delete;
   ScopedSessionDir& operator=(const ScopedSessionDir&) = delete;
 
@@ -540,8 +551,8 @@ TEST(MomentumObserverEmbedding, AHoledEffortLaneHoldsTheResidualThroughTheContro
   ScopedSessionDir session;
   rtc::ControllerLogSet log_set{"momentum_embed_gate"};
 
-  auto ctrl = BringUp<integrated_bringup::DemoJointController>(std::string(kJointYaml) +
-                                                               kMomentumBlock);
+  auto ctrl =
+      BringUp<integrated_bringup::DemoJointController>(std::string(kJointYaml) + kMomentumBlock);
   ASSERT_TRUE(ctrl->MomentumObserverConfigErrorForTesting().empty());
   auto ch = BindMomentumChannel(log_set, /*enabled=*/true);
   ASSERT_TRUE(ch.handle);
@@ -553,8 +564,7 @@ TEST(MomentumObserverEmbedding, AHoledEffortLaneHoldsTheResidualThroughTheContro
   // closes — freezing a zero would prove nothing.
   const std::vector<double> tau_ext{2.0, -3.0, 1.5, 0.5, -0.25, 0.75, -0.5};
   for (int i = 0; i < kArmDof; ++i) {
-    state.devices[0].efforts[static_cast<std::size_t>(i)] -=
-        tau_ext[static_cast<std::size_t>(i)];
+    state.devices[0].efforts[static_cast<std::size_t>(i)] -= tau_ext[static_cast<std::size_t>(i)];
   }
 
   constexpr int kOpen = 400;
@@ -634,3 +644,90 @@ momentum_observer:
 }
 
 }  // namespace
+
+// ── §MomentumObserverLifecycleGate — the on_configure branch (#454, from #135) ─
+//
+// `if (momentum_wiring_.enabled()) SetupPayloadEstimatePublisher(...)` decides
+// whether the residual reaches the wire. Both sides matter and neither had an
+// observable: a gate stuck OPEN publishes an all-zero estimate that a consumer
+// cannot distinguish from "no external wrench", and a gate stuck CLOSED takes
+// the residual off the wire while every CSV assertion in this file still passes.
+//
+// These run the full production bring-up plus on_configure on a real
+// LifecycleNode — that call is where the branch lives, and the fixtures above
+// deliberately stop before it.
+namespace {
+
+/// BringUp + on_configure on a real node. Returns the controller; the node is
+/// handed back through `node` because the publisher's lifetime is tied to it.
+template <class Ctrl>
+std::unique_ptr<Ctrl> ConfigureOnNode(const std::string& yaml, const char* node_name,
+                                      rclcpp_lifecycle::LifecycleNode::SharedPtr& node) {
+  rclcpp::NodeOptions opts;
+  opts.use_global_arguments(false);
+  node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name, "", opts);
+
+  auto ctrl = BringUp<Ctrl>(yaml);
+  const YAML::Node cfg = YAML::Load(yaml);
+  const auto rc = ctrl->on_configure(rclcpp_lifecycle::State{}, node, cfg);
+  EXPECT_EQ(rc, Ctrl::CallbackReturn::SUCCESS)
+      << node_name << ": on_configure failed — the gate assertion below would be vacuous";
+  return ctrl;
+}
+
+class MomentumObserverLifecycleGate : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+  }
+
+  /// Both sides of the branch for one controller, in one case: the same
+  /// bring-up, differing only in the `momentum_observer` block. Asserting them
+  /// together is what makes each meaningful — a publisher that is always absent
+  /// would satisfy the disabled case alone, and one that is always present would
+  /// satisfy the enabled case alone.
+  template <class Ctrl>
+  void CheckGate(const char* yaml, const char* who) {
+    rclcpp_lifecycle::LifecycleNode::SharedPtr on_node;
+    auto enabled = ConfigureOnNode<Ctrl>(std::string(yaml) + kMomentumBlock,
+                                         (std::string("mo_gate_on_") + who).c_str(), on_node);
+    ASSERT_TRUE(enabled->MomentumObserverConfigErrorForTesting().empty())
+        << who << ": " << enabled->MomentumObserverConfigErrorForTesting();
+    EXPECT_TRUE(enabled->HasPayloadEstimatePublisherForTesting())
+        << who
+        << ": observer enabled but no PayloadEstimate publisher — the residual "
+           "never reaches the wire";
+
+    rclcpp_lifecycle::LifecycleNode::SharedPtr off_node;
+    auto disabled =
+        ConfigureOnNode<Ctrl>(yaml, (std::string("mo_gate_off_") + who).c_str(), off_node);
+    ASSERT_TRUE(disabled->MomentumObserverConfigErrorForTesting().empty())
+        << who << ": " << disabled->MomentumObserverConfigErrorForTesting();
+    EXPECT_FALSE(disabled->HasPayloadEstimatePublisherForTesting())
+        << who
+        << ": no observer, yet a PayloadEstimate publisher exists — it would "
+           "advertise an estimate nothing computes";
+  }
+};
+
+}  // namespace
+
+TEST_F(MomentumObserverLifecycleGate, JointControllerPublishesOnlyWithTheObserverOn) {
+  CheckGate<integrated_bringup::DemoJointController>(kJointYaml, "joint");
+}
+
+TEST_F(MomentumObserverLifecycleGate, TaskControllerPublishesOnlyWithTheObserverOn) {
+  CheckGate<integrated_bringup::DemoTaskController>(kTaskYaml, "task");
+}
+
+TEST_F(MomentumObserverLifecycleGate, WbcControllerPublishesOnlyWithTheObserverOn) {
+  CheckGate<integrated_bringup::DemoWbcController>(kWbcYaml, "wbc");
+}
