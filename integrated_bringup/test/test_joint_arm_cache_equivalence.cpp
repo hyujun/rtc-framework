@@ -33,6 +33,7 @@
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
+#include "optional_package.hpp"
 #include "rtc_urdf_bridge/pinocchio_cache.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -174,6 +175,7 @@ TEST(JointArmCacheEquivalence, Iiwa7Leap) {
 // ur5e_p1b — 16-DoF closed-chain (combined = GetActuatedModel; arm tip is upstream
 // of the loop, so the arm TCP stays exact even here).
 TEST(JointArmCacheEquivalence, Ur5eP1b) {
+  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   RunEquivalence({/*label=*/"ur5e_p1b",
                   /*urdf_pkg=*/"hand_description",
                   /*urdf_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro",

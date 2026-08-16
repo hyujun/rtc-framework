@@ -12,6 +12,12 @@
 //   SetSystemModelConfig → SetSharedModelBuilder → SetControlRate →
 //   LoadConfig(yaml) → SetDeviceNameConfigs (triggers OnDeviceConfigsSet)
 //
+// ⚠ This profile lives in `hand_description`, which is NOT a dependency of this
+// workspace (separate project, developer machines only — see optional_package.hpp).
+// Every test that instantiates it MUST guard with RTC_SKIP_IF_PACKAGE_MISSING
+// ("hand_description"); validate_test_fixtures.py enforces that. #457 replaces this
+// with a closed-chain model in `robot_descriptions` so the paths run in CI.
+//
 // Every value below mirrors config/ur5e_p1b/_base.yaml (`urdf:` + `devices:`).
 // The builder is a process-wide singleton for the same reason as the iiwa7 one:
 // the xacro→Pinocchio parse dominates, and production shares one builder.
