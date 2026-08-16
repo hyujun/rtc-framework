@@ -201,3 +201,84 @@ demo_shared:
     # residual's first-order time constant is 1/K_I, so 10 /s settles in ~0.3 s.
     # Not identified on hardware — expect to retune per robot.
     gains: 10.0
+
+    # ── Layer 2A: quasi-static payload estimation (#135) ───────────────────
+    # Inverts the residual above into a Cartesian wrench and a payload mass:
+    #   w_ext = argmin ||J_p(q)^T w - r||^2 + mu||w||^2      [WRENCH-A]
+    #   m     = (f_ext . Wg) / ||Wg||^2                      [MASS-A]
+    # Wg is the MODEL's gravity, so a URDF with non-Z gravity needs no change.
+    #
+    # SHIPPED OFF ON PURPOSE. The gate thresholds below are derived from sim
+    # logs, and the sim has no way to hang a known mass (no object in the
+    # shipped scene, and MuJoCoSimulator::SetExternalForce has no ROS surface),
+    # so the ACCURACY of m has never been measured against a positive control.
+    # The algebra is pinned by unit tests; the number is not yet trusted.
+    # Turning this on also costs a frame Jacobian plus a 6x6 solve per tick.
+    payload_estimator:
+      enabled: false
+      # Frame the payload hangs from, resolved against the ARM sub-model.
+      # A name the model does not carry is refused at configure — pinocchio
+      # returns frame 0 (universe) for an unknown name, which would otherwise
+      # project onto an all-zero Jacobian for the life of the run.
+      frame: ee_link
+
+      # ── Validity gates ──────────────────────────────────────────────────
+      # Measured on session-67 sim_iiwa7_leap logs, binning the residual by
+      # what was moving (n = 35285 valid ticks):
+      #   arm still, hand still    max ||r||inf = 0.048 N.m   <- gates below
+      #   hand at 2e-4 rad/s       max ||r||inf = 0.224 N.m   (5x worse)
+      #   hand moving freely       max ||r||inf = 104.1 N.m   (2000x worse)
+      # The HAND axis dominates: the observer runs on an arm sub-model whose
+      # hand joints are pinned at a reference posture, so real hand motion is
+      # an external torque BY CONSTRUCTION and is indistinguishable from a
+      # payload. The arm axis is flat anywhere below 1e-2.
+      # At 1e-4 rad/s the surviving residual is ~0.048 N.m, i.e. ~10 g of
+      # payload at a 0.5 m lever arm, on 63 % of ticks.
+      # These are SIM numbers: real encoder velocity noise is larger, so
+      # hardware must re-tune both rather than inherit them.
+      max_arm_velocity: 1.0e-3         # [rad/s]
+      max_peripheral_velocity: 1.0e-4  # [rad/s] — every non-arm device
+      # Observer time constants (1/K_I) that must pass after a re-seed before
+      # the residual is believed. r restarts at zero and re-converges, so an
+      # early read measures the filter, not the load. 5 tau ~ 99.3 % settled.
+      settle_time_constants: 5.0
+
+      # ── Numerical guards ────────────────────────────────────────────────
+      # sigma0 / lambda_max parameterise the same section 6.5 adaptive damping
+      # law the controllers use (NUM-1). Damping stays ADAPTIVE rather than
+      # floored at a constant mu: a floor would bias m toward zero at every
+      # pose, always under-reporting the payload.
+      sigma0: 1.0e-3
+      lambda_max: 0.05
+      # sigma_min(J) below this rejects the tick: at least one wrench
+      # direction is unobservable, so a payload could be present and leave no
+      # trace in r.
+      min_sigma: 1.0e-3
+      # ||J^T w - r||inf ceiling [N.m]. THE gate that separates a payload from
+      # an unmodelled joint-level torque (armature / damping / frictionloss,
+      # #135 [MO-1u]): those do not lie in the range of J^T, so no wrench
+      # explains them and the leftover is large.
+      #
+      # UNLIKE THE VELOCITY GATES ABOVE, THIS VALUE IS NOT MEASURED. Deriving it
+      # needs the reconstruction error itself, which the session-67 logs cannot
+      # give (they carry r, not the per-tick Jacobian). 5.0 is deliberately
+      # permissive so it does not silently reject valid ticks before anyone has
+      # looked; with the gates above it will essentially never fire, since the
+      # surviving ||r||inf is ~0.048 N.m in the first place. Tune it DOWN once
+      # payload_fit_error has been observed on the target robot -- a ceiling
+      # that never fires is not a guard.
+      #
+      # SIM CANNOT SUPPLY THE NUMBER, measured 2026-08-16 (sim_iiwa7_leap,
+      # 21979 ticks with this block enabled): payload_fit_error has ZERO spread
+      # -- min = p50 = max = 1.2173e-07 N.m. The gate's own admit condition is
+      # why. What lets a tick through (arm still + hand still) is exactly the
+      # condition under which the MuJoCo plant and the observer's model agree
+      # to machine precision: peak |qdot| was 8.05e-18 rad/s and ||r||inf on
+      # valid ticks was 3.1e-05 N.m, three orders below the 0.048 N.m the real
+      # robot showed. Move the arm and the velocity gate closes, so the
+      # informative regime yields no valid ticks BY CONSTRUCTION. This value is
+      # therefore #177 hardware-lane work, alongside the m-hat accuracy check.
+      max_fit_error: 5.0
+      # ||Wg|| floor [m/s^2]. [MASS-A] divides by ||Wg||^2, so a gravity-free
+      # model has no mass map at all (NUM-2 / NUM-4).
+      min_gravity: 1.0e-3

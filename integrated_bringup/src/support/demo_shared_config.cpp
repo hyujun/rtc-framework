@@ -362,6 +362,34 @@ void ApplyPullEstimatorBlock(const YAML::Node& pe, DemoSharedConfig& cfg) {
   }
 }
 
+// #135 Layer 2A — `momentum_observer.payload_estimator` sub-block. Every key is
+// optional; the struct's defaults are the measured ones documented next to it.
+void ApplyPayloadEstimatorBlock(const YAML::Node& pe, PayloadEstimatorParams& pp) {
+  if (!pe || !pe.IsMap()) {
+    return;
+  }
+  pp.has_block = true;
+  if (pe["enabled"]) {
+    pp.enabled = pe["enabled"].as<bool>();
+  }
+  if (pe["frame"]) {
+    pp.frame = pe["frame"].as<std::string>();
+  }
+  const auto num = [&pe](const char* key, double& dst) {
+    if (pe[key]) {
+      dst = pe[key].as<double>();
+    }
+  };
+  num("sigma0", pp.sigma0);
+  num("lambda_max", pp.lambda_max);
+  num("min_sigma", pp.min_sigma);
+  num("max_fit_error", pp.max_fit_error);
+  num("min_gravity", pp.min_gravity);
+  num("max_arm_velocity", pp.max_arm_velocity);
+  num("max_peripheral_velocity", pp.max_peripheral_velocity);
+  num("settle_time_constants", pp.settle_time_constants);
+}
+
 // #135 Layer 1b — `momentum_observer` block. Presence of the block is what
 // enables the channel; `enabled: false` keeps the block (and its gains) around
 // while switching it off.
@@ -385,6 +413,9 @@ void ApplyMomentumObserverBlock(const YAML::Node& mo, DemoSharedConfig& cfg) {
     } else {
       mp.gains.assign(1, mo["gains"].as<double>());
     }
+  }
+  if (mo["payload_estimator"]) {
+    ApplyPayloadEstimatorBlock(mo["payload_estimator"], mp.payload);
   }
 }
 

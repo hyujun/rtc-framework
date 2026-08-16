@@ -20,6 +20,7 @@
 // count taken from the caller's joint-name list at registration.
 
 #include "rtc_controllers/estimation/momentum_observer.hpp"
+#include "rtc_controllers/estimation/payload_estimator.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -84,6 +85,30 @@ struct MomentumObserverLogPod {
   std::uint8_t invalid_reason{0};
 
   bool valid{false};
+
+  // ── Layer 2A payload estimate (#135) ──────────────────────────────────────
+  //
+  // Carried on the SAME row as the residual it was computed from, rather than
+  // in a second file: the two are produced in one tick from one set of inputs,
+  // and a reader diagnosing a suspicious mass needs the r that produced it on
+  // the same line. Zero for every tick where payload estimation is not
+  // configured, which is distinguishable from a real estimate by
+  // payload_valid=0 plus payload_reason=kNotInitialized.
+  std::array<double, 6> payload_wrench{};
+  double payload_mass{0.0};
+  // Diagnostics the §6.5 damping law makes, surfaced because the choice to keep
+  // the damping adaptive (rather than flooring μ) is only reviewable if the
+  // damping that was actually applied is visible.
+  double payload_sigma_min{0.0};
+  double payload_lambda_sq{0.0};
+  // ‖Jᵀŵ − r‖∞ [N·m]. The one column that separates a payload from an
+  // unmodelled joint-level torque, so it is worth a column even when valid.
+  double payload_fit_error{0.0};
+  // rtc::estimation::PayloadInvalidReason — WHICH gate closed. The gates fire
+  // at very different rates (the hand gate dominates in sim), so collapsing
+  // them into payload_valid would hide the thing a tuner needs.
+  std::uint8_t payload_reason{0};
+  bool payload_valid{false};
 };
 
 static_assert(std::is_trivially_copyable_v<MomentumObserverLogPod>,
@@ -91,6 +116,10 @@ static_assert(std::is_trivially_copyable_v<MomentumObserverLogPod>,
 
 static_assert(sizeof(rtc::estimation::MomentumInvalidReason) == sizeof(std::uint8_t),
               "MomentumObserverLogPod::invalid_reason mirrors MomentumInvalidReason — widen it "
+              "with the enum's underlying type");
+
+static_assert(sizeof(rtc::estimation::PayloadInvalidReason) == sizeof(std::uint8_t),
+              "MomentumObserverLogPod::payload_reason mirrors PayloadInvalidReason — widen it "
               "with the enum's underlying type");
 
 /// Number of per-joint columns this channel will emit for `joint_names`.
@@ -111,6 +140,9 @@ inline void WriteMomentumObserverLogHeader(std::ostream& os,
     os << ",r_" << joint_names[i];
   }
   os << ",residual_inf_norm,valid,invalid_reason,ticks_since_seed";
+  os << ",payload_fx,payload_fy,payload_fz,payload_tx,payload_ty,payload_tz";
+  os << ",payload_mass,payload_sigma_min,payload_lambda_sq,payload_fit_error";
+  os << ",payload_valid,payload_reason";
 }
 
 /// Emit one row. `num_columns` MUST be the value the header was built with —
@@ -131,6 +163,15 @@ inline void WriteMomentumObserverLogRow(std::ostream& os, const MomentumObserver
   os << ',' << (p.valid ? 1 : 0);
   os << ',' << static_cast<unsigned>(p.invalid_reason);
   os << ',' << p.ticks_since_seed;
+  for (double v : p.payload_wrench) {
+    os << ',' << v;
+  }
+  os << ',' << p.payload_mass;
+  os << ',' << p.payload_sigma_min;
+  os << ',' << p.payload_lambda_sq;
+  os << ',' << p.payload_fit_error;
+  os << ',' << (p.payload_valid ? 1 : 0);
+  os << ',' << static_cast<unsigned>(p.payload_reason);
 }
 
 }  // namespace integrated_bringup
