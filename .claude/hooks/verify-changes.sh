@@ -426,14 +426,14 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
   # under rtc_*/test|tests/ legitimately instantiate concrete robots — a
   # plotter test needs realistic fixtures like `leap_state.csv` — so excluding
   # them keeps the header's stated "include|src" intent without punishing test
-  # fixtures (see memory feedback_arch1_grep_false_positive; test-fixture
-  # false-positive observed 2026-07-01 on rtc_tools/test/test_plot_rtc_log.py).
+  # fixtures (test-fixture false-positive observed 2026-07-01 on
+  # rtc_tools/test/test_plot_rtc_log.py).
   RTC_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^rtc_[a-z_]+/' | grep -vE '(^|/)tests?/' || true)
   # ARCH-4 target set is derived dynamically: any non-rtc_* package whose
   # package.xml depends on at least one rtc_* package. Previously this was
   # a hardcoded "^ur5e_*/" prefix which silently lost coverage after the
   # ur5e_bringup → integrated_bringup / ur5e_hand_driver → udp_hand_driver
-  # renames (memory project_workspace_repackaging, 2026-05-03).
+  # renames (observed 2026-05-03).
   INTEGRATION_PKGS=""
   for px in */package.xml; do
     [ -f "$px" ] || continue
@@ -477,12 +477,20 @@ if [ -n "$RTC_TOUCHED" ]; then
   # real DOF hardcoding is a numeric literal in array/matrix sizing, which
   # carries no "dof" substring. The one true signal that used `10-DoF`
   # (rtc_mpc capacity constants "for UR5e + 10-DoF hand") still matches via its
-  # robot name (memory feedback_arch1_grep_whole_file_scope, 2026-07-17).
+  # robot name (whole-file-scope false positives observed 2026-07-17).
   #
   # Negation filter: lines that *forbid* the term (header comments like
   # "must NOT test UR5e", "no ur5e-specific code", "robot-agnostic") are
   # the rule itself, not a violation. Without this filter the hook punished
   # well-intentioned prohibitive docstrings (2026-05-07).
+  #
+  # Known residual false-positive class: robot names in PROSE (docstrings,
+  # launch defaults, "e.g. UR5e") that the negation filter does not cover.
+  # Triage on a hit, in order: (1) `git show HEAD:<file>` — if the line
+  # pre-existed this turn, it is a harness false positive; report it as a
+  # harness-pruning signal (CLAUDE.md §11), do not "fix" working code.
+  # (2) If the hit is prose you just wrote in rtc_*, reword robot-neutrally
+  # and push the concrete example down to a consumer package's docs/config.
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ -f "$f" ] || continue

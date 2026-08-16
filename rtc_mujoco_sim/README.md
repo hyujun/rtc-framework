@@ -110,7 +110,7 @@ SimLoop → 모든 robot 그룹의 state 퍼블리시
 - `StepOnce` (`>` 버튼)은 N substeps 전부 실행 = 1 제어 주기 진행
 - **Physics Load** = substep 루프 wall time / 제어 주기 (뷰어 상단에 표시, >100%면 실시간 유지 불가)
 
-rtc_controller_manager는 `use_sim_time_sync: true` 설정 시 `condition_variable` 기반으로 state 도착 즉시 wakeup하여 ControlLoop를 실행합니다. 기존 `clock_nanosleep` 대비 round-trip 지연이 ~1ms → ~0.35ms로 감소합니다.
+rtc_controller_manager는 `use_sim_time_sync: true` 설정 시 `condition_variable` 기반으로 state 도착 즉시 wakeup하여 ControlLoop를 실행합니다. 기존 `clock_nanosleep` 대비 round-trip 지연이 ~1ms → ~0.35ms로 감소합니다. 이 모드의 RT tick 은 `control_rate` 가 아니라 device state **도착**에 구동되므로 tick 수 기대값을 rate 로 계산하면 틀립니다 — device group 이 2개면 tick 은 ~2×`control_rate` 이고, wake eventfd 가 카운터라 tick 중 도착분이 합쳐져(coalescing) state 콜백 대비 tick 비율은 2 가 아니라 ≈1 입니다. 발행 레이트 자체는 별도 구독자로 실측해 대조합니다.
 
 ### Constraint Solver 설정 (`solver_param.yaml`)
 

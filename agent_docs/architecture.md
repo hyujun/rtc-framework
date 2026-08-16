@@ -16,6 +16,8 @@
 
 필드 list / capacity 값은 위 헤더 직접 참조 (`grep -n 'struct.*Data' <header>`).
 
+**`efforts` lane 계약** (#447 → PR #450): `DeviceState::efforts` 는 **관절 토크 [N·m]** 다 — 실기 backend 가 모터 전류를 받으면 backend 경계에서 변환해 넣고 raw 는 `motor_efforts` lane 에 남긴다 (`types.hpp` 필드 주석 참조). 실기는 command mode 와 무관하게 관절 토크를 보고하므로, backend 별로 effort 의미가 갈려 보이면 어긋나는 쪽이 **producer 결함**이다 — 소비자(예: momentum observer)를 command mode 로 게이팅하는 방향은 sim 결함을 실기 제약으로 굳히므로 반려됐고, sim 의 gravcomp 누락을 producer 에서 고쳤다. 포함범위 위반(모든 일반화력을 담지 않음)은 lane 이 fresh·정단위인 채 일어나므로 `rtc::IsLaneReadable` 로는 탐지되지 않는다.
+
 ## Threading Model
 
 Thread roster·core·priority 의 SSoT 는 **`repo_scripts/config/thread_layout.yaml`** (선언형 manifest) 다. C++ tier 상수 + `SelectThreadConfigsForCoreCount()` (`thread_config_generated.hpp`), shell 헬퍼 (`repo_scripts/scripts/lib/thread_layout_generated.sh`), Python launch 미러 (`rtc_tools/rtc_tools/launch/thread_layout_generated.py`) 가 전부 거기서 **생성**되며, `gen_thread_layout.py --check` 가 드리프트를 CI 에서 차단한다 (issue #153 M1 — 그 전에는 같은 표가 실행 코드 6곳에 손으로 인코딩돼 있었고 그중 5곳에 직접 테스트가 없었다). `SystemThreadConfigs` 구조체 정의와 런타임 wrapper `SelectThreadConfigs()` 는 각각 `thread_config.hpp` / `thread_utils.hpp` 에 남는다. 4/6/8/10/12/14/16-core 레이아웃을 자동 선택. 문서엔 *불변 원칙*만 박는다.

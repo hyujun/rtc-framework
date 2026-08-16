@@ -118,6 +118,7 @@ Follow **Conventional Commits**: `type(scope): subject` + optional body + option
 - Explain *what* and *why*, not *how*. Omit when the subject is self-explanatory.
 - Reference issues as `Closes: #N` / `Refs: #N` in the footer.
 - PR merge commits keep GitHub's default `Merge pull request #N from ...` — do not rewrite.
+- **Merge method** — squash 관례가 기본이되 (`(#N)` 접미사가 그 흔적), 브랜치의 커밋 본문이 감사 기록(PROC-6 spec-change 근거 등)을 담으면 **squash 는 그 본문을 PR 본문으로 덮어쓰므로 배제**하고, 본문을 보존하는 rebase / no-ff 중 무엇인지는 사용자가 정한다 (사용자 확정 #442; no-ff 는 PR 단위를 히스토리에 남긴다 — #450). repo 는 세 방식 모두 허용이고 `delete_branch_on_merge=false` 이므로 `gh pr merge --delete-branch` 로 로컬·원격 브랜치를 함께 정리한다.
 
 Example with body + footer:
 ```

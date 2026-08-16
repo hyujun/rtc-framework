@@ -96,6 +96,13 @@ if(BUILD_TESTING)
   # deps/src or /usr/local paths that the deps artifact does not ship).
   # pinocchio::buildModel parses kinematics/dynamics only, so the package://
   # meshes are not needed. Override-able via -D or env.
+  #
+  # NOT an ARCH-5/E-10 violation (user decision, 2026-07 docs audit): this is a
+  # test-only configure-time path — no find_package/<depend>/
+  # ament_target_dependencies edge on robot_descriptions exists, so no colcon
+  # build-graph edge is created. Do not "fix" it toward ament_index or
+  # vendoring (regression risk for zero gain); the only harmless strengthening
+  # would be a <test_depend>robot_descriptions</test_depend> for install order.
   get_filename_component(_rtc_panda_default
       "${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots/panda/urdf/panda.urdf"
       ABSOLUTE)
