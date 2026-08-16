@@ -16,6 +16,7 @@
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/sim_sensor.hpp>
 #include <rtc_msgs/msg/sim_sensor_state.hpp>
+#include <rtc_msgs/srv/set_external_wrench.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
@@ -28,6 +29,7 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -86,6 +88,13 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     sim_status_pub_ =
         create_publisher<std_msgs::msg::Float64MultiArray>("/sim/status", rclcpp::QoS(1));
 
+    set_external_wrench_srv_ = create_service<rtc_msgs::srv::SetExternalWrench>(
+        "/sim/set_external_wrench",
+        [this](const std::shared_ptr<rtc_msgs::srv::SetExternalWrench::Request> req,
+               std::shared_ptr<rtc_msgs::srv::SetExternalWrench::Response> res) {
+          SetExternalWrenchCallback(req, res);
+        });
+
     RCLCPP_INFO(get_logger(),
                 "[MuJoCoSimulatorNode] Configured — model: %s  viewer: %s  "
                 "groups: %zu  max_rtf: %.1f",
@@ -137,6 +146,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     }
     group_handles_.clear();
     sim_status_pub_.reset();
+    set_external_wrench_srv_.reset();
     sim_.reset();
     group_configs_.clear();
 
@@ -175,6 +185,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     }
     group_handles_.clear();
     sim_status_pub_.reset();
+    set_external_wrench_srv_.reset();
     sim_.reset();
     group_configs_.clear();
 
@@ -551,6 +562,68 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     status_timer_ = create_wall_timer(1s, [this]() { PublishSimStatus(); });
   }
 
+  // ── External-wrench service ────────────────────────────────────────────────
+
+  // Hang a known wrench on a named body, or take every staged one off.
+  //
+  // EVERY REFUSAL IS REPORTED. The estimator lane this serves (#135) spent two
+  // sessions paying for silent failures — a fixture that went red in CI without
+  // saying so, a gate that never fired, a hold that never froze the payload —
+  // and a request that resolves to no body is the same failure wearing a
+  // different hat: the caller believes a load is hanging, the estimator
+  // correctly reports none, and the two never meet. So an unknown or empty body
+  // name comes back accepted=false with the name quoted, and the log line is
+  // WARN rather than DEBUG. This runs on the ROS executor thread, not the sim
+  // loop, so logging and string building here are free of the RT rules.
+  void SetExternalWrenchCallback(
+      const std::shared_ptr<rtc_msgs::srv::SetExternalWrench::Request> req,
+      std::shared_ptr<rtc_msgs::srv::SetExternalWrench::Response> res) {
+    if (!sim_) {
+      res->accepted = false;
+      res->message = "simulator not configured";
+      RCLCPP_WARN(get_logger(), "[SetExternalWrench] refused — simulator not configured");
+      return;
+    }
+
+    if (req->clear) {
+      sim_->ClearExternalForce();
+      res->accepted = true;
+      res->message = "cleared all staged external wrenches";
+      RCLCPP_INFO(get_logger(), "[SetExternalWrench] cleared all staged wrenches");
+      return;
+    }
+
+    const int body_id = sim_->FindBodyId(req->body_name.c_str());
+    if (body_id < 0) {
+      res->accepted = false;
+      res->message = "unknown body '" + req->body_name + "' — no such movable body in the model";
+      RCLCPP_WARN(get_logger(), "[SetExternalWrench] refused — unknown body '%s'",
+                  req->body_name.c_str());
+      return;
+    }
+
+    const std::array<double, 3> point = {req->point.x, req->point.y, req->point.z};
+    const std::array<double, 6> wrench = {req->wrench.force.x,  req->wrench.force.y,
+                                          req->wrench.force.z,  req->wrench.torque.x,
+                                          req->wrench.torque.y, req->wrench.torque.z};
+
+    if (!sim_->SetExternalWrenchAtPoint(body_id, point, wrench)) {
+      res->accepted = false;
+      res->message = "body '" + req->body_name + "' resolved but the wrench was rejected";
+      RCLCPP_WARN(get_logger(), "[SetExternalWrench] refused — body '%s' (id %d) rejected",
+                  req->body_name.c_str(), body_id);
+      return;
+    }
+
+    res->accepted = true;
+    res->message = "staged on '" + req->body_name + "' (body id " + std::to_string(body_id) + ")";
+    RCLCPP_INFO(get_logger(),
+                "[SetExternalWrench] '%s' (id %d) f=[%.3f %.3f %.3f] N "
+                "t=[%.3f %.3f %.3f] N.m at body-local point [%.4f %.4f %.4f] m",
+                req->body_name.c_str(), body_id, wrench[0], wrench[1], wrench[2], wrench[3],
+                wrench[4], wrench[5], point[0], point[1], point[2]);
+  }
+
   // ── Command callback (all groups) ──────────────────────────────────────────
 
   void GroupCommandCallback(std::size_t group_idx,
@@ -780,6 +853,11 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   // sim_status_pub_ initialized in on_configure (NOT in member initializer
   // list).
   rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr sim_status_pub_;
+
+  // Not a LifecyclePublisher analogue: rclcpp_lifecycle gates PUBLISHERS only,
+  // so this service answers from Inactive too. That is deliberate — staging a
+  // load before activation is exactly how a run starts with one already hung.
+  rclcpp::Service<rtc_msgs::srv::SetExternalWrench>::SharedPtr set_external_wrench_srv_;
 
   rclcpp::TimerBase::SharedPtr status_timer_;
 

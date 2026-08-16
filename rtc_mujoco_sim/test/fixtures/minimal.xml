@@ -15,6 +15,26 @@
         <site name="ee_site" pos="0 0 0.2" size="0.01"/>
       </body>
     </body>
+
+    <!-- Application-point probe. Welded to the world on purpose: it exercises
+         the xfrc staging math without adding a dof or a gram to the arm above,
+         so no existing test's dynamics move.
+
+         BOTH ASYMMETRIES HERE ARE LOAD-BEARING, and a test written against a
+         body that lacks either one passes while proving nothing:
+           - the inertial pos is offset on all three axes, so the body frame
+             origin and the centre of mass cannot be confused (MuJoCo applies
+             xfrc_applied at the CoM, requests name a point on the body);
+           - the quat is a 45 deg rotation about Y, so a body-local point and
+             the same numbers read as world coordinates cannot be confused
+             either.
+         The offset is also deliberately NOT parallel to any axis a test is
+         likely to push along — a force parallel to the moment arm produces no
+         moment, and would make the whole contract look like a no-op. -->
+    <body name="probe_link" pos="0.3 -0.15 0.25" quat="0.9238795325 0 0.3826834324 0">
+      <inertial pos="0.07 0.02 -0.04" mass="0.25" diaginertia="0.001 0.001 0.001"/>
+      <geom type="box" size="0.02 0.02 0.02" rgba="0.2 0.2 0.8 1"/>
+    </body>
   </worldbody>
 
   <actuator>

@@ -421,8 +421,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
   // 4. External forces and perturbation
   if (pert_mutex_.try_lock()) {
     if (ext_xfrc_dirty_) {
-      const std::size_t n = static_cast<std::size_t>(model_->nbody) * 6;
-      std::memcpy(data_->xfrc_applied, ext_xfrc_.data(), n * sizeof(double));
+      StageExternalWrenches();
     } else {
       mju_zero(data_->xfrc_applied, static_cast<int>(model_->nbody) * 6);
     }
@@ -430,6 +429,55 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
       mjv_applyPerturbForce(model_, data_, &shared_pert_);
     }
     pert_mutex_.unlock();
+  }
+}
+
+// Convert every staged request into the CoM-referenced wrench MuJoCo actually
+// applies. Caller holds pert_mutex_.
+//
+// mjData::xfrc_applied acts at the body CENTRE OF MASS (`xipos`) — measured, not
+// assumed: staging a pure force and differencing qfrc_smooth matches
+// J(xipos)^T w to 1e-14 and J(xpos)^T w only to 1.7e-1. Requests, however, name
+// a point on the body, because the frames a caller reasons about (and that a
+// pinocchio Jacobian projects) sit at body frame origins, not at centres of
+// mass. On iiwa7_leap those differ by up to 13 cm, 35 mm at `ee_link`, and by a
+// non-zero amount on EVERY body including the massless ones — so forwarding a
+// request verbatim would add a moment of the CoM offset crossed into the force
+// and read back as a payload hanging off-centre.
+//
+// The equivalent wrench about the CoM of a wrench (f, t) acting at p is
+// (f, t + (p - c) x f) with c the CoM, which is the identity below. It is
+// re-derived here EVERY tick rather than once at request time because p and c
+// both move with the body: a correction frozen at request time stays right only
+// until the arm does anything.
+void MuJoCoSimulator::StageExternalWrenches() noexcept {
+  const int nbody = static_cast<int>(model_->nbody);
+  mju_zero(data_->xfrc_applied, nbody * 6);
+
+  for (int b = 1; b < nbody; ++b) {
+    const std::size_t w_off = static_cast<std::size_t>(b) * 6;
+    const std::size_t p_off = static_cast<std::size_t>(b) * 3;
+    const double* force = &ext_xfrc_[w_off];
+    const double* torque = &ext_xfrc_[w_off + 3];
+    if (mju_isZero(&ext_xfrc_[w_off], 6)) {
+      continue;
+    }
+
+    // Requested application point, body-local -> world.
+    mjtNum point_world[3];
+    mju_mulMatVec3(point_world, &data_->xmat[9 * b], &ext_point_[p_off]);
+    mju_addTo3(point_world, &data_->xpos[3 * b]);
+
+    // Moment arm from where MuJoCo will apply the force to where it was asked
+    // to act, and the moment that transfer costs.
+    mjtNum arm[3];
+    mju_sub3(arm, point_world, &data_->xipos[3 * b]);
+    mjtNum moment[3];
+    mju_cross(moment, arm, force);
+
+    double* dst = &data_->xfrc_applied[w_off];
+    mju_copy3(dst, force);
+    mju_add3(dst + 3, torque, moment);
   }
 }
 
@@ -468,6 +516,7 @@ void MuJoCoSimulator::HandleReset() noexcept {
     mjv_defaultPerturb(&shared_pert_);
     pert_active_ = false;
     std::fill(ext_xfrc_.begin(), ext_xfrc_.end(), 0.0);
+    std::fill(ext_point_.begin(), ext_point_.end(), 0.0);
     ext_xfrc_dirty_ = false;
   }
   step_count_.store(0, std::memory_order_relaxed);
