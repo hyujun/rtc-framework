@@ -36,7 +36,6 @@
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
-#include "optional_package.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -48,7 +47,6 @@ namespace {
 
 struct FreshnessConfig {
   const char* label;
-  const char* urdf_pkg;
   const char* urdf_rel;
   bool extended;
   const char* closure_rel;
@@ -58,13 +56,17 @@ struct FreshnessConfig {
   std::array<const char*, 4> wbc_fingertips;
 };
 
+// Every fixture model lives in `robot_descriptions` — the package name is a
+// literal, not a config field, so validate_test_fixtures.py can prove where
+// this points instead of only checking that a skip guard exists (#457).
 rub::ModelConfig MakeModelConfig(const FreshnessConfig& fc) {
   rub::ModelConfig cfg;
-  cfg.urdf_path = ament_index_cpp::get_package_share_directory(fc.urdf_pkg) + "/" + fc.urdf_rel;
+  cfg.urdf_path =
+      ament_index_cpp::get_package_share_directory("robot_descriptions") + "/" + fc.urdf_rel;
   cfg.root_joint_type = "fixed";
   if (fc.extended) {
     cfg.closure_yaml_path =
-        ament_index_cpp::get_package_share_directory(fc.urdf_pkg) + "/" + fc.closure_rel;
+        ament_index_cpp::get_package_share_directory("robot_descriptions") + "/" + fc.closure_rel;
   }
   cfg.sub_models.push_back({fc.arm_submodel, fc.root_link, fc.tip_frame});
   cfg.tree_models.push_back(
@@ -178,7 +180,6 @@ void RunFreshness(const FreshnessConfig& fc) {
 // iiwa7_leap — 23-DoF serial/mimic (combined = wbc tree, GetActuatedModel null).
 TEST(WbcFallbackOmfFreshness, Iiwa7Leap) {
   RunFreshness({/*label=*/"iiwa7_leap",
-                /*urdf_pkg=*/"robot_descriptions",
                 /*urdf_rel=*/"robots/iiwa7_leap/urdf/iiwa7_with_leap_right.urdf.xacro",
                 /*extended=*/false,
                 /*closure_rel=*/"",
@@ -192,9 +193,7 @@ TEST(WbcFallbackOmfFreshness, Iiwa7Leap) {
 // ur5e_p1b — 16-DoF closed-chain (combined = GetActuatedModel). Arm tip is
 // upstream of the loop, so the arm TCP tracks measured identically to serial.
 TEST(WbcFallbackOmfFreshness, Ur5eP1b) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   RunFreshness({/*label=*/"ur5e_p1b",
-                /*urdf_pkg=*/"hand_description",
                 /*urdf_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro",
                 /*extended=*/true,
                 /*closure_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml",

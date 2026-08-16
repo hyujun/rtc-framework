@@ -17,14 +17,14 @@ find_package(ament_cmake REQUIRED)
 #            when the two files name the same link differently
 #            (compare_mjcf_urdf --link-map; see robots/ur5e/ for the case)
 #
-# Currently shipped:
-#   robots/ur5e/         — UR5e 6-DoF arm (urdf pre-generated from
-#                          ur_description xacro; regenerate with:
-#                            sudo apt install -y ros-jazzy-ur-description \
-#                                                ros-jazzy-xacro
-#                            xacro <ur_description_path>/ur5e.urdf.xacro ...)
-#   robots/assm_v1/      — 10-DoF custom hand "assm v1"
-#   robots/ur5e_assm_v1/ — Combined arm+hand (URDF xacro processed at runtime)
+# The shipped robot list lives in README.md (§2 table) -- an enumeration here
+# goes stale the moment a directory is added, and this one had already lost
+# five robots by the time #457 added the sixth.
+#
+# One regeneration note that has no other home: robots/ur5e/urdf/ur5e.urdf is
+# pre-generated from the ur_description xacro. To regenerate:
+#   sudo apt install -y ros-jazzy-ur-description ros-jazzy-xacro
+#   xacro <ur_description_path>/ur5e.urdf.xacro ...
 #
 # To add another robot or hand: drop robots/<name>/{urdf,mjcf,meshes}/ in
 # place; downstream YAML/launch references it via the `package://` URL or

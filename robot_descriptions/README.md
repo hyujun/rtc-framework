@@ -45,6 +45,7 @@
 | `robots/iiwa7_leap/` | iiwa7 arm + LEAP Hand 결합 — URDF xacro + MJCF (left/right 각 2종), scene 각 1종. `ee_link` 말단 부착. `meshes/{visual,collision}/`은 iiwa7 + leap_hand mesh hardlink |
 | `robots/schunk_hand/` | Schunk SVH 5-finger hand — URDF (left/right × obj/glb 4종) + meshes |
 | `robots/panda/` | Franka Emika Panda 7-DoF — **kinematics-only 테스트 fixture** (`urdf/panda.urdf`만, meshes 없음). rtc_tsid / rtc_mpc / integrated_bringup gtest 가 generic 7-DoF 모델로 `pinocchio::buildModel` 에 사용. 상세·출처: `robots/panda/README.md` |
+| `robots/ur5e_p1b/` | UR5e arm + proto_1b hand 결합 — **kinematics-only 폐쇄 체인 테스트 fixture** (URDF xacro + closure sidecar, meshes 없음). repo 안에서 유일한 실규모 폐쇄 체인 (5-loop, `n_a=16`) 이라 `GetActuatedModel()` 분기를 CI 에서 태우는 유일한 모델. 상세·출처·drift 대조: `robots/ur5e_p1b/README.md` |
 
 향후 robot 추가는 `robots/<new_name>/` 서브디렉토리 추가만으로 끝난다 — 본 패키지의 `CMakeLists.txt` / `package.xml`은 손대지 않는다.
 
@@ -111,9 +112,15 @@ robot_descriptions/
     │   │   └── schunk_svh_hand_{left,right}.urdf
     │   └── meshes/{visual,collision}/
     │
-    └── panda/                             # Franka Panda 7-DoF (kinematics-only test fixture)
+    ├── panda/                             # Franka Panda 7-DoF (kinematics-only test fixture)
+    │   └── urdf/
+    │       └── panda.urdf                 # meshes 없음 — pinocchio::buildModel 전용
+    │
+    └── ur5e_p1b/                          # UR5e + proto_1b hand (kinematics-only 폐쇄 체인 fixture)
         └── urdf/
-            └── panda.urdf                 # meshes 없음 — pinocchio::buildModel 전용
+            ├── proto_1b.urdf              # hand (vendored, meshes 없음)
+            ├── ur5e_with_proto_1b.urdf.xacro       # ur5e.urdf 를 include → tool0 에 부착
+            └── ur5e_with_proto_1b.closure.yaml     # 5-loop closure sidecar (extended URDF)
 ```
 
 **Mesh 참조 규약**: 새로 입주하는 robot의 URDF는 mesh를 `package://robot_descriptions/robots/<name>/meshes/...` 절대 URL로 참조한다 (URDF가 어느 디렉토리로 옮겨져도 깨지지 않음). `ur5e/`는 ROS 표준 dependency 호환을 위해 ament share 경로 기반의 기존 패턴을 유지한다.
@@ -122,7 +129,7 @@ robot_descriptions/
 
 ## 4. 자산 레이아웃 패턴
 
-각 `robots/<name>/` 서브디렉토리는 그 로봇에 실제로 필요한 자산만 보유합니다 — 모든 로봇이 URDF+MJCF+mesh 3종을 다 갖추는 것은 아닙니다 (예: `panda`는 kinematics-only URDF만, `assm_v1`/`ur5e_assm_v1`은 primitive geometry만이라 mesh 없음).
+각 `robots/<name>/` 서브디렉토리는 그 로봇에 실제로 필요한 자산만 보유합니다 — 모든 로봇이 URDF+MJCF+mesh 3종을 다 갖추는 것은 아닙니다 (예: `panda`/`ur5e_p1b`는 kinematics-only URDF만, `assm_v1`/`ur5e_assm_v1`은 primitive geometry만이라 mesh 없음).
 
 | 로봇 | `urdf/` | `mjcf/` | `meshes/` |
 |------|:---:|:---:|:---:|
@@ -134,6 +141,7 @@ robot_descriptions/
 | `iiwa7_leap` | O (xacro) | O | O (iiwa7 + leap_hand mesh hardlink) |
 | `schunk_hand` | O | - | O |
 | `panda` | O (kinematics-only) | - | - |
+| `ur5e_p1b` | O (xacro + closure yaml) | - | - |
 
 새 robot/파일 추가·삭제 시 이 표가 바로 stale 해지므로, 정확한 목록은 항상 직접 조회합니다:
 

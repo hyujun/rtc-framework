@@ -15,7 +15,6 @@
 // ur5e_p1b config + 실제 URDF/closure 로 bring-up 을 재생한다 (test_demo_wbc_tsid_path 와 동형).
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
-#include "optional_package.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -53,9 +52,6 @@ YAML::Node ShippedWbcConfig(const char* robot) {
 class ClosedChainProjectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // ur5e_p1b 는 repo 밖 hand_description 에서 온다 — 부재 시 정직한 skip (#454).
-    RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
-
     ctrl_ = std::make_unique<DemoWbcController>("");
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("wbc_closed_chain_projection_test");
 
