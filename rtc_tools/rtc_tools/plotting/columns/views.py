@@ -123,3 +123,47 @@ def has_wbc_fingertip_force(df):
 def has_wbc_lambda(df):
     """WbcDiagLog has QP contact-wrench solution columns (`lambda_*`)."""
     return any(c.startswith("lambda_") for c in df.columns)
+
+
+# ── MomentumObserverLog (#135 / #455) predicates ───────────────────────────
+#
+# These gate on CONTENT, not on column presence, and that difference is the
+# whole point. The payload/inertial sub-blocks ship `enabled: false`, so a
+# normal session carries the columns pinned at zero with reason=kNotInitialized
+# for every row. A column-presence gate would render three all-zero panels for
+# such a session; the reason code is what separates "the estimator ran and was
+# gated" (worth plotting — the reason mix is exactly what a tuner reads) from
+# "the estimator was never configured" (nothing to show). The producer pins
+# that contract: "서브블록이 없으면 전 컬럼 0 + payload_reason=1(미초기화)".
+
+# rtc::estimation::{Payload,Inertial}InvalidReason::kNotInitialized.
+_REASON_NOT_INITIALIZED = 1
+
+
+def _estimator_was_configured(df, reason_col):
+    """True when `reason_col` shows anything other than a never-initialized run.
+
+    Absent column → False (a session recorded before that layer existed).
+    All-NaN column → False; a file truncated mid-write carries no evidence
+    either way, and an empty figure is the worse of the two failure modes.
+    """
+    if reason_col not in df.columns:
+        return False
+    reasons = df[reason_col].dropna()
+    if reasons.empty:
+        return False
+    return bool((reasons != _REASON_NOT_INITIALIZED).any())
+
+
+def has_payload_estimate(df):
+    """MomentumObserverLog carries a Layer 2A payload estimate that ran."""
+    return _estimator_was_configured(df, "payload_reason")
+
+
+def has_inertial_estimate(df):
+    """MomentumObserverLog carries a Layer 2B inertial regression that ran.
+
+    Sessions recorded before #455 have no `inertial_*` columns at all, so the
+    inertial series are dropped from the payload figure rather than drawn flat.
+    """
+    return _estimator_was_configured(df, "inertial_reason")

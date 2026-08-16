@@ -15,6 +15,10 @@ CSV 컬럼 카테고리:
   - *_sensor_log.csv                   → sensor_log (DeviceSensorLog, hand)
   - cm_timing_log*.csv                 → CM RT loop timing
   - mpc_timing_log*.csv                → MPC main-loop timing (same 8-col schema)
+  - wbc_diag.csv                       → WBC TSID/QP per-tick diagnostics
+  - grasp_diag.csv                     → Force-PI grasp diagnostics
+  - pull_estimator.csv                 → in-plane pull-force estimate
+  - momentum_observer.csv              → momentum-observer residual + payload
 
 이 파일은 thin orchestration layer다 — actual implementations live in:
   - io/         CSV load, log-type detect, save-dir resolve
@@ -53,7 +57,9 @@ def main():
     parser.add_argument(
         "csv_file",
         type=str,
-        help="Path to *_state_log.csv, *_sensor_log.csv, cm_timing_log*.csv, or mpc_timing_log*.csv",
+        help="Path to *_state_log.csv, *_sensor_log.csv, cm_timing_log*.csv, "
+        "mpc_timing_log*.csv, or a controller-owned diagnostics CSV "
+        "(wbc_diag / grasp_diag / pull_estimator / momentum_observer)",
     )
     parser.add_argument(
         "--save-dir",
@@ -159,7 +165,9 @@ def main():
         print(f"Error: Cannot detect log type from filename or columns: {args.csv_file}")
         print(
             "Expected filenames: *_state_log.csv, *_sensor_log.csv, "
-            "cm_timing_log*.csv, mpc_timing_log*.csv"
+            "cm_timing_log*.csv, mpc_timing_log*.csv, or a controller-owned "
+            "diagnostics CSV (wbc_diag.csv, grasp_diag.csv, "
+            "pull_estimator.csv, momentum_observer.csv)"
         )
         sys.exit(1)
 

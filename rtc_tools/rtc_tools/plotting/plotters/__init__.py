@@ -17,6 +17,11 @@ from .grasp import (
     plot_grasp_diag,
     print_grasp_diag_statistics,
 )
+from .momentum import (
+    plot_momentum_observer,
+    plot_momentum_payload,
+    print_momentum_observer_statistics,
+)
 from .motor import (
     plot_motor_efforts,
     plot_motor_positions,
@@ -82,6 +87,10 @@ __all__ = [
     # grasp diagnostics
     "plot_grasp_diag",
     "print_grasp_diag_statistics",
+    # momentum observer (#135 Layer 1b / 2A, #455 Layer 2B)
+    "plot_momentum_observer",
+    "plot_momentum_payload",
+    "print_momentum_observer_statistics",
     # device
     "plot_device_positions",
     "plot_device_velocities",

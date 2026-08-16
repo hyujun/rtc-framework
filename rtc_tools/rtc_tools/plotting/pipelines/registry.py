@@ -22,6 +22,7 @@ from rtc_tools.plotting import plotters
 from rtc_tools.plotting.columns import (
     has_force_only_fingertips,
     has_motor,
+    has_payload_estimate,
     has_task_goal,
     has_wbc_accel,
     has_wbc_fingertip_force,
@@ -90,6 +91,12 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     # number on stdout before anyone opens a plot (#428).
     "grasp_diag": [
         PlotEntry("print_grasp_diag_stats", plotters.print_grasp_diag_statistics),
+    ],
+    # Same judgement as grasp_diag: the number is the deliverable. #135's sim
+    # negative control is stated as "no load ⇒ ‖r‖∞ below tol", so the printer
+    # covers Layer 1b/2A/2B in one pass and gates its own sections.
+    "momentum_observer": [
+        PlotEntry("print_momentum_stats", plotters.print_momentum_observer_statistics),
     ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
@@ -198,6 +205,19 @@ PIPELINES: dict[str, list[PlotEntry]] = {
     ],
     "grasp_diag": [
         PlotEntry("grasp_diag", plotters.plot_grasp_diag),
+    ],
+    # The residual figure is unconditional — Layer 1b is always present when the
+    # file exists at all. The payload figure is gated on the REASON code, not on
+    # column presence: the 2A/2B sub-blocks ship disabled, so a normal session
+    # carries their columns pinned at zero and would otherwise get four empty
+    # panels (see columns/views.py has_payload_estimate).
+    "momentum_observer": [
+        PlotEntry("momentum_observer", plotters.plot_momentum_observer),
+        PlotEntry(
+            "momentum_payload",
+            plotters.plot_momentum_payload,
+            available=has_payload_estimate,
+        ),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

@@ -40,6 +40,11 @@ def detect_log_type(filepath):
         # In-plane pull-force estimator (#167) — fixed instance stem shared by
         # the three demo controllers.
         return "pull_estimator"
+    elif stem == "momentum_observer" or stem.endswith("momentum_observer"):
+        # Generalized-momentum observer residual + payload/inertial estimate
+        # (#135 Layer 1b/2A, #455 Layer 2B) — fixed instance stem
+        # (kMomentumObserverLogInstance) shared by the three demo controllers.
+        return "momentum_observer"
     elif stem.endswith("state_log"):
         return "state_log"
     elif stem.endswith("sensor_log"):
@@ -85,6 +90,16 @@ def detect_log_type_by_columns(columns):
     # spelling and is still accepted so archived sessions keep plotting.
     if "friction_utilization" in cols and ("force_prefilter_x" in cols or "force_raw_x" in cols):
         return "pull_estimator"
+    # Momentum observer (#135 Layer 1b): per-tick momentum_observer.csv. Like
+    # the two branches above it MUST precede the sensor_log fallback — the
+    # per-joint residual columns are `r_<joint>`, so a robot whose arm joint
+    # name happens to contain the generic `_raw_`/`_filt_` token would
+    # otherwise be classified as a sensor log and plotted with the wrong
+    # pipeline instead of erroring out. `residual_inf_norm` + `ticks_since_seed`
+    # are emitted by no other pod, and both predate the Layer 2A/2B column
+    # blocks, so an archived Layer-1b-only session still matches.
+    if "residual_inf_norm" in cols and "ticks_since_seed" in cols:
+        return "momentum_observer"
     # WBC device state: superset of state_log with TSID a_opt acceleration.
     # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the
     # WBC arm/hand state CSVs from the generic state_log before that branch.
