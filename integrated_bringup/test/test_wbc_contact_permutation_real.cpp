@@ -13,6 +13,7 @@
 //   못하는 순서에서만 나오는 defensive 경로(Configure 주석 "buildReducedModel 순서를 가정하지
 //   않는다")라 프로덕션 미도달 → 강제하지 않고, 대신 **다열 override 정합**을 실규모로 검증한다.
 #include "integrated_bringup/support/wbc_reduced_dynamics_provider.hpp"
+#include "optional_package.hpp"
 #include "rtc_urdf_bridge/pinocchio_cache.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_closed_chain_handle.hpp"
@@ -62,6 +63,7 @@ rub::ModelConfig MakeUr5eP1bConfig() {
 
 // ── 실제 closed-chain 에서 비항등 permutation 으로 override J·oMf 가 참조 핸들과 일치 ──────────
 TEST(WbcContactPermutationReal, Ur5eP1bMultiColumnOverrideMatchesHandle) {
+  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   auto builder = std::make_shared<rub::PinocchioModelBuilder>(MakeUr5eP1bConfig());
 
   const auto control = builder->GetActuatedModel();

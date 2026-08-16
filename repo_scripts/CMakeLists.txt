@@ -112,6 +112,27 @@ if(BUILD_TESTING)
     TIMEOUT 60
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
+
+  # ── Test fixture package resolution (issue #454) ──────────────────────────
+  # A fixture that resolves a package CI cannot acquire fails there and only
+  # there, and `integrated_bringup` is a continue-on-error lane, so the throw
+  # never turns a PR red -- #452's joint-order oracle was 13-of-14 red in CI for
+  # its whole life and nobody saw it. Lives here, not in integrated_bringup,
+  # because "which packages can CI acquire" is a workspace-wide fact (*/package.xml
+  # + deps.repos) that no single package's CMakeLists can see.
+  ament_add_test(test_fixture_package_resolution
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate_test_fixtures.py
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
+  # The gate's own firing proof: it must still catch a bare literal, a
+  # non-literal argument, and a violation reached only through an included
+  # fixture header -- and must not read its own prose as a resolution.
+  ament_add_test(test_fixture_package_resolution_self_test
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate_test_fixtures.py --self-test
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
 endif()
 
 ament_package()
