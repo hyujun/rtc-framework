@@ -59,12 +59,12 @@
 
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_base/threading/seqlock.hpp"
+#include "rtc_base/types/types.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controllers/estimation/momentum_observer.hpp"
 #include "rtc_controllers/estimation/payload_estimator.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
-
-#include "rtc_base/types/types.hpp"
 
 #include <rclcpp/logger.hpp>
 
@@ -144,9 +144,7 @@ struct MomentumObserverWiring {
   /// 6×nv payload-frame Jacobian, preallocated — RT writes it every tick.
   Eigen::MatrixXd J_payload;
 
-  [[nodiscard]] bool payload_enabled() const noexcept {
-    return configured && payload_configured;
-  }
+  [[nodiscard]] bool payload_enabled() const noexcept { return configured && payload_configured; }
 };
 
 /// Non-RT. Builds the wiring's own RtModelHandle over `arm_model` and pins
@@ -165,9 +163,8 @@ struct MomentumObserverWiring {
 /// silently observe a subset of the arm and report the rest of it as external
 /// torque.
 void ConfigureMomentumObserverWiring(std::shared_ptr<const pinocchio::Model> arm_model,
-                                     std::span<const std::string> arm_joint_names,
-                                     int device_index, std::span<const double> gains,
-                                     MomentumObserverWiring& w);
+                                     std::span<const std::string> arm_joint_names, int device_index,
+                                     std::span<const double> gains, MomentumObserverWiring& w);
 
 /// RT. Returns true iff the residual advanced this tick.
 ///
@@ -175,8 +172,7 @@ void ConfigureMomentumObserverWiring(std::shared_ptr<const pinocchio::Model> arm
 /// rather than zeroing it — a zero would assert "no external torque", which is
 /// precisely the fabricated measurement the gate exists to prevent. A disabled
 /// wiring returns false without touching anything.
-bool UpdateMomentumObserver(const rtc::ControllerState& state,
-                            MomentumObserverWiring& w) noexcept;
+bool UpdateMomentumObserver(const rtc::ControllerState& state, MomentumObserverWiring& w) noexcept;
 
 /// RT. Declare this tick's inputs unusable without offering any — the E-STOP
 /// path, and any tick where the controller skips its control law.
@@ -229,26 +225,18 @@ void LogMomentumObserverWiring(const rclcpp::Logger& logger, const MomentumObser
                                const MomentumObserverParams& params);
 
 /// Push one observer log row from the wiring's current residual (#135 Layer 1b).
-/// RT tick tail — noexcept, heap-free; a no-op when the CSV channel is
-/// unregistered or the wiring is disabled, so the three demo controllers carry
-/// one call instead of a copy-pasted guard + fill + Push block.
+/// RT. Fill one channel row from the wiring's CURRENT state.
 ///
-/// Call it on EVERY tick, including held and E-STOP ones. A row is what makes
-/// "the observer stopped looking" visible: it carries valid=0, the reason, and
-/// the frozen residual. Skipping those ticks would leave gaps in the file that
-/// are indistinguishable from dropped rows, which is the ambiguity #234 P-20
-/// had to remove from the pull channel.
-inline void PushMomentumObserverLog(rtc::LogHandle<MomentumObserverLogPod>& handle,
-                                    const MomentumObserverWiring& w, double t_relative_s,
-                                    std::uint64_t tick) noexcept {
-  if (!handle || !w.enabled()) {
-    return;
-  }
-  MomentumObserverLogPod pod{};
+/// Split out of the tick tail below because the row now feeds TWO lanes — the
+/// CSV file and the `rtc_msgs/PayloadEstimate` topic (#135 D12) — and a second
+/// fill would be a second place for the two to drift apart. They are the same
+/// numbers by construction, which is what lets a stored file and a live topic
+/// be read the same way.
+inline void FillMomentumObserverLogPod(const MomentumObserverWiring& w, double t_relative_s,
+                                       std::uint64_t tick, MomentumObserverLogPod& pod) noexcept {
   pod.t_relative_s = t_relative_s;
   pod.tick = tick;
-  const std::size_t n =
-      std::min(w.residual_device.size(), MomentumObserverLogPod::kMaxArmJoints);
+  const std::size_t n = std::min(w.residual_device.size(), MomentumObserverLogPod::kMaxArmJoints);
   double inf_norm = 0.0;
   for (std::size_t i = 0; i < n; ++i) {
     const double r = w.residual_device[i];
@@ -271,8 +259,36 @@ inline void PushMomentumObserverLog(rtc::LogHandle<MomentumObserverLogPod>& hand
   pod.payload_fit_error = est.fit_error;
   pod.payload_valid = w.payload.valid();
   pod.payload_reason = static_cast<std::uint8_t>(w.payload.invalid_reason());
+}
 
-  handle.Push(pod);
+/// RT tick tail — noexcept, heap-free; a no-op when the wiring is disabled, so
+/// the three demo controllers carry one call instead of a copy-pasted guard +
+/// fill + Push block.
+///
+/// Call it on EVERY tick, including held and E-STOP ones. A row is what makes
+/// "the observer stopped looking" visible: it carries valid=0, the reason, and
+/// the frozen residual. Skipping those ticks would leave gaps in the file that
+/// are indistinguishable from dropped rows, which is the ambiguity #234 P-20
+/// had to remove from the pull channel.
+///
+/// The two lanes are guarded SEPARATELY on purpose. `publish_slot` is stored on
+/// every enabled tick, while the CSV push additionally needs a bound handle:
+/// the topic exists whenever the observer does, but the file only exists when
+/// the session registered the channel. Guarding both on the log handle would
+/// make an unregistered CSV channel silently take the topic down with it.
+inline void UpdateMomentumObserverChannels(rtc::LogHandle<MomentumObserverLogPod>& handle,
+                                           rtc::SeqLock<MomentumObserverLogPod>& publish_slot,
+                                           const MomentumObserverWiring& w, double t_relative_s,
+                                           std::uint64_t tick) noexcept {
+  if (!w.enabled()) {
+    return;
+  }
+  MomentumObserverLogPod pod{};
+  FillMomentumObserverLogPod(w, t_relative_s, tick, pod);
+  publish_slot.Store(pod);
+  if (handle) {
+    handle.Push(pod);
+  }
 }
 
 }  // namespace integrated_bringup

@@ -15,6 +15,7 @@ RTC 프레임워크를 위한 **커스텀 ROS2 메시지 + 서비스 정의** �
 - 파지 상태: 컨트롤러 주기 (RT 정기 tick @ `control_rate`, default 500 Hz) 에서 계산된 접촉/힘/파지 판정 (Force-PI: GraspState, TSID-based WBC: WbcState)
 - 컨트롤러 관리: lifecycle 상태 조회(ListControllers) + activate/deactivate(SwitchController), `/rtc_cm/*` API
 - CSV 로깅 전용 메시지: 상태/커맨드/궤적 통합 (DeviceStateLog, DeviceSensorLog)
+- 추정기 출력: 준정적 payload wrench/질량 + 그것을 만든 관절공간 잔차를 한 메시지에 (PayloadEstimate)
 - C++ 및 Python 바인딩 자동 생성 (rosidl)
 
 ---
@@ -39,6 +40,7 @@ rtc_msgs/
 │   ├── SimSensor.msg          <- MuJoCo 단일 센서 출력 (로봇 비의존적)
 │   ├── SimSensorState.msg     <- MuJoCo 센서 데이터 집계 (로봇 비의존적)
 │   ├── ToFSnapshot.msg        <- ToF 센서 + 핑거팁 SE3 자세 통합 스냅샷
+│   ├── PayloadEstimate.msg    <- 준정적 payload wrench/질량 추정 + 관절공간 잔차 (#135)
 │   ├── CalibrationCommand.msg <- 센서 캘리브레이션 명령 (확장 가능 enum)
 │   └── CalibrationStatus.msg  <- 센서 캘리브레이션 진행/완료 상태
 └── srv/
@@ -196,6 +198,37 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | **Pull estimate** | `pull` | `PullEstimate` | In-plane pull-force estimate (#167) — 하위 필드는 위 `GraspState.msg` 의 `PullEstimate.msg` 표와 동일 (measured R_i·f_i 기반, TSID λ_opt 아님) |
 
 - Per-controller 토픽: `/<config_key>/hand/wbc_state` (500 Hz 컨트롤러, ~50 Hz publish thread).
+
+---
+
+### `PayloadEstimate.msg`
+
+준정적 **payload wrench/질량 추정** (#135 Layer 2A) 과 그것을 만든 **관절공간 잔차** (Layer 1) 를 한 메시지에 싣습니다. `integrated_bringup` 의 `momentum_observer.csv` 행과 필드가 1:1 대응하므로 저장 파일과 라이브 토픽을 같은 방식으로 읽습니다. 운동량 관측기를 배선한 세 데모 컨트롤러 (joint / task / wbc) 가 각각 하나씩 publish 합니다.
+
+**두 블록이 한 메시지인 이유** (#135 D12): 잔차와 payload 는 한 tick 의 같은 입력에서 나오고, 의심스러운 `mass` 를 진단하려면 그것을 만든 `residual` 이 같은 행에 있어야 합니다. 토픽을 나누면 시간 정렬이 모든 소비자의 몫이 됩니다.
+
+| 카테고리 | 필드 | 타입 | 설명 |
+|---------|------|------|------|
+| **헤더** | `header` | `std_msgs/Header` | `frame_id` = 팔 root link — wrench 축이 정렬된 프레임 |
+| | `tick` | `uint64` | RT 루프 iteration. **staleness 판정은 이 필드로** — `header.stamp` 는 publish thread 의 wall clock 이라 RT 가 멈춰도 계속 증가 |
+| | `t_relative_s` | `float64` | 세션 상대 시각 [s] |
+| **잔차 (Layer 1)** | `joint_names` | `string[]` | 잔차의 관절 순서 (**device order**). URDF/pinocchio 순서와 일반적으로 다르므로 메시지가 자기 순서를 명시 |
+| | `residual` | `float64[]` | r [N·m], `joint_names` 와 같은 길이·순서 |
+| | `residual_inf_norm` | `float64` | max\|r\| [N·m] |
+| | `ticks_since_seed` | `uint32` | 재seed 이후 유효 tick 수. 작을 때는 잔차가 아직 0 에서 수렴 중이라 작은 \|r\| 이 "무부하"를 뜻하지 않음 |
+| | `residual_reason` | `uint8` | `RESIDUAL_NONE=0` / `NOT_INITIALIZED=1` / `HELD=2` (E-STOP 포함) / `SHORT_INPUT=3` / `NON_FINITE_INPUT=4` / `NON_POSITIVE_DT=5` |
+| | `residual_valid` | `bool` | false 인 tick 의 `residual` 은 **마지막 유효값으로 동결** (0 이 아님 — 0 은 "외력 없음" 을 주장하게 됨) |
+| **payload (Layer 2A)** | `payload_frame` | `string` | wrench 가 **작용하는** 프레임. 축은 `header.frame_id` 기준 (LOCAL_WORLD_ALIGNED) — wrench 는 screw 라 작용점이 모멘트를 바꿈 |
+| | `wrench` | `geometry_msgs/Wrench` | payload 가 **로봇에** 가하는 wrench. 매달린 질량 ⇒ **아래 방향** force |
+| | `mass` | `float64` | m̂ [kg]. 모델의 중력 벡터 기준이라 중력축이 다른 모델도 코드 변경 불필요 |
+| | `sigma_min` / `lambda_sq` | `float64` | §6.5 damping 진단. `lambda_sq` 는 특이점에서 멀면 0 (무감쇠 최소자승) |
+| | `fit_error` | `float64` | max\|Jᵀŵ − r\| [N·m]. payload 와 미모델링 관절 토크 (마찰, MJCF armature) 를 가르는 유일한 지표 |
+| | `payload_reason` | `uint8` | `PAYLOAD_NONE=0` / `NOT_INITIALIZED=1` / `HELD=2` / `SHORT_INPUT=3` / `NON_FINITE_INPUT=4` / `OBSERVER_INVALID=5` / `NOT_CONVERGED=6` / `ARM_MOVING=7` / `PERIPHERAL_MOVING=8` / `DEGENERATE_GRAVITY=9` / `SOLVER_FAILED=10` / `RANK_DEFICIENT=11` / `POOR_FIT=12` |
+| | `payload_valid` | `bool` | — |
+
+- Per-controller 토픽: `/<config_key>/payload_estimate` (RT tick 에서 계산, ~50 Hz publish thread).
+- **추정기가 꺼져 있어도 이 토픽은 삽니다** — publisher 는 *관측기* 기준으로 만들어지고, payload 블록은 `payload_valid=false` + `payload_reason=PAYLOAD_NOT_INITIALIZED` 로 나갑니다 (출하 config 는 `payload_estimator.enabled: false`).
+- `PAYLOAD_PERIPHERAL_MOVING` 은 C++ `PayloadInvalidReason::kHandMoving` 에 대응합니다. 게이트가 보는 것은 손이 아니라 **관측 sub-model 에 포함되지 않은 모든 device** 이고, config 키도 `max_peripheral_velocity` 입니다.
 
 ---
 
@@ -517,6 +550,11 @@ source install/setup.bash
 ├── SwitchController.srv            /rtc_cm/switch_controller → activate/deactivate
 ├── ResetFault.srv                  /rtc_cm/reset_fault       → controller-local fault 해제
 └── ClearEstop.srv                  /rtc_cm/clear_estop       → global E-STOP 래치 해제
+
+추정 (컨트롤러 RT tick 에서 계산)
+└── PayloadEstimate (#135)
+    ├── 잔차: joint_names/residual (device order) + residual_valid/reason
+    └── payload: wrench/mass + sigma_min/lambda_sq/fit_error + payload_valid/reason
 
 로깅 (CSV 세션 기록)                ToF 스냅샷 (형상 추정용)
 ├── DeviceStateLog                  └── ToFSnapshot

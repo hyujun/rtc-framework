@@ -121,6 +121,19 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
       return CallbackReturn::FAILURE;
     }
 
+    // ── #135 D12: PayloadEstimate topic ──────────────────────────────────
+    // Gated on the OBSERVER, not on the payload estimator. The residual half
+    // of the message stands on its own, and the shipped config has
+    // payload_estimator.enabled: false — a payload-gated publisher would take
+    // the residual off the wire along with it. `payload_frame` is left empty
+    // unless the estimator actually configured, so a consumer can tell "no
+    // estimator" from "estimator held this tick" without reading the reason.
+    if (momentum_wiring_.enabled()) {
+      SetupPayloadEstimatePublisher(
+          *this, owned_topics_, "payload_estimate", primary_joint_names_,
+          momentum_wiring_.payload_enabled() ? momentum_params_.payload.frame : std::string{});
+    }
+
     LogRegistrationContext ctx{
         .logger = logger_,
         .log_set = log_set_,
@@ -165,8 +178,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     pull_estimator_log_handle_ = std::move(reg.handles.pull_estimator);
     momentum_observer_log_handle_ = std::move(reg.handles.momentum_observer);
     grasp_diag_log_handle_ = std::move(reg.handles.grasp_diag);
-    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr,
-                       ctx.grasp_diag_finger_names);
+    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr, ctx.grasp_diag_finger_names);
 
     // Drain timer on a non-RT callback group (10 Hz). Single-threaded —
     // executor's MutuallyExclusive group is sufficient.
@@ -234,8 +246,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
                 static_cast<unsigned>(grasp_phase_pub_.load(std::memory_order_acquire));
             grasp_controller_->CommandGrasp(req->target_force);
             RCLCPP_INFO(logger_, "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
-                        req->target_force, GraspHandModeName(mode),
-                        phase_before);
+                        req->target_force, GraspHandModeName(mode), phase_before);
             resp->ok = true;
             resp->message = "grasp started @ " + std::to_string(req->target_force) + " N";
           } else if (req->command == Req::RELEASE) {

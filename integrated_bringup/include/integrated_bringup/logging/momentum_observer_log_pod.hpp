@@ -6,14 +6,15 @@
 // (joint / task / wbc) — the observer is a single shared component
 // (MomentumObserverWiring), so the channel shape is controller-independent.
 //
-// PATH A: no rtc_msgs/.msg for this channel, and that is a decision rather than
-// a shortcut (#135 D12). What Layer 1 produces is the joint-space residual `r`;
-// the mass / CoM / confidence that a `PayloadEstimate` topic would exist to
-// carry are Layer 2A's output and do not exist yet. Publishing that message now
-// would ship fields pinned at zero for the life of the layer. The residual gets
-// a CSV channel instead — the same call the in-plane pull estimator made (#167)
-// — and the wire surface arrives with Layer 2A, in one msgs ABI event instead
-// of two.
+// THIS POD FEEDS TWO LANES. Layer 1b shipped it as CSV only (#135 D12): the
+// mass / CoM / confidence a `PayloadEstimate` topic would carry were Layer 2A's
+// output and did not exist yet, so publishing then would have shipped fields
+// pinned at zero for the life of the layer. Layer 2A supplied them, and the
+// wire surface arrived with it in one msgs ABI event instead of two —
+// `rtc_msgs/msg/PayloadEstimate.msg`, filled from this same row by
+// owned_topics.cpp. The row is built ONCE per tick
+// (`FillMomentumObserverLogPod`) and handed to both lanes, so the stored file
+// and the live topic cannot report different numbers for one tick.
 //
 // This file mirrors DeviceStateLogPod's shape for the per-joint block: a
 // fixed-size array with an integrated_bringup-private cap, and a runtime column
@@ -23,8 +24,8 @@
 #include "rtc_controllers/estimation/payload_estimator.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <ostream>

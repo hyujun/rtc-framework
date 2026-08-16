@@ -104,6 +104,19 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
       return CallbackReturn::FAILURE;
     }
 
+    // ── #135 D12: PayloadEstimate topic ──────────────────────────────────
+    // Gated on the OBSERVER, not on the payload estimator. The residual half
+    // of the message stands on its own, and the shipped config has
+    // payload_estimator.enabled: false — a payload-gated publisher would take
+    // the residual off the wire along with it. `payload_frame` is left empty
+    // unless the estimator actually configured, so a consumer can tell "no
+    // estimator" from "estimator held this tick" without reading the reason.
+    if (momentum_wiring_.enabled()) {
+      SetupPayloadEstimatePublisher(
+          *this, owned_topics_, "payload_estimate", primary_joint_names_,
+          momentum_wiring_.payload_enabled() ? momentum_params_.payload.frame : std::string{});
+    }
+
     LogRegistrationContext ctx{
         .logger = logger_,
         .log_set = log_set_,
@@ -149,8 +162,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     momentum_observer_log_handle_ = std::move(reg.handles.momentum_observer);
     task_diag_log_handle_ = std::move(reg.handles.task_diag);
     grasp_diag_log_handle_ = std::move(reg.handles.grasp_diag);
-    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr,
-                       ctx.grasp_diag_finger_names);
+    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr, ctx.grasp_diag_finger_names);
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

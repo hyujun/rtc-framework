@@ -865,3 +865,69 @@ TEST(PayloadEstimatorWiring, ResetRtStateClearsThePayloadEstimate) {
   EXPECT_FALSE(wir.payload.valid());
   EXPECT_DOUBLE_EQ(wir.payload.estimate().mass, 0.0) << "a stale mass survived the reset";
 }
+
+// ── #135 D12: the two channel lanes ──────────────────────────────────────────
+//
+// UpdateMomentumObserverChannels feeds a CSV handle and a publish SeqLock from
+// ONE fill. The cases below pin the two properties that a future edit could
+// break without any other symptom: the lanes carry identical numbers, and they
+// are guarded independently (an unregistered CSV channel must not take the
+// topic off the wire with it).
+
+TEST(MomentumObserverChannels, StoresTheRowForThePublisherWithNoCsvChannelBound) {
+  auto model = ArmModel();
+  rub::RtModelHandle probe(model);
+  const std::vector<std::string> names = ArmJointNames(probe);
+
+  integrated_bringup::MomentumObserverParams params;
+  params.has_block = true;
+  params.enabled = true;
+  params.gains.assign(1, 10.0);
+
+  MomentumObserverWiring wir;
+  integrated_bringup::BuildMomentumObserverWiring(params, model, names, 0, wir);
+  ASSERT_TRUE(wir.enabled());
+
+  rtc::DeviceState dev = FullyReadableDevice();
+  dev.efforts[0] = 1.25;
+  const rtc::ControllerState st = StateWith(dev);
+  for (int k = 0; k < 50; ++k) {
+    (void)integrated_bringup::UpdateMomentumObserver(st, wir);
+  }
+
+  // Deliberately unbound: this is the state every URDF fixture is in, and the
+  // state a session that registered no momentum_observer channel runs in.
+  rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> unbound_csv;
+  rtc::SeqLock<integrated_bringup::MomentumObserverLogPod> slot;
+  ASSERT_FALSE(unbound_csv);
+
+  integrated_bringup::UpdateMomentumObserverChannels(unbound_csv, slot, wir, 3.5, 77);
+
+  const auto row = slot.Load();
+  EXPECT_EQ(row.tick, 77U);
+  EXPECT_DOUBLE_EQ(row.t_relative_s, 3.5);
+  EXPECT_TRUE(row.valid);
+  // The row must carry the wiring's actual residual, not a default-constructed
+  // POD -- a store of `{}` would satisfy a bare "something was stored" check.
+  const auto r = wir.residual();
+  ASSERT_GE(r.size(), 1U);
+  EXPECT_DOUBLE_EQ(row.residual[0], r[0]);
+  EXPECT_GT(row.residual_inf_norm, 0.0);
+}
+
+TEST(MomentumObserverChannels, LeavesTheSlotAloneWhenTheWiringIsDisabled) {
+  MomentumObserverWiring wir;  // never configured
+  ASSERT_FALSE(wir.enabled());
+
+  rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> unbound_csv;
+  rtc::SeqLock<integrated_bringup::MomentumObserverLogPod> slot;
+  integrated_bringup::MomentumObserverLogPod sentinel{};
+  sentinel.tick = 999;
+  slot.Store(sentinel);
+
+  integrated_bringup::UpdateMomentumObserverChannels(unbound_csv, slot, wir, 1.0, 5);
+
+  // A disabled wiring has nothing to say; overwriting the slot with zeros would
+  // publish tick 0 forever on a controller that simply has no observer.
+  EXPECT_EQ(slot.Load().tick, 999U);
+}

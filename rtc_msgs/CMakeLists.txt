@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DeviceSensorLog.msg"
   "msg/GraspState.msg"
   "msg/PullEstimate.msg"
+  "msg/PayloadEstimate.msg"
   "msg/SimSensor.msg"
   "msg/SimSensorState.msg"
   "msg/ToFSnapshot.msg"
