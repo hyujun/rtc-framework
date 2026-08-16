@@ -47,7 +47,6 @@
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
-#include "optional_package.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_closed_chain_handle.hpp"
@@ -122,10 +121,9 @@ void PrintRow(const char* label, const Stats& s) {
 
 struct BenchConfig {
   const char* label;
-  const char* urdf_pkg;
   const char* urdf_rel;
   bool extended;
-  const char* closure_rel;                    // pkg-relative; only used when extended
+  const char* closure_rel;                    // share-relative; only used when extended
   const char* arm_submodel;                   // GetReducedModel(name) — baseline arm-only model
   const char* arm_tip_frame;                  // ee / flange frame for the frame Jacobian
   const char* root_link;                      // arm sub_model + wbc tree root link (shipped config)
@@ -134,13 +132,17 @@ struct BenchConfig {
   int expected_nv;
 };
 
+// Every fixture model lives in `robot_descriptions` — the package name is a
+// literal, not a config field, so validate_test_fixtures.py can prove where
+// this points instead of only checking that a skip guard exists (#457).
 rub::ModelConfig MakeModelConfig(const BenchConfig& bc) {
   rub::ModelConfig cfg;
-  cfg.urdf_path = ament_index_cpp::get_package_share_directory(bc.urdf_pkg) + "/" + bc.urdf_rel;
+  cfg.urdf_path =
+      ament_index_cpp::get_package_share_directory("robot_descriptions") + "/" + bc.urdf_rel;
   cfg.root_joint_type = "fixed";
   if (bc.extended) {
     cfg.closure_yaml_path =
-        ament_index_cpp::get_package_share_directory(bc.urdf_pkg) + "/" + bc.closure_rel;
+        ament_index_cpp::get_package_share_directory("robot_descriptions") + "/" + bc.closure_rel;
   }
   // Only URDF/closure paths + the fixed root joint are set here; the arm
   // sub_model and wbc control tree (the names/roots the benchmark consumes) are
@@ -371,7 +373,6 @@ void RunBench(const BenchConfig& bc) {
 //   Combined control model = wbc tree (GetActuatedModel() is null here).
 TEST(UnifiedKinDynBench, Iiwa7Leap) {
   RunBench({/*label=*/"iiwa7_leap (23-DoF serial/mimic)",
-            /*urdf_pkg=*/"robot_descriptions",
             /*urdf_rel=*/"robots/iiwa7_leap/urdf/iiwa7_with_leap_right.urdf.xacro",
             /*extended=*/false,
             /*closure_rel=*/"",
@@ -388,9 +389,7 @@ TEST(UnifiedKinDynBench, Iiwa7Leap) {
 // ur5e_p1b — 16-DoF (6 UR5e + 10 proto_1b), closed-chain (5-loop).
 //   Combined control model = GetActuatedModel() (non-null; loop-passive locked).
 TEST(UnifiedKinDynBench, Ur5eP1b) {
-  RTC_SKIP_IF_PACKAGE_MISSING("hand_description");
   RunBench({/*label=*/"ur5e_p1b (16-DoF closed-chain)",
-            /*urdf_pkg=*/"hand_description",
             /*urdf_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro",
             /*extended=*/true,
             /*closure_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml",

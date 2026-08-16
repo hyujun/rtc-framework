@@ -12,13 +12,16 @@
 //   SetSystemModelConfig → SetSharedModelBuilder → SetControlRate →
 //   LoadConfig(yaml) → SetDeviceNameConfigs (triggers OnDeviceConfigsSet)
 //
-// ⚠ This profile lives in `hand_description`, which is NOT a dependency of this
-// workspace (separate project, developer machines only — see optional_package.hpp).
-// Every test that instantiates it MUST guard with RTC_SKIP_IF_PACKAGE_MISSING
-// ("hand_description"); validate_test_fixtures.py enforces that. #457 replaces this
-// with a closed-chain model in `robot_descriptions` so the paths run in CI.
+// The model is vendored in-repo at robot_descriptions/robots/ur5e_p1b/ (#457), so
+// these paths run in CI. It used to resolve `hand_description`, a separate project
+// present only on developer machines, which made every case below an invisible red
+// there and then an explicit skip (#454) — see that robot's README.md for the
+// vendoring rationale and for what tracking upstream costs.
 //
-// Every value below mirrors config/ur5e_p1b/_base.yaml (`urdf:` + `devices:`).
+// Every value below mirrors config/ur5e_p1b/_base.yaml (`urdf:` + `devices:`) except
+// the package: the shipped profile still names `hand_description` because it drives
+// a real, separate robot, while this fixture needs a model CI can acquire. The
+// kinematics, closure sidecar and joint names are the same model either way.
 // The builder is a process-wide singleton for the same reason as the iiwa7 one:
 // the xacro→Pinocchio parse dominates, and production shares one builder.
 #pragma once
@@ -47,7 +50,7 @@ inline constexpr std::array<double, kUr5eArmDof> kUr5eHome = {0.0, -1.2, 1.4, -1
 
 inline rtc_urdf_bridge::ModelConfig MakeUr5eP1bModelConfig() {
   rtc_urdf_bridge::ModelConfig cfg;
-  const std::string share = ament_index_cpp::get_package_share_directory("hand_description");
+  const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
   cfg.urdf_path = share + "/robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro";
   cfg.root_joint_type = "fixed";
   // The closure sidecar is what makes GetActuatedModel() non-null and the
@@ -88,7 +91,7 @@ inline std::map<std::string, rtc::DeviceNameConfig> MakeUr5eP1bDeviceConfigs() {
   arm.joint_state_names = {"shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
                            "wrist_1_joint",      "wrist_2_joint",       "wrist_3_joint"};
   rtc::DeviceUrdfConfig arm_urdf;
-  arm_urdf.package = "hand_description";
+  arm_urdf.package = "robot_descriptions";
   arm_urdf.path = "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro";
   arm_urdf.root_link = "base";
   arm_urdf.tip_link = "tool0";
