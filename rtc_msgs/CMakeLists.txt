@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GraspCommand.srv"
   "srv/ResetFault.srv"
   "srv/ClearEstop.srv"
+  "srv/SetExternalWrench.srv"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 
