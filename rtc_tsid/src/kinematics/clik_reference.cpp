@@ -42,6 +42,36 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     throw std::runtime_error(
         "ClikReferenceGenerator: q_min / q_max must both be set or both empty");
   }
+  // NUM-7: the size/symmetry checks above are NOT a finiteness gate. A
+  // non-finite component is laundered by the box assembly in Compute() —
+  // std::max(lo, NaN) returns lo and std::min(hi, NaN) returns hi — so the
+  // position bound silently vanishes for that joint while q_ref/v_ref stay
+  // finite, which means Compute()'s own allFinite() output guard never fires.
+  // The inverted-box collapse (lo > hi) is equally blind: every comparison
+  // against NaN is false. ±inf is rejected too: the sanctioned encoding for
+  // "no position bound" is an EMPTY q_min/q_max, and -inf is only benign while
+  // the velocity box is on (with v_limit <= 0 it reaches the QP as l = -inf),
+  // i.e. it is not a local property. A caller whose model reports unbounded
+  // joints (Pinocchio's ±inf convention for continuous joints) must leave the
+  // box empty rather than forward the infinities.
+  //
+  // q_min(i) == q_max(i) is legitimate and must pass: it is a joint locked by
+  // the caller's own safety margin (shipped panda finger [0, 0.04] under
+  // position_margin 0.02 lands exactly on equality). Only strict inversion is
+  // a contradiction — that box admits no velocity at all, and the collapse
+  // guard would drive the joint at the full velocity limit forever.
+  for (Eigen::Index i = 0; i < config.q_min.size(); ++i) {
+    if (!std::isfinite(config.q_min(i)) || !std::isfinite(config.q_max(i))) {
+      throw std::runtime_error("ClikReferenceGenerator: q_min / q_max must be finite, got [" +
+                               std::to_string(config.q_min(i)) + ", " +
+                               std::to_string(config.q_max(i)) + "] at index " + std::to_string(i));
+    }
+    if (config.q_min(i) > config.q_max(i)) {
+      throw std::runtime_error("ClikReferenceGenerator: q_min must be <= q_max, got q_min " +
+                               std::to_string(config.q_min(i)) + " > q_max " +
+                               std::to_string(config.q_max(i)) + " at index " + std::to_string(i));
+    }
+  }
 
   // Index validation: range, duplicates, arm/hand overlap.
   std::vector<bool> seen(static_cast<size_t>(nv), false);

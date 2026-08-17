@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <new>
 #include <string>
@@ -190,6 +191,142 @@ TEST_F(ClikReferenceTest, InitRejectsInvalidConfig) {
   EXPECT_THROW(gen.Init(9, overlap), std::runtime_error);
 
   EXPECT_NO_THROW(gen.Init(9, cfg));
+}
+
+// ── Position box validation (NUM-7) ────────────────────────────────────────
+//
+// The size/symmetry checks that already existed are not a finiteness gate: the
+// box assembly in Compute() is `lo = std::max(lo, (q_min-q)/dt)` /
+// `hi = std::min(hi, (q_max-q)/dt)`, and std::max/std::min return their FIRST
+// argument when the second is NaN. A non-finite bound therefore collapses to
+// ±v_limit — the position bound silently disappears for that joint, the
+// inverted-box guard (`lo > hi`) is blind because every NaN comparison is
+// false, and Compute()'s own `allFinite()` output guard never fires because
+// q_ref/v_ref stay finite and plausible. Measured with the gate reverted: a
+// single NaN component leaves Compute() returning true with the box gone.
+//
+// Each case below is pinned separately so a reverted guard is attributable:
+//   finiteness removed        → NaN + infinite cases red
+//   finiteness → isnan only   → infinite case red alone
+//   order check removed       → inverted case red alone
+//   order check `>` → `>=`    → margin-clamped real-model case red alone
+//
+// Helper: a valid full-nv box around home, so each case mutates exactly one
+// component away from a config that is otherwise known-good.
+Eigen::VectorXd ValidBoxLow(const Eigen::VectorXd& q_home) {
+  return q_home.array() - 0.1;
+}
+
+Eigen::VectorXd ValidBoxHigh(const Eigen::VectorXd& q_home) {
+  return q_home.array() + 0.1;
+}
+
+TEST_F(ClikReferenceTest, InitRejectsNaNPositionBox) {
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+  cfg.q_min = ValidBoxLow(q_home_);
+  cfg.q_max = ValidBoxHigh(q_home_);
+
+  // Sanity: the unmutated box is accepted, so each rejection below is caused by
+  // the single NaN component and not by an unrelated defect in the fixture.
+  {
+    ClikReferenceGenerator gen;
+    EXPECT_NO_THROW(gen.Init(robot_info_.nv, cfg));
+  }
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const int idx : {0, 8}) {  // an arm index and a hand index
+    ClikReferenceGenerator::Config bad_min = cfg;
+    bad_min.q_min(idx) = nan;
+    ClikReferenceGenerator gen_min;
+    EXPECT_THROW(gen_min.Init(robot_info_.nv, bad_min), std::runtime_error)
+        << "NaN q_min at index " << idx << " must be rejected";
+
+    ClikReferenceGenerator::Config bad_max = cfg;
+    bad_max.q_max(idx) = nan;
+    ClikReferenceGenerator gen_max;
+    EXPECT_THROW(gen_max.Init(robot_info_.nv, bad_max), std::runtime_error)
+        << "NaN q_max at index " << idx << " must be rejected";
+  }
+}
+
+// ±inf in the *bound-disabling* direction (q_min = −inf, q_max = +inf) is the
+// one a NaN-only guard would let through, and it is exactly the case that is
+// only benign while the velocity box is on: with v_limit ≤ 0 the −inf reaches
+// the QP as l = −inf. The sanctioned encoding for "no position bound" is an
+// EMPTY box, which this test keeps distinguishable by asserting the empty box
+// still passes.
+TEST_F(ClikReferenceTest, InitRejectsInfinitePositionBox) {
+  const double inf = std::numeric_limits<double>::infinity();
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+  cfg.q_min = ValidBoxLow(q_home_);
+  cfg.q_max = ValidBoxHigh(q_home_);
+
+  ClikReferenceGenerator::Config unbounded_low = cfg;
+  unbounded_low.q_min(3) = -inf;
+  ClikReferenceGenerator gen_low;
+  EXPECT_THROW(gen_low.Init(robot_info_.nv, unbounded_low), std::runtime_error);
+
+  ClikReferenceGenerator::Config unbounded_high = cfg;
+  unbounded_high.q_max(3) = inf;
+  ClikReferenceGenerator gen_high;
+  EXPECT_THROW(gen_high.Init(robot_info_.nv, unbounded_high), std::runtime_error);
+
+  // The sanctioned way to say "no position bound" stays open.
+  ClikReferenceGenerator::Config empty_box = cfg;
+  empty_box.q_min = Eigen::VectorXd();
+  empty_box.q_max = Eigen::VectorXd();
+  ClikReferenceGenerator gen_empty;
+  EXPECT_NO_THROW(gen_empty.Init(robot_info_.nv, empty_box));
+}
+
+// A strictly inverted box admits no velocity at all; the collapse guard in
+// Compute() would then drive that joint at the full velocity limit every tick,
+// forever, with no failure reported. Reject at Init instead.
+TEST_F(ClikReferenceTest, InitRejectsInvertedPositionBox) {
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+  cfg.q_min = ValidBoxLow(q_home_);
+  cfg.q_max = ValidBoxHigh(q_home_);
+  cfg.q_min(5) = cfg.q_max(5) + 1e-9;  // the smallest possible inversion
+
+  ClikReferenceGenerator gen;
+  EXPECT_THROW(gen.Init(robot_info_.nv, cfg), std::runtime_error);
+}
+
+// Equality must PASS, and the reason is a real asset rather than a synthetic
+// vector: the production consumer (DemoWbcController::InitClik) builds the box
+// as model.lowerPositionLimit + margin / model.upperPositionLimit − margin with
+// a shipped margin of 0.02 rad, and the panda finger range [0, 0.04] lands on
+// q_min == q_max exactly. Rejecting equality would take out that envelope, and
+// the consumer only WARNs and silently falls back to its integrator path — so
+// an over-strict gate degrades the position backbone instead of failing loudly.
+TEST_F(ClikReferenceTest, InitAcceptsMarginClampedRealModelEnvelope) {
+  constexpr double kPositionMargin = 0.02;  // integration.position_margin, shipped
+
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+  cfg.q_min = model_->lowerPositionLimit.array() + kPositionMargin;
+  cfg.q_max = model_->upperPositionLimit.array() - kPositionMargin;
+
+  // The fixture must actually reach the equality case, else this test is
+  // vacuous and would drift silently if the shipped URDF changed.
+  ASSERT_TRUE((cfg.q_min.array() == cfg.q_max.array()).any())
+      << "panda + margin " << kPositionMargin << " no longer produces a locked joint";
+  ASSERT_TRUE((cfg.q_min.array() <= cfg.q_max.array()).all())
+      << "fixture envelope is inverted — that is a separate case";
+
+  ClikReferenceGenerator gen;
+  EXPECT_NO_THROW(gen.Init(robot_info_.nv, cfg));
 }
 
 TEST_F(ClikReferenceTest, ComputePreconditionsReturnFalse) {
