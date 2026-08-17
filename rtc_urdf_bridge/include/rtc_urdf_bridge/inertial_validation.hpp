@@ -29,6 +29,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rtc_urdf_bridge {
@@ -42,18 +43,27 @@ namespace rtc_urdf_bridge {
 // 값 근거 (2026-08-17 실측): 정당한 최소 삼각 여유는 +5.53e-5 (`panda_link2`),
 // 실제 위반은 -3.33e-2 (`schunk_svh_hand_*` 의 `*_hand_p`) — 약 600 배 간격
 // 사이에 임계가 여유롭게 들어간다.
+//
+// **이 문단이 임계 근거의 SSoT 다.** README·`agent_docs/testing-debug.md` 는 이
+// 숫자를 복제하지 말고 여기를 가리킨다 (자산이 바뀌면 재측정 지점이 하나여야 한다).
 inline constexpr double kInertialRelTol = 1e-9;
 
 // ── 결함 분류 ────────────────────────────────────────────────────────────────
 enum class InertialDefect : std::uint8_t {
   // V6 — 물리적으로 불가능 (로드 실패)
-  kNonFinite,                // mass 또는 관성 성분에 NaN/Inf, 혹은 고유값 분해 실패
-                             // (= 판정 불가. 판정 불가는 통과가 아니라 거부다)
+  kNonFinite,                // mass · CoM 기준 관성 · CoM 위치(lever) 중 하나라도
+                             // NaN/Inf, 혹은 고유값 분해 실패 (= 판정 불가.
+                             // 판정 불가는 통과가 아니라 거부다)
   kNegativeMass,             // mass < 0
   kNotPositiveSemidefinite,  // 관성 텐서에 음의 고유값
   kTriangleInequality,       // I1 + I2 < I3 — 어떤 질량분포로도 실현 불가
+  // mass = 0 인데 관성 텐서 ≠ 0. 질량 0 강체는 회전관성도 0 이어야 하므로 어떤
+  // 해석으로도 강체가 아니다 — pinocchio 자신의 유효성 기준과 같은 축이다
+  // ((m>0 && I valid) || (m==0 && I 전부 0)).
+  kMasslessWithInertia,
   // V5 — 물리적으로 불완전 (경고)
-  kMasslessMovableBody,  // movable body 의 composite mass = 0 → M(q) 특이
+  kMasslessMovableBody,  // movable body 의 composite mass 와 관성이 **함께** 0
+                         // → 강체로서 모순은 없으나 M(q) 가 그 DoF 에서 특이
 };
 
 /// 결함 1건. `principal_moments` 는 **오름차순**, 관성은 CoM 기준이다.
@@ -63,9 +73,11 @@ struct InertialViolation {
   InertialDefect defect{InertialDefect::kNonFinite};
   double mass{0.0};
   std::array<double, 3> principal_moments{{0.0, 0.0, 0.0}};
-  /// scale 로 정규화된 여유. 음수면 그 크기가 곧 상대 위반량이다
-  /// (kTriangleInequality → (I1+I2-I3)/scale, kNotPositiveSemidefinite → I1/scale).
-  /// 크기 판정이 아닌 결함(kNonFinite 등)에서는 0.
+  /// scale = max(|I1|,|I3|) 로 정규화된 여유 (kTriangleInequality → (I1+I2-I3)/scale,
+  /// kNotPositiveSemidefinite → I1/scale). 음수면 위반이고 그 크기가 상대 위반량이나,
+  /// **-1 에서 포화한다** — 음의 고유값이 절댓값 최대면 I1/scale 이 정확히 -1 이라
+  /// (-5, 0.1, 1) 과 (-50, 0.1, 1) 이 같은 값을 낸다. 위반의 절대 크기가 필요하면
+  /// principal_moments 를 보라. 크기 판정이 아닌 결함(kNonFinite 등)에서는 0.
   double margin{0.0};
 };
 
@@ -84,6 +96,17 @@ struct InertialValidationReport {
 ///   강체를 거부한다.
 [[nodiscard]] InertialValidationReport ValidateInertias(const pinocchio::Model& model,
                                                         double rel_tol = kInertialRelTol);
+
+/// 판정 + **처분**을 한 번에 수행한다 — V5 는 WARN 로그, V6 는 ERROR 로그 +
+/// `std::runtime_error`. URDF → `pinocchio::Model` 로드 진입점은 **모두** 이것을
+/// 부른다 (`PinocchioModelBuilder` · `BuildClosedChainModelFromExtendedUrdf`).
+/// 처분을 진입점마다 손으로 적으면 문이 늘어날 때 조용히 갈라지므로 (실제로
+/// 폐쇄 체인 진입점이 게이트 없이 열려 있었다 — #316 D-5) 여기 한 곳에 둔다.
+/// @param context 예외·로그에 찍을 호출 진입점 이름.
+/// @throws std::runtime_error V6 위반이 하나라도 있을 때.
+/// @note init 경로 전용.
+[[nodiscard]] InertialValidationReport EnforceInertialGate(const pinocchio::Model& model,
+                                                           std::string_view context);
 
 /// 결함 종류의 사람이 읽는 이름 (`V6:triangle-inequality` 등).
 [[nodiscard]] const char* ToString(InertialDefect defect) noexcept;

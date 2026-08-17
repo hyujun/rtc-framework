@@ -2,6 +2,7 @@
 #include "rtc_urdf_bridge/closed_chain_model.hpp"
 
 #include "rtc_urdf_bridge/constraint_builder.hpp"
+#include "rtc_urdf_bridge/inertial_validation.hpp"
 #include "rtc_urdf_bridge/loop_projection.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
 #include "rtc_urdf_bridge/urdf_logging.hpp"
@@ -102,6 +103,11 @@ ClosedChainModel BuildClosedChainModelFromExtendedUrdf(std::string_view urdf_pat
   } else {
     pinocchio::urdf::buildModel(std::string(urdf_path), out.model);
   }
+
+  // (1b) 관성 실현가능성 게이트 — builder 경로와 **같은 처분**을 받는다 (#316 D-5).
+  // sidecar 파싱보다 먼저 발사한다: 모델 자체가 강체가 아니면 closure 를 읽을
+  // 이유가 없고, 실패 사유도 그쪽 오류에 가려지지 않는다.
+  static_cast<void>(EnforceInertialGate(out.model, "BuildClosedChainModelFromExtendedUrdf"));
 
   // (2) sidecar closure YAML 파싱
   const ClosureSpec spec = LoadClosureYaml(closure_yaml_path);

@@ -8,6 +8,7 @@
 // tolerance 축이 이 파일의 두 번째 주제다. 판정은 주모멘트 크기로 정규화되며
 // (`kInertialRelTol`), 그 이유는 저장소 실모델의 주모멘트가 6.8 decade 에
 // 걸쳐 있어 절대 tol 로는 양 끝을 동시에 만족시킬 수 없기 때문이다.
+#include "rtc_urdf_bridge/closed_chain_model.hpp"
 #include "rtc_urdf_bridge/inertial_validation.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
@@ -22,6 +23,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -153,11 +156,16 @@ TEST(InertialValidation, FixedBaseRootBodyIsNotValidated) {
 
 // **비유한 값은 URDF 텍스트로는 게이트에 도달하지 못한다** — urdfdom 이 파싱
 // 단계에서 "Could not parse inertial element" 로 먼저 거부한다 (2026-08-17 실측).
-// 그래서 이 두 테스트는 모델을 **프로그램적으로** 오염시킨다. 그것이 이 가드가
-// 실제로 도달 가능한 경로이기 때문이다 — payload 추정치를 `appendBodyToJoint`
-// 로 모델에 얹는 경로(`test_payload_regressor.cpp` 참조)에서 추정이 발산하면
-// 비유한 관성이 그대로 M(q) 에 들어간다. URDF 텍스트로 재현하려다 이 가드를
-// "도달 불가" 로 오판해 지우지 말 것.
+// 그래서 이 세 테스트는 모델을 **프로그램적으로** 오염시킨다.
+//
+// 이 가드는 URDF 텍스트 경로에 대한 **심층 방어**이지 현재 살아 있는 production
+// 경로를 막는 것이 아니다 (2026-08-17 전수 grep: `model.inertias` 를 변형하는
+// production 코드 0건 — `appendBodyToJoint` 는 `test_payload_regressor.cpp` 에만
+// 있다). 그래도 지우면 안 되는 이유는 두 가지다: ① `pinocchio::Model` 을 직접
+// 조립·변형하는 경로가 API 로 열려 있고 (payload 를 프레임에 얹는 형태가 그
+// 후보다) 그 값이 게이트를 통과하면 `crba` 가 통째로 NaN 인 M(q) 를 낸다,
+// ② 고유값 분해 실패 분기는 유한한 입력에서도 발현할 수 있다. 단 게이트는
+// `BuildFullModel()` 안에서 **1회만** 돌므로 로드 후 오염은 잡지 못한다.
 TEST(InertialValidation, NonFiniteMassIsFatal) {
   pinocchio::Model model = BuildRaw(ProbeUrdf(InertialBlock("1.0", "0.03", "0.04", "0.05")));
   model.inertias[1] =
@@ -172,6 +180,17 @@ TEST(InertialValidation, NonFiniteInertiaIsFatal) {
   corrupted(0, 0) = std::numeric_limits<double>::infinity();
   model.inertias[1] =
       pinocchio::Inertia(1.0, Eigen::Vector3d::Zero(), pinocchio::Symmetric3(corrupted));
+  ExpectSingleFatal(rub::ValidateInertias(model), rub::InertialDefect::kNonFinite);
+}
+
+// mass 와 CoM 기준 관성이 모두 멀쩡해도 lever(CoM 위치)가 비유한이면 평행축
+// 이동에서 M(q) 가 통째로 NaN 이 된다. Inertia 가 lever 를 회전관성과 분리해
+// 들고 있어 inertia().allFinite() 만으로는 잡히지 않는 경로다.
+TEST(InertialValidation, NonFiniteComOffsetIsFatal) {
+  pinocchio::Model model = BuildRaw(ProbeUrdf(InertialBlock("1.0", "0.03", "0.04", "0.05")));
+  const Eigen::Vector3d bad_com(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0);
+  model.inertias[1] = pinocchio::Inertia(1.0, bad_com, pinocchio::Symmetric3::Identity());
+  ASSERT_TRUE(model.inertias[1].inertia().matrix().allFinite());  // 회전관성은 멀쩡하다
   ExpectSingleFatal(rub::ValidateInertias(model), rub::InertialDefect::kNonFinite);
 }
 
@@ -212,6 +231,22 @@ TEST(InertialValidation, MasslessMovableBodyIsDegenerateNotFatal) {
 // body 로 채운다) — 실모델에서 이 형태가 압도적으로 흔하다.
 TEST(InertialValidation, MissingInertialTagOnMovableBodyIsDegenerate) {
   const auto report = ValidateProbe("");
+  EXPECT_TRUE(report.fatal.empty()) << rub::DescribeInertialViolations(report.fatal);
+  ASSERT_EQ(report.degenerate.size(), 1u);
+  EXPECT_EQ(report.degenerate[0].defect, rub::InertialDefect::kMasslessMovableBody);
+}
+
+// mass 와 관성이 **어긋나면** V5 가 아니라 V6 다 — 질량 0 강체는 회전관성도 0
+// 이어야 하므로 어떤 질량분포로도 실현할 수 없다. V5 는 "둘 다 0" 일 때만이다.
+TEST(InertialValidation, MasslessBodyWithNonZeroInertiaIsFatal) {
+  const auto report = ValidateProbe(InertialBlock("0.0", "0.03", "0.04", "0.05"));
+  ASSERT_NO_FATAL_FAILURE(ExpectSingleFatal(report, rub::InertialDefect::kMasslessWithInertia));
+  EXPECT_EQ(report.fatal[0].mass, 0.0);
+}
+
+// 반대 방향 — 텐서가 0 이면 같은 mass 0 이라도 V5 로 남아야 한다 (레인 교차 오염).
+TEST(InertialValidation, MasslessBodyWithZeroInertiaStaysDegenerate) {
+  const auto report = ValidateProbe(InertialBlock("0.0", "0", "0", "0"));
   EXPECT_TRUE(report.fatal.empty()) << rub::DescribeInertialViolations(report.fatal);
   ASSERT_EQ(report.degenerate.size(), 1u);
   EXPECT_EQ(report.degenerate[0].defect, rub::InertialDefect::kMasslessMovableBody);
@@ -280,6 +315,53 @@ TEST(InertialValidation, TightestRealWorldValidMarginStillPasses) {
   const double i1 = i3 - i2 + 5.5260e-5 * i3;
   const auto report = ValidateProbe(InertialBlock("1.0", Num(i1), Num(i2), Num(i3)));
   EXPECT_TRUE(report.fatal.empty()) << rub::DescribeInertialViolations(report.fatal);
+}
+
+// rel_tol **주입 경로**. 이 인자를 명시로 넘기는 테스트가 하나도 없어 (2026-08-17
+// 리뷰 지적) 임계가 인자로 흐르는지 자체가 미행사였다 — mutation 은 상수를 고쳐서
+// 하므로 이 축을 대신하지 못한다.
+TEST(InertialValidation, ExplicitRelToleranceWidensAcceptance) {
+  // 상대 결손 -1e-3 인 텐서: 기본 임계(1e-9)에서는 거부.
+  const double i3 = 1.0;
+  const double i2 = 0.6;
+  const double i1 = i3 - i2 - 1e-3 * i3;
+  const std::string block = InertialBlock("1.0", Num(i1), Num(i2), Num(i3));
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectSingleFatal(ValidateProbe(block), rub::InertialDefect::kTriangleInequality));
+
+  // 같은 텐서를 1e-2 로 부르면 통과한다 — 인자가 실제로 판정을 움직인다.
+  const auto loose = ValidateProbe(block, 1e-2);
+  EXPECT_TRUE(loose.fatal.empty()) << rub::DescribeInertialViolations(loose.fatal);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 진입점 계약 — URDF → Model 문은 모두 게이트를 지난다
+// ═══════════════════════════════════════════════════════════════════════════
+
+// `PinocchioModelBuilder` 만이 로드 진입점이 아니다. 폐쇄 체인 진입점은 pinocchio
+// 를 직접 불러 한동안 게이트 밖에 있었고 (#316 D-5), 그 사실이 builder 헤더의
+// "유일한 관문" 주장을 거짓으로 만들고 있었다. 이 테스트가 그 문을 닫아 둔다.
+TEST(InertialValidation, ClosedChainEntryPointIsGatedBeforeSidecarParse) {
+  const std::filesystem::path probe =
+      std::filesystem::temp_directory_path() / "rtc_inertial_gate_probe.urdf";
+  {
+    std::ofstream out(probe);
+    ASSERT_TRUE(out) << probe.string();
+    out << ProbeUrdf(InertialBlock("0.024", "9e-7", "2e-6", "3e-6"));
+  }
+
+  // sidecar 경로는 **일부러 존재하지 않는 것**을 준다. 게이트가 (1) 모델 빌드 직후에
+  // 발사되면 관성 사유로 죽고, 파싱 뒤로 밀리면 sidecar 오류로 죽는다 — 메시지로
+  // 둘을 가르므로 "다른 이유로 throw 해서 green" 이 되지 않는다.
+  try {
+    rub::BuildClosedChainModelFromExtendedUrdf(probe.string(), "/nonexistent.closure.yaml");
+    ADD_FAILURE() << "폐쇄 체인 진입점이 V6 모델을 그대로 열었다";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("BuildClosedChainModelFromExtendedUrdf"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("V6:triangle-inequality"), std::string::npos) << msg;
+  }
+  std::filesystem::remove(probe);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

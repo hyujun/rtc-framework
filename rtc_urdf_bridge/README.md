@@ -258,6 +258,44 @@ const auto & analyzer  = builder.GetAnalyzer();
 const auto & extractor = builder.GetExtractor();
 ```
 
+#### 관성 실현가능성 게이트 (V5 / V6)
+
+`PinocchioModelBuilder` 는 full 모델을 세운 직후 **모든 movable body 의 composite 관성**이 강체를
+기술할 수 있는 값인지 판정합니다 (`inertial_validation.hpp`). 판정 대상이 URDF 의 개별 `<link>` 가
+아니라 **fixed joint 를 흡수한 뒤의 `Model::inertias[]`** 인 것이 핵심입니다 — 그것이 `M(q)` 가
+실제로 조립되는 값이라, 게이트의 의미가 "이 모델로 동역학을 돌려도 되는가" 로 정확히 떨어집니다.
+
+두 레인은 **심각도가 아니라 종류가 다릅니다.**
+
+| 레인 | 판정 | 처분 |
+|---|---|---|
+| **V6** — 물리적으로 불가능 | 비유한 값(mass · 관성 · CoM 위치), `mass < 0`, 음의 고유값, 삼각부등식 위반 (`I1+I2 < I3`), `mass == 0` 인데 관성 ≠ 0 | `std::runtime_error` 로 **로드 실패** |
+| **V5** — 물리적으로 불완전 | movable body 의 composite mass 와 관성이 **함께** 0 | **경고 + 술어** (`IsFullModelDynamicsCapable()`) |
+
+두 레인을 가르는 것은 **질량과 관성이 서로 모순되는가**입니다. 질량 0 강체는 회전관성도 0 이어야
+하므로 `mass == 0` 인데 관성이 남아 있으면 어떤 질량분포로도 실현할 수 없어 V6 입니다. 둘 다 0 이면
+강체로서는 모순이 없고 `M(q)` 만 그 DoF 에서 특이해지므로 V5 입니다.
+
+V5 가 로드를 막지 않는 이유는 이 패키지가 kinematics 전용 소비자(FK / Jacobian / IK)와 dynamics
+소비자를 함께 섬기기 때문입니다. 질량 없는 movable body 는 기하 질의에는 무해하므로, throw 하면
+멀쩡한 kinematic 모델을 못 열게 됩니다. 관성에 의존하는 소비자만 `IsFullModelDynamicsCapable()`
+로 자기 검사하십시오 — 단 이 술어는 composite mass 가 **정확히 0** 인 경우만 봅니다 (`mass > 0`
+인데 유효 관성이 0 이라 `M(q)` 를 특이하게 만드는 형태는 통과합니다).
+
+URDF → `pinocchio::Model` 로드 진입점은 `PinocchioModelBuilder` 와
+`BuildClosedChainModelFromExtendedUrdf` **둘**이며, 양쪽 모두 같은 `EnforceInertialGate` 를 통과
+합니다 — 폐쇄 체인 쪽은 sidecar YAML 파싱보다 **먼저** 판정합니다.
+
+허용오차는 **주모멘트 크기로 정규화**됩니다 (`kInertialRelTol`). 실모델의 주모멘트가 여러 decade 에
+걸쳐 있어 절대 tol 로는 양 끝을 동시에 만족시킬 수 없기
+때문입니다. **등호는 허용**됩니다 — 얇은 판·막대는 `I1+I2 = I3` 이 정확히 성립합니다.
+임계값의 실측 근거(정당한 최소 여유 vs 실제 위반의 간격)는 `inertial_validation.hpp` 의
+`kInertialRelTol` 주석이 SSoT 이며, 자산이 바뀌면 재측정 지점은 그곳 하나입니다.
+
+오프라인 저작 게이트인 `rtc_tools` 의 `compare_mjcf_urdf` 와는 **축이 다릅니다**: 그쪽은 선언값과
+collision 기하 추정값의 *비율*을 보는 informational WARN(외부 정합)이고, 여기는 기하 없이 텐서
+단독의 실현가능성(내부 정합)을 봅니다. 한쪽이 다른 쪽을 대체하지 못합니다.
+
 ### 4. RtModelHandle
 
 RT 제어 루프에서 안전하게 사용할 수 있는 Pinocchio 래퍼입니다. 모든 compute 함수는 `noexcept`이며, 사전 할당된 버퍼만 사용합니다.
@@ -309,33 +347,6 @@ v-공간 순서**입니다. `SetJointOrder` 로 device 순서를 설정해도 �
 아니라 world 원점에 놓인 점의 속도** `v_O = ṗ + p × ω` 입니다. LWA 를 기대하고 `WORLD` 의
 `topRows(3)` 을 TCP 선속도로 쓰면 `|p × ω|` 만큼 조용히 어긋납니다 (저장소 안에 `WORLD`
 호출자는 없지만 API 가 셋을 노출하므로 테스트가 셋 다 고정합니다).
-
-### 관성 실현가능성 게이트 (V5 / V6)
-
-`PinocchioModelBuilder` 는 full 모델을 세운 직후 **모든 movable body 의 composite 관성**이 강체를
-기술할 수 있는 값인지 판정합니다 (`inertial_validation.hpp`). 판정 대상이 URDF 의 개별 `<link>` 가
-아니라 **fixed joint 를 흡수한 뒤의 `Model::inertias[]`** 인 것이 핵심입니다 — 그것이 `M(q)` 가
-실제로 조립되는 값이라, 게이트의 의미가 "이 모델로 동역학을 돌려도 되는가" 로 정확히 떨어집니다.
-
-두 레인은 **심각도가 아니라 종류가 다릅니다.**
-
-| 레인 | 판정 | 처분 |
-|---|---|---|
-| **V6** — 물리적으로 불가능 | 비유한 값, `mass < 0`, 음의 고유값, 삼각부등식 위반 (`I1+I2 < I3`) | `std::runtime_error` 로 **로드 실패** |
-| **V5** — 물리적으로 불완전 | movable body 의 composite `mass == 0` | **경고 + 술어** (`IsFullModelDynamicsCapable()`) |
-
-V5 가 로드를 막지 않는 이유는 이 패키지가 kinematics 전용 소비자(FK / Jacobian / IK)와 dynamics
-소비자를 함께 섬기기 때문입니다. 질량 없는 movable body 는 `M(q)` 를 그 DoF 에서 특이하게 만들지만
-기하 질의에는 무해하므로, throw 하면 멀쩡한 kinematic 모델을 못 열게 됩니다. 관성에 의존하는
-소비자만 `IsFullModelDynamicsCapable()` 로 자기 검사하십시오.
-
-허용오차는 **주모멘트 크기로 정규화**됩니다 (`kInertialRelTol`). 저장소 실모델의 주모멘트가
-`1.03e-7 ~ 7.07e-1` 로 6.8 decade 에 걸쳐 있어 절대 tol 로는 양 끝을 동시에 만족시킬 수 없기
-때문입니다. **등호는 허용**됩니다 — 얇은 판·막대는 `I1+I2 = I3` 이 정확히 성립합니다.
-
-오프라인 저작 게이트인 `rtc_tools` 의 `compare_mjcf_urdf` 와는 **축이 다릅니다**: 그쪽은 선언값과
-collision 기하 추정값의 *비율*을 보는 informational WARN(외부 정합)이고, 여기는 기하 없이 텐서
-단독의 실현가능성(내부 정합)을 봅니다. 한쪽이 다른 쪽을 대체하지 못합니다.
 
 `ComputePayloadRegressor` 는 프레임에 강체로 매달린 payload 의 10-parameter 관성 집합 `φ_L` 에
 대해 `τ_payload = Y_L · φ_L` 을 만족하는 회귀자를 만듭니다. 두 계약이 조용히 틀리기 쉬워

@@ -168,24 +168,9 @@ void PinocchioModelBuilder::BuildFullModel() {
 // V6 는 그 값이 강체가 아니므로 로드를 실패시키고, V5 는 강체이긴 하나 동역학을
 // 지탱하지 못하는 것이라 kinematics 전용 소비자를 위해 경고 + 술어로 남긴다.
 void PinocchioModelBuilder::ValidateFullModelInertias() {
-  inertial_report_ = ValidateInertias(*full_model_);
-
-  if (!inertial_report_.degenerate.empty()) {
-    RCLCPP_WARN(logger(),
-                "관성 게이트: movable body %zu 개가 질량을 지지 않는다 — 이 모델의 M(q) 는 해당 "
-                "DoF 에서 특이하다. FK/Jacobian/IK 소비는 안전하나 동역학 소비자는 "
-                "IsFullModelDynamicsCapable() 로 자기 검사할 것.\n%s",
-                inertial_report_.degenerate.size(),
-                DescribeInertialViolations(inertial_report_.degenerate).c_str());
-  }
-
-  if (!inertial_report_.fatal.empty()) {
-    const std::string detail = DescribeInertialViolations(inertial_report_.fatal);
-    RCLCPP_ERROR(logger(), "관성 게이트: body %zu 개의 관성이 물리적으로 실현 불가능하다.\n%s",
-                 inertial_report_.fatal.size(), detail.c_str());
-    throw std::runtime_error("PinocchioModelBuilder: 물리적으로 실현 불가능한 관성 " +
-                             std::to_string(inertial_report_.fatal.size()) + "건\n" + detail);
-  }
+  // 판정·로그·throw 는 EnforceInertialGate 가 소유한다 — 폐쇄 체인 진입점도 같은
+  // 처분을 받아야 하므로 문구를 여기 복제하지 않는다 (#316 D-5).
+  inertial_report_ = EnforceInertialGate(*full_model_, "PinocchioModelBuilder");
 }
 
 // ── 축소 모델에 공통으로 적용될 passive 잠금 대상 ──────────────────────────

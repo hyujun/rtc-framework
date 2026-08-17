@@ -135,6 +135,8 @@ TEST_P(SchunkNegativeFixture, RejectedForTriangleInequalityAtDistalLink) {
 TEST_P(SchunkNegativeFixture, ReportsThirteenMasslessMovableBodies) {
   const std::string path =
       ModelPath(std::string("robots/schunk_hand/urdf/") + GetParam() + ".urdf");
+  ASSERT_TRUE(std::filesystem::exists(path)) << path;
+
   pinocchio::Model model;
   pinocchio::urdf::buildModel(path, model);
   const auto report = rub::ValidateInertias(model);

@@ -112,9 +112,19 @@ class PinocchioModelBuilder {
   /// full 모델 관성 판정 결과. 순서는 Pinocchio 관절 인덱스 오름차순 = 결정적.
   [[nodiscard]] const InertialValidationReport& GetInertialReport() const noexcept;
 
-  /// full 모델이 동역학 소비에 적합한가 (= 질량을 지지 않는 movable body 가 없는가).
-  /// false 여도 모델은 정상 로드된 상태이며 FK / Jacobian / IK 는 유효하다 —
-  /// M(q) · Coriolis · 중력 등 **관성에 의존하는 소비자만** 이 술어를 봐야 한다.
+  /// full 모델이 동역학 소비에 적합한가 (= 질량과 관성이 **함께** 0 인 movable body
+  /// 가 없는가). false 여도 모델은 정상 로드된 상태이며 FK / Jacobian / IK 는 유효하다
+  /// — M(q) · Coriolis · 중력 등 **관성에 의존하는 소비자만** 이 술어를 봐야 한다.
+  ///
+  /// 판정은 composite mass 가 **정확히 0** 인 경우만 본다 — mass > 0 인데 유효 관성이
+  /// 0 이라 M(q) 를 특이하게 만드는 형태(텐서 0 + CoM 이 관절 원점)는 이 술어를
+  /// 통과한다. 그것까지 잡으려면 "얼마나 작아야 0 인가" 라는 절대 임계가 필요한데
+  /// 근거가 없어 도입하지 않았다 (#316 D-6).
+  ///
+  /// 판정 대상은 이름 그대로 **full 모델**이다. 축소·트리·actuated 모델은 여기서
+  /// 파생되므로 결함이 새로 생기지는 않지만, 반대로 **느슨해질 수는 있다** —
+  /// 결함 body 를 다는 관절이 잠기면 그 body 가 부모에 흡수돼 축소 모델에는 남지
+  /// 않는다. 그 경우 이 술어는 축소 모델 소비자에게 보수적으로(= false 로) 틀린다.
   [[nodiscard]] bool IsFullModelDynamicsCapable() const noexcept;
 
   // ── 메타데이터 ─────────────────────────────────────────────────────────────
@@ -159,7 +169,9 @@ class PinocchioModelBuilder {
   /// full 모델의 composite 관성을 판정해 inertial_report_ 를 채운다.
   /// V6 위반이 하나라도 있으면 std::runtime_error 로 로드를 실패시킨다.
   /// BuildFullModel() 끝에서 호출된다 — 축소·트리 모델은 이 full 모델에서
-  /// 파생되므로 여기가 유일한 관문이다.
+  /// 파생되므로 **이 클래스 안에서는** 여기가 유일한 관문이다. 패키지 전체로 보면
+  /// URDF → Model 진입점이 하나 더 있고 (BuildClosedChainModelFromExtendedUrdf)
+  /// 그쪽도 같은 EnforceInertialGate 를 부른다.
   void ValidateFullModelInertias();
 
   /// Extended-URDF sidecar 를 1회 로드해 closure_spec_ 에 캐시하고, loop-passive
