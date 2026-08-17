@@ -18,16 +18,61 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   if (config.arm_v_idx.empty()) {
     throw std::runtime_error("ClikReferenceGenerator: arm_v_idx must not be empty");
   }
-  if (!(config.damping_sq > 0.0)) {
-    throw std::runtime_error("ClikReferenceGenerator: damping_sq must be > 0, got " +
+  // `!(x > 0.0)` already rejects NaN (every NaN comparison is false), but it
+  // admits +inf — and these two sit in the SAME soft-priority chain the
+  // w_arm / w_hand gate below refuses infinities for (w_task >> w_arm, w_hand
+  // >> damping_sq). An infinite member makes that ordering vacuous: +inf
+  // damping_sq regularises H into uselessness, +inf w_task drowns every other
+  // term. Finiteness first, so the positivity test never sees a NaN.
+  if (!std::isfinite(config.damping_sq) || config.damping_sq <= 0.0) {
+    throw std::runtime_error("ClikReferenceGenerator: damping_sq must be finite and > 0, got " +
                              std::to_string(config.damping_sq));
   }
-  if (!(config.w_task > 0.0)) {
-    throw std::runtime_error("ClikReferenceGenerator: w_task must be > 0, got " +
+  if (!std::isfinite(config.w_task) || config.w_task <= 0.0) {
+    throw std::runtime_error("ClikReferenceGenerator: w_task must be finite and > 0, got " +
                              std::to_string(config.w_task));
   }
-  if (config.w_arm < 0.0 || config.w_hand < 0.0) {
-    throw std::runtime_error("ClikReferenceGenerator: w_arm / w_hand must be >= 0");
+  // NUM-7: `x < 0.0` is a magnitude test, not a finiteness gate. Every
+  // comparison against NaN is false, so the sign form walks a NaN weight
+  // through a guard that READS as if it had validated it. Rewriting it as
+  // `!(x >= 0.0)` catches NaN and -inf but NOT +inf, which satisfies `>= 0`
+  // and has no sanctioned meaning here — an infinite posture weight lands on
+  // H's diagonal (`H(vi, vi) += w_arm_`) and there is no finite task weight it
+  // could be ranked against (the soft-priority contract is w_task >> w_arm,
+  // w_hand >> damping_sq). Both halves are therefore needed: finiteness first,
+  // so the sign test never sees a NaN.
+  //
+  // Of the two failure shapes this gate covers, this is the less bad one: a
+  // poisoned H makes the QP fail downstream, loudly. The silent shape is
+  // v_limit / anchor_drift_max below.
+  if (!std::isfinite(config.w_arm) || !std::isfinite(config.w_hand) || config.w_arm < 0.0 ||
+      config.w_hand < 0.0) {
+    throw std::runtime_error("ClikReferenceGenerator: w_arm / w_hand must be finite and >= 0");
+  }
+  // NUM-7, the SILENT axis. Both of these are switches whose "off" position is
+  // `<= 0`, and both are read back as a `> 0.0` predicate (`vel_box =
+  // (v_limit_ > 0.0)`; `if (anchor_drift_max_ > 0.0)`). A NaN makes both
+  // predicates false, so the feature turns ITSELF off indistinguishably from
+  // the sanctioned off sentinel: the per-joint velocity clamp and the
+  // carry-forward anti-windup clamp simply stop existing, q_ref / v_ref stay
+  // finite and plausible, and Compute()'s own allFinite() exit guard therefore
+  // never fires. Nothing downstream can tell that configuration from a
+  // deliberate `v_limit: -1`.
+  //
+  // The guard is isfinite, NOT `> 0`: a FINITE non-positive value is a
+  // legitimate request to disable the clamp and must keep passing (0 and -1
+  // are both pinned by the tests). Neither infinity is that request — "off"
+  // already has a sanctioned encoding here, and accepting ±inf as a second one
+  // is exactly what the position box gate refused: -inf would reach the QP as
+  // an unbounded side, +inf differs from off only while some other switch
+  // happens to agree.
+  if (!std::isfinite(config.v_limit)) {
+    throw std::runtime_error("ClikReferenceGenerator: v_limit must be finite, got " +
+                             std::to_string(config.v_limit));
+  }
+  if (!std::isfinite(config.anchor_drift_max)) {
+    throw std::runtime_error("ClikReferenceGenerator: anchor_drift_max must be finite, got " +
+                             std::to_string(config.anchor_drift_max));
   }
   // Position-limit box is optional; when supplied each side must be full-nv.
   if (config.q_min.size() != 0 && config.q_min.size() != nv) {

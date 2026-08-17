@@ -330,6 +330,150 @@ TEST_F(ClikReferenceTest, InitAcceptsMarginClampedRealModelEnvelope) {
   EXPECT_NO_THROW(gen.Init(robot_info_.nv, cfg));
 }
 
+// ── Adjacent scalar validation (NUM-7, same gate) ──────────────────────────
+//
+// The box above is not the only laundering path in this Config. Two scalars are
+// switches whose "off" position is `<= 0` and whose read-back is a `> 0.0`
+// predicate, so a non-finite value disables the feature INDISTINGUISHABLY from
+// a deliberate disable — silently, with finite outputs, past Compute()'s own
+// allFinite() exit guard. A third pair (w_arm / w_hand) was already guarded,
+// but with `x < 0.0`, which NaN passes.
+//
+// Attribution — reverting exactly one guard turns exactly one case red:
+//   isfinite(v_limit) removed          → NonFiniteVelocityLimit red alone
+//   isfinite(anchor_drift_max) removed → NonFiniteAnchorDriftMax red alone
+//   `!(x >= 0)` back to `x < 0`        → NonFinitePostureWeights red alone
+//
+// Each case also asserts that the SANCTIONED off value still passes, so a guard
+// written as `> 0` instead of isfinite fails here rather than in production.
+
+TEST_F(ClikReferenceTest, InitRejectsNonFiniteVelocityLimit) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+
+  for (const double bad : {nan, inf, -inf}) {
+    ClikReferenceGenerator::Config broken = cfg;
+    broken.v_limit = bad;
+    ClikReferenceGenerator gen;
+    EXPECT_THROW(gen.Init(robot_info_.nv, broken), std::runtime_error)
+        << "non-finite v_limit " << bad << " must be rejected";
+  }
+
+  // Disabling the velocity clamp is legitimate and stays legitimate: the guard
+  // is finiteness, not positivity.
+  for (const double off : {0.0, -1.0}) {
+    ClikReferenceGenerator::Config disabled = cfg;
+    disabled.v_limit = off;
+    ClikReferenceGenerator gen;
+    EXPECT_NO_THROW(gen.Init(robot_info_.nv, disabled))
+        << "v_limit " << off << " is the sanctioned way to disable the clamp";
+  }
+}
+
+TEST_F(ClikReferenceTest, InitRejectsNonFiniteAnchorDriftMax) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+
+  for (const double bad : {nan, inf, -inf}) {
+    ClikReferenceGenerator::Config broken = cfg;
+    broken.anchor_drift_max = bad;
+    ClikReferenceGenerator gen;
+    EXPECT_THROW(gen.Init(robot_info_.nv, broken), std::runtime_error)
+        << "non-finite anchor_drift_max " << bad << " must be rejected";
+  }
+
+  // 0.0 is the shipped default and means "no anti-windup clamp".
+  for (const double off : {0.0, -1.0}) {
+    ClikReferenceGenerator::Config disabled = cfg;
+    disabled.anchor_drift_max = off;
+    ClikReferenceGenerator gen;
+    EXPECT_NO_THROW(gen.Init(robot_info_.nv, disabled))
+        << "anchor_drift_max " << off << " is the sanctioned way to disable the clamp";
+  }
+}
+
+// damping_sq and w_task were already guarded as `!(x > 0.0)`, which rejects NaN
+// (every NaN comparison is false) but admits +inf. They sit in the SAME
+// soft-priority chain (w_task >> w_arm, w_hand >> damping_sq) that the posture
+// weights refuse infinities for, so accepting one here would leave the ordering
+// vacuous in a way the QP cannot report.
+TEST_F(ClikReferenceTest, InitRejectsNonFiniteDampingAndTaskWeight) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+
+  for (const double bad : {nan, inf}) {
+    ClikReferenceGenerator::Config bad_damping = cfg;
+    bad_damping.damping_sq = bad;
+    ClikReferenceGenerator gen_damping;
+    EXPECT_THROW(gen_damping.Init(robot_info_.nv, bad_damping), std::runtime_error)
+        << "non-finite damping_sq " << bad << " must be rejected";
+
+    ClikReferenceGenerator::Config bad_task = cfg;
+    bad_task.w_task = bad;
+    ClikReferenceGenerator gen_task;
+    EXPECT_THROW(gen_task.Init(robot_info_.nv, bad_task), std::runtime_error)
+        << "non-finite w_task " << bad << " must be rejected";
+  }
+
+  // The pre-existing positivity contract is unchanged.
+  ClikReferenceGenerator::Config zero_task = cfg;
+  zero_task.w_task = 0.0;
+  ClikReferenceGenerator gen_zero;
+  EXPECT_THROW(gen_zero.Init(robot_info_.nv, zero_task), std::runtime_error);
+}
+
+TEST_F(ClikReferenceTest, InitRejectsNonFinitePostureWeights) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+
+  for (const double bad : {nan, inf, -inf}) {
+    ClikReferenceGenerator::Config bad_arm = cfg;
+    bad_arm.w_arm = bad;
+    ClikReferenceGenerator gen_arm;
+    EXPECT_THROW(gen_arm.Init(robot_info_.nv, bad_arm), std::runtime_error)
+        << "non-finite w_arm " << bad << " must be rejected";
+
+    ClikReferenceGenerator::Config bad_hand = cfg;
+    bad_hand.w_hand = bad;
+    ClikReferenceGenerator gen_hand;
+    EXPECT_THROW(gen_hand.Init(robot_info_.nv, bad_hand), std::runtime_error)
+        << "non-finite w_hand " << bad << " must be rejected";
+  }
+
+  // The pre-existing contract is unchanged: negative is rejected, zero (drop
+  // the posture term) is accepted.
+  ClikReferenceGenerator::Config negative = cfg;
+  negative.w_arm = -1e-9;
+  ClikReferenceGenerator gen_neg;
+  EXPECT_THROW(gen_neg.Init(robot_info_.nv, negative), std::runtime_error);
+
+  ClikReferenceGenerator::Config zeroed = cfg;
+  zeroed.w_arm = 0.0;
+  zeroed.w_hand = 0.0;
+  ClikReferenceGenerator gen_zero;
+  EXPECT_NO_THROW(gen_zero.Init(robot_info_.nv, zeroed));
+}
+
 TEST_F(ClikReferenceTest, ComputePreconditionsReturnFalse) {
   auto gen = MakeGenerator(1e-6, 0.0);
   cache_.Update(q_home_, v_zero_);

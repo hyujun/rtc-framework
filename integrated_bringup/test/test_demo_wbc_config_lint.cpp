@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -162,8 +163,20 @@ TEST(DemoWbcConfigLint, ClikBlockWellFormed) {
       ASSERT_TRUE(clik["damping_sq"]) << cfg.robot << ": clik block missing damping_sq";
       EXPECT_GT(clik["damping_sq"].as<double>(), 0.0)
           << cfg.robot << ": clik.damping_sq must be > 0 (ClikReferenceGenerator::Init contract)";
-      if (clik["v_limit"]) {
-        EXPECT_NO_THROW((void)clik["v_limit"].as<double>()) << cfg.robot;
+
+      // Every scalar Init() gates on finiteness (#316 D-9). A non-finite value
+      // here is boot-fatal — Init throws, clik_enabled_ goes false, and DEC-1 ⓐ
+      // turns that into on_configure FAILURE — so the shipped YAML needs a CI
+      // signal of its own rather than being caught on the robot. `.nan` /
+      // `.inf` are legal YAML scalars, so parsing succeeds and only this check
+      // separates them.
+      for (const char* key :
+           {"damping_sq", "w_task", "w_arm", "w_hand", "v_limit", "anchor_drift_max"}) {
+        if (clik[key]) {
+          EXPECT_TRUE(std::isfinite(clik[key].as<double>()))
+              << cfg.robot << ": clik." << key
+              << " must be finite (ClikReferenceGenerator::Init contract)";
+        }
       }
     }
   }
