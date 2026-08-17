@@ -87,14 +87,14 @@ class ClikReferenceGenerator {
   struct Config {
     std::vector<int> arm_v_idx;   // arm velocity indices, Pinocchio order (≥1)
     std::vector<int> hand_v_idx;  // hand velocity indices (may be empty)
-    double damping_sq{1e-4};      // μ² damping (H regularization, > 0)
-    double v_limit{1.5};          // per-joint |v_ref| clamp [rad/s], ≤ 0 → off
+    double damping_sq{1e-4};      // μ² damping (H regularization, finite and > 0)
+    double v_limit{1.5};          // per-joint |v_ref| clamp [rad/s], finite; ≤ 0 → off
     // Soft-priority weights (w_task ≫ w_arm,w_hand ≫ damping_sq). μ²/w_task is
     // the effective L1 damped-inverse damping — keep w_task=1 to reproduce the
     // legacy damped right-inverse at damping_sq.
-    double w_task{1.0};   // L1 TCP tracking weight
-    double w_arm{1e-2};   // L2 arm posture weight
-    double w_hand{1e-2};  // L3 hand posture weight
+    double w_task{1.0};   // L1 TCP tracking weight (finite and > 0)
+    double w_arm{1e-2};   // L2 arm posture weight (finite and >= 0)
+    double w_hand{1e-2};  // L3 hand posture weight (finite and >= 0)
     // Per-joint position limits [nv] for the position-aware velocity box
     // (lᵢ/uᵢ above). Empty → position bound disabled (velocity box only); both
     // sides must be empty or both full-nv. Every component must be FINITE and
@@ -109,7 +109,7 @@ class ClikReferenceGenerator {
     // [rad] the integrated desired may lead/lag the measured state. ≤ 0 → off.
     // Only bites in carry-forward mode (reseed_anchor=false) under tracking lag;
     // on a reseed tick the gap is just v_ref·dt.
-    double anchor_drift_max{0.0};
+    double anchor_drift_max{0.0};  // rad; finite; ≤ 0 → off
   };
 
   // Pre-allocates all workspaces and validates the config (indices in

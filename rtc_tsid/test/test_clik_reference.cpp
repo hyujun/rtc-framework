@@ -402,6 +402,41 @@ TEST_F(ClikReferenceTest, InitRejectsNonFiniteAnchorDriftMax) {
   }
 }
 
+// damping_sq and w_task were already guarded as `!(x > 0.0)`, which rejects NaN
+// (every NaN comparison is false) but admits +inf. They sit in the SAME
+// soft-priority chain (w_task >> w_arm, w_hand >> damping_sq) that the posture
+// weights refuse infinities for, so accepting one here would leave the ordering
+// vacuous in a way the QP cannot report.
+TEST_F(ClikReferenceTest, InitRejectsNonFiniteDampingAndTaskWeight) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+
+  for (const double bad : {nan, inf}) {
+    ClikReferenceGenerator::Config bad_damping = cfg;
+    bad_damping.damping_sq = bad;
+    ClikReferenceGenerator gen_damping;
+    EXPECT_THROW(gen_damping.Init(robot_info_.nv, bad_damping), std::runtime_error)
+        << "non-finite damping_sq " << bad << " must be rejected";
+
+    ClikReferenceGenerator::Config bad_task = cfg;
+    bad_task.w_task = bad;
+    ClikReferenceGenerator gen_task;
+    EXPECT_THROW(gen_task.Init(robot_info_.nv, bad_task), std::runtime_error)
+        << "non-finite w_task " << bad << " must be rejected";
+  }
+
+  // The pre-existing positivity contract is unchanged.
+  ClikReferenceGenerator::Config zero_task = cfg;
+  zero_task.w_task = 0.0;
+  ClikReferenceGenerator gen_zero;
+  EXPECT_THROW(gen_zero.Init(robot_info_.nv, zero_task), std::runtime_error);
+}
+
 TEST_F(ClikReferenceTest, InitRejectsNonFinitePostureWeights) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const double inf = std::numeric_limits<double>::infinity();
