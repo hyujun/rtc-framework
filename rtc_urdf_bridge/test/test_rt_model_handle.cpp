@@ -356,6 +356,10 @@ TEST_F(RtModelHandleReorderTest, IdentityOrderSkipsReorder) {
   EXPECT_FALSE(handle.HasJointReorder());
 }
 
+// 주의: 이것은 **자기일치** 대조다 — 두 handle 이 같은 추출기를 통과하므로
+// GetFrameJacobian 이 행을 뒤집거나 열을 치환해도 양쪽이 똑같이 틀려 green 으로
+// 남는다. 행/열 순서 자체는 test_frame_jacobian_fd_oracle.cpp 의 중심차분
+// oracle 이 고정한다 (#316 V9).
 TEST_F(RtModelHandleReorderTest, ReorderedJacobianMatchesDirect) {
   std::vector<std::string> external_order = {
       "thumb_joint_1", "thumb_joint_2",  "thumb_joint_3",  "index_joint_1", "index_joint_2",

@@ -1,0 +1,114 @@
+<?xml version="1.0"?>
+<!-- mixed_prismatic_revolute.urdf — GetFrameJacobian 행/열 순서 FD oracle 전용 픽스처
+     base_link → link_1 → link_2 → link_3 → link_4 → link_5 → tool_link
+     rev_yaw(z) → pris_x(x) → rev_pitch(y) → pris_diag(0,0.6,0.8) → rev_roll(x) → tool(fixed)
+
+     이 픽스처는 일부러 대칭을 깬다 — 대칭이 남으면 행/열 치환 mutation 이
+     침묵한다 (자코비안 오배선은 유한하고 매끄럽게 틀리므로 NaN·노름 게이트에
+     안 걸린다):
+       • 회전축 3개가 서로 직교(z, y, x) → angular 블록이 3행을 모두 채운다.
+       • prismatic 2개의 축이 비평행이고, 그 열의 angular 블록은 정확히 0 이다
+         → 블록을 맞바꾸면 "0 이어야 할 행이 단위벡터" 가 되어 즉시 red.
+       • 모든 관절 origin 이 세 축 모두에서 offset → 회전 열의 linear 블록이
+         0 이 아니다 (프레임이 축 위에 있으면 linear 가 0 이라 swap 이 안 잡힌다).
+       • tool_joint 가 rpy 로 회전 → LOCAL 과 LOCAL_WORLD_ALIGNED 가 서로 다른
+         값을 내므로 두 ref_frame 을 각각 대조하는 것이 공허하지 않다.
+     기하를 바꾸면 위 네 성질이 유지되는지 확인할 것 — 테스트 안의
+     positive-control 단언들이 그 조건을 실행 시점에 다시 검사한다. -->
+<robot name="mixed_prismatic_revolute">
+
+  <!-- ── Links ─────────────────────────────────────────────────── -->
+  <link name="base_link">
+    <inertial>
+      <mass value="4.0"/>
+      <origin xyz="0 0 0.06" rpy="0 0 0"/>
+      <inertia ixx="0.012" ixy="0" ixz="0" iyy="0.012" iyz="0" izz="0.008"/>
+    </inertial>
+  </link>
+
+  <link name="link_1">
+    <inertial>
+      <mass value="2.8"/>
+      <origin xyz="0.02 0 0.11" rpy="0 0 0"/>
+      <inertia ixx="0.006" ixy="0" ixz="0" iyy="0.006" iyz="0" izz="0.004"/>
+    </inertial>
+  </link>
+
+  <link name="link_2">
+    <inertial>
+      <mass value="2.1"/>
+      <origin xyz="0 0.03 0.09" rpy="0 0 0"/>
+      <inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.003"/>
+    </inertial>
+  </link>
+
+  <link name="link_3">
+    <inertial>
+      <mass value="1.6"/>
+      <origin xyz="-0.01 0.02 0.08" rpy="0 0 0"/>
+      <inertia ixx="0.003" ixy="0" ixz="0" iyy="0.003" iyz="0" izz="0.002"/>
+    </inertial>
+  </link>
+
+  <link name="link_4">
+    <inertial>
+      <mass value="1.1"/>
+      <origin xyz="0.03 -0.01 0.07" rpy="0 0 0"/>
+      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.0015"/>
+    </inertial>
+  </link>
+
+  <link name="link_5">
+    <inertial>
+      <mass value="0.7"/>
+      <origin xyz="0.02 0.01 0.05" rpy="0 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0008"/>
+    </inertial>
+  </link>
+
+  <link name="tool_link">
+    <inertial>
+      <mass value="0.25"/>
+      <origin xyz="0 0 0.01" rpy="0 0 0"/>
+      <inertia ixx="0.0003" ixy="0" ixz="0" iyy="0.0003" iyz="0" izz="0.0002"/>
+    </inertial>
+  </link>
+
+  <!-- ── Joints ────────────────────────────────────────────────── -->
+  <joint name="rev_yaw" type="revolute">
+    <parent link="base_link"/><child link="link_1"/>
+    <origin xyz="0.03 -0.02 0.18" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-3.0" upper="3.0" effort="100" velocity="2"/>
+  </joint>
+
+  <joint name="pris_x" type="prismatic">
+    <parent link="link_1"/><child link="link_2"/>
+    <origin xyz="0.12 0.03 0.22" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-0.15" upper="0.25" effort="80" velocity="0.5"/>
+  </joint>
+
+  <joint name="rev_pitch" type="revolute">
+    <parent link="link_2"/><child link="link_3"/>
+    <origin xyz="0.05 -0.07 0.19" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="2.5" effort="80" velocity="2"/>
+  </joint>
+
+  <joint name="pris_diag" type="prismatic">
+    <parent link="link_3"/><child link="link_4"/>
+    <origin xyz="-0.04 0.09 0.14" rpy="0.2 0 0"/><axis xyz="0 0.6 0.8"/>
+    <limit lower="-0.10" upper="0.20" effort="60" velocity="0.5"/>
+  </joint>
+
+  <joint name="rev_roll" type="revolute">
+    <parent link="link_4"/><child link="link_5"/>
+    <origin xyz="0.08 0.02 0.16" rpy="0 0.3 0"/><axis xyz="1 0 0"/>
+    <limit lower="-2.8" upper="2.8" effort="50" velocity="3"/>
+  </joint>
+
+  <!-- rpy 회전이 걸린 tool 프레임 — LOCAL 과 LOCAL_WORLD_ALIGNED 를 갈라놓는다. -->
+  <joint name="tool_joint" type="fixed">
+    <parent link="link_5"/><child link="tool_link"/>
+    <origin xyz="0.07 -0.05 0.11" rpy="0.4 -0.7 1.1"/>
+  </joint>
+
+</robot>
