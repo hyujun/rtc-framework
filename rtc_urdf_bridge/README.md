@@ -43,6 +43,7 @@ rtc_urdf_bridge/
 │   ├── rt_model_handle.hpp             # RT-safe 계산 래퍼
 │   ├── closure_yaml_loader.hpp         # Extended-URDF sidecar 파서
 │   ├── constraint_builder.hpp          # ClosedChainInfo→RigidConstraintModel (§4b)
+│   ├── inertial_validation.hpp         # 관성 물리 실현가능성 판정 (V5/V6 로드 게이트)
 │   ├── loop_verification.hpp           # closure error / Jc rank·Delassus
 │   ├── loop_projection.hpp             # q/v loop-consistent 사영 (로드 타임)
 │   ├── closed_chain_model.hpp          # 통합 loader (BuildClosedChainModelFromExtendedUrdf)
@@ -53,6 +54,7 @@ rtc_urdf_bridge/
 │   ├── urdf_analyzer.cpp
 │   ├── kinematic_chain_extractor.cpp
 │   ├── pinocchio_model_builder.cpp
+│   ├── inertial_validation.cpp
 │   ├── rt_model_handle.cpp
 │   ├── closure_state_publisher{,_main}.cpp  # 노드 구현 + 실행 진입점
 │   ├── closure_yaml_loader.cpp         # Extended-URDF sidecar 파서
@@ -80,6 +82,8 @@ rtc_urdf_bridge/
     ├── test_rt_model_handle.cpp
     ├── test_payload_regressor.cpp     # Y_L 열 순서·origin 기준 관성 원소별 고정
     ├── test_frame_jacobian_fd_oracle.cpp # J 행(linear/angular)·열 순서 중심차분 oracle
+    ├── test_inertial_validation.cpp    # 관성 실현가능성 게이트 V5/V6 (사유 분리·scale-aware tol)
+    ├── test_real_model_inertial_gate.cpp # 실모델 11종 무경고 통과 + schunk SVH negative fixture
     ├── test_closure_yaml_loader.cpp    # sidecar 파서
     ├── test_constraint_builder.cpp     # endpoint transform / builder
     ├── test_pinocchio_builder_closure.cpp # closure_yaml_path 경로 (Extended-URDF via builder)
@@ -305,6 +309,33 @@ v-공간 순서**입니다. `SetJointOrder` 로 device 순서를 설정해도 �
 아니라 world 원점에 놓인 점의 속도** `v_O = ṗ + p × ω` 입니다. LWA 를 기대하고 `WORLD` 의
 `topRows(3)` 을 TCP 선속도로 쓰면 `|p × ω|` 만큼 조용히 어긋납니다 (저장소 안에 `WORLD`
 호출자는 없지만 API 가 셋을 노출하므로 테스트가 셋 다 고정합니다).
+
+### 관성 실현가능성 게이트 (V5 / V6)
+
+`PinocchioModelBuilder` 는 full 모델을 세운 직후 **모든 movable body 의 composite 관성**이 강체를
+기술할 수 있는 값인지 판정합니다 (`inertial_validation.hpp`). 판정 대상이 URDF 의 개별 `<link>` 가
+아니라 **fixed joint 를 흡수한 뒤의 `Model::inertias[]`** 인 것이 핵심입니다 — 그것이 `M(q)` 가
+실제로 조립되는 값이라, 게이트의 의미가 "이 모델로 동역학을 돌려도 되는가" 로 정확히 떨어집니다.
+
+두 레인은 **심각도가 아니라 종류가 다릅니다.**
+
+| 레인 | 판정 | 처분 |
+|---|---|---|
+| **V6** — 물리적으로 불가능 | 비유한 값, `mass < 0`, 음의 고유값, 삼각부등식 위반 (`I1+I2 < I3`) | `std::runtime_error` 로 **로드 실패** |
+| **V5** — 물리적으로 불완전 | movable body 의 composite `mass == 0` | **경고 + 술어** (`IsFullModelDynamicsCapable()`) |
+
+V5 가 로드를 막지 않는 이유는 이 패키지가 kinematics 전용 소비자(FK / Jacobian / IK)와 dynamics
+소비자를 함께 섬기기 때문입니다. 질량 없는 movable body 는 `M(q)` 를 그 DoF 에서 특이하게 만들지만
+기하 질의에는 무해하므로, throw 하면 멀쩡한 kinematic 모델을 못 열게 됩니다. 관성에 의존하는
+소비자만 `IsFullModelDynamicsCapable()` 로 자기 검사하십시오.
+
+허용오차는 **주모멘트 크기로 정규화**됩니다 (`kInertialRelTol`). 저장소 실모델의 주모멘트가
+`1.03e-7 ~ 7.07e-1` 로 6.8 decade 에 걸쳐 있어 절대 tol 로는 양 끝을 동시에 만족시킬 수 없기
+때문입니다. **등호는 허용**됩니다 — 얇은 판·막대는 `I1+I2 = I3` 이 정확히 성립합니다.
+
+오프라인 저작 게이트인 `rtc_tools` 의 `compare_mjcf_urdf` 와는 **축이 다릅니다**: 그쪽은 선언값과
+collision 기하 추정값의 *비율*을 보는 informational WARN(외부 정합)이고, 여기는 기하 없이 텐서
+단독의 실현가능성(내부 정합)을 봅니다. 한쪽이 다른 쪽을 대체하지 못합니다.
 
 `ComputePayloadRegressor` 는 프레임에 강체로 매달린 payload 의 10-parameter 관성 집합 `φ_L` 에
 대해 `τ_payload = Y_L · φ_L` 을 만족하는 회귀자를 만듭니다. 두 계약이 조용히 틀리기 쉬워

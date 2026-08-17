@@ -19,6 +19,10 @@
   <exec_depend>xacro</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
+  <!-- 실모델 관성 게이트 테스트 전용. ARCH-5 준수 — build-time 의존이 아니라
+       ament share dir 런타임 lookup 이다 (rtc_controller_manager 선례와 동일). -->
+  <test_depend>ament_index_cpp</test_depend>
+  <test_depend>robot_descriptions</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

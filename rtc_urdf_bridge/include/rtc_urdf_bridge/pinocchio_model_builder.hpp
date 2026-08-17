@@ -2,6 +2,7 @@
 #pragma once
 
 #include "rtc_urdf_bridge/closure_yaml_loader.hpp"
+#include "rtc_urdf_bridge/inertial_validation.hpp"
 #include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
@@ -104,6 +105,18 @@ class PinocchioModelBuilder {
   /// KKT 가 특이해져 NaN 을 낼 수 있으므로 operating configuration 으로 바로 쓰면 안 된다.
   [[nodiscard]] bool IsClosureReferenceSingular() const noexcept;
 
+  // ── 관성 게이트 (V5 / V6) 결과 ─────────────────────────────────────────────
+  // V6 (물리적으로 불가능) 는 생성자에서 이미 throw 했으므로 여기 도달했다면
+  // `fatal` 은 항상 비어 있다. 남는 정보는 V5 레인이다.
+
+  /// full 모델 관성 판정 결과. 순서는 Pinocchio 관절 인덱스 오름차순 = 결정적.
+  [[nodiscard]] const InertialValidationReport& GetInertialReport() const noexcept;
+
+  /// full 모델이 동역학 소비에 적합한가 (= 질량을 지지 않는 movable body 가 없는가).
+  /// false 여도 모델은 정상 로드된 상태이며 FK / Jacobian / IK 는 유효하다 —
+  /// M(q) · Coriolis · 중력 등 **관성에 의존하는 소비자만** 이 술어를 봐야 한다.
+  [[nodiscard]] bool IsFullModelDynamicsCapable() const noexcept;
+
   // ── 메타데이터 ─────────────────────────────────────────────────────────────
 
   /// 등록된 서브모델 이름 목록
@@ -143,6 +156,12 @@ class PinocchioModelBuilder {
   void BuildActuatedModel();
   void RegisterClosedChainConstraints();
 
+  /// full 모델의 composite 관성을 판정해 inertial_report_ 를 채운다.
+  /// V6 위반이 하나라도 있으면 std::runtime_error 로 로드를 실패시킨다.
+  /// BuildFullModel() 끝에서 호출된다 — 축소·트리 모델은 이 full 모델에서
+  /// 파생되므로 여기가 유일한 관문이다.
+  void ValidateFullModelInertias();
+
   /// Extended-URDF sidecar 를 1회 로드해 closure_spec_ 에 캐시하고, loop-passive
   /// 관절 이름 (= full model 의 movable 관절 − sidecar actuated_joints) 을
   /// closure_passive_lock_names_ 에 계산한다. BuildFullModel() 직후·
@@ -171,6 +190,8 @@ class PinocchioModelBuilder {
 
   // 모델 저장소 (shared_ptr: Handle이 참조)
   std::shared_ptr<pinocchio::Model> full_model_;
+  // 관성 게이트 판정 결과 (full 모델 기준). BuildFullModel() 에서 1회 채워진다.
+  InertialValidationReport inertial_report_;
   std::unordered_map<std::string, std::shared_ptr<pinocchio::Model>> reduced_models_;
   std::unordered_map<std::string, std::shared_ptr<pinocchio::Model>> tree_models_;
   // 폐쇄 체인 actuated 제어 모델 (loop-passive 만 잠금, nq==nv). plain URDF 면 nullptr.
