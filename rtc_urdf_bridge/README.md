@@ -78,6 +78,8 @@ rtc_urdf_bridge/
     ├── test_joint_classification.cpp   # role/subtype 분류 규칙
     ├── test_load_model_config.cpp      # YAML 로드 + 폐쇄체인/lock 빌드
     ├── test_rt_model_handle.cpp
+    ├── test_payload_regressor.cpp     # Y_L 열 순서·origin 기준 관성 원소별 고정
+    ├── test_frame_jacobian_fd_oracle.cpp # J 행(linear/angular)·열 순서 중심차분 oracle
     ├── test_closure_yaml_loader.cpp    # sidecar 파서
     ├── test_constraint_builder.cpp     # endpoint transform / builder
     ├── test_pinocchio_builder_closure.cpp # closure_yaml_path 경로 (Extended-URDF via builder)
@@ -288,6 +290,21 @@ handle.ComputeConstraintDynamics(q, v, tau);        // 폐쇄 체인 구속 동�
 handle.ComputePayloadRegressor(q, v, a, frame_id);  // nv × 10
 Eigen::Ref<const Eigen::MatrixXd> Y = handle.GetPayloadRegressor();
 ```
+
+`GetFrameJacobian` 의 출력 `J` 는 **행이 Pinocchio spatial 규약** (`rows 0..2 = linear`,
+`rows 3..5 = angular` — 각속도를 먼저 쌓는 Featherstone 관례와 반대) 이고 **열은 Pinocchio
+v-공간 순서**입니다. `SetJointOrder` 로 device 순서를 설정해도 이 출력은 재배열되지 않으며,
+재배열되는 것은 입력 `q` 뿐입니다 (`ComputePayloadRegressor` 와 같은 비대칭). 블록을 맞바꾸거나
+열을 device 순서로 착각해도 결과는 유한하고 매끄럽게 틀려 NaN·노름 게이트에 걸리지 않으므로,
+`test_frame_jacobian_fd_oracle.cpp` 가 자코비안을 전혀 쓰지 않는 **중심차분 oracle** 로 두 계약을
+고정합니다 — `test_rt_model_handle.cpp` 의 `ReorderedJacobianMatchesDirect` 는 자기일치 대조라
+행이 뒤집혀도 green 으로 남습니다.
+
+행 **순서**와 달리 linear 행이 *무엇의* 속도인지는 `ref_frame` 이 정합니다. `LOCAL` 과
+`LOCAL_WORLD_ALIGNED` 는 프레임 원점의 속도(표현 축만 다름)지만, `WORLD` 는 **프레임 원점이
+아니라 world 원점에 놓인 점의 속도** `v_O = ṗ + p × ω` 입니다. LWA 를 기대하고 `WORLD` 의
+`topRows(3)` 을 TCP 선속도로 쓰면 `|p × ω|` 만큼 조용히 어긋납니다 (저장소 안에 `WORLD`
+호출자는 없지만 API 가 셋을 노출하므로 테스트가 셋 다 고정합니다).
 
 `ComputePayloadRegressor` 는 프레임에 강체로 매달린 payload 의 10-parameter 관성 집합 `φ_L` 에
 대해 `τ_payload = Y_L · φ_L` 을 만족하는 회귀자를 만듭니다. 두 계약이 조용히 틀리기 쉬워

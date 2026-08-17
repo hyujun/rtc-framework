@@ -16,7 +16,7 @@
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
 | `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_timing_log.csv` p50/p99/max 회귀 |
 | `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O, contact_wrench) | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke. Contact wrench: `ros2 topic hz /<prefix>/<target>/contact_wrench` 후 fingertip 으로 객체 접촉 → magnitude 가시화 |
-| `rtc_urdf_bridge/` | gtest (URDF/model parsing, xacro, chain extractor) | 실제 URDF 파싱 smoke |
+| `rtc_urdf_bridge/` | gtest (URDF/model parsing, xacro, chain extractor) + `test_frame_jacobian_fd_oracle` (`GetFrameJacobian` 행/열 계약. 자코비안을 **전혀 쓰지 않는** 중심차분 oracle 이어야 하는 이유는 기존 `test_rt_model_handle` 이 유한성 + 자기일치뿐이라 행 블록을 맞바꿔도 green 이기 때문이다. 픽스처 `test/urdf/mixed_prismatic_revolute.urdf` 는 **네 비대칭 — 축 직교 · origin 3축 offset · tool rpy(LOCAL≠LWA) · prismatic 열의 zero angular — 을 유지해야** 대조가 판별력을 갖는다. 기하를 고치면 각 테스트의 positive control 이 green 아닌 red 로 알린다) | 실제 URDF 파싱 smoke |
 | `rtc_inference/` | ONNX engine unit test | 실제 모델 로드 smoke |
 | `rtc_communication/` | UDP loopback + CAN/CANFD loopback (vcan0 없으면 skip) + RS485 serial loopback (PTY, 상시 실행) + Transceiver lifecycle/decode/callback | vcan0 셋업 후 CAN 테스트 실행 (`sudo modprobe vcan && sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0`), RS485는 PTY라 셋업 불필요, 실제 HW UDP/CAN/RS485(USB-RS485+Dynamixel) 테스트 (선택) |
 | `rtc_digital_twin/` | pytest + RViz2 smoke | `/rtc_cm/{group}/joint_states` hz |

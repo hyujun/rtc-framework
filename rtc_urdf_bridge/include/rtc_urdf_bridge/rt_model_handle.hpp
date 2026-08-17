@@ -71,10 +71,34 @@ class RtModelHandle {
   /// 전체 관절 자코비안 계산: q → data_.J, oMf 갱신 포함
   void ComputeJacobians(std::span<const double> q) noexcept;
 
-  /// 특정 프레임 자코비안 추출 (ComputeJacobians 후 호출)
+  /// 특정 프레임 자코비안 추출 (ComputeJacobians 후 호출) — 6 × nv
+  ///
+  /// **행 순서는 Pinocchio spatial 규약이라 선속도가 먼저다:**
+  ///   `rows 0..2 = linear (v)` · `rows 3..5 = angular (ω)`
+  /// `geometry_msgs/Twist` 와는 같은 순서지만 각속도를 먼저 쌓는 관례
+  /// (Featherstone 6D motion vector) 와는 **반대**다. 두 블록을 맞바꿔도 결과는
+  /// 유한하고 매끄럽게 틀리므로 NaN·노름·게이트 어느 센서에도 안 걸린다 —
+  /// test_frame_jacobian_fd_oracle.cpp 가 중심차분 oracle 로 이 순서를 고정한다.
+  ///
+  /// **linear 이 "무엇의" 속도인지는 ref_frame 이 정한다** — 행 순서와 달리 이건
+  /// 셋이 서로 다르다:
+  ///   - `LOCAL` : 프레임 원점의 속도를 그 프레임 축으로 표현
+  ///   - `LOCAL_WORLD_ALIGNED` : 프레임 원점의 속도를 world 축으로 표현
+  ///   - `WORLD` : **프레임 원점 속도가 아니다.** world 원점에 놓인 body-fixed
+  ///     점의 속도 `v_O = ṗ + p × ω` (= world 축의 spatial twist) 다. LWA 를
+  ///     기대하고 `topRows(3)` 을 TCP 선속도로 쓰면 `|p × ω|` 만큼 (UR5e 기준
+  ///     0.9 m/s 수준) 조용히 어긋난다.
+  /// 저장소 안에 `WORLD` 호출자는 없지만 계약은 셋 다 테스트가 고정한다
+  /// (LOCAL·LWA 는 FD oracle, WORLD 는 `v_O = ṗ + p × ω` 항등식).
+  ///
+  /// **열 순서는 PINOCCHIO v-공간 순서다** (`GetTau()` · `GetPayloadRegressor()` 와
+  /// 동일). `SetJointOrder` 로 device 순서를 설정해도 이 출력은 재배열되지 않는다 —
+  /// 입력 q 만 device 순서로 받아 내부에서 gather 한다. device 순서로 만든 벡터와
+  /// 곱하려면 호출자가 `ReorderInput`/`ReorderOutput` 으로 한쪽을 맞춘다.
+  ///
   /// @param frame_id 프레임 인덱스
-  /// @param ref_frame LOCAL / WORLD / LOCAL_WORLD_ALIGNED
-  /// @param J_out 6 x nv pre-allocated matrix
+  /// @param ref_frame LOCAL / WORLD / LOCAL_WORLD_ALIGNED (linear 행의 의미가 다르다 — 위 계약)
+  /// @param J_out 6 x nv pre-allocated matrix (행·열 순서는 위 계약)
   void GetFrameJacobian(pinocchio::FrameIndex frame_id, pinocchio::ReferenceFrame ref_frame,
                         Eigen::Ref<Eigen::MatrixXd> J_out) noexcept;
 
@@ -223,11 +247,11 @@ class RtModelHandle {
   pinocchio::Data data_;
 
   // 사전 할당 작업 버퍼
-  Eigen::VectorXd q_;    // nq
-  Eigen::VectorXd v_;    // nv
-  Eigen::VectorXd a_;    // nv
-  Eigen::VectorXd tau_;  // nv
-  Eigen::MatrixXd J_;    // 6 x nv
+  Eigen::VectorXd q_;                  // nq
+  Eigen::VectorXd v_;                  // nv
+  Eigen::VectorXd a_;                  // nv
+  Eigen::VectorXd tau_;                // nv
+  Eigen::MatrixXd J_;                  // 6 x nv
   Eigen::MatrixXd payload_regressor_;  // nv x 10 (Layer 2B, #455)
 
   // 폐쇄 체인 구속

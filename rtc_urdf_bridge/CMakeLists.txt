@@ -153,6 +153,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_payload_regressor test/test_payload_regressor.cpp)
   target_link_libraries(test_payload_regressor ${PROJECT_NAME})
 
+  # #316 V9: GetFrameJacobian 행/열 순서를 중심차분 oracle 로 고정. 별도 TU 인
+  # 이유는 test_rt_model_handle 의 자기일치 대조와 판별 대상이 다르기 때문이다
+  # (그쪽은 추출기가 행을 뒤집어도 green 으로 남는다).
+  ament_add_gtest(test_frame_jacobian_fd_oracle test/test_frame_jacobian_fd_oracle.cpp)
+  target_link_libraries(test_frame_jacobian_fd_oracle ${PROJECT_NAME})
+
   ament_add_gtest(test_xacro_processor test/test_xacro_processor.cpp)
   target_link_libraries(test_xacro_processor ${PROJECT_NAME})
 
