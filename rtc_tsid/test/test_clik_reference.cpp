@@ -306,8 +306,9 @@ TEST_F(ClikReferenceTest, InitRejectsInvertedPositionBox) {
 // as model.lowerPositionLimit + margin / model.upperPositionLimit − margin with
 // a shipped margin of 0.02 rad, and the panda finger range [0, 0.04] lands on
 // q_min == q_max exactly. Rejecting equality would take out that envelope, and
-// the consumer only WARNs and silently falls back to its integrator path — so
-// an over-strict gate degrades the position backbone instead of failing loudly.
+// an over-strict gate does not merely degrade quality: CLIK is the consumer's
+// SOLE position backbone (the integrator A/B shadow was removed), so a throw
+// makes on_configure return FAILURE (DEC-1 ⓐ) and the robot never comes up.
 TEST_F(ClikReferenceTest, InitAcceptsMarginClampedRealModelEnvelope) {
   constexpr double kPositionMargin = 0.02;  // integration.position_margin, shipped
 

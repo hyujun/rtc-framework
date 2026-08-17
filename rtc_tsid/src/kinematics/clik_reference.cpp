@@ -53,7 +53,10 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   // the velocity box is on (with v_limit <= 0 it reaches the QP as l = -inf),
   // i.e. it is not a local property. A caller whose model reports unbounded
   // joints (Pinocchio's ±inf convention for continuous joints) must leave the
-  // box empty rather than forward the infinities.
+  // box empty rather than forward the infinities. The in-tree consumer never
+  // reaches this: Pinocchio only emits ±inf limits for unbounded/free-flyer
+  // joints, which make nq != nv, and InitClik's reduced-tree gate rejects that
+  // model before it ever assembles a box.
   //
   // q_min(i) == q_max(i) is legitimate and must pass: it is a joint locked by
   // the caller's own safety margin (shipped panda finger [0, 0.04] under
