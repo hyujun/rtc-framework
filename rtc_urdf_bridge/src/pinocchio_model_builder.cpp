@@ -4,6 +4,7 @@
 #include "rtc_urdf_bridge/closed_chain_model.hpp"
 #include "rtc_urdf_bridge/closure_yaml_loader.hpp"
 #include "rtc_urdf_bridge/constraint_builder.hpp"
+#include "rtc_urdf_bridge/inertial_validation.hpp"
 #include "rtc_urdf_bridge/urdf_logging.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
 
@@ -157,6 +158,19 @@ void PinocchioModelBuilder::BuildFullModel() {
 
   RCLCPP_INFO(logger(), "Full 모델 구축 완료: nq=%d, nv=%d, njoints=%d, nframes=%d",
               full_model_->nq, full_model_->nv, full_model_->njoints, full_model_->nframes);
+
+  ValidateFullModelInertias();
+}
+
+// ── 관성 물리 실현가능성 게이트 (V5 / V6) ───────────────────────────────────
+// 판정 대상은 fixed joint 흡수 후의 composite `inertias[]` = M(q) 가 실제로
+// 조립되는 값이다. 두 레인의 처분이 다른 이유는 §inertial_validation.hpp 참조:
+// V6 는 그 값이 강체가 아니므로 로드를 실패시키고, V5 는 강체이긴 하나 동역학을
+// 지탱하지 못하는 것이라 kinematics 전용 소비자를 위해 경고 + 술어로 남긴다.
+void PinocchioModelBuilder::ValidateFullModelInertias() {
+  // 판정·로그·throw 는 EnforceInertialGate 가 소유한다 — 폐쇄 체인 진입점도 같은
+  // 처분을 받아야 하므로 문구를 여기 복제하지 않는다 (#316 D-5).
+  inertial_report_ = EnforceInertialGate(*full_model_, "PinocchioModelBuilder");
 }
 
 // ── 축소 모델에 공통으로 적용될 passive 잠금 대상 ──────────────────────────
@@ -363,6 +377,14 @@ std::vector<pinocchio::JointIndex> PinocchioModelBuilder::ResolveJointIndicesToL
 // ═══════════════════════════════════════════════════════════════════════════════
 // 접근자
 // ═══════════════════════════════════════════════════════════════════════════════
+
+const InertialValidationReport& PinocchioModelBuilder::GetInertialReport() const noexcept {
+  return inertial_report_;
+}
+
+bool PinocchioModelBuilder::IsFullModelDynamicsCapable() const noexcept {
+  return inertial_report_.degenerate.empty();
+}
 
 std::shared_ptr<const pinocchio::Model> PinocchioModelBuilder::GetFullModel() const noexcept {
   return full_model_;

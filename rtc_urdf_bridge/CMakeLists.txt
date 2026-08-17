@@ -43,6 +43,7 @@ add_library(${PROJECT_NAME} SHARED
   src/urdf_analyzer.cpp
   src/kinematic_chain_extractor.cpp
   src/pinocchio_model_builder.cpp
+  src/inertial_validation.cpp
   src/rt_model_handle.cpp
   src/xacro_processor.cpp
   # Unified kin&dyn 솔버 캐시 (rtc_tsid 에서 이관 — #unified-kindyn Phase 1)
@@ -158,6 +159,15 @@ if(BUILD_TESTING)
   # (그쪽은 추출기가 행을 뒤집어도 green 으로 남는다).
   ament_add_gtest(test_frame_jacobian_fd_oracle test/test_frame_jacobian_fd_oracle.cpp)
   target_link_libraries(test_frame_jacobian_fd_oracle ${PROJECT_NAME})
+
+  ament_add_gtest(test_inertial_validation test/test_inertial_validation.cpp)
+  target_link_libraries(test_inertial_validation ${PROJECT_NAME})
+
+  # 실모델 게이트 — robot_descriptions 를 ament 런타임 lookup 으로만 참조한다
+  # (ARCH-5: build-time 의존 아님, test_depend + share dir 조회).
+  find_package(ament_index_cpp REQUIRED)
+  ament_add_gtest(test_real_model_inertial_gate test/test_real_model_inertial_gate.cpp)
+  target_link_libraries(test_real_model_inertial_gate ${PROJECT_NAME} ament_index_cpp::ament_index_cpp)
 
   ament_add_gtest(test_xacro_processor test/test_xacro_processor.cpp)
   target_link_libraries(test_xacro_processor ${PROJECT_NAME})
