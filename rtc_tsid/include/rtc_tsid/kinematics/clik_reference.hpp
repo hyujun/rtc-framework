@@ -96,7 +96,13 @@ class ClikReferenceGenerator {
     double w_arm{1e-2};   // L2 arm posture weight
     double w_hand{1e-2};  // L3 hand posture weight
     // Per-joint position limits [nv] for the position-aware velocity box
-    // (lᵢ/uᵢ above). Empty → position bound disabled (velocity box only).
+    // (lᵢ/uᵢ above). Empty → position bound disabled (velocity box only); both
+    // sides must be empty or both full-nv. Every component must be FINITE and
+    // ordered q_minᵢ ≤ q_maxᵢ (equality = a locked joint, allowed) — Init()
+    // throws otherwise. ±inf is not an accepted "unbounded" encoding here:
+    // leave the box empty instead. A caller deriving the box from a model that
+    // reports unbounded joints (Pinocchio uses ±inf for continuous joints) must
+    // therefore drop the box rather than forward the infinities. See Init().
     Eigen::VectorXd q_min;
     Eigen::VectorXd q_max;
     // Anti-windup clamp on the carry-forward anchor: max |q_ref_i − q_meas_i|
@@ -107,8 +113,12 @@ class ClikReferenceGenerator {
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
-  // [0, nv), no duplicates, arm/hand disjoint, damping_sq > 0). Non-RT —
-  // call from on_configure; throws std::runtime_error on invalid config.
+  // [0, nv), no duplicates, arm/hand disjoint, damping_sq > 0, and a finite
+  // ordered position box — NUM-7: the size checks alone are not a finiteness
+  // gate, because Compute()'s std::max/std::min box assembly launders a
+  // non-finite bound into the velocity limit and leaves the outputs finite).
+  // Non-RT — call from on_configure; throws std::runtime_error on invalid
+  // config.
   void Init(int nv, const Config& config);
 
   // Gains (RT-safe setters; the controller forwards its SeqLock'd gains).

@@ -164,6 +164,8 @@ Kinematics WBC (`ClikReferenceGenerator`) 와 dynamics WBC (`SE3Task`/`ObjectSE3
 
 `kinematics/clik_reference.hpp` 의 `ClikReferenceGenerator` 는 TSID 가속도 적분의 대안으로 velocity-level CLIK one-step reference `(q_ref, v_ref)` 를 생성합니다: L1 TCP (arm-only, 댐핑 우역행렬 `J_a♯ = J_aᵀ(J_aJ_aᵀ+μ²I)⁻¹` — GraspCache 와 동일한 6×6 LDLT, SVD 미사용), L2 arm nullspace posture (projector 비형성 동치식 `v_p + J_a♯(Kx⊙e − J_a·v_p)`), L3 hand posture (projection 없음). Robot-agnostic: arm/hand velocity index set 은 controller 가 주입 (ARCH-1), `PinocchioCache` 의 registered-frame J/oMf 재사용 (별도 FK 없음), measured anchoring `q_ref = q_meas + v_ref·dt` (nq==nv reduced tree 전제), per-joint `v_limit` clamp, `Manipulability()` (LDLT pivot √det) / `TcpErrorNorm()` 진단. RT alloc 0 (모든 workspace `Init()` pre-alloc, `Compute()` noexcept).
 
+`Init()` 은 위치 박스 (`q_min`/`q_max`) 를 **크기 대칭 + 성분 유한성 + 순서** 로 검증하고 위반 시 `std::runtime_error` 를 던집니다 (NUM-7). 크기 검사만으로는 부족한 이유는 `Compute()` 의 박스 조립이 `std::max`/`std::min` 이라 **비유한 성분이 ±`v_limit` 로 세탁**된다는 것입니다 — 그 joint 의 위치 바운드가 조용히 사라지는데도 `q_ref`/`v_ref` 는 유한해서 `Compute()` 자신의 `allFinite()` 출구 가드가 뜨지 않고, `lo > hi` 붕괴 가드도 NaN 비교가 전부 false 라 눈이 멉니다 (실측 수치는 [agent_docs/invariants.md](../agent_docs/invariants.md) §NUM-7 이 SSoT). `q_minᵢ == q_maxᵢ` 는 **통과**입니다 — 소비자가 안전 마진으로 잠근 joint (shipped `panda` finger `[0, 0.04]` + `position_margin` 0.02) 가 정확히 등호에 착지하기 때문입니다 — 이 방향의 오탐은 조용한 성능 저하가 아니라 **가용성 사고**입니다: CLIK 은 소비자의 유일한 위치 backbone 이므로 (integrator A/B shadow 제거됨) `Init` throw 는 DEC-1 ⓐ 를 통해 `on_configure` 를 `FAILURE` 로 떨어뜨립니다. `±inf` 는 "무제한" 인코딩으로 받지 않습니다 (위치 바운드 해제는 **빈 벡터**) — 무제한 joint 를 보고하는 모델 (pinocchio 의 continuous joint 관용구) 에서 박스를 만드는 소비자는 inf 를 전달하지 말고 박스를 비워야 합니다 (in-tree 소비자는 이 경로에 닿지 않습니다 — pinocchio 가 ±inf 를 내는 joint 는 unbounded/free-flyer 라 `nq != nv` 이고, `InitClik` 의 reduced-tree 게이트가 박스 조립 **전에** 먼저 걸러냅니다).
+
 #### SE3Task YAML 설정
 
 ```yaml
@@ -341,7 +343,7 @@ colcon test-result --verbose
 | `test_tsid_wqp_hqp_compare` | WQP vs HQP 비교 검증 |
 | `test_tsid_performance` | 성능 벤치마크 |
 | `test_phase3_integration` | Phase 3 모듈 통합 (WQP/HQP + SE3 + CoM + preset 전환) |
-| `test_clik_reference` | (Stage C-1) CLIK reference: TCP 수렴, nullspace 무간섭, hand decoupling, singularity bound, RT alloc 0 |
+| `test_clik_reference` | (Stage C-1) CLIK reference: TCP 수렴, nullspace 무간섭, hand decoupling, singularity bound, RT alloc 0, 위치 박스 검증 (NUM-7 — NaN/±inf/역전 거부, 등호 통과) |
 
 > Build hygiene: `EomConstraint::compute_equality`의 미사용 인자 `n_vars`를 `/*n_vars*/`로 표시 (`-Wunused-parameter` 제거), `PostureTask`의 `cache.q.size()` (Eigen `Index` = `long`) → `int` 변환에 `static_cast<int>` 명시 (`-Wconversion` 제거), `test_tsid_performance` warm-up 호출에 `(void)` 캐스트 추가 (nodiscard `-Wunused-result` 제거). Behavior 동일.
 
