@@ -705,6 +705,24 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── Shipped-profile pull estimator vs a known load (#177 crit#4) ───────────
+  # Parses the shipped iiwa7_leap demo_shared.yaml (same RTC_DEMO_SHARED_CONFIG_DIR
+  # route as test_demo_shared_config) so the deployed force_sign is what runs.
+  ament_add_gtest(test_pull_estimator_known_wrench test/test_pull_estimator_known_wrench.cpp)
+  target_link_libraries(test_pull_estimator_known_wrench
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_pull_estimator_known_wrench PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_pull_estimator_known_wrench
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── Closed-chain hand FK helper test (#121 Phase 2c) ───────────────────────
   # Reuses rtc_urdf_bridge/test fixtures (closure_test_fixtures.hpp,
   # test_urdf_path.hpp) — test-only, never-installed headers resolved via a

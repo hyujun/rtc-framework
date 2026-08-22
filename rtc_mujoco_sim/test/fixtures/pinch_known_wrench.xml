@@ -1,0 +1,96 @@
+<mujoco model="pinch_known_wrench_test">
+  <!-- #177 crit#4 positive control: a free object pinched between two contact-
+       sensored pads, so a KNOWN external wrench hung on the object has exactly
+       one way out — through the two contact sensors.
+
+       WHY THE SQUEEZE COMES OFF A LONG HINGE. rtc_mujoco_sim only discovers
+       HINGE joints that carry an actuator (DiscoverAllXmlJoints), so a slider
+       pad is not drivable through the group interface at all. A 0.5 m arm
+       hinged about y puts the pad on an arc whose tangent at rest is world x;
+       the pad travels well under a millimetre here, so the arc is a straight
+       push along x to five decimal places, and torque/length is the squeeze.
+       The exact squeeze value does not matter — the identity being tested holds
+       for any grip firm enough not to slip.
+
+       WHY THE PADS ARE NOT SYMMETRIC. `pad_a` is driven and `pad_b` is static.
+       A pinch between two force-driven pads cannot hold a wrench with a
+       component along the pinch axis: both pads keep pushing with the commanded
+       force whatever the object does, so the axial residual is unbalanced and
+       the assembly drifts. Backing the object against a static pad lets that
+       pad's normal force absorb the axial component, so the test wrench can
+       have all three components non-zero instead of living in the friction
+       plane.
+
+       WHY THE LINK FRAMES ARE ROTATED. Each pad body carries a non-trivial,
+       and deliberately *different*, orientation, while its geom carries the
+       inverse rotation so the contact faces stay axis-aligned. The physics is
+       therefore a plain axis-aligned pinch, but the wrench each sensor reports
+       is expressed in a frame sharing no axis with the world or with the other
+       pad. An identity slipped into the link transform, or a component swap in
+       it, changes the answer — which it would not if both link frames were the
+       identity, as in contact_minimal.xml.
+
+       Both pads start 0.5 mm INSIDE the object rather than a gap away from it,
+       so the grasp exists on tick 0 and the object never free-falls while the
+       squeeze builds. -->
+  <compiler angle="radian"/>
+  <option timestep="0.001" gravity="0 0 -9.81" integrator="implicitfast"
+          solver="Newton" iterations="50"/>
+
+  <default>
+    <geom condim="4" friction="1.5 0.05 0.005" solref="0.004 1"
+          solimp="0.95 0.99 0.001"/>
+  </default>
+
+  <worldbody>
+    <!-- Driven pad. The arm hangs BELOW its hinge, so a point at -L swings
+         towards -x for a positive rotation about +y: negative torque is the
+         squeeze direction. -->
+    <body name="pad_a_arm" pos="-0.0245 0 0.80">
+      <joint name="ja" type="hinge" axis="0 1 0" range="-0.5 0.5" damping="20"/>
+      <inertial pos="0 0 -0.25" mass="0.30" diaginertia="0.00625 0.00625 1e-5"/>
+      <geom name="pad_a_mast" type="capsule" fromto="0 0 0 0 0 -0.50" size="0.006"
+            contype="0" conaffinity="0" rgba="0.55 0.55 0.55 1"/>
+      <!-- 40 deg about (1,1,1)/sqrt(3); the geom carries the conjugate. -->
+      <body name="pad_a_link" pos="0 0 -0.50"
+            quat="0.9396926 0.1974851 0.1974851 0.1974851">
+        <inertial pos="0 0 0" mass="0.05" diaginertia="1e-4 1e-4 1e-4"/>
+        <geom name="pad_a_contact_geom" type="box" size="0.005 0.03 0.03"
+              quat="0.9396926 -0.1974851 -0.1974851 -0.1974851"
+              rgba="0.85 0.35 0.2 1"/>
+        <site name="pad_a_ft_site" pos="0 0 0" size="0.002" group="3"/>
+      </body>
+    </body>
+
+    <!-- Static pad: the object is backed against it, so its normal force
+         absorbs the along-axis component of the applied wrench.
+         55 deg about (0,1,-2)/sqrt(5); the geom carries the conjugate. -->
+    <body name="pad_b_link" pos="0.0245 0 0.30"
+          quat="0.8870108 0 0.2064968 -0.4129936">
+      <geom name="pad_b_contact_geom" type="box" size="0.005 0.03 0.03"
+            quat="0.8870108 0 -0.2064968 0.4129936" rgba="0.2 0.35 0.85 1"/>
+      <site name="pad_b_ft_site" pos="0 0 0" size="0.002" group="3"/>
+    </body>
+
+    <!-- The grasped object. The explicit inertial puts the centre of mass on
+         the body origin, so a wrench requested at point (0,0,0) is a pure force
+         about the centre of mass and induces no moment of its own. -->
+    <body name="object" pos="0 0 0.30">
+      <joint name="object_free" type="free" damping="2"/>
+      <inertial pos="0 0 0" mass="0.05" diaginertia="2e-5 2e-5 2e-5"/>
+      <geom name="object_geom" type="box" size="0.02 0.02 0.02" rgba="0.35 0.7 0.4 1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- gear=1 so ctrl is the hinge torque in N.m directly. -->
+    <motor name="ma" joint="ja" gear="1" ctrlrange="-200 200"/>
+  </actuator>
+
+  <sensor>
+    <contact name="pad_a_contact" geom1="pad_a_contact_geom" num="1"
+             data="found force torque dist pos normal tangent" reduce="netforce"/>
+    <contact name="pad_b_contact" geom1="pad_b_contact_geom" num="1"
+             data="found force torque dist pos normal tangent" reduce="netforce"/>
+  </sensor>
+</mujoco>
