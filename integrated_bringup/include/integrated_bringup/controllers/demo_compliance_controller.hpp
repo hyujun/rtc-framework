@@ -48,6 +48,7 @@
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
+#include "integrated_bringup/support/compliance_wrench_source.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
@@ -307,6 +308,13 @@ class DemoComplianceController final : public RTControllerInterface {
   // these accessors (RT-7 safe; no behavior change).
   [[nodiscard]] const ::rtc::grasp::GraspStateData& GetGraspStateForTesting() const noexcept {
     return grasp_state_;
+  }
+
+  /// Test-only: the configure-time `external_wrench.source` selection. Until S3
+  /// wires it into the tick this accessor is the ONLY reader, which is exactly
+  /// why the parse is asserted against the shipped profiles rather than trusted.
+  [[nodiscard]] ComplianceWrenchSource GetWrenchSourceForTesting() const noexcept {
+    return wrench_source_;
   }
 
   /// Test-only: the body the publish thread would Load right now (#234 P-1).
@@ -837,6 +845,13 @@ class DemoComplianceController final : public RTControllerInterface {
   // fingertip_rotations_ slot order). Disabled (null estimator) without a hand
   // tree-model or when the block is absent. Output rides grasp_state_.pull.
   PullEstimatorWiring pull_wiring_;
+
+  // #469 S2: which estimate will drive the admittance law. Resolved at
+  // configure from `external_wrench.source` and NOT read by anything yet — S3 is
+  // the first consumer. Parsed now rather than then so a profile whose source is
+  // misspelled is refused by the bring-up that ships it, instead of by the
+  // sprint that finally reads the field.
+  ComplianceWrenchSource wrench_source_{ComplianceWrenchSource::kPullEstimator};
 
   // ── Generalized-momentum observer (#135 Layer 1b) ─────────────────────────
   // Parsed in LoadConfig (the YAML is there) and BUILT in OnDeviceConfigsSet,

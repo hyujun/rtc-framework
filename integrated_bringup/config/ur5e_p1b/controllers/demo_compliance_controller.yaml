@@ -1,13 +1,15 @@
-# demo_compliance_controller (#469 S2) — byte-for-byte the sibling
-# demo_task_controller.yaml with its top-level key renamed.
+# demo_compliance_controller (#469 S2) — the sibling demo_task_controller.yaml
+# with its top-level key renamed, plus the blocks this controller owns outright.
 #
 # It is a copy on purpose: until the §7 admittance law lands (S3) the two
 # controllers must produce identical output on identical input, and
-# test_compliance_task_equivalence.cpp asserts exactly that against these two
-# shipped files. Any value edited here before S3 breaks that test — which is the
-# intended way to find out that the copy has started to drift.
+# test_compliance_task_equivalence.cpp asserts exactly that — comparing these two
+# shipped files key by key, EXCEPT for the owned blocks at the bottom, which have
+# assertions of their own. Editing any other value here breaks that comparison,
+# which is the intended way to find out that the copy has started to drift.
 #
-# S3 adds the `external_wrench:` / admittance blocks HERE, not in the sibling.
+# S3 adds the admittance gains HERE, not in the sibling, and moves each newly
+# owned block into that test's exclusion list as it does so.
 demo_compliance_controller:
   # ── Arm DoF (required) ─────────────────────────────────────────────────────
   # Authoritative arm joint count at LoadConfig time (#340). The length of
@@ -149,3 +151,51 @@ demo_compliance_controller:
     # otherwise on_configure logs an INFO naming the absent file.
     - msg_type: integrated_bringup/GraspDiagLog
       instance: grasp_diag
+
+  # ── External wrench source (#469) ──────────────────────────────────────────
+  # Which physical estimate drives the admittance law. Configure-time and
+  # exclusive — one source per controller instance, never a fusion (D-A4): the
+  # pull estimate (force on the grasped object) and a momentum-observer residual
+  # (which contains the same force, transmitted through the hand) would roughly
+  # double if added, so #470's "do not sum two 6D sources" rule fires on exactly
+  # this pair.
+  #
+  # Required with no default, and the ONLY accepted value today. A
+  # momentum-observer source is designed but not implemented (#469 S6), so
+  # writing `momentum_observer` here is refused by the same path as a typo — the
+  # bring-up stops rather than the arm running on an estimate nobody selected.
+  #
+  # S2 parses this and stops. S3 is what turns it into a wrench.
+  external_wrench:
+    source: "pull_estimator"
+
+  # ── Pull estimator override — THIS CONTROLLER ONLY (#469 D-A8) ─────────────
+  # The p1b demo_shared block ships `use_baseline_subtraction: false` on purpose:
+  # it mirrors what the control PC deploys, and #177 crit#4's 100 g plate rung
+  # needs the plate's own weight to READ as pull instead of being snapshotted
+  # away. That is a measurement setting, and it is the right one — for a
+  # measurement.
+  #
+  # Admittance needs the opposite. With the baseline off the estimate is
+  # absolute-with-offset, so at grasp a constant residual appears and never
+  # leaves; with K_p^a = 0 (D-A3, hand-guiding) the steady state of a constant
+  # force is a constant VELOCITY, so that residual does not settle the arm
+  # somewhere slightly wrong — it walks the compliant frame to the 0.15 m
+  # envelope and holds it there. The law needs "pull since grasp", which is what
+  # the baseline snapshot produces.
+  #
+  # WHY AN OVERRIDE AND NOT THE OTHER TWO OPTIONS. Refusing to configure would
+  # have been fail-closed and wrong: one controller's configure failure latches
+  # bring_up_failed and the D1 checkpoint refuses the WHOLE bring-up
+  # (rt_controller_node_params.cpp), so p1b would lose joint, task and wbc too —
+  # over a controller that is not even coupled yet. Editing demo_shared.yaml
+  # instead would silently retune the pull lane of those same three shipped
+  # controllers and break the crit#4 rung. LoadConfig applies a controller's own
+  # keys through the same ApplyDemoSharedConfig entry point as the shared file,
+  # so the override reaches this controller and nothing else.
+  #
+  # gravity_force stays zero, which is the correct pairing with the baseline on
+  # (the snapshot already removes the object weight and the tips' constant
+  # calibration residual — see the p1a block).
+  pull_estimator:
+    use_baseline_subtraction: true

@@ -1,13 +1,15 @@
-# demo_compliance_controller (#469 S2) — byte-for-byte the sibling
-# demo_task_controller.yaml with its top-level key renamed.
+# demo_compliance_controller (#469 S2) — the sibling demo_task_controller.yaml
+# with its top-level key renamed, plus the blocks this controller owns outright.
 #
 # It is a copy on purpose: until the §7 admittance law lands (S3) the two
 # controllers must produce identical output on identical input, and
-# test_compliance_task_equivalence.cpp asserts exactly that against these two
-# shipped files. Any value edited here before S3 breaks that test — which is the
-# intended way to find out that the copy has started to drift.
+# test_compliance_task_equivalence.cpp asserts exactly that — comparing these two
+# shipped files key by key, EXCEPT for the owned blocks at the bottom, which have
+# assertions of their own. Editing any other value here breaks that comparison,
+# which is the intended way to find out that the copy has started to drift.
 #
-# S3 adds the `external_wrench:` / admittance blocks HERE, not in the sibling.
+# S3 adds the admittance gains HERE, not in the sibling, and moves each newly
+# owned block into that test's exclusion list as it does so.
 # demo_compliance_controller — iiwa7 + LEAP variant
 # CLIK task-space tracking for the arm + hand joint passthrough. Grasp
 # controller deactivated (see demo_shared.yaml grasp_controller_type: "none").
@@ -111,3 +113,20 @@ demo_compliance_controller:
     # otherwise on_configure logs an INFO naming the absent file.
     - msg_type: integrated_bringup/GraspDiagLog
       instance: grasp_diag
+
+  # ── External wrench source (#469) ──────────────────────────────────────────
+  # Which physical estimate drives the admittance law. Configure-time and
+  # exclusive — one source per controller instance, never a fusion (D-A4): the
+  # pull estimate (force on the grasped object) and a momentum-observer residual
+  # (which contains the same force, transmitted through the hand) would roughly
+  # double if added, so #470's "do not sum two 6D sources" rule fires on exactly
+  # this pair.
+  #
+  # Required with no default, and the ONLY accepted value today. A
+  # momentum-observer source is designed but not implemented (#469 S6), so
+  # writing `momentum_observer` here is refused by the same path as a typo — the
+  # bring-up stops rather than the arm running on an estimate nobody selected.
+  #
+  # S2 parses this and stops. S3 is what turns it into a wrench.
+  external_wrench:
+    source: "pull_estimator"

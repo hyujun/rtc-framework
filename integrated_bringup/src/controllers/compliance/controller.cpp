@@ -1180,6 +1180,35 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
     LogPullEstimatorWiring(logger_, pull_wiring_, shared);
   }
 
+  // ── #469 S2: which estimate will drive the admittance law ────────────────
+  //
+  // Required, with no default: see ParseComplianceWrenchSource. The key is read
+  // here — right after the wiring it selects — so a profile that asks for a
+  // source whose lane is not configured is refusable in one place later, and so
+  // this controller's identity ("driven by ONE named measurement") is visible in
+  // its config rather than only in S3's tick.
+  //
+  // The value is not consumed yet. That is deliberate: parsing it a sprint early
+  // costs nothing and means the three shipped profiles are already known-good
+  // when S3 starts reading it, instead of S3 discovering a typo in a config it
+  // did not write.
+  {
+    const YAML::Node ext = cfg["external_wrench"];
+    if (!ext || !ext["source"]) {
+      throw std::runtime_error(
+          "demo_compliance_controller: required 'external_wrench.source' is missing. This "
+          "controller is defined by the measurement that drives it, so there is no default to "
+          "fall back to — name the source explicitly.");
+    }
+    // Log the string the operator wrote, not the name of the value it resolved
+    // to: with one legal spelling today those are the same, and the day they are
+    // not is exactly the day the log needs to be the truth.
+    const auto source_name = ext["source"].as<std::string>();
+    wrench_source_ = ParseComplianceWrenchSource(source_name);
+    RCLCPP_INFO(logger_, "[compliance] external wrench source: %s (not consumed until #469 S3)",
+                source_name.c_str());
+  }
+
   // ── #135 Layer 1b: momentum-observer params ─────────────────────────────
   // Only carried here. The wiring itself is built in on_configure: it pins the
   // arm device's joint order on its own model handle, and joint_state_names do

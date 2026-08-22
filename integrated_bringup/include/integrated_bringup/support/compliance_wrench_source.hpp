@@ -17,8 +17,12 @@
 // a virtual `Wrench6 Get()` would be a degenerate interface over two functions
 // that never dispatch. The verdict struct is the real interface.
 //
-// RT: every function here is called from the controller tick — noexcept, no
-// allocation, no lock, no logging, no throw, fixed-size Eigen only.
+// RT: FromPullEstimate is called from the controller tick — noexcept, no
+// allocation, no lock, no logging, no throw, fixed-size Eigen only. The one
+// exception is ParseComplianceWrenchSource, which runs at configure (it takes a
+// string and throws); it lives here anyway because an enum and the spelling that
+// selects it are one contract, and splitting them is how a value gets renamed on
+// one side only.
 #pragma once
 
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
@@ -29,6 +33,9 @@
 #include <Eigen/Core>
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace integrated_bringup {
 
@@ -47,6 +54,33 @@ namespace integrated_bringup {
 enum class ComplianceWrenchSource : std::uint8_t {
   kPullEstimator = 0,
 };
+
+/// The YAML spelling of `kPullEstimator`. Kept next to the enum so the wire
+/// name and the value cannot be renamed apart.
+inline constexpr std::string_view kPullEstimatorSourceName = "pull_estimator";
+
+/// Resolve `external_wrench.source` (configure-time, non-RT, throws).
+///
+/// FAIL-CLOSED BY OMISSION. There is no default and no fallback: a wrench source
+/// that silently resolved to something would let a typo run the arm off an
+/// estimate the operator did not select, and the compliance controller exists to
+/// be driven by one specific measurement. The throw reaches CM as a configure
+/// FAILURE, which refuses the bring-up — the same answer any other malformed
+/// controller YAML gets.
+///
+/// The message names the accepted values rather than saying "invalid", because
+/// the interesting failure is `momentum_observer`: it is a source that exists in
+/// the design (#469 S6) and does not exist yet in code, so the operator needs to
+/// be told which of the two situations they are in.
+[[nodiscard]] inline ComplianceWrenchSource ParseComplianceWrenchSource(const std::string& name) {
+  if (name == kPullEstimatorSourceName) {
+    return ComplianceWrenchSource::kPullEstimator;
+  }
+  throw std::runtime_error("external_wrench.source: unknown value '" + name + "'. Accepted: '" +
+                           std::string(kPullEstimatorSourceName) +
+                           "'. (A momentum-observer source is designed but not implemented — "
+                           "#469 S6.)");
+}
 
 /// One tick's answer from a wrench source: what to publish, where it acts, and
 /// what the state machine should make of it.

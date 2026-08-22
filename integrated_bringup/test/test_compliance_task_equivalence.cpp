@@ -42,15 +42,19 @@
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "integrated_bringup/support/compliance_wrench_source.hpp"
+#include "integrated_bringup/support/demo_shared_config.hpp"
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -60,7 +64,10 @@
 
 namespace {
 
+using integrated_bringup::ApplyDemoSharedConfig;
+using integrated_bringup::ComplianceWrenchSource;
 using integrated_bringup::DemoComplianceController;
+using integrated_bringup::DemoSharedConfig;
 using integrated_bringup::DemoTaskController;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
@@ -108,6 +115,24 @@ YAML::Node ShippedControllerNode(const std::string& profile, const std::string& 
 // override channel), so merging the shipped block in here delivers exactly what
 // the node parameter would have. Existing keys win, since an override is
 // precisely what they are.
+void FillMissing(YAML::Node dst, const YAML::Node& src) {
+  for (auto it = src.begin(); it != src.end(); ++it) {
+    const auto key = it->first.as<std::string>();
+    if (!dst[key]) {
+      dst[key] = it->second;
+    } else if (dst[key].IsMap() && it->second.IsMap()) {
+      // Recurse rather than let the present key win whole. Production merges at
+      // the STRUCT level — the shared file populates DemoSharedConfig and the
+      // controller's own keys are applied on top of it — so a controller that
+      // overrides one field of `pull_estimator` keeps every other field of the
+      // shared block. Stopping at the top level here would instead delete them,
+      // and the fixture would quietly configure a pull estimator that production
+      // never builds.
+      FillMissing(dst[key], it->second);
+    }
+  }
+}
+
 void MergeShippedShared(YAML::Node& cfg, const std::string& profile) {
   const std::string path =
       std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile + "/controllers/demo_shared.yaml";
@@ -118,12 +143,16 @@ void MergeShippedShared(YAML::Node& cfg, const std::string& profile) {
   if (!shared || !shared.IsMap()) {
     throw std::runtime_error(path + ": missing 'demo_shared' map");
   }
-  for (auto it = shared.begin(); it != shared.end(); ++it) {
-    const auto key = it->first.as<std::string>();
-    if (!cfg[key]) {
-      cfg[key] = it->second;
-    }
-  }
+  FillMissing(cfg, shared);
+}
+
+/// The profile's shared + controller config as the controller resolves it.
+DemoSharedConfig ResolvedShared(const std::string& profile, const std::string& key) {
+  YAML::Node cfg = ShippedControllerNode(profile, key);
+  MergeShippedShared(cfg, profile);
+  DemoSharedConfig out;
+  ApplyDemoSharedConfig(cfg, out);
+  return out;
 }
 
 // ── Bitwise field-by-field output comparison ─────────────────────────────────
@@ -378,15 +407,84 @@ void Append(std::vector<Tick>& dst, const std::vector<Tick>& src) {
 // when someone tunes a gain in one file and not the other. Comparing the parsed
 // node rather than the file text is deliberate: the two files differ in comments
 // and in the top-level key by design, and neither of those is configuration.
+// Keys the compliance controller owns outright, excluded from the equality
+// above and covered instead by the two tests after it. An exclusion with no
+// replacement assertion is a hole, which is why the list lives three lines from
+// the tests that fill it.
+constexpr std::array<const char*, 2> kComplianceOwnedKeys = {
+    "external_wrench",  // no sibling equivalent — the whole point of the controller
+    "pull_estimator",   // per-profile override, see the D-A8 test below
+};
+
+YAML::Node WithoutComplianceOwnedKeys(const YAML::Node& node) {
+  YAML::Node out = YAML::Clone(node);
+  for (const char* key : kComplianceOwnedKeys) {
+    out.remove(key);
+  }
+  return out;
+}
+
 TEST(ComplianceTaskEquivalence, ShippedConfigsAreTheSameConfig) {
   for (const char* profile : kProfiles) {
     const YAML::Node task = ShippedControllerNode(profile, "demo_task_controller");
     const YAML::Node comp = ShippedControllerNode(profile, "demo_compliance_controller");
-    EXPECT_EQ(YAML::Dump(comp), YAML::Dump(task))
+    EXPECT_EQ(YAML::Dump(WithoutComplianceOwnedKeys(comp)),
+              YAML::Dump(WithoutComplianceOwnedKeys(task)))
         << profile
-        << ": demo_compliance_controller.yaml has drifted from its sibling. Until #469 S3 the "
-           "two must stay identical below the top-level key — if this is the S3 divergence, "
-           "re-scope this test to the blocks S3 does not own instead of deleting it.";
+        << ": demo_compliance_controller.yaml has drifted from its sibling outside the blocks it "
+           "owns. Until #469 S3 gives it a law the rest must stay identical — if this IS the S3 "
+           "divergence, move the newly-owned block into kComplianceOwnedKeys and give it its own "
+           "assertion, rather than deleting this test.";
+  }
+}
+
+// ── 1b. What the excluded keys must say ─────────────────────────────────────
+
+TEST(ComplianceTaskEquivalence, EveryProfileNamesTheOnlyImplementedWrenchSource) {
+  for (const char* profile : kProfiles) {
+    const YAML::Node comp = ShippedControllerNode(profile, "demo_compliance_controller");
+    ASSERT_TRUE(comp["external_wrench"] && comp["external_wrench"]["source"])
+        << profile << ": required 'external_wrench.source' is missing — LoadConfig throws on this";
+    EXPECT_EQ(comp["external_wrench"]["source"].as<std::string>(),
+              std::string(integrated_bringup::kPullEstimatorSourceName))
+        << profile;
+  }
+  // The task controller must NOT have grown one: a wrench source on a
+  // controller with no compliance law would be configuration nobody reads.
+  for (const char* profile : kProfiles) {
+    EXPECT_FALSE(ShippedControllerNode(profile, "demo_task_controller")["external_wrench"])
+        << profile << ": demo_task_controller has no compliance law to feed";
+  }
+}
+
+// #469 D-A8. The pull estimate this controller will integrate must be a DELTA,
+// on every profile, however that profile configures the measurement lane for the
+// other three controllers.
+//
+// p1b is the case that forced the decision: its shared block ships
+// `use_baseline_subtraction: false` deliberately (it mirrors the control PC, and
+// #177 crit#4's plate rung needs the plate's weight to read as pull). Absolute-
+// with-offset is right for a measurement and wrong for this law — with K_p^a = 0
+// a constant offset integrates to constant velocity, so the compliant frame
+// walks to the displacement limit and stays there. The controller's own YAML
+// overrides it; demo_shared.yaml is untouched and the other three controllers
+// keep the setting they ship with.
+//
+// Asserted on the RESOLVED config rather than on p1b's override text, so a
+// fourth profile added later with the baseline off fails here instead of
+// silently inheriting the wrong regime.
+TEST(ComplianceTaskEquivalence, EveryProfileGivesTheComplianceLaneABaselinedEstimate) {
+  for (const char* profile : kProfiles) {
+    const DemoSharedConfig comp = ResolvedShared(profile, "demo_compliance_controller");
+    EXPECT_TRUE(comp.pull_use_baseline_subtraction)
+        << profile
+        << ": the compliance controller resolves to an absolute-with-offset pull estimate. Add "
+           "`pull_estimator: {use_baseline_subtraction: true}` to its YAML — do NOT flip the "
+           "shared block, which the other three controllers read.";
+    // With the baseline on, a gravity model would subtract the object weight
+    // twice (the snapshot already removed it).
+    EXPECT_TRUE(comp.pull_estimator_params.gravity_force.isZero(0.0))
+        << profile << ": gravity_force is non-zero while the baseline snapshot is on";
   }
 }
 
@@ -453,6 +551,48 @@ TEST(ComplianceTaskEquivalence, FingertipContactIsSeenIdentically) {
   touching.hand_target = {};
   Append(program, Repeat(touching, 40));
   RunAndCompare(program, "fingertip contact");
+}
+
+// ── 4. external_wrench.source, through the real configure path ──────────────
+//
+// The three tests above read the YAML. These run it through LoadConfig, which is
+// what actually decides whether a bring-up survives — a shipped file that parses
+// as text but throws at configure would pass every assertion above.
+
+// iiwa7_leap only, because BringUp needs a model and the fixture builds one
+// robot. That is not a coverage gap for the parse — the code is profile-blind —
+// but it IS one for "this file configures": the ur5e profiles are held by
+// EveryProfileNamesTheOnlyImplementedWrenchSource, which reads their YAML but
+// never runs LoadConfig over it.
+TEST(ComplianceWrenchSourceConfig, TheShippedProfileConfiguresToThePullEstimator) {
+  YAML::Node cfg = ShippedControllerNode("iiwa7_leap", "demo_compliance_controller");
+  MergeShippedShared(cfg, "iiwa7_leap");
+  std::unique_ptr<DemoComplianceController> ctrl;
+  ASSERT_NO_THROW(ctrl = BringUp<DemoComplianceController>(cfg));
+  EXPECT_EQ(ctrl->GetWrenchSourceForTesting(), ComplianceWrenchSource::kPullEstimator);
+}
+
+TEST(ComplianceWrenchSourceConfig, AMissingSourceRefusesToConfigure) {
+  YAML::Node cfg = ShippedControllerNode("iiwa7_leap", "demo_compliance_controller");
+  MergeShippedShared(cfg, "iiwa7_leap");
+  cfg.remove("external_wrench");
+  // Not "returns a default": there is no correct default for which measurement
+  // drives an arm, and a silent one would be indistinguishable from a config
+  // that named the source and got it.
+  EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
+}
+
+TEST(ComplianceWrenchSourceConfig, AnUnimplementedSourceRefusesToConfigure) {
+  YAML::Node cfg = ShippedControllerNode("iiwa7_leap", "demo_compliance_controller");
+  MergeShippedShared(cfg, "iiwa7_leap");
+  // The value that matters: momentum_observer is a REAL source in the design
+  // (#469 S6) with no adapter behind it yet. It must be refused exactly like a
+  // typo rather than accepted into a lane that produces nothing.
+  cfg["external_wrench"]["source"] = "momentum_observer";
+  EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
+
+  cfg["external_wrench"]["source"] = "pull_estimatorr";
+  EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
 }
 
 }  // namespace
