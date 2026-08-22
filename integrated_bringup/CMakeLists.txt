@@ -723,6 +723,24 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── Compliance wrench source adapter (#469 S1) ─────────────────────────────
+  # Shares pull_known_load_fixture.hpp with the crit#4 test above, so both drive
+  # the same known load through the shipped profile.
+  ament_add_gtest(test_compliance_wrench_source test/test_compliance_wrench_source.cpp)
+  target_link_libraries(test_compliance_wrench_source
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_compliance_wrench_source PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_compliance_wrench_source
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── Closed-chain hand FK helper test (#121 Phase 2c) ───────────────────────
   # Reuses rtc_urdf_bridge/test fixtures (closure_test_fixtures.hpp,
   # test_urdf_path.hpp) — test-only, never-installed headers resolved via a
