@@ -15,6 +15,7 @@
 // translation shape-invariant, so those assertions pass with the gate deleted).
 // Everything asserted below is a channel count or a joint command.
 
+#include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
@@ -27,9 +28,11 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <type_traits>
 
 namespace {
 
+using integrated_bringup::DemoComplianceController;
 using integrated_bringup::DemoJointController;
 using integrated_bringup::DemoTaskController;
 using integrated_bringup::DemoWbcController;
@@ -332,13 +335,19 @@ TEST_F(DemoJointGateTest, AWideDeviceIsNotTreatedAsAFault) {
   }
 }
 
-// ── demo_task: the same contract, a different binding ────────────────────────
+// ── demo_task and its #469 rename-copy: the same contract, other bindings ────
 //
-// DemoTaskController is registered for runtime switching, so its answer to an
-// unreadable device has to match demo_joint's. Model-less on purpose (see the
-// file header): the wire and E-STOP lanes below need no URDF, and
-// ComputeControl early-returns without a registered TCP frame — which is
-// precisely the state in which the tail policy has to be right anyway.
+// Both are registered for runtime switching, so their answer to an unreadable
+// device has to match demo_joint's. Model-less on purpose (see the file
+// header): the wire and E-STOP lanes below need no URDF, and ComputeControl
+// early-returns without a registered TCP frame — which is precisely the state
+// in which the tail policy has to be right anyway.
+//
+// ONE parametrised fixture rather than two transcriptions. demo_compliance is
+// demo_task's rename-copy today, and a copied block of assertions drifts from
+// its original silently — the failure mode is that the copy keeps passing an
+// older contract. Parametrising also states the actual claim: these bindings
+// must answer identically, whatever S3 does to the arm lane of one of them.
 
 std::string MinimalTaskYaml() {
   std::string yaml = "arm_dof: " + std::to_string(kArmDof) + "\nestop:\n  arm_safe_position: [";
@@ -349,23 +358,72 @@ std::string MinimalTaskYaml() {
   return yaml;
 }
 
-class DemoTaskGateTest : public ::testing::Test {
- protected:
-  DemoTaskController ctrl_{"", DemoTaskController::Gains{}};
+// demo_compliance takes demo_task's config plus the block it owns outright
+// (#469 S2 made `external_wrench.source` required with no default). Derived, so
+// the two bindings are provably driven from the SAME arm configuration — which
+// is what makes "they answer identically" a claim about the code rather than
+// about two YAML strings.
+std::string MinimalComplianceYaml() {
+  return MinimalTaskYaml() + "external_wrench:\n  source: \"pull_estimator\"\n";
+}
 
-  void SetUp() override { ASSERT_NO_THROW(ctrl_.LoadConfig(YAML::Load(MinimalTaskYaml()))); }
+// The per-binding facts. kMaxArmDof is genuinely per-binding — each controller
+// declares its own kDemo*MaxArmDof and sizes safe_position_ from it — so a
+// shared constant would make the E-STOP static_assert below vacuous for
+// whichever binding it does not name.
+template <typename Ctrl>
+struct GateBindingTraits;
+
+template <>
+struct GateBindingTraits<DemoTaskController> {
+  static constexpr int kMaxArmDof = integrated_bringup::kDemoTaskMaxArmDof;
+
+  static std::string Yaml() { return MinimalTaskYaml(); }
 };
 
-TEST_F(DemoTaskGateTest, ANarrowDeviceSilencesTheArm) {
+template <>
+struct GateBindingTraits<DemoComplianceController> {
+  static constexpr int kMaxArmDof = integrated_bringup::kDemoComplianceMaxArmDof;
+
+  static std::string Yaml() { return MinimalComplianceYaml(); }
+};
+
+using TaskLikeBindings = ::testing::Types<DemoTaskController, DemoComplianceController>;
+
+// Without this the suites report as `/0` and `/1`, which is unreadable in a
+// failure that only reproduces for one of the two bindings.
+class TaskLikeNames {
+ public:
+  template <typename Ctrl>
+  static std::string GetName(int) {
+    return std::is_same_v<Ctrl, DemoTaskController> ? "DemoTask" : "DemoCompliance";
+  }
+};
+
+template <typename Ctrl>
+class TaskLikeGateTest : public ::testing::Test {
+ protected:
+  static constexpr int kMaxArmDof = GateBindingTraits<Ctrl>::kMaxArmDof;
+
+  Ctrl ctrl_{"", typename Ctrl::Gains{}};
+
+  void SetUp() override {
+    ASSERT_NO_THROW(ctrl_.LoadConfig(YAML::Load(GateBindingTraits<Ctrl>::Yaml())));
+  }
+};
+
+TYPED_TEST_SUITE(TaskLikeGateTest, TaskLikeBindings, TaskLikeNames);
+
+TYPED_TEST(TaskLikeGateTest, ANarrowDeviceSilencesTheArm) {
   ControllerState narrow = MakeState(kArmDof - 2);
-  const auto out = ctrl_.Compute(narrow);
+  const auto out = this->ctrl_.Compute(narrow);
 
   EXPECT_EQ(out.devices[0].num_channels, 0);
   ASSERT_EQ(out.devices[1].num_channels, kHandChannels)
       << "the hand keeps its own passthrough (§3.7)";
 }
 
-TEST_F(DemoTaskGateTest, TheHandKeepsBeingCommandedWhileTheArmIsSilent) {
+TYPED_TEST(TaskLikeGateTest, TheHandKeepsBeingCommandedWhileTheArmIsSilent) {
   // The count alone does not say the hand is being driven — it says an array
   // was declared. This asserts the VALUES, because the way this binding failed
   // was that the hand lane lived inside ComputeControl and the arm gate's early
@@ -373,7 +431,7 @@ TEST_F(DemoTaskGateTest, TheHandKeepsBeingCommandedWhileTheArmIsSilent) {
   // perfectly valid command to the hand's origin. That is the arm hazard moved
   // one device over, and §3.7's secondary passthrough forbids it.
   ControllerState narrow = MakeState(kArmDof - 2);
-  const auto out = ctrl_.Compute(narrow);
+  const auto out = this->ctrl_.Compute(narrow);
 
   ASSERT_EQ(out.devices[0].num_channels, 0);
   ASSERT_EQ(out.devices[1].num_channels, kHandChannels);
@@ -383,13 +441,13 @@ TEST_F(DemoTaskGateTest, TheHandKeepsBeingCommandedWhileTheArmIsSilent) {
   }
 }
 
-TEST_F(DemoTaskGateTest, ASilencedTickReportsTheParkedPositionNotZeros) {
+TYPED_TEST(TaskLikeGateTest, ASilencedTickReportsTheParkedPositionNotZeros) {
   constexpr int kNarrow = kArmDof - 2;
   ControllerState narrow = MakeState(kNarrow);
   // Shifted so "this tick's measurement" is distinguishable from every other
   // number in the fixture — see ShiftArmMeasurements.
   ShiftArmMeasurements(narrow, kNarrow);
-  const auto out = ctrl_.Compute(narrow);
+  const auto out = this->ctrl_.Compute(narrow);
 
   // The log POD is bounded by the DEVICE's channel count, not the output's, and
   // has no field for the emitted width — so leaving the reference lanes at
@@ -403,25 +461,25 @@ TEST_F(DemoTaskGateTest, ASilencedTickReportsTheParkedPositionNotZeros) {
   }
 }
 
-TEST_F(DemoTaskGateTest, TheEstopLaneAnswersTheSameWay) {
-  ctrl_.TriggerEstop();
+TYPED_TEST(TaskLikeGateTest, TheEstopLaneAnswersTheSameWay) {
+  this->ctrl_.TriggerEstop();
 
   ControllerState narrow = MakeState(kArmDof - 2);
-  const auto out = ctrl_.Compute(narrow);
+  const auto out = this->ctrl_.Compute(narrow);
 
   EXPECT_EQ(out.devices[0].num_channels, 0);
 }
 
-TEST_F(DemoTaskGateTest, TheEstopRampStaysInsideTheFixedWidthSafePositionArray) {
+TYPED_TEST(TaskLikeGateTest, TheEstopRampStaysInsideTheFixedWidthSafePositionArray) {
   // T8 — the J5 shape again, in the second binding. safe_position_ is
   // kDemoTaskMaxArmDof wide; nc0 can be twice that.
   constexpr int kWide = rtc::kMaxDeviceChannels;
-  static_assert(kWide > integrated_bringup::kDemoTaskMaxArmDof,
+  static_assert(kWide > TestFixture::kMaxArmDof,
                 "fixture is vacuous unless the device can out-report safe_position_");
-  ctrl_.TriggerEstop();
+  this->ctrl_.TriggerEstop();
 
   ControllerState wide = MakeState(kWide);
-  const auto out = ctrl_.Compute(wide);
+  const auto out = this->ctrl_.Compute(wide);
 
   ASSERT_EQ(out.devices[0].num_channels, kWide);
   for (std::size_t i = 0; i < static_cast<std::size_t>(kArmDof); ++i) {
@@ -777,14 +835,21 @@ TEST_F(DemoJointHandGateTest, AWideHandIsNotTreatedAsAFault) {
   EXPECT_EQ(out.devices[1].num_channels, kHandDof + 4);
 }
 
-// ── demo_task: the same secondary-axis contract, a different binding ──────────
+// ── demo_task and its rename-copy: the same secondary-axis contract ───────────
+//
+// Parametrised over the same two bindings as the arm axis above, for the same
+// reason. The hand lane is where the copy is expected to stay identical the
+// longest — S3 touches only the arm — so a divergence here is a bug rather than
+// a design change, and that is exactly what a shared body catches.
 
-class DemoTaskHandGateTest : public ::testing::Test {
+template <typename Ctrl>
+class TaskLikeHandGateTest : public ::testing::Test {
  protected:
-  DemoTaskController ctrl_{"", DemoTaskController::Gains{}};
+  Ctrl ctrl_{"", typename Ctrl::Gains{}};
 
   void SetUp() override {
-    ASSERT_NO_THROW(ctrl_.LoadConfig(YAML::Load(MinimalTaskYaml() + TopicsTwoGroups())));
+    ASSERT_NO_THROW(
+        ctrl_.LoadConfig(YAML::Load(GateBindingTraits<Ctrl>::Yaml() + TopicsTwoGroups())));
     ctrl_.SetDeviceNameConfigs(MakeHandDeclaringConfigs());
   }
 
@@ -796,22 +861,24 @@ class DemoTaskHandGateTest : public ::testing::Test {
   }
 };
 
-TEST_F(DemoTaskHandGateTest, ANarrowHandSilencesTheHand) {
-  SeedFromReadableHand();
+TYPED_TEST_SUITE(TaskLikeHandGateTest, TaskLikeBindings, TaskLikeNames);
+
+TYPED_TEST(TaskLikeHandGateTest, ANarrowHandSilencesTheHand) {
+  this->SeedFromReadableHand();
 
   ControllerState narrow = MakeState(kArmDof, kNarrowHand);
-  const auto out = ctrl_.Compute(narrow);
+  const auto out = this->ctrl_.Compute(narrow);
 
   EXPECT_EQ(out.devices[1].num_channels, 0);
   EXPECT_EQ(out.devices[0].num_channels, kArmDof) << "the hand's gate silenced the arm";
 }
 
-TEST_F(DemoTaskHandGateTest, ASilencedHandTickReportsTheParkedFingerPositionNotZeros) {
-  SeedFromReadableHand();
+TYPED_TEST(TaskLikeHandGateTest, ASilencedHandTickReportsTheParkedFingerPositionNotZeros) {
+  this->SeedFromReadableHand();
 
   ControllerState narrow = MakeState(kArmDof, kNarrowHand);
   ShiftHandMeasurements(narrow, kNarrowHand);
-  const auto out = ctrl_.Compute(narrow);
+  const auto out = this->ctrl_.Compute(narrow);
 
   ASSERT_EQ(out.devices[1].num_channels, 0);
   for (std::size_t i = 0; i < static_cast<std::size_t>(kNarrowHand); ++i) {
@@ -822,12 +889,12 @@ TEST_F(DemoTaskHandGateTest, ASilencedHandTickReportsTheParkedFingerPositionNotZ
   }
 }
 
-TEST_F(DemoTaskHandGateTest, HandSelfInitWaitsForAReadableHandInsteadOfSeedingZeros) {
+TYPED_TEST(TaskLikeHandGateTest, HandSelfInitWaitsForAReadableHandInsteadOfSeedingZeros) {
   ControllerState narrow = MakeState(kArmDof, kNarrowHand);
-  ASSERT_EQ(ctrl_.Compute(narrow).devices[1].num_channels, 0);
+  ASSERT_EQ(this->ctrl_.Compute(narrow).devices[1].num_channels, 0);
 
   ControllerState full = MakeState(kArmDof, kHandDof);
-  const auto out = ctrl_.Compute(full);
+  const auto out = this->ctrl_.Compute(full);
 
   ASSERT_EQ(out.devices[1].num_channels, kHandDof);
   for (std::size_t i = 0; i < static_cast<std::size_t>(kHandDof); ++i) {

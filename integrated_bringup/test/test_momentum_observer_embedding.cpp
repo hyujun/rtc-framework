@@ -29,6 +29,7 @@
 // those need DDS, which is why this target claims the package ROS_DOMAIN_ID.
 
 #include "iiwa7_leap_test_fixture.hpp"
+#include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
@@ -362,6 +363,16 @@ topics:
         role: "target"
 )";
 
+// demo_compliance's config is demo_task's plus the blocks it owns outright, so
+// it is DERIVED rather than transcribed: what this file asserts is the observer
+// embedding, and two hand-maintained YAMLs would eventually differ in the arm
+// posture instead — which surfaces here as a residual that will not settle.
+// NOTE for #469 S3: when the compliance binding switches its task gains to the
+// core spelling (ik_kp_pos / ik_kp_rot), this derivation has to translate them,
+// or the inherited kp_translation lines go unread and silently take defaults.
+const std::string kComplianceYaml =
+    std::string(kTaskYaml) + "external_wrench:\n  source: \"pull_estimator\"\n";
+
 const char* const kWbcYaml = R"(
 arm_dof: 7
 command_type: "position"
@@ -411,8 +422,9 @@ topics:
 /// Bring one controller up the way CM does, short of the node: system model →
 /// shared builder → control rate → LoadConfig → SetDeviceNameConfigs (the hook
 /// that builds the observer wiring).
-/// DemoTaskController is the one of the three whose constructor also takes a
-/// Gains struct; the default-constructed one is what its own URDF fixture uses.
+/// DemoTaskController and its #469 rename-copy are the ones whose constructor
+/// also takes a Gains struct; the default-constructed one is what their own URDF
+/// fixtures use.
 template <class Ctrl>
 std::unique_ptr<Ctrl> MakeController() {
   return std::make_unique<Ctrl>("");
@@ -423,6 +435,13 @@ std::unique_ptr<integrated_bringup::DemoTaskController>
 MakeController<integrated_bringup::DemoTaskController>() {
   return std::make_unique<integrated_bringup::DemoTaskController>(
       "", integrated_bringup::DemoTaskController::Gains{});
+}
+
+template <>
+std::unique_ptr<integrated_bringup::DemoComplianceController>
+MakeController<integrated_bringup::DemoComplianceController>() {
+  return std::make_unique<integrated_bringup::DemoComplianceController>(
+      "", integrated_bringup::DemoComplianceController::Gains{});
 }
 
 template <class Ctrl>
@@ -541,6 +560,15 @@ TEST(MomentumObserverEmbedding, TaskControllerLogsAConvergedResidualAndHoldsOnEs
 
 TEST(MomentumObserverEmbedding, WbcControllerLogsAConvergedResidualAndHoldsOnEstop) {
   CheckEmbedding<integrated_bringup::DemoWbcController>(kWbcYaml, "wbc");
+}
+
+// #469 S2 shipped demo_compliance as a rename-copy, so today this asserts what
+// the task case above does. It is enumerated by hand because S3 puts an
+// admittance law between the model and the arm command, and the observer's
+// residual is computed from the commanded torque — a lane that stops being the
+// task binding's is a lane this case is the only one watching.
+TEST(MomentumObserverEmbedding, ComplianceControllerLogsAConvergedResidualAndHoldsOnEstop) {
+  CheckEmbedding<integrated_bringup::DemoComplianceController>(kComplianceYaml, "compliance");
 }
 
 // The gate the whole layer rests on (#446 / AC5): a torque lane with a hole in
@@ -695,9 +723,9 @@ class MomentumObserverLifecycleGate : public ::testing::Test {
   /// would satisfy the disabled case alone, and one that is always present would
   /// satisfy the enabled case alone.
   template <class Ctrl>
-  void CheckGate(const char* yaml, const char* who) {
+  void CheckGate(const std::string& yaml, const char* who) {
     rclcpp_lifecycle::LifecycleNode::SharedPtr on_node;
-    auto enabled = ConfigureOnNode<Ctrl>(std::string(yaml) + kMomentumBlock,
+    auto enabled = ConfigureOnNode<Ctrl>(yaml + kMomentumBlock,
                                          (std::string("mo_gate_on_") + who).c_str(), on_node);
     ASSERT_TRUE(enabled->MomentumObserverConfigErrorForTesting().empty())
         << who << ": " << enabled->MomentumObserverConfigErrorForTesting();
@@ -730,4 +758,8 @@ TEST_F(MomentumObserverLifecycleGate, TaskControllerPublishesOnlyWithTheObserver
 
 TEST_F(MomentumObserverLifecycleGate, WbcControllerPublishesOnlyWithTheObserverOn) {
   CheckGate<integrated_bringup::DemoWbcController>(kWbcYaml, "wbc");
+}
+
+TEST_F(MomentumObserverLifecycleGate, ComplianceControllerPublishesOnlyWithTheObserverOn) {
+  CheckGate<integrated_bringup::DemoComplianceController>(kComplianceYaml, "compliance");
 }
