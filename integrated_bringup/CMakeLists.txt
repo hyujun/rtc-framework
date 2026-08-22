@@ -61,6 +61,12 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/task/compute.cpp
   src/controllers/task/lifecycle.cpp
   src/controllers/task/parameters.cpp
+  # #469 S2: task-space admittance binding. Currently a rename-only copy of
+  # src/controllers/task/ — the law lands in S3.
+  src/controllers/compliance/controller.cpp
+  src/controllers/compliance/compute.cpp
+  src/controllers/compliance/lifecycle.cpp
+  src/controllers/compliance/parameters.cpp
   src/controllers/wbc/controller.cpp
   src/controllers/wbc/compute.cpp
   src/controllers/wbc/lifecycle.cpp

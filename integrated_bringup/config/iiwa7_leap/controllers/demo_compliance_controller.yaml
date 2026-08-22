@@ -1,0 +1,113 @@
+# demo_compliance_controller (#469 S2) — byte-for-byte the sibling
+# demo_task_controller.yaml with its top-level key renamed.
+#
+# It is a copy on purpose: until the §7 admittance law lands (S3) the two
+# controllers must produce identical output on identical input, and
+# test_compliance_task_equivalence.cpp asserts exactly that against these two
+# shipped files. Any value edited here before S3 breaks that test — which is the
+# intended way to find out that the copy has started to drift.
+#
+# S3 adds the `external_wrench:` / admittance blocks HERE, not in the sibling.
+# demo_compliance_controller — iiwa7 + LEAP variant
+# CLIK task-space tracking for the arm + hand joint passthrough. Grasp
+# controller deactivated (see demo_shared.yaml grasp_controller_type: "none").
+demo_compliance_controller:
+  # ── Arm DoF (required) ─────────────────────────────────────────────────────
+  # Authoritative arm joint count at LoadConfig time (#340). The length of
+  # `estop.arm_safe_position` is validated against this key — not the reverse,
+  # which is what used to make that cross-check vacuous.
+  arm_dof: 7
+
+  # ── CLIK gains ─────────────────────────────────────────────────────────────
+  kp_translation: [5.0, 5.0, 5.0]
+  kp_rotation: [2.0, 2.0, 2.0]
+  # §6.5 σ_min-adaptive DLS (#282) — replaced the retired constant λ `damping`.
+  singularity_threshold: 0.02   # σ₀
+  max_damping: 0.05             # λ_max
+  # σ₀ is read by whichever branch `control_6dof` selects, and σ_min does not
+  # mean the same thing in the two: the 6-DOF branch feeds the mixed-unit 6×n J
+  # (m/rad rows plus dimensionless axis rows, so σ_min is dominated by the O(1)
+  # rotational part), the 3-DOF branch feeds the translation-only 3×n J, whose
+  # σ_min scales with link length. This value is tuned for the 6-DOF lane below;
+  # flipping `control_6dof` at runtime reinterprets it and it must be retuned.
+
+  # ── Null-space ─────────────────────────────────────────────────────────────
+  # iiwa7 is 7-DoF → null-space exists; off by default, enable for redundancy
+  # resolution experiments.
+  enable_null_space: false
+  null_kp: 0.5
+
+  # ── 6-DOF mode ─────────────────────────────────────────────────────────────
+  control_6dof: true
+
+  # ── Trajectory speed ───────────────────────────────────────────────────────
+  trajectory_speed: 0.01
+  trajectory_angular_speed: 0.08727
+  hand_trajectory_speed: 3.14
+
+  # ── Trajectory velocity limits ─────────────────────────────────────────────
+  max_traj_velocity: 0.1
+  max_traj_angular_velocity: 0.7854
+  hand_max_traj_velocity: 6.28
+
+  # ── E-STOP ─────────────────────────────────────────────────────────────────
+  estop:
+    arm_safe_position:           # rad, 7 values (must equal arm_dof); iiwa7 home pose
+      - 0.0
+      - 0.7
+      - 0.0
+      - -1.4
+      - 0.0
+      - 0.7
+      - 0.0
+
+  # ── FSM / trajectory tuning ────────────────────────────────────────────────
+  fsm:
+    pi_rotation_margin: 0.15
+    contact_stop_release_eps: 0.005
+    contact_stop_lpf_cutoff_hz: 20.0
+    # Per-axis LPF on the fingertip force contact_stop thresholds. Higher cutoff
+    # than the hold LPF above on purpose: the 4th-order Bessel's DC group delay
+    # is ~2.11/(2*pi*fc), so 20 Hz would delay the freeze by ~17 ms out of the
+    # 50 ms BT tick this latch covers; 50 Hz costs ~6.7 ms.
+    contact_stop_force_lpf_cutoff_hz: 50.0
+
+  # ── Output type ────────────────────────────────────────────────────────────
+  command_type: "position"
+
+  # ── Topic configuration ────────────────────────────────────────────────────
+  # Phase 4: device-wire lanes moved to devices.<group>.backend.
+  topics:
+    iiwa7:
+      subscribe:
+        - topic: "iiwa7/joint_goal"
+          role: "target"
+      publish:
+        - topic: "transforms"
+          role: "robot_transforms"
+    leap:
+      subscribe:
+        - topic: "leap/joint_goal"
+          role: "target"
+
+  # ── Controller-owned CSV logs ──────────────────────────────────────────────
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: iiwa7_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: leap_state
+    - msg_type: integrated_bringup/PullEstimatorLog
+      instance: pull_estimator
+    - msg_type: integrated_bringup/MomentumObserverLog
+      instance: momentum_observer
+    # §6.5 singularity diagnostics (#310): sigma_min / lambda^2 per tick.
+    # Controller-private POD (no rtc_msgs) — see logging/task_diag_log_pod.hpp.
+    - msg_type: integrated_bringup/TaskDiagLog
+      instance: task_diag
+
+    # Per-tick Force-PI servo + stiffness-estimator diagnostics (#428).
+    # Controller-private POD (no rtc_msgs) — see logging/grasp_diag_log_pod.hpp.
+    # Registered only when demo_shared.yaml carries a `force_pi_grasp` block;
+    # otherwise on_configure logs an INFO naming the absent file.
+    - msg_type: integrated_bringup/GraspDiagLog
+      instance: grasp_diag
