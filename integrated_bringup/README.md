@@ -27,6 +27,7 @@ integrated_bringup/
 │   ├── controllers/
 │   │   ├── demo_joint_controller.hpp   <- 관절 공간 Quintic 궤적 제어 (로봇+핸드)
 │   │   ├── demo_task_controller.hpp    <- 태스크 공간 CLIK 제어 (로봇+핸드)
+│   │   ├── demo_compliance_controller.hpp <- 태스크 공간 admittance 바인딩 (#469 S2 시점: task 사본, 법칙 미결합)
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
 │   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
@@ -72,6 +73,7 @@ integrated_bringup/
 │       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi/pull_estimator/momentum_observer)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       ├── demo_task_controller.yaml   <- DemoTask 게인/토픽
+│       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (S3 까지 demo_task 와 동일 — 등가성 테스트가 고정)
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs
 │           ├── phase_config.yaml       <- GraspPhaseManager 5-phase 설정
@@ -569,6 +571,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 |-----------|--------|
 | `integrated_bringup.demo_joint_controller` | `DemoJointController` (joint-space 데모 컨트롤러, 500 Hz 핫패스) |
 | `integrated_bringup.demo_task_controller` | `DemoTaskController` (task-space 데모 컨트롤러, 500 Hz 핫패스) |
+| `integrated_bringup.demo_compliance_controller` | `DemoComplianceController` (task-space admittance 바인딩, 500 Hz 핫패스) |
 | `integrated_bringup.demo_wbc_controller` | `DemoWbcController` (WBC + MPC 데모 컨트롤러, 500 Hz 핫패스) |
 | `integrated_bringup.demo_shared_config` | `demo_shared_config` YAML 로더 (init-time, non-RT) |
 

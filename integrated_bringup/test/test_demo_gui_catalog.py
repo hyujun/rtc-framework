@@ -19,6 +19,11 @@ _SHIPPED = [
     ("DemoJointController", "demo_joint_controller"),
     ("DemoTaskController", "demo_task_controller"),
     ("DemoWbcController", "demo_wbc_controller"),
+    # #469 S2. Listed by hand like the rest: this file builds its states FROM
+    # this list, so a controller that is missing here is not a failure, it is
+    # simply never tested — which is how the fourth one would have gone
+    # unnoticed in the GUI's gain-schema lookup.
+    ("DemoComplianceController", "demo_compliance_controller"),
 ]
 
 

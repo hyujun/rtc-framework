@@ -436,6 +436,30 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── demo_compliance_controller ≡ demo_task_controller (#469 S2) ────────────
+  # The only sensor that executes the copied controller: every other
+  # per-controller suite in this package enumerates the three shipped names by
+  # hand, so a fourth controller is otherwise never run. Needs the same URDF
+  # fixture as test_demo_task_controller (both controllers gate ComputeControl
+  # behind the combined-model cache) plus the shipped config dir, because the
+  # config half compares the deployed YAMLs rather than inline strings.
+  ament_add_gtest(test_compliance_task_equivalence test/test_compliance_task_equivalence.cpp)
+  target_compile_definitions(test_compliance_task_equivalence PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_compliance_task_equivalence
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_compliance_task_equivalence
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # ── #282 two-tier DLS convergence harness ──────────────────────────────────
   # Pure numerics: the pre-#282 inline block (oracle) against
   # compliance::DifferentialIk. Its own binary because it installs the Eigen

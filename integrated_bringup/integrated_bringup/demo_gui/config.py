@@ -478,6 +478,41 @@ GAIN_GROUP_LAYOUT = {
     ],
 }
 
+# ── demo_compliance_controller mirrors demo_task_controller (#469 S2) ────────
+#
+# The compliance controller is a copy of the task controller with renamed
+# identifiers until the §7 admittance law lands (S3), so it declares the same
+# parameters in the same wire order, takes the same task-space goal and owns the
+# same grasp-mode parameter. Nine tables above key on the controller name, and
+# adding it to each by hand would be nine chances to get one wrong today plus
+# nine places to keep in step tomorrow — so the mirror is stated once, here,
+# where it can also say why it is a mirror.
+#
+# S3 REPLACES THIS, IT DOES NOT EXTEND IT: when the controller gains admittance
+# gains and a wrench source, drop the affected table out of this loop and give it
+# an explicit demo_compliance_controller entry. A silently extended mirror would
+# quietly claim the two controllers still take the same parameters.
+#
+# deepcopy, not aliasing: an S3 edit to one table must not reach through and
+# change the shipped controller's row.
+_COMPLIANCE_MIRRORS = "demo_task_controller"
+for _table in (
+    TARGET_LABELS,
+    ANGLE_INDICES,
+    JOINT_SPACE,
+    GAIN_DEFS,
+    GAIN_ROW_NAMES,
+    GAIN_PARAM_DISPATCH,
+    GAIN_GROUP_LAYOUT,
+):
+    _table["demo_compliance_controller"] = copy.deepcopy(_table[_COMPLIANCE_MIRRORS])
+
+# Not DUAL_TARGET_SPACE: like the task controller it takes one space at a time
+# (JOINT_SPACE False above), and only WBC regulates posture and an SE3 jog at
+# once. It IS a grasp-mode owner — the hand lane is duplicated verbatim, so it
+# declares grasp_controller_type exactly as its sibling does.
+GRASP_MODE_OWNERS = GRASP_MODE_OWNERS | {"demo_compliance_controller"}
+
 # Groups whose editable widgets are rendered in the Grasp tab's
 # "Grasp Detection" section instead of the Control tab's Gains panel.
 # For these groups the applied mirror is skipped (the per-entry

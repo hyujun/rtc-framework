@@ -43,6 +43,17 @@ from integrated_bringup.demo_gui.config import (
 JOINT = "demo_joint_controller"
 TASK = "demo_task_controller"
 WBC = "demo_wbc_controller"
+# #469 S2: duplicates the task controller's hand lane, so it declares
+# grasp_controller_type and is gated by the mode exactly the same way.
+COMPLIANCE = "demo_compliance_controller"
+
+# Every controller that owns the parameter, written out rather than derived from
+# GRASP_MODE_OWNERS — a list read from the same place the GUI reads it would
+# agree with the GUI no matter what either one did, the same reason BLOCKED_MODES
+# below is literal. test_mode_gated_set_matches_the_gui_config is what ties the
+# two together, so a controller added to one and not the other fails loudly
+# instead of going untested.
+MODE_GATED = [JOINT, TASK, COMPLIANCE]
 
 # The whitelist enforced by ParseGraspHandMode (demo_shared_config.cpp). Kept
 # literal rather than imported: this is the contract the C++ side publishes,
@@ -54,14 +65,14 @@ BLOCKED_MODES = ["contact_stop", "none"]
 # ── the decision function ────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("ctrl", [JOINT, TASK])
+@pytest.mark.parametrize("ctrl", MODE_GATED)
 def test_force_pi_enables_the_buttons(ctrl):
     enabled, text = grasp_command_enabled(ctrl, "force_pi")
     assert enabled is True
     assert "force_pi" in text
 
 
-@pytest.mark.parametrize("ctrl", [JOINT, TASK])
+@pytest.mark.parametrize("ctrl", MODE_GATED)
 @pytest.mark.parametrize("mode", BLOCKED_MODES)
 def test_non_force_pi_disables_the_buttons(ctrl, mode):
     """The whole point: in these modes the srv is inert, so the button must be
@@ -70,6 +81,13 @@ def test_non_force_pi_disables_the_buttons(ctrl, mode):
     enabled, text = grasp_command_enabled(ctrl, mode)
     assert enabled is False
     assert mode in text
+
+
+def test_mode_gated_set_matches_the_gui_config():
+    """The parametrisations above enumerate the gated controllers by hand. This
+    is where that hand-written list is confronted with the one the GUI actually
+    consults, so adding a controller to either side alone cannot pass."""
+    assert set(MODE_GATED) == set(GRASP_MODE_OWNERS)
 
 
 def test_wbc_is_not_gated_by_the_mode():
@@ -83,7 +101,7 @@ def test_wbc_is_not_gated_by_the_mode():
         assert enabled is True, f"WBC gated on mode={mode!r}"
 
 
-@pytest.mark.parametrize("ctrl", [JOINT, TASK])
+@pytest.mark.parametrize("ctrl", MODE_GATED)
 def test_unknown_mode_fails_open(ctrl):
     """An unreachable parameter service is not evidence that the controller
     would refuse the command. The GUI must not become a second gate that
@@ -302,7 +320,7 @@ def test_the_offered_modes_are_the_whitelist_in_enum_order():
     assert set(GRASP_MODES) == {"force_pi", *BLOCKED_MODES}
 
 
-@pytest.mark.parametrize("ctrl", [JOINT, TASK])
+@pytest.mark.parametrize("ctrl", MODE_GATED)
 def test_apply_seeds_the_combobox_and_enables_the_switch(ctrl):
     from integrated_bringup.demo_gui.app import DemoControllerGUI
 
@@ -537,7 +555,7 @@ def test_send_reports_unreachable_parameter_services():
     assert "unavailable" in state._grasp_mode_result_var.get()
 
 
-@pytest.mark.parametrize("ctrl", [JOINT, TASK])
+@pytest.mark.parametrize("ctrl", MODE_GATED)
 def test_send_transmits_the_selected_mode_as_a_string_parameter(ctrl):
     from rclpy.parameter import Parameter
 

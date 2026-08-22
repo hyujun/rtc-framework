@@ -75,12 +75,13 @@ TEST(DemoWbcConfigLint, Se3TaskNameMatchesMapKey) {
 // ── #340: the shipped `arm_dof` migration, pinned ────────────────────────────
 //
 // `arm_dof` became a required key with no fallback, so a shipped YAML that
-// misses it does not degrade — the controller throws at configure. Nothing else
-// in the suite reads the shipped controller files (every controller fixture is
-// an inline YAML string), so without this the 9-file migration is asserted only
-// by whoever ran the migration.
+// misses it does not degrade — the controller throws at configure. Almost every
+// controller fixture in this package is an inline YAML string, so without this
+// the migration is asserted only by whoever ran it. (The one other reader of the
+// shipped files is test_compliance_task_equivalence, and it compares two of them
+// to each other rather than checking either against the schema.)
 //
-// Scope is all three controllers, not just wbc — this file is where shipped-YAML
+// Scope is every shipped controller, not just wbc — this file is where shipped-YAML
 // parsing already lives, and forking a second lint harness for the same corpus
 // would be the duplication P5 exists to prevent. The robot list is explicit for
 // the same reason ShippedConfigs() is: no filesystem walk in a unit test.
@@ -88,8 +89,8 @@ std::vector<ConfigCase> AllShippedControllerConfigs() {
   const std::string dir = RTC_WBC_CONFIG_DIR;
   std::vector<ConfigCase> out;
   for (const char* robot : {"ur5e_p1a", "ur5e_p1b", "iiwa7_leap"}) {
-    for (const char* ctrl :
-         {"demo_joint_controller", "demo_task_controller", "demo_wbc_controller"}) {
+    for (const char* ctrl : {"demo_joint_controller", "demo_task_controller", "demo_wbc_controller",
+                             "demo_compliance_controller"}) {
       out.push_back(
           {std::string(robot) + "/" + ctrl, dir + "/" + robot + "/controllers/" + ctrl + ".yaml"});
     }
@@ -99,7 +100,12 @@ std::vector<ConfigCase> AllShippedControllerConfigs() {
 
 TEST(DemoControllerConfigLint, ArmDofIsPresentAndMatchesSafePositionLength) {
   const auto configs = AllShippedControllerConfigs();
-  ASSERT_EQ(configs.size(), 9U) << "the shipped controller corpus changed — update this list";
+  // 12 = 3 profiles x 4 controllers. This number is not a fact about the tree —
+  // it is the tripwire that makes adding a controller stop here: the loop above
+  // names its controllers by hand, so a new one is simply absent from the corpus
+  // and its shipped YAMLs go unlinted while this file stays green (#469 S2 added
+  // the fourth and found exactly that).
+  ASSERT_EQ(configs.size(), 12U) << "the shipped controller corpus changed — update this list";
 
   for (const auto& cfg : configs) {
     YAML::Node root = YAML::LoadFile(cfg.path);
