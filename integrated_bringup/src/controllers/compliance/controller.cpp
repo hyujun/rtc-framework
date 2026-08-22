@@ -1205,8 +1205,7 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
     // not is exactly the day the log needs to be the truth.
     const auto source_name = ext["source"].as<std::string>();
     wrench_source_ = ParseComplianceWrenchSource(source_name);
-    RCLCPP_INFO(logger_, "[compliance] external wrench source: %s (not consumed until #469 S3)",
-                source_name.c_str());
+    RCLCPP_INFO(logger_, "[compliance] external wrench source: %s", source_name.c_str());
   }
 
   // ── The §7 admittance schema, from this SAME node (#469 S3) ──────────────
@@ -1223,6 +1222,14 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
   // profiles are validated by the sprint that wrote them rather than by S3.
   rtc::params::ParseTaskAdmittanceParams(cfg, admittance_params_, admittance_config_);
   wrench_pipeline_.Configure(admittance_config_.wrench, 1.0 / GetDefaultDt());
+
+  // The one §7 knob the parser has no key for. Read here rather than left to
+  // the state machine's default argument so it is visible in the config an
+  // operator edits, and floored because a non-positive dwell would let a single
+  // clean tick clear a DEGRADED that is still oscillating.
+  if (cfg["degraded_recovery_time"]) {
+    degraded_recovery_time_ = std::max(0.0, cfg["degraded_recovery_time"].as<double>());
+  }
 
   // ── #135 Layer 1b: momentum-observer params ─────────────────────────────
   // Only carried here. The wiring itself is built in on_configure: it pins the

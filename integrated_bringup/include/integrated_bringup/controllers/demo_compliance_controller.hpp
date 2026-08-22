@@ -334,6 +334,62 @@ class DemoComplianceController final : public RTControllerInterface {
     return wrench_source_;
   }
 
+  /// One tick's view of the §7 lane, at the seam between its two halves
+  /// (#469 S3). Exposed as one POD rather than six accessors because the
+  /// interesting assertions are relations BETWEEN these values — that
+  /// `deviation` is exactly what an integrator fed `alpha * wrench_lwa` would
+  /// hold, and that `wrench_lwa` is exactly the wrench that was published.
+  /// Every field is staged by the tick for the #469 S4 diagnostic lane anyway.
+  struct ComplianceProbe {
+    Eigen::Matrix<double, 6, 1> wrench_lwa{Eigen::Matrix<double, 6, 1>::Zero()};
+    Eigen::Matrix<double, 6, 1> deviation{Eigen::Matrix<double, 6, 1>::Zero()};
+    Eigen::Matrix<double, 6, 1> velocity{Eigen::Matrix<double, 6, 1>::Zero()};
+    double alpha{0.0};
+    rtc::compliance::ComplianceState state{rtc::compliance::ComplianceState::kHolding};
+    rtc::compliance::WrenchPipelineStatus status{};
+    bool engaged{false};
+    /// The control frame's origin, world — the pipeline's lever-arm base. A
+    /// wrench published anywhere else is transported here, so this is the datum
+    /// a source needs in order to hand over an application point at all.
+    Eigen::Vector3d task_origin{Eigen::Vector3d::Zero()};
+    /// Where the arm's control frame MEASURABLY is, world. The deviation says
+    /// what the law asked for; this says whether the arm was actually asked to
+    /// go there — the two are separated by the whole composition + CLIK path,
+    /// which is otherwise observable only in joint space.
+    Eigen::Vector3d tcp_position{Eigen::Vector3d::Zero()};
+  };
+
+  [[nodiscard]] ComplianceProbe GetComplianceProbeForTesting() const noexcept {
+    ComplianceProbe p;
+    p.wrench_lwa = wrench_lwa_;
+    p.deviation = admittance_.deviation();
+    p.velocity = admittance_.velocity();
+    p.alpha = compliance_alpha_;
+    p.state = compliance_state_;
+    p.status = wrench_status_;
+    p.engaged = compliance_engaged_;
+    p.task_origin = compliance_task_origin_;
+    p.tcp_position = Eigen::Vector3d(tcp_position_[0], tcp_position_[1], tcp_position_[2]);
+    return p;
+  }
+
+  [[nodiscard]] const rtc::params::TaskAdmittanceParams& GetAdmittanceParamsForTesting()
+      const noexcept {
+    return admittance_params_;
+  }
+
+  /// Inject a wrench straight into the pipeline, bypassing the source adapter.
+  /// That seam is the point: `FromPullEstimate` has its own exhaustive suite
+  /// (#469 S1) and re-deriving a known pull through fingertip FK would test it
+  /// a second time while testing the LAW not at all. The publish site that
+  /// joins the two is asserted separately, on the pipeline's own freshness.
+  void PublishExternalWrenchForTesting(const rtc::compliance::Wrench6& wrench,
+                                       const Eigen::Vector3d& p_apply) noexcept {
+    wrench_apply_point_ = p_apply;
+    wrench_pipeline_.Publish(
+        std::span<const double, rtc::compliance::kWrenchDim>(wrench.data(), wrench.size()));
+  }
+
   /// Test-only: the body the publish thread would Load right now (#234 P-1).
   /// Distinct from GetGraspStateForTesting(), which returns the RT staging
   /// buffer: a tick that fills the staging buffer but never stores it gets
@@ -898,9 +954,49 @@ class DemoComplianceController final : public RTControllerInterface {
   // AC2); no caller does that yet because no caller steps it yet.
   rtc::compliance::AdmittanceIntegrator admittance_{};
 
-  // §7 fault classification (SAFE_STOP latched vs DEGRADED recoverable). Kept
-  // next to the two above so S3 adds a tick, not a member.
+  // §7 fault classification (SAFE_STOP latched vs DEGRADED recoverable).
   rtc::compliance::ComplianceStateMachine compliance_fsm_{};
+
+  // ── Per-tick compliance state (#469 S3) ──────────────────────────────────
+  /// Where the published wrench acts, world. Staged by the source in
+  /// ComputeSecondary and consumed by `WrenchPipeline::Update` on the NEXT
+  /// tick — see the note at the publish site for why the two are a tick apart.
+  Eigen::Vector3d wrench_apply_point_{Eigen::Vector3d::Zero()};
+  rtc::compliance::WrenchPipelineStatus wrench_status_{};
+  /// §3.2.4 quality, as judged by the SOURCE (not the pipeline): the pull
+  /// estimate can be fresh, finite and still untrustworthy — slipping, a
+  /// saturated tip, or leakage as large as the signal.
+  bool wrench_quality_low_{false};
+  /// `rtc::grasp::PullInvalidReason` as a wire constant; diagnostics only.
+  std::uint8_t wrench_invalid_reason_{0};
+
+  /// True while the arm lane is actually running the law. The EDGE matters:
+  /// falling ⇒ reset the deviation and the pipeline, rising ⇒ restart the
+  /// §10.7 ramp. Held ticks (E-STOP, unreadable device, cold cache) must not
+  /// accrue a deviation the arm would then be asked to realise on resume.
+  bool compliance_engaged_{false};
+  /// Seconds since the last rising edge, clamped at `activation_ramp_time`.
+  double compliance_ramp_elapsed_{0.0};
+  /// Latched from `WrenchPipeline::ResetForActivation` — the pipeline decides
+  /// whether a bias average is owed, the state machine acts on it.
+  bool compliance_bias_pending_{false};
+  /// The conditioned wrench the law actually integrated, LWA at the task frame,
+  /// and the §10.7 ramp scale applied to it. Staged for the #469 S4 diagnostic
+  /// lane — "the arm moved and the CSV cannot say what pushed it" is the
+  /// failure this lane exists to prevent.
+  Eigen::Matrix<double, 6, 1> wrench_lwa_{Eigen::Matrix<double, 6, 1>::Zero()};
+  double compliance_alpha_{0.0};
+  /// The control-frame origin the wrench was transported to this tick.
+  Eigen::Vector3d compliance_task_origin_{Eigen::Vector3d::Zero()};
+  /// Last `ComplianceStateMachine::Step` verdict. Read by the SAFE_STOP hold
+  /// and staged for diagnostics (#469 S4).
+  rtc::compliance::ComplianceState compliance_state_{rtc::compliance::ComplianceState::kHolding};
+
+  /// [s] DEGRADED → RUNNING dwell. NOT part of the §7 schema — the parser has
+  /// no key for it — so it is read from this controller's own YAML and lives
+  /// outside `admittance_params_` rather than being quietly defaulted inside
+  /// the state machine call.
+  double degraded_recovery_time_{0.5};
 
   // ── Generalized-momentum observer (#135 Layer 1b) ─────────────────────────
   // Parsed in LoadConfig (the YAML is there) and BUILT in OnDeviceConfigsSet,

@@ -1,13 +1,16 @@
 # demo_compliance_controller (#469 S2) — the sibling demo_task_controller.yaml
 # with its top-level key renamed, plus the blocks this controller owns outright.
 #
-# It is a copy on purpose: until the §7 admittance law lands (S3) the two
-# controllers must produce identical output on identical input, and
-# test_compliance_task_equivalence.cpp asserts exactly that — comparing these two
-# shipped files key by key, EXCEPT for the owned blocks at the bottom and the
-# renamed gains below, which have assertions of their own. Editing any other
-# value here breaks that comparison, which is the intended way to find out that
-# the copy has started to drift.
+# It began as a copy, and most of it still is: outside the blocks this
+# controller owns and the renamed gains below, the two files must stay key-for-
+# key identical, and test_compliance_task_equivalence.cpp compares them that
+# way. Editing any other value here breaks that comparison, which is the
+# intended way to find out that the copy has started to drift.
+#
+# The BEHAVIOURAL half of that equivalence is now narrower: since S3 coupled the
+# §7 admittance law, the two controllers agree only while the wrench source is
+# withheld. What the law does is asserted by
+# test_compliance_admittance_coupling.cpp instead.
 #
 # THE TASK GAINS ARE SPELLED DIFFERENTLY FROM THE SIBLING'S (#469 D-A13):
 # `ik_kp_pos` / `ik_kp_rot` / `nullspace_kp` here vs `kp_translation` /

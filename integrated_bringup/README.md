@@ -27,7 +27,7 @@ integrated_bringup/
 │   ├── controllers/
 │   │   ├── demo_joint_controller.hpp   <- 관절 공간 Quintic 궤적 제어 (로봇+핸드)
 │   │   ├── demo_task_controller.hpp    <- 태스크 공간 CLIK 제어 (로봇+핸드)
-│   │   ├── demo_compliance_controller.hpp <- 태스크 공간 admittance 바인딩 (#469 S2 시점: task 사본, 법칙 미결합)
+│   │   ├── demo_compliance_controller.hpp <- 태스크 공간 admittance 바인딩 (#469 S3: §7 법칙 결합 완료)
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
 │   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
@@ -73,7 +73,7 @@ integrated_bringup/
 │       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi/pull_estimator/momentum_observer)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       ├── demo_task_controller.yaml   <- DemoTask 게인/토픽
-│       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (task 게인은 §7 철자 ik_kp_pos/ik_kp_rot/nullspace_kp, 값은 demo_task 와 동일 — 등가성 테스트가 고정)
+│       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (task 게인은 §7 철자 ik_kp_pos/ik_kp_rot/nullspace_kp, 값은 demo_task 와 동일 — 등가성 테스트가 고정. §7 admittance 값은 코어 default, S5 에서 실기 튜닝)
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs
 │           ├── phase_config.yaml       <- GraspPhaseManager 5-phase 설정

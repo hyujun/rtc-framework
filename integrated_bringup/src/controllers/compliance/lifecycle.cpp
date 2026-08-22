@@ -294,6 +294,20 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_activate(
   // external torque — the residual would report a load that never existed and
   // then decay over ~1/K_I, which reads exactly like a real transient.
   ResetMomentumObserverRtState(momentum_wiring_);
+  // #469 S3, §10.7: the compliant frame is a deviation from the reference, and
+  // an activation must inherit none of it — otherwise the first tick asks the
+  // arm to realise a displacement accrued before anyone was watching, which is
+  // the jump §10.7 exists to forbid. The wrench goes with it: re-dating the
+  // sample present at reset would revive a dead producer's last reading as
+  // fresh (§10.6 says an expired wrench fades to ZERO, never holds).
+  admittance_.Reset();
+  compliance_bias_pending_ = wrench_pipeline_.ResetForActivation();
+  compliance_fsm_.ResetFault();
+  compliance_state_ = rtc::compliance::ComplianceState::kHolding;
+  compliance_engaged_ = false;
+  compliance_ramp_elapsed_ = 0.0;
+  wrench_quality_low_ = false;
+  wrench_invalid_reason_ = 0;
   // The identical argument, applied to the grasp FSM — which it was not, until a
   // review found the gap. A deactivate mid-grasp freezes the FSM (nothing steps
   // it while Inactive) with its request flags still armed, so the first tick after

@@ -24,14 +24,22 @@
 // device, an invalid device, an E-STOP ramp, a target applied mid-flight, a
 // fingertip in contact.
 //
-// The composition is only valid while the copy is exact, so it expires the
-// moment S3 gives this controller a law of its own. AT THAT POINT: keep
-// ShippedConfigsAreTheSameConfig for the blocks S3 does not touch, re-scope the
-// behavioural half to "equivalent when the wrench source is withheld" (the
-// admittance integrator is a no-op on a zero wrench, so that case must stay
-// bit-identical), and give the compliance controller its own entries in the five
-// suites above for everything else. Deleting this file instead would leave the
-// copy unobserved again.
+// #469 S3 HAS NOW HAPPENED, and this file was re-scoped rather than deleted —
+// the copy would otherwise go unobserved again. What survives:
+//
+//   * the config comparison, minus the blocks and the three renamed gains the
+//     compliance controller owns, each of which has its own assertion here;
+//   * the behavioural comparison, narrowed to "WHILE THE WRENCH IS WITHHELD".
+//     The admittance integrator is a no-op on a zero wrench and the tick skips
+//     the pose composition entirely when the law contributes nothing, so those
+//     programs must still be bit-identical — and RunAndCompare now ASSERTS the
+//     withholding rather than relying on a fixture that happens not to produce
+//     a pull estimate. Without that assertion this file would go quietly
+//     vacuous the day someone gives the fixture a grasp.
+//
+// What the law itself does lives in test_compliance_admittance_coupling.cpp;
+// the five per-controller suites got their own demo_compliance entries in the
+// commit before this one.
 //
 // COMPARISON IS BITWISE, not near-equal. Both controllers run the same code on
 // the same input, so every double must match to the last bit; a tolerance would
@@ -44,6 +52,10 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/support/compliance_wrench_source.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "shipped_config_test_fixture.hpp"
+
+#include <lifecycle_msgs/msg/state.hpp>
+#include <rclcpp_lifecycle/state.hpp>
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -79,9 +91,12 @@ using integrated_bringup::testfx::kDt;
 using integrated_bringup::testfx::kHandDof;
 using integrated_bringup::testfx::MakeIiwa7LeapDeviceConfigs;
 using integrated_bringup::testfx::MakeIiwa7LeapState;
+using integrated_bringup::testfx::MergeShippedShared;
+using integrated_bringup::testfx::ResolvedShared;
 using integrated_bringup::testfx::SetFingertipForce;
 using integrated_bringup::testfx::SharedIiwa7LeapBuilder;
 using integrated_bringup::testfx::SharedIiwa7LeapModelConfig;
+using integrated_bringup::testfx::ShippedControllerNode;
 
 // Tripwire for SameOutput()'s hand-written member list — see the test that
 // reads it. Updated together with that list, never on its own.
@@ -93,67 +108,6 @@ constexpr std::size_t kExpectedControllerOutputSize = 29656;
 // a ur5e-shaped fixture would be a second model harness for a controller that
 // does not yet have a law to exercise.
 constexpr std::array<const char*, 3> kProfiles = {"iiwa7_leap", "ur5e_p1a", "ur5e_p1b"};
-
-YAML::Node ShippedControllerNode(const std::string& profile, const std::string& key) {
-  const std::string path =
-      std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile + "/controllers/" + key + ".yaml";
-  const YAML::Node root = YAML::LoadFile(path);
-  EXPECT_TRUE(root[key]) << path << ": missing top-level key '" << key << "'";
-  return root[key];
-}
-
-// Give the controller the profile's shared block.
-//
-// In production the CM hands it over by declaring `config_variant` on the
-// per-controller LifecycleNode, which LoadConfig reads to find
-// config/<variant>/controllers/demo_shared.yaml. This fixture builds no node, so
-// that lookup falls back to the legacy flat path, finds nothing, and the grasp
-// controller, virtual TCP and pull-estimator lanes all stay at their built-in
-// defaults — i.e. out of the comparison, which is where the copy is least
-// observed. LoadConfig applies the controller node's OWN keys through the same
-// ApplyDemoSharedConfig entry point (that is the documented per-controller
-// override channel), so merging the shipped block in here delivers exactly what
-// the node parameter would have. Existing keys win, since an override is
-// precisely what they are.
-void FillMissing(YAML::Node dst, const YAML::Node& src) {
-  for (auto it = src.begin(); it != src.end(); ++it) {
-    const auto key = it->first.as<std::string>();
-    if (!dst[key]) {
-      dst[key] = it->second;
-    } else if (dst[key].IsMap() && it->second.IsMap()) {
-      // Recurse rather than let the present key win whole. Production merges at
-      // the STRUCT level — the shared file populates DemoSharedConfig and the
-      // controller's own keys are applied on top of it — so a controller that
-      // overrides one field of `pull_estimator` keeps every other field of the
-      // shared block. Stopping at the top level here would instead delete them,
-      // and the fixture would quietly configure a pull estimator that production
-      // never builds.
-      FillMissing(dst[key], it->second);
-    }
-  }
-}
-
-void MergeShippedShared(YAML::Node& cfg, const std::string& profile) {
-  const std::string path =
-      std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile + "/controllers/demo_shared.yaml";
-  const YAML::Node shared = YAML::LoadFile(path)["demo_shared"];
-  // Throws rather than ASSERT_: an ASSERT_ here would return from THIS function
-  // and leave the caller comparing two equally-unmerged controllers, which is
-  // green for the wrong reason.
-  if (!shared || !shared.IsMap()) {
-    throw std::runtime_error(path + ": missing 'demo_shared' map");
-  }
-  FillMissing(cfg, shared);
-}
-
-/// The profile's shared + controller config as the controller resolves it.
-DemoSharedConfig ResolvedShared(const std::string& profile, const std::string& key) {
-  YAML::Node cfg = ShippedControllerNode(profile, key);
-  MergeShippedShared(cfg, profile);
-  DemoSharedConfig out;
-  ApplyDemoSharedConfig(cfg, out);
-  return out;
-}
 
 // ── Bitwise field-by-field output comparison ─────────────────────────────────
 
@@ -352,6 +306,14 @@ std::unique_ptr<Ctrl> BringUp(const YAML::Node& cfg) {
   ctrl->SetControlRate(1.0 / kDt);
   ctrl->LoadConfig(cfg);
   ctrl->SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
+  // ACTIVATE, or every `arm_target` in the programs below is silently dropped by
+  // the #196 activation-generation gate (a target queued while Inactive is
+  // stale by definition) and the "nominal tracking" comparison is two arms
+  // holding still. Found by #469 S3's coupling fixture, which needed the arm to
+  // actually travel and did not get it.
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  EXPECT_EQ(ctrl->on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
   return ctrl;
 }
 
@@ -379,6 +341,19 @@ void RunAndCompare(const std::vector<Tick>& program, const char* what) {
     const ControllerState state = MakeTickState(t, arm_meas, static_cast<std::uint64_t>(k) + 1);
     const ControllerOutput a = task->Compute(state);
     const ControllerOutput b = comp->Compute(state);
+
+    // The precondition this whole comparison now rests on (#469 S3). These
+    // programs drive no grasp, so the pull adapter withholds and the compliance
+    // lane integrates nothing — which is the ONLY regime in which the two
+    // controllers are still expected to agree. If this fires, the fixture has
+    // grown a wrench source and the program belongs in the coupling suite, not
+    // in a looser tolerance here.
+    const auto probe = comp->GetComplianceProbeForTesting();
+    ASSERT_FALSE(probe.status.valid)
+        << what << ": tick " << k
+        << " produced an external wrench — equivalence with demo_task is not claimed there";
+    ASSERT_TRUE(probe.deviation.isZero(0.0))
+        << what << ": tick " << k << " moved the compliant frame";
 
     EXPECT_TRUE(SameOutput(a, b)) << what << ": diverged at tick " << k;
     if (::testing::Test::HasFailure()) {

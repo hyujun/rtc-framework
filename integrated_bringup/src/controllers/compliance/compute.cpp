@@ -243,8 +243,29 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
   // dev0.positions nv deep, so an unread joint would enter the CLIK law as 0.
   if (estop_active_ || !arm_readable_ || !combined_cache_.reorder_valid() ||
       task_tcp_frame_idx_ < 0) {
+    // #469 S3 AC2. Every branch of this gate is a tick on which the arm is NOT
+    // being driven by the law, and the compliant frame is a deviation from a
+    // reference — so letting it accrue here would hand the resume tick a
+    // displacement nobody commanded. Reset on the FALLING EDGE, not every tick:
+    // ResetForActivation() re-arms the bias average, and re-arming it 500 times
+    // a second means the average never completes once control comes back.
+    if (compliance_engaged_) {
+      admittance_.Reset();
+      compliance_bias_pending_ = wrench_pipeline_.ResetForActivation();
+      compliance_state_ = rtc::compliance::ComplianceState::kHolding;
+      compliance_ramp_elapsed_ = 0.0;
+      compliance_engaged_ = false;
+      // Cleared with the rest: a held tick that kept the last engagement's
+      // wrench would log a force nothing measured this tick, which is the
+      // last-value hold §10.6 forbids one layer down.
+      wrench_lwa_.setZero();
+      compliance_alpha_ = 0.0;
+      compliance_task_origin_.setZero();
+      wrench_status_ = rtc::compliance::WrenchPipelineStatus{};
+    }
     return;
   }
+  compliance_engaged_ = true;
 
   // ── Stage 2 (compute control law): consume the model. Extract the arm-joint
   // columns of the tip Jacobian from the Stage-1 cache into the 6×nv_arm CLIK
@@ -599,12 +620,66 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
     has_pending_segment_ = false;
   }
 
+  // ── §7 admittance: X_c = X_d ⊕ x̃  (#469 S3, tick rows 9-13) ─────────────
+  //
+  // The trajectory owns X_d; this block owns the deviation the external wrench
+  // drives, and the CLIK below tracks the SUM. Rows 14-16 are untouched — the
+  // differential IK, the integration from measured and the joint clamp were
+  // already right, and S3 changes only what they are asked to track.
+  //
+  // FRAMES. `wrench_apply_point_` and the wrench itself are already in the
+  // robot base frame (the pull adapter states this and rotates nothing), so
+  // `R_world_sensor` is the identity here and no rotation is owed anywhere on
+  // this path. `p_task` is the control-frame origin, which makes the pipeline's
+  // lever arm `p_apply − p_ctrl`: zero whenever the virtual TCP is both the
+  // application point and the control frame, so no moment is invented in the
+  // case that matters. Gravity comes from the MODEL rather than a literal −9.81ẑ.
+  const Eigen::Matrix<double, 6, 1> f_lwa = wrench_pipeline_.Update(
+      Eigen::Matrix3d::Identity(), wrench_apply_point_, ctrl_pos,
+      arm_handle_ ? Eigen::Vector3d(arm_handle_->GetModel().gravity.linear())
+                  : Eigen::Vector3d::Zero(),
+      dt, admittance_params_.wrench, wrench_status_);
+
+  // §10.7 activation ramp: the wrench enters over `activation_ramp_time`, so a
+  // controller activated against a standing load does not step the arm.
+  compliance_ramp_elapsed_ =
+      std::min(compliance_ramp_elapsed_ + dt, admittance_params_.activation_ramp_time);
+  const bool ramp_done = !(admittance_params_.activation_ramp_time > 0.0) ||
+                         compliance_ramp_elapsed_ >= admittance_params_.activation_ramp_time;
+  const double alpha =
+      ramp_done ? 1.0 : (compliance_ramp_elapsed_ / admittance_params_.activation_ramp_time);
+
+  wrench_lwa_ = f_lwa;
+  compliance_alpha_ = alpha;
+  compliance_task_origin_ = ctrl_pos;
+
+  const rtc::compliance::AdmittanceStatus adm =
+      admittance_.Step(admittance_params_.admittance, alpha * f_lwa, dt);
+
+  // COMPOSE ONLY WHEN THERE IS SOMETHING TO COMPOSE. `X_d ⊕ 0` is not the
+  // identity in floating point — I·R turns a negative zero positive, and
+  // `p + 0.0` does the same — so unconditionally composing would move the
+  // command by one ulp on ticks where the law contributes nothing. That is not
+  // a rounding curiosity here: test_compliance_task_equivalence asserts this
+  // controller is BIT-identical to demo_task while the wrench is withheld, and
+  // that assertion is what keeps the copied lanes honest.
+  const Eigen::Matrix<double, 6, 1>& nu_c = admittance_.velocity();
+  const bool compliance_contributes = !admittance_.translation().isZero(0.0) ||
+                                      !admittance_.rotation().isIdentity(0.0) || !nu_c.isZero(0.0);
+
+  pinocchio::SE3 reference_pose = traj_state_.pose;
+  if (compliance_contributes) {
+    reference_pose.translation() += admittance_.translation();
+    reference_pose.rotation() = admittance_.rotation() * traj_state_.pose.rotation();
+  }
+
   // ── Cartesian error ────────────────────────────────────────────────────
   // BodyLog6 = log6(T_cur⁻¹ T_d): body-frame screw error (preserves the
-  // position-rotation coupling), via rtc_math.
+  // position-rotation coupling), via rtc_math. T_d is the COMPLIANT frame from
+  // here on — the whole point of the block above.
   const rtc::math::se3::Iso3 control_iso = rtc::math::se3::toIso3(control_pose);
   const rtc::math::se3::Vec6 e_body = rtc::math::se3::computePoseError(
-      control_iso, rtc::math::se3::toIso3(traj_state_.pose), rtc::math::se3::ErrorType::BodyLog6);
+      control_iso, rtc::math::se3::toIso3(reference_pose), rtc::math::se3::ErrorType::BodyLog6);
   if (use_vtcp_frame) {
     // Jacobian is in vtcp (LOCAL) frame → use the LOCAL error directly.
     pos_error_6d_ = e_body;
@@ -618,6 +693,38 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
 
   for (int i = 0; i < 3; ++i) {
     pos_error_[i] = p_err[i];
+  }
+
+  // ── §7 fault classification (#469 S3, tick row 10) ─────────────────────
+  //
+  // Assembled HERE and not with the admittance step above, because two of its
+  // inputs are this tick's pose error, which does not exist until the block
+  // just above has run. That ordering is also the physical one: the fault is
+  // detected on the error the law just produced, and it acts on the command
+  // that error is about to become.
+  //
+  // What is NOT wired: `command_divergence` (reachable only with
+  // `integrate_from_measured: false`, which this binding does not offer),
+  // `saturation_persist` (a torque-lane fault; this is a position lane) and
+  // `posture_authority_lost` (the §6.1 selection modes are not this binding's).
+  // Left false rather than approximated — a fault that fires for the wrong
+  // reason is worse than one that does not fire.
+  {
+    rtc::compliance::ComplianceFaults faults;
+    faults.nan_inf = !ik.ok || !pos_error_6d_.allFinite() || !adm.finite;
+    faults.pose_error_exceeded = admittance_params_.pose_error_limit > 0.0 &&
+                                 pos_error_6d_.norm() > admittance_params_.pose_error_limit;
+    faults.sigma_below_critical = ik.sigma_min < admittance_params_.singularity_critical;
+    faults.sigma_below_threshold = ik.sigma_min < sigma0;
+    faults.wrench_timeout = wrench_status_.stale;
+    faults.quality_low = wrench_quality_low_;
+
+    if (wrench_status_.begin_bias_calibration) {
+      compliance_fsm_.BeginBiasCalibration();
+    }
+    compliance_state_ =
+        compliance_fsm_.Step(faults, ramp_done, dt, degraded_recovery_time_,
+                             wrench_status_.bias_gate_released, wrench_status_.in_contact);
   }
 
   // ── Primary task ───────────────────────────────────────────────────────
@@ -637,6 +744,22 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
     } else {
       ff_vel_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
       ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
+    }
+
+    // §7.3 row 13: the compliant frame's own twist rides the feedforward, so
+    // the arm follows X_c rather than merely being pulled back to it by K_ik.
+    // nu_c is LWA at the task point, which IS the Jacobian frame on the
+    // non-vtcp branch; on the vtcp branch the Jacobian was rotated into the
+    // vtcp LOCAL frame above, so the same rotation applies here. Guarded for
+    // the same bit-identity reason the pose composition is.
+    if (compliance_contributes) {
+      if (use_vtcp_frame) {
+        const Eigen::Matrix3d R_ctrl_T = control_pose.rotation().transpose();
+        ff_vel_6d.head<3>() += R_ctrl_T * nu_c.head<3>();
+        ff_vel_6d.tail<3>() += R_ctrl_T * nu_c.tail<3>();
+      } else {
+        ff_vel_6d += nu_c;
+      }
     }
 
     // The shared law, not a local spelling of it (#314). ff_vel_6d is already in
@@ -660,6 +783,15 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
     } else {
       ff_lin = traj_state_.pose.rotation() * traj_state_.velocity.linear();
     }
+    // The compliant frame's linear twist only — this branch commands no
+    // orientation, so the angular half of nu_c has nowhere to go and is
+    // deliberately dropped rather than folded into a 3-vector.
+    if (compliance_contributes) {
+      ff_lin += use_vtcp_frame
+                    ? Eigen::Vector3d(control_pose.rotation().transpose() * nu_c.head<3>())
+                    : Eigen::Vector3d(nu_c.head<3>());
+    }
+
     // Translation-only counterpart of the call above (#314). Takes the
     // translation gains DIRECTLY: this branch commands no orientation, and the
     // signature says so.
@@ -706,6 +838,23 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       ik_3d_.Solve(task_vel, dq_);
     }
     ik_3d_.Solve(ff_lin, traj_dq_);
+  }
+
+  // ── SAFE_STOP: hold position (#469 S3, tick row 11) ────────────────────
+  //
+  // A latched critical fault. `dq_ = 0` with `integrate_from_measured` makes
+  // q_cmd = q_meas, which is the position hold — and it is applied AFTER the
+  // solve rather than by returning early, so the diagnostic lanes
+  // (task_diag_staging_, traj_dq_) still describe the tick that faulted
+  // instead of leaving a gap exactly where the operator needs a row.
+  //
+  // The deviation is reset too: the arm is not realising X_c any more, so a
+  // deviation left standing would be a displacement waiting to be commanded the
+  // moment ResetFault() lands. The E-STOP lane answers separately, one gate
+  // above — it never reaches this function.
+  if (compliance_state_ == rtc::compliance::ComplianceState::kSafeStop) {
+    dq_.setZero();
+    admittance_.Reset();
   }
 }
 
@@ -1064,6 +1213,33 @@ void DemoComplianceController::ComputeSecondary(const ControllerState& state, do
                                 std::span<const bool>(fingertip_pose_valid_),
                                 num_active_fingertips_, grasp_state_.grasp_detected, dt,
                                 grasp_state_.pull);
+
+      // ── #469 S3 rows 7-8: hand the estimate to the compliance pipeline ──
+      //
+      // ONE TICK BEHIND THE CONSUMER, and deliberately so. The estimator needs
+      // `grasp_state_.grasp_detected` to arm its baseline, and grasp detection
+      // runs in this function — after ComputeControl. Publishing here and
+      // consuming in the next tick's ComputeControl costs one control period of
+      // phase on a signal whose own filter has a time constant orders of
+      // magnitude longer; moving the estimator up instead would cost the
+      // baseline edge a tick, which is the arming of a MEASUREMENT rather than
+      // a lag in a filtered one. It is also the transport semantics any wrench
+      // source has: a topic-fed producer is at least this old.
+      //
+      // WITHHOLDING IS THE MECHANISM (D-A7). On a bad tick nothing is
+      // published, the pipeline ages its last sample, fades it toward zero and
+      // raises `stale` — which the fault block reads as wrench_timeout. A zero
+      // wrench published instead would be a FRESH sample of zero: the age would
+      // never grow, and staleness would never be reported at all.
+      const WrenchSourceVerdict verdict =
+          FromPullEstimate(pull_wiring_, VirtualTcpResult{T_tcp_vtcp_, vtcp_pose_, vtcp_valid_});
+      wrench_quality_low_ = verdict.quality_low;
+      wrench_invalid_reason_ = verdict.reason;
+      if (verdict.publish) {
+        wrench_apply_point_ = verdict.p_apply;
+        wrench_pipeline_.Publish(std::span<const double, rtc::compliance::kWrenchDim>(
+            verdict.wrench.data(), verdict.wrench.size()));
+      }
     }
   }
 

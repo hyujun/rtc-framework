@@ -460,6 +460,29 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── #469 S3: the §7 admittance law as this binding wires it ────────────────
+  # A separate binary from the equivalence suite on purpose: that one asserts
+  # this controller is INDISTINGUISHABLE from its sibling, this one asserts what
+  # makes it different. Sharing a binary would put the two claims in one place
+  # and make "which of them broke" a reading exercise.
+  ament_add_gtest(test_compliance_admittance_coupling
+    test/test_compliance_admittance_coupling.cpp)
+  target_compile_definitions(test_compliance_admittance_coupling PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_compliance_admittance_coupling
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_compliance_admittance_coupling
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # ── #282 two-tier DLS convergence harness ──────────────────────────────────
   # Pure numerics: the pre-#282 inline block (oracle) against
   # compliance::DifferentialIk. Its own binary because it installs the Eigen
