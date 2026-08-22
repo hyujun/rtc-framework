@@ -4,9 +4,24 @@
 # It is a copy on purpose: until the §7 admittance law lands (S3) the two
 # controllers must produce identical output on identical input, and
 # test_compliance_task_equivalence.cpp asserts exactly that — comparing these two
-# shipped files key by key, EXCEPT for the owned blocks at the bottom, which have
-# assertions of their own. Editing any other value here breaks that comparison,
-# which is the intended way to find out that the copy has started to drift.
+# shipped files key by key, EXCEPT for the owned blocks at the bottom and the
+# renamed gains below, which have assertions of their own. Editing any other
+# value here breaks that comparison, which is the intended way to find out that
+# the copy has started to drift.
+#
+# THE TASK GAINS ARE SPELLED DIFFERENTLY FROM THE SIBLING'S (#469 D-A13):
+# `ik_kp_pos` / `ik_kp_rot` / `nullspace_kp` here vs `kp_translation` /
+# `kp_rotation` / `null_kp` there. Same quantity, same value — the §7 parser
+# reads THIS node, and carrying both spellings would ship a key that is parsed
+# and never read. The values must still match the sibling's; a separate test
+# asserts that pairwise.
+#
+# The rest of the §7 schema (desired_inertia / damping / stiffness, the §7.4
+# displacement box, the §7.5 velocity caps, §10.6 staleness) is READ from this
+# node and currently takes the core defaults in
+# rtc_controllers/include/rtc_controllers/params/task_admittance_params.hpp.
+# Values are chosen against hardware in S5; writing numbers here before they are
+# measured would ship a tuning nobody validated.
 #
 # S3 adds the admittance gains HERE, not in the sibling, and moves each newly
 # owned block into that test's exclusion list as it does so.
@@ -21,8 +36,8 @@ demo_compliance_controller:
   arm_dof: 7
 
   # ── CLIK gains ─────────────────────────────────────────────────────────────
-  kp_translation: [5.0, 5.0, 5.0]
-  kp_rotation: [2.0, 2.0, 2.0]
+  ik_kp_pos: [5.0, 5.0, 5.0]
+  ik_kp_rot: [2.0, 2.0, 2.0]
   # §6.5 σ_min-adaptive DLS (#282) — replaced the retired constant λ `damping`.
   singularity_threshold: 0.02   # σ₀
   max_damping: 0.05             # λ_max
@@ -37,7 +52,7 @@ demo_compliance_controller:
   # iiwa7 is 7-DoF → null-space exists; off by default, enable for redundancy
   # resolution experiments.
   enable_null_space: false
-  null_kp: 0.5
+  nullspace_kp: 0.5
 
   # ── 6-DOF mode ─────────────────────────────────────────────────────────────
   control_6dof: true

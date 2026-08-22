@@ -416,10 +416,33 @@ constexpr std::array<const char*, 2> kComplianceOwnedKeys = {
     "pull_estimator",   // per-profile override, see the D-A8 test below
 };
 
-YAML::Node WithoutComplianceOwnedKeys(const YAML::Node& node) {
+// The task gains, which the two files now SPELL differently (#469 D-A13): the
+// compliance controller uses the §7 schema's names because
+// ParseTaskAdmittanceParams reads its node and would otherwise parse a second,
+// unread copy of the same gain. Same physical quantity, same value — so these
+// are excluded from the textual comparison and re-asserted pairwise below,
+// which keeps the property that mattered (tune one file, the other fails).
+struct RenamedGain {
+  const char* compliance;  ///< §7 spelling, what demo_compliance_controller.yaml says
+  const char* task;        ///< CLIK spelling, what demo_task_controller.yaml says
+};
+
+constexpr std::array<RenamedGain, 3> kRenamedGains = {{
+    {"ik_kp_pos", "kp_translation"},
+    {"ik_kp_rot", "kp_rotation"},
+    {"nullspace_kp", "null_kp"},
+}};
+
+// `which` selects which half of each pair to strip, because the key to remove
+// differs per file — stripping both names from both nodes would hide a
+// compliance file that still carried the old spelling.
+YAML::Node WithoutComplianceOwnedKeys(const YAML::Node& node, bool is_compliance) {
   YAML::Node out = YAML::Clone(node);
   for (const char* key : kComplianceOwnedKeys) {
     out.remove(key);
+  }
+  for (const auto& g : kRenamedGains) {
+    out.remove(is_compliance ? g.compliance : g.task);
   }
   return out;
 }
@@ -428,8 +451,8 @@ TEST(ComplianceTaskEquivalence, ShippedConfigsAreTheSameConfig) {
   for (const char* profile : kProfiles) {
     const YAML::Node task = ShippedControllerNode(profile, "demo_task_controller");
     const YAML::Node comp = ShippedControllerNode(profile, "demo_compliance_controller");
-    EXPECT_EQ(YAML::Dump(WithoutComplianceOwnedKeys(comp)),
-              YAML::Dump(WithoutComplianceOwnedKeys(task)))
+    EXPECT_EQ(YAML::Dump(WithoutComplianceOwnedKeys(comp, /*is_compliance=*/true)),
+              YAML::Dump(WithoutComplianceOwnedKeys(task, /*is_compliance=*/false)))
         << profile
         << ": demo_compliance_controller.yaml has drifted from its sibling outside the blocks it "
            "owns. Until #469 S3 gives it a law the rest must stay identical — if this IS the S3 "
@@ -439,6 +462,30 @@ TEST(ComplianceTaskEquivalence, ShippedConfigsAreTheSameConfig) {
 }
 
 // ── 1b. What the excluded keys must say ─────────────────────────────────────
+
+// The renamed half of the exclusion. Both directions are asserted: the §7 name
+// must be present on the compliance side (a file that kept the old spelling
+// would leave the gain at the parser's default and this test would be the only
+// place that noticed), the CLIK name must be ABSENT there (both spellings in one
+// file is exactly the parsed-but-unread trap D-A13 exists to prevent), and the
+// values must match — which is what still fails when someone tunes one file.
+TEST(ComplianceTaskEquivalence, RenamedGainsCarryTheSiblingsValues) {
+  for (const char* profile : kProfiles) {
+    const YAML::Node task = ShippedControllerNode(profile, "demo_task_controller");
+    const YAML::Node comp = ShippedControllerNode(profile, "demo_compliance_controller");
+    for (const auto& g : kRenamedGains) {
+      ASSERT_TRUE(comp[g.compliance])
+          << profile << ": demo_compliance_controller.yaml is missing '" << g.compliance
+          << "' — the §7 parser would fall back to its default and nothing else would say so";
+      EXPECT_FALSE(comp[g.task]) << profile << ": demo_compliance_controller.yaml still carries '"
+                                 << g.task << "', which this controller does not read (#469 D-A13)";
+      ASSERT_TRUE(task[g.task]) << profile << ": demo_task_controller.yaml lost '" << g.task << "'";
+      EXPECT_EQ(YAML::Dump(comp[g.compliance]), YAML::Dump(task[g.task]))
+          << profile << ": '" << g.compliance << "' has drifted from the sibling's '" << g.task
+          << "'";
+    }
+  }
+}
 
 TEST(ComplianceTaskEquivalence, EveryProfileNamesTheOnlyImplementedWrenchSource) {
   for (const char* profile : kProfiles) {
@@ -593,6 +640,50 @@ TEST(ComplianceWrenchSourceConfig, AnUnimplementedSourceRefusesToConfigure) {
 
   cfg["external_wrench"]["source"] = "pull_estimatorr";
   EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
+}
+
+// The §7 schema is parsed off this SAME node from #469 S2's successor commit on,
+// and nothing in the tick reads the result yet — so this is the only assertion
+// that `ParseTaskAdmittanceParams` is called at all. Deleting the call leaves
+// every other test in this file green.
+//
+// The positive control runs FIRST and is an ASSERT: three EXPECT_THROWs on a
+// config that never configured would pass for a reason that has nothing to do
+// with the schema.
+TEST(ComplianceWrenchSourceConfig, AMalformedAdmittanceSchemaRefusesToConfigure) {
+  YAML::Node base = ShippedControllerNode("iiwa7_leap", "demo_compliance_controller");
+  MergeShippedShared(base, "iiwa7_leap");
+  ASSERT_NO_THROW(BringUp<DemoComplianceController>(base))
+      << "the shipped profile must configure — every rejection below is measured against it";
+
+  {
+    // §7.2: the law divides by the virtual inertia, so a non-positive entry is
+    // not a soft setting. Chosen over a mis-shaped sequence because a length
+    // error would also be caught by yaml-cpp's own conversion.
+    YAML::Node cfg = YAML::Clone(base);
+    cfg["desired_inertia"] = std::vector<double>{1.0, 1.0, 0.0, 1.0, 1.0, 1.0};
+    EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
+  }
+  {
+    // §7.1: admittance takes force as its INPUT, so `enabled: false` is a
+    // rejection and not a fallback. This key lives in the very `external_wrench`
+    // map the source does — which is the reason that block is SHARED with the
+    // core rather than owned by the binding, and the reason `source` must not be
+    // "cleaned up" for not appearing in the core schema.
+    YAML::Node cfg = YAML::Clone(base);
+    cfg["external_wrench"]["enabled"] = false;
+    EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
+  }
+  {
+    // The §7 parser forces a position command lane. Note what this NARROWS: the
+    // binding's own reader maps any non-"torque" string to kPosition and never
+    // throws, so before the parser was wired this controller silently accepted
+    // `command_type: torque`. It no longer does — deliberately, since the
+    // admittance law has no torque lane — and no shipped profile used it.
+    YAML::Node cfg = YAML::Clone(base);
+    cfg["command_type"] = "torque";
+    EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
+  }
 }
 
 }  // namespace

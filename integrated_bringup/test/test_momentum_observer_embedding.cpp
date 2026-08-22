@@ -47,6 +47,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -367,11 +368,25 @@ topics:
 // it is DERIVED rather than transcribed: what this file asserts is the observer
 // embedding, and two hand-maintained YAMLs would eventually differ in the arm
 // posture instead — which surfaces here as a residual that will not settle.
-// NOTE for #469 S3: when the compliance binding switches its task gains to the
-// core spelling (ik_kp_pos / ik_kp_rot), this derivation has to translate them,
-// or the inherited kp_translation lines go unread and silently take defaults.
+// The task gains are also RESPELLED: demo_compliance reads the §7 schema's
+// names (#469 D-A13), so an inherited `kp_translation:` line would be parsed by
+// nobody and the binding would quietly run the schema default instead of the
+// posture this fixture set up.
+std::string WithSevenSchemaGainNames(std::string yaml) {
+  for (const auto& [from, to] :
+       {std::pair<const char*, const char*>{"kp_translation:", "ik_kp_pos:"},
+        {"kp_rotation:", "ik_kp_rot:"},
+        {"null_kp:", "nullspace_kp:"}}) {
+    for (std::size_t at = yaml.find(from); at != std::string::npos;
+         at = yaml.find(from, at + std::strlen(to))) {
+      yaml.replace(at, std::strlen(from), to);
+    }
+  }
+  return yaml;
+}
+
 const std::string kComplianceYaml =
-    std::string(kTaskYaml) + "external_wrench:\n  source: \"pull_estimator\"\n";
+    WithSevenSchemaGainNames(kTaskYaml) + "external_wrench:\n  source: \"pull_estimator\"\n";
 
 const char* const kWbcYaml = R"(
 arm_dof: 7

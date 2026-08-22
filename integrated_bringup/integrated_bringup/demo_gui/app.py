@@ -3070,8 +3070,11 @@ class DemoControllerGUI(Node):
         # Layout tail (see CLAUDE.md): [..., grasp_command, grasp_target_force].
         #   demo_joint_controller: target_force is index 8 (9 values total)
         #   demo_task_controller : target_force is index 20 (21 values total)
-        #   demo_compliance_controller: same layout as the task controller until
-        #     #469 S3 adds admittance gains — that sprint moves this index.
+        #   demo_compliance_controller: same WIDTHS as the task controller, so
+        #     the same index. #469 D-A13 renamed three of its rows (ik_kp_pos /
+        #     ik_kp_rot / nullspace_kp) without changing any width, and
+        #     test_demo_gui_catalog pins that row by row. S3 adds admittance
+        #     ROWS, and that is the sprint that moves this index.
         tf_idx_map = {
             "demo_joint_controller": 8,
             "demo_task_controller": 20,

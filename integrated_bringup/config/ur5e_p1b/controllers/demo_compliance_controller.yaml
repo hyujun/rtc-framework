@@ -4,9 +4,24 @@
 # It is a copy on purpose: until the §7 admittance law lands (S3) the two
 # controllers must produce identical output on identical input, and
 # test_compliance_task_equivalence.cpp asserts exactly that — comparing these two
-# shipped files key by key, EXCEPT for the owned blocks at the bottom, which have
-# assertions of their own. Editing any other value here breaks that comparison,
-# which is the intended way to find out that the copy has started to drift.
+# shipped files key by key, EXCEPT for the owned blocks at the bottom and the
+# renamed gains below, which have assertions of their own. Editing any other
+# value here breaks that comparison, which is the intended way to find out that
+# the copy has started to drift.
+#
+# THE TASK GAINS ARE SPELLED DIFFERENTLY FROM THE SIBLING'S (#469 D-A13):
+# `ik_kp_pos` / `ik_kp_rot` / `nullspace_kp` here vs `kp_translation` /
+# `kp_rotation` / `null_kp` there. Same quantity, same value — the §7 parser
+# reads THIS node, and carrying both spellings would ship a key that is parsed
+# and never read. The values must still match the sibling's; a separate test
+# asserts that pairwise.
+#
+# The rest of the §7 schema (desired_inertia / damping / stiffness, the §7.4
+# displacement box, the §7.5 velocity caps, §10.6 staleness) is READ from this
+# node and currently takes the core defaults in
+# rtc_controllers/include/rtc_controllers/params/task_admittance_params.hpp.
+# Values are chosen against hardware in S5; writing numbers here before they are
+# measured would ship a tuning nobody validated.
 #
 # S3 adds the admittance gains HERE, not in the sibling, and moves each newly
 # owned block into that test's exclusion list as it does so.
@@ -18,8 +33,8 @@ demo_compliance_controller:
   arm_dof: 6
 
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
-  kp_translation: [5.0, 5.0, 5.0]         # Translation proportional gain (x, y, z) [1/s]
-  kp_rotation: [2.0, 2.0, 2.0]            # Rotation proportional gain (rx, ry, rz) [1/s]
+  ik_kp_pos: [5.0, 5.0, 5.0]         # Translation proportional gain (x, y, z) [1/s]
+  ik_kp_rot: [2.0, 2.0, 2.0]            # Rotation proportional gain (rx, ry, rz) [1/s]
   # §6.5 σ_min-adaptive DLS (#282). These replaced a single constant λ
   # (`damping`), which is retired: a constant λ and the ceiling of a ramp are
   # not the same quantity, so it is reported and ignored rather than mapped.
@@ -34,7 +49,7 @@ demo_compliance_controller:
 
   # ── Null-space configuration ────────────────────────────────────────────────
   enable_null_space: false            # Enable null-space joint centering
-  null_kp: 0.5                       # Null-space proportional gain
+  nullspace_kp: 0.5                       # Null-space proportional gain
 
   # ── 6-DOF mode ──────────────────────────────────────────────────────────────
   control_6dof: true                # false=3-DOF (position only), true=6-DOF (position+orientation)

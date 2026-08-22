@@ -478,34 +478,85 @@ GAIN_GROUP_LAYOUT = {
     ],
 }
 
-# ── demo_compliance_controller mirrors demo_task_controller (#469 S2) ────────
+# ── demo_compliance_controller: what it still mirrors, and what it no longer does
 #
-# The compliance controller is a copy of the task controller with renamed
-# identifiers until the §7 admittance law lands (S3), so it declares the same
-# parameters in the same wire order, takes the same task-space goal and owns the
-# same grasp-mode parameter. Nine tables above key on the controller name, and
-# adding it to each by hand would be nine chances to get one wrong today plus
-# nine places to keep in step tomorrow — so the mirror is stated once, here,
-# where it can also say why it is a mirror.
+# S2 shipped this controller as a copy of the task controller with renamed
+# identifiers, so ONE mirror covered every table. #469 D-A13 ended that for the
+# gain tables: the compliance binding respells its task gains to the §7 schema's
+# names (`ik_kp_pos` / `ik_kp_rot` / `nullspace_kp`) because
+# ParseTaskAdmittanceParams reads its config node and would otherwise parse a
+# second, unread copy of the same gain. The DECLARED ROS parameter names moved
+# with them, and this file is what tells the GUI which name to set.
 #
-# S3 REPLACES THIS, IT DOES NOT EXTEND IT: when the controller gains admittance
-# gains and a wrench source, drop the affected table out of this loop and give it
-# an explicit demo_compliance_controller entry. A silently extended mirror would
-# quietly claim the two controllers still take the same parameters.
+# So the three gain tables are written out below rather than mirrored. That is
+# the rule this block always carried — replace, do not extend — and it applies
+# again in S3, which adds admittance rows to GAIN_DEFS rather than renaming
+# them. The tables that are still true mirrors stay in the loop.
 #
-# deepcopy, not aliasing: an S3 edit to one table must not reach through and
-# change the shipped controller's row.
+# deepcopy, not aliasing: an edit to one table must not reach through and change
+# the shipped controller's row.
 _COMPLIANCE_MIRRORS = "demo_task_controller"
 for _table in (
     TARGET_LABELS,
     ANGLE_INDICES,
     JOINT_SPACE,
-    GAIN_DEFS,
-    GAIN_ROW_NAMES,
-    GAIN_PARAM_DISPATCH,
     GAIN_GROUP_LAYOUT,
 ):
     _table["demo_compliance_controller"] = copy.deepcopy(_table[_COMPLIANCE_MIRRORS])
+
+# The renames, stated once so a test can assert that the tables below differ
+# from the task controller's in EXACTLY these places and nowhere else — the
+# check a hand-transcribed copy otherwise loses.
+COMPLIANCE_GAIN_RENAMES = {
+    "kp_translation": "ik_kp_pos",
+    "kp_rotation": "ik_kp_rot",
+    "null_kp": "nullspace_kp",
+}
+
+GAIN_DEFS["demo_compliance_controller"] = [
+    # §7 spelling (D-A13) — same quantity and same default as the sibling's
+    # kp_translation / kp_rotation.
+    ("ik_kp_pos", 3, [5.0] * 3, False, "CLIK Gains"),
+    ("ik_kp_rot", 3, [2.0] * 3, False, "CLIK Gains"),
+    ("singularity_threshold", 1, [0.02], False, "CLIK Gains"),
+    ("max_damping", 1, [0.05], False, "CLIK Gains"),
+    ("nullspace_kp", 1, [0.5], False, "CLIK Gains"),
+    ("null_space", 1, [1], True, "CLIK Gains"),
+    ("control_6dof", 1, [0], True, "CLIK Gains"),
+    ("traj_speed", 1, [0.1], False, "Arm Trajectory"),
+    ("traj_angular_speed", 1, [0.5], False, "Arm Trajectory"),
+    ("hand_traj_speed", 1, [1.0], False, "Hand Trajectory"),
+    ("max_traj_vel", 1, [0.5], False, "Arm Trajectory"),
+    ("max_traj_angular_vel", 1, [1.0], False, "Arm Trajectory"),
+    ("hand_max_traj_vel", 1, [2.0], False, "Hand Trajectory"),
+    ("grasp_contact_thresh", 1, [0.5], False, "Grasp Detection"),
+    ("grasp_force_thresh", 1, [1.0], False, "Grasp Detection"),
+    ("grasp_min_fingertips", 1, [2], False, "Grasp Detection"),
+]
+
+GAIN_ROW_NAMES["demo_compliance_controller"] = {
+    "ik_kp_pos": ["x", "y", "z"],
+    "ik_kp_rot": ["rx", "ry", "rz"],
+}
+
+GAIN_PARAM_DISPATCH["demo_compliance_controller"] = {
+    "ik_kp_pos": ("ik_kp_pos", _set_double_array),
+    "ik_kp_rot": ("ik_kp_rot", _set_double_array),
+    "singularity_threshold": ("singularity_threshold", _set_double),
+    "max_damping": ("max_damping", _set_double),
+    "nullspace_kp": ("nullspace_kp", _set_double),
+    "null_space": ("enable_null_space", _set_bool),
+    "control_6dof": ("control_6dof", _set_bool),
+    "traj_speed": ("trajectory_speed", _set_double),
+    "traj_angular_speed": ("trajectory_angular_speed", _set_double),
+    "hand_traj_speed": ("hand_trajectory_speed", _set_double),
+    "max_traj_vel": ("max_traj_velocity", _read_only),
+    "max_traj_angular_vel": ("max_traj_angular_velocity", _read_only),
+    "hand_max_traj_vel": ("hand_max_traj_velocity", _read_only),
+    "grasp_contact_thresh": ("grasp_contact_threshold", _set_double),
+    "grasp_force_thresh": ("grasp_force_threshold", _set_double),
+    "grasp_min_fingertips": ("grasp_min_fingertips", _set_int),
+}
 
 # Not DUAL_TARGET_SPACE: like the task controller it takes one space at a time
 # (JOINT_SPACE False above), and only WBC regulates posture and an SE3 jog at

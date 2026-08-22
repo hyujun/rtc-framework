@@ -71,17 +71,17 @@ void DemoComplianceController::DeclareGainParameters() noexcept {
   };
 
   // CLIK gains
-  const auto kp_t = declare_double_array(
-      "kp_translation", std::vector<double>(g.kp_translation.begin(), g.kp_translation.end()),
-      "Translation P gain (x, y, z) [1/s]");
-  const auto kp_r = declare_double_array(
-      "kp_rotation", std::vector<double>(g.kp_rotation.begin(), g.kp_rotation.end()),
-      "Rotation P gain (rx, ry, rz) [1/s]");
+  const auto kp_t =
+      declare_double_array("ik_kp_pos", std::vector<double>(g.ik_kp_pos.begin(), g.ik_kp_pos.end()),
+                           "Translation P gain (x, y, z) [1/s]");
+  const auto kp_r =
+      declare_double_array("ik_kp_rot", std::vector<double>(g.ik_kp_rot.begin(), g.ik_kp_rot.end()),
+                           "Rotation P gain (rx, ry, rz) [1/s]");
   for (std::size_t i = 0; i < 3 && i < kp_t.size(); ++i) {
-    g.kp_translation[i] = kp_t[i];
+    g.ik_kp_pos[i] = kp_t[i];
   }
   for (std::size_t i = 0; i < 3 && i < kp_r.size(); ++i) {
-    g.kp_rotation[i] = kp_r[i];
+    g.ik_kp_rot[i] = kp_r[i];
   }
 
   // §6.5 DLS (#282). The retired `damping` is NOT declared — leaving it would
@@ -92,7 +92,8 @@ void DemoComplianceController::DeclareGainParameters() noexcept {
                                                   "σ₀: DLS damping engages below this σ_min(J)"));
   g.max_damping = rtc::compliance::FloorMaxDamping(
       declare_double("max_damping", g.max_damping, "λ_max: ceiling of the §6.5 DLS ramp"));
-  g.null_kp = declare_double("null_kp", g.null_kp, "Null-space joint-centering gain [1/s]");
+  g.nullspace_kp =
+      declare_double("nullspace_kp", g.nullspace_kp, "Null-space joint-centering gain [1/s]");
   g.enable_null_space =
       declare_bool("enable_null_space", g.enable_null_space, "Enable null-space secondary task");
   g.control_6dof = declare_bool("control_6dof", g.control_6dof,
@@ -196,26 +197,26 @@ rcl_interfaces::msg::SetParametersResult DemoComplianceController::OnGainParamet
   for (const auto& p : params) {
     const auto& name = p.get_name();
     try {
-      if (name == "kp_translation") {
+      if (name == "ik_kp_pos") {
         const auto v = p.as_double_array();
         if (v.size() != 3) {
           result.successful = false;
-          result.reason = "kp_translation requires 3 values";
+          result.reason = "ik_kp_pos requires 3 values";
           return result;
         }
         for (std::size_t i = 0; i < 3; ++i) {
-          g.kp_translation[i] = v[i];
+          g.ik_kp_pos[i] = v[i];
         }
         gains_dirty = true;
-      } else if (name == "kp_rotation") {
+      } else if (name == "ik_kp_rot") {
         const auto v = p.as_double_array();
         if (v.size() != 3) {
           result.successful = false;
-          result.reason = "kp_rotation requires 3 values";
+          result.reason = "ik_kp_rot requires 3 values";
           return result;
         }
         for (std::size_t i = 0; i < 3; ++i) {
-          g.kp_rotation[i] = v[i];
+          g.ik_kp_rot[i] = v[i];
         }
         gains_dirty = true;
       } else if (name == "singularity_threshold") {
@@ -233,13 +234,13 @@ rcl_interfaces::msg::SetParametersResult DemoComplianceController::OnGainParamet
         // through here, so neither half covers the other.
         g.max_damping = rtc::compliance::FloorMaxDamping(p.as_double());
         gains_dirty = true;
-      } else if (name == "null_kp") {
+      } else if (name == "nullspace_kp") {
         // NUM-6 (#277) — the same floor LoadConfig applies, here because this is
         // the ONLY surface that reaches this gain at runtime (`ros2 param set`
         // and the BT SetGains node both land here). A negative K_p drives the
         // null-space posture away from its target and (I − J⁺J) keeps that off
         // the Cartesian task, so nothing downstream would report it.
-        g.null_kp = rtc::FloorNonNegativeGain(p.as_double());
+        g.nullspace_kp = rtc::FloorNonNegativeGain(p.as_double());
         gains_dirty = true;
       } else if (name == "enable_null_space") {
         g.enable_null_space = p.as_bool();

@@ -58,8 +58,12 @@
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/compliance/admittance_integrator.hpp"
+#include "rtc_controllers/compliance/compliance_state_machine.hpp"
 #include "rtc_controllers/compliance/differential_ik.hpp"
+#include "rtc_controllers/compliance/wrench_pipeline.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
+#include "rtc_controllers/params/task_admittance_params.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 #include "rtc_urdf_bridge/pinocchio_cache.hpp"
@@ -148,7 +152,7 @@ inline constexpr std::uint32_t kComplianceVtcpFrameWaitTicks = 1000;
 ///                = λ_max²(1 − (σ_min/σ₀)²) if σ_min(J) < σ₀
 ///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped least squares]
 ///   N            = I − J^# J                        [null-space projector]
-///   dq           = J^# · (kp ⊙ pos_error + ν_ff) + N · (null_kp · (q_null − q))
+///   dq           = J^# · (kp ⊙ pos_error + ν_ff) + N · (nullspace_kp · (q_null − q))
 ///   q_des       += clamp(dq, ±v_max) * dt        [q_des = q_actual at
 ///   trajectory init] q_cmd        = q_des
 /// @endcode
@@ -174,11 +178,24 @@ inline constexpr std::uint32_t kComplianceVtcpFrameWaitTicks = 1000;
 class DemoComplianceController final : public RTControllerInterface {
  public:
   // ── Gain / feature configuration ─────────────────────────────────────────
+  //
+  // THE TASK-SPACE GAINS ARE SPELLED THE WAY THE §7 SCHEMA SPELLS THEM (#469
+  // D-A13), which is why they read `ik_kp_pos` / `ik_kp_rot` / `nullspace_kp`
+  // here and `kp_translation` / `kp_rotation` / `null_kp` in the demo_task
+  // sibling this class was copied from. `ParseTaskAdmittanceParams` reads this
+  // controller's YAML for the admittance law, and it parses those three keys
+  // into `TaskAdmittanceParams` — where NOTHING in rtc_controllers consumes
+  // them, because the IK step they gain is the binding's. Keeping both
+  // spellings in one file would therefore ship a key that is parsed and never
+  // read: an operator who set `ik_kp_pos` would see the arm not change, which
+  // is a worse failure than a rejected key. One name, two readers, one
+  // consumer — and the core's copy can never disagree with this one because
+  // they come from the same scalar.
   struct Gains {
     // Arm (CLIK) gains — translation / rotation separated
-    std::array<double, 3> kp_translation{
+    std::array<double, 3> ik_kp_pos{
         {5.0, 5.0, 5.0}};  ///< Translation proportional gain (x,y,z) [1/s]
-    std::array<double, 3> kp_rotation{
+    std::array<double, 3> ik_kp_rot{
         {2.0, 2.0, 2.0}};  ///< Rotation proportional gain (rx,ry,rz) [1/s]
     // §6.5 σ_min-adaptive DLS. These two REPLACED a single constant λ
     // (`damping`, retired in #282) and are named/defaulted to match the five
@@ -196,7 +213,7 @@ class DemoComplianceController final : public RTControllerInterface {
     // a law that is parameterised on the Jacobian's conditioning.
     double singularity_threshold{0.02};  ///< σ₀: DLS engages below this
     double max_damping{0.05};            ///< λ_max: ceiling of the §6.5 ramp
-    double null_kp{0.5};                 ///< Null-space joint-centering gain [1/s]
+    double nullspace_kp{0.5};            ///< Null-space joint-centering gain [1/s]
     bool enable_null_space{true};        ///< Enable null-space secondary task
     bool control_6dof{false};            ///< Enable 6-DOF (translation + orientation) control
 
@@ -277,8 +294,8 @@ class DemoComplianceController final : public RTControllerInterface {
   void PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp_translation×3, kp_rotation×3, singularity_threshold,
-  //                max_damping, null_kp,
+  // gains layout: [ik_kp_pos×3, ik_kp_rot×3, singularity_threshold,
+  //                max_damping, nullspace_kp,
   //                enable_null_space(0/1), control_6dof(0/1),
   //                trajectory_speed, trajectory_angular_speed,
   //                hand_trajectory_speed, max_traj_velocity,
@@ -853,6 +870,38 @@ class DemoComplianceController final : public RTControllerInterface {
   // sprint that finally reads the field.
   ComplianceWrenchSource wrench_source_{ComplianceWrenchSource::kPullEstimator};
 
+  // ── §7 admittance, parsed but not yet ticked (#469 S3) ────────────────────
+  //
+  // `ParseTaskAdmittanceParams` is the SSoT for this law's shape: M/D/K, the
+  // §7.4 displacement box, the §7.5 velocity limits, the §10.6 staleness
+  // window, and the §6.5 DLS pair this binding already carried under the same
+  // names. It reads THIS controller's config node, so the schema is shared with
+  // the CLIK keys above rather than nested — which is also why the gain names
+  // were unified (see the note on Gains).
+  //
+  // Filled at LoadConfig and read by NOTHING in this commit. Parsed a sprint
+  // early on purpose: every throw in that parser (non-positive desired_inertia,
+  // a mis-shaped sequence, `external_wrench.enabled: false`, a non-position
+  // command_type) becomes a configure FAILURE, and D1 turns that into a refused
+  // bring-up — so a profile S3 would have rejected is rejected by the sprint
+  // that shipped it, on a tick that does not yet depend on the values.
+  rtc::params::TaskAdmittanceParams admittance_params_{};
+  rtc::params::TaskAdmittanceConfig admittance_config_{};
+
+  // Owns the wrench's frame transport, bias, deadband, saturation and §10.6
+  // ageing. Configured (sample rate + conditioning) at LoadConfig; nothing
+  // publishes into it or reads out of it until S3 wires tick rows 8-9.
+  rtc::compliance::WrenchPipeline wrench_pipeline_{};
+
+  // x̃_c = X_c ⊖ X_d — the DEVIATION, not the frame. `Reset()` collapses X_c
+  // onto X_d, which is what E-STOP / SAFE_STOP / device-invalid owe it (S3
+  // AC2); no caller does that yet because no caller steps it yet.
+  rtc::compliance::AdmittanceIntegrator admittance_{};
+
+  // §7 fault classification (SAFE_STOP latched vs DEGRADED recoverable). Kept
+  // next to the two above so S3 adds a tick, not a member.
+  rtc::compliance::ComplianceStateMachine compliance_fsm_{};
+
   // ── Generalized-momentum observer (#135 Layer 1b) ─────────────────────────
   // Parsed in LoadConfig (the YAML is there) and BUILT in OnDeviceConfigsSet,
   // which is the first point the arm device's joint_state_names exist — the
@@ -1050,7 +1099,7 @@ class DemoComplianceController final : public RTControllerInterface {
 
   // ── Phase B (gain→parameter migration): per-controller ROS 2 parameters ──
   //
-  // Tunable gains (kp_translation, max_damping, trajectory_speed, ...) are
+  // Tunable gains (ik_kp_pos, max_damping, trajectory_speed, ...) are
   // declared as parameters on the controller's own LifecycleNode in
   // on_configure. The set-parameters callback rebuilds a Gains snapshot
   // and stores it via gains_lock_.Store(); the SeqLock provides RT-safe

@@ -8,7 +8,12 @@ from ``ControllerState.type`` (== snake_case registry/config key), NOT
 """
 
 from integrated_bringup.demo_gui.catalog import build_entries
-from integrated_bringup.demo_gui.config import GAIN_DEFS
+from integrated_bringup.demo_gui.config import (
+    COMPLIANCE_GAIN_RENAMES,
+    GAIN_DEFS,
+    GAIN_PARAM_DISPATCH,
+    GAIN_ROW_NAMES,
+)
 from rtc_msgs.msg import ControllerState
 
 # What the CM actually publishes: name == PascalCase Name(), type == config key.
@@ -92,3 +97,53 @@ def test_claimed_groups_and_active_preserved():
     (entry,) = build_entries([cs], tuple(GAIN_DEFS.keys()))
     assert entry.is_active is True
     assert entry.claimed_groups == ("ur5e", "p1b")
+
+
+def test_compliance_gain_tables_differ_from_the_sibling_only_by_the_documented_renames():
+    """#469 D-A13: demo_compliance's gain tables are written out, not mirrored.
+
+    S2 generated them with a deepcopy loop; the rename to the §7 schema's
+    parameter names ended that, and a hand-transcribed table is exactly the kind
+    that drifts silently. So the claim is stated as a test instead: same rows, in
+    the same order, with the same widths / defaults / groups, and names that
+    differ from the sibling's in EXACTLY the three places
+    ``COMPLIANCE_GAIN_RENAMES`` documents.
+
+    This is also what protects the flat wire index ``app.py`` uses to find
+    grasp_target_force: the widths are pinned row by row, so the rename cannot
+    have moved it. S3 adds admittance ROWS, at which point this test fails and
+    that sprint states the new relationship — which is the intended way to find
+    out that the two controllers have stopped taking the same parameters.
+    """
+    task = GAIN_DEFS["demo_task_controller"]
+    comp = GAIN_DEFS["demo_compliance_controller"]
+    assert len(comp) == len(task)
+
+    for t_row, c_row in zip(task, comp, strict=True):
+        expected_name = COMPLIANCE_GAIN_RENAMES.get(t_row[0], t_row[0])
+        assert c_row[0] == expected_name
+        # width, defaults, is_bool, group — everything but the name
+        assert c_row[1:] == t_row[1:], f"{c_row[0]}: layout drifted from {t_row[0]}"
+
+    # Every rename must actually be used; a stale entry in the map would let a
+    # transcription error read as an intended rename.
+    comp_names = {row[0] for row in comp}
+    for old, new in COMPLIANCE_GAIN_RENAMES.items():
+        assert new in comp_names, f"{new} is declared a rename of {old} but no row uses it"
+        assert old not in comp_names, f"{old} survived the rename"
+
+    # The declared ROS parameter each row dispatches to follows the same rule.
+    task_dispatch = GAIN_PARAM_DISPATCH["demo_task_controller"]
+    comp_dispatch = GAIN_PARAM_DISPATCH["demo_compliance_controller"]
+    assert set(comp_dispatch) == comp_names
+    for t_key, (t_param, t_builder) in task_dispatch.items():
+        c_key = COMPLIANCE_GAIN_RENAMES.get(t_key, t_key)
+        c_param, c_builder = comp_dispatch[c_key]
+        assert c_param == COMPLIANCE_GAIN_RENAMES.get(t_param, t_param)
+        assert c_builder is t_builder
+
+    # Per-axis row labels move with the names they key on.
+    assert GAIN_ROW_NAMES["demo_compliance_controller"] == {
+        COMPLIANCE_GAIN_RENAMES.get(k, k): v
+        for k, v in GAIN_ROW_NAMES["demo_task_controller"].items()
+    }

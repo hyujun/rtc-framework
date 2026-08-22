@@ -643,8 +643,7 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
     // the Jacobian frame, which is the frame contract ComputeTaskVelocity states
     // for nu_ff — the rotation above is the caller's half of that contract.
     const Eigen::Matrix<double, 6, 1> task_vel_6d = rtc::task::ComputeTaskVelocity(
-        rtc::task::TaskVelParams{gains.kp_translation, gains.kp_rotation}, pos_error_6d_,
-        ff_vel_6d);
+        rtc::task::TaskVelParams{gains.ik_kp_pos, gains.ik_kp_rot}, pos_error_6d_, ff_vel_6d);
     // Two-argument Solve, not Solve(twist, zero, out): the 6-DOF branch has no
     // posture task at all (the null-space block below is gated on
     // `!control_6dof`), and `+= N·0` is a full nv×nv product whose result is not
@@ -665,7 +664,7 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
     // translation gains DIRECTLY: this branch commands no orientation, and the
     // signature says so.
     const Eigen::Vector3d task_vel =
-        rtc::task::ComputeTranslationVelocity(gains.kp_translation, pos_error_, ff_lin);
+        rtc::task::ComputeTranslationVelocity(gains.ik_kp_pos, pos_error_, ff_lin);
 
     // ── Null-space secondary task ────────────────────────────────────────
     // Folded into this branch (#282): the gate WAS `enable_null_space &&
@@ -692,7 +691,7 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       // (The retired ClikController adapter placed it identically — #236 S7c
       // deleted the class, not the placement rule, whose SSoT is
       // agent_docs/modification-guide.md §Adding a New Controller item 5.)
-      // LoadConfig and the `null_kp` parameter callback floor it too; this half
+      // LoadConfig and the `nullspace_kp` parameter callback floor it too; this half
       // covers neither, because the gain reaches the SeqLock POD from both and
       // a negative K_p drives the posture AWAY from its target while N hides
       // that from the Cartesian task.
@@ -701,7 +700,7 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       // projected result after it. N is linear, so the two agree algebraically
       // and differ only in rounding; the shared law takes q̇_null as its
       // argument, which is what fixes the order.
-      qdot_null_ *= rtc::FloorNonNegativeGain(gains.null_kp);
+      qdot_null_ *= rtc::FloorNonNegativeGain(gains.nullspace_kp);
       ik_3d_.Solve(task_vel, qdot_null_, dq_);
     } else {
       ik_3d_.Solve(task_vel, dq_);

@@ -955,14 +955,14 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
   // fitted to whatever length arrives (#302).
   //
   // This binding already enforces the rule on its OTHER surface:
-  // OnGainParametersSet rejects `v.size() != 3` with "kp_translation requires 3
+  // OnGainParametersSet rejects `v.size() != 3` with "ik_kp_pos requires 3
   // values", so `ros2 param set` and the BT SetGains node cannot install a
   // mis-shaped gain. The YAML path used `min(size, 3)` and disagreed — the same
   // key, on the same controller, accepted from a file what it refuses from a
   // parameter. The two surfaces now say the same thing.
   //
   // `min(size, 3)` was also the worst of the three spellings this repo had,
-  // because it PARTIALLY fills: `kp_translation: [5.0, 5.0]` runs [5, 5,
+  // because it PARTIALLY fills: `ik_kp_pos: [5.0, 5.0]` runs [5, 5,
   // <default>], a gain no operator wrote and no diagnostic can flag, since the
   // entries that did come from YAML make the POD look deliberate. The schema
   // parsers' silent form at least left the whole triple at its default. An
@@ -981,8 +981,8 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
       arr[i] = n[i].as<double>();
     }
   };
-  load3("kp_translation", g.kp_translation);
-  load3("kp_rotation", g.kp_rotation);
+  load3("ik_kp_pos", g.ik_kp_pos);
+  load3("ik_kp_rot", g.ik_kp_rot);
   // §6.5 σ_min-adaptive DLS (#282). Both floors are the shared symbols, not a
   // hand-written std::max — `max(1e-4, NaN) == 1e-4` would launder a non-finite
   // λ_max into a plausible one and hand the caller a damping shell that only
@@ -1009,8 +1009,8 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
                 "singularity_threshold; the §6.5 ramp is running on %.3g / %.3g.",
                 g.max_damping, g.singularity_threshold);
   }
-  if (cfg["null_kp"]) {
-    g.null_kp = cfg["null_kp"].as<double>();
+  if (cfg["nullspace_kp"]) {
+    g.nullspace_kp = cfg["nullspace_kp"].as<double>();
   }
   // NUM-6 (#277), unconditionally rather than inside the parse above: when the
   // key is ABSENT the value still arrives from the constructor or a previous
@@ -1019,7 +1019,7 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
   // posture away from its target and (I − J⁺J) hides that from the Cartesian
   // task, so it is a silent drift and not a fault. ComputeControl floors it
   // again at the point of use.
-  g.null_kp = rtc::FloorNonNegativeGain(g.null_kp);
+  g.nullspace_kp = rtc::FloorNonNegativeGain(g.nullspace_kp);
   if (cfg["enable_null_space"]) {
     g.enable_null_space = cfg["enable_null_space"].as<bool>();
   }
@@ -1208,6 +1208,21 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
     RCLCPP_INFO(logger_, "[compliance] external wrench source: %s (not consumed until #469 S3)",
                 source_name.c_str());
   }
+
+  // ── The §7 admittance schema, from this SAME node (#469 S3) ──────────────
+  //
+  // Not a nested block: the parser reads 23 top-level keys off the controller's
+  // own config, which is why `external_wrench` above is shared with it — the
+  // core pulls `enabled` / `deadband` / `max` / `payload_com` / `filter_enabled`
+  // out of that map key by key and ignores the `source` this binding added, and
+  // an ABSENT `enabled` leaves the parser's `true` default, so §7.1 is already
+  // satisfied by what S2 shipped. Do NOT "clean up" `source` on the grounds that
+  // it is not in the core schema.
+  //
+  // Nothing reads either struct in this commit; parsing now means the shipped
+  // profiles are validated by the sprint that wrote them rather than by S3.
+  rtc::params::ParseTaskAdmittanceParams(cfg, admittance_params_, admittance_config_);
+  wrench_pipeline_.Configure(admittance_config_.wrench, 1.0 / GetDefaultDt());
 
   // ── #135 Layer 1b: momentum-observer params ─────────────────────────────
   // Only carried here. The wiring itself is built in on_configure: it pins the
