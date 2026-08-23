@@ -104,6 +104,17 @@ robot 모델이 필요한 gtest fixture 는 URDF 를 **`robot_descriptions/robot
 
 Suite 고유의 poll 예산이 있으면 헬퍼를 감싸지 말고 **인자로 넘긴다** — `WaitUntil(pred, timeout, poll)`. 예산이 assertion 옆에 보이는 편이 낫고, 같은 이름의 wrapper 는 `using namespace rtc::testing;` 이 들어오는 순간 모호해진다. 호출 지점이 많아 예산을 한 곳에 묶어야 한다면 **다른 이름**으로 얇게 감싸고 그 값의 근거를 상수 옆에 남긴다 (`udp_hand_driver` 의 `PollUntil` = CommLoop 한 tick).
 
+## 컨트롤러 CSV 채널을 검정할 때 — 관측 창은 512행이고, 넘치면 값 불일치로 보인다
+
+`ControllerLogSet::RegisterLog` 의 SPSC ring 은 기본 **512 entry** (`rtc_controller_interface/include/rtc_controller_interface/controller_log_set.hpp`, `Capacity = 512`). production 에서는 컨트롤러의 100 ms drain 타이머가 계속 비우지만, **`Compute()` 를 루프로 도는 gtest 에는 그 타이머가 없다** — 512 tick 을 넘기는 프로그램은 tail 을 잃는다.
+
+**증상이 "행이 없다" 가 아니라는 점이 이 함정을 비싸게 만든다.** 파일은 멀쩡히 512행이 있고, 테스트가 "마지막 행" 이라고 읽은 것은 링이 가득 찬 tick 의 행이다. 그래서 마지막 행을 프로브와 대조하는 단언이 **값이 어긋난 것처럼** 실패한다 — #469 S4 에서 1000 tick 프로그램의 `wrench_fx`·`x_tilde_x`·`task_origin_x` 가 한꺼번에 어긋났고, 코드에는 결함이 없었다. 같은 파일의 480 tick 짜리 케이스는 통과하고 있어서 "행 수는 맞는데 값만 틀리다" 로 읽혔다.
+
+처방 둘, 둘 다 필요하다:
+
+- **production 처럼 주기적으로 drain 한다** — 드라이버 헬퍼가 N tick 마다 `log_set.DrainAll()` 을 부르게 한다. 끝에서 한 번만 부르는 것은 512행짜리 관측 창을 쓰겠다는 뜻이다.
+- **행 수 단언 옆에 `EXPECT_EQ(log_set.TotalDropCount(), 0U)` 를 둔다** — 이것이 "잘렸다" 와 "push 가 애초에 안 됐다" 를 가르는 유일한 신호다. 없으면 나중에 Capacity 가 바뀌거나 프로그램이 길어질 때 같은 실패가 다시 값 불일치로 위장한다. `DrainControllerLogs` 는 drop 을 WARN 으로 알리지만 **테스트가 직접 부르는 `DrainAll()` 은 아무 말도 하지 않는다.**
+
 ## RT-1 zero-allocation 게이트 — 두 종류이고 서로의 맹점을 덮는다
 
 RT tick 이 heap 을 안 만진다는 주장(RT-1)을 재는 sensor 는 **두 개**이고, 어느 것을 쓸지는 취향이 아니라 두 질문으로 결정된다: **(a) 측정 대상이 Eigen 을 쓰는가, (b) 측정 대상 코드가 테스트와 같은 TU 에 인스턴스화되는가.**
