@@ -569,6 +569,15 @@ ControllerOutput DemoComplianceController::Compute(const ControllerState& state)
                                  momentum_wiring_, state.t_relative_s, state.iteration);
   PushGraspDiagLog(grasp_diag_log_handle_, grasp_controller_.get(), grasp_force_pi_ran_,
                    state.t_relative_s, state.iteration);
+  if (compliance_diag_log_handle_) {
+    // Staged by ComputeControl this tick (#469 S4) — see the staging block for
+    // why the row is not assembled here. Only the stamp is added, so a tick
+    // that early-returned through the F5 gate still carries THIS tick's time on
+    // its valid=0 row.
+    compliance_diag_staging_.t_relative_s = state.t_relative_s;
+    compliance_diag_staging_.tick = state.iteration;
+    compliance_diag_log_handle_.Push(compliance_diag_staging_);
+  }
   return output;
 }
 
@@ -1288,7 +1297,8 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
           e.msg_type != integrated_bringup::kPullEstimatorLogMsgType &&
           e.msg_type != integrated_bringup::kMomentumObserverLogMsgType &&
           e.msg_type != integrated_bringup::kTaskDiagLogMsgType &&
-          e.msg_type != integrated_bringup::kGraspDiagLogMsgType) {
+          e.msg_type != integrated_bringup::kGraspDiagLogMsgType &&
+          e.msg_type != integrated_bringup::kComplianceDiagLogMsgType) {
         throw std::runtime_error("DemoComplianceController: unknown msg_type in `logs`: " +
                                  e.msg_type);
       }

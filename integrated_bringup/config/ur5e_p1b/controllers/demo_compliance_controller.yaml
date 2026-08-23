@@ -170,6 +170,15 @@ demo_compliance_controller:
     - msg_type: integrated_bringup/GraspDiagLog
       instance: grasp_diag
 
+    # Per-tick §7 task-admittance diagnostics (#469 S4): the wrench the law
+    # actually consumed, the source verdict that gated it, the §10.7 ramp, the
+    # FSM state, x̃/ν_c and the K_p/K_d/Λ_d snapshot that makes a stored row
+    # decodable without this file. Controller-private POD (no rtc_msgs) — see
+    # logging/compliance_diag_log_pod.hpp. Registered whenever this controller
+    # configures, because `external_wrench.source` below is required.
+    - msg_type: integrated_bringup/ComplianceDiagLog
+      instance: compliance_diag
+
   # ── External wrench source (#469) ──────────────────────────────────────────
   # Which physical estimate drives the admittance law. Configure-time and
   # exclusive — one source per controller instance, never a fusion (D-A4): the

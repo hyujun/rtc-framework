@@ -483,6 +483,29 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── #469 S4: the §7 diagnostics lane ───────────────────────────────────────
+  # Its own binary, and not part of the coupling suite: this one writes real
+  # files into a scoped RTC_SESSION_DIR and reads them back, so it owns process
+  # state (an env var) the law tests do not. Sharing a binary would make an
+  # unrelated failure there look like a logging failure here.
+  ament_add_gtest(test_compliance_diag_log
+    test/test_compliance_diag_log.cpp)
+  target_compile_definitions(test_compliance_diag_log PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_compliance_diag_log
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_compliance_diag_log
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # ── #282 two-tier DLS convergence harness ──────────────────────────────────
   # Pure numerics: the pre-#282 inline block (oracle) against
   # compliance::DifferentialIk. Its own binary because it installs the Eigen

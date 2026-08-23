@@ -50,6 +50,7 @@
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "integrated_bringup/logging/compliance_diag_log_pod.hpp"
 #include "integrated_bringup/support/compliance_wrench_source.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "shipped_config_test_fixture.hpp"
@@ -408,6 +409,24 @@ constexpr std::array<RenamedGain, 3> kRenamedGains = {{
     {"nullspace_kp", "null_kp"},
 }};
 
+// The compliance controller owns ONE ENTRY inside `logs:` (#469 S4), not the
+// whole key. Excluding `logs` outright would be the easy move and would stop
+// comparing the other seven channels — the shipped instance names, the pull and
+// momentum lanes — which is most of what this equality is for. So only the
+// owned entry is dropped, and the test below asserts it is present here and
+// absent from the sibling.
+YAML::Node WithoutComplianceDiagLogEntry(const YAML::Node& logs) {
+  YAML::Node out(YAML::NodeType::Sequence);
+  for (const auto& entry : logs) {
+    if (entry["msg_type"] && entry["msg_type"].as<std::string>() ==
+                                 std::string(integrated_bringup::kComplianceDiagLogMsgType)) {
+      continue;
+    }
+    out.push_back(entry);
+  }
+  return out;
+}
+
 // `which` selects which half of each pair to strip, because the key to remove
 // differs per file — stripping both names from both nodes would hide a
 // compliance file that still carried the old spelling.
@@ -418,6 +437,9 @@ YAML::Node WithoutComplianceOwnedKeys(const YAML::Node& node, bool is_compliance
   }
   for (const auto& g : kRenamedGains) {
     out.remove(is_compliance ? g.compliance : g.task);
+  }
+  if (is_compliance && out["logs"] && out["logs"].IsSequence()) {
+    out["logs"] = WithoutComplianceDiagLogEntry(out["logs"]);
   }
   return out;
 }
@@ -458,6 +480,38 @@ TEST(ComplianceTaskEquivalence, RenamedGainsCarryTheSiblingsValues) {
       EXPECT_EQ(YAML::Dump(comp[g.compliance]), YAML::Dump(task[g.task]))
           << profile << ": '" << g.compliance << "' has drifted from the sibling's '" << g.task
           << "'";
+    }
+  }
+}
+
+// The `logs:` half of the exclusion (#469 S4). Both directions again: the entry
+// must be here (without it the channel registers on no profile and the S5
+// hardware session ships with no compliance_diag.csv at all — a failure whose
+// only symptom is an absent file), and it must NOT be on the sibling, which has
+// no §7 law to describe and whose LoadConfig rejects the msg_type outright.
+TEST(ComplianceTaskEquivalence, EveryProfileOwnsTheDiagLaneAndTheSiblingDoesNot) {
+  for (const char* profile : kProfiles) {
+    const YAML::Node comp = ShippedControllerNode(profile, "demo_compliance_controller");
+    ASSERT_TRUE(comp["logs"] && comp["logs"].IsSequence()) << profile;
+    int found = 0;
+    for (const auto& entry : comp["logs"]) {
+      if (entry["msg_type"] && entry["msg_type"].as<std::string>() ==
+                                   std::string(integrated_bringup::kComplianceDiagLogMsgType)) {
+        ++found;
+        EXPECT_EQ(entry["instance"].as<std::string>(),
+                  std::string(integrated_bringup::kComplianceDiagLogInstance))
+            << profile << ": the registration branch gates on this exact instance string";
+      }
+    }
+    EXPECT_EQ(found, 1) << profile
+                        << ": demo_compliance_controller.yaml must carry exactly one "
+                           "ComplianceDiagLog entry";
+
+    const YAML::Node task = ShippedControllerNode(profile, "demo_task_controller");
+    for (const auto& entry : task["logs"]) {
+      EXPECT_NE(entry["msg_type"].as<std::string>(),
+                std::string(integrated_bringup::kComplianceDiagLogMsgType))
+          << profile << ": demo_task_controller has no §7 law to diagnose";
     }
   }
 }

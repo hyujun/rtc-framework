@@ -137,6 +137,10 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
         .grasp_diag_enabled = grasp_controller_ != nullptr,
         .grasp_diag_finger_names =
             GraspDiagFingerNames(secondary_sensor_names_, num_grasp_fingers_),
+        // (#469 S4) — §7 admittance lane. Unconditional because the source key
+        // is required with no default (D-A12): a controller that configured has
+        // one, and it cannot change without a re-configure.
+        .compliance_diag_enabled = true,
         .momentum_observer_enabled = momentum_wiring_.enabled(),
         .momentum_observer_joint_names = primary_joint_names_,
     };
@@ -162,6 +166,7 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
     momentum_observer_log_handle_ = std::move(reg.handles.momentum_observer);
     task_diag_log_handle_ = std::move(reg.handles.task_diag);
     grasp_diag_log_handle_ = std::move(reg.handles.grasp_diag);
+    compliance_diag_log_handle_ = std::move(reg.handles.compliance_diag);
     LogGraspDiagWiring(logger_, grasp_controller_ != nullptr, ctx.grasp_diag_finger_names);
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
@@ -279,6 +284,7 @@ void DemoComplianceController::ResetLogState() noexcept {
   // #238: an unbound handle is what stops a re-configure from logging into a
   // channel whose file the previous configure owned.
   grasp_diag_log_handle_ = {};
+  compliance_diag_log_handle_ = {};
 }
 
 RTControllerInterface::CallbackReturn DemoComplianceController::on_activate(

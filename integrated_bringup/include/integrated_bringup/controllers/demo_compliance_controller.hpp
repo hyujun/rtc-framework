@@ -40,6 +40,7 @@
 #include "integrated_bringup/controllers/fingertip_force_guard.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/controllers/tof_snapshot.hpp"
+#include "integrated_bringup/logging/compliance_diag_log_pod.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
@@ -357,6 +358,13 @@ class DemoComplianceController final : public RTControllerInterface {
     /// go there — the two are separated by the whole composition + CLIK path,
     /// which is otherwise observable only in joint space.
     Eigen::Vector3d tcp_position{Eigen::Vector3d::Zero()};
+    /// The source verdict as of the LAST ComputeSecondary — the one that will
+    /// gate the NEXT tick's wrench, NOT the one this tick's law consumed
+    /// (D-A14). The `compliance_diag` row carries the latter, staged in
+    /// ComputeControl; these two are one tick apart by construction, and a
+    /// fixture that reads both is what pins that gap in place.
+    bool quality_low{false};
+    std::uint8_t invalid_reason{0};
   };
 
   [[nodiscard]] ComplianceProbe GetComplianceProbeForTesting() const noexcept {
@@ -370,6 +378,8 @@ class DemoComplianceController final : public RTControllerInterface {
     p.engaged = compliance_engaged_;
     p.task_origin = compliance_task_origin_;
     p.tcp_position = Eigen::Vector3d(tcp_position_[0], tcp_position_[1], tcp_position_[2]);
+    p.quality_low = wrench_quality_low_;
+    p.invalid_reason = wrench_invalid_reason_;
     return p;
   }
 
@@ -432,6 +442,17 @@ class DemoComplianceController final : public RTControllerInterface {
   void SetMomentumObserverLogHandleForTesting(
       rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> h) {
     momentum_observer_log_handle_ = std::move(h);
+  }
+
+  /// Test-only: bind the compliance_diag CSV channel from a test-owned
+  /// ControllerLogSet (#469 S4). Same reason as the two above, and here it is
+  /// the only way to assert the channel at all: the unit fixtures build through
+  /// LoadConfig, so the production handle is unbound and the tail push
+  /// early-returns — a row-count assertion written against that state passes
+  /// with the push deleted outright (#424's surviving fill() mutation).
+  void SetComplianceDiagLogHandleForTesting(
+      rtc::LogHandle<integrated_bringup::ComplianceDiagLogPod> h) {
+    compliance_diag_log_handle_ = std::move(h);
   }
 
   /// Test-only: whether on_configure actually built the PayloadEstimate
@@ -614,6 +635,15 @@ class DemoComplianceController final : public RTControllerInterface {
   /// INCLUDING the `!ok` hold, so a held tick still produces a row rather than
   /// a gap the reader has to interpret.
   integrated_bringup::TaskDiagLogPod task_diag_staging_{};
+
+  /// §7 admittance diagnostics staged by ComputeControl for the Phase C push at
+  /// the tail of Compute() (#469 S4). Staging is not a convenience here, it is
+  /// the correctness argument: the tail runs after ComputeSecondary, where the
+  /// NEXT tick's wrench verdict is computed, so a row assembled there would pair
+  /// this tick's `invalid_reason` with the previous tick's wrench (D-A14). Every
+  /// field is captured where the law used it. RT-thread-only; written on both
+  /// sides of the F5 gate, so a held tick is a valid=0 row rather than a gap.
+  integrated_bringup::ComplianceDiagLogPod compliance_diag_staging_{};
 
   // ── Hand fingertip FK dispatch (serial hand_handle_ ↔ closed_hand_fk_) ────
   // #121: single branch point for closed-chain vs serial hand FK so every call
@@ -1238,6 +1268,7 @@ class DemoComplianceController final : public RTControllerInterface {
   rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator_log_handle_;
   rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> momentum_observer_log_handle_;
   rtc::LogHandle<integrated_bringup::TaskDiagLogPod> task_diag_log_handle_;
+  rtc::LogHandle<integrated_bringup::ComplianceDiagLogPod> compliance_diag_log_handle_;
   /// Per-tick Force-PI servo + stiffness-estimator diagnostics (#428).
   /// Bound only when a `force_pi_grasp` block is configured; see
   /// LogRegistrationContext::grasp_diag_enabled for why the gate is the

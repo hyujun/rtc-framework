@@ -25,6 +25,31 @@
 
 namespace integrated_bringup {
 
+namespace {
+
+/// Stamp the §7 parameter snapshot onto a diag row (#469 S4). Every row carries
+/// it, valid or not: the bound is what separates a converged x̃ from one pinned
+/// against the §7.5 box, and a held row is still a row someone reads.
+void StampComplianceDiagParams(const rtc::compliance::AdmittanceParams& p,
+                               ComplianceDiagLogPod& pod) noexcept {
+  for (std::size_t i = 0; i < 6; ++i) {
+    pod.kp[i] = static_cast<float>(p.stiffness[i]);
+    pod.kd[i] = static_cast<float>(p.damping[i]);
+    pod.md[i] = static_cast<float>(p.inertia[i]);
+  }
+  pod.max_disp_lin = static_cast<float>(p.max_displacement_lin);
+  pod.max_disp_ang = static_cast<float>(p.max_displacement_ang);
+}
+
+/// Copy a 6-vector into the row's float block.
+void StampSix(const Eigen::Matrix<double, 6, 1>& v, std::array<float, 6>& out) noexcept {
+  for (std::size_t i = 0; i < 6; ++i) {
+    out[i] = static_cast<float>(v[static_cast<Eigen::Index>(i)]);
+  }
+}
+
+}  // namespace
+
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
 void DemoComplianceController::ReadState(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoComplianceController::ReadState");
@@ -263,6 +288,16 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       compliance_task_origin_.setZero();
       wrench_status_ = rtc::compliance::WrenchPipelineStatus{};
     }
+    // A held tick is a valid=0 ROW, not a gap (#429): a gap in `tick` has to
+    // mean a dropped sample and nothing else, or every reader has to guess.
+    // Zeroed rather than frozen, matching the falling-edge reset just above —
+    // these are slow-moving quantities, so a frozen wrench reads as a live one.
+    // Rebuilt from a default POD instead of edited in place so a field added
+    // later cannot leak the last engagement's value into a held row.
+    compliance_diag_staging_ = ComplianceDiagLogPod{};
+    compliance_diag_staging_.wrench_source = static_cast<std::uint8_t>(wrench_source_);
+    StampComplianceDiagParams(admittance_params_.admittance, compliance_diag_staging_);
+    compliance_diag_staging_.fsm_state = static_cast<std::uint8_t>(compliance_state_);
     return;
   }
   compliance_engaged_ = true;
@@ -725,6 +760,47 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
     compliance_state_ =
         compliance_fsm_.Step(faults, ramp_done, dt, degraded_recovery_time_,
                              wrench_status_.bias_gate_released, wrench_status_.in_contact);
+  }
+
+  // ── §7 diagnostics staged AT THE POINT OF USE (#469 S4) ────────────────
+  //
+  // Not at the tail push, and the difference is not stylistic. The tail runs
+  // after ComputeSecondary, which computes the verdict for the wrench the law
+  // has NOT consumed yet (D-A14) — a row assembled there would carry this
+  // tick's `invalid_reason` beside the previous tick's `wrench_*`, and the two
+  // would silently disagree exactly when it matters (the tick a grasp drops).
+  // `wrench_quality_low_` / `wrench_invalid_reason_` read here are the ones
+  // ComputeSecondary left LAST tick, which is the verdict that gated the sample
+  // this row's wrench columns carry, and the same pair the fault block above
+  // just fed the FSM. The tail stamps only `t_relative_s` / `tick`.
+  {
+    ComplianceDiagLogPod& d = compliance_diag_staging_;
+    d = ComplianceDiagLogPod{};
+    d.valid = true;
+    d.wrench_source = static_cast<std::uint8_t>(wrench_source_);
+    d.fsm_state = static_cast<std::uint8_t>(compliance_state_);
+    d.alpha = static_cast<float>(compliance_alpha_);
+    StampSix(wrench_lwa_, d.wrench);
+    d.wrench_age = static_cast<float>(wrench_status_.age);
+    d.wrench_fade = static_cast<float>(wrench_status_.fade);
+    d.wrench_valid = wrench_status_.valid;
+    d.wrench_stale = wrench_status_.stale;
+    d.in_contact = wrench_status_.in_contact;
+    d.bias_calibrated = wrench_status_.bias_calibrated;
+    d.bias_gate_released = wrench_status_.bias_gate_released;
+    d.bias_begin = wrench_status_.begin_bias_calibration;
+    d.rejected_samples = wrench_status_.rejected_samples;
+    d.quality_low = wrench_quality_low_;
+    d.invalid_reason = wrench_invalid_reason_;
+    StampSix(admittance_.deviation(), d.x_tilde);
+    StampSix(admittance_.velocity(), d.nu_c);
+    for (std::size_t i = 0; i < 3; ++i) {
+      d.task_origin[i] = static_cast<float>(compliance_task_origin_[static_cast<Eigen::Index>(i)]);
+    }
+    d.disp_limited = adm.displacement_limited;
+    d.vel_limited = adm.velocity_limited;
+    d.adm_finite = adm.finite;
+    StampComplianceDiagParams(admittance_params_.admittance, d);
   }
 
   // ── Primary task ───────────────────────────────────────────────────────
