@@ -40,6 +40,10 @@ def detect_log_type(filepath):
         # In-plane pull-force estimator (#167) — fixed instance stem shared by
         # the three demo controllers.
         return "pull_estimator"
+    elif stem == "compliance_diag" or stem.endswith("compliance_diag"):
+        # Per-tick §7 task-admittance diagnostics (#469 S4) — fixed instance
+        # stem, written only by demo_compliance_controller.
+        return "compliance_diag"
     elif stem == "momentum_observer" or stem.endswith("momentum_observer"):
         # Generalized-momentum observer residual + payload/inertial estimate
         # (#135 Layer 1b/2A, #455 Layer 2B) — fixed instance stem
@@ -100,6 +104,15 @@ def detect_log_type_by_columns(columns):
     # blocks, so an archived Layer-1b-only session still matches.
     if "residual_inf_norm" in cols and "ticks_since_seed" in cols:
         return "momentum_observer"
+    # Task-admittance diagnostics (#469 S4): per-tick compliance_diag.csv.
+    # `x_tilde_` is the discriminating prefix — no other pod emits it. Unlike
+    # the three branches above this one is NOT ordered against the sensor_log
+    # fallback out of necessity: no compliance_diag column carries the generic
+    # `_raw_`/`_filt_` token that branch matches on, and the header writer says
+    # so where the names are chosen. It sits here anyway so a column added later
+    # cannot quietly reclassify the file.
+    if any(c.startswith("x_tilde_") for c in cols):
+        return "compliance_diag"
     # WBC device state: superset of state_log with TSID a_opt acceleration.
     # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the
     # WBC arm/hand state CSVs from the generic state_log before that branch.

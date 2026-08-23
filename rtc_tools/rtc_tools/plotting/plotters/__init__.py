@@ -8,6 +8,9 @@ Note: matplotlib backend must be configured (`layout.configure_backend(...)`)
 at import time.
 """
 
+from .compliance import (
+    print_compliance_diag_statistics,
+)
 from .device import (
     plot_device_positions,
     plot_device_velocities,
@@ -84,6 +87,8 @@ __all__ = [
     "plot_motor_positions",
     "plot_motor_velocities",
     "print_motor_statistics",
+    # task-admittance diagnostics (#469 S4)
+    "print_compliance_diag_statistics",
     # grasp diagnostics
     "plot_grasp_diag",
     "print_grasp_diag_statistics",
