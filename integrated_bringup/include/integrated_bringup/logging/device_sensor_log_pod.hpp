@@ -260,9 +260,8 @@ inline void WriteDeviceSensorLogRow(std::ostream& os, const DeviceSensorLogPod& 
   for (std::size_t f = 0; f < n_ft; ++f) {
     for (std::size_t v = 0; v < DeviceSensorLogPod::kFTValuesPerFingertip; ++v) {
       os << ','
-         << (f < reported
-                 ? p.inference_output[f * DeviceSensorLogPod::kFTValuesPerFingertip + v]
-                 : 0.0F);
+         << (f < reported ? p.inference_output[f * DeviceSensorLogPod::kFTValuesPerFingertip + v]
+                          : 0.0F);
     }
   }
 
