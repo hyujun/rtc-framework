@@ -15,7 +15,7 @@
 | `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | (MPC CSV는 `<session>/controllers/<config_key>/...` 경로로 컨트롤러가 자체 기록) |
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
 | `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_timing_log.csv` p50/p99/max 회귀 |
-| `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O, contact_wrench) | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke. Contact wrench: `ros2 topic hz /<prefix>/<target>/contact_wrench` 후 fingertip 으로 객체 접촉 → magnitude 가시화 |
+| `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O, contact_wrench, known-load positive control) | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke. Contact wrench: `ros2 topic hz /<prefix>/<target>/contact_wrench` 후 fingertip 으로 객체 접촉 → magnitude 가시화 |
 | `rtc_urdf_bridge/` | gtest (URDF/model parsing, xacro, chain extractor) + `test_frame_jacobian_fd_oracle` (`GetFrameJacobian` 행/열 계약. 자코비안을 **전혀 쓰지 않는** 중심차분 oracle 이어야 하는 이유는 기존 `test_rt_model_handle` 이 유한성 + 자기일치뿐이라 행 블록을 맞바꿔도 green 이기 때문이다. 픽스처 `test/urdf/mixed_prismatic_revolute.urdf` 는 **네 비대칭 — 축 직교 · origin 3축 offset · tool rpy(LOCAL≠LWA) · prismatic 열의 zero angular — 을 유지해야** 대조가 판별력을 갖는다. 기하를 고치면 각 테스트의 positive control 이 green 아닌 red 로 알린다) + `test_inertial_validation` / `test_real_model_inertial_gate` (관성 물리 실현가능성 게이트 V5·V6. 레인은 심각도가 아니라 종류로 갈린다 — 질량·관성이 서로 모순이면(대표적으로 `mass==0` 인데 관성 ≠ 0) V6, 둘 다 0 이면 V5 다. 판정 대상은 **fixed joint 흡수 후의 composite `Model::inertias[]`** — M(q) 가 실제로 조립되는 값이라 게이트 의미가 "이 모델로 동역학을 돌려도 되는가" 로 떨어진다. tol 은 **주모멘트 크기로 정규화**해야 한다 — 절대 tol 은 실모델 주모멘트의 decade 폭을 양 끝에서 동시에 만족시키지 못한다. **등호는 허용**(얇은 판 I1+I2=I3). 임계값의 실측 근거는 `inertial_validation.hpp` 의 `kInertialRelTol` 주석이 SSoT 이므로 그 숫자를 여기 복제하지 않는다. `schunk_svh_hand_{left,right}` 는 통과 대상이 아니라 **실세계 negative fixture** 이며, 값을 지어내 고치지 않는 것이 #413 규율이다. 비유한 값은 urdfdom 이 파싱에서 먼저 거부하므로 그 가드는 **프로그램적 모델 오염** 경로로만 도달 가능한 심층 방어다 — 현재 그 경로를 타는 production 소비자는 없다. URDF→Model 진입점은 `PinocchioModelBuilder` 와 `BuildClosedChainModelFromExtendedUrdf` 둘이고 **양쪽 다** 게이트를 지나므로, 새 진입점을 열면 `EnforceInertialGate` 호출을 함께 넣는다) | 실제 URDF 파싱 smoke |
 | `rtc_inference/` | ONNX engine unit test | 실제 모델 로드 smoke |
 | `rtc_communication/` | UDP loopback + CAN/CANFD loopback (vcan0 없으면 skip) + RS485 serial loopback (PTY, 상시 실행) + Transceiver lifecycle/decode/callback | vcan0 셋업 후 CAN 테스트 실행 (`sudo modprobe vcan && sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0`), RS485는 PTY라 셋업 불필요, 실제 HW UDP/CAN/RS485(USB-RS485+Dynamixel) 테스트 (선택) |
@@ -24,7 +24,8 @@
 | `repo_scripts/` | `test_rt_common` + `test_install_deps` (ONNX tarball digest 검증) + shell unit test | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape_estimation/snapshot` topic echo |
 | `integrated_bringup/` demo FSM | demo_wbc FSM/integration/output + demo_joint grasp·URDF paths + demo_task CLIK/contact_stop (URDF-backed iiwa7_leap fixture 공유, 노드 비생성) + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
-| `integrated_bringup/` momentum observer (#135) | `test_momentum_observer_wiring` (좌표 계약 + lane 게이트, 실제 ur5e sub-model) + `test_momentum_observer_embedding` (세 컨트롤러 × `momentum_observer.csv` 왕복 — 이 layer 의 잔차는 **CSV 말고 관측면이 없다**: 소비자는 Layer 2A 이고 토픽은 D12 로 없다. 배선만 검사하면 push·등록 경로가 통째로 안 돌고, unbound handle 에 대고 쓴 행 수 단언은 push 를 지워도 통과한다) | sim negative control — `momentum_observer.csv` 의 무부하 정지 `residual_inf_norm`. 읽는 수단은 `ros2 run rtc_tools plot_rtc_log <그 CSV> --stats` 이며 **‖r‖∞ 통계는 `valid=1` 행만** 쓴다 (held 행은 직전 잔차가 동결된 값이라 측정이 아니다). 재시딩이 있었으면 그 직후 구간은 0 에서 수렴 중이라 작은 ‖r‖ 이 아직 무부하가 아니다 — 통계가 `Re-seeds:` 줄로 경고한다 |
+| `integrated_bringup/` compliance 바인딩 (#469) | `test_compliance_admittance_coupling` (§7 법칙의 **배선**: 발행된 렌치 → 파이프라인 → α → 적분기 → X_c → 팔. 코어 ODE 는 rtc_controllers 소관이라 재검증하지 않고, 두 반쪽에 각각 정확한 oracle 을 붙인다 — 적분기 반쪽은 로컬 `AdmittanceIntegrator` 와 **bit-identical**, 파이프라인 반쪽은 부호·축·레버암 전달) + `test_compliance_task_equivalence` (**렌치를 withhold 하는 동안에만** demo_task 와 bit-identical — 그 전제 자체를 tick 마다 단언한다) | 4개 per-controller 스위트의 `demo_compliance_controller` 항목 (device-readability · gate-closure · activation-generation · MO-embedding) |
+| `integrated_bringup/` momentum observer (#135) | `test_momentum_observer_wiring` (좌표 계약 + lane 게이트, 실제 ur5e sub-model) + `test_momentum_observer_embedding` (네 컨트롤러 × `momentum_observer.csv` 왕복 — 이 layer 의 잔차는 **CSV 말고 관측면이 없다**: 소비자는 Layer 2A 이고 토픽은 D12 로 없다. 배선만 검사하면 push·등록 경로가 통째로 안 돌고, unbound handle 에 대고 쓴 행 수 단언은 push 를 지워도 통과한다) | sim negative control — `momentum_observer.csv` 의 무부하 정지 `residual_inf_norm`. 읽는 수단은 `ros2 run rtc_tools plot_rtc_log <그 CSV> --stats` 이며 **‖r‖∞ 통계는 `valid=1` 행만** 쓴다 (held 행은 직전 잔차가 동결된 값이라 측정이 아니다). 재시딩이 있었으면 그 직후 구간은 0 에서 수렴 중이라 작은 ‖r‖ 이 아직 무부하가 아니다 — 통계가 `Re-seeds:` 줄로 경고한다 |
 | `rtc_controllers/` payload estimator (#135 Layer 2A) | `test_payload_estimator` (코어 — oracle 을 **정방향으로** 조립한다: 원하는 질량/CoM/중력축에서 wrench 를 만들고 `r = Jᵀw` 로 내린 뒤 역산시킨다. 역방향으로 쓰면 부호 뒤집힘에도 green 이라 #135 가 명시적으로 요구한 AC1 이 무효가 된다) + `test_momentum_observer_wiring` 의 `PayloadEstimatorWiring.*` (배선 — **device order 를 뒤집은** 채 알려진 질량을 매단다. `GetFrameJacobian` 은 pinocchio order, `residual()` 은 device order 라 두 순서가 같은 fixture 에서는 뒤섞어도 통과한다) | 무부하 sim 에서 `payload_mass ≈ 0` + `payload_reason` 분포 (게이트가 무엇 때문에 닫히는지) |
 | `udp_hand_driver/` | 단위 gtest (hand_packets, codec, FT, failure detector) + UDP loopback | `ros2 topic hz /p1a/joint_states` (ur5e_p1a; 드라이버 standalone 기본은 `/hand/`) |
 | `ur5e_bt_coordinator/` | BT gtest — Tier-2 는 inject(DDS-free, `inject_fixture.hpp`)/e2e(real-DDS, `test_helpers.hpp`) 분리, suite 목록은 CMakeLists `TIER2_INJECT`/`TIER2_E2E` (#154) | 실제 grasp 시나리오 smoke |
@@ -102,6 +103,17 @@ robot 모델이 필요한 gtest fixture 는 URDF 를 **`robot_descriptions/robot
 이 헬퍼는 **오직 잔다**. Executor 를 pump 해야 하는 테스트는 자기 TU 에 local spin 헬퍼를 두며, 둘을 섞지 않는 것이 [invariants.md](invariants.md) **PROC-8** 이다 (근거·양쪽 실패 모드·자동 gate 는 그쪽이 SSoT).
 
 Suite 고유의 poll 예산이 있으면 헬퍼를 감싸지 말고 **인자로 넘긴다** — `WaitUntil(pred, timeout, poll)`. 예산이 assertion 옆에 보이는 편이 낫고, 같은 이름의 wrapper 는 `using namespace rtc::testing;` 이 들어오는 순간 모호해진다. 호출 지점이 많아 예산을 한 곳에 묶어야 한다면 **다른 이름**으로 얇게 감싸고 그 값의 근거를 상수 옆에 남긴다 (`udp_hand_driver` 의 `PollUntil` = CommLoop 한 tick).
+
+## 컨트롤러 CSV 채널을 검정할 때 — 관측 창은 512행이고, 넘치면 값 불일치로 보인다
+
+`ControllerLogSet::RegisterLog` 의 SPSC ring 은 기본 **512 entry** (`rtc_controller_interface/include/rtc_controller_interface/controller_log_set.hpp`, `Capacity = 512`). production 에서는 컨트롤러의 100 ms drain 타이머가 계속 비우지만, **`Compute()` 를 루프로 도는 gtest 에는 그 타이머가 없다** — 512 tick 을 넘기는 프로그램은 tail 을 잃는다.
+
+**증상이 "행이 없다" 가 아니라는 점이 이 함정을 비싸게 만든다.** 파일은 멀쩡히 512행이 있고, 테스트가 "마지막 행" 이라고 읽은 것은 링이 가득 찬 tick 의 행이다. 그래서 마지막 행을 프로브와 대조하는 단언이 **값이 어긋난 것처럼** 실패한다 — #469 S4 에서 1000 tick 프로그램의 `wrench_fx`·`x_tilde_x`·`task_origin_x` 가 한꺼번에 어긋났고, 코드에는 결함이 없었다. 같은 파일의 480 tick 짜리 케이스는 통과하고 있어서 "행 수는 맞는데 값만 틀리다" 로 읽혔다.
+
+처방 둘, 둘 다 필요하다:
+
+- **production 처럼 주기적으로 drain 한다** — 드라이버 헬퍼가 N tick 마다 `log_set.DrainAll()` 을 부르게 한다. 끝에서 한 번만 부르는 것은 512행짜리 관측 창을 쓰겠다는 뜻이다.
+- **행 수 단언 옆에 `EXPECT_EQ(log_set.TotalDropCount(), 0U)` 를 둔다** — 이것이 "잘렸다" 와 "push 가 애초에 안 됐다" 를 가르는 유일한 신호다. 없으면 나중에 Capacity 가 바뀌거나 프로그램이 길어질 때 같은 실패가 다시 값 불일치로 위장한다. `DrainControllerLogs` 는 drop 을 WARN 으로 알리지만 **테스트가 직접 부르는 `DrainAll()` 은 아무 말도 하지 않는다.**
 
 ## RT-1 zero-allocation 게이트 — 두 종류이고 서로의 맹점을 덮는다
 

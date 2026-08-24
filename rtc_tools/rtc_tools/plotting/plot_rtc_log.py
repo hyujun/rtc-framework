@@ -17,6 +17,7 @@ CSV 컬럼 카테고리:
   - mpc_timing_log*.csv                → MPC main-loop timing (same 8-col schema)
   - wbc_diag.csv                       → WBC TSID/QP per-tick diagnostics
   - grasp_diag.csv                     → Force-PI grasp diagnostics
+  - compliance_diag.csv                → §7 task-admittance diagnostics
   - pull_estimator.csv                 → in-plane pull-force estimate
   - momentum_observer.csv              → momentum-observer residual + payload
 
@@ -59,7 +60,7 @@ def main():
         type=str,
         help="Path to *_state_log.csv, *_sensor_log.csv, cm_timing_log*.csv, "
         "mpc_timing_log*.csv, or a controller-owned diagnostics CSV "
-        "(wbc_diag / grasp_diag / pull_estimator / momentum_observer)",
+        "(wbc_diag / grasp_diag / pull_estimator / momentum_observer / compliance_diag)",
     )
     parser.add_argument(
         "--save-dir",
@@ -167,7 +168,7 @@ def main():
             "Expected filenames: *_state_log.csv, *_sensor_log.csv, "
             "cm_timing_log*.csv, mpc_timing_log*.csv, or a controller-owned "
             "diagnostics CSV (wbc_diag.csv, grasp_diag.csv, "
-            "pull_estimator.csv, momentum_observer.csv)"
+            "pull_estimator.csv, momentum_observer.csv, compliance_diag.csv)"
         )
         sys.exit(1)
 

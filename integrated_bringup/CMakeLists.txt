@@ -61,6 +61,12 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/task/compute.cpp
   src/controllers/task/lifecycle.cpp
   src/controllers/task/parameters.cpp
+  # #469 S2: task-space admittance binding. Currently a rename-only copy of
+  # src/controllers/task/ — the law lands in S3.
+  src/controllers/compliance/controller.cpp
+  src/controllers/compliance/compute.cpp
+  src/controllers/compliance/lifecycle.cpp
+  src/controllers/compliance/parameters.cpp
   src/controllers/wbc/controller.cpp
   src/controllers/wbc/compute.cpp
   src/controllers/wbc/lifecycle.cpp
@@ -430,6 +436,76 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── demo_compliance_controller ≡ demo_task_controller (#469 S2) ────────────
+  # The only sensor that executes the copied controller: every other
+  # per-controller suite in this package enumerates the three shipped names by
+  # hand, so a fourth controller is otherwise never run. Needs the same URDF
+  # fixture as test_demo_task_controller (both controllers gate ComputeControl
+  # behind the combined-model cache) plus the shipped config dir, because the
+  # config half compares the deployed YAMLs rather than inline strings.
+  ament_add_gtest(test_compliance_task_equivalence test/test_compliance_task_equivalence.cpp)
+  target_compile_definitions(test_compliance_task_equivalence PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_compliance_task_equivalence
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_compliance_task_equivalence
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
+  # ── #469 S3: the §7 admittance law as this binding wires it ────────────────
+  # A separate binary from the equivalence suite on purpose: that one asserts
+  # this controller is INDISTINGUISHABLE from its sibling, this one asserts what
+  # makes it different. Sharing a binary would put the two claims in one place
+  # and make "which of them broke" a reading exercise.
+  ament_add_gtest(test_compliance_admittance_coupling
+    test/test_compliance_admittance_coupling.cpp)
+  target_compile_definitions(test_compliance_admittance_coupling PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_compliance_admittance_coupling
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_compliance_admittance_coupling
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
+  # ── #469 S4: the §7 diagnostics lane ───────────────────────────────────────
+  # Its own binary, and not part of the coupling suite: this one writes real
+  # files into a scoped RTC_SESSION_DIR and reads them back, so it owns process
+  # state (an env var) the law tests do not. Sharing a binary would make an
+  # unrelated failure there look like a logging failure here.
+  ament_add_gtest(test_compliance_diag_log
+    test/test_compliance_diag_log.cpp)
+  target_compile_definitions(test_compliance_diag_log PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_compliance_diag_log
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_compliance_diag_log
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # ── #282 two-tier DLS convergence harness ──────────────────────────────────
   # Pure numerics: the pre-#282 inline block (oracle) against
   # compliance::DifferentialIk. Its own binary because it installs the Eigen
@@ -698,6 +774,42 @@ if(BUILD_TESTING)
     yaml-cpp
   )
   ament_target_dependencies(test_pull_estimator_wiring
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── Shipped-profile pull estimator vs a known load (#177 crit#4) ───────────
+  # Parses the shipped iiwa7_leap demo_shared.yaml (same RTC_DEMO_SHARED_CONFIG_DIR
+  # route as test_demo_shared_config) so the deployed force_sign is what runs.
+  ament_add_gtest(test_pull_estimator_known_wrench test/test_pull_estimator_known_wrench.cpp)
+  target_link_libraries(test_pull_estimator_known_wrench
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_pull_estimator_known_wrench PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_pull_estimator_known_wrench
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── Compliance wrench source adapter (#469 S1) ─────────────────────────────
+  # Shares pull_known_load_fixture.hpp with the crit#4 test above, so both drive
+  # the same known load through the shipped profile.
+  ament_add_gtest(test_compliance_wrench_source test/test_compliance_wrench_source.cpp)
+  target_link_libraries(test_compliance_wrench_source
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_compliance_wrench_source PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_compliance_wrench_source
     rclcpp
     rtc_controllers
     rtc_base

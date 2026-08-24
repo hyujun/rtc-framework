@@ -15,6 +15,7 @@
 // rtc_controller_interface/test/test_activation_generation.cpp; the rtc_controllers
 // counterpart in rtc_controllers/test/test_activation_generation_gate.cpp.
 // ─────────────────────────────────────────────────────────────────────────────
+#include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
@@ -94,6 +95,24 @@ void ExpectStaleHandTargetDropped(Controller& ctrl) {
   }
 }
 
+// The activation-generation half, for the bindings whose Compute() cannot run
+// model-less. `ActivationGeneration()` lives in the base and is bumped by the
+// base's on_activate; an override that forgets to delegate leaves it frozen at
+// 0, which never re-arms the self-init latch and never invalidates a queued
+// target. Two cycles rather than one: a generation that is SET rather than
+// INCREMENTED passes the first assertion and fails the second.
+template <typename Controller>
+void ExpectActivationDelegatesToBase(Controller& ctrl) {
+  EXPECT_EQ(ctrl.ActivationGeneration(), 0U);
+
+  ASSERT_EQ(ctrl.on_activate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_EQ(ctrl.ActivationGeneration(), 1U);
+
+  ASSERT_EQ(ctrl.on_deactivate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_activate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_EQ(ctrl.ActivationGeneration(), 2U);
+}
+
 }  // namespace
 
 TEST(IntegratedActivationGenerationGate, DemoJointDropsTargetQueuedWhileInactive) {
@@ -101,34 +120,31 @@ TEST(IntegratedActivationGenerationGate, DemoJointDropsTargetQueuedWhileInactive
   ExpectStaleHandTargetDropped(ctrl);
 }
 
-// DemoTask / DemoWbc need a real Pinocchio model before Compute() will run its
-// non-E-STOP path, which a unit test cannot cheaply provide. Their drain guard
-// is the same idiom covered end-to-end above and in rtc_controllers, so what is
-// pinned here is the part that is actually easy to regress: an on_activate
-// override that forgets to delegate to the base and therefore never bumps the
-// generation nor re-arms the self-init latch.
+// DemoTask / DemoWbc / DemoCompliance need a real Pinocchio model before
+// Compute() will run its non-E-STOP path, which a unit test cannot cheaply
+// provide. Their drain guard is the same idiom covered end-to-end above and in
+// rtc_controllers, so what is pinned here is the part that is actually easy to
+// regress: an on_activate override that forgets to delegate to the base and
+// therefore never bumps the generation nor re-arms the self-init latch.
 TEST(IntegratedActivationGenerationGate, DemoTaskActivationDelegatesToBase) {
   integrated_bringup::DemoTaskController ctrl{"", integrated_bringup::DemoTaskController::Gains{}};
-  EXPECT_EQ(ctrl.ActivationGeneration(), 0U);
-
-  ASSERT_EQ(ctrl.on_activate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
-  EXPECT_EQ(ctrl.ActivationGeneration(), 1U);
-
-  ASSERT_EQ(ctrl.on_deactivate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
-  ASSERT_EQ(ctrl.on_activate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
-  EXPECT_EQ(ctrl.ActivationGeneration(), 2U);
+  ExpectActivationDelegatesToBase(ctrl);
 }
 
 TEST(IntegratedActivationGenerationGate, DemoWbcActivationDelegatesToBase) {
   integrated_bringup::DemoWbcController ctrl{""};
-  EXPECT_EQ(ctrl.ActivationGeneration(), 0U);
+  ExpectActivationDelegatesToBase(ctrl);
+}
 
-  ASSERT_EQ(ctrl.on_activate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
-  EXPECT_EQ(ctrl.ActivationGeneration(), 1U);
-
-  ASSERT_EQ(ctrl.on_deactivate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
-  ASSERT_EQ(ctrl.on_activate(kInactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
-  EXPECT_EQ(ctrl.ActivationGeneration(), 2U);
+// #469 S2 shipped this binding as a rename-copy of demo_task, so today this
+// case asserts what its twin above does. It is listed by hand anyway because
+// S3 gives the copy its own on_activate work (the admittance deviation has to
+// be reset there, §7), and that is exactly the edit that can forget to call
+// down — at which point this case is the only one that fails.
+TEST(IntegratedActivationGenerationGate, DemoComplianceActivationDelegatesToBase) {
+  integrated_bringup::DemoComplianceController ctrl{
+      "", integrated_bringup::DemoComplianceController::Gains{}};
+  ExpectActivationDelegatesToBase(ctrl);
 }
 
 // Positive control: a target delivered while the controller is Active is still

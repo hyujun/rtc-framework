@@ -163,6 +163,40 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **탐지**: `grep -l registerNodeType ur5e_bt_coordinator/` 에 새 노드 포함 확인
 - **복구**: validate_tree / registerNodeType 양쪽 업데이트 — BT 노드 신설 시 체크리스트
 
+### AP-PROC-7: **추가** 변경에서 "회귀 0 fail" 을 커버리지로 읽기
+
+- **증상**: N+1번째 컨트롤러 / 프로필 / backend / device group 을 추가했는데 전 테스트가 green.
+  green 의 이유가 "잘 만들어서" 가 아니라 **아무도 그것을 실행하지 않아서** 다
+- **원인**: per-X 스위트가 대상 목록을 **손으로 나열**한다 (`{"a","b","c"}` 루프, `_SHIPPED` 리스트,
+  타입 목록, 하드코딩 코퍼스). 추가는 그 목록 밖이므로 실패가 아니라 **부재**가 되고, 잘못된
+  rename·누락된 CMake 소스·형제 값을 가리킨 채 남은 상수가 전부 통과한다.
+  실측: `demo_compliance_controller` 추가 커밋에서 integrated_bringup 941/941 green,
+  신규 컨트롤러 실행 라인 수 **0** (#469 S2)
+- **탐지**: 추가 대상 이름으로 `grep -rn` 해서 **테스트가 그 이름을 아는지** 본다. 모르면
+  0 fail 은 정보가 아니다. 하드카운트 단언(`ASSERT_EQ(configs.size(), 12U)`)이 있으면 그것이
+  목록을 고치라는 tripwire이지 breaker 가 아니다 — **추가만으로는 그것도 안 깨진다**
+- **복구**: (a) 목록을 늘리거나, (b) 기존 형제와의 **등가성**으로 합성한다 — "기존 X 가 시나리오
+  S 에서 옳다"(기존 스위트) ∧ "신규 Y 가 S 에서 같다"(신규 테스트) = 절대 명제. (b)는 Y 가 X 의
+  사본인 동안만 성립하므로 갈라지는 시점을 테스트 안에 적어 둔다. 어느 쪽이든 **mutation 으로
+  확인**: 신규 쪽에만 건 작은 섭동이 red 를 내는지 (관련: [invariants.md](invariants.md) PROC-6)
+
+### AP-PROC-8: 컨트롤러 픽스처가 `on_activate` 없이 target 을 넣는다
+
+- **증상**: 픽스처가 `SetDeviceTarget` 을 호출하는데 팔이 안 움직인다. 실패는 없고, 두
+  컨트롤러를 비교하는 테스트라면 **둘 다 정지 상태로 green** 이다. 주석에는 "루프를 닫아
+  팔이 실제로 이동한다" 라고 적혀 있다
+- **원인**: #196 활성 세대(activation generation) 게이트. Inactive 중에 큐잉된 target 은
+  정의상 stale 이므로 버려진다. `LoadConfig`/`SetDeviceNameConfigs` 까지만 하고
+  `on_activate` 를 부르지 않은 픽스처는 **영원히 Inactive** 라 모든 target 이 그 구멍으로
+  들어간다. 실측: `test_compliance_task_equivalence` 의 "nominal tracking" 프로그램이 S2~S3
+  내내 정지한 팔 둘을 비교하고 있었다 (#469 S3 에서 발견)
+- **탐지**: 픽스처의 bring-up 시퀀스에 `on_activate` 가 있는지 본다. 없는데 target 을 넣으면
+  그 테스트는 target 경로를 안 탄다. 확인은 **이동량 단언** — `ASSERT_GT(travelled, ε)` 를
+  비교/판정 *앞에* 두면 픽스처가 스스로 정지 상태임을 신고한다
+- **복구**: bring-up 에 `on_activate(kInactive)` 를 넣는다. 이미 있는 테스트에 넣을 때는
+  PROC-6 이 아니다 (단언 약화가 아니라 픽스처가 검사 경로를 타게 만드는 것). 넣은 뒤
+  mutation 으로 그 경로가 실제로 살아났는지 확인한다
+
 ## Controller-Specific
 
 > **AP-CTRL-2 · AP-CTRL-4 는 결번**이다 (은퇴 사유는 기록되지 않았다). ID 는 이력 참조를 위해 재사용하지 않는다.

@@ -25,6 +25,7 @@
 //   - virtual-TCP setup
 // See agent_docs handoff: `~/.claude/plans/demo-controller-refactor.md`.
 
+#include "integrated_bringup/logging/compliance_diag_log_pod.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
@@ -160,6 +161,16 @@ struct LogRegistrationContext {
   // than mislabelled.
   std::vector<std::string> grasp_diag_finger_names{};
 
+  // ComplianceDiagLog (#469 S4) — per-tick §7 admittance diagnostics for the
+  // compliance controller. Single fixed instance (kComplianceDiagLogInstance).
+  //
+  // Gated on the `external_wrench.source` block, not on a runtime mode — the
+  // same rule grasp_diag uses, and here it is forced rather than chosen: the
+  // source is a required configure-time key with no default (D-A12), so a
+  // controller that reached this point has exactly one and it cannot change
+  // without a re-configure. The caller sets this when the §7 params parsed.
+  bool compliance_diag_enabled{false};
+
   // MomentumObserverLog (#135 Layer 1b) — single fixed instance
   // (kMomentumObserverLogInstance). Gated on the wiring being configured, which
   // is the `momentum_observer` block being present and enabled; a YAML entry on
@@ -259,6 +270,8 @@ struct RegisteredLogHandles {
   rtc::LogHandle<integrated_bringup::GraspDiagLogPod> grasp_diag;
   // Single fixed instance (kMomentumObserverLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> momentum_observer;
+  // Single fixed instance (kComplianceDiagLogInstance), same reason.
+  rtc::LogHandle<integrated_bringup::ComplianceDiagLogPod> compliance_diag;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -489,6 +502,24 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.momentum_observer = std::move(handle);
+    } else if (entry.msg_type == kComplianceDiagLogMsgType) {
+      if (!ctx.compliance_diag_enabled || entry.instance != kComplianceDiagLogInstance) {
+        // Not a compliance-controller registration (or unexpected instance) —
+        // silently skip like any unregistered instance.
+        continue;
+      }
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::ComplianceDiagLogPod>(
+          entry.instance,
+          [](std::ostream& os) { integrated_bringup::WriteComplianceDiagLogHeader(os); },
+          [](std::ostream& os, const integrated_bringup::ComplianceDiagLogPod& pod) {
+            integrated_bringup::WriteComplianceDiagLogRow(os, pod);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open compliance_diag CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.compliance_diag = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,

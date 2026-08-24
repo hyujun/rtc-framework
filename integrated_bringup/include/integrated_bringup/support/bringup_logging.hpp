@@ -44,6 +44,10 @@ inline rclcpp::Logger DemoTaskLogger() {
   return rclcpp::get_logger("integrated_bringup.demo_task_controller");
 }
 
+inline rclcpp::Logger DemoComplianceLogger() {
+  return rclcpp::get_logger("integrated_bringup.demo_compliance_controller");
+}
+
 inline rclcpp::Logger DemoWbcLogger() {
   return rclcpp::get_logger("integrated_bringup.demo_wbc_controller");
 }

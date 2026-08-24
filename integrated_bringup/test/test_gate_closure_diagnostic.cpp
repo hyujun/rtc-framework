@@ -4,7 +4,7 @@
 // other trace is an absence — the arm-tip frame stops appearing in
 // /<key>/transforms, which does not distinguish "gate closed" from "controller
 // inactive" from "TF slot unset". §3.7 of rtc_controllers/docs/
-// compliance-conventions.md owns the contract; this file pins that all three
+// compliance-conventions.md owns the contract; this file pins that all four
 // shipped bindings actually emit it, and that they agree on WHEN.
 //
 // #284 added a THIRD closure cause — wide enough, but with slots the model
@@ -13,7 +13,7 @@
 // only symptom is the same absence. So it is pinned here on the same terms.
 // The base package tests the predicates themselves; what cannot be tested there
 // is that each binding hands them the right device and the right width, which
-// is the half a copy-paste between three near-identical blocks gets wrong.
+// is the half a copy-paste between four near-identical blocks gets wrong.
 //
 // WHY THIS IS ITS OWN TEST BINARY. RCLCPP_*_THROTTLE keeps its state in a
 // static at the macro's expansion point, so the window is per-process and per
@@ -46,6 +46,7 @@
 // body would find every window already consumed. Repetition needs a new
 // process, not a new iteration.
 
+#include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
@@ -64,6 +65,7 @@
 
 namespace {
 
+using integrated_bringup::DemoComplianceController;
 using integrated_bringup::DemoJointController;
 using integrated_bringup::DemoTaskController;
 using integrated_bringup::DemoWbcController;
@@ -148,6 +150,16 @@ std::string MinimalTaskYaml() {
   }
   yaml += "]\nfsm:\n  pi_rotation_margin: 0.15\n  contact_stop_release_eps: 0.005\n";
   return yaml;
+}
+
+// demo_compliance takes demo_task's config plus the one block it owns outright.
+// Derived rather than written out: the claim under test is that the two
+// bindings agree on WHEN the gate closes, and a hand-copied second YAML would
+// let them disagree on the INPUT instead — which reads as a diagnostic bug.
+// The concatenation is also a second sensor for the required-source rule
+// (#469 S2): drop the block and every case below fails at LoadConfig.
+std::string MinimalComplianceYaml() {
+  return MinimalTaskYaml() + "external_wrench:\n  source: \"pull_estimator\"\n";
 }
 
 // Two topic groups so the bindings resolve a SECONDARY device name — without
@@ -467,6 +479,12 @@ TEST_F(GateDiagnosticTest, DemoTaskReportsEveryClosureCauseOnBothAxes) {
   ExerciseBothAxes(ctrl);
 }
 
+TEST_F(GateDiagnosticTest, DemoComplianceReportsEveryClosureCauseOnBothAxes) {
+  DemoComplianceController ctrl{"", DemoComplianceController::Gains{}};
+  ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalComplianceYaml())));
+  ExerciseBothAxes(ctrl);
+}
+
 // No LoadConfig here, mirroring test_device_readability_gate.cpp: this binding
 // resolves arm_dof_ from the first readable tick when YAML is bypassed. Step 1
 // therefore carries an extra claim for this binding — arm_dof_ is still 0 while
@@ -483,7 +501,9 @@ TEST_F(GateDiagnosticTest, DemoWbcReportsEveryClosureCauseOnBothAxes) {
 // CMakeLists.txt). It has to: these tests fire the SAME three hand call sites
 // as the cases above, and a call site can only be observed firing once per
 // process. Sharing a process would leave whichever half ran second asserting
-// against a consumed window.
+// against a consumed window. (Per BINDING, not per file: demo_compliance's
+// call sites are in its own header and its own TU, so they carry their own
+// statics and do not consume demo_task's window.)
 
 class GateDiagnosticDeclaredWidthTest : public ::testing::Test {
  protected:
@@ -502,6 +522,13 @@ TEST_F(GateDiagnosticDeclaredWidthTest, DemoJointNamesTheKeyThatDeclaredTheWidth
 TEST_F(GateDiagnosticDeclaredWidthTest, DemoTaskNamesTheKeyThatDeclaredTheWidth) {
   DemoTaskController ctrl{"", DemoTaskController::Gains{}};
   ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalTaskYaml() + TopicsTwoGroups())));
+  ctrl.SetDeviceNameConfigs(MakeHandDeclaringConfigs());
+  ExerciseDeclaredHandWidth(ctrl);
+}
+
+TEST_F(GateDiagnosticDeclaredWidthTest, DemoComplianceNamesTheKeyThatDeclaredTheWidth) {
+  DemoComplianceController ctrl{"", DemoComplianceController::Gains{}};
+  ASSERT_NO_THROW(ctrl.LoadConfig(YAML::Load(MinimalComplianceYaml() + TopicsTwoGroups())));
   ctrl.SetDeviceNameConfigs(MakeHandDeclaringConfigs());
   ExerciseDeclaredHandWidth(ctrl);
 }

@@ -149,6 +149,7 @@ if(mujoco_FOUND)
     set(MJCF_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/minimal.xml")
     set(MJCF_SCENE_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/scene_with_object.xml")
     set(MJCF_CONTACT_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/contact_minimal.xml")
+    set(MJCF_PINCH_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/pinch_known_wrench.xml")
 
     # Phase 1: pure helpers (no MJCF fixture needed)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pure_helpers.cpp")
@@ -193,6 +194,16 @@ if(mujoco_FOUND)
       target_link_libraries(test_contact_wrench mujoco_simulator_lib)
       target_compile_definitions(test_contact_wrench PRIVATE
         CONTACT_MJCF_PATH="${MJCF_CONTACT_FIXTURE}")
+    endif()
+
+    # #177 crit#4 positive control: known external wrench on a pinched free
+    # body -> contact sensor lane. Separate fixture (rotated pad link frames +
+    # a graspable object), so a separate target.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_contact_wrench_known_load.cpp")
+      ament_add_gtest(test_contact_wrench_known_load test/test_contact_wrench_known_load.cpp)
+      target_link_libraries(test_contact_wrench_known_load mujoco_simulator_lib)
+      target_compile_definitions(test_contact_wrench_known_load PRIVATE
+        PINCH_MJCF_PATH="${MJCF_PINCH_FIXTURE}")
     endif()
   endif()
 else()

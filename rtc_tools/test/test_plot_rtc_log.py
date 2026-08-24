@@ -7,6 +7,7 @@ CSV 유틸리티, 컬럼 감지, 로그 타입 분류, subplot 그리드 계산 
 from __future__ import annotations
 
 import csv
+import re
 
 import numpy as np
 import pandas as pd
@@ -2628,3 +2629,244 @@ class TestMomentumObserverStatistics:
         out = capsys.readouterr().out
         assert "no valid ticks" in out
         assert "‖r‖∞ over valid ticks" not in out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# compliance_diag (#469 S4) — §7 task-admittance 진단 채널
+# ═══════════════════════════════════════════════════════════════════════════
+
+# WriteComplianceDiagLogHeader 가 내보내는 컬럼, 그 순서 그대로. 손으로 적되
+# _test_cpp_header_matches_this_list 가 C++ 헤더와 대조한다 — 이 목록은 C++ 이
+# 쓴 헤더를 읽기 위해서만 존재하므로, 둘이 갈라지면 감지는 통과하는데 통계가
+# 빈 값을 뱉는 형태로만 드러난다.
+_COMPLIANCE_DIAG_COLUMNS = [
+    "t_relative_s",
+    "tick",
+    "valid",
+    "wrench_source",
+    "fsm_state",
+    "alpha",
+    "wrench_fx",
+    "wrench_fy",
+    "wrench_fz",
+    "wrench_tx",
+    "wrench_ty",
+    "wrench_tz",
+    "wrench_age",
+    "wrench_fade",
+    "wrench_valid",
+    "wrench_stale",
+    "in_contact",
+    "bias_calibrated",
+    "bias_gate_released",
+    "bias_begin",
+    "rejected_samples",
+    "quality_low",
+    "invalid_reason",
+    "x_tilde_x",
+    "x_tilde_y",
+    "x_tilde_z",
+    "x_tilde_rx",
+    "x_tilde_ry",
+    "x_tilde_rz",
+    "nu_c_x",
+    "nu_c_y",
+    "nu_c_z",
+    "nu_c_rx",
+    "nu_c_ry",
+    "nu_c_rz",
+    "task_origin_x",
+    "task_origin_y",
+    "task_origin_z",
+    "disp_limited",
+    "vel_limited",
+    "adm_finite",
+    "kp_x",
+    "kp_y",
+    "kp_z",
+    "kp_rx",
+    "kp_ry",
+    "kp_rz",
+    "kd_x",
+    "kd_y",
+    "kd_z",
+    "kd_rx",
+    "kd_ry",
+    "kd_rz",
+    "md_x",
+    "md_y",
+    "md_z",
+    "md_rx",
+    "md_ry",
+    "md_rz",
+    "max_disp_lin",
+    "max_disp_ang",
+]
+
+
+def _compliance_diag_row(tick, *, valid=1, x=0.0, disp_limited=0, reason=0, quality=0, stale=0):
+    """One row as the C++ writer emits it — held rows zeroed, not frozen."""
+    row = dict.fromkeys(_COMPLIANCE_DIAG_COLUMNS, 0.0)
+    row["t_relative_s"] = tick * 0.002
+    row["tick"] = tick
+    row["valid"] = valid
+    row["max_disp_lin"] = 0.15
+    row["max_disp_ang"] = 0.5
+    for a in ("x", "y", "z"):
+        row[f"kp_{a}"] = 0.0  # hand-guiding: K_p = 0 (D-A3)
+        row[f"kd_{a}"] = 40.0
+        row[f"md_{a}"] = 2.0
+    if valid:
+        row["alpha"] = 1.0
+        row["fsm_state"] = 2  # RUNNING_FREE_SPACE
+        row["wrench_valid"] = 1
+        row["adm_finite"] = 1
+        row["bias_calibrated"] = 1
+        row["wrench_fx"] = 10.0
+        row["x_tilde_x"] = x
+        row["disp_limited"] = disp_limited
+        row["invalid_reason"] = reason
+        row["quality_low"] = quality
+        row["wrench_stale"] = stale
+    return [row[c] for c in _COMPLIANCE_DIAG_COLUMNS]
+
+
+def _compliance_diag_frame(n=50, **kw):
+    rows = [_compliance_diag_row(i + 1, **kw) for i in range(n)]
+    return pd.DataFrame(rows, columns=_COMPLIANCE_DIAG_COLUMNS)
+
+
+class TestComplianceDiagDetection:
+    """compliance_diag.csv 가 파일명·컬럼 어느 경로로도 올바른 파이프라인을 탄다."""
+
+    def test_by_filename(self):
+        assert (
+            detect_log_type("/s/controllers/iiwa7_leap/compliance_diag.csv") == "compliance_diag"
+        )
+
+    def test_by_columns(self):
+        assert detect_log_type_by_columns(_COMPLIANCE_DIAG_COLUMNS) == "compliance_diag"
+
+    def test_x_tilde_prefix_is_unique_to_this_pod(self):
+        """지문이 `x_tilde_` 인 근거 — 다른 어떤 POD 도 이 접두를 내지 않는다.
+
+        지문을 지우면 이 파일은 fallback 끝의 unknown 으로 떨어져 plot_rtc_log
+        가 exit(1) 한다 (task_diag 가 오늘 그 상태다). 지문이 *다른* POD 와
+        겹치면 증상은 그보다 나쁘다 — 파일이 조용히 엉뚱한 파이프라인을 탄다.
+        """
+        from pathlib import Path
+
+        logging_dir = (
+            Path(__file__).resolve().parents[2]
+            / "integrated_bringup"
+            / "include"
+            / "integrated_bringup"
+            / "logging"
+        )
+        if not logging_dir.exists():  # pragma: no cover - 단독 배포 시
+            pytest.skip(f"C++ logging headers not present at {logging_dir}")
+        offenders = [
+            p.name
+            for p in sorted(logging_dir.glob("*_log_pod.hpp"))
+            if p.name != "compliance_diag_log_pod.hpp" and "x_tilde_" in p.read_text()
+        ]
+        assert not offenders, f"`x_tilde_` 접두를 다른 POD 도 낸다: {offenders}"
+
+    def test_no_sensor_log_token_in_any_column(self):
+        """이 파일의 컬럼은 sensor_log fallback 의 `_raw_`/`_filt_` 토큰을 안 쓴다.
+
+        grasp_diag 는 `k_inst_raw_*` 때문에 지문 분기가 sensor_log **앞**에
+        있어야만 옳게 분류된다. compliance_diag 는 그 의존을 만들지 않기로 한
+        것이고 (헤더 writer 주석), 그 결정이 지켜지는지는 여기서만 볼 수 있다 —
+        나중에 `wrench_filt_*` 같은 컬럼이 추가되면 분기 순서가 조용히
+        load-bearing 이 되고, 그때는 이 테스트가 먼저 빨개져야 한다.
+        """
+        bad = [c for c in _COMPLIANCE_DIAG_COLUMNS if "_raw_" in c or "_filt_" in c]
+        assert not bad, f"sensor_log 토큰을 가진 컬럼: {bad} — 지문 순서가 load-bearing 이 됐다"
+
+    def test_cpp_header_matches_this_list(self):
+        """C++ writer 의 컬럼 목록과 위 상수가 어긋나면 실패한다."""
+        from pathlib import Path
+
+        hdr = (
+            Path(__file__).resolve().parents[2]
+            / "integrated_bringup"
+            / "include"
+            / "integrated_bringup"
+            / "logging"
+            / "compliance_diag_log_pod.hpp"
+        )
+        if not hdr.exists():  # pragma: no cover - 단독 배포 시
+            pytest.skip(f"C++ header not present at {hdr}")
+        text = hdr.read_text()
+        body = text.split("WriteComplianceDiagLogHeader(std::ostream& os) {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        joined = "".join(re.findall(r'os << "([^"]*)"', body))
+        cpp_columns = [c for c in joined.split(",") if c]
+        assert cpp_columns == _COMPLIANCE_DIAG_COLUMNS, (
+            "C++ WriteComplianceDiagLogHeader 의 컬럼과 이 테스트의 목록이 다르다"
+        )
+
+
+class TestComplianceDiagStatistics:
+    """`--stats` 가 envelope·freshness 를 숫자로 뱉는 것이 이 채널의 1차 산출물이다."""
+
+    def test_envelope_is_reported_against_the_bound(self, capsys):
+        from rtc_tools.plotting.plotters.compliance import print_compliance_diag_statistics
+
+        # 7.5 cm 편차, 15 cm 경계 → 50 %.
+        print_compliance_diag_statistics(_compliance_diag_frame(x=0.075))
+        out = capsys.readouterr().out
+
+        assert "x_tilde" in out
+        assert "50% of the 150 mm bound" in out, out
+
+    def test_a_pinned_deviation_says_so(self, capsys):
+        from rtc_tools.plotting.plotters.compliance import print_compliance_diag_statistics
+
+        print_compliance_diag_statistics(_compliance_diag_frame(x=0.15, disp_limited=1))
+        out = capsys.readouterr().out
+
+        # 평평한 x̃ 가 "수렴" 인지 "박스에 pin" 인지 — 이 채널이 존재하는 이유.
+        assert "PINNED" in out, out
+
+    def test_held_rows_do_not_dilute_the_measurements(self, capsys):
+        from rtc_tools.plotting.plotters.compliance import print_compliance_diag_statistics
+
+        live = _compliance_diag_frame(n=40, x=0.10)
+        held = _compliance_diag_frame(n=40, valid=0)
+        held["tick"] = range(41, 81)
+        df = pd.concat([live, held], ignore_index=True)
+        print_compliance_diag_statistics(df)
+        out = capsys.readouterr().out
+
+        # held 행은 0 이므로 평균에 섞이면 100 mm 가 50 mm 로 반토막 난다 —
+        # E-STOP 을 "힘이 0 이었다" 는 측정으로 읽는 바로 그 오류.
+        assert "valid: 50.0% of ticks" in out, out
+        mean_line = next(line for line in out.splitlines() if "|x_tilde| linear" in line)
+        mean_mm = float(mean_line.split("mean=")[1].split("mm")[0])
+        assert mean_mm == pytest.approx(100.0, abs=0.5), mean_line
+
+    def test_invalid_reasons_are_named_not_numbered(self, capsys):
+        from rtc_tools.plotting.plotters.compliance import print_compliance_diag_statistics
+
+        print_compliance_diag_statistics(_compliance_diag_frame(reason=4))
+        out = capsys.readouterr().out
+        assert "insufficient_contacts" in out, out
+
+    def test_quality_low_with_reason_zero_is_called_out(self, capsys):
+        from rtc_tools.plotting.plotters.compliance import print_compliance_diag_statistics
+
+        # FromPullEstimate 가 "추정은 멀쩡했는데 숫자/작용점이 아니었다" 를
+        # 남기는 유일한 서명 — 어떤 invalid tick 도 만들 수 없는 조합이다.
+        print_compliance_diag_statistics(_compliance_diag_frame(reason=0, quality=1))
+        out = capsys.readouterr().out
+        assert "quality_low with reason=0" in out, out
+
+    def test_an_all_held_file_says_nothing_is_measurable(self, capsys):
+        from rtc_tools.plotting.plotters.compliance import print_compliance_diag_statistics
+
+        print_compliance_diag_statistics(_compliance_diag_frame(n=10, valid=0))
+        out = capsys.readouterr().out
+        assert "every row is a held tick" in out, out

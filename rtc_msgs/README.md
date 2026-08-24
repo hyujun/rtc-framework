@@ -428,7 +428,7 @@ ROS 2 parameter로 표현하기에 부적절하므로 별도 srv로 분리되어
 **Single-active 모델:** 활성 데모 컨트롤러만 `~/grasp_command` server를 advertise
 합니다. 호출자(예: BT)는 `/{active_config_key}/grasp_command` 로 호출.
 
-- `demo_joint_controller` / `demo_task_controller`: `grasp_controller_` (Force-PI
+- `demo_joint_controller` / `demo_task_controller` / `demo_compliance_controller`: `grasp_controller_` (Force-PI
   FSM) 가 있을 때만 적용. 없으면 `ok=false, message="grasp_controller unavailable"`.
 - `demo_wbc_controller`: `grasp_cmd_` atomic + `grasp_target_force` gain 갱신 →
   WBC 6-state FSM (slots 2 & 5 reserved) 이 다음 tick 의 최상단 preempt guard 에서
