@@ -241,6 +241,48 @@ void DemoComplianceController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp
   }
 }
 
+// ── §7 engagement edges (#469 S3 AC2, holes closed by the #469 review) ──────
+
+void DemoComplianceController::DisengageCompliance() noexcept {
+  admittance_.Reset();
+  // Disowns the SAMPLE, not just its age: a hold that ends after the producer
+  // died must read as "nothing has arrived", never as a fresh reading of the
+  // last force anyone measured (§10.6 — an expired wrench fades to ZERO).
+  (void)wrench_pipeline_.ResetForActivation();
+  // The FSM is NOT stepped on held ticks, so its state is the one it held when
+  // the law last ran. Mirror THAT, never a literal: forcing kHolding here
+  // reported a latched SAFE_STOP as HOLDING on every held row, and the diag CSV
+  // is the only place an operator can see the latch at all.
+  compliance_state_ = compliance_fsm_.state();
+  compliance_ramp_elapsed_ = 0.0;
+  compliance_engaged_ = false;
+  // Cleared with the rest: a held tick that kept the last engagement's wrench
+  // would log a force nothing measured this tick, which is the last-value hold
+  // §10.6 forbids one layer down.
+  wrench_lwa_.setZero();
+  compliance_alpha_ = 0.0;
+  compliance_task_origin_.setZero();
+  wrench_status_ = rtc::compliance::WrenchPipelineStatus{};
+  // The SOURCE's verdict goes with the pipeline's status. ComputeSecondary is
+  // what writes these, and it does not run under E-STOP at all — so without
+  // this the first tick after an E-STOP feeds the FSM a `quality_low` that
+  // described an estimate produced before the halt, and DEGRADED is entered on
+  // evidence that no longer exists.
+  wrench_quality_low_ = false;
+  wrench_invalid_reason_ = 0;
+}
+
+void DemoComplianceController::StageHeldComplianceDiagRow() noexcept {
+  // Rebuilt from a default POD instead of edited in place so a field added
+  // later cannot leak the last engagement's value into a held row, and zeroed
+  // rather than frozen — these are slow-moving quantities, so a frozen wrench
+  // reads as a live one.
+  compliance_diag_staging_ = ComplianceDiagLogPod{};
+  compliance_diag_staging_.wrench_source = static_cast<std::uint8_t>(wrench_source_);
+  StampComplianceDiagParams(admittance_params_.admittance, compliance_diag_staging_);
+  compliance_diag_staging_.fsm_state = static_cast<std::uint8_t>(compliance_state_);
+}
+
 // ── Phase 2: Compute control (CLIK/IK + trajectory + sensor logic) ──────────
 
 void DemoComplianceController::ComputeControl(const ControllerState& state, double dt,
@@ -271,36 +313,16 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
     // #469 S3 AC2. Every branch of this gate is a tick on which the arm is NOT
     // being driven by the law, and the compliant frame is a deviation from a
     // reference — so letting it accrue here would hand the resume tick a
-    // displacement nobody commanded. Reset on the FALLING EDGE, not every tick:
-    // ResetForActivation() re-arms the bias average, and re-arming it 500 times
-    // a second means the average never completes once control comes back.
+    // displacement nobody commanded.
+    //
+    // The held ROW is staged at the head of Compute() (#429: a held tick is a
+    // valid=0 row, never a gap), not here — this gate is one of three hold
+    // paths and the other two used to leave the previous tick's row standing.
     if (compliance_engaged_) {
-      admittance_.Reset();
-      compliance_bias_pending_ = wrench_pipeline_.ResetForActivation();
-      compliance_state_ = rtc::compliance::ComplianceState::kHolding;
-      compliance_ramp_elapsed_ = 0.0;
-      compliance_engaged_ = false;
-      // Cleared with the rest: a held tick that kept the last engagement's
-      // wrench would log a force nothing measured this tick, which is the
-      // last-value hold §10.6 forbids one layer down.
-      wrench_lwa_.setZero();
-      compliance_alpha_ = 0.0;
-      compliance_task_origin_.setZero();
-      wrench_status_ = rtc::compliance::WrenchPipelineStatus{};
+      DisengageCompliance();
     }
-    // A held tick is a valid=0 ROW, not a gap (#429): a gap in `tick` has to
-    // mean a dropped sample and nothing else, or every reader has to guess.
-    // Zeroed rather than frozen, matching the falling-edge reset just above —
-    // these are slow-moving quantities, so a frozen wrench reads as a live one.
-    // Rebuilt from a default POD instead of edited in place so a field added
-    // later cannot leak the last engagement's value into a held row.
-    compliance_diag_staging_ = ComplianceDiagLogPod{};
-    compliance_diag_staging_.wrench_source = static_cast<std::uint8_t>(wrench_source_);
-    StampComplianceDiagParams(admittance_params_.admittance, compliance_diag_staging_);
-    compliance_diag_staging_.fsm_state = static_cast<std::uint8_t>(compliance_state_);
     return;
   }
-  compliance_engaged_ = true;
 
   // ── Stage 2 (compute control law): consume the model. Extract the arm-joint
   // columns of the tip Jacobian from the Stage-1 cache into the 6×nv_arm CLIK
@@ -430,6 +452,17 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       for (std::size_t i = 0; i < nhold; ++i) {
         desired_q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
       }
+      // The law does not run on this tick, so this is a falling edge exactly
+      // like the F5 gate's — and it can last kComplianceVtcpFrameWaitTicks.
+      // Without it the pipeline is never Update()d while `engaged` stays true:
+      // the wrench age freezes (the counter advances inside Read(), not on the
+      // clock), so the resume tick would read a wrench seconds old as `age =
+      // dt, fade = 1.0` and hand it to the law at full weight — §10.6's
+      // last-value hold, reached by standing still instead of by holding a
+      // value.
+      if (compliance_engaged_) {
+        DisengageCompliance();
+      }
       return;
     }
 
@@ -551,6 +584,13 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
                          "task CLIK held: non-finite Jacobian (control_6dof=%d) — "
                          "J+ would be stale, holding arm at measurement",
                          static_cast<int>(gains.control_6dof));
+    // Same falling edge as the frame hold above, for the same reason: this
+    // return is upstream of the §7 block, so leaving `engaged` set would freeze
+    // the wrench age and keep the last engagement's deviation alive across a
+    // hold of unbounded length.
+    if (compliance_engaged_) {
+      DisengageCompliance();
+    }
     return;
   }
 
@@ -655,6 +695,13 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
     has_pending_segment_ = false;
   }
 
+  // ENGAGED FROM HERE, not from the top of this function. Every `return` above
+  // is a tick the law did not run on, and marking the tick engaged before them
+  // made the two mid-function holds invisible to the falling-edge machinery —
+  // they kept `engaged` true while skipping the pipeline Update below, which is
+  // how a hold froze the wrench age instead of expiring it.
+  compliance_engaged_ = true;
+
   // ── §7 admittance: X_c = X_d ⊕ x̃  (#469 S3, tick rows 9-13) ─────────────
   //
   // The trajectory owns X_d; this block owns the deviation the external wrench
@@ -677,8 +724,22 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
 
   // §10.7 activation ramp: the wrench enters over `activation_ramp_time`, so a
   // controller activated against a standing load does not step the arm.
-  compliance_ramp_elapsed_ =
-      std::min(compliance_ramp_elapsed_ + dt, admittance_params_.activation_ramp_time);
+  //
+  // SUSPENDED WHILE A BIAS AVERAGE IS OWED. §10.6's lattice is
+  // BIAS_CALIBRATING → HOLDING(ramp) → RUNNING — the ramp is what the arm gets
+  // AFTER the bias commits, because the conditioned wrench does not exist
+  // before then (the pipeline emits zero throughout). Letting it accrue during
+  // the average spends the ramp on ticks with nothing to ramp: with a 100 Hz
+  // source the 100-sample average outlasts a 0.5 s ramp, and the first real
+  // wrench lands at α = 1 — the step this ramp exists to prevent, on the path
+  // that actually carries a load. `valid` gates the suspension so the
+  // no-producer case is unchanged: nothing has arrived, nothing is owed, and
+  // the FSM must still reach RUNNING (D-A7's withholding contract).
+  const bool bias_average_owed = wrench_status_.valid && !wrench_status_.bias_calibrated;
+  if (!bias_average_owed) {
+    compliance_ramp_elapsed_ =
+        std::min(compliance_ramp_elapsed_ + dt, admittance_params_.activation_ramp_time);
+  }
   const bool ramp_done = !(admittance_params_.activation_ramp_time > 0.0) ||
                          compliance_ramp_elapsed_ >= admittance_params_.activation_ramp_time;
   const double alpha =
@@ -738,12 +799,22 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
   // detected on the error the law just produced, and it acts on the command
   // that error is about to become.
   //
-  // What is NOT wired: `command_divergence` (reachable only with
-  // `integrate_from_measured: false`, which this binding does not offer),
-  // `saturation_persist` (a torque-lane fault; this is a position lane) and
-  // `posture_authority_lost` (the §6.1 selection modes are not this binding's).
-  // Left false rather than approximated — a fault that fires for the wrong
-  // reason is worse than one that does not fire.
+  // What is NOT wired: `saturation_persist` (a torque-lane fault; this is a
+  // position lane) and `posture_authority_lost` (the §6.1 selection modes are
+  // not this binding's). Left false rather than approximated — a fault that
+  // fires for the wrong reason is worse than one that does not fire.
+  //
+  // `command_divergence` is NOT wired either, and its absence is a real gap
+  // rather than a mode this binding cannot reach — the claim that stood here
+  // until the #469 review had it backwards. WriteArmJointCommand integrates the
+  // COMMAND (`desired_q_ += dq_·dt`, re-seeded from the measurement only on the
+  // hold/reseed branches), which is precisely `integrate_from_measured: false`,
+  // the one mode §7.3 marks with a MUST for a ‖q_cmd − q_meas‖ bound. So
+  // `admittance_params_.command_divergence_limit` is parsed and read by nobody,
+  // and a drive that saturates or lags leaves the command winding away from the
+  // arm unbounded. The sibling demo_task binding integrates identically, so
+  // this predates #469 and wiring it in one binding only would be half a guard
+  // — tracked as its own issue rather than smuggled into this lane.
   {
     rtc::compliance::ComplianceFaults faults;
     faults.nan_inf = !ik.ok || !pos_error_6d_.allFinite() || !adm.finite;
@@ -756,6 +827,12 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
 
     if (wrench_status_.begin_bias_calibration) {
       compliance_fsm_.BeginBiasCalibration();
+      // Re-entering BIAS_CALIBRATING re-arms the ramp with it. The suspension
+      // above is not enough on its own: this edge fires when data arrives after
+      // the gate was released (the shipped path — the pull estimator withholds
+      // until there is a grasp), and by then the ramp has run to completion
+      // against no wrench at all.
+      compliance_ramp_elapsed_ = 0.0;
     }
     compliance_state_ =
         compliance_fsm_.Step(faults, ramp_done, dt, degraded_recovery_time_,
@@ -918,9 +995,11 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
 
   // ── SAFE_STOP: hold position (#469 S3, tick row 11) ────────────────────
   //
-  // A latched critical fault. `dq_ = 0` with `integrate_from_measured` makes
-  // q_cmd = q_meas, which is the position hold — and it is applied AFTER the
-  // solve rather than by returning early, so the diagnostic lanes
+  // A latched critical fault. `dq_ = 0` freezes the integration, so the command
+  // stops where it stood — a position hold at the last COMMANDED pose, not at
+  // the measurement (this lane integrates the command; see the fault block
+  // above). It is applied AFTER the solve rather than by returning early, so
+  // the diagnostic lanes
   // (task_diag_staging_, traj_dq_) still describe the tick that faulted
   // instead of leaving a gap exactly where the operator needs a row.
   //

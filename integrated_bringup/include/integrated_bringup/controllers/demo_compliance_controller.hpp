@@ -285,6 +285,26 @@ class DemoComplianceController final : public RTControllerInterface {
   [[nodiscard]] bool IsEstopped() const noexcept override;
   void SetHandEstop(bool active) noexcept override;
 
+  // ── Controller-local fault latch (#260, §10.6) ───────────────────────────
+  //
+  // This is the ONE controller family that latches a fault of its own, so the
+  // base no-ops are not an answer here: with them, `/rtc_cm/reset_fault` would
+  // report "nothing latched" at a SAFE_STOP that has frozen the arm, and the
+  // latch would have no exit at all. DELIBERATELY SEPARATE from the E-STOP pair
+  // above (E-8) — `ClearEstop()` must not release this, and this must not
+  // release the global latch.
+  //
+  // Off-RT (the CM service callback). Wait-free: the request is an atomic flag
+  // the next tick consumes at the HEAD of `Compute()`, ahead of the E-STOP
+  // branch, so a controller-local fault can be cleared while the global latch
+  // is still up. `ResetTargetInitialization()` drops an unconsumed request, for
+  // the same reason `BeginBiasCalibration()` cannot beat the latch: nobody
+  // re-authorises a fault at an activation boundary.
+  void ResetFault() noexcept override;
+  /// Observable half of the above: the tick-end snapshot of the FSM's latch.
+  /// Read off-RT, never blocks.
+  [[nodiscard]] bool HasLatchedFault() const noexcept override;
+
   // ── Phase 4: controller-owned sub/pub lifecycle ─────────────────────────
   CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
                               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
@@ -675,6 +695,23 @@ class DemoComplianceController final : public RTControllerInterface {
   /// Deliberately NOT behind ComputeControl's gate — §3.7 "secondary
   /// passthrough 유지"; see the definition's header comment (#236 S7b).
   void ComputeSecondary(const ControllerState& state, double dt, const Gains& gains) noexcept;
+  /// Leave the §7 law: drop the deviation, disown the wrench, re-arm the ramp
+  /// and clear every latch whose value describes an engagement that has ended.
+  /// Called on the FALLING EDGE of `compliance_engaged_` from every path that
+  /// holds the arm instead of running the law — the F5 gate and the two
+  /// mid-function holds (control frame unavailable, non-finite Jacobian). The
+  /// edge guard is the point: `ResetForActivation()` re-arms the bias average,
+  /// and re-arming it every tick of a 1000-tick frame wait means the average
+  /// never completes once control comes back.
+  void DisengageCompliance() noexcept;
+  /// Stage the §7 diagnostic row a HELD tick leaves behind: a zeroed `valid=0`
+  /// POD carrying only what is true without the law (source, param snapshot,
+  /// FSM state). Runs at the head of every `Compute()` so a tick that returns
+  /// early — through any gate, including one added later — cannot re-publish
+  /// the previous tick's row under this tick's index (#429: a gap in `tick` has
+  /// to mean a dropped row and nothing else). The task_diag lane defaults the
+  /// same way, one member instead of a POD.
+  void StageHeldComplianceDiagRow() noexcept;
   // WriteOutput was split into 3 explicit-intent methods (see
   // demo_joint_controller.hpp for the bucket contract). Compute() calls
   // them in order WriteJointCommand → FillLogOutput → FillPublishOutput.
@@ -872,6 +909,12 @@ class DemoComplianceController final : public RTControllerInterface {
     // this hook runs off-RT from on_activate while the RT tick reads them.
     target_is_hold_seed_.store(true, std::memory_order_release);
     frame_wait_ticks_.store(0, std::memory_order_release);
+    // #260: an unconsumed fault reset dies at the activation boundary. Carrying
+    // it across would let the first tick of a new activation release a latch
+    // nobody re-authorised there — the same reason `BeginBiasCalibration()`
+    // cannot beat the latch, and the reason this activation does not clear it
+    // outright (compliance-conventions.md §fault 복구 진입점).
+    reset_fault_requested_.store(false, std::memory_order_release);
   }
 
   // ── Control-frame contract (#292) ─────────────────────────────────────────
@@ -1006,10 +1049,11 @@ class DemoComplianceController final : public RTControllerInterface {
   /// accrue a deviation the arm would then be asked to realise on resume.
   bool compliance_engaged_{false};
   /// Seconds since the last rising edge, clamped at `activation_ramp_time`.
+  /// Suspended while a bias average is owed and re-armed when one is re-entered:
+  /// §10.6's lattice runs the ramp AFTER the bias commits, so a ramp that ran to
+  /// completion during (or before) the average would hand the first conditioned
+  /// wrench to the law at α = 1 — the step §10.7 exists to forbid.
   double compliance_ramp_elapsed_{0.0};
-  /// Latched from `WrenchPipeline::ResetForActivation` — the pipeline decides
-  /// whether a bias average is owed, the state machine acts on it.
-  bool compliance_bias_pending_{false};
   /// The conditioned wrench the law actually integrated, LWA at the task frame,
   /// and the §10.7 ramp scale applied to it. Staged for the #469 S4 diagnostic
   /// lane — "the arm moved and the CSV cannot say what pushed it" is the
@@ -1183,6 +1227,17 @@ class DemoComplianceController final : public RTControllerInterface {
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};
   std::atomic<bool> hand_estopped_{false};
+
+  // ── Controller-local fault latch (#260) — NOT the E-STOP pair above (E-8) ──
+  /// Set off-RT by `ResetFault()`, consumed (and cleared) at the head of the
+  /// next `Compute()`. A request that finds no latch is a no-op there, not an
+  /// error: `ComplianceStateMachine::ResetFault()` holds that line itself.
+  std::atomic<bool> reset_fault_requested_{false};
+  /// Tick-END snapshot of `ComplianceStateMachine::in_safe_stop()`, which is
+  /// what `HasLatchedFault()` answers with. Stored at the end of the tick and
+  /// not where the FSM steps, because the reset service reads it to decide
+  /// whether the latch survived the tick that consumed the request.
+  std::atomic<bool> latched_fault_{false};
 
   /// Arm joint position the E-STOP path drives to. Authoritative source is
   /// LoadConfig(cfg["estop"]["arm_safe_position"]); only the first

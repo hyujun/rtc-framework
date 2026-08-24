@@ -307,9 +307,16 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_activate(
   // sample present at reset would revive a dead producer's last reading as
   // fresh (§10.6 says an expired wrench fades to ZERO, never holds).
   admittance_.Reset();
-  compliance_bias_pending_ = wrench_pipeline_.ResetForActivation();
-  compliance_fsm_.ResetFault();
-  compliance_state_ = rtc::compliance::ComplianceState::kHolding;
+  (void)wrench_pipeline_.ResetForActivation();
+  // The FSM is NOT reset here (#469 review, E-8). A latched SAFE_STOP is the
+  // one piece of state an activation must inherit: §10.6 forbids automatic
+  // recovery, and a deactivate/activate cycle — which a BT or a
+  // `switch_controller` round-trip performs on its own — is not an operator
+  // re-authorising a fault. Laundering it here would also make the latch
+  // unobservable after the fact, since nothing else records that it fired.
+  // `/rtc_cm/reset_fault` (ResetFault() above) is the only exit, and it is
+  // wired for exactly this reason.
+  compliance_state_ = compliance_fsm_.state();
   compliance_engaged_ = false;
   compliance_ramp_elapsed_ = 0.0;
   wrench_quality_low_ = false;

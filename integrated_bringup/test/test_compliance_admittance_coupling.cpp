@@ -39,6 +39,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -477,13 +478,11 @@ TEST(ComplianceAdmittanceCoupling, ASafeStopHoldsPositionAndCollapsesTheFrame) {
 
 // ── The seam injection skips: the publish call site ─────────────────────────
 
-TEST(ComplianceAdmittanceCoupling, TheTickItselfFeedsThePipelineFromTheSource) {
-  // Every test above injects the wrench, so all of them pass with the publish
-  // site in ComputeSecondary deleted. This one uses no injection at all: the
-  // pipeline can only become `valid` if the controller's own lane published
-  // into it. The pull estimator is disabled in this fixture (no fingertip
-  // forces), so what is asserted is the complement — WITHOUT a source, the law
-  // never runs on a wrench nobody produced.
+TEST(ComplianceAdmittanceCoupling, WithoutASourceTheLawRunsOnNoWrenchAtAll) {
+  // The complement of the test below. No injection and no fingertip forces, so
+  // nothing anywhere can hand the pipeline a sample — and the frame must not
+  // move. Necessary but NOT sufficient for the publish call site: this half
+  // passes with that site deleted, which is why it no longer carries the name.
   auto ctrl = BringUp(ComplianceConfig());
   Driver d{ctrl.get()};
   const auto probe = d.RunSilent(kSettleTicks);
@@ -494,6 +493,315 @@ TEST(ComplianceAdmittanceCoupling, TheTickItselfFeedsThePipelineFromTheSource) {
   for (int i = 0; i < 6; ++i) {
     EXPECT_EQ(probe.deviation[i], 0.0)
         << "component " << i << ": the frame moved with no wrench behind it";
+  }
+}
+
+TEST(ComplianceAdmittanceCoupling, TheTickItselfFeedsThePipelineFromTheSource) {
+  // THE POSITIVE CONTROL for the one seam injection cannot reach. Every other
+  // test in this file publishes through PublishExternalWrenchForTesting, so all
+  // of them — and the test above with them — stay green with the
+  // `wrench_pipeline_.Publish(...)` block in ComputeSecondary deleted. The
+  // production symptom of that deletion is an arm that silently never complies:
+  // no fault, no log, no CSV column out of range.
+  //
+  // So: no injection at all. A pinch is staged on the fingertip lane and the
+  // ONLY path from there to the pipeline is the controller's own tick —
+  // fingertip decode → FK → pull estimate → FromPullEstimate → Publish.
+  //
+  // THE VIRTUAL TCP IS TURNED ON, and that is not fixture convenience.
+  // `FromPullEstimate` withholds unless `vtcp.valid` (an invalid virtual TCP
+  // resolves to the identity, whose origin is a finite and completely wrong
+  // place to hang a force), and the iiwa7_leap SIM profile ships
+  // `virtual_tcp_mode: disabled` — so on that profile this source can never
+  // publish, whatever the fingertips report. Both hardware profiles
+  // (ur5e_p1a/p1b) ship `centroid`, which is what this asks for: the shipped
+  // hardware configuration of the lane, run on the model the suite has.
+  YAML::Node cfg = ComplianceConfig();
+  cfg["virtual_tcp_mode"] = "centroid";
+  auto ctrl = BringUp(cfg);
+  Driver d{ctrl.get()};
+
+  // DeriveFingertipCounts bounds the whole decode loop by this; leave it at the
+  // bare fixture's 0 and every force below is written and never read (the trap
+  // test_compliance_diag_log's StagePinch documents).
+  auto& dev1 = d.state.devices[1];
+  dev1.num_inference_groups = 4;
+  // A COMPRESSIVE pinch, which is a statement about direction and not only
+  // magnitude: the estimator activates a contact on f_n = −n̂·f_obj, where n̂ is
+  // the FK-resolved pinch axis, so a force orthogonal to it registers nothing at
+  // any magnitude. −y in the fingertip LINK frame is what projects onto that
+  // axis at this hand's home pose (the ±z that SetFingertipForce writes is very
+  // nearly orthogonal to it, and no sign of it ever activates the thumb —
+  // `required_roles: [thumb]` then rejects every tick). If the hand model or its
+  // home pose changes, this fails with the reason code below rather than
+  // silently going quiet.
+  for (int f = 0; f < 4; ++f) {
+    dev1.inference_enable[static_cast<std::size_t>(f)] = true;
+    const int base =
+        f * static_cast<int>(integrated_bringup::kHandInferenceValuesPerFingertipCapacity);
+    for (int c = 0; c < 4; ++c) {
+      dev1.inference_data[static_cast<std::size_t>(base + c)] = 0.0F;
+    }
+    dev1.inference_data[static_cast<std::size_t>(base + 2)] = -5.0F;  // f_y, link frame
+  }
+
+  const auto probe = d.RunSilent(kSettleTicks);
+
+  ASSERT_TRUE(probe.engaged) << "the arm lane never ran — the assertion below would be vacuous";
+  EXPECT_TRUE(probe.status.valid)
+      << "no sample ever reached the pipeline: the tick did not publish the estimate its own "
+         "source produced, so the law would never see a real wrench in production "
+         "(PullInvalidReason="
+      << static_cast<int>(probe.invalid_reason) << ")";
+}
+
+// ── The controller-local fault latch (#260, §10.6) ──────────────────────────
+
+TEST(ComplianceAdmittanceCoupling, ALatchedFaultSurvivesReactivationAndExitsOnlyThroughResetFault) {
+  // THE CAUSE HAS TO BE ABLE TO GO AWAY. With a permanent one every tick
+  // re-latches, "still latched" asserts nothing, and an on_activate that
+  // launders the latch passes just as well. So the fault is raised by a
+  // configured threshold and then RECONFIGURED away — LoadConfig is a non-RT
+  // reconfigure entry point, and this is the one thing in reach that removes a
+  // critical cause without also removing the latch.
+  YAML::Node faulted = ComplianceConfig();
+  faulted["singularity_critical"] = 100.0;  // above any sigma_min this posture has
+  auto ctrl = BringUp(faulted);
+  // A GOAL, so the arm holds a posture with a sigma_min to speak of. Without one
+  // this fixture's closed loop hands the un-seeded command straight back as the
+  // measurement and the arm sits at the zero configuration — where the iiwa is
+  // straight and sigma_min is exactly 0, so every threshold latches and the
+  // reconfigure below could never remove the cause.
+  const std::array<double, 6> target = {0.45, 0.10, 0.55, 0.0, 0.0, 0.0};
+  ctrl->SetDeviceTarget(0, std::span<const double>(target));
+  Driver d{ctrl.get()};
+
+  ASSERT_EQ(d.Run(2, Wrench6{}).state, ComplianceState::kSafeStop)
+      << "the fixture never tripped the fault it is about";
+  // #260's observable half. Without the override the CM's /rtc_cm/reset_fault
+  // reads the base class's `false` and reports "nothing latched" at an arm the
+  // law has frozen.
+  EXPECT_TRUE(ctrl->HasLatchedFault()) << "the latch is invisible off the RT thread";
+
+  // The key is absent from the shipped YAML (the §7 block takes core defaults),
+  // and an absent key leaves the parser's previous value standing — so the
+  // restore has to name it.
+  YAML::Node healed = ComplianceConfig();
+  healed["singularity_critical"] = 0.005;
+  ctrl->LoadConfig(healed);
+  // LoadConfig is a CONFIGURE-time entry point and re-running it drops the
+  // integrated command back to its zero init; on this closed-loop fixture the
+  // next tick would hand that back as the measurement and teleport the arm into
+  // the singular zero configuration, re-raising the very cause being removed.
+  // A fresh goal re-seeds the command from the measurement, which is what the
+  // production configure path gets from the arm self-init.
+  ctrl->SetDeviceTarget(0, std::span<const double>(target));
+  ASSERT_EQ(d.Run(2, Wrench6{}).state, ComplianceState::kSafeStop)
+      << "SAFE_STOP is latched: removing the cause must not release it";
+
+  // A request made below Active dies at the activation boundary, and the
+  // activation itself does not clear anything: §10.6 forbids automatic
+  // recovery, and a deactivate/activate cycle is a controller switch, not an
+  // operator re-authorising a fault.
+  const rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "active");
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  ASSERT_EQ(ctrl->on_deactivate(active), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ctrl->ResetFault();  // unconsumed — no tick runs while Inactive
+  ASSERT_EQ(ctrl->on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  const auto after_cycle = d.Run(2, Wrench6{});
+  EXPECT_EQ(after_cycle.state, ComplianceState::kSafeStop)
+      << "re-activation laundered a latched SAFE_STOP: the arm resumed compliant motion with the "
+         "fault cause never diagnosed and no record that it fired";
+  EXPECT_TRUE(ctrl->HasLatchedFault());
+
+  // The one exit. Consumed at the head of the next tick, on the RT thread.
+  ctrl->ResetFault();
+  const auto after_reset = d.Run(2, Wrench6{});
+  EXPECT_NE(after_reset.state, ComplianceState::kSafeStop)
+      << "the reset request never reached the state machine";
+  EXPECT_FALSE(ctrl->HasLatchedFault());
+}
+
+TEST(ComplianceAdmittanceCoupling, AHeldTickReportsTheLatchedStateRatherThanHolding) {
+  // The mirror the diagnostic row carries is not a place to write a literal.
+  // A held tick does not step the FSM, so what it must report is the state the
+  // FSM is actually in — and forcing HOLDING there reported a latched SAFE_STOP
+  // as HOLDING on every row of the outage, which is the one row an operator
+  // reads to find out that the controller is latched at all.
+  YAML::Node cfg = ComplianceConfig();
+  cfg["singularity_critical"] = 100.0;
+  auto ctrl = BringUp(cfg);
+  Driver d{ctrl.get()};
+  ASSERT_EQ(d.Run(2, Wrench6{}).state, ComplianceState::kSafeStop);
+
+  d.state.devices[0].num_channels = kArmDof - 2;  // F5 gate: the arm goes unreadable
+  const auto held = d.Run(5, Wrench6{});
+  ASSERT_FALSE(held.engaged) << "the hold path never ran";
+  EXPECT_EQ(held.state, ComplianceState::kSafeStop)
+      << "a held tick reported HOLDING while the state machine was latched";
+}
+
+// ── Holds that are not the F5 gate (#469 review) ────────────────────────────
+
+TEST(ComplianceAdmittanceCoupling, AMidFunctionHoldExpiresTheWrenchLikeEveryOtherHold) {
+  // The non-finite-Jacobian hold returns from the MIDDLE of ComputeControl,
+  // downstream of the engagement flag and upstream of the pipeline Update. That
+  // combination is what made it invisible: `engaged` stayed true, so no falling
+  // edge ran, and `Update()` never ran, so the wrench age — which advances
+  // inside Read(), not on the clock — simply stopped. A producer that died
+  // during the hold would then be read on the resume tick as `age = dt,
+  // fade = 1.0`: a seconds-old force applied at full weight, which is §10.6's
+  // last-value hold reached by standing still.
+  auto ctrl = BringUp(ComplianceConfig());
+  Driver d{ctrl.get()};
+  d.Run(kSettleTicks, Wrench6{});
+  const auto running = d.Run(kResponseTicks, ForceX(10.0));
+  ASSERT_TRUE(running.engaged);
+  ASSERT_TRUE(running.status.valid) << "the fixture never got a wrench into the pipeline";
+  ASSERT_GT(running.deviation[0], 0.01) << "the law was not actually running";
+
+  // A joint state that has stopped being a number: the Jacobian goes non-finite
+  // and CLIK holds. Deliberately NOT the F5 gate — the device is perfectly
+  // readable here, which is exactly why this path needed its own answer.
+  d.arm_meas[0] = std::numeric_limits<double>::quiet_NaN();
+  const auto held = d.RunSilent(10);
+
+  EXPECT_FALSE(held.engaged) << "the mid-function hold never disengaged the law";
+  EXPECT_FALSE(held.status.valid)
+      << "the pipeline still owns the pre-hold sample: its age froze for the whole hold instead of "
+         "expiring, so the resume tick would hand a stale wrench to the law at full weight";
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_EQ(held.deviation[i], 0.0)
+        << "component " << i << ": the deviation survived a hold and would be commanded on resume";
+  }
+}
+
+TEST(ComplianceAdmittanceCoupling, AControlFrameHoldExpiresTheWrenchLikeEveryOtherHold) {
+  // The frame-transition hold, the second of the two mid-function returns and
+  // the one that can last kComplianceVtcpFrameWaitTicks — 1000 ticks, two whole
+  // seconds of an arm that is NOT being driven by the law. It is reached with an
+  // external goal authored in one control frame while another is live, so the
+  // goal fires unchanged when its frame comes back (#292).
+  YAML::Node cfg = ComplianceConfig();
+  cfg["virtual_tcp_mode"] = "centroid";
+  auto ctrl = BringUp(cfg);
+  const std::array<double, 6> target = {0.45, 0.10, 0.55, 0.0, 0.0, 0.0};
+  ctrl->SetDeviceTarget(0, std::span<const double>(target));  // EXTERNAL: not a hold seed
+  Driver d{ctrl.get()};
+  d.Run(kSettleTicks, Wrench6{});
+  const auto running = d.Run(200, ForceX(10.0));
+  ASSERT_TRUE(running.engaged);
+  ASSERT_TRUE(running.status.valid) << "the fixture never got a wrench into the pipeline";
+
+  // The control frame changes under the standing goal: the virtual TCP is turned
+  // off at runtime, which is a live gains write and exactly the transition
+  // ClassifyFrameTransition calls kHoldExternal.
+  auto g = ctrl->get_gains();
+  g.vtcp.mode = integrated_bringup::VirtualTcpMode::kDisabled;
+  ctrl->set_gains(g);
+
+  const auto held = d.RunSilent(20);
+  EXPECT_FALSE(held.engaged) << "the frame hold never disengaged the law";
+  EXPECT_FALSE(held.status.valid)
+      << "the pipeline still owns the pre-hold sample: through a hold that can run for "
+      << "1000 ticks its age would not advance at all, and the resume tick would apply a "
+      << "two-second-old wrench at full weight";
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_EQ(held.deviation[i], 0.0) << "component " << i << ": the deviation survived the hold";
+  }
+}
+
+TEST(ComplianceAdmittanceCoupling, AHoldClearsTheSourceVerdictItCanNoLongerRefresh) {
+  // ComputeSecondary is the only writer of the source verdict and it does not
+  // run under E-STOP at all, so without an explicit clear the members freeze at
+  // whatever the last living estimate said. The first tick after the halt then
+  // feeds the FSM a `quality_low` / `invalid_reason` describing an estimate that
+  // no longer exists.
+  auto ctrl = BringUp(ComplianceConfig());
+  Driver d{ctrl.get()};
+  d.state.devices[1].num_inference_groups = 4;
+  for (int f = 0; f < 3; ++f) {
+    integrated_bringup::testfx::SetFingertipForce(d.state, f, 3.0F);
+  }
+  const auto with_source = d.Run(50, Wrench6{});
+  ASSERT_NE(with_source.invalid_reason, 0)
+      << "the pull lane never produced a verdict, so this test cannot show it being cleared";
+
+  ctrl->TriggerEstop();
+  const auto halted = d.Run(5, Wrench6{});
+  ASSERT_FALSE(halted.engaged);
+  EXPECT_EQ(halted.invalid_reason, 0)
+      << "the verdict outlived the estimate it describes and would gate the FSM on resume";
+  EXPECT_FALSE(halted.quality_low);
+}
+
+// ── §10.7 ramp vs §10.6 lattice ─────────────────────────────────────────────
+
+TEST(ComplianceAdmittanceCoupling, ABiasReEntryReArmsTheActivationRamp) {
+  // THE SHIPPED ORDER OF EVENTS, not a contrived one: the pull estimator
+  // withholds while there is no grasp, so the pipeline releases the bias gate
+  // with the debt still owed and the controller runs to RUNNING against no
+  // wrench at all. Minutes later a grasp starts publishing, the average is
+  // re-entered and committed — and THAT is the first tick a conditioned wrench
+  // exists. A ramp that ran to completion during the idle stretch is no ramp:
+  // §10.7's "does not step the arm" would be spent on ticks with nothing to
+  // ramp, and the first real force would land at alpha = 1.
+  auto ctrl = BringUp(ComplianceConfig());
+  Driver d{ctrl.get()};
+
+  const auto idle = d.RunSilent(kSettleTicks);
+  ASSERT_EQ(idle.alpha, 1.0) << "the no-source path must still reach RUNNING (D-A7)";
+  ASSERT_FALSE(idle.status.valid);
+
+  // Data arrives. The pipeline re-enters BIAS_CALIBRATING and suppresses its
+  // output for the whole average, so the ramp must be back at its START when the
+  // first conditioned wrench finally appears — not merely below 1. Measured ON
+  // the commit tick, because that is the only tick where the two candidate
+  // behaviours are far apart: a ramp that merely restarted when the data arrived
+  // has already spent the whole average accruing (~0.4 at these rates), while a
+  // ramp the average suspends is still at zero plus this tick's dt.
+  double alpha_at_commit = -1.0;
+  for (int k = 0; k < 200 && alpha_at_commit < 0.0; ++k) {
+    const auto p = d.Run(1, ForceX(10.0));
+    if (p.status.bias_calibrated) {
+      alpha_at_commit = p.alpha;
+    }
+  }
+  ASSERT_GE(alpha_at_commit, 0.0)
+      << "the average never committed — this test is not about what it thinks";
+  EXPECT_LT(alpha_at_commit, 0.01)
+      << "the ramp had already run during the bias average, so the first wrench the law ever "
+         "conditioned entered at alpha="
+      << alpha_at_commit << " instead of at the start of the ramp";
+
+  // And it still finishes.
+  EXPECT_EQ(d.Run(kSettleTicks, ForceX(10.0)).alpha, 1.0);
+}
+
+// ── Config validation ───────────────────────────────────────────────────────
+
+TEST(ComplianceAdmittanceCoupling, ANonPositiveDegradedRecoveryTimeIsRejected) {
+  // `std::max(0.0, v)` stood here and admitted exactly the value it was written
+  // to exclude: a zero dwell promotes DEGRADED → RUNNING on the first
+  // fault-free tick, so a wrench flickering in and out of `stale` chatters
+  // between the two every tick.
+  for (const double bad : {0.0, -0.1}) {
+    YAML::Node cfg = ComplianceConfig();
+    cfg["degraded_recovery_time"] = bad;
+    auto ctrl = std::make_unique<DemoComplianceController>("", DemoComplianceController::Gains{});
+    ctrl->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+    ctrl->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+    ctrl->SetControlRate(1.0 / kDt);
+    try {
+      ctrl->LoadConfig(cfg);
+      ADD_FAILURE() << "degraded_recovery_time = " << bad << " was accepted";
+    } catch (const std::runtime_error& e) {
+      // Named, so this cannot pass on an unrelated throw from the same call.
+      EXPECT_NE(std::string(e.what()).find("degraded_recovery_time"), std::string::npos)
+          << "threw for a different reason: " << e.what();
+    }
   }
 }
 

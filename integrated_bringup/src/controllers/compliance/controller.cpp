@@ -383,6 +383,16 @@ ControllerOutput DemoComplianceController::Compute(const ControllerState& state)
   RTC_TRACE_SCOPE("DemoComplianceController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
 
+  // ── Controller-local fault reset (#260), consumed at the HEAD of the tick ──
+  // Ahead of everything, including the E-STOP branch further down: the two
+  // latches are separate (E-8), so a SAFE_STOP must be clearable while the
+  // global E-STOP is still up. A request that finds no latch is a no-op — the
+  // state machine holds that line, so this does not have to.
+  if (reset_fault_requested_.exchange(false, std::memory_order_acq_rel)) {
+    compliance_fsm_.ResetFault();
+    compliance_state_ = compliance_fsm_.state();
+  }
+
   // estop_active_ is loaded once here (before ReadState) so every downstream
   // reader — including ReadState's ExtractFullState gate and the Stage-1 cache
   // refresh below — sees one consistent value for this tick.
@@ -393,6 +403,13 @@ ControllerOutput DemoComplianceController::Compute(const ControllerState& state)
   // rather than at those gates keeps the flag correct without restating that
   // compound condition in two places.
   task_diag_staging_.valid = false;
+  // The §7 lane's equivalent, one POD instead of one member (#469 S4). Same
+  // argument, and the same failure when it is missing: ComputeControl has three
+  // hold paths, and the two that return mid-function used to leave the previous
+  // tick's row staged — the tail then pushed it again under THIS tick's index
+  // with valid=1, for as long as the hold lasted. Defaulting here rather than at
+  // each gate is what keeps a hold path added later from re-opening that.
+  StageHeldComplianceDiagRow();
   // F5 gate (#236 S7b), loaded beside estop_active_ for the same reason: every
   // phase below has to agree on whether device 0 is usable this tick, and both
   // output lanes — the CLIK path and ComputeEstop — honour it.
@@ -578,6 +595,12 @@ ControllerOutput DemoComplianceController::Compute(const ControllerState& state)
     compliance_diag_staging_.tick = state.iteration;
     compliance_diag_log_handle_.Push(compliance_diag_staging_);
   }
+  // Tick-END snapshot of the fault latch (#260). Published after the diagnostics
+  // above for the reason the reset service's wait is written around: it polls
+  // the RT tick counter and treats the SECOND completed tick as proof that a
+  // tick which started after its store also finished — so this store has to be
+  // the last thing a tick does with the latch, not the first.
+  latched_fault_.store(compliance_fsm_.in_safe_stop(), std::memory_order_release);
   return output;
 }
 
@@ -886,6 +909,18 @@ void DemoComplianceController::ClearEstop() noexcept {
 
 bool DemoComplianceController::IsEstopped() const noexcept {
   return estopped_.load(std::memory_order_acquire);
+}
+
+void DemoComplianceController::ResetFault() noexcept {
+  // Off-RT, wait-free: hand the request to the RT thread and let IT decide. The
+  // clear cannot happen here — `ComplianceStateMachine` is RT-owned state, and
+  // the fault cause may still be present, in which case the next tick re-latches
+  // and `HasLatchedFault()` is how the caller finds out.
+  reset_fault_requested_.store(true, std::memory_order_release);
+}
+
+bool DemoComplianceController::HasLatchedFault() const noexcept {
+  return latched_fault_.load(std::memory_order_acquire);
 }
 
 void DemoComplianceController::SetHandEstop(bool active) noexcept {
@@ -1234,10 +1269,23 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
 
   // The one §7 knob the parser has no key for. Read here rather than left to
   // the state machine's default argument so it is visible in the config an
-  // operator edits, and floored because a non-positive dwell would let a single
-  // clean tick clear a DEGRADED that is still oscillating.
-  if (cfg["degraded_recovery_time"]) {
-    degraded_recovery_time_ = std::max(0.0, cfg["degraded_recovery_time"].as<double>());
+  // operator edits.
+  //
+  // REJECTED, not floored. A non-positive dwell lets a single clean tick clear a
+  // DEGRADED that is still oscillating — the state machine compares
+  // `degraded_elapsed_ >= dwell` after adding dt, so 0 promotes on the first
+  // fault-free tick and a wrench flickering in and out of `stale` chatters
+  // DEGRADED⇄RUNNING every tick. `std::max(0.0, v)` was the guard here and it
+  // admitted exactly that value (and NaN with it, since `0.0 < NaN` is false).
+  // Same judgement and same shape as `pose_error_limit` one layer down: a dwell
+  // that can be switched off makes a misconfiguration look like a setting.
+  if (const YAML::Node& n = cfg["degraded_recovery_time"]; n) {
+    const double v = n.as<double>();
+    if (!(v > 0.0) || !std::isfinite(v)) {
+      throw std::runtime_error(
+          "demo_compliance_controller: 'degraded_recovery_time' must be > 0 and finite");
+    }
+    degraded_recovery_time_ = v;
   }
 
   // ── #135 Layer 1b: momentum-observer params ─────────────────────────────

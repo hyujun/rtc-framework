@@ -36,10 +36,17 @@
 // report, not an inference from the columns.
 //
 // WHAT DELIBERATELY HAS NO COLUMN: `command_divergence`, `saturation_persist`
-// and `posture_authority_lost`. This binding wires none of the three (position
-// lane, `integrate_from_measured: true`, no §6.1 selection mode), so a column
-// for them would be permanently 0 — and a permanently-0 fault column reads as
-// "this never happened" rather than "this was never watched".
+// and `posture_authority_lost`. This binding wires none of the three, so a
+// column for them would be permanently 0 — and a permanently-0 fault column
+// reads as "this never happened" rather than "this was never watched".
+//
+// Two of the three are out of this lane's reach (a position lane has no torque
+// saturation, and the §6.1 selection modes are not this binding's).
+// `command_divergence` is NOT: this lane integrates the command
+// (`desired_q_ += dq_·dt`), which IS the mode §7.3 requires a ‖q_cmd − q_meas‖
+// bound for — the header used to cite `integrate_from_measured: true` here and
+// that was backwards. The column stays absent because the fault is still
+// unwired, not because it cannot happen; see the fault block in compute.cpp.
 //
 // SPSC constraint: trivially copyable. Path A: no rtc_msgs/.msg — these are
 // controller-internal law diagnostics, not device state. YAML `msg_type` id is
