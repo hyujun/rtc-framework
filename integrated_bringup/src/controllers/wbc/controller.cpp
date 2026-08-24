@@ -907,6 +907,53 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   q_max_clamped_ = combined_cache_.model()->upperPositionLimit.array() - position_margin_;
   v_limit_ = combined_cache_.model()->upperVelocityLimit * velocity_scale_;
 
+  // ── The box is assembled HERE, so an inverted box is diagnosed HERE (#473) ──
+  //
+  // `position_margin` is applied to BOTH ends, so a joint narrower than twice
+  // the margin comes out with q_min > q_max. `ClikReferenceGenerator::Init`
+  // already refuses that (#468 fail-loud, and it stays — CLIK is the sole
+  // position backbone, so absorbing it would ship a joint with no position
+  // bound at all). What it cannot do is say WHY: it receives the two
+  // post-margin numbers and an index, and reports exactly those. The operator
+  // then sees two figures they never wrote, for a joint the message does not
+  // name, with no mention of the key that produced them.
+  //
+  // Everything missing from that message exists at this line and nowhere else:
+  // the margin, the raw limits it was applied to, and the model that names the
+  // joint. Equality is deliberately NOT an error — `q_min == q_max` is a
+  // legitimately pinned joint and refusing it would be an availability
+  // incident, which is the direction #468 already pinned.
+  {
+    const pinocchio::Model& model = *combined_cache_.model();
+    for (Eigen::Index i = 0; i < q_min_clamped_.size(); ++i) {
+      if (q_min_clamped_[i] <= q_max_clamped_[i]) {
+        continue;
+      }
+      // Configuration index → owning joint, so the message names what the
+      // operator edits rather than an index into a vector they never see. Read
+      // from the model (ARCH-1: no robot-specific name is hardcoded here); a
+      // multi-DoF joint owns the whole [idx_q, idx_q + nq) span.
+      std::string joint_name = "<unnamed>";
+      for (std::size_t j = 1; j < static_cast<std::size_t>(model.njoints); ++j) {
+        const Eigen::Index first = static_cast<Eigen::Index>(model.joints[j].idx_q());
+        if (i >= first && i < first + static_cast<Eigen::Index>(model.joints[j].nq())) {
+          joint_name = model.names[j];
+          break;
+        }
+      }
+      const double lower = model.lowerPositionLimit[i];
+      const double upper = model.upperPositionLimit[i];
+      throw std::runtime_error(
+          "demo_wbc_controller: 'integration.position_margin' (" +
+          std::to_string(position_margin_) + ") inverts the CLIK position box on joint '" +
+          joint_name + "' (q index " + std::to_string(i) + "): its raw range is [" +
+          std::to_string(lower) + ", " + std::to_string(upper) + "] (width " +
+          std::to_string(upper - lower) +
+          "). The margin is applied to BOTH ends, so it must not exceed half the width — " +
+          std::to_string(0.5 * (upper - lower)) + " for this joint.");
+    }
+  }
+
   // ── 3b. Stage C-2: CLIK (Kinematic WBC) configuration ─────────────────
   // CLIK is the sole position backbone. clik.{damping_sq,v_limit,w_*} are
   // structural (consumed by ClikReferenceGenerator::Init in on_configure);
