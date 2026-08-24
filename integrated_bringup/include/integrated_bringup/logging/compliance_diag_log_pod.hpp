@@ -40,13 +40,14 @@
 // column for them would be permanently 0 — and a permanently-0 fault column
 // reads as "this never happened" rather than "this was never watched".
 //
-// Two of the three are out of this lane's reach (a position lane has no torque
-// saturation, and the §6.1 selection modes are not this binding's).
-// `command_divergence` is NOT: this lane integrates the command
-// (`desired_q_ += dq_·dt`), which IS the mode §7.3 requires a ‖q_cmd − q_meas‖
-// bound for — the header used to cite `integrate_from_measured: true` here and
-// that was backwards. The column stays absent because the fault is still
-// unwired, not because it cannot happen; see the fault block in compute.cpp.
+// WHY each one is unwired is NOT restated here — the fault-classification block
+// in `controllers/compliance/compute.cpp` owns that judgement, and one of the
+// three (`command_divergence`) is an unwatched gap rather than an unreachable
+// mode, which is a distinction only that block is in a position to keep true.
+// This header carried its own copy of the reasoning until the #469 review found
+// the copy asserting the opposite of what the command lane actually does; both
+// places were wrong together, because nobody edits a rationale twice. What this
+// header owns is the COLUMN rule above.
 //
 // SPSC constraint: trivially copyable. Path A: no rtc_msgs/.msg — these are
 // controller-internal law diagnostics, not device state. YAML `msg_type` id is
