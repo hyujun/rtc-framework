@@ -240,3 +240,24 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 
 - **증상**: 문서가 측정 시점에 의존하는 값을 박제 → 코드/측정값이 바뀌면 문서가 거짓이 됨. 예: "현 baseline 0건", "Phase X ✅ 완료", "현재 45개 상수 존재", `commit_sha 근거`
 - **복구**: 측정값·status 은 SSoT (코드/git log/측정 명령) 위임. 문서엔 *어떻게 측정하는지* 박제하고 *값 자체*는 박제하지 않는다. Status 는 git log + memory 에 자연히 남는다
+
+### AP-DOC-2: 판단의 *근거*를 두 번째 위치에 복사한다 (주석 포함)
+
+- **증상**: 같은 설계 판단의 근거가 두 곳 이상에 서술돼 있고, **틀릴 때 같이 틀린다**. AP-DOC-1
+  이 값의 박제라면 이건 *이유*의 박제다. 값과 달리 근거는 검증기가 없어서, 코드가 그 근거를
+  배신해도 두 사본 모두 조용히 남는다. 실측: `command_divergence` 를 배선하지 않은 이유가
+  `compliance/compute.cpp` fault 블록 · `compliance_diag_log_pod.hpp` 헤더 · lane plan 세 곳에
+  적혀 있었고, 셋 다 "이 바인딩은 `integrate_from_measured: false` 를 제공하지 않는다" 고 했다 —
+  `WriteArmJointCommand` 는 `desired_q_ += dq_·dt` 로 명령을 적분하므로 **그게 바로 그 모드**다
+  (#469 리뷰, `7f48c51`). 한 곳만 있었으면 코드 옆에서 반증됐을 문장이다
+- **원인**: 인접 파일이 같은 주제를 다루면 "여기서도 설명해 두면 친절하다" 가 자연스럽다. 그런데
+  근거를 고치는 사람은 **자기가 편집 중인 파일 하나만** 고친다 — 두 번 쓰는 사람은 있어도 두 번
+  고치는 사람은 없다
+- **탐지**: 주석/문서에 판단을 쓰기 전에 그 판단의 핵심 명사 (`command_divergence`,
+  `integrate_from_measured`) 로 repo 를 grep 한다. 이미 서술한 곳이 있으면 **가리킨다**
+- **복구**: 근거는 **그 판단이 코드로 나타나는 지점**이 소유한다 (fault 를 안 켜는 이유는 fault
+  블록, 컬럼이 없는 이유는 POD 헤더). 두 번째 위치는 자기가 소유한 규칙만 적고 나머지는 파일명으로
+  가리킨다 — "왜 안 켜는가" 와 "왜 컬럼이 없는가" 는 다른 질문이고 소유자도 다르다. 이 "축을
+  나눈다" 기법의 전개형은 [conventions.md](conventions.md#documentation-requirements) 의
+  **서비스·메시지 계약의 소유자** 항목이 이미 갖고 있다 (`.srv` / README / `.cpp` 헤더 4축).
+  거기는 wire 계약, 여기는 **설계 판단** — 같은 처방, 다른 대상
