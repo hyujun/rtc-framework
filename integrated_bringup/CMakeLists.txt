@@ -691,6 +691,26 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── position_margin vs the CLIK position box (#473) ────────────────────────
+  ament_add_gtest(test_wbc_position_margin_box
+    test/test_wbc_position_margin_box.cpp)
+  target_link_libraries(test_wbc_position_margin_box
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_wbc_position_margin_box PRIVATE
+    RTC_UR5E_URDF_PATH="${RTC_UR5E_URDF_PATH}"
+    RTC_WBC_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/ur5e_p1a/controllers/demo_wbc_controller.yaml")
+  ament_target_dependencies(test_wbc_position_margin_box
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    rtc_tsid
+    rtc_mpc
+    Eigen3
+  )
+
   # ── GraspPhaseManager FSM tests (Phase 7a) ─────────────────────────────────
 
   ament_add_gtest(test_grasp_phase_manager test/test_grasp_phase_manager.cpp)
