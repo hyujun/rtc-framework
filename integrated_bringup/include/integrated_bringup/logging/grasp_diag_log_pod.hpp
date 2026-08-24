@@ -106,8 +106,8 @@ struct GraspDiagLogPod {
   // ── Per-finger block (index < num_fingers is meaningful) ──────────────────
   std::uint8_t num_fingers{0};
 
-  std::array<float, kGraspDiagMaxFingers> s{};           ///< grasp parameter [0,1]
-  std::array<float, kGraspDiagMaxFingers> f_desired{};   ///< force reference [N]
+  std::array<float, kGraspDiagMaxFingers> s{};          ///< grasp parameter [0,1]
+  std::array<float, kGraspDiagMaxFingers> f_desired{};  ///< force reference [N]
   /// Filtered force the PI law consumed — the 25 Hz Force-PI bank
   /// (`fingertip_force_mag_filt_grasp_`), NOT the contact_stop bank that
   /// `<device>_sensor.csv` carries. The σ #426 needs is the standard deviation
@@ -116,13 +116,13 @@ struct GraspDiagLogPod {
   /// f_desired - f_measured. Derived, but written out because it is the reading
   /// this file exists for — same call as task_diag's `damping_active`.
   std::array<float, kGraspDiagMaxFingers> f_error{};
-  std::array<float, kGraspDiagMaxFingers> k_est{};       ///< K_contact_est after this tick's EMA
+  std::array<float, kGraspDiagMaxFingers> k_est{};  ///< K_contact_est after this tick's EMA
   /// Instantaneous delta_f/delta_s BEFORE the K_est_max clamp; 0 when no sample
   /// existed. The clamped value is what enters the EMA, so a post-clamp figure
   /// cannot show how far the raw samples land — the quantity #426 disputes.
   std::array<float, kGraspDiagMaxFingers> k_inst_raw{};
-  std::array<float, kGraspDiagMaxFingers> delta_s{};     ///< s increment the estimator divided by
-  std::array<float, kGraspDiagMaxFingers> delta_f{};     ///< force step attributed to it [N]
+  std::array<float, kGraspDiagMaxFingers> delta_s{};  ///< s increment the estimator divided by
+  std::array<float, kGraspDiagMaxFingers> delta_f{};  ///< force step attributed to it [N]
   /// 1/(1 + beta*k_est) — the gain multiplier actually applied to Kp and Ki.
   std::array<float, kGraspDiagMaxFingers> gain_scale{};
 
@@ -150,9 +150,9 @@ inline void WriteGraspDiagLogHeader(std::ostream& os,
   // Per-finger blocks are grouped by quantity rather than by finger so that a
   // spreadsheet reader can select one column family across all fingers.
   static constexpr std::string_view kPerFinger[] = {
-      "s",       "f_desired", "f_measured", "f_error",    "k_est",
-      "k_inst_raw", "delta_s", "delta_f",   "gain_scale", "est_updated",
-      "integrator_frozen", "contact"};
+      "s",          "f_desired",   "f_measured",        "f_error",
+      "k_est",      "k_inst_raw",  "delta_s",           "delta_f",
+      "gain_scale", "est_updated", "integrator_frozen", "contact"};
   // Clamped exactly as WriteGraspDiagLogRow clamps `num_columns`: without it a
   // finger list longer than the POD capacity makes the header wider than any
   // row the writer can emit.
@@ -178,8 +178,8 @@ inline void WriteGraspDiagLogRow(std::ostream& os, const GraspDiagLogPod& p,
 
   const auto n = std::min(num_columns, kGraspDiagMaxFingers);
   const std::array<const std::array<float, kGraspDiagMaxFingers>*, 9> floats = {
-      &p.s,       &p.f_desired, &p.f_measured, &p.f_error,    &p.k_est,
-      &p.k_inst_raw, &p.delta_s, &p.delta_f,   &p.gain_scale};
+      &p.s,          &p.f_desired, &p.f_measured, &p.f_error,   &p.k_est,
+      &p.k_inst_raw, &p.delta_s,   &p.delta_f,    &p.gain_scale};
   for (const auto* col : floats) {
     for (std::size_t i = 0; i < n; ++i) {
       os << ',' << (*col)[i];
@@ -245,8 +245,8 @@ inline void FillGraspDiagLogPod(std::span<const rtc::grasp::FingerState> states,
 /// rather than emitting columns for fingers with no force lane.
 inline std::vector<std::string> GraspDiagFingerNames(std::span<const std::string> sensor_names,
                                                      int num_grasp_fingers) {
-  const auto n = std::min(sensor_names.size(),
-                          static_cast<std::size_t>(std::max(num_grasp_fingers, 0)));
+  const auto n =
+      std::min(sensor_names.size(), static_cast<std::size_t>(std::max(num_grasp_fingers, 0)));
   return {sensor_names.begin(), sensor_names.begin() + static_cast<std::ptrdiff_t>(n)};
 }
 

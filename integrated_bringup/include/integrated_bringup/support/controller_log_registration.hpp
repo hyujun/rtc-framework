@@ -209,15 +209,15 @@ struct LogRegistrationContext {
 /// with `pull_estimator.csv` on `tick`. A gap therefore means exactly one
 /// thing: a dropped row (#234 P-20 convention).
 inline void PushGraspDiagLog(rtc::LogHandle<GraspDiagLogPod>& handle,
-                             const rtc::grasp::GraspController* ctrl, bool ran,
-                             double t_relative_s, std::uint64_t tick) noexcept {
+                             const rtc::grasp::GraspController* ctrl, bool ran, double t_relative_s,
+                             std::uint64_t tick) noexcept {
   if (!handle) {
     return;
   }
   GraspDiagLogPod pod{};
   if (ran && ctrl != nullptr) {
-    FillGraspDiagLogPod(ctrl->finger_states(), ctrl->params(), ctrl->phase(),
-                        ctrl->target_force(), t_relative_s, tick, pod);
+    FillGraspDiagLogPod(ctrl->finger_states(), ctrl->params(), ctrl->phase(), ctrl->target_force(),
+                        t_relative_s, tick, pod);
   } else {
     // Zero rather than freeze — see GraspDiagLogPod::valid.
     pod.t_relative_s = t_relative_s;
@@ -236,8 +236,7 @@ inline void PushGraspDiagLog(rtc::LogHandle<GraspDiagLogPod>& handle,
 inline void LogGraspDiagWiring(const rclcpp::Logger& logger, bool has_controller,
                                const std::vector<std::string>& finger_names) {
   if (!has_controller || finger_names.empty()) {
-    RCLCPP_INFO(logger,
-                "[grasp_diag] disabled — %s. No grasp_diag.csv will be written.",
+    RCLCPP_INFO(logger, "[grasp_diag] disabled — %s. No grasp_diag.csv will be written.",
                 !has_controller ? "no 'force_pi_grasp' block in demo_shared.yaml"
                                 : "hand reported no fingertip sensors to name the columns");
     return;
@@ -349,8 +348,8 @@ template <typename ParsedLogEntryT>
       // Both writers must agree on the stride AND on the fingertip-block width
       // or the row stops lining up with the header, so the whole geometry is
       // derived once here and captured into each (#440).
-      const auto cols = integrated_bringup::DeviceSensorLogColumnsFor(
-          sensor_names, it->second.values_per_group);
+      const auto cols =
+          integrated_bringup::DeviceSensorLogColumnsFor(sensor_names, it->second.values_per_group);
       auto handle = ctx.log_set.RegisterLog<integrated_bringup::DeviceSensorLogPod>(
           entry.instance,
           [sensor_names, cols](std::ostream& os) {

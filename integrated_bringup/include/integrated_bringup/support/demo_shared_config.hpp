@@ -119,16 +119,16 @@ struct PayloadEstimatorParams {
   // disabled: there is no sensible default, and guessing the last link would
   // silently estimate about the wrong point.
   std::string frame{};
-  double sigma0{1e-3};        ///< §6.5 damping knee σ₀
-  double lambda_max{0.05};    ///< §6.5 damping ceiling λ_max
-  double min_sigma{1e-3};     ///< σ_min(J) below this ⇒ wrench unobservable
+  double sigma0{1e-3};      ///< §6.5 damping knee σ₀
+  double lambda_max{0.05};  ///< §6.5 damping ceiling λ_max
+  double min_sigma{1e-3};   ///< σ_min(J) below this ⇒ wrench unobservable
   /// ‖Jᵀŵ − r‖∞ ceiling [N·m]. NOT measured, unlike the two velocity gates:
   /// deriving it needs the reconstruction error, which the session-67 logs
   /// cannot supply (they carry r, not the per-tick Jacobian). Deliberately
   /// permissive so it rejects nothing before anyone has looked at
   /// payload_fit_error on a real robot — at which point it should come DOWN.
   double max_fit_error{5.0};
-  double min_gravity{1e-3};   ///< ‖ᵂg‖ floor [m/s²]
+  double min_gravity{1e-3};              ///< ‖ᵂg‖ floor [m/s²]
   double max_arm_velocity{1e-3};         ///< ε_arm [rad/s]
   double max_peripheral_velocity{1e-4};  ///< ε_hand [rad/s] — D14
   // How many observer time constants (1/K_I) must pass after a re-seed before
