@@ -248,7 +248,7 @@ void DemoComplianceController::DisengageCompliance() noexcept {
   // Disowns the SAMPLE, not just its age: a hold that ends after the producer
   // died must read as "nothing has arrived", never as a fresh reading of the
   // last force anyone measured (§10.6 — an expired wrench fades to ZERO).
-  (void)wrench_pipeline_.ResetForActivation();
+  wrench_pipeline_.ResetForActivation();
   // The FSM is NOT stepped on held ticks, so its state is the one it held when
   // the law last ran. Mirror THAT, never a literal: forcing kHolding here
   // reported a latched SAFE_STOP as HOLDING on every held row, and the diag CSV

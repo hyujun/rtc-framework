@@ -89,8 +89,18 @@ class WrenchPipeline {
 
   /// RT: (re)activation reset. Drops the accrued age, the SAMPLE ITSELF, the
   /// bias, the filter history and the contact latch — an activation must
-  /// inherit none of them. Returns true when the caller should enter
-  /// BIAS_CALIBRATING.
+  /// inherit none of them.
+  ///
+  /// RETURNS NOTHING, and that is the answer rather than an omission. This was
+  /// a `[[nodiscard]] bool` documented as "true when the caller should enter
+  /// BIAS_CALIBRATING", which returned an unconditional `true` — and the
+  /// direction was wrong as well as the value: an activation must NOT enter
+  /// BIAS_CALIBRATING, because there is nothing to average until a producer
+  /// publishes. The state to enter is decided per tick by `Update()`, which
+  /// raises `begin_bias_calibration` on the tick data actually arrives (the
+  /// two-latch path below), and that is the only channel the state machine
+  /// reads. A second, activation-time channel answering the same question
+  /// could only ever disagree with it (#479).
   ///
   /// `Invalidate()` rather than `ResetTiming()`: re-dating the sample present at
   /// reset revives a dead producer's last reading as fresh (§10.6 says an
@@ -102,13 +112,12 @@ class WrenchPipeline {
   /// `bias_pending_` is armed only when there is work: bias_calibration_samples
   /// == 0 means the operator declined the average, so the zero bias IS the
   /// calibration and the first sample must not be spent re-entering the state.
-  [[nodiscard]] bool ResetForActivation() noexcept {
+  void ResetForActivation() noexcept {
     input_.Invalidate();
     conditioner_.Reset();
     contact_.Reset();
     bias_done_ = false;
     bias_pending_ = conditioner_.config().bias_samples > 0;
-    return true;
   }
 
   /// RT: one tick of the whole sequence. Returns the conditioned wrench in

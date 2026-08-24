@@ -307,7 +307,7 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_activate(
   // sample present at reset would revive a dead producer's last reading as
   // fresh (§10.6 says an expired wrench fades to ZERO, never holds).
   admittance_.Reset();
-  (void)wrench_pipeline_.ResetForActivation();
+  wrench_pipeline_.ResetForActivation();
   // The FSM is NOT reset here (#469 review, E-8). A latched SAFE_STOP is the
   // one piece of state an activation must inherit: §10.6 forbids automatic
   // recovery, and a deactivate/activate cycle — which a BT or a
