@@ -86,15 +86,15 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "pull_estimator": [
         PlotEntry("print_pull_stats", plotters.print_pull_estimator_statistics),
     ],
-    # The stats printer is the point of this channel, not the figure: the
-    # hardware session ships text back and #426's force-noise sigma has to be a
-    # number on stdout before anyone opens a plot (#428).
     # Stats only, no figure entry (#469 S4): the deliverable is the envelope /
     # freshness / bias numbers S5 tunes against, and STATS_PRINTERS run on every
     # invocation — `--stats` suppresses figures, not these.
     "compliance_diag": [
         PlotEntry("print_compliance_diag_stats", plotters.print_compliance_diag_statistics),
     ],
+    # The stats printer is the point of this channel, not the figure: the
+    # hardware session ships text back and #426's force-noise sigma has to be a
+    # number on stdout before anyone opens a plot (#428).
     "grasp_diag": [
         PlotEntry("print_grasp_diag_stats", plotters.print_grasp_diag_statistics),
     ],
