@@ -2,8 +2,11 @@
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,6 +22,44 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
     return ret;
   }
   try {
+    // ── §7.3 joint tail: refuse a margin that INVERTS a joint's clamp band ──
+    //
+    // `joint_limit_margin` is applied to both ends of every arm joint's band, so
+    // a δ past half the narrowest band leaves `lo >= hi` and the tail SKIPS the
+    // position clamp for that joint — a silent way to turn the guard off while
+    // the YAML still reads as though it were on. Same call #473 made for the
+    // sibling WBC binding's `integration.position_margin`.
+    //
+    // HERE, not in LoadConfig, and the difference is not stylistic. LoadConfig
+    // runs in the CM's Pass 1 (`PreConfigure`), and the band does not exist yet:
+    // device configs arrive in Pass 2 and `OnDeviceConfigsSet` is what fills
+    // `device_position_lower_/upper_`. A check written next to the parser would
+    // have validated the ±2π fallback every time and passed for any δ below 2π.
+    // Pass 2 is also the wrong home — `SetDeviceNameConfigs` is called outside
+    // any try/catch, so a throw there escapes the configure path entirely
+    // instead of becoming the FAILURE this block turns it into.
+    //
+    // Resolved with the SAME fallbacks the tail uses, so the check and the RT
+    // path cannot disagree about which joints they are talking about.
+    {
+      const auto& lower = device_position_lower_[0];
+      const auto& upper = device_position_upper_[0];
+      const std::size_t n = std::max({lower.size(), upper.size(), std::size_t{1}});
+      const double margin = admittance_params_.joint_limit_margin;
+      for (std::size_t i = 0; i < n; ++i) {
+        const double raw_lo = (i < lower.size()) ? lower[i] : -6.2832;
+        const double raw_hi = (i < upper.size()) ? upper[i] : 6.2832;
+        if (raw_lo + margin >= raw_hi - margin) {
+          throw std::runtime_error(
+              "demo_compliance_controller: 'joint_limit_margin' (" + std::to_string(margin) +
+              " rad) inverts the q_cmd clamp band on arm joint index " + std::to_string(i) +
+              " (limits [" + std::to_string(raw_lo) + ", " + std::to_string(raw_hi) +
+              "]) — it must stay below half the band width, or the §7.3 position clamp is "
+              "silently skipped for that joint");
+        }
+      }
+    }
+
     CreateOwnedTopics(*this, owned_topics_);
 
     // ── Controller-owned non-RT publishers (no YAML role mapping) ─────────

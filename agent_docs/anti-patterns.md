@@ -249,7 +249,11 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   `compliance/compute.cpp` fault 블록 · `compliance_diag_log_pod.hpp` 헤더 · lane plan 세 곳에
   적혀 있었고, 셋 다 "이 바인딩은 `integrate_from_measured: false` 를 제공하지 않는다" 고 했다 —
   `WriteArmJointCommand` 는 `desired_q_ += dq_·dt` 로 명령을 적분하므로 **그게 바로 그 모드**다
-  (#469 리뷰, `7f48c51`). 한 곳만 있었으면 코드 옆에서 반증됐을 문장이다
+  (#469 리뷰, `7f48c51`). 한 곳만 있었으면 코드 옆에서 반증됐을 문장이다.
+  **후속이 처방을 검증했다**: 그 리뷰가 세 사본을 소유자 한 곳(fault 블록)으로 접은 뒤, 같은
+  판단이 3판을 필요로 했다 — 모드 주장은 맞았지만 결론("real gap")이 틀렸고, task 축 바인딩의
+  대응물은 `pose_error_limit` 이었다 (#478). 소유자가 하나였으므로 **편집도 한 번**이었다;
+  사본이 셋이었으면 세 번이었고, 경험칙상 그중 둘은 안 고쳐진다
 - **원인**: 인접 파일이 같은 주제를 다루면 "여기서도 설명해 두면 친절하다" 가 자연스럽다. 그런데
   근거를 고치는 사람은 **자기가 편집 중인 파일 하나만** 고친다 — 두 번 쓰는 사람은 있어도 두 번
   고치는 사람은 없다

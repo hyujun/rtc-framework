@@ -4,6 +4,7 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
+#include "rtc_controllers/compliance/joint_command_tail.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"  // FloorMaxDamping, kMinSigma0
 #include "rtc_controllers/gain_floor.hpp"
 #include "rtc_controllers/task/task_vel_law.hpp"
@@ -804,17 +805,30 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
   // not this binding's). Left false rather than approximated — a fault that
   // fires for the wrong reason is worse than one that does not fire.
   //
-  // `command_divergence` is NOT wired either, and its absence is a real gap
-  // rather than a mode this binding cannot reach — the claim that stood here
-  // until the #469 review had it backwards. WriteArmJointCommand integrates the
-  // COMMAND (`desired_q_ += dq_·dt`, re-seeded from the measurement only on the
-  // hold/reseed branches), which is precisely `integrate_from_measured: false`,
-  // the one mode §7.3 marks with a MUST for a ‖q_cmd − q_meas‖ bound. So
-  // `admittance_params_.command_divergence_limit` is parsed and read by nobody,
-  // and a drive that saturates or lags leaves the command winding away from the
-  // arm unbounded. The sibling demo_task binding integrates identically, so
-  // this predates #469 and wiring it in one binding only would be half a guard
-  // — tracked as its own issue rather than smuggled into this lane.
+  // `command_divergence` is NOT wired either, and this is the comment's third
+  // revision because the first two each held one half of the answer.
+  //
+  // The MODE half (#469 review): WriteArmJointCommand integrates the COMMAND
+  // (`desired_q_ += dq_·dt`, re-seeded from the measurement only on the
+  // hold/reseed branches), so this binding DOES run `integrate_from_measured:
+  // false`. The comment that stood here before that review claimed the opposite.
+  //
+  // The AXIS half (#478): `‖q_cmd − q_meas‖` is a JOINT-space measure, and the
+  // bindings it is the only observable for are the ones whose command IS q. This
+  // one is task-space, and every feedback path in its law closes on the
+  // MEASUREMENT — FK / Jacobian / `e(X, X_c)` come from `combined_cache_.Update()`
+  // (fed by ReadState), the nullspace error from `dev0.positions` — leaving the
+  // final integrator as the sole carrier of command state. So a command winding
+  // away from the arm is not unobserved: it becomes a growing `e(X, X_c)` on the
+  // very tick it happens, and that is `pose_error_exceeded` two lines up — same
+  // critical grade, and the parser refuses to let anyone disable it (D6). A second
+  // critical fault on the same physical event, in a space this controller has no
+  // direct authority over, adds a false-positive surface and no coverage.
+  //
+  // So `admittance_params_.command_divergence_limit` is read by nobody HERE by
+  // design, not by omission. What the joint axis of this binding genuinely needs
+  // is §7.3's position clamp + rate rebound, and that lives where the command
+  // reaches the wire (WriteArmJointCommand), not in this fault block.
   {
     rtc::compliance::ComplianceFaults faults;
     faults.nan_inf = !ik.ok || !pos_error_6d_.allFinite() || !adm.finite;
@@ -1537,8 +1551,32 @@ void DemoComplianceController::WriteArmJointCommand(const ControllerState& state
     const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     dq_[static_cast<Eigen::Index>(i)] = std::clamp(dq_[static_cast<Eigen::Index>(i)], -lim, lim);
   }
+  // §7.3 joint tail (#478). The velocity clamp above bounds the SOLVE OUTPUT;
+  // what follows bounds the COMMAND, and the two are different numbers on every
+  // tick the position clamp moves something — which is exactly why the order is
+  // a MUST and why it lives in one shared unit (joint_command_tail.hpp) rather
+  // than being spelled out in each binding that self-integrates.
+  //
+  // Until this landed the arm lane had no position bound at all: the hand half
+  // of WriteWireCommand clamped its device, `demo_joint` and `demo_wbc` clamped
+  // theirs, and this binding plus `demo_task` published `desired_q_` straight to
+  // the wire. A position command past a joint limit is not a soft push — the
+  // backend rejects it or the arm drives into a hard stop.
+  //
+  // The margin is §7's own `joint_limit_margin`; `on_configure` rejects one wide
+  // enough to invert a band (not LoadConfig — the band does not exist yet at
+  // Pass 1; see that block), so the tail's `lo < hi` skip is unreachable here
+  // (#473's rule, applied to this binding's knob).
+  const rtc::compliance::JointCommandBounds joint_bounds{
+      .lower = std::span<const double>(device_position_lower_[0]),
+      .upper = std::span<const double>(device_position_upper_[0]),
+      .max_velocity = std::span<const double>(device_max_velocity_[0]),
+      .margin = admittance_params_.joint_limit_margin,
+  };
+  rtc::compliance::IntegrateAndBoundJointCommand(
+      std::span<double>(desired_q_.data(), static_cast<std::size_t>(desired_q_.size())),
+      std::span<double>(dq_.data(), static_cast<std::size_t>(dq_.size())), nq, dt, joint_bounds);
   for (std::size_t i = 0; i < nq; ++i) {
-    desired_q_[static_cast<Eigen::Index>(i)] += dq_[static_cast<Eigen::Index>(i)] * dt;
     out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }
   // Channels in [nq, nc0) have no model joint behind them. Hold them at the

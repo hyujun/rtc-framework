@@ -20,9 +20,9 @@
 // the contact_stop scenarios, mirroring test_demo_joint_controller.
 
 #include "iiwa7_leap_test_fixture.hpp"
-#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"  // kMinMaxDamping
 
@@ -31,17 +31,19 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -2261,7 +2263,6 @@ TEST_F(TaskControllerUrdfTest, EstopTickPublishesThisTicksBody) {
 
 }  // namespace
 
-
 // ── grasp_diag.csv (#428), task lane ────────────────────────────────────────
 //
 // Symmetric to the joint controller's JointGraspDiagLogTest. The push site is
@@ -2290,6 +2291,7 @@ class TaskScopedSessionDir {
     grasp_diag_fs::create_directories(dir_);
     ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
   }
+
   ~TaskScopedSessionDir() {
     if (had_prev_) {
       ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
@@ -2299,6 +2301,7 @@ class TaskScopedSessionDir {
     std::error_code ec;
     grasp_diag_fs::remove_all(dir_, ec);
   }
+
   TaskScopedSessionDir(const TaskScopedSessionDir&) = delete;
   TaskScopedSessionDir& operator=(const TaskScopedSessionDir&) = delete;
 
@@ -2356,9 +2359,8 @@ class TaskGraspDiagLogTest : public TaskForcePiBuiltTest {
   };
 
   void BindGraspDiag() {
-    const std::vector<Entry> entries{
-        {std::string(integrated_bringup::kGraspDiagLogMsgType),
-         std::string(integrated_bringup::kGraspDiagLogInstance)}};
+    const std::vector<Entry> entries{{std::string(integrated_bringup::kGraspDiagLogMsgType),
+                                      std::string(integrated_bringup::kGraspDiagLogInstance)}};
     integrated_bringup::LogRegistrationContext ctx{
         .logger = rclcpp::get_logger("grasp_diag_task_test"),
         .log_set = log_set_,
@@ -2459,4 +2461,101 @@ TEST_F(TaskGraspDiagLogTest, EstopTickStillLeavesAValidZeroRow) {
   EXPECT_EQ(GraspDiagSplit(lines.back())[valid_col], "0");
   EXPECT_EQ(GraspDiagSplit(lines[lines.size() - 2U])[valid_col], "1")
       << "the preceding servo tick must be valid, or this proves nothing";
+}
+
+// ── §7.3 joint tail: the arm command is bounded by the joint limits (#478) ───
+//
+// This binding published `desired_q_` straight to the wire until #478 — the
+// hand half of the same function clamped its device and both sibling bindings
+// (`demo_joint`, `demo_wbc`) clamped theirs. The tail's algebra and its ORDER
+// belong to rtc_controllers (test_joint_command_tail); what is asserted here is
+// that this binding CALLS it, on the arm device, with its configured limits.
+namespace {
+
+/// The shipped arm configs with the position band narrowed to `home ± half`.
+std::map<std::string, rtc::DeviceNameConfig> NarrowArmBandForTask(double half) {
+  auto configs = MakeIiwa7LeapDeviceConfigs();
+  auto& limits = configs["iiwa7"].joint_limits.value();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    limits.position_lower[ui] = kArmHome[ui] - half;
+    limits.position_upper[ui] = kArmHome[ui] + half;
+  }
+  return configs;
+}
+
+/// Runs the same CLIK program under the given device configs and returns the
+/// arm's final joint command. Only the configs differ between the two calls
+/// below, which is what makes the second one attributable to the band.
+std::array<double, kArmDof> RunToTargetUnderConfigs(
+    const std::map<std::string, rtc::DeviceNameConfig>& configs, double* worst_step) {
+  DemoTaskController ctrl("", DemoTaskController::Gains{});
+  ctrl.SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+  ctrl.SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+  ctrl.SetControlRate(1.0 / kDt);
+  ctrl.LoadConfig(YAML::Load(kTaskYaml));
+  ctrl.SetDeviceNameConfigs(configs);
+
+  auto state = MakeIiwa7LeapState();
+  auto out = ctrl.Compute(state);  // seed the hold target from the measured pose
+
+  const auto tcp0 = ctrl.tcp_position();
+  std::array<double, kArmDof> target{};
+  target[0] = tcp0[0] + 0.10;  // well past what a 0.005 rad band can reach
+  target[1] = tcp0[1] - 0.08;
+  target[2] = tcp0[2] + 0.06;
+  for (int i = 3; i < kArmDof; ++i) {
+    target[static_cast<std::size_t>(i)] = kArmHome[static_cast<std::size_t>(i)];
+  }
+  ctrl.SetDeviceTarget(0, target);
+
+  std::array<double, kArmDof> prev = kArmHome;
+  *worst_step = 0.0;
+  for (int k = 0; k < 1200; ++k) {
+    state.iteration += 1;
+    out = ctrl.Compute(state);
+    for (int i = 0; i < kArmDof; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      const double q = out.devices[0].commands[ui];
+      state.devices[0].positions[ui] = q;
+      *worst_step = std::max(
+          *worst_step, std::abs(q - prev[ui]) /
+                           MakeIiwa7LeapDeviceConfigs()["iiwa7"].joint_limits->max_velocity[ui]);
+      prev[ui] = q;
+    }
+  }
+  std::array<double, kArmDof> last{};
+  for (int i = 0; i < kArmDof; ++i) {
+    last[static_cast<std::size_t>(i)] = out.devices[0].commands[static_cast<std::size_t>(i)];
+  }
+  return last;
+}
+
+}  // namespace
+
+TEST(TaskControllerJointTail, TheArmCommandStaysInsideTheConfiguredBand) {
+  constexpr double kHalf = 0.005;
+
+  // POSITIVE CONTROL FIRST: with the shipped band the same program must travel
+  // FURTHER than kHalf on some joint, or the bounded run below proves nothing.
+  double free_step = 0.0;
+  const auto free_run = RunToTargetUnderConfigs(MakeIiwa7LeapDeviceConfigs(), &free_step);
+  double free_excursion = 0.0;
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    free_excursion = std::max(free_excursion, std::abs(free_run[ui] - kArmHome[ui]));
+  }
+  ASSERT_GT(free_excursion, kHalf)
+      << "the unbounded run never left the band, so the bounded run proves nothing";
+
+  double bounded_step = 0.0;
+  const auto bounded = RunToTargetUnderConfigs(NarrowArmBandForTask(kHalf), &bounded_step);
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_GE(bounded[ui], kArmHome[ui] - kHalf - 1e-12) << "arm joint " << i << " below its band";
+    EXPECT_LE(bounded[ui], kArmHome[ui] + kHalf + 1e-12) << "arm joint " << i << " above its band";
+  }
+  // The rebound bounds the step that SURVIVES the clamp — the half a velocity
+  // clamp on the solve output cannot reach, since the clamp runs after it.
+  EXPECT_LE(bounded_step, kDt + 1e-12) << "a bounded command stepped past max_velocity·dt";
 }

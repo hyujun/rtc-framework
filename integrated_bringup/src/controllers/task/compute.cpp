@@ -4,6 +4,7 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
+#include "rtc_controllers/compliance/joint_command_tail.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"  // FloorMaxDamping, kMinSigma0
 #include "rtc_controllers/gain_floor.hpp"
 #include "rtc_controllers/task/task_vel_law.hpp"
@@ -1205,8 +1206,31 @@ void DemoTaskController::WriteArmJointCommand(const ControllerState& state, rtc:
     const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     dq_[static_cast<Eigen::Index>(i)] = std::clamp(dq_[static_cast<Eigen::Index>(i)], -lim, lim);
   }
+  // §7.3 joint tail (#478). The velocity clamp above bounds the SOLVE OUTPUT;
+  // what follows bounds the COMMAND, and the two are different numbers on every
+  // tick the position clamp moves something — which is exactly why the order is
+  // a MUST and why it lives in one shared unit (joint_command_tail.hpp) rather
+  // than being spelled out in each binding that self-integrates.
+  //
+  // Until this landed the arm lane had no position bound at all: the hand half
+  // of WriteWireCommand clamped its device, `demo_joint` and `demo_wbc` clamped
+  // theirs, and this binding plus `demo_compliance` published `desired_q_`
+  // straight to the wire. A position command past a joint limit is not a soft push — the
+  // backend rejects it or the arm drives into a hard stop.
+  //
+  // Margin 0: this binding does not read the §7 schema, so it has no
+  // `joint_limit_margin` knob to honour. The band is the raw device limit,
+  // which is still the bound it was missing.
+  const rtc::compliance::JointCommandBounds joint_bounds{
+      .lower = std::span<const double>(device_position_lower_[0]),
+      .upper = std::span<const double>(device_position_upper_[0]),
+      .max_velocity = std::span<const double>(device_max_velocity_[0]),
+      .margin = 0.0,
+  };
+  rtc::compliance::IntegrateAndBoundJointCommand(
+      std::span<double>(desired_q_.data(), static_cast<std::size_t>(desired_q_.size())),
+      std::span<double>(dq_.data(), static_cast<std::size_t>(dq_.size())), nq, dt, joint_bounds);
   for (std::size_t i = 0; i < nq; ++i) {
-    desired_q_[static_cast<Eigen::Index>(i)] += dq_[static_cast<Eigen::Index>(i)] * dt;
     out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }
   // Channels in [nq, nc0) have no model joint behind them. Hold them at the

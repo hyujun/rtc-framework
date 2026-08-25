@@ -138,6 +138,7 @@ rtc_controllers/
 │   │   ├── inertia_shaping.hpp               -- §6.3 관성 성형 코어 (header-only, 무상태) f_cmd = B·f_task + (B−I)·f_ext, B = Λ_S Λ_d⁻¹ + §5.2 편차 clamp. **Λ_S 를 인자로** 받는다 (TaskDynamics 를 모른다 — S2b 수렴점 선점 금지). 스크래치는 max-size `Matrix<double,Dyn,Dyn,0,6,6>` 라 m<6 에서도 heap-free
 │   │   ├── differential_ik.hpp               -- §7.3 운동학 DLS J⁺ + 속도공간 nullspace N (task_dynamics 의 §6.5 λ 규칙 재사용)
 │   │   ├── admittance_integrator.hpp         -- §7.2 semi-implicit Euler + exp3 retract, §7.5 변위/속도 가드
+│   │   ├── joint_command_tail.hpp            -- §7.3 관절 tail: q_base + q̇Δt → [q_min+δ, q_max−δ] clamp → q_base±|v|Δt rate 재바운드 → q̇ round-trip. **순서가 MUST** (clamp 는 받은 스텝을 넓힐 수 있다). position 출력을 자기적분하는 바인딩이 공유한다
 │   │   ├── safety_limiter.hpp                -- §10.5 4단계 (관절한계 반발 → saturation → rate → non-finite)
 │   │   ├── torque_estop.hpp                  -- E-8 토크 홀드 τ = ĝ(q) − D·q̇
 │   │   ├── compliance_state_machine.hpp      -- §10.6 상태기계 (BIAS_CALIBRATING…SAFE_STOP latch)

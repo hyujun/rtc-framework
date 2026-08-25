@@ -465,8 +465,13 @@ if(BUILD_TESTING)
   # this controller is INDISTINGUISHABLE from its sibling, this one asserts what
   # makes it different. Sharing a binary would put the two claims in one place
   # and make "which of them broke" a reading exercise.
+  # §ComplianceMarginGate drives on_configure on a real LifecycleNode — the only
+  # place the §7.3 margin/band check can run, since the band does not exist until
+  # the CM's Pass 2 — so this target opens a DDS participant and takes the
+  # package ROS_DOMAIN_ID like its siblings (#401).
   ament_add_gtest(test_compliance_admittance_coupling
-    test/test_compliance_admittance_coupling.cpp)
+    test/test_compliance_admittance_coupling.cpp
+    ENV ROS_DOMAIN_ID=52)
   target_compile_definitions(test_compliance_admittance_coupling PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   target_link_libraries(test_compliance_admittance_coupling
