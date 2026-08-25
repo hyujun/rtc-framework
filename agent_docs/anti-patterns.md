@@ -197,6 +197,41 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   PROC-6 이 아니다 (단언 약화가 아니라 픽스처가 검사 경로를 타게 만드는 것). 넣은 뒤
   mutation 으로 그 경로가 실제로 살아났는지 확인한다
 
+### AP-PROC-9: configure-time 검증을 그 값이 아직 없는 pass 에 둔다
+
+- **증상**: configure-time 검증을 새로 넣었는데 **잘못된 config 가 통과하고 테스트는 green** 이다.
+  검증 코드는 멀쩡히 있고 실행도 되므로 grep 으로도 리뷰로도 안 잡힌다. 반대 방향의 발현은
+  요란하다 — 검증이 throw 하는데 lifecycle FAILURE 가 아니라 **configure 경로 자체가 탈출**한다
+- **원인**: 파서 옆이 검증을 쓰기 가장 자연스러운 자리인데, CM 3-pass bring-up 에서는 검사 대상이
+  **언제 채워지는가**가 pass 마다 다르다. 축은 "몇 번째 pass 인가" 가 **아니라 그 값이 어디서
+  오는가** 다 (3-pass 계약 SSoT:
+  [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공)):
+  - **모델 파생** — `SetSystemModelConfig` / `SetSharedModelBuilder` 는 `PreConfigure` **전**에
+    주입되므로 Pass 1 `LoadConfig` 에서 이미 유효하다. `DemoWbcController` 의
+    `integration.position_margin` 역전 거부가 거기 사는 이유다 (#473). **Pass 1 검증이 일반적으로
+    틀린 것이 아니다**
+  - **device 파생** (`device_name_configs_` → `LoadDeviceLimitsFromConfig` 가 채우는 한계 밴드)
+    — Pass 1 에는 **없다**. 거기 쓴 검사는 loader 의 ±2π placeholder fallback 만 보므로 2π 미만의
+    어떤 값도 통과시키는 **공허한 게이트**가 된다
+  - **Pass 2** (`SetDeviceNameConfigs` → `OnDeviceConfigsSet`) 는 값은 있지만 **거부 채널이 없다**
+    — CM 의 호출부가 try/catch 밖이라 여기서 던진 throw 는 FAILURE 로 번역되지 않고 configure 를
+    통째로 빠져나간다. 파생·캐시 전용 자리다
+  - **Pass 3** `on_configure` 만 둘 다 갖는다 — 값이 채워져 있고, 바인딩의 기존 try/catch 가
+    로그를 남기고 `CallbackReturn::FAILURE` 를 내며 CM 이 그것을 bring-up 거부로 바꾼다
+
+  실측: `#483` 이 compliance 의 `joint_limit_margin` 역전 거부를 처음 `LoadConfig` 에 넣었다.
+  밴드가 없으니 ±2π fallback 만 검사하는 공허한 게이트였고, 별개 경로를 쫓다가 드러났다
+- **탐지**: **코드의 존재가 아니라 거부 동작을 건다.** 검증을 넣었으면 잘못된 config 로 CM 순서
+  (Pass 1 → Pass 2 → Pass 3) 를 그대로 태워 `on_configure` 가 실제로 `FAILURE` 를 내는지 테스트한다.
+  정상 config 와 **쌍으로** 단언해야 "그 값 때문에" 가 성립한다 — 같은 try 블록의 다른 실패도
+  똑같이 FAILURE 이므로 단독 red 는 귀속되지 않는다. 임계값은 **device config 에서 유도**하고
+  소스에 박지 않는다 (박으면 한계가 바뀐 날 조용히 vacuous 해진다 — AP-DOC-1). 예:
+  `test_compliance_admittance_coupling.cpp` 의 `ComplianceMarginGate`
+- **복구**: 검증을 `on_configure` 로 옮기고 **RT 경로가 쓰는 것과 같은 fallback 으로** 밴드를
+  해석한다 (검사와 RT clamp 가 서로 다른 관절을 얘기하면 안 된다). Pass 2 는 파생·캐시만 하고
+  거부하지 않는다. 옮긴 뒤 mutation 으로 확인 — 게이트를 무력화했을 때 red 가 나야 그 테스트가
+  게이트를 잡고 있는 것이다 ([invariants.md](invariants.md) PROC-6)
+
 ## Controller-Specific
 
 > **AP-CTRL-2 · AP-CTRL-4 는 결번**이다 (은퇴 사유는 기록되지 않았다). ID 는 이력 참조를 위해 재사용하지 않는다.

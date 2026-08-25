@@ -213,7 +213,7 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 | `on_shutdown` | `(State) → CallbackReturn` | `on_cleanup(state)` 위임 |
 | `on_error` | `(State) → CallbackReturn` | no-op `SUCCESS` (서브클래스에서 E-STOP 트리거 등 원하는 복구 로직 override) |
 
-> **3-pass bring-up 계약**: CM은 (1) `PreConfigure(node, yaml)` → (2) 모든 컨트롤러의 `topic_config_` 으로 `active_groups_` 빌드 + `LoadDeviceNameConfigs()` + 컨트롤러별 `SetDeviceNameConfigs(...)` → (3) `on_configure(state, node, yaml)` 순서로 호출합니다. RegisterLog 람다가 `joint_state_names` / `motor_state_names` 등 device-name 정보를 capture할 때, `OnDeviceConfigsSet` 이 이미 실행됐음이 보장됩니다. 단위 테스트에서 `on_configure`를 직접 호출하는 legacy 경로는 `node_ == nullptr` 가드로 분기하여 종전 동작을 유지합니다.
+> **3-pass bring-up 계약**: CM은 (1) `PreConfigure(node, yaml)` → (2) 모든 컨트롤러의 `topic_config_` 으로 `active_groups_` 빌드 + `LoadDeviceNameConfigs()` + 컨트롤러별 `SetDeviceNameConfigs(...)` → (3) `on_configure(state, node, yaml)` 순서로 호출합니다. RegisterLog 람다가 `joint_state_names` / `motor_state_names` 등 device-name 정보를 capture할 때, `OnDeviceConfigsSet` 이 이미 실행됐음이 보장됩니다. 단위 테스트에서 `on_configure`를 직접 호출하는 legacy 경로는 `node_ == nullptr` 가드로 분기하여 종전 동작을 유지합니다. 이 순서는 **configure-time 검증을 어느 훅에 둘 수 있는지**도 규정합니다 — device 파생 상태를 읽는 검증의 pass 선택은 [agent_docs/anti-patterns.md](../agent_docs/anti-patterns.md) AP-PROC-9 참조.
 >
 > **Override 규약**: 서브클래스가 `on_configure`를 오버라이드해 자체 sub/pub을 만들 때 반드시 `RTControllerInterface::on_configure(previous_state, node, yaml_cfg)`를 먼저 호출한 뒤 `node_->create_subscription(...)` / `node_->create_publisher(...)`로 확장합니다. `PreConfigure` 는 base 전용이므로 override 불필요.
 >
