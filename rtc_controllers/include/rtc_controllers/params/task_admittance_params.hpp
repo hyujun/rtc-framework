@@ -39,7 +39,8 @@ struct TaskAdmittanceParams {
   /// `true` (§7.3 default): q_cmd = q_meas + q̇Δt — no position windup, but a
   /// lagging lower controller drags the command back. `false`: integrate the
   /// command itself (smoother, can wind away from the arm), which is why it is
-  /// the only mode guarded by `command_divergence_limit`.
+  /// the only mode guarded by `command_divergence_limit` — on a JOINT-axis
+  /// binding. See that field for why a task-space one guards it elsewhere.
   bool integrate_from_measured{true};
 
   // ── §6.5 σ_min-adaptive DLS ──────────────────────────────────────────────
@@ -48,11 +49,14 @@ struct TaskAdmittanceParams {
   double max_damping{0.05};            ///< λ_max for the DLS ramp
 
   // ── Safety / activation ──────────────────────────────────────────────────
-  double pose_error_limit{0.5};          ///< ‖e(X, X_c)‖ bound → SAFE_STOP
-  double command_divergence_limit{0.5};  ///< ‖q_cmd − q_meas‖ [rad] → SAFE_STOP
-  double joint_limit_margin{0.0};        ///< δ [rad] shrinking the q_cmd clamp band
-  double activation_ramp_time{0.5};      ///< [s] wrench 0→1 linear ramp (§10.7); ≤0 = none
-  double saturation_persist_time{0.1};   ///< [s] velocity clamp held longer → DEGRADED
+  double pose_error_limit{0.5};  ///< ‖e(X, X_c)‖ bound → SAFE_STOP
+  /// ‖q_cmd − q_meas‖ [rad] → SAFE_STOP. JOINT-axis guard: a task-space binding
+  /// reaches the same event through `pose_error_limit` and leaves this unread
+  /// (#478). Kept in the schema for the joint-compliance bindings.
+  double command_divergence_limit{0.5};
+  double joint_limit_margin{0.0};       ///< δ [rad] shrinking the q_cmd clamp band
+  double activation_ramp_time{0.5};     ///< [s] wrench 0→1 linear ramp (§10.7); ≤0 = none
+  double saturation_persist_time{0.1};  ///< [s] velocity clamp held longer → DEGRADED
 };
 
 /// Everything the §7 schema yields that is NOT a gain — see

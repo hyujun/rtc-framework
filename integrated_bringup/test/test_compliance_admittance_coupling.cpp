@@ -29,17 +29,21 @@
 #include "shipped_config_test_fixture.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/state.hpp>
 
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -803,6 +807,156 @@ TEST(ComplianceAdmittanceCoupling, ANonPositiveDegradedRecoveryTimeIsRejected) {
           << "threw for a different reason: " << e.what();
     }
   }
+}
+
+// ── §7.3 joint tail: the arm command is bounded by the joint limits (#478) ───
+//
+// Until #478 the arm lane published `desired_q_` straight to the wire. The hand
+// half of the same function clamped its device and both sibling bindings
+// (`demo_joint`, `demo_wbc`) clamped theirs; this one and `demo_task` did not.
+//
+// The algebra of the tail is `rtc_controllers`' (test_joint_command_tail pins
+// the order and each step). What is asserted here is that this binding CALLS
+// it, on the arm device, with the limits and the margin it was configured with.
+
+/// The shipped arm configs with the position band narrowed to `home ± half`.
+/// Narrowing rather than driving to a real limit is deliberate: §7.5 caps the
+/// compliant frame's travel, so no wrench this fixture can publish will move
+/// the arm 2 rad, and a test that waited for one would be green forever.
+std::map<std::string, rtc::DeviceNameConfig> NarrowArmBand(double half) {
+  auto configs = MakeIiwa7LeapDeviceConfigs();
+  auto& limits = configs["iiwa7"].joint_limits.value();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    limits.position_lower[ui] = kArmHome[ui] - half;
+    limits.position_upper[ui] = kArmHome[ui] + half;
+  }
+  return configs;
+}
+
+TEST(ComplianceJointTail, TheArmCommandStaysInsideTheConfiguredBand) {
+  constexpr double kHalf = 0.005;
+
+  // POSITIVE CONTROL FIRST. With the shipped band the same program must travel
+  // FURTHER than kHalf on some joint — otherwise the bounded run below would be
+  // green because nothing moved, which is the failure this file exists under.
+  double free_excursion = 0.0;
+  {
+    auto ctrl = BringUp(ComplianceConfig());
+    Driver d{ctrl.get()};
+    d.Run(kSettleTicks, Wrench6{});
+    d.Run(kResponseTicks, ForceX(30.0));
+    for (int i = 0; i < kArmDof; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      free_excursion = std::max(free_excursion, std::abs(d.arm_meas[ui] - kArmHome[ui]));
+    }
+  }
+  ASSERT_GT(free_excursion, kHalf)
+      << "the unbounded run never left the band, so the bounded run proves nothing";
+
+  auto ctrl = std::make_unique<DemoComplianceController>("", DemoComplianceController::Gains{});
+  ctrl->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+  ctrl->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+  ctrl->SetControlRate(1.0 / kDt);
+  // LoadConfig FIRST, then the device configs — the CM's own order (Pass 1
+  // PreConfigure→LoadConfig, Pass 2 SetDeviceNameConfigs). Reversing it is not a
+  // stylistic choice: OnDeviceConfigsSet resolves frame ids against the model
+  // LoadConfig builds, and doing it the other way round dereferences a handle
+  // that does not exist yet.
+  ctrl->LoadConfig(ComplianceConfig());
+  ctrl->SetDeviceNameConfigs(NarrowArmBand(kHalf));
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  ASSERT_EQ(ctrl->on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  Driver d{ctrl.get()};
+  std::array<double, kArmDof> prev = kArmHome;
+  bool moved = false;
+  const auto tick = [&](int n, const Wrench6& w) {
+    for (int k = 0; k < n; ++k) {
+      d.Run(1, w);
+      for (int i = 0; i < kArmDof; ++i) {
+        const auto ui = static_cast<std::size_t>(i);
+        const double q = d.arm_meas[ui];
+        ASSERT_GE(q, kArmHome[ui] - kHalf - 1e-12) << "joint " << i << " below its band";
+        ASSERT_LE(q, kArmHome[ui] + kHalf + 1e-12) << "joint " << i << " above its band";
+        // The rebound bounds the step that SURVIVES the clamp, which is the
+        // half a plain velocity clamp on the solve output cannot reach.
+        const double v_max = MakeIiwa7LeapDeviceConfigs()["iiwa7"].joint_limits->max_velocity[ui];
+        ASSERT_LE(std::abs(q - prev[ui]), v_max * kDt + 1e-12) << "joint " << i << " jumped";
+        moved = moved || std::abs(q - kArmHome[ui]) > 1e-9;
+        prev[ui] = q;
+      }
+    }
+  };
+  tick(kSettleTicks, Wrench6{});
+  tick(kResponseTicks, ForceX(30.0));
+  EXPECT_TRUE(moved) << "the arm never moved at all — the band was never tested";
+}
+
+// The parser refuses a negative or non-finite δ (NUM-6b) but cannot see the
+// band, which lives in the device configs. A δ past half the narrowest band
+// inverts it, and an inverted band makes the tail SKIP the clamp — a silent way
+// to turn the guard off while the YAML still reads as though it were on. Same
+// call as #473 made for the sibling WBC binding's `position_margin`.
+//
+// Driven through on_configure because that is where the check can live: the
+// band does not exist until Pass 2, and Pass 2's entry point is not
+// exception-handled (see the block in lifecycle.cpp for the full reasoning).
+class ComplianceMarginGate : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+  }
+
+  /// The full CM order for one margin value: Pass 1, Pass 2, Pass 3.
+  static rtc::RTControllerInterface::CallbackReturn ConfigureWithMargin(double margin) {
+    rclcpp::NodeOptions opts;
+    opts.use_global_arguments(false);
+    auto node =
+        std::make_shared<rclcpp_lifecycle::LifecycleNode>("compliance_margin_gate", "", opts);
+    auto ctrl = std::make_unique<DemoComplianceController>("", DemoComplianceController::Gains{});
+    ctrl->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+    ctrl->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+    ctrl->SetControlRate(1.0 / kDt);
+    YAML::Node cfg = ComplianceConfig();
+    cfg["joint_limit_margin"] = margin;
+    ctrl->LoadConfig(cfg);
+    ctrl->SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
+    return ctrl->on_configure(rclcpp_lifecycle::State{}, node, cfg);
+  }
+};
+
+TEST_F(ComplianceMarginGate, AMarginThatInvertsAJointBandIsRejected) {
+  // Derived from the configs, not written down: the day a limit changes, this
+  // still names the margin that inverts something.
+  const auto limits = MakeIiwa7LeapDeviceConfigs()["iiwa7"].joint_limits.value();
+  double narrowest = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    narrowest = std::min(narrowest, limits.position_upper[ui] - limits.position_lower[ui]);
+  }
+  ASSERT_TRUE(std::isfinite(narrowest));
+
+  // Asserted as a PAIR. on_configure reports a refusal as FAILURE and logs the
+  // reason, so "it failed" on its own could be any of a dozen things in that
+  // try block. The two runs differ in exactly one number, which is what makes
+  // the second one attributable to the margin.
+  EXPECT_EQ(ConfigureWithMargin(narrowest / 2.0 - 1e-3),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS)
+      << "a margin that leaves the band intact was refused";
+  EXPECT_EQ(ConfigureWithMargin(narrowest / 2.0 + 1e-3),
+            rtc::RTControllerInterface::CallbackReturn::FAILURE)
+      << "a margin of " << (narrowest / 2.0 + 1e-3) << " rad inverted a " << narrowest
+      << " rad band and was accepted";
 }
 
 }  // namespace

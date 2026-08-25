@@ -41,9 +41,9 @@
 // reads as "this never happened" rather than "this was never watched".
 //
 // WHY each one is unwired is NOT restated here — the fault-classification block
-// in `controllers/compliance/compute.cpp` owns that judgement, and one of the
-// three (`command_divergence`) is an unwatched gap rather than an unreachable
-// mode, which is a distinction only that block is in a position to keep true.
+// in `controllers/compliance/compute.cpp` owns that judgement, and it has since
+// needed a THIRD revision (#478) — which is precisely the distinction only that
+// block is in a position to keep true.
 // This header carried its own copy of the reasoning until the #469 review found
 // the copy asserting the opposite of what the command lane actually does; both
 // places were wrong together, because nobody edits a rationale twice. What this

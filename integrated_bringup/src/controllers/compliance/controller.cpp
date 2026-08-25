@@ -1262,8 +1262,9 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
   // satisfied by what S2 shipped. Do NOT "clean up" `source` on the grounds that
   // it is not in the core schema.
   //
-  // Nothing reads either struct in this commit; parsing now means the shipped
-  // profiles are validated by the sprint that wrote them rather than by S3.
+  // Parsed here since S2 so the shipped profiles are validated by the sprint
+  // that wrote them; the §7 law, the fault block and the joint tail have read
+  // this struct since S3.
   rtc::params::ParseTaskAdmittanceParams(cfg, admittance_params_, admittance_config_);
   wrench_pipeline_.Configure(admittance_config_.wrench, 1.0 / GetDefaultDt());
 

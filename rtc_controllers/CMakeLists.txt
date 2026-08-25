@@ -140,6 +140,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_admittance_core test/test_admittance_core.cpp)
   target_link_libraries(test_admittance_core rtc_controllers)
 
+  # §7.3 joint command tail (#478): the shared integrate → clamp → rebound →
+  # round-trip step both position-output bindings run. Header-only, model-free.
+  ament_add_gtest(test_joint_command_tail test/test_joint_command_tail.cpp)
+  target_link_libraries(test_joint_command_tail rtc_controllers)
+
   ament_add_gtest(test_quintic_blend_trajectory test/test_quintic_blend_trajectory.cpp)
   target_link_libraries(test_quintic_blend_trajectory rtc_controllers)
 

@@ -74,6 +74,11 @@ struct ComplianceFaults {
   /// 상한 감시 필수"). CRITICAL rather than degrading: the command has already
   /// wound away from the arm, so continuing widens the gap, and there is no
   /// reduced-authority mode to fall back to the way a lost wrench has one.
+  ///
+  /// A JOINT-axis guard. The bindings that need it are the ones whose command
+  /// IS q; a task-space binding closes every feedback path on the measurement,
+  /// so the same physical event reaches `pose_error_exceeded` first and this
+  /// flag stays false by design there (#478, compliance-conventions.md §7.3).
   bool command_divergence{false};
 
   // → DEGRADED (recoverable)
