@@ -341,6 +341,12 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_activate(
   // external torque — the residual would report a load that never existed and
   // then decay over ~1/K_I, which reads exactly like a real transient.
   ResetMomentumObserverRtState(momentum_wiring_);
+  // #484: the joint-tail totals are per-ACTIVATION. Carrying them across a
+  // deactivate/activate cycle would bill the previous session's clamping to this
+  // one, and the deactivation summary's tick window — the half that lets an
+  // operator line a pin up against what the arm was doing — would span a gap
+  // during which nothing ticked at all.
+  joint_tail_stats_.Reset();
   // #469 S3, §10.7: the compliant frame is a deviation from the reference, and
   // an activation must inherit none of it — otherwise the first tick asks the
   // arm to realise a displacement accrued before anyone was watching, which is
@@ -389,6 +395,22 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_deactivate(
   active_.store(false, std::memory_order_release);
   DeactivateOwnedTopics(prev, owned_topics_);
   log_set_.DrainAll();  // flush in-flight log SPSC residue
+  // #484: the §7.3 tail's activation summary. Silent unless the band actually
+  // engaged — see joint_tail_stats.hpp.
+  //
+  // Reached on a controller SWITCH and on an explicit lifecycle
+  // deactivate/shutdown, NOT on SIGINT: the CM's main() waits for
+  // `rclcpp::ok()` to fall, cancels its executors and returns without driving
+  // the lifecycle down. That is why the per-tick throttled WARN at the call site
+  // is the primary channel and this line is the recap — a Ctrl-C'd bring-up
+  // still has the WARNs in its terminal scrollback.
+  //
+  // Counters are final by the time this runs: on the switch path the CM has
+  // already moved `active_controller_idx_` away and waited a tick (D-A1 step 4),
+  // and on the lifecycle path it has stopped the RT loop outright. Worst case
+  // under a future faster switch, the recap misses the last tick's increment —
+  // the members are atomic, so that is a lost count, never a torn read.
+  LogJointTailSummary(logger_, "[compliance]", joint_tail_stats_);
   return CallbackReturn::SUCCESS;
 }
 

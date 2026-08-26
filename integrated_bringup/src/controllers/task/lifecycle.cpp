@@ -294,6 +294,11 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
   // external torque — the residual would report a load that never existed and
   // then decay over ~1/K_I, which reads exactly like a real transient.
   ResetMomentumObserverRtState(momentum_wiring_);
+  // #484: per-ACTIVATION totals, same call the sibling compliance binding makes
+  // at the same point — carrying them across a cycle would bill the previous
+  // session's clamping to this one and stretch the summary's tick window across
+  // a gap in which nothing ticked.
+  joint_tail_stats_.Reset();
   // The identical argument, applied to the grasp FSM — which it was not, until a
   // review found the gap. A deactivate mid-grasp freezes the FSM (nothing steps
   // it while Inactive) with its request flags still armed, so the first tick after
@@ -321,6 +326,11 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_deactivate(
   active_.store(false, std::memory_order_release);
   DeactivateOwnedTopics(prev, owned_topics_);
   log_set_.DrainAll();  // flush in-flight log SPSC residue
+  // #484: the §7.3 tail's activation summary, on the same terms as the sibling
+  // compliance binding — silent on a clean run, and NOT reached on SIGINT (the
+  // CM's main() returns without driving the lifecycle down), which is why the
+  // per-tick throttled WARN at the call site is the primary channel.
+  LogJointTailSummary(logger_, "[task]", joint_tail_stats_);
   return CallbackReturn::SUCCESS;
 }
 

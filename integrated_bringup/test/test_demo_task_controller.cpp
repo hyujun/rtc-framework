@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -2558,4 +2559,102 @@ TEST(TaskControllerJointTail, TheArmCommandStaysInsideTheConfiguredBand) {
   // The rebound bounds the step that SURVIVES the clamp — the half a velocity
   // clamp on the solve output cannot reach, since the clamp runs after it.
   EXPECT_LE(bounded_step, kDt + 1e-12) << "a bounded command stepped past max_velocity·dt";
+}
+
+// ── §7.3 joint tail: what the band did is REPORTED here too (#484) ──────────
+//
+// The test above pins that this binding CALLS the tail. This pins that it
+// consumes the tail's REPORT, which both position-output bindings discarded
+// until #484 — and what was lost was a reading: an arm held against its band
+// and an arm that has settled produce the same flat trajectory everywhere else
+// in this controller's output.
+//
+// The compliance sibling carries the same pair of assertions against the same
+// shared accumulator; joint_tail_stats.hpp owns why this is a counter and a log
+// line rather than a diagnostic column.
+namespace {
+
+/// The shipped arm configs with every arm joint's band moved entirely BELOW
+/// `kArmHome`, so `desired_q_` starts outside it on the first tick.
+///
+/// This is the only shape that reaches the REBOUND half. The solve output is
+/// velocity-clamped before the tail, so an in-band command can never hand the
+/// rebound a step too large — the only source of one is a clamp that WIDENS the
+/// step, which needs a base outside the band. Hence `gap` > max_velocity·dt.
+std::map<std::string, rtc::DeviceNameConfig> ArmBandBelowHomeForTask(double gap, double width) {
+  auto configs = MakeIiwa7LeapDeviceConfigs();
+  auto& limits = configs["iiwa7"].joint_limits.value();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    limits.position_upper[ui] = kArmHome[ui] - gap;
+    limits.position_lower[ui] = kArmHome[ui] - gap - width;
+  }
+  return configs;
+}
+
+/// Holds at the measured pose for `ticks` under the given band and returns what
+/// the tail counted. No target is authored: with the band moved off `kArmHome`
+/// the clamp fires on the hold command itself, so the two runs below differ in
+/// exactly one thing — the band.
+void HoldUnderBand(const std::map<std::string, rtc::DeviceNameConfig>& configs, int ticks,
+                   std::uint64_t* clamp_ticks, std::uint64_t* rebound_ticks) {
+  DemoTaskController ctrl("", DemoTaskController::Gains{});
+  ctrl.SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+  ctrl.SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+  ctrl.SetControlRate(1.0 / kDt);
+  ctrl.LoadConfig(YAML::Load(kTaskYaml));
+  ctrl.SetDeviceNameConfigs(configs);
+
+  auto state = MakeIiwa7LeapState();
+  auto out = ctrl.Compute(state);  // seed the hold target from the measured pose
+  for (int k = 0; k < ticks; ++k) {
+    state.iteration += 1;
+    out = ctrl.Compute(state);
+    for (int i = 0; i < kArmDof; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      state.devices[0].positions[ui] = out.devices[0].commands[ui];
+    }
+  }
+  const auto& stats = ctrl.GetJointTailStatsForTesting();
+  *clamp_ticks = stats.clamp_ticks.load();
+  *rebound_ticks = stats.rebound_ticks.load();
+}
+
+}  // namespace
+
+TEST(TaskControllerJointTail, TheTailReportIsCountedAndIsSilentOnAShippedBand) {
+  // The narrowest arm max_velocity is 1.71 rad/s, so one tick of travel is
+  // ~3.4 mrad. 50 mrad is an order of magnitude past that, which is what makes
+  // the clamp's pull to the boundary a step the rebound must cut down. Derived
+  // rather than written as a bare number so a changed fixture limit still says
+  // why this value was chosen.
+  constexpr double kGap = 0.05;
+  constexpr int kTicks = 20;
+  const auto& limits = MakeIiwa7LeapDeviceConfigs()["iiwa7"].joint_limits.value();
+  double slowest_step = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < kArmDof; ++i) {
+    slowest_step = std::min(slowest_step, limits.max_velocity[static_cast<std::size_t>(i)] * kDt);
+  }
+  ASSERT_GT(kGap, slowest_step) << "the gap no longer outruns one tick of travel";
+
+  // Asserted as a PAIR, the same call ComplianceMarginGate makes: "the counter
+  // moved" on its own could be a counter stuck on, and the two runs differ in
+  // exactly one thing.
+  std::uint64_t shipped_clamp = 0;
+  std::uint64_t shipped_rebound = 0;
+  HoldUnderBand(MakeIiwa7LeapDeviceConfigs(), kTicks, &shipped_clamp, &shipped_rebound);
+  EXPECT_EQ(shipped_clamp, 0U) << "holding inside the shipped iiwa7 band clamped a command";
+  EXPECT_EQ(shipped_rebound, 0U);
+
+  std::uint64_t shifted_clamp = 0;
+  std::uint64_t shifted_rebound = 0;
+  HoldUnderBand(ArmBandBelowHomeForTask(kGap, /*width=*/0.5), kTicks, &shifted_clamp,
+                &shifted_rebound);
+  EXPECT_GT(shifted_clamp, 0U)
+      << "the hold command sat outside the band and nothing counted the clamp";
+  // The ORDER, observed at the binding. Run the rebound FIRST and it bounds the
+  // tiny pre-clamp step (a no-op); the clamp then discards that and moves the
+  // command kGap in one tick — this counter would read 0 while the arm jumped.
+  EXPECT_GT(shifted_rebound, 0U)
+      << "the clamp widened the step and nothing rebounded it — 7.3's order is reversed";
 }

@@ -14,6 +14,7 @@
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "integrated_bringup/support/joint_tail_stats.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
@@ -388,6 +389,13 @@ class DemoTaskController final : public RTControllerInterface {
     return active_.load(std::memory_order_acquire);
   }
 
+  /// The §7.3 tail's activation totals (#484), on the same terms as the sibling
+  /// compliance binding's seam of the same name — which owns the note on why the
+  /// counters are asserted rather than the WARN line.
+  [[nodiscard]] const JointTailStats& GetJointTailStatsForTesting() const noexcept {
+    return joint_tail_stats_;
+  }
+
   /// Test-only: the latch value the non-RT quiet gate would read right now.
   /// Distinct from observing the freeze in the command: a tick that freezes the
   /// hand but never mirrors the latch leaves the gate believing the hand is
@@ -743,6 +751,13 @@ class DemoTaskController final : public RTControllerInterface {
   std::atomic<bool> target_is_hold_seed_{true};
   /// Consecutive ticks an external goal has been held for a frame mismatch.
   std::atomic<std::uint32_t> frame_wait_ticks_{0};
+
+  // ── §7.3 joint tail observation (#484) ───────────────────────────────────
+  /// Per-ACTIVATION totals for the shared joint tail, accumulated on the RT tick
+  /// and reported once at `on_deactivate`. Reset in `on_activate`. The sibling
+  /// compliance binding carries the identical member for the identical reason —
+  /// see joint_tail_stats.hpp, which owns the rationale for both.
+  JointTailStats joint_tail_stats_{};
 
   /// Seed the arm hold target at `pose` and tag it with frame `id`, so the goal
   /// and the control frame agree and CLIK sees zero task error. Shared by the

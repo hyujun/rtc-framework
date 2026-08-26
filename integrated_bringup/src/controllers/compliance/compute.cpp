@@ -1573,9 +1573,26 @@ void DemoComplianceController::WriteArmJointCommand(const ControllerState& state
       .max_velocity = std::span<const double>(device_max_velocity_[0]),
       .margin = admittance_params_.joint_limit_margin,
   };
-  rtc::compliance::IntegrateAndBoundJointCommand(
+  const auto tail = rtc::compliance::IntegrateAndBoundJointCommand(
       std::span<double>(desired_q_.data(), static_cast<std::size_t>(desired_q_.size())),
       std::span<double>(dq_.data(), static_cast<std::size_t>(dq_.size())), nq, dt, joint_bounds);
+  // #484: the tail's report is the ONLY thing that separates "the arm settled"
+  // from "the arm is held against its joint band" — both are a flat trajectory
+  // everywhere else. `disp_limited` answers the same question on the task axis;
+  // this is the joint axis, and until this landed the report was discarded here.
+  //
+  // RT-3's throttle exception applies: primitive-only format, no string
+  // assembly, and the site sits inside `if (engaged)` so a healthy run never
+  // reaches the macro at all — the logger lookup a permanently-true THROTTLE
+  // would pay every tick is not paid here.
+  if (joint_tail_stats_.Accumulate(tail, state.iteration)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "[compliance] 7.3 joint band engaged: %d joint(s) position-clamped, "
+                         "%d rate-rebounded (margin=%.3f rad) — a flat joint trajectory now is "
+                         "PINNED, not settled",
+                         tail.position_clamped, tail.rate_rebounded,
+                         admittance_params_.joint_limit_margin);
+  }
   for (std::size_t i = 0; i < nq; ++i) {
     out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }

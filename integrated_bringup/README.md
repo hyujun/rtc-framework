@@ -34,7 +34,7 @@ integrated_bringup/
 │   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum
 │   │       ├── grasp_phase_manager.hpp    <- 5-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
 │   │       └── force_reference_updater.hpp <- Stage A-3 per-contact normal-force PI helper
-│   ├── support/                        <- controller 인프라 (로깅 매크로, owned topics, vTCP, log 등록 헬퍼, momentum-observer 배선)
+│   ├── support/                        <- controller 인프라 (로깅 매크로, owned topics, vTCP, log 등록 헬퍼, momentum-observer 배선, compliance §7.3 관절 tail 통계)
 │   │   ├── bringup_logging.hpp
 │   │   ├── controller_log_registration.hpp
 │   │   ├── demo_shared_config.hpp
@@ -586,6 +586,28 @@ ros2 service call /demo_wbc_controller/grasp_command \
 | `kThrottleFastMs` | 1000 | contact_stop FREEZE/SKIP, force_pi 위상 전이 등 빠른 진행 표시 |
 | `kThrottleSlowMs` | 2000 | grasp 상태 스냅샷, 일반 반복 경고 |
 | `kThrottleIdleMs` | 10000 | 장기 유휴 / one-shot 전이 안전 그물 |
+
+### compliance §7.3 관절 밴드 판독 (#484)
+
+위치-출력 바인딩 두 개 (`demo_compliance` · `demo_task`) 는 명령을 스스로 적분하고 compliance §7.3 관절 tail
+([joint_command_tail.hpp](../rtc_controllers/include/rtc_controllers/compliance/joint_command_tail.hpp))
+로 바운드한다. 그 tail 이 **이번 tick 에 몇 개 관절을 움직였는지**를 돌려주는데, 그 값이 없으면
+**밴드에 눌려 멈춘 팔과 정착한 팔이 같은 평평한 궤적**으로 보인다 — 다른 어떤 출력도 둘을 구분하지
+못한다. task 축에는 `compliance_diag.csv` 의 `disp_limited` 가 그 답을 주고, 관절 축의 답이 이것이다.
+
+채널이 둘인 이유는 종료 경로다 — CM 의 `main()` 은 SIGINT 에서 executor 만 정리하고 리턴하므로
+**Ctrl-C 는 lifecycle 훅을 타지 않는다**. 따라서 요약만 두면 Ctrl-C 로 끝낸 bring-up 에서는 아무것도
+안 나온다.
+
+| 채널 | 레벨 | 언제 | 읽는 법 |
+|---|---|---|---|
+| 발동 중 (`... joint band engaged: N joint(s) position-clamped, M rate-rebounded`) | `WARN`, `kThrottleSlowMs` | clamp 나 rate 재바운드가 **실제로 걸린 tick** 에서만 (`if (발동)` 안이라 정상 운전은 매크로에 도달조차 안 한다) | 이 줄이 찍히는 구간의 평평한 관절 궤적은 **정착이 아니라 pin** 이다. 타임스탬프가 곧 "언제 눌렸나" |
+| 활성화 요약 (`... joint band engaged this activation: ...`) | `INFO` | `on_deactivate` — 컨트롤러 **전환** 및 명시적 `ros2 lifecycle set … deactivate/shutdown`. **Ctrl-C 에는 안 뜬다** | tick 창 (`ticks A..B`) 을 그 run 의 다른 로그·CSV 와 대조. 한 번도 안 걸렸으면 **줄 자체가 없다** |
+
+`demo_compliance` 는 §7 의 `joint_limit_margin` (δ) 을 함께 찍고, `demo_task` 는 δ 노브가 없어 raw
+device 한계에서 clamp 하므로 그 사실을 문구로 밝힌다 — 후자의 clamp 는 soft margin 이 아니라 실제
+관절 한계 도달이라 더 무거운 판독이다. 누적기·근거는
+[support/joint_tail_stats.hpp](include/integrated_bringup/support/joint_tail_stats.hpp).
 
 ### 실시간 필터링 예시
 
