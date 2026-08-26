@@ -30,17 +30,13 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
     // the YAML still reads as though it were on. Same call #473 made for the
     // sibling WBC binding's `integration.position_margin`.
     //
-    // HERE, not in LoadConfig, and the difference is not stylistic. LoadConfig
-    // runs in the CM's Pass 1 (`PreConfigure`), and the band does not exist yet:
-    // device configs arrive in Pass 2 and `OnDeviceConfigsSet` is what fills
-    // `device_position_lower_/upper_`. A check written next to the parser would
-    // have validated the ±2π fallback every time and passed for any δ below 2π.
-    // Pass 2 is also the wrong home — `SetDeviceNameConfigs` is called outside
-    // any try/catch, so a throw there escapes the configure path entirely
-    // instead of becoming the FAILURE this block turns it into.
+    // Here rather than next to the parser because the band is device-derived,
+    // which is what picks the pass — see AP-PROC-9 in
+    // agent_docs/anti-patterns.md.
     //
-    // Resolved with the SAME fallbacks the tail uses, so the check and the RT
-    // path cannot disagree about which joints they are talking about.
+    // Resolved with the SAME fallbacks the tail uses (the literals below), so
+    // the check and the RT path cannot disagree about which joints they are
+    // talking about.
     {
       const auto& lower = device_position_lower_[0];
       const auto& upper = device_position_upper_[0];
