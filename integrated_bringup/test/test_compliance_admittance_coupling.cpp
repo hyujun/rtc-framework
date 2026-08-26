@@ -81,13 +81,22 @@ YAML::Node ComplianceConfig() {
   return cfg;
 }
 
-std::unique_ptr<DemoComplianceController> BringUp(const YAML::Node& cfg) {
+/// `devices` defaults to the shipped configs; the joint-tail tests pass a
+/// narrowed or shifted band. LoadConfig runs FIRST and the device configs
+/// second — the CM's own order (Pass 1 PreConfigure→LoadConfig, Pass 2
+/// SetDeviceNameConfigs). Reversing it is not a stylistic choice:
+/// OnDeviceConfigsSet resolves frame ids against the model LoadConfig builds,
+/// and doing it the other way round dereferences a handle that does not exist
+/// yet.
+std::unique_ptr<DemoComplianceController> BringUp(
+    const YAML::Node& cfg,
+    const std::map<std::string, rtc::DeviceNameConfig>& devices = MakeIiwa7LeapDeviceConfigs()) {
   auto ctrl = std::make_unique<DemoComplianceController>("", DemoComplianceController::Gains{});
   ctrl->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
   ctrl->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
   ctrl->SetControlRate(1.0 / kDt);
   ctrl->LoadConfig(cfg);
-  ctrl->SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
+  ctrl->SetDeviceNameConfigs(devices);
   // ACTIVATE. Without this every SetDeviceTarget below is dropped by the #196
   // activation-generation gate — a target queued while Inactive is stale by
   // definition — and a fixture that dispatched goals into that hole would be
@@ -892,6 +901,119 @@ TEST(ComplianceJointTail, TheArmCommandStaysInsideTheConfiguredBand) {
   tick(kSettleTicks, Wrench6{});
   tick(kResponseTicks, ForceX(30.0));
   EXPECT_TRUE(moved) << "the arm never moved at all — the band was never tested";
+}
+
+// ── §7.3 joint tail: what the band did is now REPORTED (#484) ───────────────
+//
+// The test above pins that the tail bounds the command. These pin that the
+// binding CONSUMES the tail's report, which it discarded until #484 — and the
+// consequence of discarding it was a reading, not a missing number: an arm held
+// against its band and an arm that has settled are the same flat trajectory
+// everywhere else in this controller's output.
+//
+// Asserted on `GetJointTailStatsForTesting()` rather than on the throttled WARN
+// the counters gate. The macro's throttle state is a process-global `static` at
+// the expansion point, so an output assertion would be order-dependent on every
+// other test in the binary that reaches the same line.
+
+/// The shipped arm configs with every arm joint's band moved entirely BELOW
+/// `kArmHome`, leaving `desired_q_` (seeded from the measured position) outside
+/// it from the first tick.
+///
+/// This is the shape that exercises the REBOUND half, and it is the only shape
+/// that can. The solve output is velocity-clamped before the tail, so an
+/// in-band command can never present the rebound with a step too large — the
+/// only way to get one is a clamp that WIDENS the step, which needs a base
+/// outside the band. That is exactly why §7.3 fixes the order, and it is why
+/// `gap` below is chosen larger than `max_velocity·dt`.
+std::map<std::string, rtc::DeviceNameConfig> ArmBandBelowHome(double gap, double width) {
+  auto configs = MakeIiwa7LeapDeviceConfigs();
+  auto& limits = configs["iiwa7"].joint_limits.value();
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    limits.position_upper[ui] = kArmHome[ui] - gap;
+    limits.position_lower[ui] = kArmHome[ui] - gap - width;
+  }
+  return configs;
+}
+
+TEST(ComplianceJointTail, TheClampIsSilentOnAShippedBandAndCountedOnANarrowedOne) {
+  constexpr double kHalf = 0.005;
+
+  // NEGATIVE CONTROL FIRST: the shipped band. A counter stuck at "engaged"
+  // would pass the narrowed run below on its own, so the quiet run is what
+  // makes that run mean anything.
+  double free_excursion = 0.0;
+  {
+    auto ctrl = BringUp(ComplianceConfig());
+    Driver d{ctrl.get()};
+    d.Run(kSettleTicks, Wrench6{});
+    d.Run(kResponseTicks, ForceX(30.0));
+    for (int i = 0; i < kArmDof; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      free_excursion = std::max(free_excursion, std::abs(d.arm_meas[ui] - kArmHome[ui]));
+    }
+    EXPECT_TRUE(ctrl->GetJointTailStatsForTesting().Quiet())
+        << "the shipped iiwa7 band clamped a command — either the limits moved or the counter is "
+           "stuck on";
+  }
+  // ...and the same program must travel further than the narrowed band is wide,
+  // or the run below would be quiet because nothing moved.
+  ASSERT_GT(free_excursion, kHalf)
+      << "the unbounded run never left the band, so the bounded run proves nothing";
+
+  auto ctrl = BringUp(ComplianceConfig(), NarrowArmBand(kHalf));
+  Driver d{ctrl.get()};
+  d.Run(kSettleTicks, Wrench6{});
+  d.Run(kResponseTicks, ForceX(30.0));
+
+  const auto& stats = ctrl->GetJointTailStatsForTesting();
+  EXPECT_GT(stats.clamp_ticks.load(), 0U) << "the arm was held at the band and nothing counted it";
+  EXPECT_GE(stats.clamp_joint_events.load(), stats.clamp_ticks.load())
+      << "joint-events cannot be fewer than the ticks that produced them";
+  EXPECT_GE(stats.max_clamped_joints.load(), 1U);
+  EXPECT_NE(stats.first_tick.load(), 0U) << "the tick window was never stamped";
+  EXPECT_LE(stats.first_tick.load(), stats.last_tick.load());
+  EXPECT_FALSE(stats.Quiet());
+
+  // Per-ACTIVATION, not per-lifetime: a resumed controller reporting the last
+  // session's clamping would attribute the previous object's bring-up to this
+  // one, and the summary's tick window would span a gap in which nothing
+  // ticked.
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  ASSERT_EQ(ctrl->on_activate(inactive), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(stats.Quiet()) << "on_activate did not reset the joint-tail totals";
+}
+
+TEST(ComplianceJointTail, AClampThatWidensTheStepIsCountedAsARebound) {
+  // The narrowest arm max_velocity is 1.71 rad/s, so one tick of travel is
+  // 1.71·kDt ≈ 3.4 mrad. A 50 mrad gap is an order of magnitude past that, so
+  // the clamp's pull to the boundary is unambiguously a step the rebound has to
+  // cut down — derived here rather than written as a bare number so the day a
+  // fixture limit changes this still says why 0.05 was chosen.
+  constexpr double kGap = 0.05;
+  const auto& limits = MakeIiwa7LeapDeviceConfigs()["iiwa7"].joint_limits.value();
+  double slowest_step = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < kArmDof; ++i) {
+    slowest_step = std::min(slowest_step, limits.max_velocity[static_cast<std::size_t>(i)] * kDt);
+  }
+  ASSERT_GT(kGap, slowest_step) << "the gap no longer outruns one tick of travel";
+
+  auto ctrl = BringUp(ComplianceConfig(), ArmBandBelowHome(kGap, /*width=*/0.5));
+  Driver d{ctrl.get()};
+  d.Run(20, Wrench6{});  // no wrench needed: the base is outside the band already
+
+  const auto& stats = ctrl->GetJointTailStatsForTesting();
+  EXPECT_GT(stats.clamp_ticks.load(), 0U);
+  // The ORDER, observed at the binding rather than at the unit. Run the rebound
+  // FIRST and it bounds the tiny pre-clamp step (a no-op), the clamp then throws
+  // that away and moves the command kGap in one tick — so this counter would be
+  // 0 and the arm would jump 50 mrad while every logged value still looked
+  // reasonable.
+  EXPECT_GT(stats.rebound_ticks.load(), 0U)
+      << "the clamp widened the step and nothing rebounded it — §7.3's order is reversed";
+  EXPECT_GE(stats.rebound_joint_events.load(), stats.rebound_ticks.load());
 }
 
 // The parser refuses a negative or non-finite δ (NUM-6b) but cannot see the

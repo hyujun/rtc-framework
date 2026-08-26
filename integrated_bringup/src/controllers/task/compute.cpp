@@ -1227,9 +1227,22 @@ void DemoTaskController::WriteArmJointCommand(const ControllerState& state, rtc:
       .max_velocity = std::span<const double>(device_max_velocity_[0]),
       .margin = 0.0,
   };
-  rtc::compliance::IntegrateAndBoundJointCommand(
+  const auto tail = rtc::compliance::IntegrateAndBoundJointCommand(
       std::span<double>(desired_q_.data(), static_cast<std::size_t>(desired_q_.size())),
       std::span<double>(dq_.data(), static_cast<std::size_t>(dq_.size())), nq, dt, joint_bounds);
+  // #484, and the sibling binding says the same at its own call site: a flat
+  // joint trajectory is either "settled" or "held against the band", and the
+  // tail's report is what tells them apart. No margin term in the line below —
+  // this binding clamps at the raw device limit (see the bounds above), so a
+  // clamp here means the arm reached an actual joint limit rather than a soft
+  // band, which is the more serious of the two readings.
+  if (joint_tail_stats_.Accumulate(tail, state.iteration)) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "[task] 7.3 joint band engaged: %d joint(s) position-clamped at the raw "
+                         "device limit, %d rate-rebounded — a flat joint trajectory now is "
+                         "PINNED, not settled",
+                         tail.position_clamped, tail.rate_rebounded);
+  }
   for (std::size_t i = 0; i < nq; ++i) {
     out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }

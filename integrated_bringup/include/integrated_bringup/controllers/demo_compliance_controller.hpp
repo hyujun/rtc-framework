@@ -51,6 +51,7 @@
 #include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/compliance_wrench_source.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "integrated_bringup/support/joint_tail_stats.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
@@ -406,6 +407,19 @@ class DemoComplianceController final : public RTControllerInterface {
   [[nodiscard]] const rtc::params::TaskAdmittanceParams& GetAdmittanceParamsForTesting()
       const noexcept {
     return admittance_params_;
+  }
+
+  /// The §7.3 tail's activation totals (#484). By reference — the members are
+  /// atomics, so this type does not copy.
+  ///
+  /// This is the seam the tests assert on rather than the WARN line itself: the
+  /// log macro's throttle state is a process-global `static` at the expansion
+  /// point (it is shared by every instance in the binary), so a test written
+  /// against the output would be order-dependent on every other test that
+  /// reaches the same line. The counters are what the line reports; pinning them
+  /// pins it.
+  [[nodiscard]] const JointTailStats& GetJointTailStatsForTesting() const noexcept {
+    return joint_tail_stats_;
   }
 
   /// Inject a wrench straight into the pipeline, bypassing the source adapter.
@@ -1071,6 +1085,13 @@ class DemoComplianceController final : public RTControllerInterface {
   /// outside `admittance_params_` rather than being quietly defaulted inside
   /// the state machine call.
   double degraded_recovery_time_{0.5};
+
+  // ── §7.3 joint tail observation (#484) ───────────────────────────────────
+  /// Per-ACTIVATION totals, not per-tick: the tail's report is consumed the tick
+  /// it is produced (throttled WARN) and accumulated here for the deactivation
+  /// summary. Reset in `on_activate` — see joint_tail_stats.hpp for why this is
+  /// a counter and a log line rather than a `compliance_diag` column.
+  JointTailStats joint_tail_stats_{};
 
   // ── Generalized-momentum observer (#135 Layer 1b) ─────────────────────────
   // Parsed in LoadConfig (the YAML is there) and BUILT in OnDeviceConfigsSet,
