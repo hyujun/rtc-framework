@@ -1016,15 +1016,15 @@ TEST(ComplianceJointTail, AClampThatWidensTheStepIsCountedAsARebound) {
   EXPECT_GE(stats.rebound_joint_events.load(), stats.rebound_ticks.load());
 }
 
-// The parser refuses a negative or non-finite δ (NUM-6b) but cannot see the
-// band, which lives in the device configs. A δ past half the narrowest band
-// inverts it, and an inverted band makes the tail SKIP the clamp — a silent way
-// to turn the guard off while the YAML still reads as though it were on. Same
-// call as #473 made for the sibling WBC binding's `position_margin`.
+// Where this sits relative to its sibling sensor: the parser refuses a negative
+// or non-finite δ (NUM-6b) but never sees the band, which is device-derived, so
+// an inverted band can only be caught at the binding. What the gate rejects,
+// and why, is owned by the block in compliance/lifecycle.cpp.
 //
-// Driven through on_configure because that is where the check can live: the
-// band does not exist until Pass 2, and Pass 2's entry point is not
-// exception-handled (see the block in lifecycle.cpp for the full reasoning).
+// The fixture therefore drives the CM's real order (Pass 1 → 2 → 3) on a real
+// LifecycleNode instead of calling the check directly — that order is what makes
+// the gate reachable at all (AP-PROC-9 in agent_docs/anti-patterns.md), and its
+// verdict is a CallbackReturn, which is what the pair below asserts on.
 class ComplianceMarginGate : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
