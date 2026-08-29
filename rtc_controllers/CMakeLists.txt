@@ -169,6 +169,19 @@ if(BUILD_TESTING)
   ament_add_gtest(test_momentum_observer test/test_momentum_observer.cpp)
   target_link_libraries(test_momentum_observer rtc_controllers)
 
+  # The dynamic half of the same observer. test_momentum_observer.cpp runs
+  # entirely at q̇ == 0, where `p = M(q)q̇` and `Cᵀq̇` are identically zero, so M
+  # and C are never exercised there (nor by a quasi-static sim run). This suite
+  # drives the observer along a moving trajectory against a model-self-consistent
+  # oracle — tau_m := RNEA(q,q̇,q̈) — so the verdict does not depend on any
+  # simulator agreeing with the URDF. Needs ${rtc_urdf_bridge_test_include} for
+  # the serial_7dof fixture resolver (non-zero gravity, populated Coriolis).
+  ament_add_gtest(test_momentum_observer_model_oracle
+    test/test_momentum_observer_model_oracle.cpp)
+  target_link_libraries(test_momentum_observer_model_oracle rtc_controllers)
+  target_include_directories(test_momentum_observer_model_oracle PRIVATE
+    ${rtc_urdf_bridge_test_include})
+
   ament_add_gtest(test_payload_estimator test/test_payload_estimator.cpp)
   target_link_libraries(test_payload_estimator rtc_controllers)
 
