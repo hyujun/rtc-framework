@@ -279,18 +279,43 @@ demo_shared:
   # Costs one arm-sized dynamics pass per tick (crba + computeCoriolisMatrix +
   # gravity): 2.13-2.17 us measured on a 7-DoF arm, ~0.11 % of a 500 Hz tick.
   #
-  # Output goes to controllers/<ctrl>/momentum_observer.csv only — there is no
-  # topic for it yet, because what a PayloadEstimate message exists to carry
-  # (mass / CoM / confidence) is Layer 2A's output and does not exist at this
-  # layer.
+  # Output goes to controllers/<ctrl>/momentum_observer.csv AND to the
+  # rtc_msgs/PayloadEstimate topic (#135 D12) — all four demo controllers create
+  # that publisher when this block is enabled, so this is a public wire surface
+  # and not just a log column.
   #
   # PRECONDITION on the effort lane: DeviceState::efforts must be JOINT TORQUE
   # in N.m and must account for every generalized force on the joints. Nothing
   # downstream can check either half — a lane in the wrong unit, or one missing
   # a term, is fresh and full and wrong, and the residual absorbs the
   # difference as an external torque.
+  # ── DISABLED ON THIS PROFILE (#490) ────────────────────────────────────────
+  # The precondition above is NOT met on UR hardware. ur_robot_driver publishes
+  # MOTOR CURRENT on /joint_states.effort, not joint torque: its RTDE output
+  # recipe binds actual_current to the effort interface and requests no torque
+  # field at all (rtde_output_recipe.txt, 29 lines, zero moment|torque hits), so
+  # the conversion D10 asks for has nothing to convert from at this boundary.
+  #
+  # Measured 2026-08-27 (session 260827_1010, 204 s stationary and unloaded):
+  # the residual equals g(q) - effort_raw on ALL SIX joints to four decimals —
+  # the observer is reading amperes as N·m. A motionless unloaded arm reports
+  # -32.3 N·m of phantom external torque on shoulder_lift. The current-to-torque
+  # ratio is ~10 N·m/A from a static fit but ~6 from a load-difference fit, so
+  # there is no identified constant to convert with either.
+  #
+  # This is NOT an observer defect: the algorithm is verified correct through
+  # MOTION by test_momentum_observer_model_oracle (rtc_controllers), which drives
+  # it against a model-self-consistent oracle. That is exactly why leaving it on
+  # is worse than a visibly broken estimator would be — a correct filter fed a
+  # wrong-unit lane publishes a confident, plausibly scaled, wrong wrench.
+  #
+  # Re-enable only when the effort lane carries N·m: a backend that measures
+  # current converts at its own boundary and leaves the raw value in
+  # DeviceState::motor_efforts (momentum_observer_wiring.hpp D10 clause 1).
+  # iiwa7_leap stays enabled because MuJoCo fills efforts from qfrc_actuator +
+  # qfrc_applied + qfrc_gravcomp, which is genuine N·m.
   momentum_observer:
-    enabled: true
+    enabled: false
     # K_I [1/s], per arm joint. A scalar broadcasts to every joint; a list must
     # be exactly the arm's dof (anything else is refused at configure rather
     # than padded). Larger converges faster and passes more sensor noise; the
