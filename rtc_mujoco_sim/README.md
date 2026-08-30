@@ -463,6 +463,7 @@ mujoco_simulator:
 | `robot_response.groups` | string[] | `[]` | MuJoCo 물리 그룹 이름 목록 |
 | `fake_response.groups` | string[] | `[]` | LPF 에코백 그룹 이름 목록 |
 | `solver.*` | (다양) | (MuJoCo 기본값) | Solver 파라미터 — 상세: [solver_param.yaml](config/solver_param.yaml) 및 위 Constraint Solver 설정 섹션 참조 |
+| `object_pool.*` | (다양) | 비활성 | 랜덤 object 스폰 — 아래 [Object Pool](#object-pool-랜덤-object-스폰) 섹션 참조 |
 
 그룹별 파라미터 (`robot_response.<name>.` / `fake_response.<name>.`):
 
@@ -529,6 +530,107 @@ robot_response:
     command_topic: "/kuka/joint_command"
     state_topic: "/kuka/joint_states"
 ```
+
+---
+
+## Object Pool (랜덤 object 스폰)
+
+씬에 놓을 object 를 YAML 로 지정한 디렉토리에서 읽어, 뷰어에서 **`o` 키**로 교체합니다. 누를 때마다 기존 object 는 사라지고 설정한 범위 안에서 새 object 가 생성됩니다.
+
+### 무엇을 대체하는가
+
+[robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml](../robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml) 에는 object 하나를 손으로 추가하는 5단계 절차가 주석으로 박혀 있습니다 — mesh 항목 복사, mesh 이름에 prefix 부착 (object_sim 은 `contact0` 같은 generic 이름을 57개 object 가 공유하므로 충돌), body 블록 복제, **모든 keyframe 에 freejoint qpos 7개 append**. object pool 은 이 네 가지를 로드 시점에 자동으로 수행하므로, 씬은 object 목록 대신 **디렉토리**만 선언하면 됩니다.
+
+### 동작 원리 — 런타임 recompile 이 아니라 사전 컴파일된 pool
+
+후보 object 전부가 `mj_compile` **이전에** spec 에 attach 됩니다. 따라서 `mjModel`/`mjData` 는 `Initialize` 이후 불변이라는 이 클래스의 전제가 유지되고, viewer 스레드의 `mjvScene`/`mjrContext`/`vis_data` 를 재생성할 필요가 없습니다. `o` 는 **현재 object 를 park 하고 다른 하나를 unpark** 할 뿐입니다.
+
+Park 은 세 가지를 동시에 합니다. 하나라도 빠지면 조용히 깨집니다:
+
+| Park 요소 | 빠뜨리면 |
+|---|---|
+| `contype`/`conaffinity` = 0 | 충돌은 사라지지만 **영원히 낙하** (막을 것이 없어 속도가 발산) |
+| `body_gravcomp` = 1 | 위와 동일 |
+| freejoint `qvel`·`qacc_warmstart` = 0 | 낙하 중에 `o` 를 누르면 **등속 표류** — 충돌이 꺼져 있어 아무것도 멈추지 못함 |
+
+park **위치**는 attach 된 body 의 spec `pos` 로 들어가 그대로 `qpos0` 가 되므로, `R`(reset) 이 pool 전체를 자동으로 park 상태로 되돌립니다. 활성 object 만 같은 자세로 다시 놓입니다 (reset 이 주사위를 다시 굴리면 "리셋하고 재시도" 가 같은 실험의 반복이 아니게 되므로 의도적으로 재추첨하지 않습니다).
+
+### 4가지 모드
+
+두 축의 곱입니다:
+
+| 모드 | `selection` | `pose` |
+|---|---|---|
+| 동일 object + 동일 pose | `fixed` | `fixed` |
+| 동일 object + random pose | `fixed` | `random` |
+| random object + 고정 pose | `random` | `fixed` |
+| random object + random pose | `random` | `random` |
+
+### 설정
+
+```yaml
+mujoco_simulator:
+  ros__parameters:
+    object_pool:
+      enabled: true
+      directory: "package://robot_descriptions/object_sim"
+      objects: ["apple", "banana", "coffeemug"]   # 키를 생략하면 디렉토리 전체
+      fixed_object: "apple"                        # selection: fixed 일 때
+      selection: "random"                          # fixed | random
+      pose: "random"                               # fixed | random
+      position:           [0.70, 0.00, 0.10]       # m, 중심
+      position_variation: [0.10, 0.10, 0.00]       # m, ± 반폭
+      rpy:                [0.0, 0.0, 0.0]          # rad, ZYX Euler
+      rpy_variation:      [0.0, 0.0, 3.1416]       # rad, ± 반폭 (yaw-only 가 일반적)
+      park_position: [0.0, 0.0, -50.0]
+      seed: 0                                      # 0 = 매 실행 다름, >0 = 재현 가능
+      avoid_repeat: true
+      spawn_on_start: true
+```
+
+전체 키·기본값·주석은 [config/mujoco_default.yaml](config/mujoco_default.yaml) 이 SSoT 입니다.
+
+**`objects:` 로 디렉토리 전체를 쓰려면 키를 비우지 말고 아예 생략하십시오.** ROS 2
+params YAML 은 빈 시퀀스를 표현할 수 없습니다 — `objects: []` 는
+`rcl_yaml_param_parser` 가 원소 타입을 추론하지 못해 `PARAMETER_NOT_SET` 이 되고,
+rclcpp 가 **노드 생성 시점에** `InvalidParameterValueException` 을 던지며 죽습니다
+(`on_configure` 전이라 아래 "실패는 조용하지 않다" 의 검증에 닿지도 못합니다).
+키가 없으면 `declare_parameter` 기본값 `{}` 가 그대로 쓰이며, 그게 "디렉토리 전체"
+입니다.
+
+**단위는 rad 입니다** (SI — CLAUDE.md §10). degree 스펠링의 별칭 키는 두지 않습니다.
+
+**`*_variation` 은 반폭**입니다: 각 축을 `[중심 - variation, 중심 + variation]` 에서 균등 추출합니다.
+
+### 실패는 조용하지 않다
+
+다음은 전부 `Initialize` 실패(노드 configure 실패)입니다. 활성화됐는데 비어 있는 pool 은 "무작위화하는 척하며 아무것도 안 하는" 상태이므로 도달 가능해선 안 됩니다.
+
+- `enabled: true` 인데 `directory` 아래에 후보가 0개
+- `directory` 가 없는 경로
+- `fixed_object` 가 후보에 없음
+- `objects:` 항목 중 하나가 디렉토리에 없음 (오타가 조용히 pool 을 줄이지 않음)
+- `selection` / `pose` 에 `fixed`/`random` 외의 문자열
+- `position` 계열 키가 3원소가 아님
+
+### 비용
+
+후보 전부가 씬에 컴파일되므로 개수에 비례합니다. MuJoCo 3.7.0, ur5e 씬 실측:
+
+| 구성 | ms/step | compile | RSS |
+|---|---|---|---|
+| `enabled: false` | 0.014 | 0.14 s | baseline |
+| 1개 | 0.037 | 0.14 s | — |
+| 57개 (56개 park) | 0.086 | 0.28 s | +약 0.5 GB |
+
+500 Hz · `n_substeps: 3` 기준 tick 당 0.26 ms / 2 ms 예산 = 약 13%. 메모리가 문제면 `objects:` 로 좁히십시오 (후보가 16개를 넘으면 기동 시 경고 로그를 남깁니다).
+
+**끄면 비용은 0 입니다** — `enabled: false` 면 컴파일된 모델의 `nq`/`nbody`/`ngeom` 이 이 블록이 없을 때와 동일하며, 이는 테스트로 고정돼 있습니다.
+
+### 주의
+
+- 씬이 이미 object 를 하드코딩하고 있으면 (예: `scene_right_with_object.xml` 의 `apple_01`) pool 은 그것을 관리하지 않습니다. prefix 가 달라 충돌하지는 않지만 **사과가 두 개**가 됩니다 — pool 을 쓸 때는 씬의 하드코딩 블록을 지우십시오.
+- `<sensor><contact>` 는 `geom1=` (fingertip geom) 로 필터링하므로 어떤 object 가 활성이든 contact wrench 파이프라인은 그대로 동작합니다.
 
 ---
 
@@ -604,6 +706,7 @@ ros2 topic hz /hand/joint_states
 | Contacts | 활성 접촉 수 / on\|OFF |
 | World G | 전역 중력 ON / OFF (디버그용 G 키) |
 | Robot Gravcomp | per-body 중력 보상이 켜진 그룹 인덱스 목록 (예: `g0`) — torque 모드면 `none` |
+| Object | 현재 씬에 있는 pool object 이름 (object_pool 활성 시에만 표시). `o` 키가 실제로 동작했는지 확인하는 유일한 관측면 — 스폰 위치가 화면 밖일 수 있다 |
 | Status | running / PAUSED / perturb |
 | Integrator | Euler / RK4 / Implicit / ImplFast |
 | Solver | PGS / CG / Newton |
@@ -628,7 +731,8 @@ ros2 topic hz /hand/joint_states
 | Space | 일시정지 / 재개 |
 | Right (일시정지 중) | 한 스텝 진행 |
 | + / - | RTF 속도 2배 / 0.5배 |
-| R | 초기 자세로 리셋 |
+| R | 초기 자세로 리셋 (pool object 는 같은 자세로 다시 놓임) |
+| O | pool object 교체 — 기존 object 를 park 하고 설정 범위에서 새로 스폰 ([Object Pool](#object-pool-랜덤-object-스폰)) |
 | TAB | 카메라 모드 순환 (Free → Tracking → Fixed[0..N-1] → Free) |
 | Esc | 카메라 초기화 (Free 모드, 기본 거리/방위각) |
 | Backspace | 시각화 옵션 초기화 |
@@ -782,14 +886,14 @@ MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 
 | 라이브러리 | 용도 |
 |-----------|------|
-| **MuJoCo 3.x** | 물리 시뮬레이션 엔진 (필수, 없으면 노드 빌드 생략) |
+| **MuJoCo >= 3.2** | 물리 시뮬레이션 엔진 (필수, 없으면 노드 빌드 생략). Object pool 이 mjSpec attach API (`mj_parseXML` / `mjs_attach` / `mjs_addFreeJoint` / `mj_compile`) 를 쓰므로 3.0/3.1 로는 컴파일되지 않으며, [object_pool.hpp](include/rtc_mujoco_sim/object_pool.hpp) 의 `#error` 가드가 이를 빌드 시점에 막는다. 3.x 의 `mjVERSION_HEADER` 는 7자리다 (3.7.0 → `3007000`) — 2.x 의 3자리와 비교하지 말 것 |
 | **GLFW 3** | 3D 뷰어 윈도우 (선택, 없으면 headless 전용) |
 
 ---
 
 ## 빌드
 
-### 전제 조건: MuJoCo 3.x 설치
+### 전제 조건: MuJoCo 3.2 이상 설치
 
 ```bash
 wget https://github.com/google-deepmind/mujoco/releases/download/3.x.x/mujoco-3.x.x-linux-x86_64.tar.gz
@@ -825,7 +929,7 @@ colcon test --packages-select rtc_mujoco_sim --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-GTest 스위트 (11 파일, `test/` 디렉토리). 최신 케이스 수·pass/fail 은 `colcon test-result --verbose` 실측 — 표에 개수를 박지 않는다 (drift 방지):
+GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `colcon test-result --verbose` 실측 — 표에 개수를 박지 않는다 (drift 방지):
 
 | Test | Scope |
 |------|-------|
@@ -840,8 +944,10 @@ GTest 스위트 (11 파일, `test/` 디렉토리). 최신 케이스 수·pass/fa
 | `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
 | `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
+| `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
+| `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
 
-Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml).
+Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).
 GLFW 뷰어 통합 테스트는 헤드리스 CI 제약으로 제외.
 
 ---

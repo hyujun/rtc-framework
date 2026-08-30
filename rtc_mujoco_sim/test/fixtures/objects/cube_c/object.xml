@@ -1,0 +1,22 @@
+<!-- Pool candidate fixture. Mirrors the object_sim layout (a body named
+     "object", no joint of its own — the pool adds the freejoint) using
+     primitive geoms only, so these tests neither need the object_sim git
+     submodule to be populated nor pay mesh compilation.
+
+     THE VISUAL GEOM'S contype/conaffinity ARE ZERO ON PURPOSE. object_sim does
+     the same, and it is what makes ObjectPool::Resolve's per-geom save of the
+     original contact filters testable: an implementation that restored a
+     blanket contype=1 on unpark would drag this shell into collision, and only
+     a fixture with a non-uniform filter can tell the difference. -->
+<mujoco model="cube_c">
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="object" pos="0 0 0.05">
+      <inertial pos="0 0 0" mass="0.2" diaginertia="0.001 0.001 0.001"/>
+      <geom name="visual" type="box" size="0.031 0.031 0.031"
+            contype="0" conaffinity="0" rgba="0.9 0.4 0.1 0.4"/>
+      <geom name="collision" type="box" size="0.03 0.03 0.03"
+            contype="1" conaffinity="1" rgba="0.2 0.4 0.9 1"/>
+    </body>
+  </worldbody>
+</mujoco>

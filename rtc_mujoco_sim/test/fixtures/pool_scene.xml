@@ -1,0 +1,36 @@
+<!-- Scene fixture for the object pool.
+
+     Carries a floor so a spawned object has something to land on (the
+     positive control: an object that is really in the scene falls and rests),
+     and a keyframe so BakeParkIntoKeyframes has something to rewrite. The
+     keyframe matters: mjs_attach pads existing keyframes to the new nq with
+     (0,0,0, 1,0,0,0) — the WORLD ORIGIN, not the park position — so a scene
+     with no keyframe cannot catch that. -->
+<mujoco model="pool_scene_test">
+  <compiler angle="radian"/>
+  <option timestep="0.002" solver="Newton" iterations="20"/>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" rgba="0.3 0.3 0.3 1"/>
+
+    <body name="link1" pos="0 0 0">
+      <joint name="j1" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+      <inertial pos="0 0 0.1" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom type="cylinder" size="0.05 0.1" rgba="0.8 0.2 0.2 1"/>
+      <body name="link2" pos="0 0 0.2">
+        <joint name="j2" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+        <inertial pos="0 0 0.1" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+        <geom type="capsule" size="0.03 0.1" rgba="0.2 0.8 0.2 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="m1" joint="j1" kp="100" ctrlrange="-3.14 3.14"/>
+    <position name="m2" joint="j2" kp="100" ctrlrange="-1.57 1.57"/>
+  </actuator>
+
+  <keyframe>
+    <key name="home" qpos="0 0"/>
+  </keyframe>
+</mujoco>

@@ -143,7 +143,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
   fprintf(stdout,
           "[Viewer] Ready — press F1 in the window for help\n"
-          "  Simulation : Space=pause  +/-=speed  Right=step  R=reset\n"
+          "  Simulation : Space=pause  +/-=speed  Right=step  R=reset  O=object\n"
           "  Camera     : TAB=cycle  Left=orbit  Right=pan  Scroll=zoom  "
           "Esc=reset\n"
           "  Physics    : G=gravity  N=contacts\n"

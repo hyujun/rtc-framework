@@ -510,6 +510,18 @@ void MuJoCoSimulator::HandleReset() noexcept {
                                ? static_cast<mjtNum>(original_gravity_z_)
                                : static_cast<mjtNum>(0.0);
   // body_gravcomp persists across mj_resetData; no need to re-write here.
+
+  // Object pool: mj_resetData has just restored qpos0, which is the PARK pose
+  // for every slot (the park position is baked into each attached body's spec
+  // pos). So the reset already re-parks the pool for free and only the active
+  // object needs putting back — without this, pressing R would silently empty
+  // the scene. The same object at the same pose, deliberately: a reset that
+  // re-rolled the dice would make "reset and try again" a different
+  // experiment rather than a repeat of the same one.
+  if (object_pool_.Enabled()) {
+    object_pool_.Reapply(model_, data_);
+    RefreshNgravcomp();
+  }
   mj_forward(model_, data_);
   {
     std::lock_guard lock(pert_mutex_);
@@ -530,6 +542,36 @@ void MuJoCoSimulator::HandleReset() noexcept {
   throttle_rtf_ = current_max_rtf_.load(std::memory_order_relaxed);
   ReadState();
   fprintf(stdout, "[SimLoop] Reset to initial pose\n");
+}
+
+// ── HandleObjectRefresh ───────────────────────────────────────────────────────
+// SimLoop context only: the pool writes mjModel (geom contact filters,
+// body_gravcomp) and mjData (freejoint qpos/qvel), both of which this thread
+// owns. The viewer's 'o' key only raises the flag drained below.
+
+void MuJoCoSimulator::HandleObjectRefresh() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::HandleObjectRefresh");
+  object_pool_.Refresh(model_, data_);
+  // Parking flips body_gravcomp to 1 and activating flips it back to 0, so the
+  // nonzero count changes on every refresh. Skipping this recount would let
+  // mj_passive early-out and quietly stop compensating gravity for the parked
+  // objects (they would fall away from the park position forever).
+  RefreshNgravcomp();
+  mj_forward(model_, data_);
+}
+
+bool MuJoCoSimulator::DrainPendingObjectRefresh() noexcept {
+  if (!object_refresh_requested_.exchange(false, std::memory_order_acq_rel)) {
+    return false;
+  }
+  // Report "nothing happened" when there is no pool, so 'o' in a scene without
+  // one is a true no-op. Returning true would make the SimLoop skip a state
+  // publish and a step on every press of a key that does nothing visible.
+  if (!model_ || !data_ || !object_pool_.Enabled()) {
+    return false;
+  }
+  HandleObjectRefresh();
+  return true;
 }
 
 // ── SimLoop ─────────────────────────────────────────────────────────────────────
@@ -588,6 +630,13 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       step = 0;
       continue;
     }
+    // ── Object refresh ('o' key) ──────────────────────────────────────────
+    // Placed with reset and short-circuiting the same way: the spawn writes
+    // qpos directly, so the iteration restarts rather than stepping physics
+    // from a state that was mutated after the state publish.
+    if (DrainPendingObjectRefresh()) {
+      continue;
+    }
     // 1. Publish current state (and sensors) for ALL robot groups
     // Per-iteration span (one sim step of the raw sim_thread). All the
     // MuJoCoSimulator member-function spans below nest under this; the
@@ -618,6 +667,9 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
       HandleReset();
       step = 0;
+      continue;
+    }
+    if (DrainPendingObjectRefresh()) {
       continue;
     }
     // 3. Apply commands from ALL robot groups and substep

@@ -110,19 +110,32 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp, float cur_rtf
                   "|F|=%.2f N  |t|=%.3f Nm", f_mag, t_mag);
   }
 
+  // Object pool row, present only when the pool is enabled. This is the one
+  // observable that separates "the refresh worked" from "the key did nothing"
+  // during a GUI check — the spawn itself can land off-screen.
+  char object_label[16] = "";
+  char object_value[96] = "";
+  if (vs.sim->GetObjectPool().Enabled()) {
+    std::strncpy(object_label, "Object\n", sizeof(object_label) - 1);
+    std::snprintf(object_value, sizeof(object_value), "%s\n",
+                  vs.sim->GetActiveObjectName().c_str());
+  }
+
   char labels[640], values[640];
   std::snprintf(labels, sizeof(labels),
                 "Mode\nCamera\nRTF\nLimit\nSim Time\nSteps\nContacts\nWorld G\nRobot Gravcomp\n"
+                "%s"
                 "Status\nIntegrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load\nFrames\n"
                 "%s",
-                pert_label);
+                object_label, pert_label);
   std::snprintf(values, sizeof(values),
-                "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e\n"
+                "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s%s\n%s\n%s\n%d/%d\n%.2e\n"
                 "%d (%.2fms)\n%.1f%%\nLink:%s Joint:%s\n%s",
                 "sync", cam_str, static_cast<double>(cur_rtf), limit_str, vs.sim->SimTimeSec(),
                 static_cast<unsigned long>(vs.sim->StepCount()), ss.ncon,
                 vs.sim->IsContactEnabled() ? "on" : "OFF", world_grav_on ? "ON" : "OFF",
-                gravcomp_str, is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"),
+                gravcomp_str, object_value,
+                is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"),
                 kIntNames[ii], kSolNames[si], ss.iter, vs.sim->GetSolverIterations(),
                 ss.improvement, n_sub, substep_dt_ms, phys_load_pct,
                 vs.show_link_frames ? "ON" : "OFF", vs.show_joint_frames ? "ON" : "OFF",
@@ -162,7 +175,7 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
     char keys[800], vals[800];
     std::snprintf(keys, sizeof(keys),
                   "Help 1/2  (F1=next)\n"
-                  "Space\n+/KP_ADD\n-/KP_SUB\nRight\nR\n"
+                  "Space\n+/KP_ADD\n-/KP_SUB\nRight\nR\nO\n"
                   "TAB\nLeft drag\nShift+Left\nRight drag\nShift+Right\nScroll\nMiddle\nEsc\n"
                   "G\nN\n"
                   "I\nS\n]  /  [\nF4");
@@ -173,6 +186,7 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
                   "0.5x speed\n"
                   "Step once (paused)\n"
                   "Reset pose\n"
+                  "Spawn object [%s]\n"
                   "Cycle camera [%s]\n"
                   "Orbit\n"
                   "Orbit horizontal\n"
@@ -187,7 +201,8 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
                   "Solver [%s]\n"
                   "Solver iter [%d]\n"
                   "Solver stats",
-                  rtf_str, cam_lbl, vs.sim->IsWorldGravityEnabled() ? "ON" : "OFF",
+                  rtf_str, vs.sim->GetActiveObjectName().c_str(), cam_lbl,
+                  vs.sim->IsWorldGravityEnabled() ? "ON" : "OFF",
                   vs.sim->IsContactEnabled() ? "ON" : "OFF", kIntNames[ii], kSolNames[si],
                   vs.sim->GetSolverIterations());
     mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp, keys, vals, vs.con);

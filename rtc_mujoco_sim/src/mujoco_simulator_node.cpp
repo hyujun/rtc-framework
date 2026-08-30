@@ -303,6 +303,69 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         solver_config_.contact_override.o_friction[i] = v[i];
     }
 
+    // ── Object pool (randomised object spawning) ────────────────────────────
+    declare_parameter("object_pool.enabled", false);
+    declare_parameter("object_pool.directory", std::string(""));
+    declare_parameter("object_pool.objects", std::vector<std::string>{});
+    declare_parameter("object_pool.fixed_object", std::string(""));
+    declare_parameter("object_pool.selection", std::string("fixed"));
+    declare_parameter("object_pool.pose", std::string("fixed"));
+    declare_parameter("object_pool.position", std::vector<double>{0.0, 0.0, 0.2});
+    declare_parameter("object_pool.position_variation", std::vector<double>{0.0, 0.0, 0.0});
+    declare_parameter("object_pool.rpy", std::vector<double>{0.0, 0.0, 0.0});
+    declare_parameter("object_pool.rpy_variation", std::vector<double>{0.0, 0.0, 0.0});
+    declare_parameter("object_pool.park_position", std::vector<double>{0.0, 0.0, -50.0});
+    declare_parameter("object_pool.seed", 0);
+    declare_parameter("object_pool.avoid_repeat", true);
+    declare_parameter("object_pool.spawn_on_start", true);
+    declare_parameter("object_pool.object_file", std::string("object.xml"));
+    declare_parameter("object_pool.body_name", std::string("object"));
+    declare_parameter("object_pool.prefix", std::string("pool_"));
+
+    object_pool_config_.enabled = get_parameter("object_pool.enabled").as_bool();
+    object_pool_config_.directory = get_parameter("object_pool.directory").as_string();
+    object_pool_config_.objects = get_parameter("object_pool.objects").as_string_array();
+    object_pool_config_.fixed_object = get_parameter("object_pool.fixed_object").as_string();
+    object_pool_config_.position = LoadVec3Param("object_pool.position");
+    object_pool_config_.position_variation = LoadVec3Param("object_pool.position_variation");
+    object_pool_config_.rpy = LoadVec3Param("object_pool.rpy");
+    object_pool_config_.rpy_variation = LoadVec3Param("object_pool.rpy_variation");
+    object_pool_config_.park_position = LoadVec3Param("object_pool.park_position");
+    object_pool_config_.avoid_repeat = get_parameter("object_pool.avoid_repeat").as_bool();
+    object_pool_config_.spawn_on_start = get_parameter("object_pool.spawn_on_start").as_bool();
+    object_pool_config_.object_file = get_parameter("object_pool.object_file").as_string();
+    object_pool_config_.body_name = get_parameter("object_pool.body_name").as_string();
+    object_pool_config_.prefix = get_parameter("object_pool.prefix").as_string();
+    {
+      // Validated even when the pool is disabled: a typo that only surfaces the
+      // day someone flips `enabled` is worse than one that surfaces now.
+      const auto selection = get_parameter("object_pool.selection").as_string();
+      if (!urtc::ParseObjectSelection(selection, object_pool_config_.selection)) {
+        RCLCPP_FATAL(get_logger(),
+                     "[MuJoCoSimulatorNode] object_pool.selection must be "
+                     "'fixed' or 'random' (got '%s')",
+                     selection.c_str());
+        throw std::runtime_error("invalid object_pool.selection");
+      }
+      const auto pose = get_parameter("object_pool.pose").as_string();
+      if (!urtc::ParsePoseSampling(pose, object_pool_config_.pose)) {
+        RCLCPP_FATAL(get_logger(),
+                     "[MuJoCoSimulatorNode] object_pool.pose must be "
+                     "'fixed' or 'random' (got '%s')",
+                     pose.c_str());
+        throw std::runtime_error("invalid object_pool.pose");
+      }
+      const auto seed = get_parameter("object_pool.seed").as_int();
+      if (seed < 0) {
+        RCLCPP_FATAL(get_logger(),
+                     "[MuJoCoSimulatorNode] object_pool.seed must be >= 0 (0 = "
+                     "non-reproducible); got %ld",
+                     static_cast<long>(seed));
+        throw std::runtime_error("invalid object_pool.seed");
+      }
+      object_pool_config_.seed = static_cast<std::uint64_t>(seed);
+    }
+
     auto robot_groups = get_parameter("robot_response.groups").as_string_array();
     for (const auto& gname : robot_groups) {
       DeclareGroupParams("robot_response", gname);
@@ -408,6 +471,22 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     cwc.allow_partial_discovery = get_parameter(prefix + "allow_partial_discovery").as_bool();
   }
 
+  /// Read a 3-element double array parameter.
+  ///
+  /// A wrong length is fatal rather than partially applied: silently taking
+  /// the first two elements of a two-element `position` would put the object
+  /// somewhere nobody configured, and nothing downstream could tell.
+  std::array<double, 3> LoadVec3Param(const std::string& name) {
+    const auto v = get_parameter(name).as_double_array();
+    if (v.size() != 3) {
+      RCLCPP_FATAL(get_logger(),
+                   "[MuJoCoSimulatorNode] %s must have exactly 3 elements (got %zu)",
+                   name.c_str(), v.size());
+      throw std::runtime_error(name + " must have exactly 3 elements");
+    }
+    return {v[0], v[1], v[2]};
+  }
+
   // ── Simulator creation
   // ───────────────────────────────────────────────────────
   void CreateSimulator() {
@@ -424,6 +503,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         .servo_kp = servo_kp_,
         .servo_kd = servo_kd_,
         .solver_config = solver_config_,
+        .object_pool = object_pool_config_,
         .groups = group_configs_,
     };
     sim_ = std::make_unique<urtc::MuJoCoSimulator>(std::move(cfg));
@@ -874,6 +954,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   std::vector<double> servo_kp_;
   std::vector<double> servo_kd_;
   urtc::SolverConfig solver_config_;
+  urtc::ObjectPoolConfig object_pool_config_;
 };
 
 // ── Entry point
