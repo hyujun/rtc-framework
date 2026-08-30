@@ -2,6 +2,8 @@
 #define RTC_MUJOCO_SIM_MUJOCO_SIMULATOR_HPP_
 
 // ── Includes: project, then MuJoCo, then C++ stdlib ───────────────────────────
+#include "rtc_mujoco_sim/object_pool.hpp"
+
 #include <mujoco/mujoco.h>
 
 #include <algorithm>
@@ -114,10 +116,11 @@ struct JointGroupConfig {
     // Suffix list ordered longest-first so "_tip_contact" matches before "_contact".
     std::vector<std::string> sensor_name_suffixes{"_tip_contact", "_contact"};
     std::vector<std::string> reference_site_suffixes{"_tip_ft_site", "_ft_site"};
-    bool publish_state{false};  // <target>/contact_state (std_msgs/Bool)
-    bool publish_debug{false};  // <target>/contact_point + contact_depth
+    bool publish_state{false};            // <target>/contact_state (std_msgs/Bool)
+    bool publish_debug{false};            // <target>/contact_point + contact_depth
     bool allow_partial_discovery{false};  // false=fail if any sensor unresolved
   };
+
   ContactWrenchConfig contact_wrench;
 };
 
@@ -220,19 +223,19 @@ struct JointGroup {
   // reference site and body. The body frame is used as ROS frame_id and as the
   // target of the world→link wrench transform.
   struct ContactWrenchInfo {
-    std::string target_name;       // e.g. "index_tip" (sensor name minus suffix)
-    std::string frame_id;          // body name owning ft_site (e.g. "index_tip_head")
-    int sensor_id{-1};             // mjModel sensor id
-    int sensor_adr{0};             // mjModel.sensor_adr[sensor_id]
-    int ft_site_id{-1};            // mjModel site id (torque reference origin)
-    int body_id{-1};               // mjModel.site_bodyid[ft_site_id]
+    std::string target_name;  // e.g. "index_tip" (sensor name minus suffix)
+    std::string frame_id;     // body name owning ft_site (e.g. "index_tip_head")
+    int sensor_id{-1};        // mjModel sensor id
+    int sensor_adr{0};        // mjModel.sensor_adr[sensor_id]
+    int ft_site_id{-1};       // mjModel site id (torque reference origin)
+    int body_id{-1};          // mjModel.site_bodyid[ft_site_id]
   };
 
   // Transformed wrench sample (link frame). Heap-free POD.
   struct ContactWrenchSample {
     bool found{false};
-    std::array<double, 3> force{0.0, 0.0, 0.0};   // object-on-fingertip, in link frame
-    std::array<double, 3> torque{0.0, 0.0, 0.0};  // about ft_site origin, in link frame
+    std::array<double, 3> force{0.0, 0.0, 0.0};        // object-on-fingertip, in link frame
+    std::array<double, 3> torque{0.0, 0.0, 0.0};       // about ft_site origin, in link frame
     std::array<double, 3> point_world{0.0, 0.0, 0.0};  // contact point in world (debug)
     double dist{0.0};
   };
@@ -240,9 +243,9 @@ struct JointGroup {
   std::vector<ContactWrenchInfo> contact_wrench_infos;
   std::vector<ContactWrenchSample> contact_wrench_buffer;  // size == infos.size()
 
-  using ContactWrenchCallback = std::function<void(
-      const std::vector<ContactWrenchInfo>& infos,
-      const std::vector<ContactWrenchSample>& samples)>;
+  using ContactWrenchCallback =
+      std::function<void(const std::vector<ContactWrenchInfo>& infos,
+                         const std::vector<ContactWrenchSample>& samples)>;
   ContactWrenchCallback contact_wrench_cb{nullptr};
 
   // ── ROS2 토픽 ──────────────────────────────────────────────────
@@ -296,6 +299,10 @@ class MuJoCoSimulator {
 
     // Solver 설정 (solver_param.yaml, XML 우선)
     SolverConfig solver_config;
+
+    // Randomised object spawning (object_pool.yaml block). Disabled by
+    // default, in which case nothing about the compiled model changes.
+    ObjectPoolConfig object_pool;
 
     // 멀티 그룹 설정 (robot_response + fake_response)
     std::vector<JointGroupConfig> groups;
@@ -379,6 +386,7 @@ class MuJoCoSimulator {
     SetControlMode(group_idx,
                    torque_mode ? JointControlMode::kTorque : JointControlMode::kPosition);
   }
+
   [[nodiscard]] bool IsInTorqueMode(std::size_t group_idx) const noexcept {
     return GetControlMode(group_idx) == JointControlMode::kTorque;
   }
@@ -388,9 +396,9 @@ class MuJoCoSimulator {
   // never observes a half-updated tuple. feedforward/kp/kd may be empty.
   //   - feedforward: per-command-joint tau_ff (Nm); empty → all zeros.
   //   - kp/kd: runtime PD gains (>=0), sticky; both empty → keep current gains.
-  void StageCommand(std::size_t group_idx, JointControlMode mode,
-                    const std::vector<double>& cmd, const std::vector<double>& feedforward,
-                    const std::vector<double>& kp, const std::vector<double>& kd) noexcept;
+  void StageCommand(std::size_t group_idx, JointControlMode mode, const std::vector<double>& cmd,
+                    const std::vector<double>& feedforward, const std::vector<double>& kp,
+                    const std::vector<double>& kd) noexcept;
 
   // ── Test-only synchronous step + observers ────────────────────────────────
   // The SimLoop thread normally owns all mjData mutation; these run one full
@@ -398,6 +406,15 @@ class MuJoCoSimulator {
   // test can stage a command and observe the resulting joint forces. Do NOT
   // call while SimLoop is running.
   void StepForTest() noexcept;
+  // Run the object refresh the 'o' key triggers, synchronously and WITHOUT
+  // stepping physics, so a test can assert the exact spawn pose rather than
+  // one integration step past it. Calls the same HandleObjectRefresh the
+  // SimLoop calls, so the two paths cannot drift.
+  void RefreshObjectForTest() noexcept;
+  // Run HandleReset synchronously (the R key). Same rationale as StepForTest:
+  // the SimLoop owns this mutation, so a test that is not running the SimLoop
+  // needs an inline entry point.
+  void ResetForTest() noexcept;
   [[nodiscard]] double GetActuatorForceForTest(std::size_t group_idx,
                                                std::size_t joint_idx) const noexcept;
   [[nodiscard]] double GetAppliedForceForTest(std::size_t group_idx,
@@ -528,6 +545,32 @@ class MuJoCoSimulator {
     sync_cv_.notify_all();
   }
 
+  // ── Object pool (randomised object spawning) ──────────────────────────────
+
+  /// Park the active object and spawn another one per the object_pool config
+  /// (the viewer's 'o' key). Safe from any thread: this only raises a flag the
+  /// SimLoop drains, exactly like RequestReset — mjModel/mjData stay
+  /// SimLoop-owned. No-op when the pool is disabled.
+  void RequestObjectRefresh() noexcept {
+    object_refresh_requested_.store(true, std::memory_order_relaxed);
+    sync_cv_.notify_all();
+  }
+
+  /// Name of the object currently in the scene, or "none".
+  [[nodiscard]] const std::string& GetActiveObjectName() const noexcept {
+    return object_pool_.ActiveName();
+  }
+
+  /// Read-only pool handle for the viewer overlay and for tests.
+  ///
+  /// Unlike GetModel(), this one IS safe to read while the SimLoop runs: the
+  /// pool's observers only touch state that is immutable after Initialize plus
+  /// one atomic index (see the observer note in object_pool.hpp), which is what
+  /// lets the viewer draw the "Object" status row every frame. A concurrent
+  /// reader can see the previous object for a frame; it cannot see a torn or
+  /// out-of-range one. Still do not mutate through it.
+  [[nodiscard]] const ObjectPool& GetObjectPool() const noexcept { return object_pool_; }
+
   void SetMaxRtf(double rtf) noexcept {
     current_max_rtf_.store(rtf < 0.0 ? 0.0 : rtf, std::memory_order_relaxed);
   }
@@ -582,8 +625,7 @@ class MuJoCoSimulator {
   /// wrench requested here at point zero is the wrench a frame Jacobian of that
   /// name projects — which is what makes this usable as an estimator positive
   /// control (#135).
-  [[nodiscard]] bool SetExternalWrenchAtPoint(int body_id,
-                                              const std::array<double, 3>& point_body,
+  [[nodiscard]] bool SetExternalWrenchAtPoint(int body_id, const std::array<double, 3>& point_body,
                                               const std::array<double, 6>& wrench_world) noexcept;
 
   /// SetExternalWrenchAtPoint at the body frame ORIGIN — the common case, and
@@ -606,9 +648,7 @@ class MuJoCoSimulator {
   [[nodiscard]] double SimTimeSec() const noexcept { return sim_time_sec_.load(); }
 
   // model_->nq became mjtSize (int64_t) in MuJoCo 3.7 — explicit narrowing.
-  [[nodiscard]] int NumJoints() const noexcept {
-    return model_ ? static_cast<int>(model_->nq) : 0;
-  }
+  [[nodiscard]] int NumJoints() const noexcept { return model_ ? static_cast<int>(model_->nq) : 0; }
 
   // Read-only handles for tests / viewer. Caller must respect the SimLoop
   // ownership: do NOT mutate, and only read while the SimLoop is paused or
@@ -642,9 +682,16 @@ class MuJoCoSimulator {
   // XML에서 발견된 전체 hinge+actuator 조인트 (Initialize()에서 설정)
   std::vector<std::string> all_xml_joint_names_;
 
+  // ── Object pool ───────────────────────────────────────────────────────────
+  // Attached into the spec before mj_compile, then driven entirely from the
+  // SimLoop thread (see object_pool.hpp for why it is a pool rather than a
+  // runtime mj_recompile).
+  ObjectPool object_pool_;
+
   // ── Runtime control flags ─────────────────────────────────────────────────
   std::atomic<bool> paused_{false};
   std::atomic<bool> reset_requested_{false};
+  std::atomic<bool> object_refresh_requested_{false};
   std::atomic<bool> step_once_{false};
   std::atomic<double> current_max_rtf_{0.0};
   // World gravity is on by default — free bodies (objects to lift) always fall.
@@ -764,6 +811,13 @@ class MuJoCoSimulator {
   void UpdateRtf(uint64_t step) noexcept;
   void ThrottleIfNeeded() noexcept;
   void HandleReset() noexcept;
+  // Park the active object and spawn the next one. SimLoop context only.
+  void HandleObjectRefresh() noexcept;
+  // Consume a pending RequestObjectRefresh, if any; returns true when one was
+  // handled. Called from BOTH SimLoop and StepForTest so the test path
+  // exercises the same flag->handler edge the 'o' key does, rather than a
+  // parallel entry point that could drift away from it.
+  [[nodiscard]] bool DrainPendingObjectRefresh() noexcept;
   void PreparePhysicsStep() noexcept;
   // Requested wrenches -> data_->xfrc_applied, re-referenced to each body's
   // centre of mass. Caller holds pert_mutex_.

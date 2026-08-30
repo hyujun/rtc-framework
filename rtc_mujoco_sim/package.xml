@@ -25,7 +25,9 @@
   <!-- Session directory helper used by mujoco_sim.launch.py -->
   <exec_depend>rtc_tools</exec_depend>
 
-  <!-- MuJoCo (optional C++ library — not a ROS2 package; install separately)
+  <!-- MuJoCo >= 3.2 (optional C++ library — not a ROS2 package; install
+       separately). The 3.2 floor comes from the object pool's mjSpec attach
+       API; see rtc_mujoco_sim/CMakeLists.txt.
        https://github.com/google-deepmind/mujoco/releases -->
 
 

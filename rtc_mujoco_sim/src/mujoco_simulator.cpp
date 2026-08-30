@@ -601,11 +601,48 @@ bool MuJoCoSimulator::DiscoverContactWrenches(JointGroup& group) noexcept {
 
 bool MuJoCoSimulator::Initialize() noexcept {
   char error[1000] = {};
-  model_ = mj_loadXML(cfg_.model_path.c_str(), nullptr, error, sizeof(error));
-  if (!model_) {
-    fprintf(stderr, "[MuJoCoSimulator] Failed to load '%s': %s\n", cfg_.model_path.c_str(), error);
+
+  // mj_loadXML is parse-then-compile in one call. It is split here because the
+  // object pool has to attach its candidate bodies into the spec BETWEEN the
+  // two halves — that is the whole reason the pool needs no runtime recompile.
+  // A disabled pool takes this identical path (AttachInto is then a no-op), so
+  // there is one loading path rather than two that can drift apart.
+  mjSpec* spec = mj_parseXML(cfg_.model_path.c_str(), nullptr, error, sizeof(error));
+  if (!spec) {
+    fprintf(stderr, "[MuJoCoSimulator] Failed to parse '%s': %s\n", cfg_.model_path.c_str(),
+            error);
     return false;
   }
+
+  {
+    ObjectPoolConfig pool_cfg = cfg_.object_pool;
+    if (pool_cfg.enabled) {
+      // mj_parseXML resolves "package://" through the registered MuJoCo
+      // resource provider, but the pool's directory SCAN is plain
+      // std::filesystem and needs the absolute path itself.
+      pool_cfg.directory = ResolveModelPath(pool_cfg.directory);
+    }
+    std::string pool_error;
+    if (!object_pool_.Configure(pool_cfg, pool_error) ||
+        !object_pool_.AttachInto(spec, pool_error)) {
+      fprintf(stderr, "[MuJoCoSimulator] ERROR: %s\n", pool_error.c_str());
+      mj_deleteSpec(spec);
+      return false;
+    }
+  }
+
+  model_ = mj_compile(spec, nullptr);
+  if (!model_) {
+    const char* why = mjs_getError(spec);
+    fprintf(stderr, "[MuJoCoSimulator] Failed to compile '%s': %s\n", cfg_.model_path.c_str(),
+            why ? why : "(no detail)");
+    mj_deleteSpec(spec);
+    return false;
+  }
+  // Verified on MuJoCo 3.7.0: the compiled model owns its data, so the spec is
+  // dead weight from here on. Nothing in this class keeps a spec alive, which
+  // is what makes "model_ is immutable after Initialize" still true.
+  mj_deleteSpec(spec);
 
   data_ = mj_makeData(model_);
   if (!data_) {
@@ -947,6 +984,28 @@ bool MuJoCoSimulator::Initialize() noexcept {
   // The MJCF doesn't declare per-body gravcomp, so the compiled value is 0
   // — writing body_gravcomp[] alone would silently do nothing. Recount.
   RefreshNgravcomp();
+
+  // ── Object pool bring-up ────────────────────────────────────────────────
+  // Order matters: Resolve caches ids from the compiled model, ParkAll then
+  // writes each slot's contact filters and gravcomp, and only after that can
+  // ngravcomp be recounted. Parking every slot at startup also means a scene
+  // whose pool never gets refreshed behaves exactly like one with no objects.
+  {
+    std::string pool_error;
+    if (!object_pool_.Resolve(model_, pool_error)) {
+      fprintf(stderr, "[MuJoCoSimulator] ERROR: %s\n", pool_error.c_str());
+      return false;
+    }
+    object_pool_.BakeParkIntoKeyframes(model_);
+    object_pool_.ParkAll(model_, data_);
+    if (cfg_.object_pool.spawn_on_start) {
+      object_pool_.Refresh(model_, data_);
+    }
+    if (object_pool_.Enabled()) {
+      RefreshNgravcomp();
+      mj_forward(model_, data_);
+    }
+  }
 
   // ── Summary ─────────────────────────────────────────────────────────────
   int total_cmd_joints = 0;
@@ -1501,10 +1560,32 @@ bool MuJoCoSimulator::IsGroupGravcompEnabled(std::size_t group_idx) const noexce
 void MuJoCoSimulator::StepForTest() noexcept {
   if (!model_ || !data_)
     return;
+  // Same drain the SimLoop performs, so a test that calls
+  // RequestObjectRefresh() exercises the flag->handler edge the 'o' key uses
+  // instead of a parallel test-only entry point. SimLoop skips its step after
+  // a refresh; here the step proceeds, which is what lets a test observe the
+  // spawned object under physics in the same call.
+  (void)DrainPendingObjectRefresh();
   ApplyCommand();
   PreparePhysicsStep();
   mj_step(model_, data_);
   ReadState();
+}
+
+void MuJoCoSimulator::RefreshObjectForTest() noexcept {
+  if (!model_ || !data_)
+    return;
+  // Clear any flag a test also raised, so a later StepForTest does not spawn a
+  // second time and consume another RNG draw behind the test's back.
+  object_refresh_requested_.store(false, std::memory_order_relaxed);
+  HandleObjectRefresh();
+}
+
+void MuJoCoSimulator::ResetForTest() noexcept {
+  if (!model_ || !data_)
+    return;
+  reset_requested_.store(false, std::memory_order_relaxed);
+  HandleReset();
 }
 
 double MuJoCoSimulator::GetActuatorForceForTest(std::size_t group_idx,

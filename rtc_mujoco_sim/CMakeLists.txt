@@ -36,7 +36,12 @@ find_package(rtc_base REQUIRED)
 find_package(tinyxml2_vendor QUIET)
 find_package(tinyxml2 REQUIRED)
 
-# ── mujoco_simulator_node (optional — requires MuJoCo 3.x C++ library) ────────
+# ── mujoco_simulator_node (optional — requires MuJoCo >= 3.2 C++ library) ─────
+# 3.2 is a hard floor, not a preference: the object pool attaches candidate
+# bodies through the mjSpec API (mj_parseXML / mjs_attach / mjs_addFreeJoint /
+# mj_compile), which does not exist in 3.0/3.1. object_pool.hpp carries an
+# #error guard so an older SDK fails at compile time with that reason rather
+# than as a pile of unknown-identifier errors.
 # Install MuJoCo (binary tarball — no cmake config included):
 #   wget https://github.com/google-deepmind/mujoco/releases/download/3.x.x/mujoco-3.x.x-linux-x86_64.tar.gz
 #   sudo tar -xzf mujoco-*.tar.gz -C /opt/
@@ -80,6 +85,7 @@ if(mujoco_FOUND)
   add_library(mujoco_simulator_lib STATIC
     src/mujoco_simulator.cpp
     src/mujoco_sim_loop.cpp
+    src/object_pool.cpp
     src/ros2_resource_provider.cpp
     src/viewer/viewer_loop.cpp
     src/viewer/viewer_callbacks.cpp
@@ -157,6 +163,27 @@ if(mujoco_FOUND)
       target_link_libraries(test_pure_helpers mujoco_simulator_lib)
     endif()
 
+    # Object pool sampling/selection: pure helpers, no MJCF fixture needed.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_object_pool_sampling.cpp")
+      ament_add_gtest(test_object_pool_sampling test/test_object_pool_sampling.cpp)
+      target_link_libraries(test_object_pool_sampling mujoco_simulator_lib)
+      # Scan tests build their own throwaway tree under this directory.
+      target_compile_definitions(test_object_pool_sampling PRIVATE
+        OBJECT_POOL_SCAN_FIXTURE_DIR="${CMAKE_CURRENT_BINARY_DIR}/object_pool_scan")
+    endif()
+
+    # Shipped ros__parameters YAML must survive rclcpp's own parameter loader.
+    # No MJCF and no node — this guards the config files, not the simulator.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_shipped_config.cpp")
+      ament_add_gtest(test_shipped_config test/test_shipped_config.cpp)
+      target_link_libraries(test_shipped_config mujoco_simulator_lib)
+      # The negative control writes its own throwaway YAML under this directory.
+      target_compile_definitions(test_shipped_config PRIVATE
+        MUJOCO_DEFAULT_YAML_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/mujoco_default.yaml"
+        SOLVER_PARAM_YAML_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/solver_param.yaml"
+        SHIPPED_CONFIG_SCRATCH_DIR="${CMAKE_CURRENT_BINARY_DIR}/shipped_config_scratch")
+    endif()
+
     # ResolveModelPath: pure string + ament, no MJCF fixture needed.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_resource_provider.cpp")
       ament_add_gtest(test_resource_provider test/test_resource_provider.cpp)
@@ -186,6 +213,16 @@ if(mujoco_FOUND)
       target_link_libraries(test_gravcomp_scene mujoco_simulator_lib)
       target_compile_definitions(test_gravcomp_scene PRIVATE
         SCENE_WITH_OBJECT_MJCF_PATH="${MJCF_SCENE_FIXTURE}")
+    endif()
+
+    # Object pool against a compiled model: needs a scene with a floor and a
+    # keyframe, plus a directory of candidate objects.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_object_pool.cpp")
+      ament_add_gtest(test_object_pool test/test_object_pool.cpp)
+      target_link_libraries(test_object_pool mujoco_simulator_lib)
+      target_compile_definitions(test_object_pool PRIVATE
+        POOL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/pool_scene.xml"
+        POOL_OBJECTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/objects")
     endif()
 
     # Contact wrench pipeline: requires a fixture with mjSENS_CONTACT sensor.

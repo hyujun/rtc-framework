@@ -114,6 +114,13 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
       s->sim->RequestReset();
       break;
 
+    case GLFW_KEY_O:
+      // Park the current object and spawn another per the object_pool config.
+      // Only raises a flag — the SimLoop owns mjModel/mjData and does the work,
+      // exactly as for R above. Doing it here would race the physics thread.
+      s->sim->RequestObjectRefresh();
+      break;
+
     // ── Camera mode (TAB cycles: Free → Tracking → Fixed[0..N-1] → Free) ────
     case GLFW_KEY_TAB: {
       const int ncam = static_cast<int>(s->model->ncam);

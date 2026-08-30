@@ -42,3 +42,75 @@ mujoco_simulator:
 
     # ── Control rate (used by physics_timestep validator) ────────────────────
     control_rate: 500.0  # Hz
+
+    # ── Object pool (randomised object spawning) ─────────────────────────────
+    # Attaches every object found under `directory` into the scene at load
+    # time; the viewer's 'o' key then parks the current one and spawns another.
+    # Disabled here: with `enabled: false` the compiled model is byte-for-byte
+    # what it would be without this block.
+    #
+    # The four usual modes are the product of the two axes below:
+    #   selection: fixed  + pose: fixed   -> same object, same pose
+    #   selection: fixed  + pose: random  -> same object, random pose
+    #   selection: random + pose: fixed   -> random object, same pose
+    #   selection: random + pose: random  -> random object, random pose
+    #
+    # COST scales with the candidate count, because every candidate is compiled
+    # into the scene. Measured (MuJoCo 3.7.0, ur5e scene, 500 Hz / n_substeps 3):
+    #   off        0.014 ms/step
+    #   1 object   0.037 ms/step
+    #   57 objects 0.086 ms/step, +0.14 s compile, ~+0.5 GB RSS
+    # Narrow the list with `objects:` when memory matters.
+    object_pool:
+      enabled: false
+
+      # Directory holding one subdirectory per object, each with `object_file`.
+      # "package://" is resolved through ament.
+      # e.g. "package://robot_descriptions/object_sim"
+      directory: ""
+
+      # Allowlist of subdirectory names; unset = every object found. A name
+      # that is not present is a startup error, never a silent skip.
+      #
+      # KEEP THIS KEY COMMENTED OUT to take the whole directory. Do NOT write
+      # `objects: []`: a ROS 2 params YAML cannot express an empty sequence —
+      # rcl_yaml_param_parser cannot infer the element type, so it yields
+      # PARAMETER_NOT_SET and rclcpp throws InvalidParameterValueException
+      # ("No parameter value set") while the *node is being constructed*,
+      # before on_configure, so none of the pool's own validation is reached.
+      # An absent key takes the declare_parameter default, which is already {}.
+      # objects: ["apple", "banana", "coffeemug"]
+
+      # Which object to use when selection is "fixed". Empty = first candidate
+      # in sorted order.
+      fixed_object: ""
+
+      selection: "fixed"   # "fixed" | "random"  — which object
+      pose: "fixed"        # "fixed" | "random"  — where it lands
+
+      # Spawn pose. position is metres (world frame); rpy is ZYX Euler in
+      # RADIANS (SI — CLAUDE.md §10; there is no degree spelling of these keys).
+      # The *_variation entries are HALF-WIDTHS: each axis is drawn uniformly
+      # from [centre - variation, centre + variation], and are ignored when
+      # pose is "fixed". Yaw-only is the usual case: rpy_variation [0, 0, 3.14].
+      position:           [0.0, 0.0, 0.2]
+      position_variation: [0.0, 0.0, 0.0]
+      rpy:                [0.0, 0.0, 0.0]
+      rpy_variation:      [0.0, 0.0, 0.0]
+
+      # Where inactive objects wait. Must be clear of the robot workspace and
+      # below/away from the floor; it is compiled into qpos0, so it is also
+      # where a reset (R) puts every object that is not active.
+      park_position: [0.0, 0.0, -50.0]
+
+      # 0 = seed from the OS (different every run). Non-zero = reproducible.
+      seed: 0
+
+      avoid_repeat: true    # never spawn the same object twice in a row
+      spawn_on_start: true  # spawn once during on_configure
+
+      # Layout of the object directory. Defaults match the object_sim
+      # convention; override for a dataset that names things differently.
+      object_file: "object.xml"
+      body_name: "object"
+      prefix: "pool_"       # keeps pool names clear of objects already in the scene
