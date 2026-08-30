@@ -491,6 +491,20 @@ if [ -n "$RTC_TOUCHED" ]; then
   # harness-pruning signal (CLAUDE.md §11), do not "fix" working code.
   # (2) If the hit is prose you just wrote in rtc_*, reword robot-neutrally
   # and push the concrete example down to a consumer package's docs/config.
+  #
+  # Case (2) exercised 2026-08-30 on a NEW rtc_mujoco_sim header (object_pool):
+  # a rationale comment naming a scene path plus a "measured on the <robot>
+  # scene" note both fired, because an untracked file is screened in full. Both
+  # were genuine — an agnostic public header should not carry a robot asset
+  # path that rots on rename — and rewording them by scene SHAPE ("16-dof
+  # arm-plus-hand") while leaving the named example in that package's README
+  # made them more useful, not vaguer. Identical sentences already sitting in
+  # that package's TRACKED files did not fire, which is the gate working as
+  # designed: it asks only "did YOU add this", never "is this file clean".
+  # Decision 2026-08-30: keep this ratchet. Do not widen scope to whole files
+  # (that is the 2026-07-16 regression above) and do not add a
+  # measurement-prose exemption marker — rewording cost two comment edits and
+  # improved both.
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ -f "$f" ] || continue
