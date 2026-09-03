@@ -3,9 +3,12 @@
     <!-- First keyframe is the FALLBACK source of the robot's initial qpos in
          rtc_mujoco_sim. A bringup that sets robot_response.<group>.initial_qpos
          overrides it — integrated_bringup/config/iiwa7_leap does, with values
-         mirrored from here and pinned equal by that package's
-         test_shipped_initial_qpos, so editing the robot joints below without
-         mirroring them there changes nothing at runtime and fails that test.
+         mirrored from here. So editing the robot joints below changes NOTHING
+         at runtime until you mirror the edit there. That package's
+         test_shipped_initial_qpos checks the two copies agree, but its
+         keyframe lane needs the mujoco pip module and therefore runs neither
+         under a local colcon test nor in CI — treat it as a manual check you
+         have to remember, not a gate that will catch you.
          The freejoint object qpos further down has no YAML equivalent and is
          still consumed from here, so full MuJoCo key resets keep both objects
          on the table. -->
