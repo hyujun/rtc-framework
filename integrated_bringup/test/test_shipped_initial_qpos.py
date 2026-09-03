@@ -25,13 +25,27 @@ the reason: its joints occupy qpos addresses 8, 7, 9, 10, 12, 11, ... so
 ``command_joint_names`` order and qpos order genuinely differ, and a slice-based
 comparison would be reading a different joint's value while passing.
 
-``mujoco`` is a pip package, not a ROS dependency: CI installs it (see
-``.github/workflows/ros2-advanced-ci.yml``) but a local ``colcon test`` runs
-pytest under ``/usr/bin/python3``, where it is absent and this lane skips. To run
-it locally against the workspace venv::
+**Where the keyframe lane actually runs: nowhere automatic — only by hand.**
+Two independent gaps stack up, and it is worth spelling both out because each
+one alone looks survivable:
+
+1. a local ``colcon test`` runs pytest under ``/usr/bin/python3``, which has no
+   ``mujoco`` (it is a pip package in the workspace venv, not a ROS dependency),
+   so the lane skips;
+2. CI's ``python-test`` job does ``pip install ... mujoco``, but it builds and
+   tests only ``.github/ci-packages.yml``'s ``test_python`` list —
+   ``rtc_tools``, ``rtc_digital_twin``, ``robot_descriptions``. This package is
+   not in it, so the file is never collected there at all.
+
+So this lane is a manual check, not a gate. Run it deliberately after touching
+either copy of a pose::
 
     .venv/bin/python -m pytest \
         src/rtc-framework/integrated_bringup/test/test_shipped_initial_qpos.py
+
+The structural lane above has neither problem — it needs only PyYAML and runs
+under a plain ``colcon test`` — which is why the failure that actually aborts a
+node lives there and not here.
 """
 
 from __future__ import annotations
@@ -119,7 +133,11 @@ def test_initial_qpos_entries_are_floats(profile: str) -> None:
 def test_initial_qpos_matches_mjcf_keyframe(profile: str) -> None:
     mujoco = pytest.importorskip(
         "mujoco",
-        reason="mujoco is a pip package; local colcon runs pytest under /usr/bin/python3",
+        reason=(
+            "mujoco absent — this lane is manual-only: local colcon runs pytest under "
+            "/usr/bin/python3, and CI's python-test job does not build this package. "
+            "Run: .venv/bin/python -m pytest <this file>"
+        ),
     )
 
     response = _robot_response(profile)

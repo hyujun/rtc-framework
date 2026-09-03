@@ -221,9 +221,12 @@
     <!-- FALLBACK source of the robot's initial qpos in rtc_mujoco_sim. A
          bringup that sets robot_response.<group>.initial_qpos overrides it —
          integrated_bringup/config/ur5e_p1a does, with values mirrored from
-         here and pinned equal by that package's test_shipped_initial_qpos, so
-         editing this pose without mirroring it there changes nothing at
-         runtime and fails that test. -->
+         here. So editing this pose changes NOTHING at runtime until you mirror
+         the edit there. That package's test_shipped_initial_qpos checks the two
+         copies agree, but its keyframe lane needs the mujoco pip module and
+         therefore runs neither under a local colcon test nor in CI — treat it
+         as a manual check you have to remember, not a gate that will catch
+         you. -->
     <key name="home" qpos="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0 0 0 0 0 0 0 0 0 0"
                      ctrl="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0 0 0 0 0 0 0 0 0 0"/>
   </keyframe>

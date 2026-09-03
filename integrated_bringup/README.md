@@ -754,7 +754,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 **기동 자세**는 각 그룹의 `initial_qpos` (rad, `command_joint_names` 순서) 가 정하며, 이 값이 MJCF keyframe 보다 우선합니다 (우선순위·로그·함정은 [rtc_mujoco_sim README](../rtc_mujoco_sim/README.md#초기-자세-initial_qpos)). 세 프로필의 성격이 다릅니다:
 
 - `ur5e_p1b` — 씬에 keyframe 이 **없어서** 이 키가 유일한 기동 자세 소스다. 값은 palm-down (`wrist_2 = 0`), 즉 손가락이 아래를 보는 대신 손바닥이 바닥을 보는 자세로, top-down 파지를 위한 것이다. `object_pool` 의 스폰 중심과 `scene_with_table.xml` 의 작업대 위치가 모두 이 자세의 손 기둥 `(-0.49, -0.23)` 에 맞춰져 있다 — 이 로봇의 base 는 `quat "0 0 0 -1"` 로 붙어 있어 작업 공간이 **−x** 쪽이므로, 다른 씬의 `+x` 좌표를 그대로 옮기면 손 뒤에 물체가 생긴다. 세 값은 대략만 맞으면 되고 (나머지는 궤적 생성이 흡수한다) 서로 기계적으로 연동되어 있지 않다.
-- `ur5e_p1a` / `iiwa7_leap` — 씬 keyframe 과 **같은 값**을 명시적으로 들고 있다. 두 사본이 갈라지지 않도록 `test/test_shipped_initial_qpos.py` 가 joint 이름 기준으로 등가를 고정한다 (그 테스트의 mujoco 레인은 CI 와 워크스페이스 venv 에서 돌고, 시스템 python 으로 도는 로컬 `colcon test` 에서는 skip 된다).
+- `ur5e_p1a` / `iiwa7_leap` — 씬 keyframe 과 **같은 값**을 명시적으로 들고 있다. 두 사본이 갈라지지 않도록 `test/test_shipped_initial_qpos.py` 가 joint 이름 기준으로 등가를 고정한다. **단 그 등가 레인은 자동으로 도는 곳이 없다** — 로컬 `colcon test` 는 pytest 를 `/usr/bin/python3` 로 돌려 `mujoco` 가 없고, CI 의 `python-test` job 은 `mujoco` 를 설치하지만 [`ci-packages.yml`](../.github/ci-packages.yml) 의 `test_python` (= `rtc_tools` / `rtc_digital_twin` / `robot_descriptions`) 만 빌드·테스트하므로 이 패키지를 수집하지 않는다. 두 사본 중 하나를 고쳤으면 **손으로** 돌린다: `.venv/bin/python -m pytest src/rtc-framework/integrated_bringup/test/test_shipped_initial_qpos.py`. 같은 파일의 길이·타입 레인은 PyYAML 만 쓰므로 로컬 `colcon test` 에서 정상적으로 게이트 역할을 한다.
 
 모든 원소에 **소수점을 찍으십시오** — 정수 리터럴이 하나라도 있으면 시퀀스 전체가 정수 배열로 추론되어 노드 생성 시점에 죽습니다. `test_shipped_sim_config` 가 이 타입을 rclcpp 로더로 고정합니다.
 
