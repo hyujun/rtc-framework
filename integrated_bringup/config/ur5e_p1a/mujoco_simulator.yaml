@@ -56,6 +56,12 @@ mujoco_simulator:
           - wrist_3_joint
         command_topic: "/ur5e/joint_command"
         state_topic: "/joint_states"
+        # ── Startup + reset pose (rad, command_joint_names order) ────────────
+        # Deliberately IDENTICAL to this scene's `home` keyframe, read back by
+        # joint NAME rather than copied as a qpos slice. Making the value
+        # explicit costs a second copy, which test_shipped_initial_qpos pins
+        # against the MJCF so the two cannot drift.
+        initial_qpos: [-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
         # sensor_topic: "/ur5e/sim_sensors"   # uncomment + add sensor_names to enable
         # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
         # sensor_names: ["ft_sensor"]          # example: explicit sensor names
@@ -86,6 +92,8 @@ mujoco_simulator:
           - ring_mcp_fe
         command_topic: "/p1a/joint_command"
         state_topic: "/p1a/joint_states"
+        # Hand open — same values as the scene's `home` keyframe.
+        initial_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         # sensor_topic: "/p1a/sim_sensors"   # uncomment + add sensor_names to enable
         # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
 

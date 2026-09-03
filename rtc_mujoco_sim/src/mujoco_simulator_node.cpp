@@ -389,6 +389,14 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       } catch (...) {
       }
 
+      // Deliberately outside the catch-all above: an initial_qpos the loader
+      // rejects (the usual cause is a YAML sequence written with integer
+      // literals, which parses as an integer array and never matches the
+      // declared double array) must abort the node, not leave the arm at the
+      // pose this key exists to replace.
+      gc.initial_qpos =
+          get_parameter("robot_response." + gname + ".initial_qpos").as_double_array();
+
       LoadContactWrenchConfig("robot_response", gname, gc.contact_wrench);
 
       group_configs_.push_back(std::move(gc));
@@ -412,6 +420,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       gc.sensor_topic = get_parameter("fake_response." + gname + ".sensor_topic").as_string();
       gc.sensor_names = get_parameter("fake_response." + gname + ".sensor_names").as_string_array();
       gc.filter_alpha = get_parameter("fake_response." + gname + ".filter_alpha").as_double();
+      // Read so Initialize can reject it with a reason. A fake group has no
+      // qpos to initialise, so silently dropping the value here would leave a
+      // config that looks honoured and is not.
+      gc.initial_qpos = get_parameter("fake_response." + gname + ".initial_qpos").as_double_array();
 
       group_configs_.push_back(std::move(gc));
     }
@@ -444,6 +456,14 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // servo_kp/kd array cannot match multiple distinct joint counts.
     declare_parameter(prefix + "servo_kp", std::vector<double>{});
     declare_parameter(prefix + "servo_kd", std::vector<double>{});
+    // Startup + reset pose, in command_joint_names order, radians. Empty =
+    // fall back to the MJCF keyframe (and to zeros when there is none), which
+    // is what every config did before this key existed. Declared for both
+    // sections so a fake_response group's value is *read* and then rejected by
+    // Initialize; declaring it only for robot groups would instead make the
+    // key an unknown parameter, whose error names the parameter rather than
+    // the reason it cannot apply.
+    declare_parameter(prefix + "initial_qpos", std::vector<double>{});
     // Contact wrench publishing (opt-in). enabled+topic_prefix are required
     // to activate; suffix lists default to the "_tip_contact"/"_tip_ft_site"
     // convention but are fully YAML-overridable for any MJCF naming scheme.
@@ -479,8 +499,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   std::array<double, 3> LoadVec3Param(const std::string& name) {
     const auto v = get_parameter(name).as_double_array();
     if (v.size() != 3) {
-      RCLCPP_FATAL(get_logger(),
-                   "[MuJoCoSimulatorNode] %s must have exactly 3 elements (got %zu)",
+      RCLCPP_FATAL(get_logger(), "[MuJoCoSimulatorNode] %s must have exactly 3 elements (got %zu)",
                    name.c_str(), v.size());
       throw std::runtime_error(name + " must have exactly 3 elements");
     }

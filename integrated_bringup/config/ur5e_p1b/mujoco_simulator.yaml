@@ -10,7 +10,11 @@
 mujoco_simulator:
   ros__parameters:
     # ── Model ────────────────────────────────────────────────────────────────
-    model_path: "package://hand_description/robots/ur5e_p1b/mjcf/scene.xml"
+    # scene_with_table.xml = scene.xml + a 0.5x0.5 m work table (top at z=0.05)
+    # under the palm-down startup pose's hand column. Point this back at
+    # scene.xml for the bare robot-on-a-floor scene; the object_pool spawn
+    # height below assumes the table.
+    model_path: "package://hand_description/robots/ur5e_p1b/mjcf/scene_with_table.xml"
 
     # ── Sync timeout ─────────────────────────────────────────────────────────
     # Max time to wait for a controller command per step (ms).
@@ -31,6 +35,42 @@ mujoco_simulator:
     use_yaml_servo_gains: false
     servo_kp: [500.0, 500.0, 500.0, 150.0, 150.0, 150.0]
     servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]
+
+    # ── Object Pool (무작위 object 스폰) ─────────────────────────────────────
+    # 전체 키·기본값은 rtc_mujoco_sim/config/mujoco_default.yaml 이 SSoT.
+    #
+    # 좌표계 메모 — 이 로봇의 base 는 quat "0 0 0 -1" (z축 180°) 로 붙어 있어서
+    # 위 initial_qpos (palm-down) 자세의 손은 +x 가 아니라 **-x** 쪽에 있다.
+    # 실측: palm (-0.492, -0.234, 0.588), 손바닥 법선 정확히 -z. 아래 스폰 중심은
+    # 그 손 기둥 바로 아래다. demo 씬의 테이블이 +0.56 x 인 것은 shoulder_pan=pi
+    # 인 다른 자세 기준이므로 그 좌표를 그대로 옮기면 손 뒤에 물체가 생긴다.
+    #
+    # position.z 는 model_path 씬의 상판 z=0.05 를 전제로 한다: object_sim 메시는
+    # body 원점보다 최대 0.079 m 아래로 뻗으므로 (coffeemug) 0.16 이어야 상판을
+    # 뚫지 않는다. 받침대를 옮기면 이 한 줄만 따라 옮긴다.
+    #
+    # 아래 5개를 이 스폰 박스에서 20 s 낙하시킨 실측 (각 8회, 총 40회): 상판
+    # 이탈 0회, 최대 수평 이동 0.072 m (cubelarge), 잔류 속도 <= 0.069 m/s.
+    # 구형 object 는 구르지만 0.5 x 0.5 m 상판을 벗어나지 않는다.
+    #
+    # 후보 5개로 좁힌 이유는 비용이다 — 후보는 전부 씬에 컴파일되므로
+    # 디렉토리 전체 (57개) 는 +약 0.5 GB RSS, tick 당 0.26 ms (2 ms 예산의 13%).
+    # 넓히려면 objects 항목을 늘리고, 디렉토리 전체를 쓰려면 objects 키를
+    # **삭제**한다 ([] 는 ROS 2 params YAML 이 표현하지 못해 노드 생성 시 죽는다).
+    object_pool:
+      enabled: true
+      directory: "package://robot_descriptions/object_sim"
+      objects: ["apple", "coffeemug", "duck", "spherelarge", "cubelarge"]
+      selection: "random"   # fixed | random — 어떤 object
+      pose: "random"        # fixed | random — 어디에 떨어지는가
+      position:           [-0.49, -0.23, 0.16]
+      position_variation: [0.12, 0.12, 0.0]   # 반폭, 상판 ±0.25 안쪽
+      rpy:                [0.0, 0.0, 0.0]     # rad (ZYX Euler) — degree 스펠링 없음
+      rpy_variation:      [0.0, 0.0, 3.1416]  # yaw only
+      park_position: [0.0, 0.0, -50.0]
+      seed: 0               # 0 = 매 실행 다름, >0 = 재현 가능
+      avoid_repeat: true
+      spawn_on_start: true
 
     # ── Robot Response (MuJoCo 물리 시뮬레이션) ──────────────────────────────
     # command_joint_names: actuator 매칭용 (XML joint name). 합집합 == XML 전체 joints 필수.
@@ -56,6 +96,19 @@ mujoco_simulator:
           - wrist_3_joint
         command_topic: "/ur5e/joint_command"
         state_topic: "/ur5e/joint_states"
+        # ── Startup + reset pose (rad, command_joint_names order) ────────────
+        # This scene has NO <keyframe>, so without this key the sim starts at
+        # qpos0 — the fully extended arm lying near the floor — and the viewer's
+        # R key returns it there. The MJCF lives in the hand_description package
+        # and is not ours to add a keyframe to, which is why the pose is here.
+        #
+        # Palm-down: identical to the usual UR5e home except wrist_2 = 0 instead
+        # of -pi/2. That single joint turns the hand from "fingers pointing at
+        # the floor" (palm normal +y, sideways) into "palm facing the floor"
+        # (palm normal exactly -z), which is the orientation a top-down grasp
+        # needs. Measured on this MJCF: palm lands at (-0.492, -0.234, 0.588)
+        # with zero floor/table contact.
+        initial_qpos: [0.0, -1.5708, 1.5708, -1.5708, 0.0, 0.0]
         # sensor_topic: "/ur5e/sim_sensors"   # uncomment + add sensor_names to enable
         # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
         # sensor_names: ["ft_sensor"]          # example: explicit sensor names
@@ -86,6 +139,10 @@ mujoco_simulator:
           - ring_mcp_fe_joint
         command_topic: "/p1b/joint_command"
         state_topic: "/p1b/joint_states"
+        # Hand open, all ten joints (rad, command_joint_names order). Spelled
+        # out rather than omitted: an absent key means "fall back", and the day
+        # this scene gains a keyframe that would silently take over.
+        initial_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         # sensor_topic: "/p1b/sim_sensors"   # uncomment + add sensor_names to enable
         # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
 

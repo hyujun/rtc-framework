@@ -1,0 +1,47 @@
+<!-- Scene fixture for initial_qpos precedence (YAML > keyframe > zeros).
+
+     The keyframe qpos is NON-ZERO and ASYMMETRIC, and both properties are
+     load-bearing:
+
+       - non-zero, because the only other keyframe fixture in this package
+         (pool_scene.xml) carries `qpos="0 0"`. Against that one a YAML value
+         of {0,0} is indistinguishable from the keyframe, so the case the
+         precedence flag actually exists for — a caller who deliberately wants
+         an all-zero home on a scene whose keyframe says otherwise — cannot be
+         written at all;
+
+       - asymmetric (0.30 vs -0.70, different magnitude AND sign), because an
+         implementation that copies the keyframe into the wrong joint index, or
+         that reverses the YAML vector, still lands on a valid-looking pose when
+         the two entries match.
+
+     Otherwise a deliberately plain two-hinge arm: the contract under test is
+     which vector reaches data_->qpos, not the dynamics that follow. -->
+<mujoco model="keyframe_scene_test">
+  <compiler angle="radian"/>
+  <option timestep="0.002" solver="Newton" iterations="20"/>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 -1.0" rgba="0.3 0.3 0.3 1"/>
+
+    <body name="link1" pos="0 0 0">
+      <joint name="j1" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+      <inertial pos="0 0 0.1" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom type="cylinder" size="0.05 0.1" rgba="0.8 0.2 0.2 1"/>
+      <body name="link2" pos="0 0 0.2">
+        <joint name="j2" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+        <inertial pos="0 0 0.1" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+        <geom type="capsule" size="0.03 0.1" rgba="0.2 0.8 0.2 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="m1" joint="j1" kp="100" ctrlrange="-3.14 3.14"/>
+    <position name="m2" joint="j2" kp="100" ctrlrange="-1.57 1.57"/>
+  </actuator>
+
+  <keyframe>
+    <key name="home" qpos="0.30 -0.70"/>
+  </keyframe>
+</mujoco>

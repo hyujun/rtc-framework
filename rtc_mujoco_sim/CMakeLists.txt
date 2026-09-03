@@ -206,6 +206,18 @@ if(mujoco_FOUND)
       endif()
     endforeach()
 
+    # initial_qpos precedence (YAML > keyframe > zeros): needs BOTH a scene
+    # whose keyframe is non-zero and the keyframe-less minimal fixture, since
+    # the fallback lane and the override lane are only distinguishable against
+    # different scenes.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_initial_qpos.cpp")
+      ament_add_gtest(test_initial_qpos test/test_initial_qpos.cpp)
+      target_link_libraries(test_initial_qpos mujoco_simulator_lib)
+      target_compile_definitions(test_initial_qpos PRIVATE
+        MINIMAL_MJCF_PATH="${MJCF_FIXTURE}"
+        KEYFRAME_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/keyframe_scene.xml")
+    endif()
+
     # Per-body gravcomp regression: needs a scene with both a robot and a
     # free body.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_gravcomp_scene.cpp")

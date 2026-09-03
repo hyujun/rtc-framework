@@ -19,6 +19,11 @@ Usage:
   # max_rtf override
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py max_rtf:=10.0
 
+  # Object pool (config/ur5e_p1b/mujoco_simulator.yaml object_pool block).
+  # Press 'o' in the viewer to park the current object and spawn another.
+  ros2 launch integrated_bringup sim_ur5e_p1b.launch.py object_pool:=false
+  ros2 launch integrated_bringup sim_ur5e_p1b.launch.py object:=apple object_seed:=7
+
 Nodes launched:
   1. mujoco_simulator_node  — MuJoCo physics simulator (replaces UR driver)
   2. integrated_rt_controller     — 500Hz controller (CV-based wakeup in sim mode)
@@ -36,8 +41,8 @@ from launch.actions import (
     RegisterEventHandler,
     TimerAction,
 )
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.event_handlers import OnProcessExit
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import LifecycleNode
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
@@ -109,6 +114,29 @@ def launch_setup(context, *args, **kwargs):
             "1",
             "yes",
         )
+
+    # ── Object pool overrides ────────────────────────────────────────────────
+    # `object_pool:=false` is the control group every measurement of this
+    # feature needs: with the pool off the compiled model's nq/nbody/ngeom are
+    # what they would be with no pool block at all, so "did the pool cost /
+    # break anything?" is answerable without editing YAML between the two runs.
+    object_pool = LaunchConfiguration("object_pool").perform(context)
+    if object_pool != "":
+        sim_overrides["object_pool.enabled"] = object_pool.lower() in ("true", "1", "yes")
+
+    # Pins BOTH axes, not just the object: asking for one named object while
+    # `selection` stays "random" in YAML would keep re-rolling it on every 'o'.
+    obj = LaunchConfiguration("object").perform(context)
+    if obj.strip() != "":
+        sim_overrides["object_pool.fixed_object"] = obj.strip()
+        sim_overrides["object_pool.selection"] = "fixed"
+
+    object_seed = LaunchConfiguration("object_seed").perform(context)
+    if object_seed != "":
+        seed = int(object_seed)
+        if seed < 0:
+            raise RuntimeError(f"object_seed must be >= 0 (0 = seed from the OS), got {seed}")
+        sim_overrides["object_pool.seed"] = seed
 
     # ── Fake hand response + control_rate ─────────────────────────────────────
     import yaml
@@ -468,6 +496,39 @@ def generate_launch_description():
         ),
     )
 
+    object_pool_arg = DeclareLaunchArgument(
+        "object_pool",
+        default_value="",
+        description=(
+            "Override object_pool.enabled from YAML. "
+            "Empty -> use YAML value (true for ur5e_p1b). "
+            "false -> no candidate object is compiled into the scene, giving "
+            "the same nq/nbody/ngeom as a scene with no pool block (the "
+            "control group for cost and regression comparisons)."
+        ),
+    )
+
+    object_arg = DeclareLaunchArgument(
+        "object",
+        default_value="",
+        description=(
+            "Spawn one named object (a subdirectory of object_pool.directory, "
+            "e.g. apple). Also forces object_pool.selection to 'fixed', since "
+            "naming an object while selection stays 'random' would re-roll it "
+            "on the next 'o'. Empty = use the YAML selection."
+        ),
+    )
+
+    object_seed_arg = DeclareLaunchArgument(
+        "object_seed",
+        default_value="",
+        description=(
+            "Override object_pool.seed. 0 = seed from the OS (different every "
+            "run); any non-zero value makes the object/pose sequence "
+            "reproducible. Empty = use the YAML value."
+        ),
+    )
+
     use_cpu_affinity_arg = DeclareLaunchArgument(
         "use_cpu_affinity",
         default_value="true",
@@ -562,6 +623,9 @@ def generate_launch_description():
             kp_arg,
             kd_arg,
             use_yaml_servo_gains_arg,
+            object_pool_arg,
+            object_arg,
+            object_seed_arg,
             max_log_sessions_arg,
             use_cpu_affinity_arg,
             initial_controller_arg,

@@ -1150,10 +1150,21 @@ if(BUILD_TESTING)
     rtc_msgs
   )
 
+  # Shipped mujoco_simulator.yaml files, through the same loader a node's
+  # constructor reaches — the only gate that sees the constructs which abort a
+  # node before on_configure (empty sequences, integer-literal double arrays).
+  ament_add_gtest(test_shipped_sim_config test/test_shipped_sim_config.cpp)
+  target_compile_definitions(test_shipped_sim_config PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_shipped_sim_config rclcpp)
+
   # ── demo_controller_gui static robot profiles (pure-Python) ────────────────
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_robot_profiles test/test_robot_profiles.py)
   ament_add_pytest_test(test_cm_rt_params_wiring test/test_cm_rt_params_wiring.py)
+  # Shipped initial_qpos: length/type (always) + MJCF keyframe agreement (skips
+  # without the mujoco pip module, which CI installs and /usr/bin/python3 lacks).
+  ament_add_pytest_test(test_shipped_initial_qpos test/test_shipped_initial_qpos.py)
   ament_add_pytest_test(test_launch_shield_wiring test/test_launch_shield_wiring.py)
   ament_add_pytest_test(test_launch_hand_affinity_wiring
     test/test_launch_hand_affinity_wiring.py)

@@ -394,8 +394,7 @@ void MuJoCoSimulator::LogAllXmlSensors() const noexcept {
     return;
   }
 
-  fprintf(stdout, "[MuJoCoSimulator] XML sensors found (%d):\n",
-          static_cast<int>(model_->nsensor));
+  fprintf(stdout, "[MuJoCoSimulator] XML sensors found (%d):\n", static_cast<int>(model_->nsensor));
   for (int i = 0; i < model_->nsensor; ++i) {
     const char* name = mj_id2name(model_, mjOBJ_SENSOR, i);
     const int type = model_->sensor_type[i];
@@ -480,8 +479,7 @@ namespace {
 [[nodiscard]] std::optional<std::string> StripFirstMatchingSuffix(
     std::string_view name, const std::vector<std::string>& suffixes) noexcept {
   for (const auto& suf : suffixes) {
-    if (name.size() > suf.size() &&
-        name.compare(name.size() - suf.size(), suf.size(), suf) == 0) {
+    if (name.size() > suf.size() && name.compare(name.size() - suf.size(), suf.size(), suf) == 0) {
       return std::string(name.substr(0, name.size() - suf.size()));
     }
   }
@@ -576,10 +574,8 @@ bool MuJoCoSimulator::DiscoverContactWrenches(JointGroup& group) noexcept {
     info.ft_site_id = site_id;
     info.body_id = body_id;
 
-    fprintf(stdout,
-            "[MuJoCoSimulator] [%s] contact_wrench target='%s' site=%s frame=%s\n",
-            group.name.c_str(), info.target_name.c_str(), site_name.c_str(),
-            info.frame_id.c_str());
+    fprintf(stdout, "[MuJoCoSimulator] [%s] contact_wrench target='%s' site=%s frame=%s\n",
+            group.name.c_str(), info.target_name.c_str(), site_name.c_str(), info.frame_id.c_str());
 
     group.contact_wrench_infos.push_back(std::move(info));
   }
@@ -609,8 +605,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
   // there is one loading path rather than two that can drift apart.
   mjSpec* spec = mj_parseXML(cfg_.model_path.c_str(), nullptr, error, sizeof(error));
   if (!spec) {
-    fprintf(stderr, "[MuJoCoSimulator] Failed to parse '%s': %s\n", cfg_.model_path.c_str(),
-            error);
+    fprintf(stderr, "[MuJoCoSimulator] Failed to parse '%s': %s\n", cfg_.model_path.c_str(), error);
     return false;
   }
 
@@ -773,11 +768,36 @@ bool MuJoCoSimulator::Initialize() noexcept {
       g->initial_qpos.resize(ncj, 0.0);
       g->gainprm_yaml.resize(ncj, 0.0);
       g->biasprm2_yaml.resize(ncj, 0.0);
+      // YAML home pose, when given, outranks the MJCF keyframe read further
+      // below. Validated here rather than there so the message can name the
+      // group and both counts while the config is still in scope.
+      if (!gc.initial_qpos.empty()) {
+        if (gc.initial_qpos.size() != ncj) {
+          fprintf(stderr,
+                  "[MuJoCoSimulator] ERROR: group '%s' initial_qpos has %zu "
+                  "entries but the group has %zu command joints\n",
+                  gc.name.c_str(), gc.initial_qpos.size(), ncj);
+          return false;
+        }
+        g->initial_qpos = gc.initial_qpos;
+        g->has_yaml_initial_qpos = true;
+      }
       // State buffers
       g->positions.resize(nsj, 0.0);
       g->velocities.resize(nsj, 0.0);
       g->efforts.resize(nsj, 0.0);
     } else {
+      // A fake group echoes commands through an LPF and never touches qpos, so
+      // an initial_qpos there would be accepted and then do nothing. Reject it
+      // instead: this package's convention is that a key which cannot take
+      // effect is a startup error, not a silent no-op.
+      if (!gc.initial_qpos.empty()) {
+        fprintf(stderr,
+                "[MuJoCoSimulator] ERROR: group '%s' is a fake_response group; "
+                "initial_qpos applies to robot_response groups only\n",
+                gc.name.c_str());
+        return false;
+      }
       // Fake group: LPF buffers (command size for target, state size for
       // output)
       g->fake_target.resize(ncj, 0.0);
@@ -940,8 +960,11 @@ bool MuJoCoSimulator::Initialize() noexcept {
         g->biasprm2_yaml[i] = -kd[i];
     }
 
-    // Initial positions from keyframe
-    if (model_->nkey > 0) {
+    // Initial positions from keyframe — skipped when YAML already supplied
+    // them, which is the whole point of the key: a scene may carry a keyframe
+    // that a given bringup does not want (or, as with a scene that has none,
+    // no usable pose at all) and cannot edit.
+    if (model_->nkey > 0 && !g->has_yaml_initial_qpos) {
       for (std::size_t i = 0; i < ncj; ++i) {
         g->initial_qpos[i] = static_cast<double>(model_->key_qpos[g->qpos_indices[i]]);
       }
@@ -957,12 +980,27 @@ bool MuJoCoSimulator::Initialize() noexcept {
   mj_forward(model_, data_);
   ReadState();
 
-  if (model_->nkey > 0) {
-    const char* key_name = mj_id2name(model_, mjOBJ_KEY, 0);
-    fprintf(stdout, "[MuJoCoSimulator] Initial positions from keyframe '%s'\n",
-            key_name ? key_name : "(unnamed)");
-  } else {
-    fprintf(stdout, "[MuJoCoSimulator] No keyframe — using zero initial positions\n");
+  // Reported per group, not once for the scene: with a YAML initial_qpos the
+  // source can now differ between groups (an arm posed from YAML beside a hand
+  // left on the keyframe), and a single scene-wide line would name the losing
+  // source for one of them. Which pose the robot started in is the first thing
+  // checked when a sim comes up somewhere unexpected, so it must be truthful.
+  {
+    const char* key_name = model_->nkey > 0 ? mj_id2name(model_, mjOBJ_KEY, 0) : nullptr;
+    for (const auto& g : groups_) {
+      if (!g->is_robot)
+        continue;
+      const char* source = g->has_yaml_initial_qpos ? "YAML initial_qpos"
+                           : model_->nkey > 0       ? "MJCF keyframe"
+                                                    : "zeros (no keyframe, no YAML)";
+      if (!g->has_yaml_initial_qpos && model_->nkey > 0) {
+        fprintf(stdout, "[MuJoCoSimulator] [%s] initial positions from %s '%s'\n", g->name.c_str(),
+                source, key_name ? key_name : "(unnamed)");
+      } else {
+        fprintf(stdout, "[MuJoCoSimulator] [%s] initial positions from %s\n", g->name.c_str(),
+                source);
+      }
+    }
   }
 
   // ── Initial gravity state ───────────────────────────────────────────────
@@ -974,7 +1012,8 @@ bool MuJoCoSimulator::Initialize() noexcept {
     if (!g->is_robot)
       continue;
     const double gravcomp =
-        (g->control_mode.load(std::memory_order_relaxed) == JointControlMode::kPosition) ? 1.0 : 0.0;
+        (g->control_mode.load(std::memory_order_relaxed) == JointControlMode::kPosition) ? 1.0
+                                                                                         : 0.0;
     for (int body_id : g->body_indices) {
       if (body_id > 0 && body_id < model_->nbody)
         model_->body_gravcomp[body_id] = gravcomp;
@@ -1118,9 +1157,9 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
   // 두 자릿수 스케일 모두 cover 하도록 helper macro 로 추출.
 #if defined(mjVERSION_HEADER) && \
     ((mjVERSION_HEADER >= 320 && mjVERSION_HEADER < 1000) || mjVERSION_HEADER >= 3002000)
-  #define RTC_MUJOCO_HAS_CCD 1
+#define RTC_MUJOCO_HAS_CCD 1
 #else
-  #define RTC_MUJOCO_HAS_CCD 0
+#define RTC_MUJOCO_HAS_CCD 0
 #endif
 
 #if RTC_MUJOCO_HAS_CCD
@@ -1673,9 +1712,8 @@ int MuJoCoSimulator::FindBodyId(const char* body_name) const noexcept {
   return id > 0 ? id : -1;
 }
 
-bool MuJoCoSimulator::SetExternalWrenchAtPoint(
-    int body_id, const std::array<double, 3>& point_body,
-    const std::array<double, 6>& wrench_world) noexcept {
+bool MuJoCoSimulator::SetExternalWrenchAtPoint(int body_id, const std::array<double, 3>& point_body,
+                                               const std::array<double, 6>& wrench_world) noexcept {
   if (!model_ || body_id <= 0 || body_id >= model_->nbody) {
     return false;
   }
