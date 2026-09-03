@@ -210,6 +210,18 @@ def main():
     run_pipeline(log_type, df, args, args.save_dir)
 
     if args.show and not args.stats:
+        # Right-click zoom. Attached here rather than inside the plotters
+        # because `layout.disable_close()` has kept every figure open, so this
+        # one loop reaches all of them. Only meaningful with a GUI: the Agg
+        # path has no event loop to deliver the click.
+        from rtc_tools.plotting import zoom_dialog
+
+        n = zoom_dialog.attach_all(plt, save_dir=args.save_dir)
+        if n:
+            print(
+                f"\nRight-click any subplot ({n} figure(s)) to type an exact "
+                "x/y range; click a figure's margin for its x range alone."
+            )
         plt.show()
 
 

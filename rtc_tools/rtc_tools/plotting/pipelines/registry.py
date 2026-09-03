@@ -18,7 +18,7 @@ controller-specific plot is one row; nothing in main() needs to change.
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from rtc_tools.plotting import plotters
+from rtc_tools.plotting import plotters, zoom_dialog
 from rtc_tools.plotting.columns import (
     has_force_only_fingertips,
     has_motor,
@@ -247,6 +247,19 @@ def _entry_fires(entry, df, args):
     return avail and flag_set
 
 
+def _stamp_png_stem(plt, before, entry_name):
+    """Tag figures created by one entry with the PNG stem it wrote.
+
+    Every entry's `name` equals the stem its plotter passes to `savefig`, so
+    this recovers "which file is this figure" without touching the 33 save
+    sites. The zoom dialog needs it to name a zoomed re-save after the figure
+    rather than after a pyplot figure number. Best effort: an entry that drew
+    nothing simply stamps nothing.
+    """
+    for num in set(plt.get_fignums()) - before:
+        setattr(plt.figure(num), zoom_dialog.PNG_STEM_ATTR, entry_name)
+
+
 def run_pipeline(log_type, df, args, save_dir):
     """Run STATS_PRINTERS + PIPELINES[log_type] honouring `--stats` and flags.
 
@@ -260,6 +273,13 @@ def run_pipeline(log_type, df, args, save_dir):
     if args.stats:
         return
 
+    # Imported here, not at module scope: pyplot caches the backend on first
+    # import, and this module is itself lazy-imported after
+    # `layout.configure_backend()` for exactly that reason.
+    import matplotlib.pyplot as plt
+
     for entry in PIPELINES.get(log_type, []):
         if _entry_fires(entry, df, args):
+            before = set(plt.get_fignums())
             entry.fn(df, save_dir)
+            _stamp_png_stem(plt, before, entry.name)

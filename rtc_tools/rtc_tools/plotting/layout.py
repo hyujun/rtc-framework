@@ -13,6 +13,11 @@ from pathlib import Path
 # Late-bound; configure_backend() must run before any plot uses this.
 plt = None
 
+# The real `plt.close`, kept aside by disable_close() so anything that owns a
+# figure of its own can still close it. Without this, a dialog figure raised
+# after disable_close() has no way to dismiss itself (see zoom_dialog).
+_real_close = None
+
 
 def configure_backend(save_only):
     """Pick matplotlib backend based on whether we are saving headlessly.
@@ -35,8 +40,23 @@ def configure_backend(save_only):
 
 def disable_close():
     """Make plt.close() a no-op so figures survive until main()'s plt.show()."""
+    global _real_close
     if plt is not None:
+        if _real_close is None:
+            _real_close = plt.close
         plt.close = lambda *a, **kw: None
+
+
+def real_close(fig=None):
+    """Close `fig` for real, even after disable_close() neutered plt.close().
+
+    Used by figures this package raises *itself* (the zoom dialog), which are
+    not pipeline output and must not be kept alive until the final show().
+    """
+    closer = _real_close if _real_close is not None else getattr(plt, "close", None)
+    if closer is None:
+        return
+    closer(fig) if fig is not None else closer()
 
 
 def auto_subplot_grid(n, max_cols=None):
