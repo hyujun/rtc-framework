@@ -6,6 +6,7 @@ CSV 유틸리티, 컬럼 감지, 로그 타입 분류, subplot 그리드 계산 
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import re
 
@@ -2870,3 +2871,470 @@ class TestComplianceDiagStatistics:
         print_compliance_diag_statistics(_compliance_diag_frame(n=10, valid=0))
         out = capsys.readouterr().out
         assert "every row is a held tick" in out, out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# zoom_dialog — 우클릭 "정확한 범위로 확대" 팝업
+#
+# GUI 기능이지만 검증은 전부 Agg 에서 돈다: 대화상자를 여는 `opener` 가
+# seam 이라 테스트가 값을 직접 주입하고, 우클릭은 MouseEvent 합성으로 만든다.
+# 실기(TkAgg) 확인은 스크린샷 육안 검증 몫이고 여기서 잡는 것은 로직이다.
+# ═══════════════════════════════════════════════════════════════════════════
+
+from matplotlib.backend_bases import MouseButton, MouseEvent  # noqa: E402
+from matplotlib.transforms import blended_transform_factory  # noqa: E402
+
+from rtc_tools.plotting import zoom_dialog as _zd  # noqa: E402
+
+
+def _right_click(fig, ax, x=25.0, y=0.0):
+    """Synthesize a right-click at data coords (x, y) inside `ax`.
+
+    `ax=None` targets the figure margin (below the axes), which is how the
+    x-only figure-scope path is reached.
+    """
+    fig.canvas.draw()
+    if ax is None:
+        px, py = 2.0, 2.0  # bottom-left corner of the canvas: no axes there
+    else:
+        px, py = ax.transData.transform((x, y))
+    ev = MouseEvent("button_press_event", fig.canvas, px, py, button=MouseButton.RIGHT)
+    fig.canvas.callbacks.process("button_press_event", ev)
+    return ev
+
+
+def _click(fig, ax, button):
+    fig.canvas.draw()
+    px, py = ax.transData.transform((25.0, 0.0))
+    ev = MouseEvent("button_press_event", fig.canvas, px, py, button=button)
+    fig.canvas.callbacks.process("button_press_event", ev)
+
+
+def _recording_opener(request, record=None):
+    """An `opener` that immediately applies `request` and logs its scope."""
+
+    def opener(fig, ax, on_apply, x_only=False):
+        if record is not None:
+            record["x_only"] = x_only
+            record["ax_index"] = list(fig.axes).index(ax)
+            record["calls"] = record.get("calls", 0) + 1
+        on_apply(request)
+        return True
+
+    return opener
+
+
+@pytest.fixture
+def _quiet_close(monkeypatch):
+    """Keep plotter-created figures alive, as `main()`'s disable_close() does."""
+    import matplotlib.pyplot as plt
+
+    monkeypatch.setattr(plt, "close", lambda *a, **k: None)
+    yield plt
+    monkeypatch.undo()
+    plt.close("all")
+
+
+def _spiky_axes(lo_amp=1.0, spike=500.0, spike_t=5.0):
+    """One axes whose y range INSIDE 18.93..34.55 differs from its full range.
+
+    The fixture has to break that symmetry or a refit that ignored the window
+    entirely would produce the same numbers and the test would pass on a
+    no-op (a sine over whole cycles is exactly such a fixture).
+    """
+    import matplotlib.pyplot as plt
+
+    t = np.linspace(0.0, 50.0, 2001)
+    y = np.full_like(t, lo_amp)
+    y[np.argmin(np.abs(t - spike_t))] = spike  # spike lives OUTSIDE the window
+    fig, ax = plt.subplots()
+    ax.plot(t, y)
+    return fig, ax
+
+
+class TestZoomDataYlim:
+    """`data_ylim` 은 데이터 좌표 아티스트만 점수에 넣는다."""
+
+    def test_window_excludes_a_spike_outside_it(self, _quiet_close):
+        fig, ax = _spiky_axes()
+        full = _zd.data_ylim([ax], -np.inf, np.inf)
+        windowed = _zd.data_ylim([ax], 18.93, 34.55)
+        assert full[1] > 400.0, full
+        assert windowed[1] < 2.0, windowed
+
+    def test_axvline_ydata_is_not_scored(self, _quiet_close):
+        """`axvline` 의 ydata 는 [0,1] axes 좌표 — 이걸 먹으면 모든 grasp
+        figure 의 y 가 [0,1] 로 고정된다 (grasp._phase_bands 가 대량 생성)."""
+        import matplotlib.pyplot as plt
+
+        t = np.linspace(0.0, 50.0, 500)
+        fig, ax = plt.subplots()
+        ax.plot(t, np.full_like(t, 7.0))
+        ax.axvline(25.0)
+        lim = _zd.data_ylim([ax], 18.93, 34.55)
+        assert lim[0] > 6.0 and lim[1] < 8.0, lim
+
+    def test_axhline_xdata_is_not_scored(self, _quiet_close):
+        """`axhline` 의 xdata 는 [0,1] axes 좌표라 x 창 필터가 오작동한다."""
+        import matplotlib.pyplot as plt
+
+        t = np.linspace(20.0, 30.0, 200)
+        fig, ax = plt.subplots()
+        ax.plot(t, np.full_like(t, 5.0))
+        ax.axhline(-999.0)  # data-space y, but axes-space x
+        lim = _zd.data_ylim([ax], 18.93, 34.55)
+        assert lim[0] > 4.0, lim
+
+    def test_blended_transform_shading_is_not_scored(self, _quiet_close):
+        """momentum 의 invalid-span 음영은 y 가 axes 좌표 0..1 이다."""
+        import matplotlib.pyplot as plt
+
+        t = np.linspace(0.0, 50.0, 500)
+        fig, ax = plt.subplots()
+        ax.plot(t, np.full_like(t, 30.0))
+        trans = blended_transform_factory(ax.transData, ax.transAxes)
+        ax.fill_between(t, 0, 1, where=(t > 20) & (t < 25), transform=trans)
+        lim = _zd.data_ylim([ax], 18.93, 34.55)
+        assert lim[0] > 25.0, lim
+
+    def test_stackplot_bands_are_scored(self, _quiet_close):
+        """timing_breakdown 은 선이 아니라 PolyCollection 이므로 반드시 포함."""
+        import matplotlib.pyplot as plt
+
+        t = np.linspace(0.0, 50.0, 500)
+        fig, ax = plt.subplots()
+        ax.stackplot(t, np.full_like(t, 40.0), np.full_like(t, 60.0))
+        lim = _zd.data_ylim([ax], 18.93, 34.55)
+        assert lim is not None and lim[1] > 95.0, lim
+
+    def test_empty_window_returns_none(self, _quiet_close):
+        fig, ax = _spiky_axes()
+        assert _zd.data_ylim([ax], 900.0, 901.0) is None
+
+    def test_constant_channel_does_not_collapse(self, _quiet_close):
+        import matplotlib.pyplot as plt
+
+        t = np.linspace(0.0, 50.0, 100)
+        fig, ax = plt.subplots()
+        ax.plot(t, np.full_like(t, 3.0))
+        lo, hi = _zd.data_ylim([ax], 18.93, 34.55)
+        assert hi > lo, (lo, hi)
+
+    def test_sharey_group_is_scored_as_a_union(self, _quiet_close):
+        """`fingertip_force` 는 sharey="col" — 한 패널만 보고 set_ylim 하면
+        열 전체에 전파돼 나머지가 잘린다. union 이라 순서에 무관해야 한다."""
+        import matplotlib.pyplot as plt
+
+        t = np.linspace(0.0, 50.0, 500)
+        fig, axes = plt.subplots(2, 1, sharey=True)
+        axes[0].plot(t, np.full_like(t, 1.0))
+        axes[1].plot(t, np.full_like(t, 50.0))
+        for ax in axes:
+            lim = _zd.autoscale_y_to_xlim(ax, 18.93, 34.55)
+            assert lim[1] > 45.0, (ax, lim)
+
+
+class TestZoomBuildRequest:
+    """대화상자 문자열 → ZoomRequest 파싱."""
+
+    def _vals(self, **kw):
+        base = {"x min": "18.93", "x max": "34.55", "y min": "-1", "y max": "1"}
+        base.update(kw)
+        return base
+
+    def test_parses_both_pairs(self):
+        req = _zd.build_request(self._vals())
+        assert req.xlim == (18.93, 34.55)
+        assert req.ylim == (-1.0, 1.0)
+        assert req.x_all is True, "x 전체 적용이 기본값이어야 한다"
+        assert req.y_all is False
+
+    def test_blank_pair_means_no_change(self):
+        req = _zd.build_request(self._vals(**{"y min": "", "y max": ""}))
+        assert req.xlim == (18.93, 34.55)
+        assert req.ylim is None
+
+    def test_y_auto_ignores_the_y_fields(self):
+        req = _zd.build_request(self._vals(), y_auto=True)
+        assert req.y_auto is True and req.ylim is None
+
+    def test_inverted_range_is_rejected(self):
+        with pytest.raises(ValueError, match="min must be below max"):
+            _zd.build_request(self._vals(**{"x min": "34.55", "x max": "18.93"}))
+
+    def test_equal_bounds_are_rejected(self):
+        with pytest.raises(ValueError, match="min must be below max"):
+            _zd.build_request(self._vals(**{"x min": "20", "x max": "20"}))
+
+    def test_non_numeric_is_rejected(self):
+        with pytest.raises(ValueError, match="not a number"):
+            _zd.build_request(self._vals(**{"x max": "34,55"}))
+
+    def test_infinite_bound_is_rejected(self):
+        with pytest.raises(ValueError, match="finite"):
+            _zd.build_request(self._vals(**{"x max": "inf"}))
+
+    def test_field_defaults_round_trip(self, _quiet_close):
+        fig, ax = _spiky_axes()
+        ax.set_xlim(18.93, 34.55)
+        req = _zd.build_request(_zd.field_defaults(ax))
+        assert req.xlim == pytest.approx((18.93, 34.55))
+
+
+def _six_joint_state_df(n=2000):
+    """6-DOF state_log frame — `robot_positions` builds 6 axes with NO sharex."""
+    t = np.linspace(0.0, 50.0, n)
+    names = ["shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3"]
+    data = {"timestamp": t}
+    for i, nm in enumerate(names):
+        series = np.full_like(t, float(i + 1))
+        series[np.argmin(np.abs(t - 5.0))] = 500.0  # spike outside the window
+        data[f"actual_pos_{nm}"] = series
+    return pd.DataFrame(data)
+
+
+def _robot_positions_figure(tmp_path):
+    import matplotlib.pyplot as plt
+
+    from rtc_tools.plotting.plotters.robot import plot_robot_positions
+
+    plot_robot_positions(_six_joint_state_df(), save_dir=str(tmp_path))
+    fig = plt.gcf()
+    setattr(fig, _zd.PNG_STEM_ATTR, "robot_positions")
+    return fig
+
+
+class TestZoomApplyRequest:
+    """적용 범위: x 는 figure 전체, y 는 클릭한 칸."""
+
+    def test_x_reaches_every_subplot_of_a_figure_without_sharex(self, tmp_path, _quiet_close):
+        """이 테스트가 이 기능의 존재 이유다 — 33개 figure 중 26개가 sharex
+        없이 독립 axes 를 만들므로 드래그 확대는 6칸 중 1칸만 바꾼다."""
+        fig = _robot_positions_figure(tmp_path)
+        assert len(fig.axes) == 6
+        siblings = fig.axes[0].get_shared_x_axes().get_siblings(fig.axes[0])
+        assert len(list(siblings)) == 1, "fixture 전제: sharex 없음"
+
+        _zd.apply_request(fig, fig.axes[3], _zd.ZoomRequest(xlim=(18.93, 34.55)))
+        for i, ax in enumerate(fig.axes):
+            assert ax.get_xlim() == pytest.approx((18.93, 34.55)), f"subplot {i}"
+
+    def test_x_all_off_touches_only_the_clicked_axes(self, tmp_path, _quiet_close):
+        fig = _robot_positions_figure(tmp_path)
+        before = [tuple(ax.get_xlim()) for ax in fig.axes]
+        _zd.apply_request(fig, fig.axes[3], _zd.ZoomRequest(xlim=(18.93, 34.55), x_all=False))
+        assert fig.axes[3].get_xlim() == pytest.approx((18.93, 34.55))
+        for i, ax in enumerate(fig.axes):
+            if i != 3:
+                assert tuple(ax.get_xlim()) == before[i], f"subplot {i} moved"
+
+    def test_y_stays_on_the_clicked_axes_by_default(self, tmp_path, _quiet_close):
+        fig = _robot_positions_figure(tmp_path)
+        before = [tuple(ax.get_ylim()) for ax in fig.axes]
+        _zd.apply_request(fig, fig.axes[2], _zd.ZoomRequest(ylim=(-5.0, 5.0)))
+        assert fig.axes[2].get_ylim() == pytest.approx((-5.0, 5.0))
+        for i, ax in enumerate(fig.axes):
+            if i != 2:
+                assert tuple(ax.get_ylim()) == before[i], f"subplot {i} moved"
+
+    def test_y_all_reaches_every_subplot(self, tmp_path, _quiet_close):
+        fig = _robot_positions_figure(tmp_path)
+        _zd.apply_request(fig, fig.axes[2], _zd.ZoomRequest(ylim=(-5.0, 5.0), y_all=True))
+        for i, ax in enumerate(fig.axes):
+            assert ax.get_ylim() == pytest.approx((-5.0, 5.0)), f"subplot {i}"
+
+    def test_y_auto_refits_to_the_window_not_the_run(self, tmp_path, _quiet_close):
+        """spike 는 창 밖(t=5s)에 있다 — refit 이 전 구간을 봤다면 500 이 남는다."""
+        fig = _robot_positions_figure(tmp_path)
+        ax = fig.axes[3]  # joint 3 → constant 4.0 inside the window
+        assert ax.get_ylim()[1] > 400.0, "fixture 전제: 전 구간 y 가 spike 를 포함"
+
+        _zd.apply_request(fig, ax, _zd.ZoomRequest(xlim=(18.93, 34.55), y_auto=True))
+        lo, hi = ax.get_ylim()
+        assert hi < 10.0, (lo, hi)
+        assert lo < 4.0 < hi, (lo, hi)
+
+    def test_y_auto_leaves_y_alone_when_the_window_is_empty(self, tmp_path, _quiet_close):
+        fig = _robot_positions_figure(tmp_path)
+        ax = fig.axes[0]
+        before = tuple(ax.get_ylim())
+        _zd.apply_request(fig, ax, _zd.ZoomRequest(xlim=(900.0, 901.0), y_auto=True))
+        assert tuple(ax.get_ylim()) == before
+
+    def test_reset_restores_the_attach_time_snapshot(self, tmp_path, _quiet_close):
+        fig = _robot_positions_figure(tmp_path)
+        home = {ax: (tuple(ax.get_xlim()), tuple(ax.get_ylim())) for ax in fig.axes}
+        _zd.apply_request(fig, fig.axes[0], _zd.ZoomRequest(xlim=(18.93, 34.55), ylim=(-1.0, 1.0)))
+        assert fig.axes[0].get_xlim() != pytest.approx(home[fig.axes[0]][0])
+
+        _zd.apply_request(fig, fig.axes[0], _zd.ZoomRequest(reset=True), home=home)
+        for ax in fig.axes:
+            assert tuple(ax.get_xlim()) == pytest.approx(home[ax][0])
+            assert tuple(ax.get_ylim()) == pytest.approx(home[ax][1])
+
+
+class TestZoomAttach:
+    """우클릭만, 그리고 toolbar 도구가 잡고 있지 않을 때만 발화."""
+
+    def test_right_click_opens_the_dialog_for_the_clicked_subplot(self, tmp_path, _quiet_close):
+        fig = _robot_positions_figure(tmp_path)
+        record = {}
+        _zd.attach(
+            fig,
+            opener=_recording_opener(_zd.ZoomRequest(xlim=(18.93, 34.55)), record),
+        )
+        _right_click(fig, fig.axes[4])
+        assert record["ax_index"] == 4
+        assert record["x_only"] is False
+        assert fig.axes[0].get_xlim() == pytest.approx((18.93, 34.55))
+
+    def test_left_and_middle_click_do_nothing(self, tmp_path, _quiet_close):
+        fig = _robot_positions_figure(tmp_path)
+        record = {}
+        _zd.attach(fig, opener=_recording_opener(_zd.ZoomRequest(), record))
+        _click(fig, fig.axes[0], MouseButton.LEFT)
+        _click(fig, fig.axes[0], MouseButton.MIDDLE)
+        assert record.get("calls", 0) == 0
+
+    def test_agg_has_no_toolbar_and_must_not_crash(self, tmp_path, _quiet_close):
+        """Agg 에서 `canvas.toolbar` 는 None — 가드가 None-safe 여야 한다."""
+        fig = _robot_positions_figure(tmp_path)
+        assert getattr(fig.canvas, "toolbar", None) is None
+        assert _zd.toolbar_owns_right_button(fig) is False
+
+    def test_an_active_toolbar_tool_suppresses_the_dialog(self, tmp_path, _quiet_close):
+        """pan/zoom 모드에서는 우클릭이 matplotlib 자신의 제스처다."""
+
+        class _Toolbar:
+            mode = "zoom rect"
+
+            # Agg's draw() reaches into the toolbar for this; a bare stub
+            # would fail inside canvas.draw() before the click is delivered.
+            def _wait_cursor_for_draw_cm(self):
+                return contextlib.nullcontext()
+
+        fig = _robot_positions_figure(tmp_path)
+        fig.canvas.toolbar = _Toolbar()
+        assert _zd.toolbar_owns_right_button(fig) is True
+
+        record = {}
+        _zd.attach(fig, opener=_recording_opener(_zd.ZoomRequest(), record))
+        _right_click(fig, fig.axes[0])
+        assert record.get("calls", 0) == 0
+
+        fig.canvas.toolbar.mode = ""  # tool released → dialog available again
+        _right_click(fig, fig.axes[0])
+        assert record.get("calls", 0) == 1
+
+    def test_margin_click_is_x_only_and_forces_x_all(self, tmp_path, _quiet_close):
+        """figure 여백 클릭 = figure 스코프 — y 는 어느 칸 것인지 정의되지 않으므로
+        요청이 y 를 담고 있어도 버려야 한다."""
+        fig = _robot_positions_figure(tmp_path)
+        record = {}
+        before = [tuple(ax.get_ylim()) for ax in fig.axes]
+        _zd.attach(
+            fig,
+            opener=_recording_opener(
+                _zd.ZoomRequest(xlim=(18.93, 34.55), ylim=(-9.0, 9.0), x_all=False, y_all=True),
+                record,
+            ),
+        )
+        ev = _right_click(fig, None)
+        assert ev.inaxes is None, "fixture 전제: 여백 클릭"
+        assert record["x_only"] is True
+        for i, ax in enumerate(fig.axes):
+            assert ax.get_xlim() == pytest.approx((18.93, 34.55)), f"subplot {i}"
+            assert tuple(ax.get_ylim()) == before[i], f"subplot {i} y moved"
+
+    def test_attach_all_covers_every_open_figure(self, tmp_path, _quiet_close):
+        plt = _quiet_close
+        plt.close("all")
+        _robot_positions_figure(tmp_path)
+        _robot_positions_figure(tmp_path)
+        assert _zd.attach_all(plt, opener=_recording_opener(_zd.ZoomRequest())) == 2
+
+
+class TestZoomSave:
+    """확대 뷰 저장은 전 구간 PNG 를 절대 덮지 않는다."""
+
+    def test_zoomed_png_is_a_new_file_and_the_original_is_untouched(self, tmp_path, _quiet_close):
+        fig = _robot_positions_figure(tmp_path)
+        original = tmp_path / "robot_positions.png"
+        assert original.exists(), "plotter 가 전 구간 PNG 를 먼저 쓴다"
+        before = original.read_bytes()
+
+        _zd.attach(
+            fig,
+            save_dir=str(tmp_path),
+            opener=_recording_opener(_zd.ZoomRequest(xlim=(18.93, 34.55), y_auto=True, save=True)),
+        )
+        _right_click(fig, fig.axes[0])
+
+        zoomed = tmp_path / "robot_positions_zoom_18.93-34.55.png"
+        assert zoomed.exists(), sorted(p.name for p in tmp_path.iterdir())
+        assert original.read_bytes() == before, "전 구간 PNG 가 덮였다"
+
+    def test_path_is_named_after_the_stamped_stem(self, tmp_path):
+        path = _zd.zoom_png_path(tmp_path, "timing_total_jitter", 18.93, 34.55)
+        assert path.name == "timing_total_jitter_zoom_18.93-34.55.png"
+
+    def test_unstamped_figure_falls_back_to_its_number(self, tmp_path, _quiet_close):
+        fig, ax = _spiky_axes()
+        assert not hasattr(fig, _zd.PNG_STEM_ATTR)
+        _zd.attach(
+            fig,
+            save_dir=str(tmp_path),
+            opener=_recording_opener(_zd.ZoomRequest(xlim=(18.93, 34.55), save=True)),
+        )
+        _right_click(fig, ax)
+        assert list(tmp_path.glob(f"figure{fig.number}_zoom_*.png"))
+
+    def test_save_without_a_session_dir_is_reported_not_crashed(
+        self, tmp_path, _quiet_close, capsys
+    ):
+        fig, ax = _spiky_axes()
+        _zd.attach(
+            fig,
+            save_dir=None,
+            opener=_recording_opener(_zd.ZoomRequest(xlim=(18.93, 34.55), save=True)),
+        )
+        _right_click(fig, ax)
+        assert "no save directory" in capsys.readouterr().out
+
+
+class TestZoomStemStamp:
+    """run_pipeline 이 figure 에 PNG stem 을 찍어야 저장 이름이 맞는다."""
+
+    def test_run_pipeline_stamps_each_figure_with_its_entry_name(self, tmp_path, _quiet_close):
+        import argparse
+
+        from rtc_tools.plotting.pipelines import run_pipeline
+
+        plt = _quiet_close
+        plt.close("all")
+        args = argparse.Namespace(
+            stats=False, error=False, command=False, torque=False, task_pos=False
+        )
+        run_pipeline("state_log", _six_joint_state_df(n=50), args, str(tmp_path))
+
+        stems = {getattr(plt.figure(num), _zd.PNG_STEM_ATTR, None) for num in plt.get_fignums()}
+        assert "robot_positions" in stems, stems
+        assert None not in stems, "stem 이 안 찍힌 figure 가 있다"
+
+    def test_every_entry_name_matches_the_png_it_writes(self, tmp_path, _quiet_close):
+        """stem 이 entry.name 인 것은 둘이 같다는 전제 위에 서 있다 — 어긋나면
+        확대 저장이 남의 이름을 쓴다."""
+        import argparse
+
+        from rtc_tools.plotting.pipelines import run_pipeline
+
+        plt = _quiet_close
+        plt.close("all")
+        args = argparse.Namespace(
+            stats=False, error=True, command=True, torque=True, task_pos=False
+        )
+        run_pipeline("state_log", _six_joint_state_df(n=50), args, str(tmp_path))
+
+        written = {p.stem for p in tmp_path.glob("*.png")}
+        stamped = {getattr(plt.figure(num), _zd.PNG_STEM_ATTR, None) for num in plt.get_fignums()}
+        assert stamped <= written, f"stamped-but-never-written: {stamped - written}"

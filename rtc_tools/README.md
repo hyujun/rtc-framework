@@ -24,6 +24,7 @@ rtc_tools/
 │   │                                       thin orchestration layer; 실제 구현은
 │   │                                       columns/, io/, pipelines/, plotters/,
 │   │                                       layout.py 서브모듈로 분리되어 있음
+│   │   └── zoom_dialog.py                 ← 우클릭 → x/y 범위 입력 확대 (GUI 전용)
 │   ├── validation/
 │   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증
 │   ├── conversion/
@@ -123,6 +124,25 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 > 없던 레이트가 나오기 때문입니다 (#376). 다른 런은 `--run-id <값>` 으로
 > 선택하고, 없는 값이면 사용 가능한 목록과 함께 에러로 죽습니다.
 
+#### 우클릭 확대 — 정확한 x/y 범위 입력
+
+GUI 로 뜬 figure 의 **subplot 을 우클릭**하면 x/y 범위를 숫자로 입력하는 대화상자가
+열립니다. "18.93 초부터 34.55 초까지" 처럼 드래그로는 맞출 수 없는 창을 그대로
+타이핑할 수 있습니다 (`--show` 가 기본값이므로 그냥 실행하면 됩니다).
+
+| 항목 | 동작 |
+|---|---|
+| `x min` / `x max` | 시간 창. **기본으로 그 figure 의 모든 subplot 에 적용** — 이 패키지가 만드는 figure 중 `sharex` 를 쓰는 것은 소수라, 다관절 그리드 (`robot_positions`, `motor_*`, `sensor_*`) 는 subplot 이 서로 독립이고 드래그 확대는 6칸 중 1칸만 바꿉니다 |
+| `y min` / `y max` | 기본은 **우클릭한 칸에만** 적용 — 한 그리드 안에서도 단위가 갈릴 수 있습니다 (`wbc_task_trajectory` 는 x/y/z 가 m, roll/pitch/yaw 가 rad). 체크박스로 figure 전체 적용 |
+| `y: fit to the x window` | y 를 **창 안의 데이터로만** 재적합. `Axes.autoscale()` 은 전 구간을 보므로 x 만 좁히면 창 밖 스파이크가 y 를 계속 차지합니다. `sharey` 그룹은 union 으로 계산해 열의 나머지 패널이 잘리지 않습니다 |
+| `also save a zoomed PNG` | `<figure>_zoom_<xmin>-<xmax>.png` 를 같은 `plots/` 에 **새로** 씁니다 — 전 구간 `<figure>.png` 는 세션의 원본 기록이므로 절대 덮지 않습니다 |
+| `Reset` | 대화상자를 붙인 시점의 범위로 복원 (`relim()` 은 collection 을 무시해 stackplot figure 가 안 돌아오므로 스냅샷을 되돌립니다) |
+
+- **figure 여백**(패널 밖)을 우클릭하면 figure 스코프 — x 범위만 묻습니다.
+- toolbar 의 pan / zoom 도구가 활성인 동안에는 우클릭이 matplotlib 자신의 제스처라 대화상자가 뜨지 않습니다. 도구를 해제하고 다시 우클릭하세요.
+- 대화상자는 Tk → Qt → matplotlib 위젯 순으로 폴백하므로 `MPLBACKEND` 를 바꿔도 동작합니다.
+- `--no-show` 에서는 이벤트 루프가 없어 확대가 불가능합니다 (PNG 만 생성).
+
 **파일 이름 자동 감지:**
 
 | 패턴 | 모드 |
@@ -173,7 +193,7 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 - **Delta-spike guard 오버레이**: `ft_*_fx_guarded` / `ft_*_force_guard_rejected` 컬럼을 가진 세션에서만 그려집니다. 파선은 guard 가 raw 를 대체한 tick 구간만 (`np.where(rejected, guarded, nan)`) 표시하고, 우측 패널은 같은 tick 을 vline 으로 찍으며 좌측 제목에 hold tick 수를 적습니다 — guarded 는 거부 tick 을 뺀 나머지에서 raw 와 동일하므로 전 구간을 그리면 raw 위에 겹친 선 3개가 될 뿐입니다. guard 이전에 녹화된 세션은 컬럼 부재로 오버레이가 생략됩니다.
 - `‖F‖` 는 컬럼이 아니라 성분에서 계산되며, **필터된 성분의 norm** 입니다 — 즉 컨트롤러가 실제로 임계와 비교하는 값과 같습니다 (`‖F_raw‖` 를 필터한 값이 아님).
 - **확대 동기화**: 시간축은 8개 subplot 전체 공유 (`sharex="all"`), y축은 열 단위 공유 (`sharey="col"`) — 좌측은 부호 있는 성분, 우측은 비음수 크기라 하나로 묶으면 좌측 범위가 낭비됩니다.
-- 확대는 **인터랙티브 백엔드에서만** 가능합니다 — `--show` 가 기본값이므로 그냥 실행하면 됩니다. `--no-show` 를 주면 Agg 로 전환되어 PNG 만 나옵니다.
+- 확대는 **인터랙티브 백엔드에서만** 가능합니다 — `--show` 가 기본값이므로 그냥 실행하면 됩니다. `--no-show` 를 주면 Agg 로 전환되어 PNG 만 나옵니다. 드래그 말고 정확한 수치로 확대하려면 subplot 우클릭 (위 [우클릭 확대](#우클릭-확대--정확한-xy-범위-입력)).
 - 이 스트라이드를 존중하기 전에 녹화된 세션은 0으로 채워진 블록을 그대로 갖고 있으므로 여기 매칭되지 않고 기존 기압/ToF figure 로 갑니다.
 
 **Timing 모드 플롯:**
