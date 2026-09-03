@@ -713,13 +713,16 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 | 인자 | 기본값 | 설명 |
 |------|--------|------|
-| `model_path` | `""` (YAML 사용) | MuJoCo scene.xml 경로 오버라이드 |
+| `model_path` | `""` (YAML 사용) | MuJoCo scene 경로 오버라이드. `ur5e_p1b` 기본값은 `scene_with_table.xml` (= `scene.xml` + 상판 z=0.05 작업대); 맨바닥 씬이 필요하면 `model_path:=package://hand_description/robots/ur5e_p1b/mjcf/scene.xml` |
 | `enable_viewer` | `""` (YAML 사용) | MuJoCo 뷰어 활성화 |
 | `sync_timeout_ms` | `""` (YAML 사용) | sync 커맨드 타임아웃 (ms) |
 | `max_rtf` | `""` (YAML 사용) | 최대 실시간 배율 (0.0 = 무제한) |
 | `use_yaml_servo_gains` | `""` (YAML 사용) | YAML vs XML 서보 게인 사용 |
 | `kp` | `""` (YAML 사용) | PD 게인 Kp 오버라이드 |
 | `kd` | `""` (YAML 사용) | PD 게인 Kd 오버라이드 |
+| `object_pool` † | `""` (YAML 사용) | `object_pool.enabled` 오버라이드. `false` 면 후보가 하나도 컴파일되지 않아 pool 블록이 없을 때와 `nq`/`nbody`/`ngeom` 이 같다 — 비용·회귀 비교의 대조군 |
+| `object` † | `""` (YAML 사용) | 지정한 object 하나만 스폰 (`object_pool.directory` 의 서브디렉토리 이름). `object_pool.selection` 도 `fixed` 로 함께 고정한다 — 이름만 주고 selection 이 `random` 이면 다음 `o` 에서 다시 뽑히기 때문 |
+| `object_seed` † | `""` (YAML 사용) | `object_pool.seed` 오버라이드. `0` = 매 실행 다름, 0 이 아니면 object/pose 순서가 재현 가능 |
 | `use_cpu_affinity` | `true` | Tier 1 CPU 격리 + MuJoCo 핀닝 |
 | `max_log_sessions` | `10` (= 그 변종의 노드 config YAML) | 세션 폴더 최대 보관 수. default 를 `_base.yaml` (iiwa7_leap 은 `sim.yaml`) 에서 읽고 값을 RT 노드 파라미터로도 넘긴다 — launch 와 노드가 같은 트리를 각자 정리하므로 (#402) |
 | `initial_controller` | `""` (YAML 사용) | 시작 컨트롤러 이름 (예: `demo_wbc_controller`) 오버라이드 |
@@ -732,7 +735,9 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 빈 문자열(`""`) 기본값은 YAML 설정 파일의 값을 그대로 사용한다는 의미입니다. 명시적으로 값을 지정하면 YAML 값을 오버라이드합니다.
 
-> **`sim_ur5e_p1b.launch.py`** (UR5e + proto_1b closed-chain hand) / **`sim_iiwa7_leap.launch.py`** (iiwa7 + LEAP Hand, hand sensor 스택 없음 — `grasp_controller_type: none`)는 위 인자 집합을 **동일하게** 노출한다. iiwa7_leap은 `enable_mpc:=false`가 YAML 기본값(TSID self-hold 검증 후 수동 활성 권장).
+> **`sim_ur5e_p1b.launch.py`** (UR5e + proto_1b closed-chain hand) / **`sim_iiwa7_leap.launch.py`** (iiwa7 + LEAP Hand, hand sensor 스택 없음 — `grasp_controller_type: none`)는 위 인자 집합을 노출한다. iiwa7_leap은 `enable_mpc:=false`가 YAML 기본값(TSID self-hold 검증 후 수동 활성 권장).
+>
+> † 표시한 `object_pool` / `object` / `object_seed` 세 인자는 **`sim_ur5e_p1b.launch.py` 에만** 있다. `object_pool` 블록을 config 에 가진 프로필이 현재 `ur5e_p1b` 뿐이라, 다른 launch 에 인자만 달면 켜는 순간 `directory` 가 비어 Initialize 가 실패한다. 다른 프로필에 pool 을 쓰려면 그 프로필의 `mujoco_simulator.yaml` 에 블록을 먼저 넣는다 (키 전체의 SSoT 는 [rtc_mujoco_sim/config/mujoco_default.yaml](../rtc_mujoco_sim/config/mujoco_default.yaml)).
 
 **Launch 순서:**
 
@@ -745,6 +750,13 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 **Lifecycle 순서:** 런치 시 mujoco_simulator → configure → activate 완료 후 integrated_rt_controller → configure → activate 순차 활성화.
 
 `mujoco_simulator.yaml`은 `integrated_bringup/config/`에 위치하며 (UR5e 전용 robot_response 그룹/조인트/토픽), agnostic 기본값 + solver SSoT는 `rtc_mujoco_sim/config/solver_param.yaml`에서 먼저 로드된 후 본 yaml이 그 위에 오버레이됩니다.
+
+**기동 자세**는 각 그룹의 `initial_qpos` (rad, `command_joint_names` 순서) 가 정하며, 이 값이 MJCF keyframe 보다 우선합니다 (우선순위·로그·함정은 [rtc_mujoco_sim README](../rtc_mujoco_sim/README.md#초기-자세-initial_qpos)). 세 프로필의 성격이 다릅니다:
+
+- `ur5e_p1b` — 씬에 keyframe 이 **없어서** 이 키가 유일한 기동 자세 소스다. 값은 palm-down (`wrist_2 = 0`), 즉 손가락이 아래를 보는 대신 손바닥이 바닥을 보는 자세로, top-down 파지를 위한 것이다. `object_pool` 의 스폰 중심과 `scene_with_table.xml` 의 작업대 위치가 모두 이 자세의 손 기둥 `(-0.49, -0.23)` 에 맞춰져 있다 — 이 로봇의 base 는 `quat "0 0 0 -1"` 로 붙어 있어 작업 공간이 **−x** 쪽이므로, 다른 씬의 `+x` 좌표를 그대로 옮기면 손 뒤에 물체가 생긴다. 세 값은 대략만 맞으면 되고 (나머지는 궤적 생성이 흡수한다) 서로 기계적으로 연동되어 있지 않다.
+- `ur5e_p1a` / `iiwa7_leap` — 씬 keyframe 과 **같은 값**을 명시적으로 들고 있다. 두 사본이 갈라지지 않도록 `test/test_shipped_initial_qpos.py` 가 joint 이름 기준으로 등가를 고정한다 (그 테스트의 mujoco 레인은 CI 와 워크스페이스 venv 에서 돌고, 시스템 python 으로 도는 로컬 `colcon test` 에서는 skip 된다).
+
+모든 원소에 **소수점을 찍으십시오** — 정수 리터럴이 하나라도 있으면 시퀀스 전체가 정수 배열로 추론되어 노드 생성 시점에 죽습니다. `test_shipped_sim_config` 가 이 타입을 rclcpp 로더로 고정합니다.
 
 ---
 

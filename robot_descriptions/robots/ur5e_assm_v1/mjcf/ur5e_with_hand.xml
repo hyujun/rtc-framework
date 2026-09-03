@@ -218,6 +218,12 @@
   </actuator>
 
   <keyframe>
+    <!-- FALLBACK source of the robot's initial qpos in rtc_mujoco_sim. A
+         bringup that sets robot_response.<group>.initial_qpos overrides it —
+         integrated_bringup/config/ur5e_p1a does, with values mirrored from
+         here and pinned equal by that package's test_shipped_initial_qpos, so
+         editing this pose without mirroring it there changes nothing at
+         runtime and fails that test. -->
     <key name="home" qpos="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0 0 0 0 0 0 0 0 0 0"
                      ctrl="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0 0 0 0 0 0 0 0 0 0"/>
   </keyframe>

@@ -100,6 +100,22 @@ struct JointGroupConfig {
   std::vector<double> servo_kp;  // 비어있으면 글로벌 값 상속
   std::vector<double> servo_kd;
 
+  // ── Initial joint positions (robot groups only) ───────────────────────────
+  // Startup and reset pose for this group's command joints, in
+  // command_joint_names order, radians. Empty = fall back to the MJCF's first
+  // keyframe, and to zeros when the scene has none.
+  //
+  // The keyframe was the only source until this key existed, which left a
+  // scene without one starting at qpos0 — for an arm that is the fully
+  // extended pose, not a usable home. A keyframe is also unavailable to a
+  // bringup that must not edit the MJCF it loads, which is why this lives in
+  // YAML rather than being solved by "add a keyframe".
+  //
+  // Size must equal the group's command joint count; a mismatch is an
+  // Initialize failure rather than a partial apply, because a silently
+  // truncated home pose is a robot that starts somewhere nobody chose.
+  std::vector<double> initial_qpos;
+
   // ── Sensor publishing (optional) ──────────────────────────────
   std::string sensor_topic;               // 빈 문자열이면 센서 publish 안 함
   std::vector<std::string> sensor_names;  // XML sensor names (빈 경우 = 그룹에 센서 없음)
@@ -156,7 +172,14 @@ struct JointGroup {
 
   // ── Command 버퍼 (모두 cmd_mutex 보호) ───────────────────────────
   std::vector<double> pending_cmd;
+  // Startup + reset pose. Filled at Initialize from, in precedence order:
+  // JointGroupConfig::initial_qpos (YAML), the MJCF's first keyframe, zeros.
   std::vector<double> initial_qpos;
+  // True when the YAML supplied initial_qpos, which is what stops the keyframe
+  // block from overwriting it. A plain "is it all zeros?" test cannot stand in:
+  // an all-zero home is a legitimate YAML value (every hand group here uses
+  // one), and it is exactly the case where the keyframe would silently win.
+  bool has_yaml_initial_qpos{false};
   // pd_feedforward staging — single cmd_mutex region so the SimLoop sees a
   // consistent (mode, cmd, feedforward, gains) tuple per cmd_pending publish.
   std::vector<double> pending_feedforward;  // tau_ff (Nm), sized num_command_joints

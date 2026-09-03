@@ -478,6 +478,39 @@ mujoco_simulator:
 | `sensor_names` | string[] | XML 센서 이름 목록 (빈 배열 = 센서 없음) |
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
 | `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
+| `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
+
+### 초기 자세 (`initial_qpos`)
+
+그룹의 기동 자세이자 뷰어 `R` 키 리셋이 돌아가는 자세입니다. 우선순위는 다음과 같습니다:
+
+| 순위 | 소스 | 비고 |
+|---|---|---|
+| 1 | `robot_response.<group>.initial_qpos` | rad, `command_joint_names` 순서. 크기가 그룹의 command joint 수와 다르면 Initialize 실패 |
+| 2 | MJCF 의 **첫 번째** `<keyframe>` | 이 키가 없을 때의 fallback (기존 동작) |
+| 3 | 0 | keyframe 도 없을 때 — arm 이라면 완전히 뻗은 자세라 보통 쓸 수 없는 값 |
+
+어떤 소스가 이겼는지는 기동 로그가 **그룹별로** 알려줍니다:
+
+```
+[MuJoCoSimulator] [ur5e] initial positions from YAML initial_qpos
+[MuJoCoSimulator] [p1b] initial positions from MJCF keyframe 'home'
+```
+
+**값이 전부 0 이어도 YAML 이 이깁니다.** "설정됐는가" 는 값이 아니라 키의 존재로 판정하므로, 손처럼 열린 자세가 전부 0 인 그룹도 keyframe 으로 되돌아가지 않습니다.
+
+**왜 keyframe 만으로 부족한가**: 씬에 keyframe 이 없으면 `qpos0` 에서 시작하는데 arm 은 그게 뻗은 자세이고, MJCF 가 다른 패키지 소유라 keyframe 을 추가할 수 없는 bringup 도 있습니다. 반대로 keyframe 이 이미 있는 씬에 이 키를 쓰면 keyframe 은 **그 그룹에 한해** 무시되므로, 두 값을 같이 두려면 테스트로 고정하십시오 (`integrated_bringup/test/test_shipped_initial_qpos.py` 가 그 예입니다).
+
+```yaml
+robot_response:
+  groups: ["arm", "hand"]
+  arm:
+    command_joint_names: [j1, j2, j3, j4, j5, j6]
+    initial_qpos: [0.0, -1.5708, 1.5708, -1.5708, 0.0, 0.0]   # 소수점 필수
+    ...
+```
+
+> 모든 원소에 **소수점을 찍으십시오**. ROS 2 params YAML 은 시퀀스의 타입을 원소에서 추론하므로 `[0, -1, 1]` 은 정수 배열이 되고, 선언된 double 배열과 타입이 달라 **노드 생성 시점에** 예외로 죽습니다 (`on_configure` 전이라 위의 검증에 닿지 않습니다).
 
 ### 그룹 구성 예시
 

@@ -1,8 +1,14 @@
 <mujoco model="iiwa7_with_leap_right object scene">
   <keyframe>
-    <!-- First keyframe is consumed by rtc_mujoco_sim for robot initial qpos.
-         It also carries the freejoint object qpos so full MuJoCo key resets
-         keep both objects on the table. -->
+    <!-- First keyframe is the FALLBACK source of the robot's initial qpos in
+         rtc_mujoco_sim. A bringup that sets robot_response.<group>.initial_qpos
+         overrides it — integrated_bringup/config/iiwa7_leap does, with values
+         mirrored from here and pinned equal by that package's
+         test_shipped_initial_qpos, so editing the robot joints below without
+         mirroring them there changes nothing at runtime and fails that test.
+         The freejoint object qpos further down has no YAML equivalent and is
+         still consumed from here, so full MuJoCo key resets keep both objects
+         on the table. -->
     <key name="home_with_objects"
          qpos="0 0.7 0 -1.0 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
                0.70 -0.12 0.10 1 0 0 0

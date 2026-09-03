@@ -70,6 +70,14 @@ mujoco_simulator:
           - A7
         command_topic: "/iiwa7/joint_command"
         state_topic: "/iiwa7/joint_states"
+        # ── Startup + reset pose (rad, command_joint_names order) ────────────
+        # Deliberately IDENTICAL to this scene's first keyframe
+        # (`home_with_objects`), read back by joint NAME rather than copied as
+        # a qpos slice — that keyframe also carries the two objects' freejoint
+        # qpos, which this key neither sets nor disturbs. Making the value
+        # explicit costs a second copy, which test_shipped_initial_qpos pins
+        # against the MJCF so the two cannot drift.
+        initial_qpos: [0.0, 0.7, 0.0, -1.0, 0.0, 0.7, 0.0]
         # PD gains per joint (A1..A7). proximal 3000/600, distal 750/150.
         # Mirrors MJCF default classes iiwa7_proximal / iiwa7_distal.
         servo_kp: [3000.0, 3000.0, 3000.0, 3000.0, 750.0, 750.0, 750.0]
@@ -113,6 +121,12 @@ mujoco_simulator:
           - "15"
         command_topic: "/leap/joint_command"
         state_topic: "/leap/joint_states"
+        # Hand open — same values as the scene's first keyframe. Note that the
+        # LEAP joints are NOT a contiguous qpos slice in this model (addresses
+        # run 8, 7, 9, 10, 12, 11, ...), so this vector is only meaningful in
+        # command_joint_names order; the simulator maps it by name.
+        initial_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         # LEAP servo gains in command_joint_names order ("0".."15").
         # Force range is only ±0.95 Nm; PD kept conservative.
         # Mirrors MJCF default class "leap" (kp=2.5, kd=0.125).
