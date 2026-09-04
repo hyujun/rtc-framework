@@ -71,9 +71,30 @@ constexpr const char* kProfile = "iiwa7_leap";
 // "just enough": a fixture tuned to the exact boundary turns a change in either
 // default into a mystery failure here rather than at its own test.
 constexpr int kSettleTicks = 400;
-// ω_n = √(K/Λ) = √(200/2) = 10 rad/s, ζ = K_d/(2√(KΛ)) = 1 — critically damped,
-// so ~5 time constants is 0.5 s. 800 ticks is 1.6 s.
+// With K_p^a = 0 (D-A3) the velocity response is FIRST order, not the critically
+// damped second-order one this used to size against: τ = Λ_d/K_d = 2/40 = 50 ms.
+// 800 ticks is 1.6 s — 32 time constants, so ẋ̃ is settled and the remaining
+// question is only how far the frame travelled while it settled.
 constexpr int kResponseTicks = 800;
+
+// The §7.2 constants these tests read back, mirrored from what the profiles
+// actually resolve to. K_p^a is NOT among them: D-A3 makes it zero, and a
+// constant for zero would invite someone to "retune" the law by editing it.
+//
+// `kProbeForceX` exists because with K_p = 0 the two §7.5 guards are the only
+// things that can bound the response, and either one silently becomes the thing
+// under test if the force is large enough to reach it. At K_d = 40 N·s/m this
+// gives ẋ̃ = 0.05 m/s (a fifth of `max_velocity_lin`) and an excursion of about
+// 0.078 m over kResponseTicks (about half of `max_displacement_lin`). Both
+// margins are asserted where they matter rather than trusted here.
+constexpr double kShippedDamping = 40.0;     ///< K_d [N·s/m], AdmittanceParams default
+constexpr double kShippedMaxDispLin = 0.15;  ///< §7.4 box [m], AdmittanceParams default
+constexpr double kProbeForceX = 2.0;         ///< [N] — see above
+
+// Bias samples for the ONE test that is about the averaging mechanism. No
+// profile ships a non-zero count any more (D-A5), so that test asks for one
+// explicitly; naming the number here keeps it from reading as a shipped value.
+constexpr int kBiasSamplesUnderTest = 100;
 
 YAML::Node ComplianceConfig() {
   YAML::Node cfg = ShippedControllerNode(kProfile, "demo_compliance_controller");
@@ -192,8 +213,8 @@ TEST(ComplianceAdmittanceCoupling, APublishedForceReachesTheLawOnItsOwnAxis) {
   auto ctrl = BringUp(ComplianceConfig());
   Driver d{ctrl.get()};
 
-  d.Run(kSettleTicks, Wrench6{});  // bias calibrates against no load
-  const auto probe = d.Run(kResponseTicks, ForceX(10.0));
+  d.Run(kSettleTicks, Wrench6{});  // ramp runs against no load
+  const auto probe = d.Run(kResponseTicks, ForceX(kProbeForceX));
 
   ASSERT_TRUE(probe.engaged) << "the arm lane never ran — every assertion below would be vacuous";
   ASSERT_EQ(probe.alpha, 1.0) << "the §10.7 ramp never completed in " << kSettleTicks << " ticks";
@@ -201,21 +222,34 @@ TEST(ComplianceAdmittanceCoupling, APublishedForceReachesTheLawOnItsOwnAxis) {
   // The conditioned wrench is the published one: the pull adapter hands over a
   // base-frame vector and this path rotates nothing, so a transpose or a
   // borrowed sensor rotation shows up here rather than three layers down.
-  EXPECT_NEAR(probe.wrench_lwa[0], 10.0, 0.2) << "fx did not survive conditioning";
+  EXPECT_NEAR(probe.wrench_lwa[0], kProbeForceX, 0.04) << "fx did not survive conditioning";
   EXPECT_NEAR(probe.wrench_lwa[1], 0.0, 1e-9) << "fy appeared from nowhere";
   EXPECT_NEAR(probe.wrench_lwa[2], 0.0, 1e-9) << "fz appeared from nowhere";
   // The torque is a LEVER ARM, not a leak: the application point is one tick
-  // behind the control frame, so the residual arm is one tick of travel. At
-  // steady state that is a settled arm and the moment collapses with it. Bound
+  // behind the control frame, so the residual arm is one tick of travel. Bound
   // rather than pinned — this asserts the transport is not inventing a moment,
   // and the test below asserts it computes the right one when there IS an arm.
-  EXPECT_LT(probe.wrench_lwa.tail<3>().norm(), 1e-3) << "a settled arm still carried a moment";
+  EXPECT_LT(probe.wrench_lwa.tail<3>().norm(), 1e-3) << "a moment grew from a pure force";
 
-  // §7.2 steady state of Λẍ + K_dẋ + K_px = F is x = F/K_p. The default K_p is
-  // 200 N/m, so 10 N ⇒ 0.05 m — inside the 0.15 m displacement box, which
-  // matters: past it the barrier would be what the number measures.
-  EXPECT_NEAR(probe.deviation[0], 10.0 / 200.0, 2e-3)
-      << "the compliant frame did not settle at F/K";
+  // §7.2 steady state of Λẍ̃ + K_dẋ̃ + K_px̃ = F. WITH K_p = 0 (D-A3 hand-guiding,
+  // which is what every profile ships since S5) that steady state is a VELOCITY,
+  // ẋ̃ = F/K_d, and not a position — so the velocity is what pins the law here.
+  // The position cannot: with no spring it just integrates until the §7.4 box
+  // stops it, and a test that read `deviation` would be measuring the box.
+  //
+  // `kProbeForceX` is chosen so NEITHER bound is what answers. F/K_d is well
+  // under `max_velocity_lin` (0.25 m/s), and the excursion over kResponseTicks
+  // stays well inside `max_displacement_lin` (0.15 m) — asserted, not assumed,
+  // because a later retune of either could quietly turn this into a box test.
+  EXPECT_NEAR(probe.velocity[0], kProbeForceX / kShippedDamping, 2e-3)
+      << "the compliant frame did not settle at F/K_d";
+  EXPECT_NEAR(probe.velocity[1], 0.0, 1e-6) << "velocity leaked onto y";
+  EXPECT_NEAR(probe.velocity[2], 0.0, 1e-6) << "velocity leaked onto z";
+  EXPECT_LT(probe.velocity.tail<3>().norm(), 1e-3) << "an angular velocity grew from a pure force";
+
+  EXPECT_GT(probe.deviation[0], 0.01) << "the frame never moved, so ẋ̃ above proves nothing";
+  EXPECT_LT(probe.deviation[0], kShippedMaxDispLin - 0.01)
+      << "the frame reached the §7.4 box, so the velocity above is the guard's and not K_d's";
   EXPECT_NEAR(probe.deviation[1], 0.0, 1e-6) << "deviation leaked onto y";
   EXPECT_NEAR(probe.deviation[2], 0.0, 1e-6) << "deviation leaked onto z";
   EXPECT_LT(probe.deviation.tail<3>().norm(), 1e-3)
@@ -362,8 +396,13 @@ TEST(ComplianceAdmittanceCoupling, AWithheldWrenchGoesStaleAndDegradesRatherThan
   auto ctrl = BringUp(ComplianceConfig());
   Driver d{ctrl.get()};
   d.Run(kSettleTicks, Wrench6{});
-  const auto loaded = d.Run(kResponseTicks, ForceX(10.0));
+  const auto loaded = d.Run(kResponseTicks, ForceX(kProbeForceX));
   ASSERT_GT(loaded.deviation[0], 0.01) << "nothing was displaced, so nothing can be seen to fade";
+  // Not against the §7.4 box either: pinned there the frame cannot move in
+  // EITHER direction, and "held" below would pass on the guard rather than on
+  // the law (#469 D-A3).
+  ASSERT_LT(loaded.deviation[0], kShippedMaxDispLin - 0.01)
+      << "the frame is against the box, so 'held' would be the guard's doing";
   ASSERT_FALSE(loaded.status.stale);
 
   // Long enough to pass `timeout` (0.05 s) AND `fadeout_time` (0.1 s).
@@ -375,9 +414,24 @@ TEST(ComplianceAdmittanceCoupling, AWithheldWrenchGoesStaleAndDegradesRatherThan
     EXPECT_NEAR(faded.wrench_lwa[i], 0.0, 1e-9)
         << "component " << i << " was HELD at its last value instead of fading to zero";
   }
-  // With K_p > 0 the frame relaxes back once the force is gone — that is the
-  // spring, and it is the observable difference between "faded" and "frozen".
-  EXPECT_LT(faded.deviation[0], loaded.deviation[0] * 0.5);
+  // WHAT THE FRAME DOES WITH THE FADE IS THE OTHER HALF OF D-A3, and the two
+  // halves fail in opposite directions, so they are asserted separately rather
+  // than as one band.
+  //
+  // It must not RELAX. K_p^a = 0 is hand-guiding: losing the source leaves the
+  // arm standing where it is, which is the property that makes a dropped grasp
+  // safe. A spring reappearing here (a non-zero `stiffness` shipped, or the core
+  // default returning) walks the frame back towards X_d and the arm with it.
+  EXPECT_GT(faded.deviation[0], loaded.deviation[0] - 1e-3)
+      << "the frame sprang back — K_p^a is no longer zero and a dropped grasp now retracts";
+  // And it must not KEEP ACCRUING. This is the §10.6 half: a wrench HELD at its
+  // last value instead of faded keeps ẋ̃ = F/K_d alive, so with no spring to stop
+  // it the frame walks to the §7.4 box and stays there. Over these 200 ticks a
+  // held wrench is worth ~0.02 m, an order above the coast-down this admits.
+  EXPECT_LT(faded.deviation[0], loaded.deviation[0] + 0.01)
+      << "the frame kept travelling after the source died — the wrench was held, not faded";
+  EXPECT_LT(faded.velocity.head<3>().norm(), 1e-3)
+      << "the compliant frame never came to rest, so it is still being driven by something";
 }
 
 // ── AC2: every held branch collapses the frame, and none accrues ────────────
@@ -753,15 +807,25 @@ TEST(ComplianceAdmittanceCoupling, AHoldClearsTheSourceVerdictItCanNoLongerRefre
 // ── §10.7 ramp vs §10.6 lattice ─────────────────────────────────────────────
 
 TEST(ComplianceAdmittanceCoupling, ABiasReEntryReArmsTheActivationRamp) {
-  // THE SHIPPED ORDER OF EVENTS, not a contrived one: the pull estimator
-  // withholds while there is no grasp, so the pipeline releases the bias gate
-  // with the debt still owed and the controller runs to RUNNING against no
-  // wrench at all. Minutes later a grasp starts publishing, the average is
-  // re-entered and committed — and THAT is the first tick a conditioned wrench
-  // exists. A ramp that ran to completion during the idle stretch is no ramp:
-  // §10.7's "does not step the arm" would be spent on ticks with nothing to
-  // ramp, and the first real force would land at alpha = 1.
-  auto ctrl = BringUp(ComplianceConfig());
+  // The order of events this covers: the pull estimator withholds while there is
+  // no grasp, so the pipeline releases the bias gate with the debt still owed and
+  // the controller runs to RUNNING against no wrench at all. Later a grasp starts
+  // publishing, the average is re-entered and committed — and THAT is the first
+  // tick a conditioned wrench exists. A ramp that ran to completion during the
+  // idle stretch is no ramp: §10.7's "does not step the arm" would be spent on
+  // ticks with nothing to ramp, and the first real force would land at alpha = 1.
+  //
+  // THE AVERAGE IS ASKED FOR HERE, NOT INHERITED. Every shipped profile sets
+  // `bias_calibration_samples: 0` (D-A5 — the pull baseline already removes the
+  // bias, and see #469 for why a grasp-gated source must not be asked to fund a
+  // second removal), so this mechanism is no longer reachable from
+  // ComplianceConfig() and a test that used it unmodified would pass while
+  // exercising nothing. The count is written rather than left to the core default
+  // for the same reason: the behaviour under test is "an average was re-entered",
+  // which needs a number this test controls.
+  YAML::Node cfg = ComplianceConfig();
+  cfg["external_wrench"]["bias_calibration_samples"] = kBiasSamplesUnderTest;
+  auto ctrl = BringUp(cfg);
   Driver d{ctrl.get()};
 
   const auto idle = d.RunSilent(kSettleTicks);

@@ -74,7 +74,7 @@ integrated_bringup/
 │       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi/pull_estimator/momentum_observer)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       ├── demo_task_controller.yaml   <- DemoTask 게인/토픽
-│       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (task 게인은 §7 철자 ik_kp_pos/ik_kp_rot/nullspace_kp, 값은 demo_task 와 동일 — 등가성 테스트가 고정. §7 admittance 값은 코어 default, S5 에서 실기 튜닝)
+│       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (task 게인은 §7 철자 ik_kp_pos/ik_kp_rot/nullspace_kp, 값은 demo_task 와 동일 — 등가성 테스트가 고정. §7 admittance 는 K_p^a=0 hand-guiding 을 출하하고 (#469 D-A3) bias 는 pull baseline 한 곳에서만 뺀다 (D-A5); K_d/Λ_d 는 코어 default, S5 에서 실기 튜닝)
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs
 │           ├── phase_config.yaml       <- GraspPhaseManager 5-phase 설정
