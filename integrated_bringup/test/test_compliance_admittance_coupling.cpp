@@ -20,10 +20,18 @@
 // deviation composes onto — asserted by nothing. The one thing injection skips
 // is the publish CALL SITE, so that gets an assertion of its own at the bottom.
 //
-// BIAS FIRST. `bias_samples` defaults to 100 (§3.2.1 MUST), so a fixture that
-// published its step force from tick 0 would calibrate the bias TO that force
-// and measure a conditioned wrench of exactly zero — green, and about nothing.
-// Every program below publishes a no-load wrench until calibration commits.
+// NO BIAS AVERAGE, AND THAT IS A SHIPPED DECISION. `bias_samples` defaults to
+// 100 (§3.2.1 MUST), but every profile has shipped `bias_calibration_samples: 0`
+// since S5 (#469 D-A5): the pull estimator's own baseline already removed the
+// bias, and a grasp-gated source cannot promise 100 samples before it goes
+// stale. `AccumulateBias` therefore zeroes the bias on the first sample, and
+// nothing below is sized against an averaging window.
+//
+// The programs still open with a no-load prologue, for the OTHER reason: the
+// §10.7 activation ramp. A step force from tick 0 would spend the ramp on the
+// force under test and read α < 1 into every number here. The one test that IS
+// about the averaging asks for a count explicitly (kBiasSamplesUnderTest) —
+// no shipped config reaches that path any more, which is #497's subject.
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "shipped_config_test_fixture.hpp"
@@ -67,9 +75,10 @@ using integrated_bringup::testfx::SharedIiwa7LeapModelConfig;
 using integrated_bringup::testfx::ShippedControllerNode;
 
 constexpr const char* kProfile = "iiwa7_leap";
-// 100 bias samples + the 0.5 s activation ramp, with slack. Deliberately not
-// "just enough": a fixture tuned to the exact boundary turns a change in either
-// default into a mystery failure here rather than at its own test.
+// The 0.5 s activation ramp (250 ticks), with slack. No bias window is being
+// waited out any more — see the header. Deliberately not "just enough": a
+// fixture tuned to the exact boundary turns a change in `activation_ramp_time`
+// into a mystery failure here rather than at its own test.
 constexpr int kSettleTicks = 400;
 // With K_p^a = 0 (D-A3) the velocity response is FIRST order, not the critically
 // damped second-order one this used to size against: τ = Λ_d/K_d = 2/40 = 50 ms.
@@ -77,19 +86,24 @@ constexpr int kSettleTicks = 400;
 // question is only how far the frame travelled while it settled.
 constexpr int kResponseTicks = 800;
 
-// The §7.2 constants these tests read back, mirrored from what the profiles
-// actually resolve to. K_p^a is NOT among them: D-A3 makes it zero, and a
-// constant for zero would invite someone to "retune" the law by editing it.
+// NO CONSTANT MIRRORS A GAIN HERE. K_p^a is zero by D-A3 and a constant for
+// zero would invite someone to "retune" the law by editing it; K_d, Λ_d and the
+// §7.5 bounds are READ BACK from the controller under test
+// (GetAdmittanceParamsForTesting) because the YAML ships K_p^a and leaves those
+// at the core defaults ON PURPOSE — S5 still owes a tuning against hardware. A
+// mirrored `40.0` would go stale the day a profile writes `damping:`, and it
+// would fail with "the frame did not settle at F/K_d", pointing at the law
+// instead of at the constant.
 //
-// `kProbeForceX` exists because with K_p = 0 the two §7.5 guards are the only
-// things that can bound the response, and either one silently becomes the thing
-// under test if the force is large enough to reach it. At K_d = 40 N·s/m this
-// gives ẋ̃ = 0.05 m/s (a fifth of `max_velocity_lin`) and an excursion of about
-// 0.078 m over kResponseTicks (about half of `max_displacement_lin`). Both
-// margins are asserted where they matter rather than trusted here.
-constexpr double kShippedDamping = 40.0;     ///< K_d [N·s/m], AdmittanceParams default
-constexpr double kShippedMaxDispLin = 0.15;  ///< §7.4 box [m], AdmittanceParams default
-constexpr double kProbeForceX = 2.0;         ///< [N] — see above
+// `kProbeForceX` stays a constant because it is this file's INPUT, not the
+// law's. With K_p = 0 the two §7.5 guards are the only things that can bound the
+// response, and either one silently becomes the thing under test if the force is
+// large enough to reach it: at the shipped K_d = 40 N·s/m, 2 N gives ẋ̃ =
+// 0.05 m/s (a fifth of `max_velocity_lin`) and an excursion of about 0.078 m
+// over kResponseTicks (about half of `max_displacement_lin`). Both margins are
+// asserted against the READ-BACK bounds where they matter, so a retune that
+// invalidates this choice fails there and says which guard it reached.
+constexpr double kProbeForceX = 2.0;  ///< [N] — see above
 
 // Bias samples for the ONE test that is about the averaging mechanism. No
 // profile ships a non-zero count any more (D-A5), so that test asks for one
@@ -211,6 +225,7 @@ struct Driver {
 
 TEST(ComplianceAdmittanceCoupling, APublishedForceReachesTheLawOnItsOwnAxis) {
   auto ctrl = BringUp(ComplianceConfig());
+  const auto& law = ctrl->GetAdmittanceParamsForTesting().admittance;
   Driver d{ctrl.get()};
 
   d.Run(kSettleTicks, Wrench6{});  // ramp runs against no load
@@ -238,17 +253,18 @@ TEST(ComplianceAdmittanceCoupling, APublishedForceReachesTheLawOnItsOwnAxis) {
   // stops it, and a test that read `deviation` would be measuring the box.
   //
   // `kProbeForceX` is chosen so NEITHER bound is what answers. F/K_d is well
-  // under `max_velocity_lin` (0.25 m/s), and the excursion over kResponseTicks
-  // stays well inside `max_displacement_lin` (0.15 m) — asserted, not assumed,
-  // because a later retune of either could quietly turn this into a box test.
-  EXPECT_NEAR(probe.velocity[0], kProbeForceX / kShippedDamping, 2e-3)
+  // under `max_velocity_lin`, and the excursion over kResponseTicks stays well
+  // inside `max_displacement_lin` — asserted against the resolved bounds, not
+  // assumed, because a later retune of either could quietly turn this into a
+  // box test.
+  EXPECT_NEAR(probe.velocity[0], kProbeForceX / law.damping[0], 2e-3)
       << "the compliant frame did not settle at F/K_d";
   EXPECT_NEAR(probe.velocity[1], 0.0, 1e-6) << "velocity leaked onto y";
   EXPECT_NEAR(probe.velocity[2], 0.0, 1e-6) << "velocity leaked onto z";
   EXPECT_LT(probe.velocity.tail<3>().norm(), 1e-3) << "an angular velocity grew from a pure force";
 
   EXPECT_GT(probe.deviation[0], 0.01) << "the frame never moved, so ẋ̃ above proves nothing";
-  EXPECT_LT(probe.deviation[0], kShippedMaxDispLin - 0.01)
+  EXPECT_LT(probe.deviation[0], law.max_displacement_lin - 0.01)
       << "the frame reached the §7.4 box, so the velocity above is the guard's and not K_d's";
   EXPECT_NEAR(probe.deviation[1], 0.0, 1e-6) << "deviation leaked onto y";
   EXPECT_NEAR(probe.deviation[2], 0.0, 1e-6) << "deviation leaked onto z";
@@ -281,16 +297,29 @@ TEST(ComplianceAdmittanceCoupling, TheSignFollowsTheForce) {
   // every contact gate on the 2026-07-22 p1b run. Asserted as a RELATION
   // between two runs rather than against a remembered number, so it cannot be
   // satisfied by a fixture that happens to push the right way.
+  //
+  // PROBED AT kProbeForceX, and that is the whole difference from the 10 N this
+  // used to use. With K_p^a = 0 (D-A3) a 10 N pull runs the frame straight into
+  // ±max_displacement_lin and `ProjectOutward` lands it on the bound EXACTLY —
+  // ±0.150000 m, ẋ̃ = 0 — so the symmetry below became a statement about the
+  // guard's arithmetic, which is symmetric no matter what the law did with the
+  // sign. The box margin is asserted before the relation is, so this cannot
+  // regress into a box test again unnoticed.
   auto pos = BringUp(ComplianceConfig());
+  const double box = pos->GetAdmittanceParamsForTesting().admittance.max_displacement_lin;
   Driver dp{pos.get()};
   dp.Run(kSettleTicks, Wrench6{});
-  const double x_pos = dp.Run(kResponseTicks, ForceX(10.0)).deviation[0];
+  const double x_pos = dp.Run(kResponseTicks, ForceX(kProbeForceX)).deviation[0];
 
   auto neg = BringUp(ComplianceConfig());
   Driver dn{neg.get()};
   dn.Run(kSettleTicks, Wrench6{});
-  const double x_neg = dn.Run(kResponseTicks, ForceX(-10.0)).deviation[0];
+  const double x_neg = dn.Run(kResponseTicks, ForceX(-kProbeForceX)).deviation[0];
 
+  ASSERT_LT(std::abs(x_pos), box - 0.01)
+      << "the frame reached the §7.4 box, so the symmetry below is the guard's and not the law's";
+  ASSERT_LT(std::abs(x_neg), box - 0.01)
+      << "the frame reached the §7.4 box, so the symmetry below is the guard's and not the law's";
   EXPECT_GT(x_pos, 0.0);
   EXPECT_LT(x_neg, 0.0);
   EXPECT_NEAR(x_pos, -x_neg, 1e-9) << "the law is not symmetric — a sign is being applied twice";
@@ -304,15 +333,16 @@ TEST(ComplianceAdmittanceCoupling, TheDeviationIsExactlyWhatTheCoreIntegratorHol
   rtc::compliance::AdmittanceIntegrator oracle;
 
   Driver d{ctrl.get()};
-  // The load starts as soon as the bias average has committed (100 samples,
-  // §3.2.1) and NOT after the 0.5 s ramp — see the counter below for why that
-  // difference is the whole test.
-  constexpr int kBiasTicks = 150;
+  // The load starts BEFORE the §10.7 ramp finishes (0.5 s = 250 ticks) and not
+  // after — see the counter below for why that difference is the whole test.
+  // There is no bias window left to wait out (D-A5), so 150 is the ramp's
+  // number and nothing else's.
+  constexpr int kLoadStartTick = 150;
   constexpr int kTotalTicks = kSettleTicks + kResponseTicks;
   int compared = 0;
   int ramping_under_load = 0;
   for (int k = 0; k < kTotalTicks; ++k) {
-    const Wrench6 w = (k < kBiasTicks) ? Wrench6{} : ForceX(10.0);
+    const Wrench6 w = (k < kLoadStartTick) ? Wrench6{} : ForceX(10.0);
     const auto probe = d.Run(1, w);
     ASSERT_TRUE(probe.engaged) << "held at tick " << k;
 
@@ -353,12 +383,19 @@ TEST(ComplianceAdmittanceCoupling, TheArmTracksTheCompliantFrameAndNotTheTraject
   const Eigen::Vector3d start = dl.Run(kSettleTicks, Wrench6{}).tcp_position;
 
   // Tracked tick by tick, not just at the end. The FEEDFORWARD half of row 13
-  // (ν_c riding the IK's ff term) is invisible at steady state — ν_c is zero
-  // there and K_ik alone closes the gap — so a controller that dropped it would
-  // reach the same final position by a lag it recovers from. During the
-  // transient that lag is ẋ̃/K_ik: the response peaks near ẋ̃ = 0.018 m/s and
-  // K_ik is 5 /s, so ~3.7 mm of following error with the term dropped against
-  // ~0 with it. The bound below sits between the two.
+  // (ν_c riding the IK's ff term) is invisible once the frame stops moving — ν_c
+  // is zero there and K_ik alone closes the gap — so a controller that dropped
+  // it would reach the same final position by a lag it recovers from. The lag it
+  // drops is ẋ̃/K_ik, so the probe has to keep ẋ̃ up.
+  //
+  // THIS PROBE IS DELIBERATELY THE LOUD ONE, unlike kProbeForceX elsewhere: with
+  // K_p^a = 0 (D-A3) a 10 N pull drives ẋ̃ straight into `max_velocity_lin`
+  // (0.25 m/s) and holds it there until the §7.4 box, which at K_ik = 5 /s is
+  // ~50 mm of following error with the term dropped against ~0 with it. Reaching
+  // the guards is the POINT here and not a defect — what is under test is the
+  // composition, and both guards act on x̃ before the arm ever sees it, so a
+  // saturated ẋ̃ is still exactly the ẋ̃ the feedforward owes. The bound below
+  // rests on the mutant's size, not on its own tightness.
   double worst_lag = 0.0;
   double peak_speed = 0.0;
   DemoComplianceController::ComplianceProbe with_force;
@@ -394,6 +431,8 @@ TEST(ComplianceAdmittanceCoupling, TheArmTracksTheCompliantFrameAndNotTheTraject
 
 TEST(ComplianceAdmittanceCoupling, AWithheldWrenchGoesStaleAndDegradesRatherThanHolding) {
   auto ctrl = BringUp(ComplianceConfig());
+  const auto& law = ctrl->GetAdmittanceParamsForTesting().admittance;
+  const auto& timing = ctrl->GetAdmittanceParamsForTesting().wrench;
   Driver d{ctrl.get()};
   d.Run(kSettleTicks, Wrench6{});
   const auto loaded = d.Run(kResponseTicks, ForceX(kProbeForceX));
@@ -401,12 +440,13 @@ TEST(ComplianceAdmittanceCoupling, AWithheldWrenchGoesStaleAndDegradesRatherThan
   // Not against the §7.4 box either: pinned there the frame cannot move in
   // EITHER direction, and "held" below would pass on the guard rather than on
   // the law (#469 D-A3).
-  ASSERT_LT(loaded.deviation[0], kShippedMaxDispLin - 0.01)
+  ASSERT_LT(loaded.deviation[0], law.max_displacement_lin - 0.01)
       << "the frame is against the box, so 'held' would be the guard's doing";
   ASSERT_FALSE(loaded.status.stale);
 
-  // Long enough to pass `timeout` (0.05 s) AND `fadeout_time` (0.1 s).
-  const auto faded = d.RunSilent(200);
+  // Long enough to pass `timeout` AND `fadeout_time` several times over.
+  constexpr int kSilentTicks = 200;
+  const auto faded = d.RunSilent(kSilentTicks);
   EXPECT_TRUE(faded.status.stale) << "an aged sample was not reported stale";
   EXPECT_EQ(faded.state, ComplianceState::kDegraded)
       << "wrench_timeout must degrade — never SAFE_STOP (§3.2)";
@@ -426,9 +466,20 @@ TEST(ComplianceAdmittanceCoupling, AWithheldWrenchGoesStaleAndDegradesRatherThan
       << "the frame sprang back — K_p^a is no longer zero and a dropped grasp now retracts";
   // And it must not KEEP ACCRUING. This is the §10.6 half: a wrench HELD at its
   // last value instead of faded keeps ẋ̃ = F/K_d alive, so with no spring to stop
-  // it the frame walks to the §7.4 box and stays there. Over these 200 ticks a
-  // held wrench is worth ~0.02 m, an order above the coast-down this admits.
-  EXPECT_LT(faded.deviation[0], loaded.deviation[0] + 0.01)
+  // it the frame walks to the §7.4 box and stays there.
+  //
+  // THE BOUND IS DERIVED, NOT REMEMBERED. After the producer dies the frame is
+  // still driven for `timeout` at full weight and `fadeout_time` at a falling
+  // one, then coasts on its momentum with τ = Λ_d/K_d; ẋ̃ never exceeds the
+  // settled F/K_d, and two τ takes the tail to under a part in a thousand. The
+  // remembered 10 mm this replaces sat only 27% above the actual 7.3 mm — inside
+  // the noise of the K_d retune the header says S5 still owes (K_d = 28 N·s/m
+  // turns it red on correct code), while the held-wrench mutant is 20 mm and
+  // stays outside this bound through the same retunes.
+  const double settled_speed = kProbeForceX / law.damping[0];
+  const double coast_bound = settled_speed * (timing.timeout + timing.fadeout_time +
+                                              2.0 * law.inertia[0] / law.damping[0]);
+  EXPECT_LT(faded.deviation[0], loaded.deviation[0] + coast_bound)
       << "the frame kept travelling after the source died — the wrench was held, not faded";
   EXPECT_LT(faded.velocity.head<3>().norm(), 1e-3)
       << "the compliant frame never came to rest, so it is still being driven by something";
