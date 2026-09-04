@@ -53,6 +53,7 @@
 #include "integrated_bringup/logging/compliance_diag_log_pod.hpp"
 #include "integrated_bringup/support/compliance_wrench_source.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_controllers/params/task_admittance_params.hpp"
 #include "shipped_config_test_fixture.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
@@ -387,9 +388,10 @@ void Append(std::vector<Tick>& dst, const std::vector<Tick>& src) {
 // above and covered instead by the two tests after it. An exclusion with no
 // replacement assertion is a hole, which is why the list lives three lines from
 // the tests that fill it.
-constexpr std::array<const char*, 2> kComplianceOwnedKeys = {
+constexpr std::array<const char*, 3> kComplianceOwnedKeys = {
     "external_wrench",  // no sibling equivalent — the whole point of the controller
     "pull_estimator",   // per-profile override, see the D-A8 test below
+    "stiffness",        // §7.2 K_p^a — D-A3, see the hand-guiding test below
 };
 
 // The task gains, which the two files now SPELL differently (#469 D-A13): the
@@ -561,6 +563,52 @@ TEST(ComplianceTaskEquivalence, EveryProfileGivesTheComplianceLaneABaselinedEsti
     // twice (the snapshot already removed it).
     EXPECT_TRUE(comp.pull_estimator_params.gravity_force.isZero(0.0))
         << profile << ": gravity_force is non-zero while the baseline snapshot is on";
+  }
+}
+
+// #469 D-A3 and D-A5, asserted on the RESOLVED §7 parse rather than on the YAML
+// text. Both are decisions about WHICH LAW RUNS, and both shipped for a while as
+// core defaults that read as plausible tunings — so a profile that merely omits
+// the key has to fail here instead of quietly inheriting the rejected behaviour.
+//
+// K_p^a = 0 IS THE LAW, not a gain. With a spring the steady state is a position
+// (the default K_p = 200 N/m puts a 1.4 N pull 7 mm from X_d, which on hardware
+// reads as "the controller did nothing"); with K_p = 0 it is a velocity, and
+// losing the grasp leaves the arm standing rather than snapping home. The
+// default is the wrong one of the two and nothing else in the build said so.
+//
+// bias_calibration_samples = 0 IS AN INTERLOCK, not a sample count. The pull
+// baseline asserted directly above already removes the bias, so the default 100
+// removes it twice — and it also makes `bias_calibrated` conditional on the
+// source delivering 100 samples before it goes stale, which a grasp-gated source
+// owes nobody. When it does not, the §10.7 ramp is suspended AND
+// BIAS_CALIBRATING re-arms every tick: measured on p1b 2026-09-04 (`260904_1023`)
+// as alpha pinned at 0 for a whole 16.8 s activation with a live source.
+TEST(ComplianceTaskEquivalence, EveryProfileShipsTheHandGuidingLawAndOneBiasRemoval) {
+  for (const char* profile : kProfiles) {
+    rtc::params::TaskAdmittanceParams params;
+    rtc::params::TaskAdmittanceConfig config;
+    rtc::params::ParseTaskAdmittanceParams(
+        ShippedControllerNode(profile, "demo_compliance_controller"), params, config);
+
+    for (std::size_t i = 0; i < params.admittance.stiffness.size(); ++i) {
+      EXPECT_EQ(params.admittance.stiffness[i], 0.0)
+          << profile << ": K_p^a[" << i
+          << "] is non-zero — D-A3 is hand-guiding, and the core default is a spring";
+    }
+    EXPECT_EQ(config.wrench.bias_samples, 0)
+        << profile
+        << ": external_wrench.bias_calibration_samples must be 0 (D-A5). The pull baseline "
+           "already removes the bias, and a grasp-gated source cannot promise N samples before "
+           "it goes stale — when it does not, the §10.7 ramp never leaves alpha = 0.";
+    EXPECT_EQ(config.wrench.payload_mass, 0.0)
+        << profile << ": this wrench measures a force on the grasped object, not a tool load";
+
+    // The sibling must not have grown a §7.2 gain: it has no admittance law, so
+    // a `stiffness` key there would be parsed by nobody — the same
+    // written-and-never-read trap D-A13 covers for the renamed CLIK gains.
+    EXPECT_FALSE(ShippedControllerNode(profile, "demo_task_controller")["stiffness"])
+        << profile << ": demo_task_controller has no §7.2 virtual dynamics to gain";
   }
 }
 
