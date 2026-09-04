@@ -586,10 +586,33 @@ TEST(ComplianceTaskEquivalence, EveryProfileGivesTheComplianceLaneABaselinedEsti
 // as alpha pinned at 0 for a whole 16.8 s activation with a live source.
 TEST(ComplianceTaskEquivalence, EveryProfileShipsTheHandGuidingLawAndOneBiasRemoval) {
   for (const char* profile : kProfiles) {
+    const YAML::Node node = ShippedControllerNode(profile, "demo_compliance_controller");
+
+    // PRESENCE ON THE TEXT, VALUE ON THE PARSE — and neither substitutes for the
+    // other. `ParseTaskAdmittanceParams`'s loaders return early on an absent
+    // node, so the value assertions below read a DEFAULT just as happily as a
+    // shipped one. They catch an omission today only because two of the three
+    // defaults (K_p = 200, 100 samples) happen to BE the rejected values — the
+    // moment either moves to what D-A3/D-A5 want, a profile that drops the line
+    // passes here in silence, and `ShippedConfigsAreTheSameConfig` cannot catch
+    // it either because both keys sit in kComplianceOwnedKeys. `payload_mass`
+    // has no such luck at all: its default already equals the shipped value, so
+    // this is the ONLY assertion in the build that can tell the key from its
+    // absence, and it is what makes writing it down worth the config surface.
+    ASSERT_TRUE(node["stiffness"])
+        << profile
+        << ": no `stiffness` key — K_p^a is whatever the core default is, and D-A3 is "
+           "a decision about which law runs, not a tuning to inherit";
+    ASSERT_TRUE(node["external_wrench"])
+        << profile << ": no `external_wrench` block — the source is required with no default";
+    ASSERT_TRUE(node["external_wrench"]["bias_calibration_samples"])
+        << profile << ": no `external_wrench.bias_calibration_samples` key (D-A5)";
+    ASSERT_TRUE(node["external_wrench"]["payload_mass"])
+        << profile << ": no `external_wrench.payload_mass` key (D-A5)";
+
     rtc::params::TaskAdmittanceParams params;
     rtc::params::TaskAdmittanceConfig config;
-    rtc::params::ParseTaskAdmittanceParams(
-        ShippedControllerNode(profile, "demo_compliance_controller"), params, config);
+    rtc::params::ParseTaskAdmittanceParams(node, params, config);
 
     for (std::size_t i = 0; i < params.admittance.stiffness.size(); ++i) {
       EXPECT_EQ(params.admittance.stiffness[i], 0.0)
