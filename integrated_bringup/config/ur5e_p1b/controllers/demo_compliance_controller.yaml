@@ -196,9 +196,12 @@ demo_compliance_controller:
   # pull estimator's baseline snapshot (D-A5 / D-A8), not a spring here.
   #
   # The rotational half is zero for that reason plus a second one: D-A2 makes the
-  # torque half of this wrench identically zero (the pull estimate is an in-plane
-  # force carrying no moment), so the angular DoF never leaves x̃ = 0 whatever
-  # this says. Written as 0 so the file states one law instead of two.
+  # torque half of the SOURCE identically zero (the pull estimate is an in-plane
+  # force carrying no moment). That is NOT the same as "the angular DoF cannot
+  # move": the pipeline transports the force from its application point to the
+  # control frame, and the residual lever arm leaves a moment that K_p = 0 never
+  # returns. Bounded today only by the §7.4 angular box (0.5 rad) and tracked in
+  # #469. Written as 0 so the file states one law instead of two.
   #
   # K_d and Λ_d keep the core defaults (40 N·s/m, 2 kg; τ = Λ_d/K_d = 50 ms) that
   # #469 §5 sized the envelope against. Those ARE tunings, and S5 picks them
@@ -222,11 +225,14 @@ demo_compliance_controller:
   external_wrench:
     source: "pull_estimator"
     # ── D-A5: the bias is removed in EXACTLY ONE PLACE ────────────────────────
-    # and that place is the pull estimator's own `use_baseline_subtraction`, which
-    # is on for this controller in every profile (via demo_shared on p1a and
-    # iiwa7_leap, via the D-A8 override below on p1b). The core default of 100
-    # samples runs a SECOND removal on top of it — the double subtraction D-A5
-    # exists to forbid.
+    # THIS FILE IS WHERE THAT REASONING LIVES — p1a and iiwa7_leap ship the same
+    # two values and point here rather than restating the measurement (AP-DOC-1).
+    #
+    # The one place is the pull estimator's own `use_baseline_subtraction`, on
+    # for this controller in every profile: via demo_shared on p1a and
+    # iiwa7_leap, via the D-A8 override further down THIS file on p1b. The core
+    # default of 100 samples runs a SECOND removal on top of it — the double
+    # subtraction D-A5 exists to forbid.
     #
     # It fails worse than double-counting, because this source publishes only
     # while a grasp holds and cannot be assumed to deliver N samples before it
@@ -239,8 +245,10 @@ demo_compliance_controller:
     bias_calibration_samples: 0
     # D-A5's other half. This wrench is a force on the GRASPED OBJECT, not a
     # reading from a wrist sensor carrying a tool, so there is no payload hanging
-    # off the measurement to compensate. Written rather than left to the (equal)
-    # core default because it is a statement about what the source measures.
+    # off the measurement to compensate. The core default is equal, so writing it
+    # changes no behaviour — what it buys is that
+    # test_compliance_task_equivalence asserts the KEY's presence, which is the
+    # only thing in the build that can tell this decision from an omission.
     payload_mass: 0.0
 
   # ── Pull estimator override — THIS CONTROLLER ONLY (#469 D-A8) ─────────────
