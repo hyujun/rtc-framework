@@ -153,6 +153,9 @@ void DemoInferenceController::OnDeviceConfigsSet() {
   arm_dof_ = std::min(arm_dof_, kMaxArmDof);
   hand_dof_ = std::min(hand_dof_, kMaxHandDof);
   num_fingertips_ = std::min(num_fingertips_, kMaxFingertips);
+  fingertip_stride_ = (hand_cfg != nullptr && hand_cfg->sensor_layout.has_value())
+                          ? hand_cfg->sensor_layout->inference_values_per_group
+                          : 0;
 
   // Per-device bounds for the §7.3 command tail. Missing entries fall back to
   // the same generous defaults the sibling bindings use, so the tail always has

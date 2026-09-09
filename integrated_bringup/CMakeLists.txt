@@ -328,6 +328,26 @@ if(BUILD_TESTING)
 
   # Learned-policy binding, driven with an injected fake engine so every success
   # path runs without a .onnx file — which is the point of the injection seam.
+  # RT-1 gate on the real Compute(). Global operator-new counting reaches across
+  # the library boundary; Eigen does not, so the schema it drives has no palm
+  # feature — see the file banner for what that green does and does not cover.
+  ament_add_gtest(test_demo_inference_alloc test/test_demo_inference_alloc.cpp)
+  target_include_directories(test_demo_inference_alloc PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_link_libraries(test_demo_inference_alloc
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_inference_alloc
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_inference
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   ament_add_gtest(test_demo_inference_controller test/test_demo_inference_controller.cpp)
   target_link_libraries(test_demo_inference_controller
     ${PROJECT_NAME}_demo_controllers

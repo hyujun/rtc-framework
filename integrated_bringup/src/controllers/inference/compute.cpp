@@ -126,10 +126,7 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
         // "no contact" and "no reading" are the same observation to this
         // policy, and holding the last force instead would let a dropped lane
         // keep reporting a grasp that ended.
-        const auto* layout = GetDeviceNameConfig(GetSecondaryDeviceName());
-        const int stride = (layout != nullptr && layout->sensor_layout.has_value())
-                               ? layout->sensor_layout->inference_values_per_group
-                               : 0;
+        const int stride = fingertip_stride_;
         for (int g = 0; g < num_fingertips_; ++g) {
           double norm = 0.0;
           const bool fresh =

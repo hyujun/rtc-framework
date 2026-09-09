@@ -276,6 +276,15 @@ class DemoInferenceController final : public RTControllerInterface {
   int arm_dof_{0};
   int hand_dof_{0};
   int num_fingertips_{0};
+  /// Elements per sensor group in the hand's inference lane, resolved once.
+  ///
+  /// Read per tick it would have meant `GetDeviceNameConfig(GetSecondaryDeviceName())`
+  /// on the RT path — and `GetSecondaryDeviceName()` returns a `std::string` BY
+  /// VALUE. Today's group names ("p1b") fit in the small-string buffer so
+  /// nothing allocates, which is exactly what makes it a trap: the day a device
+  /// group is named something longer than the SSO threshold, the RT tick starts
+  /// calling operator new and nothing in the code looks different (RT-1).
+  int fingertip_stride_{0};
 
   std::uint64_t tick_{0};
   std::uint64_t inference_count_{0};
