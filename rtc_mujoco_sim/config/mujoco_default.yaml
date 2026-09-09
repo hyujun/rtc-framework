@@ -114,3 +114,41 @@ mujoco_simulator:
       object_file: "object.xml"
       body_name: "object"
       prefix: "pool_"       # keeps pool names clear of objects already in the scene
+
+    # ── Object state publishing ──────────────────────────────────────────────
+    # One tf2_msgs/TFMessage per sim tick carrying every object in the scene:
+    # header.frame_id = `reference_body` (or `frame_id` when set),
+    # child_frame_id = the MJCF body name, transform = its pose.
+    #
+    # WHICH BODIES. Every body with a freejoint, minus the object_pool
+    # candidates that are currently parked. That is the whole rule — there is
+    # no name list to keep in step with the scene. Robot links (hinge joints)
+    # and static props such as a work table (no joint) never appear; a parked
+    # pool candidate is in the compiled model but sits 50 m under the floor, so
+    # publishing it would put a phantom object in the consumer's frame set. The
+    # park test is re-evaluated every tick, so the viewer's 'o' key is reflected
+    # immediately.
+    #
+    # NOT /tf. This is a plain topic carrying the TF message type, not a TF
+    # broadcast: sim ground truth does not belong in the same tree a real robot
+    # publishes. Point a re-broadcaster at it if RViz should see the frames.
+    object_state:
+      enabled: false
+
+      # Relative names resolve under the node namespace.
+      topic: "object_transforms"
+
+      # MJCF body whose frame the poses are expressed in. Empty = the MuJoCo
+      # world frame.
+      #
+      # SET THIS whenever the scene mounts its robot base with anything but the
+      # identity — a 180 deg yaw on the base is common, and then world
+      # coordinates put every object mirrored through the base. That is a
+      # perfectly plausible-looking pose, so nothing downstream can catch it.
+      # A name that is not in the model is a startup failure, not a fallback.
+      reference_body: ""
+
+      # header.frame_id to publish. Empty = the reference body's MJCF name
+      # (or "world" when reference_body is empty). Override only when the MJCF
+      # body name and the URDF link name for the same frame differ.
+      frame_id: ""

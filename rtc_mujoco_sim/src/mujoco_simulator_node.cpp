@@ -19,6 +19,7 @@
 #include <rtc_msgs/srv/set_external_wrench.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -27,6 +28,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
 
 #include <algorithm>
 #include <array>
@@ -145,6 +147,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       h.state_pub.reset();
     }
     group_handles_.clear();
+    object_state_pub_.reset();
+    object_state_msg_.transforms.clear();
     sim_status_pub_.reset();
     set_external_wrench_srv_.reset();
     sim_.reset();
@@ -184,6 +188,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       h.state_pub.reset();
     }
     group_handles_.clear();
+    object_state_pub_.reset();
+    object_state_msg_.transforms.clear();
     sim_status_pub_.reset();
     set_external_wrench_srv_.reset();
     sim_.reset();
@@ -366,6 +372,26 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       object_pool_config_.seed = static_cast<std::uint64_t>(seed);
     }
 
+    // ── Object state publishing (object_state block) ──────────────────────
+    declare_parameter("object_state.enabled", false);
+    declare_parameter("object_state.topic", std::string("object_transforms"));
+    declare_parameter("object_state.reference_body", std::string(""));
+    declare_parameter("object_state.frame_id", std::string(""));
+
+    object_state_config_.enabled = get_parameter("object_state.enabled").as_bool();
+    object_state_config_.topic = get_parameter("object_state.topic").as_string();
+    object_state_config_.reference_body = get_parameter("object_state.reference_body").as_string();
+    object_state_config_.frame_id = get_parameter("object_state.frame_id").as_string();
+
+    if (object_state_config_.enabled && object_state_config_.topic.empty()) {
+      // An empty topic reaches create_publisher as an invalid name and throws
+      // there instead, with a message that does not name the YAML key.
+      RCLCPP_FATAL(get_logger(),
+                   "[MuJoCoSimulatorNode] object_state.enabled is true but "
+                   "object_state.topic is empty");
+      throw std::runtime_error("invalid object_state.topic");
+    }
+
     auto robot_groups = get_parameter("robot_response.groups").as_string_array();
     for (const auto& gname : robot_groups) {
       DeclareGroupParams("robot_response", gname);
@@ -473,6 +499,9 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                       std::vector<std::string>{"_tip_contact", "_contact"});
     declare_parameter(prefix + "contact_wrench.reference_site_suffixes",
                       std::vector<std::string>{"_tip_ft_site", "_ft_site"});
+    // "body" (default) or "site" — which frame the wrench is rotated into and
+    // which name goes out as frame_id. See ContactWrenchConfig.
+    declare_parameter(prefix + "contact_wrench.reference_frame", std::string("body"));
     declare_parameter(prefix + "contact_wrench.publish_state", false);
     declare_parameter(prefix + "contact_wrench.publish_debug", false);
     declare_parameter(prefix + "contact_wrench.allow_partial_discovery", false);
@@ -486,6 +515,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     cwc.sensor_name_suffixes = get_parameter(prefix + "sensor_name_suffixes").as_string_array();
     cwc.reference_site_suffixes =
         get_parameter(prefix + "reference_site_suffixes").as_string_array();
+    cwc.reference_frame = get_parameter(prefix + "reference_frame").as_string();
     cwc.publish_state = get_parameter(prefix + "publish_state").as_bool();
     cwc.publish_debug = get_parameter(prefix + "publish_debug").as_bool();
     cwc.allow_partial_discovery = get_parameter(prefix + "allow_partial_discovery").as_bool();
@@ -523,6 +553,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         .servo_kd = servo_kd_,
         .solver_config = solver_config_,
         .object_pool = object_pool_config_,
+        .object_state = object_state_config_,
         .groups = group_configs_,
     };
     sim_ = std::make_unique<urtc::MuJoCoSimulator>(std::move(cfg));
@@ -646,6 +677,78 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                   sensor_topic.empty() ? "(none)" : sensor_topic.c_str(), sim_->NumGroupJoints(idx),
                   sim_->NumStateJoints(idx));
     }
+
+    SetupObjectStatePublisher();
+  }
+
+  // ── Object state publisher (scene-level, one topic for every object) ──────
+  //
+  // Silent when object_state is disabled OR when the scene has no free body:
+  // publishing an always-empty TFMessage would look like a working lane with
+  // nothing in the scene, which is exactly the confusion this log line avoids.
+  void SetupObjectStatePublisher() {
+    if (!object_state_config_.enabled) {
+      return;
+    }
+    if (!sim_->HasObjectStates()) {
+      RCLCPP_WARN(get_logger(),
+                  "[MuJoCoSimulatorNode] object_state enabled but the scene has "
+                  "no freejoint body — nothing will be published");
+      return;
+    }
+
+    object_state_pub_ = create_publisher<tf2_msgs::msg::TFMessage>(
+        object_state_config_.topic, rclcpp::SensorDataQoS().keep_last(1));
+    // Reserve the worst case once: every tick refills this message in place,
+    // and the transform count only ever shrinks from here (parked objects drop
+    // out), so the publish path never reallocates.
+    object_state_msg_.transforms.reserve(sim_->GetObjectStateInfos().size());
+
+    sim_->SetObjectStateCallback([this](const std::vector<urtc::ObjectStateInfo>& infos,
+                                        const std::vector<urtc::ObjectStateSample>& samples) {
+      PublishObjectStates(infos, samples);
+    });
+
+    RCLCPP_INFO(get_logger(),
+                "[MuJoCoSimulatorNode] object_state — topic: %s  frame_id: %s  objects: %zu",
+                object_state_config_.topic.c_str(), sim_->GetObjectStateFrameId().c_str(),
+                sim_->GetObjectStateInfos().size());
+  }
+
+  // One TransformStamped per ACTIVE object; parked pool candidates are omitted
+  // from the array rather than published at the park position, so a consumer's
+  // frame set matches what is actually in the scene.
+  void PublishObjectStates(const std::vector<urtc::ObjectStateInfo>& infos,
+                           const std::vector<urtc::ObjectStateSample>& samples) {
+    if (!object_state_pub_ || infos.size() != samples.size()) {
+      return;
+    }
+    const auto stamp = now();
+    const auto& frame_id = sim_->GetObjectStateFrameId();
+
+    object_state_msg_.transforms.clear();
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+      if (!samples[i].active) {
+        continue;
+      }
+      geometry_msgs::msg::TransformStamped tf;
+      tf.header.stamp = stamp;
+      tf.header.frame_id = frame_id;
+      tf.child_frame_id = infos[i].name;
+      tf.transform.translation.x = samples[i].position[0];
+      tf.transform.translation.y = samples[i].position[1];
+      tf.transform.translation.z = samples[i].position[2];
+      // MuJoCo stores (w, x, y, z); geometry_msgs/Quaternion is (x, y, z, w).
+      // The reorder happens here and nowhere else — writing it componentwise
+      // rather than by index keeps the swap visible at the one boundary that
+      // performs it.
+      tf.transform.rotation.w = samples[i].quat[0];
+      tf.transform.rotation.x = samples[i].quat[1];
+      tf.transform.rotation.y = samples[i].quat[2];
+      tf.transform.rotation.z = samples[i].quat[3];
+      object_state_msg_.transforms.push_back(std::move(tf));
+    }
+    object_state_pub_->publish(object_state_msg_);
   }
 
   // ── Timers
@@ -974,6 +1077,14 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   std::vector<double> servo_kd_;
   urtc::SolverConfig solver_config_;
   urtc::ObjectPoolConfig object_pool_config_;
+  urtc::ObjectStateConfig object_state_config_;
+
+  // Scene-level, so not a GroupRosHandles member. Null when object_state is
+  // disabled or the scene has no free body.
+  rclcpp_lifecycle::LifecyclePublisher<tf2_msgs::msg::TFMessage>::SharedPtr object_state_pub_;
+  // Reused across ticks so the publish path does not reallocate the transform
+  // vector every sim step; capacity is reserved in SetupObjectStatePublisher.
+  tf2_msgs::msg::TFMessage object_state_msg_;
 };
 
 // ── Entry point

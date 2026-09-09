@@ -57,8 +57,7 @@ bool ParsePoseSampling(std::string_view text, PoseSampling& out) noexcept {
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-std::vector<std::string> ScanObjectDirectory(const std::string& dir,
-                                             const std::string& object_file,
+std::vector<std::string> ScanObjectDirectory(const std::string& dir, const std::string& object_file,
                                              std::string& error) {
   error.clear();
   std::vector<std::string> names;
@@ -516,6 +515,22 @@ int ObjectPool::ActiveBodyId() const noexcept {
     return -1;
   }
   return slots_[index].body_id;
+}
+
+bool ObjectPool::IsParkedBody(int body_id) const noexcept {
+  // -1 is the "no such body" sentinel every id accessor here returns; treating
+  // it as a match would make an unresolved lookup read as "parked" and quietly
+  // drop a real body from the caller's sweep.
+  if (body_id < 0) {
+    return false;
+  }
+  const int active_body = ActiveBodyId();
+  for (const auto& slot : slots_) {
+    if (slot.body_id == body_id) {
+      return body_id != active_body;
+    }
+  }
+  return false;  // not one of ours — the caller's own rule applies
 }
 
 int ObjectPool::BodyIdAt(std::size_t index) const noexcept {

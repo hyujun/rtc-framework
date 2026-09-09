@@ -226,7 +226,8 @@ solver:
 | `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 | robot 그룹: 위치/속도/토크 |
 | `<group.state_topic>` (예: `/hand/joint_states`) | `sensor_msgs/JointState` | 100Hz | fake 그룹: LPF 필터링된 상태 |
 | `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
-| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→`<target>_tip_head` frame transform + torque shift. 비접촉 시 0 발행 (stale 방지). |
+| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. 비접촉 시 0 발행 (stale 방지). |
+| `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
 #### Contact wrench auto-discovery (MJCF `<sensor><contact>` → ROS WrenchStamped)
@@ -236,7 +237,20 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 요구사항:
 - `<contact>` 의 `data="found force torque dist pos normal tangent"` + `num="1"` + `reduce="netforce"` (sensor_dim == 17 필수)
 - sensor 이름 suffix (default `_tip_contact` / `_contact`) 와 site 이름 suffix (default `_tip_ft_site` / `_ft_site`) 가 같은 target 토큰을 가리킬 것 (예: `index_tip_contact` ↔ `index_tip_ft_site`)
-- ROS frame_id 는 ft_site 의 owning body name (예: `index_tip_head`)
+- ROS frame_id 는 `reference_frame` 이 정한다 (아래)
+
+##### `reference_frame` — wrench 를 어느 프레임으로 낼 것인가
+
+| 값 | 회전 기준 | `frame_id` |
+|----|-----------|------------|
+| `"body"` (기본) | ft_site 의 **owning body** (`mjData.xmat`) | 그 body 의 MJCF 이름 (예: `index_tip_head`) |
+| `"site"` | ft_site **자신** (`mjData.site_xmat`) | 그 site 의 이름 |
+
+둘은 **site 가 body 대비 non-identity quat 을 가질 때만** 갈라지고, 그때는 정확히 그 회전만큼 갈라진다 — 회전된 wrench 도 여전히 그럴듯한 wrench 이므로 크기·부호·NaN 검사로는 구별되지 않는다.
+
+`"site"` 가 필요한 경우는 하나다: **소비자가 `R_link(q)` 를 적용하는 URDF 프레임이 site 가 매달린 MJCF body 와 다를 때.** 예를 들어 손의 URDF fingertip 프레임이 tip link 에서 회전된 bracket 링크면, body 프레임으로 내보낸 힘은 매 fingertip 마다 그 회전만큼 틀어진 채 도착한다 (`ur5e_p1b` 가 이 경우다 — index/middle/ring 90°, thumb 은 복합).
+
+기본이 `"body"` 인 것은 하위호환이다: 기존 씬의 ft_site 는 quat 이 없어 두 프레임이 수치적으로 동일하지만 `frame_id` 는 다르므로, 일괄 전환이 아니라 opt-in 이다. `"body"`/`"site"` 이외의 값은 fallback 없이 **Initialize 실패** — 오타가 조용히 `"body"` 로 읽히면 아무도 못 알아챈다.
 
 토픽 이름은 `<contact_wrench.topic_prefix>/<contact_sensor_name>/contact_wrench` — **MJCF `<contact name="...">` 값이 ROS topic segment 로 verbatim 전달** 되어 XML 과 1:1 round-trip 한다. Suffix 리스트는 ft_site 를 찾기 위한 *내부 site_stem* 도출에만 쓰임 (예: sensor `index_tip_contact` → site_stem `index_tip` → site `index_tip_ft_site`). LEAP profile 예시 (`topic_prefix: "/leap_hand"`): `/leap_hand/{index_tip_contact, middle_tip_contact, ring_tip_contact, thumb_tip_contact}/contact_wrench`. 비-LEAP MJCF 도 sensor↔site suffix 규약만 맞으면 wrapper 코드 변경 없이 자동 토픽 생성.
 
@@ -464,6 +478,7 @@ mujoco_simulator:
 | `fake_response.groups` | string[] | `[]` | LPF 에코백 그룹 이름 목록 |
 | `solver.*` | (다양) | (MuJoCo 기본값) | Solver 파라미터 — 상세: [solver_param.yaml](config/solver_param.yaml) 및 위 Constraint Solver 설정 섹션 참조 |
 | `object_pool.*` | (다양) | 비활성 | 랜덤 object 스폰 — 아래 [Object Pool](#object-pool-랜덤-object-스폰) 섹션 참조 |
+| `object_state.*` | (다양) | 비활성 | object 이름·프레임·pose 발행 — 아래 [Object State](#object-state-object-이름프레임pose-발행) 섹션 참조 |
 
 그룹별 파라미터 (`robot_response.<name>.` / `fake_response.<name>.`):
 
@@ -475,7 +490,8 @@ mujoco_simulator:
 | `command_topic` | string | 커맨드 구독 토픽 |
 | `state_topic` | string | 상태 퍼블리시 토픽 |
 | `sensor_topic` | string | MuJoCo 센서 퍼블리시 토픽 (빈 문자열 = 비활성화) |
-| `sensor_names` | string[] | XML 센서 이름 목록 (빈 배열 = 센서 없음) |
+| `sensor_names` | string[] | XML 센서 이름 목록 (빈 배열 = 센서 없음, `["auto"]` = XML 전체) |
+| `contact_wrench.*` | (다양) | MJCF `mjSENS_CONTACT` → WrenchStamped 자동 발견 — 위 [Contact wrench auto-discovery](#contact-wrench-auto-discovery-mjcf-sensorcontact--ros-wrenchstamped) 절 참조. `enabled` / `topic_prefix` / `sensor_name_suffixes` / `reference_site_suffixes` / `reference_frame` / `publish_state` / `publish_debug` / `allow_partial_discovery` |
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
 | `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
 | `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
@@ -664,6 +680,58 @@ rclcpp 가 **노드 생성 시점에** `InvalidParameterValueException` 을 던�
 
 - 씬이 이미 object 를 하드코딩하고 있으면 (예: `scene_right_with_object.xml` 의 `apple_01`) pool 은 그것을 관리하지 않습니다. prefix 가 달라 충돌하지는 않지만 **사과가 두 개**가 됩니다 — pool 을 쓸 때는 씬의 하드코딩 블록을 지우십시오.
 - `<sensor><contact>` 는 `geom1=` (fingertip geom) 로 필터링하므로 어떤 object 가 활성이든 contact wrench 파이프라인은 그대로 동작합니다.
+
+---
+
+## Object State (object 이름·프레임·pose 발행)
+
+씬에 있는 object 들의 **이름 / 기준 프레임 / 위치·자세** 를 매 물리 스텝마다 표준 `tf2_msgs/TFMessage` 하나로 발행합니다. 배열이므로 object 개수와 무관하게 토픽은 하나입니다.
+
+```
+tf2_msgs/TFMessage
+  geometry_msgs/TransformStamped[] transforms
+    header.frame_id   ← object_state.reference_body (또는 frame_id override)
+    child_frame_id    ← MJCF body 이름 (예: pool_apple_object)
+    transform         ← 그 프레임 기준 위치 + 자세
+```
+
+### 무엇이 object 인가
+
+**freejoint 를 가진 body 전부, 단 park 된 object_pool 후보는 제외.** 이것이 규칙의 전부이며 이름 목록은 없습니다 — 씬에 object 가 늘거나 줄어도 YAML 을 따라 고칠 필요가 없습니다.
+
+- 로봇 링크는 hinge 조인트라 해당 없음
+- 작업 테이블 같은 정적 소품은 조인트가 없어 해당 없음
+- park 된 pool 후보는 모델에는 컴파일돼 있지만 바닥 아래 50 m 에 있으므로, 발행하면 소비자의 프레임 집합에 유령 object 가 생김
+
+park 판정은 **매 tick** 다시 하므로 뷰어 `o` 키 refresh 가 즉시 반영됩니다 (Initialize 시점에 고정하면 방금 park 된 object 를 계속 발행하게 됩니다).
+
+### `/tf` 가 아니다
+
+TF **메시지 타입**을 쓰는 일반 토픽이지 TF broadcast 가 아닙니다. sim ground truth 는 실기가 발행하는 트리에 섞이지 않아야 합니다. RViz 에서 프레임을 보려면 이 토픽을 `/tf` 로 재발행하는 노드를 붙이십시오.
+
+### `reference_body` 를 반드시 확인할 것
+
+포즈는 `p_rel = R_ref^T (p_obj - p_ref)` 로 계산됩니다. 빈 문자열이면 MuJoCo world 프레임입니다.
+
+**씬이 로봇 base 를 identity 가 아닌 자세로 붙이면 반드시 지정해야 합니다.** base 에 180° yaw 를 주는 것은 흔한 배치이고, 그 경우 world 좌표를 그대로 내보내면 모든 object 가 base 를 통과해 거울상 위치에 찍힙니다 — 값 자체는 완벽히 그럴듯하므로 소비자가 알아챌 방법이 없습니다. 모델에 없는 이름은 fallback 없이 **startup 실패**입니다.
+
+### 설정
+
+```yaml
+object_state:
+  enabled: true
+  topic: "/sim/object_transforms"   # 상대 이름이면 노드 네임스페이스 아래로 해석
+  reference_body: "base"            # "" = MuJoCo world
+  frame_id: ""                      # "" = reference_body 이름 (world 면 "world")
+```
+
+`frame_id` override 는 같은 프레임을 MJCF body 이름과 URDF 링크 이름이 다르게 부를 때만 씁니다.
+
+### 확인
+
+```bash
+ros2 topic echo /sim/object_transforms --once
+```
 
 ---
 

@@ -1,0 +1,79 @@
+<mujoco model="object_state_scene_test">
+  <!-- Scene for the object_state lane. Carries one of every body kind the
+       selection rule has to sort out:
+
+         arm_base / arm_link  hinge joints        -> robot, never published
+         static_prop          no joint            -> static prop, never published
+         loose_box            freejoint           -> published
+         ref_frame            no joint            -> the reference frame body
+         (pool slots)         freejoint, attached -> published only when active
+
+       GRAVITY IS OFF. loose_box then sits at exactly its declared pose forever,
+       which is what lets the pose assertions be exact literals instead of a
+       tolerance wide enough to swallow a wrong rotation. It also freezes a
+       spawned pool object at its spawn pose, so the park/unpark assertions read
+       the pose the pool actually chose rather than one integration step of
+       free-fall past it.
+
+       WHY ref_frame CARRIES A ROTATION, AND AN UGLY ONE. The reference
+       transform is p_rel = R_ref^T (p_obj - p_ref). With an identity R_ref that
+       collapses to a subtraction, and a dropped transpose, a component
+       transposition, or no rotation at all would all pass. quat
+       (w,x,y,z) = (0.5,-0.5,-0.5,0.5) gives
+           R_ref = [[0,0,-1],[1,0,0],[0,-1,0]]
+       which maps each axis onto a different one with two sign flips, so every
+       one of those mistakes lands somewhere else. It is also non-symmetric
+       (R^T != R), which is what makes the missing-transpose case detectable.
+
+       WHY loose_box's OWN QUAT IS A GENERIC ONE. Its four components have four
+       DIFFERENT magnitudes, and so do those of the resulting relative
+       quaternion. A quat built from right angles has repeated components, and
+       then a (w,x,y,z) mix-up can survive. This one is R_zyx(0.3, -0.7, 1.1). -->
+  <compiler angle="radian"/>
+  <option timestep="0.002" gravity="0 0 0" solver="Newton" iterations="20"/>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" rgba="0.3 0.3 0.3 1"/>
+
+    <!-- Reference frame. Static (no joint), so it must not appear in the
+         published set even though everything is measured against it. -->
+    <body name="ref_frame" pos="0.1 0.2 0.3" quat="0.5 -0.5 -0.5 0.5">
+      <geom type="box" size="0.01 0.01 0.01" contype="0" conaffinity="0"
+            rgba="0.9 0.9 0.2 1"/>
+    </body>
+
+    <!-- Robot: hinge joints with actuators. Never an object. -->
+    <body name="arm_base" pos="0 0 0">
+      <joint name="j1" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+      <inertial pos="0 0 0.1" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom type="cylinder" size="0.05 0.1" contype="0" conaffinity="0"
+            rgba="0.8 0.2 0.2 1"/>
+      <body name="arm_link" pos="0 0 0.2">
+        <joint name="j2" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+        <inertial pos="0 0 0.1" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+        <geom type="capsule" size="0.03 0.1" contype="0" conaffinity="0"
+              rgba="0.2 0.8 0.2 1"/>
+      </body>
+    </body>
+
+    <!-- Static prop (a work table stands in for this in real scenes). Has
+         geoms and a name but no joint, so it is not an object. -->
+    <body name="static_prop" pos="0.5 0 0.05">
+      <geom type="box" size="0.2 0.2 0.05" rgba="0.55 0.32 0.16 1"/>
+    </body>
+
+    <!-- The one hand-placed free body. -->
+    <body name="loose_box" pos="1.0 2.0 3.0"
+          quat="0.76506218 0.29689154 -0.21567241 0.52916981">
+      <freejoint name="loose_box_free"/>
+      <inertial pos="0 0 0" mass="0.2" diaginertia="0.001 0.001 0.001"/>
+      <geom type="box" size="0.03 0.03 0.03" contype="0" conaffinity="0"
+            rgba="0.2 0.4 0.9 1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="m1" joint="j1" kp="100" ctrlrange="-3.14 3.14"/>
+    <position name="m2" joint="j2" kp="100" ctrlrange="-1.57 1.57"/>
+  </actuator>
+</mujoco>

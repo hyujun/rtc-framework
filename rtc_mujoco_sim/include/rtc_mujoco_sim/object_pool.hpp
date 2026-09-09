@@ -304,6 +304,17 @@ class ObjectPool {
 
   [[nodiscard]] const std::vector<std::string>& CandidateNames() const noexcept { return names_; }
 
+  /// True when `body_id` is one of this pool's slots AND is not the active
+  /// one — i.e. it is sitting at the park position, out of collision and
+  /// gravity-cancelled, rather than in the scene.
+  ///
+  /// Answers "should a scene-wide sweep skip this body?", which is why a body
+  /// the pool does not own returns false: the caller's own rule decides about
+  /// those. Same concurrency envelope as the other observers above — slots_ is
+  /// immutable after Resolve() and active_ is atomic, so a reader may be one
+  /// refresh stale but never sees a torn index.
+  [[nodiscard]] bool IsParkedBody(int body_id) const noexcept;
+
   /// Body id of the active object, or -1. Test/observer use.
   [[nodiscard]] int ActiveBodyId() const noexcept;
   /// Body id of candidate `index`, or -1 when out of range. Test/observer use.

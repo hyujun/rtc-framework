@@ -518,6 +518,19 @@ bool MuJoCoSimulator::DiscoverContactWrenches(JointGroup& group) noexcept {
   if (!gcfg || !gcfg->enabled)
     return true;  // disabled = success (nothing to discover)
 
+  // Reject an unknown spelling instead of falling back to "body". A typo'd
+  // reference frame that silently means "body" publishes a wrench rotated by
+  // the site quat with no error anywhere — and a rotated wrench is still a
+  // plausible wrench, so nothing downstream can notice. Same reasoning as
+  // ParseObjectSelection in object_pool.hpp.
+  if (gcfg->reference_frame != "body" && gcfg->reference_frame != "site") {
+    fprintf(stderr,
+            "[MuJoCoSimulator] [%s] contact_wrench.reference_frame='%s' is not "
+            "'body' or 'site'\n",
+            group.name.c_str(), gcfg->reference_frame.c_str());
+    return false;
+  }
+
   constexpr int kExpectedDim = 17;
   bool any_unresolved = false;
 
@@ -568,14 +581,21 @@ bool MuJoCoSimulator::DiscoverContactWrenches(JointGroup& group) noexcept {
 
     JointGroup::ContactWrenchInfo info;
     info.target_name = sinfo.name;  // ROS topic segment = MJCF sensor name verbatim.
-    info.frame_id = body_name ? body_name : ("body_" + std::to_string(body_id));
+    // frame_id must name the frame the numbers are actually in, so it follows
+    // reference_frame rather than being the body name unconditionally.
+    info.use_site_frame = (gcfg->reference_frame == "site");
+    info.frame_id = info.use_site_frame
+                        ? site_name
+                        : (body_name ? body_name : ("body_" + std::to_string(body_id)));
     info.sensor_id = mj_name2id(model_, mjOBJ_SENSOR, sinfo.name.c_str());
     info.sensor_adr = sinfo.adr;
     info.ft_site_id = site_id;
     info.body_id = body_id;
 
-    fprintf(stdout, "[MuJoCoSimulator] [%s] contact_wrench target='%s' site=%s frame=%s\n",
-            group.name.c_str(), info.target_name.c_str(), site_name.c_str(), info.frame_id.c_str());
+    fprintf(stdout,
+            "[MuJoCoSimulator] [%s] contact_wrench target='%s' site=%s frame=%s (reference=%s)\n",
+            group.name.c_str(), info.target_name.c_str(), site_name.c_str(), info.frame_id.c_str(),
+            info.use_site_frame ? "site" : "body");
 
     group.contact_wrench_infos.push_back(std::move(info));
   }
@@ -588,6 +608,75 @@ bool MuJoCoSimulator::DiscoverContactWrenches(JointGroup& group) noexcept {
             "(allow_partial_discovery=false)\n",
             group.name.c_str());
     return false;
+  }
+  return true;
+}
+
+// ── Object state discovery ───────────────────────────────────────────────────
+// Collects every freejoint body in the compiled model and resolves the
+// reference frame. See ObjectStateConfig for why "has a freejoint" is the whole
+// selection rule.
+bool MuJoCoSimulator::DiscoverObjectStates() noexcept {
+  object_state_infos_.clear();
+  object_state_buffer_.clear();
+  object_state_ref_body_ = 0;
+  object_state_frame_id_.clear();
+
+  if (!model_ || !cfg_.object_state.enabled) {
+    return true;  // disabled = success (nothing to discover)
+  }
+
+  // ── Reference frame ──────────────────────────────────────────────────────
+  // Empty reference_body means the world body, which is id 0 — the same id
+  // mj_name2id returns for "world", and the identity transform either way.
+  if (!cfg_.object_state.reference_body.empty()) {
+    const int ref_id = mj_name2id(model_, mjOBJ_BODY, cfg_.object_state.reference_body.c_str());
+    if (ref_id < 0) {
+      // Hard failure rather than a fallback to world: a scene whose robot base
+      // carries a yaw would publish every object mirrored through that base,
+      // which looks like a plausible pose and not like a missing body.
+      fprintf(stderr,
+              "[MuJoCoSimulator] object_state.reference_body='%s' not found in "
+              "the model\n",
+              cfg_.object_state.reference_body.c_str());
+      return false;
+    }
+    object_state_ref_body_ = ref_id;
+  }
+
+  object_state_frame_id_ = cfg_.object_state.frame_id;
+  if (object_state_frame_id_.empty()) {
+    const char* ref_name = mj_id2name(model_, mjOBJ_BODY, object_state_ref_body_);
+    // mj_id2name returns nullptr for the (unnamed) world body in most scenes,
+    // so "world" is the spelled-out fallback rather than an empty frame_id —
+    // an empty header.frame_id is rejected by tf2 consumers outright.
+    object_state_frame_id_ = ref_name ? ref_name : "world";
+  }
+
+  // ── Free bodies ──────────────────────────────────────────────────────────
+  // Body 0 is the world body and is skipped: it has no joint, so the loop
+  // would drop it anyway, but starting at 1 says so.
+  for (int b = 1; b < static_cast<int>(model_->nbody); ++b) {
+    if (model_->body_jntnum[b] != 1) {
+      continue;
+    }
+    if (model_->jnt_type[model_->body_jntadr[b]] != mjJNT_FREE) {
+      continue;
+    }
+    const char* body_name = mj_id2name(model_, mjOBJ_BODY, b);
+    ObjectStateInfo info;
+    info.body_id = b;
+    info.name = body_name ? body_name : ("body_" + std::to_string(b));
+    object_state_infos_.push_back(std::move(info));
+  }
+
+  object_state_buffer_.resize(object_state_infos_.size());
+
+  fprintf(stdout, "[MuJoCoSimulator] object_state: %zu free body(ies), frame_id='%s', topic='%s'\n",
+          object_state_infos_.size(), object_state_frame_id_.c_str(),
+          cfg_.object_state.topic.c_str());
+  for (const auto& info : object_state_infos_) {
+    fprintf(stdout, "[MuJoCoSimulator]   object '%s' (body %d)\n", info.name.c_str(), info.body_id);
   }
   return true;
 }
@@ -855,6 +944,12 @@ bool MuJoCoSimulator::Initialize() noexcept {
               grp->name.c_str());
       return false;
     }
+  }
+
+  // ── Object state discovery (freejoint bodies + reference frame) ────────
+  if (!DiscoverObjectStates()) {
+    fprintf(stderr, "[MuJoCoSimulator] Initialize aborted: object state discovery failed\n");
+    return false;
   }
 
   // ── Physics timestep ────────────────────────────────────────────────────
@@ -1468,12 +1563,24 @@ void MuJoCoSimulator::SetContactWrenchCallback(
   groups_[group_idx]->contact_wrench_cb = std::move(callback);
 }
 
+void MuJoCoSimulator::SetObjectStateCallback(ObjectStateCallback callback) noexcept {
+  object_state_cb_ = std::move(callback);
+}
+
 const std::vector<JointGroup::ContactWrenchInfo>& MuJoCoSimulator::GetContactWrenchInfos(
     std::size_t group_idx) const noexcept {
   static const std::vector<JointGroup::ContactWrenchInfo> empty;
   if (group_idx >= groups_.size())
     return empty;
   return groups_[group_idx]->contact_wrench_infos;
+}
+
+const std::vector<JointGroup::ContactWrenchSample>& MuJoCoSimulator::GetContactWrenchSamplesForTest(
+    std::size_t group_idx) const noexcept {
+  static const std::vector<JointGroup::ContactWrenchSample> empty;
+  if (group_idx >= groups_.size())
+    return empty;
+  return groups_[group_idx]->contact_wrench_buffer;
 }
 
 bool MuJoCoSimulator::HasContactWrenches(std::size_t group_idx) const noexcept {
@@ -1609,6 +1716,8 @@ void MuJoCoSimulator::StepForTest() noexcept {
   PreparePhysicsStep();
   mj_step(model_, data_);
   ReadState();
+  ReadContactWrenches();
+  ReadObjectStates();
 }
 
 void MuJoCoSimulator::RefreshObjectForTest() noexcept {
@@ -1618,6 +1727,10 @@ void MuJoCoSimulator::RefreshObjectForTest() noexcept {
   // second time and consume another RNG draw behind the test's back.
   object_refresh_requested_.store(false, std::memory_order_relaxed);
   HandleObjectRefresh();
+  // HandleObjectRefresh ends in mj_forward, so xpos/xmat already reflect the
+  // freshly spawned pose — reading here is what lets a test assert the exact
+  // spawn rather than one integration step past it.
+  ReadObjectStates();
 }
 
 void MuJoCoSimulator::ResetForTest() noexcept {
