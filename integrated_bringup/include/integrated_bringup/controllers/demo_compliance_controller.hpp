@@ -1063,11 +1063,21 @@ class DemoComplianceController final : public RTControllerInterface {
   /// accrue a deviation the arm would then be asked to realise on resume.
   bool compliance_engaged_{false};
   /// Seconds since the last rising edge, clamped at `activation_ramp_time`.
-  /// Suspended while a bias average is owed and re-armed when one is re-entered:
-  /// §10.6's lattice runs the ramp AFTER the bias commits, so a ramp that ran to
-  /// completion during (or before) the average would hand the first conditioned
-  /// wrench to the law at α = 1 — the step §10.7 exists to forbid.
+  /// Suspended while a bias average is owed AND CAN STILL COMMIT, and re-armed
+  /// when a usable wrench arrives: §10.6's lattice runs the ramp AFTER the bias
+  /// commits, so a ramp that ran to completion during (or before) the average
+  /// would hand the first conditioned wrench to the law at α = 1 — the step
+  /// §10.7 exists to forbid.
   double compliance_ramp_elapsed_{0.0};
+  /// Previous tick's "a wrench exists and is not stale", for the §10.7 re-arm
+  /// edge (#497). A LEVEL held across ticks rather than a status field, because
+  /// the event the ramp must key on is the TRANSITION into usability — the
+  /// pipeline reports the level, and nobody else needs its history.
+  ///
+  /// Cleared by DisengageCompliance() with the rest of the wrench state, so a
+  /// hold that disowns the sample re-arms the ramp on whatever arrives next
+  /// instead of resuming mid-ramp against a wrench measured in another frame.
+  bool wrench_usable_prev_{false};
   /// The conditioned wrench the law actually integrated, LWA at the task frame,
   /// and the §10.7 ramp scale applied to it. Staged for the #469 S4 diagnostic
   /// lane — "the arm moved and the CSV cannot say what pushed it" is the

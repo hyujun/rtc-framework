@@ -362,6 +362,11 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_activate(
   compliance_state_ = compliance_fsm_.state();
   compliance_engaged_ = false;
   compliance_ramp_elapsed_ = 0.0;
+  // Paired with the ResetForActivation above: the sample is gone, so the level
+  // the §10.7 re-arm edges on starts false and the first wrench of this
+  // activation arms the ramp (#497). Carried over, an activation that inherited
+  // `true` would skip the edge entirely.
+  wrench_usable_prev_ = false;
   wrench_quality_low_ = false;
   wrench_invalid_reason_ = 0;
   // The identical argument, applied to the grasp FSM — which it was not, until a

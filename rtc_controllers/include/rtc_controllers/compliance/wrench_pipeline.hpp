@@ -161,9 +161,24 @@ class WrenchPipeline {
         StaticGravityWrench(R_world_sensor, gravity_world, conditioner_.config().payload_mass,
                             conditioner_.config().payload_com);
 
-    if (bias_pending_ && bias_done_) {
-      // Data arrived after the gate was released: re-enter BIAS_CALIBRATING and
-      // do the owed work now.
+    // DATA ARRIVED after the gate was released: re-enter BIAS_CALIBRATING and do
+    // the owed work now. `!sample.stale` is what makes this an EDGE (#497).
+    //
+    // Without it the pair below is a two-tick cycle that never ends: the stale
+    // branch inside `!bias_done_` sets `bias_done_ = true` while KEEPING
+    // `bias_pending_`, which satisfies this condition again on the very next
+    // tick — so a producer that died mid-average re-announces the re-entry every
+    // tick for as long as the controller runs. Measured 2026-09-04 on p1b
+    // (`260904_1023`): 8360 consecutive ticks of it, and because the controller
+    // re-arms the §10.7 ramp on this edge, α was pinned at 0 for the whole
+    // 16.8 s activation while the FSM oscillated BIAS_CALIBRATING ⇄ HOLDING and
+    // never reached the HOLDING edge where `wrench_timeout` would have degraded.
+    //
+    // Gating on freshness costs nothing the average is owed: the debt and the
+    // partial sum both survive in `bias_pending_` / `accum_`, and the work
+    // restarts the moment a sample actually arrives — which is the only moment
+    // it COULD progress. §3.2.1's N-sample average is untouched.
+    if (bias_pending_ && bias_done_ && !sample.stale) {
       bias_done_ = false;
       out.begin_bias_calibration = true;
     }

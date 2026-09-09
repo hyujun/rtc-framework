@@ -271,6 +271,11 @@ void DemoComplianceController::DisengageCompliance() noexcept {
   // evidence that no longer exists.
   wrench_quality_low_ = false;
   wrench_invalid_reason_ = 0;
+  // With the sample disowned there is nothing usable to have been usable, and
+  // the §10.7 re-arm must fire on whatever arrives next (#497). Left standing it
+  // would report "still usable" across the hold and skip the edge — resuming
+  // mid-ramp against a wrench this controller no longer holds.
+  wrench_usable_prev_ = false;
 }
 
 void DemoComplianceController::StageHeldComplianceDiagRow() noexcept {
@@ -723,6 +728,37 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
                   : Eigen::Vector3d::Zero(),
       dt, admittance_params_.wrench, wrench_status_);
 
+  // ── §10.7 ramp re-arm, on the arrival of a USABLE WRENCH (#497) ──────────
+  //
+  // The trigger used to be the pipeline's `begin_bias_calibration` edge, and
+  // that was the right event for the wrong reason. What the ramp must not do is
+  // run to completion against no wrench and then hand the first real one to the
+  // law at α = 1 — and the shipped source withholds until there is a grasp, so
+  // it always arrives long after activation. Bias re-entry happened to MARK that
+  // arrival, which made the protection accidental in two directions:
+  //
+  //   * `bias_calibration_samples: 0` — what all three profiles ship since D-A5
+  //     — leaves `bias_pending_` unarmed, so that edge never fires at all and
+  //     the re-arm was unreachable from every shipped config;
+  //   * a producer that died mid-average re-fired it EVERY tick, which is the
+  //     α = 0 latch #497 is named for (p1b 2026-09-04, 8360 ticks).
+  //
+  // So arm on the thing actually being protected: the rising edge of "a wrench
+  // exists and is not stale". It fires once per grasp under both sample counts
+  // and never on the ticks between them.
+  //
+  // ORDERED BEFORE THE RAMP MATH, not after it with the FSM edges. Re-arming
+  // downstream costs exactly one tick, and with `bias_calibration_samples: 0`
+  // that tick is not free: there is no average suppressing the output, so the
+  // first conditioned wrench of the grasp would enter the law at α = 1 and only
+  // then drop to 0 and climb — a spike followed by a ramp, which is worse than
+  // the un-ramped step it was meant to replace.
+  const bool wrench_usable = wrench_status_.valid && !wrench_status_.stale;
+  if (wrench_usable && !wrench_usable_prev_) {
+    compliance_ramp_elapsed_ = 0.0;
+  }
+  wrench_usable_prev_ = wrench_usable;
+
   // §10.7 activation ramp: the wrench enters over `activation_ramp_time`, so a
   // controller activated against a standing load does not step the arm.
   //
@@ -736,7 +772,16 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
   // that actually carries a load. `valid` gates the suspension so the
   // no-producer case is unchanged: nothing has arrived, nothing is owed, and
   // the FSM must still reach RUNNING (D-A7's withholding contract).
-  const bool bias_average_owed = wrench_status_.valid && !wrench_status_.bias_calibrated;
+  //
+  // AND `!stale` GATES IT TOO (#497). `valid` is sticky — one sample ever makes
+  // it true for the rest of the activation — so on its own it kept the ramp
+  // suspended against an average that could no longer commit: the producer was
+  // gone, and the debt outlived it. Measured on p1b 2026-09-04 as α pinned at 0
+  // for 16.8 s with `wrench_age` climbing to 16.77 s. A stale source owes
+  // nothing the ramp should wait for; the debt itself survives in the pipeline
+  // and resumes when data does.
+  const bool bias_average_owed =
+      wrench_status_.valid && !wrench_status_.stale && !wrench_status_.bias_calibrated;
   if (!bias_average_owed) {
     compliance_ramp_elapsed_ =
         std::min(compliance_ramp_elapsed_ + dt, admittance_params_.activation_ramp_time);
@@ -841,12 +886,6 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
 
     if (wrench_status_.begin_bias_calibration) {
       compliance_fsm_.BeginBiasCalibration();
-      // Re-entering BIAS_CALIBRATING re-arms the ramp with it. The suspension
-      // above is not enough on its own: this edge fires when data arrives after
-      // the gate was released (the shipped path — the pull estimator withholds
-      // until there is a grasp), and by then the ramp has run to completion
-      // against no wrench at all.
-      compliance_ramp_elapsed_ = 0.0;
     }
     compliance_state_ =
         compliance_fsm_.Step(faults, ramp_done, dt, degraded_recovery_time_,

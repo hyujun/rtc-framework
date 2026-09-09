@@ -917,6 +917,112 @@ TEST(ComplianceAdmittanceCoupling, ABiasReEntryReArmsTheActivationRamp) {
   EXPECT_EQ(d.Run(kSettleTicks, ForceX(10.0)).alpha, 1.0);
 }
 
+// ── #497: a source that dies mid-average must not hold the arm ──────────────
+
+TEST(ComplianceAdmittanceCoupling, AnAverageThatCanNoLongerCommitReleasesTheRampAndDegrades) {
+  // THE 2026-09-04 p1b INCIDENT, replayed. `260904_1023`: 22 valid pull samples
+  // arrived against a 100-sample average, the producer went quiet, and the
+  // controller sat at alpha = 0 for the whole 16.8 s activation with the arm
+  // never moving — no E-STOP, no SAFE_STOP, `invalid_reason` normal. The
+  // diagnostic lane showed HOLDING and nothing else, which is why this took a
+  // log to find at all.
+  //
+  // Two mechanisms did it, and both are asserted separately below because they
+  // fail independently:
+  //
+  //   1. `bias_average_owed` suspended the ramp on a debt that could never be
+  //      paid — `WrenchInput::Read`'s `valid` is STICKY, so a producer that died
+  //      still read as present;
+  //   2. the pipeline's re-entry edge re-fired every tick (the stale branch
+  //      releases `bias_done_` while keeping `bias_pending_`), which re-armed the
+  //      ramp every tick AND forced the FSM back into BIAS_CALIBRATING — whose
+  //      branch deliberately ignores degrade causes, so `wrench_timeout` never
+  //      reached the HOLDING edge where it would have shown up as DEGRADED.
+  //
+  // The order below is the incident's: no producer, then a short burst, then
+  // silence. The burst has to come AFTER a gap — the re-entry edge only exists
+  // because the gate was released first.
+  YAML::Node cfg = ComplianceConfig();
+  cfg["external_wrench"]["bias_calibration_samples"] = kBiasSamplesUnderTest;
+  auto ctrl = BringUp(cfg);
+  Driver d{ctrl.get()};
+
+  const auto idle = d.RunSilent(kSettleTicks);
+  ASSERT_EQ(idle.alpha, 1.0) << "the no-source path must still reach RUNNING (D-A7)";
+
+  // 22 samples against a 100-sample average — the measured shortfall, kept as a
+  // number rather than "a few" because it is the whole premise: the average
+  // CANNOT commit from here, and everything below is about what the controller
+  // owes an arm in that state.
+  constexpr int kSamplesBeforeTheProducerDies = 22;
+  int begins = 0;
+  for (int k = 0; k < kSamplesBeforeTheProducerDies; ++k) {
+    if (d.Run(1, ForceX(kProbeForceX)).status.begin_bias_calibration) {
+      ++begins;
+    }
+  }
+
+  // Long enough to pass `timeout`, then run the whole 0.5 s ramp out, twice over.
+  constexpr int kSilentTicksAfterDeath = 800;
+  DemoComplianceController::ComplianceProbe last;
+  for (int k = 0; k < kSilentTicksAfterDeath; ++k) {
+    last = d.RunSilent(1);
+    if (last.status.begin_bias_calibration) {
+      ++begins;
+    }
+  }
+
+  EXPECT_EQ(begins, 1) << "BIAS_CALIBRATING was re-entered " << begins
+                       << " times. The re-entry is an EDGE — a producer that stopped publishing "
+                          "must not re-announce it on every tick (#497 mechanism 2)";
+  EXPECT_FALSE(last.status.bias_calibrated)
+      << "the average committed from 22 samples, so this test is not about what it thinks";
+  EXPECT_EQ(last.alpha, 1.0)
+      << "the ramp is still suspended on an average that can never commit (#497 mechanism 1) — "
+         "alpha="
+      << last.alpha;
+  EXPECT_EQ(last.state, ComplianceState::kDegraded)
+      << "a dead producer must be VISIBLE. wrench_timeout was raised the whole time; it reaches "
+         "the FSM only at the HOLDING edge, which a suspended ramp never gets to";
+}
+
+TEST(ComplianceAdmittanceCoupling, TheRampArmsOnTheFirstWrenchEvenWithNoBiasAverage) {
+  // THE SHIPPED CONFIG's version of the same question, and the one no test
+  // covered before #497. Every profile ships `bias_calibration_samples: 0`
+  // (D-A5), which leaves `bias_pending_` unarmed — so the re-entry edge the ramp
+  // re-arm used to key on NEVER fires, and the §10.7 protection was unreachable
+  // from any shipped configuration.
+  //
+  // The failure it lets through is precisely what §10.7 exists to forbid: the
+  // pull estimator withholds until there is a grasp, the ramp runs to completion
+  // during the idle stretch, and the first real force lands at alpha = 1. Here
+  // it is worse than in the averaging case, because with no average there is no
+  // suppressed output to absorb the step — the first conditioned wrench IS the
+  // one the law integrates.
+  //
+  // NO CONFIG SURGERY: this runs the profile exactly as shipped. That is the
+  // point of the test.
+  auto ctrl = BringUp(ComplianceConfig());
+  Driver d{ctrl.get()};
+
+  const auto idle = d.RunSilent(kSettleTicks);
+  ASSERT_EQ(idle.alpha, 1.0) << "the ramp did not complete against the idle stretch, so the "
+                                "hazard this test is about was never set up";
+  ASSERT_FALSE(idle.status.valid) << "something published during the idle stretch";
+
+  const auto first = d.Run(1, ForceX(kProbeForceX));
+  ASSERT_TRUE(first.status.valid) << "the wrench never arrived";
+  ASSERT_TRUE(first.status.bias_calibrated)
+      << "an average is running — this profile is supposed to ship bias_calibration_samples: 0";
+  EXPECT_LT(first.alpha, 0.01)
+      << "the first wrench of the grasp entered the law at alpha=" << first.alpha
+      << " — the ramp was spent on ticks with nothing to ramp and never re-armed";
+  EXPECT_GT(first.alpha, 0.0) << "the ramp is not advancing at all, which is a different bug";
+
+  // And it climbs from there rather than staying pinned.
+  EXPECT_EQ(d.Run(kSettleTicks, ForceX(kProbeForceX)).alpha, 1.0);
+}
+
 // ── Config validation ───────────────────────────────────────────────────────
 
 TEST(ComplianceAdmittanceCoupling, ANonPositiveDegradedRecoveryTimeIsRejected) {
