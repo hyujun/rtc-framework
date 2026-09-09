@@ -108,7 +108,10 @@
 #          accept that block.
 #          Doxygen / cross-package doc consistency NOT checked
 #          (modification-guide.md "Updating an Existing Package" 6 steps cover
-#          these manually). Changed set = tracked-vs-HEAD UNION untracked;
+#          these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
+#          untracked, where VERIFY_BASE is the watermark commit this hook last
+#          passed at (see "Verification baseline" below) — NOT HEAD, so work
+#          the agent committed during the turn is still verified;
 #          build/test additionally requires an untracked file to live in one of
 #          the installed-source dirs allowlisted at CHANGED_SRC_UNTRACKED below
 #          (that comment is the SSoT -- this summary still said src|include only
@@ -149,9 +152,56 @@ if [ -z "${RTC_DEPS_PREFIX:-}" ] && [ -f "$SETUP_ENV" ]; then
   set -u
 fi
 
-# Changed files = tracked modifications vs HEAD, PLUS untracked new files.
+# ── Verification baseline ───────────────────────────────────────────────────
 #
-# `git diff --name-only HEAD` alone cannot see a file that was never added,
+# Every gate below diffs against $VERIFY_BASE, not against HEAD. The two differ
+# only when the agent COMMITTED during the turn — and that is the case this
+# exists for: with HEAD as the baseline a turn that ends `git commit`-clean
+# produces an empty change set, the `[ -z "$CHANGED" ]` exit fires, and NOTHING
+# is verified. Not the doc validator, not the ARCH greps, not build or test.
+# That is the normal shape of a turn in this repo (CLAUDE.md §11 housekeeping
+# runs "commit 완료 후"), so the gate was silently absent on most of them.
+# Observed 2026-09-09: a bare-section-ref D10 violation committed in-turn passed
+# the hook and was caught only by CI's full-corpus scan.
+#
+# The baseline is a WATERMARK — the commit this hook last finished a clean run
+# at — kept in .git/ so it is per-clone, never committed, and gone after a fresh
+# clone. Semantics: "everything that changed since this gate last passed",
+# which is what the gate is actually promising. Consequences worth stating:
+#
+#   * a turn that commits is verified ONCE, on that turn; the watermark then
+#     advances to HEAD and the next idle turn is empty again, so this costs one
+#     verification — precisely the one that was missing — and not a rebuild per
+#     turn thereafter;
+#   * a blocked run (exit 2) does NOT advance it, so the next turn re-checks;
+#   * the added-line narrowing (docs, ARCH-1, ARCH-5) now sees lines added by
+#     those commits, which is where it was blindest.
+#
+# FALLS BACK TO HEAD whenever the watermark is missing, unreadable, not a
+# commit, or no longer an ancestor of HEAD (rebase, branch switch, reset). That
+# makes the fallback byte-identical to the pre-watermark behaviour rather than
+# producing a diff against an unrelated history — degrade toward the old gate,
+# never toward a workspace-wide rebuild.
+VERIFY_BASE_FILE="$(git rev-parse --git-dir 2>/dev/null || echo .git)/rtc-verify-base"
+VERIFY_BASE=HEAD
+if [ -f "$VERIFY_BASE_FILE" ]; then
+  WATERMARK=$(cat "$VERIFY_BASE_FILE" 2>/dev/null || true)
+  if [ -n "$WATERMARK" ] \
+     && git rev-parse --verify --quiet "${WATERMARK}^{commit}" >/dev/null 2>&1 \
+     && git merge-base --is-ancestor "$WATERMARK" HEAD 2>/dev/null; then
+    VERIFY_BASE="$WATERMARK"
+  fi
+fi
+
+# Called on every NON-BLOCKING exit, never on exit 2 and never on the
+# stop_hook_active re-entry (which verified nothing and must not claim to have).
+advance_verify_base() {
+  git rev-parse HEAD > "$VERIFY_BASE_FILE" 2>/dev/null || true
+}
+
+# Changed files = tracked modifications vs $VERIFY_BASE, PLUS untracked new files.
+#
+# `git diff --name-only` alone cannot see a file that was never added,
 # which is the normal state of one an agent just wrote -- so the "new .cpp
 # missing from CMakeLists" gate could not fire on precisely the files it
 # exists for. The tempting one-line swap to `git ls-files -mo` regresses the
@@ -162,10 +212,13 @@ fi
 # escapes ("...\355\225\234.cpp"). A quoted path matches no extension filter,
 # and a file matching no filter is silently exempt from every check below
 # rather than loudly rejected.
-CHANGED_TRACKED=$(git -c core.quotePath=false diff --name-only HEAD 2>/dev/null || true)
+CHANGED_TRACKED=$(git -c core.quotePath=false diff --name-only "$VERIFY_BASE" 2>/dev/null || true)
 CHANGED_UNTRACKED=$(git -c core.quotePath=false ls-files -o --exclude-standard 2>/dev/null || true)
 CHANGED=$(printf '%s\n%s\n' "$CHANGED_TRACKED" "$CHANGED_UNTRACKED" | grep -v '^[[:space:]]*$' | sort -u || true)
-[ -z "$CHANGED" ] && exit 0
+if [ -z "$CHANGED" ]; then
+  advance_verify_base
+  exit 0
+fi
 
 # Classify. Every class below has at least one check, so any of them keeps the
 # turn in scope -- previously only source and shell did, which meant docs-only,
@@ -180,6 +233,7 @@ CHANGED_YAML=$(echo "$CHANGED" | grep -E '\.(yaml|yml)$' || true)
 CHANGED_META=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
 if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
    && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ]; then
+  advance_verify_base
   exit 0
 fi
 
@@ -302,7 +356,7 @@ is_pure_format() {
   fi
 
   # Reject any file add/delete/rename — only modifications can be pure-format.
-  if git diff --diff-filter=ADRC --name-only HEAD 2>/dev/null \
+  if git diff --diff-filter=ADRC --name-only "$VERIFY_BASE" 2>/dev/null \
        | grep -qE '\.(cpp|hpp|h|cc|py)$'; then
     return 1
   fi
@@ -321,13 +375,13 @@ is_pure_format() {
       *.cpp|*.hpp|*.h|*.cc)
         # Round-trip both versions through clang-format with $f as the
         # filename hint so .clang-format / file-type rules apply.
-        head_fmt=$(git show "HEAD:$f" 2>/dev/null \
+        head_fmt=$(git show "$VERIFY_BASE:$f" 2>/dev/null \
                      | "${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" 2>/dev/null)
         work_fmt=$("${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" < "$f" 2>/dev/null)
         ;;
       *.py)
         [ -n "$RUFF_BIN" ] || return 1
-        head_fmt=$(git show "HEAD:$f" 2>/dev/null \
+        head_fmt=$(git show "$VERIFY_BASE:$f" 2>/dev/null \
                      | "$RUFF_BIN" format --stdin-filename="$f" - 2>/dev/null)
         work_fmt=$("$RUFF_BIN" format --stdin-filename="$f" - < "$f" 2>/dev/null)
         ;;
@@ -512,7 +566,7 @@ if [ -n "$RTC_TOUCHED" ]; then
     # header. Kept as line numbers rather than grepping the raw '+' text so the
     # report still points at a location the agent can open.
     if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-      ADDED_LINES=$(git diff -U0 HEAD -- "$f" 2>/dev/null | awk '
+      ADDED_LINES=$(git diff -U0 "$VERIFY_BASE" -- "$f" 2>/dev/null | awk '
         /^@@/ {
           match($0, /\+[0-9]+(,[0-9]+)?/)
           spec = substr($0, RSTART + 1, RLENGTH - 1)
@@ -574,7 +628,7 @@ if [ "$PURE_FORMAT" -eq 0 ] && [ -n "$CHANGED_META" ]; then
     [ -n "$f" ] || continue
     [ -f "$f" ] || continue
     if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-      ADDED=$(git diff -U0 HEAD -- "$f" 2>/dev/null | grep '^+' | grep -v '^+++' || true)
+      ADDED=$(git diff -U0 "$VERIFY_BASE" -- "$f" 2>/dev/null | grep '^+' | grep -v '^+++' || true)
     else
       ADDED=$(cat "$f" 2>/dev/null || true)
     fi
@@ -608,7 +662,7 @@ if [ "$PURE_FORMAT" -eq 0 ] && [ -n "$CHANGED_META" ]; then
     # ARCH-7: an executable target NAME that does not exist at HEAD.
     case "$f" in
       rtc_*/CMakeLists.txt)
-        HEAD_EXE=$(git show "HEAD:$f" 2>/dev/null | exe_targets | cut -f1 || true)
+        HEAD_EXE=$(git show "$VERIFY_BASE:$f" 2>/dev/null | exe_targets | cut -f1 || true)
         NEW_EXE=$(exe_targets < "$f" \
                     | awk -F'\t' -v head="$HEAD_EXE" '
                         BEGIN {
@@ -698,8 +752,8 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
 # Hoisted out of the per-package loop: these two git queries are repo-wide and
 # identical on every iteration, so computing them once and re-filtering by
 # package below saves one `git diff` spawn per changed package each turn.
-STRUCT_AD=$(git diff --diff-filter=AD --name-only HEAD 2>/dev/null || true)
-ADDED_A=$(git diff --diff-filter=A --name-only HEAD 2>/dev/null || true)
+STRUCT_AD=$(git diff --diff-filter=AD --name-only "$VERIFY_BASE" 2>/dev/null || true)
+ADDED_A=$(git diff --diff-filter=A --name-only "$VERIFY_BASE" 2>/dev/null || true)
 for pkg_dir in $CHANGED_PKGS; do
   # README.md co-update -- NON-BLOCKING checklist, and only for public-surface
   # changes. A src/-only edit (internal refactor, bug fix, private-impl change)
@@ -738,7 +792,7 @@ for pkg_dir in $CHANGED_PKGS; do
 
   # package.xml co-update for new find_package() in CMakeLists.txt
   if echo "$CHANGED" | grep -q "^${pkg_dir}/CMakeLists.txt$"; then
-    NEW_FIND=$(git diff HEAD -- "${pkg_dir}/CMakeLists.txt" 2>/dev/null \
+    NEW_FIND=$(git diff "$VERIFY_BASE" -- "${pkg_dir}/CMakeLists.txt" 2>/dev/null \
                 | grep -E '^\+[[:space:]]*find_package\(' \
                 | sed -E 's/^\+[[:space:]]*find_package\([[:space:]]*([A-Za-z0-9_]+).*/\1/' \
                 | grep -vE '^(ament_cmake|ament_lint_auto|ament_cmake_gtest|ament_cmake_pytest|GTest)$' \
@@ -791,7 +845,7 @@ if [ "${#DOC_FILES[@]}" -gt 0 ]; then
       DOC_ALLOW=$(mktemp)
       for d in "${DOC_FILES[@]}"; do
         if git ls-files --error-unmatch "$d" >/dev/null 2>&1; then
-          git diff -U0 HEAD -- "$d" 2>/dev/null | awk -v F="$d" '
+          git diff -U0 "$VERIFY_BASE" -- "$d" 2>/dev/null | awk -v F="$d" '
             /^@@/ {
               match($0, /\+[0-9]+(,[0-9]+)?/)
               spec = substr($0, RSTART + 1, RLENGTH - 1)
@@ -1058,7 +1112,7 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
     [ -d "$cand" ] && INSTALL_ROOTS="${INSTALL_ROOTS} ${cand}"
   done
   if [ -n "$INSTALL_ROOTS" ]; then
-    DELETED=$(git diff --diff-filter=D --name-only HEAD 2>/dev/null \
+    DELETED=$(git diff --diff-filter=D --name-only "$VERIFY_BASE" 2>/dev/null \
                 | grep -E '(^|/)(launch/[^/]+\.(py|xml|yaml)$|config/.*\.(yaml|yml)$)' \
                 || true)
     while IFS= read -r path; do
@@ -1161,4 +1215,5 @@ if [ -n "$CHECKLIST" ]; then
   echo -e "Doc checklist (non-blocking — turn NOT blocked):\n${CHECKLIST}\nSee agent_docs/modification-guide.md. If a public-surface change genuinely needs no README edit, note that in your report." >&2
 fi
 
+advance_verify_base
 exit 0
