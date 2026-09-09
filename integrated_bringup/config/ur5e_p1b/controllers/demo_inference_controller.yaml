@@ -39,6 +39,15 @@ demo_inference_controller:
     # 모델을 받으면: model_path 를 채우고 allow_missing_model 을 지운다. 그
     # 순간부터 .onnx 의 실제 shape 이 아래 input_shape/output_shapes 와 다르면
     # OnnxEngine::Init 이 throw 해 bring-up 이 거부된다 (retrain drift 의 1차 방어선).
+    #
+    # 다만 shape 이 맞는 것과 RT 예산 안에 드는 것은 다른 사실이고, 아래 둘은
+    # 모델이 없으면 원리적으로 못 잰다 — 그래서 수령 시점의 측정 항목이다:
+    #   - RT allocation. test_demo_inference_alloc 이 고정하는 것은 FakeEngine
+    #     경로뿐이다. 실제 Run() 은 IoBinding 위에서도 내부 할당을 할 수 있고,
+    #     그건 RT-1 위반인데 tick 은 여전히 정상으로 보인다.
+    #   - p99 latency. decimation 10 이면 정책 1 step 예산이 20 ms 다. 초과분은
+    #     에러가 아니라 tick 지연으로 나타나므로 예산 대비 p99 를 재고 나서
+    #     decimation 을 확정한다.
     model_path: ""
     allow_missing_model: true
     optimized_model_path: "" # ORT graph-optimized 캐시 경로 (빈 값 = 비활성)

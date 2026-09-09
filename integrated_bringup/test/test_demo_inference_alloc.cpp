@@ -12,6 +12,13 @@
 //   compiled in THIS translation unit. Compute() is in the library, so pointing
 //   that gate at it would be fail-open: a guaranteed green proving nothing.
 //
+//   It does NOT see the real model either. Every case below injects FakeEngine,
+//   so what is gated is the controller's own path AROUND inference, never ONNX
+//   Runtime: a real Run() may allocate internally even on top of IoBinding.
+//   That one cannot be measured before a model exists, so it is listed as an
+//   on-arrival check in demo_inference_controller.yaml's model_path block
+//   rather than left to be rediscovered.
+//
 // The consequence is stated rather than papered over: the feature-packing,
 // decimation, unpack, blend and command-tail path IS covered here, and the
 // palm-FK path (Pinocchio + Eigen inside the library) IS NOT. The cases below
