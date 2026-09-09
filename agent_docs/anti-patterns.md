@@ -255,11 +255,27 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **탐지**: run conclusion 이 아니라 **job 배열**을 본다 —
   `gh run view <id> --json jobs --jq '.jobs[]|"\(.name)=\(.conclusion)"'`.
   게이트 job 이 `skipped` / `cancelled` 면 그 커밋은 미검증이다. `cancelled` 는 하류를 `skipped`
-  로 전파시키므로 skipped 를 "무관해서 건너뜀" 으로 읽지 않는다. 취소 원인 감별은 job 의
-  `created_at`→`started_at`(큐 대기) 과 step 배열이고, run 이 `in_progress` 인 동안에는 로그가
-  아니라 `gh api repos/<o>/<r>/actions/jobs/<id>` 를 본다
+  로 전파시키므로 skipped 를 "무관해서 건너뜀" 으로 읽지 않는다. run 이 `in_progress` 인 동안에는
+  로그가 아니라 `gh api repos/<o>/<r>/actions/jobs/<id>` 를 본다 — `gh run view --job <id> --log`
+  는 그 job 이 completed 여도 **run 이 in_progress 면 거부**한다
+- **취소 원인 감별** — `cancelled` 를 내 diff 탓으로 읽기 전에 job 의 `created_at`→`started_at`
+  큐 대기부터 본다. 판독은 셋으로 갈린다:
+  - **대기가 크다** → 형제 job 이 러너를 물고 있었다. 내 변경과 무관하다
+  - **대기가 0인데 형제 job 들이 같은 초에 잘렸다** → step timeout 이 아니라 **run-level 취소**다.
+    새 push 가 `cancel-in-progress` 로 이 run 을 덮은 것이므로 같은 브랜치의 **더 새 run** 을
+    찾는다 (위 원인 (b))
+  - **둘 다 아니다** → `steps[].conclusion` 으로 잘린 step 을 찾아 그 로그의 **앞부분**(꼬리 아님)을
+    읽는다. apt 미러 stall 같은 인프라 원인은 step 이름만으로 내 diff 와 무관함이 배제된다
+
+  절차가 답을 고정하지는 않는다 — 같은 절차가 정반대 원인(큐 대기 46분 / 큐 대기 0초 + 실행 중
+  stall)을 가리킨 실측이 둘 다 있고, 널리 include 되는 헤더를 건드린 PR 에서 "ccache 전량 무효화"
+  가설이 그럴듯하게 섰지만 타임스탬프와 정면으로 어긋났다.
+  **예외 — 조급한 red**: 예산이 마지막 post-step(캐시 저장)에서 만료되면 빌드·테스트는 전부
+  success 인 채 job 만 `cancelled` 로 찍힌다. step 배열을 **끝까지** 훑기 전에는 red 로 보고하지 않는다
 - **복구**: 취소된 런의 job 을 re-run 해 그 커밋에 완료된 게이트를 만든다
-  (`gh run rerun <id> --failed`; run 이 `in_progress` 면 거부되므로 형제 job 종료를 먼저 기다린다).
+  (`gh run rerun <id> --failed`; run 이 `in_progress` 면 거부되므로 형제 job 종료를 먼저 기다린다 —
+  `timeout-minutes` 없는 형제가 run 을 6시간 붙들어 재실행을 봉쇄하는 경로까지, 근거는
+  [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 의 `changes` job 주석).
   구조적으로는 push 런이 서로 취소되지 않게 concurrency group 에 SHA 를 넣는다 —
   [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 의 concurrency 주석이 SSoT.
   같은 양식의 Stop hook 결함(변경 집합이 비어 게이트가 조용히 부재)은 [CLAUDE.md](../CLAUDE.md) §4
