@@ -19,6 +19,10 @@ on:
 permissions:
   contents: read
 
+# ros2-advanced-ci.yml 은 push 런이 서로 취소되지 않도록 SHA 를 그룹 키에 넣었지만
+# (#506), 여기는 ref 단위 취소를 그대로 둔다: 위에 적힌 대로 이 잡의 범위는 변경
+# diff 가 아니라 **전체 코퍼스**라, 취소된 런이 검사했을 파일을 다음 런이 남김없이
+# 다시 본다. 저쪽이 잃는 것(직전 커밋 diff 에만 걸린 C++ 게이트)이 여기엔 없다.
 concurrency:
   group: docs-validate-${{ github.ref }}
   cancel-in-progress: true
