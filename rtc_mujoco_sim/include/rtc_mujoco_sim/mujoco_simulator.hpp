@@ -85,6 +85,66 @@ struct SolverConfig {
   ContactOverride contact_override;
 };
 
+// ── ObjectStateConfig ────────────────────────────────────────────────────────
+// Pose publishing for the manipulable objects in the scene (object_state YAML
+// block). Simulator-level rather than per-group: an object belongs to the
+// SCENE, not to any joint group, and giving it a group would force an
+// arbitrary owner onto a scene whose objects outlive every robot in it.
+//
+// WHICH BODIES COUNT. Every body carrying a freejoint, minus the ObjectPool
+// slots that are currently parked. That rule is the whole selection policy and
+// it is deliberately not a name list: "can move freely under physics" is what
+// makes something a manipulable object, and it stays true when the scene gains
+// or loses objects without anyone editing YAML. Static props (a work table)
+// and robot links have no freejoint and so never appear; parked pool
+// candidates are compiled into the model but sit at the park position out of
+// collision, so publishing them would put a stack of objects 50 m under the
+// floor into the consumer's frame set.
+//
+// The park test is re-evaluated EVERY tick rather than resolved at Initialize:
+// the viewer's 'o' key swaps which candidate is active, and a set frozen at
+// startup would keep publishing the object that was parked away.
+struct ObjectStateConfig {
+  bool enabled{false};
+
+  /// Topic for the tf2_msgs/TransformStamped array. Relative names resolve
+  /// under the node's namespace.
+  std::string topic{"object_transforms"};
+
+  /// MJCF body whose frame the poses are expressed in. Empty = the MuJoCo
+  /// world frame. This is not a formality: a scene may mount its robot base
+  /// with a non-identity quat (a 180° yaw is common), and then world
+  /// coordinates differ from the robot's ROS root frame by that rotation —
+  /// the object lands mirrored through the base rather than obviously wrong.
+  std::string reference_body;
+
+  /// header.frame_id to publish. Empty = the reference body's MJCF name, or
+  /// "world" when reference_body is empty. Overriding matters when the MJCF
+  /// body name and the URDF link name for the same frame differ.
+  std::string frame_id;
+};
+
+// ── ObjectStateInfo / ObjectStateSample ──────────────────────────────────────
+// One discovered free body, and its per-tick pose in the reference frame.
+
+struct ObjectStateInfo {
+  std::string name;  // MJCF body name, verbatim — becomes child_frame_id
+  int body_id{-1};
+};
+
+// Heap-free POD, one per info entry.
+struct ObjectStateSample {
+  /// False = the body is a parked pool candidate this tick; consumers skip it.
+  /// The entry stays in the array (parallel to the infos) rather than being
+  /// compacted, so an index means the same object on every tick.
+  bool active{false};
+  std::array<double, 3> position{0.0, 0.0, 0.0};   // metres, reference frame
+  std::array<double, 4> quat{1.0, 0.0, 0.0, 0.0};  // MuJoCo/Hamilton (w, x, y, z)
+};
+
+using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo>& infos,
+                                               const std::vector<ObjectStateSample>& samples)>;
+
 // ── JointGroupConfig ─────────────────────────────────────────────────────────
 // Per-group configuration loaded from YAML (robot_response / fake_response).
 
@@ -135,6 +195,25 @@ struct JointGroupConfig {
     bool publish_state{false};            // <target>/contact_state (std_msgs/Bool)
     bool publish_debug{false};            // <target>/contact_point + contact_depth
     bool allow_partial_discovery{false};  // false=fail if any sensor unresolved
+
+    // ── Which frame the published wrench is expressed in ────────────────────
+    // "body" (default) — the ft_site's OWNING BODY frame; frame_id is that
+    //                    body's MJCF name.
+    // "site"           — the ft_site's OWN frame; frame_id is the site's name.
+    //
+    // The two differ exactly when the site carries a non-identity quat relative
+    // to its body, and then they differ by that rotation — silently, because a
+    // rotated wrench is still a perfectly plausible wrench. The distinction is
+    // load-bearing whenever the URDF frame a consumer applies R_link(q) for is
+    // NOT the MJCF body the site hangs under: a hand whose URDF fingertip
+    // frames are brackets rotated off the tip links reads every fingertip force
+    // off by that rotation if the body frame is used.
+    //
+    // "body" stays the default so existing scenes are bit-for-bit unchanged
+    // (their ft_sites carry no quat, which makes the two frames identical
+    // numerically — but not in frame_id, which is why this is opt-in rather
+    // than a blanket switch).
+    std::string reference_frame{"body"};
   };
 
   ContactWrenchConfig contact_wrench;
@@ -247,11 +326,18 @@ struct JointGroup {
   // target of the world→link wrench transform.
   struct ContactWrenchInfo {
     std::string target_name;  // e.g. "index_tip" (sensor name minus suffix)
-    std::string frame_id;     // body name owning ft_site (e.g. "index_tip_head")
-    int sensor_id{-1};        // mjModel sensor id
-    int sensor_adr{0};        // mjModel.sensor_adr[sensor_id]
-    int ft_site_id{-1};       // mjModel site id (torque reference origin)
-    int body_id{-1};          // mjModel.site_bodyid[ft_site_id]
+    // Name of the frame the sample is expressed in, per ContactWrenchConfig::
+    // reference_frame: the owning body's name ("body") or the site's own name
+    // ("site"). Published verbatim as WrenchStamped.header.frame_id.
+    std::string frame_id;
+    int sensor_id{-1};   // mjModel sensor id
+    int sensor_adr{0};   // mjModel.sensor_adr[sensor_id]
+    int ft_site_id{-1};  // mjModel site id (torque reference origin)
+    int body_id{-1};     // mjModel.site_bodyid[ft_site_id]
+    // False = rotate with mjData::xmat[body_id]; true = with
+    // site_xmat[ft_site_id]. Resolved once at discovery so the per-tick read
+    // stays a branch on a bool rather than a string compare.
+    bool use_site_frame{false};
   };
 
   // Transformed wrench sample (link frame). Heap-free POD.
@@ -327,6 +413,9 @@ class MuJoCoSimulator {
     // default, in which case nothing about the compiled model changes.
     ObjectPoolConfig object_pool;
 
+    // Object pose publishing (object_state YAML block). Disabled by default.
+    ObjectStateConfig object_state;
+
     // 멀티 그룹 설정 (robot_response + fake_response)
     std::vector<JointGroupConfig> groups;
   };
@@ -386,6 +475,43 @@ class MuJoCoSimulator {
   [[nodiscard]] const std::vector<JointGroup::ContactWrenchInfo>& GetContactWrenchInfos(
       std::size_t group_idx) const noexcept;
   [[nodiscard]] bool HasContactWrenches(std::size_t group_idx) const noexcept;
+
+  // ── Object state (scene-level, not per group) ─────────────────────────────
+
+  /// Register the per-tick object pose callback. Invoked from the SimLoop
+  /// thread alongside the state / sensor / contact-wrench callbacks.
+  void SetObjectStateCallback(ObjectStateCallback callback) noexcept;
+
+  /// Discovered free bodies, in mjModel body-id order. Immutable after
+  /// Initialize, so a caller may hold the reference for the object's lifetime.
+  [[nodiscard]] const std::vector<ObjectStateInfo>& GetObjectStateInfos() const noexcept {
+    return object_state_infos_;
+  }
+
+  [[nodiscard]] bool HasObjectStates() const noexcept { return !object_state_infos_.empty(); }
+
+  /// Resolved header.frame_id (see ObjectStateConfig::frame_id). Empty until
+  /// Initialize has run.
+  [[nodiscard]] const std::string& GetObjectStateFrameId() const noexcept {
+    return object_state_frame_id_;
+  }
+
+  /// Latest pose samples, parallel to GetObjectStateInfos(). The SimLoop owns
+  /// this buffer, so read it only from StepForTest / RefreshObjectForTest
+  /// contexts (both refresh it before returning) — never while SimLoop runs.
+  /// Production consumers use SetObjectStateCallback instead.
+  [[nodiscard]] const std::vector<ObjectStateSample>& GetObjectStateSamplesForTest()
+      const noexcept {
+    return object_state_buffer_;
+  }
+
+  /// Latest contact wrench samples for a group, parallel to
+  /// GetContactWrenchInfos(group_idx). Same ownership rule as
+  /// GetObjectStateSamplesForTest: StepForTest refreshes it, SimLoop owns it.
+  /// Exists so a test can drive contact through the deterministic inline tick
+  /// instead of racing the threaded loop for a converged sample.
+  [[nodiscard]] const std::vector<JointGroup::ContactWrenchSample>& GetContactWrenchSamplesForTest(
+      std::size_t group_idx) const noexcept;
 
   [[nodiscard]] std::vector<double> GetPositions(std::size_t group_idx) const noexcept;
   [[nodiscard]] std::vector<double> GetVelocities(std::size_t group_idx) const noexcept;
@@ -711,6 +837,19 @@ class MuJoCoSimulator {
   // runtime mj_recompile).
   ObjectPool object_pool_;
 
+  // ── Object state publishing ───────────────────────────────────────────────
+  // infos_ is fixed at Initialize (every free body in the scene); buffer_ is
+  // parallel to it and refilled every tick by the SimLoop, so neither ever
+  // allocates after startup.
+  std::vector<ObjectStateInfo> object_state_infos_;
+  std::vector<ObjectStateSample> object_state_buffer_;
+  ObjectStateCallback object_state_cb_{nullptr};
+  // mjModel body id of the reference frame. 0 is the world body, which is
+  // also the identity transform — so "no reference_body configured" needs no
+  // separate sentinel and no branch in the per-tick read.
+  int object_state_ref_body_{0};
+  std::string object_state_frame_id_;
+
   // ── Runtime control flags ─────────────────────────────────────────────────
   std::atomic<bool> paused_{false};
   std::atomic<bool> reset_requested_{false};
@@ -813,6 +952,12 @@ class MuJoCoSimulator {
   // allow_partial_discovery=false 면 unresolved 1건이라도 있으면 false 반환.
   [[nodiscard]] bool DiscoverContactWrenches(JointGroup& group) noexcept;
 
+  // Scan the compiled model for freejoint bodies and resolve the reference
+  // body + frame_id. Returns false when object_state is enabled but
+  // reference_body names no body — a silently-world-referenced publish would
+  // put every object in the wrong place with no error to notice.
+  [[nodiscard]] bool DiscoverObjectStates() noexcept;
+
   // MJCF XML의 <option> 요소를 파싱하여 명시적으로 설정된 속성 이름 집합을 반환.
   // XML에 없는 속성에 대해서만 SolverConfig(YAML) 값을 적용하기 위한 헬퍼.
   void ApplySolverConfig() noexcept;
@@ -826,10 +971,12 @@ class MuJoCoSimulator {
   void ReadState() noexcept;
   void ReadSensors() noexcept;
   void ReadContactWrenches() noexcept;
+  void ReadObjectStates() noexcept;
   void ReadSolverStats() noexcept;
   void InvokeStateCallback() noexcept;
   void InvokeSensorCallback() noexcept;
   void InvokeContactWrenchCallback() noexcept;
+  void InvokeObjectStateCallback() noexcept;
   void UpdateVizBuffer() noexcept;
   void UpdateRtf(uint64_t step) noexcept;
   void ThrottleIfNeeded() noexcept;

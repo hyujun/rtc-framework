@@ -17,6 +17,12 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
+  <!-- WrenchStamped (contact wrench lane) + TransformStamped (object state).
+       Used directly since the contact wrench lane landed, but only ever
+       reachable through sensor_msgs' transitive export until now. -->
+  <depend>geometry_msgs</depend>
+  <!-- TFMessage — the object state lane's array of named object poses. -->
+  <depend>tf2_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>rtc_msgs</depend>
   <depend>rtc_base</depend>

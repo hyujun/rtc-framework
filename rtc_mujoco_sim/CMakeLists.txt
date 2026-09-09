@@ -30,6 +30,8 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(tf2_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(rtc_base REQUIRED)
@@ -137,6 +139,8 @@ if(mujoco_FOUND)
     rclcpp_lifecycle
     std_msgs
     sensor_msgs
+    geometry_msgs
+    tf2_msgs
     ament_index_cpp
     rtc_msgs
     rtc_base
@@ -253,6 +257,27 @@ if(mujoco_FOUND)
       target_link_libraries(test_contact_wrench_known_load mujoco_simulator_lib)
       target_compile_definitions(test_contact_wrench_known_load PRIVATE
         PINCH_MJCF_PATH="${MJCF_PINCH_FIXTURE}")
+    endif()
+
+    # contact_wrench.reference_frame (body vs site). Own fixture: the scene
+    # needs TWO reference sites on one body so both modes run on identical
+    # physics, which contact_minimal.xml deliberately does not have.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_contact_wrench_site_frame.cpp")
+      ament_add_gtest(test_contact_wrench_site_frame test/test_contact_wrench_site_frame.cpp)
+      target_link_libraries(test_contact_wrench_site_frame mujoco_simulator_lib)
+      target_compile_definitions(test_contact_wrench_site_frame PRIVATE
+        CONTACT_SITE_FRAME_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/contact_site_frame.xml")
+    endif()
+
+    # object_state lane: freejoint selection + reference-frame transform. Reuses
+    # the object pool's candidate fixtures so the park/unpark filtering is
+    # exercised against the same pool the feature has to cooperate with.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_object_state.cpp")
+      ament_add_gtest(test_object_state test/test_object_state.cpp)
+      target_link_libraries(test_object_state mujoco_simulator_lib)
+      target_compile_definitions(test_object_state PRIVATE
+        OBJECT_STATE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/object_state_scene.xml"
+        OBJECT_STATE_POOL_OBJECTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/objects")
     endif()
   endif()
 else()

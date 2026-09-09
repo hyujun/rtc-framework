@@ -149,8 +149,9 @@ constexpr int kContactSensorForceOffset = 1;   // force[3]
 constexpr int kContactSensorTorqueOffset = 4;  // torque[3] (about contact point)
 constexpr int kContactSensorDistOffset = 7;
 constexpr int kContactSensorPosOffset = 8;  // pos[3] (contact point in world)
-constexpr int kRotationMatrixStride = 9;    // mjData.xmat per body (row-major 3x3)
+constexpr int kRotationMatrixStride = 9;    // mjData.xmat / site_xmat (row-major 3x3)
 constexpr int kSitePosStride = 3;           // mjData.site_xpos per site
+constexpr int kBodyPosStride = 3;           // mjData.xpos per body
 
 // Apply transpose of body rotation matrix R_WB (row-major 9 elements) to a
 // world vector — produces the vector expressed in the body frame.
@@ -228,13 +229,84 @@ void MuJoCoSimulator::ReadContactWrenches() noexcept {
       const std::array<double, 3> tau_link_w = {
           tau_pc_w[0] + r_cross_f[0], tau_pc_w[1] + r_cross_f[1], tau_pc_w[2] + r_cross_f[2]};
 
-      // Transform world-frame vectors into the ft_site's body frame.
+      // Transform world-frame vectors into the configured reference frame:
+      // the ft_site's owning body, or the site itself. Both arrays are
+      // row-major 3x3 with the same stride, so only the base pointer and the
+      // index differ — see ContactWrenchConfig::reference_frame for why the
+      // choice matters even though the two coincide when the site carries no
+      // quat.
       const mjtNum* rwb =
-          data_->xmat + (static_cast<std::ptrdiff_t>(kRotationMatrixStride) * info.body_id);
+          info.use_site_frame
+              ? data_->site_xmat +
+                    (static_cast<std::ptrdiff_t>(kRotationMatrixStride) * info.ft_site_id)
+              : data_->xmat + (static_cast<std::ptrdiff_t>(kRotationMatrixStride) * info.body_id);
       WorldVecToBody(rwb, f_w, sample.force);
       WorldVecToBody(rwb, tau_link_w, sample.torque);
     }
   }
+}
+
+void MuJoCoSimulator::ReadObjectStates() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::ReadObjectStates");
+  if (!model_ || !data_ || object_state_infos_.empty()) {
+    return;
+  }
+
+  // Reference frame pose. Read once per tick rather than per object: it is the
+  // same body for every entry, and on the common world-referenced path it is
+  // the identity that mju_* still has to be fed.
+  const mjtNum* p_ref_w =
+      data_->xpos + (static_cast<std::ptrdiff_t>(kBodyPosStride) * object_state_ref_body_);
+  const mjtNum* rot_ref_w =
+      data_->xmat + (static_cast<std::ptrdiff_t>(kRotationMatrixStride) * object_state_ref_body_);
+
+  for (std::size_t i = 0; i < object_state_infos_.size(); ++i) {
+    const auto& info = object_state_infos_[i];
+    auto& sample = object_state_buffer_[i];
+
+    // Parked pool candidates are compiled into the model but sit at the park
+    // position out of collision. Re-checked every tick because the 'o' key
+    // moves which candidate is active — see ObjectStateConfig.
+    if (object_pool_.IsParkedBody(info.body_id)) {
+      sample.active = false;
+      continue;
+    }
+    sample.active = true;
+
+    const mjtNum* p_obj_w =
+        data_->xpos + (static_cast<std::ptrdiff_t>(kBodyPosStride) * info.body_id);
+    const mjtNum* rot_obj_w =
+        data_->xmat + (static_cast<std::ptrdiff_t>(kRotationMatrixStride) * info.body_id);
+
+    // p_rel = R_ref^T (p_obj - p_ref)
+    const std::array<double, 3> delta_w = {static_cast<double>(p_obj_w[0] - p_ref_w[0]),
+                                           static_cast<double>(p_obj_w[1] - p_ref_w[1]),
+                                           static_cast<double>(p_obj_w[2] - p_ref_w[2])};
+    WorldVecToBody(rot_ref_w, delta_w, sample.position);
+
+    // R_rel = R_ref^T R_obj, then to a quaternion. mju_mulMatTMat is the
+    // transpose-on-the-left product, which is exactly R_ref^T R_obj — writing
+    // it as an explicit transpose plus mju_mulMatMat would allocate a scratch
+    // for the transpose and give the same numbers.
+    std::array<mjtNum, kRotationMatrixStride> rot_rel{};
+    mju_mulMatTMat(rot_rel.data(), rot_ref_w, rot_obj_w, 3, 3, 3);
+
+    std::array<mjtNum, 4> quat{};
+    mju_mat2Quat(quat.data(), rot_rel.data());
+    // MuJoCo quaternions are (w, x, y, z) and stay in that order here; the
+    // (x, y, z, w) swap ROS needs happens at the publish boundary, so the
+    // simulator side never carries two conventions at once.
+    sample.quat = {static_cast<double>(quat[0]), static_cast<double>(quat[1]),
+                   static_cast<double>(quat[2]), static_cast<double>(quat[3])};
+  }
+}
+
+void MuJoCoSimulator::InvokeObjectStateCallback() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::InvokeObjectStateCallback");
+  if (object_state_infos_.empty() || !object_state_cb_) {
+    return;
+  }
+  object_state_cb_(object_state_infos_, object_state_buffer_);
 }
 
 void MuJoCoSimulator::InvokeContactWrenchCallback() noexcept {
@@ -647,9 +719,11 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     ReadState();
     ReadSensors();
     ReadContactWrenches();
+    ReadObjectStates();
     InvokeStateCallback();
     InvokeSensorCallback();
     InvokeContactWrenchCallback();
+    InvokeObjectStateCallback();
 
     // 2. Wait for command from PRIMARY group
     {

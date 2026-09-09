@@ -72,6 +72,29 @@ mujoco_simulator:
       avoid_repeat: true
       spawn_on_start: true
 
+    # ── Object State (object 이름·프레임·pose publish) ───────────────────────
+    # 전체 키·기본값은 rtc_mujoco_sim/config/mujoco_default.yaml 이 SSoT.
+    #
+    # tf2_msgs/TFMessage 한 개에 씬의 free body 전부가 실린다 (TransformStamped
+    # 배열: header.frame_id = 아래 reference_body, child_frame_id = MJCF body
+    # 이름). 위 object_pool 의 park 된 후보는 배열에서 빠지므로, 지금 이 씬에서
+    # 실제로 나가는 것은 활성 object 1개다.
+    #
+    # /tf 가 아니라 전용 토픽인 이유: 이 bringup 에는 robot_state_publisher 외에
+    # /tf 발행자가 없고, 컨트롤러 transforms 도 rtc_digital_twin 이 재발행하는
+    # 구조다. sim ground-truth 를 실기와 같은 TF 트리에 섞지 않는다.
+    #
+    # reference_body 는 반드시 "base" 여야 한다 — 이 로봇의 MJCF base 는
+    # quat "0 0 0 -1" (z축 180°) 로 붙어 있어서, MuJoCo world 좌표를 그대로
+    # 내보내면 물체가 base 기준으로 x/y 부호가 뒤집힌 자리에 찍힌다. 그 값은
+    # 그럴듯해 보이므로 소비자가 알아챌 방법이 없다. URDF 루트 링크도 "base"
+    # 라서 MJCF body 이름이 그대로 ROS frame_id 로 맞는다 (frame_id override 불필요).
+    object_state:
+      enabled: true
+      topic: "/sim/object_transforms"
+      reference_body: "base"
+      frame_id: ""          # "" = reference_body 이름 그대로 ("base")
+
     # ── Robot Response (MuJoCo 물리 시뮬레이션) ──────────────────────────────
     # command_joint_names: actuator 매칭용 (XML joint name). 합집합 == XML 전체 joints 필수.
     # state_joint_names:   state publish용 (XML joint name). 비우면 XML 전체 사용.
@@ -143,8 +166,45 @@ mujoco_simulator:
         # out rather than omitted: an absent key means "fall back", and the day
         # this scene gains a keyframe that would silently take over.
         initial_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        # sensor_topic: "/p1b/sim_sensors"   # uncomment + add sensor_names to enable
-        # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
+        # ── Fingertip contact wrench ──────────────────────────────────────
+        # sensor_names="auto" is REQUIRED for contact wrench discovery: the
+        # wrapper only maps a contact sensor that lives in this group's
+        # sensor_infos. sensor_topic stays unset so the raw SimSensorState
+        # publish path is suppressed and only the per-target WrenchStamped
+        # (and Bool transition) topics are emitted.
+        sensor_names: ["auto"]
+        contact_wrench:
+          enabled: true
+          topic_prefix: "/p1b"
+          # target_name = MJCF <contact name=...> verbatim, so the topics
+          # mirror the XML 1:1:
+          #   /p1b/l_thumb_tip_contact/contact_wrench   (frame l_thumb_tip_bracket)
+          #   /p1b/l_index_tip_contact/contact_wrench   (frame l_index_tip_bracket)
+          #   /p1b/l_middle_tip_contact/contact_wrench  (frame l_middle_tip_bracket)
+          #   /p1b/l_ring_tip_contact/contact_wrench    (frame l_ring_tip_bracket)
+          #
+          # The suffix pair is what maps sensor -> reference site:
+          #   "l_index_tip_contact" -(strip "_contact")-> "l_index_tip"
+          #                         -(append "_bracket")-> site "l_index_tip_bracket"
+          # Both differ from the agnostic defaults ("_tip_contact"/"_ft_site"),
+          # which is why they are spelled out here rather than inherited.
+          sensor_name_suffixes: ["_contact"]
+          reference_site_suffixes: ["_bracket"]
+          # ── Why "site" and not the default "body" ────────────────────────
+          # This hand's controller-facing fingertip frames are the URDF
+          # `l_*_tip_bracket` links (_base.yaml tree_models tip_links,
+          # digital_twin sensor_viz.fingertip_names, the #167 Stage A-3
+          # positional pairing), and those are ROTATED relative to the
+          # `l_*_tip_link` bodies the sites hang under — 90 deg about z for
+          # index/middle/ring, a compound rotation for the thumb. Publishing in
+          # the body frame would hand every consumer a wrench turned by that
+          # rotation, and a turned wrench still looks like a valid wrench, so
+          # nothing downstream could notice. "site" rotates into the bracket
+          # site's own frame instead, which the MJCF places to match the URDF
+          # link exactly (verified to 2e-10).
+          reference_frame: "site"
+          publish_state: true   # adds /p1b/<target>/contact_state (Bool, edge-triggered)
+          publish_debug: false  # set true to also emit contact_point + contact_depth (debug)
 
     # ── Fake Response (LPF 에코백, MuJoCo 물리 아님) ─────────────────────────
     # robot_response와 같은 그룹 이름 중복 불가.

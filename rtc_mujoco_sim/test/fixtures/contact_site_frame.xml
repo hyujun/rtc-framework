@@ -1,0 +1,63 @@
+<mujoco model="contact_site_frame_test">
+  <!-- contact_minimal.xml plus a SECOND reference site on the same body,
+       carrying a non-identity rotation relative to it.
+
+       WHY A SECOND SITE RATHER THAN ROTATING THE FIRST. Both frames have to be
+       reachable from ONE scene so the two reference_frame modes can be compared
+       on bit-identical physics. Rotating tip_a_ft_site instead would change what
+       "body" mode reports as well, and then a difference between the two runs
+       would prove nothing about which rotation was applied.
+
+       Both sites sit at pos="0 0 0", so the torque shift to the site origin is
+       identical for the two modes and the ONLY thing that can differ is the
+       rotation. That isolation is the point: a test where position and rotation
+       both move cannot say which one a regression broke.
+
+       WHY THIS PARTICULAR QUAT. (w,x,y,z) = (0.5,-0.5,-0.5,0.5) is the rotation
+       R = [[0,0,-1],[1,0,0],[0,-1,0]], which maps every body axis onto a
+       DIFFERENT site axis and flips two signs:
+           v_site = R^T v_body = ( v_body.y, -v_body.z, -v_body.x )
+       So a component transposition, a dropped transpose (R instead of R^T), and
+       a silent fallback to the identity each produce a different answer.
+       A symmetric rotation — 180 deg about an axis, say — would let a
+       transposition pass. It is also the exact rotation ur5e_p1b's thumb
+       bracket carries relative to its tip link, which is the case that made
+       this option necessary. -->
+  <compiler angle="radian"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <worldbody>
+    <body name="arm_base" pos="0 0 0.50">
+      <joint name="j1" type="hinge" axis="0 1 0" range="-3.14 3.14" damping="0.5"/>
+      <inertial pos="0 0 -0.20" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.40" size="0.01"
+            rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <body name="tip_link" pos="0 0 -0.45">
+        <inertial pos="0 0 0" mass="0.05" diaginertia="0.0001 0.0001 0.0001"/>
+        <geom name="tip_a_contact_geom" type="sphere" size="0.03"
+              rgba="0.8 0.2 0.2 1"/>
+        <!-- reference_frame: "body" resolves through this one (identity). -->
+        <site name="tip_a_ft_site" pos="0 0 0" size="0.003" group="3"/>
+        <!-- reference_frame: "site" resolves through this one (rotated). -->
+        <site name="tip_a_bracket" pos="0 0 0" quat="0.5 -0.5 -0.5 0.5"
+              size="0.003" group="3"/>
+      </body>
+    </body>
+
+    <body name="ground">
+      <geom name="ground_box" type="box" size="2 2 0.05" pos="0 0 0"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="m1" joint="j1" kp="50" kv="5" ctrlrange="-3.14 3.14"/>
+  </actuator>
+
+  <sensor>
+    <contact name="tip_a_contact"
+             geom1="tip_a_contact_geom"
+             num="1"
+             data="found force torque dist pos normal tangent"
+             reduce="netforce"/>
+  </sensor>
+</mujoco>
