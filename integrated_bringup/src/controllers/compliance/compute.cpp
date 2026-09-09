@@ -271,6 +271,11 @@ void DemoComplianceController::DisengageCompliance() noexcept {
   // evidence that no longer exists.
   wrench_quality_low_ = false;
   wrench_invalid_reason_ = 0;
+  // With the sample disowned there is nothing usable to have been usable, and
+  // the §10.7 re-arm must fire on whatever arrives next (#497). Left standing it
+  // would report "still usable" across the hold and skip the edge — resuming
+  // mid-ramp against a wrench this controller no longer holds.
+  wrench_usable_prev_ = false;
 }
 
 void DemoComplianceController::StageHeldComplianceDiagRow() noexcept {
@@ -434,6 +439,28 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       // point: the task error stays exactly zero and the arm does not move. This
       // is also why a frame that flickers valid/invalid needs no latch or
       // hysteresis — every tick re-seeds to zero error.
+      //
+      // TRUE OF THE GOAL LANE, NOT OF THE WRENCH (#469 D-A15). When the control
+      // point changes KIND — vTCP ⇄ tool0 — the sample the pipeline is holding
+      // was measured somewhere the control frame no longer is:
+      // `wrench_apply_point_` is the vTCP the source published from, and only
+      // `verdict.publish` (which requires `vtcp.valid`) ever moves it. So on the
+      // tick the vTCP goes invalid, `ctrl_pos` hops to tool0 while the apply
+      // point stays behind, and the pipeline's transport turns the whole vTCP
+      // offset into a lever arm for the length of the fade — a moment the pull
+      // estimate never carried (D-A2), against K_p^a_rot = 0, which never
+      // returns it. Repeated over grasp/release cycles it walks the angular
+      // deviation toward the §7.4 box and stays.
+      //
+      // Disowning is what every other frame-related hold here already does
+      // (kHoldExternal, kExpireExternal, the non-finite Jacobian path), and for
+      // the same reason. Gated on the KIND rather than on any re-seed so a
+      // member-mask change — same frame kind, control point merely moved — keeps
+      // its conditioner state; that case is one tick of travel, exactly like the
+      // steady-state lever arm.
+      if (target_frame_id_.is_vtcp != cur_id.is_vtcp && compliance_engaged_) {
+        DisengageCompliance();
+      }
       SeedHoldTarget(control_pose, dev0, cur_id);
       target_seqlock_.Store(current_target_slot_);
       break;
@@ -681,6 +708,28 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
         desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
       }
       new_target_pending_ = false;
+      // ── D-A15: X_d MOVED TO THE MEASUREMENT, SO x̃ GOES WITH IT (#469) ────
+      //
+      // `start_pose` above is `control_pose` — the MEASURED control frame, which
+      // is already realising X_c = X_d ⊕ x̃. Leaving x̃ standing makes the very
+      // next composition `X_d_new ⊕ x̃ = 측정 + x̃`: the deviation is counted a
+      // second time, and the arm is handed the whole of it as task error on this
+      // one tick. At the §7.4 box that is a 0.15 m step against `ik_kp_pos` — a
+      // 0.75 m/s command on p1b, and `pose_error_limit` (0.5 m) does not catch
+      // it. K_p^a = 200 made this a transient the spring erased; D-A3 makes it
+      // permanent, which is what turned it into a defect.
+      //
+      // THIS DOES NOT UNDO THE HAND-GUIDING. The re-seed starts FROM the
+      // measurement, so X_c_new = 측정 = where the arm is standing: the command
+      // is continuous and the guided displacement is kept. What changes is that
+      // the §7.4 envelope is spent per re-seed instead of per activation — which
+      // is strictly better, since today a guide that uses all 15 cm kills
+      // compliance for the rest of the activation.
+      //
+      // NOT the `ẋ̃ ≈ 0` auto re-anchor §5/§10 defer: that one is a heuristic
+      // trigger for extending CONTINUOUS guiding, and it stays deferred. This
+      // fires only where the binding itself moves X_d.
+      admittance_.Reset();
     }
   }
 
@@ -723,6 +772,37 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
                   : Eigen::Vector3d::Zero(),
       dt, admittance_params_.wrench, wrench_status_);
 
+  // ── §10.7 ramp re-arm, on the arrival of a USABLE WRENCH (#497) ──────────
+  //
+  // The trigger used to be the pipeline's `begin_bias_calibration` edge, and
+  // that was the right event for the wrong reason. What the ramp must not do is
+  // run to completion against no wrench and then hand the first real one to the
+  // law at α = 1 — and the shipped source withholds until there is a grasp, so
+  // it always arrives long after activation. Bias re-entry happened to MARK that
+  // arrival, which made the protection accidental in two directions:
+  //
+  //   * `bias_calibration_samples: 0` — what all three profiles ship since D-A5
+  //     — leaves `bias_pending_` unarmed, so that edge never fires at all and
+  //     the re-arm was unreachable from every shipped config;
+  //   * a producer that died mid-average re-fired it EVERY tick, which is the
+  //     α = 0 latch #497 is named for (p1b 2026-09-04, 8360 ticks).
+  //
+  // So arm on the thing actually being protected: the rising edge of "a wrench
+  // exists and is not stale". It fires once per grasp under both sample counts
+  // and never on the ticks between them.
+  //
+  // ORDERED BEFORE THE RAMP MATH, not after it with the FSM edges. Re-arming
+  // downstream costs exactly one tick, and with `bias_calibration_samples: 0`
+  // that tick is not free: there is no average suppressing the output, so the
+  // first conditioned wrench of the grasp would enter the law at α = 1 and only
+  // then drop to 0 and climb — a spike followed by a ramp, which is worse than
+  // the un-ramped step it was meant to replace.
+  const bool wrench_usable = wrench_status_.valid && !wrench_status_.stale;
+  if (wrench_usable && !wrench_usable_prev_) {
+    compliance_ramp_elapsed_ = 0.0;
+  }
+  wrench_usable_prev_ = wrench_usable;
+
   // §10.7 activation ramp: the wrench enters over `activation_ramp_time`, so a
   // controller activated against a standing load does not step the arm.
   //
@@ -736,7 +816,16 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
   // that actually carries a load. `valid` gates the suspension so the
   // no-producer case is unchanged: nothing has arrived, nothing is owed, and
   // the FSM must still reach RUNNING (D-A7's withholding contract).
-  const bool bias_average_owed = wrench_status_.valid && !wrench_status_.bias_calibrated;
+  //
+  // AND `!stale` GATES IT TOO (#497). `valid` is sticky — one sample ever makes
+  // it true for the rest of the activation — so on its own it kept the ramp
+  // suspended against an average that could no longer commit: the producer was
+  // gone, and the debt outlived it. Measured on p1b 2026-09-04 as α pinned at 0
+  // for 16.8 s with `wrench_age` climbing to 16.77 s. A stale source owes
+  // nothing the ramp should wait for; the debt itself survives in the pipeline
+  // and resumes when data does.
+  const bool bias_average_owed =
+      wrench_status_.valid && !wrench_status_.stale && !wrench_status_.bias_calibrated;
   if (!bias_average_owed) {
     compliance_ramp_elapsed_ =
         std::min(compliance_ramp_elapsed_ + dt, admittance_params_.activation_ramp_time);
@@ -841,12 +930,6 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
 
     if (wrench_status_.begin_bias_calibration) {
       compliance_fsm_.BeginBiasCalibration();
-      // Re-entering BIAS_CALIBRATING re-arms the ramp with it. The suspension
-      // above is not enough on its own: this edge fires when data arrives after
-      // the gate was released (the shipped path — the pull estimator withholds
-      // until there is a grasp), and by then the ramp has run to completion
-      // against no wrench at all.
-      compliance_ramp_elapsed_ = 0.0;
     }
     compliance_state_ =
         compliance_fsm_.Step(faults, ramp_done, dt, degraded_recovery_time_,
