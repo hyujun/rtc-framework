@@ -946,6 +946,29 @@ bool MuJoCoSimulator::Initialize() noexcept {
     }
   }
 
+  // ── Viewer force-arrow index ───────────────────────────────────────────
+  // Flattened here, once, so the per-snapshot walk under viz_mutex_ is a
+  // straight loop over PODs instead of a nested scan of group configs — the
+  // sim thread holds that lock while the viewer is waiting on it. Groups that
+  // opted out contribute nothing, so an all-opted-out build allocates nothing
+  // and UpdateVizBuffer's added cost is one empty-vector loop.
+  // groups_ is built from cfg_.groups in order, which is the same pairing
+  // MapSensorInfos above relies on; the min() keeps that assumption from
+  // becoming an out-of-range read if it ever stops holding.
+  viz_contact_wrench_src_.clear();
+  const std::size_t n_paired = std::min(groups_.size(), cfg_.groups.size());
+  for (std::size_t gi = 0; gi < n_paired; ++gi) {
+    const auto& cw = cfg_.groups[gi].contact_wrench;
+    if (!cw.visualize) {
+      continue;
+    }
+    for (const auto& info : groups_[gi]->contact_wrench_infos) {
+      viz_contact_wrench_src_.push_back(ContactWrenchVizSource{
+          info.sensor_adr, info.ft_site_id, static_cast<float>(cw.visualize_scale)});
+    }
+  }
+  viz_contact_wrench_.assign(viz_contact_wrench_src_.size(), ContactWrenchVizSample{});
+
   // ── Object state discovery (freejoint bodies + reference frame) ────────
   if (!DiscoverObjectStates()) {
     fprintf(stderr, "[MuJoCoSimulator] Initialize aborted: object state discovery failed\n");

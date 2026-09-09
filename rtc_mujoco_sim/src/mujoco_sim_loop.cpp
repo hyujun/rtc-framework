@@ -380,9 +380,58 @@ void MuJoCoSimulator::UpdateVizBuffer() noexcept {
     std::memcpy(viz_qpos_.data(), data_->qpos,
                 static_cast<std::size_t>(model_->nq) * sizeof(double));
     viz_ncon_ = data_->ncon;
+    SnapshotContactWrenchViz();
     viz_dirty_ = true;
     viz_mutex_.unlock();
   }
+}
+
+// Caller holds viz_mutex_ (see the header). Heap-free, noexcept.
+//
+// This runs after mj_step, so sensordata and site_xpos describe the same
+// instant as the qpos copied alongside it — which is the whole reason the
+// snapshot is taken here rather than reading g->contact_wrench_buffer, whose
+// contents are one iteration old by this point (ReadContactWrenches runs at
+// the TOP of the next loop pass).
+void MuJoCoSimulator::SnapshotContactWrenchViz() noexcept {
+  if (!model_ || !data_) {
+    return;
+  }
+  for (std::size_t i = 0; i < viz_contact_wrench_src_.size(); ++i) {
+    const auto& src = viz_contact_wrench_src_[i];
+    auto& out = viz_contact_wrench_[i];
+    out.scale = src.scale;
+
+    const mjtNum* sensor_data = data_->sensordata + src.sensor_adr;
+    out.active = sensor_data[kContactSensorFoundOffset] > 0.0;
+    if (!out.active) {
+      out.origin.fill(0.0);
+      out.force.fill(0.0);
+      continue;
+    }
+
+    // World frame and the published sign: these are the same three scalars
+    // ReadContactWrenches consumes, taken before it rotates them into the
+    // reference frame. Nothing here re-derives the convention, so the arrow
+    // cannot drift away from the topic.
+    out.force = {static_cast<double>(sensor_data[kContactSensorForceOffset + 0]),
+                 static_cast<double>(sensor_data[kContactSensorForceOffset + 1]),
+                 static_cast<double>(sensor_data[kContactSensorForceOffset + 2])};
+
+    const mjtNum* p_site_w =
+        data_->site_xpos + (static_cast<std::ptrdiff_t>(kSitePosStride) * src.ft_site_id);
+    out.origin = {static_cast<double>(p_site_w[0]), static_cast<double>(p_site_w[1]),
+                  static_cast<double>(p_site_w[2])};
+  }
+}
+
+std::vector<ContactWrenchVizSample> MuJoCoSimulator::RefreshContactWrenchVizForTest() noexcept {
+  if (!model_ || !data_) {
+    return {};
+  }
+  std::lock_guard lock(viz_mutex_);
+  SnapshotContactWrenchViz();
+  return viz_contact_wrench_;
 }
 
 void MuJoCoSimulator::UpdateRtf(uint64_t step) noexcept {

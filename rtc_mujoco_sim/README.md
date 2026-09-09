@@ -265,6 +265,19 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 
 부호는 두 물리 oracle 이 고정한다: `test_contact_wrench_known_load` (파지한 물체에 건 **알려진 외력**이 lane 의 world 합으로 되나타나는지) 와 `ShippedPullEstimator` (그 lane 을 출하 프로필로 파싱해 in-plane 성분을 뽑는지). 시뮬레이터 쪽 negation 을 되살리면 전자가, 프로필에 `-1.0` 을 넣으면 후자가 red 가 된다.
 
+##### Viewer force arrows (기본 ON)
+
+`contact_wrench.enabled` 인 그룹은 뷰어에서 각 reference site 로부터 **주황색 화살표**를 그린다 — 방향·부호가 위 토픽과 동일하다.
+
+| 키 | 기본값 | 설명 |
+|----|--------|------|
+| `contact_wrench.visualize` | `true` | 이 그룹의 화살표. 다른 opt-in 키와 달리 기본 ON — 센서를 설정했다면 그 값을 보는 것이 기대 동작이고, "0 을 발행 중" 과 "발행 자체가 없음" 은 눈으로 보기 전까지 구별되지 않는다 |
+| `contact_wrench.visualize_scale` | `0.005` | [m/N]. 20 N → 10 cm. 길이는 0.3 m 에서 clamp, 0.1 N 미만은 미표시 (둘 다 렌더러 상수) |
+
+런타임 토글은 **Shift+F**. 맨 `F` 는 MuJoCo 자체의 `mjVIS_CONTACTFORCE` 로 남아 있는데, 그것은 **다른 양**이다 — 뷰어 전용 `mjData` (qpos 만 동기화, qvel/ctrl 은 0) 에서 다시 푼 접촉이라 sim 의 값도 아니고 센서의 netforce reduction 도 아니다. 그래서 화살표는 물리 스레드가 `qpos` 와 **같은 임계구역에서** 넘긴 스냅샷으로 그린다.
+
+`enable_viewer: false` 이거나 GLFW 없는 빌드에서는 스냅샷 자체를 뜨지 않는다.
+
 토픽 이름은 `<contact_wrench.topic_prefix>/<contact_sensor_name>/contact_wrench` — **MJCF `<contact name="...">` 값이 ROS topic segment 로 verbatim 전달** 되어 XML 과 1:1 round-trip 한다. Suffix 리스트는 ft_site 를 찾기 위한 *내부 site_stem* 도출에만 쓰임 (예: sensor `index_tip_contact` → site_stem `index_tip` → site `index_tip_ft_site`). LEAP profile 예시 (`topic_prefix: "/leap_hand"`): `/leap_hand/{index_tip_contact, middle_tip_contact, ring_tip_contact, thumb_tip_contact}/contact_wrench`. 비-LEAP MJCF 도 sensor↔site suffix 규약만 맞으면 wrapper 코드 변경 없이 자동 토픽 생성.
 
 ### 구독 토픽 (그룹별)
@@ -504,7 +517,7 @@ mujoco_simulator:
 | `state_topic` | string | 상태 퍼블리시 토픽 |
 | `sensor_topic` | string | MuJoCo 센서 퍼블리시 토픽 (빈 문자열 = 비활성화) |
 | `sensor_names` | string[] | XML 센서 이름 목록 (빈 배열 = 센서 없음, `["auto"]` = XML 전체) |
-| `contact_wrench.*` | (다양) | MJCF `mjSENS_CONTACT` → WrenchStamped 자동 발견 — 위 [Contact wrench auto-discovery](#contact-wrench-auto-discovery-mjcf-sensorcontact-→-ros-wrenchstamped) 절 참조. `enabled` / `topic_prefix` / `sensor_name_suffixes` / `reference_site_suffixes` / `reference_frame` / `publish_state` / `publish_debug` / `allow_partial_discovery` |
+| `contact_wrench.*` | (다양) | MJCF `mjSENS_CONTACT` → WrenchStamped 자동 발견 — 위 [Contact wrench auto-discovery](#contact-wrench-auto-discovery-mjcf-sensorcontact-→-ros-wrenchstamped) 절 참조. `enabled` / `topic_prefix` / `sensor_name_suffixes` / `reference_site_suffixes` / `reference_frame` / `publish_state` / `publish_debug` / `allow_partial_discovery` / `visualize` / `visualize_scale` |
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
 | `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
 | `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
@@ -1057,12 +1070,13 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 | `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (#447) (`scene_with_object.xml`) |
 | `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
 | `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
+| `test_contact_wrench_viz` | 뷰어 화살표 스냅샷이 **토픽과 같은 벡터**인지 — 발행된 link-frame force 를 reference frame 회전으로 world 로 되돌린 것과 componentwise 일치, 화살표 시작점 = reference site, `visualize:false` 시 스냅샷 자체가 빔 (negative control) |
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
 | `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
 | `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
 
 Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).
-GLFW 뷰어 통합 테스트는 헤드리스 CI 제약으로 제외.
+GLFW **렌더링** 자체는 헤드리스 제약으로 테스트하지 않습니다 — 대신 무엇을 그릴지 정하는 스냅샷은 `test_contact_wrench_viz` 가 디스플레이 없이 고정합니다.
 
 ---
 

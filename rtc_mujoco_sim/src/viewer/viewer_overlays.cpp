@@ -104,10 +104,8 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp, float cur_rtf
     const double f_mag = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
     const double t_mag = std::sqrt(w[3] * w[3] + w[4] * w[4] + w[5] * w[5]);
     const char* bname = mj_id2name(vs.model, mjOBJ_BODY, sel);
-    std::snprintf(pert_label, sizeof(pert_label), "Perturb (%s)",
-                  bname ? bname : "?");
-    std::snprintf(pert_value, sizeof(pert_value),
-                  "|F|=%.2f N  |t|=%.3f Nm", f_mag, t_mag);
+    std::snprintf(pert_label, sizeof(pert_label), "Perturb (%s)", bname ? bname : "?");
+    std::snprintf(pert_value, sizeof(pert_value), "|F|=%.2f N  |t|=%.3f Nm", f_mag, t_mag);
   }
 
   // Object pool row, present only when the pool is enabled. This is the one
@@ -135,11 +133,10 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp, float cur_rtf
                 static_cast<unsigned long>(vs.sim->StepCount()), ss.ncon,
                 vs.sim->IsContactEnabled() ? "on" : "OFF", world_grav_on ? "ON" : "OFF",
                 gravcomp_str, object_value,
-                is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"),
-                kIntNames[ii], kSolNames[si], ss.iter, vs.sim->GetSolverIterations(),
-                ss.improvement, n_sub, substep_dt_ms, phys_load_pct,
-                vs.show_link_frames ? "ON" : "OFF", vs.show_joint_frames ? "ON" : "OFF",
-                pert_value);
+                is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"), kIntNames[ii],
+                kSolNames[si], ss.iter, vs.sim->GetSolverIterations(), ss.improvement, n_sub,
+                substep_dt_ms, phys_load_pct, vs.show_link_frames ? "ON" : "OFF",
+                vs.show_joint_frames ? "ON" : "OFF", pert_value);
 
   mjr_overlay(mjFONT_NORMAL, mjGRID_TOPRIGHT, vp, labels, values, vs.con);
 }
@@ -218,7 +215,7 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
                   "── Frames ──\n"
                   "B\nJ\nShift+J\n"
                   "── Physics Viz ──\n"
-                  "C\nF\nU\nE\nW\nL\nA\n"
+                  "C\nF\nShift+F\nU\nE\nW\nL\nA\n"
                   "── Rendering ──\n"
                   "F5\nF6\nF7\nF8\n"
                   "── Overlays ──\n"
@@ -242,6 +239,7 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
         "\n"
         "Contact points [%s]\n"
         "Contact forces [%s]\n"
+        "Fingertip wrench [%s]\n"
         "Actuators [%s]\n"
         "Inertia [%s]\n"
         "CoM [%s]\n"
@@ -269,7 +267,7 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
         vs.opt->flags[mjVIS_JOINT] ? "ON" : "OFF", vs.show_joint_frames ? "ON" : "OFF",
         vs.opt->flags[mjVIS_CONTACTPOINT] ? "ON" : "OFF",
         vs.opt->flags[mjVIS_CONTACTFORCE] ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_ACTUATOR] ? "ON" : "OFF", vs.opt->flags[mjVIS_INERTIA] ? "ON" : "OFF",
+        vs.show_contact_wrench ? "ON" : "OFF", vs.opt->flags[mjVIS_ACTUATOR] ? "ON" : "OFF", vs.opt->flags[mjVIS_INERTIA] ? "ON" : "OFF",
         vs.opt->flags[mjVIS_COM] ? "ON" : "OFF", vs.opt->flags[mjVIS_LIGHT] ? "ON" : "OFF",
         vs.opt->flags[mjVIS_TENDON] ? "ON" : "OFF", vs.scn->flags[mjRND_WIREFRAME] ? "ON" : "OFF",
         vs.scn->flags[mjRND_SHADOW] ? "ON" : "OFF", vs.scn->flags[mjRND_SKYBOX] ? "ON" : "OFF",
@@ -432,6 +430,67 @@ void AddJointFrameGeoms(ViewerState& vs) noexcept {
 
       ++vs.scn->ngeom;
     }
+  }
+}
+
+// ── AddContactWrenchGeoms ─────────────────────────────────────────────────────
+// Draws one arrow per fingertip contact-wrench sensor, from the sensor's
+// reference site along the force the lane publishes for it.  Called between
+// mjv_updateScene() and mjr_render(), like AddJointFrameGeoms.
+//
+// The vectors come from ViewerLoop's copy of the physics thread's snapshot, NOT
+// from vs.vis_data: the viewer's mjData carries qpos only (qvel and ctrl stay
+// zero), so its own contact solution is a different quantity from the one being
+// published.  That is also why this is not simply mjVIS_CONTACTFORCE — see
+// ContactWrenchVizSample.
+void AddContactWrenchGeoms(ViewerState& vs) noexcept {
+  if (!vs.show_contact_wrench || !vs.scn || !vs.contact_wrench) {
+    return;
+  }
+
+  // Below this the arrow says nothing a viewer can read, and solver noise on a
+  // resting contact would flicker a stub in and out.
+  constexpr double kMinForceN = 0.1;
+  // Length cap [m]. A 100 N spike at the default 0.005 m/N would otherwise
+  // draw a half-metre arrow across the whole scene; clamping keeps the picture
+  // usable at the cost of making saturated arrows equal-length, which is why
+  // the cap sits well above the forces these hands actually produce.
+  constexpr double kMaxLengthM = 0.3;
+  constexpr double kShaftRadius = 0.0025;  // metres
+  // Orange: distinct from the joint frames' R/G/B and from MuJoCo's own pale
+  // contact-force arrows, so the two can be shown at once without confusion.
+  constexpr float kRgba[4] = {1.0F, 0.5F, 0.05F, 0.9F};
+
+  for (const auto& s : *vs.contact_wrench) {
+    if (!s.active) {
+      continue;
+    }
+    const double mag =
+        std::sqrt(s.force[0] * s.force[0] + s.force[1] * s.force[1] + s.force[2] * s.force[2]);
+    if (!(mag >= kMinForceN)) {  // NaN-safe: a NaN force draws nothing
+      continue;
+    }
+    if (vs.scn->ngeom >= vs.scn->maxgeom) {
+      return;
+    }
+
+    // Unit direction times the clamped length — scaling the raw vector and
+    // then clamping the result would change its direction at the cap.
+    const double length = std::min(mag * static_cast<double>(s.scale), kMaxLengthM);
+    const double k = length / mag;
+    const double from[3] = {s.origin[0], s.origin[1], s.origin[2]};
+    const double to[3] = {s.origin[0] + k * s.force[0], s.origin[1] + k * s.force[1],
+                          s.origin[2] + k * s.force[2]};
+
+    mjvGeom* g = vs.scn->geoms + vs.scn->ngeom;
+    mjv_initGeom(g, mjGEOM_NONE, nullptr, nullptr, nullptr, nullptr);
+    mjv_connector(g, mjGEOM_ARROW, kShaftRadius, from, to);
+    g->rgba[0] = kRgba[0];
+    g->rgba[1] = kRgba[1];
+    g->rgba[2] = kRgba[2];
+    g->rgba[3] = kRgba[3];
+    g->category = mjCAT_DECOR;
+    ++vs.scn->ngeom;
   }
 }
 
