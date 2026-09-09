@@ -16,15 +16,23 @@
 //     Sum_i c_i + W_f + m g = 0,      c_i = force pad i applies TO the object
 //
 // MuJoCo's netforce contact sensor reports c_i (the "geom1-on-environment"
-// convention), and ReadContactWrenches negates it to the ROS env-on-link sign
-// before expressing it in the pad's link frame. So the world-frame sum of what
-// the lane publishes is
+// convention), and ReadContactWrenches passes that sign through — the lane
+// publishes pad-on-object — before expressing it in the pad's link frame. So
+// the world-frame sum of what the lane publishes is
 //
-//     Sum_i R_i f_i^link = Sum_i (-c_i) = W_f + m g
+//     Sum_i R_i f_i^link = Sum_i c_i = -(W_f + m g)
 //
 // which is the assertion below. Every term on the right is chosen by the test.
-// A dropped or doubled negation, a transposed link rotation, or a component
+// An introduced or dropped negation, a transposed link rotation, or a component
 // swap moves the left side off it.
+//
+// THE MINUS ON THE RIGHT IS THE SIGN CONTRACT. It used to be absent, because
+// this lane used to negate into the ROS "environment-on-link" reading. That was
+// changed deliberately (see ReadContactWrenches): the simulator now agrees with
+// rtc_msgs/FingertipSensor and with PullContactConfig::force_sign's +1 default,
+// instead of being the one publisher in the repo its own consumers had to undo.
+// So these expectations are a spec change, not a weakened assertion — the
+// tolerances and the vector identity are untouched, only the sign moved.
 //
 // WHY IT IS THE SUM AND NOT THE PER-PAD FORCES. How the solver splits the load
 // between two pads is a contact-mechanics detail this lane does not own and
@@ -258,10 +266,10 @@ TEST_F(PinchKnownLoad, PadLinkFramesAreNotTheWorldFrame) {
 // ── 2. Grasp with no applied load reports the object's weight ───────────────
 //
 // The zero-wrench case of the same identity, and the one whose right-hand side
-// needs no service call: what the lane reports must sum to m*g, i.e. the pads
-// feel the object pressing DOWN on them. A flipped negation in
-// ReadContactWrenches makes this +m*g and the grasp look like it is being
-// lifted by the object.
+// needs no service call: what the lane reports must sum to -m*g, i.e. the pads
+// hold the object UP against gravity. An introduced negation in
+// ReadContactWrenches makes this -m*g (downward) and the grasp look like the
+// pads are being pressed down by an object they are in fact carrying.
 TEST_F(PinchKnownLoad, GraspWithNoAppliedLoadReportsTheObjectWeight) {
   sim_->Start();
   const Snapshot s = SettleUnderSqueeze(6000ms);
@@ -270,20 +278,22 @@ TEST_F(PinchKnownLoad, GraspWithNoAppliedLoadReportsTheObjectWeight) {
   ASSERT_TRUE(s.populated) << "grasp never settled with both contacts live "
                            << "(max|qvel| = " << s.max_object_qvel << ")";
 
-  const double expected_z = object_mass_ * kGravityZ;
+  const double expected_z = -object_mass_ * kGravityZ;
   EXPECT_NEAR(s.sum_world[0], 0.0, 0.15);
   EXPECT_NEAR(s.sum_world[1], 0.0, 0.15);
   EXPECT_NEAR(s.sum_world[2], expected_z, 0.15)
-      << "expected the pads to carry the object weight (" << expected_z << " N)";
-  EXPECT_LT(s.sum_world[2], 0.0) << "sign flip: the lane reports the object lifting the pads";
+      << "expected the pads to hold the object up against its weight (" << expected_z << " N)";
+  EXPECT_GT(s.sum_world[2], 0.0) << "sign flip: the lane reports the object pressing the pads down";
 }
 
 // ── 3. Known external wrench → the sensor lane, as a vector ────────────────
 //
 // crit#4 proper. The load is chosen by the test, hung on the object through
 // the same SetExternalWrenchAtPoint the /sim/set_external_wrench service calls,
-// and must reappear as the world-frame sum of the contact lane plus the
-// object's weight. Sign, frame and magnitude are all pinned by one comparison.
+// and must reappear, negated, as the world-frame sum of the contact lane plus
+// the object's weight — negated because the lane reports what the pads do to
+// the object, and the pads are what balances the load. Sign, frame and
+// magnitude are all pinned by one comparison.
 TEST_F(PinchKnownLoad, KnownExternalWrenchReappearsInTheContactLane) {
   sim_->Start();
   const Snapshot pre = SettleUnderSqueeze(6000ms);
@@ -296,8 +306,8 @@ TEST_F(PinchKnownLoad, KnownExternalWrenchReappearsInTheContactLane) {
   ASSERT_TRUE(s.populated) << "grasp never re-settled under the applied load "
                            << "(max|qvel| = " << s.max_object_qvel << ")";
 
-  const std::array<double, 3> expected = {kAppliedWrench[0], kAppliedWrench[1],
-                                          kAppliedWrench[2] + object_mass_ * kGravityZ};
+  const std::array<double, 3> expected = {-kAppliedWrench[0], -kAppliedWrench[1],
+                                          -(kAppliedWrench[2] + object_mass_ * kGravityZ)};
   // 2 % of the load's magnitude. Measured residual on this fixture is 0.15 %
   // (worst axis 0.008 N of 5.95 N), so this keeps better than tenfold margin
   // while staying orders of magnitude tighter than any sign or axis error,

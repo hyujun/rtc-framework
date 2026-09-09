@@ -249,6 +249,16 @@ if(mujoco_FOUND)
         CONTACT_MJCF_PATH="${MJCF_CONTACT_FIXTURE}")
     endif()
 
+    # Viewer force arrows: the snapshot the renderer draws from must agree with
+    # the wrench the topic carries. Reuses contact_minimal.xml — the property is
+    # about the two read paths, not about the scene.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_contact_wrench_viz.cpp")
+      ament_add_gtest(test_contact_wrench_viz test/test_contact_wrench_viz.cpp)
+      target_link_libraries(test_contact_wrench_viz mujoco_simulator_lib)
+      target_compile_definitions(test_contact_wrench_viz PRIVATE
+        CONTACT_MJCF_PATH="${MJCF_CONTACT_FIXTURE}")
+    endif()
+
     # #177 crit#4 positive control: known external wrench on a pinched free
     # body -> contact sensor lane. Separate fixture (rotated pad link frames +
     # a graspable object), so a separate target.

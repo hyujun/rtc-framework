@@ -107,28 +107,34 @@ demo_shared:
     # <finger>_tip_head). The per-contact gate/diagnostic normal is derived per
     # tick from pinch geometry (±plane normal, thumb opposing) — no per-tip
     # normal here, so it tracks the grasp axis rather than a body-fixed fingertip
-    # axis. force_bias / force_calibration keep their defaults (0 / I).
+    # axis. force_sign / force_bias / force_calibration keep their defaults
+    # (+1 / 0 / I).
     #
-    # force_sign: -1.0 per tip — LEAP is the one robot that needs it. The
-    # estimator sums *finger-on-object* forces (PullContactConfig::force_sign
-    # default +1), which is what the real fingertip sensors report
-    # (FingertipSensor.msg: proto-1b firmware, 1a ONNX). LEAP has no such
-    # sensor: mujoco_native packs the sim's contact-wrench WrenchStamped into
-    # inference slots 1..3 (sim.yaml), and that lane is deliberately
-    # **env-on-link** — rtc_mujoco_sim negates MuJoCo's geom1-on-environment
-    # netforce to the ROS wrench convention (mujoco_sim_loop.cpp ReadContactWrenches).
-    # So the inversion belongs here, per contact, not in the sim: flipping the sim
-    # would break the ROS wrench convention for every other consumer of /leap/*.
+    # NO force_sign HERE ANY MORE, and that absence is the point. The estimator
+    # sums *finger-on-object* forces (PullContactConfig::force_sign default +1),
+    # which is what the real fingertip sensors report (FingertipSensor.msg:
+    # proto-1b firmware, 1a ONNX). LEAP has no such sensor — mujoco_native packs
+    # the sim's contact-wrench WrenchStamped into inference slots 1..3
+    # (sim.yaml) — and that lane USED to be env-on-link, so this profile pinned
+    # `force_sign: -1.0` on all four tips to undo it. rtc_mujoco_sim now
+    # publishes link-on-environment (mujoco_sim_loop.cpp ReadContactWrenches
+    # passes MuJoCo's geom1-on-environment netforce through instead of negating
+    # it), so the sim lane and the real-sensor lane finally carry the same sign
+    # and no profile in this repo needs a per-tip inversion.
+    #
+    # Do not re-add it "to be explicit": +1 is the default, and a second -1
+    # somewhere would be indistinguishable from the flip having been reverted.
     #
     # Both sides of that seam are pinned against a KNOWN external load (#177
-    # crit#4), because until they were, deleting this line shipped green — 217
-    # tests across five suites stayed passing with it flipped to +1.0:
+    # crit#4), because the sign here was once read by no test at all — deleting
+    # it shipped green, 217 tests across five suites stayed passing with it
+    # flipped. The two that read it now:
     #   rtc_mujoco_sim   ContactWrench (known load) — a wrench hung on a pinched
     #                    free body reappears as the world-frame sum of this lane
     #   integrated_bringup ShippedPullEstimator — THIS FILE, parsed as shipped,
     #                    turns that lane into the in-plane part of the load
-    # Change the sign here and the second goes red; change the sim's negation and
-    # the first does.
+    # Put a -1.0 back and the second goes red; re-add the sim's negation and the
+    # first does.
     #
     # tip_names lists every tip that can *physically* participate, not the tips
     # one grasp is expected to use — a tip that is not touching is excluded by
@@ -157,28 +163,24 @@ demo_shared:
         force_saturation: 25.0     # [N] per-axis |raw| ≥ this ⇒ contact gated out
         contact_on_threshold: 0.5  # [N] normal-force hysteresis ON
         contact_off_threshold: 0.2 # [N] normal-force hysteresis OFF
-        force_sign: -1.0           # sim contact-wrench lane is env-on-link
       index:
         link: "index_tip_head"
         friction_coeff: 0.7
         force_saturation: 25.0
         contact_on_threshold: 0.5
         contact_off_threshold: 0.2
-        force_sign: -1.0           # sim contact-wrench lane is env-on-link
       middle:
         link: "middle_tip_head"
         friction_coeff: 0.7
         force_saturation: 25.0
         contact_on_threshold: 0.5
         contact_off_threshold: 0.2
-        force_sign: -1.0           # sim contact-wrench lane is env-on-link
       ring:
         link: "ring_tip_head"
         friction_coeff: 0.7
         force_saturation: 25.0
         contact_on_threshold: 0.5
         contact_off_threshold: 0.2
-        force_sign: -1.0           # sim contact-wrench lane is env-on-link
 
   # ── Generalized-momentum observer (#135 Layer 1b) ──────────────────────────
   # Joint-space residual r = LPF(tau_ext) from the arm's own proprioception

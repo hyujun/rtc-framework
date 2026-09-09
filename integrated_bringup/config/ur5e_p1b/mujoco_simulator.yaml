@@ -84,16 +84,26 @@ mujoco_simulator:
     # /tf 발행자가 없고, 컨트롤러 transforms 도 rtc_digital_twin 이 재발행하는
     # 구조다. sim ground-truth 를 실기와 같은 TF 트리에 섞지 않는다.
     #
-    # reference_body 는 반드시 "base" 여야 한다 — 이 로봇의 MJCF base 는
-    # quat "0 0 0 -1" (z축 180°) 로 붙어 있어서, MuJoCo world 좌표를 그대로
-    # 내보내면 물체가 base 기준으로 x/y 부호가 뒤집힌 자리에 찍힌다. 그 값은
-    # 그럴듯해 보이므로 소비자가 알아챌 방법이 없다. URDF 루트 링크도 "base"
-    # 라서 MJCF body 이름이 그대로 ROS frame_id 로 맞는다 (frame_id override 불필요).
+    # reference_body 는 비워 둔다 = MuJoCo **world** 프레임, frame_id 는 "world".
+    #
+    # 한동안 "base" 였다. 이 로봇의 MJCF base 는 quat "0 0 0 -1" (z축 180°) 로
+    # 붙어 있어서 world 와 base 는 실제로 다른 프레임이고, 둘을 헷갈리면 물체가
+    # x/y 부호가 뒤집힌 자리에 — 그럴듯해 보이는 자리에 — 찍힌다. 그 위험이
+    # 사라진 게 아니라, **누구 기준의 ground truth 인가**를 world 로 정한 것이다
+    # (2026-09-09 결정): sim 이 아는 절대 좌표를 그대로 내보내고, 로봇 기준이
+    # 필요한 소비자가 자기가 아는 base pose 로 변환한다.
+    #
+    # 대가는 알고 쓴다: "world" 는 이 bringup 의 TF 트리에 없다 —
+    # robot_state_publisher 의 루트가 "base" 이고, world→base 를 발행하는
+    # 노드는 없다. **일부러 추가하지 않았다**: 위 "NOT /tf" 와 같은 이유로
+    # sim ground truth 를 실기 TF 트리에 이어 붙이지 않는다. RViz 에서 보려면
+    # 이 토픽을 읽는 re-broadcaster 를 따로 두고, 그쪽에서 static transform 을
+    # 책임진다.
     object_state:
       enabled: true
       topic: "/sim/object_transforms"
-      reference_body: "base"
-      frame_id: ""          # "" = reference_body 이름 그대로 ("base")
+      reference_body: ""    # "" = MuJoCo world
+      frame_id: ""          # "" = reference_body 이름, 비었으므로 "world"
 
     # ── Robot Response (MuJoCo 물리 시뮬레이션) ──────────────────────────────
     # command_joint_names: actuator 매칭용 (XML joint name). 합집합 == XML 전체 joints 필수.
@@ -205,6 +215,19 @@ mujoco_simulator:
           reference_frame: "site"
           publish_state: true   # adds /p1b/<target>/contact_state (Bool, edge-triggered)
           publish_debug: false  # set true to also emit contact_point + contact_depth (debug)
+          # ── Viewer force arrows ──────────────────────────────────────────
+          # Orange arrow from each bracket site along the force this lane
+          # publishes, so the fingertip forces are readable in the window
+          # without a second terminal. Spelled out here rather than left to
+          # the (identical) compiled defaults because this is the profile the
+          # arrows were built for, and because a shipped key is a key the
+          # declare-gap test guards (test_shipped_sim_param_declared.py).
+          #
+          # Shift+F toggles them; plain F is MuJoCo's own per-contact force
+          # rendering, which comes from the viewer's mjData and is a different
+          # quantity — it does not show what /p1b/*/contact_wrench carries.
+          visualize: true
+          visualize_scale: 0.005  # [m/N] → a 20 N fingertip force draws 10 cm
 
     # ── Fake Response (LPF 에코백, MuJoCo 물리 아님) ─────────────────────────
     # robot_response와 같은 그룹 이름 중복 불가.

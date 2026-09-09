@@ -226,7 +226,7 @@ solver:
 | `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 | robot 그룹: 위치/속도/토크 |
 | `<group.state_topic>` (예: `/hand/joint_states`) | `sensor_msgs/JointState` | 100Hz | fake 그룹: LPF 필터링된 상태 |
 | `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
-| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. 비접촉 시 0 발행 (stale 방지). |
+| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. **부호는 link-on-environment** (아래 참조). 비접촉 시 0 발행 (stale 방지). |
 | `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
@@ -251,6 +251,32 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 `"site"` 가 필요한 경우는 하나다: **소비자가 `R_link(q)` 를 적용하는 URDF 프레임이 site 가 매달린 MJCF body 와 다를 때.** 예를 들어 손의 URDF fingertip 프레임이 tip link 에서 회전된 bracket 링크면, body 프레임으로 내보낸 힘은 매 fingertip 마다 그 회전만큼 틀어진 채 도착한다 (`ur5e_p1b` 가 이 경우다 — index/middle/ring 90°, thumb 은 복합).
 
 기본이 `"body"` 인 것은 하위호환이다: 기존 씬의 ft_site 는 quat 이 없어 두 프레임이 수치적으로 동일하지만 `frame_id` 는 다르므로, 일괄 전환이 아니라 opt-in 이다. `"body"`/`"site"` 이외의 값은 fallback 없이 **Initialize 실패** — 오타가 조용히 `"body"` 로 읽히면 아무도 못 알아챈다.
+
+##### 부호 규약 — link-on-environment
+
+발행되는 force/torque 는 **손끝이 환경에 가하는** 힘이다 (`fingertip → object`). ROS wrench 를 "프레임에 가해지는 하중" 으로 읽는 관례와는 반대 방향이므로 처음 보면 어색하지만, 이 저장소에서는 이쪽이 표준이다:
+
+- `rtc_msgs/FingertipSensor.f` 가 finger-on-object 이고 (proto-1b firmware, 1a ONNX),
+- `rtc::grasp::PullContactConfig::force_sign` 의 기본값이 `+1` 인 이유가 그것이다.
+
+즉 **sim lane 과 실기 센서 lane 이 같은 부호**여서, `demo_shared.yaml` 의 `pull_estimator` 블록이 sim/실기 양쪽에서 그대로 맞는다. 구현상으로는 MuJoCo `reduce="netforce"` 가 내는 geom1-on-environment 값을 **그대로 통과**시킨다 (`<contact body1="...">` 의 body 가 손끝이므로). 
+
+> 이전에는 이 lane 이 이 값을 negate 해서 env-on-link 로 발행했고, 그래서 `iiwa7_leap` 이 tip 마다 `force_sign: -1.0` 을 pin 해야 했다. 그 pin 은 제거됐다 — **어떤 프로필에도 per-tip 반전이 남아 있으면 안 된다.** 반전을 되살리면 파지 중에도 `f_n` 이 전 contact 음수가 되어 all-zero estimate 가 나간다 (2026-07-22 실기에서 관측된 실패).
+
+부호는 두 물리 oracle 이 고정한다: `test_contact_wrench_known_load` (파지한 물체에 건 **알려진 외력**이 lane 의 world 합으로 되나타나는지) 와 `ShippedPullEstimator` (그 lane 을 출하 프로필로 파싱해 in-plane 성분을 뽑는지). 시뮬레이터 쪽 negation 을 되살리면 전자가, 프로필에 `-1.0` 을 넣으면 후자가 red 가 된다.
+
+##### Viewer force arrows (기본 ON)
+
+`contact_wrench.enabled` 인 그룹은 뷰어에서 각 reference site 로부터 **주황색 화살표**를 그린다 — 방향·부호가 위 토픽과 동일하다.
+
+| 키 | 기본값 | 설명 |
+|----|--------|------|
+| `contact_wrench.visualize` | `true` | 이 그룹의 화살표. 다른 opt-in 키와 달리 기본 ON — 센서를 설정했다면 그 값을 보는 것이 기대 동작이고, "0 을 발행 중" 과 "발행 자체가 없음" 은 눈으로 보기 전까지 구별되지 않는다 |
+| `contact_wrench.visualize_scale` | `0.005` | [m/N]. 20 N → 10 cm. 길이는 0.3 m 에서 clamp, 0.1 N 미만은 미표시 (둘 다 렌더러 상수) |
+
+런타임 토글은 **Shift+F**. 맨 `F` 는 MuJoCo 자체의 `mjVIS_CONTACTFORCE` 로 남아 있는데, 그것은 **다른 양**이다 — 뷰어 전용 `mjData` (qpos 만 동기화, qvel/ctrl 은 0) 에서 다시 푼 접촉이라 sim 의 값도 아니고 센서의 netforce reduction 도 아니다. 그래서 화살표는 물리 스레드가 `qpos` 와 **같은 임계구역에서** 넘긴 스냅샷으로 그린다.
+
+`enable_viewer: false` 이거나 GLFW 없는 빌드에서는 스냅샷 자체를 뜨지 않는다.
 
 토픽 이름은 `<contact_wrench.topic_prefix>/<contact_sensor_name>/contact_wrench` — **MJCF `<contact name="...">` 값이 ROS topic segment 로 verbatim 전달** 되어 XML 과 1:1 round-trip 한다. Suffix 리스트는 ft_site 를 찾기 위한 *내부 site_stem* 도출에만 쓰임 (예: sensor `index_tip_contact` → site_stem `index_tip` → site `index_tip_ft_site`). LEAP profile 예시 (`topic_prefix: "/leap_hand"`): `/leap_hand/{index_tip_contact, middle_tip_contact, ring_tip_contact, thumb_tip_contact}/contact_wrench`. 비-LEAP MJCF 도 sensor↔site suffix 규약만 맞으면 wrapper 코드 변경 없이 자동 토픽 생성.
 
@@ -491,7 +517,7 @@ mujoco_simulator:
 | `state_topic` | string | 상태 퍼블리시 토픽 |
 | `sensor_topic` | string | MuJoCo 센서 퍼블리시 토픽 (빈 문자열 = 비활성화) |
 | `sensor_names` | string[] | XML 센서 이름 목록 (빈 배열 = 센서 없음, `["auto"]` = XML 전체) |
-| `contact_wrench.*` | (다양) | MJCF `mjSENS_CONTACT` → WrenchStamped 자동 발견 — 위 [Contact wrench auto-discovery](#contact-wrench-auto-discovery-mjcf-sensorcontact-→-ros-wrenchstamped) 절 참조. `enabled` / `topic_prefix` / `sensor_name_suffixes` / `reference_site_suffixes` / `reference_frame` / `publish_state` / `publish_debug` / `allow_partial_discovery` |
+| `contact_wrench.*` | (다양) | MJCF `mjSENS_CONTACT` → WrenchStamped 자동 발견 — 위 [Contact wrench auto-discovery](#contact-wrench-auto-discovery-mjcf-sensorcontact-→-ros-wrenchstamped) 절 참조. `enabled` / `topic_prefix` / `sensor_name_suffixes` / `reference_site_suffixes` / `reference_frame` / `publish_state` / `publish_debug` / `allow_partial_discovery` / `visualize` / `visualize_scale` |
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
 | `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
 | `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
@@ -713,7 +739,12 @@ TF **메시지 타입**을 쓰는 일반 토픽이지 TF broadcast 가 아닙니
 
 포즈는 `p_rel = R_ref^T (p_obj - p_ref)` 로 계산됩니다. 빈 문자열이면 MuJoCo world 프레임입니다.
 
-**씬이 로봇 base 를 identity 가 아닌 자세로 붙이면 반드시 지정해야 합니다.** base 에 180° yaw 를 주는 것은 흔한 배치이고, 그 경우 world 좌표를 그대로 내보내면 모든 object 가 base 를 통과해 거울상 위치에 찍힙니다 — 값 자체는 완벽히 그럴듯하므로 소비자가 알아챌 방법이 없습니다. 모델에 없는 이름은 fallback 없이 **startup 실패**입니다.
+**둘 중 무엇을 고르든 의식적으로 골라야 합니다.** base 에 180° yaw 를 주는 것은 흔한 배치이고 (`ur5e_p1b` 의 MJCF base 가 `quat "0 0 0 -1"` 입니다), 그러면 world 와 base 는 실제로 다른 프레임입니다 — 둘을 헷갈리면 모든 object 가 base 를 통과해 거울상 위치에 찍히는데, 값 자체는 완벽히 그럴듯하므로 소비자가 알아챌 방법이 없습니다. 모델에 없는 이름은 fallback 없이 **startup 실패**입니다.
+
+- `reference_body: "<로봇 base>"` — 좌표가 곧바로 로봇 기준. 대신 "sim 이 아는 절대 좌표" 는 사라집니다.
+- `reference_body: ""` (world) — sim ground truth 를 그대로. 대신 **`world` 는 대개 이 bringup 의 TF 트리에 없습니다** (`robot_state_publisher` 의 루트는 로봇 base 이고, world→base 를 발행하는 노드는 없습니다). 로봇 기준이 필요한 소비자가 그 변환을 스스로 알아야 합니다.
+
+출하 프로필 `ur5e_p1b` 는 후자입니다 — 위 "/tf 가 아니다" 와 같은 이유로, sim ground truth 를 실기 TF 트리에 이어 붙이지 않고 절대 좌표를 그대로 내보냅니다.
 
 ### 설정
 
@@ -721,7 +752,7 @@ TF **메시지 타입**을 쓰는 일반 토픽이지 TF broadcast 가 아닙니
 object_state:
   enabled: true
   topic: "/sim/object_transforms"   # 상대 이름이면 노드 네임스페이스 아래로 해석
-  reference_body: "base"            # "" = MuJoCo world
+  reference_body: ""                # "" = MuJoCo world
   frame_id: ""                      # "" = reference_body 이름 (world 면 "world")
 ```
 
@@ -1044,12 +1075,13 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 | `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (#447) (`scene_with_object.xml`) |
 | `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
 | `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
+| `test_contact_wrench_viz` | 뷰어 화살표 스냅샷이 **토픽과 같은 벡터**인지 — 발행된 link-frame force 를 reference frame 회전으로 world 로 되돌린 것과 componentwise 일치, 화살표 시작점 = reference site, `visualize:false` 시 스냅샷 자체가 빔 (negative control) |
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
 | `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
 | `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
 
 Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).
-GLFW 뷰어 통합 테스트는 헤드리스 CI 제약으로 제외.
+GLFW **렌더링** 자체는 헤드리스 제약으로 테스트하지 않습니다 — 대신 무엇을 그릴지 정하는 스냅샷은 `test_contact_wrench_viz` 가 디스플레이 없이 고정합니다.
 
 ---
 

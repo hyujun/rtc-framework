@@ -8,12 +8,14 @@
 #define RTC_MUJOCO_SIM_VIEWER_VIEWER_STATE_HPP_
 
 #ifdef MUJOCO_HAVE_GLFW
+#include "rtc_mujoco_sim/mujoco_simulator.hpp"
+
 #include <GLFW/glfw3.h>
 #include <mujoco/mujoco.h>
 
-namespace rtc {
+#include <vector>
 
-class MuJoCoSimulator;
+namespace rtc {
 
 // Camera mode for TAB cycling
 enum class CameraMode { kFree, kTracking, kFixed };
@@ -58,6 +60,17 @@ struct ViewerState {
   bool show_link_frames{false};   // B: body/link coordinate frames (opt->frame)
   bool show_joint_frames{false};  // Shift+J: custom joint coordinate frames
 
+  // ── Fingertip contact wrench arrows (Shift+F) ─────────────────────────────
+  // ON by default, unlike every other toggle here: the arrows only exist when
+  // a contact_wrench lane is configured, and someone who configured one wants
+  // to see it. Plain F stays MuJoCo's mjVIS_CONTACTFORCE, which draws a
+  // different quantity from a different mjData — see ContactWrenchVizSample.
+  bool show_contact_wrench{true};
+  // Points at ViewerLoop's frame-local copy of the sim thread's snapshot.
+  // Null (or empty) until the first snapshot arrives, and for the whole run
+  // when no group enabled the lane.
+  const std::vector<ContactWrenchVizSample>* contact_wrench{nullptr};
+
   // ── Camera mode ────────────────────────────────────────────────────────────
   CameraMode cam_mode{CameraMode::kFree};
   int fixed_cam_idx{0};  // index into model cameras when kFixed
@@ -101,6 +114,7 @@ void RenderRtfProfiler(const ViewerState& vs, const mjrRect& vp) noexcept;
 
 // ── Frame visualization (defined in viewer_overlays.cpp) ─────────────────────
 void AddJointFrameGeoms(ViewerState& vs) noexcept;
+void AddContactWrenchGeoms(ViewerState& vs) noexcept;
 
 // ── Callback functions (defined in viewer_callbacks.cpp) ─────────────────────
 void OnKey(GLFWwindow* w, int key, int scan, int action, int mods) noexcept;

@@ -75,15 +75,14 @@ TEST(ContactWrench, NoContactPublishesZeroSample) {
   std::atomic<int> cb_count{0};
   std::mutex last_mutex;
   JointGroup::ContactWrenchSample last{};
-  sim.SetContactWrenchCallback(
-      0, [&](const std::vector<JointGroup::ContactWrenchInfo>&,
-             const std::vector<JointGroup::ContactWrenchSample>& samples) {
-        cb_count.fetch_add(1, std::memory_order_relaxed);
-        if (!samples.empty()) {
-          std::lock_guard lock(last_mutex);
-          last = samples[0];
-        }
-      });
+  sim.SetContactWrenchCallback(0, [&](const std::vector<JointGroup::ContactWrenchInfo>&,
+                                      const std::vector<JointGroup::ContactWrenchSample>& samples) {
+    cb_count.fetch_add(1, std::memory_order_relaxed);
+    if (!samples.empty()) {
+      std::lock_guard lock(last_mutex);
+      last = samples[0];
+    }
+  });
 
   sim.Start();
   // Lift arm horizontal (θ ≈ +π/2) → tip clears ground.
@@ -106,23 +105,26 @@ TEST(ContactWrench, NoContactPublishesZeroSample) {
 // At j1=0 the arm hangs vertical with the sphere tip overlapping the ground
 // box (sphere bottom at z=0.02, ground top at z=0.05 → 0.03 m penetration).
 // At rest the tip_link frame is unrotated (no rotation about hinge from
-// θ=0), so world-frame +z reaction maps directly to link-frame +z force.
-TEST(ContactWrench, HangingArmContactProducesPositiveZForce) {
+// θ=0), so the world-frame vector maps directly to the link frame.
+//
+// The lane reports link-on-environment (see ReadContactWrenches), and what the
+// tip does to the ground is press DOWN — so the expected z is negative. The
+// ground's equal-and-opposite +z reaction is what this used to report.
+TEST(ContactWrench, HangingArmContactProducesNegativeZForce) {
   MuJoCoSimulator sim(MakeContactConfig());
   ASSERT_TRUE(sim.Initialize());
 
   std::atomic<int> cb_count{0};
   std::mutex last_mutex;
   JointGroup::ContactWrenchSample last{};
-  sim.SetContactWrenchCallback(
-      0, [&](const std::vector<JointGroup::ContactWrenchInfo>&,
-             const std::vector<JointGroup::ContactWrenchSample>& samples) {
-        cb_count.fetch_add(1, std::memory_order_relaxed);
-        if (!samples.empty()) {
-          std::lock_guard lock(last_mutex);
-          last = samples[0];
-        }
-      });
+  sim.SetContactWrenchCallback(0, [&](const std::vector<JointGroup::ContactWrenchInfo>&,
+                                      const std::vector<JointGroup::ContactWrenchSample>& samples) {
+    cb_count.fetch_add(1, std::memory_order_relaxed);
+    if (!samples.empty()) {
+      std::lock_guard lock(last_mutex);
+      last = samples[0];
+    }
+  });
 
   sim.Start();
   // Hold arm straight down (θ=0) — contact occurs because sphere overlaps
@@ -137,8 +139,8 @@ TEST(ContactWrench, HangingArmContactProducesPositiveZForce) {
   std::lock_guard lock(last_mutex);
   EXPECT_TRUE(last.found) << "expected contact while arm hangs into ground";
   // tip_link inherits arm_base rotation; at θ=0 the link frame matches world,
-  // so world +z reaction maps to link +z.
-  EXPECT_GT(last.force[2], 0.1) << "force z should be positive and non-trivial";
+  // so the world-frame push-down maps to link -z.
+  EXPECT_LT(last.force[2], -0.1) << "force z should be negative and non-trivial";
 }
 
 }  // namespace

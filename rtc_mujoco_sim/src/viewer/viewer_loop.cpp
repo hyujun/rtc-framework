@@ -18,6 +18,7 @@
 #include <rtc_base/threading/thread_utils.hpp>
 #include <rtc_base/tracing/trace_scope.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>  // getenv
@@ -119,6 +120,18 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   fig_profiler.range[1][1] = 30;
   fig_profiler.flg_extend = 1;
 
+  // ── Fingertip force-arrow snapshot ─────────────────────────────────────────
+  // Frame-local copy of the sim thread's viz_contact_wrench_, taken in the same
+  // critical section as qpos so the arrow and the hand it hangs off are the
+  // same instant. Sized once here (the sim sizes its side at Initialize and
+  // never resizes), so the per-frame copy under the lock is a fixed-size
+  // element-wise copy with no allocation.
+  std::vector<ContactWrenchVizSample> wrench_snapshot;
+  {
+    std::lock_guard lock(viz_mutex_);
+    wrench_snapshot.resize(viz_contact_wrench_.size());
+  }
+
   // ── ViewerState: accessed by all callbacks via glfwGetWindowUserPointer ────
   ViewerState vs;
   vs.cam = &cam;
@@ -128,6 +141,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   vs.model = model_;
   vs.vis_data = vis_data;
   vs.fig_profiler = &fig_profiler;
+  vs.contact_wrench = &wrench_snapshot;
   vs.sim = this;
   // Use body 1 (first non-world body) as default tracking target
   vs.track_body_id = (model_->nbody > 1) ? 1 : 0;
@@ -149,7 +163,8 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
           "  Physics    : G=gravity  N=contacts\n"
           "  Solver     : I=integrator  S=solver  ]/[=iterations  F4=stats\n"
           "  Frames     : B=link frames  J=joint axes  Shift+J=joint frames\n"
-          "  Visualise  : C=cpoints  F=cforces  0-5=geomgroups\n"
+          "  Visualise  : C=cpoints  F=cforces  Shift+F=fingertip wrench  "
+          "0-5=geomgroups\n"
           "               U=actuators  E=inertia  W=sites  L=lights  A=tendons  "
           "X=hulls\n"
           "               T=transp  F5=wireframe  F6=shadow  F7=skybox  "
@@ -172,6 +187,10 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
         if (viz_dirty_) {
           std::memcpy(vis_data->qpos, viz_qpos_.data(),
                       static_cast<std::size_t>(model_->nq) * sizeof(double));
+          // Same critical section on purpose: taken apart, the arrows would be
+          // drawn against a hand pose from a different step.
+          std::copy(viz_contact_wrench_.begin(), viz_contact_wrench_.end(),
+                    wrench_snapshot.begin());
           viz_dirty_ = false;
         }
       }
@@ -202,6 +221,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       RTC_TRACE_SCOPE("viewer_render");
       mjv_updateScene(model_, vis_data, &opt, &vs.pert, &cam, mjCAT_ALL, &scn);
       AddJointFrameGeoms(vs);
+      AddContactWrenchGeoms(vs);
       mjr_render(viewport, &scn, &con);
     }
 

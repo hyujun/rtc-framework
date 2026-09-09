@@ -216,7 +216,17 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
       s->opt->flags[mjVIS_CONTACTPOINT] ^= 1;
       break;
     case GLFW_KEY_F:
-      s->opt->flags[mjVIS_CONTACTFORCE] ^= 1;
+      // Shift+F is the contact_wrench LANE's arrows (what the ROS topic
+      // publishes); plain F stays MuJoCo's own per-contact force rendering,
+      // which is computed from this viewer's mjData and is a different
+      // quantity. Same split as J / Shift+J.
+      if (s->shift_held) {
+        s->show_contact_wrench = !s->show_contact_wrench;
+        fprintf(stdout, "[Viewer] Fingertip wrench arrows %s\n",
+                s->show_contact_wrench ? "ON" : "OFF");
+      } else {
+        s->opt->flags[mjVIS_CONTACTFORCE] ^= 1;
+      }
       break;
     case GLFW_KEY_T:
       s->opt->flags[mjVIS_TRANSPARENT] ^= 1;

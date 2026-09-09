@@ -542,12 +542,21 @@ TEST(ComplianceAdmittanceCoupling, TheTickItselfFeedsThePipelineFromTheSource) {
   // A COMPRESSIVE pinch, which is a statement about direction and not only
   // magnitude: the estimator activates a contact on f_n = −n̂·f_obj, where n̂ is
   // the FK-resolved pinch axis, so a force orthogonal to it registers nothing at
-  // any magnitude. −y in the fingertip LINK frame is what projects onto that
+  // any magnitude. +y in the fingertip LINK frame is what projects onto that
   // axis at this hand's home pose (the ±z that SetFingertipForce writes is very
   // nearly orthogonal to it, and no sign of it ever activates the thumb —
   // `required_roles: [thumb]` then rejects every tick). If the hand model or its
   // home pose changes, this fails with the reason code below rather than
   // silently going quiet.
+  //
+  // THE SIGN HERE IS THE LANE'S CONVENTION, not a free choice. What is written
+  // into inference_data is what the simulator's contact-wrench lane publishes,
+  // and that is link-on-environment — the same sign the estimator sums, so the
+  // shipped profile applies force_sign +1 and this value passes through as
+  // f_obj. It used to be −5 because the lane was env-on-link and iiwa7_leap
+  // pinned force_sign: −1.0 to undo it; flipping the simulator moved the
+  // negation out of both. Feed the old sign now and every contact gates out —
+  // which is exactly what this assertion reports.
   for (int f = 0; f < 4; ++f) {
     dev1.inference_enable[static_cast<std::size_t>(f)] = true;
     const int base =
@@ -555,7 +564,7 @@ TEST(ComplianceAdmittanceCoupling, TheTickItselfFeedsThePipelineFromTheSource) {
     for (int c = 0; c < 4; ++c) {
       dev1.inference_data[static_cast<std::size_t>(base + c)] = 0.0F;
     }
-    dev1.inference_data[static_cast<std::size_t>(base + 2)] = -5.0F;  // f_y, link frame
+    dev1.inference_data[static_cast<std::size_t>(base + 2)] = 5.0F;  // f_y, link frame
   }
 
   const auto probe = d.RunSilent(kSettleTicks);

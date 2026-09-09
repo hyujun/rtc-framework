@@ -145,6 +145,36 @@ struct ObjectStateSample {
 using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo>& infos,
                                                const std::vector<ObjectStateSample>& samples)>;
 
+// ── ContactWrenchVizSample ───────────────────────────────────────────────────
+// One fingertip force arrow, in WORLD coordinates, handed from the sim thread
+// to the viewer thread under viz_mutex_ alongside viz_qpos_.
+//
+// WHY THE VIEWER CANNOT COMPUTE THIS ITSELF. The viewer renders its own mjData
+// (vis_data) into which only qpos is copied; qvel and ctrl stay zero. Its
+// mj_forward therefore produces a DIFFERENT constraint solution from the
+// physics thread's, so mjVIS_CONTACTFORCE there draws forces that are neither
+// the simulator's nor the sensor's netforce reduction. Snapshotting the
+// physics thread's own numbers is the only way for the picture and the
+// published topic to be the same quantity.
+//
+// WORLD, not the published frame: the arrow has to be placed in the scene, and
+// re-deriving the world vector in the viewer would mean re-applying a rotation
+// that the sim already has on hand. The SIGN is the published one (see
+// ContactWrenchSample), so the arrow points the way the topic says.
+struct ContactWrenchVizSample {
+  /// False = no contact on this sensor in the snapshot; the arrow is skipped.
+  /// The entry stays in the array so an index means the same fingertip on
+  /// every frame.
+  bool active{false};
+  std::array<double, 3> origin{0.0, 0.0, 0.0};  // ft_site origin, world [m]
+  std::array<double, 3> force{0.0, 0.0, 0.0};   // world [N], published sign
+  /// Metres of arrow per newton, from the owning group's
+  /// ContactWrenchConfig::visualize_scale. Carried per entry rather than
+  /// resolved globally so two groups with different scales cannot silently
+  /// pick one of them.
+  float scale{0.0F};
+};
+
 // ── JointGroupConfig ─────────────────────────────────────────────────────────
 // Per-group configuration loaded from YAML (robot_response / fake_response).
 
@@ -214,6 +244,27 @@ struct JointGroupConfig {
     // numerically — but not in frame_id, which is why this is opt-in rather
     // than a blanket switch).
     std::string reference_frame{"body"};
+
+    // ── Viewer force arrows ────────────────────────────────────────────────
+    // Draw each fingertip's published force as an arrow from its ft_site, so
+    // the lane is visible without a second terminal. ON by default: if the
+    // sensor is configured, seeing what it reports is the expected behaviour,
+    // and a lane that is silently publishing zeros looks identical to one that
+    // is not publishing at all until you can see it. Costs nothing when
+    // enable_viewer is false (the snapshot is only taken for the viewer) and
+    // nothing in a headless build (no GLFW → no render path at all).
+    //
+    // Shift+F toggles it at runtime; plain F stays MuJoCo's own
+    // mjVIS_CONTACTFORCE, which draws every contact from the viewer's mjData
+    // and is a different quantity — see ContactWrenchVizSample.
+    bool visualize{true};
+
+    // Arrow length per newton [m/N]. 0.005 puts a 20 N fingertip force at
+    // 10 cm, which is roughly the hand's own scale — big enough to read
+    // against the mesh, small enough that a two-hand grasp does not fill the
+    // viewport. Length is clamped and a deadband applied in the renderer; both
+    // bounds live there as named constants.
+    double visualize_scale{0.005};
   };
 
   ContactWrenchConfig contact_wrench;
@@ -340,11 +391,18 @@ struct JointGroup {
     bool use_site_frame{false};
   };
 
-  // Transformed wrench sample (link frame). Heap-free POD.
+  // Transformed wrench sample, expressed in the frame ContactWrenchInfo::
+  // frame_id names. Heap-free POD.
+  //
+  // SIGN: link-on-environment ("what the fingertip does to what it touches"),
+  // matching rtc_msgs/FingertipSensor.f and the +1 default of
+  // rtc::grasp::PullContactConfig::force_sign. See ReadContactWrenches for why
+  // this is a pass-through of MuJoCo's netforce sensor rather than the ROS
+  // environment-on-link reading, and why no sign knob belongs on this side.
   struct ContactWrenchSample {
     bool found{false};
-    std::array<double, 3> force{0.0, 0.0, 0.0};        // object-on-fingertip, in link frame
-    std::array<double, 3> torque{0.0, 0.0, 0.0};       // about ft_site origin, in link frame
+    std::array<double, 3> force{0.0, 0.0, 0.0};        // fingertip-on-object
+    std::array<double, 3> torque{0.0, 0.0, 0.0};       // about ft_site origin, same sign
     std::array<double, 3> point_world{0.0, 0.0, 0.0};  // contact point in world (debug)
     double dist{0.0};
   };
@@ -475,6 +533,17 @@ class MuJoCoSimulator {
   [[nodiscard]] const std::vector<JointGroup::ContactWrenchInfo>& GetContactWrenchInfos(
       std::size_t group_idx) const noexcept;
   [[nodiscard]] bool HasContactWrenches(std::size_t group_idx) const noexcept;
+
+  /// Refresh the viewer's force-arrow snapshot and return a copy of it.
+  ///
+  /// Test-only entry point onto the sim thread's half of the exchange: in
+  /// production UpdateVizBuffer runs from SimLoop, only when enable_viewer is
+  /// set and only every viz_update_interval_ steps, none of which a headless
+  /// test can arrange. Copies out rather than handing back a reference because
+  /// the buffer lives under viz_mutex_.
+  ///
+  /// Call it after StepForTest so the snapshot reflects that step.
+  [[nodiscard]] std::vector<ContactWrenchVizSample> RefreshContactWrenchVizForTest() noexcept;
 
   // ── Object state (scene-level, not per group) ─────────────────────────────
 
@@ -889,6 +958,23 @@ class MuJoCoSimulator {
   std::vector<double> viz_qpos_{};
   int viz_ncon_{0};
   bool viz_dirty_{false};
+  // Fingertip force arrows, refreshed in the same critical section as
+  // viz_qpos_ so the arrow and the pose it hangs off are the same instant.
+  // Sized once at Initialize (one entry per discovered sensor, across every
+  // group that opted in) and never resized afterwards, so the sim-thread half
+  // of the exchange stays heap-free.
+  std::vector<ContactWrenchVizSample> viz_contact_wrench_{};
+
+  /// Where each viz_contact_wrench_ entry reads from. Resolved at Initialize
+  /// because the alternative is re-deriving it from the group configs on every
+  /// snapshot, inside the lock the viewer is waiting on.
+  struct ContactWrenchVizSource {
+    int sensor_adr{0};
+    int ft_site_id{-1};
+    float scale{0.0F};
+  };
+
+  std::vector<ContactWrenchVizSource> viz_contact_wrench_src_{};
 
   std::jthread sim_thread_;
   std::jthread viewer_thread_;
@@ -978,6 +1064,10 @@ class MuJoCoSimulator {
   void InvokeContactWrenchCallback() noexcept;
   void InvokeObjectStateCallback() noexcept;
   void UpdateVizBuffer() noexcept;
+  /// Fill viz_contact_wrench_ from the current mjData. THE CALLER MUST HOLD
+  /// viz_mutex_ — split out of UpdateVizBuffer only so the test entry point
+  /// can reuse it, not because it is independently safe to call.
+  void SnapshotContactWrenchViz() noexcept;
   void UpdateRtf(uint64_t step) noexcept;
   void ThrottleIfNeeded() noexcept;
   void HandleReset() noexcept;

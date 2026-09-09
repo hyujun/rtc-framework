@@ -140,9 +140,12 @@ mujoco_simulator:
         # {index,middle,ring,thumb}_tip_contact and matching {*}_tip_ft_site
         # sites under each fingertip's *_tip_head body. rtc_mujoco_sim reads
         # the 17-tuple sensordata (found/force/torque/dist/pos/normal/tangent),
-        # shifts the torque to the ft_site origin, transforms world→link via
-        # the *_tip_head body's xmat, and negates to the env-on-link sign
-        # convention before publishing geometry_msgs/WrenchStamped.
+        # shifts the torque to the ft_site origin, and transforms world→link via
+        # the *_tip_head body's xmat before publishing geometry_msgs/
+        # WrenchStamped. MuJoCo's netforce sign is passed through, so the lane
+        # is link-on-environment — the same convention as
+        # rtc_msgs/FingertipSensor.f, which is why the pull estimator in
+        # controllers/demo_shared.yaml no longer inverts it per tip.
         #
         # sensor_names="auto" is REQUIRED for contact wrench discovery — the
         # wrapper maps a contact sensor only if it lives in this group's

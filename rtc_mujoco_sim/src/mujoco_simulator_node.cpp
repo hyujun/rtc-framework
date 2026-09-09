@@ -505,6 +505,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter(prefix + "contact_wrench.publish_state", false);
     declare_parameter(prefix + "contact_wrench.publish_debug", false);
     declare_parameter(prefix + "contact_wrench.allow_partial_discovery", false);
+    // Viewer force arrows. Default ON (unlike every other opt-in above) —
+    // see ContactWrenchConfig::visualize.
+    declare_parameter(prefix + "contact_wrench.visualize", true);
+    declare_parameter(prefix + "contact_wrench.visualize_scale", 0.005);
   }
 
   void LoadContactWrenchConfig(const std::string& section, const std::string& gname,
@@ -519,6 +523,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     cwc.publish_state = get_parameter(prefix + "publish_state").as_bool();
     cwc.publish_debug = get_parameter(prefix + "publish_debug").as_bool();
     cwc.allow_partial_discovery = get_parameter(prefix + "allow_partial_discovery").as_bool();
+    cwc.visualize = get_parameter(prefix + "visualize").as_bool();
+    cwc.visualize_scale = get_parameter(prefix + "visualize_scale").as_double();
   }
 
   /// Read a 3-element double array parameter.
