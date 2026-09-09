@@ -53,6 +53,11 @@ add_library(rtc_controllers STATIC
   src/params/task_impedance_params.cpp
   src/params/task_admittance_params.cpp
   src/params/cascaded_compliance_params.cpp
+  # Learned-policy I/O schema. Same G2 layer as its siblings above: POD +
+  # yaml-cpp parser, no framework types, no inference engine — the law it owns
+  # is "YAML order becomes tensor order", which a binding calls once at
+  # configure time.
+  src/params/policy_io_params.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -341,6 +346,12 @@ if(BUILD_TESTING)
   # QuinticPolynomial boundary math + T<=0 short-circuit (trajectory_utils.hpp).
   ament_add_gtest(test_trajectory_utils test/test_trajectory_utils.cpp)
   target_link_libraries(test_trajectory_utils rtc_controllers)
+
+  # Learned-policy tensor marshalling + its YAML schema. The schema half is
+  # where a retrained model's feature-order drift has to be caught, so the
+  # cases are written as "the config is wrong" rather than "the parser works".
+  ament_add_gtest(test_policy_io test/test_policy_io.cpp)
+  target_link_libraries(test_policy_io rtc_controllers)
 endif()
 
 ament_package()
