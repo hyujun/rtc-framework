@@ -11,6 +11,9 @@
 
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
+
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/state.hpp>
@@ -179,6 +182,76 @@ inference:
 )";
 }
 
+/// A schema that adds the object pose lane (27 elements). Palm features are
+/// deliberately absent: they need a real URDF, and the object lane's contract —
+/// matching, staleness, frame checking — is independent of it.
+std::string MakeObjectYaml(double timeout_sec = 0.02, const std::string& match_mode = "prefix",
+                           const std::string& frame_match = "pool_",
+                           const std::string& source_frame_id = "world",
+                           const std::string& reference_frame = "world") {
+  return R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 1
+  input_shape: [1, 27]
+  output_shapes: [[1, 6], [1, 1]]
+  input_features:
+    - "arm.position"
+    - "hand.position"
+    - "hand.fingertip_force_norm"
+    - "object.position"
+    - "object.orientation_xyzw"
+  output_features:
+    - { name: "arm.target_position", head: 0, offset: 0, count: 6 }
+    - { name: "hand.posture_scalar", head: 1, offset: 0, count: 1 }
+  base_pose_in_world:
+    position: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 3.14159265358979]
+  object_pose:
+    topic: "/sim/object_transforms"
+    match_mode: ")" + match_mode + R"("
+    frame_match: ")" + frame_match + R"("
+    source_frame_id: ")" + source_frame_id + R"("
+    reference_frame: ")" + reference_frame + R"("
+    timeout_sec: )" + std::to_string(timeout_sec) + R"(
+  hand_posture:
+    open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+)";
+}
+
+/// One TFMessage carrying `names` at distinct positions.
+tf2_msgs::msg::TFMessage MakeTfMessage(const std::vector<std::string>& names,
+                                       const std::string& frame_id = "world") {
+  tf2_msgs::msg::TFMessage msg;
+  double k = 1.0;
+  for (const auto& n : names) {
+    geometry_msgs::msg::TransformStamped tf;
+    tf.header.frame_id = frame_id;
+    tf.child_frame_id = n;
+    tf.transform.translation.x = k;
+    tf.transform.translation.y = 2.0 * k;
+    tf.transform.translation.z = 3.0 * k;
+    tf.transform.rotation.x = 0.0;
+    tf.transform.rotation.y = 0.0;
+    tf.transform.rotation.z = 0.0;
+    tf.transform.rotation.w = 1.0;
+    msg.transforms.push_back(tf);
+    k += 1.0;
+  }
+  return msg;
+}
+
 ControllerState MakeState(double dt = 0.002) {
   ControllerState state{};
   state.num_devices = 2;
@@ -209,9 +282,9 @@ struct Harness {
   rtc::RTControllerInterface::CallbackReturn configure_result{
       rtc::RTControllerInterface::CallbackReturn::FAILURE};
 
-  explicit Harness(const std::string& yaml = MakeYaml(), bool stub_engine = false) {
-    auto fake = std::make_unique<FakeEngine>(static_cast<std::size_t>(kInputElements),
-                                             std::vector<std::size_t>{6, 1});
+  explicit Harness(const std::string& yaml = MakeYaml(), bool stub_engine = false,
+                   std::size_t input_elements = static_cast<std::size_t>(kInputElements)) {
+    auto fake = std::make_unique<FakeEngine>(input_elements, std::vector<std::size_t>{6, 1});
     if (stub_engine) {
       fake->stub = true;
     }
@@ -617,4 +690,153 @@ TEST(DemoInferenceOutput, IdentityIsPositionCommandType) {
   const auto out = h.ctrl->Compute(state);
   EXPECT_EQ(out.command_type, rtc::CommandType::kPosition);
   EXPECT_EQ(h.ctrl->Name(), "DemoInferenceController");
+}
+
+// ── Object pose lane ────────────────────────────────────────────────────────
+
+namespace {
+constexpr std::size_t kObjectInputElements = 27;
+
+/// Feed one TFMessage straight into the controller's callback. That is the
+/// production entry point (the subscription lambda calls exactly this), so no
+/// DDS round-trip is needed to exercise the matching and staleness rules.
+Harness MakeObjectHarness(const std::string& yaml) {
+  return Harness{yaml, /*stub_engine=*/false, kObjectInputElements};
+}
+}  // namespace
+
+TEST(DemoInferenceObject, ExactlyOneMatchIsAcceptedAndPacked) {
+  auto h = MakeObjectHarness(MakeObjectYaml());
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  ASSERT_EQ(h.engine->last_input.size(), kObjectInputElements);
+  // Layout: 6 arm + 10 hand + 4 force + 3 object position + 4 object quat.
+  EXPECT_FLOAT_EQ(h.engine->last_input[20], 1.0F);
+  EXPECT_FLOAT_EQ(h.engine->last_input[21], 2.0F);
+  EXPECT_FLOAT_EQ(h.engine->last_input[22], 3.0F);
+  EXPECT_FLOAT_EQ(h.engine->last_input[26], 1.0F) << "quaternion w is the LAST element (xyzw)";
+}
+
+TEST(DemoInferenceObject, TwoMatchesAreRefusedRatherThanPickingTheFirst) {
+  // The sim publishes every non-parked free body in one message. "Take the
+  // first" would silently track a different object the day the scene gains one,
+  // and every downstream number would stay plausible.
+  auto h = MakeObjectHarness(MakeObjectYaml());
+  h.ctrl->InjectObjectTransformsForTesting(
+      MakeTfMessage({"pool_apple_object", "pool_duck_object"}));
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_EQ(h.engine->run_count, 0);
+}
+
+TEST(DemoInferenceObject, NoMatchHolds) {
+  auto h = MakeObjectHarness(MakeObjectYaml());
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"table", "robot_base"}));
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+}
+
+TEST(DemoInferenceObject, HoldsBeforeAnyMessageArrives) {
+  auto h = MakeObjectHarness(MakeObjectYaml());
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_EQ(h.engine->run_count, 0) << "never run the policy on an object pose we do not have";
+}
+
+TEST(DemoInferenceObject, GoesStaleAfterTheConfiguredTimeout) {
+  // Age is accumulated in dt, so the budget is expressed on the simulation's
+  // own time axis rather than a wall clock.
+  //
+  // The budget is deliberately 0.021 s and not 0.020 s: at dt = 2 ms the latter
+  // puts the threshold exactly on an accumulated sum, where ten additions of
+  // 0.002 land a few ulp above 0.02 and the verdict is decided by float noise
+  // rather than by the rule. A full millisecond of margin on each side makes
+  // this a test of the timeout and not of rounding.
+  auto h = MakeObjectHarness(MakeObjectYaml(/*timeout_sec=*/0.021));
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+  auto state = MakeState();  // dt = 2 ms
+
+  for (int t = 0; t <= 10; ++t) {  // ages 0 .. 0.020, all inside 0.021
+    static_cast<void>(h.ctrl->Compute(state));
+    EXPECT_FALSE(h.ctrl->LastTickHeldForTesting()) << "tick " << t << " is inside the budget";
+  }
+  static_cast<void>(h.ctrl->Compute(state));  // age 0.022 — past it
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting()) << "past timeout_sec the pose must go stale";
+
+  // And it stays stale: nothing re-validates a pose that never arrived again.
+  for (int t = 0; t < 5; ++t) {
+    static_cast<void>(h.ctrl->Compute(state));
+    EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  }
+}
+
+TEST(DemoInferenceObject, AFreshMessageResetsTheAge) {
+  auto h = MakeObjectHarness(MakeObjectYaml(/*timeout_sec=*/0.021));
+  auto state = MakeState();
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+    for (int t = 0; t < 8; ++t) {
+      static_cast<void>(h.ctrl->Compute(state));
+      ASSERT_FALSE(h.ctrl->LastTickHeldForTesting()) << "cycle " << cycle << " tick " << t;
+    }
+  }
+}
+
+TEST(DemoInferenceObject, TransformsInTheWrongSourceFrameAreIgnored) {
+  auto h = MakeObjectHarness(MakeObjectYaml(0.02, "prefix", "pool_", /*source_frame_id=*/"world"));
+  h.ctrl->InjectObjectTransformsForTesting(
+      MakeTfMessage({"pool_apple_object"}, /*frame_id=*/"camera_optical"));
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting())
+      << "a pose in an unexpected frame is finite and plausible — and rotated";
+}
+
+TEST(DemoInferenceObject, ExactMatchModeDoesNotAcceptAPrefix) {
+  auto h = MakeObjectHarness(
+      MakeObjectYaml(0.02, /*match_mode=*/"exact", /*frame_match=*/"pool_apple_object"));
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object_marker"}));
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_FALSE(h.ctrl->LastTickHeldForTesting());
+}
+
+TEST(DemoInferenceObject, BaseReferenceFrameAppliesTheMountingRotation) {
+  // base_pose_in_world is a 180 deg yaw, so a world point (1, 2, 3) is
+  // (-1, -2, 3) in base. Getting this backwards produces a pose that is
+  // plausible everywhere except in the policy's reasoning.
+  auto h = MakeObjectHarness(
+      MakeObjectYaml(0.02, "prefix", "pool_", "world", /*reference_frame=*/"base"));
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  ASSERT_EQ(h.engine->last_input.size(), kObjectInputElements);
+  EXPECT_NEAR(h.engine->last_input[20], -1.0F, 1e-5);
+  EXPECT_NEAR(h.engine->last_input[21], -2.0F, 1e-5);
+  EXPECT_NEAR(h.engine->last_input[22], 3.0F, 1e-5) << "z is unchanged by a yaw";
+}
+
+TEST(DemoInferenceObject, RejectsAZeroTimeout) {
+  auto h = MakeObjectHarness(MakeObjectYaml(/*timeout_sec=*/0.0));
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceObject, RejectsAnUnknownMatchMode) {
+  auto h = MakeObjectHarness(MakeObjectYaml(0.02, /*match_mode=*/"regex"));
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
 }

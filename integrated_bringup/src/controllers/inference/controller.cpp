@@ -55,6 +55,12 @@ int DemoInferenceController::FeatureSize(std::string_view id) const {
   // Widths come from the loaded rosters, never from a literal: that is what
   // keeps a 6-DoF arm from being baked in (ARCH-1) and what makes a config
   // whose feature width disagrees with its device roster fail loudly.
+  //
+  // Device groups are consulted FIRST and the branch does NOT return early on a
+  // miss: "position" is spelled the same for a device roster and for a pose
+  // feature ("object.position"), so falling through to the pose table below is
+  // what lets both exist. An early `return 0` here made every pose feature an
+  // unknown id.
   if (field == "position") {
     if (!primary.empty() && group == primary) {
       const auto* cfg = GetDeviceNameConfig(primary);
@@ -64,7 +70,6 @@ int DemoInferenceController::FeatureSize(std::string_view id) const {
       const auto* cfg = GetDeviceNameConfig(secondary);
       return cfg ? static_cast<int>(cfg->joint_state_names.size()) : 0;
     }
-    return 0;
   }
 
   if (field == "fingertip_force_norm") {
@@ -73,6 +78,18 @@ int DemoInferenceController::FeatureSize(std::string_view id) const {
     }
     const auto* cfg = GetDeviceNameConfig(secondary);
     return cfg ? static_cast<int>(cfg->sensor_names.size()) : 0;
+  }
+
+  // Pose features are not device-scoped, so their group half is a fixed literal
+  // rather than a roster name. Widths are the shape of a pose, not a robot
+  // fact, so they are constants here.
+  if (group == "palm" || group == "object") {
+    if (field == "position") {
+      return 3;
+    }
+    if (field == "orientation_xyzw") {
+      return 4;
+    }
   }
 
   return 0;
@@ -91,10 +108,34 @@ bool DemoInferenceController::FeatureFromId(std::string_view id, PolicyFeature& 
     out = PolicyFeature::kFingertipForceNorm;
     return true;
   }
+  if (group == "palm") {
+    if (field == "position") {
+      out = PolicyFeature::kPalmPosition;
+      return true;
+    }
+    if (field == "orientation_xyzw") {
+      out = PolicyFeature::kPalmOrientationXyzw;
+      return true;
+    }
+    return false;
+  }
+  if (group == "object") {
+    if (field == "position") {
+      out = PolicyFeature::kObjectPosition;
+      return true;
+    }
+    if (field == "orientation_xyzw") {
+      out = PolicyFeature::kObjectOrientationXyzw;
+      return true;
+    }
+    return false;
+  }
   if (field != "position") {
     return false;
   }
-  out = PolicyFeature::kArmPosition;  // corrected below by OnDeviceConfigsSet order
+  // A device-scoped position. ApplyIoSchema decides arm vs hand from the group
+  // name, which is the only place both names are known.
+  out = PolicyFeature::kArmPosition;
   return true;
 }
 

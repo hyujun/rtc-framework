@@ -6,6 +6,10 @@
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "rtc_inference/inference_types.hpp"
 
+#include <Eigen/Geometry>
+
+#include <algorithm>
+
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -66,6 +70,45 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
     // Pass 3: the schema half that needs the device rosters the CM injected
     // between LoadConfig and here.
     ApplyIoSchema(yaml);
+
+    // ── Kinematic model + palm frame ───────────────────────────────────────
+    // Only built when a pose feature actually asks for it, so a policy that
+    // observes joints and forces alone does not pay for a URDF parse — and,
+    // more usefully, does not fail configure on a robot with no system URDF.
+    const bool needs_palm =
+        std::any_of(feature_kinds_.begin(), feature_kinds_.end(), [](PolicyFeature k) {
+          return k == PolicyFeature::kPalmPosition || k == PolicyFeature::kPalmOrientationXyzw;
+        });
+    if (needs_palm) {
+      if (!ConfigurePalmFk()) {
+        return CallbackReturn::FAILURE;
+      }
+    }
+
+    // ── Object pose subscription ───────────────────────────────────────────
+    const bool needs_object =
+        std::any_of(feature_kinds_.begin(), feature_kinds_.end(), [](PolicyFeature k) {
+          return k == PolicyFeature::kObjectPosition || k == PolicyFeature::kObjectOrientationXyzw;
+        });
+    if (needs_object) {
+      if (!node) {
+        RCLCPP_ERROR(logger_,
+                     "[inference] an object pose feature is configured but there is no node to "
+                     "subscribe with");
+        return CallbackReturn::FAILURE;
+      }
+      // ARCH-6: depth 1. This is a "latest wins" lane — an older object pose is
+      // never more useful than the newest one, and queueing would hand the tick
+      // a backlog to walk.
+      rclcpp::QoS qos(rclcpp::KeepLast(1));
+      qos.best_effort();
+      object_sub_ = node->create_subscription<tf2_msgs::msg::TFMessage>(
+          object_topic_, qos,
+          [this](tf2_msgs::msg::TFMessage::ConstSharedPtr msg) { OnObjectTransforms(*msg); });
+      RCLCPP_INFO(logger_, "[inference] object pose lane: %s (match %s '%s', timeout %.3f s)",
+                  object_topic_.c_str(), object_match_prefix_ ? "prefix" : "exact",
+                  object_frame_match_.c_str(), object_timeout_sec_);
+    }
 
     // ── Hand posture width vs the device that will execute it ──────────────
     const auto secondary = GetSecondaryDeviceName();
@@ -150,6 +193,131 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
   }
 
   return CallbackReturn::SUCCESS;
+}
+
+bool DemoInferenceController::ConfigurePalmFk() {
+  namespace rub = rtc_urdf_bridge;
+  const auto* sys_cfg = GetSystemModelConfig();
+  if (sys_cfg == nullptr || sys_cfg->urdf_path.empty()) {
+    RCLCPP_ERROR(logger_,
+                 "[inference] a palm pose feature is configured but no system URDF is available");
+    return false;
+  }
+
+  // Prefer the builder RtControllerNode already parsed — the URDF is parsed
+  // once per bring-up, not once per controller.
+  if (auto shared = GetSharedModelBuilder()) {
+    builder_ = std::move(shared);
+  } else {
+    builder_ = std::make_shared<rub::PinocchioModelBuilder>(*sys_cfg);
+  }
+
+  if (!combined_cache_.InitModel(*builder_, /*contact_frame_ids=*/{}, "[inference]", logger_)) {
+    RCLCPP_ERROR(logger_, "[inference] combined model init failed");
+    return false;
+  }
+
+  const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+  const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
+  combined_cache_.BuildReorderMap(arm_cfg ? &arm_cfg->joint_state_names : nullptr,
+                                  hand_cfg ? &hand_cfg->joint_state_names : nullptr,
+                                  arm_dof_ + hand_dof_, "[inference]", logger_);
+
+  const auto& model = combined_cache_.model();
+  if (!model) {
+    RCLCPP_ERROR(logger_, "[inference] no combined model to resolve '%s' against",
+                 palm_link_.c_str());
+    return false;
+  }
+  if (!model->existFrame(palm_link_)) {
+    // The failure the shipped default used to produce: `hand_base_link` is a
+    // leap-hand link and does not exist on this hand at all.
+    RCLCPP_ERROR(logger_, "[inference] palm link '%s' does not exist in the model",
+                 palm_link_.c_str());
+    return false;
+  }
+  palm_frame_idx_ = combined_cache_.cache().RegisterFrame("inference_palm",
+                                                          model->getFrameId(palm_link_));
+  if (palm_frame_idx_ < 0) {
+    RCLCPP_ERROR(logger_, "[inference] palm frame registration failed (cache locked)");
+    return false;
+  }
+
+  // Base frame: without it the cache returns the WORLD-tip pose, and this
+  // controller's own `world` is defined by `base_pose_in_world` — mixing the
+  // two would double-count the mounting rotation.
+  if (!sys_cfg->sub_models.empty()) {
+    const auto& root = sys_cfg->sub_models.front().root_link;
+    if (!root.empty() && model->existFrame(root)) {
+      arm_base_frame_idx_ =
+          combined_cache_.cache().RegisterFrame("inference_base", model->getFrameId(root));
+    }
+  }
+  if (arm_base_frame_idx_ < 0) {
+    RCLCPP_ERROR(logger_,
+                 "[inference] arm root frame could not be registered; a palm pose without an "
+                 "explicit base frame would be quoted in the model's own world");
+    return false;
+  }
+
+  RCLCPP_INFO(logger_, "[inference] palm FK: %s in %s frame", palm_link_.c_str(),
+              palm_frame_ == PoseFrame::kWorld ? "world" : "base");
+  return true;
+}
+
+void DemoInferenceController::OnObjectTransforms(const tf2_msgs::msg::TFMessage& msg) noexcept {
+  // Non-RT (controller LifecycleNode default callback group). Allocation and
+  // string comparison are fine here; the tick only reads the SeqLock.
+  ObjectPoseSample sample;
+  int matches = 0;
+  bool frame_mismatch = false;
+  for (const auto& tf : msg.transforms) {
+    if (tf.header.frame_id != object_source_frame_id_) {
+      // Checked, not assumed. A publisher quoting the same message type in a
+      // different frame is the real-hardware failure mode this key exists for,
+      // and every value it produces would still look like a valid pose.
+      frame_mismatch = true;
+      continue;
+    }
+    const auto& child = tf.child_frame_id;
+    const bool hit = object_match_prefix_
+                         ? (child.rfind(object_frame_match_, 0) == 0)
+                         : (child == object_frame_match_);
+    if (!hit) {
+      continue;
+    }
+    ++matches;
+    sample.position = {tf.transform.translation.x, tf.transform.translation.y,
+                       tf.transform.translation.z};
+    sample.orientation_xyzw = {tf.transform.rotation.x, tf.transform.rotation.y,
+                               tf.transform.rotation.z, tf.transform.rotation.w};
+  }
+
+  // Exactly one, or nothing. The sim publishes every non-parked free body in a
+  // single message, so "take the first match" would silently start tracking a
+  // different object the day the scene gains one — and every downstream value
+  // would stay finite and plausible.
+  sample.valid = (matches == 1);
+
+  // Deliver in the frame the policy asked for. `object_source_frame_id_` fixes
+  // what came in; `object_frame_` fixes what goes out.
+  if (sample.valid && object_frame_ == PoseFrame::kBase) {
+    const Eigen::Vector3d p_world(sample.position[0], sample.position[1], sample.position[2]);
+    const Eigen::Quaterniond q_world(sample.orientation_xyzw[3], sample.orientation_xyzw[0],
+                                     sample.orientation_xyzw[1], sample.orientation_xyzw[2]);
+    const pinocchio::SE3 world_obj(q_world.normalized().toRotationMatrix(), p_world);
+    const pinocchio::SE3 base_obj = world_from_base_.actInv(world_obj);
+    const Eigen::Quaterniond q_base(base_obj.rotation());
+    sample.position = {base_obj.translation().x(), base_obj.translation().y(),
+                       base_obj.translation().z()};
+    sample.orientation_xyzw = {q_base.x(), q_base.y(), q_base.z(), q_base.w()};
+  }
+
+  if (frame_mismatch) {
+    object_frame_mismatch_.store(true, std::memory_order_relaxed);
+  }
+  sample.sequence = ++object_seq_written_;
+  object_pose_lock_.Store(sample);
 }
 
 RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(

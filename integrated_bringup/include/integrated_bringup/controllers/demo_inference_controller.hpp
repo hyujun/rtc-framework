@@ -40,13 +40,17 @@
 // disagree.
 
 #include "integrated_bringup/support/combined_model_cache.hpp"
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/params/policy_io_params.hpp"
 #include "rtc_inference/inference_engine.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
+#include <tf2_msgs/msg/tf_message.hpp>
+
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
+#include <rclcpp/subscription.hpp>
 
 #include <array>
 #include <atomic>
@@ -71,9 +75,41 @@ using rtc::RTControllerInterface;
 /// (`ur5e.position` is as wide as the primary device's joint roster) are
 /// resolved at configure time, not hardcoded.
 enum class PolicyFeature : std::uint8_t {
-  kArmPosition,         ///< primary device measured joint positions [rad]
-  kHandPosition,        ///< secondary device measured joint positions [rad]
-  kFingertipForceNorm,  ///< ‖f‖ per fingertip group [N]; 0 when the lane is stale
+  kArmPosition,           ///< primary device measured joint positions [rad]
+  kHandPosition,          ///< secondary device measured joint positions [rad]
+  kFingertipForceNorm,    ///< ‖f‖ per fingertip group [N]; 0 when the lane is stale
+  kPalmPosition,          ///< palm origin, in `palm.reference_frame` [m]
+  kPalmOrientationXyzw,   ///< palm orientation, Hamilton, serialised x,y,z,w
+  kObjectPosition,        ///< tracked object origin, in `object_pose.reference_frame` [m]
+  kObjectOrientationXyzw  ///< tracked object orientation, Hamilton, x,y,z,w
+};
+
+/// Which frame a pose feature is expressed in.
+///
+/// The two are NOT interchangeable on this robot: its MJCF mounts `base` with
+/// `quat="0 0 0 -1"`, a 180 deg rotation about z, so a pose read in the wrong
+/// one has its x and y negated — and still looks like a perfectly ordinary
+/// pose. Every consumer inside this repo works in `base`; the sim's object
+/// ground truth is published in `world`.
+enum class PoseFrame : std::uint8_t { kBase, kWorld };
+
+/// One object pose sample, as handed from the subscription callback (non-RT)
+/// to the tick (RT) through a SeqLock. Trivially copyable by construction —
+/// that is the SeqLock's type requirement, so no std::string lives here and
+/// the matched frame name is resolved to a bool at write time.
+struct ObjectPoseSample {
+  std::array<double, 3> position{};
+  std::array<double, 4> orientation_xyzw{};
+  /// False when the last message carried no acceptable match: either nothing
+  /// matched the configured name, or more than one thing did. "More than one"
+  /// is a refusal rather than a pick-the-first, because the sim publishes every
+  /// non-parked free body in one message and picking the first would silently
+  /// track the wrong object the day the scene gains another.
+  bool valid{false};
+  /// Bumped on every accepted sample. The tick watches this rather than a
+  /// clock: it needs no `now()` on the RT path and it stays on the same time
+  /// axis as the simulation (age is accumulated in `dt`).
+  std::uint32_t sequence{0};
 };
 
 class DemoInferenceController final : public RTControllerInterface {
@@ -150,6 +186,13 @@ class DemoInferenceController final : public RTControllerInterface {
     return last_scalar_clamped_;
   }
 
+  /// Feed one TFMessage through the production callback. The subscription
+  /// lambda calls exactly this, so a test needs no DDS round-trip to exercise
+  /// the matching, frame and staleness rules.
+  void InjectObjectTransformsForTesting(const tf2_msgs::msg::TFMessage& msg) noexcept {
+    OnObjectTransforms(msg);
+  }
+
   [[nodiscard]] const rtc::params::PolicyIoParams& IoParamsForTesting() const noexcept {
     return io_;
   }
@@ -173,6 +216,21 @@ class DemoInferenceController final : public RTControllerInterface {
   /// Fill `input_buffer_` from `state`. Returns false the moment any required
   /// source is unreadable — the caller then holds without running the model.
   [[nodiscard]] bool PackObservation(const ControllerState& state, std::span<float> buf) noexcept;
+
+  /// Build the model, register the palm and arm-root frames. Returns false on
+  /// any failure, with the reason logged; on_configure turns that into FAILURE.
+  [[nodiscard]] bool ConfigurePalmFk();
+
+  /// Palm pose from the combined-model cache, already expressed in
+  /// `palm_frame_`. Returns false when the cache is not ready or the pose is
+  /// not finite — the caller turns that into a hold.
+  [[nodiscard]] bool PalmPose(std::array<double, 3>& position,
+                              std::array<double, 4>& orientation_xyzw) noexcept;
+
+  /// Non-RT: the object-pose subscription callback. Matches the configured
+  /// name against every transform in the message and publishes the result
+  /// through the SeqLock.
+  void OnObjectTransforms(const tf2_msgs::msg::TFMessage& msg) noexcept;
 
   /// Write measured positions into `out` for every device. The hold command.
   void HoldMeasured(const ControllerState& state, ControllerOutput& out) noexcept;
@@ -249,10 +307,52 @@ class DemoInferenceController final : public RTControllerInterface {
   std::array<std::vector<double>, rtc::ControllerState::kMaxDevices> device_position_upper_;
   std::array<std::vector<double>, rtc::ControllerState::kMaxDevices> device_max_velocity_;
 
-  // ── Model (palm FK lands here in the next slice) ──────────────────────────
+  // ── Palm FK ───────────────────────────────────────────────────────────────
   std::string urdf_path_;
-  std::unique_ptr<rtc_urdf_bridge::PinocchioModelBuilder> model_builder_;
+  std::string palm_link_;
+  PoseFrame palm_frame_{PoseFrame::kWorld};
+  std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
   CombinedModelCache combined_cache_;
+  int palm_frame_idx_{-1};
+  int arm_base_frame_idx_{-1};
+
+  /// The static transform that makes `world` mean something. Read from YAML
+  /// (`inference.base_pose_in_world`) rather than hardcoded: this robot's base
+  /// is mounted 180 deg about z, but that is a fact about this mounting, and a
+  /// wrong sign here produces poses that are plausible everywhere except in
+  /// the policy's reasoning. Identity by default.
+  pinocchio::SE3 world_from_base_{pinocchio::SE3::Identity()};
+
+  // ── Object pose lane ──────────────────────────────────────────────────────
+  // Not a device lane, so none of the framework's freshness gates cover it —
+  // this controller has to own the staleness question itself. `timeout_sec` is
+  // configuration and not a constant because the two sources are an order of
+  // magnitude apart: the sim republishes every tick (~500 Hz) while a real
+  // perception stack runs at 10-30 Hz.
+  std::string object_topic_;
+  std::string object_frame_match_;
+  bool object_match_prefix_{true};
+  /// The frame the incoming transforms are expected to be expressed in,
+  /// checked against `header.frame_id` on every message. Without this the
+  /// controller would be silently ASSUMING the sim's `world`; a perception
+  /// stack publishing the same message type in a different frame would produce
+  /// poses that are finite, plausible, and rotated.
+  std::string object_source_frame_id_;
+  PoseFrame object_frame_{PoseFrame::kWorld};
+  double object_timeout_sec_{0.2};
+  rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr object_sub_;
+  rtc::SeqLock<ObjectPoseSample> object_pose_lock_;
+  std::uint32_t object_seq_written_{0};
+  std::uint32_t last_object_seq_seen_{0};
+  double object_age_sec_{0.0};
+  bool object_ever_seen_{false};
+  /// This tick's snapshot, taken once so both halves of the pose come from one
+  /// message. A per-feature Load() could straddle a callback and pair a
+  /// position with the next message's orientation — finite, plausible, wrong.
+  ObjectPoseSample object_this_tick_{};
+  bool object_valid_this_tick_{false};
+  std::atomic<bool> object_frame_mismatch_{false};
+  bool warned_object_frame_{false};
 
   rclcpp::Logger logger_{rclcpp::get_logger("integrated_bringup.demo_inference_controller")};
 };

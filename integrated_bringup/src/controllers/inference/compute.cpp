@@ -17,7 +17,10 @@
 #include "rtc_controllers/compliance/joint_command_tail.hpp"
 #include "rtc_controllers/inference/policy_io.hpp"
 
+#include <Eigen/Geometry>
+
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <span>
@@ -36,6 +39,42 @@ constexpr int kForceSlotBegin = 1;
 constexpr int kForceSlotCount = 3;
 
 }  // namespace
+
+bool DemoInferenceController::PalmPose(std::array<double, 3>& position,
+                                       std::array<double, 4>& orientation_xyzw) noexcept {
+  if (palm_frame_idx_ < 0 || arm_base_frame_idx_ < 0) {
+    return false;
+  }
+  // T_base_palm. The cache gates this itself: an unregistered frame, a stale
+  // reorder map or an un-updated cache all return Identity rather than a stale
+  // oMf, and Identity here is indistinguishable from a real pose — so the
+  // finite check below is not the whole guard, `reorder_valid()` is.
+  if (!combined_cache_.reorder_valid()) {
+    return false;
+  }
+  const pinocchio::SE3 base_palm =
+      combined_cache_.ArmTcpPoseFromCache(palm_frame_idx_, arm_base_frame_idx_);
+  const pinocchio::SE3 pose =
+      (palm_frame_ == PoseFrame::kWorld) ? (world_from_base_ * base_palm) : base_palm;
+
+  const auto& t = pose.translation();
+  if (!t.allFinite()) {
+    return false;
+  }
+  // Explicit type, not `auto`: an Eigen expression bound to `auto` here would
+  // alias the SE3's storage (RT-5).
+  const Eigen::Quaterniond q(pose.rotation());
+  if (!std::isfinite(q.x()) || !std::isfinite(q.y()) || !std::isfinite(q.z()) ||
+      !std::isfinite(q.w())) {
+    return false;
+  }
+  position = {t.x(), t.y(), t.z()};
+  // Serialisation order is x, y, z, w — the policy's convention, and NOT
+  // Eigen's constructor order (w first), which is the easy way to ship a
+  // rotation that is wrong in a way every value still looks normal.
+  orientation_xyzw = {q.x(), q.y(), q.z(), q.w()};
+  return true;
+}
 
 bool DemoInferenceController::PackObservation(const ControllerState& state,
                                               std::span<float> buf) noexcept {
@@ -119,6 +158,41 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
         }
         break;
       }
+      case PolicyFeature::kPalmPosition:
+      case PolicyFeature::kPalmOrientationXyzw: {
+        std::array<double, 3> p{};
+        std::array<double, 4> q{};
+        if (!PalmPose(p, q)) {
+          return false;
+        }
+        const bool want_position = (feature_kinds_[f] == PolicyFeature::kPalmPosition);
+        const std::span<const double> src =
+            want_position ? std::span<const double>(p.data(), p.size())
+                          : std::span<const double>(q.data(), q.size());
+        if (!rtc::inference::PackSegment(buf, seg, src)) {
+          return false;
+        }
+        break;
+      }
+      case PolicyFeature::kObjectPosition:
+      case PolicyFeature::kObjectOrientationXyzw: {
+        // `object_valid_this_tick_` was decided once at the top of Compute so
+        // both halves of the pose come from the SAME sample — reading the
+        // SeqLock per feature could straddle a callback and pair a position
+        // with the next message's orientation.
+        if (!object_valid_this_tick_) {
+          return false;
+        }
+        const bool want_position = (feature_kinds_[f] == PolicyFeature::kObjectPosition);
+        const std::span<const double> src =
+            want_position
+                ? std::span<const double>(object_this_tick_.position.data(), 3)
+                : std::span<const double>(object_this_tick_.orientation_xyzw.data(), 4);
+        if (!rtc::inference::PackSegment(buf, seg, src)) {
+          return false;
+        }
+        break;
+      }
     }
   }
 
@@ -184,6 +258,34 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
   const double dt = state.dt;
   ++tick_;
 
+  // ── Object pose snapshot ──────────────────────────────────────────────────
+  // Read ONCE per tick, before anything consumes it, so position and
+  // orientation are guaranteed to be halves of the same message.
+  //
+  // Age is accumulated in `dt` rather than read off a clock: no `now()` on the
+  // RT path, and it stays on the simulation's own time axis, which is the axis
+  // the policy's cadence is defined in.
+  {
+    const ObjectPoseSample sample = object_pose_lock_.Load();
+    if (sample.sequence != last_object_seq_seen_) {
+      last_object_seq_seen_ = sample.sequence;
+      object_age_sec_ = 0.0;
+      object_this_tick_ = sample;
+      object_ever_seen_ = true;
+    } else {
+      object_age_sec_ += (dt > 0.0) ? dt : 0.0;
+    }
+    object_valid_this_tick_ =
+        object_ever_seen_ && object_this_tick_.valid && (object_age_sec_ <= object_timeout_sec_);
+  }
+
+  if (object_frame_mismatch_.load(std::memory_order_relaxed) && !warned_object_frame_) {
+    warned_object_frame_ = true;
+    RCLCPP_WARN(logger_,
+                "[inference] object pose transforms arrived in an unexpected frame and were "
+                "ignored — check inference.object_pose.source_frame_id against the publisher");
+  }
+
   // One-shot, argument-free: within the RT logging carve-out, and the operator
   // otherwise has no way to distinguish "this controller ignores joint goals"
   // from "this controller is broken".
@@ -210,6 +312,15 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
 
   const bool devices_readable = rtc::IsDeviceReadable(state.devices[0], arm_dof_) &&
                                 rtc::IsDeviceReadable(state.devices[1], hand_dof_);
+
+  // FK is read from the cache in PackObservation, so the scatter+Update has to
+  // have run for THIS tick first. ExtractFullState carries the same F5 gate
+  // internally, so an unreadable arm leaves the cache holding the previous
+  // configuration rather than a half-written one.
+  if (devices_readable && palm_frame_idx_ >= 0) {
+    combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
+    combined_cache_.Update();
+  }
   if (!devices_readable) {
     // Judged before decimation on purpose: replaying the held action over a
     // robot whose state we cannot read would keep driving toward a target

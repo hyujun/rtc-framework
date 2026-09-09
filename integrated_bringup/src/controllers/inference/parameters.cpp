@@ -5,7 +5,11 @@
 // What lands here is everything that is self-contained in the YAML.
 
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
+#include "rtc_math/se3/so3.hpp"
 
+#include <Eigen/Core>
+
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -33,6 +37,62 @@ std::vector<double> ParsePosture(const YAML::Node& node, const char* where) {
     out.push_back(node[i].as<double>());
   }
   return out;
+}
+
+/// "base" | "world", defaulting to world (the frame the policy's object pose
+/// is quoted in). Anything else is a typo and is refused rather than silently
+/// falling back — the two frames differ by 180 deg about z on this robot, and
+/// the wrong one produces poses that look entirely reasonable.
+PoseFrame ParsePoseFrame(const YAML::Node& node, const char* where) {
+  const auto s = node ? node.as<std::string>("world") : std::string("world");
+  if (s == "world") {
+    return PoseFrame::kWorld;
+  }
+  if (s == "base") {
+    return PoseFrame::kBase;
+  }
+  throw std::invalid_argument(std::string("demo_inference_controller: ") + where +
+                              " must be \"world\" or \"base\" (got \"" + s + "\")");
+}
+
+/// The static `world → base` transform. Identity when the key is absent, which
+/// is the right default for a robot mounted at the world origin; this one is
+/// not, and says so in its config rather than in this file.
+pinocchio::SE3 ParseBasePoseInWorld(const YAML::Node& node) {
+  if (!node) {
+    return pinocchio::SE3::Identity();
+  }
+  if (!node.IsMap()) {
+    throw std::invalid_argument(
+        "demo_inference_controller: inference.base_pose_in_world must be a map with `position` "
+        "and `rpy`");
+  }
+  Eigen::Vector3d p = Eigen::Vector3d::Zero();
+  Eigen::Vector3d rpy = Eigen::Vector3d::Zero();
+  if (const auto pn = node["position"]) {
+    if (!pn.IsSequence() || pn.size() != 3) {
+      throw std::invalid_argument(
+          "demo_inference_controller: inference.base_pose_in_world.position must be [x, y, z]");
+    }
+    for (int i = 0; i < 3; ++i) {
+      p[i] = pn[static_cast<std::size_t>(i)].as<double>();
+    }
+  }
+  if (const auto rn = node["rpy"]) {
+    if (!rn.IsSequence() || rn.size() != 3) {
+      throw std::invalid_argument(
+          "demo_inference_controller: inference.base_pose_in_world.rpy must be [r, p, y] in rad "
+          "(ZYX Euler, the repo boundary convention)");
+    }
+    for (int i = 0; i < 3; ++i) {
+      rpy[i] = rn[static_cast<std::size_t>(i)].as<double>();
+    }
+  }
+  if (!p.allFinite() || !rpy.allFinite()) {
+    throw std::invalid_argument(
+        "demo_inference_controller: inference.base_pose_in_world carries a non-finite value");
+  }
+  return pinocchio::SE3(rtc::math::se3::RpyToRotationZyx(rpy), p);
 }
 
 }  // namespace
@@ -77,14 +137,6 @@ void DemoInferenceController::LoadConfig(const YAML::Node& cfg) {
     throw std::invalid_argument("demo_inference_controller: intra_op_threads must be >= 1");
   }
   allow_missing_model_ = inf["allow_missing_model"].as<bool>(false);
-
-  // ── I/O schema is NOT parsed here ──────────────────────────────────────────
-  // Resolving a feature id to its width needs the device rosters, and this is
-  // Pass 1: `PreConfigure` calls LoadConfig, and the CM only injects device
-  // configs afterwards (`SetDeviceNameConfigs`, then `on_configure`). Parsing
-  // here would resolve every id against an empty roster, size each feature 0,
-  // and then reject the config for a sum mismatch — a real error reported as
-  // the wrong one. `ApplyIoSchema` runs from on_configure instead.
 
   // ── Hand postures ─────────────────────────────────────────────────────────
   // Length is cross-checked against the hand device's roster in
@@ -145,6 +197,86 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
     }
     feature_kinds_.push_back(kind);
   }
+
+  // ── Pose-feature configuration ────────────────────────────────────────────
+  // Required only when a pose feature asks for it. Demanding `palm:` from a
+  // policy that observes joints and forces alone would be a configure failure
+  // with nothing wrong.
+  const bool wants_palm =
+      std::any_of(feature_kinds_.begin(), feature_kinds_.end(), [](PolicyFeature k) {
+        return k == PolicyFeature::kPalmPosition || k == PolicyFeature::kPalmOrientationXyzw;
+      });
+  const bool wants_object =
+      std::any_of(feature_kinds_.begin(), feature_kinds_.end(), [](PolicyFeature k) {
+        return k == PolicyFeature::kObjectPosition || k == PolicyFeature::kObjectOrientationXyzw;
+      });
+
+  if (wants_palm) {
+    // No default link name. A wrong one is caught here (frame lookup fails at
+    // configure), but a DEFAULT that happens to exist on some other robot would
+    // resolve and silently feed the policy the wrong body — the original
+    // design's default was `hand_base_link`, a leap-hand link that does not
+    // exist on this hand at all.
+    const YAML::Node palm = inf["palm"];
+    if (!palm || !palm.IsMap() || !palm["link"]) {
+      throw std::invalid_argument(
+          "demo_inference_controller: a palm pose feature is declared, so inference.palm.link is "
+          "required (the link whose pose the policy observes)");
+    }
+    palm_link_ = palm["link"].as<std::string>("");
+    if (palm_link_.empty()) {
+      throw std::invalid_argument("demo_inference_controller: inference.palm.link is empty");
+    }
+    palm_frame_ = ParsePoseFrame(palm["reference_frame"], "inference.palm.reference_frame");
+  }
+
+  if (wants_object) {
+    const YAML::Node obj = inf["object_pose"];
+    if (!obj || !obj.IsMap()) {
+      throw std::invalid_argument(
+          "demo_inference_controller: an object pose feature is declared, so "
+          "inference.object_pose is required (topic + frame match)");
+    }
+    object_topic_ = obj["topic"].as<std::string>("");
+    if (object_topic_.empty()) {
+      throw std::invalid_argument(
+          "demo_inference_controller: inference.object_pose.topic is empty");
+    }
+    object_frame_match_ = obj["frame_match"].as<std::string>("");
+    if (object_frame_match_.empty()) {
+      throw std::invalid_argument(
+          "demo_inference_controller: inference.object_pose.frame_match is empty — an empty "
+          "match would accept every body in the message");
+    }
+    const auto mode = obj["match_mode"].as<std::string>("prefix");
+    if (mode == "prefix") {
+      object_match_prefix_ = true;
+    } else if (mode == "exact") {
+      object_match_prefix_ = false;
+    } else {
+      throw std::invalid_argument(
+          "demo_inference_controller: inference.object_pose.match_mode must be \"prefix\" or "
+          "\"exact\" (got \"" +
+          mode + "\")");
+    }
+    object_frame_ = ParsePoseFrame(obj["reference_frame"], "inference.object_pose.reference_frame");
+    object_source_frame_id_ = obj["source_frame_id"].as<std::string>("world");
+    if (object_source_frame_id_.empty()) {
+      throw std::invalid_argument(
+          "demo_inference_controller: inference.object_pose.source_frame_id is empty — it is what "
+          "turns \"the incoming poses are in world\" from an assumption into a check");
+    }
+    object_timeout_sec_ = obj["timeout_sec"].as<double>(0.2);
+    if (!(object_timeout_sec_ > 0.0)) {
+      throw std::invalid_argument(
+          "demo_inference_controller: inference.object_pose.timeout_sec must be > 0. It is "
+          "configuration and not a constant because the sim republishes every tick (~500 Hz) "
+          "while a real perception stack runs at 10-30 Hz");
+    }
+  }
+
+  // ── What `world` means ────────────────────────────────────────────────────
+  world_from_base_ = ParseBasePoseInWorld(inf["base_pose_in_world"]);
 
   // ── Fixed-capacity check ──────────────────────────────────────────────────
   if (io_.InputNumel() > static_cast<std::size_t>(kMaxInputElements)) {

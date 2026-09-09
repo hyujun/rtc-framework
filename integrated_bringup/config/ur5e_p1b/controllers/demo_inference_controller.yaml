@@ -1,0 +1,148 @@
+# demo_inference_controller — ONNX 정책으로 UR5e + proto_1b 를 구동한다
+#
+# 이 파일이 정책의 **관측 계약**이다. 학습 때와 순서·폭·정규화·프레임이 하나라도
+# 어긋나면 명령은 여전히 유한하고 관절한계 안이며 그럴듯하게 움직인다 — 그래서
+# 여기 있는 모든 키가 configure 에서 검증되고, 어긋나면 bring-up 이 거부된다.
+# 스키마 규칙의 SSoT 는 rtc_controllers/params/policy_io_params.hpp 다.
+
+demo_inference_controller:
+  command_type: "position" # 정책 head 는 rad 를 낸다. "torque" 는 configure 실패
+
+  # ── Joint command tail (§7.3) ──────────────────────────────────────────────
+  # clamp [q_min+δ, q_max−δ] → 측정 q 기준 rate rebound 순서로 적용된다
+  # (rtc_controllers/compliance/joint_command_tail.hpp). δ=0 은 device 한계를
+  # 그대로 쓴다는 뜻이고, 밴드를 뒤집는 값은 거부된다.
+  joint_limit_margin: 0.0
+
+  # ── 컨트롤러 소유 토픽 ──────────────────────────────────────────────────────
+  # 정책이 명령을 소유하므로 외부 joint_goal 은 무시된다 (첫 수신 시 1회 경고).
+  # 그래도 선언하는 이유는 이것이 **device 그룹 순서**를 세우는 유일한 수단이기
+  # 때문이다 — GetSecondaryDeviceName() 과 per-device 한계 표가 이 순서로
+  # 인덱싱되고, subscribe 에서 합법인 role 은 `target` 뿐이다.
+  topics:
+    ur5e:
+      subscribe:
+        - topic: "ur5e/joint_goal"
+          role: "target"
+    p1b:
+      subscribe:
+        - topic: "p1b/joint_goal"
+          role: "target"
+
+  inference:
+    # ── 모델 ─────────────────────────────────────────────────────────────────
+    # 아직 정책 파일이 없다. allow_missing_model 은 그 상태를 **명시적으로**
+    # 옵트인하는 키이며, 이때 컨트롤러는 configure 에 성공한 뒤 매 tick 측정 q 를
+    # hold 하고 activation 에서 1회 경고한다 — 배선·토픽·게이트를 모델 없이
+    # 그대로 검증할 수 있게 하기 위해서다. 이 키 없이 빈 경로면 configure 실패다.
+    #
+    # 모델을 받으면: model_path 를 채우고 allow_missing_model 을 지운다. 그
+    # 순간부터 .onnx 의 실제 shape 이 아래 input_shape/output_shapes 와 다르면
+    # OnnxEngine::Init 이 throw 해 bring-up 이 거부된다 (retrain drift 의 1차 방어선).
+    model_path: ""
+    allow_missing_model: true
+    optimized_model_path: "" # ORT graph-optimized 캐시 경로 (빈 값 = 비활성)
+    intra_op_threads: 1 # RT: single-threaded inference
+
+    # ── 정책 주기 ────────────────────────────────────────────────────────────
+    # 500 Hz / 10 = 50 Hz. sim 은 lock-step 이라 1 tick = physics_timestep
+    # (2 ms) 의 sim-time 이므로 10 tick = 정책 1 step 이 정확히 20 ms 다.
+    # control_rate 를 50 으로 낮추는 대안을 쓰지 않는 이유: ControllerState::dt
+    # 는 1/control_rate 인데 sim 이 실제로 진행시키는 시간은 physics_timestep
+    # 이라, 둘이 10배 어긋나면서 rate 파생 법칙이 전부 틀어진다.
+    decimation: 10
+
+    # ── 텐서 ─────────────────────────────────────────────────────────────────
+    # 6 + 10 + 3 + 4 + 4 + 3 + 4 = 34. 합이 input_shape 와 다르면 configure 실패.
+    input_shape: [1, 34]
+    # head 0 = UR5e absolute joint target, head 1 = hand posture 스칼라.
+    # shape 이 서로 달라서(6 vs 1) head 순서가 뒤바뀌면 OnnxEngine 이 잡아낸다 —
+    # 같은 shape 두 개였다면 positional binding 상 검출 불가였다.
+    output_shapes: [[1, 6], [1, 1]]
+
+    # 배열 순서 = tensor flatten 순서. 재정렬하면 텐서가 재정렬된다.
+    input_features:
+      - "ur5e.position" #  6  rad
+      - "p1b.position" # 10  rad
+      - "palm.position" #  3  m
+      - "palm.orientation_xyzw" #  4  Hamilton, 직렬화 x,y,z,w
+      - "p1b.fingertip_force_norm" #  4  N — thumb,index,middle,ring 의 ‖f‖.
+      #     norm 이라 프레임 무관이고, lane 이 stale
+      #     이면 0 이 들어간다 ("접촉 없음"과 "판독
+      #     없음"은 이 정책에 같은 관측이다)
+      - "object.position" #  3  m
+      - "object.orientation_xyzw" #  4  Hamilton, x,y,z,w
+
+    # normalized = (raw − offset) * scale. 비우면 identity.
+    # 모델 수령 시 학습 때 쓴 값으로 채운다. 길이는 0 이거나 정확히 34.
+    input_offset: []
+    input_scale: []
+
+    # ── palm FK ──────────────────────────────────────────────────────────────
+    # `l_palm_link` 이다. 기본값을 두지 않는 이유는 초안이 박아 뒀던
+    # `hand_base_link` 가 leap 계열 링크라 이 손에는 **존재하지 않기** 때문이다 —
+    # 그런 종류의 기본값은 다른 로봇에서 조용히 resolve 돼 엉뚱한 body 를 관측하게
+    # 만든다.
+    palm:
+      link: "l_palm_link"
+      reference_frame: "world"
+
+    # ── world 가 무엇인가 ────────────────────────────────────────────────────
+    # 이 로봇의 MJCF base 는 quat "0 0 0 -1" (z축 180°) 로 원점에 붙어 있다.
+    # 따라서 world 와 base 는 z 180° 만큼 다르고, 헷갈리면 x·y 부호가 뒤집힌 채
+    # 여전히 "그럴듯한" pose 가 나온다. 하드코딩하지 않는 이유는 이것이 이
+    # 마운팅의 사실이지 프레임워크의 사실이 아니기 때문이다.
+    base_pose_in_world:
+      position: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 3.14159265358979] # rad, ZYX Euler (경계 규약)
+
+    # ── object pose ──────────────────────────────────────────────────────────
+    # sim ground truth. 실기 이관 시 바뀌는 것은 topic 과 (perception 이 다른
+    # 프레임을 쓰면) source_frame_id 이며, 메시지 타입은 같다.
+    #
+    # device lane 이 아니므로 프레임워크의 freshness 게이트가 **하나도** 안 걸린다
+    # — timeout_sec 이 이 컨트롤러가 직접 지는 그 책임이다. 상수로 박을 수 없는
+    # 이유는 두 소스가 한 자릿수 이상 다르기 때문이다: sim 은 매 tick(~500 Hz)
+    # 재발행하고 실기 perception 은 10–30 Hz 다.
+    object_pose:
+      topic: "/sim/object_transforms"
+      # TFMessage 한 개에 park 안 된 free body 가 **전부** 실린다. prefix 매칭이
+      # 정확히 1개가 아니면 (0개든 2개든) invalid 로 처리해 hold 한다 —
+      # "첫 번째를 쓴다" 였다면 씬에 body 가 하나 늘어난 날 조용히 다른 물체를
+      # 추종하면서 모든 수치가 여전히 유한하고 그럴듯했을 것이다.
+      match_mode: "prefix"
+      frame_match: "pool_" # object_pool 이 스폰하는 body 는 pool_<obj>_object
+      # 들어오는 transform 이 어느 프레임인지 — **가정이 아니라 검사**다.
+      # header.frame_id 가 이것과 다르면 그 transform 은 버려진다.
+      source_frame_id: "world"
+      reference_frame: "world" # 정책이 받는 프레임
+      timeout_sec: 0.2
+
+    # ── 출력 매핑 ────────────────────────────────────────────────────────────
+    # name 으로 매칭한다 (순서가 아니라). slice 는 이미 head 에 대해 positional
+    # 이라, 배열 순서까지 의미를 갖게 하면 두 항목을 무해하게 뒤바꾼 편집이
+    # 팔과 손을 조용히 맞바꾼다.
+    output_features:
+      - { name: "ur5e.target_position", head: 0, offset: 0, count: 6 }
+      - { name: "p1b.posture_scalar", head: 1, offset: 0, count: 1 }
+
+    # ── hand posture ─────────────────────────────────────────────────────────
+    # 스칼라 s 가 open + clamp(s,0,1)·(close − open) 으로 보간한다.
+    # 순서는 devices.p1b.joint_state_names (rad):
+    #   thumb: cmc_aa, cmc_fe, mcp, dip_fe | index: mcp_aa, mcp_fe, dip_fe
+    #   middle: mcp_fe, dip_fe             | ring: mcp_fe
+    #
+    # **ur5e_bt_coordinator/config/poses_p1b.yaml 의 hand_close_* 를 복사하지
+    # 말 것.** 그 값은 10 관절 중 6개가 범위 밖이다 — upper 가 0.0 인 관절들
+    # (dip/mcp_fe 계열) 은 굴곡이 **음의 방향**인데 거기에 양수 degree 가 들어
+    # 있어서, command clamp 가 조용히 0(=open) 으로 되돌린다. 즉 그 "close" 는
+    # 거의 편 손이고 아무 진단도 남기지 않는다. 이 컨트롤러는 configure 에서
+    # posture 를 관절한계와 대조해 거부한다.
+    #
+    # 아래 close 는 **한계에서 유도한 잠정값**이다 (부호가 확실한 6개는 굴곡
+    # 방향으로, 부호가 URDF 만으로 판정되지 않는 thumb cmc_fe/mcp 와
+    # index_mcp_aa 는 0). sim 실측으로 확정하기 전까지 이 값으로 물체를 쥔다고
+    # 가정하지 말 것.
+    hand_posture:
+      open: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      close: [0.6, 0.0, 0.0, -0.6, 0.0, -0.8, -0.6, -0.8, -0.6, -0.8]
