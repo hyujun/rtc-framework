@@ -28,6 +28,7 @@ integrated_bringup/
 │   │   ├── demo_joint_controller.hpp   <- 관절 공간 Quintic 궤적 제어 (로봇+핸드)
 │   │   ├── demo_task_controller.hpp    <- 태스크 공간 CLIK 제어 (로봇+핸드)
 │   │   ├── demo_compliance_controller.hpp <- 태스크 공간 admittance 바인딩 (#469 S3: §7 법칙 결합 완료)
+│   │   ├── demo_inference_controller.hpp <- 학습 정책(ONNX) 바인딩. 코어는 `rtc_controllers/inference/policy_io.hpp`
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
 │   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더

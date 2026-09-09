@@ -35,6 +35,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(rtc_controller_interface REQUIRED)
 find_package(rtc_controllers REQUIRED)
+find_package(rtc_inference REQUIRED)
 find_package(rtc_base REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -74,6 +75,12 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/phase.cpp
   src/controllers/wbc/grasp_phase_manager.cpp
   src/controllers/wbc/force_reference_updater.cpp
+  # Learned-policy binding. Its law half lives in rtc_controllers/inference
+  # (tensor marshalling) — this side owns the ControllerState/engine contract.
+  src/controllers/inference/controller.cpp
+  src/controllers/inference/compute.cpp
+  src/controllers/inference/lifecycle.cpp
+  src/controllers/inference/parameters.cpp
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
@@ -104,6 +111,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   tf2_msgs
   rtc_controller_interface
   rtc_controllers
+  rtc_inference
   rtc_controller_manager
   rtc_base
   rtc_msgs
@@ -210,6 +218,7 @@ ament_export_dependencies(
   sensor_msgs
   rtc_controller_interface
   rtc_controllers
+  rtc_inference
   rtc_controller_manager
   rtc_base
   rtc_msgs
@@ -312,6 +321,23 @@ if(BUILD_TESTING)
     rclcpp
     rclcpp_lifecycle
     rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # Learned-policy binding, driven with an injected fake engine so every success
+  # path runs without a .onnx file — which is the point of the injection seam.
+  ament_add_gtest(test_demo_inference_controller test/test_demo_inference_controller.cpp)
+  target_link_libraries(test_demo_inference_controller
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_inference_controller
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_inference
     rtc_base
     pinocchio
     Eigen3
