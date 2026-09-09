@@ -739,7 +739,12 @@ TF **메시지 타입**을 쓰는 일반 토픽이지 TF broadcast 가 아닙니
 
 포즈는 `p_rel = R_ref^T (p_obj - p_ref)` 로 계산됩니다. 빈 문자열이면 MuJoCo world 프레임입니다.
 
-**씬이 로봇 base 를 identity 가 아닌 자세로 붙이면 반드시 지정해야 합니다.** base 에 180° yaw 를 주는 것은 흔한 배치이고, 그 경우 world 좌표를 그대로 내보내면 모든 object 가 base 를 통과해 거울상 위치에 찍힙니다 — 값 자체는 완벽히 그럴듯하므로 소비자가 알아챌 방법이 없습니다. 모델에 없는 이름은 fallback 없이 **startup 실패**입니다.
+**둘 중 무엇을 고르든 의식적으로 골라야 합니다.** base 에 180° yaw 를 주는 것은 흔한 배치이고 (`ur5e_p1b` 의 MJCF base 가 `quat "0 0 0 -1"` 입니다), 그러면 world 와 base 는 실제로 다른 프레임입니다 — 둘을 헷갈리면 모든 object 가 base 를 통과해 거울상 위치에 찍히는데, 값 자체는 완벽히 그럴듯하므로 소비자가 알아챌 방법이 없습니다. 모델에 없는 이름은 fallback 없이 **startup 실패**입니다.
+
+- `reference_body: "<로봇 base>"` — 좌표가 곧바로 로봇 기준. 대신 "sim 이 아는 절대 좌표" 는 사라집니다.
+- `reference_body: ""` (world) — sim ground truth 를 그대로. 대신 **`world` 는 대개 이 bringup 의 TF 트리에 없습니다** (`robot_state_publisher` 의 루트는 로봇 base 이고, world→base 를 발행하는 노드는 없습니다). 로봇 기준이 필요한 소비자가 그 변환을 스스로 알아야 합니다.
+
+출하 프로필 `ur5e_p1b` 는 후자입니다 — 위 "/tf 가 아니다" 와 같은 이유로, sim ground truth 를 실기 TF 트리에 이어 붙이지 않고 절대 좌표를 그대로 내보냅니다.
 
 ### 설정
 
@@ -747,7 +752,7 @@ TF **메시지 타입**을 쓰는 일반 토픽이지 TF broadcast 가 아닙니
 object_state:
   enabled: true
   topic: "/sim/object_transforms"   # 상대 이름이면 노드 네임스페이스 아래로 해석
-  reference_body: "base"            # "" = MuJoCo world
+  reference_body: ""                # "" = MuJoCo world
   frame_id: ""                      # "" = reference_body 이름 (world 면 "world")
 ```
 
