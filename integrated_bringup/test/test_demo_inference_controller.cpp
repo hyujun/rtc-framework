@@ -840,3 +840,83 @@ TEST(DemoInferenceObject, RejectsAnUnknownMatchMode) {
   auto h = MakeObjectHarness(MakeObjectYaml(0.02, /*match_mode=*/"regex"));
   EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
 }
+
+// ── Hold is a LATCH, not a follower ─────────────────────────────────────────
+//
+// These exist because the sim caught what the fixture could not: every case
+// above feeds a state whose measured positions never change, and against a
+// static state "command the measured position" and "command the latched
+// position" are indistinguishable. On the real ur5e_p1b the difference is a
+// zero-stiffness follower that sags 0.2 rad under gravity.
+
+TEST(DemoInferenceHoldLatch, HoldCommandsTheEntryPositionNotTheDriftingOne) {
+  Harness h{MakeYaml(10, "", /*allow_missing=*/true)};  // hold mode: never runs a policy
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  auto state = MakeState();
+  for (int i = 0; i < kArmDof; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 0.5;
+  }
+
+  const auto first = h.ctrl->Compute(state);
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_DOUBLE_EQ(first.devices[0].commands[0], 0.5);
+
+  // Now the arm sags, exactly as gravity makes it: the measured position walks
+  // away tick by tick. The command must NOT walk with it.
+  double sag = 0.5;
+  for (int t = 0; t < 50; ++t) {
+    sag -= 0.002;
+    for (int i = 0; i < kArmDof; ++i) {
+      state.devices[0].positions[static_cast<std::size_t>(i)] = sag;
+    }
+    const auto out = h.ctrl->Compute(state);
+    EXPECT_DOUBLE_EQ(out.devices[0].commands[0], 0.5)
+        << "tick " << t << ": the hold followed the measurement instead of latching it";
+  }
+  EXPECT_LT(sag, 0.41) << "the fixture must actually have moved, or this proves nothing";
+}
+
+TEST(DemoInferenceHoldLatch, AnAcceptedActionClearsTheLatch) {
+  Harness h;  // real (fake) policy, decimation 10
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  auto state = MakeState();
+  for (int i = 0; i < kArmDof; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 0.2;
+  }
+  h.engine->run_result = false;  // force a hold on the first evaluation
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
+
+  // Policy recovers; the arm must resume from the measurement, not stay pinned
+  // to the latched value.
+  h.engine->run_result = true;
+  h.engine->next_output = {std::vector<float>(6, 1.0F), std::vector<float>{0.0F}};
+  for (int i = 0; i < kArmDof; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 0.30;
+  }
+  const auto out = h.ctrl->Compute(state);
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_GT(out.devices[0].commands[0], 0.30) << "must move toward the policy target from 0.30";
+  EXPECT_NEAR(out.devices[0].commands[0], 0.304, 1e-9) << "one tick of the 2 rad/s rate bound";
+}
+
+TEST(DemoInferenceHoldLatch, ALatchEnteredWhileUnreadableUsesTheLastGoodState) {
+  // A hold entered BECAUSE the device went unreadable must not latch the
+  // unreadable reading — that is the one number known to be untrustworthy.
+  Harness h;
+  auto state = MakeState();
+  for (int i = 0; i < kArmDof; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 0.25;
+  }
+  static_cast<void>(h.ctrl->Compute(state));  // readable: records 0.25
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+
+  state.devices[0].hole_mask = 0b1000U;  // slot 3 stale
+  for (int i = 0; i < kArmDof; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 9.9;  // garbage behind the hole
+  }
+  const auto out = h.ctrl->Compute(state);
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_DOUBLE_EQ(out.devices[0].commands[0], 0.25)
+      << "latched from the last readable state, not from the unreadable one";
+}

@@ -157,8 +157,8 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       }
       hold_mode_ = true;
       RCLCPP_WARN(logger_,
-                  "[inference] NO POLICY LOADED (allow_missing_model). Every tick will hold the "
-                  "measured joint positions; this controller commands nothing until "
+                  "[inference] NO POLICY LOADED (allow_missing_model). Every tick holds the "
+                  "position latched at activation; this controller commands no motion until "
                   "inference.model_path is set");
     } else {
       rtc::ModelConfig mc;
@@ -333,6 +333,8 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(
   // exists, so the first tick after activation must hold and re-evaluate
   // rather than resume.
   have_action_ = false;
+  hold_latched_ = false;
+  have_readable_ = false;
   tick_ = 0;
   inference_count_ = 0;
   last_tick_held_ = true;

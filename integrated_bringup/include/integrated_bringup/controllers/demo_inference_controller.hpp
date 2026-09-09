@@ -232,8 +232,10 @@ class DemoInferenceController final : public RTControllerInterface {
   /// through the SeqLock.
   void OnObjectTransforms(const tf2_msgs::msg::TFMessage& msg) noexcept;
 
-  /// Write measured positions into `out` for every device. The hold command.
-  void HoldMeasured(const ControllerState& state, ControllerOutput& out) noexcept;
+  /// Emit the hold command: the latched entry position, seeded from the last
+  /// readable state. Latches on the first hold tick of a run and stays put
+  /// until a policy action is accepted again.
+  void HoldPosition(const ControllerState& state, ControllerOutput& out) noexcept;
 
   /// Apply position clamp + per-tick rate bound to one device's command, using
   /// the shared §7.3 joint command tail so the MUST ordering (clamp, then
@@ -302,6 +304,25 @@ class DemoInferenceController final : public RTControllerInterface {
   std::array<double, kMaxArmDof> arm_action_{};
   std::array<double, kMaxHandDof> hand_action_{};
   bool have_action_{false};
+
+  /// The position a hold commands, LATCHED when the hold begins.
+  ///
+  /// Not the continuously measured position, which is the obvious reading of
+  /// "hold the current joint positions" and is wrong. Commanding whatever the
+  /// joints currently read gives the position servo zero error every tick, so
+  /// it produces no torque, and the arm sags under gravity — a zero-stiffness
+  /// follower rather than a hold. Measured on the ur5e_p1b sim: 0.2 rad away
+  /// from the startup pose and still creeping 0.015 rad per 8 s. Latching the
+  /// entry position gives the servo something to pull against.
+  ///
+  /// Seeded from the last READABLE state, because a hold entered because the
+  /// device went unreadable must not latch the unreadable reading.
+  std::array<double, kMaxArmDof> hold_arm_{};
+  std::array<double, kMaxHandDof> hold_hand_{};
+  bool hold_latched_{false};
+  std::array<double, kMaxArmDof> last_readable_arm_{};
+  std::array<double, kMaxHandDof> last_readable_hand_{};
+  bool have_readable_{false};
 
   /// Scratch. Fixed capacity, never resized on the tick path.
   std::array<double, kMaxArmDof + kMaxHandDof> scratch_measured_{};

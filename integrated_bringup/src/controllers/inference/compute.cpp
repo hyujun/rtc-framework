@@ -197,17 +197,46 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
   return true;
 }
 
-void DemoInferenceController::HoldMeasured(const ControllerState& state,
+void DemoInferenceController::HoldPosition(const ControllerState& state,
                                            ControllerOutput& out) noexcept {
+  // Latch on entry. See the member declaration for why commanding the measured
+  // position every tick is not a hold: it is a zero-stiffness follower, and the
+  // arm sags.
+  if (!hold_latched_) {
+    if (have_readable_) {
+      hold_arm_ = last_readable_arm_;
+      hold_hand_ = last_readable_hand_;
+    } else {
+      // Nothing readable has ever arrived — the only position available is
+      // whatever this tick reports. Better than commanding zero.
+      for (int i = 0; i < arm_dof_ && i < rtc::kMaxDeviceChannels; ++i) {
+        hold_arm_[static_cast<std::size_t>(i)] =
+            state.devices[0].positions[static_cast<std::size_t>(i)];
+      }
+      for (int i = 0; i < hand_dof_ && i < rtc::kMaxDeviceChannels; ++i) {
+        hold_hand_[static_cast<std::size_t>(i)] =
+            state.devices[1].positions[static_cast<std::size_t>(i)];
+      }
+    }
+    hold_latched_ = true;
+  }
+
   out.num_devices = std::min(state.num_devices, ControllerOutput::kMaxDevices);
   for (int d = 0; d < out.num_devices; ++d) {
     const auto& dev = state.devices[static_cast<std::size_t>(d)];
     auto& dst = out.devices[static_cast<std::size_t>(d)];
     dst.num_channels = dev.num_channels;
+    const double* src = (d == 0) ? hold_arm_.data() : (d == 1) ? hold_hand_.data() : nullptr;
+    const int latched = (d == 0) ? arm_dof_ : (d == 1) ? hand_dof_ : 0;
     for (int c = 0; c < dev.num_channels && c < rtc::kMaxDeviceChannels; ++c) {
-      dst.commands[static_cast<std::size_t>(c)] = dev.positions[static_cast<std::size_t>(c)];
-      dst.target_positions[static_cast<std::size_t>(c)] =
-          dev.positions[static_cast<std::size_t>(c)];
+      // A channel past the latched width (a third device, or a wire wider than
+      // the roster) falls back to its measured value: there is no latched
+      // number for it, and inventing one would be worse than following.
+      const double q = (src != nullptr && c < latched)
+                           ? src[static_cast<std::size_t>(c)]
+                           : dev.positions[static_cast<std::size_t>(c)];
+      dst.commands[static_cast<std::size_t>(c)] = q;
+      dst.target_positions[static_cast<std::size_t>(c)] = q;
       dst.target_velocities[static_cast<std::size_t>(c)] = 0.0;
     }
   }
@@ -302,7 +331,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       !hold_mode_ && engine_ && arm_dof_ > 0 && hand_dof_ > 0 && state.num_devices >= 2;
 
   if (!structurally_ready) {
-    HoldMeasured(state, out);
+    HoldPosition(state, out);
     last_tick_held_ = true;
     return out;
   }
@@ -314,6 +343,18 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
   // have run for THIS tick first. ExtractFullState carries the same F5 gate
   // internally, so an unreadable arm leaves the cache holding the previous
   // configuration rather than a half-written one.
+  if (devices_readable) {
+    for (int i = 0; i < arm_dof_; ++i) {
+      last_readable_arm_[static_cast<std::size_t>(i)] =
+          state.devices[0].positions[static_cast<std::size_t>(i)];
+    }
+    for (int i = 0; i < hand_dof_; ++i) {
+      last_readable_hand_[static_cast<std::size_t>(i)] =
+          state.devices[1].positions[static_cast<std::size_t>(i)];
+    }
+    have_readable_ = true;
+  }
+
   if (devices_readable && palm_frame_idx_ >= 0) {
     combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
     combined_cache_.Update();
@@ -323,7 +364,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     // robot whose state we cannot read would keep driving toward a target
     // derived from a configuration that may no longer be true.
     have_action_ = false;
-    HoldMeasured(state, out);
+    HoldPosition(state, out);
     last_tick_held_ = true;
     return out;
   }
@@ -342,14 +383,14 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     const std::size_t in_size = engine_->input_size(0);
     if (in_buf == nullptr || in_size != io_.InputNumel()) {
       have_action_ = false;
-      HoldMeasured(state, out);
+      HoldPosition(state, out);
       last_tick_held_ = true;
       return out;
     }
 
     if (!PackObservation(state, std::span<float>(in_buf, in_size))) {
       have_action_ = false;
-      HoldMeasured(state, out);
+      HoldPosition(state, out);
       last_tick_held_ = true;
       return out;
     }
@@ -361,7 +402,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       // from a stale one. Dropping the held action here is what stops that
       // stale buffer from being replayed for the next `decimation` ticks.
       have_action_ = false;
-      HoldMeasured(state, out);
+      HoldPosition(state, out);
       last_tick_held_ = true;
       return out;
     }
@@ -415,11 +456,12 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
 
     if (!ok) {
       have_action_ = false;
-      HoldMeasured(state, out);
+      HoldPosition(state, out);
       last_tick_held_ = true;
       return out;
     }
     have_action_ = true;
+    hold_latched_ = false;  // a fresh action supersedes the latch
   }
 
   // ── Emit ──────────────────────────────────────────────────────────────────
