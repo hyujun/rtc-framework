@@ -226,7 +226,7 @@ solver:
 | `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 | robot 그룹: 위치/속도/토크 |
 | `<group.state_topic>` (예: `/hand/joint_states`) | `sensor_msgs/JointState` | 100Hz | fake 그룹: LPF 필터링된 상태 |
 | `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
-| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. 비접촉 시 0 발행 (stale 방지). |
+| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. **부호는 link-on-environment** (아래 참조). 비접촉 시 0 발행 (stale 방지). |
 | `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
@@ -251,6 +251,19 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 `"site"` 가 필요한 경우는 하나다: **소비자가 `R_link(q)` 를 적용하는 URDF 프레임이 site 가 매달린 MJCF body 와 다를 때.** 예를 들어 손의 URDF fingertip 프레임이 tip link 에서 회전된 bracket 링크면, body 프레임으로 내보낸 힘은 매 fingertip 마다 그 회전만큼 틀어진 채 도착한다 (`ur5e_p1b` 가 이 경우다 — index/middle/ring 90°, thumb 은 복합).
 
 기본이 `"body"` 인 것은 하위호환이다: 기존 씬의 ft_site 는 quat 이 없어 두 프레임이 수치적으로 동일하지만 `frame_id` 는 다르므로, 일괄 전환이 아니라 opt-in 이다. `"body"`/`"site"` 이외의 값은 fallback 없이 **Initialize 실패** — 오타가 조용히 `"body"` 로 읽히면 아무도 못 알아챈다.
+
+##### 부호 규약 — link-on-environment
+
+발행되는 force/torque 는 **손끝이 환경에 가하는** 힘이다 (`fingertip → object`). ROS wrench 를 "프레임에 가해지는 하중" 으로 읽는 관례와는 반대 방향이므로 처음 보면 어색하지만, 이 저장소에서는 이쪽이 표준이다:
+
+- `rtc_msgs/FingertipSensor.f` 가 finger-on-object 이고 (proto-1b firmware, 1a ONNX),
+- `rtc::grasp::PullContactConfig::force_sign` 의 기본값이 `+1` 인 이유가 그것이다.
+
+즉 **sim lane 과 실기 센서 lane 이 같은 부호**여서, `demo_shared.yaml` 의 `pull_estimator` 블록이 sim/실기 양쪽에서 그대로 맞는다. 구현상으로는 MuJoCo `reduce="netforce"` 가 내는 geom1-on-environment 값을 **그대로 통과**시킨다 (`<contact body1="...">` 의 body 가 손끝이므로). 
+
+> 이전에는 이 lane 이 이 값을 negate 해서 env-on-link 로 발행했고, 그래서 `iiwa7_leap` 이 tip 마다 `force_sign: -1.0` 을 pin 해야 했다. 그 pin 은 제거됐다 — **어떤 프로필에도 per-tip 반전이 남아 있으면 안 된다.** 반전을 되살리면 파지 중에도 `f_n` 이 전 contact 음수가 되어 all-zero estimate 가 나간다 (2026-07-22 실기에서 관측된 실패).
+
+부호는 두 물리 oracle 이 고정한다: `test_contact_wrench_known_load` (파지한 물체에 건 **알려진 외력**이 lane 의 world 합으로 되나타나는지) 와 `ShippedPullEstimator` (그 lane 을 출하 프로필로 파싱해 in-plane 성분을 뽑는지). 시뮬레이터 쪽 negation 을 되살리면 전자가, 프로필에 `-1.0` 을 넣으면 후자가 red 가 된다.
 
 토픽 이름은 `<contact_wrench.topic_prefix>/<contact_sensor_name>/contact_wrench` — **MJCF `<contact name="...">` 값이 ROS topic segment 로 verbatim 전달** 되어 XML 과 1:1 round-trip 한다. Suffix 리스트는 ft_site 를 찾기 위한 *내부 site_stem* 도출에만 쓰임 (예: sensor `index_tip_contact` → site_stem `index_tip` → site `index_tip_ft_site`). LEAP profile 예시 (`topic_prefix: "/leap_hand"`): `/leap_hand/{index_tip_contact, middle_tip_contact, ring_tip_contact, thumb_tip_contact}/contact_wrench`. 비-LEAP MJCF 도 sensor↔site suffix 규약만 맞으면 wrapper 코드 변경 없이 자동 토픽 생성.
 

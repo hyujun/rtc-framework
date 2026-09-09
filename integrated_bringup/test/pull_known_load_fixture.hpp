@@ -41,8 +41,10 @@ inline constexpr double kPullRateHz = 500.0;
 inline constexpr double kPullDt = 1.0 / kPullRateHz;
 
 /// The sim profile — the one whose pull_estimator block is fed by the
-/// simulator's contact-wrench lane, and therefore the one carrying the sign
-/// flip that turns env-on-link into finger-on-object.
+/// simulator's contact-wrench lane. It used to carry a per-tip `force_sign:
+/// -1.0` turning env-on-link into finger-on-object; the simulator now publishes
+/// that convention itself, so what this profile pins is the ABSENCE of an
+/// inversion.
 inline constexpr const char* kPullProfile = "iiwa7_leap";
 
 /// tree-model `leap` tip_links order (config/iiwa7_leap sim.yaml) — the
@@ -130,15 +132,18 @@ inline std::array<Eigen::Vector3d, 3> PullPinchForces(const Eigen::Vector3d& loa
           -0.5 * squeeze * kPinchNormal - share};
 }
 
-/// Turn those into what the SIM LANE publishes for them: env-on-link (the
-/// negative of finger-on-object) in each fingertip's own frame. This is the
-/// step the shipped `force_sign: -1.0` has to undo.
+/// Turn those into what the SIM LANE publishes for them: link-on-environment —
+/// the same sign as finger-on-object — resolved into each fingertip's own
+/// frame. Only the frame changes here; there is no sign step left, because
+/// rtc_mujoco_sim now publishes the convention the estimator sums (it used to
+/// publish env-on-link, and the shipped profile pinned `force_sign: -1.0` to
+/// undo it).
 inline std::array<FtSample, 4> PullLaneSamples(const Eigen::Vector3d& load,
                                                double squeeze = kPullSqueezeN) {
   const std::array<Eigen::Vector3d, 3> contact = PullPinchForces(load, squeeze);
   std::array<FtSample, 4> out{};
   for (std::size_t i = 0; i < 3; ++i) {
-    const Eigen::Vector3d link = kPullTipRotations[i].transpose() * (-contact[i]);
+    const Eigen::Vector3d link = kPullTipRotations[i].transpose() * contact[i];
     out[i].force = {static_cast<float>(link.x()), static_cast<float>(link.y()),
                     static_cast<float>(link.z())};
     out[i].valid = true;

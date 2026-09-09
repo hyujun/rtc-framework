@@ -201,19 +201,36 @@ void MuJoCoSimulator::ReadContactWrenches() noexcept {
         continue;
       }
 
-      // MuJoCo's netforce contact sensor reports the world-frame wrench in
-      // the "geom1-on-environment" convention (force/torque that geom1 applies
-      // to whatever it contacts). ROS WrenchStamped convention used here is
-      // "environment-on-link" (so the published force is the load felt by the
-      // fingertip body). We therefore negate at read time.
+      // SIGN — link-on-environment, passed through unchanged.
+      //
+      // MuJoCo's netforce contact sensor reports the world-frame wrench in the
+      // "geom1-on-environment" convention: the force/torque that geom1 applies
+      // to whatever it touches. The MJCF selects geom1 by body (`body1="..."`
+      // on the <contact> sensor), and that body is the fingertip, so the raw
+      // sensordata is ALREADY fingertip-on-environment — which is the
+      // convention this lane publishes. Hence no negation here.
+      //
+      // That is deliberate and it is the repo-wide convention, not a local
+      // choice: rtc_msgs/FingertipSensor.f is finger-on-object, and
+      // rtc::grasp::PullContactConfig::force_sign defaults to +1 because of it.
+      // This lane used to negate into the ROS "environment-on-link" reading,
+      // which made the simulator the one publisher in the repo disagreeing with
+      // its own consumers — every sim profile then had to undo it downstream,
+      // and ur5e_p1b (whose demo_shared.yaml keeps the +1 default because the
+      // real 1b firmware is finger-on-object) silently did not, gating every
+      // contact out of the pull estimate.
+      //
+      // Do NOT reintroduce a sign knob here. force_sign is the designated
+      // conversion point; a second one on the publisher side makes "both
+      // flipped" indistinguishable from "neither flipped".
       const std::array<double, 3> f_w = {
-          -static_cast<double>(sensor_data[kContactSensorForceOffset + 0]),
-          -static_cast<double>(sensor_data[kContactSensorForceOffset + 1]),
-          -static_cast<double>(sensor_data[kContactSensorForceOffset + 2])};
+          static_cast<double>(sensor_data[kContactSensorForceOffset + 0]),
+          static_cast<double>(sensor_data[kContactSensorForceOffset + 1]),
+          static_cast<double>(sensor_data[kContactSensorForceOffset + 2])};
       const std::array<double, 3> tau_pc_w = {
-          -static_cast<double>(sensor_data[kContactSensorTorqueOffset + 0]),
-          -static_cast<double>(sensor_data[kContactSensorTorqueOffset + 1]),
-          -static_cast<double>(sensor_data[kContactSensorTorqueOffset + 2])};
+          static_cast<double>(sensor_data[kContactSensorTorqueOffset + 0]),
+          static_cast<double>(sensor_data[kContactSensorTorqueOffset + 1]),
+          static_cast<double>(sensor_data[kContactSensorTorqueOffset + 2])};
       sample.dist = static_cast<double>(sensor_data[kContactSensorDistOffset]);
       sample.point_world[0] = static_cast<double>(sensor_data[kContactSensorPosOffset + 0]);
       sample.point_world[1] = static_cast<double>(sensor_data[kContactSensorPosOffset + 1]);

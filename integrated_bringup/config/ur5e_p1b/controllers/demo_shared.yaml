@@ -222,9 +222,11 @@ demo_shared:
     # exactly what the estimator sums — no conversion needed.
     #
     # This matches rtc_msgs/FingertipSensor.msg, whose sign contract is
-    # finger-on-object. (iiwa7_leap is the exception in this repo: it has no
-    # fingertip sensor and feeds the sim contact-wrench lane, which is
-    # env-on-link, so it pins force_sign: -1.0.) Verified 2026-07-22 on a thumb+middle plate pinch: with force_sign -1 the
+    # finger-on-object. It also matches SIM: rtc_mujoco_sim's contact-wrench
+    # lane (sim.yaml fingertip_wrench_topics) publishes link-on-environment,
+    # which is the same sign, so this block is correct in both modes and no
+    # profile in this repo pins a per-tip inversion any more.
+    # Verified 2026-07-22 on a thumb+middle plate pinch: with force_sign -1 the
     # per-contact f_n = -n·f_obj came out -2.42 N (thumb) / -1.65 N (middle),
     # gating every contact out (valid_contact_count 0, all-zero estimate); with
     # +1 the same sample gives +2.42 / +1.65 and a valid 2-contact estimate.

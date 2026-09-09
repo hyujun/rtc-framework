@@ -340,11 +340,18 @@ struct JointGroup {
     bool use_site_frame{false};
   };
 
-  // Transformed wrench sample (link frame). Heap-free POD.
+  // Transformed wrench sample, expressed in the frame ContactWrenchInfo::
+  // frame_id names. Heap-free POD.
+  //
+  // SIGN: link-on-environment ("what the fingertip does to what it touches"),
+  // matching rtc_msgs/FingertipSensor.f and the +1 default of
+  // rtc::grasp::PullContactConfig::force_sign. See ReadContactWrenches for why
+  // this is a pass-through of MuJoCo's netforce sensor rather than the ROS
+  // environment-on-link reading, and why no sign knob belongs on this side.
   struct ContactWrenchSample {
     bool found{false};
-    std::array<double, 3> force{0.0, 0.0, 0.0};        // object-on-fingertip, in link frame
-    std::array<double, 3> torque{0.0, 0.0, 0.0};       // about ft_site origin, in link frame
+    std::array<double, 3> force{0.0, 0.0, 0.0};        // fingertip-on-object
+    std::array<double, 3> torque{0.0, 0.0, 0.0};       // about ft_site origin, same sign
     std::array<double, 3> point_world{0.0, 0.0, 0.0};  // contact point in world (debug)
     double dist{0.0};
   };

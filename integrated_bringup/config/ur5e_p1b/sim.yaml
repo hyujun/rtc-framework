@@ -47,10 +47,18 @@
           # 4..6 zero-filled). Empty list disables the lane.
           #
           # SIGN. This lane is geometry_msgs/WrenchStamped, which rtc_mujoco_sim
-          # publishes env-on-link (ROS convention) — the OPPOSITE of
-          # rtc_msgs/FingertipSensor.f, which is finger-on-object. p1b inherits
-          # exactly the situation iiwa7_leap is already in; consumers that need
-          # finger-on-object multiply by -1.
+          # publishes **link-on-environment** — the SAME sign as
+          # rtc_msgs/FingertipSensor.f (finger-on-object), which is what the
+          # real 1b firmware feeds these same inference slots. So sim and real
+          # agree here and no consumer needs a conversion: the pull estimator
+          # keeps force_sign at its +1 default in demo_shared.yaml for both.
+          #
+          # It was not always so. The lane used to publish env-on-link (the ROS
+          # wrench reading), which made this profile's +1 wrong in sim while
+          # being right on hardware — a solid grasp published an all-zero
+          # estimate because every f_n = -n·f_obj came out negative. Flipping
+          # the simulator (mujoco_sim_loop.cpp ReadContactWrenches) fixed that
+          # rather than splitting demo_shared.yaml per mode.
           fingertip_wrench_topics:
             - "/p1b/l_thumb_tip_contact/contact_wrench"
             - "/p1b/l_index_tip_contact/contact_wrench"

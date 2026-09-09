@@ -3,17 +3,21 @@
 // fingertip force lane that is carrying a known external load.
 //
 // WHY THIS EXISTS SEPARATELY FROM test_pull_estimator_wiring.cpp. That file
-// builds its own inline YAML with `force_sign: 1.0`, a fixed plane normal and
-// identity fingertip rotations. It is a good unit test of the wiring and a poor
-// test of the deployed system: the value that actually decides which way the
-// arm will be pushed — `force_sign: -1.0`, four times over in
+// builds its own inline YAML with a fixed plane normal and identity fingertip
+// rotations. It is a good unit test of the wiring and a poor test of the
+// deployed system: the value that actually decides which way the arm will be
+// pushed — the resolved per-tip `force_sign` in
 // config/iiwa7_leap/controllers/demo_shared.yaml — was read by no test in this
-// repo, so deleting it shipped green (measured: 217 tests across five suites
-// stay passing with it flipped). That number exists because the sim fingertip
-// lane is deliberately env-on-link (rtc_mujoco_sim negates MuJoCo's
-// geom1-on-environment netforce to the ROS wrench convention) while the
-// estimator sums finger-on-object. The two conventions meet in that YAML and
-// nowhere else, which makes the YAML the thing to pin.
+// repo, so changing it shipped green (measured: 217 tests across five suites
+// stayed passing when the then-shipped -1.0 was flipped).
+//
+// That -1.0 is gone. rtc_mujoco_sim used to negate MuJoCo's
+// geom1-on-environment netforce into the ROS env-on-link convention while the
+// estimator sums finger-on-object, and the profile bridged the gap per tip.
+// The simulator now publishes link-on-environment, the two agree, and the
+// profile takes the +1 default — so what this file pins flipped from "the
+// inversion is present" to "no inversion is present", with the same load-based
+// oracle underneath either way.
 //
 // The physics, the fixture and how the simulator half composes with this one
 // are documented in pull_known_load_fixture.hpp.
@@ -68,18 +72,19 @@ class ShippedPullEstimator : public ::testing::Test {
   PullEstimatorWiring w_;
 };
 
-// ── 1. The shipped sign flip, stated where a reader can find it ─────────────
+// ── 1. The shipped sign, stated where a reader can find it ─────────────────
 //
 // The two behavioural tests below already fail if this value moves, but they
 // fail as a sign error in a vector. This one names the file and the field.
-TEST_F(ShippedPullEstimator, EveryTipInvertsTheEnvOnLinkSimLane) {
+TEST_F(ShippedPullEstimator, EveryTipPassesTheSimLaneThroughUnchanged) {
   ASSERT_EQ(cfg_.num_pull_contacts, 4);
   for (std::size_t i = 0; i < static_cast<std::size_t>(cfg_.num_pull_contacts); ++i) {
-    EXPECT_DOUBLE_EQ(cfg_.pull_contacts[i].force_sign, -1.0)
+    EXPECT_DOUBLE_EQ(cfg_.pull_contacts[i].force_sign, 1.0)
         << fx::kPullProfile << " tip " << w_.roles[i]
-        << ": the simulator publishes env-on-link contact wrenches and the estimator "
-           "sums finger-on-object, so this profile must invert. Dropping it inverts "
-           "every f_n gate — the 2026-07-22 p1b failure, where a solid grasp published "
+        << ": the simulator publishes link-on-environment contact wrenches and the "
+           "estimator sums finger-on-object — the same convention — so this profile "
+           "must NOT invert. Re-introducing the historical -1.0 inverts every f_n "
+           "gate: that is the 2026-07-22 p1b failure, where a solid grasp published "
            "an all-zero estimate.";
   }
   // The gravity model must stay off, or the identity this file tests acquires a
