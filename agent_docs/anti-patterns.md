@@ -62,6 +62,14 @@
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
   - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
 
+### AP-RT-8: RT tick 에서 `std::string` 을 값으로 반환하는 접근자 호출 ([invariants.md](invariants.md) RT-1 위반)
+
+- **증상**: 없다. 이것이 이 항목의 요점이다 — 짧은 이름은 SSO(small-string optimization) 버퍼에 들어가 힙을 안 건드리므로 alloc 게이트도 green 이고 코드도 평범해 보인다. 이름이 SSO 임계(libstdc++ 15 자)를 넘는 순간 RT tick 이 `operator new` 를 부르기 시작하는데, 그때 바뀐 것은 **YAML 의 device group 이름 한 줄**뿐이라 원인이 코드에 없다
+- **원인**: `RTControllerInterface::GetPrimaryDeviceName()` / `GetSecondaryDeviceName()` 은 `std::string` 을 **값으로** 반환한다 (`topic_config_.groups[i].first` 의 복사). 이름으로만 보면 조회 같아 tick 안에서 부르기 쉽다. `GetDeviceNameConfig(name)` 도 그 문자열을 인자로 받으므로 둘은 대개 붙어 다닌다
+- **본 repo 사례**: `DemoInferenceController::PackObservation` 이 fingertip stride 를 tick 마다 `GetDeviceNameConfig(GetSecondaryDeviceName())` 로 읽었다 (`f6803580` 이전). 현재 그룹 이름이 `p1b` 라 실측 allocation 은 0 이었고 게이트도 통과했다 — 결함이 아니라 **잠복**이었다
+- **탐지**: RT tick 함수 본문에서 `Get*DeviceName()` 호출을 grep. 값 반환 접근자 일반으로 넓히려면 시그니처가 `std::string` (참조 아님) 인 것을 본다
+- **복구**: configure(비-RT)에서 필요한 값을 **해석해 POD 멤버로 캐시**한다 (위 사례는 `fingertip_stride_` 하나). 문자열 자체가 tick 에 필요하면 `std::string_view` 또는 인덱스로 바꾼다. tick 에서 이름으로 map 을 조회하는 형태 자체가 이미 신호다 — device 인덱스는 `topic_config_.groups` 순서로 configure 때 고정된다
+
 > **AP-RTT-3 · AP-RTT-4 는 결번**이다 (은퇴 사유는 기록되지 않았다). AP-RTT-5 는 AP-THREAD-1 로 재분류됐다. ID 는 재사용하지 않는다.
 
 ### AP-RTT-1: `realtime_tools` primitive 도입 시 예방 규칙 (dedicated thread / ctor heap / drop 추적)

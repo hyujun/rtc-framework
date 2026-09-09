@@ -24,7 +24,7 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
   "{activate_controllers: [demo_task_controller], deactivate_controllers: [demo_wbc_controller], strictness: 1, timeout: {sec: 1}}"
 ```
 
-- 이름: `demo_joint_controller` / `demo_task_controller` / `demo_wbc_controller` / `demo_compliance_controller`.
+- 이름: `demo_joint_controller` / `demo_task_controller` / `demo_wbc_controller` / `demo_compliance_controller` / `demo_inference_controller`.
 - **Pure deactivate 불가** (single-active D-A1) — 항상 교체 대상을 activate 에 지정.
 - 토픽: joint/task → `/<ctrl>/p1a/grasp_state`, wbc → `/<ctrl>/p1a/wbc_state`. 활성 컨트롤러는 `/rtc_cm/active_controller_name` (latched).
 
@@ -50,5 +50,6 @@ DISPLAY=:1 ros2 run integrated_bringup demo_controller_gui   # 창 제목 "Demo 
 - **p1a 의 shipped scene 에는 잡을 물체가 없다** (`ur5e_assm_v1/mjcf/scene_with_hand.xml` = floor plane 만), 그래서 거기서는 **접촉이 필요한 경로 (contact_stop latch, grasp detection true) 를 sim 으로 검증 불가**. 물체가 있는 `hand_description/robots/demo/mjcf/scene_with_object.xml` 은 다른 hand 모델을 `<include>` 하므로 `model_path` 만 바꿔 끼우면 joint-name 매핑이 깨져 *오독 가능한* 결과가 나온다 — 도달 불가를 그대로 보고하는 것이 옳다.
 - **p1b 는 다르다** — `scene_with_table.xml` + `object_pool` 로 작업대 위에 물체가 하나 올라와 있으므로 접촉 검증이 **가능하다**. 다만 손을 그냥 내리는 것으로는 안 된다: palm-down 자세에서 손가락은 옆을 향하고 **`wrist_2_link` · `l_palm_link` 가 상판에 먼저 닿아** 팔이 `shoulder_lift ≈ -0.72` 에서 멈추며, 물체까지 손 아래를 받쳐 손끝을 띄운다. 실제로 손끝에 하중을 거는 가장 짧은 경로는 **손을 닫아 둔 채 `/sim/set_external_wrench` 로 물체를 위로 밀어올리는 것** (`body_name: pool_<obj>_object`, +z 60 N) — 실측으로 `l_ring_tip_contact` 에 39 N 이 걸렸다. 그리고 **joint_states 를 kinematic FK 로 재현해 접촉을 추정하지 말 것**: 이 손은 폐쇄 체인이라 수동 linkage 관절이 qpos 에 따로 있고, 그것을 0 으로 둔 재구성은 손끝이 상판을 1 cm 파고든 것처럼 보이는 **허상**을 만든다.
 - **force_pi FSM 은 물체 없이 GRASP 하면 ~1.3s 만에 Idle 로 자동 복귀**한다 (approach ramp 완료/abort). phase 가 non-Idle 인 창을 노리는 검증은 순차 CLI 로 놓친다 — 한 rclpy 프로세스 안에서 `grasp_command` 호출 직후 대상 호출을 연달아 실행할 것.
+- **`demo_inference_controller` 는 정책 파일 없이도 뜬다** (`allow_missing_model: true`) — 그때는 매 tick **활성화 시점에 래치된 자세**를 유지한다. 이 경로의 회귀 센서는 hold 자체가 아니라 **drift** 다: 측정 q 를 매 tick 그대로 명령하면 position servo 오차가 0 이라 토크가 안 나오고 팔이 중력에 처진다 (실측 15 s 에 0.0147 rad, 시작 자세에서 0.2 rad 이탈). 래치 후 실측은 15 s 에 **0.000000 rad**. `/ur5e/joint_states` 를 15 s 받아 첫 샘플과의 최대 편차를 보면 된다 — **QoS 는 BEST_EFFORT depth 1** 이어야 하고 (기본 RELIABLE 구독자는 "incompatible QoS" 경고와 함께 0 메시지를 받는다) sim 은 lock-step 이라 `/ur5e/joint_command` 를 직접 구독하는 것보다 이쪽이 확실하다.
 - 기본 active 컨트롤러는 launch 마다 다르다 — p1a 는 `demo_wbc_controller`, **p1b 는 `demo_joint_controller`**. p1b 에서 `DemoWbcController timing:` 로그가 안 보이는 것은 기동 실패가 아니다.
 - 백그라운드 빌드/테스트와 Stop hook 의 colcon 동시 실행 금지 — foreground `tail --pid=<pid> -f /dev/null` 로 대기.

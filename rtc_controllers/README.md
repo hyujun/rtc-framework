@@ -124,7 +124,10 @@ rtc_controllers/
 │   │   ├── osc_params.hpp                    -- 태스크 PD (가속도형) + §6.5 DLS + posture + E-STOP 감쇠
 │   │   ├── task_impedance_params.hpp         -- §6.2/§6.3 게인 + TaskSelection · TaskImpedanceFormulation
 │   │   ├── task_admittance_params.hpp        -- §7.2/§7.3 게인 + wrench 소스
-│   │   └── cascaded_compliance_params.hpp    -- outer/inner 게인 + §7.6 임계
+│   │   ├── cascaded_compliance_params.hpp    -- outer/inner 게인 + §7.6 임계
+│   │   └── policy_io_params.hpp              -- 학습 정책 I/O 스키마. `PolicyIoParams` + `ParsePolicyIoParams(YAML::Node, FeatureSizeFn)`. feature id 는 robot 사실이라 크기 표를 **caller 가 준다** (ARCH-1). 거부 대상: 미지 feature id · feature 합 ≠ 텐서 폭 · 부분 affine lane · head 밖 slice · **같은 head 안의** slice 겹침 · decimation < 1
+│   ├── inference/
+│   │   └── policy_io.hpp                     -- 학습 정책 텐서 마샬링 코어 (header-only, 무상태, RT). `PackSegment` / `ApplyAffine` / `UnpackSlice` / `BlendPosture` 넷뿐이고 `std::span` 만 본다 — `rtc_inference` 에 의존하지 않으므로 두 패키지는 sibling 으로 남고 버퍼가 유일한 계약이다. pack/unpack 은 **all-or-nothing** (반쪽 관측은 유효한 관측과 구별되지 않는다), affine 은 NaN 을 세탁하지 않으며, posture blend 는 비유한 스칼라를 clamp 하지 않고 **거부**한다 (NaN 비교는 전부 false 라 clamp 가 통과시킨다)
 │   ├── joint/
 │   │   ├── posture_law.hpp                   -- 영공간 자세 법칙 코어 (header-only, 무상태) — 토크형 PD `Kp·(q_ref−q) − Kd·q̇` 와 속도형 P `Kp·(q_ref−q)` **두 함수**. 레퍼런스 `q_ref` 를 인자로 받으므로 측정 seed(impedance·cascade)와 config `safe_position`(OSC)이 한 법칙이다. P 를 PD 의 `Kd=0` 으로 흡수하지 않는 이유는 비트 동치가 깨지기 때문 (부호 있는 0 — [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태). 채널 순서·사영 Nᵀ·활성화 램프는 바인딩 몫
 │   │   └── joint_pd_law.hpp                  -- 관절 공간 PD 법칙 코어 (header-only, 무상태). 궤적 **샘플**을 받고 생성기를 소유하지 않는다 — 어느 궤적이 어느 법칙을 먹이는지는 integration 계층의 구조 결정
@@ -164,7 +167,7 @@ rtc_controllers/
 │       └── grasp_state.hpp                   -- GraspStateData POD (SeqLock-호환). contact_flag 는 capability-aware: sensor A → native sigmoid prob, sensor B → derived binary (rtc_msgs/GraspState.msg 참조)
 ├── src/
 │   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
-│   ├── params/                               -- 위 스키마 파서 6종 구현
+│   ├── params/                               -- 위 스키마 파서 구현
 │   └── controllers/
 │       ├── estimation/
 │       │   ├── inertial_estimator.cpp

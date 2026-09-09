@@ -13,6 +13,7 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>rtc_controller_interface</depend>
   <depend>rtc_controllers</depend>
+  <depend>rtc_inference</depend>
   <depend>rtc_base</depend>
   <depend>rtc_msgs</depend>
   <depend>pinocchio</depend>
