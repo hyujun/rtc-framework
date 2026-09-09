@@ -34,9 +34,34 @@ on:
       - 'LICENSE'
       - '.gitignore'
 
-# 동일 브랜치 중복 실행 방지 — 새 push 시 이전 실행 자동 취소
+# 중복 실행 방지 — 단, push 런끼리는 서로 취소하지 않는다 (#506).
+#
+# 취소는 ref 단위인데 보상은 커밋 diff 단위라, 둘을 한 그룹에 두면 게이트가 조용히
+# 사라진다: 아래 `changes` job 의 paths-filter 는 `base:` 를 주지 않으므로 push 에서
+# **직전 커밋과의 diff** 만 본다. 그래서 코드 커밋의 런을 취소한 문서 커밋의 런은
+# 자기 diff 가 문서뿐이라 cpp=false 로 C++ job 을 전부 skip 하고, 브랜치는 green 인데
+# 그 코드는 어디서도 빌드·테스트되지 않는다. 게이트가 red 가 아니라 *부재* 하고,
+# 부재가 green 으로 보이는 것 — Stop hook 이 turn 안의 commit 을 놓치던 결함
+# (`c45fd09f`) 과 같은 양식이다.
+#
+# 2026-09-09 실측: run 34353592339 (`b8bbb9d4` = PR #503 머지, C++ 변경 전량) 이 26분
+# 뒤 문서 전용 `#505` 머지에 빌드 도중 잘렸고 (gated test = skipped), 그것을 취소한
+# run 34356250009 는 **success 인데 C++ job 전부 skipped** 였다.
+#
+# 처방: push 는 SHA 를 그룹 키에 넣어 커밋마다 독립 그룹이 되게 한다 — push 런 사이의
+# 취소가 원리적으로 불가능해진다. PR 은 `-pr` 로 묶여 종전대로 최신 push 가 이전 런을
+# 취소하는데, PR 런의 필터는 base(main) 와의 diff 라 새 런이 취소된 런의 몫을 **전부
+# 흡수**하므로 그 취소는 손실이 아니다. 대가는 main 에 커밋이 연달을 때 런이 병렬로
+# 뜨는 것 (러너 점유 + 같은 캐시 키에 save 경합, 지는 쪽은 warning).
+#
+# `cancel-in-progress: false` 로 낮추는 안은 같은 함정의 약한 판본이라 기각했다:
+# GitHub 은 그룹당 pending 런을 하나만 유지하고 **이전 pending 을 취소**하므로, 커밋이
+# 셋 연달으면 가운데 커밋이 똑같은 방식으로 게이트를 잃는다.
+#
+# docs-validate.yml / codeql.yml 은 같은 패턴을 그대로 둔다 — 근거는 각 파일의
+# concurrency 블록 주석.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
   cancel-in-progress: true
 
 # 최소 권한 원칙 — 전 job 은 read-only GITHUB_TOKEN 을 상속. Codecov 는 별도 secret

@@ -25,6 +25,10 @@ on:
     - cron: '0 3 * * 0'
   workflow_dispatch: {}
 
+# ros2-advanced-ci.yml 은 push 런이 서로 취소되지 않도록 SHA 를 그룹 키에 넣었지만
+# (#506), 여기는 ref 단위 취소를 그대로 둔다: 이 워크플로에는 `push` 트리거가 없다
+# (weekly schedule + workflow_dispatch). 연속 push 가 이전 런을 잘라 그 커밋의 분석이
+# 사라지는 경로 자체가 없고, 남는 취소는 수동 재실행이 자기 이전 실행을 덮는 것뿐이다.
 concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: true
