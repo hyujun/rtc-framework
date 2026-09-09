@@ -240,6 +240,30 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   거부하지 않는다. 옮긴 뒤 mutation 으로 확인 — 게이트를 무력화했을 때 red 가 나야 그 테스트가
   게이트를 잡고 있는 것이다 ([invariants.md](invariants.md) PROC-6)
 
+### AP-PROC-10: CI run 의 `success` 를 게이트 통과로 읽는다
+
+- **증상**: 브랜치 CI 가 green 인데 그 커밋의 빌드·테스트는 한 번도 안 돌았다. run conclusion 은
+  `success` 이고 실패한 job 도 없다 — 게이트가 red 가 아니라 **부재** 하고, 부재가 green 과 같은
+  색으로 보인다
+- **원인**: run 의 conclusion 은 **돌아간 job 들**의 합의일 뿐이라 `skipped` 는 성공으로 집계된다.
+  두 축이 그것을 만든다: (a) path filter 가 그 커밋 diff 에서 아무것도 못 잡아 heavy job 이 전부
+  skip, (b) `concurrency` + `cancel-in-progress` 가 앞 커밋의 런을 잘랐는데 **취소는 ref 단위,
+  보상은 커밋 diff 단위**라 자른 쪽이 그 일을 물려받지 않는다.
+  실측: 2026-09-09, PR #503 머지(C++ 변경 전량)의 런이 26분 뒤 문서 전용 머지에 빌드 도중 잘렸고,
+  그것을 자른 런은 **`success` 인데 C++ job 이 전부 `skipped`** 였다 — 그 커밋들은 PR 에서도
+  main 에서도 완료된 게이트가 없었고 로컬 `colcon test` 만이 증거였다 (#506)
+- **탐지**: run conclusion 이 아니라 **job 배열**을 본다 —
+  `gh run view <id> --json jobs --jq '.jobs[]|"\(.name)=\(.conclusion)"'`.
+  게이트 job 이 `skipped` / `cancelled` 면 그 커밋은 미검증이다. `cancelled` 는 하류를 `skipped`
+  로 전파시키므로 skipped 를 "무관해서 건너뜀" 으로 읽지 않는다. 취소 원인 감별은 job 의
+  `created_at`→`started_at`(큐 대기) 과 step 배열이고, run 이 `in_progress` 인 동안에는 로그가
+  아니라 `gh api repos/<o>/<r>/actions/jobs/<id>` 를 본다
+- **복구**: 취소된 런의 job 을 re-run 해 그 커밋에 완료된 게이트를 만든다
+  (`gh run rerun <id> --failed`; run 이 `in_progress` 면 거부되므로 형제 job 종료를 먼저 기다린다).
+  구조적으로는 push 런이 서로 취소되지 않게 concurrency group 에 SHA 를 넣는다 —
+  [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 의 concurrency 주석이 SSoT.
+  같은 양식의 Stop hook 결함(변경 집합이 비어 게이트가 조용히 부재)은 [CLAUDE.md](../CLAUDE.md) §4
+
 ## Controller-Specific
 
 > **AP-CTRL-2 · AP-CTRL-4 는 결번**이다 (은퇴 사유는 기록되지 않았다). ID 는 이력 참조를 위해 재사용하지 않는다.
