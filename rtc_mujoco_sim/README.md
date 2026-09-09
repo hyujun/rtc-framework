@@ -491,7 +491,7 @@ mujoco_simulator:
 | `state_topic` | string | 상태 퍼블리시 토픽 |
 | `sensor_topic` | string | MuJoCo 센서 퍼블리시 토픽 (빈 문자열 = 비활성화) |
 | `sensor_names` | string[] | XML 센서 이름 목록 (빈 배열 = 센서 없음, `["auto"]` = XML 전체) |
-| `contact_wrench.*` | (다양) | MJCF `mjSENS_CONTACT` → WrenchStamped 자동 발견 — 위 [Contact wrench auto-discovery](#contact-wrench-auto-discovery-mjcf-sensorcontact--ros-wrenchstamped) 절 참조. `enabled` / `topic_prefix` / `sensor_name_suffixes` / `reference_site_suffixes` / `reference_frame` / `publish_state` / `publish_debug` / `allow_partial_discovery` |
+| `contact_wrench.*` | (다양) | MJCF `mjSENS_CONTACT` → WrenchStamped 자동 발견 — 위 [Contact wrench auto-discovery](#contact-wrench-auto-discovery-mjcf-sensorcontact-→-ros-wrenchstamped) 절 참조. `enabled` / `topic_prefix` / `sensor_name_suffixes` / `reference_site_suffixes` / `reference_frame` / `publish_state` / `publish_debug` / `allow_partial_discovery` |
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
 | `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
 | `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
