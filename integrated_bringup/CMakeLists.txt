@@ -1165,6 +1165,12 @@ if(BUILD_TESTING)
   # Shipped initial_qpos: length/type (always) + MJCF keyframe agreement (skips
   # without the mujoco pip module, which CI installs and /usr/bin/python3 lacks).
   ament_add_pytest_test(test_shipped_initial_qpos test/test_shipped_initial_qpos.py)
+  # Shipped mujoco_simulator.yaml keys vs the node's declare_parameter list. An
+  # undeclared key is read as its compiled default with no error anywhere, so
+  # this is the cheap stand-in for the runtime launch that would otherwise be
+  # the only way to notice.
+  ament_add_pytest_test(test_shipped_sim_param_declared
+    test/test_shipped_sim_param_declared.py)
   ament_add_pytest_test(test_launch_shield_wiring test/test_launch_shield_wiring.py)
   ament_add_pytest_test(test_launch_hand_affinity_wiring
     test/test_launch_hand_affinity_wiring.py)
