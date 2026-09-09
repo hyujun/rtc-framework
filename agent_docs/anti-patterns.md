@@ -286,6 +286,13 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 
 ### AP-DOC-2: 판단의 *근거*를 두 번째 위치에 복사한다 (주석 포함)
 
+> **미해결 인스턴스 (2026-09-09 기준).** `integrated_bringup/src/controllers/compliance/lifecycle.cpp`
+> 의 게이트 블록 주석과 `ComplianceMarginGate` 헤더 주석이 같은 일반 유도를 각각 서술해
+> AP-PROC-9 가 **세 번째 사본**이 된다. 접는 법: 두 주석의 일반 유도를 AP-PROC-9 포인터로
+> 줄이고 site-specific 사실(δ 가 밴드에 하는 일, RT 와 같은 fallback)만 남긴다. 코드 주석
+> 변경이라 `integrated_bringup` build/test 를 끌어오므로, 그 패키지를 건드리는 다음 작업에
+> 묶는 것이 옳다 — 단독으로 열지 않는 이유가 그것이다.
+
 - **증상**: 같은 설계 판단의 근거가 두 곳 이상에 서술돼 있고, **틀릴 때 같이 틀린다**. AP-DOC-1
   이 값의 박제라면 이건 *이유*의 박제다. 값과 달리 근거는 검증기가 없어서, 코드가 그 근거를
   배신해도 두 사본 모두 조용히 남는다. 실측: `command_divergence` 를 배선하지 않은 이유가
