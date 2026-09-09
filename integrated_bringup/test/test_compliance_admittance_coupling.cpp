@@ -1023,6 +1023,140 @@ TEST(ComplianceAdmittanceCoupling, TheRampArmsOnTheFirstWrenchEvenWithNoBiasAver
   EXPECT_EQ(d.Run(kSettleTicks, ForceX(kProbeForceX)).alpha, 1.0);
 }
 
+// ── #469 D-A15: a re-seed from the measurement collapses x̃ with it ─────────
+
+/// Somewhere the shipped iiwa7_leap trajectory can actually go. The VALUE does
+/// not matter to any assertion below — what matters is that a goal arrives at
+/// all, because the defect is in how X_d is re-seeded, not in where it goes.
+constexpr std::array<double, 6> kSomeGoal = {0.45, 0.10, 0.55, 0.0, 0.0, 0.0};
+
+TEST(ComplianceAdmittanceCoupling, ANewGoalCollapsesTheCompliantFrameInsteadOfCountingItTwice) {
+  // `start_pose = control_pose` — the trajectory re-seeds X_d from the MEASURED
+  // control frame, which is already realising X_c = X_d ⊕ x̃. So a deviation left
+  // standing is composed onto it a second time and the whole of it arrives as
+  // task error on one tick: at the §7.4 box that is 0.15 m against ik_kp_pos = 5,
+  // a 0.75 m/s command, and `pose_error_limit` (0.5 m) does not catch it.
+  //
+  // Under K_p^a = 200 the spring erased this within a time constant. D-A3 makes
+  // it permanent, which is what turned a transient into a defect (#469).
+  auto ctrl = BringUp(ComplianceConfig());
+  const auto& law = ctrl->GetAdmittanceParamsForTesting().admittance;
+  Driver d{ctrl.get()};
+
+  d.Run(kSettleTicks, Wrench6{});
+  const auto loaded = d.Run(kResponseTicks, ForceX(kProbeForceX));
+  ASSERT_GT(loaded.deviation[0], 0.01)
+      << "no deviation was accrued, so nothing can be double-counted";
+  ASSERT_LT(loaded.deviation[0], law.max_displacement_lin - 0.01)
+      << "the frame is against the §7.4 box, which bounds the step this test measures";
+  const Eigen::Vector3d before = loaded.tcp_position;
+
+  ctrl->SetDeviceTarget(0, std::span<const double>(kSomeGoal));
+  // The goal tick runs UNLOADED so what follows measures the step and not the
+  // deviation re-accruing on top of it.
+  const auto seeded = d.Run(1, Wrench6{});
+  // NOT exactly zero, and the residue is the conditioner's low-pass history
+  // rather than a leftover deviation: the re-seed collapses x̃, then this same
+  // tick's Step runs against a filter that is still decaying from the probe
+  // force, which integrates ~4e-6 m. The bound is three orders under the ~0.078 m
+  // a surviving deviation would show, so nothing is being absorbed here.
+  EXPECT_LT(std::abs(seeded.deviation[0]), 1e-4)
+      << "x̃ survived the re-seed — X_d moved onto the measurement that already contained it";
+
+  // AND THE ARM DID NOT MOVE, in either direction. This is the half that says
+  // the collapse is not itself a jump: the re-seed starts FROM the measurement,
+  // so X_c_new is exactly where the arm is standing and the hand-guided
+  // displacement is kept. Over these ticks the only legitimate travel is the new
+  // trajectory's own (0.01 m/s shipped ⇒ ~1 mm), against ~31 mm of lurch for a
+  // frame counted twice.
+  constexpr int kWatchTicks = 50;
+  const auto after = d.Run(kWatchTicks, Wrench6{});
+  EXPECT_LT((after.tcp_position - before).norm(), 5e-3)
+      << "the arm was commanded away from where it stood — either the deviation was applied "
+         "twice, or collapsing it pulled the arm back and threw the guided pose away";
+}
+
+TEST(ComplianceAdmittanceCoupling, TheDisplacementEnvelopeIsSpentPerReSeedNotPerActivation) {
+  // The consequence of the collapse, and the reason it is an improvement rather
+  // than a trade: with K_p^a = 0 nothing else ever returns x̃, so an activation
+  // that guided its way to `max_compliant_displacement` had no compliance left
+  // for the rest of its life. A re-seed gives the envelope back.
+  auto ctrl = BringUp(ComplianceConfig());
+  const auto& law = ctrl->GetAdmittanceParamsForTesting().admittance;
+  Driver d{ctrl.get()};
+
+  d.Run(kSettleTicks, Wrench6{});
+  const double first = d.Run(kResponseTicks, ForceX(kProbeForceX)).deviation[0];
+  ASSERT_GT(first, 0.01);
+
+  ctrl->SetDeviceTarget(0, std::span<const double>(kSomeGoal));
+  d.Run(1, Wrench6{});
+  const double second = d.Run(kResponseTicks, ForceX(kProbeForceX)).deviation[0];
+
+  EXPECT_NEAR(second, first, 5e-3)
+      << "the second guide did not start from zero — the envelope is still being spent per "
+         "activation";
+  EXPECT_LT(second, law.max_displacement_lin - 0.01)
+      << "the second guide ran into the §7.4 box, which is what a frame that accumulates across "
+         "re-seeds does";
+}
+
+TEST(ComplianceAdmittanceCoupling, AControlFrameKindChangeDisownsTheWrenchWithTheFrame) {
+  // THE OTHER HALF OF D-A15, and the one `admittance_.Reset()` alone does not
+  // cover. `wrench_apply_point_` is the virtual TCP the source published from,
+  // and ONLY `verdict.publish` — which requires `vtcp.valid` — ever moves it. So
+  // on the tick the vTCP goes invalid, `ctrl_pos` hops to tool0 while the apply
+  // point stays behind, and the pipeline transports the force across the whole
+  // vTCP offset: a moment the pull estimate never carried (D-A2), against
+  // K_p^a_rot = 0, which never gives it back.
+  //
+  // `ClassifyFrameTransition`'s own comment says a frame may flicker
+  // valid/invalid every tick and needs no hysteresis. True of the GOAL lane,
+  // which re-seeds to zero error; the wrench lane has to disown the sample.
+  // THE VIRTUAL TCP IS TURNED ON BY HAND HERE, and that is a statement about
+  // which profile this fixture models rather than a convenience. `ur5e_p1b` and
+  // `ur5e_p1a` — the two profiles that run this controller on hardware, and the
+  // ones the 2026-09-04 diagnosis came from — ship `virtual_tcp_mode: centroid`,
+  // so the control point IS the vTCP there and the transition below is a thing
+  // that happens to them. `iiwa7_leap`, the only profile with a model fixture,
+  // ships `disabled`. Driving the shipped iiwa7_leap gains would leave
+  // `use_vtcp_frame` false for the whole run and the kind could never change, so
+  // the test would pass while reaching none of the code it names.
+  auto ctrl = BringUp(ComplianceConfig());
+  Driver d{ctrl.get()};
+
+  const Eigen::Vector3d tool0_origin = d.Run(1, Wrench6{}).task_origin;
+  auto gains = ctrl->get_gains();
+  gains.vtcp.mode = integrated_bringup::VirtualTcpMode::kCentroid;
+  ctrl->set_gains(gains);
+
+  const Eigen::Vector3d vtcp_origin = d.Run(kSettleTicks, Wrench6{}).task_origin;
+  ASSERT_GT((vtcp_origin - tool0_origin).norm(), 0.01)
+      << "the control point never moved onto the virtual TCP, so there is no frame KIND for the "
+         "change below to flip — every assertion after this would be vacuous";
+
+  const auto loaded = d.Run(kResponseTicks, ForceX(kProbeForceX));
+  ASSERT_GT(loaded.deviation[0], 0.01) << "nothing was accrued to be carried across the change";
+  ASSERT_TRUE(loaded.status.valid) << "there is no sample to disown";
+
+  // Turn it back off. `use_vtcp_frame` follows on the next tick, so the control
+  // point moves back to tool0 and ClassifyFrameTransition reports kReseed with
+  // the frame KIND changed — the same branch a vTCP that stops resolving
+  // mid-grasp reaches, which is the shipped way in.
+  gains.vtcp.mode = integrated_bringup::VirtualTcpMode::kDisabled;
+  ctrl->set_gains(gains);
+
+  const auto flipped = d.Run(1, ForceX(kProbeForceX));
+  EXPECT_FALSE(flipped.status.valid)
+      << "the sample outlived the frame it was measured in — its apply point now names a point "
+         "the control frame has left";
+  EXPECT_LT(flipped.wrench_lwa.tail<3>().norm(), 1e-9)
+      << "the transport turned the vTCP offset into a lever arm and invented a moment (D-A2 says "
+         "this wrench carries none)";
+  EXPECT_TRUE(flipped.deviation.isZero(0.0))
+      << "the compliant frame survived a re-seed onto a different control point";
+}
+
 // ── Config validation ───────────────────────────────────────────────────────
 
 TEST(ComplianceAdmittanceCoupling, ANonPositiveDegradedRecoveryTimeIsRejected) {

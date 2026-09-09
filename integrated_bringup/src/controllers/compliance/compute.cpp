@@ -439,6 +439,28 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       // point: the task error stays exactly zero and the arm does not move. This
       // is also why a frame that flickers valid/invalid needs no latch or
       // hysteresis — every tick re-seeds to zero error.
+      //
+      // TRUE OF THE GOAL LANE, NOT OF THE WRENCH (#469 D-A15). When the control
+      // point changes KIND — vTCP ⇄ tool0 — the sample the pipeline is holding
+      // was measured somewhere the control frame no longer is:
+      // `wrench_apply_point_` is the vTCP the source published from, and only
+      // `verdict.publish` (which requires `vtcp.valid`) ever moves it. So on the
+      // tick the vTCP goes invalid, `ctrl_pos` hops to tool0 while the apply
+      // point stays behind, and the pipeline's transport turns the whole vTCP
+      // offset into a lever arm for the length of the fade — a moment the pull
+      // estimate never carried (D-A2), against K_p^a_rot = 0, which never
+      // returns it. Repeated over grasp/release cycles it walks the angular
+      // deviation toward the §7.4 box and stays.
+      //
+      // Disowning is what every other frame-related hold here already does
+      // (kHoldExternal, kExpireExternal, the non-finite Jacobian path), and for
+      // the same reason. Gated on the KIND rather than on any re-seed so a
+      // member-mask change — same frame kind, control point merely moved — keeps
+      // its conditioner state; that case is one tick of travel, exactly like the
+      // steady-state lever arm.
+      if (target_frame_id_.is_vtcp != cur_id.is_vtcp && compliance_engaged_) {
+        DisengageCompliance();
+      }
       SeedHoldTarget(control_pose, dev0, cur_id);
       target_seqlock_.Store(current_target_slot_);
       break;
@@ -686,6 +708,28 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
         desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
       }
       new_target_pending_ = false;
+      // ── D-A15: X_d MOVED TO THE MEASUREMENT, SO x̃ GOES WITH IT (#469) ────
+      //
+      // `start_pose` above is `control_pose` — the MEASURED control frame, which
+      // is already realising X_c = X_d ⊕ x̃. Leaving x̃ standing makes the very
+      // next composition `X_d_new ⊕ x̃ = 측정 + x̃`: the deviation is counted a
+      // second time, and the arm is handed the whole of it as task error on this
+      // one tick. At the §7.4 box that is a 0.15 m step against `ik_kp_pos` — a
+      // 0.75 m/s command on p1b, and `pose_error_limit` (0.5 m) does not catch
+      // it. K_p^a = 200 made this a transient the spring erased; D-A3 makes it
+      // permanent, which is what turned it into a defect.
+      //
+      // THIS DOES NOT UNDO THE HAND-GUIDING. The re-seed starts FROM the
+      // measurement, so X_c_new = 측정 = where the arm is standing: the command
+      // is continuous and the guided displacement is kept. What changes is that
+      // the §7.4 envelope is spent per re-seed instead of per activation — which
+      // is strictly better, since today a guide that uses all 15 cm kills
+      // compliance for the rest of the activation.
+      //
+      // NOT the `ẋ̃ ≈ 0` auto re-anchor §5/§10 defer: that one is a heuristic
+      // trigger for extending CONTINUOUS guiding, and it stays deferred. This
+      // fires only where the binding itself moves X_d.
+      admittance_.Reset();
     }
   }
 

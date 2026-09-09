@@ -173,10 +173,17 @@ demo_compliance_controller:
   #
   # THE PRICE IS THAT THE STEADY STATE IS A VELOCITY, NOT A POSITION. With
   # K_p = 0 the law reduces to ẋ̃ = f/K_d, so a standing force walks the compliant
-  # frame until the §7.4 box stops it: total excursion is bounded by
+  # frame until the §7.4 box stops it: one guide is bounded by
   # `max_compliant_displacement` (core default 0.15 m) and by nothing else. What
-  # keeps a constant offset from spending that whole envelope is upstream — the
-  # pull estimator's baseline snapshot (D-A5 / D-A8), not a spring here.
+  # keeps a constant offset from spending that envelope is upstream — the pull
+  # estimator's baseline snapshot (D-A5 / D-A8), not a spring here.
+  #
+  # PER GUIDE, not per activation (D-A15, #469): every path that re-seeds X_d
+  # from the MEASUREMENT — a new task goal, a #292 control-frame re-seed —
+  # collapses x̃ with it, because the measurement already realises X_c and a
+  # deviation left standing would be composed onto it a second time. The guided
+  # pose survives (the re-seed starts from where the arm stands); what resets is
+  # the envelope.
   #
   # The rotational half is zero for that reason plus a second one: D-A2 makes the
   # torque half of the SOURCE identically zero (the pull estimate is an in-plane

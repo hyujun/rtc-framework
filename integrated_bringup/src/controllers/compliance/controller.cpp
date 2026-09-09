@@ -807,6 +807,14 @@ void DemoComplianceController::SeedHoldTarget(const pinocchio::SE3& pose,
   trajectory_time_ = 0.0;
   has_pending_segment_ = false;
   new_target_pending_ = false;
+  // D-A15 (#469), the same invariant the external-goal re-seed states in full:
+  // `pose` is the MEASURED control frame and already realises X_c = X_d ⊕ x̃, so
+  // a deviation left standing here is composed onto it a second time. Put in
+  // SeedHoldTarget rather than at its call sites so every re-seed — the
+  // self-init one and the #292 frame transitions — collapses the frame the same
+  // way; a caller that forgot would reintroduce the step at exactly the moment
+  // the control point moved, which is the worst place for it.
+  admittance_.Reset();
 
   target_frame_id_ = id;
   target_is_hold_seed_.store(true, std::memory_order_release);
