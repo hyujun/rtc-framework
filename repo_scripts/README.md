@@ -689,9 +689,10 @@ git clone <repo-url> src/rtc-framework
 
 # 3. Python venv (uv 사용 — install.sh 가 자동 부트스트랩하지만 수동 시:)
 #    uv 가 없으면: curl -LsSf https://astral.sh/uv/install.sh | sh
-#    --python 3.12 명시: ROS Jazzy / Ubuntu 24.04 SSoT. runtime PC 에 다른 control project
-#    용 python3.9/3.10 이 PATH 앞에 있어도 uv 가 그걸 잡지 않도록 고정.
-uv venv --python 3.12 --system-site-packages .venv
+#    --python 은 버전이 아니라 경로로 고정: `3.12` 는 runtime PC 의 python3.9/3.10 은
+#    피하지만, 설치된 uv-managed 3.12 를 apt 3.12 보다 우선해 apt 의 catkin_pkg 등을
+#    못 보는 venv 를 만든다 (README.md "Python 의존성 sync" 참고).
+uv venv --python /usr/bin/python3.12 --system-site-packages .venv
 source src/rtc-framework/repo_scripts/scripts/setup_env.sh
 uv pip sync src/rtc-framework/requirements.lock
 
@@ -747,7 +748,7 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
-          uv venv --python 3.12 --system-site-packages .venv
+          uv venv --python /usr/bin/python3.12 --system-site-packages .venv
           . .venv/bin/activate
           uv pip sync src/rtc-framework/requirements.lock
 

@@ -8,7 +8,8 @@
 #
 # Caller scope 의존:
 #   WORKSPACE, INSTALL_SCRIPT_DIR, apt_update_if_stale, 로거,
-#   is_venv_active, ensure_uv (install_uv.sh)
+#   is_venv_active · venv_uses_system_python · RTC_SYSTEM_PYTHON (rt_common.sh),
+#   ensure_uv (install_uv.sh)
 #
 # 정책 (2026-05-23, scientific stack venv 이전):
 #   - venv 생성·sync 모두 uv (pip 미사용)
@@ -31,45 +32,46 @@ _INSTALL_PYTHON_LOADED=1
 # system Python 에 대한 `pip install` 을 차단한다 (PEP 668).
 # 대응: workspace 루트에 .venv 를 uv로 생성하여 후속 install이 venv 안에서 동작.
 #   --system-site-packages: ROS rclpy / ament_* / apt numpy/scipy/matplotlib/pandas/PyQt5 상속
-#   --python 3.12: ROS 2 Jazzy / Ubuntu 24.04 SSoT 와 정합. runtime PC 에 다른 control
-#     project 용 python3.9/3.10 이 PATH 앞에 있어도 uv 가 그걸 잡지 않도록 명시 고정.
-#     pyproject.toml ruff target-version = "py312" 와 일치.
-#   기존 .venv 가 있으면 재사용 (멱등)
-#   이미 다른 venv 가 활성이면 그것을 그대로 사용
+#   --python ${RTC_SYSTEM_PYTHON} (rt_common.sh): 버전이 아니라 **경로**로 고정한다.
+#     `--python 3.12` 는 runtime PC 의 python3.9/3.10 은 피하지만, uv 기본값
+#     (python-preference=managed) 때문에 uv-managed 3.12 가 설치돼 있으면 그걸 base
+#     로 고른다. 그 venv 는 --system-site-packages 여도 /usr/lib/python3/dist-packages
+#     (apt catkin_pkg · python3-yaml …) 를 못 봐서 fresh PC 에서 rtc_base configure 가
+#     catkin_pkg ImportError 로 죽었다. pyproject.toml ruff target-version = "py312".
+#   workspace .venv 는 base 가 틀리면 재생성, 맞으면 재사용 (멱등) — setup_env.sh 가
+#     이미 활성화했어도 검사한다 (전엔 "already active" 로 빠져 검사에 도달 못 했다)
+#   이미 다른 venv 가 활성이면 그것을 그대로 사용 (build.sh 가 base 를 경고한다)
 ensure_venv() {
-  if is_venv_active; then
+  local venv_dir="${WORKSPACE:?}/.venv"
+
+  # realpath -m: 활성화된 채 .venv 를 지운 셸에서도 (VIRTUAL_ENV 가 없는 경로)
+  # workspace venv 로 알아본다.
+  if is_venv_active && [[ "$(realpath -m "${VIRTUAL_ENV}")" != "$(realpath -m "${venv_dir}")" ]]; then
     info "venv already active: ${VIRTUAL_ENV} — reusing"
     return 0
   fi
 
   ensure_uv
 
-  local venv_dir="${WORKSPACE}/.venv"
-
-  # 기존 venv 가 3.12 가 아닐 경우 재생성 (runtime PC 에 3.9 가 PATH 앞에 있던 시절에
-  # 만들어진 stale venv 복구). 활성 venv 가 아니므로 안전하게 삭제 가능.
-  if [[ -f "${venv_dir}/bin/activate" ]]; then
-    local existing_ver
-    existing_ver="$("${venv_dir}/bin/python" -c \
-      'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")"
-    if [[ "${existing_ver}" != "3.12" ]]; then
-      warn "Existing venv at ${venv_dir} uses Python '${existing_ver:-unknown}' (expected 3.12) — recreating"
-      rm -rf "${venv_dir}"
-    fi
+  # 활성 상태여도 지워도 된다 — 같은 경로에 다시 만들고 아래에서 다시 activate 하므로
+  # PATH 의 ${venv_dir}/bin 은 그대로 유효하다.
+  if [[ -e "${venv_dir}" ]] && ! venv_uses_system_python "${venv_dir}"; then
+    warn "Existing venv at ${venv_dir} is not based on ${RTC_SYSTEM_PYTHON} with system-site-packages — recreating"
+    rm -rf "${venv_dir}"
   fi
 
   if [[ ! -f "${venv_dir}/bin/activate" ]]; then
-    info "Creating Python venv at ${venv_dir} (uv, Python 3.12, --system-site-packages)..."
+    info "Creating Python venv at ${venv_dir} (uv, ${RTC_SYSTEM_PYTHON}, --system-site-packages)..."
     # python3.12-venv는 uv venv가 stdlib venv module을 호출하므로 필요.
     # 메타패키지 python3-venv 는 시스템 default python3 (runtime PC 에선 3.9 가능)
     # 를 따라가므로 명시적으로 3.12 변종을 깐다.
     apt_update_if_stale
     sudo apt-get install -y python3.12 python3.12-venv > /dev/null
-    uv venv --python 3.12 --system-site-packages "${venv_dir}" \
-      || error "uv venv failed at ${venv_dir} (Python 3.12 not found?)"
+    uv venv --python "${RTC_SYSTEM_PYTHON}" --system-site-packages "${venv_dir}" \
+      || error "uv venv failed at ${venv_dir} (${RTC_SYSTEM_PYTHON} not found?)"
     success "venv created: ${venv_dir}"
   else
-    info "venv already exists at ${venv_dir} (Python 3.12) — activating"
+    info "venv already exists at ${venv_dir} (${RTC_SYSTEM_PYTHON}) — activating"
   fi
 
   # shellcheck disable=SC1091

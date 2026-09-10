@@ -17,7 +17,9 @@
 #   uv pip compile requirements.in --generate-hashes -o requirements.lock
 #
 # Sync on a new machine:
-#   uv venv --python 3.12 --system-site-packages .venv
+#   uv venv --python /usr/bin/python3.12 --system-site-packages .venv
+#   (경로 고정 — `--python 3.12` 는 설치된 uv-managed 3.12 를 고를 수 있고, 그 venv 는
+#    system-site-packages 여도 apt 의 ROS python 모듈을 못 본다)
 #   source .venv/bin/activate
 #   uv pip sync requirements.lock
 

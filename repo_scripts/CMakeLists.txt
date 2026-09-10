@@ -54,6 +54,13 @@ if(BUILD_TESTING)
     TIMEOUT 60
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
+  # ensure_venv must base the workspace .venv on the distro Python — a uv-managed
+  # base hides the apt catkin_pkg and fails the first ament configure (rtc_base).
+  ament_add_test(test_install_python
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_install_python.sh
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
   # Stale-shield detection (issue #349 D14). Drives the pure comparison only —
   # cset is not installed on every dev box, so the mask *reader* is stubbed.
   ament_add_test(test_cpu_shield_mask

@@ -18,6 +18,8 @@
 #   auto_release_cpu_shield   — 빌드 전 CPU shield 자동 해제
 #   check_workspace_structure — ROS2 워크스페이스 구조 검증
 #   ensure_ros2_sourced       — ROS2 환경 자동 탐색 및 소싱
+#   venv_uses_system_python   — venv base 가 RTC_SYSTEM_PYTHON (+system-site-packages) 인지
+#   get_system_python         — CMake 에 넘길 배포판 python (RTC_SYSTEM_PYTHON)
 #   create_oneshot_service    — systemd oneshot 서비스 생성 헬퍼
 #   lttng_kernel_build_version      — 커널 헤더 Makefile 에서 V.P.S (uname 아님)
 #   lttng_modules_min_version_for_kernel — 그 커널이 요구하는 lttng-modules 최소 버전
@@ -533,22 +535,31 @@ WantedBy=${wanted_by}"
 }
 
 # ── Venv detection helpers ──────────────────────────────────────────────────
+# ROS 2 apt 패키지가 기대하는 배포판 python — workspace .venv 의 base 이자 CMake 가
+# 쓰는 인터프리터의 단일 출처. apt 가 까는 python 모듈 (catkin_pkg · python3-yaml …)
+# 은 /usr/lib/python3/dist-packages 에 있고, 이 경로를 sys.path 에 넣는 것은 Debian
+# 이 패치한 인터프리터다 (uv-managed python 은 --system-site-packages 여도 자기
+# prefix 의 site-packages 만 본다 — uv 0.11.16 · cpython 3.12.13 실측).
+RTC_SYSTEM_PYTHON="/usr/bin/python3.12"
+
 # venv 활성 여부 확인
 is_venv_active() {
   [[ -n "${VIRTUAL_ENV:-}" ]]
 }
 
-# venv 내에서도 시스템 Python 경로를 반환
-# eigenpy/pinocchio cmake가 apt-installed numpy를 찾을 수 있도록 함
+# venv 가 RTC_SYSTEM_PYTHON 을 base 로, system-site-packages 를 켠 채 만들어졌는지.
+# 버전이 3.12 여도 base 가 uv-managed 면 ROS 의 apt python 모듈을 못 본다.
+venv_uses_system_python() {
+  local venv_dir="$1"
+  grep -qxE 'include-system-site-packages *= *true' "${venv_dir}/pyvenv.cfg" 2>/dev/null || return 1
+  [[ "$(readlink -f "${venv_dir}/bin/python")" == "$(readlink -f "${RTC_SYSTEM_PYTHON}")" ]]
+}
+
+# CMake 에 넘길 시스템 Python — venv 의 python 링크를 따라가지 않는다. 따라가면
+# venv 의 base 가 나오는데, base 가 uv-managed 면 ament_cmake 의
+# package_xml_2_cmake.py 가 catkin_pkg 를 못 찾아 첫 패키지 configure 가 죽는다.
 get_system_python() {
-  local py
-  py=$(command -v python3 2>/dev/null || echo "/usr/bin/python3")
-  py=$(readlink -f "$py" 2>/dev/null || echo "$py")
-  # venv 내부 Python이면 시스템 Python으로 대체
-  if is_venv_active && [[ "$py" == "${VIRTUAL_ENV}"* ]]; then
-    py="/usr/bin/python3"
-  fi
-  echo "$py"
+  echo "${RTC_SYSTEM_PYTHON}"
 }
 
 # ── 공통 argument parsing (build.sh / install.sh 공유) ─────────────────────

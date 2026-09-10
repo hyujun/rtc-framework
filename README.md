@@ -216,12 +216,14 @@ source install/setup.bash
 uv pip compile requirements.in --generate-hashes -o requirements.lock
 
 # 새 머신에서 sync (install.sh 가 자동 수행, 수동:)
-uv venv --python 3.12 --system-site-packages .venv   # 3.12 명시 — runtime PC 의 system python3.9/3.10 fallback 방지
+uv venv --python /usr/bin/python3.12 --system-site-packages .venv   # 버전이 아니라 경로로 고정 (아래 참고)
 source .venv/bin/activate
 uv pip sync requirements.lock        # lock 과 정확히 일치 (extra 제거)
 ```
 
 `uv pip sync` 는 `pip install -r` 과 달리 lock 에 없는 패키지를 venv 에서 제거하므로 dev PC ↔ runtime PC 간 의존성 drift 가 발생하지 않습니다 (system-site-packages 는 건드리지 않음). hash 검증으로 wheel 변조도 차단합니다.
+
+venv base 는 **`/usr/bin/python3.12` 경로로 고정**합니다. `--python 3.12` 는 runtime PC 의 python3.9/3.10 은 피하지만, uv 기본값(`python-preference=managed`)이 **이미 설치된 uv-managed 3.12 를 apt 의 3.12 보다 우선**합니다. 그렇게 만든 venv 는 `--system-site-packages` 여도 `/usr/lib/python3/dist-packages` (apt 의 `catkin_pkg` · `python3-yaml` 등) 를 못 봐서, `rtc_base` configure 가 `No module named 'catkin_pkg'` 로 죽고 venv 안에서 `rclpy` 도 import 되지 않습니다. `install.sh` 는 base 가 틀린 기존 `.venv` 를 재생성하고, `build.sh` 는 CMake 에 항상 이 경로를 넘깁니다 (`rt_common.sh` 의 `RTC_SYSTEM_PYTHON`).
 
 ### 실행
 
