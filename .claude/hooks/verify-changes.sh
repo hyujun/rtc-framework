@@ -16,7 +16,8 @@
 #                   add_executable target NAMES against HEAD (not added lines --
 #                   CMake lines get rewritten in place). `example_*` targets are
 #                   out of scope by name; anything else opts out with an
-#                   `ARCH-7-exempt` comment on or directly above the call.
+#                   `ARCH-7-exempt` comment on the call, or anywhere in the
+#                   comment block attached directly above it.
 #        - ARCH-1 : grep robot-name / `num_joints=<literal>` in rtc_*/include|src,
 #                   with negation-aware filter (lines containing "must NOT",
 #                   "forbidden", "robot-agnostic", "no <X>-specific" are
@@ -443,10 +444,26 @@ done <<< "$(printf '%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" \
 #   - the name matches example_*  — design-principles.md puts examples outside
 #     the runtime-identity scope by name, so they need no per-target marker and
 #     cannot drift out of one;
-#   - an `ARCH-7-exempt` comment sits on the add_executable line OR the line
-#     directly above it. Same-line-only matching (the first cut) rejected the
-#     idiomatic CMake form, where the justification is a comment above the call,
-#     while accepting a bare marker appended to the call itself.
+#   - an `ARCH-7-exempt` comment sits on the add_executable line, or ANYWHERE in
+#     the contiguous comment block directly above it.
+#
+#     The scope widened twice, each time because the marker was written where
+#     CMake convention puts it and the hook did not look there. Same-line-only
+#     (the first cut) rejected the idiomatic form where the justification is a
+#     comment above the call. Then one-line-above rejected the equally idiomatic
+#     form where that justification runs to several lines — a marker naturally
+#     goes at the TOP of such a block, and the line directly above the call is
+#     the last line of the prose instead (observed 2026-09-10 on
+#     rtc_inference_check). Both rejections looked like ARCH-7 violations while
+#     the exemption was in fact declared, which is the worst shape for a gate:
+#     the author reads it as the rule misfiring rather than as a format nit.
+#
+#     The block is bounded by the first line that is not a comment — a blank
+#     line included. So a file header separated from the code by a blank line
+#     cannot exempt the first target in the file, and the marker for one call
+#     cannot leak onto the next one (the intervening add_executable ends the
+#     block). Prose that merely MENTIONS the marker inside an attached comment
+#     block still exempts, exactly as it did before this widening.
 exe_targets() {
   awk '
     { line[NR] = $0 }
@@ -460,7 +477,10 @@ exe_targets() {
         exempt = 0
         if (name ~ /^example_/) exempt = 1
         if (line[i] ~ /ARCH-7-exempt/) exempt = 1
-        if (i > 1 && line[i - 1] ~ /ARCH-7-exempt/) exempt = 1
+        for (j = i - 1; j >= 1 && exempt == 0; j--) {
+          if (line[j] !~ /^[[:space:]]*#/) break   # blank or code ends the block
+          if (line[j] ~ /ARCH-7-exempt/) exempt = 1
+        }
         printf "%s\t%d\t%d\n", name, exempt, i
       }
     }'
