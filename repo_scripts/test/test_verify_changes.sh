@@ -482,6 +482,42 @@ out=$(run_hook "$dir")
 expect_not_contains "ARCH-7 marker is honoured on the preceding line" "$out" "ARCH-7"
 rm -rf "$dir"
 
+# 17b. ...and where a multi-line justification puts it: at the TOP of the
+#      block, with prose between it and the call. One-line-above matching
+#      rejected this, and the rejection reads as ARCH-7 misfiring rather than
+#      as a format nit, because the exemption *was* declared (observed
+#      2026-09-10 on rtc_inference_check).
+dir=$(make_fixture)
+printf '# ARCH-7-exempt\n# offline inspector: takes a path on argv, owns no RT loop,\n# and appears in no bringup chain.\nadd_executable(inspector_tool src/existing.cpp)\n' \
+  >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "ARCH-7 marker is honoured at the top of a comment block" "$out" "ARCH-7"
+expect_exit "a block-marked target does not block the turn" "$rc" 0
+rm -rf "$dir"
+
+# 17c. The block is bounded. A blank line ends it, so a marker that is not
+#      attached to THIS call -- a file header, or the justification for the
+#      call above -- must not exempt it. Without this the widening in 17b would
+#      have no upper edge and every target under a marker-bearing header would
+#      go quiet.
+dir=$(make_fixture)
+printf '# ARCH-7-exempt: belongs to nothing in particular\n\nadd_executable(detached_marker_node src/existing.cpp)\n' \
+  >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a marker separated by a blank line does not exempt" "$out" "detached_marker_node"
+expect_exit "a detached marker still blocks" "$rc" 2
+rm -rf "$dir"
+
+# 17d. ...and it does not leak from one call to the next. The intervening
+#      add_executable is not a comment, so it ends the block.
+dir=$(make_fixture)
+printf '# ARCH-7-exempt: only this one\nadd_executable(marked_tool src/existing.cpp)\nadd_executable(unmarked_node src/existing.cpp)\n' \
+  >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir")
+expect_contains "the marker does not carry to the following target" "$out" "unmarked_node"
+expect_not_contains "the marked target stays exempt" "$out" "marked_tool"
+rm -rf "$dir"
+
 # 18. example_* is out of scope by name (design-principles.md), so examples
 #     need no marker and cannot drift out of one.
 dir=$(make_fixture)

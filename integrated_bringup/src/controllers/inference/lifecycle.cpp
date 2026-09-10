@@ -9,7 +9,6 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
-
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -67,6 +66,18 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       return CallbackReturn::FAILURE;
     }
 
+    // Checked BEFORE the schema, because the schema's own role table matches
+    // `device:` against these two group names — with no secondary group it
+    // would report "device 'p1b' is not one of ('ur5e', '')", which names the
+    // symptom rather than the missing group.
+    const auto secondary = GetSecondaryDeviceName();
+    if (secondary.empty() || hand_dof_ <= 0) {
+      RCLCPP_ERROR(logger_,
+                   "[inference] a second device group (the hand) is required — this controller "
+                   "drives an arm and a hand together");
+      return CallbackReturn::FAILURE;
+    }
+
     // Pass 3: the schema half that needs the device rosters the CM injected
     // between LoadConfig and here.
     ApplyIoSchema(yaml);
@@ -111,23 +122,19 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
     }
 
     // ── Hand posture width vs the device that will execute it ──────────────
-    const auto secondary = GetSecondaryDeviceName();
-    if (secondary.empty() || hand_dof_ <= 0) {
-      RCLCPP_ERROR(logger_,
-                   "[inference] a second device group (the hand) is required — the posture "
-                   "scalar has nothing to drive");
-      return CallbackReturn::FAILURE;
-    }
-    if (posture_open_.size() != static_cast<std::size_t>(hand_dof_)) {
-      RCLCPP_ERROR(logger_, "[inference] hand_posture has %zu joints but device '%s' declares %d",
-                   posture_open_.size(), secondary.c_str(), hand_dof_);
-      return CallbackReturn::FAILURE;
-    }
+    // Only when a posture_scalar role asked for the blend (#511 D-9). A policy
+    // that commands the hand joints directly never reads these two lists, and
+    // failing configure over them was a bring-up refusal with nothing wrong.
+    if (hand_role_ == PolicyOutputRole::kPostureScalar) {
+      if (posture_open_.size() != static_cast<std::size_t>(hand_dof_)) {
+        RCLCPP_ERROR(logger_, "[inference] hand_posture has %zu joints but device '%s' declares %d",
+                     posture_open_.size(), secondary.c_str(), hand_dof_);
+        return CallbackReturn::FAILURE;
+      }
 
-    // Device index 1 is the hand: the tail's bounds are indexed by
-    // `topic_config_.groups` position, which is the same order the CM fills
-    // `ControllerState::devices`.
-    {
+      // Device index 1 is the hand: the tail's bounds are indexed by
+      // `topic_config_.groups` position, which is the same order the CM fills
+      // `ControllerState::devices`.
       std::string offender;
       if (!PostureWithinLimits(posture_open_, device_position_lower_[1], device_position_upper_[1],
                                offender)) {
@@ -164,8 +171,19 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       rtc::ModelConfig mc;
       mc.model_path = model_path_;
       mc.optimized_model_path = optimized_model_path_;
-      mc.input_shape = io_.input_shape;
-      mc.output_shapes = io_.output_shapes;
+      // Straight copy — the schema layer already speaks the engine's shape. Both
+      // sides carry the .onnx tensor NAMES (the schema makes them mandatory,
+      // #511 D-1), which is what puts the engine in by-name binding: a re-export
+      // that reordered two tensors of the same shape then fails to load instead
+      // of loading cleanly and computing the wrong thing.
+      mc.inputs.reserve(io_.inputs.size());
+      for (const auto& tensor : io_.inputs) {
+        mc.inputs.push_back({tensor.name, tensor.shape});
+      }
+      mc.outputs.reserve(io_.outputs.size());
+      for (const auto& tensor : io_.outputs) {
+        mc.outputs.push_back({tensor.name, tensor.shape});
+      }
       mc.intra_op_threads = intra_op_threads_;
       engine_->Init(mc);
 
@@ -181,8 +199,10 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
         return CallbackReturn::FAILURE;
       }
       hold_mode_ = false;
-      RCLCPP_INFO(logger_, "[inference] policy loaded: %s (decimation %d, %zu-element input)",
-                  model_path_.c_str(), io_.decimation, io_.InputNumel());
+      RCLCPP_INFO(logger_,
+                  "[inference] policy loaded: %s (decimation %d, %zu input tensor(s), %zu-element "
+                  "observation)",
+                  model_path_.c_str(), io_.decimation, io_.inputs.size(), io_.inputs[0].Numel());
     }
   } catch (const std::exception& e) {
     // Includes the engine's own shape validation, which throws when the .onnx
@@ -236,8 +256,8 @@ bool DemoInferenceController::ConfigurePalmFk() {
                  palm_link_.c_str());
     return false;
   }
-  palm_frame_idx_ = combined_cache_.cache().RegisterFrame("inference_palm",
-                                                          model->getFrameId(palm_link_));
+  palm_frame_idx_ =
+      combined_cache_.cache().RegisterFrame("inference_palm", model->getFrameId(palm_link_));
   if (palm_frame_idx_ < 0) {
     RCLCPP_ERROR(logger_, "[inference] palm frame registration failed (cache locked)");
     return false;
@@ -280,9 +300,8 @@ void DemoInferenceController::OnObjectTransforms(const tf2_msgs::msg::TFMessage&
       continue;
     }
     const auto& child = tf.child_frame_id;
-    const bool hit = object_match_prefix_
-                         ? (child.rfind(object_frame_match_, 0) == 0)
-                         : (child == object_frame_match_);
+    const bool hit = object_match_prefix_ ? (child.rfind(object_frame_match_, 0) == 0)
+                                          : (child == object_frame_match_);
     if (!hit) {
       continue;
     }
@@ -340,6 +359,14 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(
   last_tick_held_ = true;
   last_scalar_clamped_ = false;
   warned_scalar_range_ = false;
+  // Recurrent state too, and UNCONDITIONALLY — `reset_after_hold_sec` governs
+  // holds during a run, not the gap across a deactivation. Whatever the state
+  // described, the robot has been out of this controller's hands since (#511
+  // D-3). Applied on the first evaluation, because the state lives in the
+  // engine's buffers and those are only safe to touch on the tick.
+  hold_elapsed_sec_ = 0.0;
+  recurrent_reset_pending_ = true;
+  warned_state_reset_ = false;
   return CallbackReturn::SUCCESS;
 }
 

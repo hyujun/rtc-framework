@@ -61,25 +61,50 @@ constexpr int kInferenceStride = 7;
 /// since it is called from inside the gated region.
 class FakeEngine final : public rtc::InferenceEngine {
  public:
-  FakeEngine() : input_(kInputElements, 0.0F), head0_(6, 0.1F), head1_(1, 0.5F) {}
+  explicit FakeEngine(const std::vector<std::size_t>& in_sizes = {kInputElements},
+                      const std::vector<std::size_t>& out_sizes = {6, 1}) {
+    for (const auto n : in_sizes) {
+      inputs_.emplace_back(n, 0.0F);
+    }
+    for (const auto n : out_sizes) {
+      outputs_.emplace_back(n, 0.1F);
+    }
+  }
 
   void Init(const rtc::ModelConfig& /*config*/) override { initialized_ = true; }
 
   [[nodiscard]] bool Run() noexcept override { return true; }
 
-  float* input_buffer(int /*m*/) noexcept override { return input_.data(); }
-
-  const float* output_buffer(int /*m*/, int output_idx) const noexcept override {
-    return (output_idx == 0) ? head0_.data() : head1_.data();
+  // Out-of-range answers nullptr/0 rather than folding onto slot 0, so a
+  // controller that addressed a tensor this "model" does not have would hold
+  // rather than silently re-read another one.
+  float* input_buffer(int /*m*/, int input_idx) noexcept override {
+    const auto t = static_cast<std::size_t>(input_idx);
+    return (t < inputs_.size()) ? inputs_[t].data() : nullptr;
   }
 
-  [[nodiscard]] std::size_t input_size(int /*m*/) const noexcept override { return input_.size(); }
+  [[nodiscard]] const float* output_buffer(int /*m*/, int output_idx) const noexcept override {
+    const auto h = static_cast<std::size_t>(output_idx);
+    return (h < outputs_.size()) ? outputs_[h].data() : nullptr;
+  }
+
+  [[nodiscard]] std::size_t input_size(int /*m*/, int input_idx) const noexcept override {
+    const auto t = static_cast<std::size_t>(input_idx);
+    return (t < inputs_.size()) ? inputs_[t].size() : 0;
+  }
 
   [[nodiscard]] std::size_t output_size(int /*m*/, int output_idx) const noexcept override {
-    return (output_idx == 0) ? head0_.size() : head1_.size();
+    const auto h = static_cast<std::size_t>(output_idx);
+    return (h < outputs_.size()) ? outputs_[h].size() : 0;
   }
 
-  [[nodiscard]] int num_outputs(int /*m*/) const noexcept override { return 2; }
+  [[nodiscard]] int num_inputs(int /*m*/) const noexcept override {
+    return static_cast<int>(inputs_.size());
+  }
+
+  [[nodiscard]] int num_outputs(int /*m*/) const noexcept override {
+    return static_cast<int>(outputs_.size());
+  }
 
   [[nodiscard]] bool is_initialized() const noexcept override { return initialized_; }
 
@@ -87,9 +112,8 @@ class FakeEngine final : public rtc::InferenceEngine {
 
  private:
   bool initialized_{false};
-  std::vector<float> input_;
-  std::vector<float> head0_;
-  std::vector<float> head1_;
+  std::vector<std::vector<float>> inputs_;
+  std::vector<std::vector<float>> outputs_;
 };
 
 std::map<std::string, rtc::DeviceNameConfig> MakeDeviceConfigs() {
@@ -139,15 +163,106 @@ topics:
 inference:
   model_path: "fake_policy.onnx"
   decimation: 10
-  input_shape: [1, 20]
-  output_shapes: [[1, 6], [1, 1]]
-  input_features:
-    - "arm.position"
-    - "hand.position"
-    - "hand.fingertip_force_norm"
+  inputs:
+    - name: "obs"
+      shape: [1, 20]
+      features:
+        - "arm.position"
+        - "hand.position"
+        - "hand.fingertip_force_norm"
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
   output_features:
-    - { name: "arm.target_position", head: 0, offset: 0, count: 6 }
-    - { name: "hand.posture_scalar", head: 1, offset: 0, count: 1 }
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
+  hand_posture:
+    open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+)";
+
+/// The same observation split across TWO input tensors. Same features, same
+/// widths, so any allocation the split introduces is the split's own — the
+/// span table, the per-tensor buffer lookup and the per-tensor affine call.
+constexpr const char* kTwoInputYaml = R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 10
+  inputs:
+    - name: "obs"
+      shape: [1, 16]
+      features:
+        - "arm.position"
+        - "hand.position"
+    - name: "aux"
+      shape: [1, 4]
+      features:
+        - "hand.fingertip_force_norm"
+      offset: [0.0, 0.0, 0.0, 0.0]
+      scale:  [1.0, 1.0, 1.0, 1.0]
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
+  output_features:
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
+  hand_posture:
+    open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+)";
+
+/// A recurrent schema: `h_out` feeds `h_in` every accepted step, so the gated
+/// region below covers the reset check, the feedback copy and its finiteness
+/// screen on top of everything the feed-forward cases already cover.
+constexpr const char* kRecurrentYaml = R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 10
+  inputs:
+    - name: "obs"
+      shape: [1, 20]
+      features:
+        - "arm.position"
+        - "hand.position"
+        - "hand.fingertip_force_norm"
+    - name: "h_in"
+      shape: [1, 8]
+      source: recurrent
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
+    - name: "h_out"
+      shape: [1, 8]
+      feeds: "h_in"
+  output_features:
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
   hand_posture:
     open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
@@ -183,12 +298,19 @@ class InferenceAllocGate : public ::testing::Test {
     }
   }
 
-  void SetUp() override {
+  void SetUp() override { Build(kYaml, {kInputElements}); }
+
+  /// Bring one controller all the way to ACTIVE. Split out of SetUp so a case
+  /// can rebuild on a different schema without duplicating the three-pass
+  /// order, which is itself part of what these cases exercise.
+  void Build(const char* yaml, const std::vector<std::size_t>& in_sizes,
+             const std::vector<std::size_t>& out_sizes = {6, 1}) {
     rclcpp::NodeOptions opts;
     opts.use_global_arguments(false);
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("inference_alloc_gate", "", opts);
-    ctrl_ = std::make_unique<DemoInferenceController>("", std::make_unique<FakeEngine>());
-    const YAML::Node cfg = YAML::Load(kYaml);
+    ctrl_ = std::make_unique<DemoInferenceController>(
+        "", std::make_unique<FakeEngine>(in_sizes, out_sizes));
+    const YAML::Node cfg = YAML::Load(yaml);
     ctrl_->LoadConfig(cfg);
     ctrl_->SetDeviceNameConfigs(MakeDeviceConfigs());
     ctrl_->OnDeviceConfigsSet();
@@ -265,4 +387,54 @@ TEST_F(InferenceAllocGate, TheHoldPathDoesNotAllocateEither) {
     allocations = gate.count();
   }
   EXPECT_EQ(allocations, 0U) << "the hold path allocated";
+}
+
+TEST_F(InferenceAllocGate, AMultiTensorObservationDoesNotAllocateEither) {
+  // The N-tensor walk is where an allocation would be easiest to introduce and
+  // hardest to notice: a `std::vector<std::span<float>>` gathering the engine's
+  // buffers each tick would look perfectly ordinary, cost one allocation per
+  // policy step, and never show up as a wrong number anywhere.
+  Build(kTwoInputYaml, {16U, 4U});
+  auto state = MakeState();
+
+  for (int t = 0; t < 25; ++t) {
+    static_cast<void>(ctrl_->Compute(state));
+  }
+  ASSERT_FALSE(ctrl_->LastTickHeldForTesting())
+      << "the two-tensor schema must actually run, or this case gates the hold path twice";
+
+  std::size_t allocations = 0;
+  {
+    const rtc::testing::ScopedAllocGate gate;
+    for (int t = 0; t < 100; ++t) {
+      static_cast<void>(ctrl_->Compute(state));
+    }
+    allocations = gate.count();
+  }
+  EXPECT_EQ(allocations, 0U) << "the multi-tensor RT tick allocated";
+}
+
+TEST_F(InferenceAllocGate, TheRecurrentFeedbackPathDoesNotAllocate) {
+  // The state copy is engine buffer → engine buffer and must stay that way. A
+  // staging `std::vector` for the hidden state would be the obvious way to
+  // write it, would cost one allocation per policy step, and would never show
+  // up as a wrong number — the actions would be identical.
+  Build(kRecurrentYaml, {kInputElements, 8U}, {6, 1, 8});
+  auto state = MakeState();
+
+  for (int t = 0; t < 25; ++t) {
+    static_cast<void>(ctrl_->Compute(state));
+  }
+  ASSERT_FALSE(ctrl_->LastTickHeldForTesting())
+      << "the recurrent schema must actually run, or this case gates the hold path twice";
+
+  std::size_t allocations = 0;
+  {
+    const rtc::testing::ScopedAllocGate gate;
+    for (int t = 0; t < 100; ++t) {
+      static_cast<void>(ctrl_->Compute(state));
+    }
+    allocations = gate.count();
+  }
+  EXPECT_EQ(allocations, 0U) << "the recurrent RT tick allocated";
 }

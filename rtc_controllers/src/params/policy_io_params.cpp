@@ -28,6 +28,13 @@ template <typename... Parts>
   throw std::invalid_argument(msg);
 }
 
+/// "inputs[2]" — the location prefix every per-tensor diagnostic carries.
+std::string At(const char* key, std::size_t index) {
+  std::string s = key;
+  s.append("[").append(std::to_string(index)).append("]");
+  return s;
+}
+
 /// Read a `[a, b, ...]` shape, refusing anything that is not a non-empty
 /// sequence of strictly positive dimensions.
 ///
@@ -75,7 +82,7 @@ std::vector<float> ParseAffineLane(const YAML::Node& node, std::size_t numel,
     return {};
   }
   if (node.size() != numel) {
-    Reject(where, " has ", std::to_string(node.size()), " entries but the input tensor has ",
+    Reject(where, " has ", std::to_string(node.size()), " entries but the tensor has ",
            std::to_string(numel), " elements (use [] or omit for identity)");
   }
   std::vector<float> lane;
@@ -90,10 +97,55 @@ std::vector<float> ParseAffineLane(const YAML::Node& node, std::size_t numel,
   return lane;
 }
 
+/// The tensor `name:` every declaration must carry (#511 D-1).
+///
+/// Empty is refused rather than defaulted to the position, because an empty
+/// name is precisely what asks `rtc::InferenceEngine` for POSITIONAL binding —
+/// the mode in which an export that reordered two same-shaped tensors loads
+/// cleanly and computes the wrong thing.
+std::string ParseTensorName(const YAML::Node& entry, const std::string& where,
+                            std::vector<std::string>& seen) {
+  auto name = entry["name"].as<std::string>("");
+  if (name.empty()) {
+    Reject(where,
+           " is missing 'name' — the .onnx tensor name is mandatory, because an unnamed "
+           "tensor is bound by POSITION and a re-export that swapped two tensors of the "
+           "same shape would then load cleanly");
+  }
+  const auto dup = std::find(seen.begin(), seen.end(), name);
+  if (dup != seen.end()) {
+    Reject(where, " repeats tensor name '", name, "' (already declared at index ",
+           std::to_string(static_cast<std::size_t>(dup - seen.begin())), ")");
+  }
+  return name;
+}
+
+/// Name the migration when a pre-#511 flat schema turns up.
+///
+/// Without this the old config fails as "inputs must be a non-empty sequence",
+/// which is true and useless: the operator's file HAS an input declaration, it
+/// just has the shape this parser stopped accepting (#511 D-7 clean break).
+void RejectLegacyFlatSchema(const YAML::Node& cfg) {
+  static constexpr const char* kGone[] = {"input_shape", "output_shapes", "input_features"};
+  for (const char* key : kGone) {
+    if (cfg[key]) {
+      Reject("'", key,
+             "' is the pre-#511 flat schema. Inputs and outputs are now declared as `inputs:` / "
+             "`outputs:` lists of {name, shape}, each input carrying its own `features:` and "
+             "affine lane, and `output_features` referring to an output by `tensor: <name>` "
+             "instead of `head: <index>`");
+    }
+  }
+}
+
 }  // namespace
 
-std::size_t PolicyIoParams::InputNumel() const noexcept {
-  return Numel(input_shape);
+std::size_t InputTensorSpec::Numel() const noexcept {
+  return rtc::params::Numel(shape);
+}
+
+std::size_t OutputTensorSpec::Numel() const noexcept {
+  return rtc::params::Numel(shape);
 }
 
 PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& feature_size) {
@@ -103,118 +155,302 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
   if (!feature_size) {
     Reject("no feature-size resolver supplied (binding bug, not a config error)");
   }
+  RejectLegacyFlatSchema(cfg);
 
   PolicyIoParams out;
 
-  // ── Shapes ────────────────────────────────────────────────────────────────
-  out.input_shape = ParseShape(cfg["input_shape"], "input_shape");
-
-  const YAML::Node heads = cfg["output_shapes"];
-  if (!heads || !heads.IsSequence() || heads.size() == 0) {
-    Reject("output_shapes must be a non-empty sequence of shapes (one per head)");
-  }
-  out.output_shapes.reserve(heads.size());
-  for (std::size_t h = 0; h < heads.size(); ++h) {
-    std::string where = "output_shapes[";
-    where.append(std::to_string(h)).append("]");
-    out.output_shapes.push_back(ParseShape(heads[h], where));
+  // ── Input tensors ─────────────────────────────────────────────────────────
+  // Offsets are a prefix sum over each tensor's OWN feature list. This is the
+  // only place YAML order becomes addresses, which is what makes "reorder the
+  // list, the tensor reorders" a property a test can pin rather than an
+  // emergent behaviour — and keeping the sum per tensor is what stops a feature
+  // added to one tensor from shifting every offset in the next.
+  const YAML::Node inputs = cfg["inputs"];
+  if (!inputs || !inputs.IsSequence() || inputs.size() == 0) {
+    Reject("inputs must be a non-empty sequence of {name, shape, features}");
   }
 
-  const std::size_t in_numel = out.InputNumel();
+  // Feature ids are unique across the WHOLE policy (#511 D-6): the same id in
+  // two tensors is a copy-paste artefact far more often than it is deliberate,
+  // so the message has to name both places rather than just the second.
+  std::vector<std::string> seen_features;
+  std::vector<std::string> seen_feature_where;
+  std::vector<std::string> input_names;
 
-  // ── Input features → segments ─────────────────────────────────────────────
-  // Offsets are a prefix sum over the YAML order. This is the ONLY place the
-  // order becomes addresses, which is what makes "reorder the list, the tensor
-  // reorders" a property a test can pin rather than an emergent behaviour.
-  const YAML::Node features = cfg["input_features"];
-  if (!features || !features.IsSequence() || features.size() == 0) {
-    Reject("input_features must be a non-empty sequence of feature ids");
-  }
-  int cursor = 0;
-  out.input_features.reserve(features.size());
-  out.input_segments.reserve(features.size());
-  for (std::size_t i = 0; i < features.size(); ++i) {
-    const std::string idx = std::to_string(i);
-    auto id = features[i].as<std::string>("");
-    if (id.empty()) {
-      Reject("input_features[", idx, "] is empty");
+  out.inputs.reserve(inputs.size());
+  input_names.reserve(inputs.size());
+  for (std::size_t t = 0; t < inputs.size(); ++t) {
+    const std::string where = At("inputs", t);
+    const YAML::Node entry = inputs[t];
+    if (!entry || !entry.IsMap()) {
+      Reject(where, " must be a map with keys {name, shape, features}");
     }
-    if (std::find(out.input_features.begin(), out.input_features.end(), id) !=
-        out.input_features.end()) {
-      Reject("input_features[", idx, "] repeats id '", id, "'");
+    InputTensorSpec spec;
+    spec.name = ParseTensorName(entry, where, input_names);
+    input_names.push_back(spec.name);
+
+    std::string shape_where = where;
+    shape_where.append(".shape");
+    spec.shape = ParseShape(entry["shape"], shape_where);
+    const std::size_t numel = spec.Numel();
+
+    // Exactly one filler. A tensor with both would have its features overwritten
+    // by the feedback every step after the first — the observation would simply
+    // stop arriving, and the policy would keep producing finite actions from a
+    // hidden state and nothing else. A tensor with neither is never written at
+    // all, so it reads whatever the engine's allocation held.
+    const YAML::Node source = entry["source"];
+    const YAML::Node features = entry["features"];
+    const bool has_features = features && features.IsSequence() && features.size() > 0;
+    if (source) {
+      const auto kind = source.as<std::string>("");
+      if (kind != "recurrent") {
+        Reject(where, " ('", spec.name, "') declares source '", kind,
+               "' — the only source other than observation features is \"recurrent\"");
+      }
+      spec.recurrent = true;
     }
-    const int count = feature_size(id);
-    if (count <= 0) {
-      Reject("input_features[", idx, "] has unknown id '", id, "'");
+    if (spec.recurrent == has_features) {
+      Reject(where, " ('", spec.name,
+             "') must declare EITHER a non-empty `features:` sequence OR `source: recurrent`, "
+             "not both and not neither");
     }
-    out.input_segments.push_back({cursor, count});
-    out.input_features.push_back(std::move(id));
-    cursor += count;
-  }
-  if (static_cast<std::size_t>(cursor) != in_numel) {
-    Reject("input_features sum to ", std::to_string(cursor), " elements but input_shape declares ",
-           std::to_string(in_numel));
+    if (spec.recurrent) {
+      if (entry["offset"] || entry["scale"]) {
+        // Normalisation constants come from the statistics of an observed
+        // quantity. A hidden state is the policy's own representation; there is
+        // no training-time distribution to centre it against.
+        Reject(where, " ('", spec.name,
+               "') is recurrent and cannot carry an affine lane — `offset`/`scale` normalise "
+               "observations, and a policy's internal state is not one");
+      }
+      out.inputs.push_back(std::move(spec));
+      continue;
+    }
+    int cursor = 0;
+    spec.features.reserve(features.size());
+    spec.segments.reserve(features.size());
+    for (std::size_t i = 0; i < features.size(); ++i) {
+      std::string at = where;
+      at.append(".features[").append(std::to_string(i)).append("]");
+      auto id = features[i].as<std::string>("");
+      if (id.empty()) {
+        Reject(at, " is empty");
+      }
+      const auto dup = std::find(seen_features.begin(), seen_features.end(), id);
+      if (dup != seen_features.end()) {
+        Reject(at, " repeats id '", id, "', already declared at ",
+               seen_feature_where[static_cast<std::size_t>(dup - seen_features.begin())]);
+      }
+      const int count = feature_size(id);
+      if (count <= 0) {
+        Reject(at, " has unknown id '", id, "'");
+      }
+      spec.segments.push_back({static_cast<int>(t), cursor, count});
+      spec.features.push_back(id);
+      seen_features.push_back(std::move(id));
+      seen_feature_where.push_back(at);
+      cursor += count;
+    }
+    if (static_cast<std::size_t>(cursor) != numel) {
+      Reject(where, " ('", spec.name, "') features sum to ", std::to_string(cursor),
+             " elements but its shape declares ", std::to_string(numel));
+    }
+
+    std::string offset_where = where;
+    offset_where.append(".offset");
+    std::string scale_where = where;
+    scale_where.append(".scale");
+    spec.offset = ParseAffineLane(entry["offset"], numel, offset_where);
+    spec.scale = ParseAffineLane(entry["scale"], numel, scale_where);
+
+    out.inputs.push_back(std::move(spec));
   }
 
-  // ── Affine normalisation ──────────────────────────────────────────────────
-  out.input_offset = ParseAffineLane(cfg["input_offset"], in_numel, "input_offset");
-  out.input_scale = ParseAffineLane(cfg["input_scale"], in_numel, "input_scale");
+  // ── Output tensors ────────────────────────────────────────────────────────
+  const YAML::Node outputs = cfg["outputs"];
+  if (!outputs || !outputs.IsSequence() || outputs.size() == 0) {
+    Reject("outputs must be a non-empty sequence of {name, shape}");
+  }
+  std::vector<std::string> output_tensor_names;
+  out.outputs.reserve(outputs.size());
+  output_tensor_names.reserve(outputs.size());
+  for (std::size_t t = 0; t < outputs.size(); ++t) {
+    const std::string where = At("outputs", t);
+    const YAML::Node entry = outputs[t];
+    if (!entry || !entry.IsMap()) {
+      Reject(where, " must be a map with keys {name, shape}");
+    }
+    OutputTensorSpec spec;
+    spec.name = ParseTensorName(entry, where, output_tensor_names);
+    output_tensor_names.push_back(spec.name);
+
+    std::string shape_where = where;
+    shape_where.append(".shape");
+    spec.shape = ParseShape(entry["shape"], shape_where);
+    spec.feeds = entry["feeds"].as<std::string>("");
+    out.outputs.push_back(std::move(spec));
+  }
+
+  // ── Recurrent links ───────────────────────────────────────────────────────
+  // Resolved after BOTH sides are known, because a link is a statement about a
+  // pair. Whole-tensor by D-2.
+  for (std::size_t t = 0; t < out.outputs.size(); ++t) {
+    const auto& src = out.outputs[t];
+    if (src.feeds.empty()) {
+      continue;
+    }
+    const std::string where = At("outputs", t);
+    std::size_t target = out.inputs.size();
+    for (std::size_t i = 0; i < out.inputs.size(); ++i) {
+      if (out.inputs[i].name == src.feeds) {
+        target = i;
+        break;
+      }
+    }
+    if (target == out.inputs.size()) {
+      Reject(where, " ('", src.name, "') feeds '", src.feeds,
+             "' but no such input tensor is declared");
+    }
+    const auto& dst = out.inputs[target];
+    if (!dst.recurrent) {
+      Reject(where, " ('", src.name, "') feeds input '", dst.name,
+             "', which is filled by observation features — writing the previous step's output "
+             "over it would replace this tick's observation with the policy's own last answer");
+    }
+    if (src.Numel() != dst.Numel()) {
+      Reject(where, " ('", src.name, "') has ", std::to_string(src.Numel()),
+             " elements but feeds input '", dst.name, "', which has ", std::to_string(dst.Numel()));
+    }
+    for (const auto& link : out.recurrent_links) {
+      if (static_cast<std::size_t>(link.input_tensor) == target) {
+        Reject(where, " ('", src.name, "') feeds input '", dst.name, "', which output '",
+               out.outputs[static_cast<std::size_t>(link.output_tensor)].name,
+               "' already feeds — the state would be whichever copy ran last");
+      }
+    }
+    out.recurrent_links.push_back({static_cast<int>(t), static_cast<int>(target), src.Numel()});
+  }
+  // A recurrent input nothing feeds is never written after the initial zero, so
+  // the policy reads a constant zero state forever while looking exactly like a
+  // working recurrent policy.
+  for (std::size_t i = 0; i < out.inputs.size(); ++i) {
+    if (!out.inputs[i].recurrent) {
+      continue;
+    }
+    const bool fed = std::any_of(out.recurrent_links.begin(), out.recurrent_links.end(),
+                                 [i](const rtc::inference::RecurrentLink& l) {
+                                   return static_cast<std::size_t>(l.input_tensor) == i;
+                                 });
+    if (!fed) {
+      Reject(At("inputs", i), " ('", out.inputs[i].name,
+             "') is recurrent but no output declares `feeds: \"", out.inputs[i].name,
+             "\"` — nothing would ever write it");
+    }
+  }
 
   // ── Output features → slices ──────────────────────────────────────────────
   const YAML::Node outs = cfg["output_features"];
   if (!outs || !outs.IsSequence() || outs.size() == 0) {
-    Reject("output_features must be a non-empty sequence of {name, head, offset, count}");
+    Reject(
+        "output_features must be a non-empty sequence of {tensor, role, device, offset?, "
+        "count?}");
   }
-  out.output_names.reserve(outs.size());
-  out.output_slices.reserve(outs.size());
+  out.output_features.reserve(outs.size());
   for (std::size_t i = 0; i < outs.size(); ++i) {
-    std::string at = "output_features[";
-    at.append(std::to_string(i)).append("]");
+    const std::string at = At("output_features", i);
     const YAML::Node entry = outs[i];
     if (!entry || !entry.IsMap()) {
-      Reject(at, " must be a map with keys {name, head, offset, count}");
+      Reject(at, " must be a map with keys {tensor, role, device, offset?, count?}");
     }
-    auto name = entry["name"].as<std::string>("");
-    if (name.empty()) {
-      Reject(at, " is missing 'name'");
+
+    // Declared, never inferred (#511 D-4). The binding this replaces read the
+    // role off a name suffix, which made two devices declaring the same role —
+    // the natural shape of a multi-output policy — resolve to whichever came
+    // last, with both commands still finite and inside the joint limits.
+    OutputCommandSpec spec;
+    spec.device = entry["device"].as<std::string>("");
+    spec.role = entry["role"].as<std::string>("");
+    if (spec.device.empty()) {
+      Reject(at, " must declare the device group it drives (`device: <name>`)");
     }
-    if (std::find(out.output_names.begin(), out.output_names.end(), name) !=
-        out.output_names.end()) {
-      Reject(at, " repeats name '", name, "'");
+    if (spec.role.empty()) {
+      Reject(at, " ('", spec.device, "') must declare what the slice means (`role: <name>`)");
     }
-    const int head = entry["head"].as<int>(-1);
-    const int offset = entry["offset"].as<int>(-1);
-    const int count = entry["count"].as<int>(0);
-    if (head < 0 || static_cast<std::size_t>(head) >= out.output_shapes.size()) {
-      Reject(at, " names head ", std::to_string(head), " but the model declares ",
-             std::to_string(out.output_shapes.size()), " head(s)");
+    for (std::size_t p = 0; p < out.output_features.size(); ++p) {
+      if (out.output_features[p].device == spec.device &&
+          out.output_features[p].role == spec.role) {
+        Reject(at, " repeats ", spec.device, "/", spec.role, ", already declared at ",
+               At("output_features", p),
+               " — one device cannot be driven twice in the same role, and silently keeping one "
+               "of the two is how the pre-#511 binding lost an arm command to a hand command");
+      }
     }
+    const std::string label = spec.device + "/" + spec.role;
+
+    // By NAME, not by index. `head: 0` would reintroduce exactly the positional
+    // reference that #511 D-1 removed from the tensor declarations themselves.
+    const auto tensor_name = entry["tensor"].as<std::string>("");
+    if (tensor_name.empty()) {
+      Reject(at, " (", label, ") must name the output tensor it slices (`tensor: <name>`)");
+    }
+    const auto found =
+        std::find(output_tensor_names.begin(), output_tensor_names.end(), tensor_name);
+    if (found == output_tensor_names.end()) {
+      Reject(at, " (", label, ") names output tensor '", tensor_name,
+             "' but no such tensor is declared under `outputs:`");
+    }
+    const auto tensor = static_cast<int>(found - output_tensor_names.begin());
+    const auto& tensor_spec = out.outputs[static_cast<std::size_t>(tensor)];
+    if (!tensor_spec.feeds.empty()) {
+      Reject(at, " (", label, ") slices output tensor '", tensor_name,
+             "', which feeds recurrent input '", tensor_spec.feeds,
+             "' — that tensor is the policy's internal state, and reading joint targets out of "
+             "it would be interpreting hidden units as radians");
+    }
+    const std::size_t tensor_numel = tensor_spec.Numel();
+
+    // Both keys are optional and default to "the whole tensor", because a
+    // policy whose tensor IS one command is the common case and spelling out
+    // `offset: 0, count: 6` there is a second place for the width to drift
+    // from the shape above it.
+    //
+    // The absent key and a MALFORMED one are kept apart on purpose. `offset`
+    // has no value that is illegal on its own — 0 is the commonest legal one —
+    // so `as<int>(0)` on a present-but-unparseable `offset: 6.0` would read as
+    // "the operator asked for element 0" and slice the wrong half of the tensor
+    // with nothing to reject. Testing the key first keeps the optionality and
+    // hands a present key the -1 sentinel the `offset < 0` check below exists
+    // for. `count` needs no such care: its own 0 default is already illegal.
+    const int offset = entry["offset"] ? entry["offset"].as<int>(-1) : 0;
+    const int count =
+        entry["count"] ? entry["count"].as<int>(0) : static_cast<int>(tensor_numel) - offset;
     if (offset < 0) {
-      Reject(at, " must declare offset >= 0");
+      Reject(at, " must declare an integer offset >= 0 (a non-integer value lands here too)");
     }
     if (count <= 0) {
       Reject(at, " must declare count > 0");
     }
-    const std::size_t head_numel = Numel(out.output_shapes[static_cast<std::size_t>(head)]);
-    if (static_cast<std::size_t>(offset) + static_cast<std::size_t>(count) > head_numel) {
+    if (static_cast<std::size_t>(offset) + static_cast<std::size_t>(count) > tensor_numel) {
       Reject(at, " slices [", std::to_string(offset), ", ", std::to_string(offset + count),
-             ") past head ", std::to_string(head), "'s ", std::to_string(head_numel), " elements");
+             ") past tensor '", tensor_name, "'s ", std::to_string(tensor_numel), " elements");
     }
-    // Overlap is a per-head question: two heads starting at 0 is normal, two
-    // slices of ONE head sharing an element means at least one is not reading
-    // what its name claims.
-    for (std::size_t p = 0; p < out.output_slices.size(); ++p) {
-      const auto& prev = out.output_slices[p];
-      if (prev.head != head) {
+    // Overlap is a per-tensor question: two tensors starting at 0 is normal,
+    // two slices of ONE tensor sharing an element means at least one is not
+    // reading what its name claims.
+    for (std::size_t p = 0; p < out.output_features.size(); ++p) {
+      const auto& prev = out.output_features[p].slice;
+      if (prev.tensor != tensor) {
         continue;
       }
       if (offset < prev.offset + prev.count && prev.offset < offset + count) {
-        Reject(at, " overlaps output_features[", std::to_string(p), "] ('", out.output_names[p],
-               "') on head ", std::to_string(head));
+        Reject(at, " (", label, ") overlaps output_features[", std::to_string(p), "] (",
+               out.output_features[p].device, "/", out.output_features[p].role, ") on tensor '",
+               tensor_name, "'");
       }
     }
-    out.output_slices.push_back({head, offset, count});
-    out.output_names.push_back(std::move(name));
+    spec.slice = {tensor, offset, count};
+    out.output_features.push_back(std::move(spec));
   }
 
   // ── Decimation ────────────────────────────────────────────────────────────

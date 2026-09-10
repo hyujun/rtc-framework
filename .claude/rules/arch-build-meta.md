@@ -24,7 +24,7 @@ paths:
 
 **ARCH-5 — 허용/금지**: 허용은 `<exec_depend>` · ament index 런타임 lookup (`get_package_share_directory`) · `package://robot_descriptions/...` URL 이다. `<test_depend>` 도 허용되지만 **테스트가 그 런타임 lookup 을 쓸 때 설치 순서를 보장하는 용도로만** 이다. 금지는 `find_package` · `<depend>` / `<build_depend>` · `ament_target_dependencies` · `ament_export_dependencies`. 근거는 link 할 artifact 가 0 개인데 build-dep 이 colcon 토폴로지 엣지를 만들어 "어디 두든 `install/robot_descriptions/share/` 만 있으면 동작" 모델을 깨기 때문이다 (사용자 정책). 복구는 보통 코드 0 줄 — build-dep 줄 제거 + `<exec_depend>` 강등.
 
-**ARCH-7 — 무엇이 걸리는가**: sensor 는 `rtc_*/CMakeLists.txt` 에서 **HEAD 에 없던 타깃 이름**을 본다 (줄 단위가 아니다 — CMake 줄은 제자리에서 고쳐 쓰이므로 재들여쓰기가 신규 exec 로 읽혔다). 즉 기존 타깃을 옮기거나 다시 들여쓰는 것은 걸리지 않는다. `example_*` 는 이름으로 면제된다. robot-agnostic standalone 노드는 `add_executable` 줄 또는 **바로 윗줄**에 `ARCH-7-exempt` 주석으로 표시한다. 예외 목록의 SSoT 는 [design-principles.md](../../agent_docs/design-principles.md) §Boundary Rules 이며, 새 exec 를 면제로 선언하기 전에 그것이 정말 robot-agnostic 한지 그 절을 열어 확인한다.
+**ARCH-7 — 무엇이 걸리는가**: sensor 는 `rtc_*/CMakeLists.txt` 에서 **HEAD 에 없던 타깃 이름**을 본다 (줄 단위가 아니다 — CMake 줄은 제자리에서 고쳐 쓰이므로 재들여쓰기가 신규 exec 로 읽혔다). 즉 기존 타깃을 옮기거나 다시 들여쓰는 것은 걸리지 않는다. `example_*` 는 이름으로 면제된다. robot-agnostic standalone 노드는 `add_executable` 줄 또는 **그 위에 붙은 주석 블록 안 아무 줄**에 `ARCH-7-exempt` 주석으로 표시한다 (여러 줄짜리 사유를 쓰고 마커를 맨 위에 두어도 된다 — 블록은 주석이 아닌 첫 줄에서 끊기며, 정확한 범위는 hook 이 SSoT). 예외 목록의 SSoT 는 [design-principles.md](../../agent_docs/design-principles.md) §Boundary Rules 이며, 새 exec 를 면제로 선언하기 전에 그것이 정말 robot-agnostic 한지 그 절을 열어 확인한다.
 
 **ARCH-2 — 방향**: 새 `<depend>` / `find_package` / `target_link_libraries` 를 추가하기 전에 [architecture.md](../../agent_docs/architecture.md) §Dependency Graph 에서 두 패키지의 층을 확인한다. 아래층이 위층을 참조하면 위반이다.
 

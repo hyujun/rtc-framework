@@ -77,7 +77,7 @@ bool DemoInferenceController::PalmPose(std::array<double, 3>& position,
 }
 
 bool DemoInferenceController::PackObservation(const ControllerState& state,
-                                              std::span<float> buf) noexcept {
+                                              std::span<const std::span<float>> bufs) noexcept {
   if (state.num_devices < 2) {
     return false;
   }
@@ -93,7 +93,16 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
   }
 
   for (std::size_t f = 0; f < feature_kinds_.size(); ++f) {
-    const auto& seg = io_.input_segments[f];
+    // One flat walk over every tensor's features. The segment names its own
+    // tensor, so the routing is a table lookup rather than a nested loop with
+    // its own counters — and an out-of-range tensor is a hold, not a fold onto
+    // tensor 0, because folding would write the right values into the wrong
+    // model input and leave the right one holding the previous tick.
+    const auto& seg = flat_segments_[f];
+    if (seg.tensor < 0 || static_cast<std::size_t>(seg.tensor) >= bufs.size()) {
+      return false;
+    }
+    const std::span<float> buf = bufs[static_cast<std::size_t>(seg.tensor)];
     switch (feature_kinds_[f]) {
       case PolicyFeature::kArmPosition: {
         for (int i = 0; i < arm_dof_; ++i) {
@@ -163,9 +172,9 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
           return false;
         }
         const bool want_position = (feature_kinds_[f] == PolicyFeature::kPalmPosition);
-        const std::span<const double> src =
-            want_position ? std::span<const double>(p.data(), p.size())
-                          : std::span<const double>(q.data(), q.size());
+        const std::span<const double> src = want_position
+                                                ? std::span<const double>(p.data(), p.size())
+                                                : std::span<const double>(q.data(), q.size());
         if (!rtc::inference::PackSegment(buf, seg, src)) {
           return false;
         }
@@ -182,9 +191,8 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
         }
         const bool want_position = (feature_kinds_[f] == PolicyFeature::kObjectPosition);
         const std::span<const double> src =
-            want_position
-                ? std::span<const double>(object_this_tick_.position.data(), 3)
-                : std::span<const double>(object_this_tick_.orientation_xyzw.data(), 4);
+            want_position ? std::span<const double>(object_this_tick_.position.data(), 3)
+                          : std::span<const double>(object_this_tick_.orientation_xyzw.data(), 4);
         if (!rtc::inference::PackSegment(buf, seg, src)) {
           return false;
         }
@@ -193,12 +201,27 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
     }
   }
 
-  rtc::inference::ApplyAffine(buf, io_.input_offset, io_.input_scale);
+  // Per tensor, after every segment of that tensor is in place: the lane is
+  // indexed against its OWN tensor, and applying it to a partially packed
+  // buffer would normalise this tick's values together with whatever the
+  // untouched elements still held.
+  for (std::size_t t = 0; t < bufs.size() && t < io_.inputs.size(); ++t) {
+    rtc::inference::ApplyAffine(bufs[t], io_.inputs[t].offset, io_.inputs[t].scale);
+  }
   return true;
 }
 
 void DemoInferenceController::HoldPosition(const ControllerState& state,
                                            ControllerOutput& out) noexcept {
+  // Every hold path in Compute() funnels through here, which is why the hold
+  // clock lives here rather than being re-armed at each of the six early
+  // returns. Arming a flag instead of resetting on the spot keeps the hold path
+  // from touching the engine at all (#511 D-3).
+  hold_elapsed_sec_ += state.dt;
+  if (reset_after_hold_sec_ >= 0.0 && hold_elapsed_sec_ >= reset_after_hold_sec_) {
+    recurrent_reset_pending_ = true;
+  }
+
   // Latch on entry. See the member declaration for why commanding the measured
   // position every tick is not a hold: it is a zero-stiffness follower, and the
   // arm sags.
@@ -232,9 +255,8 @@ void DemoInferenceController::HoldPosition(const ControllerState& state,
       // A channel past the latched width (a third device, or a wire wider than
       // the roster) falls back to its measured value: there is no latched
       // number for it, and inventing one would be worse than following.
-      const double q = (src != nullptr && c < latched)
-                           ? src[static_cast<std::size_t>(c)]
-                           : dev.positions[static_cast<std::size_t>(c)];
+      const double q = (src != nullptr && c < latched) ? src[static_cast<std::size_t>(c)]
+                                                       : dev.positions[static_cast<std::size_t>(c)];
       dst.commands[static_cast<std::size_t>(c)] = q;
       dst.target_positions[static_cast<std::size_t>(c)] = q;
       dst.target_velocities[static_cast<std::size_t>(c)] = 0.0;
@@ -379,16 +401,48 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
   const bool run_policy = !have_action_ || ((tick_ % decim) == (1U % decim));
 
   if (run_policy) {
-    float* in_buf = engine_->input_buffer(0);
-    const std::size_t in_size = engine_->input_size(0);
-    if (in_buf == nullptr || in_size != io_.InputNumel()) {
+    // Every declared input tensor, checked before anything is written. ONNX
+    // Runtime allocates all of them, so a tensor this binding failed to fill
+    // would not be absent — it would be whatever that allocation held, observed
+    // by the policy as if it were this tick's robot.
+    //
+    // Stack array, fixed capacity, bounded by `kMaxInputTensors` at configure:
+    // no allocation on the tick (RT-1).
+    std::array<std::span<float>, kMaxInputTensors> in_bufs{};
+    const std::size_t n_tensors = io_.inputs.size();
+    bool tensors_ok = (n_tensors <= in_bufs.size()) &&
+                      (static_cast<std::size_t>(engine_->num_inputs(0)) == n_tensors);
+    for (std::size_t t = 0; tensors_ok && t < n_tensors; ++t) {
+      float* buf = engine_->input_buffer(0, static_cast<int>(t));
+      const std::size_t size = engine_->input_size(0, static_cast<int>(t));
+      if (buf == nullptr || size != io_.inputs[t].Numel()) {
+        tensors_ok = false;
+        break;
+      }
+      in_bufs[t] = std::span<float>(buf, size);
+    }
+    if (!tensors_ok) {
       have_action_ = false;
       HoldPosition(state, out);
       last_tick_held_ = true;
       return out;
     }
 
-    if (!PackObservation(state, std::span<float>(in_buf, in_size))) {
+    // ── Recurrent state: reset before the observation goes in ──────────────
+    // Armed by activation or by a hold that outlasted `reset_after_hold_sec_`.
+    // Zeroing here rather than after the run means the very step that resumes
+    // already runs on the fresh state instead of one step later.
+    if (recurrent_reset_pending_) {
+      for (const auto& link : io_.recurrent_links) {
+        const auto t = static_cast<std::size_t>(link.input_tensor);
+        if (t < n_tensors) {
+          std::fill(in_bufs[t].begin(), in_bufs[t].end(), 0.0F);
+        }
+      }
+      recurrent_reset_pending_ = false;
+    }
+
+    if (!PackObservation(state, std::span<const std::span<float>>(in_bufs.data(), n_tensors))) {
       have_action_ = false;
       HoldPosition(state, out);
       last_tick_held_ = true;
@@ -408,15 +462,15 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     }
 
     // ── Unpack: arm target ─────────────────────────────────────────────────
-    const auto& arm_slice = io_.output_slices[static_cast<std::size_t>(arm_output_idx_)];
-    const auto& hand_slice = io_.output_slices[static_cast<std::size_t>(hand_output_idx_)];
+    const auto& arm_slice = io_.output_features[static_cast<std::size_t>(arm_target_idx_)].slice;
+    const auto& hand_slice = io_.output_features[static_cast<std::size_t>(hand_command_idx_)].slice;
 
     bool ok = arm_slice.count == arm_dof_;
     if (ok) {
       ok = rtc::inference::UnpackSlice(
           std::span<double>(scratch_head_.data(), static_cast<std::size_t>(arm_slice.count)),
-          arm_slice, engine_->output_buffer(0, arm_slice.head),
-          engine_->output_size(0, arm_slice.head));
+          arm_slice, engine_->output_buffer(0, arm_slice.tensor),
+          engine_->output_size(0, arm_slice.tensor));
     }
     if (ok) {
       for (int i = 0; i < arm_dof_; ++i) {
@@ -429,28 +483,56 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       }
     }
 
-    // ── Unpack: hand posture scalar → posture ──────────────────────────────
-    double scalar = 0.0;
-    if (ok) {
+    // ── Unpack: hand command ───────────────────────────────────────────────
+    // Which of the two shapes arrives is a configure-time fact, so the branch
+    // is on a resolved enum and not on anything the tick has to discover.
+    if (ok && hand_role_ == PolicyOutputRole::kJointTarget) {
+      // Same width guard the arm path carries, and for a sharper reason here:
+      // `scratch_head_` was just written with the ARM's targets, and
+      // `UnpackSlice` cannot catch a short slice because the span handed to it
+      // is sized by that same `count` — its bounds check compares the slice
+      // against itself. A `count` below `hand_dof_` would therefore leave the
+      // tail of this read holding arm joint angles, finite and inside the
+      // hand's limits, with nothing downstream to object. `parameters.cpp`
+      // refuses that config at configure time; this keeps the two lanes
+      // symmetric rather than resting the hand's correctness on a check the
+      // arm did not consider sufficient for itself.
+      ok = hand_slice.count == hand_dof_;
+      if (ok) {
+        ok = rtc::inference::UnpackSlice(
+            std::span<double>(scratch_head_.data(), static_cast<std::size_t>(hand_slice.count)),
+            hand_slice, engine_->output_buffer(0, hand_slice.tensor),
+            engine_->output_size(0, hand_slice.tensor));
+      }
+      for (int i = 0; ok && i < hand_dof_; ++i) {
+        const double v = scratch_head_[static_cast<std::size_t>(i)];
+        if (!std::isfinite(v)) {
+          ok = false;
+          break;
+        }
+        hand_action_[static_cast<std::size_t>(i)] = v;
+      }
+    } else if (ok) {
+      double scalar = 0.0;
       ok = rtc::inference::UnpackSlice(std::span<double>(&scalar, 1), hand_slice,
-                                       engine_->output_buffer(0, hand_slice.head),
-                                       engine_->output_size(0, hand_slice.head));
-    }
-    if (ok) {
-      const auto blend = rtc::inference::BlendPosture(
-          std::span<double>(hand_action_.data(), static_cast<std::size_t>(hand_dof_)),
-          posture_open_, posture_close_, scalar);
-      ok = blend.valid;
-      last_scalar_clamped_ = blend.clamped;
-      if (blend.clamped && !warned_scalar_range_) {
-        // One-shot, plain scalars only: an out-of-range scalar means the
-        // model's normalisation and this YAML disagree, and that is worth
-        // exactly one line rather than one per tick.
-        warned_scalar_range_ = true;
-        RCLCPP_WARN(logger_,
-                    "[inference] posture scalar %.3f is outside [0,1] and was clamped — the "
-                    "policy's output normalisation likely disagrees with hand_posture",
-                    scalar);
+                                       engine_->output_buffer(0, hand_slice.tensor),
+                                       engine_->output_size(0, hand_slice.tensor));
+      if (ok) {
+        const auto blend = rtc::inference::BlendPosture(
+            std::span<double>(hand_action_.data(), static_cast<std::size_t>(hand_dof_)),
+            posture_open_, posture_close_, scalar);
+        ok = blend.valid;
+        last_scalar_clamped_ = blend.clamped;
+        if (blend.clamped && !warned_scalar_range_) {
+          // One-shot, plain scalars only: an out-of-range scalar means the
+          // model's normalisation and this YAML disagree, and that is worth
+          // exactly one line rather than one per tick.
+          warned_scalar_range_ = true;
+          RCLCPP_WARN(logger_,
+                      "[inference] posture scalar %.3f is outside [0,1] and was clamped — the "
+                      "policy's output normalisation likely disagrees with hand_posture",
+                      scalar);
+        }
       }
     }
 
@@ -460,7 +542,37 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       last_tick_held_ = true;
       return out;
     }
+    // ── Recurrent feedback ─────────────────────────────────────────────────
+    // Deliberately AFTER the `ok` gate, which already means "the whole action
+    // was accepted". A partial action is not a smaller version of the right
+    // thing, and neither is the state that produced it — advancing the state on
+    // a rejected step would keep the policy's memory moving while the robot
+    // stood still (#511 C-5, no new branch needed).
+    //
+    // Engine buffer → engine buffer: the state never passes through this
+    // controller's scratch, so a hidden layer of any width costs it zero bytes.
+    for (const auto& link : io_.recurrent_links) {
+      const auto in_t = static_cast<std::size_t>(link.input_tensor);
+      if (in_t >= n_tensors) {
+        continue;
+      }
+      if (!rtc::inference::CopyFiniteChecked(in_bufs[in_t],
+                                             engine_->output_buffer(0, link.output_tensor),
+                                             engine_->output_size(0, link.output_tensor)) &&
+          !warned_state_reset_) {
+        // One-shot, plain integer: a non-finite state is a fault, and the
+        // alternative to zeroing it is a permanent silent hold (C-4).
+        warned_state_reset_ = true;
+        RCLCPP_WARN(logger_,
+                    "[inference] recurrent state tensor %d was not finite and has been RESET to "
+                    "zero. Freezing it instead would have made every later step non-finite with "
+                    "no way back short of re-activation",
+                    link.input_tensor);
+      }
+    }
+
     have_action_ = true;
+    hold_elapsed_sec_ = 0.0;
     hold_latched_ = false;  // a fresh action supersedes the latch
   }
 
