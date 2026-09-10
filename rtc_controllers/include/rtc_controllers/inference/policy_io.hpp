@@ -176,13 +176,19 @@ inline void ApplyAffine(std::span<float> buf, std::span<const float> offset,
 /// be driven out of.
 ///
 /// A size mismatch or a null source is the same refusal for the same reason:
-/// whatever `dst` holds was written for a step that no longer applies.
+/// whatever `dst` holds was written for a step that no longer applies. The
+/// mismatch is tested as `!=` and not as "too short" — a LONGER source is not
+/// a safe prefix to copy, it is a source that disagrees with `dst` about which
+/// tensor this is, and truncating it would feed the policy a silently clipped
+/// state. The link parser makes the two numels equal today (#511 D-2 links
+/// whole tensors), so this guard is what keeps a slice-level link from
+/// arriving as truncation instead of as a refusal.
 ///
 /// RT: noexcept, allocation-free, single pass. Returns false when the state was
 /// reset, so the caller can say so once rather than per tick.
 [[nodiscard]] inline bool CopyFiniteChecked(std::span<float> dst, const float* src,
                                             std::size_t src_size) noexcept {
-  if (src == nullptr || src_size < dst.size()) {
+  if (src == nullptr || src_size != dst.size()) {
     for (float& v : dst) {
       v = 0.0F;
     }

@@ -414,11 +414,19 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     // policy whose tensor IS one command is the common case and spelling out
     // `offset: 0, count: 6` there is a second place for the width to drift
     // from the shape above it.
-    const int offset = entry["offset"].as<int>(0);
+    //
+    // The absent key and a MALFORMED one are kept apart on purpose. `offset`
+    // has no value that is illegal on its own — 0 is the commonest legal one —
+    // so `as<int>(0)` on a present-but-unparseable `offset: 6.0` would read as
+    // "the operator asked for element 0" and slice the wrong half of the tensor
+    // with nothing to reject. Testing the key first keeps the optionality and
+    // hands a present key the -1 sentinel the `offset < 0` check below exists
+    // for. `count` needs no such care: its own 0 default is already illegal.
+    const int offset = entry["offset"] ? entry["offset"].as<int>(-1) : 0;
     const int count =
         entry["count"] ? entry["count"].as<int>(0) : static_cast<int>(tensor_numel) - offset;
     if (offset < 0) {
-      Reject(at, " must declare offset >= 0");
+      Reject(at, " must declare an integer offset >= 0 (a non-integer value lands here too)");
     }
     if (count <= 0) {
       Reject(at, " must declare count > 0");

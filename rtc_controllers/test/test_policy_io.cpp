@@ -548,6 +548,28 @@ output_features:
   ExpectRejectMentioning(yaml, "past tensor 'action's 6 elements");
 }
 
+TEST(PolicyIoParams, RejectsAMalformedOffsetInsteadOfReadingItAsZero) {
+  // `offset` is optional (the whole tensor is the default), and the naive way
+  // to spell that — `as<int>(0)` — cannot tell "the key is absent" from "the
+  // key is there and unparseable". 0 is a perfectly legal offset, so a typed
+  // `6.0` would slice [0, 6) of a tensor whose arm half starts at 6: the arm
+  // driven by the hand's elements, finite and inside the joint limits, with no
+  // diagnostic anywhere. `count` cannot fail this way because its own default
+  // of 0 is already illegal.
+  const std::string yaml = R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 12]
+output_features:
+  - { tensor: "action", role: "joint_target", device: "arm", offset: 6.0, count: 6 }
+)";
+  ExpectRejectMentioning(yaml, "must declare an integer offset >= 0");
+}
+
 TEST(PolicyIoParams, RejectsTheSameRoleTwiceOnOneDevice) {
   // Two disjoint slices, so nothing overlaps and both widths fit — the config
   // is wrong only in that one device cannot be driven twice in the same role.
@@ -994,6 +1016,20 @@ TEST(PolicyIoCore, CopyFiniteCheckedZeroesOnAShortOrNullSource) {
   std::vector<float> other{6.0F};
   EXPECT_FALSE(CopyFiniteChecked(other, nullptr, 4));
   EXPECT_FLOAT_EQ(other[0], 0.0F);
+}
+
+TEST(PolicyIoCore, CopyFiniteCheckedZeroesOnALongSourceRatherThanTruncatingIt) {
+  // The other half of the size refusal, and the one that could pass unnoticed:
+  // a source LONGER than `dst` has a valid prefix, so copying it would look
+  // like a success and hand the policy a clipped state. #511 D-2 links whole
+  // tensors, which is why nothing produces this today — and exactly why the
+  // guard has to be here before a slice-level link makes it reachable.
+  const std::array<float, 4> src{1.0F, 2.0F, 3.0F, 4.0F};
+  std::vector<float> dst{7.0F, 7.0F};
+  EXPECT_FALSE(CopyFiniteChecked(dst, src.data(), src.size()));
+  for (const float v : dst) {
+    EXPECT_FLOAT_EQ(v, 0.0F) << "a truncated state is refused, not silently accepted";
+  }
 }
 
 // ── BlendPosture ────────────────────────────────────────────────────────────
