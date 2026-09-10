@@ -68,6 +68,15 @@ struct TensorComparison {
   int first_bad_dim{-1};
 };
 
+/// Which side(s) a rendered report is about. An enum rather than two bools
+/// because two adjacent bools at a call site are silently swappable, and this
+/// one decides what the header line ASSERTS.
+enum class ReportSides : std::uint8_t {
+  kBoth,        ///< the configure-time question: the whole I/O surface
+  kInputsOnly,  ///< only `--input` was declared; outputs were not asked about
+  kOutputsOnly  ///< only `--output` was declared; inputs were not asked about
+};
+
 /// The full comparison, inputs and outputs together.
 struct IoReport {
   std::vector<TensorComparison> inputs;
@@ -79,22 +88,41 @@ struct IoReport {
   MatchMode input_match{MatchMode::kPositional};
   MatchMode output_match{MatchMode::kPositional};
 
-  /// True when every row is kOk and neither side was refused for mixed naming.
-  /// Arity disagreement always produces at least one kNotDeclared / kNotInModel
-  /// row, so it is covered by this too.
-  [[nodiscard]] bool Ok() const noexcept {
-    if (input_match == MatchMode::kMixedRefused || output_match == MatchMode::kMixedRefused) {
+  /// One side's verdict: every row kOk, and the side not refused for mixed
+  /// naming. Arity disagreement always produces at least one kNotDeclared /
+  /// kNotInModel row, so it is covered by this too.
+  ///
+  /// Split out from `Ok()` because a caller can legitimately be asking about
+  /// ONE side. The configure-time gate never is — a ModelConfig declares both —
+  /// but `rtc_inference_check` is, whenever only `--input` or only `--output`
+  /// is given, and an undeclared side is empty, which the pairing rules read as
+  /// "the config declares nothing" and every model tensor as unclaimed. Judged
+  /// through the conjunction that would be a mismatch for a model that matches.
+  [[nodiscard]] static bool SideOk(const std::vector<TensorComparison>& rows,
+                                   MatchMode mode) noexcept {
+    if (mode == MatchMode::kMixedRefused) {
       return false;
     }
-    const auto passed = [](const TensorComparison& row) {
-      return row.verdict == TensorVerdict::kOk;
-    };
-    return std::ranges::all_of(inputs, passed) && std::ranges::all_of(outputs, passed);
+    return std::ranges::all_of(
+        rows, [](const TensorComparison& row) { return row.verdict == TensorVerdict::kOk; });
   }
 
+  [[nodiscard]] bool InputsOk() const noexcept { return SideOk(inputs, input_match); }
+
+  [[nodiscard]] bool OutputsOk() const noexcept { return SideOk(outputs, output_match); }
+
+  /// Both sides agree. This is the question `OnnxEngine::Init` asks.
+  [[nodiscard]] bool Ok() const noexcept { return InputsOk() && OutputsOk(); }
+
   /// Render the aligned table. Safe to call on a passing report (useful for an
-  /// informational dump); the caller decides whether it is an error.
-  [[nodiscard]] std::string Format(std::string_view model_path) const;
+  /// informational dump); the caller decides whether it is an error — the
+  /// header line says which of the two it is rather than asserting a mismatch.
+  ///
+  /// `sides` restricts BOTH the table and the header to the side(s) the caller
+  /// actually asked about, for the one-sided CLI invocation above. The default
+  /// is the configure-time question.
+  [[nodiscard]] std::string Format(std::string_view model_path,
+                                   ReportSides sides = ReportSides::kBoth) const;
 };
 
 /// Compare a model's I/O against the declared schema.
@@ -380,12 +408,37 @@ inline void AppendSide(std::string& out, std::string_view label,
 
 }  // namespace detail
 
-inline std::string IoReport::Format(std::string_view model_path) const {
+inline std::string IoReport::Format(std::string_view model_path, ReportSides sides) const {
+  const bool with_inputs = sides != ReportSides::kOutputsOnly;
+  const bool with_outputs = sides != ReportSides::kInputsOnly;
+  // The verdict of what is actually being shown. Asserting a mismatch
+  // unconditionally would make an informational dump of a PASSING report — a
+  // use this function's declaration explicitly allows — state the opposite of
+  // what its own table then shows.
+  const bool matched = (!with_inputs || InputsOk()) && (!with_outputs || OutputsOk());
+
   std::string out = "rtc_inference: '";
-  out.append(model_path);
-  out.append("' I/O does not match the declared schema\n");
-  detail::AppendSide(out, "inputs ", inputs, model_inputs, declared_inputs, input_match);
-  detail::AppendSide(out, "outputs", outputs, model_outputs, declared_outputs, output_match);
+  out.append(model_path).append("' ");
+  switch (sides) {
+    case ReportSides::kBoth:
+      out.append(matched ? "I/O matches the declared schema\n"
+                         : "I/O does not match the declared schema\n");
+      break;
+    case ReportSides::kInputsOnly:
+      out.append(matched ? "inputs match the declared schema\n"
+                         : "inputs do not match the declared schema\n");
+      break;
+    case ReportSides::kOutputsOnly:
+      out.append(matched ? "outputs match the declared schema\n"
+                         : "outputs do not match the declared schema\n");
+      break;
+  }
+  if (with_inputs) {
+    detail::AppendSide(out, "inputs ", inputs, model_inputs, declared_inputs, input_match);
+  }
+  if (with_outputs) {
+    detail::AppendSide(out, "outputs", outputs, model_outputs, declared_outputs, output_match);
+  }
   return out;
 }
 

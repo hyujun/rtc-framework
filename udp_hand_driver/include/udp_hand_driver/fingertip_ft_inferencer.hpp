@@ -159,7 +159,10 @@ class FingertipFTInferencer {
     // come from the actual .onnx files, and none are shipped in-tree — every
     // `model_paths` entry in both fingertip configs is "" today. Fill these in
     // from the real models (the engine will then verify them) rather than
-    // guessing: a wrong name fails loudly, so this is safe to do incrementally.
+    // guessing: a wrong name fails loudly rather than binding to the wrong
+    // tensor. Fill a SIDE at a time, though — a side with some names and some
+    // blanks is refused outright (kMixedRefused), because guessing which of the
+    // two bindings was meant is the very ambiguity naming exists to remove.
     model_config.inputs = {{"", {1, H, udp_hand_driver::kFTInputSize}}};  // [1, H, 16]
     model_config.outputs = {{"", {1, 1}}, {"", {1, 3}}, {"", {1, 3}}};
     model_config.intra_op_threads = 1;

@@ -23,6 +23,10 @@
 //       Compare against those declarations and exit non-zero on any mismatch.
 //       An empty name (":1x34") declares an unnamed tensor, i.e. asks for the
 //       positional binding an unnamed config would get.
+//
+//   rtc_inference_check MODEL.onnx --input obs:1x34
+//       Declare one side only: that side is judged, the other is dumped and
+//       does not affect the exit status.
 
 #include "rtc_inference/shape_report.hpp"
 
@@ -46,6 +50,8 @@ void PrintUsage() {
             << "                          [--output NAME:D1xD2x...]...\n\n"
             << "  With no --input/--output, dumps the model's tensors.\n"
             << "  With them, compares and exits 1 on any mismatch.\n"
+            << "  Declaring one side only judges that side and dumps\n"
+            << "  the other.\n"
             << "  An empty NAME (\":1x34\") declares an unnamed tensor\n"
             << "  (positional binding).\n";
 }
@@ -169,12 +175,30 @@ int main(int argc, char** argv) {
   // passes, configure will too.
   const auto report =
       rtc::CompareModelIo(model_inputs, declared_inputs, model_outputs, declared_outputs);
-  if (report.Ok()) {
-    std::cout << model_path << ": I/O matches the declared schema\n";
-    return 0;
+
+  // A side nobody declared was not asked about, and must not be answered.
+  // `--input` and `--output` are independent repeatable flags, so checking the
+  // inputs first is the natural way to write a config incrementally — but an
+  // undeclared side is an EMPTY declaration, which the comparison rules read as
+  // "the config claims none of these tensors" and mark every model tensor
+  // unclaimed. Judged through `Ok()`, that reported a mismatch for a model that
+  // matched. The side is dumped instead, so the operator still sees it.
+  const rtc::ReportSides sides = declared_inputs.empty()    ? rtc::ReportSides::kOutputsOnly
+                                 : declared_outputs.empty() ? rtc::ReportSides::kInputsOnly
+                                                            : rtc::ReportSides::kBoth;
+  const bool ok = (sides == rtc::ReportSides::kOutputsOnly)  ? report.OutputsOk()
+                  : (sides == rtc::ReportSides::kInputsOnly) ? report.InputsOk()
+                                                             : report.Ok();
+
+  std::cout << report.Format(model_path, sides);
+  if (sides == rtc::ReportSides::kInputsOnly) {
+    std::cout << "  (no --output given: outputs were not checked)\n";
+    Dump("outputs", model_outputs);
+  } else if (sides == rtc::ReportSides::kOutputsOnly) {
+    std::cout << "  (no --input given: inputs were not checked)\n";
+    Dump("inputs ", model_inputs);
   }
-  std::cout << report.Format(model_path);
-  return 1;
+  return ok ? 0 : 1;
 }
 
 #else  // !HAS_ONNXRUNTIME

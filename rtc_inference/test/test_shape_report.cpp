@@ -339,4 +339,45 @@ TEST(ShapeReport, AnAbsentSideRendersAsADash) {
   EXPECT_NE(text.find("config --"), std::string::npos) << text;
 }
 
+TEST(ShapeReport, APassingReportDoesNotAnnounceAMismatch) {
+  // `Format` is documented as safe to call on a passing report for an
+  // informational dump. A hardcoded "does not match" header would make that use
+  // state the opposite of the table printed directly underneath it.
+  const auto text = CompareModelIo(OneInput(), OneInput(), TwoHeads(), TwoHeads()).Format("m.onnx");
+  EXPECT_NE(text.find("I/O matches the declared schema"), std::string::npos) << text;
+  EXPECT_EQ(text.find("does not match"), std::string::npos) << text;
+}
+
+// ── One side at a time ──────────────────────────────────────────────────────
+
+TEST(ShapeReport, AnUndeclaredSideIsNotAVerdictOnTheDeclaredOne) {
+  // What `rtc_inference_check MODEL --input obs:1x34` asks. An undeclared side
+  // is an EMPTY declaration, which the pairing rules read as "the config claims
+  // none of these tensors" — so `Ok()` is false for a model whose inputs are
+  // exactly right. The per-side verdict is what lets the caller ask only about
+  // what it declared.
+  const auto report = CompareModelIo(OneInput(), OneInput(), TwoHeads(), {});
+  EXPECT_TRUE(report.InputsOk());
+  EXPECT_FALSE(report.OutputsOk());
+  EXPECT_FALSE(report.Ok()) << "the configure-time question still fails: it declares both sides";
+}
+
+TEST(ShapeReport, AOneSidedReportRendersAndJudgesOnlyThatSide) {
+  const auto report = CompareModelIo(OneInput(), OneInput(), TwoHeads(), {});
+  const auto text = report.Format("m.onnx", rtc::ReportSides::kInputsOnly);
+  EXPECT_NE(text.find("inputs match the declared schema"), std::string::npos) << text;
+  EXPECT_NE(text.find("obs"), std::string::npos) << text;
+  EXPECT_EQ(text.find("posture"), std::string::npos)
+      << "the undeclared side must not appear in a table that judges it: " << text;
+}
+
+TEST(ShapeReport, AOneSidedReportStillReportsThatSidesMismatch) {
+  const std::vector<TensorSpec> declared{{"obs", {1, 33}}};
+  const auto report = CompareModelIo(OneInput(), declared, TwoHeads(), {});
+  EXPECT_FALSE(report.InputsOk());
+  const auto text = report.Format("m.onnx", rtc::ReportSides::kInputsOnly);
+  EXPECT_NE(text.find("inputs do not match the declared schema"), std::string::npos) << text;
+  EXPECT_NE(text.find("dim 1"), std::string::npos) << text;
+}
+
 }  // namespace

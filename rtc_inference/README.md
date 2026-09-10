@@ -137,9 +137,14 @@ ros2 run rtc_inference rtc_inference_check policy.onnx
 # 선언과 대조 (불일치 시 표를 찍고 exit 1)
 ros2 run rtc_inference rtc_inference_check policy.onnx \
     --input obs:1x34 --output action:1x6
+
+# 한쪽만 선언해도 된다 — 선언한 쪽만 판정하고 나머지는 덤프한다
+ros2 run rtc_inference rtc_inference_check policy.onnx --input obs:1x34
 ```
 
 이름 없는 텐서(positional 바인딩)는 `:1x34` 처럼 이름을 비워 선언합니다.
+
+`--input` / `--output` 은 독립적이므로 config 를 점진적으로 쓰면서 한쪽씩 확인할 수 있습니다. 선언하지 않은 쪽은 **판정에 들어가지 않고** 덤프만 됩니다 — 빈 선언을 그대로 대조에 넣으면 "config 가 이 텐서들을 하나도 선언하지 않았다" 로 읽혀 일치하는 모델에 불일치가 찍힙니다.
 
 **이것은 두 번째 검증기가 아닙니다.** 권위 있는 검사는 여전히 configure 시점의 `OnnxEngine::Init` 이고, 이 도구는 **같은 `CompareModelIo` 를 호출해 같은 `IoReport::Format` 으로 렌더**합니다 — 규칙을 재구현하지 않으므로 둘이 갈라질 수 없습니다 (AP-DOC-1). 컨트롤러 YAML 을 읽지 않는 것도 같은 이유입니다: 그 스키마의 파서는 `rtc_controllers` 가 소유하며, 여기에 두 번째 YAML 파서를 두면 그 규칙이 복제됩니다.
 
