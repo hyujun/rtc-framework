@@ -276,6 +276,25 @@ class DemoInferenceController final : public RTControllerInterface {
   bool allow_missing_model_{false};
   double joint_limit_margin_{0.0};
 
+  /// How long a HOLD may last before the recurrent state is reset on resume
+  /// [s]. `0` resets after any hold, a NEGATIVE value never resets outside
+  /// activation, and the default is 0.1 s — five policy steps at the shipped
+  /// 50 Hz cadence (#511 D-3).
+  ///
+  /// Why a threshold and not one of the two extremes. A hidden state describes
+  /// the situation the policy was last reasoning about; after a long hold that
+  /// situation is gone, and resuming from it produces actions that are finite,
+  /// in range, and about a moment that has passed — the failure has no signal.
+  /// Resetting after EVERY hold is the other error: transient holds are not
+  /// rare here (one hole in a device lane closes `IsDeviceReadable`), and
+  /// erasing memory on each would gut the recurrence it exists to provide.
+  ///
+  /// The default's own justification is weak and is meant to be: nobody can
+  /// know what "long" is for a policy that does not exist yet. It is a value to
+  /// measure against once a model arrives, and both extremes remain reachable
+  /// by editing this one number.
+  double reset_after_hold_sec_{0.1};
+
   /// Hand postures the scalar interpolates between, in secondary-device joint
   /// order. Both are validated against the device's position limits at
   /// configure — a posture outside the band would be silently pulled back by
@@ -325,6 +344,18 @@ class DemoInferenceController final : public RTControllerInterface {
   bool last_tick_held_{true};
   bool last_scalar_clamped_{false};
   bool warned_scalar_range_{false};
+
+  /// Recurrent state bookkeeping. `hold_elapsed_sec_` accumulates on hold ticks
+  /// and is cleared when an action is accepted; crossing
+  /// `reset_after_hold_sec_` arms `recurrent_reset_pending_`, which the next
+  /// evaluation consumes by zeroing the state tensors BEFORE packing.
+  ///
+  /// Armed rather than applied on the spot because the state lives in the
+  /// engine's input buffers, and the hold path deliberately does not touch the
+  /// engine at all.
+  double hold_elapsed_sec_{0.0};
+  bool recurrent_reset_pending_{true};
+  bool warned_state_reset_{false};
 
   /// Set by SetDeviceTarget (mailbox delivery, off this controller's tick) and
   /// consumed once by the tick. Atomic because the two run on different

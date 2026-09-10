@@ -63,16 +63,29 @@ struct InputTensorSpec {
   std::vector<float> offset;                           ///< empty = identity
   std::vector<float> scale;                            ///< empty = identity
 
+  /// `source: recurrent` — this tensor is filled by the PREVIOUS step's output,
+  /// not by observation features. Mutually exclusive with `features`, and it
+  /// carries no affine lane: normalising a policy's own internal representation
+  /// with statistics gathered from robot observations is meaningless.
+  bool recurrent{false};
+
   /// Element count of this tensor (product of `shape`).
   [[nodiscard]] std::size_t Numel() const noexcept;
 };
 
 /// One declared output tensor. What is READ out of it is described separately
-/// by `PolicyIoParams::output_slices`, because one tensor can carry several
+/// by `PolicyIoParams::output_features`, because one tensor can carry several
 /// commands and one command never spans two tensors.
 struct OutputTensorSpec {
   std::string name;                 ///< must match the .onnx output name
   std::vector<std::int64_t> shape;  ///< e.g. {1, 6}
+
+  /// `feeds: "<input name>"` — this tensor is the next step's value for that
+  /// recurrent input. Empty for an ordinary command tensor. A tensor that feeds
+  /// an input is NOT also a command: it carries the policy's internal state, and
+  /// slicing joint targets out of it would be reading hidden units as radians
+  /// (finite and in range, so nothing downstream would object).
+  std::string feeds;
 
   /// Element count of this tensor (product of `shape`).
   [[nodiscard]] std::size_t Numel() const noexcept;
@@ -106,11 +119,13 @@ struct PolicyIoParams {
 
   std::vector<OutputCommandSpec> output_features;  ///< YAML order
 
-  /// Recurrent links (`h_out` → next step's `h_in`). ALWAYS EMPTY until #511
-  /// P5, which owns the parsing, the feedback copy and the reset policy; the
-  /// parser refuses `source:`/`feeds:` today rather than accept a declaration
-  /// nothing acts on. The slot exists now so P5 is a pure addition instead of a
-  /// redesign of a schema three layers already consume.
+  /// Recurrent links (`h_out` → next step's `h_in`), one per `feeds:`. Empty for
+  /// a feed-forward policy, which is the common case and costs it nothing.
+  ///
+  /// WHO ACTS ON THIS. Not the engine — `udp_hand_driver` shares it and has no
+  /// recurrence, and "when does the state reset" is a control decision a tensor
+  /// runner has no standing to make. The binding owns the timing; this layer
+  /// owns the declaration and its cross-checks.
   std::vector<rtc::inference::RecurrentLink> recurrent_links;
 
   /// RT ticks per policy evaluation. 1 = every tick. The controller holds the
@@ -149,8 +164,13 @@ using FeatureSizeFn = std::function<int(std::string_view)>;
 ///     past that tensor's element count, declaring a non-positive count, or
 ///     overlapping another slice **on the same tensor**
 ///   - `decimation` < 1
-///   - `source:` on an input or `feeds:` on an output — the recurrent keys,
-///     reserved and refused until #511 P5
+///   - an input declaring both `features` and `source: recurrent`, or neither;
+///     a `source:` that is not the literal `recurrent`; an affine lane on a
+///     recurrent tensor; or a recurrent tensor that no output feeds (nothing
+///     would ever write it, so the policy would read zeros forever)
+///   - a `feeds:` naming an input that does not exist or is not recurrent,
+///     whose element count differs, or that another output already feeds; and
+///     an `output_features` entry slicing a tensor that feeds an input
 ///   - the pre-#511 flat keys (`input_shape`, `output_shapes`,
 ///     `input_features`), refused with the migration named rather than left to
 ///     surface as "inputs is missing"

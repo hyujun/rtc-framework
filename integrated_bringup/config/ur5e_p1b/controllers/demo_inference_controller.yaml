@@ -104,6 +104,30 @@ demo_inference_controller:
       - name: "posture" # hand posture 스칼라
         shape: [1, 1]
 
+    # ── recurrent (LSTM/GRU) — 이 정책은 안 쓴다 ───────────────────────────────
+    # 쓰는 정책이 오면 입력에 `source: recurrent` 텐서를 두고 그것을 먹이는
+    # 출력에 `feeds:` 를 단다. 되먹임은 텐서 전체 단위다:
+    #
+    #   inputs:  - { name: "h_in",  shape: [1, 1, 256], source: recurrent }
+    #   outputs: - { name: "h_out", shape: [1, 1, 256], feeds: "h_in" }
+    #
+    # 파서가 거부하는 것: features 와 source 를 둘 다/둘 다 아님 · recurrent
+    # 텐서의 offset/scale (정책 내부 표상엔 정규화할 학습 분포가 없다) · 아무도
+    # 안 먹이는 recurrent 텐서 (초기 0 이후 영원히 안 써져서 "도는 것처럼
+    # 보이는" 상수 상태가 된다) · feeds 대상의 폭 불일치 · 한 입력을 두 출력이
+    # 먹임 · feeds 를 가진 텐서를 output_features 가 slice (은닉 유닛을 rad 로
+    # 읽는 것이며, 유한하고 범위 안이라 아무 데서도 안 걸린다).
+    #
+    # state 는 **액션 전체가 수락됐을 때만** 전진하고, 비유한 state 는 얼리지
+    # 않고 **0 으로 리셋**한다 — NaN 을 얼리면 이후 전 step 이 NaN 이 되고 매
+    # tick 조용히 hold 하므로 재활성화 말고는 복구 경로가 없다.
+    #
+    # reset_after_hold_sec: hold 가 이 시간을 넘으면 재개 시 state 를 0 으로
+    # 되돌린다 (기본 0.1 s = 50 Hz 기준 5 policy step). `0` 은 모든 hold 에서
+    # 리셋, 음수는 activation 에서만 리셋. activation 리셋은 이 값과 무관하게
+    # 무조건이다. **기본값의 근거는 약하다** — 모델을 받고 실제 hold 길이를
+    # 재서 확정할 자리다. recurrent 텐서가 없으면 이 키는 무해하게 무시된다.
+
     # ── palm FK ──────────────────────────────────────────────────────────────
     # `l_palm_link` 이다. 기본값을 두지 않는 이유는 초안이 박아 뒀던
     # `hand_base_link` 가 leap 계열 링크라 이 손에는 **존재하지 않기** 때문이다 —

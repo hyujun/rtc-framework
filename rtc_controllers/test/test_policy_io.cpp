@@ -30,6 +30,7 @@ namespace {
 
 using rtc::inference::ApplyAffine;
 using rtc::inference::BlendPosture;
+using rtc::inference::CopyFiniteChecked;
 using rtc::inference::InputSegment;
 using rtc::inference::OutputSlice;
 using rtc::inference::PackSegment;
@@ -671,12 +672,13 @@ TEST(PolicyIoParams, RejectsMissingResolver) {
       std::invalid_argument);
 }
 
-// ── Reserved for #511 P5: refused, not ignored ──────────────────────────────
+// ── Recurrent links (#511 P5) ───────────────────────────────────────────────
 
-TEST(PolicyIoParams, RejectsRecurrentInputSourceUntilP5) {
-  // Accepting this key while the feedback path does not exist would leave the
-  // policy reading a tensor nobody writes — every action finite and plausible.
-  const std::string yaml = R"(
+namespace {
+
+/// A one-layer recurrent policy: `obs` + `h_in` in, `action` + `h_out` out,
+/// with `h_out` feeding `h_in` on the next step.
+constexpr const char* kRecurrentYaml = R"(
 inputs:
   - name: "obs"
     shape: [1, 6]
@@ -687,28 +689,154 @@ inputs:
 outputs:
   - name: "action"
     shape: [1, 6]
-output_features:
-  - { tensor: "action", role: "joint_target", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml, "inputs[1] declares 'source'");
-}
-
-TEST(PolicyIoParams, RejectsRecurrentOutputFeedsUntilP5) {
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "action"
-    shape: [1, 6]
   - name: "h_out"
     shape: [1, 1, 4]
     feeds: "h_in"
 output_features:
   - { tensor: "action", role: "joint_target", device: "arm" }
 )";
-  ExpectRejectMentioning(yaml, "outputs[1] declares 'feeds'");
+
+}  // namespace
+
+TEST(PolicyIoParams, ResolvesARecurrentLink) {
+  const auto p = ParseText(kRecurrentYaml);
+
+  ASSERT_EQ(p.inputs.size(), 2U);
+  EXPECT_FALSE(p.inputs[0].recurrent);
+  EXPECT_TRUE(p.inputs[1].recurrent);
+  EXPECT_TRUE(p.inputs[1].features.empty()) << "a recurrent tensor has no observation features";
+  EXPECT_TRUE(p.inputs[1].segments.empty());
+  EXPECT_EQ(p.inputs[1].Numel(), 4U);
+
+  ASSERT_EQ(p.outputs.size(), 2U);
+  EXPECT_TRUE(p.outputs[0].feeds.empty());
+  EXPECT_EQ(p.outputs[1].feeds, "h_in");
+
+  ASSERT_EQ(p.recurrent_links.size(), 1U);
+  EXPECT_EQ(p.recurrent_links[0].output_tensor, 1);
+  EXPECT_EQ(p.recurrent_links[0].input_tensor, 1);
+  EXPECT_EQ(p.recurrent_links[0].numel, 4U);
+
+  // The state tensor is NOT a command, so it contributes no slice.
+  ASSERT_EQ(p.output_features.size(), 1U);
+  EXPECT_EQ(p.output_features[0].slice.tensor, 0);
+}
+
+TEST(PolicyIoParams, AFeedForwardSchemaHasNoLinks) {
+  EXPECT_TRUE(ParseText(kBaseYaml).recurrent_links.empty());
+}
+
+TEST(PolicyIoParams, RejectsAnInputThatIsBothFeaturesAndRecurrent) {
+  // Every step after the first would overwrite the observation with the
+  // policy's own last answer, and the actions would stay finite throughout.
+  const std::string yaml = R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+    source: recurrent
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", role: "joint_target", device: "arm" }
+)";
+  ExpectRejectMentioning(yaml, "not both and not neither");
+}
+
+TEST(PolicyIoParams, RejectsAnInputThatIsNeitherFeaturesNorRecurrent) {
+  const std::string yaml = R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", role: "joint_target", device: "arm" }
+)";
+  ExpectRejectMentioning(yaml, "not both and not neither");
+}
+
+TEST(PolicyIoParams, RejectsAnUnknownInputSource) {
+  std::string yaml = kRecurrentYaml;
+  yaml.replace(yaml.find("source: recurrent"), std::string("source: recurrent").size(),
+               "source: constant");
+  ExpectRejectMentioning(yaml, "declares source 'constant'");
+}
+
+TEST(PolicyIoParams, RejectsAnAffineLaneOnARecurrentTensor) {
+  std::string yaml = kRecurrentYaml;
+  yaml.replace(yaml.find("    source: recurrent"), std::string("    source: recurrent").size(),
+               "    source: recurrent\n    scale: [1.0, 1.0, 1.0, 1.0]");
+  ExpectRejectMentioning(yaml, "cannot carry an affine lane");
+}
+
+TEST(PolicyIoParams, RejectsFeedsToAnUndeclaredInput) {
+  std::string yaml = kRecurrentYaml;
+  yaml.replace(yaml.find("    feeds: \"h_in\""), std::string("    feeds: \"h_in\"").size(),
+               "    feeds: \"c_in\"");
+  ExpectRejectMentioning(yaml, "feeds 'c_in' but no such input tensor is declared");
+}
+
+TEST(PolicyIoParams, RejectsFeedsToAnObservationInput) {
+  std::string yaml = kRecurrentYaml;
+  yaml.replace(yaml.find("    feeds: \"h_in\""), std::string("    feeds: \"h_in\"").size(),
+               "    feeds: \"obs\"");
+  ExpectRejectMentioning(yaml, "filled by observation features");
+}
+
+TEST(PolicyIoParams, RejectsAFeedsWidthMismatch) {
+  // The failure a retrain that changed the hidden width produces. Both tensors
+  // are perfectly valid on their own.
+  std::string yaml = kRecurrentYaml;
+  yaml.replace(yaml.rfind("    shape: [1, 1, 4]"), std::string("    shape: [1, 1, 4]").size(),
+               "    shape: [1, 1, 8]");
+  ExpectRejectMentioning(yaml, "8 elements but feeds input 'h_in', which has 4");
+}
+
+TEST(PolicyIoParams, RejectsTwoOutputsFeedingOneInput) {
+  const std::string yaml = R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+  - name: "h_in"
+    shape: [1, 4]
+    source: recurrent
+outputs:
+  - name: "action"
+    shape: [1, 6]
+  - name: "h_out"
+    shape: [1, 4]
+    feeds: "h_in"
+  - name: "c_out"
+    shape: [1, 4]
+    feeds: "h_in"
+output_features:
+  - { tensor: "action", role: "joint_target", device: "arm" }
+)";
+  ExpectRejectMentioning(yaml, "already feeds");
+}
+
+TEST(PolicyIoParams, RejectsARecurrentInputNothingFeeds) {
+  // Never written after the initial zero, so the policy reads a constant zero
+  // state forever while looking exactly like a working recurrent policy.
+  std::string yaml = kRecurrentYaml;
+  yaml.replace(yaml.find("    feeds: \"h_in\"\n"), std::string("    feeds: \"h_in\"\n").size(), "");
+  ExpectRejectMentioning(yaml, "no output declares `feeds:");
+}
+
+TEST(PolicyIoParams, RejectsSlicingATensorThatFeedsAnInput) {
+  // Hidden units read as radians: finite, in range, and driving the arm.
+  std::string yaml = kRecurrentYaml;
+  yaml.replace(
+      yaml.find("  - { tensor: \"action\", role: \"joint_target\", device: \"arm\" }"),
+      std::string("  - { tensor: \"action\", role: \"joint_target\", device: \"arm\" }").size(),
+      "  - { tensor: \"action\", role: \"joint_target\", device: \"arm\" }\n"
+      "  - { tensor: \"h_out\", role: \"posture_scalar\", device: \"hand\", offset: 0, "
+      "count: 1 }");
+  ExpectRejectMentioning(yaml, "which feeds recurrent input 'h_in'");
 }
 
 // ── The pre-#511 schema is named, not left to fail obscurely ────────────────
@@ -822,6 +950,50 @@ TEST(PolicyIoCore, UnpackSliceRefusesShortDestination) {
   const std::array<float, 4> tensor{1.0F, 2.0F, 3.0F, 4.0F};
   std::vector<double> out(1, -1.0);
   EXPECT_FALSE(UnpackSlice(out, OutputSlice{0, 0, 4}, tensor.data(), tensor.size()));
+}
+
+// ── CopyFiniteChecked: the recurrent feedback primitive ─────────────────────
+
+TEST(PolicyIoCore, CopyFiniteCheckedCopiesAFiniteState) {
+  const std::array<float, 4> src{1.0F, -2.0F, 0.0F, 3.5F};
+  std::vector<float> dst(4, 99.0F);
+  EXPECT_TRUE(CopyFiniteChecked(dst, src.data(), src.size()));
+  EXPECT_FLOAT_EQ(dst[0], 1.0F);
+  EXPECT_FLOAT_EQ(dst[3], 3.5F);
+}
+
+TEST(PolicyIoCore, CopyFiniteCheckedZeroesRatherThanFreezingANonFiniteState) {
+  // The requirement, not a nicety. A NaN latched into the state becomes the
+  // next step's input, every subsequent output is NaN, every tick fails its
+  // finiteness check and holds — and the hold path is silent, so the robot
+  // stops with nothing in the log and no recovery short of re-activation.
+  const std::array<float, 3> src{1.0F, std::numeric_limits<float>::quiet_NaN(), 3.0F};
+  std::vector<float> dst{7.0F, 8.0F, 9.0F};
+  EXPECT_FALSE(CopyFiniteChecked(dst, src.data(), src.size()));
+  for (const float v : dst) {
+    EXPECT_FLOAT_EQ(v, 0.0F) << "a refused state must be RESET, never left as it was";
+  }
+}
+
+TEST(PolicyIoCore, CopyFiniteCheckedZeroesOnAnInfinity) {
+  const std::array<float, 2> src{std::numeric_limits<float>::infinity(), 1.0F};
+  std::vector<float> dst{5.0F, 5.0F};
+  EXPECT_FALSE(CopyFiniteChecked(dst, src.data(), src.size()));
+  EXPECT_FLOAT_EQ(dst[0], 0.0F);
+  EXPECT_FLOAT_EQ(dst[1], 0.0F);
+}
+
+TEST(PolicyIoCore, CopyFiniteCheckedZeroesOnAShortOrNullSource) {
+  // Whatever `dst` holds was written for a step that no longer applies, so a
+  // source it cannot trust is the same refusal as a NaN.
+  const std::array<float, 2> src{1.0F, 2.0F};
+  std::vector<float> dst{4.0F, 4.0F, 4.0F};
+  EXPECT_FALSE(CopyFiniteChecked(dst, src.data(), src.size()));
+  EXPECT_FLOAT_EQ(dst[2], 0.0F);
+
+  std::vector<float> other{6.0F};
+  EXPECT_FALSE(CopyFiniteChecked(other, nullptr, 4));
+  EXPECT_FLOAT_EQ(other[0], 0.0F);
 }
 
 // ── BlendPosture ────────────────────────────────────────────────────────────

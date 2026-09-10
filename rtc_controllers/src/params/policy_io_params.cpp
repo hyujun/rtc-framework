@@ -120,21 +120,6 @@ std::string ParseTensorName(const YAML::Node& entry, const std::string& where,
   return name;
 }
 
-/// Refuse a key that is reserved for a phase that has not landed.
-///
-/// Reserved-and-refused, not ignored: a config declaring `source: recurrent`
-/// while the stack is still feed-forward would produce a policy fed a tensor
-/// nobody writes — finite, plausible, and wrong in exactly the way the rest of
-/// this parser exists to prevent.
-void RejectReserved(const YAML::Node& entry, const char* key, const std::string& where,
-                    const char* what) {
-  if (entry[key]) {
-    Reject(where, " declares '", key, "' — ", what,
-           " is not implemented yet (#511 P5: recurrent links). The key is reserved so that a "
-           "config cannot mean something else by it in the meantime");
-  }
-}
-
 /// Name the migration when a pre-#511 flat schema turns up.
 ///
 /// Without this the old config fails as "inputs must be a non-empty sequence",
@@ -200,8 +185,6 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     if (!entry || !entry.IsMap()) {
       Reject(where, " must be a map with keys {name, shape, features}");
     }
-    RejectReserved(entry, "source", where, "an input filled by anything other than features");
-
     InputTensorSpec spec;
     spec.name = ParseTensorName(entry, where, input_names);
     input_names.push_back(spec.name);
@@ -211,9 +194,38 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     spec.shape = ParseShape(entry["shape"], shape_where);
     const std::size_t numel = spec.Numel();
 
+    // Exactly one filler. A tensor with both would have its features overwritten
+    // by the feedback every step after the first — the observation would simply
+    // stop arriving, and the policy would keep producing finite actions from a
+    // hidden state and nothing else. A tensor with neither is never written at
+    // all, so it reads whatever the engine's allocation held.
+    const YAML::Node source = entry["source"];
     const YAML::Node features = entry["features"];
-    if (!features || !features.IsSequence() || features.size() == 0) {
-      Reject(where, " ('", spec.name, "') must declare a non-empty `features:` sequence");
+    const bool has_features = features && features.IsSequence() && features.size() > 0;
+    if (source) {
+      const auto kind = source.as<std::string>("");
+      if (kind != "recurrent") {
+        Reject(where, " ('", spec.name, "') declares source '", kind,
+               "' — the only source other than observation features is \"recurrent\"");
+      }
+      spec.recurrent = true;
+    }
+    if (spec.recurrent == has_features) {
+      Reject(where, " ('", spec.name,
+             "') must declare EITHER a non-empty `features:` sequence OR `source: recurrent`, "
+             "not both and not neither");
+    }
+    if (spec.recurrent) {
+      if (entry["offset"] || entry["scale"]) {
+        // Normalisation constants come from the statistics of an observed
+        // quantity. A hidden state is the policy's own representation; there is
+        // no training-time distribution to centre it against.
+        Reject(where, " ('", spec.name,
+               "') is recurrent and cannot carry an affine lane — `offset`/`scale` normalise "
+               "observations, and a policy's internal state is not one");
+      }
+      out.inputs.push_back(std::move(spec));
+      continue;
     }
     int cursor = 0;
     spec.features.reserve(features.size());
@@ -269,8 +281,6 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     if (!entry || !entry.IsMap()) {
       Reject(where, " must be a map with keys {name, shape}");
     }
-    RejectReserved(entry, "feeds", where, "an output fed back into an input");
-
     OutputTensorSpec spec;
     spec.name = ParseTensorName(entry, where, output_tensor_names);
     output_tensor_names.push_back(spec.name);
@@ -278,7 +288,65 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     std::string shape_where = where;
     shape_where.append(".shape");
     spec.shape = ParseShape(entry["shape"], shape_where);
+    spec.feeds = entry["feeds"].as<std::string>("");
     out.outputs.push_back(std::move(spec));
+  }
+
+  // ── Recurrent links ───────────────────────────────────────────────────────
+  // Resolved after BOTH sides are known, because a link is a statement about a
+  // pair. Whole-tensor by D-2.
+  for (std::size_t t = 0; t < out.outputs.size(); ++t) {
+    const auto& src = out.outputs[t];
+    if (src.feeds.empty()) {
+      continue;
+    }
+    const std::string where = At("outputs", t);
+    std::size_t target = out.inputs.size();
+    for (std::size_t i = 0; i < out.inputs.size(); ++i) {
+      if (out.inputs[i].name == src.feeds) {
+        target = i;
+        break;
+      }
+    }
+    if (target == out.inputs.size()) {
+      Reject(where, " ('", src.name, "') feeds '", src.feeds,
+             "' but no such input tensor is declared");
+    }
+    const auto& dst = out.inputs[target];
+    if (!dst.recurrent) {
+      Reject(where, " ('", src.name, "') feeds input '", dst.name,
+             "', which is filled by observation features — writing the previous step's output "
+             "over it would replace this tick's observation with the policy's own last answer");
+    }
+    if (src.Numel() != dst.Numel()) {
+      Reject(where, " ('", src.name, "') has ", std::to_string(src.Numel()),
+             " elements but feeds input '", dst.name, "', which has ", std::to_string(dst.Numel()));
+    }
+    for (const auto& link : out.recurrent_links) {
+      if (static_cast<std::size_t>(link.input_tensor) == target) {
+        Reject(where, " ('", src.name, "') feeds input '", dst.name, "', which output '",
+               out.outputs[static_cast<std::size_t>(link.output_tensor)].name,
+               "' already feeds — the state would be whichever copy ran last");
+      }
+    }
+    out.recurrent_links.push_back({static_cast<int>(t), static_cast<int>(target), src.Numel()});
+  }
+  // A recurrent input nothing feeds is never written after the initial zero, so
+  // the policy reads a constant zero state forever while looking exactly like a
+  // working recurrent policy.
+  for (std::size_t i = 0; i < out.inputs.size(); ++i) {
+    if (!out.inputs[i].recurrent) {
+      continue;
+    }
+    const bool fed = std::any_of(out.recurrent_links.begin(), out.recurrent_links.end(),
+                                 [i](const rtc::inference::RecurrentLink& l) {
+                                   return static_cast<std::size_t>(l.input_tensor) == i;
+                                 });
+    if (!fed) {
+      Reject(At("inputs", i), " ('", out.inputs[i].name,
+             "') is recurrent but no output declares `feeds: \"", out.inputs[i].name,
+             "\"` — nothing would ever write it");
+    }
   }
 
   // ── Output features → slices ──────────────────────────────────────────────
@@ -333,7 +401,14 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
              "' but no such tensor is declared under `outputs:`");
     }
     const auto tensor = static_cast<int>(found - output_tensor_names.begin());
-    const std::size_t tensor_numel = out.outputs[static_cast<std::size_t>(tensor)].Numel();
+    const auto& tensor_spec = out.outputs[static_cast<std::size_t>(tensor)];
+    if (!tensor_spec.feeds.empty()) {
+      Reject(at, " (", label, ") slices output tensor '", tensor_name,
+             "', which feeds recurrent input '", tensor_spec.feeds,
+             "' — that tensor is the policy's internal state, and reading joint targets out of "
+             "it would be interpreting hidden units as radians");
+    }
+    const std::size_t tensor_numel = tensor_spec.Numel();
 
     // Both keys are optional and default to "the whole tensor", because a
     // policy whose tensor IS one command is the common case and spelling out
@@ -376,8 +451,6 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     Reject("decimation must be >= 1 (got ", std::to_string(out.decimation), ")");
   }
 
-  // `out.recurrent_links` stays empty: see the header. Every path that could
-  // fill it is refused above until #511 P5.
   return out;
 }
 

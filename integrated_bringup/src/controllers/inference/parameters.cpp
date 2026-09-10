@@ -10,6 +10,7 @@
 #include <Eigen/Core>
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -137,6 +138,17 @@ void DemoInferenceController::LoadConfig(const YAML::Node& cfg) {
     throw std::invalid_argument("demo_inference_controller: intra_op_threads must be >= 1");
   }
   allow_missing_model_ = inf["allow_missing_model"].as<bool>(false);
+
+  // #511 D-3. Read here (Pass 1) because it is self-contained; whether it does
+  // anything depends on the schema declaring a recurrent link, and an inert key
+  // on a feed-forward policy is harmless. A NaN is refused rather than silently
+  // read as "never reset", which is what every comparison against it would mean.
+  reset_after_hold_sec_ = inf["reset_after_hold_sec"].as<double>(0.1);
+  if (std::isnan(reset_after_hold_sec_)) {
+    throw std::invalid_argument(
+        "demo_inference_controller: inference.reset_after_hold_sec must be a number (0 resets "
+        "after any hold, negative never resets outside activation)");
+  }
 
   // `hand_posture` is NOT read here. Whether it is required at all depends on
   // whether a `posture_scalar` role is declared, and roles are only resolvable

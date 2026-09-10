@@ -213,6 +213,15 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
 
 void DemoInferenceController::HoldPosition(const ControllerState& state,
                                            ControllerOutput& out) noexcept {
+  // Every hold path in Compute() funnels through here, which is why the hold
+  // clock lives here rather than being re-armed at each of the six early
+  // returns. Arming a flag instead of resetting on the spot keeps the hold path
+  // from touching the engine at all (#511 D-3).
+  hold_elapsed_sec_ += state.dt;
+  if (reset_after_hold_sec_ >= 0.0 && hold_elapsed_sec_ >= reset_after_hold_sec_) {
+    recurrent_reset_pending_ = true;
+  }
+
   // Latch on entry. See the member declaration for why commanding the measured
   // position every tick is not a hold: it is a zero-stiffness follower, and the
   // arm sags.
@@ -419,6 +428,20 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       return out;
     }
 
+    // ── Recurrent state: reset before the observation goes in ──────────────
+    // Armed by activation or by a hold that outlasted `reset_after_hold_sec_`.
+    // Zeroing here rather than after the run means the very step that resumes
+    // already runs on the fresh state instead of one step later.
+    if (recurrent_reset_pending_) {
+      for (const auto& link : io_.recurrent_links) {
+        const auto t = static_cast<std::size_t>(link.input_tensor);
+        if (t < n_tensors) {
+          std::fill(in_bufs[t].begin(), in_bufs[t].end(), 0.0F);
+        }
+      }
+      recurrent_reset_pending_ = false;
+    }
+
     if (!PackObservation(state, std::span<const std::span<float>>(in_bufs.data(), n_tensors))) {
       have_action_ = false;
       HoldPosition(state, out);
@@ -506,7 +529,37 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       last_tick_held_ = true;
       return out;
     }
+    // ── Recurrent feedback ─────────────────────────────────────────────────
+    // Deliberately AFTER the `ok` gate, which already means "the whole action
+    // was accepted". A partial action is not a smaller version of the right
+    // thing, and neither is the state that produced it — advancing the state on
+    // a rejected step would keep the policy's memory moving while the robot
+    // stood still (#511 C-5, no new branch needed).
+    //
+    // Engine buffer → engine buffer: the state never passes through this
+    // controller's scratch, so a hidden layer of any width costs it zero bytes.
+    for (const auto& link : io_.recurrent_links) {
+      const auto in_t = static_cast<std::size_t>(link.input_tensor);
+      if (in_t >= n_tensors) {
+        continue;
+      }
+      if (!rtc::inference::CopyFiniteChecked(in_bufs[in_t],
+                                             engine_->output_buffer(0, link.output_tensor),
+                                             engine_->output_size(0, link.output_tensor)) &&
+          !warned_state_reset_) {
+        // One-shot, plain integer: a non-finite state is a fault, and the
+        // alternative to zeroing it is a permanent silent hold (C-4).
+        warned_state_reset_ = true;
+        RCLCPP_WARN(logger_,
+                    "[inference] recurrent state tensor %d was not finite and has been RESET to "
+                    "zero. Freezing it instead would have made every later step non-finite with "
+                    "no way back short of re-activation",
+                    link.input_tensor);
+      }
+    }
+
     have_action_ = true;
+    hold_elapsed_sec_ = 0.0;
     hold_latched_ = false;  // a fresh action supersedes the latch
   }
 

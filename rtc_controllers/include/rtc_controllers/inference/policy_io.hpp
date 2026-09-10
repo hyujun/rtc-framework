@@ -3,7 +3,8 @@
 // The four operations that sit between a controller's state and a policy's
 // flat float tensors: pack a run of doubles into one input tensor, apply that
 // tensor's training-time affine normalisation, unpack a run of one output
-// tensor, and blend two joint postures by a scalar.
+// tensor, blend two joint postures by a scalar, and feed a recurrent state
+// tensor back into the next step.
 //
 // WHY THIS IS A CORE AND NOT BINDING GLUE. The boundary rule is "does this code
 // have to know `RTControllerInterface` exists?" — none of it does. It sees
@@ -62,16 +63,13 @@ struct OutputSlice {
 /// One recurrent link: an output tensor whose contents become an input tensor
 /// on the NEXT policy step (`h_out` → `h_in`).
 ///
-/// RESERVED, NOT YET FILLED. #511 P5 owns the parsing, the feedback copy and
-/// the reset policy; the descriptor and the (always empty) list in
-/// `rtc::params::PolicyIoParams` exist now so that P5 is a pure addition rather
-/// than a redesign of the schema every layer above already consumes. The schema
-/// parser refuses `source:`/`feeds:` today rather than accepting a declaration
-/// nothing acts on — a config that says "recurrent" and is silently feed-forward
-/// would produce finite, plausible, wrong actions.
+/// Whole-tensor by decision D-2: a slice-level link would multiply the
+/// validation surface for an export shape almost nobody produces.
 ///
-/// The link is whole-tensor by decision D-2: a slice-level link would multiply
-/// the validation surface for an export shape almost nobody produces.
+/// Both indices address the DECLARATION order of their side, which is the
+/// order `rtc::InferenceEngine` binds — so a link is a pair of buffer slots and
+/// the copy never passes through the controller's own memory. That is why a
+/// hidden state of any width costs this binding zero bytes.
 struct RecurrentLink {
   int output_tensor{0};
   int input_tensor{0};
@@ -162,6 +160,44 @@ inline void ApplyAffine(std::span<float> buf, std::span<const float> offset,
   }
   for (std::size_t i = 0; i < n; ++i) {
     out[i] = static_cast<double>(buf[off + i]);
+  }
+  return true;
+}
+
+/// Copy `src[0, dst.size())` into `dst`, refusing NON-FINITE values — and on
+/// refusal ZEROING `dst` rather than leaving it as it was.
+///
+/// The recurrent feedback primitive, and the zeroing is the whole point.
+/// Freezing a bad state would be permanent death: a NaN that reaches `h_out`
+/// becomes the next step's `h_in`, every subsequent output is then NaN, every
+/// tick fails its finiteness check and holds — and the hold path is silent, so
+/// the robot stops with nothing in the log to say why and no recovery short of
+/// re-activation. Zero is not the right state, but it is a state the policy can
+/// be driven out of.
+///
+/// A size mismatch or a null source is the same refusal for the same reason:
+/// whatever `dst` holds was written for a step that no longer applies.
+///
+/// RT: noexcept, allocation-free, single pass. Returns false when the state was
+/// reset, so the caller can say so once rather than per tick.
+[[nodiscard]] inline bool CopyFiniteChecked(std::span<float> dst, const float* src,
+                                            std::size_t src_size) noexcept {
+  if (src == nullptr || src_size < dst.size()) {
+    for (float& v : dst) {
+      v = 0.0F;
+    }
+    return false;
+  }
+  for (std::size_t i = 0; i < dst.size(); ++i) {
+    if (!std::isfinite(src[i])) {
+      for (float& v : dst) {
+        v = 0.0F;
+      }
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < dst.size(); ++i) {
+    dst[i] = src[i];
   }
   return true;
 }

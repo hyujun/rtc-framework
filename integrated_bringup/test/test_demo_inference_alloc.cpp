@@ -61,10 +61,13 @@ constexpr int kInferenceStride = 7;
 /// since it is called from inside the gated region.
 class FakeEngine final : public rtc::InferenceEngine {
  public:
-  explicit FakeEngine(const std::vector<std::size_t>& in_sizes = {kInputElements})
-      : head0_(6, 0.1F), head1_(1, 0.5F) {
+  explicit FakeEngine(const std::vector<std::size_t>& in_sizes = {kInputElements},
+                      const std::vector<std::size_t>& out_sizes = {6, 1}) {
     for (const auto n : in_sizes) {
       inputs_.emplace_back(n, 0.0F);
+    }
+    for (const auto n : out_sizes) {
+      outputs_.emplace_back(n, 0.1F);
     }
   }
 
@@ -81,7 +84,8 @@ class FakeEngine final : public rtc::InferenceEngine {
   }
 
   [[nodiscard]] const float* output_buffer(int /*m*/, int output_idx) const noexcept override {
-    return (output_idx == 0) ? head0_.data() : head1_.data();
+    const auto h = static_cast<std::size_t>(output_idx);
+    return (h < outputs_.size()) ? outputs_[h].data() : nullptr;
   }
 
   [[nodiscard]] std::size_t input_size(int /*m*/, int input_idx) const noexcept override {
@@ -90,14 +94,17 @@ class FakeEngine final : public rtc::InferenceEngine {
   }
 
   [[nodiscard]] std::size_t output_size(int /*m*/, int output_idx) const noexcept override {
-    return (output_idx == 0) ? head0_.size() : head1_.size();
+    const auto h = static_cast<std::size_t>(output_idx);
+    return (h < outputs_.size()) ? outputs_[h].size() : 0;
   }
 
   [[nodiscard]] int num_inputs(int /*m*/) const noexcept override {
     return static_cast<int>(inputs_.size());
   }
 
-  [[nodiscard]] int num_outputs(int /*m*/) const noexcept override { return 2; }
+  [[nodiscard]] int num_outputs(int /*m*/) const noexcept override {
+    return static_cast<int>(outputs_.size());
+  }
 
   [[nodiscard]] bool is_initialized() const noexcept override { return initialized_; }
 
@@ -106,8 +113,7 @@ class FakeEngine final : public rtc::InferenceEngine {
  private:
   bool initialized_{false};
   std::vector<std::vector<float>> inputs_;
-  std::vector<float> head0_;
-  std::vector<float> head1_;
+  std::vector<std::vector<float>> outputs_;
 };
 
 std::map<std::string, rtc::DeviceNameConfig> MakeDeviceConfigs() {
@@ -219,6 +225,49 @@ inference:
     close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
 )";
 
+/// A recurrent schema: `h_out` feeds `h_in` every accepted step, so the gated
+/// region below covers the reset check, the feedback copy and its finiteness
+/// screen on top of everything the feed-forward cases already cover.
+constexpr const char* kRecurrentYaml = R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 10
+  inputs:
+    - name: "obs"
+      shape: [1, 20]
+      features:
+        - "arm.position"
+        - "hand.position"
+        - "hand.fingertip_force_norm"
+    - name: "h_in"
+      shape: [1, 8]
+      source: recurrent
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
+    - name: "h_out"
+      shape: [1, 8]
+      feeds: "h_in"
+  output_features:
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
+  hand_posture:
+    open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+)";
+
 ControllerState MakeState() {
   ControllerState state{};
   state.num_devices = 2;
@@ -254,11 +303,13 @@ class InferenceAllocGate : public ::testing::Test {
   /// Bring one controller all the way to ACTIVE. Split out of SetUp so a case
   /// can rebuild on a different schema without duplicating the three-pass
   /// order, which is itself part of what these cases exercise.
-  void Build(const char* yaml, const std::vector<std::size_t>& in_sizes) {
+  void Build(const char* yaml, const std::vector<std::size_t>& in_sizes,
+             const std::vector<std::size_t>& out_sizes = {6, 1}) {
     rclcpp::NodeOptions opts;
     opts.use_global_arguments(false);
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("inference_alloc_gate", "", opts);
-    ctrl_ = std::make_unique<DemoInferenceController>("", std::make_unique<FakeEngine>(in_sizes));
+    ctrl_ = std::make_unique<DemoInferenceController>(
+        "", std::make_unique<FakeEngine>(in_sizes, out_sizes));
     const YAML::Node cfg = YAML::Load(yaml);
     ctrl_->LoadConfig(cfg);
     ctrl_->SetDeviceNameConfigs(MakeDeviceConfigs());
@@ -361,4 +412,29 @@ TEST_F(InferenceAllocGate, AMultiTensorObservationDoesNotAllocateEither) {
     allocations = gate.count();
   }
   EXPECT_EQ(allocations, 0U) << "the multi-tensor RT tick allocated";
+}
+
+TEST_F(InferenceAllocGate, TheRecurrentFeedbackPathDoesNotAllocate) {
+  // The state copy is engine buffer → engine buffer and must stay that way. A
+  // staging `std::vector` for the hidden state would be the obvious way to
+  // write it, would cost one allocation per policy step, and would never show
+  // up as a wrong number — the actions would be identical.
+  Build(kRecurrentYaml, {kInputElements, 8U}, {6, 1, 8});
+  auto state = MakeState();
+
+  for (int t = 0; t < 25; ++t) {
+    static_cast<void>(ctrl_->Compute(state));
+  }
+  ASSERT_FALSE(ctrl_->LastTickHeldForTesting())
+      << "the recurrent schema must actually run, or this case gates the hold path twice";
+
+  std::size_t allocations = 0;
+  {
+    const rtc::testing::ScopedAllocGate gate;
+    for (int t = 0; t < 100; ++t) {
+      static_cast<void>(ctrl_->Compute(state));
+    }
+    allocations = gate.count();
+  }
+  EXPECT_EQ(allocations, 0U) << "the recurrent RT tick allocated";
 }

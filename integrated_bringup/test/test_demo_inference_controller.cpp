@@ -578,6 +578,282 @@ TEST(DemoInferenceRoles, RejectsAMissingArmRole) {
   EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
 }
 
+// ── Recurrent state (#511 P5) ──────────────────────────────────────────────
+
+namespace {
+
+/// `obs` + `h_in` in, `arm_action` + `posture` + `h_out` out, `h_out` feeding
+/// `h_in`. `reset_after_hold_sec` is left at whatever the case wants.
+std::string MakeRecurrentYaml(const std::string& reset_line = "") {
+  return R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 1
+)" + reset_line +
+         R"(  inputs:
+    - name: "obs"
+      shape: [1, 20]
+      features:
+        - "arm.position"
+        - "hand.position"
+        - "hand.fingertip_force_norm"
+    - name: "h_in"
+      shape: [1, 4]
+      source: recurrent
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
+    - name: "h_out"
+      shape: [1, 4]
+      feeds: "h_in"
+  output_features:
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
+  hand_posture:
+    open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+)";
+}
+
+/// A recurrent harness with the state head wired: `h_out` always emits @p v.
+Harness MakeRecurrentHarness(const std::string& reset_line = "") {
+  Harness h{MakeRecurrentYaml(reset_line),
+            false,
+            {static_cast<std::size_t>(kInputElements), 4U},
+            {6, 1, 4}};
+  return h;
+}
+
+}  // namespace
+
+TEST(DemoInferenceRecurrent, TheStateHeadFeedsTheNextStepsStateInput) {
+  auto h = MakeRecurrentHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>{1.0F, 2.0F, 3.0F, 4.0F}};
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  // Activation zeroes the state, so the FIRST step must have run on zeros.
+  ASSERT_EQ(h.engine->last_inputs.size(), 2U);
+  for (const float v : h.engine->last_inputs[1]) {
+    EXPECT_FLOAT_EQ(v, 0.0F) << "activation must reset the state before the first evaluation";
+  }
+
+  // The second step sees what the first emitted.
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[1][0], 1.0F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[1][3], 4.0F);
+}
+
+TEST(DemoInferenceRecurrent, ANonFiniteStateIsZeroedRatherThanFrozen) {
+  // #511 C-4. Freezing a NaN would make every later step non-finite, every tick
+  // hold, and the hold path is silent — the robot would stop with nothing in the
+  // log and no recovery short of re-activation.
+  auto h = MakeRecurrentHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+
+  auto state = MakeState();
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>{5.0F, 6.0F, 7.0F, 8.0F}};
+  static_cast<void>(h.ctrl->Compute(state));
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FLOAT_EQ(h.engine->last_inputs[1][0], 5.0F) << "state is flowing before the fault";
+
+  // The action stays perfectly valid; only the STATE head goes bad.
+  h.engine->next_output[2][1] = std::numeric_limits<float>::quiet_NaN();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_FALSE(h.ctrl->LastTickHeldForTesting())
+      << "a bad state must not reject the action that was already accepted";
+
+  static_cast<void>(h.ctrl->Compute(state));
+  for (const float v : h.engine->last_inputs[1]) {
+    EXPECT_FLOAT_EQ(v, 0.0F) << "the whole state tensor must be reset, not partially copied";
+  }
+}
+
+TEST(DemoInferenceRecurrent, ARejectedActionDoesNotAdvanceTheState) {
+  // #511 C-5. The `ok` gate already means "the whole action was accepted", and
+  // the feedback sits behind it: advancing the policy's memory on a step whose
+  // command was thrown away would keep its story moving while the robot stood
+  // still, and every later action would be finite and about a history that did
+  // not happen.
+  auto h = MakeRecurrentHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>{2.0F, 2.0F, 2.0F, 2.0F}};
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FLOAT_EQ(h.engine->last_inputs[1][0], 2.0F);
+
+  // The ARM head goes bad while the state head offers a perfectly finite new
+  // value. The action is rejected; the state must not take that value.
+  h.engine->next_output[0][3] = std::numeric_limits<float>::quiet_NaN();
+  h.engine->next_output[2] = std::vector<float>{6.0F, 6.0F, 6.0F, 6.0F};
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting()) << "a non-finite arm target must hold";
+
+  h.engine->next_output[0][3] = 0.0F;
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[1][0], 2.0F)
+      << "the state must still be the last one that produced an ACCEPTED action";
+}
+
+TEST(DemoInferenceRecurrent, ALongHoldResetsTheStateOnResume) {
+  // dt is 2 ms and the threshold 6 ms, so four held ticks cross it.
+  auto h = MakeRecurrentHarness("  reset_after_hold_sec: 0.006\n");
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>{9.0F, 9.0F, 9.0F, 9.0F}};
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FLOAT_EQ(h.engine->last_inputs[1][0], 9.0F);
+
+  state.devices[0].hole_mask = 0b10U;  // arm lane unreadable → hold
+  for (int t = 0; t < 4; ++t) {
+    static_cast<void>(h.ctrl->Compute(state));
+  }
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
+
+  state.devices[0].hole_mask = 0U;
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  for (const float v : h.engine->last_inputs[1]) {
+    EXPECT_FLOAT_EQ(v, 0.0F) << "a state describing a moment that has passed must not resume";
+  }
+}
+
+TEST(DemoInferenceRecurrent, AShortHoldKeepsTheState) {
+  // The mirror of the case above, and the reason the policy is a threshold and
+  // not "reset on every hold": one hole in a device lane is not rare, and
+  // erasing memory on each would gut the recurrence.
+  auto h = MakeRecurrentHarness("  reset_after_hold_sec: 0.5\n");
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>{9.0F, 9.0F, 9.0F, 9.0F}};
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FLOAT_EQ(h.engine->last_inputs[1][0], 9.0F);
+
+  state.devices[0].hole_mask = 0b10U;
+  static_cast<void>(h.ctrl->Compute(state));  // 2 ms of hold, well under 500 ms
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
+
+  state.devices[0].hole_mask = 0U;
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[1][0], 9.0F) << "a transient hold must not erase memory";
+}
+
+TEST(DemoInferenceRecurrent, ANegativeThresholdNeverResetsOutsideActivation) {
+  auto h = MakeRecurrentHarness("  reset_after_hold_sec: -1.0\n");
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>{3.0F, 3.0F, 3.0F, 3.0F}};
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  static_cast<void>(h.ctrl->Compute(state));
+  state.devices[0].hole_mask = 0b10U;
+  for (int t = 0; t < 200; ++t) {  // 400 ms of hold
+    static_cast<void>(h.ctrl->Compute(state));
+  }
+  state.devices[0].hole_mask = 0U;
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[1][0], 3.0F);
+}
+
+TEST(DemoInferenceRecurrent, ZeroThresholdResetsAfterAnyHold) {
+  auto h = MakeRecurrentHarness("  reset_after_hold_sec: 0.0\n");
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>{4.0F, 4.0F, 4.0F, 4.0F}};
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FLOAT_EQ(h.engine->last_inputs[1][0], 4.0F);
+
+  state.devices[0].hole_mask = 0b10U;
+  static_cast<void>(h.ctrl->Compute(state));  // one held tick is enough
+  state.devices[0].hole_mask = 0U;
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[1][0], 0.0F);
+}
+
+TEST(DemoInferenceRecurrent, ReactivationResetsTheStateRegardlessOfTheThreshold) {
+  // The gap across a deactivation is not a hold, and no threshold governs it.
+  auto h = MakeRecurrentHarness("  reset_after_hold_sec: -1.0\n");
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>{7.0F, 7.0F, 7.0F, 7.0F}};
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FLOAT_EQ(h.engine->last_inputs[1][0], 7.0F);
+
+  ASSERT_EQ(h.ctrl->on_deactivate(rclcpp_lifecycle::State{}),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  static_cast<void>(h.ctrl->Compute(state));
+  for (const float v : h.engine->last_inputs[1]) {
+    EXPECT_FLOAT_EQ(v, 0.0F);
+  }
+}
+
+TEST(DemoInferenceRecurrent, TheStateTensorIsNotPackedWithObservationFeatures) {
+  // The observation walk is flat over features and the state tensor declares
+  // none, so nothing should reach it from PackObservation. Pinned because a
+  // walk that had kept a policy-wide cursor would spill into it — and the
+  // policy would read part of its observation as a hidden state.
+  auto h = MakeRecurrentHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F),
+                           std::vector<float>(4, 0.0F)};
+
+  auto state = MakeState();
+  for (int i = 0; i < kArmDof; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 1.0 + i;
+  }
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_EQ(h.engine->last_inputs[0].size(), static_cast<std::size_t>(kInputElements));
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][0], 1.0F);
+  for (const float v : h.engine->last_inputs[1]) {
+    EXPECT_FLOAT_EQ(v, 0.0F);
+  }
+}
+
 // ── Multi-input: one address space per tensor ──────────────────────────────
 
 namespace {

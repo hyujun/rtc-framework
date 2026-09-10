@@ -359,6 +359,14 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(
   last_tick_held_ = true;
   last_scalar_clamped_ = false;
   warned_scalar_range_ = false;
+  // Recurrent state too, and UNCONDITIONALLY — `reset_after_hold_sec` governs
+  // holds during a run, not the gap across a deactivation. Whatever the state
+  // described, the robot has been out of this controller's hands since (#511
+  // D-3). Applied on the first evaluation, because the state lives in the
+  // engine's buffers and those are only safe to touch on the tick.
+  hold_elapsed_sec_ = 0.0;
+  recurrent_reset_pending_ = true;
+  warned_state_reset_ = false;
   return CallbackReturn::SUCCESS;
 }
 
