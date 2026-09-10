@@ -262,6 +262,10 @@ Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 - ONNX session/IoBinding/tensor/warmup 은 `rtc::OnnxEngine` 이 소유 (이 클래스는 history/정규화/calibration/post-proc 만 담당)
 - `HAS_ONNXRUNTIME` 미정의 시 stub 구현 (추론 비활성)
 
+> **텐서가 positional 로 바인딩되어 있다 — head 1·2 가 뒤바뀐 모델을 검출하지 못한다.** `F` 와 `u` 는 둘 다 `[1,3]` 이라 shape 검사로는 구분이 불가능하므로, 그 둘을 반대 순서로 export 한 `.onnx` 를 물리면 **모든 검사를 통과한 채 힘과 방향이 조용히 뒤바뀐다**. 엔진은 텐서를 **이름으로** 바인딩할 수 있고 (`rtc_inference` README §텐서를 이름으로 바인딩하는 이유) 그러면 이 사각이 닫히지만, 이름을 채우려면 실제 `.onnx` 가 있어야 한다 — 현재 두 config 의 `model_paths` 는 전부 `""` 다.
+>
+> **실모델을 받으면**: `ros2 run rtc_inference rtc_inference_check <model>.onnx` 로 텐서 이름을 확인하고 `fingertip_ft_inferencer.hpp` 의 `model_config.inputs`/`.outputs` 에 채운다. 한 side 는 전부 이름을 갖거나 전부 비어야 하며, 틀린 이름은 configure 에서 큰 소리로 실패하므로 안전하게 증분 적용할 수 있다 (#511).
+
 ### UdpHandFailureDetector (`udp_hand_failure_detector.hpp`)
 
 50Hz non-RT jthread로 동작하는 장애 감지기:

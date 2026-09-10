@@ -81,9 +81,10 @@ endif()
 # configure time — so it cannot drift into disagreeing with the real gate.
 # Needs a session to read the model, hence ORT-only.
 if(HAS_ONNXRUNTIME)
-  # ARCH-7-exempt: offline inspector, not a runtime identity. It takes a model
-  # path and shapes on argv, knows no robot, owns no RT loop, and appears in no
-  # bringup chain (design-principles.md §Boundary Rules).
+  # Offline inspector, not a runtime identity: it takes a model path and shapes
+  # on argv, knows no robot, owns no RT loop, and appears in no bringup chain
+  # (design-principles.md §Boundary Rules).
+  # ARCH-7-exempt
   add_executable(rtc_inference_check src/check_model.cpp)
   target_link_libraries(rtc_inference_check rtc_inference)
   install(TARGETS rtc_inference_check DESTINATION lib/${PROJECT_NAME})
