@@ -227,9 +227,18 @@ class DemoInferenceController final : public RTControllerInterface {
 
   /// Fill every input tensor from `state`. `bufs[t]` is the engine's buffer for
   /// input tensor t, already length-checked by the caller. Returns false the
-  /// moment any required source is unreadable — the caller then holds without
-  /// running the model, and NO tensor is left half-written for the next tick to
-  /// inherit.
+  /// moment any required source is unreadable.
+  ///
+  /// A refusal DOES leave the segments packed before it in the engine's
+  /// buffers, and that is safe for two reasons that are worth naming, because
+  /// neither is "it unwinds": the caller holds without calling `Run()`, so the
+  /// half-filled buffer is never observed by the policy; and the parser forces
+  /// each tensor's features to cover it exactly, so the next successful pack
+  /// overwrites every element rather than leaving this tick's values mixed with
+  /// an older normalisation. `ApplyAffine` runs per tensor only after all of
+  /// that tensor's segments are in place, so a refused tick cannot scale
+  /// anything twice. A future tensor with partial feature coverage would break
+  /// the second reason — and #511 C-6 refuses that shape for its own reasons.
   [[nodiscard]] bool PackObservation(const ControllerState& state,
                                      std::span<const std::span<float>> bufs) noexcept;
 

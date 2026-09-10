@@ -487,10 +487,23 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     // Which of the two shapes arrives is a configure-time fact, so the branch
     // is on a resolved enum and not on anything the tick has to discover.
     if (ok && hand_role_ == PolicyOutputRole::kJointTarget) {
-      ok = rtc::inference::UnpackSlice(
-          std::span<double>(scratch_head_.data(), static_cast<std::size_t>(hand_slice.count)),
-          hand_slice, engine_->output_buffer(0, hand_slice.tensor),
-          engine_->output_size(0, hand_slice.tensor));
+      // Same width guard the arm path carries, and for a sharper reason here:
+      // `scratch_head_` was just written with the ARM's targets, and
+      // `UnpackSlice` cannot catch a short slice because the span handed to it
+      // is sized by that same `count` — its bounds check compares the slice
+      // against itself. A `count` below `hand_dof_` would therefore leave the
+      // tail of this read holding arm joint angles, finite and inside the
+      // hand's limits, with nothing downstream to object. `parameters.cpp`
+      // refuses that config at configure time; this keeps the two lanes
+      // symmetric rather than resting the hand's correctness on a check the
+      // arm did not consider sufficient for itself.
+      ok = hand_slice.count == hand_dof_;
+      if (ok) {
+        ok = rtc::inference::UnpackSlice(
+            std::span<double>(scratch_head_.data(), static_cast<std::size_t>(hand_slice.count)),
+            hand_slice, engine_->output_buffer(0, hand_slice.tensor),
+            engine_->output_size(0, hand_slice.tensor));
+      }
       for (int i = 0; ok && i < hand_dof_; ++i) {
         const double v = scratch_head_[static_cast<std::size_t>(i)];
         if (!std::isfinite(v)) {
