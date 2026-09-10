@@ -42,6 +42,7 @@
 
 - **Robot-agnostic standalone 노드** — `rtc_mujoco_sim` 의 `mujoco_simulator_node`, `rtc_urdf_bridge` 의 `closure_state_publisher`. 둘 다 로봇 이름을 모르고 URDF/MJCF 를 파라미터로 받으며, RT 제어 루프를 소유하지 않는다. 이들의 launch 는 자기 노드만 띄운다.
 - **Example 실행 파일** — `rtc_urdf_bridge` 의 `example_*` 4종, `rtc_math` 의 `se3_error_compare`. API 사용법 데모이며 bringup chain 에 등장하지 않는다.
+- **오프라인 검사 도구** — `rtc_inference` 의 `rtc_inference_check` (#511). argv 로 받은 `.onnx` 경로와 shape 만 보고 표를 찍고 끝나는 일회성 프로세스다: 로봇을 모르고, RT 루프도 ROS 노드도 없으며, 어떤 launch 에도 등장하지 않는다. 런타임 정체성이 아니라 **개발 도구**라서 예외다 — 이 범주는 exec 를 만들되 *실행 중인 시스템의 일부가 되지 않는* 것을 뜻하고, 그 판정 기준은 "bringup chain 에 등장하는가" 다.
 
 예외에 해당하지 않는 신규 `add_executable` 을 `rtc_*` 에 추가하려면 [invariants.md](invariants.md) §Escalation Triggers 의 `[CONCERN]` (E-1 / Critical — ARCH-7 전용 E-번호는 없다) 으로 보고한다. 이 규칙은 오랫동안 예외 서술 없이 "금지" 로만 적혀 있었고, 그 사이 7개 타깃이 축적되는 동안 아무 신호도 없었다 (#213) — 지금은 hook 이 `rtc_*/CMakeLists.txt` 의 신규 `add_executable` **타깃 이름** 을 검사한다. 면제 경로는 셋이다 — (1) HEAD 에 이미 있는 기존 타깃은 재발화하지 않고(**grandfathered** — 개수는 hook 이 세는 값이므로 박제하지 않는다; `mujoco_simulator_node`·`closure_state_publisher`·`se3_error_compare` 는 이 경로로만 통과한다), (2) `example_*` 는 이름으로 면제되며, (3) **그 밖의 신규 agnostic 노드** 는 `add_executable` 라인 위 또는 옆에 `ARCH-7-exempt` 주석을 달아 면제한다. 즉 hook 이 지금 마커를 강제하는 대상은 (3) 뿐이고 (1)의 세 노드에는 아직 마커가 없다 — 이들을 rename·재추가하면 name diff 가 신규 타깃으로 보므로, 그때 `ARCH-7-exempt` 주석을 함께 붙여 (3) 경로로 옮긴다.
 

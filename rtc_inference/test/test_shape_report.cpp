@@ -171,10 +171,112 @@ TEST(ShapeReport, PositionalPairingCannotSeeASwapOfTwoIdenticalShapes) {
   // live in `udp_hand_driver`, whose 3-head FT model declares {{1,1},{1,3},{1,3}}
   // — force and direction are both [1,3]. Name-based pairing is what closes it.
   const std::vector<TensorSpec> model{{"force", {1, 3}}, {"direction", {1, 3}}};
-  const std::vector<TensorSpec> swapped{{"direction", {1, 3}}, {"force", {1, 3}}};
+  // UNNAMED on the declared side — that is what selects positional pairing, and
+  // it is how `udp_hand_driver` declares its heads today. Naming them is what
+  // closes the hole (see NamedPairingCatchesTheSwapPositionalPairingCannotSee).
+  const std::vector<TensorSpec> swapped{{"", {1, 3}}, {"", {1, 3}}};
   const auto report = CompareModelIo(OneInput(), OneInput(), model, swapped);
-  EXPECT_TRUE(report.Ok()) << "if this fails, pairing is no longer positional and the "
-                              "blind spot this documents has been closed — update the test";
+  ASSERT_EQ(report.output_match, rtc::MatchMode::kPositional)
+      << "the fixture stopped exercising positional pairing, so the blind spot "
+         "this documents is no longer under test";
+  EXPECT_TRUE(report.Ok());
+}
+
+// ── Name-based pairing ──────────────────────────────────────────────────────
+
+TEST(ShapeReport, NamedPairingIgnoresTheModelsOwnTensorOrder) {
+  // The point of naming. The model exports b before a; the config lists a
+  // before b because that is the order ITS buffers are indexed in. Both are
+  // right, and the pairing must follow the names rather than either order.
+  const std::vector<TensorSpec> model{{"b", {1, 5}}, {"a", {1, 3}}};
+  const std::vector<TensorSpec> declared{{"a", {1, 3}}, {"b", {1, 5}}};
+  const auto report = CompareModelIo(model, declared, TwoHeads(), TwoHeads());
+  EXPECT_TRUE(report.Ok());
+  EXPECT_EQ(report.input_match, rtc::MatchMode::kByName);
+  // Rows come out in DECLARED order — the same order the consumer's buffer
+  // indices run in, so row i describes what input_buffer(m, i) will hold.
+  ASSERT_EQ(report.inputs.size(), 2U);
+  EXPECT_EQ(report.inputs[0].name, "a");
+  EXPECT_EQ(report.inputs[1].name, "b");
+}
+
+TEST(ShapeReport, NamedPairingCatchesTheSwapPositionalPairingCannotSee) {
+  // The counterpart to PositionalPairingCannotSeeASwapOfTwoIdenticalShapes.
+  // Same two [1,3] tensors, same swap — but now the config names them, so the
+  // pairing follows the name and the shapes are compared against the RIGHT
+  // partner. Here the swap is harmless (both [1,3], so still OK) and what the
+  // test pins is that each row is matched to its namesake, not to its position.
+  const std::vector<TensorSpec> model{{"force", {1, 3}}, {"direction", {1, 3}}};
+  const std::vector<TensorSpec> declared{{"direction", {1, 3}}, {"force", {1, 3}}};
+  const auto report = CompareModelIo(OneInput(), OneInput(), model, declared);
+  EXPECT_TRUE(report.Ok());
+  ASSERT_EQ(report.outputs.size(), 2U);
+  EXPECT_EQ(report.outputs[0].name, "direction");
+  EXPECT_EQ(report.outputs[1].name, "force");
+}
+
+TEST(ShapeReport, ANamedTensorTheModelDoesNotExportIsReportedByName) {
+  // The most common retrain failure once names are in use: the tensor was
+  // renamed upstream. The message has to name what was looked for.
+  const std::vector<TensorSpec> model{{"observation", {1, 34}}};
+  const std::vector<TensorSpec> declared{{"obs", {1, 34}}};
+  const auto report = CompareModelIo(model, declared, TwoHeads(), TwoHeads());
+  EXPECT_FALSE(report.Ok());
+  ASSERT_EQ(report.inputs.size(), 2U);
+  EXPECT_EQ(report.inputs[0].name, "obs");
+  EXPECT_EQ(report.inputs[0].verdict, TensorVerdict::kNotInModel);
+  // ...and the unclaimed model tensor is listed too, which is what turns
+  // "obs is missing" into "you probably meant observation".
+  EXPECT_EQ(report.inputs[1].name, "observation");
+  EXPECT_EQ(report.inputs[1].verdict, TensorVerdict::kNotDeclared);
+}
+
+TEST(ShapeReport, ANamedPairStillHasItsShapeChecked) {
+  const std::vector<TensorSpec> model{{"obs", {1, 34}}};
+  const std::vector<TensorSpec> declared{{"obs", {1, 40}}};
+  const auto report = CompareModelIo(model, declared, TwoHeads(), TwoHeads());
+  EXPECT_FALSE(report.Ok());
+  EXPECT_EQ(report.inputs[0].verdict, TensorVerdict::kShapeMismatch);
+  EXPECT_EQ(report.inputs[0].first_bad_dim, 1);
+}
+
+TEST(ShapeReport, PartiallyNamedDeclarationsAreRefusedRatherThanGuessedAt) {
+  // Naming half the tensors leaves two different bindings equally defensible
+  // (name the named ones and position the rest? position everything?). Picking
+  // one silently is how a config that reads correct behaves incorrectly.
+  const std::vector<TensorSpec> model{{"a", {1, 3}}, {"b", {1, 3}}};
+  const std::vector<TensorSpec> declared{{"a", {1, 3}}, {"", {1, 3}}};
+  const auto report = CompareModelIo(model, declared, TwoHeads(), TwoHeads());
+  EXPECT_FALSE(report.Ok());
+  EXPECT_EQ(report.input_match, rtc::MatchMode::kMixedRefused);
+  // A refused side is still walked, so the operator can see WHICH one is
+  // unnamed rather than getting a bare refusal.
+  EXPECT_EQ(report.inputs.size(), 2U);
+  EXPECT_NE(report.Format("m.onnx").find("REFUSED"), std::string::npos);
+}
+
+TEST(ShapeReport, ARepeatedDeclaredNameIsRefused) {
+  // Two buffers would fight over one model tensor, and only one of them could
+  // win — which one is an implementation detail nobody should have to know.
+  const std::vector<TensorSpec> model{{"a", {1, 3}}};
+  const std::vector<TensorSpec> declared{{"a", {1, 3}}, {"a", {1, 3}}};
+  const auto report = CompareModelIo(model, declared, TwoHeads(), TwoHeads());
+  EXPECT_FALSE(report.Ok());
+  ASSERT_EQ(report.inputs.size(), 2U);
+  EXPECT_EQ(report.inputs[0].verdict, TensorVerdict::kOk);
+  EXPECT_EQ(report.inputs[1].verdict, TensorVerdict::kDuplicateName);
+}
+
+TEST(ShapeReport, TheTableSaysHowEachSideWasPaired) {
+  // Inputs named, outputs not — the two sides are decided independently, and
+  // the table has to say which is which. A reader who cannot tell the modes
+  // apart cannot tell a clean row from one that merely looks clean.
+  const std::vector<TensorSpec> model{{"obs", {1, 34}}};
+  const std::vector<TensorSpec> named{{"obs", {1, 40}}};  // forced failure, to get a table
+  const std::vector<TensorSpec> unnamed_heads{{"", {1, 6}}, {"", {1, 1}}};
+  const auto text = CompareModelIo(model, named, TwoHeads(), unnamed_heads).Format("m.onnx");
+  EXPECT_NE(text.find("paired by name"), std::string::npos) << text;
+  EXPECT_NE(text.find("paired positionally"), std::string::npos) << text;
 }
 
 // ── The table ───────────────────────────────────────────────────────────────
@@ -202,9 +304,12 @@ TEST(ShapeReport, EveryDiscrepancyIsReportedNotJustTheFirst) {
   EXPECT_NE(text.find("obs"), std::string::npos);
   EXPECT_NE(text.find("h_in"), std::string::npos);
   EXPECT_NE(text.find("posture"), std::string::npos);
-  // Arity is stated for both sides.
-  EXPECT_NE(text.find("(model 2 / config 1)"), std::string::npos);
-  EXPECT_NE(text.find("(model 2 / config 2)"), std::string::npos);
+  // Arity is stated for both sides, and so is HOW they were paired — an
+  // operator reading this has to know whether a same-shape swap could be
+  // hiding behind an otherwise clean row.
+  EXPECT_NE(text.find("model 2 / config 1"), std::string::npos) << text;
+  EXPECT_NE(text.find("model 2 / config 2"), std::string::npos) << text;
+  EXPECT_NE(text.find("paired positionally"), std::string::npos) << text;
 }
 
 TEST(ShapeReport, TheTableCarriesBothNumbersOfAMismatch) {

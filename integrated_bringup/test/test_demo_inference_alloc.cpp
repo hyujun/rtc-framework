@@ -67,17 +67,27 @@ class FakeEngine final : public rtc::InferenceEngine {
 
   [[nodiscard]] bool Run() noexcept override { return true; }
 
-  float* input_buffer(int /*m*/) noexcept override { return input_.data(); }
+  // The controller's schema is still single-input, so only index 0 exists.
+  // Out-of-range answers nullptr/0 rather than folding onto slot 0, so a
+  // controller that started reading a second tensor would hold rather than
+  // silently re-read the first.
+  float* input_buffer(int /*m*/, int input_idx) noexcept override {
+    return (input_idx == 0) ? input_.data() : nullptr;
+  }
 
-  const float* output_buffer(int /*m*/, int output_idx) const noexcept override {
+  [[nodiscard]] const float* output_buffer(int /*m*/, int output_idx) const noexcept override {
     return (output_idx == 0) ? head0_.data() : head1_.data();
   }
 
-  [[nodiscard]] std::size_t input_size(int /*m*/) const noexcept override { return input_.size(); }
+  [[nodiscard]] std::size_t input_size(int /*m*/, int input_idx) const noexcept override {
+    return (input_idx == 0) ? input_.size() : 0;
+  }
 
   [[nodiscard]] std::size_t output_size(int /*m*/, int output_idx) const noexcept override {
     return (output_idx == 0) ? head0_.size() : head1_.size();
   }
+
+  [[nodiscard]] int num_inputs(int /*m*/) const noexcept override { return 1; }
 
   [[nodiscard]] int num_outputs(int /*m*/) const noexcept override { return 2; }
 

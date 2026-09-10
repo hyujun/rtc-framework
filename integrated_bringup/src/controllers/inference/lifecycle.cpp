@@ -9,7 +9,6 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
-
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -164,8 +163,16 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       rtc::ModelConfig mc;
       mc.model_path = model_path_;
       mc.optimized_model_path = optimized_model_path_;
-      mc.input_shape = io_.input_shape;
-      mc.output_shapes = io_.output_shapes;
+      // Bridge to the engine's N-tensor ModelConfig while this controller's own
+      // schema is still single-input and nameless. Names are left empty, which
+      // asks the engine for POSITIONAL binding — the same behaviour this had
+      // before. #511 P3/P4 replaces `io_` with a per-tensor, named schema and
+      // this collapses into a direct copy.
+      mc.inputs = {rtc::TensorSpec{"", io_.input_shape}};
+      mc.outputs.reserve(io_.output_shapes.size());
+      for (const auto& shape : io_.output_shapes) {
+        mc.outputs.push_back({"", shape});
+      }
       mc.intra_op_threads = intra_op_threads_;
       engine_->Init(mc);
 
@@ -236,8 +243,8 @@ bool DemoInferenceController::ConfigurePalmFk() {
                  palm_link_.c_str());
     return false;
   }
-  palm_frame_idx_ = combined_cache_.cache().RegisterFrame("inference_palm",
-                                                          model->getFrameId(palm_link_));
+  palm_frame_idx_ =
+      combined_cache_.cache().RegisterFrame("inference_palm", model->getFrameId(palm_link_));
   if (palm_frame_idx_ < 0) {
     RCLCPP_ERROR(logger_, "[inference] palm frame registration failed (cache locked)");
     return false;
@@ -280,9 +287,8 @@ void DemoInferenceController::OnObjectTransforms(const tf2_msgs::msg::TFMessage&
       continue;
     }
     const auto& child = tf.child_frame_id;
-    const bool hit = object_match_prefix_
-                         ? (child.rfind(object_frame_match_, 0) == 0)
-                         : (child == object_frame_match_);
+    const bool hit = object_match_prefix_ ? (child.rfind(object_frame_match_, 0) == 0)
+                                          : (child == object_frame_match_);
     if (!hit) {
       continue;
     }

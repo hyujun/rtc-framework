@@ -12,11 +12,10 @@
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
-#include <tf2_msgs/msg/tf_message.hpp>
-
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/state.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -75,16 +74,25 @@ class FakeEngine final : public rtc::InferenceEngine {
     return run_result;
   }
 
-  float* input_buffer(int /*model_idx*/) noexcept override { return input_.data(); }
+  // Single-input while the controller's schema is: index 0 is the only tensor,
+  // and anything else answers nullptr/0 rather than folding onto slot 0 — a
+  // controller reading a second tensor should hold, not silently re-read the
+  // first.
+  float* input_buffer(int /*model_idx*/, int input_idx) noexcept override {
+    return (input_idx == 0) ? input_.data() : nullptr;
+  }
 
-  const float* output_buffer(int /*model_idx*/, int output_idx) const noexcept override {
+  [[nodiscard]] const float* output_buffer(int /*model_idx*/,
+                                           int output_idx) const noexcept override {
     const auto h = static_cast<std::size_t>(output_idx);
     return (h < outputs_.size()) ? outputs_[h].data() : nullptr;
   }
 
-  [[nodiscard]] std::size_t input_size(int /*model_idx*/) const noexcept override {
-    return input_.size();
+  [[nodiscard]] std::size_t input_size(int /*model_idx*/, int input_idx) const noexcept override {
+    return (input_idx == 0) ? input_.size() : 0;
   }
+
+  [[nodiscard]] int num_inputs(int /*model_idx*/) const noexcept override { return 1; }
 
   [[nodiscard]] std::size_t output_size(int /*model_idx*/, int output_idx) const noexcept override {
     const auto h = static_cast<std::size_t>(output_idx);
@@ -219,11 +227,16 @@ inference:
     rpy: [0.0, 0.0, 3.14159265358979]
   object_pose:
     topic: "/sim/object_transforms"
-    match_mode: ")" + match_mode + R"("
-    frame_match: ")" + frame_match + R"("
-    source_frame_id: ")" + source_frame_id + R"("
-    reference_frame: ")" + reference_frame + R"("
-    timeout_sec: )" + std::to_string(timeout_sec) + R"(
+    match_mode: ")" +
+         match_mode + R"("
+    frame_match: ")" +
+         frame_match + R"("
+    source_frame_id: ")" +
+         source_frame_id + R"("
+    reference_frame: ")" +
+         reference_frame + R"("
+    timeout_sec: )" +
+         std::to_string(timeout_sec) + R"(
   hand_posture:
     open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
@@ -321,6 +334,7 @@ class RclcppEnv : public ::testing::Environment {
       rclcpp::init(0, nullptr);
     }
   }
+
   void TearDown() override {
     if (rclcpp::ok()) {
       rclcpp::shutdown();
@@ -419,10 +433,10 @@ TEST(DemoInferenceConfig, RejectsAClosePostureOutsideTheJointBand) {
   // The concrete trap: poses_p1b.yaml's "close" is positive on joints whose
   // upper limit is 0, so it would be clamped back to open with no diagnostic.
   std::string yaml = MakeYaml();
-  yaml.replace(yaml.find("close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]"),
-               std::string("close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]")
-                   .size(),
-               "close: [0.79, 0.79, 0.79, 0.79, 0.79, 0.79, 0.79, 0.79, 0.79, 0.79]");
+  yaml.replace(
+      yaml.find("close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]"),
+      std::string("close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]").size(),
+      "close: [0.79, 0.79, 0.79, 0.79, 0.79, 0.79, 0.79, 0.79, 0.79, 0.79]");
   Harness h{yaml};
   EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
 }

@@ -62,16 +62,10 @@ class OnnxEngine : public InferenceEngine {
     // cycle per tensor to discover the rest.
     //
     // The comparison and the table live in shape_report.hpp and know nothing
-    // about ORT: that is what makes them testable without a .onnx fixture,
-    // which this repo's test environment cannot build. What stays untested is
-    // exactly the collection loop below.
-    //
-    // NOTE: tensors are bound POSITIONALLY (input i / head o ↔ config entry i),
-    // so this cannot detect a reorder of two tensors with identical shapes
-    // (e.g. two [1,3] heads swapped) — that is still the model's contract. The
-    // names are collected and printed so a human can see what the comparison
-    // cannot.
-    const std::size_t n_out = config.output_shapes.size();
+    // about ORT. That buys exhaustive rule coverage cheaply (a pure function
+    // over two lists of shapes); the end-to-end half — that those rules are
+    // actually WIRED to a session — is covered by test_onnx_engine.cpp against
+    // a committed .onnx fixture.
     Ort::AllocatorWithDefaultOptions alloc;
     std::vector<TensorSpec> model_inputs;
     std::vector<TensorSpec> model_outputs;
@@ -86,61 +80,83 @@ class OnnxEngine : public InferenceEngine {
           {model->session.GetOutputNameAllocated(o, alloc).get(),
            model->session.GetOutputTypeInfo(o).GetTensorTypeAndShapeInfo().GetShape()});
 
-    // The declared side carries no names yet — the schema has no way to spell
-    // one. They are compared positionally and the model's names are what the
-    // table shows.
-    const std::vector<TensorSpec> declared_inputs{TensorSpec{"", config.input_shape}};
-    std::vector<TensorSpec> declared_outputs;
-    declared_outputs.reserve(n_out);
-    for (const auto& shape : config.output_shapes)
-      declared_outputs.push_back({"", shape});
-
-    // Exact arity in BOTH directions falls out of this: a tensor present on
-    // only one side gets a row, and any such row fails the report. The input
-    // side had no arity check at all before — a multi-input model reached the
-    // warmup below and died there with an ORT-internal message that named
-    // neither count.
-    const auto report =
-        CompareModelIo(model_inputs, declared_inputs, model_outputs, declared_outputs);
+    // Exact arity in BOTH directions falls out of the report: a tensor present
+    // on only one side gets a row, and any such row fails it. The input side
+    // had no arity check at all before — a multi-input model reached the warmup
+    // below and died there with an ORT-internal message naming neither count.
+    const auto report = CompareModelIo(model_inputs, config.inputs, model_outputs, config.outputs);
     if (!report.Ok())
       throw std::runtime_error(report.Format(config.model_path));
 
     const auto mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    const std::size_t n_in = config.inputs.size();
+    const std::size_t n_out = config.outputs.size();
 
-    // ── Input (single) ──────────────────────────────────────────────────────
-    const std::size_t in_size = Numel(config.input_shape);
-    model->input_size = in_size;
-    model->input_buffer.assign(in_size, 0.0F);
+    // ── Buffers, in DECLARED order ──────────────────────────────────────────
+    // Slot i is `config.inputs[i]`, which is what the consumer will pass to
+    // input_buffer(model_idx, i). When the config names its tensors that need
+    // not be the model's own order, and keeping the consumer's order here is
+    // what makes the indirection invisible to the tick.
+    //
+    // The name ORT is asked to bind slot i to:
+    //
+    //   named config    → the declared name. No lookup is needed to find the
+    //                     model's tensor: a passing report has already proven
+    //                     the model exports exactly this name, so the declared
+    //                     spelling IS the model's. THIS is where the reordering
+    //                     happens — slot i asks ORT for its own tensor, not for
+    //                     the model's i-th one.
+    //   unnamed config  → the model's i-th name, i.e. positional binding.
+    //
+    // A passing report is load-bearing here, not decorative: it is what makes
+    // the indexing below safe without a second search.
+    const auto bind_name = [](const std::vector<TensorSpec>& from_model, const TensorSpec& declared,
+                              std::size_t slot) {
+      return declared.name.empty() ? from_model[slot].name : declared.name;
+    };
 
-    // Reuse the name the report already collected: a passing report guarantees
-    // each declared tensor has a model counterpart, so these indices are safe.
-    model->input_name = model_inputs[0].name;
-    model->input_tensor =
-        Ort::Value::CreateTensor<float>(mem_info, model->input_buffer.data(), in_size,
-                                        config.input_shape.data(), config.input_shape.size());
+    model->input_buffers.resize(n_in);
+    model->input_sizes.resize(n_in);
+    model->input_names.resize(n_in);
+    model->input_name_ptrs.resize(n_in);
+    model->input_tensors.reserve(n_in);
+    for (std::size_t i = 0; i < n_in; ++i) {
+      const auto& shape = config.inputs[i].shape;
+      const std::size_t in_size = Numel(shape);
+      model->input_sizes[i] = in_size;
+      model->input_buffers[i].assign(in_size, 0.0F);
+      model->input_names[i] = bind_name(model_inputs, config.inputs[i], i);
+      model->input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          mem_info, model->input_buffers[i].data(), in_size, shape.data(), shape.size()));
+    }
 
-    // ── Outputs (N heads) ───────────────────────────────────────────────────
     model->output_buffers.resize(n_out);
     model->output_sizes.resize(n_out);
     model->output_names.resize(n_out);
-    model->output_tensors.reserve(n_out);
     model->output_name_ptrs.resize(n_out);
+    model->output_tensors.reserve(n_out);
     for (std::size_t o = 0; o < n_out; ++o) {
-      const auto& shape = config.output_shapes[o];
+      const auto& shape = config.outputs[o].shape;
       const std::size_t out_size = Numel(shape);
       model->output_sizes[o] = out_size;
       model->output_buffers[o].assign(out_size, 0.0F);
-      model->output_names[o] = model_outputs[o].name;
+      model->output_names[o] = bind_name(model_outputs, config.outputs[o], o);
       model->output_tensors.push_back(Ort::Value::CreateTensor<float>(
           mem_info, model->output_buffers[o].data(), out_size, shape.data(), shape.size()));
     }
 
-    // ── IoBinding (input + all outputs) ─────────────────────────────────────
+    // ── IoBinding (all inputs + all outputs) ────────────────────────────────
+    // The name pointers are cached here and not rebuilt per Run: they are what
+    // the RT path hands to Session::Run, and they stay valid because the
+    // strings are owned by this Model, whose address is stable (unique_ptr).
     model->io_binding = std::make_unique<Ort::IoBinding>(model->session);
-    model->io_binding->BindInput(model->input_name.c_str(), model->input_tensor);
+    for (std::size_t i = 0; i < n_in; ++i) {
+      model->io_binding->BindInput(model->input_names[i].c_str(), model->input_tensors[i]);
+      model->input_name_ptrs[i] = model->input_names[i].c_str();
+    }
     for (std::size_t o = 0; o < n_out; ++o) {
       model->io_binding->BindOutput(model->output_names[o].c_str(), model->output_tensors[o]);
-      model->output_name_ptrs[o] = model->output_names[o].c_str();  // stable: name owned by model
+      model->output_name_ptrs[o] = model->output_names[o].c_str();
     }
 
     // ── Warmup via the exact production path (RunModelDirect) ────────────────
@@ -204,10 +220,13 @@ class OnnxEngine : public InferenceEngine {
     }
   }
 
-  float* input_buffer(int model_idx = 0) noexcept override {
+  float* input_buffer(int model_idx = 0, int input_idx = 0) noexcept override {
     if (model_idx < 0 || static_cast<std::size_t>(model_idx) >= models_.size())
       return nullptr;
-    return models_[static_cast<std::size_t>(model_idx)]->input_buffer.data();
+    auto& ins = models_[static_cast<std::size_t>(model_idx)]->input_buffers;
+    if (input_idx < 0 || static_cast<std::size_t>(input_idx) >= ins.size())
+      return nullptr;
+    return ins[static_cast<std::size_t>(input_idx)].data();
   }
 
   const float* output_buffer(int model_idx = 0, int output_idx = 0) const noexcept override {
@@ -219,10 +238,20 @@ class OnnxEngine : public InferenceEngine {
     return outs[static_cast<std::size_t>(output_idx)].data();
   }
 
-  [[nodiscard]] std::size_t input_size(int model_idx = 0) const noexcept override {
+  [[nodiscard]] std::size_t input_size(int model_idx = 0,
+                                       int input_idx = 0) const noexcept override {
     if (model_idx < 0 || static_cast<std::size_t>(model_idx) >= models_.size())
       return 0;
-    return models_[static_cast<std::size_t>(model_idx)]->input_size;
+    const auto& sizes = models_[static_cast<std::size_t>(model_idx)]->input_sizes;
+    if (input_idx < 0 || static_cast<std::size_t>(input_idx) >= sizes.size())
+      return 0;
+    return sizes[static_cast<std::size_t>(input_idx)];
+  }
+
+  [[nodiscard]] int num_inputs(int model_idx = 0) const noexcept override {
+    if (model_idx < 0 || static_cast<std::size_t>(model_idx) >= models_.size())
+      return 0;
+    return static_cast<int>(models_[static_cast<std::size_t>(model_idx)]->input_sizes.size());
   }
 
   [[nodiscard]] std::size_t output_size(int model_idx = 0,
@@ -257,14 +286,19 @@ class OnnxEngine : public InferenceEngine {
 
     Ort::Session session;
     std::unique_ptr<Ort::IoBinding> io_binding;
-    std::vector<float> input_buffer;
-    std::size_t input_size{0};
-    std::string input_name;
-    Ort::Value input_tensor{nullptr};
+    // Inputs and outputs are held symmetrically: every slot below is indexed by
+    // the position in ModelConfig::inputs / ::outputs, not by the model's own
+    // tensor order. `*_name_ptrs` are pre-built so the RT Session::Run path
+    // allocates nothing.
+    std::vector<std::vector<float>> input_buffers;
+    std::vector<std::size_t> input_sizes;
+    std::vector<std::string> input_names;
+    std::vector<const char*> input_name_ptrs;
+    std::vector<Ort::Value> input_tensors;
     std::vector<std::vector<float>> output_buffers;
     std::vector<std::size_t> output_sizes;
     std::vector<std::string> output_names;
-    std::vector<const char*> output_name_ptrs;  // pre-built for RT Session::Run
+    std::vector<const char*> output_name_ptrs;
     std::vector<Ort::Value> output_tensors;
   };
 
@@ -276,10 +310,9 @@ class OnnxEngine : public InferenceEngine {
     return n;
   }
 
-  // (Shape compatibility used to be checked by a private CheckShape here. It
-  // moved to shape_report.hpp, where it is a pure function over two lists of
-  // shapes and can therefore be tested without a .onnx file — which this
-  // repo's test environment cannot produce.)
+  // (Shape compatibility lives in shape_report.hpp, as a pure function over two
+  // lists of shapes. Keeping it out of here is what lets every rule be driven
+  // exhaustively without a session; do not inline it back.)
 
   // IoBinding inference for one model (SynchronizeInputs → Run → Synchronize
   // Outputs), shared by Run() and RunModel(). Single-sources the sync triplet.
@@ -293,9 +326,9 @@ class OnnxEngine : public InferenceEngine {
   // try/catch) and Init() warmup (non-RT, allowed to throw). RT-safe: only a
   // stack name array, no heap allocation.
   void RunModelDirect(Model& m) {
-    const char* in_names[] = {m.input_name.c_str()};
-    m.session.Run(*run_options_, in_names, &m.input_tensor, 1, m.output_name_ptrs.data(),
-                  m.output_tensors.data(), m.output_tensors.size());
+    m.session.Run(*run_options_, m.input_name_ptrs.data(), m.input_tensors.data(),
+                  m.input_tensors.size(), m.output_name_ptrs.data(), m.output_tensors.data(),
+                  m.output_tensors.size());
   }
 
   bool initialized_{false};
@@ -315,13 +348,17 @@ class OnnxEngine : public InferenceEngine {
 
   [[nodiscard]] bool Run() noexcept override { return false; }
 
-  float* input_buffer(int = 0) noexcept override { return nullptr; }
+  float* input_buffer(int = 0, int = 0) noexcept override { return nullptr; }
 
-  const float* output_buffer(int = 0, int = 0) const noexcept override { return nullptr; }
+  [[nodiscard]] const float* output_buffer(int = 0, int = 0) const noexcept override {
+    return nullptr;
+  }
 
-  [[nodiscard]] std::size_t input_size(int = 0) const noexcept override { return 0; }
+  [[nodiscard]] std::size_t input_size(int = 0, int = 0) const noexcept override { return 0; }
 
   [[nodiscard]] std::size_t output_size(int = 0, int = 0) const noexcept override { return 0; }
+
+  [[nodiscard]] int num_inputs(int = 0) const noexcept override { return 0; }
 
   [[nodiscard]] int num_outputs(int = 0) const noexcept override { return 0; }
 

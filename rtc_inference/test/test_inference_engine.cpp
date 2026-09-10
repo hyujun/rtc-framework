@@ -32,13 +32,17 @@ class CountingEngine : public InferenceEngine {
     return run_calls != fail_on_call;
   }
 
-  float* input_buffer(int = 0) noexcept override { return nullptr; }
+  float* input_buffer(int = 0, int = 0) noexcept override { return nullptr; }
 
-  const float* output_buffer(int = 0, int = 0) const noexcept override { return nullptr; }
+  [[nodiscard]] const float* output_buffer(int = 0, int = 0) const noexcept override {
+    return nullptr;
+  }
 
-  [[nodiscard]] std::size_t input_size(int = 0) const noexcept override { return 0; }
+  [[nodiscard]] std::size_t input_size(int = 0, int = 0) const noexcept override { return 0; }
 
   [[nodiscard]] std::size_t output_size(int = 0, int = 0) const noexcept override { return 0; }
+
+  [[nodiscard]] int num_inputs(int = 0) const noexcept override { return 0; }
 
   [[nodiscard]] int num_outputs(int = 0) const noexcept override { return 0; }
 
@@ -137,8 +141,8 @@ TEST(ModelConfigDefaults, FieldsZeroInitializedExceptThreads) {
   EXPECT_EQ(c.intra_op_threads, 1);  // RT: single-threaded inference default
   EXPECT_TRUE(c.model_path.empty());
   EXPECT_TRUE(c.optimized_model_path.empty());
-  EXPECT_TRUE(c.input_shape.empty());
-  EXPECT_TRUE(c.output_shapes.empty());
+  EXPECT_TRUE(c.inputs.empty());
+  EXPECT_TRUE(c.outputs.empty());
 }
 
 }  // namespace

@@ -75,6 +75,20 @@ else()
   message(STATUS "ONNX Runtime not found — building stub inference engine")
 endif()
 
+# ── Offline model inspector ───────────────────────────────────────────────────
+# Prints what a .onnx exposes, and optionally compares it against inline
+# declarations using the SAME CompareModelIo/Format the engine calls at
+# configure time — so it cannot drift into disagreeing with the real gate.
+# Needs a session to read the model, hence ORT-only.
+if(HAS_ONNXRUNTIME)
+  # ARCH-7-exempt: offline inspector, not a runtime identity. It takes a model
+  # path and shapes on argv, knows no robot, owns no RT loop, and appears in no
+  # bringup chain (design-principles.md §Boundary Rules).
+  add_executable(rtc_inference_check src/check_model.cpp)
+  target_link_libraries(rtc_inference_check rtc_inference)
+  install(TARGETS rtc_inference_check DESTINATION lib/${PROJECT_NAME})
+endif()
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -87,11 +101,25 @@ if(BUILD_TESTING)
   endif()
 
   # shape_report.hpp is deliberately ONNX-Runtime-free, so this gate runs
-  # identically whether or not ORT was found — the comparison it covers is
-  # unreachable from a test otherwise (no way to build a .onnx fixture here).
+  # identically whether or not ORT was found. It proves the comparison RULES;
+  # test_onnx_engine below proves they are wired to a real session.
   ament_add_gtest(test_shape_report test/test_shape_report.cpp)
   if(TARGET test_shape_report)
     target_link_libraries(test_shape_report rtc_inference)
+  endif()
+
+  # End-to-end gate against a committed .onnx fixture. Its body is #ifdef'd out
+  # without ONNX Runtime — with no session to bind to, a green would be
+  # meaningless, so the honest state is "nothing to run" rather than a pass.
+  # The fixture is committed rather than generated: building it needs the python
+  # `onnx` package, which is not a dependency of this repo, and a gate that is
+  # silently skipped wherever that package is missing is the one thing a shape
+  # check cannot afford (see test/data/generate_fixtures.py).
+  ament_add_gtest(test_onnx_engine test/test_onnx_engine.cpp)
+  if(TARGET test_onnx_engine)
+    target_link_libraries(test_onnx_engine rtc_inference)
+    target_compile_definitions(test_onnx_engine PRIVATE
+      RTC_INFERENCE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
   endif()
 endif()
 

@@ -150,8 +150,18 @@ class FingertipFTInferencer {
     // 3-head output: contact logit [1,1], F [1,3], u [1,3]
     const int64_t H = static_cast<int64_t>(config_.history_length);
     rtc::ModelConfig model_config;
-    model_config.input_shape = {1, H, udp_hand_driver::kFTInputSize};  // [1, H, 16]
-    model_config.output_shapes = {{1, 1}, {1, 3}, {1, 3}};
+    // Tensor names are left EMPTY, which asks the engine to bind positionally.
+    //
+    // That is a known weakness here and not an oversight: heads 1 and 2 are
+    // both [1,3], so if a model is exported with F and u in the other order
+    // every shape check passes and force/direction are silently swapped. Naming
+    // them is what closes it (rtc::ModelConfig's banner), but the names have to
+    // come from the actual .onnx files, and none are shipped in-tree — every
+    // `model_paths` entry in both fingertip configs is "" today. Fill these in
+    // from the real models (the engine will then verify them) rather than
+    // guessing: a wrong name fails loudly, so this is safe to do incrementally.
+    model_config.inputs = {{"", {1, H, udp_hand_driver::kFTInputSize}}};  // [1, H, 16]
+    model_config.outputs = {{"", {1, 1}}, {"", {1, 3}}, {"", {1, 3}}};
     model_config.intra_op_threads = 1;
 
     for (int f = 0; f < n; ++f) {
