@@ -331,7 +331,10 @@ if(BUILD_TESTING)
   # RT-1 gate on the real Compute(). Global operator-new counting reaches across
   # the library boundary; Eigen does not, so the schema it drives has no palm
   # feature — see the file banner for what that green does and does not cover.
-  ament_add_gtest(test_demo_inference_alloc test/test_demo_inference_alloc.cpp)
+  # Configures a real LifecycleNode, so it opens a DDS participant and takes the
+  # package ROS_DOMAIN_ID like its siblings (#401).
+  ament_add_gtest(test_demo_inference_alloc test/test_demo_inference_alloc.cpp
+    ENV ROS_DOMAIN_ID=52)
   target_include_directories(test_demo_inference_alloc PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
   target_link_libraries(test_demo_inference_alloc
@@ -348,7 +351,9 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  ament_add_gtest(test_demo_inference_controller test/test_demo_inference_controller.cpp)
+  # Same: a real LifecycleNode → DDS participant → the package ROS_DOMAIN_ID.
+  ament_add_gtest(test_demo_inference_controller test/test_demo_inference_controller.cpp
+    ENV ROS_DOMAIN_ID=52)
   target_link_libraries(test_demo_inference_controller
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
