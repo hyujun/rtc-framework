@@ -125,7 +125,7 @@ rtc_controllers/
 │   │   ├── task_impedance_params.hpp         -- §6.2/§6.3 게인 + TaskSelection · TaskImpedanceFormulation
 │   │   ├── task_admittance_params.hpp        -- §7.2/§7.3 게인 + wrench 소스
 │   │   ├── cascaded_compliance_params.hpp    -- outer/inner 게인 + §7.6 임계
-│   │   └── policy_io_params.hpp              -- 학습 정책 I/O 스키마. `PolicyIoParams` + `ParsePolicyIoParams(YAML::Node, FeatureSizeFn)`. feature id 는 robot 사실이라 크기 표를 **caller 가 준다** (ARCH-1). 거부 대상: 미지 feature id · feature 합 ≠ 텐서 폭 · 부분 affine lane · head 밖 slice · **같은 head 안의** slice 겹침 · decimation < 1
+│   │   └── policy_io_params.hpp              -- 학습 정책 I/O 스키마. `PolicyIoParams` + `ParsePolicyIoParams(YAML::Node, FeatureSizeFn)`. **텐서 단위 선언** (`inputs:`/`outputs:`) 이라 텐서마다 자기 feature 목록·affine lane·offset 공간을 갖고, 텐서 `name` 은 필수다 — 이름이 있어야 엔진이 이름으로 바인딩하고 같은 shape 두 개의 재export 순서 바뀜이 load 에서 잡힌다 (#511 D-1). feature id 는 robot 사실이라 크기 표를 **caller 가 준다** (ARCH-1). 거부 대상: 미지 feature id · 텐서 이름 누락/중복 · feature 합 ≠ 그 텐서 폭 · **텐서 간** feature id 중복 · 부분 affine lane · 미선언 텐서 참조 · 텐서 밖 slice · **같은 텐서 안의** slice 겹침 · decimation < 1 · recurrent 예약키 (`source:`/`feeds:`, #511 P5) · pre-#511 평탄 키
 │   ├── inference/
 │   │   └── policy_io.hpp                     -- 학습 정책 텐서 마샬링 코어 (header-only, 무상태, RT). `PackSegment` / `ApplyAffine` / `UnpackSlice` / `BlendPosture` 넷뿐이고 `std::span` 만 본다 — `rtc_inference` 에 의존하지 않으므로 두 패키지는 sibling 으로 남고 버퍼가 유일한 계약이다. pack/unpack 은 **all-or-nothing** (반쪽 관측은 유효한 관측과 구별되지 않는다), affine 은 NaN 을 세탁하지 않으며, posture blend 는 비유한 스칼라를 clamp 하지 않고 **거부**한다 (NaN 비교는 전부 false 라 clamp 가 통과시킨다)
 │   ├── joint/

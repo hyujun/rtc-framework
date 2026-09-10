@@ -175,13 +175,25 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
   io_ = rtc::params::ParsePolicyIoParams(inf,
                                          [this](std::string_view id) { return FeatureSize(id); });
 
+  // ── One input tensor, for now (#511 P4) ───────────────────────────────────
+  // The schema layer already describes N of them; this binding still packs a
+  // single span. Refused rather than truncated: ONNX Runtime allocates every
+  // declared input, so packing only the first would hand the policy a second
+  // tensor full of whatever that allocation held — and every action it produced
+  // would still be finite and inside the joint limits.
+  if (io_.inputs.size() != 1) {
+    throw std::invalid_argument(
+        "demo_inference_controller: the schema declares " + std::to_string(io_.inputs.size()) +
+        " input tensors but this binding packs exactly one (#511 P4 generalises PackObservation)");
+  }
+
   // Feature kinds. `FeatureFromId` cannot tell arm from hand on its own (both
   // spell "<group>.position"), so the group name decides here, where it is
   // known — one pass over the ids the parser already accepted.
   const auto primary = GetPrimaryDeviceName();
   feature_kinds_.clear();
-  feature_kinds_.reserve(io_.input_features.size());
-  for (const auto& id : io_.input_features) {
+  feature_kinds_.reserve(io_.inputs[0].features.size());
+  for (const auto& id : io_.inputs[0].features) {
     PolicyFeature kind{};
     if (!FeatureFromId(id, kind)) {
       // Unreachable through ParsePolicyIoParams (FeatureSize already refused any
@@ -279,21 +291,23 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
   world_from_base_ = ParseBasePoseInWorld(inf["base_pose_in_world"]);
 
   // ── Fixed-capacity check ──────────────────────────────────────────────────
-  if (io_.InputNumel() > static_cast<std::size_t>(kMaxInputElements)) {
-    throw std::invalid_argument("demo_inference_controller: input tensor has " +
-                                std::to_string(io_.InputNumel()) +
-                                " elements, over the fixed capacity of " +
-                                std::to_string(kMaxInputElements));
-  }
-  for (const auto& shape : io_.output_shapes) {
-    std::size_t numel = 1;
-    for (const auto dim : shape) {
-      numel *= static_cast<std::size_t>(dim);
+  // Per tensor, because the capacities bound the buffers the tick indexes and
+  // each tensor is its own buffer. The sum across tensors is deliberately NOT
+  // the quantity checked: two 400-element inputs are two 400-element buffers.
+  for (const auto& tensor : io_.inputs) {
+    if (tensor.Numel() > static_cast<std::size_t>(kMaxInputElements)) {
+      throw std::invalid_argument("demo_inference_controller: input tensor '" + tensor.name +
+                                  "' has " + std::to_string(tensor.Numel()) +
+                                  " elements, over the fixed capacity of " +
+                                  std::to_string(kMaxInputElements));
     }
-    if (numel > static_cast<std::size_t>(kMaxOutputElements)) {
-      throw std::invalid_argument(
-          "demo_inference_controller: an output head has " + std::to_string(numel) +
-          " elements, over the fixed capacity of " + std::to_string(kMaxOutputElements));
+  }
+  for (const auto& tensor : io_.outputs) {
+    if (tensor.Numel() > static_cast<std::size_t>(kMaxOutputElements)) {
+      throw std::invalid_argument("demo_inference_controller: output tensor '" + tensor.name +
+                                  "' has " + std::to_string(tensor.Numel()) +
+                                  " elements, over the fixed capacity of " +
+                                  std::to_string(kMaxOutputElements));
     }
   }
 

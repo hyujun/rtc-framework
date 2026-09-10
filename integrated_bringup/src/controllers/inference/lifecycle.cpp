@@ -163,15 +163,18 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       rtc::ModelConfig mc;
       mc.model_path = model_path_;
       mc.optimized_model_path = optimized_model_path_;
-      // Bridge to the engine's N-tensor ModelConfig while this controller's own
-      // schema is still single-input and nameless. Names are left empty, which
-      // asks the engine for POSITIONAL binding — the same behaviour this had
-      // before. #511 P3/P4 replaces `io_` with a per-tensor, named schema and
-      // this collapses into a direct copy.
-      mc.inputs = {rtc::TensorSpec{"", io_.input_shape}};
-      mc.outputs.reserve(io_.output_shapes.size());
-      for (const auto& shape : io_.output_shapes) {
-        mc.outputs.push_back({"", shape});
+      // Straight copy — the schema layer already speaks the engine's shape. Both
+      // sides carry the .onnx tensor NAMES (the schema makes them mandatory,
+      // #511 D-1), which is what puts the engine in by-name binding: a re-export
+      // that reordered two tensors of the same shape then fails to load instead
+      // of loading cleanly and computing the wrong thing.
+      mc.inputs.reserve(io_.inputs.size());
+      for (const auto& tensor : io_.inputs) {
+        mc.inputs.push_back({tensor.name, tensor.shape});
+      }
+      mc.outputs.reserve(io_.outputs.size());
+      for (const auto& tensor : io_.outputs) {
+        mc.outputs.push_back({tensor.name, tensor.shape});
       }
       mc.intra_op_threads = intra_op_threads_;
       engine_->Init(mc);
@@ -188,8 +191,10 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
         return CallbackReturn::FAILURE;
       }
       hold_mode_ = false;
-      RCLCPP_INFO(logger_, "[inference] policy loaded: %s (decimation %d, %zu-element input)",
-                  model_path_.c_str(), io_.decimation, io_.InputNumel());
+      RCLCPP_INFO(logger_,
+                  "[inference] policy loaded: %s (decimation %d, %zu input tensor(s), %zu-element "
+                  "observation)",
+                  model_path_.c_str(), io_.decimation, io_.inputs.size(), io_.inputs[0].Numel());
     }
   } catch (const std::exception& e) {
     // Includes the engine's own shape validation, which throws when the .onnx

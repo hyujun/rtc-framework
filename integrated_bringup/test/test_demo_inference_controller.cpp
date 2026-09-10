@@ -175,15 +175,21 @@ inference:
          std::string(allow_missing ? "true" : "false") + R"(
   decimation: )" +
          std::to_string(decimation) + R"(
-  input_shape: [1, 20]
-  output_shapes: [[1, 6], [1, 1]]
-  input_features:
-    - "arm.position"
-    - "hand.position"
-    - "hand.fingertip_force_norm"
+  inputs:
+    - name: "obs"
+      shape: [1, 20]
+      features:
+        - "arm.position"
+        - "hand.position"
+        - "hand.fingertip_force_norm"
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
   output_features:
-    - { name: "arm.target_position", head: 0, offset: 0, count: 6 }
-    - { name: "hand.posture_scalar", head: 1, offset: 0, count: 1 }
+    - { name: "arm.target_position", tensor: "arm_action" }
+    - { name: "hand.posture_scalar", tensor: "posture" }
   hand_posture:
     open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
@@ -211,17 +217,23 @@ topics:
 inference:
   model_path: "fake_policy.onnx"
   decimation: 1
-  input_shape: [1, 27]
-  output_shapes: [[1, 6], [1, 1]]
-  input_features:
-    - "arm.position"
-    - "hand.position"
-    - "hand.fingertip_force_norm"
-    - "object.position"
-    - "object.orientation_xyzw"
+  inputs:
+    - name: "obs"
+      shape: [1, 27]
+      features:
+        - "arm.position"
+        - "hand.position"
+        - "hand.fingertip_force_norm"
+        - "object.position"
+        - "object.orientation_xyzw"
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
   output_features:
-    - { name: "arm.target_position", head: 0, offset: 0, count: 6 }
-    - { name: "hand.posture_scalar", head: 1, offset: 0, count: 1 }
+    - { name: "arm.target_position", tensor: "arm_action" }
+    - { name: "hand.posture_scalar", tensor: "posture" }
   base_pose_in_world:
     position: [0.0, 0.0, 0.0]
     rpy: [0.0, 0.0, 3.14159265358979]
@@ -363,10 +375,13 @@ TEST(DemoInferenceConfig, ResolvesFeatureWidthsFromTheDeviceRosters) {
   Harness h;
   ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
   const auto& io = h.ctrl->IoParamsForTesting();
-  ASSERT_EQ(io.input_segments.size(), 3U);
-  EXPECT_EQ(io.input_segments[0].count, kArmDof);
-  EXPECT_EQ(io.input_segments[1].count, kHandDof);
-  EXPECT_EQ(io.input_segments[2].count, kFingertips);
+  ASSERT_EQ(io.inputs.size(), 1U);
+  EXPECT_EQ(io.inputs[0].name, "obs") << "the .onnx tensor name the engine binds by";
+  const auto& segs = io.inputs[0].segments;
+  ASSERT_EQ(segs.size(), 3U);
+  EXPECT_EQ(segs[0].count, kArmDof);
+  EXPECT_EQ(segs[1].count, kHandDof);
+  EXPECT_EQ(segs[2].count, kFingertips);
   EXPECT_EQ(io.decimation, 10);
 }
 
@@ -392,10 +407,15 @@ TEST(DemoInferenceConfig, RejectsMismatchedPostureLengths) {
 }
 
 TEST(DemoInferenceConfig, RejectsAHandSliceWiderThanOneElement) {
+  // Widen the posture TENSOR rather than the slice. A slice wider than its own
+  // tensor is refused one layer down by the schema parser, so pointing this
+  // case at that would have tested the parser twice and left the binding's own
+  // "the scalar is exactly one element" check unexercised — the check that
+  // stands between a two-wide head and a posture blend reading half a command.
   std::string yaml = MakeYaml();
-  yaml.replace(yaml.find("\"hand.posture_scalar\", head: 1, offset: 0, count: 1"),
-               std::string("\"hand.posture_scalar\", head: 1, offset: 0, count: 1").size(),
-               "\"hand.posture_scalar\", head: 0, offset: 0, count: 2");
+  yaml.replace(yaml.find("- name: \"posture\"\n      shape: [1, 1]"),
+               std::string("- name: \"posture\"\n      shape: [1, 1]").size(),
+               "- name: \"posture\"\n      shape: [1, 2]");
   Harness h{yaml};
   EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
 }
@@ -404,9 +424,11 @@ TEST(DemoInferenceConfig, RejectsAnArmSliceThatDisagreesWithTheDeviceRoster) {
   // The retrain failure this controller exists to catch: the policy still says
   // 5 joints, the robot has 6. Both numbers are plausible on their own.
   std::string yaml = MakeYaml();
-  yaml.replace(yaml.find("\"arm.target_position\", head: 0, offset: 0, count: 6"),
-               std::string("\"arm.target_position\", head: 0, offset: 0, count: 6").size(),
-               "\"arm.target_position\", head: 0, offset: 0, count: 5");
+  // Legal against the tensor (5 of 6 elements), so the schema parser passes it
+  // and the binding's own roster cross-check is what has to refuse it.
+  yaml.replace(yaml.find("\"arm.target_position\", tensor: \"arm_action\""),
+               std::string("\"arm.target_position\", tensor: \"arm_action\"").size(),
+               "\"arm.target_position\", tensor: \"arm_action\", count: 5");
   Harness h{yaml};
   EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
 }

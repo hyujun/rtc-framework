@@ -246,7 +246,7 @@ class DemoInferenceController final : public RTControllerInterface {
   // ── Config ────────────────────────────────────────────────────────────────
   CommandType command_type_{CommandType::kPosition};
   rtc::params::PolicyIoParams io_{};
-  std::vector<PolicyFeature> feature_kinds_;  ///< parallel to io_.input_features
+  std::vector<PolicyFeature> feature_kinds_;  ///< parallel to io_.inputs[0].features
 
   std::string model_path_;
   std::string optimized_model_path_;

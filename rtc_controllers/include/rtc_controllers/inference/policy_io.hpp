@@ -1,9 +1,9 @@
 // ── Learned-policy tensor marshalling ────────────────────────────────────────
 //
 // The four operations that sit between a controller's state and a policy's
-// flat float tensors: pack a run of doubles into the input buffer, apply the
-// training-time affine normalisation, unpack a run of one output head, and
-// blend two joint postures by a scalar.
+// flat float tensors: pack a run of doubles into one input tensor, apply that
+// tensor's training-time affine normalisation, unpack a run of one output
+// tensor, and blend two joint postures by a scalar.
 //
 // WHY THIS IS A CORE AND NOT BINDING GLUE. The boundary rule is "does this code
 // have to know `RTControllerInterface` exists?" — none of it does. It sees
@@ -26,28 +26,56 @@
 
 namespace rtc::inference {
 
-/// One contiguous run of the flattened input tensor.
+/// One contiguous run of ONE flattened input tensor.
 ///
-/// `offset`/`count` are element indices into the flattened buffer, not bytes
-/// and not tensor dimensions — a policy input of shape [1, 34] is 34 elements
-/// and a feature contributing 6 of them is `{offset, 6}` wherever the YAML
-/// order happened to place it.
+/// `offset`/`count` are element indices into that tensor's flattened buffer,
+/// not bytes and not tensor dimensions — a policy input of shape [1, 34] is 34
+/// elements and a feature contributing 6 of them is `{tensor, offset, 6}`
+/// wherever the YAML order happened to place it.
+///
+/// `tensor` indexes the model's input tensors in declaration order, which is
+/// the order `rtc::InferenceEngine::input_buffer(model, input_idx)` uses. It is
+/// part of the address and not a convenience: a multi-input policy has one
+/// independent element space PER tensor, so an offset means nothing without the
+/// tensor it belongs to, and a descriptor that lost its tensor would still
+/// address a perfectly valid element of the wrong one.
 struct InputSegment {
+  int tensor{0};
   int offset{0};
   int count{0};
 };
 
-/// One contiguous run of one output head.
+/// One contiguous run of one output tensor.
 ///
-/// `head` indexes the model's output heads in the order they were declared,
-/// which is also the order `rtc::InferenceEngine` binds them — positional, so
-/// a swap of two heads with the SAME shape is undetectable here and is the
-/// model's contract to keep. Heads of differing shape are caught by the
-/// engine's own shape validation at load time.
+/// `tensor` indexes the model's output tensors in declaration order, mirroring
+/// `InputSegment::tensor`. Which .onnx tensor that declaration order actually
+/// reaches is settled by NAME at load time (`rtc::TensorSpec::name`), so two
+/// outputs of identical shape can no longer be swapped by an export that
+/// reordered them — the failure `udp_hand_driver` shipped with (#511 B-1) and
+/// the reason the schema layer makes tensor names mandatory.
 struct OutputSlice {
-  int head{0};
+  int tensor{0};
   int offset{0};
   int count{0};
+};
+
+/// One recurrent link: an output tensor whose contents become an input tensor
+/// on the NEXT policy step (`h_out` → `h_in`).
+///
+/// RESERVED, NOT YET FILLED. #511 P5 owns the parsing, the feedback copy and
+/// the reset policy; the descriptor and the (always empty) list in
+/// `rtc::params::PolicyIoParams` exist now so that P5 is a pure addition rather
+/// than a redesign of the schema every layer above already consumes. The schema
+/// parser refuses `source:`/`feeds:` today rather than accepting a declaration
+/// nothing acts on — a config that says "recurrent" and is silently feed-forward
+/// would produce finite, plausible, wrong actions.
+///
+/// The link is whole-tensor by decision D-2: a slice-level link would multiply
+/// the validation surface for an export shape almost nobody produces.
+struct RecurrentLink {
+  int output_tensor{0};
+  int input_tensor{0};
+  std::size_t numel{0};
 };
 
 /// Result of a posture blend. Two flags rather than one because the caller
@@ -110,11 +138,11 @@ inline void ApplyAffine(std::span<float> buf, std::span<const float> offset,
   }
 }
 
-/// Copy `head_buf[slice.offset, +slice.count)` into `out`, widening float →
-/// double. `head_size` is the element count of that head's buffer.
+/// Copy `buf[slice.offset, +slice.count)` into `out`, widening float → double.
+/// `size` is the element count of that output tensor's buffer.
 ///
-/// Returns false and writes nothing when the slice leaves the head or `out` is
-/// too small — same all-or-nothing reason as PackSegment. A null `head_buf` is
+/// Returns false and writes nothing when the slice leaves the tensor or `out`
+/// is too small — same all-or-nothing reason as PackSegment. A null `buf` is
 /// a false rather than a crash because that is exactly what the stub inference
 /// engine returns, and the caller's hold path is the right response to it.
 ///
@@ -123,17 +151,17 @@ inline void ApplyAffine(std::span<float> buf, std::span<const float> offset,
 /// command, and doing it in one place keeps the "which stage rejected this"
 /// answer unambiguous.
 [[nodiscard]] inline bool UnpackSlice(std::span<double> out, const OutputSlice& slice,
-                                      const float* head_buf, std::size_t head_size) noexcept {
-  if (head_buf == nullptr || slice.offset < 0 || slice.count < 0) {
+                                      const float* buf, std::size_t size) noexcept {
+  if (buf == nullptr || slice.offset < 0 || slice.count < 0) {
     return false;
   }
   const auto off = static_cast<std::size_t>(slice.offset);
   const auto n = static_cast<std::size_t>(slice.count);
-  if (off > head_size || n > head_size - off || out.size() < n) {
+  if (off > size || n > size - off || out.size() < n) {
     return false;
   }
   for (std::size_t i = 0; i < n; ++i) {
-    out[i] = static_cast<double>(head_buf[off + i]);
+    out[i] = static_cast<double>(buf[off + i]);
   }
   return true;
 }

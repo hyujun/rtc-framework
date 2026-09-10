@@ -93,7 +93,7 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
   }
 
   for (std::size_t f = 0; f < feature_kinds_.size(); ++f) {
-    const auto& seg = io_.input_segments[f];
+    const auto& seg = io_.inputs[0].segments[f];
     switch (feature_kinds_[f]) {
       case PolicyFeature::kArmPosition: {
         for (int i = 0; i < arm_dof_; ++i) {
@@ -163,9 +163,9 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
           return false;
         }
         const bool want_position = (feature_kinds_[f] == PolicyFeature::kPalmPosition);
-        const std::span<const double> src =
-            want_position ? std::span<const double>(p.data(), p.size())
-                          : std::span<const double>(q.data(), q.size());
+        const std::span<const double> src = want_position
+                                                ? std::span<const double>(p.data(), p.size())
+                                                : std::span<const double>(q.data(), q.size());
         if (!rtc::inference::PackSegment(buf, seg, src)) {
           return false;
         }
@@ -182,9 +182,8 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
         }
         const bool want_position = (feature_kinds_[f] == PolicyFeature::kObjectPosition);
         const std::span<const double> src =
-            want_position
-                ? std::span<const double>(object_this_tick_.position.data(), 3)
-                : std::span<const double>(object_this_tick_.orientation_xyzw.data(), 4);
+            want_position ? std::span<const double>(object_this_tick_.position.data(), 3)
+                          : std::span<const double>(object_this_tick_.orientation_xyzw.data(), 4);
         if (!rtc::inference::PackSegment(buf, seg, src)) {
           return false;
         }
@@ -193,7 +192,7 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
     }
   }
 
-  rtc::inference::ApplyAffine(buf, io_.input_offset, io_.input_scale);
+  rtc::inference::ApplyAffine(buf, io_.inputs[0].offset, io_.inputs[0].scale);
   return true;
 }
 
@@ -232,9 +231,8 @@ void DemoInferenceController::HoldPosition(const ControllerState& state,
       // A channel past the latched width (a third device, or a wire wider than
       // the roster) falls back to its measured value: there is no latched
       // number for it, and inventing one would be worse than following.
-      const double q = (src != nullptr && c < latched)
-                           ? src[static_cast<std::size_t>(c)]
-                           : dev.positions[static_cast<std::size_t>(c)];
+      const double q = (src != nullptr && c < latched) ? src[static_cast<std::size_t>(c)]
+                                                       : dev.positions[static_cast<std::size_t>(c)];
       dst.commands[static_cast<std::size_t>(c)] = q;
       dst.target_positions[static_cast<std::size_t>(c)] = q;
       dst.target_velocities[static_cast<std::size_t>(c)] = 0.0;
@@ -379,9 +377,12 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
   const bool run_policy = !have_action_ || ((tick_ % decim) == (1U % decim));
 
   if (run_policy) {
-    float* in_buf = engine_->input_buffer(0);
-    const std::size_t in_size = engine_->input_size(0);
-    if (in_buf == nullptr || in_size != io_.InputNumel()) {
+    // Tensor 0 only: `ApplyIoSchema` refuses a schema that declares more
+    // than one input, so there is no second buffer to leave unwritten here
+    // (#511 P4 generalises this walk).
+    float* in_buf = engine_->input_buffer(0, 0);
+    const std::size_t in_size = engine_->input_size(0, 0);
+    if (in_buf == nullptr || in_size != io_.inputs[0].Numel()) {
       have_action_ = false;
       HoldPosition(state, out);
       last_tick_held_ = true;
@@ -415,8 +416,8 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     if (ok) {
       ok = rtc::inference::UnpackSlice(
           std::span<double>(scratch_head_.data(), static_cast<std::size_t>(arm_slice.count)),
-          arm_slice, engine_->output_buffer(0, arm_slice.head),
-          engine_->output_size(0, arm_slice.head));
+          arm_slice, engine_->output_buffer(0, arm_slice.tensor),
+          engine_->output_size(0, arm_slice.tensor));
     }
     if (ok) {
       for (int i = 0; i < arm_dof_; ++i) {
@@ -433,8 +434,8 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     double scalar = 0.0;
     if (ok) {
       ok = rtc::inference::UnpackSlice(std::span<double>(&scalar, 1), hand_slice,
-                                       engine_->output_buffer(0, hand_slice.head),
-                                       engine_->output_size(0, hand_slice.head));
+                                       engine_->output_buffer(0, hand_slice.tensor),
+                                       engine_->output_size(0, hand_slice.tensor));
     }
     if (ok) {
       const auto blend = rtc::inference::BlendPosture(

@@ -1,8 +1,8 @@
 // ── Learned-policy I/O schema (G2 schema layer) ──────────────────────────────
 // The YAML that describes how a controller's state is flattened into a policy's
-// input tensor and how its output heads are sliced back into device commands.
-// Sibling of params/clik_params.hpp and friends: POD + parser, yaml-cpp only,
-// called once at configure time and never from a tick.
+// input tensors and how its output tensors are sliced back into device
+// commands. Sibling of params/clik_params.hpp and friends: POD + parser,
+// yaml-cpp only, called once at configure time and never from a tick.
 //
 // WHY THE SCHEMA IS THE POINT. Retraining a policy changes feature order,
 // tensor width and normalisation constants far more often than it changes what
@@ -11,6 +11,20 @@
 // exists to prevent is silent: a feature list whose order drifted from training
 // produces a perfectly finite, perfectly in-limits command stream that simply
 // does the wrong thing.
+//
+// WHY TENSORS ARE GROUPS AND NOT A FLAT LIST (#511 C-1). A multi-input policy's
+// tensors are filled by DIFFERENT producers — one carries the robot observation,
+// the next (P5) carries the previous step's recurrent state — and each has its
+// own element space, its own feature sum and its own normalisation constants. A
+// flat `input_shapes` plus a `tensor:` tag on every feature has nowhere to put
+// those per-tensor invariants, so the grouping is what lets the parser state
+// them once per tensor instead of re-deriving them per feature.
+//
+// WHY TENSOR NAMES ARE MANDATORY (#511 D-1). `rtc::InferenceEngine` binds by
+// name when every declared tensor has one and positionally when none do. The
+// positional path is what `udp_hand_driver` ships with, and it is exactly how a
+// re-export that swapped two same-shaped tensors goes undetected (#511 B-1).
+// A policy schema always names, so that path is unreachable from here.
 //
 // ROBOT-AGNOSTIC (ARCH-1). Feature ids are robot facts ("ur5e.position" is six
 // because a UR5e has six joints), so this layer never learns the table. The
@@ -29,32 +43,60 @@
 
 namespace rtc::params {
 
-/// Parsed and cross-checked policy I/O description.
+/// One declared input tensor and everything that fills it.
 ///
-/// `input_segments` is parallel to `input_features`: entry i is where feature i
-/// landed in the flattened tensor, assigned by prefix sum over the YAML order.
-/// That is the whole mechanism by which reordering the YAML list reorders the
-/// tensor, so a test that reorders the list and observes the packed buffer is
-/// testing the contract and not the parser's bookkeeping.
-struct PolicyIoParams {
-  std::vector<std::int64_t> input_shape;                 ///< e.g. {1, 34}
-  std::vector<std::vector<std::int64_t>> output_shapes;  ///< one per head, e.g. {{1,6},{1,1}}
+/// `segments` is parallel to `features`: entry i is where feature i landed in
+/// THIS tensor, assigned by prefix sum over the YAML order. That is the whole
+/// mechanism by which reordering the YAML list reorders the tensor, so a test
+/// that reorders the list and observes the packed buffer is testing the
+/// contract and not the parser's bookkeeping.
+///
+/// `offset`/`scale` are this tensor's own affine lane. Per tensor rather than
+/// per policy because normalisation constants come from the statistics of the
+/// quantity a tensor carries, and two tensors carrying different quantities
+/// share nothing but the model that consumes them.
+struct InputTensorSpec {
+  std::string name;                                    ///< must match the .onnx input name
+  std::vector<std::int64_t> shape;                     ///< e.g. {1, 34}
+  std::vector<std::string> features;                   ///< ids, YAML order
+  std::vector<rtc::inference::InputSegment> segments;  ///< resolved, parallel to `features`
+  std::vector<float> offset;                           ///< empty = identity
+  std::vector<float> scale;                            ///< empty = identity
 
-  std::vector<std::string> input_features;                   ///< ids, YAML order
-  std::vector<rtc::inference::InputSegment> input_segments;  ///< resolved, parallel to above
-  std::vector<float> input_offset;                           ///< empty = identity
-  std::vector<float> input_scale;                            ///< empty = identity
+  /// Element count of this tensor (product of `shape`).
+  [[nodiscard]] std::size_t Numel() const noexcept;
+};
+
+/// One declared output tensor. What is READ out of it is described separately
+/// by `PolicyIoParams::output_slices`, because one tensor can carry several
+/// commands and one command never spans two tensors.
+struct OutputTensorSpec {
+  std::string name;                 ///< must match the .onnx output name
+  std::vector<std::int64_t> shape;  ///< e.g. {1, 6}
+
+  /// Element count of this tensor (product of `shape`).
+  [[nodiscard]] std::size_t Numel() const noexcept;
+};
+
+/// Parsed and cross-checked policy I/O description.
+struct PolicyIoParams {
+  std::vector<InputTensorSpec> inputs;    ///< YAML order == engine binding order
+  std::vector<OutputTensorSpec> outputs;  ///< YAML order == engine binding order
 
   std::vector<std::string> output_names;                   ///< names, YAML order
   std::vector<rtc::inference::OutputSlice> output_slices;  ///< parallel to above
+
+  /// Recurrent links (`h_out` → next step's `h_in`). ALWAYS EMPTY until #511
+  /// P5, which owns the parsing, the feedback copy and the reset policy; the
+  /// parser refuses `source:`/`feeds:` today rather than accept a declaration
+  /// nothing acts on. The slot exists now so P5 is a pure addition instead of a
+  /// redesign of a schema three layers already consume.
+  std::vector<rtc::inference::RecurrentLink> recurrent_links;
 
   /// RT ticks per policy evaluation. 1 = every tick. The controller holds the
   /// previous action on the ticks in between, so this is what turns a 500 Hz
   /// control loop into a 50 Hz policy without touching `control_rate`.
   int decimation{1};
-
-  /// Total element count of the input tensor (product of `input_shape`).
-  [[nodiscard]] std::size_t InputNumel() const noexcept;
 };
 
 /// Element count for a feature id, or <= 0 when the id is unknown.
@@ -70,22 +112,31 @@ using FeatureSizeFn = std::function<int(std::string_view)>;
 /// Throws `std::invalid_argument` on any violation below — non-RT, called from
 /// LoadConfig / on_configure, where a loud failure is the correct outcome:
 ///
-///   - `input_shape` / `output_shapes` missing, empty, or carrying a dimension
-///     that is not strictly positive
-///   - `input_features` empty, carrying an id the resolver rejects, or carrying
-///     the same id twice (a repeat is a copy-paste artefact; the sum check
-///     below would otherwise have to be wrong in a second place to catch it)
-///   - the resolved feature counts not summing to `InputNumel()`
-///   - `input_offset` / `input_scale` present with a length that is neither 0
-///     nor `InputNumel()`, or carrying a non-finite value
-///   - `output_features` empty, naming a head that does not exist, slicing past
-///     that head's element count, declaring a non-positive count, repeating a
-///     name, or overlapping another slice **on the same head**
+///   - `inputs` / `outputs` missing or empty, an entry that is not a map, a
+///     missing or empty `name`, a duplicate name within either side, or a
+///     `shape` that is absent, empty, or carries a dimension that is not
+///     strictly positive
+///   - `features` empty, carrying an id the resolver rejects, or repeating an
+///     id declared by ANY input tensor (#511 D-6 — the message names both
+///     positions, because the same id in two tensors is a copy-paste artefact
+///     far more often than it is deliberate double normalisation)
+///   - the resolved feature counts of a tensor not summing to that tensor's
+///     element count
+///   - `offset` / `scale` present with a length that is neither 0 nor that
+///     tensor's element count, or carrying a non-finite value
+///   - `output_features` empty, naming a tensor that was not declared, slicing
+///     past that tensor's element count, declaring a non-positive count,
+///     repeating a name, or overlapping another slice **on the same tensor**
 ///   - `decimation` < 1
+///   - `source:` on an input or `feeds:` on an output — the recurrent keys,
+///     reserved and refused until #511 P5
+///   - the pre-#511 flat keys (`input_shape`, `output_shapes`,
+///     `input_features`), refused with the migration named rather than left to
+///     surface as "inputs is missing"
 ///
-/// Overlap is judged per head because two heads legitimately start at offset 0;
-/// it is two slices of the SAME head claiming an element that means one of them
-/// is not reading what its name says.
+/// Overlap is judged per tensor because two tensors legitimately start at
+/// offset 0; it is two slices of the SAME tensor claiming an element that means
+/// one of them is not reading what its name says.
 PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& feature_size);
 
 }  // namespace rtc::params

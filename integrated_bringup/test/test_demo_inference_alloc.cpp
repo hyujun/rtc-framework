@@ -149,15 +149,21 @@ topics:
 inference:
   model_path: "fake_policy.onnx"
   decimation: 10
-  input_shape: [1, 20]
-  output_shapes: [[1, 6], [1, 1]]
-  input_features:
-    - "arm.position"
-    - "hand.position"
-    - "hand.fingertip_force_norm"
+  inputs:
+    - name: "obs"
+      shape: [1, 20]
+      features:
+        - "arm.position"
+        - "hand.position"
+        - "hand.fingertip_force_norm"
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
   output_features:
-    - { name: "arm.target_position", head: 0, offset: 0, count: 6 }
-    - { name: "hand.posture_scalar", head: 1, offset: 0, count: 1 }
+    - { name: "arm.target_position", tensor: "arm_action" }
+    - { name: "hand.posture_scalar", tensor: "posture" }
   hand_posture:
     open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]

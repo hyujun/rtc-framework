@@ -37,7 +37,7 @@ demo_inference_controller:
     # 그대로 검증할 수 있게 하기 위해서다. 이 키 없이 빈 경로면 configure 실패다.
     #
     # 모델을 받으면: model_path 를 채우고 allow_missing_model 을 지운다. 그
-    # 순간부터 .onnx 의 실제 shape 이 아래 input_shape/output_shapes 와 다르면
+    # 순간부터 .onnx 의 실제 이름·shape 이 아래 inputs/outputs 선언과 다르면
     # OnnxEngine::Init 이 throw 해 bring-up 이 거부된다 (retrain drift 의 1차 방어선).
     #
     # 다만 shape 이 맞는 것과 RT 예산 안에 드는 것은 다른 사실이고, 아래 둘은
@@ -62,30 +62,47 @@ demo_inference_controller:
     decimation: 10
 
     # ── 텐서 ─────────────────────────────────────────────────────────────────
-    # 6 + 10 + 3 + 4 + 4 + 3 + 4 = 34. 합이 input_shape 와 다르면 configure 실패.
-    input_shape: [1, 34]
-    # head 0 = UR5e absolute joint target, head 1 = hand posture 스칼라.
-    # shape 이 서로 달라서(6 vs 1) head 순서가 뒤바뀌면 OnnxEngine 이 잡아낸다 —
-    # 같은 shape 두 개였다면 positional binding 상 검출 불가였다.
-    output_shapes: [[1, 6], [1, 1]]
+    # 입력·출력 모두 **텐서 단위 선언**이다 (#511). 텐서마다 자기 feature 목록과
+    # 자기 정규화 lane 을 들고, offset 은 그 텐서 안에서 0 부터 다시 센다 — 텐서
+    # 경계를 넘는 전역 prefix-sum 은 존재하지 않는다.
+    #
+    # **name 은 .onnx 의 텐서 이름과 정확히 일치해야 하고 생략할 수 없다.**
+    # 이름이 있으면 엔진이 이름으로 바인딩하므로, 재export 로 같은 shape 두 개의
+    # 순서가 바뀌면 load 가 실패한다. 이름을 비우면 positional 바인딩이 되어
+    # 그 재export 가 조용히 통과하고 값의 의미만 맞바뀐다 (#511 B-1 이 실제로
+    # udp_hand_driver 에서 발현한 형태다).
+    #
+    # 아직 모델이 없으므로 아래 이름은 **가정값**이다. 모델 수령 시 실제 이름으로
+    # 바꾼다 — 틀리면 configure 가 대조표를 찍고 거부하므로 조용히 지나가지 않는다.
+    inputs:
+      - name: "obs"
+        # 6 + 10 + 3 + 4 + 4 + 3 + 4 = 34. 합이 shape 와 다르면 configure 실패.
+        shape: [1, 34]
+        # 배열 순서 = tensor flatten 순서. 재정렬하면 텐서가 재정렬된다.
+        features:
+          - "ur5e.position" #  6  rad
+          - "p1b.position" # 10  rad
+          - "palm.position" #  3  m
+          - "palm.orientation_xyzw" #  4  Hamilton, 직렬화 x,y,z,w
+          - "p1b.fingertip_force_norm" #  4  N — thumb,index,middle,ring 의 ‖f‖.
+          #     norm 이라 프레임 무관이고, lane 이 stale
+          #     이면 0 이 들어간다 ("접촉 없음"과 "판독
+          #     없음"은 이 정책에 같은 관측이다)
+          - "object.position" #  3  m
+          - "object.orientation_xyzw" #  4  Hamilton, x,y,z,w
+        # normalized = (raw − offset) * scale. 비우면 identity.
+        # 모델 수령 시 학습 때 쓴 값으로 채운다. 길이는 0 이거나 정확히 이 텐서의 34.
+        offset: []
+        scale: []
 
-    # 배열 순서 = tensor flatten 순서. 재정렬하면 텐서가 재정렬된다.
-    input_features:
-      - "ur5e.position" #  6  rad
-      - "p1b.position" # 10  rad
-      - "palm.position" #  3  m
-      - "palm.orientation_xyzw" #  4  Hamilton, 직렬화 x,y,z,w
-      - "p1b.fingertip_force_norm" #  4  N — thumb,index,middle,ring 의 ‖f‖.
-      #     norm 이라 프레임 무관이고, lane 이 stale
-      #     이면 0 이 들어간다 ("접촉 없음"과 "판독
-      #     없음"은 이 정책에 같은 관측이다)
-      - "object.position" #  3  m
-      - "object.orientation_xyzw" #  4  Hamilton, x,y,z,w
-
-    # normalized = (raw − offset) * scale. 비우면 identity.
-    # 모델 수령 시 학습 때 쓴 값으로 채운다. 길이는 0 이거나 정확히 34.
-    input_offset: []
-    input_scale: []
+    # shape 이 서로 달라서(6 vs 1) 순서가 뒤바뀌어도 잡히지만, 그 방어선은 이제
+    # shape 이 아니라 **이름**이다 — 같은 폭 두 head 를 내는 정책이 와도 그대로
+    # 성립한다.
+    outputs:
+      - name: "arm_action" # UR5e absolute joint target
+        shape: [1, 6]
+      - name: "posture" # hand posture 스칼라
+        shape: [1, 1]
 
     # ── palm FK ──────────────────────────────────────────────────────────────
     # `l_palm_link` 이다. 기본값을 두지 않는 이유는 초안이 박아 뒀던
@@ -128,12 +145,15 @@ demo_inference_controller:
       timeout_sec: 0.2
 
     # ── 출력 매핑 ────────────────────────────────────────────────────────────
-    # name 으로 매칭한다 (순서가 아니라). slice 는 이미 head 에 대해 positional
-    # 이라, 배열 순서까지 의미를 갖게 하면 두 항목을 무해하게 뒤바꾼 편집이
-    # 팔과 손을 조용히 맞바꾼다.
+    # 어느 출력 텐서를 읽는지는 `tensor:` 로 **이름 참조**한다 (인덱스가 아니라).
+    # offset/count 를 생략하면 그 텐서 전체를 뜻하며, 위 shape 과 여기 폭이
+    # 갈라질 자리를 아예 없앤다. 텐서 하나에서 여러 명령을 잘라 쓸 때만 적는다.
+    #
+    # 컨트롤러 쪽 역할 결정은 아직 이름 suffix 로 한다 (`*.target_position` /
+    # `*.posture_scalar`). 명시 `role:`/`device:` 키는 #511 P4 가 넣는다.
     output_features:
-      - { name: "ur5e.target_position", head: 0, offset: 0, count: 6 }
-      - { name: "p1b.posture_scalar", head: 1, offset: 0, count: 1 }
+      - { name: "ur5e.target_position", tensor: "arm_action" }
+      - { name: "p1b.posture_scalar", tensor: "posture" }
 
     # ── hand posture ─────────────────────────────────────────────────────────
     # 스칼라 s 가 open + clamp(s,0,1)·(close − open) 으로 보간한다.
