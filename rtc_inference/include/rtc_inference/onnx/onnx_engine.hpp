@@ -2,6 +2,7 @@
 #define RTC_INFERENCE_ONNX_ONNX_ENGINE_HPP_
 
 #include "rtc_inference/inference_engine.hpp"
+#include "rtc_inference/shape_report.hpp"
 
 #ifdef HAS_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
@@ -55,26 +56,54 @@ class OnnxEngine : public InferenceEngine {
     auto model = std::make_unique<Model>(*env_, config.model_path.c_str(), opts);
 
     // ── Validate model I/O against config (loud failure on drift) ───────────
-    // Catches output-head count/shape mismatch from a retrained/wrong .onnx
-    // before any buffer is sized to the declared (possibly wrong) shape.
-    // NOTE: outputs are bound positionally (head o ↔ config.output_shapes[o]),
-    // so shape validation cannot detect a reorder of two heads with identical
-    // shapes (e.g. two [1,3] heads swapped) — that is the model's contract.
+    // Both sides are collected and compared in ONE pass so that a retrained
+    // .onnx which moved several tensors reports all of them at once. Throwing
+    // on the first mismatch — what this replaces — costs one whole bring-up
+    // cycle per tensor to discover the rest.
+    //
+    // The comparison and the table live in shape_report.hpp and know nothing
+    // about ORT: that is what makes them testable without a .onnx fixture,
+    // which this repo's test environment cannot build. What stays untested is
+    // exactly the collection loop below.
+    //
+    // NOTE: tensors are bound POSITIONALLY (input i / head o ↔ config entry i),
+    // so this cannot detect a reorder of two tensors with identical shapes
+    // (e.g. two [1,3] heads swapped) — that is still the model's contract. The
+    // names are collected and printed so a human can see what the comparison
+    // cannot.
     const std::size_t n_out = config.output_shapes.size();
-    if (model->session.GetInputCount() < 1)
-      throw std::runtime_error("rtc_inference: model '" + config.model_path +
-                               "' has no input tensor");
-    // Exact arity: a model with fewer OR more outputs than declared is a
-    // mismatch (extra heads would be silently dropped by positional binding).
-    if (model->session.GetOutputCount() != n_out)
-      throw std::runtime_error("rtc_inference: model '" + config.model_path + "' exposes " +
-                               std::to_string(model->session.GetOutputCount()) +
-                               " outputs but config declares " + std::to_string(n_out));
-    CheckShape(model->session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape(),
-               config.input_shape, "input", 0, config.model_path);
-    for (std::size_t o = 0; o < n_out; ++o)
-      CheckShape(model->session.GetOutputTypeInfo(o).GetTensorTypeAndShapeInfo().GetShape(),
-                 config.output_shapes[o], "output", static_cast<int>(o), config.model_path);
+    Ort::AllocatorWithDefaultOptions alloc;
+    std::vector<TensorSpec> model_inputs;
+    std::vector<TensorSpec> model_outputs;
+    model_inputs.reserve(model->session.GetInputCount());
+    model_outputs.reserve(model->session.GetOutputCount());
+    for (std::size_t i = 0; i < model->session.GetInputCount(); ++i)
+      model_inputs.push_back(
+          {model->session.GetInputNameAllocated(i, alloc).get(),
+           model->session.GetInputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape()});
+    for (std::size_t o = 0; o < model->session.GetOutputCount(); ++o)
+      model_outputs.push_back(
+          {model->session.GetOutputNameAllocated(o, alloc).get(),
+           model->session.GetOutputTypeInfo(o).GetTensorTypeAndShapeInfo().GetShape()});
+
+    // The declared side carries no names yet — the schema has no way to spell
+    // one. They are compared positionally and the model's names are what the
+    // table shows.
+    const std::vector<TensorSpec> declared_inputs{TensorSpec{"", config.input_shape}};
+    std::vector<TensorSpec> declared_outputs;
+    declared_outputs.reserve(n_out);
+    for (const auto& shape : config.output_shapes)
+      declared_outputs.push_back({"", shape});
+
+    // Exact arity in BOTH directions falls out of this: a tensor present on
+    // only one side gets a row, and any such row fails the report. The input
+    // side had no arity check at all before — a multi-input model reached the
+    // warmup below and died there with an ORT-internal message that named
+    // neither count.
+    const auto report =
+        CompareModelIo(model_inputs, declared_inputs, model_outputs, declared_outputs);
+    if (!report.Ok())
+      throw std::runtime_error(report.Format(config.model_path));
 
     const auto mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
@@ -83,8 +112,9 @@ class OnnxEngine : public InferenceEngine {
     model->input_size = in_size;
     model->input_buffer.assign(in_size, 0.0F);
 
-    Ort::AllocatorWithDefaultOptions alloc;
-    model->input_name = model->session.GetInputNameAllocated(0, alloc).get();
+    // Reuse the name the report already collected: a passing report guarantees
+    // each declared tensor has a model counterpart, so these indices are safe.
+    model->input_name = model_inputs[0].name;
     model->input_tensor =
         Ort::Value::CreateTensor<float>(mem_info, model->input_buffer.data(), in_size,
                                         config.input_shape.data(), config.input_shape.size());
@@ -100,7 +130,7 @@ class OnnxEngine : public InferenceEngine {
       const std::size_t out_size = Numel(shape);
       model->output_sizes[o] = out_size;
       model->output_buffers[o].assign(out_size, 0.0F);
-      model->output_names[o] = model->session.GetOutputNameAllocated(o, alloc).get();
+      model->output_names[o] = model_outputs[o].name;
       model->output_tensors.push_back(Ort::Value::CreateTensor<float>(
           mem_info, model->output_buffers[o].data(), out_size, shape.data(), shape.size()));
     }
@@ -246,27 +276,10 @@ class OnnxEngine : public InferenceEngine {
     return n;
   }
 
-  // Throw if the model's actual tensor shape is incompatible with the declared
-  // one. The declared shape sizes a real buffer, so every declared dim must be
-  // static positive (a dynamic -1 would make Numel() cast to SIZE_MAX and try a
-  // catastrophic allocation). A model dim < 0 is dynamic (e.g. dynamic batch/
-  // seq) and matches any declared size; static model dims must match exactly.
-  // Non-RT (Init only).
-  static void CheckShape(const std::vector<int64_t>& model_shape,
-                         const std::vector<int64_t>& declared, const char* what, int idx,
-                         const std::string& model_path) {
-    for (auto d : declared)
-      if (d <= 0)
-        throw std::runtime_error(
-            "rtc_inference: model '" + model_path + "' " + what + "[" + std::to_string(idx) +
-            "] declared shape must be static positive (got " + std::to_string(d) + ")");
-    bool ok = model_shape.size() == declared.size();
-    for (std::size_t i = 0; ok && i < declared.size(); ++i)
-      ok = (model_shape[i] < 0) || (model_shape[i] == declared[i]);
-    if (!ok)
-      throw std::runtime_error("rtc_inference: model '" + model_path + "' " + what + "[" +
-                               std::to_string(idx) + "] shape mismatch vs config");
-  }
+  // (Shape compatibility used to be checked by a private CheckShape here. It
+  // moved to shape_report.hpp, where it is a pure function over two lists of
+  // shapes and can therefore be tested without a .onnx file — which this
+  // repo's test environment cannot produce.)
 
   // IoBinding inference for one model (SynchronizeInputs → Run → Synchronize
   // Outputs), shared by Run() and RunModel(). Single-sources the sync triplet.

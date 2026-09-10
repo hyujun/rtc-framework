@@ -85,6 +85,14 @@ if(BUILD_TESTING)
   if(TARGET test_inference_engine)
     target_link_libraries(test_inference_engine rtc_inference)
   endif()
+
+  # shape_report.hpp is deliberately ONNX-Runtime-free, so this gate runs
+  # identically whether or not ORT was found — the comparison it covers is
+  # unreachable from a test otherwise (no way to build a .onnx fixture here).
+  ament_add_gtest(test_shape_report test/test_shape_report.cpp)
+  if(TARGET test_shape_report)
+    target_link_libraries(test_shape_report rtc_inference)
+  endif()
 endif()
 
 # ── Install & Export ──────────────────────────────────────────────────────────

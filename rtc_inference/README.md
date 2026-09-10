@@ -23,7 +23,7 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 | `output_shapes` | `std::vector<std::vector<int64_t>>` | -- | 출력 head 별 형상. 단일 출력은 `{{1, 1, 13}}`, 3-head 모델은 `{{1, 1}, {1, 3}, {1, 3}}` |
 | `intra_op_threads` | `int` | `1` | 추론 내부 스레드 수 (RT 환경에서는 단일 스레드 권장) |
 
-엔진은 **단일 입력 / N 출력 head** 를 지원합니다 (multi-input 은 미지원 — 실제 소비자 수요에 맞춰 일반화).
+엔진은 **단일 입력 / N 출력 head** 를 지원합니다. multi-input 일반화는 [#511](https://github.com/hyujun/rtc-framework/issues/511) 에서 진행 중이며, 그때까지 입력이 2개 이상인 모델은 `Init()` 의 arity 검사가 표로 거부합니다 (아래 **모델 검증**).
 
 ---
 
@@ -65,7 +65,15 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 
 **RT 세션 옵션** (모델당): `ORT_SEQUENTIAL` 실행 모드, `intra_op_threads` 단일 스레드, `session.intra_op.allow_spinning=0` (intra-op 워커의 busy-spin 제거로 RT 루프 지터 차단), `ORT_ENABLE_ALL` 그래프 최적화.
 
-**모델 검증**: `Init()`은 버퍼를 할당하기 전에 모델의 실제 입출력 arity/shape 를 `config` 와 대조합니다. 출력 head 수가 `config.output_shapes`와 정확히 일치하지 않거나(부족·과다 모두 거부 — positional binding 이라 extra head 는 조용히 drop 되므로) 정적 차원이 불일치하면 `std::runtime_error`를 던져 잘못된/재학습된 `.onnx`가 런타임에 조용히 틀린 값을 내지 않고 setup 단계에서 큰 소리로 실패합니다 (모델 쪽 dim `< 0`인 dynamic dim 은 임의 크기와 매칭). `config`에 선언된 shape 의 각 dim 도 static positive 여야 하며 `<= 0`이면 즉시 reject — 그렇지 않으면 dynamic `-1`이 버퍼 크기 계산(`Numel()`)에서 `SIZE_MAX`로 캐스트되어 catastrophic allocation을 시도할 수 있습니다. 워밍업 추론은 모델을 `models_`에 등록하기 **전에** 실행됩니다 (`RunModels()`와 동일한 direct `Session::Run` 경로 재사용 → warmup 이 production 경로를 정확히 데움) — 이 순서 덕분에 `Init()`이 원자적입니다: 워밍업이 예외를 던지면 반쯤 초기화된 모델이 `models_`에 남지 않고 그대로 전파됩니다 (register-or-nothing).
+**모델 검증**: `Init()`은 버퍼를 할당하기 전에 모델의 실제 입출력 arity/shape 를 `config` 와 대조하고, 불일치가 하나라도 있으면 **전량을 표로 담은** `std::runtime_error`를 던집니다 — 잘못된/재학습된 `.onnx`가 런타임에 조용히 틀린 값을 내지 않고 setup 단계에서 큰 소리로 실패합니다.
+
+비교 규칙은 [shape_report.hpp](include/rtc_inference/shape_report.hpp) 가 SSoT 이며, 요지는 셋입니다 — ① **입력·출력 양쪽 arity 가 정확히 일치**해야 한다 (한쪽에만 있는 텐서는 각각 "config 미선언" / "모델에 없음" 행으로 실패; extra head 는 positional binding 상 조용히 drop 되고, 미선언 입력은 ORT 내부 에러로 죽어 원인을 안 가리킨다), ② 모델 쪽 dim `< 0` 은 dynamic 이라 임의 크기와 매칭되지만 **`config` 쪽 dim 은 static positive** 여야 한다 (dynamic `-1`이 `Numel()`에서 `SIZE_MAX`로 캐스트되어 catastrophic allocation 을 시도하므로 — 이 검사가 rank 검사보다 먼저다), ③ **한 번에 전부 보고**한다 (재학습은 여러 텐서를 동시에 옮기므로 첫 불일치에서 throw 하면 텐서마다 bring-up 사이클을 하나씩 태운다).
+
+> **알려진 사각**: 텐서는 **positional** 로 바인딩되므로(입력 i / head o ↔ `config` 항목 i), **같은 shape 두 텐서가 뒤바뀐 export 는 검출되지 않습니다.** `udp_hand_driver` 의 3-head FT 모델(`{{1,1},{1,3},{1,3}}` — 힘과 방향이 둘 다 `[1,3]`)이 실제 해당 사례입니다. 표에 모델 쪽 텐서 **이름**을 함께 출력하는 것은 비교기가 못 보는 것을 사람이 볼 수 있게 하기 위함입니다.
+
+검증 로직이 별도 헤더인 이유는 **ONNX Runtime 비의존 순수 함수라야 테스트되기 때문**입니다 — 이 저장소의 테스트 환경에는 python `onnx` 모듈이 없어 `.onnx` 픽스처를 만들 수 없고, 엔진 안에 있으면 실제 모델 파일 없이는 도달할 수 없어 미검증으로 출하됩니다. 현재 `test_shape_report.cpp` 가 비교 규칙을 전량 고정하며, 미검증으로 남는 것은 모델 쪽 이름·shape 을 수집하는 ORT 호출 몇 줄뿐입니다.
+
+워밍업 추론은 모델을 `models_`에 등록하기 **전에** 실행됩니다 (`RunModels()`와 동일한 direct `Session::Run` 경로 재사용 → warmup 이 production 경로를 정확히 데움) — 이 순서 덕분에 `Init()`이 원자적입니다: 워밍업이 예외를 던지면 반쯤 초기화된 모델이 `models_`에 남지 않고 그대로 전파됩니다 (register-or-nothing).
 
 **`Reset()`** (non-RT): 등록된 모든 모델을 해제하여 `Init()` 재호출을 idempotent 하게 만듭니다 (`Ort::Env`/`RunOptions`는 재사용). 같은 엔진 인스턴스로 재초기화하는 소비자는 `Init()` 루프 전에 `Reset()`을 호출해 모델 중복 등록·세션 누수를 방지합니다.
 
