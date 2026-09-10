@@ -61,18 +61,23 @@ constexpr int kInferenceStride = 7;
 /// since it is called from inside the gated region.
 class FakeEngine final : public rtc::InferenceEngine {
  public:
-  FakeEngine() : input_(kInputElements, 0.0F), head0_(6, 0.1F), head1_(1, 0.5F) {}
+  explicit FakeEngine(const std::vector<std::size_t>& in_sizes = {kInputElements})
+      : head0_(6, 0.1F), head1_(1, 0.5F) {
+    for (const auto n : in_sizes) {
+      inputs_.emplace_back(n, 0.0F);
+    }
+  }
 
   void Init(const rtc::ModelConfig& /*config*/) override { initialized_ = true; }
 
   [[nodiscard]] bool Run() noexcept override { return true; }
 
-  // The controller's schema is still single-input, so only index 0 exists.
   // Out-of-range answers nullptr/0 rather than folding onto slot 0, so a
-  // controller that started reading a second tensor would hold rather than
-  // silently re-read the first.
+  // controller that addressed a tensor this "model" does not have would hold
+  // rather than silently re-read another one.
   float* input_buffer(int /*m*/, int input_idx) noexcept override {
-    return (input_idx == 0) ? input_.data() : nullptr;
+    const auto t = static_cast<std::size_t>(input_idx);
+    return (t < inputs_.size()) ? inputs_[t].data() : nullptr;
   }
 
   [[nodiscard]] const float* output_buffer(int /*m*/, int output_idx) const noexcept override {
@@ -80,14 +85,17 @@ class FakeEngine final : public rtc::InferenceEngine {
   }
 
   [[nodiscard]] std::size_t input_size(int /*m*/, int input_idx) const noexcept override {
-    return (input_idx == 0) ? input_.size() : 0;
+    const auto t = static_cast<std::size_t>(input_idx);
+    return (t < inputs_.size()) ? inputs_[t].size() : 0;
   }
 
   [[nodiscard]] std::size_t output_size(int /*m*/, int output_idx) const noexcept override {
     return (output_idx == 0) ? head0_.size() : head1_.size();
   }
 
-  [[nodiscard]] int num_inputs(int /*m*/) const noexcept override { return 1; }
+  [[nodiscard]] int num_inputs(int /*m*/) const noexcept override {
+    return static_cast<int>(inputs_.size());
+  }
 
   [[nodiscard]] int num_outputs(int /*m*/) const noexcept override { return 2; }
 
@@ -97,7 +105,7 @@ class FakeEngine final : public rtc::InferenceEngine {
 
  private:
   bool initialized_{false};
-  std::vector<float> input_;
+  std::vector<std::vector<float>> inputs_;
   std::vector<float> head0_;
   std::vector<float> head1_;
 };
@@ -162,8 +170,50 @@ inference:
     - name: "posture"
       shape: [1, 1]
   output_features:
-    - { name: "arm.target_position", tensor: "arm_action" }
-    - { name: "hand.posture_scalar", tensor: "posture" }
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
+  hand_posture:
+    open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+)";
+
+/// The same observation split across TWO input tensors. Same features, same
+/// widths, so any allocation the split introduces is the split's own — the
+/// span table, the per-tensor buffer lookup and the per-tensor affine call.
+constexpr const char* kTwoInputYaml = R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 10
+  inputs:
+    - name: "obs"
+      shape: [1, 16]
+      features:
+        - "arm.position"
+        - "hand.position"
+    - name: "aux"
+      shape: [1, 4]
+      features:
+        - "hand.fingertip_force_norm"
+      offset: [0.0, 0.0, 0.0, 0.0]
+      scale:  [1.0, 1.0, 1.0, 1.0]
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
+  output_features:
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
   hand_posture:
     open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
@@ -199,12 +249,17 @@ class InferenceAllocGate : public ::testing::Test {
     }
   }
 
-  void SetUp() override {
+  void SetUp() override { Build(kYaml, {kInputElements}); }
+
+  /// Bring one controller all the way to ACTIVE. Split out of SetUp so a case
+  /// can rebuild on a different schema without duplicating the three-pass
+  /// order, which is itself part of what these cases exercise.
+  void Build(const char* yaml, const std::vector<std::size_t>& in_sizes) {
     rclcpp::NodeOptions opts;
     opts.use_global_arguments(false);
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("inference_alloc_gate", "", opts);
-    ctrl_ = std::make_unique<DemoInferenceController>("", std::make_unique<FakeEngine>());
-    const YAML::Node cfg = YAML::Load(kYaml);
+    ctrl_ = std::make_unique<DemoInferenceController>("", std::make_unique<FakeEngine>(in_sizes));
+    const YAML::Node cfg = YAML::Load(yaml);
     ctrl_->LoadConfig(cfg);
     ctrl_->SetDeviceNameConfigs(MakeDeviceConfigs());
     ctrl_->OnDeviceConfigsSet();
@@ -281,4 +336,29 @@ TEST_F(InferenceAllocGate, TheHoldPathDoesNotAllocateEither) {
     allocations = gate.count();
   }
   EXPECT_EQ(allocations, 0U) << "the hold path allocated";
+}
+
+TEST_F(InferenceAllocGate, AMultiTensorObservationDoesNotAllocateEither) {
+  // The N-tensor walk is where an allocation would be easiest to introduce and
+  // hardest to notice: a `std::vector<std::span<float>>` gathering the engine's
+  // buffers each tick would look perfectly ordinary, cost one allocation per
+  // policy step, and never show up as a wrong number anywhere.
+  Build(kTwoInputYaml, {16U, 4U});
+  auto state = MakeState();
+
+  for (int t = 0; t < 25; ++t) {
+    static_cast<void>(ctrl_->Compute(state));
+  }
+  ASSERT_FALSE(ctrl_->LastTickHeldForTesting())
+      << "the two-tensor schema must actually run, or this case gates the hold path twice";
+
+  std::size_t allocations = 0;
+  {
+    const rtc::testing::ScopedAllocGate gate;
+    for (int t = 0; t < 100; ++t) {
+      static_cast<void>(ctrl_->Compute(state));
+    }
+    allocations = gate.count();
+  }
+  EXPECT_EQ(allocations, 0U) << "the multi-tensor RT tick allocated";
 }

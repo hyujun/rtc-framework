@@ -66,6 +66,18 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       return CallbackReturn::FAILURE;
     }
 
+    // Checked BEFORE the schema, because the schema's own role table matches
+    // `device:` against these two group names — with no secondary group it
+    // would report "device 'p1b' is not one of ('ur5e', '')", which names the
+    // symptom rather than the missing group.
+    const auto secondary = GetSecondaryDeviceName();
+    if (secondary.empty() || hand_dof_ <= 0) {
+      RCLCPP_ERROR(logger_,
+                   "[inference] a second device group (the hand) is required — this controller "
+                   "drives an arm and a hand together");
+      return CallbackReturn::FAILURE;
+    }
+
     // Pass 3: the schema half that needs the device rosters the CM injected
     // between LoadConfig and here.
     ApplyIoSchema(yaml);
@@ -110,23 +122,19 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
     }
 
     // ── Hand posture width vs the device that will execute it ──────────────
-    const auto secondary = GetSecondaryDeviceName();
-    if (secondary.empty() || hand_dof_ <= 0) {
-      RCLCPP_ERROR(logger_,
-                   "[inference] a second device group (the hand) is required — the posture "
-                   "scalar has nothing to drive");
-      return CallbackReturn::FAILURE;
-    }
-    if (posture_open_.size() != static_cast<std::size_t>(hand_dof_)) {
-      RCLCPP_ERROR(logger_, "[inference] hand_posture has %zu joints but device '%s' declares %d",
-                   posture_open_.size(), secondary.c_str(), hand_dof_);
-      return CallbackReturn::FAILURE;
-    }
+    // Only when a posture_scalar role asked for the blend (#511 D-9). A policy
+    // that commands the hand joints directly never reads these two lists, and
+    // failing configure over them was a bring-up refusal with nothing wrong.
+    if (hand_role_ == PolicyOutputRole::kPostureScalar) {
+      if (posture_open_.size() != static_cast<std::size_t>(hand_dof_)) {
+        RCLCPP_ERROR(logger_, "[inference] hand_posture has %zu joints but device '%s' declares %d",
+                     posture_open_.size(), secondary.c_str(), hand_dof_);
+        return CallbackReturn::FAILURE;
+      }
 
-    // Device index 1 is the hand: the tail's bounds are indexed by
-    // `topic_config_.groups` position, which is the same order the CM fills
-    // `ControllerState::devices`.
-    {
+      // Device index 1 is the hand: the tail's bounds are indexed by
+      // `topic_config_.groups` position, which is the same order the CM fills
+      // `ControllerState::devices`.
       std::string offender;
       if (!PostureWithinLimits(posture_open_, device_position_lower_[1], device_position_upper_[1],
                                offender)) {

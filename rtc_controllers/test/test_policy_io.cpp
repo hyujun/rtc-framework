@@ -85,8 +85,8 @@ outputs:
   - name: "posture"
     shape: [1, 1]
 output_features:
-  - { name: "ur5e.target_position", tensor: "arm_action" }
-  - { name: "p1b.posture_scalar",   tensor: "posture" }
+  - { tensor: "arm_action", role: "joint_target",   device: "ur5e" }
+  - { tensor: "posture",    role: "posture_scalar", device: "p1b" }
 decimation: 10
 )";
 
@@ -106,7 +106,7 @@ outputs:
   - name: "arm_action"
     shape: [1, 6]
 output_features:
-  - { name: "ur5e.target_position", tensor: "arm_action" }
+  - { tensor: "arm_action", role: "joint_target",   device: "ur5e" }
 )";
 
 PolicyIoParams ParseText(const std::string& yaml) {
@@ -160,11 +160,11 @@ TEST(PolicyIoParams, ShippedSchemaResolvesToContiguousSegments) {
   EXPECT_EQ(p.outputs[0].name, "arm_action");
   EXPECT_EQ(p.outputs[1].Numel(), 1U);
 
-  ASSERT_EQ(p.output_slices.size(), 2U);
-  EXPECT_EQ(p.output_slices[0].tensor, 0);
-  EXPECT_EQ(p.output_slices[0].count, 6);
-  EXPECT_EQ(p.output_slices[1].tensor, 1);
-  EXPECT_EQ(p.output_slices[1].count, 1);
+  ASSERT_EQ(p.output_features.size(), 2U);
+  EXPECT_EQ(p.output_features[0].slice.tensor, 0);
+  EXPECT_EQ(p.output_features[0].slice.count, 6);
+  EXPECT_EQ(p.output_features[1].slice.tensor, 1);
+  EXPECT_EQ(p.output_features[1].slice.count, 1);
 
   // Both affine lanes omitted → identity, not a zero-filled lane.
   EXPECT_TRUE(p.inputs[0].offset.empty());
@@ -199,8 +199,8 @@ outputs:
   - name: "posture"
     shape: [1, 1]
 output_features:
-  - { name: "ur5e.target_position", tensor: "arm_action" }
-  - { name: "p1b.posture_scalar",   tensor: "posture" }
+  - { tensor: "arm_action", role: "joint_target",   device: "ur5e" }
+  - { tensor: "posture",    role: "posture_scalar", device: "p1b" }
 )";
 
   const auto base = ParseText(kBaseYaml);
@@ -284,7 +284,7 @@ outputs:
   - name: "arm_action"
     shape: [1, 6]
 output_features:
-  - { name: "ur5e.target_position", tensor: "arm_action" }
+  - { tensor: "arm_action", role: "joint_target",   device: "ur5e" }
 )";
   const auto p = ParseText(yaml);
   ASSERT_EQ(p.inputs.size(), 2U);
@@ -307,7 +307,7 @@ outputs:
   - name: "a"
     shape: [1, 6]
 output_features:
-  - { name: "arm", tensor: "a" }
+  - { tensor: "a", role: "joint_target", device: "arm" }
 )";
   ExpectRejectMentioning(yaml, "inputs[0] is missing 'name'");
 }
@@ -321,7 +321,7 @@ inputs:
 outputs:
   - shape: [1, 6]
 output_features:
-  - { name: "arm", tensor: "a" }
+  - { tensor: "a", role: "joint_target", device: "arm" }
 )";
   ExpectRejectMentioning(yaml, "outputs[0] is missing 'name'");
 }
@@ -341,7 +341,7 @@ outputs:
   - name: "a"
     shape: [1, 6]
 output_features:
-  - { name: "arm", tensor: "a" }
+  - { tensor: "a", role: "joint_target", device: "arm" }
 )";
   ExpectRejectMentioning(yaml, "inputs[1] repeats tensor name 'obs'");
 }
@@ -365,7 +365,7 @@ outputs:
   - name: "a"
     shape: [1, 6]
 output_features:
-  - { name: "arm", offset: 0, count: 6 }
+  - { role: "joint_target", device: "arm", offset: 0, count: 6 }
 )";
   ExpectRejectMentioning(yaml, "must name the output tensor it slices");
 }
@@ -387,15 +387,16 @@ outputs:
   - name: "posture"
     shape: [1, 1]
 output_features:
-  - { name: "p1b.posture_scalar",   tensor: "posture" }
-  - { name: "ur5e.target_position", tensor: "arm_action" }
+  - { tensor: "posture",    role: "posture_scalar", device: "p1b" }
+  - { tensor: "arm_action", role: "joint_target",   device: "ur5e" }
 )";
   const auto p = ParseText(yaml);
-  ASSERT_EQ(p.output_slices.size(), 2U);
-  EXPECT_EQ(p.output_slices[0].tensor, 1) << "posture is output tensor 1, not slice 0's position";
-  EXPECT_EQ(p.output_slices[0].count, 1);
-  EXPECT_EQ(p.output_slices[1].tensor, 0);
-  EXPECT_EQ(p.output_slices[1].count, 6);
+  ASSERT_EQ(p.output_features.size(), 2U);
+  EXPECT_EQ(p.output_features[0].slice.tensor, 1)
+      << "posture is output tensor 1, not slice 0's position";
+  EXPECT_EQ(p.output_features[0].slice.count, 1);
+  EXPECT_EQ(p.output_features[1].slice.tensor, 0);
+  EXPECT_EQ(p.output_features[1].slice.count, 6);
 }
 
 TEST(PolicyIoParams, SliceDefaultsToTheWholeTensor) {
@@ -403,9 +404,9 @@ TEST(PolicyIoParams, SliceDefaultsToTheWholeTensor) {
   // Spelling them out would be a second place for the width to drift from the
   // shape declared right above it.
   const auto p = ParseText(kBaseYaml);
-  EXPECT_EQ(p.output_slices[0].offset, 0);
-  EXPECT_EQ(p.output_slices[0].count, 6);
-  EXPECT_EQ(p.output_slices[1].count, 1);
+  EXPECT_EQ(p.output_features[0].slice.offset, 0);
+  EXPECT_EQ(p.output_features[0].slice.count, 6);
+  EXPECT_EQ(p.output_features[1].slice.count, 1);
 }
 
 TEST(PolicyIoParams, SliceHonoursAnExplicitOffsetAndCount) {
@@ -418,14 +419,14 @@ outputs:
   - name: "action"
     shape: [1, 8]
 output_features:
-  - { name: "arm",  tensor: "action", offset: 0, count: 6 }
-  - { name: "grip", tensor: "action", offset: 6, count: 2 }
+  - { tensor: "action", role: "joint_target",   device: "arm",  offset: 0, count: 6 }
+  - { tensor: "action", role: "posture_scalar", device: "hand", offset: 6, count: 2 }
 )";
   const auto p = ParseText(yaml);
-  ASSERT_EQ(p.output_slices.size(), 2U);
-  EXPECT_EQ(p.output_slices[1].tensor, 0);
-  EXPECT_EQ(p.output_slices[1].offset, 6);
-  EXPECT_EQ(p.output_slices[1].count, 2);
+  ASSERT_EQ(p.output_features.size(), 2U);
+  EXPECT_EQ(p.output_features[1].slice.tensor, 0);
+  EXPECT_EQ(p.output_features[1].slice.offset, 6);
+  EXPECT_EQ(p.output_features[1].slice.count, 2);
 }
 
 TEST(PolicyIoParams, SliceWithOffsetOnlyRunsToTheEnd) {
@@ -438,11 +439,11 @@ outputs:
   - name: "action"
     shape: [1, 8]
 output_features:
-  - { name: "grip", tensor: "action", offset: 6 }
+  - { tensor: "action", role: "posture_scalar", device: "hand", offset: 6 }
 )";
   const auto p = ParseText(yaml);
-  EXPECT_EQ(p.output_slices[0].offset, 6);
-  EXPECT_EQ(p.output_slices[0].count, 2);
+  EXPECT_EQ(p.output_features[0].slice.offset, 6);
+  EXPECT_EQ(p.output_features[0].slice.count, 2);
 }
 
 // ── Schema rejections ───────────────────────────────────────────────────────
@@ -472,7 +473,7 @@ outputs:
   - name: "a"
     shape: [1, 1]
 output_features:
-  - { name: "s", tensor: "a" }
+  - { tensor: "a", role: "posture_scalar", device: "hand" }
 )";
   ExpectRejectMentioning(yaml, "repeats id 'palm.position'");
 }
@@ -493,7 +494,7 @@ outputs:
   - name: "a"
     shape: [1, 6]
 output_features:
-  - { name: "arm", tensor: "a" }
+  - { tensor: "a", role: "joint_target", device: "arm" }
 )";
   ExpectRejectMentioning(yaml,
                          "inputs[1].features[0] repeats id 'ur5e.position', already "
@@ -516,8 +517,8 @@ outputs:
   - name: "action"
     shape: [1, 6]
 output_features:
-  - { name: "a", tensor: "action", offset: 0, count: 4 }
-  - { name: "b", tensor: "action", offset: 3, count: 3 }
+  - { tensor: "action", role: "joint_target",   device: "arm",  offset: 0, count: 4 }
+  - { tensor: "action", role: "posture_scalar", device: "hand", offset: 3, count: 3 }
 )";
   ExpectRejectMentioning(yaml, "overlaps output_features[0]");
 }
@@ -526,9 +527,9 @@ TEST(PolicyIoParams, AllowsSameOffsetOnDifferentTensors) {
   // The mirror of the case above: two tensors both starting at 0 is the shipped
   // layout, so the overlap check must be per tensor and not global.
   const auto p = ParseText(kBaseYaml);
-  EXPECT_EQ(p.output_slices[0].offset, 0);
-  EXPECT_EQ(p.output_slices[1].offset, 0);
-  EXPECT_NE(p.output_slices[0].tensor, p.output_slices[1].tensor);
+  EXPECT_EQ(p.output_features[0].slice.offset, 0);
+  EXPECT_EQ(p.output_features[1].slice.offset, 0);
+  EXPECT_NE(p.output_features[0].slice.tensor, p.output_features[1].slice.tensor);
 }
 
 TEST(PolicyIoParams, RejectsSlicePastTensor) {
@@ -541,12 +542,15 @@ outputs:
   - name: "action"
     shape: [1, 6]
 output_features:
-  - { name: "a", tensor: "action", offset: 4, count: 4 }
+  - { tensor: "action", role: "joint_target", device: "arm", offset: 4, count: 4 }
 )";
   ExpectRejectMentioning(yaml, "past tensor 'action's 6 elements");
 }
 
-TEST(PolicyIoParams, RejectsDuplicateOutputName) {
+TEST(PolicyIoParams, RejectsTheSameRoleTwiceOnOneDevice) {
+  // Two disjoint slices, so nothing overlaps and both widths fit — the config
+  // is wrong only in that one device cannot be driven twice in the same role.
+  // The pre-#511 binding resolved this by keeping whichever came last.
   const std::string yaml = R"(
 inputs:
   - name: "obs"
@@ -556,10 +560,70 @@ outputs:
   - name: "action"
     shape: [1, 6]
 output_features:
-  - { name: "a", tensor: "action", offset: 0, count: 3 }
-  - { name: "a", tensor: "action", offset: 3, count: 3 }
+  - { tensor: "action", role: "joint_target", device: "arm", offset: 0, count: 3 }
+  - { tensor: "action", role: "joint_target", device: "arm", offset: 3, count: 3 }
 )";
-  ExpectRejectMentioning(yaml, "repeats name 'a'");
+  ExpectRejectMentioning(yaml, "repeats arm/joint_target, already declared at output_features[0]");
+}
+
+TEST(PolicyIoParams, AllowsTheSameRoleOnDifferentDevices) {
+  // The shape #511 B-2 was found on: a multi-output policy that commands two
+  // devices in the same role. This must PARSE — refusing it would be the same
+  // mistake in the other direction.
+  const std::string yaml = R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "arm_action"
+    shape: [1, 6]
+  - name: "hand_action"
+    shape: [1, 10]
+output_features:
+  - { tensor: "arm_action",  role: "joint_target", device: "ur5e" }
+  - { tensor: "hand_action", role: "joint_target", device: "p1b" }
+)";
+  const auto p = ParseText(yaml);
+  ASSERT_EQ(p.output_features.size(), 2U);
+  EXPECT_EQ(p.output_features[0].device, "ur5e");
+  EXPECT_EQ(p.output_features[1].device, "p1b");
+  EXPECT_EQ(p.output_features[0].role, p.output_features[1].role);
+  EXPECT_EQ(p.output_features[0].slice.count, 6);
+  EXPECT_EQ(p.output_features[1].slice.count, 10);
+}
+
+TEST(PolicyIoParams, RejectsAnOutputFeatureWithoutARole) {
+  // Written out rather than edited out of kBaseYaml: string surgery on a
+  // fixture that clang-format may realign is a case that fails for the wrong
+  // reason the day the alignment moves (it did, once, in this very file).
+  const std::string yaml = R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", device: "arm" }
+)";
+  ExpectRejectMentioning(yaml, "must declare what the slice means");
+}
+
+TEST(PolicyIoParams, RejectsAnOutputFeatureWithoutADevice) {
+  const std::string yaml = R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", role: "joint_target" }
+)";
+  ExpectRejectMentioning(yaml, "must declare the device group it drives");
 }
 
 TEST(PolicyIoParams, RejectsPartialAffineLane) {
@@ -624,7 +688,7 @@ outputs:
   - name: "action"
     shape: [1, 6]
 output_features:
-  - { name: "arm", tensor: "action" }
+  - { tensor: "action", role: "joint_target", device: "arm" }
 )";
   ExpectRejectMentioning(yaml, "inputs[1] declares 'source'");
 }
@@ -642,7 +706,7 @@ outputs:
     shape: [1, 1, 4]
     feeds: "h_in"
 output_features:
-  - { name: "arm", tensor: "action" }
+  - { tensor: "action", role: "joint_target", device: "arm" }
 )";
   ExpectRejectMentioning(yaml, "outputs[1] declares 'feeds'");
 }

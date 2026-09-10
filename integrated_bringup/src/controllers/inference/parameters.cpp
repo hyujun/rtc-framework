@@ -138,24 +138,9 @@ void DemoInferenceController::LoadConfig(const YAML::Node& cfg) {
   }
   allow_missing_model_ = inf["allow_missing_model"].as<bool>(false);
 
-  // ── Hand postures ─────────────────────────────────────────────────────────
-  // Length is cross-checked against the hand device's roster in
-  // OnDeviceConfigsSet — here we only know they must agree with each other.
-  const YAML::Node posture = inf["hand_posture"];
-  if (!posture || !posture.IsMap()) {
-    throw std::invalid_argument(
-        "demo_inference_controller: inference.hand_posture must define `open` and `close`");
-  }
-  posture_open_ = ParsePosture(posture["open"], "inference.hand_posture.open");
-  posture_close_ = ParsePosture(posture["close"], "inference.hand_posture.close");
-  if (posture_open_.size() != posture_close_.size()) {
-    throw std::invalid_argument(
-        "demo_inference_controller: hand_posture.open has " + std::to_string(posture_open_.size()) +
-        " joints but hand_posture.close has " + std::to_string(posture_close_.size()));
-  }
-  if (posture_open_.size() > static_cast<std::size_t>(kMaxHandDof)) {
-    throw std::invalid_argument("demo_inference_controller: hand_posture exceeds kMaxHandDof");
-  }
+  // `hand_posture` is NOT read here. Whether it is required at all depends on
+  // whether a `posture_scalar` role is declared, and roles are only resolvable
+  // once the device rosters exist — so it moved to Pass 3 (#511 D-9).
 }
 
 // ── Pass 3: the half of the schema that needs the device rosters ────────────
@@ -175,39 +160,39 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
   io_ = rtc::params::ParsePolicyIoParams(inf,
                                          [this](std::string_view id) { return FeatureSize(id); });
 
-  // ── One input tensor, for now (#511 P4) ───────────────────────────────────
-  // The schema layer already describes N of them; this binding still packs a
-  // single span. Refused rather than truncated: ONNX Runtime allocates every
-  // declared input, so packing only the first would hand the policy a second
-  // tensor full of whatever that allocation held — and every action it produced
-  // would still be finite and inside the joint limits.
-  if (io_.inputs.size() != 1) {
+  if (io_.inputs.size() > static_cast<std::size_t>(kMaxInputTensors)) {
     throw std::invalid_argument(
         "demo_inference_controller: the schema declares " + std::to_string(io_.inputs.size()) +
-        " input tensors but this binding packs exactly one (#511 P4 generalises PackObservation)");
+        " input tensors, over the fixed capacity of " + std::to_string(kMaxInputTensors));
   }
 
-  // Feature kinds. `FeatureFromId` cannot tell arm from hand on its own (both
-  // spell "<group>.position"), so the group name decides here, where it is
-  // known — one pass over the ids the parser already accepted.
+  // Feature kinds, FLATTENED across tensors. `FeatureFromId` cannot tell arm
+  // from hand on its own (both spell "<group>.position"), so the group name
+  // decides here, where it is known — one pass over the ids the parser already
+  // accepted. Each feature keeps its segment, and the segment carries its own
+  // tensor index, so the tick walks one flat list instead of nesting two loops.
   const auto primary = GetPrimaryDeviceName();
   feature_kinds_.clear();
-  feature_kinds_.reserve(io_.inputs[0].features.size());
-  for (const auto& id : io_.inputs[0].features) {
-    PolicyFeature kind{};
-    if (!FeatureFromId(id, kind)) {
-      // Unreachable through ParsePolicyIoParams (FeatureSize already refused any
-      // id this switch does not know) — kept so the two tables cannot drift
-      // apart silently if one gains an entry the other does not.
-      throw std::invalid_argument("demo_inference_controller: feature '" + id +
-                                  "' has a size but no extractor (binding bug)");
+  flat_segments_.clear();
+  for (const auto& tensor : io_.inputs) {
+    for (std::size_t f = 0; f < tensor.features.size(); ++f) {
+      const auto& id = tensor.features[f];
+      PolicyFeature kind{};
+      if (!FeatureFromId(id, kind)) {
+        // Unreachable through ParsePolicyIoParams (FeatureSize already refused
+        // any id this switch does not know) — kept so the two tables cannot
+        // drift apart silently if one gains an entry the other does not.
+        throw std::invalid_argument("demo_inference_controller: feature '" + id +
+                                    "' has a size but no extractor (binding bug)");
+      }
+      if (kind == PolicyFeature::kArmPosition) {
+        const auto dot = id.rfind('.');
+        const auto group = id.substr(0, dot);
+        kind = (group == primary) ? PolicyFeature::kArmPosition : PolicyFeature::kHandPosition;
+      }
+      feature_kinds_.push_back(kind);
+      flat_segments_.push_back(tensor.segments[f]);
     }
-    if (kind == PolicyFeature::kArmPosition) {
-      const auto dot = id.rfind('.');
-      const auto group = id.substr(0, dot);
-      kind = (group == primary) ? PolicyFeature::kArmPosition : PolicyFeature::kHandPosition;
-    }
-    feature_kinds_.push_back(kind);
   }
 
   // ── Pose-feature configuration ────────────────────────────────────────────
@@ -312,36 +297,113 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
   }
 
   // ── Output roles ──────────────────────────────────────────────────────────
-  // Matched by NAME, not by position. The slices are already positional against
-  // the model's heads; making the binding depend on YAML list order as well
-  // would mean a harmless reordering of the two entries silently swapped arm
-  // and hand, and both would still be finite and in range.
-  arm_output_idx_ = -1;
-  hand_output_idx_ = -1;
-  for (std::size_t i = 0; i < io_.output_names.size(); ++i) {
-    const auto& n = io_.output_names[i];
-    const auto dot = n.rfind('.');
-    const auto field = (dot == std::string::npos) ? n : n.substr(dot + 1);
-    if (field == "target_position") {
-      arm_output_idx_ = static_cast<int>(i);
-    } else if (field == "posture_scalar") {
-      hand_output_idx_ = static_cast<int>(i);
+  // DECLARED, not inferred from the entry's spelling. The suffix loop this
+  // replaced had no `break`, so two devices declaring the same role left the
+  // last one driving both — see PolicyOutputRole's declaration for why that
+  // failure is invisible downstream (#511 B-2, D-4).
+  //
+  // The device half is matched against the group rosters the same way input
+  // features are, so `banana.joint_target` is a configure failure naming both
+  // groups instead of a command quietly bound to the arm.
+  const auto secondary = GetSecondaryDeviceName();
+  arm_target_idx_ = -1;
+  hand_command_idx_ = -1;
+  for (std::size_t i = 0; i < io_.output_features.size(); ++i) {
+    const auto& spec = io_.output_features[i];
+    const std::string at =
+        "output_features[" + std::to_string(i) + "] (" + spec.device + "/" + spec.role + "): ";
+
+    const bool is_primary = !primary.empty() && spec.device == primary;
+    const bool is_secondary = !secondary.empty() && spec.device == secondary;
+    if (!is_primary && !is_secondary) {
+      // D-5 middle ground: the YAML is already shaped for N groups, but this
+      // binding drives two. A third group is refused rather than ignored.
+      throw std::invalid_argument(at + "device '" + spec.device +
+                                  "' is not one of this controller's device groups ('" + primary +
+                                  "', '" + secondary + "')");
     }
+
+    PolicyOutputRole role{};
+    if (spec.role == "joint_target") {
+      role = PolicyOutputRole::kJointTarget;
+    } else if (spec.role == "posture_scalar") {
+      role = PolicyOutputRole::kPostureScalar;
+    } else {
+      throw std::invalid_argument(at + "unknown role '" + spec.role +
+                                  "' (this binding knows \"joint_target\" and "
+                                  "\"posture_scalar\")");
+    }
+
+    const int count = spec.slice.count;
+    if (is_primary) {
+      if (role != PolicyOutputRole::kJointTarget) {
+        throw std::invalid_argument(at +
+                                    "the posture scalar interpolates the HAND postures; the "
+                                    "primary group can only take \"joint_target\"");
+      }
+      if (count != arm_dof_) {
+        throw std::invalid_argument(at + "slices " + std::to_string(count) +
+                                    " elements but device '" + spec.device + "' declares " +
+                                    std::to_string(arm_dof_) + " joints");
+      }
+      arm_target_idx_ = static_cast<int>(i);
+      continue;
+    }
+
+    if (hand_command_idx_ >= 0) {
+      // The schema already refuses the SAME role twice on one device; this is
+      // the other shape of the same mistake — two different roles aiming at one
+      // device, i.e. two commands for the same joints with no defensible order.
+      throw std::invalid_argument(at + "device '" + spec.device +
+                                  "' is already driven by output_features[" +
+                                  std::to_string(hand_command_idx_) + "]");
+    }
+    const int want = (role == PolicyOutputRole::kJointTarget) ? hand_dof_ : 1;
+    if (count != want) {
+      throw std::invalid_argument(at + "slices " + std::to_string(count) + " elements but " +
+                                  spec.role + " on '" + spec.device + "' needs exactly " +
+                                  std::to_string(want));
+    }
+    hand_command_idx_ = static_cast<int>(i);
+    hand_role_ = role;
   }
-  if (arm_output_idx_ < 0 || hand_output_idx_ < 0) {
+  if (arm_target_idx_ < 0) {
     throw std::invalid_argument(
-        "demo_inference_controller: output_features must name both "
-        "\"<arm group>.target_position\" and \"<hand group>.posture_scalar\"");
+        "demo_inference_controller: output_features must declare { device: \"" + primary +
+        "\", role: \"joint_target\" } — without it the arm receives nothing and the "
+        "controller can only hold");
   }
-  if (io_.output_slices[static_cast<std::size_t>(hand_output_idx_)].count != 1) {
+  if (hand_command_idx_ < 0) {
     throw std::invalid_argument(
-        "demo_inference_controller: the hand posture scalar must slice exactly 1 element");
+        "demo_inference_controller: output_features must declare a role for device '" + secondary +
+        "' (\"joint_target\" for direct joint commands, \"posture_scalar\" to interpolate "
+        "hand_posture)");
   }
-  if (io_.output_slices[static_cast<std::size_t>(arm_output_idx_)].count != arm_dof_) {
-    throw std::invalid_argument(
-        "demo_inference_controller: the arm target slices " +
-        std::to_string(io_.output_slices[static_cast<std::size_t>(arm_output_idx_)].count) +
-        " elements but the arm device declares " + std::to_string(arm_dof_) + " joints");
+
+  // ── Hand postures (Pass 3, and only when a scalar asks for them) ──────────
+  // D-9: requiring the block unconditionally made a policy that commands the
+  // hand joints directly fail configure over two lists it would never read.
+  if (hand_role_ == PolicyOutputRole::kPostureScalar) {
+    const YAML::Node posture = inf["hand_posture"];
+    if (!posture || !posture.IsMap()) {
+      throw std::invalid_argument(
+          "demo_inference_controller: a posture_scalar role is declared, so "
+          "inference.hand_posture must define `open` and `close`");
+    }
+    posture_open_ = ParsePosture(posture["open"], "inference.hand_posture.open");
+    posture_close_ = ParsePosture(posture["close"], "inference.hand_posture.close");
+    if (posture_open_.size() != posture_close_.size()) {
+      throw std::invalid_argument("demo_inference_controller: hand_posture.open has " +
+                                  std::to_string(posture_open_.size()) +
+                                  " joints but hand_posture.close has " +
+                                  std::to_string(posture_close_.size()));
+    }
+    if (posture_open_.size() > static_cast<std::size_t>(kMaxHandDof)) {
+      throw std::invalid_argument("demo_inference_controller: hand_posture exceeds kMaxHandDof");
+    }
+  } else {
+    posture_open_.clear();
+    posture_close_.clear();
   }
 }
 

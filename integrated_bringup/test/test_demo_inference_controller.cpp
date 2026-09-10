@@ -49,9 +49,11 @@ constexpr int kInferenceStride = 7;
 /// controller.
 class FakeEngine final : public rtc::InferenceEngine {
  public:
-  FakeEngine(std::size_t in_size, std::vector<std::size_t> out_sizes)
-      : input_(in_size, 0.0F), out_sizes_(std::move(out_sizes)) {
-    for (const auto n : out_sizes_) {
+  FakeEngine(const std::vector<std::size_t>& in_sizes, const std::vector<std::size_t>& out_sizes) {
+    for (const auto n : in_sizes) {
+      inputs_.emplace_back(n, 0.0F);
+    }
+    for (const auto n : out_sizes) {
       outputs_.emplace_back(n, 0.0F);
     }
   }
@@ -64,7 +66,7 @@ class FakeEngine final : public rtc::InferenceEngine {
 
   [[nodiscard]] bool Run() noexcept override {
     ++run_count;
-    last_input = input_;
+    last_inputs = inputs_;
     for (std::size_t h = 0; h < outputs_.size(); ++h) {
       for (std::size_t i = 0; i < outputs_[h].size(); ++i) {
         outputs_[h][i] =
@@ -74,12 +76,12 @@ class FakeEngine final : public rtc::InferenceEngine {
     return run_result;
   }
 
-  // Single-input while the controller's schema is: index 0 is the only tensor,
-  // and anything else answers nullptr/0 rather than folding onto slot 0 — a
-  // controller reading a second tensor should hold, not silently re-read the
-  // first.
+  // Out-of-range answers nullptr/0 rather than folding onto slot 0: a binding
+  // that addressed a tensor this "model" does not have must hold, not silently
+  // re-read another one.
   float* input_buffer(int /*model_idx*/, int input_idx) noexcept override {
-    return (input_idx == 0) ? input_.data() : nullptr;
+    const auto t = static_cast<std::size_t>(input_idx);
+    return (t < inputs_.size()) ? inputs_[t].data() : nullptr;
   }
 
   [[nodiscard]] const float* output_buffer(int /*model_idx*/,
@@ -89,10 +91,13 @@ class FakeEngine final : public rtc::InferenceEngine {
   }
 
   [[nodiscard]] std::size_t input_size(int /*model_idx*/, int input_idx) const noexcept override {
-    return (input_idx == 0) ? input_.size() : 0;
+    const auto t = static_cast<std::size_t>(input_idx);
+    return (t < inputs_.size()) ? inputs_[t].size() : 0;
   }
 
-  [[nodiscard]] int num_inputs(int /*model_idx*/) const noexcept override { return 1; }
+  [[nodiscard]] int num_inputs(int /*model_idx*/) const noexcept override {
+    return static_cast<int>(inputs_.size());
+  }
 
   [[nodiscard]] std::size_t output_size(int /*model_idx*/, int output_idx) const noexcept override {
     const auto h = static_cast<std::size_t>(output_idx);
@@ -112,12 +117,15 @@ class FakeEngine final : public rtc::InferenceEngine {
   bool run_result{true};
   int run_count{0};
   std::vector<std::vector<float>> next_output;
-  std::vector<float> last_input;
+  /// Snapshot of every input tensor as the last Run() saw it. Per tensor and
+  /// not concatenated: the whole point of the multi-input path is that the
+  /// tensors are separate buffers, and a flattened copy would let a case that
+  /// wrote into the wrong one still look right.
+  std::vector<std::vector<float>> last_inputs;
 
  private:
   bool initialized_{false};
-  std::vector<float> input_;
-  std::vector<std::size_t> out_sizes_;
+  std::vector<std::vector<float>> inputs_;
   std::vector<std::vector<float>> outputs_;
 };
 
@@ -188,8 +196,8 @@ inference:
     - name: "posture"
       shape: [1, 1]
   output_features:
-    - { name: "arm.target_position", tensor: "arm_action" }
-    - { name: "hand.posture_scalar", tensor: "posture" }
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
   hand_posture:
     open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
@@ -232,8 +240,8 @@ inference:
     - name: "posture"
       shape: [1, 1]
   output_features:
-    - { name: "arm.target_position", tensor: "arm_action" }
-    - { name: "hand.posture_scalar", tensor: "posture" }
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
   base_pose_in_world:
     position: [0.0, 0.0, 0.0]
     rpy: [0.0, 0.0, 3.14159265358979]
@@ -307,14 +315,18 @@ struct Harness {
   rtc::RTControllerInterface::CallbackReturn configure_result{
       rtc::RTControllerInterface::CallbackReturn::FAILURE};
 
-  explicit Harness(const std::string& yaml = MakeYaml(), bool stub_engine = false,
-                   std::size_t input_elements = static_cast<std::size_t>(kInputElements)) {
-    auto fake = std::make_unique<FakeEngine>(input_elements, std::vector<std::size_t>{6, 1});
+  explicit Harness(
+      const std::string& yaml = MakeYaml(), bool stub_engine = false,
+      const std::vector<std::size_t>& in_sizes = {static_cast<std::size_t>(kInputElements)},
+      const std::vector<std::size_t>& out_sizes = {6, 1}) {
+    auto fake = std::make_unique<FakeEngine>(in_sizes, out_sizes);
     if (stub_engine) {
       fake->stub = true;
     }
     engine = fake.get();
-    engine->next_output = {std::vector<float>(6, 0.0F), std::vector<float>(1, 0.0F)};
+    for (const auto n : out_sizes) {
+      engine->next_output.emplace_back(n, 0.0F);
+    }
     ctrl = std::make_unique<DemoInferenceController>("", std::move(fake));
 
     rclcpp::NodeOptions opts;
@@ -391,19 +403,24 @@ TEST(DemoInferenceConfig, RejectsATorqueCommandType) {
   std::string yaml = MakeYaml();
   yaml.replace(yaml.find("\"position\""), std::string("\"position\"").size(), "\"torque\"");
   DemoInferenceController ctrl(
-      "", std::make_unique<FakeEngine>(kInputElements, std::vector<std::size_t>{6, 1}));
+      "", std::make_unique<FakeEngine>(std::vector<std::size_t>{kInputElements},
+                                       std::vector<std::size_t>{6, 1}));
   EXPECT_THROW(ctrl.LoadConfig(YAML::Load(yaml)), std::invalid_argument);
 }
 
 TEST(DemoInferenceConfig, RejectsMismatchedPostureLengths) {
+  // Now a Pass 3 refusal rather than a LoadConfig throw. `hand_posture` moved
+  // out of Pass 1 because whether it is required at all depends on the declared
+  // role, and roles need the device rosters (#511 D-9). The rule itself is
+  // unchanged — this is the same assertion at the stage that now owns it, not
+  // a weakened one (PROC-6).
   std::string yaml = MakeYaml();
   yaml.replace(
       yaml.find("close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]"),
       std::string("close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]").size(),
       "close: [-1.0, -1.0]");
-  DemoInferenceController ctrl(
-      "", std::make_unique<FakeEngine>(kInputElements, std::vector<std::size_t>{6, 1}));
-  EXPECT_THROW(ctrl.LoadConfig(YAML::Load(yaml)), std::invalid_argument);
+  Harness h{yaml};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
 }
 
 TEST(DemoInferenceConfig, RejectsAHandSliceWiderThanOneElement) {
@@ -426,11 +443,254 @@ TEST(DemoInferenceConfig, RejectsAnArmSliceThatDisagreesWithTheDeviceRoster) {
   std::string yaml = MakeYaml();
   // Legal against the tensor (5 of 6 elements), so the schema parser passes it
   // and the binding's own roster cross-check is what has to refuse it.
-  yaml.replace(yaml.find("\"arm.target_position\", tensor: \"arm_action\""),
-               std::string("\"arm.target_position\", tensor: \"arm_action\"").size(),
-               "\"arm.target_position\", tensor: \"arm_action\", count: 5");
+  yaml.replace(yaml.find("role: \"joint_target\",   device: \"arm\" }"),
+               std::string("role: \"joint_target\",   device: \"arm\" }").size(),
+               "role: \"joint_target\", device: \"arm\", count: 5 }");
   Harness h{yaml};
   EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+// ── Output roles: declared, never inferred (#511 B-2, D-4, D-5) ────────────
+
+namespace {
+
+/// A schema whose two devices take the SAME role — the natural shape of a
+/// multi-output policy, and the config the pre-#511 suffix loop resolved by
+/// keeping whichever entry came last. Widths differ (6 vs 10) so a swap cannot
+/// hide behind a coincidence.
+std::string MakeTwoJointTargetYaml() {
+  return R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 1
+  inputs:
+    - name: "obs"
+      shape: [1, 20]
+      features:
+        - "arm.position"
+        - "hand.position"
+        - "hand.fingertip_force_norm"
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "hand_action"
+      shape: [1, 10]
+  output_features:
+    - { tensor: "arm_action",  role: "joint_target", device: "arm" }
+    - { tensor: "hand_action", role: "joint_target", device: "hand" }
+)";
+}
+
+}  // namespace
+
+TEST(DemoInferenceRoles, TwoDevicesInTheSameRoleEachDriveTheirOwn) {
+  // The #511 B-2 regression. Under the suffix loop both entries ended in
+  // `target_position`, the loop had no `break`, and the hand's slice won — so
+  // the ARM was driven by the hand head. Every commanded value stayed finite
+  // and inside the joint limits, which is why nothing downstream could see it.
+  Harness h{MakeTwoJointTargetYaml(), false, {static_cast<std::size_t>(kInputElements)}, {6, 10}};
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+
+  // Distinct constants per tensor, so "which head drove which device" is
+  // readable straight off the command.
+  h.engine->next_output = {std::vector<float>(6, 0.25F), std::vector<float>(10, -0.75F)};
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  const auto out = h.ctrl->Compute(state);
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_DOUBLE_EQ(out.devices[0].target_positions[static_cast<std::size_t>(i)], 0.25)
+        << "arm joint " << i << " must come from the tensor its own entry names";
+  }
+  for (int i = 0; i < kHandDof; ++i) {
+    EXPECT_DOUBLE_EQ(out.devices[1].target_positions[static_cast<std::size_t>(i)], -0.75)
+        << "hand joint " << i;
+  }
+}
+
+TEST(DemoInferenceRoles, ConfiguresWithoutHandPostureWhenTheHandTakesJointTargets) {
+  // #511 D-9. `hand_posture` used to be required unconditionally, so a policy
+  // that commands the hand joints directly failed configure over two lists it
+  // would never read. MakeTwoJointTargetYaml declares no hand_posture at all.
+  Harness h{MakeTwoJointTargetYaml(), false, {static_cast<std::size_t>(kInputElements)}, {6, 10}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+}
+
+TEST(DemoInferenceRoles, RejectsAnUnknownDevice) {
+  // `banana.target_position` used to bind to the arm, because the old loop only
+  // ever looked at the suffix.
+  std::string yaml = MakeTwoJointTargetYaml();
+  yaml.replace(yaml.find("device: \"arm\""), std::string("device: \"arm\"").size(),
+               "device: \"banana\"");
+  Harness h{yaml, false, {static_cast<std::size_t>(kInputElements)}, {6, 10}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceRoles, RejectsAnUnknownRole) {
+  std::string yaml = MakeTwoJointTargetYaml();
+  yaml.replace(yaml.find("role: \"joint_target\", device: \"hand\""),
+               std::string("role: \"joint_target\", device: \"hand\"").size(),
+               "role: \"wrist_wiggle\", device: \"hand\"");
+  Harness h{yaml, false, {static_cast<std::size_t>(kInputElements)}, {6, 10}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceRoles, RejectsTwoRolesAimedAtTheHand) {
+  // The schema layer refuses the same role twice on one device; this is the
+  // other shape — two DIFFERENT roles for one device, i.e. two commands for the
+  // same joints with no defensible order to apply them in.
+  std::string yaml = MakeTwoJointTargetYaml();
+  yaml.replace(
+      yaml.find("    - { tensor: \"hand_action\", role: \"joint_target\", device: \"hand\" }"),
+      std::string("    - { tensor: \"hand_action\", role: \"joint_target\", device: \"hand\" }")
+          .size(),
+      "    - { tensor: \"hand_action\", role: \"joint_target\", device: \"hand\" }\n"
+      "    - { tensor: \"arm_action\", role: \"posture_scalar\", device: \"hand\", offset: 0, "
+      "count: 1 }");
+  Harness h{yaml, false, {static_cast<std::size_t>(kInputElements)}, {6, 10}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceRoles, RejectsAMissingArmRole) {
+  // Without a primary joint_target the arm receives nothing and the controller
+  // can only ever hold — a config that brings up "successfully" and moves
+  // nothing is worse than one that refuses.
+  std::string yaml = MakeTwoJointTargetYaml();
+  yaml.replace(
+      yaml.find("    - { tensor: \"arm_action\",  role: \"joint_target\", device: \"arm\" }\n"),
+      std::string("    - { tensor: \"arm_action\",  role: \"joint_target\", device: \"arm\" }\n")
+          .size(),
+      "");
+  Harness h{yaml, false, {static_cast<std::size_t>(kInputElements)}, {6, 10}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+// ── Multi-input: one address space per tensor ──────────────────────────────
+
+namespace {
+
+/// Two input tensors. The arm/hand joints go in `obs` and the fingertip forces
+/// in `aux`, so the second tensor's offsets restart at 0 — the property that
+/// separates a real N-tensor walk from one that kept a policy-wide prefix sum.
+std::string MakeTwoInputYaml(const std::string& aux_lane = "") {
+  return R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 1
+  inputs:
+    - name: "obs"
+      shape: [1, 16]
+      features: ["arm.position", "hand.position"]
+    - name: "aux"
+      shape: [1, 4]
+      features: ["hand.fingertip_force_norm"]
+)" + aux_lane +
+         R"(  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+    - name: "posture"
+      shape: [1, 1]
+  output_features:
+    - { tensor: "arm_action", role: "joint_target",   device: "arm" }
+    - { tensor: "posture",    role: "posture_scalar", device: "hand" }
+  hand_posture:
+    open:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    close: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+)";
+}
+
+}  // namespace
+
+TEST(DemoInferenceMultiInput, EachTensorIsPackedIntoItsOwnBuffer) {
+  Harness h{MakeTwoInputYaml(), false, {16U, 4U}};
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+
+  auto state = MakeState();
+  for (int i = 0; i < kArmDof; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 0.1 * (i + 1);
+  }
+  for (int i = 0; i < kHandDof; ++i) {
+    state.devices[1].positions[static_cast<std::size_t>(i)] = -0.01 * (i + 1);
+  }
+  SetFingertipForce(state, 0, 3.0F, 4.0F, 0.0F);  // ‖f‖ = 5
+
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  ASSERT_EQ(h.engine->last_inputs.size(), 2U);
+  ASSERT_EQ(h.engine->last_inputs[0].size(), 16U);
+  ASSERT_EQ(h.engine->last_inputs[1].size(), 4U);
+
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][0], 0.1F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][6], -0.01F) << "hand joints follow the arm in tensor 0";
+
+  // The whole point: the force lane starts at 0 of ITS tensor, not at 16 of a
+  // policy-wide flattening. A binding that kept the flat offset would write
+  // past the 4-element buffer and hold forever instead.
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[1][0], 5.0F);
+  for (int f = 1; f < kFingertips; ++f) {
+    EXPECT_FLOAT_EQ(h.engine->last_inputs[1][static_cast<std::size_t>(f)], 0.0F);
+  }
+}
+
+TEST(DemoInferenceMultiInput, TheAffineLaneNormalisesOnlyItsOwnTensor) {
+  // `aux` scales by 2 and `obs` declares no lane at all. A binding that applied
+  // one tensor's lane to every buffer would leave both tensors finite and in a
+  // plausible range — the observation would simply be normalised with the wrong
+  // constants, which is precisely the failure the schema is built to prevent.
+  const std::string yaml =
+      MakeTwoInputYaml("      offset: [0.0, 0.0, 0.0, 0.0]\n      scale: [2.0, 2.0, 2.0, 2.0]\n");
+  Harness h{yaml, false, {16U, 4U}};
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+
+  auto state = MakeState();
+  state.devices[0].positions[0] = 0.5;
+  SetFingertipForce(state, 0, 3.0F, 4.0F, 0.0F);  // ‖f‖ = 5
+
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  ASSERT_EQ(h.engine->last_inputs.size(), 2U);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][0], 0.5F) << "tensor 0 declares no lane — identity";
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[1][0], 10.0F) << "tensor 1 scales by its own lane";
+}
+
+TEST(DemoInferenceMultiInput, HoldsWhenTheEngineDeclaresFewerTensorsThanTheSchema) {
+  // The engine offers one tensor, the schema declares two. ONNX Runtime
+  // allocates every declared input, so a binding that packed only what it could
+  // reach would leave the policy observing an untouched allocation as if it
+  // were this tick's robot.
+  Harness h{MakeTwoInputYaml(), false, {16U}};
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_EQ(h.engine->run_count, 0) << "the model must not run on a half-packed observation";
 }
 
 TEST(DemoInferenceConfig, RejectsAnEmptyModelPathWithoutTheOptIn) {
@@ -478,11 +738,12 @@ TEST(DemoInferenceObservation, PacksJointsAndForceMagnitudesInYamlOrder) {
 
   static_cast<void>(h.ctrl->Compute(state));
 
-  ASSERT_EQ(h.engine->last_input.size(), static_cast<std::size_t>(kInputElements));
-  EXPECT_FLOAT_EQ(h.engine->last_input[0], 0.1F);
-  EXPECT_FLOAT_EQ(h.engine->last_input[5], 0.6F);
-  EXPECT_FLOAT_EQ(h.engine->last_input[6], -0.01F);
-  EXPECT_FLOAT_EQ(h.engine->last_input[16], 5.0F) << "force feature must be the 3-axis magnitude";
+  ASSERT_EQ(h.engine->last_inputs[0].size(), static_cast<std::size_t>(kInputElements));
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][0], 0.1F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][5], 0.6F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][6], -0.01F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][16], 5.0F)
+      << "force feature must be the 3-axis magnitude";
 }
 
 TEST(DemoInferenceObservation, StaleFingertipGroupContributesZero) {
@@ -496,8 +757,8 @@ TEST(DemoInferenceObservation, StaleFingertipGroupContributesZero) {
 
   static_cast<void>(h.ctrl->Compute(state));
 
-  ASSERT_EQ(h.engine->last_input.size(), static_cast<std::size_t>(kInputElements));
-  EXPECT_FLOAT_EQ(h.engine->last_input[17], 0.0F);
+  ASSERT_EQ(h.engine->last_inputs[0].size(), static_cast<std::size_t>(kInputElements));
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][17], 0.0F);
 }
 
 // ── Decimation ──────────────────────────────────────────────────────────────
@@ -737,7 +998,7 @@ constexpr std::size_t kObjectInputElements = 27;
 /// production entry point (the subscription lambda calls exactly this), so no
 /// DDS round-trip is needed to exercise the matching and staleness rules.
 Harness MakeObjectHarness(const std::string& yaml) {
-  return Harness{yaml, /*stub_engine=*/false, kObjectInputElements};
+  return Harness{yaml, /*stub_engine=*/false, {kObjectInputElements}};
 }
 }  // namespace
 
@@ -749,12 +1010,12 @@ TEST(DemoInferenceObject, ExactlyOneMatchIsAcceptedAndPacked) {
   auto state = MakeState();
   static_cast<void>(h.ctrl->Compute(state));
   ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
-  ASSERT_EQ(h.engine->last_input.size(), kObjectInputElements);
+  ASSERT_EQ(h.engine->last_inputs[0].size(), kObjectInputElements);
   // Layout: 6 arm + 10 hand + 4 force + 3 object position + 4 object quat.
-  EXPECT_FLOAT_EQ(h.engine->last_input[20], 1.0F);
-  EXPECT_FLOAT_EQ(h.engine->last_input[21], 2.0F);
-  EXPECT_FLOAT_EQ(h.engine->last_input[22], 3.0F);
-  EXPECT_FLOAT_EQ(h.engine->last_input[26], 1.0F) << "quaternion w is the LAST element (xyzw)";
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][20], 1.0F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][21], 2.0F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][22], 3.0F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[0][26], 1.0F) << "quaternion w is the LAST element (xyzw)";
 }
 
 TEST(DemoInferenceObject, TwoMatchesAreRefusedRatherThanPickingTheFirst) {
@@ -861,10 +1122,10 @@ TEST(DemoInferenceObject, BaseReferenceFrameAppliesTheMountingRotation) {
   auto state = MakeState();
   static_cast<void>(h.ctrl->Compute(state));
   ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
-  ASSERT_EQ(h.engine->last_input.size(), kObjectInputElements);
-  EXPECT_NEAR(h.engine->last_input[20], -1.0F, 1e-5);
-  EXPECT_NEAR(h.engine->last_input[21], -2.0F, 1e-5);
-  EXPECT_NEAR(h.engine->last_input[22], 3.0F, 1e-5) << "z is unchanged by a yaw";
+  ASSERT_EQ(h.engine->last_inputs[0].size(), kObjectInputElements);
+  EXPECT_NEAR(h.engine->last_inputs[0][20], -1.0F, 1e-5);
+  EXPECT_NEAR(h.engine->last_inputs[0][21], -2.0F, 1e-5);
+  EXPECT_NEAR(h.engine->last_inputs[0][22], 3.0F, 1e-5) << "z is unchanged by a yaw";
 }
 
 TEST(DemoInferenceObject, RejectsAZeroTimeout) {

@@ -78,13 +78,33 @@ struct OutputTensorSpec {
   [[nodiscard]] std::size_t Numel() const noexcept;
 };
 
+/// One command a binding reads out of an output tensor.
+///
+/// `device` and `role` are OPAQUE STRINGS here (ARCH-1): which device groups a
+/// robot has, and which roles a controller can drive, are both facts the
+/// binding owns. This layer only enforces that both are declared and that the
+/// PAIR is unique — a rule that holds for any robot and any controller, and the
+/// one that closes #511 B-2. The pre-#511 binding inferred the role from the
+/// entry's name suffix in a loop with no `break`, so two entries ending in
+/// `target_position` (the natural shape of a multi-output policy: one per
+/// device) silently left the last one driving both.
+///
+/// There is deliberately no separate `name:` key. With `device` and `role`
+/// mandatory a name could only restate them, and a label that can disagree with
+/// the thing it labels is a second place for the config to be wrong.
+/// Diagnostics quote the pair as `<device>/<role>`.
+struct OutputCommandSpec {
+  std::string device;  ///< device group this command drives
+  std::string role;    ///< what the slice means to that device
+  rtc::inference::OutputSlice slice;
+};
+
 /// Parsed and cross-checked policy I/O description.
 struct PolicyIoParams {
   std::vector<InputTensorSpec> inputs;    ///< YAML order == engine binding order
   std::vector<OutputTensorSpec> outputs;  ///< YAML order == engine binding order
 
-  std::vector<std::string> output_names;                   ///< names, YAML order
-  std::vector<rtc::inference::OutputSlice> output_slices;  ///< parallel to above
+  std::vector<OutputCommandSpec> output_features;  ///< YAML order
 
   /// Recurrent links (`h_out` → next step's `h_in`). ALWAYS EMPTY until #511
   /// P5, which owns the parsing, the feedback copy and the reset policy; the
@@ -124,9 +144,10 @@ using FeatureSizeFn = std::function<int(std::string_view)>;
 ///     element count
 ///   - `offset` / `scale` present with a length that is neither 0 nor that
 ///     tensor's element count, or carrying a non-finite value
-///   - `output_features` empty, naming a tensor that was not declared, slicing
-///     past that tensor's element count, declaring a non-positive count,
-///     repeating a name, or overlapping another slice **on the same tensor**
+///   - `output_features` empty, missing `device` or `role`, repeating a
+///     (`device`, `role`) pair, naming a tensor that was not declared, slicing
+///     past that tensor's element count, declaring a non-positive count, or
+///     overlapping another slice **on the same tensor**
 ///   - `decimation` < 1
 ///   - `source:` on an input or `feeds:` on an output — the recurrent keys,
 ///     reserved and refused until #511 P5

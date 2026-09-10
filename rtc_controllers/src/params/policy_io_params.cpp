@@ -284,35 +284,52 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
   // ── Output features → slices ──────────────────────────────────────────────
   const YAML::Node outs = cfg["output_features"];
   if (!outs || !outs.IsSequence() || outs.size() == 0) {
-    Reject("output_features must be a non-empty sequence of {name, tensor, offset?, count?}");
+    Reject(
+        "output_features must be a non-empty sequence of {tensor, role, device, offset?, "
+        "count?}");
   }
-  out.output_names.reserve(outs.size());
-  out.output_slices.reserve(outs.size());
+  out.output_features.reserve(outs.size());
   for (std::size_t i = 0; i < outs.size(); ++i) {
     const std::string at = At("output_features", i);
     const YAML::Node entry = outs[i];
     if (!entry || !entry.IsMap()) {
-      Reject(at, " must be a map with keys {name, tensor, offset?, count?}");
+      Reject(at, " must be a map with keys {tensor, role, device, offset?, count?}");
     }
-    auto name = entry["name"].as<std::string>("");
-    if (name.empty()) {
-      Reject(at, " is missing 'name'");
+
+    // Declared, never inferred (#511 D-4). The binding this replaces read the
+    // role off a name suffix, which made two devices declaring the same role —
+    // the natural shape of a multi-output policy — resolve to whichever came
+    // last, with both commands still finite and inside the joint limits.
+    OutputCommandSpec spec;
+    spec.device = entry["device"].as<std::string>("");
+    spec.role = entry["role"].as<std::string>("");
+    if (spec.device.empty()) {
+      Reject(at, " must declare the device group it drives (`device: <name>`)");
     }
-    if (std::find(out.output_names.begin(), out.output_names.end(), name) !=
-        out.output_names.end()) {
-      Reject(at, " repeats name '", name, "'");
+    if (spec.role.empty()) {
+      Reject(at, " ('", spec.device, "') must declare what the slice means (`role: <name>`)");
     }
+    for (std::size_t p = 0; p < out.output_features.size(); ++p) {
+      if (out.output_features[p].device == spec.device &&
+          out.output_features[p].role == spec.role) {
+        Reject(at, " repeats ", spec.device, "/", spec.role, ", already declared at ",
+               At("output_features", p),
+               " — one device cannot be driven twice in the same role, and silently keeping one "
+               "of the two is how the pre-#511 binding lost an arm command to a hand command");
+      }
+    }
+    const std::string label = spec.device + "/" + spec.role;
 
     // By NAME, not by index. `head: 0` would reintroduce exactly the positional
     // reference that #511 D-1 removed from the tensor declarations themselves.
     const auto tensor_name = entry["tensor"].as<std::string>("");
     if (tensor_name.empty()) {
-      Reject(at, " ('", name, "') must name the output tensor it slices (`tensor: <name>`)");
+      Reject(at, " (", label, ") must name the output tensor it slices (`tensor: <name>`)");
     }
     const auto found =
         std::find(output_tensor_names.begin(), output_tensor_names.end(), tensor_name);
     if (found == output_tensor_names.end()) {
-      Reject(at, " ('", name, "') names output tensor '", tensor_name,
+      Reject(at, " (", label, ") names output tensor '", tensor_name,
              "' but no such tensor is declared under `outputs:`");
     }
     const auto tensor = static_cast<int>(found - output_tensor_names.begin());
@@ -338,18 +355,19 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     // Overlap is a per-tensor question: two tensors starting at 0 is normal,
     // two slices of ONE tensor sharing an element means at least one is not
     // reading what its name claims.
-    for (std::size_t p = 0; p < out.output_slices.size(); ++p) {
-      const auto& prev = out.output_slices[p];
+    for (std::size_t p = 0; p < out.output_features.size(); ++p) {
+      const auto& prev = out.output_features[p].slice;
       if (prev.tensor != tensor) {
         continue;
       }
       if (offset < prev.offset + prev.count && prev.offset < offset + count) {
-        Reject(at, " overlaps output_features[", std::to_string(p), "] ('", out.output_names[p],
-               "') on tensor '", tensor_name, "'");
+        Reject(at, " (", label, ") overlaps output_features[", std::to_string(p), "] (",
+               out.output_features[p].device, "/", out.output_features[p].role, ") on tensor '",
+               tensor_name, "'");
       }
     }
-    out.output_slices.push_back({tensor, offset, count});
-    out.output_names.push_back(std::move(name));
+    spec.slice = {tensor, offset, count};
+    out.output_features.push_back(std::move(spec));
   }
 
   // ── Decimation ────────────────────────────────────────────────────────────

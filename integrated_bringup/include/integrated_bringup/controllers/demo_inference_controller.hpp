@@ -46,11 +46,10 @@
 #include "rtc_inference/inference_engine.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
-#include <tf2_msgs/msg/tf_message.hpp>
-
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/subscription.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
 
 #include <array>
 #include <atomic>
@@ -82,6 +81,18 @@ enum class PolicyFeature : std::uint8_t {
   kPalmOrientationXyzw,   ///< palm orientation, Hamilton, serialised x,y,z,w
   kObjectPosition,        ///< tracked object origin, in `object_pose.reference_frame` [m]
   kObjectOrientationXyzw  ///< tracked object orientation, Hamilton, x,y,z,w
+};
+
+/// What an output slice drives. Declared in YAML as `role:`, never inferred.
+///
+/// The binding this replaced read the role off the entry's name suffix in a
+/// loop with no `break`, so a policy commanding two devices in the same role —
+/// `ur5e.target_position` and `p1b.target_position`, the natural shape of a
+/// multi-output policy — left whichever came last driving the arm. Both
+/// commands stayed finite and inside the joint limits (#511 B-2, D-4).
+enum class PolicyOutputRole : std::uint8_t {
+  kJointTarget,   ///< absolute joint positions [rad], as wide as the device
+  kPostureScalar  ///< one scalar interpolating hand_posture.open ↔ close
 };
 
 /// Which frame a pose feature is expressed in.
@@ -121,6 +132,11 @@ class DemoInferenceController final : public RTControllerInterface {
   static constexpr int kMaxFingertips = 8;
   static constexpr int kMaxInputElements = 512;
   static constexpr int kMaxOutputElements = 128;
+  /// Input tensors the tick can address. Bounds the span table `PackObservation`
+  /// walks, which is a stack array so the walk stays allocation-free (RT-1).
+  /// `kMaxInputElements` is PER TENSOR, not a total: each tensor is its own
+  /// engine-owned buffer.
+  static constexpr int kMaxInputTensors = 8;
 
   /// @param urdf_path system URDF (as handed to every binding by the registry).
   /// @param engine    owned inference backend. Production passes an
@@ -173,18 +189,14 @@ class DemoInferenceController final : public RTControllerInterface {
   /// How many times the engine has been asked to run since activation. The
   /// decimation contract is "exactly one call per `decimation` ticks", which is
   /// only observable as a count.
-  [[nodiscard]] std::uint64_t InferenceCountForTesting() const noexcept {
-    return inference_count_;
-  }
+  [[nodiscard]] std::uint64_t InferenceCountForTesting() const noexcept { return inference_count_; }
 
   /// True when the last tick shipped a held (measured-position) command rather
   /// than a policy action.
   [[nodiscard]] bool LastTickHeldForTesting() const noexcept { return last_tick_held_; }
 
   /// True when the last policy evaluation clamped its posture scalar.
-  [[nodiscard]] bool LastScalarClampedForTesting() const noexcept {
-    return last_scalar_clamped_;
-  }
+  [[nodiscard]] bool LastScalarClampedForTesting() const noexcept { return last_scalar_clamped_; }
 
   /// Feed one TFMessage through the production callback. The subscription
   /// lambda calls exactly this, so a test needs no DDS round-trip to exercise
@@ -213,9 +225,13 @@ class DemoInferenceController final : public RTControllerInterface {
   /// already accepted.
   [[nodiscard]] static bool FeatureFromId(std::string_view id, PolicyFeature& out);
 
-  /// Fill `input_buffer_` from `state`. Returns false the moment any required
-  /// source is unreadable — the caller then holds without running the model.
-  [[nodiscard]] bool PackObservation(const ControllerState& state, std::span<float> buf) noexcept;
+  /// Fill every input tensor from `state`. `bufs[t]` is the engine's buffer for
+  /// input tensor t, already length-checked by the caller. Returns false the
+  /// moment any required source is unreadable — the caller then holds without
+  /// running the model, and NO tensor is left half-written for the next tick to
+  /// inherit.
+  [[nodiscard]] bool PackObservation(const ControllerState& state,
+                                     std::span<const std::span<float>> bufs) noexcept;
 
   /// Build the model, register the palm and arm-root frames. Returns false on
   /// any failure, with the reason logged; on_configure turns that into FAILURE.
@@ -246,7 +262,13 @@ class DemoInferenceController final : public RTControllerInterface {
   // ── Config ────────────────────────────────────────────────────────────────
   CommandType command_type_{CommandType::kPosition};
   rtc::params::PolicyIoParams io_{};
-  std::vector<PolicyFeature> feature_kinds_;  ///< parallel to io_.inputs[0].features
+  /// Every input feature of every tensor, flattened in declaration order.
+  /// `feature_kinds_[i]` is the extractor and `flat_segments_[i]` is where it
+  /// lands — and the segment carries its own tensor index, so the tick routes
+  /// by descriptor rather than by walking the grouped structure and tracking
+  /// two counters.
+  std::vector<PolicyFeature> feature_kinds_;
+  std::vector<rtc::inference::InputSegment> flat_segments_;
 
   std::string model_path_;
   std::string optimized_model_path_;
@@ -259,13 +281,23 @@ class DemoInferenceController final : public RTControllerInterface {
   /// configure — a posture outside the band would be silently pulled back by
   /// the command clamp, which turns "close" into "very nearly open" without
   /// any diagnostic.
+  ///
+  /// Parsed in Pass 3 and only when a `posture_scalar` role is declared (D-9).
+  /// Requiring the block unconditionally made a policy that commands the hand
+  /// joints DIRECTLY fail configure over two lists it would never read.
   std::vector<double> posture_open_;
   std::vector<double> posture_close_;
 
-  /// Index into `io_.output_names` for the two heads this binding consumes.
-  /// Resolved once at configure so the tick does not search by name.
-  int arm_output_idx_{-1};
-  int hand_output_idx_{-1};
+  /// Indices into `io_.output_features` for the two commands this binding
+  /// emits, resolved once at configure so the tick does not search.
+  ///
+  /// The arm always takes a joint target. The hand takes EITHER a joint target
+  /// or a posture scalar — exactly one, because two roles aiming at one device
+  /// is two commands for the same joints and there is no defensible order to
+  /// apply them in.
+  int arm_target_idx_{-1};
+  int hand_command_idx_{-1};
+  PolicyOutputRole hand_role_{PolicyOutputRole::kPostureScalar};
 
   // ── Runtime ───────────────────────────────────────────────────────────────
   std::unique_ptr<rtc::InferenceEngine> engine_;

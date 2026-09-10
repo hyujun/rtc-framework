@@ -77,7 +77,7 @@ bool DemoInferenceController::PalmPose(std::array<double, 3>& position,
 }
 
 bool DemoInferenceController::PackObservation(const ControllerState& state,
-                                              std::span<float> buf) noexcept {
+                                              std::span<const std::span<float>> bufs) noexcept {
   if (state.num_devices < 2) {
     return false;
   }
@@ -93,7 +93,16 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
   }
 
   for (std::size_t f = 0; f < feature_kinds_.size(); ++f) {
-    const auto& seg = io_.inputs[0].segments[f];
+    // One flat walk over every tensor's features. The segment names its own
+    // tensor, so the routing is a table lookup rather than a nested loop with
+    // its own counters — and an out-of-range tensor is a hold, not a fold onto
+    // tensor 0, because folding would write the right values into the wrong
+    // model input and leave the right one holding the previous tick.
+    const auto& seg = flat_segments_[f];
+    if (seg.tensor < 0 || static_cast<std::size_t>(seg.tensor) >= bufs.size()) {
+      return false;
+    }
+    const std::span<float> buf = bufs[static_cast<std::size_t>(seg.tensor)];
     switch (feature_kinds_[f]) {
       case PolicyFeature::kArmPosition: {
         for (int i = 0; i < arm_dof_; ++i) {
@@ -192,7 +201,13 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
     }
   }
 
-  rtc::inference::ApplyAffine(buf, io_.inputs[0].offset, io_.inputs[0].scale);
+  // Per tensor, after every segment of that tensor is in place: the lane is
+  // indexed against its OWN tensor, and applying it to a partially packed
+  // buffer would normalise this tick's values together with whatever the
+  // untouched elements still held.
+  for (std::size_t t = 0; t < bufs.size() && t < io_.inputs.size(); ++t) {
+    rtc::inference::ApplyAffine(bufs[t], io_.inputs[t].offset, io_.inputs[t].scale);
+  }
   return true;
 }
 
@@ -377,19 +392,34 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
   const bool run_policy = !have_action_ || ((tick_ % decim) == (1U % decim));
 
   if (run_policy) {
-    // Tensor 0 only: `ApplyIoSchema` refuses a schema that declares more
-    // than one input, so there is no second buffer to leave unwritten here
-    // (#511 P4 generalises this walk).
-    float* in_buf = engine_->input_buffer(0, 0);
-    const std::size_t in_size = engine_->input_size(0, 0);
-    if (in_buf == nullptr || in_size != io_.inputs[0].Numel()) {
+    // Every declared input tensor, checked before anything is written. ONNX
+    // Runtime allocates all of them, so a tensor this binding failed to fill
+    // would not be absent — it would be whatever that allocation held, observed
+    // by the policy as if it were this tick's robot.
+    //
+    // Stack array, fixed capacity, bounded by `kMaxInputTensors` at configure:
+    // no allocation on the tick (RT-1).
+    std::array<std::span<float>, kMaxInputTensors> in_bufs{};
+    const std::size_t n_tensors = io_.inputs.size();
+    bool tensors_ok = (n_tensors <= in_bufs.size()) &&
+                      (static_cast<std::size_t>(engine_->num_inputs(0)) == n_tensors);
+    for (std::size_t t = 0; tensors_ok && t < n_tensors; ++t) {
+      float* buf = engine_->input_buffer(0, static_cast<int>(t));
+      const std::size_t size = engine_->input_size(0, static_cast<int>(t));
+      if (buf == nullptr || size != io_.inputs[t].Numel()) {
+        tensors_ok = false;
+        break;
+      }
+      in_bufs[t] = std::span<float>(buf, size);
+    }
+    if (!tensors_ok) {
       have_action_ = false;
       HoldPosition(state, out);
       last_tick_held_ = true;
       return out;
     }
 
-    if (!PackObservation(state, std::span<float>(in_buf, in_size))) {
+    if (!PackObservation(state, std::span<const std::span<float>>(in_bufs.data(), n_tensors))) {
       have_action_ = false;
       HoldPosition(state, out);
       last_tick_held_ = true;
@@ -409,8 +439,8 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     }
 
     // ── Unpack: arm target ─────────────────────────────────────────────────
-    const auto& arm_slice = io_.output_slices[static_cast<std::size_t>(arm_output_idx_)];
-    const auto& hand_slice = io_.output_slices[static_cast<std::size_t>(hand_output_idx_)];
+    const auto& arm_slice = io_.output_features[static_cast<std::size_t>(arm_target_idx_)].slice;
+    const auto& hand_slice = io_.output_features[static_cast<std::size_t>(hand_command_idx_)].slice;
 
     bool ok = arm_slice.count == arm_dof_;
     if (ok) {
@@ -430,28 +460,43 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       }
     }
 
-    // ── Unpack: hand posture scalar → posture ──────────────────────────────
-    double scalar = 0.0;
-    if (ok) {
+    // ── Unpack: hand command ───────────────────────────────────────────────
+    // Which of the two shapes arrives is a configure-time fact, so the branch
+    // is on a resolved enum and not on anything the tick has to discover.
+    if (ok && hand_role_ == PolicyOutputRole::kJointTarget) {
+      ok = rtc::inference::UnpackSlice(
+          std::span<double>(scratch_head_.data(), static_cast<std::size_t>(hand_slice.count)),
+          hand_slice, engine_->output_buffer(0, hand_slice.tensor),
+          engine_->output_size(0, hand_slice.tensor));
+      for (int i = 0; ok && i < hand_dof_; ++i) {
+        const double v = scratch_head_[static_cast<std::size_t>(i)];
+        if (!std::isfinite(v)) {
+          ok = false;
+          break;
+        }
+        hand_action_[static_cast<std::size_t>(i)] = v;
+      }
+    } else if (ok) {
+      double scalar = 0.0;
       ok = rtc::inference::UnpackSlice(std::span<double>(&scalar, 1), hand_slice,
                                        engine_->output_buffer(0, hand_slice.tensor),
                                        engine_->output_size(0, hand_slice.tensor));
-    }
-    if (ok) {
-      const auto blend = rtc::inference::BlendPosture(
-          std::span<double>(hand_action_.data(), static_cast<std::size_t>(hand_dof_)),
-          posture_open_, posture_close_, scalar);
-      ok = blend.valid;
-      last_scalar_clamped_ = blend.clamped;
-      if (blend.clamped && !warned_scalar_range_) {
-        // One-shot, plain scalars only: an out-of-range scalar means the
-        // model's normalisation and this YAML disagree, and that is worth
-        // exactly one line rather than one per tick.
-        warned_scalar_range_ = true;
-        RCLCPP_WARN(logger_,
-                    "[inference] posture scalar %.3f is outside [0,1] and was clamped — the "
-                    "policy's output normalisation likely disagrees with hand_posture",
-                    scalar);
+      if (ok) {
+        const auto blend = rtc::inference::BlendPosture(
+            std::span<double>(hand_action_.data(), static_cast<std::size_t>(hand_dof_)),
+            posture_open_, posture_close_, scalar);
+        ok = blend.valid;
+        last_scalar_clamped_ = blend.clamped;
+        if (blend.clamped && !warned_scalar_range_) {
+          // One-shot, plain scalars only: an out-of-range scalar means the
+          // model's normalisation and this YAML disagree, and that is worth
+          // exactly one line rather than one per tick.
+          warned_scalar_range_ = true;
+          RCLCPP_WARN(logger_,
+                      "[inference] posture scalar %.3f is outside [0,1] and was clamped — the "
+                      "policy's output normalisation likely disagrees with hand_posture",
+                      scalar);
+        }
       }
     }
 
