@@ -213,28 +213,17 @@ if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
   info "MuJoCo root path: ${MJ_DIR}"
 fi
 
-# ── venv: force system Python for CMake ───────────────────────────────────────
-# When a venv is active, CMake's FindPython picks the venv Python, which may
-# lack numpy headers and cause eigenpy/pinocchio cmake configuration to fail.
-# Force system Python so pinocchio/eigenpy find the apt-installed numpy.
-# ament_cmake also parses every package.xml with this interpreter
-# (package_xml_2_cmake.py → catkin_pkg, an apt module), so check it here rather
-# than let the first package die with a traceback deep inside its configure.
-if is_venv_active; then
-  SYS_PYTHON=$(get_system_python)
-  "${SYS_PYTHON}" -c 'import catkin_pkg, ament_package' >/dev/null 2>&1 \
-    || error "CMake Python ${SYS_PYTHON} is missing or cannot import catkin_pkg / ament_package (ament_cmake needs both to parse package.xml). Install ROS 2 from apt (python3-catkin-pkg-modules) and source /opt/ros/<distro>/setup.bash."
-  # The build no longer depends on the venv's base interpreter, so a venv built on
-  # a non-distro (e.g. uv-managed) Python would otherwise go unnoticed until runtime.
-  if ! venv_uses_system_python "${VIRTUAL_ENV}"; then
-    warn "Active venv ${VIRTUAL_ENV} is not based on ${SYS_PYTHON} with system-site-packages —"
-    warn "  ROS Python modules (rclpy, yaml, catkin_pkg) will not import inside it."
-    warn "  Workspace .venv: re-run ./install.sh (recreates it). Other venvs: uv venv --python ${SYS_PYTHON} --system-site-packages <dir>"
-  fi
-  CMAKE_ARGS+=("-DPython3_EXECUTABLE=${SYS_PYTHON}")
-  CMAKE_ARGS+=("-DPython3_FIND_VIRTUALENV=STANDARD")
-  warn "Venv detected — cmake will use system Python: ${SYS_PYTHON}"
-fi
+# ── CMake Python: always the distro interpreter ───────────────────────────────
+# A venv Python may lack the numpy headers eigenpy/pinocchio configure needs, and
+# ament_cmake parses every package.xml with this interpreter (package_xml_2_cmake.py
+# → catkin_pkg, an apt module). Pinned with or without a venv: FindPython searches
+# PATH directory by directory, so a python3.X earlier on PATH (e.g. the
+# ~/.local/bin/python3.12 that `uv python install` links) wins otherwise.
+# append_cmake_python_args (rt_common.sh) also warns when the active venv's base
+# is wrong — the build is unaffected, so nothing else would surface it.
+append_cmake_python_args \
+  || error "CMake Python ${CMAKE_PYTHON} is missing or cannot import catkin_pkg / ament_package (ament_cmake needs both to parse package.xml). Install ROS 2 from apt (python3-catkin-pkg-modules) and source /opt/ros/<distro>/setup.bash."
+info "CMake Python: ${CMAKE_PYTHON}"
 
 # compile_commands.json — clangd / IDE 통합용. 항상 켠다 (오버헤드 무시 가능).
 # 빌드 후 merge_compile_commands.py 가 패키지별 산출물을 단일 파일로 머지한다

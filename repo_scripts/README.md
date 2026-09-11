@@ -172,6 +172,10 @@ repo_scripts/
 | `auto_release_cpu_shield()` | 빌드 전 CPU shield 자동 해제 (cset 감지 시 해제, isolcpus는 경고만) |
 | `check_workspace_structure()` | ROS2 워크스페이스 디렉토리 구조 검증 (`src/` 하위 확인) |
 | `ensure_ros2_sourced()` | ROS2 환경 자동 탐색 및 소싱 (jazzy 우선, humble fallback — setup_env.sh와 동일 priority) |
+| `is_venv_active()` | `VIRTUAL_ENV` 설정 여부 |
+| `get_system_python()` | venv base · CMake 가 쓰는 배포판 python. 기본 `readlink -f /usr/bin/python3` (venv 링크·PATH 를 따라가지 않는다), `RTC_SYSTEM_PYTHON` 으로 덮어씀 |
+| `venv_uses_system_python()` | venv 가 `get_system_python` 을 base 로 system-site-packages 를 켜고 만들어졌는지 (uv-managed base · 사라진 base 는 무효). `ensure_venv` 의 재생성 판정 |
+| `append_cmake_python_args()` | build.sh: `-DPython3_EXECUTABLE` 를 venv 유무와 무관하게 `CMAKE_ARGS` 에 붙이고 `catkin_pkg`·`ament_package` import 를 사전 확인 (실패 시 1), 활성 venv base 가 틀리면 경고 |
 
 ### 패키지 리스트 함수
 
@@ -549,7 +553,7 @@ source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
 
 **Source 순서**: ROS Jazzy → deps/install (+ ONNX Runtime) → .venv → workspace overlay (`install/setup.bash`, 있을 때만).
 
-**Plain `colcon build` 호환성** (build.sh 우회 워크플로): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 로 단독 빌드가 가능하다. ONNX Runtime · MuJoCo · deps/install prefix 모두 환경변수로 주입되며, `.colcon/defaults.yaml` 이 `--symlink-install` / `Release` / `compile_commands` 를 자동 적용한다. 단 `.venv` 가 활성 상태면 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio configure 가 깨질 수 있으므로, `colcon` 직접 호출 전에는 `deactivate` 하거나 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 를 명시한다 (build.sh 는 이를 자동 처리). build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다.
+**Plain `colcon build` 호환성** (build.sh 우회 워크플로): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 로 단독 빌드가 가능하다. ONNX Runtime · MuJoCo · deps/install prefix 모두 환경변수로 주입되며, `.colcon/defaults.yaml` 이 `--symlink-install` / `Release` / `compile_commands` 를 자동 적용한다. 단 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 를 venv 유무와 무관하게 명시한다 (build.sh 는 이를 자동 처리 — `append_cmake_python_args`). `.venv` 가 활성이면 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio configure 가 깨질 수 있고, venv 가 없어도 FindPython 은 PATH 디렉토리 순서로 찾으므로 PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 를 잡아 `catkin_pkg` 를 못 본다. `deactivate` 는 앞의 경우만 막는다. build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다.
 
 ---
 

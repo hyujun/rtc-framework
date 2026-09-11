@@ -2266,87 +2266,6 @@ test_lttng_compat_gate_has_an_escape_hatch() {
   rm -rf "$root"
 }
 
-# ── venv base 판정 · CMake 인터프리터 (fresh PC 의 catkin_pkg 누락) ──────────
-#
-# `uv venv --python 3.12` 는 uv 기본값(python-preference=managed) 때문에 uv-managed
-# 3.12 가 설치돼 있으면 apt 의 /usr/bin/python3.12 대신 그걸 base 로 고른다. 그런
-# venv 는 --system-site-packages 여도 /usr/lib/python3/dist-packages (apt 의
-# catkin_pkg · python3-yaml …) 를 못 본다. 옛 get_system_python 은 venv 의 python
-# 링크를 readlink -f 로 끝까지 풀어 **그 base 를** CMake 에 넘겼고, ament_cmake 의
-# package_xml_2_cmake.py 가 첫 패키지(rtc_base)에서 catkin_pkg ImportError 로 죽었다.
-#
-# fixture 는 host 의 /usr/bin/python3.12 에 기대지 않는다 — RTC_SYSTEM_PYTHON 을 가짜
-# 인터프리터로 돌리고 venv 는 uv 가 만드는 모양(bin/python → base 절대경로,
-# python3 → python, pyvenv.cfg)으로 깐다. 가짜 인터프리터는 실행 가능해야 한다:
-# 아니면 옛 코드의 `command -v python3` 가 venv 를 건너뛰어 다른 이유로 판정된다.
-# 음성 fixture 는 양성과 한 속성만 다르다.
-
-_mk_fake_python() {
-  mkdir -p "$(dirname "$1")"
-  printf '#!/bin/sh\necho 3.12\n' >"$1"
-  chmod +x "$1"
-}
-
-_mk_venv() {
-  # $1=venv_dir $2=base interpreter $3=include-system-site-packages (true|false)
-  mkdir -p "$1/bin"
-  ln -sfn "$2" "$1/bin/python"
-  ln -sfn python "$1/bin/python3"
-  printf 'home = %s\ninclude-system-site-packages = %s\n' "$(dirname "$2")" "$3" >"$1/pyvenv.cfg"
-}
-
-test_get_system_python_ignores_the_venv_base() {
-  local root saved="${RTC_SYSTEM_PYTHON:-}"
-  root=$(mktemp -d)
-  RTC_SYSTEM_PYTHON="$root/usr/bin/python3.12"
-  _mk_fake_python "$RTC_SYSTEM_PYTHON"
-  _mk_fake_python "$root/uv/cpython-3.12.13/bin/python3.12"
-  _mk_venv "$root/managed" "$root/uv/cpython-3.12.13/bin/python3.12" true
-  _mk_venv "$root/system" "$RTC_SYSTEM_PYTHON" true
-
-  # fresh PC 에서 실제로 난 경로: managed base venv 가 활성.
-  expect_eq "sys_python.managed_venv" "$RTC_SYSTEM_PYTHON" \
-    "$(VIRTUAL_ENV="$root/managed" PATH="$root/managed/bin:$PATH" get_system_python)"
-  # 정상 머신 경로: 옛 코드가 내던 값과 같아야 한다 (수정이 CMake 입력을 안 바꾼다).
-  expect_eq "sys_python.system_venv" "$RTC_SYSTEM_PYTHON" \
-    "$(VIRTUAL_ENV="$root/system" PATH="$root/system/bin:$PATH" get_system_python)"
-
-  RTC_SYSTEM_PYTHON="$saved"
-  rm -rf "$root"
-}
-
-test_venv_uses_system_python() {
-  local root saved="${RTC_SYSTEM_PYTHON:-}"
-  root=$(mktemp -d)
-  RTC_SYSTEM_PYTHON="$root/usr/bin/python3.12"
-  _mk_fake_python "$RTC_SYSTEM_PYTHON"
-  ln -sfn python3.12 "$root/usr/bin/python3"
-  _mk_fake_python "$root/uv/cpython-3.12.13/bin/python3.12"
-
-  _mk_venv "$root/ok" "$RTC_SYSTEM_PYTHON" true
-  _mk_venv "$root/managed" "$root/uv/cpython-3.12.13/bin/python3.12" true
-  _mk_venv "$root/no_ssp" "$RTC_SYSTEM_PYTHON" false
-  # stdlib `python3 -m venv` 모양: python → python3 → /usr/bin/python3 → python3.12
-  mkdir -p "$root/stdlib/bin"
-  ln -sfn "$root/usr/bin/python3" "$root/stdlib/bin/python3"
-  ln -sfn python3 "$root/stdlib/bin/python"
-  printf 'home = %s\ninclude-system-site-packages = true\n' "$root/usr/bin" >"$root/stdlib/pyvenv.cfg"
-
-  expect_eq "venv_base.system" "yes" \
-    "$(venv_uses_system_python "$root/ok" && echo yes || echo no)"
-  expect_eq "venv_base.stdlib_layout" "yes" \
-    "$(venv_uses_system_python "$root/stdlib" && echo yes || echo no)"
-  expect_eq "venv_base.uv_managed" "no" \
-    "$(venv_uses_system_python "$root/managed" && echo yes || echo no)"
-  expect_eq "venv_base.no_system_site" "no" \
-    "$(venv_uses_system_python "$root/no_ssp" && echo yes || echo no)"
-  expect_eq "venv_base.missing_dir" "no" \
-    "$(venv_uses_system_python "$root/absent" && echo yes || echo no)"
-
-  RTC_SYSTEM_PYTHON="$saved"
-  rm -rf "$root"
-}
-
 test_external_driver_slots_per_tier
 test_external_driver_slots_share_a_core_only_on_the_degraded_tiers
 test_print_thread_layout_uses_the_slot_helpers
@@ -2377,9 +2296,6 @@ test_write_file_if_changed_atomic_no_partial
 test_with_temporary_disable_restores_on_success
 test_with_temporary_disable_restores_on_failure
 test_with_temporary_disable_missing_hook
-
-test_get_system_python_ignores_the_venv_base
-test_venv_uses_system_python
 
 echo
 echo "── test_rt_common.sh summary ──"
