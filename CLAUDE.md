@@ -163,7 +163,7 @@ post-incident 검증: `ls src/rtc-framework/{build,install,log}` — 존재하�
 
 위 규칙은 self-contained 하다 — 실패 시 격리를 무력화(gtest 직접 실행 / venv deactivate / `PYTHONPATH` 우회)하지 말고 sys.path / shebang / wrapper / dep resolution 을 디버그한다. 근거·과거 위반 사례는 git log + auto-memory 참조 (머신 종속 절대경로는 박제하지 않는다).
 
-**단 하나의 carve-out — `colcon build` 의 configure 단계**: venv 가 활성이면 CMake `FindPython` 이 venv 의 python 을 잡아 eigenpy/pinocchio configure 가 깨진다. 이건 *검증 우회* 가 아니라 빌드 시스템의 Python 탐색 문제이므로, 이 경우에 한해 `deactivate` 가 허용된다. 다만 **`--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 를 우선**하고 (격리를 유지한 채 해결), `build.sh` 를 쓰면 둘 다 불필요하다. `colcon test` / `ros2 run` / `ros2 launch` 실패를 덮기 위한 deactivate 는 **여전히 금지** — 그건 runtime PC 에서 재현될 결함을 숨기는 것이다. README 빠른 시작의 `deactivate 2>/dev/null` 스니펫이 가리키는 것이 바로 이 carve-out 이다.
+**단 하나의 carve-out — `colcon build` 의 configure 단계**: venv 가 활성이면 CMake `FindPython` 이 venv 의 python 을 잡아 eigenpy/pinocchio configure 가 깨진다. 이건 *검증 우회* 가 아니라 빌드 시스템의 Python 탐색 문제이므로, 이 경우에 한해 `deactivate` 가 허용된다. 다만 **인터프리터 고정 (`-DPython3_EXECUTABLE=/usr/bin/python3`) 을 우선**하고 (격리를 유지한 채 해결 — CLI `--cmake-args` 는 `.colcon/defaults.yaml` 의 Release 등을 통째로 대체하므로 명령 형태는 [repo_scripts/README.md](repo_scripts/README.md) "Plain `colcon build` 호환성"), `build.sh` 를 쓰면 둘 다 불필요하다. `colcon test` / `ros2 run` / `ros2 launch` 실패를 덮기 위한 deactivate 는 **여전히 금지** — 그건 runtime PC 에서 재현될 결함을 숨기는 것이다. README 빠른 시작의 `deactivate 2>/dev/null` 스니펫이 가리키는 것이 바로 이 carve-out 이다.
 
 ## 10. Style Cheatsheet
 
