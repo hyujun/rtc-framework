@@ -43,40 +43,40 @@ set(HAS_ONNXRUNTIME FALSE)
 set(RTC_ONNXRUNTIME_ROOT "" CACHE PATH
     "ONNX Runtime root (contains lib/ and include/); searched before /opt")
 
-# NOTE: the release tarballs ship lib/cmake/onnxruntime, but at least 1.28.2's
-# imported target points at lib64/ while the files are in lib/ — putting such a
-# tree on CMAKE_PREFIX_PATH makes THIS configure fail hard, QUIET or not. The
-# tarball path below does not go through that config.
-find_package(onnxruntime QUIET)
-if(onnxruntime_FOUND)
+# No find_package(onnxruntime). The release tarballs ship lib/cmake/onnxruntime,
+# and 1.28.2's imported target points at lib64/ while the files are in lib/ — a
+# config that is FOUND fails this configure hard, QUIET or not, and cannot be
+# caught. It is found in practice: setup_env.sh puts /opt/onnxruntime on
+# CMAKE_PREFIX_PATH. (1.17.1 shipped no config, which is why this never
+# surfaced before the upgrade.) find_library/find_path below also walk
+# CMAKE_PREFIX_PATH and the system dirs, so an apt or custom-prefix runtime is
+# still found — only the imported target is lost, and a plain path links the same.
+#
+# Order is the whole point once two runtimes coexist, which is exactly the state
+# an upgrade leaves behind. `install_onnxruntime` points the bare
+# /opt/onnxruntime symlink at the PINNED version, so it goes first; versioned
+# dirs follow newest-first. The old order walked the glob lexically, where
+# "1.17.1" sorts before "1.28.2" — the upgrade would have built against the
+# runtime it was meant to replace, and that one cannot load IR-10 models.
+file(GLOB _ORT_OPT_DIRS "/opt/onnxruntime-*" "/opt/onnxruntime/onnxruntime-*")
+list(SORT _ORT_OPT_DIRS COMPARE NATURAL ORDER DESCENDING)
+set(_ORT_HINTS ${RTC_ONNXRUNTIME_ROOT} /opt/onnxruntime ${_ORT_OPT_DIRS})
+# NO_CACHE, under names no earlier configure used: a cached path would keep an
+# existing build tree on the old runtime after the symlink moved, silently.
+find_library(_RTC_ORT_LIB onnxruntime
+  HINTS ${_ORT_HINTS}
+        /usr/local /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
+  PATH_SUFFIXES lib
+  NO_CACHE)
+find_path(_RTC_ORT_INCLUDE onnxruntime_cxx_api.h
+  HINTS ${_ORT_HINTS} /usr/local /usr
+  PATH_SUFFIXES
+    include
+    include/onnxruntime/core/session
+    include/onnxruntime
+  NO_CACHE)
+if(_RTC_ORT_LIB AND _RTC_ORT_INCLUDE)
   set(HAS_ONNXRUNTIME TRUE)
-else()
-  # Order is the whole point once two runtimes coexist, which is exactly the
-  # state an upgrade leaves behind. `install_onnxruntime` points the bare
-  # /opt/onnxruntime symlink at the PINNED version, so it goes first; versioned
-  # dirs follow newest-first. The old order walked the glob lexically, where
-  # "1.17.1" sorts before "1.28.2" — the upgrade would have built against the
-  # runtime it was meant to replace, and that one cannot load IR-10 models.
-  file(GLOB _ORT_OPT_DIRS "/opt/onnxruntime-*" "/opt/onnxruntime/onnxruntime-*")
-  list(SORT _ORT_OPT_DIRS COMPARE NATURAL ORDER DESCENDING)
-  set(_ORT_HINTS ${RTC_ONNXRUNTIME_ROOT} /opt/onnxruntime ${_ORT_OPT_DIRS})
-  # NO_CACHE, under names no earlier configure used: a cached path would keep an
-  # existing build tree on the old runtime after the symlink moved, silently.
-  find_library(_RTC_ORT_LIB onnxruntime
-    HINTS ${_ORT_HINTS}
-          /usr/local /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
-    PATH_SUFFIXES lib
-    NO_CACHE)
-  find_path(_RTC_ORT_INCLUDE onnxruntime_cxx_api.h
-    HINTS ${_ORT_HINTS} /usr/local /usr
-    PATH_SUFFIXES
-      include
-      include/onnxruntime/core/session
-      include/onnxruntime
-    NO_CACHE)
-  if(_RTC_ORT_LIB AND _RTC_ORT_INCLUDE)
-    set(HAS_ONNXRUNTIME TRUE)
-  endif()
 endif()
 
 # Say WHICH runtime was picked. A model's IR version is checked only when a
@@ -100,12 +100,8 @@ endif()
 if(HAS_ONNXRUNTIME)
   message(STATUS "ONNX Runtime found — building with inference support")
   target_compile_definitions(rtc_inference INTERFACE HAS_ONNXRUNTIME)
-  if(TARGET onnxruntime::onnxruntime)
-    target_link_libraries(rtc_inference INTERFACE onnxruntime::onnxruntime)
-  else()
-    target_include_directories(rtc_inference INTERFACE ${_RTC_ORT_INCLUDE})
-    target_link_libraries(rtc_inference INTERFACE ${_RTC_ORT_LIB})
-  endif()
+  target_include_directories(rtc_inference INTERFACE ${_RTC_ORT_INCLUDE})
+  target_link_libraries(rtc_inference INTERFACE ${_RTC_ORT_LIB})
 else()
   message(STATUS "ONNX Runtime not found — building stub inference engine")
 endif()

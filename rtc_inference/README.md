@@ -156,24 +156,22 @@ ros2 run rtc_inference rtc_inference_check policy.onnx --input obs:1x34
 
 ### ONNX Runtime 감지 (CMakeLists.txt)
 
-CMake에서 2단계로 ONNX Runtime을 탐색합니다:
+`find_library` / `find_path` 로만 탐색하며 (`find_package(onnxruntime)` 는 **쓰지 않는다** — 아래 주의), 이 순서가 곧 우선순위다:
 
-1. **CMake 패키지 탐색:** `find_package(onnxruntime QUIET)`
-2. **수동 탐색 (폴백)** — 이 순서가 곧 우선순위다:
-   1. `-DRTC_ONNXRUNTIME_ROOT=<dir>` (명시 override — sudo 없이 풀어 둔 tarball 등)
-   2. `/opt/onnxruntime` — `install_onnxruntime` 이 **pin 된 버전**으로 가리키게 하는 symlink
-   3. `/opt/onnxruntime-*`, `/opt/onnxruntime/onnxruntime-*` — **최신 버전 먼저** (natural sort 내림차순)
-   4. `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`
-   - 헤더: `include`, `include/onnxruntime/core/session`, `include/onnxruntime` 접미사로 `onnxruntime_cxx_api.h` 탐색
+1. `-DRTC_ONNXRUNTIME_ROOT=<dir>` (명시 override — sudo 없이 풀어 둔 tarball 등)
+2. `/opt/onnxruntime` — `install_onnxruntime` 이 **pin 된 버전**으로 가리키게 하는 symlink
+3. `/opt/onnxruntime-*`, `/opt/onnxruntime/onnxruntime-*` — **최신 버전 먼저** (natural sort 내림차순)
+4. `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`, 그리고 CMake 기본 경로 (`CMAKE_PREFIX_PATH` 포함 — apt·custom prefix 설치도 여기서 잡힌다)
+- 헤더: `include`, `include/onnxruntime/core/session`, `include/onnxruntime` 접미사로 `onnxruntime_cxx_api.h` 탐색
 
-수동 탐색 결과는 **캐시하지 않는다** (`NO_CACHE`) — 캐시된 경로는 업그레이드 뒤에도 기존 빌드 트리를 옛 런타임에 묶어 둔다. configure 는 선택한 런타임의 `ORT_API_VERSION` 을 STATUS 로 찍고, **1.18 미만이면 WARNING** 을 낸다 (IR 10 모델을 못 연다 — `ur5e_p1b` 의 demo_inference 정책이 IR 10 이다).
+탐색 결과는 **캐시하지 않는다** (`NO_CACHE`) — 캐시된 경로는 업그레이드 뒤에도 기존 빌드 트리를 옛 런타임에 묶어 둔다. configure 는 선택한 런타임의 `ORT_API_VERSION` 을 STATUS 로 찍고, **1.18 미만이면 WARNING** 을 낸다 (IR 10 모델을 못 연다 — `ur5e_p1b` 의 demo_inference 정책이 IR 10 이다).
 
 | 감지 결과 | 동작 |
 |-----------|------|
 | 발견 | `HAS_ONNXRUNTIME` 컴파일 정의 전파 + 라이브러리 링크 (INTERFACE) |
 | 미발견 | 스텁 엔진으로 빌드 (빌드 실패 없음) |
 
-> **릴리즈 tarball 의 `lib/cmake/onnxruntime` 은 쓰지 않는다.** 1.28.2 의 imported target 은 `lib64/` 를 가리키는데 파일은 `lib/` 에 있어서, 그 트리를 `CMAKE_PREFIX_PATH` 에 올리면 `find_package` 가 (QUIET 이어도) configure 를 실패시킨다. 폴백 수동 탐색은 그 config 를 거치지 않는다.
+> **`find_package(onnxruntime)` 를 쓰지 않는 이유.** 릴리즈 tarball 이 싣는 `lib/cmake/onnxruntime` 이 1.28.2 에서 `lib64/` 를 가리키는데 파일은 `lib/` 에 있어, config 가 **찾아지는 순간** configure 가 (QUIET 이어도, 잡을 수 없게) 실패한다. 그리고 실제로 찾아진다 — `setup_env.sh` 가 `/opt/onnxruntime` 을 `CMAKE_PREFIX_PATH` 에 올린다. 1.17.1 tarball 은 config 가 없어서 업그레이드 전에는 드러나지 않았다. 잃는 것은 imported target 뿐이고 경로 링크는 동일하게 동작한다.
 
 ### 런타임 업그레이드
 
