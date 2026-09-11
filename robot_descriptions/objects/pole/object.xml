@@ -1,0 +1,30 @@
+<!-- pole — the upright cylinder a grasp policy was trained on.
+
+     Loaded through rtc_mujoco_sim's object_pool, which attaches the body named
+     `object` from `<directory>/<name>/object.xml` and adds its freejoint. So
+     this file carries NO joint and NO scene — only the body.
+
+     GEOMETRY IS THE CONTRACT. Radius 0.04 m, height 0.15 m, and the body origin
+     at the CYLINDER CENTRE. A pose observation is the pose of this origin, so a
+     policy trained with a centre-origin object sees the right position only
+     when the sim body's origin is also the centre. The obvious alternative — an
+     origin on the bottom face, which is how a grasp record may describe the
+     same object — puts every observation 0.075 m off along the object's axis,
+     and the result still looks like an ordinary pose. That is why this is a
+     primitive and not a mesh: `size="0.04 0.075"` is radius and HALF-height,
+     centred by construction, with nothing to re-export or mis-scale.
+
+     PHYSICAL PARAMETERS ARE NOT FROM THE TRAINING ASSET — that asset's mass and
+     friction are not available here. `mass` is spelled out (rather than derived
+     from a density) because it is the one number a sim-to-sim comparison is
+     most likely to vary; friction and condim copy object_sim's collision class
+     so this object behaves like every other pool candidate. -->
+<mujoco model="pole">
+  <worldbody>
+    <body name="object">
+      <geom name="pole" type="cylinder" size="0.04 0.075" mass="0.2"
+            contype="1" conaffinity="1" condim="4" friction="1 0.5 0.01"
+            rgba="0.85 0.55 0.20 1"/>
+    </body>
+  </worldbody>
+</mujoco>

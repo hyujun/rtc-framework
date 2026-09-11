@@ -61,4 +61,12 @@ install(
   DESTINATION share/${PROJECT_NAME}/object_sim
 )
 
+# Objects this repo owns (object_sim above is a third-party submodule and is not
+# ours to add to). Same `<name>/object.xml` layout, so an object_pool can point
+# at either directory.
+install(
+  DIRECTORY objects/
+  DESTINATION share/${PROJECT_NAME}/objects
+)
+
 ament_package()

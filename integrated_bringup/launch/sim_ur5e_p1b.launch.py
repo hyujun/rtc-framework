@@ -24,6 +24,10 @@ Usage:
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py object_pool:=false
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py object:=apple object_seed:=7
 
+  # Scene overlay: a params file layered on top of mujoco_simulator.yaml
+  # (bare name = config/ur5e_p1b/sim_overlays/<name>.yaml, or a path)
+  ros2 launch integrated_bringup sim_ur5e_p1b.launch.py sim_overlay:=inference_pole
+
 Nodes launched:
   1. mujoco_simulator_node  — MuJoCo physics simulator (replaces UR driver)
   2. integrated_rt_controller     — 500Hz controller (CV-based wakeup in sim mode)
@@ -54,6 +58,41 @@ from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slo
 from rtc_tools.launch.session import max_log_sessions_from_yaml, open_session
 from rtc_tools.launch.thread_layout import get_rt_callback_core, get_sim_core
 from rtc_tools.launch.trace_action import make_trace_action
+
+PROFILE = "ur5e_p1b"
+
+
+def resolve_sim_overlay(value):
+    """``sim_overlay:=`` → an existing params-file path, or None when unset.
+
+    A bare name is looked up among this profile's shipped overlays; anything
+    with a path separator or a YAML suffix is taken as a path. A value that
+    resolves to nothing RAISES rather than falling back: an overlay that is
+    silently skipped runs the shipped scene under a command line that names
+    a different one, and every measurement from that run describes the wrong
+    scene.
+    """
+    value = value.strip()
+    if not value:
+        return None
+    overlay_dir = os.path.join(
+        get_package_share_directory("integrated_bringup"), "config", PROFILE, "sim_overlays"
+    )
+    if os.sep in value or value.endswith((".yaml", ".yml")):
+        path = os.path.abspath(os.path.expanduser(value))
+    else:
+        path = os.path.join(overlay_dir, value + ".yaml")
+    if not os.path.isfile(path):
+        shipped = (
+            sorted(f[: -len(".yaml")] for f in os.listdir(overlay_dir) if f.endswith(".yaml"))
+            if os.path.isdir(overlay_dir)
+            else []
+        )
+        raise RuntimeError(
+            f"sim_overlay '{value}' resolves to {path}, which does not exist. "
+            f"Shipped overlays for {PROFILE}: {shipped} (or pass a path to a params YAML)."
+        )
+    return path
 
 
 def launch_setup(context, *args, **kwargs):
@@ -86,8 +125,14 @@ def launch_setup(context, *args, **kwargs):
     except Exception:
         pass
 
-    # ── Build simulator parameters (defaults → robot YAML → CLI overrides) ──
+    # ── Build simulator parameters (defaults → robot YAML → overlay → CLI) ──
+    # The overlay sits between the shipped YAML and the per-argument overrides
+    # so it can replace the scene while `model_path:=` & co. still win over it.
+    # Both nodes get it; each reads only its own section.
+    sim_overlay = resolve_sim_overlay(LaunchConfiguration("sim_overlay").perform(context))
     sim_params = [sim_default, sim_config]
+    if sim_overlay is not None:
+        sim_params.append(sim_overlay)
     sim_overrides = {}
 
     # Check each launch argument - only add to overrides if explicitly provided
@@ -164,6 +209,8 @@ def launch_setup(context, *args, **kwargs):
     ctrl_params = [base_config, ctrl_config, sim_config]
     if hand_config is not None:
         ctrl_params.append(hand_config)
+    if sim_overlay is not None:
+        ctrl_params.append(sim_overlay)
     ctrl_overrides = {}
 
     kp = LaunchConfiguration("kp").perform(context)
@@ -529,6 +576,19 @@ def generate_launch_description():
         ),
     )
 
+    sim_overlay_arg = DeclareLaunchArgument(
+        "sim_overlay",
+        default_value="",
+        description=(
+            "Extra params YAML applied after config/ur5e_p1b/mujoco_simulator.yaml "
+            "and before the other command-line overrides, to both nodes. A bare "
+            "name (e.g. inference_pole) resolves to "
+            "config/ur5e_p1b/sim_overlays/<name>.yaml; a value containing '/' or "
+            "ending in .yaml is a path. An unresolvable value fails the launch. "
+            "Empty = the shipped scene."
+        ),
+    )
+
     use_cpu_affinity_arg = DeclareLaunchArgument(
         "use_cpu_affinity",
         default_value="true",
@@ -626,6 +686,7 @@ def generate_launch_description():
             object_pool_arg,
             object_arg,
             object_seed_arg,
+            sim_overlay_arg,
             max_log_sessions_arg,
             use_cpu_affinity_arg,
             initial_controller_arg,

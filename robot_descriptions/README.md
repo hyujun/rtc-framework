@@ -244,6 +244,8 @@ sudo apt install -y ros-jazzy-ur-description ros-jazzy-xacro
 
 이 저장소는 `robot_descriptions/object_sim` (mesh 데이터, [vikashplus/object_sim](https://github.com/vikashplus/object_sim)) 을 git submodule 로 포함합니다. `--recursive` 없이 클론했다면 빌드 전에 `git submodule update --init --recursive` 로 채워야 일부 MuJoCo scene (예: `robots/iiwa7_leap/mjcf/scene_right_with_object.xml`) 의 mesh 로드가 성공합니다 — 상세 절차는 [루트 README "클론 (submodule 포함)"](../README.md#클론-submodule-포함) 참조.
 
+`robot_descriptions/objects/` 는 **이 저장소가 소유하는** 시뮬레이션 물체다 (submodule 인 `object_sim` 은 upstream 에 push 할 수 없으므로 거기에 추가하지 않는다). 레이아웃은 `object_sim` 과 같은 `<name>/object.xml` (body 이름 `object`, joint 없음 — `rtc_mujoco_sim` object_pool 이 freejoint 를 붙인다) 이라, object_pool 의 `directory` 를 `package://robot_descriptions/objects` 로 바꾸면 그대로 쓴다. 현재 `pole` 하나 — 원통 r 0.04 m · h 0.15 m, **원점 = 원통 중심** (정책 관측이 그 원점의 pose 이므로 원점 위치가 계약이다), 질량 0.2 kg 은 학습 자산 값이 아니다 (파일 주석 참조). 사용처: `integrated_bringup/config/ur5e_p1b/sim_overlays/inference_pole.yaml`.
+
 ### 빌드 명령
 
 ```bash
