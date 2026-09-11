@@ -183,8 +183,8 @@ using FeatureSizeFn = std::function<int(std::string_view)>;
 /// empty list when the feature has no row names (it can then only be placed by
 /// position). Consulted only for tensors that declare `element_names`.
 ///
-/// Also the caller's: "ur5e.position" fills the rows named after that device's
-/// joints, which is a fact about the robot, not about the schema.
+/// Also the caller's: "<group>.position" fills the rows named after that device
+/// group's joints, which is a fact about the robot, not about the schema.
 using FeatureRowsFn = std::function<std::vector<std::string>(std::string_view)>;
 
 /// Parse the `inference:` I/O schema out of @p cfg.
