@@ -617,6 +617,22 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(
   hold_elapsed_sec_ = 0.0;
   recurrent_reset_pending_ = true;
   warned_state_reset_ = false;
+  // The object lane's age is accrued in tick `dt`, and the tick does not run
+  // while inactive — so an age carried across the gap says nothing about now.
+  // Only a sample that arrives AFTER this activation counts: the sequence in
+  // `last_object_seq_seen_` is KEPT, so an unchanged (hence pre-gap) sample stays invisible
+  // instead of being re-accepted with a fresh age. The cost is a `kObject` hold
+  // until the publisher speaks again, which is the same "hold and re-evaluate"
+  // the action lane above takes, and the alternative is a policy step over a
+  // pose that no longer describes the scene.
+  object_ever_seen_ = false;
+  object_valid_this_tick_ = false;
+  object_age_sec_ = 0.0;
+  object_this_tick_ = {};
+  // The reach gate's Schmitt latch is cross-tick state like the rest: a hold
+  // left standing by the previous activation would be reported on every row
+  // until the first accepted policy step re-seeds it.
+  reach_state_ = {};
   // Diagnostics describe this activation only.
   hold_counts_.fill(0);
   closed_chain_held_ticks_.store(0, std::memory_order_relaxed);

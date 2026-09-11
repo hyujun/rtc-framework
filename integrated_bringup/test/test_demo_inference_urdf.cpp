@@ -700,6 +700,31 @@ TEST_F(ShippedInference, TheTactileHoldCountsPolicyStepsAndReadsTheRightFingers)
   EXPECT_LT(Tensor("reach_phase")[0], 1e-6F) << "no ratchet: the gate falls back to proximity";
 }
 
+TEST_F(ShippedInference, AReactivationDoesNotInheritTheTactileHold) {
+  // The latch is cross-tick state like the recurrent buffers, and the gap makes
+  // the same statement about it: the hand has been out of this controller's
+  // hands since, so a grasp it latched before cannot speak for now. Every held
+  // tick of the new activation (the closed-chain walk-in is dozens of them)
+  // reports `reach_hold` on its diagnostic row before the first accepted step.
+  auto state = MakePregraspState();
+  InjectObjectInWorld({2.0, 2.0, 2.0}, Eigen::Quaterniond::Identity());
+  ASSERT_TRUE(RunUntilAccepted(state));
+
+  const auto devices = fx::MakeInferenceDeviceConfigs();
+  const auto& groups = devices.at("p1b").sensor_names;
+  for (const char* g : {"thumb", "index", "middle"}) {
+    SetForce(state, static_cast<int>(IndexOfName(groups, g)), 1.0F);
+  }
+  for (int step = 0; step < 5; ++step) {
+    RunOnePolicyStep(state);
+  }
+  ASSERT_TRUE(ctrl_->ReachHoldForTesting()) << "the fixture must latch, or this proves nothing";
+
+  ASSERT_EQ(ctrl_->on_deactivate(rclcpp_lifecycle::State{}), CR::SUCCESS);
+  ASSERT_EQ(ctrl_->on_activate(rclcpp_lifecycle::State{}), CR::SUCCESS);
+  EXPECT_FALSE(ctrl_->ReachHoldForTesting()) << "the new activation starts with no grasp behind it";
+}
+
 TEST_F(ShippedInference, AStaleObjectPoseHolds) {
   // The reach gate and the object tensors both need it; without a sample the
   // policy must not run.

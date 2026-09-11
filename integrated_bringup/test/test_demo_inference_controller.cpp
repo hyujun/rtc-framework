@@ -1308,6 +1308,40 @@ TEST(DemoInferenceObject, AFreshMessageResetsTheAge) {
   }
 }
 
+TEST(DemoInferenceObject, AReactivationDoesNotInheritThePreviousActivationsPose) {
+  // Age is accrued in tick `dt` and the tick does not run while inactive, so a
+  // deactivation gap costs the lane nothing: a pose from before it would come
+  // back looking one tick old however long the publisher has been silent since.
+  auto h = MakeObjectHarness(MakeObjectYaml(/*timeout_sec=*/0.021));
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting()) << "the pose is fresh on this activation";
+
+  ASSERT_EQ(h.ctrl->on_deactivate(rclcpp_lifecycle::State{}),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+
+  // The publisher stopped during the gap. The lane cannot vouch for what it
+  // holds — the age it would report was measured against a different run — so
+  // it must hold instead of handing the policy a pose of unknown age.
+  for (int t = 0; t < 20; ++t) {
+    static_cast<void>(h.ctrl->Compute(state));
+    ASSERT_TRUE(h.ctrl->LastTickHeldForTesting()) << "tick " << t << " after re-activation";
+  }
+  EXPECT_EQ(h.ctrl->LastHoldReasonForTesting(), integrated_bringup::InferenceHoldReason::kObject)
+      << "and it must say WHICH lane is missing, not fold into a generic hold";
+
+  // It recovers the moment the publisher speaks again — the gate is freshness,
+  // not a one-way door.
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_FALSE(h.ctrl->LastTickHeldForTesting());
+}
+
 TEST(DemoInferenceObject, TransformsInTheWrongSourceFrameAreIgnored) {
   auto h = MakeObjectHarness(MakeObjectYaml(0.02, "prefix", "pool_", /*source_frame_id=*/"world"));
   h.ctrl->InjectObjectTransformsForTesting(
