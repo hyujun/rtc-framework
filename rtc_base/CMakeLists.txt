@@ -195,6 +195,13 @@ if(BUILD_TESTING)
     target_include_directories(test_spsc_queue PRIVATE include)
     target_link_libraries(test_spsc_queue pthread)
   endif()
+
+  # Its own binary: ConfigureRtHeap() calls mallopt(), which is process-global
+  # and cannot be undone — sharing a binary would change every other suite's heap.
+  ament_add_gtest(test_rt_heap test/test_rt_heap.cpp)
+  if(TARGET test_rt_heap)
+    target_include_directories(test_rt_heap PRIVATE include)
+  endif()
 endif()
 
 ament_package(CONFIG_EXTRAS "cmake/rtc_base-test-include.cmake.in")

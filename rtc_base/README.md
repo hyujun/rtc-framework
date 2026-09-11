@@ -49,6 +49,7 @@ rtc_base/
     │   ├── cpu_topology.hpp       <- 하이브리드(P/E-core) CPU 토폴로지 감지 (NucGeneration)
     │   ├── periodic_rt_thread.hpp <- 고정 주파수 RT 루프 base (CM/MPC 공유)
     │   ├── publish_buffer.hpp     <- 락-프리 SPSC 퍼블리시 버퍼
+    │   ├── rt_heap.hpp            <- RT 프로세스 heap 정책 (ConfigureRtHeap: mallopt 2개)
     │   └── seqlock.hpp            <- 락-프리 단일 쓰기/다중 읽기 동기화
     └── utils/
         ├── clamp_commands.hpp     <- ClampSymmetric/ClampRange: RT-safe 커맨드 클램프
@@ -411,6 +412,10 @@ Phase 5 이후 `SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (
 - `ValidateSystemThreadConfigs()`는 (1) MPC main priority < rt_callback priority, (2) `arm_driver` / `hand_driver` cpu_core 가 모든 RT controller thread (rt_control/rt_callback/mpc_main) 와 disjoint, (3) cpu_core=-1 sentinel 은 disjointness sweep 에서 skip 등의 불변식을 검증.
 
 `ThreadMetrics` 구조체: `min_latency_us`, `max_latency_us`, `avg_latency_us`, `jitter_us`, `percentile_95_us`, `percentile_99_us`.
+
+#### RT 프로세스 heap 정책 (`rt_heap.hpp`)
+
+`[[nodiscard]] bool ConfigureRtHeap() noexcept` — glibc `mallopt(M_TRIM_THRESHOLD, -1)` + `mallopt(M_MMAP_MAX, 0)`. 해제한 메모리를 커널에 돌려주지 않고 큰 블록도 heap arena 에서 받게 해, warmup 이후의 할당·해제가 syscall 이 되지 않는다. `mlockall` (RT-HOST-1) 과 함께 RT 프로세스 main 진입 직후 1회 부른다 — 설정은 프로세스 전역이다. 대가는 RSS 가 최대치에 머무는 것. RT 경로에서 할당이 수용된 유일한 신규 경로 (ONNX Runtime `Run()`) 의 수용 조건 1 이다 ([invariants.md](../agent_docs/invariants.md) RT 절). 실패 (glibc 가 아니거나 설정 거부) 는 false — 호출자가 경고하고 계속 돈다. 효과는 `test_rt_heap` (64 MiB probe 가 mmap 되지 않고, 해제 후 arena 가 줄지 않음) 이 고정한다.
 
 #### SeqLock (`seqlock.hpp`)
 
