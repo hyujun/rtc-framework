@@ -105,6 +105,8 @@ child frame 은 **고정이 아니다**. `virtual_tcp_mode` 가 켜진 task 컨�
 | Shape Inspect Simple | `trees/shape_inspect_simple.xml` | Vision 기반 inspect 위치 이동 → -x 방향 linear search move + ToF 500Hz 데이터 수집 → 데이터 처리 → 목표 이동. 서비스 기반 shape estimation 미사용 |
 | Search Motion | `trees/search_motion.xml` | 팔 sweep + tilt scan 탐색 모션 |
 
+**SubTree 에 숫자를 넘길 때 (BehaviorTree.CPP 4.10+)**: `<SubTree ... timeout_s="10.0"/>` 처럼 리터럴로 넘긴 숫자는 4.10 부터 subtree blackboard 에 `int` (소수점 없음) 또는 `double` 로 저장되고, 그 키를 읽는 강타입 포트는 타입이 정확히 같아야 트리가 생성된다 (4.9 까지는 `string` 이라 무엇이든 통과했다). 그래서 `double` 포트에는 `"10.0"`, `int` 포트에는 `"10"` 처럼 모양을 맞추고, `unsigned` 포트 (`Timeout.msec` · `Delay.delay_msec` · `Sleep.msec`) 로 가는 인자는 `common_motions.xml` 의 `ForcePIGrasp` · `ForcePIRelease` 처럼 `Script` 로 새 키에 옮겨 잇는다. 이 오류는 트리를 실제로 만들 때만 나므로, 트리 파일을 추가하면 [test/test_tree_validation.cpp](test/test_tree_validation.cpp) 에 그 파일을 인스턴스화하는 테스트도 함께 추가한다.
+
 ## BT 노드
 
 ### Action 노드
