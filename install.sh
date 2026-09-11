@@ -63,7 +63,7 @@ MJ_VERSION="3.7.0"
 # 설치된 버전이 이 값과 다르면 핀 버전을 받아 /opt/onnxruntime 을 옮기고, 그 뒤
 # /opt 의 다른 버전 트리 (`onnxruntime-linux-<arch>-<ver>`) 를 지운다. 옛 트리를
 # 다른 프로젝트가 쓰는 머신이면 ONNXRT_KEEP_OTHER_VERSIONS=1 ./install.sh … 로 보존.
-ONNXRT_VERSION="1.28.2"   # ≥ 1.18 필요: ur5e_p1b demo_inference 정책이 IR 10
+ONNXRT_VERSION="1.30.0"   # ≥ 1.18 필요: ur5e_p1b demo_inference 정책이 IR 10
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 SKIP_DEPS=0

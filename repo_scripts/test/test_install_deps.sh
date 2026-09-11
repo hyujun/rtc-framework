@@ -492,8 +492,8 @@ test_keep_other_versions_opt_out() {
 test_production_pins_are_intact() {
   # TOFU pin 의 회귀 센서 — 리터럴 중복은 의도적이다. digest 를 조용히 바꾸면
   # 여기가 red 가 되어 "두 곳을 의식적으로 고치는" 절차를 강제한다.
-  # 1.17.1 은 독립 재계산 (#153 M8), 1.28.2 는 로컬 sha256sum == GitHub asset
-  # digest 로 확인했다.
+  # 1.17.1 은 독립 재계산 (#153 M8), 1.28.2 · 1.30.0 은 로컬 sha256sum == GitHub
+  # asset digest 로 확인했다.
   expect_eq "pin.1.17.1:x64" \
     "89b153af88746665909c758a06797175ae366280cbf25502c41eb5955f9a555e" \
     "${ONNXRT_SHA256[1.17.1:x64]:-MISSING}"
@@ -506,6 +506,12 @@ test_production_pins_are_intact() {
   expect_eq "pin.1.28.2:aarch64" \
     "f020b3d31106cc7db03889b4a5c21e7c38ce4a09ad26119c11d1ad6d3fa0ec04" \
     "${ONNXRT_SHA256[1.28.2:aarch64]:-MISSING}"
+  expect_eq "pin.1.30.0:x64" \
+    "a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd" \
+    "${ONNXRT_SHA256[1.30.0:x64]:-MISSING}"
+  expect_eq "pin.1.30.0:aarch64" \
+    "e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da" \
+    "${ONNXRT_SHA256[1.30.0:aarch64]:-MISSING}"
 
   # install.sh 가 지금 설치하려는 버전에 pin 이 실제로 존재하는가.
   # (버전만 올리고 digest 를 잊으면 런타임엔 skip, 여기선 red)

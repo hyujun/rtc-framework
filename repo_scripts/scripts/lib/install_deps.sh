@@ -168,14 +168,17 @@ install_behaviortree() {
 #          -q '.assets[] | select(.name|test("linux-(x64|aarch64)-[0-9.]+\\.tgz$")) | [.name,.digest] | @tsv'
 #      일치하면 `<VER>:<ARCH>` 항목을 아래에 추가한다. digest 가 null 이면 2인 재계산.
 # 1.17.1 pin 은 x64/aarch64 모두 독립 재계산으로 일치 확인됨 (#153 M8).
-# 1.28.2 pin 은 x64/aarch64 모두 로컬 sha256sum == GitHub asset digest (2026-09-11).
-# 1.17.1 은 IR ≤ 9 만 연다 — 1.28.2 는 IR 10 정책(ur5e_p1b demo_inference)을 위해 올렸다.
+# 1.28.2 · 1.30.0 pin 은 x64/aarch64 모두 로컬 sha256sum == GitHub asset digest (2026-09-11).
+# 1.17.1 은 IR ≤ 9 만 연다 — 1.28.2 는 IR 10 정책(ur5e_p1b demo_inference)을 위해 올렸고,
+# 1.30.0 은 그 정책의 python 대조 oracle 과 같은 버전을 쓰려고 올렸다 (1.28.2 wheel 부재).
 # 옛 항목은 롤백(ONNXRT_VERSION 되돌리기)이 fail-closed 되지 않도록 남겨 둔다.
 declare -A ONNXRT_SHA256=(
   ["1.17.1:x64"]="89b153af88746665909c758a06797175ae366280cbf25502c41eb5955f9a555e"
   ["1.17.1:aarch64"]="70b6f536bb7ab5961d128e9dbd192368ac1513bffb74fe92f97aac342fbd0ac1"
   ["1.28.2:x64"]="d7209b8751b27b862b0c76332c2e20e203396edb5dab700ecf4bb485cf147415"
   ["1.28.2:aarch64"]="f020b3d31106cc7db03889b4a5c21e7c38ce4a09ad26119c11d1ad6d3fa0ec04"
+  ["1.30.0:x64"]="a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd"
+  ["1.30.0:aarch64"]="e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da"
 )
 
 # 핀과 다른 버전의 tarball 트리를 지운다 — 설치가 끝난 머신에는 핀 버전 하나만
@@ -336,7 +339,7 @@ install_onnxruntime() {
 
   # ldconfig 등록. conf 는 symlink 경로를 가리키므로 한 번만 쓰면 되지만, 캐시는
   # 매 (재)설치마다 갱신해야 한다 — soname 이 버전마다 다르다
-  # (1.17.1 은 libonnxruntime.so.1.17.1, 1.28.2 는 libonnxruntime.so.1).
+  # (1.17.1 은 libonnxruntime.so.1.17.1, 1.28.2 부터는 libonnxruntime.so.1).
   if [[ ! -f "$ONNXRT_LIB_CONF" ]]; then
     echo "${ONNXRT_DIR}/lib" | sudo tee "$ONNXRT_LIB_CONF" > /dev/null
   fi
