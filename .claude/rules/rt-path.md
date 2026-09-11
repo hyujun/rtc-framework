@@ -22,7 +22,7 @@ paths:
 
 이 rule 은 `rtc_*` 및 `integrated_bringup` C++ 파일을 편집할 때 **reminder 로 로드**된다 (glob 은 파일 단위라 tick hot-path 만 골라낼 수 없다; `integrated_bringup` 은 device backend 의 rt_callback lane 과 controller `Compute()` 가 RT path 라 포함 — issue #156 유입 경로). 실제로 **구속하는 대상은 RT 정기 tick / SCHED_FIFO dedicated-core 경로뿐**이다 — 비-RT 코드 (`on_configure`/`on_activate` 등 lifecycle 콜백, `DrainLog()` aux thread, 1 Hz aux 타이머, 파라미터 콜백, **test / init 코드**) 는 면제. RT path 정의와 false-positive 판정 절차는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants. RT tick 경로에서 다음을 절대 사용 금지 (CLAUDE.md §3 의 상세판; 위반 필요시 §6 Escalation `[CONCERN]` 포맷 보고).
 
-1. `new` / `malloc` / `push_back` / `emplace_back` / `resize` — pre-allocated fixed-size 사용
+1. `new` / `malloc` / `push_back` / `emplace_back` / `resize` — pre-allocated fixed-size 사용. 수용된 알려진 위반은 DDS publish (#222) 와 ONNX Runtime `Run()` 두 경로뿐이고 조건은 invariants.md RT 절에 있다 — 새 RT 코드의 할당 근거가 아니다
 2. `throw` / `catch` — error code, `std::optional`, `std::expected`
 3. `RCLCPP_INFO/WARN/ERROR/DEBUG/FATAL` 직접 호출 — SPSC → aux thread defer. **예외**: one-shot init, `RCLCPP_*_THROTTLE` with RT-safe msg (단순 format + 기본 타입만; `fmt::format` / `to_string` / string concat 금지)
 4. `std::mutex::lock` / `lock_guard` / `scoped_lock` — `try_lock`, `SeqLock`, SPSC, atomic

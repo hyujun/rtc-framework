@@ -98,6 +98,28 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 > 재려면 거기 부록의 `LD_PRELOAD` interposer 를 쓴다 (기존 두 게이트는 **C 라이브러리 `malloc` 을
 > 원리적으로 못 본다** — testing-debug.md §게이트 표).
 
+> **알려진 위반 2건째 — ONNX Runtime `Run()` (2026-09-12 사용자 결정, 조건부 수용).** ORT 의
+> `Session::Run` 은 IoBinding 여부와 무관하게 **매 호출** heap 을 할당한다 — CPU EP 에 할당 없는
+> Run 은 없고, 노드 2개짜리 모델도 매 호출 `operator new` 를 부른다 (수치는
+> `test_demo_inference_real_model` 이 기록한다). 수용 범위는 **두 호출 지점뿐**이다:
+> `DemoInferenceController::Compute()` 정책 step 의 `InferenceEngine::Run()`, 그리고 `udp_hand_driver`
+> `FingertipFTInferencer::Infer()` 의 `RunModels()`. 같은 tick 의 나머지 (pack·unpack·FK·명령 tail) 는
+> RT-1 그대로다. 수용은 아래가 **모두** 성립할 때만이고, 하나라도 깨지면 E-1 이다:
+>
+> 1. **heap 정책** — RT 프로세스 main 에서 `rtc::ConfigureRtHeap()`
+>    ([rt_heap.hpp](../rtc_base/include/rtc_base/threading/rt_heap.hpp): `M_TRIM_THRESHOLD -1`,
+>    `M_MMAP_MAX 0`) + `mlockall` (RT-HOST-1). warmup 이후의 할당·해제가 커널로 가지 않는다 (대가:
+>    RSS 가 최대치에 머문다).
+> 2. **정상상태 heap 무성장** — warmup 뒤 반복 Run 동안 `mallinfo2()` 의 `arena`·`hblkhd` 불변.
+> 3. **호출자 몫 0** — 정책 tick 의 operator new 수 == `Run()` 의 operator new 수.
+> 4. **RT 조건 실측** — 정책 step tick 의 compute p99/max 가 tick 예산 안 (SCHED_FIFO, cm_timing
+>    CSV). 제어 PC 실측이 실기 투입의 gate 다.
+>
+> 센서: 1 은 `rtc_base` 의 `test_rt_heap` (CI), 2·3 은 `test_demo_inference_real_model` (로컬 전용 —
+> 정책 파일이 없으면 skip = 미검증), 호출자 몫은 `test_demo_inference_alloc` (FakeEngine, CI) 이 계속 0
+> 을 지킨다. `udp_hand_driver` 경로는 1 만 공유하고 2·3 은 **미측정**이다 (F/T 모델이 repo 밖).
+> #222 와 같이 "ORT 도 하는데" 는 새 RT 코드가 할당할 근거가 아니다.
+
 ```detect id=RT-1
 grep -nE '(\bnew [A-Za-z_]|malloc\(|\.push_back\(|\.emplace_back\(|\.resize\()' <RT file>
 # probe: buffer.push_back(sample);

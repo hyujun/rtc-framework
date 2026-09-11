@@ -323,8 +323,10 @@ class OnnxEngine : public InferenceEngine {
   }
 
   // Direct Session::Run marshalling shared by RunModels() (RT, wrapped in
-  // try/catch) and Init() warmup (non-RT, allowed to throw). RT-safe: only a
-  // stack name array, no heap allocation.
+  // try/catch) and Init() warmup (non-RT, allowed to throw). This wrapper adds
+  // no allocation — the name and value arrays are prebuilt — but Session::Run
+  // itself allocates on every call (see InferenceEngine::Run()); measured by
+  // integrated_bringup's test_demo_inference_real_model.
   void RunModelDirect(Model& m) {
     m.session.Run(*run_options_, m.input_name_ptrs.data(), m.input_tensors.data(),
                   m.input_tensors.size(), m.output_name_ptrs.data(), m.output_tensors.data(),

@@ -24,6 +24,13 @@
 //     (the synergy starts at 0); then, every step, both integrators inside
 //     their per-step bound.
 //
+// And the conditions of ORT Run()'s recorded RT-1 exception that a test can
+// check (agent_docs/invariants.md, RT 절), under the same heap policy the RT
+// processes set at start (rtc::ConfigureRtHeap, applied here once per process):
+//   * condition 2 — steady-state Run()s neither grow nor trim the heap;
+//   * condition 3 — a policy tick allocates exactly what Run() does, i.e. the
+//     controller's own share of the tick is zero.
+//
 // What it only produces or measures — recorded, never asserted:
 //   * a parity dump (RTC_INFERENCE_DUMP_DIR): the exact input tensors of
 //     several evaluations and the outputs this engine produced, raw float32 +
@@ -42,6 +49,7 @@
 
 #include "inference_shipped_fixture.hpp"
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
+#include "rtc_base/threading/rt_heap.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_inference/onnx/onnx_engine.hpp"
 #include "shipped_config_test_fixture.hpp"
@@ -54,6 +62,7 @@
 
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
+#include <malloc.h>
 #include <rcutils/logging.h>
 #include <yaml-cpp/yaml.h>
 
@@ -283,9 +292,14 @@ void RecordValue(const std::string& key, double value) {
   std::printf("[measured] %s: %s\n", key.c_str(), s.str().c_str());
 }
 
+/// Whether the process runs under the RT heap policy — set once at start, as
+/// the RT mains do, so the heap assertion below measures the production setting.
+bool g_rt_heap_configured = false;
+
 class RclcppEnv : public ::testing::Environment {
  public:
   void SetUp() override {
+    g_rt_heap_configured = rtc::ConfigureRtHeap();
     if (!rclcpp::ok()) {
       rclcpp::init(0, nullptr);
     }
@@ -791,4 +805,50 @@ TEST_F(RealPolicy, CountsTheHeapAllocationsOfTheRealEngine) {
   RecordValue("operator_new_per_run_iobinding", static_cast<double>(binding) / kCalls);
   RecordValue("operator_new_per_run_direct", static_cast<double>(direct) / kCalls);
   RecordValue("operator_new_per_policy_step_tick", static_cast<double>(ticks) / kCalls);
+
+  // D6 condition 3: everything a policy tick allocates is Run()'s. Any extra
+  // allocation is the controller's own and breaks RT-1 outright — the
+  // exception covers ORT and nothing around it.
+  EXPECT_EQ(ticks, binding) << "the policy tick allocates beyond Run(): the controller's share "
+                               "must be zero";
+}
+
+TEST_F(RealPolicy, SteadyStateRunsNeitherGrowNorTrimTheHeap) {
+  // D6 condition 2: under the RT heap policy, what ORT allocates inside Run()
+  // is recycled from the process's own free lists once warm — the heap the
+  // process holds stays the same size, so no Run() on the tick reaches the
+  // kernel. mallinfo2 sums every arena: `arena` is the heap held, `hblkhd`
+  // the mmapped blocks.
+  //
+  // What this does NOT prove: that the policy is what keeps the heap flat.
+  // Measured 2026-09-12 (ORT 1.30.0, glibc 2.39): 2000 Runs leave both deltas
+  // at zero WITHOUT ConfigureRtHeap too — ORT's per-Run blocks are small and
+  // come straight back off the free lists. So this is the invariant's sensor,
+  // and the policy is insurance for the tail this run length does not reach;
+  // the policy's own effect is pinned by rtc_base's test_rt_heap.
+  ASSERT_TRUE(g_rt_heap_configured) << "the RT heap policy is not in effect in this process";
+  ASSERT_TRUE(BringUp());
+  const auto state = fx::MakePregraspState();
+  InjectObjectInPolicyFrame(kNominalObject, NominalObjectOrientation());
+  ASSERT_TRUE(RunUntilAccepted(state));
+  auto& ort = engine_->inner();
+  for (int k = 0; k < 200; ++k) {  // warm-up: the arena reaches its working size
+    ASSERT_TRUE(ort.Run());
+  }
+
+  constexpr int kRuns = 2000;
+  const struct mallinfo2 before = mallinfo2();
+  bool all_ok = true;
+  for (int k = 0; k < kRuns; ++k) {
+    all_ok = ort.Run() && all_ok;
+  }
+  const struct mallinfo2 after = mallinfo2();
+  ASSERT_TRUE(all_ok);
+
+  RecordValue("heap_arena_delta_bytes",
+              static_cast<double>(after.arena) - static_cast<double>(before.arena));
+  RecordValue("heap_mmapped_delta_bytes",
+              static_cast<double>(after.hblkhd) - static_cast<double>(before.hblkhd));
+  EXPECT_EQ(after.arena, before.arena) << "steady-state Run()s changed the heap's size";
+  EXPECT_EQ(after.hblkhd, before.hblkhd) << "steady-state Run()s mmapped or unmapped a block";
 }

@@ -5,7 +5,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 패키지입니다. 신경망 모델을 실시간 제어 루프에서 결정론적으로 실행할 수 있도록 설계된 헤더 전용(header-only) INTERFACE 라이브러리이며, 초기화 이후 동적 메모리 할당 없이 추론을 수행합니다.
+RTC 프레임워크의 **ONNX Runtime 추론 엔진** 패키지입니다. 신경망 모델을 실시간 제어 루프에서 실행하기 위한 헤더 전용(header-only) INTERFACE 라이브러리로, 세션·텐서 버퍼·워밍업은 모두 초기화에서 끝나고 추론 호출은 `noexcept` 이며 이 래퍼 자신은 할당하지 않습니다. **단 ONNX Runtime 의 `Run()` 은 내부에서 매 호출 heap 을 할당합니다** (IoBinding 이든 직접 `Session::Run` 이든) — RT 경로에서의 호출은 [invariants.md](../agent_docs/invariants.md) RT 절의 조건부 수용 (RT-1 알려진 위반 2건째) 이며, 조건에는 RT 프로세스의 `rtc::ConfigureRtHeap()` 가 포함됩니다.
 
 ---
 
@@ -43,12 +43,12 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 
 모든 추론 백엔드의 추상 기반 클래스입니다. Non-copyable, non-movable이며 `rtc` 네임스페이스에 정의되어 있습니다.
 
-| 메서드 | 반환 타입 | RT-safe | 설명 |
+| 메서드 | 반환 타입 | RT 경로 | 설명 |
 |--------|-----------|---------|------|
 | `Init(const ModelConfig&)` | `void` | No | 모델 로드, 텐서 할당, 워밍업 (순수 가상) |
-| `Run()` | `bool` | Yes | 모든 등록된 모델에 대해 추론 실행 (순수 가상) |
-| `RunModel(int model_idx)` | `bool` | Yes | 단일 모델 추론 (기본 구현: `Run()` 위임) |
-| `RunModels(const int*, int)` | `bool` | Yes | 복수 모델 배치 추론 (기본 구현: `RunModel()` 순차 호출) |
+| `Run()` | `bool` | 조건부 ¹ | 모든 등록된 모델에 대해 추론 실행 (순수 가상) |
+| `RunModel(int model_idx)` | `bool` | 조건부 ¹ | 단일 모델 추론 (기본 구현: `Run()` 위임) |
+| `RunModels(const int*, int)` | `bool` | 조건부 ¹ | 복수 모델 배치 추론 (기본 구현: `RunModel()` 순차 호출) |
 | `input_buffer(int model_idx, int input_idx)` | `float*` | Yes | 사전 할당된 입력 버퍼 포인터 (범위 밖 → `nullptr`) |
 | `output_buffer(int model_idx, int output_idx)` | `const float*` | Yes | 출력 head 버퍼 포인터 반환 (범위 밖 → `nullptr`) |
 | `input_size(int model_idx, int input_idx)` | `std::size_t` | Yes | 입력 버퍼의 float 원소 수 (범위 밖 → `0`) |
@@ -58,7 +58,9 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 | `is_initialized()` | `bool` | Yes | 초기화 완료 여부 (순수 가상) |
 | `num_models()` | `int` | Yes | 등록된 모델 수 (순수 가상) |
 
-모든 RT-safe 메서드에는 `noexcept`가 지정되어 있으며, `Run()`, `RunModel()`, `RunModels()`에는 `[[nodiscard]]` 속성이 부여되어 반환값 무시를 방지합니다.
+¹ `noexcept`·무잠금이지만 ONNX Runtime 이 매 호출 heap 을 할당한다 — RT 경로 호출은 invariants.md RT 절의 수용 조건 (heap 정책·정상상태 무성장·호출자 몫 0·RT 실측) 하에서만. 실측 도구는 `integrated_bringup` 의 `test_demo_inference_real_model`.
+
+`Init()` 을 뺀 모든 메서드에는 `noexcept`가 지정되어 있으며, `Run()`, `RunModel()`, `RunModels()`에는 `[[nodiscard]]` 속성이 부여되어 반환값 무시를 방지합니다.
 
 ---
 

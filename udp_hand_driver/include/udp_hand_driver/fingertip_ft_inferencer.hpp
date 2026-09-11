@@ -14,8 +14,12 @@
 //
 // RT safety:
 //   - InitFT()에서 모든 동적 할당 수행 (non-RT 컨텍스트; session/tensor/warmup 은 engine 소유)
-//   - Infer()/FeedCalibration()는 noexcept + allocation-free
-//   - engine_.input_buffer()/output_buffer() 사전 할당 버퍼 위 zero-alloc 추론
+//   - Infer()/FeedCalibration()는 noexcept. 이 파일의 코드는 할당하지 않는다 —
+//     engine_.input_buffer()/output_buffer() 는 InitFT 에서 할당된 버퍼다
+//   - 단 ONNX Runtime 의 RunModels() 는 **내부에서 매 호출 할당**한다. CommLoop
+//     (SCHED_FIFO) 에서의 호출은 RT-1 의 조건부 수용이다 (agent_docs/invariants.md
+//     RT 절 — heap 정책은 udp_hand_node main 의 ConfigureRtHeap; 이 경로의
+//     정상상태 무성장·호출자 몫 실측은 아직 없다)
 //
 // Baseline Offset Calibration:
 //   - InitFT() 이후 FeedCalibration()으로 센서 baseline 자동 측정
@@ -280,7 +284,7 @@ class FingertipFTInferencer {
                 config_.calibration_samples);
   }
 
-  // ── Inference (noexcept, allocation-free) ──────────────────────────────────
+  // ── Inference (noexcept; allocates only inside ORT's RunModels — see top) ───
 
   /// Per-fingertip 순차 추론. sensor_data에서 barometer만 추출 → 정규화 → history FIFO → 추론.
   /// 3-head output: sigmoid(contact_logit) + u 필터링 + 직렬화.
