@@ -277,11 +277,11 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 ### ARCH-5 세부 스펙
 
-`robot_descriptions`는 C++ target / 헤더 / 라이브러리 export가 0건인 data-only 패키지다 ([robot_descriptions/CMakeLists.txt](../robot_descriptions/CMakeLists.txt)는 `install(DIRECTORY robots/)` 한 줄뿐). 소비 패키지는 다음만 사용한다:
+`robot_descriptions`는 C++ target / 헤더 / 라이브러리 export가 0건인 data-only 패키지다 ([robot_descriptions/CMakeLists.txt](../robot_descriptions/CMakeLists.txt)는 `install(DIRECTORY)` 세 벌뿐 — `robots/` · `object_sim/` · `objects/`; 파일 수는 늘어도 **빌드되는 것은 여전히 0** 이라는 것이 이 규칙의 전제다). 소비 패키지는 다음만 사용한다:
 
 **허용**:
 - `package.xml`: `<exec_depend>robot_descriptions</exec_depend>`
-- `package.xml`: `<test_depend>robot_descriptions</test_depend>` — **테스트가 아래 ament 런타임 lookup 을 쓸 때 설치 순서를 보장하는 용도로만**. colcon 토폴로지 엣지는 생기지만 (`colcon list --packages-up-to <pkg>` 에 나타난다) 아래 근거가 보호하려는 것은 깨지지 않는다: `robot_descriptions` 는 `install(DIRECTORY)` 한 줄이라 빌드 비용이 사실상 0 이고, 별도 overlay 에 두면 colcon 이 dep 을 해석하지 못해 **엣지 자체가 생기지 않는다**. 현 사례는 `rtc_controller_manager` (테스트가 `urdf.package` 파라미터로 share dir 을 런타임 resolve — 이 dep 이 없으면 병렬 빌드에서 설치 순서가 보장되지 않아 flaky)
+- `package.xml`: `<test_depend>robot_descriptions</test_depend>` — **테스트가 아래 ament 런타임 lookup 을 쓸 때 설치 순서를 보장하는 용도로만**. colcon 토폴로지 엣지는 생기지만 (`colcon list --packages-up-to <pkg>` 에 나타난다) 아래 근거가 보호하려는 것은 깨지지 않는다: `robot_descriptions` 는 `install(DIRECTORY)` 뿐이라 빌드 비용이 사실상 0 이고, 별도 overlay 에 두면 colcon 이 dep 을 해석하지 못해 **엣지 자체가 생기지 않는다**. 현 사례는 `rtc_controller_manager` (테스트가 `urdf.package` 파라미터로 share dir 을 런타임 resolve — 이 dep 이 없으면 병렬 빌드에서 설치 순서가 보장되지 않아 flaky)
 - C++: `ament_index_cpp::get_package_share_directory("robot_descriptions")`
 - Python: `ament_index_python.packages.get_package_share_directory("robot_descriptions")`
 - URDF/MJCF/launch/YAML: `package://robot_descriptions/robots/<name>/...` URL, 또는 패키지명 문자열 (rtc_controller_manager 가 런타임 resolve — `rtc_controller_manager/src/rt_controller_node_params.cpp` 참조)
