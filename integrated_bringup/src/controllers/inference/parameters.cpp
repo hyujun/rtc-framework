@@ -5,12 +5,12 @@
 // What lands here is everything that is self-contained in the YAML.
 
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
-#include "rtc_math/se3/so3.hpp"
-
-#include <Eigen/Core>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -40,67 +40,51 @@ std::vector<double> ParsePosture(const YAML::Node& node, const char* where) {
   return out;
 }
 
-/// "base" | "world", defaulting to world (the frame the policy's object pose
-/// is quoted in). Anything else is a typo and is refused rather than silently
-/// falling back — the two frames differ by 180 deg about z on this robot, and
-/// the wrong one produces poses that look entirely reasonable.
-PoseFrame ParsePoseFrame(const YAML::Node& node, const char* where) {
-  const auto s = node ? node.as<std::string>("world") : std::string("world");
-  if (s == "world") {
-    return PoseFrame::kWorld;
+/// Refuse the frame keys this binding stopped reading, naming the migration.
+///
+/// Without this an old config would fail as "palm.position has unknown id" —
+/// true and useless — or, worse, configure: `base_pose_in_world` would simply be
+/// ignored while the policy went on receiving poses in whatever frame the new
+/// keys default to. The rotation it carried is now read from the URDF.
+void RejectLegacyFrameKeys(const YAML::Node& inf) {
+  if (inf["palm"]) {
+    throw std::invalid_argument(
+        "demo_inference_controller: inference.palm is gone. Observe the palm as a link feature "
+        "(`link.<frame>.position` / `link.<frame>.orientation_xyzw`) and name the frame every "
+        "pose is expressed in with `inference.policy_frame: <urdf frame>`");
   }
-  if (s == "base") {
-    return PoseFrame::kBase;
+  if (inf["base_pose_in_world"]) {
+    throw std::invalid_argument(
+        "demo_inference_controller: inference.base_pose_in_world is gone. Poses are expressed in "
+        "`inference.policy_frame` (a URDF frame), and the object lane names the URDF frame its "
+        "messages are quoted in with `object_pose.source_frame_link` — the transform between the "
+        "two is read from the model instead of typed in");
   }
-  throw std::invalid_argument(std::string("demo_inference_controller: ") + where +
-                              " must be \"world\" or \"base\" (got \"" + s + "\")");
+  if (const YAML::Node obj = inf["object_pose"]; obj && obj.IsMap() && obj["reference_frame"]) {
+    throw std::invalid_argument(
+        "demo_inference_controller: inference.object_pose.reference_frame is gone. The object "
+        "pose is delivered in `inference.policy_frame`; declare which URDF frame the incoming "
+        "messages are in with `object_pose.source_frame_link`");
+  }
 }
 
-/// The static `world → base` transform. Identity when the key is absent, which
-/// is the right default for a robot mounted at the world origin; this one is
-/// not, and says so in its config rather than in this file.
-pinocchio::SE3 ParseBasePoseInWorld(const YAML::Node& node) {
-  if (!node) {
-    return pinocchio::SE3::Identity();
+/// A required, non-empty string key.
+std::string RequireString(const YAML::Node& node, const std::string& where, const char* why) {
+  if (!node || !node.IsScalar()) {
+    throw std::invalid_argument("demo_inference_controller: " + where + " is required (" + why +
+                                ")");
   }
-  if (!node.IsMap()) {
-    throw std::invalid_argument(
-        "demo_inference_controller: inference.base_pose_in_world must be a map with `position` "
-        "and `rpy`");
+  auto s = node.as<std::string>("");
+  if (s.empty()) {
+    throw std::invalid_argument("demo_inference_controller: " + where + " is empty");
   }
-  Eigen::Vector3d p = Eigen::Vector3d::Zero();
-  Eigen::Vector3d rpy = Eigen::Vector3d::Zero();
-  if (const auto pn = node["position"]) {
-    if (!pn.IsSequence() || pn.size() != 3) {
-      throw std::invalid_argument(
-          "demo_inference_controller: inference.base_pose_in_world.position must be [x, y, z]");
-    }
-    for (int i = 0; i < 3; ++i) {
-      p[i] = pn[static_cast<std::size_t>(i)].as<double>();
-    }
-  }
-  if (const auto rn = node["rpy"]) {
-    if (!rn.IsSequence() || rn.size() != 3) {
-      throw std::invalid_argument(
-          "demo_inference_controller: inference.base_pose_in_world.rpy must be [r, p, y] in rad "
-          "(ZYX Euler, the repo boundary convention)");
-    }
-    for (int i = 0; i < 3; ++i) {
-      rpy[i] = rn[static_cast<std::size_t>(i)].as<double>();
-    }
-  }
-  if (!p.allFinite() || !rpy.allFinite()) {
-    throw std::invalid_argument(
-        "demo_inference_controller: inference.base_pose_in_world carries a non-finite value");
-  }
-  return pinocchio::SE3(rtc::math::se3::RpyToRotationZyx(rpy), p);
+  return s;
 }
 
 }  // namespace
 
 void DemoInferenceController::LoadConfig(const YAML::Node& cfg) {
-  // Base pass first: it owns `topics:` (this controller declares none, which is
-  // legal) and `command_type`.
+  // Base pass first: it owns `topics:` and `command_type`.
   RTControllerInterface::LoadConfig(cfg);
 
   if (!cfg || !cfg.IsMap()) {
@@ -130,8 +114,11 @@ void DemoInferenceController::LoadConfig(const YAML::Node& cfg) {
   if (!inf || !inf.IsMap()) {
     throw std::invalid_argument("demo_inference_controller: an `inference:` map is required");
   }
+  RejectLegacyFrameKeys(inf);
 
-  model_path_ = inf["model_path"].as<std::string>("");
+  // Kept as written. `${VAR}` / `~` are expanded in on_configure, where an unset
+  // variable can still become a hold mode instead of a thrown LoadConfig.
+  model_path_raw_ = inf["model_path"].as<std::string>("");
   optimized_model_path_ = inf["optimized_model_path"].as<std::string>("");
   intra_op_threads_ = inf["intra_op_threads"].as<int>(1);
   if (intra_op_threads_ < 1) {
@@ -150,9 +137,59 @@ void DemoInferenceController::LoadConfig(const YAML::Node& cfg) {
         "after any hold, negative never resets outside activation)");
   }
 
-  // `hand_posture` is NOT read here. Whether it is required at all depends on
-  // whether a `posture_scalar` role is declared, and roles are only resolvable
-  // once the device rosters exist — so it moved to Pass 3 (#511 D-9).
+  // `hand_posture`, `joint_convention`, `reach_gate` and the frame keys are NOT
+  // read here: each is checked against the device rosters or the feature list,
+  // and those only exist in Pass 3 (#511 D-9).
+}
+
+bool DemoInferenceController::ExpandModelPath(const std::string& raw, std::string& out,
+                                              std::string& missing) {
+  out.clear();
+  missing.clear();
+  std::size_t i = 0;
+  // A leading `~` is the user's home, and only at the start: a `~` anywhere
+  // else is a character of a file name.
+  if (!raw.empty() && raw[0] == '~' && (raw.size() == 1 || raw[1] == '/')) {
+    const char* home = std::getenv("HOME");
+    if (home == nullptr || *home == '\0') {
+      missing = "HOME";
+      return false;
+    }
+    out = home;
+    i = 1;
+  }
+  while (i < raw.size()) {
+    if (raw[i] == '$' && i + 1 < raw.size() && raw[i + 1] == '{') {
+      const auto close = raw.find('}', i + 2);
+      if (close == std::string::npos) {
+        throw std::invalid_argument("demo_inference_controller: inference.model_path '" + raw +
+                                    "' has an unterminated `${`");
+      }
+      const std::string name = raw.substr(i + 2, close - (i + 2));
+      const bool valid_name =
+          !name.empty() &&
+          (std::isalpha(static_cast<unsigned char>(name[0])) != 0 || name[0] == '_') &&
+          std::all_of(name.begin(), name.end(), [](char c) {
+            return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+          });
+      if (!valid_name) {
+        throw std::invalid_argument("demo_inference_controller: inference.model_path '" + raw +
+                                    "' references `${" + name +
+                                    "}`, which is not a valid environment variable name");
+      }
+      const char* value = std::getenv(name.c_str());
+      if (value == nullptr || *value == '\0') {
+        missing = name;
+        return false;
+      }
+      out += value;
+      i = close + 1;
+      continue;
+    }
+    out += raw[i];
+    ++i;
+  }
+  return true;
 }
 
 // ── Pass 3: the half of the schema that needs the device rosters ────────────
@@ -169,8 +206,42 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
     throw std::invalid_argument("demo_inference_controller: an `inference:` map is required");
   }
 
-  io_ = rtc::params::ParsePolicyIoParams(inf,
-                                         [this](std::string_view id) { return FeatureSize(id); });
+  // The rosters must fit the fixed capacities the tick indexes. OnDeviceConfigsSet
+  // clamps the DOF it keeps, and a feature as wide as the UNclamped roster would
+  // then be packed with a tail the tick never wrote.
+  if (const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+      arm_cfg != nullptr &&
+      arm_cfg->joint_state_names.size() > static_cast<std::size_t>(kMaxArmDof)) {
+    throw std::invalid_argument("demo_inference_controller: the primary device declares " +
+                                std::to_string(arm_cfg->joint_state_names.size()) +
+                                " joints, over the fixed capacity of " +
+                                std::to_string(kMaxArmDof));
+  }
+  if (const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName()); hand_cfg != nullptr) {
+    if (hand_cfg->joint_state_names.size() > static_cast<std::size_t>(kMaxHandDof)) {
+      throw std::invalid_argument("demo_inference_controller: the secondary device declares " +
+                                  std::to_string(hand_cfg->joint_state_names.size()) +
+                                  " joints, over the fixed capacity of " +
+                                  std::to_string(kMaxHandDof));
+    }
+    if (hand_cfg->sensor_names.size() > static_cast<std::size_t>(kMaxFingertips)) {
+      throw std::invalid_argument("demo_inference_controller: the secondary device declares " +
+                                  std::to_string(hand_cfg->sensor_names.size()) +
+                                  " sensor groups, over the fixed capacity of " +
+                                  std::to_string(kMaxFingertips));
+    }
+  }
+
+  io_ = rtc::params::ParsePolicyIoParams(
+      inf,
+      [this](std::string_view id) {
+        ResolvedFeature r;
+        return ResolveFeature(id, r) ? r.width : 0;
+      },
+      [this](std::string_view id) {
+        ResolvedFeature r;
+        return ResolveFeature(id, r) ? r.rows : std::vector<std::string>{};
+      });
 
   if (io_.inputs.size() > static_cast<std::size_t>(kMaxInputTensors)) {
     throw std::invalid_argument(
@@ -178,79 +249,240 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
         " input tensors, over the fixed capacity of " + std::to_string(kMaxInputTensors));
   }
 
-  // Feature kinds, FLATTENED across tensors. `FeatureFromId` cannot tell arm
-  // from hand on its own (both spell "<group>.position"), so the group name
-  // decides here, where it is known — one pass over the ids the parser already
-  // accepted. Each feature keeps its segment, and the segment carries its own
-  // tensor index, so the tick walks one flat list instead of nesting two loops.
-  const auto primary = GetPrimaryDeviceName();
+  // ── Feature table, FLATTENED across tensors ───────────────────────────────
+  // Each feature keeps its segment, and the segment carries its own tensor
+  // index, so the tick walks one flat list instead of nesting two loops. Links
+  // are interned by name so a link observed twice (a position row and an
+  // orientation row) is computed once per step.
   feature_kinds_.clear();
+  feature_args_.clear();
   flat_segments_.clear();
+  links_.clear();
+  bool wants_links = false;
+  bool wants_reach = false;
+  wants_object_ = false;
   for (const auto& tensor : io_.inputs) {
     for (std::size_t f = 0; f < tensor.features.size(); ++f) {
       const auto& id = tensor.features[f];
-      PolicyFeature kind{};
-      if (!FeatureFromId(id, kind)) {
-        // Unreachable through ParsePolicyIoParams (FeatureSize already refused
-        // any id this switch does not know) — kept so the two tables cannot
-        // drift apart silently if one gains an entry the other does not.
+      ResolvedFeature r;
+      if (!ResolveFeature(id, r)) {
+        // Unreachable through ParsePolicyIoParams (its size resolver is this
+        // same function) — kept so a future resolver split cannot drift.
         throw std::invalid_argument("demo_inference_controller: feature '" + id +
                                     "' has a size but no extractor (binding bug)");
       }
-      if (kind == PolicyFeature::kArmPosition) {
-        const auto dot = id.rfind('.');
-        const auto group = id.substr(0, dot);
-        kind = (group == primary) ? PolicyFeature::kArmPosition : PolicyFeature::kHandPosition;
+      int arg = -1;
+      switch (r.kind) {
+        case PolicyFeature::kGroupForceNorm:
+          arg = r.group;
+          break;
+        case PolicyFeature::kLinkPosition:
+        case PolicyFeature::kLinkOrientationXyzw:
+          arg = InternLink(r.link);
+          wants_links = true;
+          break;
+        case PolicyFeature::kReachPhase:
+          wants_reach = true;
+          break;
+        case PolicyFeature::kObjectPosition:
+        case PolicyFeature::kObjectOrientationXyzw:
+          wants_object_ = true;
+          break;
+        default:
+          break;
       }
-      feature_kinds_.push_back(kind);
+      feature_kinds_.push_back(r.kind);
+      feature_args_.push_back(arg);
       flat_segments_.push_back(tensor.segments[f]);
     }
   }
 
-  // ── Pose-feature configuration ────────────────────────────────────────────
-  // Required only when a pose feature asks for it. Demanding `palm:` from a
-  // policy that observes joints and forces alone would be a configure failure
-  // with nothing wrong.
-  const bool wants_palm =
-      std::any_of(feature_kinds_.begin(), feature_kinds_.end(), [](PolicyFeature k) {
-        return k == PolicyFeature::kPalmPosition || k == PolicyFeature::kPalmOrientationXyzw;
-      });
-  const bool wants_object =
-      std::any_of(feature_kinds_.begin(), feature_kinds_.end(), [](PolicyFeature k) {
-        return k == PolicyFeature::kObjectPosition || k == PolicyFeature::kObjectOrientationXyzw;
-      });
-
-  if (wants_palm) {
-    // No default link name. A wrong one is caught here (frame lookup fails at
-    // configure), but a DEFAULT that happens to exist on some other robot would
-    // resolve and silently feed the policy the wrong body — the original
-    // design's default was `hand_base_link`, a leap-hand link that does not
-    // exist on this hand at all.
-    const YAML::Node palm = inf["palm"];
-    if (!palm || !palm.IsMap() || !palm["link"]) {
-      throw std::invalid_argument(
-          "demo_inference_controller: a palm pose feature is declared, so inference.palm.link is "
-          "required (the link whose pose the policy observes)");
+  // ── Recurrent seeds ───────────────────────────────────────────────────────
+  // Restricted to device lanes and the object pose: a seed is extracted BEFORE
+  // the observation is packed, and a link pose or the reach gate only exists
+  // once that packing has computed it.
+  seeds_.clear();
+  for (const auto& link : io_.recurrent_links) {
+    const auto& spec = io_.inputs[static_cast<std::size_t>(link.input_tensor)];
+    RecurrentSeed seed;
+    seed.tensor = link.input_tensor;
+    if (!spec.seed_feature.empty()) {
+      ResolvedFeature r;
+      if (!ResolveFeature(spec.seed_feature, r)) {
+        throw std::invalid_argument("demo_inference_controller: recurrent input '" + spec.name +
+                                    "' is seeded from unknown id '" + spec.seed_feature + "'");
+      }
+      if (r.kind == PolicyFeature::kLinkPosition || r.kind == PolicyFeature::kLinkOrientationXyzw ||
+          r.kind == PolicyFeature::kReachPhase) {
+        throw std::invalid_argument(
+            "demo_inference_controller: recurrent input '" + spec.name + "' is seeded from '" +
+            spec.seed_feature +
+            "', which is computed while the observation is packed — after the seed is taken. "
+            "Seed from a joint lane, a force lane or the object pose");
+      }
+      seed.has_seed = true;
+      seed.kind = r.kind;
+      seed.arg = (r.kind == PolicyFeature::kGroupForceNorm) ? r.group : -1;
+      seed.width = r.width;
     }
-    palm_link_ = palm["link"].as<std::string>("");
-    if (palm_link_.empty()) {
-      throw std::invalid_argument("demo_inference_controller: inference.palm.link is empty");
-    }
-    palm_frame_ = ParsePoseFrame(palm["reference_frame"], "inference.palm.reference_frame");
+    seeds_.push_back(seed);
   }
 
-  if (wants_object) {
+  // ── Joint convention ──────────────────────────────────────────────────────
+  // `q_policy = sign · q_device + offset`. A training asset can define a joint's
+  // axis opposite to this robot's URDF, which is invisible to every range check:
+  // the flipped value is still inside the limits, and the hand simply closes by
+  // opening. Each key must be a joint of one of the two devices — a typo here
+  // would otherwise leave that joint at identity and look exactly like a joint
+  // that needs none.
+  arm_sign_.fill(1.0);
+  arm_offset_.fill(0.0);
+  hand_sign_.fill(1.0);
+  hand_offset_.fill(0.0);
+  const auto primary = GetPrimaryDeviceName();
+  const auto secondary = GetSecondaryDeviceName();
+  if (const YAML::Node conv = inf["joint_convention"]) {
+    if (!conv.IsMap()) {
+      throw std::invalid_argument(
+          "demo_inference_controller: inference.joint_convention must be a map of "
+          "<joint>: {sign: ±1, offset: <rad>}");
+    }
+    const auto* arm_cfg = GetDeviceNameConfig(primary);
+    const auto* hand_cfg = secondary.empty() ? nullptr : GetDeviceNameConfig(secondary);
+    for (auto it = conv.begin(); it != conv.end(); ++it) {
+      const auto joint = it->first.as<std::string>("");
+      const std::string at = "inference.joint_convention." + joint;
+      const YAML::Node entry = it->second;
+      if (!entry.IsMap()) {
+        throw std::invalid_argument("demo_inference_controller: " + at +
+                                    " must be a map {sign: ±1, offset: <rad>}");
+      }
+      for (auto k = entry.begin(); k != entry.end(); ++k) {
+        const auto key = k->first.as<std::string>("");
+        if (key != "sign" && key != "offset") {
+          throw std::invalid_argument("demo_inference_controller: " + at + " has unknown key '" +
+                                      key + "' (this binding knows `sign` and `offset`)");
+        }
+      }
+      const double sign = entry["sign"] ? entry["sign"].as<double>(0.0) : 1.0;
+      if (sign != 1.0 && sign != -1.0) {
+        // A scale is not a convention: it would change the unit of the lane,
+        // and nothing downstream could tell.
+        throw std::invalid_argument("demo_inference_controller: " + at +
+                                    ".sign must be exactly 1 or -1");
+      }
+      const double offset =
+          entry["offset"] ? entry["offset"].as<double>(std::numeric_limits<double>::quiet_NaN())
+                          : 0.0;
+      if (!std::isfinite(offset)) {
+        throw std::invalid_argument("demo_inference_controller: " + at +
+                                    ".offset must be a finite number [rad]");
+      }
+      bool found = false;
+      const auto place = [&](const rtc::DeviceNameConfig* dev, auto& signs, auto& offsets,
+                             int dof) {
+        if (dev == nullptr) {
+          return;
+        }
+        const auto& names = dev->joint_state_names;
+        const auto pos = std::find(names.begin(), names.end(), joint);
+        if (pos == names.end()) {
+          return;
+        }
+        const auto idx = static_cast<std::size_t>(pos - names.begin());
+        if (idx < static_cast<std::size_t>(dof)) {
+          signs[idx] = sign;
+          offsets[idx] = offset;
+          found = true;
+        }
+      };
+      place(arm_cfg, arm_sign_, arm_offset_, arm_dof_);
+      place(hand_cfg, hand_sign_, hand_offset_, hand_dof_);
+      if (!found) {
+        throw std::invalid_argument("demo_inference_controller: " + at + " names joint '" + joint +
+                                    "', which neither device ('" + primary + "', '" + secondary +
+                                    "') declares");
+      }
+    }
+  }
+
+  // ── Reach gate ────────────────────────────────────────────────────────────
+  // Both directions are refused: `reach.phase` without a gate has no formula,
+  // and a gate that no feature reads is a block of trained constants that looks
+  // configured and does nothing.
+  reach_enabled_ = false;
+  reach_tips_ = 0;
+  reach_state_ = {};
+  reach_state_pending_ = {};
+  reach_pending_ = false;
+  const YAML::Node gate = inf["reach_gate"];
+  if (wants_reach && !gate) {
+    throw std::invalid_argument(
+        "demo_inference_controller: the feature `reach.phase` is declared, so "
+        "inference.reach_gate is required (tips, force groups, contact points)");
+  }
+  if (gate && !wants_reach) {
+    throw std::invalid_argument(
+        "demo_inference_controller: inference.reach_gate is declared but no input feature reads "
+        "`reach.phase` — the gate would be computed for nothing");
+  }
+  if (wants_reach) {
+    reach_ = rtc::params::ParseReachGateParams(gate);
+    if (reach_.tips.size() > static_cast<std::size_t>(kMaxReachTips)) {
+      throw std::invalid_argument(
+          "demo_inference_controller: reach_gate declares " + std::to_string(reach_.tips.size()) +
+          " tips, over the fixed capacity of " + std::to_string(kMaxReachTips));
+    }
+    const auto* hand_cfg = secondary.empty() ? nullptr : GetDeviceNameConfig(secondary);
+    if (hand_cfg == nullptr) {
+      throw std::invalid_argument(
+          "demo_inference_controller: the reach gate reads fingertip forces from the hand's "
+          "sensor groups, and there is no hand device config");
+    }
+    for (std::size_t i = 0; i < reach_.tips.size(); ++i) {
+      const auto& tip = reach_.tips[i];
+      const auto& groups = hand_cfg->sensor_names;
+      const auto g = std::find(groups.begin(), groups.end(), tip.force_group);
+      if (g == groups.end()) {
+        throw std::invalid_argument("demo_inference_controller: reach_gate.tips[" +
+                                    std::to_string(i) + "] reads force group '" + tip.force_group +
+                                    "', which device '" + secondary +
+                                    "' does not list in sensor_names");
+      }
+      reach_force_group_[i] = static_cast<int>(g - groups.begin());
+      reach_link_slot_[i] = InternLink(tip.link);
+      for (std::size_t c = 0; c < 3; ++c) {
+        reach_contacts_[(3 * i) + c] = tip.contact_obj[c];
+      }
+    }
+    reach_tips_ = static_cast<int>(reach_.tips.size());
+    reach_enabled_ = true;
+    // The gate measures tips against the object, so it needs the object lane
+    // even when no input observes the object directly.
+    wants_object_ = true;
+    wants_links = true;
+  }
+
+  // ── Frames ────────────────────────────────────────────────────────────────
+  // Required only when a pose is observed. Demanding it from a policy that
+  // observes joints and forces alone would be a configure failure with nothing
+  // wrong.
+  policy_frame_.clear();
+  if (wants_links || wants_object_) {
+    policy_frame_ = RequireString(inf["policy_frame"], "inference.policy_frame",
+                                  "a pose is observed, and every pose is expressed in this URDF "
+                                  "frame — the one the policy was trained in");
+  }
+
+  if (wants_object_) {
     const YAML::Node obj = inf["object_pose"];
     if (!obj || !obj.IsMap()) {
       throw std::invalid_argument(
-          "demo_inference_controller: an object pose feature is declared, so "
-          "inference.object_pose is required (topic + frame match)");
+          "demo_inference_controller: the object pose is observed (an object feature or the "
+          "reach gate), so inference.object_pose is required (topic + frame match)");
     }
-    object_topic_ = obj["topic"].as<std::string>("");
-    if (object_topic_.empty()) {
-      throw std::invalid_argument(
-          "demo_inference_controller: inference.object_pose.topic is empty");
-    }
+    object_topic_ =
+        RequireString(obj["topic"], "inference.object_pose.topic", "the TFMessage topic");
     object_frame_match_ = obj["frame_match"].as<std::string>("");
     if (object_frame_match_.empty()) {
       throw std::invalid_argument(
@@ -268,13 +500,16 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
           "\"exact\" (got \"" +
           mode + "\")");
     }
-    object_frame_ = ParsePoseFrame(obj["reference_frame"], "inference.object_pose.reference_frame");
     object_source_frame_id_ = obj["source_frame_id"].as<std::string>("world");
     if (object_source_frame_id_.empty()) {
       throw std::invalid_argument(
           "demo_inference_controller: inference.object_pose.source_frame_id is empty — it is what "
           "turns \"the incoming poses are in world\" from an assumption into a check");
     }
+    object_source_frame_link_ =
+        RequireString(obj["source_frame_link"], "inference.object_pose.source_frame_link",
+                      "the URDF frame the incoming messages are quoted in, so the model can supply "
+                      "the transform into policy_frame");
     object_timeout_sec_ = obj["timeout_sec"].as<double>(0.2);
     if (!(object_timeout_sec_ > 0.0)) {
       throw std::invalid_argument(
@@ -283,9 +518,6 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
           "while a real perception stack runs at 10-30 Hz");
     }
   }
-
-  // ── What `world` means ────────────────────────────────────────────────────
-  world_from_base_ = ParseBasePoseInWorld(inf["base_pose_in_world"]);
 
   // ── Fixed-capacity check ──────────────────────────────────────────────────
   // Per tensor, because the capacities bound the buffers the tick indexes and
@@ -317,9 +549,10 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
   // The device half is matched against the group rosters the same way input
   // features are, so `banana.joint_target` is a configure failure naming both
   // groups instead of a command quietly bound to the arm.
-  const auto secondary = GetSecondaryDeviceName();
   arm_target_idx_ = -1;
   hand_command_idx_ = -1;
+  arm_out_idx_.clear();
+  hand_out_idx_.clear();
   for (std::size_t i = 0; i < io_.output_features.size(); ++i) {
     const auto& spec = io_.output_features[i];
     const std::string at =
@@ -346,6 +579,21 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
                                   "\"posture_scalar\")");
     }
 
+    // A head that names its elements is gathered BY NAME into the device's
+    // joint order (A3). The width check below still applies, so a named head
+    // must name exactly the device's joints — each once (the parser refuses a
+    // repeated name) and nothing else.
+    const auto& tensor = io_.outputs[static_cast<std::size_t>(spec.slice.tensor)];
+    std::vector<int> gather;
+    if (!tensor.element_names.empty() && role == PolicyOutputRole::kJointTarget) {
+      const auto* dev = GetDeviceNameConfig(spec.device);
+      if (dev == nullptr) {
+        throw std::invalid_argument(at + "device '" + spec.device + "' has no joint roster");
+      }
+      gather = rtc::params::ResolveNamedIndices(tensor.element_names, dev->joint_state_names,
+                                                "output tensor '" + tensor.name + "'");
+    }
+
     const int count = spec.slice.count;
     if (is_primary) {
       if (role != PolicyOutputRole::kJointTarget) {
@@ -359,6 +607,7 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
                                     std::to_string(arm_dof_) + " joints");
       }
       arm_target_idx_ = static_cast<int>(i);
+      arm_out_idx_ = std::move(gather);
       continue;
     }
 
@@ -378,6 +627,7 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
     }
     hand_command_idx_ = static_cast<int>(i);
     hand_role_ = role;
+    hand_out_idx_ = std::move(gather);
   }
   if (arm_target_idx_ < 0) {
     throw std::invalid_argument(

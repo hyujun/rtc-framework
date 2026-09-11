@@ -1,17 +1,24 @@
 # demo_inference_controller — ONNX 정책으로 UR5e + proto_1b 를 구동한다
 #
-# 이 파일이 정책의 **관측 계약**이다. 학습 때와 순서·폭·정규화·프레임이 하나라도
-# 어긋나면 명령은 여전히 유한하고 관절한계 안이며 그럴듯하게 움직인다 — 그래서
-# 여기 있는 모든 키가 configure 에서 검증되고, 어긋나면 bring-up 이 거부된다.
-# 스키마 규칙의 SSoT 는 rtc_controllers/params/policy_io_params.hpp 다.
+# 이 파일이 정책의 **관측 계약**이다. 학습 때와 순서·폭·정규화·프레임·관절 부호가
+# 하나라도 어긋나면 명령은 여전히 유한하고 관절한계 안이며 그럴듯하게 움직인다 —
+# 그래서 여기 있는 모든 키가 configure 에서 검증되고, 어긋나면 bring-up 이 거부된다.
+# 스키마 규칙의 SSoT 는 rtc_controllers/params/policy_io_params.hpp (텐서) 와
+# rtc_controllers/params/reach_gate_params.hpp (reach gate) 다.
+#
+# 대상 정책: ObjectHandGraspDeployMulti5-Export-v0 (입력 16 / 출력 9). 텐서 이름·shape·
+# element_names 는 그 export YAML 을 옮긴 것이고, 모델에 없는 사실(프레임·관절 부호·
+# 물체 프레임)은 그래프와 FK 로 역산해 확정했다.
 
 demo_inference_controller:
   command_type: "position" # 정책 head 는 rad 를 낸다. "torque" 는 configure 실패
 
   # ── Joint command tail (§7.3) ──────────────────────────────────────────────
-  # clamp [q_min+δ, q_max−δ] → 측정 q 기준 rate rebound 순서로 적용된다
-  # (rtc_controllers/compliance/joint_command_tail.hpp). δ=0 은 device 한계를
-  # 그대로 쓴다는 뜻이고, 밴드를 뒤집는 값은 거부된다.
+  # clamp [q_min+δ, q_max−δ] → **직전 명령** 기준 rate rebound 순서로 적용된다
+  # (rtc_controllers/compliance/joint_command_tail.hpp). 측정 q 기준이면 명령이 측정을
+  # tick 당 v_max·dt 이상 앞설 수 없어, 추종 지연이 있는 서보에서는 팔이 자기 지연에
+  # 묶여 기어간다 (sim 실측 ≈0.02 rad/s vs 정책 slew 0.5 rad/s). activation 과 hold
+  # 직후에는 측정 q 에서 다시 시작한다. δ=0 은 device 한계를 그대로 쓴다는 뜻이다.
   joint_limit_margin: 0.0
 
   # ── 컨트롤러 소유 토픽 ──────────────────────────────────────────────────────
@@ -31,189 +38,286 @@ demo_inference_controller:
 
   inference:
     # ── 모델 ─────────────────────────────────────────────────────────────────
-    # 아직 정책 파일이 없다. allow_missing_model 은 그 상태를 **명시적으로**
-    # 옵트인하는 키이며, 이때 컨트롤러는 configure 에 성공한 뒤 매 tick 측정 q 를
-    # hold 하고 activation 에서 1회 경고한다 — 배선·토픽·게이트를 모델 없이
-    # 그대로 검증할 수 있게 하기 위해서다. 이 키 없이 빈 경로면 configure 실패다.
+    # 모델 파일은 저장소 밖에 둔다 (public repo). `${RTC_POLICY_DIR}` 는 configure 에서
+    # 환경변수로 펼쳐지고 (`~` 도 지원), 변수가 설정돼 있지 않으면 allow_missing_model
+    # 에 따라 **hold 모드**로 올라온다 — 경고에 변수 이름이 찍힌다. 변수가 설정돼 있는데
+    # 파일이 없거나 이름·shape 이 아래 선언과 다르면 allow_missing_model 과 무관하게
+    # configure 실패다 (경로를 가리킨 순간 그 오타는 "이 머신에 정책이 없음" 이 아니다).
     #
-    # 모델을 받으면: model_path 를 채우고 allow_missing_model 을 지운다. 그
-    # 순간부터 .onnx 의 실제 이름·shape 이 아래 inputs/outputs 선언과 다르면
-    # OnnxEngine::Init 이 throw 해 bring-up 이 거부된다 (retrain drift 의 1차 방어선).
+    #   export RTC_POLICY_DIR=/path/to/ObjectHandGraspDeployMulti5-Export-v0
     #
-    # 다만 shape 이 맞는 것과 RT 예산 안에 드는 것은 다른 사실이고, 아래 둘은
-    # 모델이 없으면 원리적으로 못 잰다 — 그래서 수령 시점의 측정 항목이다:
-    #   - RT allocation. test_demo_inference_alloc 이 고정하는 것은 FakeEngine
-    #     경로뿐이다. 실제 Run() 은 IoBinding 위에서도 내부 할당을 할 수 있고,
-    #     그건 RT-1 위반인데 tick 은 여전히 정상으로 보인다.
-    #   - p99 latency. decimation 10 이면 정책 1 step 예산이 20 ms 다. 초과분은
-    #     에러가 아니라 tick 지연으로 나타나므로 예산 대비 p99 를 재고 나서
-    #     decimation 을 확정한다.
-    model_path: ""
+    # shape 이 맞는 것과 RT 예산 안에 드는 것은 다른 사실이다. test_demo_inference_alloc
+    # 이 고정하는 것은 FakeEngine 경로뿐이라, 실제 ORT Run() 의 내부 할당과 p99 지연은
+    # 실모델로 따로 잰다 (정책 1 step 예산 = decimation 5 × 2 ms = 10 ms).
+    model_path: "${RTC_POLICY_DIR}/ObjectHandGraspDeployMulti5-Export-v0.onnx"
     allow_missing_model: true
     optimized_model_path: "" # ORT graph-optimized 캐시 경로 (빈 값 = 비활성)
     intra_op_threads: 1 # RT: single-threaded inference
 
     # ── 정책 주기 ────────────────────────────────────────────────────────────
-    # 500 Hz / 10 = 50 Hz. sim 은 lock-step 이라 1 tick = physics_timestep
-    # (2 ms) 의 sim-time 이므로 10 tick = 정책 1 step 이 정확히 20 ms 다.
-    # control_rate 를 50 으로 낮추는 대안을 쓰지 않는 이유: ControllerState::dt
-    # 는 1/control_rate 인데 sim 이 실제로 진행시키는 시간은 physics_timestep
-    # 이라, 둘이 10배 어긋나면서 rate 파생 법칙이 전부 틀어진다.
-    decimation: 10
+    # 학습 제어주기 100 Hz (sim.dt 0.005 × decimation 2). 500 Hz / 5 = 100 Hz 이고, sim 은
+    # lock-step 이라 1 tick = physics_timestep (2 ms) 의 sim-time 이므로 5 tick = 정책
+    # 1 step 이 정확히 10 ms 다. 팔 slew (0.005 rad/step) 와 reach gate 의 hold 디바운스
+    # (5 / 100 step) 가 모두 이 step 단위라, 주기가 다르면 둘 다 다른 시간이 된다.
+    # control_rate 를 낮추는 대안을 쓰지 않는 이유: ControllerState::dt 는
+    # 1/control_rate 인데 sim 이 실제로 진행시키는 시간은 physics_timestep 이라 둘이
+    # 어긋나면서 rate 파생 법칙이 전부 틀어진다.
+    decimation: 5
+
+    # ── 관측 프레임 ──────────────────────────────────────────────────────────
+    # 모든 pose (link·물체) 는 이 URDF 프레임 기준이다. 정책의 root 는 MJCF body `base`
+    # 이고 그것은 URDF `base_link` 와 같다 — URDF `base` 는 그것을 z 로 π 돌린 프레임이라,
+    # `base` 로 두면 x·y 가 뒤집힌 채 여전히 그럴듯한 pose 가 들어간다. 그래서 root 입력
+    # (robot_root_pos_w/quat_w) 은 아래에서 원점/identity 상수다.
+    policy_frame: "base_link"
+
+    # ── 관절 규약 ────────────────────────────────────────────────────────────
+    # q_policy = sign · q_device + offset (속도는 sign 만). 학습 자산(hand-description
+    # proto_1b2)은 아래 8 관절의 축이 이 URDF 와 반대다 — thumb_cmc_fe·thumb_mcp 와 팔은
+    # 같다. 관측(q, q̇)·명령(gripper_action)·recurrent seed 에 모두 적용된다. 근거: 기록된
+    # grasp 자세를 이 부호로 넣었을 때만 네 손끝이 접촉점에서 25 mm 안에 들어온다 (반전
+    # 없음 107–192 mm, 전부 반전 시 엄지 64 mm). 여기 없는 관절 이름은 configure 실패다.
+    joint_convention:
+      thumb_cmc_aa_joint: { sign: -1 }
+      thumb_dip_fe_joint: { sign: -1 }
+      index_mcp_aa_joint: { sign: -1 }
+      index_mcp_fe_joint: { sign: -1 }
+      index_dip_fe_joint: { sign: -1 }
+      middle_mcp_fe_joint: { sign: -1 }
+      middle_dip_fe_joint: { sign: -1 }
+      ring_mcp_fe_joint: { sign: -1 }
 
     # ── 텐서 ─────────────────────────────────────────────────────────────────
-    # 입력·출력 모두 **텐서 단위 선언**이다 (#511). 텐서마다 자기 feature 목록과
-    # 자기 정규화 lane 을 들고, offset 은 그 텐서 안에서 0 부터 다시 센다 — 텐서
-    # 경계를 넘는 전역 prefix-sum 은 존재하지 않는다.
+    # 입력·출력 모두 텐서 단위 선언이고 name 은 .onnx 이름과 정확히 일치해야 한다
+    # (이름으로 바인딩하므로 재export 로 같은 shape 두 텐서의 순서가 바뀌면 load 가
+    # 실패한다). 순서는 export 와 같게 둔다.
     #
-    # **name 은 .onnx 의 텐서 이름과 정확히 일치해야 하고 생략할 수 없다.**
-    # 이름이 있으면 엔진이 이름으로 바인딩하므로, 재export 로 같은 shape 두 개의
-    # 순서가 바뀌면 load 가 실패한다. 이름을 비우면 positional 바인딩이 되어
-    # 그 재export 가 조용히 통과하고 값의 의미만 맞바뀐다 (#511 B-1 이 실제로
-    # udp_hand_driver 에서 발현한 형태다).
-    #
-    # 아직 모델이 없으므로 아래 이름은 **가정값**이다. 모델 수령 시 실제 이름으로
-    # 바꾼다 — 틀리면 configure 가 대조표를 찍고 거부하므로 조용히 지나가지 않는다.
+    # element_names 가 있는 텐서는 feature 를 **이름으로** 배치한다 — 행 하나 = numel /
+    # 이름 수 원소. feature 가 덮지 않는 원소는 `fill:` (반복 패턴) 이 매 평가 채운다.
+    # 순서 = fill → pack → affine. 부분 피복 텐서에는 affine 을 둘 수 없다.
     inputs:
-      - name: "obs"
-        # 6 + 10 + 3 + 4 + 4 + 3 + 4 = 34. 합이 shape 와 다르면 configure 실패.
-        shape: [1, 34]
-        # 배열 순서 = tensor flatten 순서. 재정렬하면 텐서가 재정렬된다.
-        features:
-          - "ur5e.position" #  6  rad
-          - "p1b.position" # 10  rad
-          - "palm.position" #  3  m
-          - "palm.orientation_xyzw" #  4  Hamilton, 직렬화 x,y,z,w
-          - "p1b.fingertip_force_norm" #  4  N — thumb,index,middle,ring 의 ‖f‖.
-          #     norm 이라 프레임 무관이고, lane 이 stale
-          #     이면 0 이 들어간다 ("접촉 없음"과 "판독
-          #     없음"은 이 정책에 같은 관측이다)
-          - "object.position" #  3  m
-          - "object.orientation_xyzw" #  4  Hamilton, x,y,z,w
-        # normalized = (raw − offset) * scale. 비우면 identity.
-        # 모델 수령 시 학습 때 쓴 값으로 채운다. 길이는 0 이거나 정확히 이 텐서의 34.
-        offset: []
-        scale: []
-
-    # shape 이 서로 달라서(6 vs 1) 순서가 뒤바뀌어도 잡히지만, 그 방어선은 이제
-    # shape 이 아니라 **이름**이다 — 같은 폭 두 head 를 내는 정책이 와도 그대로
-    # 성립한다.
-    outputs:
-      - name: "arm_action" # UR5e absolute joint target
+      # 연속 게이트 [0,1] = max(손끝 근접도, 촉각 hold). 아래 reach_gate 가 계산한다.
+      # 0/1 이 아니라 연속값이어야 한다 — 그래프 안에 0.25/0.45 리맵이 있어 계단을
+      # 넣으면 학습된 램프를 건너뛴다.
+      - name: "reach_phase"
+        shape: [1]
+        features: ["reach.phase"]
+      - name: "object_root_pos_w"
+        shape: [1, 3]
+        features: ["object.position"] # m, policy_frame
+      - name: "object_root_quat_w"
+        shape: [1, 4]
+        features: ["object.orientation_xyzw"] # Hamilton, x,y,z,w, policy_frame
+      # 팔 slew 적분기. 리셋(activation, 긴 hold) 시 측정 팔 q 로 시드 — 0 으로 두면
+      # 첫 step 이 전 관절을 0 으로 끌고 간다. export 의 initial_values 는 쓰지 않는다.
+      - name: "arm_applied_target_in"
         shape: [1, 6]
-      - name: "posture" # hand posture 스칼라
+        source: recurrent
+        seed: "ur5e.position"
+      # 손 synergy 적분기 (0 = pregrasp 손, 2 = overdrive). 리셋 시 0.
+      - name: "synergy_in"
         shape: [1, 1]
+        source: recurrent
+      # 6 팔 + 10 구동 + 10 passive + loop 5개 × 4. 채우는 것은 팔·구동 16 개뿐이다 —
+      # 그래프가 passive·loop 슬롯을 읽지 않는다. export YAML 은 loop 를 ×3 으로 적어
+      # 이름이 41 개뿐이라, loop 행은 `:0..:3` 네 개로 적었다 (텐서는 46).
+      - name: "robot_joint_pos"
+        shape: [1, 46]
+        element_names:
+          [
+            shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint,
+            wrist_3_joint, index_mcp_aa_joint, index_mcp_fe_joint, index_dip_a_joint_passive,
+            index_pip_a_joint_passive, index_dip_fe_joint, middle_mcp_fe_joint,
+            middle_dip_a_joint_passive, middle_pip_a_joint_passive, middle_dip_fe_joint,
+            ring_mcp_a_joint_passive, ring_dip_b_joint_passive, ring_mcp_fe_joint,
+            ring_dip_a_joint_passive, ring_pip_a_joint_passive, thumb_cmc_aa_joint,
+            thumb_cmc_fe_joint, thumb_mcp_joint, thumb_dip_a_joint_passive,
+            thumb_pip_a_joint_passive, thumb_dip_fe_joint,
+            "loop_ring_tip_constraint:0", "loop_ring_tip_constraint:1",
+            "loop_ring_tip_constraint:2", "loop_ring_tip_constraint:3",
+            "loop_middle_tip_constraint:0", "loop_middle_tip_constraint:1",
+            "loop_middle_tip_constraint:2", "loop_middle_tip_constraint:3",
+            "loop_thumb_tip_constraint:0", "loop_thumb_tip_constraint:1",
+            "loop_thumb_tip_constraint:2", "loop_thumb_tip_constraint:3",
+            "loop_ring_pip_b_constraint:0", "loop_ring_pip_b_constraint:1",
+            "loop_ring_pip_b_constraint:2", "loop_ring_pip_b_constraint:3",
+            "loop_index_tip_constraint:0", "loop_index_tip_constraint:1",
+            "loop_index_tip_constraint:2", "loop_index_tip_constraint:3"
+          ]
+        features: ["ur5e.position", "p1b.position"]
+        fill: [0.0]
+      - name: "robot_joint_vel"
+        shape: [1, 41]
+        element_names:
+          [
+            shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint,
+            wrist_3_joint, index_mcp_aa_joint, index_mcp_fe_joint, index_dip_a_joint_passive,
+            index_pip_a_joint_passive, index_dip_fe_joint, middle_mcp_fe_joint,
+            middle_dip_a_joint_passive, middle_pip_a_joint_passive, middle_dip_fe_joint,
+            ring_mcp_a_joint_passive, ring_dip_b_joint_passive, ring_mcp_fe_joint,
+            ring_dip_a_joint_passive, ring_pip_a_joint_passive, thumb_cmc_aa_joint,
+            thumb_cmc_fe_joint, thumb_mcp_joint, thumb_dip_a_joint_passive,
+            thumb_pip_a_joint_passive, thumb_dip_fe_joint,
+            "loop_ring_tip_constraint:0", "loop_ring_tip_constraint:1",
+            "loop_ring_tip_constraint:2", "loop_middle_tip_constraint:0",
+            "loop_middle_tip_constraint:1", "loop_middle_tip_constraint:2",
+            "loop_thumb_tip_constraint:0", "loop_thumb_tip_constraint:1",
+            "loop_thumb_tip_constraint:2", "loop_ring_pip_b_constraint:0",
+            "loop_ring_pip_b_constraint:1", "loop_ring_pip_b_constraint:2",
+            "loop_index_tip_constraint:0", "loop_index_tip_constraint:1",
+            "loop_index_tip_constraint:2"
+          ]
+        # 속도 lane 이 이번 tick 에 판독 불가면 (driver 가 velocity 를 안 주면) hold 한다.
+        features: ["ur5e.velocity", "p1b.velocity"]
+        fill: [0.0]
+      # 29 body × xyz. 그래프가 읽는 행은 palm + 손끝 4 개다. 손끝은 loop-passive 관절
+      # 하류라 closed-chain hand FK 로 계산된다 (passive 를 0 에 고정한 모델에서 읽으면
+      # 수 cm 틀린다).
+      - name: "robot_body_pos_w"
+        shape: [1, 29, 3]
+        element_names:
+          [
+            base, shoulder_link, upper_arm_link, forearm_link, wrist_1_link, wrist_2_link,
+            wrist_3_link, tool0, l_palm_link, l_index_mcp_link, l_index_dip_link,
+            l_index_pip_linkage_a, l_index_tip_link, l_index_pip_linkage_b, l_middle_mcp_link,
+            l_middle_dip_a_link, l_middle_tip_link, l_middle_dip_b_link, l_ring_pip_linkage_a,
+            l_ring_dip_linkage_b, l_ring_pip_linkage_b, l_ring_dip_linkage_a, l_ring_tip_link,
+            l_thumb_cmc_link_a, l_thumb_cmc_link_b, l_thumb_mcp_link, l_thumb_dip_link_a,
+            l_thumb_tip_link, l_thumb_dip_link_b
+          ]
+        features:
+          - "link.l_palm_link.position"
+          - "link.l_index_tip_link.position"
+          - "link.l_middle_tip_link.position"
+          - "link.l_ring_tip_link.position"
+          - "link.l_thumb_tip_link.position"
+        fill: [0.0]
+      # 그래프가 읽는 행은 palm 뿐이다. 나머지 행은 identity quat.
+      - name: "robot_body_quat_w"
+        shape: [1, 29, 4]
+        element_names:
+          [
+            base, shoulder_link, upper_arm_link, forearm_link, wrist_1_link, wrist_2_link,
+            wrist_3_link, tool0, l_palm_link, l_index_mcp_link, l_index_dip_link,
+            l_index_pip_linkage_a, l_index_tip_link, l_index_pip_linkage_b, l_middle_mcp_link,
+            l_middle_dip_a_link, l_middle_tip_link, l_middle_dip_b_link, l_ring_pip_linkage_a,
+            l_ring_dip_linkage_b, l_ring_pip_linkage_b, l_ring_dip_linkage_a, l_ring_tip_link,
+            l_thumb_cmc_link_a, l_thumb_cmc_link_b, l_thumb_mcp_link, l_thumb_dip_link_a,
+            l_thumb_tip_link, l_thumb_dip_link_b
+          ]
+        features: ["link.l_palm_link.orientation_xyzw"]
+        fill: [0.0, 0.0, 0.0, 1.0]
+      # 모든 pose 가 이미 policy_frame 기준이므로 root 는 원점/identity 다.
+      - name: "robot_root_pos_w"
+        shape: [1, 3]
+        source: constant
+        values: [0.0, 0.0, 0.0]
+      - name: "robot_root_quat_w"
+        shape: [1, 4]
+        source: constant
+        values: [0.0, 0.0, 0.0, 1.0]
+      # 손끝 접촉력. 그래프는 ‖F‖ 만 쓰므로 (‖F‖, 0, 0) 로 넣는다 — norm 은 프레임
+      # 무관이다. lane 이 stale 이면 0 ("접촉 없음" 과 "판독 없음" 은 같은 관측).
+      # sim 의 힘은 손끝 body 의 **모든** 접촉 합력이다 (학습은 물체 접촉만 셌다).
+      - name: "thumb_tip_contact_force_matrix_w"
+        shape: [1, 1, 1, 3]
+        features: ["p1b.thumb.force_norm"]
+        fill: [0.0]
+      - name: "index_tip_contact_force_matrix_w"
+        shape: [1, 1, 1, 3]
+        features: ["p1b.index.force_norm"]
+        fill: [0.0]
+      - name: "middle_tip_contact_force_matrix_w"
+        shape: [1, 1, 1, 3]
+        features: ["p1b.middle.force_norm"]
+        fill: [0.0]
+      - name: "ring_tip_contact_force_matrix_w"
+        shape: [1, 1, 1, 3]
+        features: ["p1b.ring.force_norm"]
+        fill: [0.0]
+      # 직전 raw 액션 (팔 6 + synergy 1). 리셋 시 0.
+      - name: "last_action_in"
+        shape: [1, 7]
+        source: recurrent
 
-    # ── recurrent (LSTM/GRU) — 이 정책은 안 쓴다 ───────────────────────────────
-    # 쓰는 정책이 오면 입력에 `source: recurrent` 텐서를 두고 그것을 먹이는
-    # 출력에 `feeds:` 를 단다. 되먹임은 텐서 전체 단위다:
-    #
-    #   inputs:  - { name: "h_in",  shape: [1, 1, 256], source: recurrent }
-    #   outputs: - { name: "h_out", shape: [1, 1, 256], feeds: "h_in" }
-    #
-    # 파서가 거부하는 것: features 와 source 를 둘 다/둘 다 아님 · recurrent
-    # 텐서의 offset/scale (정책 내부 표상엔 정규화할 학습 분포가 없다) · 아무도
-    # 안 먹이는 recurrent 텐서 (초기 0 이후 영원히 안 써져서 "도는 것처럼
-    # 보이는" 상수 상태가 된다) · feeds 대상의 폭 불일치 · 한 입력을 두 출력이
-    # 먹임 · feeds 를 가진 텐서를 output_features 가 slice (은닉 유닛을 rad 로
-    # 읽는 것이며, 유한하고 범위 안이라 아무 데서도 안 걸린다).
-    #
-    # state 는 **액션 전체가 수락됐을 때만** 전진하고, 비유한 state 는 얼리지
-    # 않고 **0 으로 리셋**한다 — NaN 을 얼리면 이후 전 step 이 NaN 이 되고 매
-    # tick 조용히 hold 하므로 재활성화 말고는 복구 경로가 없다.
-    #
-    # reset_after_hold_sec: hold 가 이 시간을 넘으면 재개 시 state 를 0 으로
-    # 되돌린다 (기본 0.1 s = 50 Hz 기준 5 policy step). `0` 은 모든 hold 에서
-    # 리셋, 음수는 activation 에서만 리셋. activation 리셋은 이 값과 무관하게
-    # 무조건이다. **기본값의 근거는 약하다** — 모델을 받고 실제 hold 길이를
-    # 재서 확정할 자리다. recurrent 텐서가 없으면 이 키는 무해하게 무시된다.
+    outputs:
+      # 팔 절대 목표 (slew 적용 완료). 이름이 device 순서와 같아 gather 는 identity 다.
+      - name: "arm_action"
+        shape: [1, 6]
+        element_names:
+          [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint]
+      # 손 10 관절 목표 — **driver 순서가 아니다** (index → ring → thumb → middle).
+      # 이름으로 device 순서에 모은 뒤 joint_convention 을 거꾸로 적용해 명령이 된다.
+      - name: "gripper_action"
+        shape: [1, 10]
+        element_names:
+          [
+            index_mcp_aa_joint, index_mcp_fe_joint, index_dip_fe_joint, ring_mcp_fe_joint,
+            thumb_cmc_aa_joint, thumb_cmc_fe_joint, thumb_mcp_joint, thumb_dip_fe_joint,
+            middle_mcp_fe_joint, middle_dip_fe_joint
+          ]
+      # recurrent 되먹임 전용 — 명령으로 읽으면 은닉 상태를 rad 로 읽는 것이다.
+      - { name: "arm_applied_target_out", shape: [1, 6], feeds: "arm_applied_target_in" }
+      - { name: "synergy_out", shape: [1, 1], feeds: "synergy_in" }
+      - { name: "last_action_out", shape: [1, 7], feeds: "last_action_in" }
+      # 학습 PD 게인 (상수). 모델이 요구하므로 선언하지만 소비하지 않는다 — 값은 팔 kp
+      # 400/400/250/120/120/120 · kd 80/80/50/25/25/25, 손 kp 200 · kd 20.
+      - { name: "arm_action_kp_gains", shape: [1, 6] }
+      - { name: "arm_action_kd_gains", shape: [1, 6] }
+      - { name: "gripper_action_kp_gains", shape: [1, 10] }
+      - { name: "gripper_action_kd_gains", shape: [1, 10] }
 
-    # ── palm FK ──────────────────────────────────────────────────────────────
-    # `l_palm_link` 이다. 기본값을 두지 않는 이유는 초안이 박아 뒀던
-    # `hand_base_link` 가 leap 계열 링크라 이 손에는 **존재하지 않기** 때문이다 —
-    # 그런 종류의 기본값은 다른 로봇에서 조용히 resolve 돼 엉뚱한 body 를 관측하게
-    # 만든다.
-    palm:
-      link: "l_palm_link"
-      reference_frame: "world"
+    # `role`/`device` 는 **선언**이지 추정이 아니다. 이름을 가진 head 는 offset/count
+    # 없이 통째로, 이름으로 읽힌다 (device 관절 전부가 정확히 한 번씩 있어야 한다).
+    output_features:
+      - { tensor: "arm_action", role: "joint_target", device: "ur5e" }
+      - { tensor: "gripper_action", role: "joint_target", device: "p1b" }
 
-    # ── world 가 무엇인가 ────────────────────────────────────────────────────
-    # 이 로봇의 MJCF base 는 quat "0 0 0 -1" (z축 180°) 로 원점에 붙어 있다.
-    # 따라서 world 와 base 는 z 180° 만큼 다르고, 헷갈리면 x·y 부호가 뒤집힌 채
-    # 여전히 "그럴듯한" pose 가 나온다. 하드코딩하지 않는 이유는 이것이 이
-    # 마운팅의 사실이지 프레임워크의 사실이 아니기 때문이다.
-    base_pose_in_world:
-      position: [0.0, 0.0, 0.0]
-      rpy: [0.0, 0.0, 3.14159265358979] # rad, ZYX Euler (경계 규약)
+    # ── recurrent 리셋 ──────────────────────────────────────────────────────────
+    # hold 가 이 시간을 넘으면 재개 시 state 를 리셋한다 (seed 가 있으면 seed, 없으면
+    # 0). activation 리셋은 무조건이다. 쥔 채로 긴 hold 에 들어가면 synergy 가 0 으로
+    # 돌아가 손이 pregrasp 로 풀린다 — 실측 hold 길이를 보고 확정할 값이다.
+    reset_after_hold_sec: 0.1
 
     # ── object pose ──────────────────────────────────────────────────────────
-    # sim ground truth. 실기 이관 시 바뀌는 것은 topic 과 (perception 이 다른
-    # 프레임을 쓰면) source_frame_id 이며, 메시지 타입은 같다.
+    # sim ground truth. 실기 이관 시 바뀌는 것은 topic 과 (perception 이 다른 프레임을
+    # 쓰면) source_frame_id / source_frame_link 이며, 메시지 타입은 같다.
     #
     # device lane 이 아니므로 프레임워크의 freshness 게이트가 **하나도** 안 걸린다
-    # — timeout_sec 이 이 컨트롤러가 직접 지는 그 책임이다. 상수로 박을 수 없는
-    # 이유는 두 소스가 한 자릿수 이상 다르기 때문이다: sim 은 매 tick(~500 Hz)
-    # 재발행하고 실기 perception 은 10–30 Hz 다.
+    # — timeout_sec 이 이 컨트롤러가 직접 지는 그 책임이다 (sim 은 매 tick 재발행,
+    # 실기 perception 은 10–30 Hz).
     object_pose:
       topic: "/sim/object_transforms"
       # TFMessage 한 개에 park 안 된 free body 가 **전부** 실린다. prefix 매칭이
-      # 정확히 1개가 아니면 (0개든 2개든) invalid 로 처리해 hold 한다 —
-      # "첫 번째를 쓴다" 였다면 씬에 body 가 하나 늘어난 날 조용히 다른 물체를
-      # 추종하면서 모든 수치가 여전히 유한하고 그럴듯했을 것이다.
+      # 정확히 1개가 아니면 (0개든 2개든) invalid 로 처리해 hold 한다.
       match_mode: "prefix"
       frame_match: "pool_" # object_pool 이 스폰하는 body 는 pool_<obj>_object
-      # 들어오는 transform 이 어느 프레임인지 — **가정이 아니라 검사**다.
-      # header.frame_id 가 이것과 다르면 그 transform 은 버려진다.
+      # 들어오는 transform 의 header.frame_id — **가정이 아니라 검사**다. 다르면 버려진다.
       source_frame_id: "world"
-      reference_frame: "world" # 정책이 받는 프레임
+      # 그 frame_id 가 URDF 의 어느 프레임인가. sim world 는 URDF `base` 와 같다.
+      # policy_frame 으로의 변환은 모델이 준다 (여기서는 z 축 π).
+      source_frame_link: "base"
       timeout_sec: 0.2
 
-    # ── 출력 매핑 ────────────────────────────────────────────────────────────
-    # 어느 출력 텐서를 읽는지는 `tensor:` 로 **이름 참조**한다 (인덱스가 아니라).
-    # offset/count 를 생략하면 그 텐서 전체를 뜻하며, 위 shape 과 여기 폭이
-    # 갈라질 자리를 아예 없앤다. 텐서 하나에서 여러 명령을 잘라 쓸 때만 적는다.
+    # ── reach gate ───────────────────────────────────────────────────────────
+    # reach_phase = max(exp(−(d_tip/σ)²), hold ? 1 : 0), 매 policy step 새로 계산
+    # (ratchet 없음). d_tip = 손끝 4 개와 "물체에 붙어 다니는 기록 접촉점" 사이 평균 거리.
+    # hold = 첫 tip(엄지) > 0.5 N 이고 나머지 중 min_fingers 개 이상 > 0.5 N 인 step 이
+    # hold_on_steps 연속이면 ON, 아니면 hold_off_steps 연속에서 OFF. step 은 policy step
+    # 이다 (tick 이 아님).
     #
-    # `role`/`device` 는 **선언**이지 추정이 아니다. 예전 바인딩은 이름 suffix 로
-    # 역할을 추정했고 루프에 `break` 가 없어서, 두 device 가 같은 역할을 선언하면
-    # (multi-output 정책의 자연스러운 형태다) **마지막 것이 둘 다 구동**했다 —
-    # 두 명령 모두 유한하고 관절한계 안이라 아무 진단도 안 남는다 (#511 B-2).
-    #
-    # 이 바인딩이 아는 role 은 둘이다:
-    #   joint_target   — 절대 관절 목표. slice 폭 = 그 device 의 관절 수
-    #   posture_scalar — 스칼라 1개. 아래 hand_posture 를 보간한다 (손 전용)
-    # 손이 posture_scalar 대신 joint_target 을 선언하면 hand_posture 블록 자체가
-    # 불필요해진다 (#511 D-9).
-    #
-    # `device` 는 위 topics 의 그룹 이름과 대조된다 — 오타는 configure 실패이지
-    # 조용히 팔에 바인딩되는 게 아니다.
-    output_features:
-      - { tensor: "arm_action", role: "joint_target", device: "ur5e" }
-      - { tensor: "posture", role: "posture_scalar", device: "p1b" }
-
-    # ── hand posture ─────────────────────────────────────────────────────────
-    # 스칼라 s 가 open + clamp(s,0,1)·(close − open) 으로 보간한다.
-    # 순서는 devices.p1b.joint_state_names (rad):
-    #   thumb: cmc_aa, cmc_fe, mcp, dip_fe | index: mcp_aa, mcp_fe, dip_fe
-    #   middle: mcp_fe, dip_fe             | ring: mcp_fe
-    #
-    # **ur5e_bt_coordinator/config/poses_p1b.yaml 의 hand_close_* 를 복사하지
-    # 말 것.** 그 값은 10 관절 중 6개가 범위 밖이다 — upper 가 0.0 인 관절들
-    # (dip/mcp_fe 계열) 은 굴곡이 **음의 방향**인데 거기에 양수 degree 가 들어
-    # 있어서, command clamp 가 조용히 0(=open) 으로 되돌린다. 즉 그 "close" 는
-    # 거의 편 손이고 아무 진단도 남기지 않는다. 이 컨트롤러는 configure 에서
-    # posture 를 관절한계와 대조해 거부한다.
-    #
-    # 아래 close 는 **sim 실측으로 확정한 값**이다 (headless ur5e_p1b, 2026-09-09).
-    # 10 관절 전부 tracking error 0.0 rad 로 도달하며 (폐쇄 체인 구속과 싸우지
-    # 않는다), open->close 에서 index/middle/ring 손끝이 91/91/95 mm 움직여
-    # palm 까지 거리가 226->181 / 239->194 / 226->170 mm 로 줄고, 엄지 대향은
-    # thumb-index 102->32 / thumb-middle 135->26 / thumb-ring 152->54 mm 가 된다.
-    #
-    # **엄지 두 관절의 굴곡 부호는 URDF 한계만으로 판정되지 않아 실측으로 정했다**:
-    # thumb_cmc_fe 와 thumb_mcp 는 둘 다 **양수**가 굴곡이다 (+0.5 는 엄지를
-    # 손가락 쪽으로 데려오고, -0.5 는 반대로 멀어진다 — thumb-index 32->76 mm).
-    # 후보 6개를 실측 비교해 fe=+0.5, mcp=+0.5 가 네 손끝에 가장 고른 대향을
-    # 준다 (index 위주 pinch 인 mcp 단독 +0.5 보다 middle/ring 이 훨씬 가깝다).
-    hand_posture:
-      open: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-      close: [0.6, 0.5, 0.5, -0.6, 0.0, -0.8, -0.6, -0.8, -0.6, -0.8]
+    # contact_obj 는 **정책이 학습된 물체 프레임** 기준이다 — 원통 (r 0.04, h 0.15) 의
+    # **중심**. grasp 기록 JSON 의 pos_obj 는 아래 면 기준이라 z 가 0.075 m 다르고, 그
+    # 값을 쓰면 거리가 항상 수 cm 길게 나와 게이트가 열리지 않는다 (≈0.001). 아래 값은
+    # 모델에 구워진 접촉점 상수를 그대로 옮긴 것이다.
+    reach_gate:
+      tips: # 엄지 먼저 — grasped 판정이 "엄지 vs 나머지" 대향 구조다
+        - { link: "l_thumb_tip_link", force_group: "thumb", contact_obj: [-0.013565, 0.037512, 0.005946] }
+        - { link: "l_index_tip_link", force_group: "index", contact_obj: [-0.032927, -0.022462, 0.011726] }
+        - { link: "l_middle_tip_link", force_group: "middle", contact_obj: [-0.010342, -0.038602, 0.017704] }
+        - { link: "l_ring_tip_link", force_group: "ring", contact_obj: [0.01168, -0.038178, -0.002864] }
+      tip_std: 0.030 # m
+      force_threshold: 0.5 # N, strict >
+      min_fingers: 2
+      hold_on_steps: 5 # 50 ms @ 100 Hz
+      hold_off_steps: 100 # 1.0 s @ 100 Hz

@@ -1,12 +1,12 @@
 // ── DemoInferenceController: the RT tick ─────────────────────────────────────
 //
-// RT path. No allocation, no throw, no logging except throttled one-liners with
-// plain scalars. Every buffer is a fixed-size member sized at configure.
+// RT path. No allocation, no throw, no logging except one-shot lines with plain
+// scalars. Every buffer is a fixed-size member sized at configure.
 //
 // Tick shape:
 //   1. hold-or-run decision (validity gates, then decimation)
-//   2. pack observation → engine->Run() → unpack heads
-//   3. blend the hand posture, bound both devices, emit
+//   2. seed/reset recurrent state → pack observation → engine->Run() → unpack
+//   3. bound both devices against the previous command, emit
 //
 // The order matters: validity is judged BEFORE the decimation counter is
 // consulted, so a tick that would have skipped inference anyway still refuses
@@ -33,47 +33,242 @@ namespace {
 /// `inference_values_per_group` floats per sensor group and the mujoco/udp
 /// backends both write fx/fy/fz into slots 1..3 of that stride (slot 0 is the
 /// contact flag, 4..6 the direction unit vector). Only the magnitude is wanted
-/// here, and a magnitude is frame-invariant — which is why this feature needs
-/// no reference-frame configuration while the palm pose does.
+/// here, and a magnitude is frame-invariant — which is why the force features
+/// need no reference-frame configuration while the pose features do.
 constexpr int kForceSlotBegin = 1;
 constexpr int kForceSlotCount = 3;
 
 }  // namespace
 
-bool DemoInferenceController::PalmPose(std::array<double, 3>& position,
-                                       std::array<double, 4>& orientation_xyzw) noexcept {
-  if (palm_frame_idx_ < 0 || arm_base_frame_idx_ < 0) {
-    return false;
+double DemoInferenceController::GroupForceNorm(const rtc::DeviceState& hand, int g) const noexcept {
+  // A stale group contributes 0, by the decision recorded in the spec: "no
+  // contact" and "no reading" are the same observation to this policy, and
+  // holding the last force instead would let a dropped lane keep reporting a
+  // grasp that ended.
+  const int stride = fingertip_stride_;
+  if (g < 0 || g >= rtc::kMaxSensorGroups || !hand.inference_enable[static_cast<std::size_t>(g)] ||
+      stride < kForceSlotBegin + kForceSlotCount) {
+    return 0.0;
   }
-  // T_base_palm. The cache gates this itself: an unregistered frame, a stale
-  // reorder map or an un-updated cache all return Identity rather than a stale
-  // oMf, and Identity here is indistinguishable from a real pose — so the
-  // finite check below is not the whole guard, `reorder_valid()` is.
-  if (!combined_cache_.reorder_valid()) {
-    return false;
+  double sum_sq = 0.0;
+  for (int c = 0; c < kForceSlotCount; ++c) {
+    const int idx = (g * stride) + kForceSlotBegin + c;
+    if (idx < 0 || idx >= rtc::kMaxInferenceValues) {
+      return 0.0;
+    }
+    const auto v = static_cast<double>(hand.inference_data[static_cast<std::size_t>(idx)]);
+    sum_sq += v * v;
   }
-  const pinocchio::SE3 base_palm =
-      combined_cache_.ArmTcpPoseFromCache(palm_frame_idx_, arm_base_frame_idx_);
-  const pinocchio::SE3 pose =
-      (palm_frame_ == PoseFrame::kWorld) ? (world_from_base_ * base_palm) : base_palm;
+  return std::isfinite(sum_sq) ? std::sqrt(sum_sq) : 0.0;
+}
 
-  const auto& t = pose.translation();
-  if (!t.allFinite()) {
+bool DemoInferenceController::ComputeLinkPoses() noexcept {
+  // The cache gates itself — an unregistered frame, a stale reorder map or an
+  // un-updated cache all answer Identity, which is indistinguishable from a
+  // real pose — so `reorder_valid()` is part of this guard, not the finite
+  // check below.
+  if (policy_frame_idx_ < 0 || !combined_cache_.reorder_valid()) {
     return false;
   }
-  // Explicit type, not `auto`: an Eigen expression bound to `auto` here would
-  // alias the SE3's storage (RT-5).
-  const Eigen::Quaterniond q(pose.rotation());
-  if (!std::isfinite(q.x()) || !std::isfinite(q.y()) || !std::isfinite(q.z()) ||
-      !std::isfinite(q.w())) {
-    return false;
+  pinocchio::SE3 pf_hand_root = pinocchio::SE3::Identity();
+  if (has_closed_links_) {
+    // The wrapper keeps serving its last good fingertip pose through a held or
+    // unconverged tick. That is the right answer for a TF display and the wrong
+    // one for an observation: the policy would see the fingers where they were.
+    if (!closed_fk_fresh_ || hand_root_idx_ < 0) {
+      return false;
+    }
+    pf_hand_root = combined_cache_.ArmTcpPoseFromCache(hand_root_idx_, policy_frame_idx_);
   }
-  position = {t.x(), t.y(), t.z()};
-  // Serialisation order is x, y, z, w — the policy's convention, and NOT
-  // Eigen's constructor order (w first), which is the easy way to ship a
-  // rotation that is wrong in a way every value still looks normal.
-  orientation_xyzw = {q.x(), q.y(), q.z(), q.w()};
+  for (std::size_t i = 0; i < links_.size() && i < link_pos_.size(); ++i) {
+    const auto& slot = links_[i];
+    pinocchio::SE3 pose = pinocchio::SE3::Identity();
+    if (slot.closed_tip >= 0) {
+      pinocchio::SE3 root_tip = pinocchio::SE3::Identity();
+      if (!closed_fk_.GetFingertipHandRootPose(static_cast<std::size_t>(slot.closed_tip),
+                                               root_tip)) {
+        return false;
+      }
+      pose = pf_hand_root * root_tip;
+    } else if (slot.cache_idx >= 0) {
+      pose = combined_cache_.ArmTcpPoseFromCache(slot.cache_idx, policy_frame_idx_);
+    } else {
+      return false;
+    }
+    // Explicit types, not `auto`: an Eigen expression bound to `auto` would
+    // alias the SE3's storage (RT-5).
+    const Eigen::Vector3d t = pose.translation();
+    const Eigen::Quaterniond q(pose.rotation());
+    if (!t.allFinite() || !std::isfinite(q.x()) || !std::isfinite(q.y()) || !std::isfinite(q.z()) ||
+        !std::isfinite(q.w())) {
+      return false;
+    }
+    link_pos_[i] = {t.x(), t.y(), t.z()};
+    // Serialisation order is x, y, z, w — the policy's convention, and NOT
+    // Eigen's constructor order (w first), which is the easy way to ship a
+    // rotation that is wrong in a way every value still looks normal.
+    link_quat_[i] = {q.x(), q.y(), q.z(), q.w()};
+  }
   return true;
+}
+
+bool DemoInferenceController::ComputeReachPhase(const ControllerState& state,
+                                                double& phase) noexcept {
+  if (!reach_enabled_ || !object_valid_this_tick_ || reach_tips_ <= 0 || state.num_devices < 2) {
+    return false;
+  }
+  const auto& hand = state.devices[1];
+  const auto n = static_cast<std::size_t>(reach_tips_);
+  std::array<double, std::size_t{3} * kMaxReachTips> tips{};
+  std::array<double, kMaxReachTips> forces{};
+  for (std::size_t i = 0; i < n; ++i) {
+    const int slot = reach_link_slot_[i];
+    if (slot < 0 || static_cast<std::size_t>(slot) >= links_.size()) {
+      return false;
+    }
+    const auto& p = link_pos_[static_cast<std::size_t>(slot)];
+    tips[3 * i] = p[0];
+    tips[(3 * i) + 1] = p[1];
+    tips[(3 * i) + 2] = p[2];
+    forces[i] = GroupForceNorm(hand, reach_force_group_[i]);
+  }
+
+  // Advance a COPY: the trigger counts policy steps whose action was taken, so
+  // it is committed alongside the recurrent feedback, not here.
+  rtc::inference::ReachHoldState next = reach_state_;
+  const bool grasped = rtc::inference::IsGraspedByForce(std::span<const double>(forces.data(), n),
+                                                        reach_.force_threshold, reach_.min_fingers);
+  const bool hold =
+      rtc::inference::UpdateReachHold(next, grasped, reach_.hold_on_steps, reach_.hold_off_steps);
+  const double distance = rtc::inference::MeanTipDistance(
+      std::span<const double>(tips.data(), 3 * n),
+      std::span<const double, 3>(object_this_tick_.position),
+      std::span<const double, 4>(object_this_tick_.orientation_xyzw),
+      std::span<const double>(reach_contacts_.data(), 3 * n));
+  const double gate =
+      rtc::inference::ReachGate(rtc::inference::ReachProximity(distance, reach_.tip_std), hold);
+  if (!std::isfinite(gate)) {
+    return false;
+  }
+  reach_state_pending_ = next;
+  reach_pending_ = true;
+  phase = gate;
+  return true;
+}
+
+bool DemoInferenceController::ExtractFeature(PolicyFeature kind, int arg,
+                                             const ControllerState& state,
+                                             std::span<double> out) noexcept {
+  const auto& arm = state.devices[0];
+  const auto& hand = state.devices[1];
+  const auto arm_n = static_cast<std::size_t>(arm_dof_);
+  const auto hand_n = static_cast<std::size_t>(hand_dof_);
+  switch (kind) {
+    case PolicyFeature::kArmPosition:
+      if (out.size() != arm_n) {
+        return false;
+      }
+      for (std::size_t i = 0; i < arm_n; ++i) {
+        out[i] = (arm_sign_[i] * arm.positions[i]) + arm_offset_[i];
+      }
+      return true;
+    case PolicyFeature::kHandPosition:
+      if (out.size() != hand_n) {
+        return false;
+      }
+      for (std::size_t i = 0; i < hand_n; ++i) {
+        out[i] = (hand_sign_[i] * hand.positions[i]) + hand_offset_[i];
+      }
+      return true;
+    case PolicyFeature::kArmVelocity:
+      // The position gate says nothing about this lane (#446), and a driver
+      // that omits `velocity` leaves it zero-initialised — a robot at rest, as
+      // far as the policy could tell.
+      if (out.size() != arm_n || !rtc::IsLaneReadable(arm, rtc::StateLane::kVelocity, arm_dof_)) {
+        return false;
+      }
+      for (std::size_t i = 0; i < arm_n; ++i) {
+        out[i] = arm_sign_[i] * arm.velocities[i];
+      }
+      return true;
+    case PolicyFeature::kHandVelocity:
+      if (out.size() != hand_n ||
+          !rtc::IsLaneReadable(hand, rtc::StateLane::kVelocity, hand_dof_)) {
+        return false;
+      }
+      for (std::size_t i = 0; i < hand_n; ++i) {
+        out[i] = hand_sign_[i] * hand.velocities[i];
+      }
+      return true;
+    case PolicyFeature::kFingertipForceNorm: {
+      const auto n = static_cast<std::size_t>(num_fingertips_);
+      if (out.size() != n) {
+        return false;
+      }
+      for (std::size_t g = 0; g < n; ++g) {
+        out[g] = GroupForceNorm(hand, static_cast<int>(g));
+      }
+      return true;
+    }
+    case PolicyFeature::kGroupForceNorm:
+      if (out.size() != 1) {
+        return false;
+      }
+      out[0] = GroupForceNorm(hand, arg);
+      return true;
+    case PolicyFeature::kLinkPosition:
+    case PolicyFeature::kLinkOrientationXyzw: {
+      if (arg < 0 || static_cast<std::size_t>(arg) >= links_.size()) {
+        return false;
+      }
+      const auto a = static_cast<std::size_t>(arg);
+      if (kind == PolicyFeature::kLinkPosition) {
+        if (out.size() != 3) {
+          return false;
+        }
+        std::copy(link_pos_[a].begin(), link_pos_[a].end(), out.begin());
+      } else {
+        if (out.size() != 4) {
+          return false;
+        }
+        std::copy(link_quat_[a].begin(), link_quat_[a].end(), out.begin());
+      }
+      return true;
+    }
+    case PolicyFeature::kReachPhase: {
+      double phase = 0.0;
+      if (out.size() != 1 || !ComputeReachPhase(state, phase)) {
+        return false;
+      }
+      out[0] = phase;
+      return true;
+    }
+    case PolicyFeature::kObjectPosition:
+    case PolicyFeature::kObjectOrientationXyzw: {
+      // `object_valid_this_tick_` was decided once at the top of Compute so
+      // both halves of the pose come from the SAME sample — reading the
+      // SeqLock per feature could straddle a callback and pair a position
+      // with the next message's orientation.
+      if (!object_valid_this_tick_) {
+        return false;
+      }
+      if (kind == PolicyFeature::kObjectPosition) {
+        if (out.size() != 3) {
+          return false;
+        }
+        std::copy(object_this_tick_.position.begin(), object_this_tick_.position.end(),
+                  out.begin());
+      } else {
+        if (out.size() != 4) {
+          return false;
+        }
+        std::copy(object_this_tick_.orientation_xyzw.begin(),
+                  object_this_tick_.orientation_xyzw.end(), out.begin());
+      }
+      return true;
+    }
+  }
+  return false;
 }
 
 bool DemoInferenceController::PackObservation(const ControllerState& state,
@@ -81,17 +276,35 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
   if (state.num_devices < 2) {
     return false;
   }
-  const auto& arm = state.devices[0];
-  const auto& hand = state.devices[1];
-
-  // F5: the shared gate that decides whether devices[0]'s positions may be used
-  // as this tick's joint state at all. `num_channels` is the wire width and does
-  // not answer this — a message can be wide enough while leaving holes behind a
+  // F5: the shared gate that decides whether the positions may be used as this
+  // tick's joint state at all. `num_channels` is the wire width and does not
+  // answer this — a message can be wide enough while leaving holes behind a
   // reorder map, and those slots still hold the previous tick's values.
-  if (!rtc::IsDeviceReadable(arm, arm_dof_) || !rtc::IsDeviceReadable(hand, hand_dof_)) {
+  if (!rtc::IsDeviceReadable(state.devices[0], arm_dof_) ||
+      !rtc::IsDeviceReadable(state.devices[1], hand_dof_)) {
+    return false;
+  }
+  reach_pending_ = false;  // this attempt's trigger advance, if any, starts fresh
+
+  // ── 1. Filler ─────────────────────────────────────────────────────────────
+  // Before the features, so an element no feature covers holds its declared
+  // value rather than whatever the allocation or an earlier attempt left there.
+  // Recurrent tensors are skipped: their contents ARE the state.
+  for (std::size_t t = 0; t < bufs.size() && t < io_.inputs.size(); ++t) {
+    const auto& spec = io_.inputs[t];
+    if (spec.recurrent) {
+      continue;
+    }
+    rtc::inference::ApplyFill(bufs[t], spec.constant ? std::span<const float>(spec.values)
+                                                     : std::span<const float>(spec.fill));
+  }
+
+  // ── 2. Link poses, once per evaluation ────────────────────────────────────
+  if (!links_.empty() && !ComputeLinkPoses()) {
     return false;
   }
 
+  // ── 3. Features ───────────────────────────────────────────────────────────
   for (std::size_t f = 0; f < feature_kinds_.size(); ++f) {
     // One flat walk over every tensor's features. The segment names its own
     // tensor, so the routing is a table lookup rather than a nested loop with
@@ -99,112 +312,20 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
     // tensor 0, because folding would write the right values into the wrong
     // model input and leave the right one holding the previous tick.
     const auto& seg = flat_segments_[f];
-    if (seg.tensor < 0 || static_cast<std::size_t>(seg.tensor) >= bufs.size()) {
+    if (seg.tensor < 0 || static_cast<std::size_t>(seg.tensor) >= bufs.size() || seg.count <= 0 ||
+        static_cast<std::size_t>(seg.count) > scratch_measured_.size()) {
       return false;
     }
-    const std::span<float> buf = bufs[static_cast<std::size_t>(seg.tensor)];
-    switch (feature_kinds_[f]) {
-      case PolicyFeature::kArmPosition: {
-        for (int i = 0; i < arm_dof_; ++i) {
-          scratch_measured_[static_cast<std::size_t>(i)] =
-              arm.positions[static_cast<std::size_t>(i)];
-        }
-        if (!rtc::inference::PackSegment(
-                buf, seg,
-                std::span<const double>(scratch_measured_.data(),
-                                        static_cast<std::size_t>(arm_dof_)))) {
-          return false;
-        }
-        break;
-      }
-      case PolicyFeature::kHandPosition: {
-        for (int i = 0; i < hand_dof_; ++i) {
-          scratch_measured_[static_cast<std::size_t>(i)] =
-              hand.positions[static_cast<std::size_t>(i)];
-        }
-        if (!rtc::inference::PackSegment(
-                buf, seg,
-                std::span<const double>(scratch_measured_.data(),
-                                        static_cast<std::size_t>(hand_dof_)))) {
-          return false;
-        }
-        break;
-      }
-      case PolicyFeature::kFingertipForceNorm: {
-        // A stale group contributes 0, by the decision recorded in the spec:
-        // "no contact" and "no reading" are the same observation to this
-        // policy, and holding the last force instead would let a dropped lane
-        // keep reporting a grasp that ended.
-        const int stride = fingertip_stride_;
-        for (int g = 0; g < num_fingertips_; ++g) {
-          double norm = 0.0;
-          const bool fresh =
-              (g < rtc::kMaxSensorGroups) && hand.inference_enable[static_cast<std::size_t>(g)];
-          if (fresh && stride >= kForceSlotBegin + kForceSlotCount) {
-            double sum_sq = 0.0;
-            for (int c = 0; c < kForceSlotCount; ++c) {
-              const int idx = (g * stride) + kForceSlotBegin + c;
-              if (idx < 0 || idx >= rtc::kMaxInferenceValues) {
-                sum_sq = 0.0;
-                break;
-              }
-              const double v =
-                  static_cast<double>(hand.inference_data[static_cast<std::size_t>(idx)]);
-              sum_sq += v * v;
-            }
-            norm = std::isfinite(sum_sq) ? std::sqrt(sum_sq) : 0.0;
-          }
-          scratch_force_norm_[static_cast<std::size_t>(g)] = norm;
-        }
-        if (!rtc::inference::PackSegment(
-                buf, seg,
-                std::span<const double>(scratch_force_norm_.data(),
-                                        static_cast<std::size_t>(num_fingertips_)))) {
-          return false;
-        }
-        break;
-      }
-      case PolicyFeature::kPalmPosition:
-      case PolicyFeature::kPalmOrientationXyzw: {
-        std::array<double, 3> p{};
-        std::array<double, 4> q{};
-        if (!PalmPose(p, q)) {
-          return false;
-        }
-        const bool want_position = (feature_kinds_[f] == PolicyFeature::kPalmPosition);
-        const std::span<const double> src = want_position
-                                                ? std::span<const double>(p.data(), p.size())
-                                                : std::span<const double>(q.data(), q.size());
-        if (!rtc::inference::PackSegment(buf, seg, src)) {
-          return false;
-        }
-        break;
-      }
-      case PolicyFeature::kObjectPosition:
-      case PolicyFeature::kObjectOrientationXyzw: {
-        // `object_valid_this_tick_` was decided once at the top of Compute so
-        // both halves of the pose come from the SAME sample — reading the
-        // SeqLock per feature could straddle a callback and pair a position
-        // with the next message's orientation.
-        if (!object_valid_this_tick_) {
-          return false;
-        }
-        const bool want_position = (feature_kinds_[f] == PolicyFeature::kObjectPosition);
-        const std::span<const double> src =
-            want_position ? std::span<const double>(object_this_tick_.position.data(), 3)
-                          : std::span<const double>(object_this_tick_.orientation_xyzw.data(), 4);
-        if (!rtc::inference::PackSegment(buf, seg, src)) {
-          return false;
-        }
-        break;
-      }
+    const std::span<double> values(scratch_measured_.data(), static_cast<std::size_t>(seg.count));
+    if (!ExtractFeature(feature_kinds_[f], feature_args_[f], state, values) ||
+        !rtc::inference::PackSegment(bufs[static_cast<std::size_t>(seg.tensor)], seg, values)) {
+      return false;
     }
   }
 
-  // Per tensor, after every segment of that tensor is in place: the lane is
-  // indexed against its OWN tensor, and applying it to a partially packed
-  // buffer would normalise this tick's values together with whatever the
-  // untouched elements still held.
+  // ── 4. Affine, per tensor, after every segment of that tensor is in place ──
+  // Recurrent and constant tensors carry no lane (the parser refuses one), so
+  // this is a no-op for them.
   for (std::size_t t = 0; t < bufs.size() && t < io_.inputs.size(); ++t) {
     rtc::inference::ApplyAffine(bufs[t], io_.inputs[t].offset, io_.inputs[t].scale);
   }
@@ -214,13 +335,16 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
 void DemoInferenceController::HoldPosition(const ControllerState& state,
                                            ControllerOutput& out) noexcept {
   // Every hold path in Compute() funnels through here, which is why the hold
-  // clock lives here rather than being re-armed at each of the six early
-  // returns. Arming a flag instead of resetting on the spot keeps the hold path
-  // from touching the engine at all (#511 D-3).
+  // clock lives here rather than being re-armed at each early return. Arming a
+  // flag instead of resetting on the spot keeps the hold path from touching
+  // the engine at all (#511 D-3).
   hold_elapsed_sec_ += state.dt;
   if (reset_after_hold_sec_ >= 0.0 && hold_elapsed_sec_ >= reset_after_hold_sec_) {
     recurrent_reset_pending_ = true;
   }
+  // The command stream restarts from the measured position when a policy action
+  // is next accepted — see `cmd_base_valid_`.
+  cmd_base_valid_ = false;
 
   // Latch on entry. See the member declaration for why commanding the measured
   // position every tick is not a hold: it is a zero-stiffness follower, and the
@@ -264,7 +388,7 @@ void DemoInferenceController::HoldPosition(const ControllerState& state,
   }
 }
 
-void DemoInferenceController::BoundDeviceCommand(int device_idx, std::span<const double> measured,
+void DemoInferenceController::BoundDeviceCommand(int device_idx, std::span<const double> base,
                                                  std::span<double> command, double dt) noexcept {
   // The §7.3 tail integrates a VELOCITY from a base, so the absolute target the
   // policy produced is expressed as the velocity that would reach it in one
@@ -274,10 +398,10 @@ void DemoInferenceController::BoundDeviceCommand(int device_idx, std::span<const
   const auto n = command.size();
   std::array<double, kMaxArmDof + kMaxHandDof> q{};
   std::array<double, kMaxArmDof + kMaxHandDof> dq{};
-  const auto capped = std::min(n, q.size());
+  const auto capped = std::min({n, base.size(), q.size()});
   for (std::size_t i = 0; i < capped; ++i) {
-    q[i] = measured[i];
-    dq[i] = (dt > 0.0) ? ((command[i] - measured[i]) / dt) : 0.0;
+    q[i] = base[i];
+    dq[i] = (dt > 0.0) ? ((command[i] - base[i]) / dt) : 0.0;
   }
 
   rtc::compliance::JointCommandBounds bounds;
@@ -346,7 +470,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
 
   // ── Hold gates ────────────────────────────────────────────────────────────
   // Anything that makes the observation or the action untrustworthy lands the
-  // whole robot on its measured position. Never one device only: the policy
+  // whole robot on its latched position. Never one device only: the policy
   // reasons about arm and hand together, so half an action is not a smaller
   // version of the right thing.
   const bool structurally_ready =
@@ -361,10 +485,6 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
   const bool devices_readable = rtc::IsDeviceReadable(state.devices[0], arm_dof_) &&
                                 rtc::IsDeviceReadable(state.devices[1], hand_dof_);
 
-  // FK is read from the cache in PackObservation, so the scatter+Update has to
-  // have run for THIS tick first. ExtractFullState carries the same F5 gate
-  // internally, so an unreadable arm leaves the cache holding the previous
-  // configuration rather than a half-written one.
   if (devices_readable) {
     for (int i = 0; i < arm_dof_; ++i) {
       last_readable_arm_[static_cast<std::size_t>(i)] =
@@ -377,9 +497,22 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     have_readable_ = true;
   }
 
-  if (devices_readable && palm_frame_idx_ >= 0) {
+  // Kinematics on EVERY readable tick, not only on policy steps. The cache is
+  // read in PackObservation, so it has to hold this tick's configuration; the
+  // closed-chain projection additionally clamps its seed increment per update
+  // (NUM-5), so running it only every N-th tick would turn ordinary motion into
+  // a walk-in and hold the policy for no reason. ExtractFullState carries the
+  // same F5 gate internally.
+  closed_fk_fresh_ = false;
+  if (devices_readable && !links_.empty()) {
     combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
     combined_cache_.Update();
+    if (has_closed_links_) {
+      closed_fk_.Update(state);
+      const auto st = closed_fk_.status();
+      closed_fk_fresh_ = !st.held && !st.singular && std::isfinite(st.closure_error) &&
+                         st.closure_error < kClosureErrorThreshold;
+    }
   }
   if (!devices_readable) {
     // Judged before decimation on purpose: replaying the held action over a
@@ -429,17 +562,38 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     }
 
     // ── Recurrent state: reset before the observation goes in ──────────────
-    // Armed by activation or by a hold that outlasted `reset_after_hold_sec_`.
-    // Zeroing here rather than after the run means the very step that resumes
-    // already runs on the fresh state instead of one step later.
+    // Armed by activation or by a hold that outlasted `reset_after_hold_sec_`,
+    // and re-applied on every attempt until an action is accepted, so a seed
+    // read off the joints describes the step that actually runs. A seeded
+    // tensor starts from its feature (an integrator whose state is the current
+    // joint position must not start from zero — that would command every joint
+    // toward zero); the rest start from zero. The reach trigger is part of the
+    // same episode state and resets with it.
     if (recurrent_reset_pending_) {
-      for (const auto& link : io_.recurrent_links) {
-        const auto t = static_cast<std::size_t>(link.input_tensor);
-        if (t < n_tensors) {
-          std::fill(in_bufs[t].begin(), in_bufs[t].end(), 0.0F);
+      for (const auto& seed : seeds_) {
+        const auto t = static_cast<std::size_t>(seed.tensor);
+        if (t >= n_tensors) {
+          continue;
+        }
+        const std::span<float> dst = in_bufs[t];
+        if (!seed.has_seed) {
+          std::fill(dst.begin(), dst.end(), 0.0F);
+          continue;
+        }
+        const auto w = static_cast<std::size_t>(seed.width);
+        if (w != dst.size() || w > scratch_measured_.size() ||
+            !ExtractFeature(seed.kind, seed.arg, state,
+                            std::span<double>(scratch_measured_.data(), w))) {
+          have_action_ = false;
+          HoldPosition(state, out);
+          last_tick_held_ = true;
+          return out;
+        }
+        for (std::size_t i = 0; i < w; ++i) {
+          dst[i] = static_cast<float>(scratch_measured_[i]);
         }
       }
-      recurrent_reset_pending_ = false;
+      reach_state_ = {};
     }
 
     if (!PackObservation(state, std::span<const std::span<float>>(in_bufs.data(), n_tensors))) {
@@ -462,24 +616,29 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     }
 
     // ── Unpack: arm target ─────────────────────────────────────────────────
+    // A named head is gathered by name into device joint order; an unnamed
+    // one is the positional slice. Either way the values are in the POLICY's
+    // joint convention and cross back through it before they become commands.
     const auto& arm_slice = io_.output_features[static_cast<std::size_t>(arm_target_idx_)].slice;
     const auto& hand_slice = io_.output_features[static_cast<std::size_t>(hand_command_idx_)].slice;
 
     bool ok = arm_slice.count == arm_dof_;
     if (ok) {
-      ok = rtc::inference::UnpackSlice(
-          std::span<double>(scratch_head_.data(), static_cast<std::size_t>(arm_slice.count)),
-          arm_slice, engine_->output_buffer(0, arm_slice.tensor),
-          engine_->output_size(0, arm_slice.tensor));
+      const std::span<double> dst(scratch_head_.data(), static_cast<std::size_t>(arm_dof_));
+      const float* src = engine_->output_buffer(0, arm_slice.tensor);
+      const std::size_t size = engine_->output_size(0, arm_slice.tensor);
+      ok = arm_out_idx_.empty() ? rtc::inference::UnpackSlice(dst, arm_slice, src, size)
+                                : rtc::inference::UnpackIndexed(dst, arm_out_idx_, src, size);
     }
     if (ok) {
       for (int i = 0; i < arm_dof_; ++i) {
-        const double v = scratch_head_[static_cast<std::size_t>(i)];
+        const auto k = static_cast<std::size_t>(i);
+        const double v = scratch_head_[k];
         if (!std::isfinite(v)) {
           ok = false;
           break;
         }
-        arm_action_[static_cast<std::size_t>(i)] = v;
+        arm_action_[k] = arm_sign_[k] * (v - arm_offset_[k]);
       }
     }
 
@@ -488,29 +647,28 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     // is on a resolved enum and not on anything the tick has to discover.
     if (ok && hand_role_ == PolicyOutputRole::kJointTarget) {
       // Same width guard the arm path carries, and for a sharper reason here:
-      // `scratch_head_` was just written with the ARM's targets, and
-      // `UnpackSlice` cannot catch a short slice because the span handed to it
-      // is sized by that same `count` — its bounds check compares the slice
-      // against itself. A `count` below `hand_dof_` would therefore leave the
+      // `scratch_head_` was just written with the ARM's targets, and the
+      // unpack cannot catch a short slice because the span handed to it is
+      // sized by that same `count`. A `count` below `hand_dof_` would leave the
       // tail of this read holding arm joint angles, finite and inside the
-      // hand's limits, with nothing downstream to object. `parameters.cpp`
-      // refuses that config at configure time; this keeps the two lanes
-      // symmetric rather than resting the hand's correctness on a check the
-      // arm did not consider sufficient for itself.
+      // hand's limits. `parameters.cpp` refuses that config; this keeps the
+      // two lanes symmetric.
       ok = hand_slice.count == hand_dof_;
       if (ok) {
-        ok = rtc::inference::UnpackSlice(
-            std::span<double>(scratch_head_.data(), static_cast<std::size_t>(hand_slice.count)),
-            hand_slice, engine_->output_buffer(0, hand_slice.tensor),
-            engine_->output_size(0, hand_slice.tensor));
+        const std::span<double> dst(scratch_head_.data(), static_cast<std::size_t>(hand_dof_));
+        const float* src = engine_->output_buffer(0, hand_slice.tensor);
+        const std::size_t size = engine_->output_size(0, hand_slice.tensor);
+        ok = hand_out_idx_.empty() ? rtc::inference::UnpackSlice(dst, hand_slice, src, size)
+                                   : rtc::inference::UnpackIndexed(dst, hand_out_idx_, src, size);
       }
       for (int i = 0; ok && i < hand_dof_; ++i) {
-        const double v = scratch_head_[static_cast<std::size_t>(i)];
+        const auto k = static_cast<std::size_t>(i);
+        const double v = scratch_head_[k];
         if (!std::isfinite(v)) {
           ok = false;
           break;
         }
-        hand_action_[static_cast<std::size_t>(i)] = v;
+        hand_action_[k] = hand_sign_[k] * (v - hand_offset_[k]);
       }
     } else if (ok) {
       double scalar = 0.0;
@@ -547,7 +705,8 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     // was accepted". A partial action is not a smaller version of the right
     // thing, and neither is the state that produced it — advancing the state on
     // a rejected step would keep the policy's memory moving while the robot
-    // stood still (#511 C-5, no new branch needed).
+    // stood still (#511 C-5). The reach trigger is committed here for the same
+    // reason.
     //
     // Engine buffer → engine buffer: the state never passes through this
     // controller's scratch, so a hidden layer of any width costs it zero bytes.
@@ -570,6 +729,11 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
                     link.input_tensor);
       }
     }
+    if (reach_pending_) {
+      reach_state_ = reach_state_pending_;
+      reach_pending_ = false;
+    }
+    recurrent_reset_pending_ = false;
 
     have_action_ = true;
     hold_elapsed_sec_ = 0.0;
@@ -579,26 +743,33 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
   // ── Emit ──────────────────────────────────────────────────────────────────
   out.num_devices = std::min(state.num_devices, ControllerOutput::kMaxDevices);
 
+  // The rate bound steps from the PREVIOUS command (D2) — see `cmd_base_valid_`
+  // for why not from the measurement, and why the stream re-seeds from the
+  // measurement after activation and after a hold.
   std::array<double, kMaxArmDof> arm_cmd{};
   std::array<double, kMaxHandDof> hand_cmd{};
-  std::array<double, kMaxArmDof> arm_meas{};
-  std::array<double, kMaxHandDof> hand_meas{};
+  std::array<double, kMaxArmDof> arm_base{};
+  std::array<double, kMaxHandDof> hand_base{};
   for (int i = 0; i < arm_dof_; ++i) {
-    arm_cmd[static_cast<std::size_t>(i)] = arm_action_[static_cast<std::size_t>(i)];
-    arm_meas[static_cast<std::size_t>(i)] = state.devices[0].positions[static_cast<std::size_t>(i)];
+    const auto k = static_cast<std::size_t>(i);
+    arm_cmd[k] = arm_action_[k];
+    arm_base[k] = cmd_base_valid_ ? last_cmd_arm_[k] : state.devices[0].positions[k];
   }
   for (int i = 0; i < hand_dof_; ++i) {
-    hand_cmd[static_cast<std::size_t>(i)] = hand_action_[static_cast<std::size_t>(i)];
-    hand_meas[static_cast<std::size_t>(i)] =
-        state.devices[1].positions[static_cast<std::size_t>(i)];
+    const auto k = static_cast<std::size_t>(i);
+    hand_cmd[k] = hand_action_[k];
+    hand_base[k] = cmd_base_valid_ ? last_cmd_hand_[k] : state.devices[1].positions[k];
   }
 
   BoundDeviceCommand(0,
-                     std::span<const double>(arm_meas.data(), static_cast<std::size_t>(arm_dof_)),
+                     std::span<const double>(arm_base.data(), static_cast<std::size_t>(arm_dof_)),
                      std::span<double>(arm_cmd.data(), static_cast<std::size_t>(arm_dof_)), dt);
   BoundDeviceCommand(1,
-                     std::span<const double>(hand_meas.data(), static_cast<std::size_t>(hand_dof_)),
+                     std::span<const double>(hand_base.data(), static_cast<std::size_t>(hand_dof_)),
                      std::span<double>(hand_cmd.data(), static_cast<std::size_t>(hand_dof_)), dt);
+  last_cmd_arm_ = arm_cmd;
+  last_cmd_hand_ = hand_cmd;
+  cmd_base_valid_ = true;
 
   auto& arm_out = out.devices[0];
   arm_out.num_channels = arm_dof_;

@@ -1,14 +1,15 @@
 // ── DemoInferenceController: lifecycle ───────────────────────────────────────
 // Everything expensive happens here and nowhere else: model load, tensor
 // allocation, shape validation and warmup are all inside `engine_->Init()`,
-// which is why the tick can be allocation-free.
+// and every frame the tick reads is resolved to an index here — which is why
+// the tick can be allocation-free.
 
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "rtc_inference/inference_types.hpp"
+#include "rtc_urdf_bridge/loop_verification.hpp"
 
 #include <Eigen/Geometry>
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -82,29 +83,20 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
     // between LoadConfig and here.
     ApplyIoSchema(yaml);
 
-    // ── Kinematic model + palm frame ───────────────────────────────────────
-    // Only built when a pose feature actually asks for it, so a policy that
-    // observes joints and forces alone does not pay for a URDF parse — and,
-    // more usefully, does not fail configure on a robot with no system URDF.
-    const bool needs_palm =
-        std::any_of(feature_kinds_.begin(), feature_kinds_.end(), [](PolicyFeature k) {
-          return k == PolicyFeature::kPalmPosition || k == PolicyFeature::kPalmOrientationXyzw;
-        });
-    if (needs_palm) {
-      if (!ConfigurePalmFk()) {
-        return CallbackReturn::FAILURE;
-      }
+    // ── Kinematic model, link table, frames ────────────────────────────────
+    // Built only when a pose is observed (or the object pose has to be moved
+    // between frames), so a policy that observes joints and forces alone does
+    // not pay for a URDF parse — and does not fail configure on a robot with no
+    // system URDF.
+    if (!ConfigureKinematics()) {
+      return CallbackReturn::FAILURE;
     }
 
     // ── Object pose subscription ───────────────────────────────────────────
-    const bool needs_object =
-        std::any_of(feature_kinds_.begin(), feature_kinds_.end(), [](PolicyFeature k) {
-          return k == PolicyFeature::kObjectPosition || k == PolicyFeature::kObjectOrientationXyzw;
-        });
-    if (needs_object) {
+    if (wants_object_) {
       if (!node) {
         RCLCPP_ERROR(logger_,
-                     "[inference] an object pose feature is configured but there is no node to "
+                     "[inference] the object pose is observed but there is no node to "
                      "subscribe with");
         return CallbackReturn::FAILURE;
       }
@@ -116,9 +108,12 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       object_sub_ = node->create_subscription<tf2_msgs::msg::TFMessage>(
           object_topic_, qos,
           [this](tf2_msgs::msg::TFMessage::ConstSharedPtr msg) { OnObjectTransforms(*msg); });
-      RCLCPP_INFO(logger_, "[inference] object pose lane: %s (match %s '%s', timeout %.3f s)",
+      RCLCPP_INFO(logger_,
+                  "[inference] object pose lane: %s (match %s '%s', %s = URDF '%s' → '%s', "
+                  "timeout %.3f s)",
                   object_topic_.c_str(), object_match_prefix_ ? "prefix" : "exact",
-                  object_frame_match_.c_str(), object_timeout_sec_);
+                  object_frame_match_.c_str(), object_source_frame_id_.c_str(),
+                  object_source_frame_link_.c_str(), policy_frame_.c_str(), object_timeout_sec_);
     }
 
     // ── Hand posture width vs the device that will execute it ──────────────
@@ -154,19 +149,46 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
     }
 
     // ── Inference engine ───────────────────────────────────────────────────
-    if (model_path_.empty()) {
+    // The path is expanded here and not in LoadConfig so an unset variable can
+    // still become the documented hold mode: a checkout that ships the config
+    // but not the policy file is the ordinary state of every machine but the
+    // one the policy was copied to (D4 — the model stays out of the repo).
+    std::string missing_var;
+    const bool expanded =
+        model_path_raw_.empty() || ExpandModelPath(model_path_raw_, model_path_, missing_var);
+    if (model_path_raw_.empty()) {
+      model_path_.clear();
+    }
+    if (!expanded || model_path_.empty()) {
       if (!allow_missing_model_) {
-        RCLCPP_ERROR(logger_,
-                     "[inference] inference.model_path is empty. Set it, or set "
-                     "inference.allow_missing_model: true to bring the wiring up in a "
-                     "hold-position mode with no policy");
+        if (!expanded) {
+          RCLCPP_ERROR(logger_,
+                       "[inference] inference.model_path '%s' needs ${%s}, which is not set. "
+                       "Export it, or set inference.allow_missing_model: true to bring the wiring "
+                       "up in a hold-position mode with no policy",
+                       model_path_raw_.c_str(), missing_var.c_str());
+        } else {
+          RCLCPP_ERROR(logger_,
+                       "[inference] inference.model_path is empty. Set it, or set "
+                       "inference.allow_missing_model: true to bring the wiring up in a "
+                       "hold-position mode with no policy");
+        }
         return CallbackReturn::FAILURE;
       }
       hold_mode_ = true;
-      RCLCPP_WARN(logger_,
-                  "[inference] NO POLICY LOADED (allow_missing_model). Every tick holds the "
-                  "position latched at activation; this controller commands no motion until "
-                  "inference.model_path is set");
+      model_path_.clear();
+      if (!expanded) {
+        RCLCPP_WARN(logger_,
+                    "[inference] NO POLICY LOADED: inference.model_path '%s' needs ${%s}, which "
+                    "is not set (allow_missing_model). Every tick holds the position latched at "
+                    "activation; this controller commands no motion until the variable is set",
+                    model_path_raw_.c_str(), missing_var.c_str());
+      } else {
+        RCLCPP_WARN(logger_,
+                    "[inference] NO POLICY LOADED (allow_missing_model). Every tick holds the "
+                    "position latched at activation; this controller commands no motion until "
+                    "inference.model_path is set");
+      }
     } else {
       rtc::ModelConfig mc;
       mc.model_path = model_path_;
@@ -185,6 +207,9 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
         mc.outputs.push_back({tensor.name, tensor.shape});
       }
       mc.intra_op_threads = intra_op_threads_;
+      // A path that is SET but does not load is a failure even under
+      // allow_missing_model: the operator pointed at a file, and a typo in that
+      // path must not look like "no policy on this machine".
       engine_->Init(mc);
 
       // The gate that makes a missing ONNX Runtime loud. The stub engine's
@@ -200,9 +225,10 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       }
       hold_mode_ = false;
       RCLCPP_INFO(logger_,
-                  "[inference] policy loaded: %s (decimation %d, %zu input tensor(s), %zu-element "
-                  "observation)",
-                  model_path_.c_str(), io_.decimation, io_.inputs.size(), io_.inputs[0].Numel());
+                  "[inference] policy loaded: %s (decimation %d, %zu input / %zu output "
+                  "tensor(s), %zu recurrent link(s))",
+                  model_path_.c_str(), io_.decimation, io_.inputs.size(), io_.outputs.size(),
+                  io_.recurrent_links.size());
     }
   } catch (const std::exception& e) {
     // Includes the engine's own shape validation, which throws when the .onnx
@@ -215,12 +241,28 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
   return CallbackReturn::SUCCESS;
 }
 
-bool DemoInferenceController::ConfigurePalmFk() {
+bool DemoInferenceController::ConfigureKinematics() {
   namespace rub = rtc_urdf_bridge;
+  has_closed_links_ = false;
+  closed_fk_fresh_ = false;
+  policy_frame_idx_ = -1;
+  hand_root_idx_ = -1;
+  pf_from_src_ = pinocchio::SE3::Identity();
+
+  // Nothing observed in space — and an object lane whose messages are already
+  // in the policy frame needs no model to say so.
+  const bool object_needs_model = wants_object_ && !object_source_frame_link_.empty() &&
+                                  object_source_frame_link_ != policy_frame_;
+  if (links_.empty() && !object_needs_model) {
+    return true;
+  }
+
   const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg == nullptr || sys_cfg->urdf_path.empty()) {
     RCLCPP_ERROR(logger_,
-                 "[inference] a palm pose feature is configured but no system URDF is available");
+                 "[inference] a pose is observed in '%s' but no system URDF is available to "
+                 "resolve it",
+                 policy_frame_.c_str());
     return false;
   }
 
@@ -236,7 +278,6 @@ bool DemoInferenceController::ConfigurePalmFk() {
     RCLCPP_ERROR(logger_, "[inference] combined model init failed");
     return false;
   }
-
   const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
   const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
   combined_cache_.BuildReorderMap(arm_cfg ? &arm_cfg->joint_state_names : nullptr,
@@ -245,43 +286,141 @@ bool DemoInferenceController::ConfigurePalmFk() {
 
   const auto& model = combined_cache_.model();
   if (!model) {
-    RCLCPP_ERROR(logger_, "[inference] no combined model to resolve '%s' against",
-                 palm_link_.c_str());
+    RCLCPP_ERROR(logger_, "[inference] no combined model to resolve frames against");
     return false;
   }
-  if (!model->existFrame(palm_link_)) {
-    // The failure the shipped default used to produce: `hand_base_link` is a
-    // leap-hand link and does not exist on this hand at all.
-    RCLCPP_ERROR(logger_, "[inference] palm link '%s' does not exist in the model",
-                 palm_link_.c_str());
-    return false;
-  }
-  palm_frame_idx_ =
-      combined_cache_.cache().RegisterFrame("inference_palm", model->getFrameId(palm_link_));
-  if (palm_frame_idx_ < 0) {
-    RCLCPP_ERROR(logger_, "[inference] palm frame registration failed (cache locked)");
+  if (!model->existFrame(policy_frame_)) {
+    RCLCPP_ERROR(logger_, "[inference] inference.policy_frame '%s' does not exist in the model",
+                 policy_frame_.c_str());
     return false;
   }
 
-  // Base frame: without it the cache returns the WORLD-tip pose, and this
-  // controller's own `world` is defined by `base_pose_in_world` — mixing the
-  // two would double-count the mounting rotation.
-  if (!sys_cfg->sub_models.empty()) {
-    const auto& root = sys_cfg->sub_models.front().root_link;
-    if (!root.empty() && model->existFrame(root)) {
-      arm_base_frame_idx_ =
-          combined_cache_.cache().RegisterFrame("inference_base", model->getFrameId(root));
+  // ── Object source frame → policy frame ─────────────────────────────────
+  // Static by requirement: the transform is applied in the subscription
+  // callback, off the tick, so a source frame that moves with the joints (a
+  // wrist camera) would be applied at a configuration the tick never agreed
+  // to. Two frames on the same joint are rigidly attached, and their relative
+  // placement is then a model constant — no FK, no configuration.
+  if (object_needs_model) {
+    if (!model->existFrame(object_source_frame_link_)) {
+      RCLCPP_ERROR(logger_,
+                   "[inference] inference.object_pose.source_frame_link '%s' does not exist in "
+                   "the model",
+                   object_source_frame_link_.c_str());
+      return false;
+    }
+    const auto& pf = model->frames[model->getFrameId(policy_frame_)];
+    const auto& src = model->frames[model->getFrameId(object_source_frame_link_)];
+    if (pf.parentJoint != src.parentJoint) {
+      RCLCPP_ERROR(logger_,
+                   "[inference] object_pose.source_frame_link '%s' and policy_frame '%s' are not "
+                   "rigidly attached (a joint moves between them) — the object pose is "
+                   "transformed off the tick, so the transform between them must be constant",
+                   object_source_frame_link_.c_str(), policy_frame_.c_str());
+      return false;
+    }
+    pf_from_src_ = pf.placement.actInv(src.placement);
+  }
+
+  if (links_.empty()) {
+    return true;
+  }
+
+  policy_frame_idx_ = combined_cache_.cache().RegisterFrame("inference_policy_frame",
+                                                            model->getFrameId(policy_frame_));
+  if (policy_frame_idx_ < 0) {
+    RCLCPP_ERROR(logger_, "[inference] policy frame registration failed (cache locked)");
+    return false;
+  }
+
+  // ── Where each link's pose comes from ──────────────────────────────────
+  // Decided from the TOPOLOGY, per link. The cache's model locks every
+  // loop-passive joint at zero, so a link downstream of one — a fingertip on a
+  // linkage finger — gets a pose from it that is finite, smooth and wrong by
+  // centimetres. Those go through the closed-chain projection; everything else
+  // (a palm, an arm link) stays on the cache, where it is exact.
+  const auto full = builder_->GetFullModel();
+  const auto& constraints = builder_->GetConstraintModels();
+  const auto& actuated = builder_->GetClosureActuatedJointIds();
+  std::vector<std::string> closed_names;
+  for (std::size_t i = 0; i < links_.size(); ++i) {
+    auto& slot = links_[i];
+    if (!model->existFrame(slot.name)) {
+      RCLCPP_ERROR(logger_, "[inference] observed link '%s' does not exist in the model",
+                   slot.name.c_str());
+      return false;
+    }
+    const bool downstream =
+        !constraints.empty() && full && full->existFrame(slot.name) &&
+        rub::IsFrameDownstreamOfLoop(*full, actuated, full->getFrameId(slot.name));
+    if (downstream) {
+      if (closed_names.size() >= ClosedChainHandFk::kMaxFingertips) {
+        RCLCPP_ERROR(logger_,
+                     "[inference] more than %zu observed links are downstream of a loop; the "
+                     "closed-chain hand FK serves at most that many",
+                     ClosedChainHandFk::kMaxFingertips);
+        return false;
+      }
+      slot.closed_tip = static_cast<int>(closed_names.size());
+      closed_names.push_back(slot.name);
+      continue;
+    }
+    slot.cache_idx = combined_cache_.cache().RegisterFrame("inference_link_" + std::to_string(i),
+                                                           model->getFrameId(slot.name));
+    if (slot.cache_idx < 0) {
+      RCLCPP_ERROR(logger_, "[inference] frame registration for '%s' failed (cache locked)",
+                   slot.name.c_str());
+      return false;
     }
   }
-  if (arm_base_frame_idx_ < 0) {
-    RCLCPP_ERROR(logger_,
-                 "[inference] arm root frame could not be registered; a palm pose without an "
-                 "explicit base frame would be quoted in the model's own world");
-    return false;
+
+  if (!closed_names.empty()) {
+    // The projection reports fingertips relative to the hand root, and the
+    // cache supplies the hand root relative to the policy frame — the root is
+    // upstream of every loop, so its cache pose is exact.
+    std::string hand_root;
+    const auto secondary = GetSecondaryDeviceName();
+    for (const auto& tm : sys_cfg->tree_models) {
+      if (tm.name == secondary) {
+        hand_root = tm.root_link;
+        break;
+      }
+    }
+    if (hand_root.empty() || !model->existFrame(hand_root)) {
+      RCLCPP_ERROR(logger_,
+                   "[inference] links downstream of a loop need the hand root "
+                   "(urdf.tree_models.%s.root_link), which is %s",
+                   secondary.c_str(), hand_root.empty() ? "not declared" : "not in the model");
+      return false;
+    }
+    hand_root_idx_ =
+        combined_cache_.cache().RegisterFrame("inference_hand_root", model->getFrameId(hand_root));
+    if (hand_root_idx_ < 0) {
+      RCLCPP_ERROR(logger_, "[inference] hand root registration failed (cache locked)");
+      return false;
+    }
+
+    std::vector<std::vector<std::string>> dev_names;
+    dev_names.push_back(arm_cfg ? arm_cfg->joint_state_names : std::vector<std::string>{});
+    dev_names.push_back(hand_cfg ? hand_cfg->joint_state_names : std::vector<std::string>{});
+    const auto res =
+        closed_fk_.Configure(full, constraints, actuated, builder_->GetClosureReferenceConfig(),
+                             dev_names, closed_names, hand_root, kClosureErrorThreshold);
+    LogHandFkWiring(logger_, "[inference]", res, closed_fk_.missing_joint());
+    if (res != HandFkWiringResult::kActive) {
+      // No serial fallback for these links: the serial pose is exactly the
+      // wrong answer this branch exists to avoid.
+      RCLCPP_ERROR(logger_,
+                   "[inference] %zu observed link(s) are downstream of a loop but the closed-chain "
+                   "hand FK did not activate — their serial pose would be wrong",
+                   closed_names.size());
+      return false;
+    }
+    has_closed_links_ = true;
   }
 
-  RCLCPP_INFO(logger_, "[inference] palm FK: %s in %s frame", palm_link_.c_str(),
-              palm_frame_ == PoseFrame::kWorld ? "world" : "base");
+  RCLCPP_INFO(logger_, "[inference] %zu observed link(s) in '%s' (%zu closed-chain)", links_.size(),
+              policy_frame_.c_str(), closed_names.size());
   return true;
 }
 
@@ -318,18 +457,18 @@ void DemoInferenceController::OnObjectTransforms(const tf2_msgs::msg::TFMessage&
   // would stay finite and plausible.
   sample.valid = (matches == 1);
 
-  // Deliver in the frame the policy asked for. `object_source_frame_id_` fixes
-  // what came in; `object_frame_` fixes what goes out.
-  if (sample.valid && object_frame_ == PoseFrame::kBase) {
-    const Eigen::Vector3d p_world(sample.position[0], sample.position[1], sample.position[2]);
-    const Eigen::Quaterniond q_world(sample.orientation_xyzw[3], sample.orientation_xyzw[0],
-                                     sample.orientation_xyzw[1], sample.orientation_xyzw[2]);
-    const pinocchio::SE3 world_obj(q_world.normalized().toRotationMatrix(), p_world);
-    const pinocchio::SE3 base_obj = world_from_base_.actInv(world_obj);
-    const Eigen::Quaterniond q_base(base_obj.rotation());
-    sample.position = {base_obj.translation().x(), base_obj.translation().y(),
-                       base_obj.translation().z()};
-    sample.orientation_xyzw = {q_base.x(), q_base.y(), q_base.z(), q_base.w()};
+  // Deliver in the policy frame. `object_source_frame_id_` fixed what came in;
+  // `pf_from_src_` (identity when the two frames are the same) moves it.
+  if (sample.valid) {
+    const Eigen::Vector3d p_src(sample.position[0], sample.position[1], sample.position[2]);
+    const Eigen::Quaterniond q_src(sample.orientation_xyzw[3], sample.orientation_xyzw[0],
+                                   sample.orientation_xyzw[1], sample.orientation_xyzw[2]);
+    const pinocchio::SE3 src_obj(q_src.normalized().toRotationMatrix(), p_src);
+    const pinocchio::SE3 pf_obj = pf_from_src_ * src_obj;
+    const Eigen::Quaterniond q_pf(pf_obj.rotation());
+    sample.position = {pf_obj.translation().x(), pf_obj.translation().y(),
+                       pf_obj.translation().z()};
+    sample.orientation_xyzw = {q_pf.x(), q_pf.y(), q_pf.z(), q_pf.w()};
   }
 
   if (frame_mismatch) {
@@ -354,6 +493,7 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(
   have_action_ = false;
   hold_latched_ = false;
   have_readable_ = false;
+  cmd_base_valid_ = false;  // the first command steps from the measured position
   tick_ = 0;
   inference_count_ = 0;
   last_tick_held_ = true;
