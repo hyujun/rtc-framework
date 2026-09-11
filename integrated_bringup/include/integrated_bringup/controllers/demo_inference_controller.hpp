@@ -31,11 +31,16 @@
 // Every pose the policy sees — link poses and the object pose — is expressed in
 // ONE frame, named by `inference.policy_frame` after a frame of the system URDF.
 // It is a name and not a transform on purpose: the frame a policy was trained in
-// is a fact about the training asset, and on this robot the obvious candidate
-// (`base`) differs from the right one (`base_link`) by a half turn about z — a
-// pose read in the wrong one has x and y negated and still looks ordinary.
-// Naming a URDF frame lets the model, not a hand-typed rotation, supply that
-// half turn.
+// is a fact about the training asset, and on this robot the two candidates
+// (`base` and `base_link`) differ by a half turn about z — a pose read in the
+// wrong one has x and y negated and still looks ordinary. Naming a URDF frame
+// lets the model, not a hand-typed rotation, supply that half turn.
+//
+// WHICH one a policy wants cannot be settled by reading the numbers: both make
+// the trained nominal come out a round number, differing only in sign. What
+// separates them is behaviour — under the wrong one the policy ANTI-TRACKS,
+// sending the hand +y when the object moves −y, and never comes close enough to
+// close on anything. Deciding it therefore costs a run, not an inspection.
 //
 // Link poses come from one of two places, decided per link at configure time:
 // the combined-model cache when the link is upstream of every loop, or the

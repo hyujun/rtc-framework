@@ -83,11 +83,16 @@ demo_inference_controller:
     decimation: 5
 
     # ── 관측 프레임 ──────────────────────────────────────────────────────────
-    # 모든 pose (link·물체) 는 이 URDF 프레임 기준이다. 정책의 root 는 MJCF body `base`
-    # 이고 그것은 URDF `base_link` 와 같다 — URDF `base` 는 그것을 z 로 π 돌린 프레임이라,
-    # `base` 로 두면 x·y 가 뒤집힌 채 여전히 그럴듯한 pose 가 들어간다. 그래서 root 입력
-    # (robot_root_pos_w/quat_w) 은 아래에서 원점/identity 상수다.
-    policy_frame: "base_link"
+    # 모든 pose (link·물체) 는 이 URDF 프레임 기준이다. 정책의 root 는 URDF `base` —
+    # 저자 레퍼런스가 로봇 모델을 world 원점에 추가 변환 없이 놓고 world 좌표를 그대로
+    # 넣기 때문이고, 그 배치에서 world 는 URDF `base` 다. `base_link` 는 이것을 z 로 π
+    # 돌린 프레임이라 x·y 가 뒤집힌 채 여전히 그럴듯한 pose 가 들어간다 — 둘을 가르는
+    # 것은 "역산이 round number 냐" 가 아니라 (두 프레임 모두 round number 다) **정책이
+    # 물체를 정추종하느냐**다: `base_link` 로 주면 물체를 −y 로 옮겼을 때 palm 을 +y 로
+    # 보내고 (반추종) 접근 자체를 못 한다. 실측은 sim 두 세션 + 독립 python oracle
+    # (2026-09-12). 그래서 root 입력 (robot_root_pos_w/quat_w) 은 아래에서 원점/identity
+    # 상수다.
+    policy_frame: "base"
 
     # ── 관절 규약 ────────────────────────────────────────────────────────────
     # q_policy = sign · q_device + offset (속도는 sign 만). 학습 자산(hand-description
@@ -312,8 +317,10 @@ demo_inference_controller:
       frame_match: "pool_" # object_pool 이 스폰하는 body 는 pool_<obj>_object
       # 들어오는 transform 의 header.frame_id — **가정이 아니라 검사**다. 다르면 버려진다.
       source_frame_id: "world"
-      # 그 frame_id 가 URDF 의 어느 프레임인가. sim world 는 URDF `base` 와 같다.
-      # policy_frame 으로의 변환은 모델이 준다 (여기서는 z 축 π).
+      # 그 frame_id 가 URDF 의 어느 프레임인가. sim world 는 URDF `base` 와 같고 그것이
+      # 곧 policy_frame 이라, 이 프로필에서 변환은 identity 다 — 그래도 이름을 적는다:
+      # perception 이 다른 프레임으로 발행하면 여기만 바꾸면 되고, 변환은 (하드코딩한
+      # 회전이 아니라) 모델이 준다.
       source_frame_link: "base"
       timeout_sec: 0.2
 

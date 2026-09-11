@@ -28,12 +28,15 @@ mujoco_simulator:
       fixed_object: "pole"
       selection: "fixed"
       pose: "fixed"
-      # World frame. The training nominal, in the policy frame (URDF base_link),
-      # is (0.500, 0.050, 0.075) with the object's z axis pointing DOWN (Ry(pi)).
-      # World = URDF `base`, which is base_link turned pi about z, so the
-      # position maps to (-0.5, -0.05, 0.075) and the orientation to
-      # Rz(pi)*Ry(pi) = Rx(pi). z is 0.005 above resting (the pole's centre sits
-      # at 0.075 on the floor) so the spawn never starts interpenetrating.
+      # World frame — and here the sim world IS the policy frame (URDF `base`),
+      # so these numbers are also what the policy is shown. The training nominal
+      # is (-0.500, -0.050, 0.075), i.e. the pole standing on the floor under the
+      # reset posture's palm, with its z axis pointing DOWN. z is 0.005 above
+      # resting (the centre of an h 0.15 pole sits at 0.075 on a z = 0 floor) so
+      # the spawn never starts interpenetrating. Rx(pi) is one of the
+      # orientations that turn z down; a cylinder is symmetric about that axis,
+      # so the remaining half turn changes only the quaternion the policy reads,
+      # and this is the one the reaching run was measured with.
       position: [-0.5, -0.05, 0.08]
       rpy: [3.141592653589793, 0.0, 0.0]
       # Ignored while pose is "fixed", zeroed anyway: the inherited values are
