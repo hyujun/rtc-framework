@@ -109,6 +109,8 @@ make_fixture() {
   mkdir -p "${stage}/${top}/lib" "${stage}/${top}/include"
   echo "fake-so"  >"${stage}/${top}/lib/libonnxruntime.so"
   echo "fake-hdr" >"${stage}/${top}/include/onnxruntime_cxx_api.h"
+  # 실제 릴리즈 tarball 처럼 VERSION_NUMBER 를 싣는다 — 업그레이드 판정의 입력이다.
+  echo "${TEST_VER}" >"${stage}/${top}/VERSION_NUMBER"
   tar -czf "${root}/fixture.tgz" -C "$stage" "$top"
   sha256sum "${root}/fixture.tgz" | awk '{print $1}'
 }
@@ -299,16 +301,77 @@ test_existing_opt_install_short_circuits() {
   teardown_case
 }
 
+test_existing_same_version_short_circuits() {
+  # 버전을 아는 기존 설치가 pin 과 같으면 아무것도 받지 않는다.
+  setup_case
+  local tree="${TEST_ROOT}/opt/onnxruntime-linux-x64-${TEST_VER}"
+  mkdir -p "${tree}/lib" "${tree}/include"
+  echo x >"${tree}/lib/libonnxruntime.so"
+  echo x >"${tree}/include/onnxruntime_cxx_api.h"
+  echo "${TEST_VER}" >"${tree}/VERSION_NUMBER"
+  ln -s "$tree" "${TEST_ROOT}/opt/onnxruntime"
+
+  run_install
+
+  expect_eq "same_ver.no_download" "false" "$(called 'wget ')"
+  expect_eq "same_ver.reported" "true" \
+    "$(grep -q "already installed at .*(${TEST_VER})" "$LOG_FILE" && echo true || echo false)"
+  teardown_case
+}
+
+test_existing_other_version_upgrades() {
+  # ONNXRT_VERSION bump 가 이미 깔린 머신에 실제로 닿는가. 존재만 보고
+  # short-circuit 하던 시절엔 pin 을 올려도 dev box·제어 PC 가 옛 런타임에 남았다.
+  setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
+  local old="${TEST_ROOT}/opt/onnxruntime-linux-x64-0.0.1-old"
+  mkdir -p "${old}/lib" "${old}/include"
+  echo x >"${old}/lib/libonnxruntime.so"
+  echo x >"${old}/include/onnxruntime_cxx_api.h"
+  echo "0.0.1-old" >"${old}/VERSION_NUMBER"
+  ln -s "$old" "${TEST_ROOT}/opt/onnxruntime"
+  # apt 가 "성공" 하는 머신이어도 업그레이드는 apt 로 빠지면 안 된다 — 빠지면
+  # symlink 는 옛 트리를 가리킨 채 남는다. 이 값이 true 여야 그 가드가 검증된다.
+  MOCK_APT_SUCCEEDS="true"
+
+  run_install
+
+  expect_eq "upgrade.repointed" "${TEST_ROOT}/opt/onnxruntime-linux-x64-${TEST_VER}" \
+    "$(readlink "${TEST_ROOT}/opt/onnxruntime")"
+  expect_eq "upgrade.version_through_link" "${TEST_VER}" \
+    "$(cat "${TEST_ROOT}/opt/onnxruntime/VERSION_NUMBER")"
+  # `ln -sf` 는 디렉토리 symlink 를 따라가 옛 트리 안에 새 링크를 만든다.
+  expect_eq "upgrade.no_nested_link" "false" \
+    "$([[ -e "${old}/onnxruntime-linux-x64-${TEST_VER}" ]] && echo true || echo false)"
+  expect_eq "upgrade.old_tree_kept" "true" \
+    "$([[ -f "${old}/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  expect_eq "upgrade.no_apt" "false" "$(called 'apt-get install')"
+  expect_eq "upgrade.ldconfig_ran" "true" "$(called '^ldconfig$')"
+  expect_eq "upgrade.reported" "true" \
+    "$(grep -q "0.0.1-old at .* differs from pinned ${TEST_VER}" "$LOG_FILE" && echo true || echo false)"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
 test_production_pins_are_intact() {
   # TOFU pin 의 회귀 센서 — 리터럴 중복은 의도적이다. digest 를 조용히 바꾸면
   # 여기가 red 가 되어 "두 곳을 의식적으로 고치는" 절차를 강제한다.
-  # 값 자체는 공식 릴리즈 자산에서 독립 재계산으로 확인했다 (#153 M8).
+  # 1.17.1 은 독립 재계산 (#153 M8), 1.28.2 는 로컬 sha256sum == GitHub asset
+  # digest 로 확인했다.
   expect_eq "pin.1.17.1:x64" \
     "89b153af88746665909c758a06797175ae366280cbf25502c41eb5955f9a555e" \
     "${ONNXRT_SHA256[1.17.1:x64]:-MISSING}"
   expect_eq "pin.1.17.1:aarch64" \
     "70b6f536bb7ab5961d128e9dbd192368ac1513bffb74fe92f97aac342fbd0ac1" \
     "${ONNXRT_SHA256[1.17.1:aarch64]:-MISSING}"
+  expect_eq "pin.1.28.2:x64" \
+    "d7209b8751b27b862b0c76332c2e20e203396edb5dab700ecf4bb485cf147415" \
+    "${ONNXRT_SHA256[1.28.2:x64]:-MISSING}"
+  expect_eq "pin.1.28.2:aarch64" \
+    "f020b3d31106cc7db03889b4a5c21e7c38ce4a09ad26119c11d1ad6d3fa0ec04" \
+    "${ONNXRT_SHA256[1.28.2:aarch64]:-MISSING}"
 
   # install.sh 가 지금 설치하려는 버전에 pin 이 실제로 존재하는가.
   # (버전만 올리고 digest 를 잊으면 런타임엔 skip, 여기선 red)
@@ -328,6 +391,8 @@ test_missing_digest_fails_closed_before_download
 test_download_failure_leaves_no_temp
 test_apt_installed_short_circuits
 test_existing_opt_install_short_circuits
+test_existing_same_version_short_circuits
+test_existing_other_version_upgrades
 test_production_pins_are_intact
 
 echo

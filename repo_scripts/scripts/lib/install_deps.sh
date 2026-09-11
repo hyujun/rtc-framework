@@ -147,13 +147,11 @@ install_behaviortree() {
   fi
 }
 
-# ── ONNX Runtime release digests (TOFU pin) ────────────────────────────────
+# ── ONNX Runtime release digests (pin) ─────────────────────────────────────
 # MuJoCo 의 "upstream .sha256 자산을 받아서 검증" 패턴은 여기 쓸 수 없다 —
-# onnxruntime 은 `.sha256` 자산을 배포하지 않고(404) GitHub API 의 `digest`
-# 필드도 null 이다. 따라서 아래 값은 upstream 서명이 아니라 **공식 HTTPS
-# 릴리즈 tarball 에서 직접 계산해 박은 trust-on-first-use pin** 이다.
-# 보호 대상은 "pin 이후의 자산 교체 / 전송 경로 변조" 이지 upstream 자체의
-# 최초 신뢰가 아니다.
+# onnxruntime 은 `.sha256` 자산을 배포하지 않는다(404). 따라서 아래 값은
+# **공식 HTTPS 릴리즈 tarball 에서 계산해 박은 pin** 이다. 보호 대상은
+# "pin 이후의 자산 교체 / 전송 경로 변조" 다.
 #
 # 키는 `<version>:<arch>` 다 — install.sh 의 ONNXRT_VERSION 만 올리고 여기를
 # 잊으면 옛 버전 digest 로 통과하는 대신 **키 부재로 fail-closed** 된다.
@@ -163,12 +161,21 @@ install_behaviortree() {
 #      curl -fsSL -o /tmp/ort-<ARCH>.tgz \
 #        https://github.com/microsoft/onnxruntime/releases/download/v<VER>/onnxruntime-linux-<ARCH>-<VER>.tgz
 #   2. sha256sum /tmp/ort-<ARCH>.tgz
-#   3. `<VER>:<ARCH>` 항목을 아래에 추가하고, **다른 사람이 독립적으로 재계산**해
-#      같은 값이 나오는지 확인한 뒤 머지한다 (TOFU 이므로 2인 검토가 유일한 방어).
+#   3. GitHub 이 서버 측에서 계산한 asset digest 와 대조한다 — 받은 쪽과 독립인
+#      두 번째 계산이다 (1.17.1 시절엔 이 필드가 null 이라 2인 재계산이 유일한
+#      방어였다):
+#        gh api repos/microsoft/onnxruntime/releases/tags/v<VER> \
+#          -q '.assets[] | select(.name|test("linux-(x64|aarch64)-[0-9.]+\\.tgz$")) | [.name,.digest] | @tsv'
+#      일치하면 `<VER>:<ARCH>` 항목을 아래에 추가한다. digest 가 null 이면 2인 재계산.
 # 1.17.1 pin 은 x64/aarch64 모두 독립 재계산으로 일치 확인됨 (#153 M8).
+# 1.28.2 pin 은 x64/aarch64 모두 로컬 sha256sum == GitHub asset digest (2026-09-11).
+# 1.17.1 은 IR ≤ 9 만 연다 — 1.28.2 는 IR 10 정책(ur5e_p1b demo_inference)을 위해 올렸다.
+# 옛 항목은 롤백(ONNXRT_VERSION 되돌리기)이 fail-closed 되지 않도록 남겨 둔다.
 declare -A ONNXRT_SHA256=(
   ["1.17.1:x64"]="89b153af88746665909c758a06797175ae366280cbf25502c41eb5955f9a555e"
   ["1.17.1:aarch64"]="70b6f536bb7ab5961d128e9dbd192368ac1513bffb74fe92f97aac342fbd0ac1"
+  ["1.28.2:x64"]="d7209b8751b27b862b0c76332c2e20e203396edb5dab700ecf4bb485cf147415"
+  ["1.28.2:aarch64"]="f020b3d31106cc7db03889b4a5c21e7c38ce4a09ad26119c11d1ad6d3fa0ec04"
 )
 
 install_onnxruntime() {
@@ -196,15 +203,31 @@ install_onnxruntime() {
   fi
 
   # ${ONNXRT_DIR}에 이미 설치된 경우 (라이브러리 + 헤더 모두 확인)
+  #
+  # 버전은 tarball 이 싣는 VERSION_NUMBER 로만 판정한다. 그게 pin 과 **다르면**
+  # 재설치로 넘어간다 — 존재만 보고 끝냈다면 ONNXRT_VERSION 을 올려도 이미 깔린
+  # 모든 머신(dev box · 제어 PC)이 옛 런타임에 그대로 머물렀다. 파일이 없으면
+  # (수동 빌드 등) 버전을 알 수 없으므로 예전처럼 신뢰하고 둔다.
+  local upgrading="false"
   if [[ -d "$ONNXRT_DIR" && -f "$ONNXRT_DIR/lib/libonnxruntime.so" && -f "$ONNXRT_DIR/include/onnxruntime_cxx_api.h" ]]; then
-    success "ONNX Runtime already installed at ${ONNXRT_DIR}"
-    return
+    local installed_ver=""
+    if [[ -f "$ONNXRT_DIR/VERSION_NUMBER" ]]; then
+      installed_ver="$(tr -d '[:space:]' <"$ONNXRT_DIR/VERSION_NUMBER")"
+    fi
+    if [[ -z "$installed_ver" || "$installed_ver" == "$ONNXRT_VER" ]]; then
+      success "ONNX Runtime already installed at ${ONNXRT_DIR}${installed_ver:+ (${installed_ver})}"
+      return
+    fi
+    info "ONNX Runtime ${installed_ver} at ${ONNXRT_DIR} differs from pinned ${ONNXRT_VER} — upgrading"
+    upgrading="true"
   fi
 
   info "Installing ONNX Runtime ${ONNXRT_VER}..."
 
-  # 방법 1: apt
-  if sudo apt-get install -y libonnxruntime-dev > /dev/null 2>&1; then
+  # 방법 1: apt — 업그레이드 중에는 건너뛴다. 이 머신은 이미 tarball 경로를 쓰고
+  # 있고(${ONNXRT_DIR}), apt 가 다른 버전을 깔고 끝나면 symlink 는 옛 버전을
+  # 가리킨 채 남는다.
+  if [[ "$upgrading" == "false" ]] && sudo apt-get install -y libonnxruntime-dev > /dev/null 2>&1; then
     success "ONNX Runtime installed via apt"
     return
   fi
@@ -268,13 +291,18 @@ install_onnxruntime() {
     return
   fi
 
-  sudo ln -sf "${extract_root}/onnxruntime-linux-${ARCH}-${ONNXRT_VER}" "$ONNXRT_DIR"
+  # -n: ${ONNXRT_DIR} 가 이미 **디렉토리를 가리키는 symlink** 면(= 업그레이드)
+  # `ln -sf` 는 그 링크를 따라가 옛 트리 **안에** 새 링크를 만들고 끝난다 — 링크는
+  # 여전히 옛 버전을 가리키고 에러도 없다. 최초 설치에선 드러나지 않던 결함이다.
+  sudo ln -sfn "${extract_root}/onnxruntime-linux-${ARCH}-${ONNXRT_VER}" "$ONNXRT_DIR"
 
-  # ldconfig 등록
+  # ldconfig 등록. conf 는 symlink 경로를 가리키므로 한 번만 쓰면 되지만, 캐시는
+  # 매 (재)설치마다 갱신해야 한다 — soname 이 버전마다 다르다
+  # (1.17.1 은 libonnxruntime.so.1.17.1, 1.28.2 는 libonnxruntime.so.1).
   if [[ ! -f "$ONNXRT_LIB_CONF" ]]; then
     echo "${ONNXRT_DIR}/lib" | sudo tee "$ONNXRT_LIB_CONF" > /dev/null
-    sudo ldconfig
   fi
+  sudo ldconfig
 
   success "ONNX Runtime ${ONNXRT_VER} installed at ${ONNXRT_DIR} (sha256 verified)"
 }

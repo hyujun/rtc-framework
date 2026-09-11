@@ -60,7 +60,7 @@ MJ_VERSION="3.7.0"
 # ⚠ 이 값을 올리면 lib/install_deps.sh 의 ONNXRT_SHA256 에 `<새버전>:<arch>`
 #   digest 를 추가해야 한다 (거기 bump 절차 주석 참조). 누락 시 tarball 경로는
 #   검증 없이 통과하는 대신 fail-closed 로 skip 된다.
-ONNXRT_VERSION="1.17.1"
+ONNXRT_VERSION="1.28.2"   # ≥ 1.18 필요: ur5e_p1b demo_inference 정책이 IR 10
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 SKIP_DEPS=0
