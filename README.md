@@ -180,7 +180,7 @@ colcon test
 
 다만 아래 의존성은 apt/rosdep에 없어 manual install path가 필요합니다 (`install.sh`가 자동 처리):
 
-- **ONNX Runtime** (`rtc_inference` 빌드 요구) — apt에 없을 시 `/opt/onnxruntime` tarball fallback ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_onnxruntime`). tarball 경로는 `ONNXRT_SHA256` 의 `<version>:<arch>` pin 과 일치할 때만 설치되며, 미지원 arch·digest 미등록·mismatch 는 모두 설치 없이 skip 된다 (버전 bump 시 digest 추가 절차는 같은 파일 주석). 설치된 버전이 `install.sh` 의 `ONNXRT_VERSION` 과 다르면 재실행이 핀 버전으로 올리고 `/opt` 의 다른 버전 트리를 지운다 — 옛 트리를 다른 프로젝트가 쓰면 `ONNXRT_KEEP_OTHER_VERSIONS=1` 로 보존
+- **ONNX Runtime** (`rtc_inference` 빌드 요구) — 핀 버전 tarball 을 `/opt/onnxruntime` 에 설치한다 ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_onnxruntime`). apt 의 `libonnxruntime-dev` 는 버전을 핀할 수 없어 쓰지 않는다 (깔려 있으면 경고만, 지우지 않음). tarball 경로는 `ONNXRT_SHA256` 의 `<version>:<arch>` pin 과 일치할 때만 설치되며, 미지원 arch·digest 미등록·mismatch 는 모두 설치 없이 skip 된다 (버전 bump 시 digest 추가 절차는 같은 파일 주석). 설치된 버전이 `install.sh` 의 `ONNXRT_VERSION` 과 다르면 재실행이 핀 버전으로 올리고 `/opt` 의 다른 버전 트리를 지운다 — 옛 트리를 다른 프로젝트가 쓰면 `ONNXRT_KEEP_OTHER_VERSIONS=1` 로 보존
 - **MuJoCo 3.x** (`rtc_mujoco_sim` 빌드 요구) — `/opt/mujoco-3.7.0` tarball ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_mujoco`)
 - **MPC source-build deps** (`fmt` 11.1.4 + `mimalloc` 2.1.7 + `aligator` 0.19.0 — `rtc_mpc` 요구) — `<rtc_ws>/deps/install/`에 소스 빌드 ([repo_scripts/scripts/build_deps.sh](repo_scripts/scripts/build_deps.sh))
 - **mujoco Python bindings** (`rtc_tools` urdf_to_mjcf / compare_mjcf_urdf 런타임) — `requirements.lock`에 박혀 있고 `install.sh`가 `uv pip sync`로 venv에 설치 (수동: `uv pip sync requirements.lock`)

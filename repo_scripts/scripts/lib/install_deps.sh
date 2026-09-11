@@ -212,9 +212,14 @@ install_onnxruntime() {
   # ONNX Runtime C++ API (fingertip F/T inference)
   # Version is centralized as ONNXRT_VERSION in install.sh (caller scope).
   #
-  # 검증 범위: **GitHub 릴리즈 tarball 경로만** digest 검증 대상이다. apt 패키지
-  # (`libonnxruntime-dev`) 와 이미 설치된 ${ONNXRT_DIR} short-circuit 은 각각
-  # dpkg 서명 체인 / 과거 설치 결과이므로 여기서 재검증하지 않는다.
+  # 설치원은 **핀 tarball 하나**다. apt 의 `libonnxruntime-dev` 는 설치원이 아니다
+  # — 버전을 이 파일이 정할 수 없어 핀 (IR 10 정책이 요구하는 ≥ 1.18, digest) 을
+  # 보장하지 못하고, Ubuntu 24.04 에는 패키지 자체가 없다. 이미 깔려 있으면 알리기만
+  # 하고 핀을 /opt 에 깐다 (rtc_inference 는 /opt/onnxruntime 을 시스템 경로보다
+  # 먼저 찾는다). 시스템 패키지는 지우지 않는다 — 다른 소프트웨어가 의존할 수 있다.
+  #
+  # 검증 범위: tarball 경로만 digest 검증 대상이다. 이미 설치된 ${ONNXRT_DIR}
+  # short-circuit 은 과거 설치 결과이므로 여기서 재검증하지 않는다.
   #
   # 실패 계약: 검증 실패(미지원 arch / digest 미등록 / mismatch)는 **ONNX 기능만
   # warn+skip** 이고 install.sh 전체를 중단하지 않는다 — 바로 아래 install_mujoco
@@ -237,10 +242,9 @@ install_onnxruntime() {
   extract_root="$(dirname "$ONNXRT_DIR")"
   local pinned_tree="${extract_root}/onnxruntime-linux-${ARCH}-${ONNXRT_VER}"
 
-  # apt에서 설치되어 있는지 확인 (dpkg -s로 실제 설치 상태 검증)
   if dpkg -s libonnxruntime-dev 2>/dev/null | grep -q "^Status:.*install ok installed"; then
-    success "ONNX Runtime already installed (apt)"
-    return
+    warn "libonnxruntime-dev (apt) is installed but NOT used — rtc_inference builds against"
+    warn "  the pinned ${ONNXRT_VER} at ${ONNXRT_DIR}. The apt package is left in place."
   fi
 
   # ${ONNXRT_DIR}에 이미 설치된 경우 (라이브러리 + 헤더 모두 확인)
@@ -249,7 +253,6 @@ install_onnxruntime() {
   # 재설치로 넘어간다 — 존재만 보고 끝냈다면 ONNXRT_VERSION 을 올려도 이미 깔린
   # 모든 머신(dev box · 제어 PC)이 옛 런타임에 그대로 머물렀다. 파일이 없으면
   # (수동 빌드 등) 버전을 알 수 없으므로 예전처럼 신뢰하고 둔다.
-  local upgrading="false"
   if [[ -d "$ONNXRT_DIR" && -f "$ONNXRT_DIR/lib/libonnxruntime.so" && -f "$ONNXRT_DIR/include/onnxruntime_cxx_api.h" ]]; then
     local installed_ver=""
     if [[ -f "$ONNXRT_DIR/VERSION_NUMBER" ]]; then
@@ -267,20 +270,11 @@ install_onnxruntime() {
       return
     fi
     info "ONNX Runtime ${installed_ver} at ${ONNXRT_DIR} differs from pinned ${ONNXRT_VER} — upgrading"
-    upgrading="true"
   fi
 
   info "Installing ONNX Runtime ${ONNXRT_VER}..."
 
-  # 방법 1: apt — 업그레이드 중에는 건너뛴다. 이 머신은 이미 tarball 경로를 쓰고
-  # 있고(${ONNXRT_DIR}), apt 가 다른 버전을 깔고 끝나면 symlink 는 옛 버전을
-  # 가리킨 채 남는다.
-  if [[ "$upgrading" == "false" ]] && sudo apt-get install -y libonnxruntime-dev > /dev/null 2>&1; then
-    success "ONNX Runtime installed via apt"
-    return
-  fi
-
-  # 방법 2: GitHub 릴리즈 다운로드 (digest 검증 대상)
+  # GitHub 릴리즈 다운로드 (digest 검증 대상)
   if [[ -z "$ARCH" ]]; then
     warn "ONNX Runtime: unsupported architecture '$(uname -m)' — skipping"
     warn "  Prebuilt tarballs exist for x86_64/aarch64 only."

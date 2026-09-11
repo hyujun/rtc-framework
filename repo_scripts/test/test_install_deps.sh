@@ -272,16 +272,44 @@ test_download_failure_leaves_no_temp() {
   teardown_case
 }
 
-test_apt_installed_short_circuits() {
-  # apt 경로는 digest 검증 대상이 아니다 (dpkg 서명 체인) — 다운로드 자체가 없다.
+test_apt_package_does_not_bypass_the_pin() {
+  # 2026-09-11 spec 변경: apt 의 libonnxruntime-dev 는 설치원이 아니다 — 버전을 이
+  # 파일이 정할 수 없으니 핀을 보장하지 못한다. 이전에는 깔려 있기만 하면 "already
+  # installed (apt)" 로 끝나 핀 버전이 영영 설치되지 않았다 (이전 테스트:
+  # test_apt_installed_short_circuits). 시스템 패키지는 지우지 않는다.
   setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
   MOCK_DPKG_INSTALLED="true"
 
   run_install
 
-  expect_eq "apt_short.no_download" "false" "$(called 'wget ')"
-  expect_eq "apt_short.reported" "true" \
-    "$(grep -q "already installed (apt)" "$LOG_FILE" && echo true || echo false)"
+  expect_eq "apt_pkg.pin_installed" "true" \
+    "$([[ -f "${TEST_ROOT}/opt/onnxruntime/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  expect_eq "apt_pkg.no_apt_install" "false" "$(called 'apt-get install')"
+  expect_eq "apt_pkg.not_removed" "false" "$(called 'apt-get \(remove\|purge\)')"
+  expect_eq "apt_pkg.warned" "true" \
+    "$(grep -q "libonnxruntime-dev (apt) is installed but NOT used" "$LOG_FILE" && echo true || echo false)"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
+test_fresh_machine_does_not_install_via_apt() {
+  # apt 에 패키지가 있는 머신 (다른 배포판·PPA) 에서도 설치원은 핀 tarball 이다.
+  # 예전 순서는 apt 를 먼저 시도했고, 성공하면 거기서 끝나 핀과 무관한 버전이 깔렸다.
+  setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
+  MOCK_APT_SUCCEEDS="true"
+
+  run_install
+
+  expect_eq "fresh.no_apt_install" "false" "$(called 'apt-get install')"
+  expect_eq "fresh.pin_installed" "${TEST_VER}" \
+    "$(cat "${TEST_ROOT}/opt/onnxruntime/VERSION_NUMBER" 2>/dev/null)"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
   teardown_case
 }
 
@@ -331,8 +359,8 @@ test_existing_other_version_upgrades() {
   echo x >"${old}/include/onnxruntime_cxx_api.h"
   echo "0.0.1-old" >"${old}/VERSION_NUMBER"
   ln -s "$old" "${TEST_ROOT}/opt/onnxruntime"
-  # apt 가 "성공" 하는 머신이어도 업그레이드는 apt 로 빠지면 안 된다 — 빠지면
-  # symlink 는 옛 트리를 가리킨 채 남는다. 이 값이 true 여야 그 가드가 검증된다.
+  # apt 가 "성공" 하는 머신이어도 apt 로 빠지면 안 된다 — 빠지면 symlink 는 옛
+  # 트리를 가리킨 채 남는다. 이 값이 true 여야 `upgrade.no_apt` 가 뜻을 가진다.
   MOCK_APT_SUCCEEDS="true"
 
   run_install
@@ -495,7 +523,8 @@ test_digest_mismatch_refuses
 test_unknown_arch_fails_closed_before_download
 test_missing_digest_fails_closed_before_download
 test_download_failure_leaves_no_temp
-test_apt_installed_short_circuits
+test_apt_package_does_not_bypass_the_pin
+test_fresh_machine_does_not_install_via_apt
 test_existing_opt_install_short_circuits
 test_existing_same_version_short_circuits
 test_existing_other_version_upgrades
