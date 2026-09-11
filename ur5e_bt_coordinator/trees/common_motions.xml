@@ -125,7 +125,16 @@
                 grasp_target_force="{target_force_N}"/>
 
       <!-- Wait for Holding phase AND sustained per-fingertip force -->
-      <Timeout msec="{grasp_timeout_ms}">
+      <!-- grasp_timeout_ms 를 Timeout.msec 에 바로 잇지 않고 Script 로 옮긴다.   -->
+      <!--   BT.CPP 4.10 부터 SubTree 의 숫자 리터럴 인자 ("10000") 는 blackboard  -->
+      <!--   에 int 로 저장되고, 강타입 포트는 그 항목과 타입이 정확히 같아야 해서  -->
+      <!--   unsigned 인 Timeout.msec 가 트리 생성을 거부한다 (4.9 까지는 string   -->
+      <!--   이라 통과했다). Script 대입은 int (4.10) 와 string (4.9) 을 모두 받아 -->
+      <!--   Timeout 이 타입을 정한 새 키에 넣는다. 다른 SubTree 인자도 같은 규칙: -->
+      <!--   double 포트에는 "10.0", int 포트에는 "10" 처럼 모양을 맞춰 넘긴다     -->
+      <!--   ("10" 을 double 포트에 넘기면 4.10 에서 같은 오류로 트리가 안 뜬다).   -->
+      <Script code="grasp_timeout_msec := grasp_timeout_ms"/>
+      <Timeout msec="{grasp_timeout_msec}">
         <RetryUntilSuccessful num_attempts="-1">
           <Sequence>
             <WaitDuration duration_s="0.05"/>
@@ -147,7 +156,9 @@
     <Sequence>
       <SetGains
                 grasp_command="2"/>
-      <Timeout msec="{release_timeout_ms}">
+      <!-- Script 경유 이유: ForcePIGrasp 의 grasp_timeout_ms 주석 참고 -->
+      <Script code="release_timeout_msec := release_timeout_ms"/>
+      <Timeout msec="{release_timeout_msec}">
         <RetryUntilSuccessful num_attempts="-1">
           <Sequence>
             <WaitDuration duration_s="0.05"/>
