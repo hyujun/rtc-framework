@@ -400,8 +400,11 @@ class RealPolicy : public ::testing::Test {
     return engine_->produced_outputs[Out(name)];
   }
 
-  void InjectObjectInPolicyFrame(const Eigen::Vector3d& p_pf, const Eigen::Quaterniond& q_pf) {
-    object_msg_ = fx::MakeObjectTf(fx::WorldFromPolicyFrame(p_pf), fx::WorldFromPolicyFrame(q_pf));
+  /// The shipped lane reads poses published in `world`, which on this robot is
+  /// the policy frame itself (URDF `base`) — so a pose given here is the pose
+  /// the policy is shown, unconverted.
+  void InjectObject(const Eigen::Vector3d& p_pf, const Eigen::Quaterniond& q_pf) {
+    object_msg_ = fx::MakeObjectTf(p_pf, q_pf);
     Republish();
   }
 
@@ -451,11 +454,13 @@ class RealPolicy : public ::testing::Test {
 };
 
 /// The trained nominal object: the pole standing on the floor, its z axis
-/// down, in the policy frame.
-const Eigen::Vector3d kNominalObject(0.5, 0.05, 0.075);
+/// down, in the policy frame (URDF `base`, which is also the sim world). The
+/// same pole read in `base_link` sits at (0.5, 0.05, 0.075) — half a turn about
+/// z away, and just as ordinary-looking.
+const Eigen::Vector3d kNominalObject(-0.5, -0.05, 0.075);
 
 Eigen::Quaterniond NominalObjectOrientation() {
-  return Eigen::Quaterniond(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()));
+  return Eigen::Quaterniond(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()));
 }
 
 }  // namespace
@@ -525,7 +530,7 @@ TEST_F(RealPolicy, OneMisspelledInputNameFailsConfigureAndTheTableNamesBoth) {
 TEST_F(RealPolicy, TheFirstRealActionsStartFromTheMeasuredRobot) {
   ASSERT_TRUE(BringUp());
   const auto state = fx::MakePregraspState();
-  InjectObjectInPolicyFrame(kNominalObject, NominalObjectOrientation());
+  InjectObject(kNominalObject, NominalObjectOrientation());
   engine_->recording = true;
   ASSERT_TRUE(RunUntilAccepted(state));
 
@@ -652,7 +657,7 @@ TEST_F(RealPolicy, DumpsTheTensorsOfSeveralEvaluationsForAnOfflineComparison) {
   std::uint64_t seen_runs = engine_->recorded_runs;
   for (int tick = 0; tick < 2000 && dumped < kDumpSteps; ++tick) {
     const double t = static_cast<double>(tick) * fx::kUr5eDt;
-    InjectObjectInPolicyFrame(
+    InjectObject(
         kNominalObject + Eigen::Vector3d(0.01 * std::sin(kW * t), 0.01 * std::cos(kW * t), 0.0),
         NominalObjectOrientation());
     last_out_ = ctrl_->Compute(state_at(tick));
@@ -701,7 +706,7 @@ TEST_F(RealPolicy, DumpsTheTensorsOfSeveralEvaluationsForAnOfflineComparison) {
 TEST_F(RealPolicy, MeasuresTheLatencyOfTheRealModel) {
   ASSERT_TRUE(BringUp());
   const auto state = fx::MakePregraspState();
-  InjectObjectInPolicyFrame(kNominalObject, NominalObjectOrientation());
+  InjectObject(kNominalObject, NominalObjectOrientation());
   ASSERT_TRUE(RunUntilAccepted(state));
 
   auto& ort = engine_->inner();
@@ -764,7 +769,7 @@ TEST(RealPolicyAllocGate, GatePositiveControl) {
 TEST_F(RealPolicy, CountsTheHeapAllocationsOfTheRealEngine) {
   ASSERT_TRUE(BringUp());
   const auto state = fx::MakePregraspState();
-  InjectObjectInPolicyFrame(kNominalObject, NominalObjectOrientation());
+  InjectObject(kNominalObject, NominalObjectOrientation());
   ASSERT_TRUE(RunUntilAccepted(state));
   auto& ort = engine_->inner();
   for (int k = 0; k < 20; ++k) {  // past any first-run arena growth
@@ -833,7 +838,7 @@ TEST_F(RealPolicy, SteadyStateRunsNeitherGrowNorTrimTheHeap) {
   ASSERT_TRUE(g_rt_heap_configured) << "the RT heap policy is not in effect in this process";
   ASSERT_TRUE(BringUp());
   const auto state = fx::MakePregraspState();
-  InjectObjectInPolicyFrame(kNominalObject, NominalObjectOrientation());
+  InjectObject(kNominalObject, NominalObjectOrientation());
   ASSERT_TRUE(RunUntilAccepted(state));
   auto& ort = engine_->inner();
   for (int k = 0; k < 200; ++k) {  // warm-up: the arena reaches its working size

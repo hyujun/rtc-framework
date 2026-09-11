@@ -19,6 +19,12 @@
 // pregrasp's own values, whose loop gaps are 0.09–1.73 mm; the binding solves
 // them from the actuated joints instead, hence ±2 mm on the tips and ±1 mm on
 // the palm (upstream of every loop).
+//
+// The constants below are kept in the frame they were MEASURED in and crossed
+// into the policy frame (URDF `base`) with `fx::BaseFromBaseLink` at the point
+// of comparison, rather than re-typed with their signs flipped: a transcribed
+// number no longer says where it came from, and this suite exists because the
+// frame is exactly the thing that is easy to get wrong.
 
 #include "inference_fake_engine.hpp"
 #include "inference_shipped_fixture.hpp"
@@ -88,6 +94,13 @@ const std::map<std::string, std::array<double, 3>> kTipPos = {
 constexpr double kPalmTol = 1e-3;
 constexpr double kTipTol = 2e-3;
 
+/// The trained nominal object IN THE POLICY FRAME (which is also the sim
+/// world): the pole standing on a z = 0 floor under the reset posture's palm.
+/// Read in `base_link` the same pole is at (0.5, 0.05, 0.075) — a frame slip
+/// does not look like an error, it looks like an object on the other side of
+/// the robot.
+const Eigen::Vector3d kNominalObject(-0.5, -0.05, 0.075);
+
 void SetForce(ControllerState& s, int group, float fz) {
   auto& hand = s.devices[1];
   hand.inference_enable[static_cast<std::size_t>(group)] = fz != 0.0F;
@@ -124,6 +137,7 @@ class ShippedInference : public ::testing::Test {
     cfg_ = fx::ShippedControllerNode("ur5e_p1b", "demo_inference_controller");
     shipped_model_path_ = cfg_["inference"]["model_path"].as<std::string>("");
     cfg_["inference"]["model_path"] = "fake_policy.onnx";
+    AdjustShippedConfig(cfg_);
 
     in_sizes_ = Numels(cfg_["inference"]["inputs"]);
     out_sizes_ = Numels(cfg_["inference"]["outputs"]);
@@ -149,6 +163,11 @@ class ShippedInference : public ::testing::Test {
     ASSERT_TRUE(configured_) << "the shipped config must configure against the real model";
     ASSERT_EQ(ctrl_->on_activate(rclcpp_lifecycle::State{}), CR::SUCCESS);
   }
+
+  /// Hook for the one case that needs the shipped config with a single key
+  /// moved (the object lane's source frame). Everything else in this suite runs
+  /// the config exactly as it ships, which is the point of the suite.
+  virtual void AdjustShippedConfig(YAML::Node& /*cfg*/) {}
 
   [[nodiscard]] std::size_t In(const std::string& name) const {
     const auto& ins = ctrl_->IoParamsForTesting().inputs;
@@ -206,15 +225,13 @@ class ShippedInference : public ::testing::Test {
   /// Publish the object in `world` and keep republishing it on every tick the
   /// run helpers drive, the way the sim does — the lane goes stale after
   /// `timeout_sec` (100 ticks here), which a walk-in can outlast.
+  ///
+  /// Under the shipped config `world` IS the policy frame (both name URDF
+  /// `base`), so these coordinates are also what the policy is shown. The one
+  /// case where they differ overrides `source_frame_link` and says so.
   void InjectObjectInWorld(const Eigen::Vector3d& p_world, const Eigen::Quaterniond& q_world) {
     object_msg_ = MakeObjectTf(p_world, q_world);
     Republish();
-  }
-
-  /// The object at a pose given in the POLICY frame, published in `world`
-  /// (= URDF `base`, a half turn about z away).
-  void InjectObjectInPolicyFrame(const Eigen::Vector3d& p_pf, const Eigen::Quaterniond& q_pf) {
-    InjectObjectInWorld(fx::WorldFromPolicyFrame(p_pf), fx::WorldFromPolicyFrame(q_pf));
   }
 
   void Republish() {
@@ -286,8 +303,11 @@ TEST_F(ShippedInference, CarriesTheTrainedCadenceFrameAndModelLocation) {
   ASSERT_TRUE(inf["decimation"]) << "decimation must be spelled out, not defaulted to 1";
   EXPECT_EQ(ctrl_->IoParamsForTesting().decimation, 5) << "500 Hz / 5 = the trained 100 Hz";
   ASSERT_TRUE(inf["policy_frame"]);
-  EXPECT_EQ(inf["policy_frame"].as<std::string>(), "base_link");
+  EXPECT_EQ(inf["policy_frame"].as<std::string>(), "base")
+      << "shown base_link poses the policy anti-tracks the object and never reaches it";
   ASSERT_TRUE(inf["object_pose"]["source_frame_link"]);
+  // Same frame as policy_frame, so the shipped object lane applies no rotation.
+  // The rotation itself is pinned below, on a config whose source frame moves.
   EXPECT_EQ(inf["object_pose"]["source_frame_link"].as<std::string>(), "base");
   EXPECT_EQ(inf["object_pose"]["source_frame_id"].as<std::string>(), "world");
   EXPECT_EQ(shipped_model_path_, "${RTC_POLICY_DIR}/ObjectHandGraspDeployMulti5-Export-v0.onnx")
@@ -346,7 +366,7 @@ TEST_F(ShippedInference, ServesTheFingertipsThroughTheClosedChain) {
 
 TEST_F(ShippedInference, ObservesTheTrainingPregraspWhereMuJoCoPutsIt) {
   const auto state = MakePregraspState();
-  InjectObjectInPolicyFrame({0.5, 0.05, 0.075}, Eigen::Quaterniond::Identity());
+  InjectObjectInWorld(kNominalObject, Eigen::Quaterniond::Identity());
   ASSERT_TRUE(RunUntilAccepted(state));
 
   const auto& io = ctrl_->IoParamsForTesting();
@@ -377,17 +397,26 @@ TEST_F(ShippedInference, ObservesTheTrainingPregraspWhereMuJoCoPutsIt) {
     }
   }
 
-  // Body table: palm and fingertips where MuJoCo puts them, in base_link.
+  // Body table: palm and fingertips where MuJoCo puts them. The oracle was
+  // measured in MJCF `base` (= URDF `base_link`) and the policy frame is URDF
+  // `base`, so every expectation crosses the half turn on the way in.
   {
     const auto& names = io.inputs[In("robot_body_pos_w")].element_names;
     const auto& pos = Tensor("robot_body_pos_w");
     const auto row = [&](const std::string& link) { return 3 * IndexOfName(names, link); };
+    const auto in_policy_frame = [](const std::array<double, 3>& p) {
+      return fx::BaseFromBaseLink(Eigen::Vector3d(p[0], p[1], p[2]));
+    };
+    const Eigen::Vector3d palm = in_policy_frame(kPalmPos);
     for (std::size_t c = 0; c < 3; ++c) {
-      EXPECT_NEAR(pos[row("l_palm_link") + c], kPalmPos[c], kPalmTol) << "palm axis " << c;
+      EXPECT_NEAR(pos[row("l_palm_link") + c], palm[static_cast<Eigen::Index>(c)], kPalmTol)
+          << "palm axis " << c;
     }
     for (const auto& [link, p] : kTipPos) {
+      const Eigen::Vector3d tip = in_policy_frame(p);
       for (std::size_t c = 0; c < 3; ++c) {
-        EXPECT_NEAR(pos[row(link) + c], p[c], kTipTol) << link << " axis " << c;
+        EXPECT_NEAR(pos[row(link) + c], tip[static_cast<Eigen::Index>(c)], kTipTol)
+            << link << " axis " << c;
       }
     }
     EXPECT_FLOAT_EQ(pos[row("tool0")], 0.0F) << "an unobserved row holds the filler";
@@ -398,7 +427,9 @@ TEST_F(ShippedInference, ObservesTheTrainingPregraspWhereMuJoCoPutsIt) {
     // The oracle carries four decimals, so compare ROTATION ANGLE against the
     // normalised oracle rather than components (q ≡ −q).
     const Eigen::Quaterniond oracle =
-        Eigen::Quaterniond(kPalmQuatXyzw[3], kPalmQuatXyzw[0], kPalmQuatXyzw[1], kPalmQuatXyzw[2])
+        fx::BaseFromBaseLink(Eigen::Quaterniond(kPalmQuatXyzw[3], kPalmQuatXyzw[0],
+                                                kPalmQuatXyzw[1], kPalmQuatXyzw[2])
+                                 .normalized())
             .normalized();
     const Eigen::Quaterniond seen =
         Eigen::Quaterniond(quat[prow + 3], quat[prow], quat[prow + 1], quat[prow + 2]).normalized();
@@ -412,11 +443,24 @@ TEST_F(ShippedInference, ObservesTheTrainingPregraspWhereMuJoCoPutsIt) {
   EXPECT_FLOAT_EQ(Tensor("robot_root_quat_w")[3], 1.0F);
 }
 
-TEST_F(ShippedInference, TheObjectPoseIsRotatedIntoThePolicyFrameByTheModel) {
-  // The world point (1, 2, 3) is (−1, −2, 3) in base_link: `world` is URDF
-  // `base`, a half turn about z from base_link. The rotation used to be typed
-  // into the YAML (`base_pose_in_world`); it now comes from the URDF, and this
-  // is the same assertion against the new source.
+/// The shipped profile publishes the object in the policy frame itself, so it
+/// never exercises the rotation. This moves ONLY the object lane's source frame
+/// to `base_link` — the shape of a perception stack that publishes in a
+/// different frame than the policy reads — and leaves everything else shipped.
+class ShippedInferenceWithObjectSourceInBaseLink : public ShippedInference {
+ protected:
+  void AdjustShippedConfig(YAML::Node& cfg) override {
+    cfg["inference"]["object_pose"]["source_frame_link"] = "base_link";
+  }
+};
+
+TEST_F(ShippedInferenceWithObjectSourceInBaseLink,
+       TheObjectPoseIsRotatedIntoThePolicyFrameByTheModel) {
+  // The point (1, 2, 3) read in base_link is (−1, −2, 3) in the policy frame
+  // (URDF `base`), a half turn about z away. The rotation used to be typed into
+  // the YAML (`base_pose_in_world`); it comes from the URDF now, and this is the
+  // same assertion against that source — a hand-typed constant would not follow
+  // the policy frame when it moves, which is exactly what it just did.
   const auto state = MakePregraspState();
   InjectObjectInWorld({1.0, 2.0, 3.0}, Eigen::Quaterniond::Identity());
   ASSERT_TRUE(RunUntilAccepted(state));
@@ -432,7 +476,7 @@ TEST_F(ShippedInference, TheObjectPoseIsRotatedIntoThePolicyFrameByTheModel) {
 
 TEST_F(ShippedInference, TheGripperHeadReachesTheHandInDeviceOrderWithSignsUndone) {
   const auto state = MakePregraspState();
-  InjectObjectInPolicyFrame({0.5, 0.05, 0.075}, Eigen::Quaterniond::Identity());
+  InjectObjectInWorld(kNominalObject, Eigen::Quaterniond::Identity());
 
   std::vector<float> grip(out_sizes_[Out("gripper_action")]);
   for (std::size_t k = 0; k < grip.size(); ++k) {
@@ -475,7 +519,7 @@ TEST_F(ShippedInference, TheGripperHeadReachesTheHandInDeviceOrderWithSignsUndon
 
 TEST_F(ShippedInference, TheArmIntegratorStartsAtTheMeasuredArm) {
   const auto state = MakePregraspState();
-  InjectObjectInPolicyFrame({0.5, 0.05, 0.075}, Eigen::Quaterniond::Identity());
+  InjectObjectInWorld(kNominalObject, Eigen::Quaterniond::Identity());
   ASSERT_TRUE(RunUntilAccepted(state));
   const auto& applied = Tensor("arm_applied_target_in");
   for (std::size_t i = 0; i < kC18.size(); ++i) {
@@ -497,7 +541,7 @@ TEST_F(ShippedInference, TheArmIntegratorStartsAtTheMeasuredArm) {
 TEST_F(ShippedInference, ReachPhaseIsTheProximityOfTheTipsToTheObjectsContactPoints) {
   const auto state = MakePregraspState();
   // First step: object far away, to learn where the tips are.
-  InjectObjectInPolicyFrame({2.0, 2.0, 2.0}, Eigen::Quaterniond::Identity());
+  InjectObjectInWorld({2.0, 2.0, 2.0}, Eigen::Quaterniond::Identity());
   ASSERT_TRUE(RunUntilAccepted(state));
   const auto& io = ctrl_->IoParamsForTesting();
   const auto& names = io.inputs[In("robot_body_pos_w")].element_names;
@@ -512,9 +556,10 @@ TEST_F(ShippedInference, ReachPhaseIsTheProximityOfTheTipsToTheObjectsContactPoi
   EXPECT_LT(Tensor("reach_phase")[0], 1e-6F) << "two metres away is no proximity";
 
   // Now place the object where the tips are closest to their contact points
-  // (the pole upside down, as trained): the least-squares object origin for a
-  // fixed orientation is the mean of tip_i − R·c_i.
-  const Eigen::Quaterniond q_obj(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()));
+  // (the pole upside down, as trained — in the policy frame that is Rx(pi)):
+  // the least-squares object origin for a fixed orientation is the mean of
+  // tip_i − R·c_i.
+  const Eigen::Quaterniond q_obj(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()));
   Eigen::Vector3d p_obj = Eigen::Vector3d::Zero();
   for (std::size_t i = 0; i < 4; ++i) {
     p_obj += tip[i] - q_obj * Eigen::Vector3d(kC0[i][0], kC0[i][1], kC0[i][2]);
@@ -529,7 +574,7 @@ TEST_F(ShippedInference, ReachPhaseIsTheProximityOfTheTipsToTheObjectsContactPoi
   ASSERT_GT(expected, 0.05) << "the fixture must put the gate on its ramp, or this proves nothing";
   ASSERT_LT(expected, 0.999);
 
-  InjectObjectInPolicyFrame(p_obj, q_obj);
+  InjectObjectInWorld(p_obj, q_obj);
   RunOnePolicyStep(state);
   EXPECT_NEAR(Tensor("reach_phase")[0], expected, 1e-4)
       << "mean tip distance " << mean_d << " m against the model's contact points";
@@ -537,7 +582,7 @@ TEST_F(ShippedInference, ReachPhaseIsTheProximityOfTheTipsToTheObjectsContactPoi
 
 TEST_F(ShippedInference, TheTactileHoldCountsPolicyStepsAndReadsTheRightFingers) {
   auto state = MakePregraspState();
-  InjectObjectInPolicyFrame({2.0, 2.0, 2.0}, Eigen::Quaterniond::Identity());
+  InjectObjectInWorld({2.0, 2.0, 2.0}, Eigen::Quaterniond::Identity());
   ASSERT_TRUE(RunUntilAccepted(state));
 
   // Thumb + index + middle pressing, ring not: a grasp only if the FIRST tip
@@ -700,8 +745,7 @@ TEST_F(ShippedInference, TheDiagRowReportsWhatThePolicyWasShown) {
   for (const auto& [group, f] : forces) {
     SetForce(state, static_cast<int>(IndexOfName(sensors, group)), f);
   }
-  const Eigen::Vector3d nominal(0.5, 0.05, 0.075);
-  InjectObjectInPolicyFrame(nominal, Eigen::Quaterniond::Identity());
+  InjectObjectInWorld(kNominalObject, Eigen::Quaterniond::Identity());
   // A NON-zero arm head, distinct per joint: with the default zeros the policy
   // target coincides with an unset `goal_positions`, and both the goal and the
   // lag checks below would pass with those lanes not written at all.
@@ -734,7 +778,7 @@ TEST_F(ShippedInference, TheDiagRowReportsWhatThePolicyWasShown) {
   EXPECT_GT(step.tip_distance, 0.0);
   EXPECT_TRUE(step.object_valid);
   for (std::size_t c = 0; c < 3; ++c) {
-    EXPECT_NEAR(step.object_position[c], nominal[static_cast<Eigen::Index>(c)], 1e-9)
+    EXPECT_NEAR(step.object_position[c], kNominalObject[static_cast<Eigen::Index>(c)], 1e-9)
         << "policy frame, axis " << c;
   }
   EXPECT_FALSE(step.closed_held);
@@ -813,21 +857,21 @@ TEST(ShippedPoleOverlay, PutsThePoleAtTheTrainingNominalInThePolicyFrame) {
   const auto rpy = pool["rpy"].as<std::vector<double>>();
   ASSERT_EQ(p.size(), 3U);
   ASSERT_EQ(rpy.size(), 3U);
-  // World → policy frame is the inverse of the half turn the fixture applies.
-  const Eigen::Quaterniond pf_from_world =
-      fx::WorldFromPolicyFrame(Eigen::Quaterniond::Identity()).inverse();
-  const Eigen::Vector3d p_pf = pf_from_world * Eigen::Vector3d(p[0], p[1], p[2]);
-  EXPECT_NEAR(p_pf.x(), 0.500, 1e-9);
-  EXPECT_NEAR(p_pf.y(), 0.050, 1e-9);
+  // The sim world IS the policy frame (both are URDF `base`), so what the
+  // overlay spawns is literally what the policy will be shown — the pole under
+  // the reset posture's palm, not on the far side of the robot.
+  const Eigen::Vector3d p_pf(p[0], p[1], p[2]);
+  EXPECT_NEAR(p_pf.x(), kNominalObject.x(), 1e-9);
+  EXPECT_NEAR(p_pf.y(), kNominalObject.y(), 1e-9);
   // The centre rests at 0.075 (h 0.15 on a z = 0 floor); a few mm above so the
   // spawn does not start interpenetrating, and no more than that.
-  EXPECT_GT(p_pf.z(), 0.075);
-  EXPECT_LE(p_pf.z(), 0.085);
+  EXPECT_GT(p_pf.z(), kNominalObject.z());
+  EXPECT_LE(p_pf.z(), kNominalObject.z() + 0.010);
   // ZYX: R = Rz(yaw) Ry(pitch) Rx(roll). The training pole's axis points DOWN.
   const Eigen::Matrix3d r_world = (Eigen::AngleAxisd(rpy[2], Eigen::Vector3d::UnitZ()) *
                                    Eigen::AngleAxisd(rpy[1], Eigen::Vector3d::UnitY()) *
                                    Eigen::AngleAxisd(rpy[0], Eigen::Vector3d::UnitX()))
                                       .toRotationMatrix();
-  const Eigen::Vector3d axis_pf = pf_from_world * (r_world * Eigen::Vector3d::UnitZ());
+  const Eigen::Vector3d axis_pf = r_world * Eigen::Vector3d::UnitZ();
   EXPECT_NEAR(axis_pf.z(), -1.0, 1e-9) << "object z axis must point down in the policy frame";
 }

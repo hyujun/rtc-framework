@@ -125,14 +125,21 @@ inline tf2_msgs::msg::TFMessage MakeObjectTf(const Eigen::Vector3d& p_world,
   return msg;
 }
 
-/// A pose given in the POLICY frame (URDF `base_link`), expressed in `world`
-/// (= URDF `base`, a half turn about z away).
-inline Eigen::Vector3d WorldFromPolicyFrame(const Eigen::Vector3d& p_pf) {
-  return Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitZ()) * p_pf;
+/// A pose given in URDF `base_link`, expressed in URDF `base` — the two differ
+/// by a half turn about z on this robot, which makes this its own inverse.
+///
+/// The POLICY frame is `base`, and so is the sim world, so nothing has to be
+/// converted to publish an object where the policy will see it. This exists for
+/// the other direction: the MuJoCo oracle was measured in the MJCF body `base`,
+/// which is URDF `base_link` (the MJCF drops the URDF's extra root frame), and
+/// those numbers have to cross the half turn to be compared against what the
+/// policy is shown.
+inline Eigen::Vector3d BaseFromBaseLink(const Eigen::Vector3d& p_base_link) {
+  return Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitZ()) * p_base_link;
 }
 
-inline Eigen::Quaterniond WorldFromPolicyFrame(const Eigen::Quaterniond& q_pf) {
-  return Eigen::Quaterniond(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitZ())) * q_pf;
+inline Eigen::Quaterniond BaseFromBaseLink(const Eigen::Quaterniond& q_base_link) {
+  return Eigen::Quaterniond(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitZ())) * q_base_link;
 }
 
 }  // namespace integrated_bringup::testfx
