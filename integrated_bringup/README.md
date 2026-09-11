@@ -76,7 +76,7 @@ integrated_bringup/
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       ├── demo_task_controller.yaml   <- DemoTask 게인/토픽
 │       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (task 게인은 §7 철자 ik_kp_pos/ik_kp_rot/nullspace_kp, 값은 demo_task 와 동일 — 등가성 테스트가 고정. §7 admittance 는 K_p^a=0 hand-guiding 을 출하하고 (#469 D-A3) bias 는 pull baseline 한 곳에서만 뺀다 (D-A5); K_d/Λ_d 는 코어 default, S5 에서 실기 튜닝)
-│       ├── demo_inference_controller.yaml <- ONNX 정책의 관측 계약 (텐서 이름·element_names·fill·프레임·관절 규약·reach gate). ur5e_p1b 전용, 모델은 `${RTC_POLICY_DIR}` (repo 밖)
+│       ├── demo_inference_controller.yaml <- ONNX 정책의 관측 계약 (텐서 이름·element_names·fill·프레임·관절 규약·reach gate·`logs:` CSV lane·`closed_chain_warn_ticks` 진단). ur5e_p1b 전용, 모델은 `${RTC_POLICY_DIR}` (repo 밖)
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs
 │           ├── phase_config.yaml       <- GraspPhaseManager 5-phase 설정
@@ -203,6 +203,35 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # h
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py initial_controller:=demo_wbc_controller
   ```
 
+#### Scene overlay (`sim_overlay:=`) — 출하 씬을 건드리지 않고 바꾸기
+
+`sim_ur5e_p1b.launch.py` 는 `config/ur5e_p1b/mujoco_simulator.yaml` **뒤**, 그리고 자기 명령줄
+인자 (`model_path:=` 등) **앞**에 params 파일 하나를 더 끼울 수 있습니다. 두 노드에 모두 전달되고
+각 노드는 자기 섹션만 읽습니다. 이름만 주면 `config/ur5e_p1b/sim_overlays/<name>.yaml`, `/` 를
+포함하거나 `.yaml` 로 끝나면 경로로 해석하며, **해석되지 않는 값은 launch 를 실패**시킵니다 —
+조용히 무시되면 명령줄이 가리키는 씬과 실제로 뜬 씬이 달라지고 그 run 의 모든 측정이 다른 씬을
+서술하게 됩니다.
+
+출하 overlay 는 `inference_pole` 하나입니다 — `demo_inference_controller` 의 정책이 학습된 씬
+(바닥 위 원통 1개 + 학습 reset 자세). 씬 자체는 `robot_descriptions/objects/pole` 에 있고 공유
+`mujoco_simulator.yaml` 은 건드리지 않으므로, `sim_overlay:=` 없이 띄우면 정확히 출하 씬입니다.
+
+```bash
+export RTC_POLICY_DIR=/path/to/ObjectHandGraspDeployMulti5-Export-v0   # 모델은 repo 밖
+ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
+    sim_overlay:=inference_pole use_cpu_affinity:=false
+
+# 기동 후 (기본 활성은 demo_joint_controller):
+ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
+  "{activate_controllers: ['demo_inference_controller'], \
+    deactivate_controllers: ['demo_joint_controller'], strictness: 1, timeout: {sec: 1}}"
+```
+
+기동 로그의 `[inference] N observed link(s) in '<frame>'` 이 정책이 어느 프레임으로 관측하는지를
+말해주고, `[inference] policy loaded: ...` 가 없으면 `RTC_POLICY_DIR` 이 안 잡힌 것입니다 (그때는
+`allow_missing_model: true` 라 컨트롤러가 자세만 유지합니다). 결과 판독은
+`<session>/controllers/demo_inference_controller/inference_diag.csv` — 위 로그 lane 표 참조.
+
 ---
 
 ## 공통 파라미터 (`demo_shared.yaml`)
@@ -263,6 +292,7 @@ demo_task_controller:
 | `grasp_diag_log` (CSV, DemoJoint · DemoTask) | 컨트롤러 (`ControllerLogSet`) | per-tick `grasp_diag.csv` (`msg_type: integrated_bringup/GraspDiagLog`, instance 고정 `grasp_diag`) — Force-PI 서보 + 온라인 강성 추정기 진단 (#428). 값은 원래 매 tick 계산되고 버려지던 것이며, 이 채널이 생긴 이유는 #426 이 판정에 쓸 **실기 힘 노이즈 σ** 를 잴 레인이 없었기 때문이다 (그 판정은 **적응 은퇴**로 종결됐고 — [grasp_tuning_guide.md](../rtc_controllers/docs/grasp_tuning_guide.md) §6.9 — 채널은 근거를 계속 읽을 수 있게 남는다). **`f_measured_*` 는 25 Hz Force-PI 뱅크** (`fingertip_force_mag_filt_grasp_`) 로, `<device>_sensor.csv` 의 `force_filtered_*` (contact_stop 뱅크, 배포 50 Hz) 와 **다른 레인**이다 — 둘 다 이름이 force 라서 틀린 쪽에서 잰 σ 는 아무 증상 없이 그럴듯한 값을 준다. `k_inst_raw_*` 는 `K_est_max` **clamp 전** 순간 추정치이고 `delta_s_*`/`delta_f_*` 는 추정기가 실제로 나눈 차분 쌍이다 — 이 셋은 CSV 의 s/f 컬럼에서 복원할 수 없다 (추정기는 s_{t-1}-s_{t-2} 를 쓰는데 로그 행은 s_t·s_{t-1} 을 실어 한 tick 어긋난다 — 6개월짜리 버그를 숨겼던 바로 그 latch 순서, #425). `beta`/`alpha_ema`/`K_est_max` 를 매 tick 함께 남기므로 저장된 CSV 가 그 run 의 YAML 없이 해독된다 (`task_diag` 의 `sigma0`/`lambda_max` 와 같은 사유). 등록 게이트는 **`force_pi_grasp` 블록 존재**이지 `grasp_hand_mode` 가 아니다 — 모드는 런타임 변경 가능하므로 모드로 게이트하면 contact_stop 으로 시작해 force_pi 로 바꾼 세션이 조용히 파일을 안 남긴다. PI 법칙이 안 돈 tick 은 gap 이 아니라 **`valid=0` 행**이며 per-finger 필드는 동결이 아니라 **0** (PROC-7, #424 의 published GraspState 와 동일 규약). `tick` 컬럼이 `pull_estimator.csv`·`<device>_sensor.csv` 와 정렬되므로 같은 run 에서 25 Hz/50 Hz 레인 교차 검증이 된다. Path A — POD-only, rtc_msgs `.msg` 무변경. `rtc_tools` 플로터가 자동 감지하며 `--stats` 가 Holding 구간 σ 를 숫자로 출력한다. 실기 절차는 [grasp_tuning_guide.md](../rtc_controllers/docs/grasp_tuning_guide.md) §8 |
 | `momentum_observer_log` (CSV, 3 데모 컨트롤러 공용) | 컨트롤러 (`ControllerLogSet`) | per-tick `momentum_observer.csv` (`msg_type: integrated_bringup/MomentumObserverLog`, instance 고정 `momentum_observer`) — 일반화 운동량 관측기 잔차 (#135 Layer 1b). 컬럼은 `t_relative_s,tick`, **`r_<joint>`** (arm 디바이스 joint order — 컬럼명에 그 순서가 박히므로 저장된 CSV 를 그 run 의 YAML 없이 해독할 수 있다; `pull_estimator.csv` 의 mask role 접미사와 같은 사유), `residual_inf_norm` (‖r‖∞ — AC 가 이 값으로 서술되므로 파생 가능해도 함께 남긴다), `valid`, `invalid_reason` (`MomentumInvalidReason`: 1=미초기화 2=held 3=short input 4=non-finite 5=dt≤0 — 닫힌 lane 게이트와 NaN 입력과 멈춘 시계를 구분한다), `ticks_since_seed` (재시딩 후 유효 tick 수. 이 값이 작은 동안 잔차는 0 에서 수렴 중이므로 **작은 ‖r‖ 이 아직 '무부하' 를 뜻하지 않는다** — 구분이 필요한 소비자는 대략 3/K_I 만큼을 버린다). 행은 **매 tick** 남으며 held·E-STOP tick 은 gap 이 아니라 `valid=0` 행 + 직전 잔차 **동결** 값이다 (`pull_estimator.csv`·`grasp_diag.csv` 와 같은 규약, PROC-7) — 따라서 `tick` 의 gap 은 SPSC ring drop 하나만 뜻하고, 파일 자체의 부재는 `momentum_observer` 블록이 없거나 disabled 라는 뜻이다 (그 경우 `on_configure` INFO 가 미생성을 명시). **Layer 2A 컬럼** (#135) 은 같은 행에 붙는다 — `payload_fx..payload_tz` (LOCAL_WORLD_ALIGNED wrench), `payload_mass` [kg], `payload_sigma_min`·`payload_lambda_sq` (§6.5 damping 진단 — adaptive 유지 결정이 관측 가능해야 하므로), `payload_fit_error` (‖Jᵀŵ − r‖∞ — payload 와 **모델링 안 된 관절 레벨 토크**(armature/damping/frictionloss, `[MO-1u]`) 를 가르는 유일한 컬럼: 후자는 Jᵀ 의 range 밖이라 어떤 wrench 로도 설명되지 않는다), `payload_valid`, `payload_reason` (`PayloadInvalidReason` — **어느 게이트가 닫혔는지**. 게이트별 발화율이 크게 다르므로 (sim 에서는 손 게이트가 지배) valid 하나로 뭉치면 튜너가 볼 것이 사라진다). 별도 파일이 아니라 같은 행인 이유는 둘이 한 tick 의 같은 입력에서 나오고, 의심스러운 질량을 진단하려면 **그것을 만든 `r` 이 같은 줄에** 있어야 하기 때문이다. 서브블록이 없으면 전 컬럼 0 + `payload_reason=1`(미초기화). **Layer 2B 컬럼** (#455) 이 그 뒤에 붙는다 — `inertial_mass`, `inertial_mcx..mcz` (m̂·ĉ [kg·m], payload 프레임 LOCAL 축), `inertial_cx..cz` (ĉ [m]), `inertial_sigma_min` (누적 4×4 정규행렬의 σ_min = **자세 다양성 계기**), `inertial_fit_error`, `inertial_rank` (0..4; **3 이면 아직 한 자세**), `inertial_valid`, `inertial_reason` (`InertialInvalidReason`). 4 파라미터뿐이고 `I` 컬럼이 없는 것은 미구현이 아니라 준정적 게이트에서 관성 6열이 항등적으로 0 이기 때문이다. 한 자세만으로는 `m·c` 의 중력 방향 성분이 관측되지 않아 rank 가 3 에 머무르므로, 기동 직후 `inertial_valid=0` 은 정상이다. 같은 행이 `payload_estimate` 토픽 (`rtc_msgs/PayloadEstimate`) 도 채운다 — POD 는 tick 당 한 번 만들어져 두 lane 에 전달된다. `rtc_tools` 플로터가 이 파일을 자동 감지한다 — `ros2 run rtc_tools plot_rtc_log <session>/controllers/<key>/momentum_observer.csv` 가 `momentum_observer.png` (per-joint r · ‖r‖∞ · 게이트/`ticks_since_seed`) 를 내고, **Layer 2A/2B 가 실제로 구성된 run 에서만** `momentum_payload.png` 를 추가로 낸다 (판정은 `payload_reason` 이 전 행 1(미초기화) 인지 — 출하 기본이 disabled 라 컬럼 존재로 게이트하면 빈 패널만 나온다). `--stats` 는 그림 없이 통계만 내며 **‖r‖∞ 통계는 `valid=1` 행만** 쓴다 (held 행의 잔차는 동결된 직전 값이라 측정이 아니다) |
 | `compliance_diag_log` (CSV, DemoCompliance 전용) | `DemoComplianceController` (`ControllerLogSet`) | per-tick `compliance_diag.csv` (`msg_type: integrated_bringup/ComplianceDiagLog`, instance 고정 `compliance_diag`) — §7 task-admittance 진단 (#469 S4). S3 이 붙인 법칙에는 **관측면이 없었다**: 팔이 움직였을 때 그것이 pull 인지 궤적인지, §10.7 램프 중이었는지, wrench 가 stale 이었는지, FSM 이 DEGRADED 였는지를 말할 수단이 0 이었고 — `task_diag.csv` 는 σ/λ² 만, `pull_estimator.csv` 는 소스 쪽 값만 실어 **소스와 법칙 사이**가 통째로 비어 있었다. 컬럼은 소비된 wrench (`wrench_f*`/`wrench_t*`, post-conditioning LWA), 소스 축 (`wrench_source`·`quality_low`·`invalid_reason`), 파이프라인 상태 (`wrench_age`/`fade`/`stale`/`in_contact`/`bias_*`/`rejected_samples`), 법칙 상태 (`fsm_state`·`alpha`·`x_tilde_*`·`nu_c_*`·`task_origin_*`·`disp_limited`/`vel_limited`/`adm_finite`), 그리고 매 tick 파라미터 스냅샷 (`kp_*`/`kd_*`/`md_*`/`max_disp_*`). **모든 값은 사용 지점(`ComputeControl`)에서 staging 된다** — 렌치는 `ComputeSecondary` 에서 발행되고 다음 tick 의 `ComputeControl` 에서 소비되므로 (D-A14), push tail 에서 멤버를 읽으면 한 행에 *이번* tick 의 `invalid_reason` 과 *직전* tick 의 wrench 가 섞인다 (#425 latch 순서와 같은 부류). 파라미터를 매 tick 싣는 이유는 `task_diag` 의 `sigma0`/`lambda_max` 와 같다 — **평평한 x̃ 가 "수렴" 인지 "§7.5 박스에 pin" 인지**를 그 run 의 YAML 없이 가르려면 bound 가 같은 줄에 있어야 하고, `disp_limited` 가 그 판정을 직접 말한다. 등록 게이트는 `external_wrench.source` 블록 존재이며 (D-A12: 기본값 없는 필수 키라 configure 한 컨트롤러는 반드시 하나를 갖는다), 법칙이 안 돈 tick (E-STOP · arm 미판독 · reorder 무효) 은 gap 이 아니라 **`valid=0` 행 + 값 0** 이다 (동결 아님 — 느리게 변하는 추정치는 동결되면 살아있는 것처럼 읽힌다, `grasp_diag` per-finger 와 같은 규약). 배선 안 된 fault 3개 (`command_divergence`·`saturation_persist`·`posture_authority_lost`) 는 **컬럼을 만들지 않는다** — 영원히 0 인 컬럼은 "안 일어남" 으로 읽힌다. Path A — POD-only, rtc_msgs `.msg` 무변경. `rtc_tools` 플로터가 `x_tilde_` 컬럼 지문으로 자동 감지하며, `--stats` 없이도 envelope (`|x_tilde|` peak 대 bound 비율) · freshness · bias 재무장 횟수를 숫자로 출력한다 (그림은 없다 — `grasp_diag` 와 같은 판단: 숫자가 산출물) |
+| `inference_diag_log` (CSV, DemoInference 전용) | `DemoInferenceController` (`ControllerLogSet`) | per-tick `inference_diag.csv` (`msg_type: integrated_bringup/InferenceDiagLog`, instance 고정 `inference_diag`) — 이 컨트롤러는 **모든 실패가 hold 로 수렴**하므로 (입력 unreadable · `Run()` false · 비유한 출력 · closed-chain held · 물체 stale) 바깥에서 보면 정상 동작과 구분되지 않는다. 그래서 매 tick `held` 와 **사유 코드** (`hold_code`/`hold_reason` — `InferenceHoldReason`, 조기 반환 지점마다 1개) 를 남기고, 그 옆에 정책이 실제로 본 것을 함께 둔다: `policy_step`·`inference_count` (주기가 decimation 대로인지), `reach_phase`·`tip_distance`·`reach_hold` (게이트), `object_valid`·`object_age_s`·`object_x..z` (**policy_frame 기준** — 프레임이 어긋나면 여기서 부호로 드러난다), `closed_held`·`closed_held_ticks`·`closed_singular`·`closure_error` (폐쇄 체인 사영), `arm_lag_max` (정책 목표와 측정 관절각의 최대 차 — sim 서보의 구조적 지연이 여기 실린다), `force_<tip>` (reach gate 가 읽는 손끝별 힘). 같은 `logs:` 블록이 arm/hand `<device>_state.csv` 도 연다 (형제 컨트롤러와 같은 스키마). 파일 부재 = `logs:` 에 그 채널이 없다는 뜻 |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
 
