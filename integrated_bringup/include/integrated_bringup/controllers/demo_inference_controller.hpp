@@ -175,6 +175,11 @@ class DemoInferenceController final : public RTControllerInterface {
   /// tick [m]. Handed to `ClosedChainHandFk::Configure` AND used for the tick's
   /// own freshness verdict, so the two can never disagree about a tick.
   static constexpr double kClosureErrorThreshold = 1e-3;
+  /// Squared norm below which an incoming object quaternion carries no
+  /// direction and normalising it would MANUFACTURE a NaN. Loose on purpose:
+  /// this rejects garbage (all-zero, denormal), not an unnormalised-but-real
+  /// orientation, which normalising is exactly the right answer for.
+  static constexpr double kMinObjectQuatNormSq = 1e-12;
 
   /// @param urdf_path system URDF (as handed to every binding by the registry).
   /// @param engine    owned inference backend. Production passes an
@@ -279,7 +284,7 @@ class DemoInferenceController final : public RTControllerInterface {
   /// How many times this activation has warned about a stalled projection —
   /// the once-per-activation contract is only checkable by counting.
   [[nodiscard]] int ClosedChainWarningsForTesting() const noexcept {
-    return closed_chain_warnings_;
+    return closed_chain_warnings_.load(std::memory_order_relaxed);
   }
 
   void SetInferenceDiagLogHandleForTesting(rtc::LogHandle<InferenceDiagLogPod> h) noexcept {
@@ -604,8 +609,12 @@ class DemoInferenceController final : public RTControllerInterface {
   /// disables it.
   std::atomic<std::int32_t> closed_chain_held_ticks_{0};
   int closed_chain_warn_ticks_{250};
-  bool closed_chain_warned_{false};
-  int closed_chain_warnings_{0};
+  /// Written by the diagnostic poll and reset by `on_activate`, which run on
+  /// DIFFERENT callback groups. They are serialised today only because the
+  /// bring-up puts both on one single-threaded executor — that is a decision
+  /// three files away, so the guarantee lives here instead.
+  std::atomic<bool> closed_chain_warned_{false};
+  std::atomic<int> closed_chain_warnings_{0};
   std::array<std::array<double, 3>, kMaxLinks> link_pos_{};
   std::array<std::array<double, 4>, kMaxLinks> link_quat_{};
 

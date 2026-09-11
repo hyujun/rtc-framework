@@ -1223,6 +1223,36 @@ TEST(DemoInferenceObject, TwoMatchesAreRefusedRatherThanPickingTheFirst) {
   EXPECT_EQ(h.engine->run_count, 0);
 }
 
+TEST(DemoInferenceObject, APoseWithNoOrientationIsNotAPose) {
+  // An all-zero quaternion is what a broken publisher sends, and normalising it
+  // MANUFACTURES NaN — which then packs, runs, and only maybe gets caught at the
+  // command screen. The lane must refuse it like any other unusable observation.
+  auto h = MakeObjectHarness(MakeObjectYaml());
+  auto msg = MakeTfMessage({"pool_apple_object"});
+  msg.transforms[0].transform.rotation.x = 0.0;
+  msg.transforms[0].transform.rotation.y = 0.0;
+  msg.transforms[0].transform.rotation.z = 0.0;
+  msg.transforms[0].transform.rotation.w = 0.0;
+  h.ctrl->InjectObjectTransformsForTesting(msg);
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_EQ(h.engine->run_count, 0) << "nothing may reach the engine";
+}
+
+TEST(DemoInferenceObject, ANonFinitePoseIsRefusedBeforeItIsPacked) {
+  auto h = MakeObjectHarness(MakeObjectYaml());
+  auto msg = MakeTfMessage({"pool_apple_object"});
+  msg.transforms[0].transform.translation.y = std::numeric_limits<double>::quiet_NaN();
+  h.ctrl->InjectObjectTransformsForTesting(msg);
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_EQ(h.engine->run_count, 0);
+}
+
 TEST(DemoInferenceObject, NoMatchHolds) {
   auto h = MakeObjectHarness(MakeObjectYaml());
   h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"table", "robot_base"}));

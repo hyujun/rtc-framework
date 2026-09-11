@@ -304,15 +304,15 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
 
 void DemoInferenceController::PollDiagnostics() {
   // Non-RT (the log timer's own callback group).
-  if (closed_chain_warn_ticks_ <= 0 || closed_chain_warned_) {
+  if (closed_chain_warn_ticks_ <= 0 || closed_chain_warned_.load(std::memory_order_relaxed)) {
     return;
   }
   const auto held = closed_chain_held_ticks_.load(std::memory_order_relaxed);
   if (held < closed_chain_warn_ticks_) {
     return;
   }
-  closed_chain_warned_ = true;
-  ++closed_chain_warnings_;
+  closed_chain_warned_.store(true, std::memory_order_relaxed);
+  closed_chain_warnings_.fetch_add(1, std::memory_order_relaxed);
   RCLCPP_WARN(logger_,
               "[inference] the closed-chain hand FK has been held for %d ticks (warn at %d): the "
               "fingertip poses it serves are STALE, so every tick holds and the policy is not "
@@ -549,6 +549,24 @@ void DemoInferenceController::OnObjectTransforms(const tf2_msgs::msg::TFMessage&
   // would stay finite and plausible.
   sample.valid = (matches == 1);
 
+  // A pose that is not finite, or whose quaternion has no direction, is not a
+  // pose. `normalized()` below would turn the second case into NaN and the
+  // first would carry one through, and from here everything stays "valid":
+  // the tick packs it, the engine runs on it, and the output NaN is caught (if
+  // at all) only at the command screen. The shipped profile happens to trip the
+  // reach gate's isfinite check first — that is an accident of tensor order,
+  // not a guard. Treating it as no observation lets the lane go stale and the
+  // controller hold with `kObject`, which is what a garbage publisher means.
+  if (sample.valid) {
+    const double* p = sample.position.data();
+    const double* q = sample.orientation_xyzw.data();
+    const bool finite = std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) &&
+                        std::isfinite(q[0]) && std::isfinite(q[1]) && std::isfinite(q[2]) &&
+                        std::isfinite(q[3]);
+    const double quat_norm_sq = (q[0] * q[0]) + (q[1] * q[1]) + (q[2] * q[2]) + (q[3] * q[3]);
+    sample.valid = finite && quat_norm_sq > kMinObjectQuatNormSq;
+  }
+
   // Deliver in the policy frame. `object_source_frame_id_` fixed what came in;
   // `pf_from_src_` (identity when the two frames are the same) moves it.
   if (sample.valid) {
@@ -602,8 +620,8 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(
   // Diagnostics describe this activation only.
   hold_counts_.fill(0);
   closed_chain_held_ticks_.store(0, std::memory_order_relaxed);
-  closed_chain_warned_ = false;
-  closed_chain_warnings_ = 0;
+  closed_chain_warned_.store(false, std::memory_order_relaxed);
+  closed_chain_warnings_.store(0, std::memory_order_relaxed);
   last_hold_reason_ = InferenceHoldReason::kNone;
   last_reach_phase_ = InferenceDiagLogPod::kNaN;
   last_tip_distance_ = InferenceDiagLogPod::kNaN;
@@ -616,6 +634,11 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_deactivate(
   // Flush what the last ticks pushed; the next activation starts a fresh block
   // of rows rather than replaying this one's residue.
   log_set_.DrainAll();
+  // The tick stops updating this counter here, but the 10 Hz poll keeps
+  // running. A frozen "held for N ticks" would then be reported about a
+  // controller that is no longer running — the diagnostic has to go silent
+  // when its input does.
+  closed_chain_held_ticks_.store(0, std::memory_order_relaxed);
   return RTControllerInterface::on_deactivate(prev);
 }
 
