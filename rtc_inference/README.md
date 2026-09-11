@@ -159,15 +159,25 @@ ros2 run rtc_inference rtc_inference_check policy.onnx --input obs:1x34
 CMake에서 2단계로 ONNX Runtime을 탐색합니다:
 
 1. **CMake 패키지 탐색:** `find_package(onnxruntime QUIET)`
-2. **수동 탐색 (폴백):**
-   - `/opt/onnxruntime/onnxruntime-*` (버전별 하위 디렉토리 자동 탐색)
-   - `/opt/onnxruntime`, `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`
-   - 헤더: `include/onnxruntime/core/session`, `include/onnxruntime` 접미사로 `onnxruntime_cxx_api.h` 탐색
+2. **수동 탐색 (폴백)** — 이 순서가 곧 우선순위다:
+   1. `-DRTC_ONNXRUNTIME_ROOT=<dir>` (명시 override — sudo 없이 풀어 둔 tarball 등)
+   2. `/opt/onnxruntime` — `install_onnxruntime` 이 **pin 된 버전**으로 가리키게 하는 symlink
+   3. `/opt/onnxruntime-*`, `/opt/onnxruntime/onnxruntime-*` — **최신 버전 먼저** (natural sort 내림차순)
+   4. `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`
+   - 헤더: `include`, `include/onnxruntime/core/session`, `include/onnxruntime` 접미사로 `onnxruntime_cxx_api.h` 탐색
+
+수동 탐색 결과는 **캐시하지 않는다** (`NO_CACHE`) — 캐시된 경로는 업그레이드 뒤에도 기존 빌드 트리를 옛 런타임에 묶어 둔다. configure 는 선택한 런타임의 `ORT_API_VERSION` 을 STATUS 로 찍고, **1.18 미만이면 WARNING** 을 낸다 (IR 10 모델을 못 연다 — `ur5e_p1b` 의 demo_inference 정책이 IR 10 이다).
 
 | 감지 결과 | 동작 |
 |-----------|------|
 | 발견 | `HAS_ONNXRUNTIME` 컴파일 정의 전파 + 라이브러리 링크 (INTERFACE) |
 | 미발견 | 스텁 엔진으로 빌드 (빌드 실패 없음) |
+
+> **릴리즈 tarball 의 `lib/cmake/onnxruntime` 은 쓰지 않는다.** 1.28.2 의 imported target 은 `lib64/` 를 가리키는데 파일은 `lib/` 에 있어서, 그 트리를 `CMAKE_PREFIX_PATH` 에 올리면 `find_package` 가 (QUIET 이어도) configure 를 실패시킨다. 폴백 수동 탐색은 그 config 를 거치지 않는다.
+
+### 런타임 업그레이드
+
+버전은 `install.sh` 의 `ONNXRT_VERSION` 이 SSoT 다. 이미 설치된 머신에서도 `install_onnxruntime` 이 `/opt/onnxruntime/VERSION_NUMBER` 를 pin 과 비교해 다르면 새 tarball 을 받아 symlink 를 옮기고 `ldconfig` 를 다시 돈다. 그 뒤 **ORT 를 링크하는 패키지(`colcon list --packages-above rtc_inference`)를 재구성**해야 한다 — soname 이 버전마다 달라서 (`libonnxruntime.so.1.17.1` → `libonnxruntime.so.1`), 재링크되지 않은 옛 바이너리는 실행 시 `libonnxruntime.so.1.17.1: cannot open shared object file` 로 죽는다 (조용히 옛 런타임을 쓰지는 않는다). colcon 에 `--packages-above rtc_inference --cmake-force-configure` 를 준다 — plain colcon 명령의 전체 형태(venv·`--cmake-args` 주의)는 [repo_scripts/README.md](../repo_scripts/README.md) "Plain `colcon build` 호환성" 이 SSoT 다.
 
 ### 빌드 명령
 
