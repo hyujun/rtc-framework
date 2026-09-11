@@ -781,10 +781,13 @@ output_features:
 }
 
 TEST(PolicyIoParams, RejectsAnUnknownInputSource) {
+  // "sensor" is a name no filler owns. The case used to spell `constant` here,
+  // which stops being unknown once a policy needs a tensor held at fixed values
+  // (a root pose the observation already expresses in its own frame).
   std::string yaml = kRecurrentYaml;
   yaml.replace(yaml.find("source: recurrent"), std::string("source: recurrent").size(),
-               "source: constant");
-  ExpectRejectMentioning(yaml, "declares source 'constant'");
+               "source: sensor");
+  ExpectRejectMentioning(yaml, "declares source 'sensor'");
 }
 
 TEST(PolicyIoParams, RejectsAnAffineLaneOnARecurrentTensor) {
