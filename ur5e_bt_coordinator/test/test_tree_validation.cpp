@@ -99,6 +99,14 @@ TEST_F(TreeValidationTest, HandMotions) {
   EXPECT_GT(count, 0u) << "hand_motions.xml should have nodes";
 }
 
+// The coordinator's code-default tree_file. It was the one shipped tree this
+// suite never built, so a SubTree argument BT.CPP 4.10 rejects would have
+// surfaced first on the robot.
+TEST_F(TreeValidationTest, PickAndPlace) {
+  auto count = ValidateTree("pick_and_place.xml");
+  EXPECT_GT(count, 0u) << "pick_and_place.xml should have nodes";
+}
+
 TEST_F(TreeValidationTest, PickAndPlaceContactStop) {
   auto count = ValidateTree("pick_and_place_contact_stop.xml");
   EXPECT_GT(count, 0u) << "pick_and_place_contact_stop.xml should have nodes";
