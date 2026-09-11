@@ -23,6 +23,8 @@
 #include "inference_fake_engine.hpp"
 #include "inference_shipped_fixture.hpp"
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
+#include "rtc_base/logging/thread_csv_producer.hpp"
+#include "session_dir_test_fixture.hpp"
 #include "shipped_config_test_fixture.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
@@ -40,9 +42,14 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -104,6 +111,10 @@ class RclcppEnv : public ::testing::Environment {
 };
 
 const auto* const kEnv = ::testing::AddGlobalTestEnvironment(new RclcppEnv);
+// The shipped config opens its CSV logs at configure — keep them out of the
+// workspace's real session tree.
+const auto* const kSession = static_cast<const fx::IsolatedSessionDir*>(
+    ::testing::AddGlobalTestEnvironment(new fx::IsolatedSessionDir));
 
 /// The production bring-up order on the real model, driven with the SHIPPED
 /// controller config (model_path aside).
@@ -569,4 +580,254 @@ TEST_F(ShippedInference, AStaleObjectPoseHolds) {
     EXPECT_TRUE(ctrl_->LastTickHeldForTesting());
   }
   EXPECT_EQ(engine_->run_count, 0);
+}
+
+// ── Observability: the CSV lane and hold reasons (Phase 4) ─────────────────
+//
+// A hold commands the same latched position whatever caused it, so without a
+// recorded reason a run that held on every tick reads like a policy that chose
+// to stand still. These pin that each hold is named, that a policy step is
+// marked, and that what the row reports is what the policy was actually shown.
+
+TEST_F(ShippedInference, ShipsItsCsvLogs) {
+  const YAML::Node logs = cfg_["logs"];
+  ASSERT_TRUE(logs && logs.IsSequence()) << "the shipped config must declare its `logs:`";
+  std::vector<std::pair<std::string, std::string>> seen;
+  for (const auto& e : logs) {
+    seen.emplace_back(e["msg_type"].as<std::string>(), e["instance"].as<std::string>());
+  }
+  const std::vector<std::pair<std::string, std::string>> expected = {
+      {"rtc_msgs/DeviceStateLog", "ur5e_state"},
+      {"rtc_msgs/DeviceStateLog", "p1b_state"},
+      {"integrated_bringup/InferenceDiagLog", "inference_diag"}};
+  EXPECT_EQ(seen, expected);
+}
+
+TEST_F(ShippedInference, TheDiagFileIsOpenedUnderTheSessionWithTheReachTipColumns) {
+  namespace fs = std::filesystem;
+  const fs::path dir = kSession->Dir() / "controllers" / "demo_inference_controller";
+  const fs::path diag = dir / "inference_diag.csv";
+  ASSERT_TRUE(fs::exists(diag)) << "configure must open " << diag;
+  EXPECT_TRUE(fs::exists(dir / "ur5e_state.csv"));
+  EXPECT_TRUE(fs::exists(dir / "p1b_state.csv"));
+  // Earlier tests in this binary append to the same file; only rows written
+  // from here on belong to this controller.
+  const auto offset = fs::file_size(diag);
+
+  const auto state = MakePregraspState();
+  constexpr int kTicks = 40;  // below the 512-row ring: nothing may drop before the drain
+  for (int t = 0; t < kTicks; ++t) {
+    static_cast<void>(ctrl_->Compute(state));
+  }
+  ASSERT_EQ(ctrl_->on_deactivate(rclcpp_lifecycle::State{}), CR::SUCCESS);  // drains
+
+  std::ifstream in(diag);
+  std::string header;
+  ASSERT_TRUE(std::getline(in, header));
+  EXPECT_EQ(header.rfind("t_relative_s,", 0), 0U) << header;
+  EXPECT_NE(header.find(",force_thumb,force_index,force_middle,force_ring"), std::string::npos)
+      << "the tip columns are the reach gate's force groups, in its tip order: " << header;
+  in.clear();
+  in.seekg(static_cast<std::streamoff>(offset));
+  int rows = 0;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line.rfind("t_relative_s", 0) == 0) {
+      continue;
+    }
+    ++rows;
+    // Third column is `held`.
+    std::istringstream fields(line);
+    std::string field;
+    for (int c = 0; c < 3; ++c) {
+      std::getline(fields, field, ',');
+    }
+    EXPECT_EQ(field, "1") << "no object was published, so every tick holds: " << line;
+  }
+  EXPECT_EQ(rows, kTicks) << "one row per tick";
+}
+
+TEST_F(ShippedInference, EveryHeldTickNamesItsReason) {
+  using integrated_bringup::InferenceHoldReason;
+  const auto state = MakePregraspState();
+
+  // No object yet. The projection first walks in from its reference seed —
+  // those ticks hold on the closed chain, whose fingertip poses are not yet
+  // this configuration's — and then, with the chain converged, the missing
+  // object is what holds.
+  InferenceHoldReason reason = InferenceHoldReason::kNone;
+  for (int t = 0; t < 600 && reason != InferenceHoldReason::kObject; ++t) {
+    last_out_ = ctrl_->Compute(state);
+    ASSERT_TRUE(ctrl_->LastTickHeldForTesting());
+    reason = ctrl_->LastHoldReasonForTesting();
+    ASSERT_TRUE(reason == InferenceHoldReason::kClosedChain ||
+                reason == InferenceHoldReason::kObject)
+        << "tick " << t << " held for reason " << static_cast<int>(reason);
+  }
+  EXPECT_EQ(reason, InferenceHoldReason::kObject);
+  EXPECT_GT(ctrl_->HoldCountForTesting(InferenceHoldReason::kClosedChain), 0U)
+      << "the walk-in from the reference seed must be visible as closed-chain holds";
+  EXPECT_EQ(ctrl_->HoldCountForTesting(InferenceHoldReason::kUnreadable), 0U);
+
+  // A held tick's goal is the latch, not a policy target it does not have.
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_DOUBLE_EQ(last_out_.devices[0].goal_positions[i], last_out_.devices[0].commands[i]);
+  }
+
+  // An unreadable arm is named as such, not as the object it also lacks.
+  auto holed = state;
+  holed.devices[0].hole_mask = 0b1U;
+  last_out_ = ctrl_->Compute(holed);
+  EXPECT_EQ(ctrl_->LastHoldReasonForTesting(), InferenceHoldReason::kUnreadable);
+}
+
+TEST_F(ShippedInference, TheDiagRowReportsWhatThePolicyWasShown) {
+  using integrated_bringup::InferenceDiagLogPod;
+  using integrated_bringup::InferenceHoldReason;
+  rtc::ThreadCsvProducer<InferenceDiagLogPod, 512> producer;
+  ctrl_->SetInferenceDiagLogHandleForTesting(rtc::LogHandle<InferenceDiagLogPod>(&producer));
+  std::vector<InferenceDiagLogPod> rows;
+  const auto drain = [&] {
+    static_cast<void>(producer.Drain([&](const InferenceDiagLogPod& p) { rows.push_back(p); }));
+  };
+
+  auto state = MakePregraspState();
+  // Distinct sub-threshold forces, so each column is traceable to its group
+  // without arming the tactile hold.
+  const auto sensors = fx::MakeInferenceDeviceConfigs().at("p1b").sensor_names;
+  const std::vector<std::pair<std::string, float>> forces = {
+      {"thumb", 0.1F}, {"index", 0.2F}, {"middle", 0.3F}, {"ring", 0.4F}};
+  for (const auto& [group, f] : forces) {
+    SetForce(state, static_cast<int>(IndexOfName(sensors, group)), f);
+  }
+  const Eigen::Vector3d nominal(0.5, 0.05, 0.075);
+  InjectObjectInPolicyFrame(nominal, Eigen::Quaterniond::Identity());
+  // A NON-zero arm head, distinct per joint: with the default zeros the policy
+  // target coincides with an unset `goal_positions`, and both the goal and the
+  // lag checks below would pass with those lanes not written at all.
+  std::array<double, 6> arm_target{};
+  auto& arm_head = engine_->next_output[Out("arm_action")];
+  for (std::size_t i = 0; i < arm_target.size(); ++i) {
+    arm_target[i] = kC18[i] + (0.01 * static_cast<double>(i + 1));
+    arm_head[i] = static_cast<float>(arm_target[i]);
+  }
+
+  const auto before = ctrl_->InferenceCountForTesting();
+  bool accepted = false;
+  for (int t = 0; t < 600 && !accepted; ++t) {
+    Republish();
+    last_out_ = ctrl_->Compute(state);
+    drain();
+    accepted = !ctrl_->LastTickHeldForTesting() && ctrl_->InferenceCountForTesting() > before;
+  }
+  ASSERT_TRUE(accepted);
+  ASSERT_FALSE(rows.empty());
+  const auto step = rows.back();
+
+  EXPECT_FALSE(step.held);
+  EXPECT_EQ(step.hold_reason, static_cast<std::uint8_t>(InferenceHoldReason::kNone));
+  EXPECT_TRUE(step.policy_step);
+  EXPECT_EQ(step.inference_count, ctrl_->InferenceCountForTesting());
+  EXPECT_NEAR(step.reach_phase, Tensor("reach_phase")[0], 1e-6)
+      << "the row must carry the gate value the policy was fed";
+  EXPECT_TRUE(std::isfinite(step.tip_distance));
+  EXPECT_GT(step.tip_distance, 0.0);
+  EXPECT_TRUE(step.object_valid);
+  for (std::size_t c = 0; c < 3; ++c) {
+    EXPECT_NEAR(step.object_position[c], nominal[static_cast<Eigen::Index>(c)], 1e-9)
+        << "policy frame, axis " << c;
+  }
+  EXPECT_FALSE(step.closed_held);
+  EXPECT_LT(step.closure_error, DemoInferenceController::kClosureErrorThreshold);
+  ASSERT_EQ(step.num_tips, 4U);
+  for (std::size_t i = 0; i < forces.size(); ++i) {
+    EXPECT_NEAR(step.tip_force[i], forces[i].second, 1e-6) << forces[i].first;
+  }
+  // The arm stands at C18 and the target is C18 + 0.01·(i+1), so the lag is the
+  // last joint's 0.06 — and goal_positions carries the target itself, not the
+  // rate-bounded command (which may only step one tick of v_max from C18).
+  EXPECT_NEAR(step.arm_lag_max, 0.06, 1e-6);
+  for (std::size_t i = 0; i < arm_target.size(); ++i) {
+    EXPECT_NEAR(last_out_.devices[0].goal_positions[i], arm_target[i], 1e-6)
+        << "goal_positions carries the policy's own target, joint " << i;
+  }
+
+  // Between steps the action is replayed: not held, not a step, and the gate
+  // value the policy saw stays on the row.
+  last_out_ = ctrl_->Compute(state);
+  drain();
+  const auto replay = rows.back();
+  EXPECT_FALSE(replay.held);
+  EXPECT_FALSE(replay.policy_step);
+  EXPECT_DOUBLE_EQ(replay.reach_phase, step.reach_phase);
+}
+
+// ── The shipped pole overlay (sim_overlays/inference_pole.yaml) ─────────────
+//
+// It exists to put the sim where the policy was trained, and every value in it
+// is derived from something this suite already pins — so derive them again here
+// instead of trusting the file.
+
+namespace {
+
+YAML::Node PoleOverlay() {
+  const std::string path =
+      std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/ur5e_p1b/sim_overlays/inference_pole.yaml";
+  return YAML::LoadFile(path)["mujoco_simulator"]["ros__parameters"];
+}
+
+}  // namespace
+
+TEST(ShippedPoleOverlay, StartsTheHandAtThePolicysSynergyZeroShapeInThisHandsConvention) {
+  const YAML::Node overlay = PoleOverlay();
+  // The sim's command order comes from the profile's own sim config, not from
+  // a literal, so a reordered roster fails here instead of shipping a hand
+  // whose joints are shuffled.
+  const std::string sim_path =
+      std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/ur5e_p1b/mujoco_simulator.yaml";
+  const auto order = YAML::LoadFile(sim_path)["mujoco_simulator"]["ros__parameters"]
+                                             ["robot_response"]["p1b"]["command_joint_names"]
+                                                 .as<std::vector<std::string>>();
+  const auto q0 = overlay["robot_response"]["p1b"]["initial_qpos"].as<std::vector<double>>();
+  ASSERT_EQ(q0.size(), order.size());
+  for (std::size_t j = 0; j < order.size(); ++j) {
+    const double expected = kPolicySign.at(order[j]) * kC20[IndexOfName(kGripperOrder, order[j])];
+    EXPECT_NEAR(q0[j], expected, 1e-6) << order[j];
+  }
+  EXPECT_EQ(overlay["robot_response"]["ur5e"]["initial_qpos"].as<std::vector<double>>().size(), 6U);
+}
+
+TEST(ShippedPoleOverlay, PutsThePoleAtTheTrainingNominalInThePolicyFrame) {
+  const YAML::Node overlay = PoleOverlay();
+  const YAML::Node pool = overlay["object_pool"];
+  EXPECT_EQ(pool["directory"].as<std::string>(), "package://robot_descriptions/objects");
+  EXPECT_EQ(pool["objects"].as<std::vector<std::string>>(), std::vector<std::string>{"pole"});
+  EXPECT_EQ(pool["selection"].as<std::string>(), "fixed");
+  EXPECT_EQ(pool["pose"].as<std::string>(), "fixed");
+  const std::string model = overlay["model_path"].as<std::string>();
+  EXPECT_EQ(model.substr(model.size() - std::string("/ur5e_p1b/mjcf/scene.xml").size()),
+            "/ur5e_p1b/mjcf/scene.xml")
+      << "the training scene is a floor at z = 0, not the table scene";
+
+  const auto p = pool["position"].as<std::vector<double>>();
+  const auto rpy = pool["rpy"].as<std::vector<double>>();
+  ASSERT_EQ(p.size(), 3U);
+  ASSERT_EQ(rpy.size(), 3U);
+  // World → policy frame is the inverse of the half turn the fixture applies.
+  const Eigen::Quaterniond pf_from_world =
+      fx::WorldFromPolicyFrame(Eigen::Quaterniond::Identity()).inverse();
+  const Eigen::Vector3d p_pf = pf_from_world * Eigen::Vector3d(p[0], p[1], p[2]);
+  EXPECT_NEAR(p_pf.x(), 0.500, 1e-9);
+  EXPECT_NEAR(p_pf.y(), 0.050, 1e-9);
+  // The centre rests at 0.075 (h 0.15 on a z = 0 floor); a few mm above so the
+  // spawn does not start interpenetrating, and no more than that.
+  EXPECT_GT(p_pf.z(), 0.075);
+  EXPECT_LE(p_pf.z(), 0.085);
+  // ZYX: R = Rz(yaw) Ry(pitch) Rx(roll). The training pole's axis points DOWN.
+  const Eigen::Matrix3d r_world = (Eigen::AngleAxisd(rpy[2], Eigen::Vector3d::UnitZ()) *
+                                   Eigen::AngleAxisd(rpy[1], Eigen::Vector3d::UnitY()) *
+                                   Eigen::AngleAxisd(rpy[0], Eigen::Vector3d::UnitX()))
+                                      .toRotationMatrix();
+  const Eigen::Vector3d axis_pf = pf_from_world * (r_world * Eigen::Vector3d::UnitZ());
+  EXPECT_NEAR(axis_pf.z(), -1.0, 1e-9) << "object z axis must point down in the policy frame";
 }

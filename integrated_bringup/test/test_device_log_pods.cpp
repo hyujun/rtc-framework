@@ -7,6 +7,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
+#include "integrated_bringup/logging/inference_diag_log_pod.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
@@ -15,7 +16,9 @@
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -88,9 +91,9 @@ TEST(DeviceStateLogPod, ShortRuntimeChannelCountPadsRatherThanNarrowsTheRow) {
   EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
   // The runtime truth travels in the row, not in the column count.
   EXPECT_NE(hdr.find("num_joints"), std::string::npos) << hdr;
-  EXPECT_EQ(row.substr(row.rfind(',') + 1), "0");                 // num_motors
+  EXPECT_EQ(row.substr(row.rfind(',') + 1), "0");  // num_motors
   const auto tail = row.substr(0, row.rfind(','));
-  EXPECT_EQ(tail.substr(tail.rfind(',') + 1), "6");               // num_joints
+  EXPECT_EQ(tail.substr(tail.rfind(',') + 1), "6");  // num_joints
 }
 
 // A device whose backend never came up reports 0 channels while the config
@@ -589,9 +592,8 @@ TEST(DeviceWbcLogPod, AccelColumnRoundTrips) {
   pod.accelerations[0] = 3.25;
   pod.accelerations[1] = -1.5;
   std::ostringstream row_os;
-  integrated_bringup::WriteDeviceWbcLogRow(row_os, pod,
-                                           integrated_bringup::DeviceWbcLogColumnsFor(joint_names,
-                                                                                      {}));
+  integrated_bringup::WriteDeviceWbcLogRow(
+      row_os, pod, integrated_bringup::DeviceWbcLogColumnsFor(joint_names, {}));
   const std::string row = row_os.str();
   EXPECT_NE(row.find("3.25"), std::string::npos);
   EXPECT_NE(row.find("-1.5"), std::string::npos);
@@ -878,7 +880,6 @@ TEST(TaskDiagLogPod, StaleRowIsNotReportedAsDamping) {
   EXPECT_EQ(row.substr(first + 1, second - first - 1), "0");
 }
 
-
 // ── GraspDiagLogPod (#428) ──────────────────────────────────────────────────
 
 TEST(GraspDiagLogPod, IsTriviallyCopyable) {
@@ -921,9 +922,9 @@ TEST(GraspDiagLogPod, HeaderStampsFingerNamesOnEveryQuantity) {
   integrated_bringup::WriteGraspDiagLogHeader(hdr_os, fingers);
   const std::string hdr = hdr_os.str();
 
-  for (const char* q : {"s_", "f_desired_", "f_measured_", "f_error_", "k_est_", "k_inst_raw_",
-                        "delta_s_", "delta_f_", "gain_scale_", "est_updated_",
-                        "integrator_frozen_", "contact_"}) {
+  for (const char* q :
+       {"s_", "f_desired_", "f_measured_", "f_error_", "k_est_", "k_inst_raw_", "delta_s_",
+        "delta_f_", "gain_scale_", "est_updated_", "integrator_frozen_", "contact_"}) {
     for (const auto& f : fingers) {
       const std::string col = std::string(q) + f;
       EXPECT_NE(hdr.find(col), std::string::npos) << "missing column " << col << " in " << hdr;
@@ -1003,7 +1004,66 @@ TEST(GraspDiagLogPod, FingerNamesTruncateToTheGraspFingerCount) {
   EXPECT_EQ(names[2], "middle");
   // A hand reporting fewer sensors than configured grasp fingers yields the
   // shorter list — the header must not name a finger with no force lane.
-  const auto short_names = integrated_bringup::GraspDiagFingerNames(
-      std::vector<std::string>{"thumb"}, 3);
+  const auto short_names =
+      integrated_bringup::GraspDiagFingerNames(std::vector<std::string>{"thumb"}, 3);
   EXPECT_EQ(short_names.size(), 1U);
+}
+
+// ── InferenceDiagLogPod ─────────────────────────────────────────────────────
+
+TEST(InferenceDiagLogPod, IsTriviallyCopyable) {
+  EXPECT_TRUE(std::is_trivially_copyable_v<integrated_bringup::InferenceDiagLogPod>);
+}
+
+TEST(InferenceDiagLogPod, HeaderColumnsMatchRowAndNameTheTips) {
+  const std::vector<std::string> tips{"thumb", "index", "middle", "ring"};
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteInferenceDiagLogHeader(hdr_os, tips);
+  const std::string hdr = hdr_os.str();
+
+  integrated_bringup::InferenceDiagLogPod pod{};
+  pod.held = true;
+  pod.hold_reason = static_cast<std::uint8_t>(integrated_bringup::InferenceHoldReason::kObject);
+  pod.num_tips = 4;
+  pod.tip_force = {0.1, 0.2, 0.3, 0.4};
+  std::ostringstream row_os;
+  integrated_bringup::WriteInferenceDiagLogRow(row_os, pod, tips.size());
+  const std::string row = row_os.str();
+
+  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  EXPECT_EQ(hdr.rfind("t_relative_s", 0), 0U);
+  EXPECT_NE(hdr.find(",force_thumb,force_index,force_middle,force_ring"), std::string::npos);
+  // The reason is written as a code AND a name, so a stored file reads without
+  // this header's enum.
+  EXPECT_NE(row.find(",1,7,object,"), std::string::npos) << row;
+}
+
+TEST(InferenceDiagLogPod, AShortTipCountPadsRatherThanNarrowsTheRow) {
+  const std::vector<std::string> tips{"thumb", "index", "middle", "ring"};
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteInferenceDiagLogHeader(hdr_os, tips);
+  integrated_bringup::InferenceDiagLogPod pod{};
+  pod.num_tips = 1;
+  pod.tip_force = {9.0, 9.0, 9.0, 9.0};  // beyond num_tips must NOT reach the file
+  std::ostringstream row_os;
+  integrated_bringup::WriteInferenceDiagLogRow(row_os, pod, tips.size());
+  const std::string row = row_os.str();
+  EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row));
+  EXPECT_EQ(row.substr(row.size() - 8), ",9,0,0,0") << row;
+}
+
+TEST(InferenceDiagLogPod, EveryHoldReasonHasItsOwnName) {
+  std::vector<std::string> names;
+  for (std::size_t i = 0; i < integrated_bringup::kNumInferenceHoldReasons; ++i) {
+    const auto name = std::string(integrated_bringup::InferenceHoldReasonName(
+        static_cast<integrated_bringup::InferenceHoldReason>(i)));
+    EXPECT_NE(name, "unknown") << "reason " << i << " has no name";
+    EXPECT_EQ(std::count(names.begin(), names.end(), name), 0) << "duplicate name " << name;
+    names.push_back(name);
+  }
+  // One past the table: the count constant and the enum must not drift apart.
+  EXPECT_EQ(integrated_bringup::InferenceHoldReasonName(
+                static_cast<integrated_bringup::InferenceHoldReason>(
+                    integrated_bringup::kNumInferenceHoldReasons)),
+            "unknown");
 }

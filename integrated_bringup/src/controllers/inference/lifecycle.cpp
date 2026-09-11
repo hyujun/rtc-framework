@@ -5,11 +5,13 @@
 // the tick can be allocation-free.
 
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "rtc_inference/inference_types.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
 
 #include <Eigen/Geometry>
 
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -230,15 +232,78 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
                   model_path_.c_str(), io_.decimation, io_.inputs.size(), io_.outputs.size(),
                   io_.recurrent_links.size());
     }
+
+    // ── Controller-owned CSV logs ──────────────────────────────────────────
+    // Last, so a configure that fails above never leaves a channel open. Hold
+    // mode registers too: a run that held on every tick is exactly the run
+    // whose diag file has to say why.
+    ResetLogState();
+    const auto primary = GetPrimaryDeviceName();
+    const auto* arm_cfg = GetDeviceNameConfig(primary);
+    const auto* hand_cfg = GetDeviceNameConfig(secondary);
+    std::vector<std::string> tip_names;
+    tip_names.reserve(reach_.tips.size());
+    for (const auto& tip : reach_.tips) {
+      tip_names.push_back(tip.force_group);
+    }
+    LogRegistrationContext ctx{
+        .logger = logger_,
+        .log_set = log_set_,
+        .state_logs =
+            {
+                {primary + "_state",
+                 {arm_cfg ? arm_cfg->joint_state_names : std::vector<std::string>{},
+                  std::vector<std::string>{}}},
+                {secondary + "_state",
+                 {hand_cfg ? hand_cfg->joint_state_names : std::vector<std::string>{},
+                  hand_cfg ? hand_cfg->motor_state_names : std::vector<std::string>{}}},
+            },
+        .inference_diag_enabled = true,
+        .inference_diag_tip_names = reach_enabled_ ? tip_names : std::vector<std::string>{},
+    };
+    auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
+    if (reg.status == LogRegistrationStatus::kMissingInstance) {
+      ResetLogState();
+      return CallbackReturn::FAILURE;
+    }
+    if (auto it = reg.handles.state.find(primary + "_state"); it != reg.handles.state.end()) {
+      primary_state_log_handle_ = it->second;
+    }
+    if (auto it = reg.handles.state.find(secondary + "_state"); it != reg.handles.state.end()) {
+      secondary_state_log_handle_ = it->second;
+    }
+    inference_diag_log_handle_ = reg.handles.inference_diag;
+    if (!log_set_.empty() && node) {
+      // Non-RT drain, 10 Hz, its own group so a slow disk never delays the
+      // object-pose callback sharing the default one.
+      log_drain_cb_group_ =
+          node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+      log_drain_timer_ = node->create_wall_timer(
+          std::chrono::milliseconds(100),
+          [this]() { DrainControllerLogs(log_set_, logger_, log_drops_reported_); },
+          log_drain_cb_group_);
+    }
   } catch (const std::exception& e) {
     // Includes the engine's own shape validation, which throws when the .onnx
     // on disk does not match the shapes the YAML declares — the single most
     // useful failure this controller can produce after a retrain.
+    ResetLogState();
     RCLCPP_ERROR(logger_, "[inference] configure failed: %s", e.what());
     return CallbackReturn::FAILURE;
   }
 
   return CallbackReturn::SUCCESS;
+}
+
+void DemoInferenceController::ResetLogState() noexcept {
+  // Without this a cleanup → configure cycle re-registers into a set that still
+  // holds the old channels, the duplicate guard hands back unbound handles and
+  // logging silently stops (#238 — the sibling controllers' same fix).
+  log_set_.Reset();
+  log_drops_reported_ = 0;
+  primary_state_log_handle_ = {};
+  secondary_state_log_handle_ = {};
+  inference_diag_log_handle_ = {};
 }
 
 bool DemoInferenceController::ConfigureKinematics() {
@@ -507,13 +572,30 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(
   hold_elapsed_sec_ = 0.0;
   recurrent_reset_pending_ = true;
   warned_state_reset_ = false;
+  // Diagnostics describe this activation only.
+  hold_counts_.fill(0);
+  last_hold_reason_ = InferenceHoldReason::kNone;
+  last_reach_phase_ = InferenceDiagLogPod::kNaN;
+  last_tip_distance_ = InferenceDiagLogPod::kNaN;
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn DemoInferenceController::on_deactivate(
     const rclcpp_lifecycle::State& prev) noexcept {
   have_action_ = false;
+  // Flush what the last ticks pushed; the next activation starts a fresh block
+  // of rows rather than replaying this one's residue.
+  log_set_.DrainAll();
   return RTControllerInterface::on_deactivate(prev);
+}
+
+RTControllerInterface::CallbackReturn DemoInferenceController::on_cleanup(
+    const rclcpp_lifecycle::State& prev) noexcept {
+  // Timer first, so no drain runs concurrently with the reset below.
+  log_drain_timer_.reset();
+  log_drain_cb_group_.reset();
+  ResetLogState();
+  return RTControllerInterface::on_cleanup(prev);
 }
 
 }  // namespace integrated_bringup

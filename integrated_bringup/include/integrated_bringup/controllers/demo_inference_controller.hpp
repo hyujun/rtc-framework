@@ -57,9 +57,12 @@
 // because an out-of-range scalar means the model's normalisation and the YAML
 // disagree.
 
+#include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/logging/inference_diag_log_pod.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/inference/reach_gate.hpp"
 #include "rtc_controllers/params/policy_io_params.hpp"
@@ -67,9 +70,11 @@
 #include "rtc_inference/inference_engine.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
+#include <rclcpp/callback_group.hpp>
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/subscription.hpp>
+#include <rclcpp/timer.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 
 #include <array>
@@ -206,6 +211,7 @@ class DemoInferenceController final : public RTControllerInterface {
                               const YAML::Node& yaml) noexcept override;
   CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& prev) noexcept override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
 
   void LoadConfig(const YAML::Node& cfg) override;
   void OnDeviceConfigsSet() override;
@@ -247,6 +253,23 @@ class DemoInferenceController final : public RTControllerInterface {
 
   /// True when configure accepted a missing model and every tick holds.
   [[nodiscard]] bool HoldModeForTesting() const noexcept { return hold_mode_; }
+
+  /// Why the last tick held (kNone when it emitted an action).
+  [[nodiscard]] InferenceHoldReason LastHoldReasonForTesting() const noexcept {
+    return last_hold_reason_;
+  }
+
+  /// Held ticks per reason since activation.
+  [[nodiscard]] std::uint64_t HoldCountForTesting(InferenceHoldReason reason) const noexcept {
+    const auto i = static_cast<std::size_t>(reason);
+    return i < hold_counts_.size() ? hold_counts_[i] : 0;
+  }
+
+  /// Bind the diag channel to a caller-owned producer, so a test can read the
+  /// rows the tick pushes without a session directory.
+  void SetInferenceDiagLogHandleForTesting(rtc::LogHandle<InferenceDiagLogPod> h) noexcept {
+    inference_diag_log_handle_ = h;
+  }
 
   /// Feed one TFMessage through the production callback. The subscription
   /// lambda calls exactly this, so a test needs no DDS round-trip to exercise
@@ -349,8 +372,20 @@ class DemoInferenceController final : public RTControllerInterface {
 
   /// Emit the hold command: the latched entry position, seeded from the last
   /// readable state. Latches on the first hold tick of a run and stays put
-  /// until a policy action is accepted again.
-  void HoldPosition(const ControllerState& state, ControllerOutput& out) noexcept;
+  /// until a policy action is accepted again. `reason` is recorded for the
+  /// diagnostics (every hold path passes through here, so none can go unnamed).
+  void HoldPosition(const ControllerState& state, ControllerOutput& out,
+                    InferenceHoldReason reason) noexcept;
+
+  /// The tick proper. `Compute()` wraps it so the logs are pushed at ONE place
+  /// after whichever of its many early returns was taken.
+  [[nodiscard]] ControllerOutput ComputeCommand(const ControllerState& state) noexcept;
+
+  /// Push this tick's rows (RT path: wait-free, drop-on-full, no allocation).
+  void PushLogs(const ControllerState& state, const ControllerOutput& out) noexcept;
+
+  /// Close every CSV channel and unbind every handle (non-RT).
+  void ResetLogState() noexcept;
 
   /// Apply position clamp + per-tick rate bound to one device's command, using
   /// the shared §7.3 joint command tail so the MUST ordering (clamp, then
@@ -438,6 +473,14 @@ class DemoInferenceController final : public RTControllerInterface {
   std::uint64_t tick_{0};
   std::uint64_t inference_count_{0};
   bool last_tick_held_{true};
+  /// Diagnostics of the current tick: why it held, and whether an action was
+  /// accepted on it. Reset at the top of Compute(), read by PushLogs().
+  InferenceHoldReason last_hold_reason_{InferenceHoldReason::kNone};
+  bool policy_step_this_tick_{false};
+  std::array<std::uint64_t, kNumInferenceHoldReasons> hold_counts_{};
+  /// Set by PackObservation / ComputeLinkPoses immediately before they refuse,
+  /// so the caller can name the hold without re-deriving why.
+  InferenceHoldReason pack_failure_{InferenceHoldReason::kFeature};
   bool last_scalar_clamped_{false};
   bool warned_scalar_range_{false};
 
@@ -529,6 +572,11 @@ class DemoInferenceController final : public RTControllerInterface {
   /// singular). The wrapper keeps serving its last good pose otherwise, which is
   /// right for a display and wrong for an observation.
   bool closed_fk_fresh_{false};
+  /// This tick's projection status, for the diagnostics only — the control
+  /// decision is `closed_fk_fresh_`. `closed_fk_ran_` is false on a tick that
+  /// never reached the projection, so a stale status is not logged as current.
+  rtc_urdf_bridge::RtClosedChainHandle::Status closed_fk_status_{};
+  bool closed_fk_ran_{false};
   std::array<std::array<double, 3>, kMaxLinks> link_pos_{};
   std::array<std::array<double, 4>, kMaxLinks> link_quat_{};
 
@@ -547,6 +595,12 @@ class DemoInferenceController final : public RTControllerInterface {
   rtc::inference::ReachHoldState reach_state_{};
   rtc::inference::ReachHoldState reach_state_pending_{};
   bool reach_pending_{false};
+  /// The gate value and mean tip distance the policy was shown, committed with
+  /// the trigger (diagnostics only). NaN until the first accepted step.
+  double reach_phase_pending_{InferenceDiagLogPod::kNaN};
+  double tip_distance_pending_{InferenceDiagLogPod::kNaN};
+  double last_reach_phase_{InferenceDiagLogPod::kNaN};
+  double last_tip_distance_{InferenceDiagLogPod::kNaN};
 
   // ── Object pose lane ──────────────────────────────────────────────────────
   // Not a device lane, so none of the framework's freshness gates cover it —
@@ -587,6 +641,23 @@ class DemoInferenceController final : public RTControllerInterface {
   bool object_valid_this_tick_{false};
   std::atomic<bool> object_frame_mismatch_{false};
   bool warned_object_frame_{false};
+
+  // ── Controller-owned CSV logs (`logs:` in the YAML) ───────────────────────
+  // Same schema and registration helper as the sibling demo controllers:
+  // `<session>/controllers/demo_inference_controller/<instance>.csv`.
+  struct ParsedLogEntry {
+    std::string msg_type;
+    std::string instance;
+  };
+
+  std::vector<ParsedLogEntry> parsed_log_entries_;
+  rtc::ControllerLogSet log_set_{"demo_inference_controller"};
+  rtc::LogHandle<DeviceStateLogPod> primary_state_log_handle_;
+  rtc::LogHandle<DeviceStateLogPod> secondary_state_log_handle_;
+  rtc::LogHandle<InferenceDiagLogPod> inference_diag_log_handle_;
+  rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
+  rclcpp::TimerBase::SharedPtr log_drain_timer_;
+  std::uint64_t log_drops_reported_{0};
 
   rclcpp::Logger logger_{rclcpp::get_logger("integrated_bringup.demo_inference_controller")};
 };

@@ -52,6 +52,7 @@
 #include "rtc_base/threading/rt_heap.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_inference/onnx/onnx_engine.hpp"
+#include "session_dir_test_fixture.hpp"
 #include "shipped_config_test_fixture.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
@@ -313,6 +314,9 @@ class RclcppEnv : public ::testing::Environment {
 };
 
 const auto* const kEnv = ::testing::AddGlobalTestEnvironment(new RclcppEnv);
+// The shipped config opens its CSV logs at configure — keep them out of the
+// workspace's real session tree.
+const auto* const kSession = ::testing::AddGlobalTestEnvironment(new fx::IsolatedSessionDir);
 
 /// The production bring-up order on the real model, the SHIPPED controller
 /// config untouched, and the real engine behind the recording seam.

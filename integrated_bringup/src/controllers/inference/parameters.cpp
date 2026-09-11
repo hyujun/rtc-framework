@@ -13,6 +13,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace integrated_bringup {
@@ -140,6 +141,32 @@ void DemoInferenceController::LoadConfig(const YAML::Node& cfg) {
   // `hand_posture`, `joint_convention`, `reach_gate` and the frame keys are NOT
   // read here: each is checked against the device rosters or the feature list,
   // and those only exist in Pass 3 (#511 D-9).
+
+  // ── `logs:` — the sibling controllers' schema, a closed set of types ──────
+  // An unknown type is refused rather than skipped: a log the operator asked
+  // for and silently did not get is found out only when the session directory
+  // is opened, after the run it was meant to record.
+  parsed_log_entries_.clear();
+  if (const YAML::Node logs = cfg["logs"]) {
+    if (!logs.IsSequence()) {
+      throw std::invalid_argument("demo_inference_controller: `logs` must be a sequence");
+    }
+    for (const auto& entry : logs) {
+      if (!entry.IsMap() || !entry["msg_type"]) {
+        throw std::invalid_argument(
+            "demo_inference_controller: each `logs` entry needs `msg_type`");
+      }
+      ParsedLogEntry e;
+      e.msg_type = entry["msg_type"].as<std::string>();
+      e.instance = entry["instance"].as<std::string>("");
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != kInferenceDiagLogMsgType) {
+        throw std::invalid_argument(
+            "demo_inference_controller: unknown msg_type in `logs`: " + e.msg_type +
+            " (accepted: rtc_msgs/DeviceStateLog, " + std::string(kInferenceDiagLogMsgType) + ")");
+      }
+      parsed_log_entries_.push_back(std::move(e));
+    }
+  }
 }
 
 bool DemoInferenceController::ExpandModelPath(const std::string& raw, std::string& out,

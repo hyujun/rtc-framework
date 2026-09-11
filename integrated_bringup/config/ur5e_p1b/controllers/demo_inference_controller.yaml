@@ -21,6 +21,20 @@ demo_inference_controller:
   # 직후에는 측정 q 에서 다시 시작한다. δ=0 은 device 한계를 그대로 쓴다는 뜻이다.
   joint_limit_margin: 0.0
 
+  # ── 컨트롤러 소유 CSV 로그 ───────────────────────────────────────────────────
+  # <session>/controllers/demo_inference_controller/<instance>.csv, 활성 중 매 tick 1행.
+  # state 로그의 joint_goal 열 = 정책 목표 (commands 는 그것을 rate-bound 한 값).
+  # inference_diag = hold 사유 · policy step · reach gate · 물체 · 폐쇄체인 상태 · 팔 lag ·
+  # 손끝 힘 (integrated_bringup/logging/inference_diag_log_pod.hpp). hold 는 모두 같은
+  # 래치 자세를 명령하므로, 사유 열이 없으면 "정책이 멈춰 있기로 했다" 와 구별되지 않는다.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: ur5e_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p1b_state
+    - msg_type: integrated_bringup/InferenceDiagLog
+      instance: inference_diag
+
   # ── 컨트롤러 소유 토픽 ──────────────────────────────────────────────────────
   # 정책이 명령을 소유하므로 외부 joint_goal 은 무시된다 (첫 수신 시 1회 경고).
   # 그래도 선언하는 이유는 이것이 **device 그룹 순서**를 세우는 유일한 수단이기
@@ -51,8 +65,8 @@ demo_inference_controller:
     # test_demo_inference_real_model 이 잰다 (로컬 전용 — 위 변수가 있어야 돌고, 없으면
     # skip = 미검증). 예산은 decimation 과 무관하게 **tick 1개** (500 Hz → 2 ms) 다:
     # Run() 은 정책 step 을 맡은 tick 의 Compute() 안에서 동기 실행된다. 그리고 ORT 의
-    # Run() 은 IoBinding 여부와 무관하게 **매 호출 heap 을 할당**한다 — RT-1 과의 관계는
-    # 미결이다.
+    # Run() 은 IoBinding 여부와 무관하게 **매 호출 heap 을 할당**한다 — RT-1 의 알려진
+    # 위반으로 조건부 수용됐고, 그 조건은 agent_docs/invariants.md RT 절에 있다.
     model_path: "${RTC_POLICY_DIR}/ObjectHandGraspDeployMulti5-Export-v0.onnx"
     allow_missing_model: true
     optimized_model_path: "" # ORT graph-optimized 캐시 경로 (빈 값 = 비활성)

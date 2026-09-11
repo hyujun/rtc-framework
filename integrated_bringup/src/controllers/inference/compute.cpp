@@ -3,16 +3,19 @@
 // RT path. No allocation, no throw, no logging except one-shot lines with plain
 // scalars. Every buffer is a fixed-size member sized at configure.
 //
-// Tick shape:
+// Tick shape (`ComputeCommand`):
 //   1. hold-or-run decision (validity gates, then decimation)
 //   2. seed/reset recurrent state → pack observation → engine->Run() → unpack
 //   3. bound both devices against the previous command, emit
+// `Compute` wraps it and pushes the tick's CSV rows once, after whichever
+// early return was taken.
 //
 // The order matters: validity is judged BEFORE the decimation counter is
 // consulted, so a tick that would have skipped inference anyway still refuses
 // to replay a stale action over an unreadable robot.
 
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
+#include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
 #include "rtc_controllers/compliance/joint_command_tail.hpp"
 #include "rtc_controllers/inference/policy_io.hpp"
@@ -67,6 +70,7 @@ bool DemoInferenceController::ComputeLinkPoses() noexcept {
   // un-updated cache all answer Identity, which is indistinguishable from a
   // real pose — so `reorder_valid()` is part of this guard, not the finite
   // check below.
+  pack_failure_ = InferenceHoldReason::kLinkPose;
   if (policy_frame_idx_ < 0 || !combined_cache_.reorder_valid()) {
     return false;
   }
@@ -76,6 +80,7 @@ bool DemoInferenceController::ComputeLinkPoses() noexcept {
     // unconverged tick. That is the right answer for a TF display and the wrong
     // one for an observation: the policy would see the fingers where they were.
     if (!closed_fk_fresh_ || hand_root_idx_ < 0) {
+      pack_failure_ = InferenceHoldReason::kClosedChain;
       return false;
     }
     pf_hand_root = combined_cache_.ArmTcpPoseFromCache(hand_root_idx_, policy_frame_idx_);
@@ -87,6 +92,7 @@ bool DemoInferenceController::ComputeLinkPoses() noexcept {
       pinocchio::SE3 root_tip = pinocchio::SE3::Identity();
       if (!closed_fk_.GetFingertipHandRootPose(static_cast<std::size_t>(slot.closed_tip),
                                                root_tip)) {
+        pack_failure_ = InferenceHoldReason::kClosedChain;
         return false;
       }
       pose = pf_hand_root * root_tip;
@@ -151,6 +157,8 @@ bool DemoInferenceController::ComputeReachPhase(const ControllerState& state,
     return false;
   }
   reach_state_pending_ = next;
+  reach_phase_pending_ = gate;
+  tip_distance_pending_ = distance;
   reach_pending_ = true;
   phase = gate;
   return true;
@@ -273,6 +281,7 @@ bool DemoInferenceController::ExtractFeature(PolicyFeature kind, int arg,
 
 bool DemoInferenceController::PackObservation(const ControllerState& state,
                                               std::span<const std::span<float>> bufs) noexcept {
+  pack_failure_ = InferenceHoldReason::kUnreadable;
   if (state.num_devices < 2) {
     return false;
   }
@@ -312,13 +321,26 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
     // tensor 0, because folding would write the right values into the wrong
     // model input and leave the right one holding the previous tick.
     const auto& seg = flat_segments_[f];
+    pack_failure_ = InferenceHoldReason::kFeature;
     if (seg.tensor < 0 || static_cast<std::size_t>(seg.tensor) >= bufs.size() || seg.count <= 0 ||
         static_cast<std::size_t>(seg.count) > scratch_measured_.size()) {
       return false;
     }
     const std::span<double> values(scratch_measured_.data(), static_cast<std::size_t>(seg.count));
-    if (!ExtractFeature(feature_kinds_[f], feature_args_[f], state, values) ||
-        !rtc::inference::PackSegment(bufs[static_cast<std::size_t>(seg.tensor)], seg, values)) {
+    const PolicyFeature kind = feature_kinds_[f];
+    if (!ExtractFeature(kind, feature_args_[f], state, values)) {
+      // The object lane is the one input with its own freshness rule, and the
+      // reach gate depends on it, so a stale object is named as such rather
+      // than folded into "some feature".
+      const bool object_fed = kind == PolicyFeature::kObjectPosition ||
+                              kind == PolicyFeature::kObjectOrientationXyzw ||
+                              kind == PolicyFeature::kReachPhase;
+      if (object_fed && !object_valid_this_tick_) {
+        pack_failure_ = InferenceHoldReason::kObject;
+      }
+      return false;
+    }
+    if (!rtc::inference::PackSegment(bufs[static_cast<std::size_t>(seg.tensor)], seg, values)) {
       return false;
     }
   }
@@ -332,12 +354,18 @@ bool DemoInferenceController::PackObservation(const ControllerState& state,
   return true;
 }
 
-void DemoInferenceController::HoldPosition(const ControllerState& state,
-                                           ControllerOutput& out) noexcept {
+void DemoInferenceController::HoldPosition(const ControllerState& state, ControllerOutput& out,
+                                           InferenceHoldReason reason) noexcept {
   // Every hold path in Compute() funnels through here, which is why the hold
   // clock lives here rather than being re-armed at each early return. Arming a
   // flag instead of resetting on the spot keeps the hold path from touching
-  // the engine at all (#511 D-3).
+  // the engine at all (#511 D-3). The same funnel is what lets every hold carry
+  // a reason: there is no early return that could skip naming one.
+  last_hold_reason_ = reason;
+  const auto r = static_cast<std::size_t>(reason);
+  if (r < hold_counts_.size()) {
+    ++hold_counts_[r];
+  }
   hold_elapsed_sec_ += state.dt;
   if (reset_after_hold_sec_ >= 0.0 && hold_elapsed_sec_ >= reset_after_hold_sec_) {
     recurrent_reset_pending_ = true;
@@ -382,6 +410,7 @@ void DemoInferenceController::HoldPosition(const ControllerState& state,
       const double q = (src != nullptr && c < latched) ? src[static_cast<std::size_t>(c)]
                                                        : dev.positions[static_cast<std::size_t>(c)];
       dst.commands[static_cast<std::size_t>(c)] = q;
+      dst.goal_positions[static_cast<std::size_t>(c)] = q;
       dst.target_positions[static_cast<std::size_t>(c)] = q;
       dst.target_velocities[static_cast<std::size_t>(c)] = 0.0;
     }
@@ -422,7 +451,7 @@ void DemoInferenceController::BoundDeviceCommand(int device_idx, std::span<const
   }
 }
 
-ControllerOutput DemoInferenceController::Compute(const ControllerState& state) noexcept {
+ControllerOutput DemoInferenceController::ComputeCommand(const ControllerState& state) noexcept {
   ControllerOutput out;
   out.command_type = command_type_;
   out.valid = true;
@@ -477,7 +506,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       !hold_mode_ && engine_ && arm_dof_ > 0 && hand_dof_ > 0 && state.num_devices >= 2;
 
   if (!structurally_ready) {
-    HoldPosition(state, out);
+    HoldPosition(state, out, InferenceHoldReason::kNotReady);
     last_tick_held_ = true;
     return out;
   }
@@ -512,6 +541,8 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       const auto st = closed_fk_.status();
       closed_fk_fresh_ = !st.held && !st.singular && std::isfinite(st.closure_error) &&
                          st.closure_error < kClosureErrorThreshold;
+      closed_fk_status_ = st;
+      closed_fk_ran_ = true;
     }
   }
   if (!devices_readable) {
@@ -519,7 +550,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     // robot whose state we cannot read would keep driving toward a target
     // derived from a configuration that may no longer be true.
     have_action_ = false;
-    HoldPosition(state, out);
+    HoldPosition(state, out, InferenceHoldReason::kUnreadable);
     last_tick_held_ = true;
     return out;
   }
@@ -556,7 +587,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     }
     if (!tensors_ok) {
       have_action_ = false;
-      HoldPosition(state, out);
+      HoldPosition(state, out, InferenceHoldReason::kTensorMismatch);
       last_tick_held_ = true;
       return out;
     }
@@ -585,7 +616,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
             !ExtractFeature(seed.kind, seed.arg, state,
                             std::span<double>(scratch_measured_.data(), w))) {
           have_action_ = false;
-          HoldPosition(state, out);
+          HoldPosition(state, out, InferenceHoldReason::kSeed);
           last_tick_held_ = true;
           return out;
         }
@@ -598,7 +629,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
 
     if (!PackObservation(state, std::span<const std::span<float>>(in_bufs.data(), n_tensors))) {
       have_action_ = false;
-      HoldPosition(state, out);
+      HoldPosition(state, out, pack_failure_);
       last_tick_held_ = true;
       return out;
     }
@@ -610,7 +641,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
       // from a stale one. Dropping the held action here is what stops that
       // stale buffer from being replayed for the next `decimation` ticks.
       have_action_ = false;
-      HoldPosition(state, out);
+      HoldPosition(state, out, InferenceHoldReason::kRunFailed);
       last_tick_held_ = true;
       return out;
     }
@@ -696,7 +727,7 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
 
     if (!ok) {
       have_action_ = false;
-      HoldPosition(state, out);
+      HoldPosition(state, out, InferenceHoldReason::kOutput);
       last_tick_held_ = true;
       return out;
     }
@@ -731,11 +762,14 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
     }
     if (reach_pending_) {
       reach_state_ = reach_state_pending_;
+      last_reach_phase_ = reach_phase_pending_;
+      last_tip_distance_ = tip_distance_pending_;
       reach_pending_ = false;
     }
     recurrent_reset_pending_ = false;
 
     have_action_ = true;
+    policy_step_this_tick_ = true;
     hold_elapsed_sec_ = 0.0;
     hold_latched_ = false;  // a fresh action supersedes the latch
   }
@@ -771,23 +805,100 @@ ControllerOutput DemoInferenceController::Compute(const ControllerState& state) 
   last_cmd_hand_ = hand_cmd;
   cmd_base_valid_ = true;
 
+  // `goal_positions` carries the policy's own target — the value the command
+  // is rate-bounded toward — so the state log and GUI show both where the
+  // policy wants the joint and where this tick is sending it.
   auto& arm_out = out.devices[0];
   arm_out.num_channels = arm_dof_;
   for (int i = 0; i < arm_dof_; ++i) {
-    arm_out.commands[static_cast<std::size_t>(i)] = arm_cmd[static_cast<std::size_t>(i)];
-    arm_out.target_positions[static_cast<std::size_t>(i)] =
-        arm_action_[static_cast<std::size_t>(i)];
+    const auto k = static_cast<std::size_t>(i);
+    arm_out.commands[k] = arm_cmd[k];
+    arm_out.goal_positions[k] = arm_action_[k];
+    arm_out.target_positions[k] = arm_action_[k];
   }
   auto& hand_out = out.devices[1];
   hand_out.num_channels = hand_dof_;
   for (int i = 0; i < hand_dof_; ++i) {
-    hand_out.commands[static_cast<std::size_t>(i)] = hand_cmd[static_cast<std::size_t>(i)];
-    hand_out.target_positions[static_cast<std::size_t>(i)] =
-        hand_action_[static_cast<std::size_t>(i)];
+    const auto k = static_cast<std::size_t>(i);
+    hand_out.commands[k] = hand_cmd[k];
+    hand_out.goal_positions[k] = hand_action_[k];
+    hand_out.target_positions[k] = hand_action_[k];
   }
 
   last_tick_held_ = false;
   return out;
+}
+
+ControllerOutput DemoInferenceController::Compute(const ControllerState& state) noexcept {
+  last_hold_reason_ = InferenceHoldReason::kNone;
+  policy_step_this_tick_ = false;
+  closed_fk_ran_ = false;
+  ControllerOutput out = ComputeCommand(state);
+  PushLogs(state, out);
+  return out;
+}
+
+void DemoInferenceController::PushLogs(const ControllerState& state,
+                                       const ControllerOutput& out) noexcept {
+  if (primary_state_log_handle_) {
+    DeviceStateLogPod pod{};
+    FillDeviceStateLogPod(state, out, 0, pod);
+    primary_state_log_handle_.Push(pod);
+  }
+  if (secondary_state_log_handle_) {
+    DeviceStateLogPod pod{};
+    FillDeviceStateLogPod(state, out, 1, pod);
+    secondary_state_log_handle_.Push(pod);
+  }
+  if (!inference_diag_log_handle_) {
+    return;
+  }
+
+  InferenceDiagLogPod pod{};
+  pod.t_relative_s = state.t_relative_s;
+  pod.iteration = state.iteration;
+  pod.held = last_tick_held_;
+  pod.hold_reason = static_cast<std::uint8_t>(last_hold_reason_);
+  pod.policy_step = policy_step_this_tick_;
+  pod.inference_count = inference_count_;
+
+  pod.reach_phase = last_reach_phase_;
+  pod.tip_distance = last_tip_distance_;
+  pod.reach_hold = reach_state_.hold;
+
+  pod.object_valid = object_valid_this_tick_;
+  if (object_ever_seen_) {
+    pod.object_age_s = object_age_sec_;
+    if (object_this_tick_.valid) {
+      pod.object_position = object_this_tick_.position;
+    }
+  }
+
+  if (closed_fk_ran_) {
+    pod.closed_held = closed_fk_status_.held;
+    pod.closed_held_ticks = closed_fk_status_.held_ticks;
+    pod.closed_singular = closed_fk_status_.singular;
+    pod.closure_error = closed_fk_status_.closure_error;
+  }
+
+  if (!last_tick_held_ && state.num_devices >= 1) {
+    double lag = 0.0;
+    for (int i = 0; i < arm_dof_; ++i) {
+      const auto k = static_cast<std::size_t>(i);
+      lag = std::max(lag, std::abs(arm_action_[k] - state.devices[0].positions[k]));
+    }
+    pod.arm_lag_max = lag;
+  }
+
+  if (state.num_devices >= 2) {
+    const auto n =
+        std::min(static_cast<std::size_t>(std::max(reach_tips_, 0)), InferenceDiagLogPod::kMaxTips);
+    pod.num_tips = static_cast<std::uint8_t>(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      pod.tip_force[i] = GroupForceNorm(state.devices[1], reach_force_group_[i]);
+    }
+  }
+  inference_diag_log_handle_.Push(pod);
 }
 
 }  // namespace integrated_bringup

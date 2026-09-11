@@ -33,7 +33,9 @@
 // be green because the gate was inert.
 
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
+#include "rtc_base/logging/thread_csv_producer.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
+#include "session_dir_test_fixture.hpp"
 #include "shipped_config_test_fixture.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
@@ -291,6 +293,12 @@ ControllerState MakeState() {
   return state;
 }
 
+// The shipped config opens its CSV logs at configure. This keeps them out of the
+// workspace's real session tree — and is what lets registration succeed, which
+// puts the bound log push inside the shipped gates below.
+const auto* const kSession =
+    ::testing::AddGlobalTestEnvironment(new integrated_bringup::testfx::IsolatedSessionDir);
+
 class InferenceAllocGate : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -444,6 +452,33 @@ TEST_F(InferenceAllocGate, TheRecurrentFeedbackPathDoesNotAllocate) {
     allocations = gate.count();
   }
   EXPECT_EQ(allocations, 0U) << "the recurrent RT tick allocated";
+}
+
+TEST_F(InferenceAllocGate, TheDiagLogPushDoesNotAllocate) {
+  // Bound to a real producer: an unbound handle returns at PushLogs' first
+  // check, and a gate around that would pass without seeing the push at all.
+  using integrated_bringup::InferenceDiagLogPod;
+  rtc::ThreadCsvProducer<InferenceDiagLogPod, 512> producer;
+  ctrl_->SetInferenceDiagLogHandleForTesting(rtc::LogHandle<InferenceDiagLogPod>(&producer));
+  auto state = MakeState();
+  for (int t = 0; t < 25; ++t) {
+    static_cast<void>(ctrl_->Compute(state));
+  }
+  ASSERT_FALSE(ctrl_->LastTickHeldForTesting());
+  static_cast<void>(producer.Drain([](const InferenceDiagLogPod&) {}));
+
+  std::size_t allocations = 0;
+  {
+    const rtc::testing::ScopedAllocGate gate;
+    for (int t = 0; t < 100; ++t) {
+      static_cast<void>(ctrl_->Compute(state));
+    }
+    allocations = gate.count();
+  }
+  const std::size_t rows = producer.Drain([](const InferenceDiagLogPod&) {});
+  EXPECT_EQ(allocations, 0U) << "the diag log push allocated";
+  EXPECT_EQ(rows, 100U) << "every gated tick must have pushed its row, or the gate did not see "
+                           "the push path";
 }
 
 // ── The shipped policy path on the real ur5e_p1b model ─────────────────────
