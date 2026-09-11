@@ -18,6 +18,9 @@
 #   auto_release_cpu_shield   — 빌드 전 CPU shield 자동 해제
 #   check_workspace_structure — ROS2 워크스페이스 구조 검증
 #   ensure_ros2_sourced       — ROS2 환경 자동 탐색 및 소싱
+#   get_system_python         — venv base · CMake 가 쓰는 배포판 python (RTC_SYSTEM_PYTHON 로 덮어씀)
+#   venv_uses_system_python   — venv base 가 get_system_python (+system-site-packages) 인지
+#   append_cmake_python_args  — build.sh: CMake Python 고정 + ament 모듈 사전 확인
 #   create_oneshot_service    — systemd oneshot 서비스 생성 헬퍼
 #   lttng_kernel_build_version      — 커널 헤더 Makefile 에서 V.P.S (uname 아님)
 #   lttng_modules_min_version_for_kernel — 그 커널이 요구하는 lttng-modules 최소 버전
@@ -538,17 +541,53 @@ is_venv_active() {
   [[ -n "${VIRTUAL_ENV:-}" ]]
 }
 
-# venv 내에서도 시스템 Python 경로를 반환
-# eigenpy/pinocchio cmake가 apt-installed numpy를 찾을 수 있도록 함
+# ROS 2 apt 패키지가 기대하는 배포판 python — workspace .venv 의 base 이자 CMake 가
+# 쓰는 인터프리터의 단일 출처. apt 가 까는 python 모듈 (catkin_pkg · python3-yaml …)
+# 은 /usr/lib/python3/dist-packages 에 있고, 이 경로를 sys.path 에 넣는 것은 Debian
+# 이 패치한 인터프리터다 (uv-managed python 은 --system-site-packages 여도 자기
+# prefix 의 site-packages 만 본다 — uv 0.11.16 · cpython 3.12.13 실측).
+#
+# 기본값은 /usr/bin/python3 의 해석 경로 (24.04 → python3.12, 22.04 → python3.10).
+# venv 링크도 PATH 도 따라가지 않는다 — 따라가면 venv 의 base 나 PATH 앞의 python3.X
+# (uv python install 이 ~/.local/bin 에 까는 것, 다른 control project 의 python) 가
+# 나온다. RTC_SYSTEM_PYTHON 으로 덮어쓸 수 있다.
 get_system_python() {
-  local py
-  py=$(command -v python3 2>/dev/null || echo "/usr/bin/python3")
-  py=$(readlink -f "$py" 2>/dev/null || echo "$py")
-  # venv 내부 Python이면 시스템 Python으로 대체
-  if is_venv_active && [[ "$py" == "${VIRTUAL_ENV}"* ]]; then
-    py="/usr/bin/python3"
+  if [[ -n "${RTC_SYSTEM_PYTHON:-}" ]]; then
+    echo "${RTC_SYSTEM_PYTHON}"
+  else
+    readlink -f /usr/bin/python3
   fi
-  echo "$py"
+}
+
+# venv 가 get_system_python 을 base 로, system-site-packages 를 켠 채 만들어졌는지.
+# 버전이 맞아도 base 가 uv-managed 면 ROS 의 apt python 모듈을 못 본다. -x 는 링크를
+# 따라가므로 base 가 사라진 venv (release upgrade 뒤) 도 무효가 된다 — readlink -f 는
+# 없는 경로도 그대로 출력해 문자열 비교만으로는 같아 보인다.
+venv_uses_system_python() {
+  local venv_dir="$1" sys_py
+  sys_py=$(get_system_python)
+  [[ -x "${venv_dir}/bin/python" && -x "${sys_py}" ]] || return 1
+  grep -qxE 'include-system-site-packages *= *true' "${venv_dir}/pyvenv.cfg" 2>/dev/null || return 1
+  [[ "$(readlink -f "${venv_dir}/bin/python")" == "$(readlink -f "${sys_py}")" ]]
+}
+
+# build.sh 의 CMake Python 인자를 CMAKE_ARGS 에 붙인다. venv 유무와 무관하게
+# get_system_python 으로 고정한다 — 고정하지 않으면 FindPython 이 **PATH 디렉토리
+# 순서**로 찾아 (ament 의 unversioned-first 는 한 디렉토리 안의 이름 순서일 뿐이다)
+# PATH 앞의 python3.X 를 잡고 catkin_pkg 를 못 본다. ament_cmake 는 모든 package.xml
+# 을 이 인터프리터로 파싱하므로 (package_xml_2_cmake.py) 여기서 먼저 확인한다.
+# 성공 0, 인터프리터가 catkin_pkg · ament_package 를 못 보면 1 (CMAKE_ARGS 불변).
+# CMAKE_PYTHON 에 고른 경로를 남긴다. 활성 venv 의 base 가 틀리면 경고만 한다 —
+# 빌드는 영향이 없지만 그 venv 안에서 ROS python 모듈이 import 되지 않는다.
+append_cmake_python_args() {
+  CMAKE_PYTHON=$(get_system_python)
+  "${CMAKE_PYTHON}" -c 'import catkin_pkg, ament_package' >/dev/null 2>&1 || return 1
+  if is_venv_active && ! venv_uses_system_python "${VIRTUAL_ENV}"; then
+    warn "Active venv ${VIRTUAL_ENV} is not based on ${CMAKE_PYTHON} with system-site-packages —"
+    warn "  ROS Python modules (rclpy, yaml, catkin_pkg) will not import inside it."
+    warn "  Workspace .venv: re-run ./install.sh (recreates it). Other venvs: uv venv --python ${CMAKE_PYTHON} --system-site-packages <dir>"
+  fi
+  CMAKE_ARGS+=("-DPython3_EXECUTABLE=${CMAKE_PYTHON}" "-DPython3_FIND_VIRTUALENV=STANDARD")
 }
 
 # ── 공통 argument parsing (build.sh / install.sh 공유) ─────────────────────

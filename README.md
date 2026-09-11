@@ -202,7 +202,7 @@ cd ~/ros2_ws/rtc_ws && colcon build --symlink-install
 source install/setup.bash
 ```
 
-> `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 venv 활성 상태면 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` (권장) 또는 `deactivate` 가 필요합니다 (eigenpy/pinocchio configure 보호). 이 완화는 **configure 단계에만** 해당합니다 — `colcon test` / `ros2 run` 실패를 deactivate 로 우회하는 것은 금지입니다 (CLAUDE.md §9.2). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지).
+> `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 를 venv 유무와 무관하게 권장합니다 — venv 가 활성이면 CMake 가 venv python 을 잡고 (eigenpy/pinocchio configure), venv 가 없어도 PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 를 잡아 `No module named 'catkin_pkg'` 로 죽습니다. `deactivate` 는 앞의 경우만 막습니다. 이 완화는 **configure 단계에만** 해당합니다 — `colcon test` / `ros2 run` 실패를 deactivate 로 우회하는 것은 금지입니다 (CLAUDE.md §9.2). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지).
 
 ### Python 의존성 sync (dev PC ↔ runtime PC 재현성)
 
@@ -216,12 +216,14 @@ source install/setup.bash
 uv pip compile requirements.in --generate-hashes -o requirements.lock
 
 # 새 머신에서 sync (install.sh 가 자동 수행, 수동:)
-uv venv --python 3.12 --system-site-packages .venv   # 3.12 명시 — runtime PC 의 system python3.9/3.10 fallback 방지
+uv venv --python /usr/bin/python3.12 --system-site-packages .venv   # 버전이 아니라 경로로 고정 (아래 참고)
 source .venv/bin/activate
 uv pip sync requirements.lock        # lock 과 정확히 일치 (extra 제거)
 ```
 
 `uv pip sync` 는 `pip install -r` 과 달리 lock 에 없는 패키지를 venv 에서 제거하므로 dev PC ↔ runtime PC 간 의존성 drift 가 발생하지 않습니다 (system-site-packages 는 건드리지 않음). hash 검증으로 wheel 변조도 차단합니다.
+
+venv base 는 **배포판 python 경로로 고정**합니다 (24.04 에서 `/usr/bin/python3.12`). `--python 3.12` 는 runtime PC 의 python3.9/3.10 은 피하지만, uv 기본값(`python-preference=managed`)이 **이미 설치된 uv-managed 3.12 를 apt 의 3.12 보다 우선**합니다. 그렇게 만든 venv 는 `--system-site-packages` 여도 `/usr/lib/python3/dist-packages` (apt 의 `catkin_pkg` · `python3-yaml` 등) 를 못 봐서, `rtc_base` configure 가 `No module named 'catkin_pkg'` 로 죽고 venv 안에서 `rclpy` 도 import 되지 않습니다. `install.sh` 는 base 가 틀린 기존 `.venv` 를 재생성하고, `build.sh` 는 **venv 유무와 무관하게** CMake 에 같은 인터프리터를 넘깁니다 — CMake 의 FindPython 은 PATH 디렉토리 순서로 찾으므로 venv 가 없어도 PATH 앞의 `python3.X` 를 잡습니다. 값은 `rt_common.sh` 의 `get_system_python` (기본 `readlink -f /usr/bin/python3`, `RTC_SYSTEM_PYTHON` 으로 덮어씀) 이 정합니다.
 
 ### 실행
 

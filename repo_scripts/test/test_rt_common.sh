@@ -1589,7 +1589,9 @@ test_verifier_follows_the_shield_marker_profile() {
 # /sys/.../isolated 도 비어 있어서, 안 가리면 네 케이스 중 "none" 하나만 관측된다.
 _isolation_category() {
   # $1 = shield_isolation_method 가 낼 문자열, $2 = EXPECTED_ISOLATED
-  local method_out="$1" expected="$2"
+  # `expected` 가 아닌 이유: 다른 테스트가 같은 이름을 declare -A 로 쓰는데, 함수
+  # 스코프를 구분 못 하는 정적 분석이 이 local 을 배열로 오인해 SC2178/SC2128 을 낸다.
+  local method_out="$1" expected_isolated="$2"
   local checker="${SCRIPT_DIR}/../scripts/check_rt_setup.sh"
   (
     set +eu
@@ -1599,7 +1601,7 @@ _isolation_category() {
     # shellcheck disable=SC1090
     source "$checker" >/dev/null 2>&1
     shield_isolation_method() { echo "$method_out"; }
-    EXPECTED_ISOLATED="$expected"
+    EXPECTED_ISOLATED="$expected_isolated"
     OUTPUT_MODE="verbose"
     # 출력을 $(...) 로 받으면 안 된다 — 명령 치환은 서브셸이라 CATEGORY_* 갱신이
     # 호출자에게 안 돌아오고, 카테고리 단언이 전부 빈 문자열 비교로 공허해진다.
