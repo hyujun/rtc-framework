@@ -56,9 +56,10 @@
 #        - any deleted launch/*.py or config/**/*.yaml whose basename still
 #          resolves under install/ — warns about stray artefacts that
 #          colcon --symlink-install does not prune.
-#   4. shellcheck on changed *.sh (repo_scripts/**, build.sh, install.sh)
+#   4. shellcheck on changed *.sh (any path), whole file
 #        - runs at --severity=warning (notes do not block); repo-root
 #          .shellcheckrc supplies external-sources + SC2034 suppression.
+#        - NOT narrowed to added lines like the doc phase: see Phase 4.
 #
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
@@ -1150,12 +1151,24 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
 fi
 
 # --- Phase 4: shellcheck on changed shell scripts ---
-# Lint gate for repo_scripts/**/*.sh + build.sh / install.sh. Runs at
-# --severity=warning so info-level notes (SC1091 source-following, intentional
-# SC2086 word-splitting in RT cpu-list code) do not block. The repo-root
-# .shellcheckrc (external-sources=true, disable=SC2034) is auto-loaded from
-# PROJECT_DIR cwd. Fail-open when shellcheck is absent — missing tooling must
-# not hard-block a turn (mirrors the clang-format fail-open above).
+# Lint gate for every changed *.sh. Runs at --severity=warning so info-level
+# notes (SC1091 source-following, intentional SC2086 word-splitting in RT
+# cpu-list code) do not block. The repo-root .shellcheckrc (external-sources=true,
+# disable=SC2034) is found by walking up from each script. Fails open when the
+# linter is absent — missing tooling must not hard-block a turn (mirrors the
+# clang-format fail-open above). No comment line here may begin with the word
+# "shellcheck": the linter parses it as a directive and aborts the whole file.
+#
+# Whole file, unlike the doc phase's added-lines narrowing: shellcheck reports a
+# finding where the symptom is, not where the cause is (a `declare -A expected`
+# in one test surfaced as SC2178 on an untouched helper; deleting an assignment
+# surfaces as SC2154 at the unchanged use). Narrowing to added lines would trade
+# a false block for a missed one. The scope is fair only while no file carries a
+# warning into a turn, and docs-validate.yml keeps that true by linting the whole
+# tracked *.sh corpus with this same severity. So a finding here was either
+# caused by the diff (maybe on a line it did not touch) or slipped past that
+# gate; either way fix it (rename, or a `disable=` directive with a reason) --
+# do not narrow this.
 SHELLCHECK_FAILURES=""
 if [ -n "$CHANGED_SH" ]; then
   if command -v shellcheck >/dev/null 2>&1; then

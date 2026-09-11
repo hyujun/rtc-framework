@@ -1,4 +1,7 @@
-# shellcheck configuration — rtc-framework shell scripts (repo_scripts/, build.sh, install.sh)
+# shellcheck configuration — every tracked *.sh in rtc-framework
+#
+# Read by both gates at --severity=warning: the Stop hook (changed scripts, whole
+# file) and docs-validate.yml (the whole corpus, which keeps it at zero).
 #
 # external-sources: resolve `source lib/*.sh` so cross-file definitions
 # (loggers, get_base_packages, parse_common_args) are seen, not flagged SC1091.
