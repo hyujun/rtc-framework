@@ -91,6 +91,15 @@ const std::map<std::string, std::array<double, 3>> kTipPos = {
     {"l_index_tip_link", {0.6156, -0.0073, 0.0890}},
     {"l_middle_tip_link", {0.5895, -0.0266, 0.0824}},
     {"l_ring_tip_link", {0.5618, -0.0308, 0.1002}}};
+/// The fingertip BRACKETS at the same posture, measured the same way. The reach
+/// gate reads these, not the tip links 17.5 mm behind them: the recorded contact
+/// points sit on the face that touches, and that face is the bracket's
+/// neighbourhood (11.0 mm) rather than the tip link's (25.6 mm).
+const std::map<std::string, std::array<double, 3>> kBracketPos = {
+    {"l_thumb_tip_bracket", {0.5884, 0.0804, 0.0807}},
+    {"l_index_tip_bracket", {0.6098, -0.0020, 0.0734}},
+    {"l_middle_tip_bracket", {0.5842, -0.0209, 0.0667}},
+    {"l_ring_tip_bracket", {0.5566, -0.0251, 0.0851}}};
 constexpr double kPalmTol = 1e-3;
 constexpr double kTipTol = 2e-3;
 
@@ -333,8 +342,10 @@ TEST_F(ShippedInference, CarriesTheTrainingAssetsJointSigns) {
 TEST_F(ShippedInference, CarriesTheReachGateTheModelWasTrainedWith) {
   const auto gate = cfg_["inference"]["reach_gate"];
   ASSERT_TRUE(gate);
-  const std::vector<std::string> links = {"l_thumb_tip_link", "l_index_tip_link",
-                                          "l_middle_tip_link", "l_ring_tip_link"};
+  // The BRACKETS, not the tip links: the gate measures to the recorded contact
+  // points, which sit on the face that touches (see the YAML's own note).
+  const std::vector<std::string> links = {"l_thumb_tip_bracket", "l_index_tip_bracket",
+                                          "l_middle_tip_bracket", "l_ring_tip_bracket"};
   const std::vector<std::string> groups = {"thumb", "index", "middle", "ring"};
   ASSERT_EQ(gate["tips"].size(), links.size());
   for (std::size_t i = 0; i < links.size(); ++i) {
@@ -589,46 +600,68 @@ TEST_F(ShippedInference, TheArmIntegratorStartsAtTheMeasuredArm) {
 
 // ── Reach gate: wiring against the model (the formula is unit-tested) ──────
 
-TEST_F(ShippedInference, ReachPhaseIsTheProximityOfTheTipsToTheObjectsContactPoints) {
+TEST_F(ShippedInference, ReachPhaseMeasuresFromTheFingertipBracketsNotTheTipLinks) {
   const auto state = MakePregraspState();
-  // First step: object far away, to learn where the tips are.
+  // First step: object far away, to learn where the observed tip links are.
   InjectObjectInWorld({2.0, 2.0, 2.0}, Eigen::Quaterniond::Identity());
   ASSERT_TRUE(RunUntilAccepted(state));
-  const auto& io = ctrl_->IoParamsForTesting();
-  const auto& names = io.inputs[In("robot_body_pos_w")].element_names;
-  const std::vector<std::string> tips = {"l_thumb_tip_link", "l_index_tip_link",
-                                         "l_middle_tip_link", "l_ring_tip_link"};
-  std::array<Eigen::Vector3d, 4> tip{};
-  for (std::size_t i = 0; i < tips.size(); ++i) {
-    const auto r = 3 * IndexOfName(names, tips[i]);
-    const auto& pos = Tensor("robot_body_pos_w");
-    tip[i] = Eigen::Vector3d(pos[r], pos[r + 1], pos[r + 2]);
-  }
   EXPECT_LT(Tensor("reach_phase")[0], 1e-6F) << "two metres away is no proximity";
 
-  // Now place the object where the tips are closest to their contact points
-  // (the pole upside down, as trained — in the policy frame that is Rx(pi)):
-  // the least-squares object origin for a fixed orientation is the mean of
-  // tip_i − R·c_i.
+  const auto& io = ctrl_->IoParamsForTesting();
+  const auto& names = io.inputs[In("robot_body_pos_w")].element_names;
+  const std::vector<std::string> tip_links = {"l_thumb_tip_link", "l_index_tip_link",
+                                              "l_middle_tip_link", "l_ring_tip_link"};
+  const std::vector<std::string> brackets = {"l_thumb_tip_bracket", "l_index_tip_bracket",
+                                             "l_middle_tip_bracket", "l_ring_tip_bracket"};
+  std::array<Eigen::Vector3d, 4> tip{};
+  std::array<Eigen::Vector3d, 4> bracket{};
+  for (std::size_t i = 0; i < 4; ++i) {
+    const auto r = 3 * IndexOfName(names, tip_links[i]);
+    const auto& pos = Tensor("robot_body_pos_w");
+    tip[i] = Eigen::Vector3d(pos[r], pos[r + 1], pos[r + 2]);
+    const auto& b = kBracketPos.at(brackets[i]);
+    bracket[i] = fx::BaseFromBaseLink(Eigen::Vector3d(b[0], b[1], b[2]));
+  }
+
+  // Place the object where the recorded contact points sit closest to the
+  // BRACKETS (the pole upside down, as trained — Rx(pi) in the policy frame):
+  // the least-squares origin for a fixed orientation is the mean of p_i − R·c_i.
   const Eigen::Quaterniond q_obj(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()));
+  const auto contact = [&](std::size_t i) {
+    return Eigen::Vector3d(kC0[i][0], kC0[i][1], kC0[i][2]);
+  };
   Eigen::Vector3d p_obj = Eigen::Vector3d::Zero();
   for (std::size_t i = 0; i < 4; ++i) {
-    p_obj += tip[i] - q_obj * Eigen::Vector3d(kC0[i][0], kC0[i][1], kC0[i][2]);
+    p_obj += bracket[i] - (q_obj * contact(i));
   }
   p_obj /= 4.0;
-  double mean_d = 0.0;
+  double d_bracket = 0.0;
+  double d_tip = 0.0;
   for (std::size_t i = 0; i < 4; ++i) {
-    mean_d += (tip[i] - (p_obj + q_obj * Eigen::Vector3d(kC0[i][0], kC0[i][1], kC0[i][2]))).norm();
+    const Eigen::Vector3d target = p_obj + (q_obj * contact(i));
+    d_bracket += (bracket[i] - target).norm();
+    d_tip += (tip[i] - target).norm();
   }
-  mean_d /= 4.0;
-  const double expected = std::exp(-(mean_d / 0.030) * (mean_d / 0.030));
-  ASSERT_GT(expected, 0.05) << "the fixture must put the gate on its ramp, or this proves nothing";
-  ASSERT_LT(expected, 0.999);
+  d_bracket /= 4.0;
+  d_tip /= 4.0;
 
   InjectObjectInWorld(p_obj, q_obj);
   RunOnePolicyStep(state);
-  EXPECT_NEAR(Tensor("reach_phase")[0], expected, 1e-4)
-      << "mean tip distance " << mean_d << " m against the model's contact points";
+  const double gate = Tensor("reach_phase")[0];
+  ASSERT_GT(gate, 0.05) << "the fixture must put the gate on its ramp, or this proves nothing";
+  ASSERT_LT(gate, 0.999);
+
+  // Invert the gate to recover the distance the controller actually measured:
+  // gate = exp(−(d/sigma)²) with no tactile hold armed, so d = sigma·sqrt(−ln gate).
+  // Comparing DISTANCES rather than gate values is what makes this test about
+  // the frame: the two candidates are 17.5 mm apart, far outside the oracle's
+  // own couple of millimetres.
+  constexpr double kSigma = 0.030;
+  const double d_seen = kSigma * std::sqrt(-std::log(gate));
+  EXPECT_NEAR(d_seen, d_bracket, 3e-3)
+      << "the gate must measure from the brackets (oracle " << d_bracket << " m)";
+  EXPECT_GT(std::abs(d_seen - d_tip), 10e-3)
+      << "measuring from the tip links instead would read " << d_tip << " m";
 }
 
 TEST_F(ShippedInference, TheTactileHoldCountsPolicyStepsAndReadsTheRightFingers) {
