@@ -272,6 +272,16 @@ class DemoInferenceController final : public RTControllerInterface {
 
   /// Bind the diag channel to a caller-owned producer, so a test can read the
   /// rows the tick pushes without a session directory.
+  /// The non-RT poll the log timer runs, for tests that drive Compute() by hand
+  /// and have no executor spinning that timer.
+  void PollDiagnosticsForTesting() { PollDiagnostics(); }
+
+  /// How many times this activation has warned about a stalled projection —
+  /// the once-per-activation contract is only checkable by counting.
+  [[nodiscard]] int ClosedChainWarningsForTesting() const noexcept {
+    return closed_chain_warnings_;
+  }
+
   void SetInferenceDiagLogHandleForTesting(rtc::LogHandle<InferenceDiagLogPod> h) noexcept {
     inference_diag_log_handle_ = h;
   }
@@ -388,6 +398,10 @@ class DemoInferenceController final : public RTControllerInterface {
 
   /// Push this tick's rows (RT path: wait-free, drop-on-full, no allocation).
   void PushLogs(const ControllerState& state, const ControllerOutput& out) noexcept;
+
+  /// Non-RT. What the log-drain timer does besides draining: reads the counters
+  /// the tick publishes and logs what only a human can act on.
+  void PollDiagnostics();
 
   /// Close every CSV channel and unbind every handle (non-RT).
   void ResetLogState() noexcept;
@@ -582,6 +596,16 @@ class DemoInferenceController final : public RTControllerInterface {
   /// never reached the projection, so a stale status is not logged as current.
   rtc_urdf_bridge::RtClosedChainHandle::Status closed_fk_status_{};
   bool closed_fk_ran_{false};
+  /// A projection that never walks in is the quietest failure this controller
+  /// has: the fingertip poses stay finite and stale, every tick holds, and
+  /// nothing says so. The tick only PUBLISHES the counter (RT-3 forbids it
+  /// logging); `PollDiagnostics()`, on the 10 Hz non-RT timer, decides whether
+  /// to speak, and speaks once per activation. `closed_chain_warn_ticks_ <= 0`
+  /// disables it.
+  std::atomic<std::int32_t> closed_chain_held_ticks_{0};
+  int closed_chain_warn_ticks_{250};
+  bool closed_chain_warned_{false};
+  int closed_chain_warnings_{0};
   std::array<std::array<double, 3>, kMaxLinks> link_pos_{};
   std::array<std::array<double, 4>, kMaxLinks> link_quat_{};
 

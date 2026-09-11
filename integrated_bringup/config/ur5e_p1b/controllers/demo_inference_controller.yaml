@@ -302,6 +302,13 @@ demo_inference_controller:
     # 돌아가 손이 pregrasp 로 풀린다 — 실측 hold 길이를 보고 확정할 값이다.
     reset_after_hold_sec: 0.1
 
+    # 폐쇄 체인 사영이 walk-in 을 못 끝내고 계속 held 면 손끝 pose 가 **조용히**
+    # stale 이다 — 값은 유한하고 매끄러운데 매 tick hold 라 정책이 아예 안 돈다.
+    # held 가 이 tick 수를 넘으면 활성화당 한 번 경고한다. tick 은 카운터만 올리고
+    # 판단·로그는 100 ms 비-RT 타이머가 한다 (RT-3). 실측 walk-in 은 activation 직후
+    # 43 tick 이므로 250 (0.5 s) 은 정상 기동과 겹치지 않는다. 0 = 경고 끔.
+    closed_chain_warn_ticks: 250
+
     # ── object pose ──────────────────────────────────────────────────────────
     # sim ground truth. 실기 이관 시 바뀌는 것은 topic 과 (perception 이 다른 프레임을
     # 쓰면) source_frame_id / source_frame_link 이며, 메시지 타입은 같다.

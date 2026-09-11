@@ -273,14 +273,21 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
       secondary_state_log_handle_ = it->second;
     }
     inference_diag_log_handle_ = reg.handles.inference_diag;
-    if (!log_set_.empty() && node) {
-      // Non-RT drain, 10 Hz, its own group so a slow disk never delays the
-      // object-pose callback sharing the default one.
+    if (node) {
+      // Non-RT, 10 Hz, its own group so a slow disk never delays the
+      // object-pose callback sharing the default one. Created even with no CSV
+      // channel bound: draining is then a no-op, but the diagnostic poll is
+      // not, and tying "does this controller warn about a stalled projection"
+      // to "did someone ask for CSV logs" would hide it exactly where logs are
+      // off.
       log_drain_cb_group_ =
           node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
       log_drain_timer_ = node->create_wall_timer(
           std::chrono::milliseconds(100),
-          [this]() { DrainControllerLogs(log_set_, logger_, log_drops_reported_); },
+          [this]() {
+            DrainControllerLogs(log_set_, logger_, log_drops_reported_);
+            PollDiagnostics();
+          },
           log_drain_cb_group_);
     }
   } catch (const std::exception& e) {
@@ -293,6 +300,26 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
   }
 
   return CallbackReturn::SUCCESS;
+}
+
+void DemoInferenceController::PollDiagnostics() {
+  // Non-RT (the log timer's own callback group).
+  if (closed_chain_warn_ticks_ <= 0 || closed_chain_warned_) {
+    return;
+  }
+  const auto held = closed_chain_held_ticks_.load(std::memory_order_relaxed);
+  if (held < closed_chain_warn_ticks_) {
+    return;
+  }
+  closed_chain_warned_ = true;
+  ++closed_chain_warnings_;
+  RCLCPP_WARN(logger_,
+              "[inference] the closed-chain hand FK has been held for %d ticks (warn at %d): the "
+              "fingertip poses it serves are STALE, so every tick holds and the policy is not "
+              "running. Usual causes: the projection cannot close the loop from where it was "
+              "seeded, or the hand is at a singular configuration. Reported once per activation; "
+              "inference_diag.csv carries closed_held / closure_error per tick",
+              held, closed_chain_warn_ticks_);
 }
 
 void DemoInferenceController::ResetLogState() noexcept {
@@ -574,6 +601,9 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_activate(
   warned_state_reset_ = false;
   // Diagnostics describe this activation only.
   hold_counts_.fill(0);
+  closed_chain_held_ticks_.store(0, std::memory_order_relaxed);
+  closed_chain_warned_ = false;
+  closed_chain_warnings_ = 0;
   last_hold_reason_ = InferenceHoldReason::kNone;
   last_reach_phase_ = InferenceDiagLogPod::kNaN;
   last_tip_distance_ = InferenceDiagLogPod::kNaN;

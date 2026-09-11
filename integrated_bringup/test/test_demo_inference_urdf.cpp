@@ -362,6 +362,57 @@ TEST_F(ShippedInference, ServesTheFingertipsThroughTheClosedChain) {
       << "the fingertips are downstream of loop-passive joints; the serial pose is wrong";
 }
 
+// ── A projection that never walks in (the quiet failure) ───────────────────
+
+TEST_F(ShippedInference, TheOrdinaryWalkInIsNotWorthWarningAbout) {
+  using integrated_bringup::InferenceHoldReason;
+  EXPECT_EQ(cfg_["inference"]["closed_chain_warn_ticks"].as<int>(), 250)
+      << "the shipped bound must clear the measured walk-in (43 ticks) by a wide margin";
+  const auto state = MakePregraspState();
+  InjectObjectInWorld(kNominalObject, Eigen::Quaterniond::Identity());
+  for (int t = 0; t < 10; ++t) {
+    Republish();
+    last_out_ = ctrl_->Compute(state);
+  }
+  ASSERT_EQ(ctrl_->LastHoldReasonForTesting(), InferenceHoldReason::kClosedChain)
+      << "this case is about the walk-in, so it has to still be in one";
+  ctrl_->PollDiagnosticsForTesting();
+  ASSERT_TRUE(RunUntilAccepted(state));
+  ctrl_->PollDiagnosticsForTesting();
+  EXPECT_EQ(ctrl_->ClosedChainWarningsForTesting(), 0)
+      << "bring-up holds by design; warning on it teaches the operator to ignore the warning";
+}
+
+/// The same bring-up under a bound the ordinary walk-in crosses — the shape of
+/// a projection that is stuck, without having to build one.
+class ShippedInferenceWithAnEagerStallWarning : public ShippedInference {
+ protected:
+  void AdjustShippedConfig(YAML::Node& cfg) override {
+    cfg["inference"]["closed_chain_warn_ticks"] = 5;
+  }
+};
+
+TEST_F(ShippedInferenceWithAnEagerStallWarning, AHeldProjectionIsReportedOncePerActivation) {
+  using integrated_bringup::InferenceHoldReason;
+  const auto state = MakePregraspState();
+  InjectObjectInWorld(kNominalObject, Eigen::Quaterniond::Identity());
+  for (int t = 0; t < 10; ++t) {
+    Republish();
+    last_out_ = ctrl_->Compute(state);
+  }
+  ASSERT_EQ(ctrl_->LastHoldReasonForTesting(), InferenceHoldReason::kClosedChain);
+  for (int poll = 0; poll < 5; ++poll) {
+    ctrl_->PollDiagnosticsForTesting();
+  }
+  EXPECT_EQ(ctrl_->ClosedChainWarningsForTesting(), 1)
+      << "the timer polls at 10 Hz; a stall that logs on every poll is a log flood";
+
+  ASSERT_EQ(ctrl_->on_deactivate(rclcpp_lifecycle::State{}), CR::SUCCESS);
+  ASSERT_EQ(ctrl_->on_activate(rclcpp_lifecycle::State{}), CR::SUCCESS);
+  EXPECT_EQ(ctrl_->ClosedChainWarningsForTesting(), 0)
+      << "a new activation is a new robot situation and gets a new budget";
+}
+
 // ── §5 criterion 3: frame, convention and closed chain against MuJoCo ──────
 
 TEST_F(ShippedInference, ObservesTheTrainingPregraspWhereMuJoCoPutsIt) {

@@ -138,6 +138,16 @@ void DemoInferenceController::LoadConfig(const YAML::Node& cfg) {
         "after any hold, negative never resets outside activation)");
   }
 
+  // Diagnostic only — it changes nothing the robot does. Refused when negative
+  // rather than clamped: a negative here reads as "warn immediately" just as
+  // easily as "never", and the two are opposites.
+  closed_chain_warn_ticks_ = inf["closed_chain_warn_ticks"].as<int>(250);
+  if (closed_chain_warn_ticks_ < 0) {
+    throw std::invalid_argument(
+        "demo_inference_controller: inference.closed_chain_warn_ticks must be >= 0 "
+        "(0 disables the warning)");
+  }
+
   // `hand_posture`, `joint_convention`, `reach_gate` and the frame keys are NOT
   // read here: each is checked against the device rosters or the feature list,
   // and those only exist in Pass 3 (#511 D-9).

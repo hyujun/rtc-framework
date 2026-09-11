@@ -543,6 +543,9 @@ ControllerOutput DemoInferenceController::ComputeCommand(const ControllerState& 
                          st.closure_error < kClosureErrorThreshold;
       closed_fk_status_ = st;
       closed_fk_ran_ = true;
+      // Publish only. A projection that never converges has to be said out
+      // loud, but not from here (RT-3) — the non-RT poll reads this.
+      closed_chain_held_ticks_.store(st.held_ticks, std::memory_order_relaxed);
     }
   }
   if (!devices_readable) {
