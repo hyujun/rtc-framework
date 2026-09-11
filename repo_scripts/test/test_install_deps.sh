@@ -344,12 +344,118 @@ test_existing_other_version_upgrades() {
   # `ln -sf` 는 디렉토리 symlink 를 따라가 옛 트리 안에 새 링크를 만든다.
   expect_eq "upgrade.no_nested_link" "false" \
     "$([[ -e "${old}/onnxruntime-linux-x64-${TEST_VER}" ]] && echo true || echo false)"
-  expect_eq "upgrade.old_tree_kept" "true" \
-    "$([[ -f "${old}/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  # 2026-09-11 spec 변경 (사용자 결정): 업그레이드는 옛 트리를 남기지 않는다 —
+  # 설치 후 머신에는 핀 버전 하나만. 이전 단언은 `upgrade.old_tree_kept`.
+  expect_eq "upgrade.old_tree_removed" "false" \
+    "$([[ -e "$old" ]] && echo true || echo false)"
   expect_eq "upgrade.no_apt" "false" "$(called 'apt-get install')"
   expect_eq "upgrade.ldconfig_ran" "true" "$(called '^ldconfig$')"
   expect_eq "upgrade.reported" "true" \
     "$(grep -q "0.0.1-old at .* differs from pinned ${TEST_VER}" "$LOG_FILE" && echo true || echo false)"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
+# 옛 버전 트리 한 개를 만든다: $1=버전 → stdout: 경로
+make_old_tree() {
+  local tree="${TEST_ROOT}/opt/onnxruntime-linux-x64-$1"
+  mkdir -p "${tree}/lib" "${tree}/include"
+  echo x >"${tree}/lib/libonnxruntime.so"
+  echo x >"${tree}/include/onnxruntime_cxx_api.h"
+  echo "$1" >"${tree}/VERSION_NUMBER"
+  echo "$tree"
+}
+
+test_failed_upgrade_removes_nothing() {
+  # 정리는 새 트리가 검증·연결된 **뒤**의 일이다. 검증에 실패한 업그레이드가
+  # 옛 런타임까지 지우면 머신에 ORT 가 하나도 남지 않는다.
+  setup_case
+  make_fixture "$TEST_ROOT" "x64" >/dev/null
+  ONNXRT_SHA256["${TEST_VER}:x64"]="0000000000000000000000000000000000000000000000000000000000000000"
+  local old; old=$(make_old_tree "0.0.1")
+  ln -s "$old" "${TEST_ROOT}/opt/onnxruntime"
+
+  run_install
+
+  expect_eq "failed_upgrade.old_tree_kept" "true" \
+    "$([[ -f "${old}/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  expect_eq "failed_upgrade.link_unchanged" "$old" "$(readlink "${TEST_ROOT}/opt/onnxruntime")"
+  expect_eq "failed_upgrade.no_rm" "false" "$(called 'sudo rm')"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
+test_same_version_prunes_stale_trees() {
+  # 이미 핀인 머신에서 재실행해도 "핀 하나만" 으로 수렴한다 (정리 기능이 생기기
+  # 전에 업그레이드한 머신에는 옛 트리가 남아 있다).
+  setup_case
+  local pinned; pinned=$(make_old_tree "${TEST_VER}")
+  ln -s "$pinned" "${TEST_ROOT}/opt/onnxruntime"
+  local stale_a; stale_a=$(make_old_tree "0.0.1")
+  local stale_b; stale_b=$(make_old_tree "0.0.2")
+
+  run_install
+
+  expect_eq "same_prune.no_download" "false" "$(called 'wget ')"
+  expect_eq "same_prune.stale_a_removed" "false" "$([[ -e "$stale_a" ]] && echo true || echo false)"
+  expect_eq "same_prune.stale_b_removed" "false" "$([[ -e "$stale_b" ]] && echo true || echo false)"
+  expect_eq "same_prune.pinned_kept" "true" \
+    "$([[ -f "${pinned}/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  teardown_case
+}
+
+test_prune_spares_trees_it_did_not_name() {
+  # 지우는 것은 이 파일이 푸는 이름 (`onnxruntime-linux-<arch>-<숫자…>` 디렉토리)
+  # 뿐이다. 각 항목이 따로 지워질 이유가 있어야 이 테스트가 뜻을 가진다:
+  # gpu 빌드 · 다른 arch · 이름이 버전 모양인 symlink · 숫자로 시작하지 않는 접미사.
+  setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
+  local gpu="${TEST_ROOT}/opt/onnxruntime-linux-x64-gpu-1.2.3"
+  local arm="${TEST_ROOT}/opt/onnxruntime-linux-aarch64-1.2.3"
+  local custom="${TEST_ROOT}/opt/onnxruntime-linux-x64-custom"
+  local outside; outside="$(mktemp -d)"
+  mkdir -p "$gpu" "$arm" "$custom"
+  echo x >"${outside}/keep"
+  ln -s "$outside" "${TEST_ROOT}/opt/onnxruntime-linux-x64-0.0.3"
+  local old; old=$(make_old_tree "0.0.1")
+
+  run_install
+
+  expect_eq "spare.gpu" "true" "$([[ -d "$gpu" ]] && echo true || echo false)"
+  expect_eq "spare.other_arch" "true" "$([[ -d "$arm" ]] && echo true || echo false)"
+  expect_eq "spare.custom_suffix" "true" "$([[ -d "$custom" ]] && echo true || echo false)"
+  # 링크 자체가 남는지를 본다 — `rm -rf` 는 symlink 의 대상은 원래 안 지우므로
+  # 대상만 보면 `! -L` 가드를 지워도 green 이다.
+  expect_eq "spare.symlink_kept" "true" \
+    "$([[ -L "${TEST_ROOT}/opt/onnxruntime-linux-x64-0.0.3" ]] && echo true || echo false)"
+  expect_eq "spare.symlink_target_untouched" "true" \
+    "$([[ -f "${outside}/keep" ]] && echo true || echo false)"
+  expect_eq "spare.old_version_removed" "false" "$([[ -e "$old" ]] && echo true || echo false)"
+
+  rm -rf -- "$outside"
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
+test_keep_other_versions_opt_out() {
+  # 다른 제어 프로젝트가 옛 트리를 직접 참조하는 머신 (CLAUDE.md §9.2) 의 탈출구.
+  setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
+  local old; old=$(make_old_tree "0.0.1")
+  ln -s "$old" "${TEST_ROOT}/opt/onnxruntime"
+
+  ONNXRT_KEEP_OTHER_VERSIONS=1 run_install
+
+  expect_eq "keep.repointed" "${TEST_ROOT}/opt/onnxruntime-linux-x64-${TEST_VER}" \
+    "$(readlink "${TEST_ROOT}/opt/onnxruntime")"
+  expect_eq "keep.old_tree_kept" "true" \
+    "$([[ -f "${old}/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  expect_eq "keep.reported" "true" \
+    "$(grep -q "ONNXRT_KEEP_OTHER_VERSIONS=1" "$LOG_FILE" && echo true || echo false)"
 
   unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
   teardown_case
@@ -393,6 +499,10 @@ test_apt_installed_short_circuits
 test_existing_opt_install_short_circuits
 test_existing_same_version_short_circuits
 test_existing_other_version_upgrades
+test_failed_upgrade_removes_nothing
+test_same_version_prunes_stale_trees
+test_prune_spares_trees_it_did_not_name
+test_keep_other_versions_opt_out
 test_production_pins_are_intact
 
 echo

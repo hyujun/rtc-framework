@@ -60,6 +60,9 @@ MJ_VERSION="3.7.0"
 # ⚠ 이 값을 올리면 lib/install_deps.sh 의 ONNXRT_SHA256 에 `<새버전>:<arch>`
 #   digest 를 추가해야 한다 (거기 bump 절차 주석 참조). 누락 시 tarball 경로는
 #   검증 없이 통과하는 대신 fail-closed 로 skip 된다.
+# 설치된 버전이 이 값과 다르면 핀 버전을 받아 /opt/onnxruntime 을 옮기고, 그 뒤
+# /opt 의 다른 버전 트리 (`onnxruntime-linux-<arch>-<ver>`) 를 지운다. 옛 트리를
+# 다른 프로젝트가 쓰는 머신이면 ONNXRT_KEEP_OTHER_VERSIONS=1 ./install.sh … 로 보존.
 ONNXRT_VERSION="1.28.2"   # ≥ 1.18 필요: ur5e_p1b demo_inference 정책이 IR 10
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
