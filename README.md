@@ -166,6 +166,15 @@ chmod +x install.sh
 ./install.sh full         # 전체 설치
 ```
 
+> **이미 설치된 머신에서 재실행하면 apt 의존성도 최신으로 올라간다.** deps 단계의 `apt-get install -y`
+> 는 깔려 있는 ROS 패키지 (pinocchio · proxsuite 등) 를 저장소의 최신판으로 올리고, ROS apt 저장소는 최신판만
+> 제공하므로 **되돌릴 수 없다** (2026-09-11: ORT 를 올리려고 재실행해 pinocchio 4.0.0→4.1.0, proxsuite
+> 0.6.5→0.7.3 이 함께 올라갔다). soname 이 바뀌면 기존 빌드는 `…so.<옛 버전>: cannot open shared object`
+> 로 로드에 실패하고, 증분 빌드는 `No rule to make target '…so.<옛 버전>'` 로 멈춘다 — dpkg 가 deb 의
+> 파일 시각 (패키지 빌드 날짜) 을 그대로 두어 CMake 가 config 변경을 못 알아채기 때문이다. 재실행 후에는
+> `colcon build --cmake-force-configure` 로 워크스페이스 전체를 다시 구성·빌드하고 전체 테스트를 돌린다.
+> 같은 PC 의 다른 프로젝트가 같은 apt 패키지에 링크돼 있으면 그쪽도 다시 빌드해야 한다.
+
 #### 표준 ROS 2 toolchain 흐름 (CI · 외부 통합 환경)
 
 `install.sh`가 만능 wrapper지만 표준 `rosdep install` → `colcon build` → `colcon test` 흐름도 직접 지원합니다.
