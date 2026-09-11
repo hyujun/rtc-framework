@@ -141,7 +141,7 @@ mujoco_simulator:
         # (palm normal exactly -z), which is the orientation a top-down grasp
         # needs. Measured on this MJCF: palm lands at (-0.492, -0.234, 0.588)
         # with zero floor/table contact.
-        initial_qpos: [0.0, -1.5708, 1.5708, -1.5708, 0.0, 0.0]
+        initial_qpos: [0.0, -1.5706, 1.5706, 0.3494, 1.6581, -1.5706]
         # sensor_topic: "/ur5e/sim_sensors"   # uncomment + add sensor_names to enable
         # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
         # sensor_names: ["ft_sensor"]          # example: explicit sensor names
