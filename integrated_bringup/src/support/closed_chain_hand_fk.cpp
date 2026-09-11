@@ -310,7 +310,7 @@ bool RunHandForwardKinematics(ClosedChainHandFk& fk, rub::RtModelHandle* hand_ha
 
 bool HandFingertipPoseDispatch(
     const ClosedChainHandFk& fk, const rub::RtModelHandle* hand_handle,
-    const std::array<pinocchio::FrameIndex, ClosedChainHandFk::kMaxFingertips>& fingertip_ids,
+    std::span<const pinocchio::FrameIndex> fingertip_ids,
     bool use_hand_root, pinocchio::FrameIndex hand_root_id, std::size_t f,
     pinocchio::SE3& out) noexcept {
   if (fk.active()) {

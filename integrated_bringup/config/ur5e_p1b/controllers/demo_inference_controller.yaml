@@ -344,10 +344,17 @@ demo_inference_controller:
     # 모델에 구워진 접촉점 상수를 그대로 옮긴 것이다.
     reach_gate:
       tips: # 엄지 먼저 — grasped 판정이 "엄지 vs 나머지" 대향 구조다
-        - { link: "l_thumb_tip_link", force_group: "thumb", contact_obj: [-0.013565, 0.037512, 0.005946] }
-        - { link: "l_index_tip_link", force_group: "index", contact_obj: [-0.032927, -0.022462, 0.011726] }
-        - { link: "l_middle_tip_link", force_group: "middle", contact_obj: [-0.010342, -0.038602, 0.017704] }
-        - { link: "l_ring_tip_link", force_group: "ring", contact_obj: [0.01168, -0.038178, -0.002864] }
+        # link 은 **손끝 bracket** 이다 (`l_*_tip_link` 이 아니라). 기록된 접촉점은
+        # 손가락이 실제로 닿는 면에 찍혀 있고, 그 면은 tip_link 원점이 아니라 거기서
+        # 17.5 mm 떨어진 bracket 프레임 근처다 — 학습 자산 (proto_1b2.xml) 은 그것을
+        # `site_l_*_tip_bracket` 로, 이 URDF 는 같은 오프셋의 고정 링크로 갖는다.
+        # 실측 (기록된 grasp 자세, 접촉점까지 거리): bracket 11.0 mm vs tip_link
+        # 25.6 mm → 게이트 값 0.873 vs 0.481. σ 가 30 mm 이므로 이 차이는 게이트를
+        # 늦게 열리게 하고, 범위 검사에는 걸리지 않는다.
+        - { link: "l_thumb_tip_bracket", force_group: "thumb", contact_obj: [-0.013565, 0.037512, 0.005946] }
+        - { link: "l_index_tip_bracket", force_group: "index", contact_obj: [-0.032927, -0.022462, 0.011726] }
+        - { link: "l_middle_tip_bracket", force_group: "middle", contact_obj: [-0.010342, -0.038602, 0.017704] }
+        - { link: "l_ring_tip_bracket", force_group: "ring", contact_obj: [0.01168, -0.038178, -0.002864] }
       tip_std: 0.030 # m
       force_threshold: 0.5 # N, strict >
       min_fingers: 2
