@@ -14,10 +14,11 @@
 //
 //   It does NOT see the real model either. Every case below injects FakeEngine,
 //   so what is gated is the controller's own path AROUND inference, never ONNX
-//   Runtime: a real Run() may allocate internally even on top of IoBinding.
-//   That one cannot be measured before a model exists, so it is listed as an
-//   on-arrival check in demo_inference_controller.yaml's model_path block
-//   rather than left to be rediscovered.
+//   Runtime — and a real Run() DOES allocate, on every call, IoBinding or not.
+//   test_demo_inference_real_model.cpp counts it against the real policy (local
+//   only: it needs the policy file); a policy-step tick there allocates exactly
+//   what Run() does, which is the cross-check that this suite's zero is the
+//   whole of the controller's share.
 //
 // The consequence is stated rather than papered over. The roster-fixture cases
 // cover the feature-packing, decimation, unpack, blend and command-tail path.

@@ -21,6 +21,7 @@
 // the palm (upstream of every loop).
 
 #include "inference_fake_engine.hpp"
+#include "inference_shipped_fixture.hpp"
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "shipped_config_test_fixture.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
@@ -52,24 +53,17 @@ using integrated_bringup::testfx::FakeEngine;
 using rtc::ControllerState;
 using CR = rtc::RTControllerInterface::CallbackReturn;
 
-// ── Policy constants (ONNX initializers, policy frame / policy convention) ──
-constexpr std::array<double, 6> kC18 = {-0.011404, -1.148533, 1.720851,
-                                        -2.153859, -2.254593, 2.771491};
-// C20 in the gripper head's order (index → ring → thumb → middle).
-const std::vector<std::string> kGripperOrder = {
-    "index_mcp_aa_joint",  "index_mcp_fe_joint", "index_dip_fe_joint", "ring_mcp_fe_joint",
-    "thumb_cmc_aa_joint",  "thumb_cmc_fe_joint", "thumb_mcp_joint",    "thumb_dip_fe_joint",
-    "middle_mcp_fe_joint", "middle_dip_fe_joint"};
-constexpr std::array<double, 10> kC20 = {0.064476,  0.557459, 0.440156, 0.45242,  -1.426097,
-                                         -0.429778, 0.049478, 0.609149, 0.529181, 0.511366};
-// The training asset's joint signs (q_policy = s · q_device). The oracle's
-// premise, stated here independently of the shipped YAML so the YAML is what
-// is being checked.
-const std::map<std::string, double> kPolicySign = {
-    {"thumb_cmc_aa_joint", -1.0}, {"thumb_cmc_fe_joint", 1.0},   {"thumb_mcp_joint", 1.0},
-    {"thumb_dip_fe_joint", -1.0}, {"index_mcp_aa_joint", -1.0},  {"index_mcp_fe_joint", -1.0},
-    {"index_dip_fe_joint", -1.0}, {"middle_mcp_fe_joint", -1.0}, {"middle_dip_fe_joint", -1.0},
-    {"ring_mcp_fe_joint", -1.0}};
+// Policy constants and the pregrasp state: inference_shipped_fixture.hpp.
+using fx::IndexOfName;
+using fx::kC18;
+using fx::kC20;
+using fx::kGripperOrder;
+using fx::kInferenceStride;
+using fx::kPolicySign;
+using fx::MakeObjectTf;
+using fx::MakePregraspState;
+using fx::Numels;
+
 // Recorded contact points, object frame (cylinder centre), thumb/index/middle/ring.
 constexpr std::array<std::array<double, 3>, 4> kC0 = {{{-0.013565, 0.037512, 0.005946},
                                                        {-0.032927, -0.022462, 0.011726},
@@ -86,81 +80,6 @@ const std::map<std::string, std::array<double, 3>> kTipPos = {
     {"l_ring_tip_link", {0.5618, -0.0308, 0.1002}}};
 constexpr double kPalmTol = 1e-3;
 constexpr double kTipTol = 2e-3;
-
-constexpr int kInferenceStride = 7;
-
-std::vector<std::size_t> Numels(const YAML::Node& tensors) {
-  std::vector<std::size_t> out;
-  for (const auto& t : tensors) {
-    std::size_t n = 1;
-    for (const auto& d : t["shape"]) {
-      n *= d.as<std::size_t>();
-    }
-    out.push_back(n);
-  }
-  return out;
-}
-
-std::size_t IndexOfName(const std::vector<std::string>& names, const std::string& name) {
-  for (std::size_t i = 0; i < names.size(); ++i) {
-    if (names[i] == name) {
-      return i;
-    }
-  }
-  ADD_FAILURE() << "no element named '" << name << "'";
-  return names.size();
-}
-
-/// The fixture's device configs plus what the p1b hand needs here and the
-/// fixture does not carry: the inference lane stride (force features) and the
-/// hand's position band (the command tail), both as _base.yaml ships them.
-std::map<std::string, rtc::DeviceNameConfig> MakeDevices() {
-  auto devices = fx::MakeUr5eP1bDeviceConfigs();
-  auto& hand = devices.at("p1b");
-  rtc::DeviceSensorLayout layout;
-  layout.inference_values_per_group = kInferenceStride;
-  hand.sensor_layout = layout;
-  rtc::DeviceJointLimits lim;
-  lim.max_velocity.assign(fx::kP1bHandDof, 10.384);
-  lim.position_lower = {0.0,        -1.5707963, -1.5707963, -1.5707963, -0.34906585,
-                        -1.5707963, -1.5707963, -1.5707963, -1.5707963, -1.5707963};
-  lim.position_upper = {2.356194487, 1.5707963, 1.5707963, 0.0, 0.523598776,
-                        0.0,         0.0,       0.0,       0.0, 0.0};
-  hand.joint_limits = lim;
-  return devices;
-}
-
-/// Arm at C18, hand at s ⊙ C20 in DEVICE order — the training pregrasp.
-ControllerState MakePregraspState() {
-  auto state = fx::MakeUr5eP1bState();
-  for (std::size_t i = 0; i < kC18.size(); ++i) {
-    state.devices[0].positions[i] = kC18[i];
-  }
-  const auto devices = fx::MakeUr5eP1bDeviceConfigs();
-  const auto& hand_names = devices.at("p1b").joint_state_names;
-  for (std::size_t j = 0; j < hand_names.size(); ++j) {
-    const auto k = IndexOfName(kGripperOrder, hand_names[j]);
-    state.devices[1].positions[j] = kPolicySign.at(hand_names[j]) * kC20[k];
-  }
-  return state;
-}
-
-tf2_msgs::msg::TFMessage MakeObjectTf(const Eigen::Vector3d& p_world,
-                                      const Eigen::Quaterniond& q_world) {
-  tf2_msgs::msg::TFMessage msg;
-  geometry_msgs::msg::TransformStamped tf;
-  tf.header.frame_id = "world";
-  tf.child_frame_id = "pool_pole_object";
-  tf.transform.translation.x = p_world.x();
-  tf.transform.translation.y = p_world.y();
-  tf.transform.translation.z = p_world.z();
-  tf.transform.rotation.x = q_world.x();
-  tf.transform.rotation.y = q_world.y();
-  tf.transform.rotation.z = q_world.z();
-  tf.transform.rotation.w = q_world.w();
-  msg.transforms.push_back(tf);
-  return msg;
-}
 
 void SetForce(ControllerState& s, int group, float fz) {
   auto& hand = s.devices[1];
@@ -214,7 +133,7 @@ class ShippedInference : public ::testing::Test {
     ctrl_->SetSharedModelBuilder(fx::SharedUr5eP1bBuilder());
     ctrl_->SetControlRate(1.0 / fx::kUr5eDt);
     ctrl_->LoadConfig(cfg_);
-    ctrl_->SetDeviceNameConfigs(MakeDevices());
+    ctrl_->SetDeviceNameConfigs(fx::MakeInferenceDeviceConfigs());
     configured_ = ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_) == CR::SUCCESS;
     ASSERT_TRUE(configured_) << "the shipped config must configure against the real model";
     ASSERT_EQ(ctrl_->on_activate(rclcpp_lifecycle::State{}), CR::SUCCESS);
@@ -284,8 +203,7 @@ class ShippedInference : public ::testing::Test {
   /// The object at a pose given in the POLICY frame, published in `world`
   /// (= URDF `base`, a half turn about z away).
   void InjectObjectInPolicyFrame(const Eigen::Vector3d& p_pf, const Eigen::Quaterniond& q_pf) {
-    const Eigen::Quaterniond world_from_pf(Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitZ()));
-    InjectObjectInWorld(world_from_pf * p_pf, world_from_pf * q_pf);
+    InjectObjectInWorld(fx::WorldFromPolicyFrame(p_pf), fx::WorldFromPolicyFrame(q_pf));
   }
 
   void Republish() {
@@ -613,7 +531,7 @@ TEST_F(ShippedInference, TheTactileHoldCountsPolicyStepsAndReadsTheRightFingers)
 
   // Thumb + index + middle pressing, ring not: a grasp only if the FIRST tip
   // reads the thumb group. A reversed mapping would put the silent ring first.
-  const auto devices = MakeDevices();
+  const auto devices = fx::MakeInferenceDeviceConfigs();
   const auto& groups = devices.at("p1b").sensor_names;
   SetForce(state, static_cast<int>(IndexOfName(groups, "thumb")), 1.0F);
   SetForce(state, static_cast<int>(IndexOfName(groups, "index")), 1.0F);

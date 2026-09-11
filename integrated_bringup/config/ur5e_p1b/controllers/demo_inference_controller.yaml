@@ -47,8 +47,12 @@ demo_inference_controller:
     #   export RTC_POLICY_DIR=/path/to/ObjectHandGraspDeployMulti5-Export-v0
     #
     # shape 이 맞는 것과 RT 예산 안에 드는 것은 다른 사실이다. test_demo_inference_alloc
-    # 이 고정하는 것은 FakeEngine 경로뿐이라, 실제 ORT Run() 의 내부 할당과 p99 지연은
-    # 실모델로 따로 잰다 (정책 1 step 예산 = decimation 5 × 2 ms = 10 ms).
+    # 이 고정하는 것은 FakeEngine 경로뿐이고, 실제 ORT Run() 의 지연·할당은
+    # test_demo_inference_real_model 이 잰다 (로컬 전용 — 위 변수가 있어야 돌고, 없으면
+    # skip = 미검증). 예산은 decimation 과 무관하게 **tick 1개** (500 Hz → 2 ms) 다:
+    # Run() 은 정책 step 을 맡은 tick 의 Compute() 안에서 동기 실행된다. 그리고 ORT 의
+    # Run() 은 IoBinding 여부와 무관하게 **매 호출 heap 을 할당**한다 — RT-1 과의 관계는
+    # 미결이다.
     model_path: "${RTC_POLICY_DIR}/ObjectHandGraspDeployMulti5-Export-v0.onnx"
     allow_missing_model: true
     optimized_model_path: "" # ORT graph-optimized 캐시 경로 (빈 값 = 비활성)

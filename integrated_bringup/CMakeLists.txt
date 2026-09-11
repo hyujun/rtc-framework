@@ -399,6 +399,36 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # The same binding on the REAL policy through ONNX Runtime — local only. The
+  # policy stays out of the repo, so every model case SKIPS (= unverified, not
+  # passed) unless RTC_POLICY_DIR names the directory holding the .onnx the
+  # shipped config points at; CI always skips. Run() latency and operator-new
+  # counts land in the test XML (RecordProperty). One TU with alloc_gate.hpp,
+  # hence the include path and the warning flag its contract (item 2) asks for.
+  ament_add_gtest(test_demo_inference_real_model test/test_demo_inference_real_model.cpp
+    ENV ROS_DOMAIN_ID=52
+    TIMEOUT 300)
+  target_include_directories(test_demo_inference_real_model PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_compile_options(test_demo_inference_real_model PRIVATE -Wno-mismatched-new-delete)
+  target_link_libraries(test_demo_inference_real_model
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_demo_inference_real_model PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_demo_inference_real_model
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_inference
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   ament_add_gtest(test_demo_joint_controller test/test_demo_joint_controller.cpp)
   target_link_libraries(test_demo_joint_controller
     ${PROJECT_NAME}_demo_controllers
