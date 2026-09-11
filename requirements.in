@@ -16,12 +16,9 @@
 # Lock generation:
 #   uv pip compile requirements.in --generate-hashes -o requirements.lock
 #
-# Sync on a new machine:
-#   uv venv --python /usr/bin/python3.12 --system-site-packages .venv
-#   (경로 고정 — `--python 3.12` 는 설치된 uv-managed 3.12 를 고를 수 있고, 그 venv 는
-#    system-site-packages 여도 apt 의 ROS python 모듈을 못 본다)
-#   source .venv/bin/activate
-#   uv pip sync requirements.lock
+# Sync on a new machine: ./install.sh 가 수행 (install_python.sh 의 ensure_venv +
+#   install_python_deps). 손으로 할 때의 명령, 그리고 --python 을 버전이 아니라
+#   경로로 줘야 하는 이유: README.md "Python 의존성 sync".
 
 # Scientific stack — pinned to apt-jazzy baseline for rclpy ABI compatibility
 numpy<2

@@ -553,7 +553,16 @@ source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
 
 **Source 순서**: ROS Jazzy → deps/install (+ ONNX Runtime) → .venv → workspace overlay (`install/setup.bash`, 있을 때만).
 
-**Plain `colcon build` 호환성** (build.sh 우회 워크플로): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 로 단독 빌드가 가능하다. ONNX Runtime · MuJoCo · deps/install prefix 모두 환경변수로 주입되며, `.colcon/defaults.yaml` 이 `--symlink-install` / `Release` / `compile_commands` 를 자동 적용한다. 단 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 를 venv 유무와 무관하게 명시한다 (build.sh 는 이를 자동 처리 — `append_cmake_python_args`). `.venv` 가 활성이면 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio configure 가 깨질 수 있고, venv 가 없어도 FindPython 은 PATH 디렉토리 순서로 찾으므로 PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 를 잡아 `catkin_pkg` 를 못 본다. `deactivate` 는 앞의 경우만 막는다. build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다.
+**Plain `colcon build` 호환성** (build.sh 우회 워크플로): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 로 단독 빌드가 가능하다. ONNX Runtime · MuJoCo · deps/install prefix 모두 환경변수로 주입되며, `.colcon/defaults.yaml` 이 `--symlink-install` / `Release` / `compile_commands` 를 자동 적용한다. 단 CMake 가 쓸 인터프리터는 venv 유무와 무관하게 고정한다 (build.sh 는 이를 자동 처리 — `append_cmake_python_args`). `.venv` 가 활성이면 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio configure 가 깨질 수 있고, venv 가 없어도 FindPython 은 PATH 디렉토리 순서로 찾으므로 PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 를 잡아 `catkin_pkg` 를 못 본다. `deactivate` 는 앞의 경우만 막는다.
+
+이때 **CLI 의 `--cmake-args` 는 defaults 의 `cmake-args` 목록에 덧붙지 않고 그 목록을 통째로 대체한다** (`symlink-install` · `parallel-workers` 는 유지). 그래서 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 만 넘기면 새 빌드 트리가 `CMAKE_BUILD_TYPE` 없이 — 최적화 없이 — configure 되고 `compile_commands.json` 도 안 나온다. 기존 트리는 CMakeCache 가 옛 값을 기억해 차이가 드러나지 않는다. defaults 목록을 함께 적는다 (목록은 `.colcon/defaults.yaml` 과 같게 유지):
+
+```bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다.
 
 ---
 
@@ -688,23 +697,16 @@ mkdir -p ~/ros2_ws/rtc_ws/src
 cd ~/ros2_ws/rtc_ws
 git clone <repo-url> src/rtc-framework
 
-# 2. apt 의존성 (install.sh 에 정의됨 — 빌드까지 하려면 그냥 install.sh 실행)
-./src/rtc-framework/install.sh --skip-build   # deps/install 빌드 + apt 설치만
+# 2. apt 의존성 + deps/install 빌드 + .venv 생성·requirements.lock sync (빌드 제외)
+#    venv 를 손으로 만들 때의 명령과 주의점 (--python 은 버전이 아니라 경로):
+#    README.md "Python 의존성 sync"
+./src/rtc-framework/install.sh --skip-build
 
-# 3. Python venv (uv 사용 — install.sh 가 자동 부트스트랩하지만 수동 시:)
-#    uv 가 없으면: curl -LsSf https://astral.sh/uv/install.sh | sh
-#    --python 은 버전이 아니라 경로로 고정: `3.12` 는 runtime PC 의 python3.9/3.10 은
-#    피하지만, 설치된 uv-managed 3.12 를 apt 3.12 보다 우선해 apt 의 catkin_pkg 등을
-#    못 보는 venv 를 만든다 (README.md "Python 의존성 sync" 참고).
-uv venv --python /usr/bin/python3.12 --system-site-packages .venv
-source src/rtc-framework/repo_scripts/scripts/setup_env.sh
-uv pip sync src/rtc-framework/requirements.lock
-
-# 4. workspace 빌드
+# 3. workspace 빌드
 ./src/rtc-framework/build.sh sim        # 또는 robot / full
 ```
 
-`install.sh` 가 `repo_scripts/scripts/setup_env.sh` 를 자동 source 하고 `repo_scripts/scripts/build_deps.sh` 를 호출하므로, 단계 1-2 는 명령 하나로 가능합니다.
+`install.sh` 가 `repo_scripts/scripts/setup_env.sh` 를 자동 source 하고 `repo_scripts/scripts/build_deps.sh` 를 호출하며 `.venv` 까지 만들므로, `--skip-build` 를 빼면 단계 2-3 은 명령 하나로 가능합니다.
 
 ### 실 RT 제어 PC 차이점
 
@@ -718,52 +720,9 @@ uv pip sync src/rtc-framework/requirements.lock
 
 RT PC 에서 위 RT 준비가 끝나면 `cyclictest -p 90 -t 1 -n -i 1000 -D 300s` 로 jitter 기준선을 잡은 뒤 워크스페이스 RT 루프 실행.
 
-### CI 파이프라인 스니펫 (GitHub Actions)
+### CI 파이프라인 (GitHub Actions)
 
-```yaml
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    container: ros:jazzy-ros-base
-    steps:
-      - uses: actions/checkout@v4
-        with: { path: src/rtc-framework }
-
-      - name: Install apt deps
-        run: |
-          apt-get update
-          apt-get install -y python3.12 python3.12-venv python3-dev \
-            git curl ca-certificates \
-            libeigen3-dev libyaml-cpp-dev libtinyxml2-dev \
-            ros-jazzy-pinocchio ros-jazzy-proxsuite ros-jazzy-hpp-fcl \
-            ros-jazzy-eigenpy ros-jazzy-behaviortree-cpp \
-            ros-jazzy-ament-cmake-gtest python3-colcon-common-extensions \
-            python3-vcstool
-          # numpy/scipy/matplotlib/pandas/PyQt5 는 requirements.lock 에서 venv 안으로 설치
-
-      - name: Import + build isolated deps
-        run: |
-          mkdir -p deps/src
-          vcs import deps/src < src/rtc-framework/deps.repos
-          (cd deps/src/aligator && git submodule update --init --recursive --depth 1)
-          bash src/rtc-framework/repo_scripts/scripts/build_deps.sh
-
-      - name: Install uv + Python venv (hash-verified sync)
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          export PATH="$HOME/.local/bin:$PATH"
-          uv venv --python /usr/bin/python3.12 --system-site-packages .venv
-          . .venv/bin/activate
-          uv pip sync src/rtc-framework/requirements.lock
-
-      - name: colcon build + test
-        run: |
-          . src/rtc-framework/repo_scripts/scripts/setup_env.sh
-          colcon build
-          colcon test && colcon test-result --verbose
-```
-
-`actions/cache` 로 `deps/install/` 전체를 캐싱하면 aligator 재빌드 (~15-20분) 를 스킵할 수 있습니다.
+예시는 이 저장소의 CI 자체입니다 — 매 PR 실행되므로 문서에 옮겨 적은 사본보다 정확합니다. C++ 빌드·테스트·커버리지는 [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 과 그 composite action 들 ([.github/actions/README.md](../.github/actions/README.md) — ROS·apt 캐시는 `setup-rtc-env`, `deps/install` 빌드·캐시는 `build-isolated-deps`) 이 합니다. 전에 여기 있던 손으로 쓴 워크플로는 어디서도 실행되지 않아 action 버전부터 실제 CI 와 벌어져 있었습니다. CI 는 `.venv` 를 만들지 않고 러너의 Python 에 직접 설치합니다 — 러너에서도 venv 격리를 재현하려면 [README.md](../README.md) "Python 의존성 sync" 의 수동 절차를 따릅니다.
 
 ---
 

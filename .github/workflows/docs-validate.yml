@@ -8,6 +8,10 @@
 # Scope here is the whole corpus. The Stop hook runs the same script over the
 # *changed* files only -- an agent must not be blocked by a defect in a file it
 # never touched, least of all one it cannot see.
+#
+# It is also where every other cheap whole-repo gate lives -- the ones that need
+# no ROS and must run on each pull request whatever paths it touched: thread
+# layout, the hook's routing suite, the shell corpus and repo_scripts' own tests.
 name: Docs Validate
 
 on:
@@ -73,11 +77,12 @@ jobs:
       # apt-get update first: runner images ship with a pruned
       # /var/lib/apt/lists, where a bare install dies with "Unable to locate
       # package" and takes this whole job down with it. .github/actions/
-      # setup-rtc-env does the same for the same reason.
-      - name: Install clang-format
+      # setup-rtc-env does the same for the same reason. shellcheck is for the
+      # shell-corpus step further down.
+      - name: Install clang-format + shellcheck
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-format
+          sudo apt-get install -y --no-install-recommends clang-format shellcheck
 
       # Fails when any generated artifact (C++ tier constants, shell helpers,
       # Python launch mirror, the two README tables) is stale or hand-edited.
@@ -97,3 +102,53 @@ jobs:
       # files are fresh; this proves they mean the same thing.
       - name: Thread layout cross-language equivalence
         run: python3 repo_scripts/test/test_thread_layout_equivalence.py
+
+      # ── Shell corpus + repo_scripts sensors ──────────────────────────────
+      # repo_scripts is not in .github/ci-packages.yml, so ros2-advanced-ci never
+      # runs its colcon tests, and the Stop hook runs them only when repo_scripts
+      # itself changed. Two things fell through that gap: validate_test_domains
+      # reads *other* packages' CMakeLists, so two integrated_bringup tests that
+      # opened DDS without a ROS_DOMAIN_ID reached main (fixed in #513), and the
+      # shell regression tests were local-only. None of them needs ROS.
+
+      # The Stop hook lints every changed .sh as a whole file rather than just the
+      # added lines, because shellcheck reports a finding where the symptom is,
+      # not where the cause is (an `expected` declared -A in one test surfaced as
+      # SC2178 on an untouched helper). That scope is only fair while no file
+      # carries a warning into a turn -- before this step, that very pre-existing
+      # false positive blocked an unrelated edit to test_rt_common.sh. Same file
+      # set and severity as the hook; each script finds the repo .shellcheckrc by
+      # walking up. The version is printed because a runner-image bump can change
+      # the rule set under both.
+      - name: shellcheck (whole shell corpus)
+        run: |
+          shellcheck --version | head -2
+          git ls-files -z '*.sh' | xargs -0 shellcheck --severity=warning -f gcc
+
+      # Globbed, not listed, so a new test/test_*.sh is gated from its first PR.
+      # They stub what they would touch on the host -- sudo/apt/dpkg, uv, the
+      # cset mask reader, a sysfs CPU tree -- so they need neither ROS nor root.
+      # test_verify_changes.sh already ran above.
+      - name: repo_scripts shell tests
+        run: |
+          fail=0
+          for t in repo_scripts/test/test_*.sh; do
+            [ "$t" = repo_scripts/test/test_verify_changes.sh ] && continue
+            echo "::group::$t"
+            bash "$t" || { echo "::error file=$t::$t failed"; fail=1; }
+            echo "::endgroup::"
+          done
+          exit "$fail"
+
+      # Cross-package validators: their input is every package's CMakeLists and
+      # test sources, so they belong where the whole repo is in scope. Self-test
+      # first, as with validate_docs above.
+      - name: Test DDS domain allocation
+        run: |
+          python3 repo_scripts/scripts/validate_test_domains.py --self-test
+          python3 repo_scripts/scripts/validate_test_domains.py
+
+      - name: Test fixture package resolution
+        run: |
+          python3 repo_scripts/scripts/validate_test_fixtures.py --self-test
+          python3 repo_scripts/scripts/validate_test_fixtures.py

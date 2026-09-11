@@ -135,7 +135,7 @@ repository 안에 잘못 생성된 `build/`, `install/`, `log/`는 잘못된 CWD
 
 gtest binary 직접 실행, venv 비활성화, 강제 `PYTHONPATH` 설정 등으로 격리를 우회해 검증을 통과시키지 않는다.
 
-예외는 하나다: `colcon build` 의 configure 단계에서 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio 가 깨지는 경우, `deactivate` 또는 `-DPython3_EXECUTABLE=/usr/bin/python3` 를 쓸 수 있다(후자를 우선한다). 이는 빌드 시스템의 Python 탐색 문제이며 테스트 우회가 아니다. `colcon test` / `ros2 run` / `ros2 launch` 실패에 대한 비활성화는 금지가 유지된다.
+예외는 하나다: `colcon build` 의 configure 단계에서 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio 가 깨지는 경우, `deactivate` 또는 `-DPython3_EXECUTABLE=/usr/bin/python3` 를 쓸 수 있다(후자를 우선한다 — CLI `--cmake-args` 는 `.colcon/defaults.yaml` 의 Release 등을 통째로 대체하므로 명령 형태는 [repo_scripts/README.md](repo_scripts/README.md) "Plain `colcon build` 호환성"). 이는 빌드 시스템의 Python 탐색 문제이며 테스트 우회가 아니다. `colcon test` / `ros2 run` / `ros2 launch` 실패에 대한 비활성화는 금지가 유지된다.
 
 ## 7. Style and Conventions
 
