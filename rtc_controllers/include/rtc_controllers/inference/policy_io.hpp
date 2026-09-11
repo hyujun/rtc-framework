@@ -24,15 +24,26 @@
 #include <cmath>
 #include <cstddef>
 #include <span>
+#include <vector>
 
 namespace rtc::inference {
 
-/// One contiguous run of ONE flattened input tensor.
+/// Where ONE feature lands in ONE flattened input tensor — either a contiguous
+/// run or, when the tensor names its elements, a scatter.
 ///
 /// `offset`/`count` are element indices into that tensor's flattened buffer,
 /// not bytes and not tensor dimensions — a policy input of shape [1, 34] is 34
 /// elements and a feature contributing 6 of them is `{tensor, offset, 6}`
 /// wherever the YAML order happened to place it.
+///
+/// `indices`, when non-empty, REPLACES the run: value i goes to element
+/// `indices[i]` and `offset` is not consulted (`count == indices.size()`). This
+/// is how a feature is placed BY NAME into a tensor that declares
+/// `element_names` — an exported state vector that lists 46 joint slots of which
+/// the robot fills 16, in an order the export chose. The indices are resolved
+/// once at configure; a vector rather than a view into the spec so a copied
+/// descriptor can never outlive the storage it points into. The tick only reads
+/// it (by const reference), so it never allocates.
 ///
 /// `tensor` indexes the model's input tensors in declaration order, which is
 /// the order `rtc::InferenceEngine::input_buffer(model, input_idx)` uses. It is
@@ -44,6 +55,10 @@ struct InputSegment {
   int tensor{0};
   int offset{0};
   int count{0};
+  // `{}` is not redundant whatever clang-tidy says: the NSDMI is what keeps
+  // -Wmissing-field-initializers quiet on the three-value `{tensor, offset,
+  // count}` initialisations every contiguous caller writes.
+  std::vector<int> indices{};  // NOLINT(readability-redundant-member-init)
 };
 
 /// One contiguous run of one output tensor.
@@ -96,15 +111,54 @@ struct PostureBlendReport {
   if (seg.offset < 0 || seg.count < 0) {
     return false;
   }
-  const auto off = static_cast<std::size_t>(seg.offset);
   const auto n = static_cast<std::size_t>(seg.count);
-  if (off > buf.size() || n > buf.size() - off || src.size() < n) {
+  if (src.size() < n) {
+    return false;
+  }
+  if (!seg.indices.empty()) {
+    // Scatter. Every index is checked BEFORE the first write, for the same
+    // all-or-nothing reason as the contiguous branch.
+    if (seg.indices.size() != n) {
+      return false;
+    }
+    for (const int idx : seg.indices) {
+      if (idx < 0 || static_cast<std::size_t>(idx) >= buf.size()) {
+        return false;
+      }
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      buf[static_cast<std::size_t>(seg.indices[i])] = static_cast<float>(src[i]);
+    }
+    return true;
+  }
+  const auto off = static_cast<std::size_t>(seg.offset);
+  if (off > buf.size() || n > buf.size() - off) {
     return false;
   }
   for (std::size_t i = 0; i < n; ++i) {
     buf[off + i] = static_cast<float>(src[i]);
   }
   return true;
+}
+
+/// Overwrite the whole tensor with `pattern` repeated (`buf[i] = pattern[i %
+/// pattern.size()]`). An empty pattern is a no-op.
+///
+/// The filler for the elements a tensor's features do NOT cover, applied BEFORE
+/// the features are packed each evaluation — so an uncovered slot always holds
+/// the declared value rather than whatever the engine's allocation or a
+/// previous tick left there. A pattern longer than one element is what makes
+/// "identity quaternion in every unobserved row" expressible: `[0, 0, 0, 1]`
+/// over a [29, 4] tensor. It is also the whole implementation of a constant
+/// tensor, whose pattern is the tensor itself.
+inline void ApplyFill(std::span<float> buf, std::span<const float> pattern) noexcept {
+  if (pattern.empty()) {
+    return;
+  }
+  const std::size_t m = pattern.size();
+  for (std::size_t i = 0; i < buf.size(); ++i) {
+    buf[i] = pattern[i % m];
+  }
 }
 
 /// In-place `normalized = (raw - offset) * scale`, elementwise.
@@ -160,6 +214,30 @@ inline void ApplyAffine(std::span<float> buf, std::span<const float> offset,
   }
   for (std::size_t i = 0; i < n; ++i) {
     out[i] = static_cast<double>(buf[off + i]);
+  }
+  return true;
+}
+
+/// Gather `out[i] = buf[indices[i]]`, widening float → double. `size` is the
+/// element count of that output tensor's buffer.
+///
+/// The output half of by-name placement: a head whose elements are named in an
+/// order the export chose (a hand command listed index → ring → thumb → middle)
+/// is read into the DEVICE's joint order through indices resolved once at
+/// configure. Same contract as UnpackSlice — all-or-nothing, a null buffer is a
+/// false, and finiteness is the caller's screen.
+[[nodiscard]] inline bool UnpackIndexed(std::span<double> out, std::span<const int> indices,
+                                        const float* buf, std::size_t size) noexcept {
+  if (buf == nullptr || out.size() < indices.size()) {
+    return false;
+  }
+  for (const int idx : indices) {
+    if (idx < 0 || static_cast<std::size_t>(idx) >= size) {
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < indices.size(); ++i) {
+    out[i] = static_cast<double>(buf[static_cast<std::size_t>(indices[i])]);
   }
   return true;
 }

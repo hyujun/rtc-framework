@@ -120,6 +120,51 @@ std::string ParseTensorName(const YAML::Node& entry, const std::string& where,
   return name;
 }
 
+/// An optional list of non-empty, unique names (`element_names`). Absent means
+/// "not named"; a present key must be a non-empty sequence — an empty list
+/// would read as "named, with nothing to name".
+std::vector<std::string> ParseNameList(const YAML::Node& node, const std::string& where) {
+  if (!node || node.IsNull()) {
+    return {};
+  }
+  if (!node.IsSequence() || node.size() == 0) {
+    Reject(where, " must be a non-empty sequence of names (omit the key for positional order)");
+  }
+  std::vector<std::string> names;
+  names.reserve(node.size());
+  for (std::size_t i = 0; i < node.size(); ++i) {
+    auto name = node[i].IsScalar() ? node[i].as<std::string>("") : std::string{};
+    if (name.empty()) {
+      Reject(where, "[", std::to_string(i), "] must be a non-empty name");
+    }
+    const auto dup = std::find(names.begin(), names.end(), name);
+    if (dup != names.end()) {
+      Reject(where, "[", std::to_string(i), "] repeats '", name, "' (already at index ",
+             std::to_string(static_cast<std::size_t>(dup - names.begin())), ")");
+    }
+    names.push_back(std::move(name));
+  }
+  return names;
+}
+
+/// A required, non-empty list of finite floats (`fill`, `values`). Length rules
+/// are the caller's — they differ between the two keys.
+std::vector<float> ParseFloatList(const YAML::Node& node, const std::string& where) {
+  if (!node || !node.IsSequence() || node.size() == 0) {
+    Reject(where, " must be a non-empty sequence of numbers");
+  }
+  std::vector<float> out;
+  out.reserve(node.size());
+  for (std::size_t i = 0; i < node.size(); ++i) {
+    const auto v = node[i].as<float>(std::numeric_limits<float>::quiet_NaN());
+    if (!std::isfinite(v)) {
+      Reject(where, "[", std::to_string(i), "] must be finite");
+    }
+    out.push_back(v);
+  }
+  return out;
+}
+
 /// Name the migration when a pre-#511 flat schema turns up.
 ///
 /// Without this the old config fails as "inputs must be a non-empty sequence",
@@ -148,7 +193,8 @@ std::size_t OutputTensorSpec::Numel() const noexcept {
   return rtc::params::Numel(shape);
 }
 
-PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& feature_size) {
+PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& feature_size,
+                                   const FeatureRowsFn& feature_rows) {
   if (!cfg || !cfg.IsMap()) {
     Reject("schema node is missing or not a map");
   }
@@ -194,27 +240,51 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     spec.shape = ParseShape(entry["shape"], shape_where);
     const std::size_t numel = spec.Numel();
 
-    // Exactly one filler. A tensor with both would have its features overwritten
-    // by the feedback every step after the first — the observation would simply
-    // stop arriving, and the policy would keep producing finite actions from a
-    // hidden state and nothing else. A tensor with neither is never written at
-    // all, so it reads whatever the engine's allocation held.
+    // Exactly one filler. A tensor with features AND a recurrent source would
+    // have its features overwritten by the feedback every step after the first —
+    // the observation would simply stop arriving, and the policy would keep
+    // producing finite actions from a hidden state and nothing else. A tensor
+    // with none is never written at all, so it reads whatever the engine's
+    // allocation held.
     const YAML::Node source = entry["source"];
     const YAML::Node features = entry["features"];
     const bool has_features = features && features.IsSequence() && features.size() > 0;
     if (source) {
       const auto kind = source.as<std::string>("");
-      if (kind != "recurrent") {
+      if (kind == "recurrent") {
+        spec.recurrent = true;
+      } else if (kind == "constant") {
+        spec.constant = true;
+      } else {
         Reject(where, " ('", spec.name, "') declares source '", kind,
-               "' — the only source other than observation features is \"recurrent\"");
+               "' — the fillers other than observation features are \"recurrent\" and "
+               "\"constant\"");
       }
-      spec.recurrent = true;
     }
-    if (spec.recurrent == has_features) {
+    const int fillers = (has_features ? 1 : 0) + (spec.recurrent ? 1 : 0) + (spec.constant ? 1 : 0);
+    if (fillers != 1) {
       Reject(where, " ('", spec.name,
-             "') must declare EITHER a non-empty `features:` sequence OR `source: recurrent`, "
-             "not both and not neither");
+             "') must declare exactly one filler — a non-empty `features:` sequence, `source: "
+             "recurrent` or `source: constant` — not both and not neither");
     }
+
+    std::string names_where = where;
+    names_where.append(".element_names");
+    spec.element_names = ParseNameList(entry["element_names"], names_where);
+    if (!spec.element_names.empty()) {
+      if (numel % spec.element_names.size() != 0) {
+        Reject(names_where, " lists ", std::to_string(spec.element_names.size()),
+               " names, which does not divide the tensor's ", std::to_string(numel),
+               " elements into rows");
+      }
+      spec.stride = static_cast<int>(numel / spec.element_names.size());
+    }
+
+    if (entry["seed"] && !spec.recurrent) {
+      Reject(where, " ('", spec.name,
+             "') declares `seed:`, but only a recurrent tensor has a state to seed");
+    }
+
     if (spec.recurrent) {
       if (entry["offset"] || entry["scale"]) {
         // Normalisation constants come from the statistics of an observed
@@ -224,9 +294,68 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
                "') is recurrent and cannot carry an affine lane — `offset`/`scale` normalise "
                "observations, and a policy's internal state is not one");
       }
+      if (entry["fill"]) {
+        Reject(where, " ('", spec.name,
+               "') is recurrent — the feedback writes every element, so a `fill:` would never "
+               "be seen");
+      }
+      if (entry["seed"]) {
+        spec.seed_feature = entry["seed"].as<std::string>("");
+        if (spec.seed_feature.empty()) {
+          Reject(where, " ('", spec.name, "') declares an empty `seed:`");
+        }
+        const int seed_count = feature_size(spec.seed_feature);
+        if (seed_count <= 0) {
+          Reject(where, " ('", spec.name, "') is seeded from unknown id '", spec.seed_feature, "'");
+        }
+        if (static_cast<std::size_t>(seed_count) != numel) {
+          Reject(where, " ('", spec.name, "') is seeded from '", spec.seed_feature, "', which has ",
+                 std::to_string(seed_count), " elements, but the tensor has ",
+                 std::to_string(numel));
+        }
+      }
       out.inputs.push_back(std::move(spec));
       continue;
     }
+
+    if (spec.constant) {
+      if (entry["offset"] || entry["scale"]) {
+        Reject(where, " ('", spec.name,
+               "') is constant and cannot carry an affine lane — write the normalised value "
+               "into `values` instead");
+      }
+      if (entry["fill"]) {
+        Reject(where, " ('", spec.name,
+               "') is constant — its `values` already are the whole tensor, so `fill:` has "
+               "nothing to fill");
+      }
+      std::string values_where = where;
+      values_where.append(".values");
+      spec.values = ParseFloatList(entry["values"], values_where);
+      if (spec.values.size() != numel) {
+        Reject(values_where, " has ", std::to_string(spec.values.size()),
+               " entries but a constant tensor must spell out all ", std::to_string(numel),
+               " elements");
+      }
+      out.inputs.push_back(std::move(spec));
+      continue;
+    }
+
+    std::string fill_where = where;
+    fill_where.append(".fill");
+    if (entry["fill"]) {
+      spec.fill = ParseFloatList(entry["fill"], fill_where);
+      if (spec.fill.empty() || numel % spec.fill.size() != 0) {
+        Reject(fill_where, " has ", std::to_string(spec.fill.size()),
+               " entries; a fill pattern is repeated over the tensor, so its length must divide ",
+               std::to_string(numel));
+      }
+    }
+
+    // Who fills each element, so a second claim names the first. Positional
+    // placement keeps its prefix sum (YAML order IS tensor order); named
+    // placement ignores YAML order and lands each row where the export put it.
+    std::vector<int> owner(numel, -1);
     int cursor = 0;
     spec.features.reserve(features.size());
     spec.segments.reserve(features.size());
@@ -246,15 +375,82 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
       if (count <= 0) {
         Reject(at, " has unknown id '", id, "'");
       }
-      spec.segments.push_back({static_cast<int>(t), cursor, count});
+
+      rtc::inference::InputSegment seg{static_cast<int>(t), 0, count};
+      if (!spec.element_names.empty()) {
+        if (!feature_rows) {
+          Reject(at, " is placed by name ('", spec.name,
+                 "' declares element_names) but no row resolver was supplied (binding bug, not a "
+                 "config error)");
+        }
+        const std::vector<std::string> rows = feature_rows(id);
+        if (rows.empty()) {
+          Reject(at, " ('", id, "') has no row names, so it cannot be placed in '", spec.name,
+                 "', which declares element_names");
+        }
+        if (static_cast<std::size_t>(count) !=
+            rows.size() * static_cast<std::size_t>(spec.stride)) {
+          Reject(at, " ('", id, "') has ", std::to_string(count), " elements for ",
+                 std::to_string(rows.size()), " rows, but a row of '", spec.name, "' is ",
+                 std::to_string(spec.stride), " elements");
+        }
+        seg.indices.reserve(static_cast<std::size_t>(count));
+        for (const auto& row : rows) {
+          const auto it = std::find(spec.element_names.begin(), spec.element_names.end(), row);
+          if (it == spec.element_names.end()) {
+            Reject(at, " ('", id, "') fills row '", row, "', which '", spec.name,
+                   "'.element_names does not list");
+          }
+          const int base = static_cast<int>(it - spec.element_names.begin()) * spec.stride;
+          for (int j = 0; j < spec.stride; ++j) {
+            seg.indices.push_back(base + j);
+          }
+        }
+      } else {
+        seg.offset = cursor;
+        for (int j = 0; j < count; ++j) {
+          seg.indices.push_back(cursor + j);  // coverage bookkeeping only; cleared below
+        }
+        cursor += count;
+      }
+
+      for (const int idx : seg.indices) {
+        if (static_cast<std::size_t>(idx) >= numel) {
+          continue;  // positional overflow — reported with the sum below
+        }
+        auto& slot = owner[static_cast<std::size_t>(idx)];
+        if (slot >= 0) {
+          Reject(at, " ('", id, "') claims element ", std::to_string(idx), " of '", spec.name,
+                 "', which '", spec.features[static_cast<std::size_t>(slot)], "' already fills");
+        }
+        slot = static_cast<int>(i);
+      }
+      if (spec.element_names.empty()) {
+        seg.indices.clear();  // positional: a contiguous run, the pre-scatter descriptor
+      }
+      spec.segments.push_back(std::move(seg));
       spec.features.push_back(id);
       seen_features.push_back(std::move(id));
       seen_feature_where.push_back(at);
-      cursor += count;
     }
-    if (static_cast<std::size_t>(cursor) != numel) {
+
+    const auto covered = static_cast<std::size_t>(
+        std::count_if(owner.begin(), owner.end(), [](int o) { return o >= 0; }));
+    spec.partial = covered < numel;
+    if (spec.element_names.empty() && static_cast<std::size_t>(cursor) > numel) {
       Reject(where, " ('", spec.name, "') features sum to ", std::to_string(cursor),
              " elements but its shape declares ", std::to_string(numel));
+    }
+    if (spec.partial && spec.fill.empty()) {
+      if (spec.element_names.empty()) {
+        Reject(where, " ('", spec.name, "') features sum to ", std::to_string(cursor),
+               " elements but its shape declares ", std::to_string(numel),
+               " (declare `fill:` if the rest is deliberately constant)");
+      }
+      Reject(where, " ('", spec.name, "') leaves ", std::to_string(numel - covered), " of ",
+             std::to_string(numel),
+             " elements with no feature and declares no `fill:` for them — they would hold "
+             "whatever the engine's buffer last held");
     }
 
     std::string offset_where = where;
@@ -263,6 +459,11 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     scale_where.append(".scale");
     spec.offset = ParseAffineLane(entry["offset"], numel, offset_where);
     spec.scale = ParseAffineLane(entry["scale"], numel, scale_where);
+    if (spec.partial && (!spec.offset.empty() || !spec.scale.empty())) {
+      Reject(where, " ('", spec.name,
+             "') is only partly covered by its features — an affine lane would normalise the "
+             "`fill:` elements too; normalise the filler yourself or cover the tensor");
+    }
 
     out.inputs.push_back(std::move(spec));
   }
@@ -289,6 +490,14 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
     shape_where.append(".shape");
     spec.shape = ParseShape(entry["shape"], shape_where);
     spec.feeds = entry["feeds"].as<std::string>("");
+    std::string names_where = where;
+    names_where.append(".element_names");
+    spec.element_names = ParseNameList(entry["element_names"], names_where);
+    if (!spec.element_names.empty() && spec.element_names.size() != spec.Numel()) {
+      Reject(names_where, " lists ", std::to_string(spec.element_names.size()),
+             " names but tensor '", spec.name, "' has ", std::to_string(spec.Numel()),
+             " elements — an output is named element by element");
+    }
     out.outputs.push_back(std::move(spec));
   }
 
@@ -409,6 +618,13 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
              "it would be interpreting hidden units as radians");
     }
     const std::size_t tensor_numel = tensor_spec.Numel();
+    if (!tensor_spec.element_names.empty() && (entry["offset"] || entry["count"])) {
+      // A named head is read whole and routed by name. A slice of it would put
+      // back the positional reference the names exist to remove.
+      Reject(at, " (", label, ") slices tensor '", tensor_name,
+             "', which names its elements — a named head is read whole, by name; drop "
+             "offset/count");
+    }
 
     // Both keys are optional and default to "the whole tensor", because a
     // policy whose tensor IS one command is the common case and spelling out
@@ -460,6 +676,27 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
   }
 
   return out;
+}
+
+std::vector<int> ResolveNamedIndices(const std::vector<std::string>& element_names,
+                                     const std::vector<std::string>& wanted,
+                                     std::string_view what) {
+  std::vector<int> indices;
+  indices.reserve(wanted.size());
+  std::string missing;
+  for (const auto& name : wanted) {
+    const auto it = std::find(element_names.begin(), element_names.end(), name);
+    if (it == element_names.end()) {
+      missing.append(missing.empty() ? "" : ", ").append(name);
+      continue;
+    }
+    indices.push_back(static_cast<int>(it - element_names.begin()));
+  }
+  if (!missing.empty()) {
+    Reject(std::string(what), " does not name ", missing,
+           " — every joint the device commands must appear in the tensor's element_names");
+  }
+  return indices;
 }
 
 }  // namespace rtc::params

@@ -29,11 +29,13 @@
 namespace {
 
 using rtc::inference::ApplyAffine;
+using rtc::inference::ApplyFill;
 using rtc::inference::BlendPosture;
 using rtc::inference::CopyFiniteChecked;
 using rtc::inference::InputSegment;
 using rtc::inference::OutputSlice;
 using rtc::inference::PackSegment;
+using rtc::inference::UnpackIndexed;
 using rtc::inference::UnpackSlice;
 using rtc::params::ParsePolicyIoParams;
 using rtc::params::PolicyIoParams;
@@ -1102,4 +1104,415 @@ TEST(PolicyIoCore, BlendPostureRefusesRaggedPostures) {
   const auto rep = BlendPosture(out, open, close, 0.5);
   EXPECT_FALSE(rep.valid);
   EXPECT_DOUBLE_EQ(out[0], 7.0);
+}
+
+// ── By-name placement, fill, constant, seed ─────────────────────────────────
+//
+// The export shape a real grasp policy arrived with: a 46-slot joint vector of
+// which the robot fills 16, in an order the simulator chose; a [29, 3] body
+// table of which five rows are read; tensors the binding answers with a fixed
+// value; and an integrator state that must start at the measured posture. The
+// fixture is a miniature of that shape, with the device's own order reversed
+// against the export's so that "packed in YAML/device order" and "packed by
+// name" cannot coincide.
+
+namespace {
+
+int NamedFeatureSize(std::string_view id) {
+  if (id == "arm.position" || id == "hand.position") {
+    return 2;
+  }
+  if (id == "arm0.position" || id == "hand.thumb.force_norm" || id == "hand.index.force_norm") {
+    return 1;
+  }
+  if (id.starts_with("link.") && id.ends_with(".position")) {
+    return 3;
+  }
+  if (id.starts_with("link.") && id.ends_with(".orientation_xyzw")) {
+    return 4;
+  }
+  return 0;
+}
+
+std::vector<std::string> NamedFeatureRows(std::string_view id) {
+  if (id == "arm.position") {
+    return {"a0", "a1"};
+  }
+  if (id == "hand.position") {
+    return {"h1", "h0"};  // the DEVICE lists h1 first; the export lists h0 first
+  }
+  if (id == "arm0.position") {
+    return {"a0"};
+  }
+  if (id.starts_with("link.")) {
+    const auto rest = id.substr(5);
+    return {std::string(rest.substr(0, rest.find('.')))};
+  }
+  return {};  // force norms have no row names — positional only
+}
+
+constexpr const char* kNamedYaml = R"(
+inputs:
+  - name: "joint_pos"
+    shape: [1, 7]
+    element_names: ["a0", "a1", "passive", "h0", "loop:0", "loop:1", "h1"]
+    fill: [0.0]
+    features: ["arm.position", "hand.position"]
+  - name: "body_pos"
+    shape: [1, 4, 3]
+    element_names: ["base", "palm", "tip_b", "tip_a"]
+    fill: [0.0]
+    features: ["link.palm.position", "link.tip_a.position"]
+  - name: "body_quat"
+    shape: [1, 4, 4]
+    element_names: ["base", "palm", "tip_b", "tip_a"]
+    fill: [0.0, 0.0, 0.0, 1.0]
+    features: ["link.palm.orientation_xyzw"]
+  - name: "root_quat"
+    shape: [1, 4]
+    source: constant
+    values: [0.0, 0.0, 0.0, 1.0]
+  - name: "thumb_force"
+    shape: [1, 1, 1, 3]
+    fill: [0.0]
+    features: ["hand.thumb.force_norm"]
+  - name: "applied_in"
+    shape: [1, 2]
+    source: recurrent
+    seed: "arm.position"
+outputs:
+  - name: "arm_action"
+    shape: [1, 2]
+    element_names: ["a1", "a0"]
+  - name: "hand_action"
+    shape: [1, 2]
+    element_names: ["h0", "h1"]
+  - name: "applied_out"
+    shape: [1, 2]
+    feeds: "applied_in"
+output_features:
+  - { tensor: "arm_action",  role: "joint_target", device: "arm" }
+  - { tensor: "hand_action", role: "joint_target", device: "hand" }
+)";
+
+PolicyIoParams ParseNamed(const std::string& yaml) {
+  return ParsePolicyIoParams(YAML::Load(yaml), NamedFeatureSize, NamedFeatureRows);
+}
+
+void ExpectNamedRejectMentioning(const std::string& yaml, std::string_view needle) {
+  try {
+    static_cast<void>(ParseNamed(yaml));
+  } catch (const std::invalid_argument& e) {
+    const std::string what = e.what();
+    EXPECT_NE(what.find(needle), std::string::npos)
+        << "rejected, but for a different reason than this case tests.\n"
+        << "  expected to mention: " << needle << "\n  actual: " << what;
+    return;
+  }
+  ADD_FAILURE() << "expected the schema to be refused, but it parsed";
+}
+
+/// kNamedYaml with the first occurrence of @p from replaced by @p to. Fails the
+/// calling case (rather than silently testing the unedited fixture) when the
+/// anchor is gone.
+std::string Edited(std::string_view from, std::string_view to) {
+  std::string yaml = kNamedYaml;
+  const auto at = yaml.find(from);
+  EXPECT_NE(at, std::string::npos) << "fixture anchor missing: " << from;
+  if (at != std::string::npos) {
+    yaml.replace(at, from.size(), to);
+  }
+  return yaml;
+}
+
+}  // namespace
+
+TEST(PolicyIoNamed, EachRowLandsWhereTheExportPutItNotWhereTheDeviceListsIt) {
+  const auto p = ParseNamed(kNamedYaml);
+  const auto& jp = p.inputs[0];
+  EXPECT_EQ(jp.stride, 1);
+  EXPECT_TRUE(jp.partial);
+  ASSERT_EQ(jp.segments.size(), 2U);
+  EXPECT_EQ(jp.segments[0].indices, (std::vector<int>{0, 1}));
+  // Device order h1, h0 → export slots 6, 3. Positional packing would have
+  // written slots 2 and 3 — a passive joint and the wrong finger.
+  EXPECT_EQ(jp.segments[1].indices, (std::vector<int>{6, 3}));
+}
+
+TEST(PolicyIoNamed, ARowIsStrideConsecutiveElements) {
+  const auto p = ParseNamed(kNamedYaml);
+  const auto& bp = p.inputs[1];
+  EXPECT_EQ(bp.stride, 3);
+  EXPECT_EQ(bp.segments[0].indices, (std::vector<int>{3, 4, 5}));
+  EXPECT_EQ(bp.segments[1].indices, (std::vector<int>{9, 10, 11}));
+}
+
+TEST(PolicyIoNamed, PackingWritesOnlyTheNamedRowsOverTheFill) {
+  const auto p = ParseNamed(kNamedYaml);
+  const auto& jp = p.inputs[0];
+  std::vector<float> buf(7, 9.0F);  // whatever the engine's buffer last held
+  ApplyFill(buf, jp.fill);
+  ASSERT_TRUE(PackSegment(buf, jp.segments[0], std::vector<double>{1.5, 2.5}));
+  ASSERT_TRUE(PackSegment(buf, jp.segments[1], std::vector<double>{-1.0, -2.0}));  // h1, h0
+  const std::vector<float> want{1.5F, 2.5F, 0.0F, -2.0F, 0.0F, 0.0F, -1.0F};
+  EXPECT_EQ(buf, want);
+}
+
+TEST(PolicyIoNamed, AQuaternionFillMakesEveryUnobservedRowIdentity) {
+  const auto p = ParseNamed(kNamedYaml);
+  const auto& bq = p.inputs[2];
+  std::vector<float> buf(16, 9.0F);
+  ApplyFill(buf, bq.fill);
+  ASSERT_TRUE(PackSegment(buf, bq.segments[0], std::vector<double>{0.1, 0.2, 0.3, 0.9}));
+  const std::vector<float> want{0.0F, 0.0F, 0.0F, 1.0F, 0.1F, 0.2F, 0.3F, 0.9F,
+                                0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+  EXPECT_EQ(buf, want);
+}
+
+TEST(PolicyIoNamed, AConstantTensorCarriesItsValuesAndNothingElse) {
+  const auto p = ParseNamed(kNamedYaml);
+  const auto& rq = p.inputs[3];
+  EXPECT_TRUE(rq.constant);
+  EXPECT_FALSE(rq.recurrent);
+  EXPECT_TRUE(rq.features.empty());
+  EXPECT_EQ(rq.values, (std::vector<float>{0.0F, 0.0F, 0.0F, 1.0F}));
+}
+
+TEST(PolicyIoNamed, APositionalTensorMayBePartlyCoveredWhenItDeclaresAFill) {
+  const auto p = ParseNamed(kNamedYaml);
+  const auto& tf = p.inputs[4];
+  EXPECT_TRUE(tf.partial);
+  ASSERT_EQ(tf.segments.size(), 1U);
+  EXPECT_EQ(tf.segments[0].offset, 0);
+  EXPECT_EQ(tf.segments[0].count, 1);
+  EXPECT_TRUE(tf.segments[0].indices.empty()) << "positional stays a contiguous run";
+}
+
+TEST(PolicyIoNamed, ARecurrentTensorRemembersWhatSeedsIt) {
+  const auto p = ParseNamed(kNamedYaml);
+  EXPECT_TRUE(p.inputs[5].recurrent);
+  EXPECT_EQ(p.inputs[5].seed_feature, "arm.position");
+  EXPECT_TRUE(p.inputs[4].seed_feature.empty());
+}
+
+TEST(PolicyIoNamed, OutputNamesResolveToTheDeviceOrder) {
+  const auto p = ParseNamed(kNamedYaml);
+  EXPECT_EQ(p.outputs[0].element_names, (std::vector<std::string>{"a1", "a0"}));
+  EXPECT_EQ(rtc::params::ResolveNamedIndices(p.outputs[0].element_names, {"a0", "a1"}, "arm"),
+            (std::vector<int>{1, 0}));
+  EXPECT_EQ(rtc::params::ResolveNamedIndices(p.outputs[1].element_names, {"h1", "h0"}, "hand"),
+            (std::vector<int>{1, 0}));
+}
+
+TEST(PolicyIoNamed, ResolvingNamesListsEveryMissingJoint) {
+  try {
+    static_cast<void>(
+        rtc::params::ResolveNamedIndices({"a0", "a1"}, {"a0", "x", "y"}, "tensor 'arm_action'"));
+    ADD_FAILURE() << "expected a refusal";
+  } catch (const std::invalid_argument& e) {
+    const std::string what = e.what();
+    EXPECT_NE(what.find("tensor 'arm_action' does not name x, y"), std::string::npos) << what;
+  }
+}
+
+// ── By-name rejections ───────────────────────────────────────────────────────
+
+TEST(PolicyIoNamed, RejectsNamesThatDoNotDivideTheTensor) {
+  ExpectNamedRejectMentioning(Edited(R"(["a0", "a1", "passive", "h0", "loop:0", "loop:1", "h1"])",
+                                     R"(["a0", "a1", "h0", "loop:0", "loop:1", "h1"])"),
+                              "does not divide the tensor's 7 elements");
+}
+
+TEST(PolicyIoNamed, RejectsARepeatedElementName) {
+  ExpectNamedRejectMentioning(Edited(R"("passive")", R"("a0")"), "repeats 'a0'");
+}
+
+TEST(PolicyIoNamed, RejectsARowTheExportDoesNotList) {
+  ExpectNamedRejectMentioning(Edited(R"("loop:1", "h1"])", R"("loop:1", "h9"])"),
+                              "fills row 'h1', which 'joint_pos'.element_names does not list");
+}
+
+TEST(PolicyIoNamed, RejectsAFeatureWithNoRowNamesInANamedTensor) {
+  ExpectNamedRejectMentioning(
+      Edited(R"(features: ["arm.position", "hand.position"])",
+             R"(features: ["arm.position", "hand.position", "hand.index.force_norm"])"),
+      "has no row names");
+}
+
+TEST(PolicyIoNamed, RejectsAFeatureWhoseRowWidthIsNotTheStride) {
+  ExpectNamedRejectMentioning(
+      Edited(R"(features: ["link.palm.position", "link.tip_a.position"])",
+             R"(features: ["link.palm.position", "link.tip_b.orientation_xyzw"])"),
+      "has 4 elements for 1 rows, but a row of 'body_pos' is 3 elements");
+}
+
+TEST(PolicyIoNamed, RejectsTwoFeaturesClaimingOneElement) {
+  ExpectNamedRejectMentioning(
+      Edited(R"(features: ["arm.position", "hand.position"])",
+             R"(features: ["arm.position", "hand.position", "arm0.position"])"),
+      "claims element 0 of 'joint_pos', which 'arm.position' already fills");
+}
+
+TEST(PolicyIoNamed, RejectsANamedTensorWithUncoveredRowsAndNoFill) {
+  ExpectNamedRejectMentioning(
+      Edited("    fill: [0.0]\n    features: [\"arm.position\"", "    features: [\"arm.position\""),
+      "leaves 3 of 7 elements with no feature and declares no `fill:`");
+}
+
+TEST(PolicyIoNamed, RejectsAPartialPositionalTensorWithoutAFill) {
+  ExpectNamedRejectMentioning(Edited("    fill: [0.0]\n    features: [\"hand.thumb.force_norm\"]",
+                                     "    features: [\"hand.thumb.force_norm\"]"),
+                              "features sum to 1 elements but its shape declares 3");
+}
+
+TEST(PolicyIoNamed, RejectsAFillWhoseLengthDoesNotDivideTheTensor) {
+  ExpectNamedRejectMentioning(Edited("fill: [0.0, 0.0, 0.0, 1.0]", "fill: [0.0, 0.0, 1.0]"),
+                              "a fill pattern is repeated over the tensor");
+}
+
+TEST(PolicyIoNamed, RejectsANonFiniteFill) {
+  ExpectNamedRejectMentioning(Edited("fill: [0.0, 0.0, 0.0, 1.0]", "fill: [0.0, 0.0, 0.0, .nan]"),
+                              ".fill[3] must be finite");
+}
+
+TEST(PolicyIoNamed, RejectsAnAffineLaneOnAPartlyCoveredTensor) {
+  // The lane would normalise the filler — a "zero" slot would arrive as −offset·scale.
+  ExpectNamedRejectMentioning(
+      Edited("    fill: [0.0]\n    features: [\"arm.position\"",
+             "    fill: [0.0]\n    scale: [1, 1, 1, 1, 1, 1, 1]\n    features: [\"arm.position\""),
+      "only partly covered");
+}
+
+TEST(PolicyIoNamed, RejectsAConstantWithoutValues) {
+  ExpectNamedRejectMentioning(Edited("    values: [0.0, 0.0, 0.0, 1.0]\n", ""),
+                              ".values must be a non-empty sequence");
+}
+
+TEST(PolicyIoNamed, RejectsAConstantThatDoesNotSpellOutTheTensor) {
+  ExpectNamedRejectMentioning(Edited("values: [0.0, 0.0, 0.0, 1.0]", "values: [0.0, 0.0, 1.0]"),
+                              "must spell out all 4 elements");
+}
+
+TEST(PolicyIoNamed, RejectsAConstantThatAlsoHasFeatures) {
+  ExpectNamedRejectMentioning(
+      Edited("    source: constant\n",
+             "    source: constant\n    features: [\"link.base.orientation_xyzw\"]\n"),
+      "not both and not neither");
+}
+
+TEST(PolicyIoNamed, RejectsAConstantWithAFill) {
+  ExpectNamedRejectMentioning(
+      Edited("    source: constant\n", "    source: constant\n    fill: [0.0]\n"),
+      "its `values` already are the whole tensor");
+}
+
+TEST(PolicyIoNamed, RejectsAConstantWithAnAffineLane) {
+  ExpectNamedRejectMentioning(
+      Edited("    source: constant\n", "    source: constant\n    scale: [1, 1, 1, 1]\n"),
+      "is constant and cannot carry an affine lane");
+}
+
+TEST(PolicyIoNamed, RejectsASeedOnATensorThatIsNotRecurrent) {
+  ExpectNamedRejectMentioning(
+      Edited("    features: [\"hand.thumb.force_norm\"]",
+             "    features: [\"hand.thumb.force_norm\"]\n    seed: \"arm.position\""),
+      "only a recurrent tensor has a state to seed");
+}
+
+TEST(PolicyIoNamed, RejectsASeedOfTheWrongWidth) {
+  ExpectNamedRejectMentioning(Edited(R"(seed: "arm.position")", R"(seed: "hand.thumb.force_norm")"),
+                              "which has 1 elements, but the tensor has 2");
+}
+
+TEST(PolicyIoNamed, RejectsASeedFromAnUnknownFeature) {
+  ExpectNamedRejectMentioning(Edited(R"(seed: "arm.position")", R"(seed: "arm.positon")"),
+                              "seeded from unknown id 'arm.positon'");
+}
+
+TEST(PolicyIoNamed, RejectsAFillOnARecurrentTensor) {
+  ExpectNamedRejectMentioning(
+      Edited("    source: recurrent\n", "    source: recurrent\n    fill: [0.0]\n"),
+      "a `fill:` would never be seen");
+}
+
+TEST(PolicyIoNamed, RejectsOutputNamesThatDoNotMatchTheWidth) {
+  ExpectNamedRejectMentioning(Edited(R"(element_names: ["a1", "a0"])", R"(element_names: ["a1"])"),
+                              "lists 1 names but tensor 'arm_action' has 2");
+}
+
+TEST(PolicyIoNamed, RejectsARepeatedOutputName) {
+  ExpectNamedRejectMentioning(
+      Edited(R"(element_names: ["a1", "a0"])", R"(element_names: ["a1", "a1"])"), "repeats 'a1'");
+}
+
+TEST(PolicyIoNamed, RejectsASliceOfANamedHead) {
+  ExpectNamedRejectMentioning(
+      Edited(R"({ tensor: "arm_action",  role: "joint_target", device: "arm" })",
+             R"({ tensor: "arm_action",  role: "joint_target", device: "arm", offset: 0 })"),
+      "a named head is read whole, by name");
+}
+
+TEST(PolicyIoNamed, RejectsNamedPlacementWithoutARowResolver) {
+  try {
+    static_cast<void>(ParsePolicyIoParams(YAML::Load(kNamedYaml), NamedFeatureSize));
+    ADD_FAILURE() << "expected a refusal";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string(e.what()).find("no row resolver was supplied"), std::string::npos)
+        << e.what();
+  }
+}
+
+// ── Core: scatter, fill, gather ──────────────────────────────────────────────
+
+TEST(PolicyIoCore, PackSegmentScattersToItsIndices) {
+  std::vector<float> buf(5, 0.0F);
+  InputSegment seg{0, 0, 3};
+  seg.indices = {4, 0, 2};
+  ASSERT_TRUE(PackSegment(buf, seg, std::vector<double>{1.0, 2.0, 3.0}));
+  EXPECT_EQ(buf, (std::vector<float>{2.0F, 0.0F, 3.0F, 0.0F, 1.0F}));
+}
+
+TEST(PolicyIoCore, PackSegmentScatterIsAllOrNothingOnABadIndex) {
+  std::vector<float> buf(3, -1.0F);
+  InputSegment seg{0, 0, 2};
+  seg.indices = {0, 3};  // the second leaves the tensor
+  EXPECT_FALSE(PackSegment(buf, seg, std::vector<double>{1.0, 2.0}));
+  EXPECT_EQ(buf, (std::vector<float>{-1.0F, -1.0F, -1.0F}))
+      << "the first index must not be written";
+}
+
+TEST(PolicyIoCore, PackSegmentScatterRefusesACountThatDisagreesWithItsIndices) {
+  std::vector<float> buf(3, -1.0F);
+  InputSegment seg{0, 0, 3};
+  seg.indices = {0, 1};
+  EXPECT_FALSE(PackSegment(buf, seg, std::vector<double>{1.0, 2.0, 3.0}));
+}
+
+TEST(PolicyIoCore, ApplyFillRepeatsThePatternAndAnEmptyOneIsANoOp) {
+  std::vector<float> buf(6, 9.0F);
+  ApplyFill(buf, std::vector<float>{});
+  EXPECT_EQ(buf, (std::vector<float>(6, 9.0F)));
+  ApplyFill(buf, std::vector<float>{1.0F, 2.0F, 3.0F});
+  EXPECT_EQ(buf, (std::vector<float>{1.0F, 2.0F, 3.0F, 1.0F, 2.0F, 3.0F}));
+}
+
+TEST(PolicyIoCore, UnpackIndexedGathersInIndexOrder) {
+  const std::vector<float> buf{10.0F, 20.0F, 30.0F};
+  std::vector<double> out(3, 0.0);
+  ASSERT_TRUE(UnpackIndexed(out, std::vector<int>{2, 0, 1}, buf.data(), buf.size()));
+  EXPECT_EQ(out, (std::vector<double>{30.0, 10.0, 20.0}));
+}
+
+TEST(PolicyIoCore, UnpackIndexedRefusesAnOutOfRangeIndexWithoutWriting) {
+  const std::vector<float> buf{10.0F, 20.0F};
+  std::vector<double> out(2, -1.0);
+  EXPECT_FALSE(UnpackIndexed(out, std::vector<int>{0, 2}, buf.data(), buf.size()));
+  EXPECT_EQ(out, (std::vector<double>{-1.0, -1.0}));
+}
+
+TEST(PolicyIoCore, UnpackIndexedRefusesANullBufferAndAShortDestination) {
+  std::vector<double> out(1, 0.0);
+  EXPECT_FALSE(UnpackIndexed(out, std::vector<int>{0}, nullptr, 3));
+  const std::vector<float> buf{1.0F, 2.0F};
+  EXPECT_FALSE(UnpackIndexed(out, std::vector<int>{0, 1}, buf.data(), buf.size()));
 }
