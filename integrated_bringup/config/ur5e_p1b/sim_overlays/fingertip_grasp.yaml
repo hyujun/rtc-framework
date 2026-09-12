@@ -1,0 +1,61 @@
+# sim overlay — a p1b grasp the fingertip contact sensors can see (#504)
+#
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
+#       sim_overlay:=fingertip_grasp enable_viewer:=false use_cpu_affinity:=false
+#
+# An overlay is an ordinary ROS 2 params file. The launch applies it AFTER
+# ../mujoco_simulator.yaml (so it wins over the shipped scene) and BEFORE its own
+# command-line overrides (so `model_path:=` etc. still win over it), to both
+# nodes — each node reads only its own section. Nothing here edits the shared
+# profile: without `sim_overlay:=` the sim is exactly the shipped one.
+#
+# WHAT IT IS FOR. Reaching a real grasp on p1b — two fingertips over
+# `contact_on_threshold` and a valid pull estimate — is the precondition for
+# every compliance/pull observation this sim can make: #504's activation-order
+# claim, and the §7.4 envelope / D-A5 bias / §10.7 ramp lanes behind it. The
+# shipped `object_pool` cannot produce one. Its objects sit on the table under a
+# palm-down hand that stops at `shoulder_lift ~= -0.72` on the table itself, and
+# what contact there is lands on non-tip links, which carry no sensor.
+#
+# WHY IT IS SHIPPED RATHER THAN LEFT IN A SCRATCH DIR. Not for a regression
+# layer — the #504 regression is a unit test, and this scene is far too heavy for
+# CI. It is shipped because FINDING it cost five failed runs and finally a
+# `mujoco.mj_geomDistance` grid search over every robot collision geom. The
+# maintenance cost of one overlay plus one object is smaller than doing that
+# again. Geometry rationale lives in the object file; the search constraints live
+# in `.claude/skills/verify/SKILL.md` (p1b).
+#
+# HOW IT IS USED. The arm never moves. Leave the shipped palm-down
+# `initial_qpos` alone, let the disk spawn at fingertip height, and close index
+# then thumb with per-finger ramps (the two have different closure schedules —
+# one scalar saturates the thumb at 14 N while the index is still 1 mm short).
+# The grasp procedure, including which controller to activate FIRST, is in the
+# verify skill; the order is not free (#504).
+
+mujoco_simulator:
+  ros__parameters:
+    # The shipped scene is kept: the table is what anchors the 100 kg pedestal.
+    object_pool:
+      # This repo's own objects (robot_descriptions/objects), not object_sim.
+      directory: "package://robot_descriptions/objects"
+      objects: ["fingertip_disk"]
+      fixed_object: "fingertip_disk"
+      selection: "fixed"
+      pose: "fixed"
+      # World frame. (x,y) is the grid-search result — the one place the open
+      # hand leaves a fingertip-reachable void. z = 0.051 puts the pedestal
+      # bottom 0.001 above the table top (0.05) so the spawn never starts
+      # interpenetrating, and carries the disk to 0.335..0.365, the band the
+      # fingertips alone sweep. All three couple: moving any one of them without
+      # re-running the search puts the disk somewhere no sensor reports.
+      position: [-0.630, -0.165, 0.051]
+      rpy: [0.0, 0.0, 0.0]
+      # Ignored while pose is "fixed", zeroed anyway: the inherited values are
+      # the shipped ±0.12 m scatter, and flipping pose to "random" here should
+      # not quietly move the disk out of the band above.
+      position_variation: [0.0, 0.0, 0.0]
+      rpy_variation: [0.0, 0.0, 0.0]
+      # The pool is one object, so "don't spawn the same one twice" has nothing
+      # left to pick and the run must be reproducible anyway.
+      avoid_repeat: false
+      seed: 1

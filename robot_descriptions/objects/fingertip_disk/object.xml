@@ -1,0 +1,62 @@
+<!-- fingertip_disk — a disk held at p1b fingertip height on a pedestal too heavy
+     to push, so the hand can be made to close on something the fingertip contact
+     sensors actually see.
+
+     Loaded through rtc_mujoco_sim's object_pool, which attaches the body named
+     `object` from `<directory>/<name>/object.xml` and adds its freejoint. So
+     this file carries NO joint and NO scene — only the body.
+
+     WHY THIS SHAPE. Every part of it answers a way the obvious object fails, and
+     all five were observed in the p1b sim (#504, 2026-09-12) before this landed:
+
+       * DISK, not a column. A column tall enough to reach the fingertips also
+         occupies the volume the OPEN hand already fills, so it compiles inside
+         the index finger or the palm before the fingers ever move — there is no
+         (x,y) that works. Only the z band the fingertips alone sweep may be
+         occupied, which in the shipped palm-down `initial_qpos` is roughly
+         0.335..0.365 m. Hence r 0.019, h 0.03, and nothing else up there.
+       * PEDESTAL AT 100 kg. A free object is pushed away rather than grasped: a
+         0.5 kg column leaves the thumb in one step, and 5 kg still walks 2 cm in
+         a single run. At 100 kg the table friction (mu 1 => ~1 kN) exceeds
+         anything the hand can produce, so the run measures the HAND, not the
+         object's inertia. The mass lives entirely in the pedestal; the neck and
+         disk masses below are their density-derived values, spelled out so the
+         total does not depend on a MuJoCo default.
+       * NECK AT r 0.007. It only has to hold the disk up while staying thinner
+         than the gap the closing fingers sweep, so the fingers reach the disk
+         instead of stopping on the support.
+       * PEDESTAL RADIUS 0.090 AND TOP AT z 0.30. Wide enough that the 100 kg is
+         stable standing on the table, low enough to stay clear of the hand.
+
+     GEOMETRY IS THE CONTRACT, and it is expressed relative to the BODY ORIGIN,
+     which is what object_pool's `position` places. With the shipped spawn in
+     `integrated_bringup/config/ur5e_p1b/sim_overlays/fingertip_grasp.yaml`
+     (z = 0.051, a table top at z = 0.05), the three geoms below land at world
+     z 0.05..0.30 (pedestal), 0.300..0.336 (neck) and 0.335..0.365 (disk). Move
+     the spawn and the disk leaves the fingertip band — the overlay's z and this
+     file's offsets are one number split in two places.
+
+     PLACEMENT IN (x,y) IS NOT GUESSABLE. The fingertip links' contact radius is
+     about 10 mm, not the 22 mm the published `l_*_tip_bracket_actual` frames
+     suggest, and contacts on non-tip links carry no sensor at all. The shipped
+     (x,y) came out of a `mujoco.mj_geomDistance` grid search over every robot
+     collision geom; five eyeballed placements before it all missed or buried
+     the disk. See `.claude/skills/verify/SKILL.md` (p1b) for the full checklist. -->
+<mujoco model="fingertip_disk">
+  <worldbody>
+    <body name="object">
+      <!-- Pedestal: bottom on the table top, i.e. 0.001 below the body origin. -->
+      <geom name="fingertip_disk_pedestal" type="cylinder" size="0.090 0.125" pos="0 0 0.124"
+            mass="100" contype="1" conaffinity="1" condim="4" friction="1 0.5 0.01"
+            rgba="0.35 0.35 0.38 1"/>
+      <!-- Neck: pedestal top up to the underside of the disk. -->
+      <geom name="fingertip_disk_neck" type="cylinder" size="0.007 0.018" pos="0 0 0.267"
+            mass="0.0055" contype="1" conaffinity="1" condim="4" friction="1 0.5 0.01"
+            rgba="0.35 0.35 0.38 1"/>
+      <!-- Disk: the only part the fingers are meant to touch. -->
+      <geom name="fingertip_disk_disk" type="cylinder" size="0.019 0.015" pos="0 0 0.299"
+            mass="0.034" contype="1" conaffinity="1" condim="4" friction="1 0.5 0.01"
+            rgba="0.85 0.55 0.20 1"/>
+    </body>
+  </worldbody>
+</mujoco>

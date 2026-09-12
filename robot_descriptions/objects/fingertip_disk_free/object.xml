@@ -1,0 +1,100 @@
+<!-- fingertip_disk_free — the `fingertip_disk` stand carrying a disk that is FREE
+     and WEIGHTLESS, so a p1b grasp on it behaves like a grasp on a free body:
+     it travels with the hand, and the net force it returns to the hand is a
+     constant the experiment knows (zero).
+
+     Loaded through rtc_mujoco_sim's object_pool, which attaches the body named
+     `object` from `<directory>/<name>/object.xml` and adds its freejoint.
+
+     WHY IT EXISTS ALONGSIDE `fingertip_disk`. The rigid sibling answers "does
+     the grasp form" (#504) and cannot answer anything that needs it to LAST:
+     the moment DemoComplianceController consumes a wrench, K_p^a = 0 hand-
+     guiding walks the compliant frame (measured 4.22 cm, 2026-09-12) and the
+     bolted-down disk cannot follow, so the fingers leave it inside 0.37 s.
+     Anything about sustained pull — #504 AC 2's "stays valid", #177 crit#6's
+     leakage regression — needs an object that goes where the hand goes.
+
+     WHY WEIGHTLESS RATHER THAN HANGING. #177 wants the true load on the grasp
+     held CONSTANT while grip force is swept, so that d|F̂|/dΣf_n isolates
+     leakage. A free body gives exactly that: it has no other support, so in
+     equilibrium the force it returns to the hand equals its weight, whatever
+     the fingers do. Setting `gravcomp="1"` makes that constant ZERO, which is
+     the cleanest version of the same premise and removes the part that is hard
+     to arrange in this scene — a disk at fingertip height has nowhere to hang
+     from that is not already occupied by the open hand.
+
+     THE FLOATING PART HAS TO BE A CHILD BODY. object_pool's Activate() writes
+     `body_gravcomp = 0` on the body it spawns, so `gravcomp` on `object` itself
+     is overwritten every spawn. It touches only that one body, so a child keeps
+     what this file gives it. The child also cannot carry a freejoint of its own:
+     a freejoint's qpos0 is absolute, and the pool parks the root by rewriting
+     its spec `pos`, which would leave a free child 50 m from its parent. Hence
+     three slides plus a ball — 6 DOF relative to the stand, which is what the
+     pool can move around as a unit.
+
+     THE STAND IS STILL HEAVY AND STILL TOUCHES THE TABLE. It is what holds the
+     floating disk's reference frame still; `gravcomp` cannot be used on it (see
+     above), so it has to be anchored the way its sibling is — 100 kg on table
+     friction (mu 1 => ~1 kN), far more than the hand can move. The neck of the
+     rigid sibling is gone: with the disk a separate body the neck would collide
+     with it, and nothing has to hold the disk up any more.
+
+     GEOMETRY IS THE CONTRACT and matches `fingertip_disk` exactly where it has
+     to: the same spawn, the same pedestal, and the same disk at world
+     z 0.335..0.365 — so the closure schedule that grasps one grasps the other.
+     Offsets below are relative to the BODY ORIGIN, which object_pool's
+     `position` places (shipped: z = 0.051 over a table top at z = 0.05). -->
+<mujoco model="fingertip_disk_free">
+  <worldbody>
+    <body name="object">
+      <!-- Stand: bottom on the table top, i.e. 0.001 below the body origin. -->
+      <geom name="fingertip_disk_free_pedestal" type="cylinder" size="0.090 0.125"
+            pos="0 0 0.124" mass="100"
+            contype="1" conaffinity="1" condim="4" friction="1 0.5 0.01"
+            rgba="0.35 0.35 0.38 1"/>
+
+      <!-- The grasped object. 6 DOF against the stand + gravity cancelled, with
+           a weak spring holding the rest pose. Mass is 2 kg for INERTIA only
+           (gravity is compensated) — a light disk is flicked out of the pinch by
+           the force asymmetries of closing, which is how a 0.5 kg free column
+           failed here in 2026-09-12.
+
+           THE SPRING IS WHAT MAKES IT GRASPABLE, and it was not obvious. With
+           `gravcomp="1"` and free slides the disk is a genuinely free body, and
+           a free body in zero gravity is UNSEATED BY THE FIRST TOUCH: the index
+           tip nudges it, nothing restores it, and the fingers close through
+           empty space. Measured 2026-09-12 — closing all the way to fi = 1.0,
+           thumb 0.40 rad, produced 0.00 N on all four fingertips for 20 s.
+           Gravity is what normally holds an object in place to be picked up;
+           removing it costs the seating, and the spring buys it back.
+
+           STIFFNESS IS CHOSEN AGAINST THE FORCES THIS SCENE MEASURES. At 50 N/m
+           the seating force over the few mm a capture disturbs is under 0.2 N —
+           below `contact_on_threshold` (0.5 N) and well under the 1-2 N pull
+           estimates — so it does not masquerade as the load. Over the ~4 cm the
+           §7 admittance law walks the arm it grows to ~2 N, which is the
+           sustained pull that keeps hand-guiding going and is the point of this
+           object. Damping is near-critical for 2 kg (c_crit = 2*sqrt(k*m) = 20)
+           so a capture settles instead of ringing.
+
+           WHAT "TRUE LOAD" MEANS HERE, for #177 crit#6: with the arm HELD STILL
+           (run the grip sweep under DemoJointController — measured drift 0.0010
+           rad over 5 s) the disk sits at its rest pose and the spring returns
+           ~0 N, constant, whatever the fingers do. A known NON-zero load is
+           applied with `/sim/set_external_wrench` on this body rather than by
+           re-tuning anything here. -->
+      <body name="disk" pos="0 0 0.299" gravcomp="1">
+        <joint name="fingertip_disk_free_sx" type="slide" axis="1 0 0" range="-0.25 0.25"
+               stiffness="150" damping="30"/>
+        <joint name="fingertip_disk_free_sy" type="slide" axis="0 1 0" range="-0.25 0.25"
+               stiffness="150" damping="30"/>
+        <joint name="fingertip_disk_free_sz" type="slide" axis="0 0 1" range="-0.15 0.15"
+               stiffness="150" damping="30"/>
+        <joint name="fingertip_disk_free_ball" type="ball" stiffness="0.5" damping="0.2"/>
+        <geom name="fingertip_disk_free_disk" type="cylinder" size="0.019 0.015" mass="2"
+              contype="1" conaffinity="1" condim="4" friction="1 0.5 0.01"
+              rgba="0.20 0.70 0.45 1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
