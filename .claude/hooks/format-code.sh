@@ -15,6 +15,9 @@
 #            2. <workspace>/.venv/bin/ruff      (rtc_ws/.venv created by install.sh)
 #            3. `command -v ruff`               (PATH fallback)
 # Limits : silent on tool absence (no clang-format AND no uvx / no ruff -> skip).
+#          Edit / Write only: a file written through Bash (heredoc, sed -i, a
+#          rewrite script) never passes here. verify-changes.sh Phase 5 blocks
+#          the formatter drift such a write introduces.
 #          Other languages (.yaml / .md / .cmake / .sh) are NOT formatted here.
 # Exit   : always 0; never blocks. clang-format / ruff stderr is suppressed.
 set -euo pipefail

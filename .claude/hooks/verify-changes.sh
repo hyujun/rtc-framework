@@ -60,6 +60,11 @@
 #        - runs at --severity=warning (notes do not block); repo-root
 #          .shellcheckrc supplies external-sources + SC2034 suppression.
 #        - NOT narrowed to added lines like the doc phase: see Phase 4.
+#   5. Formatter drift on changed C++ / Python (clang-format / ruff format)
+#        - blocks only drift the change INTRODUCED (base blob absent or already
+#          a formatter fixed point); pre-existing debt passes. See Phase 5.
+#        - `ruff check` lint is NOT graded; Doxygen, YAML default/range/unit and
+#          README need stay manual (modification-guide.md Completion Checklist).
 #
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
@@ -1185,6 +1190,49 @@ if [ -n "$CHANGED_SH" ]; then
   fi
 fi
 
+# --- Phase 5: formatter drift introduced by the change ---
+# format-code.sh (PostToolUse) formats only what the Edit / Write tools touch. A
+# file written through Bash -- heredoc, sed -i, a python rewrite script -- used
+# to reach a commit unformatted with nothing downstream to notice: the only
+# formatter call in this hook was the pure-format fast path, and CI runs none.
+# Two such .py files reached main that way.
+#
+# Blocks only on drift the change INTRODUCED: the working file is not a formatter
+# fixed point AND its $VERIFY_BASE blob either does not exist or was one. A file
+# already unformatted at the base is debt this diff did not cause; grading it
+# whole would block every unrelated touch of a legacy file -- the false-block
+# class the doc phase's added-lines narrowing removed. (A rename reads as a new
+# file and is graded whole.) Scope is CHANGED_SRC_BUILD, so untracked scratch
+# outside the installed-source dirs is not graded. Fails OPEN when the formatter
+# is missing or prints nothing (a syntax error, uvx unable to provision): a
+# verdict needs output to compare, and this gate is style, not correctness.
+FORMAT_FAILURES=""
+RUFF_BIN_FMT=$(find_ruff) || RUFF_BIN_FMT=""
+while IFS= read -r f; do
+  [ -n "$f" ] && [ -f "$f" ] || continue
+  case "$f" in
+    *.cpp|*.hpp|*.h|*.cc)
+      [ "$HAVE_CLANG_FORMAT" -eq 1 ] || continue
+      FMT_CMD=("${CLANG_FORMAT_CMD[@]}" --assume-filename="$f")
+      FMT_FIX="clang-format -i $f"
+      ;;
+    *.py)
+      [ -n "$RUFF_BIN_FMT" ] || continue
+      FMT_CMD=("$RUFF_BIN_FMT" format --stdin-filename="$f" -)
+      FMT_FIX="ruff format $f"
+      ;;
+    *) continue ;;
+  esac
+  work_fmt=$("${FMT_CMD[@]}" < "$f" 2>/dev/null) || continue
+  [ -n "$work_fmt" ] || continue
+  [ "$work_fmt" = "$(cat "$f")" ] && continue
+  if git cat-file -e "$VERIFY_BASE:$f" 2>/dev/null; then
+    base_fmt=$(git show "$VERIFY_BASE:$f" | "${FMT_CMD[@]}" 2>/dev/null) || continue
+    [ "$base_fmt" = "$(git show "$VERIFY_BASE:$f")" ] || continue
+  fi
+  FORMAT_FAILURES="${FORMAT_FAILURES}  - $f: formatter would rewrite it (not done by the Edit/Write hook) -- run: ${FMT_FIX}\n"
+done <<< "$CHANGED_SRC_BUILD"
+
 # --- Report ---
 REPORT=""
 if [ -n "$ARCH_VIOLATIONS" ]; then
@@ -1211,20 +1259,25 @@ fi
 if [ -n "$SHELLCHECK_FAILURES" ]; then
   REPORT="${REPORT}shellcheck (warning+) on changed shell scripts:\n${SHELLCHECK_FAILURES}\n"
 fi
-
-# Constitution parity: CLAUDE.md and AGENTS.md state the same rules for two
-# different audiences (Claude Code / every other tool), and nothing else in the
-# harness looks at AGENTS.md at all.  It went 4 commits stale that way, losing
-# ARCH-7, NUM-5 and the cwd-drift recovery notes for the tools that only read
-# it.  Non-blocking on purpose: a Claude-only change (hook wiring, slash command)
-# legitimately touches one and not the other -- the agent decides, and says so.
-if echo "$CHANGED_TRACKED" | grep -qx 'CLAUDE.md' && \
-   ! echo "$CHANGED_TRACKED" | grep -qx 'AGENTS.md'; then
-  CHECKLIST="${CHECKLIST}  - CLAUDE.md changed without AGENTS.md: if the edit states a rule (not a Claude-only mechanism), mirror it into AGENTS.md so non-Claude tools get it too — or note in your report why it is Claude-specific\n"
+if [ -n "$FORMAT_FAILURES" ]; then
+  REPORT="${REPORT}Formatter drift introduced on changed sources:\n${FORMAT_FAILURES}\n"
 fi
-if echo "$CHANGED_TRACKED" | grep -qx 'AGENTS.md' && \
-   ! echo "$CHANGED_TRACKED" | grep -qx 'CLAUDE.md'; then
-  CHECKLIST="${CHECKLIST}  - AGENTS.md changed without CLAUDE.md: confirm the same rule holds for Claude Code, or note why it does not\n"
+
+# Constitution split: AGENTS.md is the single tool-neutral constitution and
+# CLAUDE.md imports it (`@AGENTS.md`), adding only Claude Code mechanisms. The
+# parity reminder this replaces ("mirror a CLAUDE.md edit into AGENTS.md") dates
+# from two hand-kept copies -- the copies went 4 commits stale, losing ARCH-7 and
+# NUM-5 for non-Claude tools -- and under the import it would recreate exactly
+# that duplication. What can still go wrong:
+#   * the import line is dropped: Claude Code silently loses the whole
+#     constitution, and nothing else in the harness would say so -> blocking;
+#   * a rule lands in CLAUDE.md, where no other tool reads it -> non-blocking,
+#     since only the agent can tell a rule from a mechanism.
+if echo "$CHANGED_TRACKED" | grep -qx 'CLAUDE.md' && [ -f AGENTS.md ]; then
+  if [ -f CLAUDE.md ] && ! grep -qx '@AGENTS.md' CLAUDE.md; then
+    REPORT="${REPORT}Constitution import missing:\n  - CLAUDE.md no longer has the line '@AGENTS.md' -- Claude Code would load none of AGENTS.md; restore it\n\n"
+  fi
+  CHECKLIST="${CHECKLIST}  - CLAUDE.md changed: it holds only Claude Code mechanisms — if the edit states a rule, put it in AGENTS.md (imported by CLAUDE.md) so other tools get it too\n"
 fi
 
 # ARCH-6 QoS depth is a non-blocking sensor: fold it into the checklist stream
