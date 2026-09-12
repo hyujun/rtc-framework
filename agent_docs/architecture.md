@@ -16,7 +16,7 @@
 
 필드 list / capacity 값은 위 헤더 직접 참조 (`grep -n 'struct.*Data' <header>`).
 
-**`efforts` lane 계약** (#447 → PR #450): `DeviceState::efforts` 는 **관절 토크 [N·m]** 다 — 실기 backend 가 모터 전류를 받으면 backend 경계에서 변환해 넣고 raw 는 `motor_efforts` lane 에 남긴다 (`types.hpp` 필드 주석 참조). 실기는 command mode 와 무관하게 관절 토크를 보고하므로, backend 별로 effort 의미가 갈려 보이면 어긋나는 쪽이 **producer 결함**이다 — 소비자(예: momentum observer)를 command mode 로 게이팅하는 방향은 sim 결함을 실기 제약으로 굳히므로 반려됐고, sim 의 gravcomp 누락을 producer 에서 고쳤다. 포함범위 위반(모든 일반화력을 담지 않음)은 lane 이 fresh·정단위인 채 일어나므로 `rtc::IsLaneReadable` 로는 탐지되지 않는다.
+**`efforts` lane 계약** (#447 → PR #450): `DeviceState::efforts` 는 **관절 토크 [N·m]** 다 — 실기 backend 가 모터 전류를 받으면 backend 경계에서 변환해 넣고 raw 는 `motor_efforts` lane 에 남긴다 (`types.hpp` 필드 주석 참조). effort 의미가 backend 별로 갈려 보이는 경우는 **두 가지이고 처방이 다르다**. **같은 로봇이 mode 에 따라 갈리면 producer 결함**이다 — 소비자(예: momentum observer)를 command mode 로 게이팅하는 방향은 sim 결함을 실기 제약으로 굳히므로 반려됐고, sim 의 gravcomp 누락을 producer 에서 고쳤다. **로봇 자체가 토크 lane 을 안 주면 그건 capability 경계**이고, 그 프로필에서 소비자를 끄는 것이 맞다: UR 은 모터 전류를 보고하며(실측 2026-08-27) 전 관절을 덮는 변환 상수가 없어 **변환하지 않기로 결정**했다 (2026-09-12, `#502` close). 그래서 momentum observer 는 `iiwa7_leap` 만 `enabled: true` 다 — 근거는 각 프로필의 `demo_shared.yaml` 이 소유한다 (sim/실기 축이 아니라 **로봇 축**이다: sim 의 UR 도 꺼 둔다). 포함범위 위반(모든 일반화력을 담지 않음)은 lane 이 fresh·정단위인 채 일어나므로 `rtc::IsLaneReadable` 로는 탐지되지 않는다.
 
 ## Threading Model
 
