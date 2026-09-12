@@ -835,7 +835,7 @@ publish 하는 joint span 과 프로파일이 어긋나면 `/rosout` 에 one-sho
 |---|---|
 | `demo_gui/app.py` | `DemoControllerGUI` Tk 클래스 + main() — 위젯 빌드 / refresh / ROS callback / 핸들러 |
 | `demo_gui/config.py` | gain 스키마 (`GAIN_DEFS`, `GAIN_PARAM_DISPATCH`), 위젯 레이아웃, FSM phase 라벨 표, 캘리브레이션 항목 — robot-agnostic GUI 표 |
-| `demo_gui/discovery.py` | `RobotShape` (arm/hand DoF·finger group) + `RobotProfile` / `ROBOT_PROFILES` — `--robot` 가 선택하는 정적 로봇 프로파일 (joint 스키마 + TCP frame) |
+| `demo_gui/discovery.py` | `RobotShape` (arm/hand DoF·finger group) + `RobotProfile` / `ROBOT_PROFILES` — `--robot` 가 선택하는 정적 로봇 프로파일 (joint 스키마 + TCP frame + 그 bringup 이 전환 가능한 컨트롤러 집합) |
 | `demo_gui/catalog.py` | `ControllerCatalog` — `/rtc_cm/list_controllers` 비동기 폴러 (5 s 주기). 라디오 버튼 / preset combo / 라벨이 모두 이 catalog 결과에서 옴. |
 | `demo_gui/pull.py` | Pull Force Estimate 패널의 상태기계 — `PullSnapshot` (immutable) / `PullPeakHold` / `badge_state` / `build_render`. Tk·rclpy 비의존이라 `test/test_demo_gui_pull.py` 가 디스플레이 없이 검증. |
 | `demo_gui/task_frame.py` | `TaskFrameSelector` — active controller 가 **실제로 제어 중인** task frame 선택 (#292). `virtual_tcp_actual` 을 한 번이라도 관측하면 즉시 latch, 없이 fallback (`RobotProfile.tcp_child`) 만 `settle_msgs` 건이면 fallback latch. 컨트롤러 이름 하드코딩 없이 **availability** 로만 판정하며, settle window 는 closed-chain hand FK walk-in 동안 tool0 만 발행되는 창을 넘기기 위한 것이다. Tk·rclpy 비의존 (`test/test_demo_gui_task_frame.py`). |
@@ -844,9 +844,15 @@ publish 하는 joint span 과 프로파일이 어긋나면 `/rosout` 에 one-sho
 
 GUI 시작 시:
 
-1. `GAIN_DEFS` 의 키 (현재 `demo_joint_controller` / `demo_task_controller` / `demo_wbc_controller`) 를 *오프라인 fallback* 으로 라디오에 표시. 상태 라벨에 `(controllers offline)` 접미사.
+1. 선택된 프로파일의 *switchable* 키 집합을 오프라인 fallback 으로 라디오에 표시. 상태 라벨에 `(controllers offline)` 접미사.
 2. CM 의 `/rtc_cm/list_controllers` 가 응답하면 catalog 가 수신 → Tk 스레드로 marshalling → 라디오 / preset combo / 상태 라벨이 *live* 데이터로 재구성. 5 s 마다 재조회 (controller hot-swap 자동 감지).
-3. 응답된 controller 중 `GAIN_DEFS` 에 스키마가 있는 것만 라디오에 노출. 스키마 없는 것은 catalog 에는 보존되지만 GUI 에서 운전 불가.
+3. 응답된 controller 중 그 switchable 집합에 있는 것만 라디오에 노출. 나머지는 catalog 에 보존되지만 GUI 에서 선택 불가.
+
+**switchable ≠ tunable.** 라디오 집합은 `GAIN_DEFS` 키 (= GUI 에 게인 패널이 있는 컨트롤러) 에 `RobotProfile.extra_switchable_controllers` 를 더한 것입니다 (`RobotProfile.switchable_controllers()`). 두 축이 갈라진 이유는 `demo_inference_controller` 입니다 — 전환은 되지만 ROS 파라미터를 하나도 선언하지 않아 튜닝할 게 없습니다.
+
+필터가 **catalog 가 아니라 프로파일**에서 오는 것이 핵심입니다: CM 은 등록된 컨트롤러를 로봇과 무관하게 전부 인스턴스화하므로 `/rtc_cm/list_controllers` 응답은 세 프로파일에서 동일합니다. 로봇마다 다른 것은 *어느 컨트롤러가 config YAML 을 갖는가* 이고, 그래서 그 사실은 `discovery.py` 의 프로파일에 있습니다. `demo_inference_controller` 는 `config/ur5e_p1b/controllers/` 에만 YAML 이 있으므로 **`--robot ur5e_p1b` 에서만** 라디오에 뜹니다 (`test_robot_profiles.py` 가 설치된 config 트리와 양방향 대조).
+
+preset combo 는 라디오 집합에서 **목표를 받지 않는 컨트롤러를 뺀** 것입니다 — preset 은 robot target 을 저장하는데, `joint_goal` 을 구독하지 않는 컨트롤러 앞으로 저장된 preset 은 재생할 곳이 없습니다.
 
 라벨은 controller config_key 를 prettify (`demo_wbc_controller` → `Demo Wbc Controller`) 한 결과를 사용합니다.
 
@@ -873,10 +879,13 @@ WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mp
 
 **Target 패널 (관절 vs task):** `demo_joint_controller` 는 관절 목표만, `demo_task_controller` 는 task-space (EE SE3) 목표만 입력 패널이 활성화됩니다. `demo_wbc_controller` 는 **둘 다 활성화** — 암 posture (nullspace reference) 와 commanded EE SE3 jog 를 독립적으로 받기 때문 (`demo_gui/config.py` `DUAL_TARGET_SPACE`). WBC 에서 `Send Command` 는 두 `RobotTarget` (goal_type `joint` + `task`) 을 모두 publish 하며, controller `DeliverTargetMessage` 가 goal_type 별로 라우팅합니다. EE SE3 패널 값은 TF (`virtual_tcp`/`ee_link`) 가 wiring 되어 있어야 current pose 로 seed 됩니다.
 
+**`demo_inference_controller` — 외부 명령 경로가 없는 컨트롤러:** 이 컨트롤러는 라디오에서 선택하고 `Switch Controller` 로 활성화할 수 있지만 (`--robot ur5e_p1b` 한정), **어떤 authoring 위젯도 동작하지 않습니다**. 정책이 팔과 손 명령을 모두 소유하므로 (a) `CreateOwnedTopics` 를 호출하지 않아 `joint_goal` **구독 자체가 없고** — YAML 의 `topics:` 블록은 device 그룹 *순서*를 세우는 용도입니다 — (b) `grasp_command` srv 를 선언하지 않으며 (c) ROS 파라미터가 0개라 게인 패널이 비어 있습니다. 그래서 GUI 는 관절·task 목표 패널과 `▶ Grasp` / `■ Release` 를 **비활성화하고 사유를 표시**합니다 (`demo_gui/config.py` `NO_EXTERNAL_COMMAND_CONTROLLERS`). 구독자가 없는 토픽으로의 publish 는 조용히 성공하므로, 버튼을 살려두면 "Sent hand cmd" 로그만 남고 로봇은 안 움직이는 상태와 구별되지 않습니다 — `Send Command` 와 `Send Preset` 의 hand 절반도 같은 이유로 차단됩니다. 관절 상태 readout 은 CM 소유 토픽(`/rtc_cm/<group>/joint_states`)이라 정상 동작하고, 진단(hold 사유·reach gate)은 토픽이 아니라 세션 CSV (`inference_diag.csv`) 로만 나옵니다.
+
 **Task frame 게이트 (#292):** task 목표는 active controller 의 **제어 frame 이 확정된 뒤에만** 입력·발행할 수 있습니다. 컨트롤러 전환 직후에는 `TaskFrameSelector` 가 미확정 상태라 task target entry / step 버튼이 `disabled` 이고, EE pose 표시는 `—` 입니다 (이전 컨트롤러의 pose 를 라이브처럼 보여주지 않기 위해). frame 이 확정되면 그 시점의 실제 pose 로 **1회** seed 되고 패널이 활성화됩니다 — 전환 시점에 seed 하면 아직 이전 컨트롤러의 pose 라 "표시된 pose 를 그대로 target 으로 보냈는데 로봇이 움직이는" 결함이 됩니다. `Send Preset` 의 자동 task publish 와 preset 저장도 같은 게이트를 통과합니다. 이 게이트는 컨트롤러 측 계약의 나머지 절반이다 — `ApplyPendingTarget` 이 외부 목표를 컨트롤러의 *의도된* frame 으로 태깅할 수 있는 근거가 "미확정 창에서는 authoring 자체가 불가능하다" 이기 때문.
 
 #### Grasp/Release 버튼 동작
 
+- **`demo_inference_controller`**: 버튼 **항상 비활성**. `grasp_command` srv 자체가 없어 누르면 거부 메시지조차 돌아오지 않으므로, 파라미터 미조회 시의 fail-open (아래) 과 달리 UNKNOWN 에서도 열리지 않습니다 — 그 fail-open 은 "컨트롤러가 받아줄 명령을 GUI 가 막지 않는다" 는 규칙인데, 여기서는 막을 대상이 없습니다.
 - **`demo_joint_controller` / `demo_task_controller`**: 활성 모드가 `force_pi` 일 때만 동작. `"contact_stop"` / `"none"` 모드에서는 srv 가 **사유와 함께 거부** (`ok=false` + `message`, `GraspCommandRejectReason` 가 SSoT). GUI 는 두 컨트롤러가 노출하는 `grasp_controller_type` 파라미터를 읽어 버튼 옆에 현재 모드를 표시하고, force_pi 가 아니면 버튼을 비활성화합니다 (파라미터 미조회 시에는 fail-open — 위 "Force-PI Grasp/Release 버튼 (GUI)" 절). 그 파라미터는 런타임 설정 가능하며 (quiet gate), 같은 절에 조건이 있습니다.
 - **`demo_wbc_controller`**: `grasp_controller_type` 무관 — WBC 는 자체 6-state FSM (slots 2 & 5 reserved) 으로 GraspCommand 를 직접 처리 (lifecycle.cpp 의 `grasp_command_srv_`). GRASP 명령은 `kApproach` 진입, RELEASE 는 어떤 비-terminal phase 에서도 `kRelease` 로 즉시 preempt (Approach/Closure/Hold 중 GUI 로 RELEASE 누르면 즉시 반응). phase 표시기가 WbcPhase enum 라벨로 갱신됩니다.
 

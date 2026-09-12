@@ -11,7 +11,7 @@ fallback). The remaining constants here are GUI-only, robot-agnostic.
 
 Public surface (imported by app.py):
 - TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
-- DUAL_TARGET_SPACE, target_panel_states
+- DUAL_TARGET_SPACE, NO_EXTERNAL_COMMAND_CONTROLLERS, target_panel_states
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
 - GRASP_MODE_PARAM, GRASP_MODE_UNKNOWN, GRASP_MODE_OWNERS, GRASP_MODES,
   grasp_command_enabled, grasp_mode_fg
@@ -81,13 +81,41 @@ JOINT_SPACE = {
 # single-space per JOINT_SPACE.
 DUAL_TARGET_SPACE = {"demo_wbc_controller"}
 
+# Controllers that accept NO external command at all — the GUI can switch to
+# them and read their joint state, but every authoring widget is inert.
+#
+# This is one set rather than two (no-target + no-grasp) because for the
+# controller that populates it both facts have the same root cause: the policy
+# owns the command, so the binding never creates the surfaces the widgets talk
+# to. demo_inference_controller measured on ur5e_p1b sim:
+#   - no RobotTarget subscription — it never calls CreateOwnedTopics
+#     (integrated_bringup/src/support/owned_topics.cpp), so
+#     /demo_inference_controller/<group>/joint_goal does not exist. Its YAML
+#     `topics:` block is there only to fix the device-group ORDER.
+#   - no ~/grasp_command srv — it declares none, so Grasp/Release reach nothing.
+# A publish or a click against those is not refused, it is simply unheard, which
+# is why the GUI has to be the one to say so: the controller cannot answer.
+#
+# Note this is the opposite call from `grasp_command_enabled`'s fail-open on an
+# unreachable parameter service. That fail-open exists so the GUI never becomes a
+# second gate in front of a controller that WOULD have acted. Here there is
+# nothing to gate — the absence is structural, not a failed query.
+NO_EXTERNAL_COMMAND_CONTROLLERS = frozenset({"demo_inference_controller"})
+
 
 def target_panel_states(ctrl_idx: str) -> tuple[bool, bool]:
     """Return ``(joint_panel_on, task_panel_on)`` for a controller.
 
-    Dual-space controllers (``DUAL_TARGET_SPACE``) enable both panels; the
-    rest follow the binary ``JOINT_SPACE`` flag (joint XOR task).
+    Controllers in ``NO_EXTERNAL_COMMAND_CONTROLLERS`` enable neither panel;
+    dual-space controllers (``DUAL_TARGET_SPACE``) enable both; the rest follow
+    the binary ``JOINT_SPACE`` flag (joint XOR task).
+
+    The no-target case cannot be spelled through ``JOINT_SPACE``: that table is
+    read with ``.get(ctrl_idx, True)``, so a controller merely absent from it
+    lands on "joint" and its panel comes up live.
     """
+    if ctrl_idx in NO_EXTERNAL_COMMAND_CONTROLLERS:
+        return False, False
     if ctrl_idx in DUAL_TARGET_SPACE:
         return True, True
     is_joint = JOINT_SPACE.get(ctrl_idx, True)
@@ -173,7 +201,14 @@ def grasp_command_enabled(ctrl: str, mode: str) -> tuple[bool, str]:
     nothing about what the controller would accept, and the GUI must not become
     a second gate that blocks a command the controller would have honoured. The
     controller already answers with a precise reason when it will not act.
+
+    ``NO_EXTERNAL_COMMAND_CONTROLLERS`` is checked first and does not fail open:
+    there is no srv behind the buttons at all, so a click produces neither motion
+    nor a rejection message. Left enabled they would read exactly like the
+    working case right up until nothing happened.
     """
+    if ctrl in NO_EXTERNAL_COMMAND_CONTROLLERS:
+        return False, "정책이 손을 구동 — 외부 Grasp/Release 경로 없음"
     if ctrl not in GRASP_MODE_OWNERS:
         # WBC (or any future controller with its own grasp path) — no parameter
         # to consult, and the mode does not gate its srv.

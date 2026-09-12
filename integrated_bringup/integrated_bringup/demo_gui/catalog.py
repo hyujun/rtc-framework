@@ -105,15 +105,18 @@ class ControllerCatalog:
     schema_keys:
         Iterable of config keys for which the GUI has a gain panel
         defined (i.e. the keys of ``GAIN_DEFS``). Entries with these
-        keys are exposed via ``schema_entries()``; everything else is
-        kept around but flagged ``has_gain_schema=False``.
+        keys are flagged ``has_gain_schema=True``; everything else is
+        kept around flagged False. This is NOT the radio-button filter —
+        a controller can be switchable without being tunable, and which
+        ones are switchable is a per-robot fact the catalog cannot know
+        (the CM reports the same roster on every profile).
     label_overrides:
         Optional ``{config_key: display_label}`` map, applied before
         falling back to ``prettify_config_key``. Empty by default; the
         Phase 2 design relies on prettify.
     on_update_callback:
         Optional callable fired on every successful service response.
-        Receives ``self`` so the callback can read ``schema_entries`` /
+        Receives ``self`` so the callback can read ``latest`` /
         ``is_offline`` directly. Fires on the **rclpy executor thread**.
     poll_interval_s:
         Wall-clock interval between service-call retries. Defaults to
@@ -175,14 +178,13 @@ class ControllerCatalog:
         """All entries from the last successful response (immutable view)."""
         return self._entries
 
-    def schema_entries(self) -> tuple[ControllerEntry, ...]:
-        """Entries whose config_key has a GAIN_DEFS schema in the GUI.
-
-        These are the candidates the controller radio buttons should
-        offer — anything else is loaded on the CM but not editable from
-        this GUI.
-        """
-        return tuple(e for e in self._entries if e.has_gain_schema)
+    # No schema_entries() accessor. It existed to answer "which controllers may
+    # the radio buttons offer" with `has_gain_schema`, and that stopped being the
+    # same question once a controller could be switched to without being tunable
+    # (demo_inference_controller). The radio filter is now profile-scoped and
+    # lives in app.py (`_switchable_keys`); `has_gain_schema` stays on each entry
+    # for callers that really do mean "has a gain panel". Reviving a filter here
+    # would put the retired rule back in the place the GUI reads first.
 
     def is_offline(self) -> bool:
         """True until the catalog has received at least one response.
