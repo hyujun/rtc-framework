@@ -143,9 +143,36 @@ colcon test-result --verbose
 
 ## Completion Checklist
 
-이 절은 Claude Code 의 Stop hook 이 자동 수행하는 범위([CLAUDE.md](../CLAUDE.md) §4 가 SSoT)의 **여집합** — 그 hook 이 있어도 검사되지 않으므로 항상 사람/에이전트가 직접 확인해야 하는 항목이다. **hook 이 없는 도구에서는 이것만으로 부족하다** — 먼저 [AGENTS.md](../AGENTS.md) §3 "커밋 전에 직접 돌려야 하는 것" 의 빌드·테스트·포맷·doc validation 을 수행하고, 그 위에 아래를 더한다.
+이 절은 Claude Code 의 Stop hook 이 자동 수행하는 범위([verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더가 SSoT, [CLAUDE.md](../CLAUDE.md) §4 는 그 요약)의 **여집합** — 그 hook 이 있어도 검사되지 않으므로 항상 사람/에이전트가 직접 확인해야 하는 항목이다. **hook 이 없는 도구에서는 이것만으로 부족하다** — 먼저 [AGENTS.md](../AGENTS.md) §3 "커밋 전에 직접 돌려야 하는 것" 의 빌드·테스트·포맷·doc validation 을 수행하고, 그 위에 아래를 더한다.
 
 - [ ] `package.xml` 의 **deps 의미·version** — hook 은 `find_package` 추가 시 `package.xml` co-update 여부만 blocking 으로 보고, 선언된 dep 이 실제로 맞는지는 보지 않는다
 - [ ] YAML 의 **default 값·유효 범위·unit 주석** — hook 은 parse 성공 여부만 본다
 - [ ] **Doxygen** public header 갱신 — hook 이 명시적으로 다루지 않는 항목이다 (cross-package doc 일관성도 동일)
 - [ ] RT path 변경 시 [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect` 블록으로 자가검사 (RT-1~RT-10, RT-7 은 은퇴)
+
+## Inferential review 트리거 (LLM-as-judge, 수동 trigger)
+
+[CLAUDE.md](../CLAUDE.md) §5.5 의 전문. computational sensor (build / test / grep) 는 **문법·빌드·기존 테스트 통과** 만 검증한다. 의미 회귀 — 설계 일관성, robot-agnostic 위반, abstract interface 누락, 재사용 가능성 — 은 잡지 못한다 (Anthropic 2026.04 *Harness design*: 에이전트의 자기 평가는 신뢰 불가, [harness-rationale.md](harness-rationale.md)).
+
+다음 상황에서 사용자에게 inferential sensor 실행을 권한다 (`/code-review`·`/security-review`·`/simplify` 는 Claude Code slash command — 미지원 환경/툴에서는 동등한 수동 code review 로 대체):
+
+- `rtc_base` / `rtc_msgs` 변경 → `/code-review` (downstream 전 패키지 영향)
+- Abstract interface 신설 / 두 번째 구현 추가 (ARCH-3 후보) → `/code-review` (base 누락·#ifdef 유혹 검출)
+- `rtc_*` 에 robot-specific 코드 추가 의심 (ARCH-1 borderline) → `/code-review`
+- E-STOP 경로 / safety publisher / lifecycle 콜백 수정 → `/security-review` (E-8)
+- PR 준비 (다파일 / 다패키지 commit) → `/code-review ultra` (현재 branch) 또는 `/code-review ultra <PR#>` (GitHub PR). `/ultrareview` 는 deprecated alias
+- 100+ 줄 변경 또는 신규 패키지 디렉토리 → `/code-review`
+- 다파일 리팩터 / 유사 기능 중복 의심 ([design-principles.md](design-principles.md) P5) / 변경 후 정리 → `/simplify` (재사용·단순화 전용 — 버그 탐지는 `/code-review`)
+
+수동 trigger 인 이유: inferential 은 GPU/cost/지연이 크고 non-deterministic 이므로 모든 변경에 자동 적용하면 ROI 음성. 위 trigger 는 "false-negative 비용 > inferential 비용" 인 경우만 추렸다.
+
+## Post-task housekeeping (상세)
+
+[CLAUDE.md](../CLAUDE.md) §11 의 전문. Commit 완료 또는 사용자가 task 종료를 알린 후:
+
+1. **Memory save / Memory prune / Harness pruning 신호 보고** — user-level CLAUDE.md `# Post-task housekeeping` 가 SSoT. *Harness pruning 신호* 의 RTC 발현 카테고리는 invariant·anti-pattern grep false-positive, [verify-changes.sh](../.claude/hooks/verify-changes.sh) 오차단, agent_docs 간 규칙 중복 drift
+2. **Issue 동기화** — 대응 GitHub issue 가 있으면 구현 완료 시 갱신한다: 무엇이 구현됐는지, acceptance criteria 중 미충족 항목, 후속 작업. issue 는 durable 결정 기록이자 cross-tool 인계면이므로 ([handoff.md](handoff.md) §5) 갱신 없이 닫지 않는다. criteria 를 전부 충족했으면 close, 아니면 남은 범위를 코멘트로 남기고 open 유지
+3. **Stale artifact 정리** — 완료된 private plan (`~/.claude/plans/*.md`) 은 그 내용이 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (복원 불가한데 보존 가치가 있는 결정 기록이 남아 있으면 issue 코멘트로 옮긴 뒤 삭제 — [handoff.md](handoff.md) §5). 작업 중 만든 임시 파일 (분석 스크립트, 중간 산출물, 로그 덤프) 은 scratchpad 에 만들고 task 종료 시 삭제하며, repo-root / `/tmp` scratch files 도 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`, issue) 에 보존됨을 확인 후 삭제
+4. **캐시 정리** — repo (`src/rtc-framework`) 안에 잘못된 cwd 로 생긴 `build/` · `install/` · `log/` ([CLAUDE.md](../CLAUDE.md) §9.1) 및 python 캐시 (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`) 가 있으면 삭제 — 모두 재생성 가능하므로 확인 없이 제거 가능. **단 colcon 정규 트리 `<rtc_ws>/{build,install,log}` 는 incremental cache 이므로 절대 건드리지 않는다**
+5. **Branch prune (main merge 후에만)** — feature branch 가 `main` 에 merge 됐으면: 로컬 merged branch 삭제 (`git branch -d <branch>`), stale remote-tracking ref 정리 (`git fetch --prune`). 원격 branch 삭제는 merge 확인 후에만 (GitHub auto-delete 미설정 시). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다
+6. **보고** — 실제 수행한 항목만 한 줄씩

@@ -3,6 +3,14 @@
 # InstructionsLoaded hook — records which CLAUDE.md / .claude/rules/*.md files
 # actually entered context, and why.
 #
+# READING THE LOG
+#
+#   The log is appended across sessions with no boundary marker, so ALWAYS
+#   filter by your own `session_id` first -- otherwise a previous session's
+#   firing reads as your own. Your id is the last path segment of the
+#   scratchpad directory the runtime names in the system prompt.
+#   e.g.  grep '"session_id":"<id>"' .claude/instructions-loaded.log | grep rt-path
+#
 # WHY THIS EXISTS
 #
 # Path-scoped rules (.claude/rules/*.md with `paths:` frontmatter) are the

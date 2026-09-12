@@ -79,7 +79,9 @@
 #          turn in an infinite block. Official Stop-hook exit-2 semantics:
 #          "Prevents Claude from stopping, continues the conversation"
 #          (code.claude.com/docs/en/hooks). The agent must act on the injected
-#          report; do not rely on any undocumented consecutive-block cap.
+#          report. Claude Code overrides the hook after 8 CONSECUTIVE blocks
+#          (documented: code.claude.com/docs/en/best-practices) -- that cap
+#          is an unverified stop, not an exit; do not lean on it.
 # Limits : per-package bounds: 180s build + 60s test. PROC-3 path: 300s build +
 #          180s test. A build OR test that hits its timeout (exit 124) or fails
 #          to launch (exit >=125) blocks as UNVERIFIED -- overrun is no longer

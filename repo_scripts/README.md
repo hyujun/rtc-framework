@@ -669,6 +669,16 @@ source install/setup.bash
 
 스크립트만 포함된 패키지이므로 바이너리는 생성되지 않습니다. `colcon build` 시 스크립트가 `install/repo_scripts/lib/repo_scripts/`에 복사됩니다.
 
+### 흔한 실패와 감별 (colcon cwd · source · venv)
+
+[CLAUDE.md](../CLAUDE.md) §9 의 두 hard rule 이 실제로 깨지는 경로와 그 증상·감별이다. 규칙 자체는 헌법이, 재발 경로·근거는 여기가 소유한다 (AP-DOC-2).
+
+**colcon cwd drift.** 실제 위반은 룰을 몰라서가 아니라 cwd drift 로 재발한다 — 편집하러 패키지 dir 로 `cd` 한 shell 에서 그대로 colcon 을 치거나, `cd src/rtc-framework && source src/rtc-framework/...` 처럼 한 줄에 체이닝해 상대경로 source 가 silent fail 한 채 빌드가 repo 안에서 도는 경로다. 에이전트 shell 의 cwd 는 호출 간에 유지되므로 "독립 call 로 내면 된다" 는 오해다. `cd <rtc_ws> &&` 로 시작하기만 하면 규칙은 지켜지지만 그 다음 호출부터 cwd 가 ws root 에 남고, 그 부작용이 아래층에서 "cd 금지" 라는 반대 규율을 만들어 두 규칙이 충돌한 채 시작한 세션이 있었다 (#345 인계 노트) — 서브셸 표준형 `( cd <rtc_ws> && source … && colcon … )` 은 그 충돌 자체를 없앤다. 증상이 빌드 실패가 아니라는 점이 이 경로를 비싸게 만든다: repo 안에 별도 `build/`·`install/`·`log/` 트리가 생기고 (`.clangd` 의 CompilationDatabase 가 그 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다) 그 뒤로는 호출마다 두 트리를 오가므로 같은 세션의 검증들이 서로 모순되는 결과를 낸다 — 한 test 는 수정 후 코드로, 다른 test 는 stale 바이너리로 도는 식이다. 코드에 없는 논리 버그를 쫓게 되니, 검증 결과가 설명 불가하게 엇갈리면 코드를 의심하기 전에 `ls src/rtc-framework/build` 부터 친다.
+
+**`source` 를 파이프라인에 넣는 것.** 출력을 줄이려 `source setup_env.sh 2>&1 | tail -2 && colcon build …` 처럼 쓰면 source 가 subshell 에서 실행돼 env 가 부모 셸에 반영되지 않는다. 조용히 성공한 것처럼 보이는 게 함정이다: `colcon` 자체는 profile PATH 에 있어 빌드가 정상 시작하고, 한참 뒤 CMake 안에서 `ModuleNotFoundError: No module named 'ament_package'` 같은 원인을 가리키지 않는 에러로 죽는다 (`ament_package` 는 dpkg 가 아니라 ROS distro 의 `site-packages` 에 있고 `PYTHONPATH` 로만 노출되므로). 출력을 줄이려면 리다이렉션(`source … >/dev/null 2>&1`)을 쓰고 파이프는 뒤따르는 명령에만 건다. 이 실패를 `-DPython3_EXECUTABLE` 탓으로 오진하기 쉬운데 (venv carve-out 은 정상이다), 감별은 `echo $VIRTUAL_ENV` 또는 `/usr/bin/python3 -c "import ament_package"` 한 줄이면 된다. 서브셸 표준형은 `source` 와 `colcon` 이 같은 서브셸 안에 있으므로 이 함정과 상충하지 않는다 — 문제는 서브셸이 아니라 *파이프*가 만드는 서브셸에 colcon 이 안 들어가는 것이다.
+
+**venv carve-out 의 범위.** `.venv` 규칙은 self-contained 하다 — 실패 시 격리를 무력화(gtest 직접 실행 / venv deactivate / `PYTHONPATH` 우회)하지 말고 sys.path / shebang / wrapper / dep resolution 을 디버그한다. 유일한 예외는 `colcon build` 의 configure 단계 (`FindPython` 이 venv 의 python 을 잡아 eigenpy/pinocchio configure 가 깨지는 문제) 이며, 그때도 인터프리터 고정이 우선이다 — CLI `--cmake-args` 는 `.colcon/defaults.yaml` 의 Release 등을 통째로 대체하므로 명령 형태는 위 "Plain `colcon build` 호환성" 을 따르고, `build.sh` 를 쓰면 둘 다 불필요하다. `colcon test` / `ros2 run` / `ros2 launch` 실패를 덮는 deactivate 는 runtime PC 에서 재현될 결함을 숨기는 것이다. 근거·과거 위반 사례는 git log + auto-memory 참조 (머신 종속 절대경로는 박제하지 않는다).
+
 ---
 
 ## 의존성 그래프 내 위치

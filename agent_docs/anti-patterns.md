@@ -323,6 +323,8 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 
 - **증상**: 문서가 측정 시점에 의존하는 값을 박제 → 코드/측정값이 바뀌면 문서가 거짓이 됨. 예: "현 baseline 0건", "Phase X ✅ 완료", "현재 45개 상수 존재", `commit_sha 근거`
 - **복구**: 측정값·status 은 SSoT (코드/git log/측정 명령) 위임. 문서엔 *어떻게 측정하는지* 박제하고 *값 자체*는 박제하지 않는다. Status 는 git log + memory 에 자연히 남는다
+- **본 repo 사례 1 — 규칙 목록 사본**: CLAUDE.md §3 에 박혀 있던 RT 금지 7개 목록이 invariants.md 의 9개와 갈라져 RT-9·RT-10 이 헌법에서 사라졌다. 같은 자리의 ARCH 5줄 사본도 ARCH-4 (integration 패키지의 `rtc_*/src/` private 헤더 include 금지, Critical) 와 ARCH-6 (QoS depth 1) 을 통째로 빠뜨린 채 굳어 있었다 (#229). 복구: 헌법은 ID 범위와 SSoT 포인터만 갖고 요약은 path-scoped rule 이 갖는다 — 어떤 파일 편집 시 로드되는지도 rule frontmatter glob 이 SSoT 이므로 박제하지 않는다
+- **본 repo 사례 2 — hook 서술 사본**: CLAUDE.md §4 가 Stop hook 의 변경 집합 산정·allowlist·편입 이력을 291단어로 들고 있으면서 같은 단락에서 "hook 주석이 SSoT" 라고 선언했고, modification-guide.md 는 거꾸로 CLAUDE.md §4 를 SSoT 로 지목해 순환이 됐다 (#527). 복구: hook 헤더가 소유, 헌법은 3줄 요약 + 포인터
 
 ### AP-DOC-2: 판단의 *근거*를 두 번째 위치에 복사한다 (주석 포함)
 
