@@ -647,7 +647,10 @@ class DemoWbcController final : public RTControllerInterface {
   // ≡ tool0) makes HandFingertipPose hand-root-relative; ComputeHandFingertipFk
   // composes with the arm TCP FK to base frame.
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
-  static constexpr std::size_t kNumFingertips = ClosedChainHandFk::kMaxFingertips;
+  /// 이 손의 손끝 수. 예전엔 ClosedChainHandFk::kMaxFingertips 를 그대로 별칭했는데
+  /// 그것은 **슬롯 용량**이지 손가락 수가 아니다 (추론 바인딩이 손가락당 2 프레임을
+  /// 관측하면서 둘이 갈라졌다).
+  static constexpr std::size_t kNumFingertips = 4;
   std::array<pinocchio::FrameIndex, kNumFingertips> fingertip_frame_ids_{};
   pinocchio::FrameIndex hand_root_frame_id_{0};
   bool use_hand_root_frame_{false};

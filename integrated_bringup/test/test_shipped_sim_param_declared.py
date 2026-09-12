@@ -128,6 +128,55 @@ def test_toplevel_block_keys_are_declared(profile: str, declared: set[str]) -> N
             )
 
 
+def _overlay_paths(profile: str) -> list[str]:
+    share = get_package_share_directory("integrated_bringup")
+    directory = os.path.join(share, "config", profile, "sim_overlays")
+    if not os.path.isdir(directory):
+        return []
+    return sorted(
+        os.path.join(directory, name) for name in os.listdir(directory) if name.endswith(".yaml")
+    )
+
+
+def _flatten(block: dict, prefix: str = "") -> list[str]:
+    names: list[str] = []
+    for key, value in block.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict):
+            names.extend(_flatten(value, name + "."))
+        else:
+            names.append(name)
+    return names
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None:
+    """A ``sim_overlay:=`` file is shipped config too, and fails the same way.
+
+    Checked in full rather than per block: an overlay is small and exists to
+    change a handful of keys, so every one of them is a key someone meant to
+    take effect. Group keys (``robot_response.<group>.<key>``) are compared by
+    suffix, which is how they are declared.
+    """
+    paths = _overlay_paths(profile)
+    if profile == "ur5e_p1b":
+        # The overlay mechanism is exercised by this profile; an empty list here
+        # means the directory moved, not that there is nothing to check.
+        assert paths, f"{profile}: no sim_overlays/*.yaml found — test is vacuous"
+    for path in paths:
+        with open(path) as handle:
+            params = yaml.safe_load(handle)["mujoco_simulator"]["ros__parameters"]
+        for name in _flatten(params):
+            parts = name.split(".")
+            grouped = parts[0] in ("robot_response", "fake_response") and len(parts) > 2
+            key = ".".join(parts[2:]) if grouped else name
+            assert key in declared, (
+                f"{os.path.basename(path)}: '{name}' is in a shipped sim overlay but "
+                "mujoco_simulator_node never declares it — the overlay's value is "
+                "silently ignored"
+            )
+
+
 def test_p1b_fingertip_wrench_frame_is_the_bracket_frame() -> None:
     """p1b must publish in the site frame, not the body frame.
 

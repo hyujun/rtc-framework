@@ -32,7 +32,12 @@ class InferenceEngine {
   /// non-RT: Load model, allocate tensors, warmup
   virtual void Init(const ModelConfig& config) = 0;
 
-  /// RT-safe: Run inference on pre-filled input buffers
+  /// Run inference on pre-filled input buffers.
+  ///
+  /// noexcept and lock-free on this side, but NOT allocation-free: ONNX
+  /// Runtime allocates inside every Run(), whatever the binding style. Calling
+  /// it on an RT path is a recorded RT-1 exception with conditions
+  /// (agent_docs/invariants.md, RT 절) — not a property of this interface.
   [[nodiscard]] virtual bool Run() noexcept = 0;
 
   /// Access pre-allocated I/O buffers. Out-of-range indices return nullptr.
@@ -54,7 +59,8 @@ class InferenceEngine {
   [[nodiscard]] virtual int num_inputs(int model_idx = 0) const noexcept = 0;
   [[nodiscard]] virtual int num_outputs(int model_idx = 0) const noexcept = 0;
 
-  /// RT-safe: Run multiple models by index in a single batch call.
+  /// Run multiple models by index in a single batch call. Same allocation
+  /// caveat as Run().
   /// Default implementation delegates to RunModel() sequentially.
   [[nodiscard]] virtual bool RunModels(const int* model_indices, int count) noexcept {
     for (int i = 0; i < count; ++i) {
@@ -65,7 +71,7 @@ class InferenceEngine {
     return true;
   }
 
-  /// RT-safe: Run a single model by index.
+  /// Run a single model by index. Same allocation caveat as Run().
   [[nodiscard]] virtual bool RunModel(int /*model_idx*/) noexcept { return Run(); }
 
   [[nodiscard]] virtual bool is_initialized() const noexcept = 0;

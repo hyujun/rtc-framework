@@ -109,6 +109,8 @@ make_fixture() {
   mkdir -p "${stage}/${top}/lib" "${stage}/${top}/include"
   echo "fake-so"  >"${stage}/${top}/lib/libonnxruntime.so"
   echo "fake-hdr" >"${stage}/${top}/include/onnxruntime_cxx_api.h"
+  # 실제 릴리즈 tarball 처럼 VERSION_NUMBER 를 싣는다 — 업그레이드 판정의 입력이다.
+  echo "${TEST_VER}" >"${stage}/${top}/VERSION_NUMBER"
   tar -czf "${root}/fixture.tgz" -C "$stage" "$top"
   sha256sum "${root}/fixture.tgz" | awk '{print $1}'
 }
@@ -270,16 +272,44 @@ test_download_failure_leaves_no_temp() {
   teardown_case
 }
 
-test_apt_installed_short_circuits() {
-  # apt 경로는 digest 검증 대상이 아니다 (dpkg 서명 체인) — 다운로드 자체가 없다.
+test_apt_package_does_not_bypass_the_pin() {
+  # 2026-09-11 spec 변경: apt 의 libonnxruntime-dev 는 설치원이 아니다 — 버전을 이
+  # 파일이 정할 수 없으니 핀을 보장하지 못한다. 이전에는 깔려 있기만 하면 "already
+  # installed (apt)" 로 끝나 핀 버전이 영영 설치되지 않았다 (이전 테스트:
+  # test_apt_installed_short_circuits). 시스템 패키지는 지우지 않는다.
   setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
   MOCK_DPKG_INSTALLED="true"
 
   run_install
 
-  expect_eq "apt_short.no_download" "false" "$(called 'wget ')"
-  expect_eq "apt_short.reported" "true" \
-    "$(grep -q "already installed (apt)" "$LOG_FILE" && echo true || echo false)"
+  expect_eq "apt_pkg.pin_installed" "true" \
+    "$([[ -f "${TEST_ROOT}/opt/onnxruntime/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  expect_eq "apt_pkg.no_apt_install" "false" "$(called 'apt-get install')"
+  expect_eq "apt_pkg.not_removed" "false" "$(called 'apt-get \(remove\|purge\)')"
+  expect_eq "apt_pkg.warned" "true" \
+    "$(grep -q "libonnxruntime-dev (apt) is installed but NOT used" "$LOG_FILE" && echo true || echo false)"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
+test_fresh_machine_does_not_install_via_apt() {
+  # apt 에 패키지가 있는 머신 (다른 배포판·PPA) 에서도 설치원은 핀 tarball 이다.
+  # 예전 순서는 apt 를 먼저 시도했고, 성공하면 거기서 끝나 핀과 무관한 버전이 깔렸다.
+  setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
+  MOCK_APT_SUCCEEDS="true"
+
+  run_install
+
+  expect_eq "fresh.no_apt_install" "false" "$(called 'apt-get install')"
+  expect_eq "fresh.pin_installed" "${TEST_VER}" \
+    "$(cat "${TEST_ROOT}/opt/onnxruntime/VERSION_NUMBER" 2>/dev/null)"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
   teardown_case
 }
 
@@ -299,16 +329,189 @@ test_existing_opt_install_short_circuits() {
   teardown_case
 }
 
+test_existing_same_version_short_circuits() {
+  # 버전을 아는 기존 설치가 pin 과 같으면 아무것도 받지 않는다.
+  setup_case
+  local tree="${TEST_ROOT}/opt/onnxruntime-linux-x64-${TEST_VER}"
+  mkdir -p "${tree}/lib" "${tree}/include"
+  echo x >"${tree}/lib/libonnxruntime.so"
+  echo x >"${tree}/include/onnxruntime_cxx_api.h"
+  echo "${TEST_VER}" >"${tree}/VERSION_NUMBER"
+  ln -s "$tree" "${TEST_ROOT}/opt/onnxruntime"
+
+  run_install
+
+  expect_eq "same_ver.no_download" "false" "$(called 'wget ')"
+  expect_eq "same_ver.reported" "true" \
+    "$(grep -q "already installed at .*(${TEST_VER})" "$LOG_FILE" && echo true || echo false)"
+  teardown_case
+}
+
+test_existing_other_version_upgrades() {
+  # ONNXRT_VERSION bump 가 이미 깔린 머신에 실제로 닿는가. 존재만 보고
+  # short-circuit 하던 시절엔 pin 을 올려도 dev box·제어 PC 가 옛 런타임에 남았다.
+  setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
+  local old="${TEST_ROOT}/opt/onnxruntime-linux-x64-0.0.1-old"
+  mkdir -p "${old}/lib" "${old}/include"
+  echo x >"${old}/lib/libonnxruntime.so"
+  echo x >"${old}/include/onnxruntime_cxx_api.h"
+  echo "0.0.1-old" >"${old}/VERSION_NUMBER"
+  ln -s "$old" "${TEST_ROOT}/opt/onnxruntime"
+  # apt 가 "성공" 하는 머신이어도 apt 로 빠지면 안 된다 — 빠지면 symlink 는 옛
+  # 트리를 가리킨 채 남는다. 이 값이 true 여야 `upgrade.no_apt` 가 뜻을 가진다.
+  MOCK_APT_SUCCEEDS="true"
+
+  run_install
+
+  expect_eq "upgrade.repointed" "${TEST_ROOT}/opt/onnxruntime-linux-x64-${TEST_VER}" \
+    "$(readlink "${TEST_ROOT}/opt/onnxruntime")"
+  expect_eq "upgrade.version_through_link" "${TEST_VER}" \
+    "$(cat "${TEST_ROOT}/opt/onnxruntime/VERSION_NUMBER")"
+  # `ln -sf` 는 디렉토리 symlink 를 따라가 옛 트리 안에 새 링크를 만든다.
+  expect_eq "upgrade.no_nested_link" "false" \
+    "$([[ -e "${old}/onnxruntime-linux-x64-${TEST_VER}" ]] && echo true || echo false)"
+  # 2026-09-11 spec 변경 (사용자 결정): 업그레이드는 옛 트리를 남기지 않는다 —
+  # 설치 후 머신에는 핀 버전 하나만. 이전 단언은 `upgrade.old_tree_kept`.
+  expect_eq "upgrade.old_tree_removed" "false" \
+    "$([[ -e "$old" ]] && echo true || echo false)"
+  expect_eq "upgrade.no_apt" "false" "$(called 'apt-get install')"
+  expect_eq "upgrade.ldconfig_ran" "true" "$(called '^ldconfig$')"
+  expect_eq "upgrade.reported" "true" \
+    "$(grep -q "0.0.1-old at .* differs from pinned ${TEST_VER}" "$LOG_FILE" && echo true || echo false)"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
+# 옛 버전 트리 한 개를 만든다: $1=버전 → stdout: 경로
+make_old_tree() {
+  local tree="${TEST_ROOT}/opt/onnxruntime-linux-x64-$1"
+  mkdir -p "${tree}/lib" "${tree}/include"
+  echo x >"${tree}/lib/libonnxruntime.so"
+  echo x >"${tree}/include/onnxruntime_cxx_api.h"
+  echo "$1" >"${tree}/VERSION_NUMBER"
+  echo "$tree"
+}
+
+test_failed_upgrade_removes_nothing() {
+  # 정리는 새 트리가 검증·연결된 **뒤**의 일이다. 검증에 실패한 업그레이드가
+  # 옛 런타임까지 지우면 머신에 ORT 가 하나도 남지 않는다.
+  setup_case
+  make_fixture "$TEST_ROOT" "x64" >/dev/null
+  ONNXRT_SHA256["${TEST_VER}:x64"]="0000000000000000000000000000000000000000000000000000000000000000"
+  local old; old=$(make_old_tree "0.0.1")
+  ln -s "$old" "${TEST_ROOT}/opt/onnxruntime"
+
+  run_install
+
+  expect_eq "failed_upgrade.old_tree_kept" "true" \
+    "$([[ -f "${old}/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  expect_eq "failed_upgrade.link_unchanged" "$old" "$(readlink "${TEST_ROOT}/opt/onnxruntime")"
+  expect_eq "failed_upgrade.no_rm" "false" "$(called 'sudo rm')"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
+test_same_version_prunes_stale_trees() {
+  # 이미 핀인 머신에서 재실행해도 "핀 하나만" 으로 수렴한다 (정리 기능이 생기기
+  # 전에 업그레이드한 머신에는 옛 트리가 남아 있다).
+  setup_case
+  local pinned; pinned=$(make_old_tree "${TEST_VER}")
+  ln -s "$pinned" "${TEST_ROOT}/opt/onnxruntime"
+  local stale_a; stale_a=$(make_old_tree "0.0.1")
+  local stale_b; stale_b=$(make_old_tree "0.0.2")
+
+  run_install
+
+  expect_eq "same_prune.no_download" "false" "$(called 'wget ')"
+  expect_eq "same_prune.stale_a_removed" "false" "$([[ -e "$stale_a" ]] && echo true || echo false)"
+  expect_eq "same_prune.stale_b_removed" "false" "$([[ -e "$stale_b" ]] && echo true || echo false)"
+  expect_eq "same_prune.pinned_kept" "true" \
+    "$([[ -f "${pinned}/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  teardown_case
+}
+
+test_prune_spares_trees_it_did_not_name() {
+  # 지우는 것은 이 파일이 푸는 이름 (`onnxruntime-linux-<arch>-<숫자…>` 디렉토리)
+  # 뿐이다. 각 항목이 따로 지워질 이유가 있어야 이 테스트가 뜻을 가진다:
+  # gpu 빌드 · 다른 arch · 이름이 버전 모양인 symlink · 숫자로 시작하지 않는 접미사.
+  setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
+  local gpu="${TEST_ROOT}/opt/onnxruntime-linux-x64-gpu-1.2.3"
+  local arm="${TEST_ROOT}/opt/onnxruntime-linux-aarch64-1.2.3"
+  local custom="${TEST_ROOT}/opt/onnxruntime-linux-x64-custom"
+  local outside; outside="$(mktemp -d)"
+  mkdir -p "$gpu" "$arm" "$custom"
+  echo x >"${outside}/keep"
+  ln -s "$outside" "${TEST_ROOT}/opt/onnxruntime-linux-x64-0.0.3"
+  local old; old=$(make_old_tree "0.0.1")
+
+  run_install
+
+  expect_eq "spare.gpu" "true" "$([[ -d "$gpu" ]] && echo true || echo false)"
+  expect_eq "spare.other_arch" "true" "$([[ -d "$arm" ]] && echo true || echo false)"
+  expect_eq "spare.custom_suffix" "true" "$([[ -d "$custom" ]] && echo true || echo false)"
+  # 링크 자체가 남는지를 본다 — `rm -rf` 는 symlink 의 대상은 원래 안 지우므로
+  # 대상만 보면 `! -L` 가드를 지워도 green 이다.
+  expect_eq "spare.symlink_kept" "true" \
+    "$([[ -L "${TEST_ROOT}/opt/onnxruntime-linux-x64-0.0.3" ]] && echo true || echo false)"
+  expect_eq "spare.symlink_target_untouched" "true" \
+    "$([[ -f "${outside}/keep" ]] && echo true || echo false)"
+  expect_eq "spare.old_version_removed" "false" "$([[ -e "$old" ]] && echo true || echo false)"
+
+  rm -rf -- "$outside"
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
+test_keep_other_versions_opt_out() {
+  # 다른 제어 프로젝트가 옛 트리를 직접 참조하는 머신 (CLAUDE.md §9.2) 의 탈출구.
+  setup_case
+  local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
+  ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"
+  local old; old=$(make_old_tree "0.0.1")
+  ln -s "$old" "${TEST_ROOT}/opt/onnxruntime"
+
+  ONNXRT_KEEP_OTHER_VERSIONS=1 run_install
+
+  expect_eq "keep.repointed" "${TEST_ROOT}/opt/onnxruntime-linux-x64-${TEST_VER}" \
+    "$(readlink "${TEST_ROOT}/opt/onnxruntime")"
+  expect_eq "keep.old_tree_kept" "true" \
+    "$([[ -f "${old}/lib/libonnxruntime.so" ]] && echo true || echo false)"
+  expect_eq "keep.reported" "true" \
+    "$(grep -q "ONNXRT_KEEP_OTHER_VERSIONS=1" "$LOG_FILE" && echo true || echo false)"
+
+  unset 'ONNXRT_SHA256[${TEST_VER}:x64]'
+  teardown_case
+}
+
 test_production_pins_are_intact() {
   # TOFU pin 의 회귀 센서 — 리터럴 중복은 의도적이다. digest 를 조용히 바꾸면
   # 여기가 red 가 되어 "두 곳을 의식적으로 고치는" 절차를 강제한다.
-  # 값 자체는 공식 릴리즈 자산에서 독립 재계산으로 확인했다 (#153 M8).
+  # 1.17.1 은 독립 재계산 (#153 M8), 1.28.2 · 1.30.0 은 로컬 sha256sum == GitHub
+  # asset digest 로 확인했다.
   expect_eq "pin.1.17.1:x64" \
     "89b153af88746665909c758a06797175ae366280cbf25502c41eb5955f9a555e" \
     "${ONNXRT_SHA256[1.17.1:x64]:-MISSING}"
   expect_eq "pin.1.17.1:aarch64" \
     "70b6f536bb7ab5961d128e9dbd192368ac1513bffb74fe92f97aac342fbd0ac1" \
     "${ONNXRT_SHA256[1.17.1:aarch64]:-MISSING}"
+  expect_eq "pin.1.28.2:x64" \
+    "d7209b8751b27b862b0c76332c2e20e203396edb5dab700ecf4bb485cf147415" \
+    "${ONNXRT_SHA256[1.28.2:x64]:-MISSING}"
+  expect_eq "pin.1.28.2:aarch64" \
+    "f020b3d31106cc7db03889b4a5c21e7c38ce4a09ad26119c11d1ad6d3fa0ec04" \
+    "${ONNXRT_SHA256[1.28.2:aarch64]:-MISSING}"
+  expect_eq "pin.1.30.0:x64" \
+    "a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd" \
+    "${ONNXRT_SHA256[1.30.0:x64]:-MISSING}"
+  expect_eq "pin.1.30.0:aarch64" \
+    "e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da" \
+    "${ONNXRT_SHA256[1.30.0:aarch64]:-MISSING}"
 
   # install.sh 가 지금 설치하려는 버전에 pin 이 실제로 존재하는가.
   # (버전만 올리고 digest 를 잊으면 런타임엔 skip, 여기선 red)
@@ -326,8 +529,15 @@ test_digest_mismatch_refuses
 test_unknown_arch_fails_closed_before_download
 test_missing_digest_fails_closed_before_download
 test_download_failure_leaves_no_temp
-test_apt_installed_short_circuits
+test_apt_package_does_not_bypass_the_pin
+test_fresh_machine_does_not_install_via_apt
 test_existing_opt_install_short_circuits
+test_existing_same_version_short_circuits
+test_existing_other_version_upgrades
+test_failed_upgrade_removes_nothing
+test_same_version_prunes_stale_trees
+test_prune_spares_trees_it_did_not_name
+test_keep_other_versions_opt_out
 test_production_pins_are_intact
 
 echo

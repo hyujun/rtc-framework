@@ -52,6 +52,7 @@
 //                                            services + nrt_publish_thread snapshot
 //                                            drain co-located here.
 
+#include "rtc_base/threading/rt_heap.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_controller_manager/rt_controller_main.hpp"
@@ -71,6 +72,15 @@
 namespace rtc {
 
 int RtControllerMain(int argc, char** argv, const std::string& node_name) {
+  // Heap policy first, before any thread exists: the settings are process-
+  // global, and they are condition 1 of the one allocation the RT tick is
+  // allowed — ONNX Runtime's Run() (agent_docs/invariants.md, RT 절).
+  if (!rtc::ConfigureRtHeap()) {
+    fprintf(stderr,
+            "[WARN] ConfigureRtHeap failed — RT heap policy not in effect; an inference "
+            "policy's per-tick allocations may reach the kernel\n");
+  }
+
   // mlockall BEFORE rclcpp::init.
   // MCL_CURRENT locks pages already mapped; MCL_FUTURE ensures every page
   // allocated afterwards (including DDS/RMW heaps) is also locked.

@@ -98,6 +98,28 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 > 재려면 거기 부록의 `LD_PRELOAD` interposer 를 쓴다 (기존 두 게이트는 **C 라이브러리 `malloc` 을
 > 원리적으로 못 본다** — testing-debug.md §게이트 표).
 
+> **알려진 위반 2건째 — ONNX Runtime `Run()` (2026-09-12 사용자 결정, 조건부 수용).** ORT 의
+> `Session::Run` 은 IoBinding 여부와 무관하게 **매 호출** heap 을 할당한다 — CPU EP 에 할당 없는
+> Run 은 없고, 노드 2개짜리 모델도 매 호출 `operator new` 를 부른다 (수치는
+> `test_demo_inference_real_model` 이 기록한다). 수용 범위는 **두 호출 지점뿐**이다:
+> `DemoInferenceController::Compute()` 정책 step 의 `InferenceEngine::Run()`, 그리고 `udp_hand_driver`
+> `FingertipFTInferencer::Infer()` 의 `RunModels()`. 같은 tick 의 나머지 (pack·unpack·FK·명령 tail) 는
+> RT-1 그대로다. 수용은 아래가 **모두** 성립할 때만이고, 하나라도 깨지면 E-1 이다:
+>
+> 1. **heap 정책** — RT 프로세스 main 에서 `rtc::ConfigureRtHeap()`
+>    ([rt_heap.hpp](../rtc_base/include/rtc_base/threading/rt_heap.hpp): `M_TRIM_THRESHOLD -1`,
+>    `M_MMAP_MAX 0`) + `mlockall` (RT-HOST-1). warmup 이후의 할당·해제가 커널로 가지 않는다 (대가:
+>    RSS 가 최대치에 머문다).
+> 2. **정상상태 heap 무성장** — warmup 뒤 반복 Run 동안 `mallinfo2()` 의 `arena`·`hblkhd` 불변.
+> 3. **호출자 몫 0** — 정책 tick 의 operator new 수 == `Run()` 의 operator new 수.
+> 4. **RT 조건 실측** — 정책 step tick 의 compute p99/max 가 tick 예산 안 (SCHED_FIFO, cm_timing
+>    CSV). 제어 PC 실측이 실기 투입의 gate 다.
+>
+> 센서: 1 은 `rtc_base` 의 `test_rt_heap` (CI), 2·3 은 `test_demo_inference_real_model` (로컬 전용 —
+> 정책 파일이 없으면 skip = 미검증), 호출자 몫은 `test_demo_inference_alloc` (FakeEngine, CI) 이 계속 0
+> 을 지킨다. `udp_hand_driver` 경로는 1 만 공유하고 2·3 은 **미측정**이다 (F/T 모델이 repo 밖).
+> #222 와 같이 "ORT 도 하는데" 는 새 RT 코드가 할당할 근거가 아니다.
+
 ```detect id=RT-1
 grep -nE '(\bnew [A-Za-z_]|malloc\(|\.push_back\(|\.emplace_back\(|\.resize\()' <RT file>
 # probe: buffer.push_back(sample);
@@ -255,11 +277,11 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 ### ARCH-5 세부 스펙
 
-`robot_descriptions`는 C++ target / 헤더 / 라이브러리 export가 0건인 data-only 패키지다 ([robot_descriptions/CMakeLists.txt](../robot_descriptions/CMakeLists.txt)는 `install(DIRECTORY robots/)` 한 줄뿐). 소비 패키지는 다음만 사용한다:
+`robot_descriptions`는 C++ target / 헤더 / 라이브러리 export가 0건인 data-only 패키지다 ([robot_descriptions/CMakeLists.txt](../robot_descriptions/CMakeLists.txt)는 `install(DIRECTORY)` 세 벌뿐 — `robots/` · `object_sim/` · `objects/`; 파일 수는 늘어도 **빌드되는 것은 여전히 0** 이라는 것이 이 규칙의 전제다). 소비 패키지는 다음만 사용한다:
 
 **허용**:
 - `package.xml`: `<exec_depend>robot_descriptions</exec_depend>`
-- `package.xml`: `<test_depend>robot_descriptions</test_depend>` — **테스트가 아래 ament 런타임 lookup 을 쓸 때 설치 순서를 보장하는 용도로만**. colcon 토폴로지 엣지는 생기지만 (`colcon list --packages-up-to <pkg>` 에 나타난다) 아래 근거가 보호하려는 것은 깨지지 않는다: `robot_descriptions` 는 `install(DIRECTORY)` 한 줄이라 빌드 비용이 사실상 0 이고, 별도 overlay 에 두면 colcon 이 dep 을 해석하지 못해 **엣지 자체가 생기지 않는다**. 현 사례는 `rtc_controller_manager` (테스트가 `urdf.package` 파라미터로 share dir 을 런타임 resolve — 이 dep 이 없으면 병렬 빌드에서 설치 순서가 보장되지 않아 flaky)
+- `package.xml`: `<test_depend>robot_descriptions</test_depend>` — **테스트가 아래 ament 런타임 lookup 을 쓸 때 설치 순서를 보장하는 용도로만**. colcon 토폴로지 엣지는 생기지만 (`colcon list --packages-up-to <pkg>` 에 나타난다) 아래 근거가 보호하려는 것은 깨지지 않는다: `robot_descriptions` 는 `install(DIRECTORY)` 뿐이라 빌드 비용이 사실상 0 이고, 별도 overlay 에 두면 colcon 이 dep 을 해석하지 못해 **엣지 자체가 생기지 않는다**. 현 사례는 `rtc_controller_manager` (테스트가 `urdf.package` 파라미터로 share dir 을 런타임 resolve — 이 dep 이 없으면 병렬 빌드에서 설치 순서가 보장되지 않아 flaky)
 - C++: `ament_index_cpp::get_package_share_directory("robot_descriptions")`
 - Python: `ament_index_python.packages.get_package_share_directory("robot_descriptions")`
 - URDF/MJCF/launch/YAML: `package://robot_descriptions/robots/<name>/...` URL, 또는 패키지명 문자열 (rtc_controller_manager 가 런타임 resolve — `rtc_controller_manager/src/rt_controller_node_params.cpp` 참조)

@@ -1,5 +1,6 @@
 #include "udp_hand_driver/udp_hand_node.hpp"
 
+#include "rtc_base/threading/rt_heap.hpp"        // ConfigureRtHeap
 #include "rtc_base/threading/thread_config.hpp"  // SelectThreadConfigs
 #include "rtc_base/threading/thread_utils.hpp"   // SelectThreadConfigs, SlotToLogicalCpu
 #include "udp_hand_driver/udp_hand_logging.hpp"
@@ -19,6 +20,13 @@ int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
 
   const auto logger = ::udp_hand_driver::logging::NodeLogger();
+
+  // Heap policy before any worker thread exists (process-global): condition 1
+  // of the recorded RT-1 exception for ONNX Runtime's Run(), which the F/T
+  // inference calls on the CommLoop thread (agent_docs/invariants.md, RT 절).
+  if (!rtc::ConfigureRtHeap()) {
+    RCLCPP_WARN(logger, "ConfigureRtHeap failed — RT heap policy not in effect");
+  }
 
   if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
     RCLCPP_WARN(logger, "mlockall failed (errno=%d: %s)", errno, strerror(errno));

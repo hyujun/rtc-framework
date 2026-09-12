@@ -329,24 +329,30 @@ if(BUILD_TESTING)
   # Learned-policy binding, driven with an injected fake engine so every success
   # path runs without a .onnx file — which is the point of the injection seam.
   # RT-1 gate on the real Compute(). Global operator-new counting reaches across
-  # the library boundary; Eigen does not, so the schema it drives has no palm
-  # feature — see the file banner for what that green does and does not cover.
+  # the library boundary; Eigen's malloc does not — see the file banner for what
+  # that green does and does not cover. The shipped-config cases replay the real
+  # ur5e_p1b model (robot_descriptions) and read the shipped controller YAML.
   # Configures a real LifecycleNode, so it opens a DDS participant and takes the
   # package ROS_DOMAIN_ID like its siblings (#401).
   ament_add_gtest(test_demo_inference_alloc test/test_demo_inference_alloc.cpp
-    ENV ROS_DOMAIN_ID=52)
+    ENV ROS_DOMAIN_ID=52
+    TIMEOUT 300)
   target_include_directories(test_demo_inference_alloc PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
   target_link_libraries(test_demo_inference_alloc
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
+  target_compile_definitions(test_demo_inference_alloc PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   ament_target_dependencies(test_demo_inference_alloc
+    ament_index_cpp
     rclcpp
     rclcpp_lifecycle
     rtc_controllers
     rtc_inference
     rtc_base
+    rtc_urdf_bridge
     pinocchio
     Eigen3
   )
@@ -364,6 +370,61 @@ if(BUILD_TESTING)
     rtc_controllers
     rtc_inference
     rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # The same binding on the real ur5e_p1b model (robot_descriptions, #457) and
+  # the SHIPPED controller YAML: link poses, the closed-chain fingertips, the
+  # base ↔ base_link half turn and the reach gate need the model, and "the
+  # shipped config observes the robot as the policy was trained" needs the file.
+  ament_add_gtest(test_demo_inference_urdf test/test_demo_inference_urdf.cpp
+    ENV ROS_DOMAIN_ID=52
+    TIMEOUT 300)
+  target_link_libraries(test_demo_inference_urdf
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_demo_inference_urdf PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_demo_inference_urdf
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_inference
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
+  # The same binding on the REAL policy through ONNX Runtime — local only. The
+  # policy stays out of the repo, so every model case SKIPS (= unverified, not
+  # passed) unless RTC_POLICY_DIR names the directory holding the .onnx the
+  # shipped config points at; CI always skips. Run() latency and operator-new
+  # counts land in the test XML (RecordProperty). One TU with alloc_gate.hpp,
+  # hence the include path and the warning flag its contract (item 2) asks for.
+  ament_add_gtest(test_demo_inference_real_model test/test_demo_inference_real_model.cpp
+    ENV ROS_DOMAIN_ID=52
+    TIMEOUT 300)
+  target_include_directories(test_demo_inference_real_model PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_compile_options(test_demo_inference_real_model PRIVATE -Wno-mismatched-new-delete)
+  target_link_libraries(test_demo_inference_real_model
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_demo_inference_real_model PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_demo_inference_real_model
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_inference
+    rtc_base
+    rtc_urdf_bridge
     pinocchio
     Eigen3
   )

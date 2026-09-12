@@ -69,6 +69,36 @@ struct InputTensorSpec {
   /// with statistics gathered from robot observations is meaningless.
   bool recurrent{false};
 
+  /// Recurrent only: the feature id whose value the state takes on a reset, or
+  /// empty for zeros. The shape of "an integrator whose state is the current
+  /// joint position" — seeding it with zeros would command every joint toward
+  /// zero on the first step after activation.
+  std::string seed_feature;
+
+  /// `source: constant` — every element is `values`, every evaluation. For a
+  /// tensor the export requires but this binding answers with a fixed value (a
+  /// root pose, when every other pose is already expressed in the root's own
+  /// frame). Carries no features, no fill and no affine lane.
+  bool constant{false};
+  std::vector<float> values;  ///< constant only; exactly Numel() entries
+
+  /// Row names of the tensor, as the export lists them. When present, features
+  /// are placed BY NAME: each feature names the rows it fills (via the
+  /// binding's row resolver) and lands on those rows wherever the export put
+  /// them. A row is `stride` consecutive elements (`Numel() / element_names`),
+  /// so `[29 body names]` over a [1, 29, 3] tensor makes a row an xyz triple.
+  std::vector<std::string> element_names;
+  int stride{1};  ///< elements per named row; 1 when `element_names` is empty
+
+  /// Pattern written over the whole tensor before the features are packed
+  /// (repeated; length divides Numel()). Required when the features do not
+  /// cover every element, and what those uncovered elements hold.
+  std::vector<float> fill;
+
+  /// Derived: the features leave some element to `fill`. An affine lane is
+  /// refused on such a tensor — it would normalise the filler too.
+  bool partial{false};
+
   /// Element count of this tensor (product of `shape`).
   [[nodiscard]] std::size_t Numel() const noexcept;
 };
@@ -86,6 +116,13 @@ struct OutputTensorSpec {
   /// slicing joint targets out of it would be reading hidden units as radians
   /// (finite and in range, so nothing downstream would object).
   std::string feeds;
+
+  /// Element names in flattened order (exactly Numel() of them), or empty. A
+  /// command read from a named tensor is gathered BY NAME into the device's
+  /// joint order (`ResolveNamedIndices`) instead of trusting that the export
+  /// listed the joints the way the driver does — the hand head this was added
+  /// for lists them index → ring → thumb → middle.
+  std::vector<std::string> element_names;
 
   /// Element count of this tensor (product of `shape`).
   [[nodiscard]] std::size_t Numel() const noexcept;
@@ -142,6 +179,14 @@ struct PolicyIoParams {
 /// feature that silently shifts every subsequent offset.
 using FeatureSizeFn = std::function<int(std::string_view)>;
 
+/// Names of the rows a feature fills, in the order its values come out, or an
+/// empty list when the feature has no row names (it can then only be placed by
+/// position). Consulted only for tensors that declare `element_names`.
+///
+/// Also the caller's: "<group>.position" fills the rows named after that device
+/// group's joints, which is a fact about the robot, not about the schema.
+using FeatureRowsFn = std::function<std::vector<std::string>(std::string_view)>;
+
 /// Parse the `inference:` I/O schema out of @p cfg.
 ///
 /// Throws `std::invalid_argument` on any violation below — non-RT, called from
@@ -174,10 +219,37 @@ using FeatureSizeFn = std::function<int(std::string_view)>;
 ///   - the pre-#511 flat keys (`input_shape`, `output_shapes`,
 ///     `input_features`), refused with the migration named rather than left to
 ///     surface as "inputs is missing"
+///   - by-name placement (`element_names`): a name list that does not divide
+///     the tensor, a repeated name, a feature whose rows the resolver does not
+///     name, a row missing from `element_names`, a feature whose width is not
+///     rows × stride, or two features claiming one element
+///   - coverage: features that do not cover the tensor with no `fill:` to hold
+///     the rest; a `fill:` whose length does not divide the tensor or that is
+///     non-finite; an affine lane on a partially covered tensor
+///   - `source: constant` without `values:` of exactly the tensor's width, with
+///     a non-finite value, or together with features / fill / affine / seed
+///   - `seed:` on a tensor that is not recurrent, or naming a feature whose
+///     width differs from the tensor's
+///   - output `element_names` not exactly as long as the tensor or repeating a
+///     name; an `output_features` entry that gives `offset`/`count` on a named
+///     tensor (a named head is read whole, by name)
 ///
 /// Overlap is judged per tensor because two tensors legitimately start at
 /// offset 0; it is two slices of the SAME tensor claiming an element that means
 /// one of them is not reading what its name says.
-PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& feature_size);
+///
+/// @p feature_rows is required only when some input declares `element_names`;
+/// a schema that never places by name can omit it.
+PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& feature_size,
+                                   const FeatureRowsFn& feature_rows = {});
+
+/// Map each of @p wanted to its position in @p element_names (non-RT).
+///
+/// Throws `std::invalid_argument` naming @p what and every missing name — a
+/// device joint the export does not list is a configure failure, not a joint
+/// that silently keeps its last command. Names in @p element_names that are not
+/// wanted are allowed: an export may carry more than one device reads.
+std::vector<int> ResolveNamedIndices(const std::vector<std::string>& element_names,
+                                     const std::vector<std::string>& wanted, std::string_view what);
 
 }  // namespace rtc::params

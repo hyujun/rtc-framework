@@ -1,0 +1,62 @@
+# sim overlay — the scene demo_inference_controller's policy was trained in
+#
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py sim_overlay:=inference_pole
+#
+# An overlay is an ordinary ROS 2 params file. The launch applies it AFTER
+# ../mujoco_simulator.yaml (so it wins over the shipped scene) and BEFORE its own
+# command-line overrides (so `model_path:=` etc. still win over it), to both
+# nodes — each node reads only its own section. Nothing here edits the shared
+# profile: without `sim_overlay:=` the sim is exactly the shipped one.
+#
+# What the policy expects and the shipped scene does not give it:
+#   - an upright cylinder, r 0.04 h 0.15, standing on a floor at z = 0 — the
+#     shipped scene has a table (top at z = 0.05) and a random pick of meshes;
+#   - that cylinder at its training nominal pose;
+#   - the robot starting from the training reset posture.
+
+mujoco_simulator:
+  ros__parameters:
+    # Bare robot-on-a-floor scene. The table in scene_with_table.xml would lift
+    # the pole 0.05 m above every position the policy was trained at, and the
+    # training scene had no table to collide with.
+    model_path: "package://hand_description/robots/ur5e_p1b/mjcf/scene.xml"
+
+    object_pool:
+      # This repo's own objects (robot_descriptions/objects), not object_sim.
+      directory: "package://robot_descriptions/objects"
+      objects: ["pole"]
+      fixed_object: "pole"
+      selection: "fixed"
+      pose: "fixed"
+      # World frame — and here the sim world IS the policy frame (URDF `base`),
+      # so these numbers are also what the policy is shown. The training nominal
+      # is (-0.500, -0.050, 0.075), i.e. the pole standing on the floor under the
+      # reset posture's palm, with its z axis pointing DOWN. z is 0.005 above
+      # resting (the centre of an h 0.15 pole sits at 0.075 on a z = 0 floor) so
+      # the spawn never starts interpenetrating. Rx(pi) is one of the
+      # orientations that turn z down; a cylinder is symmetric about that axis,
+      # so the remaining half turn changes only the quaternion the policy reads,
+      # and this is the one the reaching run was measured with.
+      position: [-0.5, -0.05, 0.08]
+      rpy: [3.141592653589793, 0.0, 0.0]
+      # Ignored while pose is "fixed", zeroed anyway: the inherited values are
+      # sized for the table scene, and flipping pose to "random" here should not
+      # quietly scatter the pole over a table that is not in this scene.
+      position_variation: [0.0, 0.0, 0.0]
+      rpy_variation: [0.0, 0.0, 0.0]
+
+    robot_response:
+      # Training reset posture: the arm integrator's initial value in the export
+      # (palm ~0.57 m above the pole), hand at the policy's synergy-0 shape.
+      # Starting here instead of driving there from the palm-down default keeps
+      # the run reproducible and makes the viewer's R key return to it.
+      ur5e:
+        initial_qpos: [-0.188, -1.76, 1.6, -2.2, -1.63, 1.57]
+      # The policy's synergy-0 hand, converted into THIS hand's joint
+      # convention (the demo_inference_controller.yaml `joint_convention` signs;
+      # command_joint_names order). Already pre-shaped — the policy only closes
+      # it by up to ~0.12 rad more.
+      p1b:
+        initial_qpos:
+          [1.426097, -0.429778, 0.049478, -0.609149, -0.064476, -0.557459, -0.440156, -0.529181,
+           -0.511366, -0.45242]

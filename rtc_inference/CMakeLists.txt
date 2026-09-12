@@ -37,27 +37,78 @@ target_include_directories(rtc_inference INTERFACE
 # ── Optional ONNX Runtime ─────────────────────────────────────────────────────
 set(HAS_ONNXRUNTIME FALSE)
 
-find_package(onnxruntime QUIET)
-if(onnxruntime_FOUND)
+# Explicit root, checked before anything under /opt. The seam for a runtime that
+# is not where the installer puts it (a CI cache, a tarball unpacked without
+# sudo to try a new version).
+set(RTC_ONNXRUNTIME_ROOT "" CACHE PATH
+    "ONNX Runtime root (contains lib/ and include/); searched before /opt")
+
+# No find_package(onnxruntime). The release tarballs ship lib/cmake/onnxruntime,
+# and 1.28.2's imported target points at lib64/ while the files are in lib/ — a
+# config that is FOUND fails this configure hard, QUIET or not, and cannot be
+# caught. It is found in practice: setup_env.sh puts /opt/onnxruntime on
+# CMAKE_PREFIX_PATH. (1.17.1 shipped no config, which is why this never
+# surfaced before the upgrade.) find_library/find_path below also walk
+# CMAKE_PREFIX_PATH and the system dirs, so an apt or custom-prefix runtime is
+# still found — only the imported target is lost, and a plain path links the same.
+#
+# Order matters once two runtimes coexist, which is exactly the state an upgrade
+# leaves behind. `install_onnxruntime` points the bare /opt/onnxruntime symlink
+# at the PINNED version, so it goes first; versioned dirs follow newest-first.
+# The old order walked the glob lexically, where "1.17.1" sorts before "1.28.2" —
+# the upgrade would have built against the runtime it was meant to replace, and
+# that one cannot load IR-10 models.
+#
+# But HINTS is not what decides today, and saying otherwise would send the next
+# reader to the wrong line: find_library searches CMAKE_PREFIX_PATH (variable AND
+# environment) BEFORE HINTS, and setup_env.sh puts /opt/onnxruntime — the pinned
+# symlink — on it. So the pin wins there first, and this list is the fallback
+# that decides when that symlink is absent. An overlay or CI image that carries a
+# DIFFERENT ORT prefix earlier on CMAKE_PREFIX_PATH would win over everything
+# here; point RTC_ONNXRUNTIME_ROOT at the intended tree in that case, or drop the
+# stray prefix. (Not forced with NO_CMAKE_PATH: that is also the path by which an
+# apt or custom-prefix runtime is found on a box with no /opt install at all.)
+file(GLOB _ORT_OPT_DIRS "/opt/onnxruntime-*" "/opt/onnxruntime/onnxruntime-*")
+list(SORT _ORT_OPT_DIRS COMPARE NATURAL ORDER DESCENDING)
+set(_ORT_HINTS ${RTC_ONNXRUNTIME_ROOT} /opt/onnxruntime ${_ORT_OPT_DIRS})
+# A cached path would keep an existing build tree on the old runtime after the
+# symlink moved, silently. NO_CACHE says so — but it is a CMake 3.21 keyword and
+# this package declares 3.16, where it is not a keyword at all: it is swallowed
+# as one more PATH_SUFFIXES entry and the variables become cache entries after
+# all, with no warning. The explicit unset is what makes the guarantee hold at
+# the declared minimum; on 3.21+ it is a no-op next to NO_CACHE.
+unset(_RTC_ORT_LIB CACHE)
+unset(_RTC_ORT_INCLUDE CACHE)
+find_library(_RTC_ORT_LIB onnxruntime
+  HINTS ${_ORT_HINTS}
+        /usr/local /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
+  PATH_SUFFIXES lib
+  NO_CACHE)
+find_path(_RTC_ORT_INCLUDE onnxruntime_cxx_api.h
+  HINTS ${_ORT_HINTS} /usr/local /usr
+  PATH_SUFFIXES
+    include
+    include/onnxruntime/core/session
+    include/onnxruntime
+  NO_CACHE)
+if(_RTC_ORT_LIB AND _RTC_ORT_INCLUDE)
   set(HAS_ONNXRUNTIME TRUE)
-else()
-  # Discover versioned tarball dirs (e.g. /opt/onnxruntime-linux-x64-1.17.1, or
-  # nested under /opt/onnxruntime/). The bare /opt/onnxruntime symlink is also
-  # covered by the HINTS below.
-  file(GLOB _ORT_OPT_DIRS "/opt/onnxruntime-*" "/opt/onnxruntime/onnxruntime-*")
-  find_library(ONNXRUNTIME_LIB onnxruntime
-    HINTS ${_ORT_OPT_DIRS}
-          /opt/onnxruntime /usr/local
-          /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
-    PATH_SUFFIXES lib)
-  find_path(ONNXRUNTIME_INCLUDE onnxruntime_cxx_api.h
-    HINTS ${_ORT_OPT_DIRS}
-          /opt/onnxruntime /usr/local /usr
-    PATH_SUFFIXES
-      include/onnxruntime/core/session
-      include/onnxruntime)
-  if(ONNXRUNTIME_LIB AND ONNXRUNTIME_INCLUDE)
-    set(HAS_ONNXRUNTIME TRUE)
+endif()
+
+# Say WHICH runtime was picked. A model's IR version is checked only when a
+# session opens it, so building against a runtime too old for the shipped
+# policy looks like a perfectly good build until on_configure.
+# ORT_API_VERSION tracks the minor release; IR 10 needs 1.18 or newer.
+if(HAS_ONNXRUNTIME AND _RTC_ORT_INCLUDE AND EXISTS "${_RTC_ORT_INCLUDE}/onnxruntime_c_api.h")
+  file(STRINGS "${_RTC_ORT_INCLUDE}/onnxruntime_c_api.h" _ORT_API_LINE
+       REGEX "^#define ORT_API_VERSION [0-9]+")
+  string(REGEX MATCH "[0-9]+$" _ORT_API "${_ORT_API_LINE}")
+  message(STATUS "ONNX Runtime API ${_ORT_API} at ${_RTC_ORT_LIB}")
+  if(_ORT_API AND _ORT_API LESS 18)
+    message(WARNING
+      "ONNX Runtime API ${_ORT_API} (1.${_ORT_API}) cannot open IR-10 models such as the "
+      "ur5e_p1b demo_inference policy. Install the version pinned in install.sh "
+      "(install_onnxruntime re-points /opt/onnxruntime) and reconfigure.")
   endif()
 endif()
 
@@ -65,12 +116,8 @@ endif()
 if(HAS_ONNXRUNTIME)
   message(STATUS "ONNX Runtime found — building with inference support")
   target_compile_definitions(rtc_inference INTERFACE HAS_ONNXRUNTIME)
-  if(TARGET onnxruntime::onnxruntime)
-    target_link_libraries(rtc_inference INTERFACE onnxruntime::onnxruntime)
-  else()
-    target_include_directories(rtc_inference INTERFACE ${ONNXRUNTIME_INCLUDE})
-    target_link_libraries(rtc_inference INTERFACE ${ONNXRUNTIME_LIB})
-  endif()
+  target_include_directories(rtc_inference INTERFACE ${_RTC_ORT_INCLUDE})
+  target_link_libraries(rtc_inference INTERFACE ${_RTC_ORT_LIB})
 else()
   message(STATUS "ONNX Runtime not found — building stub inference engine")
 endif()

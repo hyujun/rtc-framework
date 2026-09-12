@@ -5,7 +5,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 패키지입니다. 신경망 모델을 실시간 제어 루프에서 결정론적으로 실행할 수 있도록 설계된 헤더 전용(header-only) INTERFACE 라이브러리이며, 초기화 이후 동적 메모리 할당 없이 추론을 수행합니다.
+RTC 프레임워크의 **ONNX Runtime 추론 엔진** 패키지입니다. 신경망 모델을 실시간 제어 루프에서 실행하기 위한 헤더 전용(header-only) INTERFACE 라이브러리로, 세션·텐서 버퍼·워밍업은 모두 초기화에서 끝나고 추론 호출은 `noexcept` 이며 이 래퍼 자신은 할당하지 않습니다. **단 ONNX Runtime 의 `Run()` 은 내부에서 매 호출 heap 을 할당합니다** (IoBinding 이든 직접 `Session::Run` 이든) — RT 경로에서의 호출은 [invariants.md](../agent_docs/invariants.md) RT 절의 조건부 수용 (RT-1 알려진 위반 2건째) 이며, 조건에는 RT 프로세스의 `rtc::ConfigureRtHeap()` 가 포함됩니다.
 
 ---
 
@@ -43,12 +43,12 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 
 모든 추론 백엔드의 추상 기반 클래스입니다. Non-copyable, non-movable이며 `rtc` 네임스페이스에 정의되어 있습니다.
 
-| 메서드 | 반환 타입 | RT-safe | 설명 |
+| 메서드 | 반환 타입 | RT 경로 | 설명 |
 |--------|-----------|---------|------|
 | `Init(const ModelConfig&)` | `void` | No | 모델 로드, 텐서 할당, 워밍업 (순수 가상) |
-| `Run()` | `bool` | Yes | 모든 등록된 모델에 대해 추론 실행 (순수 가상) |
-| `RunModel(int model_idx)` | `bool` | Yes | 단일 모델 추론 (기본 구현: `Run()` 위임) |
-| `RunModels(const int*, int)` | `bool` | Yes | 복수 모델 배치 추론 (기본 구현: `RunModel()` 순차 호출) |
+| `Run()` | `bool` | 조건부 ¹ | 모든 등록된 모델에 대해 추론 실행 (순수 가상) |
+| `RunModel(int model_idx)` | `bool` | 조건부 ¹ | 단일 모델 추론 (기본 구현: `Run()` 위임) |
+| `RunModels(const int*, int)` | `bool` | 조건부 ¹ | 복수 모델 배치 추론 (기본 구현: `RunModel()` 순차 호출) |
 | `input_buffer(int model_idx, int input_idx)` | `float*` | Yes | 사전 할당된 입력 버퍼 포인터 (범위 밖 → `nullptr`) |
 | `output_buffer(int model_idx, int output_idx)` | `const float*` | Yes | 출력 head 버퍼 포인터 반환 (범위 밖 → `nullptr`) |
 | `input_size(int model_idx, int input_idx)` | `std::size_t` | Yes | 입력 버퍼의 float 원소 수 (범위 밖 → `0`) |
@@ -58,7 +58,9 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 | `is_initialized()` | `bool` | Yes | 초기화 완료 여부 (순수 가상) |
 | `num_models()` | `int` | Yes | 등록된 모델 수 (순수 가상) |
 
-모든 RT-safe 메서드에는 `noexcept`가 지정되어 있으며, `Run()`, `RunModel()`, `RunModels()`에는 `[[nodiscard]]` 속성이 부여되어 반환값 무시를 방지합니다.
+¹ `noexcept`·무잠금이지만 ONNX Runtime 이 매 호출 heap 을 할당한다 — RT 경로 호출은 invariants.md RT 절의 수용 조건 (heap 정책·정상상태 무성장·호출자 몫 0·RT 실측) 하에서만. 실측 도구는 `integrated_bringup` 의 `test_demo_inference_real_model`.
+
+`Init()` 을 뺀 모든 메서드에는 `noexcept`가 지정되어 있으며, `Run()`, `RunModel()`, `RunModels()`에는 `[[nodiscard]]` 속성이 부여되어 반환값 무시를 방지합니다.
 
 ---
 
@@ -156,18 +158,27 @@ ros2 run rtc_inference rtc_inference_check policy.onnx --input obs:1x34
 
 ### ONNX Runtime 감지 (CMakeLists.txt)
 
-CMake에서 2단계로 ONNX Runtime을 탐색합니다:
+`find_library` / `find_path` 로만 탐색한다 (`find_package(onnxruntime)` 는 **쓰지 않는다** — 아래 주의). 실제 우선순위는 CMake 의 탐색 순서가 정하며, **`CMAKE_PREFIX_PATH` 가 `HINTS` 보다 먼저다**:
 
-1. **CMake 패키지 탐색:** `find_package(onnxruntime QUIET)`
-2. **수동 탐색 (폴백):**
-   - `/opt/onnxruntime/onnxruntime-*` (버전별 하위 디렉토리 자동 탐색)
-   - `/opt/onnxruntime`, `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`
-   - 헤더: `include/onnxruntime/core/session`, `include/onnxruntime` 접미사로 `onnxruntime_cxx_api.h` 탐색
+0. `CMAKE_PREFIX_PATH` (변수 + 환경변수) — `setup_env.sh` 가 여기에 `/opt/onnxruntime` 을 올리므로, **평소 pin 을 고르는 것은 이 단계다**. 다른 ORT prefix 가 앞에 실린 overlay·CI 이미지에서는 그쪽이 이긴다 (그 경우 `RTC_ONNXRUNTIME_ROOT` 로 의도한 트리를 지정)
+1. `-DRTC_ONNXRUNTIME_ROOT=<dir>` (명시 override — sudo 없이 풀어 둔 tarball 등) — 아래 셋은 `HINTS`
+2. `/opt/onnxruntime` — `install_onnxruntime` 이 **pin 된 버전**으로 가리키게 하는 symlink
+3. `/opt/onnxruntime-*`, `/opt/onnxruntime/onnxruntime-*` — **최신 버전 먼저** (natural sort 내림차순). 0 단계에 symlink 가 안 실렸을 때 pin 을 고르는 fallback
+4. `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`, 그리고 CMake 기본 경로 (apt·custom prefix 설치도 여기서 잡힌다)
+- 헤더: `include`, `include/onnxruntime/core/session`, `include/onnxruntime` 접미사로 `onnxruntime_cxx_api.h` 탐색
+
+탐색 결과는 **캐시하지 않는다** — 캐시된 경로는 업그레이드 뒤에도 기존 빌드 트리를 옛 런타임에 묶어 둔다. `NO_CACHE` 는 CMake 3.21 키워드인데 이 패키지의 `cmake_minimum_required` 는 3.16 이라 그 아래에서는 조용히 `PATH_SUFFIXES` 항목으로 먹히므로, 선언 최소 버전에서도 보증이 서도록 `unset(... CACHE)` 를 함께 둔다. configure 는 선택한 런타임의 `ORT_API_VERSION` 을 STATUS 로 찍고, **1.18 미만이면 WARNING** 을 낸다 (IR 10 모델을 못 연다 — `ur5e_p1b` 의 demo_inference 정책이 IR 10 이다).
 
 | 감지 결과 | 동작 |
 |-----------|------|
 | 발견 | `HAS_ONNXRUNTIME` 컴파일 정의 전파 + 라이브러리 링크 (INTERFACE) |
 | 미발견 | 스텁 엔진으로 빌드 (빌드 실패 없음) |
+
+> **`find_package(onnxruntime)` 를 쓰지 않는 이유.** 릴리즈 tarball 이 싣는 `lib/cmake/onnxruntime` 이 1.28.2 에서 `lib64/` 를 가리키는데 파일은 `lib/` 에 있어, config 가 **찾아지는 순간** configure 가 (QUIET 이어도, 잡을 수 없게) 실패한다. 그리고 실제로 찾아진다 — `setup_env.sh` 가 `/opt/onnxruntime` 을 `CMAKE_PREFIX_PATH` 에 올린다. 1.17.1 tarball 은 config 가 없어서 업그레이드 전에는 드러나지 않았다. 잃는 것은 imported target 뿐이고 경로 링크는 동일하게 동작한다.
+
+### 런타임 업그레이드
+
+버전은 `install.sh` 의 `ONNXRT_VERSION` 이 SSoT 다. 이미 설치된 머신에서도 `install_onnxruntime` 이 `/opt/onnxruntime/VERSION_NUMBER` 를 pin 과 비교해 다르면 새 tarball 을 받아 symlink 를 옮기고 `ldconfig` 를 다시 돈다. 그 뒤 **ORT 를 링크하는 패키지(`colcon list --packages-above rtc_inference`)를 재구성**해야 한다 — soname 이 버전마다 달라서 (`libonnxruntime.so.1.17.1` → `libonnxruntime.so.1`), 재링크되지 않은 옛 바이너리는 실행 시 `libonnxruntime.so.1.17.1: cannot open shared object file` 로 죽는다 (조용히 옛 런타임을 쓰지는 않는다). colcon 에 `--packages-above rtc_inference --cmake-force-configure` 를 준다 — plain colcon 명령의 전체 형태(venv·`--cmake-args` 주의)는 [repo_scripts/README.md](../repo_scripts/README.md) "Plain `colcon build` 호환성" 이 SSoT 다.
 
 ### 빌드 명령
 

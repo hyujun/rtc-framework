@@ -79,7 +79,12 @@ enum class HandFkWiringResult {
 /// (`WbcReducedDynamicsProvider::kinematic_status()`).
 class ClosedChainHandFk {
  public:
-  static constexpr std::size_t kMaxFingertips = 4;
+  /// Slot capacity, NOT the number of fingers. One finger can need two frames:
+  /// the inference binding observes the tip link the policy's body rows name AND
+  /// the bracket its reach gate measures from (they sit 17.5 mm apart), so a
+  /// four-fingered hand asks for eight. Inactive slots are skipped everywhere
+  /// they are iterated, so the only cost of the spare four is their storage.
+  static constexpr std::size_t kMaxFingertips = 8;
 
   ClosedChainHandFk() = default;
 
@@ -249,9 +254,15 @@ class ClosedChainHandFk {
 /// @brief fingertip @p f 의 **hand-root 상대** pose 를 closed(활성) 또는 serial 에서 얻어 @p out
 ///   에 기록. serial 경로는 기존 tree-model 계산과 byte-for-byte 동일. **RT-safe.**
 /// @return 유효 pose 를 얻었으면 true (비활성/미해결 fingertip 이면 false, out 미변경).
+///
+/// @p fingertip_ids 가 span 인 이유: 호출자마다 슬롯 수가 다르다. 대부분의 컨트롤러는
+/// 손가락당 1 프레임(4)이고, 추론 바인딩은 손가락당 2 프레임(tip link + bracket, 8)을
+/// 관측한다. 고정 크기 배열 참조였을 때는 @ref ClosedChainHandFk::kMaxFingertips 를 올리는
+/// 순간 **그것을 쓰지 않는 컨트롤러 3개가 컴파일 에러**로 끌려 들어왔다 — 용량은 이 클래스의
+/// 사정이지 호출자의 계약이 아니다. 범위 밖 @p f 는 false 를 돌린다.
 [[nodiscard]] bool HandFingertipPoseDispatch(
     const ClosedChainHandFk& fk, const rtc_urdf_bridge::RtModelHandle* hand_handle,
-    const std::array<pinocchio::FrameIndex, ClosedChainHandFk::kMaxFingertips>& fingertip_ids,
+    std::span<const pinocchio::FrameIndex> fingertip_ids,
     bool use_hand_root, pinocchio::FrameIndex hand_root_id, std::size_t f,
     pinocchio::SE3& out) noexcept;
 

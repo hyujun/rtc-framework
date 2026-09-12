@@ -37,6 +37,22 @@ DISPLAY=:1 ros2 run integrated_bringup demo_controller_gui   # 창 제목 "Demo 
 - 스크린샷: `xdotool`/`scrot` 미설치 — `xwininfo -root -tree` 로 window id 찾고 `xwd -id <id> -silent -out x.xwd` 후 XWD 헤더 수동 파싱으로 PNG 변환 (PIL 은 xwd 직접 못 읽음; 100-byte big-endian 헤더 + ncolors×12 skip, 32bpp BGRX).
 - GUI 는 latched `active_controller_name` 기준으로 owned 토픽에 rewire — 활성 컨트롤러가 50 Hz 로 계속 발행하므로 fake 데이터 주입 시엔 (1) 실제 컨트롤러를 다른 것으로 전환해 대상 publisher 를 lifecycle-gate 시키고 (2) `active_controller_name` 에 그 이름을 fake 발행(transient_local) 후 (3) 침묵 토픽에 `ros2 topic pub`. 복원은 실제 switch 2회 (CM 이 latched name 재발행).
 
+## 학습 정책을 sim 에서 돌리기 (`demo_inference_controller`, ur5e_p1b 전용)
+
+```bash
+export RTC_POLICY_DIR=/path/to/<policy-export-dir>          # 모델은 repo 밖
+ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
+    sim_overlay:=inference_pole enable_viewer:=false use_cpu_affinity:=false
+# 기동 후 switch_controller 로 demo_inference_controller 활성화 (위 절)
+```
+
+- **`sim_overlay:=inference_pole` 없이는 잡을 것이 없다** — 출하 p1b 씬은 테이블 + 무작위 메시고, 정책은 바닥 위 원통 1개 + 학습 reset 자세에서 훈련됐다. overlay 는 그 씬을 params 로 얹고 (공유 `mujoco_simulator.yaml` 무수정), 이름이 안 풀리면 launch 가 실패한다 (조용히 출하 씬으로 돌면 그 run 의 모든 수치가 다른 씬을 서술한다).
+- 기동 확인 2줄: `[inference] N observed link(s) in '<frame>'` (정책이 관측하는 프레임) · `[inference] policy loaded: ... (decimation ...)`. 후자가 없으면 `RTC_POLICY_DIR` 미설정이고, 그때는 `allow_missing_model: true` 라 **자세만 유지**한다 (고장처럼 안 보인다).
+- **출하 YAML 을 안 고치고 컨트롤러 키를 바꾸려면** overlay 에 `integrated_rt_controller: ros__parameters: demo_inference_controller: <yaml.경로>: <값>` 을 넣는다 — `ApplyControllerParamOverrides` 가 그 ROS 파라미터를 컨트롤러 YAML 트리에 꽂는다. **경로는 YAML 그대로** 여야 한다 (예: `inference.policy_frame` — 한 단계 얕게 쓰면 조용히 무시된다). 반영 여부는 위 기동 로그로 확인.
+- 판독: `<session>/controllers/demo_inference_controller/inference_diag.csv` — `held`+`hold_reason` (이 컨트롤러는 **모든 실패가 hold** 라 사유 없이는 정상과 구분 불가), `policy_step`/`inference_count` (decimation 대로인지), `reach_phase`·`tip_distance`, `object_*` (policy_frame 기준 — 프레임이 어긋나면 부호로 드러난다), `arm_lag_max`, `force_<tip>`. 같은 폴더의 `<device>_state.csv` 가 관절 lane.
+- **팔 lag 은 접촉이 지배한다**: 자유 운동 구간의 하한은 sim 위치 서보의 kv/kp (0.2 s) × 명령 속도이고, 물체에 막히면 그 3 배까지 포화한다. lag 수치를 인용할 땐 첫 접촉 시각으로 구간을 갈라 보고한다.
+- 종료는 자식 노드에 SIGINT (`pkill -INT -f integrated_rt_controller; pkill -INT -f mujoco_simulator_node`) — `ros2 launch` 에 한 번 보낸 SIGINT 가 45 s 안에 안 끝난 적이 있다. `-9` 는 CSV flush 를 날린다.
+
 ## Session CSV / plots
 
 - 세션 루트: `~/ros2_ws/rtc_ws/logging_data/<YYMMDD_HHMM>/` (`rtc_tools.utils.session_dir.resolve_logging_root`).

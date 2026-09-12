@@ -105,8 +105,19 @@ ROBOT_COMBOS: list[tuple[str, dict[str, str]]] = [
 ]
 
 
+# Arguments only one launch declares. `sim_overlay` exists on the p1b sim alone,
+# so putting it in SIM_COMBOS would fail the declared-argument check for the
+# other two rather than cover anything.
+EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
+    "sim_ur5e_p1b.launch.py": [
+        ("sim_overlay", {"sim_overlay": "inference_pole"}),
+    ],
+}
+
+
 def _combos(filename: str) -> list[tuple[str, dict[str, str]]]:
-    return SIM_COMBOS if filename in SIM_LAUNCH_FILES else ROBOT_COMBOS
+    base = SIM_COMBOS if filename in SIM_LAUNCH_FILES else ROBOT_COMBOS
+    return base + EXTRA_COMBOS.get(filename, [])
 
 
 def _cases() -> list[tuple[str, str, dict[str, str]]]:
@@ -347,6 +358,94 @@ def test_invalid_mpc_engine_is_rejected(filename):
     """
     with pytest.raises(RuntimeError, match="Invalid mpc_engine"):
         _evaluate(filename, {"mpc_engine": "definitely-not-an-engine"})
+
+
+# ── sim_overlay (ur5e_p1b sim) ───────────────────────────────────────────────
+# "Evaluates without raising" says nothing about the one property an overlay
+# has: WHERE it lands in each node's parameter list. ROS 2 applies parameter
+# sources in order, so an overlay placed after the CLI dict would silently beat
+# `model_path:=`, and one placed before mujoco_simulator.yaml would silently lose
+# to it — both launch fine and run the wrong scene.
+P1B_SIM = "sim_ur5e_p1b.launch.py"
+
+
+def _node_parameter_sources(node, context) -> list:
+    """The node's parameter list, each entry as a resolved path or a dict's key set.
+
+    Reads launch_ros' name-mangled slot — the same deliberate coupling as
+    `_on_exit_target`, and for the same reason: the alternative is executing
+    the node. Raises instead of passing if a launch_ros upgrade moves it.
+    """
+    try:
+        entries = node._Node__parameters
+    except AttributeError as exc:  # pragma: no cover - launch_ros API change
+        raise AssertionError(
+            "launch_ros Node no longer stores its parameters in _Node__parameters; "
+            "this sensor must be reworked rather than deleted"
+        ) from exc
+    out: list = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            out.append({perform_substitutions(context, list(key)) for key in entry})
+        else:
+            out.append(perform_substitutions(context, entry.param_file))
+    return out
+
+
+def _nodes_by_name(overrides: dict[str, str]):
+    description = _load_launch_module(P1B_SIM).generate_launch_description()
+    context = _seeded_context(description, overrides)
+    nodes = {
+        entity._Node__node_name: entity
+        for entity in _walk(description.entities, context)
+        if hasattr(entity, "_Node__node_name")
+    }
+    return nodes, context
+
+
+def _index_of_file(sources: list, suffix: str) -> int:
+    hits = [i for i, s in enumerate(sources) if isinstance(s, str) and s.endswith(suffix)]
+    assert len(hits) == 1, f"expected exactly one parameter file ending in {suffix}: {sources}"
+    return hits[0]
+
+
+def test_sim_overlay_sits_between_the_profile_yaml_and_the_cli_overrides():
+    nodes, context = _nodes_by_name(
+        {
+            "sim_overlay": "inference_pole",
+            "model_path": "/nonexistent/scene.xml",
+            "use_cpu_affinity": "false",
+        }
+    )
+    overlay = "/sim_overlays/inference_pole.yaml"
+    for name, cli_key in (
+        ("mujoco_simulator", "model_path"),
+        ("integrated_rt_controller", "log_dir"),
+    ):
+        assert name in nodes, f"{P1B_SIM} built no node named {name}: {sorted(nodes)}"
+        sources = _node_parameter_sources(nodes[name], context)
+        at_overlay = _index_of_file(sources, overlay)
+        at_profile = _index_of_file(sources, "/ur5e_p1b/mujoco_simulator.yaml")
+        cli = [i for i, s in enumerate(sources) if isinstance(s, set) and cli_key in s]
+        assert cli, f"{name}: no override dict carrying {cli_key}: {sources}"
+        assert at_profile < at_overlay < cli[0], (
+            f"{name}: the overlay must follow mujoco_simulator.yaml (to win over "
+            f"it) and precede the command-line dict (to lose to it): {sources}"
+        )
+
+
+def test_no_sim_overlay_adds_no_parameter_file():
+    nodes, context = _nodes_by_name({"use_cpu_affinity": "false"})
+    for name in ("mujoco_simulator", "integrated_rt_controller"):
+        sources = _node_parameter_sources(nodes[name], context)
+        stray = [s for s in sources if isinstance(s, str) and "/sim_overlays/" in s]
+        assert not stray, f"{name}: an overlay was applied without sim_overlay:= — {stray}"
+
+
+def test_unknown_sim_overlay_is_rejected():
+    """A mistyped overlay must stop the launch, not quietly run the shipped scene."""
+    with pytest.raises(RuntimeError, match=r"sim_overlay 'no_such_overlay'.*inference_pole"):
+        _evaluate(P1B_SIM, {"sim_overlay": "no_such_overlay"})
 
 
 # ── Shield-first ordering (issue #405) ───────────────────────────────────────

@@ -147,13 +147,11 @@ install_behaviortree() {
   fi
 }
 
-# ── ONNX Runtime release digests (TOFU pin) ────────────────────────────────
+# ── ONNX Runtime release digests (pin) ─────────────────────────────────────
 # MuJoCo 의 "upstream .sha256 자산을 받아서 검증" 패턴은 여기 쓸 수 없다 —
-# onnxruntime 은 `.sha256` 자산을 배포하지 않고(404) GitHub API 의 `digest`
-# 필드도 null 이다. 따라서 아래 값은 upstream 서명이 아니라 **공식 HTTPS
-# 릴리즈 tarball 에서 직접 계산해 박은 trust-on-first-use pin** 이다.
-# 보호 대상은 "pin 이후의 자산 교체 / 전송 경로 변조" 이지 upstream 자체의
-# 최초 신뢰가 아니다.
+# onnxruntime 은 `.sha256` 자산을 배포하지 않는다(404). 따라서 아래 값은
+# **공식 HTTPS 릴리즈 tarball 에서 계산해 박은 pin** 이다. 보호 대상은
+# "pin 이후의 자산 교체 / 전송 경로 변조" 다.
 #
 # 키는 `<version>:<arch>` 다 — install.sh 의 ONNXRT_VERSION 만 올리고 여기를
 # 잊으면 옛 버전 digest 로 통과하는 대신 **키 부재로 fail-closed** 된다.
@@ -163,21 +161,68 @@ install_behaviortree() {
 #      curl -fsSL -o /tmp/ort-<ARCH>.tgz \
 #        https://github.com/microsoft/onnxruntime/releases/download/v<VER>/onnxruntime-linux-<ARCH>-<VER>.tgz
 #   2. sha256sum /tmp/ort-<ARCH>.tgz
-#   3. `<VER>:<ARCH>` 항목을 아래에 추가하고, **다른 사람이 독립적으로 재계산**해
-#      같은 값이 나오는지 확인한 뒤 머지한다 (TOFU 이므로 2인 검토가 유일한 방어).
+#   3. GitHub 이 서버 측에서 계산한 asset digest 와 대조한다 — 받은 쪽과 독립인
+#      두 번째 계산이다 (1.17.1 시절엔 이 필드가 null 이라 2인 재계산이 유일한
+#      방어였다):
+#        gh api repos/microsoft/onnxruntime/releases/tags/v<VER> \
+#          -q '.assets[] | select(.name|test("linux-(x64|aarch64)-[0-9.]+\\.tgz$")) | [.name,.digest] | @tsv'
+#      일치하면 `<VER>:<ARCH>` 항목을 아래에 추가한다. digest 가 null 이면 2인 재계산.
 # 1.17.1 pin 은 x64/aarch64 모두 독립 재계산으로 일치 확인됨 (#153 M8).
+# 1.28.2 · 1.30.0 pin 은 x64/aarch64 모두 로컬 sha256sum == GitHub asset digest (2026-09-11).
+# 1.17.1 은 IR ≤ 9 만 연다 — 1.28.2 는 IR 10 정책(ur5e_p1b demo_inference)을 위해 올렸고,
+# 1.30.0 은 그 정책의 python 대조 oracle 과 같은 버전을 쓰려고 올렸다 (1.28.2 wheel 부재).
+# 옛 항목은 롤백(ONNXRT_VERSION 되돌리기)이 fail-closed 되지 않도록 남겨 둔다.
 declare -A ONNXRT_SHA256=(
   ["1.17.1:x64"]="89b153af88746665909c758a06797175ae366280cbf25502c41eb5955f9a555e"
   ["1.17.1:aarch64"]="70b6f536bb7ab5961d128e9dbd192368ac1513bffb74fe92f97aac342fbd0ac1"
+  ["1.28.2:x64"]="d7209b8751b27b862b0c76332c2e20e203396edb5dab700ecf4bb485cf147415"
+  ["1.28.2:aarch64"]="f020b3d31106cc7db03889b4a5c21e7c38ce4a09ad26119c11d1ad6d3fa0ec04"
+  ["1.30.0:x64"]="a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd"
+  ["1.30.0:aarch64"]="e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da"
 )
+
+# 핀과 다른 버전의 tarball 트리를 지운다 — 설치가 끝난 머신에는 핀 버전 하나만
+# 남긴다 (2026-09-11 사용자 결정). 옛 트리가 남아 있으면 rtc_inference 의 탐색
+# fallback·수동 rpath·다른 스크립트가 그것을 잡을 수 있고, 머신에 "어느 런타임이
+# 도는가" 가 둘 이상이 된다.
+#
+# 지우는 것은 이 파일이 푸는 이름 그대로인 디렉토리 — `onnxruntime-linux-<arch>-`
+# 뒤에 숫자로 시작하는 버전 — 뿐이다. symlink 는 따라가지 않고, gpu 빌드
+# (`…-gpu-<ver>`)·다른 arch·이름이 다른 트리는 건드리지 않는다.
+#
+# 반드시 핀 트리가 검증·추출되고 ${ONNXRT_DIR} symlink 가 그것을 가리킨 **뒤에만**
+# 부른다. 실패한 업그레이드(다운로드 실패·digest mismatch)가 기존 런타임까지
+# 지우면 머신에 ORT 가 하나도 남지 않는다.
+#
+# ONNXRT_KEEP_OTHER_VERSIONS=1 이면 건너뛴다 — 제어 PC 는 다른 제어 프로젝트와
+# 공존할 수 있고 (CLAUDE.md §9.2), 그쪽이 옛 버전 트리를 직접 참조할 수 있다.
+_prune_other_onnxruntime_versions() {
+  local root="$1" arch="$2" keep_dir="$3"
+  if [[ "${ONNXRT_KEEP_OTHER_VERSIONS:-0}" == "1" ]]; then
+    info "ONNXRT_KEEP_OTHER_VERSIONS=1 — other ONNX Runtime trees under ${root} are kept"
+    return
+  fi
+  local d
+  for d in "${root}/onnxruntime-linux-${arch}-"[0-9]*; do
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    [[ "$d" == "$keep_dir" ]] && continue
+    info "Removing ONNX Runtime tree $(basename "$d") (pinned: $(basename "$keep_dir"))"
+    sudo rm -rf -- "$d"
+  done
+}
 
 install_onnxruntime() {
   # ONNX Runtime C++ API (fingertip F/T inference)
   # Version is centralized as ONNXRT_VERSION in install.sh (caller scope).
   #
-  # 검증 범위: **GitHub 릴리즈 tarball 경로만** digest 검증 대상이다. apt 패키지
-  # (`libonnxruntime-dev`) 와 이미 설치된 ${ONNXRT_DIR} short-circuit 은 각각
-  # dpkg 서명 체인 / 과거 설치 결과이므로 여기서 재검증하지 않는다.
+  # 설치원은 **핀 tarball 하나**다. apt 의 `libonnxruntime-dev` 는 설치원이 아니다
+  # — 버전을 이 파일이 정할 수 없어 핀 (IR 10 정책이 요구하는 ≥ 1.18, digest) 을
+  # 보장하지 못하고, Ubuntu 24.04 에는 패키지 자체가 없다. 이미 깔려 있으면 알리기만
+  # 하고 핀을 /opt 에 깐다 (rtc_inference 는 /opt/onnxruntime 을 시스템 경로보다
+  # 먼저 찾는다). 시스템 패키지는 지우지 않는다 — 다른 소프트웨어가 의존할 수 있다.
+  #
+  # 검증 범위: tarball 경로만 digest 검증 대상이다. 이미 설치된 ${ONNXRT_DIR}
+  # short-circuit 은 과거 설치 결과이므로 여기서 재검증하지 않는다.
   #
   # 실패 계약: 검증 실패(미지원 arch / digest 미등록 / mismatch)는 **ONNX 기능만
   # warn+skip** 이고 install.sh 전체를 중단하지 않는다 — 바로 아래 install_mujoco
@@ -189,38 +234,56 @@ install_onnxruntime() {
   local ONNXRT_DIR="${ONNXRT_DIR:-/opt/onnxruntime}"
   local ONNXRT_LIB_CONF="${ONNXRT_LIB_CONF:-/etc/ld.so.conf.d/onnxruntime.conf}"
 
-  # apt에서 설치되어 있는지 확인 (dpkg -s로 실제 설치 상태 검증)
+  # arch 는 다운로드뿐 아니라 옛 트리 정리에도 쓰이므로 여기서 정한다. 미지원
+  # arch 의 거부는 다운로드 직전에 한다 (기존 설치 확인보다 앞서 막지 않는다).
+  local ARCH=""
+  case "$(uname -m)" in
+    x86_64)  ARCH="x64" ;;
+    aarch64) ARCH="aarch64" ;;
+  esac
+  local extract_root
+  extract_root="$(dirname "$ONNXRT_DIR")"
+  local pinned_tree="${extract_root}/onnxruntime-linux-${ARCH}-${ONNXRT_VER}"
+
   if dpkg -s libonnxruntime-dev 2>/dev/null | grep -q "^Status:.*install ok installed"; then
-    success "ONNX Runtime already installed (apt)"
-    return
+    warn "libonnxruntime-dev (apt) is installed but NOT used — rtc_inference builds against"
+    warn "  the pinned ${ONNXRT_VER} at ${ONNXRT_DIR}. The apt package is left in place."
   fi
 
   # ${ONNXRT_DIR}에 이미 설치된 경우 (라이브러리 + 헤더 모두 확인)
+  #
+  # 버전은 tarball 이 싣는 VERSION_NUMBER 로만 판정한다. 그게 pin 과 **다르면**
+  # 재설치로 넘어간다 — 존재만 보고 끝냈다면 ONNXRT_VERSION 을 올려도 이미 깔린
+  # 모든 머신(dev box · 제어 PC)이 옛 런타임에 그대로 머물렀다. 파일이 없으면
+  # (수동 빌드 등) 버전을 알 수 없으므로 예전처럼 신뢰하고 둔다.
   if [[ -d "$ONNXRT_DIR" && -f "$ONNXRT_DIR/lib/libonnxruntime.so" && -f "$ONNXRT_DIR/include/onnxruntime_cxx_api.h" ]]; then
-    success "ONNX Runtime already installed at ${ONNXRT_DIR}"
-    return
+    local installed_ver=""
+    if [[ -f "$ONNXRT_DIR/VERSION_NUMBER" ]]; then
+      installed_ver="$(tr -d '[:space:]' <"$ONNXRT_DIR/VERSION_NUMBER")"
+    fi
+    if [[ -z "$installed_ver" || "$installed_ver" == "$ONNXRT_VER" ]]; then
+      success "ONNX Runtime already installed at ${ONNXRT_DIR}${installed_ver:+ (${installed_ver})}"
+      # 이미 핀인 머신도 정리한다 — 재실행이 "핀 하나만" 으로 수렴하게. 단 symlink
+      # 가 이 파일이 만든 핀 트리를 가리킬 때만: 버전을 모르는 수동 설치나 다른
+      # 배치에서는 무엇이 현재 런타임인지 단정할 수 없다.
+      if [[ -n "$installed_ver" && -n "$ARCH" &&
+            "$(readlink -f "$ONNXRT_DIR")" == "$(readlink -f "$pinned_tree")" ]]; then
+        _prune_other_onnxruntime_versions "$extract_root" "$ARCH" "$pinned_tree"
+      fi
+      return
+    fi
+    info "ONNX Runtime ${installed_ver} at ${ONNXRT_DIR} differs from pinned ${ONNXRT_VER} — upgrading"
   fi
 
   info "Installing ONNX Runtime ${ONNXRT_VER}..."
 
-  # 방법 1: apt
-  if sudo apt-get install -y libonnxruntime-dev > /dev/null 2>&1; then
-    success "ONNX Runtime installed via apt"
+  # GitHub 릴리즈 다운로드 (digest 검증 대상)
+  if [[ -z "$ARCH" ]]; then
+    warn "ONNX Runtime: unsupported architecture '$(uname -m)' — skipping"
+    warn "  Prebuilt tarballs exist for x86_64/aarch64 only."
+    warn "  F/T inference will not be available."
     return
   fi
-
-  # 방법 2: GitHub 릴리즈 다운로드 (digest 검증 대상)
-  local ARCH
-  case "$(uname -m)" in
-    x86_64)  ARCH="x64" ;;
-    aarch64) ARCH="aarch64" ;;
-    *)
-      warn "ONNX Runtime: unsupported architecture '$(uname -m)' — skipping"
-      warn "  Prebuilt tarballs exist for x86_64/aarch64 only."
-      warn "  F/T inference will not be available."
-      return
-      ;;
-  esac
 
   # digest 미등록이면 다운로드 전에 fail-closed (버전 bump 회귀 차단)
   local sha_key="${ONNXRT_VER}:${ARCH}"
@@ -238,8 +301,6 @@ install_onnxruntime() {
   # 수행한다. 예측 가능한 /tmp 경로는 검증과 `sudo tar` 사이에 파일을 바꿔치기할
   # 수 있는 TOCTOU 창을 남긴다. subshell + EXIT trap 이라 중간 실패·시그널에도
   # 임시 파일이 남지 않고, 부모 셸의 trap 을 건드리지 않는다.
-  local extract_root
-  extract_root="$(dirname "$ONNXRT_DIR")"
   if ! (
     set -e
     tmp_dir="$(mktemp -d)"
@@ -268,13 +329,21 @@ install_onnxruntime() {
     return
   fi
 
-  sudo ln -sf "${extract_root}/onnxruntime-linux-${ARCH}-${ONNXRT_VER}" "$ONNXRT_DIR"
+  # -n: ${ONNXRT_DIR} 가 이미 **디렉토리를 가리키는 symlink** 면(= 업그레이드)
+  # `ln -sf` 는 그 링크를 따라가 옛 트리 **안에** 새 링크를 만들고 끝난다 — 링크는
+  # 여전히 옛 버전을 가리키고 에러도 없다. 최초 설치에선 드러나지 않던 결함이다.
+  sudo ln -sfn "$pinned_tree" "$ONNXRT_DIR"
 
-  # ldconfig 등록
+  # 새 핀 트리가 검증·추출되고 symlink 가 그것을 가리킨 지금에서야 옛 트리를 지운다.
+  _prune_other_onnxruntime_versions "$extract_root" "$ARCH" "$pinned_tree"
+
+  # ldconfig 등록. conf 는 symlink 경로를 가리키므로 한 번만 쓰면 되지만, 캐시는
+  # 매 (재)설치마다 갱신해야 한다 — soname 이 버전마다 다르다
+  # (1.17.1 은 libonnxruntime.so.1.17.1, 1.28.2 부터는 libonnxruntime.so.1).
   if [[ ! -f "$ONNXRT_LIB_CONF" ]]; then
     echo "${ONNXRT_DIR}/lib" | sudo tee "$ONNXRT_LIB_CONF" > /dev/null
-    sudo ldconfig
   fi
+  sudo ldconfig
 
   success "ONNX Runtime ${ONNXRT_VER} installed at ${ONNXRT_DIR} (sha256 verified)"
 }

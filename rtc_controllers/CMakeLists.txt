@@ -58,6 +58,7 @@ add_library(rtc_controllers STATIC
   # is "YAML order becomes tensor order", which a binding calls once at
   # configure time.
   src/params/policy_io_params.cpp
+  src/params/reach_gate_params.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -352,6 +353,12 @@ if(BUILD_TESTING)
   # cases are written as "the config is wrong" rather than "the parser works".
   ament_add_gtest(test_policy_io test/test_policy_io.cpp)
   target_link_libraries(test_policy_io rtc_controllers)
+
+  # Reach gate (proximity ∨ tactile hold) core + its YAML. The trained formula
+  # has to be reproduced exactly outside the network, so the step-count
+  # boundaries and the ramp are pinned as numbers, not as "roughly works".
+  ament_add_gtest(test_reach_gate test/test_reach_gate.cpp)
+  target_link_libraries(test_reach_gate rtc_controllers)
 endif()
 
 ament_package()

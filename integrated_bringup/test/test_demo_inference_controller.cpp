@@ -9,6 +9,7 @@
 //     amount of simulated time than it was trained for), and
 //   * a bad tick ships a command anyway instead of holding.
 
+#include "inference_fake_engine.hpp"
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -22,9 +23,11 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,95 +44,13 @@ constexpr int kFingertips = 4;
 constexpr int kInputElements = 20;  // 6 arm + 10 hand + 4 force norms
 constexpr int kInferenceStride = 7;
 
-/// Deterministic stand-in for `rtc::OnnxEngine`.
-///
-/// Holds real buffers so the controller's pack/unpack path is the production
-/// one; only the "model" is fake. `run_result` and the output values are
-/// writable so a case can make a single tick fail without touching the
-/// controller.
-class FakeEngine final : public rtc::InferenceEngine {
- public:
-  FakeEngine(const std::vector<std::size_t>& in_sizes, const std::vector<std::size_t>& out_sizes) {
-    for (const auto n : in_sizes) {
-      inputs_.emplace_back(n, 0.0F);
-    }
-    for (const auto n : out_sizes) {
-      outputs_.emplace_back(n, 0.0F);
-    }
-  }
+using integrated_bringup::testfx::FakeEngine;
 
-  void Init(const rtc::ModelConfig& /*config*/) override {
-    // `stub` reproduces exactly what a build without ONNX Runtime does: Init()
-    // returns normally, throws nothing, and leaves is_initialized() false.
-    initialized_ = !stub;
-  }
-
-  [[nodiscard]] bool Run() noexcept override {
-    ++run_count;
-    last_inputs = inputs_;
-    for (std::size_t h = 0; h < outputs_.size(); ++h) {
-      for (std::size_t i = 0; i < outputs_[h].size(); ++i) {
-        outputs_[h][i] =
-            (h < next_output.size() && i < next_output[h].size()) ? next_output[h][i] : 0.0F;
-      }
-    }
-    return run_result;
-  }
-
-  // Out-of-range answers nullptr/0 rather than folding onto slot 0: a binding
-  // that addressed a tensor this "model" does not have must hold, not silently
-  // re-read another one.
-  float* input_buffer(int /*model_idx*/, int input_idx) noexcept override {
-    const auto t = static_cast<std::size_t>(input_idx);
-    return (t < inputs_.size()) ? inputs_[t].data() : nullptr;
-  }
-
-  [[nodiscard]] const float* output_buffer(int /*model_idx*/,
-                                           int output_idx) const noexcept override {
-    const auto h = static_cast<std::size_t>(output_idx);
-    return (h < outputs_.size()) ? outputs_[h].data() : nullptr;
-  }
-
-  [[nodiscard]] std::size_t input_size(int /*model_idx*/, int input_idx) const noexcept override {
-    const auto t = static_cast<std::size_t>(input_idx);
-    return (t < inputs_.size()) ? inputs_[t].size() : 0;
-  }
-
-  [[nodiscard]] int num_inputs(int /*model_idx*/) const noexcept override {
-    return static_cast<int>(inputs_.size());
-  }
-
-  [[nodiscard]] std::size_t output_size(int /*model_idx*/, int output_idx) const noexcept override {
-    const auto h = static_cast<std::size_t>(output_idx);
-    return (h < outputs_.size()) ? outputs_[h].size() : 0;
-  }
-
-  [[nodiscard]] int num_outputs(int /*model_idx*/) const noexcept override {
-    return static_cast<int>(outputs_.size());
-  }
-
-  [[nodiscard]] bool is_initialized() const noexcept override { return initialized_; }
-
-  [[nodiscard]] int num_models() const noexcept override { return 1; }
-
-  // ── Knobs ────────────────────────────────────────────────────────────────
-  bool stub{false};
-  bool run_result{true};
-  int run_count{0};
-  std::vector<std::vector<float>> next_output;
-  /// Snapshot of every input tensor as the last Run() saw it. Per tensor and
-  /// not concatenated: the whole point of the multi-input path is that the
-  /// tensors are separate buffers, and a flattened copy would let a case that
-  /// wrote into the wrong one still look right.
-  std::vector<std::vector<float>> last_inputs;
-
- private:
-  bool initialized_{false};
-  std::vector<std::vector<float>> inputs_;
-  std::vector<std::vector<float>> outputs_;
-};
-
-std::map<std::string, rtc::DeviceNameConfig> MakeDeviceConfigs() {
+/// @param inference_stride floats the hand packs per sensor group. Zero leaves
+/// `sensor_layout` unset entirely — the shape of a hand config that lists its
+/// sensor groups but never says how wide their lane is.
+std::map<std::string, rtc::DeviceNameConfig> MakeDeviceConfigs(
+    int inference_stride = kInferenceStride) {
   rtc::DeviceNameConfig arm;
   arm.device_name = "arm";
   for (int i = 0; i < kArmDof; ++i) {
@@ -156,9 +77,11 @@ std::map<std::string, rtc::DeviceNameConfig> MakeDeviceConfigs() {
   hand_lim.max_velocity.assign(kHandDof, 10.0);
   hand.joint_limits = hand_lim;
 
-  rtc::DeviceSensorLayout layout;
-  layout.inference_values_per_group = kInferenceStride;
-  hand.sensor_layout = layout;
+  if (inference_stride > 0) {
+    rtc::DeviceSensorLayout layout;
+    layout.inference_values_per_group = inference_stride;
+    hand.sensor_layout = layout;
+  }
 
   return {{"arm", arm}, {"hand", hand}};
 }
@@ -204,13 +127,14 @@ inference:
 )";
 }
 
-/// A schema that adds the object pose lane (27 elements). Palm features are
+/// A schema that adds the object pose lane (27 elements). Link features are
 /// deliberately absent: they need a real URDF, and the object lane's contract —
-/// matching, staleness, frame checking — is independent of it.
+/// matching, staleness, frame checking — is independent of it. So is the
+/// frame change: `source_frame_link` names the policy frame itself, which needs
+/// no model. The URDF-backed rotation is test_demo_inference_urdf.cpp's.
 std::string MakeObjectYaml(double timeout_sec = 0.02, const std::string& match_mode = "prefix",
                            const std::string& frame_match = "pool_",
-                           const std::string& source_frame_id = "world",
-                           const std::string& reference_frame = "world") {
+                           const std::string& source_frame_id = "world") {
   return R"(
 command_type: "position"
 topics:
@@ -242,9 +166,7 @@ inference:
   output_features:
     - { tensor: "arm_action", role: "joint_target",   device: "arm" }
     - { tensor: "posture",    role: "posture_scalar", device: "hand" }
-  base_pose_in_world:
-    position: [0.0, 0.0, 0.0]
-    rpy: [0.0, 0.0, 3.14159265358979]
+  policy_frame: "world_link"
   object_pose:
     topic: "/sim/object_transforms"
     match_mode: ")" +
@@ -253,8 +175,7 @@ inference:
          frame_match + R"("
     source_frame_id: ")" +
          source_frame_id + R"("
-    reference_frame: ")" +
-         reference_frame + R"("
+    source_frame_link: "world_link"
     timeout_sec: )" +
          std::to_string(timeout_sec) + R"(
   hand_posture:
@@ -318,7 +239,8 @@ struct Harness {
   explicit Harness(
       const std::string& yaml = MakeYaml(), bool stub_engine = false,
       const std::vector<std::size_t>& in_sizes = {static_cast<std::size_t>(kInputElements)},
-      const std::vector<std::size_t>& out_sizes = {6, 1}) {
+      const std::vector<std::size_t>& out_sizes = {6, 1},
+      const std::map<std::string, rtc::DeviceNameConfig>& devices = MakeDeviceConfigs()) {
     auto fake = std::make_unique<FakeEngine>(in_sizes, out_sizes);
     if (stub_engine) {
       fake->stub = true;
@@ -337,7 +259,7 @@ struct Harness {
 
     const YAML::Node cfg = YAML::Load(yaml);
     ctrl->LoadConfig(cfg);
-    ctrl->SetDeviceNameConfigs(MakeDeviceConfigs());
+    ctrl->SetDeviceNameConfigs(devices);
     ctrl->OnDeviceConfigsSet();
     configure_result = ctrl->on_configure(rclcpp_lifecycle::State{}, node, cfg);
   }
@@ -1308,6 +1230,36 @@ TEST(DemoInferenceObject, TwoMatchesAreRefusedRatherThanPickingTheFirst) {
   EXPECT_EQ(h.engine->run_count, 0);
 }
 
+TEST(DemoInferenceObject, APoseWithNoOrientationIsNotAPose) {
+  // An all-zero quaternion is what a broken publisher sends, and normalising it
+  // MANUFACTURES NaN — which then packs, runs, and only maybe gets caught at the
+  // command screen. The lane must refuse it like any other unusable observation.
+  auto h = MakeObjectHarness(MakeObjectYaml());
+  auto msg = MakeTfMessage({"pool_apple_object"});
+  msg.transforms[0].transform.rotation.x = 0.0;
+  msg.transforms[0].transform.rotation.y = 0.0;
+  msg.transforms[0].transform.rotation.z = 0.0;
+  msg.transforms[0].transform.rotation.w = 0.0;
+  h.ctrl->InjectObjectTransformsForTesting(msg);
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_EQ(h.engine->run_count, 0) << "nothing may reach the engine";
+}
+
+TEST(DemoInferenceObject, ANonFinitePoseIsRefusedBeforeItIsPacked) {
+  auto h = MakeObjectHarness(MakeObjectYaml());
+  auto msg = MakeTfMessage({"pool_apple_object"});
+  msg.transforms[0].transform.translation.y = std::numeric_limits<double>::quiet_NaN();
+  h.ctrl->InjectObjectTransformsForTesting(msg);
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_EQ(h.engine->run_count, 0);
+}
+
 TEST(DemoInferenceObject, NoMatchHolds) {
   auto h = MakeObjectHarness(MakeObjectYaml());
   h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"table", "robot_base"}));
@@ -1363,6 +1315,40 @@ TEST(DemoInferenceObject, AFreshMessageResetsTheAge) {
   }
 }
 
+TEST(DemoInferenceObject, AReactivationDoesNotInheritThePreviousActivationsPose) {
+  // Age is accrued in tick `dt` and the tick does not run while inactive, so a
+  // deactivation gap costs the lane nothing: a pose from before it would come
+  // back looking one tick old however long the publisher has been silent since.
+  auto h = MakeObjectHarness(MakeObjectYaml(/*timeout_sec=*/0.021));
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+
+  auto state = MakeState();
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting()) << "the pose is fresh on this activation";
+
+  ASSERT_EQ(h.ctrl->on_deactivate(rclcpp_lifecycle::State{}),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+
+  // The publisher stopped during the gap. The lane cannot vouch for what it
+  // holds — the age it would report was measured against a different run — so
+  // it must hold instead of handing the policy a pose of unknown age.
+  for (int t = 0; t < 20; ++t) {
+    static_cast<void>(h.ctrl->Compute(state));
+    ASSERT_TRUE(h.ctrl->LastTickHeldForTesting()) << "tick " << t << " after re-activation";
+  }
+  EXPECT_EQ(h.ctrl->LastHoldReasonForTesting(), integrated_bringup::InferenceHoldReason::kObject)
+      << "and it must say WHICH lane is missing, not fold into a generic hold";
+
+  // It recovers the moment the publisher speaks again — the gate is freshness,
+  // not a one-way door.
+  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_FALSE(h.ctrl->LastTickHeldForTesting());
+}
+
 TEST(DemoInferenceObject, TransformsInTheWrongSourceFrameAreIgnored) {
   auto h = MakeObjectHarness(MakeObjectYaml(0.02, "prefix", "pool_", /*source_frame_id=*/"world"));
   h.ctrl->InjectObjectTransformsForTesting(
@@ -1384,24 +1370,6 @@ TEST(DemoInferenceObject, ExactMatchModeDoesNotAcceptAPrefix) {
   h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
   static_cast<void>(h.ctrl->Compute(state));
   EXPECT_FALSE(h.ctrl->LastTickHeldForTesting());
-}
-
-TEST(DemoInferenceObject, BaseReferenceFrameAppliesTheMountingRotation) {
-  // base_pose_in_world is a 180 deg yaw, so a world point (1, 2, 3) is
-  // (-1, -2, 3) in base. Getting this backwards produces a pose that is
-  // plausible everywhere except in the policy's reasoning.
-  auto h = MakeObjectHarness(
-      MakeObjectYaml(0.02, "prefix", "pool_", "world", /*reference_frame=*/"base"));
-  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
-  h.ctrl->InjectObjectTransformsForTesting(MakeTfMessage({"pool_apple_object"}));
-
-  auto state = MakeState();
-  static_cast<void>(h.ctrl->Compute(state));
-  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
-  ASSERT_EQ(h.engine->last_inputs[0].size(), kObjectInputElements);
-  EXPECT_NEAR(h.engine->last_inputs[0][20], -1.0F, 1e-5);
-  EXPECT_NEAR(h.engine->last_inputs[0][21], -2.0F, 1e-5);
-  EXPECT_NEAR(h.engine->last_inputs[0][22], 3.0F, 1e-5) << "z is unchanged by a yaw";
 }
 
 TEST(DemoInferenceObject, RejectsAZeroTimeout) {
@@ -1492,4 +1460,654 @@ TEST(DemoInferenceHoldLatch, ALatchEnteredWhileUnreadableUsesTheLastGoodState) {
   ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
   EXPECT_DOUBLE_EQ(out.devices[0].commands[0], 0.25)
       << "latched from the last readable state, not from the unreadable one";
+}
+
+// ── By-name placement, fill, constant, joint convention (§5 criterion 2) ────
+//
+// The export this binding was extended for lists its joint table in its own
+// order, fills 16 of 46 slots, and defines some joint axes opposite to the
+// robot's URDF. The fixture below reproduces all three with the roster fixture:
+// the tensor lists the hand BEFORE the arm and each of them BACKWARDS, so
+// "packed by position" and "packed by name" cannot coincide, and the
+// convention flips one hand joint and offsets one arm joint.
+
+namespace {
+
+constexpr float kPad = -7.0F;     // the filler every uncovered slot must hold
+constexpr float kPoison = 99.0F;  // what a stale buffer holds before packing
+constexpr double kArmJ1Offset = 0.25;
+
+std::string MakeNamedYaml(const std::string& inference_extra = "") {
+  return R"(
+command_type: "position"
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+  hand:
+    subscribe:
+      - topic: "hand/joint_goal"
+        role: "target"
+inference:
+  model_path: "fake_policy.onnx"
+  decimation: 1
+  joint_convention:
+    hand_j2: { sign: -1 }
+    arm_j1: { offset: 0.25 }
+)" + inference_extra +
+         R"(  inputs:
+    - name: "joint_pos"
+      shape: [1, 20]
+      element_names: [pad_a, hand_j9, hand_j8, hand_j7, hand_j6, hand_j5, hand_j4, hand_j3,
+                      hand_j2, hand_j1, hand_j0, arm_j5, arm_j4, arm_j3, arm_j2, arm_j1, arm_j0,
+                      pad_b, pad_c, pad_d]
+      features: ["arm.position", "hand.position"]
+      fill: [-7.0]
+    - name: "joint_vel"
+      shape: [1, 16]
+      element_names: [hand_j0, hand_j1, hand_j2, hand_j3, hand_j4, hand_j5, hand_j6, hand_j7,
+                      hand_j8, hand_j9, arm_j0, arm_j1, arm_j2, arm_j3, arm_j4, arm_j5]
+      features: ["arm.velocity", "hand.velocity"]
+    - name: "thumb_force"
+      shape: [1, 1, 1, 3]
+      features: ["hand.ft0.force_norm"]
+      fill: [0.0]
+    - name: "root_quat"
+      shape: [1, 4]
+      source: constant
+      values: [0.0, 0.0, 0.0, 1.0]
+    - name: "arm_in"
+      shape: [1, 6]
+      source: recurrent
+      seed: "arm.position"
+    - name: "syn_in"
+      shape: [1, 1]
+      source: recurrent
+  outputs:
+    - name: "arm_action"
+      shape: [1, 6]
+      element_names: [arm_j0, arm_j1, arm_j2, arm_j3, arm_j4, arm_j5]
+    - name: "hand_action"
+      shape: [1, 10]
+      element_names: [hand_j3, hand_j7, hand_j0, hand_j9, hand_j1, hand_j5, hand_j8, hand_j2,
+                      hand_j6, hand_j4]
+    - { name: "arm_out", shape: [1, 6], feeds: "arm_in" }
+    - { name: "syn_out", shape: [1, 1], feeds: "syn_in" }
+    - { name: "gain", shape: [1, 6] }
+  output_features:
+    - { tensor: "arm_action",  role: "joint_target", device: "arm" }
+    - { tensor: "hand_action", role: "joint_target", device: "hand" }
+)";
+}
+
+const std::vector<std::size_t> kNamedIn = {20, 16, 3, 4, 6, 1};
+const std::vector<std::size_t> kNamedOut = {6, 10, 6, 1, 6};
+
+enum NamedIn : std::size_t { kJointPos, kJointVel, kThumbForce, kRootQuat, kArmIn, kSynIn };
+
+enum NamedOut : std::size_t { kArmAction, kHandAction, kArmOut, kSynOut, kGain };
+
+Harness MakeNamedHarness(const std::string& extra = "") {
+  return Harness{MakeNamedYaml(extra), false, kNamedIn, kNamedOut};
+}
+
+/// Position of @p name in a tensor's element_names — the test addresses the
+/// tensor the way the policy does, by name, never by an index literal.
+std::size_t IndexOf(const std::vector<std::string>& names, const std::string& name) {
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    if (names[i] == name) {
+      return i;
+    }
+  }
+  ADD_FAILURE() << "no element named '" << name << "'";
+  return names.size();
+}
+
+/// Distinct per-joint positions and velocities, so a swap shows up as a value.
+ControllerState MakeDistinctState() {
+  auto s = MakeState();
+  for (int i = 0; i < kArmDof; ++i) {
+    s.devices[0].positions[static_cast<std::size_t>(i)] = 0.1 * (i + 1);
+    s.devices[0].velocities[static_cast<std::size_t>(i)] = 1.0 * (i + 1);
+  }
+  for (int i = 0; i < kHandDof; ++i) {
+    s.devices[1].positions[static_cast<std::size_t>(i)] = -0.01 * (i + 1);
+    s.devices[1].velocities[static_cast<std::size_t>(i)] = 0.5 * (i + 1);
+  }
+  return s;
+}
+
+}  // namespace
+
+TEST(DemoInferenceNamed, PlacesJointLanesByNameThroughTheConvention) {
+  auto h = MakeNamedHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->PoisonInputs(kPoison);
+
+  const auto state = MakeDistinctState();
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+
+  const auto& names = h.ctrl->IoParamsForTesting().inputs[kJointPos].element_names;
+  const auto& pos = h.engine->last_inputs[kJointPos];
+  for (int i = 0; i < kArmDof; ++i) {
+    const double expect = 0.1 * (i + 1) + (i == 1 ? kArmJ1Offset : 0.0);
+    EXPECT_FLOAT_EQ(pos[IndexOf(names, "arm_j" + std::to_string(i))], static_cast<float>(expect))
+        << "arm_j" << i;
+  }
+  for (int i = 0; i < kHandDof; ++i) {
+    const double expect = -0.01 * (i + 1) * (i == 2 ? -1.0 : 1.0);
+    EXPECT_FLOAT_EQ(pos[IndexOf(names, "hand_j" + std::to_string(i))], static_cast<float>(expect))
+        << "hand_j" << i;
+  }
+  for (const char* pad : {"pad_a", "pad_b", "pad_c", "pad_d"}) {
+    EXPECT_FLOAT_EQ(pos[IndexOf(names, pad)], kPad)
+        << pad << ": an uncovered slot must hold the filler, not what the buffer held";
+  }
+}
+
+TEST(DemoInferenceNamed, AVelocityTakesTheSignButNotTheOffset) {
+  // The offset is a position datum; a velocity has none to shift.
+  auto h = MakeNamedHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  static_cast<void>(h.ctrl->Compute(MakeDistinctState()));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+
+  const auto& names = h.ctrl->IoParamsForTesting().inputs[kJointVel].element_names;
+  const auto& vel = h.engine->last_inputs[kJointVel];
+  EXPECT_FLOAT_EQ(vel[IndexOf(names, "arm_j1")], 2.0F);
+  EXPECT_FLOAT_EQ(vel[IndexOf(names, "arm_j4")], 5.0F);
+  EXPECT_FLOAT_EQ(vel[IndexOf(names, "hand_j2")], -1.5F);
+  EXPECT_FLOAT_EQ(vel[IndexOf(names, "hand_j9")], 5.0F);
+}
+
+TEST(DemoInferenceNamed, AnUnreadableVelocityLaneHolds) {
+  // The position gate says nothing about velocities (#446). A driver that omits
+  // them leaves zeros — a robot at rest, as far as the policy could tell.
+  auto h = MakeNamedHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  auto state = MakeDistinctState();
+  state.devices[1].velocity_hole_mask = 0b100U;
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_EQ(h.engine->run_count, 0);
+}
+
+TEST(DemoInferenceNamed, AGroupForceNormLandsInTheFirstSlotAndTheRestIsFill) {
+  auto h = MakeNamedHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->PoisonInputs(kPoison);
+  auto state = MakeDistinctState();
+  SetFingertipForce(state, 0, 3.0F, 0.0F, 4.0F);    // ‖f‖ = 5
+  SetFingertipForce(state, 1, 30.0F, 0.0F, 40.0F);  // another group — must not leak in
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  const auto& f = h.engine->last_inputs[kThumbForce];
+  EXPECT_FLOAT_EQ(f[0], 5.0F);
+  EXPECT_FLOAT_EQ(f[1], 0.0F);
+  EXPECT_FLOAT_EQ(f[2], 0.0F);
+}
+
+TEST(DemoInferenceNamed, AConstantTensorIsRewrittenEveryEvaluation) {
+  auto h = MakeNamedHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->PoisonInputs(kPoison);
+  static_cast<void>(h.ctrl->Compute(MakeDistinctState()));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  const auto& q = h.engine->last_inputs[kRootQuat];
+  EXPECT_FLOAT_EQ(q[0], 0.0F);
+  EXPECT_FLOAT_EQ(q[1], 0.0F);
+  EXPECT_FLOAT_EQ(q[2], 0.0F);
+  EXPECT_FLOAT_EQ(q[3], 1.0F);
+}
+
+// ── Named heads (§5 criterion 4) ────────────────────────────────────────────
+
+TEST(DemoInferenceNamed, ANamedHeadIsGatheredIntoDeviceOrderAndTheConventionUndone) {
+  auto h = MakeNamedHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+
+  const auto& io = h.ctrl->IoParamsForTesting();
+  const auto& hand_names = io.outputs[kHandAction].element_names;
+  std::vector<float> hand_head(kNamedOut[kHandAction]);
+  for (std::size_t k = 0; k < hand_head.size(); ++k) {
+    hand_head[k] = -0.1F * static_cast<float>(k + 1);  // distinct per EXPORT position
+  }
+  std::vector<float> arm_head(kNamedOut[kArmAction]);
+  for (std::size_t k = 0; k < arm_head.size(); ++k) {
+    arm_head[k] = 0.05F * static_cast<float>(k + 1);
+  }
+  h.engine->next_output = {
+      arm_head, hand_head, std::vector<float>(6, 0.0F), {0.0F}, std::vector<float>(6, 111.0F)};
+
+  const auto state = MakeDistinctState();
+  const auto out = h.ctrl->Compute(state);
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+
+  for (int j = 0; j < kHandDof; ++j) {
+    const auto k = IndexOf(hand_names, "hand_j" + std::to_string(j));
+    const double sign = (j == 2) ? -1.0 : 1.0;
+    EXPECT_DOUBLE_EQ(out.devices[1].target_positions[static_cast<std::size_t>(j)],
+                     sign * static_cast<double>(hand_head[k]))
+        << "hand_j" << j << " must come from the element NAMED after it, sign undone";
+  }
+  for (int j = 0; j < kArmDof; ++j) {
+    const double offset = (j == 1) ? kArmJ1Offset : 0.0;
+    EXPECT_DOUBLE_EQ(out.devices[0].target_positions[static_cast<std::size_t>(j)],
+                     static_cast<double>(arm_head[static_cast<std::size_t>(j)]) - offset)
+        << "arm_j" << j;
+  }
+
+  // Tensors that are declared but not commands must not reach a command.
+  h.engine->next_output[kGain].assign(6, -222.0F);
+  h.engine->next_output[kSynOut] = {1.5F};
+  const auto again = h.ctrl->Compute(state);
+  for (int j = 0; j < kHandDof; ++j) {
+    EXPECT_DOUBLE_EQ(again.devices[1].target_positions[static_cast<std::size_t>(j)],
+                     out.devices[1].target_positions[static_cast<std::size_t>(j)]);
+  }
+  for (int j = 0; j < kArmDof; ++j) {
+    EXPECT_DOUBLE_EQ(again.devices[0].target_positions[static_cast<std::size_t>(j)],
+                     out.devices[0].target_positions[static_cast<std::size_t>(j)]);
+  }
+}
+
+TEST(DemoInferenceNamed, RejectsANamedHeadThatMissesADeviceJoint) {
+  std::string yaml = MakeNamedYaml();
+  yaml.replace(yaml.find("hand_j6, hand_j4]"), std::string("hand_j6, hand_j4]").size(),
+               "hand_j6, hand_jX]");
+  Harness h{yaml, false, kNamedIn, kNamedOut};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE)
+      << "a device joint the head does not name would keep whatever it last held";
+}
+
+// ── Recurrent seed (§5 criterion 5) ─────────────────────────────────────────
+
+TEST(DemoInferenceNamed, TheIntegratorIsSeededFromTheMeasuredJointsAndReseededAfterALongHold) {
+  auto h = MakeNamedHarness("  reset_after_hold_sec: 0.006\n");
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  h.engine->next_output = {std::vector<float>(6, 0.0F),
+                           std::vector<float>(10, 0.0F),
+                           std::vector<float>(6, 9.0F),
+                           {0.75F},
+                           std::vector<float>(6, 0.0F)};
+
+  auto state = MakeDistinctState();
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  for (int i = 0; i < kArmDof; ++i) {
+    const double expect = 0.1 * (i + 1) + (i == 1 ? kArmJ1Offset : 0.0);
+    EXPECT_FLOAT_EQ(h.engine->last_inputs[kArmIn][static_cast<std::size_t>(i)],
+                    static_cast<float>(expect))
+        << "the first step's integrator is the measured arm (policy convention), not zero";
+  }
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[kSynIn][0], 0.0F) << "an unseeded state starts at zero";
+
+  static_cast<void>(h.ctrl->Compute(state));
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[kArmIn][0], 9.0F) << "then the feedback owns it";
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[kSynIn][0], 0.75F);
+
+  // A long hold while the arm moves: the resumed integrator must describe the
+  // arm as it is now, not where it was nor zero.
+  state.devices[0].hole_mask = 0b1U;
+  for (int t = 0; t < 4; ++t) {
+    static_cast<void>(h.ctrl->Compute(state));
+  }
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
+  state.devices[0].hole_mask = 0U;
+  for (int i = 0; i < kArmDof; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 0.7;
+  }
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[kArmIn][0], 0.7F);
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[kArmIn][1], static_cast<float>(0.7 + kArmJ1Offset));
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[kSynIn][0], 0.0F);
+}
+
+TEST(DemoInferenceNamed, ASeedIsTakenOnTheStepThatActuallyRuns) {
+  // The reset stays armed until an action is accepted, so an attempt that holds
+  // does not leave the next attempt seeded from a measurement it never used.
+  auto h = MakeNamedHarness();
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(h.Activate());
+  auto state = MakeDistinctState();
+  h.engine->run_result = false;
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
+
+  h.engine->run_result = true;
+  state.devices[0].positions[0] = 0.33;
+  static_cast<void>(h.ctrl->Compute(state));
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_FLOAT_EQ(h.engine->last_inputs[kArmIn][0], 0.33F);
+}
+
+// ── Command tail base = previous command (§5 criterion 7, D2) ───────────────
+
+TEST(DemoInferenceOutput, TheCommandAdvancesFromThePreviousCommandNotTheMeasurement) {
+  // A servo that lags its command must not be throttled by its own lag. With a
+  // measured base the command could lead the joint by one tick of v_max at
+  // most, so a joint that has not moved yet would be commanded 4 mrad ahead
+  // forever. Here the joint never moves at all.
+  Harness h;
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  auto state = MakeState();  // measured 0.0 on every tick
+  h.engine->next_output = {std::vector<float>(6, 3.0F), std::vector<float>{0.0F}};
+  for (int k = 1; k <= 20; ++k) {
+    const auto out = h.ctrl->Compute(state);
+    ASSERT_FALSE(h.ctrl->LastTickHeldForTesting()) << "tick " << k;
+    EXPECT_NEAR(out.devices[0].commands[0], 0.004 * k, 1e-9) << "tick " << k;
+  }
+}
+
+TEST(DemoInferenceOutput, AfterAHoldTheCommandRestartsFromTheMeasurement) {
+  // Neither the lead the command had built up nor the hold latch: a joint that
+  // drifted during the hold is not dragged back to where the hold began.
+  Harness h;
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  auto state = MakeState();
+  h.engine->next_output = {std::vector<float>(6, 3.0F), std::vector<float>{0.0F}};
+  for (int k = 1; k <= 10; ++k) {
+    static_cast<void>(h.ctrl->Compute(state));
+  }
+  state.devices[0].hole_mask = 0b1U;
+  const auto held = h.ctrl->Compute(state);
+  ASSERT_TRUE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_DOUBLE_EQ(held.devices[0].commands[0], 0.0) << "latched at the last readable 0.0";
+
+  state.devices[0].hole_mask = 0U;
+  state.devices[0].positions[0] = 0.02;
+  const auto out = h.ctrl->Compute(state);
+  ASSERT_FALSE(h.ctrl->LastTickHeldForTesting());
+  EXPECT_NEAR(out.devices[0].commands[0], 0.024, 1e-9);
+}
+
+// ── Refusals: legacy keys, convention, reach gate, frames ──────────────────
+
+namespace {
+
+/// LoadConfig must throw, and say so with @p needle — "it threw" alone cannot
+/// tell the migration message from an unrelated parse failure.
+void ExpectLoadConfigRefuses(const std::string& yaml, const std::string& needle) {
+  DemoInferenceController ctrl(
+      "", std::make_unique<FakeEngine>(std::vector<std::size_t>{kInputElements},
+                                       std::vector<std::size_t>{6, 1}));
+  try {
+    ctrl.LoadConfig(YAML::Load(yaml));
+    ADD_FAILURE() << "LoadConfig accepted a config carrying '" << needle << "'";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string(e.what()).find(needle), std::string::npos) << e.what();
+  }
+}
+
+std::string WithInference(const std::string& yaml, const std::string& lines) {
+  std::string out = yaml;
+  const std::string anchor = "inference:\n";
+  out.insert(out.find(anchor) + anchor.size(), lines);
+  return out;
+}
+
+}  // namespace
+
+TEST(DemoInferenceConfig, RejectsTheLegacyFrameKeysNamingTheMigration) {
+  ExpectLoadConfigRefuses(WithInference(MakeYaml(), "  palm:\n    link: \"l_palm_link\"\n"),
+                          "inference.palm is gone");
+  ExpectLoadConfigRefuses(
+      WithInference(MakeYaml(), "  base_pose_in_world:\n    rpy: [0.0, 0.0, 3.14]\n"),
+      "base_pose_in_world is gone");
+  ExpectLoadConfigRefuses(
+      WithInference(MakeYaml(), "  object_pose:\n    reference_frame: \"base\"\n"),
+      "reference_frame is gone");
+}
+
+TEST(DemoInferenceConfig, RejectsAConventionForAJointNeitherDeviceHas) {
+  std::string yaml = MakeNamedYaml();
+  yaml.replace(yaml.find("hand_j2: { sign: -1 }"), std::string("hand_j2: { sign: -1 }").size(),
+               "hand_j99: { sign: -1 }");
+  Harness h{yaml, false, kNamedIn, kNamedOut};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, RejectsAConventionSignThatIsAScale) {
+  std::string yaml = MakeNamedYaml();
+  yaml.replace(yaml.find("hand_j2: { sign: -1 }"), std::string("hand_j2: { sign: -1 }").size(),
+               "hand_j2: { sign: -2 }");
+  Harness h{yaml, false, kNamedIn, kNamedOut};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, RejectsAnUnknownConventionKey) {
+  std::string yaml = MakeNamedYaml();
+  yaml.replace(yaml.find("hand_j2: { sign: -1 }"), std::string("hand_j2: { sign: -1 }").size(),
+               "hand_j2: { sign: -1, scale: 2.0 }");
+  Harness h{yaml, false, kNamedIn, kNamedOut};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, RejectsAReachPhaseWithoutAGate) {
+  std::string yaml = MakeYaml();
+  yaml.replace(yaml.find("shape: [1, 20]"), std::string("shape: [1, 20]").size(), "shape: [1, 21]");
+  yaml.replace(yaml.find("        - \"hand.fingertip_force_norm\"\n"),
+               std::string("        - \"hand.fingertip_force_norm\"\n").size(),
+               "        - \"hand.fingertip_force_norm\"\n        - \"reach.phase\"\n");
+  Harness h{yaml, false, {21U}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, RejectsAGateThatNoFeatureReads) {
+  const std::string yaml = WithInference(MakeYaml(),
+                                         "  reach_gate:\n"
+                                         "    tips:\n"
+                                         "      - { link: \"a\", force_group: \"ft0\", "
+                                         "contact_obj: [0.0, 0.0, 0.0] }\n"
+                                         "      - { link: \"b\", force_group: \"ft1\", "
+                                         "contact_obj: [0.0, 0.0, 0.0] }\n");
+  Harness h{yaml};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE)
+      << "a block of trained constants that looks configured and does nothing";
+}
+
+TEST(DemoInferenceConfig, RejectsAForceFeatureOnAHandThatDeclaresNoSensorLayout) {
+  // `sensor_names` says the groups exist; only `sensor_layout` says how wide
+  // their lane is. Without it every force reads 0 and nothing downstream can
+  // tell that from "not touching anything" — the one shape of this failure that
+  // a runtime check cannot catch, because every value stays finite and in range.
+  Harness h{MakeYaml(),
+            false,
+            {static_cast<std::size_t>(kInputElements)},
+            {6, 1},
+            MakeDeviceConfigs(/*inference_stride=*/0)};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, RejectsAForceFeatureOnAHandWhoseLaneIsTooNarrowForAForce) {
+  // Present but narrower than the force triple it has to hold: slots 1..3 are
+  // fx/fy/fz, so a stride of 3 stops one short and reads 0 just as silently.
+  Harness h{MakeYaml(),
+            false,
+            {static_cast<std::size_t>(kInputElements)},
+            {6, 1},
+            MakeDeviceConfigs(/*inference_stride=*/3)};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, AcceptsTheNarrowestLaneThatStillHoldsAForce) {
+  // The boundary from the other side, so the check is a width test and not a
+  // demand that every hand pack the full seven-float lane.
+  Harness h{MakeYaml(),
+            false,
+            {static_cast<std::size_t>(kInputElements)},
+            {6, 1},
+            MakeDeviceConfigs(/*inference_stride=*/4)};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+}
+
+TEST(DemoInferenceConfig, RejectsAnObjectFeatureWithoutAPolicyFrame) {
+  std::string yaml = MakeObjectYaml();
+  yaml.replace(yaml.find("  policy_frame: \"world_link\"\n"),
+               std::string("  policy_frame: \"world_link\"\n").size(), "");
+  Harness h{yaml, false, {27U}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, RejectsAnObjectLaneThatDoesNotNameItsUrdfFrame) {
+  std::string yaml = MakeObjectYaml();
+  yaml.replace(yaml.find("    source_frame_link: \"world_link\"\n"),
+               std::string("    source_frame_link: \"world_link\"\n").size(), "");
+  Harness h{yaml, false, {27U}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, RejectsALinkFeatureWithNoSystemUrdf) {
+  std::string yaml = WithInference(MakeYaml(), "  policy_frame: \"base_link\"\n");
+  yaml.replace(yaml.find("shape: [1, 20]"), std::string("shape: [1, 20]").size(), "shape: [1, 23]");
+  yaml.replace(
+      yaml.find("        - \"hand.fingertip_force_norm\"\n"),
+      std::string("        - \"hand.fingertip_force_norm\"\n").size(),
+      "        - \"hand.fingertip_force_norm\"\n        - \"link.l_palm_link.position\"\n");
+  Harness h{yaml, false, {23U}};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+// ── model_path expansion (D4) ───────────────────────────────────────────────
+
+namespace {
+
+/// Sets or clears one environment variable for the life of a case.
+class ScopedEnv {
+ public:
+  ScopedEnv(const char* name, const char* value) : name_(name) {
+    if (const char* old = std::getenv(name)) {
+      had_ = true;
+      old_ = old;
+    }
+    if (value != nullptr) {
+      ::setenv(name, value, 1);
+    } else {
+      ::unsetenv(name);
+    }
+  }
+
+  ~ScopedEnv() {
+    if (had_) {
+      ::setenv(name_.c_str(), old_.c_str(), 1);
+    } else {
+      ::unsetenv(name_.c_str());
+    }
+  }
+
+  ScopedEnv(const ScopedEnv&) = delete;
+  ScopedEnv& operator=(const ScopedEnv&) = delete;
+
+ private:
+  std::string name_;
+  std::string old_;
+  bool had_{false};
+};
+
+}  // namespace
+
+TEST(DemoInferenceModelPath, ExpandsAnEnvironmentVariable) {
+  const ScopedEnv env("RTC_TEST_POLICY_DIR", "/opt/policies");
+  Harness h{MakeYaml(10, "${RTC_TEST_POLICY_DIR}/policy.onnx")};
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_EQ(h.engine->last_model_path, "/opt/policies/policy.onnx");
+  EXPECT_FALSE(h.ctrl->HoldModeForTesting());
+}
+
+TEST(DemoInferenceModelPath, AnUnsetVariableIsHoldModeWhenOptedIn) {
+  const ScopedEnv env("RTC_TEST_POLICY_DIR", nullptr);
+  Harness h{MakeYaml(10, "${RTC_TEST_POLICY_DIR}/policy.onnx", /*allow_missing=*/true)};
+  ASSERT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(h.ctrl->HoldModeForTesting());
+  EXPECT_EQ(h.engine->init_count, 0) << "no engine load is attempted without a path";
+}
+
+TEST(DemoInferenceModelPath, AnUnsetVariableFailsWithoutTheOptIn) {
+  const ScopedEnv env("RTC_TEST_POLICY_DIR", nullptr);
+  Harness h{MakeYaml(10, "${RTC_TEST_POLICY_DIR}/policy.onnx", /*allow_missing=*/false)};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceModelPath, ASetPathThatDoesNotLoadFailsEvenWhenOptedIn) {
+  // The operator pointed at a file; a typo in it is not "no policy here".
+  const ScopedEnv env("RTC_TEST_POLICY_DIR", "/opt/policies");
+  Harness h{MakeYaml(10, "${RTC_TEST_POLICY_DIR}/policy.onnx", /*allow_missing=*/true),
+            /*stub_engine=*/true};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceModelPath, ExpandsALeadingTildeOnly) {
+  const ScopedEnv home("HOME", "/home/tester");
+  std::string out;
+  std::string missing;
+  ASSERT_TRUE(DemoInferenceController::ExpandModelPath("~/p/x.onnx", out, missing));
+  EXPECT_EQ(out, "/home/tester/p/x.onnx");
+  ASSERT_TRUE(DemoInferenceController::ExpandModelPath("/a/~b/x.onnx", out, missing));
+  EXPECT_EQ(out, "/a/~b/x.onnx") << "a tilde inside a path is a file-name character";
+}
+
+TEST(DemoInferenceModelPath, NamesTheFirstMissingVariable) {
+  const ScopedEnv a("RTC_TEST_A", "/x");
+  const ScopedEnv b("RTC_TEST_B", nullptr);
+  std::string out;
+  std::string missing;
+  EXPECT_FALSE(
+      DemoInferenceController::ExpandModelPath("${RTC_TEST_A}/${RTC_TEST_B}/m.onnx", out, missing));
+  EXPECT_EQ(missing, "RTC_TEST_B");
+}
+
+TEST(DemoInferenceModelPath, RefusesAMalformedReference) {
+  std::string out;
+  std::string missing;
+  EXPECT_THROW(static_cast<void>(
+                   DemoInferenceController::ExpandModelPath("${RTC_TEST_A/m.onnx", out, missing)),
+               std::invalid_argument);
+  EXPECT_THROW(
+      static_cast<void>(DemoInferenceController::ExpandModelPath("${1BAD}/m.onnx", out, missing)),
+      std::invalid_argument);
+}
+
+TEST(DemoInferenceConfig, RejectsARosterWiderThanTheFixedCapacity) {
+  // OnDeviceConfigsSet keeps at most kMaxArmDof joints, but `arm.position` is as
+  // wide as the WHOLE roster — packing it would ship a tail the tick never wrote.
+  // Every OTHER check is satisfied on purpose (the arm head slices the clamped
+  // DOF, the observation sums to the full roster), so only the capacity guard
+  // stands between this config and a controller that configures and then
+  // holds forever.
+  constexpr int kWide = DemoInferenceController::kMaxArmDof + 1;
+  auto cfgs = MakeDeviceConfigs();
+  auto& arm = cfgs.at("arm");
+  arm.joint_state_names.clear();
+  for (int i = 0; i < kWide; ++i) {
+    arm.joint_state_names.push_back("arm_j" + std::to_string(i));
+  }
+  std::string yaml = MakeYaml();
+  const int obs = kWide + kHandDof + kFingertips;
+  yaml.replace(yaml.find("shape: [1, 20]"), std::string("shape: [1, 20]").size(),
+               "shape: [1, " + std::to_string(obs) + "]");
+  yaml.replace(yaml.find("shape: [1, 6]"), std::string("shape: [1, 6]").size(),
+               "shape: [1, " + std::to_string(DemoInferenceController::kMaxArmDof) + "]");
+  auto ctrl = std::make_unique<DemoInferenceController>(
+      "", std::make_unique<FakeEngine>(
+              std::vector<std::size_t>{static_cast<std::size_t>(obs)},
+              std::vector<std::size_t>{
+                  static_cast<std::size_t>(DemoInferenceController::kMaxArmDof), 1}));
+  rclcpp::NodeOptions opts;
+  opts.use_global_arguments(false);
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("inference_roster_cap", "", opts);
+  const YAML::Node cfg = YAML::Load(yaml);
+  ctrl->LoadConfig(cfg);
+  ctrl->SetDeviceNameConfigs(cfgs);
+  EXPECT_EQ(ctrl->on_configure(rclcpp_lifecycle::State{}, node, cfg),
+            rtc::RTControllerInterface::CallbackReturn::FAILURE);
 }

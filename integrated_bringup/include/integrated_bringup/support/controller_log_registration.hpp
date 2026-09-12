@@ -30,6 +30,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
+#include "integrated_bringup/logging/inference_diag_log_pod.hpp"
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
@@ -182,6 +183,14 @@ struct LogRegistrationContext {
   // Empty is tolerated: the header then emits no per-joint columns at all,
   // which is visible rather than mislabelled.
   std::vector<std::string> momentum_observer_joint_names{};
+
+  // InferenceDiagLog — per-tick hold reason / reach gate / tracking for the
+  // learned-policy controller. Single fixed instance (kInferenceDiagLogInstance),
+  // gated by the only controller that fills it. `inference_diag_tip_names` are
+  // the reach gate's force groups in its tip order; they name AND count the
+  // per-tip force columns, so a stored CSV decodes without that run's YAML.
+  bool inference_diag_enabled{false};
+  std::vector<std::string> inference_diag_tip_names{};
 };
 
 // ⚠ Two separate hazards, two separate fixes — keep both (#428).
@@ -271,6 +280,8 @@ struct RegisteredLogHandles {
   rtc::LogHandle<integrated_bringup::MomentumObserverLogPod> momentum_observer;
   // Single fixed instance (kComplianceDiagLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::ComplianceDiagLogPod> compliance_diag;
+  // Single fixed instance (kInferenceDiagLogInstance), same reason.
+  rtc::LogHandle<integrated_bringup::InferenceDiagLogPod> inference_diag;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -519,11 +530,34 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.compliance_diag = std::move(handle);
+    } else if (entry.msg_type == kInferenceDiagLogMsgType) {
+      if (!ctx.inference_diag_enabled || entry.instance != kInferenceDiagLogInstance) {
+        continue;
+      }
+      const auto tip_names = ctx.inference_diag_tip_names;
+      // Both writers must agree on the per-tip column count or the row stops
+      // lining up with the header, so the same list sizes each.
+      const auto num_columns = tip_names.size();
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::InferenceDiagLogPod>(
+          entry.instance,
+          [tip_names](std::ostream& os) {
+            integrated_bringup::WriteInferenceDiagLogHeader(os, tip_names);
+          },
+          [num_columns](std::ostream& os, const integrated_bringup::InferenceDiagLogPod& pod) {
+            integrated_bringup::WriteInferenceDiagLogRow(os, pod, num_columns);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open inference_diag CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.inference_diag = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
-    // PullEstimatorLog, TaskDiagLog, GraspDiagLog, MomentumObserverLog};
-    // reaching here is a YAML parser bug. Silently ignore.
+    // PullEstimatorLog, TaskDiagLog, GraspDiagLog, MomentumObserverLog,
+    // ComplianceDiagLog, InferenceDiagLog}; reaching here is a YAML parser
+    // bug. Silently ignore.
   }
 
   return result;
