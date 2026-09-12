@@ -282,7 +282,9 @@ SECTION_REF_QUALIFIED_RE = re.compile(
 # or invented ID ("P6", "RT-11") reads as authoritative and sends the reader
 # looking for a rule that was never written -- P1..P5 were referenced as IDs by
 # two documents while the owning file had never assigned those labels at all.
-RULE_ID_RE = re.compile(r"\b(RT-HOST-\d+|RT-\d+|ARCH-\d+|PROC-\d+|NUM-\d+[ab]?|E-\d+|AP-[A-Z]+-\d+|P[1-9])\b")
+RULE_ID_RE = re.compile(
+    r"\b(RT-HOST-\d+|RT-\d+|ARCH-\d+|PROC-\d+|NUM-\d+[ab]?|E-\d+|AP-[A-Z]+-\d+|P[1-9])\b"
+)
 RULE_ID_OWNERS = {
     "RT": "agent_docs/invariants.md",
     "ARCH": "agent_docs/invariants.md",
@@ -854,7 +856,9 @@ def target_sections(repo: Repo, target: str) -> set[str]:
     key = (repo.root, target)
     if key not in _SECTION_CACHE:
         try:
-            _SECTION_CACHE[key] = numbered_sections((repo.root / target).read_text(encoding="utf-8"))
+            _SECTION_CACHE[key] = numbered_sections(
+                (repo.root / target).read_text(encoding="utf-8")
+            )
         except OSError:
             _SECTION_CACHE[key] = set()
     return _SECTION_CACHE[key]
@@ -904,7 +908,9 @@ def check_constitution_size(rel: str, text: str) -> list[Finding]:
     return findings
 
 
-def check_section_resolution(repo: Repo, rel: str, text: str, *, markdown: bool = True) -> list[Finding]:
+def check_section_resolution(
+    repo: Repo, rel: str, text: str, *, markdown: bool = True
+) -> list[Finding]:
     """D13 -- a CLAUDE.md / AGENTS.md section ref names a heading that exists."""
     findings: list[Finding] = []
     allowed = suppressions(text)
@@ -1498,11 +1504,26 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
     ("D12 fenced line is exempt", "CLAUDE.md", "# x\n```\n" + "a" * 600 + "\n```\n", []),
     ("D12 is scoped to the constitutions", "agent_docs/f.md", "# x\n" + "a" * 501 + "\n", []),
     ("D13 dangling section ref", "agent_docs/f.md", "see CLAUDE.md \u00a799.9\n", ["D13"]),
-    ("D13 dangling ref in link form", "agent_docs/f.md", "see [AGENTS.md](../AGENTS.md) \u00a799\n", ["D13"]),
-    ("D13 live refs resolve", "agent_docs/f.md", "see AGENTS.md \u00a71 and AGENTS.md \u00a79.1\n", []),
+    (
+        "D13 dangling ref in link form",
+        "agent_docs/f.md",
+        "see [AGENTS.md](../AGENTS.md) \u00a799\n",
+        ["D13"],
+    ),
+    (
+        "D13 live refs resolve",
+        "agent_docs/f.md",
+        "see AGENTS.md \u00a71 and AGENTS.md \u00a79.1\n",
+        [],
+    ),
     ("D13 dangling ref in code-span form", "docs/f.md", "rule of `AGENTS.md` \u00a799\n", ["D13"]),
     ("D13 live ref in code-span form", "docs/f.md", "rule of `AGENTS.md` \u00a710\n", []),
-    ("D10 code-span document name qualifies", "agent_docs/f.md", "see `AGENTS.md` \u00a76.5\n", []),
+    (
+        "D10 code-span document name qualifies",
+        "agent_docs/f.md",
+        "see `AGENTS.md` \u00a76.5\n",
+        [],
+    ),
     (
         "D13 bare self-ref inside a constitution",
         "CLAUDE.md",
