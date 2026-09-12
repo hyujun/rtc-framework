@@ -265,19 +265,20 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 ## CPU Shield (cset) 검증 — issue #151
 
 `cpu_shield.sh` 는 cpuset 을 *만들기만* 하고, 런치가 CM 을 그 안으로 `adopt` 한다.
-격리가 실제로 서는지는 **실기(SMT/hybrid, 예: NUC13 4P+8E)** 에서만 검증된다 —
+격리가 실제로 서는지는 **실기(SMT/hybrid 호스트)** 에서만 검증된다 —
 sim 단일 실행으로 대체 불가 ([design-principles.md](design-principles.md) sim-noise 원칙).
 
 ```bash
-# 1) shield cpuset 이 CM 전체 span 을 덮는가 (NUC13 12c → user=2-7, #380 이후)
+# 1) shield cpuset 이 CM 전체 span 을 덮는가 (기대 집합 = get_cm_shield_cpus <profile> 출력; 값은 박제하지 않는다)
 sudo ./repo_scripts/scripts/cpu_shield.sh on --robot
 cset shield -s          # "user" == get_cm_shield_cpus 출력과 일치해야
 # 2) 런치(shield-on) 후 CM 이 user cpuset 에 들어갔는가
 CM=$(pgrep -nf integrated_rt_controller)
-grep Cpus_allowed_list /proc/$CM/status      # == 2-7 (부분집합 비교는 shield 축소를 놓친다)
+grep Cpus_allowed_list /proc/$CM/status      # == get_cm_shield_cpus 출력과 동일 (부분집합 비교는 shield 축소를 놓친다)
 # 3) activate 후 RT/nrt 스레드가 제대로 pin·FIFO 되었는가
 ps -eLo comm,psr,cls,rtprio -p $CM | grep -E "rt_control|rt_callback|nrt_"
-#   기대: rt_control psr=2/FF/90, rt_callback psr=4, nrt psr=12·13
+#   기대값은 layout SSoT 에서 — psr: get_role_slot <role> 의 slot→logical, cls=FF, rtprio: get_role_priority <role>
+#   (repo_scripts/README.md "RT/MPC 코어 레이아웃 함수"; 머신별 숫자를 여기 박제하지 않는다)
 # 4) EINVAL 회귀 없음 (shield 가 pin 을 깨뜨리지 않음)
 grep -rE "rc=22|setaffinity failed|Thread config failed" ~/.ros/log/<run>/  # 결과 없어야
 # 5) 게이트가 활성 shield 를 재활성 안 함 (cset-aware)

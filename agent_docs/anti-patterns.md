@@ -55,10 +55,10 @@
 
 - **증상**: RT producer 가 `cv.notify_one` 시 내부 mutex 보유 → 우선순위 역전 + 비결정 wake latency. wait side 는 명시 mutex lock 보유 (RT-4 결합)
 - **원인**: producer-consumer 통지를 cv 로 구현. 직관적이나 RT 우선순위 보장 안 됨
-- **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (`6405c76` 이전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
+- **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (eventfd 로 교체되기 전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
 - **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-10` 블록
 - **복구**:
-  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (post-`6405c76`) 가 표준 패턴
+  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (eventfd 전환 후 현행) 가 표준 패턴
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
   - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
 
@@ -66,7 +66,7 @@
 
 - **증상**: 없다. 이것이 이 항목의 요점이다 — 짧은 이름은 SSO(small-string optimization) 버퍼에 들어가 힙을 안 건드리므로 alloc 게이트도 green 이고 코드도 평범해 보인다. 이름이 SSO 임계(libstdc++ 15 자)를 넘는 순간 RT tick 이 `operator new` 를 부르기 시작하는데, 그때 바뀐 것은 **YAML 의 device group 이름 한 줄**뿐이라 원인이 코드에 없다
 - **원인**: `RTControllerInterface::GetPrimaryDeviceName()` / `GetSecondaryDeviceName()` 은 `std::string` 을 **값으로** 반환한다 (`topic_config_.groups[i].first` 의 복사). 이름으로만 보면 조회 같아 tick 안에서 부르기 쉽다. `GetDeviceNameConfig(name)` 도 그 문자열을 인자로 받으므로 둘은 대개 붙어 다닌다
-- **본 repo 사례**: `DemoInferenceController::PackObservation` 이 fingertip stride 를 tick 마다 `GetDeviceNameConfig(GetSecondaryDeviceName())` 로 읽었다 (`f6803580` 이전). 현재 그룹 이름이 `p1b` 라 실측 allocation 은 0 이었고 게이트도 통과했다 — 결함이 아니라 **잠복**이었다
+- **본 repo 사례**: `DemoInferenceController::PackObservation` 이 fingertip stride 를 tick 마다 `GetDeviceNameConfig(GetSecondaryDeviceName())` 로 읽었다 (stride 를 configure-time 에 캐시하기 전). 현재 그룹 이름이 `p1b` 라 실측 allocation 은 0 이었고 게이트도 통과했다 — 결함이 아니라 **잠복**이었다
 - **탐지**: RT tick 함수 본문에서 `Get*DeviceName()` 호출을 grep. 값 반환 접근자 일반으로 넓히려면 시그니처가 `std::string` (참조 아님) 인 것을 본다
 - **복구**: configure(비-RT)에서 필요한 값을 **해석해 POD 멤버로 캐시**한다 (위 사례는 `fingertip_stride_` 하나). 문자열 자체가 tick 에 필요하면 `std::string_view` 또는 인덱스로 바꾼다. tick 에서 이름으로 map 을 조회하는 형태 자체가 이미 신호다 — device 인덱스는 `topic_config_.groups` 순서로 configure 때 고정된다
 
@@ -332,7 +332,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   `compliance/compute.cpp` fault 블록 · `compliance_diag_log_pod.hpp` 헤더 · lane plan 세 곳에
   적혀 있었고, 셋 다 "이 바인딩은 `integrate_from_measured: false` 를 제공하지 않는다" 고 했다 —
   `WriteArmJointCommand` 는 `desired_q_ += dq_·dt` 로 명령을 적분하므로 **그게 바로 그 모드**다
-  (#469 리뷰, `7f48c51`). 한 곳만 있었으면 코드 옆에서 반증됐을 문장이다.
+  (#469 리뷰). 한 곳만 있었으면 코드 옆에서 반증됐을 문장이다.
   **후속이 처방을 검증했다**: 그 리뷰가 세 사본을 소유자 한 곳(fault 블록)으로 접은 뒤, 같은
   판단이 3판을 필요로 했다 — 모드 주장은 맞았지만 결론("real gap")이 틀렸고, task 축 바인딩의
   대응물은 `pose_error_limit` 이었다 (#478). 소유자가 하나였으므로 **편집도 한 번**이었다;

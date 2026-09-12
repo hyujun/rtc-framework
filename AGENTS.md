@@ -147,7 +147,7 @@ gtest binary 직접 실행, venv 비활성화, 강제 `PYTHONPATH` 설정 등으
 - Rotation: 내부는 Hamilton `Eigen::Quaterniond`, 경계에서만 ZYX Euler
 - Paper notation: `J_b`, `q_d`, `K_d` 등
 - RAII 사용, RT code에는 `noexcept`, 상태 반환에는 `[[nodiscard]]`
-- 핵심 C++ node는 `rclcpp_lifecycle::LifecycleNode`를 사용하며 configure와 activate 단계를 분리
+- 핵심 C++ node 는 `rclcpp_lifecycle::LifecycleNode` — empty constructor, `on_configure` (Tier 1) + `on_activate` (Tier 2). 어떤 node 가 LifecycleNode 인지는 [agent_docs/architecture.md](agent_docs/architecture.md)
 - Logger: node=`<exec_name>`, library=`<full_package_name>`, controller=`<package>.<controller_key>`; 점은 하나만 사용
 - Commit: Conventional Commits (`type(scope): subject`)
 
@@ -171,8 +171,7 @@ feature branch 가 `main` 에 merge 됐으면 로컬 merged branch 를 삭제하
 
 미완료 작업이 session · agent · model · 책임 경계를 넘을 때는 **handoff artifact** 를 만든다. artifact 는 받는 에이전트가 **이전 transcript 없이 재개**할 수 있어야 완료다. **채울 섹션 목록은 [agent_docs/handoff.md](agent_docs/handoff.md) §2 가 SSoT** 이며 여기 복제하지 않는다 — 이전에 복제본이 한 섹션(`Constraints / pending human decisions`)을 잃은 채 굳었다.
 
-- 보내는 쪽은 필수 섹션을 전부 채우고(해당 없으면 `N/A`), Evidence 는 **실제 실행한 명령과 결과만** 적으며, 시간은 상대 표현이 아니라 절대 날짜로 쓴다. `git status` 와 HEAD 를 기록한다.
-- 받는 쪽은 transcript 가 아니라 artifact 를 읽고 시작한다. 진행 전에 `git status` 와 핵심 evidence(build/test)가 artifact 와 일치하는지 검증하고, 불일치 시 **구현 전에 artifact 를 먼저 갱신**한다. Acceptance criteria 와 Out of scope 를 확인한 뒤 Next action 을 집는다.
+- 보내는 쪽·받는 쪽의 체크리스트는 [agent_docs/handoff.md](agent_docs/handoff.md) §3 / §4 를 따른다 — 여기 복제하지 않는다.
 - 단순 오타·단일 세션 short task 는 artifact 불필요다. 다단계 작업은 §5 의 착수 전 성공 기준을 적용한다.
 - credentials · secret · raw 대용량 log · 미검증 주장은 넣지 않는다.
 - **저장**: plan 파일은 repo 에 커밋하지 않는다 — 각 에이전트(Claude · Codex 등)가 자기 private 저장소에서 관리하고, tool 경계를 넘는 cross-tool 인계는 **git issue** 에 artifact 를 적어 공유한다. 완료된 plan 은 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (상세: [agent_docs/handoff.md](agent_docs/handoff.md) §5).
