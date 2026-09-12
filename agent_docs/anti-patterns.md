@@ -326,13 +326,6 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 
 ### AP-DOC-2: 판단의 *근거*를 두 번째 위치에 복사한다 (주석 포함)
 
-> **미해결 인스턴스 (2026-09-09 기준).** `integrated_bringup/src/controllers/compliance/lifecycle.cpp`
-> 의 게이트 블록 주석과 `ComplianceMarginGate` 헤더 주석이 같은 일반 유도를 각각 서술해
-> AP-PROC-9 가 **세 번째 사본**이 된다. 접는 법: 두 주석의 일반 유도를 AP-PROC-9 포인터로
-> 줄이고 site-specific 사실(δ 가 밴드에 하는 일, RT 와 같은 fallback)만 남긴다. 코드 주석
-> 변경이라 `integrated_bringup` build/test 를 끌어오므로, 그 패키지를 건드리는 다음 작업에
-> 묶는 것이 옳다 — 단독으로 열지 않는 이유가 그것이다.
-
 - **증상**: 같은 설계 판단의 근거가 두 곳 이상에 서술돼 있고, **틀릴 때 같이 틀린다**. AP-DOC-1
   이 값의 박제라면 이건 *이유*의 박제다. 값과 달리 근거는 검증기가 없어서, 코드가 그 근거를
   배신해도 두 사본 모두 조용히 남는다. 실측: `command_divergence` 를 배선하지 않은 이유가
@@ -355,3 +348,10 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   나눈다" 기법의 전개형은 [conventions.md](conventions.md#documentation-requirements) 의
   **서비스·메시지 계약의 소유자** 항목이 이미 갖고 있다 (`.srv` / README / `.cpp` 헤더 4축).
   거기는 wire 계약, 여기는 **설계 판단** — 같은 처방, 다른 대상
+- **두 번째 실측 — 축을 나눈 결과가 어떻게 생겼는가**: compliance `joint_limit_margin` 게이트가
+  *왜 파서가 아니라 바인딩에 있는가* 를 `compliance/lifecycle.cpp` 블록과 `ComplianceMarginGate`
+  fixture 가 **각각 유도**해, 그 규칙을 소유한 AP-PROC-9 까지 3중이 돼 있었다. 접은 뒤의 배치가
+  이 항목의 처방 그대로다 — lifecycle 블록은 *무엇을 왜 거부하는가*(δ 가 밴드에 하는 일, RT tail
+  과 같은 fallback), fixture 는 *무엇을 단언하는가*(sibling 과의 범위 분할, CallbackReturn 을 쌍으로
+  단언), **pass 선택 규칙 자체는 AP-PROC-9 한 곳**. 유도가 아니라 포인터만 남기면 다음에 그 규칙이
+  바뀔 때 고칠 곳이 하나다

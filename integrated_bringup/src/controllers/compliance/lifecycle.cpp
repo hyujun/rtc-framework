@@ -30,9 +30,8 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
     // the YAML still reads as though it were on. Same call #473 made for the
     // sibling WBC binding's `integration.position_margin`.
     //
-    // Here rather than next to the parser because the band is device-derived,
-    // which is what picks the pass — see AP-PROC-9 in
-    // agent_docs/anti-patterns.md.
+    // Why this pass and not next to the parser: AP-PROC-9 in
+    // agent_docs/anti-patterns.md, device-derived branch.
     //
     // Resolved with the SAME fallbacks the tail uses (the literals below), so
     // the check and the RT path cannot disagree about which joints they are
