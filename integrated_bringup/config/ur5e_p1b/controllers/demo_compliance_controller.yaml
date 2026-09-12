@@ -232,6 +232,35 @@ demo_compliance_controller:
   #
   # S2 parses this and stops. S3 is what turns it into a wrench.
   external_wrench:
+    # ── ACTIVATE THIS CONTROLLER *BEFORE* THE HAND CLOSES (#504) ─────────────
+    # THIS FILE IS WHERE THAT ORDER LIVES, because this profile is where it
+    # bites: `grasp_controller_type: "none"` (demo_shared.yaml) means nothing
+    # servos grip force, so the grip IS the `cmd − actual` gap of the position-
+    # commanded fingers. Activation re-seeds the hand target from the MEASURED
+    # pose (`ResetTargetInitialization()`, per the §10.7-family contract), which
+    # sets that gap to zero — so a hand that was holding something lets go the
+    # instant this controller comes up, and `source:` below then has nothing to
+    # estimate from.
+    #
+    # Measured both ways in sim on 2026-09-12 with the shipped
+    # `sim_overlay:=fingertip_grasp` disk:
+    #   grasp then switch  -> all four fingertips 0.00 N, no recovery in 6 s
+    #                         (hardware 260904_1023 is the same event)
+    #   switch then grasp  -> pull estimate valid, contact_mask 0b011,
+    #                         |F̂| up to 12.4 N
+    #
+    # The contract is NOT excepted for the hand (#504 direction (a), 2026-09-12):
+    # the re-seed still fires on every activation and the procedure is what
+    # changes. The hand target itself comes in on device 1 of the same mailbox
+    # the arm goal uses, so "close after activating" needs no extra wiring.
+    #
+    # SWITCHING WHILE GRASPING IS STILL LEGAL AND STILL DROPS THE OBJECT. It is
+    # not silent, but its signature is downstream, not at the switch: the pull
+    # estimator goes invalid with `kRequiredContactMissing` / `kDegenerateNormal`
+    # and this controller publishes `quality_low` with `reason != 0`. Because the
+    # fingers are position-commanded they still LOOK closed, which is why
+    # 260904_1023 presented as "the arm did not move for 16.8 s" instead.
+    # Procedure: `.claude/skills/verify/SKILL.md` (p1b).
     source: "pull_estimator"
     # ── D-A5: the bias is removed in EXACTLY ONE PLACE ────────────────────────
     # THIS FILE IS WHERE THAT REASONING LIVES — p1a and iiwa7_leap ship the same
