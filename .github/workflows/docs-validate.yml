@@ -60,6 +60,14 @@ jobs:
       - name: Validate documentation corpus
         run: python3 repo_scripts/scripts/validate_docs.py
 
+      # A path-scoped rule whose `paths:` globs match nothing never loads, and the
+      # only symptom is guidance quietly not arriving. The Stop hook checks CHANGED
+      # rules only, so a package rename that kills a glob in an untouched rule had
+      # no gate anywhere. This scans every rule against the checked-out tree. It
+      # answers "could it fire"; "did it fire" stays with the InstructionsLoaded log.
+      - name: Validate .claude/rules path globs
+        run: python3 repo_scripts/scripts/validate_claude_rules.py
+
       # The Stop hook is a stack of filters, and its failure mode is one layer
       # silently cancelling a fix made in another. These assert the observable
       # behaviour -- given this input, does the warning actually come out --

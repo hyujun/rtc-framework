@@ -20,6 +20,8 @@ paths:
 
 **현재 형태의 발화는 2026-08-04 에 확인됐다 (#229 종결).** 두 세션에서 독립적으로, `rtc_base/src/tracing/rtc_tracepoints.cpp` · `rtc_base/include/.../rtc_tracepoints.hpp` Read 에 이 rule 이, `rtc_base/CMakeLists.txt` · `rtc_msgs/CMakeLists.txt` 에 [arch-build-meta.md](arch-build-meta.md) 가 찍혔다. **단 로그의 `globs` 필드는 frontmatter 배열 전체를 그대로 싣고 어느 패턴이 매칭됐는지는 남기지 않는다** — 그래서 "안 쓰인 형태 정리" 의 근거로는 쓸 수 없다. 관측 없이 형태를 줄이는 것이 #363 의 회귀였으므로, 줄이려면 한 형태만 남긴 probe rule 로 별도 확인한다.
 
+**`*.h`·`*.cc` 형태는 지금 매칭 파일이 없어** `validate_claude_rules.py` 가 `[info]` 로 보고하지만, 그 확장자가 생기는 순간 rule 이 조용히 빠지지 않도록 **의도적으로 유지**한다 — 정리 대상이 아니다.
+
 **두 센서는 등가가 아니다.** `repo_scripts/scripts/validate_claude_rules.py` 는 *로드될 수 있는가* 를 Python `glob` 의미론으로 검사하고 (0건이면 hook 이 차단), 위 죽은 형태에 대해서도 **clean 을 냈다** — 즉 false green 이 가능하다. *실제로 로드됐는가* 의 ground truth 는 `.claude/instructions-loaded.log` (InstructionsLoaded hook) 뿐이다. 그리고 **rule 집합은 세션 시작 시 스냅샷**이라 (같은 세션에서 만든 probe rule 은 검증된 형태의 glob 으로도 발화하지 않았다), glob 을 고쳤으면 **다음 세션에서** 매칭 파일을 열고 그 로그를 grep 해 확인한다. build metadata (`CMakeLists.txt` / `package.xml` / `setup.py`) 축의 ARCH-5 · ARCH-7 은 [arch-build-meta.md](arch-build-meta.md) 가 갖는다. 규칙 전문·severity·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
 
 **탐지 패턴을 여기 복제하지 않는다** — 정규식·스코프·면제의 SSoT 는 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) 다 (#213: 문서가 들고 있던 divergent copy 가 hook 보다 낡은 스코프를 담은 채 썩었다). 이 파일이 갖는 것은 **판정**이다.
