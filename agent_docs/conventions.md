@@ -3,7 +3,7 @@
 **이 파일은 스타일 가이드다.**
 - 위반 시 escalation 대상인 규칙(RT / ARCH / PROC / NUM) → [invariants.md](invariants.md)
 - 재발성 실수 패턴과 탐지/복구 → [anti-patterns.md](anti-patterns.md)
-- `[CONCERN]` 포맷과 Critical Thinking 자가 점검 → [../AGENTS.md](../AGENTS.md) §6 Escalation
+- `[CONCERN]` 포맷·escalation 트리거·severity → [invariants.md](invariants.md) §Escalation Triggers (severity 의 효력은 [../AGENTS.md](../AGENTS.md) §6)
 
 ## Domain Conventions
 

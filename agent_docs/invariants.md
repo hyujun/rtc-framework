@@ -400,7 +400,7 @@ Severity 는 파일이 아니라 **규칙 단위**로 정해진다 — 위 표�
 
 ## False-positive 처리
 
-위 grep 명령은 **path-blind**(RT path 외 코드도 매칭)이거나 **role-blind**(one-shot init / aux thread 허용 케이스도 매칭)이다. 정당한 사용을 invariant로 잘못 차단하면 [AGENTS.md](../AGENTS.md) §11 *Harness pruning 신호*에 해당.
+위 grep 명령은 **path-blind**(RT path 외 코드도 매칭)이거나 **role-blind**(one-shot init / aux thread 허용 케이스도 매칭)이다. 정당한 사용을 invariant로 잘못 차단하면 하네스 pruning 신호로 보고한다 — 보고 경로는 각 도구의 문서가 소유한다 ([AGENTS.md](../AGENTS.md) §11 의 5항; Claude Code 는 [CLAUDE.md](../CLAUDE.md) §Claude Code 의 Housekeeping).
 
 판단 절차:
 

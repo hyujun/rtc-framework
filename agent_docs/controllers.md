@@ -18,7 +18,7 @@ Algorithms 이며, 여기서는 반복하지 않는다 (AP-DOC-1).
 > 모든 바인딩이 동일하게 필요로 하던 공통 글루(target mailbox 등)는 S7a 에서
 > `rtc_controller_interface` 로 올라갔고, 배치 고유 글루는 어댑터와 함께 삭제됐다 (바인딩은
 > 자기 것을 갖는다). 아직 코어로 수렴하지 않은 **바인딩 쪽 인라인 사본**은 별개이며
-> [design-principles.md](design-principles.md) §현황 이 SSoT 다 (#282).
+> [design-principles.md](design-principles.md) §완료 상태의 검증 기준 이 SSoT 다 (#282).
 
 ### 알고리즘 코어 (`rtc_controllers`)
 

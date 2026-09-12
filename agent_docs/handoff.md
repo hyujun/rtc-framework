@@ -1,6 +1,6 @@
 # Context Handoff Contract (tool-neutral)
 
-이 문서는 RTC Framework 에서 **에이전트 간·세션 간 context handoff 의 tool-neutral 단일 출처(SSoT)** 다. Claude·Codex 등 어떤 에이전트든 이 계약을 따른다. 이 문서는 **무엇이 handoff 이고, artifact 가 무엇을 담아야 하며, 받는 쪽이 어떻게 재개하는가** 만 정의한다 — Claude 전용 메커니즘(`/compact`·`/clear`·`# Compact instructions`·`/btw`·fork)과 능동 제안 트리거는 [../AGENTS.md](../AGENTS.md) §6.6 및 user-level 설정이 소유한다.
+이 문서는 RTC Framework 에서 **에이전트 간·세션 간 context handoff 의 tool-neutral 단일 출처(SSoT)** 다. Claude·Codex 등 어떤 에이전트든 이 계약을 따른다. 이 문서는 **무엇이 handoff 이고, artifact 가 무엇을 담아야 하며, 받는 쪽이 어떻게 재개하는가** 만 정의한다 — Claude 전용 메커니즘(`/compact`·`/clear`·`# Compact instructions`·`/btw`·fork)과 능동 제안 트리거는 각 도구의 문서가 소유한다 ([../AGENTS.md](../AGENTS.md) §6.6) — Claude Code 는 [../CLAUDE.md](../CLAUDE.md) §Claude Code 와 user-level 설정.
 
 **원칙: handoff 는 받는 에이전트가 이전 transcript 를 읽지 않고도 재개할 수 있을 때에만 완료된 것이다.**
 

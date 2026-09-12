@@ -240,6 +240,8 @@ rm -rf build/<pkg> install/<pkg> && colcon build --packages-select <pkg>
 | 빌드 성공 직후 테스트 바이너리 `No such file or directory` | 위와 동일 — ws-root 트리와 repo-안 트리가 갈라진 상태. `ls src/rtc-framework/build` 로 확정 |
 | env 미source 로 전 바이너리 일괄 실패 | 회귀 아님 — AGENTS.md §9.1 서브셸 표준형으로 재실행. python `subprocess` 는 `executable="/bin/bash"` 명시 (`/bin/sh` 에는 `source` 가 없어 체인이 첫 항에서 죽는다) |
 | `ignoring unknown package '<pkg>' in --packages-select` + `0 packages finished` | ws 밖(scratchpad 등) cwd — 직전 run 의 stale XML 이 green 으로 읽히므로 판정 전 결과 XML mtime 확인 |
+| `No rule to make target '/opt/ros/<distro>/lib/lib<X>.so.<옛 버전>'` (코드 변경과 무관하게 여러 패키지) | 회귀 아님 — ROS apt 업그레이드가 so 버전을 올렸고 (`/var/log/apt/history.log`), configure 때 생성된 link 규칙이 옛 절대경로를 들고 있다. `colcon build --cmake-force-configure` (명령 형태는 [repo_scripts/README.md](../repo_scripts/README.md) "Plain `colcon build` 호환성") — CMakeCache 는 유지되고 link 규칙만 재생성된다 |
+| `ament_cmake_symlink_install_files() can't find '.../rosidl_generator_type_description/<pkg>/msg/<Msg>.json'` | 그 메시지 패키지의 생성물 일부가 빠졌는데 생성 단계는 최신으로 기록된 상태 (중단된 빌드 뒤 관측) — 그 패키지만 `colcon build --packages-select <pkg> --cmake-clean-first` |
 
 ```bash
 # exec name = ROS node name = "integrated_rt_controller" (only exec from integrated_bringup;
@@ -277,7 +279,8 @@ CM=$(pgrep -nf integrated_rt_controller)
 grep Cpus_allowed_list /proc/$CM/status      # == get_cm_shield_cpus 출력과 동일 (부분집합 비교는 shield 축소를 놓친다)
 # 3) activate 후 RT/nrt 스레드가 제대로 pin·FIFO 되었는가
 ps -eLo comm,psr,cls,rtprio -p $CM | grep -E "rt_control|rt_callback|nrt_"
-#   기대값은 layout SSoT 에서 — psr: get_role_slot <role> 의 slot→logical, cls=FF, rtprio: get_role_priority <role>
+#   기대값은 layout SSoT 에서 — psr: get_role_slot <role> 의 slot→logical, rtprio: get_role_priority <role>,
+#   cls: get_role_policy <role> (SCHED_FIFO → FF, SCHED_OTHER → TS — nrt_* 는 CFS 라 TS 가 정상)
 #   (repo_scripts/README.md "RT/MPC 코어 레이아웃 함수"; 머신별 숫자를 여기 박제하지 않는다)
 # 4) EINVAL 회귀 없음 (shield 가 pin 을 깨뜨리지 않음)
 grep -rE "rc=22|setaffinity failed|Thread config failed" ~/.ros/log/<run>/  # 결과 없어야
