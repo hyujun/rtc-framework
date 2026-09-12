@@ -414,6 +414,12 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
         cursor += count;
       }
 
+      // BEFORE the overlap walk, not after it: that walk stamps `i` into
+      // `owner` and then reads `features[slot]` to name the first claimant. A
+      // feature that overlaps ITSELF (a resolver that hands back the same row
+      // name twice) hits its own stamp, and with the push after the loop that
+      // read would land one past the end while building the message.
+      spec.features.push_back(id);
       for (const int idx : seg.indices) {
         if (static_cast<std::size_t>(idx) >= numel) {
           continue;  // positional overflow — reported with the sum below
@@ -429,7 +435,6 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
         seg.indices.clear();  // positional: a contiguous run, the pre-scatter descriptor
       }
       spec.segments.push_back(std::move(seg));
-      spec.features.push_back(id);
       seen_features.push_back(std::move(id));
       seen_feature_where.push_back(at);
     }

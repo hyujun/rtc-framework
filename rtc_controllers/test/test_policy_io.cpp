@@ -1119,7 +1119,7 @@ TEST(PolicyIoCore, BlendPostureRefusesRaggedPostures) {
 namespace {
 
 int NamedFeatureSize(std::string_view id) {
-  if (id == "arm.position" || id == "hand.position") {
+  if (id == "arm.position" || id == "hand.position" || id == "arm.repeated_row") {
     return 2;
   }
   if (id == "arm0.position" || id == "hand.thumb.force_norm" || id == "hand.index.force_norm") {
@@ -1143,6 +1143,11 @@ std::vector<std::string> NamedFeatureRows(std::string_view id) {
   }
   if (id == "arm0.position") {
     return {"a0"};
+  }
+  // A resolver that names the same row twice — what a device config with a
+  // repeated joint name produces, since the rows ARE the roster verbatim.
+  if (id == "arm.repeated_row") {
+    return {"a0", "a0"};
   }
   if (id.starts_with("link.")) {
     const auto rest = id.substr(5);
@@ -1351,6 +1356,18 @@ TEST(PolicyIoNamed, RejectsTwoFeaturesClaimingOneElement) {
       Edited(R"(features: ["arm.position", "hand.position"])",
              R"(features: ["arm.position", "hand.position", "arm0.position"])"),
       "claims element 0 of 'joint_pos', which 'arm.position' already fills");
+}
+
+TEST(PolicyIoNamed, RejectsAFeatureThatClaimsOneElementTwiceByItself) {
+  // Self-overlap, and it names ITSELF as the first claimant. The one feature
+  // both stamps the owner slot and reads it back to build the message, so the
+  // message has to come from a list that already holds this feature — reading
+  // it from a list the feature is appended to afterwards is a read past the end
+  // while the rejection is being formatted.
+  ExpectNamedRejectMentioning(
+      Edited(R"(features: ["arm.position", "hand.position"])",
+             R"(features: ["arm.repeated_row", "hand.position"])"),
+      "claims element 0 of 'joint_pos', which 'arm.repeated_row' already fills");
 }
 
 TEST(PolicyIoNamed, RejectsANamedTensorWithUncoveredRowsAndNoFill) {
