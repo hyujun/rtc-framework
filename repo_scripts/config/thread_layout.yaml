@@ -23,7 +23,7 @@
 #
 # ── Editing ─────────────────────────────────────────────────────────────────
 # Changing a value here changes the runtime layout on every tier. That is an
-# E-7 (thread model) decision, not a refactor — see CLAUDE.md §6. After any
+# E-7 (thread model) decision, not a refactor — see AGENTS.md §6. After any
 # edit run the generator with --write and commit the regenerated artifacts in
 # the same commit.
 #

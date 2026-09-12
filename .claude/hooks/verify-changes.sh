@@ -1,7 +1,7 @@
 #!/bin/bash
 # Stop hook — gate the turn end on doc/metadata co-updates + build/test.
 #
-# Intent : enforce CLAUDE.md §4 Workflow Loop steps 4·5·6 + PROC-1 (doc/code
+# Intent : enforce AGENTS.md §4 Workflow Loop steps 4·5·6 + PROC-1 (doc/code
 #          sync) without trusting Claude's self-check (Anthropic 2026.04:
 #          agent self-eval is unreliable).
 # Trigger: every turn end. Reads {stop_hook_active} from stdin JSON; bails
@@ -163,7 +163,7 @@ fi
 # exists for: with HEAD as the baseline a turn that ends `git commit`-clean
 # produces an empty change set, the `[ -z "$CHANGED" ]` exit fires, and NOTHING
 # is verified. Not the doc validator, not the ARCH greps, not build or test.
-# That is the normal shape of a turn in this repo (CLAUDE.md §11 housekeeping
+# That is the normal shape of a turn in this repo (AGENTS.md §11 housekeeping
 # runs "commit 완료 후"), so the gate was silently absent on most of them.
 # Observed 2026-09-09: a bare-section-ref D10 violation committed in-turn passed
 # the hook and was caught only by CI's full-corpus scan.
@@ -565,7 +565,7 @@ if [ -n "$RTC_TOUCHED" ]; then
   # launch defaults, "e.g. UR5e") that the negation filter does not cover.
   # Triage on a hit, in order: (1) `git show HEAD:<file>` — if the line
   # pre-existed this turn, it is a harness false positive; report it as a
-  # harness-pruning signal (CLAUDE.md §11), do not "fix" working code.
+  # harness-pruning signal (CLAUDE.md §Claude Code), do not "fix" working code.
   # (2) If the hit is prose you just wrote in rtc_*, reword robot-neutrally
   # and push the concrete example down to a consumer package's docs/config.
   #
@@ -1050,7 +1050,7 @@ if [ -n "$PROC3" ]; then
   # PROC-3: broad rebuild + full test (60s * count would still time out, so use
   # a generous bound on the build and a per-package test timeout).
   # All colcon invocations run from $WORKSPACE so build/install/log land in the
-  # colcon ws root (CLAUDE.md §9.1), not in this repo's cwd.
+  # colcon ws root (AGENTS.md §9.1), not in this repo's cwd.
   run_build 300 full
   if [ "$BUILD_RC" -eq 124 ]; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) TIMED OUT after 300s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). This path is cold by construction (rtc_base / rtc_msgs touched); re-run './build.sh full' on an idle box before debugging the change.\n"

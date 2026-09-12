@@ -32,4 +32,4 @@ paths:
 
 - **CMake / `package.xml` co-update 는 blocking** 이다 (PROC-1) — 파일을 add/remove 했으면 같은 turn 에 여기도 반영한다.
 - `rtc_base` / `rtc_msgs` 의 의존을 건드렸다면 **전체 빌드·테스트** (PROC-3).
-- 위반이 필요하면 [CLAUDE.md](../../CLAUDE.md) §6 의 `[CONCERN]` 으로 보고 — ARCH-2 는 Critical 이라 승인 전 커밋·PR 금지.
+- 위반이 필요하면 [AGENTS.md](../../AGENTS.md) §6 의 `[CONCERN]` 으로 보고 — ARCH-2 는 Critical 이라 승인 전 커밋·PR 금지.

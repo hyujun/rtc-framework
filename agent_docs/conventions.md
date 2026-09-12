@@ -3,7 +3,7 @@
 **이 파일은 스타일 가이드다.**
 - 위반 시 escalation 대상인 규칙(RT / ARCH / PROC / NUM) → [invariants.md](invariants.md)
 - 재발성 실수 패턴과 탐지/복구 → [anti-patterns.md](anti-patterns.md)
-- `[CONCERN]` 포맷과 Critical Thinking 자가 점검 → [../CLAUDE.md](../CLAUDE.md) §6 Escalation
+- `[CONCERN]` 포맷과 Critical Thinking 자가 점검 → [../AGENTS.md](../AGENTS.md) §6 Escalation
 
 ## Domain Conventions
 
@@ -17,7 +17,7 @@
 - **Dynamics**: $M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q) = \tau$. Pinocchio RNEA 기반
 - **Variable naming**: Paper notation — `J_b` (body Jacobian), `q_d` (desired joint), `x_e` (EE pose), `K_d` (stiffness)
 <!-- validate-docs: allow D10 -->
-> **`§N.M` 표기 규칙** — 숫자 절번호는 세 네임스페이스에 쓰인다: 헌법 절번호(`CLAUDE.md §6`처럼 파일명과 함께), compliance 규범 명세(`compliance §6.5`처럼 접두사 필수 — [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) 가 참조하는 원명세), 그리고 파일 내부 명명 섹션(`§RT Path Invariants`). 접두사 없는 맨 `§6.5` 는 쓰지 않는다.
+> **`§N.M` 표기 규칙** — 숫자 절번호는 세 네임스페이스에 쓰인다: 헌법 절번호(`AGENTS.md §6`처럼 파일명과 함께), compliance 규범 명세(`compliance §6.5`처럼 접두사 필수 — [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) 가 참조하는 원명세), 그리고 파일 내부 명명 섹션(`§RT Path Invariants`). 접두사 없는 맨 `§6.5` 는 쓰지 않는다.
 
 - **Singularity**: compliance §6.5 σ_min-적응형 damped pseudoinverse (`max_damping` = λ_max, `singularity_threshold` = σ₀ via YAML — 다섯 task-space 컨트롤러 공통 키), near-zero division guard ([invariants.md](invariants.md) NUM-1)
 

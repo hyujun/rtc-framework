@@ -2,7 +2,7 @@
 
 `rtc_*` packages are the **robot-agnostic** backbone of this framework. Any modification must preserve this property. Robot-specific logic, hardware assumptions, and fixed-shape constants belong in the **integration packages** — today `integrated_bringup`, `udp_hand_driver`, `shape_estimation`, `ur5e_bt_coordinator` (i.e. every non-`rtc_*` package that `<depend>`s on an `rtc_*` one; the hook derives this set from `package.xml` rather than a name glob). When in doubt: *"Would this code still make sense on a 7-DOF arm with a 2-finger gripper?"*
 
-> **이 파일의 규칙 위반은 [invariants.md](invariants.md) ARCH-1~4의 escalation 대상이다.** 위반이 불가피하다고 판단될 때는 코드를 쓰기 **전에** [CLAUDE.md](../CLAUDE.md) §6 포맷으로 `[CONCERN] Severity: Warning` 이상을 보고한다.
+> **이 파일의 규칙 위반은 [invariants.md](invariants.md) ARCH-1~4의 escalation 대상이다.** 위반이 불가피하다고 판단될 때는 코드를 쓰기 **전에** [AGENTS.md](../AGENTS.md) §6 포맷으로 `[CONCERN] Severity: Warning` 이상을 보고한다.
 
 ## Five Principles
 
@@ -104,7 +104,7 @@ CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->Pu
 
 **바인딩 계층에 인라인 법칙 사본이 없다.** 잔여를 세는 기준은 "DLS 사본" 이 아니라 **"코어 대응물이 있는데 호출하지 않는 법칙"** 이고, 그 기준의 grep `grep -rn "cwiseProduct\|diagonal().array() +=\|LDLT<\|LLT<\|Jpinv\|pseudoInverse" integrated_bringup/src integrated_bringup/include` 가 **0건**이어야 한다. 호출자가 없는 코어(`ComputeImpedanceForce` · `ComputeJointPdCommand` · `ComputePostureTorque` / `ComputePostureVelocity` · `ComputeTaskAcceleration`)는 위반이 아니다 — 그 법칙을 인라인으로 다시 쓰는 살아 있는 바인딩이 없으므로 "미수렴 사본" 이 아니라 "바인딩을 기다리는 코어" 다.
 
-**완료형은 바인딩 계층에 한정한다.** `rtc_tsid` 의 SE3 / object-SE3 / CoM / posture task 는 가속도형 법칙을 자체적으로 쓴다 (`a_ff + kp ⊙ e + kd ⊙ ė`). 이는 바인딩 누수가 아니라 **동급 코어 간 중복** 축이다 — `rtc_tsid` 는 위 P5 가 "QP tasks, constraints" 를 배정한 자기 도메인의 코어이고, 속도 오차 정의부터 다르다 (Jlog6 정확 미분 대 `ν_d − ν`). 따라서 `ComputeTaskAcceleration` 으로의 수렴은 inert 리팩터가 아니라 **법칙 변경**이며, 착수하려면 별도 판단이 필요하다 ([CLAUDE.md](../CLAUDE.md) §6 E-9). 그래서 **"코어 간 법칙 중복이 없다"** 는 완료형으로 쓰지 않는다 — 쓰는 순간 문서-코드 불일치를 새로 만든다.
+**완료형은 바인딩 계층에 한정한다.** `rtc_tsid` 의 SE3 / object-SE3 / CoM / posture task 는 가속도형 법칙을 자체적으로 쓴다 (`a_ff + kp ⊙ e + kd ⊙ ė`). 이는 바인딩 누수가 아니라 **동급 코어 간 중복** 축이다 — `rtc_tsid` 는 위 P5 가 "QP tasks, constraints" 를 배정한 자기 도메인의 코어이고, 속도 오차 정의부터 다르다 (Jlog6 정확 미분 대 `ν_d − ν`). 따라서 `ComputeTaskAcceleration` 으로의 수렴은 inert 리팩터가 아니라 **법칙 변경**이며, 착수하려면 별도 판단이 필요하다 ([AGENTS.md](../AGENTS.md) §6 E-9). 그래서 **"코어 간 법칙 중복이 없다"** 는 완료형으로 쓰지 않는다 — 쓰는 순간 문서-코드 불일치를 새로 만든다.
 
 - 규칙은 **새 코드에 즉시 구속**된다. 새 제어 법칙은 코어로 쓰고, 필요하면 바인딩을 integration 패키지에 만든다.
 - **이 문서의 근거 문단에 나오는 어댑터 클래스명**(`ClikController` · `TaskImpedanceController` · `TaskAdmittanceController` 등)**은 추출 슬라이스가 판정을 내리던 시점의 대상이다** — 지금 코드에 없다. 그 판정이 왜 그렇게 났는지는 여전히 유효하므로 남겨 두되, 살아 있는 코드로 읽지 않는다.
@@ -114,7 +114,7 @@ CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->Pu
 
 **근거**: 컨트롤러를 순수 알고리즘으로 유지하면 (a) 단위 테스트가 ROS 컨텍스트 없이 성립하고, (b) 같은 법칙이 sim / 실기 / 오프라인 재생에서 배선만 갈아끼워 재사용되며, (c) 배선 결정(QoS, 네임스페이스, 메시지 타입)이 robot bringup 한 곳에 모인다. 상속 금지가 추가된 근거는 (d) — 프레임워크 계약을 구현하는 순간 글루가 법칙과 같은 파일에 들어오고, 그 글루의 대부분은 컨트롤러마다 **동일한 boilerplate** 라서 구현체 수만큼 복제된다. 실제로 mailbox 스켈레톤은 그렇게 복제됐고 (#206), 그 복제본들의 검증 공백에서 결함이 반복해 나왔다. 컨트롤러에 구독을 넣으려는 충동은 대개 "이 입력을 어떻게 넣지?" 에서 나오는데 답은 setter 이지 구독이며, 인터페이스를 상속하려는 충동은 "CM 이 이걸 어떻게 부르지?" 에서 나오는데 답은 바인딩이지 상속이 아니다.
 
-위반이 필요해 보이면 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN]` (E-1 / Critical) 로 보고한다. *(결정·개정 이력은 issue #236 코멘트.)*
+위반이 필요해 보이면 [AGENTS.md](../AGENTS.md) §6 `[CONCERN]` (E-1 / Critical) 로 보고한다. *(결정·개정 이력은 issue #236 코멘트.)*
 
 ## Backend / Controller Layering
 
@@ -145,7 +145,7 @@ This layering pairs with the runtime contract in [architecture.md](architecture.
 ## When Generalization Requires a Design Change
 
 If you cannot satisfy all five principles with a local edit, STOP and:
-1. Report a `[CONCERN] Severity: Warning` ([CLAUDE.md](../CLAUDE.md) §6 포맷)
+1. Report a `[CONCERN] Severity: Warning` ([AGENTS.md](../AGENTS.md) §6 포맷)
 2. Propose an interface refactor or dependency inversion as a separate task
 3. Do NOT embed robot-specific logic in `rtc_*` "for now"
 

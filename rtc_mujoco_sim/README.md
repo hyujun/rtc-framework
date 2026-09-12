@@ -684,7 +684,7 @@ rclcpp 가 **노드 생성 시점에** `InvalidParameterValueException` 을 던�
 키가 없으면 `declare_parameter` 기본값 `{}` 가 그대로 쓰이며, 그게 "디렉토리 전체"
 입니다.
 
-**단위는 rad 입니다** (SI — CLAUDE.md §10). degree 스펠링의 별칭 키는 두지 않습니다.
+**단위는 rad 입니다** (SI — AGENTS.md §10). degree 스펠링의 별칭 키는 두지 않습니다.
 
 **`*_variation` 은 반폭**입니다: 각 축을 `[중심 - variation, 중심 + variation]` 에서 균등 추출합니다.
 

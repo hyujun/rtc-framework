@@ -256,12 +256,12 @@ PACKAGE_COUNT_RE = re.compile(r"(\d+)\s*개\s*(?:의\s*)?(?:ROS[\s-]*2\s*)?패�
 
 # D10: a bare "§N.M" with no namespace in front of it.  The corpus uses numeric
 # section numbers for three unrelated things -- the constitutions' own sections
-# (CLAUDE.md §6), the compliance normative spec (§6.5 = the sigma_min-adaptive
+# (AGENTS.md §6), the compliance normative spec (§6.5 = the sigma_min-adaptive
 # DLS lambda rule), and file-internal named sections (§RT Path Invariants).
 # "§6.5" alone meant Sprint Contract in one file and a damping law in another,
 # and both spellings coexisted inside invariants.md with nothing to tell them
 # apart.  A reference is disambiguated when it is preceded by a markdown link
-# (`...md) §3.5`), a document name (`CLAUDE.md §6.5`), or the literal
+# (`...md) §3.5`), a document name (`AGENTS.md §6.5`), or the literal
 # `compliance ` prefix for the normative spec.
 # Scope: the constitution corpus only.  A per-package doc citing "§3.9" next to
 # the spec that owns §3.9 is unambiguous in context; the collision that D10
@@ -305,7 +305,7 @@ CONSTITUTION_MAX_BYTES = 18 * 1024
 CONSTITUTION_MAX_LINE_CHARS = 500
 
 # D13: a section ref that names its target constitution.  Accepts the plain
-# form ("CLAUDE.md §6.5") and the link form ("[CLAUDE.md](../CLAUDE.md) §6.5").
+# form ("AGENTS.md §6.5") and the link form ("[AGENTS.md](../AGENTS.md) §6.5").
 SECTION_TARGET_RE = re.compile(r"(CLAUDE|AGENTS)\.md(?:\]\([^)]*\))?\s*§(\d+(?:\.\d+)?)")
 # A bare "§N" / "§N.M" -- only resolved inside a constitution, against itself.
 BARE_SECTION_RE = re.compile(r"§(\d+(?:\.\d+)?)")
@@ -1497,7 +1497,7 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
     ("D12 is scoped to the constitutions", "agent_docs/f.md", "# x\n" + "a" * 501 + "\n", []),
     ("D13 dangling section ref", "agent_docs/f.md", "see CLAUDE.md \u00a799.9\n", ["D13"]),
     ("D13 dangling ref in link form", "agent_docs/f.md", "see [AGENTS.md](../AGENTS.md) \u00a799\n", ["D13"]),
-    ("D13 live refs resolve", "agent_docs/f.md", "see CLAUDE.md \u00a71 and AGENTS.md \u00a71\n", []),
+    ("D13 live refs resolve", "agent_docs/f.md", "see AGENTS.md \u00a71 and AGENTS.md \u00a79.1\n", []),
     (
         "D13 bare self-ref inside a constitution",
         "CLAUDE.md",
@@ -1626,7 +1626,7 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
     (
         "D10 qualified refs are silent",
         "agent_docs/f.md",
-        "compliance §6.5 와 [CLAUDE.md](../CLAUDE.md) §6.5 와 CLAUDE.md §9.1.\n",
+        "compliance §6.5 와 [AGENTS.md](../AGENTS.md) §6.5 와 AGENTS.md §9.1.\n",
         [],
     ),
     # A doc that numbers its own headings owns those numbers.

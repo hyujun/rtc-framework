@@ -255,7 +255,7 @@ SCHED_OTHER nice  0 sim_thread · viewer ← MuJoCo physics · GLFW
 **설계 원칙**:
 
 - **RT thread = controller↔hardware/sim 경계만**: rt_control · rt_callback · mpc_*. 다른 thread 는 NRT.
-- **priority 간격 10**: `90/70/60` — `cgroup.cpu.rt_runtime_us` 가 압박해도 hierarchy 유지. 우선순위 inflation 금지 (CLAUDE.md §3 E-1 escalation). v3 의 priority 65 슬롯 (rt_outbound) 은 v4 에서 빈 채로 두어 hand_driver 내부 UDP recv (FIFO 65) 가 유일.
+- **priority 간격 10**: `90/70/60` — `cgroup.cpu.rt_runtime_us` 가 압박해도 hierarchy 유지. 우선순위 inflation 금지 (AGENTS.md §3 E-1 escalation). v3 의 priority 65 슬롯 (rt_outbound) 은 v4 에서 빈 채로 두어 hand_driver 내부 UDP recv (FIFO 65) 가 유일.
 - **`mpc_main < rt_callback` 강제** (`ValidateSystemThreadConfigs`): 긴 MPC solve 가 sensor callback latency 를 늘리지 않도록 보장.
 - **`arm_driver` / `hand_driver` vs RT controller core disjoint** 강제 (v3 신규): 같은 코어에 배치 시 ValidateSystemThreadConfigs 가 reject. driver 프로세스가 RT thread 코어를 침범하지 못하도록.
 

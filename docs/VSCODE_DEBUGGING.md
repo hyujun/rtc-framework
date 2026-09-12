@@ -3,7 +3,7 @@
 이 문서는 `rtc-framework` 프로젝트에서 VS Code + GDB를 사용하여 C++ 노드를 디버깅하는 방법을 설명합니다.
 
 > [!IMPORTANT]
-> **`.vscode/` 는 리포에 체크인되지 않습니다.** `.gitignore` 에 `.vscode/` 가 등록되어 있어 (에디터 설정은 개발자 로컬 영역), 이 디렉토리는 **각자 생성**해야 합니다. 본 문서의 [§VS Code 설정 파일 구조](#vs-code-설정-파일-구조) 가 네 파일(`settings.json` / `tasks.json` / `launch.json` / `extensions.json`)의 복붙용 템플릿을 제공합니다 — VS Code 워크스페이스로 **repo 루트(`src/rtc-framework`)** 를 연다는 전제이며, colcon `build/` · `install/` 은 `${workspaceFolder}/../../` (ws 루트 `~/ros2_ws/rtc_ws`) 에 있습니다 (CLAUDE.md §9.1). `.clangd` 와 `merge_compile_commands.py` 는 repo 에 체크인되어 있습니다.
+> **`.vscode/` 는 리포에 체크인되지 않습니다.** `.gitignore` 에 `.vscode/` 가 등록되어 있어 (에디터 설정은 개발자 로컬 영역), 이 디렉토리는 **각자 생성**해야 합니다. 본 문서의 [§VS Code 설정 파일 구조](#vs-code-설정-파일-구조) 가 네 파일(`settings.json` / `tasks.json` / `launch.json` / `extensions.json`)의 복붙용 템플릿을 제공합니다 — VS Code 워크스페이스로 **repo 루트(`src/rtc-framework`)** 를 연다는 전제이며, colcon `build/` · `install/` 은 `${workspaceFolder}/../../` (ws 루트 `~/ros2_ws/rtc_ws`) 에 있습니다 (AGENTS.md §9.1). `.clangd` 와 `merge_compile_commands.py` 는 repo 에 체크인되어 있습니다.
 
 ---
 
@@ -427,7 +427,7 @@ clangd --check=integrated_bringup/src/controllers/wbc/compute.cpp
       "options": { "cwd": "${workspaceFolder}" } },
     { "label": "colcon: Test Selected Package", "type": "shell",
       "command": "colcon test --packages-select ${input:pkg} --event-handlers console_direct+",
-      "options": { "cwd": "${workspaceFolder}/../.." } }   // colcon 은 반드시 ws 루트에서 (CLAUDE.md §9.1)
+      "options": { "cwd": "${workspaceFolder}/../.." } }   // colcon 은 반드시 ws 루트에서 (AGENTS.md §9.1)
   ],
   "inputs": [ { "id": "pkg", "type": "promptString", "description": "Package name (e.g. rtc_base)" } ]
 }

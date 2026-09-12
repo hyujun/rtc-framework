@@ -15,7 +15,7 @@ description: Pre-flight and gate map for ADDING a new controller, message type /
 
 ## 1. Sprint Contract = spec (거의 항상 해당)
 
-새 abstract interface · controller · 메시지 · 디바이스 · 스레드 추가는 [CLAUDE.md](../../../CLAUDE.md) §6.5 에서 **spec 이 필수**인 부류다. 코드 전에 `~/.claude/plans/<slug>.md` 에 *왜 필요한가 · API surface · 검토한 alternatives* 를 박고 `[SPRINT]` 로 컨펌받는다. 포맷은 modification-guide.md §Sprint Contract & Spec.
+새 abstract interface · controller · 메시지 · 디바이스 · 스레드 추가는 [AGENTS.md](../../../AGENTS.md) §6.5 에서 **spec 이 필수**인 부류다. 코드 전에 `~/.claude/plans/<slug>.md` 에 *왜 필요한가 · API surface · 검토한 alternatives* 를 박고 `[SPRINT]` 로 컨펌받는다. 포맷은 modification-guide.md §Sprint Contract & Spec.
 
 `~/.claude/plans/` 를 **먼저 `ls`** 한다 — 같은 작업의 plan 이 이미 있을 수 있고, 그것이 보이지 않는 SSoT 다.
 

@@ -469,7 +469,7 @@ test_prune_spares_trees_it_did_not_name() {
 }
 
 test_keep_other_versions_opt_out() {
-  # 다른 제어 프로젝트가 옛 트리를 직접 참조하는 머신 (CLAUDE.md §9.2) 의 탈출구.
+  # 다른 제어 프로젝트가 옛 트리를 직접 참조하는 머신 (AGENTS.md §9.2) 의 탈출구.
   setup_case
   local sha; sha=$(make_fixture "$TEST_ROOT" "x64")
   ONNXRT_SHA256["${TEST_VER}:x64"]="$sha"

@@ -2,7 +2,7 @@
 
 ## Sensor Matrix (변경 유형별 필수 검증)
 
-[CLAUDE.md](../CLAUDE.md) §5의 상세판. 변경 위치에 따라 필수 sensor + 추가 sensor를 실행한다.
+[AGENTS.md](../AGENTS.md) §5의 상세판. 변경 위치에 따라 필수 sensor + 추가 sensor를 실행한다.
 
 | 변경 위치 | 필수 Sensor | 추가 Sensor |
 |----------|------------|------------|
@@ -55,7 +55,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 
 ## Revert-verification — 새 가드를 추가했을 때
 
-가드(검증·거부 경로)와 그 테스트를 함께 추가하면 **테스트 통과는 가드가 동작한다는 증거가 아니다** — 그 가드를 지워도 통과할 수 있다. 추가한 가드마다 **하나씩 원복 → 대응 테스트가 실제로 실패하는지 확인 → 복구**. [CLAUDE.md](../CLAUDE.md) §5.5 의 "에이전트 자기 평가는 신뢰 불가" 가 자기가 쓴 테스트에도 그대로 적용된다.
+가드(검증·거부 경로)와 그 테스트를 함께 추가하면 **테스트 통과는 가드가 동작한다는 증거가 아니다** — 그 가드를 지워도 통과할 수 있다. 추가한 가드마다 **하나씩 원복 → 대응 테스트가 실제로 실패하는지 확인 → 복구**. [AGENTS.md](../AGENTS.md) §5.5 의 "에이전트 자기 평가는 신뢰 불가" 가 자기가 쓴 테스트에도 그대로 적용된다.
 
 **가장 흔한 false green — 층이 겹치는 가드.** 새 가드 A·B 가 같은 잘못된 입력을 모두 거부하면 B 의 테스트는 A 에 흡수되어, B 를 통째로 지워도 통과한다. B 는 커버리지가 있는 것처럼 보이면서 실제로는 자유롭게 삭제 가능한 상태다. 이때는 테스트를 "throw 하는가" 가 아니라 **그 가드만이 만드는 관측 가능한 차이** (진단 메시지 내용, 거부 시점, 부작용 유무) 로 옮겨야 pin 이 성립한다.
 
@@ -155,7 +155,7 @@ colcon test-result --verbose
 - **lint 도 소스 파일당 1 entry 를 낸다.** `cppcheck.xunit.xml` 의 `tests="N"` 은 그 패키지의 소스 파일 수이고 전부 **skipped** 로 집계된다. 따라서 테스트 `.cpp` 를 한 개 추가하면 총계는 **1(케이스가 1개일 때) + 1(ctest 타깃) + 1(cppcheck 파일)** 로 오르고 skipped 도 +1 이 된다 — 델타를 gtest 케이스 수만으로 예측하면 매번 어긋난다. 증감을 "삭제·신설 목록과 1:1" 로 설명해야 하는 슬라이스에서는 이 세 항을 분리해 적는다.
 
 - **timeout·crash 는 gtest XML 에 `<failure>` 로 안 남는다 — CTest `Test.xml` 에만 잡힌다.** 타임아웃난 바이너리는 죽을 때 자기 `--gtest_output` XML 을 **아예 못 쓰거나 부분만 쓰므로**, `test_results/*.xml` 을 `<failure>` 로 훑는 검사는 그 런을 **clean 으로 판정한다**. 실측 (#345 검증): 22패키지 병렬 `colcon test` 에서 `ur5e_bt_coordinator::test_condition_nodes` 가 60 s CTest timeout 을 냈는데(단독 재실행 **0.47 s** 통과 — 부하 flake), gtest XML 전체에 `<failure>` 가 **0건**이었다. 따라서 **판정은 `colcon test-result` 의 요약(errors 를 포함)이나 `build/<pkg>/Testing/*/Test.xml` 로 하고**, gtest XML 직접 grep 을 유일 센서로 쓰지 않는다. 위 `--test-result-base` 범위 항과 짝이다: `build/<pkg>` 범위여야 `Test.xml` 이 합산에 들어온다.
-- **`--test-result-base <경로>` 를 기본값 아닌 곳으로 주면 총계가 조용히 바이너리 수로 줄어든다.** 각 gtest 타깃의 `--gtest_output=xml:...` 경로는 **configure 시점에 `build/<pkg>/test_results/` 로 박히므로** 이 옵션을 따라오지 않는다. 커스텀 경로에는 CTest 의 `Test.xml` 만 떨어지고, `colcon test-result --test-result-base <그 경로>` 는 그것만 합산해 **바이너리 1개당 1건** 을 보고한다 (실측: 189 대신 20). 실패가 아니라 *그럴듯하게 작은 수*라 자체 검산 없이는 회귀로 오독하기 쉽다. CLAUDE.md §9.1 cwd drift 를 피하려고 절대경로 result-base 를 습관화하면 정확히 이 함정을 밟는다 — cwd 는 `cd <rtc_ws> &&` 로 고정하고 **result-base 는 건드리지 않는 것**이 맞다. 굳이 분리하려면 판정을 `build/<pkg>/test_results/*.gtest.xml` 의 per-file `tests="N"` 으로 한다.
+- **`--test-result-base <경로>` 를 기본값 아닌 곳으로 주면 총계가 조용히 바이너리 수로 줄어든다.** 각 gtest 타깃의 `--gtest_output=xml:...` 경로는 **configure 시점에 `build/<pkg>/test_results/` 로 박히므로** 이 옵션을 따라오지 않는다. 커스텀 경로에는 CTest 의 `Test.xml` 만 떨어지고, `colcon test-result --test-result-base <그 경로>` 는 그것만 합산해 **바이너리 1개당 1건** 을 보고한다 (실측: 189 대신 20). 실패가 아니라 *그럴듯하게 작은 수*라 자체 검산 없이는 회귀로 오독하기 쉽다. AGENTS.md §9.1 cwd drift 를 피하려고 절대경로 result-base 를 습관화하면 정확히 이 함정을 밟는다 — cwd 는 `cd <rtc_ws> &&` 로 고정하고 **result-base 는 건드리지 않는 것**이 맞다. 굳이 분리하려면 판정을 `build/<pkg>/test_results/*.gtest.xml` 의 per-file `tests="N"` 으로 한다.
 
 - **flake 는 재현 전에 `build/<pkg>/Testing/Temporary/` 부터 연다.** ctest 는 실행마다 `LastTest_<UTC stamp>.log` 를 남기고 **지우지 않으므로** 몇 주 전 실패가 로그·스택·타이밍째 그대로 있다 — 관측은 이미 공짜로 쌓여 있다. `Test time = 60.0x sec` 는 crash 가 아니라 `ament_add_test` 기본 TIMEOUT 이라는 판독이고 (#401 이 재현 없이 이것으로 종결), 실패 블록(`Testing: <name>` ~ `Test time =`)의 마지막 `[ RUN ]`·마지막 로그 줄이 멈춘 지점(SetUp/TearDown)을 가르며, 같은 시간 창에서 죽은 다른 프로세스가 없으면 "다른 테스트가 죽여서 오염" 가설은 그 자리에서 무너진다. 재현 하네스는 그 다음에 짠다.
 - **한 gtest 바이너리가 ctest 에 여러 번 등록될 수 있다** (`ament_add_gtest_executable` + `ament_add_gtest_test` × N, `ENV "GTEST_FILTER=..."` — 등록 형태·여집합 필터 규칙·XML 분리는 [integrated_bringup/CMakeLists.txt](../integrated_bringup/CMakeLists.txt) 의 인라인 주석이 SSoT). 이런 바이너리를 ctest 밖에서 **맨손으로 돌리면** 필터 없이 두 등록의 케이스가 한 프로세스에 섞여, 프로세스 분리를 전제한 쪽이 실패한다 — 코드가 아니라 실행 방식이 만든 red 다. 전 바이너리 스윕에서 hit 이 나오면 `ctest -N` 으로 그 이름이 몇 번 등록됐는지부터 보고 `GTEST_FILTER` 를 등록대로 주어 재현한다 (#454).
@@ -190,7 +190,7 @@ rm -rf build/<pkg> install/<pkg> && colcon build --packages-select <pkg>
 
 > **`integrated_bringup` 측정 함정 — Debug 에서 `test_demo_task_controller` 가 abort 한다.** `NonFiniteJacobianHoldsInsteadOfSolvingWithAStaleInverse` 가 의도적으로 non-finite Jacobian 을 주입하는데, 그 결과 회전행렬이 비유니터리가 되어 pinocchio `rpy.hxx` 의 `assert(R.isUnitary())` 가 발동한다 (Release 는 NDEBUG 로 무력 — 위 proxsuite 항과 **같은 범주**: Debug-only assert 가 coverage 빌드에서만 표면화). 증상은 그 바이너리 하나가 통째로 죽어 `test-result` 총계가 **그 바이너리의 케이스 수만큼** 줄고 gcda 도 안 남는 것이다 (절대 수치는 박제하지 않는다 — 그 XML 의 `tests="N"` 을 직접 읽는다). **coverage run 의 이 실패는 회귀가 아니므로 자기 변경 탓으로 오진하지 말 것** — 판정은 Release 재실행으로 한다.
 
-> **정규 트리를 오염시키지 말고 `--build-base`/`--install-base` 를 분리하라.** 위 recipe 의 "측정 후 clean Release 재빌드" 대신, coverage 빌드를 **scratchpad 절대경로**의 별도 트리로 내보내면 (`--build-base /tmp/.../cov/build --install-base /tmp/.../cov/install`) ws-root incremental cache 가 애초에 안 더러워지므로 원복 재빌드가 불필요하다 (CLAUDE.md §9.1 은 그대로 — 호출은 여전히 ws root 에서). 이때 `gcovr --object-directory` 도 그 트리를 가리켜야 한다. `gcovr` 없이 `gcov` 만 있을 때는 `gcov -b -p <build>/CMakeFiles/<target>.dir/<path>/<file>.cpp.gcno` — 확장자 포함 `*.cpp.gcno` 를 **직접** 넘겨야 한다 (`-o <dir>` + 소스 경로 조합은 `<file>.gcno` 를 찾아 "cannot open notes file" 로 실패).
+> **정규 트리를 오염시키지 말고 `--build-base`/`--install-base` 를 분리하라.** 위 recipe 의 "측정 후 clean Release 재빌드" 대신, coverage 빌드를 **scratchpad 절대경로**의 별도 트리로 내보내면 (`--build-base /tmp/.../cov/build --install-base /tmp/.../cov/install`) ws-root incremental cache 가 애초에 안 더러워지므로 원복 재빌드가 불필요하다 (AGENTS.md §9.1 은 그대로 — 호출은 여전히 ws root 에서). 이때 `gcovr --object-directory` 도 그 트리를 가리켜야 한다. `gcovr` 없이 `gcov` 만 있을 때는 `gcov -b -p <build>/CMakeFiles/<target>.dir/<path>/<file>.cpp.gcno` — 확장자 포함 `*.cpp.gcno` 를 **직접** 넘겨야 한다 (`-o <dir>` + 소스 경로 조합은 `<file>.gcno` 를 찾아 "cannot open notes file" 로 실패).
 
 **LifecycleNode 노드(예: `rtc_controller_manager`) 유닛 커버리지 패턴**: `on_configure` 파이프라인 (params 로딩·device backend·publisher 생성) 과 private RT 헬퍼(`CheckTimeouts`/`CreateDeviceBackends`)는 friend accessor (`rtc::ControllerLifecycleTestAccess`, 헤더의 `friend` 선언으로 이름 고정) 로 private 멤버를 주입·호출해 **실 robot/RT 권한 없이** 구동한다 — `CreateDeviceBackends` 등은 `group_slot_map_`/`device_name_configs_` 주입 + registry fake backend 만으로 동작하고, `on_activate` 의 RT 루프는 `ApplyThreadConfig` 반환값을 버리므로 (SCHED_OTHER fallback) 테스트 샌드박스에서도 안전하다.
 
@@ -204,7 +204,7 @@ rm -rf build/<pkg> install/<pkg> && colcon build --packages-select <pkg>
 
 **`.venv` 격리 원칙 (Hard rule)**: `.venv`는 runtime PC가 본 workspace 외에 다른 control project들과 공존하는 환경에서 workspace dependency를 격리하기 위한 **의도된 설계**다. `colcon test` / `colcon build` / `ros2 run` / `ros2 launch`가 venv 활성 상태에서 실패하면 **반드시 근본 원인을 해결**한다 (sys.path / shebang / wrapper / dep resolution 디버그). gtest 바이너리 직접 실행, venv deactivate 후 colcon 호출, `PYTHONPATH` 강제 우회 등은 **금지** — 격리를 무력화해 runtime PC에서 다른 project의 site-packages가 끼어들면 silent breakage. 신호 (`Testing/Temporary/LastTest.log` Start/End 동일 초)가 재발하면 `env -i` 깨끗한 셸에서 `setup_env.sh` source 후 `sys.path` 순서 점검부터.
 
-이 격리에는 **로컬 전용 false-green 방향**도 있다: `colcon` 자체와 colcon 이 생성하는 console script 의 shebang 이 `/usr/bin/python3` 라, venv 를 activate 해도 `colcon test` 의 pytest 는 시스템 python 으로 돌아 `.venv` 전용 패키지를 import 못 하고 (`pytest.importorskip` 테스트가 **조용히 skip** — 실측: `rtc_tools` mujoco 의존 11개 전부), `ros2 run` 도 venv 를 못 봐 같은 검증이 `.venv/bin/python` 직접 실행과 **다른 답**을 낸다. 실제 인터프리터는 `log/latest_test/<pkg>/command.log` 가 확정해 준다. CI 는 venv 없이 `pip install` 이라 영향이 없으므로 방심 방향이 반대다 — CI green 을 근거로 로컬 skip 을 무시하지 말 것. 확인이 필요하면 (CLAUDE.md §9.2 우회 금지 하에) `PYTHONPATH=<pkg> .venv/bin/python -m pytest …` 로 직접 돌리고, 자작 게이트에는 "검사가 아예 안 돌았음" 을 통과와 구분하는 플래그를 둔다.
+이 격리에는 **로컬 전용 false-green 방향**도 있다: `colcon` 자체와 colcon 이 생성하는 console script 의 shebang 이 `/usr/bin/python3` 라, venv 를 activate 해도 `colcon test` 의 pytest 는 시스템 python 으로 돌아 `.venv` 전용 패키지를 import 못 하고 (`pytest.importorskip` 테스트가 **조용히 skip** — 실측: `rtc_tools` mujoco 의존 11개 전부), `ros2 run` 도 venv 를 못 봐 같은 검증이 `.venv/bin/python` 직접 실행과 **다른 답**을 낸다. 실제 인터프리터는 `log/latest_test/<pkg>/command.log` 가 확정해 준다. CI 는 venv 없이 `pip install` 이라 영향이 없으므로 방심 방향이 반대다 — CI green 을 근거로 로컬 skip 을 무시하지 말 것. 확인이 필요하면 (AGENTS.md §9.2 우회 금지 하에) `PYTHONPATH=<pkg> .venv/bin/python -m pytest …` 로 직접 돌리고, 자작 게이트에는 "검사가 아예 안 돌았음" 을 통과와 구분하는 플래그를 둔다.
 
 ## Live Debug Topics
 
@@ -236,9 +236,9 @@ rm -rf build/<pkg> install/<pkg> && colcon build --packages-select <pkg>
 | Controller not found | Use config_key (e.g. "demo_task_controller") or Name() |
 | 팔이 멈췄는데 궤적이 "정착"인지 "관절 밴드에 pin"인지 모르겠다 | 컨트롤러 로그의 `joint band engaged:` WARN (2 s throttle, 발동 tick 에서만) — 그 줄이 찍히는 구간의 평평한 관절 궤적은 pin 이다. `on_deactivate` 요약이 tick 창을 준다. **Ctrl-C 로 끝냈으면 요약은 없다** (CM `main()` 이 lifecycle 훅을 안 탄다) — WARN scrollback 이 유일 증거. 판독법: `integrated_bringup/README.md` compliance §7.3 관절 밴드 판독 |
 | `ament_cmake_test` missing on `colcon test` | `.venv` overlay가 system site-packages를 가림. 재활성화 + ROS 2 환경 재로드 |
-| 0.01초 만의 configure 실패 `Failed to find <repo>/install/<pkg>/.../package.sh` | 잘못된 cwd 로 돈 colcon (CLAUDE.md §9.1) — repo 안 `build/`·`install/`·`log/` 삭제 후 ws root 에서 재실행 |
+| 0.01초 만의 configure 실패 `Failed to find <repo>/install/<pkg>/.../package.sh` | 잘못된 cwd 로 돈 colcon (AGENTS.md §9.1) — repo 안 `build/`·`install/`·`log/` 삭제 후 ws root 에서 재실행 |
 | 빌드 성공 직후 테스트 바이너리 `No such file or directory` | 위와 동일 — ws-root 트리와 repo-안 트리가 갈라진 상태. `ls src/rtc-framework/build` 로 확정 |
-| env 미source 로 전 바이너리 일괄 실패 | 회귀 아님 — CLAUDE.md §9.1 서브셸 표준형으로 재실행. python `subprocess` 는 `executable="/bin/bash"` 명시 (`/bin/sh` 에는 `source` 가 없어 체인이 첫 항에서 죽는다) |
+| env 미source 로 전 바이너리 일괄 실패 | 회귀 아님 — AGENTS.md §9.1 서브셸 표준형으로 재실행. python `subprocess` 는 `executable="/bin/bash"` 명시 (`/bin/sh` 에는 `source` 가 없어 체인이 첫 항에서 죽는다) |
 | `ignoring unknown package '<pkg>' in --packages-select` + `0 packages finished` | ws 밖(scratchpad 등) cwd — 직전 run 의 stale XML 이 green 으로 읽히므로 판정 전 결과 XML mtime 확인 |
 
 ```bash

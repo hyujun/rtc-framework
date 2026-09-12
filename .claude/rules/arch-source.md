@@ -44,6 +44,6 @@ paths:
 
 ## 위반이 필요할 때
 
-고쳐 쓰지 말고 [CLAUDE.md](../../CLAUDE.md) §6 Escalation 의 `[CONCERN]` 포맷으로 보고하고 컨펌을 기다린다. Critical (ARCH-1 · ARCH-2 · ARCH-4) 은 **승인 전 커밋·PR 금지**다.
+고쳐 쓰지 말고 [AGENTS.md](../../AGENTS.md) §6 Escalation 의 `[CONCERN]` 포맷으로 보고하고 컨펌을 기다린다. Critical (ARCH-1 · ARCH-2 · ARCH-4) 은 **승인 전 커밋·PR 금지**다.
 
 새 유틸리티를 만들기 전에는 기존 `rtc_*` 에 유사 기능이 있는지 먼저 찾는다 — 맞지 않으면 fork 하지 말고 일반화한다 ([design-principles.md](../../agent_docs/design-principles.md) P5).
