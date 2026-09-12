@@ -30,6 +30,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -108,15 +109,46 @@ inline std::array<bool, 4> PullPoseValid() {
   return {true, true, true, false};
 }
 
-/// Parse the shipped profile as deployed. `config_dir` is the caller target's
+/// Parse a shipped profile as deployed. `config_dir` is the caller target's
 /// RTC_DEMO_SHARED_CONFIG_DIR — passed rather than baked in so this header does
 /// not depend on a macro every including target must remember to define.
-inline DemoSharedConfig LoadShippedPullProfile(const std::string& config_dir) {
-  const std::string path = config_dir + "/" + kPullProfile + "/controllers/demo_shared.yaml";
+inline DemoSharedConfig LoadShippedPullProfile(const std::string& config_dir,
+                                               const std::string& profile) {
+  const std::string path = config_dir + "/" + profile + "/controllers/demo_shared.yaml";
   const YAML::Node root = YAML::LoadFile(path);
   DemoSharedConfig cfg;
   ApplyDemoSharedConfig(root["demo_shared"], cfg);
   return cfg;
+}
+
+inline DemoSharedConfig LoadShippedPullProfile(const std::string& config_dir) {
+  return LoadShippedPullProfile(config_dir, kPullProfile);
+}
+
+/// One shipped robot profile that configures a pull estimator, plus the two
+/// facts a caller needs to stand its wiring up.
+///
+/// `tip_links` is the tree-model fingertip order the demo controllers hand to
+/// the wiring at configure; `expected_contacts` is how many of them the
+/// profile's own `tip_names` block actually enrols (LEAP enrols its ring, the
+/// two p1 hands do not). Both are spelled out rather than derived so that a
+/// profile edit that renames a tip or drops a role fails a named assertion
+/// instead of quietly changing which finger is under test.
+struct PullProfileCase {
+  const char* profile;
+  std::vector<std::string> tip_links;
+  int expected_contacts;
+};
+
+inline const std::vector<PullProfileCase>& ShippedPullProfiles() {
+  static const std::vector<PullProfileCase> cases = {
+      {"iiwa7_leap", {"thumb_tip_head", "index_tip_head", "middle_tip_head", "ring_tip_head"}, 4},
+      {"ur5e_p1a", {"thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"}, 3},
+      {"ur5e_p1b",
+       {"l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"},
+       3},
+  };
+  return cases;
 }
 
 /// The finger-on-object forces of a three-finger pinch carrying `load`.
@@ -132,15 +164,48 @@ inline std::array<Eigen::Vector3d, 3> PullPinchForces(const Eigen::Vector3d& loa
           -0.5 * squeeze * kPinchNormal - share};
 }
 
+/// A unit direction orthogonal to the pinch axis, used to tilt contact normals
+/// off it by a known angle. n·e = 0 exactly: (2,1,2)·(0,2,-1) = 0.
+inline const Eigen::Vector3d kPinchTiltDir = Eigen::Vector3d(0.0, 2.0, -1.0).normalized();
+
+/// Finger-on-object forces for a PURE INTERNAL SQUEEZE whose contact normals are
+/// tilted off the observed pinch axis by `tilt_rad` — no external load at all.
+///
+/// This is the construction #177 crit#6 (1) asks about. `alignment_error_rad`
+/// declares that the true contact normals sit within delta of the plane normal
+/// the estimator is handed, and bounds the resulting grip->in-plane leakage by
+/// sum_i |f_n,i| sin(delta). A squeeze that is EXACTLY opposed leaks nothing
+/// whatever delta is (the forces cancel in the sum), so it cannot test the
+/// bound; what does is a squeeze whose two sides are tilted in OPPOSITE senses,
+/// because then the cancellation is incomplete by a known amount:
+///
+///   thumb      = +S (cos d) n + S (sin d) e
+///   two others = -S (cos d) n + S (sin d) e     (split as -0.5 S each)
+///   sum        = 2 S sin(d) e,   which is entirely in-plane (e . n = 0)
+///
+/// and the normal forces the estimator accumulates are S cos d on the thumb and
+/// 0.5 S cos d on each of the others, i.e. sum |f_n| = 2 S cos d. So
+///
+///   |F_hat| / sum|f_n| = tan(d)
+///
+/// exactly, independent of S — a closed form derived here on paper, not a
+/// second copy of the estimator's expression. The test sweeps S and regresses,
+/// which is the same slope #177 §S2 measures on hardware.
+inline std::array<Eigen::Vector3d, 3> PullTiltedSqueezeForces(double squeeze, double tilt_rad) {
+  const Eigen::Vector3d n_plus =
+      std::cos(tilt_rad) * kPinchNormal + std::sin(tilt_rad) * kPinchTiltDir;
+  const Eigen::Vector3d n_minus =
+      std::cos(tilt_rad) * kPinchNormal - std::sin(tilt_rad) * kPinchTiltDir;
+  return {squeeze * n_plus, -0.5 * squeeze * n_minus, -0.5 * squeeze * n_minus};
+}
+
 /// Turn those into what the SIM LANE publishes for them: link-on-environment —
 /// the same sign as finger-on-object — resolved into each fingertip's own
 /// frame. Only the frame changes here; there is no sign step left, because
 /// rtc_mujoco_sim now publishes the convention the estimator sums (it used to
 /// publish env-on-link, and the shipped profile pinned `force_sign: -1.0` to
 /// undo it).
-inline std::array<FtSample, 4> PullLaneSamples(const Eigen::Vector3d& load,
-                                               double squeeze = kPullSqueezeN) {
-  const std::array<Eigen::Vector3d, 3> contact = PullPinchForces(load, squeeze);
+inline std::array<FtSample, 4> PullLaneSamplesFrom(const std::array<Eigen::Vector3d, 3>& contact) {
   std::array<FtSample, 4> out{};
   for (std::size_t i = 0; i < 3; ++i) {
     const Eigen::Vector3d link = kPullTipRotations[i].transpose() * contact[i];
@@ -150,6 +215,11 @@ inline std::array<FtSample, 4> PullLaneSamples(const Eigen::Vector3d& load,
   }
   out[3].valid = false;  // ring is not in this grasp
   return out;
+}
+
+inline std::array<FtSample, 4> PullLaneSamples(const Eigen::Vector3d& load,
+                                               double squeeze = kPullSqueezeN) {
+  return PullLaneSamplesFrom(PullPinchForces(load, squeeze));
 }
 
 /// Run `ticks` updates through the production staging path with the given lane.
