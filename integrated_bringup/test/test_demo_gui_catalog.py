@@ -13,8 +13,13 @@ from integrated_bringup.demo_gui.config import (
     GAIN_DEFS,
     GAIN_PARAM_DISPATCH,
     GAIN_ROW_NAMES,
+    NO_EXTERNAL_COMMAND_CONTROLLERS,
+    target_panel_states,
 )
+from integrated_bringup.demo_gui.discovery import RobotProfile
 from rtc_msgs.msg import ControllerState
+
+INFERENCE = "demo_inference_controller"
 
 # What the CM actually publishes: name == PascalCase Name(), type == config key.
 # SSoT: rt_controller_node_services.cpp (cs.name = Name(), cs.type =
@@ -56,6 +61,71 @@ def test_config_key_from_type_not_name():
         assert entry.has_gain_schema is True
         # config_key must be the snake_case key, never the PascalCase class name
         assert entry.config_key != name
+
+
+# ── the switchable / tunable split ──────────────────────────────────────────
+#
+# _SHIPPED above is the roster the GUI can TUNE. demo_inference_controller is
+# reported by the same /rtc_cm/list_controllers response but has no gain panel,
+# so it is deliberately absent from that list and tested here instead.
+
+
+def test_inference_maps_but_carries_no_gain_schema():
+    """It is a normal catalog row — the key still comes from cs.type — and
+    has_gain_schema is False, which is the honest answer and the reason the
+    radio list cannot be built from that flag any more."""
+    cs = _make_state("DemoInferenceController", INFERENCE, groups=("ur5e", "p1b"))
+    (entry,) = build_entries([cs], tuple(GAIN_DEFS.keys()))
+    assert entry.config_key == INFERENCE
+    assert entry.has_gain_schema is False
+    assert INFERENCE not in GAIN_DEFS
+    assert entry.claimed_groups == ("ur5e", "p1b")
+
+
+def test_radio_filter_keeps_inference_on_p1b_and_drops_it_elsewhere():
+    """The selection rule _refresh_controller_widgets applies, exercised over the
+    same catalog response every profile receives.
+
+    The CM instantiates every REGISTERED controller regardless of robot, so the
+    response is identical on all three profiles — the filter has to come from the
+    profile, not the catalog. Before the split this intersected has_gain_schema
+    and dropped inference everywhere.
+    """
+    states = [_make_state(n, k) for n, k in _SHIPPED]
+    states.append(_make_state("DemoInferenceController", INFERENCE))
+    entries = build_entries(states, tuple(GAIN_DEFS.keys()))
+
+    for profile_key, expect_inference in (
+        ("ur5e_p1b", True),
+        ("ur5e_p1a", False),
+        ("iiwa7_leap", False),
+    ):
+        switchable = RobotProfile.for_robot(profile_key).switchable_controllers(
+            tuple(GAIN_DEFS.keys())
+        )
+        radio_keys = [e.config_key for e in entries if e.config_key in switchable]
+        assert (INFERENCE in radio_keys) is expect_inference, profile_key
+        # the tunable four are offered on every profile, unchanged
+        for _name, key in _SHIPPED:
+            assert key in radio_keys, f"{key} missing on {profile_key}"
+
+
+def test_no_external_command_controllers_enable_no_target_panel():
+    """Both panels off. JOINT_SPACE cannot express this: it is read with a True
+    default, so a controller merely absent from it comes up with a live joint
+    panel and a Send button that publishes into a topic nobody subscribes to."""
+    for key in NO_EXTERNAL_COMMAND_CONTROLLERS:
+        assert target_panel_states(key) == (False, False)
+    # the tunable roster is unaffected — each still enables exactly one or both
+    for _name, key in _SHIPPED:
+        assert any(target_panel_states(key)), key
+
+
+def test_inference_is_in_the_no_external_command_set():
+    """Ties the two tables together: a controller offered as a radio but absent
+    from GAIN_DEFS has no gain panel, no parameters and no target subscription,
+    so it must also be the one the panel/button gates key off."""
+    assert INFERENCE in NO_EXTERNAL_COMMAND_CONTROLLERS
 
 
 def test_type_equals_registry_config_key_contract():

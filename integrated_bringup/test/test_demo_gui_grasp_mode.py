@@ -36,6 +36,7 @@ from integrated_bringup.demo_gui.config import (
     GRASP_MODE_PARAM,
     GRASP_MODE_UNKNOWN,
     GRASP_MODES,
+    NO_EXTERNAL_COMMAND_CONTROLLERS,
     grasp_command_enabled,
     grasp_mode_fg,
 )
@@ -43,6 +44,9 @@ from integrated_bringup.demo_gui.config import (
 JOINT = "demo_joint_controller"
 TASK = "demo_task_controller"
 WBC = "demo_wbc_controller"
+# Policy-driven: switchable from the GUI, but it subscribes to no joint_goal and
+# declares no grasp_command srv, so every authoring widget is inert for it.
+INFERENCE = "demo_inference_controller"
 # #469 S2: duplicates the task controller's hand lane, so it declares
 # grasp_controller_type and is gated by the mode exactly the same way.
 COMPLIANCE = "demo_compliance_controller"
@@ -99,6 +103,33 @@ def test_wbc_is_not_gated_by_the_mode():
     for mode in [GRASP_MODE_UNKNOWN, "force_pi", *BLOCKED_MODES]:
         enabled, _ = grasp_command_enabled(WBC, mode)
         assert enabled is True, f"WBC gated on mode={mode!r}"
+
+
+def test_inference_has_no_grasp_path_and_does_not_fail_open():
+    """demo_inference_controller is the third shape: not mode-gated like
+    JOINT/TASK/COMPLIANCE, and not self-driven-but-reachable like WBC. It
+    declares no ``grasp_command`` srv at all, so a click produces neither motion
+    nor a rejection — the two states that make an enabled button honest.
+
+    This is deliberately the opposite call from ``test_unknown_mode_fails_open``:
+    that fail-open exists so the GUI never blocks a command the controller would
+    have honoured. Here the absence is structural, not a failed query, so the
+    UNKNOWN sentinel must NOT reopen the buttons.
+    """
+    assert INFERENCE not in GRASP_MODE_OWNERS
+    for mode in [GRASP_MODE_UNKNOWN, "force_pi", *BLOCKED_MODES]:
+        enabled, text = grasp_command_enabled(INFERENCE, mode)
+        assert enabled is False, f"inference Grasp/Release enabled on mode={mode!r}"
+        assert text, "a disabled button must carry its reason"
+    # and the label is painted as inert rather than as an unresolved fetch
+    assert grasp_mode_fg(INFERENCE, GRASP_MODE_UNKNOWN) == GRASP_MODE_FG_BLOCKED
+
+
+def test_no_external_command_set_is_disjoint_from_the_mode_owners():
+    """A controller cannot be both gated by grasp_controller_type and have no
+    grasp path — the first branch of grasp_command_enabled would shadow the
+    second and the mode readout would go dead with no warning."""
+    assert not (NO_EXTERNAL_COMMAND_CONTROLLERS & GRASP_MODE_OWNERS)
 
 
 @pytest.mark.parametrize("ctrl", MODE_GATED)

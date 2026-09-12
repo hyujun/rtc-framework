@@ -82,6 +82,7 @@ from .config import (
     HAND_TAUFF_SOURCE_PARAM,
     HAND_TAUFF_SOURCES,
     JOINT_SPACE,
+    NO_EXTERNAL_COMMAND_CONTROLLERS,
     SENSOR_CALIBRATIONS,
     TARGET_LABELS,  # noqa: F401  (preserved for downstream compat)
     WBC_PHASE_NAMES,
@@ -1371,14 +1372,27 @@ class DemoControllerGUI(Node):
 
         # Controller Selection — populated dynamically from
         # /rtc_cm/list_controllers. Until the first successful response
-        # we show the GUI's known schema keys (GAIN_DEFS) so the user
-        # can still operate against a CM that's still coming up; the
+        # we show this profile's switchable keys so the user can still
+        # operate against a CM that's still coming up; the
         # ``(controllers offline)`` hint disambiguates the two states.
         ctrl_frame = ttk.LabelFrame(control_tab, text="Controller", padding=4)
         ctrl_frame.pack(fill="x", padx=8, pady=2)
 
-        # Pick a default selection: first GAIN_DEFS key, or empty if none.
+        # Two different questions, kept apart since the GUI gained a controller
+        # it can switch to but not tune (demo_inference_controller):
+        #   _known_schema_keys — has a gain panel here. Drives the gains panels
+        #     and the preset combo, because a preset stores a robot TARGET and
+        #     only a controller that accepts one can be its owner.
+        #   _switchable_keys   — may be selected and switched to on THIS robot.
+        #     A superset, profile-scoped (RobotProfile.extra_switchable_controllers).
+        # Conflating them is what would put demo_inference_controller's radio on
+        # every profile, including the two whose bringup has no config for it.
         self._known_schema_keys: tuple[str, ...] = tuple(GAIN_DEFS.keys())
+        self._switchable_keys: tuple[str, ...] = self._profile.switchable_controllers(
+            self._known_schema_keys
+        )
+
+        # Pick a default selection: first GAIN_DEFS key, or empty if none.
         default_ctrl = self._known_schema_keys[0] if self._known_schema_keys else ""
         self.selected_ctrl = tk.StringVar(value=default_ctrl)
 
@@ -2532,11 +2546,15 @@ class DemoControllerGUI(Node):
         # Default max scalar inputs per row inside a group box.
         DEFAULT_SCALARS_PER_ROW = 2
 
-        # Pre-build a panel for every controller the GUI knows how to drive
-        # (i.e. every config key with a GAIN_DEFS entry). Controllers that
-        # show up in /rtc_cm/list_controllers without a known schema are
+        # Pre-build a panel for every controller that can be SELECTED, not only
+        # every one with gains: _show_gains_panel is called on each radio click
+        # and each switch, and a key with no panel makes it log a warning and
+        # leave the previous controller's gains on screen under the new name.
+        # A schema-less key takes the `if not defs:` path below and gets an empty
+        # panel, which is the correct display for "nothing to tune here".
+        # Controllers the CM reports that are not switchable on this profile are
         # filtered out earlier — no panel needed.
-        for ctrl_idx in GAIN_DEFS:
+        for ctrl_idx in self._switchable_keys:
             panel_frame = tk.Frame(self._gains_inner, bg="#1e1e2e")
             applied_frame = tk.Frame(self._gains_applied_inner, bg="#1e1e2e")
             grasp_frame = tk.Frame(self._gains_grasp_inner, bg="#1e1e2e")
@@ -2852,21 +2870,28 @@ class DemoControllerGUI(Node):
         """Rebuild the Controller radio buttons + the preset-combo values
         from the catalog. Runs on the Tk thread.
 
-        Selection rule: if the catalog has any schema-bearing entries we
-        use those (intersected with the GUI's known schema keys);
-        otherwise we fall back to the GUI's full GAIN_DEFS list so the
-        user can still drive a CM that hasn't responded yet.
+        Selection rule: if the catalog has responded we use the entries it
+        reports, intersected with this profile's switchable keys; otherwise we
+        fall back to that same key list so the user can still drive a CM that
+        hasn't responded yet.
+
+        The intersection reads the FULL catalog, not ``schema_entries()``: a
+        controller with no gain panel is still switchable, and filtering on
+        ``has_gain_schema`` here is what kept demo_inference_controller off the
+        radios. ``_switchable_keys`` is the profile-scoped filter that replaces
+        it — the catalog itself cannot filter by robot, because the CM
+        instantiates every registered controller on every profile.
         """
-        live = self._catalog.schema_entries()
+        live = self._catalog.latest()
         if live:
             radio_keys: tuple[str, ...] = tuple(
-                e.config_key for e in live if e.config_key in self._known_schema_keys
+                e.config_key for e in live if e.config_key in self._switchable_keys
             )
             if not radio_keys:
-                radio_keys = self._known_schema_keys
+                radio_keys = self._switchable_keys
             offline = False
         else:
-            radio_keys = self._known_schema_keys
+            radio_keys = self._switchable_keys
             offline = self._catalog.is_offline()
 
         # Tear down old radios and rebuild from scratch — Tk doesn't have
@@ -2883,10 +2908,14 @@ class DemoControllerGUI(Node):
                 command=self._on_ctrl_radio_change,
             ).pack(side="left", padx=2)
 
-        # Preset combo follows the same set so users can save robot
-        # targets only against controllers we can drive.
+        # Preset combo follows the radio set MINUS the controllers that accept no
+        # target: a preset stores a robot goal, and one saved against a
+        # controller that never subscribes to joint_goal could only ever be
+        # replayed into a topic nobody reads.
         if hasattr(self, "_preset_ctrl_combo"):
-            self._preset_ctrl_combo.configure(values=list(radio_keys))
+            self._preset_ctrl_combo.configure(
+                values=[k for k in radio_keys if k in self._known_schema_keys]
+            )
 
         # If the previously-selected controller fell out of the list
         # (controller hot-swap edge case), pick the first available one.
@@ -3274,6 +3303,20 @@ class DemoControllerGUI(Node):
 
     def _publish_target(self):
         idx = self.selected_ctrl.get()
+
+        # The arm halves below are gated by target_panel_states, but the HAND
+        # publish at the end is not — it is frame- and space-independent and so
+        # runs for every controller. For a controller that subscribes to no
+        # joint_goal at all there is nothing to receive either half, and a
+        # publish into an unsubscribed topic succeeds silently: the operator
+        # would get "Sent hand cmd: [...]" in the log and no motion.
+        if idx in NO_EXTERNAL_COMMAND_CONTROLLERS:
+            self.get_logger().warn(
+                f"{idx} accepts no external target — Send Command ignored "
+                "(the policy owns arm and hand commands)"
+            )
+            return
+
         joint_on, _ = target_panel_states(idx)
         # #292: never publish a task goal while the control frame is unsettled —
         # the entries still hold whatever text was last in them, and the
@@ -3405,6 +3448,19 @@ class DemoControllerGUI(Node):
                     )
 
         # ── Hand target ────────────────────────────────────────────────
+        # The robot half above is gated on the preset naming a controller the
+        # GUI can drive; the hand half runs for whatever is selected. When that
+        # is a controller subscribing to no joint_goal, this is the one route
+        # left that would publish into a topic nobody reads — a hand-only preset
+        # never reaches the `ctrl_name in GAIN_DEFS` branch at all.
+        selected_ctrl = self.selected_ctrl.get()
+        if selected_ctrl in NO_EXTERNAL_COMMAND_CONTROLLERS:
+            self.get_logger().warn(
+                f"Preset '{name}': hand target withheld — {selected_ctrl} accepts no "
+                "external target (the policy owns the hand command)."
+            )
+            return
+
         # Guard: a preset whose positions_deg length != the active hand DoF
         # would publish a RobotTarget with mismatched joint_names/joint_target
         # (issue #137 finding 3). Reject with a clear warning — the robot

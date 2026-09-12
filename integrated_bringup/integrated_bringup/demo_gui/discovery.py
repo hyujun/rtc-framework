@@ -243,6 +243,31 @@ class RobotProfile:
     # "iiwa7". Keeping it here (not hard-coded in app.py) is what stops
     # --robot ur5e_p1b / iiwa7_leap from falling back to ur5e_p1a topics.
     arm_group: str
+    # Controllers this profile's bringup can switch to that the GUI has NO gain
+    # schema for. The radio list is otherwise derived from GAIN_DEFS, which
+    # answers "is it tunable from here" — a question that used to coincide with
+    # "can it be switched to" and no longer does.
+    #
+    # Profile-scoped because the CM instantiates every REGISTERED controller
+    # regardless of robot, so /rtc_cm/list_controllers cannot be the filter: it
+    # reports the same roster on every profile. What differs per robot is which
+    # ones have a config YAML, and that is a bringup fact, like arm_group above.
+    #
+    # Empty for profiles whose controllers all have a gain panel.
+    extra_switchable_controllers: tuple[str, ...] = ()
+
+    def switchable_controllers(self, gain_schema_keys: tuple[str, ...]) -> tuple[str, ...]:
+        """Config keys the GUI offers as controller radios, in display order.
+
+        ``gain_schema_keys`` is the GUI's ``GAIN_DEFS`` key order; this profile's
+        extras follow it. Kept as a method rather than a precomputed field so the
+        GAIN_DEFS ordering stays the single source of the first N entries — a
+        literal list here would be a second copy that drifts when a controller is
+        added to the gain tables.
+        """
+        return tuple(gain_schema_keys) + tuple(
+            k for k in self.extra_switchable_controllers if k not in gain_schema_keys
+        )
 
     def fallback_groups(self) -> tuple[str, str]:
         """(arm_group, hand_group) used by the GUI's ``_active_groups`` before
@@ -286,6 +311,11 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         tcp_child="tool0_actual",
         hand_group="p1b",
         arm_group="ur5e",
+        # demo_inference_controller ships a config YAML for this variant only
+        # (config/ur5e_p1b/controllers/). It has no gain panel — the policy owns
+        # every command and it declares no ROS parameters — so GAIN_DEFS is the
+        # wrong place to name it and this is the right one.
+        extra_switchable_controllers=("demo_inference_controller",),
     ),
     "iiwa7_leap": RobotProfile(
         shape=RobotShape.default_iiwa7_leap(),

@@ -5,6 +5,10 @@ default_ur5e_p1b and the RobotProfile.for_robot registry that backs the GUI's
 --robot selection.
 """
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
+
 from integrated_bringup.demo_gui.discovery import (
     ROBOT_PROFILES,
     RobotProfile,
@@ -189,3 +193,66 @@ def test_fallback_groups_never_default_to_p1a_for_non_p1a():
         arm, hand = RobotProfile.for_robot(key).fallback_groups()
         assert hand != "p1a"
         assert (arm, hand) != ("ur5e", "p1a")
+
+
+# ── Switchable controllers (profile-scoped radio list) ─────────────────────
+#
+# The GUI's radio list used to be GAIN_DEFS, which answers "is it tunable from
+# here". demo_inference_controller is switchable but has no gain panel, so the
+# two questions came apart and the extras live on the profile.
+
+
+def _shipped_controller_keys(profile: str) -> set[str]:
+    """config_keys with a shipped controller YAML under config/<profile>/."""
+    share = get_package_share_directory("integrated_bringup")
+    ctrl_dir = os.path.join(share, "config", profile, "controllers")
+    return {os.path.splitext(f)[0] for f in os.listdir(ctrl_dir) if f.endswith(".yaml")} - {
+        "demo_shared"
+    }
+
+
+def test_switchable_is_gain_keys_plus_profile_extras():
+    gain_keys = ("demo_joint_controller", "demo_task_controller")
+    p1b = RobotProfile.for_robot("ur5e_p1b").switchable_controllers(gain_keys)
+    # gain keys keep their order and come first; extras follow
+    assert p1b == (*gain_keys, "demo_inference_controller")
+    # a profile with no extras is exactly the gain keys — unchanged behaviour
+    assert RobotProfile.for_robot("ur5e_p1a").switchable_controllers(gain_keys) == gain_keys
+
+
+def test_switchable_does_not_duplicate_a_key_already_in_the_gain_tables():
+    """If demo_inference_controller ever gains a GUI gain panel, its key would be
+    in BOTH lists and the radio row would render two identical buttons bound to
+    the same variable."""
+    gain_keys = ("demo_joint_controller", "demo_inference_controller")
+    got = RobotProfile.for_robot("ur5e_p1b").switchable_controllers(gain_keys)
+    assert got == gain_keys
+    assert len(got) == len(set(got))
+
+
+def test_extras_are_only_offered_where_the_bringup_ships_their_yaml():
+    """The radio may only offer a controller this profile can actually configure.
+
+    A controller with no YAML for the selected variant is not merely unusable —
+    the CM refuses the whole bring-up over it — so offering its radio would point
+    the operator at a switch that cannot succeed. Checked against the installed
+    config tree in both directions, because either half drifting alone is silent:
+    the GUI says nothing when it hides a shipped controller, and the CM says
+    nothing to the GUI when a YAML is added.
+    """
+    for key, profile in ROBOT_PROFILES.items():
+        shipped = _shipped_controller_keys(key)
+        for extra in profile.extra_switchable_controllers:
+            assert extra in shipped, f"{key} offers {extra} with no config/{key}/controllers YAML"
+
+    # Converse: demo_inference_controller is offered on exactly the profiles that
+    # ship it. Today that is ur5e_p1b alone.
+    offered = {
+        k
+        for k, p in ROBOT_PROFILES.items()
+        if "demo_inference_controller" in p.switchable_controllers(())
+    }
+    ships = {
+        k for k in ROBOT_PROFILES if "demo_inference_controller" in _shipped_controller_keys(k)
+    }
+    assert offered == ships == {"ur5e_p1b"}
