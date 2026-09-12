@@ -3,7 +3,7 @@
 
 The agent-facing documentation in this repository carries executable claims:
 relative links, code-location citations, and the invariant *detection patterns*
-that CLAUDE.md tells an agent to run as a pre-commit self-check.  None of that
+that the constitution tells an agent to run as a pre-commit self-check.  None of that
 is covered by ``colcon test``, and the CI workflow explicitly ``paths-ignore``s
 ``agent_docs/**``.  When a detection pattern rots, it does not fail loudly --
 ``grep`` exits 1 with no output, which reads exactly like "no violations".
@@ -30,11 +30,32 @@ D7  ``detect`` fenced blocks: the pattern is linted for the escaping mistakes
     a pattern that compiles but can no longer fire still fails.  An optional
     ``# exemplar:`` additionally asserts the state of the tree today.
 D10 no bare "§N.M" section ref in the constitution corpus.  The same number
-    means different things in CLAUDE.md, in the compliance normative spec, and
+    means different things in AGENTS.md, in the compliance normative spec, and
     in a file's own numbered headings; a prefix is what tells them apart.
 D11 no rule-ID reference to an ID its owning file never defines (RT-/ARCH-/
     PROC-/NUM-/E- own by invariants.md, AP- by anti-patterns.md, P1..P5 by
     design-principles.md).
+D12 the two constitutions (``CLAUDE.md`` / ``AGENTS.md``) stay inside a size
+    budget: at most 200 lines, at most 18 KiB, and no prose line over 500
+    characters (table rows and fenced blocks are exempt).  Anthropic's guidance
+    is "under 200 lines"; the line cap alone was being satisfied by making the
+    lines longer (same line count, bytes up 70% in two months), so bytes and
+    line length are gated as well.  Honours ``allow D12`` for a single line.
+D13 every ``CLAUDE.md §N[.M]`` / ``AGENTS.md §N[.M]`` reference -- plain or in
+    link form, in the docs and in the comments of every tracked source / config
+    file (see :func:`is_section_ref_source`) -- names a numbered heading the
+    target file actually has, and a bare ``§N`` inside a constitution resolves
+    against that file's own headings.  D10 only checks that a ref carries a
+    namespace; a renumbering keeps the namespace and loses the section, which is
+    exactly the drift D10 cannot see.  It checks that the section EXISTS, not
+    that it is the right one: a ref re-pointed onto another real section passes.
+    Merging CLAUDE.md into AGENTS.md left six such refs green (a quoted
+    subsection title under the wrong number, a pointer to prose that had moved
+    into a hook header, an owner claim for content the section had handed to
+    each tool's own docs), so review re-pointed refs against their context by
+    hand.  ``--section-refs`` runs D13 alone -- the Stop hook calls it over the
+    whole corpus when a constitution's numbered headings change, because the
+    refs a renumbering breaks live in files the change never touched.
 
 D8  no detection pattern parked in a markdown table cell.  A cell cannot hold
     an unescaped ``|``, so a regex put in one gets escaped into something
@@ -244,16 +265,16 @@ PACKAGE_COUNT_RE = re.compile(r"(\d+)\s*개\s*(?:의\s*)?(?:ROS[\s-]*2\s*)?패�
 
 # D10: a bare "§N.M" with no namespace in front of it.  The corpus uses numeric
 # section numbers for three unrelated things -- the constitutions' own sections
-# (CLAUDE.md §6), the compliance normative spec (§6.5 = the sigma_min-adaptive
+# (AGENTS.md §6), the compliance normative spec (§6.5 = the sigma_min-adaptive
 # DLS lambda rule), and file-internal named sections (§RT Path Invariants).
 # "§6.5" alone meant Sprint Contract in one file and a damping law in another,
 # and both spellings coexisted inside invariants.md with nothing to tell them
 # apart.  A reference is disambiguated when it is preceded by a markdown link
-# (`...md) §3.5`), a document name (`CLAUDE.md §6.5`), or the literal
+# (`...md) §3.5`), a document name (`AGENTS.md §6.5`), or the literal
 # `compliance ` prefix for the normative spec.
 # Scope: the constitution corpus only.  A per-package doc citing "§3.9" next to
 # the spec that owns §3.9 is unambiguous in context; the collision that D10
-# exists for is the constitution corpus, where CLAUDE.md's own section numbers
+# exists for is the constitution corpus, where AGENTS.md's own section numbers
 # and the compliance spec's both appear -- inside one file, with nothing to tell
 # them apart.  Widening this to every README turned it into 159 findings that
 # were almost all legitimate self-references.
@@ -261,7 +282,7 @@ SECTION_REF_SCOPED_DOCS = ("agent_docs/", "CLAUDE.md", "AGENTS.md", ".claude/")
 SECTION_REF_RE = re.compile(r"§\d+\.\d[\d.]*")
 SELF_NUMBERED_HEADING_RE = re.compile(r"^#{2,3}\s+\d+\.\s", re.M)
 SECTION_REF_QUALIFIED_RE = re.compile(
-    r"(?:compliance|CLAUDE\.md|AGENTS\.md|README\.md|[A-Za-z0-9_.-]+\.md|\))\s*$"
+    r"(?:compliance|CLAUDE\.md|AGENTS\.md|README\.md|[A-Za-z0-9_.-]+\.md|\))`?\s*$"
 )
 
 # D11: a rule-ID reference to an ID that no document defines.  Each namespace
@@ -270,7 +291,9 @@ SECTION_REF_QUALIFIED_RE = re.compile(
 # or invented ID ("P6", "RT-11") reads as authoritative and sends the reader
 # looking for a rule that was never written -- P1..P5 were referenced as IDs by
 # two documents while the owning file had never assigned those labels at all.
-RULE_ID_RE = re.compile(r"\b(RT-HOST-\d+|RT-\d+|ARCH-\d+|PROC-\d+|NUM-\d+[ab]?|E-\d+|AP-[A-Z]+-\d+|P[1-9])\b")
+RULE_ID_RE = re.compile(
+    r"\b(RT-HOST-\d+|RT-\d+|ARCH-\d+|PROC-\d+|NUM-\d+[ab]?|E-\d+|AP-[A-Z]+-\d+|P[1-9])\b"
+)
 RULE_ID_OWNERS = {
     "RT": "agent_docs/invariants.md",
     "ARCH": "agent_docs/invariants.md",
@@ -283,6 +306,47 @@ RULE_ID_OWNERS = {
 # IDs that are deliberately retired: referenced in prose as history, never as a
 # live rule.  Keeping them listed is what lets D11 stay strict about the rest.
 RULE_ID_RETIRED = frozenset({"RT-7", "AP-RTT-3", "AP-RTT-4", "AP-CTRL-2", "AP-CTRL-4"})
+
+# D12: size budget for the two constitutions.  Both files are loaded into
+# every session (CLAUDE.md directly, AGENTS.md through the `@AGENTS.md`
+# import), so their size is the one documentation cost paid on every request.
+CONSTITUTION_DOCS = ("CLAUDE.md", "AGENTS.md")
+CONSTITUTION_MAX_LINES = 200
+CONSTITUTION_MAX_BYTES = 18 * 1024
+CONSTITUTION_MAX_LINE_CHARS = 500
+
+# D13: a section ref that names its target constitution.  Accepts the plain
+# form ("AGENTS.md §6.5"), the link form ("[AGENTS.md](../AGENTS.md) §6.5") and the
+# code-span form ("`AGENTS.md` §6.5") -- the last one hid two stale refs from the
+# first version of this check.
+SECTION_TARGET_RE = re.compile(r"(CLAUDE|AGENTS)\.md`?(?:\]\([^)]*\))?\s*§(\d+(?:\.\d+)?)")
+# A bare "§N" / "§N.M" -- only resolved inside a constitution, against itself.
+BARE_SECTION_RE = re.compile(r"§(\d+(?:\.\d+)?)")
+# "## 1. Snapshot" / "### 9.1 colcon CWD" / "## 5.5 Inferential" -> "1", "9.1", "5.5"
+NUMBERED_HEADING_RE = re.compile(r"^#{2,3}\s+(\d+(?:\.\d+)?)\.?\s", re.M)
+# Text files outside the markdown corpus that cite constitution sections, chosen
+# by type rather than by directory.  The first cut scanned .claude/hooks and
+# repo_scripts only, and six refs in rtc_* sources and .clang-tidy (section 10
+# of CLAUDE.md, by number) outlived the renumbering that emptied CLAUDE.md of
+# numbered sections while the corpus scan reported clean.  Only D13 runs on these.
+SECTION_REF_EXTRA_EXTS = (
+    ".sh",
+    ".py",
+    ".yaml",
+    ".yml",
+    ".hpp",
+    ".cpp",
+    ".h",
+    ".cc",
+    ".cmake",
+    ".xml",
+)
+SECTION_REF_EXTRA_NAMES = frozenset({".clang-tidy", ".clang-format", "CMakeLists.txt"})
+
+
+def is_section_ref_source(rel: str) -> bool:
+    """True for a non-markdown file whose comments D13 resolves."""
+    return rel.endswith(SECTION_REF_EXTRA_EXTS) or Path(rel).name in SECTION_REF_EXTRA_NAMES
 
 
 @dataclass(frozen=True)
@@ -681,6 +745,7 @@ class Repo:
                 f.endswith(".md")
                 or f.startswith(".github/workflows/")
                 and f.endswith((".yml", ".yaml"))
+                or is_section_ref_source(f)
             ):
                 keep.append(f)
         return keep
@@ -702,7 +767,19 @@ def check_file(repo: Repo, rel: str) -> list[Finding]:
         return [Finding(rel, 1, "D0", f"unreadable: {exc}")]
     if rel.endswith(".md"):
         return check_markdown(repo, rel, text)
-    return check_workflow(repo, rel, text)
+    if rel.startswith(".github/workflows/"):
+        return check_workflow(repo, rel, text)
+    # Sources / scripts / configs: only the constitution section refs (D13).
+    return check_section_resolution(repo, rel, text, markdown=False)
+
+
+def check_file_section_refs(repo: Repo, rel: str) -> list[Finding]:
+    """D13 alone, for ``--section-refs``."""
+    try:
+        text = (repo.root / rel).read_text(encoding="utf-8")
+    except OSError as exc:
+        return [Finding(rel, 1, "D0", f"unreadable: {exc}")]
+    return check_section_resolution(repo, rel, text, markdown=rel.endswith(".md"))
 
 
 def suppressions(text: str) -> dict[int, set[str]]:
@@ -797,9 +874,124 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
 
     findings.extend(check_detect_blocks(repo, rel, text))
     findings.extend(check_section_refs(rel, text))
+    findings.extend(check_section_resolution(repo, rel, text))
     findings.extend(check_rule_ids(repo, rel, text))
+    findings.extend(check_constitution_size(rel, text))
     if rel in COUNT_SCOPED_DOCS:
         findings.extend(check_package_count(rel, text, repo.package_count(), allowed))
+    return findings
+
+
+def numbered_sections(text: str) -> set[str]:
+    return set(NUMBERED_HEADING_RE.findall(text))
+
+
+_SECTION_CACHE: dict[tuple[Path, str], set[str]] = {}
+
+
+def target_sections(repo: Repo, target: str) -> set[str]:
+    key = (repo.root, target)
+    if key not in _SECTION_CACHE:
+        try:
+            _SECTION_CACHE[key] = numbered_sections(
+                (repo.root / target).read_text(encoding="utf-8")
+            )
+        except OSError:
+            _SECTION_CACHE[key] = set()
+    return _SECTION_CACHE[key]
+
+
+def check_constitution_size(rel: str, text: str) -> list[Finding]:
+    """D12 -- the constitutions stay inside the line / byte / line-length budget."""
+    findings: list[Finding] = []
+    if rel not in CONSTITUTION_DOCS:
+        return findings
+    lines = text.splitlines()
+    if len(lines) > CONSTITUTION_MAX_LINES:
+        findings.append(
+            Finding(
+                rel,
+                CONSTITUTION_MAX_LINES + 1,
+                "D12",
+                f"{len(lines)} lines > {CONSTITUTION_MAX_LINES} -- move detail to the "
+                "owning agent_docs file or a path-scoped rule; the constitution is a map",
+            )
+        )
+    nbytes = len(text.encode("utf-8"))
+    if nbytes > CONSTITUTION_MAX_BYTES:
+        findings.append(
+            Finding(
+                rel,
+                1,
+                "D12",
+                f"{nbytes} bytes > {CONSTITUTION_MAX_BYTES} -- the line cap is being met "
+                "by longer lines; cut rationale/history, keep rules + pointers",
+            )
+        )
+    allowed = suppressions(text)
+    for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
+        if in_fence or raw.lstrip().startswith("|") or "D12" in allowed.get(lineno, frozenset()):
+            continue
+        if len(raw) > CONSTITUTION_MAX_LINE_CHARS:
+            findings.append(
+                Finding(
+                    rel,
+                    lineno,
+                    "D12",
+                    f"{len(raw)}-char line > {CONSTITUTION_MAX_LINE_CHARS} -- split into "
+                    "bullets or move the detail to the document that owns it",
+                )
+            )
+    return findings
+
+
+def check_section_resolution(
+    repo: Repo, rel: str, text: str, *, markdown: bool = True
+) -> list[Finding]:
+    """D13 -- a CLAUDE.md / AGENTS.md section ref names a heading that exists."""
+    findings: list[Finding] = []
+    allowed = suppressions(text)
+    own = numbered_sections(text) if rel in CONSTITUTION_DOCS else None
+    if markdown:
+        lines = iter_lines_with_fence_state(text)
+    else:
+        lines = ((raw, False) for raw in text.splitlines())
+    for lineno, (raw, in_fence) in enumerate(lines, 1):
+        if in_fence or "D13" in allowed.get(lineno, frozenset()):
+            continue
+        consumed: list[tuple[int, int]] = []
+        for m in SECTION_TARGET_RE.finditer(raw):
+            consumed.append(m.span())
+            target = f"{m.group(1)}.md"
+            sec = m.group(2)
+            have = own if (own is not None and target == rel) else target_sections(repo, target)
+            if sec not in have:
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        "D13",
+                        f"'{target} §{sec}' names a section {target} does not have "
+                        "(renumbered or removed) -- repoint the reference",
+                    )
+                )
+        if own is None:
+            continue
+        for m in BARE_SECTION_RE.finditer(raw):
+            if any(a <= m.start() < b for a, b in consumed):
+                continue
+            # "handoff.md §5" / "compliance §6.5" belong to another namespace.
+            if SECTION_REF_QUALIFIED_RE.search(raw[: m.start()]):
+                continue
+            if m.group(1) not in own:
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        "D13",
+                        f"'§{m.group(1)}' has no matching numbered heading in {rel}",
+                    )
+                )
     return findings
 
 
@@ -827,7 +1019,7 @@ def check_section_refs(rel: str, text: str) -> list[Finding]:
                     lineno,
                     "D10",
                     f"bare section ref '{m.group(0)}' -- prefix it with the owning "
-                    "document ('CLAUDE.md \u00a76.5') or 'compliance ' for the "
+                    "document ('AGENTS.md \u00a76.5') or 'compliance ' for the "
                     "normative spec",
                 )
             )
@@ -861,7 +1053,7 @@ def check_rule_ids(repo: Repo, rel: str, text: str) -> list[Finding]:
     return findings
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def rule_id_defined(repo: Repo, owner: str, rid: str) -> bool:
     """True when *owner* defines *rid* (table row, heading, or bold label)."""
     path = repo.root / owner
@@ -1324,6 +1516,32 @@ PARKED_PATTERN_CASES: list[tuple[str, bool, bool]] = [
 ]
 
 
+# D13 over non-markdown files: (name, rel, body, codes expected).
+SOURCE_REF_FIXTURES: list[tuple[str, str, str, list[str]]] = [
+    (
+        "C++ comment with a dangling ref",
+        "rtc_x/include/x.hpp",
+        "// per CLAUDE.md \u00a710\n",
+        ["D13"],
+    ),
+    ("C++ comment with a live ref", "rtc_x/src/x.cpp", "// per AGENTS.md \u00a710\n", []),
+    (
+        "tool config with a dangling ref",
+        ".clang-tidy",
+        "# see CLAUDE.md \u00a710 Style\n",
+        ["D13"],
+    ),
+]
+# Real tracked files of each kind that carried a constitution ref when D13 was
+# first widened; each must stay in the scanned set.
+SOURCE_REF_CORPUS_MEMBERS = (
+    ".clang-tidy",
+    "rtc_base/include/rtc_base/types/types.hpp",
+    "integrated_bringup/src/controllers/task/controller.cpp",
+    "rtc_mujoco_sim/config/mujoco_default.yaml",
+)
+
+
 # Whole-document fixtures: (name, rel, markdown, sorted codes expected).
 #
 # Everything above tests a pure helper.  That left the part of this validator
@@ -1337,6 +1555,56 @@ PARKED_PATTERN_CASES: list[tuple[str, bool, bool]] = [
 # near-miss beside it.
 DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
     ("clean", "agent_docs/f.md", "# Title\n\nSee `RtControllerNode::Tick`.\n", []),
+    ("D12 constitution over the line cap", "CLAUDE.md", "# x\n" + "- a\n" * 200, ["D12"]),
+    (
+        "D12 constitution over the byte cap",
+        "AGENTS.md",
+        "# x\n" + ("\uac00" * 100 + "\n") * 70,
+        ["D12"],
+    ),
+    ("D12 over-long prose line", "CLAUDE.md", "# x\n" + "a" * 501 + "\n", ["D12"]),
+    ("D12 table row is exempt", "CLAUDE.md", "# x\n| " + "a" * 600 + " |\n", []),
+    ("D12 fenced line is exempt", "CLAUDE.md", "# x\n```\n" + "a" * 600 + "\n```\n", []),
+    ("D12 is scoped to the constitutions", "agent_docs/f.md", "# x\n" + "a" * 501 + "\n", []),
+    ("D13 dangling section ref", "agent_docs/f.md", "see CLAUDE.md \u00a799.9\n", ["D13"]),
+    (
+        "D13 dangling ref in link form",
+        "agent_docs/f.md",
+        "see [AGENTS.md](../AGENTS.md) \u00a799\n",
+        ["D13"],
+    ),
+    (
+        "D13 live refs resolve",
+        "agent_docs/f.md",
+        "see AGENTS.md \u00a71 and AGENTS.md \u00a79.1\n",
+        [],
+    ),
+    ("D13 dangling ref in code-span form", "docs/f.md", "rule of `AGENTS.md` \u00a799\n", ["D13"]),
+    ("D13 live ref in code-span form", "docs/f.md", "rule of `AGENTS.md` \u00a710\n", []),
+    (
+        "D10 code-span document name qualifies",
+        "agent_docs/f.md",
+        "see `AGENTS.md` \u00a76.5\n",
+        [],
+    ),
+    (
+        "D13 bare self-ref inside a constitution",
+        "CLAUDE.md",
+        "# x\n\n## 1. A\n\nsee \u00a71 and \u00a77\n",
+        ["D13"],
+    ),
+    (
+        "D13 other-namespace bare ref is not a self-ref",
+        "CLAUDE.md",
+        "# x\n\n## 1. A\n\nsee handoff.md \u00a75 and compliance \u00a76.5\n",
+        [],
+    ),
+    (
+        "D13 suppressed",
+        "agent_docs/f.md",
+        "<!-- validate-docs: allow D13 -->\nold text said CLAUDE.md \u00a799.9\n",
+        [],
+    ),
     ("D1 broken link", "agent_docs/f.md", "[gone](./nope.md)\n", ["D1"]),
     ("D1 live link", "agent_docs/f.md", "[arch](architecture.md)\n", []),
     (
@@ -1447,7 +1715,7 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
     (
         "D10 qualified refs are silent",
         "agent_docs/f.md",
-        "compliance §6.5 와 [CLAUDE.md](../CLAUDE.md) §6.5 와 CLAUDE.md §9.1.\n",
+        "compliance §6.5 와 [AGENTS.md](../AGENTS.md) §6.5 와 AGENTS.md §9.1.\n",
         [],
     ),
     # A doc that numbers its own headings owns those numbers.
@@ -1518,6 +1786,21 @@ def self_test() -> int:
         got_codes = sorted(f.code for f in check_markdown(repo_for_docs, rel, body))
         if got_codes != sorted(want_codes):
             failures.append(f"doc fixture {name!r}: codes={got_codes}, want {sorted(want_codes)}")
+
+    for name, rel, body, want_codes in SOURCE_REF_FIXTURES:
+        got_codes = sorted(
+            f.code for f in check_section_resolution(repo_for_docs, rel, body, markdown=False)
+        )
+        if got_codes != sorted(want_codes):
+            failures.append(
+                f"source fixture {name!r}: codes={got_codes}, want {sorted(want_codes)}"
+            )
+    # The scope itself: a type or name dropped from the D13 source set leaves
+    # every fixture above green while the corpus scan goes blind to it again.
+    corpus = set(repo_for_docs.corpus())
+    for rel in SOURCE_REF_CORPUS_MEMBERS:
+        if repo_for_docs.exists(rel) and rel not in corpus:
+            failures.append(f"D13 source scope: {rel} is tracked but not scanned")
 
     for rel, body, actual, want in COUNT_CASES:
         got_codes = sorted(
@@ -1598,6 +1881,8 @@ def self_test() -> int:
         return 1
     total = (
         len(DOC_FIXTURES)
+        + len(SOURCE_REF_FIXTURES)
+        + len(SOURCE_REF_CORPUS_MEMBERS)
         + len(COUNT_CASES)
         + len(GREP_CASES)
         + len(SLUG_CASES)
@@ -1630,6 +1915,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--files", nargs="*", help="restrict the scan to these files (hook scope)")
     ap.add_argument("--self-test", action="store_true", help="run the checker's own fixtures")
+    ap.add_argument(
+        "--section-refs",
+        action="store_true",
+        help="run only D13 (constitution section refs); the Stop hook uses this "
+        "over the whole corpus when a constitution's numbered headings change",
+    )
     args = ap.parse_args(argv)
 
     if args.self_test:
@@ -1652,7 +1943,7 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError:
                 print(f"--files: '{f}' is outside the repository", file=sys.stderr)
                 return 2
-            if not rel.endswith((".md", ".yml", ".yaml")):
+            if not (rel.endswith(".md") or is_section_ref_source(rel)):
                 continue
             # A path that is gone was deleted in this change set; that is not an
             # error, and the hook passes deleted docs through routinely.
@@ -1663,7 +1954,9 @@ def main(argv: list[str] | None = None) -> int:
 
     findings: list[Finding] = []
     for rel in targets:
-        findings.extend(check_file(repo, rel))
+        findings.extend(
+            check_file_section_refs(repo, rel) if args.section_refs else check_file(repo, rel)
+        )
 
     findings.sort(key=lambda f: (f.path, f.line, f.code))
     for f in findings:

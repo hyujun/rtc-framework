@@ -195,7 +195,7 @@ declare -A ONNXRT_SHA256=(
 # 지우면 머신에 ORT 가 하나도 남지 않는다.
 #
 # ONNXRT_KEEP_OTHER_VERSIONS=1 이면 건너뛴다 — 제어 PC 는 다른 제어 프로젝트와
-# 공존할 수 있고 (CLAUDE.md §9.2), 그쪽이 옛 버전 트리를 직접 참조할 수 있다.
+# 공존할 수 있고 (AGENTS.md §9.2), 그쪽이 옛 버전 트리를 직접 참조할 수 있다.
 _prune_other_onnxruntime_versions() {
   local root="$1" arch="$2" keep_dir="$3"
   if [[ "${ONNXRT_KEEP_OTHER_VERSIONS:-0}" == "1" ]]; then

@@ -88,7 +88,7 @@ by the `WrenchTransform.PowerDuality` test, never by assuming a library's
 ## RPY → R at the wire edge (`so3.hpp`)
 
 `RpyToRotationZyx(rpy)` returns `R = Rz(yaw)·Ry(pitch)·Rx(roll)` — intrinsic
-Z-Y'-X'', the "ZYX Euler at boundaries" rule of `CLAUDE.md` §10. Internal math
+Z-Y'-X'', the "ZYX Euler at boundaries" rule of `AGENTS.md` §10. Internal math
 stays on quaternions and `log`/`exp`; this exists only where a message or an
 operator still speaks `(x, y, z, r, p, y)`.
 

@@ -15,7 +15,7 @@ description: Pre-flight and gate map for ADDING a new controller, message type /
 
 ## 1. Sprint Contract = spec (거의 항상 해당)
 
-새 abstract interface · controller · 메시지 · 디바이스 · 스레드 추가는 [CLAUDE.md](../../../CLAUDE.md) §6.5 에서 **spec 이 필수**인 부류다. 코드 전에 `~/.claude/plans/<slug>.md` 에 *왜 필요한가 · API surface · 검토한 alternatives* 를 박고 `[SPRINT]` 로 컨펌받는다. 포맷은 modification-guide.md §Sprint Contract & Spec.
+새 abstract interface · controller · 메시지 · 디바이스 · 스레드 추가는 [AGENTS.md](../../../AGENTS.md) §6.5 에서 **spec 이 필수**인 부류다. 코드 전에 `~/.claude/plans/<slug>.md` 에 *왜 필요한가 · API surface · 검토한 alternatives* 를 박고 `[SPRINT]` 로 컨펌받는다. 포맷은 modification-guide.md §Sprint Contract & Spec.
 
 `~/.claude/plans/` 를 **먼저 `ls`** 한다 — 같은 작업의 plan 이 이미 있을 수 있고, 그것이 보이지 않는 SSoT 다.
 
@@ -27,7 +27,7 @@ description: Pre-flight and gate map for ADDING a new controller, message type /
 | Message / `PublishRole` | §Adding a New Message Type | **기본 답은 "추가하지 않는 것"** (controller-owned SeqLock + `owned_topics` 헬퍼). 그래도 필요하면 **E-11 → 착수 전 `[CONCERN]`**, 그리고 네 곳을 같은 변경 안에서 고친다 |
 | Device group / backend | §Adding a New Device Group | 기존 backend 에 **설정 키만** 필요한 것은 아닌지 먼저 판정 (§0 ARCH-3). rename 이면 §Renaming a Device Group 의 grep 목록 전부 — 조용한 dead topic 이 실제로 2회 재발했다 |
 | Thread | §Adding a New Thread | **E-7 (Critical)** — thread model 변경이므로 착수 전 `[CONCERN]` + `[SPRINT]`. `rtc_base` 변경이면 PROC-3 전체 빌드 |
-| Package (새 colcon dir) | §Adding a New Package | **두 build SSoT 를 모두** 갱신 (`rt_common.sh` 셀렉터 + `.github/ci-packages.yml`). 누락 시 실패 양상이 다르고, CI 쪽 누락은 **테스트가 한 번도 안 돌면서 green** 이다 |
+| Package (새 colcon dir) | §Adding a New Package | **두 build SSoT 를 모두** 갱신 (`repo_scripts/scripts/lib/rt_common.sh` 셀렉터 + `.github/ci-packages.yml`). 누락 시 실패 양상이 다르고, CI 쪽 누락은 **테스트가 한 번도 안 돌면서 green** 이다 |
 
 ## 3. 추가에서 특히 잘 놓치는 것
 

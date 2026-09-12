@@ -685,30 +685,36 @@ out=$(run_hook "$dir")
 expect_contains "an unlisted new .cpp is flagged even when its name is a substring of a listed one" "$out" "isting.cpp not found"
 rm -rf "$dir"
 
-# 31. Constitution parity: CLAUDE.md and AGENTS.md carry the same rules for two
-#     audiences, and nothing else in the harness reads AGENTS.md -- it went 4
-#     commits stale that way. Editing one must remind about the other. Both
-#     directions, and silent when both move together (or neither does).
+# 31. Constitution split: AGENTS.md is the constitution and CLAUDE.md imports it
+#     (`@AGENTS.md`). Dropping the import line loses the whole constitution for
+#     Claude Code with no other symptom, so it blocks; a CLAUDE.md edit that
+#     keeps it only reminds that rules belong in AGENTS.md. The old parity
+#     reminder ("mirror into AGENTS.md") would recreate the duplicated copies.
 dir=$(make_fixture)
-printf '# c\n' >"$dir/CLAUDE.md"
+printf '@AGENTS.md\n\n# c\n' >"$dir/CLAUDE.md"
 printf '# a\n' >"$dir/AGENTS.md"
-git -C "$dir" add -A && git -C "$dir" commit -qm parity
-printf '# c\n\n새 규칙.\n' >"$dir/CLAUDE.md"
-out=$(run_hook "$dir")
-expect_contains "CLAUDE.md alone reminds about AGENTS.md" "$out" "CLAUDE.md changed without AGENTS.md"
-printf '# a\n\n같은 규칙.\n' >"$dir/AGENTS.md"
-out=$(run_hook "$dir")
-expect_not_contains "editing both is silent" "$out" "changed without"
+git -C "$dir" add -A && git -C "$dir" commit -qm split
+printf '@AGENTS.md\n\n# c\n\n- hook 배선.\n' >"$dir/CLAUDE.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a CLAUDE.md edit reminds that rules belong in AGENTS.md" "$out" "CLAUDE.md changed: it holds only Claude Code mechanisms"
+expect_not_contains "a CLAUDE.md edit no longer asks to mirror it into AGENTS.md" "$out" "mirror it into AGENTS.md"
+expect_exit "a CLAUDE.md edit that keeps the import does not block" "$rc" 0
+printf '# c\n\n- hook 배선.\n' >"$dir/CLAUDE.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "dropping @AGENTS.md from CLAUDE.md is reported" "$out" "Constitution import missing"
+expect_exit "dropping @AGENTS.md from CLAUDE.md blocks the turn" "$rc" 2
 rm -rf "$dir"
 
-# 32. ...and the reverse direction, so the reminder is not one-way.
+# 32. ...and an AGENTS.md-only edit is silent: CLAUDE.md imports it, so there is
+#     no second copy to keep in step.
 dir=$(make_fixture)
-printf '# c\n' >"$dir/CLAUDE.md"
+printf '@AGENTS.md\n\n# c\n' >"$dir/CLAUDE.md"
 printf '# a\n' >"$dir/AGENTS.md"
-git -C "$dir" add -A && git -C "$dir" commit -qm parity
+git -C "$dir" add -A && git -C "$dir" commit -qm split
 printf '# a\n\n새 규칙.\n' >"$dir/AGENTS.md"
-out=$(run_hook "$dir")
-expect_contains "AGENTS.md alone reminds about CLAUDE.md" "$out" "AGENTS.md changed without CLAUDE.md"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "an AGENTS.md-only edit asks for no CLAUDE.md follow-up" "$out" "AGENTS.md changed"
+expect_exit "an AGENTS.md-only edit does not block" "$rc" 0
 rm -rf "$dir"
 
 # 33. ARCH-5 allows <test_depend>robot_descriptions: a test that resolves the
@@ -794,6 +800,181 @@ expect_contains "a real PROC-3 build failure carries the build output tail" "$ou
 expect_contains "the PROC-3 tail shows how the build was invoked" "$out" "stub-build args: full"
 expect_exit "a real PROC-3 build failure blocks the turn" "$rc" 2
 rm -rf "$dir" "$stub"
+
+# --- Phase 5 formatter drift ---------------------------------------------------
+#
+# format-code.sh only sees Edit / Write, so a file written through Bash reached
+# commits unformatted and nothing downstream graded it. Phase 5 blocks drift the
+# change introduced and must stay quiet on debt it did not.
+
+# The hook resolves ruff venv-first, then <rtc_ws>/.venv relative to itself, then
+# PATH; mirror that so the Python cases skip instead of failing on a box without it.
+have_ruff() {
+  [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/ruff" ] && return 0
+  [ -x "$REPO_ROOT/../../.venv/bin/ruff" ] && return 0
+  command -v ruff >/dev/null 2>&1
+}
+
+if have_ruff; then
+  # 40. A new installed-source .py that is not a ruff fixed point blocks, and
+  #     the report names the command that fixes it.
+  dir=$(make_fixture)
+  mkdir -p "$dir/rtc_demo/rtc_demo"
+  printf "x = {  'a':1 }\n" >"$dir/rtc_demo/rtc_demo/written_by_bash.py"
+  out=$(run_hook "$dir"); rc=$?
+  expect_contains "a new unformatted .py is reported as formatter drift" "$out" "Formatter drift introduced"
+  expect_contains "the drift report names the fix" "$out" "ruff format rtc_demo/rtc_demo/written_by_bash.py"
+  expect_exit "a new unformatted .py blocks the turn" "$rc" 2
+  rm -rf "$dir"
+
+  # 41. A formatted file made unformatted by the change blocks too -- including
+  #     in-turn commits, which the watermark base still sees.
+  dir=$(make_fixture)
+  mkdir -p "$dir/rtc_demo/rtc_demo"
+  printf 'x = {"a": 1}\n' >"$dir/rtc_demo/rtc_demo/mod.py"
+  git -C "$dir" add -A && git -C "$dir" commit -qm formatted
+  git -C "$dir" rev-parse HEAD >"$dir/.git/rtc-verify-base"
+  printf "x = {  'a':2 }\n" >"$dir/rtc_demo/rtc_demo/mod.py"
+  git -C "$dir" commit -qam "unformatted, committed in-turn"
+  out=$(run_hook "$dir"); rc=$?
+  expect_contains "drift committed in-turn on a formatted file is reported" "$out" "ruff format rtc_demo/rtc_demo/mod.py"
+  expect_exit "drift committed in-turn on a formatted file blocks" "$rc" 2
+  rm -rf "$dir"
+
+  # 42. A file already unformatted at the base is debt this diff did not cause:
+  #     touching it must not block. Asserting the absence alone would also hold
+  #     if Phase 5 never ran, so 41 above is the half that can go red.
+  dir=$(make_fixture)
+  mkdir -p "$dir/rtc_demo/rtc_demo"
+  printf "x = {  'a':1 }\n" >"$dir/rtc_demo/rtc_demo/legacy.py"
+  git -C "$dir" add -A && git -C "$dir" commit -qm legacy
+  printf "x = {  'a':1 }\ny = {  'b':2 }\n" >"$dir/rtc_demo/rtc_demo/legacy.py"
+  out=$(run_hook "$dir"); rc=$?
+  expect_not_contains "touching a file unformatted at the base is not drift" "$out" "Formatter drift"
+  expect_exit "touching a file unformatted at the base does not block" "$rc" 0
+  rm -rf "$dir"
+
+  # 43. Untracked scratch outside the installed-source dirs is not graded, the
+  #     same scope build/test uses.
+  dir=$(make_fixture)
+  printf "x = {  'a':1 }\n" >"$dir/scratch_probe.py"
+  out=$(run_hook "$dir")
+  expect_not_contains "untracked scratch outside package source dirs is not graded" "$out" "Formatter drift"
+  rm -rf "$dir"
+else
+  skip "Phase 5 .py cases (40-43): no ruff the hook can resolve"
+fi
+
+# 44. C++ takes the clang-format branch: an edit that breaks formatting of a
+#     formatted file blocks and names clang-format.
+if have_formatter; then
+  dir=$(make_fixture)
+  printf 'int existing( ){return   1;}\n' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook "$dir"); rc=$?
+  expect_contains "C++ drift names clang-format" "$out" "clang-format -i rtc_demo/src/existing.cpp"
+  expect_exit "C++ drift blocks the turn" "$rc" 2
+  printf 'int existing() { return 1; }\n' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook "$dir")
+  expect_not_contains "a formatted C++ edit is not drift" "$out" "Formatter drift"
+  rm -rf "$dir"
+else
+  skip "Phase 5 C++ case (44): no clang-format the hook can resolve"
+fi
+
+if have_ruff; then
+  # 45. Command substitution strips trailing newlines, so comparing "$(fmt)"
+  #     with "$(cat f)" read a missing final newline and trailing blank lines as
+  #     clean. Both are drift ruff format would rewrite.
+  dir=$(make_fixture)
+  mkdir -p "$dir/rtc_demo/rtc_demo"
+  printf 'x = 1' >"$dir/rtc_demo/rtc_demo/no_final_newline.py"
+  printf 'y = 1\n\n\n' >"$dir/rtc_demo/rtc_demo/trailing_blank_lines.py"
+  out=$(run_hook "$dir"); rc=$?
+  expect_contains "a missing final newline is formatter drift" "$out" "no_final_newline.py: formatter would rewrite"
+  expect_contains "trailing blank lines are formatter drift" "$out" "trailing_blank_lines.py: formatter would rewrite"
+  expect_exit "newline drift blocks the turn" "$rc" 2
+
+  # 46. Past the Stop-budget deadline Phase 5 stops grading and says which files
+  #     it skipped, instead of running into the SIGKILL. 45 above is the half
+  #     that proves the same input is drift when graded.
+  out=$(export RTC_VERIFY_FORMAT_DEADLINE_S=0; run_hook "$dir"); rc=$?
+  expect_contains "files past the deadline are listed as ungraded" "$out" "formatter drift NOT graded"
+  expect_exit "ungraded files do not block the turn" "$rc" 0
+  rm -rf "$dir"
+
+  # 47. format-code.sh's own output must pass Phase 5. With `ruff format` run
+  #     before `ruff check --fix`, UP015 dropped "r" from an over-long open()
+  #     that format had already split, and the one-line-fitting call stayed
+  #     split -- so a file written through Write was blocked as drift.
+  if command -v jq >/dev/null 2>&1; then
+    dir=$(make_fixture)
+    mkdir -p "$dir/rtc_demo/rtc_demo"
+    printf '[tool.ruff]\nline-length = 99\n\n[tool.ruff.lint]\nselect = ["UP015"]\n' >"$dir/pyproject.toml"
+    git -C "$dir" add -A && git -C "$dir" commit -qm pyproject
+    name=$(printf 'p%.0s' $(seq 1 77))
+    printf 'def f(%s):\n    with open(%s, "r") as fh:\n        return fh.read()\n' "$name" "$name" \
+      >"$dir/rtc_demo/rtc_demo/written_by_write.py"
+    jq -n --arg p "$dir/rtc_demo/rtc_demo/written_by_write.py" '{tool_input: {file_path: $p}}' \
+      | bash "$REPO_ROOT/.claude/hooks/format-code.sh"
+    out=$(run_hook "$dir"); rc=$?
+    expect_not_contains "a file format-code.sh just wrote is not graded as drift" "$out" "written_by_write.py"
+    expect_exit "a file format-code.sh just wrote does not block" "$rc" 0
+    rm -rf "$dir"
+  else
+    skip "format-code.sh round-trip (47): no jq"
+  fi
+else
+  skip "Phase 5 newline / deadline / format-code cases (45-47): no ruff the hook can resolve"
+fi
+
+# --- Documentation gate: whole-file and cross-file findings ----------------------
+
+# 48. D12's byte cap is a whole-file budget reported at line 1. The added-line
+#     narrowing dropped it, so a constitution grown past its cap by an edit in
+#     the middle passed here and only CI said so.
+dir=$(make_fixture)
+for i in $(seq 1 150); do printf -- '- rule %03d %s\n' "$i" "$(printf 'a%.0s' $(seq 1 100))"; done >"$dir/AGENTS.md"
+git -C "$dir" add -A && git -C "$dir" commit -qm constitution
+awk 'NR >= 70 && NR <= 90 { $0 = $0 " " sprintf("%0100d", 0) } { print }' "$dir/AGENTS.md" >"$dir/AGENTS.md.new"
+mv "$dir/AGENTS.md.new" "$dir/AGENTS.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a constitution grown past the byte cap mid-file is reported" "$out" "AGENTS.md:1: [D12]"
+expect_exit "a constitution over the byte cap blocks the turn" "$rc" 2
+rm -rf "$dir"
+
+# 49. Renumbering a constitution heading breaks refs in files the change never
+#     touched, and bare refs on unchanged lines of the constitution itself; the
+#     per-file, added-line scope saw neither. The heading change now resolves
+#     every section ref in the tracked corpus.
+dir=$(make_fixture)
+printf '# a\n\n## 6. Escalation\n\nsee §6 above.\n' >"$dir/AGENTS.md"
+printf '# ref\n\nsee AGENTS.md §6 for escalation.\n' >"$dir/agent_docs/ref.md"
+git -C "$dir" add -A && git -C "$dir" commit -qm numbered
+printf '# a\n\n## 6. Escalation\n\nsee §6 above.\n\nmore text.\n' >"$dir/AGENTS.md"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "an edit that keeps the headings does not scan the corpus" "$out" "numbered headings changed"
+expect_exit "an edit that keeps the headings does not block" "$rc" 0
+sed -i 's/^## 6\. Escalation$/## 7. Escalation/' "$dir/AGENTS.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "renumbering reports a ref in an untouched file" "$out" "agent_docs/ref.md:3: [D13]"
+expect_contains "renumbering reports a bare ref on an unchanged constitution line" "$out" "AGENTS.md:5: [D13]"
+expect_exit "renumbering that strands refs blocks the turn" "$rc" 2
+rm -rf "$dir"
+
+# 50. The import gate keyed on CLAUDE.md being in the change set, so removing
+#     either constitution file -- the most complete loss of the import -- was
+#     never reported.
+for gone in AGENTS.md CLAUDE.md; do
+  dir=$(make_fixture)
+  printf '@AGENTS.md\n\n# c\n' >"$dir/CLAUDE.md"
+  printf '# a\n' >"$dir/AGENTS.md"
+  git -C "$dir" add -A && git -C "$dir" commit -qm split
+  git -C "$dir" rm -q "$gone"
+  out=$(run_hook "$dir"); rc=$?
+  expect_contains "deleting $gone is reported as a lost import" "$out" "Constitution import missing"
+  expect_exit "deleting $gone blocks the turn" "$rc" 2
+  rm -rf "$dir"
+done
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

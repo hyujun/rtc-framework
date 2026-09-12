@@ -10,6 +10,6 @@
 - **Build hard rules** — `colcon` 은 반드시 workspace root 에서, `.venv` 격리는 우회하지 않는다
 - **Style** — namespace `rtc`, Google C++ naming, SI 단위, Hamilton quaternion
 
-세부 규칙의 단일 출처는 [`agent_docs/`](../agent_docs/) 이며 `AGENTS.md` §10 이 각 문서의 역할을 안내한다.
+세부 규칙의 단일 출처는 [`agent_docs/`](../agent_docs/) 이며 `AGENTS.md` §12 가 각 문서의 역할을 안내한다.
 
-`CLAUDE.md` 는 Claude Code 전용 메커니즘(hook·slash command·rule 자동 로드)을 담으므로 이 도구에는 적용되지 않는다 — 같은 규칙의 tool-neutral 판이 `AGENTS.md` 에 있다.
+`CLAUDE.md` 는 `AGENTS.md` 를 import 한 뒤 Claude Code 전용 메커니즘(hook·slash command·rule 자동 로드)만 덧붙이므로 이 도구에는 적용되지 않는다 — 규칙은 `AGENTS.md` 한 곳에만 있다.

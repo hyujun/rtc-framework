@@ -120,7 +120,7 @@ struct ObjectPoolConfig {
   std::array<double, 3> position_variation{0.0, 0.0, 0.0};
 
   /// Spawn orientation centre as ZYX Euler (roll, pitch, yaw), RADIANS.
-  /// Radians, not degrees, per CLAUDE.md §10 (SI everywhere; degrees only at an
+  /// Radians, not degrees, per AGENTS.md §10 (SI everywhere; degrees only at an
   /// API boundary). A parallel `_deg` key was considered and dropped: two
   /// spellings of one quantity is the drift this repo keeps paying for.
   std::array<double, 3> rpy{0.0, 0.0, 0.0};

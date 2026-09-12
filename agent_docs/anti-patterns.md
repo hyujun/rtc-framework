@@ -55,10 +55,10 @@
 
 - **증상**: RT producer 가 `cv.notify_one` 시 내부 mutex 보유 → 우선순위 역전 + 비결정 wake latency. wait side 는 명시 mutex lock 보유 (RT-4 결합)
 - **원인**: producer-consumer 통지를 cv 로 구현. 직관적이나 RT 우선순위 보장 안 됨
-- **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (`6405c76` 이전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
+- **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (eventfd 로 교체되기 전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
 - **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-10` 블록
 - **복구**:
-  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (post-`6405c76`) 가 표준 패턴
+  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (eventfd 전환 후 현행) 가 표준 패턴
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
   - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
 
@@ -66,7 +66,7 @@
 
 - **증상**: 없다. 이것이 이 항목의 요점이다 — 짧은 이름은 SSO(small-string optimization) 버퍼에 들어가 힙을 안 건드리므로 alloc 게이트도 green 이고 코드도 평범해 보인다. 이름이 SSO 임계(libstdc++ 15 자)를 넘는 순간 RT tick 이 `operator new` 를 부르기 시작하는데, 그때 바뀐 것은 **YAML 의 device group 이름 한 줄**뿐이라 원인이 코드에 없다
 - **원인**: `RTControllerInterface::GetPrimaryDeviceName()` / `GetSecondaryDeviceName()` 은 `std::string` 을 **값으로** 반환한다 (`topic_config_.groups[i].first` 의 복사). 이름으로만 보면 조회 같아 tick 안에서 부르기 쉽다. `GetDeviceNameConfig(name)` 도 그 문자열을 인자로 받으므로 둘은 대개 붙어 다닌다
-- **본 repo 사례**: `DemoInferenceController::PackObservation` 이 fingertip stride 를 tick 마다 `GetDeviceNameConfig(GetSecondaryDeviceName())` 로 읽었다 (`f6803580` 이전). 현재 그룹 이름이 `p1b` 라 실측 allocation 은 0 이었고 게이트도 통과했다 — 결함이 아니라 **잠복**이었다
+- **본 repo 사례**: `DemoInferenceController::PackObservation` 이 fingertip stride 를 tick 마다 `GetDeviceNameConfig(GetSecondaryDeviceName())` 로 읽었다 (stride 를 configure-time 에 캐시하기 전). 현재 그룹 이름이 `p1b` 라 실측 allocation 은 0 이었고 게이트도 통과했다 — 결함이 아니라 **잠복**이었다
 - **탐지**: RT tick 함수 본문에서 `Get*DeviceName()` 호출을 grep. 값 반환 접근자 일반으로 넓히려면 시그니처가 `std::string` (참조 아님) 인 것을 본다
 - **복구**: configure(비-RT)에서 필요한 값을 **해석해 POD 멤버로 캐시**한다 (위 사례는 `fingertip_stride_` 하나). 문자열 자체가 tick 에 필요하면 `std::string_view` 또는 인덱스로 바꾼다. tick 에서 이름으로 map 을 조회하는 형태 자체가 이미 신호다 — device 인덱스는 `topic_config_.groups` 순서로 configure 때 고정된다
 
@@ -76,7 +76,7 @@
 
 > **도입 시 적용** — `realtime_tools` 를 쓰지 않는 동안은 아래 grep 이 0건이고, 채택하는 순간부터 이 블록이 구속한다. primitive 선택·금지 기준의 SSoT 는 [invariants.md](invariants.md) §RT pub/sub primitive catalog (`RealtimePublisher::try_publish` / `RealtimeBuffer` 행) 이며, 이 블록은 도입 시 검토할 세 함정만 요약한다.
 
-- **`RealtimePublisher` dedicated thread → layout 파괴**: instance 당 `publishingLoop` 전용 thread 1개 생성 → `thread_config.hpp` `cpu_affinity` layout 초과, RT core 공유 시 cache pollution/선점. 탐지 `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 초과. 복구: (a) 토픽 N개를 SPSC + 단일 publish_thread 멀티플렉싱 (본 repo 기존 패턴), (b) 채택 시 `get_thread()` 로 priority/affinity 명시 ([CLAUDE.md](../CLAUDE.md) §6 E-7)
+- **`RealtimePublisher` dedicated thread → layout 파괴**: instance 당 `publishingLoop` 전용 thread 1개 생성 → `thread_config.hpp` `cpu_affinity` layout 초과, RT core 공유 시 cache pollution/선점. 탐지 `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 초과. 복구: (a) 토픽 N개를 SPSC + 단일 publish_thread 멀티플렉싱 (본 repo 기존 패턴), (b) 채택 시 `get_thread()` 로 priority/affinity 명시 ([AGENTS.md](../AGENTS.md) §6 E-7)
 - **`RealtimeBuffer` ctor/reset 을 lifecycle 밖에서 호출**: ctor·`reset()` 가 double buffer 를 `new T()` 2회 → RT-1 위반. ctor/`reset` 은 `on_configure`/`on_cleanup` 에서만. RT path 재구성은 `SeqLock<T>` + writer `Store`
 - **`try_publish` drop 미추적**: `try_publish` 가 false (lock 실패) 반환 시 silent drop. 호출 site 마다 `std::atomic<uint64_t> drop_count_` 증가 + aux thread 주기 publish/log (본 repo SPSC drain 은 logger 가 이미 drop counter 추적)
 
@@ -278,7 +278,8 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 의 `changes` job 주석).
   구조적으로는 push 런이 서로 취소되지 않게 concurrency group 에 SHA 를 넣는다 —
   [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 의 concurrency 주석이 SSoT.
-  같은 양식의 Stop hook 결함(변경 집합이 비어 게이트가 조용히 부재)은 [CLAUDE.md](../CLAUDE.md) §4
+  같은 양식의 Stop hook 결함(변경 집합이 비어 게이트가 조용히 부재)과 그 복구는
+  [verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더의 "Verification baseline" 주석이 SSoT.
 
 ## Controller-Specific
 
@@ -323,6 +324,9 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 
 - **증상**: 문서가 측정 시점에 의존하는 값을 박제 → 코드/측정값이 바뀌면 문서가 거짓이 됨. 예: "현 baseline 0건", "Phase X ✅ 완료", "현재 45개 상수 존재", `commit_sha 근거`
 - **복구**: 측정값·status 은 SSoT (코드/git log/측정 명령) 위임. 문서엔 *어떻게 측정하는지* 박제하고 *값 자체*는 박제하지 않는다. Status 는 git log + memory 에 자연히 남는다
+- **본 repo 사례 1 — 규칙 목록 사본**: 당시 CLAUDE.md 의 §3 에 박혀 있던 RT 금지 7개 목록이 invariants.md 의 9개와 갈라져 RT-9·RT-10 이 헌법에서 사라졌다. 같은 자리의 ARCH 5줄 사본도 ARCH-4 (integration 패키지의 `rtc_*/src/` private 헤더 include 금지, Critical) 와 ARCH-6 (QoS depth 1) 을 통째로 빠뜨린 채 굳어 있었다 (#229). 복구: 헌법은 ID 범위와 SSoT 포인터만 갖고 요약은 path-scoped rule 이 갖는다 — 어떤 파일 편집 시 로드되는지도 rule frontmatter glob 이 SSoT 이므로 박제하지 않는다
+- **본 repo 사례 2 — hook 서술 사본**: 당시 CLAUDE.md 의 §4 가 Stop hook 의 변경 집합 산정·allowlist·편입 이력을 291단어로 들고 있으면서 같은 단락에서 "hook 주석이 SSoT" 라고 선언했고, modification-guide.md 는 거꾸로 그 §4 를 SSoT 로 지목해 순환이 됐다 (#527). 복구: hook 헤더가 소유, 헌법은 3줄 요약 + 포인터
+- **본 repo 사례 3 — 등가 주장**: 목록을 복제하지 않고 "hook 이 이 목록과 같은 것을 수행한다" 는 한 줄만 남겨도 같은 drift 다. 헌법 통합 때 AGENTS.md §4 가 "Stop hook 이 자동 수행·차단하는 것과 같은 목록" 이라 적었으나 hook 은 포매팅·Doxygen 을 보지 않았고, 그 주장 탓에 Bash 로 쓴 파일의 포맷 누락 (PostToolUse 를 안 탐) 을 잡는 게이트가 없다는 사실이 가려졌다. 복구: 헌법은 "기계 판정 가능한 부분만 대신한다" + hook 헤더 포인터, 여집합은 modification-guide.md §Completion Checklist 가 소유
 
 ### AP-DOC-2: 판단의 *근거*를 두 번째 위치에 복사한다 (주석 포함)
 
@@ -332,7 +336,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   `compliance/compute.cpp` fault 블록 · `compliance_diag_log_pod.hpp` 헤더 · lane plan 세 곳에
   적혀 있었고, 셋 다 "이 바인딩은 `integrate_from_measured: false` 를 제공하지 않는다" 고 했다 —
   `WriteArmJointCommand` 는 `desired_q_ += dq_·dt` 로 명령을 적분하므로 **그게 바로 그 모드**다
-  (#469 리뷰, `7f48c51`). 한 곳만 있었으면 코드 옆에서 반증됐을 문장이다.
+  (#469 리뷰). 한 곳만 있었으면 코드 옆에서 반증됐을 문장이다.
   **후속이 처방을 검증했다**: 그 리뷰가 세 사본을 소유자 한 곳(fault 블록)으로 접은 뒤, 같은
   판단이 3판을 필요로 했다 — 모드 주장은 맞았지만 결론("real gap")이 틀렸고, task 축 바인딩의
   대응물은 `pose_error_limit` 이었다 (#478). 소유자가 하나였으므로 **편집도 한 번**이었다;

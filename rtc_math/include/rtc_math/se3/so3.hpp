@@ -163,7 +163,7 @@ inline constexpr double kQuatVecEps = 1e-8;
 // ── RPY → R, the boundary convention ────────────────────────────────────────
 //
 // R = Rz(yaw)·Ry(pitch)·Rx(roll), i.e. intrinsic Z-Y'-X'' — the "ZYX Euler at
-// boundaries" rule in CLAUDE.md §10. Internal math stays on quaternions and
+// boundaries" rule in AGENTS.md §10. Internal math stays on quaternions and
 // log/exp; this exists only for the wire edge, where operators and messages
 // still speak (x, y, z, r, p, y).
 //

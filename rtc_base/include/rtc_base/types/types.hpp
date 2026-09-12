@@ -488,7 +488,7 @@ enum class DeviceCapability : uint16_t {
 // consumer ever created a publisher, so a controller declaring one came up with
 // a silently dead topic. New controller-owned non-RT outputs use the
 // SeqLock<T> + Setup*Publisher pattern instead of extending this enum
-// (CLAUDE.md §6 E-11), so the set is expected to stay at one.
+// (agent_docs/invariants.md E-11), so the set is expected to stay at one.
 //
 // Previously removed for the same or adjacent reasons: joint_command /
 // ros2_command (Phase 4 — device-wire publication is owned by DeviceBackend

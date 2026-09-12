@@ -89,7 +89,7 @@ mujoco_simulator:
       pose: "fixed"        # "fixed" | "random"  — where it lands
 
       # Spawn pose. position is metres (world frame); rpy is ZYX Euler in
-      # RADIANS (SI — CLAUDE.md §10; there is no degree spelling of these keys).
+      # RADIANS (SI — AGENTS.md §10; there is no degree spelling of these keys).
       # The *_variation entries are HALF-WIDTHS: each axis is drawn uniformly
       # from [centre - variation, centre + variation], and are ignored when
       # pose is "fixed". Yaw-only is the usual case: rpy_variation [0, 0, 3.14].

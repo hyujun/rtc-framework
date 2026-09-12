@@ -357,7 +357,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 ## Escalation Triggers (E-1 ~ E-11)
 
-**이 절이 E-번호·severity·`[CONCERN]` 포맷의 SSoT 다** — tool-neutral 이며 [CLAUDE.md](../CLAUDE.md) §6 과 [AGENTS.md](../AGENTS.md) §5 는 여기를 가리키기만 한다 (이전에는 양쪽이 전체 목록을 인라인 복제했고, 그 구조가 handoff 섹션 목록에서 실제 드리프트를 냈다 — AP-DOC-1).
+**이 절이 E-번호·severity·`[CONCERN]` 포맷의 SSoT 다** — tool-neutral 이며 [AGENTS.md](../AGENTS.md) §6 은 여기를 가리키기만 한다 (이전에는 양쪽이 전체 목록을 인라인 복제했고, 그 구조가 handoff 섹션 목록에서 실제 드리프트를 냈다 — AP-DOC-1).
 
 다음 상황에서는 코드를 쓰기 **전에** `[CONCERN]` 을 보고하고 사용자 컨펌을 기다린다.
 
@@ -400,7 +400,7 @@ Severity 는 파일이 아니라 **규칙 단위**로 정해진다 — 위 표�
 
 ## False-positive 처리
 
-위 grep 명령은 **path-blind**(RT path 외 코드도 매칭)이거나 **role-blind**(one-shot init / aux thread 허용 케이스도 매칭)이다. 정당한 사용을 invariant로 잘못 차단하면 [CLAUDE.md](../CLAUDE.md) §11 *Harness pruning 신호*에 해당.
+위 grep 명령은 **path-blind**(RT path 외 코드도 매칭)이거나 **role-blind**(one-shot init / aux thread 허용 케이스도 매칭)이다. 정당한 사용을 invariant로 잘못 차단하면 하네스 pruning 신호로 보고한다 — 보고 경로는 각 도구의 문서가 소유한다 ([AGENTS.md](../AGENTS.md) §11 의 5항; Claude Code 는 [CLAUDE.md](../CLAUDE.md) §Claude Code 의 Housekeeping).
 
 판단 절차:
 

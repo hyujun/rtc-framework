@@ -206,12 +206,12 @@ chmod +x build.sh
 
 # 수동 빌드 (워크스페이스에 외부 패키지가 섞여 있을 때 권장)
 source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
-deactivate 2>/dev/null   # venv 활성 시 CMake FindPython 충돌 방지 (CLAUDE.md §9.2 의 configure 한정 carve-out)
+deactivate 2>/dev/null   # venv 활성 시 CMake FindPython 충돌 방지 (AGENTS.md §9.2 의 configure 한정 carve-out)
 cd ~/ros2_ws/rtc_ws && colcon build --symlink-install
 source install/setup.bash
 ```
 
-> `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 CMake 가 쓸 인터프리터는 venv 유무와 무관하게 고정해야 합니다 — 위 `deactivate` 는 venv python 만 피하고, PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 는 못 피해 `No module named 'catkin_pkg'` 로 죽습니다. CLI `--cmake-args` 는 defaults 의 Release 등을 **대체**하므로 명령 형태는 [repo_scripts/README.md](repo_scripts/README.md) "Plain `colcon build` 호환성" 을 따릅니다. 이 완화는 **configure 단계에만** 해당합니다 — `colcon test` / `ros2 run` 실패를 deactivate 로 우회하는 것은 금지입니다 (CLAUDE.md §9.2). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지).
+> `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 CMake 가 쓸 인터프리터는 venv 유무와 무관하게 고정해야 합니다 — 위 `deactivate` 는 venv python 만 피하고, PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 는 못 피해 `No module named 'catkin_pkg'` 로 죽습니다. CLI `--cmake-args` 는 defaults 의 Release 등을 **대체**하므로 명령 형태는 [repo_scripts/README.md](repo_scripts/README.md) "Plain `colcon build` 호환성" 을 따릅니다. 이 완화는 **configure 단계에만** 해당합니다 — `colcon test` / `ros2 run` 실패를 deactivate 로 우회하는 것은 금지입니다 (AGENTS.md §9.2). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지).
 
 ### Python 의존성 sync (dev PC ↔ runtime PC 재현성)
 
@@ -356,8 +356,8 @@ sudo update-grub && sudo reboot
 | [docs/VSCODE_DEBUGGING.md](docs/VSCODE_DEBUGGING.md) | VS Code + GDB 디버깅 가이드 |
 | [docs/NUC_HYBRID_SUPPORT.md](docs/NUC_HYBRID_SUPPORT.md) | NUC 13/14/15 Pro hybrid CPU (P/E core) 감지 + BIOS 체크리스트. Layout 분기는 v4.1 slot 매핑이 처리 |
 | [AGENTS.md](AGENTS.md) | **AI 에이전트 헌법 (tool-neutral)** — invariants, workflow, escalation, build hard rules. Codex · Copilot · Antigravity 등이 읽는다 |
-| [CLAUDE.md](CLAUDE.md) | 위와 같은 헌법의 Claude Code 판 — 추가로 hook · slash command · rule 자동 로드 등 Claude 전용 메커니즘 |
-| [agent_docs/](agent_docs/) | 위 두 헌법이 위임하는 세부 규칙의 SSoT (invariants, architecture, controllers, testing, conventions, handoff) |
+| [CLAUDE.md](CLAUDE.md) | Claude Code 진입점 — `@AGENTS.md` import 로 위 헌법을 그대로 싣고, hook · slash command · rule 자동 로드 등 Claude 전용 메커니즘만 덧붙인다 (규칙은 AGENTS.md 에만 있다) |
+| [agent_docs/](agent_docs/) | 헌법이 위임하는 세부 규칙의 SSoT (invariants, architecture, controllers, testing, conventions, handoff) |
 | [repo_scripts/README.md](repo_scripts/README.md) | RT 설정 / 빌드 / 환경 셋업 쉘 스크립트 가이드 (PREEMPT_RT, CPU shield, IRQ affinity, `setup_env.sh`) |
 
 각 패키지의 상세 API, 설정, 아키텍처는 해당 패키지의 `README.md`를 참조하세요.

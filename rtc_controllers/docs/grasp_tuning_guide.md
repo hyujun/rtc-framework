@@ -935,7 +935,7 @@ pin 이 소리 없이 풀리는 것은 세 겹이 막는다: `GraspParams::K_est
 3. 반영 시점: YAML 은 컨트롤러 `on_configure` 에서 읽는다 → 런타임 반영은 컨트롤러 재로드
    (controller switch). 단 `set_params()` / `set_target_force()` 경로로 들어오는 변경은 **다음
    tick 에 즉시 발효**한다 (`GraspParams` 전 필드)
-4. 테스트 실행 — colcon 은 반드시 workspace root 에서 (CLAUDE.md §9.1):
+4. 테스트 실행 — colcon 은 반드시 workspace root 에서 (AGENTS.md §9.1):
 
 ```bash
 ./build.sh -p rtc_controllers
@@ -1018,7 +1018,7 @@ REPO=$WS/src/ur5e-rt-controller
 # 1) 같은 저장소인지 + b6c8dc00 이후인지
 git -C $REPO remote -v && git -C $REPO log --oneline -3
 
-# 2) 최신화 + 빌드 (colcon 은 반드시 ws root 에서 — CLAUDE.md §9.1)
+# 2) 최신화 + 빌드 (colcon 은 반드시 ws root 에서 — AGENTS.md §9.1)
 git -C $REPO pull
 ( cd $WS && source $REPO/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 \
     && colcon build --packages-select rtc_msgs rtc_controllers integrated_bringup rtc_tools )
