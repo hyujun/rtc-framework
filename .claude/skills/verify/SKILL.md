@@ -73,8 +73,79 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
   5. **`force_saturation: 15.0` N 을 넘기면 그 손끝은 contact 집합에서 빠진다** — 더 세게 쥐면 접촉이 *줄어든다*. 정지 조건은 peak 이 아니라 밴드여야 한다.
   6. **엄지와 손가락은 폐쇄율 스케줄이 다르다.** 엄지 손끝은 제 구간에서 y 로 약 10 cm 쓸고, 검지 손끝은 25 % 까지 거의 안 움직이다가 x 로 6 cm 를 간다. 하나의 스칼라로 둘을 몰면 엄지가 포화(14 N)할 때 검지는 아직 1 mm 모자란다 — **손가락마다 램프를 따로** 준다.
 
+  **이 배치는 이제 출하된다 — 다시 탐색하지 말 것.** `sim_overlay:=fingertip_grasp`
+  (`integrated_bringup/config/ur5e_p1b/sim_overlays/fingertip_grasp.yaml` + 물체
+  `robot_descriptions/objects/fingertip_disk/object.xml`) 가 위 제약을 전부 만족하는
+  (x,y,z) 와 형상을 들고 있다. 기하 근거는 물체 파일 주석, 결정은 `#504` AC 6.
+
+  ```bash
+  ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
+      sim_overlay:=fingertip_grasp enable_viewer:=false use_cpu_affinity:=false
+  ```
+
+  **파지 절차의 순서는 자유가 아니다 (`#504`)** — compliance 를 쓸 것이면
+  **먼저 compliance 로 전환하고 그 다음에 손을 닫는다.** 활성화의
+  `ResetTargetInitialization()` 이 hand target 을 측정값에서 재시드하므로, 파지한 채로
+  전환하면 `cmd − actual` 간극(= 이 손에서는 곧 파지력)이 0 이 된다. 2026-09-12 실측
+  (`260912_1848`): joint 에서 엄지 2.7 N / 검지 4.1 N 로 5 초 안정 파지 → 전환 →
+  **네 손끝 전부 0.00 N, 6 초 내내 회복 없음**. 손은 위치 지령이라 겉보기엔 닫힌 채다.
+  반대로 먼저 전환하고 닫으면 (`260912_1845`) 같은 물체에서 pull estimate 가
+  `valid`, `contact_mask=0b011`(thumb+index), `|F̂|` 최대 12.4 N 까지 간다.
+
+  폐쇄 자체는 실측으로 **세 가지**를 더 요구한다:
+
+  7. **닫는 양은 힘으로 정한다** — 폐쇄각을 열린 값에서 목표까지 밀면
+     `force_saturation: 15.0 N` 을 넘겨 그 손끝이 contact 집합에서 빠진다.
+     2026-09-12 실측: 코멘트 `5644085864` 의 개루프 스케줄을 그대로 주면 검지가
+     24~52 N 까지 가고 `contact_mask` 가 **런의 99.8 % 동안 0** 이었다. 손끝 힘을
+     읽으며 작은 스텝(검지 폐쇄율 0.01 ≈ 0.004 rad)으로 접근해 **2~7 N 밴드에 들면 멈춘다**.
+  8. **같은 target 을 재전송하지 말 것** — `hand_new_target_pending_` 이 서면 궤적이
+     **측정 위치에서 다시 시작**하므로 간극이 0 으로 떨어졌다가 램프로 복구된다. 즉
+     유지용 재전송이 매번 파지를 잠깐 푼다. 컨트롤러가 자기 target slot 을 들고 있으므로
+     재전송은 애초에 불필요하다 — 1 초마다 재전송하며 직후에 샘플하면 **CSV 는 멀쩡한데
+     토픽은 0 N** 으로 읽힌다 (2026-09-12 에 한 번 이렇게 오진했다).
+  9. **compliance 가 렌치를 소비하면 팔이 물체에서 걸어 나간다** — `K_p^a = 0`
+     hand-guiding 이라 정상 힘이 compliant frame 을 밀고, 디스크는 100 kg 받침에
+     고정돼 따라오지 못한다. 실측 `260912_1845`: `alpha` 1.0, `|x̃|` **4.22 cm**
+     (`disp_limited` 0), 팔 관절 0.093 rad 이동, 그리고 **0.37 s 만에 접촉 소실**.
+     ⇒ **이 fixture 로는 "pull 이 valid 를 지속하는가" 를 판정할 수 없다.** 지속 관측에는
+     손을 따라올 수 있는 물체(매달린 씬)가 필요하고, 그것이 `#177` crit#6 ① 의 선행조건과
+     같은 산출물이다.
+
+  **⇒ 지속 관측용 두 번째 fixture 가 있다: `sim_overlay:=fingertip_grasp_free`**
+  (`robot_descriptions/objects/fingertip_disk_free/object.xml`). 같은 스탠드·같은 스폰·같은
+  손끝 밴드지만 디스크가 **자식 body 로 분리돼 6-DOF + `gravcomp="1"`** 이라 손을 따라온다.
+  쓰는 쪽 규칙이 셋 더 붙는다 — 전부 2026-09-12 실측이다:
+
+  10. **무중력 자유물체는 첫 접촉에 밀려나고 돌아오지 않는다.** 중력이 원래 물체를 앉혀 두는
+      역할을 하므로, 그걸 끄면 착좌를 잃는다. 그래서 슬라이드에 **약한 복원 스프링**
+      (150 N/m, near-critical damping) 을 넣었다. 스프링 없이 돌린 첫 런은 `fi=1.0`·엄지
+      0.40 rad 까지 닫아도 네 손끝 **20 초 내내 0.00 N** 이었다.
+  11. **자유물체는 순차 폐쇄로 못 잡는다 — 손가락을 번갈아 진행시킨다.** 검지를 먼저 밴드까지
+      밀면 엄지가 닿기 한참 전에 디스크를 밀어낸다 (고정 디스크에서는 안 보이는 실패다).
+      매 스텝 **힘이 작은 쪽**을 한 칸 진행시키면 두 접촉이 같이 도착한다 — 실측 엄지 1.53 N /
+      검지 1.50 N 으로 대칭 파지가 섰고 디스크는 제자리였다.
+  12. **자유물체는 파지력이 스스로 빠진다 — 유지하려면 grip 서보가 필요하다.** 디스크가
+      스프링 평형으로 물러나면 손가락이 지령 자세에 도달해 접촉력이 사라진다 (1.5 N → 0.05 N,
+      20 초). p1b 는 `grasp_controller_type: "none"` 이라 컨트롤러가 이 루프를 안 닫으므로
+      **fixture 드라이버가 닫아야 한다** (1 초 주기로 밴드 밖이면 한 칸). 이때의 재전송은 11번의
+      금지 대상이 아니다 — *새* target 이라 정당하고, 다시 시작되는 램프가 짧다.
+
+  이 fixture 로 **`#504` AC 2 가 닫혔다**: 지원 순서 + 위 세 규칙으로 pull 이 세션의 **39.6 %
+  (23960 tick, 최장 연속 12610 tick)** 동안 `valid`·`contact_mask=0b011` 을 유지했고
+  (`|F̂|` 평균 0.068 N, `Σf_n` 평균 2.63 N, `|x̃|` 최대 1.95 cm), 같은 fixture 의 반대 순서는
+  전환 직후 0.00 N 으로 떨어져 6 초간 회복하지 않았다.
+
+  **아직 못 하는 것 — `#177` crit#6 ① 의 grip sweep.** 자유 디스크에서는 **정상상태 파지력이
+  복원 스프링에 묶인다**: 손가락을 12 단계 더 밀어도 정착 힘이 0.9 → 1.6 N 밖에 안 움직였다
+  (팔은 0.0004 rad 로 정지, 즉 참하중은 제대로 고정됐다). `d\|F̂\|/dΣf_n` 회귀는 `Σf_n` 스프레드
+  ≥2 N 을 요구하므로 **이 상태로는 전제 게이트에서 거부된다.** 원인은 **두 손끝이 충분히
+  마주보지 않는 것** — 잘 대향된 pinch 만이 물체를 밀어내지 않고 내부력을 키울 수 있다.
+  다음 세션의 작업은 그 대향 기하(폐쇄 스케줄 또는 디스크 방향/두께)이지 더 센 스프링이
+  아니다 — 스프링을 키우면 참하중이 파지력을 따라 움직여 전제 자체가 깨진다.
+
   그리고 접촉을 **어떻게 판정하지 않을지**도 위와 같은 무게로 정해져 있다. **joint_states 를 kinematic FK 로 재현해 접촉을 추정하지 말 것**: 이 손은 폐쇄 체인이라 수동 linkage 관절이 qpos 에 따로 있고, 그것을 0 으로 둔 재구성은 손끝이 상판을 1 cm 파고든 것처럼 보이는 **허상**을 만든다. 그리고 **팔이 어디까지 내려가는지는 아직 안 갈렸다**: `scene_with_table.xml` 의 배너 주석은 palm 을 `z = 0.049` 까지 내릴 수 있다고 적는데(자유공간 유도) 위 `shoulder_lift ≈ -0.72` 는 상판·물체에 막힌 실측이고, 둘을 맞춰 본 적이 없다. 컨트롤러나 정책이 물체를 못 잡을 때 **원인이 그쪽인지 씬인지 가르려면 이 실측이 선행**한다.
-- **compliance 외부 렌치의 sim 도달 가능성은 프로필마다 다르고, 2026-09-11 에 바뀌었다.** `FromPullEstimate` 는 `vtcp.valid` 없이 publish 하지 않는데, 출하 `virtual_tcp_mode` 가 세 프로필 모두 `"constant"` 가 되면서 (`1b29c1d5`; iiwa7_leap 은 종전 `"disabled"`, p1a·p1b 는 `"centroid"`) 그 게이트는 **이제 어디서나 열린다** — `kConstant` 는 손끝 참여와 무관하게 offset 이 유한하면 `valid` 다 (`integrated_bringup/include/integrated_bringup/support/virtual_tcp.hpp`). 남는 축은 **지문력 lane 이 있느냐**다: `ur5e_p1b`·`iiwa7_leap` 은 sim 에서 손끝 contact wrench 를 받고 (`sim.yaml` 의 `devices.<hand>.backend.fingertip_wrench_topics`, 부호는 실기와 같은 finger-on-object), **`ur5e_p1a` 는 그 lane 도 잡을 물체도 없다**. ⇒ 종전의 "iiwa7_leap sim 에서 한 샘플도 안 나온다" 는 **더 이상 근거가 아니다**. **2026-09-12 실측으로 닿는 것을 확인했다** (`ur5e_p1b`, 아래 p1b 항목의 파지 절차): pull estimate `valid=1` · `contact_mask=0b011`(thumb+index) · `|F̂|` 6.8 N · `leakage_bound` 0.57 N · `basis_source=REFERENCE`, 그리고 compliance 쪽 `compliance_diag.csv` 가 `wrench_valid=1`, `|f|` 최대 **7.96 N**, `bias_calibrated=1`(D-A5 100 샘플 완주 — 2026-09-04 실기에서는 22 tick 뿐이라 끝내 false 였다), **compliance §10.7 램프 α 0→1 이 0.688 s**, `|x̃|` 최대 **1.46 cm** (15 cm envelope 의 10 %, `disp_limited`·`vel_limited` 0). ⇒ **compliance §7.4 envelope·bias 표류·램프는 이제 sim 에서 관측 가능하다.** 단 **파지가 전환을 못 넘긴다** (`#504`): joint→compliance 스위치 직후 sum|f| 18.5 N → 0 N, 두 손끝이 `contact_on_threshold` 0.5 N 아래로 떨어지기까지 **238 ms**, compliance 가 본 유효 pull tick 은 **213개 / 0.494 s** 뿐이다. 그러므로 **정상상태 envelope 소진(α>0 지속)을 보려면 `#504` 가 먼저 닫혀야 한다** — 이 sim 은 기전 재현과 회귀 red 까지이고 정상상태 hand-guiding 이 아니다. 한편 프레임 전이(vTCP ⇄ tool0) 경로는 여전히 출하 설정으로 도달 불가인데, 이유가 바뀌었다: `"constant"` 는 매 tick `is_vtcp=true` 로 고정이라 kind 가 flip 하지 않는다. 그걸 겨냥한 테스트는 그대로 `set_gains()` 로 모드를 명시적으로 바꾸고 그 전제를 단언해야 한다 (`test_compliance_admittance_coupling` 의 kind-change 테스트가 그 형태).
+- **compliance 외부 렌치의 sim 도달 가능성은 프로필마다 다르고, 2026-09-11 에 바뀌었다.** `FromPullEstimate` 는 `vtcp.valid` 없이 publish 하지 않는데, 출하 `virtual_tcp_mode` 가 세 프로필 모두 `"constant"` 가 되면서 (`1b29c1d5`; iiwa7_leap 은 종전 `"disabled"`, p1a·p1b 는 `"centroid"`) 그 게이트는 **이제 어디서나 열린다** — `kConstant` 는 손끝 참여와 무관하게 offset 이 유한하면 `valid` 다 (`integrated_bringup/include/integrated_bringup/support/virtual_tcp.hpp`). 남는 축은 **지문력 lane 이 있느냐**다: `ur5e_p1b`·`iiwa7_leap` 은 sim 에서 손끝 contact wrench 를 받고 (`sim.yaml` 의 `devices.<hand>.backend.fingertip_wrench_topics`, 부호는 실기와 같은 finger-on-object), **`ur5e_p1a` 는 그 lane 도 잡을 물체도 없다**. ⇒ 종전의 "iiwa7_leap sim 에서 한 샘플도 안 나온다" 는 **더 이상 근거가 아니다**. **2026-09-12 실측으로 닿는 것을 확인했다** (`ur5e_p1b`, 아래 p1b 항목의 파지 절차): pull estimate `valid=1` · `contact_mask=0b011`(thumb+index) · `|F̂|` 6.8 N · `leakage_bound` 0.57 N · `basis_source=REFERENCE`, 그리고 compliance 쪽 `compliance_diag.csv` 가 `wrench_valid=1`, `|f|` 최대 **7.96 N**, `bias_calibrated=1`(D-A5 100 샘플 완주 — 2026-09-04 실기에서는 22 tick 뿐이라 끝내 false 였다), **compliance §10.7 램프 α 0→1 이 0.688 s**, `|x̃|` 최대 **1.46 cm** (15 cm envelope 의 10 %, `disp_limited`·`vel_limited` 0). ⇒ **compliance §7.4 envelope·bias 표류·램프는 이제 sim 에서 관측 가능하다.** 단 **파지가 전환을 못 넘긴다** (`#504`): joint→compliance 스위치 직후 sum|f| 18.5 N → 0 N, 두 손끝이 `contact_on_threshold` 0.5 N 아래로 떨어지기까지 **238 ms**, compliance 가 본 유효 pull tick 은 **213개 / 0.494 s** 뿐이다. **`#504` 의 답은 코드가 아니라 순서다 (방향 (a))** — 위 p1b 항목의 파지 절차가 그 순서를 갖는다. 그리고 **정상상태 envelope 소진(α>0 지속)은 이 fixture 로는 못 본다**: 순서를 지켜 파지해도 렌치가 유효해지는 순간 팔이 고정된 물체에서 걸어 나가 0.37 s 만에 접촉이 끊긴다 (2026-09-12 실측, 위 9번). 이 sim 은 기전 재현과 회귀 red 까지이고 정상상태 hand-guiding 이 아니다. 한편 프레임 전이(vTCP ⇄ tool0) 경로는 여전히 출하 설정으로 도달 불가인데, 이유가 바뀌었다: `"constant"` 는 매 tick `is_vtcp=true` 로 고정이라 kind 가 flip 하지 않는다. 그걸 겨냥한 테스트는 그대로 `set_gains()` 로 모드를 명시적으로 바꾸고 그 전제를 단언해야 한다 (`test_compliance_admittance_coupling` 의 kind-change 테스트가 그 형태).
 - **force_pi FSM 은 물체 없이 GRASP 하면 ~1.3s 만에 Idle 로 자동 복귀**한다 (approach ramp 완료/abort). phase 가 non-Idle 인 창을 노리는 검증은 순차 CLI 로 놓친다 — 한 rclpy 프로세스 안에서 `grasp_command` 호출 직후 대상 호출을 연달아 실행할 것.
 - **`demo_inference_controller` 는 정책 파일 없이도 뜬다** (`allow_missing_model: true`) — 그때는 매 tick **활성화 시점에 래치된 자세**를 유지한다. 이 경로의 회귀 센서는 hold 자체가 아니라 **drift** 다: 측정 q 를 매 tick 그대로 명령하면 position servo 오차가 0 이라 토크가 안 나오고 팔이 중력에 처진다 (실측 15 s 에 0.0147 rad, 시작 자세에서 0.2 rad 이탈). 래치 후 실측은 15 s 에 **0.000000 rad**. `/ur5e/joint_states` 를 15 s 받아 첫 샘플과의 최대 편차를 보면 된다 — **QoS 는 BEST_EFFORT depth 1** 이어야 하고 (기본 RELIABLE 구독자는 "incompatible QoS" 경고와 함께 0 메시지를 받는다) sim 은 lock-step 이라 `/ur5e/joint_command` 를 직접 구독하는 것보다 이쪽이 확실하다.
 - 기본 active 컨트롤러는 launch 마다 다르다 — p1a 는 `demo_wbc_controller`, **p1b 는 `demo_joint_controller`**. p1b 에서 `DemoWbcController timing:` 로그가 안 보이는 것은 기동 실패가 아니다.

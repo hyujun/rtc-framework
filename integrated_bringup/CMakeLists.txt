@@ -572,6 +572,30 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── #504: activation re-seed vs. a standing hand gap ───────────────────────
+  # Same fixture as the equivalence suite (URDF model + the shipped controller
+  # YAML), a separate binary because the claim is neither "same as demo_task" nor
+  # "the §7 law": it is what the shipped GRASP PROCEDURE rests on, and the file
+  # that fails should name that.
+  ament_add_gtest(test_compliance_activation_hand_gap
+    test/test_compliance_activation_hand_gap.cpp)
+  target_compile_definitions(test_compliance_activation_hand_gap PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_compliance_activation_hand_gap
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_compliance_activation_hand_gap
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # ── #469 S3: the §7 admittance law as this binding wires it ────────────────
   # A separate binary from the equivalence suite on purpose: that one asserts
   # this controller is INDISTINGUISHABLE from its sibling, this one asserts what

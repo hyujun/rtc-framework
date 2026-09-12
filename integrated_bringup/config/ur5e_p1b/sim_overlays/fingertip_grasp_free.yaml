@@ -1,0 +1,55 @@
+# sim overlay — the same p1b grasp as `fingertip_grasp`, on a FREE object (#504 AC 2, #177 crit#6)
+#
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
+#       sim_overlay:=fingertip_grasp_free enable_viewer:=false use_cpu_affinity:=false
+#
+# Identical to `fingertip_grasp.yaml` except for which object is spawned, because
+# the two objects are built to be interchangeable: same stand, same spawn, same
+# disk at world z 0.335..0.365, so the closure schedule that grasps one grasps
+# the other and the two runs are comparable.
+#
+# WHICH ONE TO USE:
+#
+#   fingertip_grasp       — rigid disk, bolted to the stand. Answers "does the
+#                           grasp form, and does the controller switch keep it"
+#                           (#504). Cannot answer anything about DURATION: once
+#                           DemoComplianceController consumes a wrench, K_p^a = 0
+#                           hand-guiding walks the arm (4.22 cm measured) and the
+#                           bolted disk cannot follow — contact ends in 0.37 s.
+#
+#   fingertip_grasp_free  — THIS ONE. The disk is a 6-DOF child body with
+#                           `gravcomp="1"`: free to travel with the hand, and
+#                           weightless, so the force it returns to the grasp is a
+#                           constant the experiment knows (zero) no matter how
+#                           hard the fingers squeeze. That is what "sustained
+#                           pull" (#504 AC 2) and the leakage regression
+#                           d|F̂|/dΣf_n <= sin(alignment_error_rad) (#177 crit#6 ①)
+#                           both need.
+#
+# Everything else about running it — the order (activate compliance BEFORE
+# closing, #504), closing on a FORCE BAND rather than an angle (over
+# `force_saturation` 15 N a fingertip drops OUT of the contact set), and not
+# re-publishing a held target — is in `.claude/skills/verify/SKILL.md` (p1b).
+
+mujoco_simulator:
+  ros__parameters:
+    # The shipped scene is kept: the table is what anchors the 100 kg stand.
+    object_pool:
+      # This repo's own objects (robot_descriptions/objects), not object_sim.
+      directory: "package://robot_descriptions/objects"
+      objects: ["fingertip_disk_free"]
+      fixed_object: "fingertip_disk_free"
+      selection: "fixed"
+      pose: "fixed"
+      # Same spawn as fingertip_grasp.yaml, and for the same reasons: (x,y) is
+      # the grid-search result — the one place the open hand leaves a
+      # fingertip-reachable void — and z = 0.051 puts the stand's bottom 0.001
+      # above the table top while carrying the disk to 0.335..0.365, the band the
+      # fingertips alone sweep. The two overlays must keep this in step or the
+      # rigid and free runs stop being comparable.
+      position: [-0.630, -0.165, 0.051]
+      rpy: [0.0, 0.0, 0.0]
+      position_variation: [0.0, 0.0, 0.0]
+      rpy_variation: [0.0, 0.0, 0.0]
+      avoid_repeat: false
+      seed: 1
