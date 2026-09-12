@@ -47,7 +47,17 @@ namespace integrated_bringup {
 /// An enum value with no implementation turns a config typo into a runtime
 /// throw that reads as a bug in the controller; a value that simply does not
 /// exist is rejected by the same parser path as any other misspelling, which is
-/// what an operator can act on. It is added when its adapter is (#469 S6).
+/// what an operator can act on.
+///
+/// It is no longer waiting on anything: #469 S6 was the slice that would have
+/// added it, and #502 — which inherited S6 — was CLOSED 2026-09-12 without
+/// building the adapter. The reason is upstream of this enum. The momentum
+/// observer needs an effort lane that is natively N·m, UR reports motor
+/// current, and the current-to-torque conversion covers only three of six
+/// joints (ur5e_p1{a,b}/controllers/demo_shared.yaml owns that measurement).
+/// So the only arm that could drive this source today is iiwa7_leap, and
+/// nobody has asked compliance to run off a residual there. A second value
+/// therefore needs a NEW issue, and ARCH-3 still fires when it does.
 ///
 /// Values are wire constants (they reach the CSV diagnostic lane) — never
 /// renumber.

@@ -224,9 +224,11 @@ demo_compliance_controller:
   # this pair.
   #
   # Required with no default, and the ONLY accepted value today. A
-  # momentum-observer source is designed but not implemented (#469 S6), so
-  # writing `momentum_observer` here is refused by the same path as a typo — the
-  # bring-up stops rather than the arm running on an estimate nobody selected.
+  # momentum-observer source is designed but NOT BUILT — #502 (which owned that
+  # slice) was closed 2026-09-12 without it — so writing `momentum_observer`
+  # here is refused by the same path as a typo, and the bring-up stops rather
+  # than the arm running on an estimate nobody selected. Why it was not built is
+  # owned by the enum in support/compliance_wrench_source.hpp.
   #
   # S2 parses this and stops. S3 is what turns it into a wrench.
   external_wrench:

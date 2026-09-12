@@ -204,6 +204,15 @@ demo_shared:
   # downstream can check either half — a lane in the wrong unit, or one missing
   # a term, is fresh and full and wrong, and the residual absorbs the
   # difference as an external torque.
+  #
+  # WHY THIS PROFILE IS THE ONE WITH IT ON (decided 2026-09-12, #502 closed):
+  # the observer runs where the effort lane is NATIVELY N·m, and this arm is
+  # that case in BOTH modes — MuJoCo fills efforts from qfrc_actuator +
+  # qfrc_applied + qfrc_gravcomp, and the iiwa7 carries joint torque sensors on
+  # hardware. The UR profiles report motor current and are not converted;
+  # ur5e_p1{a,b}/controllers/demo_shared.yaml carries that measurement and that
+  # half of the decision. The rule is the robot's capability, not the sim/robot
+  # split: a UR in sim would still be off.
   momentum_observer:
     enabled: true
     # K_I [1/s], per arm joint. A scalar broadcasts to every joint; a list must

@@ -249,10 +249,10 @@ TEST_F(PullWrenchSource, LeakageBoundThatSwallowsTheEstimateRaisesQualityLow) {
 
 // ── 9. The enum carries no value it cannot serve ────────────────────────────
 //
-// `kMomentumObserver` is absent on purpose (#469 S6 adds it with its adapter):
-// a declared-but-unimplemented value turns a config typo into a runtime throw
-// that reads as a controller bug, where a value that simply does not exist is
-// rejected by the same path as any other misspelling.
+// Pins the enum to exactly one value, so adding a second one has to come with
+// a deliberate edit here. WHY there is only one — and why it is absent rather
+// than declared-and-rejected — is owned by the enum's own comment in
+// support/compliance_wrench_source.hpp.
 TEST(PullWrenchSourceEnum, OnlyTheImplementedSourceIsDeclared) {
   EXPECT_EQ(static_cast<std::uint8_t>(ComplianceWrenchSource::kPullEstimator), 0);
 }

@@ -271,11 +271,25 @@ demo_shared:
   # is worse than a visibly broken estimator would be — a correct filter fed a
   # wrong-unit lane publishes a confident, plausibly scaled, wrong wrench.
   #
-  # Re-enable only when the effort lane carries N·m: a backend that measures
-  # current converts at its own boundary and leaves the raw value in
+  # DECIDED 2026-09-12 (#502, closed): this stays off on UR permanently. The
+  # momentum observer is a feature of arms whose hardware reports JOINT TORQUE.
+  # UR reports current, and this repo does not convert it.
+  #
+  # The conversion was attempted, which is why this is a decision and not an
+  # omission. #177 S1 identified per-joint current-to-torque constants on
+  # hardware — shoulder_lift 6.2-6.5, elbow 4.6-6.0, wrist_1 5.0-6.7 N·m/A —
+  # so the "no identified constant" reading of the 2026-08-27 fit above is
+  # superseded. It does not help: those are THREE of six joints. shoulder_pan
+  # cannot be identified from gravity loading even in principle, wrist_2/3 lack
+  # the moment arm, and the three that exist carry ~9 % spread. A residual is a
+  # whole-arm quantity, so half an arm of constants converts nothing.
+  #
+  # `enabled: true` therefore needs a different robot, not a better fit. The
+  # escape hatch in the contract is unchanged and unused here: a backend that
+  # measures current may convert at its own boundary and leave the raw value in
   # DeviceState::motor_efforts (momentum_observer_wiring.hpp D10 clause 1).
-  # iiwa7_leap stays enabled because MuJoCo fills efforts from qfrc_actuator +
-  # qfrc_applied + qfrc_gravcomp, which is genuine N·m.
+  # The profile that satisfies the precondition natively is iiwa7_leap, and its
+  # own demo_shared.yaml carries that side of the decision.
   momentum_observer:
     enabled: false
     # K_I [1/s], per arm joint. A scalar broadcasts to every joint; a list must
