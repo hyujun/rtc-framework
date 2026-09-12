@@ -729,6 +729,17 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       // NOT the `ẋ̃ ≈ 0` auto re-anchor §5/§10 defer: that one is a heuristic
       // trigger for extending CONTINUOUS guiding, and it stays deferred. This
       // fires only where the binding itself moves X_d.
+      //
+      // WHAT WOULD UN-DEFER IT, because the order is easy to get backwards: a
+      // real guide that actually SPENDS the §7.4 envelope. That is a question
+      // about how this hardware gets handled, not about an algorithm, so a sim
+      // run cannot supply it — the 2026-09-12 rule ("sim closes algorithm
+      // questions, hardware closes physical ones") moves the VERIFICATION of
+      // such a feature to sim, never the reason to build it. 2026-09-04 on p1b
+      // the ramp sat at alpha = 0 for the whole activation, so the envelope was
+      // never touched and there is still nothing to extend; sim grasps since
+      // then stop far short of the box with `disp_limited` clear. Build it when
+      // a guide runs out of envelope on the robot, not before.
       admittance_.Reset();
     }
   }
