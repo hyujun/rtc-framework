@@ -33,6 +33,25 @@
 
 mujoco_simulator:
   ros__parameters:
+    # ── Contact-point debug lane, ON for this fixture only ──────────────────
+    # Adds <tip>/contact_point (PointStamped, world frame) and <tip>/contact_depth
+    # next to the wrench topics. The shipped profile leaves it off; this overlay
+    # turns it on because the question this fixture exists to answer needs it.
+    #
+    # The wrench lane says how hard each fingertip presses, each in its OWN
+    # frame, and that is not enough to tell a pinch that opposes from one that
+    # pushes: two 1.5 N fingertips 180 deg apart squeeze an object in place,
+    # while the same two at 90 deg shove it away, and the magnitudes are
+    # identical. WHERE the fingers touch settles it — and on this closed-chain
+    # hand it cannot be recovered from joint states, because the passive linkage
+    # joints make an FK reconstruction a phantom. It also reads out the premise
+    # #177 crit#6 stands on: the midpoint of the two contact points travels with
+    # the disk, so "the true load is held constant" becomes a measurement rather
+    # than an assumption about the spring.
+    robot_response:
+      p1b:
+        contact_wrench:
+          publish_debug: true
     # The shipped scene is kept: the table is what anchors the 100 kg stand.
     object_pool:
       # This repo's own objects (robot_descriptions/objects), not object_sim.

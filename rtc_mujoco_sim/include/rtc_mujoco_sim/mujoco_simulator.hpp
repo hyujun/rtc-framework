@@ -222,8 +222,14 @@ struct JointGroupConfig {
     // Suffix list ordered longest-first so "_tip_contact" matches before "_contact".
     std::vector<std::string> sensor_name_suffixes{"_tip_contact", "_contact"};
     std::vector<std::string> reference_site_suffixes{"_tip_ft_site", "_ft_site"};
-    bool publish_state{false};            // <target>/contact_state (std_msgs/Bool)
-    bool publish_debug{false};            // <target>/contact_point + contact_depth
+    bool publish_state{false};  // <target>/contact_state (std_msgs/Bool)
+    // <target>/contact_point (geometry_msgs/PointStamped, WORLD frame) and
+    // <target>/contact_depth (std_msgs/Float64, MuJoCo's signed contact
+    // distance — negative is penetration). Off by default because they are a
+    // diagnostic: the wrench lane says how hard a fingertip presses, these say
+    // WHERE, which on a closed-chain hand cannot be recovered from joint states
+    // (the passive linkage joints make an FK reconstruction a phantom).
+    bool publish_debug{false};
     bool allow_partial_discovery{false};  // false=fail if any sensor unresolved
 
     // ── Which frame the published wrench is expressed in ────────────────────
