@@ -41,7 +41,7 @@ import os
 from typing import Any
 
 import pytest
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -388,7 +388,25 @@ def _node_parameter_sources(node, context) -> list:
         if isinstance(entry, dict):
             out.append({perform_substitutions(context, list(key)) for key in entry})
         else:
-            out.append(perform_substitutions(context, entry.param_file))
+            try:
+                out.append(perform_substitutions(context, entry.param_file))
+            except PackageNotFoundError as exc:
+                # A `FindPackageShare` for a package this workspace does not
+                # have. CI is exactly that workspace: `.github/ci-packages.yml`
+                # leaves `rtc_mujoco_sim` out on purpose (MuJoCo is not
+                # installed there), so resolving its `solver_param.yaml` raises
+                # while every path this file asserts on — all of them
+                # integrated_bringup's — resolves fine.
+                #
+                # The entry keeps its SLOT, which is the only thing these cases
+                # read: they compare the index of the overlay against the index
+                # of the profile yaml and of the CLI dict. Dropping it would
+                # shift every later index; skipping the whole case would make
+                # the sensor vacuous on the one machine that gates the merge.
+                # Only this one exception type is absorbed, and the placeholder
+                # names the package so a reader is never left guessing which
+                # slot went unresolved.
+                out.append(f"<unresolved package: {exc}>")
     return out
 
 
