@@ -46,7 +46,12 @@ D13 every ``CLAUDE.md §N[.M]`` / ``AGENTS.md §N[.M]`` reference -- plain or in
     a numbered heading the target file actually has, and a bare ``§N`` inside a
     constitution resolves against that file's own headings.  D10 only checks
     that a ref carries a namespace; a renumbering keeps the namespace and loses
-    the section, which is exactly the drift D10 cannot see.
+    the section, which is exactly the drift D10 cannot see.  It checks that the
+    section EXISTS, not that it is the right one: a ref re-pointed onto another
+    real section passes.  Merging CLAUDE.md into AGENTS.md left four such refs
+    green (a quoted subsection title under the wrong number, a pointer to prose
+    that had moved into a hook header), so review re-pointed refs against their
+    context by hand.
 
 D8  no detection pattern parked in a markdown table cell.  A cell cannot hold
     an unescaped ``|``, so a regex put in one gets escaped into something
@@ -1016,7 +1021,7 @@ def check_rule_ids(repo: Repo, rel: str, text: str) -> list[Finding]:
     return findings
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def rule_id_defined(repo: Repo, owner: str, rid: str) -> bool:
     """True when *owner* defines *rid* (table row, heading, or bold label)."""
     path = repo.root / owner
