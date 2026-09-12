@@ -881,5 +881,100 @@ else
   skip "Phase 5 C++ case (44): no clang-format the hook can resolve"
 fi
 
+if have_ruff; then
+  # 45. Command substitution strips trailing newlines, so comparing "$(fmt)"
+  #     with "$(cat f)" read a missing final newline and trailing blank lines as
+  #     clean. Both are drift ruff format would rewrite.
+  dir=$(make_fixture)
+  mkdir -p "$dir/rtc_demo/rtc_demo"
+  printf 'x = 1' >"$dir/rtc_demo/rtc_demo/no_final_newline.py"
+  printf 'y = 1\n\n\n' >"$dir/rtc_demo/rtc_demo/trailing_blank_lines.py"
+  out=$(run_hook "$dir"); rc=$?
+  expect_contains "a missing final newline is formatter drift" "$out" "no_final_newline.py: formatter would rewrite"
+  expect_contains "trailing blank lines are formatter drift" "$out" "trailing_blank_lines.py: formatter would rewrite"
+  expect_exit "newline drift blocks the turn" "$rc" 2
+
+  # 46. Past the Stop-budget deadline Phase 5 stops grading and says which files
+  #     it skipped, instead of running into the SIGKILL. 45 above is the half
+  #     that proves the same input is drift when graded.
+  out=$(export RTC_VERIFY_FORMAT_DEADLINE_S=0; run_hook "$dir"); rc=$?
+  expect_contains "files past the deadline are listed as ungraded" "$out" "formatter drift NOT graded"
+  expect_exit "ungraded files do not block the turn" "$rc" 0
+  rm -rf "$dir"
+
+  # 47. format-code.sh's own output must pass Phase 5. With `ruff format` run
+  #     before `ruff check --fix`, UP015 dropped "r" from an over-long open()
+  #     that format had already split, and the one-line-fitting call stayed
+  #     split -- so a file written through Write was blocked as drift.
+  if command -v jq >/dev/null 2>&1; then
+    dir=$(make_fixture)
+    mkdir -p "$dir/rtc_demo/rtc_demo"
+    printf '[tool.ruff]\nline-length = 99\n\n[tool.ruff.lint]\nselect = ["UP015"]\n' >"$dir/pyproject.toml"
+    git -C "$dir" add -A && git -C "$dir" commit -qm pyproject
+    name=$(printf 'p%.0s' $(seq 1 77))
+    printf 'def f(%s):\n    with open(%s, "r") as fh:\n        return fh.read()\n' "$name" "$name" \
+      >"$dir/rtc_demo/rtc_demo/written_by_write.py"
+    jq -n --arg p "$dir/rtc_demo/rtc_demo/written_by_write.py" '{tool_input: {file_path: $p}}' \
+      | bash "$REPO_ROOT/.claude/hooks/format-code.sh"
+    out=$(run_hook "$dir"); rc=$?
+    expect_not_contains "a file format-code.sh just wrote is not graded as drift" "$out" "written_by_write.py"
+    expect_exit "a file format-code.sh just wrote does not block" "$rc" 0
+    rm -rf "$dir"
+  else
+    skip "format-code.sh round-trip (47): no jq"
+  fi
+else
+  skip "Phase 5 newline / deadline / format-code cases (45-47): no ruff the hook can resolve"
+fi
+
+# --- Documentation gate: whole-file and cross-file findings ----------------------
+
+# 48. D12's byte cap is a whole-file budget reported at line 1. The added-line
+#     narrowing dropped it, so a constitution grown past its cap by an edit in
+#     the middle passed here and only CI said so.
+dir=$(make_fixture)
+for i in $(seq 1 150); do printf -- '- rule %03d %s\n' "$i" "$(printf 'a%.0s' $(seq 1 100))"; done >"$dir/AGENTS.md"
+git -C "$dir" add -A && git -C "$dir" commit -qm constitution
+awk 'NR >= 70 && NR <= 90 { $0 = $0 " " sprintf("%0100d", 0) } { print }' "$dir/AGENTS.md" >"$dir/AGENTS.md.new"
+mv "$dir/AGENTS.md.new" "$dir/AGENTS.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a constitution grown past the byte cap mid-file is reported" "$out" "AGENTS.md:1: [D12]"
+expect_exit "a constitution over the byte cap blocks the turn" "$rc" 2
+rm -rf "$dir"
+
+# 49. Renumbering a constitution heading breaks refs in files the change never
+#     touched, and bare refs on unchanged lines of the constitution itself; the
+#     per-file, added-line scope saw neither. The heading change now resolves
+#     every section ref in the tracked corpus.
+dir=$(make_fixture)
+printf '# a\n\n## 6. Escalation\n\nsee §6 above.\n' >"$dir/AGENTS.md"
+printf '# ref\n\nsee AGENTS.md §6 for escalation.\n' >"$dir/agent_docs/ref.md"
+git -C "$dir" add -A && git -C "$dir" commit -qm numbered
+printf '# a\n\n## 6. Escalation\n\nsee §6 above.\n\nmore text.\n' >"$dir/AGENTS.md"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "an edit that keeps the headings does not scan the corpus" "$out" "numbered headings changed"
+expect_exit "an edit that keeps the headings does not block" "$rc" 0
+sed -i 's/^## 6\. Escalation$/## 7. Escalation/' "$dir/AGENTS.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "renumbering reports a ref in an untouched file" "$out" "agent_docs/ref.md:3: [D13]"
+expect_contains "renumbering reports a bare ref on an unchanged constitution line" "$out" "AGENTS.md:5: [D13]"
+expect_exit "renumbering that strands refs blocks the turn" "$rc" 2
+rm -rf "$dir"
+
+# 50. The import gate keyed on CLAUDE.md being in the change set, so removing
+#     either constitution file -- the most complete loss of the import -- was
+#     never reported.
+for gone in AGENTS.md CLAUDE.md; do
+  dir=$(make_fixture)
+  printf '@AGENTS.md\n\n# c\n' >"$dir/CLAUDE.md"
+  printf '# a\n' >"$dir/AGENTS.md"
+  git -C "$dir" add -A && git -C "$dir" commit -qm split
+  git -C "$dir" rm -q "$gone"
+  out=$(run_hook "$dir"); rc=$?
+  expect_contains "deleting $gone is reported as a lost import" "$out" "Constitution import missing"
+  expect_exit "deleting $gone blocks the turn" "$rc" 2
+  rm -rf "$dir"
+done
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

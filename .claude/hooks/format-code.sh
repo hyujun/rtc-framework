@@ -6,7 +6,7 @@
 # Trigger: every Edit / Write tool call by Claude. Reads {tool_input.file_path}
 #          from stdin JSON.
 # Format : C++ (.cpp/.hpp/.h/.cc)  -> clang-format -i (uses repo .clang-format)
-#          Python (.py)            -> ruff format + ruff check --fix
+#          Python (.py)            -> ruff check --fix, THEN ruff format
 # Lookup : clang-format prefers a system binary; if absent, falls back to the
 #          repo-pinned version via `uvx` (so environments without a system
 #          clang-format — e.g. fresh dev boxes / CI — still auto-format instead
@@ -66,8 +66,13 @@ case "$FILE_PATH" in
     ;;
   *.py)
     if RUFF_BIN=$(find_ruff); then
-      "$RUFF_BIN" format --quiet "$FILE_PATH" 2>/dev/null || true
+      # Autofix first, format last. The reverse order ends on an autofix that
+      # can leave a non-fixed-point file: `format` splits an over-long
+      # `open(name, "r")` across three lines, UP015 then drops `"r"`, and the
+      # call that now fits on one line stays split -- which verify-changes.sh
+      # Phase 5 grades as drift and blocks.
       "$RUFF_BIN" check --fix --quiet "$FILE_PATH" 2>/dev/null || true
+      "$RUFF_BIN" format --quiet "$FILE_PATH" 2>/dev/null || true
     fi
     ;;
 esac

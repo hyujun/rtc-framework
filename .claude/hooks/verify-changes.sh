@@ -65,6 +65,8 @@
 #          a formatter fixed point); pre-existing debt passes. See Phase 5.
 #        - `ruff check` lint is NOT graded; Doxygen, YAML default/range/unit and
 #          README need stay manual (modification-guide.md Completion Checklist).
+#        - takes what is left of the Stop budget: past
+#          RTC_VERIFY_FORMAT_DEADLINE_S (480s) the rest is listed as ungraded.
 #
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
@@ -342,11 +344,40 @@ resolve_clang_format() {
   return 1
 }
 resolve_clang_format && HAVE_CLANG_FORMAT=1 || HAVE_CLANG_FORMAT=0
+RUFF_BIN=$(find_ruff) || RUFF_BIN=""
+
+# The one formatter dispatch, shared by the pure-format fast path and Phase 5 so
+# the two cannot disagree about which files have a formatter or how it is run.
+# format_stdin <path>: format stdin the way <path> is formatted, to stdout.
+# Non-zero when <path> has no formatter here (type unsupported, tool absent) or
+# the run failed; a run is bounded because a cold uvx provisioning can stall.
+FORMAT_CALL_TIMEOUT_S=60
+format_stdin() {
+  case "$1" in
+    *.cpp|*.hpp|*.h|*.cc)
+      [ "$HAVE_CLANG_FORMAT" -eq 1 ] || return 1
+      timeout "$FORMAT_CALL_TIMEOUT_S" "${CLANG_FORMAT_CMD[@]}" --assume-filename="$1" 2>/dev/null
+      ;;
+    *.py)
+      [ -n "$RUFF_BIN" ] || return 1
+      timeout "$FORMAT_CALL_TIMEOUT_S" "$RUFF_BIN" format --stdin-filename="$1" - 2>/dev/null
+      ;;
+    *) return 1 ;;
+  esac
+}
+# format_fix_cmd <path>: the in-place fix, spelled with the binary that graded
+# <path> -- a bare `ruff` / `clang-format` may be absent here, or a different
+# version than the venv ruff / uvx-pinned clang-format, and then the "fixed"
+# file drifts again.
+format_fix_cmd() {
+  case "$1" in
+    *.py) printf '%s format %s' "$RUFF_BIN" "$1" ;;
+    *) printf '%s -i %s' "${CLANG_FORMAT_CMD[*]}" "$1" ;;
+  esac
+}
 
 is_pure_format() {
   [ "$HAVE_CLANG_FORMAT" -eq 1 ] || return 1
-  local RUFF_BIN
-  RUFF_BIN=$(find_ruff) || RUFF_BIN=""
 
   # No source files at all is NOT "pure format". The loop below iterates over
   # $CHANGED_SRC and returns success on an empty list, so a CMake-only or
@@ -380,22 +411,10 @@ is_pure_format() {
   local f head_fmt work_fmt
   for f in $CHANGED_SRC; do
     [ -f "$f" ] || return 1
-    case "$f" in
-      *.cpp|*.hpp|*.h|*.cc)
-        # Round-trip both versions through clang-format with $f as the
-        # filename hint so .clang-format / file-type rules apply.
-        head_fmt=$(git show "$VERIFY_BASE:$f" 2>/dev/null \
-                     | "${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" 2>/dev/null)
-        work_fmt=$("${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" < "$f" 2>/dev/null)
-        ;;
-      *.py)
-        [ -n "$RUFF_BIN" ] || return 1
-        head_fmt=$(git show "$VERIFY_BASE:$f" 2>/dev/null \
-                     | "$RUFF_BIN" format --stdin-filename="$f" - 2>/dev/null)
-        work_fmt=$("$RUFF_BIN" format --stdin-filename="$f" - < "$f" 2>/dev/null)
-        ;;
-      *) return 1 ;;
-    esac
+    # Round-trip both versions through the formatter with $f as the filename
+    # hint so .clang-format / pyproject / file-type rules apply.
+    head_fmt=$(git show "$VERIFY_BASE:$f" 2>/dev/null | format_stdin "$f") || return 1
+    work_fmt=$(format_stdin "$f" < "$f") || return 1
     # Empty output == formatter failure == not provably pure-format.
     [ -n "$work_fmt" ] || return 1
     [ "$head_fmt" = "$work_fmt" ] || return 1
@@ -849,13 +868,13 @@ DOC_FILES=()
 while IFS= read -r d; do
   [ -n "$d" ] && [ -f "$d" ] && DOC_FILES+=("$d")
 done <<< "$CHANGED_DOCS"
+# Resolved relative to this hook, not to PROJECT_DIR: the script ships in the
+# same repository as the hook, so this keeps working when the two are pointed
+# at different trees (as the routing tests do).
+HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+VALIDATE_DOCS="$HOOK_DIR/../../repo_scripts/scripts/validate_docs.py"
+[ -f "$VALIDATE_DOCS" ] || VALIDATE_DOCS="$PROJECT_DIR/repo_scripts/scripts/validate_docs.py"
 if [ "${#DOC_FILES[@]}" -gt 0 ]; then
-  # Resolved relative to this hook, not to PROJECT_DIR: the script ships in the
-  # same repository as the hook, so this keeps working when the two are pointed
-  # at different trees (as the routing tests do).
-  HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  VALIDATE_DOCS="$HOOK_DIR/../../repo_scripts/scripts/validate_docs.py"
-  [ -f "$VALIDATE_DOCS" ] || VALIDATE_DOCS="$PROJECT_DIR/repo_scripts/scripts/validate_docs.py"
   if [ -f "$VALIDATE_DOCS" ]; then
     # One invocation, and the verdict comes from the exit status. The previous
     # form piped through `xargs -0`, which re-invokes the validator once per
@@ -893,8 +912,14 @@ if [ "${#DOC_FILES[@]}" -gt 0 ]; then
         }
         # Validator findings are "path:line: [Dn] message"; anything else is a
         # summary or a traceback and must survive so real breakage stays loud.
+        # D12 line/byte caps are whole-file budgets reported at a nominal line
+        # (1, or cap+1) that the edit which blew the budget almost never adds,
+        # so they bypass the narrowing -- filtered, a constitution could grow
+        # past its cap here and only CI would say so.
         {
-          if (match($0, /^[^:]+:[0-9]+: \[D[0-9]+\] /)) {
+          if ($0 ~ /: \[D12\] [0-9]+ (bytes|lines) > [0-9]+ /) {
+            print "  - " $0
+          } else if (match($0, /^[^:]+:[0-9]+: \[D[0-9]+\] /)) {
             head = substr($0, 1, RLENGTH)
             sub(/: \[D[0-9]+\] $/, "", head)
             split(head, hp, ":")
@@ -909,6 +934,30 @@ if [ "${#DOC_FILES[@]}" -gt 0 ]; then
     fi
   fi
 fi
+
+# A constitution renumbering breaks section refs in files this change never
+# touched -- and bare refs on unchanged lines of the constitution itself -- which
+# the per-file, added-line scope above cannot see; CI's corpus scan would, one
+# push later. So when a constitution's numbered-heading set moved, resolve every
+# section ref in the tracked corpus, unnarrowed. D13 only (`--section-refs`): other
+# pre-existing debt in untouched files still cannot block the turn.
+constitution_sections() {  # stdin: markdown -> its numbered section ids, sorted
+  sed -nE 's/^#{2,3}[[:space:]]+([0-9]+(\.[0-9]+)?)\.?[[:space:]].*/\1/p' | sort
+}
+for c in AGENTS.md CLAUDE.md; do
+  echo "$CHANGED_TRACKED" | grep -qx "$c" || continue
+  [ -f "$c" ] && [ -f "$VALIDATE_DOCS" ] || continue
+  base_secs=$(git show "$VERIFY_BASE:$c" 2>/dev/null | constitution_sections || true)
+  [ "$base_secs" = "$(constitution_sections < "$c")" ] && continue
+  SECREF_RC=0
+  SECREF_OUT=$(python3 "$VALIDATE_DOCS" --section-refs 2>&1) || SECREF_RC=$?
+  if [ "$SECREF_RC" -ne 0 ]; then
+    SECREF_FAILURES=$(echo "$SECREF_OUT" | grep -vE '^$|finding\(s\) across' | sed 's/^/  - /')
+    DOC_FAILURES=$(printf '%s\n  - (%s numbered headings changed: section refs resolved corpus-wide)\n%s\n' \
+      "$DOC_FAILURES" "$c" "$SECREF_FAILURES" | awk 'NF && !seen[$0]++')
+  fi
+  break
+done
 
 YAML_FAILURES=""
 if [ -n "$CHANGED_YAML" ]; then
@@ -1206,32 +1255,40 @@ fi
 # outside the installed-source dirs is not graded. Fails OPEN when the formatter
 # is missing or prints nothing (a syntax error, uvx unable to provision): a
 # verdict needs output to compare, and this gate is style, not correctness.
+#
+# Compared byte-for-byte through files. `[ "$(fmt)" = "$(cat f)" ]` read a
+# missing final newline or trailing blank lines as clean, because command
+# substitution strips trailing newlines from both sides.
+#
+# Runs after the bounded build/test phases, so it gets whatever is left of the
+# Stop budget: once $SECONDS passes RTC_VERIFY_FORMAT_DEADLINE_S the remaining
+# files are listed as ungraded (non-blocking) rather than risking the SIGKILL
+# that would end the turn with no report at all.
 FORMAT_FAILURES=""
-RUFF_BIN_FMT=$(find_ruff) || RUFF_BIN_FMT=""
+FORMAT_UNGRADED=""
+FORMAT_DEADLINE_S="${RTC_VERIFY_FORMAT_DEADLINE_S:-480}"
+FMT_OUT=$(mktemp)
+FMT_BASE=$(mktemp)
 while IFS= read -r f; do
   [ -n "$f" ] && [ -f "$f" ] || continue
-  case "$f" in
-    *.cpp|*.hpp|*.h|*.cc)
-      [ "$HAVE_CLANG_FORMAT" -eq 1 ] || continue
-      FMT_CMD=("${CLANG_FORMAT_CMD[@]}" --assume-filename="$f")
-      FMT_FIX="clang-format -i $f"
-      ;;
-    *.py)
-      [ -n "$RUFF_BIN_FMT" ] || continue
-      FMT_CMD=("$RUFF_BIN_FMT" format --stdin-filename="$f" -)
-      FMT_FIX="ruff format $f"
-      ;;
-    *) continue ;;
-  esac
-  work_fmt=$("${FMT_CMD[@]}" < "$f" 2>/dev/null) || continue
-  [ -n "$work_fmt" ] || continue
-  [ "$work_fmt" = "$(cat "$f")" ] && continue
-  if git cat-file -e "$VERIFY_BASE:$f" 2>/dev/null; then
-    base_fmt=$(git show "$VERIFY_BASE:$f" | "${FMT_CMD[@]}" 2>/dev/null) || continue
-    [ "$base_fmt" = "$(git show "$VERIFY_BASE:$f")" ] || continue
+  if [ "$SECONDS" -ge "$FORMAT_DEADLINE_S" ]; then
+    FORMAT_UNGRADED="${FORMAT_UNGRADED} $f"
+    continue
   fi
-  FORMAT_FAILURES="${FORMAT_FAILURES}  - $f: formatter would rewrite it (not done by the Edit/Write hook) -- run: ${FMT_FIX}\n"
+  format_stdin "$f" < "$f" > "$FMT_OUT" || continue
+  [ -s "$FMT_OUT" ] || continue
+  cmp -s "$FMT_OUT" "$f" && continue
+  if git cat-file -e "$VERIFY_BASE:$f" 2>/dev/null; then
+    git show "$VERIFY_BASE:$f" > "$FMT_BASE" 2>/dev/null || continue
+    format_stdin "$f" < "$FMT_BASE" > "$FMT_OUT" || continue
+    cmp -s "$FMT_OUT" "$FMT_BASE" || continue
+  fi
+  FORMAT_FAILURES="${FORMAT_FAILURES}  - $f: formatter would rewrite it -- run: $(format_fix_cmd "$f")\n"
 done <<< "$CHANGED_SRC_BUILD"
+rm -f "$FMT_OUT" "$FMT_BASE"
+if [ -n "$FORMAT_UNGRADED" ]; then
+  CHECKLIST="${CHECKLIST}  - formatter drift NOT graded (${SECONDS}s of the Stop budget spent before Phase 5):${FORMAT_UNGRADED} -- run the formatter on these yourself\n"
+fi
 
 # --- Report ---
 REPORT=""
@@ -1269,14 +1326,22 @@ fi
 # from two hand-kept copies -- the copies went 4 commits stale, losing ARCH-7 and
 # NUM-5 for non-Claude tools -- and under the import it would recreate exactly
 # that duplication. What can still go wrong:
-#   * the import line is dropped: Claude Code silently loses the whole
-#     constitution, and nothing else in the harness would say so -> blocking;
+#   * the import is lost -- the line dropped, CLAUDE.md deleted, or AGENTS.md
+#     deleted or moved: Claude Code silently loses the whole constitution, and
+#     nothing else in the harness would say so -> blocking. Keyed on the BASE
+#     carrying the import, not on CLAUDE.md being in the change set, so a
+#     deletion or a rename of either file (which leaves CLAUDE.md untouched)
+#     is graded too;
 #   * a rule lands in CLAUDE.md, where no other tool reads it -> non-blocking,
 #     since only the agent can tell a rule from a mechanism.
-if echo "$CHANGED_TRACKED" | grep -qx 'CLAUDE.md' && [ -f AGENTS.md ]; then
-  if [ -f CLAUDE.md ] && ! grep -qx '@AGENTS.md' CLAUDE.md; then
-    REPORT="${REPORT}Constitution import missing:\n  - CLAUDE.md no longer has the line '@AGENTS.md' -- Claude Code would load none of AGENTS.md; restore it\n\n"
+if git show "$VERIFY_BASE:CLAUDE.md" 2>/dev/null | grep -qx '@AGENTS.md'; then
+  if [ ! -f CLAUDE.md ] || ! grep -qx '@AGENTS.md' CLAUDE.md; then
+    REPORT="${REPORT}Constitution import missing:\n  - CLAUDE.md is gone or no longer has the line '@AGENTS.md' -- Claude Code would load none of AGENTS.md; restore it\n\n"
+  elif [ ! -f AGENTS.md ]; then
+    REPORT="${REPORT}Constitution import missing:\n  - CLAUDE.md imports '@AGENTS.md' but AGENTS.md is gone from the repository root -- Claude Code would load no constitution; restore it\n\n"
   fi
+fi
+if echo "$CHANGED_TRACKED" | grep -qx 'CLAUDE.md' && [ -f CLAUDE.md ]; then
   CHECKLIST="${CHECKLIST}  - CLAUDE.md changed: it holds only Claude Code mechanisms — if the edit states a rule, put it in AGENTS.md (imported by CLAUDE.md) so other tools get it too\n"
 fi
 

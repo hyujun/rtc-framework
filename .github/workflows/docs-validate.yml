@@ -52,9 +52,14 @@ jobs:
       # Same trap for ruff: the routing suite's Phase 5 (formatter drift) cases
       # and the thread-layout generator's ruff-stability check both SKIP when no
       # ruff is resolvable, and a skip leaves the step green. Pinned so a ruff
-      # style release cannot flip those verdicts between runs; bump it on purpose.
+      # style release cannot flip those verdicts between runs -- to the version in
+      # requirements.in, read rather than copied, so CI grades with the formatter
+      # dev machines install and a bump there cannot leave this step behind.
       - name: Install ruff
-        run: python3 -m pip install --disable-pip-version-check ruff==0.15.20
+        run: |
+          pin=$(grep -E '^ruff==' requirements.in)
+          test -n "$pin"
+          python3 -m pip install --disable-pip-version-check "$pin"
 
       # The checker's own fixtures run first and gate the corpus scan. A
       # detector for silent failures that is merely green on this repository
