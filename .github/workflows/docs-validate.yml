@@ -49,6 +49,13 @@ jobs:
       - name: Install PyYAML
         run: python3 -m pip install --disable-pip-version-check pyyaml
 
+      # Same trap for ruff: the routing suite's Phase 5 (formatter drift) cases
+      # and the thread-layout generator's ruff-stability check both SKIP when no
+      # ruff is resolvable, and a skip leaves the step green. Pinned so a ruff
+      # style release cannot flip those verdicts between runs; bump it on purpose.
+      - name: Install ruff
+        run: python3 -m pip install --disable-pip-version-check ruff==0.15.20
+
       # The checker's own fixtures run first and gate the corpus scan. A
       # detector for silent failures that is merely green on this repository
       # has proven nothing; it has to be green on inputs whose answer is known
@@ -68,14 +75,6 @@ jobs:
       - name: Validate .claude/rules path globs
         run: python3 repo_scripts/scripts/validate_claude_rules.py
 
-      # The Stop hook is a stack of filters, and its failure mode is one layer
-      # silently cancelling a fix made in another. These assert the observable
-      # behaviour -- given this input, does the warning actually come out --
-      # rather than each layer in isolation, which is how the last regression
-      # got through.
-      - name: verify-changes.sh routing
-        run: bash repo_scripts/test/test_verify_changes.sh
-
       # ── Thread layout manifest (issue #153 M1) ───────────────────────────
       # The C++ artifact is emitted through clang-format so the checked-in file
       # matches what the repo's format hook would produce. Without the tool the
@@ -91,6 +90,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang-format shellcheck
+
+      # The Stop hook is a stack of filters, and its failure mode is one layer
+      # silently cancelling a fix made in another. These assert the observable
+      # behaviour -- given this input, does the warning actually come out --
+      # rather than each layer in isolation, which is how the last regression
+      # got through. Placed after the formatter installs: the pure-format and
+      # Phase 5 cases skip without clang-format / ruff, and skips stay green.
+      - name: verify-changes.sh routing
+        run: bash repo_scripts/test/test_verify_changes.sh
 
       # Fails when any generated artifact (C++ tier constants, shell helpers,
       # Python launch mirror, the two README tables) is stale or hand-edited.
