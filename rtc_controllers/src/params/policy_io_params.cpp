@@ -377,6 +377,27 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
       }
 
       rtc::inference::InputSegment seg{static_cast<int>(t), 0, count};
+      // BEFORE any claim: `claim` stamps `i` into `owner` and reads
+      // `features[slot]` back to name the first claimant. A feature that
+      // overlaps ITSELF (a resolver that hands back the same row name twice)
+      // hits its own stamp, and a push after the claims would leave that read
+      // one past the end while the message is being built.
+      spec.features.push_back(id);
+      // One element claimed for this feature, naming the first claimant if it is
+      // already taken. Shared by both placements, so a named and a positional
+      // tensor cannot disagree about what an overlap is.
+      const auto claim = [&](int idx) {
+        if (static_cast<std::size_t>(idx) >= numel) {
+          return;  // positional overflow — reported with the sum below
+        }
+        auto& slot = owner[static_cast<std::size_t>(idx)];
+        if (slot >= 0) {
+          Reject(at, " ('", id, "') claims element ", std::to_string(idx), " of '", spec.name,
+                 "', which '", spec.features[static_cast<std::size_t>(slot)], "' already fills");
+        }
+        slot = static_cast<int>(i);
+      };
+
       if (!spec.element_names.empty()) {
         if (!feature_rows) {
           Reject(at, " is placed by name ('", spec.name,
@@ -406,34 +427,24 @@ PolicyIoParams ParsePolicyIoParams(const YAML::Node& cfg, const FeatureSizeFn& f
             seg.indices.push_back(base + j);
           }
         }
+        // Claimed after the whole scatter is built, so a row name the export
+        // does not list is reported before any overlap it might also have.
+        for (const int idx : seg.indices) {
+          claim(idx);
+        }
       } else {
+        // A positional segment IS a contiguous run — `offset` plus `count` is
+        // the whole descriptor, and PackSegment branches on `indices.empty()`
+        // to scatter or to copy. So the run is claimed straight from the
+        // cursor: materialising the indices only to walk them and clear them
+        // left every positional segment holding a heap block nothing reads.
         seg.offset = cursor;
         for (int j = 0; j < count; ++j) {
-          seg.indices.push_back(cursor + j);  // coverage bookkeeping only; cleared below
+          claim(cursor + j);
         }
         cursor += count;
       }
 
-      // BEFORE the overlap walk, not after it: that walk stamps `i` into
-      // `owner` and then reads `features[slot]` to name the first claimant. A
-      // feature that overlaps ITSELF (a resolver that hands back the same row
-      // name twice) hits its own stamp, and with the push after the loop that
-      // read would land one past the end while building the message.
-      spec.features.push_back(id);
-      for (const int idx : seg.indices) {
-        if (static_cast<std::size_t>(idx) >= numel) {
-          continue;  // positional overflow — reported with the sum below
-        }
-        auto& slot = owner[static_cast<std::size_t>(idx)];
-        if (slot >= 0) {
-          Reject(at, " ('", id, "') claims element ", std::to_string(idx), " of '", spec.name,
-                 "', which '", spec.features[static_cast<std::size_t>(slot)], "' already fills");
-        }
-        slot = static_cast<int>(i);
-      }
-      if (spec.element_names.empty()) {
-        seg.indices.clear();  // positional: a contiguous run, the pre-scatter descriptor
-      }
       spec.segments.push_back(std::move(seg));
       seen_features.push_back(std::move(id));
       seen_feature_where.push_back(at);
