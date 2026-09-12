@@ -285,8 +285,6 @@ class DemoInferenceController final : public RTControllerInterface {
     return i < hold_counts_.size() ? hold_counts_[i] : 0;
   }
 
-  /// Bind the diag channel to a caller-owned producer, so a test can read the
-  /// rows the tick pushes without a session directory.
   /// The non-RT poll the log timer runs, for tests that drive Compute() by hand
   /// and have no executor spinning that timer.
   void PollDiagnosticsForTesting() { PollDiagnostics(); }
@@ -297,6 +295,8 @@ class DemoInferenceController final : public RTControllerInterface {
     return closed_chain_warnings_.load(std::memory_order_relaxed);
   }
 
+  /// Bind the diag channel to a caller-owned producer, so a test can read the
+  /// rows the tick pushes without a session directory.
   void SetInferenceDiagLogHandleForTesting(rtc::LogHandle<InferenceDiagLogPod> h) noexcept {
     inference_diag_log_handle_ = h;
   }
@@ -576,7 +576,6 @@ class DemoInferenceController final : public RTControllerInterface {
 
   /// Scratch. Fixed capacity, never resized on the tick path.
   std::array<double, kMaxArmDof + kMaxHandDof> scratch_measured_{};
-  std::array<double, kMaxFingertips> scratch_force_norm_{};
   std::array<double, kMaxOutputElements> scratch_head_{};
 
   // ── Device limits (configure-time, indexed by device) ─────────────────────
