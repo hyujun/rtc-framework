@@ -23,7 +23,7 @@
 6. Verify   → 본 문서 Completion Checklist 8항목 통과
 ```
 
-**※ 4·5·6은 반드시 수행한다. Claude Code 로 작업할 때는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 이를 자동 실행/차단하므로 사전 수동 실행이 빠른 피드백용이 되지만, 그 hook 은 Claude Code 전용이다 — 다른 도구(Codex · Copilot 등)에서는 돌지 않으므로 4·5·6 을 직접 실행해야 하며 무엇을 돌릴지는 [AGENTS.md](../AGENTS.md) §4 "커밋 전에 직접 돌려야 하는 것" 이 SSoT.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지(변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip)는 [verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더 주석이 SSoT 이고 [CLAUDE.md](../CLAUDE.md) §Claude Code 는 그 요약이다. hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **차단 탈출은 리포트 대응뿐이다**: 재진입은 `stop_hook_active` 로 가드되어 stop cycle 당 1회만 발화하므로 turn 이 무한히 물리지는 않지만, Claude Code 는 **8회 연속 차단 후 hook 을 override 하고 turn 을 끝낸다** ([공식 best-practices](https://code.claude.com/docs/en/best-practices), "Give Claude a way to verify its work") — 그 상한은 탈출구가 아니라 미검증 종료이므로, 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다.
+**※ 4·5·6은 반드시 수행한다. Claude Code 로 작업할 때는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 그중 기계 판정 가능한 부분을 자동 실행/차단하므로 그 부분의 사전 수동 실행은 빠른 피드백용이 되지만, 그 hook 은 Claude Code 전용이다 — 다른 도구(Codex · Copilot 등)에서는 돌지 않으므로 4·5·6 을 직접 실행해야 하며 무엇을 돌릴지는 [AGENTS.md](../AGENTS.md) §4 "커밋 전에 직접 돌려야 하는 것" 이 SSoT.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지(변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip)는 [verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더 주석이 SSoT 이고 [CLAUDE.md](../CLAUDE.md) §Claude Code 는 그 요약이다. hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **차단 탈출은 리포트 대응뿐이다**: 재진입은 `stop_hook_active` 로 가드되어 stop cycle 당 1회만 발화하므로 turn 이 무한히 물리지는 않지만, Claude Code 는 **8회 연속 차단 후 hook 을 override 하고 turn 을 끝낸다** ([공식 best-practices](https://code.claude.com/docs/en/best-practices), "Give Claude a way to verify its work") — 그 상한은 탈출구가 아니라 미검증 종료이므로, 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다.
 
 ### Workflow Fail-Safe
 
@@ -143,11 +143,12 @@ colcon test-result --verbose
 
 ## Completion Checklist
 
-이 절은 Claude Code 의 Stop hook 이 자동 수행하는 범위([verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더가 SSoT, [CLAUDE.md](../CLAUDE.md) §Claude Code 는 그 요약)의 **여집합** — 그 hook 이 있어도 검사되지 않으므로 항상 사람/에이전트가 직접 확인해야 하는 항목이다. **hook 이 없는 도구에서는 이것만으로 부족하다** — 먼저 [AGENTS.md](../AGENTS.md) §3 "커밋 전에 직접 돌려야 하는 것" 의 빌드·테스트·포맷·doc validation 을 수행하고, 그 위에 아래를 더한다.
+이 절은 Claude Code 의 Stop hook 이 자동 수행하는 범위([verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더가 SSoT, [CLAUDE.md](../CLAUDE.md) §Claude Code 는 그 요약)의 **여집합** — 그 hook 이 있어도 검사되지 않으므로 항상 사람/에이전트가 직접 확인해야 하는 항목이다. **hook 이 없는 도구에서는 이것만으로 부족하다** — 먼저 [AGENTS.md](../AGENTS.md) §4 "커밋 전에 직접 돌려야 하는 것" 의 빌드·테스트·포맷·doc validation 을 수행하고, 그 위에 아래를 더한다.
 
 - [ ] `package.xml` 의 **deps 의미·version** — hook 은 `find_package` 추가 시 `package.xml` co-update 여부만 blocking 으로 보고, 선언된 dep 이 실제로 맞는지는 보지 않는다
 - [ ] YAML 의 **default 값·유효 범위·unit 주석** — hook 은 parse 성공 여부만 본다
 - [ ] **Doxygen** public header 갱신 — hook 이 명시적으로 다루지 않는 항목이다 (cross-package doc 일관성도 동일)
+- [ ] **Python lint** (`ruff check`) — hook 은 변경이 *새로 만든* 포맷 drift 만 차단한다. lint 는 보지 않고, base 에서부터 포맷이 틀린 파일도 통과시킨다 (CI 는 포매팅 자체를 보지 않는다)
 - [ ] RT path 변경 시 [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect` 블록으로 자가검사 (RT-1~RT-10, RT-7 은 은퇴)
 
 ## Inferential review 트리거 (LLM-as-judge, 수동 trigger)

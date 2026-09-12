@@ -278,7 +278,8 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 의 `changes` job 주석).
   구조적으로는 push 런이 서로 취소되지 않게 concurrency group 에 SHA 를 넣는다 —
   [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 의 concurrency 주석이 SSoT.
-  같은 양식의 Stop hook 결함(변경 집합이 비어 게이트가 조용히 부재)은 [AGENTS.md](../AGENTS.md) §4
+  같은 양식의 Stop hook 결함(변경 집합이 비어 게이트가 조용히 부재)과 그 복구는
+  [verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더의 "Verification baseline" 주석이 SSoT.
 
 ## Controller-Specific
 
@@ -325,6 +326,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **복구**: 측정값·status 은 SSoT (코드/git log/측정 명령) 위임. 문서엔 *어떻게 측정하는지* 박제하고 *값 자체*는 박제하지 않는다. Status 는 git log + memory 에 자연히 남는다
 - **본 repo 사례 1 — 규칙 목록 사본**: 당시 CLAUDE.md 의 §3 에 박혀 있던 RT 금지 7개 목록이 invariants.md 의 9개와 갈라져 RT-9·RT-10 이 헌법에서 사라졌다. 같은 자리의 ARCH 5줄 사본도 ARCH-4 (integration 패키지의 `rtc_*/src/` private 헤더 include 금지, Critical) 와 ARCH-6 (QoS depth 1) 을 통째로 빠뜨린 채 굳어 있었다 (#229). 복구: 헌법은 ID 범위와 SSoT 포인터만 갖고 요약은 path-scoped rule 이 갖는다 — 어떤 파일 편집 시 로드되는지도 rule frontmatter glob 이 SSoT 이므로 박제하지 않는다
 - **본 repo 사례 2 — hook 서술 사본**: 당시 CLAUDE.md 의 §4 가 Stop hook 의 변경 집합 산정·allowlist·편입 이력을 291단어로 들고 있으면서 같은 단락에서 "hook 주석이 SSoT" 라고 선언했고, modification-guide.md 는 거꾸로 그 §4 를 SSoT 로 지목해 순환이 됐다 (#527). 복구: hook 헤더가 소유, 헌법은 3줄 요약 + 포인터
+- **본 repo 사례 3 — 등가 주장**: 목록을 복제하지 않고 "hook 이 이 목록과 같은 것을 수행한다" 는 한 줄만 남겨도 같은 drift 다. 헌법 통합 때 AGENTS.md §4 가 "Stop hook 이 자동 수행·차단하는 것과 같은 목록" 이라 적었으나 hook 은 포매팅·Doxygen 을 보지 않았고, 그 주장 탓에 Bash 로 쓴 파일의 포맷 누락 (PostToolUse 를 안 탐) 을 잡는 게이트가 없다는 사실이 가려졌다. 복구: 헌법은 "기계 판정 가능한 부분만 대신한다" + hook 헤더 포인터, 여집합은 modification-guide.md §Completion Checklist 가 소유
 
 ### AP-DOC-2: 판단의 *근거*를 두 번째 위치에 복사한다 (주석 포함)
 

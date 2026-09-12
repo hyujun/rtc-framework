@@ -13,13 +13,13 @@
 
 ## 2. Harness Overview
 
-에이전트 가이드는 **Agent = Model + Harness** 프레이밍의 5구성요소로 조직된다 (근거·출처·표: [agent_docs/harness-rationale.md](agent_docs/harness-rationale.md)) — **Guides** §3·§10 · **Sensors** §5 (computational)·§5.5 (inferential) · **Orchestration** §4 · **Escalation** §6·§6.5 · **Enforcement** — Claude Code 는 hook 이 §4 의 검증을 자동 수행·차단하고, 다른 도구는 §4 의 목록을 직접 돌린다.
+에이전트 가이드는 **Agent = Model + Harness** 프레이밍의 5구성요소로 조직된다 (근거·출처·표: [agent_docs/harness-rationale.md](agent_docs/harness-rationale.md)) — **Guides** §3·§10 · **Sensors** §5 (computational)·§5.5 (inferential) · **Orchestration** §4 · **Escalation** §6·§6.5 · **Enforcement** — Claude Code 는 hook 이 §4 중 기계 판정 가능한 부분을 차단하고, 다른 도구는 §4 를 직접 돌린다.
 
 **첫 방문**: §3 → §4 → §6 순으로 읽는다. **수정 중**: §5 검증 + §6 escalation 확인. Invariant 위반 의심 시 즉시 §6.
 
 ## 3. Invariants (요약)
 
-전체: [agent_docs/invariants.md](agent_docs/invariants.md). 규칙 목록을 여기 복제하지 않는다 — 사본이 원본과 갈라져 규칙이 조용히 사라진 사례가 두 번 있었다 (AP-DOC-1 본 repo 사례). 위반 보고·escalation 은 **규칙 ID** 로 한다.
+전체: [agent_docs/invariants.md](agent_docs/invariants.md). 규칙 목록을 여기 복제하지 않는다 (AP-DOC-1 본 repo 사례). 위반 보고·escalation 은 **규칙 ID** 로 한다.
 
 ### RT path 절대 금지 (정기 tick — `control_rate` YAML)
 
@@ -46,12 +46,12 @@
 
 ### 커밋 전에 직접 돌려야 하는 것
 
-단계 4·5·6 의 최소 집합. Claude Code 의 Stop hook 이 자동 수행·차단하는 것과 같은 목록이며, **다른 도구에서는 직접 수행한다.**
+단계 4·5·6 의 최소 집합이며 **다른 도구에서는 전부 직접 수행한다.** Claude Code 의 Stop hook 은 이 중 기계 판정 가능한 부분만 대신한다 (범위: hook 헤더).
 
 - **포매팅** — C/C++ 는 `clang-format` (루트 `.clang-format`), Python 은 `ruff format` + `ruff check` (루트 `pyproject.toml`). 변경한 파일에 적용
 - **빌드·테스트** — 변경한 패키지를 빌드·테스트한다 (§9 hard rule 준수). `rtc_base`/`rtc_msgs` 를 건드렸으면 전체 downstream (PROC-3)
 - **문서·메타데이터** — `.md` 를 고쳤으면 `python3 repo_scripts/scripts/validate_docs.py --files <파일들>`; 고친 YAML 의 parse·default·범위·단위; public header 의 Doxygen; public surface (header/launch/config/파일 add·del/dep) 변경 시 README; `CMakeLists.txt`·`package.xml` 동기화는 필수
-- CI 가 전체 문서 검증·빌드·CodeQL 을 다시 돌리므로 건너뛴 변경은 PR 에서 막힌다
+- CI 는 전체 문서 검증·빌드·CodeQL 을 다시 돌리지만 **포매팅은 보지 않는다**
 
 단계별 액션·grep 패턴·Completion Checklist: [modification-guide.md](agent_docs/modification-guide.md).
 
