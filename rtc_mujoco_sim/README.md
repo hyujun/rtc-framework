@@ -227,6 +227,9 @@ solver:
 | `<group.state_topic>` (예: `/hand/joint_states`) | `sensor_msgs/JointState` | 100Hz | fake 그룹: LPF 필터링된 상태 |
 | `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
 | `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. **부호는 link-on-environment** (아래 참조). 비접촉 시 0 발행 (stale 방지). |
+| `<contact_wrench.topic_prefix>/<target>/contact_state` | `std_msgs/Bool` | 접촉 전이 시 | `contact_wrench.publish_state: true` 일 때만. edge-triggered — 값이 바뀔 때만 발행 |
+| `<contact_wrench.topic_prefix>/<target>/contact_point` | `geometry_msgs/PointStamped` | 매 물리 스텝 | `contact_wrench.publish_debug: true` 일 때만. **world frame** (`frame_id: "world"`) 접촉점 — wrench 와 달리 손끝 프레임이 아니다. 아래 [디버그 lane](#publish_debug--접촉점접촉깊이-디버그-lane) 절 |
+| `<contact_wrench.topic_prefix>/<target>/contact_depth` | `std_msgs/Float64` | 매 물리 스텝 | 〃. MuJoCo 의 부호 있는 contact distance — **음수가 관통** |
 | `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
@@ -264,6 +267,14 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 > 이전에는 이 lane 이 이 값을 negate 해서 env-on-link 로 발행했고, 그래서 `iiwa7_leap` 이 tip 마다 `force_sign: -1.0` 을 pin 해야 했다. 그 pin 은 제거됐다 — **어떤 프로필에도 per-tip 반전이 남아 있으면 안 된다.** 반전을 되살리면 파지 중에도 `f_n` 이 전 contact 음수가 되어 all-zero estimate 가 나간다 (2026-07-22 실기에서 관측된 실패).
 
 부호는 두 물리 oracle 이 고정한다: `test_contact_wrench_known_load` (파지한 물체에 건 **알려진 외력**이 lane 의 world 합으로 되나타나는지) 와 `ShippedPullEstimator` (그 lane 을 출하 프로필로 파싱해 in-plane 성분을 뽑는지). 시뮬레이터 쪽 negation 을 되살리면 전자가, 프로필에 `-1.0` 을 넣으면 후자가 red 가 된다.
+
+##### `publish_debug` — 접촉점·접촉깊이 디버그 lane
+
+`contact_wrench.publish_debug: true` 면 target 마다 두 토픽이 더 붙는다 — `<target>/contact_point` (`geometry_msgs/PointStamped`, **world frame**) 과 `<target>/contact_depth` (`std_msgs/Float64`, 음수가 관통). 둘 다 `ReadContactWrenches` 가 이미 읽어 두는 `point_world` / `dist` 를 그대로 낸다.
+
+**wrench lane 이 답할 수 없는 질문을 위한 것이다.** wrench 는 손끝이 *얼마나 세게* 누르는지를 **각자의 프레임**으로 말하므로, 두 손끝이 물체를 **마주 눌러 가두는지** 아니면 **같은 쪽으로 밀어내는지**를 구별하지 못한다 — 180° 로 마주 선 1.5 N 두 개와 90° 로 벌어진 1.5 N 두 개는 크기가 똑같다. 그 구별은 **어디를 누르는지**가 정하고, 폐쇄 체인 손에서는 그것을 `joint_states` 로 재구성할 수 없다 (수동 linkage 관절 때문에 허상이 나온다 — [testing-debug.md](../agent_docs/testing-debug.md)).
+
+기본 OFF 인 이유는 진단이기 때문이고, 켜는 곳은 **그 질문을 하는 fixture** 다 (예: `integrated_bringup/config/ur5e_p1b/sim_overlays/fingertip_grasp_free.yaml`). `frame_id` 가 `"world"` 인 것은 `object_state` 의 기본 fallback 과 같은 문자열이라, 접촉점과 물체 pose 를 변환 없이 같은 표에 놓을 수 있다.
 
 ##### Viewer force arrows (기본 ON)
 

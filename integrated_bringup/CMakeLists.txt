@@ -960,6 +960,26 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── Shipped-profile leakage bound (#177 crit#6 (1)) ───────────────────────
+  # The regression the hardware runbook gates on, run against every shipped
+  # profile's own alignment_error_rad. Shares pull_known_load_fixture.hpp with
+  # the crit#4 test above; the free-disk MuJoCo route cannot close this
+  # criterion (see the file banner).
+  ament_add_gtest(test_pull_estimator_leakage_bound test/test_pull_estimator_leakage_bound.cpp)
+  target_link_libraries(test_pull_estimator_leakage_bound
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_pull_estimator_leakage_bound PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_pull_estimator_leakage_bound
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── Compliance wrench source adapter (#469 S1) ─────────────────────────────
   # Shares pull_known_load_fixture.hpp with the crit#4 test above, so both drive
   # the same known load through the shipped profile.

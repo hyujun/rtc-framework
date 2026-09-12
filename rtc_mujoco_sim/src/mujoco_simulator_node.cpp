@@ -19,6 +19,7 @@
 #include <rtc_msgs/srv/set_external_wrench.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <lifecycle_msgs/msg/state.hpp>
@@ -27,6 +28,7 @@
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 
@@ -39,6 +41,15 @@
 
 using namespace std::chrono_literals;
 namespace urtc = rtc;
+
+namespace {
+// Frame the contact-point debug lane stamps. Spelled out rather than taken from
+// object_state_config_.frame_id: that one names whatever reference_body the
+// object lane was pointed at, while a contact point is always MuJoCo world.
+// The two coincide with the shipped (empty) reference_body, which is what makes
+// a contact point and an object pose comparable without a transform.
+constexpr const char* kWorldFrameId = "world";
+}  // namespace
 
 // ── GroupRosHandles
 // ──────────────────────────────────────────────────────────────
@@ -55,6 +66,16 @@ struct GroupRosHandles {
       contact_state_pubs;
   // Last published contact_state per target — Bool topic transitions only.
   std::vector<bool> contact_state_last;
+  // Debug lane (ContactWrenchConfig::publish_debug). Empty unless that key is
+  // true. Separate from the wrench lane on purpose: the wrench is expressed in
+  // the fingertip's own frame, while these two are the contact as MuJoCo
+  // reports it — a WORLD-frame point and a signed distance — so they say where
+  // the touch is, which the per-fingertip wrenches cannot without forward
+  // kinematics through this hand's closed chain.
+  std::vector<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>::SharedPtr>
+      contact_point_pubs;
+  std::vector<rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64>::SharedPtr>
+      contact_depth_pubs;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr cmd_sub;
   rclcpp::TimerBase::SharedPtr fake_timer;  // fake groups only
   std::size_t group_idx{0};
@@ -144,6 +165,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       h.contact_wrench_pubs.clear();
       h.contact_state_pubs.clear();
       h.contact_state_last.clear();
+      h.contact_point_pubs.clear();
+      h.contact_depth_pubs.clear();
       h.state_pub.reset();
     }
     group_handles_.clear();
@@ -185,6 +208,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       h.contact_wrench_pubs.clear();
       h.contact_state_pubs.clear();
       h.contact_state_last.clear();
+      h.contact_point_pubs.clear();
+      h.contact_depth_pubs.clear();
       h.state_pub.reset();
     }
     group_handles_.clear();
@@ -649,6 +674,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           h.contact_state_pubs.reserve(cw_infos.size());
           h.contact_state_last.assign(cw_infos.size(), false);
         }
+        if (cw_cfg.publish_debug) {
+          h.contact_point_pubs.reserve(cw_infos.size());
+          h.contact_depth_pubs.reserve(cw_infos.size());
+        }
 
         for (const auto& cw_info : cw_infos) {
           const std::string wrench_topic =
@@ -660,6 +689,12 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                 cw_cfg.topic_prefix + "/" + cw_info.target_name + "/contact_state";
             h.contact_state_pubs.push_back(
                 create_publisher<std_msgs::msg::Bool>(contact_state_topic, cw_qos));
+          }
+          if (cw_cfg.publish_debug) {
+            h.contact_point_pubs.push_back(create_publisher<geometry_msgs::msg::PointStamped>(
+                cw_cfg.topic_prefix + "/" + cw_info.target_name + "/contact_point", cw_qos));
+            h.contact_depth_pubs.push_back(create_publisher<std_msgs::msg::Float64>(
+                cw_cfg.topic_prefix + "/" + cw_info.target_name + "/contact_depth", cw_qos));
           }
           RCLCPP_INFO(get_logger(),
                       "[MuJoCoSimulatorNode] Group[%zu] contact_wrench target='%s' "
@@ -1010,6 +1045,31 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
             handle.contact_state_last[i] = sample.found;
           }
         }
+      }
+
+      // Debug lane. Published EVERY tick, including when `found` is false (the
+      // sample is zeroed then), because the consumer of a contact point is
+      // usually tracking where a touch moved to and a lane that goes silent on
+      // loss is indistinguishable from a lane that stalled.
+      //
+      // FRAME. `point_world` is the MuJoCo world frame, so it is stamped
+      // "world" rather than the wrench's fingertip frame — the same literal the
+      // object_state lane falls back to, which is what makes a contact point
+      // and an object pose directly comparable. `dist` is MuJoCo's signed
+      // contact distance: negative is penetration.
+      if (i < handle.contact_point_pubs.size() && handle.contact_point_pubs[i]) {
+        geometry_msgs::msg::PointStamped pmsg;
+        pmsg.header.stamp = stamp;
+        pmsg.header.frame_id = kWorldFrameId;
+        pmsg.point.x = sample.point_world[0];
+        pmsg.point.y = sample.point_world[1];
+        pmsg.point.z = sample.point_world[2];
+        handle.contact_point_pubs[i]->publish(pmsg);
+      }
+      if (i < handle.contact_depth_pubs.size() && handle.contact_depth_pubs[i]) {
+        std_msgs::msg::Float64 dmsg;
+        dmsg.data = sample.dist;
+        handle.contact_depth_pubs[i]->publish(dmsg);
       }
     }
   }
