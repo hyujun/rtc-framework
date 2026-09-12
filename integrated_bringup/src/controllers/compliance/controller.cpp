@@ -839,7 +839,7 @@ void DemoComplianceController::ApplyPendingTarget(int device_idx, std::span<cons
   // Device 0 carries the task goal. Under control_6dof it is a full SE3 pose
   // (x,y,z,r,p,y); a short goal is ignored rather than half-applied, since a
   // pose assembled from three values would command an arbitrary orientation.
-  // ZYX (yaw·pitch·roll) at the wire edge — CLAUDE.md §10, shared with DemoWbc
+  // ZYX (yaw·pitch·roll) at the wire edge — AGENTS.md §10, shared with DemoWbc
   // through rtc::math::se3::RpyToRotationZyx so the convention has one owner.
   //
   // One snapshot for the whole function (#292): the frame tagging below needs
