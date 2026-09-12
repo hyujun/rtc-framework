@@ -162,6 +162,33 @@ demo_shared:
     # indicator ("this tip is closer to sliding than it was"), not an absolute
     # safety margin; the true μ is object- and condition-dependent and none of
     # the values pinned here have been identified experimentally.
+    # δθ — the DECLARED upper bound on the angle between the pinch axis this
+    # estimator projects against and the true contact normal. The grip is
+    # internal and cancels in that projection only if the two agree; a
+    # misalignment of δ leaks sin δ of it into the in-plane estimate, published
+    # every tick as `leakage_bound = Σ|f_n,i|·sin δ`.
+    #
+    # NOMINAL, NOT MEASURED — exactly like the μ above, and this file is where
+    # that is said (p1a / iiwa7_leap ship the same value and point here,
+    # AP-DOC-1). #177 crit#6 ② — "measure δ on this hand" — was RETIRED
+    # 2026-09-12: the dominant error here is not leakage but unsensed load paths
+    # plus shear saturation (S1 `260902_1326` §4 — the tips saw 4–31 % of added
+    # load at `fric_util` ≈ 1), crit#5 already settled that this estimate is read
+    # for trend and not absolute magnitude, and measuring δ would only restate
+    # the declaration: shrinking it is hand FK / backlash calibration, which that
+    # issue puts out of scope. Do not cite 0.035 as a measurement.
+    #
+    # WHAT IT GATES — not F̂. `sin δ` is used in exactly one place
+    # (pull_force_estimator.cpp), so turning this knob leaves the estimate bit
+    # for bit. What reads it is compliance:
+    # `quality_low = ... || (leakage_bound >= magnitude)`, which drives the
+    # compliance FSM to DEGRADED (reduced gains). Solve that comparison and δ is
+    # an OVER-SQUEEZE RATIO: it fires once `Σf_n / |F̂| >= 1 / sin δ`, i.e. 28.6×
+    # at this value. Both operating points ever observed sit far below — 1.1–1.4×
+    # on hardware (S1 G2) and 2.4× in sim (2026-09-12) — so this value would have
+    # to be an order of magnitude wrong to change any behaviour. Raise it (a
+    # larger δ fires earlier, which is the conservative direction) if a grasp
+    # ever has to run at a squeeze far above what the load needs.
     alignment_error_rad: 0.035   # [rad] δθ for grip→in-plane leakage bound (~2°)
 
     # Gravity model: m·g of the grasped object in base frame [N].

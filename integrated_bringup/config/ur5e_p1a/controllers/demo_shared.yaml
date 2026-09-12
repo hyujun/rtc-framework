@@ -144,6 +144,12 @@ demo_shared:
     # indicator ("this tip is closer to sliding than it was"), not an absolute
     # safety margin; the true μ is object- and condition-dependent and none of
     # the values pinned here have been identified experimentally.
+    # δθ for the grip→in-plane leakage bound `Σ|f_n,i|·sin δ`. NOMINAL, never
+    # measured — #177 crit#6 ② was retired 2026-09-12 — and it gates compliance's
+    # DEGRADED entry rather than the estimate itself. The mechanism and the
+    # over-squeeze-ratio arithmetic are stated once, beside this key in
+    # ur5e_p1b/controllers/demo_shared.yaml (AP-DOC-1); the measurements cited
+    # there are p1b's, and δ has not been measured on this hand either.
     alignment_error_rad: 0.035   # [rad] δθ for grip→in-plane leakage bound (~2°)
 
     # Gravity model: m·g in base frame [N]. Keep zero while
