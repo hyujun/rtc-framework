@@ -1380,15 +1380,15 @@ TEST(ComplianceJointTail, AClampThatWidensTheStepIsCountedAsARebound) {
   EXPECT_GE(stats.rebound_joint_events.load(), stats.rebound_ticks.load());
 }
 
-// Where this sits relative to its sibling sensor: the parser refuses a negative
-// or non-finite δ (NUM-6b) but never sees the band, which is device-derived, so
-// an inverted band can only be caught at the binding. What the gate rejects,
-// and why, is owned by the block in compliance/lifecycle.cpp.
+// Scope split with the sibling sensor: a negative or non-finite δ is the
+// parser's (NUM-6b); an inverted band is this fixture's. What the gate rejects
+// and why — including why it runs in the pass it does — is owned by the block in
+// compliance/lifecycle.cpp.
 //
-// The fixture therefore drives the CM's real order (Pass 1 → 2 → 3) on a real
-// LifecycleNode instead of calling the check directly — that order is what makes
-// the gate reachable at all (AP-PROC-9 in agent_docs/anti-patterns.md), and its
-// verdict is a CallbackReturn, which is what the pair below asserts on.
+// The fixture drives the CM's real order (Pass 1 → 2 → 3) on a real
+// LifecycleNode instead of calling the check directly, because that order is
+// what makes the gate reachable at all, and its verdict is a CallbackReturn,
+// which is what the pair below asserts on.
 class ComplianceMarginGate : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
