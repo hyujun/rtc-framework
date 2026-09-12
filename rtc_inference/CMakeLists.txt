@@ -52,17 +52,33 @@ set(RTC_ONNXRUNTIME_ROOT "" CACHE PATH
 # CMAKE_PREFIX_PATH and the system dirs, so an apt or custom-prefix runtime is
 # still found — only the imported target is lost, and a plain path links the same.
 #
-# Order is the whole point once two runtimes coexist, which is exactly the state
-# an upgrade leaves behind. `install_onnxruntime` points the bare
-# /opt/onnxruntime symlink at the PINNED version, so it goes first; versioned
-# dirs follow newest-first. The old order walked the glob lexically, where
-# "1.17.1" sorts before "1.28.2" — the upgrade would have built against the
-# runtime it was meant to replace, and that one cannot load IR-10 models.
+# Order matters once two runtimes coexist, which is exactly the state an upgrade
+# leaves behind. `install_onnxruntime` points the bare /opt/onnxruntime symlink
+# at the PINNED version, so it goes first; versioned dirs follow newest-first.
+# The old order walked the glob lexically, where "1.17.1" sorts before "1.28.2" —
+# the upgrade would have built against the runtime it was meant to replace, and
+# that one cannot load IR-10 models.
+#
+# But HINTS is not what decides today, and saying otherwise would send the next
+# reader to the wrong line: find_library searches CMAKE_PREFIX_PATH (variable AND
+# environment) BEFORE HINTS, and setup_env.sh puts /opt/onnxruntime — the pinned
+# symlink — on it. So the pin wins there first, and this list is the fallback
+# that decides when that symlink is absent. An overlay or CI image that carries a
+# DIFFERENT ORT prefix earlier on CMAKE_PREFIX_PATH would win over everything
+# here; point RTC_ONNXRUNTIME_ROOT at the intended tree in that case, or drop the
+# stray prefix. (Not forced with NO_CMAKE_PATH: that is also the path by which an
+# apt or custom-prefix runtime is found on a box with no /opt install at all.)
 file(GLOB _ORT_OPT_DIRS "/opt/onnxruntime-*" "/opt/onnxruntime/onnxruntime-*")
 list(SORT _ORT_OPT_DIRS COMPARE NATURAL ORDER DESCENDING)
 set(_ORT_HINTS ${RTC_ONNXRUNTIME_ROOT} /opt/onnxruntime ${_ORT_OPT_DIRS})
-# NO_CACHE, under names no earlier configure used: a cached path would keep an
-# existing build tree on the old runtime after the symlink moved, silently.
+# A cached path would keep an existing build tree on the old runtime after the
+# symlink moved, silently. NO_CACHE says so — but it is a CMake 3.21 keyword and
+# this package declares 3.16, where it is not a keyword at all: it is swallowed
+# as one more PATH_SUFFIXES entry and the variables become cache entries after
+# all, with no warning. The explicit unset is what makes the guarantee hold at
+# the declared minimum; on 3.21+ it is a no-op next to NO_CACHE.
+unset(_RTC_ORT_LIB CACHE)
+unset(_RTC_ORT_INCLUDE CACHE)
 find_library(_RTC_ORT_LIB onnxruntime
   HINTS ${_ORT_HINTS}
         /usr/local /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu

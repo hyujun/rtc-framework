@@ -158,15 +158,16 @@ ros2 run rtc_inference rtc_inference_check policy.onnx --input obs:1x34
 
 ### ONNX Runtime 감지 (CMakeLists.txt)
 
-`find_library` / `find_path` 로만 탐색하며 (`find_package(onnxruntime)` 는 **쓰지 않는다** — 아래 주의), 이 순서가 곧 우선순위다:
+`find_library` / `find_path` 로만 탐색한다 (`find_package(onnxruntime)` 는 **쓰지 않는다** — 아래 주의). 실제 우선순위는 CMake 의 탐색 순서가 정하며, **`CMAKE_PREFIX_PATH` 가 `HINTS` 보다 먼저다**:
 
-1. `-DRTC_ONNXRUNTIME_ROOT=<dir>` (명시 override — sudo 없이 풀어 둔 tarball 등)
+0. `CMAKE_PREFIX_PATH` (변수 + 환경변수) — `setup_env.sh` 가 여기에 `/opt/onnxruntime` 을 올리므로, **평소 pin 을 고르는 것은 이 단계다**. 다른 ORT prefix 가 앞에 실린 overlay·CI 이미지에서는 그쪽이 이긴다 (그 경우 `RTC_ONNXRUNTIME_ROOT` 로 의도한 트리를 지정)
+1. `-DRTC_ONNXRUNTIME_ROOT=<dir>` (명시 override — sudo 없이 풀어 둔 tarball 등) — 아래 셋은 `HINTS`
 2. `/opt/onnxruntime` — `install_onnxruntime` 이 **pin 된 버전**으로 가리키게 하는 symlink
-3. `/opt/onnxruntime-*`, `/opt/onnxruntime/onnxruntime-*` — **최신 버전 먼저** (natural sort 내림차순)
-4. `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`, 그리고 CMake 기본 경로 (`CMAKE_PREFIX_PATH` 포함 — apt·custom prefix 설치도 여기서 잡힌다)
+3. `/opt/onnxruntime-*`, `/opt/onnxruntime/onnxruntime-*` — **최신 버전 먼저** (natural sort 내림차순). 0 단계에 symlink 가 안 실렸을 때 pin 을 고르는 fallback
+4. `/usr/local`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`, 그리고 CMake 기본 경로 (apt·custom prefix 설치도 여기서 잡힌다)
 - 헤더: `include`, `include/onnxruntime/core/session`, `include/onnxruntime` 접미사로 `onnxruntime_cxx_api.h` 탐색
 
-탐색 결과는 **캐시하지 않는다** (`NO_CACHE`) — 캐시된 경로는 업그레이드 뒤에도 기존 빌드 트리를 옛 런타임에 묶어 둔다. configure 는 선택한 런타임의 `ORT_API_VERSION` 을 STATUS 로 찍고, **1.18 미만이면 WARNING** 을 낸다 (IR 10 모델을 못 연다 — `ur5e_p1b` 의 demo_inference 정책이 IR 10 이다).
+탐색 결과는 **캐시하지 않는다** — 캐시된 경로는 업그레이드 뒤에도 기존 빌드 트리를 옛 런타임에 묶어 둔다. `NO_CACHE` 는 CMake 3.21 키워드인데 이 패키지의 `cmake_minimum_required` 는 3.16 이라 그 아래에서는 조용히 `PATH_SUFFIXES` 항목으로 먹히므로, 선언 최소 버전에서도 보증이 서도록 `unset(... CACHE)` 를 함께 둔다. configure 는 선택한 런타임의 `ORT_API_VERSION` 을 STATUS 로 찍고, **1.18 미만이면 WARNING** 을 낸다 (IR 10 모델을 못 연다 — `ur5e_p1b` 의 demo_inference 정책이 IR 10 이다).
 
 | 감지 결과 | 동작 |
 |-----------|------|
