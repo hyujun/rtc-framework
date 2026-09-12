@@ -46,7 +46,11 @@ constexpr int kInferenceStride = 7;
 
 using integrated_bringup::testfx::FakeEngine;
 
-std::map<std::string, rtc::DeviceNameConfig> MakeDeviceConfigs() {
+/// @param inference_stride floats the hand packs per sensor group. Zero leaves
+/// `sensor_layout` unset entirely — the shape of a hand config that lists its
+/// sensor groups but never says how wide their lane is.
+std::map<std::string, rtc::DeviceNameConfig> MakeDeviceConfigs(
+    int inference_stride = kInferenceStride) {
   rtc::DeviceNameConfig arm;
   arm.device_name = "arm";
   for (int i = 0; i < kArmDof; ++i) {
@@ -73,9 +77,11 @@ std::map<std::string, rtc::DeviceNameConfig> MakeDeviceConfigs() {
   hand_lim.max_velocity.assign(kHandDof, 10.0);
   hand.joint_limits = hand_lim;
 
-  rtc::DeviceSensorLayout layout;
-  layout.inference_values_per_group = kInferenceStride;
-  hand.sensor_layout = layout;
+  if (inference_stride > 0) {
+    rtc::DeviceSensorLayout layout;
+    layout.inference_values_per_group = inference_stride;
+    hand.sensor_layout = layout;
+  }
 
   return {{"arm", arm}, {"hand", hand}};
 }
@@ -233,7 +239,8 @@ struct Harness {
   explicit Harness(
       const std::string& yaml = MakeYaml(), bool stub_engine = false,
       const std::vector<std::size_t>& in_sizes = {static_cast<std::size_t>(kInputElements)},
-      const std::vector<std::size_t>& out_sizes = {6, 1}) {
+      const std::vector<std::size_t>& out_sizes = {6, 1},
+      const std::map<std::string, rtc::DeviceNameConfig>& devices = MakeDeviceConfigs()) {
     auto fake = std::make_unique<FakeEngine>(in_sizes, out_sizes);
     if (stub_engine) {
       fake->stub = true;
@@ -252,7 +259,7 @@ struct Harness {
 
     const YAML::Node cfg = YAML::Load(yaml);
     ctrl->LoadConfig(cfg);
-    ctrl->SetDeviceNameConfigs(MakeDeviceConfigs());
+    ctrl->SetDeviceNameConfigs(devices);
     ctrl->OnDeviceConfigsSet();
     configure_result = ctrl->on_configure(rclcpp_lifecycle::State{}, node, cfg);
   }
@@ -1907,6 +1914,41 @@ TEST(DemoInferenceConfig, RejectsAGateThatNoFeatureReads) {
   Harness h{yaml};
   EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE)
       << "a block of trained constants that looks configured and does nothing";
+}
+
+TEST(DemoInferenceConfig, RejectsAForceFeatureOnAHandThatDeclaresNoSensorLayout) {
+  // `sensor_names` says the groups exist; only `sensor_layout` says how wide
+  // their lane is. Without it every force reads 0 and nothing downstream can
+  // tell that from "not touching anything" — the one shape of this failure that
+  // a runtime check cannot catch, because every value stays finite and in range.
+  Harness h{MakeYaml(),
+            false,
+            {static_cast<std::size_t>(kInputElements)},
+            {6, 1},
+            MakeDeviceConfigs(/*inference_stride=*/0)};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, RejectsAForceFeatureOnAHandWhoseLaneIsTooNarrowForAForce) {
+  // Present but narrower than the force triple it has to hold: slots 1..3 are
+  // fx/fy/fz, so a stride of 3 stops one short and reads 0 just as silently.
+  Harness h{MakeYaml(),
+            false,
+            {static_cast<std::size_t>(kInputElements)},
+            {6, 1},
+            MakeDeviceConfigs(/*inference_stride=*/3)};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::FAILURE);
+}
+
+TEST(DemoInferenceConfig, AcceptsTheNarrowestLaneThatStillHoldsAForce) {
+  // The boundary from the other side, so the check is a width test and not a
+  // demand that every hand pack the full seven-float lane.
+  Harness h{MakeYaml(),
+            false,
+            {static_cast<std::size_t>(kInputElements)},
+            {6, 1},
+            MakeDeviceConfigs(/*inference_stride=*/4)};
+  EXPECT_EQ(h.configure_result, rtc::RTControllerInterface::CallbackReturn::SUCCESS);
 }
 
 TEST(DemoInferenceConfig, RejectsAnObjectFeatureWithoutAPolicyFrame) {

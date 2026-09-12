@@ -343,6 +343,13 @@ bool DemoInferenceController::ConfigureKinematics() {
 
   // Nothing observed in space — and an object lane whose messages are already
   // in the policy frame needs no model to say so.
+  //
+  // `policy_frame_` is therefore NOT checked against the model on this path:
+  // there is no model to check it against, and building one to validate a name
+  // would make a URDF mandatory for a policy that needs none. It is inert here
+  // by construction — with no link poses to transform and the object transform
+  // an identity, the name is a label and nothing reads it. The moment either of
+  // those stops holding, the branch below runs and `existFrame` decides.
   const bool object_needs_model = wants_object_ && !object_source_frame_link_.empty() &&
                                   object_source_frame_link_ != policy_frame_;
   if (links_.empty() && !object_needs_model) {

@@ -297,6 +297,7 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
   links_.clear();
   bool wants_links = false;
   bool wants_reach = false;
+  bool wants_force = false;
   wants_object_ = false;
   for (const auto& tensor : io_.inputs) {
     for (std::size_t f = 0; f < tensor.features.size(); ++f) {
@@ -312,6 +313,10 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
       switch (r.kind) {
         case PolicyFeature::kGroupForceNorm:
           arg = r.group;
+          wants_force = true;
+          break;
+        case PolicyFeature::kFingertipForceNorm:
+          wants_force = true;
           break;
         case PolicyFeature::kLinkPosition:
         case PolicyFeature::kLinkOrientationXyzw:
@@ -378,6 +383,33 @@ void DemoInferenceController::ApplyIoSchema(const YAML::Node& cfg) {
   hand_offset_.fill(0.0);
   const auto primary = GetPrimaryDeviceName();
   const auto secondary = GetSecondaryDeviceName();
+
+  // ── The force lane has to be wide enough to hold a force ──────────────────
+  // `sensor_names` says which groups exist; `sensor_layout` says how many floats
+  // each one packs, and only the second decides whether slots 1..3 hold fx/fy/fz.
+  // Below that width `GroupForceNorm` returns 0 for EVERY group, and nothing
+  // downstream can tell that from "no contact": the policy is fed all-zero
+  // contact forces, the tactile hold never latches, and the reach gate silently
+  // degrades to proximity-only — every value finite, in range, and wrong. The
+  // gate is checked too even without a force feature, because its own tips read
+  // the same lane.
+  if (wants_force || wants_reach) {
+    const auto* hand_cfg = secondary.empty() ? nullptr : GetDeviceNameConfig(secondary);
+    const int stride = (hand_cfg != nullptr && hand_cfg->sensor_layout.has_value())
+                           ? hand_cfg->sensor_layout->inference_values_per_group
+                           : 0;
+    if (stride < kForceSlotBegin + kForceSlotCount) {
+      throw std::invalid_argument(
+          "demo_inference_controller: a fingertip force is observed (a force feature or the "
+          "reach gate), so device '" +
+          std::string(secondary) + "' must declare sensor_layout.inference_values_per_group >= " +
+          std::to_string(kForceSlotBegin + kForceSlotCount) + " (it declares " +
+          std::to_string(stride) + ") — the force triple lives in slots " +
+          std::to_string(kForceSlotBegin) + ".." +
+          std::to_string((kForceSlotBegin + kForceSlotCount) - 1) + " of that stride");
+    }
+  }
+
   if (const YAML::Node conv = inf["joint_convention"]) {
     if (!conv.IsMap()) {
       throw std::invalid_argument(

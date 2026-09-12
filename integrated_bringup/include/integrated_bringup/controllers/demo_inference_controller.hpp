@@ -171,6 +171,16 @@ class DemoInferenceController final : public RTControllerInterface {
   static constexpr int kMaxLinks = 32;
   /// Tips the reach gate averages over.
   static constexpr int kMaxReachTips = 8;
+  /// Fingertip force lane geometry. The hand's inference lane packs
+  /// `sensor_layout.inference_values_per_group` floats per sensor group, and the
+  /// mujoco/udp backends both write fx/fy/fz into slots 1..3 of that stride
+  /// (slot 0 is the contact flag, 4..6 the direction unit vector). Only the
+  /// magnitude is wanted here, and a magnitude is frame-invariant — which is why
+  /// the force features need no reference-frame configuration while the pose
+  /// features do. Declared here rather than in the tick's translation unit
+  /// because configure checks the declared stride against them.
+  static constexpr int kForceSlotBegin = 1;
+  static constexpr int kForceSlotCount = 3;
   /// Closure residual above which a closed-chain fingertip is not trusted this
   /// tick [m]. Handed to `ClosedChainHandFk::Configure` AND used for the tick's
   /// own freshness verdict, so the two can never disagree about a tick.

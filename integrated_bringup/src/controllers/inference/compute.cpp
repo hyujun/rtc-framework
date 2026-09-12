@@ -30,19 +30,6 @@
 
 namespace integrated_bringup {
 
-namespace {
-
-/// Fingertip force lane geometry. The hand's inference lane packs
-/// `inference_values_per_group` floats per sensor group and the mujoco/udp
-/// backends both write fx/fy/fz into slots 1..3 of that stride (slot 0 is the
-/// contact flag, 4..6 the direction unit vector). Only the magnitude is wanted
-/// here, and a magnitude is frame-invariant — which is why the force features
-/// need no reference-frame configuration while the pose features do.
-constexpr int kForceSlotBegin = 1;
-constexpr int kForceSlotCount = 3;
-
-}  // namespace
-
 double DemoInferenceController::GroupForceNorm(const rtc::DeviceState& hand, int g) const noexcept {
   // A stale group contributes 0, by the decision recorded in the spec: "no
   // contact" and "no reading" are the same observation to this policy, and
