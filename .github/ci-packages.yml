@@ -15,7 +15,9 @@
 #   lint_cpp    : cppcheck 대상 — include/ 또는 src/ 가 있는 C++ 패키지
 #
 # 누락된 패키지 (의도적):
-#   rtc_mujoco_sim       : MuJoCo 미설치 (D-2)
+#   rtc_mujoco_sim       : MuJoCo 미설치 (D-2). 그래서 integrated_bringup 의 sim launch 를
+#                          평가하는 테스트는 이 패키지의 FindPackageShare 가 해소되지 않는
+#                          것을 견뎌야 한다 — test_launch_description_evaluates.py 참조
 #   rtc_mpc              : integrated_bringup transitive 로만 build (직접 test X)
 #   robot_descriptions   : (더 이상 누락 아님 — test_python 에 있다) URDF/MJCF
 #                          데이터만이지만 그 모델들을 rtc_tools 의
