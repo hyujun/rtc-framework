@@ -273,7 +273,7 @@ SECTION_REF_SCOPED_DOCS = ("agent_docs/", "CLAUDE.md", "AGENTS.md", ".claude/")
 SECTION_REF_RE = re.compile(r"§\d+\.\d[\d.]*")
 SELF_NUMBERED_HEADING_RE = re.compile(r"^#{2,3}\s+\d+\.\s", re.M)
 SECTION_REF_QUALIFIED_RE = re.compile(
-    r"(?:compliance|CLAUDE\.md|AGENTS\.md|README\.md|[A-Za-z0-9_.-]+\.md|\))\s*$"
+    r"(?:compliance|CLAUDE\.md|AGENTS\.md|README\.md|[A-Za-z0-9_.-]+\.md|\))`?\s*$"
 )
 
 # D11: a rule-ID reference to an ID that no document defines.  Each namespace
@@ -305,8 +305,10 @@ CONSTITUTION_MAX_BYTES = 18 * 1024
 CONSTITUTION_MAX_LINE_CHARS = 500
 
 # D13: a section ref that names its target constitution.  Accepts the plain
-# form ("AGENTS.md §6.5") and the link form ("[AGENTS.md](../AGENTS.md) §6.5").
-SECTION_TARGET_RE = re.compile(r"(CLAUDE|AGENTS)\.md(?:\]\([^)]*\))?\s*§(\d+(?:\.\d+)?)")
+# form ("AGENTS.md §6.5"), the link form ("[AGENTS.md](../AGENTS.md) §6.5") and the
+# code-span form ("`AGENTS.md` §6.5") -- the last one hid two stale refs from the
+# first version of this check.
+SECTION_TARGET_RE = re.compile(r"(CLAUDE|AGENTS)\.md`?(?:\]\([^)]*\))?\s*§(\d+(?:\.\d+)?)")
 # A bare "§N" / "§N.M" -- only resolved inside a constitution, against itself.
 BARE_SECTION_RE = re.compile(r"§(\d+(?:\.\d+)?)")
 # "## 1. Snapshot" / "### 9.1 colcon CWD" / "## 5.5 Inferential" -> "1", "9.1", "5.5"
@@ -1498,6 +1500,9 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
     ("D13 dangling section ref", "agent_docs/f.md", "see CLAUDE.md \u00a799.9\n", ["D13"]),
     ("D13 dangling ref in link form", "agent_docs/f.md", "see [AGENTS.md](../AGENTS.md) \u00a799\n", ["D13"]),
     ("D13 live refs resolve", "agent_docs/f.md", "see AGENTS.md \u00a71 and AGENTS.md \u00a79.1\n", []),
+    ("D13 dangling ref in code-span form", "docs/f.md", "rule of `AGENTS.md` \u00a799\n", ["D13"]),
+    ("D13 live ref in code-span form", "docs/f.md", "rule of `AGENTS.md` \u00a710\n", []),
+    ("D10 code-span document name qualifies", "agent_docs/f.md", "see `AGENTS.md` \u00a76.5\n", []),
     (
         "D13 bare self-ref inside a constitution",
         "CLAUDE.md",
