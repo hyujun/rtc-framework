@@ -68,7 +68,7 @@ rtc_msgs, rtc_base (독립)
   ├── rtc_inference ← rtc_base
   ├── rtc_controller_interface ← rtc_base, rtc_msgs, rtc_urdf_bridge
   ├── rtc_controllers ← rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
-  │     (rtc_controller_interface 의 형제 — 의존하지 않는다, #236 S7c)
+  │     (rtc_controller_interface 의 형제 — 의존하지 않는다)
   ├── rtc_controller_manager ← rtc_controller_interface, rtc_controllers,
   │       rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge
   ├── rtc_tsid ← rtc_math, rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
@@ -110,13 +110,13 @@ integrated_bringup ← rtc_controller_manager, rtc_controller_interface, rtc_con
 - **Lifecycle 관리**: 핵심 C++ 노드가 `rclcpp_lifecycle::LifecycleNode` 기반 — `ros2 lifecycle` CLI로 런타임 상태 제어 (deactivate/activate), Launch event handler 기반 자동 configure→activate 체이닝. robot-agnostic standalone 노드는 예외 (예: `ClosureStatePublisher` 는 `rclcpp::Node`)
 
 ### 제어 알고리즘
-`rtc_controllers` 는 **법칙 함수 + YAML 스키마**로 제공하고, 그것을 tick 마다 부르는 바인딩은 integration 패키지가 소유한다 (#236 S7c). 목록·헤더 경로는 [rtc_controllers/README.md](rtc_controllers/README.md#개요) 가 SSoT.
+`rtc_controllers` 는 **법칙 함수 + YAML 스키마**로 제공하고, 그것을 tick 마다 부르는 바인딩은 integration 패키지가 소유한다. 목록·헤더 경로는 [rtc_controllers/README.md](rtc_controllers/README.md#개요) 가 SSoT.
 
 - **관절 PD** (`joint/joint_pd_law.hpp`): PD + Pinocchio RNEA 중력/코리올리 보상. 궤적은 바인딩이 소유 (JointSpaceTrajectory 퀸틱 보간)
 - **태스크 속도 / CLIK** (`task/task_vel_law.hpp` + `compliance/differential_ik.hpp`): Damped Jacobian 역운동학 (3/6-DOF), 영공간 제어, TaskSpaceTrajectory SE3 퀸틱
 - **태스크 가속 / OSC** (`task/task_accel_law.hpp` + `compliance/task_dynamics.hpp`): 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
 - **Compliance 계열** (`compliance/*` §6.2 impedance · §7 admittance · §7.6 cascade): Jacobian-transpose impedance, 힘 입력 → 위치 출력, 두 루프 직렬. 규범·계약은 [rtc_controllers/docs/compliance-conventions.md](rtc_controllers/docs/compliance-conventions.md)
-- **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 6-state FSM (Idle→Approach→Closure→Hold→Release, 그리고 Fallback; enum slot 2·5 는 예약 — 과거 kPreGrasp 는 kApproach 에 병합, kRetreat 는 제거), ProxSuite Dense QP (Kinematic CLIK-QP position backbone + Dynamic TSID-ID τ_ff QP), RELEASE/abort 가 active grasp phase (`kApproach`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제), **Phase 5에서 MPC reference 주입 경로 지원 — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, MPC 비활성 시 Phase 4 고정-reference 동작 bit-identical 유지**
+- **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 6-state FSM (Idle→Approach→Closure→Hold→Release, 그리고 QP 발산 시의 안전 hold Fallback), ProxSuite Dense QP (Kinematic CLIK-QP position backbone + Dynamic TSID-ID τ_ff QP), RELEASE/abort 가 active grasp phase (`kApproach`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제). MPC reference 주입 경로는 opt-in — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, 비활성 시 고정-reference 동작과 동일하게 유지
 
 ### 안전 시스템
 - **글로벌 E-STOP**: `atomic<bool>` + `compare_exchange_strong` 기반 통합 비상 정지. 디바이스 그룹 init/state 타임아웃, 연속 RT 오버런, sim 동기화 타임아웃, actuator 경계의 controller output 검증 실패가 트리거한다 — 설정된 **모든** 디바이스 그룹이 state 를 보고하기 전에는 제어가 시작되지 않는다
@@ -164,8 +164,7 @@ chmod +x install.sh
 
 > **이미 설치된 머신에서 재실행하면 apt 의존성도 최신으로 올라간다.** deps 단계의 `apt-get install -y`
 > 는 깔려 있는 ROS 패키지 (pinocchio · proxsuite 등) 를 저장소의 최신판으로 올리고, ROS apt 저장소는 최신판만
-> 제공하므로 **되돌릴 수 없다** (2026-09-11: ORT 를 올리려고 재실행해 pinocchio 4.0.0→4.1.0, proxsuite
-> 0.6.5→0.7.3 이 함께 올라갔다). soname 이 바뀌면 기존 빌드는 `…so.<옛 버전>: cannot open shared object`
+> 제공하므로 **되돌릴 수 없다**. soname 이 바뀌면 기존 빌드는 `…so.<옛 버전>: cannot open shared object`
 > 로 로드에 실패하고, 증분 빌드는 `No rule to make target '…so.<옛 버전>'` 로 멈춘다 — dpkg 가 deb 의
 > 파일 시각 (패키지 빌드 날짜) 을 그대로 두어 CMake 가 config 변경을 못 알아채기 때문이다. 재실행 후에는
 > `colcon build --cmake-force-configure` 로 워크스페이스 전체를 다시 구성·빌드하고 전체 테스트를 돌린다.
@@ -211,7 +210,7 @@ source install/setup.bash
 
 ### Python 의존성 sync (dev PC ↔ runtime PC 재현성)
 
-`install.sh` 가 `uv` 를 자동 부트스트랩하여 `.venv` 를 `requirements.lock` 과 비트단위로 일치시킵니다. 정책 (2026-05-23, cross-workspace isolation):
+`install.sh` 가 `uv` 를 자동 부트스트랩하여 `.venv` 를 `requirements.lock` 과 비트단위로 일치시킵니다. 정책 (cross-workspace isolation):
 
 - **venv 책임 (lock)**: `numpy` (`<2`, ros-jazzy-rclpy ABI 핀) / `scipy` / `matplotlib` / `pandas` / `PyQt5` / `mujoco` + transitive / `Cython` / `ruff` / `setuptools` / `wheel` — `requirements.lock` 에 sha256 hash 와 함께 박힘. 같은 host 의 다른 workspace 가 시스템 numpy 를 바꿔도 이 venv 는 영향 없음 (sys.path 우선)
 - **시스템 상속 (`--system-site-packages`)**: `rclpy` / `ament_*` (ROS 2 Jazzy) / `python3-bt2` (kernel-bound) / `python3-colcon-*` · `python3-vcstool` · `python3-rosdep` (부트스트랩 도구)
@@ -304,19 +303,19 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 
 ## 세션 기반 로깅
 
-로그는 `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 자동 저장됩니다. 보관 개수는 로봇 config 의 `max_log_sessions` (기본 10) 가 SSoT 이며, 5개 bringup launch 가 모두 이 값을 동명의 launch 인자 default 로 읽으므로 `ros2 launch ... max_log_sessions:=N` 으로 한 번에 바꿀 수 있습니다 (#402):
+로그는 `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 자동 저장됩니다. 보관 개수는 로봇 config 의 `max_log_sessions` (기본 10) 가 SSoT 이며, 5개 bringup launch 가 모두 이 값을 동명의 launch 인자 default 로 읽으므로 `ros2 launch ... max_log_sessions:=N` 으로 한 번에 바꿀 수 있습니다:
 
 | 서브디렉토리 | 내용 |
 |---|---|
-| `controllers/<config_key>/` | per-controller 데이터 CSV (`<instance>.csv`; Phase C에서 controller-owned 경로로 일원화) |
-| `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log, rt_callback_timing_log — 동일 8열 `t_wall_ns,tick_count,run_id` + RtTickTimingPayload 5열 스키마. `run_id` 는 같은 분에 재기동해 한 디렉토리를 공유한 두 런을 가른다 — #376) |
+| `controllers/<config_key>/` | per-controller 데이터 CSV (`<instance>.csv`, controller-owned 경로) |
+| `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log, rt_callback_timing_log — 동일 8열 `t_wall_ns,tick_count,run_id` + RtTickTimingPayload 5열 스키마. `run_id` 는 같은 분에 재기동해 한 디렉토리를 공유한 두 런을 가른다) |
 | `device/` | 디바이스 통계 JSON (예: udp_hand_driver 의 `hand_udp_stats.json`) |
 | `monitor/` | 모니터링 로그 (생성만 되고 현재 기록 주체 없음) |
 | `tracing/` | LTTng trace 세션 (`--tracing` 빌드 시, [docs/tracing.md](docs/tracing.md)) |
 | `sim/` | screenshot_*.ppm (MuJoCo 전용) |
 | `plots/`, `motions/` | rtc_tools 출력 |
 
-환경변수 `RTC_SESSION_DIR` 로 모든 노드에 세션 경로 자동 전파. 같은 분에 재기동하면 세션 디렉토리(분 해상도)가 재사용되므로, launch 는 `RTC_RUN_ID` 도 함께 전파해 타이밍 CSV 안에서 두 런을 가른다 (#376).
+환경변수 `RTC_SESSION_DIR` 로 모든 노드에 세션 경로 자동 전파. 같은 분에 재기동하면 세션 디렉토리(분 해상도)가 재사용되므로, launch 는 `RTC_RUN_ID` 도 함께 전파해 타이밍 CSV 안에서 두 런을 가른다.
 
 ---
 
@@ -333,7 +332,7 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 최대 RT 성능을 위한 CPU 격리:
 ```bash
 # /etc/default/grub의 GRUB_CMDLINE_LINUX_DEFAULT에 추가
-# isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-3  # RT cluster = Core 1-3, 전 tier 동일 (#380)
+# isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-3  # RT cluster = Core 1-3, 전 tier 동일
 # 값 산출은 repo_scripts/scripts/setup_grub_rt.sh 가 자동으로 한다 (SMT 시블링 포함)
 sudo update-grub && sudo reboot
 ```

@@ -25,7 +25,7 @@ repo_scripts/
 ├── CMakeLists.txt
 ├── package.xml
 ├── config/
-│   └── thread_layout.yaml               <- **CPU 레이아웃 SSoT** (선언형 manifest, issue #153 M1)
+│   └── thread_layout.yaml               <- **CPU 레이아웃 SSoT** (선언형 manifest)
 └── scripts/
     ├── gen_thread_layout.py             <- manifest -> C++/shell/Python/README 생성 + --check 드리프트 게이트
     ├── lib/
@@ -95,7 +95,7 @@ repo_scripts/
 | `check_rt_setup.sh` | 정적 환경 검증 -- 커널, CPU, IRQ, 네트워크 등 (9개 카테고리) | 선택 |
 | `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 (7개 카테고리) | 선택 |
 
-> **External driver 프로세스 검증 (`arm_driver` / `hand_driver`).** 이 둘은 컨트롤러 내부 스레드가 아니라 launch 가 taskset 으로 pin 하는 **별도 프로세스**다 (`arm_driver`=`ros2_control_node`, `hand_driver`=`udp_hand_node`; thread_config.hpp §process-level threads). `verify_rt_runtime.sh` 는 이들을 process comm 으로 발견해 검증하되 **축이 다르다**: `arm_driver` 는 **RT 루프** — 설정된 우선순위(50)의 SCHED_FIFO 스레드가 존재하고 그것이 arm 코어에 있는지. `hand_driver` 는 **per-thread layout** — `hand_udp_recv` 는 hand 코어에 SCHED_FIFO 65, `hand_aux_io` 는 aux 코어(= OS slot)에 CFS, 그 외 TID(executor, DDS)는 hand 코어에 있어야 한다 (issue #345). 이름별 policy/priority 를 보는 것은 external driver 에 대해 이 검사가 처음이다 — `check_scheduling_policy` 는 컨트롤러 *내부* 스레드만 순회한다. 판정 우선순위는 `MISSING` > `WRONG_SCHED` > `WRONG_CPU` 이며, 스레드가 아예 없거나 스케줄러가 틀린 것이 코어 오배치보다 나쁜 발견이다. aux slot 은 `RTC_HAND_AUX_SLOT` 로 override 하며 기본값은 `get_os_cores()`(= 0) 로 노드의 `aux_cpu_slot` 기본값과 같다. ≤5코어 tier 에서는 hand slot 과 OS slot 이 둘 다 0 이라 두 기대가 같은 논리 CPU 로 풀려 그대로 통과한다(예외 처리 아님). hand 의 옛 전-스레드 affinity 검사(`taskset -a` pin, issue #245)는 **폐기됐다** — 프로세스 안에서 스레드마다 다른 코어에 붙으므로 균일 검사는 정상 배치를 FAIL 로 만든다. arm 은 프로세스 affinity 를 봐서는 안 된다: main thread 는 executor 이고 500 Hz 루프는 별도 스레드이며, 예전에는 launch 가 그 main thread 를 핀하고 검증기가 같은 스레드를 읽어 서로를 확인해 주고 있었다 (issue #343). FIFO 스레드 부재는 WARN 이 아니라 FAIL 이다 — FIFO 요청이 EPERM 으로 거부돼도 affinity 는 적용되므로, 위치만 보는 검사는 CFS 로 강등된 제어 루프를 통과시킨다. 우선순위 기대값은 `RTC_ARM_DRIVER_RT_PRIO` 로 override. sim launch 는 mujoco 만 pin 하고 driver 프로세스가 없으므로 **SKIP** 처리된다. 다른 로봇/드라이버는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM` env (공백 구분 comm 후보 리스트) 로 override.
+> **External driver 프로세스 검증 (`arm_driver` / `hand_driver`).** 이 둘은 컨트롤러 내부 스레드가 아니라 launch 가 taskset 으로 pin 하는 **별도 프로세스**다 (`arm_driver`=`ros2_control_node`, `hand_driver`=`udp_hand_node`; thread_config.hpp §process-level threads). `verify_rt_runtime.sh` 는 이들을 process comm 으로 발견해 검증하되 **축이 다르다**: `arm_driver` 는 **RT 루프** — 설정된 우선순위(50)의 SCHED_FIFO 스레드가 존재하고 그것이 arm 코어에 있는지. `hand_driver` 는 **per-thread layout** — `hand_udp_recv` 는 hand 코어에 SCHED_FIFO 65, `hand_aux_io` 는 aux 코어(= OS slot)에 CFS, 그 외 TID(executor, DDS)는 hand 코어에 있어야 한다. 이름별 policy/priority 를 보는 것은 external driver 에 대해 이 검사가 처음이다 — `check_scheduling_policy` 는 컨트롤러 *내부* 스레드만 순회한다. 판정 우선순위는 `MISSING` > `WRONG_SCHED` > `WRONG_CPU` 이며, 스레드가 아예 없거나 스케줄러가 틀린 것이 코어 오배치보다 나쁜 발견이다. aux slot 은 `RTC_HAND_AUX_SLOT` 로 override 하며 기본값은 `get_os_cores()`(= 0) 로 노드의 `aux_cpu_slot` 기본값과 같다. ≤5코어 tier 에서는 hand slot 과 OS slot 이 둘 다 0 이라 두 기대가 같은 논리 CPU 로 풀려 그대로 통과한다(예외 처리 아님). hand 는 프로세스 전체에 균일 affinity 검사를 적용하지 않는다 — 프로세스 안에서 스레드마다 다른 코어에 붙으므로 균일 검사는 정상 배치를 FAIL 로 만든다. arm 은 프로세스 affinity 를 봐서는 안 된다 — main thread 는 executor 이고 500 Hz 루프는 별도 스레드이므로 프로세스 affinity 는 그 루프의 실제 배치를 반영하지 않는다. FIFO 스레드 부재는 WARN 이 아니라 FAIL 이다 — FIFO 요청이 EPERM 으로 거부돼도 affinity 는 적용되므로, 위치만 보는 검사는 CFS 로 강등된 제어 루프를 통과시킨다. 우선순위 기대값은 `RTC_ARM_DRIVER_RT_PRIO` 로 override. sim launch 는 mujoco 만 pin 하고 driver 프로세스가 없으므로 **SKIP** 처리된다. 다른 로봇/드라이버는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM` env (공백 구분 comm 후보 리스트) 로 override.
 
 > **Intel hybrid 감지 (`[2.5/9]`) 전제조건 — `cpuid` 패키지 (`sudo apt install -y cpuid`).**
 > Raptor/Meteor/Arrow Lake 등 P+E 하이브리드는 3-path 캐스케이드로 감지한다: ① primary = `/sys/.../cpu/types/` sysfs (**커널 >= 6.9 + `nuc` 프로파일 재빌드** 필요 — `build_rt_kernel.sh` 참조), ② fallback = CPUID leaf 0x1A (**`cpuid` 툴 필요**), ③ fallback = cpuinfo_max_freq 클러스터링. 세 경로가 모두 실패하면 hybrid CPU가 "homogeneous" 로 **오검출**된다. `cpuid` 는 재이미징 시 누락되기 쉬운 필수 도구이므로 신규/재설치 머신 프로비저닝에 반드시 포함한다 (미설치 시 `check_rt_setup.sh` 가 Intel CPU 에 한해 오검출 경고를 출력한다).
@@ -136,9 +136,9 @@ repo_scripts/
 | `compute_expected_isolated()` | 비-OS 코어 전체 범위 (RT + nrt + driver, SMT 시블링 포함). cset shield 검증 (`check_rt_setup.sh`) 에 사용 — nohz_full / rcu_nocbs 는 `get_rt_cores_with_siblings()` 를 사용 (좁은 범위) |
 | `get_os_logical_cpus()` | OS 물리 코어에 속하는 논리 CPU 번호 목록 |
 
-### 격리 상태 탐지 함수 (issue #386)
+### 격리 상태 탐지 함수
 
-`cpu_shield.sh` 에 있던 것을 옮겨 왔습니다. 소비자가 둘인데 서로 다른 파일을 source 하기 때문입니다 — `cpu_shield.sh` (stale-shield 판정 · `status`) 와 `check_rt_setup.sh` (CPU Isolation 카테고리). 옮기기 전에는 후자가 `/sys/devices/system/cpu/isolated` 하나로 판정했고, **그 파일은 isolcpus 만 쓰므로** 살아 있는 cset shield 를 "격리 미활성" 으로 보고했습니다.
+`cpu_shield.sh` (stale-shield 판정 · `status`) 와 `check_rt_setup.sh` (CPU Isolation 카테고리) 가 공유하는 유틸리티입니다 — `/sys/devices/system/cpu/isolated` 는 isolcpus 만 반영하므로, 이 함수들이 cset shield 유무를 별도로 판정합니다.
 
 | 함수 | 설명 |
 |------|------|
@@ -181,36 +181,36 @@ repo_scripts/
 
 | 함수 | 설명 |
 |------|------|
-| `get_base_packages()` | 기본 RTC 패키지 리스트 (build.sh/install.sh 공유). Phase 5에서 `rtc_mpc`가 `rtc_urdf_bridge`와 `rtc_tsid` 사이에 추가됨. |
+| `get_base_packages()` | 기본 RTC 패키지 리스트 (build.sh/install.sh 공유, `rtc_mpc` 포함) |
 | `get_robot_packages()` | 로봇 전용 패키지 리스트 |
 
 ### RT/MPC 코어 레이아웃 함수 (Layout SSoT)
 
-**값의 SSoT 는 [config/thread_layout.yaml](config/thread_layout.yaml)** 이고, 아래 tier 의존 헬퍼들은 그 manifest 에서 [scripts/lib/thread_layout_generated.sh](scripts/lib/thread_layout_generated.sh) 로 **생성**됩니다 (issue #153 M1 — 그 전에는 같은 표가 여기 셋, C++, Python, 검증기에 손으로 인코딩돼 있었습니다). `rt_common.sh` 가 그 파일을 source 하므로 호출부는 달라진 게 없고, 생성 파일을 직접 편집하면 `gen_thread_layout.py --check` 가 CI 와 `colcon test` 에서 차단합니다. 이 파일들은 순수 함수(코어 수 in, slot out)라 `install.sh` 가 workspace 빌드 **전에** source 할 수 있습니다.
+**값의 SSoT 는 [config/thread_layout.yaml](config/thread_layout.yaml)** 이고, 아래 tier 의존 헬퍼들은 그 manifest 에서 [scripts/lib/thread_layout_generated.sh](scripts/lib/thread_layout_generated.sh) 로 **생성**됩니다. `rt_common.sh` 가 그 파일을 source 하므로 호출부는 달라진 게 없고, 생성 파일을 직접 편집하면 `gen_thread_layout.py --check` 가 CI 와 `colcon test` 에서 차단합니다. 이 파일들은 순수 함수(코어 수 in, slot out)라 `install.sh` 가 workspace 빌드 **전에** source 할 수 있습니다.
 
-각 함수는 `$1` 로 물리 코어 수를 받을 수 있습니다 (미지정 시 `get_physical_cores`) — 이 머신에 없는 tier 를 테스트·출력할 때 씁니다. v4.1 Layout SSoT 통합 후:
+각 함수는 `$1` 로 물리 코어 수를 받을 수 있습니다 (미지정 시 `get_physical_cores`) — 이 머신에 없는 tier 를 테스트·출력할 때 씁니다.
 
-- `cpu_shield.sh::compute_shield_cores()` 는 `get_cm_shield_cpus()` 를 호출 (자체 tier 분기 없음). CM 프로세스 전체가 cpuset 에 들어가야 하므로 shield 는 RT ∪ nrt span 을 덮는다 (issue #151). shield 는 cpuset 만 만들고, 런치가 `cpu_shield.sh adopt <pid>` 로 CM 을 그 안에 넣는다. **`adopt` 의 종료 코드가 계약이다** (issue #344): 양성 no-op(cset 미설치 / shield 비활성 / PID 부재)은 0, *필요했는데 실패*하면 non-zero 이고 런치는 그때 ACTIVATE 를 거부한다 — 그대로 활성화하면 RT 스레드가 affinity 와 SCHED_FIFO 를 함께 잃은 채 돈다.
+- `cpu_shield.sh::compute_shield_cores()` 는 `get_cm_shield_cpus()` 를 호출 (자체 tier 분기 없음). CM 프로세스 전체가 cpuset 에 들어가야 하므로 shield 는 RT ∪ nrt span 을 덮는다. shield 는 cpuset 만 만들고, 런치가 `cpu_shield.sh adopt <pid>` 로 CM 을 그 안에 넣는다. **`adopt` 의 종료 코드가 계약이다**: 양성 no-op(cset 미설치 / shield 비활성 / PID 부재)은 0, *필요했는데 실패*하면 non-zero 이고 런치는 그때 ACTIVATE 를 거부한다 — 그대로 활성화하면 RT 스레드가 affinity 와 SCHED_FIFO 를 함께 잃은 채 돈다.
 - `setup_grub_rt.sh` 는 `get_rt_cores_with_siblings()` 를 호출하여 `nohz_full` / `rcu_nocbs` 값으로 RT thread 가 실행되는 코어만 (SMT 시 sibling 포함) 한정.
-- `setup_irq_affinity.sh` / `check_rt_setup.sh` / `verify_rt_runtime.sh` 는 `compute_cpu_layout()` 기반으로 동작하여 tier 분기가 없습니다 (OS/RT 코어 범위가 layout v4.1 에서 모든 tier 공통: OS=0, RT=1..N-1).
+- `setup_irq_affinity.sh` / `check_rt_setup.sh` / `verify_rt_runtime.sh` 는 `compute_cpu_layout()` 기반으로 동작하여 tier 분기가 없습니다 (OS/RT 코어 범위가 모든 tier 공통: OS=0, RT=1..N-1).
 
 | 함수 | 출처 | 설명 |
 |------|------|------|
 | `get_role_spec()` / `get_role_slot()` / `get_role_policy()` / `get_role_priority()` / `get_role_nice()` | 생성 | `<role> [ncpu]` 로 임의 role 의 배치를 조회. 그 tier 에 없는 role 은 **비0 종료** — 없는 스레드를 기대 목록에 넣지 않기 위한 계약이다 |
-| `get_mpc_cores()` | 생성 | MPC 슬롯 CSV. #380 이 worker 슬롯을 회수한 뒤로 항목은 `mpc_main` 하나이며, MPC 를 떨어뜨리는 profile 에서는 빈 목록 |
+| `get_mpc_cores()` | 생성 | MPC 슬롯 CSV. 항목은 `mpc_main` 하나이며, MPC 를 떨어뜨리는 profile 에서는 빈 목록 |
 | `get_mpc_main_core()` | 파생 | MPC main 코어만 (`get_mpc_cores` 의 첫 항목) |
 | `get_rt_cores()` | 생성 | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `get_rt_cores_with_siblings()` / `get_rt_shield_cpus()` 의 base |
-| `get_nrt_cores()` | 생성 | nrt_logging + nrt_callback + nrt_publish 슬롯 (중복 제거, 오름차순). `get_cm_shield_cpus()` 가 RT 와 union. layout v5 부터 tier ≥ 6 은 aux slot (= rt_callback slot 2) 이라 RT 의 부분집합이고, degraded tier 는 Core 0 공유 — 어느 쪽이든 union 이 RT span 을 넘지 않는다 |
+| `get_nrt_cores()` | 생성 | nrt_logging + nrt_callback + nrt_publish 슬롯 (중복 제거, 오름차순). `get_cm_shield_cpus()` 가 RT 와 union. tier ≥ 6 은 aux slot (= rt_callback slot 2) 이라 RT 의 부분집합이고, degraded tier 는 Core 0 공유 — 어느 쪽이든 union 이 RT span 을 넘지 않는다 |
 | `get_arm_driver_slot()` / `get_hand_driver_slot()` | 생성 | 외부 driver 프로세스의 slot (launch taskset / in-process self-pin 대상) |
-| `get_os_cores()` | 생성 | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). `get_cm_shield_cpus()` 가 shield 에서 제외할 slot 판정에 사용 |
-| `rtc_expected_threads()` | 생성 | `verify_rt_runtime.sh` 의 기대 표 (`name:slot:policy:priority[:optional]`). 컨트롤러 **in-process 스레드만** — arm/hand 는 별도 프로세스라 여기 있으면 항상 false-WARN 이다 (#353) |
-| `rtc_forbidden_threads()` | 생성 | 이번 profile 이 떨어뜨린 in-process 스레드 이름 (존재하면 FAIL). default profile 에서는 비어 있다 (#350) |
-| `rtc_layout_profiles()` / `rtc_default_profile()` / `rtc_is_layout_profile()` | 생성 | 선언된 launch profile 목록 · 기본값 · 유효성 검사 (#350) |
+| `get_os_cores()` | 생성 | OS/DDS/IRQ 코어 (Core 0 단일). `get_cm_shield_cpus()` 가 shield 에서 제외할 slot 판정에 사용 |
+| `rtc_expected_threads()` | 생성 | `verify_rt_runtime.sh` 의 기대 표 (`name:slot:policy:priority[:optional]`). 컨트롤러 **in-process 스레드만** — arm/hand 는 별도 프로세스라 여기 있으면 항상 false-WARN 이다 |
+| `rtc_forbidden_threads()` | 생성 | 이번 profile 이 떨어뜨린 in-process 스레드 이름 (존재하면 FAIL). default profile 에서는 비어 있다 |
+| `rtc_layout_profiles()` / `rtc_default_profile()` / `rtc_is_layout_profile()` | 생성 | 선언된 launch profile 목록 · 기본값 · 유효성 검사 |
 | `get_rt_cores_with_siblings()` | 파생 | `get_rt_cores()` 출력에 SMT HT 시블링까지 포함, range-collapse. `setup_grub_rt.sh` 의 `nohz_full` / `rcu_nocbs` 값. non-SMT 시 입력과 동일 cpu 집합 (range 표기) |
 | `get_rt_shield_cpus()` | 파생 | RT 슬롯 → **logical cpu** (slot→logical) + HT 시블링. RT-only 격리/검증 (verify_rt_runtime) |
-| `get_cm_shield_cpus()` | 파생 | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위 (issue #151). 예: non-SMT 는 전 tier `1-3` · NUC13 12c hybrid `2-7` |
+| `get_cm_shield_cpus()` | 파생 | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위. 예: non-SMT 는 전 tier `1-3` · NUC13 12c hybrid `2-7` |
 
-**"생성"** = manifest 에서 나온다 (직접 편집 금지). **"파생"** = `rt_common.sh` 에 손으로 쓰여 있고 위 생성 함수를 호출한다. tier 별 반환값은 아래 생성된 표가 SSoT 이므로 여기 중복해 적지 않는다 — 예전엔 이 열이 tier 표의 일곱 번째 사본이었다.
+**"생성"** = manifest 에서 나온다 (직접 편집 금지). **"파생"** = `rt_common.sh` 에 손으로 쓰여 있고 위 생성 함수를 호출한다. tier 별 반환값은 아래 생성된 표가 SSoT 이므로 여기 중복해 적지 않는다.
 
 Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는 그 manifest 에서 생성된다):
 
@@ -230,19 +230,19 @@ Tier별 매핑 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는
 <!-- END GENERATED: thread-layout-tiers -->
 
 - **≤5코어 / 6–7코어는 degraded** — RT 결정성 보장 X. 전자는 nrt·driver 가 전부 OS Core 0 으로 접히고 mpc 가 CFS 로 강등되며, 후자는 arm/hand 가 한 코어를, nrt_logging + nrt_callback 이 또 한 코어를 공유한다.
-- **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯(**4·5**)을 얻고, 그 위 tier 는 **전부 같은 쌍**을 쓴다. 10+ tier 가 예약하던 `mpc_worker_0/1` 이 그 슬롯이었고 #380 이 회수, **v6 (#383)** 이 드라이버를 거기로 내렸다 — #380 이 "별개의 배치 결정" 이라며 미뤄둔 그 결정이다. 그래서 tier 가 올라가도 드라이버가 움직이지 않고 (이전에는 8→10, 10→12 에서 매번 이동), spare 는 슬롯 6 부터 **연속 블록**이 된다 (16c 의 과거 "user cset shield Core 4-8" 잔재는 v4.1 에서 제거). cset shield 와 `nohz_full` 은 이 이동에 **영향받지 않는다** — 드라이버는 `get_cm_shield_cpus` 의 union 에서 애초에 제외돼 있다.
+- **8코어 이상**에서 arm_driver / hand_driver 가 전용 슬롯(**4·5**)을 얻고, 그 위 tier 는 **전부 같은 쌍**을 쓴다 — tier 가 올라가도 드라이버 슬롯은 움직이지 않고, spare 는 슬롯 6 부터 연속 블록이 된다. cset shield 와 `nohz_full` 은 이 배치와 무관하다 — 드라이버는 `get_cm_shield_cpus` 의 union 에서 애초에 제외돼 있다.
 
-**launch profile (issue #350)** — 위 표의 `(mpc_off)` 열은 **두 번째 축**이다. tier 는 "어느 role 이 어느 슬롯에 앉는가", profile 은 "이번 실행에서 어느 role 이 도는가" 를 정한다. MPC 활성은 host 속성이 아니라 controller YAML (`mpc.enabled`) 이고 스레드는 `on_activate` 에서 뜨므로 런타임 자동 감지가 불가능하다 — 그래서 launch 단계의 **명시적 opt-out** 이다.
+**launch profile** — 위 표의 `(mpc_off)` 열은 **두 번째 축**이다. tier 는 "어느 role 이 어느 슬롯에 앉는가", profile 은 "이번 실행에서 어느 role 이 도는가" 를 정한다. MPC 활성은 host 속성이 아니라 controller YAML (`mpc.enabled`) 이고 스레드는 `on_activate` 에서 뜨므로 런타임 자동 감지가 불가능하다 — 그래서 launch 단계의 **명시적 opt-out** 이다.
 
 - profile 축을 받는 함수는 `get_rt_cores` · `get_mpc_cores` · `rtc_expected_threads` · `rtc_forbidden_threads` 넷이며, 전부 **`$2`** 로 받고 기본값은 `rtc_default_profile()` (= `mpc_on`) 이다. 인자를 안 주는 기존 호출자는 종전 레이아웃을 그대로 받는다. 선언된 profile 목록은 `rtc_layout_profiles()`, 검사는 `rtc_is_layout_profile <id>` — 알 수 없는 id 는 조용히 default 로 떨어지지 않고 **비0** 이다.
-- `mpc_off` 는 MPC role (`mpc_main`) 만 떨어뜨린다. `get_nrt_cores` / `get_arm_driver_slot` / `get_hand_driver_slot` 은 profile 축을 받지 않으므로 값이 변하지 않는다 — 이들이 함께 좁아지면 그 스레드의 self-pin 이 EINVAL 로 죽는다 (#151).
+- `mpc_off` 는 MPC role (`mpc_main`) 만 떨어뜨린다. `get_nrt_cores` / `get_arm_driver_slot` / `get_hand_driver_slot` 은 profile 축을 받지 않으므로 값이 변하지 않는다 — 이들이 함께 좁아지면 그 스레드의 self-pin 이 EINVAL 로 죽는다.
 - `rtc_forbidden_threads()` 는 `rtc_expected_threads()` 의 거울이다. off 에서 mpc 행을 기대 표에서 빼기만 하면 "MPC 꺼짐" 과 "MPC 가 방금 반환한 코어에서 돌고 있음" 이 검증기에 똑같이 보이므로 (둘 다 행이 없다), 떨어뜨린 role 은 **존재하면 FAIL** 인 목록으로 옮겨간다.
-- **`cpu_shield.sh status` 는 shield 를 먼저 묻는다** — 격리 탐지가 `/sys/devices/system/cpu/isolated` 를 게이트로 삼고 있었는데 **그 파일은 isolcpus 만 쓴다**. cset shield 는 아무것도 안 쓰므로, shield 가 `CPUSPEC(1-3,7-9)` 로 살아 있는데도 "Isolated cores: none" 이 나왔다 (dev PC 에 cset 설치 후 실측, 2026-08-07). 이제 `shield_isolation_method()` 가 실제 cpuset → isolcpus 순으로 판정한다. `check_rt_setup.sh` 의 `CPU Isolation` 항목에 남아 있던 같은 오탐은 #386 A 가 해소했다 — 그 함수가 `rt_common.sh` 로 올라가 두 소비자가 같은 답을 쓴다
-- **GRUB 은 profile 을 타지 않는다 (결정 D11(a))** — `get_rt_cores_with_siblings()` 는 `$2` 를 무시하고 항상 default profile 기준 최광 집합을 낸다. `nohz_full` / `rcu_nocbs` 는 boot-static 이라 profile 을 반영하려면 재부팅이 필요하고, 그러면 "재부팅 없는 profile 전환" 이 깨진다. 반환된 코어에 `nohz_full` 마킹이 남는 비용은 공짜가 아니다 (runnable task 가 둘 이상이면 scheduler tick 이 재개되고 RCU/housekeeping 이 offload 된다) — 다만 커널 커맨드라인과 런타임 레이아웃이 어긋나는 것보다 싸다.
+- **`cpu_shield.sh status` 는 shield 를 먼저 묻는다** — `/sys/devices/system/cpu/isolated` 는 isolcpus 만 반영하고 cset shield 는 그 파일에 아무것도 안 쓰므로, `shield_isolation_method()` 가 실제 cpuset → isolcpus 순으로 판정해 두 소비자(`cpu_shield.sh`, `check_rt_setup.sh`)가 같은 답을 쓴다.
+- **GRUB 은 profile 을 타지 않는다** — `get_rt_cores_with_siblings()` 는 `$2` 를 무시하고 항상 default profile 기준 최광 집합을 낸다. `nohz_full` / `rcu_nocbs` 는 boot-static 이라 profile 을 반영하려면 재부팅이 필요하고, 그러면 "재부팅 없는 profile 전환" 이 깨진다. 반환된 코어에 `nohz_full` 마킹이 남는 비용은 공짜가 아니다 (runnable task 가 둘 이상이면 scheduler tick 이 재개되고 RCU/housekeeping 이 offload 된다) — 다만 커널 커맨드라인과 런타임 레이아웃이 어긋나는 것보다 싸다.
 
-**hand aux lane (issue #345)**: `udp_hand_node` 는 위 `hand_driver` 코어에 더해 **OS slot(Core 0)에 `hand_aux_io` 스레드 하나**를 둔다 — 타이밍 CSV drain(1 Hz, 버스트당 최대 512행)과 stats JSON 저장 같은 blocking 파일 I/O 전용 CFS 레인이다. shield 밖 `system` cpuset 안이라 cpuset 재설계가 필요 없고 `cset shield` 활성 상태에서도 EINVAL 이 나지 않는다. slot 은 노드 param `aux_cpu_slot`(기본 0) 이며 shell 쪽 SSoT 는 `get_os_cores()` 다. ≤5코어 tier 에서는 `hand_driver` slot 도 0 이라 두 레인이 같은 코어로 합쳐진다 (그 tier 는 원래 Core 0 에 전부 모이는 degraded 배치다).
+**hand aux lane**: `udp_hand_node` 는 위 `hand_driver` 코어에 더해 **OS slot(Core 0)에 `hand_aux_io` 스레드 하나**를 둔다 — 타이밍 CSV drain(1 Hz, 버스트당 최대 512행)과 stats JSON 저장 같은 blocking 파일 I/O 전용 CFS 레인이다. shield 밖 `system` cpuset 안이라 cpuset 재설계가 필요 없고 `cset shield` 활성 상태에서도 EINVAL 이 나지 않는다. slot 은 노드 param `aux_cpu_slot`(기본 0) 이며 shell 쪽 SSoT 는 `get_os_cores()` 다. ≤5코어 tier 에서는 `hand_driver` slot 도 0 이라 두 레인이 같은 코어로 합쳐진다 (그 tier 는 원래 Core 0 에 전부 모이는 degraded 배치다).
 
-**v4.1 의 핵심 변화 (모든 tier 공통)**: RT cluster 가 Core 1 부터 시작 (Core 0 = OS/DDS/IRQ 전용), nrt_logging / nrt_callback 이 모든 ≥ 6c tier 에서 Core 0 와 분리, arm/hand 알파벳 순, sim_thread / viewer 가 모든 tier 에서 `cpu_core = -1`. 단조성 불변식은 `rtc_base/test/test_mpc_thread_config.cpp` 의 tier 쌍 + sentinel 처리 테스트가 회귀 방지.
+**공통 배치 규칙**: RT cluster 는 Core 1 부터 시작 (Core 0 = OS/DDS/IRQ 전용), nrt_logging / nrt_callback 은 모든 ≥ 6c tier 에서 Core 0 와 분리, arm/hand 는 알파벳 순, sim_thread / viewer 는 모든 tier 에서 `cpu_core = -1`. 단조성 불변식은 `rtc_base/test/test_mpc_thread_config.cpp` 의 tier 쌍 + sentinel 처리 테스트가 회귀를 방지한다.
 
 ---
 
@@ -442,20 +442,18 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 
 | Tier | 스레드 | 격리 |
 |------|--------|------|
-| Tier 1 (RT-critical) | rt_control + rt_callback (FIFO 70) + mpc_main | 항상 |
-| Tier 2 (driver / IO) | arm_driver, hand_driver, hand_aux_io, nrt_logging, nrt_callback | SCHED_OTHER — shield 밖 dedicated core. arm 은 CM 파라미터로 내부 RT 루프만 FIFO 50 + pin (issue #343). hand 는 프로세스가 스스로 pin 하고 (`use_cpu_affinity` param) 내부 `hand_udp_recv` 만 FIFO 65, `hand_aux_io` 는 OS slot 으로 분리 (issue #345); launch 는 DDS 스레드만 co-pin 한다. sim 은 taskset |
+| Tier 1 (RT-critical) | rt_control + rt_callback (FIFO 70) + mpc_main. nrt_logging / nrt_callback / nrt_publish (SCHED_OTHER) 는 ≥ 6c 에서 rt_callback 과 같은 aux slot 에 동거 | 항상 |
+| Tier 2 (driver / IO) | arm_driver, hand_driver, hand_aux_io | SCHED_OTHER — shield 밖 dedicated core. arm 은 CM 파라미터로 내부 RT 루프만 FIFO 50 + pin. hand 는 프로세스가 스스로 pin 하고 (`use_cpu_affinity` param) 내부 `hand_udp_recv` 만 FIFO 65, `hand_aux_io` 는 OS slot 으로 분리; launch 는 DDS 스레드만 co-pin 한다. sim 은 taskset |
 | Tier 3 (Flexible) | sim_thread, viewer, monitoring, build | 격리 안 함 (`cpu_core = -1`, no pin) |
 
-> Layout v4.1 에서 `--robot` / `--sim` 두 모드의 shield 범위가 동일해짐 (RT + MPC only). driver / IO 코어는 shield 밖에서 SCHED_OTHER 로 직접 핀 — 별도 tier 격리 불필요. 두 옵션은 forward-compat 용으로 유지.
+> `--robot` / `--sim` 두 모드는 shield 범위가 동일하다 (RT + MPC only). driver / IO 코어는 shield 밖에서 SCHED_OTHER 로 직접 핀 — 별도 tier 격리 불필요. 두 옵션은 forward-compat 용으로 유지.
 
 **코어 수별 격리 범위 (`--robot` / `--sim` 동일):**
 
 전 tier 동일하게 **`1-3`** 이다 — RT 그룹은 `rt_control`(1) + `rt_callback`(2) +
-`mpc_main`(3) 셋이고 코어가 늘어도 늘지 않는다. 10-11코어 `1-4` · 12코어+ `1-5` 였던
-두 행은 `mpc_worker_0/1` 몫이었고 **#380 이 회수**했다 (오라클:
-`test_rt_common.sh::test_get_rt_shield_cpus_non_smt`). 물리 코어가 슬롯보다 적은
-박스(예: 2코어)에서는 존재하지 않는 코어가 떨어져 `1` 로 좁혀진다 — cset/taskset 에
-없는 core id 를 넘기지 않기 위한 phantom drop 이다.
+`mpc_main`(3) 셋이고 코어가 늘어도 늘지 않는다 (검증: `test_rt_common.sh::test_get_rt_shield_cpus_non_smt`).
+물리 코어가 슬롯보다 적은 박스(예: 2코어)에서는 존재하지 않는 코어가 떨어져 `1` 로
+좁혀진다 — cset/taskset 에 없는 core id 를 넘기지 않기 위한 phantom drop 이다.
 
 > `integrated_bringup` 의 launch 파일 다섯 개가 `rtc_tools.launch.cpu_shield` 를 통해 자동
 > 호출합니다 (`robot_ur5e_p1a` · `robot_ur5e_p1b` · `sim_ur5e_p1a` · `sim_ur5e_p1b` ·
@@ -463,10 +461,10 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 > 호출하지 **않습니다** (design-principles P1). `build.sh` / `install.sh` 는 빌드 전 자동 해제합니다.
 >
 > 무장은 **노드 기동보다 먼저 끝난다** — 핀을 거는 액션이 전부 이 프로세스의 `OnProcessExit`
-> 에 걸려 있습니다 (#405). 선언 순서만으로는 부족했습니다: `ExecuteProcess` 라 나란히 시작하고,
-> `cset` 이 수백 태스크를 옮기는 동안 이미 뜬 `ros2_control_node` 가 `system` cpuset 에 붙으면서
-> 그 500 Hz 루프의 `cpu_affinity` 가 cpuset mask 로 덮였습니다 (NUC13 tier 12 실측: `8` → `0-1,8-15`).
-> 그래서 launch 시작이 cset 소요만큼 늦어집니다 — 정상입니다.
+> 에 걸려 있습니다. 선언 순서만으로는 부족합니다 — `ExecuteProcess` 는 병렬로 시작되므로,
+> `cset` 이 태스크를 옮기는 동안 먼저 뜬 프로세스가 `system` cpuset 에 붙어 그 RT 루프의
+> `cpu_affinity` 가 cpuset mask 로 덮일 수 있습니다. 그래서 launch 시작이 cset 소요만큼
+> 늦어집니다 — 정상입니다.
 
 ---
 
@@ -633,7 +631,7 @@ source setup_env.sh
   ./check_rt_setup.sh --summary
 
 [로봇 실행]
-  sudo cpu_shield.sh on --robot           # 선택: launch 가 알아서 먼저 무장한다 (#405)
+  sudo cpu_shield.sh on --robot           # 선택: launch 가 알아서 먼저 무장한다
   ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
   ./verify_rt_runtime.sh --watch 3        # 런타임 모니터링
 
@@ -673,7 +671,7 @@ source install/setup.bash
 
 [AGENTS.md](../AGENTS.md) §9 의 두 hard rule 이 실제로 깨지는 경로와 그 증상·감별이다. 규칙 자체는 헌법이, 재발 경로·근거는 여기가 소유한다 (AP-DOC-2).
 
-**colcon cwd drift.** 실제 위반은 룰을 몰라서가 아니라 cwd drift 로 재발한다 — 편집하러 패키지 dir 로 `cd` 한 shell 에서 그대로 colcon 을 치거나, `cd src/rtc-framework && source src/rtc-framework/...` 처럼 한 줄에 체이닝해 상대경로 source 가 silent fail 한 채 빌드가 repo 안에서 도는 경로다. 에이전트 shell 의 cwd 는 호출 간에 유지되므로 "독립 call 로 내면 된다" 는 오해다. `cd <rtc_ws> &&` 로 시작하기만 하면 규칙은 지켜지지만 그 다음 호출부터 cwd 가 ws root 에 남고, 그 부작용이 아래층에서 "cd 금지" 라는 반대 규율을 만들어 두 규칙이 충돌한 채 시작한 세션이 있었다 (#345 인계 노트) — 서브셸 표준형 `( cd <rtc_ws> && source … && colcon … )` 은 그 충돌 자체를 없앤다. 증상이 빌드 실패가 아니라는 점이 이 경로를 비싸게 만든다: repo 안에 별도 `build/`·`install/`·`log/` 트리가 생기고 (`.clangd` 의 CompilationDatabase 가 그 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다) 그 뒤로는 호출마다 두 트리를 오가므로 같은 세션의 검증들이 서로 모순되는 결과를 낸다 — 한 test 는 수정 후 코드로, 다른 test 는 stale 바이너리로 도는 식이다. 코드에 없는 논리 버그를 쫓게 되니, 검증 결과가 설명 불가하게 엇갈리면 코드를 의심하기 전에 `ls src/rtc-framework/build` 부터 친다.
+**colcon cwd drift.** 실제 위반은 룰을 몰라서가 아니라 cwd drift 로 재발한다 — 편집하러 패키지 dir 로 `cd` 한 shell 에서 그대로 colcon 을 치거나, `cd src/rtc-framework && source src/rtc-framework/...` 처럼 한 줄에 체이닝해 상대경로 source 가 silent fail 한 채 빌드가 repo 안에서 도는 경로다. 에이전트 shell 의 cwd 는 호출 간에 유지되므로 "독립 call 로 내면 된다" 는 오해다. `cd <rtc_ws> &&` 로 시작하기만 하면 규칙은 지켜지지만 그 다음 호출부터 cwd 가 ws root 에 남고, 그 부작용이 아래층에서 "cd 금지" 라는 반대 규율을 만들어 두 규칙이 충돌한 채 시작한 세션이 있었다 — 서브셸 표준형 `( cd <rtc_ws> && source … && colcon … )` 은 그 충돌 자체를 없앤다. 증상이 빌드 실패가 아니라는 점이 이 경로를 비싸게 만든다: repo 안에 별도 `build/`·`install/`·`log/` 트리가 생기고 (`.clangd` 의 CompilationDatabase 가 그 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다) 그 뒤로는 호출마다 두 트리를 오가므로 같은 세션의 검증들이 서로 모순되는 결과를 낸다 — 한 test 는 수정 후 코드로, 다른 test 는 stale 바이너리로 도는 식이다. 코드에 없는 논리 버그를 쫓게 되니, 검증 결과가 설명 불가하게 엇갈리면 코드를 의심하기 전에 `ls src/rtc-framework/build` 부터 친다.
 
 **`source` 를 파이프라인에 넣는 것.** 출력을 줄이려 `source setup_env.sh 2>&1 | tail -2 && colcon build …` 처럼 쓰면 source 가 subshell 에서 실행돼 env 가 부모 셸에 반영되지 않는다. 조용히 성공한 것처럼 보이는 게 함정이다: `colcon` 자체는 profile PATH 에 있어 빌드가 정상 시작하고, 한참 뒤 CMake 안에서 `ModuleNotFoundError: No module named 'ament_package'` 같은 원인을 가리키지 않는 에러로 죽는다 (`ament_package` 는 dpkg 가 아니라 ROS distro 의 `site-packages` 에 있고 `PYTHONPATH` 로만 노출되므로). 출력을 줄이려면 리다이렉션(`source … >/dev/null 2>&1`)을 쓰고 파이프는 뒤따르는 명령에만 건다. 이 실패를 `-DPython3_EXECUTABLE` 탓으로 오진하기 쉬운데 (venv carve-out 은 정상이다), 감별은 `echo $VIRTUAL_ENV` 또는 `/usr/bin/python3 -c "import ament_package"` 한 줄이면 된다. 서브셸 표준형은 `source` 와 `colcon` 이 같은 서브셸 안에 있으므로 이 함정과 상충하지 않는다 — 문제는 서브셸이 아니라 *파이프*가 만드는 서브셸에 colcon 이 안 들어가는 것이다.
 
