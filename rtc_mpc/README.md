@@ -7,7 +7,7 @@ Robot-agnostic library providing the plumbing between a soft-RT MPC thread
 design 100 Hz–5 kHz): lock-free solution delivery,
 cubic Hermite trajectory interpolation, Riccati feedback, and an MPC thread
 skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
-`rtc::mpc::MPCThread` + `PhaseManagerBase` (Phase 2+).
+`rtc::mpc::MPCThread` + `PhaseManagerBase`.
 
 ## Module map
 
@@ -21,15 +21,15 @@ skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 | `phase/` | `phase_context.hpp` | `PhaseContext` bundle passed from manager to OCP builder (contact plan + cost config + ee target + `ocp_type` dispatch key) |
 | `ocp/` | `ocp_handler_base.hpp` | Abstract OCP builder (`Build` / `UpdateReferences`); `OCPLimits` (control box / friction μ) and `OCPBuildError` enum |
 | `ocp/` | `cost_factory.hpp` | Builds per-stage `aligator::CostStack` (frame placement + state reg + control reg), weight-gated, no-throw |
-| `ocp/` | `contact_light_ocp.hpp` | Concrete `OCPHandlerBase` backed by `MultibodyConstraintFwdDynamicsTpl` (fixed-base `u = τ`); alloc-free `UpdateReferences` via cached polymorphic residual handles. Dispatch key `"contact_light"`. (Renamed from `kinodynamics_ocp.hpp` in Phase 4.-1.) |
-| `ocp/` | `contact_rich_ocp.hpp` | Concrete `OCPHandlerBase` adding per-active-contact `ContactForceResidualTpl` cost + `MultibodyFrictionConeResidualTpl` / `NegativeOrthantTpl` inequality. Dispatch key `"contact_rich"`. Phase 4 header; `.cpp` lands in Step 4. Cold-start requires caller-side seeding (see class doc-comment). |
-| `ocp/` | `grasp_quality_provider.hpp` | Pure-virtual extension seam for grasp-quality residuals on `ContactRichOCP` running/terminal stages. No concrete provider ships in Phase 4 — first implementation lands in Phase 4.5+ alongside a real consumer. |
+| `ocp/` | `contact_light_ocp.hpp` | Concrete `OCPHandlerBase` backed by `MultibodyConstraintFwdDynamicsTpl` (fixed-base `u = τ`); alloc-free `UpdateReferences` via cached polymorphic residual handles. Dispatch key `"contact_light"`. |
+| `ocp/` | `contact_rich_ocp.hpp` | Concrete `OCPHandlerBase` adding per-active-contact `ContactForceResidualTpl` cost + `MultibodyFrictionConeResidualTpl` / `NegativeOrthantTpl` inequality. Dispatch key `"contact_rich"`. Cold-start requires caller-side seeding (see class doc-comment). |
+| `ocp/` | `grasp_quality_provider.hpp` | Pure-virtual extension seam for grasp-quality residuals on `ContactRichOCP` running/terminal stages. No concrete provider ships yet; the seam awaits a real consumer. |
 | `comm/` | `triple_buffer.hpp` | Lock-free triple buffer with zero-copy consumer acquire |
 | `interpolation/` | `trajectory_interpolator.hpp` | Cubic Hermite interpolation between OCP nodes |
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` with optional accel-only mode |
 | `manager/` | `mpc_solution_manager.hpp` | Facade combining TripleBuffer + Interpolator + Feedback + SeqLock |
-| `logging/` | `mpc_timing_logger.hpp` | `MpcTimingLogger` — thin wrapper resolving `<session>/timing/mpc_timing_log.csv` and pre-binding the unified `RtTickTimingPayload` header/row writers (shared 8-col schema with the CM RT loop / hand_udp EventLoop: `t_wall_ns,tick_count,run_id` from the logger + 5 payload columns; `run_id` separates restarts that share a session directory — #376) |
-| `thread/` | `mpc_thread.hpp` | `MPCThread` solve loop: inherits `rtc::PeriodicRtThread` for lifecycle / `clock_nanosleep` cadence / Pause/Resume / per-tick t0~t3 capture; subclass adds the `Solve(state, out)` virtual. `OnTick` runs `ReadState → MarkStateAcquired → Solve → MarkComputeDone → PublishSolution`. Solve is single-threaded — parallelism, if reintroduced, belongs to the solver's own OpenMP pool, not to externally owned thread handles (#380). `MockMPCThread` is the deterministic test impl. `Pause()` / `Resume()` come from base and cv-gate the solve loop so an inactive controller can keep the thread alive without burning a core (used by `DemoWbcController::on_deactivate` under the rtc_cm lifecycle plan). |
+| `logging/` | `mpc_timing_logger.hpp` | `MpcTimingLogger` — thin wrapper resolving `<session>/timing/mpc_timing_log.csv` and pre-binding the unified `RtTickTimingPayload` header/row writers (shared 8-col schema with the CM RT loop / hand_udp EventLoop: `t_wall_ns,tick_count,run_id` from the logger + 5 payload columns; `run_id` separates restarts that share a session directory) |
+| `thread/` | `mpc_thread.hpp` | `MPCThread` solve loop: inherits `rtc::PeriodicRtThread` for lifecycle / `clock_nanosleep` cadence / Pause/Resume / per-tick t0~t3 capture; subclass adds the `Solve(state, out)` virtual. `OnTick` runs `ReadState → MarkStateAcquired → Solve → MarkComputeDone → PublishSolution`. Solve is single-threaded — parallelism, if reintroduced, belongs to the solver's own OpenMP pool, not to externally owned thread handles. `MockMPCThread` is the deterministic test impl. `Pause()` / `Resume()` come from base and cv-gate the solve loop so an inactive controller can keep the thread alive without burning a core (used by `DemoWbcController::on_deactivate` under the rtc_cm lifecycle plan). |
 | `thread/` | `handler_mpc_thread.hpp` | Concrete `MPCThread` wiring a `PhaseManagerBase` FSM into an `MPCHandlerBase` solver: per-tick FK → `phase_manager.Update` → `handler.Solve` → `PublishSolution`; cross-mode swap via `MPCFactory` + `SeedWarmStart`; observability atomics |
 | `handler/` | `mpc_handler_base.hpp` | Abstract MPC solve orchestrator: owns an `OCPHandlerBase` + `SolverProxDDP`, drives warm-started solves via `Init` / `Solve(PhaseContext, state, MPCSolution&)` / `SeedWarmStart`. Enums `MPCInitError`, `MPCSolveError`, POD `MPCSolverConfig`. |
 | `handler/` | `contact_light_mpc.hpp` | Concrete `MPCHandlerBase` wrapping `ContactLightOCP`. |
@@ -55,9 +55,7 @@ into TSID tasks themselves.
 
 `fmt`, `pinocchio`, and `aligator` are isolated to `deps/install/` (see
 `repo_scripts/scripts/setup_env.sh`, which prepends it to
-`CMAKE_PREFIX_PATH`); no explicit `*_DIR` hints are needed. The old
-hpp-fcl `*_DIR` ABI-pin workaround was removed once the package migrated
-from Pinocchio 3.9 to 4.0, which drops hpp-fcl for `coal`.
+`CMAKE_PREFIX_PATH`); no explicit `*_DIR` hints are needed.
 
 Aligator's ProxDDP solve path allocates via mimalloc, but frees can route
 through glibc across the pinocchio/aligator ABI boundary; under
@@ -123,18 +121,6 @@ behind.
 
 ## Status
 
-| Phase | Scope | Status |
-|-------|-------|--------|
-| 0 | Aligator toolchain (fmt / mimalloc / aligator → /usr/local) | ✅ |
-| 1 | `RobotModelHandler` + `contact_plan_types.hpp` | ✅ |
-| 2 | `PhaseManagerBase` + `PhaseCostConfig` + `PhaseContext` | ✅ |
-| 3 | `OCPHandlerBase` + `ContactLightOCP` (renamed from `KinoDynamicsOCP` in 4.-1) + `CostFactory` + `OCPLimits` | ✅ |
-| 4 | `ContactRichOCP` (contact-force cost + smooth conic friction cone) + `GraspQualityResidualProvider` seam + `test_utils/SeedGravityCompensation` | ✅ |
-| 5 | `MPCHandlerBase` + `ContactLightMPC` + `ContactRichMPC` + `MPCFactory` + horizon-shift warm-start (Aligator `cycleAppend`) | ✅ |
-| 6 | `HandlerMPCThread` + `MockPhaseManager` (test-only) + alloc tracer (Phase 5 Exit #3 closed for ContactLight; ContactRich informational) | ✅ |
-| 7 | integrated_bringup `GraspPhaseManager` + MPC YAML wiring + 16-DoF MuJoCo E2E | ✅ |
-
-Phase 0–7 closed; production default since `5118f67` (`engine: handler` in
-`demo_wbc`). For phase-by-phase rationale, spike notes, and risk closure
-history, see `git log --grep='rtc_mpc'` (key commits: `6e49bc9` Phase 7,
-`02e119e`/`9d6288f` Phase 7 follow-ups, `5118f67` handler default).
+Production default engine is `handler` (`engine: "handler"` in
+`integrated_bringup`'s `demo_wbc_controller.yaml`, all robots). History:
+`git log --grep='rtc_mpc'`.
