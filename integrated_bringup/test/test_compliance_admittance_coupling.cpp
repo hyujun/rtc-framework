@@ -272,6 +272,36 @@ TEST(ComplianceAdmittanceCoupling, APublishedForceReachesTheLawOnItsOwnAxis) {
       << "an angular deviation grew from a pure force";
 }
 
+// Every profile ships `external_wrench.filter_enabled: false` — the pull
+// estimator already low-passes, and a second filter had nothing left to remove
+// (the evidence is written in ur5e_p1b's YAML). The config tests pin the KEY;
+// this pins that configure carries it to the pipeline: a step in the published
+// force is the law's input on the very tick it arrives.
+//
+// Paired with the same program on a filter-ON copy. Equality with the step is
+// also what a pipeline would read if something seeded its filter AT the step,
+// so without a control that the probe demonstrably shows filtering, the
+// equality would prove nothing about the filter at all.
+TEST(ComplianceAdmittanceCoupling, TheShippedProfileHandsAForceStepToTheLawUnfiltered) {
+  const auto first_tick_of_step = [](const YAML::Node& cfg) {
+    auto ctrl = BringUp(cfg);
+    Driver d{ctrl.get()};
+    d.Run(kSettleTicks, Wrench6{});  // any filter settles on zero first
+    return d.Run(1, ForceX(kProbeForceX)).wrench_lwa[0];
+  };
+
+  EXPECT_DOUBLE_EQ(first_tick_of_step(ComplianceConfig()), kProbeForceX)
+      << "the shipped profile filters the pull wrench a second time";
+
+  YAML::Node filtered = ComplianceConfig();
+  filtered["external_wrench"]["filter_enabled"] = true;
+  filtered["external_wrench"]["filter_cutoff_force"] = 20.0;
+  filtered["external_wrench"]["filter_cutoff_torque"] = 15.0;
+  EXPECT_LT(first_tick_of_step(filtered), 0.5 * kProbeForceX)
+      << "the filter-on control passed the step straight through, so the probe cannot see a "
+         "filter and the equality above proves nothing";
+}
+
 TEST(ComplianceAdmittanceCoupling, TheApplicationPointIsTransportedToTheTaskFrame) {
   // `p_sensor` and `p_task` are two different arguments to the same call, and
   // swapping them flips the moment's sign while leaving the force untouched —

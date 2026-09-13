@@ -409,6 +409,12 @@ class DemoComplianceController final : public RTControllerInterface {
     return admittance_params_;
   }
 
+  /// The one §7 knob LoadConfig reads itself rather than through
+  /// ParseTaskAdmittanceParams, so the params accessor above cannot show it.
+  [[nodiscard]] double GetDegradedRecoveryTimeForTesting() const noexcept {
+    return degraded_recovery_time_;
+  }
+
   /// The §7.3 tail's activation totals (#484). By reference — the members are
   /// atomics, so this type does not copy.
   ///
