@@ -23,7 +23,7 @@ RTC 프레임워크의 **ONNX Runtime 추론 엔진** 패키지입니다. 신경
 | `outputs` | `std::vector<TensorSpec>` | -- | 출력 head. 순서 = `output_buffer(m, o)` 인덱스 |
 | `intra_op_threads` | `int` | `1` | 추론 내부 스레드 수 (RT 환경에서는 단일 스레드 권장) |
 
-`TensorSpec` 은 `{ std::string name; std::vector<int64_t> shape; }` 입니다. 엔진은 **N 입력 × N 출력 head** 를 지원합니다 (#511 P2).
+`TensorSpec` 은 `{ std::string name; std::vector<int64_t> shape; }` 입니다. 엔진은 **N 입력 × N 출력 head** 를 지원합니다.
 
 #### 텐서를 이름으로 바인딩하는 이유
 
@@ -183,9 +183,10 @@ ros2 run rtc_inference rtc_inference_check policy.onnx --input obs:1x34
 ### 빌드 명령
 
 ```bash
-cd ~/ros2_ws/rtc_ws
-colcon build --packages-select rtc_inference
+./build.sh -p rtc_inference
 ```
+
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조.
 
 ---
 
@@ -196,7 +197,7 @@ colcon build --packages-select rtc_inference
 | `ament_cmake` | 빌드 도구 | ROS 2 빌드 시스템 |
 | `rtc_base` | 런타임 의존 | 공유 데이터 타입 |
 | `libonnxruntime-dev` | 빌드 의존 (선택) | ONNX Runtime 백엔드 |
-| (lint depend 없음) | — | 워크스페이스 정책 (`bdedac7`): `ament_lint_common` meta / `ament_uncrustify` 사용 금지 — 필요 시 개별 `ament_cmake_{cppcheck,lint_cmake,xmllint}` 만 추가. 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md) |
+| (lint depend 없음) | — | `ament_lint_common`/`ament_uncrustify` 미사용 정책 — 상세: [agent_docs/conventions.md](../agent_docs/conventions.md) |
 
 C++ 20 표준이 요구됩니다 (`CMAKE_CXX_STANDARD 20`).
 

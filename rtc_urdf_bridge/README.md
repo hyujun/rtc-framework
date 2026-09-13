@@ -79,35 +79,16 @@ rtc_urdf_bridge/
 │   ├── example_submodel.cpp
 │   ├── example_tree_model.cpp
 │   └── example_rt_integration.cpp
-└── test/                               # GTest 테스트 -- 전체 목록은 test/ 디렉토리 참조
-    ├── test_urdf_analyzer.cpp
-    ├── test_chain_extractor.cpp
-    ├── test_model_builder.cpp
-    ├── test_joint_classification.cpp   # role/subtype 분류 규칙
-    ├── test_load_model_config.cpp      # YAML 로드 + 폐쇄체인/lock 빌드
-    ├── test_rt_model_handle.cpp
-    ├── test_payload_regressor.cpp     # Y_L 열 순서·origin 기준 관성 원소별 고정
+└── test/                               # GTest -- 목록은 디렉토리 참조
     ├── test_frame_jacobian_fd_oracle.cpp # J 행(linear/angular)·열 순서 중심차분 oracle
-    ├── test_inertial_validation.cpp    # 관성 실현가능성 게이트 V5/V6 (사유 분리·scale-aware tol)
-    ├── test_real_model_inertial_gate.cpp # 실모델 11종 무경고 통과 + schunk SVH negative fixture
-    ├── test_closure_yaml_loader.cpp    # sidecar 파서
-    ├── test_constraint_builder.cpp     # endpoint transform / builder
-    ├── test_pinocchio_builder_closure.cpp # closure_yaml_path 경로 (Extended-URDF via builder)
-    ├── test_loop_closed_chain.cpp      # closure error/projection/rank/dynamics
-    ├── test_loop_projection_passive.cpp # actuated 고정 passive 사영 (crank_rocker/four_bar)
-    ├── test_closed_chain_handle.cpp    # 축약 M/g/h/J/FK: serial 등가·round-trip·특이 flag
-    ├── test_closed_chain_fk_measurement.cpp # frozen-loop FK vs closed-chain FK 실측 오차
-    ├── test_rt_closed_chain_handle.cpp # RT-safe FK: converged 등가·J_a·serial 항등·hold·singular·seed-guard·identity-NaN-hold·OOB-getter·조립분기 clamp
-    ├── test_rt_closed_chain_alloc.cpp  # RT-1 센서: Update() 힙 할당 0 (전역 new 카운터, 단독 TU)
-    ├── test_closure_state_publisher.cpp # 노드 end-to-end (actuated 주입→full q, loop 닫힘)
+    ├── test_rt_model_handle.cpp
+    ├── test_payload_regressor.cpp      # Y_L 열 순서·origin 기준 관성 원소별 고정
     ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
-    ├── test_xacro_processor.cpp        # xacro 전처리
     └── urdf/                           # 테스트용 URDF / closure.yaml / MJCF
 ```
 
-> **참고** — SE(3) pose/velocity(twist) error 모듈은 `rtc_math` 패키지로 이전되었다
-> (`rtc::math::se3`). 이 패키지는 URDF→Pinocchio 모델 *구축*만 담당하며, 모델을 써서
-> task-space 제어 오차를 계산하는 코드는 [rtc_math](../rtc_math/README.md) 참조.
+> **참고** — SE(3) pose/velocity(twist) error 계산(`rtc::math::se3`)은 [rtc_math](../rtc_math/README.md)
+> 담당이다. 이 패키지는 URDF→Pinocchio 모델 *구축*만 담당한다.
 
 ## Dependencies
 
@@ -125,15 +106,11 @@ rtc_urdf_bridge/
 ## Build
 
 ```bash
-colcon build --packages-select rtc_urdf_bridge
-```
-
-테스트 실행:
-
-```bash
+./build.sh -p rtc_urdf_bridge
 colcon test --packages-select rtc_urdf_bridge
-colcon test-result --verbose
 ```
+
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조.
 
 ## Core Components
 
@@ -205,7 +182,7 @@ has_limit_tag == true
   AND (type == kContinuous  OR  velocity > 0)
 ```
 
-- `<transmission>` 태그는 **분류에 사용되지 않는다** (과거와 다름).
+- `<transmission>` 태그는 **분류에 사용되지 않는다**.
 - `<limit>` 태그가 없거나 `effort="0"` 이면 warning.
 - `continuous` 관절은 position limit 없이도 OK (effort/velocity만 체크).
 
@@ -334,39 +311,22 @@ handle.ComputeForwardDynamics(q, v, tau);           // ABA: a = M⁻¹(τ - C·v
 handle.ComputeMassMatrix(q);                        // M(q)
 handle.ComputeConstraintDynamics(q, v, tau);        // 폐쇄 체인 구속 동역학
 
-// Payload 관성 회귀자 (#455 Layer 2B) — Y_L = J_F(LOCAL)ᵀ · frameBodyRegressor(F)
+// Payload 관성 회귀자 (Layer 2B) — Y_L = J_F(LOCAL)ᵀ · frameBodyRegressor(F)
 handle.ComputePayloadRegressor(q, v, a, frame_id);  // nv × 10
 Eigen::Ref<const Eigen::MatrixXd> Y = handle.GetPayloadRegressor();
 ```
 
-`GetFrameJacobian` 의 출력 `J` 는 **행이 Pinocchio spatial 규약** (`rows 0..2 = linear`,
-`rows 3..5 = angular` — 각속도를 먼저 쌓는 Featherstone 관례와 반대) 이고 **열은 Pinocchio
-v-공간 순서**입니다. `SetJointOrder` 로 device 순서를 설정해도 이 출력은 재배열되지 않으며,
-재배열되는 것은 입력 `q` 뿐입니다 (`ComputePayloadRegressor` 와 같은 비대칭). 블록을 맞바꾸거나
-열을 device 순서로 착각해도 결과는 유한하고 매끄럽게 틀려 NaN·노름 게이트에 걸리지 않으므로,
-`test_frame_jacobian_fd_oracle.cpp` 가 자코비안을 전혀 쓰지 않는 **중심차분 oracle** 로 두 계약을
-고정합니다 — `test_rt_model_handle.cpp` 의 `ReorderedJacobianMatchesDirect` 는 자기일치 대조라
-행이 뒤집혀도 green 으로 남습니다.
-
-행 **순서**와 달리 linear 행이 *무엇의* 속도인지는 `ref_frame` 이 정합니다. `LOCAL` 과
-`LOCAL_WORLD_ALIGNED` 는 프레임 원점의 속도(표현 축만 다름)지만, `WORLD` 는 **프레임 원점이
-아니라 world 원점에 놓인 점의 속도** `v_O = ṗ + p × ω` 입니다. LWA 를 기대하고 `WORLD` 의
-`topRows(3)` 을 TCP 선속도로 쓰면 `|p × ω|` 만큼 조용히 어긋납니다 (저장소 안에 `WORLD`
-호출자는 없지만 API 가 셋을 노출하므로 테스트가 셋 다 고정합니다).
+`GetFrameJacobian` 의 행(linear/angular 순서)·열(Pinocchio v-공간 순서, device 순서로 재배열되지
+않음) 규약과 `ref_frame`(LOCAL/LOCAL_WORLD_ALIGNED/WORLD)별 linear 행의 의미 전문은
+`include/rtc_urdf_bridge/rt_model_handle.hpp` 의 `GetFrameJacobian` Doxygen 주석이 SSoT 입니다 —
+`test_frame_jacobian_fd_oracle.cpp` 가 중심차분 oracle 로 이 계약을 고정합니다.
 
 `ComputePayloadRegressor` 는 프레임에 강체로 매달린 payload 의 10-parameter 관성 집합 `φ_L` 에
-대해 `τ_payload = Y_L · φ_L` 을 만족하는 회귀자를 만듭니다. 두 계약이 조용히 틀리기 쉬워
-`test_payload_regressor.cpp` 가 원소별로 고정합니다:
-
-- **열 순서는 `pinocchio::Inertia::toDynamicParameters()`** — `[m, m·c, I_xx, I_xy, I_yy, I_xz,
-  I_yz, I_zz]` 로 **lower-triangular column-major** 이며 (`I_xz` 가 `I_yy` 뒤), 그 `I` 는
-  **프레임 origin 기준**이지 CoM 기준이 아닙니다.
-- **행은 PINOCCHIO 순서** (`GetTau()` 와 동일). 반면 `q`/`v`/`a` 입력은 **device 순서**로 받아
-  내부에서 재배열합니다 — 이 비대칭은 이 클래스 전반의 규약입니다.
-
-`v = a = 0` (준정적) 으로 부르면 **`I` 6열이 정확히 0** 이 됩니다. 중력만으로는 회전 관성이
-관측되지 않기 때문이며 (자세를 60개 쌓아도 rank 는 10 이 아니라 4), Layer 2B 추정기가 4개만
-식별하는 근거입니다.
+대해 `τ_payload = Y_L · φ_L` 을 만족하는 회귀자를 만듭니다. 열 순서(`toDynamicParameters()`
+lower-triangular column-major, origin 기준)·행 순서(PINOCCHIO 순서, `q`/`v`/`a` 는 device 순서)
+전문은 같은 헤더의 `ComputePayloadRegressor` 주석이 SSoT 이며, `test_payload_regressor.cpp` 가
+원소별로 고정합니다. `v = a = 0` (준정적) 이면 중력만으로 회전 관성이 관측되지 않아 **`I` 6열이
+정확히 0** 이 되고, 이것이 Layer 2B 추정기가 4개만 식별하는 근거입니다.
 
 ### 5. ClosedChainHandle (closed-chain 축약 동역학 질의, non-RT)
 
@@ -386,9 +346,9 @@ planar `contact_3d` 처럼 구속이 redundant(rank<m) 여도 damped pseudo-inve
 > 금지 — init / 저주기 query / off-RT 컨트롤러 준비용입니다. RT 핫패스용 축약 동역학은
 > `RtClosedChainHandle::UpdateDynamics(v_a)` + `GetMassMatrix/GetGeneralizedGravity/
 > GetNonLinearEffects` 가 동일 수학을 warm-start + 고정 K 사영 + damped 정규방정식 LDLT 로
-> **힙 할당 없이** 제공합니다 (non-RT SVD damped-pinv 와 수치 등가; #120). loop-consistent
+> **힙 할당 없이** 제공합니다 (non-RT SVD damped-pinv 와 수치 등가). loop-consistent
 > frame drift `J̇_a·v_a` 는 `GetFrameClassicalAccelerationDrift(fid, ref, out)` — 같은 tick 의
-> `UpdateDynamics()` 가 구한 구속-정합 drift 가속으로 2차 FK 한 상태를 읽습니다 (#173).
+> `UpdateDynamics()` 가 구한 구속-정합 drift 가속으로 2차 FK 한 상태를 읽습니다.
 > 개방 체인 RT 는 `RtModelHandle`.
 
 ```cpp
@@ -510,11 +470,9 @@ auto ccm = rtc_urdf_bridge::BuildClosedChainModelFromExtendedUrdf(urdf_path, clo
 //                           ProjectPassiveWithContinuation (**스트리밍 소비자의 표준 진입점**)
 ```
 
-**조립 분기(assembly branch) 주의 — 반드시 continuation 을 쓸 것.** 점(`CONTACT_3D`) 구속으로
-닫은 loop 은 4-bar 처럼 조립 분기가 둘 이상이고 **모든 분기가 φ=0 을 정확히 만족**한다. 따라서
-`converged` / `‖φ‖` 로는 물리적으로 틀린 분기를 검출할 수 없다 — 분기를 결정하는 것은 residual 이
-아니라 seed 에서 해까지의 **homotopy 경로**다. 직전 해에서 크게 떨어진 actuated seed 를 한 번의
-사영에 통째로 넘기면 반대편 분기로 착지하고, warm-start 구조상 영구 고정된다 (issue #248).
+**조립 분기(assembly branch) 주의 — 반드시 continuation 을 쓸 것.** 점 구속으로 닫은 loop 은
+조립 분기가 둘 이상이고 모두 φ=0 을 만족해 `converged`/`‖φ‖` 로는 물리적으로 틀린 분기를 검출할
+수 없다 — 근거·세부 스펙은 [invariants.md](../agent_docs/invariants.md) NUM-5 가 SSoT.
 
 - 스트리밍 소비자(직전 해가 있는 경우)는 `ProjectPassiveWithContinuation(q_prev, q_target, …)` 을
   쓴다 — actuated 증분을 `kDefaultActuatedIncrement`(0.05) 단위 sub-step 으로 나눠 warm-start 를
@@ -522,7 +480,7 @@ auto ccm = rtc_urdf_bridge::BuildClosedChainModelFromExtendedUrdf(urdf_path, clo
 - `ProjectPassiveToConstraint` 직접 호출은 증분이 작다고 보장될 때만.
 - RT 경로(`RtClosedChainHandle`)는 sub-step loop 가 비결정적이라 쓸 수 없다 — 대신 **tick 당 seed
   증분을 균일 스케일로 클램프**하고 그 tick 을 `held` 로 보고해 tick loop 자체를 continuation
-  경로로 쓴다 (고정 K 유지, 추가 연산 0). 세부는 [invariants.md](../agent_docs/invariants.md) NUM-5.
+  경로로 쓴다 (고정 K 유지, 추가 연산 0). 세부는 NUM-5.
 
 **PinocchioModelBuilder 경로 (bring-up SSoT).** raw URDF 뿐 아니라 xacro 도 소비하는
 `PinocchioModelBuilder` 는 `ModelConfig::closure_yaml_path` 가 설정되면 (`buildModel` 대신)
@@ -539,7 +497,7 @@ builder.GetClosureReferenceConfig();    // loop-consistent q_ref (full model)
 builder.GetClosureActuatedJointIds();   // actuation.actuated_joints → JointIndex
 builder.GetClosurePassiveLockNames();   // loop-passive 관절 이름 (movable − actuated); topology 판정용
 builder.IsClosureReferenceConverged();  // strict 수렴 (‖φ‖ < 1e-10) 여부 — 관측 신호
-builder.IsClosureReferenceAcceptable(); // false 면 q_ref 사용 금지 (‖φ‖ > 1e-6 또는 비유한, #250)
+builder.IsClosureReferenceAcceptable(); // false 면 q_ref 사용 금지 (‖φ‖ > 1e-6 또는 비유한)
 builder.IsClosureReferenceSingular();   // true 면 q_ref 를 operating config 로 쓰지 말 것
 ```
 
@@ -641,7 +599,7 @@ Reduced/Tree 모델은 `pinocchio::buildReducedModel()`을 사용하여 지정�
   ├─ ComputeJacobians(q)
   ├─ GetFrameJacobian(frame_id, ref, J)
   ├─ ComputeNonLinearEffects(q, v)
-  ├─ ComputePayloadRegressor(q, v, a, frame_id)   # 선택 — #455 Layer 2B
+  ├─ ComputePayloadRegressor(q, v, a, frame_id)   # 선택 — Layer 2B
   └─ 제어 법칙 계산 → 토크 출력
 
 [Phase 3] 정리
@@ -686,11 +644,11 @@ closure 구속으로 풀어(`ProjectPassiveWithContinuation`, warm-start) **loop
 | `output_topic` | `/digital_twin/joint_states` | loop-consistent full `JointState` 출력 |
 | `warn_on_singular` | `true` | 기준 형상 특이 시 기동 경고 |
 | `max_iterations` / `tolerance` | `100` / `1e-10` | passive 사영 반복 상한 / strict 수렴 임계 (solver 반복 목표) |
-| `acceptance_tolerance` | `1e-6` | 결과 수용 임계 (병진 m, #250). strict 미달이어도 이 이내면 해를 커밋 — URDF 좌표 불일치의 residual floor 대응. **solver 정지 완화 목적으로 `tolerance` 를 올리지 말 것** (초기 residual 이 임계 미만이면 refinement 를 건너뜀) |
+| `acceptance_tolerance` | `1e-6` | 결과 수용 임계 (병진 m). strict 미달이어도 이 이내면 해를 커밋 — URDF 좌표 불일치의 residual floor 대응. **solver 정지 완화 목적으로 `tolerance` 를 올리지 말 것** (초기 residual 이 임계 미만이면 refinement 를 건너뜀) |
 | `max_actuated_increment` | `0.05` | continuation sub-step 당 actuated 증분 상한 (rad). 조립 분기 이탈 방지 — 위 "조립 분기 주의" 참조. `≤0` 이면 비활성 |
 
 비수용(acceptance 초과)/특이 프레임은 **직전 loop-consistent 해를 hold**(NaN 미발행)하고 THROTTLE
-WARN 을 낸다. strict 미달·acceptance 이내의 residual floor 는 정상 커밋된다 (#250).
+WARN 을 낸다. strict 미달·acceptance 이내의 residual floor 는 정상 커밋된다.
 closure 비활성(param 미설정) 로봇은 이 노드를 기동하지 않고 digital_twin 이 직접 publish 한다
 (opt-in). launch 배선은 [rtc_digital_twin](../rtc_digital_twin/README.md) 참조.
 
