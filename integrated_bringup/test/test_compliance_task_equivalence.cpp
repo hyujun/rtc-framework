@@ -394,6 +394,20 @@ constexpr std::array<const char*, 3> kComplianceOwnedKeys = {
     "stiffness",        // §7.2 K_p^a — D-A3, see the hand-guiding test below
 };
 
+// The §7 keys that decide how the arm answers a pull. None has a sibling
+// equivalent, so they are owned outright as well — excluded by
+// WithoutComplianceOwnedKeys alongside the list above.
+constexpr std::array<const char*, 8> kAdmittanceResponseKeys = {
+    "damping",                         // K_d
+    "desired_inertia",                 // Λ_d
+    "min_desired_inertia",             // §7.4 floor under Λ_d
+    "max_compliant_displacement",      // §7.4 box
+    "max_compliant_linear_velocity",   // §7.5
+    "max_compliant_angular_velocity",  // §7.5
+    "activation_ramp_time",            // §10.7
+    "degraded_recovery_time",          // read by LoadConfig, not the §7 parser
+};
+
 // The task gains, which the two files now SPELL differently (#469 D-A13): the
 // compliance controller uses the §7 schema's names because
 // ParseTaskAdmittanceParams reads its node and would otherwise parse a second,
@@ -435,6 +449,9 @@ YAML::Node WithoutComplianceDiagLogEntry(const YAML::Node& logs) {
 YAML::Node WithoutComplianceOwnedKeys(const YAML::Node& node, bool is_compliance) {
   YAML::Node out = YAML::Clone(node);
   for (const char* key : kComplianceOwnedKeys) {
+    out.remove(key);
+  }
+  for (const char* key : kAdmittanceResponseKeys) {
     out.remove(key);
   }
   for (const auto& g : kRenamedGains) {
