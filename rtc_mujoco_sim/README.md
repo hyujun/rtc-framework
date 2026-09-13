@@ -262,9 +262,7 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 - `rtc_msgs/FingertipSensor.f` 가 finger-on-object 이고 (proto-1b firmware, 1a ONNX),
 - `rtc::grasp::PullContactConfig::force_sign` 의 기본값이 `+1` 인 이유가 그것이다.
 
-즉 **sim lane 과 실기 센서 lane 이 같은 부호**여서, `demo_shared.yaml` 의 `pull_estimator` 블록이 sim/실기 양쪽에서 그대로 맞는다. 구현상으로는 MuJoCo `reduce="netforce"` 가 내는 geom1-on-environment 값을 **그대로 통과**시킨다 (`<contact body1="...">` 의 body 가 손끝이므로). 
-
-> 이전에는 이 lane 이 이 값을 negate 해서 env-on-link 로 발행했고, 그래서 `iiwa7_leap` 이 tip 마다 `force_sign: -1.0` 을 pin 해야 했다. 그 pin 은 제거됐다 — **어떤 프로필에도 per-tip 반전이 남아 있으면 안 된다.** 반전을 되살리면 파지 중에도 `f_n` 이 전 contact 음수가 되어 all-zero estimate 가 나간다 (2026-07-22 실기에서 관측된 실패).
+즉 **sim lane 과 실기 센서 lane 이 같은 부호**여서, `demo_shared.yaml` 의 `pull_estimator` 블록이 sim/실기 양쪽에서 그대로 맞는다. 구현상으로는 MuJoCo `reduce="netforce"` 가 내는 geom1-on-environment 값을 **그대로 통과**시킨다 (`<contact body1="...">` 의 body 가 손끝이므로). **어떤 프로필에도 per-tip 반전(`force_sign: -1.0`)이 있으면 안 된다** — 반전이 들어가면 파지 중에도 `f_n` 이 전 contact 음수가 되어 all-zero estimate 가 나간다.
 
 부호는 두 물리 oracle 이 고정한다: `test_contact_wrench_known_load` (파지한 물체에 건 **알려진 외력**이 lane 의 world 합으로 되나타나는지) 와 `ShippedPullEstimator` (그 lane 을 출하 프로필로 파싱해 in-plane 성분을 뽑는지). 시뮬레이터 쪽 negation 을 되살리면 전자가, 프로필에 `-1.0` 을 넣으면 후자가 red 가 된다.
 
@@ -308,7 +306,7 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 
 #### 외력 주입 (`/sim/set_external_wrench`)
 
-추정기·관측기 검증에는 **참값을 아는 부하**가 필요합니다 (#135). 이 서비스는 MJCF body 를 이름으로 지정해 world 축 wrench 를 매답니다.
+추정기·관측기 검증에는 **참값을 아는 부하**가 필요합니다. 이 서비스는 MJCF body 를 이름으로 지정해 world 축 wrench 를 매답니다.
 
 ```bash
 # ee_link 프레임 원점에 1 kg 상당의 하중을 매단다 (아래 방향 9.81 N)
@@ -343,7 +341,7 @@ ros2 service call /sim/set_external_wrench rtc_msgs/srv/SetExternalWrench "{clea
 
 Position servo 모드에서는 MuJoCo 의 per-body `body_gravcomp` 가 그룹의 link body 들에 대해 1.0 으로 설정되어 중력이 내부적으로 상쇄됩니다. 전역 `opt.gravity` 는 항상 원래 값으로 유지되므로, 같은 씬 안의 free body (들어올릴 객체 등) 는 정상적으로 떨어집니다 — lift / manipulation 시뮬레이션과 양립.
 
-> **`JointState.effort` 의 정의 (모드 무관)**: `qfrc_actuator + qfrc_applied + qfrc_gravcomp` — 즉 **그 관절에 작용하는 일반화력 전부**이며 단위는 관절 토크 [N·m] 입니다. `DeviceState::effort` lane 계약 (`rtc_base` `types.hpp`: "torques for robot arm") 이 실기·sim 양쪽에 동일하게 걸리고, 실기는 command mode 와 무관하게 관절 토크를 보고하므로 sim 도 모드에 따라 의미가 달라지면 안 됩니다. `gravcomp` 항이 빠지면 position 모드의 effort 는 "중력이 이미 상쇄된 뒤 PD 가 추가로 낸 토크" 가 되어 조용히 다른 물리량이 됩니다 (#447 — momentum observer 가 무부하에서 residual 이 `+g(q)` 로 수렴하는 것으로 발현). gravcomp 가 OFF 인 `torque` / `pd_feedforward` 에서는 MuJoCo 가 `qfrc_gravcomp` 를 **0 으로 기입**하므로 (미기입이 아니다 — `mj_passive` 는 `ngravcomp == 0` early-out 전에 배열을 0 으로 덮는다) 이 합산은 모드 분기 없이 안전합니다. `qfrc_passive` 를 통째로 더하지 않는 이유는 거기에 spring / damper / fluid 가 섞여 있어서입니다 (iiwa7 은 관절 damping 1.0–3.0 → `qvel=0.5` 에서 1.5 N·m) — 그건 모델의 마찰이고 관측기의 residual 에 남습니다.
+> **`JointState.effort` 의 정의 (모드 무관)**: `qfrc_actuator + qfrc_applied + qfrc_gravcomp` — 즉 **그 관절에 작용하는 일반화력 전부**이며 단위는 관절 토크 [N·m] 입니다. `DeviceState::effort` lane 계약 (`rtc_base` `types.hpp`: "torques for robot arm") 이 실기·sim 양쪽에 동일하게 걸리고, 실기는 command mode 와 무관하게 관절 토크를 보고하므로 sim 도 모드에 따라 의미가 달라지면 안 됩니다. `gravcomp` 항이 빠지면 position 모드의 effort 는 "중력이 이미 상쇄된 뒤 PD 가 추가로 낸 토크" 가 되어 조용히 다른 물리량이 됩니다. gravcomp 가 OFF 인 `torque` / `pd_feedforward` 에서는 MuJoCo 가 `qfrc_gravcomp` 를 **0 으로 기입**하므로 (미기입이 아니다 — `mj_passive` 는 `ngravcomp == 0` early-out 전에 배열을 0 으로 덮는다) 이 합산은 모드 분기 없이 안전합니다. `qfrc_passive` 를 통째로 더하지 않는 이유는 거기에 spring / damper / fluid 가 섞여 있어서입니다 (iiwa7 은 관절 damping 1.0–3.0 → `qvel=0.5` 에서 1.5 N·m) — 그건 모델의 마찰이고 관측기의 residual 에 남습니다.
 
 #### `pd_feedforward` 모드 (sim 전용)
 
@@ -495,7 +493,7 @@ mujoco_simulator:
 
 > **참고:** `joint_names`는 `command_joint_names` 미지정 시 하위 호환 대체로 사용됩니다. `state_joint_names`가 빈 배열이면 robot 그룹은 XML 전체 조인트, fake 그룹은 command_joint_names와 동일하게 사용됩니다. 다중 그룹(arm + hand)에서는 각 그룹의 `state_joint_names`를 명시적으로 지정해야 그룹별 state 토픽이 자기 도메인 조인트만 publish 합니다 (미지정 시 전 그룹이 XML 전체를 publish).
 >
-> **검증 경고:** XML 조인트가 모든 robot 그룹의 `state_joint_names` 합집합에 포함되지 않으면 `WARNING: XML joint '...' not published by any group's state_joint_names` 가 1회 출력됩니다 (이전에는 그룹별로 잘못 출력됨).
+> **검증 경고:** XML 조인트가 모든 robot 그룹의 `state_joint_names` 합집합에 포함되지 않으면 `WARNING: XML joint '...' not published by any group's state_joint_names` 가 1회 출력됩니다.
 
 ### 노드가 읽는 파라미터 목록
 
@@ -702,17 +700,7 @@ rclcpp 가 **노드 생성 시점에** `InvalidParameterValueException` 을 던�
 
 ### 비용
 
-후보 전부가 씬에 컴파일되므로 개수에 비례합니다. MuJoCo 3.7.0, ur5e 씬 실측:
-
-| 구성 | ms/step | compile | RSS |
-|---|---|---|---|
-| `enabled: false` | 0.014 | 0.14 s | baseline |
-| 1개 | 0.037 | 0.14 s | — |
-| 57개 (56개 park) | 0.086 | 0.28 s | +약 0.5 GB |
-
-500 Hz · `n_substeps: 3` 기준 tick 당 0.26 ms / 2 ms 예산 = 약 13%. 메모리가 문제면 `objects:` 로 좁히십시오 (후보가 16개를 넘으면 기동 시 경고 로그를 남깁니다).
-
-**끄면 비용은 0 입니다** — `enabled: false` 면 컴파일된 모델의 `nq`/`nbody`/`ngeom` 이 이 블록이 없을 때와 동일하며, 이는 테스트로 고정돼 있습니다.
+후보 전부가 씬에 컴파일되므로 물리 스텝 비용과 컴파일 시간·RSS 가 후보 개수에 비례합니다. 메모리가 문제면 `objects:` 로 후보를 좁히십시오 (후보가 16개를 넘으면 기동 시 경고 로그를 남깁니다). **끄면 비용은 0 입니다** — `enabled: false` 면 컴파일된 모델의 `nq`/`nbody`/`ngeom` 이 이 블록이 없을 때와 동일하며, 이는 테스트로 고정돼 있습니다.
 
 ### 주의
 
@@ -807,7 +795,7 @@ ros2 launch rtc_mujoco_sim mujoco_sim.launch.py model_path:=... enable_viewer:=f
 | `model_path` | `""` | MJCF scene 경로 (빈값 = YAML) |
 | `enable_viewer` | `""` | GLFW 3D 뷰어 활성화 (빈값 = YAML) |
 | `max_rtf` | `""` | 최대 실시간 비율 (빈값 = YAML, 0.0 = 무제한) |
-| `max_log_sessions` | (robot config) | 최대 보관 세션 폴더 수. default 는 그 변종의 노드 config YAML (`_base.yaml` / `sim.yaml`) 에서 읽고, 값은 RT 노드 파라미터로도 전달된다 — launch 와 노드가 같은 트리를 각자 정리하므로 (#402) |
+| `max_log_sessions` | (robot config) | 최대 보관 세션 폴더 수. default 는 그 변종의 노드 config YAML (`_base.yaml` / `sim.yaml`) 에서 읽고, 값은 RT 노드 파라미터로도 전달된다 — launch 와 노드가 같은 트리를 각자 정리하기 때문 |
 
 세션 디렉토리 (`YYMMDD_HHMM`)를 launch 실행 시점에 자동 생성하고 `RTC_SESSION_DIR` 환경변수로 전파합니다. 세션 루트 결정 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()`의 **3단** 체인 (`$COLCON_PREFIX_PATH` → cwd 상위 `install/+src/` → `$PWD`) 을 따릅니다 — `$RTC_SESSION_DIR` 는 이 체인이 아니라 그 위의 세션 결정 단계에 있고, launch 가 *내보내는* 값입니다 (자세한 내용: [rtc_tools/README.md](../rtc_tools/README.md)).
 
@@ -917,70 +905,31 @@ ros2 topic hz /hand/joint_states
 
 ## C++ API
 
+그룹 인덱스 기반입니다 (`group_idx` 생략 오버로드는 group 0 에 위임하는 하위 호환용). 전체 시그니처·동작은 [include/rtc_mujoco_sim/mujoco_simulator.hpp](include/rtc_mujoco_sim/mujoco_simulator.hpp) 의 인라인 주석이 SSoT — 아래는 사용 패턴 요약.
+
 ```cpp
 auto sim = std::make_unique<MuJoCoSimulator>(cfg);
 sim->Start();
 
-// 그룹 인덱스 기반 API
-sim->SetCommand(0, cmd);                   // group 0 (ur5e) 커맨드
-sim->SetCommand(1, cmd);                   // group 1 (hand) 커맨드
-sim->SetControlMode(0, true);             // group 0 → torque 모드
-sim->SetControlMode(1, false);            // group 1 → position servo 모드
+sim->SetCommand(0, cmd);                  // group 0 커맨드
+sim->SetControlMode(0, true);             // torque 모드 (false = position servo)
+auto pos = sim->GetPositions(0);
+auto eff = sim->GetEfforts(0);
 
-auto pos = sim->GetPositions(0);          // group 0 위치
-auto vel = sim->GetVelocities(0);         // group 0 속도
-auto eff = sim->GetEfforts(0);            // group 0 토크
-auto names = sim->GetJointNames(1);       // group 1 command 조인트 이름
-auto snames = sim->GetStateJointNames(1); // group 1 state 조인트 이름
+// 센서 / contact wrench / fake(LPF) 콜백 (해당 그룹에 설정돼 있을 때만)
+sim->SetSensorCallback(0, [](const auto& infos, const auto& values) { /* ... */ });
+sim->SetContactWrenchCallback(0, [](const auto& infos, const auto& samples) { /* ... */ });
+sim->SetFakeTarget(fake_group_idx, target);
 
-// 센서 API (robot 그룹, YAML sensor_names 설정 시)
-sim->HasSensors(0);                       // 그룹에 센서 있는지 확인
-auto& infos = sim->GetSensorInfos(0);     // SensorInfo 목록 (name, type, adr, dim)
-sim->SetSensorCallback(0, [](const auto& infos, const auto& values) {
-  // infos: 센서 메타데이터, values: flat double 배열
-});
-
-// Contact wrench API (robot 그룹, MJCF <sensor><contact> 자동 발견 시)
-sim->SetContactWrenchCallback(0, [](const auto& infos, const auto& samples) {
-  // infos: ContactWrenchInfo 목록 (target_name, frame_id 등)
-  // samples: infos와 동일 인덱스의 link-frame force/torque (ContactWrenchSample)
-});
-
-// Fake response API (fake 그룹)
-sim->SetFakeTarget(group_idx, target);    // LPF 타겟 설정
-sim->AdvanceFakeLPF(group_idx);           // LPF 1스텝 진행
-auto state = sim->GetFakeState(group_idx);
-
-// 하위 호환 API (group 0 위임)
-sim->SetCommand(cmd);                      // = SetCommand(0, cmd)
-sim->GetPositions();                       // = GetPositions(0)
-
-// 물리 파라미터 런타임 변경
+// 물리 파라미터 런타임 변경, 외력, 일시정지/리셋
 sim->SetIntegrator(mjINT_IMPLICIT);
 sim->SetSolverType(mjSOL_NEWTON);
-sim->SetSolverIterations(200);
-sim->SetSolverTolerance(1e-10);
-sim->SetCone(mjCONE_ELLIPTIC);
-sim->SetImpratio(10.0);
-sim->SetNoslipIterations(10);
-sim->EnableWorldGravity(false);  // 디버그: 씬 전체 중력 OFF (free body 포함)
-sim->SetContactEnabled(false);
 sim->SetExternalForce(body_id, wrench);
-sim->SetMaxRtf(5.0);
-
-// 일시정지 / 리셋
-sim->Pause();
-sim->Resume();
-sim->StepOnce();
-sim->RequestReset();
+sim->Pause(); sim->Resume(); sim->StepOnce(); sim->RequestReset();
 
 // 시뮬레이터 상태
-auto steps    = sim->StepCount();
-auto rtf      = sim->GetRtf();
-auto solver   = sim->GetSolverStats();
-auto n_groups = sim->NumGroups();
-auto n_sub    = sim->GetNumSubsteps();    // n_substeps 값
-auto load     = sim->GetPhysicsLoad();    // physics wall time / control period
+auto rtf = sim->GetRtf();
+auto load = sim->GetPhysicsLoad();  // physics wall time / control period
 ```
 
 ---
@@ -1088,7 +1037,7 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 | `test_command_state_io` | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
 | `test_lifecycle` | Start/Stop/Pause/Resume/Reset/StepOnce/SyncTimeout |
 | `test_runtime_controls` | atomic setter/getter, 클램핑, world gravity 토글 |
-| `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (#447) (`scene_with_object.xml`) |
+| `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (`scene_with_object.xml`) |
 | `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
 | `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
 | `test_contact_wrench_site_frame` | `ContactWrenchConfig::reference_frame` — `body` / `site` 모드가 site 회전만큼 다른 벡터를 내는지 고정 |

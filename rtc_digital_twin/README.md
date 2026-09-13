@@ -144,9 +144,9 @@ YAML에 `sensor_viz` 블록이 있을 때만 활성화됩니다. 핑거팁별로
 
 ### TcpVisualizer (`tcp_visualizer.py`) -- 선택적
 
-**Phase 4에서 `GuiPosition` 메시지 구독 방식이 제거되고 tf2 조회로 대체되었습니다** (`GuiPosition` 메시지 자체도 폐기됨). YAML에 `tcp_viz.source_topic`이 비어있지 않을 때 활성화되며, 매 표시 주기마다 `tf2_ros.Buffer.lookup_transform(tcp_viz.frame_id, tcp_viz.source_topic, ...)`로 TCP pose를 조회해 RViz2 마커로 변환합니다. 이 lookup이 해결되려면 `_actual` 프레임이 `/tf`에 있어야 하는데, 컨트롤러는 전용 `/tf` publisher 없이 `<config_key>/transforms` (`tf2_msgs/TFMessage`)로만 노출하므로, DigitalTwinNode의 **controller_tf 재발행**(기본 활성)이 그 프레임을 `/tf`로 올려줘야 tcp_viz의 bare `TransformListener`가 받는다 (상세: [agent_docs/architecture.md](../agent_docs/architecture.md)).
+TCP pose는 `GuiPosition` 메시지 구독이 아니라 tf2 조회로 얻습니다. YAML에 `tcp_viz.source_topic`이 비어있지 않을 때 활성화되며, 매 표시 주기마다 `tf2_ros.Buffer.lookup_transform(tcp_viz.frame_id, tcp_viz.source_topic, ...)`로 TCP pose를 조회해 RViz2 마커로 변환합니다. 이 lookup이 해결되려면 `_actual` 프레임이 `/tf`에 있어야 하는데, 컨트롤러는 전용 `/tf` publisher 없이 `<config_key>/transforms` (`tf2_msgs/TFMessage`)로만 노출하므로, DigitalTwinNode의 **controller_tf 재발행**(기본 활성)이 그 프레임을 `/tf`로 올려줘야 tcp_viz의 bare `TransformListener`가 받는다 (상세: [agent_docs/architecture.md](../agent_docs/architecture.md)).
 
-**`tcp_viz.source_topic`은 더 이상 토픽 이름이 아니라 TF child frame 이름**입니다 (예: `"tool0_actual"`). `/`가 포함되지 않은 값은 그대로 child frame으로 쓰이고, `/`가 포함된 legacy 값(과거 절대 토픽 경로 형태)은 활성화 플래그로만 취급되어 child frame은 기본값 `"tool0_actual"`로 폴백합니다.
+**`tcp_viz.source_topic`은 더 이상 토픽 이름이 아니라 TF child frame 이름**입니다 (예: `"tool0_actual"`). `/`가 포함되지 않은 값은 그대로 child frame으로 쓰이고, `/`가 포함된 값(절대 토픽 경로 형태)은 활성화 플래그로만 취급되어 child frame은 기본값 `"tool0_actual"`로 폴백합니다.
 
 **시각화 마커:**
 
@@ -384,7 +384,7 @@ Loop-closed 핸드(예: linkage 핑거)는 spanning-tree URDF + `<stem>.closure.
 | `visualization_msgs` | `Marker`, `MarkerArray` (센서 시각화) |
 | `geometry_msgs` | `Point`, `Vector3` (마커 좌표/스케일) |
 | `builtin_interfaces` | ROS2 기본 인터페이스 |
-| `rtc_msgs` | `HandSensorState` (`FingertipSensor` 필드 포함, 센서 데이터). TCP pose는 Phase 4부터 tf2 lookup으로 대체 (`GuiPosition` 폐기) |
+| `rtc_msgs` | `HandSensorState` (`FingertipSensor` 필드 포함, 센서 데이터). TCP pose는 `GuiPosition` 이 아니라 tf2 lookup 으로 조회 |
 | `tf2_msgs` | `TFMessage` (`<active>/transforms` 구독 + `/tf` 재발행) |
 | `tf2_ros` | TCP pose 조회 (`lookup_transform`) + TF 브로드캐스팅 (`TransformBroadcaster` — controller_tf 재발행 / 선택적 virtual_tcp) |
 | `robot_state_publisher` | URDF -> TF 변환 (launch에서 사용) |
