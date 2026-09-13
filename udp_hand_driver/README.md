@@ -210,7 +210,7 @@ skip 사이클의 동작:
 
 1. **캘리브레이션**: 시작 시 N 샘플로 barometer baseline offset 자동 측정
 2. **전처리**: barometer 정규화 + delta 계산 + FIFO history shift (12 row)
-3. **추론**: per-fingertip ONNX 모델. ONNX 실행은 `rtc::OnnxEngine` (single-input / 3-output) 에 위임, zero-alloc
+3. **추론**: per-fingertip ONNX 모델. ONNX 실행은 `rtc::OnnxEngine` (single-input / 3-output) 에 위임. 전·후처리는 할당 없음이지만 ORT `Run()` 은 매 호출 heap 을 할당한다 — RT-1 조건부 수용이며 이 경로의 수용 조건 중 미측정 항목은 [invariants.md](../agent_docs/invariants.md#rt-path-invariants) 가 SSoT
 4. **출력**: contact probability (sigmoid), force vector (3), direction vector (3)
 
 > ⚠️ **컨트롤러 capability 일치 의무** — 컨슈머 (integrated_bringup) 의 device YAML
@@ -472,8 +472,7 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 | `target_port` | `55151` | 손 컨트롤러 포트 |
 | `local_ip` | `""` (yaml) | 제어 PC source address override |
 | `local_interface` | `""` (yaml) | egress NIC override |
-| `loop_rate_hz` | `500.0` | self-clocked CommLoop 주기 (Hz) — read/state publish 자율 tick rate |
-| `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
+| `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율). `loop_rate_hz` 는 launch 인자가 아니다 — 노드 YAML 의 ROS param (위 표) |
 | `communication_mode` | `bulk` | `"individual"` 또는 `"bulk"` |
 | `recv_timeout_ms` | `0.4` | ppoll 수신 타임아웃 (ms) |
 | `protocol_version` | `1a` | `"1a"` (int32 baro/ToF, bulk 259B) 또는 `"1b"` (float force, bulk 99B). 노드+firmware 양쪽 전파 |

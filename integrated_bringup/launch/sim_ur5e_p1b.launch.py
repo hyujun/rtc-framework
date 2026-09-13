@@ -614,7 +614,7 @@ def generate_launch_description():
             "Enable the MPC thread in DemoWbcController. "
             "Takes effect only when initial_controller:=demo_wbc_controller. "
             "Empty = use demo_wbc_controller.yaml default. "
-            "Runtime toggle is also available via gains index 7."
+            "Runtime consumption toggle: the controller's mpc_enable parameter."
         ),
     )
 

@@ -71,7 +71,7 @@ virtual void SetDeviceTaskTarget(int device_idx, std::span<const double> task6) 
 joint 목표는 디스패치 직전에 `device_name_configs_[group_name].joint_limits`의 `position_lower` / `position_upper`와 대조되며, 벗어나면 위반 joint 이름·값·범위를 담은 throttled `RCLCPP_WARN`이 발행됩니다. 리오더링이 끝난 `ordered_span`에서 검사하므로 인덱스가 `joint_state_names`와 1:1로 맞습니다.
 
 - **Warn-only** — 커맨드를 거부하거나 수정하지 않습니다. 실제 강제는 각 컨트롤러 `WriteJointCommand`의 RT-path `ClampRange`가 그대로 담당하며, 이 로그는 "왜 goal 이 요청한 곳에 안 갔는지"를 조용한 clamp 대신 보이게 하는 것이 목적입니다.
-- **`joint_limits` 미설정 device 는 침묵** — `LoadDeviceLimitsFromConfig`의 ±2π fallback 은 실제 안전 범위가 아니라 placeholder 이므로, 이를 기준으로 경고하면 전부 false-positive 가 됩니다.
+- **`joint_limits` 미설정 device 는 침묵** — 기준으로 삼을 실제 안전 범위가 없기 때문입니다. 바인딩이 RT clamp 용으로 `LoadDeviceLimitsFromConfig` 에 넘기는 ±2π 같은 fallback 인자는 호출자가 고른 placeholder 이지 limit 이 아니므로, 이 검사는 그것을 보지 않습니다.
 - **task 목표는 대상 외** — `task_target`은 Cartesian `(x, y, z, r, p, y)`라 joint limit 이 적용되지 않습니다.
 - **non-finite 도 위반으로 보고** — `std::clamp(NaN, lo, hi)`는 두 비교가 모두 false 라 NaN 을 그대로 반환합니다. 즉 RT clamp 가 막지 못하므로 반드시 표면화해야 합니다 (현재는 경고만 — drop 하지 않음).
 - 판정 로직은 순수 함수 `rtc::CheckTargetLimits(ordered, lim)` → `TargetLimitViolation` 으로 분리돼 있어 ROS 없이 단위 테스트됩니다. 로그는 [conventions.md](../agent_docs/conventions.md) §Logger naming 에 따라 library-level logger (`rtc_controller_interface`) + 메시지 본문 `[<controller_name>]` prefix 를 씁니다.
@@ -118,7 +118,7 @@ CM 이 아닌 단위 테스트가 직접 `Compute()` 를 도는 경로는 양쪽
 
 `ControllerOutput` 은 out-of-tree 계약(레지스트리로 로드되는 어떤 controller 든 채운다)인데, CM 은 그것을 그대로 `DeviceBackend::WriteCommand` 로 넘긴다 — 물리 액추에이터 직전 마지막 소프트웨어 단계다. 그 사이에 검증하는 곳이 없어서 NaN 커맨드나 디바이스가 보고하지 않은 채널 수가 그대로 모션이 되어 나갔다. `CheckTargetLimits` 의 ingress 검사를 egress 쪽에 대칭으로 둔 것이 이 검증이다.
 
-순수 함수 `rtc::ValidateControllerOutput(out, state)` → `ControllerOutputValidation` 로 분리돼 ROS 없이 단위 테스트된다 (`test/test_output_validation.cpp`). RT-safe: 할당·로깅·throw 없음.
+순수 함수 `rtc::ValidateControllerOutput(out, state)` → `ControllerOutputValidation` 로 분리돼 ROS 없이 단위 테스트된다 (`test/test_output_validation.cpp`). RT-safe: 할당·로깅·throw 없음. 거부 사유의 로그 문자열은 `OutputRejectReasonToString(reason)` — 정적 리터럴을 반환하므로 RT 경로에서 캡처해 deferred 로그에 넘길 수 있다.
 
 | 검사 | 규칙 | `OutputRejectReason` |
 |---|---|---|
@@ -186,6 +186,7 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 | `HasLatchedFault()` | `false` 반환 | controller-local fault latch 가 올라가 있는가. 비-RT read, non-blocking. `/rtc_cm/list_controllers` 의 `has_latched_fault` 로 노출된다 (#287) — 비활성 controller 도 보고되므로 `/rtc_cm/reset_fault` 에 댈 이름을 여기서 찾는다 |
 | `LoadConfig(const YAML::Node&)` | 디바이스 플래그 경고 + 토픽 파싱 | YAML 설정 로드. `noexcept`가 아님 (throw 가능) |
 | `GetCommandType()` | `CommandType::kPosition` | 커맨드 타입 (`kPosition` 또는 `kTorque`) |
+| `PublishNonRtSnapshot(const PublishSnapshot&)` | no-op | controller-owned non-RT 토픽 발행 훅. CM 의 publish 스레드가 호출 — `noexcept`, RT 가 쓰는 상태 접근 금지 |
 
 > **`ResetFault()` ↔ `ClearEstop()` 는 의도적으로 분리돼 있다 (E-8).** 전자는 컨트롤러가 스스로 건 latch (compliance 계열의 `SAFE_STOP`, §10.6 "자동 복구 금지") 를, 후자는 CM global E-STOP 을 푼다. **어느 쪽도 다른 쪽을 풀지 않는다** — 하나의 bool 로 합치면 global clear 가 지나가는 모든 컨트롤러 fault 를 세탁하게 되므로 #236 슬라이스 1 이 그 설계를 거부했다. 기본 구현이 둘 다 no-op / `false` 이므로, 자체 latch 가 없는 컨트롤러는 아무것도 override 하지 않고 `/rtc_cm/reset_fault` 에 "latch 없음" 으로 응답된다. `ResetFault()` 가 `void` 인 이유는 해제 판정이 RT tick 소유이기 때문이며, 결과는 `HasLatchedFault()` 로 확인한다. **latch 가 올라가 있지 않을 때의 `ResetFault()` 는 상태를 바꾸지 않아야 한다** — public virtual 이라 CM 외의 호출자도 닿을 수 있으므로, 이 판정은 호출자가 아니라 구현이 쥔다 (compliance 계열은 `ComplianceStateMachine::ResetFault()` 가 `SAFE_STOP` 이 아니면 no-op).
 
@@ -209,10 +210,12 @@ egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게�
 | `on_configure` | `(State, LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | `PreConfigure` 경유 시 멱등 (이미 set된 `node_`/`topic_config_` 보존, LoadConfig 재호출 안 함). 직접 호출 (legacy 단위 테스트) 시 `node_` 저장 + LoadConfig. 서브클래스가 `RegisterLog<>(...)` / 파라미터 / 퍼블리셔를 만드는 시점이며, 이때 `GetDeviceNameConfig(...)` 결과는 이미 채워져 있어 헤더 writer 에 안전히 전달 가능. 실패 경로 로그는 `rclcpp::get_logger("rtc_controller_interface")` 정적 logger 사용 + 메시지 본문에 `[<controller_name>]` prefix — 네이밍 규약은 [agent_docs/conventions.md](../agent_docs/conventions.md) "Logging" 섹션 참조 |
 | `on_activate` | `(State) → CallbackReturn` | activation generation 증분 (비활성 구간에 큐잉된 target 무효화) + `ResetTargetInitialization()` 호출 → `SUCCESS`. 아래 "Activation generation gate" 참조 |
 | `on_deactivate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
-| `on_cleanup` | `(State) → CallbackReturn` | `node_.reset()` → `SUCCESS` |
+| `on_cleanup` | `(State) → CallbackReturn` | `node_.reset()` + configure 상태를 `kUnconfigured` 로 → `SUCCESS` |
 | `on_shutdown` | `(State) → CallbackReturn` | `on_cleanup(state)` 위임 |
 | `on_error` | `(State) → CallbackReturn` | no-op `SUCCESS` (서브클래스에서 E-STOP 트리거 등 원하는 복구 로직 override) |
 
+> **Configure 상태 (`GetConfigState()` → `ConfigState`)**: `kUnconfigured` → `PreConfigure` 성공 시 `kPreConfigured` → `on_configure` 성공 시 `kConfigured`. 어느 configure 단계든 실패하면 `kFailed` 로 가고 이후 `on_configure()` 는 계속 `FAILURE` 다 — 되돌리는 경로는 `on_cleanup()` 하나뿐이다.
+>
 > **3-pass bring-up 계약**: CM은 (1) `PreConfigure(node, yaml)` → (2) 모든 컨트롤러의 `topic_config_` 으로 `active_groups_` 빌드 + `LoadDeviceNameConfigs()` + 컨트롤러별 `SetDeviceNameConfigs(...)` → (3) `on_configure(state, node, yaml)` 순서로 호출합니다. RegisterLog 람다가 `joint_state_names` / `motor_state_names` 등 device-name 정보를 capture할 때, `OnDeviceConfigsSet` 이 이미 실행됐음이 보장됩니다. 단위 테스트에서 `on_configure`를 직접 호출하는 legacy 경로는 `node_ == nullptr` 가드로 분기하여 종전 동작을 유지합니다. 이 순서는 **configure-time 검증을 어느 훅에 둘 수 있는지**도 규정합니다 — device 파생 상태를 읽는 검증의 pass 선택은 [agent_docs/anti-patterns.md](../agent_docs/anti-patterns.md) AP-PROC-9 참조.
 >
 > **Override 규약**: 서브클래스가 `on_configure`를 오버라이드해 자체 sub/pub을 만들 때 반드시 `RTControllerInterface::on_configure(previous_state, node, yaml_cfg)`를 먼저 호출한 뒤 `node_->create_subscription(...)` / `node_->create_publisher(...)`로 확장합니다. `PreConfigure` 는 base 전용이므로 override 불필요.

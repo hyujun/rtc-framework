@@ -41,6 +41,10 @@ rtc_urdf_bridge/
 │   ├── kinematic_chain_extractor.hpp   # 서브모델/트리모델 체인 추출
 │   ├── pinocchio_model_builder.hpp     # YAML→Pinocchio 모델 빌드 파이프라인
 │   ├── rt_model_handle.hpp             # RT-safe 계산 래퍼
+│   ├── pinocchio_cache.hpp             # tick 당 1회 결합 모델 FK·J·M·h·g 공유 RT 캐시 (task/constraint 소비자용)
+│   ├── reduced_dynamics_provider.hpp   # PinocchioCache 의 M/h/g 를 축약 동역학 값으로 덮어쓰는 추상 주입점
+│   ├── xacro_processor.hpp             # .xacro → URDF XML 전처리 (xacro CLI)
+│   ├── urdf_logging.hpp                # `urdf.*` 계층 sub-logger 정의
 │   ├── closure_yaml_loader.hpp         # Extended-URDF sidecar 파서
 │   ├── constraint_builder.hpp          # ClosedChainInfo→RigidConstraintModel (§4b)
 │   ├── inertial_validation.hpp         # 관성 물리 실현가능성 판정 (V5/V6 로드 게이트)
@@ -56,6 +60,8 @@ rtc_urdf_bridge/
 │   ├── pinocchio_model_builder.cpp
 │   ├── inertial_validation.cpp
 │   ├── rt_model_handle.cpp
+│   ├── pinocchio_cache.cpp
+│   ├── xacro_processor.cpp
 │   ├── closure_state_publisher{,_main}.cpp  # 노드 구현 + 실행 진입점
 │   ├── closure_yaml_loader.cpp         # Extended-URDF sidecar 파서
 │   ├── constraint_builder.cpp          # ClosedChainInfo→RigidConstraintModel

@@ -289,6 +289,13 @@ ros2 run rtc_tools compare_mjcf_urdf
 ros2 run rtc_tools compare_mjcf_urdf \
     --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf
 
+# 패키지 레이아웃으로 경로 해석 (<robot-pkg>/robots/<robot-name>/...)
+ros2 run rtc_tools compare_mjcf_urdf --robot-pkg robot_descriptions --robot-name ur5e
+
+# 비교 범위 좁히기: MJCF default class 루트 · 관절 목록 (생략 시 자동 탐지, MJCF ∩ URDF)
+ros2 run rtc_tools compare_mjcf_urdf --robot-pkg robot_descriptions --robot-name ur5e \
+    --mjcf-class ur5e --joints shoulder_pan_joint shoulder_lift_joint
+
 # tolerance 조정 (기본: 1e-4)
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 

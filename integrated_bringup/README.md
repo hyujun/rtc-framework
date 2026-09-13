@@ -9,9 +9,9 @@
 UR5e 로봇을 위한 **launch, 설정, 데모 컨트롤러** 통합 패키지입니다. 실제 로봇과 MuJoCo 시뮬레이션 모드를 지원하며, CPU 격리, DDS 스레드 핀닝, 세션 기반 로깅을 자동으로 설정합니다.
 
 **핵심 기능:**
-- 3개 데모 컨트롤러 (DemoJointController, DemoTaskController, DemoWbcController — TSID QP whole-body + MPC 통합)
-- 5개 launch 파일: `robot_ur5e_p1a.launch.py` / `robot_ur5e_p1b.launch.py` (실로봇), `sim_ur5e_p1a.launch.py` / `sim_ur5e_p1b.launch.py` / `sim_iiwa7_leap.launch.py` (MuJoCo)
-- 2개 GUI 도구 (컨트롤러 튜닝, 모션 에디터)
+- 데모 컨트롤러: `DemoJointController`, `DemoTaskController`, `DemoComplianceController`, `DemoWbcController` (TSID QP whole-body + MPC 통합), `DemoInferenceController` (ONNX 정책) — 등록 목록은 `src/controllers/controller_registration.cpp`
+- launch 파일: `robot_ur5e_p1a.launch.py` / `robot_ur5e_p1b.launch.py` (실로봇), `sim_ur5e_p1a.launch.py` / `sim_ur5e_p1b.launch.py` / `sim_iiwa7_leap.launch.py` (MuJoCo)
+- GUI 도구 (컨트롤러 튜닝, 모션 에디터)
 - 자동 CPU 격리 + DDS 스레드 핀닝
 - 세션 디렉토리 자동 생성 및 정리
 
@@ -236,7 +236,7 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
 
 ## 공통 파라미터 (`demo_shared.yaml`)
 
-`DemoJointController` · `DemoTaskController` · `DemoWbcController` 가 다음 파라미터를 공유합니다. 기본값은 `config/ur5e_p1a/controllers/demo_shared.yaml` 에 단일 소스로 정의되며, 세 컨트롤러가 `LoadConfig()` 시점에 동일하게 로드합니다 (WBC 는 layer-d 에서 추가됨).
+`DemoJointController` · `DemoTaskController` · `DemoComplianceController` · `DemoWbcController` 가 다음 파라미터를 공유합니다. 기본값은 로봇별 `config/<robot>/controllers/demo_shared.yaml` 에 단일 소스로 정의되며, 네 컨트롤러가 `LoadConfig()` 시점에 동일하게 로드합니다.
 
 | 파라미터 | 설명 |
 |---------|------|
@@ -273,7 +273,7 @@ demo_task_controller:
 
 ### 토픽 소유권 (Phase 4 + trailing cleanup)
 
-3개 데모 컨트롤러 모두 non-RT 외부 통신 토픽을 **컨트롤러 소유**로 이관했습니다.
+데모 컨트롤러는 non-RT 외부 통신 토픽을 **컨트롤러가 소유**합니다.
 
 | 토픽 역할 | 소유자 | 메커니즘 / 경로 (active = demo_wbc_controller 예시) |
 |-----------|--------|------------------------------------------|
@@ -686,11 +686,12 @@ ros2 launch integrated_bringup robot_ur5e_p1a.launch.py use_mock_hardware:=true 
 | `controller_spawner_timeout` | `10` | controller_manager spawner의 load/activate 대기(초). 부하로 startup이 느리면 상향 |
 | `activate_joint_controller` | `true` | `initial_joint_controller`를 시작 시 active로. `false`면 로드만 하고 inactive |
 | `initial_joint_controller` | `forward_position_controller` | UR 드라이버가 처음 로드/활성화할 joint controller. RTC backend가 `/forward_position_controller/commands`에 publish |
-| `enable_mpc` | `""` | DemoWbcController MPC 토글. **선언만 되어 있고 robot_ur5e_p1a.launch.py는 OpaqueFunction 미사용** — 실제 제어는 런타임 gains topic index 7로 수행. |
+| `enable_mpc` | `""` | layout profile 선택 — cset shield 와 `DemoWbcController` 활성화 게이트가 함께 본다. `false` 면 MPC 코어를 system cpuset 에 반납하므로 MPC 가 켜진 WBC config 는 활성화를 거부한다. 빈 값/`true` 는 코어를 예약. sim launch 와 달리 YAML `mpc.enabled` 를 오버라이드하지 않는다 — 런타임 소비 토글은 컨트롤러의 `mpc_enable` 파라미터 |
 | `enable_tracing` | `false` | LTTng trace 캡처 (ros2_tracing). 출력: `<session_dir>/tracing/<trace_session_name>/` (`repo_scripts/scripts/timeline.sh`로 Chrome Trace 변환 가능). 1회 `./install.sh --tracing` 설정 필요 |
 | `trace_session_name` | `""` | LTTng 세션 이름 — `<session_dir>/tracing/`의 leaf 디렉토리명. 빈 값 = `"trace"` |
 | `trace_events_ust` | `""` | 콤마 구분 UST 이벤트. 빈 값 = ros2_tracing `DEFAULT_EVENTS_ROS` |
 | `trace_events_kernel` | `sched_switch,sched_waking,sched_wakeup,irq_handler_entry,irq_handler_exit` | 콤마 구분 커널 이벤트. 빈 값 = kernel tracing 비활성 (UST만). `lttng-modules-dkms` + `tracing` 그룹 필요 |
+| `sil_mode` | hand YAML 의 `sil_mode` (없으면 `off`) | `off` / `loopmodel` / `firmware`. `firmware` 는 loopback 으로 `fake_hand_firmware` 를 띄운다. 모드별 동작은 [udp_hand_driver/README.md](../udp_hand_driver/README.md) |
 
 > **`robot_ur5e_p1b.launch.py`** (UR5e + proto_1b closed-chain hand) 는 위 인자 집합을 **동일하게** 노출한다 — 유일한 기본값 차이는 `robot_ip` (`192.168.0.3`). p1b는 hand config·`/p1b/joint_states` gate만 다르다.
 

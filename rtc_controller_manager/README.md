@@ -36,11 +36,9 @@ rtc_controller_manager/
 │   ├── rt_controller_node.cpp             <- 생성자/소멸자, 콜백 그룹, 타이머, Lifecycle 콜백
 │   ├── rt_controller_node_params.cpp      <- 파라미터 선언/로딩, 디바이스 설정
 │   ├── rt_controller_node_device_config.cpp <- URDF/모델 파싱, 디바이스 이름 설정
-│   ├── rt_controller_node_subscriptions.cpp <- 구독자 생성 (SeqLock writer 콜백 등록)
-│   ├── rt_controller_node_publishers.cpp    <- 퍼블리셔 생성 (per-controller LifecyclePublisher)
+│   ├── rt_controller_node_publishers.cpp    <- CM 고정 퍼블리셔 생성 (per-group JointState republish, E-STOP 상태)
 │   ├── rt_controller_node_services.cpp      <- 서비스 (LoadController, SwitchController 등)
 │   ├── rt_controller_node_switch.cpp        <- 컨트롤러 전환 로직 + active_controller_name latched publish
-│   ├── rt_controller_node_callbacks.cpp     <- 디바이스 센서/타겟 콜백 (SeqLock writer)
 │   ├── rt_controller_node_rt_loop.cpp       <- RT 루프 (@ control_rate), 워치독, 로그 드레인
 │   ├── rt_controller_node_publish.cpp       <- SPSC 드레인 → ROS2 publish (eventfd wakeup)
 │   ├── rt_controller_node_estop.cpp         <- E-STOP 트리거/클리어/퍼블리시
@@ -53,21 +51,17 @@ rtc_controller_manager/
 
 ---
 
-## 스레딩 아키텍처 (layout v4.1)
+## 스레딩 아키텍처
 
-`SelectThreadConfigs()`가 물리 코어 수에 따라 스레드 레이아웃을 자동 선택합니다. **값의 SSoT 는 선언형 manifest [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml)** 이며, C++ tier 상수와 dispatch 는 거기서 생성됩니다 (issue #153 M1).
+`SelectThreadConfigs()`가 물리 코어 수에 따라 스레드 레이아웃을 자동 선택합니다. **값의 SSoT 는 선언형 manifest [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml)** 이며, C++ tier 상수와 dispatch 는 거기서 생성됩니다. tier 별 코어 배치는 [rtc_base/README.md](../rtc_base/README.md) 의 생성된 매트릭스를 봅니다.
 
-| 스레드 | 코어 | 스케줄러 | 주파수 | 역할 |
-|--------|------|----------|--------|------|
-| **rt_loop** (rt_control) | 1 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push. 그 push/eventfd 인계 직후 publish phase 를 끊으므로 (`StampPublishDone`), `cm_timing_log.csv` 의 `t_total_us − (t_state+t_compute+t_publish)` 잔차가 **그 tick 의 post-publish tail** 이다 — 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 먼저 본다 (#222) |
-| **rt_callback_executor** | 2 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch-time taskset 으로 같은 Core 2 에 co-pin (CFS 유지) |
-| **nrt_logging_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` + `rt_callback_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
-| **nrt_publish** | tier-aware (4c: 0 / ≥6c: dedicated, nrt_callback core 공유) | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` (cap 16) SPSC 드레인 → `controller.PublishNonRtSnapshot` (Transforms / grasp_state / wbc_state / tof_snapshot). std::jthread + eventfd wakeup. `cfgs.nrt_publish` 를 쓴다 — 코어·정책은 `nrt_callback` 과 같고 **이름만 다르다** (#349 D15: 같은 이름이면 verifier 가 둘 중 하나만 검사) |
-| **nrt_callback_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, RobotTarget 외부 입력, lifecycle services, 컨트롤러 LifecycleNode default group (owned subs) |
-
-> **v4.1 변경**: RT cluster 가 Core 1 부터 시작 (Core 0 = OS / DDS / IRQ 전용). DDS receive thread 는 새 rt_callback core (Core 2) 에 co-pin. nrt_logging / nrt_callback 이 모든 ≥ 6c tier 에서 Core 0 와 분리. 정확한 tier 별 cpu_core 는 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) (SSoT) 또는 [rtc_base/README.md](../rtc_base/README.md) 의 생성된 매트릭스 참조.
->
-> **v4 변경 (참고)**: v3 의 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거. actuator publish 는 `rt_control` 이 inline 으로 수행 (RT-safe contract). cross-core hand-off 가 사라져 latency / 자원 동시 감소.
+| 스레드 | 스케줄러 | 주파수 | 역할 |
+|--------|----------|--------|------|
+| **rt_loop** (rt_control) | SCHED_FIFO 90 | `control_rate` Hz + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push. 그 push/eventfd 인계 직후 publish phase 를 끊으므로 (`StampPublishDone`), `cm_timing_log.csv` 의 `t_total_us − (t_state+t_compute+t_publish)` 잔차가 **그 tick 의 post-publish tail** 이다 — 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 먼저 본다 |
+| **rt_callback_executor** | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch 에서 같은 코어로 co-pin (CFS 유지) |
+| **nrt_logging_executor** | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` + `rt_callback_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
+| **nrt_publish** | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` SPSC 드레인 → `controller.PublishNonRtSnapshot` + per-group JointState republish. std::jthread + eventfd wakeup. `cfgs.nrt_publish` 를 쓴다 — 배치는 `nrt_callback` 과 같고 **이름만 다르다** (같은 이름이면 `verify_rt_runtime.sh` 가 이름당 TID 하나만 검사) |
+| **nrt_callback_executor** | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, RobotTarget 외부 입력, lifecycle services, 컨트롤러 LifecycleNode default group (owned subs) |
 
 > `mlockall(MCL_CURRENT | MCL_FUTURE)`를 `rclcpp::init()` 전에 호출하여 페이지 폴트를 방지합니다.
 
@@ -106,13 +100,12 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 
 ### Phase 0: 준비 검사
 - **디바이스 준비 게이트** — 설정된 **모든** 디바이스 그룹이 timeout 안에 state 를 한 번 이상 보고했는지 확인. 하나라도 미보고면 tick 은 그대로 반환하고 `Compute()` / `WriteCommand()` 는 실행되지 않는다. `init_timeout_sec` 경과 시 `{group}_init_timeout` E-STOP + 노드 종료 (미보고 그룹 이름 포함). 준비 여부는 `backends_[slot]->LastStateStamp()` 가 단일 출처 — CM 은 별도 플래그/타임스탬프를 두지 않는다 (#198 §1/§2)
-- Auto-hold 모드: 외부 타겟 없으면 모든 디바이스가 valid 상태일 때 현재 위치를 타겟으로 초기화
+- CM 은 hold 타겟을 만들지 않는다 — 각 컨트롤러가 첫 `Compute()` 에서 현재 device state 로 자체 seed 한다
 - `init_complete_` 이후 정상 루프 진입
 
 ### Phase 1: 비차단 상태 획득
 - 활성 컨트롤러의 TopicConfig.groups 순서대로 `backends_[slot]->ReadState/ReadMotorState/ReadSensorState(cache)` → `ControllerState.devices[]` 복사 (RT-safe, 락-프리)
 - 각 backend는 내부에 `SeqLock<DeviceStateCache>`를 보유 — 센서 callback (writer) + RT loop (reader) 분리
-- `try_lock`으로 타겟 스냅샷 (`device_target_snapshots_`)
 
 ### Phase 2: 제어 연산
 - `timing_profiler_.MeasuredCompute(controller, state)`
@@ -552,6 +545,7 @@ Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointComman
 | `max_log_sessions` | int | `10` | 최대 로그 세션 보관 수. `on_configure` 가 `log_dir` 의 부모를 루트로 삼아 정리한다. **bringup launch 도 같은 트리를 정리하므로** 5개 launch 는 이 값을 자기 `max_log_sessions` 인자의 default 로 읽어 노드에도 다시 넘긴다 — 두 정리 주체가 항상 같은 수를 보게 하기 위해서다 (#402). 따라서 이 YAML 값이 SSoT 이고, CLI `max_log_sessions:=N` 은 양쪽을 함께 움직인다 |
 | `use_sim_time_sync` | bool | `false` | MuJoCo 동기 루프 CV 기반 wakeup 모드 |
 | `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) |
+| `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 — `<pkg_share>/config/<config_variant>/controllers/<config_key>.yaml`. 빈 값이면 `config/controllers/` |
 | `kp` | double | `5.0` | (레거시) 기본 P 게인 |
 | `kd` | double | `0.5` | (레거시) 기본 D 게인 |
 
@@ -668,6 +662,7 @@ CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로
 |--------|------|
 | `ament_cmake` | 빌드 시스템 |
 | `rclcpp` | ROS2 클라이언트 라이브러리 |
+| `rclcpp_lifecycle` | `RtControllerNode` 의 `LifecycleNode` 베이스 |
 | `sensor_msgs` | JointState 메시지 |
 | `std_msgs` | Bool (E-STOP), String (active controller name) — Float64MultiArray bridge moved into `ur_driver_native` DeviceBackend (Phase 4) |
 | `rtc_controller_interface` | 컨트롤러 추상 인터페이스 + 레지스트리 |

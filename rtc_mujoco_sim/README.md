@@ -503,6 +503,7 @@ mujoco_simulator:
 |----------|------|--------|------|
 | `model_path` | string | `""` | MJCF 모델 경로 (필수). 빈 값이면 노드 configure 시 `runtime_error`. robot-specific bringup이 `package://<pkg>/path/to/scene.xml` 형태로 전달. |
 | `enable_viewer` | bool | `true` | GLFW 3D 뷰어 활성화 |
+| `viewer_refresh_rate` | double | `60.0` | 뷰어 목표 refresh rate (Hz) |
 | `sync_timeout_ms` | double | `50.0` | primary 그룹 command 대기 타임아웃 (ms) |
 | `max_rtf` | double | `0.0` | 최대 실시간 비율 (0.0 = 무제한) |
 | `control_rate` | double | `500.0` | 런치 파일에서 전달. physics_timestep 검증용 |
@@ -1011,6 +1012,8 @@ MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 | `rclcpp_lifecycle` | LifecycleNode 기반 상태 관리 |
 | `std_msgs` | Float64MultiArray (sim/status) |
 | `sensor_msgs` | JointState (state publish) |
+| `geometry_msgs` | `WrenchStamped` (contact wrench lane), `TransformStamped` (object state) |
+| `tf2_msgs` | `TFMessage` — object state lane 의 named object pose 배열 |
 | `ament_index_cpp` | package:// URI 해석 |
 | `rtc_msgs` | JointCommand, SimSensorState 메시지 |
 | `rtc_base` | RTC 공통 유틸리티 |
@@ -1078,6 +1081,8 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 |------|-------|
 | `test_pure_helpers` | `SolverNameToEnum`/`ConeNameToEnum`/`JacobianNameToEnum`/`IntegratorNameToEnum`/`ApplyFakeLpfStep` (순수 로직) |
 | `test_resource_provider` | `ResolveModelPath` — package:// URI 해석 (순수 문자열 + ament, MJCF fixture 불필요) |
+| `test_initial_qpos` | `robot_response.<group>.initial_qpos` — 시작·reset 자세 |
+| `test_shipped_config` | 이 패키지가 출하하는 모든 params YAML 이 rclcpp 파라미터 로더를 통과하는지 |
 | `test_simulator_init` | `Initialize` happy/실패 경로, joint/sensor 디스커버리, 검증 |
 | `test_solver_config` | XML `<option>`/`<flag>` 우선순위, YAML fallback, ContactOverride |
 | `test_command_state_io` | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
@@ -1086,9 +1091,11 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 | `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (#447) (`scene_with_object.xml`) |
 | `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
 | `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
+| `test_contact_wrench_site_frame` | `ContactWrenchConfig::reference_frame` — `body` / `site` 모드가 site 회전만큼 다른 벡터를 내는지 고정 |
 | `test_contact_wrench_viz` | 뷰어 화살표 스냅샷이 **토픽과 같은 벡터**인지 — 발행된 link-frame force 를 reference frame 회전으로 world 로 되돌린 것과 componentwise 일치, 화살표 시작점 = reference site, `visualize:false` 시 스냅샷 자체가 빔 (negative control) |
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
 | `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
+| `test_object_state` | object state lane — 어떤 body 가 object 로 잡히는지, pose 가 어느 프레임으로 나오는지 |
 | `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
 
 Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).

@@ -37,12 +37,11 @@ bt_coordinator (non-RT, 80 Hz)
 
 ## QoS 정책
 
-BT coordinator는 RT Controller 파이프라인의 **RELIABLE QoS topic만 subscribe**한다.
-BEST_EFFORT topic (`/p1a/sensor_states`, `/joint_states` 등; hand_group 세그먼트는
-variant 별로 결정 — ur5e_p1a 기준)은 RT 제어 전용이므로 BT에서 subscribe하지 않는다.
+BT coordinator는 RT 제어 전용 BEST_EFFORT topic (`/p1a/sensor_states`, `/joint_states` 등; hand_group 세그먼트는
+variant 별로 결정 — ur5e_p1a 기준)을 subscribe하지 않는다. 예외는 controller-owned `<ns>/tof/snapshot` 하나다 (아래 표).
 
 Grasp 상태 데이터는 RT Controller가 500Hz로 계산하여 publish하는
-`/<active_ctrl>/p1a/grasp_state` (`rtc_msgs/GraspState`, depth 10) topic을 사용한다.
+`/<active_ctrl>/p1a/grasp_state` (`rtc_msgs/GraspState`, depth 1) topic을 사용한다.
 Fingertip별 force magnitude와 aggregate grasp detection 결과가 포함되어 있어
 BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
@@ -56,6 +55,7 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 |-------|------------|------|
 | `<ns>/<arm_group>/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 (controller-owned) |
 | `<ns>/<hand_group>/joint_goal` | `rtc_msgs/RobotTarget` | Hand 모터 목표 (controller-owned) |
+| `/shape/trigger` | `std_msgs/String` | shape estimation 시작/정지 트리거 (서비스 client `/shape/clear` 로 누적 상태 초기화) |
 
 게인 변경은 토픽이 아닌 active controller LifecycleNode의 ROS 2 parameter (`SetGains` BT node가 `set_parameters_atomically`로 호출). 컨트롤러 전환은 `/rtc_cm/switch_controller` srv (`SwitchController` BT node).
 
@@ -63,15 +63,16 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 
 | Topic | 메시지 타입 | QoS | 설명 |
 |-------|------------|-----|------|
-| `/rtc_cm/<arm_group>/joint_states` | `sensor_msgs/JointState` | depth 10 | Arm 관절 위치 (fixed path, active controller 와 무관 — controller-agnostic) |
-| `/rtc_cm/<hand_group>/joint_states` | `sensor_msgs/JointState` | depth 10 | Hand 관절 위치 (fixed path, controller-agnostic) |
-| `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
-| `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
+| `/rtc_cm/<arm_group>/joint_states` | `sensor_msgs/JointState` | RELIABLE, depth 1 | Arm 관절 위치 (fixed path, active controller 와 무관 — controller-agnostic) |
+| `/rtc_cm/<hand_group>/joint_states` | `sensor_msgs/JointState` | RELIABLE, depth 1 | Hand 관절 위치 (fixed path, controller-agnostic) |
+| `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 1 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
+| `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 1 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
-| `<ns>/transforms` | `tf2_msgs/TFMessage` | RELIABLE, depth 10 | active controller의 FK `base → tool0_actual` (controller-owned, rewire). `tf_buffer_`에 직접 feed → TCP pose lookup 소스 |
-| `/world_target_info` | `geometry_msgs/Polygon` | depth 10 | 비전 물체 위치 (`points[0]` = x,y,z; orientation 없음 — roll/pitch/yaw는 0으로 채움) |
+| `<ns>/transforms` | `tf2_msgs/TFMessage` | RELIABLE, depth 1 | active controller의 FK `base → tool0_actual` (controller-owned, rewire). `tf_buffer_`에 직접 feed → TCP pose lookup 소스 |
+| `/world_target_info` | `geometry_msgs/Polygon` | RELIABLE, depth 1 | 비전 물체 위치 (`points[0]` = x,y,z; orientation 없음 — roll/pitch/yaw는 0으로 채움) |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
-| `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 10 | E-STOP 상태 |
+| `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 1 | E-STOP 상태 |
+| `/shape/estimate` | `shape_estimation_msgs/ShapeEstimate` | RELIABLE, depth 1 | shape estimation 결과 (`WaitShapeResult` / `CheckShapeType` 가 소비) |
 
 ### TF
 

@@ -367,7 +367,7 @@ auto state = xcvr.GetLatestState();
 
 #### 수신 루프 (`RecvLoop`) 상세
 
-`RecvLoop`는 `ApplyThreadConfig()`를 호출하여 RT 스레드 설정을 적용한 뒤, 다음을 반복합니다:
+`RecvLoop`는 `ApplyThreadConfigVerbose()`로 RT 스레드 설정을 적용하고 결과를 1줄 로그로 남긴 뒤 (실패해도 계속 — 비-RT 사용자는 rtprio 가 없을 수 있다), 다음을 반복합니다:
 
 ```
 while (!stop_requested):
@@ -413,12 +413,12 @@ RT 루프에서 디코딩된 상태가 필요하면 `GetLatestState()`를 직접
 
 | 테스트 파일 | 프레임워크 | 다루는 항목 |
 |------------|-----------|------------|
-| `test/test_udp_loopback.cpp` | GTest | UdpSocket bind/connect 라운드 트립, `SO_RCVTIMEO` 만료, RAII fd 닫힘, UdpTransport bind+connect 수명 (5 케이스) |
-| `test/test_can_loopback.cpp` | GTest | CanSocket/CanTransport 수명, invalid interface, vcan0 라운드 트립, 타임아웃, RAII, >8B 거부, 필터 accept/reject, extended ID, RTR drop, receive_own_messages (12 케이스, vcan 의존 8개는 guarded) |
-| `test/test_canfd_loopback.cpp` | GTest | CanFdTransport invalid interface, 64B 라운드 트립, >64B 거부, classic/FD 혼재 수신 (4 케이스, vcan 의존 3개는 guarded) |
-| `test/test_serial_loopback.cpp` | GTest | SerialPort PTY 수명, 잘못된 device 실패, 라인 설정, 양방향 바이트 왕복, VTIME 타임아웃, RAII fd 닫힘 (6 케이스) |
-| `test/test_rs485_transport.cpp` | GTest | Rs485Transport 단일 프레임, 헤더 앞 garbage 리싱크, 연속 프레임 분리, read 분할 재조립, 타임아웃 `-1`, garbage 스트림 하 전체 deadline, oversize 프레임 `-1` 후 복구, timeout=0 무한 대기, 고정 길이 프레이밍, `discard_echo`, `Transceiver<DynamixelTestCodec>` 풀스택 디코드 (11 케이스) |
-| `test/test_transceiver.cpp` | GTest | `Transceiver<FakeCodec>` 기동·종료, 외부 송신 디코딩, 콜백 호출, 짧은 데이터그램 무시, Send 경로 외부 수신자 도달 (4 케이스) |
+| `test/test_udp_loopback.cpp` | GTest | UdpSocket bind/connect 라운드 트립, `SO_RCVTIMEO` 만료, RAII fd 닫힘, UdpTransport bind+connect 수명 |
+| `test/test_can_loopback.cpp` | GTest | CanSocket/CanTransport 수명, invalid interface, vcan0 라운드 트립, 타임아웃, RAII, >8B 거부, 필터 accept/reject, extended ID, RTR drop, receive_own_messages (vcan 의존 케이스는 guarded) |
+| `test/test_canfd_loopback.cpp` | GTest | CanFdTransport invalid interface, 64B 라운드 트립, >64B 거부, classic/FD 혼재 수신 (vcan 의존 케이스는 guarded) |
+| `test/test_serial_loopback.cpp` | GTest | SerialPort PTY 수명, 잘못된 device 실패, 라인 설정, 양방향 바이트 왕복, VTIME 타임아웃, RAII fd 닫힘 |
+| `test/test_rs485_transport.cpp` | GTest | Rs485Transport 단일 프레임, 헤더 앞 garbage 리싱크, 연속 프레임 분리, read 분할 재조립, 타임아웃 `-1`, garbage 스트림 하 전체 deadline, oversize 프레임 `-1` 후 복구, timeout=0 무한 대기, 고정 길이 프레이밍, `discard_echo`, `Transceiver<DynamixelTestCodec>` 풀스택 디코드 |
+| `test/test_transceiver.cpp` | GTest | `Transceiver<FakeCodec>` 기동·종료, 외부 송신 디코딩, 콜백 호출, 짧은 데이터그램 무시, Send 경로 외부 수신자 도달 |
 | `test/fake_codec.hpp` | -- | `PacketCodec` concept을 만족하는 최소 코덱 (테스트 하니스용) |
 | `test/can_test_support.hpp` | -- | vcan 감지 (`HasVcan`/`GetInterfaceMtu`)·`SKIP_IF_NO_VCAN`/`SKIP_IF_NO_FD_VCAN` 매크로 공용 헬퍼 |
 | `test/serial_test_support.hpp` | -- | PTY master/slave 페어 루프백 헬퍼 (`OpenPtyPair`). PTY는 상시 사용 가능하므로 RS485 테스트는 SKIP 없이 실행 |
