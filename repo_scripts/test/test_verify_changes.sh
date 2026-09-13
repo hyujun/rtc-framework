@@ -19,9 +19,8 @@
 # An assertion here has to be able to fail. Case 7 previously checked for the
 # absence of a README reminder that the fixture could never have produced, so it
 # held whether the code under it worked or not. Where a case guards a fix, it
-# was run against the pre-fix hook to confirm it goes red -- 12 of these do --
-# and the ones asserting an absence were checked by severing the mechanism they
-# depend on.
+# was run against the pre-fix hook to confirm it goes red, and the ones
+# asserting an absence were checked by severing the mechanism they depend on.
 #
 # Usage: repo_scripts/test/test_verify_changes.sh
 set -uo pipefail
@@ -975,6 +974,97 @@ for gone in AGENTS.md CLAUDE.md; do
   expect_exit "deleting $gone blocks the turn" "$rc" 2
   rm -rf "$dir"
 done
+
+# --- Background agents in flight -----------------------------------------------
+#
+# Stop fires at the main agent's turn end while background agents may still be
+# writing the checkout. The hook defers rather than grade a half-written tree --
+# only for labels that edit this checkout, and never by dropping the change.
+
+# Like run_hook, with the Stop input given explicitly.
+run_hook_input() {
+  local dir="$1" input="$2"
+  ( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_SKIP_BUILD=1 \
+      bash "$HOOK" <<<"$input" 2>&1 >/dev/null )
+}
+
+# Stop input carrying one background task, shaped as Claude Code sends it.
+bg_input() {
+  printf '{"stop_hook_active": false, "background_tasks": [{"id": "t1", "type": "%s", "status": "%s", "description": "Compact READMEs"}]}' "$1" "$2"
+}
+
+add_missing_dep() {
+  sed -i 's/^project(rtc_demo)/project(rtc_demo)\nfind_package(fmt REQUIRED)/' "$1/rtc_demo/CMakeLists.txt"
+}
+
+# 51. A blocking defect committed in-turn while an editing agent is in flight:
+#     no block, no gate output, watermark kept -- and the next stop with nothing
+#     in flight grades it. The second half is what makes this a deferral.
+for label in subagent workflow teammate; do
+  dir=$(make_fixture)
+  base=$(git -C "$dir" rev-parse HEAD)
+  echo "$base" >"$dir/.git/rtc-verify-base"
+  add_missing_dep "$dir"
+  git -C "$dir" commit -qam "missing dep, committed in-turn"
+  out=$(run_hook_input "$dir" "$(bg_input "$label" running)"); rc=$?
+  expect_exit "a $label in flight does not block" "$rc" 0
+  expect_contains "a $label in flight is reported as a deferral" "$out" "Verification deferred"
+  expect_not_contains "a $label in flight defers the gates" "$out" "find_package(fmt)"
+  if [ "$(cat "$dir/.git/rtc-verify-base")" = "$base" ]; then
+    pass "a deferral for a $label keeps the watermark"
+  else
+    fail "a deferral for a $label advanced the watermark"
+  fi
+  out=$(run_hook "$dir"); rc=$?
+  expect_contains "a change deferred for a $label is graded once none are in flight" "$out" "find_package(fmt)"
+  expect_exit "a change deferred for a $label blocks once none are in flight" "$rc" 2
+  rm -rf "$dir"
+done
+
+# 51b. The deferral notice lists at most five tasks; a longer list must be
+#      summarised, not kill the hook under `set -euo pipefail`.
+dir=$(make_fixture)
+add_missing_dep "$dir"
+many=$(jq -n '{stop_hook_active: false, background_tasks: [range(7) | {id: "t\(.)", type: "subagent", status: "running", description: "agent \(.)"}]}')
+out=$(run_hook_input "$dir" "$many"); rc=$?
+expect_exit "seven agents in flight do not block" "$rc" 0
+expect_contains "seven agents in flight are summarised" "$out" "(+2 more)"
+expect_not_contains "the sixth agent is not listed" "$out" "agent 5"
+rm -rf "$dir"
+
+# 52. ...but not for work that cannot be mid-edit here: a shell (a CI watcher
+#     would switch the gate off for its whole run), a label the hook does not
+#     know, a task no longer in flight, or a malformed field.
+for spec in 'shell|running' 'cloud session|running' 'subagent|completed'; do
+  IFS='|' read -r label status <<<"$spec"
+  dir=$(make_fixture)
+  add_missing_dep "$dir"
+  out=$(run_hook_input "$dir" "$(bg_input "$label" "$status")"); rc=$?
+  expect_contains "a $label ($status) does not defer the gates" "$out" "find_package(fmt)"
+  expect_exit "a $label ($status) still blocks" "$rc" 2
+  rm -rf "$dir"
+done
+dir=$(make_fixture)
+add_missing_dep "$dir"
+out=$(run_hook_input "$dir" '{"stop_hook_active": false, "background_tasks": "bogus"}'); rc=$?
+expect_contains "a malformed background_tasks does not defer the gates" "$out" "find_package(fmt)"
+expect_exit "a malformed background_tasks still blocks" "$rc" 2
+rm -rf "$dir"
+
+# 53. A README kept beside the headers is not public surface: editing it asked
+#     whether the package README reflected the edit. The header control keeps
+#     the absence from holding just because the checklist never fires here.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/include/rtc_demo"
+echo '# se3' >"$dir/rtc_demo/include/rtc_demo/README.md"
+git -C "$dir" add -A && git -C "$dir" commit -qm "doc beside headers"
+printf '# se3\n\nmore.\n' >"$dir/rtc_demo/include/rtc_demo/README.md"
+out=$(run_hook "$dir")
+expect_not_contains "a README under include/ does not raise the README checklist" "$out" "public surface changed"
+printf 'int demo_fn();\n' >"$dir/rtc_demo/include/rtc_demo/demo.hpp"
+out=$(run_hook "$dir")
+expect_contains "a header under include/ still raises the README checklist" "$out" "public surface changed"
+rm -rf "$dir"
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
