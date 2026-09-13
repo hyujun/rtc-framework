@@ -784,6 +784,47 @@ TEST(ComplianceWrenchSourceConfig, AMalformedAdmittanceSchemaRefusesToConfigure)
     cfg["command_type"] = "torque";
     EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
   }
+  {
+    // A scalar `damping` is the constant λ retired in #282, left over from the
+    // CLIK schema this controller was copied from. The §7 parser would refuse it
+    // too, as a mis-shaped K_d — so a bare EXPECT_THROW passes with or without
+    // the binding's own check, and only the message tells them apart.
+    YAML::Node cfg = YAML::Clone(base);
+    cfg["damping"] = 0.01;
+    try {
+      BringUp<DemoComplianceController>(cfg);
+      ADD_FAILURE() << "a scalar `damping` configured";
+    } catch (const std::runtime_error& e) {
+      EXPECT_NE(std::string(e.what()).find("max_damping"), std::string::npos)
+          << "refused, but not as the retired λ: " << e.what();
+    }
+  }
+}
+
+// The response keys through the REAL configure path, on the one profile the
+// fixture can bring up. The parse-level tests above cannot see two of them:
+// `degraded_recovery_time` is read by LoadConfig itself, and `damping` has a
+// SECOND reader in LoadConfig — the retired-λ check — which must leave a K_d
+// sequence to the §7 parser rather than take it for that λ.
+//
+// Distinct values, not the shipped ones: those equal the core defaults, so a
+// read-back of them would pass just as well if neither key were read at all.
+TEST(ComplianceWrenchSourceConfig, TheResponseKeysReachTheControllerThroughConfigure) {
+  YAML::Node cfg = ShippedControllerNode("iiwa7_leap", "demo_compliance_controller");
+  MergeShippedShared(cfg, "iiwa7_leap");
+  const std::vector<double> k_d = {41.0, 42.0, 43.0, 1.1, 1.2, 1.3};
+  const double recovery = 0.7;
+  cfg["damping"] = k_d;
+  cfg["degraded_recovery_time"] = recovery;
+
+  std::unique_ptr<DemoComplianceController> ctrl;
+  ASSERT_NO_THROW(ctrl = BringUp<DemoComplianceController>(cfg))
+      << "a K_d sequence was refused at configure";
+  const auto& law = ctrl->GetAdmittanceParamsForTesting().admittance;
+  for (std::size_t i = 0; i < k_d.size(); ++i) {
+    EXPECT_EQ(law.damping[i], k_d[i]) << "K_d[" << i << "] did not reach the law";
+  }
+  EXPECT_EQ(ctrl->GetDegradedRecoveryTimeForTesting(), recovery);
 }
 
 }  // namespace

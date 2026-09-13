@@ -1048,18 +1048,25 @@ void DemoComplianceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["max_damping"]) {
     g.max_damping = rtc::compliance::FloorMaxDamping(cfg["max_damping"].as<double>());
   }
-  if (cfg["damping"]) {
-    // Retired in #282. Reported rather than mapped onto max_damping, for the
-    // same reason the five rtc_controllers schemas give (#236 S2b/S3b): a
-    // constant λ and the ceiling of a σ_min-adaptive ramp are not the same
-    // quantity, so any mapping would be a guess. WARN and not a throw because
-    // this controller ships in three robot configs and a stale key must not
-    // stop a bring-up — but the ramp then runs on ITS defaults, not on 0.01.
-    RCLCPP_WARN(logger_,
-                "demo_compliance_controller: 'damping' is retired (#282) and IGNORED — it is not "
-                "mapped onto max_damping. Replace it with max_damping / "
-                "singularity_threshold; the §6.5 ramp is running on %.3g / %.3g.",
-                g.max_damping, g.singularity_threshold);
+  // `damping` is TWO keys, told apart by SHAPE, because this node has two
+  // readers. To the §7 parser further down it is K_d, a 6-entry sequence, and
+  // every shipped profile writes it. To the CLIK schema this controller was
+  // copied from it was a scalar λ, retired in #282 — not mapped onto
+  // max_damping, for the reason the five rtc_controllers schemas give (#236
+  // S2b/S3b): a constant λ and the ceiling of a σ_min-adaptive ramp are not the
+  // same quantity, so any mapping would be a guess.
+  //
+  // A sequence is therefore left alone, and a scalar is refused HERE, naming
+  // the retirement. This used to WARN "retired and IGNORED" on mere presence,
+  // which mis-reported a live K_d as ignored on every configure — and "a stale
+  // key must not stop a bring-up" was not true either, because the §7 parser
+  // already refuses a scalar as a mis-shaped K_d. Throwing first changes only
+  // which message the operator reads.
+  if (const YAML::Node& damping = cfg["damping"]; damping && damping.IsScalar()) {
+    throw std::runtime_error(
+        "demo_compliance_controller: a scalar 'damping' is the constant λ retired in #282 — "
+        "replace it with max_damping / singularity_threshold. In this controller 'damping' is the "
+        "§7 K_d, a 6-entry sequence [x, y, z, rx, ry, rz].");
   }
   if (cfg["nullspace_kp"]) {
     g.nullspace_kp = cfg["nullspace_kp"].as<double>();
