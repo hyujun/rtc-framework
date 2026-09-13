@@ -385,7 +385,7 @@ void Append(std::vector<Tick>& dst, const std::vector<Tick>& src) {
 // node rather than the file text is deliberate: the two files differ in comments
 // and in the top-level key by design, and neither of those is configuration.
 // Keys the compliance controller owns outright, excluded from the equality
-// above and covered instead by the two tests after it. An exclusion with no
+// above and covered instead by the tests after it. An exclusion with no
 // replacement assertion is a hole, which is why the list lives three lines from
 // the tests that fill it.
 constexpr std::array<const char*, 3> kComplianceOwnedKeys = {
@@ -394,9 +394,11 @@ constexpr std::array<const char*, 3> kComplianceOwnedKeys = {
     "stiffness",        // §7.2 K_p^a — D-A3, see the hand-guiding test below
 };
 
-// The §7 keys that decide how the arm answers a pull. None has a sibling
-// equivalent, so they are owned outright as well — excluded by
-// WithoutComplianceOwnedKeys alongside the list above.
+// The §7 keys that decide how the arm answers a pull, written out rather than
+// inherited from the core defaults. Owned outright as well — excluded by
+// WithoutComplianceOwnedKeys alongside the list above, and asserted by
+// EveryProfileWritesTheAdmittanceResponse and its two neighbours. Kept as a
+// separate list because those tests iterate it.
 constexpr std::array<const char*, 8> kAdmittanceResponseKeys = {
     "damping",                         // K_d
     "desired_inertia",                 // Λ_d
@@ -406,6 +408,15 @@ constexpr std::array<const char*, 8> kAdmittanceResponseKeys = {
     "max_compliant_angular_velocity",  // §7.5
     "activation_ramp_time",            // §10.7
     "degraded_recovery_time",          // read by LoadConfig, not the §7 parser
+};
+
+// ...and the ones inside `external_wrench`, which kComplianceOwnedKeys already
+// excludes whole — so nothing but the tests below says they are there.
+constexpr std::array<const char*, 4> kWrenchResponseKeys = {
+    "deadband",
+    "filter_enabled",
+    "timeout",
+    "fadeout_time",
 };
 
 // The task gains, which the two files now SPELL differently (#469 D-A13): the
@@ -649,6 +660,135 @@ TEST(ComplianceTaskEquivalence, EveryProfileShipsTheHandGuidingLawAndOneBiasRemo
     // written-and-never-read trap D-A13 covers for the renamed CLIK gains.
     EXPECT_FALSE(ShippedControllerNode(profile, "demo_task_controller")["stiffness"])
         << profile << ": demo_task_controller has no §7.2 virtual dynamics to gain";
+  }
+}
+
+// The rest of how the arm answers a pull, written out instead of inherited from
+// the core defaults — so a default moving in rtc_controllers cannot quietly
+// retune a shipped arm.
+//
+// PRESENCE IS THE LOAD-BEARING HALF, for the reason the test above gives, only
+// worse: every one of these ships AT its core default today, so a deleted line
+// parses to the identical struct and no value assertion could ever notice. The
+// value half asserts only what each key must be for the law to stay the law —
+// not the tuning, which is allowed to move.
+TEST(ComplianceTaskEquivalence, EveryProfileWritesTheAdmittanceResponse) {
+  for (const char* profile : kProfiles) {
+    const YAML::Node node = ShippedControllerNode(profile, "demo_compliance_controller");
+    for (const char* key : kAdmittanceResponseKeys) {
+      EXPECT_TRUE(node[key]) << profile << ": no `" << key
+                             << "` — the arm would run on whatever rtc_controllers defaults to";
+    }
+    ASSERT_TRUE(node["external_wrench"]) << profile;
+    for (const char* key : kWrenchResponseKeys) {
+      EXPECT_TRUE(node["external_wrench"][key])
+          << profile << ": no `external_wrench." << key
+          << "` — the arm would run on whatever rtc_controllers defaults to";
+    }
+
+    rtc::params::TaskAdmittanceParams params;
+    rtc::params::TaskAdmittanceConfig config;
+    rtc::params::ParseTaskAdmittanceParams(node, params, config);
+    const auto& law = params.admittance;
+
+    // The parser accepts K_d = 0 because it is legal beside a spring. With
+    // K_p = 0 (asserted above) there is no spring, and a zero-damped axis has no
+    // steady state: it accelerates until the velocity guard stops it.
+    for (std::size_t i = 0; i < law.damping.size(); ++i) {
+      EXPECT_GT(law.damping[i], 0.0) << profile << ": K_d[" << i << "] is not positive";
+    }
+    // `<= 0` switches each of these guards OFF (the §7.5 idiom), so a 0 would
+    // read as the tightest setting and be no setting at all.
+    EXPECT_GT(law.max_displacement_lin, 0.0) << profile << ": §7.4 linear box disabled";
+    EXPECT_GT(law.max_displacement_ang, 0.0) << profile << ": §7.4 angular box disabled";
+    EXPECT_GT(law.max_velocity_lin, 0.0) << profile << ": §7.5 linear ceiling disabled";
+    EXPECT_GT(law.max_velocity_ang, 0.0) << profile << ": §7.5 angular ceiling disabled";
+    // No ramp steps the arm with the first force of every grasp (§10.7), and a
+    // zero fade drops a held force in one step instead of fading it (§10.6).
+    EXPECT_GT(params.activation_ramp_time, 0.0) << profile << ": §10.7 ramp disabled";
+    EXPECT_GT(params.wrench.timeout, 0.0) << profile;
+    EXPECT_GT(params.wrench.fadeout_time, 0.0) << profile << ": §10.6 fade is a step";
+
+    // One low-pass, and it is the pull estimator's — the measurement that
+    // decided this is written in ur5e_p1b's YAML. With the conditioning filter
+    // off the core neither validates nor reads the two cutoffs, so writing them
+    // would ship settings that change nothing.
+    EXPECT_FALSE(config.wrench.filter_enabled)
+        << profile << ": the pull wrench is low-passed a second time on top of the estimator";
+    if (!config.wrench.filter_enabled) {
+      EXPECT_FALSE(node["external_wrench"]["filter_cutoff_force"])
+          << profile << ": `filter_cutoff_force` is written but the filter it tunes is off";
+      EXPECT_FALSE(node["external_wrench"]["filter_cutoff_torque"])
+          << profile << ": `filter_cutoff_torque` is written but the filter it tunes is off";
+    }
+
+    // The sibling has no §7 law, so any of these there would be read by nobody.
+    const YAML::Node task = ShippedControllerNode(profile, "demo_task_controller");
+    for (const char* key : kAdmittanceResponseKeys) {
+      EXPECT_FALSE(task[key]) << profile << ": demo_task_controller has no §7 law to feed `" << key
+                              << "`";
+    }
+  }
+}
+
+// ONE response across the three profiles, on purpose. The §7 law's behavioural
+// suite (test_compliance_admittance_coupling) drives iiwa7_leap only, so the ur5e
+// profiles' values are exercised by it only because they are these values. The
+// day a profile is tuned on its own hardware this fails — and that is exactly
+// when its numbers stop being covered by that suite, which deserves a decision
+// rather than a drift nobody sees.
+TEST(ComplianceTaskEquivalence, TheThreeProfilesShipOneAdmittanceResponse) {
+  const char* reference = kProfiles[0];
+  const YAML::Node ref = ShippedControllerNode(reference, "demo_compliance_controller");
+  for (const char* profile : kProfiles) {
+    const YAML::Node node = ShippedControllerNode(profile, "demo_compliance_controller");
+    for (const char* key : kAdmittanceResponseKeys) {
+      EXPECT_EQ(YAML::Dump(node[key]), YAML::Dump(ref[key]))
+          << profile << ": `" << key << "` differs from " << reference;
+    }
+    for (const char* key : kWrenchResponseKeys) {
+      EXPECT_EQ(YAML::Dump(node["external_wrench"][key]), YAML::Dump(ref["external_wrench"][key]))
+          << profile << ": `external_wrench." << key << "` differs from " << reference;
+    }
+  }
+}
+
+// Keys the §7 parser reads and this binding never uses. Each would be
+// configuration that changes nothing, and one would also say something false:
+//   * `integrate_from_measured` — the tick integrates the COMMAND and re-seeds it
+//     from the measurement only on hold (the fault block in
+//     compliance/compute.cpp), so the parser's `true` default already disagrees
+//     with what runs, and a written `true` would repeat that in the config;
+//   * `command_divergence_limit` — a joint-axis guard; this task-space binding
+//     sees the same event as `pose_error_limit` (#478);
+//   * `saturation_persist_time` — a torque-lane fault on a position lane;
+//   * `external_wrench.enabled` — must be true, which is the default (§7.1);
+//   * `external_wrench.sensor_frame` / `payload_com` — the source hands over a
+//     base-frame force, so no sensor rotation is looked up, and there is no
+//     payload (`payload_mass: 0`) for a centre of mass to belong to.
+constexpr std::array<const char*, 3> kUnreadAdmittanceKeys = {
+    "integrate_from_measured",
+    "command_divergence_limit",
+    "saturation_persist_time",
+};
+constexpr std::array<const char*, 3> kUnreadWrenchKeys = {
+    "enabled",
+    "sensor_frame",
+    "payload_com",
+};
+
+TEST(ComplianceTaskEquivalence, NoProfileWritesAnAdmittanceKeyThisBindingDoesNotRead) {
+  for (const char* profile : kProfiles) {
+    const YAML::Node node = ShippedControllerNode(profile, "demo_compliance_controller");
+    for (const char* key : kUnreadAdmittanceKeys) {
+      EXPECT_FALSE(node[key]) << profile << ": `" << key
+                              << "` is parsed but this binding never reads it";
+    }
+    ASSERT_TRUE(node["external_wrench"]) << profile;
+    for (const char* key : kUnreadWrenchKeys) {
+      EXPECT_FALSE(node["external_wrench"][key]) << profile << ": `external_wrench." << key
+                                                 << "` is parsed but this binding never reads it";
+    }
   }
 }
 

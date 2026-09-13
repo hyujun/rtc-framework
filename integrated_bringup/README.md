@@ -75,7 +75,7 @@ integrated_bringup/
 │       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi/pull_estimator/momentum_observer)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       ├── demo_task_controller.yaml   <- DemoTask 게인/토픽
-│       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (task 게인은 §7 철자 ik_kp_pos/ik_kp_rot/nullspace_kp, 값은 demo_task 와 동일 — 등가성 테스트가 고정. §7 admittance 는 K_p^a=0 hand-guiding 을 출하하고 (D-A3) bias 는 pull baseline 한 곳에서만 뺀다 (D-A5); K_d/Λ_d 는 코어 default)
+│       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (task 게인은 §7 철자 ik_kp_pos/ik_kp_rot/nullspace_kp, 값은 demo_task 와 동일 — 등가성 테스트가 고정. §7 admittance 는 K_p^a=0 hand-guiding 을 출하하고 (D-A3) bias 는 pull baseline 한 곳에서만 뺀다 (D-A5); 팔의 응답을 정하는 나머지 §7 키도 명시 등록한다 — 값은 코어 default 이되 `external_wrench.filter_enabled: false`, 파싱만 되고 이 바인딩이 안 읽는 키는 두지 않으며 세 프로필이 같다. 근거는 ur5e_p1b 사본)
 │       ├── demo_inference_controller.yaml <- ONNX 정책의 관측 계약 (텐서 이름·element_names·fill·프레임·관절 규약·reach gate·`logs:` CSV lane·`closed_chain_warn_ticks` 진단). ur5e_p1b 전용, 모델은 `${RTC_POLICY_DIR}` (repo 밖)
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs

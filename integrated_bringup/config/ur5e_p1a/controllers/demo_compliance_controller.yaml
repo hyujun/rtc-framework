@@ -19,17 +19,33 @@
 # and never read. The values must still match the sibling's; a separate test
 # asserts that pairwise.
 #
-# The rest of the §7 schema (desired_inertia / damping, the §7.4 displacement
-# box, the §7.5 velocity caps, §10.6 staleness) is READ from this node and
-# currently takes the core defaults in
-# rtc_controllers/include/rtc_controllers/params/task_admittance_params.hpp.
-# Values are chosen against hardware in S5; writing numbers here before they are
-# measured would ship a tuning nobody validated. `stiffness` left that list in
-# S5: K_p^a = 0 is D-A3's decision about which law runs, not a number anyone
-# measures, and leaving it at the default shipped a spring the design rules out.
+# WHICH §7 KEYS ARE WRITTEN. The §7 parser
+# (rtc_controllers/include/rtc_controllers/params/task_admittance_params.hpp)
+# reads more of this node than the file shows. Written: every key that shapes
+# how the arm answers a pull — K_p / K_d / Λ_d and the §7.4 inertia floor, the
+# §7.4 / §7.5 envelope, the §10.7 ramp, DEGRADED recovery, and the wrench
+# conditioning and staleness under `external_wrench`. Left out on purpose:
+#   * keys the parser reads and this binding never uses —
+#     `integrate_from_measured`, `command_divergence_limit` (#478),
+#     `saturation_persist_time`, `external_wrench.{enabled, sensor_frame,
+#     payload_com}`. Writing one would ship a setting that changes nothing, and
+#     test_compliance_task_equivalence asserts they stay out;
+#   * the fault guards — `pose_error_limit`, `singularity_critical`,
+#     `joint_limit_margin`, `barrier_stiffness`, `max_return_*_velocity`,
+#     `external_wrench.{max, contact_threshold, contact_release_ratio}` — which
+#     keep the core defaults.
 #
-# S3 adds the admittance gains HERE, not in the sibling, and moves each newly
-# owned block into that test's exclusion list as it does so.
+# THE WRITTEN NUMBERS ARE NOT A HARDWARE TUNING. They are the core defaults made
+# explicit, so a default moving in rtc_controllers cannot silently retune this
+# arm — except `external_wrench.filter_enabled`, turned off on measured
+# evidence. #469's S5 was to pick K_d / Λ_d / the envelope from hardware
+# measurements and closed (2026-09-09) without them: the one compliance session
+# (260904_1023) never drove the law. The reasoning for each key is written next
+# to it ONCE, in ur5e_p1b's copy of this file; the values here are that copy's,
+# and test_compliance_task_equivalence asserts the three profiles agree.
+#
+# Every key this controller owns goes HERE, not in the sibling, and into that
+# test's exclusion list together with an assertion of its own.
 demo_compliance_controller:
   # ── Arm DoF (required) ─────────────────────────────────────────────────────
   # Authoritative arm joint count at LoadConfig time (#340). The length of
@@ -40,9 +56,10 @@ demo_compliance_controller:
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
   ik_kp_pos: [5.0, 5.0, 5.0]         # Translation proportional gain (x, y, z) [1/s]
   ik_kp_rot: [2.0, 2.0, 2.0]            # Rotation proportional gain (rx, ry, rz) [1/s]
-  # §6.5 σ_min-adaptive DLS (#282). These replaced a single constant λ
-  # (`damping`), which is retired: a constant λ and the ceiling of a ramp are
-  # not the same quantity, so it is reported and ignored rather than mapped.
+  # §6.5 σ_min-adaptive DLS (#282). These replaced a single constant λ, once a
+  # scalar `damping`, which is retired: a constant λ and the ceiling of a ramp
+  # are not the same quantity, so it is not mapped. In THIS file `damping` is
+  # the §7 K_d sequence further down; a scalar one is refused at configure.
   singularity_threshold: 0.02         # σ₀ — damping engages below this σ_min(J)
   max_damping: 0.05                   # λ_max — ceiling of the §6.5 ramp
   # σ₀ is read by whichever branch `control_6dof` selects, and σ_min does not
@@ -168,13 +185,13 @@ demo_compliance_controller:
   # HAND-GUIDING: K_p^a = 0, user-confirmed. There is no spring back to X_d, so
   # losing the grasp leaves the arm standing where it is instead of snapping the
   # compliant frame home — that is the property this law was picked for, and it
-  # is a decision rather than a tuning, which is why it is written here while
-  # K_d / Λ_d are not.
+  # is a decision rather than a tuning, which is why its VALUE is asserted while
+  # K_d / Λ_d below are only asserted present.
   #
   # THE PRICE IS THAT THE STEADY STATE IS A VELOCITY, NOT A POSITION. With
   # K_p = 0 the law reduces to ẋ̃ = f/K_d, so a standing force walks the compliant
   # frame until the §7.4 box stops it: one guide is bounded by
-  # `max_compliant_displacement` (core default 0.15 m) and by nothing else. What
+  # `max_compliant_displacement` below and by nothing else. What
   # keeps a constant offset from spending that envelope is upstream — the pull
   # estimator's baseline snapshot (D-A5 / D-A8), not a spring here.
   #
@@ -189,14 +206,31 @@ demo_compliance_controller:
   # torque half of the SOURCE identically zero (the pull estimate is an in-plane
   # force carrying no moment). That is NOT the same as "the angular DoF cannot
   # move": the pipeline transports the force from its application point to the
-  # control frame, and the residual lever arm leaves a moment that K_p = 0 never
-  # returns. Bounded today only by the §7.4 angular box (0.5 rad) and tracked in
-  # #469. Written as 0 so the file states one law instead of two.
-  #
-  # K_d and Λ_d keep the core defaults (40 N·s/m, 2 kg; τ = Λ_d/K_d = 50 ms) that
-  # #469 §5 sized the envelope against. Those ARE tunings, and S5 picks them
-  # against measured hardware.
+  # control frame, and a lever arm between them leaves a moment that K_p = 0
+  # never returns. While a grasp is held both points are the virtual TCP, so the
+  # arm is only as long as the distance the arm travels while a sample is held
+  # or fading (a control-frame KIND change disowns the sample, D-A15). Bounded by
+  # the angular half of the §7.4 box. Written as 0 so the file states one law
+  # instead of two.
   stiffness: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  # The keys from here to `degraded_recovery_time`, and the conditioning and
+  # staleness keys under `external_wrench`, carry ur5e_p1b's values and are
+  # reasoned ONCE, next to each key in ur5e_p1b's copy of this file — do not
+  # restate that here. Kept identical on purpose, and asserted so: the §7 law's
+  # behavioural suite (test_compliance_admittance_coupling) drives only
+  # iiwa7_leap, so this is the file whose values actually get exercised.
+  damping: [40.0, 40.0, 40.0, 1.0, 1.0, 1.0]           # K_d, every entry > 0
+  desired_inertia: [2.0, 2.0, 2.0, 0.05, 0.05, 0.05]   # Λ_d
+  min_desired_inertia: [2.0, 0.05]                     # §7.4 floor under Λ_d
+
+  # ── §7.4 / §7.5 envelope — spent per guide, not per activation (D-A15) ─────
+  max_compliant_displacement: [0.15, 0.5]   # [m, rad]; <= 0 disables
+  max_compliant_linear_velocity: 0.25       # [m/s];   <= 0 disables
+  max_compliant_angular_velocity: 0.8       # [rad/s]; <= 0 disables
+
+  # ── §10.7 activation ramp / §10.6 DEGRADED recovery ────────────────────────
+  activation_ramp_time: 0.5     # [s]
+  degraded_recovery_time: 0.5   # [s], > 0; DEGRADED is a label in this binding
 
   # ── External wrench source (#469) ──────────────────────────────────────────
   # Which physical estimate drives the admittance law. Configure-time and
@@ -212,8 +246,6 @@ demo_compliance_controller:
   # here is refused by the same path as a typo, and the bring-up stops rather
   # than the arm running on an estimate nobody selected. Why it was not built is
   # owned by the enum in support/compliance_wrench_source.hpp.
-  #
-  # S2 parses this and stops. S3 is what turns it into a wrench.
   external_wrench:
     source: "pull_estimator"
     # ── D-A5: the bias is removed in EXACTLY ONE PLACE ────────────────────────
@@ -235,3 +267,8 @@ demo_compliance_controller:
     # test_compliance_task_equivalence asserts the KEY's presence, which is the
     # only thing in the build that can tell this decision from an omission.
     payload_mass: 0.0
+    # Conditioning and staleness — ur5e_p1b's values and reasoning (see above).
+    deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # off
+    filter_enabled: false   # the pull estimator already filters; cutoffs NOT written
+    timeout: 0.05           # [s]
+    fadeout_time: 0.1       # [s], > 0
