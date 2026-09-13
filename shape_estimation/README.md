@@ -44,6 +44,8 @@ ToF(Time-of-Flight) 센서 기반 물체 형상 추정 패키지. UR5e + 커스�
 
 ## Core Components
 
+상세 알고리즘·수식: [docs/ALGORITHMS.md](docs/ALGORITHMS.md).
+
 ### VoxelPointCloud
 
 Spatial hashing 기반 포인트 클라우드 관리자.
@@ -160,19 +162,12 @@ ros2 launch shape_estimation shape_estimation.launch.py use_rviz:=false
 # Custom config
 ros2 launch shape_estimation shape_estimation.launch.py config_file:=/path/to/custom.yaml
 
-# State control
-ros2 topic pub /shape/trigger std_msgs/msg/String "data: 'start'" --once
-ros2 topic pub /shape/trigger std_msgs/msg/String "data: 'stop'" --once
-ros2 topic pub /shape/trigger std_msgs/msg/String "data: 'pause'" --once
-ros2 topic pub /shape/trigger std_msgs/msg/String "data: 'single'" --once
-
-# Clear point cloud
-ros2 service call /shape/clear std_srvs/srv/Trigger
-
 # Autonomous exploration
 ros2 action send_goal /shape/explore shape_estimation_msgs/action/ExploreShape \
   "{object_position: {x: 0.4, y: 0.0, z: 0.3}, confidence_threshold: 0.8}"
 ```
+
+상태 제어(`start`/`stop`/`pause`/`resume`/`single`)·point cloud clear·전체 진단 명령: [docs/DEBUGGING.md](docs/DEBUGGING.md).
 
 ---
 
@@ -194,37 +189,27 @@ ros2 action send_goal /shape/explore shape_estimation_msgs/action/ExploreShape \
 
 ---
 
-## Tests
+## Build & Test
 
 ```bash
-colcon build --packages-select shape_estimation --cmake-args -DBUILD_TESTING=ON
+cd ~/ros2_ws/rtc_ws
+./build.sh -p shape_estimation
 colcon test --packages-select shape_estimation
-colcon test-result --verbose --all
 ```
 
-Test targets are defined in the `if(BUILD_TESTING)` block of [CMakeLists.txt](CMakeLists.txt).
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조. Test targets: `if(BUILD_TESTING)` block in [CMakeLists.txt](CMakeLists.txt).
 
 ---
 
 ## Logging
 
-### 분류 독트린
+레벨 분류·공통 규칙: [conventions.md §Logging](../agent_docs/conventions.md#logging).
 
-| 레벨 | 용도 | 예시 |
-|------|------|------|
-| `FATAL` | 프로세스를 계속 실행할 수 없는 상태 | (현재 없음 — 치명적 초기화 실패 시 예약) |
-| `ERROR` | 복구 불가능한 실패, 사용자 개입 필요 | 탐색 전체 타임아웃, action 실패 |
-| `WARN` | 복구 가능한 이상 상태, 자동 재시도 중 | E-STOP, approach 타임아웃, 수치적 비정상 (r²<0), 알 수 없는 trigger 명령 |
-| `INFO` | 사용자가 알아야 할 1 Hz 미만 상태 전환 | 노드 초기화, trigger 명령 수신, FSM phase 전이, 탐색 성공/취소 |
-| `DEBUG` | 개발자 진단용 (기본 꺼짐), 고빈도 허용 | ToF 콜백 상태, voxel 업데이트, fit 결과 상세 |
+**패키지 규칙**:
 
-**핵심 규칙**:
-
-- ToF 콜백 안의 로그는 **`DEBUG`로 격리 + `_THROTTLE` 적용**. 기본 실행 시 조용해야 한다.
-- 초기 포인트 축적 중 발생하는 "포인트 부족" 메시지는 `DEBUG`. 누적되면 자동 해소되는 정상 상태.
-- 수치적 비정상 (음수 `r²`, 음수 `radius²` 등)은 `WARN`. 피팅 알고리즘의 실제 오류 신호.
-- 메시지 본문에 수동 `[ModuleName]` / `"XX 피팅:"` 접두사를 붙이지 않는다. 서브-로거 이름이 곧 식별자다.
-- THROTTLE 주기는 매직넘버 대신 `shape_logging.hpp`의 표준 상수를 사용한다.
+- ToF 콜백 안의 로그는 `DEBUG` 격리 + `_THROTTLE` 필수 — 기본 실행 시 조용해야 한다.
+- 초기 포인트 축적 중 "포인트 부족" 메시지는 `DEBUG` (누적되면 자동 해소되는 정상 상태).
+- 수치적 비정상 (음수 `r²`, 음수 `radius²` 등)은 `WARN` — 피팅 알고리즘의 실제 오류 신호.
 
 ### 서브-로거 네임스페이스
 
@@ -239,15 +224,15 @@ Test targets are defined in the `if(BUILD_TESTING)` block of [CMakeLists.txt](CM
 | `shape.protus` | `ProtuberanceDetector` (signed residual, clustering, gap) |
 | `shape.explore` | `ExplorationMotionGenerator` (5-phase FSM) |
 
-### THROTTLE 주기 표준
+### THROTTLE 상수
 
-`rtc::shape::logging` 네임스페이스에 정의된 상수만 사용한다 (`include/shape_estimation/shape_logging.hpp`):
+`include/shape_estimation/shape_logging.hpp` (`rtc::shape::logging` 네임스페이스) 가 SSoT — 매직넘버 대신 아래 이름을 사용한다.
 
-| 상수 | 값 [ms] | 용도 |
-|------|---------|------|
-| `kThrottleFastMs` | 500 | 빠른 진행 상태 (fit 결과, EstimateShape 선택) |
-| `kThrottleSlowMs` | 2000 | 일반 반복 경고 (빈 snapshot, voxel update 통계) |
-| `kThrottleIdleMs` | 10000 | 장기 유휴 상태 |
+| 상수 | 용도 |
+|------|------|
+| `kThrottleFastMs` | 빠른 진행 상태 (fit 결과, EstimateShape 선택) |
+| `kThrottleSlowMs` | 일반 반복 경고 (빈 snapshot, voxel update 통계) |
+| `kThrottleIdleMs` | 장기 유휴 상태 |
 
 ### 실시간 필터링 예시
 
@@ -256,16 +241,6 @@ Test targets are defined in the `if(BUILD_TESTING)` block of [CMakeLists.txt](CM
 ros2 service call /shape_estimation_node/set_logger_levels \
   rcl_interfaces/srv/SetLoggerLevels \
   "{levels: [{name: 'shape.voxel', level: 10}]}"
-
-# 피팅 전체(sphere/cylinder/plane/box 모두) DEBUG
-ros2 service call /shape_estimation_node/set_logger_levels \
-  rcl_interfaces/srv/SetLoggerLevels \
-  "{levels: [{name: 'shape.fit', level: 10}]}"
-
-# 탐색 FSM 전이만 조용히 (INFO → WARN)
-ros2 service call /shape_estimation_node/set_logger_levels \
-  rcl_interfaces/srv/SetLoggerLevels \
-  "{levels: [{name: 'shape.explore', level: 30}]}"
 ```
 
 콘솔 출력에 로거 이름을 표시하려면 환경변수 설정:

@@ -4,17 +4,15 @@
 
 ToF 기반 형상 추정 시스템용 커스텀 ROS 2 메시지 정의 패키지입니다. 핑거팁 ToF 센서 스냅샷, 자세 정보, 형상 프리미티브 추정 결과를 위한 3종의 메시지 타입과 1종의 액션을 제공합니다.
 
-> **Note:** `ToFSnapshot` 메시지는 로봇 독립성을 위해 `rtc_msgs` 패키지로 이동되었습니다.
+> **Note:** 런타임 ToF 데이터(`ToFSnapshot`)는 로봇 독립성을 위해 `rtc_msgs` 패키지가 소유합니다.
 
 ---
 
 ## 메시지 타입
 
-### ToFReadings.msg (reserved / unused)
+필드 의미·단위 등 상세 계약은 각 `.msg` 파일이 SSoT다.
 
-ToF 센서 원시 데이터용으로 정의되었으나, 현재 repo 전역에 C++/Python 소비자가 없습니다.
-런타임 ToF 데이터는 `rtc_msgs/ToFSnapshot`을 사용합니다 (본 패키지 상단 note 참조). 필드는
-아래와 같이 남아 있습니다.
+### ToFReadings.msg (reserved — 현재 소비자 없음)
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
@@ -22,15 +20,16 @@ ToF 센서 원시 데이터용으로 정의되었으나, 현재 repo 전역에 C
 | `distances` | `float64[6]` | 6개 센서 거리 [m] (thumb_A, thumb_B, index_A, index_B, middle_A, middle_B) |
 | `valid` | `bool[6]` | 6개 센서 유효성 플래그 |
 
-### TipPoses.msg (reserved / unused)
+상세: [msg/ToFReadings.msg](msg/ToFReadings.msg)
 
-3개 핑거팁의 월드 프레임 SE3 자세 (FK 결과)용으로 정의되었으나, 현재 repo 전역에
-C++/Python 소비자가 없습니다.
+### TipPoses.msg (reserved — 현재 소비자 없음)
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | `stamp` | `builtin_interfaces/Time` | 타임스탬프 |
 | `poses` | `geometry_msgs/Pose[3]` | thumb, index, middle 순서 |
+
+상세: [msg/TipPoses.msg](msg/TipPoses.msg)
 
 ### ShapeEstimate.msg
 
@@ -49,15 +48,15 @@ C++/Python 소비자가 없습니다.
 | `local_curvatures` | `float64[3]` | 3개 손가락의 로컬 곡률 |
 | `curvature_valid` | `bool[3]` | 곡률 유효성 플래그 |
 
+상세(protuberance 필드 포함): [msg/ShapeEstimate.msg](msg/ShapeEstimate.msg)
+
 ---
 
 ## 액션 타입
 
 ### ExploreShape.action
 
-탐색 모션 + 형상 추정 통합 액션입니다. GUI 또는 BT에서 호출하며, 물체 주변을 자동
-탐색하면서 ToF 기반 형상 추정을 수행하고 confidence 임계값 도달 시 결과를 반환합니다
-(`shape_estimation` 패키지의 `/shape/explore` 액션 서버가 제공).
+탐색 모션 + 형상 추정 통합 액션 (`shape_estimation` 패키지의 `/shape/explore` 서버가 제공). 상세: [action/ExploreShape.action](action/ExploreShape.action)
 
 **Goal**
 
@@ -106,8 +105,10 @@ C++/Python 소비자가 없습니다.
 
 ```bash
 cd ~/ros2_ws/rtc_ws
-colcon build --packages-select shape_estimation_msgs --symlink-install
+./build.sh -p shape_estimation_msgs
 ```
+
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조.
 
 ---
 
