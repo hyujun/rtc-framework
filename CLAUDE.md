@@ -6,7 +6,7 @@
 
 - **Enforcement (AGENTS.md §2 · AGENTS.md §4)** — `.claude/hooks/`. 검사 범위·blocking 구분·allowlist·bound 의 SSoT 는 각 hook 헤더 주석
   - `format-code.sh` (PostToolUse): Edit/Write 한 파일만 clang-format / ruff — Bash 로 쓴 파일은 거치지 않는다
-  - `verify-changes.sh` (Stop): AGENTS.md §4 "커밋 전에 직접 돌려야 하는 것" 중 **기계 판정 가능한 부분만** 자동 수행하고 hard failure 시 `exit 2` 로 차단 — 여집합은 modification-guide.md §Completion Checklist 로 직접 확인. 변경 집합은 **마지막 통과 커밋(watermark) 기준 `git diff` ∪ untracked** 이므로 turn 안에서 commit 한 변경도 검증된다. timeout·launch 실패는 "미검증" 으로 차단
+  - `verify-changes.sh` (Stop): AGENTS.md §4 "커밋 전에 직접 돌려야 하는 것" 중 **기계 판정 가능한 부분만** 자동 수행하고 hard failure 시 `exit 2` 로 차단 — 여집합은 modification-guide.md §Completion Checklist 로 직접 확인. 변경 집합은 **마지막 통과 커밋(watermark) 기준 `git diff` ∪ untracked** 이므로 turn 안에서 commit 한 변경도 검증된다. timeout·launch 실패는 "미검증" 으로 차단. 백그라운드 subagent·workflow·teammate 가 도는 동안의 turn 끝에서는 검사를 **미루고** (차단 없음·watermark 유지) 모두 끝난 첫 turn 끝에서 몰아서 검증한다 — 병렬 편집 중의 통과는 검증이 아니다
   - `log-instructions-loaded.sh` (InstructionsLoaded): 로드 기록만
 - **Rules (AGENTS.md §3)** — path-scoped rule `.claude/rules/rt-path.md` (RT-1~10 요약·예외·대안) · `arch-source.md` (ARCH-1·2·3·4·6) · `arch-build-meta.md` (ARCH-2·5·7) 이 매칭 파일 편집 시 자동 로드된다 (로드 조건은 frontmatter glob 이 SSoT — 박제 금지). **rule 채널은 두 센서로 검증한다**: glob 매칭은 `validate_claude_rules.py` (변경된 rule 한정, 0건이면 차단), 실제 로드는 `.claude/instructions-loaded.log`. rule 을 새로 쓰거나 glob 을 고쳤으면 매칭 파일을 하나 열고 로그를 자기 `session_id` 로 걸러 발화를 확인한다 (읽는 법은 그 hook 헤더). rule 이 안 뜨는 실패는 증상이 "규칙이 조용히 없는 것" 뿐이다
 - **Skills (AGENTS.md §4)** — 추가 작업은 `adding-component` skill 이 진입점 (P5 일반화 · ARCH-3 · spec 필요 여부 판정과 발화 게이트만; 절차 SSoT 는 modification-guide.md). 런타임 검증 레시피는 `verify` skill

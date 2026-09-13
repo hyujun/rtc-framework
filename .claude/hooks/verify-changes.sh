@@ -5,7 +5,10 @@
 #          sync) without trusting Claude's self-check (Anthropic 2026.04:
 #          agent self-eval is unreliable).
 # Trigger: every turn end. Reads {stop_hook_active} from stdin JSON; bails
-#          early on re-entry to avoid infinite loops.
+#          early on re-entry to avoid infinite loops. Also reads
+#          {background_tasks}: defers (exit 0, watermark kept) while a
+#          background agent may still be writing the checkout -- see
+#          "Background agents still writing the checkout".
 #
 # Phases :
 #   0. ARCH grep (architecture-fitness sensor)
@@ -245,6 +248,45 @@ CHANGED_META=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' 
 if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
    && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ]; then
   advance_verify_base
+  exit 0
+fi
+
+# ── Background agents still writing the checkout ────────────────────────────
+#
+# Stop fires when the MAIN agent ends its turn, and a background subagent does
+# not hold that turn open -- so every gate below would grade a tree another
+# agent is halfway through writing. Observed 2026-09-13: with nine README
+# agents sharing the checkout, one turn end blocked on an anchor to a heading
+# the agent merging five docs had not written yet (inviting the main agent to
+# "fix" a file it did not own), and three others passed only because nothing
+# happened to be half-written at that instant.
+#
+# Claude Code passes `background_tasks` in the Stop input (checked on 2.1.269:
+# running/pending backgrounded tasks, labeled by `type`). While one that edits
+# this checkout is in flight, verification is DEFERRED, not skipped: exit 0
+# WITHOUT advance_verify_base, so the first turn end with none in flight diffs
+# against the same watermark and grades everything they wrote. A session that
+# ends first leaves the watermark in .git/ for the next session's first stop.
+#
+# Deferring labels are an allowlist: subagent / workflow / teammate. Not shell
+# or monitor -- a CI watcher runs for tens of minutes and would switch the gate
+# off for all of it -- and not an unknown label, since a wrong block costs one
+# turn while a wrong defer costs an unverified tree. A missing or malformed
+# field (older Claude Code) makes jq yield nothing, i.e. the gate as before.
+IN_FLIGHT=$(printf '%s' "$INPUT" | jq -r '
+  [(.background_tasks // [])[]
+   | select(.type == "subagent" or .type == "workflow" or .type == "teammate")
+   | select(.status == "running" or .status == "pending")
+   | "  - \(.type): \((.description // .id) | tostring | .[0:100])"]
+  | .[]' 2>/dev/null || true)
+if [ -n "$IN_FLIGHT" ]; then
+  {
+    echo "Verification deferred (turn NOT blocked) -- background work may still be writing this checkout:"
+    sed -n '1,5p' <<<"$IN_FLIGHT"
+    n=$(wc -l <<<"$IN_FLIGHT")
+    if [ "$n" -gt 5 ]; then echo "  (+$((n - 5)) more)"; fi
+    echo "Everything changed since $(git rev-parse --short "$VERIFY_BASE" 2>/dev/null || echo "$VERIFY_BASE") is graded at the first turn end with none in flight."
+  } >&2
   exit 0
 fi
 
@@ -808,7 +850,10 @@ for pkg_dir in $CHANGED_PKGS; do
   # over-blocking. We flag only when the change plausibly alters documented
   # behavior/usage: a public header (include/), launch/ or config/, a source
   # file add/delete (structural), or package.xml (deps/exec surface).
-  PKG_PUBLIC=$(echo "$CHANGED" | grep -E "^${pkg_dir}/(include|launch|config)/" || true)
+  # A doc kept beside the headers (rtc_math/include/rtc_math/se3/README.md) is
+  # not surface: editing it used to ask whether the README reflected the edit.
+  PKG_PUBLIC=$(echo "$CHANGED" | grep -E "^${pkg_dir}/(include|launch|config)/" \
+                 | grep -vE '\.md$' || true)
   PKG_STRUCT=$(echo "$STRUCT_AD" \
                  | grep -E "^${pkg_dir}/(src|include)/.*\.(cpp|hpp|h|cc|py)$" || true)
   PKG_PKGXML=$(echo "$CHANGED" | grep -E "^${pkg_dir}/package.xml$" || true)
