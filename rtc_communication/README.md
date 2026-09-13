@@ -400,7 +400,7 @@ while (!stop_requested):
 
 | 메서드 | RT-safe? | 사유 |
 |--------|----------|------|
-| `Send(pkt)` | ✅ Yes | 스택 memcpy + 단일 `sendto()` syscall, `noexcept`. RT 정기 tick 루프 (default 500 Hz, `control_rate`로 가변)에서 직접 호출 가능 |
+| `Send(pkt)` | ✅ Yes | 스택 memcpy + 단일 `sendto()` syscall, `noexcept`. RT 정기 tick 루프 (`control_rate` — default·범위는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants)에서 직접 호출 가능 |
 | `IsRunning()` / `recv_count()` / `send_count()` | ✅ Yes | atomic load만 수행 |
 | `GetLatestState()` | ❌ **No** | `std::mutex` 획득 — non-RT 컨텍스트(진단 스레드, ROS2 콜백)에서만 호출 |
 | `StartRecv()` / `Stop()` / `SetCallback()` | ❌ No | 초기화/셧다운 경로 (jthread 생성·조인) |
@@ -469,10 +469,10 @@ RS485 테스트는 PTY(pseudo-terminal) 페어를 실제 시리얼 링크 대용
 ## 빌드
 
 ```bash
-colcon build --packages-select rtc_communication
+./build.sh -p rtc_communication
 ```
 
-헤더 전용 라이브러리이므로 컴파일되는 바이너리는 없습니다. 다른 패키지에서 `find_package(rtc_communication REQUIRED)`로 의존성을 추가하면 include 경로가 자동으로 설정됩니다.
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조 (테스트는 위 §테스트). 헤더 전용 라이브러리이므로 컴파일되는 바이너리는 없습니다. 다른 패키지에서 `find_package(rtc_communication REQUIRED)`로 의존성을 추가하면 include 경로가 자동으로 설정됩니다.
 
 ---
 

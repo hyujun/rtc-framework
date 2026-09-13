@@ -99,7 +99,7 @@ map (`R → rpy`); this direction is total and well conditioned.
 
 The reason it lives here rather than in each binding: the same three
 `AngleAxisd` lines were written twice in the controller bindings with different
-spellings, which is the drift class issue #206 exists to remove. Changing the
+spellings — exactly the drift class this module exists to remove. Changing the
 convention must be one edit. Consumer-side tests deliberately re-derive it
 literally instead of calling this — a shared helper on both sides of an
 assertion pins nothing.

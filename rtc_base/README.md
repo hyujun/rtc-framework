@@ -6,7 +6,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **헤더 전용(header-only) 실시간 인프라 라이브러리**입니다. 결정론적 정기 tick 제어 루프 (rate-agnostic; `control_rate` YAML, default 500 Hz, 설계 범위 100 Hz–5 kHz) 에서 안전하게 사용할 수 있도록 설계되었으며, 공유 데이터 타입, 락-프리 동기화 프리미티브, 신호 처리 필터, 스레드 구성, 타이밍 프로파일링, 로깅 인프라를 제공합니다.
+RTC 프레임워크의 **헤더 전용(header-only) 실시간 인프라 라이브러리**입니다. 결정론적 정기 tick 제어 루프 (rate-agnostic; `control_rate` YAML — default·설계 범위는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants 참조) 에서 안전하게 사용할 수 있도록 설계되었으며, 공유 데이터 타입, 락-프리 동기화 프리미티브, 신호 처리 필터, 스레드 구성, 타이밍 프로파일링, 로깅 인프라를 제공합니다.
 
 **핵심 설계 원칙:**
 - 헤더 전용 -- 링크 타임 의존성 없음
@@ -119,10 +119,10 @@ rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 
 | 열거형 | 값 | 설명 |
 |--------|---|------|
-| `StateLane` | `kPosition`, `kVelocity`, `kEffort` | `DeviceState` 의 세 조인트공간 lane 중 어느 것의 freshness 를 묻는지 (#446). 짝 헬퍼 `LaneHoleMask(dev, lane)` 가 lane→필드 매핑의 유일한 소유자이고, 판정은 `rtc::IsLaneReadable` 이 한다 |
+| `StateLane` | `kPosition`, `kVelocity`, `kEffort` | `DeviceState` 의 세 조인트공간 lane 중 어느 것의 freshness 를 묻는지. 짝 헬퍼 `LaneHoleMask(dev, lane)` 가 lane→필드 매핑의 유일한 소유자이고, 판정은 `rtc::IsLaneReadable` 이 한다 |
 | `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` | 커맨드 모드. `kPdFeedforward`는 PD 위치 서보(`values`) + per-joint feedforward 토크(`DeviceOutput::feedforward`) 오버레이 — arm=kPosition, hand=kPdFeedforward 같은 mixed-command 출력에 사용 |
 | `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |
-| `PublishRole` | `kRobotTransforms` | YAML 로 선언하는 controller-owned 퍼블리시 역할. `kRobotTransforms`=`tf2_msgs/TFMessage` (controller가 사용하는 frame들을 묶어 발행). issue #196 Phase 5 에서 `kRobotTarget` / `kDigitalTwinState` 제거 — 파서는 매핑했으나 publisher 를 만드는 소비자가 없어 선언하면 조용히 죽은 토픽이 됐다. Device-wire 명령 발행은 `devices.<group>.backend`가, grasp/wbc/tof 상태는 각 controller가 소유하는 `SeqLock<T>` + `Setup*Publisher` 헬퍼가 담당하며 `PublishRole`을 거치지 않는다 |
+| `PublishRole` | `kRobotTransforms` | YAML 로 선언하는 controller-owned 퍼블리시 역할. `kRobotTransforms`=`tf2_msgs/TFMessage` (controller가 사용하는 frame들을 묶어 발행). Device-wire 명령 발행은 `devices.<group>.backend`가, grasp/wbc/tof 상태는 각 controller가 소유하는 `SeqLock<T>` + `Setup*Publisher` 헬퍼가 담당하며 `PublishRole`을 거치지 않는다 |
 | `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` | 디바이스 기능 비트마스크 (RT 루프 선택적 데이터 복사) |
 
 `GoalTypeToString()`, `CommandTypeToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수. `CommandTypeToString()`은 `JointCommand.command_type`와 동일한 와이어 문자열(`"position"`/`"torque"`/`"pd_feedforward"`)을 반환한다.
@@ -136,7 +136,7 @@ rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 
 | 구조체 | 설명 |
 |--------|------|
-| `DeviceState` | 가변 채널 디바이스 상태 -- `positions[64]`, `velocities[64]`, `efforts[64]`, `hole_mask` · `velocity_hole_mask` · `effort_hole_mask` (lane 별 per-slot freshness — 비트 set = 그 슬롯이 직전 state 메시지에서 안 써짐; **0 = 구멍 주장 없음**이라 채우지 않는 생산자의 판정이 불변이다. `positions` 는 `rtc::IsDeviceReadable` 이 소비하고 (#284), 나머지 둘은 `rtc::IsLaneReadable` 이 소비한다 — `JointState` 가 두 lane 을 optional 로 두므로 빈 lane 은 정상 입력이고 `num_channels` 는 그걸 말해주지 못한다, #446), 모터 공간 (`motor_positions[64]`, `motor_velocities[64]`, `motor_efforts[64]`), 센서 (`sensor_data[128]`, `sensor_data_raw[128]`), 추론 (`inference_data[64]`, `inference_enable[8]`, `num_inference_groups`) |
+| `DeviceState` | 가변 채널 디바이스 상태 -- `positions[64]`, `velocities[64]`, `efforts[64]`, `hole_mask` · `velocity_hole_mask` · `effort_hole_mask` (lane 별 per-slot freshness — 비트 set = 그 슬롯이 직전 state 메시지에서 안 써짐; **0 = 구멍 주장 없음**이라 채우지 않는 생산자의 판정이 불변이다. `positions` 는 `rtc::IsDeviceReadable` 이 소비하고, 나머지 둘은 `rtc::IsLaneReadable` 이 소비한다 — `JointState` 가 두 lane 을 optional 로 두므로 빈 lane 은 정상 입력이고 `num_channels` 는 그걸 말해주지 못한다), 모터 공간 (`motor_positions[64]`, `motor_velocities[64]`, `motor_efforts[64]`), 센서 (`sensor_data[128]`, `sensor_data_raw[128]`), 추론 (`inference_data[64]`, `inference_enable[8]`, `num_inference_groups`) |
 | `ControllerState` | `devices[8]` (DeviceState 배열, `kMaxDevices`) + `num_devices`, `dt`, `iteration`, `t_relative_s` (CM 가 매 tick 채워주는 session-wide 상대 시간; controller 는 `chrono::*::now()` 대신 이 값을 읽어 로그 timestamp 으로 사용) |
 | `DeviceOutput` | 가변 채널 출력 -- `commands[64]`, `goal_positions[64]`, `target_positions[64]`, `target_velocities[64]`, `trajectory_positions[64]`, `trajectory_velocities[64]`, `feedforward[64]` (per-joint feedforward 토크 Nm, `kPdFeedforward` 전용, 그 외 모드는 무시), `goal_type`, `command_type` (`std::optional<CommandType>` — per-device override; `nullopt` 이면 `ControllerOutput::command_type` 전역 기본값을 상속) |
 | `ControllerOutput` | `devices[8]` (DeviceOutput 배열, `kMaxDevices`) + `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `valid`, `command_type` (전역 기본 `CommandType`), **TF 발행용 SE3** (`arm_tip_pose` + valid, `virtual_tcp_pose` + valid, `task_link_poses[8]` + valid). `grasp_state`/`wbc_state`/`tof_snapshot` 는 controller 별 SeqLock 으로 분리되어 ControllerOutput 에서 제거됨. |
@@ -158,8 +158,8 @@ rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 
 | 구조체 | 설명 |
 |--------|------|
-| `SubscribeTopicEntry` | `topic_name` (구독 role은 singleton이라 enum 없음; issue #138: `ownership` field 제거 — controller-owned only) |
-| `PublishTopicEntry` | `topic_name` + `PublishRole` (issue #138: `ownership` field 제거, issue #196 Phase 5: 아무도 읽지 않던 `data_size` 제거) |
+| `SubscribeTopicEntry` | `topic_name` (구독 role은 singleton이라 enum 없음; controller-owned only) |
+| `PublishTopicEntry` | `topic_name` + `PublishRole` |
 | `DeviceTopicGroup` | `subscribe` + `publish` 토픽 엔트리 벡터 |
 
 `TopicConfig` 주요 메서드:
@@ -339,7 +339,7 @@ O(1) 슬라이딩 윈도우 OLS(최소자승법) 기반 실시간 드리프트 �
 
 `ThreadConfig` 구조체는 CPU 어피니티, 스케줄러 정책, 우선순위, nice 값, 스레드 이름을 정의합니다.
 
-> **레이아웃 값의 SSoT 는 이 헤더가 아니라 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 입니다** (issue #153 M1). tier 상수 (`k*Config*`) 와 `SelectThreadConfigsForCoreCount()` 는 `thread_config_generated.hpp` 로 생성되고, 이 헤더는 구조체 정의와 설계 산문을 갖습니다. 같은 manifest 가 shell 헬퍼 (`repo_scripts/scripts/lib/thread_layout_generated.sh`) 와 Python launch 미러 (`rtc_tools/rtc_tools/launch/thread_layout_generated.py`), 그리고 아래 매트릭스까지 생성합니다.
+> **레이아웃 값의 SSoT 는 이 헤더가 아니라 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 입니다.** tier 상수 (`k*Config*`) 와 `SelectThreadConfigsForCoreCount()` 는 `thread_config_generated.hpp` 로 생성되고, 이 헤더는 구조체 정의와 설계 산문을 갖습니다. 같은 manifest 가 shell 헬퍼 (`repo_scripts/scripts/lib/thread_layout_generated.sh`) 와 Python launch 미러 (`rtc_tools/rtc_tools/launch/thread_layout_generated.py`), 그리고 아래 매트릭스까지 생성합니다.
 
 CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4, 6, 8, 10, 12, 14, 16코어).
 
@@ -402,7 +402,7 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 `SystemThreadConfigs` 구조체: `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `nrt_publish` (controller-owned publish jthread — `nrt_callback` 과 같은 slot, 이름만 별개), `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`). `rt_outbound`/`udp_recv` 필드는 없음 — actuator publish 는 `rt_control` 이 rt_loop tick 안에서 inline 으로 수행하고, hand UDP receive thread 는 hand_driver 프로세스 내부 (`udp_hand_driver/udp_hand_constants.hpp::kHandUdpRecvConfig`) 에 있으며, 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1 sentinel) 을 caller 가 명시적으로 사용한다.
 
 `MpcThreadConfig` 구조체:
-- `main`: MPC solve 스레드의 `ThreadConfig`. **필드는 이것 하나다** — `num_workers` / `workers` 는 #380 이 제거했다. worker jthread 들은 설정을 적용한 직후 반환해 실제로는 아무것도 실행하지 않았고, 애초에 어떤 solver 도 그것을 쓸 수 없었다 (Aligator 의 병렬화는 OpenMP 이며 자기 스레드를 직접 소유·생성하므로 외부 핸들을 받지 않는다). 병렬 MPC 를 되살린다면 `SolverProxDDP::setNumThreads` + 그 OpenMP 풀의 pinning 이지 여기 ThreadConfig 를 추가하는 것이 아니다.
+- `main`: MPC solve 스레드의 `ThreadConfig`. **필드는 이것 하나다** — Aligator 의 병렬화는 OpenMP 이며 자기 스레드를 직접 소유·생성하므로 외부 핸들을 받지 않는다. 병렬 MPC 를 되살린다면 `SolverProxDDP::setNumThreads` + 그 OpenMP 풀의 pinning 이지 여기 `ThreadConfig` 를 추가하는 것이 아니다.
 - `SelectThreadConfigs()`가 물리 코어 수에 맞는 `kMpcConfig{4,6,8,10,12,14,16}Core` 프리셋을 채워 반환 (tier dispatch는 `>=` 계단식). 상수와 dispatch 는 [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 에서 생성되므로 tier 를 바꾸려면 manifest 를 고치고 `gen_thread_layout.py --write` 를 돌린다.
 - `ValidateSystemThreadConfigs()`는 (1) MPC main priority < rt_callback priority, (2) `arm_driver` / `hand_driver` cpu_core 가 모든 RT controller thread (rt_control/rt_callback/mpc_main) 와 disjoint, (3) cpu_core=-1 sentinel 은 disjointness sweep 에서 skip 등의 불변식을 검증.
 
@@ -481,9 +481,9 @@ CM, MPC, udp_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. �
 
 ### 로깅 (`logging/`)
 
-CM-side 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `integrated_bringup/include/integrated_bringup/logging/`) 가 담당한다. CM 자신은 `cm_timing_log.csv` (per-tick scheduling timing) 만 소유하며, schema 는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 8-col (접두 3열 + `RtTickTimingPayload` 5열) 을 사용한다 (`rtc_base/timing/rt_tick_timing_sample.hpp`). `run_id` 는 로거가 `Open()` 에서 한 번 해석해 (`logging/run_id.hpp`) 매 행에 찍으며, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못하게 한다 (#376).
+CM-side 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `integrated_bringup/include/integrated_bringup/logging/`) 가 담당한다. CM 자신은 `cm_timing_log.csv` (per-tick scheduling timing) 만 소유하며, schema 는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 8-col (접두 3열 + `RtTickTimingPayload` 5열) 을 사용한다 (`rtc_base/timing/rt_tick_timing_sample.hpp`). `run_id` 는 로거가 `Open()` 에서 한 번 해석해 (`logging/run_id.hpp`) 매 행에 찍으며, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못하게 한다.
 
-**세 phase 열은 `t_total_us` 로 합산되지 않는다.** `PeriodicRtThread::MarkPublishDone()` 을 부르는 producer (CM RT loop) 는 `t_publish_us` 를 publish 작업이 끝나는 지점에서 끊고, 남는 `t_total_us − (t_state_us + t_compute_us + t_publish_us)` 가 그 tick 의 **post-publish tail** — 뒤따르는 per-tick 작업 + 스레드가 돌지 못한 시간 — 이다. 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 본다 (#222: CM 의 최악 traced overrun 은 publish 28 µs + tail 3.4 ms 였다). 마지막에 publish 하는 producer (MPC / hand_udp) 는 이 stamp 를 부르지 않으므로 잔차가 정확히 0 이고, 이는 #222 이전의 모든 CSV 와 같다. 분석 쪽 파생 열은 `rtc_tools` `plotting/plotters/timing.py` 의 `add_tail_column` (`t_tail_us`).
+**세 phase 열은 `t_total_us` 로 합산되지 않는다.** `PeriodicRtThread::MarkPublishDone()` 을 부르는 producer (CM RT loop) 는 `t_publish_us` 를 publish 작업이 끝나는 지점에서 끊고, 남는 `t_total_us − (t_state_us + t_compute_us + t_publish_us)` 가 그 tick 의 **post-publish tail** — 뒤따르는 per-tick 작업 + 스레드가 돌지 못한 시간 — 이다. 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 본다. 마지막에 publish 하는 producer (MPC / hand_udp) 는 이 stamp 를 부르지 않으므로 잔차가 정확히 0 이다. 분석 쪽 파생 열은 `rtc_tools` `plotting/plotters/timing.py` 의 `add_tail_column` (`t_tail_us`).
 
 `PeriodicRtThread::JitterMeaningful()` 가상 함수로 producer가 자기 wakeup이 deadline-driven 인지 선언한다. CM `ControlLoopThread` 는 `use_sim_time_sync=true` 일 때 `false` 를 반환해 `jitter_us` 를 0.0 으로 고정한다 (CV cadence 대비 budget 차이는 RT 잡음 지표가 아니므로). MPC / hand_udp 는 default `true` 유지. 나머지 6개 컬럼은 두 모드 동일.
 
@@ -609,12 +609,11 @@ target `rtc_base::rtc_tracing`) 로 컴파일한다. 소비 패키지는 이 tar
 ## 빌드
 
 ```bash
-cd ~/ros2_ws/rtc_ws
-colcon build --packages-select rtc_base
-source install/setup.bash
+./build.sh -p rtc_base
+colcon test --packages-select rtc_base
 ```
 
-헤더 전용 라이브러리이므로 컴파일되는 바이너리는 없습니다. 소비자 패키지에서 `#include`하여 사용합니다.
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조. 헤더 전용 라이브러리이므로 컴파일되는 바이너리는 없습니다 — 소비자 패키지에서 `#include`하여 사용합니다.
 
 **컴파일러 요구사항:** C++20 호환 컴파일러 (GCC 10+, Clang 13+).
 
