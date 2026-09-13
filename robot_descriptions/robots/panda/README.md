@@ -7,10 +7,8 @@ fixed-base 7-DOF 모델로 사용하는 `urdf/panda.urdf` 만 vendor 한다.
 
 `example-robot-data` (Gepetto, BSD-2-Clause) 의
 `robots/panda_description/urdf/panda.urdf` 를 그대로 복사한 것이다.
-이전에는 vcs-imported `deps/src/example-robot-data` 또는 legacy `/usr/local` 에서
-참조했으나, deps 아티팩트가 `deps/install` 만 보존(소스 트리 삭제)하여 CI 에서
-부재 → 테스트 fixture 의 `pinocchio::buildModel` 이 throw → 미실행. 이를
-robot_descriptions 의 ament share 경로로 vendor 하여 로컬·CI 일관성을 확보한다.
+소스 트리가 없는 환경(CI 포함)에서도 테스트 fixture 의 `pinocchio::buildModel` 이
+안정적으로 동작하도록, robot_descriptions 의 ament share 경로로 vendor 한다.
 
 ## meshes 미포함 (의도)
 

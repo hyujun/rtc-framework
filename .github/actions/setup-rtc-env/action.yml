@@ -1,6 +1,6 @@
 name: Setup RTC CI Environment
 description: |
-  ROS 2 distribution + apt cache + colcon upgrade + numpy fix.
+  ROS 2 distribution (rate-limit resilient apt source) + apt cache + numpy fix.
   Standard prerequisite for any CI job that builds or tests rtc-framework packages.
   Caller is responsible for sourcing /opt/ros/<distro>/setup.bash in subsequent steps.
 

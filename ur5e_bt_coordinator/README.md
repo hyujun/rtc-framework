@@ -37,12 +37,11 @@ bt_coordinator (non-RT, 80 Hz)
 
 ## QoS 정책
 
-BT coordinator는 RT Controller 파이프라인의 **RELIABLE QoS topic만 subscribe**한다.
-BEST_EFFORT topic (`/p1a/sensor_states`, `/joint_states` 등; hand_group 세그먼트는
-variant 별로 결정 — ur5e_p1a 기준)은 RT 제어 전용이므로 BT에서 subscribe하지 않는다.
+BT coordinator는 RT 제어 전용 BEST_EFFORT topic (`/p1a/sensor_states`, `/joint_states` 등; hand_group 세그먼트는
+variant 별로 결정 — ur5e_p1a 기준)을 subscribe하지 않는다. 예외는 controller-owned `<ns>/tof/snapshot` 하나다 (아래 표).
 
 Grasp 상태 데이터는 RT Controller가 500Hz로 계산하여 publish하는
-`/<active_ctrl>/p1a/grasp_state` (`rtc_msgs/GraspState`, depth 10) topic을 사용한다.
+`/<active_ctrl>/p1a/grasp_state` (`rtc_msgs/GraspState`, depth 1) topic을 사용한다.
 Fingertip별 force magnitude와 aggregate grasp detection 결과가 포함되어 있어
 BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
@@ -50,28 +49,40 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 ### 발행 (Publish)
 
-Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다. 아래 표의 `ur5e`/`<hand_group>` 세그먼트는 `arm_group`/`hand_group` 파라미터 값 (`arm_group` default `ur5e`; `hand_group` 은 default 없음 — variant delta 가 공급: p1a→`p1a`, p1b→`p1b`) — robot-agnostic (Seam A).
+`<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다. 아래 표의 `ur5e`/`<hand_group>` 세그먼트는 `arm_group`/`hand_group` 파라미터 값 (`arm_group` default `ur5e`; `hand_group` 은 default 없음 — variant delta 가 공급: p1a→`p1a`, p1b→`p1b`) — robot-agnostic (Seam A).
 
 | Topic | 메시지 타입 | 설명 |
 |-------|------------|------|
 | `<ns>/<arm_group>/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 (controller-owned) |
 | `<ns>/<hand_group>/joint_goal` | `rtc_msgs/RobotTarget` | Hand 모터 목표 (controller-owned) |
+| `/shape/trigger` | `std_msgs/String` | shape estimation 시작/정지 트리거 (서비스 client `/shape/clear` 로 누적 상태 초기화) |
 
-게인 변경은 토픽이 아닌 active controller LifecycleNode의 ROS 2 parameter (`SetGains` BT node가 `set_parameters_atomically`로 호출). 컨트롤러 전환은 `/rtc_cm/switch_controller` srv (`SwitchController` BT node).
+게인 변경·컨트롤러 전환·grasp 커맨드는 토픽이 아닌 서비스/파라미터 API 사용 — 아래 서비스 클라이언트 표 참조.
 
 ### 구독 (Subscribe)
 
 | Topic | 메시지 타입 | QoS | 설명 |
 |-------|------------|-----|------|
-| `/rtc_cm/<arm_group>/joint_states` | `sensor_msgs/JointState` | depth 10 | Arm 관절 위치 (fixed path, active controller 와 무관 — controller-agnostic) |
-| `/rtc_cm/<hand_group>/joint_states` | `sensor_msgs/JointState` | depth 10 | Hand 관절 위치 (fixed path, controller-agnostic) |
-| `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
-| `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
+| `/rtc_cm/<arm_group>/joint_states` | `sensor_msgs/JointState` | RELIABLE, depth 1 | Arm 관절 위치 (fixed path, active controller 와 무관 — controller-agnostic) |
+| `/rtc_cm/<hand_group>/joint_states` | `sensor_msgs/JointState` | RELIABLE, depth 1 | Hand 관절 위치 (fixed path, controller-agnostic) |
+| `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 1 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
+| `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 1 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
-| `<ns>/transforms` | `tf2_msgs/TFMessage` | RELIABLE, depth 10 | active controller의 FK `base → tool0_actual` (controller-owned, rewire). `tf_buffer_`에 직접 feed → TCP pose lookup 소스 |
-| `/world_target_info` | `geometry_msgs/Polygon` | depth 10 | 비전 물체 위치 (`points[0]` = x,y,z; orientation 없음 — roll/pitch/yaw는 0으로 채움) |
+| `<ns>/transforms` | `tf2_msgs/TFMessage` | RELIABLE, depth 1 | active controller의 FK `base → tool0_actual` (controller-owned, rewire). `tf_buffer_`에 직접 feed → TCP pose lookup 소스 |
+| `/world_target_info` | `geometry_msgs/Polygon` | RELIABLE, depth 1 | 비전 물체 위치 (`points[0]` = x,y,z, orientation 없음). `IsObjectDetected`/`IsVisionTargetReady`가 출력 시 orientation 을 현재 TCP pose 로 채운다 |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
-| `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 10 | E-STOP 상태 |
+| `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 1 | E-STOP 상태 |
+| `/shape/estimate` | `shape_estimation_msgs/ShapeEstimate` | RELIABLE, depth 1 | shape estimation 결과 (`WaitShapeResult` / `CheckShapeType` 가 소비) |
+
+### 서비스 클라이언트
+
+| 서비스 | 타입 | 설명 |
+|--------|------|------|
+| `/rtc_cm/switch_controller` | `rtc_msgs/srv/SwitchController` | 활성 컨트롤러 전환 (`SwitchController` BT 노드) |
+| `/rtc_cm/list_controllers` | `rtc_msgs/srv/ListControllers` | 등록된 컨트롤러 목록 조회 (bridge 가 client 보유, 현재 어떤 BT 노드도 호출하지 않음) |
+| `/<active_ctrl>/<active_ctrl>/set_parameters_atomically` | (parameter API) | active 컨트롤러 LifecycleNode 게인 설정 (`SetGains` BT 노드; LifecycleNode FQN 이 `/<active_ctrl>/<active_ctrl>`이므로 세그먼트가 중복) |
+| `/<active_ctrl>/grasp_command` | `rtc_msgs/srv/GraspCommand` | Force-PI one-shot grasp/release (`SetGains` BT 노드) |
+| `/shape/clear` | `std_srvs/srv/Trigger` | shape estimation 누적 데이터 초기화 (`TriggerShapeEstimation` `command="start"` 시 자동 호출) |
 
 ### TF
 
@@ -80,7 +91,7 @@ TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` 
 `transforms_sub_`가 controller 전환마다 rewire 되어 그 `TFMessage`를 `tf_buffer_`에 직접 feed 한다
 (bare `TransformListener`는 `/tf`만 듣기 때문에 이 프레임을 못 받는다 — 외부 `/tf` 재발행 불필요).
 
-#### Task frame 선택 (#292)
+#### Task frame 선택
 
 child frame 은 **고정이 아니다**. `virtual_tcp_mode` 가 켜진 task 컨트롤러는 virtual TCP 를 제어하므로, `tool0_actual` 을 읽으면 `GetTcpPose()` 와 `PublishArmTarget` 이 서로 다른 frame 이 된다 — GUI 와 달리 여기서는 표시 문제가 아니라 **수렴이 영원히 성립하지 않는** 문제다 (`MoveToPose` / `TrackTrajectory` 가 이 pose 로 도달을 판정한다).
 
@@ -88,26 +99,91 @@ child frame 은 **고정이 아니다**. `virtual_tcp_mode` 가 켜진 task 컨�
 
 - **`IsTcpPoseValid()` 를 반드시 함께 본다.** rewire 직후 캐시는 *이전* 컨트롤러의 pose 다. `MoveToPose` / `TrackTrajectory` 는 live 가 아니면 수렴 판정을 보류하고 RUNNING 을 유지한다 — 그러지 않으면 우연히 tolerance 안에 든 stale pose 로 **움직이지도 않은 동작이 SUCCESS** 로 보고된다.
 - rewire 는 task frame 선택·pose validity·tf buffer 를 모두 리셋한다.
-- **절대 waypoint 를 조용히 변환하지 않는다 — 그리고 변환할 것이 없다 (#294 종결).** #292 는 트리의 절대 waypoint 가 tool0 authoring 이라고 **가정**하고 vtcp latch 시 WARN 을 냈다. 감사 결과 그런 waypoint 는 **없다**: `trees/*.xml` 의 `MoveToPose` target 은 예외 없이 `{blackboard_var}` 이고, 그 변수를 채우는 것은 둘뿐이다 — (1) `GetCurrentPose → ComputeOffsetPose` 상대 체인 (#292 가 읽기를 active controller 기준으로 만든 뒤로 **구성상 frame-consistent**), (2) `{object_pose}` (위치는 `/world_target_info`, 자세는 현재 제어 frame). vision publisher 는 저장소 밖이며 그 `(x, y, z)` 는 **물체 중심**으로 확인됐다 ⇒ vtcp(fingertip centroid)를 거기 보내는 것이 파지 의도에 **더 가깝다**. 따라서 (a)/(b) 는 고칠 필요 없는 것을 고치는 것이고 현행 (c) 를 유지한다. latch 시의 한 줄은 **INFO 로 남는다** — 트리의 상대 offset 이 어느 점 기준인지, 그리고 나중에 절대 waypoint 를 추가하면 어디에 떨어지는지를 알리는 용도이며, 기본 UR5e 운용마다 발화하는 WARN 은 읽히지 않게 되어 진짜 경고가 필요한 날 비용이 더 크다.
+- **절대 waypoint 를 변환할 필요가 없다.** `trees/*.xml`의 `MoveToPose` target 은 예외 없이 `{blackboard_var}`이고, 그 변수를 채우는 경로는 둘뿐이다 — (1) `GetCurrentPose → ComputeOffsetPose` 상대 체인 (읽기가 active controller 기준이라 구성상 frame-consistent), (2) `{object_pose}` (위치는 `/world_target_info`, 자세는 현재 제어 frame). vision publisher 의 `(x, y, z)`는 물체 중심이므로 vtcp(fingertip centroid)를 그 좌표로 보내는 것이 파지 의도에 더 가깝다. latch 시 한 줄은 INFO 로 남긴다 (WARN 은 기본 운용마다 발화해 읽히지 않게 되므로) — 트리의 상대 offset 이 어느 점 기준인지, 이후 절대 waypoint 를 추가하면 어디에 떨어지는지 알리는 용도.
 
 ## BT 트리
 
-| 트리 | 파일 | 설명 |
-|------|------|------|
-| Common Motions | `trees/common_motions.xml` | 재사용 가능한 공통 모션 SubTree 라이브러리 (DetectObject, ForceGrasp, LiftAndVerify, PoseBasedEmergencyAbort 등) |
-| Pick and Place | `trees/pick_and_place.xml` | Pose-based grasp: vision 감지 → approach → SetHandPose 기반 grip (soft/medium/hard) → lift → transport → release. Grasp controller 미사용 |
-| Pick and Place (Contact Stop) | `trees/pick_and_place_contact_stop.xml` | Force-based grasp (contact_stop): vision 감지 → approach → force-based grasp → lift → transport → release |
-| Pick and Place (Force-PI) | `trees/pick_and_place_force_pi.xml` | Force-PI adaptive grasp: vision 감지 → approach → force-PI grasp (retry 지원) → lift → transport → release |
-| Towel Unfold | `trees/towel_unfold.xml` | 수건 edge 감지 → pinch pre-shape → approach → pinch grasp → lift → compliant sweep → lower/release → retreat |
-| Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 데모 (OppositionDemo → WaveDemo) |
-| Vision Approach | `trees/vision_approach.xml` | Vision 기반 approach 데모 (arm-only, 핸드 미사용) |
-| Shape Inspect | `trees/shape_inspect.xml` | ToF 센서 기반 shape estimation 워크플로우 (start → wait → stop → evaluate) |
-| Shape Inspect Simple | `trees/shape_inspect_simple.xml` | Vision 기반 inspect 위치 이동 → -x 방향 linear search move + ToF 500Hz 데이터 수집 → 데이터 처리 → 목표 이동. 서비스 기반 shape estimation 미사용 |
-| Search Motion | `trees/search_motion.xml` | 팔 sweep + tilt scan 탐색 모션 |
+| 트리 | 파일 | 설명 | 실패 처리 |
+|------|------|------|----------|
+| Common Motions | `trees/common_motions.xml` | 재사용 가능한 공통 모션 SubTree 라이브러리 (아래 표) | - |
+| Pick and Place | `trees/pick_and_place.xml` | Pose-based grasp: vision 감지 → approach → SetHandPose 기반 grip (soft/medium/hard) → lift → transport → release. Grasp controller 미사용 | `PoseBasedEmergencyAbort` |
+| Pick and Place (Contact Stop) | `trees/pick_and_place_contact_stop.xml` | Force-based grasp (contact_stop): vision 감지 → approach → force-based grasp → lift → transport → release | `ContactStopEmergencyAbort` |
+| Pick and Place (Force-PI) | `trees/pick_and_place_force_pi.xml` | Force-PI adaptive grasp: vision 감지 → approach → force-PI grasp (retry 지원) → lift → transport → release | `ForcePIEmergencyAbort` |
+| Towel Unfold | `trees/towel_unfold.xml` | 수건 edge 감지 → pinch pre-shape → approach → pinch grasp → lift → compliant sweep → lower/release → retreat | `ReleaseAndRetreat` (정상 종료 경로 재사용) |
+| Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 데모 (OppositionDemo → WaveDemo) | - |
+| Vision Approach | `trees/vision_approach.xml` | Vision 기반 approach 데모 (arm-only, 핸드 미사용) | 없음 (단순 데모) |
+| Shape Inspect | `trees/shape_inspect.xml` | ToF 센서 기반 shape estimation 워크플로우 (start → wait → stop → evaluate) | 없음 |
+| Shape Inspect Simple | `trees/shape_inspect_simple.xml` | Vision 기반 inspect 위치 이동 → -x 방향 linear search move + ToF 500Hz 데이터 수집 → 데이터 처리 → 목표 이동. 서비스 기반 shape estimation 미사용 | 없음 |
+| Search Motion | `trees/search_motion.xml` | 팔 sweep + tilt scan 탐색 모션 | 없음 (단순 데모) |
+
+### Common Motions SubTree 라이브러리
+
+`<include path="common_motions.xml"/>`로 참조한다. 재사용 대상은 pick_and_place\* 계열과 towel_unfold.
+
+| SubTree | 설명 | 사용 트리 |
+|---------|------|----------|
+| `DetectObject` | 재시도 기반 물체 감지 | 모든 pick 트리, towel_unfold |
+| `ApproachFromAbove` | 목표 위 오프셋으로 접근 | 모든 pick 트리, towel_unfold |
+| `SlowDescend` | 저속 게인 설정 후 목표로 이동 (optional Z override) | 모든 pick 트리, towel_unfold |
+| `ForceGrasp` | 병렬 GraspControl close + 힘 감지 + 파지 검증 | pick_and_place_contact_stop |
+| `LiftAndVerify` | 리프트 + 파지 유지 검증 | contact_stop, force_pi, towel_unfold |
+| `ReleaseAndRetreat` | GraspControl open + 상방 후퇴 | contact_stop, towel_unfold |
+| `ContactStopOpen` | GraspControl open + settle | contact_stop |
+| `ContactStopEmergencyAbort` | ContactStopOpen + retreat (실패 시 안전 종착) | contact_stop |
+| `ForcePIGrasp` | Force-PI FSM 기반 adaptive grasp | force_pi |
+| `ForcePIRelease` | Force-PI FSM release (grasp_command=2) | force_pi |
+| `ForcePIGraspWithRetry` | ForcePIGrasp retry wrapper (hand-only 재시도) | force_pi |
+| `ForcePIGraspDiagnose` | 실패 시 FSM phase 진단 로깅 | force_pi |
+| `ForcePIEmergencyAbort` | ForcePIRelease + retreat (실패 시 안전 종착) | force_pi |
+| `PoseBasedEmergencyAbort` | SetHandPose open + retreat (실패 시 안전 종착) | pick_and_place (pose-based) |
 
 **SubTree 에 숫자를 넘길 때 (BehaviorTree.CPP 4.10+)**: `<SubTree ... timeout_s="10.0"/>` 처럼 리터럴로 넘긴 숫자는 4.10 부터 subtree blackboard 에 `int` (소수점 없음) 또는 `double` 로 저장되고, 그 키를 읽는 강타입 포트는 타입이 정확히 같아야 트리가 생성된다 (4.9 까지는 `string` 이라 무엇이든 통과했다). 그래서 `double` 포트에는 `"10.0"`, `int` 포트에는 `"10"` 처럼 모양을 맞추고, `unsigned` 포트 (`Timeout.msec` · `Delay.delay_msec` · `Sleep.msec`) 로 가는 인자는 `common_motions.xml` 의 `ForcePIGrasp` · `ForcePIRelease` 처럼 `Script` 로 새 키에 옮겨 잇는다. 이 오류는 트리를 실제로 만들 때만 나므로, 트리 파일을 추가하면 [test/test_tree_validation.cpp](test/test_tree_validation.cpp) 에 그 파일을 인스턴스화하는 테스트도 함께 추가한다.
 
+### 커스텀 트리 작성
+
+`trees/*.xml`에 파일을 추가하면 재빌드 없이 자동으로 install 에 포함된다. 기본 골격:
+
+```xml
+<root BTCPP_format="4" main_tree_to_execute="MyTask">
+  <include path="common_motions.xml"/>
+  <BehaviorTree ID="MyTask">
+    <Sequence name="main"><!-- 노드 배치 --></Sequence>
+  </BehaviorTree>
+</root>
+```
+
+공통 SubTree 포트:
+
+| SubTree | 주요 Input 포트 | Output 포트 |
+|---------|----------------|-------------|
+| `DetectObject` | `num_attempts`, `wait_s` | `pose` |
+| `ApproachFromAbove` | `target_pose`, `offset_z`, `pos_tol`, `ori_tol`, `timeout_s` | `approach_pose` |
+| `SlowDescend` | `target_pose`, `traj_speed`, `max_traj_vel`, `pos_tol`, `ori_tol`, `timeout_s` | - |
+| `ForceGrasp` | `grasp_mode`, `close_speed`, `max_position`, `threshold_N`, `min_fingertips`, `sustained_ms`, `verify_force_N`, `verify_min_tips` | - |
+| `LiftAndVerify` | `base_pose`, `offset_z`, `traj_speed`, `verify_force_N`, `verify_min_tips` | `lift_pose` |
+| `ReleaseAndRetreat` | `base_pose`, `retreat_z`, `retreat_speed`, `timeout_s` | `retreat_pose` |
+| `*EmergencyAbort` | `retreat_z` | - |
+
+파일 수정 체크리스트:
+
+| 변경 내용 | 수정 파일 | 빌드 필요 |
+|-----------|----------|----------|
+| 기존 포즈 튜닝 | `config/poses.yaml` | X (런타임 오버라이드) |
+| 새 포즈 추가 (컴파일타임) | `hand_pose_config.hpp` | O |
+| 새 포즈 추가 (런타임) | `config/poses.yaml` | X |
+| 새 관절 그룹 추가 | `hand_pose_config.hpp` | O |
+| 새 BT 트리 추가 | `trees/*.xml` | X (런타임 로드) |
+| 공통 SubTree 추가 | `trees/common_motions.xml` | X |
+
 ## BT 노드
+
+Blackboard 문자열 포맷 (`BT::convertFromString` 특수화, [bt_types.hpp](include/ur5e_bt_coordinator/bt_types.hpp)):
+
+| 타입 | 포맷 | 예시 |
+|------|------|------|
+| `Pose6D` | `"x;y;z;roll;pitch;yaw"` | `"0.3;-0.3;0.15;3.14;0.0;0.0"` |
+| `vector<double>` | `"v0;v1;v2;..."` | `"0.0;0.0;0.0;0.0;0.0;0.0"` |
+| `vector<Pose6D>` | 파이프(`\|`)로 구분된 Pose6D | `"0.1;0.2;0.3;0;0;0\|0.4;0.5;0.6;0;0;0"` |
 
 ### Action 노드
 
@@ -117,8 +193,8 @@ child frame 은 **고정이 아니다**. `virtual_tcp_mode` 가 켜진 task 컨�
 | `MoveToJoints` | StatefulAction | Joint-space 목표 이동, per-joint tolerance 도달 판정 | `target`, `pose_name`(poses.yaml named arm pose, target 대체), `tolerance`(0.01), `timeout_s`(10.0) |
 | `GraspControl` | StatefulAction | Hand open/close/pinch/preset 제어, 점진적 닫기 지원 | `mode`(close), `target_positions`, `close_speed`(0.3), `max_position`(1.4), `pinch_fingers`("thumb,index"), `timeout_s`(8.0) |
 | `TrackTrajectory` | StatefulAction | Waypoint 시퀀스 순차 추적 (sweep motion 등) | `waypoints`, `position_tolerance`(0.01), `timeout_s`(30.0) |
-| `SetGains` | StatefulAction | active controller LifecycleNode의 ROS 2 parameter 동적 변경 (`set_parameters_atomically`). 입력 포트 중 채워진 것만 dispatch — 컨트롤러별 매핑은 `set_gains.cpp` 참조 (예: `trajectory_speed` → DemoJoint면 `robot_trajectory_speed`, DemoWbc면 `arm_trajectory_speed`). `grasp_command`/`grasp_target_force`는 ROS 2 srv (`rtc_msgs/srv/GraspCommand`)로 분기. read-only 파라미터 (`*_max_traj_velocity`)는 변경 불가 (rejected) | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `kp_translation`, `kp_rotation`, `singularity_threshold`, `max_damping`, `null_kp`, `enable_null_space`, `control_6dof`, `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips`, `se3_weight`, `force_weight`, `posture_weight`, `mpc_enable`, `riccati_gain_scale`, `grasp_command`, `grasp_target_force` |
-| `SwitchController` | StatefulAction | 활성 컨트롤러 전환 (joint ↔ task) | `controller_name`, `timeout_s`(3.0) |
+| `SetGains` | StatefulAction | active controller LifecycleNode의 ROS 2 parameter 동적 변경 (`set_parameters_atomically`). 입력 포트 중 채워진 것만 dispatch — 컨트롤러별 매핑은 `set_gains.cpp` 참조 (예: `trajectory_speed` → DemoJoint면 `robot_trajectory_speed`, DemoWbc면 `arm_trajectory_speed`). `grasp_command`/`grasp_target_force`는 ROS 2 srv (`rtc_msgs/srv/GraspCommand`)로 분기하며 parameter 커밋 후에만 전송 (순차 2단계 — 거절된 게인 위에서 grasp 하지 않음). read-only 파라미터 (`*_max_traj_velocity`)는 변경 불가 (rejected) | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `kp_translation`, `kp_rotation`, `singularity_threshold`, `max_damping`, `null_kp`, `enable_null_space`, `control_6dof`, `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips`, `se3_weight`, `force_weight`, `posture_weight`, `mpc_enable`, `riccati_gain_scale`, `grasp_command`, `grasp_target_force` |
+| `SwitchController` | StatefulAction | 활성 컨트롤러 전환 (joint ↔ task). srv 요청을 non-blocking 으로 발사하고 tick 마다 `wait_for(0)`으로 폴링 (single-thread executor 가 tick 안에서 blocking wait 하면 데드락하므로) | `controller_name`, `timeout_s`(3.0) |
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
 | `SetPoseZ` | SyncAction | Pose의 Z좌표를 절대값으로 덮어씀 (X, Y, 방향 유지). `z`가 NaN(기본값)이면 pass-through. Object final goal의 Z를 고정하는 용도 | `input_pose`, `z`(NaN) → 출력: `output_pose` |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용, sinusoidal arc 프로파일) | `start_pose`, `direction_x`(1.0), `direction_y`(0.0), `distance`(0.3), `arc_height`(0.05), `num_waypoints`(8) → 출력: `waypoints` |
@@ -134,7 +210,7 @@ child frame 은 **고정이 아니다**. `virtual_tcp_mode` 가 켜진 task 컨�
 | `WaitShapeResult` | StatefulAction | Shape estimation 결과 대기 (confidence 임계값 도달까지) | `confidence_threshold`(0.7), `timeout_s`(10.0), 출력: `estimate` |
 | `StartToFCollection` | SyncAction | `<ns>/tof/snapshot` 메시지 버퍼링 시작 (기존 데이터 초기화) | — |
 | `StopToFCollection` | SyncAction | ToF 버퍼링 중지, 수집된 스냅샷 수 반환 | 출력: `count` |
-| `ProcessSearchData` | SyncAction | 수집된 ToF 데이터로부터 목표 pose 계산 (현재 processing 로직 미구현 — 현재 TCP pose를 그대로 반환하는 stub) | 출력: `output_pose` |
+| `ProcessSearchData` | SyncAction | 수집된 ToF 데이터로부터 목표 pose 계산 (현재 processing 로직 미구현 — 현재 TCP pose를 그대로 반환하는 stub). 입력 가용 필드: index finger `distances[2]`/`distances[3]` (ToF A/B), `valid[2]`/`valid[3]`, `tip_poses[1]` (index fingertip SE3, world frame), `stamp` | 출력: `output_pose` |
 
 ### Condition 노드
 
@@ -195,23 +271,11 @@ ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
 
 ## 로깅 (Logging)
 
-### 분류 독트린
+레벨 분류·로거 네이밍 공통 규칙은 [conventions.md#logging](../agent_docs/conventions.md#logging) 참조. 이 패키지 고유 규칙만 아래에 둔다.
 
-| 레벨 | 용도 | 예시 |
-|------|------|------|
-| `FATAL` | 프로세스를 계속 실행할 수 없는 상태 | 트리 파일 없음, 치명적 초기화 실패 |
-| `ERROR` | 복구 불가능한 실패, 사용자 개입 필요 | 필수 포트 누락, 컨트롤러 전환 실패, BT leaf 실패 (FailureLogger) |
-| `WARN` | 복구 가능한 실패/이상 상태, 자동 재시도 중 | 액션 타임아웃, 토픽 stale, gimbal lock 근접 |
-| `INFO` | 사용자가 알아야 할 1 Hz 미만 상태 전환 | 액션 시작/완료/halted, 트리 로드, 컨트롤러 전환 개시 |
-| `DEBUG` | 개발자 진단용 (기본 꺼짐), 20 Hz까지 허용 | 틱 추적, 진행률, watchdog healthy 핑 |
-
-**핵심 규칙**:
-
-- `INFO`/`WARN`/`ERROR`는 **20 Hz 핫패스에서 직접 호출 금지**. 폴링 안에서 반복될 수 있는 메시지는 `*_THROTTLE` 매크로 사용.
-- `DEBUG`는 20 Hz 루프 안에서도 사용 가능. 단, 전용 서브-로거 이름으로 격리되어 기본 꺼져 있어야 한다.
+- `INFO`/`WARN`/`ERROR`는 **20 Hz 핫패스에서 직접 호출 금지** — 폴링 안에서 반복될 수 있는 메시지는 `*_THROTTLE` 매크로 사용. `DEBUG`는 20 Hz 루프 안에서도 사용 가능하되 전용 서브-로거로 격리되어 기본 꺼져 있어야 한다.
 - 노드 내부 실패 로그에는 `"FAILURE:"` 접두사를 붙이지 않는다. 실패 사실은 `FailureLogger`가 자동으로 `[BT FAIL]` 라인을 찍어주므로, 노드는 실패 *원인의 진단 정보만* 남긴다 (예: `timeout 10.0s pos_err=0.012`).
 - 메시지 본문에 노드 이름을 수동으로 박아넣지 않는다. 서브-로거 이름이 곧 식별자다 (`bt.action.move_to_pose`).
-- THROTTLE 주기는 매직넘버 대신 `bt_logging.hpp`의 표준 상수를 사용한다.
 
 ### 서브-로거 네임스페이스
 
@@ -229,52 +293,37 @@ ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
 
 ### THROTTLE 주기 표준
 
-`rtc_bt::logging` 네임스페이스에 정의된 상수만 사용한다 (`bt_logging.hpp`):
+`rtc_bt::logging` 네임스페이스에 정의된 상수만 사용한다 (값의 SSoT는 [bt_logging.hpp](include/ur5e_bt_coordinator/bt_logging.hpp)):
 
-| 상수 | 값 [ms] | 용도 |
-|------|---------|------|
-| `kThrottleFastMs` | 500 | 고빈도 폴링 노드의 진행 상태 표시 |
-| `kThrottleSlowMs` | 2000 | 일반 반복 경고 (vision target stale 등) |
-| `kThrottleIdleMs` | 10000 | 장기 유휴 상태 (watchdog, paused 핑 등) |
+| 상수 | 용도 |
+|------|------|
+| `kThrottleFastMs` | 고빈도 폴링 노드의 진행 상태 표시 |
+| `kThrottleSlowMs` | 일반 반복 경고 (vision target stale 등) |
+| `kThrottleIdleMs` | 장기 유휴 상태 (watchdog, paused 핑 등) |
 
 ### 실시간 필터링 예시
 
 ```bash
-# 특정 액션 노드만 DEBUG 활성화
+# 특정 액션 노드만 DEBUG 활성화 (계층 매칭 — 'bt.action'만 주면 전체 액션 노드)
 ros2 service call /bt_coordinator/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
   "{levels: [{name: 'bt.action.move_to_pose', level: 10}]}"
-
-# 모든 액션 노드 DEBUG (계층 매칭)
-ros2 service call /bt_coordinator/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
-  "{levels: [{name: 'bt.action', level: 10}]}"
-
-# 워치독만 끄기
-ros2 service call /bt_coordinator/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
-  "{levels: [{name: 'bt.watchdog', level: 50}]}"
 ```
 
-콘솔 출력에 로거 이름을 표시하려면 환경변수 설정:
-
-```bash
-export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
-```
+콘솔 출력에 로거 이름을 표시하려면: `export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"`
 
 ### FailureLogger 동작
 
-트리 실행 중 어떤 노드가 `FAILURE` 상태로 전이되면 **실시간으로** 다음과 같은
-로그가 `bt.fail` 서브-로거의 `RCLCPP_ERROR` 레벨로 출력된다:
+트리 실행 중 어떤 노드가 `FAILURE` 상태로 전이되면 `BT::StatusChangeLogger`를 상속한
+`FailureLogger`가 (트리 로드 시 전 노드에 자동 구독) **실시간으로** `bt.fail` 서브-로거의
+`RCLCPP_ERROR` 레벨로 다음을 찍는다 — 틱 주기 사이에도 즉시 출력되므로 어느 노드가
+먼저 실패했는지 곧바로 확인 가능:
 
 ```
 [BT FAIL] <node_name> (type=<RegistrationName> uid=<N>) <prev_status> -> FAILURE
 ```
 
-이는 `BT::StatusChangeLogger` 를 상속한 `FailureLogger` 클래스가 트리 로드 시
-모든 노드에 자동 구독되어 동작한다. 틱 주기 사이에도 즉시 출력되므로, 트리가
-멈춘 시점에 어느 노드가 먼저 실패했는지 곧바로 확인할 수 있다.
-
-추가로 트리가 최종 `FAILURE` 로 종료되면 `LogFailureDiagnosis()` 가 트리
-전체를 순회하며 실패 경로를 들여쓰기 포맷으로 덤프한다. 가장 안쪽의 실패
-노드에는 `[FAIL-LEAF]` 태그가 붙어 원인 노드를 빠르게 찾을 수 있다:
+트리가 최종 `FAILURE` 로 종료되면 `LogFailureDiagnosis()` 가 트리 전체를 순회하며
+실패 경로를 들여쓰기로 덤프한다 (가장 안쪽 실패 노드는 `[FAIL-LEAF]` 태그):
 
 ```
 ──── Failure Diagnosis ────
@@ -284,12 +333,8 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 ──── End Diagnosis (1 leaf failures) ────
 ```
 
-개별 Action/Condition 노드는 실패 시 진단에 필요한 수치(타임아웃, 위치/힘
-오차, 현재 phase 등)를 `RCLCPP_WARN` 또는 `RCLCPP_ERROR` 로 함께 출력한다.
-이때 메시지에는 `"FAILURE:"` 접두사를 붙이지 않으며, 실패 사실은 `FailureLogger`
-가 자동으로 표시한다. 폴링 노드(RetryUntilSuccessful 안에서 동작)의 경우
-로그 플러딩을 막기 위해 `kThrottleFastMs` 또는 `kThrottleSlowMs` 주기로
-throttle 된다.
+개별 Action/Condition 노드는 실패 시 진단 수치(타임아웃, 위치/힘 오차, 현재 phase 등)를
+`RCLCPP_WARN`/`RCLCPP_ERROR` 로 함께 남긴다 (폴링 노드는 `kThrottleFastMs`/`kThrottleSlowMs` throttle).
 
 ### Blackboard 변수 (`bb.*` 파라미터)
 
@@ -437,7 +482,7 @@ assm_v1 hand (joint_states 순서 thumb:3/index:3/middle:3/ring:1) 예시:
 
 ## SetGains 노드 (ROS 2 parameter API)
 
-`SetGains` BT 노드는 *active* 컨트롤러의 LifecycleNode (`/<config_key>`) 에 대해 `set_parameters_atomically`를 호출한다 (Phase A~E 마이그레이션, 2026-04-26). BT 입력 포트로 채워진 값들만 dispatch하며, 입력 키와 실제 parameter 이름의 매핑은 active controller에 따라 다르다 ([src/nodes/set_gains.cpp](src/nodes/set_gains.cpp) 참조).
+`SetGains` BT 노드는 *active* 컨트롤러의 LifecycleNode (`/<active_ctrl>/<active_ctrl>`) 에 대해 `set_parameters_atomically`를 호출한다. BT 입력 포트로 채워진 값들만 dispatch하며, 입력 키와 실제 parameter 이름의 매핑은 active controller에 따라 다르다 ([src/nodes/set_gains.cpp](src/nodes/set_gains.cpp) 참조).
 
 | BT 입력 포트 | DemoJoint | DemoTask | DemoWbc |
 |-------------|-----------|----------|---------|
@@ -469,25 +514,15 @@ Read-only 파라미터 (`max_traj_velocity` / `max_traj_angular_velocity` / `han
 | `eigen` | 선형대수 |
 | `ament_index_cpp` | 패키지 share 디렉토리 탐색 (빌드·런타임 의존성 — LoadTree/validate_tree 가 런타임에 호출) |
 
-## 빌드
+## 빌드 · 테스트
 
 ```bash
-# BehaviorTree.CPP 설치 (최초 1회)
-sudo apt install ros-jazzy-behaviortree-cpp
-
-# 빌드
-cd ~/ros2_ws/rtc_ws
-colcon build --packages-select ur5e_bt_coordinator
-```
-
-또는 `./build.sh` 실행 시 자동으로 빌드됨.
-
-## 테스트
-
-```bash
-cd ~/ros2_ws/rtc_ws
+./build.sh -p ur5e_bt_coordinator
 colcon test --packages-select ur5e_bt_coordinator --event-handlers console_direct+
 ```
+
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조. `behaviortree_cpp`
+(`ros-jazzy-behaviortree-cpp`) 는 사전 설치 필요.
 
 테스트는 3개 tier 로 구성된다 (suite 목록의 단일 출처는 [CMakeLists.txt](CMakeLists.txt)):
 
@@ -501,8 +536,7 @@ colcon test --packages-select ur5e_bt_coordinator --event-handlers console_direc
   rebind 경로 자체가 테스트 대상인 suite 만 남긴다.
 - **Tier 3** — BT XML 트리 검증.
 
-새 테스트가 topic 전달이 아니라 bridge 캐시 상태만 필요하면 `InjectTestFixture` 를
-사용한다 (fixture 분리 배경: issue #154).
+새 테스트가 topic 전달이 아니라 bridge 캐시 상태만 필요하면 `InjectTestFixture` 를 사용한다.
 
 ## 실행
 
@@ -633,6 +667,42 @@ ur5e_bt_coordinator/
 노드/헤더 개수는 `include/ur5e_bt_coordinator/{action_nodes,condition_nodes}/` 및
 `src/nodes/`를 직접 확인하거나 위 [BT 노드](#bt-노드) 절 표를 참조 (등록된 노드 목록의
 단일 출처는 [src/bt_node_registration.cpp](src/bt_node_registration.cpp)).
+
+## 트러블슈팅
+
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `[Watchdog] ...: no messages received yet` | RT 컨트롤러 미실행 | `sim_ur5e_p1a.launch.py` 또는 `robot_ur5e_p1a.launch.py` 먼저 시작 |
+| 트리가 즉시 FAILURE / `[FAILED] IsObjectDetected` | 비전 미감지 | `/world_target_info` 발행 확인 |
+| `[FAILED] MoveToPose` (timeout) | 목표 도달 실패 | tolerance 완화 또는 gains 조정 |
+| `[FAILED] IsForceAbove` | 힘 미감지 | `threshold_N` 낮추기, 물체 위치 확인 |
+| 팔이 움직이지 않음 | RT Controller 미실행 또는 E-STOP 활성 | 컨트롤러 상태 및 E-STOP 확인 |
+| 파지 타임아웃 | 힘 임계값이 너무 높거나 센서 미연결 | `threshold_N` 조정, `/<active_ctrl>/<hand_group>/grasp_state` 확인 |
+| 게인 변경이 반영 안 됨 | active 컨트롤러 parameter 서비스 미준비 (또는 read-only 파라미터에 set 시도) | `ros2 param list /<active_ctrl>`로 노출 확인. read-only 거절 시 SetGains 응답 message 확인 |
+| 트리가 FAILURE 로 종료 | 시퀀스 중 한 노드가 실패 | `bt.fail` 로그의 Failure Diagnosis (§FailureLogger 동작) 로 실패 노드 확인, 또는 Groot2 로 추적 |
+| `Tree file not found` | 경로 오류 | 절대 경로 사용 또는 `trees/` 디렉토리 확인 |
+| tick 이 멈추고 재개 안 됨 | E-STOP 활성 (`reason = "E-STOP active"`) | E-STOP 원인 확인 및 해제 — 해제되면 자동 재개 |
+| `Tick skipped: Hand joint_states not received yet` (throttled WARN) | finger 트리(`MoveFinger`/`MoveOpposition`/`FlexExtendFinger`)가 hand joint_states 도착 전에 tick — 스택과 동시 launch 시 startup race | joint_states 흐르면 자동 재개 (arm-only 트리는 무관). 계속되면 hand 드라이버 및 `/rtc_cm/<hand_group>/joint_states` 확인 |
+| `Tick aborted by exception: ... — halting tree, reporting FAILURE` | 노드가 tick 중 throw (필수 입력 누락, readiness 후에도 해석 불가한 finger 키 등) | 프로세스는 죽지 않음. 예외 메시지로 원인 노드 확인 — `no hand joints for finger '<name>'`이면 트리의 finger 이름 ↔ hand joint_states name 접두사(또는 `finger_map.*`) 불일치 |
+
+**디버깅 명령:**
+
+```bash
+# 토픽 모니터링
+ros2 topic echo /rtc_cm/<arm_group>/joint_states
+ros2 topic echo /<active_ctrl>/<hand_group>/grasp_state
+ros2 topic echo /world_target_info
+ros2 topic echo /rtc_cm/active_controller_name   # 활성 컨트롤러 확인
+
+# TCP 포즈 확인 (토픽이 아닌 tf2 lookup)
+ros2 run tf2_ros tf2_echo base tool0_actual
+
+# 파라미터 확인
+ros2 param list /bt_coordinator
+ros2 param get /bt_coordinator tree_file
+```
+
+Step 모드·Groot2·오프라인 트리 검증 명령은 [설정 파일 > 런타임 제어](#런타임-제어) / [실행 > 직접 실행 (ros2 run)](#직접-실행-ros2-run) 참조.
 
 ---
 

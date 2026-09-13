@@ -84,7 +84,7 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
                     -> stats JSON 저장 (10 s)
 ```
 
-### 스레드 모델 (issue #345)
+### 스레드 모델
 
 프로세스는 RTC 스레드 3개 + DDS 스레드를 가진다. 분리 축은 core 소속이 아니라 **연산량**이다 — 가벼운 CFS 레인은 CommLoop 과 같은 코어에 둬도 FIFO 65 가 항상 선점하므로 문제가 없고, blocking 파일 I/O 만 다른 코어로 뺀다.
 
@@ -109,9 +109,9 @@ publish 는 CommLoop 이 호출하는 콜백(push)이 아니라 executor 가 당
 - **latest-wins / overwrite**: mailbox 는 큐가 아니다. 폴 한 번은 publish 한 번이며, 그 사이 여러 tick 이 지났다면 **가장 최신 snapshot 만** 나가고 중간 것은 덮인다. 손실은 카운터로 보이지 않는다 — 관측하려면 `state_sequence()` 증가분과 publish 수를 대조한다.
 - **폴링 주기 = `loop_rate_hz × kPublishPollOversampling(2.0)`**. 생산과 같은 레이트로 폴링하면 두 tick 이 두 폴 사이에 들어갈 때마다 한 샘플이 영구 손실돼 토픽 레이트가 `loop_rate_hz` 아래로 내려앉는다. 오버샘플링은 그 손실 꼬리를 wakeup 비용(새 데이터가 없으면 atomic load 1회)과 맞바꾼다.
 - **카운터는 호출 횟수가 아니라 cycle 수**. `SeqLock` 은 Store 당 sequence 를 2 증가시키므로 완료된 tick 수는 `(현재 − 직전) / 2` 이고, 홀수 값은 쓰기 진행 중이라는 뜻이라 baseline 으로 삼으면 이후 모든 차분이 한 스텝 어긋난다 (`LastCompletedWrite` 로 내림). `link_status` 감쇠와 주기 로그는 이 cycle 수를 누적하고 **나머지를 carry** 하므로, 폴이 밀린 구간에서도 유효 레이트가 떨어지지 않는다.
-- **state ↔ F/T 는 최대 1 cycle 어긋난다 (허용오차 계약)**. `/hand/sensor_states` 한 건 안의 barometer/ToF 값과 F/T 값은 **같은 tick 이 보장되지 않는다** — `PollAndPublish` 가 `state_seqlock_` 과 `ft_seqlock_` 을 **독립적으로** load 하기 때문이다. state 를 읽은 뒤 F/T 를 읽기 전에 CommLoop 이 다음 cycle 의 F/T store 를 끝내면 **F/T 가 state 보다 1 comm cycle 앞선다**. 반대 방향(F/T 가 tearing 으로 뒤처짐)은 없다 — 한 tick 안에서 `RunFTInference` 의 store 가 `state_seqlock_.Store` 보다 먼저다. 이와 별개로 `sensor_decimation > 1` 이면 F/T 는 마지막 센서 cycle 값이라 정상적으로 더 오래됐을 수 있고, 그건 tearing 이 아니라 감쇠 semantics 다. **소비자 계약: `1 / loop_rate_hz` 의 pairing 허용오차** (구 push 모델은 같은 tick 을 보장했다 — 이 PR 이 바꾼 성질이다). 현재 소비자 중 정확한 pairing 을 요구하는 곳은 없다. 필요해지면 두 payload 를 하나의 SeqLock 으로 합쳐야 하며, 그것은 controller API 변경이라 별도 이슈다.
+- **state ↔ F/T 는 최대 1 cycle 어긋난다 (허용오차 계약)**. `/hand/sensor_states` 한 건 안의 barometer/ToF 값과 F/T 값은 **같은 tick 이 보장되지 않는다** — `PollAndPublish` 가 `state_seqlock_` 과 `ft_seqlock_` 을 **독립적으로** load 하기 때문이다. state 를 읽은 뒤 F/T 를 읽기 전에 CommLoop 이 다음 cycle 의 F/T store 를 끝내면 **F/T 가 state 보다 1 comm cycle 앞선다**. 반대 방향(F/T 가 tearing 으로 뒤처짐)은 없다 — 한 tick 안에서 `RunFTInference` 의 store 가 `state_seqlock_.Store` 보다 먼저다. 이와 별개로 `sensor_decimation > 1` 이면 F/T 는 마지막 센서 cycle 값이라 정상적으로 더 오래됐을 수 있고, 그건 tearing 이 아니라 감쇠 semantics 다. **소비자 계약: `1 / loop_rate_hz` 의 pairing 허용오차**. 현재 소비자 중 정확한 pairing 을 요구하는 곳은 없다. 필요해지면 두 payload 를 하나의 SeqLock 으로 합쳐야 하며, 그것은 controller API 변경이라 별도 이슈다.
 
-**Command-gated write**: write(`WritePosition`)는 **per-command** 게이트다 — `event_pending_`가 set 된 cycle 에서 `pending_cmd_`를 latch 하고 `has_pending_write_`를 세운 뒤, 1회 write 시도 후 성공/실패 무관 clear 한다. 명령이 끊긴 구간은 read-only cycle 만 돌고 펌웨어는 마지막 위치를 hold 한다(이전의 영구 latch → stale 재전송 문제 제거).
+**Command-gated write**: write(`WritePosition`)는 **per-command** 게이트다 — `event_pending_`가 set 된 cycle 에서 `pending_cmd_`를 latch 하고 `has_pending_write_`를 세운 뒤, 1회 write 시도 후 성공/실패 무관 clear 한다. 명령이 끊긴 구간은 read-only cycle 만 돌고 펌웨어는 마지막 위치를 hold 한다.
 
 **Startup write-gate**: write 는 `state_read_once_`(첫 상태 read 완료) **및** `has_pending_write_`(pending 명령) 가 **둘 다** 참이어야 실행된다. 첫 상태 read 전에는 명령을 latch 만 하고 write 는 보류 → lifecycle activate 직후 hold 명령 publish 전 창에서 손을 q=0 으로 끌어내리지 않는다(no-jump 계약).
 
@@ -166,7 +166,7 @@ MODE byte 를 임의값으로 echo 하므로 그 경로만 검증을 끈다 (`Ve
 1b 는 `communication_mode: "bulk"` 를 요구하며, individual 과 조합 시 `on_configure`
 가 FAILURE 를 반환한다. Lx/Ly/Temp 는 현재 펌웨어에서 placeholder 이므로 디코드는
 하되(`UdpHandState::sensor_force`) 토픽 발행은 보류한다 — 실제 데이터 도착 시
-후속 PR 에서 `u`/신규 필드로 매핑.
+`u`/신규 필드로 매핑하는 후속 작업이 필요하다.
 
 ### Dual Read (Motor + Joint 공간)
 
@@ -210,7 +210,7 @@ skip 사이클의 동작:
 
 1. **캘리브레이션**: 시작 시 N 샘플로 barometer baseline offset 자동 측정
 2. **전처리**: barometer 정규화 + delta 계산 + FIFO history shift (12 row)
-3. **추론**: per-fingertip ONNX 모델. ONNX 실행은 `rtc::OnnxEngine` (single-input / 3-output) 에 위임, zero-alloc
+3. **추론**: per-fingertip ONNX 모델. ONNX 실행은 `rtc::OnnxEngine` (single-input / 3-output) 에 위임. 전·후처리는 할당 없음이지만 ORT `Run()` 은 매 호출 heap 을 할당한다 — RT-1 조건부 수용이며 이 경로의 수용 조건 중 미측정 항목은 [invariants.md](../agent_docs/invariants.md#rt-path-invariants) 가 SSoT
 4. **출력**: contact probability (sigmoid), force vector (3), direction vector (3)
 
 > ⚠️ **컨트롤러 capability 일치 의무** — 컨슈머 (integrated_bringup) 의 device YAML
@@ -225,7 +225,7 @@ skip 사이클의 동작:
 
 ### UdpHandController (`udp_hand_controller.hpp`)
 
-핵심 드라이버 클래스. Event-driven jthread (hand_driver core, SCHED_FIFO/65) 로 동작합니다. 코어 번호는 tier-aware (`rtc_base/threading/thread_config.hpp::SelectThreadConfigs().hand_driver.cpu_core` — 6-core 에서 Core 1, ≥ 8-core 에서 dedicated; SSoT 참조). 프로세스가 **스스로** main 스레드를 그 코어에 pin 하고 (issue #345 — launch 의 `taskset -a` 스윕은 제거됐다) 내부 receive thread (priority 65) 가 affinity 상속. launch 는 `rclcpp::init()` 이 노드 생성 전에 만드는 DDS 스레드만 co-pin 한다.
+핵심 드라이버 클래스. Event-driven jthread (hand_driver core, SCHED_FIFO/65) 로 동작합니다. 코어 배치는 tier-aware (`rtc_base/threading/thread_config.hpp::SelectThreadConfigs().hand_driver.cpu_core`) — 코어 수별 실제 배치는 [rtc_base/README.md](../rtc_base/README.md#스레딩-threading) 의 생성 매트릭스가 SSoT. 프로세스가 **스스로** main 스레드를 그 코어에 pin 하고 내부 receive thread (priority 65) 가 affinity 상속. launch 는 `rclcpp::init()` 이 노드 생성 전에 만드는 DDS 스레드만 co-pin 한다.
 
 - **SeqLock** 기반 lock-free 상태 공유 (priority inversion 방지)
 - **per-command write gate**: `event_pending_`(release) → CommLoop latch(acquire); 1회 write 후 clear (stale 재전송 없음)
@@ -264,7 +264,7 @@ Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 
 > **텐서가 positional 로 바인딩되어 있다 — head 1·2 가 뒤바뀐 모델을 검출하지 못한다.** `F` 와 `u` 는 둘 다 `[1,3]` 이라 shape 검사로는 구분이 불가능하므로, 그 둘을 반대 순서로 export 한 `.onnx` 를 물리면 **모든 검사를 통과한 채 힘과 방향이 조용히 뒤바뀐다**. 엔진은 텐서를 **이름으로** 바인딩할 수 있고 (`rtc_inference` README §텐서를 이름으로 바인딩하는 이유) 그러면 이 사각이 닫히지만, 이름을 채우려면 실제 `.onnx` 가 있어야 한다 — 현재 두 config 의 `model_paths` 는 전부 `""` 다.
 >
-> **실모델을 받으면**: `ros2 run rtc_inference rtc_inference_check <model>.onnx` 로 텐서 이름을 확인하고 `fingertip_ft_inferencer.hpp` 의 `model_config.inputs`/`.outputs` 에 채운다. 한 side 는 전부 이름을 갖거나 전부 비어야 하며, 틀린 이름은 configure 에서 큰 소리로 실패하므로 안전하게 증분 적용할 수 있다 (#511).
+> **실모델을 받으면**: `ros2 run rtc_inference rtc_inference_check <model>.onnx` 로 텐서 이름을 확인하고 `fingertip_ft_inferencer.hpp` 의 `model_config.inputs`/`.outputs` 에 채운다. 한 side 는 전부 이름을 갖거나 전부 비어야 하며, 틀린 이름은 configure 에서 큰 소리로 실패하므로 안전하게 증분 적용할 수 있다.
 
 ### UdpHandFailureDetector (`udp_hand_failure_detector.hpp`)
 
@@ -282,7 +282,7 @@ EventLoop 단계별 소요시간 추적. 히스토그램 기반 p95/p99 백분�
 
 ### UdpHandTimingLogger (`udp_hand_timing_logger.hpp`)
 
-CommLoop per-tick 타이밍을 `<session>/timing/hand_udp_timing_log.csv` 로 기록한다. CM (`cm_timing_log.csv`) 및 MPC (`mpc_timing_log.csv`) 와 동일한 통합 스키마 (`t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 를 사용 — `rtc_base/timing/rt_tick_timing_sample.hpp` 의 `RtTickTimingPayload` 직접 재사용. 접두 3열은 로거 소유이고 `run_id` 는 한 세션 디렉토리를 공유한 두 기동을 가른다 (#376).
+CommLoop per-tick 타이밍을 `<session>/timing/hand_udp_timing_log.csv` 로 기록한다. CM (`cm_timing_log.csv`) 및 MPC (`mpc_timing_log.csv`) 와 동일한 통합 스키마 (`t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 를 사용 — `rtc_base/timing/rt_tick_timing_sample.hpp` 의 `RtTickTimingPayload` 직접 재사용. 접두 3열은 로거 소유이고 `run_id` 는 한 세션 디렉토리를 공유한 두 기동을 가른다.
 
 데이터 흐름:
 - producer: `RunCommCycle` 이 UDP read 직후 `MarkState()`, sensor 후처리+FT 직후 `MarkCompute()` 를 호출하면 `rtc::PeriodicRtThread` (CommLoop) 기반이 매 tick 1개 `RtTickTimingPayload` 를 `HandUdpTimingBuffer` 에 push (RT-safe, wait-free)
@@ -472,8 +472,7 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 | `target_port` | `55151` | 손 컨트롤러 포트 |
 | `local_ip` | `""` (yaml) | 제어 PC source address override |
 | `local_interface` | `""` (yaml) | egress NIC override |
-| `loop_rate_hz` | `500.0` | self-clocked CommLoop 주기 (Hz) — read/state publish 자율 tick rate |
-| `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
+| `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율). `loop_rate_hz` 는 launch 인자가 아니다 — 노드 YAML 의 ROS param (위 표) |
 | `communication_mode` | `bulk` | `"individual"` 또는 `"bulk"` |
 | `recv_timeout_ms` | `0.4` | ppoll 수신 타임아웃 (ms) |
 | `protocol_version` | `1a` | `"1a"` (int32 baro/ToF, bulk 259B) 또는 `"1b"` (float force, bulk 99B). 노드+firmware 양쪽 전파 |
@@ -542,13 +541,15 @@ firmware 는 driver decoder 의 거울상(self-consistency)이라 driver↔실�
 단독 실행하면 firmware 모터가 LPF rest(0)에 머물러 failure detector 의
 all-zero/duplicate 경고가 뜨는데, 이는 정상 동작(명령이 오면 해소)이다.
 
-### 빌드
+### 빌드 & 테스트
 
 ```bash
 cd ~/ros2_ws/rtc_ws
-colcon build --packages-select rtc_base rtc_communication rtc_inference rtc_msgs udp_hand_driver --symlink-install
-source install/setup.bash
+./build.sh -p rtc_base,rtc_communication,rtc_inference,rtc_msgs,udp_hand_driver
+colcon test --packages-select udp_hand_driver
 ```
+
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조.
 
 ---
 
@@ -581,31 +582,19 @@ source install/setup.bash
 - **SeqLock** 기반 lock-free 상태 공유
 - **printf 제거** -- CommLoop (SCHED_FIFO) 스레드에서 stdout 출력 없음
 - **ppoll** 기반 sub-ms 수신 타임아웃 (hrtimer on PREEMPT_RT)
-- Main thread: Core 0-1로 affinity 설정 (DDS 스레드가 RT 코어에 배치되는 것 방지)
 
 ---
 
 ## 로깅 (Logging)
 
-### 분류 독트린
+레벨 분류·공통 규칙: [conventions.md §Logging](../agent_docs/conventions.md#logging).
 
-| 레벨 | 용도 | 예시 |
-|------|------|------|
-| `FATAL` | 프로세스를 계속 실행할 수 없는 상태 | UDP 소켓 생성 실패 (포트 점유), 잘못된 설정 |
-| `ERROR` | 복구 불가능한 실패, 사용자 개입 필요 | FT 모델 로드 실패, FailureDetector trigger, 센서모드 전환 실패 |
-| `WARN` | 복구 가능한 실패/이상 상태, 자동 재시도 중 | UDP recv 실패 누적, 링크 복구 중, fake 모드 안내 |
-| `INFO` | 사용자가 알아야 할 1 Hz 미만 상태 전환 | 노드 시작/종료, 캘리브레이션 START/COMPLETE, 링크 복구 |
-| `DEBUG` | 개발자 진단용 (기본 꺼짐) | cycle counter, FailureDetector 스레드 lifecycle |
-
-**핵심 규칙**:
+**패키지 규칙**:
 
 - `UdpHandController::RunCommCycle`, `UdpHandTransport::Send/Recv`, `UdpHandSensorProcessor::PreFilter/ApplyFilters`, `FingertipFTInferencer::Infer` 는 모두 **`loop_rate_hz` (기본 500 Hz) UDP 폴링 hot path** 다. 정상 경로의 `INFO`/`WARN` 직접 호출은 **금지** — 반복될 수 있는 메시지는 반드시 `*_THROTTLE` 매크로를 사용한다.
 - **`RCLCPP_*_ONCE` 금지**. `_ONCE` 도 첫 호출에서는 동일한 fmt 포맷 할당을 수행하므로 RT 안전이 아니며, 조건이 다시 참이 될 때 침묵해 버린다. 대신 `*_THROTTLE` 을 `kThrottleIdleMs` 와 함께 사용한다 (예: `UdpHandSensorProcessor::PreFilter` 의 BesselFilter 재초기화 실패 경고).
 - **루프 기반 per-element 로그 금지.** RT 스레드에서 `for` 로 돌며 per-channel 로그를 내보내는 패턴은 1초 주기 throttle 을 만족하더라도 집계 1회로 축소해야 한다. 예: `UdpHandSensorProcessor::ThrottledDriftWarning` 은 플래그된 채널 수 + 첫 위반 id/slope 를 **단 1 개의 `WARN_THROTTLE`** 로만 내보낸다 (최대 길이 고정 → 절단 없음).
-- **RT 핫패스의 포맷 인자 수를 최소화한다.** 엣지 트리거되는 링크 UP/DOWN 조차 arg 0~1개로 유지. 상세 데이터는 `SeqLock` 상태나 `CommStats`/`drift_result_` 구조체 쪽에 쌓아 두고, 필요한 쪽(`SaveCommStats`, 비-RT consumer)이 끌어가도록 한다.
-- THROTTLE 주기는 매직넘버 대신 `udp_hand_logging.hpp` 의 표준 상수를 사용한다.
-- Non-RT 경로(init/shutdown, `UdpHandFailureDetector`, `udp_hand_node` 콜백, `SaveCommStats`) 의 INFO/WARN 은 *최대한 풍부하게* 작성한다. 그렙 한 줄로 세션 결과를 진단할 수 있어야 한다: cycle/rate/ok%/timeout%/err% 등 비율과 실패 원인을 한 줄에 담는다 (`SaveCommStats` 요약 참고).
-- 메시지 본문에 클래스 이름을 박아넣지 않는다. 서브-로거 이름이 곧 식별자다 (`hand.ctrl`).
+- Non-RT 경로(init/shutdown, `UdpHandFailureDetector`, `udp_hand_node` 콜백, `SaveCommStats`) 의 INFO/WARN 은 그렙 한 줄로 세션 결과를 진단할 수 있도록 cycle/rate/ok%/timeout%/err% 등 비율과 실패 원인을 한 줄에 담는다 (`SaveCommStats` 요약 참고).
 
 ### 서브-로거 네임스페이스
 
@@ -618,16 +607,16 @@ source install/setup.bash
 | `hand.fail` | `UdpHandFailureDetector` (50 Hz 워치독 스레드) |
 | `hand.ft` | `FingertipFTInferencer` (ONNX 모델 로드, 캘리브레이션, inference 예외) |
 
-### THROTTLE 주기 표준
+### THROTTLE 상수
 
-`udp_hand_driver::logging` 네임스페이스에 정의된 상수만 사용한다 (`udp_hand_logging.hpp`):
+`udp_hand_driver::logging` 네임스페이스 (`udp_hand_logging.hpp`) 가 SSoT — 매직넘버 대신 아래 이름을 사용한다.
 
-| 상수 | 값 [ms] | 용도 |
-|------|---------|------|
-| `kThrottleFastMs` | 500 | UDP recv 실패 누적 등 빠른 진행 표시 |
-| `kThrottleSlowMs` | 2000 | 캘리브레이션 dispatch, 일반 반복 경고 |
-| `kThrottleIdleMs` | 10000 | BesselFilter 재초기화 실패, one-shot 전이 안전 그물 |
-| `kThrottleHotMs` | 5000 | RT 핫패스 예외 경로 (FT inference exception) |
+| 상수 | 용도 |
+|------|------|
+| `kThrottleFastMs` | UDP recv 실패 누적 등 빠른 진행 표시 |
+| `kThrottleSlowMs` | 캘리브레이션 dispatch, 일반 반복 경고 |
+| `kThrottleIdleMs` | BesselFilter 재초기화 실패, one-shot 전이 안전 그물 |
+| `kThrottleHotMs` | RT 핫패스 예외 경로 (FT inference exception) |
 
 ### 실시간 필터링 예시
 
@@ -635,14 +624,6 @@ source install/setup.bash
 # UDP 트랜스포트 레이어만 DEBUG 활성화
 ros2 service call /udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
   "{levels: [{name: 'hand.udp', level: 10}]}"
-
-# 모든 hand.* 서브로거 동시에 끄기 (계층 매칭)
-ros2 service call /udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
-  "{levels: [{name: 'hand', level: 50}]}"
-
-# Failure detector 만 끄기 (false-positive 노이즈 제거)
-ros2 service call /udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
-  "{levels: [{name: 'hand.fail', level: 50}]}"
 ```
 
 콘솔 출력에 로거 이름을 표시하려면:

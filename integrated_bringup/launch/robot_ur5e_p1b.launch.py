@@ -343,10 +343,12 @@ def generate_launch_description():
         "enable_mpc",
         default_value="",
         description=(
-            "Enable the MPC thread in DemoWbcController. "
-            "Takes effect only when initial_controller is demo_wbc_controller. "
-            "Empty = use demo_wbc_controller.yaml default. "
-            "Runtime toggle is also available via gains index 7."
+            "Layout profile for the cset shield and DemoWbcController's "
+            "activation gate. 'false' returns the MPC cores to the system "
+            "cpuset, so an MPC-enabled WBC config then refuses to activate; "
+            "empty/true keeps them reserved. Does not override the YAML "
+            "mpc.enabled — runtime consumption toggle is the controller's "
+            "mpc_enable parameter."
         ),
     )
 
@@ -521,11 +523,9 @@ def generate_launch_description():
     )
 
     # ── RT controller node ─────────────────────────────────────────────────────
-    # The `enable_mpc` launch arg is declared below but takes effect through
-    # the runtime gains topic (index 7) rather than a param override here —
-    # robot_ur5e_p1b.launch.py does not use OpaqueFunction, and nested YAML overrides
-    # would require restructuring the launch. The sim_ur5e_p1a.launch.py flow does
-    # inject the override directly via its OpaqueFunction setup.
+    # `enable_mpc` reaches this launch only as the layout profile (shield +
+    # the controller's activation gate, below). It does not override the YAML
+    # `mpc.enabled` here — the sim launches do that inside their OpaqueFunction.
     # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
     # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
     # Node name = executable name (= "integrated_rt_controller"). The robot-specific

@@ -5,10 +5,10 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
 
 | Action | Purpose | Used by |
 |--------|---------|---------|
-| [`setup-rtc-env`](setup-rtc-env/action.yml) | ROS 2 distro/tooling + apt cache + colcon upgrade + numpy fix | every job (+ codeql) |
+| [`setup-rtc-env`](setup-rtc-env/action.yml) | ROS 2 distro/tooling (rate-limit resilient apt source) + apt cache + numpy fix | every job (+ codeql) |
 | [`build-isolated-deps`](build-isolated-deps/action.yml) | Build & cache fmt 11 / mimalloc / aligator from `deps.repos` → publish artifact | `build-deps`, `codeql` |
 | [`colcon-build`](colcon-build/action.yml) | `colcon build --packages-up-to <pkgs>` with deps prepend + optional `use-ccache` launcher + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test`, `codeql` |
-| [`colcon-test-report`](colcon-test-report/action.yml) | `colcon test` + `GITHUB_STEP_SUMMARY` table + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test` |
+| [`colcon-test-report`](colcon-test-report/action.yml) | `colcon test` (+ optional `ctest-args` / `pytest-args` subset) + `GITHUB_STEP_SUMMARY` table + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test` |
 | [`free-disk-space`](free-disk-space/action.yml) | Delete unused pre-installed toolchains (dotnet / Android / GHC / …) before a C++ build | `gated-test`, `coverage-cpp`, `codeql` |
 | [`disk-report`](disk-report/action.yml) | `df -h` + `df -i` + per-directory `du -sh` at a labelled checkpoint | `gated-test`, `coverage-cpp`, `codeql` |
 
@@ -21,8 +21,11 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
   `CCACHE_DIR` + cache-key prefixes so instrumented objects never cross-contaminate).
 - `artifact-suffix` input on `colcon-build` / `colcon-test-report` MUST be unique
   per job to avoid `actions/upload-artifact` name collisions.
-- `deps-install-path` is the empty string when a job does not need isolated
-  deps (e.g., python-only test, cppcheck lint).
+- `deps-install-path` defaults to the empty string (no deps prepend) for a job
+  that does not need isolated deps (e.g., `python-test`).
+- `colcon-test-report`'s `ctest-args` and `pytest-args` are mutually exclusive
+  (the action fails if both are set), and any `-R` in `ctest-args` must be paired
+  with `--no-tests=error` — see the input's description in `action.yml`.
 - `if: failure()` artifacts have 7-day retention (debug only). The deps cache
   and dep artifact use 1-day retention (cross-job same-run only).
 - ROS distro defaults to `jazzy` (single distro; the CI rewrite that decided
@@ -34,7 +37,7 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
   best-effort (always `exit 0`); bump `ros-apt-source-fallback` when the pinned
   release stops publishing a deb for the runner's Ubuntu codename.
 
-- Disk headroom (issue #210): every C++ build job calls `free-disk-space` right after
+- Disk headroom: every C++ build job calls `free-disk-space` right after
   checkout, then `disk-report` at three checkpoints — `after-cleanup`, `pre-build`
   (after *all* cache/artifact restores, so cold and warm runs are comparable) and
   `post-build` under `if: always()`, which is the one a `No space left on device`

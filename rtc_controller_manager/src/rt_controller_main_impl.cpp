@@ -16,7 +16,7 @@
 //            group stays on nrt_callback_executor to continue processing
 //            lifecycle services.
 //
-// Threading model (layout v4.1, SSoT: rtc_base/threading/thread_config.hpp):
+// Threading model (core slots per tier: repo_scripts/config/thread_layout.yaml):
 //   rt_control       Core 1  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
 //                                            timeout checker. Performs DeviceBackend.WriteCommand
 //                                            inline (actuator command publish, RT-safe) and pushes
@@ -39,10 +39,10 @@
 //                                            Transforms / grasp_state /
 //                                            wbc_state / tof_snapshot).
 //   nrt_logging      tier-aware (4c: Core 0; nrt_logging_executor — cm_timing_log.csv
-//                    ≥ 6c: dedicated core)   drain + deferred E-STOP log.
+//                    ≥ 6c: Core 2, shared)   drain + deferred E-STOP log.
 //                                            SCHED_OTHER -5.
 //   nrt_callback     tier-aware (4c: Core 0; nrt_callback_executor —
-//                    ≥ 6c: dedicated core)   cb_group_nrt_callback_ + CM node default
+//                    ≥ 6c: Core 2, shared)   cb_group_nrt_callback_ + CM node default
 //                                            SCHED_OTHER 0                group
 //                                            (lifecycle services; CM owns no
 //                                            RobotTarget sub — issue #138) + every

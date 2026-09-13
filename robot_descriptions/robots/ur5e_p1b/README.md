@@ -1,8 +1,7 @@
 # ur5e_p1b — UR5e + proto_1b hand (closed-chain, kinematics-only test fixture)
 
 이 디렉토리는 **테스트 전용 fixture** 다 (`panda/` 와 같은 성격). `robot_descriptions`
-안에서 **유일하게 진짜 폐쇄 체인**인 모델이며, 그 경로를 CI 에서 태우기 위해 존재한다
-(#457).
+안에서 **유일하게 진짜 폐쇄 체인**인 모델이며, 그 경로를 CI 에서 태우기 위해 존재한다.
 
 ## 왜 이것이 필요한가 — iiwa7_leap 이 대체하지 못한다
 
@@ -11,7 +10,7 @@
 `iiwa7_leap` 은 serial/mimic 이라 `GetActuatedModel()` 이 null 이고, repo 의 다른 폐쇄
 체인인 `rtc_urdf_bridge/test/urdf/{crank_rocker,four_bar}` 는 합성 1-DoF (`control.nv == 1`)
 라 다열 scatter 를 한 열도 안 태운다. 그래서 셋 다 서로를 대체하지 못한다 —
-합성 fixture 는 **은퇴시키지 않는다** (1-DoF 경계·특이 케이스·residual floor 담당, #250).
+합성 fixture 는 **은퇴시키지 않는다** (1-DoF 경계·특이 케이스·residual floor 담당).
 
 이 모델이 실제로 만족하는 것:
 
@@ -26,8 +25,8 @@
 ## 출처 (vendored)
 
 `hand_description` (별도 프로젝트, MIT, maintainer junho5.park@lge.com) 에서 복사했다.
-그 패키지는 이 워크스페이스의 의존이 **아니고** 개발자 머신에만 있으므로, 이 fixture 를
-쓰는 테스트는 CI 에서 전부 조용히 red 였다 (#452 → #454 에서 정직한 skip → #457 에서 이관).
+그 패키지는 이 워크스페이스의 의존이 **아니고** 개발자 머신에만 있으므로, 이 fixture 로
+운동학·closure 를 CI 에 vendor 해 들여왔다.
 
 | 파일 | 출처 | 상태 |
 |---|---|---|

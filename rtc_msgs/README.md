@@ -12,7 +12,7 @@ RTC 프레임워크를 위한 **커스텀 ROS2 메시지 + 서비스 정의** �
 - 로봇 비의존적(robot-agnostic) 메시지 설계
 - 관절/태스크 공간 목표 지원 (JointCommand, RobotTarget)
 - 핑거팁 센서: 원시(raw) + 필터링(filtered) 데이터 + ONNX 추론 출력 통합
-- 파지 상태: 컨트롤러 주기 (RT 정기 tick @ `control_rate`, default 500 Hz) 에서 계산된 접촉/힘/파지 판정 (Force-PI: GraspState, TSID-based WBC: WbcState)
+- 파지 상태: 컨트롤러 RT 정기 tick (`control_rate`) 에서 계산된 접촉/힘/파지 판정 (Force-PI: GraspState, TSID-based WBC: WbcState)
 - 컨트롤러 관리: lifecycle 상태 조회(ListControllers) + activate/deactivate(SwitchController), `/rtc_cm/*` API
 - CSV 로깅 전용 메시지: 상태/커맨드/궤적 통합 (DeviceStateLog, DeviceSensorLog)
 - 추정기 출력: 준정적 payload wrench/질량 + 관성 파라미터 회귀 + 그것을 만든 관절공간 잔차를 한 메시지에 (PayloadEstimate)
@@ -40,7 +40,7 @@ rtc_msgs/
 │   ├── SimSensor.msg          <- MuJoCo 단일 센서 출력 (로봇 비의존적)
 │   ├── SimSensorState.msg     <- MuJoCo 센서 데이터 집계 (로봇 비의존적)
 │   ├── ToFSnapshot.msg        <- ToF 센서 + 핑거팁 SE3 자세 통합 스냅샷
-│   ├── PayloadEstimate.msg    <- 준정적 payload wrench/질량·관성 추정 + 관절공간 잔차 (#135, #455)
+│   ├── PayloadEstimate.msg    <- 준정적 payload wrench/질량·관성 추정 + 관절공간 잔차
 │   ├── CalibrationCommand.msg <- 센서 캘리브레이션 명령 (확장 가능 enum)
 │   └── CalibrationStatus.msg  <- 센서 캘리브레이션 진행/완료 상태
 └── srv/
@@ -123,7 +123,7 @@ rtc_msgs/
 
 ### `GraspState.msg`
 
-컨트롤러의 RT 정기 tick (`control_rate`, default 500Hz) 에서 계산된 파지(grasp) 상태 메시지입니다. BT coordinator가 구독하여 파지 판정에 사용합니다.
+컨트롤러의 RT 정기 tick (`control_rate` — default·설계 범위는 [invariants.md](../agent_docs/invariants.md) §RT Path Invariants 참조) 에서 계산된 파지(grasp) 상태 메시지입니다. BT coordinator가 구독하여 파지 판정에 사용합니다.
 
 | 카테고리 | 필드 | 타입 | 설명 |
 |---------|------|------|------|
@@ -149,10 +149,10 @@ rtc_msgs/
 | `finger_s` | `float32[]` | 핑거별 그래스프 파라미터 [0,1] |
 | `finger_filtered_force` | `float32[]` | 핑거별 필터링된 힘 [N] |
 | `finger_force_error` | `float32[]` | 핑거별 힘 오차 [N] |
-| `finger_stiffness_est` | `float32[]` | 핑거별 접촉 강성 추정치 `K_contact_est` [N/Δs] (#424). seed 1.0 에서 출발하고 `K_est_max` 로 상한된다 — 배포 설정은 그 상한을 seed 와 같게 두므로 **실기에서는 1.0 에 고정**돼 보이는 것이 정상이며 적응이 꺼져 있다는 증거다. 이 pin 은 **영구**다 — 적응은 #426 이 은퇴시켰다 (`grasp_tuning_guide.md` §6.9). `0.0` 은 이번 tick 에 계산하지 않았다는 뜻 (E-STOP) 이지 무른 접촉이 아니다 |
+| `finger_stiffness_est` | `float32[]` | 핑거별 접촉 강성 추정치 `K_contact_est` [N/Δs]. seed 1.0 에서 출발하고 `K_est_max` 로 상한된다 — 배포 설정은 그 상한을 seed 와 같게 두므로 **실기에서는 1.0 에 고정**돼 보이는 것이 정상이며 적응이 꺼져 있다는 증거다. 이 pin 은 **영구**다 (`grasp_tuning_guide.md` §6.9). `0.0` 은 이번 tick 에 계산하지 않았다는 뜻 (E-STOP) 이지 무른 접촉이 아니다 |
 | `grasp_target_force` | `float32` | 현재 목표 힘 [N] |
 
-**In-plane pull-force estimate** (#167) — `pull` 필드는 `PullEstimate.msg` 하위 메시지이며 `WbcState.msg` 도 같은 타입을 embed 한다 (소비자 저장 코드 공유 목적). `rtc::grasp::PullForceEstimator` 출력.
+**In-plane pull-force estimate** — `pull` 필드는 `PullEstimate.msg` 하위 메시지이며 `WbcState.msg` 도 같은 타입을 embed 한다 (소비자 저장 코드 공유 목적). `rtc::grasp::PullForceEstimator` 출력.
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
@@ -196,17 +196,17 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | **TSID 진단** | `tsid_solve_us` | `float32` | 마지막 solver 계산 시간 [us] (informational) |
 | | `tsid_solver_ok` | `bool` | 마지막 QP 수렴 여부 |
 | | `qp_fail_count` | `int32` | 활성화 이후 누적 QP 실패 횟수 |
-| **Pull estimate** | `pull` | `PullEstimate` | In-plane pull-force estimate (#167) — 하위 필드는 위 `GraspState.msg` 의 `PullEstimate.msg` 표와 동일 (measured R_i·f_i 기반, TSID λ_opt 아님) |
+| **Pull estimate** | `pull` | `PullEstimate` | In-plane pull-force estimate — 하위 필드는 위 `GraspState.msg` 의 `PullEstimate.msg` 표와 동일 (measured R_i·f_i 기반, TSID λ_opt 아님) |
 
-- Per-controller 토픽: `/<config_key>/hand/wbc_state` (500 Hz 컨트롤러, ~50 Hz publish thread).
+- Per-controller 토픽: `/<config_key>/hand/wbc_state` (컨트롤러 RT tick 에서 계산, ~50 Hz publish thread).
 
 ---
 
 ### `PayloadEstimate.msg`
 
-준정적 **payload wrench/질량 추정** (#135 Layer 2A) 과 그것을 만든 **관절공간 잔차** (Layer 1) 를 한 메시지에 싣습니다. `integrated_bringup` 의 `momentum_observer.csv` 행과 필드가 1:1 대응하므로 저장 파일과 라이브 토픽을 같은 방식으로 읽습니다. 운동량 관측기를 배선한 세 데모 컨트롤러 (joint / task / wbc) 가 각각 하나씩 publish 합니다.
+준정적 **payload wrench/질량 추정** (Layer 2A) 과 그것을 만든 **관절공간 잔차** (Layer 1) 를 한 메시지에 싣습니다. `integrated_bringup` 의 `momentum_observer.csv` 행과 필드가 1:1 대응하므로 저장 파일과 라이브 토픽을 같은 방식으로 읽습니다. 운동량 관측기를 배선한 세 데모 컨트롤러 (joint / task / wbc) 가 각각 하나씩 publish 합니다.
 
-**두 블록이 한 메시지인 이유** (#135 D12): 잔차와 payload 는 한 tick 의 같은 입력에서 나오고, 의심스러운 `mass` 를 진단하려면 그것을 만든 `residual` 이 같은 행에 있어야 합니다. 토픽을 나누면 시간 정렬이 모든 소비자의 몫이 됩니다.
+**두 블록이 한 메시지인 이유**: 잔차와 payload 는 한 tick 의 같은 입력에서 나오고, 의심스러운 `mass` 를 진단하려면 그것을 만든 `residual` 이 같은 행에 있어야 합니다. 토픽을 나누면 시간 정렬이 모든 소비자의 몫이 됩니다.
 
 | 카테고리 | 필드 | 타입 | 설명 |
 |---------|------|------|------|
@@ -235,9 +235,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | | `inertial_reason` | `uint8` | `INERTIAL_NONE=0` / `NOT_INITIALIZED=1` / `HELD=2` / `SHORT_INPUT=3` / `NON_FINITE_INPUT=4` / `UPSTREAM_INVALID=5` / `INSUFFICIENT_POSE_DIVERSITY=6` / `DYNAMIC_EXCITATION=7` / `SOLVER_FAILED=8` / `NON_POSITIVE_MASS=9` / `COM_OUT_OF_BOUNDS=10` |
 | | `inertial_valid` | `bool` | — |
 
-**Layer 2B 가 4개만 싣고 `I` 를 안 싣는 것은 범위가 아니라 물리입니다.** 전체 집합은 `[m, m·c, I(6)]` 이지만, 이 추정기가 Layer 2A 와 공유하는 준정적 게이트 아래에서 회귀자의 **관성 6열은 항등적으로 0** 입니다 — 회전 관성은 `I·a + v×I·v` 로만 동역학에 들어오므로 중력만으로는 정보가 없습니다. 자세를 60개 쌓아도 rank 는 10 이 아니라 **4** 입니다. `I` 를 식별하려면 각가속도 여기가 필요하고 그건 다른 게이트·다른 lane 이라, 이 메시지는 **영구히 0 으로만 나갈 6개 필드를 의도적으로 싣지 않습니다**.
-
-**그리고 한 자세로는 절대 안 됩니다.** 중력만 받는 강체는 프레임에 `f = m·ᵂg`, `τ = (m·c) × ᵂg` 를 가하는데 그 외적이 `m·c` 의 **ᵂg 방향 성분을 지웁니다**. 따라서 한 자세는 4개 중 정확히 3개만 고정하고 (실측: σ₄ = 0, 모든 자세·두 로봇), 팔이 그 방향을 채우는 자세들을 방문하기 전까지 `inertial_rank` 는 3 에 머물고 `inertial_valid` 는 false 입니다. **이것이 정상 기동 상태이며 결함이 아닙니다.** (Layer 2A 가 이 문제를 피하는 것은 파라미터가 아니라 Jᵀ 를 통해 wrench 를 맞추기 때문입니다.)
+**Layer 2B 가 4-파라미터만 식별하고 `I` 를 싣지 않는 것은 범위가 아니라 물리적 필연입니다** — 준정적 게이트 아래에서 회귀자의 관성 6열은 항등적으로 0이라 자세를 아무리 쌓아도 rank 는 4를 넘지 않고, 한 자세는 그중 정확히 3개만 고정하므로 `inertial_rank=3`/`inertial_valid=false` 는 정상 기동 상태이지 결함이 아닙니다. 완전한 유도 과정은 [`msg/PayloadEstimate.msg`](msg/PayloadEstimate.msg) 주석이 SSoT 입니다.
 
 - Per-controller 토픽: `/<config_key>/payload_estimate` (RT tick 에서 계산, ~50 Hz publish thread).
 - **추정기가 꺼져 있어도 이 토픽은 삽니다** — publisher 는 *관측기* 기준으로 만들어지고, payload 블록은 `payload_valid=false` + `payload_reason=PAYLOAD_NOT_INITIALIZED` 로 나갑니다 (출하 config 는 `payload_estimator.enabled: false`).
@@ -277,7 +275,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | `target_reject_count` | `uint64` | ingress 에서 거부된 goal 수 (`GetTargetRejectCount()`) -- 형식 불량 또는 `device_idx` 범위 밖. producer 의 **payload** 가 문제 |
 | `target_unhandled_count` | `uint64` | base default `ApplyPendingTarget` 에 도달한 entry 수 (`GetTargetUnhandledCount()`). 0 이 아니면 그 **컨트롤러 자신**이 mailbox 에 push 하면서 override 를 안 한 것 |
 
-진단 4필드(#287)는 넷 다 `RTControllerInterface` 가 이미 추적하는 값을 CM 이 base 접근자에서 직접 읽어 채운다 -- 컨트롤러별 override 를 요구하지 않는다. 카운터 3종은 생성 시점부터 monotonic 이고 조회가 값을 소비하지 않으므로, 포화 진단은 두 번의 폴링 사이 **증가 여부**로 한다. 한 응답 안의 네 값은 서로 다른 tick 에서 왔을 수 있는 **스냅샷**이다 (각각 독립 atomic load). 필드별 배경은 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §진단 필드.
+진단 4필드는 넷 다 `RTControllerInterface` 가 이미 추적하는 값을 CM 이 base 접근자에서 직접 읽어 채운다 -- 컨트롤러별 override 를 요구하지 않는다. 카운터 3종은 생성 시점부터 monotonic 이고 조회가 값을 소비하지 않으므로, 포화 진단은 두 번의 폴링 사이 **증가 여부**로 한다. 한 응답 안의 네 값은 서로 다른 tick 에서 왔을 수 있는 **스냅샷**이다 (각각 독립 atomic load). 필드별 배경은 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §진단 필드.
 
 ---
 
@@ -408,8 +406,7 @@ publish (QoS: RELIABLE + TRANSIENT_LOCAL + depth 1, late-join 구독자가 최�
 
 ### `GraspCommand.srv`
 
-Force-PI 그래스프의 **one-shot 이벤트** 채널입니다. State가 아닌 transition이라
-ROS 2 parameter로 표현하기에 부적절하므로 별도 srv로 분리되어 있습니다.
+Force-PI 그래스프의 **one-shot 이벤트** 채널입니다 (`/{active_config_key}/grasp_command` — 활성 데모 컨트롤러만 advertise). 상세 계약은 [`srv/GraspCommand.srv`](srv/GraspCommand.srv) 주석이 SSoT.
 
 **Request:**
 
@@ -425,16 +422,10 @@ ROS 2 parameter로 표현하기에 부적절하므로 별도 srv로 분리되어
 | `ok` | `bool` | 활성 컨트롤러 grasp FSM에 적용 여부 |
 | `message` | `string` | 사람-읽기용 결과 ("grasp started @ 2.0 N", "E-STOP active", ...) |
 
-**Single-active 모델:** 활성 데모 컨트롤러만 `~/grasp_command` server를 advertise
-합니다. 호출자(예: BT)는 `/{active_config_key}/grasp_command` 로 호출.
-
 - `demo_joint_controller` / `demo_task_controller` / `demo_compliance_controller`: `grasp_controller_` (Force-PI
   FSM) 가 있을 때만 적용. 없으면 `ok=false, message="grasp_controller unavailable"`.
-- `demo_wbc_controller`: `grasp_cmd_` atomic + `grasp_target_force` gain 갱신 →
-  WBC 6-state FSM (slots 2 & 5 reserved) 이 다음 tick 의 최상단 preempt guard 에서
-  `kApproach` (GRASP) / `kRelease` (RELEASE) 로 전이. RELEASE 는 active grasp
-  phase (`kApproach`/`kClosure`/`kHold`) 어디서든 즉시 preempt;
-  `kIdle` (no-op) / `kRelease` (이미 release 중) / `kFallback` (수동 복구 필요) 면제.
+- `demo_wbc_controller`: GRASP/RELEASE 는 WBC 6-state FSM 전이로 매핑된다 — 전이 규칙은
+  [integrated_bringup/README.md](../integrated_bringup/README.md) §6-Phase FSM (slots 2 & 5 reserved) 가 SSoT.
 - E-STOP 활성 시 모든 호출이 `ok=false, message="E-STOP active"`.
 
 Caller: grasp coordinator (예: BehaviorTree action node) 또는 `ros2 service call`.
@@ -483,7 +474,7 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 ### `ResetFault.srv`
 
-`/rtc_cm/reset_fault` -- latched **controller-local** fault 를 해제합니다 (#260). compliance 계열은 critical fault 에서 `SAFE_STOP` 을 래치하고 자동 복귀하지 않으므로 (§10.6), 이 서비스가 유일한 외부 탈출구입니다. CM global E-STOP 과는 **의도적으로 분리**돼 있어 서로를 풀지 않습니다 (E-8).
+`/rtc_cm/reset_fault` -- latched **controller-local** fault 를 해제합니다. CM global E-STOP 과는 **의도적으로 분리**돼 있어 서로를 풀지 않습니다 (E-8).
 
 **Request:**
 
@@ -504,7 +495,7 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 ### `ClearEstop.srv`
 
-`/rtc_cm/clear_estop` -- CM **global** E-STOP 래치를 해제합니다 (#288). `ResetFault` 의 글로벌 판 대응물이며, 이전에는 프로덕션 호출자가 `on_deactivate` 하나뿐이라 프로세스 재시작이 유일한 출구였습니다. 둘은 **양방향으로 분리**돼 서로를 풀지 않습니다 (E-8).
+`/rtc_cm/clear_estop` -- CM **global** E-STOP 래치를 해제합니다. `ResetFault` 의 글로벌 판 대응물이며, 둘은 **양방향으로 분리**돼 서로를 풀지 않습니다 (E-8).
 
 **Request:**
 
@@ -523,7 +514,7 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 ### `SetExternalWrench.srv`
 
-`/sim/set_external_wrench` — 시뮬레이션 body 에 **알려진** 외력을 매달거나 떼어냅니다 (#135). 추정기 lane 은 참값을 아는 부하가 있어야 검증되는데, 그전까지 sim 에는 그 수단이 없어 모든 측정이 무부하에서 이뤄졌고 분산이 정의상 0 이었습니다 (D16). 이 서비스가 그 degeneracy 를 깨는 positive control 입니다.
+`/sim/set_external_wrench` — 시뮬레이션 body 에 **알려진** 외력을 매달거나 떼어냅니다. 추정기·관측기 검증에 참값을 아는 부하가 필요해 만든 positive control 입니다.
 
 | 요청 필드 | 타입 | 의미 |
 |------|------|------|
@@ -537,21 +528,18 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 | `accepted` | `bool` | 적용됐는지. false 면 아무것도 바뀌지 않음 |
 | `message` | `string` | 성공 시 해석된 body id, 실패 시 거부 사유 |
 
-> **wrench 는 body 질량중심이 아니라 `point` 에 작용합니다.** MuJoCo 의 `xfrc_applied` 자체는 body 질량중심(`xipos`)에 걸리고 그 점은 body 프레임 원점에서 iiwa7_leap 기준 최대 13 cm (`ee_link` 는 35 mm) 떨어져 있어, 요청을 그대로 전달하면 10 N 에 0.25 N·m 의 모멘트가 얹힙니다 — 추정기 노이즈 바닥의 5배이고 "존재하지 않는 CoM 오프셋을 가진 payload" 로 읽힙니다. `rtc_mujoco_sim` 이 매 tick CoM 기준 등가 wrench 를 재계산하는 이유이며, 계약의 SSoT 는 [`srv/SetExternalWrench.srv`](srv/SetExternalWrench.srv) 주석과 `rtc_mujoco_sim/README.md` §외력 주입 입니다.
->
-> **latched 입니다** — 해제·덮어쓰기·리셋 전까지 매 물리 tick 재적용되므로 한 번만 호출하면 됩니다.
+> **wrench 는 body 질량중심이 아니라 `point` 에 작용하고, latched 입니다** (해제·덮어쓰기·리셋 전까지 매 물리 tick 재적용). CoM 오프셋 보정·latch 의미론의 SSoT 는 [`srv/SetExternalWrench.srv`](srv/SetExternalWrench.srv) 주석과 [`rtc_mujoco_sim/README.md`](../rtc_mujoco_sim/README.md) §외력 주입 입니다.
 
 ---
 
 ## 빌드
 
 ```bash
-cd ~/ros2_ws/rtc_ws
-colcon build --packages-select rtc_msgs
-source install/setup.bash
+./build.sh -p rtc_msgs
+colcon test --packages-select rtc_msgs
 ```
 
-빌드 후 생성된 메시지는 C++ (`rtc_msgs/msg/joint_command.hpp` 등) 및 Python (`rtc_msgs.msg.JointCommand` 등)에서 사용 가능합니다.
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조. 빌드 후 생성된 메시지는 C++ (`rtc_msgs/msg/joint_command.hpp` 등) 및 Python (`rtc_msgs.msg.JointCommand` 등)에서 사용 가능합니다.
 
 ---
 
@@ -588,7 +576,7 @@ source install/setup.bash
 └── SetExternalWrench.srv           /sim/set_external_wrench  → 알려진 외력 부착/해제
 
 추정 (컨트롤러 RT tick 에서 계산)
-└── PayloadEstimate (#135, #455)
+└── PayloadEstimate
     ├── 잔차: joint_names/residual (device order) + residual_valid/reason
     ├── payload: wrench/mass + sigma_min/lambda_sq/fit_error + payload_valid/reason
     └── 관성: inertial_mass/first_moment/com + sigma_min/rank (4-param; I 는 준정적에서 관측 불가)

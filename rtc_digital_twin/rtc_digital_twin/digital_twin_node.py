@@ -1,6 +1,6 @@
 """Generalized Digital Twin Node.
 
-Subscribes to configurable JointState topics (RELIABLE, depth 10),
+Subscribes to configurable JointState topics (RELIABLE, depth 1),
 merges them into a single combined JointState for robot_state_publisher,
 and validates that all required URDF joints are covered.
 

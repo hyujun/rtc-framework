@@ -61,6 +61,23 @@
 - Base class (`RTControllerInterface`)에서 찍는 공통 로그는 `rclcpp::get_logger("rtc_controller_interface")` + 메시지 본문에 `[<controller_name>]` prefix 로 어느 컨트롤러에서 호출됐는지 표시
 - 점(`.`) 하나만 허용. 패키지 prefix를 축약하지 말 것 (예: `bringup.demo_joint` 사용 금지 → `integrated_bringup.demo_joint_controller`)
 
+**레벨 분류** — 패키지 README 는 이 표를 복제하지 않고 *자기 예시*·서브-로거 표·THROTTLE 상수 이름만 갖는다:
+
+| 레벨 | 용도 |
+|------|------|
+| `FATAL` | 프로세스를 계속 실행할 수 없는 상태 |
+| `ERROR` | 복구 불가능한 실패, 사용자 개입 필요 |
+| `WARN` | 복구 가능한 실패/이상 상태, 자동 재시도 중 |
+| `INFO` | 사용자가 알아야 할 1 Hz 미만 상태 전환 |
+| `DEBUG` | 개발자 진단용 (기본 꺼짐) — 고빈도 경로는 전용 서브-로거로 격리 |
+
+**공통 규칙:**
+- 주기 경로 (RT tick · 고빈도 폴링 · 센서 콜백) 에서 반복될 수 있는 `INFO`/`WARN`/`ERROR` 는 `*_THROTTLE` 로만 찍는다. 주기는 매직넘버가 아니라 그 패키지 logging 헤더의 표준 상수를 쓴다 (값은 헤더가 SSoT)
+- 핫패스 로그는 포맷 인자 수를 최소화하고, 상세 데이터는 상태 구조체·CSV 로 넘긴다
+- non-RT 경로 (init/shutdown, YAML 로더, 서비스 콜백) 의 `INFO` 는 grep 한 줄로 진단 가능하도록 풍부하게 쓴다
+- 메시지 본문에 클래스·노드 이름을 박지 않는다 — logger 이름이 식별자다. `[grasp]` 같은 짧은 기능 영역 태그는 허용
+- 서브-로거 계층은 런타임 필터링 단위다: `ros2 service call /<node>/set_logger_levels rcl_interfaces/srv/SetLoggerLevels "{levels: [{name: '<logger>', level: 10}]}"` (10=DEBUG, 30=WARN, 50=FATAL — 상위 이름은 하위 전체에 매칭)
+
 RT path logging 금지 규칙과 SPSC 우회 패턴은 [invariants.md](invariants.md) RT-3 참조.
 
 ## Controller-owned CSV logging (`logs:` schema)

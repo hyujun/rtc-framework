@@ -9,7 +9,7 @@
 RTC 프레임워크의 **일반화된 RViz2 디지털 트윈 시각화** 패키지입니다. YAML로 정의된 다중 JointState 토픽을 구독하여 병합하고, URDF/xacro 기반으로 **어떤 로봇이든** RViz2에서 실시간 시각화합니다.
 
 **핵심 기능:**
-- YAML 설정 기반 다중 JointState 소스 구독 및 병합 (RELIABLE, depth=10)
+- YAML 설정 기반 다중 JointState 소스 구독 및 병합 (RELIABLE, depth=1)
 - URDF 조인트 자동 분류 (active / passive_mimic / passive_closed_chain / fixed)
 - Mimic 조인트 위치 자동 계산 (`multiplier * master + offset`)
 - 필수 조인트 커버리지 주기적 검증 (3초 후 첫 검증, 이후 10초 주기)
@@ -57,15 +57,13 @@ rtc_digital_twin/
 ## 데이터 흐름
 
 ```
-[rtc_controller_manager (C++, RT @ control_rate; default 500Hz)]
-  /joint_states (BE/2) -> DeviceJointStateCallback
-       ├── device_states_ 업데이트 (기존)
-       └── forward -> /rtc_cm/{group}/joint_states (RELIABLE/10)
+[rtc_controller_manager]
+  device backend state -> nrt_publish_thread -> /rtc_cm/{group}/joint_states (RELIABLE/1)
 
 [digital_twin_node (Python)]
-  /rtc_cm/{group}/joint_states (RELIABLE/10) ──┐
-                                                ├-> merge -> /digital_twin/joint_states
-  /rtc_cm/{group}/joint_states (RELIABLE/10) ──┘     │
+  /rtc_cm/{group}/joint_states (RELIABLE/1) ──┐
+                                               ├-> merge -> /digital_twin/joint_states
+  /rtc_cm/{group}/joint_states (RELIABLE/1) ──┘     │
                                                       ├-> mimic 조인트 자동 계산
                                                       ├-> URDF 검증 (로그)
                                                       └-> (선택) sensor_viz -> MarkerArray
@@ -82,10 +80,10 @@ rtc_digital_twin/
 
 | 토픽 | 타입 | QoS | 설명 |
 |------|------|-----|------|
-| `source_N.topic` (YAML 정의) | `sensor_msgs/JointState` | RELIABLE, depth=10 | rtc_controller_manager가 republish한 조인트 상태 |
-| `sensor_viz.sensor_topic` (선택) | `rtc_msgs/HandSensorState` | RELIABLE, depth=10 | 핑거팁 센서 데이터 |
+| `source_N.topic` (YAML 정의) | `sensor_msgs/JointState` | RELIABLE, depth=1 | rtc_controller_manager가 republish한 조인트 상태 |
+| `sensor_viz.sensor_topic` (선택) | `rtc_msgs/HandSensorState` | RELIABLE, depth=1 | 핑거팁 센서 데이터 |
 | `controller_tf.active_controller_topic` (기본 `/rtc_cm/active_controller_name`) | `std_msgs/String` | TRANSIENT_LOCAL, RELIABLE, depth=1 | 능동 컨트롤러 이름 추종 -> `<active>/transforms` 구독을 rewire |
-| `/<active>/transforms` (rewire됨) | `tf2_msgs/TFMessage` | RELIABLE, depth=10 | 능동 컨트롤러의 FK `_actual` 프레임. restamp 후 `/tf`로 재발행 |
+| `/<active>/transforms` (rewire됨) | `tf2_msgs/TFMessage` | RELIABLE, depth=1 | 능동 컨트롤러의 FK `_actual` 프레임. restamp 후 `/tf`로 재발행 |
 | `/tf`, `/tf_static` (TF) | `tf2_msgs/TFMessage` | tf2 기본 | TCP 시각화용 `tcp_viz.frame_id` -> `tcp_viz.source_topic`(child frame) transform. 토픽 구독이 아닌 `lookup_transform()`. 이 `/tf`는 아래 controller_tf 재발행이 채운다 |
 
 ### 퍼블리시
@@ -103,7 +101,7 @@ rtc_digital_twin/
 
 ### DigitalTwinNode (`digital_twin_node.py`)
 
-- YAML의 `source_N.*` 설정으로 다중 JointState 토픽 구독 (RELIABLE, depth=10)
+- YAML의 `source_N.*` 설정으로 다중 JointState 토픽 구독 (RELIABLE, depth=1)
 - `JointStateCache` 데이터클래스로 소스별 상태 캐싱 및 이름->인덱스 매핑
 - **Static 모드**: `joint_names`에 조인트 이름을 명시하면 해당 이름만 수신/매핑
 - **Dynamic 모드**: `joint_names`가 빈 배열이면 수신 메시지의 모든 조인트를 자동 수용
@@ -146,9 +144,9 @@ YAML에 `sensor_viz` 블록이 있을 때만 활성화됩니다. 핑거팁별로
 
 ### TcpVisualizer (`tcp_visualizer.py`) -- 선택적
 
-**Phase 4에서 `GuiPosition` 메시지 구독 방식이 제거되고 tf2 조회로 대체되었습니다** (`GuiPosition` 메시지 자체도 폐기됨). YAML에 `tcp_viz.source_topic`이 비어있지 않을 때 활성화되며, 매 표시 주기마다 `tf2_ros.Buffer.lookup_transform(tcp_viz.frame_id, tcp_viz.source_topic, ...)`로 TCP pose를 조회해 RViz2 마커로 변환합니다. 이 lookup이 해결되려면 `_actual` 프레임이 `/tf`에 있어야 하는데, 컨트롤러는 전용 `/tf` publisher 없이 `<config_key>/transforms` (`tf2_msgs/TFMessage`)로만 노출하므로, DigitalTwinNode의 **controller_tf 재발행**(기본 활성)이 그 프레임을 `/tf`로 올려줘야 tcp_viz의 bare `TransformListener`가 받는다 (상세: [agent_docs/architecture.md](../agent_docs/architecture.md)).
+TCP pose는 `GuiPosition` 메시지 구독이 아니라 tf2 조회로 얻습니다. YAML에 `tcp_viz.source_topic`이 비어있지 않을 때 활성화되며, 매 표시 주기마다 `tf2_ros.Buffer.lookup_transform(tcp_viz.frame_id, tcp_viz.source_topic, ...)`로 TCP pose를 조회해 RViz2 마커로 변환합니다. 이 lookup이 해결되려면 `_actual` 프레임이 `/tf`에 있어야 하는데, 컨트롤러는 전용 `/tf` publisher 없이 `<config_key>/transforms` (`tf2_msgs/TFMessage`)로만 노출하므로, DigitalTwinNode의 **controller_tf 재발행**(기본 활성)이 그 프레임을 `/tf`로 올려줘야 tcp_viz의 bare `TransformListener`가 받는다 (상세: [agent_docs/architecture.md](../agent_docs/architecture.md)).
 
-**`tcp_viz.source_topic`은 더 이상 토픽 이름이 아니라 TF child frame 이름**입니다 (예: `"tool0_actual"`). `/`가 포함되지 않은 값은 그대로 child frame으로 쓰이고, `/`가 포함된 legacy 값(과거 절대 토픽 경로 형태)은 활성화 플래그로만 취급되어 child frame은 기본값 `"tool0_actual"`로 폴백합니다.
+**`tcp_viz.source_topic`은 더 이상 토픽 이름이 아니라 TF child frame 이름**입니다 (예: `"tool0_actual"`). `/`가 포함되지 않은 값은 그대로 child frame으로 쓰이고, `/`가 포함된 값(절대 토픽 경로 형태)은 활성화 플래그로만 취급되어 child frame은 기본값 `"tool0_actual"`로 폴백합니다.
 
 **시각화 마커:**
 
@@ -372,15 +370,7 @@ Loop-closed 핸드(예: linkage 핑거)는 spanning-tree URDF + `<stem>.closure.
 
 ## rtc_controller_manager 연동 (per-group JointState republish)
 
-`rtc_controller_manager` 패키지의 `rtc_controller_manager` 노드는 각 디바이스 그룹의 JointState를 RELIABLE QoS로 자동 republish합니다:
-
-| 원본 토픽 (BEST_EFFORT/2) | Republish 토픽 (RELIABLE/10) |
-|---|---|
-| `/joint_states` | `/rtc_cm/{group}/joint_states` |
-| `/hand/joint_states` | `/rtc_cm/{group}/joint_states` |
-
-- `DeviceJointStateCallback()`에서 수신 즉시 forward (최소 레이턴시)
-- sensor executor 스레드에서 실행 (RT 루프 영향 없음)
+`rtc_controller_manager` 가 디바이스 그룹마다 `/rtc_cm/{group}/joint_states` (RELIABLE, depth 1) 를 발행하고, 이 노드는 그 토픽을 `source_N.topic` 으로 구독한다. 어느 스레드가 발행하고 샘플이 어떻게 합쳐지는지는 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md#per-group-jointstate-자동-퍼블리셔) 가 SSoT.
 
 ---
 
@@ -394,7 +384,7 @@ Loop-closed 핸드(예: linkage 핑거)는 spanning-tree URDF + `<stem>.closure.
 | `visualization_msgs` | `Marker`, `MarkerArray` (센서 시각화) |
 | `geometry_msgs` | `Point`, `Vector3` (마커 좌표/스케일) |
 | `builtin_interfaces` | ROS2 기본 인터페이스 |
-| `rtc_msgs` | `HandSensorState` (`FingertipSensor` 필드 포함, 센서 데이터). TCP pose는 Phase 4부터 tf2 lookup으로 대체 (`GuiPosition` 폐기) |
+| `rtc_msgs` | `HandSensorState` (`FingertipSensor` 필드 포함, 센서 데이터). TCP pose는 `GuiPosition` 이 아니라 tf2 lookup 으로 조회 |
 | `tf2_msgs` | `TFMessage` (`<active>/transforms` 구독 + `/tf` 재발행) |
 | `tf2_ros` | TCP pose 조회 (`lookup_transform`) + TF 브로드캐스팅 (`TransformBroadcaster` — controller_tf 재발행 / 선택적 virtual_tcp) |
 | `robot_state_publisher` | URDF -> TF 변환 (launch에서 사용) |

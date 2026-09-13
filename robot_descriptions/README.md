@@ -41,7 +41,7 @@
 | `robots/assm_v1/` | 10-DoF custom hand "assm v1" — URDF xacro, MJCF (cylinder geom) |
 | `robots/ur5e_assm_v1/` | UR5e arm + assm_v1 hand 결합 — URDF xacro, MJCF scene (wrist3 말단 부착) |
 | `robots/iiwa7/` | KUKA iiwa7 7-DoF arm — URDF (obj/glb 2종) + meshes |
-| `robots/leap_hand/` | LEAP Hand 16-DoF — URDF (left/right) + meshes (collision-box composite inertia rebake 2026-05-15) |
+| `robots/leap_hand/` | LEAP Hand 16-DoF — URDF (left/right) + meshes |
 | `robots/iiwa7_leap/` | iiwa7 arm + LEAP Hand 결합 — URDF xacro + MJCF (left/right 각 2종), scene 각 1종. `ee_link` 말단 부착. `meshes/{visual,collision}/`은 iiwa7 + leap_hand mesh hardlink |
 | `robots/schunk_hand/` | Schunk SVH 5-finger hand — URDF (left/right × obj/glb 4종) + meshes |
 | `robots/panda/` | Franka Emika Panda 7-DoF — **kinematics-only 테스트 fixture** (`urdf/panda.urdf`만, meshes 없음). rtc_tsid / rtc_mpc / integrated_bringup gtest 가 generic 7-DoF 모델로 `pinocchio::buildModel` 에 사용. 상세·출처: `robots/panda/README.md` |
@@ -198,7 +198,7 @@ find robot_descriptions/robots -iname "*.xml"                                   
 | wrist_2_link | 1.3 |
 | wrist_3_link | 0.365 |
 
-> **URDF 가 SSoT 다** (#392 결정 #1). URDF 는 UR 공식 `ur_description` 의 `ur.urdf.xacro` 에서 기계 생성된 것이고, mass·inertia·kinematics 가 `config/ur5e/{physical_parameters,default_kinematics}.yaml` 과 일치한다. MJCF (MuJoCo Menagerie 유래) 는 한때 **UR5e 가 아니라 레거시 UR5 (CB3) 의 관성 세트**를 싣고 있었고 (shoulder 3.7 / upper_arm 8.393 / forearm 2.275 / wrist 1.219·1.219·0.1889), DH 길이도 소수 3자리로 반올림돼 있었다. 그 상태의 실측 비용은 중력 토크 상대오차 mean 14.5% · p95 24.9%, tool 위치 오차 최대 1.49 mm 였다 — sim(MJCF)과 컨트롤러 모델(URDF)이 어긋나므로 sim 에서 튜닝한 게인이 존재하지 않는 모델 오차를 보상하게 된다. 현재는 두 MJCF (`ur5e/mjcf/ur5e.xml`, `ur5e_assm_v1/mjcf/ur5e_with_hand.xml`) 가 URDF 에 정렬돼 있다.
+> **URDF 가 SSoT 다.** URDF 는 UR 공식 `ur_description` 의 `ur.urdf.xacro` 에서 기계 생성된 것이고, mass·inertia·kinematics 가 `config/ur5e/{physical_parameters,default_kinematics}.yaml` 과 일치한다. 두 MJCF (`ur5e/mjcf/ur5e.xml`, `ur5e_assm_v1/mjcf/ur5e_with_hand.xml`) 는 이 URDF 에 정렬돼 있다 — sim(MJCF)과 컨트롤러 모델(URDF)이 어긋나면 sim 에서 튜닝한 게인이 존재하지 않는 모델 오차를 보상하게 되므로, 값을 바꿀 때는 항상 URDF 를 SSoT 로 다시 정렬한다.
 >
 > **MJCF 에만 있는 것**: 6관절 전부의 `armature=0.1` (로터 관성, URDF 무대응) — 의도적이며 수정 대상이 아니다. **프레임 배치 규약은 다르게 유지**한다 — MJCF 는 body frame 을 UR 이 visual mesh 를 놓는 자리(`shoulder_offset=0.138`, `elbow_offset=0.007`)에, URDF 는 DH frame 에 놓는다. 축 직선이 같으면 물리가 같으므로 정상이며, 이 차이 때문에 `compare_mjcf_urdf` 는 관절 원점을 점이 아니라 **축 직선**으로 비교한다.
 >
@@ -280,10 +280,10 @@ ros2 run rtc_tools compare_mjcf_urdf --mjcf robots/ur5e/mjcf/ur5e.xml --urdf rob
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 ```
 
-**`ur5e` 는 선언 두 개가 필요합니다** (둘 다 이름·프레임이 엇갈려 자동 탐지로 풀리지 않습니다, #392):
+**`ur5e` 는 선언 두 개가 필요합니다** (둘 다 이름·프레임이 엇갈려 자동 탐지로 풀리지 않습니다):
 
 - **`--align-frames world base`** — 두 파일의 world frame 이 다릅니다 (MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link`). 없으면 관절 6개 전부 x 부호가 뒤집힌 것처럼 보이는데, 모델 발산이 아니라 mounting 규약입니다.
-- **`--link-map robots/ur5e/ur5e.link_map.yaml`** — MJCF body `base` 는 URDF `base_link_inertia`(4 kg) 인데 URDF 에도 **massless** `base` 프레임이 따로 있습니다. 자동 탐지는 이름이 같은 쌍만 맺으므로 그 둘을 잘못 짝지어 `base_link_inertia` 를 "mass=4 kg lost" 로 보고했습니다. 선언하면 base 링크 관성 검증이 켜지고(양쪽 값은 이미 동일) 허위 손실 보고가 사라집니다. 이 파일은 **예외 목록**이라 여기 없는 동명 쌍도 그대로 비교됩니다 (#411) — 일부만 적어도 비교 범위가 좁아지지 않습니다.
+- **`--link-map robots/ur5e/ur5e.link_map.yaml`** — MJCF body `base` 는 URDF `base_link_inertia`(4 kg) 인데 URDF 에도 **massless** `base` 프레임이 따로 있습니다. 자동 탐지는 이름이 같은 쌍만 맺으므로 그 둘을 잘못 짝지어 `base_link_inertia` 를 "mass=4 kg lost" 로 보고했습니다. 선언하면 base 링크 관성 검증이 켜지고(양쪽 값은 이미 동일) 허위 손실 보고가 사라집니다. 이 파일은 **예외 목록**이라 여기 없는 동명 쌍도 그대로 비교됩니다 — 일부만 적어도 비교 범위가 좁아지지 않습니다.
 
 ```bash
 ros2 run rtc_tools compare_mjcf_urdf \
@@ -293,26 +293,26 @@ ros2 run rtc_tools compare_mjcf_urdf \
 # -> Mismatches: 0  (Warnings: 2 — 아래 참조)
 ```
 
-**이 비교는 자동으로 돕니다** — [`robots/model_pairs.yaml`](robots/model_pairs.yaml) 이 **8쌍**(단독 5 + 팔·손 조합 3)과 각 쌍의 선언을 갖고, [`rtc_tools/test/test_real_model_pairs.py`](../rtc_tools/test/test_real_model_pairs.py) 가 그걸 읽어 발사합니다. **여기의 MJCF/URDF 를 고쳤다면 그 테스트가 해당 sensor 입니다.** 로봇을 새로 들이면 `model_pairs.yaml` 에 한 줄 추가하세요 — 어떤 MJCF 가 어떤 URDF 와 짝인지는 자동 탐지로 추측할 수 없습니다 (`ur5e` 는 `ur5e.xml`·`scene.xml` 둘을 갖습니다). URDF 가 `*.urdf.xacro` 면 게이트가 테스트 시점에 확장하므로 그대로 적으면 됩니다 (#414) — 확장 실패는 skip 이 아니라 **테스트 실패**로 드러납니다. **팔+손 조합 모델이 특히 중요합니다**: 단독 모델만 검사하면 두 모델이 각각 맞으면서 결합부만 틀린 상태가 통과합니다.
+**이 비교는 자동으로 돕니다** — [`robots/model_pairs.yaml`](robots/model_pairs.yaml) 이 **8쌍**(단독 5 + 팔·손 조합 3)과 각 쌍의 선언을 갖고, [`rtc_tools/test/test_real_model_pairs.py`](../rtc_tools/test/test_real_model_pairs.py) 가 그걸 읽어 발사합니다. **여기의 MJCF/URDF 를 고쳤다면 그 테스트가 해당 sensor 입니다.** 로봇을 새로 들이면 `model_pairs.yaml` 에 한 줄 추가하세요 — 어떤 MJCF 가 어떤 URDF 와 짝인지는 자동 탐지로 추측할 수 없습니다 (`ur5e` 는 `ur5e.xml`·`scene.xml` 둘을 갖습니다). URDF 가 `*.urdf.xacro` 면 게이트가 테스트 시점에 확장하므로 그대로 적으면 됩니다 — 확장 실패는 skip 이 아니라 **테스트 실패**로 드러납니다. **팔+손 조합 모델이 특히 중요합니다**: 단독 모델만 검사하면 두 모델이 각각 맞으면서 결합부만 틀린 상태가 통과합니다.
 
 > ⚠️ **로컬 `colcon test` 에서는 이 게이트가 skip 됩니다.** colcon 이 pytest 를 `/usr/bin/python3` 로 돌리는데 (colcon 자체의 shebang) 이 저장소는 mujoco 를 `.venv` 에 둡니다. CI 는 `pip install ... mujoco` 를 하므로 실제로 실행됩니다. 로컬에서 직접 돌리려면:
 > ```bash
 > PYTHONPATH=rtc_tools:$PYTHONPATH .venv/bin/python -m pytest rtc_tools/test/test_real_model_pairs.py
 > ```
-> `PYTHONPATH` 는 **덮어쓰지 말고 이어붙이세요** — xacro 쌍이 `import xacro` 를 하는데 그 모듈은 ROS 가 `PYTHONPATH` 로만 노출하므로, 대입하면 `ModuleNotFoundError: xacro` 가 납니다 (#414).
+> `PYTHONPATH` 는 **덮어쓰지 말고 이어붙이세요** — xacro 쌍이 `import xacro` 를 하는데 그 모듈은 ROS 가 `PYTHONPATH` 로만 노출하므로, 대입하면 `ModuleNotFoundError: xacro` 가 납니다.
 
 남는 warning 2건은 정당한 차이라 유지합니다: MJCF 가 링크당 visual mesh 를 쪼개고(20 vs 14) collision 을 capsule 로 따로 두기 때문입니다(29 vs 14).
 
 ### assm_v1 hand 의 선언 (`assm_v1.link_map.yaml` · `ur5e_assm_v1.link_map.yaml`)
 
-hand 쪽은 두 가지가 더 필요합니다 (#413):
+hand 쪽은 두 가지가 더 필요합니다:
 
 - **`hand_base: hand_base_link`** — palm 도 이름이 엇갈립니다.
-- **`fuse:`** — 손끝 4개(`*_tip_link`, 각 0.01 kg)는 MJCF 에 별도 body 가 없고 부모 distal 에 접혀 있습니다(0.02 → 0.03 kg). 정당한 병합이며, 평행축 합성이 MJCF 값과 정확히 일치함을 확인했습니다 (#412: `m=0.03`, `com_z=0.0208333`, `Ixx=5.26667e-6`, `Izz=2e-7`). 선언하면 합성값으로 비교되고, 선언 없이는 "질량 손실 + 부모 과중" 2중 오탐이 납니다.
+- **`fuse:`** — 손끝 4개(`*_tip_link`, 각 0.01 kg)는 MJCF 에 별도 body 가 없고 부모 distal 에 접혀 있습니다(0.02 → 0.03 kg). 정당한 병합이며, 평행축 합성이 MJCF 값과 정확히 일치합니다. 선언하면 합성값으로 비교되고, 선언 없이는 "질량 손실 + 부모 과중" 2중 오탐이 납니다.
 
-> **palm 질량이 MJCF 에 없었습니다** (#413). URDF `hand_base_link` 는 0.3 kg 인데 조합 MJCF 의 `hand_base` 에는 `<inertial>` 이 없어 geom density 로 0.2 kg 이 추론됐고, 단독 `hand.xml` 은 palm 이 worldbody geom 이라 아예 0 kg (손 전체 0.54 kg 중 56% 소실) 이었습니다. box 치수·위치는 양쪽이 정확히 일치했으므로 형상은 맞고 관성 선언만 빠진 상태였습니다. 실측 비용: **arm 중력 토크 최대 0.93 Nm (6.42%) · mean 0.40 Nm (1.41%)** — digital twin 이 로드하는 모델이라 sim 에서 튜닝한 게인이 이 오차를 보상하게 됩니다. 현재는 양쪽 MJCF 모두 URDF 를 미러합니다. 다만 URDF 의 `diag(1e-4, 1e-4, 1e-4)` 자체가 등방 placeholder 이며(균질 박스 계산값은 `diag(2.66e-4, 1.76e-4, 4.10e-4)`), 그 사실은 plausibility warning 이 계속 알립니다 — 텐서를 물리값으로 고치는 것은 URDF(SSoT)를 바꾸는 일이라 별도 축입니다.
+> **palm 관성 선언.** 양쪽 MJCF 모두 URDF `hand_base_link`(0.3 kg) 를 미러합니다. 다만 URDF 의 `diag(1e-4, 1e-4, 1e-4)` 자체가 등방 placeholder 이며(균질 박스 계산값은 `diag(2.66e-4, 1.76e-4, 4.10e-4)`), 그 사실은 plausibility warning 이 계속 알립니다 — 텐서를 물리값으로 고치는 것은 URDF(SSoT)를 바꾸는 일이라 별도 축입니다.
 
-**massless 프레임은 mismatch 로 세지 않습니다** — `base_link`·`flange`·`ft_frame`·`tool0`·`world`·`base` 는 질량 0 의 순수 좌표 프레임이고 MuJoCo 가 body 를 안 만드는 것이 정상 동작입니다. 다만 **MuJoCo 가 실제로 만들지 않은 것만** 면제하며(iiwa7 은 1개, leap_hand 는 5개의 massless 프레임을 실제 body 로 갖고 있습니다), **질량을 가진 링크가 사라지면 여전히 mismatch** 입니다 — fusestatic 이 질량을 부모로 흡수한 경우가 그것이고, 그 신호는 그대로 남습니다 (#385).
+**massless 프레임은 mismatch 로 세지 않습니다** — `base_link`·`flange`·`ft_frame`·`tool0`·`world`·`base` 는 질량 0 의 순수 좌표 프레임이고 MuJoCo 가 body 를 안 만드는 것이 정상 동작입니다. 다만 **MuJoCo 가 실제로 만들지 않은 것만** 면제하며(iiwa7 은 1개, leap_hand 는 5개의 massless 프레임을 실제 body 로 갖고 있습니다), **질량을 가진 링크가 사라지면 여전히 mismatch** 입니다 — fusestatic 이 질량을 부모로 흡수한 경우가 그것이고, 그 신호는 그대로 남습니다.
 
 ---
 

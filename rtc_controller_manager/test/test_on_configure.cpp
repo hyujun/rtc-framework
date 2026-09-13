@@ -4,9 +4,8 @@
 // on_deactivate -> on_cleanup -> on_shutdown) end to end, exercising
 // rt_controller_node_params.cpp (DeclareAndLoadParameters + controller
 // loading), rt_controller_node_device_config.cpp, rt_controller_node_
-// publishers.cpp, rt_controller_node_subscriptions.cpp, rt_controller_node.cpp
-// lifecycle callbacks, and (via on_activate's RT loop) parts of
-// rt_controller_node_rt_loop.cpp.
+// publishers.cpp, rt_controller_node.cpp lifecycle callbacks, and (via
+// on_activate's RT loop) parts of rt_controller_node_rt_loop.cpp.
 //
 // A minimal controller is registered through the controller registry so the
 // bring-up has something to instantiate. Parameters are injected by declaring

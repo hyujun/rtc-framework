@@ -12,7 +12,7 @@ RTC 프레임워크의 **TSID (Task-Space Inverse Dynamics) QP 솔버 라이브�
 - YAML 기반 phase preset 설정
 - Pinocchio 공유 캐시로 중복 동역학 계산 방지
 
-**Phase 5 통합 노트** — `rtc_tsid`는 `rtc_mpc`에 의존하지 않습니다. 두 패키지를 함께 사용하는 것은 controller(예: `integrated_bringup::DemoWbcController`)의 책임입니다. 일반 흐름:
+**통합 노트** — `rtc_tsid`는 `rtc_mpc`에 의존하지 않습니다. 두 패키지를 함께 사용하는 것은 controller(예: `integrated_bringup::DemoWbcController`)의 책임입니다. 일반 흐름:
 
 ```
 rtc_mpc::MPCSolutionManager.ComputeReference(...) -> (q_ref, v_ref, a_ff, u_fb)
@@ -22,7 +22,7 @@ rtc::tsid::ControlReference.{q_des, v_des, a_des += u_fb}
 rtc::tsid::TSIDController::compute(...)
 ```
 
-`SE3Task`, `PostureTask`, `ForceTask`의 `set_*_reference()` API는 RT-safe하며 매 tick MPC 인터폴레이션 결과로 호출 가능합니다 (Phase 4에서는 phase preset 기반 고정 reference, Phase 5에서는 MPC가 시간-가변 reference 공급).
+`SE3Task`, `PostureTask`, `ForceTask`의 `set_*_reference()` API는 RT-safe하며 매 tick 시간-가변 reference(예: MPC 인터폴레이션 결과)로 호출 가능합니다.
 
 ---
 
@@ -48,9 +48,9 @@ rtc_tsid/
 │   │   ├── com_task.hpp                -- CoM 위치 추종 태스크
 │   │   ├── force_task.hpp              -- 접촉력 reference 추종 태스크
 │   │   ├── momentum_task.hpp           -- Centroidal momentum regularization 태스크
-│   │   ├── object_wrench_task.hpp      -- (Stage B-2) Object 결합 wrench 추종 (J = [0, G], r = w_obj_des)
-│   │   ├── internal_force_task.hpp     -- (Stage B-3) Squeeze force 추종 (rank-based nullity + r = P_N · λ_des)
-│   │   └── object_se3_task.hpp         -- (Stage B-4) Object SE(3) pose 추종 ((Gᵀ)⁺·J_c kinematic)
+│   │   ├── object_wrench_task.hpp      -- Object 결합 wrench 추종 (J = [0, G], r = w_obj_des)
+│   │   ├── internal_force_task.hpp     -- Squeeze force 추종 (rank-based nullity + r = P_N · λ_des)
+│   │   └── object_se3_task.hpp         -- Object SE(3) pose 추종 ((Gᵀ)⁺·J_c kinematic)
 │   ├── constraints/
 │   │   ├── eom_constraint.hpp          -- 운동 방정식 등식 제약
 │   │   ├── contact_constraint.hpp      -- 접촉 제약
@@ -60,13 +60,13 @@ rtc_tsid/
 │   ├── types/
 │   │   ├── wbc_types.hpp               -- 핵심 데이터 구조체
 │   │   ├── qp_types.hpp                -- QP 문제 구조체
-│   │   └── object_frame.hpp            -- (Stage B-1) ObjectFrame POD + Ad*/grasp-block helpers
+│   │   └── object_frame.hpp            -- ObjectFrame POD + Ad*/grasp-block helpers
 │   ├── contact/
-│   │   ├── contact_manager.hpp         -- (Stage B-1/B-4) Grasp matrix G + J_c / J̇_c·v stacking + active_lambda_dim
-│   │   ├── grasp_cache.hpp             -- (Stage B-2) LDLT-based G_pinv + GT_pinv + P_N + rank_G
-│   │   └── object_state_provider.hpp   -- (Stage B-4) ObjectStateProvider interface + IdentityObjectStateProvider stub
+│   │   ├── contact_manager.hpp         -- Grasp matrix G + J_c / J̇_c·v stacking + active_lambda_dim
+│   │   ├── grasp_cache.hpp             -- LDLT-based G_pinv + GT_pinv + P_N + rank_G
+│   │   └── object_state_provider.hpp   -- ObjectStateProvider interface + IdentityObjectStateProvider stub
 │   ├── kinematics/
-│   │   └── clik_reference.hpp          -- (Stage C-1) ClikReferenceGenerator — velocity-level CLIK low-level reference
+│   │   └── clik_reference.hpp          -- ClikReferenceGenerator — velocity-level CLIK low-level reference
 │   └── solver/
 │       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼
 ├── src/                                -- 구현 파일
@@ -84,7 +84,7 @@ rtc_tsid/
 
 TSID 솔버의 메인 컨트롤러입니다. `ControllerBase`를 상속하며 `final`로 선언되어 있습니다.
 
-> **참고:** `RTControllerInterface`(ROS2 제어 인터페이스)와는 별도의 내부 인터페이스입니다. ROS2 통합은 향후 Phase 3에서 진행 예정입니다.
+> **참고:** `RTControllerInterface`(ROS2 제어 인터페이스)와는 별도의 내부 인터페이스입니다. ROS2 통합은 아직 이루어지지 않았습니다.
 
 | 메서드 | 설명 |
 |--------|------|
@@ -111,18 +111,19 @@ TSID 솔버의 메인 컨트롤러입니다. `ControllerBase`를 상속하며 `f
 formulation_type: "wqp"  # 또는 "hqp"
 ```
 
-#### ProxSuite QP solver YAML (WQP / HQP 공통, 2026-04-26 update)
+#### ProxSuite QP solver YAML (WQP / HQP 공통)
 
 ```yaml
 wqp:                       # 또는 hqp.solver_per_level (HQP)
   solver:
-    max_iter: 20           # ProxSuite max iterations
+    max_iter: 20           # ProxSuite max iterations (코드 기본값: WQP 20, HQP 10)
+    max_iter_in: 100       # inner loop 상한 — RT tick 에서 무한 루프 방지
     eps_abs:  1.0e-6       # absolute tolerance
     eps_rel:  0.0          # relative tolerance (0 → abs-only)
     verbose:  false        # ProxSuite per-iteration log (debug only)
 ```
 
-4개 키 모두 `WQPFormulation::init` / `HQPFormulation::init` 에서 읽음. 누락 시 위 기본값.
+5개 키 모두 `WQPFormulation::init` / `HQPFormulation::init` 에서 읽음. 누락 시 코드 기본값 (`max_iter` 만 formulation 별로 다르다).
 
 ---
 
@@ -262,9 +263,9 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 | `Ag` | `MatrixXd` | Centroidal Momentum Matrix [6 × nv] (`compute_centroidal` 활성 시) |
 | `h_centroidal` | `Vector6d` | Centroidal momentum [6] (`compute_centroidal` 활성 시) |
 | `hg_drift` | `Vector6d` | dAg·v — centroidal momentum rate drift (`compute_centroidal` 활성 시) |
-| `reduced_provider` | `ReducedDynamicsProvider*` | (#120) optional closed-chain 축약 동역학 주입점 (non-owning). set 시 `Update()` 의 open-chain `M/h/g` 계산 직후 호출돼 `M/h/g` 를 constraint-consistent 축약값으로 덮는다 (`nullptr`=open-chain, byte-for-byte). |
+| `reduced_provider` | `ReducedDynamicsProvider*` | optional closed-chain 축약 동역학 주입점 (non-owning). set 시 `Update()` 의 open-chain `M/h/g` 계산 직후 호출돼 `M/h/g` 를 constraint-consistent 축약값으로 덮는다 (`nullptr`=open-chain, byte-for-byte). |
 
-> **#120 closed-chain EOM 주입**: `ReducedDynamicsProvider` (순수 인터페이스, `types/reduced_dynamics_provider.hpp`) 는 rtc_tsid 가 rtc_urdf_bridge 를 의존하지 않도록(ARCH-2) `M/h/g` 축약 대체를 추상화한다. 구체 구현(`RtClosedChainHandle` 소유)은 상위 패키지 `integrated_bringup` 의 `WbcReducedDynamicsProvider` — extended 로봇의 actuated control model 에서 loop-passive DoF 를 사영해 축약 `M_a/g_a/h_a` 를 제공한다. contact frame J·oMf·dJv 는 loop-하류에 한해 loop-consistent 로 override 된다 (Phase 3 + #173 L2-exact dJv; `ContactManager::StackContactJDotV` 는 `FrameCache::dJv` 를 그대로 소비 — rtc_tsid 무변경). 그 외 frame 은 open-chain(frozen-loop) 유지.
+> **closed-chain EOM 주입**: `ReducedDynamicsProvider` (순수 인터페이스, `types/reduced_dynamics_provider.hpp`) 는 rtc_tsid 가 rtc_urdf_bridge 를 의존하지 않도록(ARCH-2) `M/h/g` 축약 대체를 추상화한다. 구체 구현(`RtClosedChainHandle` 소유)은 상위 패키지 `integrated_bringup` 의 `WbcReducedDynamicsProvider` — extended 로봇의 actuated control model 에서 loop-passive DoF 를 사영해 축약 `M_a/g_a/h_a` 를 제공한다. contact frame J·oMf·dJv 는 loop-하류에 한해 loop-consistent 로 override 된다 (`ContactManager::StackContactJDotV` 는 `FrameCache::dJv` 를 그대로 소비 — rtc_tsid 무변경). 그 외 frame 은 open-chain(frozen-loop) 유지.
 
 ### CommandOutput
 
@@ -272,7 +273,7 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 |------|------|------|
 | `tau` | `VectorXd` | 구동 토크 [n_actuated] |
 | `a_opt` | `VectorXd` | 최적 가속도 [nv] |
-| `lambda_opt` | `VectorXd` | 접촉력 [max_contact_vars] (Stage A-5a fixed-dim QP; 비활성 contact 슬롯은 ≈ 0) |
+| `lambda_opt` | `VectorXd` | 접촉력 [max_contact_vars] (fixed-dim QP; 비활성 contact 슬롯은 ≈ 0) |
 | `qp_converged` | `bool` | QP 솔버 수렴 여부 |
 | `solve_time_us` | `double` | 풀이 시간 [μs] |
 | `solve_levels` | `int` | WQP: 1, HQP: N |
@@ -284,7 +285,7 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 | 의존성 | 용도 |
 |--------|------|
 | `pinocchio` | 강체 동역학 (질량 행렬, 자코비안, RNEA 등) |
-| `rtc_math` | 공유 SE(3) 오차 helper (`log3`, `BodyLog6` 등) — kinematics/dynamics WBC 공통 (Stage C-1 U1 통일) |
+| `rtc_math` | 공유 SE(3) 오차 helper (`log3`, `BodyLog6` 등) — kinematics/dynamics WBC 공통 (U1 통일) |
 | `eigen3_cmake_module` / `Eigen3` | 선형 대수 (행렬/벡터 연산) |
 | `proxsuite` | Dense QP 솔버 (사전 할당 워크스페이스) |
 | `yaml-cpp` | YAML 설정 파싱 (iterator 함정: `it->first/second` 는 prvalue Node — `const auto& x = it->second` 는 dangling. `YAML::Node x = it->second` 로 복사할 것. `LoadPhasePresets` 참고) |
@@ -295,25 +296,13 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 
 ## 빌드
 
-### 사전 설치 (ProxSuite)
-
-ProxSuite는 `rtc_tsid`의 하드 의존성이며, ROS 2 apt 저장소에서 바이너리로 제공됩니다:
+`rtc_tsid`는 ProxSuite를 하드 의존성으로 요구합니다 (`sudo apt install ros-${ROS_DISTRO}-proxsuite`; 바이너리 미제공 distro는 robotpkg 폴백 — http://robotpkg.openrobots.org 참고). `./install.sh`를 사용하면 `install_proxsuite()`가 자동으로 처리합니다.
 
 ```bash
-# Jazzy / Humble 공통 (ROS 2 apt 저장소 활성화 필요)
-sudo apt install ros-${ROS_DISTRO}-proxsuite
-
-# robotpkg 폴백 (바이너리 미제공 distro)
-# http://robotpkg.openrobots.org 참고 → robotpkg-py3XX-proxsuite
+./build.sh -p rtc_tsid
 ```
 
-`./install.sh`를 사용하면 `install_proxsuite()`가 자동으로 위 절차를 수행합니다.
-
-### 빌드
-
-```bash
-colcon build --packages-select rtc_tsid
-```
+설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참고.
 
 ---
 
@@ -345,9 +334,7 @@ colcon test-result --verbose
 | `test_tsid_wqp_hqp_compare` | WQP vs HQP 비교 검증 |
 | `test_tsid_performance` | 성능 벤치마크 |
 | `test_phase3_integration` | Phase 3 모듈 통합 (WQP/HQP + SE3 + CoM + preset 전환) |
-| `test_clik_reference` | (Stage C-1) CLIK reference: TCP 수렴, nullspace 무간섭, hand decoupling, singularity bound, RT alloc 0, 위치 박스 검증 (NUM-7 — NaN/±inf/역전 거부, 등호 통과), 인접 스칼라 유한성 (`v_limit`·`anchor_drift_max`·`w_arm`/`w_hand` — 비유한 거부, 인가된 off 값 통과) |
-
-> Build hygiene: `EomConstraint::compute_equality`의 미사용 인자 `n_vars`를 `/*n_vars*/`로 표시 (`-Wunused-parameter` 제거), `PostureTask`의 `cache.q.size()` (Eigen `Index` = `long`) → `int` 변환에 `static_cast<int>` 명시 (`-Wconversion` 제거), `test_tsid_performance` warm-up 호출에 `(void)` 캐스트 추가 (nodiscard `-Wunused-result` 제거). Behavior 동일.
+| `test_clik_reference` | CLIK reference: TCP 수렴, nullspace 무간섭, hand decoupling, singularity bound, RT alloc 0, 위치 박스 검증 (NUM-7 — NaN/±inf/역전 거부, 등호 통과), 인접 스칼라 유한성 (`v_limit`·`anchor_drift_max`·`w_arm`/`w_hand` — 비유한 거부, 인가된 off 값 통과) |
 
 ---
 

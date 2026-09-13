@@ -12,11 +12,7 @@ RTC 프레임워크의 **Python 개발 유틸리티 패키지**입니다. 로그
 rtc_tools/
 ├── rtc_tools/
 │   ├── gui/
-│   │   └── (empty)                       ← controller_gui.py removed in
-│   │                                       Phase F-2 (2026-04-26); the
-│   │                                       supported demo GUI lives under
-│   │                                       integrated_bringup/scripts/
-│   │                                       demo_controller_gui.py
+│   │   └── (empty)                       ← controller_gui.py 없음 (아래 참고 참조)
 │   ├── monitoring/
 │   │   └── __init__.py
 │   ├── plotting/
@@ -37,7 +33,7 @@ rtc_tools/
 │   │   ├── cpu_shield.py               ← cset shield 감지 + adopt→ACTIVATE 체인
 │   │   │                                  (다섯 bringup launch 공유, fail-closed)
 │   │   ├── cm_rt_params.py             ← controller_manager RT 파라미터 파일 생성
-│   │   │                                  (UR arm 루프 pin, issue #343)
+│   │   │                                  (UR arm 루프 pin)
 │   │   └── trace_action.py             ← ros2_tracing (LTTng) capture 액션 헬퍼
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
@@ -70,12 +66,8 @@ rtc_tools/
 
 ## 스크립트 설명
 
-> **Note:** The legacy `controller_gui.py` was removed in Phase F-2 (2026-04-26)
-> together with the gain → ROS 2 parameter migration. It targeted the four
-> core controllers (P / JointPD / CLIK / OSC) which never exposed a
-> runtime-tunable gain channel. The supported demo GUI for the
-> three demo controllers (DemoJoint / DemoTask / DemoWbc) lives at
-> [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
+> **Note:** `controller_gui.py`는 없습니다 — 세 데모 컨트롤러(DemoJoint/DemoTask/DemoWbc)용 GUI는
+> [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py)에 있습니다.
 
 ### `plot_rtc_log.py` — 로그 시각화 (v5, 4-카테고리)
 
@@ -121,7 +113,7 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 > 타이밍 CSV 가 `run_id` 를 여러 개 담고 있으면 (세션 디렉토리는 분 해상도라
 > 같은 분의 재기동이 같은 파일에 append 된다) **마지막 런만** 그리고 무엇을
 > 버렸는지 stdout 에 출력합니다 — 파일 전체로 `n / span` 을 내면 어느 런에도
-> 없던 레이트가 나오기 때문입니다 (#376). 다른 런은 `--run-id <값>` 으로
+> 없던 레이트가 나오기 때문입니다. 다른 런은 `--run-id <값>` 으로
 > 선택하고, 없는 값이면 사용 가능한 목록과 함께 에러로 죽습니다.
 
 #### 우클릭 확대 — 정확한 x/y 범위 입력
@@ -153,10 +145,10 @@ GUI 로 뜬 figure 의 **subplot 을 우클릭**하면 x/y 범위를 숫자로 �
 | `mpc_timing_log*.csv` | mpc_timing (MPC main loop) |
 | `<dev>_state.csv` (WBC, `accel_*` 컬럼) | wbc_log (DeviceWbcLog — state_log superset: TSID a_opt 가속도 + SE3 trajectory(arm) / fingertip force(hand)) |
 | `wbc_diag.csv` | wbc_diag (WbcDiagLog — per-tick TSID/QP 진단: solve time / λ / 수렴 / grasp) |
-| `pull_estimator.csv` | pull_estimator (PullEstimatorLog #167 — in-plane pull-force estimate: raw+filtered force / in-plane·magnitude·directional / friction util·leakage / validity 플래그 / 관측된 파지 형태 `opposing_mask`. 4×1 sharex 단일 figure + 통계) |
-| `grasp_diag.csv` | grasp_diag (GraspDiagLog #428 — per-tick Force-PI 서보 + 강성 추정 진단) |
-| `compliance_diag.csv` | compliance_diag (ComplianceDiagLog #469 S4 — §7 task-admittance 진단: 소비된 wrench / source verdict / FSM·α / x̃·ν_c / 파라미터 스냅샷. 컬럼 지문은 `x_tilde_`. **통계 전용, figure 없음** — envelope·freshness·bias 숫자가 산출물이라 `grasp_diag` 와 같은 판단) |
-| `momentum_observer.csv` | momentum_observer (MomentumObserverLog #135/#455 — 일반화 운동량 관측기 잔차 `r_<joint>`·‖r‖∞·게이트, Layer 2A payload wrench/질량, Layer 2B 관성 회귀. `momentum_observer.png` + (2A/2B 가 구성된 run 에서만) `momentum_payload.png` + 통계) |
+| `pull_estimator.csv` | pull_estimator (PullEstimatorLog — in-plane pull-force estimate: raw+filtered force / in-plane·magnitude·directional / friction util·leakage / validity 플래그 / 관측된 파지 형태 `opposing_mask`. 4×1 sharex 단일 figure + 통계) |
+| `grasp_diag.csv` | grasp_diag (GraspDiagLog — per-tick Force-PI 서보 + 강성 추정 진단) |
+| `compliance_diag.csv` | compliance_diag (ComplianceDiagLog — §7 task-admittance 진단: 소비된 wrench / source verdict / FSM·α / x̃·ν_c / 파라미터 스냅샷. 컬럼 지문은 `x_tilde_`. **통계 전용, figure 없음** — envelope·freshness·bias 숫자가 산출물이라 `grasp_diag` 와 같은 판단) |
+| `momentum_observer.csv` | momentum_observer (MomentumObserverLog — 일반화 운동량 관측기 잔차 `r_<joint>`·‖r‖∞·게이트, Layer 2A payload wrench/질량, Layer 2B 관성 회귀. `momentum_observer.png` + (2A/2B 가 구성된 run 에서만) `momentum_payload.png` + 통계) |
 
 > WBC `<dev>_state.csv` 는 파일명만으로 generic state_log 와 구분 불가 (둘 다 `_state`)
 > → `accel_*` 컬럼 fingerprint 로 컬럼 fallback 단계에서 wbc_log 로 분류된다. wbc_log
@@ -289,6 +281,13 @@ ros2 run rtc_tools compare_mjcf_urdf
 ros2 run rtc_tools compare_mjcf_urdf \
     --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf
 
+# 패키지 레이아웃으로 경로 해석 (<robot-pkg>/robots/<robot-name>/...)
+ros2 run rtc_tools compare_mjcf_urdf --robot-pkg robot_descriptions --robot-name ur5e
+
+# 비교 범위 좁히기: MJCF default class 루트 · 관절 목록 (생략 시 자동 탐지, MJCF ∩ URDF)
+ros2 run rtc_tools compare_mjcf_urdf --robot-pkg robot_descriptions --robot-name ur5e \
+    --mjcf-class ur5e --joints shoulder_pan_joint shoulder_lift_joint
+
 # tolerance 조정 (기본: 1e-4)
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 
@@ -297,17 +296,17 @@ ros2 run rtc_tools compare_mjcf_urdf --align-frames world base \
     --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf
 ```
 
-**`--align-frames <MJCF_FRAME> <URDF_FRAME>`** — MJCF 는 로봇 루트 body 를 씬 작성자가 정한 자리에 mount 하고 URDF 의 world 는 루트 링크다. 두 world 가 다르면 world-frame FK 비교가 **로봇 전체 오프셋**을 뿜는데, 그건 모델 발산이 아니라 mounting 규약이다 (ur5e: MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link` → 6개 관절 전부 x 부호가 뒤집혀 보였다, #392). 물리적으로 같은 프레임을 **양쪽에서 하나씩 선언**하면 그 갭이 닫힌다. **이름이 엇갈리는 데 주의** — ur5e 의 MJCF body `base` 는 URDF 링크 `base` 가 아니라 `base_link` 에 대응한다. 미지정 시 두 world 가 일치한다고 가정한다.
+**`--align-frames <MJCF_FRAME> <URDF_FRAME>`** — MJCF 는 로봇 루트 body 를 씬 작성자가 정한 자리에 mount 하고 URDF 의 world 는 루트 링크다. 두 world 가 다르면 world-frame FK 비교가 **로봇 전체 오프셋**을 뿜는데, 그건 모델 발산이 아니라 mounting 규약이다 (ur5e: MJCF world = UR "Base"(DH) 프레임, URDF world = REP-103 `base_link`). 물리적으로 같은 프레임을 **양쪽에서 하나씩 선언**하면 그 갭이 닫힌다. **이름이 엇갈리는 데 주의** — ur5e 의 MJCF body `base` 는 URDF 링크 `base` 가 아니라 `base_link` 에 대응한다. 미지정 시 두 world 가 일치한다고 가정한다.
 
 > 추정이 아니라 선언인 이유: 변환을 데이터에 최소자승으로 맞추면 **진짜 발산이 그 fit 에 흡수된다** — 이 센서가 잡으려는 바로 그 실패다.
 
-**massless URDF 프레임은 mismatch 로 세지 않는다** (#392). 질량 0 의 링크는 순수 좌표 프레임이라 MuJoCo 가 body 를 안 만드는 것이 정상이므로 `[NOTE]` 로만 알린다. 단 면제는 **MuJoCo 가 실제로 만들지 않은 것에 한정**된다 — iiwa7 은 1개, leap_hand 는 5개의 massless 프레임을 실제 body 로 갖고 있어서 일괄 제외하면 그쪽 body count 가 깨진다. **질량을 가진 링크의 소실은 여전히 mismatch** 이며 (fusestatic 이 질량을 부모로 흡수한 경우), #385 가 넣은 신호는 그대로다.
+**massless URDF 프레임은 mismatch 로 세지 않는다.** 질량 0 의 링크는 순수 좌표 프레임이라 MuJoCo 가 body 를 안 만드는 것이 정상이므로 `[NOTE]` 로만 알린다. 단 면제는 **MuJoCo 가 실제로 만들지 않은 것에 한정**된다 — iiwa7 은 1개, leap_hand 는 5개의 massless 프레임을 실제 body 로 갖고 있어서 일괄 제외하면 그쪽 body count 가 깨진다. **질량을 가진 링크의 소실은 여전히 mismatch** 다 (fusestatic 이 질량을 부모로 흡수한 경우).
 
 **링크 존재 판정은 `--link-map` 을 거친다** — 같은 이름이 서로 다른 것을 가리킬 수 있기 때문이다. ur5e 의 URDF 에는 massless `base` 프레임과 4 kg `base_link_inertia` 가 둘 다 있고 MJCF 의 `base` body 는 후자다. 이름만으로 맺으면 massless 프레임이 무거운 body 를 차지해 진짜 링크가 "lost" 로 보고된다.
 
-**`--link-map` 은 예외 목록이지 작업 목록이 아니다** (#411). 파일에 적힌 것은 *이름이 엇갈리는 쌍*뿐이고, 나머지 동명 쌍은 그대로 전부 비교된다 — 선언이 비교 범위를 **좁히지 않는다**. 예전에는 좁혔고, 그래서 ur5e+hand 조합 모델에 7개짜리 arm 맵을 주면 hand 의 실제 질량 발산 4건이 per-link 비교에서 빠진 채 `Mismatches: 3` 이 나왔다. 충돌 시 선언이 이긴다 — 어떤 URDF 링크를 명시 항목이 이미 가리키면 동명 body 가 그것을 다시 채가지 못한다. 리포트는 `Link pairs compared: N` 과 짝을 못 찾은 body/link 목록을 찍으므로, 좁아졌다는 사실 자체가 관측된다.
+**`--link-map` 은 예외 목록이지 작업 목록이 아니다.** 파일에 적힌 것은 *이름이 엇갈리는 쌍*뿐이고, 나머지 동명 쌍은 그대로 전부 비교된다 — 선언이 비교 범위를 **좁히지 않는다**. 충돌 시 선언이 이긴다 — 어떤 URDF 링크를 명시 항목이 이미 가리키면 동명 body 가 그것을 다시 채가지 못한다. 리포트는 `Link pairs compared: N` 과 짝을 못 찾은 body/link 목록을 찍으므로, 좁아졌다는 사실 자체가 관측된다.
 
-**병합된 링크는 `fuse:` 로 선언한다** (#412). MJCF 가 fixed joint 자식을 부모 body 에 접는 것은 정당한 모델링인데, 선언 수단이 없으면 도구가 이를 **2중 오탐**한다 — 자식이 "mass lost" 로, 부모가 "MASS MISMATCH" 로. 그러면 그런 모델은 게이트에 못 넣는다. link_map 파일의 structured form 이 이를 표현한다:
+**병합된 링크는 `fuse:` 로 선언한다.** MJCF 가 fixed joint 자식을 부모 body 에 접는 것은 정당한 모델링인데, 선언 수단이 없으면 도구가 이를 **2중 오탐**한다 — 자식이 "mass lost" 로, 부모가 "MASS MISMATCH" 로. 그러면 그런 모델은 게이트에 못 넣는다. link_map 파일의 structured form 이 이를 표현한다:
 
 ```yaml
 links:                                   # 이름이 엇갈리는 쌍 (생략 가능)
@@ -320,13 +319,13 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 
 선언된 자식은 비교 **전에 합성**된다: 질량 합, 질량가중 COM, 평행축 정리로 옮긴 관성 텐서 합. 합성은 URDF world frame (zero configuration) 에서 수행한 뒤 부모 링크 프레임으로 되돌리므로 fixed joint 의 `rpy` 와 임의 깊이의 체인이 추가 코드 없이 처리된다. **선언이 검사를 무력화하지 않는다** — 합성된 질량·COM·주모멘트가 전부 그대로 비교되고, 자식으로 향하는 경로에 fixed 가 아닌 관절이 하나라도 있으면 선언 자체가 mismatch 다 (그게 없으면 "접었다고 선언" 이 임의의 발산을 지우는 수단이 된다). 합성 body 에 대해서는 collision-geometry plausibility 추정이 부모 링크의 형상만 보므로 검사를 돌리지 않고 그 사실을 `[NOTE]` 로 알린다.
 
-**링크 COM 은 world frame 에서 비교한다** (#416). 로컬 프레임 COM 은 비교 대상이 아니다 — MJCF 는 body 원점을 visual mesh 기준, URDF 는 DH 기준으로 두므로 같은 물리적 COM 이 두 프레임에서 다르게 읽힌다 (ur5e `forearm_link` 실측 0.242 m 차이, 전부 규약). zero configuration 기준 world 로 올리면 그 차이가 사라진다 (같은 3쌍 실측: 최대 5e-7). 관절을 축 *직선* 으로 비교하는 것과 같은 이유다. `--align-frames` 는 COM 비교에도 적용된다. 이 검사가 없으면 **질량과 주모멘트가 그대로인 채 COM 만 옮겨진 발산이 조용히 통과**한다 — 주모멘트는 COM 기준 회전불변량이라 평행이동에 반응하지 않는다.
+**링크 COM 은 world frame 에서 비교한다.** 로컬 프레임 COM 은 비교 대상이 아니다 — MJCF 는 body 원점을 visual mesh 기준, URDF 는 DH 기준으로 두므로 같은 물리적 COM 이 두 프레임에서 다르게 읽힌다 (ur5e `forearm_link` 실측 0.242 m 차이, 전부 규약). zero configuration 기준 world 로 올리면 그 차이가 사라진다 (같은 3쌍 실측: 최대 5e-7). 관절을 축 *직선* 으로 비교하는 것과 같은 이유다. `--align-frames` 는 COM 비교에도 적용된다. 이 검사가 없으면 **질량과 주모멘트가 그대로인 채 COM 만 옮겨진 발산이 조용히 통과**한다 — 주모멘트는 COM 기준 회전불변량이라 평행이동에 반응하지 않는다.
 
 **`--tip-frames <MJCF_FRAME> <URDF_FRAME>`** — tool 프레임을 직접 비교한다. 관절 비교가 축 *직선* 기준이라 **마지막 관절 이후의 오프셋(DH `d6`)을 원리적으로 못 본다** — 그 오프셋은 마지막 관절 자신의 축과 평행하고, 링크 COM 도 움직이지 않는다(실측 확인). ur5e 는 `--tip-frames attachment_site tool0`. MJCF 쪽은 body 또는 **site** 이름을 받는다.
 
 **`--fail-on-unverified`** — 아예 실행되지 못한 검사가 있으면 exit 1. 없으면 mujoco 를 import 못 해도 구조 비교가 통째로 빠진 채 `Mismatches: 0` / exit 0 이 나온다 — **게이트에는 필수**다. 이 플래그 없이도 요약은 `UNVERIFIED: N` 과 "this is NOT a clean pass" 를 찍는다 (warning 과 합치지 않는다 — warning 은 "봤는데 괜찮다", unverified 는 "안 봤다").
 
-**관절 위치는 축 *직선* 으로 비교한다** (#392). Revolute 관절의 원점은 자기 축 위 어디에 놓든 물리가 안 바뀌고, MJCF 는 visual-mesh 기준·URDF 는 DH 기준으로 원점을 다르게 놓는 것이 정상이다. 따라서 두 축 직선의 **수직 거리**만 mismatch 로 세고 축 방향 성분은 `[NOTE]` 로 알린다 (ur5e 실측: 축 방향 성분 최대 138 mm, 수직 성분 전부 0.8 mm 미만). Prismatic 관절은 원점이 곧 zero position 이므로 **점 비교를 유지**한다.
+**관절 위치는 축 *직선* 으로 비교한다.** Revolute 관절의 원점은 자기 축 위 어디에 놓든 물리가 안 바뀌고, MJCF 는 visual-mesh 기준·URDF 는 DH 기준으로 원점을 다르게 놓는 것이 정상이다. 따라서 두 축 직선의 **수직 거리**만 mismatch 로 세고 축 방향 성분은 `[NOTE]` 로 알린다 (ur5e 실측: 축 방향 성분 최대 138 mm, 수직 성분 전부 0.8 mm 미만). Prismatic 관절은 원점이 곧 zero position 이므로 **점 비교를 유지**한다.
 
 **비교 항목:**
 
@@ -490,7 +489,7 @@ plots = get_session_subdir('plots')  # 환경변수 읽기 전용, None 반환 �
 | `resolve_logging_root()` | 3단 체인으로 `logging_data` 루트 경로 결정 |
 | `create_session_dir(root=None)` | `YYMMDD_HHMM` 세션과 6개 서브디렉토리 생성 |
 | `cleanup_old_sessions(root, max)` | `YYMMDD_HHMM` 패턴 세션만 대상으로 개수 제한 |
-| `generate_run_id()` | 이번 launch 의 런 ID (`YYMMDDHHMMSS`). launch 가 `RTC_RUN_ID` 로 전파하고 C++ `rtc::ResolveRunId()` 가 소비 (#376) |
+| `generate_run_id()` | 이번 launch 의 런 ID (`YYMMDDHHMMSS`). launch 가 `RTC_RUN_ID` 로 전파하고 C++ `rtc::ResolveRunId()` 가 소비 |
 | `get_session_dir()` | `RTC_SESSION_DIR` 읽기 (없으면 `None`) |
 | `get_or_create_session_dir()` | env 우선, 없으면 새 세션 생성 |
 | `get_session_subdir(name)` | 현재 세션 하위 폴더 경로 반환 (자동 생성, 세션 미설정 시 `None`) |
@@ -499,7 +498,7 @@ plots = get_session_subdir('plots')  # 환경변수 읽기 전용, None 반환 �
 
 ### `thread_layout.py` — 스레드 코어 배치 SSoT의 Python mirror
 
-코어 티어 breakpoint 의 Python 미러입니다. **재인코딩이 아니라 생성물**이며 (issue #153 M1), 표 자체는 `thread_layout_generated.py` 에 선언형 manifest [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 로부터 생성됩니다 — C++ tier 상수·shell 헬퍼와 같은 출처입니다. Launch 파일(Python)이 외부 driver/simulator 프로세스에 `taskset` 핀을 적용할 때 C++ RT 루프와 동일한 코어 배치 결정을 내리기 위해 사용됩니다.
+코어 티어 breakpoint 의 Python 미러입니다. **재인코딩이 아니라 생성물**이며, 표 자체는 `thread_layout_generated.py` 에 선언형 manifest [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) 로부터 생성됩니다 — C++ tier 상수·shell 헬퍼와 같은 출처입니다. Launch 파일(Python)이 외부 driver/simulator 프로세스에 `taskset` 핀을 적용할 때 C++ RT 루프와 동일한 코어 배치 결정을 내리기 위해 사용됩니다.
 
 ```python
 from rtc_tools.launch.thread_layout import select_thread_layout, get_physical_cpu_count
@@ -571,9 +570,9 @@ cd ~/ros2_ws/rtc_ws && uv pip sync src/rtc-framework/requirements.lock
 |------|--------|
 | build_type (export) | `ament_python` |
 | exec | `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `ament_index_python` |
-| test | (개별 lint — `ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책 `bdedac7` 으로 사용 금지; 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md)) |
+| test | (개별 lint — `ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책상 사용 금지; 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md)) |
 
-> Python scientific stack (`numpy` / `scipy` / `matplotlib` / `pandas` / `PyQt5`) 과 `mujoco` 는 package.xml 에 두지 않는다 — cross-workspace isolation 정책 (2026-05-23) 으로 모두 venv `requirements.lock` 책임. `rclpy` 만 ROS Jazzy 가 책임.
+> Python scientific stack (`numpy` / `scipy` / `matplotlib` / `pandas` / `PyQt5`) 과 `mujoco` 는 package.xml 에 두지 않는다 — cross-workspace isolation 정책으로 모두 venv `requirements.lock` 책임. `rclpy` 만 ROS Jazzy 가 책임.
 
 **venv lock 기준** ([requirements.in](../requirements.in) → [requirements.lock](../requirements.lock)):
 
