@@ -3,7 +3,7 @@
 <package format="3">
   <name>integrated_bringup</name>
   <version>5.17.0</version>
-  <description>UR5e-specific launch files, YAML configs, and demo controllers (DemoJointController, DemoTaskController) for RTC framework. Includes robot/sim launch, GUI tools, and CPU affinity setup.</description>
+  <description>Per-robot launch files and YAML configs (config/&lt;robot&gt;/) and the demo controller bindings (DemoJointController, DemoTaskController, DemoComplianceController, DemoWbcController, DemoInferenceController) for RTC framework. Includes robot/sim launch, GUI tools, and CPU affinity setup.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

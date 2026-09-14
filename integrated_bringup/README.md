@@ -6,7 +6,7 @@
 
 ## 개요
 
-UR5e 로봇을 위한 **launch, 설정, 데모 컨트롤러** 통합 패키지입니다. 실제 로봇과 MuJoCo 시뮬레이션 모드를 지원하며, CPU 격리, DDS 스레드 핀닝, 세션 기반 로깅을 자동으로 설정합니다.
+로봇별(`config/<robot>/`) **launch, 설정, 데모 컨트롤러** 통합 패키지입니다. 실제 로봇과 MuJoCo 시뮬레이션 모드를 지원하며, CPU 격리, DDS 스레드 핀닝, 세션 기반 로깅을 자동으로 설정합니다.
 
 **핵심 기능:**
 - 데모 컨트롤러: `DemoJointController`, `DemoTaskController`, `DemoComplianceController`, `DemoWbcController` (TSID QP whole-body + MPC 통합), `DemoInferenceController` (ONNX 정책) — 등록 목록은 `src/controllers/controller_registration.cpp`
