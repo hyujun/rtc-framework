@@ -39,6 +39,8 @@ DISPLAY=:1 ros2 run integrated_bringup demo_controller_gui # 창 제목 "Demo Co
 
 ## 학습 정책을 sim 에서 돌리기 (`demo_inference_controller`, ur5e_p1b 전용)
 
+**착수 전 [integrated_bringup/README.md §Scene overlay](../../../integrated_bringup/README.md#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) 를 읽는다** — 어느 overlay 가 정책의 학습 씬인지, 이름이 안 풀릴 때의 동작, 정책 로드를 가르는 기동 로그 2줄은 그 절이 소유한다 (모델이 안 잡혀도 에러 없이 올라온다 — 아래 Gotchas). 이 절은 그 명령에 headless 인자를 더한 형태와 실행자에게만 필요한 것만 갖는다.
+
 ```bash
 export RTC_POLICY_DIR=/path/to/<policy-export-dir> # 모델은 repo 밖
 ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
@@ -46,9 +48,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
 # 기동 후 switch_controller 로 demo_inference_controller 활성화 (위 절)
 ```
 
-- **`sim_overlay:=inference_pole` 없이는 잡을 것이 없다** — 출하 p1b 씬은 테이블 + 무작위 메시고, 정책은 바닥 위 원통 1개 + 학습 reset 자세에서 훈련됐다. overlay 는 그 씬을 params 로 얹고 (공유 `mujoco_simulator.yaml` 무수정), 이름이 안 풀리면 launch 가 실패한다 (조용히 출하 씬으로 돌면 그 run 의 모든 수치가 다른 씬을 서술한다).
-- 기동 확인 2줄: `[inference] N observed link(s) in '<frame>'` (정책이 관측하는 프레임) · `[inference] policy loaded: ... (decimation ...)`. 후자가 없으면 `RTC_POLICY_DIR` 미설정이고, 그때는 `allow_missing_model: true` 라 **자세만 유지**한다 (고장처럼 안 보인다).
-- **출하 YAML 을 안 고치고 컨트롤러 키를 바꾸려면** overlay 에 `integrated_rt_controller: ros__parameters: demo_inference_controller: <yaml.경로>: <값>` 을 넣는다 — `ApplyControllerParamOverrides` 가 그 ROS 파라미터를 컨트롤러 YAML 트리에 꽂는다. **경로는 YAML 그대로** 여야 한다 (예: `inference.policy_frame` — 한 단계 얕게 쓰면 조용히 무시된다). 반영 여부는 위 기동 로그로 확인.
+- **출하 YAML 을 안 고치고 컨트롤러 키를 바꾸려면** overlay 에 `integrated_rt_controller: ros__parameters: demo_inference_controller: <yaml.경로>: <값>` 을 넣는다 — `ApplyControllerParamOverrides` 가 그 ROS 파라미터를 컨트롤러 YAML 트리에 꽂는다. **경로는 YAML 그대로** 여야 한다 (예: `inference.policy_frame` — 한 단계 얕게 쓰면 조용히 무시된다). 반영 여부는 README 의 기동 로그로 확인.
 - 판독: `<session>/controllers/demo_inference_controller/inference_diag.csv` — `held`+`hold_reason` (이 컨트롤러는 **모든 실패가 hold** 라 사유 없이는 정상과 구분 불가), `policy_step`/`inference_count` (decimation 대로인지), `reach_phase`·`tip_distance`, `object_*` (policy_frame 기준 — 프레임이 어긋나면 부호로 드러난다), `arm_lag_max`, `force_<tip>`. 같은 폴더의 `<device>_state.csv` 가 관절 lane.
 - **팔 lag 은 접촉이 지배한다**: 자유 운동 구간의 하한은 sim 위치 서보의 kv/kp (0.2 s) × 명령 속도이고, 물체에 막히면 그 3 배까지 포화한다. lag 수치를 인용할 땐 첫 접촉 시각으로 구간을 갈라 보고한다.
 - 종료는 자식 노드에 SIGINT (`pkill -INT -f integrated_rt_controller; pkill -INT -f mujoco_simulator_node`) — `ros2 launch` 에 한 번 보낸 SIGINT 가 45 s 안에 안 끝난 적이 있다. `-9` 는 CSV flush 를 날린다.

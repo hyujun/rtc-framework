@@ -208,13 +208,14 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # h
 `sim_ur5e_p1b.launch.py` 는 `config/ur5e_p1b/mujoco_simulator.yaml` **뒤**, 그리고 자기 명령줄
 인자 (`model_path:=` 등) **앞**에 params 파일 하나를 더 끼울 수 있습니다. 두 노드에 모두 전달되고
 각 노드는 자기 섹션만 읽습니다. 이름만 주면 `config/ur5e_p1b/sim_overlays/<name>.yaml`, `/` 를
-포함하거나 `.yaml` 로 끝나면 경로로 해석하며, **해석되지 않는 값은 launch 를 실패**시킵니다 —
-조용히 무시되면 명령줄이 가리키는 씬과 실제로 뜬 씬이 달라지고 그 run 의 모든 측정이 다른 씬을
-서술하게 됩니다.
+포함하거나 `.yaml` 로 끝나면 경로로 해석하며, **해석되지 않는 값은 launch 를 실패**시킵니다
+(에러에 출하 overlay 이름 목록이 실립니다). fallback 하지 않는 이유는 launch 파일의
+`resolve_sim_overlay` docstring 이 갖습니다.
 
-출하 overlay 는 `inference_pole` 하나입니다 — `demo_inference_controller` 의 정책이 학습된 씬
-(바닥 위 원통 1개 + 학습 reset 자세). 씬 자체는 `robot_descriptions/objects/pole` 에 있고 공유
-`mujoco_simulator.yaml` 은 건드리지 않으므로, `sim_overlay:=` 없이 띄우면 정확히 출하 씬입니다.
+출하 overlay 와 각각의 용도는 `config/ur5e_p1b/sim_overlays/*.yaml` 의 헤더 주석이 소유합니다.
+어느 overlay 도 공유 `mujoco_simulator.yaml` 을 건드리지 않으므로, `sim_overlay:=` 없이 띄우면
+정확히 출하 씬입니다. `demo_inference_controller` 의 정책이 학습된 씬(바닥 위 원통 1개 + 학습
+reset 자세)은 `inference_pole` 이고, 물체 자산은 `robot_descriptions/objects/pole` 에 있습니다.
 
 ```bash
 export RTC_POLICY_DIR=/path/to/ObjectHandGraspDeployMulti5-Export-v0   # 모델은 repo 밖
