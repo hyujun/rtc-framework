@@ -736,10 +736,12 @@ void DemoComplianceController::ComputeControl(const ControllerState& state, doub
       // run cannot supply it — the 2026-09-12 rule ("sim closes algorithm
       // questions, hardware closes physical ones") moves the VERIFICATION of
       // such a feature to sim, never the reason to build it. 2026-09-04 on p1b
-      // the ramp sat at alpha = 0 for the whole activation, so the envelope was
-      // never touched and there is still nothing to extend; sim grasps since
-      // then stop far short of the box with `disp_limited` clear. Build it when
-      // a guide runs out of envelope on the robot, not before.
+      // the envelope was never touched in either of the session's two
+      // activations — the first ramped to alpha = 1 but the hand was empty and
+      // no wrench arrived, the second sat at alpha = 0 behind the #497 bias
+      // latch — so there is still nothing to extend; sim grasps since then stop
+      // far short of the box with `disp_limited` clear. Build it when a guide
+      // runs out of envelope on the robot, not before.
       admittance_.Reset();
     }
   }

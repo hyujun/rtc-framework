@@ -245,8 +245,10 @@ demo_shared:
     # What remains unmeasured is HARDWARE. Every number here, these gates
     # included, comes from a plant whose model the observer knows exactly;
     # encoder noise, friction and model error do not exist in it and all three
-    # attack this estimator directly ([MO-1u]). #177 owns that lane, and this
-    # stays off until it closes.
+    # attack this estimator directly ([MO-1u]). #177 closed 2026-09-12 without
+    # a run on this arm (its hardware lane was the UR5e), so no issue owns that
+    # measurement now; this stays off until a hardware run on this arm has
+    # looked at it.
     # Turning this on also costs a frame Jacobian plus a 6x6 solve per tick.
     payload_estimator:
       enabled: false
@@ -337,8 +339,8 @@ demo_shared:
       # THESE ARE SIM NUMBERS, exactly as the velocity gates above are. The sim
       # payload floor is model agreement to machine precision; on hardware,
       # model error and friction set that floor instead and it will be orders
-      # higher, so this ceiling must be re-measured there before it is trusted
-      # (#177), not inherited.
+      # higher, so this ceiling must be re-measured there before it is trusted,
+      # not inherited.
       max_fit_error: 1.0e-3
       # ||Wg|| floor [m/s^2]. [MASS-A] divides by ||Wg||^2, so a gravity-free
       # model has no mass map at all (NUM-2 / NUM-4).
@@ -366,7 +368,7 @@ demo_shared:
       # and after every re-seed; that is the design, not a fault.
       inertial:
         # Shipped false for the same reason payload_estimator is: no hardware
-        # run has looked at these numbers yet (#177).
+        # run on this arm has looked at these numbers yet.
         enabled: false
         # Per-tick decay of the RLS accumulator, (0, 1]. 1.0 = never forget,
         # correct only if the payload cannot change during a run. Below 1 it
