@@ -15,11 +15,10 @@
 // after the controller activates (compliance-conventions.md §3.1). Slice 3 needs
 // exactly that sequence, so it is extracted here rather than copied (P5).
 //
-// TaskImpedanceController still carries its own copy: extracting a helper and
-// migrating a shipped controller onto it are separate regression surfaces, and
-// this repo already took that call once — task_dynamics.hpp landed without
-// touching the OSC for the same reason (#236 D16). The migration is a follow-up,
-// and the day it happens these two must produce byte-identical wrenches.
+// The TaskImpedanceController adapter that carried its own copy when this was
+// extracted was deleted in #236 S7c without migrating onto it, so there is one
+// implementation of this sequence in the tree; its in-tree consumer is the
+// integrated_bringup compliance binding.
 //
 // Deliberately model-free and FSM-free: the caller owns the robot model (it
 // supplies the two frames) and the ComplianceStateMachine (it acts on the
