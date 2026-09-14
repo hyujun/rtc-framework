@@ -120,6 +120,13 @@
 #          keep as-is (user, 2026-08-14) -- UNVERIFIED is not a silent pass
 #          (#435), so it is accepted. Do not reopen without a new reason to
 #          accept that block.
+#          A colcon / build.sh ALREADY running in this workspace (e.g. the
+#          agent's own background shell task) is looked for before building;
+#          if one is found the hook builds nothing and blocks with a message
+#          naming it -- running beside it races for CPU and writes the same
+#          build/ and install/ trees. Matched by name + cwd, so a colcon aimed
+#          here from elsewhere with an absolute --build-base is not seen (see
+#          workspace_build_rivals).
 #          Doxygen / cross-package doc consistency NOT checked
 #          (modification-guide.md "Updating an Existing Package" 6 steps cover
 #          these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
@@ -1133,6 +1140,41 @@ build_contention_evidence() {
   fi
   printf 'loadavg %s, %s build/compiler processes running at kill time' "$load" "${busy:-0}"
 }
+
+# A build already writing this workspace -- looked for BEFORE starting ours.
+#
+# Evidence after a kill (above) explains a 124; it does not prevent the race.
+# Observed 2026-09-14: the main agent started `./build.sh -p <3 pkgs>` as a
+# background SHELL task and ended its turn. Shell tasks do not defer (see
+# "Background agents still writing the checkout"), so this hook built the same
+# packages beside it and was killed at the bound (loadavg 15.5). A timeout is
+# the mild outcome: two colcon runs also write the same build/ and install/
+# trees, so a concurrent ninja or a half-installed package can surface as a
+# compile error or a test verdict that belongs to neither run.
+#
+# So when one is found the hook does not build at all -- it blocks with a
+# message naming the rival and saying to wait for it. Block, not defer, for the
+# reason shell tasks do not defer: a wrong block costs a turn, a wrong defer an
+# unverified tree. Nothing is dropped; the watermark only advances on a pass.
+#
+# Matched by process NAME (-x, for the reason given above) and then by working
+# directory. build.sh cds into the workspace before colcon and stays there for
+# the post-build RT check; the AGENTS.md §9.1 form runs colcon from the
+# workspace root. A colcon pointed here from another directory with absolute
+# --build-base/--install-base is NOT recognised, and `bash build.sh` is named
+# "bash" (only a direct-shebang exec keeps the script's name) -- its colcon is
+# still seen once it starts. Prints "<pid>: <cmdline>".
+workspace_build_rivals() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  local ws pid cwd cmd
+  ws=$(cd "$WORKSPACE" 2>/dev/null && pwd -P) || return 0
+  for pid in $(pgrep -x '(colcon|build\.sh)' 2>/dev/null || true); do
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+    [ "$cwd" = "$ws" ] || continue
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120) || cmd="?"
+    printf '%s: %s\n' "$pid" "$cmd"
+  done
+}
 PROC3=$(echo "$BUILD_PKGS" | tr ' ' '\n' | grep -E '^(rtc_base|rtc_msgs)$' || true)
 if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
   # Emit the routing decision before discarding it. Blanking BUILD_PKGS is what
@@ -1145,7 +1187,14 @@ if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
   BUILD_PKGS=""
 fi
 
-if [ -n "$PROC3" ]; then
+RIVALS=""
+if [ -n "$PROC3$BUILD_PKGS" ]; then
+  RIVALS=$(workspace_build_rivals)
+fi
+if [ -n "$RIVALS" ]; then
+  # Backslashes doubled for the `echo -e` report, as build_log_tail does.
+  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(sed -n '1,3p' <<<"$RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/      /')\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then end the turn again.\n"
+elif [ -n "$PROC3" ]; then
   # PROC-3: broad rebuild + full test (60s * count would still time out, so use
   # a generous bound on the build and a per-package test timeout).
   # All colcon invocations run from $WORKSPACE so build/install/log land in the
