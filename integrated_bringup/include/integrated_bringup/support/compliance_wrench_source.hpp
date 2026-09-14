@@ -79,17 +79,17 @@ inline constexpr std::string_view kPullEstimatorSourceName = "pull_estimator";
 /// controller YAML gets.
 ///
 /// The message names the accepted values rather than saying "invalid", because
-/// the interesting failure is `momentum_observer`: it is a source that exists in
-/// the design (#469 S6) and does not exist yet in code, so the operator needs to
-/// be told which of the two situations they are in.
+/// the interesting failure is `momentum_observer`: an operator who has read the
+/// design (#469 S6) expects it to exist, and it was deliberately not built (see
+/// the note on the enum), so the message says so instead of reading as a typo.
 [[nodiscard]] inline ComplianceWrenchSource ParseComplianceWrenchSource(const std::string& name) {
   if (name == kPullEstimatorSourceName) {
     return ComplianceWrenchSource::kPullEstimator;
   }
   throw std::runtime_error("external_wrench.source: unknown value '" + name + "'. Accepted: '" +
                            std::string(kPullEstimatorSourceName) +
-                           "'. (A momentum-observer source is designed but not implemented — "
-                           "#469 S6.)");
+                           "'. (A momentum-observer source was not built — #502; adding one "
+                           "needs a new issue.)");
 }
 
 /// One tick's answer from a wrench source: what to publish, where it acts, and
