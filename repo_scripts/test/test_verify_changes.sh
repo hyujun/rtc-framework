@@ -800,6 +800,99 @@ expect_contains "the PROC-3 tail shows how the build was invoked" "$out" "stub-b
 expect_exit "a real PROC-3 build failure blocks the turn" "$rc" 2
 rm -rf "$dir" "$stub"
 
+# --- A build already running in the workspace ---------------------------------
+#
+# 2026-09-14: the agent's own `./build.sh` ran as a background shell task, the
+# hook built the same packages beside it and was killed at the bound. The hook
+# now looks for a colcon / build.sh whose cwd is its colcon workspace before
+# building, and blocks without building when it finds one.
+
+# Nested as <ws>/src/repo so the hook's WORKSPACE ($PROJECT_DIR/../..) is a
+# directory this test owns rather than "/". Echoes the repo dir.
+make_nested_fixture() {
+  local ws dir
+  ws=$(mktemp -d)
+  mkdir -p "$ws/src"
+  dir=$(make_fixture)
+  mv "$dir" "$ws/src/repo"
+  echo "$ws/src/repo"
+}
+
+# A stand-in for a running build: a script whose process NAME is its file name.
+# Direct shebang on purpose -- through `#!/usr/bin/env bash` env execs bash and
+# the process is named "bash", which no name match can see (measured).
+write_rival() {
+  cat >"$1" <<'EOF'
+#!/bin/bash
+trap 'kill "$child" 2>/dev/null; exit 0' TERM
+sleep 60 &
+child=$!
+wait "$child"
+EOF
+  chmod +x "$1"
+}
+
+# $1 = pid, $2 = process name. The background subshell execs the rival, so its
+# name changes a moment after `&` returns; asserting before that would test
+# nothing.
+wait_for_name() {
+  local _
+  for _ in $(seq 1 50); do
+    [ "$(cat "/proc/$1/comm" 2>/dev/null)" = "$2" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# 39b. A rival in the workspace blocks the turn WITHOUT building beside it: the
+#      stub build would print "stub-build args" into the report if it ran.
+for rival in colcon build.sh; do
+  dir=$(make_nested_fixture)
+  ws=$(cd "$dir/../.." && pwd -P)
+  stub=$(make_build_stub 1)
+  bin=$(mktemp -d)
+  write_rival "$bin/$rival"
+  (cd "$ws" && exec "$bin/$rival") >/dev/null 2>&1 &
+  rpid=$!
+  if wait_for_name "$rpid" "$rival"; then
+    echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+    out=$(run_hook_build "$dir" "$stub"); rc=$?
+    expect_contains "a $rival running in the workspace is reported" "$out" "build/test NOT run"
+    # cmdline of a shebang script is "<interpreter> <script>".
+    expect_contains "the report names the running $rival by pid" "$out" "$rpid: /bin/bash $bin/$rival"
+    expect_not_contains "nothing is built beside a running $rival" "$out" "stub-build args"
+    expect_exit "a $rival running in the workspace blocks the turn" "$rc" 2
+  else
+    fail "the $rival stand-in never showed up under its own name"
+  fi
+  kill "$rpid" 2>/dev/null
+  wait "$rpid" 2>/dev/null
+  rm -rf "$ws" "$stub" "$bin"
+done
+
+# 39c. ...but a colcon running for ANOTHER workspace is not a rival: the build
+#      runs as before. Without this the check could block on any colcon at all.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+stub=$(make_build_stub 1)
+bin=$(mktemp -d)
+elsewhere=$(mktemp -d)
+write_rival "$bin/colcon"
+(cd "$elsewhere" && exec "$bin/colcon") >/dev/null 2>&1 &
+rpid=$!
+if wait_for_name "$rpid" colcon; then
+  echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook_build "$dir" "$stub"); rc=$?
+  expect_not_contains "a colcon in another workspace is not a rival" "$out" "build/test NOT run"
+  expect_contains "the build still runs beside a colcon elsewhere" "$out" "build FAILED (exit 1)"
+  expect_exit "that build failure still blocks the turn" "$rc" 2
+else
+  fail "the colcon stand-in never showed up under its own name"
+fi
+kill "$rpid" 2>/dev/null
+wait "$rpid" 2>/dev/null
+rm -rf "$ws" "$stub" "$bin" "$elsewhere"
+
 # --- Phase 5 formatter drift ---------------------------------------------------
 #
 # format-code.sh only sees Edit / Write, so a file written through Bash reached
