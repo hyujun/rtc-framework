@@ -161,9 +161,14 @@ inline constexpr std::uint32_t kComplianceVtcpFrameWaitTicks = 1000;
 ///
 /// ### Hand control law (same as DemoJointController)
 /// @code
-///   hand_cmd[i]  = hand_pos[i] + hand_kp[i] * (hand_target[i] - hand_pos[i]) *
-///   dt
+///   on a new hand goal: quintic rest-to-rest trajectory from the measured hand
+///                       position, duration
+///     T          = max(0.01, max|Δq| / hand_trajectory_speed,
+///                      1.875 · max|Δq| / hand_max_traj_velocity)  [2nd if > 0]
+///   hand_cmd[i]  = trajectory position at t
 /// @endcode
+///   The grasp mode then owns the command: `force_pi` hands it to the grasp
+///   controller, `contact_stop` freezes it at the contact hold position.
 ///
 /// ### Target convention (`SetRobotTarget` / `/target_joint_positions`)
 ///   - 3-DOF mode: `target[0..2]` = TCP position [x,y,z], `target[3..5]` =
@@ -1012,14 +1017,14 @@ class DemoComplianceController final : public RTControllerInterface {
   // tree-model or when the block is absent. Output rides grasp_state_.pull.
   PullEstimatorWiring pull_wiring_;
 
-  // #469 S2: which estimate will drive the admittance law. Resolved at
-  // configure from `external_wrench.source` and NOT read by anything yet — S3 is
-  // the first consumer. Parsed now rather than then so a profile whose source is
-  // misspelled is refused by the bring-up that ships it, instead of by the
-  // sprint that finally reads the field.
+  // #469 D-A4: which estimate drives the admittance law. Resolved at configure
+  // from `external_wrench.source`, so a profile whose source is misspelled is
+  // refused by the bring-up that ships it. With a single value there is nothing
+  // to dispatch on — the tick calls FromPullEstimate directly — and the field is
+  // read only by the diagnostic lane (the `wrench_source` column).
   ComplianceWrenchSource wrench_source_{ComplianceWrenchSource::kPullEstimator};
 
-  // ── §7 admittance, parsed but not yet ticked (#469 S3) ────────────────────
+  // ── §7 admittance (#469 S3) ───────────────────────────────────────────────
   //
   // `ParseTaskAdmittanceParams` is the SSoT for this law's shape: M/D/K, the
   // §7.4 displacement box, the §7.5 velocity limits, the §10.6 staleness
@@ -1028,23 +1033,22 @@ class DemoComplianceController final : public RTControllerInterface {
   // the CLIK keys above rather than nested — which is also why the gain names
   // were unified (see the note on Gains).
   //
-  // Filled at LoadConfig and read by NOTHING in this commit. Parsed a sprint
-  // early on purpose: every throw in that parser (non-positive desired_inertia,
-  // a mis-shaped sequence, `external_wrench.enabled: false`, a non-position
-  // command_type) becomes a configure FAILURE, and D1 turns that into a refused
-  // bring-up — so a profile S3 would have rejected is rejected by the sprint
-  // that shipped it, on a tick that does not yet depend on the values.
+  // Filled at LoadConfig and read every tick (the admittance step, the wrench
+  // update, the activation ramp, the fault gates). Every throw in that parser
+  // (non-positive desired_inertia, a mis-shaped sequence,
+  // `external_wrench.enabled: false`, a non-position command_type) becomes a
+  // configure FAILURE, and D1 turns that into a refused bring-up.
   rtc::params::TaskAdmittanceParams admittance_params_{};
   rtc::params::TaskAdmittanceConfig admittance_config_{};
 
   // Owns the wrench's frame transport, bias, deadband, saturation and §10.6
-  // ageing. Configured (sample rate + conditioning) at LoadConfig; nothing
-  // publishes into it or reads out of it until S3 wires tick rows 8-9.
+  // ageing. Configured (sample rate + conditioning) at LoadConfig; the tick
+  // publishes the source verdict into it and reads the LWA wrench out of it.
   rtc::compliance::WrenchPipeline wrench_pipeline_{};
 
   // x̃_c = X_c ⊖ X_d — the DEVIATION, not the frame. `Reset()` collapses X_c
-  // onto X_d, which is what E-STOP / SAFE_STOP / device-invalid owe it (S3
-  // AC2); no caller does that yet because no caller steps it yet.
+  // onto X_d, which is what activation, SAFE_STOP, every disengage edge and
+  // every re-seed of X_d from the measurement (D-A15) owe it.
   rtc::compliance::AdmittanceIntegrator admittance_{};
 
   // §7 fault classification (SAFE_STOP latched vs DEGRADED recoverable).

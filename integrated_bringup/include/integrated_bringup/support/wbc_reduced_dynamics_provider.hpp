@@ -64,9 +64,11 @@ namespace integrated_bringup {
 /// **frozen-loop 미주입 정책 (사용자 확정 2026-07-18)**:
 ///  - **L1**: held/singular tick 은 open-chain fallback 이 아니라 직전 유효(last-good)
 ///  loop-consistent
-///    J/oMf 를 유지한다 (최초 유효 tick 이전만 open-chain — 불가피). degraded J 를 QP 에 안 넣는다.
-///  - **L2-zero**: 하류 frame **dJv(drift)=0** (RtClosedChainHandle 에 가속도 API 없음 →
-///    frozen-loop drift 대신 미보상). 완전 loop-consistent dJv 는 issue #173 후속.
+///    J/oMf/dJv 를 유지한다 (최초 유효 tick 이전만 open-chain — 불가피). degraded J 를 QP 에 안
+///    넣는다.
+///  - **L2-exact** (#173): 하류 frame **dJv(drift)** 는 같은 tick `UpdateDynamics` 의 2차 FK
+///    상태에서 `RtClosedChainHandle::GetFrameClassicalAccelerationDrift` 로 읽은 loop-consistent
+///    `J̇_a·v_a` 다. J/oMf 와 한 snapshot 단위로 저장·주입한다.
 ///  - 비하류(serial 등가) contact frame 은 open-chain 이 **정확값**이라 미변경 (byte-for-byte).
 ///
 /// ### RT 계약
@@ -158,7 +160,7 @@ class WbcReducedDynamicsProvider final : public rtc::tsid::ReducedDynamicsProvid
 
   /// @brief (Phase ③) loop-하류 contact frame 의 J·oMf 를 loop-consistent 값으로 덮는다.
   ///   provider 가 `FillReducedDynamics` 에서 이미 사영한 핸들을 재사용 (재사영 없음). frozen-loop
-  ///   미주입 정책 (L1 last-good hold / L2-zero dJv / 비하류 미변경) 은 클래스 주석 참조.
+  ///   미주입 정책 (L1 last-good hold / L2-exact dJv / 비하류 미변경) 은 클래스 주석 참조.
   /// @return 하나 이상 frame 을 덮었으면 true. **RT-safe.**
   /// @warning **순서 계약**: 반드시 같은 `PinocchioCache::Update()` 안에서 `FillReducedDynamics`
   ///   (핸들 Update)가 먼저 돈 뒤 호출해야 한다 — q/v 를 무시하고 핸들의 사영 kinematics 를

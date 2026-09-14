@@ -204,6 +204,13 @@ class RtClosedChainHandle {
   [[nodiscard]] const Eigen::VectorXd& GetFullConfiguration() const noexcept;
 
   /// 축약 프레임 Jacobian J_a = J_full(frame)·G (6 × n_a) 를 J_out 에 기록.
+  ///
+  /// 행은 `RtModelHandle::GetFrameJacobian` 과 같다 (rows 0..2 = linear, 3..5 = angular).
+  /// **열은 다르다 — PINOCCHIO v-공간 순서가 아니라 독립 좌표 순서다** (G 의 열 k =
+  /// `GetIndependentJointNames()[k]`, `Update` 의 `q_a` 와 같은 순서, n_a 열). 이름이 같은 형제
+  /// 메서드의 "columns = Pinocchio v-order" 계약을 여기 적용하면 DoF 가 조용히 섞인다. full·cache
+  /// v 공간 행렬에 넣으려면 호출자가 열을 순열로 흩뿌린다 (예:
+  /// `WbcReducedDynamicsProvider::ScatterFrameJacobian`).
   /// @param frame_id 프레임 인덱스 (full 모델 기준; GetFrameId 로 조회)
   /// @param ref_frame LOCAL / WORLD / LOCAL_WORLD_ALIGNED
   /// @param J_out 6 × n_a pre-allocated. **RT-safe.**

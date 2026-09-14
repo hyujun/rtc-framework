@@ -889,9 +889,9 @@ TEST(ComplianceWrenchSourceConfig, AMissingSourceRefusesToConfigure) {
 TEST(ComplianceWrenchSourceConfig, AnUnimplementedSourceRefusesToConfigure) {
   YAML::Node cfg = ShippedControllerNode("iiwa7_leap", "demo_compliance_controller");
   MergeShippedShared(cfg, "iiwa7_leap");
-  // The value that matters: momentum_observer is a REAL source in the design
-  // (#469 S6) with no adapter behind it yet. It must be refused exactly like a
-  // typo rather than accepted into a lane that produces nothing.
+  // The value that matters: momentum_observer is a source the design named
+  // (#469 S6) and #502 closed without building. It must be refused exactly like
+  // a typo rather than accepted into a lane that produces nothing.
   cfg["external_wrench"]["source"] = "momentum_observer";
   EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
 
@@ -899,10 +899,9 @@ TEST(ComplianceWrenchSourceConfig, AnUnimplementedSourceRefusesToConfigure) {
   EXPECT_THROW(BringUp<DemoComplianceController>(cfg), std::runtime_error);
 }
 
-// The §7 schema is parsed off this SAME node from #469 S2's successor commit on,
-// and nothing in the tick reads the result yet — so this is the only assertion
-// that `ParseTaskAdmittanceParams` is called at all. Deleting the call leaves
-// every other test in this file green.
+// The §7 schema is parsed off this SAME node. This is the configure-side
+// assertion that `ParseTaskAdmittanceParams` is called on it: deleting the call
+// leaves every other test in this file green.
 //
 // The positive control runs FIRST and is an ASSERT: three EXPECT_THROWs on a
 // config that never configured would pass for a reason that has nothing to do

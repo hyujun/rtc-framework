@@ -5,10 +5,12 @@
 //
 //   τ_estop = ĝ(q) − D·q̇,   clamped per joint to ±τ_max
 //
-// ĝ(q) keeps the arm from collapsing; −D·q̇ damps residual motion to rest. This
-// is the SAME helper that #184's OSC E-STOP should migrate onto (deferred), so
-// the two do not diverge. Not merged with the CM global E-STOP latch — see
-// compliance_state_machine.hpp. RT-safe: noexcept, fixed size, no heap/throw.
+// ĝ(q) keeps the arm from collapsing; −D·q̇ damps residual motion to rest. Any
+// torque-mode binding E-STOPs through this one helper so the paths cannot
+// diverge; no binding in the tree does today (the OSC adapter #184 would have
+// migrated onto it was deleted in #236 S7c). Not merged with the CM global
+// E-STOP latch — see compliance_state_machine.hpp. RT-safe: noexcept, fixed
+// size, no heap/throw.
 #pragma once
 
 #include <Eigen/Core>
@@ -27,7 +29,7 @@ namespace rtc::compliance {
 // channel) would survive the per-joint clamp untouched — NaN fails every
 // comparison, and ±∞ would clamp to ±lim and silently mask the fault — so any
 // non-finite result is forced to 0 N·m (no energy injection) rather than reaching
-// the backend. (The same helper is what #184's OSC E-STOP migrates onto.)
+// the backend.
 inline void GravityCompDampedHold(Eigen::Ref<Eigen::VectorXd> tau_out,
                                   const Eigen::Ref<const Eigen::VectorXd>& gravity,
                                   const Eigen::Ref<const Eigen::VectorXd>& qdot, double damping,

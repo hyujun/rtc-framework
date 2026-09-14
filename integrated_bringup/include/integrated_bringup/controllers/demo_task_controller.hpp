@@ -117,9 +117,14 @@ inline constexpr std::uint32_t kVtcpFrameWaitTicks = 1000;
 ///
 /// ### Hand control law (same as DemoJointController)
 /// @code
-///   hand_cmd[i]  = hand_pos[i] + hand_kp[i] * (hand_target[i] - hand_pos[i]) *
-///   dt
+///   on a new hand goal: quintic rest-to-rest trajectory from the measured hand
+///                       position, duration
+///     T          = max(0.01, max|Δq| / hand_trajectory_speed,
+///                      1.875 · max|Δq| / hand_max_traj_velocity)  [2nd if > 0]
+///   hand_cmd[i]  = trajectory position at t
 /// @endcode
+///   The grasp mode then owns the command: `force_pi` hands it to the grasp
+///   controller, `contact_stop` freezes it at the contact hold position.
 ///
 /// ### Target convention (`SetRobotTarget` / `/target_joint_positions`)
 ///   - 3-DOF mode: `target[0..2]` = TCP position [x,y,z], `target[3..5]` =
