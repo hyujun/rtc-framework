@@ -131,7 +131,7 @@ FSM은 사실상 두 벌이다. 위 WBC FSM이 authoritative이며, MPC가 켜�
 
 - 감축 사상 `G`(nv×n_a)는 종속 좌표 블록 `-A⁻¹B`(`A = Jc_Dᵀ Jc_D`, `B = Jc_Dᵀ Jc_I`, damped 정규방정식 좌-pseudoinverse)와 독립 좌표 identity 블록으로 구성한다.
 - 축약 관성 `M_a = Gᵀ M G`, 축약 중력 `g_a = Gᵀ g`, 축약 비선형효과 `h_a = Gᵀ · rnea(q, G·v_a, a_drift)` (`v=0`이면 `h_a = g_a`).
-- **접촉 프레임의 placement·Jacobian(`oMf`·`J`)은 loop-downstream contact에 한해 loop-consistent 값으로 격상**한다 (`FillReducedFrameKinematics` — 같은 `Update()` 안에서 축약 동역학이 이미 사영한 `RtClosedChainHandle`을 재사용하므로 재사영 없음). 비-downstream/미매핑 frame은 open-chain 정확값을 그대로 유지한다(byte-for-byte). 단 **접촉 프레임 drift `dJv`는 아직 frozen-loop 0(L2-zero)** — 핸들에 loop-consistent 가속도 API가 없어 미격상이며 후속 과제다(issue #173).
+- **접촉 프레임의 placement·Jacobian(`oMf`·`J`)은 loop-downstream contact에 한해 loop-consistent 값으로 격상**한다 (`FillReducedFrameKinematics` — 같은 `Update()` 안에서 축약 동역학이 이미 사영한 `RtClosedChainHandle`을 재사용하므로 재사영 없음). 비-downstream/미매핑 frame은 open-chain 정확값을 그대로 유지한다(byte-for-byte). **접촉 프레임 drift `dJv`도 loop-consistent 값(L2-exact, #173)** 이다 — 같은 tick 축약 동역학의 2차 FK 상태에서 `GetFrameClassicalAccelerationDrift`로 읽어 `J`·`oMf`와 한 묶음으로 주입하고, held/singular tick에는 셋을 함께 last-good으로 유지한다.
 - `Jc_D`의 최소 특이값이 임계 이하이면 singular로 표시하고 **마지막 정상 축약 동역학을 유지**한다(열화된 dynamics를 절대 주입하지 않는다). provider가 실패를 반환하면 open-chain 값으로 fallback한다.
 
 fixed-base 개곡선 arm(예: reduced tree UR5e, `nq==nv`)에는 provider가 없고 open-chain `M/h/g`를 그대로 쓴다.
