@@ -335,13 +335,18 @@ void MuJoCoSimulator::ReadProjectileBallState() noexcept {
     return;
   }
   projectile_ball_sample_.active = projectile_ball_active_;
+  // Freejoint qvel: linear part is world frame, angular part is body frame.
+  // Publish both in world frame so the twist matches header.frame_id.
+  mjtNum angular_world[3];
+  mju_rotVecQuat(angular_world, data_->qvel + projectile_ball_qvel_adr_ + 3,
+                 data_->qpos + projectile_ball_qpos_adr_ + 3);
   for (int i = 0; i < 3; ++i) {
     projectile_ball_sample_.position[static_cast<std::size_t>(i)] =
         static_cast<double>(data_->qpos[projectile_ball_qpos_adr_ + i]);
     projectile_ball_sample_.linear_velocity[static_cast<std::size_t>(i)] =
         static_cast<double>(data_->qvel[projectile_ball_qvel_adr_ + i]);
     projectile_ball_sample_.angular_velocity[static_cast<std::size_t>(i)] =
-        static_cast<double>(data_->qvel[projectile_ball_qvel_adr_ + 3 + i]);
+        static_cast<double>(angular_world[i]);
   }
   for (int i = 0; i < 4; ++i) {
     projectile_ball_sample_.orientation[static_cast<std::size_t>(i)] =
@@ -586,7 +591,10 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
                                ? static_cast<mjtNum>(original_gravity_z_)
                                : static_cast<mjtNum>(0.0);
 
-  // 4. External forces and perturbation
+  // 4. Projectile ball aerodynamics (velocity-dependent: recomputed every substep)
+  ApplyProjectileBallAerodynamics();
+
+  // 5. External forces and perturbation
   if (pert_mutex_.try_lock()) {
     if (ext_xfrc_dirty_) {
       StageExternalWrenches();
@@ -722,13 +730,16 @@ void MuJoCoSimulator::HandleReset() noexcept {
 // and velocity + warm start cleared (gravcomp alone keeps a moving body
 // drifting). body_gravcomp is only honoured while ngravcomp > 0, hence the
 // recount.
-void MuJoCoSimulator::WriteProjectileBallState(bool active, const std::array<double, 3>& position,
-                                               const std::array<double, 3>& velocity) noexcept {
+void MuJoCoSimulator::WriteProjectileBallState(
+    bool active, const std::array<double, 3>& position, const std::array<double, 3>& velocity,
+    const std::array<double, 3>& angular_velocity) noexcept {
+  // The quaternion is reset to identity below, so the freejoint's body-frame
+  // angular velocity equals the world-frame value written here.
   for (int i = 0; i < 3; ++i) {
     const auto k = static_cast<std::size_t>(i);
     data_->qpos[projectile_ball_qpos_adr_ + i] = position[k];
     data_->qvel[projectile_ball_qvel_adr_ + i] = velocity[k];
-    data_->qvel[projectile_ball_qvel_adr_ + 3 + i] = 0.0;
+    data_->qvel[projectile_ball_qvel_adr_ + 3 + i] = angular_velocity[k];
   }
   data_->qpos[projectile_ball_qpos_adr_ + 3] = 1.0;
   for (int i = 1; i < 4; ++i) {
@@ -736,6 +747,7 @@ void MuJoCoSimulator::WriteProjectileBallState(bool active, const std::array<dou
   }
   for (int i = 0; i < 6; ++i) {
     data_->qacc_warmstart[projectile_ball_qvel_adr_ + i] = 0.0;
+    data_->qfrc_applied[projectile_ball_qvel_adr_ + i] = 0.0;
   }
   mju_zero(data_->xfrc_applied + 6 * projectile_ball_body_id_, 6);
   model_->body_gravcomp[projectile_ball_body_id_] = active ? 0.0 : 1.0;
@@ -748,11 +760,38 @@ void MuJoCoSimulator::WriteProjectileBallState(bool active, const std::array<dou
   projectile_ball_sample_.active = active;
 }
 
+void MuJoCoSimulator::ApplyProjectileBallAerodynamics() noexcept {
+  if (projectile_ball_body_id_ < 0 || !projectile_ball_active_ ||
+      !cfg_.projectile_ball.aerodynamics_enabled) {
+    return;
+  }
+  const int qpos = projectile_ball_qpos_adr_;
+  const int dof = projectile_ball_qvel_adr_;
+  // Freejoint qvel: linear part is the world-frame velocity of the body origin
+  // (= centre of mass, ipos is zero); angular part is in the body frame.
+  const std::array<double, 3> velocity = {static_cast<double>(data_->qvel[dof]),
+                                          static_cast<double>(data_->qvel[dof + 1]),
+                                          static_cast<double>(data_->qvel[dof + 2])};
+  mjtNum angular_world[3];
+  mju_rotVecQuat(angular_world, data_->qvel + dof + 3, data_->qpos + qpos + 3);
+  const std::array<double, 3> angular_velocity = {static_cast<double>(angular_world[0]),
+                                                  static_cast<double>(angular_world[1]),
+                                                  static_cast<double>(angular_world[2])};
+  const std::array<double, 3> force = ComputeProjectileBallAeroForce(
+      GetProjectileBallPhysics(cfg_.projectile_ball.type), cfg_.projectile_ball.radius_m,
+      kProjectileBallAirDensity, velocity, angular_velocity);
+  for (int i = 0; i < 3; ++i) {
+    data_->qfrc_applied[dof + i] = static_cast<mjtNum>(force[static_cast<std::size_t>(i)]);
+    data_->qfrc_applied[dof + 3 + i] = 0.0;
+  }
+}
+
 void MuJoCoSimulator::HandleProjectileBallReset() noexcept {
   if (projectile_ball_body_id_ < 0 || !data_) {
     return;
   }
-  WriteProjectileBallState(false, cfg_.projectile_ball.park_position_m, {0.0, 0.0, 0.0});
+  WriteProjectileBallState(false, cfg_.projectile_ball.park_position_m, {0.0, 0.0, 0.0},
+                           {0.0, 0.0, 0.0});
 }
 
 void MuJoCoSimulator::HandleProjectileBallLaunch() noexcept {
@@ -760,7 +799,8 @@ void MuJoCoSimulator::HandleProjectileBallLaunch() noexcept {
     return;
   }
   const auto launch = SampleProjectileBallLaunch(cfg_.projectile_ball, projectile_ball_rng_);
-  WriteProjectileBallState(true, cfg_.projectile_ball.spawn_position_m, launch.linear_velocity_m_s);
+  WriteProjectileBallState(true, cfg_.projectile_ball.spawn_position_m, launch.linear_velocity_m_s,
+                           launch.angular_velocity_rad_s);
   mj_forward(model_, data_);
 }
 

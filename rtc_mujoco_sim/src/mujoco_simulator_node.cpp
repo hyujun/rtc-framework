@@ -279,11 +279,12 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
     declare_parameter("projectile_ball.enabled", false);
     declare_parameter("projectile_ball.body_name", std::string("projectile_ball"));
-    declare_parameter("projectile_ball.radius_m", 0.025);
-    declare_parameter("projectile_ball.mass_kg", 0.05);
+    declare_parameter("projectile_ball.ball_type", std::string("tennis"));
+    declare_parameter("projectile_ball.radius_m", 0.0335);
+    declare_parameter("projectile_ball.mass_kg", 0.057);
     declare_parameter("projectile_ball.collision_contype", 2);
     declare_parameter("projectile_ball.collision_conaffinity", 1);
-    declare_parameter("projectile_ball.friction", std::vector<double>{1.0, 0.5, 0.01});
+    declare_parameter("projectile_ball.aerodynamics", false);
     declare_parameter("projectile_ball.spawn_position_m", std::vector<double>{0.0, 0.0, 0.5});
     declare_parameter("projectile_ball.park_position_m", std::vector<double>{0.0, 0.0, -50.0});
     declare_parameter("projectile_ball.launch_direction", std::vector<double>{1.0, 0.0, 0.0});
@@ -291,6 +292,11 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("projectile_ball.launch_angle_variation_deg", 0.0);
     declare_parameter("projectile_ball.launch_speed_m_s", 1.0);
     declare_parameter("projectile_ball.launch_speed_variation_m_s", 0.0);
+    declare_parameter("projectile_ball.launch_azimuth_variation_deg", 0.0);
+    declare_parameter("projectile_ball.launch_spin_rad_s", std::vector<double>{0.0, 0.0, 0.0});
+    declare_parameter("projectile_ball.launch_spin_variation_rad_s",
+                      std::vector<double>{0.0, 0.0, 0.0});
+    declare_parameter("projectile_ball.launch_noise", std::string("uniform"));
     declare_parameter("projectile_ball.seed", 0);
     declare_parameter("projectile_ball.publish.sample_rate_hz", 100.0);
     declare_parameter("projectile_ball.publish.frame_id", std::string("world"));
@@ -351,13 +357,19 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
     projectile_ball_config_.enabled = get_parameter("projectile_ball.enabled").as_bool();
     projectile_ball_config_.body_name = get_parameter("projectile_ball.body_name").as_string();
+    const auto ball_type = get_parameter("projectile_ball.ball_type").as_string();
+    if (!ParseProjectileBallType(ball_type, projectile_ball_config_.type)) {
+      throw std::runtime_error("projectile_ball.ball_type must be tennis, beanbag or hard (got '" +
+                               ball_type + "')");
+    }
     projectile_ball_config_.radius_m = get_parameter("projectile_ball.radius_m").as_double();
     projectile_ball_config_.mass_kg = get_parameter("projectile_ball.mass_kg").as_double();
     projectile_ball_config_.collision_contype =
         static_cast<int>(get_parameter("projectile_ball.collision_contype").as_int());
     projectile_ball_config_.collision_conaffinity =
         static_cast<int>(get_parameter("projectile_ball.collision_conaffinity").as_int());
-    projectile_ball_config_.friction = LoadVec3Param("projectile_ball.friction");
+    projectile_ball_config_.aerodynamics_enabled =
+        get_parameter("projectile_ball.aerodynamics").as_bool();
     projectile_ball_config_.spawn_position_m = LoadVec3Param("projectile_ball.spawn_position_m");
     projectile_ball_config_.park_position_m = LoadVec3Param("projectile_ball.park_position_m");
     projectile_ball_config_.launch_direction = LoadVec3Param("projectile_ball.launch_direction");
@@ -369,6 +381,16 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         get_parameter("projectile_ball.launch_speed_m_s").as_double();
     projectile_ball_config_.launch_speed_variation_m_s =
         get_parameter("projectile_ball.launch_speed_variation_m_s").as_double();
+    projectile_ball_config_.launch_azimuth_variation_deg =
+        get_parameter("projectile_ball.launch_azimuth_variation_deg").as_double();
+    projectile_ball_config_.launch_spin_rad_s = LoadVec3Param("projectile_ball.launch_spin_rad_s");
+    projectile_ball_config_.launch_spin_variation_rad_s =
+        LoadVec3Param("projectile_ball.launch_spin_variation_rad_s");
+    const auto launch_noise = get_parameter("projectile_ball.launch_noise").as_string();
+    if (!ParseProjectileBallNoise(launch_noise, projectile_ball_config_.launch_noise)) {
+      throw std::runtime_error("projectile_ball.launch_noise must be uniform or normal (got '" +
+                               launch_noise + "')");
+    }
     const auto ball_seed = get_parameter("projectile_ball.seed").as_int();
     if (ball_seed < 0) {
       throw std::runtime_error("projectile_ball.seed must be >= 0");

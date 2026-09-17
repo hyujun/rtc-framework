@@ -231,7 +231,7 @@ solver:
 | `<contact_wrench.topic_prefix>/<target>/contact_point` | `geometry_msgs/PointStamped` | 매 물리 스텝 | `contact_wrench.publish_debug: true` 일 때만. **world frame** (`frame_id: "world"`) 접촉점 — wrench 와 달리 손끝 프레임이 아니다. 아래 [디버그 lane](#publish_debug--접촉점접촉깊이-디버그-lane) 절 |
 | `<contact_wrench.topic_prefix>/<target>/contact_depth` | `std_msgs/Float64` | 매 물리 스텝 | 〃. MuJoCo 의 부호 있는 contact distance — **음수가 관통** |
 | `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
-| `<projectile_ball.publish.ground_truth_topic>` (예: `/sim/ball/ground_truth`) | `nav_msgs/Odometry` | `publish.sample_rate_hz` (sim 시간 기준) | 씬 전체: 발사된 공의 참값 pose·twist. **park 중에는 발행하지 않는다**. 아래 [Projectile Ball](#projectile-ball-발사-공) 절 |
+| `<projectile_ball.publish.ground_truth_topic>` (예: `/sim/ball/ground_truth`) | `nav_msgs/Odometry` | `publish.sample_rate_hz` (sim 시간 기준) | 씬 전체: 발사된 공의 참값 pose·twist. twist 는 선속도·각속도 모두 **world 프레임** (Odometry 의 child frame 관례와 다르다). **park 중에는 발행하지 않는다**. 아래 [Projectile Ball](#projectile-ball-발사-공) 절 |
 | `<projectile_ball.publish.camera_topic>` (예: `/sim/ball/camera_position`) | `geometry_msgs/PointStamped` | 〃 | 〃 위치에 축별 가우시안 노이즈 (`position_noise_stddev_m`) — 카메라 관측 모사 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
@@ -774,7 +774,7 @@ ros2 topic echo /sim/object_transforms --once
 
 ## Projectile Ball (발사 공)
 
-파지·추적 실험용으로 **공 하나를 던져 주는** 기능입니다. 공은 `projectile_ball.enabled: true` 일 때 `rtc_mujoco_sim` 이 파싱한 MJCF spec 에 직접 붙이므로 씬 XML 을 고칠 필요가 없습니다. 질량·반경·마찰은 기동 시 고정이고, 발사는 SimLoop 에서 qpos/qvel 만 바꿉니다.
+파지·추적 실험용으로 **공 하나를 던져 주는** 기능입니다. 공은 `projectile_ball.enabled: true` 일 때 `rtc_mujoco_sim` 이 파싱한 MJCF spec 에 직접 붙이므로 씬 XML 을 고칠 필요가 없습니다. **YAML 은 반경·질량만 정하고**, 나머지 물성 (관성 분포·반발·마찰·항력·양력) 은 `ball_type` preset 이 정합니다. 물성은 기동 시 고정이고, 발사는 SimLoop 에서 qpos/qvel 만 바꿉니다.
 
 ### 동작
 
@@ -786,9 +786,30 @@ ros2 topic echo /sim/object_transforms --once
 park 는 세 가지를 **함께** 해야 합니다 — object pool 의 park 와 같은 이유입니다.
 - **접촉 끄기**: MuJoCo plane 은 halfspace 라서, 바닥 아래 park 위치에 접촉이 켜진 공을 두면 관통으로 판정돼 수백 m/s 로 튕겨 나갑니다.
 - **gravcomp 켜기**: 접촉을 끄면 공을 붙잡는 것이 없어 끝없이 자유낙하합니다.
-- **속도·warm start 지우기**: gravcomp 만으로는 움직이던 공이 등속으로 계속 흘러갑니다.
+- **속도·warm start·공력 지우기**: gravcomp 만으로는 움직이던 공이 등속으로 계속 흘러갑니다.
 
-발사 속도는 `launch_direction` (수평, 정규화) 방향으로 `launch_angle_deg ± launch_angle_variation_deg` 만큼 올려 `launch_speed_m_s ± launch_speed_variation_m_s` 크기로 줍니다 (균등 분포). 앙각은 `launch_angle_deg` 만 결정하므로 **`launch_direction` 에 z 성분이 있으면 Initialize 가 실패**합니다.
+발사 속도는 `launch_direction` (수평, 정규화) 을 z 축으로 `launch_azimuth_variation_deg` 만큼 돌린 방향으로, `launch_angle_deg ± launch_angle_variation_deg` 만큼 올려 `launch_speed_m_s ± launch_speed_variation_m_s` 크기로 줍니다. `launch_noise` 가 `uniform` 이면 `*_variation` 은 반폭, `normal` 이면 표준편차입니다. 앙각은 `launch_angle_deg` 만 결정하므로 **`launch_direction` 에 z 성분이 있으면 Initialize 가 실패**합니다.
+
+초기 회전 `launch_spin_rad_s` 는 **발사 프레임** 기준입니다 — x = (azimuth 가 반영된) 발사 방향, z = 월드 위, y = z × x (왼쪽). 날아가는 방향에 대해 **backspin (공이 뜸) 은 −y, topspin 은 +y**, 옆으로 휘는 sidespin 은 z 입니다. `launch_spin_variation_rad_s` 는 축별 산포입니다.
+
+### `ball_type` preset
+
+| 물성 | `tennis` | `hard` (야구공류) | `beanbag` (모래 주머니 공) |
+|---|---|---|---|
+| I / (m r²) | 0.55 [Cross 2003] | 0.378 [Brody] | 0.4 (추정 — 충전물이 움직임) |
+| 반발계수 (강체 바닥) | 0.75 [ITF 낙하 시험 0.745] | 0.55 [ASTM F1887 0.546 @27 m/s; 저속은 더 높음, 추정] | 0.1 (추정) |
+| 미끄럼 마찰 μ | 0.6 [Cross 2003, hard court 0.6–0.75] | 0.5 [Sawicki 2003] | 0.5 (추정) |
+| 비틀림 마찰 / r | 0.05 (추정) | 0.02 (추정) | 0.3 (추정) |
+| 구름 저항 / r | 0.02 (추정) | 0.005 (추정) | 0.5 (추정 — 거의 안 구름) |
+| 항력 Cd | 0.55 [자유비행 0.51 – 풍동 0.65] | 0.5 [Cross, Kensrud: 아임계 Re] | 0.5 (추정) |
+| 양력 C_L(S) | S / (0.981 + 2.022 S) [Stepanek 1988] | S / (0.667 + 1.48 S) [Sawicki 2003 bilinear 에 맞춤] | 없음 |
+
+S = r·|ω⊥| / |v|. 던지는 속도 (2–10 m/s, Re ≈ 10⁴–6×10⁴) 는 drag crisis 아래이므로 Cd 는 상수입니다. 값을 바꾸려면 `src/projectile_ball.cpp` 의 preset 표와 이 표를 함께 고칩니다.
+
+- **접촉**: 공 geom 은 `condim=6` (비틀림·구름 마찰이 실제로 작동) 에 `priority=100` 이라 **바닥·테이블·손끝 어느 상대와 부딪혀도 공의 반발·마찰이 그대로 적용**됩니다 (상대 geom 의 solref/friction 과 섞이지 않음). 씬에 priority ≥ 100 인 geom 이 있으면 Initialize 가 실패합니다. 반발은 direct 형식 `solref = (−k, −b)` 로 넣습니다 — k 는 접촉 반주기가 physics substep 12 개가 되도록, b 는 누르기만 하는 (push-only) spring-damper 의 반발이 목표값이 되도록 정합니다. MuJoCo 3.7.0 실측으로 2–6 m/s 충돌에서 목표 ±0.04 (substep 0.67–2 ms) 입니다. 대가로 접촉이 실제 공보다 부드러워 6 m/s 충돌 시 약 1 cm 파고듭니다.
+- **공력** (`aerodynamics: true`): 항력 −½ρC_d·A·|v|v 와 Magnus 양력 ½ρC_L·A·|v|² (ω×v 방향) 을 **공의 `qfrc_applied` 에만** 매 substep 씁니다 (ρ = 1.204 kg/m³). MuJoCo 내장 fluid 모델은 전역 `density` 를 켜야 해 로봇 링크까지 끌리므로 쓰지 않습니다. 57 g 테니스공을 5 m/s·45° 로 던지면 2 m 지점에서 진공 궤적보다 약 5 cm 낮고, 가벼운 공일수록 차이가 커집니다.
+- `solver.contact_override.enable: true` 이면 MuJoCo 가 모든 접촉을 override 값으로 덮으므로 preset 반발이 적용되지 않습니다.
+- `solver.island: false` (기본) 에서는 **씬 어딘가에 깊게 파묻힌 접촉** (예: 바닥에 10 cm 박힌 링크) 이 같은 solve 를 공유해 공 접촉을 흔듭니다 (fixture 에서 20 mm 튐, 멈추지 않는 구름으로 실측). 공이 이유 없이 튀면 씬의 관통부터 확인합니다.
 
 ### 설정
 
@@ -796,18 +817,23 @@ park 는 세 가지를 **함께** 해야 합니다 — object pool 의 park 와 
 projectile_ball:
   enabled: false
   body_name: "projectile_ball"
-  radius_m: 0.025
-  mass_kg: 0.05
+  ball_type: "tennis"         # tennis | beanbag | hard
+  radius_m: 0.0335
+  mass_kg: 0.057
   collision_contype: 2        # 상대 geom 과 양방향으로 겹치도록 고른다 (아래)
   collision_conaffinity: 1
-  friction: [1.0, 0.5, 0.01]
+  aerodynamics: false         # 항력 + Magnus 양력 (공에만)
   spawn_position_m: [0.0, 0.0, 0.5]
   park_position_m: [0.0, 0.0, -50.0]
   launch_direction: [1.0, 0.0, 0.0]   # z 는 0 이어야 한다
+  launch_noise: "uniform"     # uniform (variation = 반폭) | normal (variation = 표준편차)
   launch_angle_deg: 0.0
   launch_angle_variation_deg: 0.0
+  launch_azimuth_variation_deg: 0.0
   launch_speed_m_s: 1.0
   launch_speed_variation_m_s: 0.0
+  launch_spin_rad_s: [0.0, 0.0, 0.0]            # 발사 프레임 (x 발사방향, y 왼쪽, z 위)
+  launch_spin_variation_rad_s: [0.0, 0.0, 0.0]
   seed: 0                     # 0 = 매 기동 random_device
   publish:
     sample_rate_hz: 100.0     # sim 시간 기준 (RTF 와 무관하게 sim 초당 횟수)
@@ -819,7 +845,7 @@ projectile_ball:
 
 MuJoCo 는 `(contype_A & conaffinity_B) || (contype_B & conaffinity_A)` 이면 두 geom 을 충돌시킵니다. 손끝 mesh 가 `contype=1, conaffinity=2` 라면 공은 `contype=2, conaffinity=1` 로 두어 양쪽 방향이 모두 맞게 합니다. 이 값이면 기본 마스크 (1/1) 인 바닥과도 충돌합니다.
 
-`seed` 는 발사 샘플링과 카메라 노이즈에 함께 쓰이지만 노이즈 쪽은 stream tag 를 섞어 두 난수열이 겹치지 않습니다.
+`seed` 는 발사 샘플링과 카메라 노이즈에 함께 쓰이지만 노이즈 쪽은 stream tag 를 섞어 두 난수열이 겹치지 않습니다. variation 이 0 인 항목은 난수를 소비하지 않습니다.
 
 ### 확인
 
@@ -1113,10 +1139,10 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
 | `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
 | `test_object_state` | object state lane — 어떤 body 가 object 로 잡히는지, pose 가 어느 프레임으로 나오는지 |
-| `test_projectile_ball` | projectile ball — 설정 검증 (기울어진 `launch_direction` 거부), 발사 속도 샘플링 재현성·범위, sim 시간 publish throttle 이 reset 후 재개되는지, **negative control** (기동 직후 park 공이 바닥 plane 에 튕기지도 자유낙하하지도 않음) 과 **positive control** (발사된 공이 바닥과 접촉) (`pool_scene.xml`) |
+| `test_projectile_ball` | projectile ball — 설정 검증 (기울어진 `launch_direction`·음수 spin 산포 거부), 발사 샘플링 재현성·범위 (azimuth, normal 분포), 발사 프레임 spin, sim 시간 publish throttle 이 reset 후 재개되는지, park **negative control** 과 접촉 **positive control** (`pool_scene.xml`); preset 질량·관성·condim·priority, 바닥과 **자체 solref 를 가진 손끝 모사 pad** 모두에서 preset 반발 (±0.05), pad 가 공보다 priority 가 높으면 Initialize 거부, 구름 저항, 공력 방향·크기 순수함수와 자유낙하 tanh 해석해 (1 %), backspin 양력 (`ball_scene.xml`) |
 | `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
 
-Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).
+Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe), [test/fixtures/ball_scene.xml](test/fixtures/ball_scene.xml) (바닥 + 손끝 모사 pad) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).
 GLFW **렌더링** 자체는 헤드리스 제약으로 테스트하지 않습니다 — 대신 무엇을 그릴지 정하는 스냅샷은 `test_contact_wrench_viz` 가 디스플레이 없이 고정합니다.
 
 ---

@@ -177,7 +177,9 @@ if(mujoco_FOUND)
       target_link_libraries(test_projectile_ball mujoco_simulator_lib)
       target_compile_definitions(test_projectile_ball PRIVATE
         MINIMAL_MJCF_PATH="${MJCF_FIXTURE}"
-        POOL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/pool_scene.xml")
+        POOL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/pool_scene.xml"
+        BALL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/ball_scene.xml"
+        BALL_SCENE_HIGH_PRIORITY_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/ball_scene_high_priority.xml")
     endif()
 
     # Object pool sampling/selection: pure helpers, no MJCF fixture needed.

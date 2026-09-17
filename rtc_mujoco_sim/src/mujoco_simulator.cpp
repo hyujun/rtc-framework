@@ -17,6 +17,12 @@
 
 namespace rtc {
 
+namespace {
+// Above any priority a scene is expected to use, so the ball's contact
+// parameters decide every pair it is in (checked in ResolveProjectileBall).
+constexpr int kProjectileBallGeomPriority = 100;
+}  // namespace
+
 // ── Pure parse helpers
 // ─────────────────────────────────────────────────────────
 
@@ -90,12 +96,24 @@ bool MuJoCoSimulator::AttachProjectileBall(mjSpec* spec, std::string& error) noe
     return false;
   }
   mjs_setName(body->element, cfg_.projectile_ball.body_name.c_str());
+  const ProjectileBallConfig& ball = cfg_.projectile_ball;
+  const ProjectileBallPhysics& physics = GetProjectileBallPhysics(ball.type);
+  // Explicit inertial: the preset's inertia ratio (hollow vs filled) cannot be
+  // expressed through a sphere geom's density. ipos must be written — mjSpec
+  // leaves it NaN, and the compiler then offsets the centre of mass by the
+  // body position (measured on MuJoCo 3.7.0).
+  body->explicitinertial = 1;
+  body->mass = ball.mass_kg;
+  const double inertia = physics.inertia_ratio * ball.mass_kg * ball.radius_m * ball.radius_m;
   for (int i = 0; i < 3; ++i) {
-    body->pos[i] = cfg_.projectile_ball.park_position_m[static_cast<std::size_t>(i)];
-    body->inertia[i] = 0.4 * cfg_.projectile_ball.mass_kg * cfg_.projectile_ball.radius_m *
-                       cfg_.projectile_ball.radius_m;
+    body->pos[i] = ball.park_position_m[static_cast<std::size_t>(i)];
+    body->ipos[i] = 0.0;
+    body->inertia[i] = inertia;
   }
-  body->mass = cfg_.projectile_ball.mass_kg;
+  body->iquat[0] = 1.0;
+  body->iquat[1] = 0.0;
+  body->iquat[2] = 0.0;
+  body->iquat[3] = 0.0;
 
   mjsJoint* joint = mjs_addJoint(body, nullptr);
   if (joint == nullptr) {
@@ -110,13 +128,17 @@ bool MuJoCoSimulator::AttachProjectileBall(mjSpec* spec, std::string& error) noe
     return false;
   }
   geom->type = mjGEOM_SPHERE;
-  geom->size[0] = cfg_.projectile_ball.radius_m;
-  geom->mass = cfg_.projectile_ball.mass_kg;
-  for (int i = 0; i < 3; ++i) {
-    geom->friction[i] = cfg_.projectile_ball.friction[static_cast<std::size_t>(i)];
-  }
-  geom->contype = cfg_.projectile_ball.collision_contype;
-  geom->conaffinity = cfg_.projectile_ball.collision_conaffinity;
+  geom->size[0] = ball.radius_m;
+  geom->contype = ball.collision_contype;
+  geom->conaffinity = ball.collision_conaffinity;
+  // condim 6 so the preset's torsional and rolling friction act (condim 3
+  // silently ignores them). The priority makes the ball's condim, friction,
+  // solref and solimp win outright against any scene geom — floor, table and
+  // fingertips alike — instead of being mixed with theirs. solref/friction
+  // depend on the physics substep and are written in
+  // ApplyProjectileBallContact once it is known.
+  geom->condim = 6;
+  geom->priority = kProjectileBallGeomPriority;
   return true;
 }
 
@@ -159,7 +181,55 @@ bool MuJoCoSimulator::ResolveProjectileBall() noexcept {
     fprintf(stderr, "[MuJoCoSimulator] projectile ball body must have a sphere geom\n");
     return false;
   }
+  // A scene <compiler inertiafromgeom="true"> would silently replace the
+  // preset inertia with the geom's default density.
+  const ProjectileBallConfig& ball = cfg_.projectile_ball;
+  const double expected_inertia = GetProjectileBallPhysics(ball.type).inertia_ratio * ball.mass_kg *
+                                  ball.radius_m * ball.radius_m;
+  const auto relative_error = [](double actual, double expected) {
+    return std::abs(actual - expected) / expected;
+  };
+  if (relative_error(static_cast<double>(model_->body_mass[projectile_ball_body_id_]),
+                     ball.mass_kg) > 1e-9 ||
+      relative_error(static_cast<double>(model_->body_inertia[3 * projectile_ball_body_id_]),
+                     expected_inertia) > 1e-9) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] projectile ball mass/inertia were not taken from the preset "
+            "(scene <compiler inertiafromgeom>?)\n");
+    return false;
+  }
+  for (int geom_id = 0; geom_id < model_->ngeom; ++geom_id) {
+    if (geom_id != projectile_ball_geom_id_ &&
+        model_->geom_priority[geom_id] >= kProjectileBallGeomPriority) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] geom %d has priority %d >= projectile ball priority %d; "
+              "the ball's restitution would not apply to it\n",
+              geom_id, model_->geom_priority[geom_id], kProjectileBallGeomPriority);
+      return false;
+    }
+  }
   return true;
+}
+
+void MuJoCoSimulator::ApplyProjectileBallContact() noexcept {
+  if (projectile_ball_geom_id_ < 0) {
+    return;
+  }
+  const ProjectileBallContact contact =
+      ComputeProjectileBallContact(cfg_.projectile_ball, static_cast<double>(model_->opt.timestep));
+  const int g = projectile_ball_geom_id_;
+  // Negative solref = direct stiffness/damping, which (unlike timeconst/
+  // dampratio) sets the rebound independently of the colliding masses.
+  model_->geom_solref[mjNREF * g + 0] = static_cast<mjtNum>(-contact.stiffness);
+  model_->geom_solref[mjNREF * g + 1] = static_cast<mjtNum>(-contact.damping);
+  for (int i = 0; i < mjNIMP; ++i) {
+    model_->geom_solimp[mjNIMP * g + i] =
+        static_cast<mjtNum>(contact.solimp[static_cast<std::size_t>(i)]);
+  }
+  for (int i = 0; i < 3; ++i) {
+    model_->geom_friction[3 * g + i] =
+        static_cast<mjtNum>(contact.friction[static_cast<std::size_t>(i)]);
+  }
 }
 
 // ── Constructor / Destructor
@@ -1118,6 +1188,9 @@ bool MuJoCoSimulator::Initialize() noexcept {
             "physics_dt=%.4f s (%.1f Hz)\n",
             xml_timestep_, 1.0 / xml_timestep_);
   }
+
+  // Restitution calibration depends on the final substep.
+  ApplyProjectileBallContact();
 
   // ── Viewer refresh rate ─────────────────────────────────────────────────
   if (cfg_.viewer_refresh_rate <= 0.0) {
