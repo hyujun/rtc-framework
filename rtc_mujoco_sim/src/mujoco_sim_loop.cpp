@@ -281,10 +281,12 @@ void MuJoCoSimulator::ReadObjectStates() noexcept {
     const auto& info = object_state_infos_[i];
     auto& sample = object_state_buffer_[i];
 
-    // Parked pool candidates are compiled into the model but sit at the park
-    // position out of collision. Re-checked every tick because the 'o' key
-    // moves which candidate is active — see ObjectStateConfig.
-    if (object_pool_.IsParkedBody(info.body_id)) {
+    // Parked pool candidates and a parked projectile ball are compiled into
+    // the model but sit at their park position out of collision. Re-checked
+    // every tick because the 'o' key moves which candidate is active and
+    // launch/reset toggle the ball — see ObjectStateConfig.
+    const bool parked_ball = info.body_id == projectile_ball_body_id_ && !projectile_ball_active_;
+    if (parked_ball || object_pool_.IsParkedBody(info.body_id)) {
       sample.active = false;
       continue;
     }
@@ -324,6 +326,34 @@ void MuJoCoSimulator::InvokeObjectStateCallback() noexcept {
     return;
   }
   object_state_cb_(object_state_infos_, object_state_buffer_);
+}
+
+void MuJoCoSimulator::ReadProjectileBallState() noexcept {
+  if (projectile_ball_body_id_ < 0 || projectile_ball_qpos_adr_ < 0 ||
+      projectile_ball_qvel_adr_ < 0) {
+    projectile_ball_sample_.active = false;
+    return;
+  }
+  projectile_ball_sample_.active = projectile_ball_active_;
+  for (int i = 0; i < 3; ++i) {
+    projectile_ball_sample_.position[static_cast<std::size_t>(i)] =
+        static_cast<double>(data_->qpos[projectile_ball_qpos_adr_ + i]);
+    projectile_ball_sample_.linear_velocity[static_cast<std::size_t>(i)] =
+        static_cast<double>(data_->qvel[projectile_ball_qvel_adr_ + i]);
+    projectile_ball_sample_.angular_velocity[static_cast<std::size_t>(i)] =
+        static_cast<double>(data_->qvel[projectile_ball_qvel_adr_ + 3 + i]);
+  }
+  for (int i = 0; i < 4; ++i) {
+    projectile_ball_sample_.orientation[static_cast<std::size_t>(i)] =
+        static_cast<double>(data_->qpos[projectile_ball_qpos_adr_ + 3 + i]);
+  }
+  projectile_ball_sample_.sim_time_sec = data_->time;
+}
+
+void MuJoCoSimulator::InvokeProjectileBallCallback() noexcept {
+  if (projectile_ball_cb_ && projectile_ball_body_id_ >= 0) {
+    projectile_ball_cb_(projectile_ball_sample_);
+  }
 }
 
 void MuJoCoSimulator::InvokeContactWrenchCallback() noexcept {
@@ -661,6 +691,8 @@ void MuJoCoSimulator::HandleReset() noexcept {
     RefreshNgravcomp();
   }
   mj_forward(model_, data_);
+  HandleProjectileBallReset();
+  mj_forward(model_, data_);
   {
     std::lock_guard lock(pert_mutex_);
     mjv_defaultPerturb(&shared_pert_);
@@ -680,6 +712,56 @@ void MuJoCoSimulator::HandleReset() noexcept {
   throttle_rtf_ = current_max_rtf_.load(std::memory_order_relaxed);
   ReadState();
   fprintf(stdout, "[SimLoop] Reset to initial pose\n");
+}
+
+// Park and launch share one writer so the two states differ only in the
+// arguments, the same split ObjectPool::Park / Activate uses. Parking has to
+// do three things, not one: contacts off (a MuJoCo plane is a halfspace, so a
+// ball parked under the floor with contacts on is ejected at hundreds of m/s),
+// gravcomp on (with contacts off nothing else stops it free-falling forever),
+// and velocity + warm start cleared (gravcomp alone keeps a moving body
+// drifting). body_gravcomp is only honoured while ngravcomp > 0, hence the
+// recount.
+void MuJoCoSimulator::WriteProjectileBallState(bool active, const std::array<double, 3>& position,
+                                               const std::array<double, 3>& velocity) noexcept {
+  for (int i = 0; i < 3; ++i) {
+    const auto k = static_cast<std::size_t>(i);
+    data_->qpos[projectile_ball_qpos_adr_ + i] = position[k];
+    data_->qvel[projectile_ball_qvel_adr_ + i] = velocity[k];
+    data_->qvel[projectile_ball_qvel_adr_ + 3 + i] = 0.0;
+  }
+  data_->qpos[projectile_ball_qpos_adr_ + 3] = 1.0;
+  for (int i = 1; i < 4; ++i) {
+    data_->qpos[projectile_ball_qpos_adr_ + 3 + i] = 0.0;
+  }
+  for (int i = 0; i < 6; ++i) {
+    data_->qacc_warmstart[projectile_ball_qvel_adr_ + i] = 0.0;
+  }
+  mju_zero(data_->xfrc_applied + 6 * projectile_ball_body_id_, 6);
+  model_->body_gravcomp[projectile_ball_body_id_] = active ? 0.0 : 1.0;
+  model_->geom_contype[projectile_ball_geom_id_] =
+      active ? cfg_.projectile_ball.collision_contype : 0;
+  model_->geom_conaffinity[projectile_ball_geom_id_] =
+      active ? cfg_.projectile_ball.collision_conaffinity : 0;
+  RefreshNgravcomp();
+  projectile_ball_active_ = active;
+  projectile_ball_sample_.active = active;
+}
+
+void MuJoCoSimulator::HandleProjectileBallReset() noexcept {
+  if (projectile_ball_body_id_ < 0 || !data_) {
+    return;
+  }
+  WriteProjectileBallState(false, cfg_.projectile_ball.park_position_m, {0.0, 0.0, 0.0});
+}
+
+void MuJoCoSimulator::HandleProjectileBallLaunch() noexcept {
+  if (projectile_ball_body_id_ < 0 || !data_) {
+    return;
+  }
+  const auto launch = SampleProjectileBallLaunch(cfg_.projectile_ball, projectile_ball_rng_);
+  WriteProjectileBallState(true, cfg_.projectile_ball.spawn_position_m, launch.linear_velocity_m_s);
+  mj_forward(model_, data_);
 }
 
 // ── HandleObjectRefresh ───────────────────────────────────────────────────────
@@ -768,6 +850,15 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       step = 0;
       continue;
     }
+    if (projectile_ball_reset_requested_.exchange(false, std::memory_order_acq_rel)) {
+      HandleProjectileBallReset();
+      mj_forward(model_, data_);
+      continue;
+    }
+    if (projectile_ball_launch_requested_.exchange(false, std::memory_order_acq_rel)) {
+      HandleProjectileBallLaunch();
+      continue;
+    }
     // ── Object refresh ('o' key) ──────────────────────────────────────────
     // Placed with reset and short-circuiting the same way: the spawn writes
     // qpos directly, so the iteration restarts rather than stepping physics
@@ -786,10 +877,12 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     ReadSensors();
     ReadContactWrenches();
     ReadObjectStates();
+    ReadProjectileBallState();
     InvokeStateCallback();
     InvokeSensorCallback();
     InvokeContactWrenchCallback();
     InvokeObjectStateCallback();
+    InvokeProjectileBallCallback();
 
     // 2. Wait for command from PRIMARY group
     {
@@ -807,6 +900,11 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
       HandleReset();
       step = 0;
+      continue;
+    }
+    if (projectile_ball_reset_requested_.exchange(false, std::memory_order_acq_rel)) {
+      HandleProjectileBallReset();
+      mj_forward(model_, data_);
       continue;
     }
     if (DrainPendingObjectRefresh()) {

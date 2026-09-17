@@ -71,11 +71,105 @@ void MuJoCoSimulator::ApplyFakeLpfStep(std::vector<double>& state,
   }
 }
 
+bool MuJoCoSimulator::AttachProjectileBall(mjSpec* spec, std::string& error) noexcept {
+  if (!cfg_.projectile_ball.enabled) {
+    return true;
+  }
+  if (!ValidateProjectileBallConfig(cfg_.projectile_ball, error)) {
+    return false;
+  }
+
+  mjsBody* world = mjs_findBody(spec, "world");
+  if (world == nullptr) {
+    error = "failed to find MuJoCo world body";
+    return false;
+  }
+  mjsBody* body = mjs_addBody(world, nullptr);
+  if (body == nullptr) {
+    error = "failed to add projectile_ball body";
+    return false;
+  }
+  mjs_setName(body->element, cfg_.projectile_ball.body_name.c_str());
+  for (int i = 0; i < 3; ++i) {
+    body->pos[i] = cfg_.projectile_ball.park_position_m[static_cast<std::size_t>(i)];
+    body->inertia[i] = 0.4 * cfg_.projectile_ball.mass_kg * cfg_.projectile_ball.radius_m *
+                       cfg_.projectile_ball.radius_m;
+  }
+  body->mass = cfg_.projectile_ball.mass_kg;
+
+  mjsJoint* joint = mjs_addJoint(body, nullptr);
+  if (joint == nullptr) {
+    error = "failed to add projectile_ball freejoint";
+    return false;
+  }
+  joint->type = mjJNT_FREE;
+
+  mjsGeom* geom = mjs_addGeom(body, nullptr);
+  if (geom == nullptr) {
+    error = "failed to add projectile_ball sphere geom";
+    return false;
+  }
+  geom->type = mjGEOM_SPHERE;
+  geom->size[0] = cfg_.projectile_ball.radius_m;
+  geom->mass = cfg_.projectile_ball.mass_kg;
+  for (int i = 0; i < 3; ++i) {
+    geom->friction[i] = cfg_.projectile_ball.friction[static_cast<std::size_t>(i)];
+  }
+  geom->contype = cfg_.projectile_ball.collision_contype;
+  geom->conaffinity = cfg_.projectile_ball.collision_conaffinity;
+  return true;
+}
+
+bool MuJoCoSimulator::ResolveProjectileBall() noexcept {
+  projectile_ball_body_id_ = -1;
+  projectile_ball_joint_id_ = -1;
+  projectile_ball_qpos_adr_ = -1;
+  projectile_ball_qvel_adr_ = -1;
+  projectile_ball_geom_id_ = -1;
+  if (!cfg_.projectile_ball.enabled) {
+    return true;
+  }
+  projectile_ball_body_id_ = mj_name2id(model_, mjOBJ_BODY, cfg_.projectile_ball.body_name.c_str());
+  if (projectile_ball_body_id_ < 0) {
+    fprintf(stderr, "[MuJoCoSimulator] projectile ball body '%s' not found\n",
+            cfg_.projectile_ball.body_name.c_str());
+    return false;
+  }
+  for (int joint_id = 0; joint_id < model_->njnt; ++joint_id) {
+    if (model_->jnt_bodyid[joint_id] == projectile_ball_body_id_ &&
+        model_->jnt_type[joint_id] == mjJNT_FREE) {
+      projectile_ball_joint_id_ = joint_id;
+      break;
+    }
+  }
+  if (projectile_ball_joint_id_ < 0) {
+    fprintf(stderr, "[MuJoCoSimulator] projectile ball body must have a freejoint\n");
+    return false;
+  }
+  projectile_ball_qpos_adr_ = model_->jnt_qposadr[projectile_ball_joint_id_];
+  projectile_ball_qvel_adr_ = model_->jnt_dofadr[projectile_ball_joint_id_];
+  for (int geom_id = 0; geom_id < model_->ngeom; ++geom_id) {
+    if (model_->geom_bodyid[geom_id] == projectile_ball_body_id_ &&
+        model_->geom_type[geom_id] == mjGEOM_SPHERE) {
+      projectile_ball_geom_id_ = geom_id;
+      break;
+    }
+  }
+  if (projectile_ball_geom_id_ < 0) {
+    fprintf(stderr, "[MuJoCoSimulator] projectile ball body must have a sphere geom\n");
+    return false;
+  }
+  return true;
+}
+
 // ── Constructor / Destructor
 // ───────────────────────────────────────────────────
 
 MuJoCoSimulator::MuJoCoSimulator(Config cfg) noexcept : cfg_(std::move(cfg)) {
   current_max_rtf_.store(cfg_.max_rtf, std::memory_order_relaxed);
+  const auto seed =
+      cfg_.projectile_ball.seed == 0 ? std::random_device{}() : cfg_.projectile_ball.seed;
+  projectile_ball_rng_.seed(seed);
   mjv_defaultPerturb(&shared_pert_);
 }
 
@@ -699,6 +793,12 @@ bool MuJoCoSimulator::Initialize() noexcept {
   }
 
   {
+    std::string ball_error;
+    if (!AttachProjectileBall(spec, ball_error)) {
+      fprintf(stderr, "[MuJoCoSimulator] ERROR: %s\n", ball_error.c_str());
+      mj_deleteSpec(spec);
+      return false;
+    }
     ObjectPoolConfig pool_cfg = cfg_.object_pool;
     if (pool_cfg.enabled) {
       // mj_parseXML resolves "package://" through the registered MuJoCo
@@ -737,6 +837,10 @@ bool MuJoCoSimulator::Initialize() noexcept {
   }
 
   original_gravity_z_ = static_cast<double>(model_->opt.gravity[2]);
+
+  if (!ResolveProjectileBall()) {
+    return false;
+  }
 
   // Store XML solver defaults into atomics (may be overwritten by
   // ApplySolverConfig)
@@ -1162,6 +1266,15 @@ bool MuJoCoSimulator::Initialize() noexcept {
       RefreshNgravcomp();
       mj_forward(model_, data_);
     }
+  }
+
+  // ── Projectile ball bring-up ────────────────────────────────────────────
+  // The ball is compiled at its park position with its configured contact
+  // filters, so it must be parked explicitly before the first step — otherwise
+  // it sits inside the floor halfspace with contacts enabled and is ejected.
+  if (projectile_ball_body_id_ >= 0) {
+    HandleProjectileBallReset();
+    mj_forward(model_, data_);
   }
 
   // ── Summary ─────────────────────────────────────────────────────────────
@@ -1590,6 +1703,10 @@ void MuJoCoSimulator::SetObjectStateCallback(ObjectStateCallback callback) noexc
   object_state_cb_ = std::move(callback);
 }
 
+void MuJoCoSimulator::SetProjectileBallCallback(ProjectileBallCallback callback) noexcept {
+  projectile_ball_cb_ = std::move(callback);
+}
+
 const std::vector<JointGroup::ContactWrenchInfo>& MuJoCoSimulator::GetContactWrenchInfos(
     std::size_t group_idx) const noexcept {
   static const std::vector<JointGroup::ContactWrenchInfo> empty;
@@ -1729,6 +1846,13 @@ bool MuJoCoSimulator::IsGroupGravcompEnabled(std::size_t group_idx) const noexce
 void MuJoCoSimulator::StepForTest() noexcept {
   if (!model_ || !data_)
     return;
+  if (projectile_ball_reset_requested_.exchange(false, std::memory_order_acq_rel)) {
+    HandleProjectileBallReset();
+    mj_forward(model_, data_);
+  }
+  if (projectile_ball_launch_requested_.exchange(false, std::memory_order_acq_rel)) {
+    HandleProjectileBallLaunch();
+  }
   // Same drain the SimLoop performs, so a test that calls
   // RequestObjectRefresh() exercises the flag->handler edge the 'o' key uses
   // instead of a parallel test-only entry point. SimLoop skips its step after
@@ -1741,6 +1865,7 @@ void MuJoCoSimulator::StepForTest() noexcept {
   ReadState();
   ReadContactWrenches();
   ReadObjectStates();
+  ReadProjectileBallState();
 }
 
 void MuJoCoSimulator::RefreshObjectForTest() noexcept {

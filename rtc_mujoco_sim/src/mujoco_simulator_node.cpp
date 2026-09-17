@@ -32,9 +32,14 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 
+#include <nav_msgs/msg/odometry.hpp>
+#include <std_srvs/srv/trigger.hpp>
+
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <memory>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -118,6 +123,31 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           SetExternalWrenchCallback(req, res);
         });
 
+    launch_ball_srv_ = create_service<std_srvs::srv::Trigger>(
+        "/sim/launch_ball", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                                   std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+          if (!sim_ || !sim_->HasProjectileBall()) {
+            response->success = false;
+            response->message = "projectile ball is disabled (projectile_ball.enabled: false)";
+            return;
+          }
+          sim_->RequestProjectileBallLaunch();
+          response->success = true;
+          response->message = "projectile ball launch requested";
+        });
+    reset_ball_srv_ = create_service<std_srvs::srv::Trigger>(
+        "/sim/reset_ball", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                                  std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+          if (!sim_ || !sim_->HasProjectileBall()) {
+            response->success = false;
+            response->message = "projectile ball is disabled (projectile_ball.enabled: false)";
+            return;
+          }
+          sim_->RequestProjectileBallReset();
+          response->success = true;
+          response->message = "projectile ball reset requested";
+        });
+
     RCLCPP_INFO(get_logger(),
                 "[MuJoCoSimulatorNode] Configured — model: %s  viewer: %s  "
                 "groups: %zu  max_rtf: %.1f",
@@ -174,6 +204,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     object_state_msg_.transforms.clear();
     sim_status_pub_.reset();
     set_external_wrench_srv_.reset();
+    launch_ball_srv_.reset();
+    reset_ball_srv_.reset();
+    ground_truth_pub_.reset();
+    camera_position_pub_.reset();
     sim_.reset();
     group_configs_.clear();
 
@@ -217,6 +251,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     object_state_msg_.transforms.clear();
     sim_status_pub_.reset();
     set_external_wrench_srv_.reset();
+    launch_ball_srv_.reset();
+    reset_ball_srv_.reset();
+    ground_truth_pub_.reset();
+    camera_position_pub_.reset();
     sim_.reset();
     group_configs_.clear();
 
@@ -238,6 +276,30 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("use_yaml_servo_gains", false);
     declare_parameter("servo_kp", std::vector<double>{500.0, 500.0, 500.0, 150.0, 150.0, 150.0});
     declare_parameter("servo_kd", std::vector<double>{400.0, 400.0, 400.0, 100.0, 100.0, 100.0});
+
+    declare_parameter("projectile_ball.enabled", false);
+    declare_parameter("projectile_ball.body_name", std::string("projectile_ball"));
+    declare_parameter("projectile_ball.radius_m", 0.025);
+    declare_parameter("projectile_ball.mass_kg", 0.05);
+    declare_parameter("projectile_ball.collision_contype", 2);
+    declare_parameter("projectile_ball.collision_conaffinity", 1);
+    declare_parameter("projectile_ball.friction", std::vector<double>{1.0, 0.5, 0.01});
+    declare_parameter("projectile_ball.spawn_position_m", std::vector<double>{0.0, 0.0, 0.5});
+    declare_parameter("projectile_ball.park_position_m", std::vector<double>{0.0, 0.0, -50.0});
+    declare_parameter("projectile_ball.launch_direction", std::vector<double>{1.0, 0.0, 0.0});
+    declare_parameter("projectile_ball.launch_angle_deg", 0.0);
+    declare_parameter("projectile_ball.launch_angle_variation_deg", 0.0);
+    declare_parameter("projectile_ball.launch_speed_m_s", 1.0);
+    declare_parameter("projectile_ball.launch_speed_variation_m_s", 0.0);
+    declare_parameter("projectile_ball.seed", 0);
+    declare_parameter("projectile_ball.publish.sample_rate_hz", 100.0);
+    declare_parameter("projectile_ball.publish.frame_id", std::string("world"));
+    declare_parameter("projectile_ball.publish.ground_truth_topic",
+                      std::string("/sim/ball/ground_truth"));
+    declare_parameter("projectile_ball.publish.camera_topic",
+                      std::string("/sim/ball/camera_position"));
+    declare_parameter("projectile_ball.publish.position_noise_stddev_m",
+                      std::vector<double>{0.0, 0.0, 0.0});
 
     // ── Solver parameters (solver_param.yaml)
     // ─────────────────────────────────
@@ -286,6 +348,58 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     use_yaml_servo_gains_ = get_parameter("use_yaml_servo_gains").as_bool();
     servo_kp_ = get_parameter("servo_kp").as_double_array();
     servo_kd_ = get_parameter("servo_kd").as_double_array();
+
+    projectile_ball_config_.enabled = get_parameter("projectile_ball.enabled").as_bool();
+    projectile_ball_config_.body_name = get_parameter("projectile_ball.body_name").as_string();
+    projectile_ball_config_.radius_m = get_parameter("projectile_ball.radius_m").as_double();
+    projectile_ball_config_.mass_kg = get_parameter("projectile_ball.mass_kg").as_double();
+    projectile_ball_config_.collision_contype =
+        static_cast<int>(get_parameter("projectile_ball.collision_contype").as_int());
+    projectile_ball_config_.collision_conaffinity =
+        static_cast<int>(get_parameter("projectile_ball.collision_conaffinity").as_int());
+    projectile_ball_config_.friction = LoadVec3Param("projectile_ball.friction");
+    projectile_ball_config_.spawn_position_m = LoadVec3Param("projectile_ball.spawn_position_m");
+    projectile_ball_config_.park_position_m = LoadVec3Param("projectile_ball.park_position_m");
+    projectile_ball_config_.launch_direction = LoadVec3Param("projectile_ball.launch_direction");
+    projectile_ball_config_.launch_angle_deg =
+        get_parameter("projectile_ball.launch_angle_deg").as_double();
+    projectile_ball_config_.launch_angle_variation_deg =
+        get_parameter("projectile_ball.launch_angle_variation_deg").as_double();
+    projectile_ball_config_.launch_speed_m_s =
+        get_parameter("projectile_ball.launch_speed_m_s").as_double();
+    projectile_ball_config_.launch_speed_variation_m_s =
+        get_parameter("projectile_ball.launch_speed_variation_m_s").as_double();
+    const auto ball_seed = get_parameter("projectile_ball.seed").as_int();
+    if (ball_seed < 0) {
+      throw std::runtime_error("projectile_ball.seed must be >= 0");
+    }
+    projectile_ball_config_.seed = static_cast<std::uint64_t>(ball_seed);
+    projectile_ball_sample_rate_hz_ =
+        get_parameter("projectile_ball.publish.sample_rate_hz").as_double();
+    projectile_ball_frame_id_ = get_parameter("projectile_ball.publish.frame_id").as_string();
+    projectile_ball_ground_truth_topic_ =
+        get_parameter("projectile_ball.publish.ground_truth_topic").as_string();
+    projectile_ball_camera_topic_ =
+        get_parameter("projectile_ball.publish.camera_topic").as_string();
+    projectile_ball_noise_stddev_m_ =
+        LoadVec3Param("projectile_ball.publish.position_noise_stddev_m");
+    for (const double value : projectile_ball_noise_stddev_m_) {
+      if (!std::isfinite(value) || value < 0.0) {
+        throw std::runtime_error("projectile_ball noise standard deviations must be >= 0");
+      }
+    }
+    if (projectile_ball_sample_rate_hz_ <= 0.0 || projectile_ball_frame_id_.empty() ||
+        projectile_ball_ground_truth_topic_.empty() || projectile_ball_camera_topic_.empty()) {
+      throw std::runtime_error("invalid projectile_ball publish configuration");
+    }
+    // std::normal_distribution requires stddev > 0, and 0 is the default
+    // ("no noise"), so a zero axis keeps a unit distribution and is skipped at
+    // draw time instead.
+    for (std::size_t i = 0; i < projectile_ball_noise_.size(); ++i) {
+      const double stddev = projectile_ball_noise_stddev_m_[i];
+      projectile_ball_noise_[i] =
+          std::normal_distribution<double>(0.0, stddev > 0.0 ? stddev : 1.0);
+    }
 
     solver_config_.solver = get_parameter("solver.solver").as_string();
     solver_config_.cone = get_parameter("solver.cone").as_string();
@@ -585,6 +699,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         .solver_config = solver_config_,
         .object_pool = object_pool_config_,
         .object_state = object_state_config_,
+        .projectile_ball = projectile_ball_config_,
         .groups = group_configs_,
     };
     sim_ = std::make_unique<urtc::MuJoCoSimulator>(std::move(cfg));
@@ -720,6 +835,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     }
 
     SetupObjectStatePublisher();
+    SetupProjectileBallPublishers();
   }
 
   // ── Object state publisher (scene-level, one topic for every object) ──────
@@ -754,6 +870,82 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                 "[MuJoCoSimulatorNode] object_state — topic: %s  frame_id: %s  objects: %zu",
                 object_state_config_.topic.c_str(), sim_->GetObjectStateFrameId().c_str(),
                 sim_->GetObjectStateInfos().size());
+  }
+
+  void SetupProjectileBallPublishers() {
+    if (!projectile_ball_config_.enabled || !sim_->HasProjectileBall()) {
+      return;
+    }
+    ground_truth_pub_ = create_publisher<nav_msgs::msg::Odometry>(
+        projectile_ball_ground_truth_topic_, rclcpp::SensorDataQoS().keep_last(1));
+    camera_position_pub_ = create_publisher<geometry_msgs::msg::PointStamped>(
+        projectile_ball_camera_topic_, rclcpp::SensorDataQoS().keep_last(1));
+    // Same configured seed as the simulator's launch RNG, so mix in a stream
+    // tag: identically seeded mt19937_64s would make the camera noise a
+    // replay of the launch draws.
+    const std::uint64_t noise_seed =
+        projectile_ball_config_.seed == 0 ? std::random_device{}() : projectile_ball_config_.seed;
+    std::seed_seq noise_seq{static_cast<std::uint32_t>(noise_seed),
+                            static_cast<std::uint32_t>(noise_seed >> 32U),
+                            static_cast<std::uint32_t>(0x6e6f6973U)};
+    projectile_ball_noise_rng_.seed(noise_seq);
+    projectile_ball_last_publish_time_ = -1.0;
+    ground_truth_msg_.header.frame_id = projectile_ball_frame_id_;
+    ground_truth_msg_.child_frame_id = projectile_ball_config_.body_name;
+    camera_position_msg_.header.frame_id = projectile_ball_frame_id_;
+    sim_->SetProjectileBallCallback(
+        [this](const urtc::ProjectileBallSample& sample) { PublishProjectileBall(sample); });
+    RCLCPP_INFO(
+        get_logger(),
+        "[MuJoCoSimulatorNode] projectile_ball — ground_truth: %s  camera: %s  rate: %.1f Hz",
+        projectile_ball_ground_truth_topic_.c_str(), projectile_ball_camera_topic_.c_str(),
+        projectile_ball_sample_rate_hz_);
+  }
+
+  void PublishProjectileBall(const urtc::ProjectileBallSample& sample) {
+    if (!ground_truth_pub_ || !camera_position_pub_) {
+      return;
+    }
+    // Parked ball: publish nothing, like object_state omits parked pool bodies.
+    if (!sample.active) {
+      return;
+    }
+    if (!urtc::ShouldPublishProjectileBallSample(sample.sim_time_sec,
+                                                 1.0 / projectile_ball_sample_rate_hz_,
+                                                 projectile_ball_last_publish_time_)) {
+      return;
+    }
+    const auto stamp = now();
+
+    auto& ground_truth = ground_truth_msg_;
+    ground_truth.header.stamp = stamp;
+    ground_truth.pose.pose.position.x = sample.position[0];
+    ground_truth.pose.pose.position.y = sample.position[1];
+    ground_truth.pose.pose.position.z = sample.position[2];
+    ground_truth.pose.pose.orientation.w = sample.orientation[0];
+    ground_truth.pose.pose.orientation.x = sample.orientation[1];
+    ground_truth.pose.pose.orientation.y = sample.orientation[2];
+    ground_truth.pose.pose.orientation.z = sample.orientation[3];
+    ground_truth.twist.twist.linear.x = sample.linear_velocity[0];
+    ground_truth.twist.twist.linear.y = sample.linear_velocity[1];
+    ground_truth.twist.twist.linear.z = sample.linear_velocity[2];
+    ground_truth.twist.twist.angular.x = sample.angular_velocity[0];
+    ground_truth.twist.twist.angular.y = sample.angular_velocity[1];
+    ground_truth.twist.twist.angular.z = sample.angular_velocity[2];
+    ground_truth_pub_->publish(ground_truth);
+
+    auto& camera_position = camera_position_msg_;
+    camera_position.header.stamp = stamp;
+    std::array<double, 3> noisy = sample.position;
+    for (std::size_t i = 0; i < noisy.size(); ++i) {
+      if (projectile_ball_noise_stddev_m_[i] > 0.0) {
+        noisy[i] += projectile_ball_noise_[i](projectile_ball_noise_rng_);
+      }
+    }
+    camera_position.point.x = noisy[0];
+    camera_position.point.y = noisy[1];
+    camera_position.point.z = noisy[2];
+    camera_position_pub_->publish(camera_position);
   }
 
   // One TransformStamped per ACTIVE object; parked pool candidates are omitted
@@ -1126,6 +1318,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   // so this service answers from Inactive too. That is deliberate — staging a
   // load before activation is exactly how a run starts with one already hung.
   rclcpp::Service<rtc_msgs::srv::SetExternalWrench>::SharedPtr set_external_wrench_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr launch_ball_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_ball_srv_;
 
   rclcpp::TimerBase::SharedPtr status_timer_;
 
@@ -1144,6 +1338,22 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   urtc::SolverConfig solver_config_;
   urtc::ObjectPoolConfig object_pool_config_;
   urtc::ObjectStateConfig object_state_config_;
+  urtc::ProjectileBallConfig projectile_ball_config_;
+  double projectile_ball_sample_rate_hz_{100.0};
+  double projectile_ball_last_publish_time_{-1.0};
+  std::string projectile_ball_frame_id_;
+  std::string projectile_ball_ground_truth_topic_;
+  std::string projectile_ball_camera_topic_;
+  std::array<double, 3> projectile_ball_noise_stddev_m_{0.0, 0.0, 0.0};
+  std::mt19937_64 projectile_ball_noise_rng_{};
+  std::array<std::normal_distribution<double>, 3> projectile_ball_noise_{};
+  // Pre-allocated so the sim-thread publish only writes numbers and the stamp;
+  // frame ids are set once in SetupProjectileBallPublishers.
+  nav_msgs::msg::Odometry ground_truth_msg_;
+  geometry_msgs::msg::PointStamped camera_position_msg_;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>::SharedPtr ground_truth_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>::SharedPtr
+      camera_position_pub_;
 
   // Scene-level, so not a GroupRosHandles member. Null when object_state is
   // disabled or the scene has no free body.

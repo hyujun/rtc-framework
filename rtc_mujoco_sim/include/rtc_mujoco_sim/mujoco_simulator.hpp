@@ -3,6 +3,7 @@
 
 // ── Includes: project, then MuJoCo, then C++ stdlib ───────────────────────────
 #include "rtc_mujoco_sim/object_pool.hpp"
+#include "rtc_mujoco_sim/projectile_ball.hpp"
 
 #include <mujoco/mujoco.h>
 
@@ -92,18 +93,19 @@ struct SolverConfig {
 // arbitrary owner onto a scene whose objects outlive every robot in it.
 //
 // WHICH BODIES COUNT. Every body carrying a freejoint, minus the ObjectPool
-// slots that are currently parked. That rule is the whole selection policy and
-// it is deliberately not a name list: "can move freely under physics" is what
-// makes something a manipulable object, and it stays true when the scene gains
-// or loses objects without anyone editing YAML. Static props (a work table)
-// and robot links have no freejoint and so never appear; parked pool
-// candidates are compiled into the model but sit at the park position out of
+// slots that are currently parked and the projectile ball while it is parked
+// (it counts once launched: it is then a free body under physics). That rule is the whole selection
+// policy and it is deliberately not a name list: "can move freely under physics" is what makes
+// something a manipulable object, and it stays true when the scene gains or loses objects without
+// anyone editing YAML. Static props (a work table) and robot links have no freejoint and so never
+// appear; parked pool candidates are compiled into the model but sit at the park position out of
 // collision, so publishing them would put a stack of objects 50 m under the
 // floor into the consumer's frame set.
 //
 // The park test is re-evaluated EVERY tick rather than resolved at Initialize:
-// the viewer's 'o' key swaps which candidate is active, and a set frozen at
-// startup would keep publishing the object that was parked away.
+// the viewer's 'o' key swaps which candidate is active and launch/reset moves
+// the ball in and out, and a set frozen at startup would keep publishing the
+// object that was parked away.
 struct ObjectStateConfig {
   bool enabled{false};
 
@@ -134,7 +136,8 @@ struct ObjectStateInfo {
 
 // Heap-free POD, one per info entry.
 struct ObjectStateSample {
-  /// False = the body is a parked pool candidate this tick; consumers skip it.
+  /// False = the body is parked this tick (pool candidate or projectile ball);
+  /// consumers skip it.
   /// The entry stays in the array (parallel to the infos) rather than being
   /// compacted, so an index means the same object on every tick.
   bool active{false};
@@ -144,6 +147,17 @@ struct ObjectStateSample {
 
 using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo>& infos,
                                                const std::vector<ObjectStateSample>& samples)>;
+
+struct ProjectileBallSample {
+  bool active{false};
+  std::array<double, 3> position{0.0, 0.0, 0.0};
+  std::array<double, 4> orientation{1.0, 0.0, 0.0, 0.0};
+  std::array<double, 3> linear_velocity{0.0, 0.0, 0.0};
+  std::array<double, 3> angular_velocity{0.0, 0.0, 0.0};
+  double sim_time_sec{0.0};
+};
+
+using ProjectileBallCallback = std::function<void(const ProjectileBallSample& sample)>;
 
 // ── ContactWrenchVizSample ───────────────────────────────────────────────────
 // One fingertip force arrow, in WORLD coordinates, handed from the sim thread
@@ -480,6 +494,8 @@ class MuJoCoSimulator {
     // Object pose publishing (object_state YAML block). Disabled by default.
     ObjectStateConfig object_state;
 
+    ProjectileBallConfig projectile_ball;
+
     // 멀티 그룹 설정 (robot_response + fake_response)
     std::vector<JointGroupConfig> groups;
   };
@@ -556,6 +572,20 @@ class MuJoCoSimulator {
   /// Register the per-tick object pose callback. Invoked from the SimLoop
   /// thread alongside the state / sensor / contact-wrench callbacks.
   void SetObjectStateCallback(ObjectStateCallback callback) noexcept;
+
+  void SetProjectileBallCallback(ProjectileBallCallback callback) noexcept;
+
+  void RequestProjectileBallLaunch() noexcept {
+    projectile_ball_launch_requested_.store(true, std::memory_order_release);
+    sync_cv_.notify_all();
+  }
+
+  void RequestProjectileBallReset() noexcept {
+    projectile_ball_reset_requested_.store(true, std::memory_order_release);
+    sync_cv_.notify_all();
+  }
+
+  [[nodiscard]] bool HasProjectileBall() const noexcept { return projectile_ball_body_id_ >= 0; }
 
   /// Discovered free bodies, in mjModel body-id order. Immutable after
   /// Initialize, so a caller may hold the reference for the object's lifetime.
@@ -925,10 +955,22 @@ class MuJoCoSimulator {
   int object_state_ref_body_{0};
   std::string object_state_frame_id_;
 
+  ProjectileBallCallback projectile_ball_cb_{nullptr};
+  int projectile_ball_body_id_{-1};
+  int projectile_ball_joint_id_{-1};
+  int projectile_ball_qpos_adr_{-1};
+  int projectile_ball_qvel_adr_{-1};
+  int projectile_ball_geom_id_{-1};
+  ProjectileBallSample projectile_ball_sample_{};
+  std::mt19937_64 projectile_ball_rng_{};
+  bool projectile_ball_active_{false};
+
   // ── Runtime control flags ─────────────────────────────────────────────────
   std::atomic<bool> paused_{false};
   std::atomic<bool> reset_requested_{false};
   std::atomic<bool> object_refresh_requested_{false};
+  std::atomic<bool> projectile_ball_launch_requested_{false};
+  std::atomic<bool> projectile_ball_reset_requested_{false};
   std::atomic<bool> step_once_{false};
   std::atomic<double> current_max_rtf_{0.0};
   // World gravity is on by default — free bodies (objects to lift) always fall.
@@ -1064,11 +1106,13 @@ class MuJoCoSimulator {
   void ReadSensors() noexcept;
   void ReadContactWrenches() noexcept;
   void ReadObjectStates() noexcept;
+  void ReadProjectileBallState() noexcept;
   void ReadSolverStats() noexcept;
   void InvokeStateCallback() noexcept;
   void InvokeSensorCallback() noexcept;
   void InvokeContactWrenchCallback() noexcept;
   void InvokeObjectStateCallback() noexcept;
+  void InvokeProjectileBallCallback() noexcept;
   void UpdateVizBuffer() noexcept;
   /// Fill viz_contact_wrench_ from the current mjData. THE CALLER MUST HOLD
   /// viz_mutex_ — split out of UpdateVizBuffer only so the test entry point
@@ -1077,6 +1121,14 @@ class MuJoCoSimulator {
   void UpdateRtf(uint64_t step) noexcept;
   void ThrottleIfNeeded() noexcept;
   void HandleReset() noexcept;
+  [[nodiscard]] bool AttachProjectileBall(mjSpec* spec, std::string& error) noexcept;
+  [[nodiscard]] bool ResolveProjectileBall() noexcept;
+  void HandleProjectileBallLaunch() noexcept;
+  // Park (active=false) or launch (active=true) the ball: pose, velocity,
+  // contact filters and gravcomp together. SimLoop context only.
+  void WriteProjectileBallState(bool active, const std::array<double, 3>& position,
+                                const std::array<double, 3>& velocity) noexcept;
+  void HandleProjectileBallReset() noexcept;
   // Park the active object and spawn the next one. SimLoop context only.
   void HandleObjectRefresh() noexcept;
   // Consume a pending RequestObjectRefresh, if any; returns true when one was

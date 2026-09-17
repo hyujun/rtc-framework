@@ -30,7 +30,9 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rtc_msgs REQUIRED)
@@ -88,6 +90,7 @@ if(mujoco_FOUND)
     src/mujoco_simulator.cpp
     src/mujoco_sim_loop.cpp
     src/object_pool.cpp
+    src/projectile_ball.cpp
     src/ros2_resource_provider.cpp
     src/viewer/viewer_loop.cpp
     src/viewer/viewer_callbacks.cpp
@@ -139,7 +142,9 @@ if(mujoco_FOUND)
     rclcpp_lifecycle
     std_msgs
     sensor_msgs
+    nav_msgs
     geometry_msgs
+    std_srvs
     tf2_msgs
     ament_index_cpp
     rtc_msgs
@@ -165,6 +170,14 @@ if(mujoco_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pure_helpers.cpp")
       ament_add_gtest(test_pure_helpers test/test_pure_helpers.cpp)
       target_link_libraries(test_pure_helpers mujoco_simulator_lib)
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_projectile_ball.cpp")
+      ament_add_gtest(test_projectile_ball test/test_projectile_ball.cpp)
+      target_link_libraries(test_projectile_ball mujoco_simulator_lib)
+      target_compile_definitions(test_projectile_ball PRIVATE
+        MINIMAL_MJCF_PATH="${MJCF_FIXTURE}"
+        POOL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/pool_scene.xml")
     endif()
 
     # Object pool sampling/selection: pure helpers, no MJCF fixture needed.
