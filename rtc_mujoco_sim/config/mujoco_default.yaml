@@ -154,24 +154,33 @@ mujoco_simulator:
       frame_id: ""
 
     # ── Projectile ball ──────────────────────────────────────────────────────
-    # A single sphere is attached to the parsed MuJoCo spec when enabled. Its
-    # mass and radius are startup properties; launch requests only change
-    # qpos/qvel on the simulator thread.
+    # A single sphere is attached to the parsed MuJoCo spec when enabled. Only
+    # radius and mass are set here; inertia distribution, restitution,
+    # friction, drag and lift come from the ball_type preset (README
+    # "Projectile Ball"). Launch requests only change qpos/qvel on the
+    # simulator thread.
     projectile_ball:
       enabled: false
       body_name: "projectile_ball"
-      radius_m: 0.025
-      mass_kg: 0.05
+      ball_type: "tennis"          # tennis | beanbag | hard
+      radius_m: 0.0335             # [m]
+      mass_kg: 0.057               # [kg]
       collision_contype: 2
       collision_conaffinity: 1
-      friction: [1.0, 0.5, 0.01]
+      aerodynamics: false          # drag + Magnus lift on the ball only
       spawn_position_m: [0.0, 0.0, 0.5]
       park_position_m: [0.0, 0.0, -50.0]
       launch_direction: [1.0, 0.0, 0.0]
+      launch_noise: "uniform"      # uniform (variation = half-width) | normal (variation = stddev)
       launch_angle_deg: 0.0
       launch_angle_variation_deg: 0.0
+      launch_azimuth_variation_deg: 0.0
       launch_speed_m_s: 1.0
       launch_speed_variation_m_s: 0.0
+      # [rad/s] launch frame: x = launch direction, y = left, z = up.
+      # Backspin (ball floats) is negative y; topspin is positive y.
+      launch_spin_rad_s: [0.0, 0.0, 0.0]
+      launch_spin_variation_rad_s: [0.0, 0.0, 0.0]
       seed: 0
       publish:
         sample_rate_hz: 100.0

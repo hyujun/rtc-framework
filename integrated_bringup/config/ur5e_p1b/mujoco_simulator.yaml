@@ -111,20 +111,27 @@ mujoco_simulator:
     projectile_ball:
       enabled: true
       body_name: "projectile_ball"
+      # 물성 (관성 분포·반발·마찰·항력·양력) 은 preset 이 정한다. 형상·질량만 여기서.
+      ball_type: "tennis"          # tennis | beanbag | hard
       radius_m: 0.025
       mass_kg: 0.05
       # p1b fingertip collision meshes use contype=1, conaffinity=2. MuJoCo
       # requires the projectile masks to be complementary for both directions.
       collision_contype: 2
       collision_conaffinity: 1
-      friction: [1.0, 0.5, 0.01]
+      aerodynamics: true
       spawn_position_m: [-0.49, -0.23, 0.65]
       park_position_m: [0.0, 0.0, -50.0]
       launch_direction: [1.0, 0.0, 0.0]
+      launch_noise: "uniform"
       launch_angle_deg: 35.0
       launch_angle_variation_deg: 5.0
+      launch_azimuth_variation_deg: 0.0
       launch_speed_m_s: 2.0
       launch_speed_variation_m_s: 0.2
+      # [rad/s] launch frame: x = 발사 방향, y = 왼쪽, z = 위. backspin = -y.
+      launch_spin_rad_s: [0.0, 0.0, 0.0]
+      launch_spin_variation_rad_s: [0.0, 0.0, 0.0]
       seed: 42
       publish:
         sample_rate_hz: 100.0

@@ -152,8 +152,8 @@ struct ProjectileBallSample {
   bool active{false};
   std::array<double, 3> position{0.0, 0.0, 0.0};
   std::array<double, 4> orientation{1.0, 0.0, 0.0, 0.0};
-  std::array<double, 3> linear_velocity{0.0, 0.0, 0.0};
-  std::array<double, 3> angular_velocity{0.0, 0.0, 0.0};
+  std::array<double, 3> linear_velocity{0.0, 0.0, 0.0};   ///< world frame
+  std::array<double, 3> angular_velocity{0.0, 0.0, 0.0};  ///< world frame (qvel is body frame)
   double sim_time_sec{0.0};
 };
 
@@ -586,6 +586,12 @@ class MuJoCoSimulator {
   }
 
   [[nodiscard]] bool HasProjectileBall() const noexcept { return projectile_ball_body_id_ >= 0; }
+
+  /// Latest ball sample. Same ownership rule as GetObjectStateSamplesForTest:
+  /// StepForTest refreshes it, SimLoop owns it.
+  [[nodiscard]] const ProjectileBallSample& GetProjectileBallSampleForTest() const noexcept {
+    return projectile_ball_sample_;
+  }
 
   /// Discovered free bodies, in mjModel body-id order. Immutable after
   /// Initialize, so a caller may hold the reference for the object's lifetime.
@@ -1123,11 +1129,17 @@ class MuJoCoSimulator {
   void HandleReset() noexcept;
   [[nodiscard]] bool AttachProjectileBall(mjSpec* spec, std::string& error) noexcept;
   [[nodiscard]] bool ResolveProjectileBall() noexcept;
+  // Writes the substep-dependent solref/solimp/friction onto the ball geom.
+  void ApplyProjectileBallContact() noexcept;
   void HandleProjectileBallLaunch() noexcept;
   // Park (active=false) or launch (active=true) the ball: pose, velocity,
   // contact filters and gravcomp together. SimLoop context only.
   void WriteProjectileBallState(bool active, const std::array<double, 3>& position,
-                                const std::array<double, 3>& velocity) noexcept;
+                                const std::array<double, 3>& velocity,
+                                const std::array<double, 3>& angular_velocity) noexcept;
+  // Drag + Magnus into the ball's qfrc_applied slots (assigned, not added, so a
+  // skipped clear can never double it). SimLoop context only.
+  void ApplyProjectileBallAerodynamics() noexcept;
   void HandleProjectileBallReset() noexcept;
   // Park the active object and spawn the next one. SimLoop context only.
   void HandleObjectRefresh() noexcept;
