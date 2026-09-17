@@ -231,6 +231,8 @@ solver:
 | `<contact_wrench.topic_prefix>/<target>/contact_point` | `geometry_msgs/PointStamped` | 매 물리 스텝 | `contact_wrench.publish_debug: true` 일 때만. **world frame** (`frame_id: "world"`) 접촉점 — wrench 와 달리 손끝 프레임이 아니다. 아래 [디버그 lane](#publish_debug--접촉점접촉깊이-디버그-lane) 절 |
 | `<contact_wrench.topic_prefix>/<target>/contact_depth` | `std_msgs/Float64` | 매 물리 스텝 | 〃. MuJoCo 의 부호 있는 contact distance — **음수가 관통** |
 | `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
+| `<projectile_ball.publish.ground_truth_topic>` (예: `/sim/ball/ground_truth`) | `nav_msgs/Odometry` | `publish.sample_rate_hz` (sim 시간 기준) | 씬 전체: 발사된 공의 참값 pose·twist. **park 중에는 발행하지 않는다**. 아래 [Projectile Ball](#projectile-ball-발사-공) 절 |
+| `<projectile_ball.publish.camera_topic>` (예: `/sim/ball/camera_position`) | `geometry_msgs/PointStamped` | 〃 | 〃 위치에 축별 가우시안 노이즈 (`position_noise_stddev_m`) — 카메라 관측 모사 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
 #### Contact wrench auto-discovery (MJCF `<sensor><contact>` → ROS WrenchStamped)
@@ -303,6 +305,8 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 | 서비스 | 타입 | 설명 |
 |------|------|------|
 | `/sim/set_external_wrench` | `rtc_msgs/SetExternalWrench` | body 이름으로 지정한 곳에 알려진 외력 부착 / 전체 해제 |
+| `/sim/launch_ball` | `std_srvs/Trigger` | projectile ball 발사 요청 (뷰어 `K` 와 같은 경로). 공이 비활성이면 `success: false` |
+| `/sim/reset_ball` | `std_srvs/Trigger` | projectile ball 을 park 위치로 회수. 공이 비활성이면 `success: false` |
 
 #### 외력 주입 (`/sim/set_external_wrench`)
 
@@ -515,6 +519,7 @@ mujoco_simulator:
 | `solver.*` | (다양) | (MuJoCo 기본값) | Solver 파라미터 — 상세: [solver_param.yaml](config/solver_param.yaml) 및 위 Constraint Solver 설정 섹션 참조 |
 | `object_pool.*` | (다양) | 비활성 | 랜덤 object 스폰 — 아래 [Object Pool](#object-pool-랜덤-object-스폰) 섹션 참조 |
 | `object_state.*` | (다양) | 비활성 | object 이름·프레임·pose 발행 — 아래 [Object State](#object-state-object-이름프레임pose-발행) 섹션 참조 |
+| `projectile_ball.*` | (다양) | 비활성 | 발사 공 생성·발사·발행 — 아래 [Projectile Ball](#projectile-ball-발사-공) 섹션 참조 |
 
 그룹별 파라미터 (`robot_response.<name>.` / `fake_response.<name>.`):
 
@@ -723,13 +728,14 @@ tf2_msgs/TFMessage
 
 ### 무엇이 object 인가
 
-**freejoint 를 가진 body 전부, 단 park 된 object_pool 후보는 제외.** 이것이 규칙의 전부이며 이름 목록은 없습니다 — 씬에 object 가 늘거나 줄어도 YAML 을 따라 고칠 필요가 없습니다.
+**freejoint 를 가진 body 전부, 단 park 된 object_pool 후보와 park 된 [projectile ball](#projectile-ball-발사-공) 은 제외.** 이것이 규칙의 전부이며 이름 목록은 없습니다 — 씬에 object 가 늘거나 줄어도 YAML 을 따라 고칠 필요가 없습니다.
 
 - 로봇 링크는 hinge 조인트라 해당 없음
 - 작업 테이블 같은 정적 소품은 조인트가 없어 해당 없음
 - park 된 pool 후보는 모델에는 컴파일돼 있지만 바닥 아래 50 m 에 있으므로, 발행하면 소비자의 프레임 집합에 유령 object 가 생김
+- projectile ball 도 같은 이유로 park 중에는 빠지고, 발사된 뒤에는 물리 아래 free body 이므로 포함됨
 
-park 판정은 **매 tick** 다시 하므로 뷰어 `o` 키 refresh 가 즉시 반영됩니다 (Initialize 시점에 고정하면 방금 park 된 object 를 계속 발행하게 됩니다).
+park 판정은 **매 tick** 다시 하므로 뷰어 `o` 키 refresh 와 공의 발사·reset 이 즉시 반영됩니다 (Initialize 시점에 고정하면 방금 park 된 object 를 계속 발행하게 됩니다).
 
 ### `/tf` 가 아니다
 
@@ -762,6 +768,65 @@ object_state:
 
 ```bash
 ros2 topic echo /sim/object_transforms --once
+```
+
+---
+
+## Projectile Ball (발사 공)
+
+파지·추적 실험용으로 **공 하나를 던져 주는** 기능입니다. 공은 `projectile_ball.enabled: true` 일 때 `rtc_mujoco_sim` 이 파싱한 MJCF spec 에 직접 붙이므로 씬 XML 을 고칠 필요가 없습니다. 질량·반경·마찰은 기동 시 고정이고, 발사는 SimLoop 에서 qpos/qvel 만 바꿉니다.
+
+### 동작
+
+| 상태 | 위치 | 접촉 | gravcomp | 발행 |
+|---|---|---|---|---|
+| park (기동 직후 · `R` · `/sim/reset_ball`) | `park_position_m` | 끔 (contype/conaffinity = 0) | 켬 | 안 함 (`object_state` 에서도 빠짐) |
+| 발사 (`K` · `/sim/launch_ball`) | `spawn_position_m` | `collision_contype` / `collision_conaffinity` | 끔 | `sample_rate_hz` |
+
+park 는 세 가지를 **함께** 해야 합니다 — object pool 의 park 와 같은 이유입니다.
+- **접촉 끄기**: MuJoCo plane 은 halfspace 라서, 바닥 아래 park 위치에 접촉이 켜진 공을 두면 관통으로 판정돼 수백 m/s 로 튕겨 나갑니다.
+- **gravcomp 켜기**: 접촉을 끄면 공을 붙잡는 것이 없어 끝없이 자유낙하합니다.
+- **속도·warm start 지우기**: gravcomp 만으로는 움직이던 공이 등속으로 계속 흘러갑니다.
+
+발사 속도는 `launch_direction` (수평, 정규화) 방향으로 `launch_angle_deg ± launch_angle_variation_deg` 만큼 올려 `launch_speed_m_s ± launch_speed_variation_m_s` 크기로 줍니다 (균등 분포). 앙각은 `launch_angle_deg` 만 결정하므로 **`launch_direction` 에 z 성분이 있으면 Initialize 가 실패**합니다.
+
+### 설정
+
+```yaml
+projectile_ball:
+  enabled: false
+  body_name: "projectile_ball"
+  radius_m: 0.025
+  mass_kg: 0.05
+  collision_contype: 2        # 상대 geom 과 양방향으로 겹치도록 고른다 (아래)
+  collision_conaffinity: 1
+  friction: [1.0, 0.5, 0.01]
+  spawn_position_m: [0.0, 0.0, 0.5]
+  park_position_m: [0.0, 0.0, -50.0]
+  launch_direction: [1.0, 0.0, 0.0]   # z 는 0 이어야 한다
+  launch_angle_deg: 0.0
+  launch_angle_variation_deg: 0.0
+  launch_speed_m_s: 1.0
+  launch_speed_variation_m_s: 0.0
+  seed: 0                     # 0 = 매 기동 random_device
+  publish:
+    sample_rate_hz: 100.0     # sim 시간 기준 (RTF 와 무관하게 sim 초당 횟수)
+    frame_id: "world"
+    ground_truth_topic: "/sim/ball/ground_truth"
+    camera_topic: "/sim/ball/camera_position"
+    position_noise_stddev_m: [0.0, 0.0, 0.0]   # 0 인 축은 노이즈 없음
+```
+
+MuJoCo 는 `(contype_A & conaffinity_B) || (contype_B & conaffinity_A)` 이면 두 geom 을 충돌시킵니다. 손끝 mesh 가 `contype=1, conaffinity=2` 라면 공은 `contype=2, conaffinity=1` 로 두어 양쪽 방향이 모두 맞게 합니다. 이 값이면 기본 마스크 (1/1) 인 바닥과도 충돌합니다.
+
+`seed` 는 발사 샘플링과 카메라 노이즈에 함께 쓰이지만 노이즈 쪽은 stream tag 를 섞어 두 난수열이 겹치지 않습니다.
+
+### 확인
+
+```bash
+ros2 service call /sim/launch_ball std_srvs/srv/Trigger
+ros2 topic hz /sim/ball/ground_truth       # 발사 후 ~sample_rate_hz × RTF
+ros2 service call /sim/reset_ball std_srvs/srv/Trigger   # 이후 발행이 멈춘다
 ```
 
 ---
@@ -865,6 +930,7 @@ ros2 topic hz /hand/joint_states
 | + / - | RTF 속도 2배 / 0.5배 |
 | R | 초기 자세로 리셋 (pool object 는 같은 자세로 다시 놓임) |
 | O | pool object 교체 — 기존 object 를 park 하고 설정 범위에서 새로 스폰 ([Object Pool](#object-pool-랜덤-object-스폰)) |
+| K | projectile ball 발사 (`/sim/launch_ball` 과 같음, [Projectile Ball](#projectile-ball-발사-공)) |
 | TAB | 카메라 모드 순환 (Free → Tracking → Fixed[0..N-1] → Free) |
 | Esc | 카메라 초기화 (Free 모드, 기본 거리/방위각) |
 | Backspace | 시각화 옵션 초기화 |
@@ -961,7 +1027,9 @@ MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 | `rclcpp_lifecycle` | LifecycleNode 기반 상태 관리 |
 | `std_msgs` | Float64MultiArray (sim/status) |
 | `sensor_msgs` | JointState (state publish) |
-| `geometry_msgs` | `WrenchStamped` (contact wrench lane), `TransformStamped` (object state) |
+| `nav_msgs` | `Odometry` — projectile ball 참값 lane |
+| `std_srvs` | `Trigger` — `/sim/launch_ball`, `/sim/reset_ball` |
+| `geometry_msgs` | `WrenchStamped` (contact wrench lane), `TransformStamped` (object state), `PointStamped` (projectile ball camera lane) |
 | `tf2_msgs` | `TFMessage` — object state lane 의 named object pose 배열 |
 | `ament_index_cpp` | package:// URI 해석 |
 | `rtc_msgs` | JointCommand, SimSensorState 메시지 |
@@ -1045,6 +1113,7 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
 | `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
 | `test_object_state` | object state lane — 어떤 body 가 object 로 잡히는지, pose 가 어느 프레임으로 나오는지 |
+| `test_projectile_ball` | projectile ball — 설정 검증 (기울어진 `launch_direction` 거부), 발사 속도 샘플링 재현성·범위, sim 시간 publish throttle 이 reset 후 재개되는지, **negative control** (기동 직후 park 공이 바닥 plane 에 튕기지도 자유낙하하지도 않음) 과 **positive control** (발사된 공이 바닥과 접촉) (`pool_scene.xml`) |
 | `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
 
 Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).

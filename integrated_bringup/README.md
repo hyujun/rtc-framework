@@ -835,6 +835,7 @@ GUI 는 `integrated_bringup/integrated_bringup/demo_gui/` 패키지로 구성됩
 | `demo_gui/catalog.py` | `ControllerCatalog` — `/rtc_cm/list_controllers` 비동기 폴러 (5 s 주기). 라디오 버튼 / preset combo / 라벨이 모두 이 catalog 결과에서 옴. |
 | `demo_gui/pull.py` | Pull Force Estimate 패널의 상태기계 — `PullSnapshot` (immutable) / `PullPeakHold` / `badge_state` / `build_render`. Tk·rclpy 비의존이라 `test/test_demo_gui_pull.py` 가 디스플레이 없이 검증. |
 | `demo_gui/task_frame.py` | `TaskFrameSelector` — active controller 가 **실제로 제어 중인** task frame 선택. `virtual_tcp_actual` 을 한 번이라도 관측하면 즉시 latch, 없이 fallback (`RobotProfile.tcp_child`) 만 `settle_msgs` 건이면 fallback latch. 컨트롤러 이름 하드코딩 없이 **availability** 로만 판정하며, settle window 는 closed-chain hand FK walk-in 동안 tool0 만 발행되는 창을 넘기기 위한 것이다. Tk·rclpy 비의존 (`test/test_demo_gui_task_frame.py`). |
+| `demo_gui/preset_toggle.py` | preset 단축키의 순수 로직 — `PresetToggleState` (close 우선, **dispatch 성공 시에만** close↔open 전진, key-repeat 억제용 arm/rearm), keysym 정규화, preset 쌍 해석, 설정 JSON 의 검증·atomic 저장. Tk·rclpy 비의존 (`test/test_demo_gui_preset_toggle.py`). |
 
 #### 동적 controller 발견 (`/rtc_cm/list_controllers`)
 
@@ -878,6 +879,16 @@ WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mp
 **`demo_inference_controller` — 외부 명령 경로가 없는 컨트롤러:** 이 컨트롤러는 라디오에서 선택하고 `Switch Controller` 로 활성화할 수 있지만 (`--robot ur5e_p1b` 한정), **어떤 authoring 위젯도 동작하지 않습니다**. 정책이 팔과 손 명령을 모두 소유하므로 (a) `CreateOwnedTopics` 를 호출하지 않아 `joint_goal` **구독 자체가 없고** — YAML 의 `topics:` 블록은 device 그룹 *순서*를 세우는 용도입니다 — (b) `grasp_command` srv 를 선언하지 않으며 (c) ROS 파라미터가 0개라 게인 패널이 비어 있습니다. 그래서 GUI 는 관절·task 목표 패널과 `▶ Grasp` / `■ Release` 를 **비활성화하고 사유를 표시**합니다 (`demo_gui/config.py` `NO_EXTERNAL_COMMAND_CONTROLLERS`). 구독자가 없는 토픽으로의 publish 는 조용히 성공하므로, 버튼을 살려두면 "Sent hand cmd" 로그만 남고 로봇은 안 움직이는 상태와 구별되지 않습니다 — `Send Command` 와 `Send Preset` 의 hand 절반도 같은 이유로 차단됩니다. 관절 상태 readout 은 CM 소유 토픽(`/rtc_cm/<group>/joint_states`)이라 정상 동작하고, 진단(hold 사유·reach gate)은 토픽이 아니라 세션 CSV (`inference_diag.csv`) 로만 나옵니다.
 
 **Task frame 게이트:** task 목표는 active controller 의 **제어 frame 이 확정된 뒤에만** 입력·발행할 수 있습니다. 컨트롤러 전환 직후에는 `TaskFrameSelector` 가 미확정 상태라 task target entry / step 버튼이 `disabled` 이고, EE pose 표시는 `—` 입니다 (이전 컨트롤러의 pose 를 라이브처럼 보여주지 않기 위해). frame 이 확정되면 그 시점의 실제 pose 로 **1회** seed 되고 패널이 활성화됩니다 — 전환 시점에 seed 하면 아직 이전 컨트롤러의 pose 라 "표시된 pose 를 그대로 target 으로 보냈는데 로봇이 움직이는" 결함이 됩니다. `Send Preset` 의 자동 task publish 와 preset 저장도 같은 게이트를 통과합니다. 이 게이트는 컨트롤러 측 계약의 나머지 절반이다 — `ApplyPendingTarget` 이 외부 목표를 컨트롤러의 *의도된* frame 으로 태깅할 수 있는 근거가 "미확정 창에서는 authoring 자체가 불가능하다" 이기 때문.
+
+#### Preset 단축키 (close ↔ open 토글)
+
+Preset 패널의 `Toggle Close` / `Open` 콤보에 고른 두 preset 을 **키 하나로 번갈아** 보냅니다 (기본 `Space`, `Set Key` 로 변경 — 캡처 창에서 `Esc` 는 취소). 선택은 preset 파일과 같은 디렉토리의 `demo_gui_settings_<hand_group>.json` 에 저장됩니다.
+
+- **atomic dispatch**: preset 의 `controller` 가 active 가 아니면 먼저 전환합니다. 전환 여부와 무관하게 보내기 전에 최대 2 s 동안 세 가지를 기다립니다 — goal publisher 가 **그 컨트롤러 네임스페이스로 다시 만들어졌는가** (`active_controller_name` 은 rewire 보다 먼저 바뀌므로 이름만으로는 옛 publisher 에 보낼 수 있음), 그 publisher 에 **매칭된 subscriber 가 있는가** (goal publisher 는 depth 1 volatile 이라 discovery 전에 보낸 목표는 버려지는데 토글은 성공으로 셈), (task 목표라면) task frame 이 확정됐는가. E-STOP·DoF 불일치·미확정 task frame 등 사전 조건이 하나라도 실패하면 **아무것도 발행하지 않고** 사유를 로그에 남깁니다.
+- **전진 규칙**: 발행에 성공했을 때만 다음 역할(close→open)로 넘어갑니다 — 거부된 close 뒤에 누르면 다시 close 입니다.
+- **입력 억제**: 텍스트 입력 위젯에 포커스가 있으면 무시하고 (그 외 위젯에서는 단축키가 이깁니다 — ttk 버튼은 클릭하면 포커스를 가져가므로, 포커스된 버튼에 `Space` 를 넘기면 마지막에 누른 버튼(E-STOP·Switch 포함)이 다시 눌리고 단축키는 조용히 먹통이 됩니다), 키를 누르고 있는 동안의 auto-repeat 는 한 번으로 셉니다. 앞선 토글이 끝나기 전의 입력도 무시합니다.
+- **실패 복구**: 토글 단계 중 예외가 나면 단축키 잠금을 풀고 `Preset toggle (...) aborted` 를 error 로그에 남깁니다 — 재시작 없이 다시 누를 수 있습니다.
+- 두 콤보에 같은 preset 을 고르면 패널에 경고가 표시됩니다 (토글이 같은 명령만 반복).
 
 #### Grasp/Release 버튼 동작
 

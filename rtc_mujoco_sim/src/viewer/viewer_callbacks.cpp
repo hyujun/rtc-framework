@@ -114,6 +114,10 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
       s->sim->RequestReset();
       break;
 
+    case GLFW_KEY_K:
+      s->sim->RequestProjectileBallLaunch();
+      break;
+
     case GLFW_KEY_O:
       // Park the current object and spawn another per the object_pool config.
       // Only raises a flag — the SimLoop owns mjModel/mjData and does the work,

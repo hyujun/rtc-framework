@@ -172,7 +172,7 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
     char keys[800], vals[800];
     std::snprintf(keys, sizeof(keys),
                   "Help 1/2  (F1=next)\n"
-                  "Space\n+/KP_ADD\n-/KP_SUB\nRight\nR\nO\n"
+                  "Space\n+/KP_ADD\n-/KP_SUB\nRight\nR\nO\nK\n"
                   "TAB\nLeft drag\nShift+Left\nRight drag\nShift+Right\nScroll\nMiddle\nEsc\n"
                   "G\nN\n"
                   "I\nS\n]  /  [\nF4");
@@ -184,6 +184,7 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
                   "Step once (paused)\n"
                   "Reset pose\n"
                   "Spawn object [%s]\n"
+                  "Launch ball [%s]\n"
                   "Cycle camera [%s]\n"
                   "Orbit\n"
                   "Orbit horizontal\n"
@@ -198,7 +199,8 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
                   "Solver [%s]\n"
                   "Solver iter [%d]\n"
                   "Solver stats",
-                  rtf_str, vs.sim->GetActiveObjectName().c_str(), cam_lbl,
+                  rtf_str, vs.sim->GetActiveObjectName().c_str(),
+                  vs.sim->HasProjectileBall() ? "ON" : "OFF", cam_lbl,
                   vs.sim->IsWorldGravityEnabled() ? "ON" : "OFF",
                   vs.sim->IsContactEnabled() ? "ON" : "OFF", kIntNames[ii], kSolNames[si],
                   vs.sim->GetSolverIterations());
@@ -266,8 +268,8 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
         vs.opt->flags[mjVIS_CONVEXHULL] ? "ON" : "OFF", vs.show_link_frames ? "ON" : "OFF",
         vs.opt->flags[mjVIS_JOINT] ? "ON" : "OFF", vs.show_joint_frames ? "ON" : "OFF",
         vs.opt->flags[mjVIS_CONTACTPOINT] ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_CONTACTFORCE] ? "ON" : "OFF",
-        vs.show_contact_wrench ? "ON" : "OFF", vs.opt->flags[mjVIS_ACTUATOR] ? "ON" : "OFF", vs.opt->flags[mjVIS_INERTIA] ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_CONTACTFORCE] ? "ON" : "OFF", vs.show_contact_wrench ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_ACTUATOR] ? "ON" : "OFF", vs.opt->flags[mjVIS_INERTIA] ? "ON" : "OFF",
         vs.opt->flags[mjVIS_COM] ? "ON" : "OFF", vs.opt->flags[mjVIS_LIGHT] ? "ON" : "OFF",
         vs.opt->flags[mjVIS_TENDON] ? "ON" : "OFF", vs.scn->flags[mjRND_WIREFRAME] ? "ON" : "OFF",
         vs.scn->flags[mjRND_SHADOW] ? "ON" : "OFF", vs.scn->flags[mjRND_SKYBOX] ? "ON" : "OFF",

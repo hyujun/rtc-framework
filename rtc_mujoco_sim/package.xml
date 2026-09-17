@@ -17,6 +17,8 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_srvs</depend>
   <!-- WrenchStamped (contact wrench lane) + TransformStamped (object state).
        Used directly since the contact wrench lane landed, but only ever
        reachable through sensor_msgs' transitive export until now. -->

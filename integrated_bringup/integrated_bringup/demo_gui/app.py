@@ -29,6 +29,7 @@ their own modules.
 
 import argparse
 import contextlib
+import functools
 import json
 import math
 import os
@@ -99,6 +100,16 @@ from .config import (
     target_panel_states,
 )
 from .discovery import RobotProfile, RobotShape
+from .preset_toggle import (
+    PresetToggleState,
+    format_keysym,
+    is_text_input_widget,
+    load_toggle_settings,
+    normalize_keysym,
+    resolve_preset_pair,
+    save_toggle_settings,
+    toggle_mapping_warning,
+)
 from .pull import (
     PLACEHOLDER,
     SOURCE_GRASP,
@@ -127,6 +138,26 @@ def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, flo
     return roll, pitch, yaw
 
 
+def _toggle_stage(method):
+    """Release the hotkey if a preset-toggle stage raises.
+
+    Each stage runs from its own Tk callback (key press, switch-controller
+    response, ``after`` poll), so an exception would unwind past the stage that
+    owns ``_toggle_in_flight`` and leave the hotkey dead until restart.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, role, *args, **kwargs):
+        try:
+            return method(self, role, *args, **kwargs)
+        except Exception as exc:
+            self._toggle_in_flight = False
+            self.get_logger().error(f"Preset toggle ({role}) aborted: {exc!r}")
+            raise
+
+    return wrapper
+
+
 class DemoControllerGUI(Node):
     def __init__(self, robot: str = "ur5e_p1a"):
         super().__init__("demo_controller_gui")
@@ -150,6 +181,13 @@ class DemoControllerGUI(Node):
         self._wired_groups: tuple[str, str] = ("", "")
         self.robot_cmd_pub = None
         self.hand_cmd_pub = None
+        # Namespace the command publishers are bound to, set only once
+        # _rewire_owned_topics has recreated them. _active_ctrl changes BEFORE
+        # the rewire runs (executor thread), so it cannot tell the Tk thread
+        # that the publishers already point at the new controller. The lock
+        # spans the whole rewire so a sender never sees a half-destroyed pair.
+        self._owned_topics_lock = threading.Lock()
+        self._owned_topics_ns = ""
         self._arm_gui_sub = None
         self._hand_gui_sub = None
         self._grasp_state_sub = None
@@ -309,6 +347,20 @@ class DemoControllerGUI(Node):
         # (issue #137 finding 3).
         self._preset_path = _resolve_preset_path(self._profile.hand_group)
         self._presets = self._load_presets()
+        self._toggle_settings_path = os.path.join(
+            os.path.dirname(self._preset_path),
+            f"demo_gui_settings_{self._profile.hand_group}.json",
+        )
+        self._toggle_settings = load_toggle_settings(self._toggle_settings_path)
+        toggle = self._toggle_settings["preset_toggle"]
+        toggle["close_preset"], toggle["open_preset"] = resolve_preset_pair(
+            self._presets, toggle["close_preset"], toggle["open_preset"]
+        )
+        self._preset_toggle = PresetToggleState()
+        self._toggle_in_flight = False
+        self._toggle_rearm_after = None
+        self._toggle_capture_window = None
+        self._toggle_bindtag = f"PresetToggle{id(self)}"
 
         # Dirty-check caches for GUI refresh (avoid redundant Tk redraws)
         self._prev_status = [""] * self._shape.arm_dof
@@ -359,6 +411,7 @@ class DemoControllerGUI(Node):
         # point _on_catalog_update re-wires to the real group names.
         self._wired_groups = ("", "")
         self._rewire_if_groups_changed()
+        self.root.after(0, lambda: self._sync_selected_to_active_controller(name))
 
     def _active_groups(self) -> tuple[str, str]:
         """(arm_group, hand_group) for the active controller, taken from the
@@ -440,8 +493,14 @@ class DemoControllerGUI(Node):
     def _rewire_owned_topics(self, ns: str, arm_group: str, hand_group: str) -> None:
         """(Re)create the controller-owned + per-group pubs/subs against ``ns``
         and the given group names, destroying any prior handles first."""
-        self._reset_controller_sourced_state()
+        with self._owned_topics_lock:
+            self._owned_topics_ns = ""
+            self._reset_controller_sourced_state()
+            self._recreate_owned_topics(ns, arm_group, hand_group)
+            self._owned_topics_ns = ns
 
+    def _recreate_owned_topics(self, ns: str, arm_group: str, hand_group: str) -> None:
+        """Handle swap for ``_rewire_owned_topics``; caller holds the lock."""
         # Reset old sub handles by dropping references; rclpy will unsubscribe.
         for sub_attr in (
             "_arm_gui_sub",
@@ -1204,6 +1263,8 @@ class DemoControllerGUI(Node):
         self.root.geometry("1000x900")
         self.root.resizable(True, True)
         self.root.configure(bg="#1e1e2e")
+        self.root.bind_class(self._toggle_bindtag, "<KeyPress>", self._on_toggle_key_press)
+        self.root.bind_class(self._toggle_bindtag, "<KeyRelease>", self._on_toggle_key_release)
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -1790,6 +1851,7 @@ class DemoControllerGUI(Node):
         self._catalog.start()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._install_toggle_bindtag(self.root)
         self._gui_ready.set()
         self._schedule_refresh()
         self.root.mainloop()
@@ -2472,6 +2534,55 @@ class DemoControllerGUI(Node):
             side="left", padx=4
         )
 
+        toggle_frame = tk.Frame(preset_frame, bg="#1e1e2e")
+        toggle_frame.pack(fill="x", padx=4, pady=(4, 0))
+        toggle = self._toggle_settings["preset_toggle"]
+        self._toggle_close_var = tk.StringVar(value=toggle["close_preset"])
+        self._toggle_open_var = tk.StringVar(value=toggle["open_preset"])
+        self._toggle_key_var = tk.StringVar(value=format_keysym(toggle["keysym"]))
+
+        tk.Label(toggle_frame, text="Toggle Close:", bg="#1e1e2e", fg="#cdd6f4").pack(
+            side="left", padx=(0, 2)
+        )
+        self._toggle_close_combo = ttk.Combobox(
+            toggle_frame,
+            textvariable=self._toggle_close_var,
+            width=14,
+            state="readonly",
+        )
+        self._toggle_close_combo.pack(side="left", padx=2)
+        tk.Label(toggle_frame, text="Open:", bg="#1e1e2e", fg="#cdd6f4").pack(
+            side="left", padx=(8, 2)
+        )
+        self._toggle_open_combo = ttk.Combobox(
+            toggle_frame,
+            textvariable=self._toggle_open_var,
+            width=14,
+            state="readonly",
+        )
+        self._toggle_open_combo.pack(side="left", padx=2)
+        self._toggle_close_combo.bind("<<ComboboxSelected>>", self._on_toggle_mapping_changed)
+        self._toggle_open_combo.bind("<<ComboboxSelected>>", self._on_toggle_mapping_changed)
+        ttk.Button(toggle_frame, text="Set Key", command=self._capture_toggle_key).pack(
+            side="left", padx=(8, 2)
+        )
+        tk.Label(
+            toggle_frame,
+            textvariable=self._toggle_key_var,
+            bg="#1e1e2e",
+            fg="#a6e3a1",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=2)
+        self._toggle_warning_var = tk.StringVar(value="")
+        tk.Label(
+            toggle_frame,
+            textvariable=self._toggle_warning_var,
+            bg="#1e1e2e",
+            fg="#f9e2af",
+            font=("Segoe UI", 8),
+        ).pack(side="left", padx=(8, 2))
+        self._refresh_toggle_controls(save=False)
+
         # Preset file path display
         tk.Label(
             preset_frame,
@@ -2521,6 +2632,236 @@ class DemoControllerGUI(Node):
                     pos_str,
                 ),
             )
+        if hasattr(self, "_toggle_close_combo"):
+            self._refresh_toggle_controls()
+
+    def _refresh_toggle_controls(self, save: bool = True):
+        close_name, open_name = resolve_preset_pair(
+            self._presets, self._toggle_close_var.get(), self._toggle_open_var.get()
+        )
+        self._toggle_close_var.set(close_name)
+        self._toggle_open_var.set(open_name)
+        names = list(self._presets)
+        self._toggle_close_combo.configure(values=names)
+        self._toggle_open_combo.configure(values=names)
+        self._update_toggle_warning()
+        if save:
+            self._save_toggle_settings()
+
+    def _save_toggle_settings(self):
+        toggle = self._toggle_settings["preset_toggle"]
+        toggle["close_preset"] = self._toggle_close_var.get()
+        toggle["open_preset"] = self._toggle_open_var.get()
+        try:
+            save_toggle_settings(self._toggle_settings_path, self._toggle_settings)
+        except OSError as exc:
+            self.get_logger().error(f"Failed to save toggle settings: {exc}")
+
+    def _on_toggle_mapping_changed(self, _event=None):
+        self._preset_toggle.next_role = "close"
+        self._update_toggle_warning()
+        self._save_toggle_settings()
+
+    def _update_toggle_warning(self):
+        warning = toggle_mapping_warning(self._toggle_close_var.get(), self._toggle_open_var.get())
+        self._toggle_warning_var.set(warning or "")
+
+    def _capture_toggle_key(self):
+        if self._toggle_capture_window is not None:
+            self._toggle_capture_window.lift()
+            return
+        dialog = tk.Toplevel(self.root)
+        self._toggle_capture_window = dialog
+        dialog.title("Set Preset Toggle Key")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        tk.Label(dialog, text="Press one key (Esc to cancel)", padx=24, pady=16).pack()
+
+        def finish():
+            with contextlib.suppress(tk.TclError):
+                dialog.grab_release()
+                dialog.destroy()
+            self._toggle_capture_window = None
+
+        def capture(event):
+            if event.keysym == "Escape":
+                finish()
+                return "break"
+            keysym = normalize_keysym(event.keysym)
+            if keysym is None:
+                return "break"
+            self._toggle_settings["preset_toggle"]["keysym"] = keysym
+            self._toggle_key_var.set(format_keysym(keysym))
+            self._preset_toggle.rearm()
+            self._save_toggle_settings()
+            finish()
+            return "break"
+
+        dialog.bind("<KeyPress>", capture)
+        dialog.protocol("WM_DELETE_WINDOW", finish)
+        dialog.grab_set()
+        dialog.focus_force()
+
+    def _install_toggle_bindtag(self, widget):
+        tags = widget.bindtags()
+        if self._toggle_bindtag not in tags:
+            widget.bindtags((self._toggle_bindtag, *tags))
+        for child in widget.winfo_children():
+            self._install_toggle_bindtag(child)
+
+    def _toggle_event_matches(self, event) -> bool:
+        configured = self._toggle_settings["preset_toggle"]["keysym"]
+        return normalize_keysym(event.keysym) == configured
+
+    def _on_toggle_key_press(self, event):
+        if self._toggle_capture_window is not None or not self._toggle_event_matches(event):
+            return None
+        if is_text_input_widget(event.widget.winfo_class()):
+            return None
+        if self._toggle_rearm_after is not None:
+            self.root.after_cancel(self._toggle_rearm_after)
+            self._toggle_rearm_after = None
+        role = self._preset_toggle.press()
+        if role is not None and not self._toggle_in_flight:
+            self._toggle_in_flight = True
+            self._request_toggle_preset(role)
+        return "break"
+
+    def _on_toggle_key_release(self, event):
+        if self._toggle_capture_window is not None or not self._toggle_event_matches(event):
+            return None
+        if is_text_input_widget(event.widget.winfo_class()):
+            return None
+        if self._toggle_rearm_after is not None:
+            self.root.after_cancel(self._toggle_rearm_after)
+        self._toggle_rearm_after = self.root.after(30, self._rearm_toggle_key)
+        return "break"
+
+    def _rearm_toggle_key(self):
+        self._toggle_rearm_after = None
+        self._preset_toggle.rearm()
+
+    @_toggle_stage
+    def _request_toggle_preset(self, role: str):
+        if self.estop_active:
+            self.get_logger().warn("Preset toggle withheld — E-STOP is active")
+            self._toggle_complete(role)(False)
+            return
+        name = self._toggle_settings["preset_toggle"].get(f"{role}_preset", "")
+        if not name or name not in self._presets:
+            self.get_logger().warn(f"Preset toggle withheld — {role} preset is not configured")
+            self._toggle_complete(role)(False)
+            return
+        self._preset_tree.selection_set(name)
+        self._preset_tree.see(name)
+        data = self._presets[name]
+        ctrl_name = data.get("controller")
+        if ctrl_name and ctrl_name in GAIN_DEFS:
+            if self.selected_ctrl.get() != ctrl_name:
+                self.selected_ctrl.set(ctrl_name)
+                self._on_ctrl_radio_change()
+            if self._active_ctrl != ctrl_name:
+                self._on_switch_controller(
+                    on_complete=lambda success: self._after_toggle_controller_switch(
+                        role, name, ctrl_name, success
+                    )
+                )
+                return
+        elif not ctrl_name and self._active_ctrl and self.selected_ctrl.get() != self._active_ctrl:
+            self.selected_ctrl.set(self._active_ctrl)
+            self._on_ctrl_radio_change()
+        target_ctrl = ctrl_name or self._active_ctrl
+        if not target_ctrl or target_ctrl not in GAIN_DEFS:
+            # Nothing to wait for: the atomic precondition check reports why.
+            self._send_preset(
+                preset_name=name, atomic=True, on_complete=self._toggle_complete(role)
+            )
+            return
+        # Even with the controller already active, a switch made elsewhere may
+        # still be rewiring — go through the same readiness gate.
+        self._wait_for_toggle_controller(role, name, target_ctrl, time.monotonic() + 2.0)
+
+    @_toggle_stage
+    def _after_toggle_controller_switch(self, role: str, name: str, ctrl_name: str, success: bool):
+        if not success:
+            self.get_logger().warn(f"Preset toggle '{name}' withheld — controller switch failed")
+            self._sync_selected_to_active_controller(self._active_ctrl)
+            self._toggle_complete(role)(False)
+            return
+        self._wait_for_toggle_controller(role, name, ctrl_name, time.monotonic() + 2.0)
+
+    @_toggle_stage
+    def _wait_for_toggle_controller(self, role: str, name: str, ctrl_name: str, deadline: float):
+        if self.estop_active:
+            self.get_logger().warn("Preset toggle withheld — E-STOP became active")
+            self._toggle_complete(role)(False)
+            return
+        data = self._presets.get(name, {})
+        goal_type = data.get(
+            "robot_goal_type", "joint" if JOINT_SPACE.get(ctrl_name, True) else "task"
+        )
+        task_ready = goal_type == "joint" or self._task_space_ready(ctrl_name)
+        with self._owned_topics_lock:
+            if (
+                self._active_ctrl == ctrl_name
+                and task_ready
+                and self._toggle_publishers_matched(ctrl_name, bool(data.get("robot_target")))
+            ):
+                self._send_preset(
+                    preset_name=name, atomic=True, on_complete=self._toggle_complete(role)
+                )
+                return
+        if time.monotonic() >= deadline:
+            self.get_logger().error(
+                f"Preset toggle timed out waiting for '{ctrl_name}' to rebind and "
+                "subscribe to its goal topics"
+            )
+            self._toggle_complete(role)(False)
+            return
+        self.root.after(
+            50, lambda: self._wait_for_toggle_controller(role, name, ctrl_name, deadline)
+        )
+
+    def _toggle_publishers_matched(self, ctrl_name: str, needs_robot: bool) -> bool:
+        """Are the goal publishers bound to ``ctrl_name`` AND heard? Caller holds
+        ``_owned_topics_lock``.
+
+        Bound: ``_owned_topics_ns`` names the controller, which is only true
+        after the rewire recreated the publishers. Heard: a matched
+        subscription, because the goal publishers are depth-1 volatile — a
+        message published before discovery completes is dropped, and the
+        toggle would still count it as sent.
+        """
+        if self._owned_topics_ns != "/" + ctrl_name:
+            return False
+        hand_pub = self.hand_cmd_pub
+        if hand_pub is None or hand_pub.get_subscription_count() == 0:
+            return False
+        if needs_robot:
+            robot_pub = self.robot_cmd_pub
+            if robot_pub is None or robot_pub.get_subscription_count() == 0:
+                return False
+        return True
+
+    def _toggle_complete(self, role: str):
+        def complete(success: bool):
+            self._toggle_in_flight = False
+            if success:
+                self._preset_toggle.commit(role)
+
+        return complete
+
+    def _sync_selected_to_active_controller(self, ctrl_name: str):
+        if not ctrl_name or ctrl_name == self.selected_ctrl.get():
+            return
+        if ctrl_name not in self._switchable_keys:
+            self.get_logger().warn(
+                f"Active controller '{ctrl_name}' is not available in this robot profile"
+            )
+            return
+        self.selected_ctrl.set(ctrl_name)
+        self._on_ctrl_radio_change()
+        self._ctrl_status.set(f"Active: {self._catalog.display_label(ctrl_name)}")
 
     # ---- Gains UI helpers ----------------------------------------------------
 
@@ -2900,13 +3241,16 @@ class DemoControllerGUI(Node):
         for child in self._ctrl_btn_row.winfo_children():
             child.destroy()
         for key in radio_keys:
-            ttk.Radiobutton(
+            button = ttk.Radiobutton(
                 self._ctrl_btn_row,
                 text=self._catalog.display_label(key),
                 value=key,
                 variable=self.selected_ctrl,
                 command=self._on_ctrl_radio_change,
-            ).pack(side="left", padx=2)
+            )
+            button.pack(side="left", padx=2)
+            if hasattr(self, "_toggle_bindtag"):
+                self._install_toggle_bindtag(button)
 
         # Preset combo follows the radio set MINUS the controllers that accept no
         # target: a preset stores a robot goal, and one saved against a
@@ -2950,7 +3294,7 @@ class DemoControllerGUI(Node):
         # to follow the same selection, not the active controller.
         self._refresh_grasp_mode(idx)
 
-    def _on_switch_controller(self):
+    def _on_switch_controller(self, on_complete=None):
         idx = self.selected_ctrl.get()
 
         # Async send via /rtc_cm/switch_controller. UI updates happen
@@ -2960,6 +3304,8 @@ class DemoControllerGUI(Node):
         if not self.switch_controller_client.service_is_ready():
             self.get_logger().warn("/rtc_cm/switch_controller not ready — request dropped")
             self._ctrl_status.set(f"(srv unavailable) Active: {self._catalog.display_label(idx)}")
+            if on_complete is not None:
+                on_complete(False)
             return
 
         req = SwitchController.Request()
@@ -2974,6 +3320,8 @@ class DemoControllerGUI(Node):
                 resp = fut.result()
             except Exception as exc:  # pragma: no cover — rclpy executor error
                 self.get_logger().error(f"switch_controller srv exception: {exc}")
+                if on_complete is not None:
+                    self.root.after(0, lambda: on_complete(False))
                 return
             if resp.ok:
                 self.get_logger().info(
@@ -2981,6 +3329,8 @@ class DemoControllerGUI(Node):
                 )
             else:
                 self.get_logger().error(f"switch_controller rejected: {resp.message}")
+            if on_complete is not None:
+                self.root.after(0, lambda: on_complete(resp.ok))
 
         future.add_done_callback(_on_switch_done)
 
@@ -3386,11 +3736,53 @@ class DemoControllerGUI(Node):
         name = sel[0]
         return name, self._presets[name]
 
-    def _send_preset(self):
-        result = self._get_selected_preset()
-        if result is None:
-            return
-        name, data = result
+    def _send_preset(self, preset_name=None, atomic: bool = False, on_complete=None):
+        if preset_name is None:
+            result = self._get_selected_preset()
+            if result is None:
+                if on_complete is not None:
+                    on_complete(False)
+                return
+            name, data = result
+        else:
+            data = self._presets.get(preset_name)
+            if data is None:
+                self.get_logger().warn(f"Preset '{preset_name}' no longer exists")
+                if on_complete is not None:
+                    on_complete(False)
+                return
+            name = preset_name
+
+        if atomic:
+            selected_ctrl = self.selected_ctrl.get()
+            ctrl_name = data.get("controller")
+            goal_type = data.get(
+                "robot_goal_type", "joint" if JOINT_SPACE.get(ctrl_name, True) else "task"
+            )
+            robot_target = data.get("robot_target", [])
+            positions = preset_hand_targets(data, self._shape.hand_dof)
+            failure = None
+            if self.estop_active:
+                failure = "E-STOP is active"
+            elif ctrl_name and ctrl_name not in GAIN_DEFS:
+                failure = f"unknown controller '{ctrl_name}'"
+            elif selected_ctrl in NO_EXTERNAL_COMMAND_CONTROLLERS:
+                failure = f"{selected_ctrl} accepts no external target"
+            elif positions is None:
+                failure = f"hand positions do not match active DoF {self._shape.hand_dof}"
+            elif self.hand_cmd_pub is None:
+                failure = "hand command publisher is not bound"
+            elif robot_target and len(robot_target) != self._shape.arm_dof:
+                failure = f"robot target does not match arm DoF {self._shape.arm_dof}"
+            elif robot_target and self.robot_cmd_pub is None:
+                failure = "robot command publisher is not bound"
+            elif robot_target and goal_type != "joint" and not self._task_space_ready(ctrl_name):
+                failure = "task control frame has not settled"
+            if failure is not None:
+                self.get_logger().warn(f"Preset toggle '{name}' withheld — {failure}")
+                if on_complete is not None:
+                    on_complete(False)
+                return
 
         # ── Robot target (if present) ──────────────────────────────────
         # Only act on the preset's controller name if the GUI knows how
@@ -3540,6 +3932,8 @@ class DemoControllerGUI(Node):
 
         # Also update the hand target entries on the Control tab
         self._set_hand_target_entries(positions_rad)
+        if on_complete is not None:
+            on_complete(self.hand_cmd_pub is not None)
 
     def _confirm_preset_overwrite(self, name: str) -> bool:
         """True if saving under ``name`` may proceed — either the name is new,
@@ -3745,6 +4139,9 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except RuntimeError:
+        if rclpy.ok():
+            raise
     finally:
         # All ROS teardown happens here on the main thread, after spin has
         # returned — whether shutdown was initiated by Ctrl-C (SIGINT →
