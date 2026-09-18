@@ -2,6 +2,7 @@
 
 - 상태: **S0 진행 중** (결정 반영 단계)
 - 최종 갱신: 2026-09-19
+- Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
 - 갱신 규칙: 결정·단계 상태·게이트 결과가 바뀔 때마다 이 문서를 먼저 고친다. 설계 문서(`CATCHING_MASTER.md`, `L0_core.md` … `L8_bringup.md`)와 충돌하면 **이 문서의 결정이 우선**하며, 해당 설계 문서는 S0.3 에서 v0.5 로 고친다.
 
@@ -90,7 +91,7 @@
   - 참조 코드 명명: namespace `rtc`, 함수 PascalCase
   - `controllers.md` 의 DemoWbc "TSID QP → accel → position integration" drift 는 별도 수정 대상으로 기록
 - S0.4 (삭제 — ball_perception 은 사용자가 직접 개발 중이라 요청 이슈 불필요, §7.1 A-3)
-- S0.5 Epic issue + Sprint Contract
+- S0.5 Epic issue [#537](https://github.com/hyujun/rtc-framework/issues/537) 생성 완료 (단계 완료·게이트 결과·결정 변경을 코멘트로 남긴다) + Sprint Contract
 
 게이트: `validate_docs.py` 통과, W 기록 칸 비어 있지 않음, 결정 로그 갱신.
 
