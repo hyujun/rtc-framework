@@ -7,12 +7,14 @@
 필요 패키지: numpy, scipy
 실행: `./test_l3` 로 cases.txt 를 만든 뒤 같은 디렉터리에서 `python3 verify_l3.py`
 """
+
 import os
+
 import numpy as np
 import scipy.optimize as so
 
-
 # --- 1) 최소 도달시간 -------------------------------------------------------
+
 
 def t_rest(D, wm, a):
     wp = np.sqrt(a * D)
@@ -21,7 +23,7 @@ def t_rest(D, wm, a):
 
 def t_min(q0, w0, q1, wm, a):
     """time_feasibility.hpp::tMinChecked 의 파이썬 거울."""
-    if abs(w0) > wm:                      # C9: 초기 상태가 속도 한계를 위반 → clamp
+    if abs(w0) > wm:  # C9: 초기 상태가 속도 한계를 위반 → clamp
         w0 = np.copysign(wm, w0)
     d = q1 - q0
     if abs(d) < 1e-12 and abs(w0) < 1e-12:
@@ -43,16 +45,36 @@ def lp_feasible(q0, w0, q1, wm, a, T, N=400):
     dt = T / N
     n = N + 1
     A_eq, b_eq = [], []
-    r = np.zeros(n); r[0] = 1; A_eq.append(r); b_eq.append(w0)
-    r = np.zeros(n); r[-1] = 1; A_eq.append(r); b_eq.append(0.0)
-    r = np.full(n, dt); r[0] = r[-1] = dt / 2; A_eq.append(r); b_eq.append(q1 - q0)
+    r = np.zeros(n)
+    r[0] = 1
+    A_eq.append(r)
+    b_eq.append(w0)
+    r = np.zeros(n)
+    r[-1] = 1
+    A_eq.append(r)
+    b_eq.append(0.0)
+    r = np.full(n, dt)
+    r[0] = r[-1] = dt / 2
+    A_eq.append(r)
+    b_eq.append(q1 - q0)
     A_ub, b_ub = [], []
     for k in range(N):
-        r = np.zeros(n); r[k + 1] = 1; r[k] = -1
-        A_ub.append(r); b_ub.append(a * dt)
-        A_ub.append(-r); b_ub.append(a * dt)
-    res = so.linprog(np.zeros(n), A_ub=np.array(A_ub), b_ub=b_ub, A_eq=np.array(A_eq),
-                     b_eq=b_eq, bounds=[(-wm, wm)] * n, method="highs")
+        r = np.zeros(n)
+        r[k + 1] = 1
+        r[k] = -1
+        A_ub.append(r)
+        b_ub.append(a * dt)
+        A_ub.append(-r)
+        b_ub.append(a * dt)
+    res = so.linprog(
+        np.zeros(n),
+        A_ub=np.array(A_ub),
+        b_ub=b_ub,
+        A_eq=np.array(A_eq),
+        b_eq=b_eq,
+        bounds=[(-wm, wm)] * n,
+        method="highs",
+    )
     return res.status == 0
 
 
@@ -68,6 +90,7 @@ def lp_tmin(q0, w0, q1, wm, a):
 
 
 # --- 3) 접근축 회전벡터 오차 -------------------------------------------------
+
 
 def skew(v):
     return np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
@@ -120,9 +143,10 @@ if __name__ == "__main__":
 
     if os.path.exists("cases.txt"):
         mx = 0.0
-        for line in open("cases.txt"):
-            q0, w0, q1, wm, a, tc = map(float, line.split())
-            mx = max(mx, abs(tc - lp_tmin(q0, w0, q1, wm, a)))
+        with open("cases.txt") as f:
+            for line in f:
+                q0, w0, q1, wm, a, tc = map(float, line.split())
+                mx = max(mx, abs(tc - lp_tmin(q0, w0, q1, wm, a)))
         print(f"[2] C++ tMin vs LP: max abs err = {mx:.2e} s")
     else:
         print("[2] cases.txt 없음: ./test_l3 실행 후 같은 디렉터리에서 재실행")
