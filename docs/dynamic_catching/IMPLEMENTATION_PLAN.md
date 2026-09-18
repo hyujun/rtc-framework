@@ -84,7 +84,7 @@
   - RT tick 안 try/catch 제거 (RT-2), FAULT 시 RT 에서 deactivate 제거
   - 시간 서술을 §3 으로 통일 (L1·L2·L3·L6·L7), 500 Hz 고정 → `dt` 기준
   - 손 포트 추상화 삭제 (D-11), γ derate 를 v1 범위 밖으로 (D-8), η_v 교차제약 (D-9)
-  - L2 문서 코드 블록 삭제 → 헤더가 SSoT
+  - L0·L2·L3·L4 문서의 코드 블록 삭제 → 헤더가 SSoT (L2 블록은 v0.2 그대로이고, 나머지는 원래 헤더와 byte 동일했으나 헤더 포맷 적용 커밋 47158227 이후 어긋남)
   - 이름이 둘인 같은 값 5쌍을 단일 키로 (`n_min`, `derate_step`, `ed_jump_max`, `a_dec`, ramp)
   - L7 Reason enum 완전화, IDLE→wait_pose homing 추가, 신규 스레드 서술을 D-7 로 교체
   - L1 이 L2 타입에 의존하는 역전 해소 (궤적 타입을 공용 타입으로)
