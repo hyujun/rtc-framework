@@ -359,6 +359,25 @@ if(BUILD_TESTING)
   # boundaries and the ramp are pinned as numbers, not as "roughly works".
   ament_add_gtest(test_reach_gate test/test_reach_gate.cpp)
   target_link_libraries(test_reach_gate rtc_controllers)
+
+  # ── catching core (dynamic_catching S1, rtc::catching) ─────────────────────
+  # ROS-free numerical core for ball catching. The suites port the reference
+  # tests under docs/dynamic_catching/ with their thresholds unchanged; the gate
+  # IDs (G0-*, G2-*, G3-*, G4-*, G7-*) are those of the L0–L7 design docs.
+  #
+  # Ball flight fixture (G0-A). Test-only: it generates the reference
+  # trajectories the other catching suites compare against, and the controller
+  # never re-propagates the ball, so it lives under the never-installed
+  # test/include.
+  ament_add_gtest(test_catching_ball_fixture test/test_catching_ball_fixture.cpp)
+  target_link_libraries(test_catching_ball_fixture rtc_controllers)
+  target_include_directories(test_catching_ball_fixture PRIVATE ${rtc_controllers_test_include})
+
+  # Time axes (G0-E): the cross-axis comparisons that must NOT compile are
+  # static_asserts in this TU, so a regression there is a build break rather
+  # than a failed case.
+  ament_add_gtest(test_catching_time_types test/test_catching_time_types.cpp)
+  target_link_libraries(test_catching_time_types rtc_controllers)
 endif()
 
 ament_package()
