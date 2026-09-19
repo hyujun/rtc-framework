@@ -1,38 +1,40 @@
 # L1 — IO: `PointCloud2` 예측 궤적 수신·파싱·검증, 스냅샷 브리지, 로봇·센서 상태
 
-- 브랜치: `feat/catching-L1-io`
-- 패키지: `catching_io` (가칭, `TBD-WS-02`)
-- 선행: 단계 W, L0
-- 산출물: `cloud_parser.{hpp,cpp}`, `traj_receiver.{hpp,cpp}`, `snapshot_bridge.hpp`, `robot_snapshot.hpp`, `staleness.hpp`, 진단 카운터
+- 문서 버전: v0.5 (2026-09-19) — 결정·단계의 SSoT 는 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (충돌 시 plan 우선)
+- 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
+- 배치 `[확정 D-1]`: `PointCloud2` 구독·필드 이름 파서는 `integrated_bringup` 바인딩, ROS 비의존 판정 로직(D-2 시간 변환, 순서·`generation`·`validity`·stale 판정, 점 개수 검사)은 rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`)
+- 단계: **S1** 순수 조각 (S1.2 점 개수 검사, S1.3 시간 변환) + **S5.2** 구독 → 필드 이름 파서 → SeqLock 스냅샷
+- 선행: 단계 W (완료, plan §2), L0, L2 (공용 궤적 타입, S1.2)
+- 산출물: 필드 이름 파서, 수신 콜백, 궤적 스냅샷 브리지(`rtc::SeqLock`), 계획기 공분산 버퍼 전달, RT 상태 POD, 진단 카운터
 
 ---
 
 ## 1. 범위 / 비범위
 
-범위: vision 노드의 `sensor_msgs/PointCloud2`(마스터 §5.1)를 검증해 `traj::PredictedTrajectory`로 바꾸고 RT에 전달한다. 계획 결과(`PlanSnapshot`)와 손·지문 센서 상태를 RT로 넘기는 브리지를 제공한다. 스냅샷 나이(stale), 시계 이상, 트랙 불연속을 판정한다.
+범위: vision(ball_perception)의 `sensor_msgs/PointCloud2`(마스터 §5.1, D-4)를 검증해 공용 궤적 타입(L2 §5.1)으로 바꾸고 RT와 계획기에 전달한다. 손·지문 센서 상태를 계획기로 넘기는 RT 상태 POD 를 제공한다. 스냅샷 나이(stale), 시계 이상, 순서 역전·중복, 트랙 교체를 판정한다.
 
 비범위:
-- 좌표 변환 조회를 RT에서 수행하는 것(금지). `frame_id`→`world` 변환은 configure 단계에서 한 번 읽어 캐시한다.
+- 좌표 변환 조회를 RT에서 수행하는 것(금지 — RT 경로에 tf2 없음). `frame_id`→`world` 가 다르면 configure 에서 한 번 읽어 캐시한 정적 변환을 nrt 콜백에서 적용한다. 필요 여부 자체가 미확인이다(TBD-VIS-06, S3.4).
 - 궤적 예측·전파(vision 노드, 마스터 §5.2).
-- RT 원시형(SeqLock/SPSC) 구현 — workspace의 것을 쓴다(W2-2).
+- RT 원시형 구현 — `rtc::SeqLock`·`rtc::SpscQueue` 를 쓴다(G1-8).
 
-**v0.3 변경.** 입력이 자체 정의 `catching_msgs/BallState`에서 vision의 `PointCloud2`로 바뀌었다. 파싱 계층(§5.1)이 새로 생겼고, 메시지에 없는 정보(트랙 ID·상태, 추정기 건강도)를 대체하는 판정이 추가됐다(§4.4). NIS 창 감시는 입력이 사라져 삭제했다.
+**v0.5 변경.** 입력 레이아웃이 ball_perception 의 실제 레이아웃으로 확정됐다(D-4, G1-1). 시간은 수신 시 1회 절대 steady 시각으로 변환한다(D-2, §4.1). 트랙 식별은 vision 의 `generation` 이 맡고(§4.4), `validity`·`snapshot_sequence` 로 미평가 예측과 순서 역전을 거부한다. 공분산은 RT 스냅샷에서 분리해 계획기 버퍼로만 보낸다(A-3).
 
 ## 2. 코드 확인 게이트
 
-단계 W에서 처리한다(`WORKSPACE_ANALYSIS.md` W2, W5). 본 layer에 직접 걸리는 항목:
+단계 W에서 처리했다(plan §2, `WORKSPACE_ANALYSIS.md` W2, W4, W5). 본 layer에 직접 걸리는 항목:
 
 | ID | 확인 항목 | 기록 |
 |---|---|---|
-| G1-1 | **`PointField` 배열 실제 덤프**: name·offset·datatype·count, `point_step`, `row_step`, `is_bigendian`, `is_dense` | TBD-VIS-02 (W5-2) |
-| G1-2 | 토픽 이름과 QoS | TBD-VIS-01, 08 (W5-1) |
-| G1-3 | `t` 필드 타입·기준 | TBD-VIS-03 (W5-3) |
-| G1-4 | `header.frame_id`와 `world`의 관계, static TF 제공 방식 | TBD-VIS-06 (W5-5) |
-| G1-5 | 트랙 식별·소실 판정 수단이 있는지 (메시지에는 자리가 없다) | TBD-VIS-07 (W5-7) |
-| G1-6 | subscription callback이 도는 executor / callback group 규약 | TBD-RTC-04 (W2-5) |
-| G1-7 | RT `update()`의 `time` clock type과 스탬프 clock의 일치 여부 (sim: `use_sim_time`) | TBD-RTC-05 (W2-3) |
-| G1-8 | SeqLock/SPSC 원시형 API와 재시도 정책 | TBD-RTC-01 (W2-2) |
-| G1-9 | 지문 센서·손 상태가 RT 루프에 들어오는 경로와 메시지 규약 | TBD-HAND-03 (W4-6) |
+| G1-1 | `PointField` 배열 실제 레이아웃 | 닫힘 `[확정 D-4]` — little-endian, `point_step` 384: `x,y,z,vx,vy,vz,ax,ay,az` FLOAT64 (offset 0–64), `covariance` FLOAT64×36 @72 (row-major $p_x..v_z$, 모르면 NaN), `snapshot_sequence` UINT32×2 @360, `generation` UINT32×2 @368 (uint64 low/high), `horizon_ns` UINT32 @376, `validity` UINT8 @380 (0 NOT_EVALUATED, 1 VALID). **offset 은 참고값이고 파서는 이름으로 찾는다** (§4.6). debug 토픽이라 stable ABI 아님 (W5-2) |
+| G1-2 | 토픽 이름과 QoS | 토픽 닫힘 — ball_perception `sim_estimator_node` 의 debug 예측 궤적 토픽 (`io.traj_topic`). QoS 는 TBD-VIS-08, S3.4 에서 확인 (W5-1) |
+| G1-3 | 점 시각 필드 타입·기준 | 닫힘 — `t` 필드는 없다. `horizon_ns` (UINT32, `header.stamp` 기준 상대 ns), `header.stamp` = 예측 원점 시각 (W5-3) |
+| G1-4 | `header.frame_id`와 `world`의 관계 | **미확인** — TBD-VIS-06, S3.4 에서 확인 (W5-5) |
+| G1-5 | 트랙 식별·소실 판정 수단 | 대부분 닫힘 — `generation` (트랙 epoch), `validity`. 남는 것: 측정을 잃은 뒤에도 `VALID` 예측이 계속 나오는지(유령 트랙, §4.5) — S3.4 드롭 주입으로 확인 (W5-7, TBD-VIS-07) |
+| G1-6 | subscription callback이 도는 executor / callback group | 닫힘 — 컨트롤러 소유 구독은 LifecycleNode default group → `nrt_callback_executor` (단일 스레드, lifecycle 서비스와 공유) (W2-5) |
+| G1-7 | RT tick 시각과 스탬프 clock 의 관계 (sim) | 닫힘 `[확정 D-2, D-3]` — RT tick 은 `RTControllerInterface::Compute(const ControllerState&)`, 시각은 steady. 스탬프는 wall (`rtc_mujoco_sim`·`sim_estimator_node` 모두 `use_sim_time=false`, `/clock` 없음). wall→steady 는 §4.1 변환 1회. D-3 은 S3.1 검증 후 재검토 (W2-3) |
+| G1-8 | SeqLock/SPSC 원시형 API와 재시도 정책 | 닫힘 — `rtc::SeqLock::Store`/`Load`/`sequence`. `Load` 는 **재시도 상한 없이** 일관된 사본을 얻을 때까지 반복한다(단일 writer·유한 쓰기 시간이 설계 불변식). payload 는 trivially copyable (L0 §5.2) (W2-2) |
+| G1-9 | 지문 센서·손 상태 경로와 규약 | 닫힘 — 실기 P1b `HandSensorState` 250 Hz, sim `WrenchStamped`. 두 경로 모두 finger-on-object 부호 (0fcc1d23 이후; `FingertipSensor.msg` 의 반대 부호 주석은 stale). S7.3 에서 재확인 (W4-6, TBD-HAND-03) |
 
 ## 3. 참고자료
 
@@ -40,235 +42,226 @@
 
 ## 4. 수학적 이론
 
-### 4.1 스냅샷 나이
+### 4.1 시각 변환과 스냅샷 나이 `[확정 D-2]`
 
-수신 시점의 나이 $\Delta t=t-t_{ref}$ ($t_{ref}$ = `header.stamp`). vision이 예측 궤적을 주므로 나이가 커져도 **예측 자체는 유효**하다 — 다만 그 예측이 반영하지 못한 최근 관측이 쌓인다.
+시간 규약의 SSoT 는 plan §3 이다. 수신 콜백(nrt)은 **도착 즉시** steady·wall 시각을 한 쌍으로 찍고, 원격 스탬프를 한 번만 절대 steady 시각으로 바꾼다.
 
-- stale 임계 $T_{stale}$: 발행 주기 + 전송 지연 + 여유. YAML로 둔다(G1-2 실측 후).
-- 미래 스탬프 허용치 $T_{future}$: 시계 동기 오차 상한. $\Delta t<-T_{future}$이면 시계 이상으로 거부한다.
-- 지평 여유: $t_{ref}+t_{N-1}$ 이 현재 시각보다 충분히 뒤여야 한다. 아니면 궤적이 이미 지나간 것이다(L2 §4.6).
+$$t_{ref}^{steady}=t_{recv}^{steady}-\big(t_{recv}^{wall}-t_{stamp}\big),\qquad \mathrm{BallTime}_j=t_{ref}^{steady}+\texttt{horizon\_ns}_j$$
 
-v0.2의 $\Sigma_p(\Delta t)$ 증가 근사는 필요 없다. 각 샘플의 공분산을 vision이 직접 준다.
+- 이후 RT·계획기는 `BallTime`(절대 steady ns)만 본다. 원점이 다른 상대시각을 섞지 않는다. 원격 stamp 를 시간 원점으로 쓰는 것은 D-2 가 명문화하는 E-1 예외다.
+- **stale·나이는 steady 수신 나이** $t_{now}^{steady}-t_{recv}^{steady}$ 로만 판정한다(plan §3). `header.stamp` 로 staleness 를 판정하지 않는다([invariants.md](../../agent_docs/invariants.md)). v0.4 의 `age = clock.now − stamp` 거부(`TooOld`)는 이 규칙 위반이라 삭제했다.
+- 원점 지연 $t_{recv}^{wall}-t_{stamp}$ 는 **진단**(분포 기록)이다. 음수가 $T_{future}$ 보다 크면(미래 스탬프) 변환 결과가 틀리므로 시계 이상으로 거부한다.
+- stale 임계 $T_{stale}$: 발행 주기 + 여유(예시 profile ≤ 30 Hz). YAML, S3.4·S8 실측 후.
+- 지평 끝 소진: 마지막 점 `BallTime` 을 **now_lead** 와 비교한다(plan §3 "궤적 지평 끝 경고 = now_lead"). 샘플링이 선행축으로 읽으므로 소진 판정도 같은 축이어야 한다 — v0.4 `readTraj` 는 실제 나이를 지평 상대시각과 비교해 두 축을 섞었다.
+- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 S3.6 이 정하고 sim profile 을 그에 맞춘다(예시 profile: 0.5 s / 0.05 s 간격 / 최대 10 점).
 
 ### 4.2 시계 오차의 영향
 
-두 PC 시계 오차 $\delta$는 보상 불가능한 위치 오차 $\approx\Vert v\Vert\,\delta$를 만든다(1차 근사). 6 m/s에서 1 ms는 6 mm다. $T_{future}$와 PTP offset 임계는 포구 허용오차 예산에서 역산해 정한다(L3 §4.6).
+§4.1 변환은 전송 지연을 정확히 보상하고 두 PC 시계 오프셋 $\delta$ 만 남긴다. $\delta$ 는 보상 불가능한 위치 오차 $\approx\Vert v\Vert\,\delta$ 를 만든다(1차 근사). 6 m/s에서 1 ms는 6 mm다. $T_{future}$와 PTP offset 임계는 포구 허용오차 예산에서 역산해 정한다(L3 §4.6). sim 은 한 PC 의 wall clock 이라 $\delta=0$ 이다(D-3).
 
 ### 4.3 좌표 변환과 공분산
 
-계획과 기준 생성은 `W`에서 수행한다. `header.frame_id`가 `W`가 아닌 경우만 변환한다(G1-4). **네 가지를 모두 변환해야 한다.**
+계획과 기준 생성은 `W`에서 수행한다. `header.frame_id`가 `W`가 아닌 경우만 변환한다(G1-4, S3.4 에서 필요 여부 확인). **네 가지를 모두 변환해야 한다.**
 
 $$p'=Rp+t,\qquad v'=Rv,\qquad a'=Ra,\qquad \Sigma'=T\Sigma T^\top,\quad T=\mathrm{diag}(R,R)$$
 
-속도·가속도에는 평행이동이 들어가지 않는다. 공분산은 6×6이므로 $T$가 $\mathrm{blkdiag}(R,R)$ 이다. 변환은 configure에서 캐시한 $R,t$ 로 non-RT 콜백에서 수행한다.
+속도·가속도에는 평행이동이 들어가지 않는다. 공분산은 6×6이므로 $T$가 $\mathrm{blkdiag}(R,R)$ 이다. 변환은 configure에서 캐시한 $R,t$ 로 nrt 콜백에서 수행하고, 공분산 변환 결과는 계획기 버퍼로만 간다(A-3). NaN(모름) 원소는 변환하지 않고 NaN 그대로 둔다 — 행·열에 NaN 이 섞인 상태로 곱하면 알려진 원소까지 오염된다.
 
-frame이 움직이는 경우(예: 카메라가 로봇에 달린 경우)는 본 설계 범위 밖이다. G1-4에서 static인지 확인한다.
+frame이 움직이는 경우(예: 카메라가 로봇에 달린 경우)는 본 설계 범위 밖이다.
 
-### 4.4 트랙 연속성 판정 `[논문 외 설계]` `[TBD-VIS-07]`
+### 4.4 트랙 식별과 순서 `[확정 D-4]`
 
-`PointCloud2`에는 `track_id`도 트랙 상태(초기화/추적/소실)도 없다(마스터 §5.1). vision이 별도 수단을 주지 않으면 제어 PC가 다음 두 지표로 대체한다.
+- **`generation` (uint64) 이 트랙 epoch 다.** 값이 바뀌면 새 트랙이다. 스냅샷에 그대로 싣고, L3·L7 이 이 값의 변화를 트랙 교체로 해석한다(L3 의 `n_settle` 등). v0.4 의 제어 PC 자체 `track_epoch` 생성(스탬프 간격·점프 임계)은 삭제한다.
+- **`snapshot_sequence` (uint64)** 는 같은 generation 안에서 직전 수락값 이하이면 **중복·순서 역전으로 거부**한다(v0.4 M1 — 늦게 도착한 옛 예측이 새 예측을 덮어쓰던 문제). vision 노드 재시작으로 sequence 가 되감기는 경우의 처리(generation 변화 동반 여부)는 S5.2 에서 확인한다.
+- **`validity`** 는 점 단위 필드다. `VALID`(1) 가 아닌 점(`NOT_EVALUATED` 또는 미지 값)이 하나라도 있으면 메시지를 거부한다. 부분 수용은 S5.2 에서 재검토한다.
+- 두 uint64 필드는 UINT32×2 (low, high) 로 온다: $x=\mathrm{low}+2^{32}\cdot\mathrm{high}$. 모든 점이 같은 값을 가져야 하며 점 0 과 다르면 형식 오류로 거부한다.
 
-**스탬프 간격.** 연속 두 메시지의 `header.stamp` 차가 $T_{gap}$ 을 넘으면 새 트랙으로 본다(발행이 끊겼다 재개된 것).
+**궤적 점프 (진단).** 같은 generation 의 직전 궤적과 새 궤적을 **같은 절대 시각** $t^\ast$ 에서 샘플링해 비교한다.
 
-**궤적 점프.** 직전 메시지와 새 메시지를 **같은 절대 시각** $t^\ast$ 에서 샘플링해 비교한다.
+$$J=\big\Vert \hat p_{new}(t^\ast)-\hat p_{old}(t^\ast)\big\Vert,\qquad t^\ast=\max(t^{steady}_{ref,new},\,t^{steady}_{ref,old})+\Delta_{eval}$$
 
-$$J=\big\Vert \hat p_{new}(t^\ast)-\hat p_{old}(t^\ast)\big\Vert,\qquad t^\ast=\max(t_{ref,new},\,t_{ref,old})+\Delta_{eval}$$
-
-$J>J_{new}$ 이면 새 트랙(다른 공이거나 예측이 리셋된 것), $J_{jump,warn}<J\le J_{new}$ 이면 경고만 기록한다. 이 값은 L3의 교체 히스테리시스(L3 §4.7)와 L4의 재예측 점프(L4 §4.3)가 감당해야 할 크기와 같은 양이므로, 임계를 그쪽과 함께 정한다.
-
-**한계 명시.** 이것은 대체 수단이지 트랙 ID가 아니다. 공이 두 개 동시에 날아오거나 vision이 트랙을 바꿔치기하면 판별하지 못한다. 단일 투척 시나리오를 전제한다(`TBD-BALL-02`). vision 쪽에 트랙 ID를 실을 여지가 있으면 그 편이 낫다 — W5-7에서 사용자와 결정한다.
+$J>J_{warn}$ 이면 경고만 기록한다(트랙 판정에는 쓰지 않는다). 이 값은 L3의 교체 히스테리시스(L3 §4.7)와 L4의 재예측 점프(L4 §4.3)가 감당해야 할 크기와 같은 양이므로 분포를 함께 본다.
 
 ### 4.5 예측 일관성 감시 `[논문 외 설계]`
 
-v0.2는 vision이 준 NIS 로 추정기 건강도를 감시했다. `PointCloud2` 에는 그 자리가 없지만(마스터 §5.1), **연속 두 메시지를 같은 절대 시각에서 비교하면 혁신(innovation) 대용 통계를 만들 수 있다.** §4.4가 이미 계산하는 $J$ 를 공분산으로 정규화하면 된다.
+연속 두 메시지를 같은 절대 시각에서 비교하면 혁신(innovation) 대용 통계를 만들 수 있다. §4.4의 $J$ 를 공분산으로 정규화한다.
 
-$$\nu=J(t^\ast)^\top\big(\Sigma_{pp,new}(t^\ast)+\Sigma_{pp,old}(t^\ast)\big)^{-1}J(t^\ast),\qquad J=\hat p_{new}(t^\ast)-\hat p_{old}(t^\ast)$$
+$$\nu=J^\top\big(\Sigma_{pp,new}(t^\ast)+\Sigma_{pp,old}(t^\ast)+\lambda I\big)^{-1}J$$
 
-두 예측이 독립이고 공분산이 정직하면 $\nu\sim\chi^2_3$ 이므로 $\mathbb E[\nu]=3$ 이다. 창 길이 $N$ 의 평균이
+- **정규화 역행렬 (NUM-1).** 합 공분산은 특이·악조건일 수 있으므로 $\lambda I$ 를 더한 뒤 Cholesky 로 푼다. 실패하거나 원소에 NaN(모름)이 있으면 그 쌍의 $\nu$ 는 계산하지 않는다(카운트만).
+- **공분산의 시각 보간.** $t^\ast$ 는 일반적으로 두 점 사이다. 점마다 주어진 $\Sigma$ 를 $t^\ast$ 로 옮기는 규칙(인접 점 선택 / 원소별 선형 보간 등)이 **아직 정해지지 않았다 — S5.2 미결 항목.**
+- 두 예측이 독립이고 공분산이 정직하면 $\nu\sim\chi^2_3$, $\mathbb E[\nu]=3$. 창 길이 $N$ 의 평균이 $\bar\nu\notin\big[\tfrac1N\chi^2_{3N}(\alpha/2),\ \tfrac1N\chi^2_{3N}(1-\alpha/2)\big]$ 이면 경고한다([R8], 경계는 configure 에서 미리 계산). 두 예측은 겹치는 관측을 쓰므로 독립이 아니다 — $\bar\nu$ 는 절대 임계보다 **추세**로 본다.
+- 계산은 공분산이 아직 손에 있는 nrt 콜백에서 한다(RT 에는 공분산이 없다, A-3).
 
-$$\bar\nu\notin\Big[\tfrac1N\chi^2_{3N}(\alpha/2),\ \tfrac1N\chi^2_{3N}(1-\alpha/2)\Big]$$
+$\bar\nu$ 는 세 곳에서 쓴다: L3의 $\kappa_\sigma$ 보정 근거(L3 §4.4), L7의 `PRED_INCONSISTENT` 사유(L7 §4.2), L8 지표.
 
-이면 경고한다([R8], 구간 경계는 configure에서 미리 계산). 위쪽을 넘으면 vision 공분산이 과소, 아래쪽이면 과대다.
+**유령 트랙.** vision이 공을 놓치고 관성 예측만 계속 발행하면 스탬프는 신선하고 $J$ 와 $\bar\nu$ 는 오히려 작아진다. v0.5 에서는 `generation`·`validity` 가 이 판별의 1차 수단이다. 측정 손실 뒤에도 `VALID` 예측이 계속 나오는지는 S3.4 드롭 주입으로 확인한다(G1-5).
 
-**한계를 명시한다.** 두 예측은 겹치는 관측을 쓰므로 독립이 아니다. 따라서 $\bar\nu$ 는 절대 임계로 쓰기보다 **추세**로 본다 — 평소 값을 기록해 두고 그보다 크게 벗어나면 경고한다. 그래도 아무 감시도 없는 것보다는 낫다.
+### 4.6 레이아웃 검증 `[확정 D-4, A-3]`
 
-$\bar\nu$ 는 세 곳에서 쓴다: L3의 $\kappa_\sigma$ 보정 근거(§L3 4.4), L7의 `PRED_INCONSISTENT` 사유(§L7 4.2), L8 지표.
-
-**여전히 못 잡는 것: 유령 트랙.** vision이 공을 놓치고 관성 예측만 계속 발행하면 스탬프는 신선하고 $J$ 는 오히려 **작아진다** — 두 지표가 정확히 반대 방향으로 움직인다. $\bar\nu$ 도 마찬가지다. 이 경우를 판별하려면 vision 쪽에 트랙 상태가 필요하다(`TBD-VIS-07`, W5-7). 그래서 W5-7을 "사용자 결정"이 아니라 **vision 쪽 요청 사항**으로 올렸다.
-
-### 4.6 레이아웃 검증
-
-v0.2는 `model_version` 정수 하나로 계약 위반을 잡았다. `PointCloud2`에는 그런 필드가 없으므로 **필드 레이아웃 자체를 지문으로 쓴다**.
-
-configure 단계에서 첫 메시지의 `(name, offset, datatype, count)` 목록과 `point_step`, `is_bigendian`을 읽어 파서를 구성하고, 그 조합의 해시를 저장한다. 이후 메시지는 해시만 비교한다(O(1)). 불일치하면 거부하고 진단에 올린다 — vision 쪽이 필드를 바꿨는데 제어 PC가 조용히 잘못 읽는 상황을 막는다.
+- **필드 이름으로 파싱한다.** `PointField` 배열에서 필수 필드를 이름으로 찾고, 각 필드의 datatype·count 가 기대와 같은지 검사한다(§5.1 표). offset 은 배열에서 읽는다 — 상수로 가정하지 않는다.
+- **레이아웃 해시는 진단이다.** `(name, offset, datatype, count)` 목록 + `point_step` + `is_bigendian` 의 해시를 캐시하고, 해시가 바뀐 메시지에서만 필드 맵을 다시 만든다(평소 O(1)). 해시 변경은 진단으로 올린다. 재구성한 맵이 필수 필드 검사를 통과하면 수락한다 — offset 만 바뀐 레이아웃 변경은 그대로 따라간다.
+- 해시·이름 검사는 **의미 변경**(단위·기준·순서)을 못 잡는다. 그 역할은 물리 일관성 검사(§7 S5.2)와 $\bar\nu$ 추세가 한다.
 
 ## 5. C++ 구현
 
-### 5.1 파서 (non-RT, configure에서 1회 구성)
+§5 의 스케치는 인터페이스 형태만 보인다. 실제 시그니처는 S5.2 에서 확정한다. ros2_control·tf2 는 쓰지 않는다.
 
-**offset을 상수로 가정하지 않는다.** 마스터 §5.1에 적었듯 진술된 `point_step`(372 B)이 필드 합(360 + 4~8 B)과 맞지 않는다. 실제 배열에서 읽어 구성한다.
+### 5.1 파서 (`integrated_bringup` 바인딩, nrt)
+
+필수 필드 집합:
+
+| 필드 | datatype | count |
+|---|---|---|
+| `x, y, z, vx, vy, vz, ax, ay, az` | FLOAT64 | 1 |
+| `covariance` | FLOAT64 | 36 |
+| `snapshot_sequence`, `generation` | UINT32 | 2 (low, high) |
+| `horizon_ns` | UINT32 | 1 |
+| `validity` | UINT8 | 1 |
 
 ```cpp
-// catching_io/cloud_parser.hpp
-struct FieldMap {                       // configure 에서 1회 구성
-  int off_x{-1}, off_v{-1}, off_a{-1};  // 각 3성분의 시작 offset (연속 가정은 검증한다)
-  int off_t{-1}, off_cov{-1};
-  bool t_is_float64{true};              // false = uint32 ns (TBD-VIS-03)
+// integrated_bringup 바인딩 — non-RT (nrt_callback_executor)
+struct FieldSlot { std::uint32_t offset{0}; bool found{false}; };
+
+struct FieldMap {                                  // 해시가 바뀔 때만 재구성
+  std::array<FieldSlot, 9> pva;                    // x..az, FLOAT64 x1
+  FieldSlot covariance, snapshot_sequence, generation, horizon_ns, validity;
   std::uint32_t point_step{0};
-  std::uint64_t layout_hash{0};
+  std::uint64_t layout_hash{0};                    // 진단용
   bool ok{false};
 };
 
-// PointField 배열에서 FieldMap 을 만든다. 실패 사유를 남긴다.
-[[nodiscard]] FieldMap buildFieldMap(const sensor_msgs::msg::PointCloud2& m,
-                                     ParseReject& why);
-
-// 메시지 → PredictedTrajectory. 좌표 변환(§4.3) 포함. non-RT.
-[[nodiscard]] bool parseCloud(const sensor_msgs::msg::PointCloud2& m, const FieldMap& fm,
-                              const Eigen::Isometry3d& T_w_src, bool need_transform,
-                              traj::PredictedTrajectory& out, CovBuffer& cov_out);
+// 이름으로 찾고 datatype·count·경계(offset + 크기 <= point_step)를 검사한다.
+[[nodiscard]] bool BuildFieldMap(const sensor_msgs::msg::PointCloud2& m, FieldMap& out,
+                                 ParseReject& why);
 ```
 
-구성 시 검사 항목:
+메시지 형식 검사 — **점을 복사하기 전에** 모두 통과해야 한다:
 
-- 필수 필드 존재: `x,y,z,vx,vy,vz,ax,ay,az,t,cov`
-- `x,y,z`가 float64이고 offset이 8 B 간격으로 연속인가 (아니면 성분별 offset을 따로 보관)
-- `cov`의 `count`가 36인가
-- `point_step`이 마지막 필드 끝보다 크거나 같은가
-- `is_bigendian == false` (아니면 거부. 바이트 스왑은 지원하지 않는다)
-- `height == 1`, `width == N`, `data.size() == point_step * width`
+- `is_bigendian == false` (바이트 스왑 미지원)
+- `height == 1`, `width` ∈ [`io.n_min`, `kMaxSamples`] — 상한 검사를 복사 전에 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 수정)
+- `data.size() == point_step × width`, `row_step == point_step × width`
+- 필드 값은 `std::memcpy` 로 읽는다(정렬·aliasing UB 방지)
 
-### 5.2 수신 콜백 (non-RT)
+### 5.2 수신 콜백 (nrt)
 
 ```cpp
-void TrajReceiver::onCloud(const sensor_msgs::msg::PointCloud2& m) {
-  const Nanoseconds t_ref = rclcpp::Time(m.header.stamp, clock_type_).nanoseconds();
-  const double age = 1e-9 * static_cast<double>(clock_->now().nanoseconds() - t_ref);
+// integrated_bringup 바인딩. 컨트롤러 LifecycleNode 의 default group 구독
+// → nrt_callback_executor (G1-6). 할당은 configure 에서 끝낸 버퍼만 쓴다.
+void CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& m) {
+  const std::int64_t recv_steady = SteadyNowNs();  // 도착 즉시 한 쌍으로
+  const std::int64_t recv_wall = WallNowNs();
 
-  Reject r = Reject::None;
-  if (!fm_.ok)                                        r = Reject::NoLayout;
-  else if (layoutHash(m) != fm_.layout_hash)          r = Reject::LayoutChanged;   // §4.6
-  else if (m.height != 1 || m.width < cfg_.n_min)     r = Reject::Shape;
-  else if (m.data.size() != std::size_t(m.point_step) * m.width) r = Reject::Size;
-  else if (age < -cfg_.future_tol)                    r = Reject::FutureStamp;
-  else if (age > cfg_.max_age)                        r = Reject::TooOld;
-  if (r != Reject::None) { counters_.inc(r); return; }
+  Reject r = CheckLayoutAndShape(m, fm_, cfg_);    // §4.6, §5.1 (복사 전)
+  if (r == Reject::kNone) r = ReadHeaderFields(m, fm_, hdr_);  // generation, sequence, validity
+  if (r == Reject::kNone) r = CheckOrder(hdr_, last_);          // §4.4 중복·역전·NOT_EVALUATED
+  const std::int64_t origin_latency = recv_wall - StampNs(m.header.stamp);
+  if (r == Reject::kNone && origin_latency < -cfg_.future_tol_ns) r = Reject::kFutureStamp;
+  if (r != Reject::kNone) { counters_.Inc(r); return; }
+  diag_.origin_latency.Push(origin_latency);       // 진단만 (§4.1)
 
-  if (!parseCloud(m, fm_, T_w_src_, need_transform_, traj_, cov_)) {
-    counters_.inc(Reject::Parse); return;
+  const BallTime t_ref{recv_steady - origin_latency};          // D-2 변환 1회
+  if (!ParsePoints(m, fm_, t_ref, T_w_src_, need_transform_, snap_, cov_)) {  // NaN 거부
+    counters_.Inc(Reject::kParse); return;
   }
-  const auto chk = traj::check(traj_, cfg_.n_min);              // 단조 t, 유한값
-  if (!chk.ok) { counters_.inc(Reject::Malformed); return; }
-  if (!withinExpectedSpacing(chk, cfg_))  counters_.inc(Reject::SpacingWarn);  // 경고만
+  const auto chk = CheckTrajectory(snap_, cfg_.n_min, cfg_.dt_min);  // L2: 단조, dt_min 거부
+  if (!chk.ok) { counters_.Inc(Reject::kMalformed); return; }
+  snap_.horizon_short = chk.horizon_ns < cfg_.horizon_min_ns;        // D-15 진단
+  snap_.recv_steady_ns = recv_steady;
 
-  jump_ = trackJump(prev_traj_, traj_, cfg_.eval_offset);       // §4.4
-  nu_    = predConsistency(prev_traj_, prev_cov_, traj_, cov_, cfg_.eval_offset);  // §4.5
-  if (jump_ > cfg_.j_new || (t_ref - prev_t_ref_) > cfg_.t_gap_ns) ++track_epoch_;
-  nu_window_.push(nu_);                                          // 창 평균, non-RT
-  traj_.seq = ++seq_;
-  traj_.track_epoch = track_epoch_;      // **스냅샷에 실어야 RT·L3 가 읽는다**
-
-  traj_box_.write(traj_);        // RT 용: (t, p, v, a) 만        (단일 writer)
-  plan_buf_.write(traj_, cov_);  // non-RT 계획용: 공분산 포함    (§L2 4.5)
-  planner_signal_.notify();
-  prev_traj_ = traj_; prev_t_ref_ = t_ref;
+  UpdateJumpAndNu(prev_, snap_, prev_cov_, cov_);  // §4.4, §4.5 (같은 generation 일 때만)
+  traj_box_.Store(snap_);                          // rtc::SeqLock<TrajectorySnapshot> (공분산 없음)
+  PublishToPlanner(snap_, cov_);                   // 계획기 버퍼 (A-3), 전달 수단은 S5.2/S6
+  planner_wakeup_.Notify();                        // eventfd (D-7c)
+  last_ = hdr_;
 }
 ```
 
-- 문자열 비교(`frame_id`)와 해시 계산은 non-RT 콜백이라 허용한다.
-- `track_epoch_`는 `PointCloud2`에 없는 `track_id`를 대신한다(§4.4). L3·L7이 이 값의 변화를 트랙 교체로 해석한다.
-- 공분산 대칭화: 수신 직후 각 점에 대해 $\Sigma\leftarrow\tfrac12(\Sigma+\Sigma^\top)$.
+- `TrajectorySnapshot` 은 공용 궤적 타입(L2 §5.1)이며 trivially copyable POD 다(L0 §5.2). `generation`, `snapshot_sequence`, `recv_steady_ns`, 점별 `BallTime` 을 싣는다.
+- 공분산 대칭화 $\Sigma\leftarrow\tfrac12(\Sigma+\Sigma^\top)$ 는 NaN 이 없는 원소 쌍에만 적용한다.
+- 문자열 비교(`frame_id`)와 해시 계산은 nrt 콜백이라 허용한다. 콜백 계산량은 lifecycle 서비스와 executor 를 공유하므로 작게 유지한다(D-7 이 계획 계산을 이 executor 에서 뺀 이유).
 
 ### 5.3 RT 측 읽기와 stale 판정
 
 ```cpp
-struct TrajView { const traj::PredictedTrajectory* tr; double age; bool stale; };
+// RTControllerInterface::Compute 안 — noexcept, 할당 없음
+struct TrajView { bool stale; bool expired; };
 
-[[nodiscard]] TrajView readTraj(const SnapshotBox<traj::PredictedTrajectory>& box,
-                                Nanoseconds now, double t_stale,
-                                traj::PredictedTrajectory& buf) noexcept {
-  const bool ok = box.tryRead(buf);                   // SeqLock, 재시도 상한 (G1-8)
-  const double age = 1e-9 * static_cast<double>(now - buf.t_ref);
-  const bool expired = (buf.n > 0) && (age > buf.s[buf.n - 1].t);   // 지평 소진
-  const bool stale = !ok || !buf.valid || age > t_stale || expired;
-  return {&buf, age, stale};
+[[nodiscard]] TrajView ReadTraj(const rtc::SeqLock<TrajectorySnapshot>& box, NowReal now,
+                                NowLead now_lead, std::int64_t t_stale_ns,
+                                std::uint32_t& last_lock_seq, TrajectorySnapshot& buf) noexcept {
+  if (box.sequence() != last_lock_seq) {           // 바뀌었을 때만 복사
+    buf = box.Load();                              // 재시도 상한 없음 (G1-8)
+    last_lock_seq = box.sequence();
+  }
+  const bool stale = !buf.valid || (now.ns - buf.recv_steady_ns) > t_stale_ns;  // steady 수신 나이
+  const bool expired = buf.n > 0 && now_lead > buf.LastBallTime();              // 선행축 (§4.1)
+  return {stale, expired};
 }
 ```
 
-재시도 상한에 걸려 읽기에 실패하면 직전 버퍼를 유지하고 stale로 처리한다.
+- `last_lock_seq` 비교가 스냅샷 전체 복사를 새 메시지 도착 시로 한정한다(L2 §5.2 복사 비용).
+- `now` 는 매 tick steady 실측이다(tick × `dt` 아님, plan §3).
 
-### 5.4 RobotSnapshot
+### 5.4 RT 상태 POD (RT → 계획기)
 
-```cpp
-struct RobotSnapshot {                               // RT 틱마다 갱신
-  Nanoseconds t{0};
-  Eigen::Matrix<double, kMaxArmDof, 1> q, dq;        // 측정 (kMaxArmDof = 7, 사용 차원은 n_arm)
-  Eigen::Matrix<double, kMaxArmDof, 1> q_cmd;        // 직전 명령
-  std::array<Eigen::Matrix<double, 6, 1>, kMaxFingertips> tip_wrench;  // S_i 기준
-  std::array<Nanoseconds, kMaxFingertips> tip_stamp; // 실기 비동기 경로의 나이 판정용
-  Eigen::Matrix<double, kMaxHandDof, 1> q_hand;      // 구동 좌표
-  int n_arm{0}, n_tip{0}, n_hand{0};
-};
-```
+계획기 입력용 로봇 상태는 `rtc::SeqLock<RtStatePod>` 로 넘긴다(plan §6). v0.4 의 Eigen 멤버 `RobotSnapshot` 은 SeqLock 에 실을 수 없어 대체한다.
 
-채우는 경로는 workspace의 것을 쓴다(W4-6). 시뮬레이션과 실기가 다른 경로면 어댑터를 둔다.
+- 필드: `NowReal` 시각, 팔 q·q̇ (측정), 직전 명령 q_c, 손 구동 좌표, 지문 wrench·스탬프 — 모두 `std::array<double, kMax…>` + 사용 차원 `n_arm`/`n_hand`/`n_tip`
+- 채우는 곳: `Compute` 안에서 `ControllerState` 로부터. 지문 wrench 부호는 sim·실기 모두 finger-on-object (0fcc1d23), S7.3 에서 재확인 (G1-9)
 
 ## 6. YAML 파라미터
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `io.traj_topic` | string | – | `TBD` | – | TBD-VIS-01 |
-| `io.qos` | enum | – | `TBD` | – | TBD-VIS-08, vision 설정을 따름 |
-| `io.expected_frame` | string | – | `world` | – | 마스터 §3. 다르면 §4.3 변환 |
-| `io.n_min` | int | – | `TBD` | ≥2 | 형식 검사 하한. **단일 원천** — L2는 이 값을 인자로 받는다(L2 §6 `prediction.n_min`은 같은 키) (G1-1) |
-| `io.max_age` | double | s | 0.15 | 0.02–0.5 | 수신 거부 상한 (튜닝) |
-| `io.t_stale` | double | s | `TBD` | 0.02–0.2 | 발행 주기 + 전송 지연 + 여유 (실측 후) |
-| `io.future_tol` | double | s | `TBD` | 1e-4–1e-2 | 시계 동기 오차 예산 (§4.2) |
-| `io.track.t_gap` | double | s | `TBD` | >0 | §4.4 스탬프 간격 임계 |
+| `io.traj_topic` | string | – | ball_perception debug 예측 궤적 토픽 | – | G1-2, D-4 (stable ABI 아님) |
+| `io.qos` | enum | – | `TBD` | – | TBD-VIS-08, vision 설정을 따름 (S3.4) |
+| `io.expected_frame` | string | – | `world` | – | 마스터 §3. 다르면 §4.3 변환 (TBD-VIS-06, S3.4) |
+| `io.n_min` | int | – | `TBD` | ≥2 | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3) |
+| `io.t_stale` | double | s | `TBD` | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후) |
+| `io.future_tol` | double | s | `TBD` | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2) |
+| `io.horizon_min` | double | s | `TBD` | >0 | D-15 지평 요구. S3.6 산출 (예시 profile 0.5 s) |
 | `io.track.eval_offset` | double | s | 0.05 | 0–0.3 | §4.4 비교 시각 오프셋 |
-| `io.track.j_new` | double | m | `TBD` | >0 | §4.4 새 트랙 판정 |
-| `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 경고 |
+| `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 점프 경고 |
 | `io.pred.nu_window` | int | – | 30 | 5–300 | §4.5 창 길이 |
 | `io.pred.nu_alpha` | double | – | 0.05 | 0.001–0.2 | §4.5 |
-| `io.seqlock_max_retries` | int | – | 4 | 1–64 | G1-8 결과 반영 |
-| `io.tip_topic_prefix` | string | – | `TBD` | – | TBD-HAND-03 (실기) |
-| `io.tip_t_stale` | double | s | `TBD` | – | 센서 주기에 따름 |
+| `io.pred.nu_reg` | double | m² | `TBD` | >0 | §4.5 정규화 λ (NUM-1), S5.2 |
 
-v0.2의 `io.nis_window`, `io.nis_alpha`는 삭제했다(입력 없음).
+v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.1), `io.track.t_gap`·`io.track.j_new` (트랙 판정은 `generation`, §4.4), `io.seqlock_max_retries` (`rtc::SeqLock` 에 재시도 상한 없음, G1-8), `io.tip_topic_prefix`·`io.tip_t_stale` (지문 센서는 `ControllerState` 경로, 규약은 S7.3).
 
 ## 7. 단위 기술 구현 순서
 
-- **L1.1** 단계 W의 W5-2 결과로 `buildFieldMap` + 레이아웃 해시 + 구성 실패 케이스 테스트.
-- **L1.2** `parseCloud` + 좌표 변환(§4.3) + 저장된 bag 1건으로 왕복 테스트.
-- **L1.3** `SnapshotBox<T>` 래퍼: RTC SeqLock 위에 `write()/tryRead()` 제공 (G1-8).
-- **L1.4** `TrajReceiver` + 거부 사유 카운터 + 트랙 연속성 판정(§4.4) + 예측 일관성 지표(§4.5). `track_epoch` 를 스냅샷에 싣는지 확인.
-- **L1.4b** 물리 일관성 검사(non-RT, 메시지당 $O(N)$): $\Vert a_j-(v_{j+1}-v_j)/\Delta t\Vert$ 잔차, $v_j$ 대 Hermite 미분 잔차, $\Vert a\Vert$ 범위, `frame_id` 매 메시지 비교, cov 대각 양정. 레이아웃 해시는 **의미 변경을 못 잡으므로**(§4.6) 이 검사가 그 역할을 한다.
-- **L1.5** stale·지평 소진 판정.
-- **L1.6** `RobotSnapshot` 채우기: 시뮬레이션 경로 → 실기 경로.
-- **L1.7** 진단 발행: 거부 사유 카운트, 나이 분포, 샘플 수 분포, 점프 분포(non-RT, 1 Hz).
+- **S1.2** (L2 와 공동) 공용 궤적 타입 + 점 개수 `[n_min, kMaxSamples]` 검사(파서·check·RT 읽기 공통), NaN 거부.
+- **S1.3** D-2 변환 함수 + $T_{arm}\ne0$ fixture 에서 stale(실제축)·지평 소진(선행축) 판정 테스트.
+- **S5.2a** `BuildFieldMap` (이름·datatype·count) + 형식 검사 + 레이아웃 해시 진단 + 거부 케이스 테스트 (필드 누락, datatype 변경, offset 만 변경 → 수락, width > `kMaxSamples`).
+- **S5.2b** `OnCloud`: `generation`/`snapshot_sequence`/`validity` 처리, uint64 low/high 조립, D-2 변환, 지평 요구 진단, SeqLock 게시, 계획기 버퍼, eventfd.
+- **S5.2c** 물리 일관성 검사(nrt, 메시지당 $O(N)$): $a$ 가 상수 $g$ 인지(vision 규약, L2 G2-3), $v_j$ 대 Hermite 미분 잔차, `frame_id` 매 메시지 비교, cov 대각 양수(NaN 제외). 레이아웃 해시·이름 검사가 **의미 변경을 못 잡으므로**(§4.6) 이 검사가 그 역할을 한다.
+- **S5.2d** $J$, $\nu$ (정규화 역행렬, 공분산 시각 보간 규칙 확정 후).
+- **S5.2e** RT 상태 POD 채우기: sim 경로 → 실기 경로.
+- 진단 발행: 거부 사유 카운트, 원점 지연·수신 나이 분포, 점 수·지평 분포, 점프 분포(nrt, 1 Hz, `PublishRole` 없이).
 
 ## 8. 디버깅 방법
 
-- 파싱이 통째로 실패: `ros2 topic echo --once --field fields` 로 실제 `PointField` 배열을 덤프해 `buildFieldMap`의 기대와 비교한다. `point_step`과 필드 끝의 차이(마스터 §5.1)를 먼저 본다.
-- 값이 그럴듯하지만 틀림: endianness, `t` 필드 타입(초/ns), cov 순서 $(p,v)$ 를 의심한다. 한 점을 손으로 바이트 단위로 읽어 대조한다.
-- 모든 메시지가 `TooOld`: 시뮬레이션에서 `use_sim_time`이 양쪽 모두 켜졌는지, 스탬프가 예측 기준 시각인지 확인한다(G1-7).
-- `FutureStamp` 발생: 실기에서 PTP offset, 시뮬레이션에서 clock type 혼용을 확인한다.
-- `LayoutChanged` 발생: vision 노드가 필드를 바꿨다. 파서를 재구성하기 전에 무엇이 바뀌었는지 기록한다.
-- 트랙이 자주 새로 잡힘: `io.track.j_new`가 예측 갱신량보다 작은지 확인한다. L2 점프 분포와 함께 본다.
-- 궤적이 계속 이상: `/ball/truth`(시뮬레이션)와 수신 궤적을 같은 그래프에 그린다.
+- 파싱이 통째로 실패: `ros2 topic echo --once --field fields` 로 실제 `PointField` 배열을 덤프해 필수 필드 표(§5.1)와 비교한다. 레이아웃 해시 변경 진단이 먼저 떴는지 본다.
+- 값이 그럴듯하지만 틀림: endianness, `horizon_ns` 해석(상대 ns), uint64 low/high 순서, cov 순서 $(p,v)$ 를 의심한다. 한 점을 손으로 바이트 단위로 읽어 대조한다.
+- 모든 메시지가 stale: stale 은 steady 수신 나이이므로 발행이 멈췄거나 거부되고 있는 것이다 — 거부 사유 카운터를 먼저 본다.
+- `FutureStamp` 발생: 실기에서 PTP offset, sim 에서 누군가 `use_sim_time=true` 로 떠서 stamp 가 sim time 인지 확인한다(G1-7).
+- 순서 역전 거부가 계속됨: vision 노드 재시작으로 `snapshot_sequence` 가 되감긴 것인지 `generation` 과 함께 본다(§4.4).
+- 트랙이 자주 새로 잡힘: vision 쪽 `generation` 변화 빈도를 직접 기록한다(제어 PC 가 만들지 않는다).
+- 궤적이 계속 이상: `/sim/ball/ground_truth`(sim)와 수신 궤적을 같은 steady 축에 그린다.
 
 ## 9. 검증 방법과 합격 게이트
 
 | 게이트 | 기준 | 태그 |
 |---|---|---|
-| G1-A | 거부 사유별 단위 테스트 (레이아웃 불일치, shape, size, 미래·과거 스탬프, 비단조 $t$, NaN, 비양정 cov 대각) 전부 통과 | `[SIM-ANY]` |
-| G1-B | 실제 vision bag 1건을 파싱해 점 개수·필드 값이 `ros2 topic echo` 출력과 일치 | `[HW-P1B]` |
-| G1-C | writer 부하 + RT reader 500 Hz에서 찢어진 스냅샷 0 (필드 체크섬 비교), TSAN 경고 0 | `[SIM-ANY]` |
-| G1-D | RT 읽기 경로 할당 0, 최악 실행시간 기록 | `[SIM-ANY]` |
-| G1-E | 인위적 지연·누락 주입 시 stale 전이가 기대 시각 ±1 틱 이내 | `[SIM-ANY]` |
-| G1-F | 좌표 변환 왕복 테스트: $p,v,a,\Sigma$ 를 변환 후 역변환해 원값 복원 (< 1e-12) | `[SIM-ANY]` |
-| G1-G | 실기 연결에서 나이 분포(평균, 99%), 점프 분포 기록 → `t_stale`, `j_new` 확정 | `[HW-P1B]` |
+| G1-A | 거부 사유별 단위 테스트 (필수 필드 누락·datatype·count, shape, size, `width` > `kMaxSamples` (ASan 무오류), 미래 스탬프, `NOT_EVALUATED`, `snapshot_sequence` 중복·역전, 비단조 시각, `dt_min` 미만, NaN) 전부 통과. offset 만 바뀐 레이아웃은 수락 | `[SIM-ANY]` |
+| G1-B | 실제 ball_perception 메시지 1건을 파싱해 점 개수·필드 값·uint64 필드가 `ros2 topic echo` 출력과 일치 | `[SIM-ANY]` |
+| G1-C | writer 부하 + RT reader (`control_rate` 100·500·5000 Hz)에서 찢어진 스냅샷 0 (필드 체크섬 비교), TSAN 경고 0 | `[SIM-ANY]` |
+| G1-D | RT 읽기 경로 할당 0 (`ScopedNoMalloc`·`ScopedAllocGate`), 최악 실행시간 기록 | `[SIM-ANY]` |
+| G1-E | 인위적 지연·누락 주입 시 stale 전이가 steady 기준 기대 시각 ±1 틱 이내. $T_{arm}\ne0$ 에서 지평 소진은 now_lead 기준 | `[SIM-ANY]` |
+| G1-F | 좌표 변환 왕복 테스트: $p,v,a,\Sigma$ 를 변환 후 역변환해 원값 복원 (< 1e-12), NaN 원소 보존 | `[SIM-ANY]` |
+| G1-G | 실기 연결에서 수신 나이·원점 지연 분포(평균, 99%), 점프 분포 기록 → `t_stale`, `future_tol` 확정 | `[HW-P1B]` |
 
 ## 10. 미확정 항목
 
-TBD-VIS-01~08, TBD-RTC-01, 04, 05, TBD-HAND-03, `io.n_min`, `io.t_stale`, `io.future_tol`, `io.track.*`, `io.pred.*` 임계.
+TBD-VIS-06 (`frame_id` 와 world, S3.4), TBD-VIS-07 잔여(유령 트랙, S3.4), TBD-VIS-08 (QoS, S3.4), `snapshot_sequence` 되감김 처리·`validity` 부분 수용 (S5.2), $\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (S5.2), 계획기 공분산 버퍼 전달 수단 (S5.2/S6), `io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min` (S3.4·S3.6), `io.track.j_warn`.

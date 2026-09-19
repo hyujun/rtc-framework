@@ -51,7 +51,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - 시간: RT 의 `ControllerState::t_relative_s` 는 steady clock 기반, `ControllerState::dt` 는 항상 1/`control_rate` (sim lock-step 에서 실제 간격과 다를 수 있음). `header.stamp` staleness 판단 금지
 - CLIK: `ClikReferenceGenerator` 는 pose 목표만, LWA 6행 고정, 측정 q 에서 e·J 평가, 위치∩속도 box, `max_iter` 20 고정. 가속 box·feedforward·마스크·상태 노출 없음. `PinocchioCache` Jacobian 은 `LOCAL_WORLD_ALIGNED` 고정
 - 재사용 대상: `rtc::SeqLock`, `rtc::SpscQueue`, `rtc::compliance::DifferentialIk`, `rtc_math` se3 `log3`/`exp3`, `QPSolverWrapper`
-- 지문 센서: P1b 실기 `HandSensorState` 250 Hz, finger-on-object 부호. sim 은 `WrenchStamped` env-on-link **반대 부호**
+- 지문 센서: P1b 실기 `HandSensorState` 250 Hz, finger-on-object 부호. sim 의 `WrenchStamped` contact-wrench lane 도 커밋 0fcc1d23 (2026-09-09) 이후 **같은 부호** (fingertip-on-environment = finger-on-object, 변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 하나). `rtc_msgs` FingertipSensor 메시지 주석의 "sim 은 반대 부호" 는 그 이전 서술로 stale — repo drift 로 별도 수정 대상
 - sim 공: `/sim/launch_ball`·`/sim/reset_ball` (Trigger), `/sim/ball/ground_truth` (Odometry), `/sim/ball/camera_position` (PointStamped + noise), 항력·Magnus 자체 구현, iiwa7_leap 설정 없음
 - vision: 형제 workspace 의 ball_perception 저장소 `ball_perception_sim` 패키지 `sim_estimator_node` 가 `/sim/ball/camera_position` 을 구독해 예측 궤적 PointCloud2 를 debug 토픽으로 발행한다 (point_step 384, `horizon_ns` u32, `generation`, `validity`, `covariance` NaN=모름). **stable ABI 아님** — 제품 ABI 는 ball_perception E6-F02 로 defer
 - 참조 구현 테스트: l0/l2/l3/l4 + `verify_l3.py` 전부 통과, ASan/UBSan 통과. 단 테스트 밖 결함 확인: `n > kMaxSamples` 범위 밖 읽기(ASan), NaN 목표 영구 오염, derate 결함(D-8)
@@ -78,7 +78,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 
 | 단계 | 상태 | 게이트 결과 |
 |---|---|---|
-| S0 결정·문서 v0.5·계약 | 진행 중 | — |
+| S0 결정·문서 v0.5·계약 | 진행 중 — S0.2·S0.3 완료, 확인 요청 4건 (§7.3) | S0.2 W 기록 칸 전부 채움, S0.3 설계 문서 13개 v0.5 동기화, `validate_docs` 13 files clean (2026-09-19) |
 | S1 순수 수치 코어 | 대기 | — |
 | S2 기존 rtc_* 일반화 | 대기 | — |
 | S3 시뮬레이션 기반 | 대기 | — |
@@ -143,6 +143,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S3.4 `sim_estimator_node` 연결: clock domain(`use_sim_time=false`), `frame_id` 와 world 관계, 발행 주기·N·지평 실측 (TBD-VIS-04/06), 지연·드롭 주입
 - S3.5 catchability 지도 도구 (D-18, §11): 발사 영역 × 발사 속도·각도 격자 → 궤적 → 포구 후보 IK → manipulability → 잡을 수 있는 발사 조건 범위. 결과를 발사 srv(D-14) 설정으로 사용
 - S3.6 vision 요구 사양 산출 (D-15): 목표 투척 분포에서 "검출 이후 포구 창 종료까지 최대 비행 시간" → 필요 지평, L2 보간 게이트를 만족하는 간격 → 점 수 → 파서 용량. 결과를 ball_perception sim profile 설정값으로 제시 (설정은 사용자)
+- S3.7 팔 지연 에뮬레이션 (L5 §4.6 `sim.arm_lag`): sim 에서 T_arm 을 주입해 L5 G5-D·G5-E 를 돌릴 수 있게 한다 (backend 에 지연 보상이 없으므로 선행 보상 검증에 필요)
 
 게이트: 발사 → PointCloud2 수신 end-to-end, seed 재현성, RTF 게이트 동작.
 
@@ -180,7 +181,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 
 - S7.1 손 시퀀서 → 손 device slot
 - S7.2 FSM (전이표 = 데이터, Reason 완전), IDLE→wait_pose homing. DECEL 은 시각 기준 진입 (A-5, now_lead ≥ t_c), 지문 센서는 결과 판정·abort 전용. COMMITTED 이후 stale 은 동결 plan 으로 계속, `supervisor.stale_committed_max` 초과 시 ABORT_SAFE (A-6, 초기값은 vision 발행 주기의 3배로 제안하고 S8 에서 조정)
-- S7.3 접촉 판정 (sim·실기 부호 정규화), 감속, 충격량 예산
+- S7.3 접촉 판정 (sim·실기 모두 finger-on-object — 착수 시 재확인), 감속, 충격량 예산
 - S7.4 abort·retreat·재무장 리셋, 연속 투척
 
 게이트: L7 G7-A~E, L8 G8-A2.
@@ -281,6 +282,34 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 5. 측정에서 상류 구간 (nrt_callback 수신)이 지배적이면 D-7e 로 수신 경로를 따로 검토한다
 
 ### 7.3 미결정
+
+**S0.3 동기화에서 나온 확인 요청 (결정 필요)**
+
+- C-1 vision `validity` 는 점마다 있다 — 한 점이라도 VALID 가 아니면 메시지 전체를 거부 (L1 §4.4 보수적 기본값) 할지, 유효 점만 받을지. 권장: 전체 거부로 시작, S3.4 실측에서 부분 무효가 실제로 나오면 재검토
+- C-2 L1 에서 `header.stamp` 기반 나이 거부(`io.max_age`)를 삭제하고 원점 지연(수신 wall − stamp)은 진단으로만 남겼다 — 시각이 절대값(D-2)이라 오래된 원점은 지평 검사가 거른다. 권장: 확인 (거부 없음)
+- C-3 L3 의 `planner.ik.manip_min` 을 D-18 w₅ 게이트로 대체해 삭제했다 (J_p 가 계수 손실하면 w₅ = 0). 권장: 확인
+- C-4 포구 후보마다 IK seed 를 대기 자세로 고정했다 (지도 도구와 런타임 일치, §11) — 이전 plan 해로 warm start 하지 않아 IK 반복·예산이 늘 수 있다. 권장: 확인, 예산은 S6.3 에서 측정
+
+**단계에서 정할 것 (S0.3 에서 발견, 결정은 해당 단계)**
+
+- S1.7 η_v·D-16 가속 box 의 YAML 키 이름 (plan 이 이름을 정하지 않음)
+- S2.2 CLIK: 관절별 속도 한계 (현재 `v_limit` 스칼라), q_c 평가용 캐시 분리, q_c 모드 실패 후 재앵커 규칙, `anchor_drift_max` 와 `TRACK_ERR` 중복 정리, 결합 모델 nv 실측 (p1b 22 로 기록돼 있으나 미검증)
+- S3.4 vision 재시작 시 `snapshot_sequence` 되감김 처리, `frame_id` ↔ world, 유령 트랙(관성 예측만 발행) 시 `validity` 거동
+- S5.2 공분산의 시간 보간 정의와 nrt 파서 → 계획기 버퍼 전달 방식
+- S5.3 QP 비의존 관절공간 abort 식
+- S6.2 `DifferentialIk` 의 σ₀·λ_max 키
+- S7 homing 을 IDLE 하위 단계로 둘지 별도 Mode 로 둘지, `REF_SATURATED` 판정식, 손 hold 힘 한계를 position 목표로 표현하는 규칙
+- TBD-WS-01 (바닥·작업셀 경계) 을 닫는 단계가 없다 — S3.5 catchability 지도에서 작업셀 경계를 입력으로 쓸 때 함께 정한다
+
+**repo drift (이 작업 범위 밖 — 별도 처리 제안)**
+
+- `rtc_msgs` FingertipSensor 메시지 주석이 "sim contact-wrench 는 반대 부호" 라고 적지만 커밋 0fcc1d23 이후 같은 부호다 (메시지 파일 변경이라 PROC-3 전체 빌드 대상)
+- `agent_docs/controllers.md` 의 DemoWbc 행이 "TSID QP → accel → position integration" 이라 적지만 실제 위치 백본은 CLIK
+- ur5e_p1b YAML 의 `index_mcp_aa_joint` 한계(−0.349/0.524)가 "URDF 와 같다" 는 주석과 달리 URDF·MJCF(−0.122/0.297)와 다르다 (실효 한계는 교집합이라 URDF 값)
+- MPC 경로가 문서상 RT 로 분류되지만 mutex·`fprintf` 를 쓴다 (§6)
+
+**기존 미결정**
+
 
 - D-7e (조건부) vision 수신 경로가 지연을 지배할 때의 대안 — 7.2 측정 결과가 나오면
 - D-12 값들

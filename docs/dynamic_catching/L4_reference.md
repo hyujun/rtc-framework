@@ -1,26 +1,30 @@
 # L4 — Reference: soft-catch DS, 접근축 정렬, 복귀
 
-- 브랜치: `feat/catching-L4-reference`
-- 패키지: `catching_reference`
+- 문서 버전: v0.5 (2026-09-19) — 결정·단계의 SSoT 는 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (충돌 시 plan 우선)
+- 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
+- 배치 `[확정 D-1]`: soft-catch 병진 기준·γ 프로파일·복귀 기준은 rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`), **축 정렬 오차·각속도·Jacobian 은 `rtc_math` se3** 로 옮긴다
+- 단계: **S1.4** soft-catch 기준 생성기 (NaN 가드, derate 없음), **S2.1** 축 정렬 함수의 `rtc_math` se3 이식 (deadband·반평행에서 유한), CLIK 기준 공급은 **S2.2** (CLIK twist feedforward 옵션, D-5) · **S5.3** (스트리밍 기준 → 확장 CLIK)
 - 선행: 단계 W, L0 (L2 궤적 샘플러 `traj::sampleAt()` 출력을 입력으로 받음)
-- 산출물: `soft_catch_reference.hpp`, `retreat_reference.hpp`, `convergence_bound.hpp`
+- 산출물: soft-catch 병진 기준 (참조: `soft_catch_reference.hpp`), 복귀 기준, 수렴 한계
 - 비고: L3가 γ rollout에서 **이 layer의 같은 코드**를 호출한다.
 
 ---
 
 ## 1. 범위 / 비범위
 
-범위: 추종 대상(실제 공 또는 L7의 가상 감속 공)의 상태로부터 catch frame의 병진 기준 $(x,\dot x,\ddot x)$와 회전 기준 $\omega_{ref}$를 500 Hz로 생성한다. 복귀(retreat) 기준도 포함한다.
+범위: 추종 대상(실제 공 또는 L7의 가상 감속 공)의 상태로부터 catch frame의 병진 기준 $(x,\dot x,\ddot x)$와 회전 기준 $\omega_{ref}$를 제어 주기 $h$ = `ControllerState::dt` (= 1/`control_rate`, 100–5000 Hz) 마다 생성한다. 500 Hz 고정을 가정하지 않는다. 복귀(retreat) 기준도 포함한다.
 
 비범위: 관절 공간 변환과 한계 처리(L5), γ·포구점 결정(L3), 모드 전환 판단(L7).
 
 ## 2. 코드 확인 게이트
 
+단계 W 에서 처리했다 (2026-09-19, plan §2).
+
 | ID | 확인 항목 | 기록 |
 |---|---|---|
-| G4-1 | `rtc_tsid` / CLIK가 받는 과제 기준의 형식 (위치+속도+가속도? 속도만?) | TBD-RTC-07 |
-| G4-2 | 기존 SE(3)/SO(3) 오차 헬퍼(U1 공유 헬퍼)의 규약과 본 문서 §4.5 축 정렬 오차의 공존 방식 | TBD-RTC-08 |
-| G4-3 | 두 로봇의 catch frame과 손바닥 바깥 법선 축 | TBD-FRAME-01 |
+| G4-1 | `rtc_tsid` / CLIK가 받는 과제 기준의 형식 | 닫힘 — `rtc::tsid::ClikReferenceGenerator` 는 현재 **pose(SE3) 목표만** 받는다 (6 LWA 행 고정, feedforward·마스크 없음). twist feedforward·LOCAL 접근축 2행·가속 box 는 옵션(기본 off)으로 확장한다 `[확정 D-5]` (S2.2) |
+| G4-2 | 기존 SE(3)/SO(3) 오차 헬퍼(U1 공유 헬퍼)의 규약과 본 문서 §4.5 축 정렬 오차의 공존 방식 | 닫힘 — U1 헬퍼는 `rtc_tsid` se3_error (`ComputeTaskPoseError`, LWA BodyLog6). §4.5 축 정렬 오차는 그것과 **별도 함수**로 `rtc_math` se3 (`log3`/`exp3` 기반) 에 둔다 (D-1, S2.1) |
+| G4-3 | 두 로봇의 catch frame과 손바닥 바깥 법선 축 | 닫힘 — D-17: 모델 빌더가 YAML 선언 frame 으로 추가 (D-10), 부모·offset·자세는 로봇 config, 접근축 = 그 frame 의 +z. 초기값은 S2.3 제안 → 사용자 sim 확인 (plan §10) |
 
 ## 3. 참고자료
 
@@ -142,6 +146,15 @@ $\theta\to0$ 극한은 $f\to1$, $f'\to-1/3$ 로 유한하고, 이때 $J_a\to[a_d
 1. 소각도 급수는 $c>0$ 일 때만 쓴다. $\sin\theta$ 는 $\theta\to0$ 과 $\theta\to\pi$ **양쪽에서** 0이므로, 부호를 보지 않으면 반평행 근처에서 발산해야 할 $f$ 가 유한한 값(≈2.645)으로 조용히 바뀐다. 실측: $\theta=180°-5.7\times10^{-7}°$ 에서 참값 $3.16\times10^{8}$ 대신 2.645.
 2. `axisAlignJacobian` 의 `sin_eps` 는 `axisAlignError` 와 **같은 값**이어야 한다. 다르면 데드밴드 안에서 $e_a$ 는 상수인데 $J_a$ 가 0이 아닌 값을 돌려주어, $J_a$ 가 더 이상 $e_a$ 의 야코비안이 아니게 된다.
 
+**참조 구현 결함 — 함수는 항상 유한값을 돌려줘야 한다 (S2.1).** 위 $\theta\to\pi$ 발산은 수학의 성질이지만, RT 경로 함수가 NaN·폭주값을 내보내면 CLIK 입력이 오염된다. 참조 `axisAlignJacobian` 은 반평행 데드밴드($\Vert m\Vert<\epsilon_{\sin}$, $c<0$)와 그 근처에서 NaN 또는 폭주값을 낸다. `rtc_math` se3 이식 시 요구사항:
+
+- 정렬 데드밴드: $J_a=0$ (`axisAlignError` 가 상수 0 이므로)
+- 반평행 데드밴드: `axisAlignError` 가 고정 축 $\pi\hat u_\perp$ 를 돌려주는 구간이므로 그에 맞는 유한값 (0 포함) — 비유한 출력 금지
+- 데드밴드 경계 근처의 $f$·$f'$ 는 유한 상한으로 제한하고, 그 선택을 유한차분 테스트로 고정한다 (G4-D)
+- 입력 비단위·NaN 에도 유한값 + 무효 표시
+
+정확한 처리 방식(상한 값·반평행 구간의 반환값)은 S2.1 code review 에서 확정한다.
+
 ### 4.6 공개 코드 [R5]와의 차이 (이식 금지 목록)
 
 [R5] `bimanual_ds.cpp`의 `Update()`는 [R4]의 식과 다음이 다르다. 본 구현은 논문 식을 따른다.
@@ -167,6 +180,10 @@ $$M=\begin{bmatrix}1-s^2&1-2s\\-s^2&1-2s\end{bmatrix}\quad(\text{상태 }[e;\,h\
 
 이고, Jury 조건에서 안정 조건은 $0<s<2\sqrt2-2\approx0.828$이다(수치 확인: $s=0.83$에서 스펙트럼 반경 1.005). 정확도를 위해 $s\le0.05$를 권장한다. $h=2$ ms면 $\omega\le25$ rad/s다.
 
+**$h$ 는 실제 제어 주기다 (v0.5).** $h$ = `ControllerState::dt` = 1/`control_rate` 이고 `control_rate` 는 100–5000 Hz 범위다. 500 Hz 에서 맞는 $\omega$ 가 100 Hz ($h=10$ ms) 에서는 $s=\omega h$ 가 5배가 되어 안정 경계를 넘을 수 있다 ($\omega=10$ → $s=0.1$, 권장치 초과). 파라미터 검증기가 configure 시 실제 $h$ 로 $s$ 를 검사한다: 경계 이상 → `armable=false`, 권장치 초과 → 경고 (L0 §5.3, S1.7). 위 $M$ 은 $\zeta=1$ 의 식이다.
+
+**$\zeta\neq1$ 은 검증기가 다뤄야 한다.** §4.4 닫힌해 `criticallyDampedError` 는 $\zeta=1$ 을 가정하므로, `reference.zeta` $\neq1$ 이면 L3 종단 오차 예측이 틀린다. v1 검증기는 $\zeta\neq1$ 을 `armable=false` 로 막는다 (L0 §5.3). 일반 $\zeta$ 를 허용하려면 닫힌해와 이산 안정 경계를 $\zeta$ 에 대해 다시 유도해야 한다.
+
 ### 4.8 포화
 
 $\Vert u\Vert\le a_{\max}$, $\Vert\dot x\Vert\le v_{\max}$로 포화시키고 플래그를 올린다. 포화 중에는 §4.1의 오차계가 성립하지 않는다.
@@ -179,7 +196,7 @@ soft catch에서는 포화가 포구 직전에 몰려 치명적이다. 지난 �
 | $a_{\max}=15$, $\gamma_f=0.4$ | 97.4 mm |
 | $a_{\max}=15$, $\gamma_f=0$ | 29.7 mm |
 
-따라서 L3가 rollout으로 포화 없는 $(\gamma_f,T_w)$를 선택하고(L3 §4.8), 실행 중 포화가 나면 L7이 **먼저 γ를 하향**하고(§5.1 `derateGamma`, L7 §4.6), 그래도 해소되지 않을 때만 abort한다. abort는 $t_c$ 직전에 가장 나쁜 선택이므로 마지막 수단으로 둔다.
+따라서 L3가 rollout으로 포화 없는 $(\gamma_f,T_w)$를 선택하고(L3 §4.8), 계획 γ 창이 $\eta_v$`reference.v_max` 로 여유를 남긴다 (D-9). 실행 중 포화가 나면 `COMMITTED` 이전은 RETREAT, 이후는 ABORT_SAFE 다 `[확정 D-8]`. v0.4 의 "먼저 γ 하향, 그래도 안 되면 abort" 경로(`derateGamma`)는 v1 범위 밖이다 (§5.2.1).
 
 ### 4.9 Sanity check
 
@@ -189,7 +206,7 @@ soft catch에서는 포화가 포구 직전에 몰려 치명적이다. 지난 �
 4. 닫힌해와 미세 스텝 적분 일치.
 5. 축 정렬: $\Vert\omega_{ref}\Vert$ 가 정렬 오차에 대해 연속, $\exp([e_a]_\times)z=a_d$, Jacobian이 유한차분과 일치.
 6. (회귀) 속도 포화 시 반환 `xdd`가 실현 가속도와 일치(§5.1).
-7. (회귀) `derateGamma` 후 $\gamma$, $e$ 연속, $\dot e$ 점프 $=\vert\dot\gamma\vert\Vert\xi^O\Vert$.
+7. (v1 범위 밖, D-8) `derateGamma` 후 $\gamma$, $e$ 연속, $\dot e$ 점프 $=\vert\dot\gamma\vert\Vert\xi^O\Vert$.
 
 `test_l4.cpp` 실행 결과($\omega=10$, $h=2$ ms, 포화 없음, $T_w=0.4$ s, $t_c=0.8$ s):
 
@@ -210,250 +227,49 @@ v0.1 표와의 차이: $\gamma_f=0.4,\delta=0$ 행이 0.6 → 1.1 mm, 상대속�
 
 ### 5.1 `soft_catch_reference.hpp` (참조 구현, 검증 완료)
 
-```cpp
-#pragma once
-// catching_reference/soft_catch_reference.hpp — RT-safe, 고정 크기, noexcept.
-//
-// L3(계획 rollout), L4(기준 생성), L5(접근축 과제)가 모두 이 헤더를 쓴다.
-#include <Eigen/Core>
-#include <Eigen/Geometry>
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
+SSoT 는 같은 폴더의 `soft_catch_reference.hpp` (v0.4) 다 — 문서에 코드를 복제하지 않는다. 내용: `TargetState`, `GammaProfile` (5차 램프), `TranslationOutput` (`x`·`xd`·`xdd`·`u_des`·`e`·`ed`·γ 3종·`saturated`), `SoftCatchTranslation` (`reset`·`setIntercept`·`step`, 그리고 v1 범위 밖인 `derateJump`·`derateGamma`·`DerateResult`), `AxisAlignParams`·`axisAlignError`·`axisAlignOmega`·`axisAlignJacobian` (§4.5), `criticallyDampedError` (§4.4).
 
-namespace catching::ref {
+S1 이식 시 변경:
 
-struct TargetState {            // 추종 대상 (vision 예측 보간값 또는 L7 가상 감속 공), W 기준
-  Eigen::Vector3d p{Eigen::Vector3d::Zero()};   // [m]
-  Eigen::Vector3d v{Eigen::Vector3d::Zero()};   // [m/s]
-  Eigen::Vector3d a{Eigen::Vector3d::Zero()};   // [m/s^2]
-};
-
-// gamma(t): [t0, t1]에서 g0 → gf 5차 보간. 양 끝 1·2계 미분 0 → clamp와 일관.
-struct GammaProfile {
-  double g0{0.0}, gf{0.0}, t0{0.0}, t1{1.0};   // t 는 선행축 상대시간 [s] (L4 §5.2)
-  void eval(double t, double& g, double& gd, double& gdd) const noexcept {
-    const double T = std::max(t1 - t0, 1e-6);
-    const double s = std::clamp((t - t0) / T, 0.0, 1.0);
-    const double s2 = s * s, s3 = s2 * s, s4 = s3 * s, s5 = s4 * s;
-    const double d = gf - g0;
-    g   = g0 + d * (10.0 * s3 - 15.0 * s4 + 6.0 * s5);
-    gd  = d * (30.0 * s2 - 60.0 * s3 + 30.0 * s4) / T;
-    gdd = d * (60.0 * s - 180.0 * s2 + 120.0 * s3) / (T * T);
-  }
-};
-
-// 시간축 규약 (L4 §5.2):
-//   x, xd        : t + dt 기준 (다음 틱에 내보낼 기준 상태)
-//   xdd          : [t, t+dt] 구간에 **실제 실현된** 평균 가속도 (속도 포화 반영)
-//   u_des        : 포화 전 DS 요구 가속도 (진단, L3 rollout 판정)
-//   e, ed        : t 기준 오차 (진단)
-struct TranslationOutput {
-  Eigen::Vector3d x{Eigen::Vector3d::Zero()}, xd{Eigen::Vector3d::Zero()},
-                  xdd{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d u_des{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d e{Eigen::Vector3d::Zero()}, ed{Eigen::Vector3d::Zero()};
-  double gamma{0.0}, gamma_d{0.0}, gamma_dd{0.0};   // L8 TickRecord 기록용 (L4 §8)
-  bool saturated{false};
-};
-
-// derateGamma() 의 결과. L7 은 Rejected 만 "여유 없음"으로 해석한다 (L7 §4.6).
-//   Applied : 목표를 gf_new 로 낮췄다.
-//   Frozen  : 현재 gamma(t) 가 이미 gf_new 이하라 **현재 값에서 동결**했다.
-//             gammadot, gammaddot 가 0 이 되므로 feedforward 의 지배항이 사라진다 —
-//             램프 중앙에서는 이것만으로도 |u| 가 크게 준다.
-//   Rejected: 상향 요청이거나 목표가 이미 그 값 이하다.
-enum class DerateResult : std::uint8_t { Rejected = 0, Frozen = 1, Applied = 2 };
-
-class SoftCatchTranslation {
- public:
-  struct Params {
-    double omega{10.0};   // [rad/s]  (omega*dt <= 0.828 이 이산 안정 경계, L4 §4.7)
-    double zeta{1.0};
-    double a_max{15.0};   // [m/s^2]  L7 supervisor.decel.a_dec <= 이 값 이어야 한다 (L7 §4.3)
-    double v_max{2.0};    // [m/s]    L3 gammaWindow 의 v_tcp_max 와 같은 값이어야 한다
-  };
-  explicit SoftCatchTranslation(const Params& p) noexcept : prm_(p) {}
-
-  // 활성화·재무장 시 호출. 기준 상태뿐 아니라 **포구점과 gamma 프로파일까지** 초기화한다.
-  // gamma == 0 이면 끌개는 p_c_ 이므로(아래 주의), p_c_ = x 로 두어 현재 자세 유지가 된다.
-  // v0.3 이전에는 p_c_ 와 gp_ 가 남아 직전 시행의 포구점으로 복귀하는 결함이 있었다.
-  void reset(const Eigen::Vector3d& x, const Eigen::Vector3d& xd) noexcept {
-    x_ = x; xd_ = xd; p_c_ = x; gp_ = GammaProfile{};
-  }
-
-  // **주의: gamma == 0 이면 대상 o 는 결과에 전혀 영향을 주지 않는다.**
-  //   u = -w^2 (x - p_c) - 2 zeta w xd  → 끌개는 오직 p_c_ 다.
-  // 따라서 정지 목표(홈 복귀, 대기 자세 유지)는 **p_c 로** 지정해야 한다 (L4 §5.3).
-  void setIntercept(const Eigen::Vector3d& p_c, const GammaProfile& gp) noexcept {
-    p_c_ = p_c; gp_ = gp;
-  }
-  [[nodiscard]] const Eigen::Vector3d& intercept() const noexcept { return p_c_; }
-  [[nodiscard]] const GammaProfile& gamma() const noexcept { return gp_; }
-
-  // 지금 하향하면 ed 가 얼마나 점프하는지 (L7 §4.6 사전 검사).
-  //   ||Δed|| = |gammadot(t)| * ||xi^O(t)||
-  // 이 값은 t 에 대해 **단조가 아니다** — gammadot 이 램프 중앙에서 최대이므로 봉우리가 있다.
-  [[nodiscard]] double derateJump(const TargetState& o, double t) const noexcept {
-    double g{}, gd{}, gdd{};
-    gp_.eval(t, g, gd, gdd);
-    return std::abs(gd) * (o.p - p_c_).norm();
-  }
-
-  // COMMITTED 이후에 허용되는 유일한 계획 변경 (L3 §4.7, L7 §4.6).
-  // p_c 는 동결한 채 gamma 목표만 **하향**한다. 현재 gamma 값에서 다시 5차 램프를
-  // 시작하므로 gamma(t) 는 연속이고 e 도 연속이다. ed 는 derateJump() 만큼 점프한다.
-  //
-  // 비교 기준은 **현재 값 gamma(t) 가 아니라 목표 gp_.gf** 다. 현재 값을 기준으로
-  // 삼으면 램프 상승 구간(gamma(t) << gf)에서 요청이 전부 거부되는데, |u| 가 최대인
-  // 곳이 바로 그 구간이다.
-  DerateResult derateGamma(double t, double gf_new, double t_ramp) noexcept {
-    if (!(gf_new < gp_.gf)) return DerateResult::Rejected;
-    double g{}, gd{}, gdd{};
-    gp_.eval(t, g, gd, gdd);
-    const double T = std::max(t_ramp, 1e-3);
-    if (!(gf_new < g)) {                       // 현재 값이 이미 새 목표 이하 → 동결
-      gp_ = GammaProfile{g, g, t, t + T};
-      return DerateResult::Frozen;
-    }
-    gp_ = GammaProfile{g, gf_new, t, t + T};
-    return DerateResult::Applied;
-  }
-
-  // t: gamma profile 과 같은 시간축(선행축) [s], dt: 제어 주기 [s]
-  [[nodiscard]] TranslationOutput step(const TargetState& o, double t, double dt) noexcept {
-    const Eigen::Vector3d xo = o.p - p_c_;           // 원점 = 포구점
-    double g{}, gd{}, gdd{};
-    gp_.eval(t, g, gd, gdd);
-    const Eigen::Vector3d e  = (x_ - p_c_) - g * xo;
-    const Eigen::Vector3d ed = xd_ - (g * o.v + gd * xo);
-    const double w = prm_.omega;
-    const Eigen::Vector3d u_des = g * o.a + 2.0 * gd * o.v + gdd * xo      // feedforward
-                                - w * w * e - 2.0 * prm_.zeta * w * ed;   // e'' = A1 e + A2 e'
-
-    bool sat = false;
-    Eigen::Vector3d u = u_des;
-    if (const double un = u.norm(); un > prm_.a_max) { u *= prm_.a_max / un; sat = true; }
-
-    const Eigen::Vector3d xd_prev = xd_;
-    xd_ += u * dt;                                                        // semi-implicit Euler
-    if (const double vn = xd_.norm(); vn > prm_.v_max) { xd_ *= prm_.v_max / vn; sat = true; }
-    x_ += xd_ * dt;
-
-    // 속도 포화가 걸리면 u 는 더 이상 실현 가속도가 아니다. 실제 실현값을 돌려준다.
-    const Eigen::Vector3d xdd = (dt > 0.0) ? Eigen::Vector3d((xd_ - xd_prev) / dt) : u;
-    return {x_, xd_, xdd, u_des, e, ed, g, gd, gdd, sat};
-  }
-
- private:
-  Params prm_;
-  Eigen::Vector3d x_{Eigen::Vector3d::Zero()}, xd_{Eigen::Vector3d::Zero()},
-                  p_c_{Eigen::Vector3d::Zero()};
-  GammaProfile gp_{};
-};
-
-// ---------------------------------------------------------------------------
-// 접근축 정렬 (L4 §4.5). L3 §4.2(IK), L5 §4.2(과제)도 같은 함수를 쓴다.
-//
-// 오차는 **회전벡터** e_a = theta * u_hat 이다 (u_hat = (z x a_d)/||z x a_d||).
-// exp([e_a]x) z == a_d 를 정확히 만족하고, ||e_a|| = theta 라 0~pi 에서 연속·단조다.
-// ---------------------------------------------------------------------------
-struct AxisAlignParams {
-  double k_axis{8.0};          // [1/s]
-  double w_max{6.0};           // [rad/s]
-  double sin_eps{1e-6};        // 축이 수치적으로 정의되는 하한 (|z x a_d|)
-};
-
-// z, a_d 는 단위벡터여야 한다.
-[[nodiscard]] inline Eigen::Vector3d axisAlignError(const Eigen::Vector3d& z,
-                                                    const Eigen::Vector3d& a_d,
-                                                    double sin_eps = 1e-6) noexcept {
-  const Eigen::Vector3d m = z.cross(a_d);
-  const double n = m.norm();
-  const double c = z.dot(a_d);
-  if (n < sin_eps) {
-    if (c > 0.0) return Eigen::Vector3d::Zero();                 // 이미 정렬 (데드밴드)
-    // 반평행: 축이 정의되지 않음 → z 에 수직인 임의 축으로 pi 회전
-    const Eigen::Vector3d r = (std::abs(z.x()) < 0.9) ? Eigen::Vector3d::UnitX()
-                                                      : Eigen::Vector3d::UnitY();
-    return M_PI * z.cross(r).normalized();
-  }
-  return (std::atan2(n, c) / n) * m;
-}
-
-[[nodiscard]] inline Eigen::Vector3d axisAlignOmega(const Eigen::Vector3d& z,
-                                                    const Eigen::Vector3d& a_d,
-                                                    const AxisAlignParams& p) noexcept {
-  Eigen::Vector3d w = p.k_axis * axisAlignError(z, a_d, p.sin_eps);
-  if (const double n = w.norm(); n > p.w_max) w *= p.w_max / n;
-  return w;                                                       // W 기준, z 에 수직
-}
-
-// de_a/dt = J_a * omega  (omega 는 W 표현). L5 에서 J_a = axisAlignJacobian(z,a_d) * J_omega^W.
-//
-//   m = z x a_d,  c = z^T a_d,  theta = atan2(|m|, c),  f = theta/sin(theta)
-//   J_a = f'(c) m m^T + f(c) [a_d]x [z]x ,   f'(c) = (theta*c/sin(theta) - 1) / sin^2(theta)
-//
-// **sin_eps 는 axisAlignError 와 같은 값을 넘겨야 한다.** 다르면 J_a 가 e_a 의 야코비안이
-// 아니게 된다(데드밴드 안에서 e_a 는 상수인데 J_a 는 0 이 아닌 값을 돌려준다).
-//
-// 소각도 급수는 **c > 0 일 때만** 쓴다. sin(theta) 는 theta->0 과 theta->pi 양쪽에서 0 이라,
-// 부호를 보지 않으면 반평행 근처에서 발산해야 할 값이 유한한 값(~2.645)으로 조용히 바뀐다.
-// theta->pi 에서의 발산은 축이 정의되지 않기 때문이며, 정의의 결함이 아니라 문제의 성질이다.
-[[nodiscard]] inline Eigen::Matrix3d axisAlignJacobian(const Eigen::Vector3d& z,
-                                                       const Eigen::Vector3d& a_d,
-                                                       double sin_eps = 1e-6) noexcept {
-  const Eigen::Vector3d m = z.cross(a_d);
-  const double n = m.norm();
-  const double c = std::clamp(z.dot(a_d), -1.0, 1.0);
-  const double th = std::atan2(n, c);
-  if (n < sin_eps && c > 0.0) return Eigen::Matrix3d::Zero();     // e_a 데드밴드 → de_a = 0
-  double f, fp;
-  if (n < 1e-8 && c > 0.0) {            // theta -> 0 급수: f = 1 + th^2/6, f' = -1/3
-    f  = 1.0 + th * th / 6.0;
-    fp = -1.0 / 3.0;
-  } else {
-    f  = th / n;                        // c < 0 이고 n -> 0 이면 발산 — 의도된 동작
-    fp = (th * c / n - 1.0) / (n * n);
-  }
-  const Eigen::Matrix3d Sa = (Eigen::Matrix3d() <<     0.0, -a_d.z(),  a_d.y(),
-                                                   a_d.z(),      0.0, -a_d.x(),
-                                                  -a_d.y(),  a_d.x(),      0.0).finished();
-  const Eigen::Matrix3d Sz = (Eigen::Matrix3d() <<   0.0, -z.z(),  z.y(),
-                                                   z.z(),    0.0, -z.x(),
-                                                  -z.y(),  z.x(),    0.0).finished();
-  return fp * (m * m.transpose()) + f * (Sa * Sz);
-}
-
-// 임계감쇠(zeta=1) 오차의 닫힌해: 계획 단계의 종단 오차 예측용 (L3)
-inline void criticallyDampedError(const Eigen::Vector3d& e0, const Eigen::Vector3d& ed0,
-                                  double omega, double t,
-                                  Eigen::Vector3d& e, Eigen::Vector3d& ed) noexcept {
-  const Eigen::Vector3d c = ed0 + omega * e0;
-  const double ex = std::exp(-omega * t);
-  e  = (e0 + c * t) * ex;
-  ed = (ed0 - omega * t * c) * ex;
-}
-
-}  // namespace catching::ref
-```
+- **배치·명명** (D-1, S0.3): 병진 기준·γ 프로파일은 rtc_controllers `catching` (namespace `rtc::catching`, S1.4), 축 정렬 3함수는 `rtc_math` se3 (S2.1). 함수 PascalCase
+- **NaN 가드 (S1.4).** 참조 `step` 은 비유한 목표(`TargetState` 의 NaN/Inf)가 한 번 들어오면 내부 상태 `x_`·`xd_` 가 NaN 으로 **영구 오염**된다. 또 `u.norm() > a_max` 비교가 NaN 에서 거짓이라 **포화 플래그도 서지 않는다**. 이식본은 비유한 입력(목표·`t`·`dt`) 시 **내부 상태를 보존**하고 출력을 invalid 로 표시하며, 포화 검출은 NaN 에서도 참이 되도록 부정 비교(`!(un <= a_max)`)로 쓴다.
+- **derate 제거 (D-8).** `derateGamma`·`derateJump`·`DerateResult` 는 이식하지 않는다 (§5.2.1)
+- **축 정렬 함수 유한성 (S2.1).** 데드밴드·반평행에서 NaN·폭주 금지 (§4.5)
+- **dt 검증.** `dt` 는 `ControllerState::dt` (100–5000 Hz) 이고, $\omega h$ 검사는 configure 의 검증기가 한다 (§4.7). 비유한·비양수 `dt` 는 invalid
+- RT 경로 코드이므로 할당 0·`noexcept` 유지 (G4-G)
+- 테스트: `test_l4.cpp` → GTest (S1.1), NaN 회귀 테스트 추가 (G4-I)
 
 ### 5.2 사용 규약
 
-- 시간축: `t`는 계획 기준 상대시간(`PlanSnapshot`의 기준 시각에서 잰 값)을 쓴다. `GammaProfile`의 `t0`, `t1`도 같은 기준이다.
-- `setIntercept()`는 L7이 `COMMITTED` 이전에만 호출한다. `COMMITTED` 이후 허용되는 유일한 계획 변경은 `derateGamma()`다(아래).
+- **시간축 (plan §3, D-2).** γ 프로파일 평가와 대상 샘플링은 **선행 시각 $now_{lead}=now+T_{arm}$** 축이다 (팔 명령은 $T_{arm}$ 뒤 실현). `PlanSnapshot` 의 시각(γ 프로파일 `t0`·`t1`, $t_c$)은 절대 steady ns 이고, `step(o, t, dt)` 의 `t` 와 `GammaProfile` 의 `t0`·`t1` 은 **수치 코어 경계에서** 같은 원점의 상대 초로 바꾼 값이다. 대상 `o` 는 L2 샘플러로 같은 $now_{lead}$ 에서 샘플링한다. 매 tick 의 $now$ 는 steady 실측이며 tick 수 × dt 로 계산하지 않는다. T_arm ≠ 0 fixture 로 두 축을 구분해 테스트한다
+- `setIntercept()`는 L7이 `COMMITTED` 이전에만 호출한다. **v1 에서 `COMMITTED` 이후 허용되는 계획 변경은 없다** (γ 하향은 v1 범위 밖, D-8 — §5.2.1).
 - **반환값의 시간축이 섞여 있다.** `x`, `xd`는 $t+\Delta t$ 기준(다음 틱 명령), `xdd`는 $[t,t+\Delta t]$ 구간의 실현 가속도, `e`, `ed`는 $t$ 기준 진단값이다. L8 `TickRecord`에 함께 기록할 때 1틱 오정렬을 감안한다.
-- **`xdd` vs `u_des`.** 속도 포화가 걸리면 DS가 요구한 가속도 `u_des`는 실현되지 않는다. CLIK feedforward(L5)에는 `xdd`를, L3 rollout 판정과 포화 진단에는 `u_des`를 쓴다. v0.1은 포화 후에도 `u_des`를 `xdd`로 돌려주어, 예를 들어 $v_{max}=0.5$ m/s 조건에서 실현 5.0 m/s² 대신 490 m/s²를 보고했다.
-- 감속 모드(L7): 대상에 가상 감속 공을 넣고 `GammaProfile{1,1,…}`(상수 1)로 바꾼다. 전환 시각이 $t_c$이면 $\xi^O(t_c)\approx0$이라 오차 점프가 작다(§4.3). 가상 공의 초기 속도를 전환 시점의 기준 속도로 두면 $\dot e$도 연속이다(L7 §4.3).
-- 회전: `axisAlignOmega(z_cmd, a_d, p)`의 `z_cmd`는 현재 명령 자세(CLIK 내부 상태) 기준이다. 측정 자세 사용 여부는 G4-1 결과에 맞춘다.
+- **`xdd` vs `u_des`.** 속도 포화가 걸리면 DS가 요구한 가속도 `u_des`는 실현되지 않는다. 실현값이 필요한 곳(CLIK 공급, 기록)에는 `xdd`를, L3 rollout 판정과 포화 진단에는 `u_des`를 쓴다. v0.1은 포화 후에도 `u_des`를 `xdd`로 돌려주어, 예를 들어 $v_{max}=0.5$ m/s 조건에서 실현 5.0 m/s² 대신 490 m/s²를 보고했다.
+- **CLIK 공급 (S2.2·S5.3).** 현 `rtc::tsid::ClikReferenceGenerator` 는 pose 목표만 받으므로, 기준 `x` 와 접근축 목표를 pose 로 넘기고 `xd`·$\omega_{ref}$ 는 twist feedforward 옵션(D-5)으로 넘긴다. 어떤 성분을 어느 행에 싣는지(LOCAL 접근축 2행, 가속 box 와의 관계)는 S2.2 CLIK 확장 설계에서 확정한다.
+- 감속 모드(L7): 대상에 가상 감속 공을 넣고 `GammaProfile{1,1,…}`(상수 1)로 바꾼다. 전환은 $now_{lead}\ge t_c$ 에서 한다 (A-5). 전환 시각이 $t_c$이면 $\xi^O(t_c)\approx0$이라 오차 점프가 작다(§4.3). 가상 공의 초기 속도를 전환 시점의 기준 속도로 두면 $\dot e$도 연속이다(L7 §4.3).
+- 회전: `axisAlignOmega(z_cmd, a_d, p)`의 `z_cmd`는 현재 **명령 자세** $q_c$ 의 FK 기준이다 — CLIK 오차·J 를 명령값 $q_c$ 에서 평가하는 옵션(D-6)과 같은 자세다. 실추종 오차는 `TRACK_ERR` 로 별도 감시한다.
 
 ### 5.2.1 `derateGamma()` — 동결 후 γ 하향 `[권장]`
 
-`COMMITTED` 이후 포화가 예상되면 plan 전체를 버리는 대신 $\gamma_f$ 만 낮춘다(L7 §4.6). $p_c$ 와 $t_c$ 는 동결 상태를 유지한다.
+**v0.5 에서 v1 범위 밖 (D-8) — S8 포화 빈도 측정 후 재검토.** v1 은 실행 중 포화 시 `COMMITTED` 이전 RETREAT, 이후 ABORT_SAFE 로 처리하고, 계획 여유(D-9 $\eta_v$)가 유일한 완충이다. S8 에서 γ 포화 빈도를 측정해 재도입 여부를 정한다 (plan §4 S8).
 
-**비교 기준은 현재 값 $\gamma(t)$ 가 아니라 목표 $\gamma_f$ 다.** 현재 값을 기준으로 삼으면 램프 상승 구간에서 요청이 전부 거부된다 — $\gamma(t)\ll\gamma_f$ 이므로 `gf_new = γ_f − step` 이 거의 항상 $\gamma(t)$ 보다 크기 때문이다. 실측(γ_f=0.4, 램프 [0, 0.45] s, step=0.1): $t=0.05\sim0.25$ 에서 전부 거부, $t\ge0.30$ 부터 수락. 그런데 $\Vert u\Vert$ 최대는 $\dot\gamma,\ddot\gamma$ 가 큰 **바로 그 앞 구간**에 몰린다. 즉 기준을 잘못 잡으면 하향 경로가 필요한 순간에만 정확히 무력해진다.
+**참조 구현 probe 결과 (v1 제외 근거).**
 
-반환은 세 값이다.
+- `Frozen` 분기가 $\gamma_{\min}$ (손 폐쇄 하한, L3 §4.5) 을 보장하지 않는다 — 램프 상승 구간에서 현재 $\gamma(t)<\gamma_{\min}$ 인 값으로 동결될 수 있고, `Applied` 도 `gf_new` 를 $\gamma_{\min}$ 으로 clamp 하지 않는다
+- 완화 분기가 무효다
+- 기본 램프 0.05 s (`reference.gamma_derate.ramp`) 가 가속 피크를 오히려 **20 → 70 m/s²** 로 키운다
+- 램프 끝 $t+T_{ramp}$ 가 $t_c$ 를 넘을 수 있다 — 그러면 $t_c$ 에서 $\dot\gamma\neq0$ 이라 §4.2 Corollary 가 성립하지 않는다
+
+**재도입 시 재설계 요구사항.**
+
+1. 결과 γ 를 항상 $\gamma\ge\gamma_{\min}$ 으로 clamp (`Applied`·`Frozen` 모두)
+2. 램프 끝 $\le t_c$ (남은 시간에 맞춰 램프 길이를 줄이거나 거부)
+3. **forward rollout 수락** — 하향 후 궤적을 L3 §4.8 과 같은 rollout 으로 $t_c$ 까지 굴려 $\max\Vert u_{des}\Vert$ 가 실제로 줄어드는 경우에만 적용
+4. 키는 단일 키로 (`derate_step`, ramp, `ed_jump_max` 공유 — S0.3)
+
+**v0.4 분석 (재도입 검토용 기록).** 아래는 v0.4 설계와 그 연속성 분석이다. L7 §4.6 이 참조하던 내용이며, 재설계의 출발점으로만 남긴다.
+
+**비교 기준은 현재 값 $\gamma(t)$ 가 아니라 목표 $\gamma_f$ 다.** 현재 값을 기준으로 삼으면 램프 상승 구간에서 요청이 전부 거부된다 — $\gamma(t)\ll\gamma_f$ 이므로 `gf_new = γ_f − step` 이 거의 항상 $\gamma(t)$ 보다 크기 때문이다. 실측(γ_f=0.4, 램프 [0, 0.45] s, step=0.1): $t=0.05\sim0.25$ 에서 전부 거부, $t\ge0.30$ 부터 수락.
 
 | 결과 | 조건 | 동작 |
 |---|---|---|
@@ -461,14 +277,9 @@ inline void criticallyDampedError(const Eigen::Vector3d& e0, const Eigen::Vector
 | `Frozen` | $\gamma_f^{new}\ge\gamma(t)$ 이지만 $\gamma_f^{new}<\gamma_f$ | **현재 값에서 동결** ($\gamma_0=\gamma_f=\gamma(t)$) |
 | `Rejected` | $\gamma_f^{new}\ge\gamma_f$ (상향) | 무시 |
 
-`Frozen` 도 유효한 완화다. $\dot\gamma,\ddot\gamma$ 가 0이 되면 feedforward 의 $2\dot\gamma\dot\xi^O+\ddot\gamma\xi^O$ 항이 사라지는데, 램프 중앙에서는 이것이 $\Vert u\Vert$ 의 지배항이다. **L7 은 `Rejected` 만 "여유 없음"으로 해석해야 한다** — `false` 하나로 뭉뚱그리면 `Frozen` 이 abort 트리거가 된다.
+연속성: $\gamma(t)$ 연속 → $e$ 연속, $\dot\gamma$ 가 0으로 점프 → $\dot e$ 가 $\vert\dot\gamma(t)\vert\,\Vert\xi^O(t)\Vert$ 만큼 점프.
 
-연속성:
-
-- $\gamma(t)$ 연속 → $e=(x-p_c)-\gamma\xi^O$ **연속** (수치 확인: $\Delta e=0$)
-- $\dot\gamma$ 가 0으로 점프 → $\dot e$ 가 $\vert\dot\gamma(t)\vert\,\Vert\xi^O(t)\Vert$ 만큼 점프
-
-**이 점프는 시간에 대해 단조가 아니다.** v0.2는 "늦게 할수록 점프가 작아진다"고 적었으나 틀렸다. $\dot\gamma$ 는 5차 램프의 **중앙에서 최대**($1.875\,\Delta\gamma/T$)이고 $\Vert\xi^O\Vert$ 만 단조 감소하므로, 곱은 봉우리를 만든다. 실측(램프 [0.4, 0.8] s, $\gamma_f=0.4$, $t_c=0.8$):
+**이 점프는 시간에 대해 단조가 아니다.** $\dot\gamma$ 는 5차 램프의 **중앙에서 최대**($1.875\,\Delta\gamma/T$)이고 $\Vert\xi^O\Vert$ 만 단조 감소하므로, 곱은 봉우리를 만든다. 실측(램프 [0.4, 0.8] s, $\gamma_f=0.4$, $t_c=0.8$):
 
 | $t$ [s] | 0.45 | 0.50 | **0.56** | 0.60 | 0.70 | 0.76 | 0.79 |
 |---|---|---|---|---|---|---|---|
@@ -476,9 +287,7 @@ inline void criticallyDampedError(const Eigen::Vector3d& e0, const Eigen::Vector
 | $\Vert\xi^O\Vert$ | 1.61 | 1.42 | 1.11 | 1.01 | 0.53 | 0.19 | 0.06 |
 | 점프 | 0.58 | 1.50 | **2.04** | 1.88 | 0.56 | 0.05 | 0.001 |
 
-맞는 것은 극한 주장뿐이다: $t\to t_c$ 에서 $\dot\gamma\to0$, $\xi^O\to0$ 이므로 점프 $\to0$. 따라서 L7 은 하향 전에 `derateJump(o, t)` 로 점프를 **미리 계산해** `ed_jump_max` 와 비교하고, 초과하면 `Frozen` 으로 대신하거나 다음 틱으로 미룬다(L7 §4.6).
-
-필요 가속도는 $\gamma_f$ 에 거의 선형으로 줄어든다(§L3 4.8 표: $T_w=0.30$ s에서 $\gamma_f$ 0.4→0.2가 33.0→16.4 m/s²).
+맞는 것은 극한 주장뿐이다: $t\to t_c$ 에서 점프 $\to0$. 필요 가속도는 $\gamma_f$ 에 거의 선형으로 줄어든다(L3 §4.8 표: $T_w=0.30$ s에서 $\gamma_f$ 0.4→0.2가 33.0→16.4 m/s²).
 
 ### 5.3 복귀 기준 `retreat_reference.hpp`
 
@@ -492,36 +301,38 @@ $$\texttt{setIntercept}(p_{home},\ \texttt{GammaProfile}\{0,0,\cdot,\cdot\})$$
 
 v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적었는데 이것은 **no-op** 이다. 실측하면 대상을 홈으로 주든 임의의 점으로 주든 똑같이 **직전 포구점**으로 수렴한다. 그러면 L7 §4.5 조건 4(대기 자세 허용오차)가 영원히 거짓이라 `RETREAT → ARMED` 전이가 막힌다. `test_l4.cpp` 의 `A5` 가 회귀 검사한다.
 
-같은 이유로 `reset(x, xd)` 는 $p_c\leftarrow x$, $\gamma$ 프로파일 초기화까지 수행한다 — 그래야 활성화 직후 현재 자세 유지가 되고, 재무장 시 직전 시행의 포구점·하향된 γ가 남지 않는다(L7 §4.8 재무장 리셋 목록).
+같은 이유로 `reset(x, xd)` 는 $p_c\leftarrow x$, $\gamma$ 프로파일 초기화까지 수행한다 — 그래야 활성화 직후 현재 자세 유지가 되고, 재무장 시 직전 시행의 포구점·γ 프로파일이 남지 않는다(L7 §4.8 재무장 리셋 목록). 같은 기준이 IDLE 의 wait_pose homing 에도 쓰인다 (L7).
 
-회전은 홈 자세로의 SO(3) 오차(기존 U1 헬퍼)를 쓴다(G4-2).
+회전은 홈 자세로의 SO(3) 오차로, 기존 U1 헬퍼 `rtc_tsid` se3_error (`ComputeTaskPoseError`) 를 쓴다(G4-2). 별도 파일로 둘지 병진 기준 코어에 함께 둘지는 S1.4 에서 정한다.
 
 ## 6. YAML 파라미터
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `reference.omega` | double | rad/s | 10.0 | 1–25 | §4.7 ($h=2$ ms에서 $s\le0.05$) |
-| `reference.zeta` | double | – | 1.0 | 0.7–1.5 | 닫힌해는 1에서만 유효 |
+| `reference.omega` | double | rad/s | 10.0 | 1–25 | §4.7. 검증기가 실제 $h$ = `ControllerState::dt` 로 $s=\omega h$ 를 검사 (경계 0.828 이상 armable=false, 0.05 초과 경고) |
+| `reference.zeta` | double | – | 1.0 | v1: 1 만 허용 | 닫힌해(§4.4)·이산 경계(§4.7)가 1에서만 유효 — ≠1 이면 검증기가 armable=false (L0 §5.3) |
 | `reference.a_max` | double | m/s² | `TBD` | >0 | TBD-ARM-02, 로봇·자세 의존 |
-| `reference.v_max` | double | m/s | `TBD` | >0 | 로봇 TCP 속도 한계. **L3 `gammaWindow`의 `v_tcp_max`와 같은 값이어야 한다** |
+| `reference.v_max` | double | m/s | `TBD` | >0 | 로봇 TCP 속도 한계. L3 `gammaWindow` 는 $\eta_v\cdot$ 이 값을 쓴다 `[확정 D-9]` (L3 §4.5) |
 | `reference.axis.k_axis` | double | 1/s | 8.0 | 1–30 | 튜닝. $\Vert\omega_{ref}\Vert=K_a\theta$ 이므로 $\theta=\pi$ 에서 $K_a\pi$ |
 | `reference.axis.w_max` | double | rad/s | `TBD` | >0 | 손목 관절 한계에서 산정 |
 | `reference.axis.sin_eps` | double | – | 1e-6 | 1e-9–1e-3 | 반평행 축 정의 하한 $\Vert z\times a_d\Vert$ (§4.5) |
-| `reference.gamma_derate.ramp` | double | s | 0.05 | 0.01–0.3 | §5.2.1 하향 램프 길이 |
+| `reference.gamma_derate.ramp` | – | – | – | – | v1 범위 밖 (D-8, §5.2.1). 기본 0.05 s 는 가속 피크를 키웠다 — 재도입 시 단일 키로 다시 정한다 |
 | `reference.retreat.omega` | double | rad/s | 3.0 | 0.5–10 | 튜닝 |
 | `reference.retreat.home_pose` | pose | m, quat | `TBD` | – | 로봇별 |
 
 ## 7. 단위 기술 구현 순서
 
+단계 매핑 (plan §4): L4.1–L4.3·L4.5·L4.7 = **S1.4**, L4.4 = **S2.1** (`rtc_math` se3), CLIK 결합은 S2.2·S5.3.
+
 - **L4.1** `GammaProfile` + 미분 일치(유한차분) 테스트.
-- **L4.2** `SoftCatchTranslation` + §4.9 1–4, 6 테스트.
+- **L4.2** `SoftCatchTranslation` + §4.9 1–4, 6 테스트 + NaN 가드 회귀 (§5.1).
 - **L4.3** 재예측 점프 테스트: `setIntercept` 교체 직후 $e,\dot e$ 변화가 §4.3 식과 일치.
-- **L4.4** `axisAlignError`/`Omega`/`Jacobian` + 연속성 sweep + 반평행 + Jacobian 유한차분(L3·L5와 공유).
-- **L4.5** 이산 안정 경계 테스트 ($s=0.8$ 수렴, $s=0.85$ 발산).
-- **L4.6** `derateGamma` + §5.2.1 연속성 테스트.
+- **L4.4** `axisAlignError`/`Omega`/`Jacobian` 을 `rtc_math` se3 로 이식 + 연속성 sweep + 반평행 + Jacobian 유한차분 + 데드밴드·반평행 유한성 (L3·L5와 공유).
+- **L4.5** 이산 안정 경계 테스트 ($s=0.8$ 수렴, $s=0.85$ 발산), 100·500·5000 Hz 의 $h$ 로.
+- **L4.6** (v1 범위 밖, D-8) `derateGamma` + §5.2.1 연속성 테스트.
 - **L4.7** 복귀 기준.
 
-참조 구현: `soft_catch_reference.hpp`, `test_l4.cpp` (같은 폴더). ROS 2 패키지로 이식할 때 GTest로 옮긴다.
+참조 구현: `soft_catch_reference.hpp`, `test_l4.cpp` (같은 폴더). S1.1 에서 GTest로 옮긴다.
 
 ## 8. 디버깅 방법
 
@@ -540,14 +351,15 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 | G4-A | §4.9 표 재현 (간극 오차 < $\epsilon_{conv}$ + $(1-\gamma)\delta$의 5%, 상대속도 오차 < 2%). $\epsilon_{conv}=2$ mm는 $\omega=10$, 비행 0.8 s의 DS 잔여 수렴 오차다 | `[SIM-ANY]` |
 | G4-B | 재예측 점프 식 일치 (< 1e-9) | `[SIM-ANY]` |
 | G4-C | 이산 안정 경계 테스트 통과 ($s=0.80$ 수렴, $s=0.85$ 발산) | `[SIM-ANY]` |
-| G4-D | 축 정렬: $\exp([e_a]_\times)z=a_d$ 잔차 < 1e-12, 1° 격자 $\Vert\omega_{ref}\Vert$ 변화 < $1.5K_a\pi/180$, Jacobian 유한차분 오차 < 1e-5 (1–170°) | `[SIM-ANY]` |
-| G4-E | `derateGamma` 후 $\gamma$, $e$ 연속(< 1e-12), $\dot e$ 점프 $=\vert\dot\gamma\vert\Vert\xi^O\Vert$ (< 1e-9), 상향 거부 | `[SIM-ANY]` |
+| G4-D | 축 정렬: $\exp([e_a]_\times)z=a_d$ 잔차 < 1e-12, 1° 격자 $\Vert\omega_{ref}\Vert$ 변화 < $1.5K_a\pi/180$, Jacobian 유한차분 오차 < 1e-5 (1–170°), **정렬·반평행 데드밴드와 그 근처에서 출력 전부 유한** (S2.1) | `[SIM-ANY]` |
+| G4-E | v1 범위 밖 (D-8). 재도입 시: `derateGamma` 후 $\gamma$, $e$ 연속(< 1e-12), $\dot e$ 점프 $=\vert\dot\gamma\vert\Vert\xi^O\Vert$ (< 1e-9), 상향 거부 + §5.2.1 재설계 요구사항 (γ_min clamp, 램프 끝 ≤ $t_c$, forward rollout 수락) | – |
 | G4-F | 속도 포화 시 `xdd` == 실현 가속도 (< 1e-9) | `[SIM-ANY]` |
 | G4-G | 할당 0, `noexcept`, 틱당 최악 실행시간 기록 | `[SIM-ANY]` |
 | G4-H | MuJoCo에서 L5와 결합 후 catch frame 실제 궤적이 기준을 추종 (추종 오차 기록) | `[SIM-P1B]` |
+| G4-I | NaN 가드: 비유한 목표·`t`·`dt` 입력 시 내부 상태 보존 + invalid, 다음 유한 입력에서 정상 출력, NaN 에서 포화 검출 참 (S1.4) | `[SIM-ANY]` |
 
-`test_l4.cpp`가 G4-A~F를 전부 돌린다(v0.2 기준 통과).
+`test_l4.cpp`가 G4-A~F를 전부 돌린다(v0.2 기준 통과). S1 이식본은 G4-E 를 빼고 G4-I 와 G4-D 유한성 항목을 더한다.
 
 ## 10. 미확정 항목
 
-TBD-RTC-07, TBD-RTC-08, TBD-FRAME-01, TBD-ARM-02, TBD-REF-01(§4.6 [R4]/[R5] 재확인), `reference.v_max`, `reference.axis.w_max`, `reference.retreat.home_pose`.
+TBD-ARM-02, TBD-REF-01(§4.6 [R4]/[R5] 재확인), `reference.v_max`, `reference.axis.w_max`, `reference.retreat.home_pose`, CLIK 공급 성분 배치 (S2.2), 축 정렬 Jacobian 의 데드밴드 처리 방식 (S2.1). TBD-RTC-07·TBD-RTC-08·TBD-FRAME-01 은 닫힘 (§2), γ derate 는 v1 범위 밖 (D-8).
