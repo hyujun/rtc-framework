@@ -235,9 +235,13 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
 bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_idx,
                                      int base_frame_idx, const pinocchio::SE3& placement_des,
                                      const Eigen::VectorXd& q_posture_des, double dt,
-                                     bool reseed_anchor) noexcept {
+                                     bool reseed_anchor,
+                                     const Eigen::Matrix<double, 6, 1>* twist_ff) noexcept {
   last_solve_ = SolveDiagnostics{};
   if (!PreconditionsHold(cache, tcp_frame_idx, base_frame_idx, q_posture_des, dt)) {
+    return false;
+  }
+  if (twist_ff != nullptr && !twist_ff->allFinite()) {
     return false;
   }
 
@@ -255,6 +259,9 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   e_x_ = ComputeTaskPoseError(tip_in_base, placement_des);
   tcp_error_norm_ = e_x_.norm();
   r_task_ = kx_.cwiseProduct(e_x_);
+  if (twist_ff != nullptr) {
+    r_task_ += *twist_ff;
+  }
 
   const int N = nv_;
 

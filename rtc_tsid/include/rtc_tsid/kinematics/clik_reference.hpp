@@ -169,10 +169,15 @@ class ClikReferenceGenerator {
   // closed-loop); false = carry forward from the previous q_ref. The first call
   // after Init (and the call after any failure) always re-anchors to measured
   // regardless, so the integrator never starts from an undefined anchor.
+  // twist_ff (optional, D-5): desired TCP twist [linear; angular] in the same
+  // axes as the pose error (base-frame aligned), added as
+  // r_task = Kx ⊙ e_x + twist_ff. nullptr → the legacy law. A non-finite
+  // twist_ff fails the call before the solve.
   [[nodiscard]] bool Compute(const PinocchioCache& cache, int tcp_frame_idx, int base_frame_idx,
                              const pinocchio::SE3& placement_des,
                              const Eigen::VectorXd& q_posture_des, double dt,
-                             bool reseed_anchor = true) noexcept;
+                             bool reseed_anchor = true,
+                             const Eigen::Matrix<double, 6, 1>* twist_ff = nullptr) noexcept;
 
   [[nodiscard]] const Eigen::VectorXd& QRef() const noexcept { return q_ref_; }
 

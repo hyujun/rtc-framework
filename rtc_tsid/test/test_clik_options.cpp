@@ -492,5 +492,56 @@ TEST_F(ClikOptionsTest, SmoothingDampsTheStepAndKeepsTheFixedPoint) {
   EXPECT_LT(err_on, 1e-3);
 }
 
+// ── Twist feedforward (SE3 path, D-5) ───────────────────────────────────────
+
+// Target moving at constant velocity: the P-only law lags by ≈ v/Kx; the
+// feedforward removes the lag. w_arm is lowered because the arm posture term
+// (w_arm·‖v_arm − K·(q_des − q)‖², here with K = 0) also penalises arm
+// velocity and leaves its own lag (1.7 mm vs 20 mm at the default 1e-2) — that
+// is the soft-priority regularisation, not the feedforward.
+TEST_F(ClikOptionsTest, TwistFeedforwardRemovesVelocityLag) {
+  constexpr double kGain = 5.0;
+  constexpr double kSpeed = 0.05;  // m/s along base x
+  const pinocchio::SE3 start = OffsetTarget(0.0);
+  auto run = [&](bool with_ff) {
+    auto cfg = BaseConfig();
+    cfg.w_arm = 1e-6;
+    ClikReferenceGenerator gen;
+    gen.Init(kNv, cfg);
+    gen.SetTaskGain(Vec6::Constant(kGain));
+    Vec6 ff = Vec6::Zero();
+    ff(0) = kSpeed;
+    Eigen::VectorXd q = q_home_;
+    pinocchio::SE3 des = start;
+    for (int k = 0; k < 1500; ++k) {
+      des.translation()(0) = start.translation()(0) + kSpeed * kDt * k;
+      cache_.Update(q, v_zero_);
+      EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt, false,
+                              with_ff ? &ff : nullptr));
+      q = gen.QRef();
+    }
+    // q_ref already includes this tick's step: compare with the next target.
+    cache_.Update(q, v_zero_);
+    return start.translation()(0) + kSpeed * kDt * 1500 - TipInBase().translation()(0);
+  };
+  const double lag_p = run(false);
+  const double lag_ff = run(true);
+  EXPECT_NEAR(lag_p, kSpeed / kGain, 0.2 * kSpeed / kGain);
+  EXPECT_LT(std::abs(lag_ff), 0.05 * kSpeed / kGain);
+}
+
+TEST_F(ClikOptionsTest, TwistFeedforwardNonFiniteFailsBeforeSolve) {
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, BaseConfig());
+  const pinocchio::SE3 des = OffsetTarget(0.0);
+  Vec6 ff = Vec6::Zero();
+  ff(4) = std::numeric_limits<double>::infinity();
+  cache_.Update(q_home_, v_zero_);
+  EXPECT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt, true, &ff));
+  EXPECT_FALSE(gen.LastSolve().reached_solve);
+  // The solver was never fed the bad input: the next call succeeds.
+  EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+}
+
 }  // namespace
 }  // namespace rtc::tsid
