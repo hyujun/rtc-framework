@@ -303,7 +303,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 - S7 homing 을 IDLE 하위 단계로 둘지 별도 Mode 로 둘지, `REF_SATURATED` 판정식, 손 hold 힘 한계를 position 목표로 표현하는 규칙
 - TBD-WS-01 (바닥·작업셀 경계) 을 닫는 단계가 없다 — S3.5 catchability 지도에서 작업셀 경계를 입력으로 쓸 때 함께 정한다
 
-**repo drift (이 작업 범위 밖 — 사용자가 별도 브랜치로 처리, 2026-09-19)**
+**repo drift (이 작업 범위 밖 — 별도 브랜치로 처리).** 앞의 세 항목(FingertipSensor 주석, controllers.md DemoWbc 행, p1b `index_mcp_aa_joint` 주석)은 PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 main 에 반영됐다 (2026-09-19, 값 변경 없음). MPC RT 분류 항목은 주석 수정이 아니라 설계 판단이 필요해 남아 있다.
 
 - `rtc_msgs` FingertipSensor 메시지 주석이 "sim contact-wrench 는 반대 부호" 라고 적지만 커밋 0fcc1d23 이후 같은 부호다 (메시지 파일 변경이라 PROC-3 전체 빌드 대상)
 - `agent_docs/controllers.md` 의 DemoWbc 행이 "TSID QP → accel → position integration" 이라 적지만 실제 위치 백본은 CLIK
