@@ -162,6 +162,20 @@ class ClikReferenceGenerator {
   [[nodiscard]] double TcpErrorNorm() const noexcept { return tcp_error_norm_; }
 
  private:
+  // Shared stages of Compute(). Each keeps the floating-point accumulation
+  // order of the original single-function Compute(), which the golden-vector
+  // regression (test/test_clik_golden.cpp) pins bit-for-bit.
+  [[nodiscard]] bool PreconditionsHold(const PinocchioCache& cache, int tcp_frame_idx,
+                                       int base_frame_idx, const Eigen::VectorXd& q_posture_des,
+                                       double dt) const noexcept;
+  void ComputePostureReferences(const PinocchioCache& cache,
+                                const Eigen::VectorXd& q_posture_des) noexcept;
+  // H/g must already hold the task terms.
+  void AddPostureAndDamping() noexcept;
+  void AssembleBox(const Eigen::VectorXd& q, double dt) noexcept;
+  [[nodiscard]] bool SolveAndIntegrate(const PinocchioCache& cache, double dt,
+                                       bool reseed_anchor) noexcept;
+
   int nv_{0};
   int n_arm_{0};
   int n_hand_{0};
