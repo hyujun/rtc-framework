@@ -26,7 +26,8 @@
 | D-15 | vision 예측 사양(지평·간격·점 수·발행률)은 **포구 제어기가 요구 사양을 정하고**, sim 에서는 공 투척 설정과 ball_perception sim profile 을 그 요구에 맞춰 설정한다. 제어기는 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외·진단한다 | **확정** | ball_perception 은 sim 이 주는 위치로 미래 궤적을 만드는 노드이고 사용자가 직접 설정한다. 현재 예시 profile 은 지평 0.5 s, 간격 0.05 s, 최대 10 점, ≤ 30 Hz |
 | D-16 | 관절 가속 한계는 **토크 한계에서 도출**한다 (§9). 시뮬레이션 추정은 교차 검증용. YAML 의 기존 `max_acceleration` 값은 쓰지 않는다 | **확정** | 가속 데이터 없음, 토크 데이터 있음. 기존 `max_acceleration` (5.0 rad/s²) 은 CM 이 읽기만 하고 어떤 컨트롤러도 쓰지 않는 placeholder |
 | D-17 | catch frame 의 부모 frame·위치 offset·자세는 **YAML 로 열어 둔다**. 초기값은 S2.3 에서 제안하고, 사용자가 sim 에서 확인해 실제 값으로 갱신한다 (§10) | **확정** | 사용자 결정 |
-| D-12 | 사용자 제공 값: 목표 투척 속도·거리 (sim 에서는 제어기에 맞춰 설정 — D-15), 공 사양, 실기 T_close,tot 측정 시점, 성공률 하한·시행 수. 관절 가속 한계는 D-16, catch frame 은 D-17 로 대체 | **방식 확정, 값 대기** | 추측 금지. 임시값은 YAML 에 provisional 표시 |
+| D-18 | 투척 목표는 **arm manipulability 기반 포구 가능성(catchability)** 으로 정한다. 발사 영역 (arm base frame +x 4 m, world z 1.5–2.0 m) 에서 출발한 궤적 위 포구 후보마다, 손바닥 +z 가 공 진행 방향을 마주보는 자세(a_d = −v̂)의 IK 해에서 manipulability 를 재고, threshold 이상인 후보가 있으면 잡을 수 있는 공, 없으면 포기. 이 판정으로 투척 속도·각도 범위를 정한다. threshold 초기값 0.1 (provisional, 사용자가 sim 에서 자세를 보고 갱신) | **확정** — 정의 세부는 §11 | 사용자 결정 |
+| D-12 | 사용자 제공 값: 투척 목표는 D-18 로 대체, 공 사양, 실기 T_close,tot 측정 시점, 성공률 하한·시행 수. 관절 가속 한계는 D-16, catch frame 은 D-17 로 대체 | **방식 확정, 값 대기** | 추측 금지. 임시값은 YAML 에 provisional 표시 |
 
 ## 1a. Sprint Contract (A-1 승인, 2026-09-19)
 
@@ -140,7 +141,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S3.2 발사 srv (D-14), iiwa7_leap projectile 설정, 투척용 스폰 위치
 - S3.3 공 접촉 truth(시각·충격량·접촉력) 출력, truth 발행 주기 상향, sim time 진단 출력(RTF 게이트용)
 - S3.4 `sim_estimator_node` 연결: clock domain(`use_sim_time=false`), `frame_id` 와 world 관계, 발행 주기·N·지평 실측 (TBD-VIS-04/06), 지연·드롭 주입
-- S3.5 투척 생성 도구 (목표 포구점 → 발사 조건)
+- S3.5 catchability 지도 도구 (D-18, §11): 발사 영역 × 발사 속도·각도 격자 → 궤적 → 포구 후보 IK → manipulability → 잡을 수 있는 발사 조건 범위. 결과를 발사 srv(D-14) 설정으로 사용
 - S3.6 vision 요구 사양 산출 (D-15): 목표 투척 분포에서 "검출 이후 포구 창 종료까지 최대 비행 시간" → 필요 지평, L2 보간 게이트를 만족하는 간격 → 점 수 → 파서 용량. 결과를 ball_perception sim profile 설정값으로 제시 (설정은 사용자)
 
 게이트: 발사 → PointCloud2 수신 end-to-end, seed 재현성, RTF 게이트 동작.
@@ -167,11 +168,11 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 ### S6 계획기 스레드 (D-7)
 
 - S6.1 스레드 골격: MPC 스레드 생성 방식 그대로 (§6). RT-1~10 준수 코드, 초기 FIFO, thread layout role 추가 (E-7 절차)
-- S6.2 포구 자세 IK: `DifferentialIk` (m=5) + 스레드 전용 모델 handle
+- S6.2 포구 자세 IK: `DifferentialIk` (m=5) + 스레드 전용 모델 handle. IK 직후 manipulability 게이트 (D-18) — 기준 미달 후보 제외, 후보가 모두 탈락하면 plan 없음(포기)을 사유 코드와 함께 기록. S3.5 도구와 **같은 함수·같은 YAML 키**를 쓴다
 - S6.3 γ 창·rollout (S1 코드 호출), 예산 초과 시 coarse-to-fine
 - S6.4 후보 선택·hysteresis·commit/freeze, `PlanSnapshot` SeqLock
 - S6.5 D-7a 측정: 제어 PC 부하 상태에서 FIFO·OTHER 각각 수신 → plan 게시 지연 p50·p99·최대, 예산 초과율 → §7.2 기준으로 정책 확정
-- S6.6 NLP 전환 대비 (A-4, §8a): 탐색 전략을 계획기 코어의 단일 진입 함수 뒤에 두어, 1차원 탐색 + IK 를 NLP 로 바꿔도 스레드·입출력 스냅샷·RT 쪽 소비 코드는 그대로 두는 경계를 유지. 전환 판단 신호(IK 수렴률 G3-G, 계획 성공률, 예산 초과율)를 S6·S8 에서 기록
+- S6.6 NLP 전환 대비 (A-4, §8): 탐색 전략을 계획기 코어의 단일 진입 함수 뒤에 두어, 1차원 탐색 + IK 를 NLP 로 바꿔도 스레드·입출력 스냅샷·RT 쪽 소비 코드는 그대로 두는 경계를 유지. 전환 판단 신호(IK 수렴률 G3-G, 계획 성공률, 예산 초과율)를 S6·S8 에서 기록
 
 게이트: L3 G3-A~E, G3-C 예산 준수, Adding a New Thread 3 oracle.
 
@@ -247,7 +248,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 - A-1 Sprint Contract: Epic 기준 + 단계별 `[SPRINT]` (§1a)
 - A-2 D-7a 판정 기준: FIFO 가 수신 → plan 게시 지연 p99 를 `planner.budget_s` 의 10% 이상 줄이거나 예산 초과율을 줄이면 FIFO 유지, 둘 다 아니면 SCHED_OTHER. 표본 ≥ 1000 시행 (L3 G3-C 와 같은 규모)
 - A-3 공분산(TBD-COV-01): RT 스냅샷에서 분리, 계획기 쪽 버퍼에만 둔다. NaN(모름) 처리도 계획기 한 곳에서
-- A-4 계획기 탐색: 1차원 시간 탐색 + IK 로 시작하되 NLP 전환을 염두에 둔 경계를 유지한다 (§8a)
+- A-4 계획기 탐색: 1차원 시간 탐색 + IK 로 시작하되 NLP 전환을 염두에 둔 경계를 유지한다 (§8)
 - A-5 DECEL 은 t_c 시각 기준 진입, 지문 센서는 결과 판정·abort 전용 (L7 §4.1 권장 채택)
 - A-6 COMMITTED 이후 stale 은 동결 plan 으로 계속하고 상한 초과 시 ABORT_SAFE (L7 §4.2 권장 채택)
 - A-7 → D-15 (vision 요구 사양은 제어기가 정하고 sim 을 맞춘다)
@@ -285,9 +286,11 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 - S2.2 CLIK 확장 구조 (행 선택형 vs formulation 클래스) — S2 첫 설계 리뷰
 - L3 후보 점수 가중치 — 튜닝, S6~S8
 - 실기 공분산 검증 수단 (L8 §6 의 세 가지 중) — S10
-- NLP 전환 여부 (§8a 신호) — S6·S8 결과 후
+- NLP 전환 여부 (§8 신호) — S6·S8 결과 후
+- D-18 manipulability 정의 (§11 권장: 팔 열 5행 w₅) — 확인 요청
+- D-18 발사 영역의 y 범위·방위각 (초기값 y = 0) — 확인 요청
 
-## 8a. 계획기 NLP 전환 대비 (A-4)
+## 8. 계획기 NLP 전환 대비 (A-4)
 
 1차원 시간 탐색 + IK 로 시작하지만, 문제가 복잡해지면 MPC 처럼 NLP 로 바꿀 수 있어야 한다.
 
@@ -336,7 +339,47 @@ extra_frames:
 - 제안값은 근거(자세·계산식)와 함께 PR 에 적고, 사용자가 sim 에서 확인한 뒤 `provisional: false` 로 갱신한다
 - 검증기는 `provisional: true` 인 catch frame 으로 실기 arm 을 막는다 (D-12 와 같은 규칙)
 
-## 11. 알려진 위험
+## 11. 투척 목표와 catchability 판정 (D-18)
+
+**판정.** 공 궤적의 포구 후보점 p_c 마다 L3 §4.2 의 포구 자세(catch frame +z = a_d = −v̂(t_c), 즉 손바닥 바깥 법선이 날아오는 공을 마주봄)를 IK 로 구하고, 그 해 q* 에서 manipulability w(q*) 를 잰다. w ≥ `planner.catchability.manipulability_min` 인 후보가 하나라도 있으면 잡을 수 있는 공이다. 이 판정은 기존 게이트(IK 수렴, 도달시간, γ 창, 정지거리)에 **추가되는 AND 조건**이다 — manipulability 만으로 시간 안에 도달할 수 있다는 보장은 없다.
+
+**같은 판정을 두 곳에서 쓴다.** (1) 오프라인 catchability 지도 (S3.5) 가 발사 조건을 정하고, (2) 런타임 계획기 (S6.2) 가 후보를 거른다. 둘은 같은 함수와 같은 YAML 키를 써야 지도와 실제 판정이 어긋나지 않는다.
+
+**manipulability 정의 — 권장 (확인 요청, §7.3).**
+
+- Jacobian: catch frame 의 **팔 관절 열**만 쓴다. 손 관절은 손바닥 frame 에 영향이 없다 (손바닥은 폐쇄 체인 상류, §2)
+- 행: 포구 과제와 같은 **5행** — 병진 3 (LOCAL_WORLD_ALIGNED) + 접근축 2 (LOCAL x·y 각속도). 손바닥 법선 둘레 회전(roll)은 포구에 무관하므로 뺀다. w₅ = √det(J₅ J₅ᵀ)
+- 기존 CLIK 진단값 (`ClikReferenceGenerator::Manipulability`, 6×6 damped) 은 roll 을 포함하므로 같은 값이 아니다. 로그에는 둘 다 남겨 비교한다
+- 단위가 섞여 있어 (m 와 rad) w 의 크기는 정의에 따라 달라진다. **threshold 0.1 은 위 정의에 대한 값**이고, 정의를 바꾸면 다시 맞춰야 한다
+
+**포구 자세의 여유 자유도.** 6축 UR5e 에서 5행 과제는 1 자유도(손바닥 법선 둘레 roll)와 IK 해 가지가 남아 w 가 그 선택에 따라 달라진다. 런타임과 지도가 같은 해를 쓰도록 **대기 자세(wait_pose)에서 시작하는 같은 IK(자세 과제 포함)** 로 정한다. roll 을 w 최대화로 고르는 방식은 v1 범위 밖 (필요하면 S8 이후).
+
+**frame 규약 (함정 주의).**
+
+- "arm base frame" 은 로봇 config 의 CLIK `base_frame` 이다: ur5e_p1b `base` (URDF `base`), iiwa7_leap `link_0`
+- ur5e_p1b 에서 URDF `base` 와 `base_link` 는 z 축 둘레 180° 차이다. `base_link` 로 두면 +x 가 반대가 되어 공이 등 뒤에서 날아온다 — 그래도 그럴듯한 결과가 나오므로 조용히 틀린다
+- 발사 높이 z 는 world 기준이고 x 는 base 기준이다. world ↔ base 변환은 가정하지 않고, **같은 q 에서 MuJoCo FK 와 Pinocchio FK 를 대조**해 S3.5 착수 시 확정한다
+
+**YAML (제안).**
+
+```yaml
+planner:
+  catchability:
+    manipulability_min: 0.1        # provisional — 사용자가 sim 에서 자세 확인 후 갱신
+    definition: "arm_5row"          # 위 정의. 바꾸면 threshold 재보정
+sim:
+  throw_region:                     # S3.5 지도 도구·발사 설정 입력
+    base_frame: "base"              # 로봇 config 의 CLIK base_frame 과 일치해야 함 (검증기)
+    x_base_m: 4.0
+    y_base_m: [0.0, 0.0]            # 범위. 초기값 0 — 사용자 결정
+    z_world_m: [1.5, 2.0]
+    speed_m_s: [TBD, TBD]           # 지도 결과로 채움
+    elevation_rad: [TBD, TBD]       # 지도 결과로 채움
+```
+
+**지도 도구 출력 (S3.5).** 발사 속도·각도 격자별로 (a) 포구 가능 여부, (b) 최대 w 와 그 후보의 t_c·p_c·q*, (c) 탈락 사유(IK 실패·w 미달·도달 불가)를 표로 내고, 잡을 수 있는 발사 조건 범위를 `sim.throw_region` 의 속도·각도로 제안한다. 사용자가 sim 에서 q* 자세를 보고 threshold 를 갱신하면 지도를 다시 돌린다.
+
+## 12. 알려진 위험
 
 - vision 토픽이 stable ABI 가 아니다 (D-4)
 - sim T_close 는 MJCF 게인에 의존 — 실기 측정 전까지 S4 결론은 잠정
@@ -344,4 +387,4 @@ extra_frames:
 - D-3 이 검증에서 떨어지면 S3·S5 시간 경로 재작업
 - 토크에서 도출한 보수적 가속 box (D-16) 가 받을 수 있는 공 속력을 낮출 수 있다 — S4.4 에서 함께 판정
 - vision 지평이 짧으면 (현 예시 profile 0.5 s) 계획 가능한 포구 창이 줄어든다 — S3.6 요구 사양으로 sim profile 을 맞춘다
-- 1차원 분해가 복잡한 경우를 놓치면 NLP 전환 (§8a) 이 필요해 S6 재작업
+- 1차원 분해가 복잡한 경우를 놓치면 NLP 전환 (§8) 이 필요해 S6 재작업
