@@ -169,7 +169,25 @@ MuJoCo UR 팔 actuator(`<general>` position-PD)는 `servoj` 와 동특성이 다
 
 ### 5.1 CLIK 확장 옵션 (S2.2a·S2.2b, `rtc_tsid`)
 
-v0.4 의 `CatchTaskAdapter` (`configure`/`update()`, 자체 `VecN`) 스케치는 폐기한다. 옵션은 `rtc::tsid::ClikReferenceGenerator::Config` 에 추가하는 것이 1안이며, 인터페이스 형태(행 선택형 확장 vs formulation 클래스)는 **S2.2a** 에서 확정한다. 요구 사항:
+v0.4 의 `CatchTaskAdapter` (`configure`/`update()`, 자체 `VecN`) 스케치는 폐기한다.
+
+**구조 결정 (S2.2a — 행 선택형 확장, 2026-09-19 사용자 결정).** `ClikReferenceGenerator` 한 클래스에 옵션을 더한다. formulation 클래스 (`QPSolverWrapper`·se3 오차만 공유) 는 택하지 않는다. box 조립·위치 한계 collapse·anchor 적분·실패 처리를 두 벌로 유지해야 하고, 구현이 하나뿐이라 분리 이득이 없다 (P5, ARCH-3). rtc_controllers 의 DLS task-velocity 법칙 (`task_vel_core`, DemoTask·DemoCompliance) 도 후보가 아니다 — box 제약이 없고, 가속 box·위치 한계를 QP 로 푸는 것이 이 확장의 목적이다.
+
+| 항목 | 결정 |
+|---|---|
+| 과제 입력 | 기존 `Compute(…, const pinocchio::SE3&, …)` 는 그대로 둔다. 포구용으로 위치 3행 + 접근축 2행을 받는 **`Compute` 오버로드**를 더한다. 목표 구조체는 base frame 의 위치·접근축 (단위)·선속도·각속도 feedforward |
+| 공유 코드 | box 조립, solve, anchor 적분·실패 분기를 private helper 로 뽑는다. 이 추출은 **golden-vector 회귀 (`rtc_tsid/test/test_clik_golden.cpp`) 가 비트 일치로 통과하는 별도 커밋**으로 한다 |
+| 좌표 | 새 오버로드는 오차·Jacobian 을 모두 world 정렬 (LWA) 로 쓴다. base frame 은 목표를 world 로 옮기는 데만 쓴다. 기존 SE3 경로는 base 정렬 오차와 world 정렬 `rf.J` 를 곱한다 — base 가 world 에 대해 회전하면 어긋나지만 현 로봇 구성 (root = universe 정렬) 에서는 드러나지 않는다. 기존 경로는 golden 이 고정하므로 고치지 않고 기록만 한다 |
+| 접근축 행 | $J_a=S\,R_{WC}^\top J_\omega^{LWA}$, $r_a=S\,R_{WC}^\top(K_a e_a+\omega_{ff})$, $e_a$ = `rtc::math::se3::AxisAlignError` (S2.1). 무효·반평행 데드밴드 분기는 결과의 region 으로 호출자에게 노출한다 |
+| 옵션 (전부 기본 off) | 관절별 속도 한계 (비면 기존 스칼라 `v_limit`), 가속 box ($\ddot q_{\max}$ 벡터, $\dot q_{prev}$ = 직전 `v_ref`) + `bound_conflict`·관절 mask, 평활 가중 $w_s$, `max_iter` (기본 20 = 기존값), 기존 SE3 경로의 twist feedforward (없으면 기존 식), 명령값 평가 모드 |
+| 명령값 평가 모드 (D-6) | CLIK 안에 cache 를 두지 않는다. 호출자가 $q_c$ (= 직전 `QRef()`) 로 갱신한 cache 를 넘기고, CLIK 은 (a) 첫 호출·`ResetAnchor()` 뒤가 아니면 항상 carry-forward, (b) `cache.q` 와 직전 `QRef()` 가 다르면 false (배선 오류 검출), (c) `anchor_drift_max` 를 쓰지 않는다 (측정 q 가 없다. 실추종 감시는 L7 `TRACK_ERR`) |
+| 재앵커 | `ResetAnchor()` 가 anchor 와 $\dot q_{prev}$ 를 함께 초기화한다 (activate·재무장·E-STOP 해제, §4.2 표). 실패 후 측정 q 재앵커는 기존 동작 유지가 기본이고, 명령값 모드에서는 cache 가 이미 $q_c$ 라 연속이다 |
+| 진단 | `LastSolve()`: ProxQP status (`SolveResult` 에 raw status 추가), 반복 수, solve time, `bound_conflict`, 충돌 관절 mask |
+| box 허용오차 | QP 해는 ProxQP `eps_abs` (1e-6) 안에서만 box 를 지킨다 (실측: `v_limit` 초과 최대 8e-7). G5-B 의 "위반 0" 은 이 허용오차 안을 뜻한다 |
+
+S2.2b 커밋 순서: helper 추출 (golden 비트 일치) → 진단 노출 → `max_iter` → 관절별 속도 한계 → 가속 box + `bound_conflict` → 평활 항 → twist feedforward → 위치 + 접근축 오버로드 (S2.1 머지 후) → 명령값 평가 모드. 커밋마다 golden 비트 일치를 확인한다.
+
+요구 사항:
 
 - 모든 옵션 기본 off, off 시 기존 `Compute` 출력 bit-identical. 할당은 `Init` 에서만, `Compute` 는 noexcept·할당 0
 - 추가 옵션: twist feedforward 입력, 접근축 2행 (catch frame 등록 index + $R_{WC}$ 회전), 가속 box ($\ddot q_{\max}$ 벡터, $\dot q_{prev}$) + `bound_conflict`, 평활 가중 $w_s$, `max_iter`, q_c 평가 모드와 재앵커 대상(§4.2)
@@ -280,7 +298,7 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 
 ## 10. 미확정 항목
 
-- S2.2a 확장 구조 (행 선택형 vs formulation 클래스); S2.2b: q_c 평가용 캐시 분리 여부, 실패 후 재앵커 대상, `anchor_drift_max` 사용 여부, 관절별 속도 한계 적용
+- 닫힘 (S2.2a, §5.1 표): 확장 구조, q_c 평가 cache 소유, 실패 후 재앵커, 명령값 모드의 `anchor_drift_max`, 관절별 속도 한계
 - S5.3 관절공간 abort 감속 법칙 세부
 - `joint_cmd.K_a`, `robot.arm.q_nominal`, `supervisor.track_err_abort` (L7), `joint_cmd.lag.*` (S10)
 - E-STOP·fault 전체 정책 (D-13, S9)
