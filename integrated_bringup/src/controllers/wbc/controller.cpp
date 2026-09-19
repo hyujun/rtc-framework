@@ -86,8 +86,9 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {
   // for UR5e + 10-DoF hand. TSID/MPC/state
   // buffers all operate in this reduced space, so mimic DoFs are handled
   // by the hardware driver / MuJoCo's built-in tendon. If the tree isn't
-  // configured in YAML, fall back to the raw URDF-parsed full model (nq=26,
-  // nv=21 with Pinocchio first-class mimic) — this preserves pre-reduction
+  // configured in YAML, fall back to the raw URDF-parsed full model (nq > nv
+  // when the URDF has <mimic> joints, kept first-class by Pinocchio; ur5e_p1b's
+  // full tree is nq = nv = 26) — this preserves pre-reduction
   // behaviour for URDFs without <mimic> tags.
   // For extended (closed-chain) hands the path-based 'wbc' tree locks off-path
   // actuated joints — a 4-bar finger's active DIP reaches the tip through a
@@ -548,8 +549,8 @@ void DemoWbcController::InitClik() noexcept {
   const int nq = combined_cache_.model()->nq;
   const int nv = combined_cache_.model()->nv;
   // CLIK contract: nq == nv (reduced revolute/prismatic tree) so velocity
-  // indices address q directly and q_ref = q + v·dt is valid. The full URDF
-  // model (nq=26, nv=21 with first-class mimic) violates this. CLIK is now the
+  // indices address q directly and q_ref = q + v·dt is valid. A full URDF
+  // model with first-class <mimic> joints (nq > nv) violates this. CLIK is now the
   // SOLE position backbone (the integrator was removed), so a non-reduced model
   // has no backbone — leave CLIK disabled and let on_configure FAIL the
   // lifecycle transition (DEC-1 ⓐ: reject the config rather than degrade).
