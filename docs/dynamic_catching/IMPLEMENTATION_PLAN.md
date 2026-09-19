@@ -160,7 +160,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 |---|---|---|
 | S0 결정·문서 v0.5·계약 | 완료 (2026-09-19) | S0.2 W 기록 칸 전부 채움. S0.3 설계 문서 12개(v0.5 헤더) 동기화, 이 문서 포함 `validate_docs` 13 files clean. 정합화 개정 (§7.4). 승인: issue #537 코멘트. S0.7 필요 지평 0.46–0.86 s (R2 지배)·`kCap` 40 제안, 0.5 s profile 부족 (§4.4 S0 결과). S0.9 검정력 표 (§1a) |
 | S1 순수 수치 코어 | S1.1~S1.8 완료 (2026-09-19, PR #541), S1.9 는 S2.1 후 | 이식·회귀·RT·시간 PASS, 검증기 PASS, S1.8 PASS (G7-C 임계 NOT_EVALUATED), backfill NOT_EVALUATED(S3.6) — §4.4 S1 결과 |
-| S2 기존 rtc_* 일반화 | 대기 | — |
+| S2 기존 rtc_* 일반화 | 진행 중 — S2.1 완료 (2026-09-19, PR A), S2.2~S2.5·S2.4 남음 | S2.1: se3 게이트 PASS (G4-D) — §4.4 S2 결과 |
 | S3a 시뮬레이션 기반 | 대기 | — |
 | S4a 손 타이밍 측정 | 대기 | — |
 | S3b·S4.4 지도·go/no-go·vision 사양 | 대기 | — |
@@ -295,6 +295,13 @@ GUI·plot: 면제 (D-19, §13).
 | 가속 도출 | §9 의 산출물(infeasible 비율·binding 제약·provenance) 이 YAML 에 기록됨, 퇴화 시 채택하지 않음, iiwa7 sim 교차 검증에서 도출값 ≤ 달성 가속 | η_τ (S2.5 제안, 사용자 확인) |
 | 문서 | public header Doxygen, README 갱신 (PROC-1) | — |
 | GUI·plot | §13 S2 행 | — |
+
+**S2 결과 (진행 중).** 착수 전 코드 재확인에서 계획 서술 정정 5건을 보고했다 (2026-09-19): G5-5 의 `max_iter` 는 CLIK 하드코딩이 아니라 `QPSolverConfig` 기본값이고 반복 수·solve time 은 `SolveResult` 에 이미 있다 (CLIK 노출만 없다). extra frame 파서는 `ParseSubModels` 의 "불완전 항목 조용히 건너뛰기" 를 따르지 않고 실패시킨다. G5-B2·G5-C3 의 L7 전이·abort 경로 부분은 S5.3·S7 에서 판정한다. S2.5 표본 범위는 대기 자세 (S3.5a) 전이라 결과가 provisional 이다. golden 비트 일치는 Release 빌드에서만 판정한다 (sanitizer 빌드는 최적화 수준이 달라 상대 1e-12). 사용자 결정 (2026-09-19): PR 은 S2.1 먼저 머지 → S2.2 · S2.3a · S2.5 → S2.4 마감, S2.2a 는 행 선택형 확장, S2.5 도구는 rtc_tools python.
+
+| 게이트 | 판정 | 근거 |
+|---|---|---|
+| se3 (S2.1) | PASS | `rtc_math/include/rtc_math/se3/axis_align.hpp`, `rtc_math/test/test_axis_align.cpp` 11 케이스. G4-D: exp 잔차 < 1e-12 (0.5° 격자 × 20 축), 1° 격자 ‖ω‖ 변화 < 1.5·K_a·π/180 (K_a 8, w_max 6), 유한차분 < 1e-5 (1–170°), 두 데드밴드 주변 ‖m‖ 1 … 1e-18 격자에서 출력 전부 유한·상한 이내. 무효 입력은 0 + 무효. 할당 0 (`ScopedNoMalloc`), noexcept `static_assert`. 데드밴드 처리 방식은 L4 §4.5 표. positive control: 급수 분기의 부호 조건 제거·Jacobian 상한 제거·데드밴드 J ≠ 0·단위 검사 제거·ω 포화 제거 5개 변형이 각각 해당 테스트에서 실패. colcon (ws root, Release) rtc_math 33 케이스 green, ASan/UBSan 빌드 보고 0 |
+| 동등성·CLIK·extra frame·가속 도출·문서·GUI·plot | 대기 | — |
 
 #### S3a 시뮬레이션 기반 (`rtc_mujoco_sim`, robot-agnostic)
 
