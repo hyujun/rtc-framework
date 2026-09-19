@@ -50,6 +50,27 @@ T ReadOptional(const YAML::Node& node, const char* key, T fallback) {
   }
 }
 
+/// Child section `key` of `parent`. An absent (or empty `key:`) section reads
+/// as an empty node, so every key under it takes its doc default — itself TBD
+/// where the doc leaves it open, which the validator then refuses in the
+/// active configuration (fail-closed). A present section that is not a map is
+/// refused. Going through this helper rather than `parent[key][...]` matters:
+/// yaml-cpp throws `YAML::InvalidNode`, not `std::invalid_argument`, when a
+/// missing node is subscripted.
+YAML::Node ReadSection(const YAML::Node& parent, const char* key) {
+  if (!parent.IsMap()) {
+    return YAML::Node();  // the parent section itself was absent
+  }
+  const YAML::Node child = parent[key];
+  if (!child || child.IsNull()) {
+    return YAML::Node();
+  }
+  if (!child.IsMap()) {
+    Reject("section '", key, "' must be a map");
+  }
+  return child;
+}
+
 /// Read a scalar that may be the literal string "TBD" (or, per L0 §5.3, an
 /// unparseable/non-finite number — treated the same way). An absent key takes
 /// `fallback` (the doc default, itself possibly still-TBD); a present key
@@ -98,6 +119,9 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   }
   if (q_pre.size() != q_close.size()) {
     Reject("robot.hand.q_pre and q_close must have the same length");
+  }
+  if (q_pre.size() == 0) {
+    Reject("robot.hand.q_pre/q_close must not be empty (use 'TBD' for an unset profile)");
   }
   if (q_pre.size() > kMaxHandDof) {
     Reject("robot.hand.q_pre/q_close length exceeds kMaxHandDof (", std::to_string(kMaxHandDof),
@@ -160,34 +184,34 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   }
   CatchingParams out;
 
-  const YAML::Node reference = node["reference"];
+  const YAML::Node reference = ReadSection(node, "reference");
   out.reference_omega = ReadTbdDouble(reference, "omega", out.reference_omega);
   out.reference_zeta = ReadTbdDouble(reference, "zeta", out.reference_zeta);
   out.reference_v_max = ReadTbdDouble(reference, "v_max", out.reference_v_max);
   out.reference_a_max = ReadTbdDouble(reference, "a_max", out.reference_a_max);
 
-  const YAML::Node planner = node["planner"];
-  const YAML::Node gamma = planner["gamma"];
+  const YAML::Node planner = ReadSection(node, "planner");
+  const YAML::Node gamma = ReadSection(planner, "gamma");
   out.planner_gamma_eta_v = ReadTbdDouble(gamma, "eta_v", out.planner_gamma_eta_v);
 
-  const YAML::Node catchability = planner["catchability"];
-  const YAML::Node manip_min = catchability["manipulability_min"];
+  const YAML::Node catchability = ReadSection(planner, "catchability");
+  const YAML::Node manip_min = ReadSection(catchability, "manipulability_min");
   out.planner_catchability_manip_min_arm5row =
       ReadTbdDouble(manip_min, "arm_5row", out.planner_catchability_manip_min_arm5row);
   out.planner_catchability_manip_min_provisional = ReadOptional(manip_min, "provisional", true);
 
-  const YAML::Node supervisor = node["supervisor"];
-  const YAML::Node decel = supervisor["decel"];
+  const YAML::Node supervisor = ReadSection(node, "supervisor");
+  const YAML::Node decel = ReadSection(supervisor, "decel");
   out.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", out.supervisor_decel_a_dec);
 
-  const YAML::Node core = node["core"];
-  out.ball = ReadBallSpec(core["ball"]);
+  const YAML::Node core = ReadSection(node, "core");
+  out.ball = ReadBallSpec(ReadSection(core, "ball"));
 
-  const YAML::Node sim = node["sim"];
-  out.sim_ball_drag_k = ReadTbdDouble(sim["ball"], "drag_k", out.sim_ball_drag_k);
+  const YAML::Node sim = ReadSection(node, "sim");
+  out.sim_ball_drag_k = ReadTbdDouble(ReadSection(sim, "ball"), "drag_k", out.sim_ball_drag_k);
 
-  const YAML::Node robot = node["robot"];
-  out.hand = ReadHandProfile(robot["hand"]);
+  const YAML::Node robot = ReadSection(node, "robot");
+  out.hand = ReadHandProfile(ReadSection(robot, "hand"));
 
   return out;
 }

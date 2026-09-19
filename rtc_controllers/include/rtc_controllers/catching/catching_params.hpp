@@ -110,13 +110,16 @@ struct CatchingParams {
   HandProfile hand;
 };
 
-/// Parse the `catching:` map (CATCHING_MASTER.md §6 top-level tree). Throws
-/// `std::invalid_argument` on: a missing/non-map node or sub-map; a present
-/// scalar that is neither a finite number nor the literal `"TBD"`; hand
-/// `q_pre`/`q_close` given inconsistently (one TBD, the other an array; arrays
-/// of different length; a `caging_mask` of the wrong length); a hand array
-/// longer than `kMaxHandDof`. A present-but-malformed key is refused rather
-/// than defaulted — defaulting would read a typo as "still TBD".
+/// Parse the `catching:` map (CATCHING_MASTER.md §6 top-level tree). An absent
+/// section (e.g. no `sim:` tree in a real-arm config) is not an error: its keys
+/// take their doc defaults (TBD where open), which `ValidateCatchingParams`
+/// refuses only when the key is active. Throws `std::invalid_argument` (and
+/// only that) on: a missing/non-map root; a present section that is not a
+/// map; a present scalar that is neither a finite number nor the literal
+/// `"TBD"`; hand `q_pre`/`q_close` given inconsistently (one TBD, the other an
+/// array; arrays of different length; empty arrays; a `caging_mask` of the
+/// wrong length); a hand array longer than `kMaxHandDof`. A present-but-malformed key is refused
+/// rather than defaulted — defaulting would read a typo as "still TBD".
 [[nodiscard]] CatchingParams ParseCatchingParams(const YAML::Node& node);
 
 // ── Validation report ────────────────────────────────────────────────────

@@ -412,4 +412,57 @@ TEST(CatchingParams, RejectsHandArrayLongerThanCapacity) {
   ExpectRejectMentioning(root, "kMaxHandDof");
 }
 
+TEST(CatchingParams, RejectsNonMapSection) {
+  YAML::Node root = ValidRoot();
+  root["planner"] = 5;
+  ExpectRejectMentioning(root, "section 'planner'");
+}
+
+TEST(CatchingParams, RejectsEmptyHandArrays) {
+  // An empty profile would parse as "resolved, 0 joints" and the caging-gap
+  // check would cover nothing — the validator would then report armable.
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["q_pre"] = YAML::Load("[]");
+  root["robot"]["hand"]["q_close"] = YAML::Load("[]");
+  root["robot"]["hand"].remove("caging_mask");
+  ExpectRejectMentioning(root, "must not be empty");
+}
+
+// ── Absent sections: defaults, never a foreign exception type ────────────────
+
+TEST(CatchingParams, RealArmConfigMayOmitSimSection) {
+  // sim.* is inactive on the real arm (G0-C); omitting the tree must parse
+  // and arm, not throw YAML::InvalidNode from subscripting a missing node.
+  YAML::Node root = ValidRoot();
+  root.remove("sim");
+  CatchingParams p;
+  ASSERT_NO_THROW(p = ParseCatchingParams(root));
+  EXPECT_TRUE(p.sim_ball_drag_k.tbd);
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/true);
+  EXPECT_TRUE(r.armable);
+  EXPECT_EQ(r.failure_count, 0u);
+}
+
+TEST(CatchingParams, EveryOtherAbsentSectionParsesButBlocksRealArm) {
+  // Each non-sim section removed in turn: parsing must not throw anything,
+  // and the real-arm config must refuse to arm — every one of these sections
+  // holds a TBD default or a provisional flag defaulting to true. (In sim an
+  // absent `planner:` does arm: its values have doc defaults, L3 §6, and the
+  // provisional flag only warns there.)
+  for (const char* key : {"reference", "planner", "supervisor", "core", "robot"}) {
+    YAML::Node root = ValidRoot();
+    ASSERT_TRUE(root[key]) << key << " missing from the baseline YAML";
+    root.remove(key);
+    CatchingParams p;
+    try {
+      p = ParseCatchingParams(root);
+    } catch (const std::exception& e) {
+      ADD_FAILURE() << "absent '" << key << "' threw: " << e.what();
+      continue;
+    }
+    const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/true);
+    EXPECT_FALSE(r.armable) << "absent '" << key << "' still armed on the real arm";
+  }
+}
+
 }  // namespace
