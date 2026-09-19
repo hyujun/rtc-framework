@@ -12,7 +12,7 @@ derived_accel_limits:
     provenance:
       tool: rtc_tools.analysis.derive_accel_limits
       date: '2026-09-20'
-      git_head: fe166277
+      git_head: '97542952'
       urdf: package://hand_description/robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro
       urdf_sha256: 21b845fc58292d0fab0537f858c18627788a433fb87ae84a333453b35413d325
       robot_config: [integrated_bringup/config/ur5e_p1b/_base.yaml]
