@@ -63,7 +63,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - 재사용 대상: `rtc::SeqLock`, `rtc::SpscQueue`, `rtc::compliance::DifferentialIk` (1-step damped pseudoinverse, 임의 행 수 m — 반복 루프는 S1.9 가 새로 쓴다), `rtc_math` se3 `log3`/`exp3`, `QPSolverWrapper`, base 의 `ActivationGeneration()`/`IsCurrentGeneration()`, `thread_layout.yaml` 의 `profiles:`, `repo_scripts/scripts/verify_rt_runtime.sh`
 - lifecycle: `PeriodicRtThread::Pause()` 는 요청 플래그 store 뿐이고 pause 게이트는 루프 최상단이라 진행 중 iteration 은 끝까지 돈다. lifecycle 은 publisher 만 활성화·비활성화한다 (D-23)
 - 모델: ur5e_p1b 결합 모델 nv 는 full tree **26** (UR5e 6 + P1b 20 revolute), actuated 축약 모델 **16** (팔 6 + 손 10). DemoWbc·CLIK 의 control model 은 actuated 모델이 있으면 그것이므로 ur5e_p1b 의 CLIK nv 는 16 이다. 이전 기록의 22 는 근거가 없다. 로봇 config 의 `urdf.*` 는 rclcpp 파라미터로 읽고 `urdf.sub_models.<name>.*` 처럼 map key 로 파싱한다 (list-of-dict 불가)
-- 지문 센서: P1b 실기 `HandSensorState` 250 Hz, finger-on-object 부호. sim 의 `WrenchStamped` contact-wrench lane 도 커밋 0fcc1d23 (2026-09-09) 이후 **같은 부호** (변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 하나). `rtc_msgs` FingertipSensor 주석 수정은 PR #538 로 main 에 들어갔으나 **이 브랜치는 그 이전에서 갈라져** 아직 옛 주석을 보인다 (§7.3). 센서 lane 에는 수신 시각·sequence 가 없다 (D-24)
+- 지문 센서: P1b 실기 `HandSensorState` 250 Hz, finger-on-object 부호. sim 의 `WrenchStamped` contact-wrench lane 도 커밋 0fcc1d23 (2026-09-09) 이후 **같은 부호** (변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 하나). `rtc_msgs` FingertipSensor 주석은 PR #538 로 고쳐졌고 이 브랜치에 병합됐다 (2026-09-19). 센서 lane 에는 수신 시각·sequence 가 없다 (D-24)
 - sim 공: `/sim/launch_ball`·`/sim/reset_ball` (Trigger), `/sim/ball/ground_truth` (Odometry), `/sim/ball/camera_position` (PointStamped + noise), 항력·Magnus 자체 구현, iiwa7_leap 설정 없음. 공 샘플 발행은 sim time 으로 게이트되고 stamp 는 wall 이다. 기존 RTF 는 200 step 구간 평균이고, throttle 기준은 `max_rtf` 가 바뀔 때만 재설정된다 (§5)
 - sim 모델: ur5e_p1b sim 이 로드하는 MJCF 는 형제 저장소 hand-description 의 사본이고 `model_pairs.yaml` 게이트에 ur5e_p1b 쌍이 없다 (§9)
 - vision: 형제 workspace 의 ball_perception 저장소 `ball_perception_sim` 패키지 `sim_estimator_node` 가 `/sim/ball/camera_position` 을 구독해 예측 궤적 PointCloud2 를 debug 토픽으로 발행한다 (point_step 384, `horizon_ns` u32, `generation`, `validity`, `covariance` NaN=모름, `frame_id` 는 profile 값 — 예시 `world`). **stable ABI 아님** — 제품 ABI 는 ball_perception E6-F02 로 defer
@@ -498,7 +498,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 **repo drift (이 작업 범위 밖 — 별도 브랜치로 처리)**
 
-- PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 세 항목(FingertipSensor 주석, controllers.md DemoWbc 행, p1b `index_mcp_aa_joint` 주석)이 origin/main 에 반영됐다 (2026-09-19, 값 변경 없음). **이 브랜치는 #538 이전에서 갈라져** 세 항목이 아직 옛 상태다 — 구현 착수 전에 main 을 병합하거나 rebase 한다
+- PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 세 항목(FingertipSensor 주석, controllers.md DemoWbc 행, p1b `index_mcp_aa_joint` 주석)이 main 에 반영됐고 (2026-09-19, 값 변경 없음), 같은 날 이 브랜치에 origin/main 을 병합해 세 항목이 여기서도 고쳐진 상태다
 - (E-9) MPC 경로가 문서상 RT 로 분류되지만 mutex·`fprintf` 를 쓴다 (§6) — 문서와 코드 중 어느 쪽에 맞출지 설계 판단 필요
 - (PROC-7) DemoWbc `Compute()` 의 `!target_initialized_` early-return 이 `wbc_state_lock_.Store` 를 하지 않는다
 - `rtc_tools` plotting `log_type.py` 의 "unified 7-col schema" 주석 — 실제 timing CSV 는 `run_id` 가 더해진 8열
@@ -667,7 +667,7 @@ sim:
 | D-13 을 S9 로 미뤄 S5~S7 의 abort·FAULT·손 유지 경로가 정책 확정 때 바뀔 수 있다 | S5 E-8 최소 계약으로 범위를 좁히고 S9 에서 재통과 |
 | UR 벤더 position 컨트롤러 자체의 가감속·보호 정지 | S10 |
 | w₅·w₆ 를 매 후보 계산하면 계획 예산을 먹는다 (L3 §4.8 은 이미 coarse-to-fine 이 필요하다고 본다) | S6.3 예산 측정 |
-| 브랜치 장기 체류로 main 과 어긋난다 (#538 로 1회 발현) | 구현 착수 전 main 병합 |
+| 브랜치 장기 체류로 main 과 어긋난다 (#538 로 1회 발현, 2026-09-19 병합으로 해소) | 단계 착수 때마다 main 병합 |
 
 ## 13. GUI·plot 단계별 구현과 확인 (D-19)
 

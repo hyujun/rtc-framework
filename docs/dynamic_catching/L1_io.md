@@ -34,7 +34,7 @@
 | G1-6 | subscription callback이 도는 executor / callback group | 닫힘 — 컨트롤러 소유 구독은 LifecycleNode default group → `nrt_callback_executor` (단일 스레드, lifecycle 서비스와 공유) (W2-5) |
 | G1-7 | RT tick 시각과 스탬프 clock 의 관계 (sim) | 닫힘 `[확정 D-2, D-3]` — RT tick 은 `RTControllerInterface::Compute(const ControllerState&)`, 시각은 steady. 스탬프는 wall (`rtc_mujoco_sim`·`sim_estimator_node` 모두 `use_sim_time=false`, `/clock` 없음). wall→steady 는 §4.1 변환 1회. D-3 은 S3.1a 검증 후 재검토 (W2-3) |
 | G1-8 | SeqLock/SPSC 원시형 API와 재시도 정책 | 닫힘 — `rtc::SeqLock::Store`/`Load`/`sequence`. `Load` 는 **재시도 상한 없이** 일관된 사본을 얻을 때까지 반복한다(단일 writer·유한 쓰기 시간이 설계 불변식). 비-RT writer(nrt 콜백) → RT reader 는 backend 3종이 관절 상태에 이미 쓰는 경로이므로 새 primitive 가 아니다 — 최악 재시도 시간은 G1-C 로 측정한다(D-21). payload 는 trivially copyable (L0 §5.2) (W2-2) |
-| G1-9 | 지문 센서·손 상태 경로와 규약 | 닫힘 — 실기 P1b `HandSensorState` 250 Hz, sim `WrenchStamped`. 두 경로 모두 finger-on-object 부호 (0fcc1d23 이후; `FingertipSensor.msg` 의 반대 부호 주석은 stale — PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 origin/main 에는 수정됐으나 **이 브랜치는 그 이전에서 갈라져** 아직 반영 안 됨, plan §7.3). 센서 lane 에는 수신 시각·sequence 가 없다 — freshness 경로는 **D-24 결정 대기**(S5 착수 전) (W4-6, TBD-HAND-03) |
+| G1-9 | 지문 센서·손 상태 경로와 규약 | 닫힘 — 실기 P1b `HandSensorState` 250 Hz, sim `WrenchStamped`. 두 경로 모두 finger-on-object 부호 (0fcc1d23 이후; `FingertipSensor.msg` 주석도 PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 같은 부호로 고쳐졌고 이 브랜치에 병합됨, plan §7.3). 센서 lane 에는 수신 시각·sequence 가 없다 — freshness 경로는 **D-24 결정 대기**(S5 착수 전) (W4-6, TBD-HAND-03) |
 
 ## 3. 참고자료
 
