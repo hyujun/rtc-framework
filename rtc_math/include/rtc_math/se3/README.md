@@ -127,7 +127,7 @@ Every call returns finite values and reports its branch in `AxisAlignRegion`:
 | `kAlignedDeadband` | `‖z×a_d‖ < sin_eps`, `c > 0` | 0 | 0 |
 | `kAntiparallelDeadband` | `‖z×a_d‖ < sin_eps`, `c ≤ 0` | `π·u⊥` (fixed unit axis ⟂ `z`, deterministic in `z`) | 0 |
 | `kJacobianCapped` | `c < 0`, `sin_eps ≤ ‖z×a_d‖ < jacobian_sin_floor` | exact | `f`, `f'` evaluated at the floor: `‖J_a‖ ≲ π/floor`, continuous at the floor |
-| `kInvalidInput` | non-finite or non-unit input (`|‖v‖−1| > 1e-6`), bound out of range | 0 | 0 |
+| `kInvalidInput` | non-finite or non-unit input (`|‖v‖−1| > 1e-6`), `sin_eps` / floor outside [1e-12, 1) | 0 | 0 |
 
 `J_a` is 0 in both deadbands because `e_a` is constant there; pass the same
 `sin_eps` to the error and the Jacobian so their deadbands agree. The θ→π

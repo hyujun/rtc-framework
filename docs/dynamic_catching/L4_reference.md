@@ -160,7 +160,7 @@ $\theta\to0$ 극한은 $f\to1$, $f'\to-1/3$ 로 유한하고, 이때 $J_a\to[a_d
 | 정렬 데드밴드 | $\Vert m\Vert<\epsilon_{\sin}$, $c>0$ | 0 | 0 |
 | 반평행 데드밴드 | $\Vert m\Vert<\epsilon_{\sin}$, $c\le0$ | $\pi\hat u_\perp$ ($z$ 로 정해지는 고정 축) | 0 |
 | Jacobian 상한 | $c<0$, $\epsilon_{\sin}\le\Vert m\Vert<n_J$ | 정확값 | $f,f'$ 를 $\Vert m\Vert=n_J$ 에서 평가 — $\Vert J_a\Vert\lesssim\pi/n_J$, $n_J$ 에서 연속 |
-| 무효 입력 | 비유한·비단위($\vert\Vert v\Vert-1\vert>10^{-6}$)·범위 밖 $\epsilon_{\sin}$, $n_J$ | 0 | 0 |
+| 무효 입력 | 비유한·비단위($\vert\Vert v\Vert-1\vert>10^{-6}$)·$[10^{-12},1)$ 밖의 $\epsilon_{\sin}$, $n_J$ | 0 | 0 |
 
 기본값은 $\epsilon_{\sin}=10^{-6}$, $n_J=10^{-3}$ 이다. 상한은 약 179.94° 이상에서만 걸리므로 G4-D 의 유한차분 범위(1–170°)에 영향이 없다. 두 데드밴드 모두 $e_a$ 가 상수라 $J_a=0$ 을 돌려준다. 소각도 급수는 $c>0$, $\theta<10^{-3}$ 에서만 쓴다 ($f=1+\theta^2/6$, $f'=-1/3-2\theta^2/15$). ω 는 $K_a e_a$ 를 $\Vert\omega\Vert\le w_{max}$ 로 줄이고 `saturated` 를 올린다. 비유한 오차·잘못된 게인은 0 과 무효를 돌려준다.
 

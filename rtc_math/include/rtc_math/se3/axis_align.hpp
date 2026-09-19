@@ -70,6 +70,12 @@ inline constexpr double kAxisAlignJacobianSinFloor = 1e-3;
 /// Tolerance on |‖v‖ − 1| for the unit-axis inputs.
 inline constexpr double kAxisAlignUnitTol = 1e-6;
 
+/// Smallest accepted sin_eps / jacobian_sin_floor. With n ≥ 1e-12 the
+/// Jacobian stays ≲ π/1e-12 and f' = O(n⁻³) ≲ 1e37, far from overflow; a
+/// smaller bound would let f' overflow near antiparallel (≈1e-103 and below)
+/// while the result still reported valid.
+inline constexpr double kAxisAlignMinSinBound = 1e-12;
+
 /// Branch an axis-alignment function took. Only kInvalidInput means the
 /// outputs must not be used; the other values are diagnostics.
 enum class AxisAlignRegion : std::uint8_t {
@@ -109,10 +115,10 @@ namespace detail {
   return v.allFinite() && std::abs(v.norm() - 1.0) <= kAxisAlignUnitTol;
 }
 
-// sin_eps must be a positive finite value below 1 (‖z × a_d‖ ≤ 1 for unit
-// inputs, so sin_eps ≥ 1 would make every input a deadband).
+// A deadband / floor must lie in [kAxisAlignMinSinBound, 1): ‖z × a_d‖ ≤ 1 for
+// unit inputs, so a bound ≥ 1 would make every input a deadband.
 [[nodiscard]] inline bool IsValidSinBound(double s) noexcept {
-  return std::isfinite(s) && s > 0.0 && s < 1.0;
+  return std::isfinite(s) && s >= kAxisAlignMinSinBound && s < 1.0;
 }
 
 // A fixed unit axis ⟂ z. Deterministic in z so the antiparallel error does not
@@ -199,6 +205,12 @@ inline constexpr double kAxisAlignSeriesTheta = 1e-3;
   }
   out.jacobian.noalias() = fp * (m * m.transpose());
   out.jacobian.noalias() += f * (hat(a_d) * hat(z));
+  // Unreachable with the bounds above; kept so a future bound change cannot
+  // turn an overflow into a "valid" non-finite Jacobian (NUM-7).
+  if (!out.jacobian.allFinite()) {
+    out.jacobian.setZero();
+    out.region = AxisAlignRegion::kInvalidInput;
+  }
   return out;
 }
 
@@ -213,15 +225,14 @@ inline constexpr double kAxisAlignSeriesTheta = 1e-3;
       w_max <= 0.0) {
     return out;  // valid = false, omega = 0
   }
-  out.omega = k_axis * error;
-  const double norm = out.omega.norm();
-  if (!std::isfinite(norm)) {  // k_axis·error overflowed
-    out.omega.setZero();
-    return out;
-  }
-  if (norm > w_max) {
-    out.omega *= w_max / norm;
+  // Compare k·‖e‖ rather than forming ‖k·e‖: the product may overflow for a
+  // large gain while the saturated result (w_max·e/‖e‖) is perfectly finite.
+  const double e_norm = error.stableNorm();
+  if (k_axis * e_norm > w_max) {
+    out.omega = (w_max / e_norm) * error;
     out.saturated = true;
+  } else {
+    out.omega = k_axis * error;
   }
   out.valid = true;
   return out;

@@ -298,11 +298,15 @@ TEST(AxisAlign, InvalidInputsGiveZeroAndInvalid) {
       EXPECT_TRUE(j.jacobian.isZero(0.0));
     }
   }
-  for (const double eps : {0.0, -1e-6, 1.0, 2.0, kNaN, kInf}) {
+  // Below kAxisAlignMinSinBound f' could overflow near antiparallel.
+  for (const double eps : {0.0, -1e-6, 1e-13, 1e-200, 1.0, 2.0, kNaN, kInf}) {
     EXPECT_FALSE(se3::AxisAlignError(z, good, eps).IsValid()) << eps;
     EXPECT_FALSE(se3::AxisAlignJacobian(z, good, eps).IsValid()) << eps;
     EXPECT_FALSE(se3::AxisAlignJacobian(z, good, 1e-6, eps).IsValid()) << eps;
   }
+  EXPECT_TRUE(
+      se3::AxisAlignJacobian(z, good, se3::kAxisAlignMinSinBound, se3::kAxisAlignMinSinBound)
+          .IsValid());
   // Floor below the deadband would leave a region the deadband claims.
   EXPECT_FALSE(se3::AxisAlignJacobian(z, good, 1e-3, 1e-4).IsValid());
   // Within the unit tolerance is accepted.
@@ -337,13 +341,26 @@ TEST(AxisAlign, OmegaSaturationAndInvalidGains) {
       {e, 1.0, -1.0},
       {e, 1.0, kNaN},
       {e, 1.0, kInf},
-      {Vec3(1e300, 1e300, 0.0), 1e300, 1.0},
   };
   for (const Bad& c : cases) {
     const se3::AxisAlignOmegaResult w = se3::AxisAlignOmega(c.error, c.k, c.w_max);
     EXPECT_FALSE(w.valid);
     EXPECT_TRUE(w.omega.isZero(0.0));
   }
+
+  // Finite but huge k·e (‖k·e‖ overflows) still saturates instead of failing.
+  for (const Vec3& huge : {Vec3(1.0, 0.0, 0.0), Vec3(1e300, 1e300, 0.0)}) {
+    const se3::AxisAlignOmegaResult w = se3::AxisAlignOmega(huge, 1e300, 6.0);
+    EXPECT_TRUE(w.valid);
+    EXPECT_TRUE(w.saturated);
+    EXPECT_NEAR(w.omega.norm(), 6.0, 1e-12);
+    EXPECT_NEAR(w.omega.normalized().dot(huge.stableNormalized()), 1.0, 1e-12);
+  }
+  // Zero error is valid and unsaturated for any gain.
+  const se3::AxisAlignOmegaResult zero = se3::AxisAlignOmega(Vec3::Zero(), 1e300, 6.0);
+  EXPECT_TRUE(zero.valid);
+  EXPECT_FALSE(zero.saturated);
+  EXPECT_TRUE(zero.omega.isZero(0.0));
 }
 
 // ── RT: noexcept, no Eigen heap allocation ──────────────────────────────────
