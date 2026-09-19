@@ -401,7 +401,7 @@ GUI·plot: 면제 (D-19, §13).
 |---|---|---|
 | FSM | G7-A, G7-B, G7-D | — |
 | 센서 stale | G7-G: 관절 fresh + 지문 센서 dropout negative control 에서 `TIP_STALE` 또는 결과 `Undetermined` 발화, 옛 힘을 새 접촉으로 판정 0 | D-24 |
-| 접촉 | G7-C (오경보율 기록) | 임계는 사용자 결정 → NOT_EVALUATED |
+| 접촉 | G7-C (오경보율 기록) | 임계는 사용자 결정 → NOT_EVALUATED. 2026-09-19 결정: sim fingertip 잡음을 쓸 수 있는 S7 에서 정한다 |
 | 충격·토크 | G7-B3 | 손 토크 권위 한계 (D-12) → 확정 전 NOT_EVALUATED |
 | 재무장 | G8-A2, 리셋 표 완전성 (모든 stateful 멤버가 표에 있거나 명시적 면제) | — |
 | 결과 판정 | G7-E | — |
@@ -567,7 +567,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 **단계에서 정할 것 (결정은 해당 단계)**
 
-- ~~S1.7 η_v·D-16 가속 box 의 YAML 키 이름~~ — S1.7 에서 닫음: η_v 는 L3 §6 의 `planner.gamma.eta_v`, a_dec 는 `supervisor.decel.a_dec` 로 문서에 이미 있었다. 가속 box 키는 S2.5 에서. S1.7 이 새로 둔 키: `core.ball.provisional`·`planner.catchability.manipulability_min.provisional`·`robot.hand.provisional` (문서는 provisional 을 산문으로만 표시, 기본값 true = fail-closed). catch frame 의 provisional (D-17) 은 `urdf.extra_frames` 쪽이라 S2.3a 에서 검증기에 연결
+- ~~S1.7 η_v·D-16 가속 box 의 YAML 키 이름~~ — S1.7 에서 닫음: η_v 는 L3 §6 의 `planner.gamma.eta_v`, a_dec 는 `supervisor.decel.a_dec` 로 문서에 이미 있었다. 가속 box 키는 S2.5 에서. S1.7 이 새로 둔 키: `core.ball.provisional`·`planner.catchability.manipulability_min.provisional`·`robot.hand.provisional` (문서는 provisional 을 산문으로만 표시, 기본값 true = fail-closed). catch frame 의 provisional (D-17) 은 `urdf.extra_frames` 쪽이라 S2.3a 에서 검증기에 연결. 세 키의 이름·기본값은 2026-09-19 사용자 승인
 - ~~G0-C 의 ωh 경계 도달 불가~~ — 닫힘 (2026-09-19 사용자 결정): 범위는 그대로 두고 게이트 문구를 "범위 검사가 ωh 안정을 함의, 경계 공식은 범위 밖 ω 로 단위 검증" 으로 고쳤다 (L0 §5.3·§9)
 - L7 전이표 (S1.8) 의 해석 3건을 S7.2 에서 확인: `Reason::kNone` = 각 상태의 정상 전진, IDLE homing 은 `kIdle` 안, ARMED→IDLE (§4.5 조건 위반) 은 전용 사유가 없어 `kParamsTbd` 재사용 (`transition_table.hpp` 헤더)
 - S2.2a CLIK 확장 구조 (행 선택형 vs formulation 클래스)
@@ -581,7 +581,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 **repo drift (이 작업 범위 밖 — 별도 브랜치로 처리)**
 
-- PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 세 항목(FingertipSensor 주석, controllers.md DemoWbc 행, p1b `index_mcp_aa_joint` 주석)이 main 에 반영됐고 (2026-09-19, 값 변경 없음), 같은 날 이 브랜치에 origin/main 을 병합해 세 항목이 여기서도 고쳐진 상태다
+- PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 세 항목(FingertipSensor 주석, controllers.md DemoWbc 행, p1b `index_mcp_aa_joint` 주석)이 main 에 반영됐고 (2026-09-19, 값 변경 없음) — 닫힘
 - (E-9) MPC 경로가 문서상 RT 로 분류되지만 mutex·`fprintf` 를 쓴다 (§6) — 문서와 코드 중 어느 쪽에 맞출지 설계 판단 필요
 - (PROC-7) DemoWbc `Compute()` 의 `!target_initialized_` early-return 이 `wbc_state_lock_.Store` 를 하지 않는다
 - `rtc_tools` plotting `log_type.py` 의 "unified 7-col schema" 주석 — 실제 timing CSV 는 `run_id` 가 더해진 8열
