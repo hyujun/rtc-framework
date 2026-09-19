@@ -367,7 +367,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 |----|----------|--------|-----------|
 | E-1 | **Critical** | 이 파일의 invariant 를 위반하거나 예외가 필요할 것 같음 | 전 규칙 (전용 번호가 없는 모든 위반이 여기로 수렴) |
 | E-2 | **Critical** | `rtc_*` 패키지에 robot-specific 값을 넣어야 함 | ARCH-1 |
-| E-3 | **Critical** | `rtc_msgs` / `shape_estimation_msgs` public ABI 변경 필요 | — |
+| E-3 | **Critical** | `rtc_msgs` / `shape_estimation_msgs` public ABI 변경 필요 — 기존 필드의 변경·삭제·재정렬**과** 새 `.msg`/`.srv`/`.action` **추가**를 모두 포함한다 (추가는 wire 호환이어도 PROC-3 전체 빌드와 소비자 동기화가 따른다) | PROC-3 |
 | E-4 | **Warning** | Abstract interface 없이 두 번째 구현 추가 필요 | ARCH-3 |
 | E-5 | **Warning** | Optional dep (MuJoCo, aligator) fallback 제거 필요 | — |
 | E-6 | **Critical** | 기존 test assertion 을 약화·수정해야 할 것 같음 — 회귀 은폐 vs 정당한 spec 변경/test-bug 를 구분하고, 후자는 별도 commit + 근거 | PROC-6 |
