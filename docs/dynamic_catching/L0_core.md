@@ -118,7 +118,7 @@ v0.5 에서 코드 복사본을 삭제했다. **SSoT 는 같은 폴더의 `ball_
 v0.4 의 `types.hpp` 스케치를 대체한다. 헤더 이름·배치는 S1.1 골격에서 정한다.
 
 - **시간 타입** `BallTime`, `NowReal`, `NowLead` (§4.5, S1.3). 각각 `int64` ns 하나를 감싼 trivially copyable 타입
-- **용량 상수** `kMaxArmDof = 7`, `kMaxHandDof = 16`, `kMaxFingertips = 4`. 궤적 용량 컴파일타임 상수 `kCap` 은 **공용 궤적 타입(S1.2, L2 §5.1)이 단독 소유**한다 — v0.4 의 `kMaxTrajSamples` 중복 상수와 `static_assert` 짝맞춤은 삭제. 값은 S0.7 vision 지평 손계산 제안값으로 정해 provisional 로 두고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정한다. `n_max` 가 `kCap` 을 넘으면 `kCap` 을 올리고 S1 게이트를 재실행한다(backfill, plan §4.2)
+- **용량 상수** `kMaxArmDof = 7`, `kMaxHandDof = 16`, `kMaxFingertips = 4`. 궤적 용량 컴파일타임 상수 `kCap` 은 **공용 궤적 타입(S1.2, L2 §5.1)이 단독 소유**한다 — v0.4 의 `kMaxTrajSamples` 중복 상수와 `static_assert` 짝맞춤은 삭제. 값은 **40** (S0.7 제안, 2026-09-19 사용자 결정, provisional) 이고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정한다. `n_max` 가 `kCap` 을 넘으면 `kCap` 을 올리고 S1 게이트를 재실행한다(backfill, plan §4.2)
 - **SeqLock payload 규칙 `[확정]`.** `rtc::SeqLock`·`rtc::SpscQueue` 에 싣는 모든 타입(궤적 스냅샷, `PlanSnapshot`, RT 상태 POD)은 trivially copyable POD 다 — 벡터는 `std::array<double, 3>` 등으로, **Eigen 멤버 금지** (G0-1, plan §6). 계산 측은 `Eigen::Map` 으로 본다. 각 타입 정의에 `static_assert(std::is_trivially_copyable_v<…>)` 를 둔다
 - **공분산 버퍼** — RT 스냅샷에 넣지 않고 계획기 쪽 버퍼에만 둔다 `[확정 A-3]`. NaN 원소는 "모름"이며 해석은 계획기 한 곳에서 한다. 파서 → 계획기 전달 수단은 S5.2/S6 에서 확정한다(SeqLock 을 쓰면 위 POD 규칙 적용)
 - **트랙 식별** — v0.4 의 `TrackEpoch` 는 삭제. vision 의 `generation`(uint64)을 궤적 스냅샷에 그대로 싣는다(D-4, L1 §4.4)

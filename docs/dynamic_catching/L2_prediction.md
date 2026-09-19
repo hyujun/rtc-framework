@@ -141,7 +141,7 @@ v0.5 에서 코드 복사본(v0.2 그대로였음)을 삭제했다. **SSoT 는 �
 - **`dt_min` 거부.** 최소 샘플 간격 미만 구간은 경고가 아니라 거부한다 — `interpolate` 가 극소 $h$ 를 받아 $1/h^2$ 로 폭주하는 것을 막는다
 - **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — `Sample` 의 `Eigen::Vector3d` 멤버를 `std::array<double, 3>` 으로 바꾸고, 계산은 `Eigen::Map` 으로 한다(L0 §5.2, plan §6). `static_assert(std::is_trivially_copyable_v<…>)`
 - **시간 타입.** 샘플 시각은 `BallTime`(절대 steady ns), 샘플링 인자는 `NowLead` (L0 §4.5). 스냅샷 필드: `generation`·`snapshot_sequence` (uint64, `track_epoch`·`seq` 대체), `recv_steady_ns`, `n`, `valid`
-- **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kCap` 은 이 타입이 단독 소유하고(L0 의 중복 상수·`static_assert` 짝맞춤 삭제), 값은 S0.7 제안값으로 S1.2 가 정한다(provisional). 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정하고, 넘으면 S1.2 backfill (plan §4.2)
+- **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kCap` 은 이 타입이 단독 소유하고(L0 의 중복 상수·`static_assert` 짝맞춤 삭제), 값은 40 (S0.7 제안, 2026-09-19 결정, provisional) 으로 S1.2 가 구현한다. 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정하고, 넘으면 S1.2 backfill (plan §4.2)
 - **명명.** namespace `rtc::catching`, 함수 PascalCase (`hermite5`/`interpolate`/`extrapolate`/`sampleAt`/`check` → `Hermite5`/`Interpolate`/`Extrapolate`/`SampleAt`/`Check`)
 
 RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleAt()`은 hint 커서로 평균 $O(1)$ 이고, 커서가 어긋나면 이진 탐색으로 복구한다($O(\log N)$ 상한).
