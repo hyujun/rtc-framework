@@ -122,6 +122,14 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 > 을 지킨다. `udp_hand_driver` 경로는 1 만 공유하고 2·3 은 **미측정**이다 (F/T 모델이 repo 밖).
 > #222 와 같이 "ORT 도 하는데" 는 새 RT 코드가 할당할 근거가 아니다.
 
+> **알려진 위반 3건째 — MPC thread 의 cross-mode swap (2026-09-19 기록, 수용 아님).** MPC thread 는
+> RT 이지만 (architecture.md §Execution Contexts) `HandlerMPCThread::Solve` 는 phase 가 바뀌며
+> `ocp_type` 이 달라지면 그 스레드에서 `MPCFactory::Create` 로 handler 를 새로 만든다 — heap 할당·YAML
+> 파싱·`try/catch` (RT-1·RT-2). DemoWbc 가 light·rich factory YAML 을 둘 다 넘기므로 **production 에서
+> 도달한다**. 해소 경로는 두 handler 를 configure 에서 미리 만들어 swap 을 포인터 교체로 줄이는 것이고
+> 별도 작업이다. 같은 스레드의 Aligator solve 자체가 할당하는지는 **미측정**이다. 통계 mutex 와
+> `fprintf` 는 이 기록과 함께 제거됐다 (E-9 결정: 문서가 아니라 코드를 RT 에 맞춘다).
+
 ```detect id=RT-1
 grep -nE '(\bnew [A-Za-z_]|malloc\(|\.push_back\(|\.emplace_back\(|\.resize\()' <RT file>
 # probe: buffer.push_back(sample);

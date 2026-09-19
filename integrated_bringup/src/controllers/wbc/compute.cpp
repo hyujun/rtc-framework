@@ -1321,6 +1321,32 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
         [this](const rtc::RtTickTimingSample& s) { mpc_timing_logger_.Log(s); });
   }
 
+  // Solve failures: HandlerMPCThread only counts them (no I/O on the MPC
+  // thread); report the delta here, throttled to ~5 s.
+  if (const auto* handler_thread =
+          dynamic_cast<const rtc::mpc::HandlerMPCThread*>(mpc_thread_.get())) {
+    static constexpr std::uint32_t kMpcFailWarnEveryNTicks = 5;
+    const std::uint64_t failed = handler_thread->FailedSolves();
+    if (failed < mpc_failed_solves_reported_) {
+      mpc_failed_solves_reported_ = 0;  // a new thread restarted its counters
+    }
+    const bool due = !mpc_fail_warned_once_ ||
+                     (mpc_timing_tick_ - mpc_fail_warn_tick_) >= kMpcFailWarnEveryNTicks;
+    if (failed > mpc_failed_solves_reported_ && due) {
+      RCLCPP_WARN(logger_,
+                  "[mpc] %lu solve(s) failed since last report (total=%lu failed=%lu "
+                  "last_err=%d phase=%d%s)",
+                  static_cast<unsigned long>(failed - mpc_failed_solves_reported_),
+                  static_cast<unsigned long>(handler_thread->TotalSolves()),
+                  static_cast<unsigned long>(failed), handler_thread->LastSolveErrorCode(),
+                  handler_thread->LastPhaseId(),
+                  handler_thread->NullHandlerHit() ? " null_handler" : "");
+      mpc_failed_solves_reported_ = failed;
+      mpc_fail_warn_tick_ = mpc_timing_tick_;
+      mpc_fail_warned_once_ = true;
+    }
+  }
+
   // Periodic aggregate INFO so tmux-watchers see progress without
   // tail-ing the CSV. The window is computed by MPCSolutionManager over
   // its 256-sample ring (handler-side solve_duration_ns); 10 s INFO

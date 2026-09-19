@@ -214,7 +214,7 @@ TEST_F(MpcThreadIntegrationTest, NullHandlerLogsOnceAndSkips) {
   thread.RequestStop();
   thread.Join();
 
-  EXPECT_TRUE(thread.NullHandlerLogged());
+  EXPECT_TRUE(thread.NullHandlerHit());
   EXPECT_EQ(thread.TotalSolves(), 0u)
       << "Null path must not increment total_solves — it returns before the "
          "counter update";

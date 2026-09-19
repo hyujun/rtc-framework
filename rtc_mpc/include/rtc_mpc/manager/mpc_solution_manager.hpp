@@ -28,7 +28,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 
 namespace rtc::mpc {
 
@@ -121,7 +120,10 @@ class MPCSolutionManager {
   // `solve_duration_ns` to a bounded ring buffer (@ref kSolveStatsWindow
   // samples). Callers poll @ref GetSolveStats off-RT to get percentile
   // statistics over the current window — the ring is overwritten in
-  // round-robin order once full.
+  // round-robin order once full. The MPC thread is an RT context
+  // (architecture.md §Execution Contexts), so the producer side is
+  // lock-free: it updates a thread-private working copy and publishes it
+  // through a SeqLock; readers never block it.
   //
   // Scope: perf-monitoring aid for the Phase 7c exit metrics
   // (KinoDynamics p50<10ms, p99<20ms; FullDynamics p50<25ms, p99<45ms).
@@ -145,10 +147,14 @@ class MPCSolutionManager {
   };
 
   /// @brief Snapshot the current solve-timing window and compute stats.
-  /// Non-RT; takes a short mutex to copy the ring buffer before sorting.
+  /// Non-RT (sorts a copy of the window); lock-free with respect to the
+  /// producer — a SeqLock load that retries only while a publish is in flight.
   [[nodiscard]] SolveTimingStats GetSolveStats() const noexcept;
 
   /// @brief Reset the ring buffer + total-solve counter. Non-RT.
+  /// @pre No @ref PublishSolution is in flight (MPC thread paused or not yet
+  ///      started): the reset writes the producer's working copy, and the
+  ///      SeqLock admits a single writer.
   void ResetSolveStats() noexcept;
 
   // Per-tick raw-sample stream lives on the MPCThread (producer thread)
@@ -172,16 +178,21 @@ class MPCSolutionManager {
   RiccatiFeedback riccati_;
   rtc::SeqLock<MPCStateSnapshot> state_lock_;
 
-  // Solve-timing probe state. The ring buffer is written inside
-  // `PublishSolution` (single producer, MPC thread) and copied under the
-  // mutex inside `GetSolveStats` (non-RT caller). The producer path keeps
-  // the mutex: PublishSolution is already off the RT loop.
-  mutable std::mutex solve_stats_mutex_;
-  std::array<std::uint64_t, kSolveStatsWindow> solve_stats_ring_{};
-  std::uint32_t solve_stats_next_{0};    // next write slot, wraps at kSolveStatsWindow
-  std::uint32_t solve_stats_filled_{0};  // samples in ring (≤ kSolveStatsWindow)
-  std::uint64_t solve_stats_total_{0};   // lifetime solve count
-  std::uint64_t solve_stats_last_{0};    // most recent sample
+  // Solve-timing probe state. `PublishSolution` (single producer, MPC
+  // thread) updates `solve_stats_work_` and stores it into
+  // `solve_stats_lock_`; `GetSolveStats` (non-RT) loads a copy. No mutex:
+  // a FIFO MPC thread blocking on a lock held by the SCHED_OTHER stats
+  // reader was a priority inversion (RT-4).
+  struct SolveStatsRing {
+    std::array<std::uint64_t, kSolveStatsWindow> ring{};
+    std::uint32_t next{0};    // next write slot, wraps at kSolveStatsWindow
+    std::uint32_t filled{0};  // samples in ring (≤ kSolveStatsWindow)
+    std::uint64_t total{0};   // lifetime solve count
+    std::uint64_t last{0};    // most recent sample
+  };
+
+  SolveStatsRing solve_stats_work_{};  // producer-private working copy
+  rtc::SeqLock<SolveStatsRing> solve_stats_lock_;
 };
 
 }  // namespace rtc::mpc

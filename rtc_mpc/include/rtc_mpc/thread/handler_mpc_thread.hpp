@@ -31,8 +31,10 @@
 /// and re-seeds the new handler via `SeedWarmStart(prev_out_)`. The factory
 /// call is wrapped in `try/catch (...)` so this method stays `noexcept`;
 /// allocations during the swap are accepted as a one-tick cost (phase-
-/// transition ticks are infrequent). In baseline mode (`factory_cfg_light_`
-/// / `factory_cfg_rich_` both null), mismatches return `kRebuildRequired`
+/// transition ticks are infrequent). This is a KNOWN RT-1/RT-2 deviation on
+/// an RT thread, not an exemption — production (DemoWbc) passes both factory
+/// YAMLs, so it runs on real phase changes (invariants.md §RT Path). In baseline mode
+/// (`factory_cfg_light_` / `factory_cfg_rich_` both null), mismatches return `kRebuildRequired`
 /// without swapping and increment `failed_solves_`.
 ///
 /// RT-safety on the steady-state path —
@@ -40,13 +42,12 @@
 ///   section and it is skipped on unchanged-`ocp_type` ticks.
 /// - No `new`/`push_back`/`throw`; `pdata_`, `q_scratch_`, `v_scratch_`,
 ///   `sensor_scratch_`, and `prev_out_` are pre-allocated in `Configure`.
-/// - `std::fprintf(stderr, …)` inside the null-handler guard fires at most
-///   once per thread lifetime (gated by `null_logged_`). The MPC thread runs
-///   off the RT loop so a one-time stderr write is acceptable;
-///   SPSC-queue logging is a Phase 7 concern.
+/// - No logging or stderr I/O: the MPC thread is an RT context
+///   (architecture.md §Execution Contexts). Failures only bump the atomics
+///   below; a non-RT reader (the owning controller's aux timer) reports them.
 ///
-/// Observability — `Last*` / `Total*` / `Failed*` atomics expose solve-loop
-/// counters to tests and diagnostics. All reads/writes use `relaxed` memory
+/// Observability — `Last*` / `Total*` / `Failed*` / `NullHandlerHit` atomics
+/// expose solve-loop counters to tests and diagnostics. All reads/writes use `relaxed` memory
 /// ordering since the counters are not used for synchronisation.
 
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
@@ -131,9 +132,9 @@ class HandlerMPCThread final : public MPCThread {
     return failed_solves_.load(std::memory_order_relaxed);
   }
 
-  /// @return true once the null-handler guard has logged at least once.
-  [[nodiscard]] bool NullHandlerLogged() const noexcept {
-    return null_logged_.load(std::memory_order_relaxed);
+  /// @return true once the null-handler guard has rejected a solve.
+  [[nodiscard]] bool NullHandlerHit() const noexcept {
+    return null_handler_hit_.load(std::memory_order_relaxed);
   }
 
  protected:
@@ -144,12 +145,6 @@ class HandlerMPCThread final : public MPCThread {
   ///        the caller wraps in try/catch. On success, returns true and
   ///        `handler_` points at the new instance (seeded via SeedWarmStart).
   bool TryCrossModeSwap(const PhaseContext& ctx);
-
-  /// @brief Emit a single `fprintf(stderr, …)` line at most once per
-  ///        `kWarnThrottleNs`. Called from every `Solve` failure path
-  ///        (dim-mismatch / rebuild-required / solver error) so a silently
-  ///        failing thread is no longer invisible from outside.
-  void WarnThrottled(const char* what, int code) noexcept;
 
   // Owned dependencies.
   std::unique_ptr<MPCHandlerBase> handler_{};
@@ -181,9 +176,7 @@ class HandlerMPCThread final : public MPCThread {
   std::atomic<int> last_phase_id_{-1};
   std::atomic<std::uint64_t> total_solves_{0};
   std::atomic<std::uint64_t> failed_solves_{0};
-  std::atomic<bool> null_logged_{false};
-  // steady_clock epoch ns of the most recent WarnThrottled() emission.
-  std::atomic<std::int64_t> last_warn_ns_{0};
+  std::atomic<bool> null_handler_hit_{false};
 };
 
 }  // namespace rtc::mpc

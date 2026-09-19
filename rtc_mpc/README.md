@@ -97,15 +97,17 @@ the affected gtest binaries bare.
 
 ## Observability (HandlerMPCThread)
 
-`HandlerMPCThread::Solve` is `noexcept` and runs off the RT loop, so failure
-paths log to `stderr` rather than via ROS. Each path (dim-mismatch,
-cross-mode swap rebuild required, handler solve error) increments
-`failed_solves_`/`total_solves_` atomics and calls `WarnThrottled(...)`
-which emits one `fprintf(stderr, …)` line at most every 5 s with
-`what=<cause> code=<int> total=N failed=M`. The null-handler setup error
-retains its own one-shot `fprintf` (separate semantics: fatal setup
-mistake, not runtime drift). Readers can also pair the stderr stream with
-`<session>/timing/mpc_timing_log.csv` (writer:
+The MPC thread is an RT context (SCHED_FIFO, dedicated core —
+[architecture.md](../agent_docs/architecture.md) §Execution Contexts), so
+`HandlerMPCThread::Solve` does no I/O. Each failure path (dim-mismatch,
+cross-mode swap rebuild required, handler solve error, null handler) only
+bumps lock-free atomics — `FailedSolves()`, `TotalSolves()`,
+`LastSolveErrorCode()`, `LastPhaseId()`, `NullHandlerHit()` — and the owning
+controller's non-RT 1 Hz aux timer reports the delta (DemoWbc: one
+`[mpc] N solve(s) failed …` WARN at most every ~5 s). The cross-mode swap
+itself still allocates on this thread — a recorded known violation
+([invariants.md](../agent_docs/invariants.md) §RT Path). Readers can also
+pair those reports with `<session>/timing/mpc_timing_log.csv` (writer:
 [`rtc_mpc/logging/mpc_timing_logger.hpp`](include/rtc_mpc/logging/mpc_timing_logger.hpp);
 each MPC-using controller's own LifecycleNode owns a 1 Hz aux timer that
 drains `MPCThread::TimingProducer()` per-tick SPSC into the CSV). Schema

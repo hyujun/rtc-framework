@@ -1169,6 +1169,13 @@ class DemoWbcController final : public RTControllerInterface {
   rclcpp::TimerBase::SharedPtr mpc_timing_timer_;
   rtc::mpc::MpcTimingLogger mpc_timing_logger_;
   std::uint32_t mpc_timing_tick_{0};
+  // MPC solve-failure reporting (moved off the MPC thread, which must not do
+  // I/O): the aux tick compares HandlerMPCThread::FailedSolves() against the
+  // count last reported and warns with the delta at most every
+  // kMpcFailWarnEveryNTicks ticks (~5 s, the old in-thread throttle).
+  std::uint64_t mpc_failed_solves_reported_{0};
+  std::uint32_t mpc_fail_warn_tick_{0};
+  bool mpc_fail_warned_once_{false};
   // Logger / timer setup is one-shot per controller lifetime — gated on this
   // flag so repeated activate/deactivate cycles (Phase 2 lifecycle switch)
   // don't truncate the CSV or churn timer registration.
