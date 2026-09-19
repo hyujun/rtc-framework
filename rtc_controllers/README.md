@@ -7,7 +7,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니다. 관절/태스크 공간 제어 법칙, compliance 계열 법칙과 그 공용 커널(`compliance/`), 적응형 PI 힘 제어 그래스프 컨트롤러, 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인), 그리고 in-thread estimator 코어(`grasp/pull_force_estimator.hpp` · `estimation/momentum_observer.hpp` · `estimation/payload_estimator.hpp` · `estimation/inertial_estimator.hpp`)를 제공합니다.
+RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니다. 관절/태스크 공간 제어 법칙, compliance 계열 법칙과 그 공용 커널(`compliance/`), 적응형 PI 힘 제어 그래스프 컨트롤러, 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인), 공 포구 수치 코어(`catching/`), 그리고 in-thread estimator 코어(`grasp/pull_force_estimator.hpp` · `estimation/momentum_observer.hpp` · `estimation/payload_estimator.hpp` · `estimation/inertial_estimator.hpp`)를 제공합니다.
 
 > **계약**: 이 패키지는 **제어 법칙만** 소유합니다 — 노드·publisher·subscription 을 만들지 않고, `RTControllerInterface` 를 상속하지도 않습니다. 프레임워크 계약을 구현하는 클래스(= 바인딩)는 downstream integration 패키지가 소유합니다. 규칙·3계층 배치·경계 판정의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 이며, 여기서 반복하지 않습니다.
 >
@@ -128,6 +128,14 @@ rtc_controllers/
 │   ├── task/
 │   │   ├── task_accel_law.hpp                -- 태스크 공간 가속도 법칙 코어 (header-only, 무상태) a_task = K_p·e + K_d·(ν_d−ν) + a_ff. 게인은 **가속도형** `[1/s²]` — `impedance_law` 의 힘형과 Λ 배 차이. pose error 정의·궤적·모델은 바인딩 몫
 │   │   └── task_vel_law.hpp                  -- 태스크 공간 속도 법칙 코어 (header-only, 무상태) task_vel = K_p ⊙ e + ν_ff. 게인은 **속도형** `[1/s]` 이고 미분항이 없다 (CLIK 이 닫는 플랜트가 적분기이므로). 6축·병진전용 두 형태. pose error 정의·궤적·**ν_ff 의 프레임 전송**은 바인딩 몫
+│   ├── catching/                             -- 공 포구 (dynamic_catching, Epic #537) ROS 비의존 수치 코어 `rtc::catching`. 설계·게이트 SSoT 는 `docs/dynamic_catching/IMPLEMENTATION_PLAN.md`. 전부 할당 0·noexcept·fail-closed (비유한/무효 입력은 invalid flag 또는 게이트를 떨어뜨리는 값)
+│   │   ├── time_types.hpp                    -- 시간축 강한 타입 `BallTime`·`NowReal`·`NowLead` (절대 steady ns). 섞은 비교 연산자가 없고 plan §3 의 판정마다 자기 축만 받는 함수 (`DecelDue`·`CommitDue`…) — 축을 잘못 고르면 컴파일되지 않는다. `ConvertRemoteStamp` 는 D-2 (3) E-1 기록된 예외 (미래 stamp 거부)
+│   │   ├── trajectory.hpp                    -- SeqLock payload POD: `TrajectorySnapshot` (용량 `kCap` 40, provisional) · `ProvenanceToken` (D-22) · `PlanSnapshot` (L3 §5.2)
+│   │   ├── traj_sampler.hpp                  -- 5차 Hermite 샘플러 `SampleAt(snapshot, NowLead)` + 수신 검사 `Check` (개수는 인덱싱 전에, NaN·비단조·dt_min 미만 거부)
+│   │   ├── soft_catch.hpp                    -- soft-catch 병진 기준 `SoftCatchTranslation` (γ 프로파일, NaN 가드 — 비유한 입력에서 상태 보존). γ derate 없음 (D-8)
+│   │   ├── time_feasibility.hpp              -- 도달시간 `TMinChecked` (한계 무효 → flag + t=+∞)·γ 창 (η_v·v_max, D-9)·방향 속력·정지거리·오차 예산
+│   │   ├── decel_target.hpp · transition_table.hpp · contact_debounce.hpp -- L7 순수 조각: 가상 감속 목표, (상태 × 사유) 전이표 + 완전성 검사, 지문 접촉 debounce
+│   │   └── catching_params.hpp               -- 파라미터 검증기 (`ParseCatchingParams` + `ValidateCatchingParams` → `armable`): 활성 구성 TBD, D-9·a_dec 교차제약, ω·dt 안정 경계, ζ≠1, provisional 은 실기에서 차단
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)

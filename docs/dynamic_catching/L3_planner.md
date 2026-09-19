@@ -335,7 +335,7 @@ S1.5 이식 시 변경:
 | `p_c`, `a_d`, `v_c` | `std::array<double,3>` (W) | 포구점, 목표 접근축, 예측 포구 순간 공 속도 (감속 계획용) |
 | `gamma_g0`, `gamma_gf`, `gamma_t0_ns`, `gamma_t1_ns` | `double` ×2, `int64` ×2 | L4 `GammaProfile` 파라미터. 시각은 절대 ns 이고 $now_{lead}$ 와 비교해 평가한다. 상대시간 변환은 L4 수치 코어 경계에서 |
 | `gamma_min` | `double` | §4.5 γ 창 하한 (진단. v0.4 의 derate 하한 용도는 v1 범위 밖, D-8) |
-| `q_star`, `nv` | `std::array<double, kCap>`, `int` | IK 해 (L5 posture 참고). 용량 `kCap` 은 **결합 모델(팔+손) nv** 를 담는 컴파일 타임 상수이고, configure 에서 nv ≤ `kCap` 을 검사한다 |
+| `q_star`, `nv` | `std::array<double, kMaxPlanNv>`, `int` | IK 해 (L5 posture 참고). 용량 `kMaxPlanNv` 는 **계획기 control 모델 nv** 를 담는 컴파일 타임 상수이고 (S1.2: 32), configure 에서 nv ≤ `kMaxPlanNv` 를 검사한다. 궤적 점 용량 `kCap` 과는 다른 상수다 (v0.5 문서가 둘을 같은 이름으로 불렀다) |
 | `w5`, `w6` | `double` | §4.2 catchability manipulability — IK·게이트 판정용 $w_5$ 와 검증용 $w_6$ 를 정의(`planner.catchability.definition`)와 무관하게 매 후보 **항상 함께** 기록한다 (D-18, C-3, plan §11) |
 | `score`, `sigma_c`, `sigma_l` | `double` | §4.10 점수, §4.6 오차 예산 두 항 (`sigma_l` 은 동결 후 `monitorOnly` 가 갱신) |
 | `dp_impact` | `double` | L7 §4.7 예상 충격량 [kg m/s] |
