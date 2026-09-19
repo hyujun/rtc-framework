@@ -565,7 +565,21 @@ passive_joints: ["joint_a", "joint_b"]
 # 잠금 관절 기준 설정값 (radian)
 lock_reference_config:
   joint_name: 0.5
+
+# 추가 frame (catch frame 등, dynamic_catching D-10/D-17). map 형식 — key 가 frame 이름.
+# BuildFullModel 직후 full 모델에 OP_FRAME (관성 0) 으로 붙고, sub/tree/actuated 는
+# full 에서 축소되므로 상속한다 (부모 관절이 잠긴 모델에서는 유지 조상 관절에 같은
+# placement 로 다시 붙음). 새 frame 은 끝에 붙어 기존 frame id 는 불변.
+# 없는 부모·이미 있는 이름·중복·비유한 값은 생성 실패, 불완전 항목은 LoadModelConfig 가 거부.
+extra_frames:
+  frame_name:
+    parent: "parent_frame"             # 링크·관절·frame 이름
+    xyz: [x, y, z]                     # m, 부모 frame 기준
+    rpy: [r, p, y]                     # rad, URDF 규약 R = Rz·Ry·Rx
+    provisional: true                  # 기본 true — 실기 소비자는 거부해야 한다
 ```
+
+로봇 config (rclcpp 파라미터) 에서는 같은 키가 `urdf.extra_frames.<name>.*` 이고 `rtc_controller_manager` 가 읽는다 (불완전 항목·builder 실패는 configure 거부).
 
 ## Model Types
 

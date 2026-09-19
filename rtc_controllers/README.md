@@ -135,7 +135,7 @@ rtc_controllers/
 │   │   ├── soft_catch.hpp                    -- soft-catch 병진 기준 `SoftCatchTranslation` (γ 프로파일, NaN 가드 — 비유한 입력에서 상태 보존). γ derate 없음 (D-8)
 │   │   ├── time_feasibility.hpp              -- 도달시간 `TMinChecked` (한계 무효 → flag + t=+∞)·γ 창 (η_v·v_max, D-9)·방향 속력·정지거리·오차 예산
 │   │   ├── decel_target.hpp · transition_table.hpp · contact_debounce.hpp -- L7 순수 조각: 가상 감속 목표, (상태 × 사유) 전이표 + 완전성 검사, 지문 접촉 debounce
-│   │   └── catching_params.hpp               -- 파라미터 검증기 (`ParseCatchingParams` + `ValidateCatchingParams` → `armable`): 활성 구성 TBD, D-9·a_dec 교차제약, ω·dt 안정 경계, ζ≠1, provisional 은 실기에서 차단
+│   │   └── catching_params.hpp               -- 파라미터 검증기 (`ParseCatchingParams` + `ValidateCatchingParams` → `armable`): 활성 구성 TBD, D-9·a_dec 교차제약, ω·dt 안정 경계, ζ≠1, provisional 은 실기에서 차단. `CheckCatchFrameProvisional` 은 robot config 의 `urdf.extra_frames.<catch_frame>.provisional` 에 같은 규칙 적용
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
