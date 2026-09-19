@@ -514,7 +514,7 @@ class DemoWbcController final : public RTControllerInterface {
   // Sensor-derived WbcState aggregates (per-fingertip |F| / contact flags /
   // grasp detection). Sourced from fingertip_data_, which ReadState refreshes
   // every tick including E-STOP — hence shared by FillLogOutput and
-  // FillEstopPublishState. Does NOT touch the TSID-derived fields.
+  // FillUnsolvedPublishState. Does NOT touch the TSID-derived fields.
   void FillWbcSensorAggregates() noexcept;
 
   // E-STOP counterpart of FillLogOutput's SeqLock store (#234 P-1). The E-8
@@ -526,8 +526,11 @@ class DemoWbcController final : public RTControllerInterface {
   // the rule's intent — sensor aggregates are refreshed, TSID health is
   // reported as not-solved (tsid_solver_ok=false, tsid_solve_us=0) instead of
   // replaying the last solve, and the pull estimate runs its E-STOP tick.
+  // Also the store for the other no-solve tick: the `!target_initialized_`
+  // early return (seed deferred after ClearEstop / on_activate until both
+  // devices are readable) — PROC-7 covers every tick Compute() runs.
   // RT tick path — noexcept, heap-free.
-  void FillEstopPublishState(double dt) noexcept;
+  void FillUnsolvedPublishState(double dt) noexcept;
 
   // ── WBC CSV fill (controller-private data: a_opt / SE3 ramp / fingertip
   //    force / TSID-QP diagnostics — see ~/.claude/plans/wbc-csv-logging.md) ─
@@ -1169,6 +1172,13 @@ class DemoWbcController final : public RTControllerInterface {
   rclcpp::TimerBase::SharedPtr mpc_timing_timer_;
   rtc::mpc::MpcTimingLogger mpc_timing_logger_;
   std::uint32_t mpc_timing_tick_{0};
+  // MPC solve-failure reporting (moved off the MPC thread, which must not do
+  // I/O): the aux tick compares HandlerMPCThread::FailedSolves() against the
+  // count last reported and warns with the delta at most every
+  // kMpcFailWarnEveryNTicks ticks (~5 s, the old in-thread throttle).
+  std::uint64_t mpc_failed_solves_reported_{0};
+  std::uint32_t mpc_fail_warn_tick_{0};
+  bool mpc_fail_warned_once_{false};
   // Logger / timer setup is one-shot per controller lifetime — gated on this
   // flag so repeated activate/deactivate cycles (Phase 2 lifecycle switch)
   // don't truncate the CSV or churn timer registration.

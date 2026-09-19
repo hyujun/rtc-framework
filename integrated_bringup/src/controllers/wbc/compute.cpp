@@ -981,7 +981,7 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
     auto& ws = wbc_state_;
     // tsid_solver_ok / qp_fail_count are the Dynamic (TSID) QP health — the
     // rtc_msgs/WbcState fields always referred to the TSID solve. Filled only
-    // on the path that actually ran a solve; FillEstopPublishState reports
+    // on the path that actually ran a solve; FillUnsolvedPublishState reports
     // "not solved this tick" instead of replaying these.
     ws.tsid_solver_ok = tsid_initialized_ && (dyn_qp_fail_count_ == 0);
     ws.qp_fail_count = dyn_qp_fail_count_;
@@ -1030,8 +1030,8 @@ void DemoWbcController::FillWbcSensorAggregates() noexcept {
 //
 // Rationale in the header.
 
-void DemoWbcController::FillEstopPublishState(double dt) noexcept {
-  RTC_TRACE_SCOPE("DemoWbcController::FillEstopPublishState");
+void DemoWbcController::FillUnsolvedPublishState(double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillUnsolvedPublishState");
   FillWbcSensorAggregates();
   auto& ws = wbc_state_;
   // No TSID solve ran this tick. Reporting the previous solve's health here is
@@ -1319,6 +1319,32 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
   if (mpc_thread_) {
     mpc_thread_->TimingProducer().Drain(
         [this](const rtc::RtTickTimingSample& s) { mpc_timing_logger_.Log(s); });
+  }
+
+  // Solve failures: HandlerMPCThread only counts them (no I/O on the MPC
+  // thread); report the delta here, throttled to ~5 s.
+  if (const auto* handler_thread =
+          dynamic_cast<const rtc::mpc::HandlerMPCThread*>(mpc_thread_.get())) {
+    static constexpr std::uint32_t kMpcFailWarnEveryNTicks = 5;
+    const std::uint64_t failed = handler_thread->FailedSolves();
+    if (failed < mpc_failed_solves_reported_) {
+      mpc_failed_solves_reported_ = 0;  // a new thread restarted its counters
+    }
+    const bool due = !mpc_fail_warned_once_ ||
+                     (mpc_timing_tick_ - mpc_fail_warn_tick_) >= kMpcFailWarnEveryNTicks;
+    if (failed > mpc_failed_solves_reported_ && due) {
+      RCLCPP_WARN(logger_,
+                  "[mpc] %lu solve(s) failed since last report (total=%lu failed=%lu "
+                  "last_err=%d phase=%d%s)",
+                  static_cast<unsigned long>(failed - mpc_failed_solves_reported_),
+                  static_cast<unsigned long>(handler_thread->TotalSolves()),
+                  static_cast<unsigned long>(failed), handler_thread->LastSolveErrorCode(),
+                  handler_thread->LastPhaseId(),
+                  handler_thread->NullHandlerHit() ? " null_handler" : "");
+      mpc_failed_solves_reported_ = failed;
+      mpc_fail_warn_tick_ = mpc_timing_tick_;
+      mpc_fail_warned_once_ = true;
+    }
   }
 
   // Periodic aggregate INFO so tmux-watchers see progress without

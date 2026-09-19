@@ -14,6 +14,10 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <thread>
 #include <vector>
 
 namespace rtc::mpc {
@@ -257,6 +261,49 @@ TEST_F(MpcSolutionManagerTest, ResetSolveStatsClearsAllFields) {
   EXPECT_EQ(s.count, 0u);
   EXPECT_EQ(s.window, 0u);
   EXPECT_EQ(s.last_ns, 0u);
+}
+
+// The stats producer (MPC thread, RT) publishes through a SeqLock and the
+// non-RT reader must never see a torn window. Sample k (1-based) carries
+// solve_duration_ns == k, so every consistent snapshot satisfies
+// last == max == count and min == count - window + 1; a mix of two publishes
+// breaks at least one of them.
+TEST_F(MpcSolutionManagerTest, SolveStatsSnapshotIsConsistentUnderConcurrentPublish) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  constexpr std::uint64_t kPublishes = 20'000;
+  std::atomic<bool> done{false};
+  std::thread producer([&] {
+    MPCSolution sol = MakeSolution(1);
+    for (std::uint64_t k = 1; k <= kPublishes; ++k) {
+      sol.timestamp_ns = k;
+      sol.solve_duration_ns = k;
+      mgr_.PublishSolution(sol);
+    }
+    done.store(true, std::memory_order_release);
+  });
+
+  std::uint64_t reads = 0;
+  std::uint64_t inconsistent = 0;
+  std::uint64_t prev_count = 0;
+  while (!done.load(std::memory_order_acquire) || reads == 0) {
+    const auto s = mgr_.GetSolveStats();
+    ++reads;
+    if (s.count == 0) {
+      continue;
+    }
+    const std::uint64_t expect_window =
+        std::min<std::uint64_t>(s.count, MPCSolutionManager::kSolveStatsWindow);
+    const bool ok = s.window == expect_window && s.last_ns == s.count && s.max_ns == s.count &&
+                    s.min_ns == s.count - s.window + 1 && s.count >= prev_count;
+    if (!ok) {
+      ++inconsistent;
+    }
+    prev_count = s.count;
+  }
+  producer.join();
+
+  EXPECT_EQ(inconsistent, 0u) << "torn snapshots out of " << reads << " reads";
+  EXPECT_EQ(mgr_.GetSolveStats().count, kPublishes);
 }
 
 // Per-tick raw-sample stream is no longer owned by MPCSolutionManager — it

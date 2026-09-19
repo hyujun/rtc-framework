@@ -705,7 +705,7 @@ TEST_F(WbcTsidPathTest, NonTsidTickWithholdsContactGeometryFromPullEstimate) {
 
 // The mirror image: on an E-STOP tick no TSID solve runs, so the same fields
 // must report "not solved" instead of replaying the last good body. This pins
-// the FillEstopPublishState / StageEstopPullTick pair against the TSID-live
+// the FillUnsolvedPublishState / StageEstopPullTick pair against the TSID-live
 // baseline the rest of this file establishes (the pre-existing E-STOP tests run
 // with no TSID stack at all, so they cannot tell a stale replay from a reset).
 TEST_F(WbcTsidPathTest, EstopAfterTsidTickReportsNotSolvedNotStale) {
@@ -720,6 +720,26 @@ TEST_F(WbcTsidPathTest, EstopAfterTsidTickReportsNotSolvedNotStale) {
   EXPECT_FALSE(ws.tsid_solver_ok) << "no solve ran this tick";
   EXPECT_FLOAT_EQ(ws.tsid_solve_us, 0.0F);
   EXPECT_FALSE(ws.pull.valid) << "pull estimate must be invalidated under E-STOP";
+}
+
+// PROC-7, the other no-solve tick: ClearEstop (and on_activate) drop
+// target_initialized_, and Compute() then returns before TSID until both
+// devices are readable. That tick must still store a not-solved body — before
+// the fix it stored nothing, so the publish thread re-shipped the last good
+// solve (tsid_solver_ok=true) under the current stamp.
+TEST_F(WbcTsidPathTest, SeedDeferredTickAfterClearEstopReportsNotSolvedNotStale) {
+  ASSERT_TRUE(configured_);
+  DriveToHold();
+  ASSERT_TRUE(ctrl_->GetPublishedWbcStateForTesting().tsid_solver_ok);
+
+  ctrl_->ClearEstop();              // re-seed request, no E-STOP active
+  state_.devices[0].valid = false;  // arm not readable → seed deferred
+  RunTicks(2, /*feedback_hand=*/false);
+
+  const auto ws = ctrl_->GetPublishedWbcStateForTesting();
+  EXPECT_FALSE(ws.tsid_solver_ok) << "no solve ran on a seed-deferred tick";
+  EXPECT_FLOAT_EQ(ws.tsid_solve_us, 0.0F);
+  EXPECT_FALSE(ws.pull.valid);
 }
 
 // ── Hand feedforward torque overlay ─────────────────────────────────────────

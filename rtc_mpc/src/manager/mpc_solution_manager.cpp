@@ -47,23 +47,17 @@ void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
   solution_buffer_.FinishWrite();
 
   // Timing probe — record the just-published solve_duration into the
-  // bounded ring. Locking here is fine: PublishSolution runs on the MPC
-  // thread (off the RT loop) and contention with GetSolveStats /
-  // ResetSolveStats is bounded to a single consumer at a time.
-  try {
-    std::lock_guard<std::mutex> lock(solve_stats_mutex_);
-    const std::size_t slot_idx = static_cast<std::size_t>(solve_stats_next_) % kSolveStatsWindow;
-    solve_stats_ring_[slot_idx] = sol.solve_duration_ns;
-    solve_stats_next_ = static_cast<std::uint32_t>((slot_idx + 1) % kSolveStatsWindow);
-    if (solve_stats_filled_ < kSolveStatsWindow) {
-      ++solve_stats_filled_;
-    }
-    ++solve_stats_total_;
-    solve_stats_last_ = sol.solve_duration_ns;
-  } catch (...) {
-    // Mutex ops can't throw in practice (non-RT) and this function is
-    // noexcept; swallow to uphold the contract.
+  // bounded ring. Lock-free: only this (MPC) thread writes the working copy,
+  // and the SeqLock store never waits on the non-RT GetSolveStats reader.
+  SolveStatsRing& w = solve_stats_work_;
+  w.ring[w.next] = sol.solve_duration_ns;
+  w.next = static_cast<std::uint32_t>((w.next + 1) % kSolveStatsWindow);
+  if (w.filled < kSolveStatsWindow) {
+    ++w.filled;
   }
+  ++w.total;
+  w.last = sol.solve_duration_ns;
+  solve_stats_lock_.Store(w);
 
   // Per-tick raw-sample stream is owned by MPCThread (producer thread).
   // It pushes one rtc::RtTickTimingPayload per main-loop iteration with
@@ -74,20 +68,12 @@ void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
 MPCSolutionManager::SolveTimingStats MPCSolutionManager::GetSolveStats() const noexcept {
   SolveTimingStats s{};
 
-  // Snapshot under the mutex, compute outside.
-  std::array<std::uint64_t, kSolveStatsWindow> snap{};
-  std::uint32_t window = 0;
-  try {
-    std::lock_guard<std::mutex> lock(solve_stats_mutex_);
-    s.count = solve_stats_total_;
-    s.last_ns = solve_stats_last_;
-    window = solve_stats_filled_;
-    for (std::size_t i = 0; i < window; ++i) {
-      snap[i] = solve_stats_ring_[i];
-    }
-  } catch (...) {
-    return s;
-  }
+  // Snapshot through the SeqLock, compute on the copy.
+  const SolveStatsRing loaded = solve_stats_lock_.Load();
+  s.count = loaded.total;
+  s.last_ns = loaded.last;
+  const std::uint32_t window = loaded.filled;
+  std::array<std::uint64_t, kSolveStatsWindow> snap = loaded.ring;
 
   s.window = window;
   if (window == 0) {
@@ -119,16 +105,8 @@ MPCSolutionManager::SolveTimingStats MPCSolutionManager::GetSolveStats() const n
 }
 
 void MPCSolutionManager::ResetSolveStats() noexcept {
-  try {
-    std::lock_guard<std::mutex> lock(solve_stats_mutex_);
-    solve_stats_ring_.fill(0);
-    solve_stats_next_ = 0;
-    solve_stats_filled_ = 0;
-    solve_stats_total_ = 0;
-    solve_stats_last_ = 0;
-  } catch (...) {
-    // As above — mutex can't throw; swallow for noexcept.
-  }
+  solve_stats_work_ = SolveStatsRing{};
+  solve_stats_lock_.Store(solve_stats_work_);
 }
 
 MPCStateSnapshot MPCSolutionManager::ReadState() const noexcept {
