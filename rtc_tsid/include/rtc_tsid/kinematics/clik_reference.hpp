@@ -115,6 +115,11 @@ class ClikReferenceGenerator {
     // the cap is a failed Compute() with LastSolve().status =
     // PROXQP_MAX_ITER_REACHED (G5-C3).
     int max_iter{20};
+    // Per-joint velocity limits [nv] (rad/s or m/s), each finite and > 0.
+    // Empty → the scalar v_limit applies to every joint (legacy). When set it
+    // replaces v_limit everywhere v_limit is used, including the re-clamp of a
+    // collapsed position box.
+    Eigen::VectorXd v_limit_per_joint;
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -202,6 +207,7 @@ class ClikReferenceGenerator {
   std::vector<int> hand_v_idx_;
   double damping_sq_{1e-4};
   double v_limit_{1.5};
+  Eigen::VectorXd v_limit_per_joint_;  // [nv] or empty (scalar v_limit_)
   double w_task_{1.0};
   double w_arm_{1e-2};
   double w_hand_{1e-2};

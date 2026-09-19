@@ -70,6 +70,23 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     throw std::runtime_error("ClikReferenceGenerator: v_limit must be finite, got " +
                              std::to_string(config.v_limit));
   }
+  if (config.v_limit_per_joint.size() != 0) {
+    if (config.v_limit_per_joint.size() != nv) {
+      throw std::runtime_error("ClikReferenceGenerator: v_limit_per_joint size " +
+                               std::to_string(config.v_limit_per_joint.size()) + " != nv " +
+                               std::to_string(nv));
+    }
+    // Per-joint limits have no "off" encoding: a joint without a bound belongs
+    // in the scalar path. NaN fails both tests below (NUM-7).
+    for (Eigen::Index i = 0; i < config.v_limit_per_joint.size(); ++i) {
+      const double v = config.v_limit_per_joint(i);
+      if (!std::isfinite(v) || !(v > 0.0)) {
+        throw std::runtime_error(
+            "ClikReferenceGenerator: v_limit_per_joint must be finite and > 0, got " +
+            std::to_string(v) + " at index " + std::to_string(i));
+      }
+    }
+  }
   if (config.max_iter < 1) {
     throw std::runtime_error("ClikReferenceGenerator: max_iter must be >= 1, got " +
                              std::to_string(config.max_iter));
@@ -151,6 +168,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   n_hand_ = static_cast<int>(hand_v_idx_.size());
   damping_sq_ = config.damping_sq;
   v_limit_ = config.v_limit;
+  v_limit_per_joint_ = config.v_limit_per_joint;
   w_task_ = config.w_task;
   w_arm_ = config.w_arm;
   w_hand_ = config.w_hand;
@@ -297,12 +315,14 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
   const int N = nv_;
   auto l = qp_data_.l.head(N);
   auto u = qp_data_.u.head(N);
-  const bool vel_box = (v_limit_ > 0.0);
+  const bool per_joint = (v_limit_per_joint_.size() == N);
+  const bool vel_box = per_joint || (v_limit_ > 0.0);
   const bool pos_box = (q_min_.size() == N && q_max_.size() == N);
   const double inf = std::numeric_limits<double>::infinity();
   for (int i = 0; i < N; ++i) {
-    double lo = vel_box ? -v_limit_ : -inf;
-    double hi = vel_box ? v_limit_ : inf;
+    const double v_max = per_joint ? v_limit_per_joint_(i) : v_limit_;
+    double lo = vel_box ? -v_max : -inf;
+    double hi = vel_box ? v_max : inf;
     if (pos_box) {
       const double q_i = q(i);  // q-index == v-index (nq == nv contract)
       lo = std::max(lo, (q_min_(i) - q_i) / dt);
@@ -319,7 +339,7 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
     // bounded, and the two directions become symmetric. With the velocity box
     // off (v_limit ≤ 0) there is no bound to fall back on, so it stays raw.
     if (lo > hi) {
-      lo = vel_box ? std::clamp(hi, -v_limit_, v_limit_) : hi;
+      lo = vel_box ? std::clamp(hi, -v_max, v_max) : hi;
       hi = lo;
     }
     l(i) = lo;

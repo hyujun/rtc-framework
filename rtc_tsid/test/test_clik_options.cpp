@@ -232,5 +232,74 @@ TEST_F(ClikOptionsTest, MaxIterCapIsHonouredAndReported) {
   EXPECT_TRUE(ref.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
 }
 
+// ── Per-joint velocity limits ───────────────────────────────────────────────
+
+TEST_F(ClikOptionsTest, PerJointVelocityLimitRejectsInvalid) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const double bad : {0.0, -1.0, nan, inf}) {
+    auto cfg = BaseConfig();
+    cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 1.0);
+    cfg.v_limit_per_joint(4) = bad;
+    ClikReferenceGenerator gen;
+    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << bad;
+  }
+  auto cfg = BaseConfig();
+  cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv - 1, 1.0);
+  ClikReferenceGenerator gen;
+  EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error);
+}
+
+// One tight joint among loose ones: the tight one is bounded by its own limit,
+// and a loose one is allowed past the tight value (so the scalar is not used).
+TEST_F(ClikOptionsTest, PerJointVelocityLimitBoundsEachJoint) {
+  auto cfg = BaseConfig();
+  cfg.v_limit = 0.01;  // would bind everything if it were still used
+  cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 2.0);
+  cfg.v_limit_per_joint(1) = 0.1;
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Constant(20.0));
+  const pinocchio::SE3 des = OffsetTarget(0.3);
+
+  double max_tight = 0.0;
+  double max_loose = 0.0;
+  Eigen::VectorXd q = q_home_;
+  for (int k = 0; k < 50; ++k) {
+    cache_.Update(q, v_zero_);
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+    for (int j = 0; j < kNv; ++j) {
+      ASSERT_LE(std::abs(gen.VRef()(j)), cfg.v_limit_per_joint(j) + kSolverEps) << j;
+    }
+    max_tight = std::max(max_tight, std::abs(gen.VRef()(1)));
+    for (const int j : {0, 2, 3, 4, 5, 6}) {
+      max_loose = std::max(max_loose, std::abs(gen.VRef()(j)));
+    }
+    q = gen.QRef();
+  }
+  EXPECT_NEAR(max_tight, 0.1, kSolverEps) << "tight joint never reached its limit";
+  EXPECT_GT(max_loose, 0.1 + 1e-3) << "loose joints were held to the tight or scalar value";
+}
+
+// A joint past q_max collapses its box; the recovery speed is re-clamped to
+// that joint's own limit.
+TEST_F(ClikOptionsTest, PerJointLimitReclampsCollapsedBox) {
+  auto cfg = BaseConfig();
+  cfg.q_min = model_->lowerPositionLimit;
+  cfg.q_max = model_->upperPositionLimit;
+  cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 2.0);
+  cfg.v_limit_per_joint(3) = 0.2;
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Constant(2.0));
+  const pinocchio::SE3 des = OffsetTarget(0.05);
+
+  Eigen::VectorXd q = q_home_;
+  q(3) = model_->upperPositionLimit(3) + 0.05;  // raw collapse would be −25 rad/s at kDt
+  cache_.Update(q, v_zero_);
+  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  EXPECT_NEAR(gen.VRef()(3), -0.2, kSolverEps);
+}
+
 }  // namespace
 }  // namespace rtc::tsid
