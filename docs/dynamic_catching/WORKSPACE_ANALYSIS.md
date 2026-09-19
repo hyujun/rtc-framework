@@ -139,7 +139,7 @@ kinematics·dynamics·QP·과제 클래스·적분은 **전부 기존 것**이�
 |---|---|---|
 | W7-1 | 바닥 높이·작업셀 경계의 `W` 좌표 (`TBD-WS-01`) | 미확인 — 사용자 제공 값 (D-12). 발사 영역 높이(world z 1.5–2.0 m)는 D-18 로 정의됨. 작업셀 경계는 S3.5a catchability 지도 착수 시 입력으로 함께 정한다 (plan §7.3) |
 | W7-2 | 공 지름·질량·재질(반발) (`TBD-BALL-01`), 허용 충격량 (`TBD-IMP-01`) | 미확인 — 사용자 제공 값 대기 (D-12, provisional 표시). sim 은 tennis preset (r 0.025 m, m 0.05 kg) 으로 진행 |
-| W7-3 | 투척 속도·거리 범위, 포구 허용 작업공간 (`TBD-BALL-02`) | 방식 닫힘 — **D-18**: 발사 영역 = base frame 수평 거리 4 m 원호, world z 1.5–2.0 m. 속도·앙각·방위 범위는 catchability 지도 (manipulability w₅ ≥ 0.1 provisional) 결과로 정한다 — S3.5a/b (plan §11) |
+| W7-3 | 투척 속도·거리 범위, 포구 허용 작업공간 (`TBD-BALL-02`) | 방식 닫힘 — **D-18**: 발사 영역 = base frame 수평 거리 4 m 원호, world z 1.5–2.0 m, 비행시간 T_f ≥ 1.0 s. 속도·앙각·방위 범위는 catchability 지도 (manipulability w₅ ≥ 0.1 provisional) 결과로 정한다 — S3.5a/b (plan §11) |
 | W7-4 | P1b 사양 실측: 구동 좌표 정의, preshape/폐쇄 자세, 전류·토크 한계, 포켓 유효 깊이 (`TBD-HAND-04, 05`) | 미확인 — 손 프로파일 S4.1, T_close,tot 실측 S4.3 (D-11), 포켓 중심은 catch frame 제안값 S2.3b (D-17, S4.1 이후) |
 
 ## 4. 수행 순서

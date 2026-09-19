@@ -386,7 +386,7 @@ catching:
 |---|---|---|---|
 | TBD-FRAME-01 | 두 로봇의 catch frame 이름, 손바닥 바깥 법선 축 | L3, L4, L5 | **→ D-17** — 부모·offset·자세를 YAML 로 열고 접근축은 catch frame +z. 후보 p1b `l_palm_link` +z, iiwa7_leap `palm_lower` −z(D-10). 값은 provisional, S2.3a/b 제안 후 사용자 sim 확인 |
 | TBD-BALL-01 | 공 지름·질량·재질(반발) | L0, L3 | 사용자 제공 (D-12). sim tennis preset(r 0.025 m, m 0.05 kg)은 임시값일 뿐 |
-| TBD-BALL-02 | 투척 속도·거리 범위, 포구 허용 작업공간 | L3, L8 | **→ D-18** — catchability 판정으로 정한다. 발사 영역은 base 수평 거리 4 m 원호, world z 1.5–2.0 m. 속도·앙각·방위 범위는 S3.5a/b 지도 결과, threshold 0.1 provisional |
+| TBD-BALL-02 | 투척 속도·거리 범위, 포구 허용 작업공간 | L3, L8 | **→ D-18** — catchability 판정으로 정한다. 발사 영역은 base 수평 거리 4 m 원호, world z 1.5–2.0 m, 비행시간 T_f ≥ 1.0 s. 속도·앙각·방위 범위는 S3.5a/b 지도 결과, threshold 0.1 provisional |
 | TBD-HAND-01 | P1b `T_close` | L3, L6 | S4 식별 도구(sim) + S4.3 실기 $T_{close,tot}$ `[HW-P1B]` |
 | TBD-HAND-02 | P1b 명령 경로(메시지·노드)와 `T_link` | L6 | 닫힘 — 손 device slot → `udp_hand_native` → `/p1b/joint_command` → `udp_hand_node`(250 Hz). 명령 stamp 미사용이라 $T_{link}$ 대신 종단 간 $T_{close,tot}$ 를 잰다 (W, D-11) |
 | TBD-HAND-03 | 지문 센서 인터페이스·주기·부호·frame | L6, L7 | 인터페이스·주기·부호 닫힘 — 실기 `HandSensorState` 250 Hz finger-on-object, sim `WrenchStamped` 도 finger-on-object (0fcc1d23). S7.3 에서 재확인 |
