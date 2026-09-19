@@ -301,5 +301,152 @@ TEST_F(ClikOptionsTest, PerJointLimitReclampsCollapsedBox) {
   EXPECT_NEAR(gen.VRef()(3), -0.2, kSolverEps);
 }
 
+// ── Acceleration box + bound_conflict (G5-B, G5-B2 CLIK side) ──────────────
+
+TEST_F(ClikOptionsTest, AccelBoxRejectsInvalid) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const double bad : {0.0, -1.0, nan, inf}) {
+    auto cfg = BaseConfig();
+    cfg.a_max = Eigen::VectorXd::Constant(kNv, 10.0);
+    cfg.a_max(2) = bad;
+    ClikReferenceGenerator gen;
+    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << bad;
+  }
+  auto cfg = BaseConfig();
+  cfg.a_max = Eigen::VectorXd::Constant(3, 10.0);
+  ClikReferenceGenerator gen;
+  EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error);
+}
+
+// G5-B: 1e4 ticks of random target jumps with the robot tracking q_ref
+// exactly. Velocity and acceleration stay inside their boxes on every tick
+// (to the solver tolerance), and the position limit is exceeded only through a
+// reported conflict, by less than the margin the CLIK box was shrunk by.
+TEST_F(ClikOptionsTest, RandomReferencesRespectVelocityAndAccelerationBoxes) {
+  constexpr double kMargin = 0.1;
+  constexpr double kAMax = 20.0;
+  auto cfg = BaseConfig();
+  cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 1.5);
+  cfg.v_limit_per_joint.tail(2).setConstant(0.1);
+  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
+  const Eigen::VectorXd q_lo = model_->lowerPositionLimit;
+  const Eigen::VectorXd q_hi = model_->upperPositionLimit;
+  cfg.q_min = q_lo.array() + kMargin;
+  cfg.q_max = q_hi.array() - kMargin;
+  cfg.q_min.tail(2) = q_lo.tail(2);  // fingers: 4 cm range, no room for a margin
+  cfg.q_max.tail(2) = q_hi.tail(2);
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Constant(20.0));
+  gen.SetPostureGains(1.0, 1.0);
+
+  cache_.Update(q_home_, v_zero_);
+  const pinocchio::SE3 home = TipInBase();
+  std::mt19937 rng(537);
+  std::uniform_real_distribution<double> offset(-0.35, 0.35);
+
+  Eigen::VectorXd q = q_home_;
+  Eigen::VectorXd v_prev = Eigen::VectorXd::Zero(kNv);
+  pinocchio::SE3 des = home;
+  int conflicts = 0;
+  double worst_overshoot = 0.0;
+  for (int k = 0; k < 10000; ++k) {
+    if (k % 250 == 0) {
+      des = home;
+      des.translation() += Eigen::Vector3d(offset(rng), offset(rng), offset(rng));
+    }
+    cache_.Update(q, v_prev);
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt)) << k;
+    const Eigen::VectorXd& v = gen.VRef();
+    const auto& diag = gen.LastSolve();
+    conflicts += diag.bound_conflict ? 1 : 0;
+    for (int j = 0; j < kNv; ++j) {
+      ASSERT_LE(std::abs(v(j)), cfg.v_limit_per_joint(j) + kSolverEps)
+          << "tick " << k << " j " << j;
+      ASSERT_LE(std::abs(v(j) - v_prev(j)), kAMax * kDt + kSolverEps) << "tick " << k << " j " << j;
+    }
+    q = gen.QRef();
+    v_prev = v;
+    for (int j = 0; j < kNv; ++j) {
+      const double over = std::max(q(j) - cfg.q_max(j), cfg.q_min(j) - q(j));
+      worst_overshoot = std::max(worst_overshoot, over);
+    }
+  }
+  RecordProperty("bound_conflict_ticks", std::to_string(conflicts));
+  RecordProperty("worst_overshoot_rad", std::to_string(worst_overshoot));
+  EXPECT_LT(worst_overshoot, kMargin) << "q left the true joint envelope";
+  if (worst_overshoot > kSolverEps) {
+    EXPECT_GT(conflicts, 0) << "overshoot without a reported conflict";
+  }
+}
+
+// G5-B2 (CLIK side): a joint driven at speed toward its limit cannot stop
+// within one tick; the acceleration bound wins, the conflict is reported with
+// the joint's bit, and the step stays within a_max·dt.
+TEST_F(ClikOptionsTest, AccelConflictKeepsAccelBoundAndReports) {
+  constexpr double kAMax = 5.0;
+  auto cfg = BaseConfig();
+  cfg.q_min = model_->lowerPositionLimit;
+  cfg.q_max = model_->upperPositionLimit;
+  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Zero());
+  gen.SetPostureGains(50.0, 0.0);  // posture drives joint 0 hard toward q_max
+
+  Eigen::VectorXd q_des = q_home_;
+  q_des(0) = cfg.q_max(0) + 1.0;
+  Eigen::VectorXd q = q_home_;
+  q(0) = cfg.q_max(0) - 0.5;
+  // Ramp up to speed, far from the limit.
+  for (int k = 0; k < 200 && q(0) < cfg.q_max(0) - 0.02; ++k) {
+    cache_.Update(q, v_zero_);
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, pinocchio::SE3::Identity(), q_des, kDt));
+    q = gen.QRef();
+  }
+  ASSERT_GT(gen.VRef()(0), 0.5) << "joint 0 never got up to speed";
+
+  bool saw_conflict = false;
+  for (int k = 0; k < 400; ++k) {
+    const double v_before = gen.VRef()(0);
+    cache_.Update(q, v_zero_);
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, pinocchio::SE3::Identity(), q_des, kDt));
+    ASSERT_LE(std::abs(gen.VRef()(0) - v_before), kAMax * kDt + kSolverEps) << k;
+    if (gen.LastSolve().bound_conflict) {
+      saw_conflict = true;
+      EXPECT_TRUE(gen.LastSolve().conflict_mask & 1U) << "joint 0 bit";
+    }
+    q = gen.QRef();
+  }
+  EXPECT_TRUE(saw_conflict);
+}
+
+// ResetAnchor clears v_prev: after a fast run, the next step starts from rest.
+TEST_F(ClikOptionsTest, ResetAnchorRestartsAccelerationFromRest) {
+  constexpr double kAMax = 5.0;
+  auto cfg = BaseConfig();
+  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Constant(20.0));
+  const pinocchio::SE3 des = OffsetTarget(0.3);
+  Eigen::VectorXd q = q_home_;
+  for (int k = 0; k < 300; ++k) {
+    cache_.Update(q, v_zero_);
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+    q = gen.QRef();
+  }
+  ASSERT_GT(gen.VRef().cwiseAbs().maxCoeff(), 2.0 * kAMax * kDt);
+
+  gen.ResetAnchor();
+  cache_.Update(q_home_, v_zero_);
+  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  EXPECT_LE(gen.VRef().cwiseAbs().maxCoeff(), kAMax * kDt + kSolverEps);
+  EXPECT_FALSE(gen.LastSolve().bound_conflict);
+  // Re-anchored to the measured state, not carried from the fast run.
+  EXPECT_LE((gen.QRef() - q_home_).cwiseAbs().maxCoeff(), kAMax * kDt * kDt + 1e-12);
+}
+
 }  // namespace
 }  // namespace rtc::tsid

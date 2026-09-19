@@ -87,6 +87,25 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
       }
     }
   }
+  if (config.a_max.size() != 0) {
+    if (config.a_max.size() != nv) {
+      throw std::runtime_error("ClikReferenceGenerator: a_max size " +
+                               std::to_string(config.a_max.size()) + " != nv " +
+                               std::to_string(nv));
+    }
+    if (nv > 64) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: acceleration box needs nv <= 64 (conflict_mask width), got " +
+          std::to_string(nv));
+    }
+    for (Eigen::Index i = 0; i < config.a_max.size(); ++i) {
+      const double a = config.a_max(i);
+      if (!std::isfinite(a) || !(a > 0.0)) {
+        throw std::runtime_error("ClikReferenceGenerator: a_max must be finite and > 0, got " +
+                                 std::to_string(a) + " at index " + std::to_string(i));
+      }
+    }
+  }
   if (config.max_iter < 1) {
     throw std::runtime_error("ClikReferenceGenerator: max_iter must be >= 1, got " +
                              std::to_string(config.max_iter));
@@ -169,6 +188,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   damping_sq_ = config.damping_sq;
   v_limit_ = config.v_limit;
   v_limit_per_joint_ = config.v_limit_per_joint;
+  a_max_ = config.a_max;
   w_task_ = config.w_task;
   w_arm_ = config.w_arm;
   w_hand_ = config.w_hand;
@@ -183,6 +203,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
 
   q_ref_.setZero(nv_);
   v_ref_.setZero(nv_);
+  v_prev_.setZero(nv_);
   j_task_.setZero(6, nv_);
   v_post_arm_.setZero(n_arm_);
   v_post_hand_.setZero(n_hand_);
@@ -318,6 +339,7 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
   const bool per_joint = (v_limit_per_joint_.size() == N);
   const bool vel_box = per_joint || (v_limit_ > 0.0);
   const bool pos_box = (q_min_.size() == N && q_max_.size() == N);
+  const bool accel_box = (a_max_.size() == N);
   const double inf = std::numeric_limits<double>::infinity();
   for (int i = 0; i < N; ++i) {
     const double v_max = per_joint ? v_limit_per_joint_(i) : v_limit_;
@@ -341,6 +363,27 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
     if (lo > hi) {
       lo = vel_box ? std::clamp(hi, -v_max, v_max) : hi;
       hi = lo;
+    }
+    if (accel_box) {
+      // Acceleration window around the previous command (L5 §4.3). [lo, hi] is
+      // non-empty here (the collapse above guarantees it). If the window misses
+      // it, keep the acceleration bound — a one-tick velocity jump on a
+      // position interface is what a protective stop reacts to — and report
+      // the conflict; the position overshoot it allows is what limit_margin is
+      // for, and the supervisor aborts on the flag.
+      const double a_dt = a_max_(i) * dt;
+      const double w_lo = v_prev_(i) - a_dt;
+      const double w_hi = v_prev_(i) + a_dt;
+      if (w_lo > hi || w_hi < lo) {
+        const double v = std::clamp(std::clamp(v_prev_(i), lo, hi), w_lo, w_hi);
+        lo = v;
+        hi = v;
+        last_solve_.bound_conflict = true;
+        last_solve_.conflict_mask |= (std::uint64_t{1} << static_cast<unsigned>(i));
+      } else {
+        lo = std::max(lo, w_lo);
+        hi = std::min(hi, w_hi);
+      }
     }
     l(i) = lo;
     u(i) = hi;
@@ -402,6 +445,7 @@ bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, doub
     return false;
   }
   anchor_initialized_ = true;
+  v_prev_ = v_ref_;
   return true;
 }
 

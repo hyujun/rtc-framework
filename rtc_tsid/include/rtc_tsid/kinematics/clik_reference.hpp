@@ -7,6 +7,7 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Core>
 
+#include <cstdint>
 #include <vector>
 
 namespace rtc::tsid {
@@ -120,6 +121,16 @@ class ClikReferenceGenerator {
     // replaces v_limit everywhere v_limit is used, including the re-clamp of a
     // collapsed position box.
     Eigen::VectorXd v_limit_per_joint;
+    // Acceleration box [nv] (rad/s² or m/s²), each finite and > 0; empty → off.
+    // Intersects the velocity ∩ position box with v_prev ± a_max·dt, v_prev =
+    // the v_ref of the last successful Compute() (0 after Init / ResetAnchor).
+    // When the intersection is empty the acceleration window wins: the joint
+    // gets l = u = clamp(v*, v_prev − a·dt, v_prev + a·dt), v* the point of the
+    // velocity ∩ position interval nearest v_prev, and LastSolve() raises
+    // bound_conflict with the joint's bit in conflict_mask (L5 §4.3). Requires
+    // nv ≤ 64 (the mask width). The same a_max must feed the planner's
+    // reach-time check so the plan matches what CLIK executes (D-16).
+    Eigen::VectorXd a_max;
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -175,15 +186,27 @@ class ClikReferenceGenerator {
   /// Diagnostic only — it never changes the outputs. Filled on every call;
   /// a call rejected by its preconditions leaves reached_solve = false.
   struct SolveDiagnostics {
-    bool reached_solve{false};  ///< preconditions held and the QP was solved
-    bool converged{false};      ///< QP converged with finite iterates
-    bool non_finite{false};     ///< QP iterates or q_ref / v_ref were non-finite
-    int status{-1};             ///< proxsuite::proxqp::QPSolverOutput (0 = SOLVED), −1 = none
-    int iterations{0};          ///< ProxQP outer iterations
-    double solve_time_us{0.0};  ///< wall time of the solve [µs]
+    bool reached_solve{false};   ///< preconditions held and the QP was solved
+    bool converged{false};       ///< QP converged with finite iterates
+    bool non_finite{false};      ///< QP iterates or q_ref / v_ref were non-finite
+    int status{-1};              ///< proxsuite::proxqp::QPSolverOutput (0 = SOLVED), −1 = none
+    int iterations{0};           ///< ProxQP outer iterations
+    double solve_time_us{0.0};   ///< wall time of the solve [µs]
+    bool bound_conflict{false};  ///< acceleration box overrode velocity ∩ position
+    std::uint64_t conflict_mask{0};  ///< bit i = velocity index i conflicted
   };
 
   [[nodiscard]] const SolveDiagnostics& LastSolve() const noexcept { return last_solve_; }
+
+  /// Forget the integration anchor and the previous velocity: the next
+  /// Compute() re-anchors q_ref to cache.q and the acceleration box starts
+  /// from v_prev = 0. Call at activation, re-arm and E-STOP release (L5 §4.2)
+  /// — leaving v_prev from the previous run would make the first tick's
+  /// acceleration box relative to a stale velocity. RT-safe.
+  void ResetAnchor() noexcept {
+    anchor_initialized_ = false;
+    v_prev_.setZero();
+  }
 
  private:
   // Shared stages of Compute(). Each keeps the floating-point accumulation
@@ -208,6 +231,8 @@ class ClikReferenceGenerator {
   double damping_sq_{1e-4};
   double v_limit_{1.5};
   Eigen::VectorXd v_limit_per_joint_;  // [nv] or empty (scalar v_limit_)
+  Eigen::VectorXd a_max_;              // [nv] or empty (acceleration box off)
+  Eigen::VectorXd v_prev_;             // [nv] v_ref of the last successful Compute()
   double w_task_{1.0};
   double w_arm_{1e-2};
   double w_hand_{1e-2};
