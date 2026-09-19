@@ -59,6 +59,11 @@ add_library(rtc_controllers STATIC
   # configure time.
   src/params/policy_io_params.cpp
   src/params/reach_gate_params.cpp
+  # dynamic_catching S1.7: YAML schema + G0-C validator for the catching core
+  # (rtc::catching). Same G2 schema-layer shape as the siblings above — POD +
+  # yaml-cpp parser, non-RT, called once at configure time — plus a fixed-
+  # capacity, allocation-free ValidateCatchingParams() (L0 §5.3, §9 G0-C).
+  src/params/catching_params.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -359,6 +364,72 @@ if(BUILD_TESTING)
   # boundaries and the ramp are pinned as numbers, not as "roughly works".
   ament_add_gtest(test_reach_gate test/test_reach_gate.cpp)
   target_link_libraries(test_reach_gate rtc_controllers)
+
+  # ── catching core (dynamic_catching S1, rtc::catching) ─────────────────────
+  # ROS-free numerical core for ball catching. The suites port the reference
+  # tests under docs/dynamic_catching/ with their thresholds unchanged; the gate
+  # IDs (G0-*, G2-*, G3-*, G4-*, G7-*) are those of the L0–L7 design docs.
+  #
+  # Ball flight fixture (G0-A). Test-only: it generates the reference
+  # trajectories the other catching suites compare against, and the controller
+  # never re-propagates the ball, so it lives under the never-installed
+  # test/include.
+  ament_add_gtest(test_catching_ball_fixture test/test_catching_ball_fixture.cpp)
+  target_link_libraries(test_catching_ball_fixture rtc_controllers)
+  target_include_directories(test_catching_ball_fixture PRIVATE ${rtc_controllers_test_include})
+
+  # Time axes (G0-E): the cross-axis comparisons that must NOT compile are
+  # static_asserts in this TU, so a regression there is a build break rather
+  # than a failed case.
+  ament_add_gtest(test_catching_time_types test/test_catching_time_types.cpp)
+  target_link_libraries(test_catching_time_types rtc_controllers)
+
+  # Trajectory snapshot + quintic Hermite sampler (G2-A..E, G2-G, G2-H). The RT
+  # read path is gated by both allocation sensors (operator new and Eigen's own
+  # allocator), hence both test include dirs and the program-wide
+  # -Wmismatched-new-delete false positive of the alloc gate.
+  ament_add_gtest(test_catching_traj_sampler test/test_catching_traj_sampler.cpp)
+  target_link_libraries(test_catching_traj_sampler rtc_controllers)
+  target_include_directories(test_catching_traj_sampler PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_traj_sampler PRIVATE -Wno-mismatched-new-delete)
+
+  # Soft-catch translational reference (G4-A..C, G4-F, G4-G, G4-I). The γ-derate
+  # cases of the reference are not ported (D-8) and the axis-alignment cases
+  # (G4-D) belong to rtc_math se3 (S2.1). Same two-sensor allocation gate.
+  ament_add_gtest(test_catching_soft_catch test/test_catching_soft_catch.cpp)
+  target_link_libraries(test_catching_soft_catch rtc_controllers)
+  target_include_directories(test_catching_soft_catch PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_soft_catch PRIVATE -Wno-mismatched-new-delete)
+
+  # Reachability gates (G3-A, G3-B): minimum joint time against a fixed table
+  # from verify_l3.py's independent closed form, γ window with the D-9 TCP
+  # speed, directional speed, stopping distance, error budget. Same two-sensor
+  # allocation gate (the planner may run SCHED_FIFO).
+  ament_add_gtest(test_catching_time_feasibility test/test_catching_time_feasibility.cpp)
+  target_link_libraries(test_catching_time_feasibility rtc_controllers)
+  target_include_directories(test_catching_time_feasibility PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_time_feasibility PRIVATE -Wno-mismatched-new-delete)
+
+  # L7 supervisor "pure pieces" (S1.8 / L7.1-L7.3): decel target (§4.3),
+  # transition table as data (§4.1/§4.2), contact debounce (§4.4). Same
+  # global operator-new counting gate as the other RT-1 suites above
+  # (${rtc_controllers_test_include}) PLUS rtc_base's Eigen allocation
+  # tripwire (${rtc_base_test_include}) — the decel target math is
+  # Eigen::Vector3d, which operator-new counting cannot see.
+  ament_add_gtest(test_catching_supervisor_core test/test_catching_supervisor_core.cpp)
+  target_link_libraries(test_catching_supervisor_core rtc_controllers)
+  target_include_directories(test_catching_supervisor_core PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_supervisor_core PRIVATE -Wno-mismatched-new-delete)
+
+  # Parameter validator (S1.7, G0-C): active-config TBD, D-9/L7 §4.3 cross-
+  # constraints, ζ·ω·h discretization, hand caging gap (L6 §4.2), provisional
+  # gating. Model-free — no URDF fixture needed.
+  ament_add_gtest(test_catching_params test/test_catching_params.cpp)
+  target_link_libraries(test_catching_params rtc_controllers)
 endif()
 
 ament_package()

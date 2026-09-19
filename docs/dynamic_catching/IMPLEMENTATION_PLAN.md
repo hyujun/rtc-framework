@@ -1,7 +1,7 @@
 # dynamic_catching — 전체 구현 계획 (living document)
 
-- 상태: **S0 완료** (2026-09-19) — S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
-- 최종 갱신: 2026-09-19 (S0.7·S0.9 결과 기록. 정합화 개정의 finding 재검증 결과는 §7.4)
+- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, 브랜치 `feat/dynamic-catching-s1` — S1.9 는 S2.1 후, §4.2). S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
+- 최종 갱신: 2026-09-19 (S1 게이트 결과 §4.4 S1, S0.7·S0.9 결과. 정합화 개정의 finding 재검증 결과는 §7.4)
 - Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
 - 저장 위치: [handoff.md](../../agent_docs/handoff.md) §5 는 plan 파일을 커밋하지 않는다. 이 문서는 같은 폴더의 설계 문서(v0.5)와 함께 리뷰되어야 하는 결정 로그라서 설계 문서와 같은 브랜치에 커밋한다 — 사용자 결정 P-2 (§7.1). cross-tool 인계면은 여전히 issue #537 이다.
@@ -136,12 +136,13 @@ S0.6 에서 승인된 예외 문구 (2026-09-19, [invariants.md](../../agent_doc
 ### 4.2 단계 DAG
 
 ```
-S0 ─┬─ S1  : S1.1–S1.9            (S1.3 의 D-2 변환 함수는 S0.6 승인 후)
+S0 ─┬─ S1  : S1.1–S1.8            (S1.3 의 D-2 변환 함수는 S0.6 승인 후)
     ├─ S2  : S2.1, S2.2a → S2.2b, S2.3a, S2.5, 마지막에 S2.4
     ├─ S3a : S3.1a, S3.2*, S3.3, S3.4, S3.7, S3.8   (* S0.8 승인 후)
     └─ S4a : S4.0 → S4.1, S4.2, S4.3, S4.5
 
 S4.1 ──────────────────────────────► S2.3b (포켓 중심 offset)
+S1, S2.1 ──────────────────────────► S1.9 (IK 회전 행이 S2.1 의 축 정렬 회전벡터를 쓴다 — 2026-09-19 사용자 결정)
 S0.7, S1.9, S2.3a, S2.3b, S3.2 ────► S3.5a (kinematic catchability 지도)
 S3.5a, S4.2, S4.5, S2.5, S1.5, S1.7 ► S4.4 (go/no-go)
 S4.4 ─► S3.5b (gate-catchable 지도) ─► S3.6 (vision 요구 사양) ─► D-12 투척 분포 동결 (사용자)
@@ -158,7 +159,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 | 단계 | 상태 | 게이트 결과 |
 |---|---|---|
 | S0 결정·문서 v0.5·계약 | 완료 (2026-09-19) | S0.2 W 기록 칸 전부 채움. S0.3 설계 문서 12개(v0.5 헤더) 동기화, 이 문서 포함 `validate_docs` 13 files clean. 정합화 개정 (§7.4). 승인: issue #537 코멘트. S0.7 필요 지평 0.46–0.86 s (R2 지배)·`kCap` 40 제안, 0.5 s profile 부족 (§4.4 S0 결과). S0.9 검정력 표 (§1a) |
-| S1 순수 수치 코어 | 대기 | — |
+| S1 순수 수치 코어 | S1.1~S1.8 완료 (2026-09-19, 브랜치 `feat/dynamic-catching-s1`), S1.9 는 S2.1 후 | 이식·회귀·RT·시간 PASS, 검증기 PASS(provisional), S1.8 PASS (G7-C 임계 NOT_EVALUATED), backfill NOT_EVALUATED(S3.6) — §4.4 S1 결과 |
 | S2 기존 rtc_* 일반화 | 대기 | — |
 | S3a 시뮬레이션 기반 | 대기 | — |
 | S4a 손 타이밍 측정 | 대기 | — |
@@ -243,19 +244,37 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 - S1.6 `ball_dynamics` 는 test fixture 전용 위치로
 - S1.7 파라미터 검증 로직: 활성 구성 키만 TBD 검사, 교차제약 표(D-9 반영), ζ·ω·h 검사(`dt` 기준), provisional 값의 실기 arm 차단
 - S1.8 L7 순수 조각: 감속 목표, 전이표를 데이터로, 접촉 debounce
-- S1.9 포구 자세 IK 반복 루프 + catchability 판정 함수 (L3 §4.2, §11): `DifferentialIk` (m=5) 를 반복 호출하는 루프, 수렴 판정·스텝 제한·seed = wait_pose, 해에서 w₅·w₆ 계산과 fail-closed 판정 (§11). 입력은 `RtModelHandle` (rtc_controllers 는 이미 `rtc_urdf_bridge` 에 의존). **S3.5a/b 지도 도구와 S6.2 런타임이 이 함수 하나를 쓴다.** 추상 interface 는 만들지 않는다 (ARCH-3)
+- S1.9 **(S2.1 머지 후 — IK 회전 행 $e_a^C$ 가 S2.1 의 `rtc_math` 축 정렬 회전벡터다, L3 §4.2. S1 안에 사본을 두면 P5 위반이라 2026-09-19 사용자 결정으로 뒤로 미뤘다)** 포구 자세 IK 반복 루프 + catchability 판정 함수 (L3 §4.2, §11): `DifferentialIk` (m=5) 를 반복 호출하는 루프, 수렴 판정·스텝 제한·seed = wait_pose, 해에서 w₅·w₆ 계산과 fail-closed 판정 (§11). 입력은 `RtModelHandle` (rtc_controllers 는 이미 `rtc_urdf_bridge` 에 의존). **S3.5a/b 지도 도구와 S6.2 런타임이 이 함수 하나를 쓴다.** 추상 interface 는 만들지 않는다 (ARCH-3)
 
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
-| 이식 | 참조 테스트 전부 GTest 통과 (L0 G0-A, L2 G2-A~D·G2-G, L3 G3-A·G3-B, L4 G4-A~D·G4-F) | — |
-| 회귀 | `n > kCap`·NaN·비단조·`dt_min` 미만 입력에서 ASan/UBSan 무오류 + invalid (G2-H, G1-A 의 해당 항목), NaN 목표 가드 (G4-I) | — |
+| 이식 | 참조 테스트 전부 GTest 통과 (L0 G0-A, L2 G2-A~D·G2-G, L3 G3-A·G3-B, L4 G4-A~C·G4-F). G4-D (축 정렬) 는 S2.1, derate 테스트는 D-8 로 기능과 함께 제외 (G4-E) | — |
+| 회귀 | `n > kCap`·NaN·`dt_min` 미만 입력에서 ASan/UBSan 무오류 + invalid (G2-H, G1-A 의 해당 항목), 비단조 쌍 invalid (G2-G), NaN 목표 가드 (G4-I) | — |
 | RT | 대상 경로 `ScopedNoMalloc`·`ScopedAllocGate` 할당 0, `noexcept` (G0-B, G2-E, G4-G) | — |
 | 시간 | 다른 시간 타입끼리 비교가 컴파일되지 않음, T_arm ≠ 0 fixture (G0-E) | — |
 | 검증기 | 활성 구성 TBD·provisional·교차제약·ζ·ω·h (G0-C) | — |
-| S1.9 | 합성 기구학에서 수렴·스텝 제한, w₅·w₆ 유한차분 대조, zero speed·NaN/Inf·rank-deficient·near-singular 입력에서 후보 탈락 + 사유 코드 (G3-I 의 함수 부분) | — |
+| S1.8 | 전이표 완전성 검사 (G7-A 의 표 부분), 감속 전환 시 기준 상태 연속 < 1e-9 (G7-B), 합성 잡음 접촉 오경보율 기록 (G7-C — 임계는 사용자 결정이라 NOT_EVALUATED), 할당 0 (G7-D) | G7-C 임계: 사용자 |
+| S1.9 (S2.1 후) | 합성 기구학에서 수렴·스텝 제한, w₅·w₆ 유한차분 대조, zero speed·NaN/Inf·rank-deficient·near-singular 입력에서 후보 탈락 + 사유 코드 (G3-I 의 함수 부분) | S2.1 |
 | backfill | S3.6 의 `n_max ≤ kCap`. 초과하면 `kCap` 상향 후 이 표 재실행 | S3.6 |
 
 GUI·plot: 면제 (D-19, §13).
+
+**S1 결과 (2026-09-19, S1.1~S1.8).** 코드: rtc_controllers `include/rtc_controllers/catching/` (헤더 전용) + `src/params/catching_params.cpp`, 테스트 `test/test_catching_*.cpp` 7 스위트 130 케이스. 측정: colcon (ws root) 로 rtc_controllers 전체 652 케이스 green·새 경고 0, 같은 7 스위트를 ASan/UBSan (+`_GLIBCXX_ASSERTIONS`) 별도 빌드로 실행해 보고 0 (레시피: [testing-debug.md](../../agent_docs/testing-debug.md) sensor matrix). positive control: `SampleAt` 의 `n > kCap` 검사를 지운 사본은 G2-H 케이스에서 중단된다. `/code-review` (브랜치 전체) 반영 4건: FAULT 에서 ESTOP 해제가 래치를 풀던 전이 행 (L7 §4.2 사유표 "전 구간 → IDLE" 을 그대로 옮긴 것 — P-1·S5.1(d) 와 모순이라 사유표에 FAULT 예외를 적었다), 없는 YAML 섹션이 `YAML::InvalidNode` 를 던지던 parser (이제 기본값으로 읽고 검증기가 막는다), 빈 손 배열 통과, `Check()`·`Interpolate` 의 wire 시각 int64 뺄셈 overflow (포화 연산. 되돌린 사본은 UBSan 에서 중단).
+
+| 게이트 | 판정 | 근거 |
+|---|---|---|
+| 이식 | PASS | G0-A 6종, G2-A~D·G2-G, G3-A (verify_l3.py 독립 python 닫힌식 고정표 42행 < 1e-9 — LP 대조 ≤ 1.2e-5 s. 참조의 `cases.txt` 는 C++ 가 자기 출력을 대조하는 순환이라 대체), G3-B (§4.8 표 ±5%), G4-A~C·G4-F — 임계 무수정. 참조 L2 fixture 60 점 → 40 점 (`kCap`) 과 ns 반올림 시각에서의 참값 적분은 fixture 변경 (사용자 승인). 참조 G4-B 의 `step(…, dt=0)` 읽기는 `Evaluate()` 로 |
+| 회귀 | PASS | G2-H·G1-A 해당분 (개수 경계 선검사, NaN/Inf, `dt_min` 미만, 한계 무효), G2-G, G4-I (비유한 목표·t·dt·명령 오버플로 → 상태 보존 + invalid + saturated, 다음 유한 입력에서 쌍둥이 실행과 bit-identical) |
+| RT | PASS | `ScopedAllocGate` + `ScopedNoMalloc` 할당 0: `SampleAt`·`Check`·`Step`·`Evaluate`·도달시간/γ 창 게이트·감속 목표·debounce. 전부 `noexcept`. 기록 (개발 PC, 비 RT 커널): 스냅샷 복사 3240 B/tick, 복사 + `SampleAt` 최악 3.4 µs, `Step` 최악 0.2–0.4 µs |
+| 시간 | PASS | G0-E — 교차 축 비교·산술·변환이 컴파일되지 않음을 `static_assert` 로, T_arm = 50 ms fixture 에서 §3 표의 판정별 축 고정. D-2 (3) 변환은 미래 stamp·오버플로 거부 |
+| 검증기 | PASS(provisional) | G0-C 전 항목 (29 케이스, 사유 코드까지 단언). 단 ωh ≥ 0.828 경계는 L4 §6 의 `reference.omega` 범위 [1, 25] 안에서 도달 불가 (5000 Hz·100 Hz 모두 s ≤ 0.25) — 범위 밖 ω 로 공식만 검증했다 (§7.3) |
+| S1.8 | PASS · G7-C NOT_EVALUATED(임계) | G7-A 표 완전성 (도달 불가·미사용 사유·중복 칸 각각 음성 테스트), G7-B 진입 시 e = ė = 0 정확·τ_s 연속, G7-D 할당 0. G7-C 오경보: k_σ = 3 합성 잡음 **0/20000** (debounce 후) 기록 |
+| S1.9 | 대기 (S2.1 후) | §4.2 |
+| backfill | NOT_EVALUATED(S3.6) | — |
+
+- 기록: 0.05 s 간격 17 점 (D-15 sim profile) 보간 오차 — 위치 2.0e-11 m, 가속 1.9e-7 m/s² (1/60 s 간격은 3.2e-14 m). S3.6 간격 선택의 입력
+- 구현 중 정정 (설계 문서 반영): L3 §5.2 `q_star` 용량도 "`kCap`" 이라 불러 궤적 용량과 이름이 겹침 → `kMaxPlanNv` (32). L4 §5.1 "dt ≤ 0 invalid" 와 참조 G4-B 의 dt = 0 읽기 충돌 → `Evaluate()` 분리. `SampleAt` 은 비단조 쌍을 구조적으로 선택하지 않으므로 G2-G 는 `Interpolate` 직접 호출로만 도달한다
+- 수치 감사 (read-only 에이전트) finding 전부 반영: `Evaluate()` 가 a_max < 0·demand 0 에서 NaN 을 valid 로 내던 fail-open (blocking), 1 ms 미만 γ 램프·100 µs 미만 보간 구간·int64 시각 오버플로·`TRest` 직접 호출·+Inf 속도 입력 — 각 회귀 테스트 포함
 
 #### S2 기존 rtc_* 일반화 (code review 대상)
 
@@ -548,7 +567,9 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 **단계에서 정할 것 (결정은 해당 단계)**
 
-- S1.7 η_v·D-16 가속 box 의 YAML 키 이름 (plan 이 이름을 정하지 않음)
+- ~~S1.7 η_v·D-16 가속 box 의 YAML 키 이름~~ — S1.7 에서 닫음: η_v 는 L3 §6 의 `planner.gamma.eta_v`, a_dec 는 `supervisor.decel.a_dec` 로 문서에 이미 있었다. 가속 box 키는 S2.5 에서. S1.7 이 새로 둔 키: `core.ball.provisional`·`planner.catchability.manipulability_min.provisional`·`robot.hand.provisional` (문서는 provisional 을 산문으로만 표시, 기본값 true = fail-closed). catch frame 의 provisional (D-17) 은 `urdf.extra_frames` 쪽이라 S2.3a 에서 검증기에 연결
+- G0-C 의 ωh 경계 (100·500·5000 Hz) 는 `reference.omega` 범위 [1, 25] rad/s 안에서 도달 불가 — 범위를 넓히거나 게이트 문구를 "범위 검사가 ωh 안정을 함의" 로 고칠지 (S1 결과, 사용자 판단)
+- L7 전이표 (S1.8) 의 해석 3건을 S7.2 에서 확인: `Reason::kNone` = 각 상태의 정상 전진, IDLE homing 은 `kIdle` 안, ARMED→IDLE (§4.5 조건 위반) 은 전용 사유가 없어 `kParamsTbd` 재사용 (`transition_table.hpp` 헤더)
 - S2.2a CLIK 확장 구조 (행 선택형 vs formulation 클래스)
 - S2.2 CLIK: 관절별 속도 한계 (현재 `v_limit` 스칼라), q_c 평가용 캐시 분리, q_c 모드 실패 후 재앵커 규칙, `anchor_drift_max` 와 `TRACK_ERR` 중복 정리
 - S3.1a ε_clk 할당 비율 제안

@@ -235,7 +235,7 @@ S1 이식 시 변경:
 - **NaN 가드 (S1.4).** 참조 `step` 은 비유한 목표(`TargetState` 의 NaN/Inf)가 한 번 들어오면 내부 상태 `x_`·`xd_` 가 NaN 으로 **영구 오염**된다. 또 `u.norm() > a_max` 비교가 NaN 에서 거짓이라 **포화 플래그도 서지 않는다**. 이식본은 비유한 입력(목표·`t`·`dt`) 시 **내부 상태를 보존**하고 출력을 invalid 로 표시하며, 포화 검출은 NaN 에서도 참이 되도록 부정 비교(`!(un <= a_max)`)로 쓴다.
 - **derate 제거 (D-8).** `derateGamma`·`derateJump`·`DerateResult` 는 이식하지 않는다 (§5.2.1)
 - **축 정렬 함수 유한성 (S2.1).** 데드밴드·반평행에서 NaN·폭주 금지 (§4.5)
-- **dt 검증.** `dt` 는 `ControllerState::dt` (100–5000 Hz) 이고, $\omega h$ 검사는 configure 의 검증기가 한다 (§4.7). 비유한·비양수 `dt` 는 invalid
+- **dt 검증.** `dt` 는 `ControllerState::dt` (100–5000 Hz) 이고, $\omega h$ 검사는 configure 의 검증기가 한다 (§4.7). 비유한·비양수 `dt` 는 invalid. 참조 테스트가 `step(o, t, 0)` 으로 하던 "적분 없이 e·ė 읽기" 는 별도 `Evaluate(o, t)` 로 분리했다 (S1.4)
 - RT 경로 코드이므로 할당 0·`noexcept` 유지 (G4-G)
 - 테스트: `test_l4.cpp` → GTest (S1.1), NaN 회귀 테스트 추가 (G4-I)
 
