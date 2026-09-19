@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 namespace rtc::tsid {
 namespace {
 
@@ -242,6 +244,44 @@ TEST_F(QPSolverWrapperTest, TsidLikeDimension) {
   ASSERT_TRUE(result.converged);
   EXPECT_GT(result.iterations, 0);
   EXPECT_LT(result.solve_time_us, 10000.0);  // < 10ms
+}
+
+// A non-finite solve must report failure and must not latch the solver off.
+// ProxQP returns PROXQP_SOLVED with NaN iterates for a NaN g (NaN residuals pass
+// its convergence test), and every Solve() warm-starts from the previous
+// iterates — before the fix the NaN solve came back converged with a NaN x_opt
+// and every later finite solve failed from the NaN warm start.
+TEST_F(QPSolverWrapperTest, RecoversAfterNonFiniteSolve) {
+  solver.Init(3, 0, 3);
+
+  QPData qp;
+  qp.Init(3, 0, 3);
+  qp.n_vars = 3;
+  qp.n_ineq = 3;
+  qp.H.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+  qp.C.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+  qp.l.head(3).setConstant(-0.5);
+  qp.u.head(3).setConstant(0.5);
+
+  // min ½‖x‖² − gᵀx over the box [-0.5, 0.5]³ → x* = clamp(g, ±0.5).
+  qp.g.head(3) << -0.2, -1.0, 0.3;
+  ASSERT_TRUE(solver.Solve(qp).converged);
+
+  // A NaN task reference spreads through Jᵀr into every entry of g (the CLIK
+  // case); a single NaN entry can stay confined to a box-clamped component.
+  qp.g.head(3).setConstant(std::numeric_limits<double>::quiet_NaN());
+  const auto& bad = solver.Solve(qp);
+  EXPECT_FALSE(bad.converged);
+  EXPECT_TRUE(bad.x_opt.allFinite()) << "x_opt keeps the last good solution";
+
+  qp.g.head(3) << -0.1, 0.2, 2.0;
+  for (int k = 0; k < 5; ++k) {
+    const auto& r = solver.Solve(qp);
+    ASSERT_TRUE(r.converged) << "solve " << k << " after the non-finite tick";
+    EXPECT_NEAR(r.x_opt(0), 0.1, 1e-6);
+    EXPECT_NEAR(r.x_opt(1), -0.2, 1e-6);
+    EXPECT_NEAR(r.x_opt(2), -0.5, 1e-6);
+  }
 }
 
 }  // namespace

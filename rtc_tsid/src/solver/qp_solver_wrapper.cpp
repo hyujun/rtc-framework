@@ -119,9 +119,26 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
 
   qp_->solve();
 
+  // Non-finite iterates (e.g. a NaN task reference reaching g). ProxQP still
+  // reports PROXQP_SOLVED in that case — every residual comparison against NaN
+  // is false, so its convergence test passes — and the caller received
+  // converged = true with a NaN x_opt. Worse, every Solve() warm-starts from the
+  // previous iterates, so every later (finite) solve started from NaN and
+  // failed too: one bad tick latched the caller's QP off for good
+  // (dynamic_catching S2.2a, F-B1). Treat non-finite iterates as a failed solve
+  // and start the next solve without an initial guess; the first finite result
+  // restores warm-starting. A failed solve with finite iterates (max_iter hit)
+  // keeps warm-starting, as before. Only a settings enum changes — no
+  // allocation.
+  const bool iterates_finite =
+      qp_->results.x.allFinite() && qp_->results.y.allFinite() && qp_->results.z.allFinite();
+  qp_->settings.initial_guess =
+      iterates_finite ? proxsuite::proxqp::InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT
+                      : proxsuite::proxqp::InitialGuessStatus::NO_INITIAL_GUESS;
+
   // 결과 추출 — caller 가 알려준 active dim (qp.n_vars) 만큼만 읽음
-  result_.converged =
-      (qp_->results.info.status == proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED);
+  result_.converged = iterates_finite && (qp_->results.info.status ==
+                                          proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED);
   result_.iterations = static_cast<int>(qp_->results.info.iter);
 
   const int active_n = (qp.n_vars > 0 && qp.n_vars <= n) ? qp.n_vars : n;
