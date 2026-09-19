@@ -41,6 +41,8 @@ namespace {
 using rtc::catching::CatchingParams;
 using rtc::catching::CatchingValidationReason;
 using rtc::catching::CatchingValidationReport;
+using rtc::catching::CheckCatchFrameProvisional;
+using rtc::catching::kCatchFrameProvisionalKey;
 using rtc::catching::ParseCatchingParams;
 using rtc::catching::ValidateCatchingParams;
 
@@ -463,6 +465,47 @@ TEST(CatchingParams, EveryOtherAbsentSectionParsesButBlocksRealArm) {
     const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/true);
     EXPECT_FALSE(r.armable) << "absent '" << key << "' still armed on the real arm";
   }
+}
+
+// ── Catch frame provisional (D-17, S2.3a) ───────────────────────────────────
+// The flag comes from the robot config's urdf.extra_frames, not from the
+// catching: section; the same L0 §5.3 rule applies — sim warns, real arm blocks.
+TEST(CatchFrameProvisional, SimWarnsRealArmBlocks) {
+  CatchingValidationReport sim;
+  CheckCatchFrameProvisional(sim, /*catch_frame_provisional=*/true, /*real_arm_config=*/false);
+  EXPECT_TRUE(sim.armable);
+  EXPECT_EQ(sim.failure_count, 0U);
+  ASSERT_EQ(sim.warning_count, 1U);
+  EXPECT_EQ(sim.warnings[0].reason, CatchingValidationReason::kProvisionalWarning);
+  EXPECT_STREQ(sim.warnings[0].key, kCatchFrameProvisionalKey);
+
+  CatchingValidationReport real;
+  CheckCatchFrameProvisional(real, true, true);
+  EXPECT_FALSE(real.armable);
+  ASSERT_EQ(real.failure_count, 1U);
+  EXPECT_EQ(real.failures[0].reason, CatchingValidationReason::kProvisionalOnRealArm);
+  EXPECT_STREQ(real.failures[0].key, kCatchFrameProvisionalKey);
+
+  for (const bool real_arm : {false, true}) {
+    CatchingValidationReport confirmed;
+    CheckCatchFrameProvisional(confirmed, false, real_arm);
+    EXPECT_TRUE(confirmed.armable);
+    EXPECT_EQ(confirmed.failure_count, 0U);
+    EXPECT_EQ(confirmed.warning_count, 0U);
+  }
+}
+
+// It adds to an existing report instead of replacing it: an already
+// non-armable report stays non-armable when the frame is confirmed.
+TEST(CatchFrameProvisional, AppendsToExistingReport) {
+  CatchingValidationReport report;
+  report.armable = false;
+  report.failure_count = 1;
+  CheckCatchFrameProvisional(report, false, true);
+  EXPECT_FALSE(report.armable);
+  EXPECT_EQ(report.failure_count, 1U);
+  CheckCatchFrameProvisional(report, true, true);
+  EXPECT_EQ(report.failure_count, 2U);
 }
 
 }  // namespace
