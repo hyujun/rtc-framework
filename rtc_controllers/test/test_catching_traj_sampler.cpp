@@ -454,4 +454,36 @@ TEST(CatchingTrajSampler, IntervalBelowStructuralFloorIsInvalid) {
   EXPECT_TRUE(Interpolate(A, B, BallTime{A.t_ns + 10}).valid);
 }
 
+// Wire timestamps at the int64 extremes: Check() and Interpolate() must
+// decide on them without signed overflow (UB — UBSan run in the S1 recipe
+// traps it), reporting a saturated gap rather than a wrapped one.
+TEST(CatchingTrajSampler, ExtremeTimestampsDoNotOverflow) {
+  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  const TrajLimits lim{2, kCap, 1'000'000};
+
+  TrajectorySnapshot tr{};
+  tr.n = 2;
+  tr.s[0].t_ns = kMin;
+  tr.s[1].t_ns = kMax;
+  const TrajCheck wide = Check(tr, lim);
+  EXPECT_TRUE(wide.t_monotonic);
+  EXPECT_EQ(wide.dt_max_ns, kMax);
+  EXPECT_EQ(wide.horizon_ns, kMax);
+
+  tr.s[0].t_ns = kMax;  // backwards across the whole range
+  tr.s[1].t_ns = kMin;
+  const TrajCheck back = Check(tr, lim);
+  EXPECT_FALSE(back.ok);
+  EXPECT_EQ(back.reason, TrajReject::kNonMonotonic);
+
+  TrajSample A{};
+  TrajSample B{};
+  A.t_ns = kMin;
+  B.t_ns = kMax;
+  const SampleEval e = Interpolate(A, B, BallTime{0});
+  EXPECT_TRUE(e.valid);
+  EXPECT_TRUE(e.p.allFinite());
+}
+
 }  // namespace

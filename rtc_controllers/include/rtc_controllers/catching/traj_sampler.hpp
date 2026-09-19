@@ -111,7 +111,8 @@ inline constexpr std::int64_t kMinInterpIntervalNs = 100'000;
 [[nodiscard]] inline SampleEval Interpolate(const TrajSample& A, const TrajSample& B,
                                             BallTime t) noexcept {
   SampleEval e{};
-  if (!(B.t_ns > A.t_ns) || B.t_ns - A.t_ns < kMinInterpIntervalNs)
+  // Saturating: t_ns is wire data, so B − A can overflow int64 (UB).
+  if (!(B.t_ns > A.t_ns) || detail::SatSub(B.t_ns, A.t_ns) < kMinInterpIntervalNs)
     return e;
   const double h = SecondsBetween(BallTime{A.t_ns}, BallTime{B.t_ns});
   const double s = std::clamp(SecondsBetween(BallTime{A.t_ns}, t) / h, 0.0, 1.0);
@@ -266,7 +267,9 @@ struct TrajCheck {
         !detail::Vec(s.a).allFinite())
       c.finite = false;
     if (i > 0) {
-      const std::int64_t d = s.t_ns - tr.s[i - 1].t_ns;
+      // Saturating: wire timestamps are unchecked here, and an overflowed
+      // difference would be UB inside the gate meant to reject them.
+      const std::int64_t d = detail::SatSub(s.t_ns, tr.s[i - 1].t_ns);
       if (d <= 0)
         c.t_monotonic = false;
       else if (d < lim.dt_min_ns)
@@ -277,7 +280,7 @@ struct TrajCheck {
   }
   if (n == 1)
     c.dt_min_ns = 0;
-  c.horizon_ns = tr.s[n - 1].t_ns - tr.s[0].t_ns;
+  c.horizon_ns = detail::SatSub(tr.s[n - 1].t_ns, tr.s[0].t_ns);
 
   if (!c.finite)
     c.reason = TrajReject::kNonFinite;
