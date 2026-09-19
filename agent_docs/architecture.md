@@ -161,7 +161,7 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio
   |         (+ CMake-only: fmt >= 10, aligator -- source-installed, package.xml 미선언)
   +-- rtc_mujoco_sim <-- rtc_base, rtc_msgs, MuJoCo 3.x (optional)
-rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional)
+rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional, test-only rtc_base)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base
 robot_descriptions (data-only, no code deps)

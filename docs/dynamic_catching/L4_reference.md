@@ -153,7 +153,16 @@ $\theta\to0$ 극한은 $f\to1$, $f'\to-1/3$ 로 유한하고, 이때 $J_a\to[a_d
 - 데드밴드 경계 근처의 $f$·$f'$ 는 유한 상한으로 제한하고, 그 선택을 유한차분 테스트로 고정한다 (G4-D)
 - 입력 비단위·NaN 에도 유한값 + 무효 표시
 
-정확한 처리 방식(상한 값·반평행 구간의 반환값)은 S2.1 code review 에서 확정한다.
+**S2.1 구현 (`rtc_math/include/rtc_math/se3/axis_align.hpp`).** 세 함수 `AxisAlignError`·`AxisAlignJacobian`·`AxisAlignOmega` 가 결과와 함께 분기 (`AxisAlignRegion`) 를 돌려준다.
+
+| 분기 | 조건 | $e_a$ | $J_a$ |
+|---|---|---|---|
+| 정렬 데드밴드 | $\Vert m\Vert<\epsilon_{\sin}$, $c>0$ | 0 | 0 |
+| 반평행 데드밴드 | $\Vert m\Vert<\epsilon_{\sin}$, $c\le0$ | $\pi\hat u_\perp$ ($z$ 로 정해지는 고정 축) | 0 |
+| Jacobian 상한 | $c<0$, $\epsilon_{\sin}\le\Vert m\Vert<n_J$ | 정확값 | $f,f'$ 를 $\Vert m\Vert=n_J$ 에서 평가 — $\Vert J_a\Vert\lesssim\pi/n_J$, $n_J$ 에서 연속 |
+| 무효 입력 | 비유한·비단위($\vert\Vert v\Vert-1\vert>10^{-6}$)·$[10^{-12},1)$ 밖의 $\epsilon_{\sin}$, $n_J$ | 0 | 0 |
+
+기본값은 $\epsilon_{\sin}=10^{-6}$, $n_J=10^{-3}$ 이다. 상한은 약 179.94° 이상에서만 걸리므로 G4-D 의 유한차분 범위(1–170°)에 영향이 없다. 두 데드밴드 모두 $e_a$ 가 상수라 $J_a=0$ 을 돌려준다. 소각도 급수는 $c>0$, $\theta<10^{-3}$ 에서만 쓴다 ($f=1+\theta^2/6$, $f'=-1/3-2\theta^2/15$). ω 는 $K_a e_a$ 를 $\Vert\omega\Vert\le w_{max}$ 로 줄이고 `saturated` 를 올린다. 비유한 오차·잘못된 게인은 0 과 무효를 돌려준다.
 
 ### 4.6 공개 코드 [R5]와의 차이 (이식 금지 목록)
 
@@ -362,4 +371,4 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 
 ## 10. 미확정 항목
 
-TBD-ARM-02, TBD-REF-01(§4.6 [R4]/[R5] 재확인), `reference.v_max`, `reference.axis.w_max`, `reference.retreat.home_pose`, CLIK 공급 성분 배치 (S2.2b), 축 정렬 Jacobian 의 데드밴드 처리 방식 (S2.1). TBD-RTC-07·TBD-RTC-08·TBD-FRAME-01 은 닫힘 (§2), γ derate 는 v1 범위 밖 (D-8).
+TBD-ARM-02, TBD-REF-01(§4.6 [R4]/[R5] 재확인), `reference.v_max`, `reference.axis.w_max`, `reference.retreat.home_pose`, CLIK 공급 성분 배치 (S2.2b). 축 정렬 Jacobian 의 데드밴드 처리는 닫힘 (S2.1, §4.5). TBD-RTC-07·TBD-RTC-08·TBD-FRAME-01 은 닫힘 (§2), γ derate 는 v1 범위 밖 (D-8).
