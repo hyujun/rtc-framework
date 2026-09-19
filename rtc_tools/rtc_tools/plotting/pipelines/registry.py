@@ -53,7 +53,7 @@ def _not_force_only(df):
 
 
 # Per-tick timing CSVs (cm_timing_log.csv / mpc_timing_log.csv) share the
-# unified 7-col schema, so the same stats printer + plotter list applies to
+# unified 8-col schema, so the same stats printer + plotter list applies to
 # both. PNG output filename is disambiguated by the source CSV's parent
 # directory.
 _TIMING_STATS = [

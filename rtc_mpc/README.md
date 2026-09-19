@@ -109,8 +109,8 @@ mistake, not runtime drift). Readers can also pair the stderr stream with
 [`rtc_mpc/logging/mpc_timing_logger.hpp`](include/rtc_mpc/logging/mpc_timing_logger.hpp);
 each MPC-using controller's own LifecycleNode owns a 1 Hz aux timer that
 drains `MPCThread::TimingProducer()` per-tick SPSC into the CSV). Schema
-is **per-MPC-tick raw** sharing the unified 7-col format with the CM RT
-loop: `t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`,
+is **per-MPC-tick raw** sharing the unified 8-col format with the CM RT
+loop: `t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`,
 one row per main-loop iteration. When MPC is enabled but `Solve` keeps
 failing the CSV still grows one row per tick (publish phase is just
 zero), so the failed-solve atomics above plus the periodic `RCLCPP_INFO`

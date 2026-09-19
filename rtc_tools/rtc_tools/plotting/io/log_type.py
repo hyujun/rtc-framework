@@ -11,11 +11,11 @@ def detect_log_type(filepath):
       *_state_log.csv  → state_log  (DeviceStateLog fields)
       *_sensor_log.csv → sensor_log (DeviceSensorLog fields)
 
-    Per-tick timing (unified 7-col schema):
+    Per-tick timing (unified 8-col schema):
       cm_timing_log*.csv  → cm_timing   (CM RT loop)
       mpc_timing_log*.csv → mpc_timing  (MPC main loop)
       hand_udp_timing_log*.csv → cm_timing  (hand UDP EventLoop —
-                                             same 7-col schema, treated
+                                             same 8-col schema, treated
                                              as cm_timing for plotting)
 
     Phase C controller-owned CSVs live under
@@ -69,7 +69,7 @@ def detect_log_type_by_columns(columns):
     """Fallback: infer log type from CSV header columns.
 
     Used when filename doesn't match a known pattern. CM and MPC per-tick
-    timing CSVs share the same 7-col schema, so column-based detection
+    timing CSVs share the same 8-col schema, so column-based detection
     cannot tell them apart — return ``cm_timing`` and let the caller rely
     on the filename to pick the cm/mpc pipeline if needed.
     """
