@@ -439,4 +439,19 @@ TEST(CatchingTrajSampler, G2ERtReadPathAllocationFreeAndRecorded) {
               sizeof(TrajectorySnapshot), static_cast<long long>(worst_ns));
 }
 
+// Numerical-audit regression: an interval shorter than the structural floor
+// (100 µs) is invalid even if the snapshot bypassed Check() — otherwise a
+// 1-ns interval gives a finite ~1e18 acceleration flagged valid.
+TEST(CatchingTrajSampler, IntervalBelowStructuralFloorIsInvalid) {
+  TrajSample A{};
+  TrajSample B{};
+  A.t_ns = 1'000'000;
+  B.t_ns = A.t_ns + rtc::catching::kMinInterpIntervalNs - 1;
+  A.p = {0.0, 0.0, 0.0};
+  B.p = {1e-3, 0.0, 0.0};
+  EXPECT_FALSE(Interpolate(A, B, BallTime{A.t_ns + 10}).valid);
+  B.t_ns = A.t_ns + rtc::catching::kMinInterpIntervalNs;
+  EXPECT_TRUE(Interpolate(A, B, BallTime{A.t_ns + 10}).valid);
+}
+
 }  // namespace

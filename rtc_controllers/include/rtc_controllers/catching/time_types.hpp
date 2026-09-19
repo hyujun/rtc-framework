@@ -35,11 +35,36 @@
 
 #include <compare>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 namespace rtc::catching {
 
 inline constexpr double kNsToS = 1e-9;
+
+namespace detail {
+
+// Saturating int64 arithmetic. Instants here come partly from other threads
+// (PlanSnapshot t_c / t_cmd over a SeqLock); a corrupted value near the int64
+// limits must not turn a comparison into signed-overflow UB. Saturation keeps
+// the ordering the decision needs (a garbage t_c at +max is "never due").
+[[nodiscard]] constexpr std::int64_t SatAdd(std::int64_t a, std::int64_t b) noexcept {
+  std::int64_t r = 0;
+  if (__builtin_add_overflow(a, b, &r))
+    return b > 0 ? std::numeric_limits<std::int64_t>::max()
+                 : std::numeric_limits<std::int64_t>::min();
+  return r;
+}
+
+[[nodiscard]] constexpr std::int64_t SatSub(std::int64_t a, std::int64_t b) noexcept {
+  std::int64_t r = 0;
+  if (__builtin_sub_overflow(a, b, &r))
+    return b < 0 ? std::numeric_limits<std::int64_t>::max()
+                 : std::numeric_limits<std::int64_t>::min();
+  return r;
+}
+
+}  // namespace detail
 
 /// Physical instant of the ball [absolute steady ns].
 struct BallTime {
@@ -67,19 +92,19 @@ static_assert(std::is_trivially_copyable_v<NowLead>);
 /// The lead axis for this tick. `t_arm_ns` is the arm command latency T_arm
 /// (≥ 0; the caller validates it at configure time).
 [[nodiscard]] constexpr NowLead MakeNowLead(NowReal now, std::int64_t t_arm_ns) noexcept {
-  return NowLead{now.ns + t_arm_ns};
+  return NowLead{detail::SatAdd(now.ns, t_arm_ns)};
 }
 
 /// Seconds from `a` to `b` on the ball axis (b − a). Both instants come from the
 /// same clock, so the difference is origin-free.
 [[nodiscard]] constexpr double SecondsBetween(BallTime a, BallTime b) noexcept {
-  return static_cast<double>(b.ns - a.ns) * kNsToS;
+  return static_cast<double>(detail::SatSub(b.ns, a.ns)) * kNsToS;
 }
 
 /// Seconds from the lead now until ball instant `t` (t − now_lead). Negative once
 /// `t` has passed on the lead axis. Used for sampling, γ profile and reference.
 [[nodiscard]] constexpr double LeadSecondsUntil(NowLead now_lead, BallTime t) noexcept {
-  return static_cast<double>(t.ns - now_lead.ns) * kNsToS;
+  return static_cast<double>(detail::SatSub(t.ns, now_lead.ns)) * kNsToS;
 }
 
 /// CLOSING→DECEL: the arm command issued now is realised at or after t_c.
@@ -97,7 +122,7 @@ static_assert(std::is_trivially_copyable_v<NowLead>);
 /// includes T_arm in its lower bound, plan §3).
 [[nodiscard]] constexpr bool CommitDue(NowReal now, BallTime t_c,
                                        std::int64_t t_freeze_ns) noexcept {
-  return t_c.ns - now.ns <= t_freeze_ns;
+  return detail::SatSub(t_c.ns, now.ns) <= t_freeze_ns;
 }
 
 /// COMMITTED→CLOSING and the hand close command: now ≥ t_cmd. The hand has no
@@ -109,19 +134,19 @@ static_assert(std::is_trivially_copyable_v<NowLead>);
 /// Hand preshape: now ≥ t_c − T_pre (real axis).
 [[nodiscard]] constexpr bool PreshapeDue(NowReal now, BallTime t_c,
                                          std::int64_t t_pre_ns) noexcept {
-  return now.ns >= t_c.ns - t_pre_ns;
+  return now.ns >= detail::SatSub(t_c.ns, t_pre_ns);
 }
 
 /// Contact decision window [t_cmd, t_c + T_conf], closed at both ends (real axis).
 [[nodiscard]] constexpr bool InContactWindow(NowReal now, BallTime t_cmd, BallTime t_c,
                                              std::int64_t t_conf_ns) noexcept {
-  return now.ns >= t_cmd.ns && now.ns <= t_c.ns + t_conf_ns;
+  return now.ns >= t_cmd.ns && now.ns <= detail::SatAdd(t_c.ns, t_conf_ns);
 }
 
 /// Message age: now_steady − recv_steady [ns]. Both operands are steady receive /
 /// tick instants; a BallTime or header stamp cannot be passed here.
 [[nodiscard]] constexpr std::int64_t AgeNs(NowReal now, NowReal recv_steady) noexcept {
-  return now.ns - recv_steady.ns;
+  return detail::SatSub(now.ns, recv_steady.ns);
 }
 
 // ── D-2 (3): remote stamp → ball axis (E-1 recorded exception, S0.6) ─────────

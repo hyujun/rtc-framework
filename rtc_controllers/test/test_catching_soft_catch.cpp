@@ -337,7 +337,7 @@ TEST(CatchingSoftCatch, CriticallyDampedClosedFormMatchesIntegration) {
   }
   Eigen::Vector3d ec;
   Eigen::Vector3d edc;
-  CriticallyDampedError(e0, ed0, w, T, ec, edc);
+  ASSERT_TRUE(CriticallyDampedError(e0, ed0, w, T, ec, edc));
   EXPECT_LT((ec - e).norm(), 1e-6);
   EXPECT_LT((edc - ed).norm(), 1e-5);
 }
@@ -380,6 +380,56 @@ TEST(CatchingSoftCatch, G4GStepAllocationFreeAndRecorded) {
   RecordProperty("worst_step_ns", std::to_string(worst_ns));
   std::printf("[ record ] worst SoftCatchTranslation::Step %lld ns\n",
               static_cast<long long>(worst_ns));
+}
+
+// ── numerical-audit regressions (S1 review) ─────────────────────────────────
+
+// A directly constructed instance with invalid params must fail closed. Before
+// the fix, a_max < 0 with a zero demand made Evaluate() scale 0·(−∞) = NaN and
+// still return valid = true (Step() was saved by its x_next check).
+TEST(CatchingSoftCatch, InvalidParamsFailClosed) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const SoftCatchTranslation::Params p :
+       {Prm(10.0, 1.0, -1.0, 2.0), Prm(10.0, 1.0, 0.0, 2.0), Prm(10.0, 1.0, 15.0, 0.0),
+        Prm(0.0, 1.0, 15.0, 2.0), Prm(nan, 1.0, 15.0, 2.0), Prm(10.0, -1.0, 15.0, 2.0)}) {
+    SoftCatchTranslation ds(p);
+    EXPECT_FALSE(ds.ParamsValid());
+    ASSERT_TRUE(ds.Reset({0.2, 0.0, 0.5}, Eigen::Vector3d::Zero()));
+    // Target at the intercept, zero velocity: demand exactly 0.
+    const TargetState at_rest{{0.2, 0.0, 0.5}, {0, 0, 0}, {0, 0, 0}};
+    const TranslationOutput ev = ds.Evaluate(at_rest, 0.0);
+    EXPECT_FALSE(ev.valid);
+    const TranslationOutput st = ds.Step(at_rest, 0.0, kDt);
+    EXPECT_FALSE(st.valid);
+    EXPECT_EQ(ds.Position(), Eigen::Vector3d(0.2, 0.0, 0.5));
+  }
+  EXPECT_TRUE(SoftCatchTranslation(Prm(10.0, 1.0, 15.0, 2.0)).ParamsValid());
+}
+
+// A γ ramp shorter than 1 ms is refused: finite but ∝ 1/T² γ̈ would pass every
+// finiteness check. A degenerate step (t1 ≤ t0) stays allowed.
+TEST(CatchingSoftCatch, TooShortGammaRampRejected) {
+  SoftCatchTranslation ds(Prm(10.0, 1.0, 15.0, 2.0));
+  ASSERT_TRUE(ds.Reset({0, 0, 0}, Eigen::Vector3d::Zero()));
+  EXPECT_FALSE(ds.SetIntercept({1, 0, 0}, GammaProfile{0.0, 0.4, 0.5, 0.5 + 1e-9}));
+  EXPECT_FALSE(ds.SetIntercept({1, 0, 0}, GammaProfile{0.0, 0.4, 0.5, 0.5009}));
+  EXPECT_TRUE(ds.SetIntercept({1, 0, 0}, GammaProfile{0.0, 0.4, 0.5, 0.501}));
+  EXPECT_TRUE(ds.SetIntercept({1, 0, 0}, GammaProfile{0.0, 0.4, 0.5, 0.5}));  // step
+}
+
+TEST(CatchingSoftCatch, CriticallyDampedErrorRejectsInvalidInput) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  Eigen::Vector3d e;
+  Eigen::Vector3d ed;
+  const Eigen::Vector3d e0(0.05, 0.0, 0.0);
+  const Eigen::Vector3d ed0(0.0, 0.0, 0.0);
+  EXPECT_FALSE(CriticallyDampedError(e0, ed0, 10.0, -1.0, e, ed));  // backwards t: exp overflow
+  EXPECT_TRUE(e.allFinite() && ed.allFinite());
+  EXPECT_FALSE(CriticallyDampedError(e0, ed0, -10.0, 1.0, e, ed));  // sign-flipped ω
+  EXPECT_FALSE(CriticallyDampedError(e0, ed0, 0.0, 1.0, e, ed));
+  EXPECT_FALSE(CriticallyDampedError({nan, 0, 0}, ed0, 10.0, 1.0, e, ed));
+  EXPECT_TRUE(CriticallyDampedError(e0, ed0, 10.0, 0.0, e, ed));
+  EXPECT_EQ(e, e0);
 }
 
 }  // namespace

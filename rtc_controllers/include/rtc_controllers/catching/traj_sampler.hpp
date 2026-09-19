@@ -98,13 +98,20 @@ inline void MarkFinite(SampleEval& e) noexcept {
 
 }  // namespace detail
 
+/// Structural floor on an interpolated interval [ns]. Check()'s dt_min is the
+/// authoritative spacing gate at ingress; this only keeps the RT read from
+/// turning a snapshot that bypassed Check() into an O(1/h²) finite-but-garbage
+/// acceleration. 100 µs is far below any vision spacing (≥ 1/120 s).
+inline constexpr std::int64_t kMinInterpIntervalNs = 100'000;
+
 /// Interpolate inside [A, B] at ball instant t (clamped to the interval).
-/// Returns invalid if the pair is not strictly increasing in time — Check()
-/// guarantees it on receipt, but the RT read does not re-run Check().
+/// Returns invalid if the pair is shorter than kMinInterpIntervalNs (which
+/// includes non-increasing) — Check() guarantees spacing on receipt, but the RT
+/// read does not re-run Check().
 [[nodiscard]] inline SampleEval Interpolate(const TrajSample& A, const TrajSample& B,
                                             BallTime t) noexcept {
   SampleEval e{};
-  if (!(B.t_ns > A.t_ns))
+  if (!(B.t_ns > A.t_ns) || B.t_ns - A.t_ns < kMinInterpIntervalNs)
     return e;
   const double h = SecondsBetween(BallTime{A.t_ns}, BallTime{B.t_ns});
   const double s = std::clamp(SecondsBetween(BallTime{A.t_ns}, t) / h, 0.0, 1.0);

@@ -78,9 +78,16 @@ struct GammaProfile {
     gdd = d * (60.0 * s - 180.0 * s2 + 120.0 * s3) / (T * T);
   }
 
-  [[nodiscard]] bool IsFinite() const noexcept {
-    return std::isfinite(g0) && std::isfinite(gf) && std::isfinite(t0) && std::isfinite(t1);
+  /// Finite, and either a degenerate step (t1 ≤ t0) or a ramp of at least
+  /// kMinRampSeconds: 0 < T ≪ 1 gives a finite but meaningless γ̈ ∝ 1/T² that
+  /// the finiteness checks downstream cannot catch.
+  [[nodiscard]] bool IsValid() const noexcept {
+    if (!std::isfinite(g0) || !std::isfinite(gf) || !std::isfinite(t0) || !std::isfinite(t1))
+      return false;
+    return !(t1 > t0) || (t1 - t0) >= kMinRampSeconds;
   }
+
+  static constexpr double kMinRampSeconds = 1e-3;
 };
 
 /// Relative seconds of lead instant `now_lead` from `origin` — the `t` passed to
@@ -124,7 +131,16 @@ class SoftCatchTranslation {
     double v_max{2.0};   // [m/s]    the γ window uses η_v·v_max (D-9)
   };
 
-  explicit SoftCatchTranslation(const Params& p) noexcept : prm_(p) {}
+  explicit SoftCatchTranslation(const Params& p) noexcept
+      : prm_(p),
+        params_valid_(std::isfinite(p.omega) && p.omega > 0.0 && std::isfinite(p.zeta) &&
+                      p.zeta > 0.0 && std::isfinite(p.a_max) && p.a_max > 0.0 &&
+                      std::isfinite(p.v_max) && p.v_max > 0.0) {}
+
+  /// False when ω, ζ, a_max or v_max is not positive-finite; every Step() /
+  /// Evaluate() is then rejected. The configure-time validator (S1.7) is the
+  /// primary gate — this keeps a directly constructed instance fail-closed too.
+  [[nodiscard]] bool ParamsValid() const noexcept { return params_valid_; }
 
   /// Activation / re-arm: resets the reference state AND the intercept and γ
   /// profile. With γ ≡ 0 the attractor is p_c, so p_c = x makes this a hold at
@@ -144,7 +160,7 @@ class SoftCatchTranslation {
   /// influence at all — u = −ω²(x − p_c) − 2ζωẋ — so a stationary goal (home,
   /// wait pose) must be given as p_c (L4 §5.3). Rejects non-finite input.
   bool SetIntercept(const Eigen::Vector3d& p_c, const GammaProfile& gp) noexcept {
-    if (!p_c.allFinite() || !gp.IsFinite())
+    if (!p_c.allFinite() || !gp.IsValid())
       return false;
     p_c_ = p_c;
     gp_ = gp;
@@ -163,7 +179,7 @@ class SoftCatchTranslation {
   /// the current state, xdd the saturated demand.
   [[nodiscard]] TranslationOutput Evaluate(const TargetState& o, double t) const noexcept {
     TranslationOutput out = Rejected();
-    if (!Finite(o) || !std::isfinite(t))
+    if (!params_valid_ || !Finite(o) || !std::isfinite(t))
       return out;
     Eigen::Vector3d u = Eigen::Vector3d::Zero();
     if (!Demand(o, t, out, u))
@@ -177,7 +193,7 @@ class SoftCatchTranslation {
   /// profile); dt: control period [s], > 0.
   [[nodiscard]] TranslationOutput Step(const TargetState& o, double t, double dt) noexcept {
     TranslationOutput out = Rejected();
-    if (!Finite(o) || !std::isfinite(t) || !std::isfinite(dt) || !(dt > 0.0))
+    if (!params_valid_ || !Finite(o) || !std::isfinite(t) || !std::isfinite(dt) || !(dt > 0.0))
       return out;
     Eigen::Vector3d u = Eigen::Vector3d::Zero();
     if (!Demand(o, t, out, u))
@@ -250,10 +266,11 @@ class SoftCatchTranslation {
       u *= prm_.a_max / un;
       out.saturated = true;
     }
-    return true;
+    return u.allFinite();  // the scaled command too — not only its pre-scale norm
   }
 
   Params prm_;
+  bool params_valid_{false};
   Eigen::Vector3d x_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d xd_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d p_c_{Eigen::Vector3d::Zero()};
@@ -262,14 +279,22 @@ class SoftCatchTranslation {
 
 /// Closed-form error of the critically damped (ζ = 1) error dynamics after t —
 /// the planner's terminal-error prediction (L3, L4 §4.4). Valid only for ζ = 1,
-/// which is why the validator rejects ζ ≠ 1.
-inline void CriticallyDampedError(const Eigen::Vector3d& e0, const Eigen::Vector3d& ed0,
-                                  double omega, double t, Eigen::Vector3d& e,
-                                  Eigen::Vector3d& ed) noexcept {
+/// which is why the validator rejects ζ ≠ 1. Returns false (outputs zeroed) for
+/// non-finite input, ω ≤ 0 or t < 0 — exp(−ωt) would otherwise overflow for a
+/// backwards t or a sign-flipped ω.
+[[nodiscard]] inline bool CriticallyDampedError(const Eigen::Vector3d& e0,
+                                                const Eigen::Vector3d& ed0, double omega, double t,
+                                                Eigen::Vector3d& e, Eigen::Vector3d& ed) noexcept {
+  e.setZero();
+  ed.setZero();
+  if (!e0.allFinite() || !ed0.allFinite() || !std::isfinite(omega) || !(omega > 0.0) ||
+      !std::isfinite(t) || !(t >= 0.0))
+    return false;
   const Eigen::Vector3d c = ed0 + omega * e0;
   const double ex = std::exp(-omega * t);
   e = (e0 + c * t) * ex;
   ed = (ed0 - omega * t * c) * ex;
+  return e.allFinite() && ed.allFinite();
 }
 
 }  // namespace rtc::catching

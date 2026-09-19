@@ -445,4 +445,17 @@ TEST(CatchingTimeFeasibility, GatesAllocationFree) {
   EXPECT_TRUE(std::isfinite(sink));
 }
 
+// Numerical-audit regressions: TRest called directly with invalid limits is
+// +∞ (was NaN from sqrt of a negative), and +∞ speed limits are invalid input
+// rather than "unbounded".
+TEST(CatchingTimeFeasibility, DirectTRestAndInfiniteSpeedsFailClosed) {
+  const double inf = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(TRest(1.0, kPi, -1.0), inf);
+  EXPECT_EQ(TRest(1.0, 0.0, 10.0), inf);
+  EXPECT_EQ(TRest(std::numeric_limits<double>::quiet_NaN(), kPi, 10.0), inf);
+  EXPECT_FALSE(ComputeGammaWindow(4.0, inf, 2.0, 0.04, 0.06).Feasible());
+  EXPECT_FALSE(ComputeGammaWindow(4.0, 2.0, inf, 0.04, 0.06).Feasible());
+  EXPECT_EQ(MaxCatchableSpeed(inf, 2.0, 0.04, 0.06), 0.0);
+}
+
 }  // namespace

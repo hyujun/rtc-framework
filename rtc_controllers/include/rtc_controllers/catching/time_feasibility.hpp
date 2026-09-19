@@ -39,9 +39,12 @@ namespace rtc::catching {
 
 inline constexpr double kInfTime = std::numeric_limits<double>::infinity();
 
-/// Rest-to-rest minimum time over distance D ≥ 0. Limits must be valid
-/// (positive, finite) — callers go through TMinChecked().
+/// Rest-to-rest minimum time over distance D ≥ 0. Invalid limits or distance
+/// give +∞ (fail-closed); TMinChecked() is the flagged entry point.
 [[nodiscard]] inline double TRest(double D, double w_max, double a_max) noexcept {
+  if (!(a_max > 0.0) || !(w_max > 0.0) || !std::isfinite(a_max) || !std::isfinite(w_max) ||
+      !std::isfinite(D))
+    return kInfTime;
   if (D <= 0.0)
     return 0.0;
   const double w_peak = std::sqrt(a_max * D);
@@ -186,7 +189,8 @@ struct GammaWindow {
   GammaWindow w{};
   const bool bad = !(v_ball > 0.0) || !(d_eff >= 0.0) || !(v_dir_max >= 0.0) ||
                    !(v_tcp_max >= 0.0) || !(t_close_total > 0.0) || !std::isfinite(v_ball) ||
-                   !std::isfinite(d_eff) || !std::isfinite(t_close_total);
+                   !std::isfinite(d_eff) || !std::isfinite(t_close_total) ||
+                   !std::isfinite(v_dir_max) || !std::isfinite(v_tcp_max);
   if (bad)
     return w;  // {1, 0, invalid}: not feasible
   w.g_min = std::clamp(1.0 - d_eff / (v_ball * t_close_total), 0.0, 1.0);
@@ -202,7 +206,8 @@ struct GammaWindow {
 [[nodiscard]] inline double MaxCatchableSpeed(double v_dir_max, double v_tcp_max, double d_eff,
                                               double t_close_total) noexcept {
   if (!(v_dir_max >= 0.0) || !(v_tcp_max >= 0.0) || !(d_eff >= 0.0) || !(t_close_total > 0.0) ||
-      !std::isfinite(d_eff) || !std::isfinite(t_close_total))
+      !std::isfinite(d_eff) || !std::isfinite(t_close_total) || !std::isfinite(v_dir_max) ||
+      !std::isfinite(v_tcp_max))
     return 0.0;
   return std::min(v_dir_max, v_tcp_max) + d_eff / t_close_total;
 }

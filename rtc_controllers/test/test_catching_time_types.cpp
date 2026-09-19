@@ -222,4 +222,21 @@ TEST(CatchingStampConversion, SampleTimeAddsHorizonWithOverflowCheck) {
   EXPECT_FALSE(SampleBallTime(BallTime{std::numeric_limits<std::int64_t>::max()}, 1, out));
 }
 
+// Numerical-audit regression: instants near the int64 limits (a corrupted
+// PlanSnapshot t_c) saturate instead of overflowing — and saturate in the
+// fail-safe direction (a garbage t_c at +max is never due, at −max always).
+TEST(CatchingTimeTypes, ExtremeInstantsSaturateInsteadOfOverflowing) {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+  const NowReal now{-5'000 * kMs};
+  EXPECT_FALSE(CommitDue(now, BallTime{kMax}, 200 * kMs));  // t_c − now would overflow
+  EXPECT_TRUE(CommitDue(NowReal{5'000 * kMs}, BallTime{kMin}, 200 * kMs));
+  EXPECT_FALSE(PreshapeDue(NowReal{0}, BallTime{kMax}, 0));
+  EXPECT_TRUE(PreshapeDue(NowReal{0}, BallTime{kMin}, 1));
+  EXPECT_FALSE(InContactWindow(NowReal{0}, BallTime{kMax}, BallTime{kMax}, kMax));
+  EXPECT_EQ(MakeNowLead(NowReal{kMax - 1}, kTArm).ns, kMax);
+  EXPECT_EQ(AgeNs(NowReal{kMax}, NowReal{kMin}), kMax);
+  EXPECT_GT(LeadSecondsUntil(NowLead{kMin}, BallTime{kMax}), 9.2e9);
+}
+
 }  // namespace
