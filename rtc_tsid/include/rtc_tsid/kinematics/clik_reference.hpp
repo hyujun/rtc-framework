@@ -131,6 +131,10 @@ class ClikReferenceGenerator {
     // nv ≤ 64 (the mask width). The same a_max must feed the planner's
     // reach-time check so the plan matches what CLIK executes (D-16).
     Eigen::VectorXd a_max;
+    // Smoothing weight w_s ≥ 0 (finite): adds (w_s/2)·‖v − v_prev‖² to the
+    // cost, pulling the command toward the previous one (L5 §4.3). 0 → off.
+    // Keep w_s ≪ w_task like the posture weights, or it competes with tracking.
+    double w_smooth{0.0};
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -233,6 +237,7 @@ class ClikReferenceGenerator {
   Eigen::VectorXd v_limit_per_joint_;  // [nv] or empty (scalar v_limit_)
   Eigen::VectorXd a_max_;              // [nv] or empty (acceleration box off)
   Eigen::VectorXd v_prev_;             // [nv] v_ref of the last successful Compute()
+  double w_smooth_{0.0};               // smoothing weight, 0 → off
   double w_task_{1.0};
   double w_arm_{1e-2};
   double w_hand_{1e-2};

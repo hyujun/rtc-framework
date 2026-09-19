@@ -106,6 +106,10 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
       }
     }
   }
+  if (!std::isfinite(config.w_smooth) || config.w_smooth < 0.0) {
+    throw std::runtime_error("ClikReferenceGenerator: w_smooth must be finite and >= 0, got " +
+                             std::to_string(config.w_smooth));
+  }
   if (config.max_iter < 1) {
     throw std::runtime_error("ClikReferenceGenerator: max_iter must be >= 1, got " +
                              std::to_string(config.max_iter));
@@ -189,6 +193,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   v_limit_ = config.v_limit;
   v_limit_per_joint_ = config.v_limit_per_joint;
   a_max_ = config.a_max;
+  w_smooth_ = config.w_smooth;
   w_task_ = config.w_task;
   w_arm_ = config.w_arm;
   w_hand_ = config.w_hand;
@@ -328,6 +333,13 @@ void ClikReferenceGenerator::AddPostureAndDamping() noexcept {
   for (int c = 0; c < n_hand_; ++c) {
     const auto vi = static_cast<Eigen::Index>(hand_v_idx_[static_cast<size_t>(c)]);
     g(vi) -= w_hand_ * v_post_hand_(c);
+  }
+
+  // Smoothing (w_s/2)·‖v − v_prev‖²: skipped entirely when off so the legacy
+  // accumulation is untouched.
+  if (w_smooth_ > 0.0) {
+    H.diagonal().array() += w_smooth_;
+    g.noalias() -= w_smooth_ * v_prev_;
   }
 }
 

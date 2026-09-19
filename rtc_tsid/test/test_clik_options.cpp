@@ -448,5 +448,49 @@ TEST_F(ClikOptionsTest, ResetAnchorRestartsAccelerationFromRest) {
   EXPECT_LE((gen.QRef() - q_home_).cwiseAbs().maxCoeff(), kAMax * kDt * kDt + 1e-12);
 }
 
+// ── Smoothing term ──────────────────────────────────────────────────────────
+
+TEST_F(ClikOptionsTest, SmoothingRejectsInvalid) {
+  for (const double bad :
+       {-1e-3, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    auto cfg = BaseConfig();
+    cfg.w_smooth = bad;
+    ClikReferenceGenerator gen;
+    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << bad;
+  }
+}
+
+// A target step: with smoothing on, the first-tick velocity jump shrinks, and
+// the same stationary target is still reached (smoothing is a rate penalty,
+// not a bias: at rest v_prev = v = 0).
+TEST_F(ClikOptionsTest, SmoothingDampsTheStepAndKeepsTheFixedPoint) {
+  const pinocchio::SE3 des = OffsetTarget(0.05);
+  auto run = [&](double w_smooth, double* first_step) {
+    auto cfg = BaseConfig();
+    cfg.w_smooth = w_smooth;
+    ClikReferenceGenerator gen;
+    gen.Init(kNv, cfg);
+    gen.SetTaskGain(Vec6::Constant(5.0));
+    Eigen::VectorXd q = q_home_;
+    for (int k = 0; k < 3000; ++k) {
+      cache_.Update(q, v_zero_);
+      EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+      if (k == 0) {
+        *first_step = gen.VRef().norm();
+      }
+      q = gen.QRef();
+    }
+    cache_.Update(q, v_zero_);
+    return (TipInBase().translation() - des.translation()).norm();
+  };
+  double step_off = 0.0;
+  double step_on = 0.0;
+  const double err_off = run(0.0, &step_off);
+  const double err_on = run(0.5, &step_on);
+  EXPECT_LT(step_on, 0.5 * step_off);
+  EXPECT_LT(err_off, 1e-3);
+  EXPECT_LT(err_on, 1e-3);
+}
+
 }  // namespace
 }  // namespace rtc::tsid
