@@ -13,7 +13,7 @@
 
 범위: 새 예측 궤적 메시지마다(계획기 스레드, D-7 — §5.3) 다음을 결정해 `PlanSnapshot`으로 발행한다. 후보 시각은 **vision이 준 샘플 격자**에서 고른다 — 제어 PC가 궤적을 만들지 않는다(마스터 §5.2).
 - 포구 시각 $t_c$, 포구점 $p_c$, 목표 접근축 $a_d$
-- IK 해 $q^\ast$ (L5의 posture 참고용)과 그 자세의 manipulability $w_5$ (catchability, D-18 — §4.2)
+- IK 해 $q^\ast$ (L5의 posture 참고용)과 그 자세의 manipulability $w_5$·$w_6$ (catchability, D-18·C-3 — §4.2)
 - γ 프로파일 $(\gamma_f,T_w)$, 손 폐쇄 명령 시각 $t_{cmd}$
 - 유효성, commit 가능 여부
 
@@ -94,7 +94,7 @@ $$J(q)=\begin{bmatrix}J_p\\S\,J^L_\omega\end{bmatrix},\qquad \Delta q=J^\top(JJ^
 
 $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LWA}\\ S\,J^{L}_\omega\end{bmatrix}_{\text{팔 관절 열}}\in\mathbb R^{5\times n_{arm}}$$
 
-를 재고 $w_5<$ `planner.catchability.manipulability_min` (0.1, provisional) 이면 후보를 사유 코드와 함께 탈락시킨다. 모든 후보가 탈락하면 plan 없음(포기)이다. 정의 세부 (plan §11):
+를 재고, 게이트 정의(`planner.catchability.definition`, 기본 `arm_5row`)의 값이 그 정의의 threshold (`planner.catchability.manipulability_min.arm_5row` = 0.1, provisional) 미만이면 후보를 사유 코드와 함께 탈락시킨다. 검증용으로 $w_6=\sqrt{\det(J_6J_6^\top)}$ (팔 열 6×6, roll 포함) 도 함께 계산·기록한다 (C-3, plan §11). 모든 후보가 탈락하면 plan 없음(포기)이다. 정의 세부 (plan §11):
 
 - 손바닥 법선 둘레 roll 은 포구에 무관해 행에서 뺀다. 손 관절은 손바닥 frame 에 영향이 없다 (P1b 손바닥은 폐쇄 루프 상류)
 - m 와 rad 가 섞인 값이라 threshold 0.1 은 **이 정의에 대한 값**이다. 정의를 바꾸면 다시 맞춘다
@@ -386,8 +386,8 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.ik.eps_pos` | double | m | 0.002 | – | 수락 |
 | `planner.ik.alpha_max` | double | rad | `TBD` | 0–π/2 | 손 형상 허용 콘 ($\theta\le\alpha_{\max}$) |
 | `planner.ik.manip_min` | – | – | – | – | v0.5 에서 삭제 — `planner.catchability.manipulability_min` 이 대체 (§4.5) |
-| `planner.catchability.manipulability_min` | double | – | 0.1 (**provisional**) | ≥0 | §4.2 D-18 $w_5$ 하한. 사용자가 sim 에서 자세 확인 후 갱신. provisional 이면 실기 구성 arm 차단 (L0 §5.3). S3.5 지도 도구와 **같은 키** |
-| `planner.catchability.definition` | string | – | `"arm_5row"` | – | §4.2 정의 식별자. 바꾸면 threshold 재보정 |
+| `planner.catchability.manipulability_min.arm_5row` / `.arm_6row` | double | – | 0.1 (**provisional**) / TBD | ≥0 | §4.2 D-18 정의별 하한 (차원이 달라 따로 둔다, C-3). `arm_6row` 값은 S3.5 지도 결과로 제안. 사용자가 sim 에서 자세 확인 후 갱신. provisional 이면 실기 구성 arm 차단 (L0 §5.3). S3.5 지도 도구와 **같은 키** |
+| `planner.catchability.definition` | string | – | `"arm_5row"` | `arm_5row` \| `arm_6row` | §4.2 게이트에 쓸 정의. w₅·w₆ 는 정의와 무관하게 둘 다 기록 |
 | `planner.time.margin` | double | s | 0.03 | 0–0.2 | §4.3 |
 | `planner.unc.kappa_sigma` | double | – | 0.3 | 0.05–1 | §4.4 |
 | `planner.hand.d_eff` | double | m | `TBD` | >0 | TBD-HAND-04 (손별) |

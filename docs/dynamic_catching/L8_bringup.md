@@ -109,7 +109,7 @@ sim 은 wall clock 을 유지하고, 시행별로 공 비행 구간의 Δsim_tim
 plan §11 이 정의·YAML 의 SSoT 다. 요점:
 
 - 발사 영역: arm base frame 수평 거리 √(x²+y²) = 4 m 원호 (방위 φ, 초기 탐색 ±90°), world z 1.5–2.0 m, 수평 방향 = (발사점 → 겨냥점) + 편차 (초기 탐색 ±10°), 속도·앙각 격자
-- 판정: 궤적 위 포구 후보마다 catch frame +z = −v̂ 자세의 IK (대기 자세에서 시작) → 팔 5행 manipulability w₅ ≥ `planner.catchability.manipulability_min` (0.1, provisional). 런타임 계획기(S6.2)와 **같은 함수·같은 YAML 키**
+- 판정: 궤적 위 포구 후보마다 catch frame +z = −v̂ 자세의 IK (대기 자세에서 시작) → 게이트 정의(기본 `arm_5row`)의 manipulability ≥ 정의별 threshold (w₅ 0.1, provisional). w₅·w₆ 를 모두 기록해 지도에서 두 분포를 비교한다 (C-3). 런타임 계획기(S6.2)와 **같은 함수·같은 YAML 키**
 - **frame 함정:** ur5e_p1b 의 arm base frame 은 URDF `base` 이고 `base_link` 와 z 둘레 180° 다르다 — `base_link` 로 두면 공이 등 뒤에서 날아오는데 결과가 그럴듯해 조용히 틀린다. world ↔ base 변환은 같은 q 에서 MuJoCo FK 와 Pinocchio FK 대조로 S3.5 착수 시 확정한다
 - 출력: 격자별 포구 가능 여부, 최대 w 와 그 후보의 $t_c$·$p_c$·$q^*$, 탈락 사유 → `sim.throw_region` 제안 (발사 srv 설정으로 사용)
 
