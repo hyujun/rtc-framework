@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Test fixture package-resolution gate (issue #454).
 
-A test fixture that resolves a robot model from a package the CI runner cannot
-acquire fails there and *only* there. `integrated_bringup` runs in the
-`test_cpp_besteffort` (continue-on-error) lane, so the throw never turns a PR
-red; the only symptom is a codecov patch % that reads as "no tests were
-written". #452 is what that cost: `test_momentum_observer_wiring` was 13-of-14
-red in CI for its whole life, so the joint-order oracle it exists for -- mixing
-device-order residuals with pinocchio-order Jacobians yields a finite, smooth,
-WRONG answer that no gate and no NaN check catches -- had never run outside one
-developer machine.
+A test fixture that resolves a robot model from a package a clean workspace
+cannot acquire fails there and *only* there. The case below happened on the
+C++ CI (removed 2026-09-19; with no CI left, this gate is the only defence):
+`integrated_bringup` ran in its `test_cpp_besteffort` (continue-on-error) lane,
+so the throw never turned a PR red; the only symptom was a coverage patch %
+that read as "no tests were written". #452 is what that cost:
+`test_momentum_observer_wiring` was 13-of-14 red in CI for its whole life, so
+the joint-order oracle it exists for -- mixing device-order residuals with
+pinocchio-order Jacobians yields a finite, smooth, WRONG answer that no gate
+and no NaN check catches -- had never run outside one developer machine.
 
 `agent_docs/testing-debug.md` already required fixtures to resolve models from
 `robot_descriptions/robots/<name>/`. The rule existed; the sensor did not.

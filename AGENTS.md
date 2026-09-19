@@ -51,7 +51,7 @@
 - **포매팅** — C/C++ 는 `clang-format` (루트 `.clang-format`), Python 은 `ruff format` + `ruff check` (루트 `pyproject.toml`). 변경한 파일에 적용
 - **빌드·테스트** — 변경한 패키지를 빌드·테스트한다 (§9 hard rule 준수). `rtc_base`/`rtc_msgs` 를 건드렸으면 전체 downstream (PROC-3)
 - **문서·메타데이터** — `.md` 를 고쳤으면 `python3 repo_scripts/scripts/validate_docs.py --files <파일들>`; 고친 YAML 의 parse·default·범위·단위; public header 의 Doxygen; public surface (header/launch/config/파일 add·del/dep) 변경 시 README; `CMakeLists.txt`·`package.xml` 동기화는 필수
-- CI 는 전체 문서 검증·빌드·CodeQL 을 다시 돌리지만 **포매팅은 보지 않는다**
+- CI 는 `docs-validate` (문서·생성물·셸 검사) 뿐이다 — **빌드·테스트·포매팅의 게이트는 위 로컬 검증뿐이다**
 
 단계별 액션·grep 패턴·Completion Checklist: [modification-guide.md](agent_docs/modification-guide.md).
 

@@ -114,10 +114,9 @@ Group 이름은 config YAML 밖에도 박혀 있어서, `devices:` 블록만 고
 
 ## Adding a New Package (new colcon directory)
 
-새 `<pkg>/package.xml` 디렉토리를 추가하면 **두 build SSoT를 모두** 갱신해야 한다 — 서로 다른 colcon 셀렉터를 쓰므로 누락 시 실패 양상이 다르다:
+새 `<pkg>/package.xml` 디렉토리를 추가하면 build SSoT 를 갱신해야 한다 (C++ CI 와 그 패키지 목록은 2026-09-19 에 제거됐다):
 
-1. **[repo_scripts/scripts/lib/rt_common.sh](../repo_scripts/scripts/lib/rt_common.sh) `get_base_packages()` (또는 `get_robot_packages()`)** — `build.sh` / `install.sh` 가 `--packages-select`(**비전이**)로 소비. 누락 시 그 패키지를 의존하는 downstream 의 클린 `./build.sh` 가 `find_package(<pkg>)` 에서 실패. rtc_* 빌드 의존이 없으면 `rtc_base` 직후처럼 앞쪽에 둔다.
-2. **[.github/ci-packages.yml](../.github/ci-packages.yml)** — CI 는 `build` 를 `--packages-up-to`(**전이**)로 빌드하므로 빌드 자체는 안 깨지지만, gtest / cppcheck / coverage 는 `test_cpp_*` · `lint_cpp` · `coverage_paths` 에 명시해야 **실행**된다. `test_cpp_*` 는 두 갈래이며 의미가 다르다 — **`test_cpp_gated`** 는 실패 시 PR 을 빨갛게 만들고, **`test_cpp_besteffort`** 는 CI 환경에서 불안정한 패키지(TSID solve-time, mimalloc grasp timing 의존)라 coverage 수집만 하고 PR 을 막지 않는다. 즉 "CI 에 있으나 게이트하지 않는" 패키지가 존재하므로, besteffort 목록의 테스트가 로컬에서 깨졌다면 CI green 을 근거로 넘기면 안 된다. 커버리지 리포트 설정은 [codecov.yml](../codecov.yml) 이 소유한다. 의도적으로 제외하면 파일 상단 "의도적 누락" 목록에 사유와 함께 기록 — 안 그러면 silent gap (테스트가 CI 에서 한 번도 안 돌아도 green). Header-only 패키지는 `rtc_base` 선례(test + lint + include-only coverage)를 따른다.
+- **[repo_scripts/scripts/lib/rt_common.sh](../repo_scripts/scripts/lib/rt_common.sh) `get_base_packages()` (또는 `get_robot_packages()`)** — `build.sh` / `install.sh` 가 `--packages-select`(**비전이**)로 소비. 누락 시 그 패키지를 의존하는 downstream 의 클린 `./build.sh` 가 `find_package(<pkg>)` 에서 실패. rtc_* 빌드 의존이 없으면 `rtc_base` 직후처럼 앞쪽에 둔다.
 
 README 패키지 표·count, [architecture.md](architecture.md) dependency graph 는 아래 §Updating an Existing Package 의 Doc 동기화 규칙(PROC-1)을 따른다.
 

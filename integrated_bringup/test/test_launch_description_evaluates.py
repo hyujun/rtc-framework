@@ -392,9 +392,8 @@ def _node_parameter_sources(node, context) -> list:
                 out.append(perform_substitutions(context, entry.param_file))
             except PackageNotFoundError as exc:
                 # A `FindPackageShare` for a package this workspace does not
-                # have. CI is exactly that workspace: `.github/ci-packages.yml`
-                # leaves `rtc_mujoco_sim` out on purpose (MuJoCo is not
-                # installed there), so resolving its `solver_param.yaml` raises
+                # have — e.g. a workspace built without `rtc_mujoco_sim`
+                # (MuJoCo not installed), where resolving its `solver_param.yaml` raises
                 # while every path this file asserts on — all of them
                 # integrated_bringup's — resolves fine.
                 #

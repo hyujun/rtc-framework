@@ -32,10 +32,8 @@ one alone looks survivable:
 1. a local ``colcon test`` runs pytest under ``/usr/bin/python3``, which has no
    ``mujoco`` (it is a pip package in the workspace venv, not a ROS dependency),
    so the lane skips;
-2. CI's ``python-test`` job does ``pip install ... mujoco``, but it builds and
-   tests only ``.github/ci-packages.yml``'s ``test_python`` list —
-   ``rtc_tools``, ``rtc_digital_twin``, ``robot_descriptions``. This package is
-   not in it, so the file is never collected there at all.
+2. there is no build/test CI (removed 2026-09-19; only docs-validate runs),
+   so nothing collects this file with ``mujoco`` available.
 
 So this lane is a manual check, not a gate. Run it deliberately after touching
 either copy of a pose::

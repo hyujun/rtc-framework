@@ -1,13 +1,12 @@
 # RTC (Real-Time Control) Framework
 
-![CI](https://github.com/hyujun/rtc-framework/actions/workflows/ros2-advanced-ci.yml/badge.svg)
-[![codecov](https://codecov.io/gh/hyujun/rtc-framework/branch/main/graph/badge.svg?token=4Synh4Gk1v)](https://codecov.io/gh/hyujun/rtc-framework)
+![Docs Validate](https://github.com/hyujun/rtc-framework/actions/workflows/docs-validate.yml/badge.svg)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
 **Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 모듈형 rtc_* 프레임워크 기반 UR5e 실시간 제어 시스템**
 
-> CI ([.github/workflows/](.github/workflows/))는 현재 Jazzy만 실행합니다. Humble은 지원 대상이지만 CI로 검증되지 않습니다.
+> CI ([docs-validate](.github/workflows/docs-validate.yml)) 는 문서·생성물·셸 검사만 합니다. 빌드·테스트는 CI 가 돌리지 않으므로 로컬 (`./build.sh`, `colcon test`) 에서 검증합니다. 로컬 기준은 Jazzy 이며 Humble 은 지원 대상이지만 검증되지 않습니다.
 
 로봇 비의존적(robot-agnostic) RTC 프레임워크 위에 구축된 실시간 제어 솔루션입니다. 가변 DOF, 설정 가능한 RT 루프 주기 (`control_rate` YAML; 설계 범위 100Hz–5kHz, default 500Hz), 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/TSID-WBC), TSID QP 전신 제어 (`rtc_tsid` + ProxSuite), **MPC↔RT 인터페이스 계층 (`rtc_mpc`: zero-copy TripleBuffer + cubic-Hermite 보간 + Riccati 피드백, dedicated-core MPC thread)**, 전송 계층 추상화(UDP/CAN-FD/EtherCAT/RS485), RT-안전 ONNX 추론 엔진, MuJoCo 3.x 물리 시뮬레이터, E-STOP 안전 시스템, CSV 데이터 로깅, GUI 도구를 포함합니다.
 
@@ -170,7 +169,7 @@ chmod +x install.sh
 > `colcon build --cmake-force-configure` 로 워크스페이스 전체를 다시 구성·빌드하고 전체 테스트를 돌린다.
 > 같은 PC 의 다른 프로젝트가 같은 apt 패키지에 링크돼 있으면 그쪽도 다시 빌드해야 한다.
 
-#### 표준 ROS 2 toolchain 흐름 (CI · 외부 통합 환경)
+#### 표준 ROS 2 toolchain 흐름 (외부 통합 환경)
 
 `install.sh`가 만능 wrapper지만 표준 `rosdep install` → `colcon build` → `colcon test` 흐름도 직접 지원합니다.
 

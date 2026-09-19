@@ -1,9 +1,7 @@
 # Documentation-corpus gate (issue #213).
 #
-# Deliberately a separate workflow rather than a job inside ros2-advanced-ci:
-# that workflow's `paths-ignore` drops `docs/**`, `agent_docs/**` and root
-# `*.md`, so a docs-only pull request never starts it. A validation job living
-# there could not run on the changes it exists to validate.
+# The only CI workflow: the C++/Python build-and-test CI (ros2-advanced-ci)
+# and CodeQL were removed on 2026-09-19, so build/test gating is local-only.
 #
 # Scope here is the whole corpus. The Stop hook runs the same script over the
 # *changed* files only -- an agent must not be blocked by a defect in a file it
@@ -23,10 +21,8 @@ on:
 permissions:
   contents: read
 
-# ros2-advanced-ci.yml 은 push 런이 서로 취소되지 않도록 SHA 를 그룹 키에 넣었지만
-# (#506), 여기는 ref 단위 취소를 그대로 둔다: 위에 적힌 대로 이 잡의 범위는 변경
-# diff 가 아니라 **전체 코퍼스**라, 취소된 런이 검사했을 파일을 다음 런이 남김없이
-# 다시 본다. 저쪽이 잃는 것(직전 커밋 diff 에만 걸린 C++ 게이트)이 여기엔 없다.
+# ref 단위 취소를 그대로 둔다: 이 잡의 범위는 변경 diff 가 아니라 **전체 코퍼스**라,
+# 취소된 런이 검사했을 파일을 다음 런이 남김없이 다시 본다.
 concurrency:
   group: docs-validate-${{ github.ref }}
   cancel-in-progress: true
@@ -88,8 +84,7 @@ jobs:
       # gate. Installing it keeps all five artifacts in scope here.
       # apt-get update first: runner images ship with a pruned
       # /var/lib/apt/lists, where a bare install dies with "Unable to locate
-      # package" and takes this whole job down with it. .github/actions/
-      # setup-rtc-env does the same for the same reason. shellcheck is for the
+      # package" and takes this whole job down with it. shellcheck is for the
       # shell-corpus step further down.
       - name: Install clang-format + shellcheck
         run: |
@@ -125,9 +120,8 @@ jobs:
         run: python3 repo_scripts/test/test_thread_layout_equivalence.py
 
       # ── Shell corpus + repo_scripts sensors ──────────────────────────────
-      # repo_scripts is not in .github/ci-packages.yml, so ros2-advanced-ci never
-      # runs its colcon tests, and the Stop hook runs them only when repo_scripts
-      # itself changed. Two things fell through that gap: validate_test_domains
+      # There is no colcon test CI, and the Stop hook runs repo_scripts' tests
+      # only when repo_scripts itself changed. Two things fell through that gap: validate_test_domains
       # reads *other* packages' CMakeLists, so two integrated_bringup tests that
       # opened DDS without a ROS_DOMAIN_ID reached main (fixed in #513), and the
       # shell regression tests were local-only. None of them needs ROS.
