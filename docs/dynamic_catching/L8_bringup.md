@@ -16,7 +16,7 @@
 - L0–L7을 하나의 `RTControllerInterface` 컨트롤러로 묶는다 (ros2_control 이 아니다). tick 은 `Compute`.
 - 시뮬레이션(`iiwa7_leap`, `ur5e_p1b`)과 실기(`ur5e_p1b`) 실행 구성을 기존 `integrated_bringup` launch 에 얹는다.
 - 시스템 수준 검증을 수행한다.
-- `demo_controller_gui` 패널과 `plot_rtc_log` CSV 플롯을 단계마다 함께 구현·확인한다 `[확정 D-19]` — 단계별 항목·게이트는 plan §13, 포구 상태 메시지는 D-20 (S5 전 결정).
+- `demo_controller_gui` 패널과 `plot_rtc_log` CSV 플롯을 단계마다 함께 구현·확인한다 `[확정 D-19]` — 단계별 항목·게이트는 plan §13, 포구 상태는 `rtc_msgs` 새 상태 메시지로 GUI 에 보낸다 `[확정 D-20]` (필드는 S5).
 
 비범위: vision 노드 구현 (형제 저장소 ball_perception, 사용자가 개발). 시뮬레이션에서는 ball_perception 의 `sim_estimator_node` 를 그대로 쓰며 자체 vision 발행기를 만들지 않는다 (§4.3).
 

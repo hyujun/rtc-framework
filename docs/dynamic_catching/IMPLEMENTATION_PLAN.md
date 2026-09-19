@@ -28,6 +28,7 @@
 | D-17 | catch frame 의 부모 frame·위치 offset·자세는 **YAML 로 열어 둔다**. 초기값은 S2.3 에서 제안하고, 사용자가 sim 에서 확인해 실제 값으로 갱신한다 (§10) | **확정** | 사용자 결정 |
 | D-18 | 투척 목표는 **arm manipulability 기반 포구 가능성(catchability)** 으로 정한다. 발사 영역 (arm base frame 기준 수평 거리 √(x²+y²) = 4 m 의 원호 — 좌우로 흩어진 투척 포함, world z 1.5–2.0 m = 사람이 손으로 던지는 높이) 에서 출발한 궤적 위 포구 후보마다, 손바닥 +z 가 공 진행 방향을 마주보는 자세(a_d = −v̂)의 IK 해에서 manipulability 를 재고, threshold 이상인 후보가 있으면 잡을 수 있는 공, 없으면 포기. 이 판정으로 투척 속도·각도 범위를 정한다. threshold 초기값 0.1 (provisional, 사용자가 sim 에서 자세를 보고 갱신) | **확정** — 정의 세부는 §11 | 사용자 결정 |
 | D-19 | 단계마다 **`demo_controller_gui` 갱신과 `plot_rtc_log` 로 CSV 플롯을 구현·확인**한다. 각 단계 게이트에 GUI 확인과 plot 회귀 테스트를 포함한다 (§13) | **확정** | 사용자 결정 |
+| D-20 | 포구 상태는 `rtc_msgs` 에 **새 상태 메시지**를 추가해 GUI 로 보낸다 (`WbcState`·`GraspState` 선례). Adding a New Message 절차, `rtc_msgs` 변경이므로 PROC-3 전체 빌드·테스트. 필드는 S5 에서 확정 | **확정** | 사용자 결정 |
 | D-12 | 사용자 제공 값: 투척 목표는 D-18 로 대체, 공 사양, 실기 T_close,tot 측정 시점, 성공률 하한·시행 수. 관절 가속 한계는 D-16, catch frame 은 D-17 로 대체 | **방식 확정, 값 대기** | 추측 금지. 임시값은 YAML 에 provisional 표시 |
 
 ## 1a. Sprint Contract (A-1 승인, 2026-09-19)
@@ -162,7 +163,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S5.1 컨트롤러 등록, YAML, lifecycle, 재무장. E-STOP·fault 훅은 **최소 동작만** (S9 전 임시 기준, §7.1 A-1)
 - S5.2 PointCloud2 구독(nrt) → 필드 이름 파서 → SeqLock 스냅샷 (공분산 제외, A-3). D-2 변환, `generation`/`validity`/`snapshot_sequence` 처리, 지평이 요구(D-15)보다 짧으면 진단. 공분산은 계획기 쪽 버퍼에만
 - S5.3 스트리밍 기준 → 확장 CLIK → 팔 명령. QP 비의존 관절공간 abort 경로
-- S5.4 CSV 로그, 상태 publisher (`PublishRole` 없이)
+- S5.4 CSV 로그, 상태 publisher (`PublishRole` 없이) — 포구 상태 메시지 신설 (D-20, `rtc_msgs`, PROC-3)
 - S5.5 ground truth 기반 고정 포구점(oracle plan)으로 추종 검증
 
 게이트: L4 G4-H·L5 G5-A~C4 (sim), 할당 0. GUI·plot (§13 S5 행).
@@ -311,7 +312,6 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 
 **기존 미결정**
 
-- D-20 (S5 전) 포구 상태 메시지 — 권장: `rtc_msgs` 에 새 상태 메시지 추가 (`WbcState`·`GraspState` 선례, §13)
 
 
 - D-7e (조건부) vision 수신 경로가 지연을 지배할 때의 대안 — 7.2 측정 결과가 나오면
@@ -459,4 +459,4 @@ sim:
 
 **게이트 공통.** 해당 단계의 (1) GUI 패널이 sim 에서 값을 표시하고 조작이 컨트롤러에 반영됨 (육안 확인 + `test_demo_gui_*` 추가), (2) 새 CSV 가 `plot_rtc_log` 로 파싱·플롯되고 `test_plot_rtc_log.py` 에 회귀 케이스가 있음.
 
-**결정 필요 (S5 전).** 포구 상태를 GUI 로 보낼 메시지. 기존 선례는 컨트롤러별 상태 메시지(`WbcState`, `GraspState`)이므로 `rtc_msgs` 에 포구 상태 메시지를 새로 추가하는 것이 자연스럽다 — Adding a New Message 절차, `rtc_msgs` 변경이라 PROC-3 전체 빌드 (§7.3).
+**포구 상태 메시지 (D-20 확정).** `rtc_msgs` 에 포구 상태 메시지를 새로 추가해 GUI 가 구독한다 (`WbcState`·`GraspState` 선례). Adding a New Message 절차, PROC-3 전체 빌드·테스트. 필드(모드·사유·입력 상태·plan·w₅/w₆·손 위상·결과)는 S5 에서 확정하고 이후 단계에서 필요한 필드를 더한다. 새 메시지 추가는 E-3 이 아니다 (기존 메시지 변경이 아님).
