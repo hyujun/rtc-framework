@@ -262,7 +262,7 @@ vision의 예측을 그대로 신뢰한다. 제어 PC는 $(p,v,a)$ 샘플 열 �
 
 ### 5.3 시계
 
-실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../agent_docs/invariants.md) 에 E-1 예외로 명문화하는 것은 **아직 승인 대기다** (`[CONCERN] E-1`, S0.6 — 승인되면 invariants.md 편집은 별도 커밋, plan §3.1·§4.1). sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall stamp 를 쓴다(D-3, S3.4).
+실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../agent_docs/invariants.md) 에 E-1 기록된 예외로 명문화됐다 (S0.6 승인 2026-09-19, plan §3.1). 실기 적용 조건(PTP 동기)은 S10 에서 재확인한다. sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall stamp 를 쓴다(D-3, S3.4).
 
 ---
 

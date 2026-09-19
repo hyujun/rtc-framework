@@ -1,6 +1,6 @@
 # dynamic_catching — 전체 구현 계획 (living document)
 
-- 상태: **S0 마무리** — S0.1~S0.5 완료. 남은 것은 S0.6~S0.9: escalation 승인 3건(E-1·E-3, 그리고 S5·S6 착수 전 E-8·E-7), vision 지평 손계산, 검정력 표. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
+- 상태: **S0 마무리** — S0.1~S0.6·S0.8 완료 (E-1·E-3 승인 2026-09-19). 남은 것은 S0.7 vision 지평 손계산, S0.9 검정력 표, 그리고 S5·S6 착수 전 E-8·E-7 승인. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
 - 최종 갱신: 2026-09-19 (정합화 개정 — 외부 리뷰 finding 재검증 결과는 §7.4)
 - Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
@@ -14,7 +14,7 @@ ID 는 한 번만 정의한다. 사용자 결정은 D-·C-·P- 로, 착수 전 �
 | ID | 결정 | 상태 | 근거 요약 |
 |---|---|---|---|
 | D-1 | 코드 배치: 수치 코어는 rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`), 축 정렬 오차는 `rtc_math` se3, CLIK 확장은 `rtc_tsid`, 바인딩·YAML·launch·PointCloud2 파서는 `integrated_bringup` | **확정** | 코어가 robot-agnostic 판정([design-principles.md](../../agent_docs/design-principles.md))을 통과한다. `compliance`·`grasp`·`inference` 코어와 같은 선례. 새 패키지를 만들지 않는다 |
-| D-2 | 시간 규약: (1) t_c·t_cmd 는 공의 **물리 시각** 단일 정의, 판정별 비교 대상 '지금' 고정(§3). (2) 내부 표현은 절대 steady ns, 상대시각은 수치 코어 경계에서만. (3) nrt 수신 시 `t_ref_steady = recv_steady − (recv_wall − stamp)` 를 1회 계산한다. `header.stamp` 는 **물리 샘플 시각 복원에만** 쓰고, freshness·stale 은 `recv_steady` 로만 판정한다 (§3.1) | (1)(2) **확정**, (3) **E-1 승인 대기** (S0.6) | (3) 은 stale 판정에 stamp 를 쓰지 않지만, t_c·t_cmd 가 stamp 에서 파생되어 COMMITTED·CLOSING·DECEL 판정(deadline)이 wall clock 점프에 노출된다 — [invariants.md](../../agent_docs/invariants.md) §Clock 시간축 규칙의 예외가 필요하다. 기각한 대안: 보정항을 버리고 `t_ref_steady = recv_steady` 로 두면 예외는 불필요하지만 전송·추정 지연(수~수십 ms)이 T_arm·T_freeze 예산에 그대로 들어간다 |
+| D-2 | 시간 규약: (1) t_c·t_cmd 는 공의 **물리 시각** 단일 정의, 판정별 비교 대상 '지금' 고정(§3). (2) 내부 표현은 절대 steady ns, 상대시각은 수치 코어 경계에서만. (3) nrt 수신 시 `t_ref_steady = recv_steady − (recv_wall − stamp)` 를 1회 계산한다. `header.stamp` 는 **물리 샘플 시각 복원에만** 쓰고, freshness·stale 은 `recv_steady` 로만 판정한다 (§3.1) | **확정** — (3) 은 E-1 승인 (2026-09-19, S0.6), invariants.md 에 기록된 예외 | (3) 은 stale 판정에 stamp 를 쓰지 않지만, t_c·t_cmd 가 stamp 에서 파생되어 COMMITTED·CLOSING·DECEL 판정(deadline)이 wall clock 점프에 노출된다 — [invariants.md](../../agent_docs/invariants.md) §Clock 시간축 규칙의 기록된 예외로 허용한다. 기각한 대안: 보정항을 버리고 `t_ref_steady = recv_steady` 로 두면 예외는 불필요하지만 전송·추정 지연(수~수십 ms)이 T_arm·T_freeze 예산에 그대로 들어간다 |
 | D-3 | sim 시간축: wall clock 유지 + 시행별 clock 오차 게이트 (§5) | **채택 — 판정식 재정의, 검증 후 재검토** | D-2 변환이 실기와 같은 경로로 동작. `/clock` 방식은 RT 루프에 sim 전용 시간 원천이 필요해 D-2 와 충돌 |
 | D-4 | vision 입력: ball_perception 의 실제 PointCloud2 레이아웃 채택, 필드 이름으로 파싱, `generation`·`validity`·`snapshot_sequence` 사용, NaN 공분산 = 모름. 구독 QoS 는 `KEEP_LAST` depth **1** 고정 (ARCH-6), reliability 만 S3.4 에서 실측해 정한다 | **확정** | 실제 발행기 존재. 설계 문서 §5 의 372 B·`t`·`cov` 가정 폐기. depth 는 ARCH-6 의 강제 사항이라 TBD 대상이 아니다 |
 | D-5 | CLIK: `rtc::tsid::ClikReferenceGenerator` 를 옵션(기본 off)으로 확장. 옵션을 넣기 전에 기존 동작 golden-vector 회귀를 먼저 만든다 (S2.2a) | **확정** | P5 일반화. off 시 기존 출력 bit-identical, 기존 assertion 수정 필요 시 즉시 E-6 |
@@ -26,13 +26,13 @@ ID 는 한 번만 정의한다. 사용자 결정은 D-·C-·P- 로, 착수 전 �
 | D-11 | 손 명령 포트 추상화 폐기. 손은 `ControllerOutput` 의 손 device slot 에 직접 기록. T_link 분리 측정 대신 종단 간 T_close,tot 실측 | **확정** | P1b·LEAP 모두 이미 device group. `udp_hand_node` 는 명령 stamp 를 읽지 않는다 |
 | D-12 | 사용자 제공 값: 공 사양, 실기 T_close,tot 측정 시점, 성공률 하한·시행 수, **P1b 손 관절 운용 토크 한계의 권위 출처** (§7.3). 투척 목표는 D-18, 관절 가속 한계는 D-16, catch frame 은 D-17 로 대체 | **방식 확정, 값 대기** | 추측 금지. 임시값은 YAML 에 provisional 표시, 값에 의존하는 게이트는 NOT_EVALUATED (§4.1) |
 | D-13 | E-STOP·fault 정책 (E-8) | **보류 — 최종 정책은 S9** (§4). S5 의 최소 계약은 P-1 | 사용자 결정 |
-| D-14 | 공 발사 API: (p0, v0, ω) 명시 srv 를 `rtc_msgs` 에 추가 (Adding a New Message Type, PROC-3) | **확정 — E-3 승인 대기** (S0.8) | 파라미터 설정 + Trigger 는 경합·재현성 약함. E-3 판단은 §7.3 |
+| D-14 | 공 발사 API: (p0, v0, ω) 명시 srv 를 `rtc_msgs` 에 추가 (Adding a New Message Type, PROC-3) | **확정** — E-3 승인 (2026-09-19, S0.8) | 파라미터 설정 + Trigger 는 경합·재현성 약함. E-3 판단은 §7.1 |
 | D-15 | vision 예측 사양(지평·간격·점 수·발행률)은 **포구 제어기가 요구 사양을 정하고**, sim 에서는 공 투척 설정과 ball_perception sim profile 을 그 요구에 맞춰 설정한다. 제어기는 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외·진단한다 | **확정** | ball_perception 은 sim 이 주는 위치로 미래 궤적을 만드는 노드이고 사용자가 직접 설정한다. 현재 예시 profile 은 지평 0.5 s, 간격 0.05 s, 최대 10 점, ≤ 30 Hz |
 | D-16 | 관절 가속 한계는 **토크 한계에서 도출**한다 (§9). 시뮬레이션 추정은 교차 검증용. YAML 의 기존 `max_acceleration` 값은 쓰지 않는다 | **확정** — 도출 절차의 퇴화 분기·가중·오라클은 §9 | 가속 데이터 없음, 토크 데이터 있음. 기존 `max_acceleration` (5.0 rad/s²) 은 CM 이 읽기만 하고 어떤 컨트롤러도 쓰지 않는 placeholder |
 | D-17 | catch frame 의 부모 frame·위치 offset·자세는 **YAML 로 열어 둔다**. 초기값은 S2.3a(축)·S2.3b(위치)에서 제안하고, 사용자가 sim 에서 확인해 실제 값으로 갱신한다 (§10). 값은 모델 빌드 시 읽히므로 바꾸면 컨트롤러를 다시 configure 해야 한다 | **확정** | 사용자 결정 |
 | D-18 | 투척 목표는 **arm manipulability 기반 포구 가능성(catchability)** 으로 정한다. 발사 영역 (arm base frame 기준 수평 거리 √(x²+y²) = 4 m 의 원호 — 좌우로 흩어진 투척 포함, world z 1.5–2.0 m = 사람이 손으로 던지는 높이) 에서 출발한 궤적 위 포구 후보마다, 손바닥 +z 가 공 진행 방향을 마주보는 자세(a_d = −v̂)의 IK 해에서 manipulability 를 재고, threshold 이상인 후보가 있으면 잡을 수 있는 공, 없으면 포기. 이 판정으로 투척 속도·각도 범위를 정한다. threshold 초기값 0.1 (provisional, 사용자가 sim 에서 자세를 보고 갱신) | **확정** — 정의 세부는 §11 | 사용자 결정 |
 | D-19 | 단계마다 **`demo_controller_gui` 갱신과 `plot_rtc_log` 로 CSV 플롯을 구현·확인**한다. 각 단계 게이트에 GUI 확인과 plot 회귀 테스트를 포함한다. S0 (코드 없음)·S1 (ROS·GUI 비의존 순수 코어, 실행 산출물은 GTest 뿐) 은 면제한다 (§13) | **확정** | 사용자 결정. 면제 근거는 §13 |
-| D-20 | 포구 상태는 `rtc_msgs` 에 **새 상태 메시지**를 추가해 GUI 로 보낸다 (`WbcState`·`GraspState` 선례, `PublishRole` 을 늘리지 않는 controller-owned `SeqLock<T>` 패턴). **S5 에서 S5~S9 필드 superset 을 한 번에 동결**하고 이후 단계는 값만 채운다. 모든 `Compute()` tick 에서 Store (PROC-7) | **확정 — E-3 승인 대기** (S0.8) | 사용자 결정. 필드를 단계마다 더하면 매번 `rtc_msgs` 변경·PROC-3 전체 빌드·테스트가 반복된다 |
+| D-20 | 포구 상태는 `rtc_msgs` 에 **새 상태 메시지**를 추가해 GUI 로 보낸다 (`WbcState`·`GraspState` 선례, `PublishRole` 을 늘리지 않는 controller-owned `SeqLock<T>` 패턴). **S5 에서 S5~S9 필드 superset 을 한 번에 동결**하고 이후 단계는 값만 채운다. 모든 `Compute()` tick 에서 Store (PROC-7) | **확정** — E-3 승인 (2026-09-19, S0.8) | 사용자 결정. 필드를 단계마다 더하면 매번 `rtc_msgs` 변경·PROC-3 전체 빌드·테스트가 반복된다 |
 | D-21 | SeqLock 소비 계약: RT 소비자는 매 tick `Load()` 를 무조건 한 번 하고, 새 스냅샷 여부는 **payload 안의** `snapshot_sequence`·provenance token (D-22) 으로 판정한다. `SeqLock::sequence()` 와 `Load()` 를 따로 읽어 짝짓지 않는다. 스냅샷 용량은 컴파일타임 상수 `kCap` (S1.2) | **확정** (§7.4 F4) | 두 호출 사이에 writer 가 끼면 옛 payload 와 새 sequence 가 짝지어져 최신 스냅샷을 놓친다. repo 의 다른 SeqLock 소비자는 모두 무조건 `Load()` 관용구를 쓴다. 비-RT writer → RT reader 는 backend 3종이 관절 상태에 이미 쓰는 경로이며, 최악 재시도 시간은 G1-C 로 측정한다 |
 | D-22 | provenance token: 궤적 스냅샷·공분산 버퍼·`PlanSnapshot` 은 같은 identity `{activation_generation, generation, snapshot_sequence, traj_recv_ns}` 를 싣고, `PlanSnapshot` 은 여기에 계산 기준 `{rt_iteration, rt_state_ns}` 와 `publish_ns` 를 더한다. 계획기는 계산 시작과 게시 직전에 최신 token 을 다시 보고, 대체되었거나 짝이 안 맞는 결과(궤적 N ↔ 공분산 N−1 포함)는 버린다. RT 소비자는 token 의 activation·generation 일치, `snapshot_sequence` 단조, source 나이·state 나이 상한을 fail-closed 로 검사한다 | **확정** (§7.4 F5) | `PlanSnapshot` 에 출처 필드가 없고 궤적·공분산이 다른 버퍼로 가서 N/N−1 혼합을 막을 수단이 없었다. MPC 선례(`MPCSolution::timestamp_ns`)보다 넓은 이유: 포구는 절대 시각 판정이라 출처 나이가 곧 안전 조건이다 |
 | D-23 | activation 경계: vision ingress 와 계획기는 base 의 `ActivationGeneration()` 을 스냅샷에 싣고, RT 소비는 `IsCurrentGeneration()` 이 아니면 무효로 본다. `PeriodicRtThread::Pause()` 는 진행 중 iteration 을 멈추지 않으므로 quiescence 를 기다리지 않고 generation 으로 판정한다. lifecycle·E-STOP 훅은 atomic 요청(또는 epoch)만 갱신하고, plan·궤적·공분산·손·FSM·타이머 무효화는 **RT tick 이 유일 writer** 로 수행한다 | **확정** (§7.4 F6) | lifecycle 은 publisher 만 게이트하므로 컨트롤러 소유 구독은 비활성 중에도 산다. base target mailbox 의 generation 게이트는 그 mailbox 에만 적용된다 (`rt_controller_interface.hpp`) |
@@ -83,7 +83,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 
 타입: `BallTime` (물리 시각, 절대 steady ns), `NowReal`, `NowLead` — 비교는 타입별 오버로드로만. **T_arm ≠ 0 fixture 필수** (T_arm = 0 이면 두 축이 같아져 버그가 숨는다). 매 tick 의 now 는 steady 실측이며 tick 수 × dt 로 계산하지 않는다.
 
-### 3.1 `header.stamp` 사용 계약 (D-2 (3), E-1 승인 대기)
+### 3.1 `header.stamp` 사용 계약 (D-2 (3), E-1 승인 2026-09-19)
 
 | 용도 | 쓰는 값 | 비고 |
 |---|---|---|
@@ -93,7 +93,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 | 미래 stamp (`recv_wall − stamp < −future_tol`) | 메시지 거부 + 카운터 | 변환 신뢰 불가 판정 (fail-closed), 예외 문구에 포함 |
 | 절대 시각 지평 검사 | 마지막 점 `BallTime` 대 now_lead | feasibility 판정이며 deadline 아님. 원점 오차는 지평을 짧게 보이게 하는 fail-closed 방향 |
 
-S0.6 에 올릴 예외 문구 초안 (승인 전에는 invariants.md 를 고치지 않는다):
+S0.6 에서 승인된 예외 문구 (2026-09-19, [invariants.md](../../agent_docs/invariants.md) §Clock 시간축 규칙에 기록):
 
 > **기록된 예외 — 원격 예측 궤적의 물리 샘플 시각 (dynamic_catching, D-2).** 수신 콜백은 `t_ref_steady = recv_steady − (recv_wall − stamp)` 를 1회 계산해 원격 예측의 물리 시각축을 steady 로 옮긴다. 다음을 모두 만족할 때만 허용하고 하나라도 깨지면 E-1 이다: ① freshness·stale·watchdog 판정은 `now_steady − recv_steady` 로만 한다, ② 보정항이 음수로 `future_tol` 을 넘으면 메시지를 거부하고 센다, ③ 송·수신이 같은 호스트의 CLOCK_REALTIME 을 공유하거나 PTP 동기가 검증된 경우로 한정한다 (실기는 S10 에서 재확인), ④ 보정항 분포를 진단으로 발행해 점프를 관측할 수 있게 한다. 이 예외는 t_c·t_cmd 같은 deadline 판정을 stamp 에서 파생시키므로, wall clock 점프는 그 판정 오차로 그대로 들어간다. `header.stamp` 로 staleness·E-STOP 을 판단하는 것은 여전히 금지다.
 
@@ -105,8 +105,8 @@ S0.6 에 올릴 예외 문구 초안 (승인 전에는 invariants.md 를 고치�
 
 | 게이트 | 내용 | 막는 단계 |
 |---|---|---|
-| S0.6 `[CONCERN] E-1` | §3.1 예외 문구 승인 → invariants.md 편집은 별도 커밋 | S1.3 의 D-2 변환 함수, S5.2 |
-| S0.8 `[CONCERN] E-3` | D-14 (.srv)·D-20 (.msg) 을 한 번에 발화 (§7.3) | S3.2 발사 srv, S5.4 상태 메시지 |
+| S0.6 `[CONCERN] E-1` | §3.1 예외 문구 — **승인 2026-09-19**, invariants.md 에 기록 | (해제) S1.3 의 D-2 변환 함수, S5.2 |
+| S0.8 `[CONCERN] E-3` | D-14 (.srv)·D-20 (.msg) 을 한 번에 발화 (§7.1) — **승인 2026-09-19** | (해제) S3.2 발사 srv, S5.4 상태 메시지 |
 | S5 착수 전 `[CONCERN] E-8` | P-1 최소 E-STOP 계약 (§4.4 S5) | S5.1 |
 | S6 착수 전 `[CONCERN] E-7` | 전 tier × profile 배치표, tier 4 정책, `catching_on/off` (§6) | S6.1 |
 | D-24 결정 | 지문 센서 freshness 경로 | S5.2e, S7.3 |
@@ -138,7 +138,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 
 | 단계 | 상태 | 게이트 결과 |
 |---|---|---|
-| S0 결정·문서 v0.5·계약 | 진행 중 — S0.1~S0.5 완료, S0.6~S0.9 남음 | S0.2 W 기록 칸 전부 채움. S0.3 설계 문서 12개(v0.5 헤더) 동기화, 이 문서 포함 `validate_docs` 13 files clean (2026-09-19). 정합화 개정 2026-09-19 (§7.4) |
+| S0 결정·문서 v0.5·계약 | 진행 중 — S0.1~S0.6·S0.8 완료, S0.7·S0.9 남음 | S0.2 W 기록 칸 전부 채움. S0.3 설계 문서 12개(v0.5 헤더) 동기화, 이 문서 포함 `validate_docs` 13 files clean (2026-09-19). 정합화 개정 2026-09-19 (§7.4) |
 | S1 순수 수치 코어 | 대기 | — |
 | S2 기존 rtc_* 일반화 | 대기 | — |
 | S3a 시뮬레이션 기반 | 대기 | — |
@@ -162,9 +162,9 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 - S0.3 설계 문서 v0.5 개정 — 완료. 참조 코드 명명 규칙(namespace `rtc::catching`, 함수 PascalCase)은 **규칙만** 문서화했고 헤더 이름 변경은 S1.1 에서 이식하며 한다
 - S0.4 (삭제 — ball_perception 은 사용자가 직접 개발 중이라 요청 이슈 불필요, P-3)
 - S0.5 Epic issue #537 생성 + Sprint Contract — 완료
-- S0.6 `[CONCERN] E-1` — §3.1 예외 문구 승인. 승인되면 invariants.md 편집은 별도 커밋
+- S0.6 `[CONCERN] E-1` — §3.1 예외 문구 승인 — 완료 (2026-09-19, invariants.md §Clock 시간축 규칙에 별도 커밋으로 기록)
 - S0.7 vision 지평 손계산 — D-18 발사 영역(4 m, z 1.5–2.0 m)과 속도 가정으로 탄도식 비행 시간을 구하고, "포구점이 예측 지평 안에 드는 시각 ≥ t_c − T_freeze" 가 되려면 필요한 지평·점 수를 산출한다. 결과로 (a) S1.2 의 `kCap` 제안값 (필요 점 수 × 2), (b) 현 예시 profile (지평 0.5 s) 로 충분한지를 사용자에게 보고한다. 부족하면 D-18 의 거리·속도 범위부터 조정한다
-- S0.8 `[CONCERN] E-3` — D-14·D-20 (§7.3)
+- S0.8 `[CONCERN] E-3` — D-14·D-20 (§7.1) — 승인 완료 (2026-09-19)
 - S0.9 Epic 검정력 표 — (가정 성공률 × floor) 격자에서 Wilson 95% 하한이 floor 를 넘는 데 필요한 시행 수. D-12 floor 확정 시 S8 벽시계 예산이 불가능한 조합을 배제하는 입력
 
 | 게이트 | PASS 기준 | 판정 입력 |
@@ -440,6 +440,8 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 - C-2 `header.stamp` 기반 나이 거부는 두지 않는다. 원점 지연(수신 wall − stamp)은 진단으로만 남긴다 (오래된 원점은 절대 시각 기반 지평 검사가 거른다). 미래 stamp 거부는 별개 (§3.1)
 - C-3 `planner.ik.manip_min` 은 D-18 게이트로 대체한다. **IK·게이트는 w₅ 로 풀고, 검증은 w₆ 로 해야 할 수도 있다** — §11 의 w₅/w₆ 병행 규칙
 - C-4 포구 후보마다 IK seed 는 대기 자세로 고정한다. IK 반복·예산 증가는 S6.3 에서 측정
+- E-1 (S0.6, 승인 2026-09-19): D-2 (3) 의 stamp 사용을 §3.1 문구 그대로 invariants.md §Clock 시간축 규칙의 기록된 예외로 둔다
+- E-3 (S0.8, 승인 2026-09-19): D-14 (.srv)·D-20 (.msg). 규칙 텍스트는 새 인터페이스 "추가" 를 다루지 않고 선례가 갈린다 — 새 `.msg` (`f95ca5aa` PayloadEstimate) 는 E-3 을 발화·컨펌했고, 새 `.srv` (`4d98c15f` SetExternalWrench) 는 "append-only 라 ABI 파괴 아님" 으로 발화하지 않았다. 보수적으로 둘을 한 번에 발화해 승인받았다. 두 경우 모두 `PublishRole` 을 늘리지 않으므로 E-11 은 발화하지 않는다. PROC-3 은 각 변경 때 수행한다
 
 ### 7.2 D-7a 스케줄러 — RT(SCHED_FIFO) 검토, 측정으로 확정
 
@@ -474,8 +476,6 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 | 항목 | 내용 | 필요 시점 |
 |---|---|---|
-| E-1 승인 (S0.6) | §3.1 예외 문구 | S1.3 변환 함수 전 |
-| E-3 승인 (S0.8) | D-14·D-20. 규칙 텍스트는 새 인터페이스 "추가" 를 다루지 않는다. 선례가 갈린다 — 새 `.msg` (`f95ca5aa` PayloadEstimate) 는 E-3 을 발화·컨펌했고, 새 `.srv` (`4d98c15f` SetExternalWrench) 는 "append-only 라 ABI 파괴 아님" 으로 발화하지 않았다. 보수적으로 둘을 한 번에 발화한다. 두 경우 모두 `PublishRole` 을 늘리지 않으므로 E-11 은 발화하지 않는다 | S3.2 전 |
 | E-8 승인 | P-1 최소 계약 (§4.4 S5) | S5 전 |
 | E-7 승인 | §6 의 배치표·tier 4 정책·profile | S6 전 |
 | D-24 결정 | 지문 센서 freshness 경로 (a)/(b) | S5 전 |
@@ -519,7 +519,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 | finding | 판정 | 반영 |
 |---|---|---|
-| F1 E-3 누락 | 수정 — 규칙 모호, 선례가 `.msg` 발화·`.srv` 미발화로 갈림 | D-14·D-20, S0.8, §7.3 |
+| F1 E-3 누락 | 수정 — 규칙 모호, 선례가 `.msg` 발화·`.srv` 미발화로 갈림 | D-14·D-20, S0.8, §7.1 |
 | F2 E-8 시점 | 확인 — 신규 컨트롤러 E-STOP hold 회귀가 E-8 로 분류된 선례 (`aebcd8e6`) | P-1, S5 게이트 |
 | F3 DAG 역의존 6건 | 확인 (+ L3 "착수 전 S4" 문구, 미배정 L5.7·L5.8·L5.10·k 식별) | §4.2, S1.9·S2.3a/b·S3.5a/b·S4.0·S4.5·S3.1a/b·S3.8 |
 | F4 ReadTraj race | 확인 | D-21 |

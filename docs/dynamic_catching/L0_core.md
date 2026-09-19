@@ -33,7 +33,7 @@
 | ID | 확인 항목 | 방법 | 결과 기록 |
 |---|---|---|---|
 | G0-1 | SeqLock/SPSC 원시형 헤더 위치와 API (단일 writer 가정, reader 재시도 정책) | 소스 확인 (W2-2) | 닫힘 — `rtc::SeqLock` (단일 writer `Store`, reader `Load`; **재시도 상한 없음** — 단일 writer·유한 쓰기 시간을 설계 불변식으로 둔다), `rtc::SpscQueue`. 둘 다 payload 가 **trivially copyable** 이어야 한다(`static_assert`). `Eigen::Vector3d` 멤버는 불가 → `std::array` 기반 POD (W2-2, plan §6) |
-| G0-2 | 시간 타입 규약 (ns 정수 / double s, clock type) | 소스 확인 (W2-3) | 닫힘 `[확정 D-2 (1)(2)]` — 내부 표현은 절대 steady `int64` ns, 타입 `BallTime`/`NowReal`/`NowLead` (plan §3, §4.5). RT 의 `ControllerState::t_relative_s` 는 steady 기반 세션 상대시각, `ControllerState::dt` = 1/`control_rate` 고정. `header.stamp` 를 수신 경계에서 1회 변환하는 것은 D-2 (3) 이며 **E-1 승인 대기** (S0.6, plan §3.1) — 승인 전까지 stale 판정에는 쓰지 않는다 (W2-3) |
+| G0-2 | 시간 타입 규약 (ns 정수 / double s, clock type) | 소스 확인 (W2-3) | 닫힘 `[확정 D-2 (1)(2)]` — 내부 표현은 절대 steady `int64` ns, 타입 `BallTime`/`NowReal`/`NowLead` (plan §3, §4.5). RT 의 `ControllerState::t_relative_s` 는 steady 기반 세션 상대시각, `ControllerState::dt` = 1/`control_rate` 고정. `header.stamp` 를 수신 경계에서 1회 변환하는 것은 D-2 (3) 이며 E-1 기록된 예외로 승인됐다 (2026-09-19, S0.6, plan §3.1). stale 판정에는 쓰지 않는다 (W2-3) |
 | G0-3 | 기존 YAML 파라미터 로딩 패턴 | 소스 확인 (W2-6) | 닫힘 — `LoadConfig(YAML)` + `ParseXxxParams` (non-RT, `on_configure`) + runtime gain 만 `declare_parameter`. `generate_parameter_library` 는 쓰지 않는다 (W2-6) |
 | G0-4 | 포구 코드 배치·이름 | 사용자 결정 (W1-5) | 닫힘 `[확정 D-1]` — rtc_controllers `catching` 하위 디렉토리, namespace `rtc::catching` |
 | G0-5 | sim 의 공 유체 모델 — fixture 한정 | sim 확인 (W6-3) | 닫힘 — `rtc_mujoco_sim` 이 항력 $\tfrac12\rho C_dA\Vert v\Vert v$ + Magnus 를 자체 구현한다(MJCF 유체 모델 아님, tennis preset r 0.025 m, m 0.05 kg). 본 모델(§4.1)은 Magnus 가 없으므로 $k$ 식별 잔차에 회전 효과가 남는다 (W6-3) |
@@ -96,7 +96,7 @@ $$\dot\Phi=A(x(t))\,\Phi,\qquad \Phi(t_0)=I$$
 
 - **내부 표현은 절대 steady `int64` ns.** 상대시각(double 초)은 수치 코어(샘플러·γ·rollout) 경계에서만 만들고, 원점이 다른 상대시각끼리 비교하지 않는다.
 - **세 타입.** `BallTime`(공의 물리 시각 — $t_c$, $t_{cmd}$, 궤적 점 시각), `NowReal`(매 tick steady 실측 now), `NowLead`(= now + $T_{arm}$). 셋은 서로 암묵 변환되지 않는 강한 타입이고, 비교는 **타입별 오버로드로만** 제공한다 — 어떤 판정이 어떤 now 와 비교하는지(plan §3 표)가 타입으로 고정된다. 예: 샘플링·γ·DECEL 진입은 `NowLead` 대 `BallTime`, commit·손 명령·접촉 창은 `NowReal` 대 `BallTime`.
-- **메시지 나이·stale** 은 `BallTime` 과 무관하게 steady 수신 시각 차(now_steady − recv_steady)로만 잰다. `header.stamp` 를 수신 시 1회 `BallTime` 원점으로 변환하는 것은 D-2 (3) 이며 **E-1 승인 대기** 다(L1 §4.1, plan §3.1, S0.6).
+- **메시지 나이·stale** 은 `BallTime` 과 무관하게 steady 수신 시각 차(now_steady − recv_steady)로만 잰다. `header.stamp` 를 수신 시 1회 `BallTime` 원점으로 변환하는 것은 D-2 (3) 이며 E-1 기록된 예외로 승인됐다(L1 §4.1, plan §3.1, S0.6).
 - 매 tick 의 now 는 steady 실측이며 tick 수 × `dt` 로 계산하지 않는다.
 - 테스트는 **$T_{arm}\ne0$ fixture 필수** ($T_{arm}=0$ 이면 두 축이 같아져 버그가 숨는다).
 
