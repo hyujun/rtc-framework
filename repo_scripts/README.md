@@ -730,7 +730,7 @@ RT PC 에서 위 RT 준비가 끝나면 `cyclictest -p 90 -t 1 -n -i 1000 -D 300
 
 ### CI 파이프라인 (GitHub Actions)
 
-예시는 이 저장소의 CI 자체입니다 — 매 PR 실행되므로 문서에 옮겨 적은 사본보다 정확합니다. C++ 빌드·테스트·커버리지는 [ros2-advanced-ci.yml](../.github/workflows/ros2-advanced-ci.yml) 과 그 composite action 들 ([.github/actions/README.md](../.github/actions/README.md) — ROS·apt 캐시는 `setup-rtc-env`, `deps/install` 빌드·캐시는 `build-isolated-deps`) 이 합니다. 전에 여기 있던 손으로 쓴 워크플로는 어디서도 실행되지 않아 action 버전부터 실제 CI 와 벌어져 있었습니다. CI 는 `.venv` 를 만들지 않고 러너의 Python 에 직접 설치합니다 — 러너에서도 venv 격리를 재현하려면 [README.md](../README.md) "Python 의존성 sync" 의 수동 절차를 따릅니다.
+CI 는 [docs-validate.yml](../.github/workflows/docs-validate.yml) 하나입니다 — 문서 코퍼스, thread layout 생성물, Stop hook routing, 셸 코퍼스 shellcheck, repo_scripts 검사기처럼 ROS 없이 도는 검사만 합니다. C++/Python 빌드·테스트 CI (`ros2-advanced-ci`) 와 CodeQL 은 2026-09-19 에 제거했습니다 (소요 시간 대비 효용이 낮다는 사용자 판단). 따라서 빌드·테스트의 게이트는 로컬 `./build.sh` · `colcon test` 뿐입니다.
 
 ---
 

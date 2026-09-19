@@ -117,8 +117,8 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 > 4. **RT 조건 실측** — 정책 step tick 의 compute p99/max 가 tick 예산 안 (SCHED_FIFO, cm_timing
 >    CSV). 제어 PC 실측이 실기 투입의 gate 다.
 >
-> 센서: 1 은 `rtc_base` 의 `test_rt_heap` (CI), 2·3 은 `test_demo_inference_real_model` (로컬 전용 —
-> 정책 파일이 없으면 skip = 미검증), 호출자 몫은 `test_demo_inference_alloc` (FakeEngine, CI) 이 계속 0
+> 센서: 1 은 `rtc_base` 의 `test_rt_heap`, 2·3 은 `test_demo_inference_real_model` (로컬 전용 —
+> 정책 파일이 없으면 skip = 미검증), 호출자 몫은 `test_demo_inference_alloc` (FakeEngine) 이 계속 0
 > 을 지킨다. `udp_hand_driver` 경로는 1 만 공유하고 2·3 은 **미측정**이다 (F/T 모델이 repo 밖).
 > #222 와 같이 "ORT 도 하는데" 는 새 RT 코드가 할당할 근거가 아니다.
 

@@ -85,7 +85,7 @@ def _resolve_urdf(path: Path, tmp_path: Path) -> Path:
     import xacro
 
     # `$(find robot_descriptions)` 를 쓰므로 ament index 에 그 패키지가 있어야
-    # 한다 — in-source 경로만으로는 안 된다 (.github/ci-packages.yml 참조).
+    # 한다 — in-source 경로만으로는 안 된다.
     doc = xacro.process_file(str(path))
     out = tmp_path / f"{path.stem.removesuffix('.urdf')}.urdf"
     out.write_text(doc.toprettyxml(indent="  "))

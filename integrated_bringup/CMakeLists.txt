@@ -1331,10 +1331,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_launch_hand_affinity_wiring
     test/test_launch_hand_affinity_wiring.py)
   # Behavioural twin of the two AST tests above: evaluates every launch
-  # description instead of reading it. Named in the gated-test CI job's ctest
-  # regex (.github/workflows/ros2-advanced-ci.yml) — renaming this target
-  # without updating that regex would drop it back out of the merge gate, which
-  # --no-tests=error there turns into a red job rather than a silent skip.
+  # description instead of reading it.
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
   ament_add_pytest_test(test_launch_session_wiring
