@@ -131,7 +131,7 @@ v0.4 의 `types.hpp` 스케치를 대체한다. 헤더 이름·배치는 S1.1 �
 - **활성 구성 TBD 검사.** 문자열 `"TBD"` 또는 NaN 이 남은 필드 중 **현재 활성 구성이 참조하는 키만** 실패로 센다(sim/실기, `lead_enable` 등에 따라 검사 집합 결정 — 마스터 §6).
 - **범위 검사.** 각 필드 `(name, value, lo, hi, unit)` 표(층별 §6).
 - **교차제약.** 마스터 §6 표를 구현한다. v0.5 변경: `v_tcp_max = η_v · reference.v_max` ($0<\eta_v\le1$) `[확정 D-9]` 가 "같은 값" 행을 대체하고, 이름이 둘이던 값 5쌍(`n_min`, `derate_step`, `ed_jump_max`, `a_dec`, ramp)은 단일 키가 되어 일치 검사 대상에서 빠진다(plan S0.3). γ derate 키는 v1 범위 밖이다(D-8).
-- **ζ·ω·h 검사 (`dt` 기준).** $h$ = configure 시 `control_rate`(100–5000 Hz)로 정해지는 `ControllerState::dt`. $s=\omega h$ 가 이산 안정 경계 $2\sqrt2-2\approx0.828$ 이상이면 `armable=false`, 정확도 권장 $s\le0.05$ 초과면 경고(L4 §4.7). 500 Hz 고정 가정은 쓰지 않는다. `reference.zeta` ≠ 1 이면 `armable=false` — 계획기의 종단 오차 닫힌해가 $\zeta=1$ 에서만 유효하다(L4 §4.4 임계감쇠 닫힌해).
+- **ζ·ω·h 검사 (`dt` 기준).** $h$ = configure 시 `control_rate`(100–5000 Hz)로 정해지는 `ControllerState::dt`. $s=\omega h$ 가 이산 안정 경계 $2\sqrt2-2\approx0.828$ 이상이면 `armable=false`, 정확도 권장 $s\le0.05$ 초과면 경고(L4 §4.7). 500 Hz 고정 가정은 쓰지 않는다. `reference.omega` 범위 [1, 25] rad/s 안에서는 100 Hz 에서도 $s\le0.25$ 라 안정 경계에 닿지 않는다 — 범위 검사가 안정을 함의하고, 경계 검사는 범위가 바뀔 때를 대비한 심층 방어다. 실제 구성에서 발동하는 것은 경고다 (100 Hz 에서 $\omega>5$). `reference.zeta` ≠ 1 이면 `armable=false` — 계획기의 종단 오차 닫힌해가 $\zeta=1$ 에서만 유효하다(L4 §4.4 임계감쇠 닫힌해).
 - **provisional 처리.** D-12 사용자 값(공 사양 등), D-17 catch frame(`provisional: true`), D-18 `planner.catchability.manipulability_min` 처럼 YAML 에 provisional 표시된 값은 sim 구성에서는 경고와 함께 허용하고, **실기 구성에서는 `armable=false`** 로 arm 을 막는다(plan §7.1 D-12, §10).
 - **결과.** `ValidationReport{bool armable; 고정 용량 실패 키 목록; 경고 목록}`. `armable=false`면 L7이 `ARMED` 진입을 거부한다.
 
@@ -175,7 +175,7 @@ v0.3에서 자체 메시지 패키지를 폐기했다. 입력은 vision의 `sens
 |---|---|---|
 | G0-A | §4.4 여섯 테스트 통과 (해석해 오차 < 1e-9 m, 오차비 12–20, STM 차이 < 1e-6, 저속 ∂A/∂k 상대오차 < 1e-12, `truncated` 계약) | `[SIM-ANY]` |
 | G0-B | 모든 함수 `noexcept`, 시간 타입·검증기 외 RT 사용 경로 할당 0 (`ScopedNoMalloc`·`ScopedAllocGate`), SeqLock payload 타입 `static_assert` trivially copyable | `[SIM-ANY]` |
-| G0-C | 활성 구성의 TBD 필드가 있는 YAML에서 `armable=false`, 비활성 구성 키의 TBD 는 통과. `robot.hand.q_close != q_pre`(L6 §4.2) 검사 포함. D-9 교차제약, $\omega h\ge0.828$(100·500·5000 Hz 각각), $\zeta\ne1$, 실기 구성의 provisional 값 → `armable=false` | `[SIM-ANY]` |
+| G0-C | 활성 구성의 TBD 필드가 있는 YAML에서 `armable=false`, 비활성 구성 키의 TBD 는 통과. `robot.hand.q_close != q_pre`(L6 §4.2) 검사 포함. D-9 교차제약, $\omega h\ge0.828$ 공식(100·500·5000 Hz 각각 — `reference.omega` 범위가 이 경계를 배제하므로 범위 밖 $\omega$ 로 공식만 검증한다), $\omega h>0.05$ 경고, $\zeta\ne1$, 실기 구성의 provisional 값 → `armable=false` | `[SIM-ANY]` |
 | G0-D | 시뮬레이션 $k$ 식별 후 1 s 궤적 위치 RMS 잔차 기록 (합격 임계는 사용자 결정) | `[SIM-P1B]` |
 | G0-E | 시간 타입: 다른 타입끼리 비교가 컴파일되지 않음, $T_{arm}\ne0$ fixture 에서 plan §3 표의 판정별 비교 대상 고정 | `[SIM-ANY]` |
 

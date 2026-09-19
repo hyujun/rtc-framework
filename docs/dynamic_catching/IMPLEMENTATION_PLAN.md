@@ -1,6 +1,6 @@
 # dynamic_catching — 전체 구현 계획 (living document)
 
-- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, 브랜치 `feat/dynamic-catching-s1` — S1.9 는 S2.1 후, §4.2). S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
+- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541 머지 — S1.9 는 S2.1 후, §4.2). S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
 - 최종 갱신: 2026-09-19 (S1 게이트 결과 §4.4 S1, S0.7·S0.9 결과. 정합화 개정의 finding 재검증 결과는 §7.4)
 - Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
@@ -159,7 +159,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 | 단계 | 상태 | 게이트 결과 |
 |---|---|---|
 | S0 결정·문서 v0.5·계약 | 완료 (2026-09-19) | S0.2 W 기록 칸 전부 채움. S0.3 설계 문서 12개(v0.5 헤더) 동기화, 이 문서 포함 `validate_docs` 13 files clean. 정합화 개정 (§7.4). 승인: issue #537 코멘트. S0.7 필요 지평 0.46–0.86 s (R2 지배)·`kCap` 40 제안, 0.5 s profile 부족 (§4.4 S0 결과). S0.9 검정력 표 (§1a) |
-| S1 순수 수치 코어 | S1.1~S1.8 완료 (2026-09-19, 브랜치 `feat/dynamic-catching-s1`), S1.9 는 S2.1 후 | 이식·회귀·RT·시간 PASS, 검증기 PASS(provisional), S1.8 PASS (G7-C 임계 NOT_EVALUATED), backfill NOT_EVALUATED(S3.6) — §4.4 S1 결과 |
+| S1 순수 수치 코어 | S1.1~S1.8 완료 (2026-09-19, PR #541), S1.9 는 S2.1 후 | 이식·회귀·RT·시간 PASS, 검증기 PASS, S1.8 PASS (G7-C 임계 NOT_EVALUATED), backfill NOT_EVALUATED(S3.6) — §4.4 S1 결과 |
 | S2 기존 rtc_* 일반화 | 대기 | — |
 | S3a 시뮬레이션 기반 | 대기 | — |
 | S4a 손 타이밍 측정 | 대기 | — |
@@ -267,7 +267,7 @@ GUI·plot: 면제 (D-19, §13).
 | 회귀 | PASS | G2-H·G1-A 해당분 (개수 경계 선검사, NaN/Inf, `dt_min` 미만, 한계 무효), G2-G, G4-I (비유한 목표·t·dt·명령 오버플로 → 상태 보존 + invalid + saturated, 다음 유한 입력에서 쌍둥이 실행과 bit-identical) |
 | RT | PASS | `ScopedAllocGate` + `ScopedNoMalloc` 할당 0: `SampleAt`·`Check`·`Step`·`Evaluate`·도달시간/γ 창 게이트·감속 목표·debounce. 전부 `noexcept`. 기록 (개발 PC, 비 RT 커널): 스냅샷 복사 3240 B/tick, 복사 + `SampleAt` 최악 3.4 µs, `Step` 최악 0.2–0.4 µs |
 | 시간 | PASS | G0-E — 교차 축 비교·산술·변환이 컴파일되지 않음을 `static_assert` 로, T_arm = 50 ms fixture 에서 §3 표의 판정별 축 고정. D-2 (3) 변환은 미래 stamp·오버플로 거부 |
-| 검증기 | PASS(provisional) | G0-C 전 항목 (29 케이스, 사유 코드까지 단언). 단 ωh ≥ 0.828 경계는 L4 §6 의 `reference.omega` 범위 [1, 25] 안에서 도달 불가 (5000 Hz·100 Hz 모두 s ≤ 0.25) — 범위 밖 ω 로 공식만 검증했다 (§7.3) |
+| 검증기 | PASS | G0-C 전 항목 (사유 코드까지 단언). ωh ≥ 0.828 경계는 `reference.omega` 범위 [1, 25] 안에서 도달 불가 (100 Hz 에서도 s ≤ 0.25) 라 범위 밖 ω 로 공식만 검증했고, 게이트 문구를 그에 맞게 고쳤다 (2026-09-19 사용자 결정, L0 §5.3·§9) |
 | S1.8 | PASS · G7-C NOT_EVALUATED(임계) | G7-A 표 완전성 (도달 불가·미사용 사유·중복 칸 각각 음성 테스트), G7-B 진입 시 e = ė = 0 정확·τ_s 연속, G7-D 할당 0. G7-C 오경보: k_σ = 3 합성 잡음 **0/20000** (debounce 후) 기록 |
 | S1.9 | 대기 (S2.1 후) | §4.2 |
 | backfill | NOT_EVALUATED(S3.6) | — |
@@ -568,7 +568,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 **단계에서 정할 것 (결정은 해당 단계)**
 
 - ~~S1.7 η_v·D-16 가속 box 의 YAML 키 이름~~ — S1.7 에서 닫음: η_v 는 L3 §6 의 `planner.gamma.eta_v`, a_dec 는 `supervisor.decel.a_dec` 로 문서에 이미 있었다. 가속 box 키는 S2.5 에서. S1.7 이 새로 둔 키: `core.ball.provisional`·`planner.catchability.manipulability_min.provisional`·`robot.hand.provisional` (문서는 provisional 을 산문으로만 표시, 기본값 true = fail-closed). catch frame 의 provisional (D-17) 은 `urdf.extra_frames` 쪽이라 S2.3a 에서 검증기에 연결
-- G0-C 의 ωh 경계 (100·500·5000 Hz) 는 `reference.omega` 범위 [1, 25] rad/s 안에서 도달 불가 — 범위를 넓히거나 게이트 문구를 "범위 검사가 ωh 안정을 함의" 로 고칠지 (S1 결과, 사용자 판단)
+- ~~G0-C 의 ωh 경계 도달 불가~~ — 닫힘 (2026-09-19 사용자 결정): 범위는 그대로 두고 게이트 문구를 "범위 검사가 ωh 안정을 함의, 경계 공식은 범위 밖 ω 로 단위 검증" 으로 고쳤다 (L0 §5.3·§9)
 - L7 전이표 (S1.8) 의 해석 3건을 S7.2 에서 확인: `Reason::kNone` = 각 상태의 정상 전진, IDLE homing 은 `kIdle` 안, ARMED→IDLE (§4.5 조건 위반) 은 전용 사유가 없어 `kParamsTbd` 재사용 (`transition_table.hpp` 헤더)
 - S2.2a CLIK 확장 구조 (행 선택형 vs formulation 클래스)
 - S2.2 CLIK: 관절별 속도 한계 (현재 `v_limit` 스칼라), q_c 평가용 캐시 분리, q_c 모드 실패 후 재앵커 규칙, `anchor_drift_max` 와 `TRACK_ERR` 중복 정리
