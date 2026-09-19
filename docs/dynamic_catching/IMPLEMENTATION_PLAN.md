@@ -4,7 +4,7 @@
 - 최종 갱신: 2026-09-19
 - Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
-- 갱신 규칙: 결정·단계 상태·게이트 결과가 바뀔 때마다 이 문서를 먼저 고친다. 설계 문서(`CATCHING_MASTER.md`, `L0_core.md` … `L8_bringup.md`)와 충돌하면 **이 문서의 결정이 우선**하며, 해당 설계 문서는 S0.3 에서 v0.5 로 고친다.
+- 갱신 규칙: 결정·단계 상태·게이트 결과가 바뀔 때마다 이 문서를 먼저 고친다. 이 문서가 구체화되면 같은 폴더의 설계 문서·참조 구현을 이 문서에 맞춰 갱신·동기화한다 (S0.3, 이후 결정 변경 시마다). 설계 문서(`CATCHING_MASTER.md`, `L0_core.md` … `L8_bringup.md`)와 충돌하면 **이 문서의 결정이 우선**하며, 해당 설계 문서는 S0.3 에서 v0.5 로 고친다.
 
 ## 1. 결정 로그
 
@@ -23,7 +23,23 @@
 | D-11 | 손 명령 포트 추상화 폐기. 손은 `ControllerOutput` 의 손 device slot 에 직접 기록. T_link 분리 측정 대신 종단 간 T_close,tot 실측 | **확정** | P1b·LEAP 모두 이미 device group. `udp_hand_node` 는 명령 stamp 를 읽지 않는다 |
 | D-13 | E-STOP·fault 정책 (E-8) | **보류 — 다른 기능 전부 구현 후 마지막에 결정** (§4) | 사용자 결정 |
 | D-14 | 공 발사 API: (p0, v0, ω) 명시 srv 를 `rtc_msgs` 에 추가 (Adding a New Message, PROC-3) | **확정** | 파라미터 설정 + Trigger 는 경합·재현성 약함 |
-| D-12 | 사용자 제공 값: 목표 투척 속도·거리, 공 사양, 실기 T_close,tot 측정 시점, 운용 관절 가속 한계, 성공률 하한·시행 수, catch frame 축 확인·offset | **방식 확정, 값 대기** | 추측 금지. 임시값은 YAML 에 provisional 표시 |
+| D-15 | vision 예측 사양(지평·간격·점 수·발행률)은 **포구 제어기가 요구 사양을 정하고**, sim 에서는 공 투척 설정과 ball_perception sim profile 을 그 요구에 맞춰 설정한다. 제어기는 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외·진단한다 | **확정** | ball_perception 은 sim 이 주는 위치로 미래 궤적을 만드는 노드이고 사용자가 직접 설정한다. 현재 예시 profile 은 지평 0.5 s, 간격 0.05 s, 최대 10 점, ≤ 30 Hz |
+| D-16 | 관절 가속 한계는 **토크 한계에서 도출**한다 (§9). 시뮬레이션 추정은 교차 검증용. YAML 의 기존 `max_acceleration` 값은 쓰지 않는다 | **확정** | 가속 데이터 없음, 토크 데이터 있음. 기존 `max_acceleration` (5.0 rad/s²) 은 CM 이 읽기만 하고 어떤 컨트롤러도 쓰지 않는 placeholder |
+| D-17 | catch frame 의 부모 frame·위치 offset·자세는 **YAML 로 열어 둔다**. 초기값은 S2.3 에서 제안하고, 사용자가 sim 에서 확인해 실제 값으로 갱신한다 (§10) | **확정** | 사용자 결정 |
+| D-12 | 사용자 제공 값: 목표 투척 속도·거리 (sim 에서는 제어기에 맞춰 설정 — D-15), 공 사양, 실기 T_close,tot 측정 시점, 성공률 하한·시행 수. 관절 가속 한계는 D-16, catch frame 은 D-17 로 대체 | **방식 확정, 값 대기** | 추측 금지. 임시값은 YAML 에 provisional 표시 |
+
+## 1a. Sprint Contract (A-1 승인, 2026-09-19)
+
+Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**을 따로 확정한다 (단계 sub-plan 의 `## Spec`).
+
+```
+[SPRINT] 1) iiwa7_leap·ur5e_p1b MuJoCo 에서 ball_perception PointCloud2 예측만을 입력으로,
+            목표 투척 분포(D-12)에서 포구 성공률의 Wilson 95% 하한 ≥ floor(D-12), 로봇별 보고
+         2) 전 RT 경로 할당 0·noexcept·RT-1~10 준수, 기존 컨트롤러 테스트 assertion 무수정 green
+         3) 설계 문서 v0.5 가 코드와 일치하고, 이 문서에 단계별 게이트 결과가 기록됨
+```
+
+실기(S10)는 Epic 기준 밖이며 S10 착수 시 별도 기준을 세운다.
 
 ## 2. 단계 W 결론 요약
 
@@ -98,7 +114,7 @@
 ### S1 순수 수치 코어 (ROS 비의존)
 
 - S1.1 rtc_controllers `catching` 하위 디렉토리 골격, 참조 테스트를 GTest 로 이식
-- S1.2 궤적 타입(공용) + Hermite 샘플러. SeqLock 에 싣는 타입(궤적 스냅샷, PlanSnapshot)은 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지 — §6). 점 개수 `[n_min, kMaxSamples]` 를 파서·check·RT 읽기 모두에서 먼저 검사, NaN 입력 거부, `dt_min` 미만은 경고가 아니라 거부
+- S1.2 궤적 타입(공용) + Hermite 샘플러. SeqLock 에 싣는 타입(궤적 스냅샷, PlanSnapshot)은 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지 — §6). 점 개수 `[n_min, kMaxSamples]` 를 파서·check·RT 읽기 모두에서 먼저 검사 (용량 `kMaxSamples` 는 S3.6 요구 사양에 여유를 두어 정하고, 그 전에는 provisional), NaN 입력 거부, `dt_min` 미만은 경고가 아니라 거부
 - S1.3 시간 타입 `BallTime`/`NowReal`/`NowLead` (§3)
 - S1.4 soft-catch 기준 생성기: NaN 가드(비유한 목표 시 상태 보존 + invalid), derate 없음(D-8)
 - S1.5 도달 가능성: `time_feasibility`, 방향 속력(투영 v̂ᵀJ_p q̇, 0 가드), 정지거리·오차 예산. 잘못된 한계는 flag
@@ -112,10 +128,11 @@
 
 - S2.1 `rtc_math` se3 에 축 정렬 오차·각속도·Jacobian (deadband 에서 유한), 유한차분 테스트
 - S2.2 `ClikReferenceGenerator` 옵션 (D-5·D-6): twist feedforward, LOCAL 접근축 2행, 가속 box + `bound_conflict`, 직전 q̇ 평활 항, status·반복·solve time 노출, `max_iter` 설정, q_c 평가 모드. 착수 후 첫 설계 리뷰에서 "행 집합 선택형 확장" 과 "`QPSolverWrapper`·se3 오차만 공유하는 formulation 클래스" 중 하나로 확정
-- S2.3 `rtc_urdf_bridge` 모델 빌더: YAML 선언 추가 frame (D-10)
+- S2.3 `rtc_urdf_bridge` 모델 빌더: YAML 선언 추가 frame (D-10, D-17). 스키마는 §10. 초기 제안값 산출(§10) 후 사용자 sim 확인
+- S2.5 관절 가속 한계 도출 도구 (D-16, §9): 토크 한계 + 동역학 모델 → 보수적 가속 box, provenance 포함 YAML 출력. sim 교차 검증
 - S2.4 DemoWbc 회귀(기존 assertion 무수정), `rtc_tsid`·`rtc_urdf_bridge` downstream 빌드·테스트, `/code-review`
 
-게이트: 옵션 off 시 기존 출력 동일, 기존 테스트 전부 green, 할당 0.
+게이트: 옵션 off 시 기존 출력 동일, 기존 테스트 전부 green, 할당 0. S2.5 는 도출값이 sim 교차 검증(§9)과 모순되지 않음.
 
 ### S3 시뮬레이션 기반 (`rtc_mujoco_sim`, robot-agnostic)
 
@@ -124,6 +141,7 @@
 - S3.3 공 접촉 truth(시각·충격량·접촉력) 출력, truth 발행 주기 상향, sim time 진단 출력(RTF 게이트용)
 - S3.4 `sim_estimator_node` 연결: clock domain(`use_sim_time=false`), `frame_id` 와 world 관계, 발행 주기·N·지평 실측 (TBD-VIS-04/06), 지연·드롭 주입
 - S3.5 투척 생성 도구 (목표 포구점 → 발사 조건)
+- S3.6 vision 요구 사양 산출 (D-15): 목표 투척 분포에서 "검출 이후 포구 창 종료까지 최대 비행 시간" → 필요 지평, L2 보간 게이트를 만족하는 간격 → 점 수 → 파서 용량. 결과를 ball_perception sim profile 설정값으로 제시 (설정은 사용자)
 
 게이트: 발사 → PointCloud2 수신 end-to-end, seed 재현성, RTF 게이트 동작.
 
@@ -139,7 +157,7 @@
 ### S5 포구 컨트롤러 골격·입력·추종 (Adding a New Controller)
 
 - S5.1 컨트롤러 등록, YAML, lifecycle, 재무장. E-STOP·fault 훅은 **최소 동작만** (S9 전 임시 기준, §7.1 A-1)
-- S5.2 PointCloud2 구독(nrt) → 필드 이름 파서 → SeqLock 스냅샷. D-2 변환, `generation`/`validity`/`snapshot_sequence` 처리
+- S5.2 PointCloud2 구독(nrt) → 필드 이름 파서 → SeqLock 스냅샷 (공분산 제외, A-3). D-2 변환, `generation`/`validity`/`snapshot_sequence` 처리, 지평이 요구(D-15)보다 짧으면 진단. 공분산은 계획기 쪽 버퍼에만
 - S5.3 스트리밍 기준 → 확장 CLIK → 팔 명령. QP 비의존 관절공간 abort 경로
 - S5.4 CSV 로그, 상태 publisher (`PublishRole` 없이)
 - S5.5 ground truth 기반 고정 포구점(oracle plan)으로 추종 검증
@@ -149,17 +167,18 @@
 ### S6 계획기 스레드 (D-7)
 
 - S6.1 스레드 골격: MPC 스레드 생성 방식 그대로 (§6). RT-1~10 준수 코드, 초기 FIFO, thread layout role 추가 (E-7 절차)
-- S6.5 D-7a 측정: 제어 PC 부하 상태에서 FIFO·OTHER 각각 수신 → plan 게시 지연 p50·p99·최대, 예산 초과율 → §7.2 기준으로 정책 확정
 - S6.2 포구 자세 IK: `DifferentialIk` (m=5) + 스레드 전용 모델 handle
 - S6.3 γ 창·rollout (S1 코드 호출), 예산 초과 시 coarse-to-fine
 - S6.4 후보 선택·hysteresis·commit/freeze, `PlanSnapshot` SeqLock
+- S6.5 D-7a 측정: 제어 PC 부하 상태에서 FIFO·OTHER 각각 수신 → plan 게시 지연 p50·p99·최대, 예산 초과율 → §7.2 기준으로 정책 확정
+- S6.6 NLP 전환 대비 (A-4, §8a): 탐색 전략을 계획기 코어의 단일 진입 함수 뒤에 두어, 1차원 탐색 + IK 를 NLP 로 바꿔도 스레드·입출력 스냅샷·RT 쪽 소비 코드는 그대로 두는 경계를 유지. 전환 판단 신호(IK 수렴률 G3-G, 계획 성공률, 예산 초과율)를 S6·S8 에서 기록
 
 게이트: L3 G3-A~E, G3-C 예산 준수, Adding a New Thread 3 oracle.
 
 ### S7 손 시퀀서·슈퍼바이저
 
 - S7.1 손 시퀀서 → 손 device slot
-- S7.2 FSM (전이표 = 데이터, Reason 완전), IDLE→wait_pose homing
+- S7.2 FSM (전이표 = 데이터, Reason 완전), IDLE→wait_pose homing. DECEL 은 시각 기준 진입 (A-5, now_lead ≥ t_c), 지문 센서는 결과 판정·abort 전용. COMMITTED 이후 stale 은 동결 plan 으로 계속, `supervisor.stale_committed_max` 초과 시 ABORT_SAFE (A-6, 초기값은 vision 발행 주기의 3배로 제안하고 S8 에서 조정)
 - S7.3 접촉 판정 (sim·실기 부호 정규화), 감속, 충격량 예산
 - S7.4 abort·retreat·재무장 리셋, 연속 투척
 
@@ -196,7 +215,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 | 예측 일관성 | vision 예측 궤적 vs ground truth (같은 wall 시각 축) | 오차가 RTF < 1 구간에서만 커지는지 확인 |
 | stamp 도메인 | `sim_estimator_node` 의 stamp 가 wall 인지 | `use_sim_time=false` 에서 wall |
 
-## 6. D-7 계획기 스레드 구성 (분석 중)
+## 6. D-7 계획기 스레드 구성
 
 기존 MPC 스레드와 같은 방식으로 생성하고 기능만 planner 로 한다. 분석 결과 (2026-09-19):
 
@@ -212,7 +231,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 
 **복사하지 않을 것.** 현 MPC 경로는 문서상 RT 로 분류되지만 `MPCSolutionManager::PublishSolution` 의 mutex·try/catch, `HandlerMPCThread` 의 `fprintf` 가 있다 — planner 템플릿으로 쓰지 않는다. (repo 문서와 코드의 drift 로 별도 기록 대상.)
 
-**남은 선택** — §7 D-7a~d.
+세부 선택 D-7a~d 는 §7.
 
 ## 7. 세부 결정과 후속 결정
 
@@ -225,6 +244,13 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 - A-2 `docs/dynamic_catching/` 는 브랜치 `docs/dynamic-catching-plan` 에 커밋
 - A-3 Epic issue 만 생성. ball_perception 쪽 요청 이슈는 만들지 않는다 (사용자가 직접 개발 중) — 레이아웃 변경은 S5.2 파서의 필드 이름·datatype 검사와 레이아웃 해시 진단이 감지한다
 - D-12 추측하지 않고, 값이 준비되기 전에는 YAML 에 provisional 로 표시해 활성 구성 TBD 검사가 실기 arm 을 막게 한다
+- A-1 Sprint Contract: Epic 기준 + 단계별 `[SPRINT]` (§1a)
+- A-2 D-7a 판정 기준: FIFO 가 수신 → plan 게시 지연 p99 를 `planner.budget_s` 의 10% 이상 줄이거나 예산 초과율을 줄이면 FIFO 유지, 둘 다 아니면 SCHED_OTHER. 표본 ≥ 1000 시행 (L3 G3-C 와 같은 규모)
+- A-3 공분산(TBD-COV-01): RT 스냅샷에서 분리, 계획기 쪽 버퍼에만 둔다. NaN(모름) 처리도 계획기 한 곳에서
+- A-4 계획기 탐색: 1차원 시간 탐색 + IK 로 시작하되 NLP 전환을 염두에 둔 경계를 유지한다 (§8a)
+- A-5 DECEL 은 t_c 시각 기준 진입, 지문 센서는 결과 판정·abort 전용 (L7 §4.1 권장 채택)
+- A-6 COMMITTED 이후 stale 은 동결 plan 으로 계속하고 상한 초과 시 ABORT_SAFE (L7 §4.2 권장 채택)
+- A-7 → D-15 (vision 요구 사양은 제어기가 정하고 sim 을 맞춘다)
 
 ### 7.2 D-7a 스케줄러 — RT(SCHED_FIFO) 검토, 측정으로 확정
 
@@ -248,19 +274,74 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 1. planner 코드는 스케줄링 클래스와 무관하게 **RT-1~10 준수로 작성**한다 (S6 게이트: `ScopedAllocGate`·`ScopedNoMalloc` 할당 0, noexcept, 로깅은 SPSC). 그러면 FIFO/OTHER 는 `thread_layout.yaml` 값 하나로 바뀌고 코드 변경이 없다
 2. 초기값은 **FIFO** (rt_callback 보다 낮은 우선순위, 검사 추가)
 3. S6 에서 제어 PC 에 부하(포구 컨트롤러 + sim 또는 실기 드라이버 + vision)를 건 상태로 두 정책을 각각 측정한다: vision 수신 → plan 게시 지연의 p50·p99·최대, 예산 초과율
-4. 판정 기준 (제안, S6 착수 전 확정): FIFO 가 p99 지연을 `planner.budget_s` 의 10% 이상 줄이지 못하고 예산 초과율도 차이가 없으면 **SCHED_OTHER 로 전환**
+4. 판정 기준 (A-2 확정): FIFO 가 p99 지연을 `planner.budget_s` 의 10% 이상 줄이지 못하고 예산 초과율도 줄이지 못하면 **SCHED_OTHER 로 전환**. 표본 ≥ 1000 시행
 5. 측정에서 상류 구간 (nrt_callback 수신)이 지배적이면 D-7e 로 수신 경로를 따로 검토한다
 
 ### 7.3 미결정
 
-- D-7a 판정 기준 수치 (7.2 의 10%) — S6 착수 전
 - D-7e (조건부) vision 수신 경로가 지연을 지배할 때의 대안 — 7.2 측정 결과가 나오면
 - D-12 값들
 - D-13 E-STOP·fault 정책 — S9
+- S2.2 CLIK 확장 구조 (행 선택형 vs formulation 클래스) — S2 첫 설계 리뷰
+- L3 후보 점수 가중치 — 튜닝, S6~S8
+- 실기 공분산 검증 수단 (L8 §6 의 세 가지 중) — S10
+- NLP 전환 여부 (§8a 신호) — S6·S8 결과 후
 
-## 8. 알려진 위험
+## 8a. 계획기 NLP 전환 대비 (A-4)
+
+1차원 시간 탐색 + IK 로 시작하지만, 문제가 복잡해지면 MPC 처럼 NLP 로 바꿀 수 있어야 한다.
+
+- **경계:** 계획기 코어는 "입력 스냅샷(궤적 + 공분산 + 로봇 상태) → `PlanSnapshot`" 단일 진입 함수로 둔다. 스레드(§6), 입출력 SeqLock, RT 쪽 소비(L4·L7), 게이트 순서의 앞단(불확실성·도달시간 사전 필터)은 탐색 전략과 독립으로 설계한다
+- **추상 interface 는 지금 만들지 않는다.** 구현이 하나뿐인 abstract interface 는 ARCH-3 위반이다. NLP 구현이 실제로 생기는 시점에 두 구현을 두고 interface 를 도입한다
+- **스케줄링과의 관계:** NLP solver 가 할당·예외를 쓰면 RT-1~10 을 지킬 수 없으므로, 그때 D-7a 는 `thread_layout.yaml` 값만 바꿔 SCHED_OTHER 로 간다 (코드 변경 없음 — §7.2 결정 방식 1)
+- **전환 판단 신호 (S6·S8 기록):** IK 수렴률 (L3 G3-G), 계획 성공률, 예산 초과율, 1차원 분해가 놓치는 후보(시각·자세 결합) 사례
+- 전환 시 재사용 후보: `rtc_mpc` 의 solver 기반·스레드 관용구 (그 시점에 조사)
+
+## 9. 관절 가속 한계 도출 (D-16)
+
+가속 데이터는 없고 토크 한계는 있다: YAML `devices.<group>.joint_limits.max_torque`, URDF `effort`, MJCF `forcerange` 가 같은 값이다 (UR5e 150·150·150·28·28·28 N·m, iiwa7 200 N·m). 기존 YAML `max_acceleration` (5.0 rad/s²) 은 출처 없는 placeholder 라 쓰지 않는다.
+
+**방법 (오프라인 도구, S2.5).**
+
+1. 포구 작업공간·대기 자세 주변에서 관절 자세 q 와 속도 q̇ (속도 한계 이내)를 표본 추출한다
+2. 각 표본에서 Pinocchio 로 M(q), h(q, q̇) (RNEA) 를 구한다 — 손을 포함한 결합 모델
+3. 모든 |q̈_j| ≤ a_j 에 대해 |M q̈ + h|_i ≤ η_τ · τ_max,i 가 성립하는 충분조건 Σ_j |M_ij| a_j + |h_i| ≤ η_τ · τ_max,i 를 세우고, a = s · w (관절별 가중 w) 로 두어 최대 s 를 구한다 (LP)
+4. 전 표본의 최소값을 보수적 상수 box 로 채택하고, 표본 범위·η_τ·모델 버전·일자를 provenance 로 YAML 에 기록한다
+
+- η_τ < 1 은 접촉 충격(L7 충격량 예산)과 모델 오차를 위한 여유다. 값은 S2.5 에서 제안한다
+- 상수 box 를 쓰는 이유: 계획기(L3 도달시간)와 CLIK 가속 box 가 같은 한계를 써야 계획이 실행과 일치한다. 자세 의존 한계는 v1 범위 밖이며, RT 에서 매 tick 토크 여유를 감시하는 용도로만 검토한다
+- **교차 검증 (sim):** MJCF `forcerange` 가 같은 토크 한계를 가지므로, sim 에서 큰 step 명령으로 달성 가속을 측정해 도출값이 달성 가능 범위 안인지 확인한다
+- **실기 주의:** UR 은 position 명령을 받는 쪽 컨트롤러가 자체 가속·보호 정지 기준을 가질 수 있다 (repo 밖, 미확인). S10 에서 식별한다
+
+## 10. catch frame YAML (D-17)
+
+catch frame 은 모델 빌더가 추가하는 frame 이다 (D-10). 사용자가 sim 에서 확인하며 바꿀 수 있도록 로봇 config 에 연다.
+
+```yaml
+# 로봇 config (예: integrated_bringup ur5e_p1b _base.yaml 의 모델 절) — 스키마 제안
+extra_frames:
+  - name: catch_frame
+    parent: l_palm_link          # 부모 frame
+    xyz: [0.0, 0.0, 0.0]         # m, 부모 frame 기준 — 포켓 중심
+    rpy: [0.0, 0.0, 0.0]         # rad, 부모 frame 기준 — 결과 frame 의 +z 가 손바닥 바깥 법선
+    provisional: true            # 사용자 확인 전
+```
+
+포구 컨트롤러 YAML 은 frame 이름만 참조한다 (`catch_frame: catch_frame`). 접근축은 규약상 이 frame 의 +z 다.
+
+**초기 제안값 산출 (S2.3).**
+
+- 축: FK 로 도출한 후보 — p1b `l_palm_link` +z (rpy 0), iiwa7_leap `palm_lower` −z (x 축 π 회전으로 +z 로 뒤집음)
+- 위치: 손 preshape 자세(S4.1 손 프로파일)에서 손가락 끝 위치들의 중심을 부모 frame 에 표현한 값을 포켓 중심 제안값으로 한다
+- 제안값은 근거(자세·계산식)와 함께 PR 에 적고, 사용자가 sim 에서 확인한 뒤 `provisional: false` 로 갱신한다
+- 검증기는 `provisional: true` 인 catch frame 으로 실기 arm 을 막는다 (D-12 와 같은 규칙)
+
+## 11. 알려진 위험
 
 - vision 토픽이 stable ABI 가 아니다 (D-4)
 - sim T_close 는 MJCF 게인에 의존 — 실기 측정 전까지 S4 결론은 잠정
 - γ derate 제외(D-8)로 abort 가 늘 수 있다 — S8 에서 측정
 - D-3 이 검증에서 떨어지면 S3·S5 시간 경로 재작업
+- 토크에서 도출한 보수적 가속 box (D-16) 가 받을 수 있는 공 속력을 낮출 수 있다 — S4.4 에서 함께 판정
+- vision 지평이 짧으면 (현 예시 profile 0.5 s) 계획 가능한 포구 창이 줄어든다 — S3.6 요구 사양으로 sim profile 을 맞춘다
+- 1차원 분해가 복잡한 경우를 놓치면 NLP 전환 (§8a) 이 필요해 S6 재작업
