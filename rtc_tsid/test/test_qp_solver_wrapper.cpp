@@ -263,7 +263,7 @@ TEST_F(QPSolverWrapperTest, RecoversAfterNonFiniteSolve) {
   qp.l.head(3).setConstant(-0.5);
   qp.u.head(3).setConstant(0.5);
 
-  // min ½‖x‖² − gᵀx over the box [-0.5, 0.5]³ → x* = clamp(g, ±0.5).
+  // min ½‖x‖² + gᵀx over the box [-0.5, 0.5]³ → x* = clamp(−g, ±0.5).
   qp.g.head(3) << -0.2, -1.0, 0.3;
   ASSERT_TRUE(solver.Solve(qp).converged);
 
