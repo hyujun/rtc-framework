@@ -1610,9 +1610,9 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     // #234 P-1: the same rule applied to the *wire* required a store, not a
     // skip — the publish thread re-loads the SeqLock under a fresh stamp every
     // tick, so "don't store" published the pre-E-STOP body as if it were
-    // current. FillEstopPublishState stores a body with the TSID-derived
+    // current. FillUnsolvedPublishState stores a body with the TSID-derived
     // fields reported as not-solved and the pull estimate marked invalid.
-    FillEstopPublishState(dt);
+    FillUnsolvedPublishState(dt);
     PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
                          state.iteration);
     UpdateMomentumObserverChannels(momentum_observer_log_handle_, payload_estimate_lock_,
@@ -1627,6 +1627,13 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   if (!target_initialized_.load(std::memory_order_acquire)) {
     auto out = WriteJointCommand(state);
     out.command_type = command_type_;
+    // PROC-7: no TSID solve ran, and this path is reached after every
+    // ClearEstop / on_activate until both devices are readable — skipping the
+    // store would republish the last session's body (tsid_solver_ok=true)
+    // under this tick's stamp. Same not-solved body as the E-STOP tick.
+    FillUnsolvedPublishState(dt);
+    UpdateMomentumObserverChannels(momentum_observer_log_handle_, payload_estimate_lock_,
+                                   momentum_wiring_, state.t_relative_s, state.iteration);
     return out;
   }
 

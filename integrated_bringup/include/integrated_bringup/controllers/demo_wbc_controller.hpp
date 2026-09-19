@@ -514,7 +514,7 @@ class DemoWbcController final : public RTControllerInterface {
   // Sensor-derived WbcState aggregates (per-fingertip |F| / contact flags /
   // grasp detection). Sourced from fingertip_data_, which ReadState refreshes
   // every tick including E-STOP — hence shared by FillLogOutput and
-  // FillEstopPublishState. Does NOT touch the TSID-derived fields.
+  // FillUnsolvedPublishState. Does NOT touch the TSID-derived fields.
   void FillWbcSensorAggregates() noexcept;
 
   // E-STOP counterpart of FillLogOutput's SeqLock store (#234 P-1). The E-8
@@ -526,8 +526,11 @@ class DemoWbcController final : public RTControllerInterface {
   // the rule's intent — sensor aggregates are refreshed, TSID health is
   // reported as not-solved (tsid_solver_ok=false, tsid_solve_us=0) instead of
   // replaying the last solve, and the pull estimate runs its E-STOP tick.
+  // Also the store for the other no-solve tick: the `!target_initialized_`
+  // early return (seed deferred after ClearEstop / on_activate until both
+  // devices are readable) — PROC-7 covers every tick Compute() runs.
   // RT tick path — noexcept, heap-free.
-  void FillEstopPublishState(double dt) noexcept;
+  void FillUnsolvedPublishState(double dt) noexcept;
 
   // ── WBC CSV fill (controller-private data: a_opt / SE3 ramp / fingertip
   //    force / TSID-QP diagnostics — see ~/.claude/plans/wbc-csv-logging.md) ─

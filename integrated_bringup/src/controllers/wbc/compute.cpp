@@ -981,7 +981,7 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
     auto& ws = wbc_state_;
     // tsid_solver_ok / qp_fail_count are the Dynamic (TSID) QP health — the
     // rtc_msgs/WbcState fields always referred to the TSID solve. Filled only
-    // on the path that actually ran a solve; FillEstopPublishState reports
+    // on the path that actually ran a solve; FillUnsolvedPublishState reports
     // "not solved this tick" instead of replaying these.
     ws.tsid_solver_ok = tsid_initialized_ && (dyn_qp_fail_count_ == 0);
     ws.qp_fail_count = dyn_qp_fail_count_;
@@ -1030,8 +1030,8 @@ void DemoWbcController::FillWbcSensorAggregates() noexcept {
 //
 // Rationale in the header.
 
-void DemoWbcController::FillEstopPublishState(double dt) noexcept {
-  RTC_TRACE_SCOPE("DemoWbcController::FillEstopPublishState");
+void DemoWbcController::FillUnsolvedPublishState(double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillUnsolvedPublishState");
   FillWbcSensorAggregates();
   auto& ws = wbc_state_;
   // No TSID solve ran this tick. Reporting the previous solve's health here is
