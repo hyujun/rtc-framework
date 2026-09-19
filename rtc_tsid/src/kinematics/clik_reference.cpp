@@ -212,6 +212,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   q_max_ = config.q_max;
   anchor_drift_max_ = config.anchor_drift_max;
   anchor_initialized_ = false;  // first Compute() re-anchors to measured
+  command_check_armed_ = false;
 
   manipulability_ = 0.0;
   tcp_error_norm_ = 0.0;
@@ -401,7 +402,11 @@ bool ClikReferenceGenerator::PreconditionsHold(const PinocchioCache& cache, int 
 }
 
 bool ClikReferenceGenerator::CommandStateMatches(const PinocchioCache& cache) const noexcept {
-  if (!evaluate_at_command_ || !anchor_initialized_) {
+  // Armed by the first success, disarmed only by Init / ResetAnchor — NOT by a
+  // failed call: a failure leaves q_ref = cache.q (the command state the
+  // caller passed), so the check stays meaningful, and a measured q wired in
+  // right after a failure must not slip through.
+  if (!evaluate_at_command_ || !command_check_armed_) {
     return true;
   }
   constexpr double kTol = 1e-12;
@@ -535,6 +540,7 @@ bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, doub
     q_ref_ = cache.q;
     v_ref_.setZero();
     anchor_initialized_ = false;  // force a measured re-anchor on recovery
+    v_prev_.setZero();            // the command this tick was v_ref = 0
     return false;
   }
   v_ref_ = res.x_opt.head(N);
@@ -572,9 +578,11 @@ bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, doub
     q_ref_ = cache.q;
     v_ref_.setZero();
     anchor_initialized_ = false;  // force a measured re-anchor on recovery
+    v_prev_.setZero();            // the command this tick was v_ref = 0
     return false;
   }
   anchor_initialized_ = true;
+  command_check_armed_ = true;
   v_prev_ = v_ref_;
   return true;
 }

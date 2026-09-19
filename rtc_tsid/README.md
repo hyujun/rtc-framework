@@ -174,7 +174,7 @@ Kinematics WBC (`ClikReferenceGenerator`) 와 dynamics WBC (`SE3Task`/`ObjectSE3
 | `Config::max_iter` | ProxQP outer iteration 상한 (기본 20 = 기존값). 초과 시 `Compute` false, `LastSolve().status` = `PROXQP_MAX_ITER_REACHED` |
 | `LastSolve()` | 마지막 호출의 도달 여부·수렴·비유한·ProxQP status·반복 수·solve time·`command_mismatch`·`bound_conflict`·`conflict_mask` (진단 전용) |
 | `Config::v_limit_per_joint` | 관절별 속도 한계 [nv]. 설정하면 스칼라 `v_limit` 을 대체 (collapse 재 clamp 포함) |
-| `Config::a_max` + `ResetAnchor()` | 가속 box `v_prev ± a_max·dt` 를 속도 ∩ 위치 box 와 교차. 교집합이 비면 가속 한계를 지키고 `bound_conflict` (nv ≤ 64). `ResetAnchor()` 가 anchor 와 `v_prev` 를 초기화 (activate·재무장·E-STOP 해제) |
+| `Config::a_max` + `ResetAnchor()` | 가속 box `v_prev ± a_max·dt` 를 속도 ∩ 위치 box 와 교차. 교집합이 비면 가속 한계를 지키고 `bound_conflict` (nv ≤ 64). `ResetAnchor()` 가 anchor 와 `v_prev` 를 초기화 (activate·재무장·E-STOP 해제). 실패한 호출 뒤에도 `v_prev` = 0 |
 | `Config::w_smooth` | 비용에 `(w_s/2)‖v − v_prev‖²` |
 | `Compute(…, twist_ff)` | SE3 경로 twist feedforward: `r_task = Kx ⊙ e_x + twist_ff` (base 정렬) |
 | `Config::evaluate_at_command` | 호출자가 명령값 `q_c` 로 갱신한 cache 를 넘긴다. anchor = `cache.q`, 팔 성분이 직전 `QRef()` 와 다르면 `command_mismatch` 로 실패, `anchor_drift_max` 와 함께 쓰면 `Init` 거부 |

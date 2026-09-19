@@ -124,7 +124,8 @@ class ClikReferenceGenerator {
     Eigen::VectorXd v_limit_per_joint;
     // Acceleration box [nv] (rad/s² or m/s²), each finite and > 0; empty → off.
     // Intersects the velocity ∩ position box with v_prev ± a_max·dt, v_prev =
-    // the v_ref of the last successful Compute() (0 after Init / ResetAnchor).
+    // the v_ref of the last successful Compute() (0 after Init / ResetAnchor and
+    // after a failed call, whose output command is v_ref = 0).
     // When the intersection is empty the acceleration window wins: the joint
     // gets l = u = clamp(v*, v_prev − a·dt, v_prev + a·dt), v* the point of the
     // velocity ∩ position interval nearest v_prev, and LastSolve() raises
@@ -141,8 +142,9 @@ class ClikReferenceGenerator {
     // at the measured state, so error, Jacobian and box are evaluated along
     // the commanded path and servo lag stays out of the loop. Then:
     //   - the anchor is cache.q every tick (reseed_anchor is ignored);
-    //   - after the first successful call, cache.q on the arm indices must
-    //     equal the previous QRef() (|Δ| ≤ 1e-12) — otherwise the call fails
+    //   - after the first successful call (and until ResetAnchor, failures
+    //     included), cache.q on the arm indices must equal the previous
+    //     QRef() (|Δ| ≤ 1e-12) — otherwise the call fails
     //     with LastSolve().command_mismatch (a wiring error: a measured q
     //     would silently turn this back into measured-state CLIK). Hand
     //     indices are not checked: the hand is commanded elsewhere (L6);
@@ -271,6 +273,7 @@ class ClikReferenceGenerator {
   /// acceleration box relative to a stale velocity. RT-safe.
   void ResetAnchor() noexcept {
     anchor_initialized_ = false;
+    command_check_armed_ = false;
     v_prev_.setZero();
   }
 
@@ -320,6 +323,9 @@ class ClikReferenceGenerator {
   // the first call (and after any failure) so q_ref never integrates from a
   // stale/zero anchor.
   bool anchor_initialized_{false};
+  // evaluate_at_command: the arm command-state check is active (see
+  // CommandStateMatches). Survives failed calls; cleared by Init / ResetAnchor.
+  bool command_check_armed_{false};
 
   // Gains (L1 task / L2 arm posture / L3 hand posture)
   Eigen::Matrix<double, 6, 1> kx_{Eigen::Matrix<double, 6, 1>::Zero()};

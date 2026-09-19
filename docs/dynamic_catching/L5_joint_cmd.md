@@ -180,8 +180,8 @@ v0.4 의 `CatchTaskAdapter` (`configure`/`update()`, 자체 `VecN`) 스케치는
 | 좌표 | 새 오버로드는 오차·Jacobian 을 모두 world 정렬 (LWA) 로 쓴다. base frame 은 목표를 world 로 옮기는 데만 쓴다. 기존 SE3 경로는 base 정렬 오차와 world 정렬 `rf.J` 를 곱한다 — base 가 world 에 대해 회전하면 어긋나지만 현 로봇 구성 (root = universe 정렬) 에서는 드러나지 않는다. 기존 경로는 golden 이 고정하므로 고치지 않고 기록만 한다 |
 | 접근축 행 | $J_a=S\,R_{WC}^\top J_\omega^{LWA}$, $r_a=S\,R_{WC}^\top(K_a e_a+\omega_{ff})$, $e_a$ = `rtc::math::se3::AxisAlignError` (S2.1). 무효·반평행 데드밴드 분기는 결과의 region 으로 호출자에게 노출한다 |
 | 옵션 (전부 기본 off) | 관절별 속도 한계 (비면 기존 스칼라 `v_limit`), 가속 box ($\ddot q_{\max}$ 벡터, $\dot q_{prev}$ = 직전 `v_ref`) + `bound_conflict`·관절 mask, 평활 가중 $w_s$, `max_iter` (기본 20 = 기존값), 기존 SE3 경로의 twist feedforward (없으면 기존 식), 명령값 평가 모드 |
-| 명령값 평가 모드 (D-6) | CLIK 안에 cache 를 두지 않는다. 호출자가 $q_c$ (= 직전 `QRef()`) 로 갱신한 cache 를 넘기고, CLIK 은 (a) 매 tick `cache.q` (= $q_c$) 에 anchor 를 두고 (`reseed_anchor` 무시), (b) 첫 호출·`ResetAnchor()` 뒤가 아니면 **팔 성분**의 `cache.q` 가 직전 `QRef()` 와 다를 때 false + `command_mismatch` (배선 오류 검출. 손 성분은 L6 가 명령하므로 검사하지 않는다), (c) `anchor_drift_max` 를 쓰지 않는다 (Init 이 거부) (측정 q 가 없다. 실추종 감시는 L7 `TRACK_ERR`) |
-| 재앵커 | `ResetAnchor()` 가 anchor 와 $\dot q_{prev}$ 를 함께 초기화한다 (activate·재무장·E-STOP 해제, §4.2 표). 실패 후 측정 q 재앵커는 기존 동작 유지가 기본이고, 명령값 모드에서는 cache 가 이미 $q_c$ 라 연속이다 |
+| 명령값 평가 모드 (D-6) | CLIK 안에 cache 를 두지 않는다. 호출자가 $q_c$ (= 직전 `QRef()`) 로 갱신한 cache 를 넘기고, CLIK 은 (a) 매 tick `cache.q` (= $q_c$) 에 anchor 를 두고 (`reseed_anchor` 무시), (b) 첫 성공 뒤로는 (실패한 호출이 있어도 `ResetAnchor()` 전까지) **팔 성분**의 `cache.q` 가 직전 `QRef()` 와 다를 때 false + `command_mismatch` (배선 오류 검출. 손 성분은 L6 가 명령하므로 검사하지 않는다), (c) `anchor_drift_max` 를 쓰지 않는다 (Init 이 거부) (측정 q 가 없다. 실추종 감시는 L7 `TRACK_ERR`) |
+| 재앵커 | 실패한 호출은 출력이 $\dot q=0$ 이므로 $\dot q_{prev}$ 도 0 으로 둔다. `ResetAnchor()` 가 anchor 와 $\dot q_{prev}$ 를 함께 초기화한다 (activate·재무장·E-STOP 해제, §4.2 표). 실패 후 측정 q 재앵커는 기존 동작 유지가 기본이고, 명령값 모드에서는 cache 가 이미 $q_c$ 라 연속이다 |
 | 진단 | `LastSolve()`: ProxQP status (`SolveResult` 에 raw status 추가), 반복 수, solve time, `bound_conflict`, 충돌 관절 mask |
 | box 허용오차 | QP 해는 ProxQP `eps_abs` (1e-6) 안에서만 box 를 지킨다 (실측: `v_limit` 초과 최대 8e-7). G5-B 의 "위반 0" 은 이 허용오차 안을 뜻한다 |
 

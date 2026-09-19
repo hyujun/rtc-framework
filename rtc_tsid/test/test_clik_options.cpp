@@ -452,6 +452,34 @@ TEST_F(ClikOptionsTest, ResetAnchorRestartsAccelerationFromRest) {
   EXPECT_LE((gen.QRef() - q_home_).cwiseAbs().maxCoeff(), kAMax * kDt * kDt + 1e-12);
 }
 
+// A failed call outputs v_ref = 0, so the next call's acceleration window is
+// centred on 0, not on the velocity before the failure (review finding).
+TEST_F(ClikOptionsTest, FailedCallRestartsAccelerationFromRest) {
+  constexpr double kAMax = 5.0;
+  auto cfg = BaseConfig();
+  cfg.a_max = Eigen::VectorXd::Constant(kNv, kAMax);
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Constant(20.0));
+  const pinocchio::SE3 des = OffsetTarget(0.3);
+  Eigen::VectorXd q = q_home_;
+  for (int k = 0; k < 300; ++k) {
+    cache_.Update(q, v_zero_);
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+    q = gen.QRef();
+  }
+  ASSERT_GT(gen.VRef().cwiseAbs().maxCoeff(), 2.0 * kAMax * kDt);
+
+  pinocchio::SE3 bad = des;
+  bad.translation()(1) = std::numeric_limits<double>::quiet_NaN();
+  cache_.Update(q, v_zero_);
+  ASSERT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, bad, q_home_, kDt));
+  ASSERT_TRUE(gen.VRef().isZero(0.0));
+
+  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  EXPECT_LE(gen.VRef().cwiseAbs().maxCoeff(), kAMax * kDt + kSolverEps);
+}
+
 // ── Smoothing term ──────────────────────────────────────────────────────────
 
 TEST_F(ClikOptionsTest, SmoothingRejectsInvalid) {
@@ -608,8 +636,22 @@ TEST_F(ClikOptionsTest, CommandModeDetectsMeasuredStateOnTheArm) {
   EXPECT_FALSE(gen.LastSolve().reached_solve);
   EXPECT_EQ(gen.QRef(), q_c);
 
+  // The check survives a failed call: the failure leaves q_ref = the q_c that
+  // was passed, and a measured q right after it is still refused.
+  pinocchio::SE3 bad = des;
+  bad.translation()(0) = std::numeric_limits<double>::quiet_NaN();
+  cache_.Update(q_c, v_zero_);
+  EXPECT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, bad, q_home_, kDt));
+  EXPECT_FALSE(gen.LastSolve().command_mismatch);
+  cache_.Update(q_meas, v_zero_);
+  EXPECT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  EXPECT_TRUE(gen.LastSolve().command_mismatch);
+  cache_.Update(q_c, v_zero_);
+  EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  const Eigen::VectorXd q_c2 = gen.QRef();
+
   // Hand indices are commanded elsewhere and are not checked.
-  Eigen::VectorXd q_hand = q_c;
+  Eigen::VectorXd q_hand = q_c2;
   q_hand(7) += 5e-3;
   cache_.Update(q_hand, v_zero_);
   EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
