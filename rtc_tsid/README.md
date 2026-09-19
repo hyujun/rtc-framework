@@ -167,6 +167,21 @@ Kinematics WBC (`ClikReferenceGenerator`) 와 dynamics WBC (`SE3Task`/`ObjectSE3
 
 `Init()` 은 위치 박스 (`q_min`/`q_max`) 를 **크기 대칭 + 성분 유한성 + 순서** 로 검증하고 위반 시 `std::runtime_error` 를 던집니다 (NUM-7). 크기 검사만으로는 부족한 이유는 `Compute()` 의 박스 조립이 `std::max`/`std::min` 이라 **비유한 성분이 ±`v_limit` 로 세탁**된다는 것입니다 — 그 joint 의 위치 바운드가 조용히 사라지는데도 `q_ref`/`v_ref` 는 유한해서 `Compute()` 자신의 `allFinite()` 출구 가드가 뜨지 않고, `lo > hi` 붕괴 가드도 NaN 비교가 전부 false 라 눈이 멉니다 (실측 수치는 [agent_docs/invariants.md](../agent_docs/invariants.md) §NUM-7 이 SSoT). `q_minᵢ == q_maxᵢ` 는 **통과**입니다 — 소비자가 안전 마진으로 잠근 joint (shipped `panda` finger `[0, 0.04]` + `position_margin` 0.02) 가 정확히 등호에 착지하기 때문입니다 — 이 방향의 오탐은 조용한 성능 저하가 아니라 **가용성 사고**입니다: CLIK 은 소비자의 유일한 위치 backbone 이므로 (integrator A/B shadow 제거됨) `Init` throw 는 DEC-1 ⓐ 를 통해 `on_configure` 를 `FAILURE` 로 떨어뜨립니다. `±inf` 는 "무제한" 인코딩으로 받지 않습니다 (위치 바운드 해제는 **빈 벡터**) — 무제한 joint 를 보고하는 모델 (pinocchio 의 continuous joint 관용구) 에서 박스를 만드는 소비자는 inf 를 전달하지 말고 박스를 비워야 합니다 (in-tree 소비자는 이 경로에 닿지 않습니다 — pinocchio 가 ±inf 를 내는 joint 는 unbounded/free-flyer 라 `nq != nv` 이고, `InitClik` 의 reduced-tree 게이트가 박스 조립 **전에** 먼저 걸러냅니다).
 
+**옵션 (dynamic_catching S2.2b, 전부 기본 off — off 에서 기존 출력과 비트 일치, `test_clik_golden` 이 고정).** 구조 결정은 [L5 §5.1](../docs/dynamic_catching/L5_joint_cmd.md).
+
+| 옵션 | 내용 |
+|---|---|
+| `Config::max_iter` | ProxQP outer iteration 상한 (기본 20 = 기존값). 초과 시 `Compute` false, `LastSolve().status` = `PROXQP_MAX_ITER_REACHED` |
+| `LastSolve()` | 마지막 호출의 도달 여부·수렴·비유한·ProxQP status·반복 수·solve time·`command_mismatch`·`bound_conflict`·`conflict_mask` (진단 전용) |
+| `Config::v_limit_per_joint` | 관절별 속도 한계 [nv]. 설정하면 스칼라 `v_limit` 을 대체 (collapse 재 clamp 포함) |
+| `Config::a_max` + `ResetAnchor()` | 가속 box `v_prev ± a_max·dt` 를 속도 ∩ 위치 box 와 교차. 교집합이 비면 가속 한계를 지키고 `bound_conflict` (nv ≤ 64). `ResetAnchor()` 가 anchor 와 `v_prev` 를 초기화 (activate·재무장·E-STOP 해제) |
+| `Config::w_smooth` | 비용에 `(w_s/2)‖v − v_prev‖²` |
+| `Compute(…, twist_ff)` | SE3 경로 twist feedforward: `r_task = Kx ⊙ e_x + twist_ff` (base 정렬) |
+| `Config::evaluate_at_command` | 호출자가 명령값 `q_c` 로 갱신한 cache 를 넘긴다. anchor = `cache.q`, 팔 성분이 직전 `QRef()` 와 다르면 `command_mismatch` 로 실패, `anchor_drift_max` 와 함께 쓰면 `Init` 거부 |
+| `Compute(…, PositionAxisTarget, …)` | 위치 3행 + LOCAL x·y 접근축 2행 (`rtc_math::se3::AxisAlignError`). 오차·Jacobian 모두 world 정렬, `Config::w_axis`·`SetAxisGain`, `LastAxisRegion()` |
+
+QP 는 box 를 ProxQP `eps_abs` (1e-6) 안에서만 지킨다. 기존 SE3 경로는 base 정렬 오차에 world 정렬 `rf.J` 를 곱하므로 base 가 world 에 대해 회전하면 어긋난다 (현 로봇 구성에서는 root 가 universe 정렬이라 드러나지 않음, golden 이 고정한 기존 동작). `QPSolverWrapper` 는 해가 비유한이면 ProxQP 가 SOLVED 를 내도 `converged = false` 로 보고하고 다음 solve 를 warm start 없이 시작한다 — 비유한 목표 한 tick 이 이후 solve 를 모두 막지 않게.
+
 같은 게이트가 **인접 스칼라 3개**도 함께 검증합니다 (NUM-7, 같은 함수·같은 실패 의미론). `v_limit` 와 `anchor_drift_max` 는 "off" 위치가 `<= 0` 인 스위치인데 읽는 쪽이 `> 0.0` 술어라 (`vel_box = (v_limit_ > 0.0)`, `if (anchor_drift_max_ > 0.0)`) **비유한 값이 기능을 인가된 off sentinel 과 구별 불가하게 조용히 끕니다** — 속도 clamp 와 carry-forward anti-windup clamp 가 사라지는데도 `q_ref`/`v_ref` 는 유한해서 `Compute()` 의 `allFinite()` 출구 가드가 안 뜹니다. 그래서 가드는 `> 0` 이 아니라 `std::isfinite` 입니다 — **유한한** 비양수 (`0`, `-1`) 는 정당한 비활성화 요청이라 계속 통과하고, `±inf` 는 통과하지 않습니다 ("off" 에는 이미 인가된 인코딩이 있고, `-inf` 는 위치 박스가 거부한 unbounded 인코딩과 같습니다). `damping_sq`/`w_task`/`w_arm`/`w_hand` 는 가드가 **있었지만** 유한성 게이트가 아니었습니다 — `!(x > 0.0)` 은 NaN 은 막아도 `+inf` 를 통과시키고, `w_*` 의 `x < 0.0` 은 NaN 조차 통과시킵니다 (`!(x >= 0.0)` 로 고쳐도 `+inf` 가 남습니다) — 무한 posture 가중치는 H 대각에 얹혀 soft-priority 계약 (`w_task ≫ w_arm,w_hand ≫ damping_sq`) 자체를 무의미하게 만들므로 **유한성 + 부호 두 검사가 모두** 필요합니다.
 
 #### SE3Task YAML 설정
@@ -334,6 +349,8 @@ colcon test-result --verbose
 | `test_tsid_wqp_hqp_compare` | WQP vs HQP 비교 검증 |
 | `test_tsid_performance` | 성능 벤치마크 |
 | `test_phase3_integration` | Phase 3 모듈 통합 (WQP/HQP + SE3 + CoM + preset 전환) |
+| `test_clik_golden` | CLIK 기본 경로 golden-vector (4 시나리오 2520 값, Release 비트 일치·sanitizer 상대 1e-12) + 기록 입력의 분기 도달 검사 |
+| `test_clik_options` | S2.2b 옵션: 진단, `max_iter`, 관절별 속도 한계, 가속 box·`bound_conflict`·`ResetAnchor` (랜덤 1e4 tick), 평활, twist feedforward, 명령값 평가 모드, 위치 + 접근축 오버로드 (G5-A 수렴, 반평행 출발, base 변환, 할당 0) |
 | `test_clik_reference` | CLIK reference: TCP 수렴, nullspace 무간섭, hand decoupling, singularity bound, RT alloc 0, 위치 박스 검증 (NUM-7 — NaN/±inf/역전 거부, 등호 통과), 인접 스칼라 유한성 (`v_limit`·`anchor_drift_max`·`w_arm`/`w_hand` — 비유한 거부, 인가된 off 값 통과) |
 
 ---
