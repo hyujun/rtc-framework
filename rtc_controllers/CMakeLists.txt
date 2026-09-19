@@ -388,6 +388,15 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_traj_sampler PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_traj_sampler PRIVATE -Wno-mismatched-new-delete)
+
+  # Soft-catch translational reference (G4-A..C, G4-F, G4-G, G4-I). The γ-derate
+  # cases of the reference are not ported (D-8) and the axis-alignment cases
+  # (G4-D) belong to rtc_math se3 (S2.1). Same two-sensor allocation gate.
+  ament_add_gtest(test_catching_soft_catch test/test_catching_soft_catch.cpp)
+  target_link_libraries(test_catching_soft_catch rtc_controllers)
+  target_include_directories(test_catching_soft_catch PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_soft_catch PRIVATE -Wno-mismatched-new-delete)
 endif()
 
 ament_package()
