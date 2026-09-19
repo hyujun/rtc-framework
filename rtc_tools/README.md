@@ -23,6 +23,8 @@ rtc_tools/
 │   │   └── zoom_dialog.py                 ← 우클릭 → x/y 범위 입력 확대 (GUI 전용)
 │   ├── validation/
 │   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증
+│   ├── analysis/
+│   │   └── derive_accel_limits.py       ← 토크 한계 → 관절 가속 상수 box 도출 (dynamic_catching D-16)
 │   ├── conversion/
 │   │   ├── urdf_to_mjcf.py             ← URDF/XACRO → MJCF 변환 (관절 분류 + 후처리)
 │   │   └── ctf_to_chrome_trace.py      ← LTTng CTF trace → Chrome Trace JSON (Perfetto UI)
@@ -59,6 +61,7 @@ rtc_tools/
 | `ros2 run rtc_tools hand_udp_sender_example` | `utils.hand_udp_sender_example` | 핸드 UDP 테스트 (대화형) |
 | `ros2 run rtc_tools compare_mjcf_urdf` | `validation.compare_mjcf_urdf` | MJCF/URDF 파라미터 비교 |
 | `ros2 run rtc_tools urdf_to_mjcf` | `conversion.urdf_to_mjcf` | URDF/XACRO → MJCF 변환 |
+| `ros2 run rtc_tools derive_accel_limits` | `analysis.derive_accel_limits` | 토크 한계에서 관절 가속 상수 box 도출 (provenance YAML) |
 
 **Python 의존성**: `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `numpy`, `matplotlib`, `pandas`, `scipy`, `mujoco`
 
@@ -200,6 +203,30 @@ GUI 로 뜬 figure 의 **subplot 을 우클릭**하면 x/y 범위를 숫자로 �
 - sensor_log CSV 컬럼 수 불일치 자동 복구 (헤더 < 데이터 행 시 inference 컬럼 재구성)
 - 가변 DOF 자동 감지 (6-DOF 로봇 외에도 지원)
 - 서브플롯 그리드 자동 계산
+
+---
+
+### `derive_accel_limits.py` — 토크 한계 → 관절 가속 box (dynamic_catching D-16)
+
+가속 데이터는 없고 토크 한계는 있다는 전제에서, 팔 상태 (q, q̇) 표본마다
+`Σ_j |M_ij| a_j ≤ η_τ τ_max,i − |g_i| − |c_i|` 를 만족하는 최대 `a = s·w` 를 구하고
+(최악 부호 결합 — 2~4 배 보수적인 충분조건), 전 표본 최소값을 상수 box 로 낸다.
+표본 최소값은 표본 수에 따라 계속 내려가므로 최악 표본 10개에서 박스 안 국소 최소화
+(Powell) 로 정제한다. 판정식·절차는 `docs/dynamic_catching/IMPLEMENTATION_PLAN.md` §9.
+
+```bash
+ros2 run rtc_tools derive_accel_limits \
+  --robot-config integrated_bringup/config/ur5e_p1b/_base.yaml --group ur5e \
+  --eta-tau 0.8 --samples 20000 --check rnea \
+  --out integrated_bringup/config/ur5e_p1b/derived_accel_limits.yaml
+```
+
+- 입력: 로봇 config 의 `devices.<group>.joint_state_names`·`joint_limits.{max_torque,max_velocity,position_*}`, `urdf.package/path` (xacro 확장). `--eta-tau` 는 기본값이 없다 (결정 사항)
+- 표본 범위 기본값은 관절 한계 box 전체 (URDF ∩ config) 와 ±max_velocity. `--q-center/--q-halfwidth` 로 좁힌다
+- 손 관절은 URDF 중립 자세·속도 0 으로 고정하고, 손 가속 결합 `max|M_arm,hand|` 는 provenance 에만 기록
+- 퇴화 (τ_dyn ≤ 0 인 표본, 또는 s* < `--min-accel`) 면 `adopted: false` 로 쓰고 exit 2. 교차 검증 실패는 exit 3
+- 교차 검증: `--check rnea` (부호 패턴 전부에 대해 RNEA 토크 ≤ η_τ τ_max), `--check mujoco --mjcf <xml>` (`mj_inverse` — MJCF armature·damping 포함, 접촉·관절 한계 구속은 끔 — 가 actuator forcerange 이하). mujoco 는 venv 에만 있으므로 `.venv/bin/python -m rtc_tools.analysis.derive_accel_limits` 로 실행한다
+- 테스트 `test/test_derive_accel_limits.py`: 진자 닫힌해, 2-link 최악 부호 패턴에서의 등호 (RNEA), 정제, 퇴화, 가중치, provenance, config 병합, MuJoCo 진자 (venv 에서만)
 
 ---
 

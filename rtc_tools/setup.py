@@ -25,6 +25,7 @@ setup(
             "hand_udp_sender_example = rtc_tools.utils.hand_udp_sender_example:main",
             "compare_mjcf_urdf = rtc_tools.validation.compare_mjcf_urdf:main",
             "urdf_to_mjcf = rtc_tools.conversion.urdf_to_mjcf:main",
+            "derive_accel_limits = rtc_tools.analysis.derive_accel_limits:main",
         ],
     },
 )
