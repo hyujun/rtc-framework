@@ -215,12 +215,13 @@ TEST(TransitionTable, BrokenTableWithAnUnreachableStateIsDetected) {
 }
 
 TEST(TransitionTable, BrokenTableWithAnUnusedReasonIsDetected) {
-  // kFaultReset is used in exactly one row; removing it does not change
-  // kFault's reachability (still reached via kAbortEscalated) or exit (still
-  // has the ESTOP row), isolating the unused-reason finding.
+  // kNoCatchablePlan is used in exactly one row, a kTracking self-loop;
+  // removing it changes no Mode's reachability or exit, isolating the
+  // unused-reason finding. (kFaultReset is NOT usable here: it is kFault's
+  // only exit, see FaultLeavesOnlyViaFaultReset.)
   std::vector<TransitionRow> broken(kTransitionTable.begin(), kTransitionTable.end());
   const auto it = std::find_if(broken.begin(), broken.end(), [](const TransitionRow& r) {
-    return r.reason == Reason::kFaultReset;
+    return r.reason == Reason::kNoCatchablePlan;
   });
   ASSERT_NE(it, broken.end());
   broken.erase(it);
@@ -230,10 +231,25 @@ TEST(TransitionTable, BrokenTableWithAnUnusedReasonIsDetected) {
     EXPECT_FALSE(result.unreachable[i]) << "index " << i;
     EXPECT_FALSE(result.no_exit[i]) << "index " << i;
   }
-  const std::size_t reason_index = static_cast<std::size_t>(Reason::kFaultReset);
+  const std::size_t reason_index = static_cast<std::size_t>(Reason::kNoCatchablePlan);
   EXPECT_TRUE(result.unused_reason[reason_index]);
   EXPECT_FALSE(result.duplicate_cell);
   EXPECT_FALSE(result.Ok());
+}
+
+TEST(TransitionTable, FaultLeavesOnlyViaFaultReset) {
+  // §4.1 P-1 / S5.1(d): the fault is a controller latch separate from E-STOP.
+  // ClearEstop (Reason::kEstop) must keep kFault; only kFaultReset leaves it.
+  Mode to = Mode::kIdle;
+  ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kFault, Reason::kEstop, to));
+  EXPECT_EQ(to, Mode::kFault);
+  ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kFault, Reason::kFaultReset, to));
+  EXPECT_EQ(to, Mode::kIdle);
+  for (const TransitionRow& row : kTransitionTable) {
+    if (row.from == Mode::kFault && row.to != Mode::kFault) {
+      EXPECT_EQ(row.reason, Reason::kFaultReset) << "unexpected kFault exit";
+    }
+  }
 }
 
 TEST(TransitionTable, BrokenTableWithAnUndefinedAmbiguousCellIsDetected) {

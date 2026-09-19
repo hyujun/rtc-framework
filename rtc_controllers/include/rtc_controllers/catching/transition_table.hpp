@@ -264,9 +264,11 @@ inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
     {Mode::kAbortSafe, Reason::kAbortEscalated, Mode::kFault},
     {Mode::kAbortSafe, Reason::kEstop, Mode::kIdle},
 
-    // FAULT (§4.1 row 11; FAULT_RESET, ESTOP clear)
+    // FAULT (§4.1 row 11; FAULT_RESET only). ESTOP is a self-loop here: the
+    // fault is a controller latch separate from E-STOP, and ClearEstop must
+    // not release it (§4.1 P-1, S5.1(d)) — only FAULT_RESET leaves FAULT.
     {Mode::kFault, Reason::kFaultReset, Mode::kIdle},
-    {Mode::kFault, Reason::kEstop, Mode::kIdle},
+    {Mode::kFault, Reason::kEstop, Mode::kFault},
 }};
 // clang-format on
 
