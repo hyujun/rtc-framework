@@ -485,7 +485,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
   - profile 이 role 을 드롭할 수 있으므로 `all_configs` 조립부에 absent-role 필터를 한 번 되살린다 (없으면 zero-init 된 cpu_core 0 이 실재 slot 으로 읽혀 허위 충돌 — #349)
   - activate 게이트: DemoWbc 선례처럼 on_activate 첫 문장에서 profile 이 planner 를 드롭했는데 config 가 planner 를 요구하면 FAILURE
 
-**복사하지 않을 것.** 현 MPC 경로는 문서상 RT 로 분류되지만 `MPCSolutionManager::PublishSolution` 의 mutex·try/catch, `HandlerMPCThread` 의 `fprintf` 가 있다 — planner 템플릿으로 쓰지 않는다 (E-9 기록 대상, §7.3).
+**복사하지 않을 것.** MPC 스레드의 cross-mode swap 은 phase 전환 때 그 스레드에서 handler 를 새로 만든다 (heap·YAML·try/catch) — invariants.md §RT Path 의 알려진 위반이며 planner 템플릿으로 쓰지 않는다. 통계 mutex 와 `fprintf` 는 E-9 결정으로 제거됐다 (2026-09-19, §7.3).
 
 세부 선택 D-7a~d 는 §7.
 
@@ -582,10 +582,10 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 **repo drift (이 작업 범위 밖 — 별도 브랜치로 처리)**
 
 - PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 세 항목(FingertipSensor 주석, controllers.md DemoWbc 행, p1b `index_mcp_aa_joint` 주석)이 main 에 반영됐고 (2026-09-19, 값 변경 없음) — 닫힘
-- (E-9) MPC 경로가 문서상 RT 로 분류되지만 mutex·`fprintf` 를 쓴다 (§6) — 문서와 코드 중 어느 쪽에 맞출지 설계 판단 필요
-- (PROC-7) DemoWbc `Compute()` 의 `!target_initialized_` early-return 이 `wbc_state_lock_.Store` 를 하지 않는다
-- `rtc_tools` plotting `log_type.py` 의 "unified 7-col schema" 주석 — 실제 timing CSV 는 `run_id` 가 더해진 8열
-- invariants.md E-3 행이 새 인터페이스 "추가" 를 다루는지 정의하지 않아 같은 이슈(#135) 안에서 판정이 갈렸다 — 한 줄 정의 추가 후보
+- ~~(E-9) MPC 경로의 mutex·`fprintf`~~ — 닫힘 (2026-09-19 사용자 결정: 코드를 RT 에 맞춤). 통계는 SeqLock, 실패 보고는 aux 타이머로 옮겼다. cross-mode swap 의 할당은 invariants.md 에 알려진 위반으로 기록 (해소는 별도)
+- ~~(PROC-7) DemoWbc `!target_initialized_` early-return 의 Store 누락~~ — 닫힘 (2026-09-19, E-8 승인). 나머지 세 컨트롤러는 감사 결과 clean
+- ~~timing CSV "7-col" 주석~~ — 닫힘 (2026-09-19, 8열로 정정)
+- ~~invariants.md E-3 의 "추가" 정의~~ — 닫힘 (2026-09-19 사용자 결정: 추가도 E-3)
 
 **기존 미결정**
 
