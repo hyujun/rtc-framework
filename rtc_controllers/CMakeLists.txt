@@ -407,6 +407,18 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_time_feasibility PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_time_feasibility PRIVATE -Wno-mismatched-new-delete)
+
+  # L7 supervisor "pure pieces" (S1.8 / L7.1-L7.3): decel target (§4.3),
+  # transition table as data (§4.1/§4.2), contact debounce (§4.4). Same
+  # global operator-new counting gate as the other RT-1 suites above
+  # (${rtc_controllers_test_include}) PLUS rtc_base's Eigen allocation
+  # tripwire (${rtc_base_test_include}) — the decel target math is
+  # Eigen::Vector3d, which operator-new counting cannot see.
+  ament_add_gtest(test_catching_supervisor_core test/test_catching_supervisor_core.cpp)
+  target_link_libraries(test_catching_supervisor_core rtc_controllers)
+  target_include_directories(test_catching_supervisor_core PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_supervisor_core PRIVATE -Wno-mismatched-new-delete)
 endif()
 
 ament_package()
