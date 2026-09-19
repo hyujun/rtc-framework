@@ -110,6 +110,11 @@ class ClikReferenceGenerator {
     // Only bites in carry-forward mode (reseed_anchor=false) under tracking lag;
     // on a reseed tick the gap is just v_ref·dt.
     double anchor_drift_max{0.0};  // rad; finite; ≤ 0 → off
+    // ProxQP outer-iteration cap (≥ 1). The default is the value CLIK always
+    // used (QPSolverConfig), so an unset field keeps the legacy solve. Hitting
+    // the cap is a failed Compute() with LastSolve().status =
+    // PROXQP_MAX_ITER_REACHED (G5-C3).
+    int max_iter{20};
   };
 
   // Pre-allocates all workspaces and validates the config (indices in

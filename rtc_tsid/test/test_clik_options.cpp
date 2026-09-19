@@ -192,5 +192,45 @@ TEST_F(ClikOptionsTest, LastSolveReportsSolverOutcome) {
   EXPECT_EQ(gen.LastSolve().status, -1);
 }
 
+// ── max_iter (G5-C3, CLIK side) ─────────────────────────────────────────────
+
+TEST_F(ClikOptionsTest, MaxIterDefaultIsLegacyValue) {
+  EXPECT_EQ(ClikReferenceGenerator::Config{}.max_iter, QPSolverConfig{}.max_iter);
+}
+
+TEST_F(ClikOptionsTest, MaxIterRejectsNonPositive) {
+  for (const int bad : {0, -1}) {
+    ClikReferenceGenerator gen;
+    auto cfg = BaseConfig();
+    cfg.max_iter = bad;
+    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << bad;
+  }
+}
+
+// A cap of 1 on a problem with active bounds cannot converge: the call fails,
+// the status says why, and the iteration count respects the cap.
+TEST_F(ClikOptionsTest, MaxIterCapIsHonouredAndReported) {
+  auto cfg = BaseConfig();
+  cfg.v_limit = 0.05;  // bind the velocity box so the QP needs several iterations
+  cfg.max_iter = 1;
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Constant(10.0));
+  const pinocchio::SE3 des = OffsetTarget(0.2);
+  cache_.Update(q_home_, v_zero_);
+  EXPECT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  EXPECT_TRUE(gen.LastSolve().reached_solve);
+  EXPECT_FALSE(gen.LastSolve().converged);
+  EXPECT_EQ(gen.LastSolve().status, 1);  // PROXQP_MAX_ITER_REACHED
+  EXPECT_LE(gen.LastSolve().iterations, 1);
+
+  // The same problem converges under the default cap.
+  ClikReferenceGenerator ref;
+  cfg.max_iter = ClikReferenceGenerator::Config{}.max_iter;
+  ref.Init(kNv, cfg);
+  ref.SetTaskGain(Vec6::Constant(10.0));
+  EXPECT_TRUE(ref.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+}
+
 }  // namespace
 }  // namespace rtc::tsid

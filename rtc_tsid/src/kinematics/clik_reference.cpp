@@ -70,6 +70,10 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     throw std::runtime_error("ClikReferenceGenerator: v_limit must be finite, got " +
                              std::to_string(config.v_limit));
   }
+  if (config.max_iter < 1) {
+    throw std::runtime_error("ClikReferenceGenerator: max_iter must be >= 1, got " +
+                             std::to_string(config.max_iter));
+  }
   if (!std::isfinite(config.anchor_drift_max)) {
     throw std::runtime_error("ClikReferenceGenerator: anchor_drift_max must be finite, got " +
                              std::to_string(config.anchor_drift_max));
@@ -180,6 +184,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   qp_data_.n_ineq = nv_;
 
   QPSolverConfig solver_cfg;
+  solver_cfg.max_iter = config.max_iter;
   qp_solver_.Init(nv_, 0, nv_, solver_cfg);
 }
 
