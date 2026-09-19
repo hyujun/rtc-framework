@@ -66,6 +66,19 @@
         wbc:
           root_link: "base"
           tip_links: ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
+      # Frames the model builder adds to the full model (inherited by every
+      # derived model) — dynamic_catching D-10/D-17, plan §10. Changing a value
+      # needs a controller re-configure (read at model build).
+      extra_frames:
+        catch_frame:
+          parent: "l_palm_link"
+          # Pocket-centre offset: provisional 0 until S2.3b (preshape fingertip
+          # centroid, after S4.1).
+          xyz: [0.0, 0.0, 0.0]
+          # +z = palm outward normal: flexing the fingers moves their tip
+          # centroid toward l_palm_link +z (FK, 2026-09-19), so no rotation.
+          rpy: [0.0, 0.0, 0.0]
+          provisional: true # unconfirmed in sim — blocks a real-arm catching config
 
     # ── Device configuration (keyed by controller topic group name) ─────────
     # Mode-agnostic identity only: joint/sensor rosters, limits, sensor packing.

@@ -173,4 +173,17 @@ struct CatchingValidationReport {
                                                               double control_rate_hz,
                                                               bool real_arm_config) noexcept;
 
+/// Key reported for the catch frame's provisional flag (D-17).
+inline constexpr const char* kCatchFrameProvisionalKey =
+    "urdf.extra_frames.<catch_frame>.provisional";
+
+/// Applies the L0 §5.3 provisional rule to the catch frame (D-17): a
+/// provisional frame warns in sim and blocks a real-arm configuration. The
+/// flag lives in the robot config (`urdf.extra_frames.<name>.provisional`,
+/// carried by rtc_urdf_bridge::ExtraFrameConfig), not in the `catching:`
+/// section, so the caller reads it from the model config and adds it to the
+/// report ValidateCatchingParams produced. Allocation-free, noexcept.
+void CheckCatchFrameProvisional(CatchingValidationReport& report, bool catch_frame_provisional,
+                                bool real_arm_config) noexcept;
+
 }  // namespace rtc::catching

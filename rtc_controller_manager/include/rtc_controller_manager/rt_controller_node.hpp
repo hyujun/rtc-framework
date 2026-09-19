@@ -192,6 +192,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ── System model configuration (top-level "urdf:" YAML) ──────────────────
   void ParseSystemModelConfig(rtc_urdf_bridge::ModelConfig& config);
   void ParseSubModels(rtc_urdf_bridge::ModelConfig& config);
+  // urdf.extra_frames.<name>.{parent, xyz, rpy, provisional} → config.extra_frames
+  // (dynamic_catching D-10/D-17). Unlike the sub/tree parsers an incomplete
+  // entry THROWS: a silently dropped catch frame surfaces only much later.
+  void ParseExtraFrames(rtc_urdf_bridge::ModelConfig& config);
   void ParseTreeModels(rtc_urdf_bridge::ModelConfig& config);
 
   // ── Device name configuration ────────────────────────────────────────────

@@ -683,8 +683,10 @@ class DemoWbcController final : public RTControllerInterface {
   // provider through cache(). InitModels prefers the builder's actuated closed-
   // chain model (extended hands: locks only the loop-passives, keeping every
   // actuated joint movable → nq == nv == 16 for UR5e + 10-DoF hand), else the
-  // reduced tree `wbc`, else the raw URDF full model (nq=26, nv=21 with first-
-  // class mimic). TSID + MPC share this model.
+  // reduced tree `wbc`, else the raw URDF full model (nq > nv whenever the URDF
+  // has <mimic> joints, which Pinocchio keeps first-class; the shipped
+  // ur5e_p1b full tree is nq = nv = 26 — test_catch_frame_models). TSID + MPC
+  // share this model.
   CombinedModelCache combined_cache_;
 
   // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +

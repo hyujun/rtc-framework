@@ -16,6 +16,7 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/model.hpp>
 #include <pinocchio/math.hpp>
+#include <pinocchio/math/rpy.hpp>
 #include <pinocchio/multibody/joint/fwd.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 #include <pinocchio/spatial.hpp>
@@ -90,6 +91,7 @@ void PinocchioModelBuilder::Build() {
   //     mimic / closed-chain / hint 기반 passive 분류는 Analyzer가 완료.
   //     reduced 모델 lock 대상은 analyzer_->GetPassiveJointNames() 사용.
   BuildFullModel();
+  AddExtraFrames();
   // Extended-URDF sidecar 는 full 모델이 있어야 loop-passive 를 계산할 수 있고,
   // 그 결과가 reduced/tree 서브모델 잠금에 필요하므로 BuildReducedModels() 전에 로드.
   LoadClosureSpecAndComputePassiveLocks();
@@ -160,6 +162,44 @@ void PinocchioModelBuilder::BuildFullModel() {
               full_model_->nq, full_model_->nv, full_model_->njoints, full_model_->nframes);
 
   ValidateFullModelInertias();
+}
+
+// ── YAML 선언 extra frame (D-10, D-17) ───────────────────────────────────────
+// full 모델에만 추가한다. sub/tree/actuated 는 모두 buildReducedModel(full) 이라
+// frame 을 상속하고, 부모 관절이 잠긴 모델에서는 가장 가까운 유지 조상 관절에
+// 같은 world placement 로 다시 붙는다. 새 frame 은 끝에 붙으므로 기존 frame id 는
+// 바뀌지 않는다.
+void PinocchioModelBuilder::AddExtraFrames() {
+  for (std::size_t i = 0; i < config_.extra_frames.size(); ++i) {
+    const ExtraFrameConfig& ef = config_.extra_frames[i];
+    const std::string where = "PinocchioModelBuilder: extra frame '" + ef.name + "'";
+    if (ef.name.empty()) {
+      throw std::runtime_error("PinocchioModelBuilder: extra frame with an empty name");
+    }
+    if (!ef.xyz.allFinite() || !ef.rpy.allFinite()) {
+      throw std::runtime_error(where + ": xyz/rpy must be finite");
+    }
+    if (full_model_->existFrame(ef.name)) {
+      throw std::runtime_error(where + ": a frame with this name already exists");
+    }
+    if (!full_model_->existFrame(ef.parent)) {
+      throw std::runtime_error(where + ": parent frame '" + ef.parent + "' not found");
+    }
+    const pinocchio::FrameIndex parent_id = full_model_->getFrameId(ef.parent);
+    const pinocchio::Frame& parent = full_model_->frames[parent_id];
+    const pinocchio::SE3 offset(pinocchio::rpy::rpyToMatrix(ef.rpy.x(), ef.rpy.y(), ef.rpy.z()),
+                                ef.xyz);
+    // Frame placement is relative to the parent JOINT, so compose with the
+    // parent frame's own joint-relative placement.
+    full_model_->addFrame(pinocchio::Frame(ef.name, parent.parentJoint, parent_id,
+                                           parent.placement * offset, pinocchio::OP_FRAME,
+                                           pinocchio::Inertia::Zero()));
+    RCLCPP_INFO(logger(),
+                "extra frame 추가: '%s' (parent='%s', xyz=[%.4f %.4f %.4f], "
+                "rpy=[%.4f %.4f %.4f]%s)",
+                ef.name.c_str(), ef.parent.c_str(), ef.xyz.x(), ef.xyz.y(), ef.xyz.z(), ef.rpy.x(),
+                ef.rpy.y(), ef.rpy.z(), ef.provisional ? ", provisional" : "");
+  }
 }
 
 // ── 관성 물리 실현가능성 게이트 (V5 / V6) ───────────────────────────────────
@@ -612,6 +652,38 @@ ModelConfig PinocchioModelBuilder::LoadModelConfig(std::string_view yaml_path) {
   if (root["lock_reference_config"]) {
     for (const auto& kv : root["lock_reference_config"]) {
       cfg.lock_reference_config[kv.first.as<std::string>()] = kv.second.as<double>();
+    }
+  }
+
+  // extra_frames — robot config 와 같은 map 형식 (<name>: {parent, xyz, rpy, provisional}).
+  // 불완전한 항목은 건너뛰지 않고 실패시킨다: catch frame 이 조용히 빠지면 소비자는
+  // configure 까지 가서야 (또는 영영) 모른다.
+  if (const YAML::Node frames = root["extra_frames"]) {
+    if (!frames.IsMap()) {
+      throw std::runtime_error("LoadModelConfig: extra_frames must be a map of <name>: {...}");
+    }
+    for (const auto& kv : frames) {
+      ExtraFrameConfig ef;
+      ef.name = kv.first.as<std::string>();
+      const YAML::Node& node = kv.second;
+      const auto vec3 = [&](const char* key) {
+        const YAML::Node v = node[key];
+        if (!v || !v.IsSequence() || v.size() != 3) {
+          throw std::runtime_error("LoadModelConfig: extra_frames." + ef.name + "." + key +
+                                   " must be a 3-element list");
+        }
+        return Eigen::Vector3d(v[0].as<double>(), v[1].as<double>(), v[2].as<double>());
+      };
+      if (!node["parent"]) {
+        throw std::runtime_error("LoadModelConfig: extra_frames." + ef.name + ".parent missing");
+      }
+      ef.parent = node["parent"].as<std::string>();
+      ef.xyz = vec3("xyz");
+      ef.rpy = vec3("rpy");
+      if (node["provisional"]) {
+        ef.provisional = node["provisional"].as<bool>();
+      }
+      cfg.extra_frames.push_back(std::move(ef));
     }
   }
 

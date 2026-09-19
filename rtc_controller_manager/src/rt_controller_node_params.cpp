@@ -443,6 +443,20 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       }
     }
 
+    // ── Extra frames (urdf.extra_frames, dynamic_catching D-10/D-17) ─────────
+    // Fail-closed, unlike the WARN-and-continue blocks above: a controller that
+    // references a catch frame would otherwise discover its absence only at
+    // its own configure (or, worse, fall back to another frame).
+    if (!urdf_path.empty()) {
+      try {
+        ParseExtraFrames(system_model_config_);
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(get_logger(), "Invalid urdf.extra_frames: %s — refusing to configure",
+                     e.what());
+        return false;
+      }
+    }
+
     // ── Build the shared PinocchioModelBuilder once (both branches) ──────────
     // Built AFTER closure resolution so closure_yaml_path (when set) is bound
     // into the RT model. Shared with every registered controller — each would
@@ -455,6 +469,16 @@ bool RtControllerNode::DeclareAndLoadParameters() {
         shared_builder =
             std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(system_model_config_);
       } catch (const std::exception& e) {
+        if (!system_model_config_.extra_frames.empty()) {
+          // With declared extra frames the likely cause is the frame itself
+          // (missing parent, duplicate name); every controller-local builder
+          // would fail the same way, so stop here with the reason.
+          RCLCPP_ERROR(get_logger(),
+                       "Shared PinocchioModelBuilder build failed with %zu urdf.extra_frames "
+                       "declared (%s) — refusing to configure",
+                       system_model_config_.extra_frames.size(), e.what());
+          return false;
+        }
         RCLCPP_WARN(get_logger(),
                     "Shared PinocchioModelBuilder build failed (%s) — "
                     "controllers will build their own",

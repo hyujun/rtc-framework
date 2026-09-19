@@ -10,6 +10,7 @@
 #include <sys/eventfd.h>  // eventfd_write (state-lane mailbox signal)
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace urtc = rtc;
 
@@ -44,6 +45,61 @@ void RtControllerNode::ParseSubModels(rtc_urdf_bridge::ModelConfig& config) {
     sm.root_link = get_parameter(root_key).as_string();
     sm.tip_link = get_parameter(tip_key).as_string();
     config.sub_models.push_back(std::move(sm));
+  }
+}
+
+void RtControllerNode::ParseExtraFrames(rtc_urdf_bridge::ModelConfig& config) {
+  // Same map-key enumeration as ParseSubModels (rclcpp parameters cannot hold
+  // a list of dicts), but fail-closed: every entry needs parent, xyz[3], rpy[3].
+  // system_model_config_ is not reset between configures (sub/tree models
+  // accumulate there). Start from an empty list so a configure → cleanup →
+  // configure cycle does not re-add every frame and fail on "already exists".
+  config.extra_frames.clear();
+  const std::string root = "urdf.extra_frames";
+  const auto params = list_parameters({root}, 10);
+
+  const auto vec3 = [this](const std::string& key) {
+    if (!has_parameter(key)) {
+      throw std::runtime_error(key + " missing");
+    }
+    const rclcpp::Parameter p = get_parameter(key);
+    std::vector<double> v;
+    if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+      v = p.as_double_array();
+    } else if (p.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER_ARRAY) {
+      for (const auto i : p.as_integer_array()) {
+        v.push_back(static_cast<double>(i));
+      }
+    } else {
+      throw std::runtime_error(key + " must be a numeric list");
+    }
+    if (v.size() != 3) {
+      throw std::runtime_error(key + " must have 3 elements, got " + std::to_string(v.size()));
+    }
+    return Eigen::Vector3d(v[0], v[1], v[2]);
+  };
+
+  for (const auto& prefix : params.prefixes) {
+    if (prefix == root) {
+      continue;
+    }
+    rtc_urdf_bridge::ExtraFrameConfig ef;
+    ef.name = prefix.substr(root.size() + 1);
+    if (ef.name.empty() || ef.name.find('.') != std::string::npos) {
+      continue;  // deeper prefixes are covered by their own <name> entry
+    }
+    const std::string parent_key = prefix + ".parent";
+    if (!has_parameter(parent_key)) {
+      throw std::runtime_error(parent_key + " missing");
+    }
+    ef.parent = get_parameter(parent_key).as_string();
+    ef.xyz = vec3(prefix + ".xyz");
+    ef.rpy = vec3(prefix + ".rpy");
+    const std::string prov_key = prefix + ".provisional";
+    if (has_parameter(prov_key)) {
+      ef.provisional = get_parameter(prov_key).as_bool();
+    }
+    config.extra_frames.push_back(std::move(ef));
   }
 }
 

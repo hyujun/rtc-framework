@@ -17,10 +17,9 @@ namespace {
 // each place a doc marks a value "provisional" (L0 §5.3), it does so in
 // prose or a table 근거 column, not with a boolean key, EXCEPT the catch
 // frame (D-17, plan §10), which already has one (`provisional: true`) but
-// lives in the robot's `urdf:` tree, a different YAML root than `catching:`
-// (D-1 places `rtc_urdf_bridge` model-building in a different layer, S2.3a,
-// which has not landed) — wiring that in is left to S2.3a rather than
-// guessed here. For the three provisional groups this validator DOES own,
+// lives in the robot's `urdf:` tree, a different YAML root than `catching:` —
+// CheckCatchFrameProvisional (S2.3a) applies the same rule to it from the
+// model config. For the three provisional groups this validator DOES own,
 // the chosen key sits as a sibling of the group's other fields, mirroring
 // the catch frame's own placement:
 //   - `core.ball.provisional`                              (D-12 공 사양)
@@ -283,6 +282,11 @@ void CheckProvisional(CatchingValidationReport& report, const char* key, bool pr
 }
 
 }  // namespace
+
+void CheckCatchFrameProvisional(CatchingValidationReport& report, bool catch_frame_provisional,
+                                bool real_arm_config) noexcept {
+  CheckProvisional(report, kCatchFrameProvisionalKey, catch_frame_provisional, real_arm_config);
+}
 
 CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
                                                 double control_rate_hz,

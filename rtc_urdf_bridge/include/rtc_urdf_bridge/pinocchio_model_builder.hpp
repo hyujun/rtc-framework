@@ -158,6 +158,12 @@ class PinocchioModelBuilder {
  private:
   void Build();
   void BuildFullModel();
+  /// Adds config_.extra_frames to the full model (right after BuildFullModel,
+  /// before any reduced model is built). Throws std::runtime_error on a
+  /// missing parent, a name that already exists, a duplicate within the list,
+  /// or a non-finite offset — a silently missing catch frame is worse than a
+  /// failed configure.
+  void AddExtraFrames();
   void BuildReducedModels();
   void BuildTreeModels();
   /// Extended-URDF closure 시 actuated 제어 모델 구축 (loop-passive 만 잠금 → nq==nv).
