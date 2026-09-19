@@ -1,7 +1,7 @@
 # dynamic_catching — 전체 구현 계획 (living document)
 
-- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541 머지 — S1.9 는 S2.1 후, §4.2). S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
-- 최종 갱신: 2026-09-19 (S1 게이트 결과 §4.4 S1, S0.7·S0.9 결과. 정합화 개정의 finding 재검증 결과는 §7.4)
+- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541), **S2 완료** (2026-09-20, PR #545~#549 — S2.3b 는 S4.1 후). 다음은 S1.9 (S2.1 이 머지되어 착수 가능) 와 S3a·S4a. S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
+- 최종 갱신: 2026-09-20 (S2 게이트 결과 §4.4 S2, η_τ 확정 §7.1·§9)
 - Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
 - 저장 위치: [handoff.md](../../agent_docs/handoff.md) §5 는 plan 파일을 커밋하지 않는다. 이 문서는 같은 폴더의 설계 문서(v0.5)와 함께 리뷰되어야 하는 결정 로그라서 설계 문서와 같은 브랜치에 커밋한다 — 사용자 결정 P-2 (§7.1). cross-tool 인계면은 여전히 issue #537 이다.
@@ -160,7 +160,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 |---|---|---|
 | S0 결정·문서 v0.5·계약 | 완료 (2026-09-19) | S0.2 W 기록 칸 전부 채움. S0.3 설계 문서 12개(v0.5 헤더) 동기화, 이 문서 포함 `validate_docs` 13 files clean. 정합화 개정 (§7.4). 승인: issue #537 코멘트. S0.7 필요 지평 0.46–0.86 s (R2 지배)·`kCap` 40 제안, 0.5 s profile 부족 (§4.4 S0 결과). S0.9 검정력 표 (§1a) |
 | S1 순수 수치 코어 | S1.1~S1.8 완료 (2026-09-19, PR #541), S1.9 는 S2.1 후 | 이식·회귀·RT·시간 PASS, 검증기 PASS, S1.8 PASS (G7-C 임계 NOT_EVALUATED), backfill NOT_EVALUATED(S3.6) — §4.4 S1 결과 |
-| S2 기존 rtc_* 일반화 | 진행 중 — S2.1·S2.2a·S2.2b 완료 (2026-09-19), S2.3a·S2.5·S2.4 남음 | se3 PASS (G4-D), 동등성 PASS (G5-A2), CLIK PASS (G5-C solve time 예산 NOT_EVALUATED) — §4.4 S2 결과 |
+| S2 기존 rtc_* 일반화 | 완료 (2026-09-20, PR #545~#549 + 마감 PR) — S2.3b 는 S4.1 후 | se3·동등성·CLIK·extra frame PASS, 가속 도출 PASS(provisional), G5-C solve time 예산 NOT_EVALUATED — §4.4 S2 결과 |
 | S3a 시뮬레이션 기반 | 대기 | — |
 | S4a 손 타이밍 측정 | 대기 | — |
 | S3b·S4.4 지도·go/no-go·vision 사양 | 대기 | — |
@@ -296,7 +296,11 @@ GUI·plot: 면제 (D-19, §13).
 | 문서 | public header Doxygen, README 갱신 (PROC-1) | — |
 | GUI·plot | §13 S2 행 | — |
 
-**S2 결과 (진행 중).** 착수 전 코드 재확인에서 계획 서술 정정 5건을 보고했다 (2026-09-19): G5-5 의 `max_iter` 는 CLIK 하드코딩이 아니라 `QPSolverConfig` 기본값이고 반복 수·solve time 은 `SolveResult` 에 이미 있다 (CLIK 노출만 없다). extra frame 파서는 `ParseSubModels` 의 "불완전 항목 조용히 건너뛰기" 를 따르지 않고 실패시킨다. G5-B2·G5-C3 의 L7 전이·abort 경로 부분은 S5.3·S7 에서 판정한다. S2.5 표본 범위는 대기 자세 (S3.5a) 전이라 결과가 provisional 이다. golden 비트 일치는 Release 빌드에서만 판정한다 (sanitizer 빌드는 최적화 수준이 달라 상대 1e-12). 사용자 결정 (2026-09-19): PR 은 S2.1 먼저 머지 → S2.2 · S2.3a · S2.5 → S2.4 마감, S2.2a 는 행 선택형 확장 (L5 §5.1), S2.5 도구는 rtc_tools python.
+**S2 결과 (2026-09-20, S2.1·S2.2a·S2.2b·S2.3a·S2.5·S2.4 — PR #545~#549).** 착수 전 코드 재확인에서 계획 서술 정정 5건을 보고했다 (2026-09-19): G5-5 의 `max_iter` 는 CLIK 하드코딩이 아니라 `QPSolverConfig` 기본값이고 반복 수·solve time 은 `SolveResult` 에 이미 있다 (CLIK 노출만 없다). extra frame 파서는 `ParseSubModels` 의 "불완전 항목 조용히 건너뛰기" 를 따르지 않고 실패시킨다. G5-B2·G5-C3 의 L7 전이·abort 경로 부분은 S5.3·S7 에서 판정한다. S2.5 표본 범위는 대기 자세 (S3.5a) 전이라 결과가 provisional 이다. golden 비트 일치는 Release 빌드에서만 판정한다 (sanitizer 빌드는 최적화 수준이 달라 상대 1e-12). 사용자 결정 (2026-09-19): PR 은 S2.1 먼저 머지 → S2.2 · S2.3a · S2.5 → S2.4 마감, S2.2a 는 행 선택형 확장 (L5 §5.1), S2.5 도구는 rtc_tools python.
+
+S2.4 중 발견 (기존 상태, 이 단계 범위 밖): p1b idle sim 에서 DemoWbc 의 **TSID (dynamics) QP 가 거의 매 tick 수렴하지 않는다** (`qp_converged` 0.5 %, `qp_fail_count` 가 tick 마다 증가). S2 이전 wrapper (main `f0e03c42`) 로 되돌린 같은 조건의 A/B 에서도 0.5 % 라 S2 회귀가 아니다 (수렴 판정에서 유한성 조건만 뺀 경우 2 %). CLIK (kinematic) 쪽은 세 run 모두 `clik_valid` 100 %. 원인 조사는 별도 이슈 후보다.
+
+S2.3a 중 발견: DemoWbc 주석의 "full 모델 nq=26, nv=21 (mimic)" 은 어느 로봇과도 맞지 않아 실측값으로 고쳤다 (E-9, 주석을 코드에 맞춤). CM `system_model_config_` 는 configure 사이에 초기화되지 않아 sub/tree 모델이 재configure 마다 누적된다 (기록만 — extra frame 파서는 파싱 전에 목록을 비운다). S5 배선 항목: `CheckCatchFrameProvisional`·`ValidateCatchingParams` 는 아직 production 호출자가 없다.
 
 S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 모든 solve 가 실패했다 (warm start 가 NaN 에서 출발, ProxQP 는 NaN 에서도 SOLVED 보고) — golden 기록 전에 별도 수정으로 고쳤다 (사용자 결정: 선수정). 기록만 한 기존 동작 두 건: SE3 경로의 base 정렬 오차 × world 정렬 J (base 가 world 에 대해 회전하면 불일치, 현 구성에서 잠재), `anchor_drift_max` clamp 가 비유한 `q_ref` (dt = +inf) 를 유한값으로 세탁 (dt 는 control_rate 고정이라 실경로 도달 불가).
 
@@ -305,7 +309,10 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 | se3 (S2.1) | PASS | `rtc_math/include/rtc_math/se3/axis_align.hpp`, `rtc_math/test/test_axis_align.cpp` 11 케이스. G4-D: exp 잔차 < 1e-12 (0.5° 격자 × 20 축), 1° 격자 ‖ω‖ 변화 < 1.5·K_a·π/180 (K_a 8, w_max 6), 유한차분 < 1e-5 (1–170°), 두 데드밴드 주변 ‖m‖ 1 … 1e-18 격자에서 출력 전부 유한·상한 이내. 무효 입력은 0 + 무효. 할당 0 (`ScopedNoMalloc`), noexcept `static_assert`. 데드밴드 처리 방식은 L4 §4.5 표. positive control: 급수 분기의 부호 조건 제거·Jacobian 상한 제거·데드밴드 J ≠ 0·단위 검사 제거·ω 포화 제거 5개 변형이 각각 해당 테스트에서 실패. `/code-review` (브랜치) finding 2건 반영: 아주 작은 $\epsilon_{\sin}$·floor (≲ 1e-103) 에서 반평행 근처 J_a 가 overflow 해도 유효로 보고되던 것 (하한 1e-12 + 비유한 결과 무효 처리), 큰 게인에서 ‖K_a e_a‖ overflow 로 ω 가 포화 대신 무효가 되던 것 (K_a‖e_a‖ 비교). colcon (ws root, Release) rtc_math 33 케이스 green, ASan/UBSan 빌드 보고 0 |
 | 동등성 (S2.2a·b) | PASS | `rtc_tsid/test/test_clik_golden.cpp`: 4 시나리오 2520 값 (tick 당 ok·q_ref·v_ref·manipulability·오차 노름) 을 IEEE-754 비트로 기록. Release 는 비트 일치, sanitizer 빌드는 상대 1e-12. 기록 입력이 모든 분기를 지나는지 별도 테스트로 확인하고, 분기별 mutation 11개가 모두 golden 을 red 로 만든다. S2.2b 의 모든 커밋에서 비트 일치. 기존 `test_clik_reference`·DemoWbc (integrated_bringup 1233) assertion 무수정 green |
 | CLIK (S2.2b) | PASS · G5-C solve time 예산 NOT_EVALUATED(사용자 값) | `rtc_tsid/test/test_clik_options.cpp` 25 케이스. G5-A: 정지 목표 위치 < 1 mm·축 < 0.5°. G5-B: 랜덤 목표 1e4 tick 에서 속도·가속 위반 0 (ProxQP eps 1e-6 이내), `bound_conflict` 706 tick, 위치 초과 최대 0.054 rad < margin 0.1 (≈ v²/2a). G5-B2 (CLIK 쪽): 충돌 시 가속 한계 유지 + 관절 bit 보고. G5-C3 (CLIK 쪽): `max_iter` 준수, status 노출, false 반환. G5-C 할당 부분: 옵션 전부 on·두 오버로드 교대 1000 tick 할당 0. 옵션별 mutation 9개 전부 red. `/code-review` (S2.2b 범위) finding 반영: 실패한 호출 뒤 `v_prev` 가 마지막 성공 속도로 남아 다음 tick 가속 창이 0 출력에서 그 속도로 점프하던 것 (실패 시 0 으로 초기화), 명령값 모드의 상태 검사가 실패 한 번으로 한 tick 꺼지던 것 (ResetAnchor 전까지 유지) — 각각 회귀 테스트와 mutation 확인. ASan 0, UBSan 은 ProxSuite 내부 bool 읽기 1건뿐 (기존 테스트에서도 발생, testing-debug.md). G5-B2·G5-C3 의 L7 전이·abort 경로 부분은 S5.3·S7 |
-| extra frame·가속 도출·문서·GUI·plot | 대기 | — |
+| extra frame (S2.3a) | PASS | `rtc_urdf_bridge` `ModelConfig::extra_frames` → full 모델 OP_FRAME, 파생 모델 상속. `test_extra_frames` (four_bar closure): full·sub·tree·actuated 네 모델의 부모 기준 위치 1e-12 일치 (부모 관절이 잠긴 모델 포함), 기존 frame id·관성 불변, 없는 부모·중복·빈 이름·비유한 값 실패, `LoadModelConfig` 불완전 항목 거부 — 부모 placement 합성을 빼는 mutation red (처음엔 fixture 의 부모가 전부 joint 기준 identity 라 공허했고 c1 로 바꿔 잡았다). CM: `urdf.extra_frames` 파싱·재configure·없는 부모·불완전 항목 → configure 거부 (`test_cm_config_pipeline`). 검증기: `CheckCatchFrameProvisional` 은 sim 경고·실기 차단 (G0-C, 호출자는 S5). 실모델 `test_catch_frame_models`: 출하 config 를 읽어 네 모델 존재·위치, 손가락을 곧게 편 자세에서 0 에서 먼 한계 쪽으로 25·50 % 굽힐 때 끝점 중심이 catch frame +z 로 이동 (p1b 3.2/4.6 cm, iiwa 10.1/7.9 cm, rpy 를 뒤집으면 red), ur5e_p1b full nq = nv = 26·actuated 16, iiwa7_leap full·wbc nv 23. 축 초기 제안: p1b `l_palm_link` rpy 0, iiwa7_leap `palm_lower` rpy [π,0,0], xyz 0 (S2.3b 전), provisional. `/code-review` finding 0 |
+| 가속 도출 (S2.5) | PASS(provisional) — 표본 범위는 S3.5a 대기 자세 전 | `rtc_tools derive_accel_limits` (§9 절차) + `integrated_bringup/config/<robot>/derived_accel_limits.yaml` (키 `derived_accel_limits.<group>.qdd_max`, provenance 포함). η_τ = 0.8 (사용자 확정 2026-09-20), 균일 가중, 관절 한계 box 전체·±max_velocity, 20000 표본 + 최악 10 표본 Powell 정제 (표본 최소값은 표본 수에 따라 계속 내려간다: p1b 2000 → 5.0, 20000 → 4.1 rad/s², 정제값 2.03 으로 수렴). ur5e_p1b **2.03 rad/s²** (binding 거의 전부 shoulder_lift, 중력), iiwa7_leap **9.20 rad/s²** (binding A2). 퇴화 없음 (τ_dyn ≤ 0 표본 0). 교차 검증: RNEA (부호 패턴 전부) 최악 0.78·0.85, iiwa MuJoCo `mj_inverse` (iiwa7_with_leap_right, armature·damping 포함, 접촉·관절 한계 구속 제외, gear·방향별 forcerange) 0.67 — "도출값 ≤ 달성 가속" PASS. 첫 MuJoCo 실행의 12.8 배는 자기 충돌 접촉력이 섞인 검증 스크립트 결함이었다. pytest 15, 도구 mutation 6/6 red. `/code-review` finding 2건 (MuJoCo 한계의 gear·비대칭) 반영. **UR5e 값은 S0.7 가정 (ā = 10 rad/s²) 보다 크게 낮다** — 전 범위·전 속도라 가장 보수적이고 지배항이 중력이므로, S3.5a 대기 자세 주변으로 표본 범위를 좁혀 재생성한 값이 S4.4 입력이다 |
+| 문서 (S2.4) | PASS | public header Doxygen (`axis_align.hpp`, `clik_reference.hpp`, `types.hpp`·builder, `catching_params.hpp`), README (rtc_math se3, rtc_tsid, rtc_urdf_bridge, integrated_bringup, rtc_controllers, rtc_tools, 루트·architecture 의존 그래프), L4 §4.5, L5 §5.1. `validate_docs` clean |
+| GUI·plot (S2.4) | PASS | §13 S2 행 (2026-09-20, merge 후 main `d7715c90`, ur5e_p1b headless sim): 기동 로그에 `catch_frame` 추가 (full nq = nv = 26, actuated 16), DemoWbc 전환 후 `[wbc] CLIK reference enabled` (tip frame idx 0 — extra frame 이 기존 id 를 밀지 않음), overrun 0, `wbc_state` 발행. `demo_controller_gui --robot ur5e_p1b` 가 활성 컨트롤러·p1b 손 관절을 표시 (Xephyr 캡처 육안 확인). `wbc_diag.csv` 80627 행이 `plot_rtc_log` 로 solver·contacts 두 figure 로 그려진다. CSV 에 새 열을 더하지 않았으므로 plotter 변경은 없다. `test_demo_gui_*`·`test_plot_rtc_log.py` 는 전체 회귀에 포함 (integrated_bringup 1236, rtc_tools 698 green). CLIK 지표: `clik_valid` 100 %, `kin_qp_fail_count` 0 |
 
 #### S3a 시뮬레이션 기반 (`rtc_mujoco_sim`, robot-agnostic)
 
@@ -531,6 +538,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 - C-2 `header.stamp` 기반 나이 거부는 두지 않는다. 원점 지연(수신 wall − stamp)은 진단으로만 남긴다 (오래된 원점은 절대 시각 기반 지평 검사가 거른다). 미래 stamp 거부는 별개 (§3.1)
 - C-3 `planner.ik.manip_min` 은 D-18 게이트로 대체한다. **IK·게이트는 w₅ 로 풀고, 검증은 w₆ 로 해야 할 수도 있다** — §11 의 w₅/w₆ 병행 규칙
 - C-4 포구 후보마다 IK seed 는 대기 자세로 고정한다. IK 반복·예산 증가는 S6.3 에서 측정
+- S2 (2026-09-19~20 사용자 결정): PR 단위 S2.1 → S2.2 → S2.3a·S2.5 → 마감, S2.2a 행 선택형 확장 (L5 §5.1), S2.5 도구는 rtc_tools python, golden 비교는 Release 비트 일치·sanitizer 상대 1e-12, `QPSolverWrapper` 비유한 회복은 golden 전에 선수정, **η_τ = 0.8** (§9, S3.5a 뒤 표본 범위만 바꿔 재생성)
 - E-1 (S0.6, 승인 2026-09-19): D-2 (3) 의 stamp 사용을 §3.1 문구 그대로 invariants.md §Clock 시간축 규칙의 기록된 예외로 둔다
 - E-3 (S0.8, 승인 2026-09-19): D-14 (.srv)·D-20 (.msg). 규칙 텍스트는 새 인터페이스 "추가" 를 다루지 않고 선례가 갈린다 — 새 `.msg` (`f95ca5aa` PayloadEstimate) 는 E-3 을 발화·컨펌했고, 새 `.srv` (`4d98c15f` SetExternalWrench) 는 "append-only 라 ABI 파괴 아님" 으로 발화하지 않았다. 보수적으로 둘을 한 번에 발화해 승인받았다. 두 경우 모두 `PublishRole` 을 늘리지 않으므로 E-11 은 발화하지 않는다. PROC-3 은 각 변경 때 수행한다
 
@@ -578,7 +586,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 **단계에서 정할 것 (결정은 해당 단계)**
 
-- ~~S1.7 η_v·D-16 가속 box 의 YAML 키 이름~~ — S1.7 에서 닫음: η_v 는 L3 §6 의 `planner.gamma.eta_v`, a_dec 는 `supervisor.decel.a_dec` 로 문서에 이미 있었다. 가속 box 키는 S2.5 에서. S1.7 이 새로 둔 키: `core.ball.provisional`·`planner.catchability.manipulability_min.provisional`·`robot.hand.provisional` (문서는 provisional 을 산문으로만 표시, 기본값 true = fail-closed). catch frame 의 provisional (D-17) 은 `urdf.extra_frames` 쪽이라 S2.3a 에서 검증기에 연결. 세 키의 이름·기본값은 2026-09-19 사용자 승인
+- ~~S1.7 η_v·D-16 가속 box 의 YAML 키 이름~~ — S1.7 에서 닫음: η_v 는 L3 §6 의 `planner.gamma.eta_v`, a_dec 는 `supervisor.decel.a_dec` 로 문서에 이미 있었다. 가속 box 키는 S2.5 에서 — `integrated_bringup/config/<robot>/derived_accel_limits.yaml` 의 `derived_accel_limits.<group>.qdd_max` 로 정했다 (컨트롤러 배선은 S5). S1.7 이 새로 둔 키: `core.ball.provisional`·`planner.catchability.manipulability_min.provisional`·`robot.hand.provisional` (문서는 provisional 을 산문으로만 표시, 기본값 true = fail-closed). catch frame 의 provisional (D-17) 은 `urdf.extra_frames` 쪽이라 S2.3a 에서 검증기에 연결. 세 키의 이름·기본값은 2026-09-19 사용자 승인
 - ~~G0-C 의 ωh 경계 도달 불가~~ — 닫힘 (2026-09-19 사용자 결정): 범위는 그대로 두고 게이트 문구를 "범위 검사가 ωh 안정을 함의, 경계 공식은 범위 밖 ω 로 단위 검증" 으로 고쳤다 (L0 §5.3·§9)
 - L7 전이표 (S1.8) 의 해석 3건을 S7.2 에서 확인: `Reason::kNone` = 각 상태의 정상 전진, IDLE homing 은 `kIdle` 안, ARMED→IDLE (§4.5 조건 위반) 은 전용 사유가 없어 `kParamsTbd` 재사용 (`transition_table.hpp` 헤더)
 - ~~S2.2a CLIK 확장 구조, S2.2 CLIK 세부 (관절별 속도 한계, q_c 평가 cache, 실패 후 재앵커, `anchor_drift_max`)~~ — 닫힘 (2026-09-19, L5 §5.1 표)
@@ -655,7 +663,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 6. **퇴화 시 채택 금지.** τ_dyn ≤ 0 인 표본이 있거나 s 가 0 에 가까우면 자동 채택하지 않고 사용자 판단으로 넘긴다 (표본 범위 축소, η_τ 조정, 자세 의존 한계 검토)
 
 - 충분조건(삼각부등식)은 전 관절이 최악 부호로 동시 가속한다고 보므로 2~4 배 보수적일 수 있다. 그 영향은 S4.4 에서 받을 수 있는 공 속력과 함께 판정한다
-- η_τ < 1 은 접촉 충격(L7 충격량 예산)과 모델 오차를 위한 여유다. 값은 S2.5 에서 제안한다
+- η_τ < 1 은 접촉 충격(L7 충격량 예산)과 모델 오차를 위한 여유다. **0.8 로 확정** (2026-09-20 사용자 결정, S2.5 결과는 §4.4 S2)
 - 상수 box 를 쓰는 이유: 계획기(L3 도달시간)와 CLIK 가속 box 가 같은 한계를 써야 계획이 실행과 일치한다. 자세 의존 한계는 v1 범위 밖이며, RT 에서 매 tick 토크 여유를 감시하는 용도로만 검토한다
 - **교차 검증 (sim) 은 iiwa7 로 한다.** iiwa7 은 `model_pairs.yaml` 게이트 안이라 MJCF 와 URDF 의 일치가 검증돼 있다. ur5e_p1b 가 로드하는 MJCF 는 형제 저장소의 사본이고 게이트 밖이며, MJCF 의 `armature`·`damping`·`frictionloss` 는 Pinocchio M·h 가 모르는 항이라 도출값을 낙관적으로 확인해 줄 수 있다. ur5e_p1b 는 모델 자기정합 오라클(τ := RNEA 로 정답 생성)로 대신 검증한다
 - **실기 주의:** UR 은 position 명령을 받는 쪽 컨트롤러가 자체 가속·보호 정지 기준을 가질 수 있다 (repo 밖, 미확인). S10 에서 식별한다
