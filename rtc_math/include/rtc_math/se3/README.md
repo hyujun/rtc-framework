@@ -104,6 +104,40 @@ convention must be one edit. Consumer-side tests deliberately re-derive it
 literally instead of calling this — a shared helper on both sides of an
 assertion pins nothing.
 
+## Approach-axis alignment (`axis_align.hpp`)
+
+A 2-DoF orientation error for tasks that only constrain where one body axis
+points (e.g. a palm normal facing an incoming object) and leave the roll about
+that axis free. For unit axes `z` (current) and `a_d` (target):
+
+| Function | Returns |
+|---|---|
+| `AxisAlignError(z, a_d, sin_eps)` | `e_a = θ·(z×a_d)/‖z×a_d‖`, `θ = atan2(‖z×a_d‖, zᵀa_d)`, so `exp([e_a]×) z = a_d` exactly and `‖e_a‖ = θ` |
+| `AxisAlignJacobian(z, a_d, sin_eps, jacobian_sin_floor)` | `J_a` with `ė_a = J_a ω` (ω in the frame of `z`, `a_d` fixed) |
+| `AxisAlignOmega(e_a, k_axis, w_max)` | `ω = k_axis·e_a` scaled to `‖ω‖ ≤ w_max`, with a `saturated` flag |
+
+The rotation vector is used instead of `z × a_d` because `‖z × a_d‖ = sinθ`
+collapses near 180°, so a reference built on it stalls there and jumps at any
+antiparallel threshold. `‖e_a‖ = θ` is continuous and monotone.
+
+Every call returns finite values and reports its branch in `AxisAlignRegion`:
+
+| Region | Condition | `e_a` | `J_a` |
+|---|---|---|---|
+| `kAlignedDeadband` | `‖z×a_d‖ < sin_eps`, `c > 0` | 0 | 0 |
+| `kAntiparallelDeadband` | `‖z×a_d‖ < sin_eps`, `c ≤ 0` | `π·u⊥` (fixed unit axis ⟂ `z`, deterministic in `z`) | 0 |
+| `kJacobianCapped` | `c < 0`, `sin_eps ≤ ‖z×a_d‖ < jacobian_sin_floor` | exact | `f`, `f'` evaluated at the floor: `‖J_a‖ ≲ π/floor`, continuous at the floor |
+| `kInvalidInput` | non-finite or non-unit input (`|‖v‖−1| > 1e-6`), bound out of range | 0 | 0 |
+
+`J_a` is 0 in both deadbands because `e_a` is constant there; pass the same
+`sin_eps` to the error and the Jacobian so their deadbands agree. The θ→π
+divergence of `J_a` is a property of the problem (the rotation axis is
+undefined), so it is capped rather than hidden. Defaults: `sin_eps` 1e-6,
+`jacobian_sin_floor` 1e-3 (the cap starts only above ≈179.94°). The small-angle
+series is used only for `c > 0`; `sinθ` also vanishes at θ = π, so a series
+keyed on `sinθ` alone would replace the divergent antiparallel value with ≈2.645.
+Derivation and background: `docs/dynamic_catching/L4_reference.md` §4.5.
+
 ## Choosing a definition
 
 - **WBC / QP residual / impedance** with separately-tuned translation vs rotation
@@ -128,6 +162,10 @@ assertion pins nothing.
   `Ad^{-T}` power duality, `RpyToRotationZyx` axis/order/properness) run with
   **no** external dependency. When Pinocchio is found, two extra cross-checks compile in
   (`log3`/`log6` and `Jlog3`/`Jlog6` < 1e-10), gated by `RTC_MATH_HAVE_PINOCCHIO`.
+- `test/test_axis_align.cpp` — axis alignment: `exp([e_a]×)z = a_d` < 1e-12,
+  1° grid `‖ω‖` continuity, `J_a` vs central difference < 1e-5 over 1–170°,
+  finiteness in and around both deadbands, invalid inputs, zero Eigen heap
+  allocation (`rtc_base`'s test-only `ScopedNoMalloc`, a test dependency only).
 - `examples/se3_error_compare` (+ `scripts/plot_se3_compare.py`) — S1 straight-line
   vs screw, S2 Lee stall, S3 θ=179.999° robustness, S4 anisotropic-gain Jlog
   compensation, S5 transport-map omission.

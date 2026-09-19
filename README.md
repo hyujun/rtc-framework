@@ -22,7 +22,7 @@
 |--------|------|------|
 | [`rtc_msgs`](rtc_msgs/) | 커스텀 ROS 2 메시지 (`rtc_msgs/msg/` 가 SSoT — 개수·목록은 여기 박제하지 않는다) | ament_cmake |
 | [`rtc_base`](rtc_base/) | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/14/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
-| [`rtc_math`](rtc_math/) | 헤더-전용 robot-agnostic 기하/제어 수학 (Eigen-only): SE(3) Lie-group 원시 연산(so3/se3 log/exp/Jacobian) + task-space pose/velocity(twist) error 정의(`rtc::math::se3`). Pinocchio 어댑터는 optional | ament_cmake |
+| [`rtc_math`](rtc_math/) | 헤더-전용 robot-agnostic 기하/제어 수학 (Eigen-only): SE(3) Lie-group 원시 연산(so3/se3 log/exp/Jacobian) + task-space pose/velocity(twist) error 정의(`rtc::math::se3`) + 접근축 정렬 오차(`axis_align.hpp`). Pinocchio 어댑터는 optional | ament_cmake |
 | [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket/CanSocket/SerialPort RAII, UDP·CAN·CAN FD·RS485 transport (length-prefixed 프레이머), PacketCodec concept, Transceiver 템플릿 | ament_cmake |
 | [`rtc_controller_interface`](rtc_controller_interface/) | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
 | [`rtc_controllers`](rtc_controllers/) | 제어 알고리즘 라이브러리 — 관절/태스크 제어 법칙, compliance 공용 커널, Force-PI grasp, 퀸틱 궤적 생성기 (목록은 [rtc_controllers/README.md](rtc_controllers/) 가 SSoT) | ament_cmake |
@@ -78,7 +78,7 @@ rtc_msgs, rtc_base (독립)
   └── rtc_tools (Python) ← rtc_msgs (exec)
 
 repo_scripts (ament_cmake — 스크립트 install + ament_add_test, 라이브러리/실행파일 없음)
-rtc_math (독립) ← Eigen3 (Pinocchio adapter optional)
+rtc_math (독립) ← Eigen3 (Pinocchio adapter optional, test 전용 rtc_base)
 rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
 
 shape_estimation_msgs (독립)
