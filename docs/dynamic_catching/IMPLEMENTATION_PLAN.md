@@ -160,7 +160,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 |---|---|---|
 | S0 결정·문서 v0.5·계약 | 완료 (2026-09-19) | S0.2 W 기록 칸 전부 채움. S0.3 설계 문서 12개(v0.5 헤더) 동기화, 이 문서 포함 `validate_docs` 13 files clean. 정합화 개정 (§7.4). 승인: issue #537 코멘트. S0.7 필요 지평 0.46–0.86 s (R2 지배)·`kCap` 40 제안, 0.5 s profile 부족 (§4.4 S0 결과). S0.9 검정력 표 (§1a) |
 | S1 순수 수치 코어 | S1.1~S1.8 완료 (2026-09-19, PR #541), S1.9 는 S2.1 후 | 이식·회귀·RT·시간 PASS, 검증기 PASS, S1.8 PASS (G7-C 임계 NOT_EVALUATED), backfill NOT_EVALUATED(S3.6) — §4.4 S1 결과 |
-| S2 기존 rtc_* 일반화 | 진행 중 — S2.1 완료 (2026-09-19, PR A), S2.2~S2.5·S2.4 남음 | S2.1: se3 게이트 PASS (G4-D) — §4.4 S2 결과 |
+| S2 기존 rtc_* 일반화 | 진행 중 — S2.1·S2.2a·S2.2b 완료 (2026-09-19), S2.3a·S2.5·S2.4 남음 | se3 PASS (G4-D), 동등성 PASS (G5-A2), CLIK PASS (G5-C solve time 예산 NOT_EVALUATED) — §4.4 S2 결과 |
 | S3a 시뮬레이션 기반 | 대기 | — |
 | S4a 손 타이밍 측정 | 대기 | — |
 | S3b·S4.4 지도·go/no-go·vision 사양 | 대기 | — |
@@ -296,12 +296,16 @@ GUI·plot: 면제 (D-19, §13).
 | 문서 | public header Doxygen, README 갱신 (PROC-1) | — |
 | GUI·plot | §13 S2 행 | — |
 
-**S2 결과 (진행 중).** 착수 전 코드 재확인에서 계획 서술 정정 5건을 보고했다 (2026-09-19): G5-5 의 `max_iter` 는 CLIK 하드코딩이 아니라 `QPSolverConfig` 기본값이고 반복 수·solve time 은 `SolveResult` 에 이미 있다 (CLIK 노출만 없다). extra frame 파서는 `ParseSubModels` 의 "불완전 항목 조용히 건너뛰기" 를 따르지 않고 실패시킨다. G5-B2·G5-C3 의 L7 전이·abort 경로 부분은 S5.3·S7 에서 판정한다. S2.5 표본 범위는 대기 자세 (S3.5a) 전이라 결과가 provisional 이다. golden 비트 일치는 Release 빌드에서만 판정한다 (sanitizer 빌드는 최적화 수준이 달라 상대 1e-12). 사용자 결정 (2026-09-19): PR 은 S2.1 먼저 머지 → S2.2 · S2.3a · S2.5 → S2.4 마감, S2.2a 는 행 선택형 확장, S2.5 도구는 rtc_tools python.
+**S2 결과 (진행 중).** 착수 전 코드 재확인에서 계획 서술 정정 5건을 보고했다 (2026-09-19): G5-5 의 `max_iter` 는 CLIK 하드코딩이 아니라 `QPSolverConfig` 기본값이고 반복 수·solve time 은 `SolveResult` 에 이미 있다 (CLIK 노출만 없다). extra frame 파서는 `ParseSubModels` 의 "불완전 항목 조용히 건너뛰기" 를 따르지 않고 실패시킨다. G5-B2·G5-C3 의 L7 전이·abort 경로 부분은 S5.3·S7 에서 판정한다. S2.5 표본 범위는 대기 자세 (S3.5a) 전이라 결과가 provisional 이다. golden 비트 일치는 Release 빌드에서만 판정한다 (sanitizer 빌드는 최적화 수준이 달라 상대 1e-12). 사용자 결정 (2026-09-19): PR 은 S2.1 먼저 머지 → S2.2 · S2.3a · S2.5 → S2.4 마감, S2.2a 는 행 선택형 확장 (L5 §5.1), S2.5 도구는 rtc_tools python.
+
+S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 모든 solve 가 실패했다 (warm start 가 NaN 에서 출발, ProxQP 는 NaN 에서도 SOLVED 보고) — golden 기록 전에 별도 수정으로 고쳤다 (사용자 결정: 선수정). 기록만 한 기존 동작 두 건: SE3 경로의 base 정렬 오차 × world 정렬 J (base 가 world 에 대해 회전하면 불일치, 현 구성에서 잠재), `anchor_drift_max` clamp 가 비유한 `q_ref` (dt = +inf) 를 유한값으로 세탁 (dt 는 control_rate 고정이라 실경로 도달 불가).
 
 | 게이트 | 판정 | 근거 |
 |---|---|---|
 | se3 (S2.1) | PASS | `rtc_math/include/rtc_math/se3/axis_align.hpp`, `rtc_math/test/test_axis_align.cpp` 11 케이스. G4-D: exp 잔차 < 1e-12 (0.5° 격자 × 20 축), 1° 격자 ‖ω‖ 변화 < 1.5·K_a·π/180 (K_a 8, w_max 6), 유한차분 < 1e-5 (1–170°), 두 데드밴드 주변 ‖m‖ 1 … 1e-18 격자에서 출력 전부 유한·상한 이내. 무효 입력은 0 + 무효. 할당 0 (`ScopedNoMalloc`), noexcept `static_assert`. 데드밴드 처리 방식은 L4 §4.5 표. positive control: 급수 분기의 부호 조건 제거·Jacobian 상한 제거·데드밴드 J ≠ 0·단위 검사 제거·ω 포화 제거 5개 변형이 각각 해당 테스트에서 실패. `/code-review` (브랜치) finding 2건 반영: 아주 작은 $\epsilon_{\sin}$·floor (≲ 1e-103) 에서 반평행 근처 J_a 가 overflow 해도 유효로 보고되던 것 (하한 1e-12 + 비유한 결과 무효 처리), 큰 게인에서 ‖K_a e_a‖ overflow 로 ω 가 포화 대신 무효가 되던 것 (K_a‖e_a‖ 비교). colcon (ws root, Release) rtc_math 33 케이스 green, ASan/UBSan 빌드 보고 0 |
-| 동등성·CLIK·extra frame·가속 도출·문서·GUI·plot | 대기 | — |
+| 동등성 (S2.2a·b) | PASS | `rtc_tsid/test/test_clik_golden.cpp`: 4 시나리오 2520 값 (tick 당 ok·q_ref·v_ref·manipulability·오차 노름) 을 IEEE-754 비트로 기록. Release 는 비트 일치, sanitizer 빌드는 상대 1e-12. 기록 입력이 모든 분기를 지나는지 별도 테스트로 확인하고, 분기별 mutation 11개가 모두 golden 을 red 로 만든다. S2.2b 의 모든 커밋에서 비트 일치. 기존 `test_clik_reference`·DemoWbc (integrated_bringup 1233) assertion 무수정 green |
+| CLIK (S2.2b) | PASS · G5-C solve time 예산 NOT_EVALUATED(사용자 값) | `rtc_tsid/test/test_clik_options.cpp` 25 케이스. G5-A: 정지 목표 위치 < 1 mm·축 < 0.5°. G5-B: 랜덤 목표 1e4 tick 에서 속도·가속 위반 0 (ProxQP eps 1e-6 이내), `bound_conflict` 706 tick, 위치 초과 최대 0.054 rad < margin 0.1 (≈ v²/2a). G5-B2 (CLIK 쪽): 충돌 시 가속 한계 유지 + 관절 bit 보고. G5-C3 (CLIK 쪽): `max_iter` 준수, status 노출, false 반환. G5-C 할당 부분: 옵션 전부 on·두 오버로드 교대 1000 tick 할당 0. 옵션별 mutation 9개 전부 red. `/code-review` (S2.2b 범위) finding 반영: 실패한 호출 뒤 `v_prev` 가 마지막 성공 속도로 남아 다음 tick 가속 창이 0 출력에서 그 속도로 점프하던 것 (실패 시 0 으로 초기화), 명령값 모드의 상태 검사가 실패 한 번으로 한 tick 꺼지던 것 (ResetAnchor 전까지 유지) — 각각 회귀 테스트와 mutation 확인. ASan 0, UBSan 은 ProxSuite 내부 bool 읽기 1건뿐 (기존 테스트에서도 발생, testing-debug.md). G5-B2·G5-C3 의 L7 전이·abort 경로 부분은 S5.3·S7 |
+| extra frame·가속 도출·문서·GUI·plot | 대기 | — |
 
 #### S3a 시뮬레이션 기반 (`rtc_mujoco_sim`, robot-agnostic)
 
@@ -577,8 +581,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 - ~~S1.7 η_v·D-16 가속 box 의 YAML 키 이름~~ — S1.7 에서 닫음: η_v 는 L3 §6 의 `planner.gamma.eta_v`, a_dec 는 `supervisor.decel.a_dec` 로 문서에 이미 있었다. 가속 box 키는 S2.5 에서. S1.7 이 새로 둔 키: `core.ball.provisional`·`planner.catchability.manipulability_min.provisional`·`robot.hand.provisional` (문서는 provisional 을 산문으로만 표시, 기본값 true = fail-closed). catch frame 의 provisional (D-17) 은 `urdf.extra_frames` 쪽이라 S2.3a 에서 검증기에 연결. 세 키의 이름·기본값은 2026-09-19 사용자 승인
 - ~~G0-C 의 ωh 경계 도달 불가~~ — 닫힘 (2026-09-19 사용자 결정): 범위는 그대로 두고 게이트 문구를 "범위 검사가 ωh 안정을 함의, 경계 공식은 범위 밖 ω 로 단위 검증" 으로 고쳤다 (L0 §5.3·§9)
 - L7 전이표 (S1.8) 의 해석 3건을 S7.2 에서 확인: `Reason::kNone` = 각 상태의 정상 전진, IDLE homing 은 `kIdle` 안, ARMED→IDLE (§4.5 조건 위반) 은 전용 사유가 없어 `kParamsTbd` 재사용 (`transition_table.hpp` 헤더)
-- S2.2a CLIK 확장 구조 (행 선택형 vs formulation 클래스)
-- S2.2 CLIK: 관절별 속도 한계 (현재 `v_limit` 스칼라), q_c 평가용 캐시 분리, q_c 모드 실패 후 재앵커 규칙, `anchor_drift_max` 와 `TRACK_ERR` 중복 정리
+- ~~S2.2a CLIK 확장 구조, S2.2 CLIK 세부 (관절별 속도 한계, q_c 평가 cache, 실패 후 재앵커, `anchor_drift_max`)~~ — 닫힘 (2026-09-19, L5 §5.1 표)
 - S3.1a ε_clk 할당 비율 제안
 - S5.2 (S3.4 측정 결과로) C-1 재검토 여부, vision 재시작 시 `snapshot_sequence` 되감김 처리, `frame_id` ↔ world, 유령 트랙 처리, 공분산의 시간 보간 정의와 nrt 파서 → 계획기 버퍼 전달 방식 (D-22 token 유지)
 - S5.3 QP 비의존 관절공간 abort 식

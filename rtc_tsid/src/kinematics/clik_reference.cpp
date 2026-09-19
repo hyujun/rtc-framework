@@ -70,6 +70,59 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     throw std::runtime_error("ClikReferenceGenerator: v_limit must be finite, got " +
                              std::to_string(config.v_limit));
   }
+  if (config.v_limit_per_joint.size() != 0) {
+    if (config.v_limit_per_joint.size() != nv) {
+      throw std::runtime_error("ClikReferenceGenerator: v_limit_per_joint size " +
+                               std::to_string(config.v_limit_per_joint.size()) + " != nv " +
+                               std::to_string(nv));
+    }
+    // Per-joint limits have no "off" encoding: a joint without a bound belongs
+    // in the scalar path. NaN fails both tests below (NUM-7).
+    for (Eigen::Index i = 0; i < config.v_limit_per_joint.size(); ++i) {
+      const double v = config.v_limit_per_joint(i);
+      if (!std::isfinite(v) || !(v > 0.0)) {
+        throw std::runtime_error(
+            "ClikReferenceGenerator: v_limit_per_joint must be finite and > 0, got " +
+            std::to_string(v) + " at index " + std::to_string(i));
+      }
+    }
+  }
+  if (config.a_max.size() != 0) {
+    if (config.a_max.size() != nv) {
+      throw std::runtime_error("ClikReferenceGenerator: a_max size " +
+                               std::to_string(config.a_max.size()) + " != nv " +
+                               std::to_string(nv));
+    }
+    if (nv > 64) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: acceleration box needs nv <= 64 (conflict_mask width), got " +
+          std::to_string(nv));
+    }
+    for (Eigen::Index i = 0; i < config.a_max.size(); ++i) {
+      const double a = config.a_max(i);
+      if (!std::isfinite(a) || !(a > 0.0)) {
+        throw std::runtime_error("ClikReferenceGenerator: a_max must be finite and > 0, got " +
+                                 std::to_string(a) + " at index " + std::to_string(i));
+      }
+    }
+  }
+  if (!std::isfinite(config.w_smooth) || config.w_smooth < 0.0) {
+    throw std::runtime_error("ClikReferenceGenerator: w_smooth must be finite and >= 0, got " +
+                             std::to_string(config.w_smooth));
+  }
+  if (config.evaluate_at_command && config.anchor_drift_max > 0.0) {
+    throw std::runtime_error(
+        "ClikReferenceGenerator: anchor_drift_max needs the measured state and cannot be used "
+        "with evaluate_at_command");
+  }
+  if (!std::isfinite(config.w_axis) || !(config.w_axis > 0.0)) {
+    throw std::runtime_error("ClikReferenceGenerator: w_axis must be finite and > 0, got " +
+                             std::to_string(config.w_axis));
+  }
+  if (config.max_iter < 1) {
+    throw std::runtime_error("ClikReferenceGenerator: max_iter must be >= 1, got " +
+                             std::to_string(config.max_iter));
+  }
   if (!std::isfinite(config.anchor_drift_max)) {
     throw std::runtime_error("ClikReferenceGenerator: anchor_drift_max must be finite, got " +
                              std::to_string(config.anchor_drift_max));
@@ -147,6 +200,11 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   n_hand_ = static_cast<int>(hand_v_idx_.size());
   damping_sq_ = config.damping_sq;
   v_limit_ = config.v_limit;
+  v_limit_per_joint_ = config.v_limit_per_joint;
+  a_max_ = config.a_max;
+  w_smooth_ = config.w_smooth;
+  evaluate_at_command_ = config.evaluate_at_command;
+  w_axis_ = config.w_axis;
   w_task_ = config.w_task;
   w_arm_ = config.w_arm;
   w_hand_ = config.w_hand;
@@ -154,13 +212,18 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   q_max_ = config.q_max;
   anchor_drift_max_ = config.anchor_drift_max;
   anchor_initialized_ = false;  // first Compute() re-anchors to measured
+  command_check_armed_ = false;
 
   manipulability_ = 0.0;
   tcp_error_norm_ = 0.0;
+  last_solve_ = SolveDiagnostics{};
 
   q_ref_.setZero(nv_);
   v_ref_.setZero(nv_);
+  v_prev_.setZero(nv_);
   j_task_.setZero(6, nv_);
+  j_pos_.setZero(3, nv_);
+  j_axis_.setZero(2, nv_);
   v_post_arm_.setZero(n_arm_);
   v_post_hand_.setZero(n_hand_);
   j_arm_.setZero(6, n_arm_);
@@ -179,22 +242,24 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   qp_data_.n_ineq = nv_;
 
   QPSolverConfig solver_cfg;
+  solver_cfg.max_iter = config.max_iter;
   qp_solver_.Init(nv_, 0, nv_, solver_cfg);
 }
 
 bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_idx,
                                      int base_frame_idx, const pinocchio::SE3& placement_des,
                                      const Eigen::VectorXd& q_posture_des, double dt,
-                                     bool reseed_anchor) noexcept {
-  // Preconditions. nq == nv (reduced revolute/prismatic tree) is required so
-  // velocity indices address q directly and q_ref = q + v·dt is valid.
-  const int n_registered = static_cast<int>(cache.registered_frames.size());
-  if (nv_ == 0 || tcp_frame_idx < 0 || tcp_frame_idx >= n_registered ||
-      base_frame_idx >= n_registered) {
+                                     bool reseed_anchor,
+                                     const Eigen::Matrix<double, 6, 1>* twist_ff) noexcept {
+  last_solve_ = SolveDiagnostics{};
+  if (!PreconditionsHold(cache, tcp_frame_idx, base_frame_idx, q_posture_des, dt)) {
     return false;
   }
-  if (cache.q.size() != nv_ || cache.v.size() != nv_ || q_posture_des.size() != nv_ ||
-      !(dt > 0.0)) {
+  if (twist_ff != nullptr && !twist_ff->allFinite()) {
+    return false;
+  }
+  if (!CommandStateMatches(cache)) {
+    last_solve_.command_mismatch = true;
     return false;
   }
 
@@ -212,6 +277,9 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   e_x_ = ComputeTaskPoseError(tip_in_base, placement_des);
   tcp_error_norm_ = e_x_.norm();
   r_task_ = kx_.cwiseProduct(e_x_);
+  if (twist_ff != nullptr) {
+    r_task_ += *twist_ff;
+  }
 
   const int N = nv_;
 
@@ -224,6 +292,135 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
     j_arm_.col(c) = rf.J.col(vi);
   }
 
+  ComputePostureReferences(cache, q_posture_des);
+
+  // ── H = w_task·JᵀJ + diag(w_arm@arm, w_hand@hand) + μ²·I ──
+  auto H = qp_data_.H.topLeftCorner(N, N);
+  auto g = qp_data_.g.head(N);
+  H.setZero();
+  H.noalias() += w_task_ * j_task_.transpose() * j_task_;
+  // ── g = −(w_task·Jᵀr_task + scatter(w_arm·v_post_arm, w_hand·v_post_hand)) ──
+  g.noalias() = -w_task_ * (j_task_.transpose() * r_task_);
+  AddPostureAndDamping();
+
+  AssembleBox(cache.q, dt);
+  return SolveAndIntegrate(cache, dt, reseed_anchor);
+}
+
+bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int frame_idx, int base_frame_idx,
+                                     const PositionAxisTarget& target,
+                                     const Eigen::VectorXd& q_posture_des, double dt,
+                                     bool reseed_anchor) noexcept {
+  namespace se3 = rtc::math::se3;
+  last_solve_ = SolveDiagnostics{};
+  axis_region_ = se3::AxisAlignRegion::kInvalidInput;
+  if (!PreconditionsHold(cache, frame_idx, base_frame_idx, q_posture_des, dt)) {
+    return false;
+  }
+  if (!target.position.allFinite() || !target.linear_velocity_ff.allFinite() ||
+      !target.angular_velocity_ff.allFinite()) {
+    return false;
+  }
+  if (!CommandStateMatches(cache)) {
+    last_solve_.command_mismatch = true;
+    return false;
+  }
+
+  const auto& rf = cache.registered_frames[static_cast<size_t>(frame_idx)];
+
+  // ── Target → world-aligned axes (base_frame_idx < 0 → already world) ──
+  Eigen::Vector3d p_des = target.position;
+  Eigen::Vector3d a_des = target.axis;
+  Eigen::Vector3d v_ff = target.linear_velocity_ff;
+  Eigen::Vector3d w_ff = target.angular_velocity_ff;
+  if (base_frame_idx >= 0) {
+    const pinocchio::SE3& oMb = cache.registered_frames[static_cast<size_t>(base_frame_idx)].oMf;
+    p_des = oMb.act(target.position);
+    a_des.noalias() = oMb.rotation() * target.axis;
+    v_ff.noalias() = oMb.rotation() * target.linear_velocity_ff;
+    w_ff.noalias() = oMb.rotation() * target.angular_velocity_ff;
+  }
+
+  // ── Errors: position (world) and approach axis (rotation vector, world) ──
+  const Eigen::Matrix3d& R_wc = rf.oMf.rotation();
+  const Eigen::Vector3d z_c = R_wc.col(2);
+  const se3::AxisAlignErrorResult axis = se3::AxisAlignError(z_c, a_des);
+  axis_region_ = axis.region;
+  if (!axis.IsValid()) {
+    return false;  // non-unit / non-finite axis target
+  }
+  const Eigen::Vector3d e_p = p_des - rf.oMf.translation();
+  position_error_norm_ = e_p.norm();
+  axis_error_angle_ = axis.error.norm();
+  tcp_error_norm_ = std::sqrt(position_error_norm_ * position_error_norm_ +
+                              axis_error_angle_ * axis_error_angle_);
+
+  // Task references. The axis rows live in the frame's LOCAL x, y (S·R_WCᵀ);
+  // e_a ⟂ z_C, so dropping LOCAL z loses nothing (L5 §4.2).
+  const Eigen::Vector3d r_p = kx_.head<3>().cwiseProduct(e_p) + v_ff;
+  const Eigen::Vector3d w_ref_local = R_wc.transpose() * (k_axis_ * axis.error + w_ff);
+
+  // ── Jacobian rows on the arm columns (hand columns 0) ──
+  const int N = nv_;
+  j_pos_.setZero();
+  j_axis_.setZero();
+  for (int c = 0; c < n_arm_; ++c) {
+    const auto vi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
+    j_pos_.col(vi) = rf.J.col(vi).head<3>();
+    const Eigen::Vector3d w_local = R_wc.transpose() * rf.J.col(vi).tail<3>();
+    j_axis_.col(vi) = w_local.head<2>();
+    j_arm_.col(c) = rf.J.col(vi);  // manipulability diagnostic
+  }
+
+  ComputePostureReferences(cache, q_posture_des);
+
+  auto H = qp_data_.H.topLeftCorner(N, N);
+  auto g = qp_data_.g.head(N);
+  H.setZero();
+  H.noalias() += w_task_ * j_pos_.transpose() * j_pos_;
+  H.noalias() += w_axis_ * j_axis_.transpose() * j_axis_;
+  g.noalias() = -w_task_ * (j_pos_.transpose() * r_p);
+  g.noalias() -= w_axis_ * (j_axis_.transpose() * w_ref_local.head<2>());
+  AddPostureAndDamping();
+
+  AssembleBox(cache.q, dt);
+  return SolveAndIntegrate(cache, dt, reseed_anchor);
+}
+
+bool ClikReferenceGenerator::PreconditionsHold(const PinocchioCache& cache, int tcp_frame_idx,
+                                               int base_frame_idx,
+                                               const Eigen::VectorXd& q_posture_des,
+                                               double dt) const noexcept {
+  // nq == nv (reduced revolute/prismatic tree) is required so velocity indices
+  // address q directly and q_ref = q + v·dt is valid.
+  const int n_registered = static_cast<int>(cache.registered_frames.size());
+  if (nv_ == 0 || tcp_frame_idx < 0 || tcp_frame_idx >= n_registered ||
+      base_frame_idx >= n_registered) {
+    return false;
+  }
+  return cache.q.size() == nv_ && cache.v.size() == nv_ && q_posture_des.size() == nv_ && dt > 0.0;
+}
+
+bool ClikReferenceGenerator::CommandStateMatches(const PinocchioCache& cache) const noexcept {
+  // Armed by the first success, disarmed only by Init / ResetAnchor — NOT by a
+  // failed call: a failure leaves q_ref = cache.q (the command state the
+  // caller passed), so the check stays meaningful, and a measured q wired in
+  // right after a failure must not slip through.
+  if (!evaluate_at_command_ || !command_check_armed_) {
+    return true;
+  }
+  constexpr double kTol = 1e-12;
+  for (const int vi : arm_v_idx_) {
+    const auto i = static_cast<Eigen::Index>(vi);
+    if (!(std::abs(cache.q(i) - q_ref_(i)) <= kTol)) {  // NaN → mismatch
+      return false;
+    }
+  }
+  return true;
+}
+
+void ClikReferenceGenerator::ComputePostureReferences(
+    const PinocchioCache& cache, const Eigen::VectorXd& q_posture_des) noexcept {
   // ── L2/L3 posture velocity references v_p = K·(q_des − q) ──
   for (int c = 0; c < n_arm_; ++c) {
     const auto qi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
@@ -233,12 +430,15 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
     const auto qi = static_cast<Eigen::Index>(hand_v_idx_[static_cast<size_t>(c)]);
     v_post_hand_(c) = kh_ * (q_posture_des(qi) - cache.q(qi));
   }
+}
 
-  // ── H = w_task·JᵀJ + diag(w_arm@arm, w_hand@hand) + μ²·I ──
+void ClikReferenceGenerator::AddPostureAndDamping() noexcept {
+  // Adds the L2/L3 posture and μ² terms on top of the task terms the caller has
+  // already written into H and g — the same accumulation order the single-task
+  // path always had, so its output stays bit-identical.
+  const int N = nv_;
   auto H = qp_data_.H.topLeftCorner(N, N);
   auto g = qp_data_.g.head(N);
-  H.setZero();
-  H.noalias() += w_task_ * j_task_.transpose() * j_task_;
   for (int c = 0; c < n_arm_; ++c) {
     const auto vi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
     H(vi, vi) += w_arm_;
@@ -249,8 +449,6 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   }
   H.diagonal().array() += damping_sq_;
 
-  // ── g = −(w_task·Jᵀr_task + scatter(w_arm·v_post_arm, w_hand·v_post_hand)) ──
-  g.noalias() = -w_task_ * (j_task_.transpose() * r_task_);
   for (int c = 0; c < n_arm_; ++c) {
     const auto vi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
     g(vi) -= w_arm_ * v_post_arm_(c);
@@ -260,17 +458,30 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
     g(vi) -= w_hand_ * v_post_hand_(c);
   }
 
+  // Smoothing (w_s/2)·‖v − v_prev‖²: skipped entirely when off so the legacy
+  // accumulation is untouched.
+  if (w_smooth_ > 0.0) {
+    H.diagonal().array() += w_smooth_;
+    g.noalias() -= w_smooth_ * v_prev_;
+  }
+}
+
+void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) noexcept {
   // ── Box constraints lᵢ ≤ vᵢ ≤ uᵢ (per-joint velocity ∩ position) ──
+  const int N = nv_;
   auto l = qp_data_.l.head(N);
   auto u = qp_data_.u.head(N);
-  const bool vel_box = (v_limit_ > 0.0);
+  const bool per_joint = (v_limit_per_joint_.size() == N);
+  const bool vel_box = per_joint || (v_limit_ > 0.0);
   const bool pos_box = (q_min_.size() == N && q_max_.size() == N);
+  const bool accel_box = (a_max_.size() == N);
   const double inf = std::numeric_limits<double>::infinity();
   for (int i = 0; i < N; ++i) {
-    double lo = vel_box ? -v_limit_ : -inf;
-    double hi = vel_box ? v_limit_ : inf;
+    const double v_max = per_joint ? v_limit_per_joint_(i) : v_limit_;
+    double lo = vel_box ? -v_max : -inf;
+    double hi = vel_box ? v_max : inf;
     if (pos_box) {
-      const double q_i = cache.q(i);  // q-index == v-index (nq == nv contract)
+      const double q_i = q(i);  // q-index == v-index (nq == nv contract)
       lo = std::max(lo, (q_min_(i) - q_i) / dt);
       hi = std::min(hi, (q_max_(i) - q_i) / dt);
     }
@@ -285,19 +496,51 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
     // bounded, and the two directions become symmetric. With the velocity box
     // off (v_limit ≤ 0) there is no bound to fall back on, so it stays raw.
     if (lo > hi) {
-      lo = vel_box ? std::clamp(hi, -v_limit_, v_limit_) : hi;
+      lo = vel_box ? std::clamp(hi, -v_max, v_max) : hi;
       hi = lo;
+    }
+    if (accel_box) {
+      // Acceleration window around the previous command (L5 §4.3). [lo, hi] is
+      // non-empty here (the collapse above guarantees it). If the window misses
+      // it, keep the acceleration bound — a one-tick velocity jump on a
+      // position interface is what a protective stop reacts to — and report
+      // the conflict; the position overshoot it allows is what limit_margin is
+      // for, and the supervisor aborts on the flag.
+      const double a_dt = a_max_(i) * dt;
+      const double w_lo = v_prev_(i) - a_dt;
+      const double w_hi = v_prev_(i) + a_dt;
+      if (w_lo > hi || w_hi < lo) {
+        const double v = std::clamp(std::clamp(v_prev_(i), lo, hi), w_lo, w_hi);
+        lo = v;
+        hi = v;
+        last_solve_.bound_conflict = true;
+        last_solve_.conflict_mask |= (std::uint64_t{1} << static_cast<unsigned>(i));
+      } else {
+        lo = std::max(lo, w_lo);
+        hi = std::min(hi, w_hi);
+      }
     }
     l(i) = lo;
     u(i) = hi;
   }
+}
 
+bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, double dt,
+                                               bool reseed_anchor) noexcept {
+  const int N = nv_;
   // ── Solve (C = Iₙ already set in Init) ──
   const auto& res = qp_solver_.Solve(qp_data_);
+  last_solve_.reached_solve = true;
+  last_solve_.converged = res.converged;
+  last_solve_.non_finite = res.non_finite;
+  last_solve_.status = res.status;
+  last_solve_.iterations = res.iterations;
+  last_solve_.solve_time_us = res.solve_time_us;
   if (!res.converged) {
     q_ref_ = cache.q;
     v_ref_.setZero();
     anchor_initialized_ = false;  // force a measured re-anchor on recovery
+    v_prev_.setZero();            // the command this tick was v_ref = 0
     return false;
   }
   v_ref_ = res.x_opt.head(N);
@@ -316,8 +559,8 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   // between goal/phase edges (DemoTaskController's desired_q_ pattern). Only the
   // anchor switches — v_ref above is a measured-based closed-loop correction
   // either way.
-  if (reseed_anchor || !anchor_initialized_) {
-    q_ref_ = cache.q;  // re-anchor to measured
+  if (evaluate_at_command_ || reseed_anchor || !anchor_initialized_) {
+    q_ref_ = cache.q;  // measured (or, in command mode, the command state q_c)
   }  // else q_ref_ holds the previous desired — carry forward in place.
   q_ref_.noalias() += v_ref_ * dt;
 
@@ -330,13 +573,17 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   }
 
   if (!q_ref_.allFinite() || !v_ref_.allFinite()) {
+    last_solve_.non_finite = true;
     // Safe outputs even if the caller ignores the return value.
     q_ref_ = cache.q;
     v_ref_.setZero();
     anchor_initialized_ = false;  // force a measured re-anchor on recovery
+    v_prev_.setZero();            // the command this tick was v_ref = 0
     return false;
   }
   anchor_initialized_ = true;
+  command_check_armed_ = true;
+  v_prev_ = v_ref_;
   return true;
 }
 

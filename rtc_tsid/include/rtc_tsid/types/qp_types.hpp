@@ -43,6 +43,12 @@ struct QPData {
 struct SolveResult {
   Eigen::VectorXd x_opt;  // [max_n_vars] pre-allocated
   bool converged{false};
+  // proxsuite::proxqp::QPSolverOutput of the last solve as int (0 = SOLVED);
+  // −1 = the wrapper returned before solving (not initialised).
+  int status{-1};
+  // Solver iterates were non-finite (converged is then false even if status
+  // reports SOLVED — see QPSolverWrapper::Solve).
+  bool non_finite{false};
   double solve_time_us{0.0};
   int iterations{0};
   int levels_solved{0};  // WQP: 항상 1, HQP: 실제 solve한 level 수

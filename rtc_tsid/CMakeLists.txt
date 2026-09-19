@@ -202,6 +202,21 @@ if(BUILD_TESTING)
   ament_add_gtest(test_clik_reference test/test_clik_reference.cpp)
   target_link_libraries(test_clik_reference rtc_tsid)
 
+  # dynamic_catching S2.2a: golden-vector regression of the default CLIK path.
+  # Bit-exact only in the configuration the table was recorded in (Release, no
+  # sanitizer); other builds compare with a relative tolerance (see the test
+  # file header).
+  ament_add_gtest(test_clik_golden test/test_clik_golden.cpp)
+  target_link_libraries(test_clik_golden rtc_tsid)
+  target_include_directories(test_clik_golden PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
+  if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT CMAKE_CXX_FLAGS MATCHES "sanitize")
+    target_compile_definitions(test_clik_golden PRIVATE RTC_CLIK_GOLDEN_EXACT=1)
+  endif()
+
+  # dynamic_catching S2.2b: CLIK options (each defaults off).
+  ament_add_gtest(test_clik_options test/test_clik_options.cpp)
+  target_link_libraries(test_clik_options rtc_tsid)
+
   # Apply PANDA_URDF_PATH macro to every test target above.
   foreach(_t
       test_qp_solver_wrapper test_wbc_types test_posture_task test_se3_task
@@ -212,7 +227,8 @@ if(BUILD_TESTING)
       test_tsid_hqp test_tsid_wqp_hqp_compare test_tsid_performance
       test_fixed_dim_qp test_activation_ramp test_weight_scaling
       test_grasp_matrix test_grasp_cache test_object_wrench_task
-      test_internal_force_task test_object_se3_task test_clik_reference)
+      test_internal_force_task test_object_se3_task test_clik_reference
+      test_clik_golden test_clik_options)
     target_compile_definitions(${_t} PRIVATE
         RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
   endforeach()
