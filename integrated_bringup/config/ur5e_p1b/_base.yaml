@@ -104,9 +104,13 @@
           - "index"
           - "middle"
           - "ring"
-        # Values mirror proto_1b.urdf <limit> tags (joint order matches
-        # joint_state_names above): velocity=10.384, effort=3.0 for every
-        # actuated joint; position bounds are per-joint from the URDF.
+        # velocity=10.384 / effort=3.0 mirror proto_1b.urdf <limit> tags (joint
+        # order matches joint_state_names above). Position bounds do NOT all
+        # mirror it: index_mcp_aa_joint here is [-0.349, 0.524] (real-hw tuning,
+        # 397ad3a0) while the vendored URDF (84549777) says [-0.122, 0.297]. The
+        # CM intersects YAML with the URDF model limits, so the URDF range is
+        # what is enforced; which range is physically right is a hardware
+        # question, not settled here.
         joint_limits:
           max_velocity: [10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384]
           max_torque: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
