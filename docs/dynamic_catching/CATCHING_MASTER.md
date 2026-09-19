@@ -14,7 +14,7 @@
 | v0.2 | 2026-09-18 | `_REVIEW_catching_2026-09-18.md` 반영. 주요 변경: 포구 오차 예산 식 교체(L3 §4.6), 접근축 오차를 회전벡터 기반으로 교체(L4 §4.5, L3 §4.2, L5 §4.2), 속도 포화 시 반환 가속도 수정(L4 §5.1), `COMMITTED` 이후 γ 하향 경로 신설(L3 §4.7, L4 §5.1, L7 §4.6), 충격량 예산 절 신설(L7 §4.7), impact 계열 문헌 추가(§8), 구현 순서에서 `T_close` 식별 선행(§4), Jacobian 규약 명시(§3), 참조 구현 1벌로 통합 |
 | v0.3 | 2026-09-18 | 구현 대상을 기존 `rtc-framework` workspace로 확정. 입력 계약을 자체 정의 `catching_msgs/BallState`에서 **vision 노드의 `sensor_msgs/PointCloud2`**로 교체(§5). 제어 PC는 궤적을 재전파하지 않고 vision 예측을 그대로 신뢰 — L2가 전파기에서 **궤적 샘플러**로 축소(L2 전면 개정). kinematics·dynamics·QP·과제 클래스·joint command backend는 **기존 구현 재사용**으로 확정(§1.2, L5). 단계 W(`WORKSPACE_ANALYSIS.md`) 신설 — L0 포함 모든 구현의 선행 단계 |
 | v0.4 | 2026-09-19 | 에이전트 4개(정합성·수식 재유도·v0.3 잔재·데이터 흐름/RT) 교차 검증 반영. **기능 결함 5건 수정**: `derateGamma` 수락 기준을 목표 γ_f 로(L4 §5.2.1), retreat 끌개를 $p_c$ 로(L4 §5.3), `track_epoch` 를 스냅샷 필드로(L2 §5.1), 시간축 단일 원점·두 축 규약(§3, L2 §4.4), 재무장 리셋 목록(L7 §4.8). **근거 수정**: γ 하향 점프가 시간에 단조가 아님(L4 §5.2.1, L7 §4.6). **신설**: 예측 일관성 감시 $\bar\nu$(L1 §4.5), QP 반복 상한·`QP_FAILED`(L5 §4.3, L7 §4.2), 상태 전이 행렬 완전성(L7 §4.1). 테스트 커버리지 보강(보간 속도 경로, `tRest` 4분기, 안정 경계 ±0.2%, γ 하향 3분기) |
-| v0.5 | 2026-09-19 | **단계 W 를 코드 대조로 종결**(기록: `WORKSPACE_ANALYSIS.md`, 요약: plan §2). 결정의 SSoT 를 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)(D-1~D-18, A-1~A-7, D-7a~d)로 옮기고 설계 문서 전체를 그에 맞춤(S0.3). 주요 변경: ros2_control·`update()` 전제 → `RTControllerInterface::Compute` → `ControllerOutput` → `DeviceBackend`(§1.2, §2). L5 "얇은 어댑터" → `rtc::tsid::ClikReferenceGenerator` 확장(D-5·D-6). 코드 배치(D-1, §4). 시간 규약을 절대 steady ns + `BallTime`/`NowReal`/`NowLead` 로(D-2, §3), sim 은 wall clock + RTF 게이트(D-3). vision 입력을 ball_perception 실제 레이아웃으로(D-4, §5). γ derate 를 v1 에서 제외(D-8), η_v 교차제약(D-9). 손 명령 포트 추상화 삭제 — 손 device slot 직접 기록(D-11). 계획기 스레드를 MPC 스레드와 같은 `rtc::PeriodicRtThread` 방식으로(D-7). 관절 가속 한계를 토크에서 도출(D-16). catch frame 을 YAML 로(D-17). 투척 목표를 manipulability 기반 catchability 로(D-18). 이름이 둘인 같은 값 5쌍을 단일 키로(§6). L0·L2·L3·L4 §5 코드 복사본 삭제 → 헤더가 SSoT |
+| v0.5 | 2026-09-19 | **단계 W 를 코드 대조로 종결**(기록: `WORKSPACE_ANALYSIS.md`, 요약: plan §2). 결정의 SSoT 를 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)(D-1~D-24, P-1~P-3, A-1~A-7, C-1~C-4, D-7a~d)로 옮기고 설계 문서 전체를 그에 맞춤(S0.3). 주요 변경: ros2_control·`update()` 전제 → `RTControllerInterface::Compute` → `ControllerOutput` → `DeviceBackend`(§1.2, §2). L5 "얇은 어댑터" → `rtc::tsid::ClikReferenceGenerator` 확장(D-5·D-6). 코드 배치(D-1, §4). 시간 규약을 절대 steady ns + `BallTime`/`NowReal`/`NowLead` 로(D-2, §3), sim 은 wall clock + RTF 게이트(D-3). vision 입력을 ball_perception 실제 레이아웃으로(D-4, §5). γ derate 를 v1 에서 제외(D-8), η_v 교차제약(D-9). 손 명령 포트 추상화 삭제 — 손 device slot 직접 기록(D-11). 계획기 스레드를 MPC 스레드와 같은 `rtc::PeriodicRtThread` 방식으로(D-7). 관절 가속 한계를 토크에서 도출(D-16). catch frame 을 YAML 로(D-17). 투척 목표를 manipulability 기반 catchability 로(D-18). 이름이 둘인 같은 값 5쌍을 단일 키로(§6). L0·L2·L3·L4 §5 코드 복사본 삭제 → 헤더가 SSoT |
 
 [R3] 식 대조는 v0.2에서 완료했다(L4 §4.1). v0.1이 "T-RO 본문 대조 미완"으로 남겨 둔 항목이다.
 
@@ -56,8 +56,8 @@
 - rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`): 궤적 타입·샘플러(L2), 시간 타입, soft-catch 기준 생성기(L4), 도달 가능성·계획기 탐색 코어·catchability 판정(L3), L7 순수 조각, 파라미터 검증(L0)
 - `rtc_math` se3: 접근축 정렬 오차·각속도·Jacobian (S2.1)
 - `rtc_tsid`: CLIK 확장 (S2.2)
-- `rtc_urdf_bridge` 모델 빌더: YAML 선언 추가 frame (S2.3)
-- `rtc_mujoco_sim`: 발사 srv(D-14, `rtc_msgs` 에 추가), 접촉 truth, RTF 진단 (S3)
+- `rtc_urdf_bridge` 모델 빌더: YAML 선언 추가 frame (S2.3a)
+- `rtc_mujoco_sim`: 발사 srv(D-14, `rtc_msgs` 에 추가), 접촉 truth, clock 위상 진단 (S3, plan §5) — per-step `(sim_time, steady_now)` lane
 - `integrated_bringup`: 포구 컨트롤러 바인딩, `PointCloud2` 파서·구독, 계획기 스레드 소유, 손 시퀀서 배선, YAML·launch (S5~S7)
 
 ### 1.3 대상 시스템 `[확정]`
@@ -75,7 +75,7 @@
 - 코드 기반: **기존 `rtc-framework` workspace + `rtc_tsid` CLIK 확장** `[확정 D-1, D-5]`
 - 입력: vision 노드의 **`sensor_msgs/PointCloud2` 예측 궤적** `[확정 D-4]` (§5). 제어 PC는 궤적을 재전파하지 않는다
 - Pinocchio: **4.0** `[확정]`
-- P1b 사양(작성 시점 기준 사용자 진술): thumb 4, index 3, middle 2, ring 1 = 10 actuated DoF, 관절 모터 1.5 Nm·12.46 rad/s. 구현 시 URDF/MJCF와 대조할 것(L6 게이트, S4.1).
+- P1b 사양(작성 시점 기준 사용자 진술): thumb 4, index 3, middle 2, ring 1 = 10 actuated DoF, 관절 모터 1.5 Nm·12.46 rad/s. 구현 시 URDF/MJCF와 대조할 것(L6 게이트, S4.1). **대조 결과 (W, L6 G6-3):** 설정·모델값(YAML `max_torque` = URDF effort = MJCF forcerange)은 **3.0 N·m** 로 일치한다 — 위 1.5 N·m 는 작성 시점 사용자 진술이며, 이를 그대로 운용 한계로 쓸 수 있는지(nominal·continuous·peak·설정값 중 어느 것)는 **D-12 미결정** (plan §7.3)
 
 ### 1.4 시뮬레이션 검증의 한계 `[권장]`
 
@@ -136,7 +136,7 @@ flowchart TB
 2. non-RT → RT 공유 상태는 단일 writer `rtc::SeqLock` 으로만 전달한다. payload 는 trivially copyable 이어야 하므로 `Eigen::Vector3d` 대신 `std::array` 기반 POD 를 쓴다(plan §6).
 3. RT → non-RT 기록은 고정 크기 레코드의 `rtc::SpscQueue` 로만 전달하고 aux 타이머가 drain 한다.
 4. RT 경로 금지 패턴은 RTC 프레임워크 규칙 RT-1~10(RT-7 은퇴)을 그대로 따른다: 동적 할당, 예외(`throw`/`catch` 모두), blocking I/O, mutex, tf2 조회 금지. 계획기 스레드도 스케줄링 클래스와 무관하게 이 규칙으로 작성한다(D-7a, plan §7.2).
-5. 시간 기준 `[확정 D-2]`: 내부 시각은 **절대 steady ns** 로 통일한다. nrt 수신 시 한 번 `t_ref_steady = recv_steady − (recv_wall − stamp)` 로 변환하고, 이후 `header.stamp` 는 쓰지 않는다. `use_sim_time` 은 쓰지 않는다 — sim 도 wall clock 이며 시행별 RTF 게이트로 무효 시행을 거른다(D-3, 검증 후 재검토). stale 판정은 `now_steady − recv_steady` 로만 한다(repo 시계 규칙).
+5. 시간 기준 `[확정 D-2]`: 내부 시각은 **절대 steady ns** 로 통일한다. nrt 수신 시 한 번 `t_ref_steady = recv_steady − (recv_wall − stamp)` 로 변환하고, 이후 `header.stamp` 는 쓰지 않는다. `use_sim_time` 은 쓰지 않는다 — sim 도 wall clock 이며 시행별 clock 위상 오차 게이트(δ_max·pause, plan §5)로 무효 시행을 거른다(D-3, 검증 후 재검토). stale 판정은 `now_steady − recv_steady` 로만 한다(repo 시계 규칙).
 
 ---
 
@@ -173,9 +173,9 @@ layer 는 설계 문서의 단위이고, 구현 순서·게이트는 plan §4 �
 | L0 | rtc_controllers `catching` (공용 타입·파라미터 검증), 공 동역학은 테스트 fixture 전용 위치 | S1.1·S1.6·S1.7 | 공용 타입, 파라미터 검증(활성 구성 키만 TBD 검사, 교차제약) |
 | L1 | `integrated_bringup` 바인딩 (구독·필드 이름 파서·D-2 변환), 궤적 타입은 `catching` 공용 | S1.2·S5.2 | `PointCloud2` 수신·파싱·검증, 스냅샷 브리지, stale 판정 |
 | L2 | rtc_controllers `catching` | S1.2·S1.3 | 궤적 샘플러 (5차 Hermite, 시각 정렬, 지평 감시), 시간 타입 |
-| L3 | 탐색 코어는 `catching`, 스레드 소유는 `integrated_bringup` | S1.5·S3.5·S6 | 포구점·시각·γ 결정, catchability(D-18), 계획기 스레드(D-7) |
+| L3 | 탐색 코어는 `catching`, 스레드 소유는 `integrated_bringup` | S1.5·S1.9·S3.5a/b·S6 | 포구점·시각·γ 결정, catchability(D-18), 계획기 스레드(D-7) |
 | L4 | `catching` (DS), 접근축 정렬은 `rtc_math` se3 | S1.4·S2.1 | soft-catch DS, 접근축 정렬, 복귀 |
-| L5 | `rtc_tsid` CLIK 확장 + 포구 컨트롤러(`catching` + `integrated_bringup`), catch frame 은 `rtc_urdf_bridge` | S2.2·S2.3·S2.5·S5.3 | 확장 CLIK 과제 구성, 가속 한계(D-16), device 0 에 $q_c$ |
+| L5 | `rtc_tsid` CLIK 확장 + 포구 컨트롤러(`catching` + `integrated_bringup`), catch frame 은 `rtc_urdf_bridge` | S2.2·S2.3a/b·S2.5·S5.3 | 확장 CLIK 과제 구성, 가속 한계(D-16), device 0 에 $q_c$ |
 | L6 | `catching` (시퀀서), 손 프로파일 YAML 은 `integrated_bringup` | S4·S7.1 | 손 시퀀서 → 손 device slot, `T_close,tot` 식별 |
 | L7 | `catching` (순수 조각), FSM 배선은 포구 컨트롤러 | S1.8·S7.2~S7.4·S9 | 상태 머신, 접촉 판정, 감속, abort, E-STOP·fault(D-13) |
 | L8 | `integrated_bringup` (YAML·launch·로깅), `rtc_mujoco_sim` (발사·truth) | S3·S5·S8·S10 | 컨트롤러 통합, 시나리오 테스트, 지표 |
@@ -194,11 +194,11 @@ $$\Vert v(t_c)\Vert>\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 
 우변이 **받을 수 있는 최대 공 속력**이다. 참조 구현(`test_l3`)으로 확인한 값: $v_{dir,\max}=1.5$ m/s, $d_{eff}=4$ cm, $T_{close,tot}=60$ ms이면 상한이 2.17 m/s다. 6 m/s를 받으려면 $T_{close,tot}\le d_{eff}/(\Vert v\Vert-v_{dir,\max})=8.9$ ms가 필요하다. [R1]의 DLR-Hand-II가 5 ms 급이었다는 점을 생각하면 자명한 요구가 아니다.
 
-즉 `TBD-HAND-01`($T_{close}$) 하나가 목표 투척 속도(D-18 catchability 지도와 함께), `reference.a_max`, γ 격자, rollout 창 길이를 전부 결정한다. 이 값을 모른 채 L3–L5를 튜닝하면 재작업이 확정이다. 그래서 plan 은 이를 **S4 go/no-go** 로 두었다: 손 device slot step 으로 sim $T_{close}$ 분포를 재고(S4.2), 가능하면 실기 $T_{close,tot}$ 를 재고(S4.3), 받을 수 있는 최대 공 속력으로 목표 속도를 확정 또는 하향한다(S4.4). D-16 의 보수적 가속 box 도 이 판정에 함께 들어간다. 실기 값이 나오면 `planner.*`와 `reference.*`를 재산정한다(L3 게이트 G3-F).
+즉 `TBD-HAND-01`($T_{close}$) 하나가 목표 투척 속도(D-18 catchability 지도와 함께), `reference.a_max`, γ 격자, rollout 창 길이를 전부 결정한다. 이 값을 모른 채 L3–L5를 튜닝하면 재작업이 확정이다. 그래서 plan 은 이를 **S4.4 go/no-go** 로 두었다: 손 device slot step 으로 sim $T_{close}$ 분포를 재고(S4.2), 가능하면 실기 $T_{close,tot}$ 를 재고(S4.3), S3.5a kinematic catchability 지도가 정한 목표 속도 범위와 대조해 확정 또는 하향한다(S4.4). D-16 의 보수적 가속 box 도 이 판정에 함께 들어간다. 실기 값이 나오면 `planner.*`와 `reference.*`를 재산정한다(L3 게이트 G3-F).
 
 ### 4.2 브랜치 전략 `[확정]`
 
-- 기준 브랜치: `main` (TBD-GIT-01 닫힘). 작업 브랜치는 repo 관례 `type/kebab-slug` 로 `main` 에서 분기한다 (설계 문서는 A-2 에 따라 `docs/dynamic-catching-plan`).
+- 기준 브랜치: `main` (TBD-GIT-01 닫힘). 작업 브랜치는 repo 관례 `type/kebab-slug` 로 `main` 에서 분기한다 (설계 문서는 P-2 에 따라 `docs/dynamic-catching-plan`).
 - 병합 조건: 해당 단계의 plan §4 게이트 + 관련 layer 문서 §9 게이트 통과 + 리뷰(AGENTS.md §5.5 트리거 — `rtc_tsid`·`rtc_urdf_bridge` 일반화는 code review, E-STOP 경로는 security review). 게이트 결과는 plan §4 표와 Epic #537 코멘트에 기록한다.
 - 커밋은 Conventional Commits `type(scope): subject`, scope 는 변경 패키지(예: `rtc_tsid`, `integrated_bringup`) 또는 설계 문서면 `dynamic_catching`.
 - 게이트 공통 항목(모든 RT 코드, 계획기 스레드 포함): RT 경로 할당 0(`ScopedAllocGate`·`ScopedNoMalloc`), `noexcept` 경계 유지, RT 경로에 `throw`/`catch` 없음(RT-2), 고정 QP 차원 + **반복 상한 `max_iter`(S2.2 에서 설정 가능) 및 미수렴 시 실패 경로 확인**(`ClikReferenceGenerator` 실패 시 q_ref = q_meas·v = 0·false, L5 §4.3), 기존 테스트 assertion 무수정, 컴파일 경고 0(`-Wall -Wextra`).
@@ -248,7 +248,7 @@ $$\Vert v(t_c)\Vert>\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 | `horizon_ns` | UINT32 @376 | `header.stamp` 기준 상대 ns |
 | `validity` | UINT8 @380 | 0 NOT_EVALUATED, 1 VALID |
 
-**v0.4 의 결손이 닫혔다.** 트랙 식별·상태는 `generation`·`validity`·`snapshot_sequence` 로 판정한다(TBD-VIS-07 닫힘). 레이아웃 변경은 필드 이름·datatype 검사와 **레이아웃 해시 진단**이 감지한다(A-3, L1 §5.1). NIS 같은 추정기 건강도 필드는 여전히 없다.
+**v0.4 의 결손이 닫혔다.** 트랙 식별·상태는 `generation`·`validity`·`snapshot_sequence` 로 판정한다(TBD-VIS-07 닫힘). 레이아웃 변경은 필드 이름·datatype 검사와 **레이아웃 해시 진단**이 감지한다(P-3, L1 §5.1). NIS 같은 추정기 건강도 필드는 여전히 없다.
 
 **요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. 현 예시 profile: 지평 0.5 s, 간격 0.05 s, 최대 10 점, ≤ 30 Hz. 파서 용량 `kMaxSamples` 는 S3.6 결과에 여유를 두어 정하고 그 전에는 provisional 이다(S1.2).
 
@@ -262,7 +262,7 @@ vision의 예측을 그대로 신뢰한다. 제어 PC는 $(p,v,a)$ 샘플 열 �
 
 ### 5.3 시계
 
-실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../agent_docs/invariants.md) 에 E-1 예외로 명문화한다(D-2). sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall stamp 를 쓴다(D-3, S3.4).
+실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../agent_docs/invariants.md) 에 E-1 예외로 명문화하는 것은 **아직 승인 대기다** (`[CONCERN] E-1`, S0.6 — 승인되면 invariants.md 편집은 별도 커밋, plan §3.1·§4.1). sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall stamp 를 쓴다(D-3, S3.4).
 
 ---
 
@@ -291,7 +291,7 @@ catching:
 **새 키 (plan 이 SSoT).**
 
 - catch frame `[확정 D-17]`: 로봇 config 의 `extra_frames`(이름·부모·`xyz`·`rpy`·`provisional`)를 `rtc_urdf_bridge` 모델 빌더가 Pinocchio 모델에 추가하고, 포구 YAML 은 frame 이름만 참조한다(`catch_frame`). 스키마·초기값 산출: plan §10
-- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(0.1 provisional / TBD), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3), `sim.throw_region.*`(발사 영역·속도·앙각). 정의·스키마: plan §11. S3.5 지도 도구와 S6.2 계획기가 **같은 키**를 쓴다
+- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(0.1 provisional / TBD), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3), `sim.throw_region.*`(발사 영역·속도·앙각). 정의·스키마: plan §11. S3.5a/b 지도 도구와 S6.2 계획기가 **같은 키**를 쓴다
 - 관절 가속 한계 `[확정 D-16]`: 토크 한계에서 도출한 보수적 상수 box 를 provenance(표본 범위·η_τ·모델 버전·일자)와 함께 YAML 로 출력한다(S2.5, plan §9). 기존 `max_acceleration`(5.0 rad/s², placeholder)은 쓰지 않는다. 키 이름은 S2.5 에서 정한다
 
 **TBD 검사는 "현재 활성 구성이 참조하는 키"에만 적용한다 `[권장]`.** 전체 키에 걸면 절대 `ARMED` 가 되지 않는다 — 실기에서 `sim.*` 가 영구히 TBD로 남기 때문이다. L0 검증기는 launch 구성(실기/시뮬, `lead_enable`)에 따라 검사 대상 집합을 정한다. `provisional: true` 인 값(D-12 사용자 값, catch frame)은 실기 arm 을 막는다(D-12, D-17).
@@ -323,7 +323,7 @@ catching:
 | `PointCloud2` 파싱·레이아웃 검증 | 논문 외 설계 | L1 §5.1 | `integrated_bringup` 바인딩 (S5.2, D-4) |
 | 관절 최소 도달시간 (P1 램프 제약) | [R1] + 논문 외 유도 | L3 §4.3 | `time_feasibility.hpp` (`tMinChecked`) → `catching` (S1.5) |
 | 5-DoF 포구 자세, 접근축 제약 | [R1] 식(3)의 변형 | L3 §4.2 | `rtc::compliance::DifferentialIk` (m=5) 호출, 계획기 코어 `catching` (S6.2, D-7d) |
-| catchability (arm 5행 manipulability) | 논문 외 설계 | L3, plan §11 | `catching` 단일 함수 — 지도 도구(S3.5)와 계획기(S6.2) 공용 (D-18) |
+| catchability (arm 5행 manipulability) | 논문 외 설계 | L3, plan §11 | `catching` 단일 함수 — 지도 도구(S3.5a/b)와 계획기(S6.2) 공용 (D-18) |
 | γ 창 부등식, 방향 속력 | 논문 외 유도 | L3 §4.5 | `time_feasibility.hpp` (`gammaWindow`, `maxCatchableSpeed`) → `catching` (S1.5, 투영 속력·0 가드) |
 | 포구 오차 예산 (직교 분해) | 논문 외 유도 | L3 §4.6 | 계획기 코어 `catching` (S1.5·S6) |
 | 계획기 스레드 | 논문 외 설계 | L3, plan §6 | `rtc::PeriodicRtThread` subclass, `integrated_bringup` 소유 (S6, D-7) |
@@ -337,8 +337,8 @@ catching:
 | 팔 추종 지연 식별·선행 보상 | 논문 외 설계 | L5 §4.4–4.5 | 식별 도구 (S10). backend 에 지연 보상 없음(W4) |
 | 가상 감속 대상(연속 전환) | 논문 외 유도 | L7 §4.3 | `catching` (S1.8) |
 | 충격량 예산 | [R16][R17][R18] + 논문 외 유도 | L7 §4.7 | 계획기 코어, L8 지표 (S7.3) |
-| 투척 생성·발사 | 논문 외 설계 | L8 §4.2 | `rtc_mujoco_sim` 발사 srv (D-14, S3.2) + catchability 지도 (S3.5) |
-| catch frame | 논문 외 설계 | plan §10 | `rtc_urdf_bridge` 모델 빌더 추가 frame (S2.3, D-10·D-17) |
+| 투척 생성·발사 | 논문 외 설계 | L8 §4.2 | `rtc_mujoco_sim` 발사 srv (D-14, S3.2) + catchability 지도 (S3.5a/b) |
+| catch frame | 논문 외 설계 | plan §10 | `rtc_urdf_bridge` 모델 빌더 추가 frame (S2.3a, D-10·D-17) |
 | 관절 가속 한계 도출 | 논문 외 설계 | plan §9 | 오프라인 도구 (S2.5, D-16) |
 | velocity CLIK / QP | [R9][R10] | L5 §4 | `rtc::tsid::ClikReferenceGenerator` **확장** (S2.2, D-5·D-6) |
 | FK / Jacobian / 폐쇄 체인 | [R9] | L3 §4.2, L5 §4.2 | 기존 `PinocchioCache`·`RtModelHandle` 재사용 (W3) |
@@ -384,9 +384,9 @@ catching:
 
 | ID | 내용 | 영향 layer | 확정 방법 |
 |---|---|---|---|
-| TBD-FRAME-01 | 두 로봇의 catch frame 이름, 손바닥 바깥 법선 축 | L3, L4, L5 | **→ D-17** — 부모·offset·자세를 YAML 로 열고 접근축은 catch frame +z. 후보 p1b `l_palm_link` +z, iiwa7_leap `palm_lower` −z(D-10). 값은 provisional, S2.3 제안 후 사용자 sim 확인 |
+| TBD-FRAME-01 | 두 로봇의 catch frame 이름, 손바닥 바깥 법선 축 | L3, L4, L5 | **→ D-17** — 부모·offset·자세를 YAML 로 열고 접근축은 catch frame +z. 후보 p1b `l_palm_link` +z, iiwa7_leap `palm_lower` −z(D-10). 값은 provisional, S2.3a/b 제안 후 사용자 sim 확인 |
 | TBD-BALL-01 | 공 지름·질량·재질(반발) | L0, L3 | 사용자 제공 (D-12). sim tennis preset(r 0.025 m, m 0.05 kg)은 임시값일 뿐 |
-| TBD-BALL-02 | 투척 속도·거리 범위, 포구 허용 작업공간 | L3, L8 | **→ D-18** — catchability 판정으로 정한다. 발사 영역은 base 수평 거리 4 m 원호, world z 1.5–2.0 m. 속도·앙각·방위 범위는 S3.5 지도 결과, threshold 0.1 provisional |
+| TBD-BALL-02 | 투척 속도·거리 범위, 포구 허용 작업공간 | L3, L8 | **→ D-18** — catchability 판정으로 정한다. 발사 영역은 base 수평 거리 4 m 원호, world z 1.5–2.0 m. 속도·앙각·방위 범위는 S3.5a/b 지도 결과, threshold 0.1 provisional |
 | TBD-HAND-01 | P1b `T_close` | L3, L6 | S4 식별 도구(sim) + S4.3 실기 $T_{close,tot}$ `[HW-P1B]` |
 | TBD-HAND-02 | P1b 명령 경로(메시지·노드)와 `T_link` | L6 | 닫힘 — 손 device slot → `udp_hand_native` → `/p1b/joint_command` → `udp_hand_node`(250 Hz). 명령 stamp 미사용이라 $T_{link}$ 대신 종단 간 $T_{close,tot}$ 를 잰다 (W, D-11) |
 | TBD-HAND-03 | 지문 센서 인터페이스·주기·부호·frame | L6, L7 | 인터페이스·주기·부호 닫힘 — 실기 `HandSensorState` 250 Hz finger-on-object, sim `WrenchStamped` 도 finger-on-object (0fcc1d23). S7.3 에서 재확인 |
@@ -397,7 +397,7 @@ catching:
 | TBD-ARM-02 | 운용 관절 가속 한계 | L3, L5 | **→ D-16** — 토크 한계에서 도출(S2.5, plan §9), sim 교차 검증 |
 | TBD-SIM-01 | MuJoCo ↔ ros2_control 연동 방식 | L8 | 닫힘 — ros2_control 없음. `rtc_mujoco_sim` 이 `mujoco_native` backend 로 lock-step, `/clock` 없음, stamp 는 wall (W, D-3) |
 | TBD-SIM-02 | MJCF 공 유체 모델 설정 | L0, L8 | 닫힘 — 항력 ½ρC_dA\|v\|v + Magnus 를 `rtc_mujoco_sim` 이 자체 구현, MJCF 유체 모델 아님 (W). $k$ 는 그 파라미터에서 계산 |
-| TBD-GIT-01 | 기준 브랜치 이름, 기존 명명 규칙 | 전체 | 닫힘 — `main`, `type/kebab-slug`, Conventional Commits (§4.2, A-2) |
+| TBD-GIT-01 | 기준 브랜치 이름, 기존 명명 규칙 | 전체 | 닫힘 — `main`, `type/kebab-slug`, Conventional Commits (§4.2, P-2) |
 | ~~TBD-PRED-01~~ | 폐기(v0.3). 제어 PC가 전파하지 않으므로 $q$ 공유가 불필요. fixture 전용 `sim.ekf.q_acc` 로 대체 | — | — |
 | TBD-WS-01 | 바닥 높이, 작업셀 경계 (`W`) | L2 | 셀 측정 |
 | TBD-ARM-03 | UR 드라이버 speed scaling 상태 인터페이스 | L7 | 노출 없음 확인 (W). 신호 출처 확보는 S10 |
@@ -436,7 +436,7 @@ layer 문서들이 개별 번호를 인용하므로 여기에 정의를 모은�
 | TBD-RTC-14 | 모델 로드 경로·FK API (폐쇄 체인 손 포함) | L3 G3-1 | W3-1~3 닫힘 — CM 공유 `PinocchioModelBuilder`, 폐쇄 체인 sidecar closure YAML, 손바닥 frame 은 루프 상류 |
 | TBD-RTC-16 | non-RT 스레드 생성·우선순위, CPU 격리 | L3 G3-3 | W2-1 닫힘 — `rtc::PeriodicRtThread` subclass + `thread_layout.yaml` role (D-7, D-7b). 스케줄러는 측정으로 확정(D-7a, S6.5) |
 | TBD-RTC-17 | 기존 WBC 손 명령 경로와의 충돌 | L6 G6-6 | W4-9 닫힘 — 포구 컨트롤러가 손 device slot 에 직접 기록(D-11) |
-| TBD-RTC-18 | 기존 상태 머신·lifecycle 과 L7 `Mode` 의 매핑 | L7 G7-1 | W2-1 닫힘 — lifecycle 훅(`on_configure`/`on_activate`/`on_deactivate`, noexcept), E-STOP 훅 `TriggerEstop`/`ClearEstop`/`SetHandEstop`, fault 래치 `ResetFault`/`HasLatchedFault`. 정책은 D-13(S9), 임시 기준 A-1 |
+| TBD-RTC-18 | 기존 상태 머신·lifecycle 과 L7 `Mode` 의 매핑 | L7 G7-1 | W2-1 닫힘 — lifecycle 훅(`on_configure`/`on_activate`/`on_deactivate`, noexcept), E-STOP 훅 `TriggerEstop`/`ClearEstop`/`SetHandEstop`, fault 래치 `ResetFault`/`HasLatchedFault`. 정책은 D-13(S9), 임시 기준 P-1 (S5.1 최소 계약, `[CONCERN] E-8`) |
 | TBD-RTC-19 | 컨트롤러 기반 클래스·lifecycle 훅 | L8 G8-1 | W2-1 닫힘 — `RTControllerInterface`, `RTC_REGISTER_CONTROLLER`, 코어+바인딩 2층 |
 | TBD-RTC-20 | 로깅 도구: RT 레코드 형식, rosbag 규약 | L8 G8-4 | W2-7 닫힘 — RT 레코드는 `rtc::SpscQueue` → aux 타이머 drain CSV (plan §6, S5.4) |
 
@@ -448,16 +448,16 @@ v0.3의 `TBD-RTC-06`(결번)과 `TBD-RTC-15`(W2-2가 01로 이미 다룸)는 폐
 
 | 위험 | 영향 | 완화 |
 |---|---|---|
-| **$T_{close,tot}$ 실측값이 예산 초과** | 목표 속도 전 구간에서 γ 창이 비어 포구 자체가 불가 | §4.1 선행 측정(S4 go/no-go). 초과 시 목표 속도를 낮추고 `planner.*`·`reference.*` 재산정. sim $T_{close}$ 는 MJCF 게인에 의존하므로 실기 측정 전까지 S4 결론은 잠정 |
+| **$T_{close,tot}$ 실측값이 예산 초과** | 목표 속도 전 구간에서 γ 창이 비어 포구 자체가 불가 | §4.1 선행 측정(S4.4 go/no-go). 초과 시 목표 속도를 낮추고 `planner.*`·`reference.*` 재산정. sim $T_{close}$ 는 MJCF 게인에 의존하므로 실기 측정 전까지 S4 결론은 잠정 |
 | **토크 도출 가속 box 가 보수적** (D-16) | 받을 수 있는 공 속력이 낮아짐 | S4.4 에서 함께 판정 |
 | **접촉 충격량** | 손가락 관절·감속기 손상, UR5e 보호 정지, 공 튕겨나감 | L7 §4.7 충격량 예산, γ 최대화, `effort_limit_hold`, 저속 단계적 도입(L8 §9.2) |
 | 시계 오차 | 위치 오차 ≈ $\Vert v\Vert\,\delta$ | PTP, 시작 시 점검, D-2 수신 시 1회 변환, stale 판정 |
-| **sim 시간축 (D-3)** | RTF < 1 구간에서 wall 기준 예측과 sim 공이 어긋남. D-3 이 검증에서 떨어지면 S3·S5 시간 경로 재작업 | 시행별 RTF 게이트(비행 구간 Δsim/Δwall < 0.99 무효), S3.1 검증 (plan §5) |
+| **sim 시간축 (D-3)** | clock 이 벌어지는 구간에서 wall 기준 예측과 sim 공이 어긋남. D-3 이 검증에서 떨어지면 S3·S5 시간 경로 재작업 | 시행별 clock 위상 오차 게이트(δ_max·pause, plan §5), S3.1a·S3.1b 검증 |
 | 팔 추종 지연 미보상 | 포구 시각 편향 | backend 보상 없음(W4). `NowLead` 선행(§3), 실기 $T_{arm}$ 식별은 S10 |
 | soft catch 중 포화 | 간극 급증 (hard catch보다 나빠짐) | L3 γ rollout, η_v 여유(D-9). γ 하향은 v1 에서 제외(D-8) → COMMITTED 전 RETREAT, 이후 ABORT_SAFE. abort 가 늘 수 있어 S8 에서 포화 빈도 측정 |
 | 지문 센서만으로 접촉 판정 | 손바닥 선접촉 시 검출 지연 | 감속은 시각 기준, 센서는 판정·abort 전용(A-5) |
 | 시뮬레이션과 실기 손 차이 | 성공률 과대평가 | `[SIM-P1B]`/`[HW-P1B]` 태그 분리, `T_close` 실측 반영, 지문 부호는 두 경로 동일(0fcc1d23) — S7.3 재확인 |
-| **vision 토픽이 stable ABI 가 아님** (D-4) | 필드·의미가 예고 없이 바뀔 수 있음 | 필드 이름·datatype 검사, 레이아웃 해시 진단(L1 §5.1, A-3). 제품 ABI 는 ball_perception E6-F02 |
+| **vision 토픽이 stable ABI 가 아님** (D-4) | 필드·의미가 예고 없이 바뀔 수 있음 | 필드 이름·datatype 검사, 레이아웃 해시 진단(L1 §5.1, P-3). 제품 ABI 는 ball_perception E6-F02 |
 | **vision 메시지의 의미 변경** (레이아웃은 그대로, `horizon_ns` 기준·`a` 정의·공분산 순서·단위가 바뀜) | 해시가 못 잡는다 | L1 §5.1 물리 일관성 검사(가속도 잔차, 속도 잔차, `frame_id` 매 메시지 비교), L1 §4.5 $\bar\nu$ 추세 |
 | **vision 지평이 짧음** (현 예시 profile 0.5 s) | 계획 가능한 포구 창이 줄어듦 | D-15: 요구 사양을 제어기가 정하고(S3.6) sim profile 을 맞춘다. 짧은 궤적은 후보 제외·진단 |
 | **유령 트랙** (vision이 공을 놓치고 관성 예측만 발행) | 스탬프는 신선하고 궤적 점프는 작아져 대체 지표가 반대로 움직인다 | **완화됨** — `generation`·`validity`·`snapshot_sequence` 로 트랙 교체·무효를 판별(D-4, S5.2). 관성 예측 구간을 `validity` 가 표시하는지는 S3.4 에서 발행기 동작으로 확인 |

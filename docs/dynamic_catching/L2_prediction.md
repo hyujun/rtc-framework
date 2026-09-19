@@ -31,7 +31,7 @@ vision 노드가 이미 예측 궤적을 발행하고(마스터 §5, D-4), 제�
 
 | ID | 확인 항목 | 기록 |
 |---|---|---|
-| G2-1 | 발행 주기, $N$ 범위, 지평 길이 → `kMaxSamples`와 L3 슬라이스 범위 | 전환 `[확정 D-15]` — vision 사양은 **제어기가 요구를 정하고** sim profile 을 맞춘다. 현 예시 profile: 지평 0.5 s, 간격 0.05 s, 최대 10 점, ≤ 30 Hz. 요구 산출은 S3.6, 그 전 `kMaxSamples` 는 provisional (W5-6, TBD-VIS-04) |
+| G2-1 | 발행 주기, $N$ 범위, 지평 길이 → `kCap`(컴파일타임)·`n_max`(런타임)와 L3 슬라이스 범위 | 전환 `[확정 D-15]` — vision 사양은 **제어기가 요구를 정하고** sim profile 을 맞춘다. 현 예시 profile: 지평 0.5 s, 간격 0.05 s, 최대 10 점, ≤ 30 Hz. `kCap` 은 S0.7 손계산 제안값으로 S1.2 가 정해 provisional 로 두고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 요구 사양에서 산출한다 — `n_max > kCap` 이면 S1.2 backfill 후 S1 게이트 재실행 (plan §4.2) (W5-6, TBD-VIS-04) |
 | G2-2 | 점 시각 필드 타입·기준 → 시각 정렬 식 | 닫힘 — `horizon_ns` UINT32 (`header.stamp` 기준 상대 ns). L1 이 수신 시 절대 `BallTime` 으로 변환한다(D-2, L1 §4.1). 샘플러는 절대 시각만 받는다 (W5-3, TBD-VIS-03) |
 | G2-3 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | 닫힘 — 상수 $g$ (W5-4, TBD-VIS-05) |
 | G2-4 | 공분산을 RT까지 넘길지 | 닫힘 `[확정 A-3]` — RT 스냅샷에서 분리, 계획기 버퍼에만 (TBD-COV-01) |
@@ -127,8 +127,8 @@ ball_perception 은 $a$ 를 상수 $g$ 로 준다(G2-3). 그러면 점별 $(p,v,
 3. 순수 중력 데이터에 대해 참 궤적과 일치.
 4. 지평 앞/뒤 외삽 플래그 구분, 지평 끝 정확히는 외삽 아님.
 5. hint 커서 결과가 이진 탐색 결과와 동일.
-6. 형식 검사기(단조 시각, 유한값, 개수 `[n_min, kMaxSamples]`, `dt_min` 미만 거부).
-7. (회귀) `n > kMaxSamples`·NaN 시각에서 범위 밖 읽기 없이 invalid (ASan).
+6. 형식 검사기(단조 시각, 유한값, 개수 `[n_min, kCap]`, `dt_min` 미만 거부).
+7. (회귀) `n > kCap`·NaN 시각에서 범위 밖 읽기 없이 invalid (ASan).
 
 ## 5. C++ 구현
 
@@ -136,12 +136,12 @@ ball_perception 은 $a$ 를 상수 $g$ 로 준다(G2-3). 그러면 점별 $(p,v,
 
 v0.5 에서 코드 복사본(v0.2 그대로였음)을 삭제했다. **SSoT 는 같은 폴더의 `traj_sampler.hpp` (v0.4)** 다 — `before_horizon`/`after_horizon` 분리, `track_epoch` 필드 등 v0.4 변경은 헤더에만 있다. S1.2 이식 시 변경:
 
-- **점 개수 경계.** `n` 을 `[n_min, kMaxSamples]` 로 `check`·`sampleAt`·RT 읽기 모두에서 **먼저** 검사한다. 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있다(ASan 확인)
+- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `check`·`sampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). 런타임 상한 `n_max`(S3.6, ≤ `kCap`)이 정해지면 그 값으로 더 좁혀 검사한다
 - **NaN 거부.** NaN 시각·값은 `check` 에서 거부, `sampleAt(NaN)` 은 invalid 를 반환한다(참조 구현은 valid 반환)
 - **`dt_min` 거부.** 최소 샘플 간격 미만 구간은 경고가 아니라 거부한다 — `interpolate` 가 극소 $h$ 를 받아 $1/h^2$ 로 폭주하는 것을 막는다
 - **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — `Sample` 의 `Eigen::Vector3d` 멤버를 `std::array<double, 3>` 으로 바꾸고, 계산은 `Eigen::Map` 으로 한다(L0 §5.2, plan §6). `static_assert(std::is_trivially_copyable_v<…>)`
 - **시간 타입.** 샘플 시각은 `BallTime`(절대 steady ns), 샘플링 인자는 `NowLead` (L0 §4.5). 스냅샷 필드: `generation`·`snapshot_sequence` (uint64, `track_epoch`·`seq` 대체), `recv_steady_ns`, `n`, `valid`
-- **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kMaxSamples` 는 이 타입이 단독 소유하고(L0 의 중복 상수·`static_assert` 짝맞춤 삭제), 값은 S3.6 요구 사양에 여유를 두어 정한다(그 전 provisional)
+- **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kCap` 은 이 타입이 단독 소유하고(L0 의 중복 상수·`static_assert` 짝맞춤 삭제), 값은 S0.7 제안값으로 S1.2 가 정한다(provisional). 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정하고, 넘으면 S1.2 backfill (plan §4.2)
 - **명명.** namespace `rtc::catching`, 함수 PascalCase (`hermite5`/`interpolate`/`extrapolate`/`sampleAt`/`check` → `Hermite5`/`Interpolate`/`Extrapolate`/`SampleAt`/`Check`)
 
 RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleAt()`은 hint 커서로 평균 $O(1)$ 이고, 커서가 어긋나면 이진 탐색으로 복구한다($O(\log N)$ 상한).
@@ -149,17 +149,17 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 ### 5.2 L1·L4와의 연결
 
 - L1이 `PointCloud2`를 파싱해 공용 궤적 스냅샷(`generation` 포함)을 채우고 `rtc::SeqLock` 에 쓴다(L1 §5.2).
-- RT 루프(`RTControllerInterface::Compute`)는 SeqLock `sequence()` 가 바뀐 tick 에만 `Load` → 매 tick `SampleAt(tr, now_lead, hint_)` → 결과를 L4 추종 대상 상태 $(p,v,a)$ 로 넘긴다(L8 §4.1 순서 2).
-- `hint_`는 컨트롤러 멤버로 유지하고, **스냅샷이 바뀌면 0으로 초기화**한다. 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다.
+- RT 루프(`RTControllerInterface::Compute`)는 **매 tick 무조건 `Load`** 하고(D-21, 재시도 상한 없음), payload 의 `snapshot_sequence` 로 새 스냅샷 여부를 판정한다 → 매 tick `SampleAt(tr, now_lead, hint_)` → 결과를 L4 추종 대상 상태 $(p,v,a)$ 로 넘긴다(L8 §4.1 순서 2).
+- `hint_`는 컨트롤러 멤버로 유지하고, **`snapshot_sequence` 가 바뀌면 0으로 초기화**한다. 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다.
 - `Interpolate()` 가 `valid=false` 를 돌려주면(비단조 샘플 쌍 등) 그 틱은 invalid 로 처리한다.
 
-**스냅샷 복사 비용.** 스냅샷은 `kMaxSamples` 고정이라 실제 $n$ 과 무관하게 전체를 복사한다 — 점당 시각 + 9 double ≈ 80 B, 512 샘플이면 약 41 KB. `rtc::SeqLock::Load` 는 재시도 상한이 없으므로(L1 G1-8) 복사 시간이 곧 writer 와의 경합 창이다. 대응: (1) `sequence()` 비교로 새 메시지 도착 tick 에만 복사(L1 §5.3), (2) `kMaxSamples` 를 S3.6 요구 $N$ 상한에 여유를 둔 값으로 줄인다(예시 profile 은 최대 10 점).
+**스냅샷 복사 비용.** 스냅샷은 `kCap` 고정이라 실제 $n$ 과 무관하게 전체를 **매 tick** 복사한다 — `SeqLock::sequence()` 로 새 메시지 도착 tick 에만 복사를 한정하는 최적화는 D-21 이 금지한다(payload 안 token 으로만 새 스냅샷을 판정). 점당 시각 + 9 double ≈ 80 B, 512 샘플이면 약 41 KB. `rtc::SeqLock::Load` 는 재시도 상한이 없으므로(L1 G1-8) 복사 시간이 곧 writer 와의 경합 창이며, 최악 재시도 시간은 G1-C 로 측정한다. 유일한 대응은 `kCap` 을 S3.6 요구 $N$ 상한(`n_max`)에 여유를 둔 값으로 줄이는 것이다(예시 profile 은 최대 10 점).
 
 ## 6. YAML 파라미터
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `prediction.max_samples` | int | – | 512 (provisional) | 16–512 | `kMaxSamples` (컴파일 상수와 일치 검사). S3.6 요구 사양으로 축소 (D-15) |
+| `prediction.max_samples` | int | – | 512 (provisional) | 16–512 | `kCap` (컴파일 상수와 일치 검사, S0.7 제안값). 런타임 상한 `n_max ≤ kCap` 은 S3.6 요구 사양으로 정한다 (D-15) |
 | `prediction.n_min` | – | – | – | – | v0.5 삭제 — 단일 키 `io.n_min` (L1 §6) 을 쓴다 (plan S0.3) |
 | `prediction.t_horizon_margin` | double | s | 0.05 | 0–0.3 | §4.6 지평 끝 여유 |
 | `prediction.dt_expected` | double | s | `TBD` | >0 | vision 점 간격. 검사용. 예시 profile 0.05 (S3.6 에서 확정) |
@@ -196,11 +196,11 @@ v0.2의 `prediction.rt.*`, `prediction.rollout.*`, `q_acc`, `q_k`는 전부 삭�
 | G2-D | 외삽 플래그(앞/뒤 구분), hint 커서, 형식 검사기 동작 | `[SIM-ANY]` |
 | G2-E | RT 샘플링 경로 할당 0 (`ScopedNoMalloc`·`ScopedAllocGate`), 최악 실행시간·**복사 바이트 수** 기록. 임계는 L8 틱 예산에서 역산 | `[SIM-ANY]` |
 | G2-G | `Interpolate()` 가 비단조 샘플 쌍에 `valid=false` 반환 | `[SIM-ANY]` |
-| G2-H | (회귀) `n > kMaxSamples`·NaN 입력에서 ASan 무오류 + invalid, `dt_min` 미만 거부, 스냅샷 타입 trivially copyable | `[SIM-ANY]` |
+| G2-H | (회귀) `n > kCap`·NaN 입력에서 ASan 무오류 + invalid, `dt_min` 미만 거부, 스냅샷 타입 trivially copyable | `[SIM-ANY]` |
 | G2-F | sim(ball_perception) 재생에서 외삽 발생률·샘플 간격 분포 기록, 실기는 S10 | `[SIM-ANY]` |
 
 `test_l2.cpp`가 G2-A~D를 돌린다(v0.4 기준 통과).
 
 ## 10. 미확정 항목
 
-TBD-WS-01 (닫는 단계 미지정), `kMaxSamples`·`prediction.dt_expected` (S3.6, D-15), `prediction.dt_min` (S1.2), `io.n_min` (L1), `prediction.lead` 의 $T_{arm}$ (S10).
+TBD-WS-01 (닫는 단계 미지정), `kCap` 제안값 (S0.7 → S1.2)·런타임 `n_max`·`prediction.dt_expected` (S3.6, D-15), `prediction.dt_min` (S1.2), `io.n_min` (L1), `prediction.lead` 의 $T_{arm}$ (S10).

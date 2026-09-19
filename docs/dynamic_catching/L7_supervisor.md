@@ -3,7 +3,7 @@
 - 문서 버전: v0.5 (2026-09-19) — 결정·단계의 SSoT 는 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (충돌 시 plan 우선)
 - 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
 - 배치 `[확정 D-1]`: 순수 조각(감속 목표, 전이표 데이터, 접촉 debounce)은 rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`), FSM 은 포구 컨트롤러(`RTControllerInterface::Compute` 안)에서 구동, YAML 은 `integrated_bringup` 바인딩. 별도 패키지를 만들지 않는다
-- 단계: **S1.8** 순수 조각, **S7** 손 시퀀서·FSM·접촉 판정·감속·충격량 예산·재무장. E-STOP·fault 정책 전체는 **S9 (D-13 보류)** — 그 전까지는 §4.1 의 임시 기준(A-1)만 구현
+- 단계: **S1.8** 순수 조각, **S5.1** E-STOP·fault 최소 계약(P-1, `[CONCERN] E-8` 승인 후), **S7** 손 시퀀서·FSM·접촉 판정·감속·충격량 예산·재무장. E-STOP·fault 정책 전체는 **S9 (D-13 보류)** — 그 전까지는 §4.1 의 임시 기준(P-1)만 구현
 - 선행: 단계 W, L1–L6
 - 산출물: 전이표(데이터), `Mode`/`Reason`/`Outcome` enum, 감속 목표, 접촉 판정기, 전이 로그 레코드
 
@@ -54,7 +54,7 @@
 | `HOLD` | 정지 | 유지, 결과 판정 확정 | $T_{hold}$ 경과 → `RETREAT` |
 | `RETREAT` | 종료·실패 | 복귀 기준(L4 §5.3), 결과에 따라 손 유지/개방 | 복귀 완료 → `ARMED` |
 | `ABORT_SAFE` | 치명 조건(상태 무관) | 즉시 감속 후 정지. L5 가 정상이면 §4.3 감속 대상을 L4→L5 로, **`QP_FAILED`·`JOINT_CONFLICT` 이면 QP 비의존 관절공간 감속**(아래) | 정지 → `RETREAT` / 재차 치명 조건 → `FAULT` |
-| `FAULT` | `QP_FAILED` 연속 $N_{qp}$회, 또는 `ABORT_SAFE` 중 재차 치명 조건 | QP 비의존 관절공간 감속으로 정지 후 $q_c$ 고정, 컨트롤러 fault 래치 (`HasLatchedFault()` true). **RT 에서 deactivate 를 요청하지 않는다** | `/rtc_cm/reset_fault` → `ResetFault()` → `IDLE` (A-1 reseed) |
+| `FAULT` | `QP_FAILED` 연속 $N_{qp}$회, 또는 `ABORT_SAFE` 중 재차 치명 조건 | QP 비의존 관절공간 감속으로 정지 후 $q_c$ 고정, 컨트롤러 fault 래치 (`HasLatchedFault()` true). **RT 에서 deactivate 를 요청하지 않는다** | `/rtc_cm/reset_fault` → `ResetFault()` → `IDLE` (P-1 reseed) |
 
 **전이는 (상태 × 사유) 표를 데이터로 둔다 `[확정 S1.8]`.** 위 표와 §4.2 표는 사람이 읽는 형태이고, 코드는 둘을 합친 표 하나를 단일 출처로 삼는다. 기동 시 완전성을 검사한다 — 모든 상태에 진입·이탈이 최소 1개씩 있고, 모든 `Reason` 이 최소 한 칸에서 쓰이며, 미정의 칸이 없어야 한다(G7-A).
 
@@ -66,11 +66,18 @@
 
 **감속은 시각 기준으로 시작한다 `[확정 A-5]`.** 실기 접촉 신호가 지문 센서뿐이라, 공이 손바닥에 먼저 닿으면 손가락이 닫히기 전까지 검출이 늦을 수 있다. 따라서 `DECEL` 진입은 $now_{lead}\ge t_c$ 로 하고, 지문 센서는 결과 판정과 abort에만 쓴다.
 
-**E-STOP·fault 임시 기준 `[확정 A-1]` (S9 전까지).**
+**E-STOP·fault 임시 기준 `[확정 P-1]` (S9 전까지).**
 - E-STOP 중 출력은 CM 이 `BuildHoldOutput` 으로 대체한다. 슈퍼바이저는 출력을 만들지 않고 **상태만 정리**한다 (`TriggerEstop` 에서 진행 중 시행을 `Aborted` 로 종결, plan·손 시퀀스 무효화).
 - `ClearEstop` 후 **자동 재개 금지** — `IDLE` 로 가고, $q_c$ 와 CLIK 앵커를 $q_{meas}$ 로 reseed 한다. 다음 시행은 homing 부터 다시 한다.
 - fault 는 E-STOP 과 분리된 컨트롤러 래치다. `ClearEstop` 은 fault 를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않는다. RT 경로의 try/catch·deactivate 는 쓰지 않는다 (RT-2).
 - 손 자세 유지로 인한 파지력 소실 등 부작용 검토와 정책 전체는 S9 (D-13).
+
+**S5.1 최소 E-STOP 계약 (plan §4.4 S5.1, `[CONCERN] E-8` — S5 착수 전 승인 필요).** 이 계약은 위 P-1 임시 기준을 구현 수준에서 좁힌 것이다.
+- (a) `TriggerEstop`·`ClearEstop`·`ResetFault`·`ResetTargetInitialization` 훅은 **atomic 요청·epoch 만 갱신**한다. reset 자체(값을 되돌리는 동작)의 **유일한 writer 는 RT tick** 이다 — 훅이 직접 상태를 되돌리지 않는다.
+- (b) plan·궤적·공분산·손·FSM·타이머 무효화는 D-23 순서(activation generation 판정)로 RT tick 이 수행한다.
+- (c) 해제 후 자동 재개는 하지 않는다.
+- (d) `ClearEstop` 은 컨트롤러 fault 래치를 풀지 않는다 — E-STOP 경로와 fault 경로는 별개다(위 P-1 규칙과 동일).
+- 이 계약은 팔 명령 경로·CLIK 앵커가 아직 없는 S4.0 에는 적용되지 않는다(S4.0 은 base 기본 동작과 CM 의 hold 방어선에 맡긴다) — E-8 대상은 그것들이 생기는 **S5.1** 부터다. 전체 물리 정책(D-13)은 S9.
 
 ### 4.2 abort·실패 사유
 
@@ -78,7 +85,7 @@
 |---|---|---|---|
 | `BALL_STALE` | L1 stale (나이 초과 또는 지평 소진) | `TRACKING`, `APPROACH` | `TRACKING` 이면 `ARMED`, `APPROACH` 면 `RETREAT` |
 | `BALL_STALE_COMMITTED` | L1 stale | `COMMITTED`, `CLOSING` | 계속 진행 (동결 plan으로 포구 시도), 기록 `[확정 A-6]` |
-| `BALL_STALE_LONG` | stale 지속 > `supervisor.stale_committed_max` | `COMMITTED`, `CLOSING` | `ABORT_SAFE` `[확정 A-6]` |
+| `BALL_STALE_LONG` | stale 지속 > `supervisor.stale_committed_max_s` | `COMMITTED`, `CLOSING` | `ABORT_SAFE` `[확정 A-6]` |
 | `TRACK_CHANGED` | L1 트랙 변경 판정 (L1 §4.4 — 트랙 epoch. `generation` 을 어떻게 쓰는지는 L1 이 정한다, D-4) | `TRACKING`, `APPROACH` | `ARMED`/`RETREAT`. `PointCloud2`에 트랙 상태가 없어 `STATUS_LOST`를 이것으로 대체 |
 | `HORIZON_EXTRAP` | L2 `after_horizon=true` (지평 **뒤**로 외삽, $now_{lead}$ 기준) | 전 구간 | `APPROACH`면 `RETREAT`, 동결 후면 기록 후 계속 |
 | `PRED_INCONSISTENT` | L1 예측 일관성 지표 $\bar\nu$ 가 임계 초과 (L1 §4.5) | `TRACKING`, `APPROACH` | `RETREAT` (`TRACKING` 이면 `ARMED`). 동결 후에는 기록만 |
@@ -91,7 +98,7 @@
 | `JOINT_CONFLICT` | L5 `bound_conflict` | 전 구간 | `ABORT_SAFE` (QP 비의존 경로) |
 | `TRACK_ERR` | $\Vert q-q_c(now-T_{arm})\Vert>$ 임계 | 전 구간 | `ABORT_SAFE` |
 | `ABORT_ESCALATED` | `ABORT_SAFE` 중 재차 치명 조건 | `ABORT_SAFE` | `FAULT` |
-| `ESTOP` | E-STOP 발동·해제 (§4.1 A-1) | 전 구간 | 발동: 상태 정리, 해제: `IDLE` |
+| `ESTOP` | E-STOP 발동·해제 (§4.1 P-1, S5.1 최소 계약) | 전 구간 | 발동: 상태 정리, 해제: `IDLE` |
 | `FAULT_RESET` | `ResetFault` | `FAULT` | `IDLE` |
 | `SPEED_SCALING` | speed scaling ≠ 1 | 전 구간 | `ABORT_SAFE`. **repo 에 신호 출처 없음 → sim 비활성, S10** |
 | `CLOCK_UNHEALTHY` | PTP 임계 초과 | 전 구간 | `IDLE`·`ARMED`에서는 진입 거부, 운행 중 `ABORT_SAFE`. **신호 출처 없음 → sim 비활성, S10** |
@@ -99,7 +106,9 @@
 | `HAND_TIMEOUT` | L6 폐쇄 타임아웃 | `CLOSING`, `DECEL` | 기록, 계속 |
 | `TIP_STALE` | 지문 센서 stale | `COMMITTED` 이후 | 판정 불가로 기록 |
 
-`BALL_STALE_COMMITTED` 는 A-6 으로 확정됐다. 동결 후에는 짧은 누락으로 포기하는 것보다 동결 plan으로 진행하는 편이 안전하다고 본다. stale 지속 시간 상한 `supervisor.stale_committed_max` 의 초기 제안값은 **vision 발행 주기의 3배**(예: 30 Hz 발행이면 0.1 s)이고 S8 에서 조정한다.
+**`TIP_STALE` 판정 경로는 미결정이다 (D-24, S5 전 결정).** 지문 센서 lane 에는 수신 시각도 sequence 도 없다 — RT backend 3종 중 관절 상태 콜백만 `last_state_ns_` (backend watchdog stamp) 를 갱신하고, 지문 센서 자체의 freshness 는 아직 관측할 수 없다. 관절이 fresh 한 채 센서만 멈추면 옛 힘을 새 접촉으로 오판할 수 있다. D-24 의 두 경로 (a) `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid` 를 추가 (PROC-3, P5 — grasp 에도 같은 gap), (b) 포구 컨트롤러 소유 mailbox 로 센서 토픽을 별도 구독 — 중 하나를 S5 착수 전에 정한다.
+
+`BALL_STALE_COMMITTED` 는 A-6 으로 확정됐다. 동결 후에는 짧은 누락으로 포기하는 것보다 동결 plan으로 진행하는 편이 안전하다고 본다. stale 지속 시간 상한 `supervisor.stale_committed_max_s` 의 초기 제안값 **vision 발행 주기의 3배**(예: 30 Hz 발행이면 0.1 s)는 물리적 유도가 없는 제안일 뿐이다 — 어느 물리량(공분산 성장, 포획 반경 오차 할당, abort 정지거리 $\Vert\dot x\Vert^2/(2a_{dec})$)으로 이 값을 조일지는 **S7 착수 시** 정한다(plan §7.3).
 
 ### 4.3 가상 감속 대상 `[논문 외 유도]`
 
@@ -167,7 +176,7 @@ $$\Delta p=m_{ball}\,(1-\gamma_f)\Vert v(t_c)\Vert$$
 
 **계획·검증 단계에서 다음을 산출하고 기록한다.**
 
-1. **충격량과 손가락 토크.** $\Delta p$ 를 접촉 시간 $\Delta t_{imp}$ 로 나눈 평균 힘 $\bar F=\Delta p/\Delta t_{imp}$ 와, 그것이 만드는 관절 토크를 P1b 모터 한계(1.5 Nm, G6-3)와 비교한다. $\Delta t_{imp}$ 는 시뮬레이션 접촉 참값(S3.3 — 시각·충격량·접촉력 출력)에서 측정한다.
+1. **충격량과 손가락 토크.** $\Delta p$ 를 접촉 시간 $\Delta t_{imp}$ 로 나눈 평균 힘 $\bar F=\Delta p/\Delta t_{imp}$ 와, 그것이 만드는 관절 토크를 P1b 모터 한계와 비교한다. 설정·모델값(YAML `max_torque` = URDF effort = MJCF forcerange)은 **3.0 N·m** 로 일치한다(L6 G6-3). 이 값을 그대로 운용 한계로 쓸 수 있는지는 **미확정** — 권위 있는 운용 한계(nominal·continuous·peak·설정값 중 어느 것)는 **D-12 대기** 이고(plan §7.3), 확정 전에는 이 게이트의 토크 비교 부분을 `NOT_EVALUATED` 로 기록한다(G7-B3). $\Delta t_{imp}$ 는 시뮬레이션 접촉 참값(S3.3 — 시각·충격량·접촉력 출력)에서 측정한다.
 2. **팔 쪽 반력.** position 명령은 접촉 중에도 계속 진행하므로, 공이 손 안에서 감속되는 동안의 반력은 구조와 관절이 받는다. UR5e 보호 정지 임계 대비 어디인지 확인한다(`[HW-P1B]`, 저속부터).
 3. **충격 후 CLIK 괴리.** 충격으로 $q$ 가 $q_c$ 에서 벌어지면 (D-6 으로 CLIK 은 $q_c$ 에서 평가하므로 이 괴리는 `TRACK_ERR` 로만 보인다) L7 `TRACK_ERR` 가 오동작할 수 있다. `track_err_abort` 를 정할 때 충격 구간을 제외하거나 임계를 시간 가변으로 둔다.
 4. **반발.** L3 §4.5의 $d_{eff}=d(1+1/e)$ 는 법선 단일 충돌 모델이다. [R19]가 다루는 접선 컴플라이언스는 무시한다는 가정을 명시한다.
@@ -179,19 +188,25 @@ $$\Delta p=m_{ball}\,(1-\gamma_f)\Vert v(t_c)\Vert$$
 
 ### 4.8 재무장 리셋 목록 `[권장]`
 
-`RETREAT → ARMED` 전이에서 **다음을 전부 초기화한다.** 하나라도 빠지면 직전 시행의 상태가 남아 두 번째 투척이 다르게 동작한다. v0.2는 이 목록이 없었고, §9 시나리오가 전부 단발 시행이라 게이트에서도 잡히지 않았다.
+`RETREAT → ARMED` 전이에서 **다음을 전부 초기화한다.** 하나라도 빠지면 직전 시행의 상태가 남아 두 번째 투척이 다르게 동작한다. v0.2는 이 목록이 없었고, §9 시나리오가 전부 단발 시행이라 게이트에서도 잡히지 않았다. 아래는 소유 layer 별로 정리한 **단일 표**다.
 
-| 대상 | 리셋 내용 | 빠뜨렸을 때 |
-|---|---|---|
-| `PlanSnapshot` 박스 | `valid=false` 로 무효화하고 `last_consumed_plan_id` 기록 | 옛 plan 의 $t_c$ 가 이미 과거라 `TRACKING→…→DECEL` 을 몇 틱에 통과하며 엉뚱한 곳에서 손을 닫는다 |
-| L4 soft-catch 기준 생성기 | 측정 자세·속도 0 으로 리셋 — $p_c$ 와 γ 프로파일까지 (L4 §5.3) | 직전 포구점으로 복귀하고, 하향된 γ가 남는다 |
-| L2 hint 커서 | 0 | 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다 |
-| L5 (확장 CLIK) 직전 $\dot q$ 상태·앵커 | $\dot q$ 0, 앵커·$q_c$ 를 현재 명령 자세로 (L5 리셋 규약) | 첫 틱 가속 경계가 옛 속도 기준이라 `bound_conflict` 오abort |
-| L6 시퀀서 | `Open` 위상, 진행률 창 | 폐쇄 명령 시각이 어긋난다 |
-| L7 접촉 바이어스·잡음 창 | 원형 버퍼 비우기 | 직전 시행의 접촉력이 바이어스에 섞인다 |
-| L7 stale 타이머 | `BALL_STALE_COMMITTED` 지속 시간 0 | 직전 시행의 stale 누적으로 `BALL_STALE_LONG` 오abort |
-| L7 `QP_FAILED` 연속 카운터 | 0 | 직전 시행 실패가 누적돼 `FAULT` 로 조기 진입 |
-| L7 결과·사유 | `Outcome::None`, `Reason::None` | 진단 오염 |
+| 대상 | 소유 layer | 리셋 내용 | 빠뜨렸을 때 |
+|---|---|---|---|
+| `PlanSnapshot` 박스 (valid flag 포함) | S6 계획기 출력 / RT 소비 | `valid=false` 로 무효화하고 `last_consumed_plan_id` 기록 | 옛 plan 의 $t_c$ 가 이미 과거라 `TRACKING→…→DECEL` 을 몇 틱에 통과하며 엉뚱한 곳에서 손을 닫는다 |
+| 계획기 후보 hysteresis·이전 최선 후보 | S6 계획기 (스레드 내부) | 이전 시행의 최선 후보·hysteresis 상태를 지운다 | 새 시행의 첫 후보가 직전 시행의 후보와 비교돼 갱신이 지연되거나 억제된다 |
+| 계획기 공분산 버퍼 | S6 계획기 (A-3, D-22 token) | 버퍼·token 무효화 | 직전 시행의 옛 공분산이 새 궤적과 짝지어져(N/N−1 혼합) 게이트를 오판정한다 |
+| 계획기 wake 잔여 신호 (eventfd) | S6 계획기 스레드 (D-7c) | drain 하여 카운터를 0 으로 | 재무장 직후 첫 tick 이 옛 신호로 깨어나 있지도 않은 스냅샷을 소비한 것처럼 판정될 수 있다 |
+| L4 soft-catch 기준 생성기 | L4 | 측정 자세·속도 0 으로 리셋 — $p_c$ 와 γ 프로파일까지 (L4 §5.3) | 직전 포구점으로 복귀하고, 하향된 γ가 남는다 |
+| L2 hint 커서 | L2 (샘플러) | 0 | 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다 |
+| L5 (확장 CLIK) 직전 $\dot q$ 상태·앵커 | L5 | $\dot q$ 0, 앵커·$q_c$ 를 현재 명령 자세로 (L5 리셋 규약) | 첫 틱 가속 경계가 옛 속도 기준이라 `bound_conflict` 오abort |
+| L6 시퀀서 | L6 | `Open` 위상, 진행률 창 | 폐쇄 명령 시각이 어긋난다 |
+| L7 접촉 바이어스·잡음 창 | L7 | 원형 버퍼 비우기 | 직전 시행의 접촉력이 바이어스에 섞인다 |
+| L7 접촉 debounce 카운터 | L7 | $N_{deb}$ 연속 카운터를 0 으로 | 직전 시행 종료 시점의 연속 참 카운트가 남아 새 시행 초반에 한두 샘플만으로 접촉 확정된다 |
+| L7 stale 타이머 | L7 | `BALL_STALE_COMMITTED` 지속 시간 0 | 직전 시행의 stale 누적으로 `BALL_STALE_LONG` 오abort |
+| L7 `QP_FAILED` 연속 카운터 | L7 | 0 | 직전 시행 실패가 누적돼 `FAULT` 로 조기 진입 |
+| L7 결과·사유 | L7 | `Outcome::None`, `Reason::None` | 진단 오염 |
+
+**완전성 규칙.** 전이표 완전성 검사(§4.1 G7-A)와 같은 방식으로, **모든 stateful 멤버는 이 표에 있거나 명시적으로 면제되어야 한다** — 새 stateful 멤버를 추가하면서 이 표를 갱신하지 않는 것을 금지한다 (S7.4 게이트, G8-A2).
 
 그리고 L7이 plan 을 받아들일 때 **세 조건을 모두** 본다: `valid`, `plan_id != last_consumed_plan_id`, $t_c > now + T_{lead,min}$ ($t_c$ 는 절대 steady 시각, D-2). 마지막 조건이 과거 plan 을 걸러낸다.
 
@@ -238,7 +253,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.T_sat_guard` | — | – | – | – | v0.5 에서 삭제 — `SAT_NEAR_TC` 삭제 (D-8) |
 | `supervisor.gamma.*` | — | – | – | – | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8). `eta_sat`·`max_derates`·`min_interval`·`ramp`·`derate_step` 전부 |
 | `supervisor.impact.dp_max` | double | kg·m/s | `TBD` | >0 | §4.7 `TBD-IMP-01` |
-| `supervisor.stale_committed_max` | double | s | `TBD` (제안: vision 발행 주기 × 3) | ≥0 | §4.2 `[확정 A-6]`, S8 조정 |
+| `supervisor.stale_committed_max_s` | double | s | `TBD` (제안: vision 발행 주기 × 3, 물리적 유도 없음) | ≥0 | §4.2 `[확정 A-6]`. 조일 물리량은 S7 착수 시 결정 (plan §7.3), S8 조정 |
 | `supervisor.n_qp` | int | – | `TBD` | ≥1 | §4.1 `FAULT` 진입 연속 `QP_FAILED` 수 |
 | `supervisor.track_err_abort` | double | rad | `TBD` | >0 | **단일 원천.** L5 는 이 키를 참조만 한다 |
 | `supervisor.decel.a_dec` | double | m/s² | `TBD` | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3) |
@@ -260,7 +275,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 - **L7.5** (S7.2) 슈퍼바이저 본체 + IDLE homing + QP 비의존 abort 경로 연결 + 시나리오 테스트(§9).
 - **L7.6** (S7.3) 충격량 예산(§4.7): 시뮬레이션 접촉 참값(S3.3)으로 $\Delta t_{imp}$, $\bar F$, 관절 토크 산출 → `TBD-IMP-01` 확정 → L3 게이트 연결.
 - **L7.7** (S10) 실기 전용 조건 연결: speed scaling, 시계 (신호 출처 확보 후), 지문 센서 stale.
-- **L7.8** (S5.1 임시 → S9) E-STOP·fault 훅: A-1 임시 기준 → D-13 정책.
+- **L7.8** (S5.1 임시 → S9) E-STOP·fault 훅: P-1 임시 기준 (S5.1, `[CONCERN] E-8`) → D-13 정책 (S9).
 
 ## 8. 디버깅 방법
 
@@ -298,12 +313,14 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | G7-A | 위 시나리오 전부 기대 상태열과 일치, 전이표 완전성 검사 통과 | `[SIM-ANY]` |
 | G7-B | 감속 전환 시 기준 상태 $(x,\dot x)$ 연속 (< 1e-9) | `[SIM-ANY]` |
 | G7-B2 | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8) | – |
-| G7-B3 | 충격량 $\Delta p$ 기록과 시뮬레이션 접촉 참값의 최대 접촉력 상관 확인, 손가락 관절 토크가 한계 이내 | `[SIM-P1B]` |
+| G7-B3 | 충격량 $\Delta p$ 기록과 시뮬레이션 접촉 참값의 최대 접촉력 상관 확인, 손가락 관절 토크가 한계 이내 (한계 권위 출처 D-12 확정 전까지 토크 비교 부분은 `NOT_EVALUATED`) | `[SIM-P1B]` |
 | G7-C | 합성 잡음에서 접촉 오경보율 기록 (임계는 사용자 결정) | `[SIM-ANY]` |
 | G7-D | RT 할당 0 (`ScopedNoMalloc`·`ScopedAllocGate`), 틱 최악 실행시간 기록 | `[SIM-ANY]` |
 | G7-E | `ur5e_p1b` 시뮬레이션 폐루프에서 결과 판정과 MuJoCo 참값 일치율 기록 (부호 규약 재확인 포함) | `[SIM-P1B]` |
 | G7-F | 실기 speed scaling·시계·센서 stale 경로 동작 확인 (S10, 신호 출처 확보 후) | `[HW-P1B]` |
+| G7-G | 관절 fresh + 지문 센서 dropout negative control 에서 `TIP_STALE` 또는 결과 `Undetermined` 발화, 옛 힘을 새 접촉으로 판정 0 (D-24) | `[SIM-ANY]` |
+| G7-H | E-8 최소 계약(S5.1): (a) deactivate → 다른 컨트롤러가 팔 이동 → 재activate 첫 tick 이 옛 자세를 명령하지 않음, (b) trigger·clear·deactivate race 에서 reset writer 가 RT tick 하나, (c) 자동 재개 0, (d) `ClearEstop` 후 latched fault 유지 | `[SIM-ANY]` |
 
 ## 10. 미확정 항목
 
-TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max`, `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`, `supervisor.impact.dp_max`, homing 을 `IDLE` 하위 단계로 둘지 별도 `Mode` 로 둘지(S1.8), `REF_SATURATED` 판정 방식(S7), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).
+TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(값·조일 물리량 모두 S7 착수 시), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`, `supervisor.impact.dp_max`, homing 을 `IDLE` 하위 단계로 둘지 별도 `Mode` 로 둘지(S1.8), `REF_SATURATED` 판정 방식(S7), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).

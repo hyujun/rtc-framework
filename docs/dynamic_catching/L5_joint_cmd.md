@@ -3,7 +3,7 @@
 - 문서 버전: v0.5 (2026-09-19)
 - 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
 - 코드 배치 `[확정 D-1]`: CLIK 확장은 `rtc_tsid` (`rtc::tsid::ClikReferenceGenerator` 옵션), 컨트롤러 바인딩은 `integrated_bringup`. 새 패키지를 만들지 않는다
-- 단계: **S2.2** (CLIK 옵션, D-5·D-6) · **S5.3** (스트리밍 기준 → 확장 CLIK → 팔 명령, QP 비의존 관절공간 abort 경로) · S10 (실기 $T_{arm}$ 식별)
+- 단계: **S2.2a·S2.2b** (CLIK 옵션, D-5·D-6 — S2.2a 구조 결정+golden-vector, S2.2b 옵션 구현) · **S5.3** (스트리밍 기준 → 확장 CLIK → 팔 명령, QP 비의존 관절공간 abort 경로) · **S3.7** (지연 식별 도구) · S10 (실기 $T_{arm}$ 식별)
 - 선행: 단계 W, L0, L4
 - 산출물: `ClikReferenceGenerator` 옵션(기본 off) + 회귀 테스트, 포구 컨트롤러의 팔 명령 경로, 지연 식별 도구(S10)
 
@@ -15,10 +15,10 @@
 
 | 부분 | 내용 | 단계 |
 |---|---|---|
-| (a) CLIK 확장 | `rtc::tsid::ClikReferenceGenerator` 에 옵션 추가: twist feedforward, 접근축 2행(LOCAL x·y 각속도), 가속 box + `bound_conflict`, 직전 $\dot q$ 평활 항, status·반복 수·solve time 노출, `max_iter` 설정, q_c 평가 모드. **기본 off, off 시 기존 출력 bit-identical.** 기존 assertion 을 고쳐야 하면 즉시 E-6 | S2.2 |
+| (a) CLIK 확장 | `rtc::tsid::ClikReferenceGenerator` 에 옵션 추가: twist feedforward, 접근축 2행(LOCAL x·y 각속도), 가속 box + `bound_conflict`, 직전 $\dot q$ 평활 항, status·반복 수·solve time 노출, `max_iter` 설정, q_c 평가 모드. **기본 off, off 시 기존 출력 bit-identical.** 기존 assertion 을 고쳐야 하면 즉시 E-6 | S2.2a → S2.2b |
 | (b) 컨트롤러 바인딩 | 포구 컨트롤러가 L4 스트리밍 기준을 확장 CLIK 에 넣고, 결과 $q_c$ 를 `ControllerOutput` device 0 (팔) 에 position 으로 쓴다. CLIK 실패 시 QP 비의존 관절공간 abort 경로 | S5.3 |
 
-확장 구조("행 집합 선택형 확장" vs "`QPSolverWrapper`·se3 오차만 공유하는 formulation 클래스")는 S2.2 착수 후 첫 설계 리뷰에서 확정한다 (plan §7.3).
+확장 구조("행 집합 선택형 확장" vs "`QPSolverWrapper`·se3 오차만 공유하는 formulation 클래스")는 **S2.2a** 에서 확정한다 — 기존 동작 golden-vector 회귀(기록한 q 열 → q_ref 해시)도 그 구조 결정의 일부다. golden 테스트가 생기기 전에는 기존 위치∩속도 box 코드를 재구조화하지 않는다 (plan §7.3, §4.4 S2).
 
 비범위:
 - **토크 제어.** 명령은 전부 position (마스터 §1.3). sim·실기 모두 `CommandType::kPosition`.
@@ -35,8 +35,8 @@
 | G5-1 | 명령을 싣는 자리의 형태 | 닫힘 — `RTControllerInterface::Compute` 가 돌려주는 `ControllerOutput` 의 `devices[0].commands` (팔 device 0 관례, rad, `CommandType::kPosition`). CM 이 같은 RT tick 안에서 `ValidateControllerOutput` → (실패·E-STOP 시 `BuildHoldOutput` 대체) → `DeviceBackend::WriteCommand` 로 보낸다. ros2_control `command_interface` 아님 (W4-1) |
 | G5-2 | backend 가 이미 하는 일 | 닫힘 — 관절 위치 clamp(YAML `devices.<g>.joint_limits` ∩ URDF) 와 출력 검증·hold 만 있다. **지연 보상 없음**, 컨트롤러 쪽 외의 속도·변화량 제한 없음, speed scaling 노출 없음, `ApplySafetyLayer` production 호출 없음 (W4-2, W4-3) |
 | G5-3 | CLIK 입력·출력·적분 상태 | 닫힘 — `ClikReferenceGenerator::Compute` 는 **측정 q** 에서 e·J 를 평가하고, 적분 anchor 는 `reseed_anchor` 로 측정/carry-forward 를 고른다 (`anchor_drift_max` clamp). 적분 상태 소유자는 CLIK. q_c 평가는 새 옵션 `[확정 D-6]` |
-| G5-4 | 마스크 지원 | 닫힘 — CLIK 은 LWA 6행 고정, LOCAL 고정축 마스크 없음. `rtc_tsid` TaskBase 계열(SE3Task mask 는 LWA 행)은 acceleration-level 이라 쓰지 않는다 → **CLIK 에 접근축 2행 옵션 신설** (S2.2) |
-| G5-5 | QP solver 사용 방식 | 닫힘 — ProxQP dense box-QP over v, 차원 고정 (n_vars = nv, n_ineq = nv), `max_iter` 20 **하드코딩**, status 미노출 → `max_iter` 설정·status·반복 수·solve time 노출 옵션 (S2.2) |
+| G5-4 | 마스크 지원 | 닫힘 — CLIK 은 LWA 6행 고정, LOCAL 고정축 마스크 없음. `rtc_tsid` TaskBase 계열(SE3Task mask 는 LWA 행)은 acceleration-level 이라 쓰지 않는다 → **CLIK 에 접근축 2행 옵션 신설** (S2.2b) |
+| G5-5 | QP solver 사용 방식 | 닫힘 — ProxQP dense box-QP over v, 차원 고정 (n_vars = nv, n_ineq = nv), `max_iter` 20 **하드코딩**, status 미노출 → `max_iter` 설정·status·반복 수·solve time 노출 옵션 (S2.2b) |
 | G5-6 | frame Jacobian 함수·reference frame | 닫힘 — `PinocchioCache` 등록 frame 의 `J` 는 `LOCAL_WORLD_ALIGNED` 고정 (`RegisterFrame` 후 `Update`). LOCAL 이 필요하면 LWA 각속도 행을 $R_{WC}^\top$ 로 회전해 만든다 (§4.2) |
 | G5-7 | 실기/sim 경로 전환, MuJoCo actuator | 닫힘 — 로봇 config YAML + launch 로 backend 선택 (`ur_driver_native` / `mujoco_native`), **둘 다 position**. MuJoCo UR 팔은 `<general>` position-PD (forcerange ±150/±28 N·m) (W4-2, W6-2) |
 | G5-8 | `DemoWbcController` 알려진 버그 | 닫힘 — 본 경로에 영향 있는 미해결 버그 없음 (W2-8). DemoWbc 위치 백본이 이 CLIK 이므로 S2.4 회귀(기존 assertion 무수정)가 옵션 off 의 동등성을 지킨다 |
@@ -51,17 +51,17 @@
 
 관절 명령이 전부 position이므로 QP 출력 $\dot q$를 한 번 적분해 $q_c$를 만든다. 가속도 QP 출력을 두 번 적분하면 드리프트와 솔버 잡음 증폭이 생기므로 쓰지 않는다(기존 프로젝트 결론과 동일).
 
-이 구조는 `rtc::tsid::ClikReferenceGenerator` 로 이미 있다 (DemoWbc 위치 백본). 본 layer 는 그 클래스를 옵션으로 확장하고(S2.2) 포구 컨트롤러에서 호출한다(S5.3). 적분은 CLIK 한 곳에서만 한다(§4.3).
+이 구조는 `rtc::tsid::ClikReferenceGenerator` 로 이미 있다 (DemoWbc 위치 백본). 본 layer 는 그 클래스를 옵션으로 확장하고(S2.2b) 포구 컨트롤러에서 호출한다(S5.3). 적분은 CLIK 한 곳에서만 한다(§4.3).
 
 ### 4.2 과제 정의
 
-**평가 지점 `[확정 D-6]`.** 포구 모드에서 CLIK 은 오차·Jacobian 을 **명령값 $q_c$** 에서 평가한다 (기존 기본값은 측정 q). 측정 q 평가는 servo 지연을 CLIK 루프에 품어 §4.5 선행 보상과 이중 보상이 된다. $q_c$ 평가는 `PinocchioCache` 를 $q_c$ 로 `Update` 해야 하므로, 측정 q 로 갱신하는 기존 캐시와 별개의 Data 가 필요한지는 S2.2 에서 확정한다.
+**평가 지점 `[확정 D-6]`.** 포구 모드에서 CLIK 은 오차·Jacobian 을 **명령값 $q_c$** 에서 평가한다 (기존 기본값은 측정 q). 측정 q 평가는 servo 지연을 CLIK 루프에 품어 §4.5 선행 보상과 이중 보상이 된다. $q_c$ 평가는 `PinocchioCache` 를 $q_c$ 로 `Update` 해야 하므로, 측정 q 로 갱신하는 기존 캐시와 별개의 Data 가 필요한지는 S2.2b 에서 확정한다.
 
 **병진 과제 (twist feedforward, D-5)**
 
 $$J_p(q_c)\dot q=v_p^\ast,\qquad v_p^\ast=\dot x_{ref}+K_p\big(x_{ref}-x_C(q_c)\big)$$
 
-$J_p$ 는 캐시 `J` 의 행 0..2 (`LOCAL_WORLD_ALIGNED`, 마스터 §3). $\dot x_{ref}$ feedforward 는 기존 CLIK 에 없는 항이다 (기존은 $r=K_x\odot e_x$ 뿐) — S2.2 옵션.
+$J_p$ 는 캐시 `J` 의 행 0..2 (`LOCAL_WORLD_ALIGNED`, 마스터 §3). $\dot x_{ref}$ feedforward 는 기존 CLIK 에 없는 항이다 (기존은 $r=K_x\odot e_x$ 뿐) — S2.2b 옵션.
 
 **명령 공간 폐루프임을 명시한다.** $x_C$ 는 $q_c$ 의 FK 이지 측정 $q$ 의 FK 가 아니다. 따라서 $K_p(x_{ref}-x_C(q_c))$ 는 **적분 드리프트 보정 항일 뿐 외란 제거 항이 아니다.** 실제 운동은 $\dot x_{ref}$ feedforward 가 만든다. 결과로:
 
@@ -74,12 +74,12 @@ $J_p$ 는 캐시 `J` 의 행 0..2 (`LOCAL_WORLD_ALIGNED`, 마스터 §3). $\dot 
 | 시점 | 동작 |
 |---|---|
 | 컨트롤러 activate, arm·재무장 (L7 §4.8) | $q_c\leftarrow q_{meas}$, $\dot q_{prev}\leftarrow0$ — $\dot q_{prev}$ 를 남기면 첫 tick 가속 box 가 직전 시행 속도 기준이라 `bound_conflict` 오abort 가 난다 |
-| E-STOP 해제 | $q_c$·CLIK anchor 를 $q_{meas}$ 로 reseed, **자동 재개 금지** — S9 이전 임시 기준 `[확정 A-1]`. 전체 정책은 D-13 (S9) |
-| 기존 CLIK 실패 후 첫 호출 | 기존 동작은 측정 q 로 강제 재앵커. 포구 모드에서는 abort 경로(§4.3)가 만든 $q_c$ 와 불연속이 되므로, 재앵커 대상을 옵션으로 둘지 S2.2 에서 확정 |
+| E-STOP 해제 | $q_c$·CLIK anchor 를 $q_{meas}$ 로 reseed, **자동 재개 금지** — S9 이전 임시 기준 `[확정 P-1]` (S5 E-8 최소 계약, plan §4.4 S5.1: `TriggerEstop`·`ClearEstop`·`ResetFault`·`ResetTargetInitialization` 훅은 atomic 요청·epoch 만 갱신하고 reset 의 유일 writer 는 RT tick 이며, `ClearEstop` 은 컨트롤러 fault 를 풀지 않는다 — 두 경로는 별개). 전체 정책은 D-13 (S9) |
+| 기존 CLIK 실패 후 첫 호출 | 기존 동작은 측정 q 로 강제 재앵커. 포구 모드에서는 abort 경로(§4.3)가 만든 $q_c$ 와 불연속이 되므로, 재앵커 대상을 옵션으로 둘지 S2.2b 에서 확정 |
 
-기존 `anchor_drift_max` clamp 는 $\Vert q_c-q\Vert$ 를 조용히 잘라 `TRACK_ERR` 감시와 겹친다 — 포구 모드에서의 사용 여부는 S2.2 에서 정한다.
+기존 `anchor_drift_max` clamp 는 $\Vert q_c-q\Vert$ 를 조용히 잘라 `TRACK_ERR` 감시와 겹친다 — 포구 모드에서의 사용 여부는 S2.2b 에서 정한다.
 
-**접근축 과제 (2행, S2.2 신설).** catch frame 의 LOCAL $z$ 축이 손바닥 바깥 법선이다 (규약, D-17 · plan §10). roll 제거는 LOCAL 각속도의 $x,y$ 성분만 쓰는 선택 행렬 $S=\begin{bmatrix}1&0&0\\0&1&0\end{bmatrix}$ 로 표현한다. 캐시는 LWA 만 주므로(G5-6) 각속도 행(캐시 `J` 의 행 3..5)을 catch frame 으로 회전한다.
+**접근축 과제 (2행, S2.2b 신설).** catch frame 의 LOCAL $z$ 축이 손바닥 바깥 법선이다 (규약, D-17 · plan §10). roll 제거는 LOCAL 각속도의 $x,y$ 성분만 쓰는 선택 행렬 $S=\begin{bmatrix}1&0&0\\0&1&0\end{bmatrix}$ 로 표현한다. 캐시는 LWA 만 주므로(G5-6) 각속도 행(캐시 `J` 의 행 3..5)을 catch frame 으로 회전한다.
 
 $$J_a=S\,R_{WC}^\top J_\omega^{LWA}(q_c)\in\mathbb R^{2\times n_v},\qquad r_a=S\,R_{WC}^\top K_a\,e_a$$
 
@@ -101,8 +101,8 @@ $$\text{s.t.}\quad \ell\le v\le\upsilon$$
 
 $$\ell_i=\max\Big(-\dot q_{\max,i},\ \frac{q_{\min,i}+m_q-q_{c,i}}{\Delta t},\ \dot q_{prev,i}-\ddot q_{\max,i}\Delta t\Big),\qquad \upsilon_i=\min\Big(\dot q_{\max,i},\ \frac{q_{\max,i}-m_q-q_{c,i}}{\Delta t},\ \dot q_{prev,i}+\ddot q_{\max,i}\Delta t\Big)$$
 
-- 위치∩속도 항은 기존 box 그대로다 (기존은 스칼라 `v_limit`, $\beta$ 없음). 마진 $m_q$ 는 CLIK 에 넘기는 `q_min`/`q_max` 를 좁혀 구현하므로 새 옵션이 필요 없다 `[권장]`. v0.4 의 한계 접근 감속 $\beta$ 는 기존 box 에 없고 S2.2 옵션 목록에도 없어 v1 에서 쓰지 않는다 ($\beta=1$ 과 동치).
-- 가속 항과 평활 항($w_s$)은 S2.2 옵션이다. $\Delta t$ 는 `ControllerState::dt` (= 1/`control_rate`).
+- 위치∩속도 항은 기존 box 그대로다 (기존은 스칼라 `v_limit`, $\beta$ 없음). 마진 $m_q$ 는 CLIK 에 넘기는 `q_min`/`q_max` 를 좁혀 구현하므로 새 옵션이 필요 없다 `[권장]`. v0.4 의 한계 접근 감속 $\beta$ 는 기존 box 에 없고 S2.2b 옵션 목록에도 없어 v1 에서 쓰지 않는다 ($\beta=1$ 과 동치).
+- 가속 항과 평활 항($w_s$)은 S2.2b 옵션이다. $\Delta t$ 는 `ControllerState::dt` (= 1/`control_rate`).
 - **가속 한계 $\ddot q_{\max}$ 의 출처 `[확정 D-16]`:** 토크 한계에서 오프라인으로 도출한 **상수 box** (plan §9, S2.5 도구 출력 YAML, provenance 포함). URDF 에는 가속 한계가 없다. 로봇 config 의 기존 `devices.<g>.joint_limits.max_acceleration` (5.0 rad/s²) 은 어떤 컨트롤러도 쓰지 않는 placeholder 라 **쓰지 않는다**. L3 도달시간 계산과 같은 값을 써야 계획이 실행과 일치한다.
 
 $H$ 는 $\mu^2>0$ 이므로 양정치이고, 차원 $n_v$ 와 제약 수가 고정이다.
@@ -115,9 +115,9 @@ $$\ell_i=\upsilon_i=\mathrm{clamp}\Big(\mathrm{proj}_{[p_{lo,i},\,p_{hi,i}]}(\do
 
 위치 한계를 1틱 더 정확히 지키려고 가속 항을 빼면 $\dot q^\ast$ 가 한 틱에 $\pm\ddot q_{\max}\Delta t$ 를 넘어 점프한다. position 인터페이스에서 $q_c$ 기울기 불연속이고 UR 제어기가 보호 정지를 걸 수 있다. 이 상황은 어차피 abort 대상이므로 **abort 경로로 안전하게 빠져나가는 것**이 우선이다. 위치 한계 침범은 `limit_margin` 이 흡수한다.
 
-**반복 상한과 상태 노출 (S2.2).** 차원만 고정하면 최악 실행시간이 묶이지 않는다. 기존 하드코딩 `max_iter` 20 을 설정 가능하게 하고, solver status·반복 수·solve time 을 노출한다. 초과·수렴 실패·비유한 결과는 `Compute` 가 false 를 돌려주는 기존 경로로 합쳐진다.
+**반복 상한과 상태 노출 (S2.2b).** 차원만 고정하면 최악 실행시간이 묶이지 않는다. 기존 하드코딩 `max_iter` 20 을 설정 가능하게 하고, solver status·반복 수·solve time 을 노출한다. 초과·수렴 실패·비유한 결과는 `Compute` 가 false 를 돌려주는 기존 경로로 합쳐진다.
 
-**실패 경로 — QP 비의존 관절공간 abort (S5.3).** 기존 CLIK 은 실패 시 `q_ref = q_meas`, `v_ref = 0`, false 를 돌려준다. 포구 컨트롤러는 **이 출력을 소비하지 않는다** — $q_{meas}$ 로 점프하면 $q_c$ 불연속이고 $v=0$ 은 가속 한계를 무시한 즉시 정지다. v0.4 의 $\dot q^\ast=\beta_{qp}\dot q_{prev}$ 감쇠 폴백은 QP 없이 동작하는 관절공간 경로로 흡수한다: 직전 $\dot q_{prev}$ 에서 관절별로 $\ddot q_{\max}\Delta t$ 씩 0 으로 감속하며 $q_c$ 를 적분하고(위치 한계 clamp 포함), L7 `QP_FAILED` → `ABORT_SAFE` 로 넘긴다. 감속 법칙의 세부는 S5.3 에서 확정한다. 연속 실패가 `joint_cmd.qp.n_fail_fault` 에 이르면 L7 FAULT 래치 (`HasLatchedFault`).
+**실패 경로 — QP 비의존 관절공간 abort (S5.3).** 기존 CLIK 은 실패 시 `q_ref = q_meas`, `v_ref = 0`, false 를 돌려준다. 포구 컨트롤러는 **이 출력을 소비하지 않는다** — $q_{meas}$ 로 점프하면 $q_c$ 불연속이고 $v=0$ 은 가속 한계를 무시한 즉시 정지다. v0.4 의 $\dot q^\ast=\beta_{qp}\dot q_{prev}$ 감쇠 폴백은 QP 없이 동작하는 관절공간 경로로 흡수한다: 직전 $\dot q_{prev}$ 에서 관절별로 $\ddot q_{\max}\Delta t$ 씩 0 으로 감속하며 $q_c$ 를 적분하고(위치 한계 clamp 포함), L7 `QP_FAILED` → `ABORT_SAFE` 로 넘긴다. 감속 법칙의 세부는 S5.3 에서 확정한다. 연속 `QP_FAILED` 횟수가 **L7 소유의 단일 키** `supervisor.n_qp` (L7 §4.1) 에 이르면 L7 FAULT 래치 (`HasLatchedFault`) — L5 는 이 카운터를 새로 두지 않고 L7 판정을 참조만 한다.
 
 **RT tick 안 try/catch 금지 (RT-2).** v0.4 가 제안한 `try { … } catch (...)` 는 쓰지 않는다. `ClikReferenceGenerator::Compute` 는 이미 noexcept 이고 모든 할당·검증(throw)은 non-RT `Init` 에 있다. 예외 주입은 non-RT 테스트 빌드에서만 하며, RT 경로의 방어는 입력 검증(비유한·차원)과 false 반환으로 한다.
 
@@ -167,19 +167,19 @@ MuJoCo UR 팔 actuator(`<general>` position-PD)는 `servoj` 와 동특성이 다
 
 ## 5. C++ 구현
 
-### 5.1 CLIK 확장 옵션 (S2.2, `rtc_tsid`)
+### 5.1 CLIK 확장 옵션 (S2.2a·S2.2b, `rtc_tsid`)
 
-v0.4 의 `CatchTaskAdapter` (`configure`/`update()`, 자체 `VecN`) 스케치는 폐기한다. 옵션은 `rtc::tsid::ClikReferenceGenerator::Config` 에 추가하는 것이 1안이며, 인터페이스 형태(행 선택형 확장 vs formulation 클래스)는 S2.2 첫 설계 리뷰에서 확정한다. 요구 사항:
+v0.4 의 `CatchTaskAdapter` (`configure`/`update()`, 자체 `VecN`) 스케치는 폐기한다. 옵션은 `rtc::tsid::ClikReferenceGenerator::Config` 에 추가하는 것이 1안이며, 인터페이스 형태(행 선택형 확장 vs formulation 클래스)는 **S2.2a** 에서 확정한다. 요구 사항:
 
 - 모든 옵션 기본 off, off 시 기존 `Compute` 출력 bit-identical. 할당은 `Init` 에서만, `Compute` 는 noexcept·할당 0
 - 추가 옵션: twist feedforward 입력, 접근축 2행 (catch frame 등록 index + $R_{WC}$ 회전), 가속 box ($\ddot q_{\max}$ 벡터, $\dot q_{prev}$) + `bound_conflict`, 평활 가중 $w_s$, `max_iter`, q_c 평가 모드와 재앵커 대상(§4.2)
 - 노출: solver status, 반복 수, solve time, `bound_conflict`, 활성 관절 mask
-- 차원: 결정변수는 **결합 모델 전체 $n_v$** (tree model `wbc`: ur5e_p1b 22, iiwa7_leap 23 — S2.2 착수 시 모델에서 재확인). 팔 열은 `Config::arm_v_idx` 로 고른다. v0.4 의 "최대 7 `VecN`" 가정은 틀렸다
+- 차원: 결정변수는 **결합 모델 전체 $n_v$**. ur5e_p1b 결합 모델은 full tree nv **26** (UR5e 6 + P1b 20 revolute), actuated 축약 모델 nv **16** (팔 6 + 손 10) — 이전 기록의 22 는 근거가 없다(plan §2). CLIK 의 control model 은 actuated 모델이 있으면 그것(ur5e_p1b: nv 16)이고, 없을 때만 tree/full 로 fallback 한다 (DemoWbc `ConfigureReducedDynamicsProvider` 의 게이트와 같은 인스턴스). iiwa7_leap 값은 S2.3a 의 nv 고정 테스트에서 기록한다. 팔 열은 `Config::arm_v_idx` 로 고른다. v0.4 의 "최대 7 `VecN`" 가정은 틀렸다
 - 기존 `Manipulability()` (팔 6×6 damped √det) 는 진단값으로 유지. D-18 의 5행 $w_5$ 와 다른 값이므로 로그에 둘 다 남긴다 (plan §11)
 
 ### 5.2 경계 계산 (RT)
 
-§4.3 의 가속 box·충돌 규칙은 CLIK 옵션 내부에서 계산한다. v0.4 의 `jointVelocityBounds` 참조 코드는 삭제한다 — S2.2 에서 `ClikReferenceGenerator` 의 box 조립에 넣고, 가속 옵션 off 에서는 기존 box 조립(한계 위반 시 collapse 복구 포함)을 그대로 둔다. 충돌 규칙 단위 테스트(G5-B2)는 S2.2 에서 작성한다.
+§4.3 의 가속 box·충돌 규칙은 CLIK 옵션 내부에서 계산한다. v0.4 의 `jointVelocityBounds` 참조 코드는 삭제한다 — S2.2b 에서 `ClikReferenceGenerator` 의 box 조립에 넣고, 가속 옵션 off 에서는 기존 box 조립(한계 위반 시 collapse 복구 포함)을 그대로 둔다. 충돌 규칙 단위 테스트(G5-B2)는 S2.2b 에서 작성한다.
 
 ### 5.3 컨트롤러 바인딩 (S5.3, `integrated_bringup`)
 
@@ -219,7 +219,7 @@ def equivalent_delay(tau, T, f):
 | `robot.arm.joint_names` | string[] | – | 로봇 config | – | `devices.<arm>.joint_state_names` 를 참조 (사본 금지) |
 | `catch_frame` | string | – | `catch_frame` | – | 모델 빌더 추가 frame 이름 `[확정 D-17]` (plan §10) |
 | `robot.arm.q_min`, `q_max` | double[n] | rad | 로봇 config | – | YAML `joint_limits` ∩ URDF (backend 와 같은 원천, 사본 금지) |
-| `robot.arm.qd_max` | double[n] | rad/s | 로봇 config `max_velocity` | ≤ 데이터시트 | 기존 CLIK 은 스칼라 `v_limit` — 관절별 적용은 S2.2 에서 확인 |
+| `robot.arm.qd_max` | double[n] | rad/s | 로봇 config `max_velocity` | ≤ 데이터시트 | 기존 CLIK 은 스칼라 `v_limit` — 관절별 적용은 S2.2b 에서 확인 |
 | `robot.arm.qdd_max` | double[n] | rad/s² | S2.5 도출값 | >0 | `[확정 D-16]` 토크 한계에서 도출한 상수 box, provenance 포함. `max_acceleration` placeholder 사용 금지 |
 | `robot.arm.limit_margin` | double | rad | 0.05 | 0–0.3 | CLIK 에 넘기는 위치 box 를 좁힘 (§4.3) |
 | `robot.arm.q_nominal` | double[n] | rad | `TBD` | – | posture 과제 (wait_pose 와 관계는 L7) |
@@ -227,9 +227,8 @@ def equivalent_delay(tau, T, f):
 | `joint_cmd.K_a` | double | 1/s | `TBD` | >0 | 접근축 게인 |
 | `joint_cmd.w_task`, `w_a`, `w_arm` | double | – | 1.0, 0.5, 1e-2 | >0 | 기존 CLIK 가중 체계 (`w_task ≫ w_arm ≫ μ²`) |
 | `joint_cmd.damping_sq` | double | – | 1e-4 | >0 | 기존 CLIK μ² |
-| `joint_cmd.w_smooth` | double | – | 1e-3 | ≥0 | 평활 항 $w_s$ (S2.2 옵션) |
-| `joint_cmd.qp.max_iter` | int | – | 20 | >0 | 기존 하드코딩값을 기본으로, S2.2 에서 설정화 |
-| `joint_cmd.qp.n_fail_fault` | int | – | 3 | 1–20 | 연속 실패 시 FAULT 래치 (L7 §4.1) |
+| `joint_cmd.w_smooth` | double | – | 1e-3 | ≥0 | 평활 항 $w_s$ (S2.2b 옵션) |
+| `joint_cmd.qp.max_iter` | int | – | 20 | >0 | 기존 하드코딩값을 기본으로, S2.2b 에서 설정화 |
 | `joint_cmd.K_n` | double | 1/s | 1.0 | 0–10 | posture (기존 `SetPostureGains`) |
 | `joint_cmd.lag.T_arm` | double | s | `TBD` | ≥0 | §4.4 식별 (S10). 식별 전 sim 은 주입값 |
 | `joint_cmd.lag.per_joint` | double[n] | s | `TBD` | ≥0 | §4.4 |
@@ -243,16 +242,16 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 ## 7. 단위 기술 구현 순서
 
 - **L5.0** 단계 W 결과 반영 — 완료 (§2).
-- **L5.1** (S2.2) 확장 구조 설계 리뷰 → 옵션 추가. 옵션 off bit-identical 회귀 테스트를 먼저 쓴다.
-- **L5.2** (S2.2) 가속 box + 충돌 규칙 테스트.
-- **L5.3** (S2.2) 접근축 2행, twist feedforward, q_c 평가 모드와 재앵커.
-- **L5.4** (S2.2) 정지 목표 수렴 테스트, 유한차분 Jacobian 테스트.
-- **L5.5** (S2.2·S2.4) RT 검사: QP 차원 고정, 할당 0, solve time 분포, DemoWbc 회귀.
+- **L5.1** (S2.2a) 확장 구조 설계 리뷰 + 기존 동작 golden-vector 회귀(기록한 q 열 → q_ref 해시) → 옵션 추가는 S2.2b. 옵션 off bit-identical 회귀 테스트를 먼저 쓴다.
+- **L5.2** (S2.2b) 가속 box + 충돌 규칙 테스트.
+- **L5.3** (S2.2b) 접근축 2행, twist feedforward, q_c 평가 모드와 재앵커.
+- **L5.4** (S2.2b) 정지 목표 수렴 테스트, 유한차분 Jacobian 테스트.
+- **L5.5** (S2.2b·S2.4) RT 검사: QP 차원 고정, 할당 0, solve time 분포, DemoWbc 회귀.
 - **L5.6** (S5.3) 컨트롤러 바인딩: `devices[0]` 쓰기, 관절공간 abort 경로.
-- **L5.7** 지연 식별 도구 + 시뮬레이션 주입 지연 회복 테스트 (`[SIM-ANY]`).
-- **L5.8** 예측 선행 보상(now_lead, L2 연동) + 에뮬레이션에서 효과 측정.
+- **L5.7** (S3.7) 지연 식별 도구: 순수 지연 + 시상수 분리 식별, σ_trk sim 초기값 산출 + 시뮬레이션 주입 지연 회복 테스트 (`[SIM-ANY]`).
+- **L5.8** (S5.3) 예측 선행 보상(now_lead, L2 연동) + 에뮬레이션에서 효과 측정.
 - **L5.9** 실기 식별 `[HW-P1B]` (S10).
-- **L5.10** backend 왕복 확인: `ControllerOutput` 에 쓴 $q_c$ 와 backend 가 실제로 쓴 값 1:1 대조.
+- **L5.10** (S5.3) backend 왕복 확인: `ControllerOutput` 에 쓴 $q_c$ 와 backend 가 실제로 쓴 값 1:1 대조.
 
 ## 8. 디버깅 방법
 
@@ -271,17 +270,17 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 | G5-A2 | 옵션 전부 off 에서 기존 CLIK 출력 bit-identical, 기존 테스트 assertion 무수정 green (S2.4) | `[SIM-ANY]` |
 | G5-B | 무작위 기준 1e4 틱에서 속도·가속 한계 위반 0, 위치 한계 위반은 `limit_margin` 이내 (§4.3 충돌 규칙) | `[SIM-ANY]` |
 | G5-B2 | 경계 충돌 유도 시나리오: `bound_conflict` 발생, $\vert\dot q^\ast-\dot q_{prev}\vert\le\ddot q_{\max}\Delta t$ 유지, L7이 `ABORT_SAFE`로 전이 | `[SIM-ANY]` |
-| G5-C | RT: page fault 0, 할당 0, QP 차원 고정, solve time 99.9% < 예산 (예산은 사용자 결정) | `[SIM-ANY]` |
+| G5-C | RT: page fault 0, 할당 0, QP 차원 고정, solve time 99.9% < 예산. 예산은 사용자 결정 — 값이 정해지기 전까지 이 항목은 `NOT_EVALUATED` (plan §4.1) | `[SIM-ANY]` |
 | G5-C2 | backend 왕복: `ControllerOutput.devices[0].commands` 와 backend 가 쓴 명령 slot 이 전 틱에서 일치 (backend clamp 미발동) | `[SIM-P1B]` / `[HW-P1B]` |
 | G5-C3 | `max_iter` 설정값 준수, 초과 시 status 노출 + 관절공간 abort 경로(가속 box 준수), L7 `QP_FAILED` 전이. RT tick 에 try/catch 없음, `Compute` noexcept | `[SIM-ANY]` |
-| G5-C4 | 재무장·E-STOP 해제 reseed 후 첫 틱에 `bound_conflict` 미발생, 자동 재개 없음 (A-1) | `[SIM-ANY]` |
-| G5-D | 주입 지연(예: 30 ms) 식별 오차 < 2 ms | `[SIM-ANY]` |
-| G5-E | 에뮬레이션 지연 하에서 선행 보상 전후 $t_c$ 위치 오차 비교 기록 | `[SIM-P1B]` |
+| G5-C4 | 재무장·E-STOP 해제 reseed 후 첫 틱에 `bound_conflict` 미발생, 자동 재개 없음, `ClearEstop` 후에도 latched fault 유지 (P-1, S5 E-8 최소 계약) | `[SIM-ANY]` |
+| G5-D | (**S3.7 게이트**, plan §4.4 S3a) 주입 지연(예: 30 ms) 식별 오차 < 2 ms | `[SIM-ANY]` |
+| G5-E | (**S5 게이트**, plan §4.4 S5 "선행 보상" 행 — 판정 입력은 S3.7) 에뮬레이션 지연 하에서 선행 보상 전후 $t_c$ 위치 오차 비교 기록 | `[SIM-P1B]` |
 | G5-F | 실기 `T_arm` 식별 및 YAML 확정 (S10) | `[HW-P1B]` |
 
 ## 10. 미확정 항목
 
-- S2.2 확장 구조 (행 선택형 vs formulation 클래스), q_c 평가용 캐시 분리 여부, 실패 후 재앵커 대상, `anchor_drift_max` 사용 여부, 관절별 속도 한계 적용
+- S2.2a 확장 구조 (행 선택형 vs formulation 클래스); S2.2b: q_c 평가용 캐시 분리 여부, 실패 후 재앵커 대상, `anchor_drift_max` 사용 여부, 관절별 속도 한계 적용
 - S5.3 관절공간 abort 감속 법칙 세부
 - `joint_cmd.K_a`, `robot.arm.q_nominal`, `supervisor.track_err_abort` (L7), `joint_cmd.lag.*` (S10)
 - E-STOP·fault 전체 정책 (D-13, S9)

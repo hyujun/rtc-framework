@@ -11,7 +11,7 @@ kinematics·dynamics·CLIK/QP·joint command backend를 재사용한다(마스�
 ## 구현 계획 (living document)
 
 전체 구현 계획·결정 로그·단계 상태는 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) 가 SSoT 다. 아래 설계 문서와
-충돌하면 그 문서의 결정이 우선한다. 구현이 끝나면 prune 한다.
+충돌하면 **IMPLEMENTATION_PLAN.md 의 결정이 우선한다**. 구현이 끝나면 prune 한다.
 
 ## 단계 W (완료) 와 문서 동기화 상태
 
@@ -71,9 +71,10 @@ python3 verify_l3.py        # numpy, scipy 필요. test_l3 가 만든 cases.txt 
 - rollout 예산 추정 ~26 ms vs 예산 10 ms — coarse-to-fine 필요 (S6.3)
 - ζ ≠ 1·ω·h 범위 검증 필요 (S1.7), 명명 규칙을 repo 에 맞춤 (namespace `rtc`, 함수 PascalCase)
 - SeqLock 에 싣는 타입은 `std::array` 기반 POD 여야 한다 (Eigen 멤버 금지, plan §6)
+- 참조 헤더는 **아직** `catching::*` namespace·camelCase 함수 그대로다 — 이름 변경은 이식 시점인 S1.1 에서 한다 (규칙만 v0.5 에서 정했다, plan §4.4 S0.3)
 
 ## 주의
 
 - 참조 구현은 **ROS 의존이 없다**. `PointCloud2` 파싱(L1 §5.1)은 `integrated_bringup` 바인딩에서 구현하며(D-1),
   본 폴더의 코드는 그 결과를 받는 순수 수치 부분만 담는다.
-- 이 폴더는 브랜치 `docs/dynamic-catching-plan` 에 커밋된다(A-2).
+- 이 폴더는 브랜치 `docs/dynamic-catching-plan` 에 커밋된다(P-2).

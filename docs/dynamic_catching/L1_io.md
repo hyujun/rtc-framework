@@ -27,14 +27,14 @@
 | ID | 확인 항목 | 기록 |
 |---|---|---|
 | G1-1 | `PointField` 배열 실제 레이아웃 | 닫힘 `[확정 D-4]` — little-endian, `point_step` 384: `x,y,z,vx,vy,vz,ax,ay,az` FLOAT64 (offset 0–64), `covariance` FLOAT64×36 @72 (row-major $p_x..v_z$, 모르면 NaN), `snapshot_sequence` UINT32×2 @360, `generation` UINT32×2 @368 (uint64 low/high), `horizon_ns` UINT32 @376, `validity` UINT8 @380 (0 NOT_EVALUATED, 1 VALID). **offset 은 참고값이고 파서는 이름으로 찾는다** (§4.6). debug 토픽이라 stable ABI 아님 (W5-2) |
-| G1-2 | 토픽 이름과 QoS | 토픽 닫힘 — ball_perception `sim_estimator_node` 의 debug 예측 궤적 토픽 (`io.traj_topic`). QoS 는 TBD-VIS-08, S3.4 에서 확인 (W5-1) |
+| G1-2 | 토픽 이름과 QoS | 토픽 닫힘 — ball_perception `sim_estimator_node` 의 debug 예측 궤적 토픽 (`io.traj_topic`). QoS depth 는 `KEEP_LAST(1)` 고정(ARCH-6, invariants.md) — TBD 대상이 아니다. reliability 만 TBD-VIS-08, S3.4 에서 실측해 정한다. 선례: `integrated_bringup` inference 컨트롤러가 `KeepLast(1)` 로 구독한다 (W5-1) |
 | G1-3 | 점 시각 필드 타입·기준 | 닫힘 — `t` 필드는 없다. `horizon_ns` (UINT32, `header.stamp` 기준 상대 ns), `header.stamp` = 예측 원점 시각 (W5-3) |
 | G1-4 | `header.frame_id`와 `world`의 관계 | **미확인** — TBD-VIS-06, S3.4 에서 확인 (W5-5) |
 | G1-5 | 트랙 식별·소실 판정 수단 | 대부분 닫힘 — `generation` (트랙 epoch), `validity`. 남는 것: 측정을 잃은 뒤에도 `VALID` 예측이 계속 나오는지(유령 트랙, §4.5) — S3.4 드롭 주입으로 확인 (W5-7, TBD-VIS-07) |
 | G1-6 | subscription callback이 도는 executor / callback group | 닫힘 — 컨트롤러 소유 구독은 LifecycleNode default group → `nrt_callback_executor` (단일 스레드, lifecycle 서비스와 공유) (W2-5) |
-| G1-7 | RT tick 시각과 스탬프 clock 의 관계 (sim) | 닫힘 `[확정 D-2, D-3]` — RT tick 은 `RTControllerInterface::Compute(const ControllerState&)`, 시각은 steady. 스탬프는 wall (`rtc_mujoco_sim`·`sim_estimator_node` 모두 `use_sim_time=false`, `/clock` 없음). wall→steady 는 §4.1 변환 1회. D-3 은 S3.1 검증 후 재검토 (W2-3) |
-| G1-8 | SeqLock/SPSC 원시형 API와 재시도 정책 | 닫힘 — `rtc::SeqLock::Store`/`Load`/`sequence`. `Load` 는 **재시도 상한 없이** 일관된 사본을 얻을 때까지 반복한다(단일 writer·유한 쓰기 시간이 설계 불변식). payload 는 trivially copyable (L0 §5.2) (W2-2) |
-| G1-9 | 지문 센서·손 상태 경로와 규약 | 닫힘 — 실기 P1b `HandSensorState` 250 Hz, sim `WrenchStamped`. 두 경로 모두 finger-on-object 부호 (0fcc1d23 이후; `FingertipSensor.msg` 의 반대 부호 주석은 stale). S7.3 에서 재확인 (W4-6, TBD-HAND-03) |
+| G1-7 | RT tick 시각과 스탬프 clock 의 관계 (sim) | 닫힘 `[확정 D-2, D-3]` — RT tick 은 `RTControllerInterface::Compute(const ControllerState&)`, 시각은 steady. 스탬프는 wall (`rtc_mujoco_sim`·`sim_estimator_node` 모두 `use_sim_time=false`, `/clock` 없음). wall→steady 는 §4.1 변환 1회. D-3 은 S3.1a 검증 후 재검토 (W2-3) |
+| G1-8 | SeqLock/SPSC 원시형 API와 재시도 정책 | 닫힘 — `rtc::SeqLock::Store`/`Load`/`sequence`. `Load` 는 **재시도 상한 없이** 일관된 사본을 얻을 때까지 반복한다(단일 writer·유한 쓰기 시간이 설계 불변식). 비-RT writer(nrt 콜백) → RT reader 는 backend 3종이 관절 상태에 이미 쓰는 경로이므로 새 primitive 가 아니다 — 최악 재시도 시간은 G1-C 로 측정한다(D-21). payload 는 trivially copyable (L0 §5.2) (W2-2) |
+| G1-9 | 지문 센서·손 상태 경로와 규약 | 닫힘 — 실기 P1b `HandSensorState` 250 Hz, sim `WrenchStamped`. 두 경로 모두 finger-on-object 부호 (0fcc1d23 이후; `FingertipSensor.msg` 의 반대 부호 주석은 stale — PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 origin/main 에는 수정됐으나 **이 브랜치는 그 이전에서 갈라져** 아직 반영 안 됨, plan §7.3). 센서 lane 에는 수신 시각·sequence 가 없다 — freshness 경로는 **D-24 결정 대기**(S5 착수 전) (W4-6, TBD-HAND-03) |
 
 ## 3. 참고자료
 
@@ -139,7 +139,7 @@ struct FieldMap {                                  // 해시가 바뀔 때만 �
 메시지 형식 검사 — **점을 복사하기 전에** 모두 통과해야 한다:
 
 - `is_bigendian == false` (바이트 스왑 미지원)
-- `height == 1`, `width` ∈ [`io.n_min`, `kMaxSamples`] — 상한 검사를 복사 전에 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 수정)
+- `height == 1`, `width` ∈ [`io.n_min`, `n_max`] (`n_max ≤ kCap`, S3.6) — 상한 검사를 복사 전에, **인덱싱 전에** 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 에서 `kCap` 검사로 수정)
 - `data.size() == point_step × width`, `row_step == point_step × width`
 - 필드 값은 `std::memcpy` 로 읽는다(정렬·aliasing UB 방지)
 
@@ -147,7 +147,9 @@ struct FieldMap {                                  // 해시가 바뀔 때만 �
 
 ```cpp
 // integrated_bringup 바인딩. 컨트롤러 LifecycleNode 의 default group 구독
-// → nrt_callback_executor (G1-6). 할당은 configure 에서 끝낸 버퍼만 쓴다.
+// → nrt_callback_executor (G1-6). lifecycle 은 publisher 만 게이트하므로 이 구독은
+// 컨트롤러가 비활성(inactive)인 동안에도 살아서 OnCloud 가 계속 불린다 (D-23).
+// 할당은 configure 에서 끝낸 버퍼만 쓴다.
 void CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& m) {
   const std::int64_t recv_steady = SteadyNowNs();  // 도착 즉시 한 쌍으로
   const std::int64_t recv_wall = WallNowNs();
@@ -169,15 +171,24 @@ void CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& m) {
   snap_.horizon_short = chk.horizon_ns < cfg_.horizon_min_ns;        // D-15 진단
   snap_.recv_steady_ns = recv_steady;
 
+  // provenance token (D-22) — 궤적 스냅샷과 계획기 공분산 버퍼가 같은 값을 싣는다
+  snap_.activation_generation = ActivationGeneration();  // base RTControllerInterface (D-23)
+  snap_.generation = hdr_.generation;                    // vision 트랙 epoch (§4.4)
+  snap_.snapshot_sequence = hdr_.snapshot_sequence;
+  snap_.traj_recv_ns = recv_steady;                      // == recv_steady_ns
+  cov_.token = {snap_.activation_generation, snap_.generation, snap_.snapshot_sequence, snap_.traj_recv_ns};
+
   UpdateJumpAndNu(prev_, snap_, prev_cov_, cov_);  // §4.4, §4.5 (같은 generation 일 때만)
   traj_box_.Store(snap_);                          // rtc::SeqLock<TrajectorySnapshot> (공분산 없음)
-  PublishToPlanner(snap_, cov_);                   // 계획기 버퍼 (A-3), 전달 수단은 S5.2/S6
+  PublishToPlanner(snap_, cov_);                   // 계획기 버퍼 (A-3) — 같은 token, 전달 수단은 S5.2/S6
   planner_wakeup_.Notify();                        // eventfd (D-7c)
   last_ = hdr_;
 }
 ```
 
-- `TrajectorySnapshot` 은 공용 궤적 타입(L2 §5.1)이며 trivially copyable POD 다(L0 §5.2). `generation`, `snapshot_sequence`, `recv_steady_ns`, 점별 `BallTime` 을 싣는다.
+- `TrajectorySnapshot` 은 공용 궤적 타입(L2 §5.1)이며 trivially copyable POD 다(L0 §5.2). `generation`, `snapshot_sequence`, `recv_steady_ns`, 점별 `BallTime` 과 provenance token `{activation_generation, generation, snapshot_sequence, traj_recv_ns}` (D-22, `traj_recv_ns` == `recv_steady_ns`) 을 싣는다.
+- 계획기 쪽 공분산 버퍼 항목도 같은 token 을 싣는다(A-3, D-22). 계획기는 계산 시작과 게시 직전에 최신 token 을 다시 조회해, 대체됐거나 짝이 안 맞는 조합(예: 궤적 N ↔ 공분산 N−1)을 버린다.
+- **lifecycle 은 publisher 만 게이트한다** — 비활성 중에도 이 구독은 살아 있다(D-23). RT 소비자는 `snap_.activation_generation` 이 `IsCurrentGeneration()` 이 아니면 그 스냅샷을 무효로 본다(§5.3).
 - 공분산 대칭화 $\Sigma\leftarrow\tfrac12(\Sigma+\Sigma^\top)$ 는 NaN 이 없는 원소 쌍에만 적용한다.
 - 문자열 비교(`frame_id`)와 해시 계산은 nrt 콜백이라 허용한다. 콜백 계산량은 lifecycle 서비스와 executor 를 공유하므로 작게 유지한다(D-7 이 계획 계산을 이 executor 에서 뺀 이유).
 
@@ -185,22 +196,24 @@ void CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& m) {
 
 ```cpp
 // RTControllerInterface::Compute 안 — noexcept, 할당 없음
-struct TrajView { bool stale; bool expired; };
+struct TrajView { bool stale; bool expired; bool is_new; };
 
 [[nodiscard]] TrajView ReadTraj(const rtc::SeqLock<TrajectorySnapshot>& box, NowReal now,
                                 NowLead now_lead, std::int64_t t_stale_ns,
-                                std::uint32_t& last_lock_seq, TrajectorySnapshot& buf) noexcept {
-  if (box.sequence() != last_lock_seq) {           // 바뀌었을 때만 복사
-    buf = box.Load();                              // 재시도 상한 없음 (G1-8)
-    last_lock_seq = box.sequence();
-  }
-  const bool stale = !buf.valid || (now.ns - buf.recv_steady_ns) > t_stale_ns;  // steady 수신 나이
+                                std::uint32_t current_generation,  // 호출부: ActivationGeneration()
+                                std::uint64_t& last_snapshot_seq, TrajectorySnapshot& buf) noexcept {
+  buf = box.Load();                                // 매 tick 무조건 (D-21) — 재시도 상한 없음 (G1-8)
+  const bool is_new = buf.snapshot_sequence != last_snapshot_seq;  // payload 안 token 으로 판정 (D-22)
+  if (is_new) { last_snapshot_seq = buf.snapshot_sequence; }
+  const bool current_gen = buf.activation_generation == current_generation;  // D-23
+  const bool stale = !current_gen || !buf.valid || (now.ns - buf.recv_steady_ns) > t_stale_ns;  // steady 수신 나이
   const bool expired = buf.n > 0 && now_lead > buf.LastBallTime();              // 선행축 (§4.1)
-  return {stale, expired};
+  return {stale, expired, is_new};
 }
 ```
 
-- `last_lock_seq` 비교가 스냅샷 전체 복사를 새 메시지 도착 시로 한정한다(L2 §5.2 복사 비용).
+- **D-21.** `Load()` 는 매 tick 무조건 한 번 하고, `SeqLock::sequence()` 와 짝지어 조건부로 복사하지 않는다 — 두 호출 사이에 writer 가 끼면 옛 payload 와 새 sequence 가 짝지어져 최신 스냅샷을 놓친다. 새 스냅샷 여부는 payload 안의 `snapshot_sequence` (D-22) 로만 판정한다.
+- **D-23.** `buf.activation_generation` 이 현재 activation 과 다르면(`IsCurrentGeneration()` 이 아니면) 비활성 중 받은 궤적이 재활성 첫 tick 에 그대로 쓰이는 것을 막기 위해 무효(stale)로 본다.
 - `now` 는 매 tick steady 실측이다(tick × `dt` 아님, plan §3).
 
 ### 5.4 RT 상태 POD (RT → 계획기)
@@ -209,13 +222,14 @@ struct TrajView { bool stale; bool expired; };
 
 - 필드: `NowReal` 시각, 팔 q·q̇ (측정), 직전 명령 q_c, 손 구동 좌표, 지문 wrench·스탬프 — 모두 `std::array<double, kMax…>` + 사용 차원 `n_arm`/`n_hand`/`n_tip`
 - 채우는 곳: `Compute` 안에서 `ControllerState` 로부터. 지문 wrench 부호는 sim·실기 모두 finger-on-object (0fcc1d23), S7.3 에서 재확인 (G1-9)
+- **지문 센서 freshness (D-24, S5 착수 전 결정 대기, S5.2e).** 옵션 (a) 가 채택되면 이 POD 에 지문 wrench 의 `recv_steady_ns`·`sequence`·`valid` 를 추가로 싣는다. 결정 전에는 필드를 확정하지 않는다
 
 ## 6. YAML 파라미터
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
 | `io.traj_topic` | string | – | ball_perception debug 예측 궤적 토픽 | – | G1-2, D-4 (stable ABI 아님) |
-| `io.qos` | enum | – | `TBD` | – | TBD-VIS-08, vision 설정을 따름 (S3.4) |
+| `io.qos_reliability` | enum | – | `TBD` (`best_effort`\|`reliable`) | – | TBD-VIS-08, S3.4 에서 실측해 정한다. depth 는 `KEEP_LAST(1)` 고정(ARCH-6)이라 설정 키가 아니다 |
 | `io.expected_frame` | string | – | `world` | – | 마스터 §3. 다르면 §4.3 변환 (TBD-VIS-06, S3.4) |
 | `io.n_min` | int | – | `TBD` | ≥2 | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3) |
 | `io.t_stale` | double | s | `TBD` | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후) |
@@ -231,13 +245,14 @@ v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.
 
 ## 7. 단위 기술 구현 순서
 
-- **S1.2** (L2 와 공동) 공용 궤적 타입 + 점 개수 `[n_min, kMaxSamples]` 검사(파서·check·RT 읽기 공통), NaN 거부.
-- **S1.3** D-2 변환 함수 + $T_{arm}\ne0$ fixture 에서 stale(실제축)·지평 소진(선행축) 판정 테스트.
-- **S5.2a** `BuildFieldMap` (이름·datatype·count) + 형식 검사 + 레이아웃 해시 진단 + 거부 케이스 테스트 (필드 누락, datatype 변경, offset 만 변경 → 수락, width > `kMaxSamples`).
-- **S5.2b** `OnCloud`: `generation`/`snapshot_sequence`/`validity` 처리, uint64 low/high 조립, D-2 변환, 지평 요구 진단, SeqLock 게시, 계획기 버퍼, eventfd.
+- **S1.2** (L2 와 공동) 공용 궤적 타입 + 점 개수 `[n_min, kCap]` (런타임 `n_max ≤ kCap` 은 S3.6) 검사(파서·check·RT 읽기 공통, 인덱싱 전), NaN 거부, provenance token 필드(D-22).
+- **S1.3** D-2 변환 함수(**S0.6 승인 후**) + $T_{arm}\ne0$ fixture 에서 stale(실제축)·지평 소진(선행축) 판정 테스트.
+- **S5.2a** `BuildFieldMap` (이름·datatype·count) + 형식 검사 + 레이아웃 해시 진단 + 거부 케이스 테스트 (필드 누락, datatype 변경, offset 만 변경 → 수락, width > `n_max` (and > `kCap`)).
+- **S5.2b** `OnCloud`: `generation`/`snapshot_sequence`/`validity` 처리, uint64 low/high 조립, D-2 변환, provenance token(D-22, `ActivationGeneration()` 스탬프), 지평 요구 진단, SeqLock 게시, 계획기 버퍼, eventfd.
 - **S5.2c** 물리 일관성 검사(nrt, 메시지당 $O(N)$): $a$ 가 상수 $g$ 인지(vision 규약, L2 G2-3), $v_j$ 대 Hermite 미분 잔차, `frame_id` 매 메시지 비교, cov 대각 양수(NaN 제외). 레이아웃 해시·이름 검사가 **의미 변경을 못 잡으므로**(§4.6) 이 검사가 그 역할을 한다.
 - **S5.2d** $J$, $\nu$ (정규화 역행렬, 공분산 시각 보간 규칙 확정 후).
-- **S5.2e** RT 상태 POD 채우기: sim 경로 → 실기 경로.
+- **S5.2e** RT 상태 POD 채우기: sim 경로 → 실기 경로. D-24 채택 옵션의 지문 센서 freshness 필드 포함(§5.4).
+- S3.4 는 QoS reliability·validity 히스토그램·`snapshot_sequence` 재시작 거동·유령 트랙을 **측정만** 한다 — 그 결과에 따른 정책(C-1 재검토 포함)은 S5.2 에서 정한다.
 - 진단 발행: 거부 사유 카운트, 원점 지연·수신 나이 분포, 점 수·지평 분포, 점프 분포(nrt, 1 Hz, `PublishRole` 없이).
 
 ## 8. 디버깅 방법
@@ -254,14 +269,17 @@ v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.
 
 | 게이트 | 기준 | 태그 |
 |---|---|---|
-| G1-A | 거부 사유별 단위 테스트 (필수 필드 누락·datatype·count, shape, size, `width` > `kMaxSamples` (ASan 무오류), 미래 스탬프, `NOT_EVALUATED`, `snapshot_sequence` 중복·역전, 비단조 시각, `dt_min` 미만, NaN) 전부 통과. offset 만 바뀐 레이아웃은 수락 | `[SIM-ANY]` |
+| G1-A | 거부 사유별 단위 테스트 (필수 필드 누락·datatype·count, shape, size, `width` > `n_max` (and > `kCap`) (ASan 무오류), 미래 스탬프, `NOT_EVALUATED`, `snapshot_sequence` 중복·역전, 비단조 시각, `dt_min` 미만, NaN) 전부 통과. offset 만 바뀐 레이아웃은 수락 | `[SIM-ANY]` |
 | G1-B | 실제 ball_perception 메시지 1건을 파싱해 점 개수·필드 값·uint64 필드가 `ros2 topic echo` 출력과 일치 | `[SIM-ANY]` |
-| G1-C | writer 부하 + RT reader (`control_rate` 100·500·5000 Hz)에서 찢어진 스냅샷 0 (필드 체크섬 비교), TSAN 경고 0 | `[SIM-ANY]` |
+| G1-C | writer 부하 + RT reader (`control_rate` 100·500·5000 Hz)에서 찢어진 스냅샷 0 (필드 체크섬 비교), TSAN 경고 0, 최악 재시도 시간 기록 (D-21, G1-8) | `[SIM-ANY]` |
 | G1-D | RT 읽기 경로 할당 0 (`ScopedNoMalloc`·`ScopedAllocGate`), 최악 실행시간 기록 | `[SIM-ANY]` |
 | G1-E | 인위적 지연·누락 주입 시 stale 전이가 steady 기준 기대 시각 ±1 틱 이내. $T_{arm}\ne0$ 에서 지평 소진은 now_lead 기준 | `[SIM-ANY]` |
 | G1-F | 좌표 변환 왕복 테스트: $p,v,a,\Sigma$ 를 변환 후 역변환해 원값 복원 (< 1e-12), NaN 원소 보존 | `[SIM-ANY]` |
 | G1-G | 실기 연결에서 수신 나이·원점 지연 분포(평균, 99%), 점프 분포 기록 → `t_stale`, `future_tol` 확정 | `[HW-P1B]` |
+| G1-H | writer `Store` 를 reader step 사이에 주입하는 결정적 테스트에서 최신 스냅샷이 누락되지 않음을 보인다 (D-21) | `[SIM-ANY]` |
+| G1-I | nrt 콜백을 막아 DDS backlog 를 만든 뒤 최신 `snapshot_sequence` 만 수락됨을 확인, 구독 QoS `KEEP_LAST(1)` (ARCH-6) | `[SIM-ANY]` |
+| G1-J | 컨트롤러가 비활성인 동안 받은 궤적이 재활성 후 첫 tick 에 소비되지 않음 (`activation_generation`, D-23) | `[SIM-ANY]` |
 
 ## 10. 미확정 항목
 
-TBD-VIS-06 (`frame_id` 와 world, S3.4), TBD-VIS-07 잔여(유령 트랙, S3.4), TBD-VIS-08 (QoS, S3.4), `snapshot_sequence` 되감김 처리·`validity` 부분 수용 (S5.2), $\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (S5.2), 계획기 공분산 버퍼 전달 수단 (S5.2/S6), `io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min` (S3.4·S3.6), `io.track.j_warn`.
+TBD-VIS-06 (`frame_id` 와 world, S3.4), TBD-VIS-07 잔여(유령 트랙, S3.4), TBD-VIS-08 (구독 reliability, S3.4 — depth 는 `KEEP_LAST(1)` 로 이미 확정), `snapshot_sequence` 되감김 처리·`validity` 부분 수용 (S5.2), $\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (S5.2), 계획기 공분산 버퍼 전달 수단 (S5.2/S6), `io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min` (S3.4·S3.6), `io.track.j_warn`, D-24 지문 센서 freshness 경로 (S5 착수 전).

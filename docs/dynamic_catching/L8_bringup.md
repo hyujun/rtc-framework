@@ -83,7 +83,7 @@ $$\epsilon_k=(x_{true}(t_k)-\hat x_k)^\top P_k^{-1}(x_{true}(t_k)-\hat x_k),\qqu
 
 - truth `publish.sample_rate_hz` (현 100 Hz) 로는 $t_k$ 보간 오차가 커질 수 있다 → S3.3 에서 상향
 - truth 는 공이 활성(발사 후, park 전)인 동안만 의미가 있다 — 그 구간만 쓴다
-- stamp 는 둘 다 wall 이다 (D-3). RTF < 1 구간의 오차 증가는 §4.5 게이트로 가른다
+- stamp 는 둘 다 wall 이다 (D-3). δ 가 큰 구간에서만 오차가 커지는지는 §4.5 게이트로 가른다
 
 **포구 지표 (시행별).**
 - $t_c$에서 간극: $\Vert p_{true}(t_c)-p_C(t_c)\Vert$ (catch frame 실제 위치, D-10)
@@ -99,19 +99,28 @@ $$\frac{\hat p+\frac{z^2}{2n}\pm z\sqrt{\frac{\hat p(1-\hat p)}{n}+\frac{z^2}{4n
 
 **오차 예산 검증.** L3 §4.6 예측 간극 분포와 실제 간극 분포를 비교한다(모델 검증).
 
-### 4.5 sim 시간축과 RTF 게이트 `[D-3 채택 — 검증 후 추가 검토 필수]`
+### 4.5 sim 시간축과 clock 위상 게이트 `[D-3 채택 — 검증 후 추가 검토 필수]`
 
-sim 은 wall clock 을 유지하고, 시행별로 공 비행 구간의 Δsim_time/Δwall 이 0.99 미만이면 그 시행을 무효로 한다 (D-3). D-2 변환이 실기와 같은 경로로 동작하게 하려는 선택이다. **이 결정은 S3.1 검증(plan §5) 결과로 다시 검토한다** — 비행 중 RTF, 부하(포구 컨트롤러 + 계획기 + `sim_estimator_node`) 시 RTF, 예측 오차가 RTF < 1 구간에서만 커지는지, `sim_estimator_node` stamp 가 wall 인지. 하나라도 기준을 못 넘으면 `/clock` 방식을 포함해 D-3 을 재결정한다. RTF 판정용 sim time 진단 출력은 S3.3 에서 추가한다.
+sim 은 wall clock 을 유지한다 (D-3). D-2 변환이 실기와 같은 경로로 동작하게 하려는 선택이다. 기존 RTF 신호(200 step 구간 평균)는 0.5 s 비행 동안 표본이 1~2 개뿐이라 짧은 스톨을 평균이 지우므로, 판정은 **비율(RTF)이 아니라 시행별 clock 위상 오차**로 한다 (plan §5).
+
+**측정.** S3.3 이 추가하는 per-step `(sim_time, steady_now)` 진단 lane 이 데이터 원천이다. 발사 시각을 원점으로 비행 구간 매 step 에서 δ(t) = (steady(t) − steady₀) − (sim(t) − sim₀) 를 구하고, 시행별 δ_max = max|δ| 와 max pause(한 step 의 Δwall − Δsim 최댓값)를 기록한다 (양방향).
+
+**시행 유효 조건.** v_max·δ_max + ½·a_bound·δ_max² ≤ ε_clk,alloc **이고** max pause ≤ ε_clk,alloc / v_max. v_max 는 목표 투척 분포의 최대 공 속력(S3.5b 전에는 S0.7 가정값), a_bound 는 g + 항력 가속 상한(S3.8 의 k). **ε_clk,alloc 은 L3 §4.6 오차 예산 중 시계 항에 할당한 몫이고, r_cap(TBD-HAND-04)과 할당 비율이 정해지기 전까지 이 판정은 `NOT_EVALUATED` 이며 δ_max·pause 분포만 기록한다.** 할당 비율은 S3.1a 에서 제안하고 사용자가 확인한다.
+
+**시행 수·무효율.** 구성별(로봇 2종) 발사 ≥ 200 회, 무효율 ≤ 5 %. 이 두 값은 **제안값**이다(사용자 확인, plan §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다.
+
+**이 결정은 S3.1a(무부하) · S3.1b(부하: 포구 컨트롤러 + 계획기 + `sim_estimator_node`) 검증(plan §5) 결과로 다시 검토한다** — 예측 오차가 δ 가 큰 구간에서만 커지는지, `sim_estimator_node` stamp 가 `use_sim_time=false` 에서 wall 인지도 함께 본다. 성공률 평가(S8)는 유효 시행으로 계산하되 전체 발사 수와 무효 사유를 함께 보고한다.
 
 처리량: lock-step 에서 `max_rtf` 1.0 은 상한이므로 RTF ≤ 1 이다. 시행당 발사·비행·감속·복귀·재무장을 합쳐 수 초가 걸려 **200 시행에 약 12 분** 이상이 든다 — 평가 일정은 이를 전제로 짠다.
 
-### 4.6 catchability 지도 도구 `[확정 D-18]` (S3.5)
+### 4.6 catchability 지도 도구 `[확정 D-18]` (S3.5a kinematic 지도 → S3.5b gate-catchable 지도)
 
 plan §11 이 정의·YAML 의 SSoT 다. 요점:
 
 - 발사 영역: arm base frame 수평 거리 √(x²+y²) = 4 m 원호 (방위 φ, 초기 탐색 ±90°), world z 1.5–2.0 m, 수평 방향 = (발사점 → 겨냥점) + 편차 (초기 탐색 ±10°), 속도·앙각 격자
-- 판정: 궤적 위 포구 후보마다 catch frame +z = −v̂ 자세의 IK (대기 자세에서 시작) → 게이트 정의(기본 `arm_5row`)의 manipulability ≥ 정의별 threshold (w₅ 0.1, provisional). w₅·w₆ 를 모두 기록해 지도에서 두 분포를 비교한다 (C-3). 런타임 계획기(S6.2)와 **같은 함수·같은 YAML 키**
-- **frame 함정:** ur5e_p1b 의 arm base frame 은 URDF `base` 이고 `base_link` 와 z 둘레 180° 다르다 — `base_link` 로 두면 공이 등 뒤에서 날아오는데 결과가 그럴듯해 조용히 틀린다. world ↔ base 변환은 같은 q 에서 MuJoCo FK 와 Pinocchio FK 대조로 S3.5 착수 시 확정한다
+- 판정: 궤적 위 포구 후보마다 catch frame +z = −v̂ 자세의 IK (대기 자세에서 시작) → 게이트 정의(기본 `arm_5row`)의 manipulability ≥ 정의별 threshold (w₅ 0.1, provisional). w₅·w₆ 를 모두 기록해 지도에서 두 분포를 비교한다 (C-3). 런타임 계획기(S6.2)와 **같은 함수·같은 YAML 키** (S1.9)
+- **frame 함정:** ur5e_p1b 의 arm base frame 은 URDF `base` 이고 `base_link` 와 z 둘레 180° 다르다 — `base_link` 로 두면 공이 등 뒤에서 날아오는데 결과가 그럴듯해 조용히 틀린다. world ↔ base 변환은 같은 q 에서 MuJoCo FK 와 Pinocchio FK 대조로 **S3.2** 에서 확정한다 (S3.5a 의 선행, plan §4.2 DAG)
+- S3.5a 는 kinematic catchability 지도(IK + w₅/w₆), S3.5b 는 S4.4 go/no-go 값(T_close, d_eff, 가속 box, η_v)으로 전체 게이트 체인을 다시 돌린 gate-catchable 지도다 — 이 지도가 목표 투척 분포가 되고, S3.6 vision 요구 사양 산출로 이어진다
 - 출력: 격자별 포구 가능 여부, 최대 w 와 그 후보의 $t_c$·$p_c$·$q^*$, 탈락 사유 → `sim.throw_region` 제안 (발사 srv 설정으로 사용)
 
 ## 5. C++ 구현
@@ -129,14 +138,14 @@ class CatchingController final : public rtc::RTControllerInterface {
   //  on_deactivate: 계획기 Pause (join 은 소멸자에서만)
   // RT
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;  // §4.1
-  // E-STOP·fault: TriggerEstop/ClearEstop/SetHandEstop, ResetFault/HasLatchedFault — A-1 임시 기준, 정책은 S9
+  // E-STOP·fault: TriggerEstop/ClearEstop/SetHandEstop, ResetFault/HasLatchedFault — P-1 임시 기준(S5.1 최소 계약, L7 §4.1), 정책은 S9
 };
 ```
 
 - 궤적 구독은 controller 소유 구독이라 `nrt_callback_executor` (단일 스레드)에서 돈다 — 파싱·D-2 변환·SeqLock write·계획기 eventfd 신호만 하고 계산은 계획기 스레드로 넘긴다 (D-7)
 - 계획기 스레드: `rtc::PeriodicRtThread` 의 형제 subclass, event 구동 (D-7c), slot·스케줄러는 D-7b·D-7a (plan §6·§7). 배치 변경은 E-7 이며 Adding a New Thread 절차를 따른다
 - SeqLock payload (`RtStatePod`, `PlanSnapshotPod`, 궤적 스냅샷, 상태 스냅샷)는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지)
-- 상태 publisher: controller 소유 `rtc::SeqLock<T>` + `Setup*Publisher` 패턴. `PublishRole` 에 추가하지 않는다 (E-11)
+- 상태 publisher (L8.3, D-20): `rtc_msgs` 새 포구 상태 메시지, controller 소유 `rtc::SeqLock<T>` + `Setup*Publisher` 패턴 (`WbcState`·`GraspState` 선례). `PublishRole` 에 추가하지 않는다 (E-11). **필드는 S5 에서 S5~S9 superset 을 한 번에 동결**하고 이후 단계는 값만 채운다. `Compute()` 의 **모든 tick 에서 Store** 한다 — E-STOP·stale·generation 불일치·지평 부족·plan 없음·abort 를 포함한 **모든 early-return 분기**에서도 Store 하고, 그 tick 에 계산하지 않은 필드는 무효화한다 (PROC-7, agent_docs/invariants.md). DemoWbc 의 `!target_initialized_` early-return 이 `wbc_state_lock_.Store` 를 빠뜨리는 것은 **알려진 gap 이지 선례가 아니다** — 새 컨트롤러가 그대로 이식하지 않는다
 - v0.4 의 손 명령 포트 추상화(in_loop/async)는 D-11 로 삭제 — 손은 device slot 에 직접 쓴다
 
 ### 5.2 기록 레코드
@@ -145,9 +154,10 @@ class CatchingController final : public rtc::RTControllerInterface {
 struct TickRecord {                   // 고정 크기, POD
   std::int64_t t_steady_ns;
   std::uint8_t mode, reason;
-  std::uint64_t generation;  // vision 트랙 epoch (L1 §4.4, D-4)
+  std::uint64_t generation;           // vision 트랙 epoch (L1 §4.4, D-4)
   std::uint32_t plan_id;
-  std::uint64_t generation;           // D-4
+  std::uint64_t activation_generation; // provenance token (D-22) — ActivationGeneration() at consume time
+  std::uint64_t snapshot_sequence;     // provenance token (D-22) — 소비한 스냅샷 sequence
   float gamma, gamma_d, gamma_dd;
   std::array<float, 3> x_ref, xd_ref, xdd_ref, u_des, e, ed, ball_p, ball_v;
   // xdd_ref = 실현 가속도, u_des = 포화 전 DS 요구값 (L4). 둘을 함께 기록해야
@@ -196,7 +206,10 @@ struct TickRecord {                   // 고정 크기, POD
 | `sim.meas.delay`·`dropout`·`outlier_rate` | — | – | – | – | 지연·드롭 주입 위치와 키는 S3.4 에서 정한다 |
 | `sim.ekf.q_acc` | — | – | – | – | v0.5 에서 삭제 — 자체 fixture EKF 없음 (§4.3) |
 | `sim.vision.layout` | — | – | – | – | v0.5 에서 삭제 — 실제 발행기 레이아웃 사용 (D-4) |
-| `sim.rtf_min` | double | – | 0.99 | (0, 1] | §4.5 시행 무효 기준 (D-3) |
+| `sim.rtf_min` | — | – | – | – | v0.5 에서 삭제 — RTF 비율 판정은 §4.5 clock 위상 오차 판정으로 대체 (D-3, plan §5) |
+| `sim.clock.eps_alloc_m` | double | m | `TBD` | >0 | §4.5 ε_clk,alloc — r_cap(TBD-HAND-04) 확정 전까지 `NOT_EVALUATED`, S3.1a 제안 |
+| `sim.clock.min_launches` | int | – | 200 | ≥1 | §4.5 구성별 최소 발사 수 (제안값, plan §7.3) |
+| `sim.clock.max_invalid_rate` | double | – | 0.05 | (0, 1] | §4.5 무효율 상한 (제안값, plan §7.3) |
 | `sim.trials` | int | – | D-12 | ≥30 | 신뢰구간 폭과 연동, 성공률 하한 D-12 |
 
 **실기에서 검증 불가능한 것 `[권장]`.** 실기에는 $p_{true}(t_c)$ 가 없으므로 "예측 간극 분포"를 직접 잴 수 없다. 관측 가능한 것은 포획/실패 이진 결과와 지문 접촉 시각뿐이다. 따라서 실기 게이트(G8-G)는 다음 중 하나로 대체한다 — **선택은 S10** (plan §7.3).
@@ -210,10 +223,10 @@ struct TickRecord {                   // 고정 크기, POD
 ## 7. 단위 기술 구현 순서
 
 - **L8.1** G8 게이트 — 닫힘 (W, §2).
-- **L8.2** (S5) 컨트롤러 골격 + §4.1 순서 + lifecycle + 기존 launch 인자.
+- **L8.2** (S4.0 → S5.1) 컨트롤러 골격 + §4.1 순서 + lifecycle + 기존 launch 인자. S4.0 은 손 계단 진단 모드·팔 hold 뿐인 최소 골격이고, 팔 명령 경로·CLIK 앵커·E-8 최소 계약을 포함한 완성은 S5.1.
 - **L8.3** (S5.4) 기록 레코드 → 기존 CSV 인프라, 상태 publisher, 플롯 스크립트.
-- **L8.4** (S3.1–S3.3) D-3 검증, 발사 srv, iiwa7_leap projectile, 접촉 truth·truth 주기·sim time 진단.
-- **L8.5** (S3.4–S3.6) `sim_estimator_node` 연결, catchability 지도, vision 요구 사양, 오프라인 NEES.
+- **L8.4** (S3.1a·S3.2·S3.3, 부하 재검증은 S3.1b — S6 에서 계획기·`sim_estimator_node` 동시 구동으로) D-3 검증, 발사 srv, iiwa7_leap projectile, 접촉 truth·truth 주기·sim time 진단.
+- **L8.5** (S3.4·S3.5a/b·S3.6) `sim_estimator_node` 연결, catchability 지도(kinematic → gate-catchable), vision 요구 사양, 오프라인 NEES.
 - **L8.6** (S8) `sim_iiwa7_leap` 폐루프 → 시스템 게이트 G8-A~C.
 - **L8.7** (S8) `sim_ur5e_p1b` 폐루프 → G8-D.
 - **L8.8** (S10) 실기 단계적 도입 (§9.2).
@@ -226,7 +239,7 @@ struct TickRecord {                   // 고정 크기, POD
 - 틱 예산 분해: 스냅샷 복사 바이트, SeqLock 재시도 횟수, QP 반복 수·solve time을 따로 기록한다. 예산은 `dt` (= 1/`control_rate`, 100–5000 Hz) 이고 총량이 아니라 **분산의 꼬리**가 위험하다.
 - 오차 원인 분해: 간극을 L3 §4.6의 항별($A=p_{true}-\hat p_{live}$, $B=\hat p_{live}-p_c$, 추종, 시계)로 분해해 표로 만든다. 시뮬레이션은 truth 가 있으므로 각 항을 직접 계산할 수 있고, $A\perp B$ 가정도 검증할 수 있다(G8-C2).
 - 충격 구간 분해: $t_c$ 전후 100 ms의 접촉력·관절 토크·$q-q_c$ 괴리를 겹쳐 그린다(L7 §4.7).
-- 무효 시행 급증: §4.5 RTF 게이트 로그와 부하 구성을 확인한다.
+- 무효 시행 급증: §4.5 clock 위상 오차(δ_max·pause) 로그와 부하 구성을 확인한다.
 
 ## 9. 검증 방법과 합격 게이트
 
@@ -236,16 +249,18 @@ struct TickRecord {                   // 고정 크기, POD
 |---|---|---|
 | G8-A | 전체 시행에서 RT 위반 0 (할당, 틱 초과 기준은 RTC 규약). 계획기 스레드가 RT 와 다른 코어에 있는지 확인. **개발 PC (PREEMPT_RT 아님) 의 RT·CPU 격리 결과는 smoke 로만 보고, 판정은 제어 PC 에서** 한다 | `[SIM-ANY]` |
 | G8-A2 | **연속 2회 투척**과 **abort 직후 재투척** 시나리오에서 L7 §4.8 재무장 리셋 목록이 전부 동작 (옛 plan 재사용 0, 복귀 위치가 `wait_pose`, 첫 틱 `bound_conflict` 0) | `[SIM-ANY]` |
+| G8-H | early-return 분기(E-STOP·stale·generation 불일치·지평 부족·plan 없음·abort)마다 그 tick 의 body 가 실렸는지 보는 실패 경로 테스트 (PROC-7, `EstopTickPublishesThisTicksBody*` 선례). S7 에서 늘어난 분기까지 확장 | `[SIM-ANY]` |
 | G8-B | ball_perception 예측의 NEES 평균이 [R8] 구간 안 (지평별, NaN 공분산 제외, §4.4) | `[SIM-ANY]` |
-| G8-B2 | L1 파서가 ball_perception 실제 레이아웃(필드 이름·datatype)을 검사하고 레이아웃 해시 진단이 변경을 감지 — sim·실기가 같은 발행기 계열이라 복제 레이아웃 대조는 불필요 (D-4, A-3) | `[SIM-ANY]` |
+| G8-B2 | L1 파서가 ball_perception 실제 레이아웃(필드 이름·datatype)을 검사하고 레이아웃 해시 진단이 변경을 감지 — sim·실기가 같은 발행기 계열이라 복제 레이아웃 대조는 불필요 (D-4, P-3) | `[SIM-ANY]` |
 | G8-B3 | 실기 vision 공분산의 일관성: §6 세 수단 중 S10 에서 고른 방법 (G8-C2와 짝) | `[HW-P1B]` |
 | G8-C | `iiwa7_leap`에서 $\gamma=0$ 고정 대 계획 γ ablation: 간극·상대속도·**충격량**·접촉력 분포 비교 | `[SIM-ANY]` |
 | G8-C2 | 오차 예산 모델 검증: L3 §4.6 직교 분해식의 예측 간극 분포와 실제 분포 비교. truth 가 있으므로 $A=p_{true}-\hat p_{live}$, $B=\hat p_{live}-p_c$ 의 직교성도 직접 확인한다 | `[SIM-ANY]` |
 | G8-C3 | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8). 대신 `REF_SATURATED` 빈도를 기록해 D-8 재검토 입력으로 쓴다 | `[SIM-ANY]` |
-| G8-D | `ur5e_p1b`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포 | `[SIM-P1B]` |
+| G8-D | `ur5e_p1b`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포. 전체 발사 수·무효 시행 수·무효 사유를 함께 보고하고, 무효율이 plan §5 상한을 넘으면 그 run 은 `NOT_EVALUATED` | `[SIM-P1B]` |
+| G8-D2 | `iiwa7_leap`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포. 전체 발사 수·무효 시행 수·무효 사유를 함께 보고하고, 무효율이 plan §5 상한을 넘으면 그 run 은 `NOT_EVALUATED` | `[SIM-ANY]` |
 | G8-E | `ur5e_p1b` + position 지연 에뮬레이션에서 선행 보상 유무 비교 | `[SIM-P1B]` |
 
-모든 sim 게이트는 §4.5 RTF 게이트를 통과한 시행만 집계하고 무효 비율을 함께 보고한다. 처리량은 §4.5 (200 시행 ≈ 12 분 이상).
+모든 sim 게이트는 §4.5 clock 위상 게이트를 통과한 시행만 집계하고 무효 비율을 함께 보고한다. 처리량은 §4.5 (200 시행 ≈ 12 분 이상).
 
 ### 9.2 실기 단계적 도입 `[권장]` (S10)
 
@@ -259,8 +274,8 @@ S10 착수 전 S9 (E-STOP·fault 정책, D-13) 완료가 필수다. 각 단계 �
 | 게이트 | 기준 | 태그 |
 |---|---|---|
 | G8-F | 단계 1–2 완료, abort 경로 전부 실기 동작 확인 | `[HW-P1B]` |
-| G8-G | 단계 3 이후 성공률·간극 분포 기록, 시뮬레이션 대비 차이 원인 분해 | `[HW-P1B]` |
+| G8-G | 단계 3 이후 성공률·간극 분포 기록, 시뮬레이션 대비 차이 원인 분해 — "원인 분해" 는 항목별 수치 기록(§8 오차 원인 분해 표의 항목별 값)으로 판정한다 (plan §4.4 S10) | `[HW-P1B]` |
 
 ## 10. 미확정 항목
 
-TBD-HAND-03, TBD-VIS-04/06 (S3.4), D-3 재검토 (S3.1), D-12 값 (투척 속도·성공률 하한·시행 수), `sim.throw_region` 값 (S3.5), 지연·드롭 주입 위치 (S3.4), 오프라인 도구 위치 (S3), 포구 launch 인자·컨트롤러 YAML 파일명 (S5), 실기 공분산 검증 수단 (S10), 재스탬프 도구 (S10).
+TBD-HAND-03, TBD-VIS-04/06 (S3.4), D-3 재검토 (S3.1a·S3.1b), `sim.clock.eps_alloc_m`·시행 수·무효율 제안값 (S3.1a), D-12 값 (투척 속도·성공률 하한·시행 수), `sim.throw_region` 값 (S3.5a/b), 지연·드롭 주입 위치 (S3.4), 오프라인 도구 위치 (S3), 포구 launch 인자·컨트롤러 YAML 파일명 (S5), 실기 공분산 검증 수단 (S10), 재스탬프 도구 (S10).

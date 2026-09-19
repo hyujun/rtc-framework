@@ -22,7 +22,7 @@
 **`ball_dynamics.hpp`의 위상 `[확정]`.** vision이 예측을 전담하므로 **실시간 제어 경로에서 쓰이지 않는다.** S1.6 에서 test fixture 전용 위치로 옮긴다(프로덕션 라이브러리에 넣지 않는다). 남는 용도는 두 가지뿐이다.
 
 1. 시뮬레이션 fixture: MuJoCo 참값에서 vision 역할을 대신하는 테스트용 발행기·궤적 생성(L8 §4.3).
-2. 투척 조건 역산: 목표 지점에 도달하는 초기속도를 슈팅으로 푸는 데 상태전이행렬이 필요하다(L8 §4.2). S3.5 catchability 지도 도구가 궤적 생성에 이 모델을 쓸지 sim 의 항력·Magnus 구현을 쓸지는 S3.5 에서 정한다.
+2. 투척 조건 역산: 목표 지점에 도달하는 초기속도를 슈팅으로 푸는 데 상태전이행렬이 필요하다(L8 §4.2). S3.5a catchability 지도 도구가 궤적 생성에 이 모델을 쓸지 sim 의 항력·Magnus 구현을 쓸지는 S3.5a 에서 정한다.
 
 따라서 `kModelVersion`, 모델 버전 협상, 항력계수 $k$ 의 실시간 식별은 전부 삭제한다. $k$ 식별은 fixture를 실제 궤적에 맞출 때만 쓴다.
 
@@ -33,7 +33,7 @@
 | ID | 확인 항목 | 방법 | 결과 기록 |
 |---|---|---|---|
 | G0-1 | SeqLock/SPSC 원시형 헤더 위치와 API (단일 writer 가정, reader 재시도 정책) | 소스 확인 (W2-2) | 닫힘 — `rtc::SeqLock` (단일 writer `Store`, reader `Load`; **재시도 상한 없음** — 단일 writer·유한 쓰기 시간을 설계 불변식으로 둔다), `rtc::SpscQueue`. 둘 다 payload 가 **trivially copyable** 이어야 한다(`static_assert`). `Eigen::Vector3d` 멤버는 불가 → `std::array` 기반 POD (W2-2, plan §6) |
-| G0-2 | 시간 타입 규약 (ns 정수 / double s, clock type) | 소스 확인 (W2-3) | 닫힘 `[확정 D-2]` — 내부 표현은 절대 steady `int64` ns, 타입 `BallTime`/`NowReal`/`NowLead` (plan §3, §4.5). RT 의 `ControllerState::t_relative_s` 는 steady 기반 세션 상대시각, `ControllerState::dt` = 1/`control_rate` 고정. `header.stamp` 는 수신 경계에서 1회 변환만 (W2-3) |
+| G0-2 | 시간 타입 규약 (ns 정수 / double s, clock type) | 소스 확인 (W2-3) | 닫힘 `[확정 D-2 (1)(2)]` — 내부 표현은 절대 steady `int64` ns, 타입 `BallTime`/`NowReal`/`NowLead` (plan §3, §4.5). RT 의 `ControllerState::t_relative_s` 는 steady 기반 세션 상대시각, `ControllerState::dt` = 1/`control_rate` 고정. `header.stamp` 를 수신 경계에서 1회 변환하는 것은 D-2 (3) 이며 **E-1 승인 대기** (S0.6, plan §3.1) — 승인 전까지 stale 판정에는 쓰지 않는다 (W2-3) |
 | G0-3 | 기존 YAML 파라미터 로딩 패턴 | 소스 확인 (W2-6) | 닫힘 — `LoadConfig(YAML)` + `ParseXxxParams` (non-RT, `on_configure`) + runtime gain 만 `declare_parameter`. `generate_parameter_library` 는 쓰지 않는다 (W2-6) |
 | G0-4 | 포구 코드 배치·이름 | 사용자 결정 (W1-5) | 닫힘 `[확정 D-1]` — rtc_controllers `catching` 하위 디렉토리, namespace `rtc::catching` |
 | G0-5 | sim 의 공 유체 모델 — fixture 한정 | sim 확인 (W6-3) | 닫힘 — `rtc_mujoco_sim` 이 항력 $\tfrac12\rho C_dA\Vert v\Vert v$ + Magnus 를 자체 구현한다(MJCF 유체 모델 아님, tennis preset r 0.025 m, m 0.05 kg). 본 모델(§4.1)은 Magnus 가 없으므로 $k$ 식별 잔차에 회전 효과가 남는다 (W6-3) |
@@ -96,7 +96,7 @@ $$\dot\Phi=A(x(t))\,\Phi,\qquad \Phi(t_0)=I$$
 
 - **내부 표현은 절대 steady `int64` ns.** 상대시각(double 초)은 수치 코어(샘플러·γ·rollout) 경계에서만 만들고, 원점이 다른 상대시각끼리 비교하지 않는다.
 - **세 타입.** `BallTime`(공의 물리 시각 — $t_c$, $t_{cmd}$, 궤적 점 시각), `NowReal`(매 tick steady 실측 now), `NowLead`(= now + $T_{arm}$). 셋은 서로 암묵 변환되지 않는 강한 타입이고, 비교는 **타입별 오버로드로만** 제공한다 — 어떤 판정이 어떤 now 와 비교하는지(plan §3 표)가 타입으로 고정된다. 예: 샘플링·γ·DECEL 진입은 `NowLead` 대 `BallTime`, commit·손 명령·접촉 창은 `NowReal` 대 `BallTime`.
-- **메시지 나이·stale** 은 `BallTime` 과 무관하게 steady 수신 시각 차(now_steady − recv_steady)로만 잰다. `header.stamp` 는 수신 시 1회 `BallTime` 원점으로 변환된다(L1 §4.1, D-2).
+- **메시지 나이·stale** 은 `BallTime` 과 무관하게 steady 수신 시각 차(now_steady − recv_steady)로만 잰다. `header.stamp` 를 수신 시 1회 `BallTime` 원점으로 변환하는 것은 D-2 (3) 이며 **E-1 승인 대기** 다(L1 §4.1, plan §3.1, S0.6).
 - 매 tick 의 now 는 steady 실측이며 tick 수 × `dt` 로 계산하지 않는다.
 - 테스트는 **$T_{arm}\ne0$ fixture 필수** ($T_{arm}=0$ 이면 두 축이 같아져 버그가 숨는다).
 
@@ -118,7 +118,7 @@ v0.5 에서 코드 복사본을 삭제했다. **SSoT 는 같은 폴더의 `ball_
 v0.4 의 `types.hpp` 스케치를 대체한다. 헤더 이름·배치는 S1.1 골격에서 정한다.
 
 - **시간 타입** `BallTime`, `NowReal`, `NowLead` (§4.5, S1.3). 각각 `int64` ns 하나를 감싼 trivially copyable 타입
-- **용량 상수** `kMaxArmDof = 7`, `kMaxHandDof = 16`, `kMaxFingertips = 4`. 궤적 용량 `kMaxSamples` 는 **공용 궤적 타입(S1.2, L2 §5.1)이 단독 소유**한다 — v0.4 의 `kMaxTrajSamples` 중복 상수와 `static_assert` 짝맞춤은 삭제. 값은 S3.6 vision 요구 사양(D-15)에 여유를 두어 정하고 그 전에는 provisional
+- **용량 상수** `kMaxArmDof = 7`, `kMaxHandDof = 16`, `kMaxFingertips = 4`. 궤적 용량 컴파일타임 상수 `kCap` 은 **공용 궤적 타입(S1.2, L2 §5.1)이 단독 소유**한다 — v0.4 의 `kMaxTrajSamples` 중복 상수와 `static_assert` 짝맞춤은 삭제. 값은 S0.7 vision 지평 손계산 제안값으로 정해 provisional 로 두고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정한다. `n_max` 가 `kCap` 을 넘으면 `kCap` 을 올리고 S1 게이트를 재실행한다(backfill, plan §4.2)
 - **SeqLock payload 규칙 `[확정]`.** `rtc::SeqLock`·`rtc::SpscQueue` 에 싣는 모든 타입(궤적 스냅샷, `PlanSnapshot`, RT 상태 POD)은 trivially copyable POD 다 — 벡터는 `std::array<double, 3>` 등으로, **Eigen 멤버 금지** (G0-1, plan §6). 계산 측은 `Eigen::Map` 으로 본다. 각 타입 정의에 `static_assert(std::is_trivially_copyable_v<…>)` 를 둔다
 - **공분산 버퍼** — RT 스냅샷에 넣지 않고 계획기 쪽 버퍼에만 둔다 `[확정 A-3]`. NaN 원소는 "모름"이며 해석은 계획기 한 곳에서 한다. 파서 → 계획기 전달 수단은 S5.2/S6 에서 확정한다(SeqLock 을 쓰면 위 POD 규칙 적용)
 - **트랙 식별** — v0.4 의 `TrackEpoch` 는 삭제. vision 의 `generation`(uint64)을 궤적 스냅샷에 그대로 싣는다(D-4, L1 §4.4)
@@ -160,7 +160,7 @@ v0.3에서 자체 메시지 패키지를 폐기했다. 입력은 vision의 `sens
 - **S1.2** (L2 와 공동) 공용 궤적 타입 POD 화, 용량 상수.
 - **S1.7** 파라미터 검증기 + 활성 구성 TBD·provisional·교차제약·ζ·ω·h 테스트.
 - **S1.6** `ball_dynamics.hpp` 를 test fixture 로 이식 + §4.4 테스트 6종 (참조: `test_l0.cpp`, GTest). **fixture 전용이므로 RT 게이트는 적용하지 않는다.**
-- (S3 이후) 시뮬레이션 $k$ 식별 도구: MuJoCo에서 서로 다른 초기속도로 공을 던져 참값 궤적(`/sim/ball/ground_truth`)을 기록하고, $k$를 스칼라 최소제곱으로 추정. 산출값을 `sim.ball.drag_k`에 기록. fixture 가 실제로 필요해질 때까지 미뤄도 된다.
+- **S3.8** 시뮬레이션 $k$ 식별 도구: MuJoCo에서 서로 다른 초기속도로 공을 던져 참값 궤적(`/sim/ball/ground_truth`)을 기록하고, $k$를 스칼라 최소제곱으로 추정. 산출값을 `sim.ball.drag_k`에 기록. fixture 가 실제로 필요해질 때까지 미뤄도 된다.
 
 ## 8. 디버깅 방법
 
@@ -181,4 +181,4 @@ v0.3에서 자체 메시지 패키지를 폐기했다. 입력은 vision의 `sens
 
 ## 10. 미확정 항목
 
-TBD-BALL-01 (D-12 값 대기), `kMaxSamples` 값 (S3.6), 공분산 버퍼 전달 수단 (S5.2/S6), fixture 사용 여부 (S3.5). TBD-SIM-02·TBD-WS-02·TBD-RTC-01~03 은 닫힘 (§2).
+TBD-BALL-01 (D-12 값 대기), `kCap` 제안값 (S0.7 → S1.2), 런타임 `n_max ≤ kCap` (S3.6), 공분산 버퍼 전달 수단 (S5.2/S6), fixture 사용 여부 (S3.5a). TBD-SIM-02·TBD-WS-02·TBD-RTC-01~03 은 닫힘 (§2).

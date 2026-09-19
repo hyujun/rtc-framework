@@ -3,7 +3,7 @@
 - 문서 버전: v0.5 (2026-09-19) — 결정·단계의 SSoT 는 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (충돌 시 plan 우선)
 - 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
 - 배치 `[확정 D-1]`: soft-catch 병진 기준·γ 프로파일·복귀 기준은 rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`), **축 정렬 오차·각속도·Jacobian 은 `rtc_math` se3** 로 옮긴다
-- 단계: **S1.4** soft-catch 기준 생성기 (NaN 가드, derate 없음), **S2.1** 축 정렬 함수의 `rtc_math` se3 이식 (deadband·반평행에서 유한), CLIK 기준 공급은 **S2.2** (CLIK twist feedforward 옵션, D-5) · **S5.3** (스트리밍 기준 → 확장 CLIK)
+- 단계: **S1.4** soft-catch 기준 생성기 (NaN 가드, derate 없음), **S2.1** 축 정렬 함수의 `rtc_math` se3 이식 (deadband·반평행에서 유한), CLIK 기준 공급은 **S2.2b** (CLIK twist feedforward 옵션, D-5) · **S5.3** (스트리밍 기준 → 확장 CLIK)
 - 선행: 단계 W, L0 (L2 궤적 샘플러 `traj::sampleAt()` 출력을 입력으로 받음)
 - 산출물: soft-catch 병진 기준 (참조: `soft_catch_reference.hpp`), 복귀 기준, 수렴 한계
 - 비고: L3가 γ rollout에서 **이 layer의 같은 코드**를 호출한다.
@@ -22,9 +22,9 @@
 
 | ID | 확인 항목 | 기록 |
 |---|---|---|
-| G4-1 | `rtc_tsid` / CLIK가 받는 과제 기준의 형식 | 닫힘 — `rtc::tsid::ClikReferenceGenerator` 는 현재 **pose(SE3) 목표만** 받는다 (6 LWA 행 고정, feedforward·마스크 없음). twist feedforward·LOCAL 접근축 2행·가속 box 는 옵션(기본 off)으로 확장한다 `[확정 D-5]` (S2.2) |
+| G4-1 | `rtc_tsid` / CLIK가 받는 과제 기준의 형식 | 닫힘 — `rtc::tsid::ClikReferenceGenerator` 는 현재 **pose(SE3) 목표만** 받는다 (6 LWA 행 고정, feedforward·마스크 없음). twist feedforward·LOCAL 접근축 2행·가속 box 는 옵션(기본 off)으로 확장한다 `[확정 D-5]` (S2.2b) |
 | G4-2 | 기존 SE(3)/SO(3) 오차 헬퍼(U1 공유 헬퍼)의 규약과 본 문서 §4.5 축 정렬 오차의 공존 방식 | 닫힘 — U1 헬퍼는 `rtc_tsid` se3_error (`ComputeTaskPoseError`, LWA BodyLog6). §4.5 축 정렬 오차는 그것과 **별도 함수**로 `rtc_math` se3 (`log3`/`exp3` 기반) 에 둔다 (D-1, S2.1) |
-| G4-3 | 두 로봇의 catch frame과 손바닥 바깥 법선 축 | 닫힘 — D-17: 모델 빌더가 YAML 선언 frame 으로 추가 (D-10), 부모·offset·자세는 로봇 config, 접근축 = 그 frame 의 +z. 초기값은 S2.3 제안 → 사용자 sim 확인 (plan §10) |
+| G4-3 | 두 로봇의 catch frame과 손바닥 바깥 법선 축 | 닫힘 — D-17: 모델 빌더가 YAML 선언 frame 으로 추가 (D-10), 부모·offset·자세는 로봇 config, 접근축 = 그 frame 의 +z. 초기값은 S2.3a/b 제안 → 사용자 sim 확인 (plan §10) |
 
 ## 3. 참고자료
 
@@ -245,7 +245,7 @@ S1 이식 시 변경:
 - `setIntercept()`는 L7이 `COMMITTED` 이전에만 호출한다. **v1 에서 `COMMITTED` 이후 허용되는 계획 변경은 없다** (γ 하향은 v1 범위 밖, D-8 — §5.2.1).
 - **반환값의 시간축이 섞여 있다.** `x`, `xd`는 $t+\Delta t$ 기준(다음 틱 명령), `xdd`는 $[t,t+\Delta t]$ 구간의 실현 가속도, `e`, `ed`는 $t$ 기준 진단값이다. L8 `TickRecord`에 함께 기록할 때 1틱 오정렬을 감안한다.
 - **`xdd` vs `u_des`.** 속도 포화가 걸리면 DS가 요구한 가속도 `u_des`는 실현되지 않는다. 실현값이 필요한 곳(CLIK 공급, 기록)에는 `xdd`를, L3 rollout 판정과 포화 진단에는 `u_des`를 쓴다. v0.1은 포화 후에도 `u_des`를 `xdd`로 돌려주어, 예를 들어 $v_{max}=0.5$ m/s 조건에서 실현 5.0 m/s² 대신 490 m/s²를 보고했다.
-- **CLIK 공급 (S2.2·S5.3).** 현 `rtc::tsid::ClikReferenceGenerator` 는 pose 목표만 받으므로, 기준 `x` 와 접근축 목표를 pose 로 넘기고 `xd`·$\omega_{ref}$ 는 twist feedforward 옵션(D-5)으로 넘긴다. 어떤 성분을 어느 행에 싣는지(LOCAL 접근축 2행, 가속 box 와의 관계)는 S2.2 CLIK 확장 설계에서 확정한다.
+- **CLIK 공급 (S2.2b·S5.3).** 현 `rtc::tsid::ClikReferenceGenerator` 는 pose 목표만 받으므로, 기준 `x` 와 접근축 목표를 pose 로 넘기고 `xd`·$\omega_{ref}$ 는 twist feedforward 옵션(D-5)으로 넘긴다. 어떤 성분을 어느 행에 싣는지(LOCAL 접근축 2행, 가속 box 와의 관계)는 S2.2b CLIK 확장 설계에서 확정한다 (구조 자체는 S2.2a 에서 먼저 결정).
 - 감속 모드(L7): 대상에 가상 감속 공을 넣고 `GammaProfile{1,1,…}`(상수 1)로 바꾼다. 전환은 $now_{lead}\ge t_c$ 에서 한다 (A-5). 전환 시각이 $t_c$이면 $\xi^O(t_c)\approx0$이라 오차 점프가 작다(§4.3). 가상 공의 초기 속도를 전환 시점의 기준 속도로 두면 $\dot e$도 연속이다(L7 §4.3).
 - 회전: `axisAlignOmega(z_cmd, a_d, p)`의 `z_cmd`는 현재 **명령 자세** $q_c$ 의 FK 기준이다 — CLIK 오차·J 를 명령값 $q_c$ 에서 평가하는 옵션(D-6)과 같은 자세다. 실추종 오차는 `TRACK_ERR` 로 별도 감시한다.
 
@@ -322,7 +322,7 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 
 ## 7. 단위 기술 구현 순서
 
-단계 매핑 (plan §4): L4.1–L4.3·L4.5·L4.7 = **S1.4**, L4.4 = **S2.1** (`rtc_math` se3), CLIK 결합은 S2.2·S5.3.
+단계 매핑 (plan §4, §14.2): L4.1–L4.3·L4.5·L4.7 = **S1.4**, L4.4 = **S2.1** (`rtc_math` se3), CLIK 결합은 S2.2b·S5.3.
 
 - **L4.1** `GammaProfile` + 미분 일치(유한차분) 테스트.
 - **L4.2** `SoftCatchTranslation` + §4.9 1–4, 6 테스트 + NaN 가드 회귀 (§5.1).
@@ -362,4 +362,4 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 
 ## 10. 미확정 항목
 
-TBD-ARM-02, TBD-REF-01(§4.6 [R4]/[R5] 재확인), `reference.v_max`, `reference.axis.w_max`, `reference.retreat.home_pose`, CLIK 공급 성분 배치 (S2.2), 축 정렬 Jacobian 의 데드밴드 처리 방식 (S2.1). TBD-RTC-07·TBD-RTC-08·TBD-FRAME-01 은 닫힘 (§2), γ derate 는 v1 범위 밖 (D-8).
+TBD-ARM-02, TBD-REF-01(§4.6 [R4]/[R5] 재확인), `reference.v_max`, `reference.axis.w_max`, `reference.retreat.home_pose`, CLIK 공급 성분 배치 (S2.2b), 축 정렬 Jacobian 의 데드밴드 처리 방식 (S2.1). TBD-RTC-07·TBD-RTC-08·TBD-FRAME-01 은 닫힘 (§2), γ derate 는 v1 범위 밖 (D-8).
