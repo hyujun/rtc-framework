@@ -388,7 +388,10 @@ def mujoco_check(
         mujoco.mjtDisableBit.mjDSBL_LIMIT
     )
     d = mujoco.MjData(m)
-    qadr, dadr, frc = [], [], []
+    # Joint-space torque range each actuator can deliver: joint torque = gear ·
+    # actuator force, so the range is gear · forcerange (sign-aware — an
+    # asymmetric range or a negative gear flips which bound applies).
+    qadr, dadr, tau_lo, tau_hi = [], [], [], []
     for name in spec.joint_names:
         jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
         if jid < 0:
@@ -402,8 +405,14 @@ def mujoco_check(
         ]
         if len(acts) != 1 or not m.actuator_forcelimited[acts[0]]:
             raise SystemExit(f"MJCF joint '{name}' needs exactly one force-limited actuator")
-        frc.append(m.actuator_forcerange[acts[0]].max())
-    frc = np.asarray(frc)
+        gear = float(m.actuator_gear[acts[0], 0])
+        ends = gear * m.actuator_forcerange[acts[0]]
+        tau_lo.append(float(ends.min()))
+        tau_hi.append(float(ends.max()))
+    tau_lo = np.asarray(tau_lo)
+    tau_hi = np.asarray(tau_hi)
+    if np.any(tau_hi <= 0.0) or np.any(tau_lo >= 0.0):
+        raise SystemExit(f"MJCF {mjcf}: an arm actuator cannot drive both directions")
     rng = np.random.default_rng(seed)
     worst = 0.0
     for _ in range(n_states):
@@ -416,14 +425,16 @@ def mujoco_check(
             d.qacc[:] = 0.0
             d.qacc[dadr] = sigma * a_max
             mujoco.mj_inverse(m, d)
-            worst = max(worst, float(np.max(np.abs(d.qfrc_inverse[dadr]) / frc)))
+            tau = d.qfrc_inverse[dadr]
+            ratio = np.where(tau >= 0.0, tau / tau_hi, tau / tau_lo)
+            worst = max(worst, float(np.max(ratio)))
     return {
         "method": "mujoco mj_inverse",
         "mjcf": str(mjcf),
         "states": n_states,
         "patterns": 2 ** len(spec.joint_names),
         "worst_ratio": worst,
-        "limit": "actuator forcerange",
+        "limit": "gear * actuator forcerange (per direction)",
         "disabled": ["contact", "joint limit"],
         "pass": bool(worst <= 1.0),
     }

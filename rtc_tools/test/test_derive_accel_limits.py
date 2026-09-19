@@ -296,17 +296,30 @@ PENDULUM_MJCF = f"""
     </body>
   </worldbody>
   <actuator>
-    <motor joint="j1" forcelimited="true" forcerange="-FORCE FORCE"/>
+    <motor joint="j1" forcelimited="true" forcerange="LO HI" gear="GEAR"/>
   </actuator>
 </mujoco>
 """
 
 
-@pytest.mark.parametrize(("force", "expect_pass"), [(50.0, True), (5.0, False)])
-def test_mujoco_check_compares_with_forcerange(tmp_path, force, expect_pass):
+# The derived box needs up to η τ_max = 40 N·m of joint torque in both
+# directions. Joint torque = gear · actuator force, per direction.
+@pytest.mark.parametrize(
+    ("lo", "hi", "gear", "expect_pass"),
+    [
+        (-50.0, 50.0, 1.0, True),
+        (-5.0, 5.0, 1.0, False),
+        (-5.0, 50.0, 1.0, False),  # asymmetric: too weak in the negative direction
+        (-5.0, 5.0, 10.0, True),  # a 10:1 gear makes 5 N of force 50 N·m
+        (-50.0, 50.0, 0.1, False),  # a 1:10 gear leaves 5 N·m
+    ],
+)
+def test_mujoco_check_uses_geared_directional_range(tmp_path, lo, hi, gear, expect_pass):
     pytest.importorskip("mujoco")
     mjcf = tmp_path / "pendulum.xml"
-    mjcf.write_text(PENDULUM_MJCF.replace("FORCE", str(force)))
+    mjcf.write_text(
+        PENDULUM_MJCF.replace("LO", str(lo)).replace("HI", str(hi)).replace("GEAR", str(gear))
+    )
     cfg = write_config(tmp_path, "arm", ["j1"], [50.0], [2.0])
     code, entry = run(
         tmp_path,
