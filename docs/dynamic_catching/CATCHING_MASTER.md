@@ -250,7 +250,7 @@ $$\Vert v(t_c)\Vert>\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 
 **v0.4 의 결손이 닫혔다.** 트랙 식별·상태는 `generation`·`validity`·`snapshot_sequence` 로 판정한다(TBD-VIS-07 닫힘). 레이아웃 변경은 필드 이름·datatype 검사와 **레이아웃 해시 진단**이 감지한다(P-3, L1 §5.1). NIS 같은 추정기 건강도 필드는 여전히 없다.
 
-**요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. 현 예시 profile: 지평 0.5 s, 간격 0.05 s, 최대 10 점, ≤ 30 Hz. 파서 용량 `kMaxSamples` 는 S3.6 결과에 여유를 두어 정하고 그 전에는 provisional 이다(S1.2).
+**요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. sim profile: 지평 0.8 s, 간격 0.05 s, 17 점, ≤ 30 Hz (plan D-15, 2026-09-19 — S0.7 결과로 기존 예시 0.5 s 에서 상향). 궤적 용량 `kCap` 은 S0.7 제안값(40)으로 S1.2 가 provisional 로 두고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정한다(L0 §5).
 
 QoS는 vision 노드가 정한 것을 따른다(`TBD-VIS-08`). 제어 PC는 수신 나이(`now_steady − recv_steady`) 검사를 기본 감시로 쓴다(L1).
 
@@ -405,7 +405,7 @@ catching:
 | TBD-VIS-01 | vision 토픽 이름 | L1, L8 | sim 은 debug 토픽 `/ball_perception/debug/prediction/trajectory` (W). 제품 토픽은 미정 (ball_perception E6-F02) |
 | TBD-VIS-02 | `PointField` 실제 레이아웃(offset·datatype·count), `point_step` 372 B의 미설명 4–8 B | L1 | 닫힘 — 384 B, §5.1 표 (W, D-4) |
 | TBD-VIS-03 | `t` 필드 타입·기준 (float64 초 / uint32 ns) | L1, L2 | 닫힘 — `horizon_ns` UINT32, `header.stamp`(예측 원점) 기준 상대 ns (W, D-4) |
-| TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15, S3.6), sim 실측은 S3.4. 예시 profile: 0.5 s·0.05 s·10 점·≤ 30 Hz |
+| TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15, S3.6), sim 실측은 S3.4. sim profile: 0.8 s·0.05 s·17 점·≤ 30 Hz (plan D-15) |
 | TBD-VIS-05 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | L0, L2, L4 | 닫힘 — 상수 $g$ (W) |
 | TBD-VIS-06 | `header.frame_id`와 `world`의 관계 | L1 | S3.4 에서 확인 |
 | TBD-VIS-07 | 트랙 식별·상태(소실) 판정 수단 | L1, L3, L7 | 닫힘 — `generation`·`validity`·`snapshot_sequence` 필드 존재 (W, D-4) |
@@ -459,7 +459,7 @@ v0.3의 `TBD-RTC-06`(결번)과 `TBD-RTC-15`(W2-2가 01로 이미 다룸)는 폐
 | 시뮬레이션과 실기 손 차이 | 성공률 과대평가 | `[SIM-P1B]`/`[HW-P1B]` 태그 분리, `T_close` 실측 반영, 지문 부호는 두 경로 동일(0fcc1d23) — S7.3 재확인 |
 | **vision 토픽이 stable ABI 가 아님** (D-4) | 필드·의미가 예고 없이 바뀔 수 있음 | 필드 이름·datatype 검사, 레이아웃 해시 진단(L1 §5.1, P-3). 제품 ABI 는 ball_perception E6-F02 |
 | **vision 메시지의 의미 변경** (레이아웃은 그대로, `horizon_ns` 기준·`a` 정의·공분산 순서·단위가 바뀜) | 해시가 못 잡는다 | L1 §5.1 물리 일관성 검사(가속도 잔차, 속도 잔차, `frame_id` 매 메시지 비교), L1 §4.5 $\bar\nu$ 추세 |
-| **vision 지평이 짧음** (현 예시 profile 0.5 s) | 계획 가능한 포구 창이 줄어듦 | D-15: 요구 사양을 제어기가 정하고(S3.6) sim profile 을 맞춘다. 짧은 궤적은 후보 제외·진단 |
+| **vision 지평이 짧음** (sim profile 0.8 s — S0.7 로 0.5 s 에서 상향, 먼 q* 는 여전히 부족) | 계획 가능한 포구 창이 줄어듦 | D-15: 요구 사양을 제어기가 정하고(S3.6) sim profile 을 맞춘다. 짧은 궤적은 후보 제외·진단 |
 | **유령 트랙** (vision이 공을 놓치고 관성 예측만 발행) | 스탬프는 신선하고 궤적 점프는 작아져 대체 지표가 반대로 움직인다 | **완화됨** — `generation`·`validity`·`snapshot_sequence` 로 트랙 교체·무효를 판별(D-4, S5.2). 관성 예측 구간을 `validity` 가 표시하는지는 S3.4 에서 발행기 동작으로 확인 |
 | **실기 공분산 미검증** | $\kappa_\sigma$, $n_\sigma$ 가 보정 불가 | 실기에는 $p_{true}$ 가 없다. L8 §6의 세 대체 수단(포획률 회귀, 접촉 시각 편차, 1회 외부 계측) 중 하나는 해야 한다 (S10) |
 | 재무장 상태 오염 | 두 번째 투척이 다르게 동작 (옛 plan 재사용, 직전 포구점 복귀, 첫 틱 `bound_conflict`) | L7 §4.8 재무장 리셋 목록 + G8-A2 연속 투척 시나리오 (S7.4) |

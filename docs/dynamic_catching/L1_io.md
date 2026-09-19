@@ -234,7 +234,7 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | `io.n_min` | int | – | `TBD` | ≥2 | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3) |
 | `io.t_stale` | double | s | `TBD` | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후) |
 | `io.future_tol` | double | s | `TBD` | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2) |
-| `io.horizon_min` | double | s | `TBD` | >0 | D-15 지평 요구. S3.6 산출 (예시 profile 0.5 s) |
+| `io.horizon_min` | double | s | `TBD` | >0 | D-15 지평 요구. S3.6 산출 (sim profile 지평 0.8 s — plan D-15, 2026-09-19) |
 | `io.track.eval_offset` | double | s | 0.05 | 0–0.3 | §4.4 비교 시각 오프셋 |
 | `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 점프 경고 |
 | `io.pred.nu_window` | int | – | 30 | 5–300 | §4.5 창 길이 |
