@@ -59,6 +59,11 @@ add_library(rtc_controllers STATIC
   # configure time.
   src/params/policy_io_params.cpp
   src/params/reach_gate_params.cpp
+  # dynamic_catching S1.7: YAML schema + G0-C validator for the catching core
+  # (rtc::catching). Same G2 schema-layer shape as the siblings above — POD +
+  # yaml-cpp parser, non-RT, called once at configure time — plus a fixed-
+  # capacity, allocation-free ValidateCatchingParams() (L0 §5.3, §9 G0-C).
+  src/params/catching_params.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -419,6 +424,12 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_supervisor_core PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_supervisor_core PRIVATE -Wno-mismatched-new-delete)
+
+  # Parameter validator (S1.7, G0-C): active-config TBD, D-9/L7 §4.3 cross-
+  # constraints, ζ·ω·h discretization, hand caging gap (L6 §4.2), provisional
+  # gating. Model-free — no URDF fixture needed.
+  ament_add_gtest(test_catching_params test/test_catching_params.cpp)
+  target_link_libraries(test_catching_params rtc_controllers)
 endif()
 
 ament_package()
