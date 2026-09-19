@@ -135,6 +135,19 @@ class ClikReferenceGenerator {
     // cost, pulling the command toward the previous one (L5 §4.3). 0 → off.
     // Keep w_s ≪ w_task like the posture weights, or it competes with tracking.
     double w_smooth{0.0};
+    // Command-value evaluation (D-6, L5 §4.2). The caller passes a cache
+    // updated at the COMMAND state q_c (its previous QRef() on the arm), not
+    // at the measured state, so error, Jacobian and box are evaluated along
+    // the commanded path and servo lag stays out of the loop. Then:
+    //   - the anchor is cache.q every tick (reseed_anchor is ignored);
+    //   - after the first successful call, cache.q on the arm indices must
+    //     equal the previous QRef() (|Δ| ≤ 1e-12) — otherwise the call fails
+    //     with LastSolve().command_mismatch (a wiring error: a measured q
+    //     would silently turn this back into measured-state CLIK). Hand
+    //     indices are not checked: the hand is commanded elsewhere (L6);
+    //   - anchor_drift_max must be ≤ 0 (Init throws): there is no measured q
+    //     to bound against; tracking is supervised outside (L7 TRACK_ERR).
+    bool evaluate_at_command{false};
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -195,13 +208,14 @@ class ClikReferenceGenerator {
   /// Diagnostic only — it never changes the outputs. Filled on every call;
   /// a call rejected by its preconditions leaves reached_solve = false.
   struct SolveDiagnostics {
-    bool reached_solve{false};   ///< preconditions held and the QP was solved
-    bool converged{false};       ///< QP converged with finite iterates
-    bool non_finite{false};      ///< QP iterates or q_ref / v_ref were non-finite
-    int status{-1};              ///< proxsuite::proxqp::QPSolverOutput (0 = SOLVED), −1 = none
-    int iterations{0};           ///< ProxQP outer iterations
-    double solve_time_us{0.0};   ///< wall time of the solve [µs]
-    bool bound_conflict{false};  ///< acceleration box overrode velocity ∩ position
+    bool reached_solve{false};     ///< preconditions held and the QP was solved
+    bool converged{false};         ///< QP converged with finite iterates
+    bool non_finite{false};        ///< QP iterates or q_ref / v_ref were non-finite
+    int status{-1};                ///< proxsuite::proxqp::QPSolverOutput (0 = SOLVED), −1 = none
+    int iterations{0};             ///< ProxQP outer iterations
+    double solve_time_us{0.0};     ///< wall time of the solve [µs]
+    bool command_mismatch{false};  ///< evaluate_at_command: cache.q (arm) ≠ previous QRef()
+    bool bound_conflict{false};    ///< acceleration box overrode velocity ∩ position
     std::uint64_t conflict_mask{0};  ///< bit i = velocity index i conflicted
   };
 
@@ -224,6 +238,8 @@ class ClikReferenceGenerator {
   [[nodiscard]] bool PreconditionsHold(const PinocchioCache& cache, int tcp_frame_idx,
                                        int base_frame_idx, const Eigen::VectorXd& q_posture_des,
                                        double dt) const noexcept;
+  // evaluate_at_command: cache.q on the arm equals the previous QRef().
+  [[nodiscard]] bool CommandStateMatches(const PinocchioCache& cache) const noexcept;
   void ComputePostureReferences(const PinocchioCache& cache,
                                 const Eigen::VectorXd& q_posture_des) noexcept;
   // H/g must already hold the task terms.
@@ -243,6 +259,7 @@ class ClikReferenceGenerator {
   Eigen::VectorXd a_max_;              // [nv] or empty (acceleration box off)
   Eigen::VectorXd v_prev_;             // [nv] v_ref of the last successful Compute()
   double w_smooth_{0.0};               // smoothing weight, 0 → off
+  bool evaluate_at_command_{false};    // cache.q is the command state q_c
   double w_task_{1.0};
   double w_arm_{1e-2};
   double w_hand_{1e-2};

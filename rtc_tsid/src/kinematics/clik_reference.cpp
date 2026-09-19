@@ -110,6 +110,11 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     throw std::runtime_error("ClikReferenceGenerator: w_smooth must be finite and >= 0, got " +
                              std::to_string(config.w_smooth));
   }
+  if (config.evaluate_at_command && config.anchor_drift_max > 0.0) {
+    throw std::runtime_error(
+        "ClikReferenceGenerator: anchor_drift_max needs the measured state and cannot be used "
+        "with evaluate_at_command");
+  }
   if (config.max_iter < 1) {
     throw std::runtime_error("ClikReferenceGenerator: max_iter must be >= 1, got " +
                              std::to_string(config.max_iter));
@@ -194,6 +199,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   v_limit_per_joint_ = config.v_limit_per_joint;
   a_max_ = config.a_max;
   w_smooth_ = config.w_smooth;
+  evaluate_at_command_ = config.evaluate_at_command;
   w_task_ = config.w_task;
   w_arm_ = config.w_arm;
   w_hand_ = config.w_hand;
@@ -242,6 +248,10 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
     return false;
   }
   if (twist_ff != nullptr && !twist_ff->allFinite()) {
+    return false;
+  }
+  if (!CommandStateMatches(cache)) {
+    last_solve_.command_mismatch = true;
     return false;
   }
 
@@ -301,6 +311,20 @@ bool ClikReferenceGenerator::PreconditionsHold(const PinocchioCache& cache, int 
     return false;
   }
   return cache.q.size() == nv_ && cache.v.size() == nv_ && q_posture_des.size() == nv_ && dt > 0.0;
+}
+
+bool ClikReferenceGenerator::CommandStateMatches(const PinocchioCache& cache) const noexcept {
+  if (!evaluate_at_command_ || !anchor_initialized_) {
+    return true;
+  }
+  constexpr double kTol = 1e-12;
+  for (const int vi : arm_v_idx_) {
+    const auto i = static_cast<Eigen::Index>(vi);
+    if (!(std::abs(cache.q(i) - q_ref_(i)) <= kTol)) {  // NaN → mismatch
+      return false;
+    }
+  }
+  return true;
 }
 
 void ClikReferenceGenerator::ComputePostureReferences(
@@ -442,8 +466,8 @@ bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, doub
   // between goal/phase edges (DemoTaskController's desired_q_ pattern). Only the
   // anchor switches — v_ref above is a measured-based closed-loop correction
   // either way.
-  if (reseed_anchor || !anchor_initialized_) {
-    q_ref_ = cache.q;  // re-anchor to measured
+  if (evaluate_at_command_ || reseed_anchor || !anchor_initialized_) {
+    q_ref_ = cache.q;  // measured (or, in command mode, the command state q_c)
   }  // else q_ref_ holds the previous desired — carry forward in place.
   q_ref_.noalias() += v_ref_ * dt;
 

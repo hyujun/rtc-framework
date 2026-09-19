@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <new>
@@ -540,6 +541,80 @@ TEST_F(ClikOptionsTest, TwistFeedforwardNonFiniteFailsBeforeSolve) {
   EXPECT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt, true, &ff));
   EXPECT_FALSE(gen.LastSolve().reached_solve);
   // The solver was never fed the bad input: the next call succeeds.
+  EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+}
+
+// ── Command-value evaluation (D-6) ──────────────────────────────────────────
+
+TEST_F(ClikOptionsTest, CommandModeRejectsDriftClamp) {
+  auto cfg = BaseConfig();
+  cfg.evaluate_at_command = true;
+  cfg.anchor_drift_max = 0.05;
+  ClikReferenceGenerator gen;
+  EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error);
+}
+
+// With a perfectly tracking robot, command mode matches the legacy
+// carry-forward path bit-for-bit (same anchor, same evaluation point); the
+// measured state never enters (the cache is fed q_c).
+TEST_F(ClikOptionsTest, CommandModeMatchesPerfectTrackingCarryForward) {
+  const pinocchio::SE3 des = OffsetTarget(0.08);
+  auto cfg_cmd = BaseConfig();
+  cfg_cmd.evaluate_at_command = true;
+  ClikReferenceGenerator cmd;
+  cmd.Init(kNv, cfg_cmd);
+  cmd.SetTaskGain(Vec6::Constant(5.0));
+  ClikReferenceGenerator legacy;
+  legacy.Init(kNv, BaseConfig());
+  legacy.SetTaskGain(Vec6::Constant(5.0));
+
+  Eigen::VectorXd q_c = q_home_;
+  Eigen::VectorXd q_legacy = q_home_;
+  for (int k = 0; k < 2000; ++k) {
+    cache_.Update(q_c, v_zero_);
+    ASSERT_TRUE(cmd.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt, /*reseed=*/true));
+    q_c = cmd.QRef();
+
+    cache_.Update(q_legacy, v_zero_);  // robot tracks q_ref exactly
+    ASSERT_TRUE(legacy.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt, /*reseed=*/false));
+    q_legacy = legacy.QRef();
+    ASSERT_EQ(0, std::memcmp(q_c.data(), q_legacy.data(), sizeof(double) * kNv)) << k;
+  }
+  cache_.Update(q_c, v_zero_);
+  EXPECT_LT((TipInBase().translation() - des.translation()).norm(), 1e-3);
+}
+
+TEST_F(ClikOptionsTest, CommandModeDetectsMeasuredStateOnTheArm) {
+  auto cfg = BaseConfig();
+  cfg.evaluate_at_command = true;
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Constant(5.0));
+  const pinocchio::SE3 des = OffsetTarget(0.05);
+
+  cache_.Update(q_home_, v_zero_);
+  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  const Eigen::VectorXd q_c = gen.QRef();
+
+  // A lagging "measured" arm fed by mistake is refused, outputs untouched.
+  Eigen::VectorXd q_meas = q_c;
+  q_meas(2) -= 1e-3;
+  cache_.Update(q_meas, v_zero_);
+  EXPECT_FALSE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  EXPECT_TRUE(gen.LastSolve().command_mismatch);
+  EXPECT_FALSE(gen.LastSolve().reached_solve);
+  EXPECT_EQ(gen.QRef(), q_c);
+
+  // Hand indices are commanded elsewhere and are not checked.
+  Eigen::VectorXd q_hand = q_c;
+  q_hand(7) += 5e-3;
+  cache_.Update(q_hand, v_zero_);
+  EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+  EXPECT_FALSE(gen.LastSolve().command_mismatch);
+
+  // ResetAnchor (re-arm) accepts any state again.
+  gen.ResetAnchor();
+  cache_.Update(q_meas, v_zero_);
   EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
 }
 
