@@ -290,6 +290,64 @@ TEST_F(CmConfigPipelineTest, SubModelResolvesLinksAndMergesUrdfLimits) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// ── urdf.extra_frames (dynamic_catching S2.3a) ──────────────────────────────
+
+TEST_F(CmConfigPipelineTest, ExtraFramesParseAndSurviveReconfigure) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("urdf.package", std::string("robot_descriptions"));
+  node->declare_parameter("urdf.path", std::string("robots/panda/urdf/panda.urdf"));
+  node->declare_parameter("urdf.extra_frames.catch_frame.parent", std::string("panda_hand"));
+  node->declare_parameter("urdf.extra_frames.catch_frame.xyz", std::vector<double>{0.0, 0.0, 0.1});
+  node->declare_parameter("urdf.extra_frames.catch_frame.rpy",
+                          std::vector<double>{3.141592653589793, 0.0, 0.0});
+  // Integer lists are accepted (YAML `[0, 0, 0]` arrives as an integer array).
+  node->declare_parameter("urdf.extra_frames.marker.parent", std::string("panda_link0"));
+  node->declare_parameter("urdf.extra_frames.marker.xyz", std::vector<int64_t>{1, 0, 0});
+  node->declare_parameter("urdf.extra_frames.marker.rpy", std::vector<int64_t>{0, 0, 0});
+  node->declare_parameter("urdf.extra_frames.marker.provisional", false);
+
+  for (int round = 0; round < 2; ++round) {  // configure → cleanup → configure
+    ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured())) << round;
+    const auto& model_cfg = ControllerLifecycleTestAccess::GetSystemModelConfig(*node);
+    ASSERT_EQ(2u, model_cfg.extra_frames.size()) << round;
+    for (const auto& ef : model_cfg.extra_frames) {
+      if (ef.name == "catch_frame") {
+        EXPECT_EQ("panda_hand", ef.parent);
+        EXPECT_DOUBLE_EQ(0.1, ef.xyz.z());
+        EXPECT_TRUE(ef.provisional);
+      } else {
+        EXPECT_EQ("marker", ef.name);
+        EXPECT_DOUBLE_EQ(1.0, ef.xyz.x());
+        EXPECT_FALSE(ef.provisional);
+      }
+    }
+    EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive())) << round;
+  }
+}
+
+TEST_F(CmConfigPipelineTest, ExtraFrameWithMissingParentRefusesConfigure) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("urdf.package", std::string("robot_descriptions"));
+  node->declare_parameter("urdf.path", std::string("robots/panda/urdf/panda.urdf"));
+  node->declare_parameter("urdf.extra_frames.catch_frame.parent", std::string("no_such_link"));
+  node->declare_parameter("urdf.extra_frames.catch_frame.xyz", std::vector<double>{0.0, 0.0, 0.0});
+  node->declare_parameter("urdf.extra_frames.catch_frame.rpy", std::vector<double>{0.0, 0.0, 0.0});
+  EXPECT_NE(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+}
+
+TEST_F(CmConfigPipelineTest, IncompleteExtraFrameRefusesConfigure) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("urdf.package", std::string("robot_descriptions"));
+  node->declare_parameter("urdf.path", std::string("robots/panda/urdf/panda.urdf"));
+  node->declare_parameter("urdf.extra_frames.catch_frame.parent", std::string("panda_hand"));
+  node->declare_parameter("urdf.extra_frames.catch_frame.xyz", std::vector<double>{0.0, 0.0});
+  node->declare_parameter("urdf.extra_frames.catch_frame.rpy", std::vector<double>{0.0, 0.0, 0.0});
+  EXPECT_NE(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+}
+
 TEST_F(CmConfigPipelineTest, TreeModelResolvesRootAndUrdfOnlyLimits) {
   auto node = MakeNode();
   DeclareArmDevice(*node);
