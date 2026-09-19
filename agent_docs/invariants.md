@@ -44,6 +44,8 @@ RT path 에 포함되는 subscription / UDP receive / timer callback 은 **mailb
 
 두 시간축을 명확히 분리한다. **Topic 경계 (`header.stamp`)** = ROS wall clock (`std::chrono::system_clock`, CLOCK_REALTIME) — rosbag / tf2 / message_filters / 외부 노드 호환. **내부 timing / watchdog / staleness** = monotonic (`std::chrono::steady_clock`) — NTP step·역행에 불변. **`header.stamp` 를 staleness / E-STOP / deadline 판단에 사용 금지** (wall clock 은 NTP 로 역행·점프 가능). 현 코드는 `last_state_ns_` 등 watchdog 을 steady_clock 으로 유지해 이미 준수.
 
+**기록된 예외 — 원격 예측 궤적의 물리 샘플 시각** (dynamic_catching D-2, E-1 승인 2026-09-19, 구현은 S1.3·S5.2): 수신 콜백은 `t_ref_steady = recv_steady − (recv_wall − stamp)` 를 1회 계산해 원격 예측의 물리 시각축을 steady 로 옮긴다. 다음을 모두 만족할 때만 허용하고 하나라도 깨지면 E-1 이다: ① freshness·stale·watchdog 판정은 `now_steady − recv_steady` 로만 한다, ② 보정항이 음수로 `future_tol` 을 넘으면 메시지를 거부하고 센다, ③ 송·수신이 같은 호스트의 CLOCK_REALTIME 을 공유하거나 PTP 동기가 검증된 경우로 한정한다 (실기는 S10 에서 재확인), ④ 보정항 분포를 진단으로 발행해 점프를 관측할 수 있게 한다. 이 예외는 t_c·t_cmd 같은 deadline 판정을 stamp 에서 파생시키므로, wall clock 점프는 그 판정 오차로 그대로 들어간다. `header.stamp` 로 staleness·E-STOP 을 판단하는 것은 여전히 금지이며, 이 예외는 다른 토픽의 근거가 아니다. 계약 전문: [IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) §3.1.
+
 ### RT pub/sub primitive catalog
 
 RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free + heap-free + single-owner) 를 default 로 하고, 정당한 이유 (신규 단일-토픽 publisher, MPSC 필요 등) 가 있을 때만 2순위로 내려간다. 금지 항목은 RT-1~10 위반.
