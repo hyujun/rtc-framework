@@ -378,6 +378,16 @@ if(BUILD_TESTING)
   # than a failed case.
   ament_add_gtest(test_catching_time_types test/test_catching_time_types.cpp)
   target_link_libraries(test_catching_time_types rtc_controllers)
+
+  # Trajectory snapshot + quintic Hermite sampler (G2-A..E, G2-G, G2-H). The RT
+  # read path is gated by both allocation sensors (operator new and Eigen's own
+  # allocator), hence both test include dirs and the program-wide
+  # -Wmismatched-new-delete false positive of the alloc gate.
+  ament_add_gtest(test_catching_traj_sampler test/test_catching_traj_sampler.cpp)
+  target_link_libraries(test_catching_traj_sampler rtc_controllers)
+  target_include_directories(test_catching_traj_sampler PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_traj_sampler PRIVATE -Wno-mismatched-new-delete)
 endif()
 
 ament_package()
