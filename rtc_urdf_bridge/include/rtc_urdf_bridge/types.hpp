@@ -258,6 +258,22 @@ struct SubModelConfig {
   std::string tip_link;
 };
 
+/// A frame the model builder adds to the full model after parsing the URDF
+/// (dynamic_catching D-10/D-17, e.g. a catch frame). Declared in the robot
+/// config as `urdf.extra_frames.<name>.{parent, xyz, rpy, provisional}`.
+/// Every derived model (sub / tree / actuated) is reduced from the full model,
+/// so it inherits the frame; where the parent joint is locked the frame hangs
+/// off the nearest kept ancestor with the same world placement.
+struct ExtraFrameConfig {
+  std::string name;    ///< new frame name — must not exist in the model
+  std::string parent;  ///< existing frame (link, joint or frame) it is fixed to
+  Eigen::Vector3d xyz{Eigen::Vector3d::Zero()};  ///< [m], in the parent frame
+  Eigen::Vector3d rpy{Eigen::Vector3d::Zero()};  ///< [rad], URDF convention R = Rz·Ry·Rx
+  /// Not yet confirmed by the user (D-17). Consumers that command a real arm
+  /// must refuse a provisional frame; the builder itself only carries the flag.
+  bool provisional{true};
+};
+
 struct TreeModelConfig {
   std::string name;
   std::string root_link;
@@ -299,6 +315,9 @@ struct ModelConfig {
 
   // 잠금 관절의 기준 설정값 (joint_name → radian)
   std::unordered_map<std::string, double> lock_reference_config;
+
+  // Full 모델에 추가할 frame (catch frame 등). 파생 모델은 full 에서 축소되므로 상속한다.
+  std::vector<ExtraFrameConfig> extra_frames;
 };
 
 }  // namespace rtc_urdf_bridge
