@@ -16,10 +16,12 @@ float32[3] tof_raw        # ToF 거리 센서 3개 (raw, pre-LPF)
 #   sign  : fingertip 이 물체에 *가하는* 힘 (finger-on-object). 이 토픽을 발행하는
 #           fingertip 센서 경로 (proto-1b firmware, 1a ONNX 추론) 는 전부 이 부호다.
 #           "환경이 손가락에 가하는 힘" 이 필요한 소비자는 -1 을 곱한다.
-#           주의 — rtc_mujoco_sim 의 contact-wrench lane 은 이 메시지가 아니라
-#           geometry_msgs/WrenchStamped 로 나가며 부호가 **반대** (env-on-link,
-#           ROS wrench 관례). mujoco_native backend 를 통해 같은 inference slot
-#           1..3 으로 들어오므로, 그 경로의 소비자는 부호를 따로 맞춰야 한다.
+#           rtc_mujoco_sim 의 contact-wrench lane 은 이 메시지가 아니라
+#           geometry_msgs/WrenchStamped 로 나가지만 부호는 **같다**
+#           (fingertip-on-environment = finger-on-object, 0fcc1d23 이후 — 그 전에는
+#           ROS env-on-link 로 반대였다). mujoco_native backend 를 통해 같은
+#           inference slot 1..3 으로 들어온다. 부호 변환 지점은 소비자 쪽
+#           rtc::grasp::PullContactConfig::force_sign 하나뿐이다.
 float32[3] f              # 추정 힘 벡터 [Fx, Fy, Fz] — 위 contract 참조
 float32[3] u              # 추정 변위 벡터 [ux, uy, uz]
 float32    contact_flag   # 접촉 판별 플래그 (0.0 or 1.0)
