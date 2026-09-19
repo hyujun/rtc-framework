@@ -817,5 +817,51 @@ TEST_F(ClikReferenceTest, AnchorDriftClampBoundsCarryForward) {
   }
 }
 
+// One non-finite target must cost exactly one tick. The QP warm-starts from the
+// previous iterates; before the QPSolverWrapper fix a NaN target left NaN
+// iterates and every later Compute() failed, so CLIK — DemoWbc's only position
+// backbone — stayed off until reconfigure. The failure → recovery path must
+// also stay allocation-free (it runs on the RT tick).
+TEST_F(ClikReferenceTest, RecoversOneTickAfterNonFiniteTarget) {
+  auto gen = MakeGenerator(1e-6, 1.5);
+  gen.SetTaskGain(Vec6::Constant(2.0));
+  gen.SetPostureGains(0.5, 1.0);
+
+  cache_.Update(q_home_, v_zero_);
+  pinocchio::SE3 des = TipInBase();
+  des.translation()(2) += 0.05;
+  pinocchio::SE3 bad = des;
+  bad.translation()(0) = std::numeric_limits<double>::quiet_NaN();
+
+  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, 0.002));
+
+  // Positive control: the counter sees an allocation made while armed.
+  AllocCounter::Arm();
+  {
+    // volatile: a plain new/delete pair may be elided by the compiler.
+    int* volatile probe = new int(0);
+    delete probe;
+  }
+  AllocCounter::Disarm();
+  ASSERT_GT(AllocCounter::alloc_count.load(), 0);
+
+  bool bad_ok = true;
+  int ok_after = 0;
+  AllocCounter::Arm();
+  bad_ok = gen.Compute(cache_, tcp_idx_, base_idx_, bad, q_home_, 0.002);
+  for (int k = 0; k < 20; ++k) {
+    if (gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, 0.002)) {
+      ++ok_after;
+    }
+  }
+  AllocCounter::Disarm();
+
+  EXPECT_FALSE(bad_ok);
+  EXPECT_EQ(ok_after, 20);
+  EXPECT_EQ(AllocCounter::alloc_count.load(), 0);
+  EXPECT_TRUE(gen.QRef().allFinite());
+  EXPECT_TRUE(gen.VRef().allFinite());
+}
+
 }  // namespace
 }  // namespace rtc::tsid

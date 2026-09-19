@@ -51,6 +51,9 @@ class QPSolverWrapper {
   // QP solve (RT-safe: 사전 할당된 workspace만 사용)
   // qp.n_vars, n_eq, n_ineq가 이전 호출과 다르면 내부 re-init
   // 결과는 내부 result_에 저장, reference 반환
+  // converged == true 이면 x_opt 는 유한하다. 해가 비유한이면 (예: NaN 이 섞인
+  // g) ProxQP 가 SOLVED 를 내도 converged = false 이고 x_opt 는 직전 해를 유지하며,
+  // 다음 solve 는 warm start 없이 시작한다 (비유한 해가 이후 solve 를 전부 막지 않게).
   [[nodiscard]] const SolveResult& Solve(const QPData& qp) noexcept;
 
   // 설정 변경 (non-RT)
