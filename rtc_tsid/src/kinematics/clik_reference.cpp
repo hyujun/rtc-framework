@@ -157,6 +157,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
 
   manipulability_ = 0.0;
   tcp_error_norm_ = 0.0;
+  last_solve_ = SolveDiagnostics{};
 
   q_ref_.setZero(nv_);
   v_ref_.setZero(nv_);
@@ -186,6 +187,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
                                      int base_frame_idx, const pinocchio::SE3& placement_des,
                                      const Eigen::VectorXd& q_posture_des, double dt,
                                      bool reseed_anchor) noexcept {
+  last_solve_ = SolveDiagnostics{};
   if (!PreconditionsHold(cache, tcp_frame_idx, base_frame_idx, q_posture_des, dt)) {
     return false;
   }
@@ -325,6 +327,12 @@ bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, doub
   const int N = nv_;
   // ── Solve (C = Iₙ already set in Init) ──
   const auto& res = qp_solver_.Solve(qp_data_);
+  last_solve_.reached_solve = true;
+  last_solve_.converged = res.converged;
+  last_solve_.non_finite = res.non_finite;
+  last_solve_.status = res.status;
+  last_solve_.iterations = res.iterations;
+  last_solve_.solve_time_us = res.solve_time_us;
   if (!res.converged) {
     q_ref_ = cache.q;
     v_ref_.setZero();
@@ -361,6 +369,7 @@ bool ClikReferenceGenerator::SolveAndIntegrate(const PinocchioCache& cache, doub
   }
 
   if (!q_ref_.allFinite() || !v_ref_.allFinite()) {
+    last_solve_.non_finite = true;
     // Safe outputs even if the caller ignores the return value.
     q_ref_ = cache.q;
     v_ref_.setZero();

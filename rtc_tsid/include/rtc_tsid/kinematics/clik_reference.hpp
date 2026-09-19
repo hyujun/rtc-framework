@@ -161,6 +161,20 @@ class ClikReferenceGenerator {
   // ‖e_x‖ of the last Compute() (6D mixed: position [m] + rotation [rad]).
   [[nodiscard]] double TcpErrorNorm() const noexcept { return tcp_error_norm_; }
 
+  /// Solver outcome of the last Compute() (dynamic_catching S2.2b, L5 §5.1).
+  /// Diagnostic only — it never changes the outputs. Filled on every call;
+  /// a call rejected by its preconditions leaves reached_solve = false.
+  struct SolveDiagnostics {
+    bool reached_solve{false};  ///< preconditions held and the QP was solved
+    bool converged{false};      ///< QP converged with finite iterates
+    bool non_finite{false};     ///< QP iterates or q_ref / v_ref were non-finite
+    int status{-1};             ///< proxsuite::proxqp::QPSolverOutput (0 = SOLVED), −1 = none
+    int iterations{0};          ///< ProxQP outer iterations
+    double solve_time_us{0.0};  ///< wall time of the solve [µs]
+  };
+
+  [[nodiscard]] const SolveDiagnostics& LastSolve() const noexcept { return last_solve_; }
+
  private:
   // Shared stages of Compute(). Each keeps the floating-point accumulation
   // order of the original single-function Compute(), which the golden-vector
@@ -200,6 +214,7 @@ class ClikReferenceGenerator {
   double kh_{0.0};
 
   // Last-Compute diagnostics
+  SolveDiagnostics last_solve_;
   double manipulability_{0.0};
   double tcp_error_norm_{0.0};
 

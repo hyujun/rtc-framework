@@ -76,6 +76,7 @@ void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
 const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   if (!initialized_) {
     result_.converged = false;
+    result_.status = -1;
     return result_;
   }
 
@@ -139,6 +140,8 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   // 결과 추출 — caller 가 알려준 active dim (qp.n_vars) 만큼만 읽음
   result_.converged = iterates_finite && (qp_->results.info.status ==
                                           proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED);
+  result_.status = static_cast<int>(qp_->results.info.status);
+  result_.non_finite = !iterates_finite;
   result_.iterations = static_cast<int>(qp_->results.info.iter);
 
   const int active_n = (qp.n_vars > 0 && qp.n_vars <= n) ? qp.n_vars : n;
