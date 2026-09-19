@@ -27,6 +27,7 @@
 | D-16 | 관절 가속 한계는 **토크 한계에서 도출**한다 (§9). 시뮬레이션 추정은 교차 검증용. YAML 의 기존 `max_acceleration` 값은 쓰지 않는다 | **확정** | 가속 데이터 없음, 토크 데이터 있음. 기존 `max_acceleration` (5.0 rad/s²) 은 CM 이 읽기만 하고 어떤 컨트롤러도 쓰지 않는 placeholder |
 | D-17 | catch frame 의 부모 frame·위치 offset·자세는 **YAML 로 열어 둔다**. 초기값은 S2.3 에서 제안하고, 사용자가 sim 에서 확인해 실제 값으로 갱신한다 (§10) | **확정** | 사용자 결정 |
 | D-18 | 투척 목표는 **arm manipulability 기반 포구 가능성(catchability)** 으로 정한다. 발사 영역 (arm base frame 기준 수평 거리 √(x²+y²) = 4 m 의 원호 — 좌우로 흩어진 투척 포함, world z 1.5–2.0 m = 사람이 손으로 던지는 높이) 에서 출발한 궤적 위 포구 후보마다, 손바닥 +z 가 공 진행 방향을 마주보는 자세(a_d = −v̂)의 IK 해에서 manipulability 를 재고, threshold 이상인 후보가 있으면 잡을 수 있는 공, 없으면 포기. 이 판정으로 투척 속도·각도 범위를 정한다. threshold 초기값 0.1 (provisional, 사용자가 sim 에서 자세를 보고 갱신) | **확정** — 정의 세부는 §11 | 사용자 결정 |
+| D-19 | 단계마다 **`demo_controller_gui` 갱신과 `plot_rtc_log` 로 CSV 플롯을 구현·확인**한다. 각 단계 게이트에 GUI 확인과 plot 회귀 테스트를 포함한다 (§13) | **확정** | 사용자 결정 |
 | D-12 | 사용자 제공 값: 투척 목표는 D-18 로 대체, 공 사양, 실기 T_close,tot 측정 시점, 성공률 하한·시행 수. 관절 가속 한계는 D-16, catch frame 은 D-17 로 대체 | **방식 확정, 값 대기** | 추측 금지. 임시값은 YAML 에 provisional 표시 |
 
 ## 1a. Sprint Contract (A-1 승인, 2026-09-19)
@@ -133,7 +134,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S2.5 관절 가속 한계 도출 도구 (D-16, §9): 토크 한계 + 동역학 모델 → 보수적 가속 box, provenance 포함 YAML 출력. sim 교차 검증
 - S2.4 DemoWbc 회귀(기존 assertion 무수정), `rtc_tsid`·`rtc_urdf_bridge` downstream 빌드·테스트, `/code-review`
 
-게이트: 옵션 off 시 기존 출력 동일, 기존 테스트 전부 green, 할당 0. S2.5 는 도출값이 sim 교차 검증(§9)과 모순되지 않음.
+게이트: 옵션 off 시 기존 출력 동일, 기존 테스트 전부 green, 할당 0. GUI·plot (§13 S2 행). S2.5 는 도출값이 sim 교차 검증(§9)과 모순되지 않음.
 
 ### S3 시뮬레이션 기반 (`rtc_mujoco_sim`, robot-agnostic)
 
@@ -145,7 +146,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S3.6 vision 요구 사양 산출 (D-15): 목표 투척 분포에서 "검출 이후 포구 창 종료까지 최대 비행 시간" → 필요 지평, L2 보간 게이트를 만족하는 간격 → 점 수 → 파서 용량. 결과를 ball_perception sim profile 설정값으로 제시 (설정은 사용자)
 - S3.7 팔 지연 에뮬레이션 (L5 §4.6 `sim.arm_lag`): sim 에서 T_arm 을 주입해 L5 G5-D·G5-E 를 돌릴 수 있게 한다 (backend 에 지연 보상이 없으므로 선행 보상 검증에 필요)
 
-게이트: 발사 → PointCloud2 수신 end-to-end, seed 재현성, RTF 게이트 동작.
+게이트: 발사 → PointCloud2 수신 end-to-end, seed 재현성, RTF 게이트 동작. GUI·plot (§13 S3 행).
 
 ### S4 손 타이밍 선행 측정 (go/no-go)
 
@@ -154,7 +155,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S4.3 가능하면 실기 T_close,tot 측정
 - S4.4 받을 수 있는 최대 공 속력 계산 → 목표 투척 속도(D-12) 확정 또는 하향
 
-게이트: 목표 속도에서 γ 창이 비지 않음. 비면 목표를 낮춘 뒤 진행.
+게이트: 목표 속도에서 γ 창이 비지 않음. 비면 목표를 낮춘 뒤 진행. GUI·plot (§13 S4 행).
 
 ### S5 포구 컨트롤러 골격·입력·추종 (Adding a New Controller)
 
@@ -164,7 +165,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S5.4 CSV 로그, 상태 publisher (`PublishRole` 없이)
 - S5.5 ground truth 기반 고정 포구점(oracle plan)으로 추종 검증
 
-게이트: L4 G4-H·L5 G5-A~C4 (sim), 할당 0.
+게이트: L4 G4-H·L5 G5-A~C4 (sim), 할당 0. GUI·plot (§13 S5 행).
 
 ### S6 계획기 스레드 (D-7)
 
@@ -175,7 +176,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S6.5 D-7a 측정: 제어 PC 부하 상태에서 FIFO·OTHER 각각 수신 → plan 게시 지연 p50·p99·최대, 예산 초과율 → §7.2 기준으로 정책 확정
 - S6.6 NLP 전환 대비 (A-4, §8): 탐색 전략을 계획기 코어의 단일 진입 함수 뒤에 두어, 1차원 탐색 + IK 를 NLP 로 바꿔도 스레드·입출력 스냅샷·RT 쪽 소비 코드는 그대로 두는 경계를 유지. 전환 판단 신호(IK 수렴률 G3-G, 계획 성공률, 예산 초과율)를 S6·S8 에서 기록
 
-게이트: L3 G3-A~E, G3-C 예산 준수, Adding a New Thread 3 oracle.
+게이트: L3 G3-A~E, G3-C 예산 준수, Adding a New Thread 3 oracle. GUI·plot (§13 S6 행).
 
 ### S7 손 시퀀서·슈퍼바이저
 
@@ -184,27 +185,27 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - S7.3 접촉 판정 (sim·실기 모두 finger-on-object — 착수 시 재확인), 감속, 충격량 예산
 - S7.4 abort·retreat·재무장 리셋, 연속 투척
 
-게이트: L7 G7-A~E, L8 G8-A2.
+게이트: L7 G7-A~E, L8 G8-A2. GUI·plot (§13 S7 행).
 
 ### S8 sim 통합 평가
 
 - iiwa7_leap → ur5e_p1b. Wilson CI, NEES, 소거실험(γ, lead). **γ 포화 빈도 측정 → D-8 재검토 입력**
 
-게이트: L8 G8-A~E (성공률 하한은 D-12).
+게이트: L8 G8-A~E (성공률 하한은 D-12). GUI·plot (§13 S8 행).
 
 ### S9 E-STOP·fault 정책 (D-13)
 
 - D-13 결정 → 구현 → `/security-review` (E-8)
 - 결정 시 검토할 부작용: E-STOP 중 손도 측정 자세 유지 → position servo 간극이 0 이 되어 파지력 소실 가능
 
-게이트: E-STOP 발동·해제 시나리오 테스트, security review 통과. **S10 착수 전 필수.**
+게이트: E-STOP 발동·해제 시나리오 테스트, security review 통과, GUI·plot (§13 S9 행). **S10 착수 전 필수.**
 
 ### S10 실기 단계 도입 (HW-P1B)
 
 - bag replay(재스탬프 도구) → 가상 공 → 저속 실투척 → 상향
 - T_arm 식별·선행, speed scaling·PTP 감시(신호 출처 확보 후)
 
-게이트: L5 G5-F, L6 G6-D/E, L7 G7-F, L8 G8-F/G.
+게이트: L5 G5-F, L6 G6-D/E, L7 G7-F, L8 G8-F/G. GUI·plot (§13 S10 행).
 
 ## 5. D-3 검증 계획 (채택 조건부)
 
@@ -283,12 +284,12 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 
 ### 7.3 미결정
 
-**S0.3 동기화에서 나온 확인 요청 (결정 필요)**
+**S0.3 동기화 확인 사항 — 확정 (2026-09-19)**
 
-- C-1 vision `validity` 는 점마다 있다 — 한 점이라도 VALID 가 아니면 메시지 전체를 거부 (L1 §4.4 보수적 기본값) 할지, 유효 점만 받을지. 권장: 전체 거부로 시작, S3.4 실측에서 부분 무효가 실제로 나오면 재검토
-- C-2 L1 에서 `header.stamp` 기반 나이 거부(`io.max_age`)를 삭제하고 원점 지연(수신 wall − stamp)은 진단으로만 남겼다 — 시각이 절대값(D-2)이라 오래된 원점은 지평 검사가 거른다. 권장: 확인 (거부 없음)
-- C-3 L3 의 `planner.ik.manip_min` 을 D-18 w₅ 게이트로 대체해 삭제했다 (J_p 가 계수 손실하면 w₅ = 0). 권장: 확인
-- C-4 포구 후보마다 IK seed 를 대기 자세로 고정했다 (지도 도구와 런타임 일치, §11) — 이전 plan 해로 warm start 하지 않아 IK 반복·예산이 늘 수 있다. 권장: 확인, 예산은 S6.3 에서 측정
+- C-1 vision `validity`: 한 점이라도 VALID 가 아니면 메시지 전체를 거부한다. S3.4 실측에서 부분 무효가 실제로 나오면 재검토
+- C-2 `header.stamp` 기반 나이 거부는 두지 않는다. 원점 지연(수신 wall − stamp)은 진단으로만 남긴다 (오래된 원점은 절대 시각 기반 지평 검사가 거른다)
+- C-3 `planner.ik.manip_min` 은 D-18 게이트로 대체한다. **IK·게이트는 w₅ 로 풀고, 검증은 w₆ 로 해야 할 수도 있다** — §11 의 w₅/w₆ 병행 규칙
+- C-4 포구 후보마다 IK seed 는 대기 자세로 고정한다. IK 반복·예산 증가는 S6.3 에서 측정
 
 **단계에서 정할 것 (S0.3 에서 발견, 결정은 해당 단계)**
 
@@ -301,7 +302,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 - S7 homing 을 IDLE 하위 단계로 둘지 별도 Mode 로 둘지, `REF_SATURATED` 판정식, 손 hold 힘 한계를 position 목표로 표현하는 규칙
 - TBD-WS-01 (바닥·작업셀 경계) 을 닫는 단계가 없다 — S3.5 catchability 지도에서 작업셀 경계를 입력으로 쓸 때 함께 정한다
 
-**repo drift (이 작업 범위 밖 — 별도 처리 제안)**
+**repo drift (이 작업 범위 밖 — 사용자가 별도 브랜치로 처리, 2026-09-19)**
 
 - `rtc_msgs` FingertipSensor 메시지 주석이 "sim contact-wrench 는 반대 부호" 라고 적지만 커밋 0fcc1d23 이후 같은 부호다 (메시지 파일 변경이라 PROC-3 전체 빌드 대상)
 - `agent_docs/controllers.md` 의 DemoWbc 행이 "TSID QP → accel → position integration" 이라 적지만 실제 위치 백본은 CLIK
@@ -309,6 +310,8 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** S3.1 에서 다�
 - MPC 경로가 문서상 RT 로 분류되지만 mutex·`fprintf` 를 쓴다 (§6)
 
 **기존 미결정**
+
+- D-20 (S5 전) 포구 상태 메시지 — 권장: `rtc_msgs` 에 새 상태 메시지 추가 (`WbcState`·`GraspState` 선례, §13)
 
 
 - D-7e (조건부) vision 수신 경로가 지연을 지배할 때의 대안 — 7.2 측정 결과가 나오면
@@ -379,7 +382,12 @@ extra_frames:
 
 - Jacobian: catch frame 의 **팔 관절 열**만 쓴다. 손 관절은 손바닥 frame 에 영향이 없다 (손바닥은 폐쇄 체인 상류, §2)
 - 행: 포구 과제와 같은 **5행** — 병진 3 (LOCAL_WORLD_ALIGNED) + 접근축 2 (LOCAL x·y 각속도). 손바닥 법선 둘레 회전(roll)은 포구에 무관하므로 뺀다. w₅ = √det(J₅ J₅ᵀ)
-- 기존 CLIK 진단값 (`ClikReferenceGenerator::Manipulability`, 6×6 damped) 은 roll 을 포함하므로 같은 값이 아니다. 로그에는 둘 다 남겨 비교한다
+- 기존 CLIK 진단값 (`ClikReferenceGenerator::Manipulability`, 6×6 damped) 은 roll 을 포함하므로 같은 값이 아니다
+- **w₅/w₆ 병행 (C-3).** IK 와 게이트는 w₅ 로 푼다. 검증은 roll 까지 포함한 w₆ = √det(J₆ J₆ᵀ) (팔 열 6×6, damping 없음) 로 해야 할 수도 있으므로:
+  - 지도 도구(S3.5)와 런타임 계획기(S6.2)는 매 후보에서 **w₅ 와 w₆ 를 모두 계산·기록**한다 (CSV·`PlanSnapshot`)
+  - 게이트 정의는 YAML `definition` (`arm_5row` 기본, `arm_6row` 선택) 으로 바꿀 수 있게 하고, **threshold 는 정의별로 따로 둔다** — 단위·차원이 달라 같은 수치를 쓸 수 없다
+  - w₆ 는 IK 가 남긴 roll 에 의존한다. roll 은 대기 자세 seed + 자세 과제로 결정적으로 정해지므로 (C-4) 지도와 런타임의 w₆ 도 같은 값이 된다
+  - 어느 정의로 판정할지는 S3.5 지도에서 두 값의 분포와 사용자의 sim 자세 확인을 보고 정한다
 - 단위가 섞여 있어 (m 와 rad) w 의 크기는 정의에 따라 달라진다. **threshold 0.1 은 위 정의에 대한 값**이고, 정의를 바꾸면 다시 맞춰야 한다
 
 **포구 자세의 여유 자유도.** 6축 UR5e 에서 5행 과제는 1 자유도(손바닥 법선 둘레 roll)와 IK 해 가지가 남아 w 가 그 선택에 따라 달라진다. 런타임과 지도가 같은 해를 쓰도록 **대기 자세(wait_pose)에서 시작하는 같은 IK(자세 과제 포함)** 로 정한다. roll 을 w 최대화로 고르는 방식은 v1 범위 밖 (필요하면 S8 이후).
@@ -395,8 +403,10 @@ extra_frames:
 ```yaml
 planner:
   catchability:
-    manipulability_min: 0.1        # provisional — 사용자가 sim 에서 자세 확인 후 갱신
-    definition: "arm_5row"          # 위 정의. 바꾸면 threshold 재보정
+    definition: "arm_5row"          # arm_5row (기본) | arm_6row — 게이트에 쓸 정의
+    manipulability_min:
+      arm_5row: 0.1                 # provisional — 사용자가 sim 에서 자세 확인 후 갱신
+      arm_6row: TBD                 # w₆ 로 판정할 때. S3.5 지도 결과로 제안
 sim:
   throw_region:                     # S3.5 지도 도구·발사 설정 입력
     base_frame: "base"              # 로봇 config 의 CLIK base_frame 과 일치해야 함 (검증기)
@@ -422,3 +432,31 @@ sim:
 - 토크에서 도출한 보수적 가속 box (D-16) 가 받을 수 있는 공 속력을 낮출 수 있다 — S4.4 에서 함께 판정
 - vision 지평이 짧으면 (현 예시 profile 0.5 s) 계획 가능한 포구 창이 줄어든다 — S3.6 요구 사양으로 sim profile 을 맞춘다
 - 1차원 분해가 복잡한 경우를 놓치면 NLP 전환 (§8) 이 필요해 S6 재작업
+
+## 13. GUI·plot 단계별 구현과 확인 (D-19)
+
+단계마다 그 단계가 만든 상태·로그를 **`demo_controller_gui` 에서 보이게 하고, CSV 를 `plot_rtc_log` 로 그릴 수 있게** 한다. 둘 다 단계 게이트에 들어간다.
+
+**기존 패턴 (따른다).**
+
+- GUI (`integrated_bringup` demo_gui): 컨트롤러 목록은 `/rtc_cm/list_controllers` 로 자동 발견된다. 새 컨트롤러는 목표 형태·게인 스키마 (`GAIN_DEFS` 등, config 모듈) 와 상태 메시지 패널을 추가한다 — DemoWbc 는 `WbcState`, grasp 는 `GraspState` 를 구독한다. 회귀는 integrated_bringup 의 `test_demo_gui_*` 테스트
+- plot (`rtc_tools` plotting): 새 CSV 는 파일명·컬럼으로 종류를 판별하고 (log_type 모듈), 전용 plotter 와 pipeline 등록을 더한다 — `wbc_diag`·`compliance_diag` 가 선례. 회귀는 rtc_tools 의 `test_plot_rtc_log.py`. 스레드 timing CSV 는 공통 8열 스키마라 timing plotter 를 재사용한다
+- GUI 육안 확인은 `verify` skill 의 sim 절차를 따른다
+
+**단계별 항목.**
+
+| 단계 | GUI | CSV · plot |
+|---|---|---|
+| S2 | 변경 없음 (DemoWbc 패널이 CLIK 옵션 off 에서 그대로 동작하는지 확인) | `wbc_diag` 플롯이 그대로인지 회귀 확인. CLIK 새 진단(status·반복·solve time·`bound_conflict`)을 기존 CSV 에 더하면 plotter 반영 |
+| S3 | sim 공 발사(D-14 srv) 버튼·발사 조건 입력, 공 상태(ground truth·vision 예측 수신 여부) 표시 | RTF 진단 CSV (D-3 게이트), catchability 지도 결과 (w₅·w₆ 분포, 방위별 포구 가능 구간) 는 지도 도구 자체 플롯 |
+| S4 | 손 step 명령·T_close 식별 실행 | T_close 식별 CSV → ρ(t)·T_close 분포 플롯 |
+| S5 | 포구 컨트롤러 패널: 모드·입력 상태(n·generation·수신 나이·지평), 기준 vs 실제 추종 오차, CLIK 상태, arm/disarm | `catching_diag.csv` (tick 별: 입력 스냅샷, L4 기준, CLIK 상태, q_c vs q) → 새 plot 종류 + 회귀 테스트 |
+| S6 | plan 표시: t_c·p_c·γ_f·w₅·w₆·탈락 사유·plan 나이 | `planner_timing_log.csv` (timing plotter 재사용), plan 이벤트 CSV (후보별 게이트 결과) → plot |
+| S7 | 슈퍼바이저 모드·사유·결과, 손 위상, 접촉 센서 | 전이 로그·손 위상·접촉 CSV → plot (전이 시각선을 추종 플롯에 겹침) |
+| S8 | 연속 투척 진행 표시 | 시행 요약 CSV → 성공률 (Wilson 구간)·NEES·소거실험 플롯 (오프라인 평가 스크립트) |
+| S9 | E-STOP·fault 상태·해제 흐름 | E-STOP/fault 사건이 CSV 와 플롯에 드러나는지 |
+| S10 | 실기 모드 표시 (provisional 값 차단 상태 포함) | 실기 세션 CSV 가 같은 plot 으로 그려지는지 |
+
+**게이트 공통.** 해당 단계의 (1) GUI 패널이 sim 에서 값을 표시하고 조작이 컨트롤러에 반영됨 (육안 확인 + `test_demo_gui_*` 추가), (2) 새 CSV 가 `plot_rtc_log` 로 파싱·플롯되고 `test_plot_rtc_log.py` 에 회귀 케이스가 있음.
+
+**결정 필요 (S5 전).** 포구 상태를 GUI 로 보낼 메시지. 기존 선례는 컨트롤러별 상태 메시지(`WbcState`, `GraspState`)이므로 `rtc_msgs` 에 포구 상태 메시지를 새로 추가하는 것이 자연스럽다 — Adding a New Message 절차, `rtc_msgs` 변경이라 PROC-3 전체 빌드 (§7.3).
