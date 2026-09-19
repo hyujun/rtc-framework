@@ -69,6 +69,19 @@
             - "index_tip_head"
             - "middle_tip_head"
             - "ring_tip_head"
+      # Frames the model builder adds to the full model (inherited by every
+      # derived model) — dynamic_catching D-10/D-17, plan §10. Changing a value
+      # needs a controller re-configure (read at model build).
+      extra_frames:
+        catch_frame:
+          parent: "palm_lower"
+          # Pocket-centre offset: provisional 0 until S2.3b (preshape fingertip
+          # centroid, after S4.1).
+          xyz: [0.0, 0.0, 0.0]
+          # palm_lower −z is the palm outward normal (flexing moves the tip
+          # centroid toward −z, FK 2026-09-19); a π turn about x makes it +z.
+          rpy: [3.141592653589793, 0.0, 0.0]
+          provisional: true # unconfirmed in sim — blocks a real-arm catching config
 
     # ── Device configuration ──────────────────────────────────────────────────
     # Phase 4: devices.<group>.backend is the SSoT for HW/sim adapter type +

@@ -1058,6 +1058,20 @@ if(BUILD_TESTING)
   # Measures per-call latency of baseline arm-only FK/Jacobian (joint/task
   # controllers today) vs unified PinocchioCache::Update on the combined
   # arm+hand model, for iiwa7_leap + ur5e_p1b. Report-only (no timing asserts).
+  # dynamic_catching S2.3a: shipped urdf.extra_frames.catch_frame on the real
+  # robot models (placement in every derived model, palm-normal sign, nv).
+  ament_add_gtest(test_catch_frame_models test/test_catch_frame_models.cpp)
+  target_compile_definitions(test_catch_frame_models PRIVATE
+    RTC_BRINGUP_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_catch_frame_models
+    ament_index_cpp
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+    yaml-cpp
+  )
+  target_link_libraries(test_catch_frame_models yaml-cpp)
+
   ament_add_gtest(test_unified_kindyn_bench test/test_unified_kindyn_bench.cpp)
   target_link_libraries(test_unified_kindyn_bench
     ${PROJECT_NAME}_demo_controllers
