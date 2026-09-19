@@ -259,7 +259,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 
 GUI·plot: 면제 (D-19, §13).
 
-**S1 결과 (2026-09-19, S1.1~S1.8).** 코드: rtc_controllers `include/rtc_controllers/catching/` (헤더 전용) + `src/params/catching_params.cpp`, 테스트 `test/test_catching_*.cpp` 7 스위트 124 케이스. 측정: colcon (ws root) 로 rtc_controllers 전체 646 케이스 green·새 경고 0, 같은 7 스위트를 ASan/UBSan (+`_GLIBCXX_ASSERTIONS`) 별도 빌드로 실행해 보고 0 (레시피: [testing-debug.md](../../agent_docs/testing-debug.md) sensor matrix). positive control: `SampleAt` 의 `n > kCap` 검사를 지운 사본은 G2-H 케이스에서 중단된다.
+**S1 결과 (2026-09-19, S1.1~S1.8).** 코드: rtc_controllers `include/rtc_controllers/catching/` (헤더 전용) + `src/params/catching_params.cpp`, 테스트 `test/test_catching_*.cpp` 7 스위트 130 케이스. 측정: colcon (ws root) 로 rtc_controllers 전체 652 케이스 green·새 경고 0, 같은 7 스위트를 ASan/UBSan (+`_GLIBCXX_ASSERTIONS`) 별도 빌드로 실행해 보고 0 (레시피: [testing-debug.md](../../agent_docs/testing-debug.md) sensor matrix). positive control: `SampleAt` 의 `n > kCap` 검사를 지운 사본은 G2-H 케이스에서 중단된다. `/code-review` (브랜치 전체) 반영 4건: FAULT 에서 ESTOP 해제가 래치를 풀던 전이 행 (L7 §4.2 사유표 "전 구간 → IDLE" 을 그대로 옮긴 것 — P-1·S5.1(d) 와 모순이라 사유표에 FAULT 예외를 적었다), 없는 YAML 섹션이 `YAML::InvalidNode` 를 던지던 parser (이제 기본값으로 읽고 검증기가 막는다), 빈 손 배열 통과, `Check()`·`Interpolate` 의 wire 시각 int64 뺄셈 overflow (포화 연산. 되돌린 사본은 UBSan 에서 중단).
 
 | 게이트 | 판정 | 근거 |
 |---|---|---|
