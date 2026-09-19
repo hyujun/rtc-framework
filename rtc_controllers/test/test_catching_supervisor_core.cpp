@@ -462,7 +462,10 @@ TEST_F(ContactDebounceTest, GaussianNoiseFalseAlarmRateAtTheDocDefaultKSigmaIsRe
   const double false_alarm_rate =
       static_cast<double>(false_alarms) / static_cast<double>(kTestSamples);
   EXPECT_TRUE(std::isfinite(false_alarm_rate));
-  RecordProperty("false_alarm_rate_k_sigma_3", std::to_string(false_alarm_rate));
+  // Counts, not a formatted rate: std::to_string prints 6 decimals and would
+  // show a small non-zero rate as 0.000000.
+  RecordProperty("false_alarms_k_sigma_3",
+                 std::to_string(false_alarms) + "/" + std::to_string(kTestSamples));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
