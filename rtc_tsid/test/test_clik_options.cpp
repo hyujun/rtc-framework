@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -18,6 +19,8 @@
 #include <new>
 #include <random>
 #include <string>
+#include <utility>
+#include <vector>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -616,6 +619,207 @@ TEST_F(ClikOptionsTest, CommandModeDetectsMeasuredStateOnTheArm) {
   gen.ResetAnchor();
   cache_.Update(q_meas, v_zero_);
   EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt));
+}
+
+// ── Position + approach-axis overload (G5-A, L5 §4.2) ───────────────────────
+
+class ClikAxisTest : public ClikOptionsTest {
+ protected:
+  // Current TCP frame placement in the world (panda_link0 = world here).
+  [[nodiscard]] pinocchio::SE3 TipInWorld() const {
+    return cache_.registered_frames[static_cast<size_t>(tcp_idx_)].oMf;
+  }
+
+  // Target: position offset + axis tilted by `tilt` [rad] about world x.
+  [[nodiscard]] ClikReferenceGenerator::PositionAxisTarget Target(double dz, double tilt) {
+    cache_.Update(q_home_, v_zero_);
+    const pinocchio::SE3 tip = TipInWorld();
+    ClikReferenceGenerator::PositionAxisTarget t;
+    t.position = tip.translation() + Eigen::Vector3d(0.0, 0.0, dz);
+    t.axis = Eigen::AngleAxisd(tilt, Eigen::Vector3d::UnitX()) * tip.rotation().col(2);
+    return t;
+  }
+
+  // Runs the loop with perfect tracking; returns (position error, axis angle).
+  std::pair<double, double> Converge(ClikReferenceGenerator& gen,
+                                     const ClikReferenceGenerator::PositionAxisTarget& t,
+                                     int ticks) {
+    Eigen::VectorXd q = q_home_;
+    for (int k = 0; k < ticks; ++k) {
+      cache_.Update(q, v_zero_);
+      EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, -1, t, q_home_, kDt)) << k;
+      q = gen.QRef();
+    }
+    cache_.Update(q, v_zero_);
+    const pinocchio::SE3 tip = TipInWorld();
+    const double pos = (tip.translation() - t.position).norm();
+    const double ang = std::acos(std::clamp(tip.rotation().col(2).dot(t.axis), -1.0, 1.0));
+    return {pos, ang};
+  }
+
+  [[nodiscard]] static ClikReferenceGenerator MakeAxisGen(
+      const ClikReferenceGenerator::Config& cfg) {
+    ClikReferenceGenerator gen;
+    gen.Init(kNv, cfg);
+    gen.SetTaskGain(Vec6::Constant(5.0));
+    gen.SetAxisGain(5.0);
+    gen.SetPostureGains(0.5, 0.0);
+    return gen;
+  }
+};
+
+TEST_F(ClikAxisTest, RejectsInvalidAxisWeight) {
+  for (const double bad : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN()}) {
+    auto cfg = BaseConfig();
+    cfg.w_axis = bad;
+    ClikReferenceGenerator gen;
+    EXPECT_THROW(gen.Init(kNv, cfg), std::runtime_error) << bad;
+  }
+}
+
+// G5-A: stationary target → position < 1 mm, axis < 0.5°.
+TEST_F(ClikAxisTest, StationaryTargetConverges) {
+  auto gen = MakeAxisGen(BaseConfig());
+  const auto t = Target(0.05, 0.5);
+  const auto [pos, ang] = Converge(gen, t, 4000);
+  EXPECT_LT(pos, 1e-3);
+  EXPECT_LT(ang, 0.5 * M_PI / 180.0);
+}
+
+// Starting antiparallel (axis target = −z): the error is π about a fixed
+// perpendicular axis, so the frame turns around instead of stalling (the v0.1
+// sinθ error stalled here). Only the axis is checked: flipping the hand in
+// place drives the Panda wrist into its limits and against the home posture,
+// which leaves a position residual that is not the axis law's doing.
+TEST_F(ClikAxisTest, AntiparallelStartStillConverges) {
+  auto gen = MakeAxisGen(BaseConfig());
+  cache_.Update(q_home_, v_zero_);
+  ClikReferenceGenerator::PositionAxisTarget t;
+  t.position = TipInWorld().translation();
+  t.axis = -TipInWorld().rotation().col(2);
+  cache_.Update(q_home_, v_zero_);
+  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, -1, t, q_home_, kDt));
+  EXPECT_EQ(gen.LastAxisRegion(), rtc::math::se3::AxisAlignRegion::kAntiparallelDeadband);
+  gen.ResetAnchor();
+  const auto result = Converge(gen, t, 8000);
+  EXPECT_LT(result.second, 2.0 * M_PI / 180.0);
+}
+
+// The base frame only moves the target into the world: the same target given
+// in world axes (base −1) or in a rotated, translated base (panda_link1 at a
+// non-zero joint 0) produces the same step.
+TEST_F(ClikAxisTest, BaseFrameTargetMatchesWorldTarget) {
+  const int link1 = cache_.RegisterFrame("panda_link1", model_->getFrameId("panda_link1"));
+  ASSERT_GE(link1, 0);
+  Eigen::VectorXd q = q_home_;
+  q(0) = 0.7;  // rotates link1 about world z
+  cache_.Update(q, v_zero_);
+  const pinocchio::SE3 oMb = cache_.registered_frames[static_cast<size_t>(link1)].oMf;
+  ASSERT_GT((oMb.rotation() - Eigen::Matrix3d::Identity()).norm(), 0.5);
+
+  ClikReferenceGenerator::PositionAxisTarget world;
+  world.position = TipInWorld().translation() + Eigen::Vector3d(0.03, -0.02, 0.04);
+  world.axis = Eigen::AngleAxisd(0.3, Eigen::Vector3d::UnitY()) * TipInWorld().rotation().col(2);
+  world.linear_velocity_ff = Eigen::Vector3d(0.01, 0.02, -0.01);
+  world.angular_velocity_ff = Eigen::Vector3d(0.1, -0.05, 0.02);
+  ClikReferenceGenerator::PositionAxisTarget in_base;
+  in_base.position = oMb.actInv(world.position);
+  in_base.axis = oMb.rotation().transpose() * world.axis;
+  in_base.linear_velocity_ff = oMb.rotation().transpose() * world.linear_velocity_ff;
+  in_base.angular_velocity_ff = oMb.rotation().transpose() * world.angular_velocity_ff;
+
+  auto a = MakeAxisGen(BaseConfig());
+  auto b = MakeAxisGen(BaseConfig());
+  ASSERT_TRUE(a.Compute(cache_, tcp_idx_, -1, world, q_home_, kDt));
+  ASSERT_TRUE(b.Compute(cache_, tcp_idx_, link1, in_base, q_home_, kDt));
+  EXPECT_LT((a.VRef() - b.VRef()).cwiseAbs().maxCoeff(), 1e-9);
+}
+
+// L5 §4.7 sanity 2: the axis rows are the frame's LOCAL x, y angular velocity.
+TEST_F(ClikAxisTest, AxisRowsMatchFiniteDifferenceOfLocalRotation) {
+  // Step with a pure axis task and read the frame's LOCAL angular velocity
+  // from the rotation change: its x, y must equal S·R_WCᵀ·J_ω·v_ref, i.e. the
+  // command realises the requested LOCAL rate to first order.
+  auto cfg = BaseConfig();
+  cfg.w_arm = 1e-8;
+  cfg.damping_sq = 1e-10;
+  ClikReferenceGenerator gen;
+  gen.Init(kNv, cfg);
+  gen.SetTaskGain(Vec6::Zero());
+  gen.SetAxisGain(0.0);
+  ClikReferenceGenerator::PositionAxisTarget t;
+  cache_.Update(q_home_, v_zero_);
+  t.position = TipInWorld().translation();
+  t.axis = TipInWorld().rotation().col(2);
+  const Eigen::Matrix3d R0 = TipInWorld().rotation();
+  const Eigen::Vector3d w_local_req(0.2, -0.1, 0.0);
+  t.angular_velocity_ff = R0 * w_local_req;  // world-aligned ff, base = world
+
+  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, -1, t, q_home_, 1e-6));
+  cache_.Update(gen.QRef(), v_zero_);
+  const Eigen::Matrix3d R1 = TipInWorld().rotation();
+  const Eigen::AngleAxisd d(R0.transpose() * R1);
+  const Eigen::Vector3d w_local = d.angle() * d.axis() / 1e-6;
+  EXPECT_LT((w_local.head<2>() - w_local_req.head<2>()).norm(), 1e-4);
+}
+
+TEST_F(ClikAxisTest, InvalidAxisTargetFailsBeforeSolve) {
+  auto gen = MakeAxisGen(BaseConfig());
+  auto t = Target(0.0, 0.2);
+  cache_.Update(q_home_, v_zero_);
+  const std::vector<Eigen::Vector3d> bad_axes = {
+      Eigen::Vector3d(0.0, 0.0, 2.0), Eigen::Vector3d(0.0, 0.0, 0.0),
+      Eigen::Vector3d(std::numeric_limits<double>::quiet_NaN(), 0.0, 1.0)};
+  for (const Eigen::Vector3d& bad : bad_axes) {
+    auto tb = t;
+    tb.axis = bad;
+    EXPECT_FALSE(gen.Compute(cache_, tcp_idx_, -1, tb, q_home_, kDt));
+    EXPECT_FALSE(gen.LastSolve().reached_solve);
+    EXPECT_EQ(gen.LastAxisRegion(), rtc::math::se3::AxisAlignRegion::kInvalidInput);
+  }
+  auto tp = t;
+  tp.position.x() = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(gen.Compute(cache_, tcp_idx_, -1, tp, q_home_, kDt));
+  EXPECT_FALSE(gen.LastSolve().reached_solve);
+  EXPECT_TRUE(gen.Compute(cache_, tcp_idx_, -1, t, q_home_, kDt));
+}
+
+// ── RT: every option on, both overloads — no heap allocation (G5-C) ────────
+TEST_F(ClikAxisTest, AllOptionsOnComputeIsAllocationFree) {
+  auto cfg = BaseConfig();
+  cfg.q_min = model_->lowerPositionLimit;
+  cfg.q_max = model_->upperPositionLimit;
+  cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 1.0);
+  cfg.a_max = Eigen::VectorXd::Constant(kNv, 10.0);
+  cfg.w_smooth = 1e-3;
+  cfg.max_iter = 30;
+  cfg.evaluate_at_command = true;
+  auto gen = MakeAxisGen(cfg);
+  const auto t = Target(0.05, 0.4);
+  const pinocchio::SE3 des = OffsetTarget(0.05);
+  Vec6 ff = Vec6::Constant(0.01);
+
+  Eigen::VectorXd q = q_home_;
+  cache_.Update(q, v_zero_);
+  ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, t, q_home_, kDt));  // warm-up
+  q = gen.QRef();
+
+  int ok = 0;
+  AllocCounter::Arm();
+  for (int k = 0; k < 1000; ++k) {
+    cache_.Update(q, v_zero_);
+    const bool r = (k % 2 == 0)
+                       ? gen.Compute(cache_, tcp_idx_, base_idx_, t, q_home_, kDt)
+                       : gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, kDt, false, &ff);
+    ok += r ? 1 : 0;
+    q = gen.QRef();
+    if (k == 500) {
+      gen.ResetAnchor();
+    }
+  }
+  AllocCounter::Disarm();
+  EXPECT_EQ(ok, 1000);
+  EXPECT_EQ(AllocCounter::alloc_count.load(), 0);
 }
 
 }  // namespace

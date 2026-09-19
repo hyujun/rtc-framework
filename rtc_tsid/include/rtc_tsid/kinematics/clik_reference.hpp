@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rtc_math/se3/axis_align.hpp"
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
@@ -148,6 +149,9 @@ class ClikReferenceGenerator {
     //   - anchor_drift_max must be ≤ 0 (Init throws): there is no measured q
     //     to bound against; tracking is supervised outside (L7 TRACK_ERR).
     bool evaluate_at_command{false};
+    // Weight of the two approach-axis rows of the position + axis Compute()
+    // overload (L5 §4.3 w_a; finite and > 0). Unused by the SE3 overload.
+    double w_axis{0.5};
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -166,6 +170,20 @@ class ClikReferenceGenerator {
     ka_ = ka;
     kh_ = kh;
   }
+
+  /// Approach-axis gain K_a [1/s] of the position + axis overload (the
+  /// position gain is SetTaskGain()'s linear part).
+  void SetAxisGain(double ka) noexcept { k_axis_ = ka; }
+
+  /// Target of the position + approach-axis task (dynamic_catching L5 §4.2),
+  /// all in the base frame of the call. Roll about the axis is left free —
+  /// the arm posture term resolves it.
+  struct PositionAxisTarget {
+    Eigen::Vector3d position{Eigen::Vector3d::Zero()};             ///< frame origin [m]
+    Eigen::Vector3d axis{Eigen::Vector3d::UnitZ()};                ///< desired frame +z, unit
+    Eigen::Vector3d linear_velocity_ff{Eigen::Vector3d::Zero()};   ///< [m/s]
+    Eigen::Vector3d angular_velocity_ff{Eigen::Vector3d::Zero()};  ///< [rad/s]
+  };
 
   // One CLIK step anchored at the measured (cache.q, cache.v) of this tick.
   //   tcp_frame_idx / base_frame_idx : indices into cache.registered_frames
@@ -191,6 +209,31 @@ class ClikReferenceGenerator {
                              const Eigen::VectorXd& q_posture_des, double dt,
                              bool reseed_anchor = true,
                              const Eigen::Matrix<double, 6, 1>* twist_ff = nullptr) noexcept;
+
+  // Position (3 rows) + approach axis (2 rows) step for a frame whose LOCAL
+  // +z must point along target.axis, e.g. a catch frame (L5 §4.2):
+  //   J_p = rf.J rows 0–2 (LOCAL_WORLD_ALIGNED),  r_p = Kx[0:3] ⊙ e_p + v_ff
+  //   J_a = S·R_WCᵀ·rf.J rows 3–5,                r_a = S·R_WCᵀ·(K_a·e_a + ω_ff)
+  // with S = [I₂ 0] (LOCAL x, y), e_a = rtc::math::se3::AxisAlignError(z_C, a)
+  // and everything expressed in world-aligned axes: base_frame_idx only moves
+  // the target into the world (unlike the SE3 overload, whose error stays in
+  // base-aligned axes). Cost w_task‖J_p v − r_p‖² + w_axis‖J_a v − r_a‖² plus
+  // the same posture, damping, smoothing and boxes as the SE3 overload.
+  // Fails before the solve on a non-finite target or an axis that is not
+  // unit (AxisAlignError invalid); LastAxisRegion() reports the branch.
+  [[nodiscard]] bool Compute(const PinocchioCache& cache, int frame_idx, int base_frame_idx,
+                             const PositionAxisTarget& target, const Eigen::VectorXd& q_posture_des,
+                             double dt, bool reseed_anchor = true) noexcept;
+
+  /// Axis-alignment branch of the last position + axis Compute().
+  [[nodiscard]] rtc::math::se3::AxisAlignRegion LastAxisRegion() const noexcept {
+    return axis_region_;
+  }
+
+  /// ‖e_p‖ [m] and θ = ‖e_a‖ [rad] of the last position + axis Compute().
+  [[nodiscard]] double PositionErrorNorm() const noexcept { return position_error_norm_; }
+
+  [[nodiscard]] double AxisErrorAngle() const noexcept { return axis_error_angle_; }
 
   [[nodiscard]] const Eigen::VectorXd& QRef() const noexcept { return q_ref_; }
 
@@ -260,6 +303,13 @@ class ClikReferenceGenerator {
   Eigen::VectorXd v_prev_;             // [nv] v_ref of the last successful Compute()
   double w_smooth_{0.0};               // smoothing weight, 0 → off
   bool evaluate_at_command_{false};    // cache.q is the command state q_c
+  double w_axis_{0.5};                 // approach-axis rows weight
+  double k_axis_{0.0};                 // approach-axis gain K_a
+  rtc::math::se3::AxisAlignRegion axis_region_{rtc::math::se3::AxisAlignRegion::kInvalidInput};
+  double position_error_norm_{0.0};
+  double axis_error_angle_{0.0};
+  Eigen::MatrixXd j_pos_;   // [3 × nv] position rows, arm columns
+  Eigen::MatrixXd j_axis_;  // [2 × nv] approach-axis rows, arm columns
   double w_task_{1.0};
   double w_arm_{1e-2};
   double w_hand_{1e-2};

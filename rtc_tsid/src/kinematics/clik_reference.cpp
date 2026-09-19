@@ -115,6 +115,10 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
         "ClikReferenceGenerator: anchor_drift_max needs the measured state and cannot be used "
         "with evaluate_at_command");
   }
+  if (!std::isfinite(config.w_axis) || !(config.w_axis > 0.0)) {
+    throw std::runtime_error("ClikReferenceGenerator: w_axis must be finite and > 0, got " +
+                             std::to_string(config.w_axis));
+  }
   if (config.max_iter < 1) {
     throw std::runtime_error("ClikReferenceGenerator: max_iter must be >= 1, got " +
                              std::to_string(config.max_iter));
@@ -200,6 +204,7 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   a_max_ = config.a_max;
   w_smooth_ = config.w_smooth;
   evaluate_at_command_ = config.evaluate_at_command;
+  w_axis_ = config.w_axis;
   w_task_ = config.w_task;
   w_arm_ = config.w_arm;
   w_hand_ = config.w_hand;
@@ -216,6 +221,8 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   v_ref_.setZero(nv_);
   v_prev_.setZero(nv_);
   j_task_.setZero(6, nv_);
+  j_pos_.setZero(3, nv_);
+  j_axis_.setZero(2, nv_);
   v_post_arm_.setZero(n_arm_);
   v_post_hand_.setZero(n_hand_);
   j_arm_.setZero(6, n_arm_);
@@ -293,6 +300,86 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   H.noalias() += w_task_ * j_task_.transpose() * j_task_;
   // ── g = −(w_task·Jᵀr_task + scatter(w_arm·v_post_arm, w_hand·v_post_hand)) ──
   g.noalias() = -w_task_ * (j_task_.transpose() * r_task_);
+  AddPostureAndDamping();
+
+  AssembleBox(cache.q, dt);
+  return SolveAndIntegrate(cache, dt, reseed_anchor);
+}
+
+bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int frame_idx, int base_frame_idx,
+                                     const PositionAxisTarget& target,
+                                     const Eigen::VectorXd& q_posture_des, double dt,
+                                     bool reseed_anchor) noexcept {
+  namespace se3 = rtc::math::se3;
+  last_solve_ = SolveDiagnostics{};
+  axis_region_ = se3::AxisAlignRegion::kInvalidInput;
+  if (!PreconditionsHold(cache, frame_idx, base_frame_idx, q_posture_des, dt)) {
+    return false;
+  }
+  if (!target.position.allFinite() || !target.linear_velocity_ff.allFinite() ||
+      !target.angular_velocity_ff.allFinite()) {
+    return false;
+  }
+  if (!CommandStateMatches(cache)) {
+    last_solve_.command_mismatch = true;
+    return false;
+  }
+
+  const auto& rf = cache.registered_frames[static_cast<size_t>(frame_idx)];
+
+  // ── Target → world-aligned axes (base_frame_idx < 0 → already world) ──
+  Eigen::Vector3d p_des = target.position;
+  Eigen::Vector3d a_des = target.axis;
+  Eigen::Vector3d v_ff = target.linear_velocity_ff;
+  Eigen::Vector3d w_ff = target.angular_velocity_ff;
+  if (base_frame_idx >= 0) {
+    const pinocchio::SE3& oMb = cache.registered_frames[static_cast<size_t>(base_frame_idx)].oMf;
+    p_des = oMb.act(target.position);
+    a_des.noalias() = oMb.rotation() * target.axis;
+    v_ff.noalias() = oMb.rotation() * target.linear_velocity_ff;
+    w_ff.noalias() = oMb.rotation() * target.angular_velocity_ff;
+  }
+
+  // ── Errors: position (world) and approach axis (rotation vector, world) ──
+  const Eigen::Matrix3d& R_wc = rf.oMf.rotation();
+  const Eigen::Vector3d z_c = R_wc.col(2);
+  const se3::AxisAlignErrorResult axis = se3::AxisAlignError(z_c, a_des);
+  axis_region_ = axis.region;
+  if (!axis.IsValid()) {
+    return false;  // non-unit / non-finite axis target
+  }
+  const Eigen::Vector3d e_p = p_des - rf.oMf.translation();
+  position_error_norm_ = e_p.norm();
+  axis_error_angle_ = axis.error.norm();
+  tcp_error_norm_ = std::sqrt(position_error_norm_ * position_error_norm_ +
+                              axis_error_angle_ * axis_error_angle_);
+
+  // Task references. The axis rows live in the frame's LOCAL x, y (S·R_WCᵀ);
+  // e_a ⟂ z_C, so dropping LOCAL z loses nothing (L5 §4.2).
+  const Eigen::Vector3d r_p = kx_.head<3>().cwiseProduct(e_p) + v_ff;
+  const Eigen::Vector3d w_ref_local = R_wc.transpose() * (k_axis_ * axis.error + w_ff);
+
+  // ── Jacobian rows on the arm columns (hand columns 0) ──
+  const int N = nv_;
+  j_pos_.setZero();
+  j_axis_.setZero();
+  for (int c = 0; c < n_arm_; ++c) {
+    const auto vi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
+    j_pos_.col(vi) = rf.J.col(vi).head<3>();
+    const Eigen::Vector3d w_local = R_wc.transpose() * rf.J.col(vi).tail<3>();
+    j_axis_.col(vi) = w_local.head<2>();
+    j_arm_.col(c) = rf.J.col(vi);  // manipulability diagnostic
+  }
+
+  ComputePostureReferences(cache, q_posture_des);
+
+  auto H = qp_data_.H.topLeftCorner(N, N);
+  auto g = qp_data_.g.head(N);
+  H.setZero();
+  H.noalias() += w_task_ * j_pos_.transpose() * j_pos_;
+  H.noalias() += w_axis_ * j_axis_.transpose() * j_axis_;
+  g.noalias() = -w_task_ * (j_pos_.transpose() * r_p);
+  g.noalias() -= w_axis_ * (j_axis_.transpose() * w_ref_local.head<2>());
   AddPostureAndDamping();
 
   AssembleBox(cache.q, dt);
