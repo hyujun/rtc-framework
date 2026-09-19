@@ -159,7 +159,7 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `prediction.max_samples` | int | – | 512 (provisional) | 16–512 | `kCap` (컴파일 상수와 일치 검사, S0.7 제안값). 런타임 상한 `n_max ≤ kCap` 은 S3.6 요구 사양으로 정한다 (D-15) |
+| `prediction.max_samples` | int | – | 40 (provisional, S0.7 제안) | 16–512 | `kCap` (컴파일 상수와 일치 검사, S0.7 제안값 — plan §4.4 S0 결과). 런타임 상한 `n_max ≤ kCap` 은 S3.6 요구 사양으로 정한다 (D-15) |
 | `prediction.n_min` | – | – | – | – | v0.5 삭제 — 단일 키 `io.n_min` (L1 §6) 을 쓴다 (plan S0.3) |
 | `prediction.t_horizon_margin` | double | s | 0.05 | 0–0.3 | §4.6 지평 끝 여유 |
 | `prediction.dt_expected` | double | s | `TBD` | >0 | vision 점 간격. 검사용. 예시 profile 0.05 (S3.6 에서 확정) |
