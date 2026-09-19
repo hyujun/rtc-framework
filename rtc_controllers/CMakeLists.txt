@@ -397,6 +397,16 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_soft_catch PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_soft_catch PRIVATE -Wno-mismatched-new-delete)
+
+  # Reachability gates (G3-A, G3-B): minimum joint time against a fixed table
+  # from verify_l3.py's independent closed form, γ window with the D-9 TCP
+  # speed, directional speed, stopping distance, error budget. Same two-sensor
+  # allocation gate (the planner may run SCHED_FIFO).
+  ament_add_gtest(test_catching_time_feasibility test/test_catching_time_feasibility.cpp)
+  target_link_libraries(test_catching_time_feasibility rtc_controllers)
+  target_include_directories(test_catching_time_feasibility PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_time_feasibility PRIVATE -Wno-mismatched-new-delete)
 endif()
 
 ament_package()
