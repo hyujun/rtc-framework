@@ -194,7 +194,7 @@ $$\Vert v(t_c)\Vert>\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 
 우변이 **받을 수 있는 최대 공 속력**이다. 참조 구현(`test_l3`)으로 확인한 값: $v_{dir,\max}=1.5$ m/s, $d_{eff}=4$ cm, $T_{close,tot}=60$ ms이면 상한이 2.17 m/s다. 6 m/s를 받으려면 $T_{close,tot}\le d_{eff}/(\Vert v\Vert-v_{dir,\max})=8.9$ ms가 필요하다. [R1]의 DLR-Hand-II가 5 ms 급이었다는 점을 생각하면 자명한 요구가 아니다.
 
-즉 `TBD-HAND-01`($T_{close}$) 하나가 목표 투척 속도(D-18 catchability 지도와 함께), `reference.a_max`, γ 격자, rollout 창 길이를 전부 결정한다. 이 값을 모른 채 L3–L5를 튜닝하면 재작업이 확정이다. 그래서 plan 은 이를 **S4.4 go/no-go** 로 두었다: 손 device slot step 으로 sim $T_{close}$ 분포를 재고(S4.2), 가능하면 실기 $T_{close,tot}$ 를 재고(S4.3), S3.5a kinematic catchability 지도가 정한 목표 속도 범위와 대조해 확정 또는 하향한다(S4.4). D-16 의 보수적 가속 box 도 이 판정에 함께 들어간다. 실기 값이 나오면 `planner.*`와 `reference.*`를 재산정한다(L3 게이트 G3-F).
+즉 `TBD-HAND-01`($T_{close}$) 하나가 목표 투척 속도(D-18 catchability 지도와 함께), `reference.a_max`, γ 격자, rollout 창 길이를 전부 결정한다. 이 값을 모른 채 L3–L5를 튜닝하면 재작업이 확정이다. 그래서 plan 은 이를 **S4.4 go/no-go** 로 두었다: 손 device slot step 으로 sim $T_{close}$ 분포를 재고(S4.2), 실기 $T_{close,tot}$ 는 S10 에서 재고(S4.3 에서 이월, 2026-09-20), S3.5a kinematic catchability 지도가 정한 목표 속도 범위와 대조해 확정 또는 하향한다(S4.4). D-16 의 보수적 가속 box 도 이 판정에 함께 들어간다. 실기 값이 나오면 `planner.*`와 `reference.*`를 재산정한다(L3 게이트 G3-F).
 
 ### 4.2 브랜치 전략 `[확정]`
 
@@ -390,7 +390,7 @@ catching:
 | TBD-HAND-01 | P1b `T_close` | L3, L6 | S4 식별 도구(sim) + S4.3 실기 $T_{close,tot}$ `[HW-P1B]` |
 | TBD-HAND-02 | P1b 명령 경로(메시지·노드)와 `T_link` | L6 | 닫힘 — 손 device slot → `udp_hand_native` → `/p1b/joint_command` → `udp_hand_node`(250 Hz). 명령 stamp 미사용이라 $T_{link}$ 대신 종단 간 $T_{close,tot}$ 를 잰다 (W, D-11) |
 | TBD-HAND-03 | 지문 센서 인터페이스·주기·부호·frame | L6, L7 | 인터페이스·주기·부호 닫힘 — 실기 `HandSensorState` 250 Hz finger-on-object, sim `WrenchStamped` 도 finger-on-object (0fcc1d23). S7.3 에서 재확인 |
-| TBD-HAND-04 | 포켓 유효 깊이 $d_{eff}$ (두 손) | L3 | CAD 측정 + 투척 실험 |
+| TBD-HAND-04 | 포켓 유효 깊이 $d_{eff}$ · 포획 반경 $r_{cap}$ (두 손) | L3 | S4.5 기하 추정 (preshape FK, provisional·사용자 승인) + S7.1 후 투척 보정 |
 | TBD-HAND-05 | P1b preshape/폐쇄 자세, 전류(토크) 한계 | L6 | 사용자 제공, S4.1 손 프로파일 YAML |
 | TBD-ARM-01 | 명령을 싣는 자리(인터페이스 형태·필드·단위), 실기/sim 전환, backend가 이미 보상하는 지연이 있는지 | L3, L5 | 닫힘 — `ControllerOutput` device 0, `CommandType` kPosition, backend 가 실기/sim 전환(`ur_driver_native`/`mujoco_native`), 지연 보상 없음 (W) |
 | TBD-WS-02 | 포구 코드를 새 패키지로 둘지 기존 패키지에 넣을지, 패키지 이름 확정 | 전체 | 닫힘 — **→ D-1** (새 패키지 없음, §4) |

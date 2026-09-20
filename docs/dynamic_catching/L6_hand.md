@@ -96,8 +96,8 @@ $T_{close}$를 최소화하려면 폐쇄 자세로의 계단 position 명령 + a
 
 ### 4.5 포켓 유효 깊이 $d_{eff}$ 산정 `[권장]` (S4.5, TBD-HAND-04)
 
-1. 기하 추정: preshape 자세에서 FK로 손바닥 평면과 폐쇄 시 손가락이 형성하는 차단선 사이 거리를 접근축(catch frame +z) 방향으로 측정한다. 공 반지름을 뺀다.
-2. 실험 보정: 시뮬레이션과 실기에서 저속 투척으로 "폐쇄 늦음" 경계를 찾는다.
+1. 기하 추정: preshape 자세에서 FK로 손바닥 평면과 폐쇄 시 손가락이 형성하는 차단선 사이 거리를 접근축(catch frame +z) 방향으로 측정한다. 공 반지름을 뺀다. 같은 FK 에서 포획 반경 $r_{cap}$ (L3 §4.6 게이트 우변, 같은 TBD-HAND-04) 도 함께 산정한다 — S4.5 (plan §4.4 S4a, 2026-09-20).
+2. 실험 보정: 시뮬레이션과 실기에서 저속 투척으로 "폐쇄 늦음" 경계를 찾는다. **S7.1 (손 시퀀서) 이후에 한다** — 시퀀서 없이 비-RT 러너의 지연으로 폐쇄 시각을 맞추면 지터 × 공 속력이 $d_{eff}$ 와 같은 자릿수다 (plan §4.4 S4a).
 3. 반발 허용 여부(L3 §4.5)에 따라 $d$ 또는 $d(1+1/e)$를 쓴다.
 
 산출값은 **provisional** 이며 사용자 승인 대상이다 (plan §4.4 S4a). 산정식·실험값·provisional 표시를 YAML(§6)과 이 문서에 함께 기록한다 (G6-F).
@@ -161,10 +161,10 @@ v0.4 의 `robot.hand.effort_limit_hold`, `robot.hand.T_link`, `robot.hand.port`,
 
 **L6a = S4a·S4.4 (S5 이전, go/no-go)**
 
-- **L6.1** (S4.1) 손 프로파일 YAML 두 벌(P1b 10 DoF, LEAP 16 DoF) 초안 — provisional.
-- **L6.2** (S4.2) $T_{close}$ 식별 도구: 손 device slot 에 계단 position 명령 반복(≥20회) + CSV → $\rho(t)$, $T_{close,e2e}(\eta)$ 분포(평균, 최대, 99%) 산출 (sim, 두 손). **S4.0 선행 필요** — `DemoJointController` 는 손 목표를 quintic 궤적으로 보간해 계단 응답을 낼 수 없으므로, S4.0 의 포구 컨트롤러 최소 골격(손 계단 진단 모드, 팔은 현재 자세 hold)이 있어야 이 계단 명령을 낼 수 있다 (plan §4.2 DAG, §4.4 S4a).
+- **L6.1** (S4.1) 손 프로파일 YAML 두 벌(P1b 10 DoF, LEAP 16 DoF) 초안 — provisional. 파서·검증기는 S1.7 의 `rtc::catching::HandProfile` 이 이미 있고, S4.1 은 `q_open`·`eta_close`·`T_close_e2e` 를 더한다 (나머지 §5.1 필드는 S7.1). 자세는 sim 에서 사용자 확인 후 S4.2 로 간다.
+- **L6.2** (S4.2) $T_{close}$ 식별 도구: 손 device slot 에 계단 position 명령 반복(**손당 200 회** — 99 % 는 20 회로 말할 수 없다) + 기존 `DeviceStateLog` CSV (`<hand>_state.csv` 의 `command_*`·`actual_pos_*`·`t_relative_s`) → $\rho(t)$, $T_{close,e2e}(\eta)$ 분포(평균, 최대, 99%) 산출 (sim, 두 손). sim lock-step 의 steady 값은 호스트 스톨을 포함하므로 steady·tick×dt 두 축으로 보고한다. **S4.0 선행 필요** — `DemoJointController` 는 손 목표를 quintic 궤적으로 보간해 계단 응답을 낼 수 없으므로, S4.0 의 포구 컨트롤러 최소 골격(손 계단 진단 모드, 팔은 현재 자세 hold)이 있어야 이 계단 명령을 낼 수 있다 (plan §4.2 DAG, §4.4 S4a).
 - **L6.3** (S4.4) 산출값으로 §4.1 의 $\Vert v\Vert_{\max}$ 를 계산해 목표 투척 속도와 대조하고, γ 창이 비면 사용자에게 보고하고 목표를 낮춘다. 목표 속도는 **S3.5a kinematic catchability 지도**가 정한 범위이고 (D-18, D-12 는 최종 성공률 floor·시행 수와 손 토크 권위 출처만 남는다), 이 판정(S4.4 go/no-go)의 결과는 다시 S3.5b(gate-catchable 지도)·S3.6(vision 요구 사양)으로 흐른다 (plan §4.2 DAG, §4.4 S3b·S4.4).
-- **L6.5** (S4.3) 실기 $T_{close,tot}$ 종단 간 식별 `[HW-P1B]`. 실기 접근 가능하면 S4 에 포함하고, 아니면 S10.
+- **L6.5** (S4.3) 실기 $T_{close,tot}$ 종단 간 식별 `[HW-P1B]`. **S10 으로 이월** (2026-09-20 사용자 결정 — S4.0 골격은 sim 전용이고 실기 팔 hold 는 E-8 승인 대상이다, plan §4.4 S4a).
 - **L6 §4.5** (S4.5) 포켓 유효 깊이 $d_{eff}$ 산정 — 기하 추정 + sim 실험 보정, provisional, 사용자 승인 (G6-F, TBD-HAND-04). S4.4 go/no-go 의 입력.
 
 번호 L6.4 는 v0.4 의 `AsyncHandPort` 였고 D-11 로 삭제했다. 번호는 작업 항목 식별자라 재부여하지 않는다.

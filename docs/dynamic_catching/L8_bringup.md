@@ -187,7 +187,7 @@ struct TickRecord {                   // 고정 크기, POD
 
 ### 5.4 YAML 파일
 
-- 포구 컨트롤러 설정: 로봇별 `integrated_bringup/config/<robot>/controllers/` 아래 (기존 `demo_*_controller.yaml` 과 같은 자리). 파일명은 S5.1 에서 정한다
+- 포구 컨트롤러 설정: 로봇별 `integrated_bringup/config/<robot>/controllers/` 아래 (기존 `demo_*_controller.yaml` 과 같은 자리). 파일명은 `demo_catching_controller.yaml` (config_key `demo_catching_controller`, S4.0 에서 확정 — plan §4.4 S4a)
 - catch frame (`extra_frames`, D-10·D-17) 은 로봇 config 의 모델 절 (plan §10)
 - 투척·catchability (`sim.throw_region`, `planner.catchability.*`) 는 plan §11 스키마
 - sim 공 설정 (projectile, truth 주기)은 로봇별 `mujoco_simulator.yaml`
@@ -223,7 +223,7 @@ struct TickRecord {                   // 고정 크기, POD
 ## 7. 단위 기술 구현 순서
 
 - **L8.1** G8 게이트 — 닫힘 (W, §2).
-- **L8.2** (S4.0 → S5.1) 컨트롤러 골격 + §4.1 순서 + lifecycle + 기존 launch 인자. S4.0 은 손 계단 진단 모드·팔 hold 뿐인 최소 골격이고, 팔 명령 경로·CLIK 앵커·E-8 최소 계약을 포함한 완성은 S5.1.
+- **L8.2** (S4.0 → S5.1) 컨트롤러 골격 + §4.1 순서 + lifecycle + 기존 launch 인자. S4.0 은 손 계단 진단 모드·팔 hold 뿐인 최소 골격이고 (sim 전용을 `backend.type` 가드로 강제 — S5.1 에서 E-8 승인과 함께 제거), 팔 명령 경로·CLIK 앵커·E-8 최소 계약을 포함한 완성은 S5.1.
 - **L8.3** (S5.4) 기록 레코드 → 기존 CSV 인프라, 상태 publisher, 플롯 스크립트.
 - **L8.4** (S3.1a·S3.2·S3.3, 부하 재검증은 S3.1b — S6 에서 계획기·`sim_estimator_node` 동시 구동으로) D-3 검증, 발사 srv, iiwa7_leap projectile, 접촉 truth·truth 주기·sim time 진단.
 - **L8.5** (S3.4·S3.5a/b·S3.6) `sim_estimator_node` 연결, catchability 지도(kinematic → gate-catchable), vision 요구 사양, 오프라인 NEES.
