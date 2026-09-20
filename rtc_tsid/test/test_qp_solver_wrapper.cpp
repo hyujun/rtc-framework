@@ -284,5 +284,69 @@ TEST_F(QPSolverWrapperTest, RecoversAfterNonFiniteSolve) {
   }
 }
 
+// ResetWarmStart() must make the answer depend only on the QUESTION, not on
+// what the solver was asked before it.
+//
+// Warm starting is right for a controller and wrong for a sweep: dynamic
+// catching's offline catchability map and its runtime planner must return the
+// same catch pose for the same candidate, and with a retained warm start the
+// answer would depend on which candidate was tried first (L3 §4.2, plan §11).
+//
+// The tolerance is loosened on purpose. ProxQP stops as soon as its residual
+// test passes, so at a tight tolerance every start converges to the same point
+// and the leak this test exists to detect would be invisible — a test that
+// passes because the effect is too small to see is not a test. The positive
+// control below MEASURES that the fixture can see it.
+TEST_F(QPSolverWrapperTest, ResetWarmStartMakesTheAnswerOrderIndependent) {
+  QPSolverConfig loose;
+  loose.eps_abs = 1e-3;
+
+  // Two different box QPs over the same shape.
+  const auto fill = [](QPData& qp, double g0, double g1, double g2) {
+    qp.Init(3, 0, 3);
+    qp.n_vars = 3;
+    qp.n_ineq = 3;
+    qp.H.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+    qp.H(1, 1) = 1e-3;  // ill-conditioned, so the iterate path matters
+    qp.H(2, 2) = 1e3;
+    qp.C.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+    qp.l.head(3).setConstant(-2.0);
+    qp.u.head(3).setConstant(2.0);
+    qp.g.head(3) << g0, g1, g2;
+  };
+  QPData p;
+  QPData other;
+  fill(p, -0.7, -1.3, 0.9);
+  fill(other, 1.9, 0.4, -1.7);
+
+  // Reference: a solver that has seen nothing but P.
+  QPSolverWrapper fresh;
+  fresh.Init(3, 0, 3, loose);
+  const Eigen::VectorXd reference = fresh.Solve(p).x_opt.head(3);
+  ASSERT_TRUE(reference.allFinite());
+
+  // Same question, asked after a different one, with the warm start discarded.
+  QPSolverWrapper reset;
+  reset.Init(3, 0, 3, loose);
+  ASSERT_TRUE(reset.Solve(p).converged);
+  ASSERT_TRUE(reset.Solve(other).converged);
+  reset.ResetWarmStart();
+  const Eigen::VectorXd after_reset = reset.Solve(p).x_opt.head(3);
+  for (int i = 0; i < 3; ++i)
+    EXPECT_EQ(after_reset(i), reference(i)) << "component " << i;
+
+  // Positive control: the SAME sequence without the reset. If this ever stops
+  // differing, the assertion above has become vacuous and the fixture — not the
+  // API — is what needs fixing.
+  QPSolverWrapper warm;
+  warm.Init(3, 0, 3, loose);
+  ASSERT_TRUE(warm.Solve(p).converged);
+  ASSERT_TRUE(warm.Solve(other).converged);
+  const Eigen::VectorXd without_reset = warm.Solve(p).x_opt.head(3);
+  EXPECT_FALSE(without_reset(0) == reference(0) && without_reset(1) == reference(1) &&
+               without_reset(2) == reference(2))
+      << "warm start no longer leaks here — this fixture can no longer measure the reset";
+}
+
 }  // namespace
 }  // namespace rtc::tsid

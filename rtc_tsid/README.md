@@ -68,7 +68,7 @@ rtc_tsid/
 │   ├── kinematics/
 │   │   └── clik_reference.hpp          -- ClikReferenceGenerator — velocity-level CLIK low-level reference
 │   └── solver/
-│       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼
+│       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼. `Init()` 1회 할당 후 `Solve()` 는 할당 없음 (`test_catch_pose_ik` 가 두 게이트로 실측). `ResetWarmStart()` 는 다음 `Solve()` 를 x=y=z=0 에서 시작시킨다 — **연속 solve 가 서로 다른 문제일 때** (오프라인 sweep·후보 루프) warm start 는 답을 호출 순서에 의존하게 만든다
 ├── src/                                -- 구현 파일
 ├── config/                             -- YAML 설정 파일
 ├── test/                               -- GTest 파일 (ament_add_gtest 등록 — CMakeLists.txt 참조)
@@ -180,7 +180,7 @@ Kinematics WBC (`ClikReferenceGenerator`) 와 dynamics WBC (`SE3Task`/`ObjectSE3
 | `Config::evaluate_at_command` | 호출자가 명령값 `q_c` 로 갱신한 cache 를 넘긴다. anchor = `cache.q`, 팔 성분이 직전 `QRef()` 와 다르면 `command_mismatch` 로 실패, `anchor_drift_max` 와 함께 쓰면 `Init` 거부 |
 | `Compute(…, PositionAxisTarget, …)` | 위치 3행 + LOCAL x·y 접근축 2행 (`rtc_math::se3::AxisAlignError`). 오차·Jacobian 모두 world 정렬, `Config::w_axis`·`SetAxisGain`, `LastAxisRegion()` |
 
-QP 는 box 를 ProxQP `eps_abs` (1e-6) 안에서만 지킨다. 기존 SE3 경로는 base 정렬 오차에 world 정렬 `rf.J` 를 곱하므로 base 가 world 에 대해 회전하면 어긋난다 (현 로봇 구성에서는 root 가 universe 정렬이라 드러나지 않음, golden 이 고정한 기존 동작). `QPSolverWrapper` 는 해가 비유한이면 ProxQP 가 SOLVED 를 내도 `converged = false` 로 보고하고 다음 solve 를 warm start 없이 시작한다 — 비유한 목표 한 tick 이 이후 solve 를 모두 막지 않게.
+QP 는 box 를 ProxQP `eps_abs` (1e-6) 안에서만 지킨다. 기존 SE3 경로는 base 정렬 오차에 world 정렬 `rf.J` 를 곱하므로 base 가 world 에 대해 회전하면 어긋난다 (현 로봇 구성에서는 root 가 universe 정렬이라 드러나지 않음, golden 이 고정한 기존 동작). `QPSolverWrapper` 는 해가 비유한이면 ProxQP 가 SOLVED 를 내도 `converged = false` 로 보고하고 다음 solve 를 warm start 없이 시작한다 — 비유한 목표 한 tick 이 이후 solve 를 모두 막지 않게. 같은 메커니즘을 의도적으로 부를 수 있는 것이 `ResetWarmStart()` 다 (dynamic_catching D-26: 포구 후보마다 cold start 해야 오프라인 지도와 런타임 판정이 일치한다).
 
 같은 게이트가 **인접 스칼라 3개**도 함께 검증합니다 (NUM-7, 같은 함수·같은 실패 의미론). `v_limit` 와 `anchor_drift_max` 는 "off" 위치가 `<= 0` 인 스위치인데 읽는 쪽이 `> 0.0` 술어라 (`vel_box = (v_limit_ > 0.0)`, `if (anchor_drift_max_ > 0.0)`) **비유한 값이 기능을 인가된 off sentinel 과 구별 불가하게 조용히 끕니다** — 속도 clamp 와 carry-forward anti-windup clamp 가 사라지는데도 `q_ref`/`v_ref` 는 유한해서 `Compute()` 의 `allFinite()` 출구 가드가 안 뜹니다. 그래서 가드는 `> 0` 이 아니라 `std::isfinite` 입니다 — **유한한** 비양수 (`0`, `-1`) 는 정당한 비활성화 요청이라 계속 통과하고, `±inf` 는 통과하지 않습니다 ("off" 에는 이미 인가된 인코딩이 있고, `-inf` 는 위치 박스가 거부한 unbounded 인코딩과 같습니다). `damping_sq`/`w_task`/`w_arm`/`w_hand` 는 가드가 **있었지만** 유한성 게이트가 아니었습니다 — `!(x > 0.0)` 은 NaN 은 막아도 `+inf` 를 통과시키고, `w_*` 의 `x < 0.0` 은 NaN 조차 통과시킵니다 (`!(x >= 0.0)` 로 고쳐도 `+inf` 가 남습니다) — 무한 posture 가중치는 H 대각에 얹혀 soft-priority 계약 (`w_task ≫ w_arm,w_hand ≫ damping_sq`) 자체를 무의미하게 만들므로 **유한성 + 부호 두 검사가 모두** 필요합니다.
 
@@ -332,7 +332,7 @@ colcon test-result --verbose
 
 | 테스트 | 설명 |
 |--------|------|
-| `test_qp_solver_wrapper` | ProxSuite QP 래퍼 기본 동작 |
+| `test_qp_solver_wrapper` | ProxSuite QP 래퍼 기본 동작 + `ResetWarmStart()` 순서 독립성 (positive control 로 warm start 누출이 이 fixture 에서 실제로 보이는지 함께 잰다) |
 | `test_wbc_types` | WBC 타입 시스템 초기화/갱신 |
 | `test_posture_task` | 자세 태스크 잔차/자코비안 |
 | `test_se3_task` | SE3 pose tracking, mask, log3 singularity, gains |

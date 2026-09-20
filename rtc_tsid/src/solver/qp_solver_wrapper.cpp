@@ -155,6 +155,12 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   return result_;
 }
 
+void QPSolverWrapper::ResetWarmStart() noexcept {
+  if (qp_) {
+    qp_->settings.initial_guess = proxsuite::proxqp::InitialGuessStatus::NO_INITIAL_GUESS;
+  }
+}
+
 void QPSolverWrapper::SetMaxIter(int iter) noexcept {
   config_.max_iter = iter;
   if (qp_) {
