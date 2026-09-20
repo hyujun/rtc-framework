@@ -30,6 +30,7 @@
 // rather than a race with the sequencer.
 
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
@@ -219,6 +220,14 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint64_t> arm_target_reject_count_{0};
   std::atomic<std::uint64_t> hand_step_disabled_reject_count_{0};
   std::atomic<std::uint64_t> hand_step_applied_count_{0};
+
+  // ── Controller-owned topics (`topics:` block) ────────────────────────────
+  // The hand step arrives on the group's `joint_goal`, which only exists if
+  // CreateOwnedTopics runs — the YAML entry alone creates no endpoint. Holds
+  // the target subscription only: this controller publishes nothing (D-20), so
+  // there is no lifecycle publisher to gate and no on_activate/on_deactivate
+  // pair to add.
+  ControllerTopicHandles owned_topics_;
 
   // ── Logging (Phase C `logs:` block) ──────────────────────────────────────
   rtc::ControllerLogSet log_set_{"demo_catching_controller"};

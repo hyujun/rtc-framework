@@ -1,5 +1,6 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/owned_topics.hpp"
 
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
@@ -239,6 +240,16 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
           log_drain_cb_group_);
     }
 
+    // ── Controller-owned topics ──────────────────────────────────────────
+    // Creates the hand group's `joint_goal` subscription declared in the
+    // `topics:` block. Last, and only past every refusal above, so a
+    // controller that is going to fail configure never exposes a step lane.
+    // Without this the YAML entry is inert: the topic name parses, the group
+    // shows up in topic_config_, and no endpoint is ever created — the step
+    // then vanishes with no error anywhere (the step path is what S4.2
+    // measures through, so it fails as silence, not as a failure).
+    CreateOwnedTopics(*this, owned_topics_);
+
     DeclareProfileParameters();
 
     RCLCPP_INFO(logger_,
@@ -270,6 +281,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_cleanup(
   log_drain_timer_.reset();
   log_drain_cb_group_.reset();
   ResetLogState();
+  ResetOwnedTopics(owned_topics_);
   return RTControllerInterface::on_cleanup(prev);
 }
 

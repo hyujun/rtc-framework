@@ -38,11 +38,13 @@
 #include <yaml-cpp/yaml.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -446,6 +448,39 @@ TEST_F(CatchingConfigureTest, StillConfiguresWhileTCloseE2eIsTbd) {
   EXPECT_TRUE(ctrl.GetCatchingParams().hand.T_close_e2e.tbd);
   EXPECT_FALSE(ctrl.GetValidationReport().armable)
       << "the report itself must still say 'not armable' — only the GATE is narrower";
+}
+
+// A successful configure must leave a real `joint_goal` ENDPOINT behind, not
+// just a parsed `topics:` entry. Those are different things: the YAML parses
+// and the group lands in topic_config_ whether or not CreateOwnedTopics ever
+// runs, and a controller that skips it drops every step on the floor with no
+// error on any lane — the step simply never arrives. Asserting through
+// DeliverTargetMessage cannot see this, because that call bypasses the
+// subscription the operator and S4.2's runner actually publish to.
+TEST_F(CatchingConfigureTest, ConfigureCreatesTheDeclaredJointGoalEndpoints) {
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+
+  // Graph discovery is not instantaneous even for a node's own endpoints, so
+  // poll rather than sample once.
+  const auto wait_for_subscriber = [this](const std::string& topic) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (node_->count_subscribers(topic) > 0) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  };
+
+  EXPECT_TRUE(wait_for_subscriber("/hand/joint_goal"))
+      << "the hand step lane has no endpoint — S4.2 would publish into nothing";
+  EXPECT_TRUE(wait_for_subscriber("/arm/joint_goal"))
+      << "the arm lane has no endpoint, so its targets are never counted as rejected";
 }
 
 // ── 6. The shipped profiles (S4.1) ──────────────────────────────────────────
