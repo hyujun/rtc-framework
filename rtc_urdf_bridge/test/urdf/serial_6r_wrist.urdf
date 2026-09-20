@@ -1,0 +1,155 @@
+<?xml version="1.0"?>
+<!-- serial_6r_wrist.urdf — 6-DoF non-redundant arm with a 3-axis wrist and a
+     rotated tool frame (test fixture).
+
+     base_link → link_1 … link_6 → catch_frame, joint axes [Z Y Y Y Z Y]. The
+     last three (Y Z Y) form a wrist, so the 6×6 arm Jacobian is full rank over
+     a broad region and w₆ = √det(J₆J₆ᵀ) is a meaningful number rather than a
+     structural zero — unlike serial_6dof.urdf, whose axes are all Z (σ_min ≡ 0,
+     the fixture trap recorded in the dynamic_catching plan §제약·함정).
+
+     Two properties this fixture exists for, neither of which serial_7dof.urdf
+     has:
+
+     1. nv = 6 with a 5-row task, so the redundancy is EXACTLY the one
+        degree of freedom the catch-pose task leaves free (roll about the palm
+        normal). That makes a dense sweep over roll a complete, independent
+        oracle for "did the null-space ascent find the local w₅ maximum on this
+        branch" — with nv = 7 the free set is 2-dimensional and a roll sweep
+        would no longer enumerate it.
+
+     2. `catch_frame` is attached with BOTH a translation offset and a nonzero
+        rpy, so its local +z (the palm outward normal, [확정 D-17]) is not the
+        flange z and not any base axis. A frame or row mix-up in the 5-row
+        selection therefore changes the answer instead of cancelling — the
+        symmetry-breaking a fixture needs to pin a frame convention
+        (dynamic_catching plan §11).
+
+     The link origins carry y-offsets so the chain is not planar in any
+     configuration. Limits are finite and asymmetric so a step that walks into
+     a bound is reachable in a test rather than hypothetical. -->
+<robot name="serial_6r_wrist">
+
+  <!-- ── Links ─────────────────────────────────────────────────── -->
+  <link name="base_link">
+    <inertial>
+      <mass value="4.0"/>
+      <origin xyz="0 0 0.04" rpy="0 0 0"/>
+      <inertia ixx="0.010" ixy="0" ixz="0" iyy="0.010" iyz="0" izz="0.008"/>
+    </inertial>
+  </link>
+
+  <link name="link_1">
+    <inertial>
+      <mass value="3.2"/>
+      <origin xyz="0 0.03 0.10" rpy="0 0 0"/>
+      <inertia ixx="0.008" ixy="0" ixz="0" iyy="0.008" iyz="0" izz="0.005"/>
+    </inertial>
+  </link>
+
+  <link name="link_2">
+    <inertial>
+      <mass value="2.8"/>
+      <origin xyz="0.12 0 0.04" rpy="0 0 0"/>
+      <inertia ixx="0.004" ixy="0" ixz="0" iyy="0.022" iyz="0" izz="0.022"/>
+    </inertial>
+  </link>
+
+  <link name="link_3">
+    <inertial>
+      <mass value="1.9"/>
+      <origin xyz="0.10 0 0.03" rpy="0 0 0"/>
+      <inertia ixx="0.003" ixy="0" ixz="0" iyy="0.014" iyz="0" izz="0.014"/>
+    </inertial>
+  </link>
+
+  <link name="link_4">
+    <inertial>
+      <mass value="0.9"/>
+      <origin xyz="0 0.02 0.05" rpy="0 0 0"/>
+      <inertia ixx="0.0012" ixy="0" ixz="0" iyy="0.0012" iyz="0" izz="0.0008"/>
+    </inertial>
+  </link>
+
+  <link name="link_5">
+    <inertial>
+      <mass value="0.7"/>
+      <origin xyz="0 0 0.04" rpy="0 0 0"/>
+      <inertia ixx="0.0008" ixy="0" ixz="0" iyy="0.0008" iyz="0" izz="0.0006"/>
+    </inertial>
+  </link>
+
+  <link name="link_6">
+    <inertial>
+      <mass value="0.4"/>
+      <origin xyz="0 0.01 0.03" rpy="0 0 0"/>
+      <inertia ixx="0.0004" ixy="0" ixz="0" iyy="0.0004" iyz="0" izz="0.0003"/>
+    </inertial>
+  </link>
+
+  <!-- The catch frame stands in for a hand palm: offset off the flange axis and
+       tilted, so its +z is a direction no other frame in the chain shares. -->
+  <link name="catch_frame">
+    <inertial>
+      <mass value="0.15"/>
+      <origin xyz="0 0 0.01" rpy="0 0 0"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <!-- ── Joints: [Z Y Y Y Z Y] — the last three form a wrist ─────── -->
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0.09" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.9" upper="2.9" effort="120" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0 0.12 0.15" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.2" upper="2.2" effort="120" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint_3" type="revolute">
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <origin xyz="0.28 -0.05 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.6" upper="2.6" effort="90" velocity="2.5"/>
+  </joint>
+
+  <joint name="joint_4" type="revolute">
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <origin xyz="0.24 0 0.04" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.2" upper="2.2" effort="50" velocity="3.0"/>
+  </joint>
+
+  <joint name="joint_5" type="revolute">
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <origin xyz="0 -0.09 0.12" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.9" upper="2.9" effort="35" velocity="3.0"/>
+  </joint>
+
+  <joint name="joint_6" type="revolute">
+    <parent link="link_5"/>
+    <child link="link_6"/>
+    <origin xyz="0 0 0.10" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.6" upper="2.6" effort="25" velocity="3.5"/>
+  </joint>
+
+  <joint name="catch_joint" type="fixed">
+    <parent link="link_6"/>
+    <child link="catch_frame"/>
+    <origin xyz="0.02 -0.03 0.07" rpy="0.30 -0.20 0.50"/>
+  </joint>
+
+</robot>

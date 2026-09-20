@@ -153,8 +153,12 @@ Session logs: `logging_data/YYMMDD_HHMM/{timing,monitor,device,sim,plots,motions
 rtc_msgs, rtc_base (independent)
   +-- rtc_communication, rtc_inference <-- rtc_base
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs, rtc_urdf_bridge
-  +-- rtc_controllers <-- rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
+  +-- rtc_controllers <-- rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge, rtc_tsid
   |     (sibling of rtc_controller_interface -- does NOT depend on it, #236 S7c)
+  |     (rtc_tsid edge added 2026-09-20, dynamic_catching D-26: the catch-pose IK
+  |      task step is a box-constrained QP via QPSolverWrapper. rtc_tsid does not
+  |      depend on rtc_controllers, so no cycle -- but note every consumer of
+  |      rtc_controllers, including rtc_controller_manager, now pulls ProxSuite)
   +-- rtc_controller_manager <-- rtc_controller_interface, rtc_controllers,
   |         rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge
   +-- rtc_tsid <-- rtc_math, rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
