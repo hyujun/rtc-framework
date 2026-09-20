@@ -4,6 +4,7 @@
 // ControllerRegistry.  The library is linked with --whole-archive so the
 // linker preserves this translation unit without a Force function.
 
+#include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
@@ -52,3 +53,11 @@ RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
     demo_inference_controller, "", "integrated_bringup",
     std::make_unique<integrated_bringup::DemoInferenceController>(
         urdf, std::make_unique<rtc::OnnxEngine>()))
+
+// dynamic_catching S4.0 — the catching controller's minimal skeleton (arm hold
+// + unshaped hand step). REQUIRING_CONFIG for two reasons: the hand profile
+// (L6 §6) has no defensible default, so LoadConfig refuses an absent config
+// node, and ur5e_p1a is not a catching target and ships no YAML for it.
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
+    demo_catching_controller, "", "integrated_bringup",
+    std::make_unique<integrated_bringup::DemoCatchingController>(urdf))

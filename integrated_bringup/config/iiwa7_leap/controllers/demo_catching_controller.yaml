@@ -1,0 +1,86 @@
+# demo_catching_controller — iiwa7 + LEAP variant (dynamic_catching S4.0/S4.1)
+#
+# SIM ONLY — see the ur5e_p1b copy of this file for why (E-8 / plan §4.4 S4a
+# Q3): the controller refuses to configure unless every claimed device is on
+# the `mujoco_native` backend.
+#
+# S4.0 scope: arm hold + unshaped hand step. Keys owned by other steps
+# (reference.*, planner.*, supervisor.*) are deliberately absent; this
+# controller never arms, so G0-C's arming gate is not its gate.
+demo_catching_controller:
+  command_type: "position"
+
+  diagnostic:
+    hand_step: true
+
+  catching:
+    # Same sim ball as the p1b profile, deliberately (rtc_mujoco_sim ships
+    # radius 0.025 m / mass 0.05 kg for both). provisional until D-12 closes.
+    core:
+      ball:
+        diameter: 0.05
+        mass: 0.05
+        restitution: 0.8
+        provisional: true
+
+    # ── Hand profile (L6 §5.1/§6) ───────────────────────────────────────────
+    # 16 actuated joints in the `devices.leap.joint_state_names` order, which
+    # is the CONTROLLER-facing order (thumb first), not the URDF's:
+    #   0-3   thumb  (URDF joints 12,13,14,15)
+    #   4-7   index  (URDF joints 0,1,2,3)  = [mcp_aa, mcp_fe, pip, dip]
+    #   8-11  middle (URDF joints 4,5,6,7)
+    #   12-15 ring   (URDF joints 8,9,10,11)
+    #
+    # ⚠ PROVISIONAL AND NOT YET VERIFIED IN SIM. Unlike the p1b profile, LEAP
+    # ships no tuned grasp posture anywhere in this repo, so these are a
+    # geometric first draft: fingers flat at q_open, a cupped preshape, and a
+    # closure that flexes mcp/pip/dip while the abduction joints stay put.
+    # Every value is inside `devices.leap.joint_limits` ∩ URDF, which is all
+    # that has been checked. S4.5's MuJoCo FK pass derives the aperture these
+    # poses actually produce (d_eff / r_cap), and the poses are confirmed
+    # against a sim screenshot BEFORE S4.2 measures anything with them
+    # (plan §4.4 S4a Q8).
+    robot:
+      hand:
+        provisional: true
+        rho_eps: 0.02
+
+        #        thumb                  index                 middle                ring
+        q_open:  [0.0, 0.0, 0.0, 0.0,   0.0, 0.0, 0.0, 0.0,   0.0, 0.0, 0.0, 0.0,   0.0, 0.0, 0.0, 0.0]
+        q_pre:   [0.6, 0.3, 0.2, 0.2,   0.0, 0.4, 0.3, 0.2,   0.0, 0.4, 0.3, 0.2,   0.0, 0.4, 0.3, 0.2]
+        q_close: [1.0, 0.7, 0.6, 0.5,   0.0, 1.1, 0.9, 0.6,   0.0, 1.1, 0.9, 0.6,   0.0, 1.1, 0.9, 0.6]
+
+        # C (L6 §4.2) = every joint that travels toward closure. The three
+        # finger abduction joints (slots 4, 8, 12) do not move between q_pre
+        # and q_close, so they are excluded — a masked joint with no travel is
+        # a division by zero in rho and the validator refuses it.
+        caging_mask: [true,  true, true, true,
+                      false, true, true, true,
+                      false, true, true, true,
+                      false, true, true, true]
+
+        eta_close: 0.9
+
+        # TBD until S4.2 measures it on this hand in this sim. A placeholder
+        # would be indistinguishable from a measurement downstream.
+        T_close_e2e: TBD
+
+  # Group order IS the device index order: iiwa7 = 0 (held), leap = 1
+  # (stepped). No publishers — S4.0 emits no state message (D-20).
+  topics:
+    iiwa7:
+      subscribe:
+        - topic: "iiwa7/joint_goal"
+          role: "target"
+    leap:
+      subscribe:
+        - topic: "leap/joint_goal"
+          role: "target"
+
+  # S4.2 reads `leap_state.csv`: `command_*` gives t_cmd, `actual_pos_*` gives
+  # rho(t), `t_relative_s` is the RT steady clock L6 §4.2 asks for.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: iiwa7_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: leap_state

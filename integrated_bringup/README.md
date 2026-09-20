@@ -30,6 +30,7 @@ integrated_bringup/
 │   │   ├── demo_compliance_controller.hpp <- 태스크 공간 admittance 바인딩 (§7 법칙 결합)
 │   │   ├── demo_inference_controller.hpp <- 학습 정책(ONNX) 바인딩. 코어는 `rtc_controllers/inference/{policy_io,reach_gate}.hpp`. link pose (cache / closed-chain FK, `policy_frame` 기준) · 관절 규약 · reach gate · object pose(TFMessage) 레인을 스스로 소유한다 — object 는 device lane 이 아니라 프레임워크 freshness 게이트가 안 걸리므로 `object_pose.timeout_sec` 이 그 책임을 진다
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
+│   │   ├── demo_catching_controller.hpp <- dynamic_catching S4.0 골격: 팔 hold + 손 무성형 계단 (sim 전용, E-8 승인 전)
 │   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
 │   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum
@@ -78,6 +79,7 @@ integrated_bringup/
 │       ├── demo_compliance_controller.yaml <- DemoCompliance 게인/토픽 (task 게인은 §7 철자 ik_kp_pos/ik_kp_rot/nullspace_kp, 값은 demo_task 와 동일 — 등가성 테스트가 고정. §7 admittance 는 K_p^a=0 hand-guiding 을 출하하고 (D-A3) bias 는 pull baseline 한 곳에서만 뺀다 (D-A5); 팔의 응답을 정하는 나머지 §7 키도 명시 등록한다 — 값은 코어 default 이되 `external_wrench.filter_enabled: false`, 파싱만 되고 이 바인딩이 안 읽는 키는 두지 않으며 세 프로필이 같다. 근거는 ur5e_p1b 사본)
 │       ├── demo_inference_controller.yaml <- ONNX 정책의 관측 계약 (텐서 이름·element_names·fill·프레임·관절 규약·reach gate·`logs:` CSV lane·`closed_chain_warn_ticks` 진단). ur5e_p1b 전용, 모델은 `${RTC_POLICY_DIR}` (repo 밖)
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
+│       ├── demo_catching_controller.yaml <- DemoCatching 손 프로파일(L6 §5.1 `q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`, 전부 provisional)·진단 플래그·CSV lane. `ur5e_p1b`·`iiwa7_leap` 만
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs
 │           ├── phase_config.yaml       <- GraspPhaseManager 5-phase 설정
 │           ├── contact_light.yaml      <- rtc_mpc ContactLightOCP factory config
@@ -606,6 +608,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 | `integrated_bringup.demo_task_controller` | `DemoTaskController` (task-space 데모 컨트롤러, 500 Hz 핫패스) |
 | `integrated_bringup.demo_compliance_controller` | `DemoComplianceController` (task-space admittance 바인딩, 500 Hz 핫패스) |
 | `integrated_bringup.demo_wbc_controller` | `DemoWbcController` (WBC + MPC 데모 컨트롤러, 500 Hz 핫패스) |
+| `integrated_bringup.demo_catching_controller` | `DemoCatchingController` (dynamic_catching S4.0 골격, 500 Hz 핫패스) |
 | `integrated_bringup.demo_shared_config` | `demo_shared_config` YAML 로더 (init-time, non-RT) |
 
 ### THROTTLE 주기 표준

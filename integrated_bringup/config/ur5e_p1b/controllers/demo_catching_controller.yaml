@@ -1,0 +1,103 @@
+# demo_catching_controller — UR5e + Proto-1b variant (dynamic_catching S4.0/S4.1)
+#
+# SIM ONLY. The controller refuses to configure unless every device it claims
+# is bound to the `mujoco_native` backend: it holds the arm by commanding it
+# every tick, and doing that on real hardware is a change on the E-STOP path
+# (E-8), pending approval before S5. This file is therefore loaded by
+# sim_ur5e_p1b.launch.py only in practice; the guard, not the file's location,
+# is what enforces it (plan §4.4 S4a Q3).
+#
+# S4.0 scope: arm hold + unshaped hand step. No catching law (S5), no hand
+# sequencer (S7.1). The `catching:` tree below carries only what this step
+# needs; the keys owned by other steps (reference.*, planner.*, supervisor.*)
+# are deliberately absent and their TBDs are logged as warnings rather than
+# refused — this controller never arms, so G0-C's arming gate is not its gate.
+demo_catching_controller:
+  command_type: "position"
+
+  # ── S4a diagnostic mode ────────────────────────────────────────────────────
+  # Accept unshaped step position targets on the hand group's joint_goal, so
+  # S4.2 can identify T_close,e2e from the device CSV. False from S7.1 on: the
+  # hand sequencer owns the hand then, and an operator step would race it.
+  diagnostic:
+    hand_step: true
+
+  catching:
+    # ── D-12 ball (L0 §6) ───────────────────────────────────────────────────
+    # The SIM ball, which is what the sim gates are judged against
+    # (rtc_mujoco_sim ball_type: tennis → radius 0.025 m, mass 0.05 kg).
+    # provisional: the real D-12 spec is still open, and S4.5 re-derives
+    # d_eff / r_cap when it closes (plan §4.4 S4a Q10).
+    core:
+      ball:
+        diameter: 0.05
+        mass: 0.05
+        restitution: 0.8
+        provisional: true
+
+    # ── Hand profile (L6 §5.1/§6) ───────────────────────────────────────────
+    # 10 actuated joints, in the `devices.p1b.joint_state_names` order:
+    #   0 thumb_cmc_aa   1 thumb_cmc_fe  2 thumb_mcp      3 thumb_dip_fe
+    #   4 index_mcp_aa   5 index_mcp_fe  6 index_dip_fe
+    #   7 middle_mcp_fe  8 middle_dip_fe 9 ring_mcp_fe
+    #
+    # PROVISIONAL, and provisional in the L0 §5.3 sense: this warns in sim and
+    # blocks a real-arm configuration. q_pre / q_close are the Force-PI grasp
+    # postures from demo_shared.yaml (`force_pi_grasp.fingers`, deg → rad) —
+    # real-hardware tuned values, which is the only measured source this hand
+    # has. q_open extends the four flexion joints to 0 rad (flat palm), the
+    # pose a trial returns to. Every value is inside
+    # `devices.p1b.joint_limits` ∩ URDF.
+    robot:
+      hand:
+        provisional: true
+        rho_eps: 0.02
+
+        # Flat open palm: the four caging joints extended, the rest at q_pre.
+        q_open:  [1.570796, -0.523599, 0.0, -0.087266, 0.0,  0.0,      -0.261799,  0.0,      -0.174533,  0.0]
+        # Preshape = Force-PI `q_open` (thumb 90/-30/0/-5, index 0/-20/-15,
+        # middle -30/-10, ring -5 deg).
+        q_pre:   [1.570796, -0.523599, 0.0, -0.087266, 0.0, -0.349066, -0.261799, -0.523599, -0.174533, -0.087266]
+        # Closed = Force-PI `q_close` (thumb 90/15/0/-5, index 0/-50/-10,
+        # middle -48/-10, ring -10 deg).
+        q_close: [1.570796,  0.261799, 0.0, -0.087266, 0.0, -0.872665, -0.174533, -0.837758, -0.174533, -0.174533]
+
+        # C (L6 §4.2) = the joints that actually travel toward closure:
+        # thumb_cmc_fe, index_mcp_fe, middle_mcp_fe, ring_mcp_fe. The DIP
+        # joints are excluded because the tuned posture EXTENDS index_dip_fe
+        # while the MCPs flex — rho would otherwise read that extension as
+        # closure progress.
+        caging_mask: [false, true, false, false, false, true, false, true, false, true]
+
+        # rho >= eta_close is "closed enough to cage" (L6 §4.2). 0.9 leaves the
+        # last 10 % of travel, which is where contact stalls the joint.
+        eta_close: 0.9
+
+        # TBD until S4.2 measures it (200 trials, this hand, this sim). It is
+        # left open on purpose: a placeholder here would be indistinguishable
+        # from a measurement in every downstream reader.
+        T_close_e2e: TBD
+
+  # ── Topic configuration ────────────────────────────────────────────────────
+  # Group order IS the controller's device index order: ur5e = 0 (held),
+  # p1b = 1 (stepped). No publishers: S4.0 emits no state message (D-20).
+  topics:
+    ur5e:
+      subscribe:
+        - topic: "ur5e/joint_goal"
+          role: "target"
+    p1b:
+      subscribe:
+        - topic: "p1b/joint_goal"
+          role: "target"
+
+  # ── Controller-owned CSV logs ──────────────────────────────────────────────
+  # The S4.2 measurement reads `p1b_state.csv` — `command_*` gives t_cmd (the
+  # tick the step was accepted), `actual_pos_*` gives rho(t), and
+  # `t_relative_s` is the RT steady clock L6 §4.2 asks for. No dedicated
+  # diagnostic channel: these columns already carry everything rho needs.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: ur5e_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p1b_state
