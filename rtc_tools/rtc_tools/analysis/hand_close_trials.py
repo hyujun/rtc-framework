@@ -123,7 +123,11 @@ def main(argv: list[str] | None = None) -> int:
         help="comma-separated hand joint_state_names, in device order "
         "(the same list the CSV header is built from)",
     )
-    parser.add_argument("--group", required=True, help="hand device group name, e.g. p1b / leap")
+    parser.add_argument(
+        "--group",
+        required=True,
+        help="hand device group name, as the controller's `topics:` spells it",
+    )
     parser.add_argument("--config-key", default=DEFAULT_CONFIG_KEY)
     parser.add_argument(
         "--trials",
