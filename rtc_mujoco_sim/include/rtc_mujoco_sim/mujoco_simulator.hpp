@@ -4,6 +4,8 @@
 // ── Includes: project, then MuJoCo, then C++ stdlib ───────────────────────────
 #include "rtc_mujoco_sim/object_pool.hpp"
 #include "rtc_mujoco_sim/projectile_ball.hpp"
+#include <rtc_base/concurrency/spsc_queue.hpp>
+#include <rtc_base/threading/seqlock.hpp>
 
 #include <mujoco/mujoco.h>
 
@@ -147,6 +149,68 @@ struct ObjectStateSample {
 
 using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo>& infos,
                                                const std::vector<ObjectStateSample>& samples)>;
+
+// ── Clock phase lane ────────────────────────────────────────────────────────
+// One entry per completed sim step, pairing the simulator's own clock with the
+// steady clock the rest of the machine runs on.
+//
+// WHY A LANE AND NOT A TOPIC. /sim/status carries sim_time already, but on a
+// 1 Hz WALL timer — five hundred times too slow to see the phase error D-3 is
+// about, and sampled on the wrong clock to boot. Nothing else in this package
+// writes per-step state: there is no file writer anywhere in it. So the
+// measurement substrate for D-3 (and therefore S3.1a) did not exist.
+//
+// WHY NOT JUST STAMP THE BALL TRUTH WITH SIM TIME. That was the obvious move
+// and it is unsafe: ball_perception's recorder_node and evaluator_node both
+// pair /sim/ball/ground_truth with the camera topic BY TIMESTAMP (0.2 ms
+// alignment tolerance), so moving one topic's clock axis and not the other
+// silently breaks both. Moving BOTH needs rtc to publish /clock and the whole
+// stack to run use_sim_time — an S5/S6 decision, not an S3a one. This lane
+// gives the sim↔steady mapping instead, which is what "interpolate on the sim
+// axis" actually needs, and breaks no existing contract.
+struct SimClockSample {
+  std::uint64_t step{0};
+  double sim_time_sec{0.0};
+  std::int64_t steady_ns{0};  ///< steady_clock, same epoch the RT path uses
+  /// Launches issued so far, counting both the sampled and the stated path.
+  /// Rows sharing a value belong to the same trial.
+  std::uint64_t launch_seq{0};
+  /// Whether the ball was in flight. Together with launch_seq this cuts the
+  /// FLIGHT window out of the run, which is the only window D-3's delta means
+  /// anything over: delta is measured from the launch instant and accumulates,
+  /// so letting a trial run to the next launch would report the idle time
+  /// between throws as clock error.
+  bool ball_active{false};
+};
+
+// ── Ball contact truth ──────────────────────────────────────────────────────
+// One row per contact EPISODE — a contiguous run of substeps in which the ball
+// touches anything. The catching work needs "when did it hit, how hard, and
+// what did it hit"; a per-substep dump answers that too, but buries it.
+//
+// The existing contact lane cannot be reused. It is sensor-based
+// (mjSENS_CONTACT) and scoped to the robot groups, so it never sees the ball:
+// DiscoverContactWrenches matches targets inside a group, and the ball belongs
+// to none.
+//
+// IMPULSE IS INTEGRATED INSIDE THE SUBSTEP LOOP. mjData::contact is rebuilt by
+// every mj_step, so a read placed after the loop sees only the last substep and
+// silently under-reports the impulse by a factor of n_substeps — and a bounce
+// often IS a few substeps long.
+struct BallContactEvent {
+  std::uint64_t step{0};  ///< sim step the episode ended on
+  double begin_sim_time_sec{0.0};
+  double end_sim_time_sec{0.0};
+  int substeps{0};  ///< substeps the ball was in contact
+  /// Impulse delivered TO THE BALL, world frame [N.s]. Integral of the contact
+  /// force over the episode.
+  std::array<double, 3> impulse_world{0.0, 0.0, 0.0};
+  double peak_force_n{0.0};  ///< largest |sum of simultaneous contact forces|
+  std::array<double, 3> position_at_begin{0.0, 0.0, 0.0};
+  std::array<double, 3> velocity_at_begin{0.0, 0.0, 0.0};
+  int first_body_id{-1};   ///< body the ball touched first (name resolved off-thread)
+  int distinct_bodies{0};  ///< how many different bodies the episode involved
+};
 
 struct ProjectileBallSample {
   bool active{false};
@@ -496,6 +560,14 @@ class MuJoCoSimulator {
 
     ProjectileBallConfig projectile_ball;
 
+    // Per-step clock phase lane (D-3 / S3.1a). Off by default: it costs a ring
+    // write per step and a file on disk, and nothing outside a measurement run
+    // wants either.
+    bool clock_lane_enabled{false};
+
+    // Ball contact truth lane (S3.3). Same deal — measurement runs only.
+    bool ball_contact_lane_enabled{false};
+
     // 멀티 그룹 설정 (robot_response + fake_response)
     std::vector<JointGroupConfig> groups;
   };
@@ -575,14 +647,76 @@ class MuJoCoSimulator {
 
   void SetProjectileBallCallback(ProjectileBallCallback callback) noexcept;
 
+  /// Launch with a state SAMPLED from the configured distribution. This is the
+  /// `/sim/launch_ball` Trigger and the viewer's `K` key, and it consumes the
+  /// seeded RNG stream. It cannot fail: with no ball in the model the flag is
+  /// raised and the handler ignores it, which is why the node checks
+  /// HasProjectileBall() before calling and refuses on its own behalf.
   void RequestProjectileBallLaunch() noexcept {
     projectile_ball_launch_requested_.store(true, std::memory_order_release);
     sync_cv_.notify_all();
   }
 
+  /// Launch with the state the CALLER names (`/sim/launch_ball_at`, D-14).
+  /// Returns false — and stages nothing — when the model carries no projectile
+  /// ball or any component is non-finite; `error` then says which.
+  ///
+  /// This path does NOT touch the launch RNG, so interleaving it with the
+  /// sampled path leaves that stream exactly where it was. That is what lets a
+  /// seeded sweep and a stated throw share one session without either
+  /// perturbing the other's reproducibility.
+  ///
+  /// Two stated launches racing the physics thread coalesce to the later one.
+  /// That is not a dropped request: there is one ball, so had both been applied
+  /// the second would have overwritten the first within the same tick and the
+  /// end state would be identical.
+  [[nodiscard]] bool RequestProjectileBallLaunchAt(const ProjectileBallLaunchCommand& command,
+                                                   std::string& error) noexcept;
+
   void RequestProjectileBallReset() noexcept {
     projectile_ball_reset_requested_.store(true, std::memory_order_release);
     sync_cv_.notify_all();
+  }
+
+  /// Ring capacity: ~8 s of 500 Hz stepping, so a drain timer that stalls
+  /// briefly loses nothing. Public because a consumer sizing its drain — or a
+  /// test provoking overflow deliberately — needs the same number the ring was
+  /// built with rather than a copy that can drift from it.
+  static constexpr std::size_t kClockLaneCapacity = 4096;
+
+  static constexpr std::size_t kBallContactLaneCapacity = 256;
+
+  /// Drain up to `max` completed contact episodes. Non-RT side.
+  [[nodiscard]] std::size_t DrainBallContactLane(BallContactEvent* out, std::size_t max) noexcept {
+    std::size_t n = 0;
+    while (n < max && ball_contact_lane_.Pop(out[n])) {
+      ++n;
+    }
+    return n;
+  }
+
+  /// Episodes the sim thread could not hand over. Same contract as
+  /// ClockLaneDropped: counted, never silent.
+  [[nodiscard]] std::uint64_t BallContactDropped() const noexcept {
+    return ball_contact_dropped_.load(std::memory_order_relaxed);
+  }
+
+  /// Drain up to `max` clock-phase samples. Non-RT side; the sim thread only
+  /// ever pushes. Returns how many were written into `out`.
+  [[nodiscard]] std::size_t DrainClockLane(SimClockSample* out, std::size_t max) noexcept {
+    std::size_t n = 0;
+    while (n < max && clock_lane_.Pop(out[n])) {
+      ++n;
+    }
+    return n;
+  }
+
+  /// Samples the sim thread could not hand over because the ring was full.
+  /// Monotonic for the run. A non-zero value invalidates any claim about the
+  /// distribution's tail, so a consumer must report it rather than divide it
+  /// away.
+  [[nodiscard]] std::uint64_t ClockLaneDropped() const noexcept {
+    return clock_lane_dropped_.load(std::memory_order_relaxed);
   }
 
   [[nodiscard]] bool HasProjectileBall() const noexcept { return projectile_ball_body_id_ >= 0; }
@@ -863,6 +997,11 @@ class MuJoCoSimulator {
   /// Safe to call from any thread — reads the immutable compiled model only.
   [[nodiscard]] int FindBodyId(const char* body_name) const noexcept;
 
+  /// Body id -> MJCF name, or nullptr. The inverse of FindBodyId, for lanes
+  /// that record ids on the physics thread and resolve names off it. Reads the
+  /// immutable compiled model, so it is safe from any thread.
+  [[nodiscard]] const char* BodyName(int body_id) const noexcept;
+
   /// Latch a world-frame wrench acting at `point_body` (in `body_id`'s LOCAL
   /// frame, metres) until it is cleared, overwritten, or the sim is reset.
   /// Returns false — and stages nothing — if `body_id` names no movable body.
@@ -961,6 +1100,20 @@ class MuJoCoSimulator {
   int object_state_ref_body_{0};
   std::string object_state_frame_id_;
 
+  SpscQueue<SimClockSample, kClockLaneCapacity> clock_lane_{};
+  SpscQueue<BallContactEvent, kBallContactLaneCapacity> ball_contact_lane_{};
+  std::atomic<std::uint64_t> ball_contact_dropped_{0};
+  // Episode under construction. Only the sim thread touches these.
+  BallContactEvent ball_contact_accum_{};
+  bool ball_contact_in_episode_{false};
+  static constexpr std::size_t kBallContactBodyTrack = 8;
+  std::array<int, kBallContactBodyTrack> ball_contact_bodies_{};
+  // StepForTest has no SimLoop step counter to borrow; it keeps its own so a
+  // test sees the same monotonic numbering a real run produces.
+  std::uint64_t step_for_test_count_{0};
+  std::uint64_t launch_seq_{0};
+  std::atomic<std::uint64_t> clock_lane_dropped_{0};
+
   ProjectileBallCallback projectile_ball_cb_{nullptr};
   int projectile_ball_body_id_{-1};
   int projectile_ball_joint_id_{-1};
@@ -970,6 +1123,23 @@ class MuJoCoSimulator {
   ProjectileBallSample projectile_ball_sample_{};
   std::mt19937_64 projectile_ball_rng_{};
   bool projectile_ball_active_{false};
+
+  // Stated launch state, handed to the physics thread.
+  //
+  // SeqLock rather than a mutex because the physics thread is the reader and
+  // must not block on a caller; the wrench lane next door solves the same
+  // problem with try_lock, which cannot be reused here. A failed try_lock
+  // there means "keep last tick's staging", which is harmless. Here it would
+  // mean "could not tell whether this launch was stated or sampled", and
+  // guessing wrong launches a ball from the WRONG state while reporting
+  // success — the one outcome LaunchBall.srv exists to rule out.
+  //
+  // The SeqLock's single-writer invariant is held by the mutex below, which the
+  // physics thread never touches. Service callbacks are serialised by their
+  // callback group today; the mutex keeps that from being load-bearing.
+  std::mutex projectile_ball_launch_writer_mutex_;
+  SeqLock<ProjectileBallLaunchCommand> projectile_ball_launch_command_{};
+  std::atomic<bool> projectile_ball_explicit_launch_requested_{false};
 
   // ── Runtime control flags ─────────────────────────────────────────────────
   std::atomic<bool> paused_{false};
@@ -1131,7 +1301,23 @@ class MuJoCoSimulator {
   [[nodiscard]] bool ResolveProjectileBall() noexcept;
   // Writes the substep-dependent solref/solimp/friction onto the ball geom.
   void ApplyProjectileBallContact() noexcept;
+  /// Push one clock-phase sample. Shared by SimLoop and StepForTest so the
+  /// two cannot drift: a lane fed only by the production loop is a lane no test
+  /// can hold to its contract, and one fed only by the test entry point is a
+  /// lane that measures nothing real.
+  void RecordClockSample(std::uint64_t step) noexcept;
+
+  /// Integrate one substep of ball contact. MUST be called inside the substep
+  /// loop: mjData::contact is rebuilt by each mj_step.
+  void AccumulateBallContacts(std::uint64_t step, double substep_sec) noexcept;
+  /// Close the episode under construction and hand it to the lane.
+  void FlushBallContactEpisode(std::uint64_t step) noexcept;
+
   void HandleProjectileBallLaunch() noexcept;
+  /// Launch from the state staged in projectile_ball_launch_command_. Separate
+  /// from HandleProjectileBallLaunch so the two paths cannot be confused for
+  /// one another at the call site.
+  void HandleProjectileBallExplicitLaunch() noexcept;
   // Park (active=false) or launch (active=true) the ball: pose, velocity,
   // contact filters and gravcomp together. SimLoop context only.
   void WriteProjectileBallState(bool active, const std::array<double, 3>& position,

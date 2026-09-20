@@ -283,6 +283,19 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
 
+  ament_add_gtest(test_cm_required_config
+    test/test_cm_required_config.cpp
+    ENV ROS_DOMAIN_ID=44)
+  if(TARGET test_cm_required_config)
+    target_include_directories(test_cm_required_config PRIVATE include test)
+    ament_target_dependencies(test_cm_required_config
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_cm_required_config
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
   ament_add_gtest(test_create_device_backends
     test/test_create_device_backends.cpp
     ENV ROS_DOMAIN_ID=44)

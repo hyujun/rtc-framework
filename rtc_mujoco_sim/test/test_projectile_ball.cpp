@@ -1,3 +1,4 @@
+#include "rtc_mujoco_sim/object_pool.hpp"
 #include "rtc_mujoco_sim/projectile_ball.hpp"
 #include "test_fixture.hpp"
 
@@ -6,8 +7,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
+#include <mutex>
 #include <random>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #ifndef POOL_SCENE_MJCF_PATH
 #error "POOL_SCENE_MJCF_PATH must be defined by CMake"
@@ -18,6 +24,11 @@
 #ifndef BALL_SCENE_HIGH_PRIORITY_MJCF_PATH
 #error "BALL_SCENE_HIGH_PRIORITY_MJCF_PATH must be defined by CMake"
 #endif
+#ifndef BALL_POOL_OBJECTS_DIR
+#error "BALL_POOL_OBJECTS_DIR must be defined by CMake"
+#endif
+
+using namespace std::chrono_literals;
 
 namespace rtc {
 namespace {
@@ -654,6 +665,593 @@ TEST(ProjectileBall, ObjectStateOmitsBallOnlyWhileParked) {
   sim.RequestProjectileBallReset();
   sim.StepForTest();
   EXPECT_FALSE(sim.GetObjectStateSamplesForTest()[ball_index].active) << "parked by reset";
+}
+
+// ── Stated launch (D-14, /sim/launch_ball_at) ───────────────────────────────
+
+TEST(ProjectileBall, RejectsNonFiniteLaunchCommand) {
+  ProjectileBallLaunchCommand command;
+  std::string error;
+  EXPECT_TRUE(ValidateProjectileBallLaunchCommand(command, error))
+      << "an all-zero command is a drop, not an error";
+
+  command.position_m = {0.0, std::numeric_limits<double>::quiet_NaN(), 0.0};
+  EXPECT_FALSE(ValidateProjectileBallLaunchCommand(command, error));
+  EXPECT_NE(error.find("position"), std::string::npos);
+
+  command.position_m = {0.0, 0.0, 1.0};
+  command.linear_velocity_m_s = {std::numeric_limits<double>::infinity(), 0.0, 0.0};
+  EXPECT_FALSE(ValidateProjectileBallLaunchCommand(command, error));
+  EXPECT_NE(error.find("velocity"), std::string::npos);
+
+  command.linear_velocity_m_s = {1.0, 0.0, 0.0};
+  command.angular_velocity_rad_s = {0.0, 0.0, -std::numeric_limits<double>::infinity()};
+  EXPECT_FALSE(ValidateProjectileBallLaunchCommand(command, error));
+  EXPECT_NE(error.find("angular_velocity"), std::string::npos);
+}
+
+TEST(ProjectileBall, StatedLaunchArmsExactlyTheRequestedState) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.qpos, 0);
+  ASSERT_GE(ball.dof, 0);
+  const auto* data = sim.GetData();
+
+  // StepForTest arms AND integrates, so the readback is the armed state plus
+  // exactly one step. Asking for a state whose horizontal motion is zero makes
+  // that step observable instead of confounding: with aerodynamics off, the
+  // only force on a free ball is gravity, so x, y and the orientation cannot
+  // move at all and can be compared exactly. Anything the arming write got
+  // wrong in those components has nowhere to hide.
+  const ProjectileBallLaunchCommand resting{{0.31, -0.22, 2.75}, {}, {}};
+  std::string error;
+  ASSERT_TRUE(sim.RequestProjectileBallLaunchAt(resting, error)) << error;
+  sim.StepForTest();
+
+  EXPECT_DOUBLE_EQ(data->qpos[ball.qpos + 0], resting.position_m[0]);
+  EXPECT_DOUBLE_EQ(data->qpos[ball.qpos + 1], resting.position_m[1]);
+  EXPECT_DOUBLE_EQ(data->qpos[ball.qpos + 3], 1.0) << "orientation is reset to identity";
+  for (int i = 1; i < 4; ++i) {
+    EXPECT_DOUBLE_EQ(data->qpos[ball.qpos + 3 + i], 0.0) << "quaternion component " << i;
+  }
+  // Fell, and fell by no more than one step of free fall — it was armed at the
+  // requested height rather than dropped from the configured spawn.
+  const double dz = resting.position_m[2] - data->qpos[ball.qpos + 2];
+  EXPECT_GT(dz, 0.0);
+  EXPECT_LT(dz, 0.5 * 9.81 * sim.GetModel()->opt.timestep * sim.GetModel()->opt.timestep * 4.0);
+
+  // Velocity and spin are armed verbatim too. Horizontal velocity and the spin
+  // of an isotropic sphere are untouched by gravity, so these are exact.
+  const ProjectileBallLaunchCommand moving{{0.0, 0.0, 3.0}, {1.5, -0.5, 3.25}, {0.0, -40.0, 0.0}};
+  ASSERT_TRUE(sim.RequestProjectileBallLaunchAt(moving, error)) << error;
+  sim.StepForTest();
+
+  EXPECT_DOUBLE_EQ(data->qvel[ball.dof + 0], moving.linear_velocity_m_s[0]);
+  EXPECT_DOUBLE_EQ(data->qvel[ball.dof + 1], moving.linear_velocity_m_s[1]);
+  EXPECT_LT(data->qvel[ball.dof + 2], moving.linear_velocity_m_s[2]) << "gravity acted on vz";
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NEAR(data->qvel[ball.dof + 3 + i],
+                moving.angular_velocity_rad_s[static_cast<std::size_t>(i)], 1e-12)
+        << "spin axis " << i;
+  }
+}
+
+TEST(ProjectileBall, StatedLaunchRefusesWhenNoBallExists) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.projectile_ball.enabled = false;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  ASSERT_LT(FindBall(sim.GetModel()).body, 0) << "no ball body with the lane disabled";
+
+  std::string error;
+  EXPECT_FALSE(sim.RequestProjectileBallLaunchAt({{0.0, 0.0, 2.0}, {1.0, 0.0, 0.0}, {}}, error));
+  EXPECT_NE(error.find("disabled"), std::string::npos);
+
+  // The refusal must be the end of it. A staged-but-unlaunchable request would
+  // fire the moment a ball appeared, which is the silent action the srv
+  // contract rules out.
+  EXPECT_NO_FATAL_FAILURE(sim.StepForTest());
+}
+
+TEST(ProjectileBall, StatedLaunchRefusesNonFiniteAndStagesNothing) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.qpos, 0);
+  const auto* data = sim.GetData();
+
+  sim.StepForTest();
+  const double parked_z = data->qpos[ball.qpos + 2];
+
+  std::string error;
+  EXPECT_FALSE(sim.RequestProjectileBallLaunchAt(
+      {{0.0, 0.0, std::numeric_limits<double>::quiet_NaN()}, {1.0, 0.0, 0.0}, {}}, error));
+
+  sim.StepForTest();
+  // Still parked: a refused request changed nothing. Had the NaN been staged it
+  // would have reached qpos and poisoned every body in the scene, not just the
+  // ball.
+  EXPECT_NEAR(data->qpos[ball.qpos + 2], parked_z, 1e-9);
+  EXPECT_FALSE(sim.GetProjectileBallSampleForTest().active);
+}
+
+TEST(ProjectileBall, StatedLaunchReplaysBitIdentically) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.qpos, 0);
+  const auto* data = sim.GetData();
+
+  const ProjectileBallLaunchCommand command{{0.0, 0.0, 3.0}, {1.25, 0.4, 0.75}, {0.0, -25.0, 0.0}};
+  constexpr int kFlightSteps = 40;
+
+  const auto fly = [&]() {
+    std::string error;
+    EXPECT_TRUE(sim.RequestProjectileBallLaunchAt(command, error)) << error;
+    std::vector<double> track;
+    track.reserve(static_cast<std::size_t>(kFlightSteps) * 3);
+    for (int s = 0; s < kFlightSteps; ++s) {
+      sim.StepForTest();
+      for (int i = 0; i < 3; ++i) {
+        track.push_back(data->qpos[ball.qpos + i]);
+      }
+    }
+    return track;
+  };
+
+  const std::vector<double> first = fly();
+  const std::vector<double> second = fly();
+
+  ASSERT_EQ(first.size(), second.size());
+  for (std::size_t i = 0; i < first.size(); ++i) {
+    // Bit-identical, not near: the whole reason this lane exists is to re-run
+    // one throw while something else changes, and a tolerance here would hide
+    // exactly the drift that makes such a comparison meaningless.
+    EXPECT_EQ(first[i], second[i]) << "sample " << i;
+  }
+  // The flight must actually have gone somewhere, or the comparison above is
+  // two copies of the arming state.
+  EXPECT_GT(std::abs(first.front() - first.back()), 1e-6);
+}
+
+TEST(ProjectileBall, StatedLaunchDoesNotDisturbTheSampledRngStream) {
+  const auto draw_two_sampled = [](bool interleave_stated) {
+    auto config = MakeFloorSceneConfigWithBall();
+    // Without variation every draw is the same vector and the comparison below
+    // would pass on a dead RNG. The final EXPECT_NE guards that, but the spread
+    // has to exist for the test to have any power in the first place.
+    config.projectile_ball.launch_speed_m_s = 6.0;
+    config.projectile_ball.launch_speed_variation_m_s = 1.5;
+    config.projectile_ball.launch_angle_deg = 30.0;
+    config.projectile_ball.launch_angle_variation_deg = 8.0;
+    MuJoCoSimulator sim(std::move(config));
+    EXPECT_TRUE(sim.Initialize());
+    std::vector<std::array<double, 3>> draws;
+
+    sim.RequestProjectileBallLaunch();
+    sim.StepForTest();
+    draws.push_back(sim.GetProjectileBallSampleForTest().linear_velocity);
+
+    if (interleave_stated) {
+      std::string error;
+      EXPECT_TRUE(sim.RequestProjectileBallLaunchAt({{0.0, 0.0, 4.0}, {9.0, 9.0, 9.0}, {}}, error))
+          << error;
+      sim.StepForTest();
+    }
+
+    sim.RequestProjectileBallLaunch();
+    sim.StepForTest();
+    draws.push_back(sim.GetProjectileBallSampleForTest().linear_velocity);
+    return draws;
+  };
+
+  const auto clean = draw_two_sampled(false);
+  const auto interleaved = draw_two_sampled(true);
+
+  // A stated launch must not consume the seeded stream. If it did, a run that
+  // inserts one stated throw would silently renumber every sampled throw after
+  // it, and a "same seed" sweep would stop being the same sweep.
+  ASSERT_EQ(clean.size(), interleaved.size());
+  for (std::size_t d = 0; d < clean.size(); ++d) {
+    for (std::size_t i = 0; i < 3; ++i) {
+      EXPECT_EQ(clean[d][i], interleaved[d][i]) << "draw " << d << " axis " << i;
+    }
+  }
+  // Guard against the assertion above passing because both draws are equal to
+  // each other (a dead RNG would satisfy it trivially).
+  EXPECT_NE(clean[0][0], clean[1][0]);
+}
+
+// ── Clock phase lane (D-3 / S3.1a) ──────────────────────────────────────────
+
+TEST(SimClockLane, StaysSilentUntilEnabled) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  for (int s = 0; s < 20; ++s) {
+    sim.StepForTest();
+  }
+  std::array<SimClockSample, 8> batch{};
+  EXPECT_EQ(sim.DrainClockLane(batch.data(), batch.size()), 0U)
+      << "a measurement lane nobody asked for must not cost a ring write per step";
+  EXPECT_EQ(sim.ClockLaneDropped(), 0U);
+}
+
+TEST(SimClockLane, PairsEveryStepWithBothClocks) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.clock_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  constexpr int kSteps = 32;
+  for (int s = 0; s < kSteps; ++s) {
+    sim.StepForTest();
+  }
+
+  std::array<SimClockSample, 64> batch{};
+  const std::size_t n = sim.DrainClockLane(batch.data(), batch.size());
+  ASSERT_EQ(n, static_cast<std::size_t>(kSteps)) << "one sample per completed step, no more";
+  EXPECT_EQ(sim.ClockLaneDropped(), 0U);
+
+  const double dt = sim.GetModel()->opt.timestep * static_cast<double>(1);
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(batch[i].step, i + 1) << "steps are numbered from 1 and never skipped";
+    // Sim time must advance by exactly the physics step. This is the axis the
+    // lane exists to expose, so an off-by-a-substep here would silently rescale
+    // every phase measurement taken from it.
+    EXPECT_NEAR(batch[i].sim_time_sec, static_cast<double>(i + 1) * dt, 1e-12) << "sample " << i;
+    EXPECT_GT(batch[i].steady_ns, 0);
+    if (i > 0) {
+      EXPECT_GE(batch[i].steady_ns, batch[i - 1].steady_ns) << "steady clock must not go back";
+    }
+  }
+
+  std::array<SimClockSample, 4> empty{};
+  EXPECT_EQ(sim.DrainClockLane(empty.data(), empty.size()), 0U) << "draining is consuming";
+}
+
+TEST(SimClockLane, SegmentsTrialsByLaunchAndFlight) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.clock_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  const auto collect = [&](int steps) {
+    std::vector<SimClockSample> out;
+    std::array<SimClockSample, 64> batch{};
+    for (int s = 0; s < steps; ++s) {
+      sim.StepForTest();
+      const std::size_t n = sim.DrainClockLane(batch.data(), batch.size());
+      for (std::size_t i = 0; i < n; ++i) {
+        out.push_back(batch[i]);
+      }
+    }
+    return out;
+  };
+
+  const auto idle = collect(5);
+  ASSERT_FALSE(idle.empty());
+  for (const auto& s : idle) {
+    EXPECT_EQ(s.launch_seq, 0U) << "nothing launched yet";
+    EXPECT_FALSE(s.ball_active) << "the ball is parked at startup";
+  }
+
+  std::string error;
+  ASSERT_TRUE(sim.RequestProjectileBallLaunchAt({{0.0, 0.0, 3.0}, {1.0, 0.0, 0.0}, {}}, error))
+      << error;
+  const auto first = collect(10);
+  ASSERT_FALSE(first.empty());
+  for (const auto& s : first) {
+    EXPECT_EQ(s.launch_seq, 1U);
+    EXPECT_TRUE(s.ball_active) << "in flight";
+  }
+
+  sim.RequestProjectileBallReset();
+  const auto parked = collect(5);
+  ASSERT_FALSE(parked.empty());
+  for (const auto& s : parked) {
+    // The trial's window CLOSES here. Without this, a trial would run to the
+    // next launch and the idle time between throws would be reported as clock
+    // error — delta accumulates from the launch instant, so an open-ended
+    // window inflates delta_max without bound.
+    EXPECT_EQ(s.launch_seq, 1U) << "still trial 1, just no longer flying";
+    EXPECT_FALSE(s.ball_active);
+  }
+
+  // The sampled path must number trials too, or a run that mixes both loses
+  // the segmentation for half its throws.
+  sim.RequestProjectileBallLaunch();
+  const auto second = collect(5);
+  ASSERT_FALSE(second.empty());
+  for (const auto& s : second) {
+    EXPECT_EQ(s.launch_seq, 2U);
+    EXPECT_TRUE(s.ball_active);
+  }
+}
+
+TEST(SimClockLane, CountsOverflowInsteadOfDroppingSilently) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.clock_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  // Never drain, so the ring fills and then overflows. This is the case that
+  // matters: a lane that drops quietly under-reports exactly the tail — the
+  // large-delta, long-pause steps — that D-3 is trying to find, and it does so
+  // while still producing a full-looking CSV.
+  const std::size_t capacity = MuJoCoSimulator::kClockLaneCapacity;
+  const int steps = static_cast<int>(capacity) + 50;
+  for (int s = 0; s < steps; ++s) {
+    sim.StepForTest();
+  }
+
+  EXPECT_GT(sim.ClockLaneDropped(), 0U) << "overflow must be visible, not inferred";
+
+  std::size_t held = 0;
+  std::array<SimClockSample, 256> batch{};
+  std::size_t n = 0;
+  while ((n = sim.DrainClockLane(batch.data(), batch.size())) > 0) {
+    held += n;
+  }
+  // Every step is accounted for: what was kept plus what was counted as lost.
+  EXPECT_EQ(held + sim.ClockLaneDropped(), static_cast<std::uint64_t>(steps));
+}
+
+// ── Ball contact truth (S3.3) ───────────────────────────────────────────────
+
+namespace {
+// Clear of the two-link arm in pool_scene.xml, so what the ball lands on is the
+// floor and nothing else. Dropping at the origin lands it on the robot, which
+// is a fine contact but not a controlled one.
+constexpr double kClearDropX = 1.5;
+constexpr double kClearDropY = 1.5;
+
+struct DropTrace {
+  std::vector<BallContactEvent> events;
+  std::vector<double> sim_time;  ///< per step, after the step
+  std::vector<double> vz;        ///< ball world vz at the same instant
+};
+
+DropTrace DropOnFloor(MuJoCoSimulator& sim, const BallIds& ball, double z, int steps) {
+  std::string error;
+  EXPECT_TRUE(sim.RequestProjectileBallLaunchAt({{kClearDropX, kClearDropY, z}, {}, {}}, error))
+      << error;
+  DropTrace trace;
+  std::array<BallContactEvent, 16> batch{};
+  const auto* data = sim.GetData();
+  for (int s = 0; s < steps; ++s) {
+    sim.StepForTest();
+    trace.sim_time.push_back(data->time);
+    trace.vz.push_back(ball.dof >= 0 ? data->qvel[ball.dof + 2] : 0.0);
+    const std::size_t n = sim.DrainBallContactLane(batch.data(), batch.size());
+    for (std::size_t i = 0; i < n; ++i) {
+      trace.events.push_back(batch[i]);
+    }
+  }
+  return trace;
+}
+}  // namespace
+
+TEST(BallContactLane, StaysSilentUntilEnabled) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  EXPECT_TRUE(DropOnFloor(sim, ball, 0.20, 400).events.empty())
+      << "a lane nobody asked for must not scan contacts every substep";
+  EXPECT_EQ(sim.BallContactDropped(), 0U);
+}
+
+TEST(BallContactLane, ImpulseOnTheBallPointsAwayFromWhatItHit) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.ball_contact_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.dof, 0);
+
+  const auto trace = DropOnFloor(sim, ball, 0.20, 400);
+  ASSERT_FALSE(trace.events.empty()) << "a ball dropped on the floor must register a contact";
+
+  const auto& first = trace.events.front();
+  ASSERT_EQ(first.first_body_id, 0) << "expected the world body (floor plane), not the robot";
+
+  // The sign is the whole point. mj_contactForce reports the force on geom[1]
+  // of the pair, and the ball is on either side depending on geom id order, so
+  // an unflipped read would give an impulse pointing INTO the floor for half
+  // the scenes in this repo while still looking like a plausible number.
+  EXPECT_GT(first.impulse_world[2], 0.0) << "the floor pushes the ball UP";
+  // A vertical drop onto a horizontal plane: the lateral impulse is friction
+  // only, so it must be small next to the normal one rather than exactly zero.
+  const double lateral = std::hypot(first.impulse_world[0], first.impulse_world[1]);
+  EXPECT_LT(lateral, 0.1 * first.impulse_world[2]);
+
+  EXPECT_GT(first.peak_force_n, 0.0);
+  EXPECT_GE(first.substeps, 1);
+  EXPECT_GE(first.end_sim_time_sec, first.begin_sim_time_sec);
+  EXPECT_LT(first.velocity_at_begin[2], 0.0) << "it was still falling when it touched";
+  EXPECT_GE(first.distinct_bodies, 1);
+  EXPECT_EQ(sim.BallContactDropped(), 0U);
+}
+
+TEST(BallContactLane, SignIsRightWhenTheBallIsTheFirstGeomOfThePair) {
+  // mj_contactForce reports the force on geom[1], so the accumulator flips the
+  // sign when the ball is geom[0]. Against the floor and the robot the ball is
+  // always geom[1] — it is attached to the spec last, so its geom id is the
+  // highest — and the flip is dead code that no assertion can reach. A pool
+  // object IS attached after the ball, which is the one way in this package to
+  // put the ball on the first side of a pair.
+  auto config = MakeFloorSceneConfigWithBall();
+  config.ball_contact_lane_enabled = true;
+  config.object_pool.enabled = true;
+  config.object_pool.directory = BALL_POOL_OBJECTS_DIR;
+  config.object_pool.position = {0.0, 0.0, 0.10};
+  config.object_pool.park_position = {0.0, 0.0, -50.0};
+  config.object_pool.selection = ObjectSelection::kFixed;
+  config.object_pool.pose = PoseSampling::kFixed;
+  config.object_pool.spawn_on_start = true;
+  config.object_pool.seed = 20260920;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.geom, 0);
+
+  // Let the spawned object settle before anything is dropped on it.
+  for (int s = 0; s < 300; ++s) {
+    sim.StepForTest();
+  }
+  std::array<BallContactEvent, 16> flush{};
+  while (sim.DrainBallContactLane(flush.data(), flush.size()) > 0) {
+  }
+
+  std::string error;
+  ASSERT_TRUE(sim.RequestProjectileBallLaunchAt({{0.0, 0.0, 0.40}, {0.0, 0.0, -1.5}, {}}, error))
+      << error;
+
+  std::vector<BallContactEvent> events;
+  std::array<BallContactEvent, 16> batch{};
+  for (int s = 0; s < 300 && events.empty(); ++s) {
+    sim.StepForTest();
+    const std::size_t n = sim.DrainBallContactLane(batch.data(), batch.size());
+    for (std::size_t i = 0; i < n; ++i) {
+      events.push_back(batch[i]);
+    }
+  }
+  ASSERT_FALSE(events.empty());
+
+  const auto& e = events.front();
+  // The pool object sits above the floor, so what the ball met first is not the
+  // world body — which is what makes this the pair with the ball first.
+  ASSERT_NE(e.first_body_id, 0) << "expected the spawned object, not the floor";
+  EXPECT_GT(e.impulse_world[2], 0.0)
+      << "an object under the ball pushes it UP; an unflipped sign reads as a pull DOWN";
+}
+
+TEST(BallContactLane, IntegratesEverySubstepNotJustTheLastOne) {
+  // StepForTest runs ONE mj_step, so every unit test above exercises
+  // n_substeps == 1 — and with one substep, accumulating inside the substep
+  // loop and accumulating after it are the same code. The hazard this lane was
+  // written around (mjData::contact is rebuilt by each mj_step, so a read
+  // placed after the loop sees only the last one) is therefore invisible to
+  // them. This drives the real SimLoop with n_substeps > 1 instead.
+  auto config = MakeFloorSceneConfigWithBall();
+  config.ball_contact_lane_enabled = true;
+  config.n_substeps = 4;
+  config.sync_timeout_ms = 10.0;
+  config.max_rtf = 0.0;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  std::mutex trace_mutex;
+  std::vector<std::pair<double, double>> vz_trace;  // (sim_time, vz)
+  sim.SetProjectileBallCallback([&](const ProjectileBallSample& s) {
+    if (!s.active) {
+      return;
+    }
+    std::lock_guard lock(trace_mutex);
+    vz_trace.emplace_back(s.sim_time_sec, s.linear_velocity[2]);
+  });
+
+  sim.Start();
+  std::string error;
+  EXPECT_TRUE(sim.RequestProjectileBallLaunchAt({{kClearDropX, kClearDropY, 0.30}, {}, {}}, error))
+      << error;
+  std::vector<BallContactEvent> events;
+  std::array<BallContactEvent, 16> batch{};
+  for (int i = 0; i < 600 && events.empty(); ++i) {
+    sim.SetCommand(0, {0.0, 0.0});
+    std::this_thread::sleep_for(1ms);
+    const std::size_t n = sim.DrainBallContactLane(batch.data(), batch.size());
+    for (std::size_t k = 0; k < n; ++k) {
+      events.push_back(batch[k]);
+    }
+  }
+  sim.Stop();
+  ASSERT_FALSE(events.empty()) << "the ball never touched the floor within the run";
+
+  std::vector<std::pair<double, double>> trace;
+  {
+    std::lock_guard lock(trace_mutex);
+    trace = vz_trace;
+  }
+  ASSERT_GE(trace.size(), 4U);
+
+  const auto& e = events.front();
+  ASSERT_GT(e.substeps, 1) << "this test only means something if the bounce spans substeps";
+
+  std::size_t before = trace.size(), after = trace.size();
+  for (std::size_t i = 0; i < trace.size(); ++i) {
+    if (trace[i].first <= e.begin_sim_time_sec) {
+      before = i;
+    }
+    if (after == trace.size() && trace[i].first >= e.end_sim_time_sec &&
+        trace[i].first > e.begin_sim_time_sec) {
+      after = i;
+    }
+  }
+  ASSERT_LT(before, trace.size());
+  ASSERT_LT(after, trace.size());
+
+  const int ball_body = mj_name2id(sim.GetModel(), mjOBJ_BODY, "projectile_ball");
+  ASSERT_GE(ball_body, 0);
+  const double mass = sim.GetModel()->body_mass[ball_body];
+  const double gz = sim.GetModel()->opt.gravity[2];
+  const double window = trace[after].first - trace[before].first;
+  const double expected = mass * ((trace[after].second - trace[before].second) - gz * window);
+
+  // Reading only the last substep would under-count the impulse by roughly the
+  // number of substeps the bounce spanned, which this tolerance cannot absorb.
+  EXPECT_NEAR(e.impulse_world[2], expected, 0.15 * std::abs(expected))
+      << "reported " << e.impulse_world[2] << " vs momentum-derived " << expected << " over "
+      << e.substeps << " substeps";
+}
+
+TEST(BallContactLane, ImpulseMatchesTheMomentumChangeItCauses) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.ball_contact_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.dof, 0);
+
+  const auto trace = DropOnFloor(sim, ball, 0.20, 400);
+  ASSERT_FALSE(trace.events.empty());
+  const auto& e = trace.events.front();
+
+  // Independent oracle: the ball's own momentum. It never reads mjData::contact,
+  // so a bug in the accumulation cannot also produce the number it is checked
+  // against. Window it by the episode's own timestamps — the last sample before
+  // the episode began and the first one after it ended — so gravity is
+  // integrated over exactly the same interval as the contact.
+  std::size_t before = trace.sim_time.size(), after = trace.sim_time.size();
+  for (std::size_t i = 0; i < trace.sim_time.size(); ++i) {
+    if (trace.sim_time[i] <= e.begin_sim_time_sec) {
+      before = i;
+    }
+    if (after == trace.sim_time.size() && trace.sim_time[i] >= e.end_sim_time_sec &&
+        trace.sim_time[i] > e.begin_sim_time_sec) {
+      after = i;
+    }
+  }
+  ASSERT_LT(before, trace.sim_time.size());
+  ASSERT_LT(after, trace.sim_time.size());
+  ASSERT_GT(after, before);
+
+  const double mass = sim.GetModel()->body_mass[ball.body];
+  const double gz = sim.GetModel()->opt.gravity[2];
+  const double window = trace.sim_time[after] - trace.sim_time[before];
+
+  // m * dv = J_contact + m * g * dt   =>   J_contact = m * (dv - g * dt)
+  const double expected = mass * ((trace.vz[after] - trace.vz[before]) - gz * window);
+  EXPECT_NEAR(e.impulse_world[2], expected, 0.10 * std::abs(expected))
+      << "reported " << e.impulse_world[2] << " vs momentum-derived " << expected << " over ["
+      << trace.sim_time[before] << ", " << trace.sim_time[after] << "]";
+  EXPECT_GT(std::abs(expected), 1e-4) << "the bounce must be big enough for this to mean anything";
 }
 
 }  // namespace

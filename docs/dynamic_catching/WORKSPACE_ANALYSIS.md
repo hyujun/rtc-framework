@@ -102,8 +102,8 @@ kinematics·dynamics·QP·과제 클래스·적분은 **전부 기존 것**이�
 | W5-2 | **실제 `PointField` 배열 덤프**: 각 필드의 name·offset·datatype·count, `point_step`, `row_step`, `is_bigendian`, `is_dense` | TBD-VIS-02 | 닫힘 — little-endian, `point_step` 384, 산술이 닫힌다 (아래 표). 필드 이름으로 파싱 (**D-4**). `row_step`·`is_dense` 의 실측은 S3.4. 확인: ball_perception 발행 코드 (2026-09-19) |
 | W5-3 | `t` 필드의 타입과 기준 (float64 상대 초 / uint32 상대 ns) | TBD-VIS-03 | 닫힘 — `t` 필드 없음. `horizon_ns` UINT32, `header.stamp` (= 예측 원점 시각) 기준 상대 ns. 절대 시각 변환은 D-2. 확인: ball_perception 코드 (2026-09-19) |
 | W5-4 | `ax, ay, az`가 점마다 같은 상수 $g$인지, 항력이 반영된 그 시각의 총 가속도인지 | TBD-VIS-05 | 닫힘 — 상수 $g$ (중력만 모델, 항력 미반영). 확인: ball_perception 코드 (2026-09-19). 데이터 대조는 S3.4 |
-| W5-5 | `header.frame_id`가 계획·기준 생성에 쓰는 `world`와 같은지 | TBD-VIS-06 | 미확인 — S3.4 (`sim_estimator_node` 연결 시 `frame_id` 와 world 관계 실측) |
-| W5-6 | 발행 주기, $N$(width)의 범위, 지평 길이, 지연 분포 | TBD-VIS-04 | 예시 sim profile: 지평 0.5 s, 간격 0.05 s, 최대 10 점, 발행 ≤ 30 Hz (ball_perception 설정 (2026-09-19)) — S0.7 결과로 목표를 지평 0.8 s·17 점으로 올렸다 (plan D-15). 단 **요구 사양은 포구 제어기가 정하고 sim profile 을 맞춘다 (D-15, S3.6)**. 실측 주기·N·지연 분포는 S3.4 |
+| W5-5 | `header.frame_id`가 계획·기준 생성에 쓰는 `world`와 같은지 | TBD-VIS-06 | 닫힘 — `world` (S3.4 실측 2026-09-20) |
+| W5-6 | 발행 주기, $N$(width)의 범위, 지평 길이, 지연 분포 | TBD-VIS-04 | 예시 sim profile: 지평 0.5 s, 간격 0.05 s, 최대 10 점, 발행 ≤ 30 Hz (ball_perception 설정 (2026-09-19)) — S0.7 결과로 목표를 지평 0.8 s·**16 점**으로 올렸다 (plan D-15; 점 수는 2026-09-20 정정 — 예측점이 `step, 2·step, …, horizon` 이라 t = 0 이 없어 0.8/0.05 = 16 이다). 단 **요구 사양은 포구 제어기가 정하고 sim profile 을 맞춘다 (D-15, S3.6)**. 실측 주기·N·지연 분포는 S3.4. **S3.4 실측 (2026-09-20)**: 0.8 s 프로파일에서 30.0 Hz · N 16 · 지평 0.05…0.80 s |
 | W5-7 | ~~[요청 사항]~~ 트랙 식별·유효성 필드 | TBD-VIS-07 | 닫힘 — 요청 불필요. `generation` (uint64), `validity` (uint8), `snapshot_sequence` (uint64) 가 이미 있다 (사용자가 ball_perception 을 직접 개발, **P-3**). 사용법은 D-4, S5.2. 확인: ball_perception 코드 (2026-09-19) |
 | W5-8 | 두 PC 간 시계 동기(PTP) 상태 확인 방법 | TBD-NET-01 | 미확인 — S10 (PTP 감시 신호 출처 확보 후). sim 은 단일 PC 라 해당 없음 |
 
@@ -171,8 +171,8 @@ kinematics·dynamics·QP·과제 클래스·적분은 **전부 기존 것**이�
 | 미통과 항목 | 잔여 내용 | 이어받는 plan 단계·게이트 |
 |---|---|---|
 | GW-A (부분) | W5-5 `frame_id` ↔ world 실측 | S3.4 (plan §4.4 S3a) |
-| GW-D (부분) | `TBD-VIS-04` (발행 주기·N·지평 실측) | S3.4, 요구 사양은 S3.6 (plan §4.4 S3b) |
-| GW-D (부분) | `TBD-VIS-06` (`frame_id` 관계) | S3.4 |
+| GW-D (부분) | `TBD-VIS-04` (발행 주기·N·지평 실측) | 실측 완료 S3.4 (30 Hz · 16 · 0.8 s); 요구 사양은 S3.6 (plan §4.4 S3b) |
+| GW-D (부분) | `TBD-VIS-06` (`frame_id` 관계) | 닫힘 (S3.4: `world`) |
 | GW-D (부분) | `TBD-FRAME-01` 값 (catch frame 부모·offset·자세) | S2.3a (축), S2.3b (위치, S4.1 이후) (plan §4.4 S2) |
 | GW-E (진행 중) | L0–L8 문서 동기화 잔여, 남은 TBD 를 §9 표로 수렴 | S0.3 (plan §4.4 S0), 이후 각 TBD 는 위 표·§9 가 가리키는 단계 |
 

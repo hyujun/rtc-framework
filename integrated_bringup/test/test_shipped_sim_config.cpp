@@ -90,6 +90,16 @@ TEST_P(ShippedSimConfig, DeclaredArrayKeysLoadAsDoubleArrays) {
       "object_pool.rpy",
       "object_pool.rpy_variation",
       "object_pool.park_position",
+      // The projectile ball lane. These were missing while only ur5e_p1b
+      // carried them, so the trap was real but unguarded on every profile;
+      // iiwa7_leap adding the block is what made the gap worth closing rather
+      // than what created it.
+      "projectile_ball.spawn_position_m",
+      "projectile_ball.park_position_m",
+      "projectile_ball.launch_direction",
+      "projectile_ball.launch_spin_rad_s",
+      "projectile_ball.launch_spin_variation_rad_s",
+      "projectile_ball.publish.position_noise_stddev_m",
   };
 
   int checked = 0;

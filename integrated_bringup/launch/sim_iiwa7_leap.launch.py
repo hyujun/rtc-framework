@@ -13,6 +13,10 @@ Usage:
   # Headless
   ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false
 
+  # Scene overlay: a params file layered on top of mujoco_simulator.yaml
+  # (bare name = config/iiwa7_leap/sim_overlays/<name>.yaml, or a path)
+  ros2 launch integrated_bringup sim_iiwa7_leap.launch.py sim_overlay:=<name>
+
 Nodes launched:
   1. mujoco_simulator_node    — MuJoCo physics simulator
   2. integrated_rt_controller — 500Hz controller (CV-based wakeup in sim mode)
@@ -35,19 +39,25 @@ from launch.actions import (
     RegisterEventHandler,
     TimerAction,
 )
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.event_handlers import OnProcessExit
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import LifecycleNode
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from integrated_bringup.sim_overlay import (
+    resolve_sim_overlay,
+    sim_overlay_argument_description,
+)
 from rtc_tools.launch import cpu_shield as shield
 from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
 from rtc_tools.launch.session import max_log_sessions_from_yaml, open_session
 from rtc_tools.launch.thread_layout import get_rt_callback_core, get_sim_core
 from rtc_tools.launch.trace_action import make_trace_action
+
+PROFILE = "iiwa7_leap"
 
 
 def launch_setup(context, *args, **kwargs):
@@ -74,8 +84,14 @@ def launch_setup(context, *args, **kwargs):
     # No hand UDP driver on iiwa7+LEAP — sensor stack disabled.
     hand_config = None
 
-    # ── Build simulator parameters (defaults → robot YAML → CLI overrides) ──
+    # ── Build simulator parameters (defaults → robot YAML → overlay → CLI) ──
+    # The overlay sits between the shipped YAML and the per-argument overrides
+    # so it can replace the scene while `model_path:=` & co. still win over it.
+    # Both nodes get it; each reads only its own section.
+    sim_overlay = resolve_sim_overlay(LaunchConfiguration("sim_overlay").perform(context), PROFILE)
     sim_params = [sim_default, sim_config]
+    if sim_overlay is not None:
+        sim_params.append(sim_overlay)
     sim_overrides = {}
 
     # Check each launch argument - only add to overrides if explicitly provided
@@ -129,6 +145,8 @@ def launch_setup(context, *args, **kwargs):
     ctrl_params = [ctrl_config, sim_config]
     if hand_config is not None:
         ctrl_params.append(hand_config)
+    if sim_overlay is not None:
+        ctrl_params.append(sim_overlay)
     ctrl_overrides = {}
 
     kp = LaunchConfiguration("kp").perform(context)
@@ -546,10 +564,17 @@ def generate_launch_description():
         ),
     )
 
+    sim_overlay_arg = DeclareLaunchArgument(
+        "sim_overlay",
+        default_value="",
+        description=sim_overlay_argument_description(PROFILE),
+    )
+
     return LaunchDescription(
         [
             # Arguments
             model_path_arg,
+            sim_overlay_arg,
             enable_viewer_arg,
             sync_timeout_ms_arg,
             max_rtf_arg,

@@ -547,7 +547,7 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 | `max_log_sessions` | int | `10` | 최대 로그 세션 보관 수. `on_configure` 가 `log_dir` 의 부모를 루트로 삼아 정리한다. **bringup launch 도 같은 트리를 정리하므로** launch 는 이 값을 자기 `max_log_sessions` 인자의 default 로 읽어 노드에도 다시 넘긴다 — 두 정리 주체가 항상 같은 수를 보게 하기 위해서다. 따라서 이 YAML 값이 SSoT 이고, CLI `max_log_sessions:=N` 은 양쪽을 함께 움직인다 |
 | `use_sim_time_sync` | bool | `false` | MuJoCo 동기 루프 CV 기반 wakeup 모드 |
 | `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) |
-| `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 — `<pkg_share>/config/<config_variant>/controllers/<config_key>.yaml`. 빈 값이면 `config/controllers/` |
+| `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 — `<pkg_share>/config/<config_variant>/controllers/<config_key>.yaml`. 빈 값이면 `config/controllers/`. 파일이 **없을 때**의 거동 세 갈래는 아래 참조 |
 | `kp` | double | `5.0` | (레거시) 기본 P 게인 |
 | `kd` | double | `0.5` | (레거시) 기본 D 게인 |
 
@@ -602,6 +602,20 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 ### YAML 소유권 (ARCH-1)
 
 `rtc_controller_manager` 는 **default YAML을 동봉하지 않습니다**. 모든 파라미터는 `DeclareAndLoadParameters()` 가 robot-agnostic 코드 기본값(예: `initial_controller=""`, `device_timeout_names=[]`, `urdf` / `devices` 미선언)으로 declare 합니다. 실제 production 값은 `<robot>_bringup` 패키지의 YAML이 단독 소유 — 예: `integrated_bringup/config/{ur5e_p1a,iiwa7_leap}/sim.yaml`. 새 robot 도입 시 자체 YAML을 만들어 launch에서 주입하세요. `config_variant` ROS 파라미터(예: `"ur5e_p1a"`, `"iiwa7_leap"`)가 `config/<variant>/controllers/...` 경로 조회를 결정합니다.
+
+### 컨트롤러 YAML 이 없을 때 — 세 갈래 (issue #196 D2 + `config_required`)
+
+등록된 컨트롤러는 로봇과 무관하게 전부 인스턴스화되므로, 그 variant 에 YAML 이 없는 경우의 거동이 계약이다.
+
+| 상황 | 거동 |
+|---|---|
+| 파일 **없음**, `RTC_REGISTER_CONTROLLER` | 빈 노드로 `PreConfigure` → 내장 기본값으로 동작 (D2) |
+| 파일 **없음**, `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` | **인스턴스화하지 않고 건너뜀** — `/rtc_cm/list_controllers` 에도 없다. "이 로봇은 이 컨트롤러를 쓰지 않는다" 의 표현 |
+| 파일 **있음**, 파싱 실패 또는 최상위 키 불일치 | configure 전체 **거부** (D1). 오타가 컨트롤러를 조용히 없애지 못하게 한다 |
+
+두 번째 갈래는 기본값으로 돌 수 없는 컨트롤러(정책 컨트롤러 등)를 위한 것이다. 그런 컨트롤러를 일반 매크로로 등록하면 `LoadConfig` 거부 → `PreConfigure` 실패 → D1 이 **그 로봇의 모든 컨트롤러** 를 거부한다. 선택 기준과 게이트는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#rtc_register_controller_requiring_config--config-가-없으면-건너뛴다).
+
+⚠️ 첫째와 셋째를 `LoadConfig` 안에서 구별하려 하지 말 것. yaml-cpp 에서 **기본 생성 노드(파일 부재)는 truthy·Null** 이고 **없는 키(파일 있음·키 오타)는 falsy·Undefined** 라, 흔한 `if (!cfg) return;` 가드는 의도와 반대로 오타 쪽에서 발동한다. CM 이 파일 존재 여부로 상류에서 가르는 이유다.
 
 UR5e bringup의 예시 YAML 구조 (`integrated_bringup/config/ur5e_p1a/sim.yaml`):
 

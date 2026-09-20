@@ -765,6 +765,15 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 > **`sim_ur5e_p1b.launch.py`** (UR5e + proto_1b closed-chain hand) / **`sim_iiwa7_leap.launch.py`** (iiwa7 + LEAP Hand, hand sensor 스택 없음 — `grasp_controller_type: none`)는 위 인자 집합을 노출한다. iiwa7_leap은 `enable_mpc:=false`가 YAML 기본값(TSID self-hold 검증 후 수동 활성 권장).
 >
+> **공 발사는 `ur5e_p1b` 와 `iiwa7_leap` 두 프로필에 있다** (`ur5e_p1a` 에는 없다). launch 인자가 아니라
+> 그 프로필의 `mujoco_simulator.yaml` 의 `projectile_ball:` 블록이 켠다. 두 프로필의 **공은 같지만
+> 충돌 마스크·투척 조건은 서로 다르다** — 모델의 충돌 geom 구성과 손 위치에서 각각 유도한 값이라
+> 한쪽을 다른 쪽에 복사하면 조용히 틀린다 (근거는 각 파일의 주석). 발사는 두 경로다:
+> `/sim/launch_ball` (설정 분포에서 샘플링, 뷰어 `K` 와 같음) 과 `/sim/launch_ball_at`
+> (호출자가 준 `(p0, v0, ω)`, 재현 가능 — D-14). 계약의 SSoT 는
+> [rtc_msgs/srv/LaunchBall.srv](../rtc_msgs/srv/LaunchBall.srv) 와
+> [rtc_mujoco_sim/README.md](../rtc_mujoco_sim/README.md) §Projectile Ball 이다.
+>
 > † 표시한 `object_pool` / `object` / `object_seed` 세 인자는 **`sim_ur5e_p1b.launch.py` 에만** 있다. `object_pool` 블록을 config 에 가진 프로필이 현재 `ur5e_p1b` 뿐이라, 다른 launch 에 인자만 달면 켜는 순간 `directory` 가 비어 Initialize 가 실패한다. 다른 프로필에 pool 을 쓰려면 그 프로필의 `mujoco_simulator.yaml` 에 블록을 먼저 넣는다 (키 전체의 SSoT 는 [rtc_mujoco_sim/config/mujoco_default.yaml](../rtc_mujoco_sim/config/mujoco_default.yaml)).
 
 **Launch 순서:**
@@ -847,7 +856,9 @@ GUI 시작 시:
 
 **switchable ≠ tunable.** 라디오 집합은 `GAIN_DEFS` 키 (= GUI 에 게인 패널이 있는 컨트롤러) 에 `RobotProfile.extra_switchable_controllers` 를 더한 것입니다 (`RobotProfile.switchable_controllers()`). 두 축이 갈라진 이유는 `demo_inference_controller` 입니다 — 전환은 되지만 ROS 파라미터를 하나도 선언하지 않아 튜닝할 게 없습니다.
 
-필터가 **catalog 가 아니라 프로파일**에서 오는 것이 핵심입니다: CM 은 등록된 컨트롤러를 로봇과 무관하게 전부 인스턴스화하므로 `/rtc_cm/list_controllers` 응답은 세 프로파일에서 동일합니다. 로봇마다 다른 것은 *어느 컨트롤러가 config YAML 을 갖는가* 이고, 그래서 그 사실은 `discovery.py` 의 프로파일에 있습니다. `demo_inference_controller` 는 `config/ur5e_p1b/controllers/` 에만 YAML 이 있으므로 **`--robot ur5e_p1b` 에서만** 라디오에 뜹니다 (`test_robot_profiles.py` 가 설치된 config 트리와 양방향 대조).
+필터가 **catalog 가 아니라 프로파일**에서 오는 것이 핵심입니다: CM 은 등록된 컨트롤러를 로봇과 무관하게 인스턴스화하고, 로봇마다 다른 것은 *어느 컨트롤러가 config YAML 을 갖는가* 이며, 그래서 그 사실은 `discovery.py` 의 프로파일에 있습니다. `demo_inference_controller` 는 `config/ur5e_p1b/controllers/` 에만 YAML 이 있으므로 **`--robot ur5e_p1b` 에서만** 라디오에 뜹니다 (`test_robot_profiles.py` 가 설치된 config 트리와 양방향 대조).
+
+**예외 하나 — `/rtc_cm/list_controllers` 응답이 세 프로파일에서 동일하지는 않습니다.** `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 로 등록된 컨트롤러(현재 `demo_inference_controller` 뿐)는 그 프로파일에 YAML 이 없으면 **인스턴스화되지 않고**, 따라서 목록에도 없습니다. 기본값으로 돌 수 없는 컨트롤러이기 때문입니다 — 정책 파일 경로도 IO 스키마도 없이 기본값으로 도는 정책 컨트롤러는 의미가 없고, 그렇다고 bring-up 을 거부하면 그 로봇의 **나머지 네 컨트롤러까지** 못 뜹니다 (실제로 `ur5e_p1a`·`iiwa7_leap` 이 그 상태였습니다). 나머지 컨트롤러는 종전대로 YAML 이 없으면 내장 기본값으로 돕니다. 게이트는 `test_registered_controllers_have_shipped_config.cpp`.
 
 preset combo 는 라디오 집합에서 **목표를 받지 않는 컨트롤러를 뺀** 것입니다 — preset 은 robot target 을 저장하는데, `joint_goal` 을 구독하지 않는 컨트롤러 앞으로 저장된 preset 은 재생할 곳이 없습니다.
 

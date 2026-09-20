@@ -3,7 +3,7 @@
 - 문서 버전: v0.5 (2026-09-19)
 - 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
 - 코드 배치 `[확정 D-1]`: CLIK 확장은 `rtc_tsid` (`rtc::tsid::ClikReferenceGenerator` 옵션), 컨트롤러 바인딩은 `integrated_bringup`. 새 패키지를 만들지 않는다
-- 단계: **S2.2a·S2.2b** (CLIK 옵션, D-5·D-6 — S2.2a 구조 결정+golden-vector, S2.2b 옵션 구현) · **S5.3** (스트리밍 기준 → 확장 CLIK → 팔 명령, QP 비의존 관절공간 abort 경로) · **S3.7** (지연 식별 도구) · S10 (실기 $T_{arm}$ 식별)
+- 단계: **S2.2a·S2.2b** (CLIK 옵션, D-5·D-6 — S2.2a 구조 결정+golden-vector, S2.2b 옵션 구현) · **S5.3** (스트리밍 기준 → 확장 CLIK → 팔 명령, QP 비의존 관절공간 abort 경로) · ~~**S3.7** (지연 식별 도구)~~ — **2026-09-20 결정으로 제외, S10 에 흡수** · S10 (실기 $T_{arm}$ 식별)
 - 선행: 단계 W, L0, L4
 - 산출물: `ClikReferenceGenerator` 옵션(기본 off) + 회귀 테스트, 포구 컨트롤러의 팔 명령 경로, 지연 식별 도구(S10)
 
@@ -140,7 +140,8 @@ $$\ell_i=\upsilon_i=\mathrm{clamp}\Big(\mathrm{proj}_{[p_{lo,i},\,p_{hi,i}]}(\do
 3. 1차 + 지연 모델을 최소제곱으로 맞추고, 포구 대역의 $T_{eq}$를 계산한다.
 4. $T_{arm}=\max_iT_{eq,i}$ (보수적)와 관절별 값을 모두 기록한다.
 
-sim 에서는 주입 지연 회복 테스트(G5-D, `[SIM-ANY]`)로 도구를 검증한다.
+> **2026-09-20 결정 — sim 은 지연이 없다고 보고 구현한다 (사용자 결정, plan §4.4 S3a 각주).**
+> 종전의 "sim 에서는 주입 지연 회복 테스트(G5-D)로 도구를 검증한다" 는 **삭제한다** — 주입도 에뮬레이션도 하지 않고 `arm_lag` (또는 `sim.arm_lag`) 파라미터를 신설하지 않는다. 이 절의 식별 절차는 **실기 전용** (§7 L5.9, S10 `[HW-P1B]`) 이 되고 `G5-D` 는 은퇴한다 (§9).
 
 ### 4.5 지연 보상: 예측 선행 `[논문 외 설계]`
 
@@ -151,18 +152,22 @@ sim 에서는 주입 지연 회복 테스트(G5-D, `[SIM-ANY]`)로 도구를 검
 
 손 명령 시각 $t_{cmd}$ 와 Preshape 는 **실제 시각(now)** 축이므로 이 선행을 적용하지 않는다 (plan §3, L6).
 
-1차 필터 성분이 크면 선행만으로는 위상이 완전히 맞지 않는다. 시뮬레이션 에뮬레이션(§4.6)으로 잔여 오차를 측정해 판정한다. **$T_{arm}\neq0$ fixture 필수** — $T_{arm}=0$ 이면 now 와 now_lead 가 같아져 축 혼동 버그가 숨는다.
+1차 필터 성분이 크면 선행만으로는 위상이 완전히 맞지 않는다. ~~시뮬레이션 에뮬레이션(§4.6)으로 잔여 오차를 측정해 판정한다~~ — **sim 지연 0 결정 (2026-09-20) 으로 그 판정 수단이 사라졌다.** 잔여 오차 판정은 실기 (S10) 로 간다.
+
+**$T_{arm}\neq0$ fixture 는 여전히 필수다** — $T_{arm}=0$ 이면 now 와 now_lead 가 같아져 축 혼동 버그가 숨는다. 이 요구는 sim **런타임** 지연과 무관하며, sim 지연 0 결정은 이것을 면제하지 않는다. (그래서 이 fixture 가 §9 G5-E·L8 G8-E 를 되살리는 가장 싼 경로이기도 하다 — S5 착수 시 결정.)
 
 ### 4.6 시뮬레이션 동등성
 
-MuJoCo UR 팔 actuator(`<general>` position-PD)는 `servoj` 와 동특성이 다르다. `ur5e_p1b` 시뮬레이션에는 식별된 $G(s)$ 를 명령 경로에 넣는 에뮬레이션 옵션을 둔다(`sim.arm_lag.*`, `[SIM]` 전용). `iiwa7_leap` 시뮬레이션도 position 명령 경로라 구조가 같다.
+MuJoCo UR 팔 actuator(`<general>` position-PD)는 `servoj` 와 동특성이 다르다. ~~`ur5e_p1b` 시뮬레이션에는 식별된 $G(s)$ 를 명령 경로에 넣는 에뮬레이션 옵션을 둔다(`sim.arm_lag.*`, `[SIM]` 전용)~~ — **2026-09-20 결정으로 두지 않는다. sim 은 지연 0 이다** (plan §4.4 S3a 각주). `iiwa7_leap` 도 같다.
+
+남는 사실은 **동특성이 다르다는 것 자체**다: sim 의 position-PD 응답은 `servoj` 가 아니므로 sim 에서 잰 추종 오차를 실기 예측값으로 쓰면 안 된다. 호스트가 될 명령 경로는 `MuJoCoSimulator::ApplyCommand()` 이고, 나중에 지연 주입이 필요해지면 **출하 YAML 파라미터가 아니라 테스트 fixture 전용**으로 넣는다 (`rtc_controllers` 의 `sim.ball.*` 이 그 선례다).
 
 ### 4.7 Sanity check
 
 1. 정지 목표: 과제 오차가 지수적으로 감소하고 roll 은 posture 과제로 정해진다.
 2. $R_{WC}^\top J_\omega^{LWA}$ 로 만든 접근축 행과 유한차분 FK 일치.
 3. 관절 한계 접근 시 위반 0.
-4. 알려진 지연을 주입한 시뮬레이션에서 식별값이 주입값을 회복.
+4. ~~알려진 지연을 주입한 시뮬레이션에서 식별값이 주입값을 회복~~ — **삭제 (2026-09-20, sim 지연 0).** 식별 도구의 검증은 실기 여기 궤적 (S10) 에서만 한다.
 5. 옵션 전부 off 에서 기존 CLIK 출력과 bit-identical (S2.4 회귀).
 
 ## 5. C++ 구현
@@ -248,12 +253,10 @@ def equivalent_delay(tau, T, f):
 | `joint_cmd.w_smooth` | double | – | 1e-3 | ≥0 | 평활 항 $w_s$ (S2.2b 옵션) |
 | `joint_cmd.qp.max_iter` | int | – | 20 | >0 | 기존 하드코딩값을 기본으로, S2.2b 에서 설정화 |
 | `joint_cmd.K_n` | double | 1/s | 1.0 | 0–10 | posture (기존 `SetPostureGains`) |
-| `joint_cmd.lag.T_arm` | double | s | `TBD` | ≥0 | §4.4 식별 (S10). 식별 전 sim 은 주입값 |
+| `joint_cmd.lag.T_arm` | double | s | `TBD` | ≥0 | §4.4 식별 (S10). **sim 은 0** — 주입하지 않는다 (2026-09-20). 0 이 아닌 값은 §4.5 의 축 혼동 fixture 에서만 쓴다 |
 | `joint_cmd.lag.per_joint` | double[n] | s | `TBD` | ≥0 | §4.4 |
 | `joint_cmd.lag.lead_enable` | bool | – | false | – | 식별 전에는 false |
 | `supervisor.track_err_abort` | double | rad | `TBD` | >0 | **L7 §6 단일 원천.** L5 는 참조만 한다 |
-| `sim.arm_lag.enable` | bool | – | false | – | §4.6, `[SIM]` 전용 |
-| `sim.arm_lag.tau`, `T_f` | double | s | `TBD` | ≥0 | §4.4 식별값 |
 
 v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 관절공간 abort). `robot.arm.limit_beta` 도 삭제한다 (§4.3).
 
@@ -266,8 +269,8 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 - **L5.4** (S2.2b) 정지 목표 수렴 테스트, 유한차분 Jacobian 테스트.
 - **L5.5** (S2.2b·S2.4) RT 검사: QP 차원 고정, 할당 0, solve time 분포, DemoWbc 회귀.
 - **L5.6** (S5.3) 컨트롤러 바인딩: `devices[0]` 쓰기, 관절공간 abort 경로.
-- **L5.7** (S3.7) 지연 식별 도구: 순수 지연 + 시상수 분리 식별, σ_trk sim 초기값 산출 + 시뮬레이션 주입 지연 회복 테스트 (`[SIM-ANY]`).
-- **L5.8** (S5.3) 예측 선행 보상(now_lead, L2 연동) + 에뮬레이션에서 효과 측정.
+- **L5.7** ~~(S3.7)~~ → **S10 으로 이동 (2026-09-20)**, L5.9 에 흡수한다. 지연 식별 도구: 순수 지연 + 시상수 분리 식별. ~~σ_trk sim 초기값 산출~~·~~시뮬레이션 주입 지연 회복 테스트~~ 는 **sim 지연 0 결정으로 소멸** — `planner.budget.sigma_trk` (L3 §6) 는 sim 초기값 출처를 잃고 S10 까지 TBD 로 남는다.
+- **L5.8** (S5.3) 예측 선행 보상(now_lead, L2 연동). ~~+ 에뮬레이션에서 효과 측정~~ — **substrate 를 잃었다** (§4.6). 보상 자체는 그대로 구현하되 효과 측정 (G5-E) 은 S5 착수 시 결정한다.
 - **L5.9** 실기 식별 `[HW-P1B]` (S10).
 - **L5.10** (S5.3) backend 왕복 확인: `ControllerOutput` 에 쓴 $q_c$ 와 backend 가 실제로 쓴 값 1:1 대조.
 
@@ -292,8 +295,8 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 | G5-C2 | backend 왕복: `ControllerOutput.devices[0].commands` 와 backend 가 쓴 명령 slot 이 전 틱에서 일치 (backend clamp 미발동) | `[SIM-P1B]` / `[HW-P1B]` |
 | G5-C3 | `max_iter` 설정값 준수, 초과 시 status 노출 + 관절공간 abort 경로(가속 box 준수), L7 `QP_FAILED` 전이. RT tick 에 try/catch 없음, `Compute` noexcept | `[SIM-ANY]` |
 | G5-C4 | 재무장·E-STOP 해제 reseed 후 첫 틱에 `bound_conflict` 미발생, 자동 재개 없음, `ClearEstop` 후에도 latched fault 유지 (P-1, S5 E-8 최소 계약) | `[SIM-ANY]` |
-| G5-D | (**S3.7 게이트**, plan §4.4 S3a) 주입 지연(예: 30 ms) 식별 오차 < 2 ms | `[SIM-ANY]` |
-| G5-E | (**S5 게이트**, plan §4.4 S5 "선행 보상" 행 — 판정 입력은 S3.7) 에뮬레이션 지연 하에서 선행 보상 전후 $t_c$ 위치 오차 비교 기록 | `[SIM-P1B]` |
+| ~~G5-D~~ | **은퇴 (2026-09-20)** — S3.7 이 빠지고 sim 에 지연이 없어 주입할 대상이 없다. 식별 오차 판정은 S10 의 G5-F 로 간다 | — |
+| G5-E | (**S5 게이트**) 에뮬레이션 지연 하에서 선행 보상 전후 $t_c$ 위치 오차 비교 기록. ⚠️ **판정 입력이 없다** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없고, 지연 0 에서는 전후가 같아 **측정이 공허하다**. 살리려면 §4.5 의 fixture 전용 지연 주입이 필요하다 (S5 착수 시 결정) | `[SIM-P1B]` |
 | G5-F | 실기 `T_arm` 식별 및 YAML 확정 (S10) | `[HW-P1B]` |
 
 ## 10. 미확정 항목

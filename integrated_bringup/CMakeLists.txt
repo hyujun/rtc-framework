@@ -332,6 +332,34 @@ if(BUILD_TESTING)
   # the library boundary; Eigen's malloc does not — see the file banner for what
   # that green does and does not cover. The shipped-config cases replay the real
   # ur5e_p1b model (robot_descriptions) and read the shipped controller YAML.
+  # The ONLY test target that links --whole-archive, and it has to: the
+  # registration TUs are anonymous-namespace static initializers, so without it
+  # rtc::ControllerRegistry is EMPTY in the test process and every assertion in
+  # this suite passes vacuously. The suite's first canary fails loudly if this
+  # flag is ever dropped. No node, no model, no ONNX session — it constructs
+  # each registered controller and probes LoadConfig with an empty node.
+  ament_add_gtest(test_registered_controllers_have_shipped_config
+    test/test_registered_controllers_have_shipped_config.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_registered_controllers_have_shipped_config
+    -Wl,--whole-archive
+    ${PROJECT_NAME}_demo_controllers
+    -Wl,--no-whole-archive
+    yaml-cpp
+  )
+  target_compile_definitions(test_registered_controllers_have_shipped_config PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_registered_controllers_have_shipped_config
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controllers
+    rtc_inference
+    rtc_base
+    rtc_urdf_bridge
+  )
+
   # Configures a real LifecycleNode, so it opens a DDS participant and takes the
   # package ROS_DOMAIN_ID like its siblings (#401).
   ament_add_gtest(test_demo_inference_alloc test/test_demo_inference_alloc.cpp
@@ -1346,6 +1374,7 @@ if(BUILD_TESTING)
     test/test_launch_hand_affinity_wiring.py)
   # Behavioural twin of the two AST tests above: evaluates every launch
   # description instead of reading it.
+  ament_add_pytest_test(test_sim_overlay test/test_sim_overlay.py)
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
   ament_add_pytest_test(test_launch_session_wiring
@@ -1355,6 +1384,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_preset_toggle test/test_demo_gui_preset_toggle.py)
   ament_add_pytest_test(test_demo_gui_pull test/test_demo_gui_pull.py)
   ament_add_pytest_test(test_demo_gui_task_frame test/test_demo_gui_task_frame.py)
+  ament_add_pytest_test(test_demo_gui_ball_launch test/test_demo_gui_ball_launch.py)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
 endif()
 

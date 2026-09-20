@@ -794,13 +794,135 @@ void MuJoCoSimulator::HandleProjectileBallReset() noexcept {
                            {0.0, 0.0, 0.0});
 }
 
+// Taken at the one instant where the step is over and both clocks mean the same
+// thing. Wait-free on the physics thread: a ring push and, on overflow, a
+// relaxed counter bump — no allocation, no file, no logging.
+// One substep of ball contact, integrated in place.
+//
+// SIGN. mj_contactForce returns the force in the contact frame acting on
+// geom[1] of the pair (equivalently: what geom[0] pushes onto geom[1]). The
+// ball is on either side depending on geom id order, so the sign is flipped
+// when the ball is geom[0]. The resulting vector is the force ON THE BALL,
+// which is the one a reader means by "how hard was it hit"; a sign convention
+// left to the reader is a sign convention that gets guessed wrong.
+void MuJoCoSimulator::AccumulateBallContacts(std::uint64_t step, double substep_sec) noexcept {
+  if (!cfg_.ball_contact_lane_enabled || projectile_ball_geom_id_ < 0 || !data_) {
+    return;
+  }
+  mjtNum sum_world[3] = {0.0, 0.0, 0.0};
+  int touched = 0;
+  int first_body = -1;
+
+  for (int i = 0; i < data_->ncon; ++i) {
+    const mjContact& con = data_->contact[i];
+    const bool ball_is_first = con.geom[0] == projectile_ball_geom_id_;
+    const bool ball_is_second = con.geom[1] == projectile_ball_geom_id_;
+    if (!ball_is_first && !ball_is_second) {
+      continue;
+    }
+    mjtNum wrench[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    mj_contactForce(model_, data_, i, wrench);
+    // Contact frame rows are its axes in world, so world = frame^T * local.
+    mjtNum force_world[3];
+    mju_mulMatTVec3(force_world, con.frame, wrench);
+    if (ball_is_first) {
+      mju_scl3(force_world, force_world, -1.0);
+    }
+    mju_addTo3(sum_world, force_world);
+
+    const int other_geom = ball_is_first ? con.geom[1] : con.geom[0];
+    const int other_body = model_->geom_bodyid[other_geom];
+    if (first_body < 0) {
+      first_body = other_body;
+    }
+    if (touched < static_cast<int>(kBallContactBodyTrack)) {
+      bool seen = false;
+      for (int k = 0; k < touched; ++k) {
+        seen = seen || ball_contact_bodies_[static_cast<std::size_t>(k)] == other_body;
+      }
+      if (!seen) {
+        ball_contact_bodies_[static_cast<std::size_t>(touched)] = other_body;
+        ++touched;
+      }
+    }
+  }
+
+  if (touched == 0) {
+    // Episode ends on the first contact-free substep, not at the end of the
+    // step: a bounce can start and finish inside one step.
+    FlushBallContactEpisode(step);
+    return;
+  }
+
+  if (!ball_contact_in_episode_) {
+    ball_contact_accum_ = BallContactEvent{};
+    ball_contact_accum_.begin_sim_time_sec = data_->time;
+    ball_contact_accum_.first_body_id = first_body;
+    for (int i = 0; i < 3; ++i) {
+      const auto k = static_cast<std::size_t>(i);
+      ball_contact_accum_.position_at_begin[k] = data_->qpos[projectile_ball_qpos_adr_ + i];
+      ball_contact_accum_.velocity_at_begin[k] = data_->qvel[projectile_ball_qvel_adr_ + i];
+    }
+    ball_contact_in_episode_ = true;
+  }
+  ball_contact_accum_.end_sim_time_sec = data_->time;
+  ++ball_contact_accum_.substeps;
+  ball_contact_accum_.distinct_bodies = std::max(ball_contact_accum_.distinct_bodies, touched);
+  for (int i = 0; i < 3; ++i) {
+    ball_contact_accum_.impulse_world[static_cast<std::size_t>(i)] += sum_world[i] * substep_sec;
+  }
+  ball_contact_accum_.peak_force_n =
+      std::max(ball_contact_accum_.peak_force_n, mju_norm3(sum_world));
+}
+
+void MuJoCoSimulator::FlushBallContactEpisode(std::uint64_t step) noexcept {
+  if (!ball_contact_in_episode_) {
+    return;
+  }
+  ball_contact_in_episode_ = false;
+  ball_contact_accum_.step = step;
+  if (!ball_contact_lane_.Push(ball_contact_accum_)) {
+    ball_contact_dropped_.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void MuJoCoSimulator::RecordClockSample(std::uint64_t step) noexcept {
+  if (!cfg_.clock_lane_enabled || !data_) {
+    return;
+  }
+  const SimClockSample sample{step, data_->time,
+                              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count(),
+                              launch_seq_, projectile_ball_active_};
+  if (!clock_lane_.Push(sample)) {
+    clock_lane_dropped_.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
 void MuJoCoSimulator::HandleProjectileBallLaunch() noexcept {
   if (projectile_ball_body_id_ < 0 || !data_) {
     return;
   }
+  ++launch_seq_;
   const auto launch = SampleProjectileBallLaunch(cfg_.projectile_ball, projectile_ball_rng_);
   WriteProjectileBallState(true, cfg_.projectile_ball.spawn_position_m, launch.linear_velocity_m_s,
                            launch.angular_velocity_rad_s);
+  mj_forward(model_, data_);
+}
+
+// Same writer, same body, same publishers as the sampled path — only the source
+// of the numbers differs. The RNG is deliberately NOT advanced: a session may
+// interleave stated throws with a seeded sweep and the sweep must replay
+// identically either way.
+void MuJoCoSimulator::HandleProjectileBallExplicitLaunch() noexcept {
+  if (projectile_ball_body_id_ < 0 || !data_) {
+    return;
+  }
+  ++launch_seq_;
+  const ProjectileBallLaunchCommand command = projectile_ball_launch_command_.Load();
+  WriteProjectileBallState(true, command.position_m, command.linear_velocity_m_s,
+                           command.angular_velocity_rad_s);
   mj_forward(model_, data_);
 }
 
@@ -895,6 +1017,10 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       mj_forward(model_, data_);
       continue;
     }
+    if (projectile_ball_explicit_launch_requested_.exchange(false, std::memory_order_acq_rel)) {
+      HandleProjectileBallExplicitLaunch();
+      continue;
+    }
     if (projectile_ball_launch_requested_.exchange(false, std::memory_order_acq_rel)) {
       HandleProjectileBallLaunch();
       continue;
@@ -960,6 +1086,9 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
         RTC_TRACE_SCOPE("mj_step");
         mj_step(model_, data_);
       }
+      // Before ClearContactForces, and inside this loop — mjData::contact does
+      // not survive the next mj_step.
+      AccumulateBallContacts(step + 1, model_->opt.timestep);
       ClearContactForces();
     }
     const double step_wall_sec =
@@ -970,6 +1099,8 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     ++step;
     step_count_.store(step, std::memory_order_relaxed);
     sim_time_sec_.store(data_->time, std::memory_order_relaxed);
+
+    RecordClockSample(step);
 
     UpdateRtf(step);
     ThrottleIfNeeded();

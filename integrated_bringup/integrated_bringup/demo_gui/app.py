@@ -40,12 +40,15 @@ import tkinter as tk
 from tkinter import font as tkfont, messagebox, ttk
 
 import rclpy
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.parameter_client import AsyncParameterClient
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.utilities import remove_ros_args
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, PointCloud2
 from std_msgs.msg import Bool, String
+from std_srvs.srv import Trigger
 from tf2_msgs.msg import TFMessage
 from tf2_ros import Buffer, TransformException
 
@@ -56,8 +59,14 @@ from rtc_msgs.msg import (
     RobotTarget,
     WbcState,
 )
-from rtc_msgs.srv import GraspCommand, SwitchController
+from rtc_msgs.srv import GraspCommand, LaunchBall, SwitchController
 
+from .ball_launch import (
+    BALL_PREDICTION_TOPIC,
+    BALL_TRUTH_TOPIC,
+    BallStatus,
+    parse_launch_condition,
+)
 from .catalog import ControllerCatalog
 from .config import (
     _CALIB_STATE_COLORS,
@@ -204,6 +213,21 @@ class DemoControllerGUI(Node):
         self.switch_controller_client = self.create_client(
             SwitchController, "/rtc_cm/switch_controller"
         )
+
+        # Projectile ball (dynamic_catching §13 S3). Sim-only lanes: on hardware
+        # nothing serves them and the panel stays on "never received", which is
+        # the honest readout rather than a hidden error.
+        self._ball_status = BallStatus()
+        self._launch_ball_client = self.create_client(LaunchBall, "/sim/launch_ball_at")
+        self._reset_ball_client = self.create_client(Trigger, "/sim/reset_ball")
+        self.create_subscription(
+            Odometry, BALL_TRUTH_TOPIC, self._ball_truth_cb, qos_profile_sensor_data
+        )
+        # The publisher of the prediction lane is hardcoded RELIABLE in
+        # ball_perception, so this subscriber has to be reliable too — a
+        # best-effort subscriber is incompatible and would receive nothing
+        # while looking perfectly healthy.
+        self.create_subscription(PointCloud2, BALL_PREDICTION_TOPIC, self._ball_prediction_cb, 10)
 
         # AsyncParameterClient + grasp_command client per controller. Created
         # lazily (and rebound on /rtc_cm/active_controller_name change) so we
@@ -1030,6 +1054,7 @@ class DemoControllerGUI(Node):
     def _schedule_refresh(self):
         """Periodic GUI refresh scheduled on the Tk event loop (thread-safe)."""
         self._refresh_current_display()
+        self._refresh_ball_panel()
         self.root.after(200, self._schedule_refresh)
 
     def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
@@ -1832,6 +1857,8 @@ class DemoControllerGUI(Node):
             btn_frame, text="Send Command", style="Send.TButton", command=self._publish_target
         ).pack(side="left", padx=4)
 
+        self._build_ball_panel(control_tab)
+
         # ══════════════════════════════════════════════════════════════════
         #  GRASP TAB
         # ══════════════════════════════════════════════════════════════════
@@ -1857,6 +1884,115 @@ class DemoControllerGUI(Node):
         self.root.mainloop()
 
     # ---- Grasp tab builder -----------------------------------------------------
+
+    # ---- Projectile ball panel (dynamic_catching §13 S3) ----------------------
+
+    def _ball_truth_cb(self, _msg) -> None:
+        self._ball_status.truth.mark(time.monotonic())
+
+    def _ball_prediction_cb(self, _msg) -> None:
+        self._ball_status.prediction.mark(time.monotonic())
+
+    def _build_ball_panel(self, parent: tk.Frame) -> None:
+        """Launch button, launch-condition entry, and what is arriving.
+
+        The condition is three world-frame triples, entered as text and parsed
+        by ``ball_launch.parse_launch_condition`` so a typo is refused here with
+        the offending field named, instead of travelling to the simulator and
+        coming back as a service message the operator has to go and read.
+        """
+        frame = ttk.LabelFrame(parent, text="Projectile Ball (sim)", padding=4)
+        frame.pack(fill="x", padx=8, pady=(2, 2))
+
+        entry_row = tk.Frame(frame, bg="#1e1e2e")
+        entry_row.pack(fill="x")
+        self._ball_entries = {}
+        # Defaults are the ur5e_p1b shipped throw, so the button does something
+        # sensible before anything is typed.
+        for label, key, default in (
+            ("p0 [m]", "position", "-0.49 -0.23 1.75"),
+            ("v0 [m/s]", "velocity", "2.0 0.0 3.58"),
+            ("w [rad/s]", "spin", "0.0 0.0 0.0"),
+        ):
+            tk.Label(entry_row, text=label, bg="#1e1e2e", fg="#a6adc8", font=("Segoe UI", 8)).pack(
+                side="left", padx=(4, 2)
+            )
+            entry = ttk.Entry(entry_row, width=16)
+            entry.insert(0, default)
+            entry.pack(side="left", padx=(0, 6))
+            self._ball_entries[key] = entry
+
+        btn_row = tk.Frame(frame, bg="#1e1e2e")
+        btn_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(btn_row, text="Launch", command=self._launch_ball).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="Reset ball", command=self._reset_ball).pack(side="left", padx=4)
+
+        self._ball_status_label = tk.Label(
+            frame,
+            text="\n".join(self._ball_status.lines(time.monotonic())),
+            bg="#1e1e2e",
+            fg="#a6adc8",
+            font=("Courier New", 8),
+            justify="left",
+            anchor="w",
+        )
+        self._ball_status_label.pack(fill="x", padx=4, pady=(4, 0))
+
+    def _launch_ball(self) -> None:
+        try:
+            condition = parse_launch_condition(
+                self._ball_entries["position"].get(),
+                self._ball_entries["velocity"].get(),
+                self._ball_entries["spin"].get(),
+            )
+        except ValueError as exc:
+            self._ball_status.record_launch(False, str(exc))
+            self._refresh_ball_panel()
+            return
+
+        if not self._launch_ball_client.service_is_ready():
+            # Named rather than silently dropped: on hardware, or before the sim
+            # is up, there is no service and a button that appears to work would
+            # leave the operator believing a ball is in flight.
+            self._ball_status.record_launch(False, "/sim/launch_ball_at not available")
+            self._refresh_ball_panel()
+            return
+
+        request = LaunchBall.Request()
+        (request.position.x, request.position.y, request.position.z) = condition.position_m
+        (request.velocity.x, request.velocity.y, request.velocity.z) = condition.velocity_m_s
+        (
+            request.angular_velocity.x,
+            request.angular_velocity.y,
+            request.angular_velocity.z,
+        ) = condition.spin_rad_s
+        future = self._launch_ball_client.call_async(request)
+        future.add_done_callback(self._on_launch_ball_done)
+
+    def _on_launch_ball_done(self, future) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:  # noqa: BLE001 - surfaced in the panel, not swallowed
+            self._ball_status.record_launch(False, f"service call failed: {exc}")
+        else:
+            self._ball_status.record_launch(response.accepted, response.message)
+
+    def _reset_ball(self) -> None:
+        if not self._reset_ball_client.service_is_ready():
+            self._ball_status.record_launch(False, "/sim/reset_ball not available")
+            self._refresh_ball_panel()
+            return
+        self._reset_ball_client.call_async(Trigger.Request())
+
+    def _refresh_ball_panel(self) -> None:
+        label = getattr(self, "_ball_status_label", None)
+        if label is None:
+            return
+        text = "\n".join(self._ball_status.lines(time.monotonic()))
+        if getattr(self, "_prev_ball_text", None) == text:
+            return
+        self._prev_ball_text = text
+        label.config(text=text)
 
     def _build_pull_panel(self, parent: tk.Frame, mono_font) -> None:
         """Build the Pull Force Estimate panel.

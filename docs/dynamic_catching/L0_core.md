@@ -147,7 +147,7 @@ v0.3에서 자체 메시지 패키지를 폐기했다. 입력은 vision의 `sens
 | `core.ball.mass` | double | kg | `TBD` | 0.005–1.0 | TBD-BALL-01, D-12 (provisional). L7 §4.7 충격량 |
 | `core.ball.restitution` | double | – | `TBD` | 0–1 | TBD-BALL-01, D-12 (provisional). L3 §4.5 $d(1+1/e)$ |
 | `sim.ball.gravity` | double[3] | m/s² | `[0, 0, -9.81]` | 크기 9.7–9.9 | fixture 전용 |
-| `sim.ball.drag_k` | double | 1/m | `TBD` | 0–0.2 | fixture 전용, §7 식별값 |
+| `sim.ball.drag_k` | double | 1/m | `TBD` | 0–0.2 | fixture 전용, §7 식별값. **TBD 로 남는다** — S3.8 이 S3a 범위 밖 (2026-09-20) |
 | `sim.ball.v_eps` | double | m/s | 1e-3 | 1e-6–1e-1 | 특이점 방어 (fixture) |
 | `sim.integrator.h_max` | double | s | 0.002 | 1e-4–0.01 | fixture 적분 스텝 |
 | `sim.integrator.max_steps` | int | – | 100 | 1–500 | fixture 연산량 상한 |
@@ -160,7 +160,9 @@ v0.3에서 자체 메시지 패키지를 폐기했다. 입력은 vision의 `sens
 - **S1.2** (L2 와 공동) 공용 궤적 타입 POD 화, 용량 상수.
 - **S1.7** 파라미터 검증기 + 활성 구성 TBD·provisional·교차제약·ζ·ω·h 테스트.
 - **S1.6** `ball_dynamics.hpp` 를 test fixture 로 이식 + §4.4 테스트 6종 (참조: `test_l0.cpp`, GTest). **fixture 전용이므로 RT 게이트는 적용하지 않는다.**
-- **S3.8** 시뮬레이션 $k$ 식별 도구: MuJoCo에서 서로 다른 초기속도로 공을 던져 참값 궤적(`/sim/ball/ground_truth`)을 기록하고, $k$를 스칼라 최소제곱으로 추정. 산출값을 `sim.ball.drag_k`에 기록. fixture 가 실제로 필요해질 때까지 미뤄도 된다.
+- **S3.8** (**S3a 범위 밖 — 2026-09-20 사용자 결정**) 시뮬레이션 $k$ 식별 도구: MuJoCo에서 서로 다른 초기속도로 공을 던져 참값 궤적(`/sim/ball/ground_truth`)을 기록하고, $k$를 스칼라 최소제곱으로 추정. 산출값을 `sim.ball.drag_k`에 기록.
+  - **왜 뺐나:** 공 위치 예측은 `ball_perception` 이 준다 — rtc 는 자체 탄도 모델로 예측하지 않으므로 이 $k$ 가 제어 경로에 들어갈 자리가 없다. 이 절이 이미 "fixture 가 실제로 필요해질 때까지 미뤄도 된다" 고 적었고 §10 의 "fixture 사용 여부 (S3.5a)" 도 미확정이다. ⇒ **fixture 가 필요해지는 시점 (S3.5a) 으로 이월**한다.
+  - ⚠️ 이 $k$ 는 시뮬레이터의 preset $C_d$ 와 **다른 값이다**. sim 은 $-\tfrac12\rho C_d A|v|v$ + Magnus 를 `constexpr` preset 으로 돌리고 (YAML 미노출), 여기 $k$ 는 §4.1 의 스칼라 [1/m] 이며 Magnus 가 없다. preset 에서 환산해 쓸 수 없고, 그래서 식별 도구가 필요했던 것이다.
 
 ## 8. 디버깅 방법
 
@@ -176,7 +178,7 @@ v0.3에서 자체 메시지 패키지를 폐기했다. 입력은 vision의 `sens
 | G0-A | §4.4 여섯 테스트 통과 (해석해 오차 < 1e-9 m, 오차비 12–20, STM 차이 < 1e-6, 저속 ∂A/∂k 상대오차 < 1e-12, `truncated` 계약) | `[SIM-ANY]` |
 | G0-B | 모든 함수 `noexcept`, 시간 타입·검증기 외 RT 사용 경로 할당 0 (`ScopedNoMalloc`·`ScopedAllocGate`), SeqLock payload 타입 `static_assert` trivially copyable | `[SIM-ANY]` |
 | G0-C | 활성 구성의 TBD 필드가 있는 YAML에서 `armable=false`, 비활성 구성 키의 TBD 는 통과. `robot.hand.q_close != q_pre`(L6 §4.2) 검사 포함. D-9 교차제약, $\omega h\ge0.828$ 공식(100·500·5000 Hz 각각 — `reference.omega` 범위가 이 경계를 배제하므로 범위 밖 $\omega$ 로 공식만 검증한다), $\omega h>0.05$ 경고, $\zeta\ne1$, 실기 구성의 provisional 값 → `armable=false` | `[SIM-ANY]` |
-| G0-D | 시뮬레이션 $k$ 식별 후 1 s 궤적 위치 RMS 잔차 기록 (합격 임계는 사용자 결정) | `[SIM-P1B]` |
+| G0-D | 시뮬레이션 $k$ 식별 후 1 s 궤적 위치 RMS 잔차 기록 (합격 임계는 사용자 결정). **S3a 게이트에서 빠졌다 (2026-09-20, §7 S3.8)** — fixture 가 필요해지는 시점 (S3.5a) 까지 `NOT_EVALUATED` | `[SIM-P1B]` |
 | G0-E | 시간 타입: 다른 타입끼리 비교가 컴파일되지 않음, $T_{arm}\ne0$ fixture 에서 plan §3 표의 판정별 비교 대상 고정 | `[SIM-ANY]` |
 
 ## 10. 미확정 항목

@@ -600,7 +600,8 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     // exists but cannot be read (parse error, bad override, unknown package)
     // is a real config error and refuses the whole configure instead of
     // silently running a controller with defaults the operator never asked
-    // for.
+    // for. A controller registered as config_required opts out of the first
+    // half only — see the skip below.
     //
     // config_variant gates the whole config tree (system YAML + controllers +
     // mujoco + shared).  When non-empty, path becomes
@@ -612,6 +613,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     const std::string variant = get_parameter("config_variant").as_string();
 
     YAML::Node ctrl_node;
+    bool config_file_absent = false;
     try {
       const std::string pkg_dir =
           ament_index_cpp::get_package_share_directory(entry.config_package);
@@ -630,12 +632,32 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       // BadFile must be caught before std::exception: YAML::Exception derives
       // from std::runtime_error, so the order below is what separates
       // "absent" from "present but broken".
+      config_file_absent = true;
       RCLCPP_INFO(get_logger(), "No config file for '%s' (pkg=%s) — using built-in defaults",
                   ctrl->Name().data(), entry.config_package.c_str());
     } catch (const std::exception& e) {
       RCLCPP_ERROR(get_logger(), "Config load failed for '%s' (pkg=%s): %s", ctrl->Name().data(),
                    entry.config_package.c_str(), e.what());
       bring_up_failed = true;
+    }
+
+    // D2's third case: the controller declared that defaults cannot run it
+    // (ControllerEntry::config_required) and this variant ships no YAML. That
+    // is a robot which does not use this controller, not a broken bring-up —
+    // skip it and let the rest configure. Without this the controller fails
+    // PreConfigure below and the D1 checkpoint refuses EVERY controller,
+    // including the ones whose configs are fine.
+    //
+    // Deliberately keyed on config_file_absent, not on an empty ctrl_node: a
+    // file that exists but whose top-level key is misspelled also yields an
+    // empty node, and that one must still refuse rather than silently drop a
+    // controller the operator did configure.
+    if (config_file_absent && entry.config_required) {
+      RCLCPP_INFO(get_logger(),
+                  "Controller '%s' requires a config file and config_variant '%s' ships none "
+                  "(pkg=%s) — not instantiated for this robot",
+                  entry.config_key.c_str(), variant.c_str(), entry.config_package.c_str());
+      continue;
     }
 
     // Create a dedicated LifecycleNode per controller.  Namespace is
@@ -691,19 +713,34 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     // sits between here and D1, which nothing enforces. Tier 1 above is
     // structured the same way.) The loop still runs to completion so one run
     // reports every collision.
+    //
+    // The value stored is the index this controller will occupy in
+    // controllers_, i.e. its size BEFORE the push_back below — NOT the registry
+    // entry index `i`. The two coincide only while every entry is
+    // instantiated; once an entry can be skipped (config_required above) `i`
+    // runs ahead, and since SwitchActiveController indexes controllers_ with
+    // this value, a stale `i` resolves a name to a DIFFERENT controller and
+    // reports success. The bounds check there does not catch it — the wrong
+    // index is still in range.
+    const auto ctrl_idx = static_cast<int>(controllers_.size());
     const std::string ctrl_name(ctrl->Name());
     auto claim = [&](const std::string& id) {
-      const auto [prev, inserted] = controller_name_to_idx_.emplace(id, static_cast<int>(i));
+      const auto [prev, inserted] = controller_name_to_idx_.emplace(id, ctrl_idx);
       if (inserted) {
         return;
       }
       bring_up_failed = true;
+      // The previous claimant is identified by config_key out of
+      // controller_types_ (parallel to controllers_), for the same reason the
+      // stored value is not `i`: entries[] and controllers_ need not align.
+      // prev->second always addresses an ALREADY pushed controller — a claim
+      // colliding with this iteration's own is excluded by the guard below.
       RCLCPP_FATAL(get_logger(),
-                   "Controller identifier '%s' is already claimed by registration #%d "
-                   "(config_key='%s'); #%zu (config_key='%s', Name()='%s') would shadow "
-                   "it in the switch_controller / initial_controller namespace.",
+                   "Controller identifier '%s' is already claimed by controller #%d "
+                   "(config_key='%s'); registration #%zu (config_key='%s', Name()='%s') would "
+                   "shadow it in the switch_controller / initial_controller namespace.",
                    id.c_str(), prev->second,
-                   entries[static_cast<std::size_t>(prev->second)].config_key.c_str(), i,
+                   controller_types_[static_cast<std::size_t>(prev->second)].c_str(), i,
                    entry.config_key.c_str(), ctrl_name.c_str());
     };
     claim(ctrl_name);

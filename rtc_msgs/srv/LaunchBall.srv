@@ -1,0 +1,65 @@
+# /sim/launch_ball_at — launch the simulated projectile ball from a STATE THE
+# CALLER NAMES, rather than from one the simulator samples.
+#
+# WHY THIS EXISTS. The simulator already had a full projectile-ball lane —
+# mjSpec freejoint sphere, physical presets, quadratic drag with Magnus lift,
+# noise-sampled launches, ground-truth and noisy-camera publishers — reachable
+# through `/sim/launch_ball`, which is a `std_srvs/Trigger`. A Trigger carries
+# no request fields at all: the callback does not even name its request
+# argument. Every launch condition therefore came from YAML plus a seeded RNG,
+# so a caller could ask for "a launch" but never for "THIS launch" (D-14).
+#
+# That is fine for a demo and useless as a measurement substrate. Catching work
+# needs to re-run one throw while something else changes, to sweep a grid of
+# release states, and to compare two runs that must differ only in the variable
+# under test. This service is the second path into the same writer: same body,
+# same physics, same publishers, but the state is stated instead of drawn.
+#
+# `/sim/launch_ball` KEEPS ITS MEANING. It still samples from the configured
+# distribution, and the viewer's `K` key still goes through it. This service
+# does not replace it and does not disturb its RNG stream — the two paths share
+# only the code that writes the freejoint.
+#
+# REPRODUCIBILITY IS THE POINT. No RNG is consulted here, and the writer zeroes
+# the ball's warm-start and applied forces and resets its orientation to
+# identity, so two calls carrying the same numbers put the ball in the same
+# state bit for bit. The trajectories that follow are then bit-identical for as
+# long as the ball flies free.
+
+# Release position of the ball centre, in the WORLD frame [m]. There is no
+# default worth having: the configured spawn position belongs to the sampled
+# path, and silently substituting it here would answer a question the caller
+# did not ask. Every component must be finite.
+geometry_msgs/Point position
+
+# Release velocity of the ball centre, in the WORLD frame [m/s]. Zero is a
+# legitimate request — it drops the ball — so it is not treated as "unset".
+geometry_msgs/Vector3 velocity
+
+# Release angular velocity, in the WORLD frame [rad/s]. World and body axes
+# coincide at release because the writer resets the ball's orientation to
+# identity, so this is unambiguous at the moment it is applied.
+#
+# Spin is not decoration. With aerodynamics enabled the ball carries a Magnus
+# term, so the spin a caller states here changes where the ball lands. Leaving
+# it zero asks for a spinless throw, which is a different throw from an unset
+# one only in that the caller meant it.
+geometry_msgs/Vector3 angular_velocity
+
+---
+
+# True iff the ball was armed with the requested state. False means NOTHING
+# CHANGED — no ball was launched, no state was written, and the previous launch
+# (if any) is still in flight untouched.
+#
+# A refusal is deliberate, never a dropped request. A caller that believed a
+# launch happened would go on to attribute whatever the ball was already doing
+# to the state it asked for, which is the one failure a measurement substrate
+# must not have. The refusals are: the simulator is not configured; the model
+# carries no projectile ball (`projectile_ball.enabled: false`, which is the
+# shipped default and is also every model that never configured one); or any
+# component of any field is NaN or infinite.
+bool accepted
+
+# Human-readable outcome — the armed state on success, the reason on refusal.
+string message

@@ -30,7 +30,7 @@
 | G3-3 | 계획기 스레드 생성·우선순위 규약 | 닫힘 — D-7: MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), 새 thread layout role, 초기 FIFO, 정책은 D-7a 측정으로 확정 (plan §6, §7) |
 | G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | TBD-HAND-04 (W7-4) |
 | G3-5 | 포구 허용 작업공간, 감속 여유 공간 | TBD-BALL-02 (W7-3) |
-| G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | TBD-VIS-04 (W5-6). 요구 사양은 제어기가 정한다 (D-15, S3.6) |
+| G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | sim 실측 간격 0.05 s · 지평 0.80 s · N 16 (S3.4 2026-09-20, TBD-VIS-04). 요구 사양은 제어기가 정한다 (D-15, S3.6) |
 | G3-7 | **독립 IK/포즈 해석기가 있는지**와 그 API | 닫힘 — 독립 IK 없음. `rtc::compliance::DifferentialIk` (σ_min 적응 λ, heap-free) 를 m=5 로 재사용 (D-7d). 수렴은 G3-G 로 검증 |
 
 ## 3. 참고자료
@@ -419,7 +419,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
 | `planner.budget_s` | double | s | 0.010 | 0.001–0.016 | 60 Hz 주기 내 |
-| `planner.slice.dt` | double | s | `TBD` | 0.005–0.05 | vision 샘플 간격의 정수배 (TBD-VIS-04) |
+| `planner.slice.dt` | double | s | `TBD` | 0.005–0.05 | vision 샘플 간격의 정수배 (sim 실측 간격 0.05 s — S3.4; 확정은 S3.6) |
 | `planner.slice.t_lead_min` | double | s | `TBD` | >0 | $T_{freeze}$ 이상 |
 | `planner.slice.t_max` | double | s | `TBD` | 0.2–1.5 | vision 지평 − `prediction.t_horizon_margin` 이하 |
 | `planner.n_settle` | int | – | 3 | 0–20 | §4.4 트랙 epoch 변경 후 대기 메시지 수 |
@@ -451,7 +451,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.gamma.eta_a`, `eta_v` | double | – | 0.8, 0.9 | (0, 1] | 여유율. `eta_v` 는 D-9 의 $\eta_v$ — `gammaWindow` 와 rollout 수락이 같은 값을 쓴다 (§4.5, §4.8) |
 | `planner.gamma.eps_term` | double | m | 0.002 | – | §4.8 |
 | `planner.budget.n_sigma` | double | – | 2.0 | 1–3 | §4.6 |
-| `planner.budget.sigma_trk` | double | m | `TBD` | ≥0 | L5 실측 |
+| `planner.budget.sigma_trk` | double | m | `TBD` | ≥0 | L5 실측. ⚠️ **sim 초기값 출처가 없다** — S3.7 이 2026-09-20 결정으로 빠져 (L5 §7 L5.7) **S10 실기 식별까지 TBD 로 남는다** |
 | `planner.budget.clock_err` | double | s | `TBD` | ≥0 | 인프라 실측 |
 | `planner.stop.a_dec` | – | – | – | – | v0.5 에서 삭제 — 단일 키 `supervisor.decel.a_dec` (L7 §6) 를 읽는다 (§4.9) |
 | `planner.stop.check_ik` | bool | – | true | – | §4.9 |

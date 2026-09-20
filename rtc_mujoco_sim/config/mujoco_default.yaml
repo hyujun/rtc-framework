@@ -188,3 +188,35 @@ mujoco_simulator:
         ground_truth_topic: "/sim/ball/ground_truth"
         camera_topic: "/sim/ball/camera_position"
         position_noise_stddev_m: [0.0, 0.0, 0.0]
+
+    # ── Clock phase lane (D-3 / S3.1a 측정용) ────────────────────────────────
+    # 완료된 sim step 마다 (step, sim_time, steady_ns) 한 줄을 링에 넣고, 노드가
+    # 타이머로 빼서 CSV 로 쓴다. 측정 run 에서만 켠다 — step 당 링 쓰기와 디스크
+    # 파일이 대가다.
+    #
+    # `/sim/status` 가 sim_time 을 이미 싣지만 **1 Hz wall 타이머**라 D-3 이 보려는
+    # 위상 오차에 500× 느리고 샘플링 클럭 자체가 틀렸다.
+    #
+    # ⚠ 공 truth 토픽의 stamp 를 sim 시각으로 바꾸는 쪽이 아니다 — ball_perception 의
+    # recorder_node·evaluator_node 가 `/sim/ball/ground_truth` 와 카메라 토픽을
+    # **stamp 로 짝짓기** 때문에(0.2 ms 허용오차) 한쪽만 축을 바꾸면 둘 다 조용히
+    # 깨진다. 둘 다 바꾸려면 rtc 가 `/clock` 을 내야 하고 그건 S5/S6 결정이다.
+    clock_lane:
+      enabled: false
+      # 빈 문자열이면 lane 이 켜져 있어도 거부된다 (조용히 임의 경로에 쓰지 않는다).
+      csv_path: ""
+      drain_rate_hz: 20.0
+
+    # ── Ball contact truth lane (S3.3 측정용) ────────────────────────────────
+    # 공이 무언가에 닿아 있는 연속 substep 구간(= 한 episode)마다 CSV 한 줄:
+    # 시각·충격량(world, 공에 가해진)·최대 접촉력·첫 접촉 시 공 상태·맞은 body.
+    #
+    # 기존 contact lane 은 못 쓴다 — mjSENS_CONTACT 센서 기반에 로봇 group 범위라
+    # 공을 아예 보지 않는다.
+    #
+    # 충격량은 **substep 루프 안에서** 적산한다. mjData::contact 는 매 mj_step 에
+    # 다시 만들어지므로 루프 밖에서 읽으면 마지막 substep 만 보이고 조용히
+    # n_substeps 배만큼 과소 보고된다 (튐 하나가 여러 substep 인 경우가 흔하다).
+    ball_contact_lane:
+      enabled: false
+      csv_path: ""

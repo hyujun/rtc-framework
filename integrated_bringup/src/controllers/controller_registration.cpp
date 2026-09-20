@@ -38,6 +38,17 @@ RTC_REGISTER_CONTROLLER(demo_compliance_controller, "", "integrated_bringup",
 // here; when ONNX Runtime was absent at build time this same name resolves to
 // the stub, whose Init() is a silent no-op, which is why the controller gates
 // on `is_initialized()` rather than trusting configure to have loaded anything.
-RTC_REGISTER_CONTROLLER(demo_inference_controller, "", "integrated_bringup",
-                        std::make_unique<integrated_bringup::DemoInferenceController>(
-                            urdf, std::make_unique<rtc::OnnxEngine>()))
+//
+// REQUIRING_CONFIG, unlike every other controller here: LoadConfig refuses an
+// absent config node (inference/parameters.cpp) because a policy controller has
+// no defensible defaults — no model path, no IO schema, no policy frame. That
+// refusal is correct and stays, but as a plain registration it also meant any
+// robot shipping no demo_inference_controller.yaml failed the whole bring-up,
+// taking the other four controllers down with it (ur5e_p1a and iiwa7_leap both
+// did). The flag makes "this robot ships no policy config" mean "this robot
+// does not run the policy controller", which is what the GUI roster in
+// demo_gui/discovery.py has always assumed.
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
+    demo_inference_controller, "", "integrated_bringup",
+    std::make_unique<integrated_bringup::DemoInferenceController>(
+        urdf, std::make_unique<rtc::OnnxEngine>()))

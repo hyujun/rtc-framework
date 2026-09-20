@@ -195,6 +195,27 @@ bool ValidateProjectileBallConfig(const ProjectileBallConfig& config, std::strin
   return true;
 }
 
+bool ValidateProjectileBallLaunchCommand(const ProjectileBallLaunchCommand& command,
+                                         std::string& error) noexcept {
+  // Named one at a time so the refusal message says WHICH field, not just that
+  // the request was bad. A caller sweeping a grid of release states gets these
+  // back from a script, where "invalid" and "velocity is NaN" cost the same to
+  // emit and differ by an afternoon of bisecting.
+  if (!IsFinite(command.position_m)) {
+    error = "launch position must be finite";
+    return false;
+  }
+  if (!IsFinite(command.linear_velocity_m_s)) {
+    error = "launch velocity must be finite";
+    return false;
+  }
+  if (!IsFinite(command.angular_velocity_rad_s)) {
+    error = "launch angular_velocity must be finite";
+    return false;
+  }
+  return true;
+}
+
 double ProjectileBallDampingRatioForRestitution(double restitution) noexcept {
   const double target = std::clamp(restitution, 1e-3, 0.999);
   // Restitution falls monotonically with zeta; by zeta = 5 the push-only
