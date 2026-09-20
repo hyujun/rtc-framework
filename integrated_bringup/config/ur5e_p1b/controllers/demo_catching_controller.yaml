@@ -24,15 +24,21 @@ demo_catching_controller:
 
   catching:
     # ── D-12 ball (L0 §6) ───────────────────────────────────────────────────
-    # The SIM ball, which is what the sim gates are judged against
-    # (rtc_mujoco_sim ball_type: tennis → radius 0.025 m, mass 0.05 kg).
-    # provisional: the real D-12 spec is still open, and S4.5 re-derives
-    # d_eff / r_cap when it closes (plan §4.4 S4a Q10).
+    # The SIM ball, which is what the sim gates are judged against. It mirrors
+    # `mujoco_simulator.yaml`'s `projectile_ball` (radius 0.0335 m, mass
+    # 0.057 kg) and the `tennis` physics preset's restitution (0.75, ITF drop
+    # test 0.745) — a real ITF Type 2 ball as of 2026-09-20, where this file
+    # previously carried a 50 mm / 50 g ball and a restitution of 0.8 that
+    # matched no preset. Keep the three in sync: S4.5's d_eff / r_cap are
+    # derived FOR this diameter, so changing it invalidates them.
+    # provisional: the real D-12 spec is still open (this is the sim ball, not
+    # a decision about the hardware one), and S4.5 re-derives d_eff / r_cap
+    # when it closes (plan §4.4 S4a Q10).
     core:
       ball:
-        diameter: 0.05
-        mass: 0.05
-        restitution: 0.8
+        diameter: 0.067
+        mass: 0.057
+        restitution: 0.75
         provisional: true
 
     # ── Hand profile (L6 §5.1/§6) ───────────────────────────────────────────
@@ -42,41 +48,89 @@ demo_catching_controller:
     #   7 middle_mcp_fe  8 middle_dip_fe 9 ring_mcp_fe
     #
     # PROVISIONAL, and provisional in the L0 §5.3 sense: this warns in sim and
-    # blocks a real-arm configuration. q_pre / q_close are the Force-PI grasp
-    # postures from demo_shared.yaml (`force_pi_grasp.fingers`, deg → rad) —
-    # real-hardware tuned values, which is the only measured source this hand
-    # has. q_open extends the four flexion joints to 0 rad (flat palm), the
-    # pose a trial returns to. Every value is inside
-    # `devices.p1b.joint_limits` ∩ URDF.
+    # blocks a real-arm configuration. q_pre / q_close are USER-SUPPLIED, which
+    # is what TBD-HAND-05 asks for (MASTER §9): posed in the demo GUI against
+    # the sim hand and handed back as `catch_q_pre` / `catch_q_close` in
+    # `logging_data/hand_presets_p1b.json`. They supersede the Force-PI grasp
+    # postures this file shipped first — Force-PI is tuned to squeeze an object
+    # already in the hand, not to cage one arriving at speed, so its preshape
+    # is too open and its closure too shallow. q_open is unchanged: the four
+    # flexion joints extended, the pose a trial returns to. Every value is
+    # inside `devices.p1b.joint_limits` ∩ URDF.
     robot:
       hand:
         provisional: true
         rho_eps: 0.02
 
-        # Flat open palm: the four caging joints extended, the rest at q_pre.
-        q_open:  [1.570796, -0.523599, 0.0, -0.087266, 0.0,  0.0,      -0.261799,  0.0,      -0.174533,  0.0]
-        # Preshape = Force-PI `q_open` (thumb 90/-30/0/-5, index 0/-20/-15,
-        # middle -30/-10, ring -5 deg).
-        q_pre:   [1.570796, -0.523599, 0.0, -0.087266, 0.0, -0.349066, -0.261799, -0.523599, -0.174533, -0.087266]
-        # Closed = Force-PI `q_close` (thumb 90/15/0/-5, index 0/-50/-10,
-        # middle -48/-10, ring -10 deg).
-        q_close: [1.570796,  0.261799, 0.0, -0.087266, 0.0, -0.872665, -0.174533, -0.837758, -0.174533, -0.174533]
+        # Flat open palm: the four flexion joints extended (thumb 90/-30/0/-5,
+        # index 0/0/-15, middle 0/-10, ring 0 deg).
+        q_open:  [1.570796, -0.523599,      0.0, -0.087266, 0.0,       0.0, -0.261799,       0.0, -0.174533,       0.0]
+        # Preshape, user-supplied (thumb 80/-30/0/-5, index 0/-45/-15,
+        # middle -55/-10, ring -45 deg): the fingers already curled into a cup
+        # so closure only has to finish the wrap, not start it.
+        q_pre:   [1.396263, -0.523599,      0.0, -0.087266, 0.0, -0.785398, -0.261799, -0.959931, -0.174533, -0.785398]
+        # Closed, user-supplied (thumb 60/-10/30/-80, index 0/-60/-60,
+        # middle -75/-60, ring -80 deg): the thumb swings across the palm
+        # (cmc_aa 80 → 60, mcp 0 → 30) while every distal joint flexes.
+        q_close: [1.047198, -0.174533, 0.523599, -1.396263, 0.0, -1.047198, -1.047198, -1.308997, -1.047198, -1.396263]
+        # C (L6 §4.2) = the joints needed to cage, which in these postures is
+        # every joint that travels: the thumb swings in and all three of its
+        # distal joints flex, and each finger's DIP now flexes WITH its MCP
+        # instead of extending against it (which is why the earlier Force-PI
+        # posture had to exclude them). Only index_mcp_aa is out — it holds
+        # still, and a masked joint with no travel is a division by zero in
+        # rho, which the validator refuses (kHandCagingGapTooSmall).
+        caging_mask: [true, true, true, true, false, true, true, true, true, true]
 
-        # C (L6 §4.2) = the joints that actually travel toward closure:
-        # thumb_cmc_fe, index_mcp_fe, middle_mcp_fe, ring_mcp_fe. The DIP
-        # joints are excluded because the tuned posture EXTENDS index_dip_fe
-        # while the MCPs flex — rho would otherwise read that extension as
-        # closure progress.
-        caging_mask: [false, true, false, false, false, true, false, true, false, true]
+        # eta is "the progress at which the ball can no longer escape"
+        # (L6 §4.2). 0.5 is carried over from the LEAP profile, where S4.5
+        # MEASURED the stall at rho = 0.50 with a ball in the hand. It is NOT
+        # measured for THIS hand and cannot be until the postures above are
+        # re-posed: with the current pair p1b never stalls at all (rho reaches
+        # 1.0 in every one of 851 placements) because the ball is gone before
+        # the fingers meet. Re-derive it with the new postures.
+        eta_close: 0.5
 
-        # rho >= eta_close is "closed enough to cage" (L6 §4.2). 0.9 leaves the
-        # last 10 % of travel, which is where contact stalls the joint.
-        eta_close: 0.9
+        # MEASURED, S4.2 (2026-09-20): 200 step trials on this hand in this
+        # sim, 0 CSV drops, re-read at the eta above. steady axis (L6 §4.2's
+        # definition) mean 280.5 ms, max 284.6 ms, p99 282.7 ms — a 4 ms spread
+        # over 200 trials, which is what a deterministic position-servo step
+        # response looks like. The value below is the p99; the same trials give
+        # 398.6 ms at eta 0.9. Like eta, it moves when the postures do.
+        # Authority for the closure torque is the sim MJCF forcerange
+        # (3.0 N·m); this hand is torque-saturation dominated, so an operating
+        # limit of 1.5 N·m would stretch T_close by roughly √2.
+        # The analyser's tick axis is NOT usable here — see L6 §4.2.
+        T_close_e2e: 0.2827
 
-        # TBD until S4.2 measures it (200 trials, this hand, this sim). It is
-        # left open on purpose: a placeholder here would be indistinguishable
-        # from a measurement in every downstream reader.
-        T_close_e2e: TBD
+    # ── Pocket geometry (L3 §6 `planner.hand.*`, TBD-HAND-04) ────────────────
+    # NOTHING READS THESE TWO KEYS YET. `ParseCatchingParams` puts
+    # `planner.hand.*` out of scope on purpose (see the header of
+    # rtc_controllers/include/rtc_controllers/catching/catching_params.hpp):
+    # their consumers are the L3 planner's gamma window and §4.6 budget gate,
+    # which land in S6. They are recorded here because G6-F asks for the
+    # derivation and the value to live together with the profile they were
+    # derived from — read them as documentation, not as configuration.
+    #
+    # STILL TBD FOR THIS HAND, and not for want of measuring. S4.5 closed this
+    # hand on a ball PLACED on the preshape palm at 851 points of a 5 mm
+    # lateral grid and it held NONE of them. The contact trace says why: one
+    # finger reaches the ball at rho 0.01-0.15 and, with no opposing contact
+    # yet — the thumb never arrives — punts it sideways out of the hand. It is
+    # not the ball size either: repeating the scan at radius 0.025 m also holds
+    # 0, and only at 0.020 m does anything hold (9 of 109), which is about the
+    # 38 mm fixture disk this repo already grasps with this hand. So the
+    # capture region is EMPTY, r_cap is not "small", it does not exist, and
+    # d_eff has no catch point to be measured through.
+    # The postures above are being re-posed by the user (2026-09-20); re-run
+    # the S4.5 scan with them before writing anything here. Until then D-3
+    # (plan §5.1) stays NOT_EVALUATED for this robot, because it is r_cap that
+    # opens that verdict.
+    planner:
+      hand:
+        d_eff: TBD
+        r_cap: TBD
+        provisional: true
 
   # ── Topic configuration ────────────────────────────────────────────────────
   # Group order IS the controller's device index order: ur5e = 0 (held),
