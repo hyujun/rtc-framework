@@ -233,12 +233,18 @@ def test_switchable_does_not_duplicate_a_key_already_in_the_gain_tables():
 def test_extras_are_only_offered_where_the_bringup_ships_their_yaml():
     """The radio may only offer a controller this profile can actually configure.
 
-    A controller with no YAML for the selected variant is not merely unusable —
-    the CM refuses the whole bring-up over it — so offering its radio would point
-    the operator at a switch that cannot succeed. Checked against the installed
-    config tree in both directions, because either half drifting alone is silent:
-    the GUI says nothing when it hides a shipped controller, and the CM says
-    nothing to the GUI when a YAML is added.
+    A controller with no YAML for the selected variant is not instantiated at
+    all when it is registered config_required (the CM skips it), and runs on
+    built-in defaults otherwise — either way, offering its radio would point the
+    operator at a switch that cannot do what the label says. Checked against the
+    installed config tree in both directions, because either half drifting alone
+    is silent: the GUI says nothing when it hides a shipped controller, and the
+    CM says nothing to the GUI when a YAML is added.
+
+    This docstring used to say the CM refuses the whole bring-up over a missing
+    YAML. It did, and that was the defect — one unconfigured controller took
+    down every other controller on ur5e_p1a and iiwa7_leap. The registry-side
+    gate for it is test_registered_controllers_have_shipped_config.cpp.
     """
     for key, profile in ROBOT_PROFILES.items():
         shipped = _shipped_controller_keys(key)

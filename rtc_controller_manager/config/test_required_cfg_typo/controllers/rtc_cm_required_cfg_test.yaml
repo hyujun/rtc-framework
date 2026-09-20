@@ -1,0 +1,15 @@
+# Test fixture — loaded ONLY by rtc_controller_manager unit tests via
+# config_variant=test_required_cfg_typo. Well-formed YAML whose TOP-LEVEL KEY
+# is misspelled, so YAML::LoadFile succeeds and file_node[config_key] comes
+# back undefined.
+#
+# This is the case ControllerEntry::config_required must NOT absorb. A skipped
+# controller and a typo'd key look identical at LoadConfig — both hand it an
+# empty node — so the CM distinguishes them upstream, by whether the FILE was
+# there. Here it is, so the configure must still be refused; otherwise one
+# wrong character silently removes the policy controller from the robot that
+# does run it, with no error anywhere.
+#
+# test_cm_required_config.cpp asserts that split.
+rtc_cm_required_cfg_tset:
+  kp: 1.0

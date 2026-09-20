@@ -347,6 +347,14 @@ class ControllerLifecycleTestAccess {
     return node.controllers_.size();
   }
 
+  // The switch_controller / initial_controller namespace, exposed so a test can
+  // assert that a name maps to the index of the controller that OWNS it. The
+  // values index controllers_, which is not the registry entry order once an
+  // entry can be skipped (ControllerEntry::config_required).
+  static const std::unordered_map<std::string, int>& GetNameToIdx(const RtControllerNode& node) {
+    return node.controller_name_to_idx_;
+  }
+
   // ── Teardown eventfd ordering (issue #224) ────────────────────────────────
   // The state-ready callback writes these two fds, so they must outlive the
   // backends that own the subscriptions dispatching it. Exposed read-only (and
