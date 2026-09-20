@@ -14,7 +14,7 @@
 범위: vision(ball_perception)의 `sensor_msgs/PointCloud2`(마스터 §5.1, D-4)를 검증해 공용 궤적 타입(L2 §5.1)으로 바꾸고 RT와 계획기에 전달한다. 손·지문 센서 상태를 계획기로 넘기는 RT 상태 POD 를 제공한다. 스냅샷 나이(stale), 시계 이상, 순서 역전·중복, 트랙 교체를 판정한다.
 
 비범위:
-- 좌표 변환 조회를 RT에서 수행하는 것(금지 — RT 경로에 tf2 없음). `frame_id`→`world` 가 다르면 configure 에서 한 번 읽어 캐시한 정적 변환을 nrt 콜백에서 적용한다. 필요 여부 자체가 미확인이다(TBD-VIS-06, S3.4).
+- 좌표 변환 조회를 RT에서 수행하는 것(금지 — RT 경로에 tf2 없음). `frame_id`→`world` 가 다르면 configure 에서 한 번 읽어 캐시한 정적 변환을 nrt 콜백에서 적용한다. sim 에서는 불필요 — 실측 `frame_id` = `world` (TBD-VIS-06 닫힘, S3.4 2026-09-20); 실기 카메라 프로파일이 다른 frame 을 내면 그때 켠다.
 - 궤적 예측·전파(vision 노드, 마스터 §5.2).
 - RT 원시형 구현 — `rtc::SeqLock`·`rtc::SpscQueue` 를 쓴다(G1-8).
 
@@ -27,10 +27,10 @@
 | ID | 확인 항목 | 기록 |
 |---|---|---|
 | G1-1 | `PointField` 배열 실제 레이아웃 | 닫힘 `[확정 D-4]` — little-endian, `point_step` 384: `x,y,z,vx,vy,vz,ax,ay,az` FLOAT64 (offset 0–64), `covariance` FLOAT64×36 @72 (row-major $p_x..v_z$, 모르면 NaN), `snapshot_sequence` UINT32×2 @360, `generation` UINT32×2 @368 (uint64 low/high), `horizon_ns` UINT32 @376, `validity` UINT8 @380 (0 NOT_EVALUATED, 1 VALID). **offset 은 참고값이고 파서는 이름으로 찾는다** (§4.6). debug 토픽이라 stable ABI 아님 (W5-2) |
-| G1-2 | 토픽 이름과 QoS | 토픽 닫힘 — ball_perception `sim_estimator_node` 의 debug 예측 궤적 토픽 (`io.traj_topic`). QoS depth 는 `KEEP_LAST(1)` 고정(ARCH-6, invariants.md) — TBD 대상이 아니다. reliability 만 TBD-VIS-08, S3.4 에서 실측해 정한다. 선례: `integrated_bringup` inference 컨트롤러가 `KeepLast(1)` 로 구독한다 (W5-1) |
+| G1-2 | 토픽 이름과 QoS | 토픽 닫힘 — ball_perception `sim_estimator_node` 의 debug 예측 궤적 토픽 (`io.traj_topic`). QoS depth 는 `KEEP_LAST(1)` 고정(ARCH-6, invariants.md) — TBD 대상이 아니다. reliability 는 **`best_effort` 로 확정** (TBD-VIS-08 닫힘, S3.4 2026-09-20: best_effort KEEP_LAST(1) 구독이 reliable 구독과 identity 로 동일 — 30 Hz 에서 856/856, 50 ms 지연·30 % 드롭 주입에서도 편측 손실 0. publisher 는 RELIABLE/VOLATILE 이라 둘 다 호환). 선례: `integrated_bringup` inference 컨트롤러가 `KeepLast(1)` 로 구독한다 (W5-1) |
 | G1-3 | 점 시각 필드 타입·기준 | 닫힘 — `t` 필드는 없다. `horizon_ns` (UINT32, `header.stamp` 기준 상대 ns), `header.stamp` = 예측 원점 시각 (W5-3) |
-| G1-4 | `header.frame_id`와 `world`의 관계 | **미확인** — TBD-VIS-06, S3.4 에서 확인 (W5-5) |
-| G1-5 | 트랙 식별·소실 판정 수단 | 대부분 닫힘 — `generation` (트랙 epoch), `validity`. 남는 것: 측정을 잃은 뒤에도 `VALID` 예측이 계속 나오는지(유령 트랙, §4.5) — S3.4 드롭 주입으로 확인 (W5-7, TBD-VIS-07) |
+| G1-4 | `header.frame_id`와 `world`의 관계 | 닫힘 — **`world` 그대로** (TBD-VIS-06, S3.4 2026-09-20: 예측 토픽 `frame_id` = `world` ×856, 입력 카메라 lane 도 `world`, 프로파일 `input.frame_transform.source: identity`). 변환 없음 (W5-5) |
+| G1-5 | 트랙 식별·소실 판정 수단 | 대부분 닫힘 — `generation` (트랙 epoch), `validity`. 유령 트랙은 **없다** (TBD-VIS-07 닫힘, S3.4 2026-09-20 드롭 주입: 공이 계속 날아도 입력이 끊기면 `VALID` 예측은 다음 30 Hz tick 한 건(≤34 ms)까지만 나오고 그 뒤 **침묵**). 단 INVALID 스냅샷은 발행되지 않는다 — 소실은 `track_status` (diagnostics, +100 ms COASTING·+500 ms LOST) 나 수신 나이로만 안다. 그래서 `io.t_stale` 이 필수다 (W5-7) |
 | G1-6 | subscription callback이 도는 executor / callback group | 닫힘 — 컨트롤러 소유 구독은 LifecycleNode default group → `nrt_callback_executor` (단일 스레드, lifecycle 서비스와 공유) (W2-5) |
 | G1-7 | RT tick 시각과 스탬프 clock 의 관계 (sim) | 닫힘 `[확정 D-2, D-3]` — RT tick 은 `RTControllerInterface::Compute(const ControllerState&)`, 시각은 steady. 스탬프는 wall (`rtc_mujoco_sim`·`sim_estimator_node` 모두 `use_sim_time=false`, `/clock` 없음). wall→steady 는 §4.1 변환 1회. D-3 은 S3.1a 검증 후 재검토 (W2-3) |
 | G1-8 | SeqLock/SPSC 원시형 API와 재시도 정책 | 닫힘 — `rtc::SeqLock::Store`/`Load`/`sequence`. `Load` 는 **재시도 상한 없이** 일관된 사본을 얻을 때까지 반복한다(단일 writer·유한 쓰기 시간이 설계 불변식). 비-RT writer(nrt 콜백) → RT reader 는 backend 3종이 관절 상태에 이미 쓰는 경로이므로 새 primitive 가 아니다 — 최악 재시도 시간은 G1-C 로 측정한다(D-21). payload 는 trivially copyable (L0 §5.2) (W2-2) |
@@ -229,8 +229,8 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
 | `io.traj_topic` | string | – | ball_perception debug 예측 궤적 토픽 | – | G1-2, D-4 (stable ABI 아님) |
-| `io.qos_reliability` | enum | – | `TBD` (`best_effort`\|`reliable`) | – | TBD-VIS-08, S3.4 에서 실측해 정한다. depth 는 `KEEP_LAST(1)` 고정(ARCH-6)이라 설정 키가 아니다 |
-| `io.expected_frame` | string | – | `world` | – | 마스터 §3. 다르면 §4.3 변환 (TBD-VIS-06, S3.4) |
+| `io.qos_reliability` | enum | – | `best_effort` | – | S3.4 실측으로 확정 (TBD-VIS-08 닫힘, G1-2). depth 는 `KEEP_LAST(1)` 고정(ARCH-6)이라 설정 키가 아니다 |
+| `io.expected_frame` | string | – | `world` | – | 마스터 §3. sim 실측 `world` (TBD-VIS-06 닫힘). 다르면 §4.3 변환 |
 | `io.n_min` | int | – | `TBD` | ≥2 | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3) |
 | `io.t_stale` | double | s | `TBD` | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후) |
 | `io.future_tol` | double | s | `TBD` | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2) |
@@ -282,4 +282,4 @@ v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.
 
 ## 10. 미확정 항목
 
-TBD-VIS-06 (`frame_id` 와 world, S3.4), TBD-VIS-07 잔여(유령 트랙, S3.4), TBD-VIS-08 (구독 reliability, S3.4 — depth 는 `KEEP_LAST(1)` 로 이미 확정), `snapshot_sequence` 되감김 처리·`validity` 부분 수용 (S5.2), $\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (S5.2), 계획기 공분산 버퍼 전달 수단 (S5.2/S6), `io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min` (S3.4·S3.6), `io.track.j_warn`, D-24 지문 센서 freshness 경로 (S5 착수 전).
+~~TBD-VIS-06·07·08~~ (S3.4 에서 닫힘 — G1-2·G1-4·G1-5), `snapshot_sequence` 되감김 처리·`validity` 부분 수용 (S5.2), $\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (S5.2), 계획기 공분산 버퍼 전달 수단 (S5.2/S6), `io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min` (S3.4·S3.6), `io.track.j_warn`, D-24 지문 센서 freshness 경로 (S5 착수 전).

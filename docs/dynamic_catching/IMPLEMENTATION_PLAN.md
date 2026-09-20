@@ -391,10 +391,25 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
   - iiwa7_leap 은 `projectile_ball:`·`object_state:` 설정이 **없고 공용 기본값도 없다** (기본 `enabled:false` 는 C++ 에서 온다) — ur5e 설정 복사가 아니라 LEAP 손가락 충돌 마스크까지 재유도해야 한다
 - S3.3 공 접촉 truth(시각·충격량·접촉력) 출력, truth 발행 주기 상향, per-step `(sim_time, steady_now)` 진단 lane (§5 판정용)
 - S3.4 `sim_estimator_node` 연결 — **측정만 한다** (정책은 S5.2): clock domain(`use_sim_time=false`), `frame_id` 와 world 관계, 발행 주기·N·지평 실측 (TBD-VIS-04/06), 구독 reliability 비교, validity 패턴 히스토그램, 재시작 시 `snapshot_sequence` 거동, 유령 트랙(관성 예측만 발행) 시 `validity` 거동, 지연·드롭 주입
+  - **완료 2026-09-20.** 도구: `rtc_tools` `vision_lane_probe` / `camera_relay` / `analyze_vision_lane` (D-4 대로 필드 이름 디코딩, 다르면 거부). 프로파일: 0.8 s / 0.05 s / 16 점, `position_covariance_m2` 대각 2.5e-5 (sim 노이즈 5 mm), 입력 best_effort, `ros_system_time` + `use_sim_time:=false` (rtc 에 `/clock` 없음 → **설정으로 닫힘**). 풀 bring-up, 지정 발사 (`/sim/launch_ball_at`).
+  - | 항목 | `ur5e_p1b` (20 발사) | `iiwa7_leap` (10 발사) |
+    |---|---|---|
+    | 발행 주기 · N · 지평 (TBD-VIS-04) | 30.0 Hz (p05 30.3 / p95 29.7) · **16** · 0.05…0.80 s | 30.0 Hz · 16 · 0.05…0.80 s |
+    | stamp→수신 지연 | p50 32 / p95 41 / max 430 ms (30 Hz 주기 포함; estimator 처리 p50 13 µs / p95 663 µs) | — |
+    | `frame_id` (TBD-VIS-06) | `world` ×856 | `world` ×427 |
+    | validity | VALID 806 / 빈(INVALID clear) 50 — 비행당 ≈2.5 clear (발사 초기화 + 손 충돌 discontinuity + 회수) | VALID 393 / 빈 34 |
+    | 공분산 NaN | 0 | 0 |
+    | `snapshot_sequence` 되감김 / generation 변화 | 0 / 39 (≈2 per flight) | 0 / 29 |
+    | 구독 reliability (TBD-VIS-08) | best_effort = reliable **identity 동일** 856/856, 편측 0 | 427/427, 편측 0 |
+  - **유령 트랙 (TBD-VIS-07, `camera_relay --drop-after-s 0.4`, 10 비행)**: 공이 계속 나는데 입력이 끊기면 VALID 예측은 **다음 30 Hz tick 한 건 (≤34 ms)** 까지만, 이후 **침묵**. INVALID 스냅샷은 발행되지 않고 `track_status` 만 +100 ms COASTING (`coasting_timeout_s`), +500 ms LOST (`lost_timeout_s`) 로 diagnostics 에 나온다. ⇒ 소비자는 침묵을 소실로 읽어야 하며 (`io.t_stale`), validity 만 보면 안 된다
+  - **지연 50 ms** (`--delay-s 0.05`, stamp 불변): 1404/1404 수용, stale 폐기 0, VALID 비율 불변 — capture stamp 기반이라 전송 지연은 흡수된다. **드롭 30 %** (`--drop-prob 0.3`): 1001/1400 수용, 초기화 횟수 불변 (2/비행), 발행 p95 가 15 Hz 로 얇아진다 (예측은 입력 step 마다)
+  - **sim 재시작** (estimator 는 유지): 카메라 공백 11.8 s 에도 `clock_reset` **미발동**, `snapshot_sequence` 3→1352 단조, generation 연속 — stamp 가 wall `now()` 라 역행이 없다. 준비 세션이 예상한 "재시작 = clock_reset latch" 함정은 `/clock` + `use_sim_time` 전환 (S5/S6) 뒤에만 유효
+  - ⚠️ **ball_perception 결함 (rtc 밖)**: `debug.enabled_topics` 에 `prediction/trajectory` 만 있으면 `needs_samples()` (`estimator_node.hpp:125`) 가 그 토픽을 빼놓아 샘플을 기록하지 않고, 토픽은 있는데 **발행이 0건**이다. 우회 = 다른 debug 토픽 동반. 그쪽 세션에 보고
+  - 남은 것 (S3.6·S5.2): `io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min` 값, 되감김 정책 (되감김은 관측되지 않았다), validity 부분 수용 정책
 
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
-| e2e | 발사 → PointCloud2 수신 end-to-end, 같은 seed 재발사 시 truth 궤적 동일 | — |
+| e2e | 발사 → PointCloud2 수신 end-to-end, 같은 seed 재발사 시 truth 궤적 동일. **PASS 2026-09-20**: 두 로봇 모두 발사 → `prediction/trajectory` 수신 (p1b 856 · iiwa 427). 같은 seed (42) 로 sim 재시작 후 첫 발사 truth: `ur5e_p1b` 222 샘플 max \|Δ\| **7.9e-11 m**; `iiwa7_leap` 는 t = 0.9 s 까지 **0.0**, 제어 중인 팔에 맞고 튄 뒤 (t ≥ 1.33 s) 7.95 mm — 발사·자유비행은 동일하고 차이는 팔 제어의 run 간 비결정성 | **확정** |
 | D-3 무부하 | §5 판정 (구성별 무효율 상한). **측정 완료 2026-09-20 (§5.1)**: 로봇 2종 × 200 발사, 거부 0, lane drop 0. δ_max max 는 `ur5e_p1b` 18.212 ms · `iiwa7_leap` 8.671 ms. 95 % 를 덮는 ε_clk,alloc 제안 **49.8 mm** (p1b 가 구속) | ε_clk 할당 (r_cap, TBD-HAND-04) → **NOT_EVALUATED 유지**, 분포는 §5.1 에 기록됨. 할당 비율 **사용자 확인 대기** |
 | frame | world ↔ base FK 대조 잔차 < 1e-6 m, 결과가 §11 에 기록됨. **측정 완료 2026-09-20 (§11)**: `iiwa7_leap` **PASS** (항등, 4.5e-16 m) · `ur5e_p1b` **FAIL 8.3e-4 m** — 프레임은 `Rz(180°)` 로 확정됐고 잔차는 MJCF↔URDF 치수 차이라 **sim 에서 줄일 수 없다**. 임계는 낮추지 않는다 — **사용자 결정 2026-09-20: `hand_description` 을 고치지 않고 sim 바닥값으로 받아 오차 예산의 모델 항으로 센다** | **확정** |
 | PROC-3 | S3.2 의 `rtc_msgs` 변경 후 전체 빌드·테스트 | — |
@@ -560,7 +575,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | 무부하 (S3.1a) | 구성별 (로봇 2종) 발사 ≥ 200 회 | 무효율 ≤ 5 % — **실측 완료 2026-09-20 (§5.1), 판정 NOT_EVALUATED** |
 | 부하 (S3.1b) | 포구 컨트롤러 + 계획기 + `sim_estimator_node` 동시 구동, 구성별 발사 ≥ 200 회 | 무효율 ≤ 5 % |
 | 예측 일관성 | vision 예측 궤적 대 ground truth (같은 wall 시각 축) | 오차가 δ 가 큰 구간에서만 커지는지 확인 (기록) |
-| stamp 도메인 | `sim_estimator_node` 의 stamp 가 wall 인지 | `use_sim_time=false` 에서 wall |
+| stamp 도메인 | `sim_estimator_node` 의 stamp 가 wall 인지 | `use_sim_time=false` 에서 wall — **확인 2026-09-20** (S3.4: 예측 origin stamp = 카메라 capture stamp = sim 의 wall `now()`; sim 재시작에도 역행 없음) |
 
 시행 수 200·무효율 5 % 는 제안값이다 (사용자 확인, §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다. 성공률 평가(S8)는 유효 시행으로 계산하되 전체 발사 수와 무효 사유를 함께 보고해, 무효 제외가 성공률을 편향하지 않는지 드러낸다.
 

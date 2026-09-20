@@ -66,7 +66,7 @@
 
 v0.4 의 자체 vision 발행기(측정 모사 + 참조 EKF + `PointCloud2`)는 v0.5 에서 삭제했다. ball_perception 의 `sim_estimator_node` 가 `/sim/ball/camera_position` 을 구독해 `/ball_perception/debug/prediction/trajectory` (`PointCloud2`) 를 발행하므로, L1 파서는 sim 과 실기에서 **실제 발행기와 같은 레이아웃**을 탄다 (D-4).
 
-- 연결 (S3.4): clock domain `use_sim_time=false` (stamp = wall, D-3), `frame_id` 와 world 관계, 발행 주기·점 수·지평 실측 (TBD-VIS-04/06), 지연·드롭 주입 (주입 위치는 S3.4 에서 정한다)
+- 연결 (S3.4, **완료 2026-09-20** — 결과는 plan §4.4 S3.4): clock domain `ros_system_time` + `use_sim_time=false` (rtc 에 `/clock` 없음, stamp = wall — 설정으로 닫힘), `frame_id` = `world`, 30 Hz · N 16 · 지평 0.8 s (TBD-VIS-04/06 닫힘), 지연·드롭 주입은 `rtc_tools camera_relay` 로 입력 토픽 앞에서 한다. sim 재시작 시 `clock_reset` 은 wall stamp 에서는 **발동하지 않는다** — `/clock` 전환(S5/S6) 뒤에 다시 본다
 - 측정 잡음은 `rtc_mujoco_sim` 의 `publish.position_noise_stddev_m` 이 준다
 - 제어 경로에서 truth 토픽을 쓰지 않는다. truth 는 지표·NEES 전용
 - 자체 fixture EKF 는 만들지 않는다. `ball_dynamics` 는 test fixture 전용 위치로 옮긴다 (S1.6)
@@ -278,4 +278,4 @@ S10 착수 전 S9 (E-STOP·fault 정책, D-13) 완료가 필수다. 각 단계 �
 
 ## 10. 미확정 항목
 
-TBD-HAND-03, TBD-VIS-04/06 (S3.4), D-3 재검토 (S3.1a·S3.1b), `sim.clock.eps_alloc_m`·시행 수·무효율 제안값 (S3.1a), D-12 값 (투척 속도·성공률 하한·시행 수), `sim.throw_region` 값 (S3.5a/b), 지연·드롭 주입 위치 (S3.4), 오프라인 도구 위치 (S3), 포구 launch 인자·컨트롤러 YAML 파일명 (S5), 실기 공분산 검증 수단 (S10), 재스탬프 도구 (S10).
+TBD-HAND-03, ~~TBD-VIS-04/06~~ (S3.4 닫힘), D-3 재검토 (S3.1a·S3.1b), `sim.clock.eps_alloc_m`·시행 수·무효율 제안값 (S3.1a), D-12 값 (투척 속도·성공률 하한·시행 수), `sim.throw_region` 값 (S3.5a/b), 지연·드롭 주입 위치 (S3.4), 오프라인 도구 위치 (S3), 포구 launch 인자·컨트롤러 YAML 파일명 (S5), 실기 공분산 검증 수단 (S10), 재스탬프 도구 (S10).
