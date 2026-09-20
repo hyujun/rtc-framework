@@ -278,7 +278,7 @@ GUI·plot: 면제 (D-19, §13).
 - 구현 중 정정 (설계 문서 반영): L3 §5.2 `q_star` 용량도 "`kCap`" 이라 불러 궤적 용량과 이름이 겹침 → `kMaxPlanNv` (32). L4 §5.1 "dt ≤ 0 invalid" 와 참조 G4-B 의 dt = 0 읽기 충돌 → `Evaluate()` 분리. `SampleAt` 은 비단조 쌍을 구조적으로 선택하지 않으므로 G2-G 는 `Interpolate` 직접 호출로만 도달한다
 - 수치 감사 (read-only 에이전트) finding 전부 반영: `Evaluate()` 가 a_max < 0·demand 0 에서 NaN 을 valid 로 내던 fail-open (blocking), 1 ms 미만 γ 램프·100 µs 미만 보간 구간·int64 시각 오버플로·`TRest` 직접 호출·+Inf 속도 입력 — 각 회귀 테스트 포함
 
-**S1.9 결과 (2026-09-20).** 코드: `rtc_controllers/include/rtc_controllers/catching/catch_pose_ik.hpp` + `src/catching/catch_pose_ik.cpp` (`rtc::catching::CatchPoseIk`), 테스트 `test/test_catch_pose_ik.cpp` 20 케이스 + 공용 fixture 헤더 `test/include/rtc_controllers/testing/catch_arm_fixture.hpp`, 신규 URDF fixture `rtc_urdf_bridge/test/urdf/serial_6r_wrist.urdf`, rtc_tsid `QPSolverWrapper::ResetWarmStart()` + 그 테스트. 설계 변경 3건 (D-25 roll manipulability 최대화 번복 · ρ 과제 가중 정정, D-26 과제 스텝 제약 QP) 을 L3 §4.2·§6·§10, architecture.md dep graph, rtc_controllers README 에 반영했다.
+**S1.9 결과 (2026-09-20).** 코드: `rtc_controllers/include/rtc_controllers/catching/catch_pose_ik.hpp` + `src/catching/catch_pose_ik.cpp` (`rtc::catching::CatchPoseIk`), 테스트 `test/test_catch_pose_ik.cpp` 25 케이스 + 공용 fixture 헤더 `test/include/rtc_controllers/testing/catch_arm_fixture.hpp`, 신규 URDF fixture `rtc_urdf_bridge/test/urdf/serial_6r_wrist.urdf`, rtc_tsid `QPSolverWrapper::ResetWarmStart()` + 그 테스트. 설계 변경 3건 (D-25 roll manipulability 최대화 번복 · ρ 과제 가중 정정, D-26 과제 스텝 제약 QP) 을 L3 §4.2·§6·§10, architecture.md dep graph, rtc_controllers README 에 반영했다.
 
 **A·B 비교 (사용자 결정 근거).** 두 후보는 $\dot q_{clik}$ 계산 **한 줄만** 다르고 수락 조건·영공간 항·종료 규칙을 공유한다. 2 fixture × 500 후보, 동일 후보 리스트. bench 는 결정 후 폐기했고 표만 남긴다.
 
@@ -300,14 +300,14 @@ GUI·plot: 면제 (D-19, §13).
 - **QP 가 사려던 것을 절반만 샀다.** 제약은 $\dot q_{clik}$ 만 묶고 실제로 움직이는 것은 $\dot q_d$ 라 $\Vert\dot q_d\Vert_\infty$ 축소와 한계 clamp 가 여전히 필요하다. limit 활성 비율 차이가 그만큼만 나는 이유다
 - **첫 측정은 틀렸다** — bench 가 `QPSolverConfig` 를 만들고 `Init()` 에 넘기지 않아 B 가 기본값 (eps_abs 1e-6) 으로 돌았고, B 의 수락률이 74.6%/61.6% 로 나왔다. 위 표는 수정 후 값이다
 
-측정: rtc_tsid 235 · rtc_controllers **677** · rtc_controller_manager 215 케이스 green (colcon, ws root), 전체 22 패키지 빌드 성공, 변경 패키지 경고 0. 같은 스위트를 ASan/UBSan 별도 빌드 (rtc_tsid·rtc_controllers 동일 플래그, +`_GLIBCXX_ASSERTIONS`, `-DEIGEN_MALLOC_ALREADY_ALIGNED=1`) 로 돌려 20/20 green · ASan 0 건. UBSan 잔여 3 종 (`LLT.h:66`, `SelfAdjointEigenSolver.h:76`, `CoreEvaluators.h:1264` 의 초기화 전 `ComputationInfo`/enum load) 은 각각 기존 `test_dls_convergence` 와 `test_qp_solver_wrapper` 에서도 재현되므로 **이 변경 이전부터 있던 third-party UB** 다.
+측정: rtc_tsid 235 · rtc_controllers **682** · rtc_controller_manager 215 케이스 green (colcon, ws root), 전체 22 패키지 빌드 성공, 변경 패키지 경고 0. 같은 스위트를 ASan/UBSan 별도 빌드 (rtc_tsid·rtc_controllers 동일 플래그, +`_GLIBCXX_ASSERTIONS`, `-DEIGEN_MALLOC_ALREADY_ALIGNED=1`) 로 돌려 25/25 green · ASan 0 건. UBSan 잔여 3 종 (`LLT.h:66`, `SelfAdjointEigenSolver.h:76`, `CoreEvaluators.h:1264` 의 초기화 전 `ComputationInfo`/enum load) 은 각각 기존 `test_dls_convergence` 와 `test_qp_solver_wrapper` 에서도 재현되므로 **이 변경 이전부터 있던 third-party UB** 다.
 
 **할당 0 의 거짓 green 과 그 수정.** 정상 빌드는 할당 0 을 보고했지만 sanitizer 빌드는 IK **반복당 Eigen 할당 1 건**을 봤다. 원인은 `g.noalias() = -(Jᵀe)` — `noalias()` 는 맨 곱셈에만 임시를 없애고, 단항 음수가 감싸면 Product 를 런타임 크기 임시로 평가한다. 두 문장으로 쪼개 (곱 → 제자리 부호 반전) 0 이 됐다. 이 과정에서 드러난 두 가지를 테스트로 박았다:
 
 - `TheAllocationGatesAreArmed` — 두 게이트가 **실제로 발화하는지** 먼저 잰다. 첫 시도의 `new double` + `delete` 대조는 컴파일러가 쌍을 제거해 무효였다 ([expr.new]/10). `std::vector` 로 바꿨다
 - `TheTaskQpItselfAllocatesNothing` — `QPSolverWrapper::Solve` 의 "compute 경로 할당 없음" 은 헤더 주석의 **미검증 주장**이었다. 양쪽 빌드에서 0 으로 측정했다
 
-positive control (5종 mutant, 각각 빌드·실행해 red 확인):
+positive control (10종 mutant, 각각 빌드·실행해 red 확인 — 뒤 5개는 아래 리뷰 반영분):
 
 | mutant | red 가 된 테스트 |
 |---|---|
@@ -316,10 +316,27 @@ positive control (5종 mutant, 각각 빌드·실행해 red 확인):
 | 영공간 투영 N 제거 | `AscentReachesTheRollSweepLocalMaximum`, `ReversingTheGradientSignDescendsInstead` |
 | 회전 행을 LOCAL 대신 LWA 로 | 9 케이스 (수렴·w 대조·상승 전부) |
 | FD 기울기 부호 반전 | 상승 3 케이스 |
+| 관절 순서 거부 제거 | `ADeviceOrderedHandleIsRejectedRatherThanSilentlySolved` |
+| 실패한 FD 탐침이 허용오차 비교로 빠짐 | `AnUnusableGradientProbeIsNotReportedAsAConvergedAscent` |
+| QP 실패가 수락된 자세를 버림 | `AQpFailureAfterAcceptanceKeepsTheAcceptedPose` |
+| σ_min·λ² 를 마지막 반복 값으로 둠 | `TheProjectorDiagnosticsDescribeQStarNotTheLastIterate` |
+| $q_n$ 을 clamp 안 한 seed 로 | `AnOutOfLimitSeedIsNotAPermanentPosturePull` |
 
 - **오라클은 3단계**다. (1) dense determinant 로 w 산술 대조 (1e-9), (2) **FK 만 쓰는 유한차분 Jacobian** 으로 frame·행 규약 고정 (Jacobian API 미사용), (3) roll 1°×±90° sweep 에서 후보마다 전체 6D IK 를 풀어 만든 w₅(ψ) 곡선의 같은 가지 국소 최대와 함수의 w₅(q\*) 대조 (기울기 구현과 독립)
 - **선형 행의 frame 은 w₅ 가 고정하지 못한다** — LWA 와 LOCAL 은 $T=\mathrm{diag}(R,I_2)$ 만큼만 다르고 det 는 $\det(R)^2=1$ 배라 값이 같다 (테스트가 이 불변성을 단언한다). 그 규약을 고정하는 것은 수렴 테스트다 (잔차가 world 벡터라 LOCAL J 를 쓰면 발산)
 - 결정성: 같은 입력 2회 + **사이에 다른 후보를 끼운 3회차**가 bit-identical. QP 는 후보마다 `ResetWarmStart()` 로 cold start 하므로 성립한다 (지도와 런타임 동치의 전제, §11)
+**`/code-review` (브랜치 전체, PR #552) finding 5건 반영.** 전부 "유한하고 그럴듯하며 자기 실행에 대해 거짓인 결과" 로, 크래시도 NaN 도 아니라서 위 스위트가 전부 green 인 채로 통과하던 것들이다. 각각 회귀 테스트 1개 + mutation red 확인:
+
+| finding | 증상 | 수정 |
+|---|---|---|
+| device 관절 순서 | `SetJointOrder` 가 걸린 핸들에서 `ComputeJacobians` 입력(device)과 Jacobian 열·한계·$\dot q$(Pinocchio)가 섞여 **모든 후보가 조용히 틀린다**. 실기 배선이 실제로 그런 핸들을 만든다 (`momentum_observer_wiring`) | `HasJointReorder()` 를 거부 (`kJointOrderMismatch`, 새 사유 코드). L3 §4.2 |
+| 실패한 FD 탐침 | 탐침이 못 쓰게 나오면 `grad_norm`=0 → `manip_converged=true` 로 루프가 끊겨, **상승이 한 번도 안 돈 자세**가 "수렴" 으로 보고된다 (G3-G 신호 역전) | 탐침 실패는 수렴 아님 + `manip_grad_failures` 카운터 신설 |
+| QP 실패의 범위 | 이미 허용오차를 만족한 $q^\ast$ 가 있어도 이후 QP 비수렴이 그것을 버리고 `kQpFailed` + 전부 0 인 `q` 를 냈다. D-25 상승이 생기면서 비로소 도달 가능해진 경로 | 수락 전이면 거부(그대로), 수락 후면 $q^\ast$ 반환 + `qp_failures` 로 조기 종료 기록 |
+| σ_min·λ² 의 귀속 | "at q\*" 로 문서화됐으나 **마지막 반복** 값을 실었다 (w₅·w₆ 는 $q^\ast$ 에서 재평가하면서 이쪽만 빠졌다) | 수락된 반복의 값을 따로 들고 종료 시 교체 |
+| clamp 안 한 $q_n$ | 한계 밖 seed 가 **영원히 감쇠하지 않는** 자세 인력점이 되어, clamp 와 매 반복 싸운다 | $q_n$ = clamp 된 seed (`q_ref_`). L3 §4.2·§6 |
+
+재측정: rtc_controllers 682 케이스 green, downstream (`rtc_controller_manager`·`integrated_bringup`) 빌드 성공. 같은 sanitizer 레시피로 `test_catch_pose_ik` 25/25 green·ASan 0 건 — 새 코드의 할당 0 은 **최적화 빌드에서** 재확인했다 (정상 빌드의 0 은 위 거짓 green 사례 때문에 근거로 쓰지 않는다). UBSan 은 위 3 종 중 2 종 (`LLT.h:66`, `SelfAdjointEigenSolver.h:76`) 이 이 스위트에서 재현되고 새 보고는 없다.
+
 - 미결: `planner.ik` 의 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol`, `mu`, `qp_eps_abs`) 은 S3.5a 지도 실측으로 제안하고 사용자가 확정한다 (L3 §10). `alpha_max` 는 여전히 TBD 라 함수는 인자로 받는다
 
 #### S2 기존 rtc_* 일반화 (code review 대상)
