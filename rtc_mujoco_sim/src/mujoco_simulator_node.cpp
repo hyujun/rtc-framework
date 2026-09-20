@@ -1129,7 +1129,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // say WHEN the ring overflowed, and where it overflowed is exactly where
     // the phase error was worst — a run's most interesting rows are the ones
     // most likely to be the missing ones.
-    clock_lane_csv_ << "step,sim_time_sec,steady_ns,dropped_total\n";
+    clock_lane_csv_ << "step,sim_time_sec,steady_ns,launch_seq,ball_active,dropped_total\n";
     clock_lane_written_ = 0;
     RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] clock lane -> %s (drain %.1f Hz)",
                 clock_lane_csv_path_.c_str(), clock_lane_drain_rate_hz_);
@@ -1164,7 +1164,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       const auto dropped = sim_->ClockLaneDropped();
       for (std::size_t i = 0; i < n; ++i) {
         clock_lane_csv_ << batch[i].step << ',' << std::setprecision(17) << batch[i].sim_time_sec
-                        << ',' << batch[i].steady_ns << ',' << dropped << '\n';
+                        << ',' << batch[i].steady_ns << ',' << batch[i].launch_seq << ','
+                        << (batch[i].ball_active ? 1 : 0) << ',' << dropped << '\n';
       }
       clock_lane_written_ += n;
       if (n < batch.size()) {

@@ -23,6 +23,10 @@
   <depend>rtc_mpc</depend>
   <depend>yaml-cpp</depend>
   <depend>sensor_msgs</depend>
+  <!-- demo_controller_gui projectile-ball panel: /sim/ball/ground_truth (Odometry),
+       the prediction debug cloud, and /sim/reset_ball. -->
+  <depend>nav_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
   <depend>tf2_msgs</depend>

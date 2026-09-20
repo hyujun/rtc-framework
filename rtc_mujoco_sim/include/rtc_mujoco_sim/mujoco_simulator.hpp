@@ -172,6 +172,15 @@ struct SimClockSample {
   std::uint64_t step{0};
   double sim_time_sec{0.0};
   std::int64_t steady_ns{0};  ///< steady_clock, same epoch the RT path uses
+  /// Launches issued so far, counting both the sampled and the stated path.
+  /// Rows sharing a value belong to the same trial.
+  std::uint64_t launch_seq{0};
+  /// Whether the ball was in flight. Together with launch_seq this cuts the
+  /// FLIGHT window out of the run, which is the only window D-3's delta means
+  /// anything over: delta is measured from the launch instant and accumulates,
+  /// so letting a trial run to the next launch would report the idle time
+  /// between throws as clock error.
+  bool ball_active{false};
 };
 
 // ── Ball contact truth ──────────────────────────────────────────────────────
@@ -1102,6 +1111,7 @@ class MuJoCoSimulator {
   // StepForTest has no SimLoop step counter to borrow; it keeps its own so a
   // test sees the same monotonic numbering a real run produces.
   std::uint64_t step_for_test_count_{0};
+  std::uint64_t launch_seq_{0};
   std::atomic<std::uint64_t> clock_lane_dropped_{0};
 
   ProjectileBallCallback projectile_ball_cb_{nullptr};

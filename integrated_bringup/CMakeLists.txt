@@ -1355,6 +1355,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_preset_toggle test/test_demo_gui_preset_toggle.py)
   ament_add_pytest_test(test_demo_gui_pull test/test_demo_gui_pull.py)
   ament_add_pytest_test(test_demo_gui_task_frame test/test_demo_gui_task_frame.py)
+  ament_add_pytest_test(test_demo_gui_ball_launch test/test_demo_gui_ball_launch.py)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
 endif()
 

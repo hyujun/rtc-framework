@@ -893,7 +893,8 @@ void MuJoCoSimulator::RecordClockSample(std::uint64_t step) noexcept {
   const SimClockSample sample{step, data_->time,
                               std::chrono::duration_cast<std::chrono::nanoseconds>(
                                   std::chrono::steady_clock::now().time_since_epoch())
-                                  .count()};
+                                  .count(),
+                              launch_seq_, projectile_ball_active_};
   if (!clock_lane_.Push(sample)) {
     clock_lane_dropped_.fetch_add(1, std::memory_order_relaxed);
   }
@@ -903,6 +904,7 @@ void MuJoCoSimulator::HandleProjectileBallLaunch() noexcept {
   if (projectile_ball_body_id_ < 0 || !data_) {
     return;
   }
+  ++launch_seq_;
   const auto launch = SampleProjectileBallLaunch(cfg_.projectile_ball, projectile_ball_rng_);
   WriteProjectileBallState(true, cfg_.projectile_ball.spawn_position_m, launch.linear_velocity_m_s,
                            launch.angular_velocity_rad_s);
@@ -917,6 +919,7 @@ void MuJoCoSimulator::HandleProjectileBallExplicitLaunch() noexcept {
   if (projectile_ball_body_id_ < 0 || !data_) {
     return;
   }
+  ++launch_seq_;
   const ProjectileBallLaunchCommand command = projectile_ball_launch_command_.Load();
   WriteProjectileBallState(true, command.position_m, command.linear_velocity_m_s,
                            command.angular_velocity_rad_s);

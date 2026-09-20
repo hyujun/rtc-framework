@@ -915,6 +915,65 @@ TEST(SimClockLane, PairsEveryStepWithBothClocks) {
   EXPECT_EQ(sim.DrainClockLane(empty.data(), empty.size()), 0U) << "draining is consuming";
 }
 
+TEST(SimClockLane, SegmentsTrialsByLaunchAndFlight) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.clock_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  const auto collect = [&](int steps) {
+    std::vector<SimClockSample> out;
+    std::array<SimClockSample, 64> batch{};
+    for (int s = 0; s < steps; ++s) {
+      sim.StepForTest();
+      const std::size_t n = sim.DrainClockLane(batch.data(), batch.size());
+      for (std::size_t i = 0; i < n; ++i) {
+        out.push_back(batch[i]);
+      }
+    }
+    return out;
+  };
+
+  const auto idle = collect(5);
+  ASSERT_FALSE(idle.empty());
+  for (const auto& s : idle) {
+    EXPECT_EQ(s.launch_seq, 0U) << "nothing launched yet";
+    EXPECT_FALSE(s.ball_active) << "the ball is parked at startup";
+  }
+
+  std::string error;
+  ASSERT_TRUE(sim.RequestProjectileBallLaunchAt({{0.0, 0.0, 3.0}, {1.0, 0.0, 0.0}, {}}, error))
+      << error;
+  const auto first = collect(10);
+  ASSERT_FALSE(first.empty());
+  for (const auto& s : first) {
+    EXPECT_EQ(s.launch_seq, 1U);
+    EXPECT_TRUE(s.ball_active) << "in flight";
+  }
+
+  sim.RequestProjectileBallReset();
+  const auto parked = collect(5);
+  ASSERT_FALSE(parked.empty());
+  for (const auto& s : parked) {
+    // The trial's window CLOSES here. Without this, a trial would run to the
+    // next launch and the idle time between throws would be reported as clock
+    // error — delta accumulates from the launch instant, so an open-ended
+    // window inflates delta_max without bound.
+    EXPECT_EQ(s.launch_seq, 1U) << "still trial 1, just no longer flying";
+    EXPECT_FALSE(s.ball_active);
+  }
+
+  // The sampled path must number trials too, or a run that mixes both loses
+  // the segmentation for half its throws.
+  sim.RequestProjectileBallLaunch();
+  const auto second = collect(5);
+  ASSERT_FALSE(second.empty());
+  for (const auto& s : second) {
+    EXPECT_EQ(s.launch_seq, 2U);
+    EXPECT_TRUE(s.ball_active);
+  }
+}
+
 TEST(SimClockLane, CountsOverflowInsteadOfDroppingSilently) {
   auto config = MakeFloorSceneConfigWithBall();
   config.clock_lane_enabled = true;
