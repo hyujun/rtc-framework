@@ -60,6 +60,19 @@ struct ProjectileBallConfig {
   std::uint64_t seed{0};
 };
 
+/// A launch state the CALLER named, as opposed to one the simulator drew from
+/// the configured distribution. Trivially copyable on purpose: it is handed to
+/// the physics thread through a SeqLock, which requires that.
+///
+/// Every field is world-frame. Body and world axes coincide at release because
+/// the writer resets the ball's orientation to identity, so `angular_velocity`
+/// needs no frame qualifier at the instant it is applied.
+struct ProjectileBallLaunchCommand {
+  std::array<double, 3> position_m{0.0, 0.0, 0.0};
+  std::array<double, 3> linear_velocity_m_s{0.0, 0.0, 0.0};
+  std::array<double, 3> angular_velocity_rad_s{0.0, 0.0, 0.0};
+};
+
 struct ProjectileBallLaunchSample {
   double angle_deg{0.0};
   double azimuth_deg{0.0};
@@ -116,6 +129,14 @@ inline constexpr double kProjectileBallAirDensity = 1.204;
 
 [[nodiscard]] ProjectileBallLaunchSample SampleProjectileBallLaunch(
     const ProjectileBallConfig& config, std::mt19937_64& rng) noexcept;
+
+/// Reject a launch state the physics cannot act on. Only finiteness is checked:
+/// a zero velocity is a drop, a zero spin is a spinless throw, and a position
+/// below the floor is a caller's business — none of those are errors. NaN and
+/// infinity are, because they would reach mjData::qpos/qvel and poison the
+/// whole scene rather than just the ball.
+[[nodiscard]] bool ValidateProjectileBallLaunchCommand(const ProjectileBallLaunchCommand& command,
+                                                       std::string& error) noexcept;
 
 /// Sim-time publish throttle. Returns true (and records sim_time_sec) when at
 /// least period_sec has elapsed since the last accepted sample; a negative

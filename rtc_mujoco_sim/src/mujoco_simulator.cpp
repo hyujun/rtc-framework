@@ -1923,6 +1923,9 @@ void MuJoCoSimulator::StepForTest() noexcept {
     HandleProjectileBallReset();
     mj_forward(model_, data_);
   }
+  if (projectile_ball_explicit_launch_requested_.exchange(false, std::memory_order_acq_rel)) {
+    HandleProjectileBallExplicitLaunch();
+  }
   if (projectile_ball_launch_requested_.exchange(false, std::memory_order_acq_rel)) {
     HandleProjectileBallLaunch();
   }
@@ -2044,6 +2047,31 @@ int MuJoCoSimulator::FindBodyId(const char* body_name) const noexcept {
   // wrench on body 0 is swallowed by the fixed base, so reporting it as
   // accepted would be the silent no-op this API exists to rule out.
   return id > 0 ? id : -1;
+}
+
+bool MuJoCoSimulator::RequestProjectileBallLaunchAt(const ProjectileBallLaunchCommand& command,
+                                                    std::string& error) noexcept {
+  // Refused rather than queued. A ball that does not exist cannot be launched
+  // later either — projectile_ball_body_id_ is resolved once at Initialize and
+  // never changes — so "accepted, pending" would be a lie with no expiry.
+  if (projectile_ball_body_id_ < 0) {
+    error = "projectile ball is disabled (projectile_ball.enabled: false)";
+    return false;
+  }
+  if (!ValidateProjectileBallLaunchCommand(command, error)) {
+    return false;
+  }
+  {
+    // Holds the SeqLock's single-writer invariant. The physics thread never
+    // takes this — it only Loads — so contention here cannot reach it.
+    std::lock_guard lock(projectile_ball_launch_writer_mutex_);
+    projectile_ball_launch_command_.Store(command);
+  }
+  // After the Store, so the physics thread cannot observe the flag ahead of the
+  // state it announces.
+  projectile_ball_explicit_launch_requested_.store(true, std::memory_order_release);
+  sync_cv_.notify_all();
+  return true;
 }
 
 bool MuJoCoSimulator::SetExternalWrenchAtPoint(int body_id, const std::array<double, 3>& point_body,

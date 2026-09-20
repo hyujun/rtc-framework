@@ -4,6 +4,7 @@
 // ── Includes: project, then MuJoCo, then C++ stdlib ───────────────────────────
 #include "rtc_mujoco_sim/object_pool.hpp"
 #include "rtc_mujoco_sim/projectile_ball.hpp"
+#include <rtc_base/threading/seqlock.hpp>
 
 #include <mujoco/mujoco.h>
 
@@ -575,10 +576,31 @@ class MuJoCoSimulator {
 
   void SetProjectileBallCallback(ProjectileBallCallback callback) noexcept;
 
+  /// Launch with a state SAMPLED from the configured distribution. This is the
+  /// `/sim/launch_ball` Trigger and the viewer's `K` key, and it consumes the
+  /// seeded RNG stream. It cannot fail: with no ball in the model the flag is
+  /// raised and the handler ignores it, which is why the node checks
+  /// HasProjectileBall() before calling and refuses on its own behalf.
   void RequestProjectileBallLaunch() noexcept {
     projectile_ball_launch_requested_.store(true, std::memory_order_release);
     sync_cv_.notify_all();
   }
+
+  /// Launch with the state the CALLER names (`/sim/launch_ball_at`, D-14).
+  /// Returns false — and stages nothing — when the model carries no projectile
+  /// ball or any component is non-finite; `error` then says which.
+  ///
+  /// This path does NOT touch the launch RNG, so interleaving it with the
+  /// sampled path leaves that stream exactly where it was. That is what lets a
+  /// seeded sweep and a stated throw share one session without either
+  /// perturbing the other's reproducibility.
+  ///
+  /// Two stated launches racing the physics thread coalesce to the later one.
+  /// That is not a dropped request: there is one ball, so had both been applied
+  /// the second would have overwritten the first within the same tick and the
+  /// end state would be identical.
+  [[nodiscard]] bool RequestProjectileBallLaunchAt(const ProjectileBallLaunchCommand& command,
+                                                   std::string& error) noexcept;
 
   void RequestProjectileBallReset() noexcept {
     projectile_ball_reset_requested_.store(true, std::memory_order_release);
@@ -971,6 +993,23 @@ class MuJoCoSimulator {
   std::mt19937_64 projectile_ball_rng_{};
   bool projectile_ball_active_{false};
 
+  // Stated launch state, handed to the physics thread.
+  //
+  // SeqLock rather than a mutex because the physics thread is the reader and
+  // must not block on a caller; the wrench lane next door solves the same
+  // problem with try_lock, which cannot be reused here. A failed try_lock
+  // there means "keep last tick's staging", which is harmless. Here it would
+  // mean "could not tell whether this launch was stated or sampled", and
+  // guessing wrong launches a ball from the WRONG state while reporting
+  // success — the one outcome LaunchBall.srv exists to rule out.
+  //
+  // The SeqLock's single-writer invariant is held by the mutex below, which the
+  // physics thread never touches. Service callbacks are serialised by their
+  // callback group today; the mutex keeps that from being load-bearing.
+  std::mutex projectile_ball_launch_writer_mutex_;
+  SeqLock<ProjectileBallLaunchCommand> projectile_ball_launch_command_{};
+  std::atomic<bool> projectile_ball_explicit_launch_requested_{false};
+
   // ── Runtime control flags ─────────────────────────────────────────────────
   std::atomic<bool> paused_{false};
   std::atomic<bool> reset_requested_{false};
@@ -1132,6 +1171,10 @@ class MuJoCoSimulator {
   // Writes the substep-dependent solref/solimp/friction onto the ball geom.
   void ApplyProjectileBallContact() noexcept;
   void HandleProjectileBallLaunch() noexcept;
+  /// Launch from the state staged in projectile_ball_launch_command_. Separate
+  /// from HandleProjectileBallLaunch so the two paths cannot be confused for
+  /// one another at the call site.
+  void HandleProjectileBallExplicitLaunch() noexcept;
   // Park (active=false) or launch (active=true) the ball: pose, velocity,
   // contact filters and gravcomp together. SimLoop context only.
   void WriteProjectileBallState(bool active, const std::array<double, 3>& position,

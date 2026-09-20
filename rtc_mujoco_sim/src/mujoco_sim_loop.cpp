@@ -804,6 +804,20 @@ void MuJoCoSimulator::HandleProjectileBallLaunch() noexcept {
   mj_forward(model_, data_);
 }
 
+// Same writer, same body, same publishers as the sampled path — only the source
+// of the numbers differs. The RNG is deliberately NOT advanced: a session may
+// interleave stated throws with a seeded sweep and the sweep must replay
+// identically either way.
+void MuJoCoSimulator::HandleProjectileBallExplicitLaunch() noexcept {
+  if (projectile_ball_body_id_ < 0 || !data_) {
+    return;
+  }
+  const ProjectileBallLaunchCommand command = projectile_ball_launch_command_.Load();
+  WriteProjectileBallState(true, command.position_m, command.linear_velocity_m_s,
+                           command.angular_velocity_rad_s);
+  mj_forward(model_, data_);
+}
+
 // ── HandleObjectRefresh ───────────────────────────────────────────────────────
 // SimLoop context only: the pool writes mjModel (geom contact filters,
 // body_gravcomp) and mjData (freejoint qpos/qvel), both of which this thread
@@ -893,6 +907,10 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     if (projectile_ball_reset_requested_.exchange(false, std::memory_order_acq_rel)) {
       HandleProjectileBallReset();
       mj_forward(model_, data_);
+      continue;
+    }
+    if (projectile_ball_explicit_launch_requested_.exchange(false, std::memory_order_acq_rel)) {
+      HandleProjectileBallExplicitLaunch();
       continue;
     }
     if (projectile_ball_launch_requested_.exchange(false, std::memory_order_acq_rel)) {

@@ -305,7 +305,8 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 | 서비스 | 타입 | 설명 |
 |------|------|------|
 | `/sim/set_external_wrench` | `rtc_msgs/SetExternalWrench` | body 이름으로 지정한 곳에 알려진 외력 부착 / 전체 해제 |
-| `/sim/launch_ball` | `std_srvs/Trigger` | projectile ball 발사 요청 (뷰어 `K` 와 같은 경로). 공이 비활성이면 `success: false` |
+| `/sim/launch_ball` | `std_srvs/Trigger` | projectile ball 발사 요청 — 상태는 **설정 분포에서 샘플링** (뷰어 `K` 와 같은 경로). 공이 비활성이면 `success: false` |
+| `/sim/launch_ball_at` | `rtc_msgs/LaunchBall` | projectile ball 을 **호출자가 지정한 `(p0, v0, ω)`** 로 발사 (D-14). RNG 를 소비하지 않는다. 거부 시 `accepted: false` 이고 **아무것도 바뀌지 않는다** |
 | `/sim/reset_ball` | `std_srvs/Trigger` | projectile ball 을 park 위치로 회수. 공이 비활성이면 `success: false` |
 
 #### 외력 주입 (`/sim/set_external_wrench`)
@@ -782,6 +783,7 @@ ros2 topic echo /sim/object_transforms --once
 |---|---|---|---|---|
 | park (기동 직후 · `R` · `/sim/reset_ball`) | `park_position_m` | 끔 (contype/conaffinity = 0) | 켬 | 안 함 (`object_state` 에서도 빠짐) |
 | 발사 (`K` · `/sim/launch_ball`) | `spawn_position_m` | `collision_contype` / `collision_conaffinity` | 끔 | `sample_rate_hz` |
+| 발사 (`/sim/launch_ball_at`) | 요청의 `position` | 〃 | 끔 | 〃 |
 
 park 는 세 가지를 **함께** 해야 합니다 — object pool 의 park 와 같은 이유입니다.
 - **접촉 끄기**: MuJoCo plane 은 halfspace 라서, 바닥 아래 park 위치에 접촉이 켜진 공을 두면 관통으로 판정돼 수백 m/s 로 튕겨 나갑니다.
@@ -847,11 +849,32 @@ MuJoCo 는 `(contype_A & conaffinity_B) || (contype_B & conaffinity_A)` 이면 �
 
 `seed` 는 발사 샘플링과 카메라 노이즈에 함께 쓰이지만 노이즈 쪽은 stream tag 를 섞어 두 난수열이 겹치지 않습니다. variation 이 0 인 항목은 난수를 소비하지 않습니다.
 
+#### 지정 상태 발사 (`/sim/launch_ball_at`)
+
+위 표의 `spawn_position_m`·각도·속도·spin 은 **샘플링 경로**의 입력입니다. 측정을 하려면 한 투척을 고정한 채
+다른 변수만 바꿔 재실행할 수 있어야 하는데, `std_srvs/Trigger` 는 요청 필드가 없어 그것을 표현할 수단이
+없었습니다 (D-14). `/sim/launch_ball_at` (`rtc_msgs/LaunchBall`) 은 같은 writer 로 가는 **두 번째 경로**로,
+`(p0, v0, ω)` 를 world 프레임에서 직접 받습니다. 필드·거부 집합의 SSoT 는
+[`rtc_msgs/srv/LaunchBall.srv`](../rtc_msgs/srv/LaunchBall.srv) 주석입니다.
+
+- **재현성** — RNG 를 보지 않고, writer 가 warm start·적용력을 0 으로, 자세를 단위 quaternion 으로 되돌립니다.
+  같은 숫자를 두 번 보내면 공은 비트 단위로 같은 상태에서 출발하고, 자유 비행 동안 궤적도 비트 단위로 같습니다.
+- **샘플링 경로와 간섭하지 않습니다** — 난수열을 소비하지 않으므로 시드 sweep 중간에 끼워 넣어도 sweep 은
+  동일하게 재생됩니다.
+- **거부는 조용한 무시가 아닙니다** — 시뮬레이터 미구성 · 모델에 공 없음 (`enabled: false`) · 비유한값이면
+  `accepted: false` 이고 직전 발사는 그대로 비행합니다.
+
 ### 확인
 
 ```bash
-ros2 service call /sim/launch_ball std_srvs/srv/Trigger
+ros2 service call /sim/launch_ball std_srvs/srv/Trigger   # 설정 분포에서 샘플링
 ros2 topic hz /sim/ball/ground_truth       # 발사 후 ~sample_rate_hz × RTF
+
+# 지정 상태 발사 — 같은 숫자면 궤적이 비트 단위로 같다
+ros2 service call /sim/launch_ball_at rtc_msgs/srv/LaunchBall \
+  "{position: {x: 4.0, y: 0.0, z: 1.75}, velocity: {x: -5.0, y: 0.0, z: 3.0}, \
+    angular_velocity: {x: 0.0, y: -40.0, z: 0.0}}"
+
 ros2 service call /sim/reset_ball std_srvs/srv/Trigger   # 이후 발행이 멈춘다
 ```
 
@@ -1055,6 +1078,7 @@ MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 | `sensor_msgs` | JointState (state publish) |
 | `nav_msgs` | `Odometry` — projectile ball 참값 lane |
 | `std_srvs` | `Trigger` — `/sim/launch_ball`, `/sim/reset_ball` |
+| `rtc_msgs` | `LaunchBall` — `/sim/launch_ball_at` (지정 상태 발사), `SetExternalWrench` — `/sim/set_external_wrench` |
 | `geometry_msgs` | `WrenchStamped` (contact wrench lane), `TransformStamped` (object state), `PointStamped` (projectile ball camera lane) |
 | `tf2_msgs` | `TFMessage` — object state lane 의 named object pose 배열 |
 | `ament_index_cpp` | package:// URI 해석 |
@@ -1139,7 +1163,7 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
 | `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
 | `test_object_state` | object state lane — 어떤 body 가 object 로 잡히는지, pose 가 어느 프레임으로 나오는지 |
-| `test_projectile_ball` | projectile ball — 설정 검증 (기울어진 `launch_direction`·음수 spin 산포 거부), 발사 샘플링 재현성·범위 (azimuth, normal 분포), 발사 프레임 spin, sim 시간 publish throttle 이 reset 후 재개되는지, park **negative control** 과 접촉 **positive control** (`pool_scene.xml`); preset 질량·관성·condim·priority, 바닥과 **자체 solref 를 가진 손끝 모사 pad** 모두에서 preset 반발 (±0.05), pad 가 공보다 priority 가 높으면 Initialize 거부, 구름 저항, 공력 방향·크기 순수함수와 자유낙하 tanh 해석해 (1 %), backspin 양력 (`ball_scene.xml`) |
+| `test_projectile_ball` | projectile ball — 설정 검증 (기울어진 `launch_direction`·음수 spin 산포 거부), 발사 샘플링 재현성·범위 (azimuth, normal 분포), 발사 프레임 spin, sim 시간 publish throttle 이 reset 후 재개되는지, park **negative control** 과 접촉 **positive control** (`pool_scene.xml`); preset 질량·관성·condim·priority, 바닥과 **자체 solref 를 가진 손끝 모사 pad** 모두에서 preset 반발 (±0.05), pad 가 공보다 priority 가 높으면 Initialize 거부, 구름 저항, 공력 방향·크기 순수함수와 자유낙하 tanh 해석해 (1 %), backspin 양력 (`ball_scene.xml`); **지정 상태 발사** — 요청 상태가 그대로 장전되는지, 같은 요청의 궤적이 **비트 단위로** 동일한지, 샘플링 RNG 스트림을 건드리지 않는지, 공 없음·비유한값 거부가 상태를 바꾸지 않는지 |
 | `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
 
 Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe), [test/fixtures/ball_scene.xml](test/fixtures/ball_scene.xml) (바닥 + 손끝 모사 pad) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).

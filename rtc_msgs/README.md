@@ -48,6 +48,7 @@ rtc_msgs/
     ├── ListControllers.srv    <- 등록된 컨트롤러 lifecycle 상태 조회 (/rtc_cm/list_controllers)
     ├── ResetFault.srv         <- latched controller-local fault 해제 (/rtc_cm/reset_fault)
     ├── ClearEstop.srv         <- global E-STOP 래치 해제 (/rtc_cm/clear_estop)
+    ├── LaunchBall.srv         <- sim 공을 호출자가 지정한 상태로 발사 (/sim/launch_ball_at)
     ├── SetExternalWrench.srv  <- sim body 에 알려진 외력 부착/해제 (/sim/set_external_wrench)
     └── SwitchController.srv   <- 컨트롤러 activate/deactivate 요청 (/rtc_cm/switch_controller)
 ```
@@ -530,6 +531,29 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 > **wrench 는 body 질량중심이 아니라 `point` 에 작용하고, latched 입니다** (해제·덮어쓰기·리셋 전까지 매 물리 tick 재적용). CoM 오프셋 보정·latch 의미론의 SSoT 는 [`srv/SetExternalWrench.srv`](srv/SetExternalWrench.srv) 주석과 [`rtc_mujoco_sim/README.md`](../rtc_mujoco_sim/README.md) §외력 주입 입니다.
 
+### `LaunchBall.srv`
+
+`/sim/launch_ball_at` — 시뮬레이션 공을 **호출자가 지정한 방출 상태**로 발사합니다. 기존
+`/sim/launch_ball` 은 `std_srvs/Trigger` 라 요청 필드가 없어 발사 조건이 YAML + 시드 RNG 에서만 나왔고,
+"발사해라" 는 말할 수 있어도 "**이** 발사를 해라" 는 말할 수 없었습니다 (D-14). 한 투척을 고정한 채 다른
+변수만 바꿔 재실행하거나 방출 상태 격자를 쓸어야 하는 측정에는 그 구분이 전부입니다.
+
+| 요청 필드 | 타입 | 의미 |
+|------|------|------|
+| `position` | `geometry_msgs/Point` | 방출 시 공 중심 위치, **world** [m]. 기본값 없음 — 설정된 spawn 으로 대체하지 않습니다 |
+| `velocity` | `geometry_msgs/Vector3` | 방출 속도, **world** [m/s]. 0 은 "낙하" 라는 유효한 요청입니다 |
+| `angular_velocity` | `geometry_msgs/Vector3` | 방출 각속도, **world** [rad/s]. 공기력이 켜져 있으면 Magnus 로 탄착점이 바뀝니다 |
+
+| 응답 필드 | 타입 | 의미 |
+|------|------|------|
+| `accepted` | `bool` | 요청한 상태로 장전됐는지. false 면 **아무것도 바뀌지 않음** (이전 발사도 그대로) |
+| `message` | `string` | 성공 시 장전된 상태, 실패 시 거부 사유 |
+
+> **`/sim/launch_ball` 의 의미는 그대로입니다** — 여전히 설정된 분포에서 샘플링하고 뷰어 `K` 키도 그 경로입니다.
+> 이 srv 는 그것을 대체하지 않고 **RNG 스트림도 건드리지 않습니다**: 시드 sweep 중간에 지정 발사를 끼워 넣어도
+> sweep 은 동일하게 재생됩니다. 거부 집합(시뮬레이터 미구성 · 모델에 공 없음 · 비유한값)과 재현성 계약의 SSoT 는
+> [`srv/LaunchBall.srv`](srv/LaunchBall.srv) 주석입니다.
+
 ---
 
 ## 빌드
@@ -573,7 +597,8 @@ colcon test --packages-select rtc_msgs
 └── ClearEstop.srv                  /rtc_cm/clear_estop       → global E-STOP 래치 해제
 
 시뮬레이션 (rtc_mujoco_sim 전용)
-└── SetExternalWrench.srv           /sim/set_external_wrench  → 알려진 외력 부착/해제
+├── SetExternalWrench.srv           /sim/set_external_wrench  → 알려진 외력 부착/해제
+└── LaunchBall.srv                  /sim/launch_ball_at       → 지정 상태 (p0, v0, w) 발사
 
 추정 (컨트롤러 RT tick 에서 계산)
 └── PayloadEstimate

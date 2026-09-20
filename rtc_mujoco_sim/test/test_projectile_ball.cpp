@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <string>
+#include <vector>
 
 #ifndef POOL_SCENE_MJCF_PATH
 #error "POOL_SCENE_MJCF_PATH must be defined by CMake"
@@ -654,6 +656,205 @@ TEST(ProjectileBall, ObjectStateOmitsBallOnlyWhileParked) {
   sim.RequestProjectileBallReset();
   sim.StepForTest();
   EXPECT_FALSE(sim.GetObjectStateSamplesForTest()[ball_index].active) << "parked by reset";
+}
+
+// ── Stated launch (D-14, /sim/launch_ball_at) ───────────────────────────────
+
+TEST(ProjectileBall, RejectsNonFiniteLaunchCommand) {
+  ProjectileBallLaunchCommand command;
+  std::string error;
+  EXPECT_TRUE(ValidateProjectileBallLaunchCommand(command, error))
+      << "an all-zero command is a drop, not an error";
+
+  command.position_m = {0.0, std::numeric_limits<double>::quiet_NaN(), 0.0};
+  EXPECT_FALSE(ValidateProjectileBallLaunchCommand(command, error));
+  EXPECT_NE(error.find("position"), std::string::npos);
+
+  command.position_m = {0.0, 0.0, 1.0};
+  command.linear_velocity_m_s = {std::numeric_limits<double>::infinity(), 0.0, 0.0};
+  EXPECT_FALSE(ValidateProjectileBallLaunchCommand(command, error));
+  EXPECT_NE(error.find("velocity"), std::string::npos);
+
+  command.linear_velocity_m_s = {1.0, 0.0, 0.0};
+  command.angular_velocity_rad_s = {0.0, 0.0, -std::numeric_limits<double>::infinity()};
+  EXPECT_FALSE(ValidateProjectileBallLaunchCommand(command, error));
+  EXPECT_NE(error.find("angular_velocity"), std::string::npos);
+}
+
+TEST(ProjectileBall, StatedLaunchArmsExactlyTheRequestedState) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.qpos, 0);
+  ASSERT_GE(ball.dof, 0);
+  const auto* data = sim.GetData();
+
+  // StepForTest arms AND integrates, so the readback is the armed state plus
+  // exactly one step. Asking for a state whose horizontal motion is zero makes
+  // that step observable instead of confounding: with aerodynamics off, the
+  // only force on a free ball is gravity, so x, y and the orientation cannot
+  // move at all and can be compared exactly. Anything the arming write got
+  // wrong in those components has nowhere to hide.
+  const ProjectileBallLaunchCommand resting{{0.31, -0.22, 2.75}, {}, {}};
+  std::string error;
+  ASSERT_TRUE(sim.RequestProjectileBallLaunchAt(resting, error)) << error;
+  sim.StepForTest();
+
+  EXPECT_DOUBLE_EQ(data->qpos[ball.qpos + 0], resting.position_m[0]);
+  EXPECT_DOUBLE_EQ(data->qpos[ball.qpos + 1], resting.position_m[1]);
+  EXPECT_DOUBLE_EQ(data->qpos[ball.qpos + 3], 1.0) << "orientation is reset to identity";
+  for (int i = 1; i < 4; ++i) {
+    EXPECT_DOUBLE_EQ(data->qpos[ball.qpos + 3 + i], 0.0) << "quaternion component " << i;
+  }
+  // Fell, and fell by no more than one step of free fall — it was armed at the
+  // requested height rather than dropped from the configured spawn.
+  const double dz = resting.position_m[2] - data->qpos[ball.qpos + 2];
+  EXPECT_GT(dz, 0.0);
+  EXPECT_LT(dz, 0.5 * 9.81 * sim.GetModel()->opt.timestep * sim.GetModel()->opt.timestep * 4.0);
+
+  // Velocity and spin are armed verbatim too. Horizontal velocity and the spin
+  // of an isotropic sphere are untouched by gravity, so these are exact.
+  const ProjectileBallLaunchCommand moving{{0.0, 0.0, 3.0}, {1.5, -0.5, 3.25}, {0.0, -40.0, 0.0}};
+  ASSERT_TRUE(sim.RequestProjectileBallLaunchAt(moving, error)) << error;
+  sim.StepForTest();
+
+  EXPECT_DOUBLE_EQ(data->qvel[ball.dof + 0], moving.linear_velocity_m_s[0]);
+  EXPECT_DOUBLE_EQ(data->qvel[ball.dof + 1], moving.linear_velocity_m_s[1]);
+  EXPECT_LT(data->qvel[ball.dof + 2], moving.linear_velocity_m_s[2]) << "gravity acted on vz";
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NEAR(data->qvel[ball.dof + 3 + i],
+                moving.angular_velocity_rad_s[static_cast<std::size_t>(i)], 1e-12)
+        << "spin axis " << i;
+  }
+}
+
+TEST(ProjectileBall, StatedLaunchRefusesWhenNoBallExists) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.projectile_ball.enabled = false;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  ASSERT_LT(FindBall(sim.GetModel()).body, 0) << "no ball body with the lane disabled";
+
+  std::string error;
+  EXPECT_FALSE(sim.RequestProjectileBallLaunchAt({{0.0, 0.0, 2.0}, {1.0, 0.0, 0.0}, {}}, error));
+  EXPECT_NE(error.find("disabled"), std::string::npos);
+
+  // The refusal must be the end of it. A staged-but-unlaunchable request would
+  // fire the moment a ball appeared, which is the silent action the srv
+  // contract rules out.
+  EXPECT_NO_FATAL_FAILURE(sim.StepForTest());
+}
+
+TEST(ProjectileBall, StatedLaunchRefusesNonFiniteAndStagesNothing) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.qpos, 0);
+  const auto* data = sim.GetData();
+
+  sim.StepForTest();
+  const double parked_z = data->qpos[ball.qpos + 2];
+
+  std::string error;
+  EXPECT_FALSE(sim.RequestProjectileBallLaunchAt(
+      {{0.0, 0.0, std::numeric_limits<double>::quiet_NaN()}, {1.0, 0.0, 0.0}, {}}, error));
+
+  sim.StepForTest();
+  // Still parked: a refused request changed nothing. Had the NaN been staged it
+  // would have reached qpos and poisoned every body in the scene, not just the
+  // ball.
+  EXPECT_NEAR(data->qpos[ball.qpos + 2], parked_z, 1e-9);
+  EXPECT_FALSE(sim.GetProjectileBallSampleForTest().active);
+}
+
+TEST(ProjectileBall, StatedLaunchReplaysBitIdentically) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.qpos, 0);
+  const auto* data = sim.GetData();
+
+  const ProjectileBallLaunchCommand command{{0.0, 0.0, 3.0}, {1.25, 0.4, 0.75}, {0.0, -25.0, 0.0}};
+  constexpr int kFlightSteps = 40;
+
+  const auto fly = [&]() {
+    std::string error;
+    EXPECT_TRUE(sim.RequestProjectileBallLaunchAt(command, error)) << error;
+    std::vector<double> track;
+    track.reserve(static_cast<std::size_t>(kFlightSteps) * 3);
+    for (int s = 0; s < kFlightSteps; ++s) {
+      sim.StepForTest();
+      for (int i = 0; i < 3; ++i) {
+        track.push_back(data->qpos[ball.qpos + i]);
+      }
+    }
+    return track;
+  };
+
+  const std::vector<double> first = fly();
+  const std::vector<double> second = fly();
+
+  ASSERT_EQ(first.size(), second.size());
+  for (std::size_t i = 0; i < first.size(); ++i) {
+    // Bit-identical, not near: the whole reason this lane exists is to re-run
+    // one throw while something else changes, and a tolerance here would hide
+    // exactly the drift that makes such a comparison meaningless.
+    EXPECT_EQ(first[i], second[i]) << "sample " << i;
+  }
+  // The flight must actually have gone somewhere, or the comparison above is
+  // two copies of the arming state.
+  EXPECT_GT(std::abs(first.front() - first.back()), 1e-6);
+}
+
+TEST(ProjectileBall, StatedLaunchDoesNotDisturbTheSampledRngStream) {
+  const auto draw_two_sampled = [](bool interleave_stated) {
+    auto config = MakeFloorSceneConfigWithBall();
+    // Without variation every draw is the same vector and the comparison below
+    // would pass on a dead RNG. The final EXPECT_NE guards that, but the spread
+    // has to exist for the test to have any power in the first place.
+    config.projectile_ball.launch_speed_m_s = 6.0;
+    config.projectile_ball.launch_speed_variation_m_s = 1.5;
+    config.projectile_ball.launch_angle_deg = 30.0;
+    config.projectile_ball.launch_angle_variation_deg = 8.0;
+    MuJoCoSimulator sim(std::move(config));
+    EXPECT_TRUE(sim.Initialize());
+    std::vector<std::array<double, 3>> draws;
+
+    sim.RequestProjectileBallLaunch();
+    sim.StepForTest();
+    draws.push_back(sim.GetProjectileBallSampleForTest().linear_velocity);
+
+    if (interleave_stated) {
+      std::string error;
+      EXPECT_TRUE(sim.RequestProjectileBallLaunchAt({{0.0, 0.0, 4.0}, {9.0, 9.0, 9.0}, {}}, error))
+          << error;
+      sim.StepForTest();
+    }
+
+    sim.RequestProjectileBallLaunch();
+    sim.StepForTest();
+    draws.push_back(sim.GetProjectileBallSampleForTest().linear_velocity);
+    return draws;
+  };
+
+  const auto clean = draw_two_sampled(false);
+  const auto interleaved = draw_two_sampled(true);
+
+  // A stated launch must not consume the seeded stream. If it did, a run that
+  // inserts one stated throw would silently renumber every sampled throw after
+  // it, and a "same seed" sweep would stop being the same sweep.
+  ASSERT_EQ(clean.size(), interleaved.size());
+  for (std::size_t d = 0; d < clean.size(); ++d) {
+    for (std::size_t i = 0; i < 3; ++i) {
+      EXPECT_EQ(clean[d][i], interleaved[d][i]) << "draw " << d << " axis " << i;
+    }
+  }
+  // Guard against the assertion above passing because both draws are equal to
+  // each other (a dead RNG would satisfy it trivially).
+  EXPECT_NE(clean[0][0], clean[1][0]);
 }
 
 }  // namespace

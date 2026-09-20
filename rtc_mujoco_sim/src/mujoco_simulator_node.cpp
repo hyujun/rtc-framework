@@ -16,6 +16,7 @@
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/sim_sensor.hpp>
 #include <rtc_msgs/msg/sim_sensor_state.hpp>
+#include <rtc_msgs/srv/launch_ball.hpp>
 #include <rtc_msgs/srv/set_external_wrench.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -38,8 +39,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iomanip>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -54,6 +57,16 @@ namespace {
 // The two coincide with the shipped (empty) reference_body, which is what makes
 // a contact point and an object pose comparable without a transform.
 constexpr const char* kWorldFrameId = "world";
+
+// Echo a request's numbers back in the response rather than only in the node's
+// log. A caller sweeping release states records the response; making it read
+// the values the simulator actually armed closes the loop without a second
+// query, and makes a unit-converted or transposed request visible on the spot.
+[[nodiscard]] std::string FormatTriple(const std::array<double, 3>& v) {
+  std::ostringstream os;
+  os << std::fixed << std::setprecision(4) << v[0] << ' ' << v[1] << ' ' << v[2];
+  return os.str();
+}
 }  // namespace
 
 // ── GroupRosHandles
@@ -135,6 +148,11 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           response->success = true;
           response->message = "projectile ball launch requested";
         });
+    launch_ball_at_srv_ = create_service<rtc_msgs::srv::LaunchBall>(
+        "/sim/launch_ball_at", [this](const std::shared_ptr<rtc_msgs::srv::LaunchBall::Request> req,
+                                      std::shared_ptr<rtc_msgs::srv::LaunchBall::Response> res) {
+          LaunchBallCallback(req, res);
+        });
     reset_ball_srv_ = create_service<std_srvs::srv::Trigger>(
         "/sim/reset_ball", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
                                   std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
@@ -205,6 +223,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     sim_status_pub_.reset();
     set_external_wrench_srv_.reset();
     launch_ball_srv_.reset();
+    launch_ball_at_srv_.reset();
     reset_ball_srv_.reset();
     ground_truth_pub_.reset();
     camera_position_pub_.reset();
@@ -252,6 +271,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     sim_status_pub_.reset();
     set_external_wrench_srv_.reset();
     launch_ball_srv_.reset();
+    launch_ball_at_srv_.reset();
     reset_ball_srv_.reset();
     ground_truth_pub_.reset();
     camera_position_pub_.reset();
@@ -1081,6 +1101,43 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                 wrench[4], wrench[5], point[0], point[1], point[2]);
   }
 
+  void LaunchBallCallback(const std::shared_ptr<rtc_msgs::srv::LaunchBall::Request> req,
+                          std::shared_ptr<rtc_msgs::srv::LaunchBall::Response> res) {
+    if (!sim_) {
+      res->accepted = false;
+      res->message = "simulator not configured";
+      RCLCPP_WARN(get_logger(), "[LaunchBall] refused — simulator not configured");
+      return;
+    }
+
+    const urtc::ProjectileBallLaunchCommand command{
+        {req->position.x, req->position.y, req->position.z},
+        {req->velocity.x, req->velocity.y, req->velocity.z},
+        {req->angular_velocity.x, req->angular_velocity.y, req->angular_velocity.z}};
+
+    // The simulator owns the refusal set (no ball, non-finite field) so the
+    // service and the viewer cannot drift apart on what counts as launchable.
+    std::string error;
+    if (!sim_->RequestProjectileBallLaunchAt(command, error)) {
+      res->accepted = false;
+      res->message = error;
+      RCLCPP_WARN(get_logger(), "[LaunchBall] refused — %s", error.c_str());
+      return;
+    }
+
+    res->accepted = true;
+    res->message = "armed at p=[" + FormatTriple(command.position_m) + "] m v=[" +
+                   FormatTriple(command.linear_velocity_m_s) + "] m/s w=[" +
+                   FormatTriple(command.angular_velocity_rad_s) + "] rad/s";
+    RCLCPP_INFO(get_logger(),
+                "[LaunchBall] armed p=[%.4f %.4f %.4f] m v=[%.4f %.4f %.4f] m/s "
+                "w=[%.4f %.4f %.4f] rad/s",
+                command.position_m[0], command.position_m[1], command.position_m[2],
+                command.linear_velocity_m_s[0], command.linear_velocity_m_s[1],
+                command.linear_velocity_m_s[2], command.angular_velocity_rad_s[0],
+                command.angular_velocity_rad_s[1], command.angular_velocity_rad_s[2]);
+  }
+
   // ── Command callback (all groups) ──────────────────────────────────────────
 
   void GroupCommandCallback(std::size_t group_idx,
@@ -1341,6 +1398,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   // load before activation is exactly how a run starts with one already hung.
   rclcpp::Service<rtc_msgs::srv::SetExternalWrench>::SharedPtr set_external_wrench_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr launch_ball_srv_;
+  rclcpp::Service<rtc_msgs::srv::LaunchBall>::SharedPtr launch_ball_at_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_ball_srv_;
 
   rclcpp::TimerBase::SharedPtr status_timer_;
