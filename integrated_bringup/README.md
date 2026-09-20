@@ -765,6 +765,15 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 > **`sim_ur5e_p1b.launch.py`** (UR5e + proto_1b closed-chain hand) / **`sim_iiwa7_leap.launch.py`** (iiwa7 + LEAP Hand, hand sensor 스택 없음 — `grasp_controller_type: none`)는 위 인자 집합을 노출한다. iiwa7_leap은 `enable_mpc:=false`가 YAML 기본값(TSID self-hold 검증 후 수동 활성 권장).
 >
+> **공 발사는 `ur5e_p1b` 와 `iiwa7_leap` 두 프로필에 있다** (`ur5e_p1a` 에는 없다). launch 인자가 아니라
+> 그 프로필의 `mujoco_simulator.yaml` 의 `projectile_ball:` 블록이 켠다. 두 프로필의 **공은 같지만
+> 충돌 마스크·투척 조건은 서로 다르다** — 모델의 충돌 geom 구성과 손 위치에서 각각 유도한 값이라
+> 한쪽을 다른 쪽에 복사하면 조용히 틀린다 (근거는 각 파일의 주석). 발사는 두 경로다:
+> `/sim/launch_ball` (설정 분포에서 샘플링, 뷰어 `K` 와 같음) 과 `/sim/launch_ball_at`
+> (호출자가 준 `(p0, v0, ω)`, 재현 가능 — D-14). 계약의 SSoT 는
+> [rtc_msgs/srv/LaunchBall.srv](../rtc_msgs/srv/LaunchBall.srv) 와
+> [rtc_mujoco_sim/README.md](../rtc_mujoco_sim/README.md) §Projectile Ball 이다.
+>
 > † 표시한 `object_pool` / `object` / `object_seed` 세 인자는 **`sim_ur5e_p1b.launch.py` 에만** 있다. `object_pool` 블록을 config 에 가진 프로필이 현재 `ur5e_p1b` 뿐이라, 다른 launch 에 인자만 달면 켜는 순간 `directory` 가 비어 Initialize 가 실패한다. 다른 프로필에 pool 을 쓰려면 그 프로필의 `mujoco_simulator.yaml` 에 블록을 먼저 넣는다 (키 전체의 SSoT 는 [rtc_mujoco_sim/config/mujoco_default.yaml](../rtc_mujoco_sim/config/mujoco_default.yaml)).
 
 **Launch 순서:**
