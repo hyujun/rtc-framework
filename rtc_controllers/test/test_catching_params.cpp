@@ -79,9 +79,12 @@ robot:
   hand:
     provisional: false
     rho_eps: 0.02
+    q_open: [-0.2, -0.2, -0.2]
     q_pre: [0.0, 0.0, 0.0]
     q_close: [0.5, 0.5, 0.5]
     caging_mask: [true, true, true]
+    eta_close: 0.9
+    T_close_e2e: 0.15
 )";
 
 YAML::Node ValidRoot() {
@@ -197,6 +200,135 @@ TEST(CatchingParams, HandCagingGapIgnoredOffCagingMask) {
   EXPECT_TRUE(r.armable);
   EXPECT_FALSE(ReportHasFailure(r, CatchingValidationReason::kHandCagingGapTooSmall,
                                 "robot.hand.q_close", 1));
+}
+
+// ── L6 §5.1/§6: q_open, eta_close, T_close_e2e (S4.1) ───────────────────────
+//
+// The three fields S4a added to the profile. Each is active in both
+// configurations and each carries its own report line: a profile that is
+// half-drafted must say which key is missing, not fail as one lump.
+
+TEST(CatchingParams, HandQOpenAbsentBlocksArmingWithoutHidingThePair) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"].remove("q_open");
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_TRUE(p.hand.q_open_tbd);
+  EXPECT_FALSE(p.hand.tbd) << "q_pre/q_close were given: the pair must still read as resolved";
+
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.q_open"));
+  EXPECT_FALSE(
+      ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.q_pre/q_close"));
+}
+
+TEST(CatchingParams, HandQOpenLiteralTbdBlocksArming) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["q_open"] = "TBD";
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_TRUE(p.hand.q_open_tbd);
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.q_open"));
+}
+
+TEST(CatchingParams, HandProfileTbdReportsThePairNotQOpen) {
+  // With the pair itself TBD the joint count is unknown, so q_open cannot be
+  // length-checked: exactly one failure, naming the pair.
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["q_pre"] = "TBD";
+  root["robot"]["hand"]["q_close"] = "TBD";
+  root["robot"]["hand"].remove("caging_mask");
+  const CatchingParams p = ParseCatchingParams(root);
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.q_pre/q_close"));
+  EXPECT_FALSE(
+      ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.q_open"));
+}
+
+TEST(CatchingParams, HandQOpenIsReadInJointOrder) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  ASSERT_EQ(p.hand.dof, 3);
+  EXPECT_FALSE(p.hand.q_open_tbd);
+  for (int i = 0; i < p.hand.dof; ++i) {
+    EXPECT_DOUBLE_EQ(p.hand.q_open[static_cast<std::size_t>(i)], -0.2) << "joint " << i;
+  }
+}
+
+TEST(CatchingParams, RejectsQOpenLengthMismatch) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["q_open"] = YAML::Load("[0.1, 0.2]");  // the pair has 3 entries
+  ExpectRejectMentioning(root, "robot.hand.q_open must have the same length");
+}
+
+TEST(CatchingParams, RejectsQOpenScalarThatIsNotTbd) {
+  // A typo'd scalar must be refused, not silently read as "still TBD".
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["q_open"] = 0.3;
+  ExpectRejectMentioning(root, "robot.hand.q_open must be a sequence");
+}
+
+TEST(CatchingParams, HandEtaCloseTbdBlocksArming) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["eta_close"] = "TBD";
+  const CatchingParams p = ParseCatchingParams(root);
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.eta_close"));
+}
+
+TEST(CatchingParams, HandEtaCloseOutOfRangeFails) {
+  for (const double eta : {0.49, 1.01}) {
+    YAML::Node root = ValidRoot();
+    root["robot"]["hand"]["eta_close"] = eta;
+    const CatchingParams p = ParseCatchingParams(root);
+    const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+    EXPECT_FALSE(r.armable) << "eta_close = " << eta;
+    EXPECT_TRUE(
+        ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "robot.hand.eta_close"))
+        << "eta_close = " << eta;
+  }
+}
+
+TEST(CatchingParams, HandEtaCloseAtBoundsPasses) {
+  // L6 §6 gives the range as 0.5–1, inclusive at both ends.
+  for (const double eta : {0.5, 1.0}) {
+    YAML::Node root = ValidRoot();
+    root["robot"]["hand"]["eta_close"] = eta;
+    const CatchingParams p = ParseCatchingParams(root);
+    const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+    EXPECT_TRUE(r.armable) << "eta_close = " << eta;
+  }
+}
+
+TEST(CatchingParams, HandTCloseE2eTbdBlocksArming) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_e2e"] = "TBD";
+  const CatchingParams p = ParseCatchingParams(root);
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.T_close_e2e"));
+}
+
+TEST(CatchingParams, HandTCloseE2eNegativeFails) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_e2e"] = -0.01;
+  const CatchingParams p = ParseCatchingParams(root);
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "robot.hand.T_close_e2e"));
+}
+
+TEST(CatchingParams, HandTCloseE2eZeroPasses) {
+  // L6 §6 bounds it at >= 0; zero is a degenerate but in-range identification.
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_e2e"] = 0.0;
+  const CatchingParams p = ParseCatchingParams(root);
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_TRUE(r.armable);
 }
 
 // ── D-9: 0 < eta_v <= 1 ──────────────────────────────────────────────────────

@@ -94,14 +94,44 @@ TbdDouble ReadTbdDouble(const YAML::Node& node, const char* key, TbdDouble fallb
   return TbdDouble{d, false};
 }
 
-/// Parse `robot.hand.q_pre`/`q_close` (+ optional `caging_mask`). Both arrays
-/// must be TBD together or given together — a doc has no notion of "half a
-/// hand profile" (L6 §6). `caging_mask` defaults to "every joint is checked"
-/// when absent, the fail-closed reading of L6 §4.2 (it names no default).
+/// Read one hand pose array (`q_open`/`q_pre`/`q_close`) into `dst`, refusing
+/// a non-sequence, a wrong length or a non-finite entry. `key` names the YAML
+/// key in every rejection so a typo is attributable.
+void ReadHandPoseArray(const YAML::Node& seq, const char* key, std::size_t dof,
+                       std::array<double, kMaxHandDof>& dst) {
+  if (!seq.IsSequence()) {
+    Reject("robot.hand.", key, " must be a sequence of ", std::to_string(dof), " numbers");
+  }
+  if (seq.size() != dof) {
+    Reject("robot.hand.", key, " must have the same length as q_pre/q_close");
+  }
+  for (std::size_t i = 0; i < dof; ++i) {
+    double v = std::numeric_limits<double>::quiet_NaN();
+    try {
+      v = seq[i].as<double>();
+    } catch (const YAML::Exception&) {
+      Reject("robot.hand.", key, "[", std::to_string(i), "] does not parse as a number");
+    }
+    if (!std::isfinite(v)) {
+      Reject("robot.hand.", key, "[", std::to_string(i), "] must be finite");
+    }
+    dst[i] = v;
+  }
+}
+
+/// Parse `robot.hand.q_pre`/`q_close` (+ optional `caging_mask`, `q_open`).
+/// `q_pre`/`q_close` must be TBD together or given together — a doc has no
+/// notion of "half a hand profile" (L6 §6). `caging_mask` defaults to "every
+/// joint is checked" when absent, the fail-closed reading of L6 §4.2 (it names
+/// no default). `q_open` (L6 §5.1) is not part of the §4.2 caging pair: an
+/// absent one leaves `q_open_tbd` set for the validator to report as a
+/// still-TBD active key, while a present one must match the pair's length.
 HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   HandProfile out;
   out.rho_eps = ReadOptional(hand_node, "rho_eps", out.rho_eps);
   out.provisional = ReadOptional(hand_node, "provisional", true);
+  out.eta_close = ReadTbdDouble(hand_node, "eta_close", out.eta_close);
+  out.T_close_e2e = ReadTbdDouble(hand_node, "T_close_e2e", out.T_close_e2e);
 
   const YAML::Node q_pre = hand_node["q_pre"];
   const YAML::Node q_close = hand_node["q_close"];
@@ -109,6 +139,9 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   const bool close_is_seq = q_close && q_close.IsSequence();
 
   if (!pre_is_seq && !close_is_seq) {
+    // Whole profile still TBD: `dof` is unknown, so `q_open` cannot be length-
+    // checked either and stays TBD whatever the YAML says. The validator
+    // reports the pair; there is no state where q_open alone is meaningful.
     out.tbd = true;
     out.dof = 0;
     return out;
@@ -161,6 +194,18 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
       out.caging_mask[i] = true;  // fail-closed default: check every joint
     }
   }
+
+  // q_open (L6 §5.1): absent or the literal "TBD" leaves the flag set; a
+  // present value must be a well-formed array of the pair's length, because
+  // defaulting a malformed one would read a typo as "still TBD".
+  const YAML::Node q_open = hand_node["q_open"];
+  const bool q_open_tbd =
+      !q_open || q_open.IsNull() || (q_open.IsScalar() && q_open.Scalar() == "TBD");
+  if (!q_open_tbd) {
+    ReadHandPoseArray(q_open, "q_open", dof, out.q_open);
+    out.q_open_tbd = false;
+  }
+
   out.dof = static_cast<int>(dof);
   out.tbd = false;
   return out;
@@ -372,9 +417,23 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   }
 
   // robot.hand.* — active in every configuration.
+  //
+  // eta_close / T_close_e2e are checked outside the profile branch: each is an
+  // independent key with its own report line, so a TBD pose pair does not hide
+  // a second missing value behind one failure (L6 §6).
+  if (CheckActiveTbd(report, params.hand.eta_close, "robot.hand.eta_close", true)) {
+    CheckRange(report, "robot.hand.eta_close", params.hand.eta_close.value, 0.5, 1.0);
+  }
+  if (CheckActiveTbd(report, params.hand.T_close_e2e, "robot.hand.T_close_e2e", true)) {
+    CheckRange(report, "robot.hand.T_close_e2e", params.hand.T_close_e2e.value, 0.0,
+               std::numeric_limits<double>::infinity());
+  }
   if (params.hand.tbd) {
     AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "robot.hand.q_pre/q_close");
   } else {
+    if (params.hand.q_open_tbd) {
+      AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "robot.hand.q_open");
+    }
     CheckPositive(report, "robot.hand.rho_eps", params.hand.rho_eps);
     for (int i = 0; i < params.hand.dof; ++i) {
       const auto idx = static_cast<std::size_t>(i);
