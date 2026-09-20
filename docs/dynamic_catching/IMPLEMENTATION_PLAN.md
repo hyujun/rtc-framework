@@ -395,7 +395,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
 | e2e | 발사 → PointCloud2 수신 end-to-end, 같은 seed 재발사 시 truth 궤적 동일 | — |
-| D-3 무부하 | §5 판정 (구성별 무효율 상한) | ε_clk 할당 (r_cap, TBD-HAND-04) → 없으면 NOT_EVALUATED, δ·pause 분포는 기록 |
+| D-3 무부하 | §5 판정 (구성별 무효율 상한). **측정 완료 2026-09-20 (§5.1)**: 로봇 2종 × 200 발사, 거부 0, lane drop 0. δ_max max 는 `ur5e_p1b` 18.212 ms · `iiwa7_leap` 8.671 ms. 95 % 를 덮는 ε_clk,alloc 제안 **49.8 mm** (p1b 가 구속) | ε_clk 할당 (r_cap, TBD-HAND-04) → **NOT_EVALUATED 유지**, 분포는 §5.1 에 기록됨. 할당 비율 **사용자 확인 대기** |
 | frame | world ↔ base FK 대조 잔차 < 1e-6 m, 결과가 §11 에 기록됨. **측정 완료 2026-09-20 (§11)**: `iiwa7_leap` **PASS** (항등, 4.5e-16 m) · `ur5e_p1b` **FAIL 8.3e-4 m** — 프레임은 `Rz(180°)` 로 확정됐고 잔차는 MJCF↔URDF 치수 차이라 **sim 에서 줄일 수 없다**. 임계는 낮추지 않는다 — **사용자 결정 2026-09-20: `hand_description` 을 고치지 않고 sim 바닥값으로 받아 오차 예산의 모델 항으로 센다** | **확정** |
 | PROC-3 | S3.2 의 `rtc_msgs` 변경 후 전체 빌드·테스트 | — |
 | GUI·plot | §13 S3 행 | — |
@@ -540,9 +540,24 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 - a_bound: g + 항력 가속 상한 (항력 k — S3.8 이 2026-09-20 결정으로 빠졌으므로 L0 §4.1 의 문서 대표값 0.0229 1/m)
 - ε_clk,alloc: L3 §4.6 오차 예산 중 시계 항 ‖v‖δ 에 할당한 몫. r_cap (TBD-HAND-04) 과 할당 비율이 정해지기 전까지 이 판정은 **NOT_EVALUATED** 이고 δ_max·pause 분포만 기록한다. 할당 비율은 S3.1a 에서 제안하고 사용자가 확인한다
 
+### 5.1 S3.1a 실측 (2026-09-20)
+
+로봇 2종 × 발사 200 회, **풀 bring-up** (포구 스택 없음 = §5 의 "무부하"; 컨트롤러 없는 독립 노드 구동은 sim 이 매 step `sync_timeout_ms` 를 기다려 ~20 Hz 로 도는 **다른 실험**이다). 발사는 `/sim/launch_ball_at` 지정 발사라 모든 시행이 동일 방출 상태 `p0 = (4.81, 0.04, 1.75) m`, `v0 = (−4.0, 0, 3.5805) m/s`, `ω = 0` 이고 시드 RNG 를 소비하지 않아 재현 가능하다. 도구: `analyze_clock_phase` / `run_clock_phase_trials`.
+
+| 구성 | 시행 | 거부 | lane drop | δ_max p50 / p95 / max | max pause p50 / p95 / max | 부호 (뒤처짐 / 따라잡음) | 95 % 를 통과시키는 ε_clk,alloc |
+|---|---|---|---|---|---|---|---|
+| `ur5e_p1b` | 200 | 0 | **0** | 1.514 / 4.931 / **18.212** ms | 1.627 / 4.171 / 18.388 ms | 196 / 4 | 49.808 mm |
+| `iiwa7_leap` | 200 | 0 | **0** | 0.438 / 2.701 / **8.671** ms | 0.402 / 2.671 / 4.628 ms | 135 / 65 | 22.989 mm |
+
+- **drop 0 이 꼬리를 믿을 근거다.** lane 이 넘쳤다면 가장 큰 δ·긴 pause 가 정확히 빠진 채 분포가 멀쩡해 보인다. 두 구성 모두 누적 drop 이 0 이다
+- **무효율은 아직 계산하지 않는다** — ε_clk,alloc 이 없으면 유효/무효를 가를 수 없다. 판정은 **NOT_EVALUATED** 이고, 위 ε 열은 각 구성의 95 % 를 통과시키는 **역산 제안값**이다. 이 값을 임계로 채택하면 임계가 예산이 아니라 측정의 재서술이 된다
+- **할당 비율 제안**: 두 구성을 모두 덮으려면 ε_clk,alloc ≥ **49.8 mm** (p1b 가 구속). r_cap (TBD-HAND-04) 이 정해지면 L3 §4.6 예산에서 이 몫이 확보되는지 확인한다
+- ⚠️ **두 구성은 완전히 동등하지 않다** — `ur5e_p1b` 는 컨트롤러 5개 (비활성 `demo_inference_controller` 포함), `iiwa7_leap` 은 4개를 인스턴스화한다 (그 프로파일은 정책 config 를 싣지 않아 CM 이 건너뛴다). 차이의 일부는 로봇이 아니라 bring-up 에서 올 수 있다
+- 플롯 (§13 S3 의 CSV 플롯 요구): `analyze_clock_phase --plot` 이 시행별 δ_max·max pause 분포를 낸다
+
 | 항목 | 방법 | 기준 |
 |---|---|---|
-| 무부하 (S3.1a) | 구성별 (로봇 2종) 발사 ≥ 200 회 | 무효율 ≤ 5 % |
+| 무부하 (S3.1a) | 구성별 (로봇 2종) 발사 ≥ 200 회 | 무효율 ≤ 5 % — **실측 완료 2026-09-20 (§5.1), 판정 NOT_EVALUATED** |
 | 부하 (S3.1b) | 포구 컨트롤러 + 계획기 + `sim_estimator_node` 동시 구동, 구성별 발사 ≥ 200 회 | 무효율 ≤ 5 % |
 | 예측 일관성 | vision 예측 궤적 대 ground truth (같은 wall 시각 축) | 오차가 δ 가 큰 구간에서만 커지는지 확인 (기록) |
 | stamp 도메인 | `sim_estimator_node` 의 stamp 가 wall 인지 | `use_sim_time=false` 에서 wall |
@@ -876,7 +891,7 @@ sim:
 | 단계 | GUI | CSV · plot |
 |---|---|---|
 | S2 | 변경 없음 (DemoWbc 패널이 CLIK 옵션 off 에서 그대로 동작하는지 확인) | `wbc_diag` 플롯이 그대로인지 회귀 확인. CLIK 새 진단(status·반복·solve time·`bound_conflict`)을 기존 CSV 에 더하면 plotter 반영 |
-| S3 | sim 공 발사(D-14 srv) 버튼·발사 조건 입력, 공 상태(ground truth·vision 예측 수신 여부) 표시 | clock 위상 오차 CSV (δ·pause, §5), catchability 지도 결과 (w₅·w₆ 분포, 방위별 포구 가능 구간) 는 지도 도구 자체 플롯 |
+| S3 | sim 공 발사(D-14 srv) 버튼·발사 조건 입력, 공 상태(ground truth·vision 예측 수신 여부) 표시 — **완료 2026-09-20**: `demo_controller_gui` Control 탭의 ball 패널. 패널이 `/sim/launch_ball_at` 과 **같은 집합을 거부**하고(필드 이름을 대며) 피드를 never/live/stale **셋**으로 구분한다 (브링업 중 앞의 둘은 화면에서 같아 보이면서 정반대를 뜻한다). vision 예측은 토픽 구독뿐이라 ball_perception 없이도 "never received" 로 정직하게 동작한다. 게이트: `test_demo_gui_ball_launch.py` | clock 위상 오차 CSV (δ·pause, §5) — **완료 2026-09-20**: `analyze_clock_phase --plot` (합성 픽스처에 4 ms 스톨을 주입해 δ_max·max pause 로 복원되는 것을 확인). 결과는 §5.1. catchability 지도 결과 (w₅·w₆ 분포, 방위별 포구 가능 구간) 는 지도 도구 자체 플롯 |
 | S4 | 손 step 명령·T_close 식별 실행 | T_close 식별 CSV → ρ(t)·T_close 분포 플롯 |
 | S5 | 포구 컨트롤러 패널: 모드·입력 상태(n·generation·수신 나이·지평), 기준 vs 실제 추종 오차, CLIK 상태, arm/disarm | `catching_diag.csv` (tick 별: 입력 스냅샷 token, L4 기준, CLIK 상태, q_c vs q) → 새 plot 종류 + 회귀 테스트 |
 | S6 | plan 표시: t_c·p_c·γ_f·w₅·w₆·탈락 사유·plan 나이 | `planner_timing_log.csv` (timing plotter 재사용), plan 이벤트 CSV (후보별 게이트 결과, 수신 → 게시 지연) → plot |

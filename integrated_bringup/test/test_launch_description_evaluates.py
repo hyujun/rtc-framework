@@ -105,9 +105,11 @@ ROBOT_COMBOS: list[tuple[str, dict[str, str]]] = [
 ]
 
 
-# Arguments only one launch declares. `sim_overlay` exists on the p1b sim alone,
-# so putting it in SIM_COMBOS would fail the declared-argument check for the
-# other two rather than cover anything.
+# Arguments not every launch can be driven with. `sim_overlay` is declared by
+# the p1b and iiwa7_leap sims (not p1a), but only p1b SHIPS overlays — a bare
+# name on iiwa7_leap correctly raises, which is the contract, not a combo to
+# evaluate. Driving iiwa7_leap's overlay would need a path to a temp file, and
+# that is covered directly in test_sim_overlay.py.
 EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     "sim_ur5e_p1b.launch.py": [
         ("sim_overlay", {"sim_overlay": "inference_pole"}),

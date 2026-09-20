@@ -1374,6 +1374,7 @@ if(BUILD_TESTING)
     test/test_launch_hand_affinity_wiring.py)
   # Behavioural twin of the two AST tests above: evaluates every launch
   # description instead of reading it.
+  ament_add_pytest_test(test_sim_overlay test/test_sim_overlay.py)
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
   ament_add_pytest_test(test_launch_session_wiring
