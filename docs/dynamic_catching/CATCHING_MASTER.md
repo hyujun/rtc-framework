@@ -250,7 +250,7 @@ $$\Vert v(t_c)\Vert>\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 
 **v0.4 의 결손이 닫혔다.** 트랙 식별·상태는 `generation`·`validity`·`snapshot_sequence` 로 판정한다(TBD-VIS-07 닫힘). 레이아웃 변경은 필드 이름·datatype 검사와 **레이아웃 해시 진단**이 감지한다(P-3, L1 §5.1). NIS 같은 추정기 건강도 필드는 여전히 없다.
 
-**요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. sim profile: 지평 0.8 s, 간격 0.05 s, 17 점, ≤ 30 Hz (plan D-15, 2026-09-19 — S0.7 결과로 기존 예시 0.5 s 에서 상향). 궤적 용량 `kCap` 은 S0.7 제안값(40)으로 S1.2 가 provisional 로 두고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정한다(L0 §5).
+**요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. sim profile: 지평 0.8 s, 간격 0.05 s, **16 점** (지평 0.05…0.80 s — 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다, 2026-09-20 정정), ≤ 30 Hz (plan D-15, 2026-09-19 — S0.7 결과로 기존 예시 0.5 s 에서 상향). 궤적 용량 `kCap` 은 S0.7 제안값(40)으로 S1.2 가 provisional 로 두고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 정한다(L0 §5).
 
 QoS는 vision 노드가 정한 것을 따른다(`TBD-VIS-08`). 제어 PC는 수신 나이(`now_steady − recv_steady`) 검사를 기본 감시로 쓴다(L1).
 
@@ -405,7 +405,7 @@ catching:
 | TBD-VIS-01 | vision 토픽 이름 | L1, L8 | sim 은 debug 토픽 `/ball_perception/debug/prediction/trajectory` (W). 제품 토픽은 미정 (ball_perception E6-F02) |
 | TBD-VIS-02 | `PointField` 실제 레이아웃(offset·datatype·count), `point_step` 372 B의 미설명 4–8 B | L1 | 닫힘 — 384 B, §5.1 표 (W, D-4) |
 | TBD-VIS-03 | `t` 필드 타입·기준 (float64 초 / uint32 ns) | L1, L2 | 닫힘 — `horizon_ns` UINT32, `header.stamp`(예측 원점) 기준 상대 ns (W, D-4) |
-| TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15, S3.6), sim 실측은 S3.4. sim profile: 0.8 s·0.05 s·17 점·≤ 30 Hz (plan D-15) |
+| TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15, S3.6), sim 실측은 S3.4. sim profile: 0.8 s·0.05 s·**16 점**·≤ 30 Hz (plan D-15, 점 수 2026-09-20 정정 — t = 0 없음) |
 | TBD-VIS-05 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | L0, L2, L4 | 닫힘 — 상수 $g$ (W) |
 | TBD-VIS-06 | `header.frame_id`와 `world`의 관계 | L1 | S3.4 에서 확인 |
 | TBD-VIS-07 | 트랙 식별·상태(소실) 판정 수단 | L1, L3, L7 | 닫힘 — `generation`·`validity`·`snapshot_sequence` 필드 존재 (W, D-4) |

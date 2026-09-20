@@ -31,7 +31,7 @@ vision 노드가 이미 예측 궤적을 발행하고(마스터 §5, D-4), 제�
 
 | ID | 확인 항목 | 기록 |
 |---|---|---|
-| G2-1 | 발행 주기, $N$ 범위, 지평 길이 → `kCap`(컴파일타임)·`n_max`(런타임)와 L3 슬라이스 범위 | 전환 `[확정 D-15]` — vision 사양은 **제어기가 요구를 정하고** sim profile 을 맞춘다. sim profile: 지평 0.8 s, 간격 0.05 s, 17 점, ≤ 30 Hz (plan D-15, 2026-09-19 — 기존 예시 0.5 s·10 점). `kCap` 은 S0.7 손계산 제안값으로 S1.2 가 정해 provisional 로 두고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 요구 사양에서 산출한다 — `n_max > kCap` 이면 S1.2 backfill 후 S1 게이트 재실행 (plan §4.2) (W5-6, TBD-VIS-04) |
+| G2-1 | 발행 주기, $N$ 범위, 지평 길이 → `kCap`(컴파일타임)·`n_max`(런타임)와 L3 슬라이스 범위 | 전환 `[확정 D-15]` — vision 사양은 **제어기가 요구를 정하고** sim profile 을 맞춘다. sim profile: 지평 0.8 s, 간격 0.05 s, **16 점** (지평 0.05…0.80 s — 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다, 2026-09-20 정정), ≤ 30 Hz (plan D-15, 2026-09-19 — 기존 예시 0.5 s·10 점). `kCap` 은 S0.7 손계산 제안값으로 S1.2 가 정해 provisional 로 두고, 런타임 상한 `n_max ≤ kCap` 은 S3.6 이 요구 사양에서 산출한다 — `n_max > kCap` 이면 S1.2 backfill 후 S1 게이트 재실행 (plan §4.2) (W5-6, TBD-VIS-04) |
 | G2-2 | 점 시각 필드 타입·기준 → 시각 정렬 식 | 닫힘 — `horizon_ns` UINT32 (`header.stamp` 기준 상대 ns). L1 이 수신 시 절대 `BallTime` 으로 변환한다(D-2, L1 §4.1). 샘플러는 절대 시각만 받는다 (W5-3, TBD-VIS-03) |
 | G2-3 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | 닫힘 — 상수 $g$ (W5-4, TBD-VIS-05) |
 | G2-4 | 공분산을 RT까지 넘길지 | 닫힘 `[확정 A-3]` — RT 스냅샷에서 분리, 계획기 버퍼에만 (TBD-COV-01) |
@@ -153,7 +153,7 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 - `hint_`는 컨트롤러 멤버로 유지하고, **`snapshot_sequence` 가 바뀌면 0으로 초기화**한다. 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다.
 - `Interpolate()` 가 `valid=false` 를 돌려주면(비단조 샘플 쌍 등) 그 틱은 invalid 로 처리한다.
 
-**스냅샷 복사 비용.** 스냅샷은 `kCap` 고정이라 실제 $n$ 과 무관하게 전체를 **매 tick** 복사한다 — `SeqLock::sequence()` 로 새 메시지 도착 tick 에만 복사를 한정하는 최적화는 D-21 이 금지한다(payload 안 token 으로만 새 스냅샷을 판정). 점당 시각 + 9 double ≈ 80 B, 512 샘플이면 약 41 KB. `rtc::SeqLock::Load` 는 재시도 상한이 없으므로(L1 G1-8) 복사 시간이 곧 writer 와의 경합 창이며, 최악 재시도 시간은 G1-C 로 측정한다. 유일한 대응은 `kCap` 을 S3.6 요구 $N$ 상한(`n_max`)에 여유를 둔 값으로 줄이는 것이다(sim profile 은 17 점, S0.7 제안 `kCap` 40 이면 약 3.2 KB).
+**스냅샷 복사 비용.** 스냅샷은 `kCap` 고정이라 실제 $n$ 과 무관하게 전체를 **매 tick** 복사한다 — `SeqLock::sequence()` 로 새 메시지 도착 tick 에만 복사를 한정하는 최적화는 D-21 이 금지한다(payload 안 token 으로만 새 스냅샷을 판정). 점당 시각 + 9 double ≈ 80 B, 512 샘플이면 약 41 KB. `rtc::SeqLock::Load` 는 재시도 상한이 없으므로(L1 G1-8) 복사 시간이 곧 writer 와의 경합 창이며, 최악 재시도 시간은 G1-C 로 측정한다. 유일한 대응은 `kCap` 을 S3.6 요구 $N$ 상한(`n_max`)에 여유를 둔 값으로 줄이는 것이다(sim profile 은 16 점, S0.7 제안 `kCap` 40 이면 약 3.2 KB).
 
 ## 6. YAML 파라미터
 

@@ -105,7 +105,7 @@ sim 은 wall clock 을 유지한다 (D-3). D-2 변환이 실기와 같은 경로
 
 **측정.** S3.3 이 추가하는 per-step `(sim_time, steady_now)` 진단 lane 이 데이터 원천이다. 발사 시각을 원점으로 비행 구간 매 step 에서 δ(t) = (steady(t) − steady₀) − (sim(t) − sim₀) 를 구하고, 시행별 δ_max = max|δ| 와 max pause(한 step 의 Δwall − Δsim 최댓값)를 기록한다 (양방향).
 
-**시행 유효 조건.** v_max·δ_max + ½·a_bound·δ_max² ≤ ε_clk,alloc **이고** max pause ≤ ε_clk,alloc / v_max. v_max 는 목표 투척 분포의 최대 공 속력(S3.5b 전에는 S0.7 가정값), a_bound 는 g + 항력 가속 상한(S3.8 의 k). **ε_clk,alloc 은 L3 §4.6 오차 예산 중 시계 항에 할당한 몫이고, r_cap(TBD-HAND-04)과 할당 비율이 정해지기 전까지 이 판정은 `NOT_EVALUATED` 이며 δ_max·pause 분포만 기록한다.** 할당 비율은 S3.1a 에서 제안하고 사용자가 확인한다.
+**시행 유효 조건.** v_max·δ_max + ½·a_bound·δ_max² ≤ ε_clk,alloc **이고** max pause ≤ ε_clk,alloc / v_max. v_max 는 목표 투척 분포의 최대 공 속력(S3.5b 전에는 S0.7 가정값), a_bound 는 g + 항력 가속 상한(항력 k — **S3.8 이 2026-09-20 결정으로 빠졌으므로** L0 §4.1 의 문서 대표값 0.0229 1/m 를 쓴다). **ε_clk,alloc 은 L3 §4.6 오차 예산 중 시계 항에 할당한 몫이고, r_cap(TBD-HAND-04)과 할당 비율이 정해지기 전까지 이 판정은 `NOT_EVALUATED` 이며 δ_max·pause 분포만 기록한다.** 할당 비율은 S3.1a 에서 제안하고 사용자가 확인한다.
 
 **시행 수·무효율.** 구성별(로봇 2종) 발사 ≥ 200 회, 무효율 ≤ 5 %. 이 두 값은 **제안값**이다(사용자 확인, plan §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다.
 
@@ -180,7 +180,7 @@ struct TickRecord {                   // 고정 크기, POD
 | launch | 로봇 | backend | 공 입력 |
 |---|---|---|---|
 | `sim_iiwa7_leap.launch.py` (+ 포구 인자) | `iiwa7_leap` | `mujoco_native` | `sim_estimator_node` (§4.3) |
-| `sim_ur5e_p1b.launch.py` (+ 포구 인자) | `ur5e_p1b` | `mujoco_native` | `sim_estimator_node` (선택: position 지연 에뮬레이션, G8-E) |
+| `sim_ur5e_p1b.launch.py` (+ 포구 인자) | `ur5e_p1b` | `mujoco_native` | `sim_estimator_node` (~~선택: position 지연 에뮬레이션~~ — 2026-09-20 결정으로 없다, L5 §4.6) |
 | `robot_ur5e_p1b.launch.py` (+ 포구 인자, S10) | `ur5e_p1b` | `ur_driver_native` + `udp_hand_native` | vision PC |
 
 컨트롤러 선택은 기존 `initial_controller` 인자를 쓴다. 추가 인자(`sim_estimator_node` 동시 기동 등)의 이름은 S5 에서 정한다.
@@ -258,7 +258,7 @@ struct TickRecord {                   // 고정 크기, POD
 | G8-C3 | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8). 대신 `REF_SATURATED` 빈도를 기록해 D-8 재검토 입력으로 쓴다 | `[SIM-ANY]` |
 | G8-D | `ur5e_p1b`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포. 전체 발사 수·무효 시행 수·무효 사유를 함께 보고하고, 무효율이 plan §5 상한을 넘으면 그 run 은 `NOT_EVALUATED` | `[SIM-P1B]` |
 | G8-D2 | `iiwa7_leap`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포. 전체 발사 수·무효 시행 수·무효 사유를 함께 보고하고, 무효율이 plan §5 상한을 넘으면 그 run 은 `NOT_EVALUATED` | `[SIM-ANY]` |
-| G8-E | `ur5e_p1b` + position 지연 에뮬레이션에서 선행 보상 유무 비교 | `[SIM-P1B]` |
+| G8-E | `ur5e_p1b` + position 지연 에뮬레이션에서 선행 보상 유무 비교. ⚠️ **substrate 없음** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없다 (L5 §4.6). 지연 0 에서는 유무 비교가 공허하므로 fixture 전용 주입을 S5 착수 시 결정해야 한다 | `[SIM-P1B]` |
 
 모든 sim 게이트는 §4.5 clock 위상 게이트를 통과한 시행만 집계하고 무효 비율을 함께 보고한다. 처리량은 §4.5 (200 시행 ≈ 12 분 이상).
 

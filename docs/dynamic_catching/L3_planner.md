@@ -451,7 +451,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.gamma.eta_a`, `eta_v` | double | – | 0.8, 0.9 | (0, 1] | 여유율. `eta_v` 는 D-9 의 $\eta_v$ — `gammaWindow` 와 rollout 수락이 같은 값을 쓴다 (§4.5, §4.8) |
 | `planner.gamma.eps_term` | double | m | 0.002 | – | §4.8 |
 | `planner.budget.n_sigma` | double | – | 2.0 | 1–3 | §4.6 |
-| `planner.budget.sigma_trk` | double | m | `TBD` | ≥0 | L5 실측 |
+| `planner.budget.sigma_trk` | double | m | `TBD` | ≥0 | L5 실측. ⚠️ **sim 초기값 출처가 없다** — S3.7 이 2026-09-20 결정으로 빠져 (L5 §7 L5.7) **S10 실기 식별까지 TBD 로 남는다** |
 | `planner.budget.clock_err` | double | s | `TBD` | ≥0 | 인프라 실측 |
 | `planner.stop.a_dec` | – | – | – | – | v0.5 에서 삭제 — 단일 키 `supervisor.decel.a_dec` (L7 §6) 를 읽는다 (§4.9) |
 | `planner.stop.check_ik` | bool | – | true | – | §4.9 |
