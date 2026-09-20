@@ -521,6 +521,9 @@ mujoco_simulator:
 | `object_pool.*` | (다양) | 비활성 | 랜덤 object 스폰 — 아래 [Object Pool](#object-pool-랜덤-object-스폰) 섹션 참조 |
 | `object_state.*` | (다양) | 비활성 | object 이름·프레임·pose 발행 — 아래 [Object State](#object-state-object-이름프레임pose-발행) 섹션 참조 |
 | `projectile_ball.*` | (다양) | 비활성 | 발사 공 생성·발사·발행 — 아래 [Projectile Ball](#projectile-ball-발사-공) 섹션 참조 |
+| `clock_lane.enabled` | bool | `false` | 완료 step 마다 `(step, sim_time, steady_ns)` 를 CSV 로 기록 (D-3 위상 오차 측정) |
+| `clock_lane.csv_path` | string | `""` | 출력 CSV 경로. **비어 있으면 lane 이 켜져 있어도 거부**된다 |
+| `clock_lane.drain_rate_hz` | double | `20.0` | 노드가 링을 비우는 주기. 너무 낮으면 링이 넘치고 넘친 수가 CSV 에 기록된다 |
 
 그룹별 파라미터 (`robot_response.<name>.` / `fake_response.<name>.`):
 
@@ -880,6 +883,35 @@ ros2 service call /sim/reset_ball std_srvs/srv/Trigger   # 이후 발행이 멈�
 
 ---
 
+## Clock phase lane (D-3 측정)
+
+완료된 물리 step 마다 `(step, sim_time_sec, steady_ns, dropped_total)` 한 줄을 CSV 로 남깁니다.
+**sim 클럭과 이 기계가 실제로 쓰는 steady 클럭의 위상 오차**를 재기 위한 lane 이고, 측정 run 에서만 켭니다.
+
+기존 수단으로는 못 쟀습니다 — `/sim/status` 가 `sim_time` 을 싣지만 **1 Hz wall 타이머**라 500× 느리고
+샘플링 클럭 자체가 틀렸으며, 이 패키지에는 파일 writer 자체가 없었습니다.
+
+| 열 | 뜻 |
+|---|---|
+| `step` | 1 부터의 step 번호. 건너뛰지 않는다 |
+| `sim_time_sec` | `mjData::time` |
+| `steady_ns` | 같은 순간의 `std::chrono::steady_clock` (RT 경로와 같은 epoch) |
+| `dropped_total` | 그 시점까지 링이 넘겨 잃은 샘플 누적 수 |
+
+- **물리 스레드는 링에 넣기만 합니다.** 파일 열기·포맷·쓰기는 전부 노드 executor 에서 합니다.
+- **넘침은 조용하지 않습니다.** 링이 가득 차면 샘플을 버리되 세고, 그 누적값을 **매 행에** 적습니다 —
+  끝에 한 번만 적으면 *언제* 넘쳤는지 알 수 없는데, 넘친 구간이 바로 위상 오차가 가장 컸을 구간입니다.
+  `dropped_total > 0` 이면 분포의 꼬리를 신뢰할 수 없으므로 `drain_rate_hz` 를 올리고 다시 잽니다.
+- `csv_path` 가 비면 lane 을 **거부**합니다. 측정 run 의 유일한 산출물을 아무도 지정하지 않은 경로에 쓰지 않습니다.
+
+> ⚠️ **공 truth 토픽의 stamp 를 sim 시각으로 바꾸는 쪽이 아닙니다.** ball_perception 의 `recorder_node` 와
+> `evaluator_node` 가 `/sim/ball/ground_truth` 와 카메라 토픽을 **stamp 로 짝짓기** 때문에(허용오차 0.2 ms)
+> 한쪽만 클럭 축을 바꾸면 둘 다 조용히 깨집니다. 둘 다 바꾸려면 rtc 가 `/clock` 을 내고 스택 전체가
+> `use_sim_time` 으로 돌아야 하며, 그건 S5/S6 결정입니다. 이 lane 은 그 대신 **sim↔steady 대응표**를 주고,
+> "sim 축으로 보간" 에 실제로 필요한 것이 그것입니다.
+
+---
+
 ## 실행
 
 ```bash
@@ -1163,7 +1195,7 @@ GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `col
 | `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
 | `test_object_pool_sampling` | object pool 순수 로직 — 디렉토리 스캔·정렬, allowlist 해석, ZYX Euler→quat (비대칭 각도 3쌍으로 `mju_euler2Quat` seq 규약 고정), pose 샘플링의 범위 **커버리지**, seed 재현성, `avoid_repeat` (MJCF fixture 불필요) |
 | `test_object_state` | object state lane — 어떤 body 가 object 로 잡히는지, pose 가 어느 프레임으로 나오는지 |
-| `test_projectile_ball` | projectile ball — 설정 검증 (기울어진 `launch_direction`·음수 spin 산포 거부), 발사 샘플링 재현성·범위 (azimuth, normal 분포), 발사 프레임 spin, sim 시간 publish throttle 이 reset 후 재개되는지, park **negative control** 과 접촉 **positive control** (`pool_scene.xml`); preset 질량·관성·condim·priority, 바닥과 **자체 solref 를 가진 손끝 모사 pad** 모두에서 preset 반발 (±0.05), pad 가 공보다 priority 가 높으면 Initialize 거부, 구름 저항, 공력 방향·크기 순수함수와 자유낙하 tanh 해석해 (1 %), backspin 양력 (`ball_scene.xml`); **지정 상태 발사** — 요청 상태가 그대로 장전되는지, 같은 요청의 궤적이 **비트 단위로** 동일한지, 샘플링 RNG 스트림을 건드리지 않는지, 공 없음·비유한값 거부가 상태를 바꾸지 않는지 |
+| `test_projectile_ball` | projectile ball — 설정 검증 (기울어진 `launch_direction`·음수 spin 산포 거부), 발사 샘플링 재현성·범위 (azimuth, normal 분포), 발사 프레임 spin, sim 시간 publish throttle 이 reset 후 재개되는지, park **negative control** 과 접촉 **positive control** (`pool_scene.xml`); preset 질량·관성·condim·priority, 바닥과 **자체 solref 를 가진 손끝 모사 pad** 모두에서 preset 반발 (±0.05), pad 가 공보다 priority 가 높으면 Initialize 거부, 구름 저항, 공력 방향·크기 순수함수와 자유낙하 tanh 해석해 (1 %), backspin 양력 (`ball_scene.xml`); **clock phase lane** — 꺼져 있으면 step 당 비용 0, 켜면 step 마다 두 클럭이 한 줄씩 쌓이고 sim 시각이 정확히 physics step 만큼 전진하는지, 링이 넘치면 **세어서** 알리는지 (보유 + 버린 수 = 전체 step); **지정 상태 발사** — 요청 상태가 그대로 장전되는지, 같은 요청의 궤적이 **비트 단위로** 동일한지, 샘플링 RNG 스트림을 건드리지 않는지, 공 없음·비유한값 거부가 상태를 바꾸지 않는지 |
 | `test_object_pool` | object pool 통합 — attach/park/spawn/refresh, `enabled:false` 시 모델 불변, keyframe park pose, geom 별 contact filter 복원, **positive control** (활성 object 가 낙하·정지) 과 **negative control** (park object 가 전혀 안 움직임), reset 재적용, 실패 모드 (`pool_scene.xml` + `fixtures/objects/`) |
 
 Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml), [test/fixtures/pool_scene.xml](test/fixtures/pool_scene.xml) (바닥 + keyframe), [test/fixtures/ball_scene.xml](test/fixtures/ball_scene.xml) (바닥 + 손끝 모사 pad) 과 [test/fixtures/objects/](test/fixtures/objects/) (primitive geom 후보 3개 — object_sim submodule 없이도 돈다).

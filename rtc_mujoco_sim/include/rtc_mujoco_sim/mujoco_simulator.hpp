@@ -4,6 +4,7 @@
 // ── Includes: project, then MuJoCo, then C++ stdlib ───────────────────────────
 #include "rtc_mujoco_sim/object_pool.hpp"
 #include "rtc_mujoco_sim/projectile_ball.hpp"
+#include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_base/threading/seqlock.hpp>
 
 #include <mujoco/mujoco.h>
@@ -148,6 +149,30 @@ struct ObjectStateSample {
 
 using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo>& infos,
                                                const std::vector<ObjectStateSample>& samples)>;
+
+// ── Clock phase lane ────────────────────────────────────────────────────────
+// One entry per completed sim step, pairing the simulator's own clock with the
+// steady clock the rest of the machine runs on.
+//
+// WHY A LANE AND NOT A TOPIC. /sim/status carries sim_time already, but on a
+// 1 Hz WALL timer — five hundred times too slow to see the phase error D-3 is
+// about, and sampled on the wrong clock to boot. Nothing else in this package
+// writes per-step state: there is no file writer anywhere in it. So the
+// measurement substrate for D-3 (and therefore S3.1a) did not exist.
+//
+// WHY NOT JUST STAMP THE BALL TRUTH WITH SIM TIME. That was the obvious move
+// and it is unsafe: ball_perception's recorder_node and evaluator_node both
+// pair /sim/ball/ground_truth with the camera topic BY TIMESTAMP (0.2 ms
+// alignment tolerance), so moving one topic's clock axis and not the other
+// silently breaks both. Moving BOTH needs rtc to publish /clock and the whole
+// stack to run use_sim_time — an S5/S6 decision, not an S3a one. This lane
+// gives the sim↔steady mapping instead, which is what "interpolate on the sim
+// axis" actually needs, and breaks no existing contract.
+struct SimClockSample {
+  std::uint64_t step{0};
+  double sim_time_sec{0.0};
+  std::int64_t steady_ns{0};  ///< steady_clock, same epoch the RT path uses
+};
 
 struct ProjectileBallSample {
   bool active{false};
@@ -497,6 +522,11 @@ class MuJoCoSimulator {
 
     ProjectileBallConfig projectile_ball;
 
+    // Per-step clock phase lane (D-3 / S3.1a). Off by default: it costs a ring
+    // write per step and a file on disk, and nothing outside a measurement run
+    // wants either.
+    bool clock_lane_enabled{false};
+
     // 멀티 그룹 설정 (robot_response + fake_response)
     std::vector<JointGroupConfig> groups;
   };
@@ -605,6 +635,30 @@ class MuJoCoSimulator {
   void RequestProjectileBallReset() noexcept {
     projectile_ball_reset_requested_.store(true, std::memory_order_release);
     sync_cv_.notify_all();
+  }
+
+  /// Ring capacity: ~8 s of 500 Hz stepping, so a drain timer that stalls
+  /// briefly loses nothing. Public because a consumer sizing its drain — or a
+  /// test provoking overflow deliberately — needs the same number the ring was
+  /// built with rather than a copy that can drift from it.
+  static constexpr std::size_t kClockLaneCapacity = 4096;
+
+  /// Drain up to `max` clock-phase samples. Non-RT side; the sim thread only
+  /// ever pushes. Returns how many were written into `out`.
+  [[nodiscard]] std::size_t DrainClockLane(SimClockSample* out, std::size_t max) noexcept {
+    std::size_t n = 0;
+    while (n < max && clock_lane_.Pop(out[n])) {
+      ++n;
+    }
+    return n;
+  }
+
+  /// Samples the sim thread could not hand over because the ring was full.
+  /// Monotonic for the run. A non-zero value invalidates any claim about the
+  /// distribution's tail, so a consumer must report it rather than divide it
+  /// away.
+  [[nodiscard]] std::uint64_t ClockLaneDropped() const noexcept {
+    return clock_lane_dropped_.load(std::memory_order_relaxed);
   }
 
   [[nodiscard]] bool HasProjectileBall() const noexcept { return projectile_ball_body_id_ >= 0; }
@@ -983,6 +1037,12 @@ class MuJoCoSimulator {
   int object_state_ref_body_{0};
   std::string object_state_frame_id_;
 
+  SpscQueue<SimClockSample, kClockLaneCapacity> clock_lane_{};
+  // StepForTest has no SimLoop step counter to borrow; it keeps its own so a
+  // test sees the same monotonic numbering a real run produces.
+  std::uint64_t step_for_test_count_{0};
+  std::atomic<std::uint64_t> clock_lane_dropped_{0};
+
   ProjectileBallCallback projectile_ball_cb_{nullptr};
   int projectile_ball_body_id_{-1};
   int projectile_ball_joint_id_{-1};
@@ -1170,6 +1230,12 @@ class MuJoCoSimulator {
   [[nodiscard]] bool ResolveProjectileBall() noexcept;
   // Writes the substep-dependent solref/solimp/friction onto the ball geom.
   void ApplyProjectileBallContact() noexcept;
+  /// Push one clock-phase sample. Shared by SimLoop and StepForTest so the
+  /// two cannot drift: a lane fed only by the production loop is a lane no test
+  /// can hold to its contract, and one fed only by the test entry point is a
+  /// lane that measures nothing real.
+  void RecordClockSample(std::uint64_t step) noexcept;
+
   void HandleProjectileBallLaunch() noexcept;
   /// Launch from the state staged in projectile_ball_launch_command_. Separate
   /// from HandleProjectileBallLaunch so the two paths cannot be confused for

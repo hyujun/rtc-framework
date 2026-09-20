@@ -857,5 +857,82 @@ TEST(ProjectileBall, StatedLaunchDoesNotDisturbTheSampledRngStream) {
   EXPECT_NE(clean[0][0], clean[1][0]);
 }
 
+// ── Clock phase lane (D-3 / S3.1a) ──────────────────────────────────────────
+
+TEST(SimClockLane, StaysSilentUntilEnabled) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  for (int s = 0; s < 20; ++s) {
+    sim.StepForTest();
+  }
+  std::array<SimClockSample, 8> batch{};
+  EXPECT_EQ(sim.DrainClockLane(batch.data(), batch.size()), 0U)
+      << "a measurement lane nobody asked for must not cost a ring write per step";
+  EXPECT_EQ(sim.ClockLaneDropped(), 0U);
+}
+
+TEST(SimClockLane, PairsEveryStepWithBothClocks) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.clock_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  constexpr int kSteps = 32;
+  for (int s = 0; s < kSteps; ++s) {
+    sim.StepForTest();
+  }
+
+  std::array<SimClockSample, 64> batch{};
+  const std::size_t n = sim.DrainClockLane(batch.data(), batch.size());
+  ASSERT_EQ(n, static_cast<std::size_t>(kSteps)) << "one sample per completed step, no more";
+  EXPECT_EQ(sim.ClockLaneDropped(), 0U);
+
+  const double dt = sim.GetModel()->opt.timestep * static_cast<double>(1);
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(batch[i].step, i + 1) << "steps are numbered from 1 and never skipped";
+    // Sim time must advance by exactly the physics step. This is the axis the
+    // lane exists to expose, so an off-by-a-substep here would silently rescale
+    // every phase measurement taken from it.
+    EXPECT_NEAR(batch[i].sim_time_sec, static_cast<double>(i + 1) * dt, 1e-12) << "sample " << i;
+    EXPECT_GT(batch[i].steady_ns, 0);
+    if (i > 0) {
+      EXPECT_GE(batch[i].steady_ns, batch[i - 1].steady_ns) << "steady clock must not go back";
+    }
+  }
+
+  std::array<SimClockSample, 4> empty{};
+  EXPECT_EQ(sim.DrainClockLane(empty.data(), empty.size()), 0U) << "draining is consuming";
+}
+
+TEST(SimClockLane, CountsOverflowInsteadOfDroppingSilently) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.clock_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  // Never drain, so the ring fills and then overflows. This is the case that
+  // matters: a lane that drops quietly under-reports exactly the tail — the
+  // large-delta, long-pause steps — that D-3 is trying to find, and it does so
+  // while still producing a full-looking CSV.
+  const std::size_t capacity = MuJoCoSimulator::kClockLaneCapacity;
+  const int steps = static_cast<int>(capacity) + 50;
+  for (int s = 0; s < steps; ++s) {
+    sim.StepForTest();
+  }
+
+  EXPECT_GT(sim.ClockLaneDropped(), 0U) << "overflow must be visible, not inferred";
+
+  std::size_t held = 0;
+  std::array<SimClockSample, 256> batch{};
+  std::size_t n = 0;
+  while ((n = sim.DrainClockLane(batch.data(), batch.size())) > 0) {
+    held += n;
+  }
+  // Every step is accounted for: what was kept plus what was counted as lost.
+  EXPECT_EQ(held + sim.ClockLaneDropped(), static_cast<std::uint64_t>(steps));
+}
+
 }  // namespace
 }  // namespace rtc

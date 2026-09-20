@@ -794,6 +794,22 @@ void MuJoCoSimulator::HandleProjectileBallReset() noexcept {
                            {0.0, 0.0, 0.0});
 }
 
+// Taken at the one instant where the step is over and both clocks mean the same
+// thing. Wait-free on the physics thread: a ring push and, on overflow, a
+// relaxed counter bump — no allocation, no file, no logging.
+void MuJoCoSimulator::RecordClockSample(std::uint64_t step) noexcept {
+  if (!cfg_.clock_lane_enabled || !data_) {
+    return;
+  }
+  const SimClockSample sample{step, data_->time,
+                              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count()};
+  if (!clock_lane_.Push(sample)) {
+    clock_lane_dropped_.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
 void MuJoCoSimulator::HandleProjectileBallLaunch() noexcept {
   if (projectile_ball_body_id_ < 0 || !data_) {
     return;
@@ -988,6 +1004,8 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     ++step;
     step_count_.store(step, std::memory_order_relaxed);
     sim_time_sec_.store(data_->time, std::memory_order_relaxed);
+
+    RecordClockSample(step);
 
     UpdateRtf(step);
     ThrottleIfNeeded();

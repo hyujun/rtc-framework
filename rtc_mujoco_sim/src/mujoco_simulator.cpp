@@ -1938,6 +1938,7 @@ void MuJoCoSimulator::StepForTest() noexcept {
   ApplyCommand();
   PreparePhysicsStep();
   mj_step(model_, data_);
+  RecordClockSample(++step_for_test_count_);
   ReadState();
   ReadContactWrenches();
   ReadObjectStates();
