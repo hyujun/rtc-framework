@@ -396,7 +396,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 |---|---|---|
 | e2e | 발사 → PointCloud2 수신 end-to-end, 같은 seed 재발사 시 truth 궤적 동일 | — |
 | D-3 무부하 | §5 판정 (구성별 무효율 상한) | ε_clk 할당 (r_cap, TBD-HAND-04) → 없으면 NOT_EVALUATED, δ·pause 분포는 기록 |
-| frame | world ↔ base FK 대조 잔차 < 1e-6 m, 결과가 §11 에 기록됨 | — |
+| frame | world ↔ base FK 대조 잔차 < 1e-6 m, 결과가 §11 에 기록됨. **측정 완료 2026-09-20 (§11)**: `iiwa7_leap` **PASS** (항등, 4.5e-16 m) · `ur5e_p1b` **FAIL 8.3e-4 m** — 프레임은 `Rz(180°)` 로 확정됐고 잔차는 MJCF↔URDF 치수 차이라 **sim 에서 줄일 수 없다**. 임계를 낮추지 않고 그대로 둔다 (사용자 판단 대기) | 사용자 — `hand_description` 수정 여부 |
 | PROC-3 | S3.2 의 `rtc_msgs` 변경 후 전체 빌드·테스트 | — |
 | GUI·plot | §13 S3 행 | — |
 
@@ -792,6 +792,23 @@ urdf:
 - "arm base frame" 은 로봇 config 의 CLIK `base_frame` 이다: ur5e_p1b `base` (URDF `base`), iiwa7_leap `link_0`
 - ur5e_p1b 에서 URDF `base` 와 `base_link` 는 z 축 둘레 180° 차이다. `base_link` 로 두면 +x 가 반대가 되어 공이 등 뒤에서 날아온다 — 그래도 그럴듯한 결과가 나오므로 조용히 틀린다. sim 에서는 MJCF 의 로봇 body 가 world 에 180° z 회전으로 놓여 있다
 - 발사 높이 z 는 world 기준이고 거리는 base 기준이다. world ↔ base 변환은 가정하지 않고, **같은 q 에서 MuJoCo FK 와 Pinocchio FK 를 대조**해 S3.2 에서 확정한다 (S3.5a 의 선행). 확정 전까지 아래 키는 이름에 프레임을 붙여 섞이지 않게 한다
+
+**world ↔ base 대조 실측 (S3.2, 2026-09-20).** 두 엔진(MuJoCo `mj_forward` · Pinocchio `forwardKinematics`)을 **씬 파일** 위에서 같은 q 로 돌려 비교했다. 무작위 q 8 세트 (trial 0 은 q=0).
+
+| 로봇 | base frame | **world_T_base (확정)** | 축선 잔차 | 게이트 < 1e-6 m |
+|---|---|---|---|---|
+| `iiwa7_leap` | `link_0` | **항등** (p = 0, R = I) | **4.5e-16 m** | **PASS** |
+| `ur5e_p1b` | `base` (URDF) | **Rz(180°), p = 0** | **8.3e-4 m** | **FAIL** — 아래 |
+
+- **비교 대상은 body/link 프레임 원점이 아니라 관절 축선이다.** UR5e 는 MJCF body 프레임과 URDF link 프레임의 관례가 달라 (`upper_arm_link` 이 정확히 shoulder_offset 0.138 m 만큼 어긋난다) 이름이 같은 body↔link 를 원점으로 비교하면 **물리가 아니라 파일 관례를 재게 된다**. 저장소의 기존 `compare_mjcf_urdf` 게이트가 축선을 쓰는 이유와 같다
+- ⚠️ **단일 링크의 "implied transform 이 상수" 는 증거가 못 된다.** `shoulder_link` 의 implied transform 은 8 세트에서 1e-17 로 상수지만, 두 모델의 그 프레임 차이가 **pan 축(z) 둘레 회전 + z 방향 이동**이면 q 와 무관하게 상수로 나온다 — 그리고 실제 차이가 정확히 그 형태였다. 그래서 `world_T_base = I` 와 `Rz(180°)` 가 이 링크로는 구별되지 않는다. 가설 검정(축선)으로 갈랐다: `yaw 0°` → 1.66 m, `yaw 180°` → 8.3e-4 m
+- ⚠️ **`ur5e_p1b` 의 FAIL 은 프레임 미확정이 아니라 두 모델이 다르기 때문이다.** 축 방향은 8.5e-7 ° 로 완벽하고 (회전은 일치), 잔차는 **순수 치수 차이**다. shoulder_pan·shoulder_lift·elbow 는 **정확히 0** (1e-16) 이고 wrist 부터 벌어진다:
+  - shoulder 높이 — URDF `0.1625` vs MJCF `0.163` → **0.5 mm**
+  - wrist_1 — URDF `0.3922` vs MJCF `0.392` → **0.2 mm**
+  - wrist_2 누적 → 0.71 mm (최악 8.3e-4 m)
+  - 뿌리는 `ur5e_p1b` 의 MJCF 가 `hand_description` 패키지에 있는 **#392 수정 밖의 Menagerie 사본**이라는 것이다 (관성이 어긋난다는 것은 알려져 있었고, **운동학도 어긋난다는 것이 여기서 처음 측정됐다**). 사용자 결정 (2026-08-29) 으로 `hand_description` 은 고치지 않으므로 **이 0.8 mm 는 sim 의 바닥값**이고 sim 안에서 줄일 수 없다
+  - ⇒ **`ur5e_p1b` 의 sim 포구점은 계통적으로 0.8 mm 편향된다.** 공 반지름 25 mm 대비 작지만 sim 으로는 측정해 없앨 수 없는 항이므로, S3.5a 지도와 S8 오차 예산에서 **모델 항**으로 따로 세운다
+- **재현 방법**: 두 엔진을 직접 링크한 프로그램으로 관절 축선(`mjData::xanchor`/`xaxis` vs `Data::oMi`)을 비교한다. pinocchio 4.x 는 `-DNDEBUG` 와 `BOOST_MPL_LIMIT_{LIST,VECTOR}_SIZE=30` 없이는 컴파일되지 않는다 (repo 안에서는 `pinocchio::pinocchio` 타깃이 넣어 준다)
 
 **YAML (제안).**
 
