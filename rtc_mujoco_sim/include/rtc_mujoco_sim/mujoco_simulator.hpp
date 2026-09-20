@@ -174,6 +174,35 @@ struct SimClockSample {
   std::int64_t steady_ns{0};  ///< steady_clock, same epoch the RT path uses
 };
 
+// ── Ball contact truth ──────────────────────────────────────────────────────
+// One row per contact EPISODE — a contiguous run of substeps in which the ball
+// touches anything. The catching work needs "when did it hit, how hard, and
+// what did it hit"; a per-substep dump answers that too, but buries it.
+//
+// The existing contact lane cannot be reused. It is sensor-based
+// (mjSENS_CONTACT) and scoped to the robot groups, so it never sees the ball:
+// DiscoverContactWrenches matches targets inside a group, and the ball belongs
+// to none.
+//
+// IMPULSE IS INTEGRATED INSIDE THE SUBSTEP LOOP. mjData::contact is rebuilt by
+// every mj_step, so a read placed after the loop sees only the last substep and
+// silently under-reports the impulse by a factor of n_substeps — and a bounce
+// often IS a few substeps long.
+struct BallContactEvent {
+  std::uint64_t step{0};  ///< sim step the episode ended on
+  double begin_sim_time_sec{0.0};
+  double end_sim_time_sec{0.0};
+  int substeps{0};  ///< substeps the ball was in contact
+  /// Impulse delivered TO THE BALL, world frame [N.s]. Integral of the contact
+  /// force over the episode.
+  std::array<double, 3> impulse_world{0.0, 0.0, 0.0};
+  double peak_force_n{0.0};  ///< largest |sum of simultaneous contact forces|
+  std::array<double, 3> position_at_begin{0.0, 0.0, 0.0};
+  std::array<double, 3> velocity_at_begin{0.0, 0.0, 0.0};
+  int first_body_id{-1};   ///< body the ball touched first (name resolved off-thread)
+  int distinct_bodies{0};  ///< how many different bodies the episode involved
+};
+
 struct ProjectileBallSample {
   bool active{false};
   std::array<double, 3> position{0.0, 0.0, 0.0};
@@ -527,6 +556,9 @@ class MuJoCoSimulator {
     // wants either.
     bool clock_lane_enabled{false};
 
+    // Ball contact truth lane (S3.3). Same deal — measurement runs only.
+    bool ball_contact_lane_enabled{false};
+
     // 멀티 그룹 설정 (robot_response + fake_response)
     std::vector<JointGroupConfig> groups;
   };
@@ -642,6 +674,23 @@ class MuJoCoSimulator {
   /// test provoking overflow deliberately — needs the same number the ring was
   /// built with rather than a copy that can drift from it.
   static constexpr std::size_t kClockLaneCapacity = 4096;
+
+  static constexpr std::size_t kBallContactLaneCapacity = 256;
+
+  /// Drain up to `max` completed contact episodes. Non-RT side.
+  [[nodiscard]] std::size_t DrainBallContactLane(BallContactEvent* out, std::size_t max) noexcept {
+    std::size_t n = 0;
+    while (n < max && ball_contact_lane_.Pop(out[n])) {
+      ++n;
+    }
+    return n;
+  }
+
+  /// Episodes the sim thread could not hand over. Same contract as
+  /// ClockLaneDropped: counted, never silent.
+  [[nodiscard]] std::uint64_t BallContactDropped() const noexcept {
+    return ball_contact_dropped_.load(std::memory_order_relaxed);
+  }
 
   /// Drain up to `max` clock-phase samples. Non-RT side; the sim thread only
   /// ever pushes. Returns how many were written into `out`.
@@ -939,6 +988,11 @@ class MuJoCoSimulator {
   /// Safe to call from any thread — reads the immutable compiled model only.
   [[nodiscard]] int FindBodyId(const char* body_name) const noexcept;
 
+  /// Body id -> MJCF name, or nullptr. The inverse of FindBodyId, for lanes
+  /// that record ids on the physics thread and resolve names off it. Reads the
+  /// immutable compiled model, so it is safe from any thread.
+  [[nodiscard]] const char* BodyName(int body_id) const noexcept;
+
   /// Latch a world-frame wrench acting at `point_body` (in `body_id`'s LOCAL
   /// frame, metres) until it is cleared, overwritten, or the sim is reset.
   /// Returns false — and stages nothing — if `body_id` names no movable body.
@@ -1038,6 +1092,13 @@ class MuJoCoSimulator {
   std::string object_state_frame_id_;
 
   SpscQueue<SimClockSample, kClockLaneCapacity> clock_lane_{};
+  SpscQueue<BallContactEvent, kBallContactLaneCapacity> ball_contact_lane_{};
+  std::atomic<std::uint64_t> ball_contact_dropped_{0};
+  // Episode under construction. Only the sim thread touches these.
+  BallContactEvent ball_contact_accum_{};
+  bool ball_contact_in_episode_{false};
+  static constexpr std::size_t kBallContactBodyTrack = 8;
+  std::array<int, kBallContactBodyTrack> ball_contact_bodies_{};
   // StepForTest has no SimLoop step counter to borrow; it keeps its own so a
   // test sees the same monotonic numbering a real run produces.
   std::uint64_t step_for_test_count_{0};
@@ -1235,6 +1296,12 @@ class MuJoCoSimulator {
   /// can hold to its contract, and one fed only by the test entry point is a
   /// lane that measures nothing real.
   void RecordClockSample(std::uint64_t step) noexcept;
+
+  /// Integrate one substep of ball contact. MUST be called inside the substep
+  /// loop: mjData::contact is rebuilt by each mj_step.
+  void AccumulateBallContacts(std::uint64_t step, double substep_sec) noexcept;
+  /// Close the episode under construction and hand it to the lane.
+  void FlushBallContactEpisode(std::uint64_t step) noexcept;
 
   void HandleProjectileBallLaunch() noexcept;
   /// Launch from the state staged in projectile_ball_launch_command_. Separate

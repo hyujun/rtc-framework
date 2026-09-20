@@ -1938,6 +1938,9 @@ void MuJoCoSimulator::StepForTest() noexcept {
   ApplyCommand();
   PreparePhysicsStep();
   mj_step(model_, data_);
+  // Same order the SimLoop uses: contacts integrated while mjData::contact is
+  // still the one mj_step just produced.
+  AccumulateBallContacts(step_for_test_count_ + 1, model_->opt.timestep);
   RecordClockSample(++step_for_test_count_);
   ReadState();
   ReadContactWrenches();
@@ -2073,6 +2076,13 @@ bool MuJoCoSimulator::RequestProjectileBallLaunchAt(const ProjectileBallLaunchCo
   projectile_ball_explicit_launch_requested_.store(true, std::memory_order_release);
   sync_cv_.notify_all();
   return true;
+}
+
+const char* MuJoCoSimulator::BodyName(int body_id) const noexcept {
+  if (!model_ || body_id < 0 || body_id >= model_->nbody) {
+    return nullptr;
+  }
+  return mj_id2name(model_, mjOBJ_BODY, body_id);
 }
 
 bool MuJoCoSimulator::SetExternalWrenchAtPoint(int body_id, const std::array<double, 3>& point_body,

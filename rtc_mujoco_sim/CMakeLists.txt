@@ -179,7 +179,12 @@ if(mujoco_FOUND)
         MINIMAL_MJCF_PATH="${MJCF_FIXTURE}"
         POOL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/pool_scene.xml"
         BALL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/ball_scene.xml"
-        BALL_SCENE_HIGH_PRIORITY_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/ball_scene_high_priority.xml")
+        BALL_SCENE_HIGH_PRIORITY_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/ball_scene_high_priority.xml"
+        # The ball is attached to the spec BEFORE the pool objects, so a pool
+        # object's geoms outrank it by id and a ball-vs-object contact puts the
+        # ball on the FIRST side of the pair. Nothing else in these fixtures
+        # does, so without a pool object the sign-flip branch is unreachable.
+        BALL_POOL_OBJECTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/objects")
     endif()
 
     # Object pool sampling/selection: pure helpers, no MJCF fixture needed.

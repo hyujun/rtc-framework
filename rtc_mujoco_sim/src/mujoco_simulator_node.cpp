@@ -181,6 +181,9 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     if (clock_lane_enabled_) {
       OpenClockLaneCsv();
     }
+    if (ball_contact_lane_enabled_) {
+      OpenBallContactCsv();
+    }
     sim_->Start();
     CreateTimers();
 
@@ -195,6 +198,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       status_timer_->cancel();
     if (clock_lane_timer_)
       clock_lane_timer_->cancel();
+    if (ball_contact_timer_)
+      ball_contact_timer_->cancel();
     for (auto& h : group_handles_) {
       if (h.fake_timer)
         h.fake_timer->cancel();
@@ -208,6 +213,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // part that goes missing.
     DrainClockLaneToCsv();
     CloseClockLaneCsv();
+    DrainBallContactToCsv();
+    CloseBallContactCsv();
 
     LifecycleNode::on_deactivate(state);
     RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] Deactivated");
@@ -258,6 +265,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       status_timer_->cancel();
     if (clock_lane_timer_)
       clock_lane_timer_->cancel();
+    if (ball_contact_timer_)
+      ball_contact_timer_->cancel();
     for (auto& h : group_handles_) {
       if (h.fake_timer)
         h.fake_timer->cancel();
@@ -345,6 +354,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("clock_lane.enabled", false);
     declare_parameter("clock_lane.csv_path", std::string(""));
     declare_parameter("clock_lane.drain_rate_hz", 20.0);
+    declare_parameter("ball_contact_lane.enabled", false);
+    declare_parameter("ball_contact_lane.csv_path", std::string(""));
 
     // ── Solver parameters (solver_param.yaml)
     // ─────────────────────────────────
@@ -455,6 +466,15 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       RCLCPP_ERROR(get_logger(),
                    "[MuJoCoSimulatorNode] clock_lane.drain_rate_hz must be finite and > 0");
       clock_lane_enabled_ = false;
+    }
+
+    ball_contact_lane_enabled_ = get_parameter("ball_contact_lane.enabled").as_bool();
+    ball_contact_csv_path_ = get_parameter("ball_contact_lane.csv_path").as_string();
+    if (ball_contact_lane_enabled_ && ball_contact_csv_path_.empty()) {
+      RCLCPP_ERROR(get_logger(),
+                   "[MuJoCoSimulatorNode] ball_contact_lane.enabled is true but "
+                   "ball_contact_lane.csv_path is empty — lane disabled");
+      ball_contact_lane_enabled_ = false;
     }
     projectile_ball_frame_id_ = get_parameter("projectile_ball.publish.frame_id").as_string();
     projectile_ball_ground_truth_topic_ =
@@ -781,6 +801,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         .object_state = object_state_config_,
         .projectile_ball = projectile_ball_config_,
         .clock_lane_enabled = clock_lane_enabled_,
+        .ball_contact_lane_enabled = ball_contact_lane_enabled_,
         .groups = group_configs_,
     };
     sim_ = std::make_unique<urtc::MuJoCoSimulator>(std::move(cfg));
@@ -1083,6 +1104,12 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(period),
                             [this]() { DrainClockLaneToCsv(); });
     }
+
+    if (ball_contact_lane_enabled_) {
+      // Contact episodes are rare next to steps, so a slow drain is enough —
+      // the ring holds 256 of them.
+      ball_contact_timer_ = create_wall_timer(200ms, [this]() { DrainBallContactToCsv(); });
+    }
   }
 
   // ── Clock phase lane (D-3 / S3.1a) ─────────────────────────────────────────
@@ -1140,6 +1167,72 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                         << ',' << batch[i].steady_ns << ',' << dropped << '\n';
       }
       clock_lane_written_ += n;
+      if (n < batch.size()) {
+        break;
+      }
+    }
+  }
+
+  // ── Ball contact truth lane (S3.3) ────────────────────────────────────────
+  void OpenBallContactCsv() {
+    ball_contact_csv_.open(ball_contact_csv_path_, std::ios::out | std::ios::trunc);
+    if (!ball_contact_csv_) {
+      RCLCPP_ERROR(get_logger(), "[MuJoCoSimulatorNode] cannot open ball contact csv '%s'",
+                   ball_contact_csv_path_.c_str());
+      ball_contact_lane_enabled_ = false;
+      return;
+    }
+    // The body NAME is resolved here, not in the accumulator: building a string
+    // is not something the physics thread should be doing.
+    ball_contact_csv_ << "step,begin_sim_time_sec,end_sim_time_sec,substeps,"
+                         "impulse_x,impulse_y,impulse_z,peak_force_n,"
+                         "pos_x,pos_y,pos_z,vel_x,vel_y,vel_z,"
+                         "first_body,distinct_bodies,dropped_total\n";
+    ball_contact_written_ = 0;
+    RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] ball contact lane -> %s",
+                ball_contact_csv_path_.c_str());
+  }
+
+  void CloseBallContactCsv() {
+    if (!ball_contact_csv_.is_open()) {
+      return;
+    }
+    ball_contact_csv_.flush();
+    ball_contact_csv_.close();
+    const auto dropped = sim_ ? sim_->BallContactDropped() : 0;
+    if (dropped > 0) {
+      RCLCPP_WARN(get_logger(),
+                  "[MuJoCoSimulatorNode] ball contact lane wrote %llu episodes and DROPPED %llu",
+                  static_cast<unsigned long long>(ball_contact_written_),
+                  static_cast<unsigned long long>(dropped));
+    } else {
+      RCLCPP_INFO(get_logger(),
+                  "[MuJoCoSimulatorNode] ball contact lane wrote %llu episodes, 0 dropped",
+                  static_cast<unsigned long long>(ball_contact_written_));
+    }
+  }
+
+  void DrainBallContactToCsv() {
+    if (!sim_ || !ball_contact_csv_.is_open()) {
+      return;
+    }
+    std::array<urtc::BallContactEvent, 64> batch{};
+    std::size_t n = 0;
+    while ((n = sim_->DrainBallContactLane(batch.data(), batch.size())) > 0) {
+      const auto dropped = sim_->BallContactDropped();
+      for (std::size_t i = 0; i < n; ++i) {
+        const auto& e = batch[i];
+        const char* body = sim_->BodyName(e.first_body_id);
+        ball_contact_csv_ << e.step << ',' << std::setprecision(17) << e.begin_sim_time_sec << ','
+                          << e.end_sim_time_sec << ',' << e.substeps << ',' << e.impulse_world[0]
+                          << ',' << e.impulse_world[1] << ',' << e.impulse_world[2] << ','
+                          << e.peak_force_n << ',' << e.position_at_begin[0] << ','
+                          << e.position_at_begin[1] << ',' << e.position_at_begin[2] << ','
+                          << e.velocity_at_begin[0] << ',' << e.velocity_at_begin[1] << ','
+                          << e.velocity_at_begin[2] << ',' << (body ? body : "?") << ','
+                          << e.distinct_bodies << ',' << dropped << '\n';
+      }
+      ball_contact_written_ += n;
       if (n < batch.size()) {
         break;
       }
@@ -1510,6 +1603,11 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
   rclcpp::TimerBase::SharedPtr status_timer_;
   rclcpp::TimerBase::SharedPtr clock_lane_timer_;
+  rclcpp::TimerBase::SharedPtr ball_contact_timer_;
+  std::ofstream ball_contact_csv_;
+  std::string ball_contact_csv_path_;
+  std::uint64_t ball_contact_written_{0};
+  bool ball_contact_lane_enabled_{false};
   std::ofstream clock_lane_csv_;
   std::string clock_lane_csv_path_;
   double clock_lane_drain_rate_hz_{20.0};

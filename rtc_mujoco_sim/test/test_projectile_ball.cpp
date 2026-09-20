@@ -1,3 +1,4 @@
+#include "rtc_mujoco_sim/object_pool.hpp"
 #include "rtc_mujoco_sim/projectile_ball.hpp"
 #include "test_fixture.hpp"
 
@@ -7,8 +8,11 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef POOL_SCENE_MJCF_PATH
@@ -20,6 +24,11 @@
 #ifndef BALL_SCENE_HIGH_PRIORITY_MJCF_PATH
 #error "BALL_SCENE_HIGH_PRIORITY_MJCF_PATH must be defined by CMake"
 #endif
+#ifndef BALL_POOL_OBJECTS_DIR
+#error "BALL_POOL_OBJECTS_DIR must be defined by CMake"
+#endif
+
+using namespace std::chrono_literals;
 
 namespace rtc {
 namespace {
@@ -932,6 +941,258 @@ TEST(SimClockLane, CountsOverflowInsteadOfDroppingSilently) {
   }
   // Every step is accounted for: what was kept plus what was counted as lost.
   EXPECT_EQ(held + sim.ClockLaneDropped(), static_cast<std::uint64_t>(steps));
+}
+
+// ── Ball contact truth (S3.3) ───────────────────────────────────────────────
+
+namespace {
+// Clear of the two-link arm in pool_scene.xml, so what the ball lands on is the
+// floor and nothing else. Dropping at the origin lands it on the robot, which
+// is a fine contact but not a controlled one.
+constexpr double kClearDropX = 1.5;
+constexpr double kClearDropY = 1.5;
+
+struct DropTrace {
+  std::vector<BallContactEvent> events;
+  std::vector<double> sim_time;  ///< per step, after the step
+  std::vector<double> vz;        ///< ball world vz at the same instant
+};
+
+DropTrace DropOnFloor(MuJoCoSimulator& sim, const BallIds& ball, double z, int steps) {
+  std::string error;
+  EXPECT_TRUE(sim.RequestProjectileBallLaunchAt({{kClearDropX, kClearDropY, z}, {}, {}}, error))
+      << error;
+  DropTrace trace;
+  std::array<BallContactEvent, 16> batch{};
+  const auto* data = sim.GetData();
+  for (int s = 0; s < steps; ++s) {
+    sim.StepForTest();
+    trace.sim_time.push_back(data->time);
+    trace.vz.push_back(ball.dof >= 0 ? data->qvel[ball.dof + 2] : 0.0);
+    const std::size_t n = sim.DrainBallContactLane(batch.data(), batch.size());
+    for (std::size_t i = 0; i < n; ++i) {
+      trace.events.push_back(batch[i]);
+    }
+  }
+  return trace;
+}
+}  // namespace
+
+TEST(BallContactLane, StaysSilentUntilEnabled) {
+  auto config = MakeFloorSceneConfigWithBall();
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  EXPECT_TRUE(DropOnFloor(sim, ball, 0.20, 400).events.empty())
+      << "a lane nobody asked for must not scan contacts every substep";
+  EXPECT_EQ(sim.BallContactDropped(), 0U);
+}
+
+TEST(BallContactLane, ImpulseOnTheBallPointsAwayFromWhatItHit) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.ball_contact_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.dof, 0);
+
+  const auto trace = DropOnFloor(sim, ball, 0.20, 400);
+  ASSERT_FALSE(trace.events.empty()) << "a ball dropped on the floor must register a contact";
+
+  const auto& first = trace.events.front();
+  ASSERT_EQ(first.first_body_id, 0) << "expected the world body (floor plane), not the robot";
+
+  // The sign is the whole point. mj_contactForce reports the force on geom[1]
+  // of the pair, and the ball is on either side depending on geom id order, so
+  // an unflipped read would give an impulse pointing INTO the floor for half
+  // the scenes in this repo while still looking like a plausible number.
+  EXPECT_GT(first.impulse_world[2], 0.0) << "the floor pushes the ball UP";
+  // A vertical drop onto a horizontal plane: the lateral impulse is friction
+  // only, so it must be small next to the normal one rather than exactly zero.
+  const double lateral = std::hypot(first.impulse_world[0], first.impulse_world[1]);
+  EXPECT_LT(lateral, 0.1 * first.impulse_world[2]);
+
+  EXPECT_GT(first.peak_force_n, 0.0);
+  EXPECT_GE(first.substeps, 1);
+  EXPECT_GE(first.end_sim_time_sec, first.begin_sim_time_sec);
+  EXPECT_LT(first.velocity_at_begin[2], 0.0) << "it was still falling when it touched";
+  EXPECT_GE(first.distinct_bodies, 1);
+  EXPECT_EQ(sim.BallContactDropped(), 0U);
+}
+
+TEST(BallContactLane, SignIsRightWhenTheBallIsTheFirstGeomOfThePair) {
+  // mj_contactForce reports the force on geom[1], so the accumulator flips the
+  // sign when the ball is geom[0]. Against the floor and the robot the ball is
+  // always geom[1] — it is attached to the spec last, so its geom id is the
+  // highest — and the flip is dead code that no assertion can reach. A pool
+  // object IS attached after the ball, which is the one way in this package to
+  // put the ball on the first side of a pair.
+  auto config = MakeFloorSceneConfigWithBall();
+  config.ball_contact_lane_enabled = true;
+  config.object_pool.enabled = true;
+  config.object_pool.directory = BALL_POOL_OBJECTS_DIR;
+  config.object_pool.position = {0.0, 0.0, 0.10};
+  config.object_pool.park_position = {0.0, 0.0, -50.0};
+  config.object_pool.selection = ObjectSelection::kFixed;
+  config.object_pool.pose = PoseSampling::kFixed;
+  config.object_pool.spawn_on_start = true;
+  config.object_pool.seed = 20260920;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.geom, 0);
+
+  // Let the spawned object settle before anything is dropped on it.
+  for (int s = 0; s < 300; ++s) {
+    sim.StepForTest();
+  }
+  std::array<BallContactEvent, 16> flush{};
+  while (sim.DrainBallContactLane(flush.data(), flush.size()) > 0) {
+  }
+
+  std::string error;
+  ASSERT_TRUE(sim.RequestProjectileBallLaunchAt({{0.0, 0.0, 0.40}, {0.0, 0.0, -1.5}, {}}, error))
+      << error;
+
+  std::vector<BallContactEvent> events;
+  std::array<BallContactEvent, 16> batch{};
+  for (int s = 0; s < 300 && events.empty(); ++s) {
+    sim.StepForTest();
+    const std::size_t n = sim.DrainBallContactLane(batch.data(), batch.size());
+    for (std::size_t i = 0; i < n; ++i) {
+      events.push_back(batch[i]);
+    }
+  }
+  ASSERT_FALSE(events.empty());
+
+  const auto& e = events.front();
+  // The pool object sits above the floor, so what the ball met first is not the
+  // world body — which is what makes this the pair with the ball first.
+  ASSERT_NE(e.first_body_id, 0) << "expected the spawned object, not the floor";
+  EXPECT_GT(e.impulse_world[2], 0.0)
+      << "an object under the ball pushes it UP; an unflipped sign reads as a pull DOWN";
+}
+
+TEST(BallContactLane, IntegratesEverySubstepNotJustTheLastOne) {
+  // StepForTest runs ONE mj_step, so every unit test above exercises
+  // n_substeps == 1 — and with one substep, accumulating inside the substep
+  // loop and accumulating after it are the same code. The hazard this lane was
+  // written around (mjData::contact is rebuilt by each mj_step, so a read
+  // placed after the loop sees only the last one) is therefore invisible to
+  // them. This drives the real SimLoop with n_substeps > 1 instead.
+  auto config = MakeFloorSceneConfigWithBall();
+  config.ball_contact_lane_enabled = true;
+  config.n_substeps = 4;
+  config.sync_timeout_ms = 10.0;
+  config.max_rtf = 0.0;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  std::mutex trace_mutex;
+  std::vector<std::pair<double, double>> vz_trace;  // (sim_time, vz)
+  sim.SetProjectileBallCallback([&](const ProjectileBallSample& s) {
+    if (!s.active) {
+      return;
+    }
+    std::lock_guard lock(trace_mutex);
+    vz_trace.emplace_back(s.sim_time_sec, s.linear_velocity[2]);
+  });
+
+  sim.Start();
+  std::string error;
+  EXPECT_TRUE(sim.RequestProjectileBallLaunchAt({{kClearDropX, kClearDropY, 0.30}, {}, {}}, error))
+      << error;
+  std::vector<BallContactEvent> events;
+  std::array<BallContactEvent, 16> batch{};
+  for (int i = 0; i < 600 && events.empty(); ++i) {
+    sim.SetCommand(0, {0.0, 0.0});
+    std::this_thread::sleep_for(1ms);
+    const std::size_t n = sim.DrainBallContactLane(batch.data(), batch.size());
+    for (std::size_t k = 0; k < n; ++k) {
+      events.push_back(batch[k]);
+    }
+  }
+  sim.Stop();
+  ASSERT_FALSE(events.empty()) << "the ball never touched the floor within the run";
+
+  std::vector<std::pair<double, double>> trace;
+  {
+    std::lock_guard lock(trace_mutex);
+    trace = vz_trace;
+  }
+  ASSERT_GE(trace.size(), 4U);
+
+  const auto& e = events.front();
+  ASSERT_GT(e.substeps, 1) << "this test only means something if the bounce spans substeps";
+
+  std::size_t before = trace.size(), after = trace.size();
+  for (std::size_t i = 0; i < trace.size(); ++i) {
+    if (trace[i].first <= e.begin_sim_time_sec) {
+      before = i;
+    }
+    if (after == trace.size() && trace[i].first >= e.end_sim_time_sec &&
+        trace[i].first > e.begin_sim_time_sec) {
+      after = i;
+    }
+  }
+  ASSERT_LT(before, trace.size());
+  ASSERT_LT(after, trace.size());
+
+  const int ball_body = mj_name2id(sim.GetModel(), mjOBJ_BODY, "projectile_ball");
+  ASSERT_GE(ball_body, 0);
+  const double mass = sim.GetModel()->body_mass[ball_body];
+  const double gz = sim.GetModel()->opt.gravity[2];
+  const double window = trace[after].first - trace[before].first;
+  const double expected = mass * ((trace[after].second - trace[before].second) - gz * window);
+
+  // Reading only the last substep would under-count the impulse by roughly the
+  // number of substeps the bounce spanned, which this tolerance cannot absorb.
+  EXPECT_NEAR(e.impulse_world[2], expected, 0.15 * std::abs(expected))
+      << "reported " << e.impulse_world[2] << " vs momentum-derived " << expected << " over "
+      << e.substeps << " substeps";
+}
+
+TEST(BallContactLane, ImpulseMatchesTheMomentumChangeItCauses) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.ball_contact_lane_enabled = true;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const BallIds ball = FindBall(sim.GetModel());
+  ASSERT_GE(ball.dof, 0);
+
+  const auto trace = DropOnFloor(sim, ball, 0.20, 400);
+  ASSERT_FALSE(trace.events.empty());
+  const auto& e = trace.events.front();
+
+  // Independent oracle: the ball's own momentum. It never reads mjData::contact,
+  // so a bug in the accumulation cannot also produce the number it is checked
+  // against. Window it by the episode's own timestamps — the last sample before
+  // the episode began and the first one after it ended — so gravity is
+  // integrated over exactly the same interval as the contact.
+  std::size_t before = trace.sim_time.size(), after = trace.sim_time.size();
+  for (std::size_t i = 0; i < trace.sim_time.size(); ++i) {
+    if (trace.sim_time[i] <= e.begin_sim_time_sec) {
+      before = i;
+    }
+    if (after == trace.sim_time.size() && trace.sim_time[i] >= e.end_sim_time_sec &&
+        trace.sim_time[i] > e.begin_sim_time_sec) {
+      after = i;
+    }
+  }
+  ASSERT_LT(before, trace.sim_time.size());
+  ASSERT_LT(after, trace.sim_time.size());
+  ASSERT_GT(after, before);
+
+  const double mass = sim.GetModel()->body_mass[ball.body];
+  const double gz = sim.GetModel()->opt.gravity[2];
+  const double window = trace.sim_time[after] - trace.sim_time[before];
+
+  // m * dv = J_contact + m * g * dt   =>   J_contact = m * (dv - g * dt)
+  const double expected = mass * ((trace.vz[after] - trace.vz[before]) - gz * window);
+  EXPECT_NEAR(e.impulse_world[2], expected, 0.10 * std::abs(expected))
+      << "reported " << e.impulse_world[2] << " vs momentum-derived " << expected << " over ["
+      << trace.sim_time[before] << ", " << trace.sim_time[after] << "]";
+  EXPECT_GT(std::abs(expected), 1e-4) << "the bounce must be big enough for this to mean anything";
 }
 
 }  // namespace
