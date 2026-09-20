@@ -1439,6 +1439,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_task_frame test/test_demo_gui_task_frame.py)
   ament_add_pytest_test(test_demo_gui_ball_launch test/test_demo_gui_ball_launch.py)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
+  ament_add_pytest_test(test_demo_gui_hand_step test/test_demo_gui_hand_step.py)
 endif()
 
 ament_package()
