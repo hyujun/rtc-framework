@@ -21,7 +21,7 @@
 // SCHED_FIFO, so it obeys the RT path rules (RT-1 no heap, RT-2 no throw, RT-3
 // no logging) after Resize() — but it is not a tick and has no notion of dt.
 //
-// ── Six places where the obvious reading is the wrong one ───────────────────
+// ── Seven places where the obvious reading is the wrong one ─────────────────
 //
 // 1. ρ WEIGHTS THE TASK, it does not scale the residual alone.
 //    L3 §4.2 prints the update as Δq = Jᵀ(JJᵀ+λ²I)⁻¹·[−(p_C−p_c); ρ·S·e_a^C],
@@ -101,6 +101,21 @@
 //    its own reason code. Reading `ok` as "the pose is fine" would pass every
 //    singular pose straight into the gate.
 //
+// 7. THE MODEL HANDLE MUST NOT CARRY A DEVICE JOINT ORDER.
+//    `RtModelHandle` reorders only its INPUTS: after `SetJointOrder`, the q
+//    handed to `ComputeJacobians` is read in device order and gathered
+//    internally, while `GetFrameJacobian`'s COLUMNS stay in Pinocchio v-space
+//    order (rt_model_handle.hpp) — as do `pin.lowerPositionLimit(i)` and hence
+//    q̇, the box rows and the clamp. This function mixes both sides of that
+//    boundary, so a reordered handle would make every candidate silently wrong:
+//    the pose stays finite, the residual still converges, and it converges to
+//    the wrong arm. `HasJointReorder()` is therefore a REJECTION
+//    (kJointOrderMismatch), not something quietly worked around — production
+//    does configure arm sub-model handles this way (momentum_observer_wiring),
+//    so a caller can reach it, and a loud refusal is the only reading that
+//    cannot be mistaken for an answer. A caller holding such a handle builds a
+//    second, unreordered one over the same model.
+//
 // ── Maximising w₅ in the null space ─────────────────────────────────────────
 // [확정 D-18] said roll should be left to the seed and that choosing it by
 // manipulability was out of v1 scope. That is reversed (user decision
@@ -134,11 +149,16 @@
 // k_manip = 0 recovers the original [확정 D-18] behaviour exactly, which is
 // what the k_null-only baseline in the test suite measures against.
 //
-// q_n is the seed. L3 §4.2 names K_n(q_n − q) without ever defining q_n; with
-// the seed being the wait pose (the one posture the arm is known to rest in),
-// "stay near where you started" is the only posture reference this function has
-// that does not invent a new YAML key. k_null defaults to 0, so the term is
-// inert unless a caller asks for it.
+// q_n is the seed AS CLAMPED INTO THE MODEL'S LIMITS, not the raw argument.
+// L3 §4.2 names K_n(q_n − q) without ever defining q_n; with the seed being the
+// wait pose (the one posture the arm is known to rest in), "stay near where you
+// started" is the only posture reference this function has that does not invent
+// a new YAML key. The clamp matters because the first iterate is the clamped
+// seed: keeping the raw one as q_n would make an out-of-limit seed a posture
+// target the arm can never reach, so the term would never decay and would spend
+// every iteration pushing into a bound that the clamp then undoes. Clamped, q_n
+// is a configuration the arm can actually hold and the term vanishes there.
+// k_null defaults to 0, so it is inert unless a caller asks for it.
 #pragma once
 
 #include "rtc_base/types/types.hpp"
@@ -174,19 +194,20 @@ enum class ManipDefinition : std::uint8_t {
 /// gate order off the enum. Every one of these is a REJECTION: nothing here is
 /// clamped into a plausible value and allowed through (NUM-7).
 enum class CatchPoseReason : std::uint8_t {
-  kNone = 0,           ///< accepted: position, axis and manipulability all met
-  kOptionsInvalid,     ///< an option is non-finite or out of range
-  kModelInvalid,       ///< nq ≠ nv, nv > kMaxRobotDOF, or the frame is unknown
-  kSeedNonFinite,      ///< seed has a NaN/Inf, or its size ≠ nv
-  kTargetNonFinite,    ///< p_c has a NaN/Inf
-  kVelocityNonFinite,  ///< v̂ has a NaN/Inf
-  kSpeedTooLow,        ///< ‖v̂‖ < v_eps — the approach axis is undefined
-  kAxisAlignInvalid,   ///< AxisAlignError rejected its inputs (non-unit a^C)
-  kJacobianNonFinite,  ///< FK/Jacobian produced a non-finite J (DifferentialIk ok=false)
-  kQpFailed,           ///< the task-step QP did not converge (status/iterations reported)
-  kNotConverged,       ///< max_iter reached without meeting eps_pos ∧ alpha_max
-  kRankDeficient,      ///< J J ᵀ would not factor: a non-finite or non-positive pivot
-  kBelowManipMin,      ///< w(definition) < manipulability_min
+  kNone = 0,            ///< accepted: position, axis and manipulability all met
+  kOptionsInvalid,      ///< an option is non-finite or out of range
+  kModelInvalid,        ///< nq ≠ nv, nv > kMaxRobotDOF, or the frame is unknown
+  kJointOrderMismatch,  ///< the handle carries a device joint order — see note 7
+  kSeedNonFinite,       ///< seed has a NaN/Inf, or its size ≠ nv
+  kTargetNonFinite,     ///< p_c has a NaN/Inf
+  kVelocityNonFinite,   ///< v̂ has a NaN/Inf
+  kSpeedTooLow,         ///< ‖v̂‖ < v_eps — the approach axis is undefined
+  kAxisAlignInvalid,    ///< AxisAlignError rejected its inputs (non-unit a^C)
+  kJacobianNonFinite,   ///< FK/Jacobian produced a non-finite J (DifferentialIk ok=false)
+  kQpFailed,            ///< a task-step QP failed before any pose met the tolerances
+  kNotConverged,        ///< max_iter reached without meeting eps_pos ∧ alpha_max
+  kRankDeficient,       ///< J J ᵀ would not factor: a non-finite or non-positive pivot
+  kBelowManipMin,       ///< w(definition) < manipulability_min
 };
 
 /// Tuning for one Solve(). Defaults mirror L3 §6 where a key exists there; the
@@ -245,14 +266,27 @@ struct CatchPoseIkResult {
   /// rejection: a pose that meets the task is acceptable whether or not its
   /// conditioning had stopped climbing. It is the signal that max_iter is too
   /// small, which is exactly what G3-G is meant to measure.
+  ///
+  /// It is false for BOTH reasons the ascent can fail to settle — still
+  /// climbing, and the gradient probe never produced a usable direction. Those
+  /// are told apart by `manip_grad_failures`, not by this flag: an unusable
+  /// probe leaves `manip_grad_norm` at 0, and reading that zero as "converged"
+  /// would make the G3-G signal report the exact opposite of what happened.
   bool manip_converged{false};
   double manip_grad_norm{0.0};  ///< ‖N ∇log w₅‖ at the final iterate
+  int manip_grad_failures{0};   ///< iterations whose ∇log w₅ probe was unusable
 
-  double sigma_min{0.0};  ///< σ_min(W J₅) at q* — §6.5 diagnostic for the projector N
-  double lambda_sq{0.0};  ///< λ² applied when forming N at the final step
+  double sigma_min{0.0};  ///< σ_min(W J₅) at q*, or at the final iterate if none met
+  double lambda_sq{0.0};  ///< λ² applied when forming N at the same configuration
   int qp_status{-1};      ///< last task-QP solver status (0 = solved)
   int qp_iterations{0};   ///< last task-QP iteration count
-  int qp_failures{0};     ///< 1 when the run ended on a failed QP (it fails closed)
+
+  /// 1 when a task-step QP did not converge. What that costs depends on when it
+  /// happened: before any iterate met the tolerances there is no pose to return
+  /// and the run fails closed with kQpFailed; afterwards the already-accepted
+  /// q* is returned and this flag is the only record that the run ended early
+  /// rather than at its own stopping condition.
+  int qp_failures{0};
 };
 
 namespace detail {
@@ -297,8 +331,9 @@ class CatchPoseIk {
   ///                    The approach axis is a_d = −v_ball/‖v_ball‖; this takes
   ///                    the raw velocity so the ‖v̂‖ ≥ v_eps defence happens here
   ///                    rather than in each caller (NUM-7).
-  /// @param q_seed      seed, nv entries — the wait pose [확정 D-18]. Also the
-  ///                    posture reference q_n for the k_null term.
+  /// @param q_seed      seed, nv entries — the wait pose [확정 D-18]. Clamped
+  ///                    into the model's limits on entry; that clamped vector is
+  ///                    both the first iterate and the posture reference q_n.
   /// @param opt         tuning; rejected as kOptionsInvalid if unusable.
   /// @return outcome; `accepted` iff `reason == kNone`.
   [[nodiscard]] CatchPoseIkResult Solve(rtc_urdf_bridge::RtModelHandle& model,
@@ -340,7 +375,9 @@ class CatchPoseIk {
   /// Central-difference ∇log w₅ at `q`, written to grad_. 2·nv Jacobian
   /// evaluations, allocation-free. Returns false if any probe was invalid, in
   /// which case the caller drops the ascent term for this iteration rather than
-  /// clamping it (NUM-7) — a dropped term is recorded in manip_grad_norm as 0.
+  /// clamping it (NUM-7) and counts it in manip_grad_failures. The dropped term
+  /// leaves manip_grad_norm at 0, which is why that zero must NOT be read as a
+  /// converged ascent.
   ///
   /// Leaves the model's Data holding the LAST PROBE's configuration, not q; the
   /// caller re-evaluates at q afterwards.
@@ -369,8 +406,9 @@ class CatchPoseIk {
   Eigen::VectorXd q_try_;      ///< nv: FD probe / trial configuration
   Eigen::VectorXd q_acc_;      ///< nv: last iterate that met both tolerances
   Eigen::VectorXd grad_;       ///< nv: ∇log w₅
+  Eigen::VectorXd q_ref_;      ///< nv: q_n — the CLAMPED seed, the k_null posture target
   Eigen::VectorXd qdot_sec_;   ///< nv: secondary task k_manip·∇log w₅ + k_null·(q_n − q)
-  Eigen::VectorXd qdot_clik_;  ///< nv: q̇_clik = (W J₅)⁺_λ (W e)
+  Eigen::VectorXd qdot_clik_;  ///< nv: q̇_clik — the box-constrained task QP's solution
   Eigen::VectorXd qdot_n_;     ///< nv: q̇_n = N·q̇_sec — a velocity in the null space
   Eigen::VectorXd qdot_d_;     ///< nv: q̇_d = q̇_clik + q̇_n
 

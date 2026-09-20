@@ -85,6 +85,7 @@ void CatchPoseIk::Resize(int nv) {
   q_ = Eigen::VectorXd::Zero(nv);
   q_try_ = Eigen::VectorXd::Zero(nv);
   q_acc_ = Eigen::VectorXd::Zero(nv);
+  q_ref_ = Eigen::VectorXd::Zero(nv);
   grad_ = Eigen::VectorXd::Zero(nv);
   qdot_sec_ = Eigen::VectorXd::Zero(nv);
   qdot_clik_ = Eigen::VectorXd::Zero(nv);
@@ -189,6 +190,18 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
     r.reason = CatchPoseReason::kModelInvalid;
     return r;
   }
+  // A handle configured with SetJointOrder reads the q it is HANDED in device
+  // order while still emitting Pinocchio-ordered Jacobian columns, and this
+  // function lives on both sides of that line: it feeds q_ to ComputeJacobians
+  // and then indexes the result, the limits and q̇ by Pinocchio index. Under a
+  // non-identity permutation the whole solve is consistent-looking and wrong —
+  // finite, convergent, and about a different arm — so it is refused outright
+  // (note 7). An identity order never sets the map, so the ordinary caller that
+  // passes joint names in model order is not affected.
+  if (model.HasJointReorder()) {
+    r.reason = CatchPoseReason::kJointOrderMismatch;
+    return r;
+  }
   r.nv = nv_;
 
   if (q_seed.size() != nv_ || !q_seed.allFinite()) {
@@ -217,6 +230,12 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
   // otherwise make the first iterate the only one that ever violated them.
   q_ = q_seed;
   ClampToLimits(pin, q_);
+  // q_n for the k_null term is the CLAMPED seed, not the argument. An
+  // out-of-limit seed would otherwise be a posture target no iterate can ever
+  // reach, so k_null·(q_n − q) would never decay: every iteration would push
+  // into the bound and the clamp would undo it, leaving a permanent bias that
+  // looks like a converged solution sitting on its limit.
+  q_ref_ = q_;
 
   // Note 5: one cold start per CANDIDATE. Iterations inside this call may warm
   // start from each other — that is deterministic and wanted — but nothing from
@@ -230,7 +249,15 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
   bool accepted_any = false;
   bool manip_converged = (opt.k_manip == 0.0);  // nothing to converge without the term
   double grad_norm = 0.0;
+  int grad_failures = 0;
+  int qp_failures = 0;
   int iterations = 0;
+  // σ_min / λ² belong to a CONFIGURATION, and the last iterate is not q* when
+  // the run ended on a step that failed the tolerances. Both are tracked: the
+  // accepted pair is what an accepted result reports, the last pair is what a
+  // rejection reports, since a rejected run has no q* to describe.
+  double sigma_acc = 0.0;
+  double lambda_acc = 0.0;
 
   for (int iter = 0; iter < opt.max_iter; ++iter) {
     iterations = iter + 1;
@@ -283,6 +310,11 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
     }
     r.sigma_min = dls.sigma_min;
     r.lambda_sq = dls.lambda_sq;
+    if (meets_task) {
+      // Same iterate as q_acc_ above: dls_ was just factored at this q_.
+      sigma_acc = dls.sigma_min;
+      lambda_acc = dls.lambda_sq;
+    }
 
     qdot_sec_.setZero();
     grad_norm = 0.0;
@@ -295,16 +327,24 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
         qdot_n_.noalias() = dls_.NullspaceProjector() * grad_;
         grad_norm = qdot_n_.norm();
         qdot_sec_.noalias() += opt.k_manip * grad_;
+        manip_converged = (grad_norm < opt.manip_grad_tol);
       } else {
         // A non-finite probe drops the ascent for this iteration instead of
-        // substituting a direction (NUM-7). The task step still runs, and the
-        // zero grad_norm is reported rather than hidden.
+        // substituting a direction (NUM-7). The task step still runs.
+        //
+        // It must NOT fall through to the tolerance test. grad_norm is 0 here
+        // because nothing was measured, not because the ascent arrived, and
+        // ‖0‖ < tol would declare convergence on an iteration where the ascent
+        // never ran — near a singularity, where the probes are most likely to
+        // fail, that is precisely the pose whose conditioning was never
+        // improved. The run is recorded as not converged and counted.
         grad_.setZero();
+        ++grad_failures;
+        manip_converged = false;
       }
-      manip_converged = (grad_norm < opt.manip_grad_tol);
     }
     if (opt.k_null != 0.0)
-      qdot_sec_.noalias() += opt.k_null * (q_seed - q_);
+      qdot_sec_.noalias() += opt.k_null * (q_ref_ - q_);
 
     if (meets_task && manip_converged)
       break;
@@ -324,9 +364,21 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
       // Fail closed. A non-converged QP means the task step is unknown, and
       // substituting the unconstrained pseudo-inverse would quietly hand back a
       // pose computed by a different law than the one the map recorded.
+      //
+      // What "closed" means depends on whether there is anything to close over.
+      // With no accepted iterate yet there is no pose, so the candidate is
+      // rejected. With one already in hand, q_acc_ met both tolerances under
+      // this same law and discarding it would turn a valid catch pose into a
+      // rejection — the failure only means the run cannot continue improving,
+      // which is what stopping here records. That distinction only became
+      // reachable with the D-25 ascent: at k_manip = 0 the loop breaks on
+      // meets_task before a second QP ever runs.
+      qp_failures = 1;
+      if (accepted_any)
+        break;
       r.qp_status = qp_status_;
       r.qp_iterations = qp_iterations_;
-      r.qp_failures = 1;
+      r.qp_failures = qp_failures;
       r.iterations = iterations;
       r.reason = CatchPoseReason::kQpFailed;
       return r;
@@ -358,13 +410,21 @@ CatchPoseIkResult CatchPoseIk::Solve(rtc_urdf_bridge::RtModelHandle& model,
   r.iterations = iterations;
   r.qp_status = qp_status_;
   r.qp_iterations = qp_iterations_;
+  r.qp_failures = qp_failures;
   r.manip_grad_norm = grad_norm;
   r.manip_converged = manip_converged;
+  r.manip_grad_failures = grad_failures;
 
   if (!accepted_any) {
     r.reason = CatchPoseReason::kNotConverged;
     return r;
   }
+
+  // From here the result describes q*, so the projector diagnostics switch from
+  // the last iterate's to the accepted iterate's — the same move the w
+  // re-evaluation below makes, and for the same reason.
+  r.sigma_min = sigma_acc;
+  r.lambda_sq = lambda_acc;
 
   for (int i = 0; i < nv_; ++i)
     r.q[static_cast<std::size_t>(i)] = q_acc_(i);

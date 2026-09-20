@@ -896,3 +896,228 @@ TEST(CatchPoseIk, RejectionPathsAlsoAllocateNothing) {
   EXPECT_EQ(new_count, 0U);
   EXPECT_EQ(eigen_violations, 0U);
 }
+
+// ── 6. Diagnostics that must not lie about what happened (PR #552 review) ────
+// Every test below fixes a case where the result POD stayed finite, plausible
+// and WRONG about its own run. None of them is a crash or a NaN, which is why
+// the sections above could all pass while these failed: a diagnostic that
+// reports the opposite of what happened is indistinguishable from a correct one
+// until something asks it the question directly.
+
+namespace {
+
+/// σ_min(W J₅) at `q`, read off the fixture's reference Jacobian.
+///
+/// Shares DifferentialIk with the implementation, deliberately: what is under
+/// test here is WHICH configuration the reported number belongs to, not how
+/// σ_min is computed (the suite's other oracles cover that).
+[[nodiscard]] double SigmaMinOfWeightedTask(Arm& a, const Eigen::VectorXd& q,
+                                            const CatchPoseIkOptions& o) {
+  const Eigen::MatrixXd j = StackJacobianRef(a, q);
+  Eigen::MatrixXd j5w(5, a.nv);
+  j5w.topRows(3) = j.topRows(3);
+  j5w.row(3) = o.rho * j.row(3);
+  j5w.row(4) = o.rho * j.row(4);
+  rtc::compliance::DifferentialIk dls;
+  dls.Resize(a.nv, 5);
+  return dls.Compute(j5w, o.sigma0, o.lambda_max).sigma_min;
+}
+
+}  // namespace
+
+TEST(CatchPoseIk, ADeviceOrderedHandleIsRejectedRatherThanSilentlySolved) {
+  Arm a = Arm6R();
+  CatchPoseIk ik;
+  ik.Resize(a.nv);
+  std::mt19937 rng(552U);
+  const Eigen::VectorXd seed = SampleQ(a, rng, 0.4);
+  const Target t = TargetAt(a, seed);
+  const CatchPoseIkOptions o = BaseOptions();
+
+  // Positive control: in model order this exact problem is accepted, so the
+  // rejection below is caused by the reorder and by nothing else.
+  ASSERT_EQ(ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, seed, o).reason, CatchPoseReason::kNone);
+
+  std::vector<std::string> names = a.handle->GetPinocchioJointNames();
+  ASSERT_EQ(static_cast<int>(names.size()), a.nv);
+  std::reverse(names.begin(), names.end());
+  ASSERT_TRUE(a.handle->SetJointOrder(names));
+  ASSERT_TRUE(a.handle->HasJointReorder())
+      << "the fixture must actually install a permutation, not an identity";
+
+  // The failure being prevented is not a crash. With the permutation active the
+  // solve stays finite and still converges — to a pose of a different arm,
+  // because ComputeJacobians reads q in device order while the columns it
+  // produces, the limits and q̇ are all in Pinocchio order. Only a refusal tells
+  // that apart from an answer.
+  const CatchPoseIkResult r = ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, seed, o);
+  EXPECT_EQ(r.reason, CatchPoseReason::kJointOrderMismatch);
+  EXPECT_FALSE(r.accepted);
+}
+
+TEST(CatchPoseIk, AnUnusableGradientProbeIsNotReportedAsAConvergedAscent) {
+  // serial_6dof's J₅ is rank deficient at EVERY configuration, so every
+  // central-difference probe of log w₅ comes back invalid: the one fixture on
+  // which the ascent can never measure anything at all.
+  Arm a = MakeArm("serial_6dof.urdf", "tool_link");
+  CatchPoseIk ik;
+  ik.Resize(a.nv);
+
+  const Eigen::VectorXd seed = Eigen::VectorXd::Constant(a.nv, 0.2);
+  const Target t = TargetAt(a, seed);
+  CatchPoseIkOptions o = BaseOptions();
+  o.eps_pos = 1e9;  // acceptance vacuous, so the run reaches the ascent at all
+  o.alpha_max = std::numbers::pi;
+  o.max_iter = 4;
+  o.k_manip = 1e-3;
+  o.manip_grad_tol = 1e-4;  // a tolerance that ‖0‖ would satisfy
+
+  const CatchPoseIkResult r = ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, seed, o);
+  // A failed probe leaves grad_norm at 0 because nothing was measured. Reading
+  // that as ‖N∇log w₅‖ < tol would break the loop on the first iteration and
+  // report manip_converged on a pose whose conditioning was never touched —
+  // the exact opposite of what G3-G is supposed to measure.
+  EXPECT_FALSE(r.manip_converged);
+  EXPECT_EQ(r.manip_grad_failures, o.max_iter);
+  EXPECT_EQ(r.iterations, o.max_iter);
+  EXPECT_EQ(r.manip_grad_norm, 0.0);
+}
+
+TEST(CatchPoseIk, AQpFailureAfterAcceptanceKeepsTheAcceptedPose) {
+  Arm a = Arm6R();
+  CatchPoseIk ik;
+  ik.Resize(a.nv);
+  std::mt19937 rng(553U);
+  const Eigen::VectorXd seed = SampleQ(a, rng, 0.4);
+  const Target t = TargetAt(a, seed);
+
+  // A QP that cannot converge: one iteration against a 1e-14 tolerance. The
+  // target is offset by 1 mm so the residual — and therefore g — is nonzero,
+  // since at g = 0 the origin is optimal and even one iteration succeeds.
+  CatchPoseIkOptions o = BaseOptions();
+  o.eps_pos = 5e-3;  // …but well inside the tolerance, so iteration 1 accepts
+  o.alpha_max = 1e-2;
+  o.k_manip = 1e-6;        // the ascent is what keeps the loop running…
+  o.manip_grad_tol = 0.0;  // …past the iterate that already met the task
+  o.max_iter = 8;
+  o.qp_max_iter = 1;
+  o.qp_eps_abs = 1e-14;
+  const Eigen::Vector3d p_near = t.p_c + Eigen::Vector3d(1e-3, 0.0, 0.0);
+
+  const CatchPoseIkResult r = ik.Solve(*a.handle, a.frame, p_near, t.v_ball, seed, o);
+  ASSERT_EQ(r.qp_failures, 1) << "the fixture must actually provoke a QP failure";
+  // The pose was already accepted under the same law, and a later QP failure
+  // only means the run cannot keep improving it. Discarding it would turn a
+  // valid catch pose into a rejection carrying an all-zero q.
+  EXPECT_EQ(r.reason, CatchPoseReason::kNone);
+  EXPECT_TRUE(r.accepted);
+  EXPECT_GT(ResultQ(r).lpNorm<Eigen::Infinity>(), 0.0);
+  EXPECT_LT(r.pos_error, o.eps_pos);
+  EXPECT_LE(r.theta, o.alpha_max);
+
+  // The other half of fail-closed is unchanged: with nothing accepted yet there
+  // is no pose to keep, and the same failing QP is a rejection.
+  CatchPoseIkOptions strict = o;
+  strict.eps_pos = 1e-9;
+  const CatchPoseIkResult rejected =
+      ik.Solve(*a.handle, a.frame, Eigen::Vector3d(50.0, 50.0, 50.0), t.v_ball, seed, strict);
+  EXPECT_EQ(rejected.reason, CatchPoseReason::kQpFailed);
+  EXPECT_FALSE(rejected.accepted);
+  EXPECT_EQ(rejected.qp_failures, 1);
+}
+
+TEST(CatchPoseIk, TheProjectorDiagnosticsDescribeQStarNotTheLastIterate) {
+  Arm a = Arm6R();
+  CatchPoseIk ik;
+  ik.Resize(a.nv);
+  std::mt19937 rng(554U);
+  const Eigen::VectorXd seed = SampleQ(a, rng, 0.4);
+  const Target t = TargetAt(a, seed);
+
+  // Iteration 1 sits exactly on the target and is accepted; a deliberately
+  // large ascent gain then throws iterate 2 far outside eps_pos. The run
+  // therefore ENDS on an iterate that is not q*, which is the only situation in
+  // which "at q*" and "at the last iterate" are different claims.
+  CatchPoseIkOptions tight = BaseOptions();
+  tight.max_iter = 2;
+  tight.k_manip = 5.0;
+  tight.manip_grad_tol = 0.0;  // never stop early — both runs take both steps
+
+  // The same trajectory read differently: acceptance made vacuous, so q* IS the
+  // last iterate. The update law does not depend on acceptance, so the two runs
+  // visit the same two configurations.
+  CatchPoseIkOptions vacuous = tight;
+  vacuous.eps_pos = 1e9;
+  vacuous.alpha_max = std::numbers::pi;
+
+  const CatchPoseIkResult acc = ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, seed, tight);
+  const CatchPoseIkResult last = ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, seed, vacuous);
+  ASSERT_TRUE(acc.accepted);
+  ASSERT_TRUE(last.accepted);
+  ASSERT_LT((ResultQ(acc) - seed).lpNorm<Eigen::Infinity>(), 1e-12);
+  ASSERT_GT((ResultQ(acc) - ResultQ(last)).lpNorm<Eigen::Infinity>(), 1e-3)
+      << "the fixture must make q* and the last iterate different poses";
+  ASSERT_GT(std::abs(acc.sigma_min - last.sigma_min), 1e-6)
+      << "…and must make their σ_min tell those poses apart";
+
+  EXPECT_NEAR(acc.sigma_min, SigmaMinOfWeightedTask(a, ResultQ(acc), tight), 1e-9);
+  EXPECT_NEAR(last.sigma_min, SigmaMinOfWeightedTask(a, ResultQ(last), vacuous), 1e-9);
+}
+
+TEST(CatchPoseIk, AnOutOfLimitSeedIsNotAPermanentPosturePull) {
+  Arm a = Arm6R();
+  CatchPoseIk ik;
+  ik.Resize(a.nv);
+  std::mt19937 rng(555U);
+
+  Eigen::VectorXd raw = SampleQ(a, rng, 0.4);
+  raw(1) = a.model->upperPositionLimit(1) + 0.3;  // one joint past its bound
+  Eigen::VectorXd clamped = raw;
+  clamped(1) = a.model->upperPositionLimit(1);
+
+  // A target a short way off the clamped seed: far enough that the run takes
+  // real iterations with the posture term active, close enough that a k_null
+  // that fights the task cannot turn the test into a kNotConverged.
+  Eigen::VectorXd goal = clamped;
+  goal(3) += 0.05;
+  goal(5) -= 0.05;
+  const Target t = TargetAt(a, goal);
+  CatchPoseIkOptions o = BaseOptions();
+  // k_null and eps_pos are chosen together, and the `control` run below is what
+  // proves the pair is usable. N makes q̇_n invisible to the task only to FIRST
+  // order, so a posture step of ~k_null·‖q_n − q‖ leaves a second-order
+  // residual the next task step has to undo; push k_null up and the loop
+  // settles into a standing error instead of converging. That is a property of
+  // the law, not of this fixture. 2e-3 is the eps_pos the header ships.
+  o.k_null = 0.1;
+  o.eps_pos = 2e-3;
+
+  // The raw seed is used for exactly two things — the first iterate and the
+  // posture reference q_n — and both are the CLAMPED vector, so the two calls
+  // are the same input and must give the same answer bit for bit. With q_n left
+  // raw they are not: k_null·(q_n − q) can never reach a target outside the
+  // limits, so it never decays, and N spreads that permanent pull onto every
+  // joint while the clamp keeps undoing it on the one that is out of bounds.
+  const CatchPoseIkResult from_raw = ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, raw, o);
+  const CatchPoseIkResult from_clamped = ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, clamped, o);
+
+  CatchPoseIkOptions no_posture = o;
+  no_posture.k_null = 0.0;
+  const CatchPoseIkResult control =
+      ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, clamped, no_posture);
+  ASSERT_EQ(control.reason, CatchPoseReason::kNone)
+      << "control reason " << static_cast<int>(control.reason) << ", iters " << control.iterations;
+  ASSERT_EQ(from_clamped.reason, CatchPoseReason::kNone)
+      << "reason " << static_cast<int>(from_clamped.reason) << ", iters " << from_clamped.iterations
+      << ", pos_error " << from_clamped.pos_error << ", theta " << from_clamped.theta;
+  ASSERT_GT(from_clamped.iterations, 1)
+      << "the fixture must run long enough for a posture term to act";
+  ASSERT_GT((ResultQ(from_clamped) - clamped).lpNorm<Eigen::Infinity>(), 1e-3)
+      << "…and must actually move away from the seed";
+
+  EXPECT_EQ(from_raw.reason, from_clamped.reason);
+  EXPECT_EQ(from_raw.iterations, from_clamped.iterations);
+  for (int i = 0; i < a.nv; ++i)
+    EXPECT_EQ(from_raw.q[static_cast<std::size_t>(i)], from_clamped.q[static_cast<std::size_t>(i)])
+        << "joint " << i;
+}
