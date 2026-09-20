@@ -252,6 +252,30 @@ ros2 run rtc_tools analyze_clock_phase clock_lane.csv --plot out.png
 - lane 의 누적 drop 을 그대로 보고한다. drop 이 있으면 꼬리(큰 δ·긴 pause)가 정확히 빠진 채 분포가 멀쩡해 보인다
 - 테스트 `test/test_clock_phase.py`: 합성 lane 에 4 ms 스톨을 주입해 δ_max·max pause 로 복원, 대기 시간 무시, 세그먼트 열 부재 거부
 
+### `hand_close.py` · `hand_close_trials.py` — 손 폐쇄 시간 T_close,e2e (dynamic_catching S4.2)
+
+`L6_hand.md` §4.2 의 ρ(t) = min_{i∈C}((q_i−q_i^pre)·s_i / |q_i^cls−q_i^pre|) 와
+T_close,e2e(η) = inf{t−t_cmd : ρ≥η} 를 **포구 컨트롤러의 `<hand>_state.csv`** 에서 낸다. 러너는
+`demo_catching_controller` 의 손 그룹에 preshape↔closed 계단을 N 회 쏘고, 분석기는 command lane 으로
+시행을 자른다 (`command_*` 가 바뀐 첫 행이 t_cmd).
+
+```bash
+ros2 run rtc_tools run_hand_close_trials --group p1b --joint-names "$(...)" --trials 200 --out run.json
+ros2 run rtc_tools analyze_hand_close <session>/controllers/demo_catching_controller/p1b_state.csv \
+    --profile run.json --plot out.png
+```
+
+- **프로파일은 컨트롤러의 읽기 전용 파라미터에서 읽는다** (출하 YAML 이 아니라). 러너가 그것을 JSON 으로
+  떨궈 분석기에 넘기므로, 그 run 의 컨트롤러가 실제로 읽은 값으로 분석된다
+- **시간축 2개를 모두 보고한다**: `steady` (`t_relative_s`, L6 정의 — lock-step sim 에서는 호스트 스톨 포함)
+  와 `tick × dt` (sim 시간, 결정적). 둘의 차이가 곧 스톨이다. CSV 행이 하나라도 드롭되면 tick 축이 어긋나므로
+  샘플 간격을 검사해 신뢰할 수 없으면 그렇게 말한다
+- ρ 는 **최소**다. 한 손가락만 늦어도 손 전체가 못 감싼 것이고 평균은 그것을 지운다. caging 집합은 프로파일이
+  정한다 — p1b 출하 자세는 닫힐 때 index DIP 가 오히려 펴지므로 그 관절을 넣으면 진행으로 오독한다
+- p99 는 **순서통계량**이다. 성공 시행이 100 미만이면 p99 는 곧 최댓값이고 도구가 그렇게 말한다
+- 테스트 `test/test_hand_close.py`: 1차 응답의 해석해 t = −τ·ln(1−η) 복원, ρ 의 min 거동, mask 제외, 역방향
+  관절 부호, 드롭 행 탐지, 순서통계량
+
 ### `vision_lane.py` · `vision_lane_probe.py` · `camera_relay.py` — 예측 lane 실측 (dynamic_catching S3.4)
 
 `ball_perception` `sim_estimator_node` 의 `prediction/trajectory` (PointCloud2, D-4 레이아웃) 를
