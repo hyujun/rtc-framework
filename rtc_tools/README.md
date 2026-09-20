@@ -24,7 +24,12 @@ rtc_tools/
 │   ├── validation/
 │   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증
 │   ├── analysis/
-│   │   └── derive_accel_limits.py       ← 토크 한계 → 관절 가속 상수 box 도출 (dynamic_catching D-16)
+│   │   ├── derive_accel_limits.py       ← 토크 한계 → 관절 가속 상수 box 도출 (dynamic_catching D-16)
+│   │   ├── clock_phase.py               ← sim↔steady 시계 위상 오차 δ·pause 분석 (D-3 / S3.1a)
+│   │   ├── clock_phase_trials.py        ← 지정 발사 N회 러너 (D-3 시행 생성)
+│   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
+│   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4)
+│   │   └── camera_relay.py              ← 카메라 lane 릴레이 + 드롭·지연 주입 (S3.4)
 │   ├── conversion/
 │   │   ├── urdf_to_mjcf.py             ← URDF/XACRO → MJCF 변환 (관절 분류 + 후처리)
 │   │   └── ctf_to_chrome_trace.py      ← LTTng CTF trace → Chrome Trace JSON (Perfetto UI)
@@ -229,6 +234,42 @@ ros2 run rtc_tools derive_accel_limits \
 - 테스트 `test/test_derive_accel_limits.py`: 진자 닫힌해, 2-link 최악 부호 패턴에서의 등호 (RNEA), 정제, 퇴화, 가중치, provenance, config 병합, MuJoCo 진자 (venv 에서만)
 
 ---
+
+### `clock_phase.py` · `clock_phase_trials.py` — D-3 시계 위상 오차 (dynamic_catching S3.1a)
+
+D-3 는 비율(RTF)이 아니라 **시행별 clock 위상 오차**로 판정한다 (계획 §5). `rtc_mujoco_sim` 의
+`clock_lane` CSV 에서 발사 시각을 원점으로 `δ(t) = (steady − steady₀) − (sim − sim₀)` 를 쌓아 시행별
+`δ_max = max|δ|` 와 max pause (한 step 의 Δwall − Δsim 최대) 를 낸다. 창은 **비행 구간**이다 — lane 의
+`launch_seq`·`ball_active` 로 자르므로 투척 사이 대기 시간이 오차로 잡히지 않는다. 판정은
+**NOT_EVALUATED** 로 두고 (ε_clk,alloc 이 r_cap 에 달림) 95 % 를 통과시키는 ε 를 **제안값**으로만 낸다.
+
+```bash
+ros2 run rtc_tools run_clock_phase_trials --trials 200         # /sim/launch_ball_at 지정 발사 + 회수 반복
+ros2 run rtc_tools analyze_clock_phase clock_lane.csv --plot out.png
+```
+
+- 지정 발사라 시드 RNG 를 소비하지 않고 모든 시행이 같은 방출 상태다 — 시행 간 차이는 투척 분산이 아니라 기계의 차이
+- lane 의 누적 drop 을 그대로 보고한다. drop 이 있으면 꼬리(큰 δ·긴 pause)가 정확히 빠진 채 분포가 멀쩡해 보인다
+- 테스트 `test/test_clock_phase.py`: 합성 lane 에 4 ms 스톨을 주입해 δ_max·max pause 로 복원, 대기 시간 무시, 세그먼트 열 부재 거부
+
+### `vision_lane.py` · `vision_lane_probe.py` · `camera_relay.py` — 예측 lane 실측 (dynamic_catching S3.4)
+
+`ball_perception` `sim_estimator_node` 의 `prediction/trajectory` (PointCloud2, D-4 레이아웃) 를
+**필드 이름으로** 디코딩하고 (이름·offset·datatype·count·`point_step`·endianness 가 하나라도 다르면
+**거부**), 프로브가 기록한 CSV 에서 S3.4 의 질문 — 발행 주기·N·지평 (TBD-VIS-04), `frame_id` (VIS-06),
+측정 손실 뒤 `validity` (VIS-07), best_effort vs reliable 구독 손실 (VIS-08) — 에 답한다. **측정만** 한다;
+정책은 S5.2 몫이다.
+
+```bash
+ros2 run rtc_tools vision_lane_probe <prefix>            # <prefix>_{prediction,camera,truth,diag}.csv
+ros2 run rtc_tools camera_relay --drop-after-s 0.4       # 또는 --drop-prob p / --delay-s d
+ros2 run rtc_tools analyze_vision_lane <prefix>
+```
+
+- 프로브는 예측 토픽을 best_effort·reliable **둘 다** KEEP_LAST(1) 로 구독해 각각 받은 것을 identity 로 비교한다 — 개수가 같아도 다른 메시지일 수 있다
+- 릴레이는 stamp 를 건드리지 않는다 (지연은 전송 지연으로 보이게). estimator 프로파일의 `input.topic` 을 릴레이 출력으로 돌린다
+- ⚠️ `sim_estimator_node` 는 `debug.enabled_topics` 에 `prediction/trajectory` **만** 있으면 샘플을 기록하지 않아 토픽만 있고 **발행이 0건**이다 (`needs_samples()` 가 그 토픽을 빼놓는다). 다른 debug 토픽을 하나 이상 같이 켠다
+- 테스트 `test/test_vision_lane.py`: near-miss 레이아웃 거부 (필드 이동·타입·count·누락·초과·point_step·endian), uint64 재조립, 빈 INVALID 스냅샷, 요약 (주기·되감김·identity 비교·유령 트랙)
 
 ### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환
 

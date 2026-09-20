@@ -13,6 +13,12 @@
   <exec_depend>rtc_msgs</exec_depend>
   <!-- /sim/reset_ball in the D-3 trial runner (analysis/clock_phase_trials.py). -->
   <exec_depend>std_srvs</exec_depend>
+  <!-- S3.4 prediction-lane probe / camera relay (analysis/vision_lane_probe.py,
+       camera_relay.py): PointStamped camera lane, Odometry truth, the
+       estimator's DiagnosticArray. -->
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
   <!-- numpy / pandas / matplotlib / scipy / PyQt5 / mujoco: venv 책임 (requirements.lock).
        jazzy rosdep DB 미정의 + cross-workspace isolation 정책 (2026-05-23). -->
   <exec_depend>ament_index_python</exec_depend>
