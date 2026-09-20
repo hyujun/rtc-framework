@@ -77,18 +77,49 @@ $e_a^C\perp\hat e_z$ 이므로 $z$ 성분이 0이고, $S=\begin{bmatrix}1&0&0\\0
 
 **갱신식은 Gauss-Newton이 아니다** — 이 점을 v0.1은 잘못 적었다. 아래 $J$ 는 잔차 $r$ 의 야코비안 $\partial r/\partial q$ 가 **아니고**, 관절속도와 과제속도를 잇는 관계일 뿐이다.
 
-$$J(q)=\begin{bmatrix}J_p\\S\,J^L_\omega\end{bmatrix},\qquad \Delta q=J^\top(JJ^\top+\lambda^2I)^{-1}\begin{bmatrix}-(p_C-p_c)\\ \rho\,S\,e_a^C\end{bmatrix}+\big(I-J^\dagger J\big)K_n(q_n-q)$$
+$$J(q)=\begin{bmatrix}J_p\\S\,J^L_\omega\end{bmatrix},\qquad W=\mathrm{diag}(1,1,1,\rho,\rho),\qquad e=\begin{bmatrix}p_c-p_C\\ S\,e_a^C\end{bmatrix}$$
+
+$$\dot q_{clik}=\arg\min_{\dot q}\ \tfrac12\Vert W(J\dot q-e)\Vert^2+\tfrac12\mu\Vert\dot q\Vert^2\quad\text{s.t.}\quad \max(q_{min}-q,\,-\Delta_{max})\le\dot q\le\min(q_{max}-q,\,\Delta_{max})$$
+
+$$\dot q_n=\big(I-J^\dagger J\big)\dot q_{sec},\qquad \boxed{\ \dot q_d=\dot q_{clik}+\dot q_n\ }$$
+
+**갱신량은 관절 속도의 합이지 하나의 $\Delta q$ 가 아니다 `[2026-09-20 사용자 지시]`.** CLIK 이 내는 것은 $\dot q_{clik}$ 이고, 2차 과제가 보태는 것은 **영공간 관절 속도** $\dot q_n$ 이다. 둘을 하나의 스텝으로 합쳐 적으면 $N$ 이 강제하는 우선순위가 표기에서 사라진다. 반복 1회는 $\dot q_d$ 를 $\Delta t=1$ 로 적분한다 — 오프라인 root-finding 반복이지 servo tick 이 아니라서 샘플 주기가 없고, `planner.ik.dq_step_max` 는 반복당 $\Vert\dot q_d\Vert_\infty$ 상한이다.
 
 - 위치 행: $J_p\dot q=v_p$ 에 대한 Newton 스텝. 잔차의 부호를 뒤집어 넣는다.
 - 회전 행: $SJ^L_\omega\dot q=S\omega^L$ 이므로, $\omega^L=e_a^C$ 를 단위 시간 적용하면 $\exp([e_a]_\times)z=a_d$ 에 의해 **한 번에 정확히 정렬된다**(L4 §4.5). 즉 이 행은 1차 근사가 아니라 정확한 회전 갱신이고, 부호도 그래서 양수다.
 
 두 블록은 단위가 다르다(m vs rad). $\rho$ [m/rad]는 그 스케일을 맞추는 특성길이로, 단일 $\lambda$ 아래 두 과제의 상대 가중을 결정한다. `planner.ik.rho`로 둔다. v0.1은 이 항이 없어 상대 스케일이 임의였다.
 
+**$\rho$ 는 과제 가중이지 잔차 이득이 아니다 (S1.9 정정).** v0.5 까지 이 식은 $\rho$ 를 잔차에만 곱해 $\Delta q=J^\top(JJ^\top+\lambda^2I)^{-1}[-(p_C-p_c);\ \rho Se_a^C]$ 로 적었다. 그 형태는 차원이 맞지 않는다 — $J\Delta q$ 의 회전 행은 rad 인데 잔차의 회전 행은 m 이 되고, $\rho$ 는 단위 변환이 아니라 값 0.1 짜리 **스텝 이득**으로 작동해 회전 오차가 반복마다 $(1-\rho)$ 로만 줄어든다. 그러면 바로 위의 "한 번에 정확히 정렬된다" 도 성립하지 않는다. $J$ 와 $e$ 양쪽에 $W$ 를 곱해야 $\rho$ 가 [m/rad] 특성길이로 쓰이고, $\lambda^2=0$ 인 곳에서 $W$ 가 상쇄되어 1-스텝 정렬이 복원되며, 특이점 근처에서는 단일 $\lambda$ 가 m 블록과 rad 블록에 감쇠를 어떻게 나눌지를 $\rho$ 가 결정한다 — 이 절이 $\rho$ 에 부여한 역할 그대로다. 구현은 가중형이다 (`catch_pose_ik.hpp`).
+
+**영공간 2차 과제 $\dot q_{sec}$ (S1.9).**
+
+$$\dot q_{sec}=k_w\,\nabla\log w_5(q)+K_n\,(q_n-q),\qquad \dot q_n=(I-J^\dagger J)\,\dot q_{sec}$$
+
+- $q_n$ 은 **seed 를 관절 한계로 clamp 한 것** (= wait_pose) 이다. v0.5 까지 $q_n$ 의 정의가 이 문서 어디에도 없었다. clamp 가 정의의 일부인 이유는 첫 반복부터 $q$ 가 clamp 된 값이기 때문이다 — 한계 밖 seed 를 그대로 $q_n$ 으로 두면 어떤 반복도 도달할 수 없는 자세를 목표로 잡아 $K_n(q_n-q)$ 가 **영원히 감쇠하지 않고**, 매 반복 한계 쪽으로 밀면 clamp 가 되돌리는 정상 편향이 남는다 (수렴한 해가 한계에 앉아 있는 것처럼 보인다). `planner.ik.k_null` 기본값은 0 이라 이 항은 요청하지 않으면 비활성이다.
+- $K_n$ 은 `planner.ik.eps_pos` 와 **함께** 골라야 한다. $N$ 이 $\dot q_n$ 을 과제에서 안 보이게 하는 것은 **1차까지**라, 크기 $K_n\Vert q_n-q\Vert$ 의 자세 스텝은 다음 과제 스텝이 되갚아야 할 2차 잔차를 남긴다. $K_n$ 을 키우면 반복이 수렴하지 않고 정상 오차에 눌러앉는다 (S1.9 실측: 6R fixture 에서 $K_n=0.5$ 는 `eps_pos` 2e-3 에서도 $N_{IK}=200$ 을 소진했고 $K_n=0.1$ 은 수렴했다).
+- $\nabla\log w_5$ 는 중심차분으로 구한다 (반복당 $2n_{arm}$ 회 Jacobian, 할당 0). $w_5$ 가 아니라 $\log w_5$ 를 올리는 이유는 특이점에 가까울수록 기울기가 커져 밀어내는 방향이 강해지고, 이득 $k_w$ 가 $w_5$ 의 혼합단위 스케일에 덜 의존하기 때문이다.
+- 종료는 수락 조건 **∧** ($\Vert N\nabla\log w_5\Vert<$ `planner.ik.manip_grad_tol` ∨ $N_{IK}$) 다. 투영된 기울기로 판정한다 — 과제가 상쇄하는 성분은 쓸 수 없으므로 $\Vert\nabla\log w_5\Vert$ 로는 영원히 수렴하지 않는다. 상승이 안 끝난 채 반복 상한에 걸려도 **수락은 유지**하고 `manip_converged=false` 로 기록한다 (G3-G 신호). **중심차분 탐침이 못 쓰게 나온 반복은 수렴이 아니다** — 그 반복의 $\Vert N\nabla\log w_5\Vert$ 가 0 인 것은 도달해서가 아니라 잰 것이 없어서이고, 이를 허용오차와 비교하면 특이점 근처(탐침이 깨지기 가장 쉬운 곳)에서 상승이 한 번도 안 돈 자세를 "수렴" 으로 보고해 G3-G 신호의 부호가 뒤집힌다. 그런 반복은 `manip_converged=false` 로 두고 `manip_grad_failures` 로 따로 센다.
+- 매 반복 $\Vert\dot q_d\Vert_\infty\le$ `planner.ik.dq_step_max` 로 **방향을 유지한 채 축소**한다 (성분별 clip 은 과제 방향과 영공간 방향을 함께 왜곡한다).
+
 참 야코비안이 필요하면 L4 §4.5의 $J_a$ 를 쓴다($S[\hat e_z]_\times[a^C]_\times J_\omega^L$ 형태). 본 갱신식은 그것을 쓰지 않으므로 수렴률에 대한 Gauss-Newton 보장은 없다 — 수렴은 게이트 G3-G로 실측한다.
 
-**구현 `[확정 D-7d]`.** 위 갱신식은 새로 짜지 않고 `rtc::compliance::DifferentialIk` 를 $m=5$ (위치 3행 LOCAL_WORLD_ALIGNED + 접근축 2행 LOCAL $x,y$) 로 재사용한다. $J$ 는 계획기 스레드 전용 `RtModelHandle` 에서 catch frame 의 **팔 관절 열**만 꺼낸다 (G3-1). 감쇠는 고정 $\lambda$ 가 아니라 `DifferentialIk` 의 σ_min 적응 λ 를 수용하고, 수렴이 부족하면(G3-G) 그때 `DifferentialIk` 를 일반화한다 (P5).
+**과제 스텝은 제약 QP 다 `[D-7d 번복, 2026-09-20 사용자 결정 → D-26]`.** v0.5 까지는 갱신식 전체를 `DifferentialIk` (감쇠 pseudo-inverse) 로 푼다고 적었다. 관절 한계·스텝 제한을 **사후 clamp 가 아니라 부등식 제약**으로 두기 위해 $\dot q_{clik}$ 은 위 QP 로 바꾼다 (ProxQP, `rtc_tsid::QPSolverWrapper`). $\mu$ 는 `planner.ik.mu` 다 — $J^\top J$ 는 rank ≤ 5 라 어떤 팔에서도 특이하므로 $\mu>0$ 이 없으면 해가 유일하지 않다.
 
-반복마다 관절 한계로 clamp하고, 반복 상한 $N_{IK}$와 허용오차로 종료한다. **seed 는 매 후보 대기 자세(wait_pose)다** `[확정 D-18]` — 6축 5행 과제는 roll 1 자유도와 IK 해 가지가 남아 해(따라서 manipulability)가 seed 에 따라 달라지므로, 오프라인 catchability 지도(S3.5a/b)와 런타임이 **같은 함수·같은 seed·같은 YAML 키**를 써야 지도와 실제 판정이 어긋나지 않는다 (plan §11). v0.4의 "이웃 슬라이스 해 warm start" 는 해를 탐색 순서에 의존하게 만들어 폐기한다. roll 을 manipulability 최대화로 고르는 방식은 v1 범위 밖이다.
+- **측정 근거** (2 fixture × 500 후보, plan §4.4 표): $\mu=10^{-4}$ 에서 QP 가 DLS 보다 수락률(99.2% vs 98.8%, 98.8% vs 98.2%)·잔차·한계 활성 비율에서 근소하게 앞서고 호출당 시간은 약 22% 더 든다. $\mu=10^{-8}$ 에서는 Hessian 이 거의 특이해져 대부분의 반복에서 QP 가 수렴하지 않는다 — **$\mu$ 는 절벽이 있는 손잡이**라 기본값을 provisional 로 두고 검증한다
+- **제약은 $\dot q_{clik}$ 만 묶는다.** 실제로 움직이는 것은 $\dot q_d=\dot q_{clik}+\dot q_n$ 이고 $\dot q_n$ 은 QP 밖에서 계산되므로, $\Vert\dot q_d\Vert_\infty$ 축소와 관절 한계 clamp 는 **여전히 필요**하다. "한계를 제약으로" 는 과제 스텝을 고르는 방식의 개선이지 최종 적용값의 경계를 대체하지 않는다
+- **후보마다 cold start 한다.** `QPSolverWrapper` 는 호출 간 warm start 를 유지하는데, 연속 호출이 **서로 다른 후보**이므로 그대로 두면 답이 탐색 순서에 의존해 지도와 런타임이 어긋난다 (§11). 이를 위해 `ResetWarmStart()` 를 rtc_tsid 에 추가했다 (enum 하나만 바꾸므로 할당 없음). 한 후보 **안의** 반복 사이 warm start 는 결정적이라 유지한다
+- **QP 가 안 풀리면 fail closed 인데, 닫을 것이 있을 때만 거부다.** 비수렴 QP 는 과제 스텝을 모른다는 뜻이라 감쇠 pseudo-inverse 로 대체하지 않는다 (지도가 기록한 법칙과 다른 법칙으로 자세를 만들게 된다). 다만 **이미 허용오차를 만족한 반복이 있었다면** 그 $q^\ast$ 는 같은 법칙으로 얻은 유효한 자세이므로 그것을 반환하고 `qp_failures=1` 로 조기 종료만 기록한다 — 버리면 유효한 포구 자세가 거부로 바뀐다. 아직 수락된 반복이 없을 때만 후보를 거부한다 (`kQpFailed`). 이 구분은 D-25 상승이 생기면서 **비로소 도달 가능**해졌다: `k_manip`=0 이면 루프가 수락 즉시 끝나 두 번째 QP 가 돌지 않는다
+- **의존.** rtc_controllers → rtc_tsid 엣지가 새로 생긴다 (순환 없음 — rtc_tsid 는 rtc_controllers 를 모른다). `architecture.md` §Dependency Graph 에 기록했다
+- **`RtModelHandle` 은 device 관절 순서가 걸려 있으면 안 된다.** `SetJointOrder` 는 **입력만** 재배열한다 — `ComputeJacobians` 에 넘긴 $q$ 를 device 순서로 읽는 반면 `GetFrameJacobian` 의 **열**, `lowerPositionLimit(i)`, 따라서 $\dot q$ 와 box 행·clamp 는 전부 Pinocchio 순서다. 이 함수는 그 경계의 양쪽을 동시에 쓰므로 순열이 걸린 핸들에서는 모든 후보가 **유한하고 수렴하며 틀린다** (다른 팔의 자세로 간다). 그래서 `HasJointReorder()` 는 우회가 아니라 거부다 (`kJointOrderMismatch`). 실기 배선은 팔 sub-model 핸들에 `SetJointOrder` 를 건다 (`momentum_observer_wiring`) 므로 호출자가 실제로 여기 걸릴 수 있다 — 그 경우 같은 모델로 재배열 없는 핸들을 하나 더 만든다. identity 순서는 매핑을 설치하지 않으므로 모델 순서로 이름을 넘기는 보통의 호출자는 영향이 없다
+
+$N=I-J^\dagger J$ 는 **`DifferentialIk` 가 계속 만든다** — 영공간 투영은 갱신식의 일부이지 과제 solver 의 일부가 아니다. 따라서 `planner.ik.sigma0`·`lambda_max` 는 이제 $N$ 만 파라미터화한다. $J$ 는 $m=5$ (위치 3행 LOCAL_WORLD_ALIGNED + 접근축 2행 LOCAL $x,y$) 다. $J$ 는 계획기 스레드 전용 `RtModelHandle` 에서 catch frame 의 **팔 관절 열**만 꺼낸다 (G3-1).
+
+함수는 `rtc_controllers/include/rtc_controllers/catching/catch_pose_ik.hpp` 의 `rtc::catching::CatchPoseIk` 다 (S1.9). ROS 의존 없음, `Resize()` 뒤 할당 0·`noexcept`·무로깅 (G3-K 함수 부분), 호출 간 상태 없음. 입력 $p_c$·$\hat v$ 는 **모델 world 좌표**로 받는다 — base→world 변환은 호출자(S3.5a 지도 / S6.2 계획기) 몫이다. `DifferentialIk::Compute` 의 `ok=false` 는 **비유한 J 만** 뜻하므로 (특이 자세는 `ok=true`, σ_min≈0 — #310), 랭크 결손 판정은 $w$ 계산의 LDLT 피벗에서 하고 사유 코드를 따로 둔다.
+
+반복마다 관절 한계로 clamp하고, 반복 상한 $N_{IK}$와 허용오차로 종료한다. **seed 는 매 후보 대기 자세(wait_pose)다** `[확정 D-18]` — 6축 5행 과제는 roll 1 자유도와 IK 해 가지가 남아 해(따라서 manipulability)가 seed 에 따라 달라지므로, 오프라인 catchability 지도(S3.5a/b)와 런타임이 **같은 함수·같은 seed·같은 YAML 키**를 써야 지도와 실제 판정이 어긋나지 않는다 (plan §11). v0.4의 "이웃 슬라이스 해 warm start" 는 해를 탐색 순서에 의존하게 만들어 폐기한다.
+
+**roll 은 manipulability 최대화로 고른다 `[D-18 일부 번복, 2026-09-20 사용자 결정]`.** v0.5 까지 이 문단은 "roll 을 manipulability 최대화로 고르는 방식은 v1 범위 밖" 이라고 적었다. S1.9 에서 위 영공간 항 $k_w\nabla\log w_5$ 로 구현했으므로 그 문장은 폐기한다. **seed 규정은 그대로다** — 상승은 seed 가 놓인 해 가지 안의 **국소 최대**일 뿐 전역 roll 탐색이 아니라서, 지도와 런타임의 동치는 여전히 같은 seed·같은 키에 의존한다. 최대화 대상은 게이트 정의(`planner.catchability.definition`)와 무관하게 **항상 $w_5$** 다 `[확정 Q3a]` — 그래야 $q^\ast$ 가 정의에 의존하지 않아 같은 자세에서 잰 $w_5$ 와 $w_6$ 를 비교할 수 있다 (C-3). `arm_6row` 로 판정할 때는 **직접 최대화하지 않은 값으로 게이트한다**는 뜻이므로 지도 해석 시 유의한다. `planner.ik.k_manip` = 0 이면 번복 전 동작(seed 가 roll 을 결정)으로 정확히 되돌아간다.
 
 수락 조건: 위치 오차 < $\epsilon_p$, $\theta\le\alpha_{\max}$ ([R2]의 허용 콘과 같은 취지. $\theta$ 는 위 회전벡터의 크기라 $z^\top a_d\ge\cos\alpha_{\max}$ 와 동치이면서 큰 오차에서도 수치적으로 안정하다).
 
@@ -394,8 +425,18 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.n_settle` | int | – | 3 | 0–20 | §4.4 트랙 epoch 변경 후 대기 메시지 수 |
 | `planner.gamma.margin` | double | m/s | 0.1 | 0–1 | §4.5 `maxCatchableSpeed` 경계 여유 (1 ulp 엇갈림 방지) |
 | `planner.ik.max_iter` | int | – | 20 | 1–100 | 연산 예산 |
-| `planner.ik.lambda` | – | – | – | – | v0.5 에서 삭제 — 고정 λ 대신 `DifferentialIk` 의 σ_min 적응 λ (D-7d). 그 파라미터(σ₀, λ_max)의 키·값은 S6.2 에서 정한다 |
-| `planner.ik.rho` | double | m/rad | 0.1 | 0.01–1 | §4.2 위치/회전 스케일 정합 (특성길이) |
+| `planner.ik.lambda` | – | – | – | – | v0.5 에서 삭제 — 고정 λ 대신 `DifferentialIk` 의 σ_min 적응 λ (D-7d). 그 파라미터는 아래 `sigma0`·`lambda_max` 다 |
+| `planner.ik.sigma0` | double | – | 1e-3 (**provisional**) | >0 | §6.5 감쇠 shell 진입 σ_min — **영공간 투영 $N$ 만** 파라미터화한다 (과제 스텝은 QP, D-26). **S6.2 가 아니라 S1.9 에서 정한다** — S3.5a 지도가 S6.2 보다 먼저 같은 함수를 돌리고 지도와 런타임은 같은 키를 써야 한다 (plan §11) |
+| `planner.ik.lambda_max` | double | – | 1e-2 (**provisional**) | ≥0 | §6.5 최대 감쇠. $N$ 전용, 위와 같은 이유로 S1.9 |
+| `planner.ik.mu` | double | – | 1e-4 (**provisional**) | >0 | §4.2 과제 QP 정칙화. $J^\top J$ 가 rank ≤ 5 라 필수다. 1e-8 은 QP 비수렴, 1e-2 는 수락률 하락 — 절벽이 있으니 값을 바꾸면 재측정한다 (plan §4.4) |
+| `planner.ik.qp_eps_abs` | double | – | 1e-10 (**provisional**) | >0 | 과제 QP 절대 허용오차. TSID tick 기본값 1e-6 을 그대로 쓰면 IK 잔차에 solver 바닥이 생긴다 |
+| `planner.ik.qp_max_iter` | int | – | 50 | ≥1 | 과제 QP 반복 상한 |
+| `planner.ik.rho` | double | m/rad | 0.1 | 0.01–1 | §4.2 위치/회전 스케일 정합 (특성길이). **$J$ 와 잔차 양쪽에 가중** (S1.9 정정) |
+| `planner.ik.dq_step_max` | double | rad | 0.15 (**provisional**) | >0 | 반복당 $\Vert\dot q_d\Vert_\infty$ 상한 (방향 유지 축소, $\Delta t=1$) |
+| `planner.ik.k_null` | double | 1/step | 0 | ≥0 | §4.2 영공간 자세 과제 $K_n$. $q_n$ = **한계로 clamp 한** seed. `eps_pos` 와 함께 고른다 (2차 잔차) |
+| `planner.ik.k_manip` | double | – | 0 (**provisional**) | ≥0 | §4.2 영공간 $\log w_5$ 상승 이득 $k_w$. 0 이면 D-18 번복 전 동작 |
+| `planner.ik.manip_grad_tol` | double | – | 1e-4 (**provisional**) | ≥0 | 상승 종료 판정 $\Vert N\nabla\log w_5\Vert$ |
+| `planner.ik.v_eps` | double | m/s | 1e-6 | >0 | §4.2 NUM-7 속력 하한 — 미만이면 clamp 가 아니라 탈락 |
 | `planner.ik.eps_pos` | double | m | 0.002 | – | 수락 |
 | `planner.ik.alpha_max` | double | rad | `TBD` | 0–π/2 | 손 형상 허용 콘 ($\theta\le\alpha_{\max}$) |
 | `planner.ik.manip_min` | – | – | – | – | v0.5 에서 삭제 — `planner.catchability.manipulability_min` 이 대체 (§4.5) |
@@ -465,7 +506,7 @@ L3.1·L3.3·L3.4는 `test_l3.cpp`가 참조 구현을 이미 돌리고 있다. *
 
 ## 10. 미확정 항목
 
-TBD-HAND-01, TBD-HAND-04, TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max`, `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `DifferentialIk` 감쇠 파라미터 (S6.2), 점수 가중치 (S6~S8), D-7a 정책 (S6.5), NLP 전환 여부 (§4.1, S6·S8 후). TBD-RTC-14~16 은 닫힘 (§2).
+TBD-HAND-01, TBD-HAND-04, TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max`, `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `planner.ik` 의 S1.9 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol` — 값은 S3.5a 지도 실측으로 제안하고 사용자가 확정), 점수 가중치 (S6~S8), D-7a 정책 (S6.5), NLP 전환 여부 (§4.1, S6·S8 후). TBD-RTC-14~16 은 닫힘 (§2).
 
 ---
 

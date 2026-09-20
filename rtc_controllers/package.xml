@@ -16,6 +16,11 @@
   <depend>rtc_math</depend>
   <depend>rtc_urdf_bridge</depend>
   <depend>yaml-cpp</depend>
+  <!-- dynamic_catching S1.9 (D-26): the catch-pose IK task step is a
+       box-constrained QP solved through rtc_tsid's QPSolverWrapper. rtc_tsid
+       does not depend on rtc_controllers, so this adds no cycle (ARCH-2);
+       the dependency graph in agent_docs/architecture.md records the edge. -->
+  <depend>rtc_tsid</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
 

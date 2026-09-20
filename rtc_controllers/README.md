@@ -135,6 +135,7 @@ rtc_controllers/
 │   │   ├── soft_catch.hpp                    -- soft-catch 병진 기준 `SoftCatchTranslation` (γ 프로파일, NaN 가드 — 비유한 입력에서 상태 보존). γ derate 없음 (D-8)
 │   │   ├── time_feasibility.hpp              -- 도달시간 `TMinChecked` (한계 무효 → flag + t=+∞)·γ 창 (η_v·v_max, D-9)·방향 속력·정지거리·오차 예산
 │   │   ├── decel_target.hpp · transition_table.hpp · contact_debounce.hpp -- L7 순수 조각: 가상 감속 목표, (상태 × 사유) 전이표 + 완전성 검사, 지문 접촉 debounce
+│   │   ├── catch_pose_ik.hpp                 -- 포구 자세 IK + catchability 게이트 `CatchPoseIk` (L3 §4.2, S1.9). 5행 과제 = 병진 3 (LOCAL_WORLD_ALIGNED) + 접근축 2 (LOCAL x·y). 갱신은 관절속도의 합 `q̇_d = q̇_clik + q̇_n` 이고, `q̇_clik` 은 관절 한계·스텝 제한을 부등식 제약으로 갖는 **QP** 가 푼다 (ProxQP, D-26 — `DifferentialIk` 는 영공간 투영 N 전용). roll 은 영공간 log w₅ 상승에 쓴다 (D-25). `Resize()` 뒤 할당 0·noexcept·무로깅, 호출 간 상태 없음 — 후보마다 `ResetWarmStart()` 로 QP 를 cold start 하므로 오프라인 지도 S3.5a 와 런타임 계획기 S6.2 가 같은 q\* 를 얻는다. 랭크 결손은 `DifferentialIk` 의 `ok` 가 아니라 w 의 LDLT 피벗에서 판정한다. 핸들에 device 관절 순서(`SetJointOrder`)가 걸려 있으면 **거부**한다 — `ComputeJacobians` 는 입력만 재배열하고 열·한계·q̇ 는 Pinocchio 순서라, 섞이면 결과가 유한·수렴한 채로 틀린다
 │   │   └── catching_params.hpp               -- 파라미터 검증기 (`ParseCatchingParams` + `ValidateCatchingParams` → `armable`): 활성 구성 TBD, D-9·a_dec 교차제약, ω·dt 안정 경계, ζ≠1, provisional 은 실기에서 차단. `CheckCatchFrameProvisional` 은 robot config 의 `urdf.extra_frames.<catch_frame>.provisional` 에 같은 규칙 적용
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
@@ -170,6 +171,8 @@ rtc_controllers/
 ├── src/
 │   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
 │   ├── params/                               -- 위 스키마 파서 구현
+│   ├── catching/
+│   │   └── catch_pose_ik.cpp                 -- 위 `catch_pose_ik.hpp` 구현 (Pinocchio + Eigen, ROS 비의존)
 │   └── controllers/
 │       ├── estimation/
 │       │   ├── inertial_estimator.cpp
@@ -805,6 +808,7 @@ rtc::joint::ComputeJointPdCommand(gains_view, inputs, dt, nq, nc0, cmd_type, pre
 | `pinocchio` | 기구학/동역학 (FK, Jacobian, Gravity, Coriolis, SE3/SO3, exp/log) |
 | `rtc_math` | SE3 헬퍼 (`rtc_math/se3/pinocchio_adapter.hpp` — CLIK/OSC 법칙의 log/exp 오차 계산) |
 | `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 (`ModelConfig`/`PinocchioModelBuilder`) |
+| `rtc_tsid` | 포구 자세 IK (`catching/catch_pose_ik.hpp`) 의 과제 스텝 QP — `QPSolverWrapper` (ProxQP). **2026-09-20 추가** (dynamic_catching D-26). rtc_tsid 는 rtc_controllers 를 의존하지 않아 순환은 없지만, 이 엣지로 rtc_controllers 의 모든 소비자(`rtc_controller_manager` 포함)가 ProxSuite 를 전이적으로 끌게 된다 |
 | `yaml-cpp` | YAML 설정 파싱 |
 
 ---

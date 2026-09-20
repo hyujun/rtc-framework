@@ -56,6 +56,23 @@ class QPSolverWrapper {
   // 다음 solve 는 warm start 없이 시작한다 (비유한 해가 이후 solve 를 전부 막지 않게).
   [[nodiscard]] const SolveResult& Solve(const QPData& qp) noexcept;
 
+  // Discard the warm start: the NEXT Solve() begins from x = y = z = 0 instead
+  // of from the previous solve's iterates, after which warm-starting resumes.
+  //
+  // Warm starting is the right default for a controller, where consecutive
+  // ticks solve almost the same QP. It is WRONG whenever consecutive solves are
+  // DIFFERENT problems — an offline sweep, a candidate loop, a map — because
+  // then each answer depends on which problem happened to be solved before it,
+  // and a solver that is asked the same question twice can give two answers.
+  // dynamic_catching's catch-pose IK is exactly that case: the offline
+  // catchability map (S3.5a) and the runtime planner (S6.2) must agree, so
+  // every candidate starts cold (L3 §4.2, plan §11).
+  //
+  // Only a settings enum changes — no allocation, safe on the RT path. This is
+  // the same mechanism the non-finite-iterate guard already uses (#546); this
+  // makes it reachable deliberately rather than only as a fault response.
+  void ResetWarmStart() noexcept;
+
   // 설정 변경 (non-RT)
   void SetMaxIter(int iter) noexcept;
   void SetEpsAbs(double eps) noexcept;

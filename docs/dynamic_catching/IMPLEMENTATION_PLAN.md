@@ -1,6 +1,6 @@
 # dynamic_catching — 전체 구현 계획 (living document)
 
-- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541), **S2 완료** (2026-09-20, PR #545~#549 — S2.3b 는 S4.1 후). 다음은 S1.9 (S2.1 이 머지되어 착수 가능) 와 S3a·S4a. S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
+- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541), **S2 완료** (2026-09-20, PR #545~#549 — S2.3b 는 S4.1 후), **S1.9 완료** (2026-09-20). 다음은 S3a·S4a. S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
 - 최종 갱신: 2026-09-20 (S2 게이트 결과 §4.4 S2, η_τ 확정 §7.1·§9)
 - Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
@@ -37,6 +37,8 @@ ID 는 한 번만 정의한다. 사용자 결정은 D-·C-·P- 로, 착수 전 �
 | D-22 | provenance token: 궤적 스냅샷·공분산 버퍼·`PlanSnapshot` 은 같은 identity `{activation_generation, generation, snapshot_sequence, traj_recv_ns}` 를 싣고, `PlanSnapshot` 은 여기에 계산 기준 `{rt_iteration, rt_state_ns}` 와 `publish_ns` 를 더한다. 계획기는 계산 시작과 게시 직전에 최신 token 을 다시 보고, 대체되었거나 짝이 안 맞는 결과(궤적 N ↔ 공분산 N−1 포함)는 버린다. RT 소비자는 token 의 activation·generation 일치, `snapshot_sequence` 단조, source 나이·state 나이 상한을 fail-closed 로 검사한다 | **확정** (§7.4 F5) | `PlanSnapshot` 에 출처 필드가 없고 궤적·공분산이 다른 버퍼로 가서 N/N−1 혼합을 막을 수단이 없었다. MPC 선례(`MPCSolution::timestamp_ns`)보다 넓은 이유: 포구는 절대 시각 판정이라 출처 나이가 곧 안전 조건이다 |
 | D-23 | activation 경계: vision ingress 와 계획기는 base 의 `ActivationGeneration()` 을 스냅샷에 싣고, RT 소비는 `IsCurrentGeneration()` 이 아니면 무효로 본다. `PeriodicRtThread::Pause()` 는 진행 중 iteration 을 멈추지 않으므로 quiescence 를 기다리지 않고 generation 으로 판정한다. lifecycle·E-STOP 훅은 atomic 요청(또는 epoch)만 갱신하고, plan·궤적·공분산·손·FSM·타이머 무효화는 **RT tick 이 유일 writer** 로 수행한다 | **확정** (§7.4 F6) | lifecycle 은 publisher 만 게이트하므로 컨트롤러 소유 구독은 비활성 중에도 산다. base target mailbox 의 generation 게이트는 그 mailbox 에만 적용된다 (`rt_controller_interface.hpp`) |
 | D-24 | 지문 센서 freshness: (a) **권장** `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid` 를 추가하고 backend 3종이 채워 `ControllerState` 로 전달 (PROC-3, P5 — 같은 gap 이 grasp 에도 있다), (b) 포구 컨트롤러 소유 mailbox 로 센서 토픽을 따로 구독 | **결정 대기** — S5 착수 전 (§7.3) | 현재 `last_state_ns_` 는 관절 상태 콜백에서만 갱신된다. 관절이 fresh 한 채 센서만 멈추면 옛 힘을 새 접촉으로 볼 수 있다 |
+| D-25 | S1.9 구현에서 확정한 두 가지: (1) **L3 §4.2 의 roll manipulability 최대화 제외를 번복**한다 — 영공간 항 $k_w\nabla\log w_5$ 로 구현했고, seed 규정·결정성 요구는 그대로다 (국소 최대이지 전역 roll 탐색이 아니다). 최대화 대상은 게이트 정의와 무관하게 항상 $w_5$ 라 $q^\ast$ 가 정의에 의존하지 않는다 (C-3 비교가 공정해진다). (2) **$\rho$ 는 $J$ 와 잔차 양쪽에 곱하는 과제 가중**이다 — 잔차에만 곱한 v0.5 식은 차원이 맞지 않고 같은 절의 "1-스텝 정확 정렬" 과도 모순이었다 | **확정** (2026-09-20 사용자 결정, S1.9) | (1) 여유 자유도를 seed 가 남긴 우연에 맡기는 대신 조건수에 쓴다. `planner.ik.k_manip` = 0 이면 번복 전 동작으로 정확히 되돌아가므로 기준선이자 fallback 이 된다. (2) $\rho$ [m/rad] 가 단위 변환으로 쓰이려면 양쪽 가중이어야 하고, 그래야 $\lambda^2=0$ 에서 $W$ 가 상쇄돼 회전 행이 1 스텝에 정렬된다 |
+| D-26 | 포구 자세 IK 의 **과제 스텝을 제약 QP 로** 바꾼다 (L3 §4.2 `[확정 D-7d]` 의 `DifferentialIk` 전면 재사용을 번복). $\dot q_{clik}$ 은 관절 한계·스텝 제한을 부등식 제약으로 갖는 QP 가 풀고 (ProxQP, `rtc_tsid::QPSolverWrapper`), $\dot q_n=N\dot q_{sec}$ 는 QP **밖에서** 더한다 — $\dot q_d=\dot q_{clik}+\dot q_n$. `DifferentialIk` 는 $N$ 을 만드는 용도로 남는다 | **확정** (2026-09-20 사용자 결정, A·B 비교 측정 후 — §4.4 S1.9 결과) | $\mu=10^{-4}$ 에서 QP 가 DLS 대비 수락률·잔차·한계 활성 비율에서 근소 우위, 시간 +22%. manipulability 항을 QP cost 에 넣는 초안은 **폐기**했다 (2026-09-20 사용자 지시) — CLIK 출력은 $\dot q_{clik}$ 이고 2차 과제는 영공간 관절 속도라 둘은 더하는 것이지 합치는 것이 아니며, cost 에 섞으면 우선순위가 soft 해진다. 비용: rtc_controllers→rtc_tsid production 의존 신설 (순환 없음, ARCH-2 아님 — 다만 rtc_controller_manager 까지 ProxSuite 가 전이된다), rtc_tsid 에 `ResetWarmStart()` 신설 (후보 간 결정성) |
 
 ## 1a. Sprint Contract (A-1 승인, 2026-09-19)
 
@@ -79,7 +81,7 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 - 없음이 확인된 것: UR 지연 보상, speed scaling 노출, `ApplySafetyLayer` 의 production 호출, 스트리밍 목표를 받는 컨트롤러, 독립 IK, Pinocchio offset frame 추가 기능, sim `/clock`, sim 공 접촉 truth 출력, sim 명령 지연 주입
 - 시간: RT 의 `ControllerState::t_relative_s` 는 steady clock 기반, `ControllerState::dt` 는 항상 1/`control_rate` (sim lock-step 에서 실제 간격과 다를 수 있음). `header.stamp` staleness 판단 금지
 - CLIK: `ClikReferenceGenerator` 는 pose 목표만, LWA 6행 고정, 측정 q 에서 e·J 평가, 위치∩속도 box, `max_iter` 20 은 내부 `QPSolverWrapper` 고정값. 가속 box·feedforward·마스크·상태 노출 없음. `PinocchioCache` Jacobian 은 `LOCAL_WORLD_ALIGNED` 고정. `Manipulability()` 는 damped 6×6 Gram 의 LDLT 곱이라 게이트로 재사용하지 않는다 (§11). production 소비자는 DemoWbc 하나
-- 재사용 대상: `rtc::SeqLock`, `rtc::SpscQueue`, `rtc::compliance::DifferentialIk` (1-step damped pseudoinverse, 임의 행 수 m — 반복 루프는 S1.9 가 새로 쓴다), `rtc_math` se3 `log3`/`exp3`, `QPSolverWrapper`, base 의 `ActivationGeneration()`/`IsCurrentGeneration()`, `thread_layout.yaml` 의 `profiles:`, `repo_scripts/scripts/verify_rt_runtime.sh`
+- 재사용 대상: `rtc::SeqLock`, `rtc::SpscQueue`, `rtc::compliance::DifferentialIk` (S1.9 는 영공간 투영 N 만 쓴다 — 과제 스텝은 D-26 이후 QP), `rtc_math` se3 `log3`/`exp3`, `QPSolverWrapper`, base 의 `ActivationGeneration()`/`IsCurrentGeneration()`, `thread_layout.yaml` 의 `profiles:`, `repo_scripts/scripts/verify_rt_runtime.sh`
 - lifecycle: `PeriodicRtThread::Pause()` 는 요청 플래그 store 뿐이고 pause 게이트는 루프 최상단이라 진행 중 iteration 은 끝까지 돈다. lifecycle 은 publisher 만 활성화·비활성화한다 (D-23)
 - 모델: ur5e_p1b 결합 모델 nv 는 full tree **26** (UR5e 6 + P1b 20 revolute), actuated 축약 모델 **16** (팔 6 + 손 10). DemoWbc·CLIK 의 control model 은 actuated 모델이 있으면 그것이므로 ur5e_p1b 의 CLIK nv 는 16 이다. 이전 기록의 22 는 근거가 없다. 로봇 config 의 `urdf.*` 는 rclcpp 파라미터로 읽고 `urdf.sub_models.<name>.*` 처럼 map key 로 파싱한다 (list-of-dict 불가)
 - 지문 센서: P1b 실기 `HandSensorState` 250 Hz, finger-on-object 부호. sim 의 `WrenchStamped` contact-wrench lane 도 커밋 0fcc1d23 (2026-09-09) 이후 **같은 부호** (변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 하나). `rtc_msgs` FingertipSensor 주석은 PR #538 로 고쳐졌고 이 브랜치에 병합됐다 (2026-09-19). 센서 lane 에는 수신 시각·sequence 가 없다 (D-24)
@@ -244,7 +246,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 - S1.6 `ball_dynamics` 는 test fixture 전용 위치로
 - S1.7 파라미터 검증 로직: 활성 구성 키만 TBD 검사, 교차제약 표(D-9 반영), ζ·ω·h 검사(`dt` 기준), provisional 값의 실기 arm 차단
 - S1.8 L7 순수 조각: 감속 목표, 전이표를 데이터로, 접촉 debounce
-- S1.9 **(S2.1 머지 후 — IK 회전 행 $e_a^C$ 가 S2.1 의 `rtc_math` 축 정렬 회전벡터다, L3 §4.2. S1 안에 사본을 두면 P5 위반이라 2026-09-19 사용자 결정으로 뒤로 미뤘다)** 포구 자세 IK 반복 루프 + catchability 판정 함수 (L3 §4.2, §11): `DifferentialIk` (m=5) 를 반복 호출하는 루프, 수렴 판정·스텝 제한·seed = wait_pose, 해에서 w₅·w₆ 계산과 fail-closed 판정 (§11). 입력은 `RtModelHandle` (rtc_controllers 는 이미 `rtc_urdf_bridge` 에 의존). **S3.5a/b 지도 도구와 S6.2 런타임이 이 함수 하나를 쓴다.** 추상 interface 는 만들지 않는다 (ARCH-3)
+- S1.9 **(완료 2026-09-20. S2.1 머지 후 착수 — IK 회전 행 $e_a^C$ 가 S2.1 의 `rtc_math` 축 정렬 회전벡터다, L3 §4.2)** 포구 자세 IK 반복 루프 + catchability 판정 함수 (L3 §4.2, §11): `DifferentialIk` (m=5) 를 반복 호출하는 루프, 수렴 판정·스텝 제한·seed = wait_pose, 해에서 w₅·w₆ 계산과 fail-closed 판정 (§11), 영공간 $\log w_5$ 상승 (D-25). 입력은 `RtModelHandle` (rtc_controllers 는 이미 `rtc_urdf_bridge` 에 의존). **S3.5a/b 지도 도구와 S6.2 런타임이 이 함수 하나를 쓴다.** 추상 interface 는 만들지 않는다 (ARCH-3)
 
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
@@ -254,7 +256,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 | 시간 | 다른 시간 타입끼리 비교가 컴파일되지 않음, T_arm ≠ 0 fixture (G0-E) | — |
 | 검증기 | 활성 구성 TBD·provisional·교차제약·ζ·ω·h (G0-C) | — |
 | S1.8 | 전이표 완전성 검사 (G7-A 의 표 부분), 감속 전환 시 기준 상태 연속 < 1e-9 (G7-B), 합성 잡음 접촉 오경보율 기록 (G7-C — 임계는 사용자 결정이라 NOT_EVALUATED), 할당 0 (G7-D) | G7-C 임계: 사용자 |
-| S1.9 (S2.1 후) | 합성 기구학에서 수렴·스텝 제한, w₅·w₆ 유한차분 대조, zero speed·NaN/Inf·rank-deficient·near-singular 입력에서 후보 탈락 + 사유 코드 (G3-I 의 함수 부분) | S2.1 |
+| S1.9 | 합성 기구학에서 수렴·스텝 제한, w₅·w₆ 유한차분 대조, zero speed·NaN/Inf·rank-deficient·near-singular 입력에서 후보 탈락 + 사유 코드 (G3-I 의 함수 부분), w₅ 상승이 roll sweep 국소 최대에 도달 (D-25), 할당 0 (G3-K 함수 부분) | — |
 | backfill | S3.6 의 `n_max ≤ kCap`. 초과하면 `kCap` 상향 후 이 표 재실행 | S3.6 |
 
 GUI·plot: 면제 (D-19, §13).
@@ -269,12 +271,73 @@ GUI·plot: 면제 (D-19, §13).
 | 시간 | PASS | G0-E — 교차 축 비교·산술·변환이 컴파일되지 않음을 `static_assert` 로, T_arm = 50 ms fixture 에서 §3 표의 판정별 축 고정. D-2 (3) 변환은 미래 stamp·오버플로 거부 |
 | 검증기 | PASS | G0-C 전 항목 (사유 코드까지 단언). ωh ≥ 0.828 경계는 `reference.omega` 범위 [1, 25] 안에서 도달 불가 (100 Hz 에서도 s ≤ 0.25) 라 범위 밖 ω 로 공식만 검증했고, 게이트 문구를 그에 맞게 고쳤다 (2026-09-19 사용자 결정, L0 §5.3·§9) |
 | S1.8 | PASS · G7-C NOT_EVALUATED(임계) | G7-A 표 완전성 (도달 불가·미사용 사유·중복 칸 각각 음성 테스트), G7-B 진입 시 e = ė = 0 정확·τ_s 연속, G7-D 할당 0. G7-C 오경보: k_σ = 3 합성 잡음 **0/20000** (debounce 후) 기록 |
-| S1.9 | 대기 (S2.1 후) | §4.2 |
+| S1.9 | PASS | 아래 S1.9 결과 |
 | backfill | NOT_EVALUATED(S3.6) | — |
 
 - 기록: 0.05 s 간격 17 점 (D-15 sim profile) 보간 오차 — 위치 2.0e-11 m, 가속 1.9e-7 m/s² (1/60 s 간격은 3.2e-14 m). S3.6 간격 선택의 입력
 - 구현 중 정정 (설계 문서 반영): L3 §5.2 `q_star` 용량도 "`kCap`" 이라 불러 궤적 용량과 이름이 겹침 → `kMaxPlanNv` (32). L4 §5.1 "dt ≤ 0 invalid" 와 참조 G4-B 의 dt = 0 읽기 충돌 → `Evaluate()` 분리. `SampleAt` 은 비단조 쌍을 구조적으로 선택하지 않으므로 G2-G 는 `Interpolate` 직접 호출로만 도달한다
 - 수치 감사 (read-only 에이전트) finding 전부 반영: `Evaluate()` 가 a_max < 0·demand 0 에서 NaN 을 valid 로 내던 fail-open (blocking), 1 ms 미만 γ 램프·100 µs 미만 보간 구간·int64 시각 오버플로·`TRest` 직접 호출·+Inf 속도 입력 — 각 회귀 테스트 포함
+
+**S1.9 결과 (2026-09-20).** 코드: `rtc_controllers/include/rtc_controllers/catching/catch_pose_ik.hpp` + `src/catching/catch_pose_ik.cpp` (`rtc::catching::CatchPoseIk`), 테스트 `test/test_catch_pose_ik.cpp` 25 케이스 + 공용 fixture 헤더 `test/include/rtc_controllers/testing/catch_arm_fixture.hpp`, 신규 URDF fixture `rtc_urdf_bridge/test/urdf/serial_6r_wrist.urdf`, rtc_tsid `QPSolverWrapper::ResetWarmStart()` + 그 테스트. 설계 변경 3건 (D-25 roll manipulability 최대화 번복 · ρ 과제 가중 정정, D-26 과제 스텝 제약 QP) 을 L3 §4.2·§6·§10, architecture.md dep graph, rtc_controllers README 에 반영했다.
+
+**A·B 비교 (사용자 결정 근거).** 두 후보는 $\dot q_{clik}$ 계산 **한 줄만** 다르고 수락 조건·영공간 항·종료 규칙을 공유한다. 2 fixture × 500 후보, 동일 후보 리스트. bench 는 결정 후 폐기했고 표만 남긴다.
+
+| candidate | accept | w₅ p50 | w₅ p10 | resid p50 | limit 활성 | µs p50 | µs p99 | QP 비수렴 |
+|---|---|---|---|---|---|---|---|---|
+| 6R A: DLS | 98.8% | 0.0203 | 0.0044 | 8.3e-08 | 1.2% | 1444 | 2167 | – |
+| 6R B: QP μ=1e-8 | 99.0% | 0.0201 | 0.0043 | 1.4e-07 | 1.4% | 2061 | 2175 | **483** |
+| 6R B: QP μ=1e-6 | 99.2% | 0.0201 | 0.0043 | 8.8e-08 | 2.0% | 1783 | 1897 | 0 |
+| **6R B: QP μ=1e-4** | **99.2%** | 0.0201 | 0.0043 | 7.8e-08 | **1.0%** | 1777 | 1877 | 0 |
+| 6R B: QP μ=1e-2 | 93.4% | 0.0212 | 0.0057 | 2.1e-07 | 1.3% | 1775 | 2396 | 0 |
+| 7R A: DLS | 98.2% | 0.0817 | 0.0148 | 4.3e-07 | 5.5% | 1820 | 2089 | – |
+| 7R B: QP μ=1e-8 | 98.2% | 0.0800 | 0.0148 | 7.4e-07 | 5.9% | 2512 | 2680 | **460** |
+| 7R B: QP μ=1e-6 | 98.6% | 0.0822 | 0.0147 | 4.3e-07 | 4.1% | 2230 | 3490 | 0 |
+| **7R B: QP μ=1e-4** | **98.8%** | 0.0820 | 0.0146 | 4.5e-07 | 4.7% | 2227 | 2455 | 0 |
+| 7R B: QP μ=1e-2 | 88.2% | 0.0904 | 0.0240 | 6.2e-07 | 5.0% | 2241 | 2530 | 0 |
+
+- **선택은 B (사용자, 2026-09-20).** μ=1e-4 에서 수락률·잔차·한계 활성이 A 이상이고 시간은 +22% 다
+- **μ 는 절벽이 있는 손잡이다.** 1e-8 이면 $J^\top J$ (rank ≤ 5) 에 대한 정칙화가 모자라 QP 가 대부분의 반복에서 수렴하지 않는다. A 의 σ_min 적응 λ 는 스스로 맞추던 것이므로, 이는 B 가 새로 들여온 비용이다
+- **QP 가 사려던 것을 절반만 샀다.** 제약은 $\dot q_{clik}$ 만 묶고 실제로 움직이는 것은 $\dot q_d$ 라 $\Vert\dot q_d\Vert_\infty$ 축소와 한계 clamp 가 여전히 필요하다. limit 활성 비율 차이가 그만큼만 나는 이유다
+- **첫 측정은 틀렸다** — bench 가 `QPSolverConfig` 를 만들고 `Init()` 에 넘기지 않아 B 가 기본값 (eps_abs 1e-6) 으로 돌았고, B 의 수락률이 74.6%/61.6% 로 나왔다. 위 표는 수정 후 값이다
+
+측정: rtc_tsid 235 · rtc_controllers **682** · rtc_controller_manager 215 케이스 green (colcon, ws root), 전체 22 패키지 빌드 성공, 변경 패키지 경고 0. 같은 스위트를 ASan/UBSan 별도 빌드 (rtc_tsid·rtc_controllers 동일 플래그, +`_GLIBCXX_ASSERTIONS`, `-DEIGEN_MALLOC_ALREADY_ALIGNED=1`) 로 돌려 25/25 green · ASan 0 건. UBSan 잔여 3 종 (`LLT.h:66`, `SelfAdjointEigenSolver.h:76`, `CoreEvaluators.h:1264` 의 초기화 전 `ComputationInfo`/enum load) 은 각각 기존 `test_dls_convergence` 와 `test_qp_solver_wrapper` 에서도 재현되므로 **이 변경 이전부터 있던 third-party UB** 다.
+
+**할당 0 의 거짓 green 과 그 수정.** 정상 빌드는 할당 0 을 보고했지만 sanitizer 빌드는 IK **반복당 Eigen 할당 1 건**을 봤다. 원인은 `g.noalias() = -(Jᵀe)` — `noalias()` 는 맨 곱셈에만 임시를 없애고, 단항 음수가 감싸면 Product 를 런타임 크기 임시로 평가한다. 두 문장으로 쪼개 (곱 → 제자리 부호 반전) 0 이 됐다. 이 과정에서 드러난 두 가지를 테스트로 박았다:
+
+- `TheAllocationGatesAreArmed` — 두 게이트가 **실제로 발화하는지** 먼저 잰다. 첫 시도의 `new double` + `delete` 대조는 컴파일러가 쌍을 제거해 무효였다 ([expr.new]/10). `std::vector` 로 바꿨다
+- `TheTaskQpItselfAllocatesNothing` — `QPSolverWrapper::Solve` 의 "compute 경로 할당 없음" 은 헤더 주석의 **미검증 주장**이었다. 양쪽 빌드에서 0 으로 측정했다
+
+positive control (10종 mutant, 각각 빌드·실행해 red 확인 — 뒤 5개는 아래 리뷰 반영분):
+
+| mutant | red 가 된 테스트 |
+|---|---|
+| 스텝 제한 제거 | `EveryStepObeysTheInfinityNormBound`, `TighterStepBoundCostsMoreIterations` |
+| 반복별 관절 한계 clamp 제거 | `AcceptedPoseRespectsJointLimits` |
+| 영공간 투영 N 제거 | `AscentReachesTheRollSweepLocalMaximum`, `ReversingTheGradientSignDescendsInstead` |
+| 회전 행을 LOCAL 대신 LWA 로 | 9 케이스 (수렴·w 대조·상승 전부) |
+| FD 기울기 부호 반전 | 상승 3 케이스 |
+| 관절 순서 거부 제거 | `ADeviceOrderedHandleIsRejectedRatherThanSilentlySolved` |
+| 실패한 FD 탐침이 허용오차 비교로 빠짐 | `AnUnusableGradientProbeIsNotReportedAsAConvergedAscent` |
+| QP 실패가 수락된 자세를 버림 | `AQpFailureAfterAcceptanceKeepsTheAcceptedPose` |
+| σ_min·λ² 를 마지막 반복 값으로 둠 | `TheProjectorDiagnosticsDescribeQStarNotTheLastIterate` |
+| $q_n$ 을 clamp 안 한 seed 로 | `AnOutOfLimitSeedIsNotAPermanentPosturePull` |
+
+- **오라클은 3단계**다. (1) dense determinant 로 w 산술 대조 (1e-9), (2) **FK 만 쓰는 유한차분 Jacobian** 으로 frame·행 규약 고정 (Jacobian API 미사용), (3) roll 1°×±90° sweep 에서 후보마다 전체 6D IK 를 풀어 만든 w₅(ψ) 곡선의 같은 가지 국소 최대와 함수의 w₅(q\*) 대조 (기울기 구현과 독립)
+- **선형 행의 frame 은 w₅ 가 고정하지 못한다** — LWA 와 LOCAL 은 $T=\mathrm{diag}(R,I_2)$ 만큼만 다르고 det 는 $\det(R)^2=1$ 배라 값이 같다 (테스트가 이 불변성을 단언한다). 그 규약을 고정하는 것은 수렴 테스트다 (잔차가 world 벡터라 LOCAL J 를 쓰면 발산)
+- 결정성: 같은 입력 2회 + **사이에 다른 후보를 끼운 3회차**가 bit-identical. QP 는 후보마다 `ResetWarmStart()` 로 cold start 하므로 성립한다 (지도와 런타임 동치의 전제, §11)
+**`/code-review` (브랜치 전체, PR #552) finding 5건 반영.** 전부 "유한하고 그럴듯하며 자기 실행에 대해 거짓인 결과" 로, 크래시도 NaN 도 아니라서 위 스위트가 전부 green 인 채로 통과하던 것들이다. 각각 회귀 테스트 1개 + mutation red 확인:
+
+| finding | 증상 | 수정 |
+|---|---|---|
+| device 관절 순서 | `SetJointOrder` 가 걸린 핸들에서 `ComputeJacobians` 입력(device)과 Jacobian 열·한계·$\dot q$(Pinocchio)가 섞여 **모든 후보가 조용히 틀린다**. 실기 배선이 실제로 그런 핸들을 만든다 (`momentum_observer_wiring`) | `HasJointReorder()` 를 거부 (`kJointOrderMismatch`, 새 사유 코드). L3 §4.2 |
+| 실패한 FD 탐침 | 탐침이 못 쓰게 나오면 `grad_norm`=0 → `manip_converged=true` 로 루프가 끊겨, **상승이 한 번도 안 돈 자세**가 "수렴" 으로 보고된다 (G3-G 신호 역전) | 탐침 실패는 수렴 아님 + `manip_grad_failures` 카운터 신설 |
+| QP 실패의 범위 | 이미 허용오차를 만족한 $q^\ast$ 가 있어도 이후 QP 비수렴이 그것을 버리고 `kQpFailed` + 전부 0 인 `q` 를 냈다. D-25 상승이 생기면서 비로소 도달 가능해진 경로 | 수락 전이면 거부(그대로), 수락 후면 $q^\ast$ 반환 + `qp_failures` 로 조기 종료 기록 |
+| σ_min·λ² 의 귀속 | "at q\*" 로 문서화됐으나 **마지막 반복** 값을 실었다 (w₅·w₆ 는 $q^\ast$ 에서 재평가하면서 이쪽만 빠졌다) | 수락된 반복의 값을 따로 들고 종료 시 교체 |
+| clamp 안 한 $q_n$ | 한계 밖 seed 가 **영원히 감쇠하지 않는** 자세 인력점이 되어, clamp 와 매 반복 싸운다 | $q_n$ = clamp 된 seed (`q_ref_`). L3 §4.2·§6 |
+
+재측정: rtc_controllers 682 케이스 green, downstream (`rtc_controller_manager`·`integrated_bringup`) 빌드 성공. 같은 sanitizer 레시피로 `test_catch_pose_ik` 25/25 green·ASan 0 건 — 새 코드의 할당 0 은 **최적화 빌드에서** 재확인했다 (정상 빌드의 0 은 위 거짓 green 사례 때문에 근거로 쓰지 않는다). UBSan 은 위 3 종 중 2 종 (`LLT.h:66`, `SelfAdjointEigenSolver.h:76`) 이 이 스위트에서 재현되고 새 보고는 없다.
+
+- 미결: `planner.ik` 의 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol`, `mu`, `qp_eps_abs`) 은 S3.5a 지도 실측으로 제안하고 사용자가 확정한다 (L3 §10). `alpha_max` 는 여전히 TBD 라 함수는 인자로 받는다
 
 #### S2 기존 rtc_* 일반화 (code review 대상)
 
@@ -593,7 +656,6 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 - S3.1a ε_clk 할당 비율 제안
 - S5.2 (S3.4 측정 결과로) C-1 재검토 여부, vision 재시작 시 `snapshot_sequence` 되감김 처리, `frame_id` ↔ world, 유령 트랙 처리, 공분산의 시간 보간 정의와 nrt 파서 → 계획기 버퍼 전달 방식 (D-22 token 유지)
 - S5.3 QP 비의존 관절공간 abort 식
-- S6.2 `DifferentialIk` 의 σ₀·λ_max 키
 - S7 homing 을 IDLE 하위 단계로 둘지 별도 Mode 로 둘지, `REF_SATURATED` 판정식, 손 hold 힘 한계를 position 목표로 표현하는 규칙, `stale_committed_max_s` 를 조일 물리량 (공분산 성장·포획 반경 오차 할당·abort 정지거리)
 - TBD-WS-01 (바닥·작업셀 경계) — S3.5a catchability 지도에서 작업셀 경계를 입력으로 쓸 때 함께 정한다
 
@@ -714,11 +776,12 @@ urdf:
 - **w₅/w₆ 병행 (C-3).** IK 와 게이트는 w₅ 로 푼다. 검증은 roll 까지 포함한 w₆ = √det(J₆ J₆ᵀ) (팔 열 6×6, damping 없음) 로 해야 할 수도 있으므로:
   - 지도 도구(S3.5a/b)와 런타임 계획기(S6.2)는 매 후보에서 **w₅ 와 w₆ 를 모두 계산·기록**한다 (CSV·`PlanSnapshot`)
   - 게이트 정의는 YAML `definition` (`arm_5row` 기본, `arm_6row` 선택) 으로 바꿀 수 있게 하고, **threshold 는 정의별로 따로 둔다** — 단위·차원이 달라 같은 수치를 쓸 수 없다
-  - w₆ 는 IK 가 남긴 roll 에 의존한다. roll 은 대기 자세 seed + 자세 과제로 결정적으로 정해지므로 (C-4) 지도와 런타임의 w₆ 도 같은 값이 된다
+  - w₆ 는 IK 가 남긴 roll 에 의존한다. roll 은 대기 자세 seed + **w₅ 상승** (D-25) 으로 결정적으로 정해지므로 (C-4) 지도와 런타임의 w₆ 도 같은 값이 된다
+  - **상승 대상은 정의와 무관하게 항상 w₅ 다** (D-25). 그래서 q\* 가 `definition` 에 의존하지 않고, 위 두 분포가 **같은 자세에서 잰 두 값**이라 비교가 성립한다. `arm_6row` 로 판정한다는 것은 직접 올리지 않은 값으로 게이트한다는 뜻이다
   - 어느 정의로 판정할지는 S3.5a/b 지도에서 두 값의 분포와 사용자의 sim 자세 확인을 보고 정한다
 - 단위가 섞여 있어 (m 와 rad) w 의 크기는 정의에 따라 달라진다. **threshold 0.1 은 위 정의에 대한 값**이고, 정의를 바꾸면 다시 맞춰야 한다
 
-**포구 자세의 여유 자유도.** 6축 UR5e 에서 5행 과제는 1 자유도(손바닥 법선 둘레 roll)와 IK 해 가지가 남아 w 가 그 선택에 따라 달라진다. 런타임과 지도가 같은 해를 쓰도록 **대기 자세(wait_pose)에서 시작하는 같은 IK(자세 과제 포함)** 로 정한다. roll 을 w 최대화로 고르는 방식은 v1 범위 밖 (필요하면 S8 이후).
+**포구 자세의 여유 자유도.** 6축 UR5e 에서 5행 과제는 1 자유도(손바닥 법선 둘레 roll)와 IK 해 가지가 남아 w 가 그 선택에 따라 달라진다. 런타임과 지도가 같은 해를 쓰도록 **대기 자세(wait_pose)에서 시작하는 같은 IK** 로 정하고, 남은 roll 은 **영공간 log w₅ 상승으로 쓴다** (D-25, 2026-09-20 번복 — v0.5 까지는 v1 범위 밖이라고 적었다). 상승은 seed 가 놓인 해 가지 안의 **국소 최대**이지 전역 roll 탐색이 아니므로, 결정성은 여전히 같은 seed·같은 키에 달려 있다. `planner.ik.k_manip` = 0 이면 번복 전 동작 그대로다.
 
 **frame 규약 (함정 주의).**
 

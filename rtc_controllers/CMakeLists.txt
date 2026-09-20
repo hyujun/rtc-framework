@@ -32,6 +32,10 @@ find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(rtc_math REQUIRED)
 find_package(rtc_urdf_bridge REQUIRED)
+# dynamic_catching S1.9 (D-26): the catch-pose IK task step is a
+# box-constrained QP solved through rtc_tsid's QPSolverWrapper. No cycle —
+# rtc_tsid does not depend on rtc_controllers (ARCH-2).
+find_package(rtc_tsid REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # ── Library ───────────────────────────────────────────────────────────────────
@@ -64,6 +68,11 @@ add_library(rtc_controllers STATIC
   # yaml-cpp parser, non-RT, called once at configure time — plus a fixed-
   # capacity, allocation-free ValidateCatchingParams() (L0 §5.3, §9 G0-C).
   src/params/catching_params.cpp
+  # dynamic_catching S1.9: 5-row catch-pose IK + the catchability gate
+  # (L3 §4.2). Pinocchio + Eigen only, no ROS and no controller types — the
+  # offline catchability map (S3.5a) links the same object the planner will, so
+  # this deliberately stays a plain library unit rather than a controller.
+  src/catching/catch_pose_ik.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -76,6 +85,7 @@ ament_target_dependencies(rtc_controllers
   pinocchio
   rtc_math
   rtc_urdf_bridge
+  rtc_tsid
 )
 target_link_libraries(rtc_controllers pinocchio::pinocchio yaml-cpp Eigen3::Eigen)
 
@@ -107,6 +117,7 @@ ament_export_dependencies(
   pinocchio
   rtc_math
   rtc_urdf_bridge
+  rtc_tsid
   yaml-cpp
 )
 ament_export_include_directories(include)
@@ -192,6 +203,21 @@ if(BUILD_TESTING)
   target_link_libraries(test_momentum_observer_model_oracle rtc_controllers)
   target_include_directories(test_momentum_observer_model_oracle PRIVATE
     ${rtc_urdf_bridge_test_include})
+
+  # dynamic_catching S1.9: catch-pose IK + catchability gate. Needs
+  # ${rtc_urdf_bridge_test_include} for the URDF resolver and the two arm
+  # fixtures (serial_6r_wrist for the roll sweep, serial_7dof for the redundant
+  # case, serial_6dof as the rank-deficient negative). RT gate is two
+  # complementary sensors — the shared global-operator-new gate
+  # (${rtc_controllers_test_include}, with the same program-wide
+  # -Wmismatched-new-delete false positive it forces everywhere else) PLUS
+  # rtc_base's Eigen allocation tripwire (${rtc_base_test_include}), because
+  # operator-new counting cannot see Eigen's allocator.
+  ament_add_gtest(test_catch_pose_ik test/test_catch_pose_ik.cpp)
+  target_link_libraries(test_catch_pose_ik rtc_controllers)
+  target_include_directories(test_catch_pose_ik PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catch_pose_ik PRIVATE -Wno-mismatched-new-delete)
 
   ament_add_gtest(test_payload_estimator test/test_payload_estimator.cpp)
   target_link_libraries(test_payload_estimator rtc_controllers)
