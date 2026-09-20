@@ -48,6 +48,71 @@ mujoco_simulator:
     # 켜면 런타임에 동일 값으로 덮어쓴다 (현재 false → MJCF default-class 활성).
     use_yaml_servo_gains: false
 
+    # ── Object state ──────────────────────────────────────────────────────────
+    # freejoint 를 가진 body 전부의 pose 를 발행한다 — 이 씬은 테이블 위 물체 2개를
+    # 이미 가지고 있고, 아래 projectile ball 도 발사된 동안 여기 포함된다 (park 중에는
+    # 빠진다).
+    object_state:
+      enabled: true
+      topic: "/sim/object_transforms"
+      reference_body: ""    # "" = MuJoCo world
+      frame_id: ""          # "" = reference_body 이름, 비었으므로 "world"
+
+    # ── Projectile ball ─────────────────────────────────────────────────────
+    # 공은 rtc_mujoco_sim 이 기동 시 MJCF spec 에 직접 붙이므로 씬 XML 을 고칠 필요가
+    # 없다. 뷰어 K 또는 /sim/launch_ball 은 아래 분포에서 샘플링하고,
+    # /sim/launch_ball_at 은 호출자가 준 (p0, v0, ω) 를 그대로 쓴다 (D-14).
+    #
+    # ⚠ 아래 값은 ur5e_p1b 설정의 복사가 아니라 이 모델에서 재유도한 것이다.
+    # 두 로봇은 충돌 마스크 구조도 손 위치도 다르므로 복사하면 조용히 틀린다.
+    projectile_ball:
+      enabled: true
+      body_name: "projectile_ball"
+      # 물성 (관성 분포·반발·마찰·항력·양력) 은 preset 이 정한다. 형상·질량만 여기서.
+      #
+      # ur5e_p1b 와 **같은 공**을 일부러 쓴다. S3.1a 는 로봇 2종을 비교하는데,
+      # 공까지 다르면 차이가 로봇 탓인지 공 탓인지 갈라낼 수 없다.
+      ball_type: "tennis"          # tennis | beanbag | hard
+      radius_m: 0.025
+      mass_kg: 0.05
+      # 이 모델의 충돌 geom 은 103 개 전부가 contype=1 / conaffinity=1 이다 (컴파일된
+      # 모델에서 확인). ur5e_p1b 와 다른 점이 여기다 — 거기는 손 geom 21 개가
+      # conaffinity=2 라서 공에 contype=2 를 줘야 손과 짝이 맞지만, 이 모델에는
+      # conaffinity=2 인 geom 이 하나도 없어 그 비트가 아무 일도 하지 않는다.
+      # 짝짓기는 전적으로 robot.contype(1) & ball.conaffinity(1) 로 성립한다.
+      # (1, 1) 은 contype 이 0 인 geom 과도 짝이 맞으므로 (2, 1) 보다 포괄적이다.
+      collision_contype: 1
+      collision_conaffinity: 1
+      aerodynamics: true
+      # 투척 조건은 계획 §S0.7 / D-18 에서 유도했다. 목표는 T_f = 1.0 s — 그보다 짧은
+      # 비행은 R2 지평 요구 (0.46–0.86 s) 를 못 덮어 애초에 계획이 안 선다.
+      #   포구점  = home 자세의 palm_lower xpos = (0.809, 0.038, 0.4255) [모델 실측]
+      #   수평거리 = 4.0 m (D-18), 발사 높이 = 1.75 m (D-18 의 1.5–2.0 m 중앙)
+      #   ⇒ vx = 4.0, vz = 3.58 ⇒ v0 = 5.37 m/s, 앙각 41.8°, 정점 2.40 m
+      # 무항력 해이므로 공력이 켜진 실제 비행은 조금 다르다 (S0.7 재계산 기준 v0 +3 %
+      # 쯤). 정확한 값은 S3.4 가 실측으로 닫는다.
+      spawn_position_m: [4.81, 0.04, 1.75]
+      park_position_m: [0.0, 0.0, -50.0]
+      launch_direction: [-1.0, 0.0, 0.0]   # 로봇을 향해 (+x 쪽에서 원점 쪽으로)
+      launch_noise: "uniform"
+      launch_angle_deg: 41.8
+      # ur5e_p1b 보다 산포를 좁게 둔다 (5.0 → 2.0, 0.2 → 0.15). 여기 목적은 시연이
+      # 아니라 측정이고, 산포가 넓으면 투척 상당수가 T_f 밴드 밖으로 나간다.
+      launch_angle_variation_deg: 2.0
+      launch_azimuth_variation_deg: 1.0
+      launch_speed_m_s: 5.37
+      launch_speed_variation_m_s: 0.15
+      # [rad/s] launch frame: x = 발사 방향, y = 왼쪽, z = 위. backspin = -y.
+      launch_spin_rad_s: [0.0, 0.0, 0.0]
+      launch_spin_variation_rad_s: [0.0, 0.0, 0.0]
+      seed: 42
+      publish:
+        sample_rate_hz: 100.0
+        frame_id: "world"
+        ground_truth_topic: "/sim/ball/ground_truth"
+        camera_topic: "/sim/ball/camera_position"
+        position_noise_stddev_m: [0.005, 0.005, 0.005]
+
     # ── Robot Response ────────────────────────────────────────────────────────
     robot_response:
       groups: ["iiwa7", "leap"]
