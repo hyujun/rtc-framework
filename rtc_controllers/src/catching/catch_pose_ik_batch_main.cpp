@@ -29,6 +29,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -47,6 +48,12 @@ constexpr std::string_view kUsage =
   --catch-frame NAME    frame name (default: catch_frame)
   --params PATH         YAML holding the `catching:` tree (planner.ik.*,
                         planner.catchability.*). Omit to use in-code defaults.
+                        Accepted shapes: a top-level `catching:` map; a shipped
+                        controller config (`<controller>: {catching: ...}`); or
+                        the tree itself (top-level `planner:`). Anything else
+                        is an error, never a silent default.
+  --print-options       print the options --params resolves to (and where in
+                        the file the tree was found) and exit; needs no model
   --candidates PATH     candidate CSV: id[,seed_id],p_c_x,p_c_y,p_c_z,v_x,v_y,v_z
                         in MODEL WORLD coordinates. '-' reads stdin.
   --seeds PATH          seed CSV: seed_id,q0,... (one row per wait-pose candidate)
@@ -70,6 +77,7 @@ struct Args {
   std::string seeds;
   std::string out;
   bool dump_frame{false};
+  bool print_options{false};
 };
 
 [[nodiscard]] Args ParseArgs(int argc, char** argv) {
@@ -101,35 +109,67 @@ struct Args {
       a.out = value(i, f);
     } else if (f == "--dump-frame") {
       a.dump_frame = true;
+    } else if (f == "--print-options") {
+      a.print_options = true;
     } else {
       Die("unknown argument '" + std::string(f) + "' (try --help)");
     }
   }
-  if (a.model_config.empty()) {
-    Die("--model-config is required (try --help)");
+  if (a.model_config.empty() && !a.print_options) {
+    Die("--model-config is required unless --print-options (try --help)");
   }
   return a;
 }
 
-/// The `catching:` map, from a file that may or may not wrap it.
-[[nodiscard]] YAML::Node LoadCatchingNode(const std::string& path) {
-  YAML::Node root = YAML::LoadFile(path);
-  if (root["catching"]) {
-    return root["catching"];
+/// The options `--params` resolves to; the in-code defaults when it is absent.
+/// Everything that decides WHICH tree is read lives in the library
+/// (`ResolveCatchingTree`), so that it is a tested function and not a guess
+/// made here. `tree_path` receives where the tree was found.
+[[nodiscard]] rtc::catching::CatchPoseIkOptions LoadOptions(const std::string& params_path,
+                                                            std::string& tree_path) {
+  tree_path = "<none: in-code defaults>";
+  if (params_path.empty()) {
+    return {};
   }
-  return root;
+  const rtc::catching::CatchingTree tree =
+      rtc::catching::ResolveCatchingTree(YAML::LoadFile(params_path), params_path);
+  tree_path = tree.path;
+  rtc::catching::CatchPoseIkRetiredKeys retired{};
+  const auto parsed = rtc::catching::ParseCatchPoseIkParams(tree.node, &retired);
+  if (retired.lambda || retired.manip_min) {
+    std::cerr << "catch_pose_ik_batch: note — the params file carries retired planner.ik keys"
+              << '\n';
+  }
+  // An absent `planner` section is the parser's documented all-defaults case,
+  // and legitimate (the S4.0 controller configs ship without one) — but it is
+  // also what a wrongly-shaped file used to look like, so it is said out loud.
+  const YAML::Node& node = tree.node;
+  if (!node["planner"]) {
+    std::cerr << "catch_pose_ik_batch: note — '" << params_path << "' (" << tree.path
+              << ") has no `planner` section; every option is the in-code default\n";
+  }
+  // A TBD threshold leaves manipulability_min non-finite on purpose, which
+  // Solve reports as kOptionsInvalid for every candidate. Say so once here
+  // rather than letting the map come out uniformly empty.
+  if (rtc::catching::ActiveManipulabilityMin(parsed).tbd) {
+    std::cerr << "catch_pose_ik_batch: the active manipulability_min row is TBD — every "
+                 "candidate will be rejected as options_invalid\n";
+  }
+  return parsed.options;
 }
 
+/// `GetReducedModel` throws `std::out_of_range` for an unknown name (it never
+/// returns null); the translation here only makes the message name the flag.
 [[nodiscard]] std::shared_ptr<const pinocchio::Model> PickModel(const rub::PinocchioModelBuilder& b,
                                                                 const std::string& sub_model) {
   if (sub_model.empty()) {
     return b.GetFullModel();
   }
-  auto m = b.GetReducedModel(sub_model);
-  if (!m) {
-    Die("sub-model '" + sub_model + "' is not in the model config");
+  try {
+    return b.GetReducedModel(sub_model);
+  } catch (const std::out_of_range&) {
+    Die("--sub-model '" + sub_model + "' is not a sub-model of the model config");
   }
-  return m;
 }
 
 /// The S2.3b check, through the production builder: does the frame the model
@@ -184,6 +224,13 @@ int DumpFrame(const pinocchio::Model& model, const rub::ModelConfig& cfg,
 int main(int argc, char** argv) {
   try {
     const Args args = ParseArgs(argc, argv);
+    if (args.print_options) {
+      std::string tree_path;
+      const rtc::catching::CatchPoseIkOptions resolved = LoadOptions(args.params, tree_path);
+      std::cout << "params_tree " << tree_path << '\n'
+                << rtc::catching::FormatCatchPoseIkOptions(resolved);
+      return 0;
+    }
     const rub::ModelConfig cfg = rub::PinocchioModelBuilder::LoadModelConfig(args.model_config);
     const rub::PinocchioModelBuilder builder(cfg);
     const std::shared_ptr<const pinocchio::Model> model = PickModel(builder, args.sub_model);
@@ -195,29 +242,23 @@ int main(int argc, char** argv) {
       Die("--candidates and --seeds are required unless --dump-frame (try --help)");
     }
 
-    rtc::catching::CatchPoseIkOptions opt{};
-    if (!args.params.empty()) {
-      rtc::catching::CatchPoseIkRetiredKeys retired{};
-      const auto parsed =
-          rtc::catching::ParseCatchPoseIkParams(LoadCatchingNode(args.params), &retired);
-      opt = parsed.options;
-      if (retired.lambda || retired.manip_min) {
-        std::cerr << "catch_pose_ik_batch: note — the params file carries retired planner.ik keys"
-                  << '\n';
-      }
-      // A TBD threshold leaves manipulability_min non-finite on purpose, which
-      // Solve reports as kOptionsInvalid for every candidate. Say so once here
-      // rather than letting the map come out uniformly empty.
-      if (rtc::catching::ActiveManipulabilityMin(parsed).tbd) {
-        std::cerr << "catch_pose_ik_batch: the active manipulability_min row is TBD — every "
-                     "candidate will be rejected as options_invalid\n";
-      }
-    }
-
     // The handle must be built from the model alone: one carrying a device joint
     // order is refused by Solve as kJointOrderMismatch (note 7).
     rub::RtModelHandle handle(model);
-    const pinocchio::FrameIndex frame = handle.GetFrameId(args.catch_frame);
+    // Before any input is read: `GetFrameId` answers an unknown name with the
+    // universe frame, and the run would then "succeed" with a map of nothing
+    // but model_invalid rows.
+    pinocchio::FrameIndex frame = 0;
+    try {
+      frame = rtc::catching::ResolveCatchFrame(handle.GetModel(), args.catch_frame);
+    } catch (const std::invalid_argument& e) {
+      Die(std::string("--catch-frame: ") + e.what() +
+          (args.sub_model.empty() ? std::string(" [full model]")
+                                  : " [--sub-model " + args.sub_model + "]"));
+    }
+
+    std::string tree_path;
+    const rtc::catching::CatchPoseIkOptions opt = LoadOptions(args.params, tree_path);
 
     std::vector<rtc::catching::BatchCandidate> candidates;
     if (args.candidates == "-") {
@@ -248,7 +289,7 @@ int main(int argc, char** argv) {
     std::ostream& os = args.out.empty() ? std::cout : file;
     os << rtc::catching::BatchCsvHeader(handle.nv()) << '\n';
     for (const auto& row : rows) {
-      os << rtc::catching::BatchCsvRow(row) << '\n';
+      os << rtc::catching::BatchCsvRow(row, handle.nv()) << '\n';
     }
     return 0;
   } catch (const std::exception& e) {

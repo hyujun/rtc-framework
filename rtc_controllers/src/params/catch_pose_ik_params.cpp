@@ -1,5 +1,7 @@
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 
+#include "catching_yaml_read.hpp"
+
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -46,40 +48,19 @@ std::string IkKey(const char* key) {
   return std::string("planner.ik.") + key;
 }
 
+using params_detail::Spelling;
+
 /// Child section `key` of `parent`, named by its full dotted `path` in any
 /// rejection. An absent (or empty `key:`) section reads as an empty node, so
 /// every key under it takes its in-code default; a present section that is not
-/// a map is refused. Going through a helper rather than `parent[key][...]`
-/// matters: yaml-cpp throws `YAML::InvalidNode`, not `std::invalid_argument`,
-/// when a missing node is subscripted.
+/// a map is refused. The READING is `params_detail::ReadSectionNode`, shared
+/// with catching_params.cpp; only the refusal's wording is this parser's.
 YAML::Node ReadSection(const YAML::Node& parent, const char* key, const std::string& path) {
-  if (!parent.IsMap()) {
-    return YAML::Node();  // the parent section itself was absent
-  }
-  const YAML::Node child = parent[key];
-  if (!child || child.IsNull()) {
-    return YAML::Node();
-  }
-  if (!child.IsMap()) {
+  const params_detail::SectionRead sec = params_detail::ReadSectionNode(parent, key);
+  if (sec.kind == params_detail::SectionKind::kNotAMap) {
     RejectMsg("section '" + path + "' must be a map");
   }
-  return child;
-}
-
-/// The scalar as the YAML file spells it, for a message that quotes what was
-/// written rather than a reformatted double (1e-10 through `std::to_string` is
-/// "0.000000", which reads as a different complaint than the one being made).
-std::string Spelling(const YAML::Node& v) {
-  if (v.IsScalar()) {
-    return "'" + v.Scalar() + "'";
-  }
-  if (v.IsSequence()) {
-    return "a sequence";
-  }
-  if (v.IsMap()) {
-    return "a map";
-  }
-  return "an empty value";
+  return sec.node;
 }
 
 void CheckRange(const std::string& path, const YAML::Node& v, double d, const Range& r) {
@@ -136,29 +117,27 @@ int ReadInt(const YAML::Node& sec, const char* key, int fallback, int lo, int hi
 }
 
 /// Read a scalar the schema may leave open as the literal string "TBD" (or, per
-/// L0 §5.3, an unparseable/non-finite number — treated the same way). Same
-/// convention as `ReadTbdDouble` in params/catching_params.cpp, with the range
-/// check applied only once the value resolved to a real number.
+/// L0 §5.3, an unparseable/non-finite number — treated the same way). The
+/// READING is `params_detail::ReadTbdScalar`, the very function
+/// `ReadTbdDouble` in params/catching_params.cpp uses, so the two parsers
+/// cannot disagree about what a node means. What differs is what happens NEXT,
+/// by design: this parser range-checks a resolved number and THROWS, whereas
+/// ParseCatchingParams lets it through for ValidateCatchingParams to report.
 TbdDouble ReadTbd(const YAML::Node& sec, const char* key, const std::string& path,
                   TbdDouble fallback, const Range& r) {
-  const YAML::Node v = sec[key];
-  if (!v) {
-    return fallback;
+  const params_detail::TbdRead read = params_detail::ReadTbdScalar(sec, key);
+  switch (read.kind) {
+    case params_detail::TbdReadKind::kAbsent:
+      return fallback;
+    case params_detail::TbdReadKind::kNotANumber:
+      RejectMsg("'" + path + "' must be a number or the literal 'TBD', got " + Spelling(read.node));
+    case params_detail::TbdReadKind::kRead:
+      break;
   }
-  if (v.IsScalar() && v.Scalar() == "TBD") {
-    return TbdDouble{};  // NaN, tbd = true
+  if (!read.value.tbd) {
+    CheckRange(path, read.node, read.value.value, r);
   }
-  double d = std::numeric_limits<double>::quiet_NaN();
-  try {
-    d = v.as<double>();
-  } catch (const YAML::Exception&) {
-    RejectMsg("'" + path + "' must be a number or the literal 'TBD', got " + Spelling(v));
-  }
-  if (!std::isfinite(d)) {
-    return TbdDouble{d, true};  // NaN sentinel: still TBD (L0 §5.3)
-  }
-  CheckRange(path, v, d, r);
-  return TbdDouble{d, false};
+  return read.value;
 }
 
 bool ReadBool(const YAML::Node& sec, const char* key, const std::string& path, bool fallback) {
@@ -254,9 +233,11 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
   o.manip_grad_tol = ReadDouble(ik, "manip_grad_tol", o.manip_grad_tol, kNonNegative);
   o.v_eps = ReadDouble(ik, "v_eps", o.v_eps, kPositive);
 
-  // alpha_max: TBD in L3 §6, provisional in code. See the header's DISCREPANCY
-  // note — a TBD (or absent) key leaves the struct's provisional 0.26 in
-  // `options` and records the openness in `out.alpha_max`, so nothing here
+  // alpha_max: L3 §6 records `0.26 (provisional)`, which is the struct's own
+  // default (see the header's RESOLVED DISCREPANCY note). It is still read as a
+  // TBD-capable value because an explicit `TBD` in a config must stay
+  // representable: a TBD (or absent) key leaves the struct's provisional 0.26
+  // in `options` and records the openness in `out.alpha_max`, so nothing here
   // turns a TBD into a decided number without saying so.
   out.alpha_max =
       ReadTbd(ik, "alpha_max", IkKey("alpha_max"), out.alpha_max, Range{0.0, kPiOver2, false});

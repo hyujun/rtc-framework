@@ -1,5 +1,6 @@
 #include "rtc_controllers/catching/catching_params.hpp"
 
+#include "catching_yaml_read.hpp"
 #include <rtc_base/types/types.hpp>
 
 #include <cmath>
@@ -53,45 +54,36 @@ T ReadOptional(const YAML::Node& node, const char* key, T fallback) {
 /// as an empty node, so every key under it takes its doc default — itself TBD
 /// where the doc leaves it open, which the validator then refuses in the
 /// active configuration (fail-closed). A present section that is not a map is
-/// refused. Going through this helper rather than `parent[key][...]` matters:
-/// yaml-cpp throws `YAML::InvalidNode`, not `std::invalid_argument`, when a
-/// missing node is subscripted.
+/// refused. The READING is `params_detail::ReadSectionNode`, shared with
+/// catch_pose_ik_params.cpp; only the refusal's wording is this parser's.
 YAML::Node ReadSection(const YAML::Node& parent, const char* key) {
-  if (!parent.IsMap()) {
-    return YAML::Node();  // the parent section itself was absent
-  }
-  const YAML::Node child = parent[key];
-  if (!child || child.IsNull()) {
-    return YAML::Node();
-  }
-  if (!child.IsMap()) {
+  const params_detail::SectionRead sec = params_detail::ReadSectionNode(parent, key);
+  if (sec.kind == params_detail::SectionKind::kNotAMap) {
     Reject("section '", key, "' must be a map");
   }
-  return child;
+  return sec.node;
 }
 
 /// Read a scalar that may be the literal string "TBD" (or, per L0 §5.3, an
 /// unparseable/non-finite number — treated the same way). An absent key takes
 /// `fallback` (the doc default, itself possibly still-TBD); a present key
-/// that is neither a number nor "TBD" is refused.
+/// that is neither a number nor "TBD" is refused. The READING is
+/// `params_detail::ReadTbdScalar`, shared with catch_pose_ik_params.cpp. No
+/// range is applied here: an out-of-range number parses, and
+/// ValidateCatchingParams reports it (kRangeViolation) — unlike the sibling
+/// parser, which throws. That difference is by design and is pinned by
+/// test_catch_pose_ik_params.cpp (SharedKey* cases).
 TbdDouble ReadTbdDouble(const YAML::Node& node, const char* key, TbdDouble fallback) {
-  const YAML::Node v = node[key];
-  if (!v) {
-    return fallback;
+  const params_detail::TbdRead read = params_detail::ReadTbdScalar(node, key);
+  switch (read.kind) {
+    case params_detail::TbdReadKind::kAbsent:
+      return fallback;
+    case params_detail::TbdReadKind::kNotANumber:
+      Reject("'", key, "' is present but is neither a number nor the literal 'TBD'");
+    case params_detail::TbdReadKind::kRead:
+      break;
   }
-  if (v.IsScalar() && v.Scalar() == "TBD") {
-    return TbdDouble{};  // NaN, tbd = true
-  }
-  double d = std::numeric_limits<double>::quiet_NaN();
-  try {
-    d = v.as<double>();
-  } catch (const YAML::Exception&) {
-    Reject("'", key, "' is present but is neither a number nor the literal 'TBD'");
-  }
-  if (!std::isfinite(d)) {
-    return TbdDouble{d, true};  // NaN sentinel: still TBD (L0 §5.3)
-  }
-  return TbdDouble{d, false};
+  return read.value;
 }
 
 /// Read one hand pose array (`q_open`/`q_pre`/`q_close`) into `dst`, refusing

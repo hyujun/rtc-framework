@@ -13,15 +13,20 @@
 // a candidate file with swapped columns or a non-finite entry would otherwise
 // produce a plausible map rather than an error.
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
+#include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
 
 #include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -34,8 +39,12 @@ using rtc::catching::BatchRow;
 using rtc::catching::CatchPoseIkOptions;
 using rtc::catching::CatchPoseReason;
 using rtc::catching::CatchPoseReasonName;
+using rtc::catching::FormatCatchPoseIkOptions;
 using rtc::catching::ParseCandidateCsv;
+using rtc::catching::ParseCatchPoseIkParams;
 using rtc::catching::ParseSeedCsv;
+using rtc::catching::ResolveCatchFrame;
+using rtc::catching::ResolveCatchingTree;
 using rtc::catching::RunBatch;
 
 [[nodiscard]] CatchPoseIkOptions MapOptions() {
@@ -82,6 +91,12 @@ using rtc::catching::RunBatch;
   return std::memcmp(&a, &b, sizeof(double)) == 0;
 }
 
+/// nv of the 6R fixture arm. Every `for (j < result.nv)` loop below is preceded
+/// by an ASSERT against this: a result whose nv is 0 (which is what `Solve`'s
+/// earliest returns leave) would otherwise run the loop zero times and pass
+/// having checked nothing.
+constexpr int kFixtureNv = 6;
+
 struct Fixture {
   rtc::testing::Arm arm{rtc::testing::Arm6R()};
   Eigen::VectorXd seed{Eigen::VectorXd::Zero(arm.nv)};
@@ -119,6 +134,7 @@ TEST(CatchPoseIkBatchCsv, ColumnsRoundTripBitExactly) {
   const std::vector<BatchRow> rows =
       RunBatch(*f.arm.handle, f.arm.frame, cands, f.seeds, MapOptions());
   ASSERT_EQ(rows.size(), cands.size());
+  ASSERT_EQ(f.arm.nv, kFixtureNv);
   const std::string header = BatchCsvHeader(f.arm.nv);
 
   // The columns whose exactness the map depends on.
@@ -136,8 +152,9 @@ TEST(CatchPoseIkBatchCsv, ColumnsRoundTripBitExactly) {
   };
 
   bool saw_nontrivial = false;
+  int q_cells_checked = 0;
   for (const BatchRow& row : rows) {
-    const std::vector<std::string> cells = Cells(BatchCsvRow(row));
+    const std::vector<std::string> cells = Cells(BatchCsvRow(row, f.arm.nv));
     ASSERT_EQ(cells.size(), Cells(header).size());
     for (const auto& col : kDoubleCols) {
       const int i = ColumnOf(header, col.name);
@@ -153,14 +170,17 @@ TEST(CatchPoseIkBatchCsv, ColumnsRoundTripBitExactly) {
     }
     // q* likewise, for the reasons that leave a pose.
     if (row.result.reason == CatchPoseReason::kNone) {
+      ASSERT_EQ(row.result.nv, kFixtureNv) << "the q loop below would check nothing";
       for (int j = 0; j < row.result.nv; ++j) {
         const int i = ColumnOf(header, "q" + std::to_string(j));
         ASSERT_GE(i, 0);
         EXPECT_TRUE(SameBits(std::stod(cells.at(static_cast<std::size_t>(i))), row.result.q[j]))
             << "q" << j;
+        ++q_cells_checked;
       }
     }
   }
+  EXPECT_GT(q_cells_checked, 0) << "no candidate converged, so no q column was ever compared";
   EXPECT_TRUE(saw_nontrivial) << "every checked column was 0 or integral — the round-trip "
                                  "assertion proved nothing";
 }
@@ -178,8 +198,10 @@ TEST(CatchPoseIkBatchCsv, PoselessReasonsLeaveTheQColumnsEmpty) {
   ASSERT_EQ(rows.size(), 1U);
   ASSERT_EQ(rows[0].result.reason, CatchPoseReason::kSpeedTooLow);
   const std::string header = BatchCsvHeader(f.arm.nv);
-  const std::vector<std::string> cells = Cells(BatchCsvRow(rows[0]));
+  const std::vector<std::string> cells = Cells(BatchCsvRow(rows[0], f.arm.nv));
   EXPECT_EQ(cells.at(static_cast<std::size_t>(ColumnOf(header, "reason_name"))), "speed_too_low");
+  ASSERT_EQ(f.arm.nv, kFixtureNv);
+  ASSERT_EQ(rows[0].result.nv, kFixtureNv) << "the q loop below would check nothing";
   for (int j = 0; j < rows[0].result.nv; ++j) {
     const int i = ColumnOf(header, "q" + std::to_string(j));
     ASSERT_GE(i, 0);
@@ -192,8 +214,8 @@ TEST(CatchPoseIkBatchCsv, HeaderWidthMatchesRowWidth) {
   const std::vector<BatchRow> rows =
       RunBatch(*f.arm.handle, f.arm.frame, f.Candidates(1), f.seeds, MapOptions());
   const std::string header = BatchCsvHeader(f.arm.nv);
-  EXPECT_EQ(Cells(header).size(), Cells(BatchCsvRow(rows[0])).size());
-  EXPECT_EQ(CommaCount(header), CommaCount(BatchCsvRow(rows[0])));
+  EXPECT_EQ(Cells(header).size(), Cells(BatchCsvRow(rows[0], f.arm.nv)).size());
+  EXPECT_EQ(CommaCount(header), CommaCount(BatchCsvRow(rows[0], f.arm.nv)));
 
   // The poseless row ends in nv empty fields, which is where a splitter that
   // drops trailing empties reports the wrong width.
@@ -201,12 +223,72 @@ TEST(CatchPoseIkBatchCsv, HeaderWidthMatchesRowWidth) {
   stalled.id = 9;
   stalled.p_c = Eigen::Vector3d(0.2, 0.1, 0.3);
   stalled.v_ball = Eigen::Vector3d::Zero();
-  const std::string poseless =
-      BatchCsvRow(RunBatch(*f.arm.handle, f.arm.frame, {stalled}, f.seeds, MapOptions()).at(0));
+  const std::string poseless = BatchCsvRow(
+      RunBatch(*f.arm.handle, f.arm.frame, {stalled}, f.seeds, MapOptions()).at(0), f.arm.nv);
   EXPECT_EQ(CommaCount(header), CommaCount(poseless));
   EXPECT_EQ(Cells(header).size(), Cells(poseless).size());
   EXPECT_GE(ColumnOf(BatchCsvHeader(f.arm.nv), "q" + std::to_string(f.arm.nv - 1)), 0);
   EXPECT_LT(ColumnOf(BatchCsvHeader(f.arm.nv), "q" + std::to_string(f.arm.nv)), 0);
+}
+
+TEST(CatchPoseIkBatchCsv, EarlyExitReasonsAreAsWideAsTheHeader) {
+  // `Solve` returns kOptionsInvalid (and kModelInvalid, kJointOrderMismatch)
+  // BEFORE it records an nv, so result.nv is 0 for them. A row sized off the
+  // result is then nv cells short, the reader rejects the file, and the
+  // fail-closed verdict never reaches the map. Driven through RunBatch with
+  // the very options a TBD threshold produces (non-finite manipulability_min).
+  Fixture f;
+  ASSERT_EQ(f.arm.nv, kFixtureNv);
+  CatchPoseIkOptions bad = MapOptions();
+  bad.manipulability_min = std::numeric_limits<double>::quiet_NaN();
+  const std::vector<BatchRow> rows =
+      RunBatch(*f.arm.handle, f.arm.frame, f.Candidates(1), f.seeds, bad);
+  ASSERT_EQ(rows.size(), 1U);
+  ASSERT_EQ(rows[0].result.reason, CatchPoseReason::kOptionsInvalid);
+  // The premise of the bug, pinned so that this case cannot go vacuous if
+  // Solve ever starts recording nv earlier.
+  ASSERT_EQ(rows[0].result.nv, 0);
+
+  const std::string header = BatchCsvHeader(f.arm.nv);
+  const std::string line = BatchCsvRow(rows[0], f.arm.nv);
+  const std::vector<std::string> cells = Cells(line);
+  ASSERT_EQ(cells.size(), Cells(header).size());
+  EXPECT_EQ(CommaCount(line), CommaCount(header));
+  EXPECT_EQ(cells.at(static_cast<std::size_t>(ColumnOf(header, "reason_name"))), "options_invalid");
+  EXPECT_EQ(cells.at(static_cast<std::size_t>(ColumnOf(header, "nv"))), "0")
+      << "the nv column stays the solver's number; only the row WIDTH is the header's";
+  for (int j = 0; j < kFixtureNv; ++j) {
+    const int i = ColumnOf(header, "q" + std::to_string(j));
+    ASSERT_GE(i, 0);
+    EXPECT_TRUE(cells.at(static_cast<std::size_t>(i)).empty()) << "q" << j;
+  }
+}
+
+TEST(CatchPoseIkBatchCsv, ModelInvalidRowIsAsWideAsTheHeader) {
+  // The second early exit, reached the way a misspelt frame reaches it: frame
+  // id 0 is what RtModelHandle::GetFrameId answers for an unknown name.
+  Fixture f;
+  ASSERT_EQ(f.arm.nv, kFixtureNv);
+  const std::vector<BatchRow> rows =
+      RunBatch(*f.arm.handle, /*catch_frame=*/0, f.Candidates(1), f.seeds, MapOptions());
+  ASSERT_EQ(rows.size(), 1U);
+  ASSERT_EQ(rows[0].result.reason, CatchPoseReason::kModelInvalid);
+  const std::string header = BatchCsvHeader(f.arm.nv);
+  const std::string line = BatchCsvRow(rows[0], f.arm.nv);
+  EXPECT_EQ(Cells(line).size(), Cells(header).size());
+  EXPECT_EQ(CommaCount(line), CommaCount(header));
+}
+
+TEST(CatchPoseIkBatchCsv, APoseIsNeverTruncatedOrPaddedIntoTheColumns) {
+  Fixture f;
+  const std::vector<BatchRow> rows =
+      RunBatch(*f.arm.handle, f.arm.frame, f.Candidates(1), f.seeds, MapOptions());
+  ASSERT_EQ(rows.size(), 1U);
+  ASSERT_EQ(rows[0].result.reason, CatchPoseReason::kNone);
+  ASSERT_EQ(rows[0].result.nv, kFixtureNv);
+  EXPECT_THROW((void)BatchCsvRow(rows[0], kFixtureNv - 1), std::invalid_argument);
+  EXPECT_THROW((void)BatchCsvRow(rows[0], kFixtureNv + 1), std::invalid_argument);
+  EXPECT_NO_THROW((void)BatchCsvRow(rows[0], kFixtureNv));
 }
 
 // ── 2. the batch is a pure function of the candidate set ────────────────────
@@ -222,11 +304,11 @@ TEST(CatchPoseIkBatchPurity, ReorderingCandidatesDoesNotChangeAnyVerdict) {
   ASSERT_EQ(a.size(), b.size());
   std::map<std::int64_t, std::string> by_id;
   for (const BatchRow& r : b) {
-    by_id[r.candidate.id] = BatchCsvRow(r);
+    by_id[r.candidate.id] = BatchCsvRow(r, f.arm.nv);
   }
   for (const BatchRow& r : a) {
     ASSERT_TRUE(by_id.count(r.candidate.id)) << r.candidate.id;
-    EXPECT_EQ(BatchCsvRow(r), by_id.at(r.candidate.id)) << "id " << r.candidate.id;
+    EXPECT_EQ(BatchCsvRow(r, f.arm.nv), by_id.at(r.candidate.id)) << "id " << r.candidate.id;
   }
 }
 
@@ -245,6 +327,8 @@ TEST(CatchPoseIkBatchPurity, MatchesAnInProcessSolveBitForBit) {
     EXPECT_TRUE(SameBits(direct.w6, rows[i].result.w6));
     EXPECT_TRUE(SameBits(direct.pos_error, rows[i].result.pos_error));
     EXPECT_EQ(direct.iterations, rows[i].result.iterations);
+    ASSERT_EQ(direct.nv, kFixtureNv) << "the q loop below would check nothing";
+    ASSERT_EQ(rows[i].result.nv, kFixtureNv);
     for (int j = 0; j < direct.nv; ++j) {
       EXPECT_TRUE(SameBits(direct.q[j], rows[i].result.q[j])) << "candidate " << i << " q" << j;
     }
@@ -268,6 +352,8 @@ TEST(CatchPoseIkBatchPurity, SeedSelectionIsPerCandidate) {
   ik.Resize(f.arm.nv);
   const auto with_other =
       ik.Solve(*f.arm.handle, f.arm.frame, cands[1].p_c, cands[1].v_ball, other, MapOptions());
+  ASSERT_EQ(with_other.nv, kFixtureNv) << "the q loop below would check nothing";
+  ASSERT_EQ(rows[1].result.nv, kFixtureNv);
   for (int j = 0; j < with_other.nv; ++j) {
     EXPECT_TRUE(SameBits(with_other.q[j], rows[1].result.q[j])) << "q" << j;
   }
@@ -357,6 +443,187 @@ TEST(CatchPoseIkBatchParse, SeedCsvRejectsDuplicatesAndRaggedRows) {
 
   std::istringstream empty("\n# nothing\n");
   EXPECT_THROW((void)ParseSeedCsv(empty), std::invalid_argument);
+}
+
+TEST(CatchPoseIkBatchParse, SeedHeaderIsRecognisedAfterCommentAndBlankLines) {
+  // The header is the first line that carries anything, not physical line 1.
+  std::istringstream in(
+      "# seeds for the iiwa wait-pose sweep\n"
+      "\n"
+      "seed_id,q0,q1\n"
+      "0,0.1,0.2\n"
+      "1,0.3,0.4\n");
+  const std::map<int, Eigen::VectorXd> seeds = ParseSeedCsv(in);
+  ASSERT_EQ(seeds.size(), 2U);
+  EXPECT_EQ(seeds.at(0), Eigen::Vector2d(0.1, 0.2));
+  EXPECT_EQ(seeds.at(1), Eigen::Vector2d(0.3, 0.4));
+
+  // ...and ONLY the first such line: a second `seed_id,...` row is data that
+  // does not parse, not another header to be skipped.
+  std::istringstream twice("seed_id,q0,q1\n0,0.1,0.2\nseed_id,q0,q1\n");
+  EXPECT_THROW((void)ParseSeedCsv(twice), std::invalid_argument);
+}
+
+TEST(CatchPoseIkBatchParse, CandidateIdIsSixtyFourBit) {
+  // BatchCandidate::id is int64; ids past 2^31 come from a flattened grid index.
+  constexpr std::int64_t kBig = 3000000000LL;
+  ASSERT_GT(kBig, static_cast<std::int64_t>(std::numeric_limits<int>::max()));
+  Fixture f;
+  const rtc::testing::Target t = rtc::testing::TargetAt(f.arm, f.seed, 6.0);
+  std::ostringstream csv;
+  csv.precision(17);
+  csv << "id,p_c_x,p_c_y,p_c_z,v_x,v_y,v_z\n"
+      << "3000000000," << t.p_c.x() << ',' << t.p_c.y() << ',' << t.p_c.z() << ',' << t.v_ball.x()
+      << ',' << t.v_ball.y() << ',' << t.v_ball.z() << '\n';
+  std::istringstream in(csv.str());
+  const std::vector<BatchCandidate> got = ParseCandidateCsv(in);
+  ASSERT_EQ(got.size(), 1U);
+  EXPECT_EQ(got[0].id, kBig);
+
+  // Round trip into the result row python joins on.
+  const std::vector<BatchRow> rows =
+      RunBatch(*f.arm.handle, f.arm.frame, got, f.seeds, MapOptions());
+  ASSERT_EQ(rows.size(), 1U);
+  const std::string header = BatchCsvHeader(f.arm.nv);
+  const std::vector<std::string> cells = Cells(BatchCsvRow(rows[0], f.arm.nv));
+  EXPECT_EQ(cells.at(static_cast<std::size_t>(ColumnOf(header, "id"))), "3000000000");
+
+  // seed_id stays an int, and an id that overflows even 64 bits is refused.
+  std::istringstream too_big(
+      "id,p_c_x,p_c_y,p_c_z,v_x,v_y,v_z\n99999999999999999999,0,0,0,1,2,3\n");
+  EXPECT_THROW((void)ParseCandidateCsv(too_big), std::invalid_argument);
+}
+
+// ── 3b. the catch frame cannot be misnamed quietly ──────────────────────────
+
+TEST(CatchPoseIkBatchFrame, KnownFrameResolvesToTheHandlesId) {
+  Fixture f;
+  ASSERT_NE(f.arm.frame, 0U);
+  EXPECT_EQ(ResolveCatchFrame(f.arm.handle->GetModel(), "catch_frame"), f.arm.frame);
+}
+
+TEST(CatchPoseIkBatchFrame, UnknownFrameIsRefusedNamingFrameAndModel) {
+  Fixture f;
+  const pinocchio::Model& model = f.arm.handle->GetModel();
+  // The premise: the handle answers a typo with the universe frame, silently.
+  ASSERT_EQ(f.arm.handle->GetFrameId("catch_frmae"), 0U);
+  ASSERT_FALSE(model.name.empty());
+  try {
+    (void)ResolveCatchFrame(model, "catch_frmae");
+    FAIL() << "a misspelt frame resolved";
+  } catch (const std::invalid_argument& e) {
+    const std::string what = e.what();
+    EXPECT_NE(what.find("catch_frmae"), std::string::npos) << what;
+    EXPECT_NE(what.find(model.name), std::string::npos) << what;
+  }
+}
+
+TEST(CatchPoseIkBatchFrame, UniverseFrameIsRefused) {
+  // It EXISTS, so an existFrame check alone would pass it, and Solve would then
+  // reject every candidate as kModelInvalid (catch_frame == 0).
+  Fixture f;
+  const pinocchio::Model& model = f.arm.handle->GetModel();
+  ASSERT_TRUE(model.existFrame("universe"));
+  EXPECT_THROW((void)ResolveCatchFrame(model, "universe"), std::invalid_argument);
+}
+
+// ── 3c. the params file cannot be misread as "all defaults" ─────────────────
+
+constexpr const char* kPlannerBody =
+    "planner:\n"
+    "  ik:\n"
+    "    k_manip: 0.5\n"
+    "  catchability:\n"
+    "    manipulability_min:\n"
+    "      arm_5row: 0.174\n";
+
+[[nodiscard]] std::string Indented(const std::string& body, int spaces) {
+  std::istringstream in(body);
+  std::string line;
+  std::string out;
+  while (std::getline(in, line)) {
+    out += std::string(static_cast<std::size_t>(spaces), ' ') + line + '\n';
+  }
+  return out;
+}
+
+/// The tree must not merely be FOUND — it must be the one that parses to the
+/// file's numbers, which differ from the in-code defaults on purpose.
+void ExpectResolvesToTheFilesValues(const std::string& yaml, const std::string& want_path) {
+  const CatchPoseIkOptions defaults{};
+  ASSERT_NE(defaults.k_manip, 0.5);
+  ASSERT_NE(defaults.manipulability_min, 0.174);
+  const rtc::catching::CatchingTree tree = ResolveCatchingTree(YAML::Load(yaml), "test.yaml");
+  EXPECT_EQ(tree.path, want_path);
+  const CatchPoseIkOptions opt = ParseCatchPoseIkParams(tree.node).options;
+  EXPECT_DOUBLE_EQ(opt.k_manip, 0.5);
+  EXPECT_DOUBLE_EQ(opt.manipulability_min, 0.174);
+}
+
+TEST(CatchPoseIkBatchParamsTree, AcceptsTopLevelCatching) {
+  ExpectResolvesToTheFilesValues("catching:\n" + Indented(kPlannerBody, 2), "catching");
+}
+
+TEST(CatchPoseIkBatchParamsTree, AcceptsTheShippedControllerConfigShape) {
+  // `<controller>: {catching: {...}}` with sibling keys, as the shipped files
+  // have. The old resolver returned this file's ROOT, which has no `planner`,
+  // and the parser then defaulted everything without a word.
+  const std::string yaml =
+      "demo_catching_controller:\n"
+      "  command_type: \"position\"\n"
+      "  diagnostic:\n"
+      "    hand_step: true\n"
+      "  catching:\n" +
+      Indented(kPlannerBody, 4) +
+      "  topics:\n"
+      "    arm: {}\n";
+  ExpectResolvesToTheFilesValues(yaml, "demo_catching_controller.catching");
+}
+
+TEST(CatchPoseIkBatchParamsTree, AcceptsTheBareTree) {
+  ExpectResolvesToTheFilesValues(kPlannerBody, "<root>");
+}
+
+TEST(CatchPoseIkBatchParamsTree, RejectsEverythingElseNamingTheFile) {
+  const char* const kRejected[] = {
+      // two controllers: which one is a guess
+      "a:\n  catching:\n    planner: {}\nb:\n  catching:\n    planner: {}\n",
+      // ros__parameters-style nesting, one level too deep
+      "node:\n  ros__parameters:\n    catching:\n      planner: {}\n",
+      // a tree with neither marker
+      "reference:\n  omega: 10.0\n",
+      // markers of the wrong type
+      "catching: 3\n",
+      "planner: [1, 2]\n",
+      // both markers at once
+      "catching:\n  planner: {}\nplanner:\n  ik: {}\n",
+      // not a map at all
+      "[1, 2, 3]\n",
+      "",
+  };
+  for (const char* yaml : kRejected) {
+    try {
+      (void)ResolveCatchingTree(YAML::Load(yaml), "some/params.yaml");
+      ADD_FAILURE() << "resolved a tree out of:\n" << yaml;
+    } catch (const std::invalid_argument& e) {
+      EXPECT_NE(std::string(e.what()).find("some/params.yaml"), std::string::npos) << e.what();
+    }
+  }
+}
+
+TEST(CatchPoseIkBatchParamsTree, FormatShowsTheResolvedNumbers) {
+  CatchPoseIkOptions opt;
+  opt.k_manip = 0.5;
+  opt.manipulability_min = 0.174;
+  opt.definition = rtc::catching::ManipDefinition::kArm6Row;
+  const std::string text = FormatCatchPoseIkOptions(opt);
+  EXPECT_NE(text.find("planner.ik.k_manip 0.5\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("planner.catchability.definition arm_6row\n"), std::string::npos) << text;
+  // Round-trip precision, like the CSV: the line carries the double itself.
+  const std::string key = "manipulability_min ";
+  const std::size_t at = text.rfind(key);
+  ASSERT_NE(at, std::string::npos) << text;
+  EXPECT_TRUE(SameBits(std::stod(text.substr(at + key.size())), 0.174)) << text;
 }
 
 // ── 4. reason names are a usable histogram key ──────────────────────────────

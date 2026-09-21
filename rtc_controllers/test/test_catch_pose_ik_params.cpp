@@ -585,4 +585,91 @@ TEST(CatchPoseIkParams, SharesTheArm5RowKeyWithTheG0CValidator) {
   EXPECT_DOUBLE_EQ(ik.options.manipulability_min, g0c.planner_catchability_manip_min_arm5row.value);
 }
 
+// The two parsers share how the key is READ and differ, by design, in how an
+// out-of-range value is REPORTED (catch_pose_ik_params.hpp §Scope). Both halves
+// are pinned here so the documented difference cannot drift.
+
+TEST(CatchPoseIkParams, SharedKeyIsReadTheSameWayByBothParsers) {
+  // Every spelling the shared reader classifies, and the record each yields.
+  const struct {
+    const char* spelling;
+    bool tbd;
+    double value;  // compared only when resolved
+  } kCases[] = {
+      {"0.42", false, 0.42}, {"0", false, 0.0},   {"1e-3", false, 1e-3},
+      {"TBD", true, 0.0},    {".nan", true, 0.0}, {".inf", true, 0.0},
+  };
+
+  for (const auto& c : kCases) {
+    SCOPED_TRACE(c.spelling);
+    const YAML::Node root = YAML::Load(
+        std::string("planner:\n  catchability:\n    manipulability_min:\n      arm_5row: ") +
+        c.spelling + "\n");
+    const rtc::catching::TbdDouble ik = ParseCatchPoseIkParams(root).manipulability_min_arm_5row;
+    const rtc::catching::TbdDouble g0c =
+        rtc::catching::ParseCatchingParams(root).planner_catchability_manip_min_arm5row;
+    EXPECT_EQ(ik.tbd, c.tbd);
+    EXPECT_EQ(g0c.tbd, c.tbd);
+    if (!c.tbd) {
+      EXPECT_DOUBLE_EQ(ik.value, c.value);
+      EXPECT_DOUBLE_EQ(g0c.value, c.value);
+    }
+  }
+
+  // Absent: the same default from both.
+  const YAML::Node absent = CatchabilityRoot();
+  const rtc::catching::TbdDouble ik = ParseCatchPoseIkParams(absent).manipulability_min_arm_5row;
+  const rtc::catching::TbdDouble g0c =
+      rtc::catching::ParseCatchingParams(absent).planner_catchability_manip_min_arm5row;
+  EXPECT_FALSE(ik.tbd);
+  EXPECT_FALSE(g0c.tbd);
+  EXPECT_DOUBLE_EQ(ik.value, g0c.value);
+
+  // Neither a number nor `TBD`: refused by both, with the same exception type.
+  const YAML::Node words =
+      YAML::Load("planner:\n  catchability:\n    manipulability_min:\n      arm_5row: lowish\n");
+  EXPECT_THROW((void)ParseCatchPoseIkParams(words), std::invalid_argument);
+  EXPECT_THROW((void)rtc::catching::ParseCatchingParams(words), std::invalid_argument);
+}
+
+TEST(CatchPoseIkParams, SharedKeyOutOfRangeIsThrownHereAndReportedThere) {
+  YAML::Node root = CatchabilityRoot();
+  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = -0.1;
+
+  // This parser: `options` must be ready for Solve, so it refuses outright.
+  ExpectRejectMentioning(root, "'planner.catchability.manipulability_min.arm_5row'");
+
+  // The G0-C parser: the value PARSES, as written...
+  rtc::catching::CatchingParams g0c;
+  ASSERT_NO_THROW(g0c = rtc::catching::ParseCatchingParams(root));
+  EXPECT_FALSE(g0c.planner_catchability_manip_min_arm5row.tbd);
+  EXPECT_DOUBLE_EQ(g0c.planner_catchability_manip_min_arm5row.value, -0.1);
+
+  // ...and the validator is what refuses it, as a range violation on the key.
+  const rtc::catching::CatchingValidationReport report =
+      rtc::catching::ValidateCatchingParams(g0c, /*control_rate_hz=*/500.0,
+                                            /*real_arm_config=*/false);
+  EXPECT_FALSE(report.armable);
+  bool reported = false;
+  for (std::size_t i = 0; i < report.failure_count; ++i) {
+    const rtc::catching::CatchingValidationEntry& e = report.failures[i];
+    if (e.reason == rtc::catching::CatchingValidationReason::kRangeViolation &&
+        std::string_view(e.key) == "planner.catchability.manipulability_min.arm_5row") {
+      reported = true;
+    }
+  }
+  EXPECT_TRUE(reported) << "the out-of-range threshold was parsed but never reported";
+
+  // Control: the same report for an in-range value does NOT carry that entry,
+  // so the assertion above is about -0.1 and not about the rest of the config.
+  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = 0.1;
+  const rtc::catching::CatchingValidationReport ok =
+      rtc::catching::ValidateCatchingParams(rtc::catching::ParseCatchingParams(root), 500.0, false);
+  for (std::size_t i = 0; i < ok.failure_count; ++i) {
+    EXPECT_FALSE(
+        ok.failures[i].reason == rtc::catching::CatchingValidationReason::kRangeViolation &&
+        std::string_view(ok.failures[i].key) == "planner.catchability.manipulability_min.arm_5row");
+  }
+}
+
 }  // namespace

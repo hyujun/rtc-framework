@@ -1,8 +1,7 @@
 // ── Catch-pose IK YAML schema (dynamic_catching S3.5a) ──────────────────────
-// The parser `catch_pose_ik.hpp` said did not exist yet ("No YAML parser yet
-// (Q4): the planner binding that gets one later has to produce exactly this
-// struct"). It reads `planner.ik.*` plus the two `planner.catchability.*` keys
-// that decide the gate, and produces exactly that struct. Non-RT: the same G2
+// The YAML parser for `CatchPoseIkOptions` — the one S1.9 left open as Q4. It
+// reads `planner.ik.*` plus the two `planner.catchability.*` keys that decide
+// the gate, and produces exactly that struct. Non-RT: the same G2
 // schema-layer shape as its siblings under `params/` — POD + a free
 // `ParseXxxParams`, yaml-cpp only, rclcpp-free, called once at configure time.
 //
@@ -28,9 +27,21 @@
 // `planner.catchability.manipulability_min.arm_5row` (+ its invented
 // `provisional` flag, whose rationale lives in params/catching_params.cpp) —
 // unavoidable, because that key is both a G0-C cross-constraint and the gate
-// threshold `CatchPoseIkOptions` must carry. Both read it the same way and
-// with the same default, and the L3 §6 table is the single source they agree
-// against.
+// threshold `CatchPoseIkOptions` must carry. Precisely what the two share and
+// what they do not:
+//   - SHARED — how the key is READ. Both go through the one private helper
+//     (`params_detail::ReadTbdScalar`, src/params/catching_yaml_read.hpp): an
+//     absent key takes the default, the literal `TBD` and a non-finite number
+//     are still-TBD, a finite number is resolved, and anything else is refused
+//     with `std::invalid_argument`. The default is the same number (L3 §6).
+//   - NOT SHARED — how an OUT-OF-RANGE value is reported. `arm_5row: -0.1`
+//     makes `ParseCatchPoseIkParams` THROW, because `options` must be ready to
+//     hand to `Solve`; `ParseCatchingParams` PARSES it and
+//     `ValidateCatchingParams` reports `kRangeViolation` against the key,
+//     because that layer's contract is a full report rather than a first
+//     failure. Both refuse the value; neither lets it run.
+// The SharedKey* cases in test/test_catch_pose_ik_params.cpp pin both halves,
+// so the documented difference cannot drift into an undocumented one.
 //
 // ── Fields of `CatchPoseIkOptions` NOT reachable from YAML ──────────────────
 // L3 §6 names no key for them, and this parser does not invent one; they keep
@@ -70,7 +81,8 @@
 //   - DEFAULTED: an absent key, and an absent `planner.ik` / `planner` /
 //     `planner.catchability` section. The result then equals the in-code
 //     `CatchPoseIkOptions` default, which is the L3 §6 default for every key
-//     but `alpha_max` (see the DISCREPANCY note below).
+//     — `alpha_max` included, since the reconciliation recorded in the
+//     RESOLVED DISCREPANCY note above.
 //   - REPORTED: the two keys L3 §6 marks removed in v0.5 (`planner.ik.lambda`,
 //     `planner.ik.manip_min`). A deployed config may still carry them and
 //     their meaning is known, so they are not typos: they are handed back in
@@ -106,8 +118,9 @@ struct CatchPoseIkRetiredKeys {
 /// The two TBD keys fail in different directions on purpose:
 ///
 ///   - `alpha_max` TBD leaves `options.alpha_max` at its in-code provisional
-///     value (≈15°, declared as such in catch_pose_ik.hpp). The code owns a
-///     number here that the doc has not fixed; `alpha_max.tbd` is what says so.
+///     value (≈15°, declared as such in catch_pose_ik.hpp, and recorded as
+///     provisional in L3 §6). The number is a stand-in nobody has closed with
+///     evidence yet; `alpha_max.tbd` is what says the config did not decide it.
 ///   - A TBD ACTIVE threshold instead makes `options.manipulability_min`
 ///     non-finite, so `CatchPoseIk::Solve` refuses the options outright
 ///     (`kOptionsInvalid`). There is no provisional stand-in to fall back on:
@@ -124,7 +137,11 @@ struct CatchPoseIkConfig {
   /// defaults.
   CatchPoseIkOptions options{};
 
-  /// `planner.ik.alpha_max` [rad], 0–π/2. L3 §6 default is `TBD`.
+  /// `planner.ik.alpha_max` [rad], 0–π/2. L3 §6 records `0.26 (provisional)`,
+  /// which is `CatchPoseIkOptions::alpha_max`'s own default. This stays a
+  /// `TbdDouble` — default-constructed, i.e. "not given" — because an explicit
+  /// `TBD` in a config must remain representable, and an absent key must stay
+  /// distinguishable from a decided one.
   TbdDouble alpha_max{};
 
   /// `planner.catchability.manipulability_min.arm_5row`, ≥ 0. The default is

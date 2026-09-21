@@ -212,13 +212,15 @@ enum class CatchPoseReason : std::uint8_t {
 
 /// Tuning for one Solve(). Defaults mirror L3 §6 where a key exists there; the
 /// rest are provisional and marked as such in the docs until S3.5a measures
-/// them. No YAML parser yet (Q4): the planner binding that gets one later has
-/// to produce exactly this struct.
+/// them. The YAML parser (the Q4 this comment used to leave open) is
+/// `ParseCatchPoseIkParams` in catch_pose_ik_params.hpp: the offline map and
+/// the planner binding both obtain this struct from it, so neither resolves a
+/// key on its own.
 struct CatchPoseIkOptions {
   // ── Acceptance (L3 §4.2) ──────────────────────────────────────────────────
   int max_iter{20};        ///< `planner.ik.max_iter`
   double eps_pos{0.002};   ///< `planner.ik.eps_pos` [m]
-  double alpha_max{0.26};  ///< `planner.ik.alpha_max` [rad] — TBD in L3, provisional ≈15°
+  double alpha_max{0.26};  ///< `planner.ik.alpha_max` [rad] — provisional ≈15° (L3 §6 too)
 
   // ── Step (L3 §4.2) ────────────────────────────────────────────────────────
   double rho{0.1};              ///< `planner.ik.rho` [m/rad] — task weight, see note 1 above

@@ -20,6 +20,7 @@
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include <Eigen/Core>
+#include <yaml-cpp/yaml.h>
 
 #include <cstdint>
 #include <iosfwd>
@@ -58,17 +59,72 @@ struct BatchRow {
 [[nodiscard]] std::vector<BatchCandidate> ParseCandidateCsv(std::istream& in);
 
 /// Read seeds from `seed_id,q0,q1,...`. Every row must have the same width.
+/// Blank lines and `#` comments are skipped, and an optional `seed_id,...`
+/// header is recognised as the first line that is NOT skipped — not as
+/// physical line 1, which a leading comment would push it off.
 /// Throws `std::invalid_argument` on a duplicate id or a ragged row.
 [[nodiscard]] std::map<int, Eigen::VectorXd> ParseSeedCsv(std::istream& in);
 
 /// CSV header matching `BatchCsvRow`, with `nv` trailing `q<i>` columns.
 [[nodiscard]] std::string BatchCsvHeader(int nv);
 
-/// One result row. Doubles are written with enough digits to round-trip
-/// exactly, so the map's numbers are the solver's numbers and not a rendering
-/// of them. `q*` columns are written only for the reasons that leave a pose
-/// (see `CatchPoseIkResult::q`); otherwise they are empty.
-[[nodiscard]] std::string BatchCsvRow(const BatchRow& row);
+/// One result row, exactly as wide as `BatchCsvHeader(nv)`. Doubles are
+/// written with enough digits to round-trip exactly, so the map's numbers are
+/// the solver's numbers and not a rendering of them. `q*` columns are written
+/// only for the reasons that leave a pose (see `CatchPoseIkResult::q`);
+/// otherwise they are empty.
+///
+/// The width comes from `nv` — the HEADER's — and never from `row.result.nv`:
+/// `Solve` returns `kOptionsInvalid` / `kModelInvalid` / `kJointOrderMismatch`
+/// before it records an nv at all, and a row sized off the result would come
+/// out short for precisely the fail-closed verdicts, so the reader would
+/// reject the file instead of seeing them.
+///
+/// @throws std::invalid_argument if the result carries a pose whose width is
+///         not `nv` — a posture is never truncated or padded into the columns.
+[[nodiscard]] std::string BatchCsvRow(const BatchRow& row, int nv);
+
+/// Resolve the catch frame by name, failing closed.
+///
+/// `RtModelHandle::GetFrameId` answers an unknown name with 0 (the universe
+/// frame) rather than an error, and `Solve` then rejects every candidate as
+/// `kModelInvalid` — so a misspelt frame, or a sub-model that does not carry
+/// it, would produce a complete, well-formed map that says nothing is
+/// catchable. This is the check that turns that into an error up front.
+///
+/// @throws std::invalid_argument naming the frame and the model if the model
+///         has no such frame, or if the name is the universe frame itself.
+[[nodiscard]] pinocchio::FrameIndex ResolveCatchFrame(const pinocchio::Model& model,
+                                                      std::string_view frame_name);
+
+/// Where a params file keeps its `catching:` tree.
+struct CatchingTree {
+  YAML::Node node;   ///< the tree `ParseCatchPoseIkParams` takes
+  std::string path;  ///< where it was found, e.g. `<controller>.catching`
+};
+
+/// Locate the `catching:` tree in a loaded params file, failing closed.
+///
+/// Exactly three shapes are accepted:
+///   (a) the root has a `catching` map                         → `catching`
+///   (b) the root is a single-key map whose value has one —
+///       the shipped controller config, `<controller>: {catching: …}`
+///                                                → `<controller>.catching`
+///   (c) the root has a `planner` map — it IS the tree          → `<root>`
+/// Anything else throws. In particular the root is never used as a fallback:
+/// the parser defaults every absent key, so handing it a wrapper it cannot see
+/// through yields the in-code defaults with no error at all.
+///
+/// @param root   the loaded file.
+/// @param source what to call the file in a message (its path).
+/// @throws std::invalid_argument naming `source` and the shapes looked for; also
+///         when both (a) and (c) match, since which tree was meant is a guess.
+[[nodiscard]] CatchingTree ResolveCatchingTree(const YAML::Node& root, const std::string& source);
+
+/// The options as `key value` lines, doubles at round-trip precision — what
+/// `--print-options` shows, so that which tuning a run actually used is
+/// something one can look at rather than infer.
+[[nodiscard]] std::string FormatCatchPoseIkOptions(const CatchPoseIkOptions& opt);
 
 /// Solve every candidate, in the given order.
 ///
