@@ -1,6 +1,6 @@
 # dynamic_catching — 전체 구현 계획 (living document)
 
-- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541), **S2 완료** (2026-09-20, PR #545~#549 — S2.3b 는 S4.1 후), **S1.9 완료** (2026-09-20), **S3a 완료** (2026-09-20, PR #553), **S4a 완료** (2026-09-21, 브랜치 `feat/s4a-hand-timing` — S4.3 실기는 S10). 그 뒤 S3.5a (S3.2·S1.9·S2.3a 충족, S2.3b 는 S4.1 후). S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
+- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541), **S2 완료** (2026-09-20, PR #545~#549; **S2.3b 2026-09-21**), **S1.9 완료** (2026-09-20), **S3a 완료** (2026-09-20, PR #553), **S4a 완료** (2026-09-21, 브랜치 `feat/s4a-hand-timing` — S4.3 실기는 S10). **S3.5a 완료** (2026-09-21 — 도구 + 두 로봇 지도, PASS(provisional); §11 지도 결과). S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
 - 최종 갱신: 2026-09-21 (P1b 손 자세 탐색·S4.5 재실행·D-3 P1b 판정 §4.4 S4a·§5.1; S4a 착수 전 코드 대조·범위 결정 §4.4 S4a; S3a 게이트 결과 §4.4 S3a·§5.1·§11, D-3 ε 하한 §7.3)
 - Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
@@ -143,7 +143,7 @@ S0 ─┬─ S1  : S1.1–S1.8            (S1.3 의 D-2 변환 함수는 S0.6 �
     ├─ S3a : S3.1a, S3.2*, S3.3, S3.4          (* S0.8 승인 후; S3.7·S3.8 은 2026-09-20 결정으로 제외 — §4.4)
     └─ S4a : S4.0 → S4.1, S4.2, S4.5                (S4.3 실기 측정은 2026-09-20 결정으로 S10 — §4.4)
 
-S4.1 ──────────────────────────────► S2.3b (포켓 중심 offset)
+S4.5 ──────────────────────────────► S2.3b (포켓 중심 offset)
 S1, S2.1 ──────────────────────────► S1.9 (IK 회전 행이 S2.1 의 축 정렬 회전벡터를 쓴다 — 2026-09-19 사용자 결정)
 S0.7, S1.9, S2.3a, S2.3b, S3.2 ────► S3.5a (kinematic catchability 지도)
 S3.5a, S4.2, S4.5, S2.5, S1.5, S1.7 ► S4.4 (go/no-go)
@@ -162,9 +162,10 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 |---|---|---|
 | S0 결정·문서 v0.5·계약 | 완료 (2026-09-19) | S0.2 W 기록 칸 전부 채움. S0.3 설계 문서 12개(v0.5 헤더) 동기화, 이 문서 포함 `validate_docs` 13 files clean. 정합화 개정 (§7.4). 승인: issue #537 코멘트. S0.7 필요 지평 0.46–0.86 s (R2 지배)·`kCap` 40 제안, 0.5 s profile 부족 (§4.4 S0 결과). S0.9 검정력 표 (§1a) |
 | S1 순수 수치 코어 | S1.1~S1.8 완료 (2026-09-19, PR #541), S1.9 는 S2.1 후 | 이식·회귀·RT·시간 PASS, 검증기 PASS, S1.8 PASS (G7-C 임계 NOT_EVALUATED), backfill NOT_EVALUATED(S3.6) — §4.4 S1 결과 |
-| S2 기존 rtc_* 일반화 | 완료 (2026-09-20, PR #545~#549 + 마감 PR) — S2.3b 는 S4.1 후 | se3·동등성·CLIK·extra frame PASS, 가속 도출 PASS(provisional), G5-C solve time 예산 NOT_EVALUATED — §4.4 S2 결과 |
+| S2 기존 rtc_* 일반화 | 완료 (2026-09-20, PR #545~#549 + 마감 PR). **S2.3b 완료 (2026-09-21)** | se3·동등성·CLIK·extra frame PASS, 가속 도출 PASS(provisional), G5-C solve time 예산 NOT_EVALUATED — §4.4 S2 결과. S2.3b: 두 로봇의 `catch_frame.xyz` 를 S4.5 실측 포구점으로 확정, frame 규약 대조 PASS (§10), 사용자 확인 후 `provisional: false` 전환 완료 |
 | S3a 시뮬레이션 기반 | 완료 (2026-09-20, PR #553) | e2e·frame·PROC-3·GUI·plot PASS, D-3 무부하 NOT_EVALUATED (분포 §5.1, ε 하한 49.8 mm 채택, r_cap 후 판정) — §4.4 S3a 결과. S3.7·S3.8 은 범위 밖 (결정 B·C) |
 | S4a 손 타이밍 측정 | S4.0·S4.1·S4.2·S4.5 완료 (2026-09-21, 브랜치 `feat/s4a-hand-timing`) | 결정 Q1~Q10 확정. $T_{close,e2e}$ P1b 280.5 ms (η=0.7) · LEAP 103.7 ms (η=0.5). S4.5: **LEAP** $r_{cap}$ 31.0 mm · $d_{eff}$ 80 mm, **P1b** $r_{cap}$ 24 mm · $d_{eff}$ ≥ 95 mm — P1b 는 사용자 제공 자세 두 벌이 테니스공을 파지하지 못해 (851 중 0) **자세를 탐색으로 다시 정했다** (2026-09-21). 놓인 공은 잡지만 날아드는 공은 0.5 m/s 부터 거의 못 잡는다 (폐쇄 속도) → S4.4. S4.3 은 S10 으로 — §4.4 S4a |
+| S3.5a kinematic catchability 지도 | 완료 (2026-09-21) — 도구(C++ 파서·배치 CLI·python 코어) + 두 로봇 지도 | PASS(provisional). 수락 투척 `ur5e_p1b` 1426/3402 · `iiwa7_leap` 1503/3402. `sim.throw_region`·`wait_pose`·`planner.ik`·문턱 제안 모두 provisional (사용자 확정 대상). G3-I 는 지도 반쪽만 — 런타임 반쪽 NOT_EVALUATED (S6.2). ⚠️ 수락 후보의 ‖v(t_c)‖ 6.5–8.3 m/s 대 ‖v‖max 1.84/2.26 m/s → S4.4 가 거리·목표 속력을 되돌려야 한다 — §11 지도 결과 |
 | S3b·S4.4 지도·go/no-go·vision 사양 | 대기 | — |
 | S5 포구 컨트롤러 골격·입력·추종 | 대기 | — |
 | S6 계획기 스레드 | 대기 | — |
@@ -346,7 +347,7 @@ positive control (10종 mutant, 각각 빌드·실행해 red 확인 — 뒤 5개
 - S2.2a CLIK 확장 구조 결정 1쪽 ("행 집합 선택형 확장" 대 "`QPSolverWrapper`·se3 오차만 공유하는 formulation 클래스") + **기존 동작 golden-vector 회귀** (기록한 q 열 → q_ref 해시). golden 테스트가 생기기 전에는 기존 위치∩속도 box 코드를 재구조화하지 않는다
 - S2.2b `ClikReferenceGenerator` 옵션 (D-5·D-6), 옵션별 개별 커밋: twist feedforward, LOCAL 접근축 2행, 가속 box + `bound_conflict`, 직전 q̇ 평활 항, status·반복·solve time 노출, `max_iter` 설정, q_c 평가 모드
 - S2.3a `rtc_urdf_bridge` extra frame 기구 (D-10, D-17, §10): 로봇 config `urdf.extra_frames.<name>.{parent,xyz,rpy,provisional}` → CM 파서 (`list_parameters` map key, `ParseSubModels` 와 같은 방식) → `ModelConfig` 필드 → yaml-cpp `LoadModelConfig` 경로(같은 키 지원 또는 명시적 거부) → `PinocchioModelBuilder` 가 `BuildFullModel()` 직후 full 모델에 `addFrame`. 축(rpy) 초기 제안값 산출. 결합 모델 nv (full 26 / actuated 16) 를 테스트로 고정
-- S2.3b (S4.1 이후) 포켓 중심 offset 제안값 — preshape 자세에서 손가락 끝 위치 중심 (§10)
+- S2.3b (S4.5 이후) 포켓 중심 offset 제안값 — S4.5 실측 포구점을 부모 frame 으로 옮긴 값 (§10; "preshape 손끝 중심" 은 기각)
 - S2.5 관절 가속 한계 도출 도구 (D-16, §9)
 - S2.4 (S2 의 마지막) DemoWbc 회귀(기존 assertion 무수정), `rtc_tsid`·`rtc_math`·`rtc_urdf_bridge` downstream 빌드·테스트, public header Doxygen·패키지 README 갱신, `/code-review`
 
@@ -373,7 +374,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 | se3 (S2.1) | PASS | `rtc_math/include/rtc_math/se3/axis_align.hpp`, `rtc_math/test/test_axis_align.cpp` 11 케이스. G4-D: exp 잔차 < 1e-12 (0.5° 격자 × 20 축), 1° 격자 ‖ω‖ 변화 < 1.5·K_a·π/180 (K_a 8, w_max 6), 유한차분 < 1e-5 (1–170°), 두 데드밴드 주변 ‖m‖ 1 … 1e-18 격자에서 출력 전부 유한·상한 이내. 무효 입력은 0 + 무효. 할당 0 (`ScopedNoMalloc`), noexcept `static_assert`. 데드밴드 처리 방식은 L4 §4.5 표. positive control: 급수 분기의 부호 조건 제거·Jacobian 상한 제거·데드밴드 J ≠ 0·단위 검사 제거·ω 포화 제거 5개 변형이 각각 해당 테스트에서 실패. `/code-review` (브랜치) finding 2건 반영: 아주 작은 $\epsilon_{\sin}$·floor (≲ 1e-103) 에서 반평행 근처 J_a 가 overflow 해도 유효로 보고되던 것 (하한 1e-12 + 비유한 결과 무효 처리), 큰 게인에서 ‖K_a e_a‖ overflow 로 ω 가 포화 대신 무효가 되던 것 (K_a‖e_a‖ 비교). colcon (ws root, Release) rtc_math 33 케이스 green, ASan/UBSan 빌드 보고 0 |
 | 동등성 (S2.2a·b) | PASS | `rtc_tsid/test/test_clik_golden.cpp`: 4 시나리오 2520 값 (tick 당 ok·q_ref·v_ref·manipulability·오차 노름) 을 IEEE-754 비트로 기록. Release 는 비트 일치, sanitizer 빌드는 상대 1e-12. 기록 입력이 모든 분기를 지나는지 별도 테스트로 확인하고, 분기별 mutation 11개가 모두 golden 을 red 로 만든다. S2.2b 의 모든 커밋에서 비트 일치. 기존 `test_clik_reference`·DemoWbc (integrated_bringup 1233) assertion 무수정 green |
 | CLIK (S2.2b) | PASS · G5-C solve time 예산 NOT_EVALUATED(사용자 값) | `rtc_tsid/test/test_clik_options.cpp` 25 케이스. G5-A: 정지 목표 위치 < 1 mm·축 < 0.5°. G5-B: 랜덤 목표 1e4 tick 에서 속도·가속 위반 0 (ProxQP eps 1e-6 이내), `bound_conflict` 706 tick, 위치 초과 최대 0.054 rad < margin 0.1 (≈ v²/2a). G5-B2 (CLIK 쪽): 충돌 시 가속 한계 유지 + 관절 bit 보고. G5-C3 (CLIK 쪽): `max_iter` 준수, status 노출, false 반환. G5-C 할당 부분: 옵션 전부 on·두 오버로드 교대 1000 tick 할당 0. 옵션별 mutation 9개 전부 red. `/code-review` (S2.2b 범위) finding 반영: 실패한 호출 뒤 `v_prev` 가 마지막 성공 속도로 남아 다음 tick 가속 창이 0 출력에서 그 속도로 점프하던 것 (실패 시 0 으로 초기화), 명령값 모드의 상태 검사가 실패 한 번으로 한 tick 꺼지던 것 (ResetAnchor 전까지 유지) — 각각 회귀 테스트와 mutation 확인. ASan 0, UBSan 은 ProxSuite 내부 bool 읽기 1건뿐 (기존 테스트에서도 발생, testing-debug.md). G5-B2·G5-C3 의 L7 전이·abort 경로 부분은 S5.3·S7 |
-| extra frame (S2.3a) | PASS | `rtc_urdf_bridge` `ModelConfig::extra_frames` → full 모델 OP_FRAME, 파생 모델 상속. `test_extra_frames` (four_bar closure): full·sub·tree·actuated 네 모델의 부모 기준 위치 1e-12 일치 (부모 관절이 잠긴 모델 포함), 기존 frame id·관성 불변, 없는 부모·중복·빈 이름·비유한 값 실패, `LoadModelConfig` 불완전 항목 거부 — 부모 placement 합성을 빼는 mutation red (처음엔 fixture 의 부모가 전부 joint 기준 identity 라 공허했고 c1 로 바꿔 잡았다). CM: `urdf.extra_frames` 파싱·재configure·없는 부모·불완전 항목 → configure 거부 (`test_cm_config_pipeline`). 검증기: `CheckCatchFrameProvisional` 은 sim 경고·실기 차단 (G0-C, 호출자는 S5). 실모델 `test_catch_frame_models`: 출하 config 를 읽어 네 모델 존재·위치, 손가락을 곧게 편 자세에서 0 에서 먼 한계 쪽으로 25·50 % 굽힐 때 끝점 중심이 catch frame +z 로 이동 (p1b 3.2/4.6 cm, iiwa 10.1/7.9 cm, rpy 를 뒤집으면 red), ur5e_p1b full nq = nv = 26·actuated 16, iiwa7_leap full·wbc nv 23. 축 초기 제안: p1b `l_palm_link` rpy 0, iiwa7_leap `palm_lower` rpy [π,0,0], xyz 0 (S2.3b 전), provisional. `/code-review` finding 0 |
+| extra frame (S2.3a) | PASS | `rtc_urdf_bridge` `ModelConfig::extra_frames` → full 모델 OP_FRAME, 파생 모델 상속. `test_extra_frames` (four_bar closure): full·sub·tree·actuated 네 모델의 부모 기준 위치 1e-12 일치 (부모 관절이 잠긴 모델 포함), 기존 frame id·관성 불변, 없는 부모·중복·빈 이름·비유한 값 실패, `LoadModelConfig` 불완전 항목 거부 — 부모 placement 합성을 빼는 mutation red (처음엔 fixture 의 부모가 전부 joint 기준 identity 라 공허했고 c1 로 바꿔 잡았다). CM: `urdf.extra_frames` 파싱·재configure·없는 부모·불완전 항목 → configure 거부 (`test_cm_config_pipeline`). 검증기: `CheckCatchFrameProvisional` 은 sim 경고·실기 차단 (G0-C, 호출자는 S5). 실모델 `test_catch_frame_models`: 출하 config 를 읽어 네 모델 존재·위치, 손가락을 곧게 편 자세에서 0 에서 먼 한계 쪽으로 25·50 % 굽힐 때 끝점 중심이 catch frame +z 로 이동 (p1b 3.2/4.6 cm, iiwa 10.1/7.9 cm, rpy 를 뒤집으면 red), ur5e_p1b full nq = nv = 26·actuated 16, iiwa7_leap full·wbc nv 23. 축 초기 제안: p1b `l_palm_link` rpy 0, iiwa7_leap `palm_lower` rpy [π,0,0], provisional. xyz 는 **S2.3b 에서 확정** (2026-09-21): p1b `[0.015, 0.145, 0.052]`, iiwa7_leap `[-0.035, -0.015, -0.069]` — §10. `/code-review` finding 0 |
 | 가속 도출 (S2.5) | PASS(provisional) — 표본 범위는 S3.5a 대기 자세 전 | `rtc_tools derive_accel_limits` (§9 절차) + `integrated_bringup/config/<robot>/derived_accel_limits.yaml` (키 `derived_accel_limits.<group>.qdd_max`, provenance 포함). η_τ = 0.8 (사용자 확정 2026-09-20), 균일 가중, 관절 한계 box 전체·±max_velocity, 20000 표본 + 최악 10 표본 Powell 정제 (표본 최소값은 표본 수에 따라 계속 내려간다: p1b 2000 → 5.0, 20000 → 4.1 rad/s², 정제값 2.03 으로 수렴). ur5e_p1b **2.03 rad/s²** (binding 거의 전부 shoulder_lift, 중력), iiwa7_leap **9.20 rad/s²** (binding A2). 퇴화 없음 (τ_dyn ≤ 0 표본 0). 교차 검증: RNEA (부호 패턴 전부) 최악 0.78·0.85, iiwa MuJoCo `mj_inverse` (iiwa7_with_leap_right, armature·damping 포함, 접촉·관절 한계 구속 제외, gear·방향별 forcerange) 0.67 — "도출값 ≤ 달성 가속" PASS. 첫 MuJoCo 실행의 12.8 배는 자기 충돌 접촉력이 섞인 검증 스크립트 결함이었다. pytest 15, 도구 mutation 6/6 red. `/code-review` finding 2건 (MuJoCo 한계의 gear·비대칭) 반영. **UR5e 값은 S0.7 가정 (ā = 10 rad/s²) 보다 크게 낮다** — 전 범위·전 속도라 가장 보수적이고 지배항이 중력이므로, S3.5a 대기 자세 주변으로 표본 범위를 좁혀 재생성한 값이 S4.4 입력이다 |
 | 문서 (S2.4) | PASS | public header Doxygen (`axis_align.hpp`, `clik_reference.hpp`, `types.hpp`·builder, `catching_params.hpp`), README (rtc_math se3, rtc_tsid, rtc_urdf_bridge, integrated_bringup, rtc_controllers, rtc_tools, 루트·architecture 의존 그래프), L4 §4.5, L5 §5.1. `validate_docs` clean |
 | GUI·plot (S2.4) | PASS | §13 S2 행 (2026-09-20, merge 후 main `d7715c90`, ur5e_p1b headless sim): 기동 로그에 `catch_frame` 추가 (full nq = nv = 26, actuated 16), DemoWbc 전환 후 `[wbc] CLIK reference enabled` (tip frame idx 0 — extra frame 이 기존 id 를 밀지 않음), overrun 0, `wbc_state` 발행. `demo_controller_gui --robot ur5e_p1b` 가 활성 컨트롤러·p1b 손 관절을 표시 (Xephyr 캡처 육안 확인). `wbc_diag.csv` 80627 행이 `plot_rtc_log` 로 solver·contacts 두 figure 로 그려진다. CSV 에 새 열을 더하지 않았으므로 plotter 변경은 없다. `test_demo_gui_*`·`test_plot_rtc_log.py` 는 전체 회귀에 포함 (integrated_bringup 1236, rtc_tools 698 green). CLIK 지표: `clik_valid` 100 %, `kin_qp_fail_count` 0 |
@@ -411,7 +412,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 |---|---|---|
 | e2e | 발사 → PointCloud2 수신 end-to-end, 같은 seed 재발사 시 truth 궤적 동일. **PASS 2026-09-20**: 두 로봇 모두 발사 → `prediction/trajectory` 수신 (p1b 856 · iiwa 427). 같은 seed (42) 로 sim 재시작 후 첫 발사 truth: `ur5e_p1b` 222 샘플 max \|Δ\| **7.9e-11 m**; `iiwa7_leap` 는 t = 0.9 s 까지 **0.0**, 제어 중인 팔에 맞고 튄 뒤 (t ≥ 1.33 s) 7.95 mm — 발사·자유비행은 동일하고 차이는 팔 제어의 run 간 비결정성 | **확정** |
 | D-3 무부하 | §5 판정 (구성별 무효율 상한). **측정 완료 2026-09-20 (§5.1)**: 로봇 2종 × 200 발사, 거부 0, lane drop 0. δ_max max 는 `ur5e_p1b` 18.212 ms · `iiwa7_leap` 8.671 ms. 95 % 를 덮는 ε_clk,alloc 제안 **49.8 mm** (p1b 가 구속) | ε_clk 할당 (r_cap, TBD-HAND-04) → **r_cap 확정 후 §5.1 에서 재판정**: LEAP PASS, P1b PASS(provisional) (각 손의 $\Vert v\Vert_{\max}$ 기준). 할당 비율은 사용자 확정 2026-09-20 (§5.1) |
-| frame | world ↔ base FK 대조 잔차 < 1e-6 m, 결과가 §11 에 기록됨. **측정 완료 2026-09-20 (§11)**: `iiwa7_leap` **PASS** (항등, 4.5e-16 m) · `ur5e_p1b` **FAIL 8.3e-4 m** — 프레임은 `Rz(180°)` 로 확정됐고 잔차는 MJCF↔URDF 치수 차이라 **sim 에서 줄일 수 없다**. 임계는 낮추지 않는다 — **사용자 결정 2026-09-20: `hand_description` 을 고치지 않고 sim 바닥값으로 받아 오차 예산의 모델 항으로 센다** | **확정** |
+| frame | world ↔ base FK 대조 잔차 < 1e-6 m, 결과가 §11 에 기록됨. **측정 완료 2026-09-20 (§11)**: `iiwa7_leap` **PASS** (항등, 4.5e-16 m) · `ur5e_p1b` **FAIL** — 프레임은 **항등**이고 (2026-09-21 정정, §11: 처음 `Rz(180°)` 로 적힌 것은 180° 를 두 번 센 것이다) 잔차 8.3e-4 m (축선) / **1.46e-3 m** (`l_palm_link`·`tool0`) 는 MJCF↔URDF 치수 차이라 **sim 에서 줄일 수 없다**. 임계는 낮추지 않는다 — **사용자 결정 2026-09-20: `hand_description` 을 고치지 않고 sim 바닥값으로 받아 오차 예산의 모델 항으로 센다** | **확정** |
 | PROC-3 | S3.2 의 `rtc_msgs` 변경 후 전체 빌드·테스트 — **PASS** (S3.2 직후 22 패키지 5147 tests; S3a 마감 시점 재실행 5198 tests, 0 failures) | **확정** |
 | GUI·plot | §13 S3 행 — **PASS** (GUI 공 발사 패널 `test_demo_gui_ball_launch.py` 15, δ·pause 플롯 `analyze_clock_phase --plot`; §13 S3 행에 기록) | **확정** |
 
@@ -797,7 +798,7 @@ urdf:
   extra_frames:
     catch_frame:                 # map key = frame 이름
       parent: l_palm_link        # 부모 frame
-      xyz: [0.0, 0.0, 0.0]       # m, 부모 frame 기준 — 포켓 중심
+      xyz: [0.0, 0.0, 0.0]       # m, 부모 frame 기준 — 포켓 중심 (스키마의 자리값. 출하값은 아래 "초기 제안값 산출")
       rpy: [0.0, 0.0, 0.0]       # rad, 부모 frame 기준 — 결과 frame 의 +z 가 손바닥 바깥 법선
       provisional: true          # 사용자 확인 전
 ```
@@ -809,9 +810,27 @@ urdf:
 **초기 제안값 산출.**
 
 - 축 (S2.3a): FK 로 도출한 후보 — p1b `l_palm_link` +z (rpy 0), iiwa7_leap `palm_lower` −z (x 축 π 회전으로 +z 로 뒤집음)
-- 위치 (S2.3b, S4.1 이후): 손 preshape 자세(S4.1 손 프로파일)에서 손가락 끝 위치들의 중심을 부모 frame 에 표현한 값을 포켓 중심 제안값으로 한다
-- 제안값은 근거(자세·계산식)와 함께 PR 에 적고, 사용자가 sim 에서 확인한 뒤 `provisional: false` 로 갱신한다
+- 위치 (S2.3b, 2026-09-21 확정): **S4.5 의 실측 포구점** (L6 §4.5 표) 을 부모 frame 으로 옮긴 값을 쓴다 — p1b `[0.015, 0.145, 0.052]`, iiwa7_leap `[-0.035, -0.015, -0.069]`
+- 제안값은 근거(자세·계산식)와 함께 PR 에 적고, 사용자가 sim 에서 확인한 뒤 `provisional: false` 로 갱신한다 — **완료 2026-09-21**: 두 로봇 모두 렌더로 확인받아 `false` 로 전환했다. 그 전환이 `test_catch_frame_models` 의 `EXPECT_TRUE(provisional)` tripwire 를 뒤집으므로 PROC-6 에 따라 근거를 달고 assertion 을 `EXPECT_FALSE` 로 바꿨다 (이제 "확인된 상태가 출하된다" 를 고정한다)
 - 검증기는 `provisional: true` 인 catch frame 으로 실기 arm 을 막는다 (D-12 와 같은 규칙)
+
+**"preshape 손끝 중심" 은 기각했다 (2026-09-21).** v0.x 까지 이 절은 위치 제안값을 손 preshape 자세의 손가락 끝 위치 중심으로 산출한다고 적었다. S4.5 가 두 손의 포구점을 실제로 재고 나니 그 정의를 쓸 이유가 없다.
+
+- **게이트가 실측점 중심으로 정의돼 있다.** $r_{cap}$ (L3 §4.6 게이트 우변) 은 그 포구점을 중심으로 잰 **측면** 허용량이다. 원점을 다른 곳에 두면 게이트가 두 점 사이 거리만큼 통째로 어긋난다 — p1b 20.9 mm, iiwa7_leap 81.7 mm (아래 측정).
+- **$t_c$ 의 의미와 충돌한다.** $t_{cmd} = t_c - T_{close,e2e}$ (L6 §4.3) 이므로 $t_c$ 는 손이 이미 $\eta$ 까지 닫힌 시각이다. 그때 공이 있는 자리가 원점이어야 한다. 손끝 중심은 포켓 **입구**이고 둘의 차이는 접근축 방향으로 대략 $d_{eff}$ 다 (iiwa7_leap: 포구점 catch z 0.069 + $d_{eff}$ 0.080 = 0.149 ≈ 손끝 평면 0.146). 입구를 원점으로 삼으면 γ 창에서 $d_{eff}$ 를 두 번 세게 된다.
+- **정의 자체가 값을 못 정한다.** "손가락 끝" 에 해당하는 body 가 한 로봇 안에 여럿이다. iiwa7_leap 의 `*_tip_head` 중심은 catch z 0.146, `fingertip`/`*_tip_link` 중심은 0.0969 — 같은 자세에서 **51.2 mm** 차이다. 실측 포구점에는 이 자유도가 없다.
+- 손끝 중심은 버리지 않고 **교차 확인**으로 쓴다: 실측 포구점과 같은 쪽(+z)에 있어야 하고, 접근축 차이가 $d_{eff}$ 자릿수여야 한다. 둘 다 성립한다.
+
+**frame 규약 검증 (S2.3b 게이트, 2026-09-21).** 실측은 MuJoCo 의 palm **body** frame 에서 쟀고 YAML 은 URDF 의 parent **link** frame 을 쓴다. 두 관례는 이 저장소에서 실제로 갈리므로 (§11 의 `upper_arm_link`; 이번 측정에서도 `wrist_3_link` 의 body 원점은 올바른 변환에서도 **100 mm** 어긋난다) 값을 옮기기 전에 같은 q 에서 두 엔진 FK 를 대조했다. 무작위 팔 자세 16 세트, 잔차 분해는 $L = T_{mj}T_{pin}^{-1}$ (palm 이 일치할 때만 상수) 와 $R = T_{pin}^{-1}T_{mj}$ (base 가 일치할 때만 상수).
+
+| 로봇 | palm 방향 잔차 | catch frame 원점 왕복 오차 | 판정 |
+|---|---|---|---|
+| `iiwa7_leap` | 7.7e-5 ° | **1e-7 m** | PASS |
+| `ur5e_p1b` | 3.4e-6 ° | **1.4 mm** (평균 1.15 mm) | PASS — 잔차는 $\varepsilon_{model,p1b}$ (§11), frame 불일치 아님 |
+
+- `l_palm_link`·`tool0` 는 두 모델에서 일치하므로 (위 표) catch frame 의 앵커로 유효하다. 이름이 같은 다른 link 는 그렇지 않다 — 앵커는 반드시 실제로 쓰는 frame 으로 확인한다.
+- `ur5e_p1b` 의 1.4 mm 는 §11 의 8.3e-4 m 와 같은 항(MJCF↔URDF 치수 차이)을 다른 지점·다른 통계로 본 값이다. sim 으로 줄일 수 없으므로 **다른 오차 항과 합치지 않는다** (§11 사용자 결정 2026-09-20).
+- 재현: `verify_catch_frame.py` (도구는 private plan 쪽에 있다 — repo 에 커밋하지 않는다). 방법은 위 두 잔차 분해와 왕복 대조이고, 그것이 이 문서가 갖는 SSoT 다.
 
 ## 11. 투척 목표와 catchability 판정 (D-18)
 
@@ -842,7 +861,7 @@ urdf:
 
 **frame 규약 (함정 주의).**
 
-- "arm base frame" 은 로봇 config 의 CLIK `base_frame` 이다: ur5e_p1b `base` (URDF `base`), iiwa7_leap `link_0`
+- "arm base frame" 은 ur5e_p1b `base` (URDF `base`), iiwa7_leap `link_0` 다 — 로봇 config 의 `urdf.sub_models.<arm>.root_link` 와 같은 값이고, 컨트롤러 config 의 CLIK `base_frame` (`controllers/demo_wbc_controller.yaml`·`controllers/mpc/*.yaml`) 이 이것을 이름으로 참조한다. **로봇 config 최상단에는 `base_frame` 키가 없다** — v0.x 까지 여기에 "로봇 config 의 CLIK `base_frame`" 이라고 적혀 있었고, 그 키를 찾으러 가면 없다 (2026-09-21 정정)
 - ur5e_p1b 에서 URDF `base` 와 `base_link` 는 z 축 둘레 180° 차이다. `base_link` 로 두면 +x 가 반대가 되어 공이 등 뒤에서 날아온다 — 그래도 그럴듯한 결과가 나오므로 조용히 틀린다. sim 에서는 MJCF 의 로봇 body 가 world 에 180° z 회전으로 놓여 있다
 - 발사 높이 z 는 world 기준이고 거리는 base 기준이다. world ↔ base 변환은 가정하지 않고, **같은 q 에서 MuJoCo FK 와 Pinocchio FK 를 대조**해 S3.2 에서 확정한다 (S3.5a 의 선행). 확정 전까지 아래 키는 이름에 프레임을 붙여 섞이지 않게 한다
 
@@ -851,7 +870,34 @@ urdf:
 | 로봇 | base frame | **world_T_base (확정)** | 축선 잔차 | 게이트 < 1e-6 m |
 |---|---|---|---|---|
 | `iiwa7_leap` | `link_0` | **항등** (p = 0, R = I) | **4.5e-16 m** | **PASS** |
-| `ur5e_p1b` | `base` (URDF) | **Rz(180°), p = 0** | **8.3e-4 m** | **FAIL** — 아래 |
+| `ur5e_p1b` | `base` (URDF) | **항등** (p = 0, R = I) — 아래 정정 | **1.46e-3 m** | **FAIL** — 아래 |
+
+> **정정 (2026-09-21, 사용자 컨펌).** 이 행은 `Rz(180°), p = 0` 으로 적혀 있었고 **틀렸다**. 180° 가 두 번 세어졌다.
+>
+> 원인: 위 측정은 MuJoCo world 를 Pinocchio `Data::oMi` 와 대조했는데 `oMi` 는 **URDF 모델 root** 기준이고, 이 URDF 의 모델 root (`universe`/`world`) 는 **`base_link`** 다 (회전 0°, 직접 측정). `base` = root·Rz(180°) 이므로 그 측정의 Rz(180°) 는 world→**`base_link`** 이고, 표가 이름 붙인 world→`base` 는 그 합성 결과 **항등**이다.
+>
+> 가설 검정을 두 모델이 실제로 일치하는 frame (`tool0`·`l_palm_link`) 으로 다시 돌린 결과:
+>
+> | probe | root = `base` | root = `base_link` |
+> |---|---|---|
+> | `tool0` · `l_palm_link` | 항등 → **1.46e-3 m** · Rz(180°) → 1.798 m | 항등 → 1.798 m · Rz(180°) → **1.46e-3 m** |
+>
+> 왜 이 probe 여야 하는가: `wrist_3_link` 는 **올바른** 변환에서도 body 원점이 100 mm 어긋난다 (MJCF body frame ≠ URDF link frame, 아래 `upper_arm_link` 와 같은 축). 이름이 같은 link 를 아무거나 앵커로 쓰면 물리가 아니라 파일 관례를 재게 된다 — 앵커는 **실제로 쓰는 frame** 으로 확인한다.
+>
+> 걸려 있던 것: 지도 도구가 이 표를 그대로 써서 world 발사점을 `base` 로 옮기면 x·y 가 뒤집혀 **아래 본문이 예고한 "공이 등 뒤에서 날아온다" 가 그대로 발생한다.** 실제로 그 함정을 경고하는 문단 바로 위에서 표가 그 함정에 걸려 있었다. 그래서 S3.5a 도구는 변환을 **인자로만** 받고 어떤 로봇 값도 박지 않는다.
+>
+> $\varepsilon_{model,p1b}$ 는 영향받지 않는다 — 회전 라벨과 무관한 치수 차이 항이다. 잔차 수치는 8.3e-4 m (관절 축선 기준) → **1.46e-3 m** (`l_palm_link`·`tool0` 원점, 무작위 자세 16 세트의 최대) 로 갱신했다. 같은 항을 사슬의 더 아래 지점에서 본 값이므로 커진 것이 정상이고, 아래 "사용자 결정" 의 0.8 mm 를 **1.5 mm 로 읽는다**.
+
+**⚠️ 위 표만으로는 좌표를 넘길 수 없다 — 변환이 두 개다 (2026-09-21).** 위 표는 world ↔ **계획기가 이름 붙인 base frame** (`sub_models.<arm>.root_link`) 의 변환이다. 그런데 `CatchPoseIk::Solve` 와 `catch_pose_ik_batch` 는 `p_c`·`v` 를 **모델 world** (Pinocchio universe = URDF 모델 root) 로 받고, 이 둘이 같은 frame이 아니다.
+
+| 로봇 | MuJoCo world → `sub_models` base frame | MuJoCo world → **모델 root** (판정기 입력) |
+|---|---|---|
+| `iiwa7_leap` | 항등 (`link_0`) | **항등** — 모델 root 가 `link_0` 이다 |
+| `ur5e_p1b` | **항등** (`base`) | **Rz(180°)** — 모델 root 는 `base_link` 이고 `base` = root·Rz(180°) 다 |
+
+즉 `ur5e_p1b` 에서 **world 좌표를 판정기에 그대로 넣으면 틀린다.** "world_T_base 는 항등이다" 만 읽고 넘기면 x·y 가 뒤집혀, 바로 아래 본문이 경고하는 "공이 등 뒤에서 날아온다" 가 그대로 발생한다 — 라벨 오류(위)를 고친 뒤에도 남아 있는 두 번째 함정이고, 원인은 같다: 이 URDF 에는 원점이 같고 z 둘레 180° 다른 frame 이 둘 있다.
+
+그래서 지도 도구는 두 변환을 **분리해서** 받는다: `base_T_world` 는 인자 (`--world-yaw-deg`·`--world-translation-m`), `model_world_T_base` 는 `--arm-base-frame` 으로 지정한 frame 의 배치를 **모델에서 읽어** 합성한다 (그 frame 이 모델 root 에 대해 강체가 아니면 거부한다). 어느 쪽도 모듈 코드에 박지 않고, 180° 는 테스트가 고정한다.
 
 **영구 게이트로 만들지 않는다 (2026-09-20 사용자 결정, 권장안).** 두 로봇의 값은 위 표로 닫혔고, 게이트로 두려면 `ur5e_p1b` 에 0.83 mm 를 예외 허용치로 박아 알려진 실패를 정상으로 고정해야 하며 MuJoCo 를 `integrated_bringup` 의 test dep 으로 새로 넣어야 한다. 대신 **새 로봇 프로파일이 추가되거나 `hand_description` MJCF 가 고쳐질 때** 축선 대조를 한 번 다시 돌린다 — 재현 경로는 `rtc_tools compare_mjcf_urdf` 에 관절 축선 FK 대조를 얹는 후속 작업 (pinocchio·mujoco python 이 이미 그 도구의 의존이다, P5). 이번 측정의 C++ 프로브는 세션 scratch 였고 보존하지 않는다 — 방법(축선 비교·가설 검정)은 아래 본문이 갖는다.
 
@@ -862,9 +908,9 @@ urdf:
   - wrist_1 — URDF `0.3922` vs MJCF `0.392` → **0.2 mm**
   - wrist_2 누적 → 0.71 mm (최악 8.3e-4 m)
   - 뿌리는 `ur5e_p1b` 의 MJCF 가 `hand_description` 패키지에 있는 **#392 수정 밖의 Menagerie 사본**이라는 것이다 (관성이 어긋난다는 것은 알려져 있었고, **운동학도 어긋난다는 것이 여기서 처음 측정됐다**). 사용자 결정 (2026-08-29) 으로 `hand_description` 은 고치지 않으므로 **이 0.8 mm 는 sim 의 바닥값**이고 sim 안에서 줄일 수 없다
-  - ⇒ **`ur5e_p1b` 의 sim 포구점은 계통적으로 0.8 mm 편향된다.** 공 반지름 25 mm 대비 작지만 sim 으로는 측정해 없앨 수 없는 항이다
+  - ⇒ **`ur5e_p1b` 의 sim 포구점은 계통적으로 편향된다.** 축선으로 0.8 mm, catch frame 부모 (`l_palm_link`) 원점으로는 **1.46e-3 m** (2026-09-21, 무작위 자세 16 세트 최대). 포구점에 걸리는 값은 후자다. 공 반지름 33.5 mm 대비 작지만 sim 으로는 측정해 없앨 수 없는 항이다
   - **사용자 결정 (2026-09-20): `hand_description` 을 고치지 않는다.** 2026-08-29 결정(별개 패키지)을 유지하고, 이 0.8 mm 를 **sim 의 바닥값**으로 받는다. 대신 다음을 지킨다:
-    - S3.5a/b 지도와 S8 오차 예산에서 `ε_model,p1b = 0.8 mm` 를 **분리된 계통 항**으로 센다 — 다른 항과 합쳐 평균내면 sim 을 아무리 돌려도 안 줄어드는 항이 줄어드는 것처럼 보인다
+    - S3.5a/b 지도와 S8 오차 예산에서 `ε_model,p1b` = **1.5 mm** (catch frame 지점의 값, 위) 를 **분리된 계통 항**으로 센다 — 다른 항과 합쳐 평균내면 sim 을 아무리 돌려도 안 줄어드는 항이 줄어드는 것처럼 보인다
     - **sim 실측으로 이 항을 검증하려 하지 않는다.** sim 이 곧 편향의 출처이므로 자기 자신을 오라클로 쓰는 셈이다 (실기 S10 에서만 갈린다)
     - `iiwa7_leap` 에는 이 항이 없다 (항등·4.5e-16 m). 두 로봇의 sim 포구 정확도를 비교할 때 **이 차이를 로봇 차이로 읽지 않는다**
 - **재현 방법**: 두 엔진을 직접 링크한 프로그램으로 관절 축선(`mjData::xanchor`/`xaxis` vs `Data::oMi`)을 비교한다. pinocchio 4.x 는 `-DNDEBUG` 와 `BOOST_MPL_LIMIT_{LIST,VECTOR}_SIZE=30` 없이는 컴파일되지 않는다 (repo 안에서는 `pinocchio::pinocchio` 타깃이 넣어 준다)
@@ -890,6 +936,39 @@ sim:
     elevation_rad: [TBD, TBD]       # 수평면 기준 앙각. 지도 결과로 채움
     flight_time_s: [1.0, TBD]       # 발사 → 포구 비행시간. 하한 확정 (D-18), 상한은 지도 결과
 ```
+
+**지도 도구의 구성 (S3.5a, 2026-09-21 착수).** 판정은 런타임과 같은 `CatchPoseIk::Solve` 여야 하고 (위 S1.9), 격자·비행·집계는 python 관행이다. 그 둘을 잇는 방식을 **C++ 배치 실행파일 + python 오케스트레이터**로 정했다. pybind 는 기각했다 — 저장소에 선례가 없고, venv 의 `FindPython` 함정 (AGENTS.md §9.2) 과 정면으로 부딪치며, pinocchio 4.x 는 전용 컴파일 플래그를 요구한다. python 으로 판정을 다시 구현하는 것은 "같은 함수" 를 어긴다. 선례는 `rtc_math/se3_error_compare` (Eigen-only 오프라인 도구 + python 짝) 다.
+
+- **C++ 옵션 파서** `rtc::catching::ParseCatchPoseIkParams` — `planner.ik.*`·`planner.catchability.*` → `CatchPoseIkOptions`. S1.9 가 "No YAML parser yet (Q4)" 로 남긴 자리이고, S6.2 런타임이 이것을 그대로 쓴다 ("같은 YAML 키" 의 실체). `planner.ik` 아래 미지 키는 **거부**한다 (이 절을 통째로 소유하므로). `alpha_max` 는 L3 §6 이 TBD, 구조체 기본값은 0.26 rad — 어느 쪽도 바꾸지 않고 불일치로 표기했다. 활성 `manipulability_min` 이 TBD 면 비유한으로 남겨 `kOptionsInvalid` 로 **fail-closed** 한다 (w₅ 의 0.1 은 차원이 다른 w₆ 게이트의 보수적 대체값이 될 수 없다, C-3).
+- **배치 실행파일** `catch_pose_ik_batch` (`rtc_controllers`, ARCH-7 은 design-principles.md §"ARCH-7 의 범위" 의 **오프라인 검사 도구** 예외 — bringup chain 에 없고 로봇을 모른다). 입력은 ModelConfig YAML·sub-model 이름·catch frame 이름·옵션 YAML·seed CSV·후보 CSV, 출력은 후보별 `reason`·`q*`·`w5`·`w6`·`iterations`·`sigma_min`·`qp_*` CSV. 두 계약을 테스트가 고정한다 — **열이 solver 의 double 을 bit-exact 로 싣는다** (G3-I 비교가 반올림된 열로는 성립하지 않는다) 와 **후보 순서를 바꿔도 판정이 같다** (python 이 격자를 샤딩·재개한다). `--dump-frame` 은 생산 빌더로 catch frame 배치를 선언값과 대조한다 (S2.3b 검사).
+- **python 순수 모듈** `rtc_tools.analysis.catchability_map` — 격자, 항력 비행 (고정 스텝 RK4, 적분 차수까지 테스트), base↔world 변환, provenance. 변환은 **항상 인자**이고 로봇 값을 박지 않는다 (위 ⚠️).
+- **함정 두 개.** (1) 출하 `urdf.sub_models.<arm>` 은 flange (`tool0`/`ee_link`) 에서 끝나 **catch frame 이 그 sub-model 에 없다** — 지도는 arm root → catch frame 부모 link 까지의 sub-model 을 따로 선언해 쓴다 (손 관절은 `buildReducedModel` 이 잠그고, 손바닥은 루프 상류라 catch frame FK·Jacobian 은 정확하다). S6.2 런타임도 같은 모델이 필요하므로 그때 출하 config 에 들어가야 한다. (2) `LoadModelConfig` 의 스키마는 출하 robot config 와 **다르다** (`urdf_path`, `sub_models` 가 map 이 아니라 sequence) — 번역은 python 쪽이 한다.
+- **항력.** sim 의 항력은 무차원 `Cd` **preset (constexpr, YAML 미노출)** 이고 문서의 스칼라 $k$ [1/m] 는 `sim.ball.drag_k` = TBD 이며 §7 이 "preset 에서 환산해 쓸 수 없다" 고 못박았다. 그래서 지도는 **sim 의 힘 법칙 자체**를 적분하고 (ω = 0 이라 Magnus 소멸), ρ·$C_d$ 는 기본값 없는 필수 인자로 받아 출처 file:line 을 provenance 에 남긴다. 반경·질량은 YAML 에서 읽는다. 환산값 $k = \rho C_d A/2m$ = **0.0205 1/m** 은 참고로만 기록한다 (문서 대표값 0.0229 와 12 % 차이).
+
+**지도 결과 (S3.5a, 2026-09-21) `[PASS(provisional)]`.** 격자: 거리 4 m, 방위 6 × 60°, world z {1.5, 1.8, 2.0}, 방향 편차 {−10°, 0, +10°}, 속력 5.00–7.00 m/s (0.25 간격 9), 앙각 32–56° (4° 간격 7) = **투척 3402 개**. 비행은 sim 힘 법칙 RK4 (2 ms), 포구 후보는 T_f ∈ [1.0, 2.4] s 를 25 ms 로 훑고 도달권·최소 높이로 걸렀다. 판정은 `catch_pose_ik_batch`, seed 는 Pass A 에서 고른 상위 2 개.
+
+| | `ur5e_p1b` | `iiwa7_leap` |
+|---|---|---|
+| 수락 투척 | **1426 / 3402 (41.9 %)** | **1503 / 3402 (44.2 %)** |
+| 판정한 후보 / 수락 | 13776 / 8446 | 10596 / 8030 |
+| 탈락 사유 | `below_manip_min` 4572, `not_converged` 758 | `not_converged` 1366, `below_manip_min` 1199, `qp_failed` 1 |
+| w₅ (수락) | min 0.100 · p05 0.108 · **median 0.148** · max 0.208 | min 0.100 · p05 0.112 · **median 0.226** · max 0.273 |
+| w₆ (수락) | min 0.0035 · median 0.046 · max 0.111 | min 0.0013 · median 0.109 · max 0.144 |
+| θ (수락) | max 1.22e-2 rad = **0.047 × α_max** | max 2.99e-2 rad = **0.115 × α_max** |
+| ε = 1.5 mm 경계 뒤집힘 | **81 / 8446 (0.96 %)** | 23 / 8030 (0.29 %) |
+| wait_pose 차점 seed 격차 | 1.55 %p | 0.25 %p |
+
+- **방위는 구속하지 않는다.** 두 팔 다 base z 둘레 대칭이라 전 방위가 같은 결과를 낸다 (Pass A 에서 12 방위 전부 확인). 구속하는 것은 **속력 × 앙각의 결합**이고, 수락 집합은 그 평면에서 **능선**이다 — 앙각이 낮거나 속력이 높으면 궤적이 도달권을 비껴간다. 그래서 축정렬 상자로는 표현이 안 된다: 수락 집합의 외접 상자는 격자 전체이고 그 안의 수락률은 42 / 44 % 에 그친다 (도구가 `box_accepted_fraction` 으로 그 사실을 같이 낸다).
+- **`sim.throw_region` 제안 (provisional)**: 거리 4 m, 방위 전 범위, world z 1.5–2.0 m, 방향 편차 ±10°, **앙각 44–56°**, **속력 5.0–6.5 m/s**. 그 상자 안 수락률은 `ur5e_p1b` **81.5 %** · `iiwa7_leap` **97.2 %** 이고, 수락 투척의 75 / 78 % 를 덮는다. 앙각 하한을 48° 로 올리면 수락률은 82.5 / 99.1 % 로 오르지만 덮는 범위가 59 / 62 % 로 준다.
+- **α_max 는 구속하지 않는다** — θ 가 콘의 12 % 를 넘은 적이 없다. L3 §6 의 provisional 0.26 rad 을 그대로 둔다 (닫는 근거는 이 분포다).
+- **`arm_5row` 0.1 은 `ur5e_p1b` 에서 한계선이다.** 수락 w₅ 의 median 이 0.148, p05 가 0.108 로 문턱에 붙어 있다. `iiwa7_leap` 은 median 0.226 으로 두 배 여유다. 같은 숫자가 두 팔에서 전혀 다른 뜻이 되므로 **문턱을 로봇별로 두는 것을 권한다** (§4.4 후속).
+- **`arm_6row` 로 바꾸려면 문턱이 30배 작아야 한다.** 같은 수락 집합의 w₆ 하한이 0.0035 (`ur5e_p1b`) / 0.0013 (`iiwa7_leap`) 다. 6행 정의는 6축 팔의 손목 특이점에서 0 으로 내려가는데 그 자세가 포구에는 멀쩡하므로, **정의는 `arm_5row` 를 유지하고** `arm_6row` 는 기록만 한다 (C-3).
+- **`planner.ik` 제안 (provisional)**: `k_manip` = **0.5** (0 이 아니어야 한다 — 아래), `max_iter` = **40**. 나머지 (`sigma0`·`lambda_max`·`dq_step_max`·`manip_grad_tol`) 는 L3 §6 기본값에서 손댈 근거가 없었다.
+- ⚠️ **출하 기본값 `k_manip = 0` 으로는 아무것도 통과하지 못한다.** 그럴듯한 대기 자세에서 w₅ 가 0.06–0.09 로 문턱 아래에 머문다. D-25 의 영공간 log w₅ 상승을 켜야 (k_manip 0.5) 비로소 0.10–0.21 로 올라온다. 즉 **게이트가 통과 가능한 것은 상승 때문이고**, "0.1 문턱 + 상승 꺼짐" 조합은 출하 config 에 남겨 두면 안 된다.
+- **`wait_pose` 제안 (provisional)**: `ur5e_p1b` `[0, −1.4, 0.9, −1.9, −1.5708, 0]`, `iiwa7_leap` `[0, 1.0, 0, −1.2, 0, 1.2, 0]`. **민감도는 낮다** — Pass A 에서 `iiwa7_leap` 은 5 개 seed 가 커버리지 27/56 으로 전부 동일했고 (mean log w₅ 로만 갈렸다), `ur5e_p1b` 도 차점과 1.55 %p 차이다. 7-DoF 여유와 영공간 상승이 seed 의 영향을 흡수한다. 고정점 확인은 이 낮은 민감도 때문에 1 회로 끝났다.
+- **$\varepsilon_{model,p1b}$ 는 분리해 센다.** 1.5 mm 섭동으로 수락 후보의 **0.96 %** 가 뒤집힌다 (`below_manip_min` 99, `not_converged` 40). `iiwa7_leap` 의 0.29 % 는 이 항이 없는 로봇의 수치적 한계선일 뿐이므로 **두 값을 로봇 차이로 읽지 않는다** (§11 사용자 결정 2026-09-20).
+- ⚠️ **이것은 kinematic 지도다 — 손은 이 공을 못 잡는다.** 수락된 후보의 포구 시점 속력은 두 팔 모두 **6.5–8.3 m/s** (median 7.35) 인데, $\Vert v\Vert_{\max}$ 공식값은 `iiwa7_leap` 2.26 · `ur5e_p1b` 1.84 m/s 다 — **3.5–4.5 배**다. 게다가 P1b 의 fly-in 실측은 0.25 m/s 에서 130 중 9, 0.5 m/s 3, ≥1 m/s 0 이다 (L6 §4.5). 팔이 갈 수 있다는 것과 손이 닫힌다는 것은 다른 이야기이고, **S4.4 는 거리(4 m)나 목표 속력을 되돌려야 한다** — 그래서 도구는 거리를 인자로 받는다. 이 지도는 그 협상의 입력이지 결론이 아니다.
+- `not_converged` 가 758 / 1366 인 것은 max_iter 40 의 부족과 애초에 도달 불가한 후보가 섞여 있어 갈리지 않는다 — max_iter sweep 은 후속으로 둔다.
 
 **발사 조건 공간.** 발사점은 방위 φ 와 높이 z 로, 발사 속도는 크기·앙각·수평 방향으로 정한다. 수평 방향은 "발사점에서 겨냥점(aim point)을 향한 방향 + 편차" 로 두어, 사람이 로봇 쪽으로 던지되 좌우로 빗나가는 투척을 표현한다. 포구 후보는 비행시간 T_f ≥ 1.0 s 인 것만 남긴다 (D-18) — 항력 포함 기준 T_f 1.0 s 에서 앙각 40–53°, v₀ 4.7–5.9 m/s, 정점 z 2.2–2.8 m 이고 T_f 가 길수록 모두 커지는 lob 이다 (S0.7 결과). 지도 도구의 초기 탐색 범위 (제안): φ ∈ [−π/2, π/2] (로봇 정면 반원), 편차 ∈ [−10°, +10°] — 탐색 범위일 뿐이며, 잡을 수 있는 범위는 지도 결과로 정한다.
 

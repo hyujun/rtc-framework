@@ -438,7 +438,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.ik.manip_grad_tol` | double | – | 1e-4 (**provisional**) | ≥0 | 상승 종료 판정 $\Vert N\nabla\log w_5\Vert$ |
 | `planner.ik.v_eps` | double | m/s | 1e-6 | >0 | §4.2 NUM-7 속력 하한 — 미만이면 clamp 가 아니라 탈락 |
 | `planner.ik.eps_pos` | double | m | 0.002 | – | 수락 |
-| `planner.ik.alpha_max` | double | rad | `TBD` | 0–π/2 | 손 형상 허용 콘 ($\theta\le\alpha_{\max}$) |
+| `planner.ik.alpha_max` | double | rad | **0.26 (provisional)** | 0–π/2 | 손 형상 허용 콘 ($\theta\le\alpha_{\max}$). 2026-09-21: `TBD` 로 적혀 있었으나 코드에는 provisional 기본값 0.26 rad (≈15°) 가 살아 있었다 — `ParseCatchPoseIkParams` 신설 때 드러난 불일치이고, 값은 코드 쪽으로 맞췄다. 닫는 근거는 S3.5a 지도의 `theta` 분포 (이 콘이 실제로 구속하는지) 다 |
 | `planner.ik.manip_min` | – | – | – | – | v0.5 에서 삭제 — `planner.catchability.manipulability_min` 이 대체 (§4.5) |
 | `planner.catchability.manipulability_min.arm_5row` / `.arm_6row` | double | – | 0.1 (**provisional**) / TBD | ≥0 | §4.2 D-18 정의별 하한 (차원이 달라 따로 둔다, C-3). `arm_6row` 값은 S3.5a/b 지도 결과로 제안. 사용자가 sim 에서 자세 확인 후 갱신. provisional 이면 실기 구성 arm 차단 (L0 §5.3). S3.5a/b 지도 도구와 **같은 키** |
 | `planner.catchability.definition` | string | – | `"arm_5row"` | `arm_5row` \| `arm_6row` | §4.2 게이트에 쓸 정의. w₅·w₆ 는 정의와 무관하게 둘 다 기록 |
@@ -506,7 +506,7 @@ L3.1·L3.3·L3.4는 `test_l3.cpp`가 참조 구현을 이미 돌리고 있다. *
 
 ## 10. 미확정 항목
 
-TBD-HAND-01, TBD-HAND-04 (투척 보정만 — 기하값은 두 손 모두 S4.5 로 provisional 닫힘), TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max`, `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `planner.ik` 의 S1.9 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol` — 값은 S3.5a 지도 실측으로 제안하고 사용자가 확정), 점수 가중치 (S6~S8), D-7a 정책 (S6.5), NLP 전환 여부 (§4.1, S6·S8 후). TBD-RTC-14~16 은 닫힘 (§2).
+TBD-HAND-01, TBD-HAND-04 (투척 보정만 — 기하값은 두 손 모두 S4.5 로 provisional 닫힘), TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max` (provisional 0.26 — 값은 위 §6 에서 코드와 일치시켰고 닫는 근거만 남았다), `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `planner.ik` 의 S1.9 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol` — 값은 S3.5a 지도 실측으로 제안하고 사용자가 확정), 점수 가중치 (S6~S8), D-7a 정책 (S6.5), NLP 전환 여부 (§4.1, S6·S8 후). TBD-RTC-14~16 은 닫힘 (§2).
 
 ---
 

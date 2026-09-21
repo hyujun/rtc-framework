@@ -111,7 +111,7 @@ $T_{close}$를 최소화하려면 폐쇄 자세로의 계단 position 명령 + a
 
 폐쇄 체인 P1b는 구동 좌표에서 명령한다. 수동 관절은 폐쇄 제약으로 결정된다(기존 `rtc_urdf_bridge`, Pinocchio `RigidConstraintModel`).
 
-**catch frame 과 폐쇄 체인.** catch frame 은 손바닥(`l_palm_link` / `palm_lower`) 에 붙는 모델 빌더 추가 frame 이고 부모·offset·자세는 로봇 config YAML 로 연다 `[확정 D-10, D-17]` (plan §10). 손바닥은 폐쇄 체인 루프의 **상류**이므로 catch frame FK·Jacobian 은 팔 관절만으로 정해지며, 폐쇄 체인 사영이 `held` (NUM-5) 여도 영향을 받지 않는다. catch frame 위치 초기 제안값(포켓 중심)은 S4.1 손 프로파일의 preshape 자세에서 손가락 끝 중심으로 산출한다 — S2.3b (S4.1 이후, plan §10).
+**catch frame 과 폐쇄 체인.** catch frame 은 손바닥(`l_palm_link` / `palm_lower`) 에 붙는 모델 빌더 추가 frame 이고 부모·offset·자세는 로봇 config YAML 로 연다 `[확정 D-10, D-17]` (plan §10). 손바닥은 폐쇄 체인 루프의 **상류**이므로 catch frame FK·Jacobian 은 팔 관절만으로 정해지며, 폐쇄 체인 사영이 `held` (NUM-5) 여도 영향을 받지 않는다. catch frame 위치 초기 제안값(포켓 중심)은 **아래 §4.5 의 실측 포구점**을 부모 frame 으로 옮긴 값이다 — S2.3b (2026-09-21, plan §10). 그 값은 catch frame 좌표이고 YAML `xyz` 는 부모 frame 좌표이므로, `palm_lower` 처럼 rpy 가 π 회전인 손에서는 **부호가 뒤집힌다**. "preshape 손끝 중심" 을 쓰던 이전 정의는 기각됐다 (근거: plan §10).
 
 ### 4.5 포켓 유효 깊이 $d_{eff}$ 산정 `[권장]` (S4.5, TBD-HAND-04)
 

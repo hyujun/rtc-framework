@@ -122,6 +122,7 @@ plan §11 이 정의·YAML 의 SSoT 다. 요점:
 - **frame 함정:** ur5e_p1b 의 arm base frame 은 URDF `base` 이고 `base_link` 와 z 둘레 180° 다르다 — `base_link` 로 두면 공이 등 뒤에서 날아오는데 결과가 그럴듯해 조용히 틀린다. world ↔ base 변환은 같은 q 에서 MuJoCo FK 와 Pinocchio FK 대조로 **S3.2** 에서 확정한다 (S3.5a 의 선행, plan §4.2 DAG)
 - S3.5a 는 kinematic catchability 지도(IK + w₅/w₆), S3.5b 는 S4.4 go/no-go 값(T_close, d_eff, 가속 box, η_v)으로 전체 게이트 체인을 다시 돌린 gate-catchable 지도다 — 이 지도가 목표 투척 분포가 되고, S3.6 vision 요구 사양 산출로 이어진다
 - 출력: 격자별 포구 가능 여부, 최대 w 와 그 후보의 $t_c$·$p_c$·$q^*$, 탈락 사유 → `sim.throw_region` 제안 (발사 srv 설정으로 사용)
+- **도구 (S3.5a 완료 2026-09-21)**: `ros2 run rtc_tools catchability_map` (python — 격자·항력 비행·집계·그림) 이 `ros2 run rtc_controllers catch_pose_ik_batch` (C++ — 판정) 을 샤딩해 부른다. 판정을 python 에서 다시 구현하지 않는 이유가 §4.6 첫 줄의 "같은 함수" 다. 두 함정: 판정기는 `p_c`·`v` 를 **모델 world** (URDF 모델 root) 로 받고 이것은 arm base frame 이 **아니다** (`ur5e_p1b` 에서 Rz(180°) 차이 — plan §11); 출하 `sub_models.<arm>` 은 flange 에서 끝나 catch frame 을 담지 않으므로 지도는 arm root → catch frame 부모까지의 sub-model 을 따로 선언한다. 결과·제안값은 plan §11
 
 ## 5. C++ 구현
 
