@@ -135,7 +135,10 @@ demo_catching_controller:
       # test — just not yet on a tick. Recorded here because G6-F asks the
       # derivation and the value to live together.
       #
-      # MEASURED, S3.5a map (2026-09-21): 1503/3402 throws accepted before this threshold, 1160 after on a 3402-throw grid at 4 m,
+      # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1499 throws
+      # accepted from the best single wait pose at the old shared threshold 0.1,
+      # 1158 at the robot-specific 0.174 below (reproduced by running the map
+      # tool with THIS file as --params),
       # T_f >= 1.0 s. Details and the rejected alternatives: plan §11.
       ik:
         # k_manip > 0 is NOT optional. It enables the D-25 null-space log w5
@@ -161,10 +164,10 @@ demo_catching_controller:
           # sqrt(det(J5 J5^T)) scales with the arm's link lengths, so one number
           # means different strictness on different arms: the shipped 0.1 sat at
           # roughly the 40th percentile of the 6-axis arm's task-feasible w5 but
-          # only ~the 10th of this 7-axis one, i.e. the two arms were being held
+          # only ~the 10th of the 7-axis arm's, i.e. the two arms were being held
           # to different standards and the map's coverage comparison was not
           # like-for-like. Each value is 0.1 scaled by that arm's task-feasible
-          # median w5 (gate off, same grid): 0.2176 vs the 6-axis arm's 0.1249, so 0.1 * 0.2176/0.1249 = 0.174. Tightening costs coverage - 77.2% of the previously accepted throws survive - and that cost is the point: it is what equal strictness actually looks like.
+          # median w5 (gate off, same grid): 0.2176 vs the 6-axis arm's 0.1249, so 0.1 * 0.2176/0.1249 = 0.174. Tightening costs coverage - 77% of the previously accepted throws survive - and that cost is the point: it is what equal strictness actually looks like.
           arm_5row: 0.174
           # No value: the 6-row gate is not the definition above, and 0.1 is not
           # a conservative stand-in for a different-dimension quantity — the

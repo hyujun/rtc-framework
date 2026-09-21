@@ -165,7 +165,9 @@ demo_catching_controller:
       # test — just not yet on a tick. Recorded here because G6-F asks the
       # derivation and the value to live together.
       #
-      # MEASURED, S3.5a map (2026-09-21): 1426/3402 throws accepted on a 3402-throw grid at 4 m,
+      # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1418 throws
+      # accepted from the best single wait pose (reproduced by running the map
+      # tool with THIS file as --params),
       # T_f >= 1.0 s. Details and the rejected alternatives: plan §11.
       ik:
         # k_manip > 0 is NOT optional. It enables the D-25 null-space log w5
@@ -173,7 +175,7 @@ demo_catching_controller:
         # the arm wherever the seed put it: w5 came out 0.06-0.09 at plausible
         # wait poses, i.e. BELOW the gate, so every candidate in the map was
         # rejected as below_manip_min. With the ascent on, w5 reaches
-        # 0.100-0.208 (median 0.148) and the gate is passable. A config that carries the
+        # 0.100-0.208 (median 0.147) and the gate is passable. A config that carries the
         # threshold but leaves this at 0 rejects everything at runtime.
         k_manip: 0.5
         # 20 (the L3 default) was not enough to let the ascent settle; 40 left
@@ -191,7 +193,7 @@ demo_catching_controller:
           # sqrt(det(J5 J5^T)) scales with the arm's link lengths, so one number
           # means different strictness on different arms: the shipped 0.1 sat at
           # roughly the 40th percentile of the 6-axis arm's task-feasible w5 but
-          # only ~the 10th of this 7-axis one, i.e. the two arms were being held
+          # only ~the 10th of the 7-axis arm's, i.e. the two arms were being held
           # to different standards and the map's coverage comparison was not
           # like-for-like. Each value is 0.1 scaled by that arm's task-feasible
           # median w5 (gate off, same grid): 0.1249 here, so 0.1 is kept unchanged - this is the arm it was calibrated on.

@@ -165,7 +165,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 | S2 기존 rtc_* 일반화 | 완료 (2026-09-20, PR #545~#549 + 마감 PR). **S2.3b 완료 (2026-09-21)** | se3·동등성·CLIK·extra frame PASS, 가속 도출 PASS(provisional), G5-C solve time 예산 NOT_EVALUATED — §4.4 S2 결과. S2.3b: 두 로봇의 `catch_frame.xyz` 를 S4.5 실측 포구점으로 확정, frame 규약 대조 PASS (§10), 사용자 확인 후 `provisional: false` 전환 완료 |
 | S3a 시뮬레이션 기반 | 완료 (2026-09-20, PR #553) | e2e·frame·PROC-3·GUI·plot PASS, D-3 무부하 NOT_EVALUATED (분포 §5.1, ε 하한 49.8 mm 채택, r_cap 후 판정) — §4.4 S3a 결과. S3.7·S3.8 은 범위 밖 (결정 B·C) |
 | S4a 손 타이밍 측정 | S4.0·S4.1·S4.2·S4.5 완료 (2026-09-21, 브랜치 `feat/s4a-hand-timing`) | 결정 Q1~Q10 확정. $T_{close,e2e}$ P1b 280.5 ms (η=0.7) · LEAP 103.7 ms (η=0.5). S4.5: **LEAP** $r_{cap}$ 31.0 mm · $d_{eff}$ 80 mm, **P1b** $r_{cap}$ 24 mm · $d_{eff}$ ≥ 95 mm — P1b 는 사용자 제공 자세 두 벌이 테니스공을 파지하지 못해 (851 중 0) **자세를 탐색으로 다시 정했다** (2026-09-21). 놓인 공은 잡지만 날아드는 공은 0.5 m/s 부터 거의 못 잡는다 (폐쇄 속도) → S4.4. S4.3 은 S10 으로 — §4.4 S4a |
-| S3.5a kinematic catchability 지도 | 완료 (2026-09-21) — 도구(C++ 파서·배치 CLI·python 코어) + 두 로봇 지도 | PASS(provisional). 수락 투척 `ur5e_p1b` 1426/3402 · `iiwa7_leap` 1503/3402. `sim.throw_region`·`wait_pose`·`planner.ik`·문턱 제안 모두 provisional (사용자 확정 대상). G3-I 는 지도 반쪽만 — 런타임 반쪽 NOT_EVALUATED (S6.2). ⚠️ 수락 후보의 ‖v(t_c)‖ 6.5–8.3 m/s 대 ‖v‖max 1.84/2.26 m/s → S4.4 가 거리·목표 속력을 되돌려야 한다 — §11 지도 결과 |
+| S3.5a kinematic catchability 지도 | 완료 (2026-09-21) — 도구(C++ 파서·배치 CLI·python 코어) + 두 로봇 지도 | PASS(provisional). 수락 투척 (단일 대기 자세) `ur5e_p1b` 1418/3402 · `iiwa7_leap` 1499/3402. `sim.throw_region`·`wait_pose`·`planner.ik`·문턱 제안 모두 provisional (사용자 확정 대상). G3-I 는 지도 반쪽만 — 런타임 반쪽 NOT_EVALUATED (S6.2). ⚠️ 수락 후보의 ‖v(t_c)‖ 6.5–8.3 m/s 대 ‖v‖max 1.84/2.26 m/s → S4.4 가 거리·목표 속력을 되돌려야 한다 — §11 지도 결과 |
 | S3b·S4.4 지도·go/no-go·vision 사양 | 대기 | — |
 | S5 포구 컨트롤러 골격·입력·추종 | 대기 | — |
 | S6 계획기 스레드 | 대기 | — |
@@ -339,7 +339,7 @@ positive control (10종 mutant, 각각 빌드·실행해 red 확인 — 뒤 5개
 
 재측정: rtc_controllers 682 케이스 green, downstream (`rtc_controller_manager`·`integrated_bringup`) 빌드 성공. 같은 sanitizer 레시피로 `test_catch_pose_ik` 25/25 green·ASan 0 건 — 새 코드의 할당 0 은 **최적화 빌드에서** 재확인했다 (정상 빌드의 0 은 위 거짓 green 사례 때문에 근거로 쓰지 않는다). UBSan 은 위 3 종 중 2 종 (`LLT.h:66`, `SelfAdjointEigenSolver.h:76`) 이 이 스위트에서 재현되고 새 보고는 없다.
 
-- 미결: `planner.ik` 의 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol`, `mu`, `qp_eps_abs`) 은 S3.5a 지도 실측으로 제안하고 사용자가 확정한다 (L3 §10). `alpha_max` 는 여전히 TBD 라 함수는 인자로 받는다
+- 미결: `planner.ik` 의 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol`, `mu`, `qp_eps_abs`) 은 S3.5a 지도 실측으로 제안하고 사용자가 확정한다 (L3 §10) — **2026-09-21 확정**: `k_manip` 0.5 · `max_iter` 40 (출하 config 반영), 나머지는 기본값에서 손댈 근거가 없었다 (§11 지도 결과). `alpha_max` 는 여전히 TBD 라 함수는 인자로 받는다
 
 #### S2 기존 rtc_* 일반화 (code review 대상)
 
@@ -939,7 +939,7 @@ sim:
 
 **지도 도구의 구성 (S3.5a, 2026-09-21 착수).** 판정은 런타임과 같은 `CatchPoseIk::Solve` 여야 하고 (위 S1.9), 격자·비행·집계는 python 관행이다. 그 둘을 잇는 방식을 **C++ 배치 실행파일 + python 오케스트레이터**로 정했다. pybind 는 기각했다 — 저장소에 선례가 없고, venv 의 `FindPython` 함정 (AGENTS.md §9.2) 과 정면으로 부딪치며, pinocchio 4.x 는 전용 컴파일 플래그를 요구한다. python 으로 판정을 다시 구현하는 것은 "같은 함수" 를 어긴다. 선례는 `rtc_math/se3_error_compare` (Eigen-only 오프라인 도구 + python 짝) 다.
 
-- **C++ 옵션 파서** `rtc::catching::ParseCatchPoseIkParams` — `planner.ik.*`·`planner.catchability.*` → `CatchPoseIkOptions`. S1.9 가 "No YAML parser yet (Q4)" 로 남긴 자리이고, S6.2 런타임이 이것을 그대로 쓴다 ("같은 YAML 키" 의 실체). `planner.ik` 아래 미지 키는 **거부**한다 (이 절을 통째로 소유하므로). `alpha_max` 는 L3 §6 이 TBD, 구조체 기본값은 0.26 rad — 어느 쪽도 바꾸지 않고 불일치로 표기했다. 활성 `manipulability_min` 이 TBD 면 비유한으로 남겨 `kOptionsInvalid` 로 **fail-closed** 한다 (w₅ 의 0.1 은 차원이 다른 w₆ 게이트의 보수적 대체값이 될 수 없다, C-3).
+- **C++ 옵션 파서** `rtc::catching::ParseCatchPoseIkParams` — `planner.ik.*`·`planner.catchability.*` → `CatchPoseIkOptions`. S1.9 가 "No YAML parser yet (Q4)" 로 남긴 자리이고, S6.2 런타임이 이것을 그대로 쓴다 ("같은 YAML 키" 의 실체). `planner.ik` 아래 미지 키는 **거부**한다 (이 절을 통째로 소유하므로). `alpha_max` 는 L3 §6 이 TBD, 구조체 기본값은 0.26 rad 인 불일치를 이 파서가 드러냈고, **값은 코드 쪽으로 맞췄다** (L3 §6 = `0.26 (provisional)`; 열려 있는 것은 값이 아니라 닫는 근거인 θ 분포다). 활성 `manipulability_min` 이 TBD 면 비유한으로 남겨 `kOptionsInvalid` 로 **fail-closed** 한다 (w₅ 의 0.1 은 차원이 다른 w₆ 게이트의 보수적 대체값이 될 수 없다, C-3).
 - **배치 실행파일** `catch_pose_ik_batch` (`rtc_controllers`, ARCH-7 은 design-principles.md §"ARCH-7 의 범위" 의 **오프라인 검사 도구** 예외 — bringup chain 에 없고 로봇을 모른다). 입력은 ModelConfig YAML·sub-model 이름·catch frame 이름·옵션 YAML·seed CSV·후보 CSV, 출력은 후보별 `reason`·`q*`·`w5`·`w6`·`iterations`·`sigma_min`·`qp_*` CSV. 두 계약을 테스트가 고정한다 — **열이 solver 의 double 을 bit-exact 로 싣는다** (G3-I 비교가 반올림된 열로는 성립하지 않는다) 와 **후보 순서를 바꿔도 판정이 같다** (python 이 격자를 샤딩·재개한다). `--dump-frame` 은 생산 빌더로 catch frame 배치를 선언값과 대조한다 (S2.3b 검사).
 - **python 순수 모듈** `rtc_tools.analysis.catchability_map` — 격자, 항력 비행 (고정 스텝 RK4, 적분 차수까지 테스트), base↔world 변환, provenance. 변환은 **항상 인자**이고 로봇 값을 박지 않는다 (위 ⚠️).
 - **함정 두 개.** (1) 출하 `urdf.sub_models.<arm>` 은 flange (`tool0`/`ee_link`) 에서 끝나 **catch frame 이 그 sub-model 에 없다** — 지도는 arm root → catch frame 부모 link 까지의 sub-model 을 따로 선언해 쓴다 (손 관절은 `buildReducedModel` 이 잠그고, 손바닥은 루프 상류라 catch frame FK·Jacobian 은 정확하다). S6.2 런타임도 같은 모델이 필요하므로 그때 출하 config 에 들어가야 한다. (2) `LoadModelConfig` 의 스키마는 출하 robot config 와 **다르다** (`urdf_path`, `sub_models` 가 map 이 아니라 sequence) — 번역은 python 쪽이 한다.
@@ -947,21 +947,23 @@ sim:
 
 **지도 결과 (S3.5a, 2026-09-21) `[PASS(provisional)]`.** 격자: 거리 4 m, 방위 6 × 60°, world z {1.5, 1.8, 2.0}, 방향 편차 {−10°, 0, +10°}, 속력 5.00–7.00 m/s (0.25 간격 9), 앙각 32–56° (4° 간격 7) = **투척 3402 개**. 비행은 sim 힘 법칙 RK4 (2 ms), 포구 후보는 T_f ∈ [1.0, 2.4] s 를 25 ms 로 훑고 도달권·최소 높이로 걸렀다. 판정은 `catch_pose_ik_batch`, seed 는 Pass A 에서 고른 상위 2 개.
 
+> **정정 (2026-09-21, 코드리뷰 #556).** 이 절의 투척 수는 처음에 **두 seed 의 합집합**으로 적혔다 (`ur5e_p1b` 1426 · `iiwa7_leap` 1503) — 도구의 `summarize_throws` 가 seed 를 구분하지 않았다. 로봇은 **한 자세**에서 기다리므로 아래 값은 최선 seed 하나의 것이다 (차이 0.3–0.6 %). 더 컸던 것은 제안 상자의 수락률이다: 후보가 0 개인 투척이 `throw_summary.csv` 에서 빠져 분모가 작았고 (81.5 / 97.2 %), 상자 안 **전체 격자 투척** 기준으로는 70.2 / 76.9 % 다. 두 결함 모두 도구에서 고쳤다.
+
 | | `ur5e_p1b` | `iiwa7_leap` |
 |---|---|---|
-| 수락 투척 | **1426 / 3402 (41.9 %)** | **1503 / 3402 (44.2 %)** |
-| 판정한 후보 / 수락 | 13776 / 8446 | 10596 / 8030 |
-| 탈락 사유 | `below_manip_min` 4572, `not_converged` 758 | `not_converged` 1366, `below_manip_min` 1199, `qp_failed` 1 |
-| w₅ (수락) | min 0.100 · p05 0.108 · **median 0.148** · max 0.208 | min 0.100 · p05 0.112 · **median 0.226** · max 0.273 |
-| w₆ (수락) | min 0.0035 · median 0.046 · max 0.111 | min 0.0013 · median 0.109 · max 0.144 |
+| 수락 투척 (**단일 대기 자세**, 최선 seed) | **1418 / 3402 (41.7 %)** | **1499 / 3402 (44.1 %)** |
+| 판정한 후보 / 수락 (그 seed) | 6888 / 4264 | 5298 / 4019 |
+| 탈락 사유 (그 seed) | `below_manip_min` 2241, `not_converged` 383 | `not_converged` 683, `below_manip_min` 596 |
+| w₅ (수락) | min 0.100 · p05 0.108 · **median 0.147** · max 0.208 | min 0.100 · p05 0.112 · **median 0.226** · max 0.273 |
+| w₆ (수락) | min 0.0035 · median 0.047 · max 0.111 | min 0.0013 · median 0.109 · max 0.144 |
 | θ (수락) | max 1.22e-2 rad = **0.047 × α_max** | max 2.99e-2 rad = **0.115 × α_max** |
-| ε = 1.5 mm 경계 뒤집힘 | **81 / 8446 (0.96 %)** | 23 / 8030 (0.29 %) |
+| ε = 1.5 mm 경계 뒤집힘 (두 seed 의 수락 후보 합산) | **81 / 8446 (0.96 %)** | 23 / 8030 (0.29 %) |
 | wait_pose 차점 seed 격차 | 1.55 %p | 0.25 %p |
 
-- **방위는 구속하지 않는다.** 두 팔 다 base z 둘레 대칭이라 전 방위가 같은 결과를 낸다 (Pass A 에서 12 방위 전부 확인). 구속하는 것은 **속력 × 앙각의 결합**이고, 수락 집합은 그 평면에서 **능선**이다 — 앙각이 낮거나 속력이 높으면 궤적이 도달권을 비껴간다. 그래서 축정렬 상자로는 표현이 안 된다: 수락 집합의 외접 상자는 격자 전체이고 그 안의 수락률은 42 / 44 % 에 그친다 (도구가 `box_accepted_fraction` 으로 그 사실을 같이 낸다).
-- **`sim.throw_region` 제안 (provisional)**: 거리 4 m, 방위 전 범위, world z 1.5–2.0 m, 방향 편차 ±10°, **앙각 44–56°**, **속력 5.0–6.5 m/s**. 그 상자 안 수락률은 `ur5e_p1b` **81.5 %** · `iiwa7_leap` **97.2 %** 이고, 수락 투척의 75 / 78 % 를 덮는다. 앙각 하한을 48° 로 올리면 수락률은 82.5 / 99.1 % 로 오르지만 덮는 범위가 59 / 62 % 로 준다.
+- **방위는 구속하지 않는다.** 두 팔 다 base z 둘레 대칭이라 전 방위가 같은 결과를 낸다 (Pass A 에서 12 방위 전부 확인). 구속하는 것은 **속력 × 앙각의 결합**이고, 수락 집합은 그 평면에서 **능선**이다 — 앙각이 낮거나 속력이 높으면 궤적이 도달권을 비껴간다. 그래서 축정렬 상자로는 표현이 안 된다: 수락 집합의 외접 상자는 격자 전체이고 그 안의 수락률은 41.7 / 44.1 % 에 그친다 (도구가 `box_accepted_fraction` 으로 그 사실을 같이 낸다).
+- **`sim.throw_region` 제안 (provisional)**: 거리 4 m, 방위 전 범위, world z 1.5–2.0 m, 방향 편차 ±10°, **앙각 44–56°**, **속력 5.0–6.5 m/s**. 그 상자 안 수락률은 `ur5e_p1b` **70.2 %** · `iiwa7_leap` **76.9 %** (상자 안 격자 투척 1512 개 기준) 이고, 수락 투척의 75 / 78 % 를 덮는다.
 - **α_max 는 구속하지 않는다** — θ 가 콘의 12 % 를 넘은 적이 없다. L3 §6 의 provisional 0.26 rad 을 그대로 둔다 (닫는 근거는 이 분포다).
-- **`arm_5row` 0.1 은 `ur5e_p1b` 에서 한계선이다.** 수락 w₅ 의 median 이 0.148, p05 가 0.108 로 문턱에 붙어 있다. `iiwa7_leap` 은 median 0.226 으로 두 배 여유다. 같은 숫자가 두 팔에서 전혀 다른 뜻이 되므로 **문턱을 로봇별로 두는 것을 권한다** (§4.4 후속).
+- **`arm_5row` 0.1 은 `ur5e_p1b` 에서 한계선이다.** 수락 w₅ 의 median 이 0.147, p05 가 0.108 로 문턱에 붙어 있다. `iiwa7_leap` 은 median 0.226 으로 두 배 여유다. 같은 숫자가 두 팔에서 전혀 다른 뜻이 되므로 **문턱을 로봇별로 두는 것을 권한다** (§4.4 후속).
 - **`arm_6row` 로 바꾸려면 문턱이 30배 작아야 한다.** 같은 수락 집합의 w₆ 하한이 0.0035 (`ur5e_p1b`) / 0.0013 (`iiwa7_leap`) 다. 6행 정의는 6축 팔의 손목 특이점에서 0 으로 내려가는데 그 자세가 포구에는 멀쩡하므로, **정의는 `arm_5row` 를 유지하고** `arm_6row` 는 기록만 한다 (C-3).
 - **`planner.ik` 제안 (provisional)**: `k_manip` = **0.5** (0 이 아니어야 한다 — 아래), `max_iter` = **40**. 나머지 (`sigma0`·`lambda_max`·`dq_step_max`·`manip_grad_tol`) 는 L3 §6 기본값에서 손댈 근거가 없었다.
 - ⚠️ **출하 기본값 `k_manip = 0` 으로는 아무것도 통과하지 못한다.** 그럴듯한 대기 자세에서 w₅ 가 0.06–0.09 로 문턱 아래에 머문다. D-25 의 영공간 log w₅ 상승을 켜야 (k_manip 0.5) 비로소 0.10–0.21 로 올라온다. 즉 **게이트가 통과 가능한 것은 상승 때문이고**, "0.1 문턱 + 상승 꺼짐" 조합은 출하 config 에 남겨 두면 안 된다.
