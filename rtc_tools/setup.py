@@ -26,6 +26,7 @@ setup(
             "compare_mjcf_urdf = rtc_tools.validation.compare_mjcf_urdf:main",
             "urdf_to_mjcf = rtc_tools.conversion.urdf_to_mjcf:main",
             "derive_accel_limits = rtc_tools.analysis.derive_accel_limits:main",
+            "catchability_map = rtc_tools.analysis.catchability_map:main",
             "analyze_clock_phase = rtc_tools.analysis.clock_phase:main",
             "run_clock_phase_trials = rtc_tools.analysis.clock_phase_trials:main",
             "analyze_hand_close = rtc_tools.analysis.hand_close:main",

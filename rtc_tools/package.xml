@@ -27,6 +27,13 @@
        venv dependency like the other tools. -->
   <exec_depend>pinocchio</exec_depend>
   <exec_depend>xacro</exec_depend>
+  <!-- catchability_map (dynamic_catching S3.5a) shells out to the C++ judge
+       `catch_pose_ik_batch`, found under this package's ament prefix at runtime.
+       A runtime edge only: rtc_controllers does not depend on rtc_tools, so
+       there is no cycle (ARCH-2). The verdict must come from the same
+       CatchPoseIk::Solve the runtime planner calls (plan §11 / S1.9), so it
+       cannot be reimplemented here. -->
+  <exec_depend>rtc_controllers</exec_depend>
 
   <!-- test_real_model_pairs.py 가 robot_descriptions 의 실제 MJCF/URDF 쌍에
        compare_mjcf_urdf 를 발사한다 (#392 재발 방지 게이트). 데이터 전용

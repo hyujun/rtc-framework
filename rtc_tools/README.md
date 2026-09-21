@@ -27,6 +27,8 @@ rtc_tools/
 │   │   ├── derive_accel_limits.py       ← 토크 한계 → 관절 가속 상수 box 도출 (dynamic_catching D-16)
 │   │   ├── clock_phase.py               ← sim↔steady 시계 위상 오차 δ·pause 분석 (D-3 / S3.1a)
 │   │   ├── clock_phase_trials.py        ← 지정 발사 N회 러너 (D-3 시행 생성)
+│   │   ├── catchability_map.py          ← catchability 지도: 공 비행 모델·투척 grid·프레임 변환
+│   │   │                                   + C++ judge 배치 드라이버·집계·CLI (S3.5a)
 │   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
 │   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4)
 │   │   └── camera_relay.py              ← 카메라 lane 릴레이 + 드롭·지연 주입 (S3.4)
@@ -56,7 +58,8 @@ rtc_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (6개):
+**Entry points** (15개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
+`analysis/` 의 나머지 CLI 는 각 스크립트 절에서 호출 형태를 준다):
 
 | 실행 명령 | 모듈 | 설명 |
 |-----------|------|------|
@@ -67,6 +70,7 @@ rtc_tools/
 | `ros2 run rtc_tools compare_mjcf_urdf` | `validation.compare_mjcf_urdf` | MJCF/URDF 파라미터 비교 |
 | `ros2 run rtc_tools urdf_to_mjcf` | `conversion.urdf_to_mjcf` | URDF/XACRO → MJCF 변환 |
 | `ros2 run rtc_tools derive_accel_limits` | `analysis.derive_accel_limits` | 토크 한계에서 관절 가속 상수 box 도출 (provenance YAML) |
+| `ros2 run rtc_tools catchability_map` | `analysis.catchability_map` | catchability 지도 (grid → 비행 → C++ judge → 집계·플롯) |
 
 **Python 의존성**: `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `numpy`, `matplotlib`, `pandas`, `scipy`, `mujoco`
 
@@ -301,6 +305,102 @@ ros2 run rtc_tools analyze_vision_lane <prefix>
 - 릴레이는 stamp 를 건드리지 않는다 (지연은 전송 지연으로 보이게). estimator 프로파일의 `input.topic` 을 릴레이 출력으로 돌린다
 - ⚠️ `sim_estimator_node` 는 `debug.enabled_topics` 에 `prediction/trajectory` **만** 있으면 샘플을 기록하지 않아 토픽만 있고 **발행이 0건**이다 (`needs_samples()` 가 그 토픽을 빼놓는다). 다른 debug 토픽을 하나 이상 같이 켠다
 - 테스트 `test/test_vision_lane.py`: near-miss 레이아웃 거부 (필드 이동·타입·count·누락·초과·point_step·endian), uint64 재조립, 빈 INVALID 스냅샷, 요약 (주기·되감김·identity 비교·유령 트랙)
+
+### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
+
+투척 grid → 항력 비행 → 포구 후보 → **C++ judge** → 집계·제안·플롯. 판정은 재구현하지 않고
+`rtc_controllers` 의 오프라인 실행파일 `catch_pose_ik_batch` (= 런타임 계획기와 같은
+`CatchPoseIk::Solve`, 같은 YAML 키 — plan §11 / S1.9) 를 CSV 로 호출한다. import 전용 순수
+함수와 CLI 를 함께 갖는다.
+
+```bash
+ros2 run rtc_tools catchability_map \
+  --robot-config <config>/ur5e_p1b/_base.yaml \
+  --ball-config  <config>/ur5e_p1b/mujoco_simulator.yaml \
+  --arm-base-frame base \
+  --drag-coefficient 0.55 --drag-coefficient-source 'rtc_mujoco_sim/src/projectile_ball.cpp:30' \
+  --air-density 1.204 --air-density-source 'rtc_mujoco_sim/include/rtc_mujoco_sim/projectile_ball.hpp:95' \
+  --distances-m 4.0 --azimuths-deg '180 190 200' --release-heights-m 1.8 \
+  --aim-deviations-deg 0.0 --speeds-m-s '5.4 6.0' --elevations-deg '40 48' \
+  --window-s 1.0 1.8 --stride-s 0.05 --min-flight-time-s 1.0 \
+  --max-reach-m 1.1 --seed '0.0 -1.4 0.9 -1.9 -1.5708 0.0' \
+  --workers 6 --epsilon-m 0.01 --out-dir <out>
+```
+
+출력: `candidates.csv` (후보별 verdict·q\*), `throw_summary.csv` (throw 별 포구 가능·최대 w 후보),
+`reason_histogram.csv`, `throw_region.yaml` (`sim.throw_region` 제안 + provenance),
+`provenance.yaml`, `azimuth_coverage.png` (방위별 포구 가능 구간), `manipulability.png`,
+그리고 `model_config.yaml` / `model.urdf` / `seeds.csv` / `shards/` (재개용).
+
+```python
+from rtc_tools.analysis import catchability_map as cm
+
+shape  = cm.ball_shape_from_config([Path(".../mujoco_simulator.yaml")])   # radius_m, mass_kg
+params = cm.ball_params_from_shape(shape, drag_coefficient=..., drag_coefficient_source="<file:line>",
+                                   air_density_kg_m3=..., air_density_source="<file:line>")
+traj   = cm.integrate_flight(throw.position_m, throw.velocity_m_s, params, horizon_s=1.5, step_s=0.002)
+throws = cm.generate_throw_grid(distances_m=(4.0,), speeds_m_s=(5.0, 7.0, 9.0))
+p_b, v_b = cm.world_to_base(base_T_world, traj.position_m[i], traj.velocity_m_s[i])
+
+art  = cm.write_model_config([robot_cfg], out_dir)        # 출하 스키마 → LoadModelConfig 스키마
+mwTb = cm.frame_placement_in_model_world(art.urdf_text, "base")   # model world ← arm base
+cand = cm.sample_catch_candidates(traj, window_s=(1.0, 1.8), stride_s=0.05,
+                                  min_flight_time_s=1.0,
+                                  reach_filter=cm.max_distance_filter(base_xyz, 1.1))
+rows = cm.run_judge_batch(inv, cm.to_judge_candidates(cand, model_world_t_world=mwTb @ bTw),
+                          work_dir=out_dir / "shards", shard_size=200, workers=6)
+outc = cm.summarize_throws(cm.join_results(candidates, rows))
+```
+
+- ⚠️ **judge 의 프레임은 arm base 가 아니라 Pinocchio MODEL WORLD (= URDF 모델 root) 다.**
+  `ur5e_p1b` 에서 모델 root 는 `base_link` 이고 CLIK `base_frame` 은 `base` 로 z 축 180° 차이다
+  (plan §11). world→`base` 는 항등이므로 **world 좌표를 judge 에 그대로 넣으면 x·y 가 뒤집혀**
+  "공이 등 뒤에서 온다". 그래서 CLI 는 `base_T_world` 를 인자로 받고 (`--world-yaw-deg` /
+  `--world-translation-m`, 기본 항등 — 쓰인 값은 provenance 에 기록), `model_world_T_base` 는
+  `--arm-base-frame` 으로 지정된 프레임의 FK 에서 읽어 **합성**한다. 어느 쪽도 박제하지 않는다.
+  `iiwa7_leap` 은 모델 root = `link_0` = base 라 합성이 항등이다
+- ⚠️ **출하 `urdf.sub_models.<arm>` 은 flange (`tool0`/`ee_link`) 에서 끝나 catch frame 이 그 sub-model
+  에 없다.** `write_model_config` 가 arm root → `urdf.extra_frames.<catch_frame>.parent` 까지의
+  sub-model `arm_catch` 를 **추가로** 선언한다. 그 뒤(손 전체)는 `buildReducedModel` 이 잠그는데,
+  손바닥이 손의 폐쇄 루프 상류라 catch frame 의 FK·팔 관절 Jacobian 은 **정확하다**. 스키마 차이도
+  여기서 번역한다 (`urdf_path`, `sub_models` 는 map 이 아니라 **sequence**; `extra_frames` 만 같은 map)
+- **샤딩·재개**: 후보를 chunk 로 나눠 최대 6 프로세스 (이 머신 상한) 로 돌리고 자식 env 에
+  `OMP_NUM_THREADS=1` 을 준다. 완료된 shard 출력은 **행/ID 대조로 검사**해 재실행을 건너뛴다.
+  비정상 종료·짧은 CSV 는 그 shard 의 stderr 를 달아 raise 한다 — 조용히 짧은 shard 는
+  "그 투척들은 못 잡는다" 로 읽혀 나중에 반증되지 않는다
+- **`q*` 열이 비는 것은 세 번째 상태다** (pose 없음 ≠ q = 0). judge 는 `none`/`below_manip_min`/
+  `rank_deficient` 에만 pose 를 쓰므로 나머지 사유는 `q*` 가 공란이고, 파서는 이를 `None` 으로
+  구분하고 절반만 찬 행은 거부한다
+- **w₅·w₆ 는 따로 보고한다** (같은 q\* 의 두 측정이지만 차원이 달라 pooling 하지 않는다, plan §11 C-3).
+  θ 분포는 `fraction_below` 와 `fraction_near_limit` 을 **둘 다** 낸다 — "α_max 의 몇 % 안"이
+  양쪽으로 읽히고 결론이 뒤집히기 때문. 접근축 cone 이 binding 하는지는 `fraction_near_limit` 이 답한다
+- **seed 비교**는 포구 가능 throw 비율 내림차순, 동률이면 평균 `log w5` 로 가른다. 서로 다른 throw
+  집합을 비교하려 하면 거부한다. runner-up 의 coverage 차이가 대기 자세 민감도 수치다
+- **ε 경계 개수**의 "경계" 는 후보 생성 단계로 정의된다: 받아들여진 후보의 p_c 를 축별 ±ε 로 옮긴
+  6 사본을 **다시 judge 에 넣어** 하나라도 거부되면 그 후보는 경계 위다 (w₅ 여유 같은 대용값 추정 아님)
+- **힘 법칙은 sim 과 같다**: 중력 + 이차 항력 `-½ρC_dA|v|v` (`ComputeProjectileBallAeroForce`).
+  **각속도 0 가정**이므로 Magnus 항은 소멸하며 구현하지 않는다 — spin 을 실어 발사한 궤적은 이 모델과 다르다
+- **공기밀도·항력계수·반지름·질량은 기본값이 없다.** `C_d`·ρ 는 C++ `constexpr` preset 에만 있고 YAML 로
+  노출되지 않으므로, python 에 박아두면 preset 이 바뀌어도 아무것도 실패하지 않는다. 호출자가 값과
+  **출처 라벨 (`file:line`)** 을 함께 넘겨야 하고 provenance 가 그 라벨을 기록한다. 반지름·질량은 노출되어
+  있으므로 `projectile_ball.radius_m` / `.mass_kg` 에서 읽는다
+- 스칼라 `k = ρC_dA/(2m)` [1/m] 는 **참고용 파생값**으로만 기록한다 — 문서의 대표값과 수치가 다르고
+  (출하 tennis preset → 0.02048, L0 §4.1 대표값 0.0229) L0 §7 이 둘을 환산할 수 없다고 명시한다
+- **프레임 변환은 인자로만 받는다.** URDF 가 `base` / `base_link` 를 같은 원점에 z 180° 로 두는 경우
+  잘못 고르면 downrange 부호만 뒤집혀 "공이 등 뒤에서 온다" — 그런데 수치는 전부 그럴듯하다.
+  로봇별 값을 모듈에 박지 않으며, 호출자가 (같은 q 에서 MuJoCo FK ↔ Pinocchio FK 로 확정한) 변환을 넘긴다
+- 각 throw 는 world 기준 release position·velocity 를 들고 있어 `rtc_msgs/srv/LaunchBall` 요청 필드로
+  1:1 대응된다 (`throw_to_launch_request`)
+- 테스트 `test/test_catchability_map.py` (49 케이스): 무항력 닫힌해 + **적분 차수** (스텝 절반 → 오차
+  1/16; Euler 2, substage 속도를 고정한 RK4 2.1 로 실측 반증), 항력 부호·상승 중 속력 단조감소·종단속도
+  √(g/k), 프레임 변환 longhand oracle·transpose·Rz(180°) 함정 pin·round trip, grid 개수·속력/고도각
+  역산·downrange 부호, provenance 출처 라벨·파생 k, 손으로 계산한 후보 샘플링 (비행시간 하한이 제거 +
+  재-anchor 하는 것까지)·reach prefilter, **`q*` 공란 행과 정상 행이 섞인 결과 CSV**·절반만 찬 pose 거부,
+  짧은 shard 탐지, 출하 스키마 → ModelConfig 번역 (`arm_catch` tip = catch frame 부모), 모델 world 변환
+  rigid 검사, seed 순위 tie-break (두 기준이 어긋나게 구성), `throw_region` 박스 (초과 포함 비율까지 손
+  계산), 사유 히스토그램, ε 경계 개수. **실제 `catch_pose_ik_batch` 왕복** (출하 ur5e_p1b config →
+  `--dump-frame` nv 6 · `base` 가 Rz(180°) 임을 pin → 2-shard 실행 → poseless 행 · 재개) 은 바이너리·출하
+  config·URDF 툴체인이 없으면 이유를 적고 skip 한다
 
 ### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환
 
