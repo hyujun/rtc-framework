@@ -230,6 +230,24 @@ TEST(DemoCatchingController, AWideDeviceIsNotAFault) {
   EXPECT_EQ(out.devices[1].num_channels, kHandDof + 2);
 }
 
+TEST(DemoCatchingController, AWideDeviceWithHolesIsLatchedOnlyUpToTheFirstHole) {
+  // `readable` vouches for [0, dof) only. The channels past it can be wire
+  // slots no state message ever wrote, which read 0.0 out of the persistent
+  // cache — latching those would freeze "go to the origin" on them for the
+  // whole activation, and this latch never re-seeds.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ControllerState holed = MakeState(0.0, kHandDof + 2);
+  holed.devices[1].positions[kHandDof] = 0.0;      // never written
+  holed.devices[1].positions[kHandDof + 1] = 0.0;  // never written
+  holed.devices[1].hole_mask =
+      (1ULL << static_cast<unsigned>(kHandDof)) | (1ULL << static_cast<unsigned>(kHandDof + 1));
+
+  const ControllerOutput out = ctrl.Compute(holed);
+  EXPECT_EQ(out.devices[1].num_channels, kHandDof)
+      << "a never-written slot was latched and is now commanded every tick";
+}
+
 // ── 2. The hand step reaches the wire unshaped ───────────────────────────────
 
 TEST(DemoCatchingController, AcceptedStepIsCommandedBitExactFromTheAcceptingTick) {
@@ -289,6 +307,58 @@ TEST(DemoCatchingController, HandHoldsItsActivationPoseUntilAStepArrives) {
 }
 
 // ── 3. The refusals refuse ──────────────────────────────────────────────────
+
+TEST(DemoCatchingController, ATaskGoalOnTheHandIsRefusedRatherThanSteppedAsJoints) {
+  // The base's default SetDeviceTaskTarget forwards a task goal straight to
+  // SetDeviceTarget, so without an override the six Cartesian numbers would be
+  // written into the first six HAND JOINTS as an unshaped step — clamped to the
+  // joint limits, and with the base's limit warning deliberately skipped
+  // because "joint limits do not apply to a Cartesian goal".
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  const ControllerState seed = MakeState(0.0);
+  static_cast<void>(ctrl.Compute(seed));
+
+  rtc_msgs::msg::RobotTarget msg;
+  msg.goal_type = "task";
+  msg.task_target = {0.4, -0.2, 0.6, 0.0, 1.57, 0.0};
+  ctrl.DeliverTargetMessage("hand", kCatchingHandDeviceIdx, msg);
+  const ControllerOutput out = ctrl.Compute(MakeState(0.0));
+
+  EXPECT_EQ(ctrl.GetTaskTargetRejectCount(), 1U);
+  EXPECT_EQ(ctrl.GetHandStepAppliedCount(), 0U);
+  for (int i = 0; i < kHandDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(out.devices[1].commands[idx], seed.devices[1].positions[idx])
+        << "a Cartesian pose value reached hand joint " << i;
+  }
+}
+
+TEST(DemoCatchingController, AShortHandGoalIsRefusedRatherThanHalfApplied) {
+  // This controller has no persistent target row: the overlay covers
+  // [0, width) and the REST comes from the activation latch. So a short goal
+  // would not leave the untouched joints where the previous step put them — it
+  // would snap them back to the activation pose, unshaped.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  static_cast<void>(ctrl.Compute(MakeState(0.0)));
+
+  const std::array<double, kHandDof> full{0.11, 0.22, 0.33, 0.44};
+  ctrl.SetDeviceTarget(kCatchingHandDeviceIdx, std::span<const double>(full));
+  static_cast<void>(ctrl.Compute(MakeState(0.0)));
+
+  const std::array<double, 2> partial{0.9, 0.9};
+  ctrl.SetDeviceTarget(kCatchingHandDeviceIdx, std::span<const double>(partial));
+  const ControllerOutput out = ctrl.Compute(MakeState(0.0));
+
+  EXPECT_EQ(ctrl.GetHandTargetWidthRejectCount(), 1U);
+  EXPECT_EQ(ctrl.GetHandStepAppliedCount(), 1U) << "the short goal was applied";
+  for (int i = 0; i < kHandDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(out.devices[1].commands[idx], full[idx])
+        << "hand joint " << i << " left the previous step";
+  }
+}
 
 TEST(DemoCatchingController, HandStepIsRefusedWhenTheDiagnosticFlagIsOff) {
   DemoCatchingController ctrl{""};
@@ -386,23 +456,92 @@ TEST_F(CatchingConfigureTest, ConfiguresOnAnAllMujocoProfile) {
   EXPECT_EQ(ctrl.GetHandDof(), kHandDof);
 }
 
-TEST_F(CatchingConfigureTest, RefusesARealDriverBackend) {
+// The sim-only guard (E-8) refuses ACTIVATION, not configuration. These three
+// tests replaced a pair that asserted `on_configure == FAILURE`: that verdict
+// took the whole robot down with it, because sim and real share
+// `config/<variant>/controllers/` and CM latches `bring_up_failed` on any
+// controller's configure failure. The property being pinned is unchanged and
+// now checked further in — a real backend commands nothing — so each of these
+// asserts MORE than the assertion it replaced, not less.
+
+TEST_F(CatchingConfigureTest, ConfiguresDisabledOnARealDriverBackend) {
   // E-8: holding a real arm is an E-STOP-path change pending approval.
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("ur_driver_native", "udp_hand_native"));
   const rclcpp_lifecycle::State prev;
   EXPECT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
-            DemoCatchingController::CallbackReturn::FAILURE);
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << "a configure failure here refuses EVERY controller on the real robot";
+  EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
   EXPECT_EQ(ctrl.GetNonSimGroups().size(), 2U);
 }
 
-TEST_F(CatchingConfigureTest, RefusesADeviceThatDeclaresNoBackendAtAll) {
+TEST_F(CatchingConfigureTest, RefusesToActivateOnARealDriverBackend) {
+  // This is where the guard bites: nothing is commanded until a controller is
+  // active, so a controller that cannot activate cannot reach the arm.
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("ur_driver_native", "udp_hand_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  EXPECT_EQ(ctrl.ActivationGeneration(), 0U) << "the base activation ran anyway";
+}
+
+TEST_F(CatchingConfigureTest, ConfiguresDisabledOnADeviceThatDeclaresNoBackendAtAll) {
   // Silence does not prove the device is the simulator.
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", ""));
   const rclcpp_lifecycle::State prev;
   EXPECT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
-            DemoCatchingController::CallbackReturn::FAILURE);
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+}
+
+TEST_F(CatchingConfigureTest, ADisabledInstanceExposesNoProfileParameters) {
+  // A disabled instance stops before DeclareProfileParameters, so the real
+  // robot does not even advertise the diagnostic step lane's profile.
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("ur_driver_native", "udp_hand_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(node_->has_parameter("hand.q_close"));
+  EXPECT_FALSE(node_->has_parameter("diagnostic.hand_step"));
+}
+
+TEST_F(CatchingConfigureTest, ConfigureIsReentrantOnTheSameNode) {
+  // The profile parameters are read_only, so on_cleanup cannot undeclare them.
+  // Without a has_parameter guard the second declare throws and turns a legal
+  // re-configure into a configure failure.
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl.IsSimOnlyDisabled());
+}
+
+TEST_F(CatchingConfigureTest, ADisabledInstanceRecoversWhenTheBackendsBecomeSim) {
+  // The verdict is re-decided per configure — a disabled instance must not
+  // stay disabled once it is given simulator backends.
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("ur_driver_native", "udp_hand_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(ctrl.IsSimOnlyDisabled());
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(MinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl.IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
 TEST_F(CatchingConfigureTest, RefusesAProfileWhoseHandWidthDisagreesWithTheDevice) {

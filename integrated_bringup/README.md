@@ -30,7 +30,7 @@ integrated_bringup/
 │   │   ├── demo_compliance_controller.hpp <- 태스크 공간 admittance 바인딩 (§7 법칙 결합)
 │   │   ├── demo_inference_controller.hpp <- 학습 정책(ONNX) 바인딩. 코어는 `rtc_controllers/inference/{policy_io,reach_gate}.hpp`. link pose (cache / closed-chain FK, `policy_frame` 기준) · 관절 규약 · reach gate · object pose(TFMessage) 레인을 스스로 소유한다 — object 는 device lane 이 아니라 프레임워크 freshness 게이트가 안 걸리므로 `object_pose.timeout_sec` 이 그 책임을 진다
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
-│   │   ├── demo_catching_controller.hpp <- dynamic_catching S4.0 골격: 팔 hold + 손 무성형 계단 (sim 전용, E-8 승인 전)
+│   │   ├── demo_catching_controller.hpp <- dynamic_catching S4.0 골격: 팔 hold + 손 무성형 계단 (sim 전용 — 비-sim backend 면 DISABLED 로 configure 되고 활성화를 거부, E-8 승인 전)
 │   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
 │   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum

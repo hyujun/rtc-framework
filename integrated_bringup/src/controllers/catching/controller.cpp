@@ -166,7 +166,40 @@ void DemoCatchingController::SetDeviceTarget(int device_idx,
                          "its activation pose");
     return;
   }
+  // A partial goal is refused rather than half-applied. This controller has no
+  // persistent target row — the overlay in WriteDeviceCommand covers
+  // [0, hand_target_width_) and the REST comes from the activation latch — so a
+  // short goal does not leave the untouched joints where the previous step put
+  // them, it snaps them back to the pose held at activation. The base already
+  // refuses a goal LONGER than the device and refuses partial NAMED goals; this
+  // closes the unnamed-short case for the one binding whose goals are unshaped
+  // steps. (It is also what stops a 6-value task goal, see SetDeviceTaskTarget.)
+  if (hand_dof_ > 0 && target.size() != static_cast<std::size_t>(hand_dof_)) {
+    hand_target_width_reject_count_.fetch_add(1, std::memory_order_relaxed);
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "hand target refused: %zu values for a %d-joint hand. A step commands "
+                         "every joint or none — a partial one would snap the rest back to the "
+                         "activation pose.",
+                         target.size(), hand_dof_);
+    return;
+  }
   PushPendingTarget(device_idx, target, /*is_task=*/false);
+}
+
+void DemoCatchingController::SetDeviceTaskTarget(int device_idx,
+                                                 std::span<const double> task6) noexcept {
+  // There is no task lane here — no CLIK, no IK, nothing that turns a Cartesian
+  // pose into joint values (see the header). The base's default forwards a task
+  // goal to SetDeviceTarget, which on this controller would write the six pose
+  // numbers into the first six HAND JOINTS as an unshaped step, clamped to the
+  // joint limits and with the base's limit warning deliberately skipped because
+  // "joint limits do not apply to a Cartesian goal". Refuse instead.
+  static_cast<void>(task6);
+  task_target_reject_count_.fetch_add(1, std::memory_order_relaxed);
+  RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                       "task goal for device %d refused: this controller has no task lane. Send "
+                       "joint values (goal_type 'joint') to step the hand.",
+                       device_idx);
 }
 
 void DemoCatchingController::ApplyPendingTarget(int device_idx, std::span<const double> values,
@@ -242,7 +275,14 @@ void DemoCatchingController::WriteDeviceCommand(const ControllerState& state,
   // whose unreported joints are 0 — i.e. "go to the origin" — and the latch
   // would make that permanent.
   if (!latch.IsLatched() && readable) {
-    const int width = std::min(dev.num_channels, static_cast<int>(kMaxDeviceChannels));
+    // Trimmed at the first HOLE, not at num_channels. `readable` only vouches
+    // for [0, dof) — slots past it can be wire channels no state message ever
+    // wrote, which sit at 0.0 in the persistent cache. Latching those would
+    // freeze "go to the origin" on them for the whole activation, and unlike
+    // the joint controller's per-tick tail this latch never re-seeds. This is
+    // what SelfReportedChannelBound exists for, and it is a no-op on a
+    // hole-free device, so a legitimately wide device still gets full width.
+    const int width = rtc::SelfReportedChannelBound(dev, static_cast<int>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < static_cast<std::size_t>(width); ++i) {
       latch.commands[i] = dev.positions[i];
     }

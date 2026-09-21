@@ -96,20 +96,31 @@ void DemoCatchingController::DeclareProfileParameters() {
   std::vector<double> q_close(hand.q_close.begin(), hand.q_close.begin() + dof);
   std::vector<bool> caging(hand.caging_mask.begin(), hand.caging_mask.begin() + dof);
 
-  node_->declare_parameter("hand.q_open", q_open, ReadOnlyDescriptor("L6 §5.1 open pose [rad]"));
-  node_->declare_parameter("hand.q_pre", q_pre, ReadOnlyDescriptor("L6 §5.1 preshape pose [rad]"));
-  node_->declare_parameter("hand.q_close", q_close,
-                           ReadOnlyDescriptor("L6 §5.1 closed pose [rad]"));
-  node_->declare_parameter("hand.caging_mask", caging,
-                           ReadOnlyDescriptor("L6 §4.2 caging joint set C"));
-  node_->declare_parameter("hand.eta_close", hand.eta_close.value,
-                           ReadOnlyDescriptor("L6 §4.2 closure threshold eta"));
-  node_->declare_parameter("hand.rho_eps", hand.rho_eps,
-                           ReadOnlyDescriptor("L6 §4.2 caging gap floor [rad]"));
-  node_->declare_parameter("hand.T_close_e2e", hand.T_close_e2e.value,
-                           ReadOnlyDescriptor("L6 §4.2 end-to-end closure time [s]"));
-  node_->declare_parameter("diagnostic.hand_step", hand_step_enabled_,
-                           ReadOnlyDescriptor("accept unshaped hand step targets (S4a)"));
+  // Guarded, like every sibling binding's parameters.cpp. These are read_only,
+  // so on_cleanup CANNOT undeclare them — a configure → cleanup → configure on
+  // the same LifecycleNode would otherwise throw ParameterAlreadyDeclaredException
+  // and turn a legal re-configure into a configure failure.
+  const auto declare = [this](const std::string& name, const auto& value, std::string description) {
+    if (!node_->has_parameter(name)) {
+      node_->declare_parameter(name, value, ReadOnlyDescriptor(std::move(description)));
+    }
+  };
+
+  declare("hand.q_open", q_open, "L6 §5.1 open pose [rad]");
+  declare("hand.q_pre", q_pre, "L6 §5.1 preshape pose [rad]");
+  declare("hand.q_close", q_close, "L6 §5.1 closed pose [rad]");
+  declare("hand.caging_mask", caging, "L6 §4.2 caging joint set C");
+  declare("hand.eta_close", hand.eta_close.value, "L6 §4.2 closure threshold eta");
+  declare("hand.rho_eps", hand.rho_eps, "L6 §4.2 caging gap floor [rad]");
+  declare("hand.T_close_e2e", hand.T_close_e2e.value, "L6 §4.2 end-to-end closure time [s]");
+  // The RT tick period the analyser needs for its tick axis and its dropped-row
+  // test. It is mirrored here for the same reason as the poses: the off-process
+  // reader must use what the CONTROLLER resolved, not a constant. The runner
+  // cannot read `control_rate` itself — that parameter lives on the CM's node,
+  // not on this per-controller one — and a hard-coded 0.002 silently scales the
+  // tick axis and widens the drop gate on any bring-up that is not 500 Hz.
+  declare("control.dt", GetDefaultDt(), "RT tick period [s] = 1/control_rate");
+  declare("diagnostic.hand_step", hand_step_enabled_, "accept unshaped hand step targets (S4a)");
 }
 
 RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
@@ -125,6 +136,9 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // on_configure directly sets the configs FIRST, so the hook then saw no
     // groups — re-run rather than trust the ordering (idempotent).
     ResolveDevices();
+    // Owned by this function alone, and re-decided on every configure: a
+    // reconfigure after the backends changed must not inherit the old verdict.
+    sim_only_disabled_ = false;
 
     if (topic_config_.groups.size() < 2) {
       RCLCPP_ERROR(logger_,
@@ -139,26 +153,33 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // it every tick; doing that on real hardware is a change on the E-STOP
     // path (E-8), which is pending approval before S5. S5.1 removes this
     // guard together with that approval.
+    // A disabled instance returns SUCCESS and stops here: it creates no step
+    // subscription, no log channels, no drain timer and no profile parameters,
+    // and on_activate refuses. Returning FAILURE instead would take the whole
+    // bring-up down with it (see the header) — the real p1b robot instantiates
+    // this controller from the same config dir as the sim.
     if (!device_configs_seen_) {
+      sim_only_disabled_ = true;
       RCLCPP_ERROR(logger_,
-                   "refusing to configure: no device config resolved for any declared group, so "
-                   "no device has proven it is the simulator (E-8: this controller is sim-only "
-                   "until the E-STOP path is approved)");
-      return CallbackReturn::FAILURE;
+                   "DISABLED: no device config resolved for any declared group, so no device has "
+                   "proven it is the simulator (E-8: this controller is sim-only until the E-STOP "
+                   "path is approved). It will refuse to activate.");
+      return CallbackReturn::SUCCESS;
     }
     if (!non_sim_groups_.empty()) {
       for (const auto& group : non_sim_groups_) {
         const auto* cfg = GetDeviceNameConfig(group);
         RCLCPP_ERROR(logger_,
-                     "refusing to configure: device group '%s' is bound to backend '%s', not '%s'. "
-                     "This controller is SIM-ONLY until E-8 (the E-STOP path) is approved in S5.1 "
-                     "— it holds the arm by commanding it every tick.",
+                     "DISABLED: device group '%s' is bound to backend '%s', not '%s'. This "
+                     "controller is SIM-ONLY until E-8 (the E-STOP path) is approved in S5.1 — it "
+                     "holds the arm by commanding it every tick. It will refuse to activate.",
                      group.c_str(),
                      (cfg != nullptr && cfg->backend.has_value()) ? cfg->backend->type.c_str()
                                                                   : "<none declared>",
                      kCatchingRequiredBackendType);
       }
-      return CallbackReturn::FAILURE;
+      sim_only_disabled_ = true;
+      return CallbackReturn::SUCCESS;
     }
 
     // ── Hand profile (G0-C, L0 §5.3) ─────────────────────────────────────
@@ -258,10 +279,34 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                 hand_dof_, hand_step_enabled_ ? "enabled" : "disabled",
                 kCatchingRequiredBackendType);
   } catch (const std::exception& e) {
+    // Undo everything this function may already have built. Without this a
+    // throw past the log registration leaves a half-configured instance —
+    // live log channels, a live 100 ms timer capturing `this`, and a live step
+    // subscription — behind a FAILURE that the operator reads as "nothing
+    // happened". CM then refuses the bring-up and destroys the node anyway,
+    // but a fixture that retries configure would inherit the wreckage.
     RCLCPP_ERROR(logger_, "on_configure failed: %s", e.what());
+    TearDownConfiguredResources();
     return CallbackReturn::FAILURE;
   }
   return CallbackReturn::SUCCESS;
+}
+
+RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
+    const rclcpp_lifecycle::State& prev) noexcept {
+  // The sim-only guard (E-8) lives here, not in on_configure: refusing to
+  // configure took the whole robot down with it (see the header). Nothing is
+  // commanded until a controller is active, so refusing here is what the
+  // guard actually needs to do.
+  if (sim_only_disabled_) {
+    RCLCPP_ERROR(logger_,
+                 "refusing to activate: this controller is SIM-ONLY until E-8 (the E-STOP path) "
+                 "is approved in S5.1, and configure could not prove every claimed device is the "
+                 "'%s' simulator backend. Nothing was commanded.",
+                 kCatchingRequiredBackendType);
+    return CallbackReturn::FAILURE;
+  }
+  return RTControllerInterface::on_activate(prev);
 }
 
 void DemoCatchingController::ResetLogState() noexcept {
@@ -273,8 +318,7 @@ void DemoCatchingController::ResetLogState() noexcept {
   hand_state_log_handle_ = {};
 }
 
-RTControllerInterface::CallbackReturn DemoCatchingController::on_cleanup(
-    const rclcpp_lifecycle::State& prev) noexcept {
+void DemoCatchingController::TearDownConfiguredResources() noexcept {
   log_set_.DrainAll();
   // Tear the timer down BEFORE Reset() so no drain callback runs against
   // channels that are being destroyed.
@@ -282,6 +326,13 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_cleanup(
   log_drain_cb_group_.reset();
   ResetLogState();
   ResetOwnedTopics(owned_topics_);
+}
+
+RTControllerInterface::CallbackReturn DemoCatchingController::on_cleanup(
+    const rclcpp_lifecycle::State& prev) noexcept {
+  TearDownConfiguredResources();
+  // The next configure re-decides this from the backends it is given.
+  sim_only_disabled_ = false;
   return RTControllerInterface::on_cleanup(prev);
 }
 

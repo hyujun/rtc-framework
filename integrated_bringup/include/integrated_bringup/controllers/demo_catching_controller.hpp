@@ -15,14 +15,28 @@
 // hand sequencer, no ρ, no state message. Those land with S5 / S7.1. The arm
 // never moves under this controller, by construction.
 //
-// SIM ONLY (2026-09-20 decision, plan §4.4 S4a Q3). on_configure REFUSES unless
-// every device this controller claims is bound to the `mujoco_native` backend.
-// Commanding a real arm — even to hold it — is a change on the E-STOP path
-// (E-8) that is pending approval before S5, and this controller must not be the
-// way that path opens by accident. The guard is removed in S5.1 together with
-// that approval. For the same reason this class overrides NONE of the E-STOP
-// hooks: the base no-ops plus the CM's hold/substitution lane are the whole
-// defence here, and adding a hook now would be the E-8 change itself.
+// SIM ONLY (2026-09-20 decision, plan §4.4 S4a Q3). Unless every device this
+// controller claims is bound to the `mujoco_native` backend, it configures into
+// a DISABLED state and then REFUSES on_activate. Commanding a real arm — even
+// to hold it — is a change on the E-STOP path (E-8) that is pending approval
+// before S5, and this controller must not be the way that path opens by
+// accident. The guard is removed in S5.1 together with that approval. For the
+// same reason this class overrides NONE of the E-STOP hooks: the base no-ops
+// plus the CM's hold/substitution lane are the whole defence here, and adding a
+// hook now would be the E-8 change itself.
+//
+// WHY DISABLED RATHER THAN A CONFIGURE REFUSAL (2026-09-21). The refusal used
+// to be `on_configure` returning FAILURE, and that took the whole robot down
+// with it: sim and real share `config/<variant>/controllers/`, so the real p1b
+// bring-up instantiates this controller too, and CM's Pass 3 latches
+// `bring_up_failed` on ANY controller's configure failure and then refuses to
+// configure EVERY controller (rt_controller_node_params.cpp). The intent was
+// "this controller must not run on real hardware", never "the real robot must
+// not boot". Refusing activation is what actually carries that intent: nothing
+// is commanded until a controller is active, so a controller that can never
+// activate can never command. A disabled instance also stops short of creating
+// its step subscription, log channels, drain timer and profile parameters —
+// on real hardware the diagnostic lane does not exist at all.
 //
 // THE HAND STEP IS A DIAGNOSTIC MODE. Hand targets are accepted only while the
 // YAML says `diagnostic.hand_step: true`. From S7.1 the sequencer owns the
@@ -89,6 +103,7 @@ class DemoCatchingController final : public RTControllerInterface {
   CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
                               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                               const YAML::Node& yaml) noexcept override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
 
   // ── Observation surface (tools, GUI, tests) ──────────────────────────────
@@ -113,10 +128,16 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] int GetHandDof() const noexcept { return hand_dof_; }
 
   /// Group names whose backend is not `mujoco_native` (or which declare no
-  /// `backend:` block at all). Non-empty ⇒ on_configure refuses.
+  /// `backend:` block at all). Non-empty ⇒ the instance configures DISABLED.
   [[nodiscard]] const std::vector<std::string>& GetNonSimGroups() const noexcept {
     return non_sim_groups_;
   }
+
+  /// True once on_configure has parked this instance because it could not prove
+  /// every claimed device is the simulator (E-8). A disabled instance holds no
+  /// step lane, no log channels and no profile parameters, and on_activate
+  /// refuses — so it commands nothing, ever.
+  [[nodiscard]] bool IsSimOnlyDisabled() const noexcept { return sim_only_disabled_; }
 
   /// Targets refused because they addressed the arm. The arm slot has exactly
   /// one writer here (the activation latch), so a goal sent to it is a mistake
@@ -130,6 +151,18 @@ class DemoCatchingController final : public RTControllerInterface {
     return hand_step_disabled_reject_count_.load(std::memory_order_relaxed);
   }
 
+  /// Hand targets refused because they did not carry one value per hand joint.
+  /// A step commands every joint or none — see SetDeviceTarget.
+  [[nodiscard]] std::uint64_t GetHandTargetWidthRejectCount() const noexcept {
+    return hand_target_width_reject_count_.load(std::memory_order_relaxed);
+  }
+
+  /// Task-space goals refused. This controller has no task lane; the base's
+  /// default would forward the six pose numbers into the hand's joint lane.
+  [[nodiscard]] std::uint64_t GetTaskTargetRejectCount() const noexcept {
+    return task_target_reject_count_.load(std::memory_order_relaxed);
+  }
+
   /// Hand step targets applied on an RT tick since construction.
   [[nodiscard]] std::uint64_t GetHandStepAppliedCount() const noexcept {
     return hand_step_applied_count_.load(std::memory_order_relaxed);
@@ -138,6 +171,7 @@ class DemoCatchingController final : public RTControllerInterface {
  protected:
   void ApplyPendingTarget(int device_idx, std::span<const double> values,
                           bool is_task) noexcept override;
+  void SetDeviceTaskTarget(int device_idx, std::span<const double> task6) noexcept override;
   void OnDeviceConfigsSet() override;
   void ResetTargetInitialization() noexcept override;
 
@@ -155,6 +189,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Close every CSV channel and unbind the handles (#238 — a re-configure
   /// must not land in a channel the previous configure owned).
   void ResetLogState() noexcept;
+
+  /// Release everything on_configure builds: drain and close the CSV channels,
+  /// stop the drain timer, and destroy the owned topics. Used by on_cleanup and
+  /// by on_configure's own catch, so a throw cannot leave a half-built instance.
+  void TearDownConfiguredResources() noexcept;
 
   /// One tick's worth of per-device command writing, shared by both axes.
   /// `latch` supplies the held command; an unreadable device is SILENCED
@@ -196,6 +235,8 @@ class DemoCatchingController final : public RTControllerInterface {
   int arm_dof_{0};
   int hand_dof_{0};
   bool device_configs_seen_{false};
+  /// Set by on_configure, cleared by on_cleanup. See IsSimOnlyDisabled().
+  bool sim_only_disabled_{false};
   std::vector<std::string> non_sim_groups_;
   std::vector<std::string> arm_joint_names_;
   std::vector<std::string> hand_joint_names_;
@@ -219,6 +260,8 @@ class DemoCatchingController final : public RTControllerInterface {
 
   std::atomic<std::uint64_t> arm_target_reject_count_{0};
   std::atomic<std::uint64_t> hand_step_disabled_reject_count_{0};
+  std::atomic<std::uint64_t> hand_target_width_reject_count_{0};
+  std::atomic<std::uint64_t> task_target_reject_count_{0};
   std::atomic<std::uint64_t> hand_step_applied_count_{0};
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────
