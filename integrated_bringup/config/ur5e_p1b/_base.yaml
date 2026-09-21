@@ -98,7 +98,12 @@
           # rise asserted by test_catch_frame_models is a different motion
           # (straight → far joint limit), not this posture pair.
           rpy: [0.0, 0.0, 0.0]
-          provisional: true # unconfirmed in sim — blocks a real-arm catching config
+          # CONFIRMED by the user in sim, 2026-09-21 (D-17): the offset above was
+          # rendered onto the preshape hand with a ball-radius sphere at the frame
+          # origin and accepted. This no longer blocks a real-arm catching config —
+          # the sim-only guard that still does is the catching controller's own
+          # backend check (E-8, unapproved), not this flag.
+          provisional: false
 
     # ── Device configuration (keyed by controller topic group name) ─────────
     # Mode-agnostic identity only: joint/sensor rosters, limits, sensor packing.
