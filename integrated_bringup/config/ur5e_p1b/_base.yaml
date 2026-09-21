@@ -72,11 +72,31 @@
       extra_frames:
         catch_frame:
           parent: "l_palm_link"
-          # Pocket-centre offset: provisional 0 until S2.3b (preshape fingertip
-          # centroid, after S4.1).
-          xyz: [0.0, 0.0, 0.0]
-          # +z = palm outward normal: flexing the fingers moves their tip
-          # centroid toward l_palm_link +z (FK, 2026-09-19), so no rotation.
+          # Pocket-centre offset (S2.3b, 2026-09-21) = the S4.5 MEASURED catch
+          # point, not the preshape fingertip centroid plan §10 first proposed
+          # (rationale and the rejected alternative: plan §10). In short: r_cap
+          # is the lateral allowance measured AROUND this point, and t_c is the
+          # instant the closing hand holds the ball, so the origin has to be
+          # where the ball ends up — not the pocket mouth, which is d_eff away.
+          # L6 §4.5 states the point in CATCH-frame coordinates and this key is
+          # in the PARENT frame; rpy is zero here so the two coincide for this
+          # robot (they do NOT for iiwa7_leap, which carries a π turn).
+          # Cross-checked against the source of the measurement: the Pinocchio
+          # catch-frame origin and the MuJoCo pocket point agree to 1.4 mm over
+          # 16 random arm poses. That residual is ε_model,p1b (plan §11, MJCF↔
+          # URDF dimensions), not a frame mismatch — the two palm frames agree
+          # to 3.4e-6 deg in orientation.
+          xyz: [0.015, 0.145, 0.052]
+          # +z = palm outward normal, so no rotation. Evidence (2026-09-21,
+          # shipped postures): the −z backstop under the pocket sits at catch
+          # z 0.0155 and the measured ball centre rests one ball radius above it
+          # (0.0155 + 0.0335 = 0.049, measured 0.052); the preshape fingertip
+          # centroid is on the same side (z 0.053).
+          # NOT the evidence, despite the older wording here: between the
+          # shipped q_pre and q_close the tip centroid moves toward −z
+          # (cos −0.58) — fingers curl back toward the palm. The monotone +z
+          # rise asserted by test_catch_frame_models is a different motion
+          # (straight → far joint limit), not this posture pair.
           rpy: [0.0, 0.0, 0.0]
           provisional: true # unconfirmed in sim — blocks a real-arm catching config
 
