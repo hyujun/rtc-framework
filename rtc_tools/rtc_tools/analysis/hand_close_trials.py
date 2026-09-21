@@ -62,8 +62,8 @@ class HandStepRunner(Node):
             if time.monotonic() > deadline:
                 raise SystemExit(
                     f"{self._node_path}/get_parameters never appeared. Is the catching "
-                    "controller configured? (It refuses to configure outside sim — see "
-                    "its E-8 guard.)"
+                    "controller configured? (Outside sim it configures DISABLED and exposes no "
+                    "profile parameters — see its E-8 guard.)"
                 )
         names = [
             "hand.q_open",
@@ -74,6 +74,13 @@ class HandStepRunner(Node):
             "hand.rho_eps",
             "hand.T_close_e2e",
             "diagnostic.hand_step",
+            # The RT tick period, mirrored by the controller from its own
+            # control_rate. The analyser scales its tick axis and sizes its
+            # dropped-row gate with it; a hard-coded 0.002 is silently wrong on
+            # any bring-up that is not 500 Hz. It cannot be read from
+            # `control_rate` directly — that lives on the CM's node, not on the
+            # per-controller one this client talks to.
+            "control.dt",
         ]
         request = GetParameters.Request(names=names)
         future = client.call_async(request)
@@ -96,6 +103,7 @@ class HandStepRunner(Node):
             "rho_eps": float(values["hand.rho_eps"]),
             "T_close_e2e_at_run": float(values["hand.T_close_e2e"]),
             "hand_step_enabled": bool(values["diagnostic.hand_step"]),
+            "dt": float(values["control.dt"]),
         }
         if not profile["hand_step_enabled"]:
             raise SystemExit(

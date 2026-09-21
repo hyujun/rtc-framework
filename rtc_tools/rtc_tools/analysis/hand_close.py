@@ -48,6 +48,14 @@ from pathlib import Path
 # (one missing sample doubles the spacing), not to police jitter.
 TICK_AXIS_SPACING_TOLERANCE = 0.5
 
+# How close a command row must sit to a shipped pose, as a fraction of the
+# profile's own |q_close - q_pre| travel, to count as that pose at all. Rows
+# outside every band are 'other' — see _nearest_pose. A quarter of the travel
+# is wide enough for the real steps (the controller clamps them to the joint
+# limits, so they are near but rarely exact) and far tighter than the ~0.9x
+# travel at which the shipped p1b activation pose sits.
+POSE_MATCH_BAND = 0.25
+
 
 @dataclass
 class HandProfile:
@@ -60,6 +68,11 @@ class HandProfile:
     eta_close: float
     rho_eps: float = 0.02
     dt: float = 0.002
+    # False when the sidecar carried no `dt` and the default above was assumed.
+    # The tick axis and the dropped-row gate BOTH scale with dt, so an assumed
+    # value does not just stretch the axis — it widens the drop gate and can
+    # call a run trusted that dropped rows. Reported, never silently used.
+    dt_is_assumed: bool = False
 
     @property
     def caging_indices(self) -> list[int]:
@@ -98,6 +111,7 @@ def load_profile(path: Path) -> HandProfile:
         eta_close=float(data["eta_close"]),
         rho_eps=float(data.get("rho_eps", 0.02)),
         dt=float(data.get("dt", 0.002)),
+        dt_is_assumed="dt" not in data,
     )
     profile.validate()
     return profile
@@ -154,15 +168,36 @@ def _columns(header: list[str], prefix: str, profile: HandProfile) -> list[int]:
 
 
 def _nearest_pose(command: list[float], profile: HandProfile) -> str:
-    """Which shipped pose this command row is, by nearest distance.
+    """Which shipped pose this command row is: 'pre', 'close' or 'other'.
 
     Compared by distance rather than equality because the controller clamps the
     target to the device limits before commanding it, so a pose that sits on a
     limit is commanded as the clamped value and an equality test would classify
     every row as 'other'.
+
+    'other' exists because a nearest-of-two vote has no way to say "neither".
+    Every command row that is not a step — the activation hold pose, a
+    `q_open` step from the GUI — is forced into 'pre' or 'close' by proximity
+    alone, and a row that lands on 'close' OPENS A TRIAL. That trial never
+    reaches eta, so it is counted as a timeout: it does not move the mean or
+    the p99 (those filter NaN) but it inflates the trial count and the
+    exclusion count, which is exactly the success rate S4.2 hands onward.
+
+    The margin is not hypothetical. On the shipped ur5e_p1b profile the
+    activation hold pose (all joints at zero in sim) sits 0.107% from being
+    classified 'close' — 3.033 vs 3.036 in squared distance — against poses
+    the YAML itself marks provisional.
+
+    The band is a fraction of the profile's OWN travel, so it scales with the
+    hand rather than assuming a joint count or a unit.
     """
-    d_pre = sum((command[i] - profile.q_pre[i]) ** 2 for i in range(len(profile.joint_names)))
-    d_close = sum((command[i] - profile.q_close[i]) ** 2 for i in range(len(profile.joint_names)))
+    n = len(profile.joint_names)
+    d_pre = sum((command[i] - profile.q_pre[i]) ** 2 for i in range(n))
+    d_close = sum((command[i] - profile.q_close[i]) ** 2 for i in range(n))
+    travel_sq = sum((profile.q_close[i] - profile.q_pre[i]) ** 2 for i in range(n))
+    band_sq = (POSE_MATCH_BAND * POSE_MATCH_BAND) * travel_sq
+    if min(d_pre, d_close) > band_sq:
+        return "other"
     return "pre" if d_pre <= d_close else "close"
 
 
@@ -195,7 +230,17 @@ def analyse(csv_path: Path, profile: HandProfile) -> RunStats:
     spacings = sorted(rows[i][0] - rows[i - 1][0] for i in range(1, len(rows)))
     median_spacing = spacings[len(spacings) // 2]
     worst_spacing = spacings[-1]
-    if worst_spacing > profile.dt * (1.0 + TICK_AXIS_SPACING_TOLERANCE):
+    if profile.dt_is_assumed:
+        # Both the axis and the gate that guards it scale with dt, so an
+        # assumed dt cannot police itself: at 1 kHz it would compare a 2 ms
+        # drop gap against a 3 ms threshold and call the run clean.
+        stats.tick_axis_trusted = False
+        stats.spacing_note = (
+            f"the sidecar carried no 'dt', so {profile.dt * 1e3:.2f} ms was ASSUMED. Re-run the "
+            "trials with a runner that records the controller's control.dt, or add the key by "
+            "hand if you know the rate"
+        )
+    elif worst_spacing > profile.dt * (1.0 + TICK_AXIS_SPACING_TOLERANCE):
         stats.tick_axis_trusted = False
         stats.spacing_note = (
             f"largest sample gap {worst_spacing * 1e3:.2f} ms exceeds dt "

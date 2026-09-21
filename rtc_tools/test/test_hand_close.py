@@ -14,6 +14,7 @@ going backwards.
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -135,6 +136,79 @@ def test_every_trial_is_segmented(tmp_path):
     expected = analytic_t_close()
     for trial in stats.trials:
         assert trial.t_close_steady_s <= expected + DT + 1e-12
+
+
+def test_a_pose_that_is_neither_shipped_pose_does_not_open_a_trial(tmp_path):
+    # The activation hold pose is whatever the hand was measured at when the
+    # controller went active. It is not a step, but a nearest-of-two vote has
+    # no way to say so — and if it happens to fall on the q_close side it opens
+    # a phantom trial that never reaches eta and is counted as a timeout,
+    # inflating the very exclusion count the report asks the reader to quote.
+    # On the shipped ur5e_p1b profile that vote is decided by 0.107%.
+    profile = make_profile()
+    csv = write_csv(tmp_path / "hand_state.csv", profile, trials=3)
+
+    header, *rows = csv.read_text().splitlines()
+    n = len(profile.joint_names)
+    # A hold pose PAST q_close: nearer to q_close than to q_pre (12 vs 27), so
+    # the old two-way vote called it "close", but far outside the match band on
+    # either side.
+    # Partway between the two poses, on the q_close side of the midpoint: the
+    # old two-way vote called it "close" (1.47 vs 0.27 squared) but it is
+    # outside the match band, and its rho (0.7) is below eta so it does not
+    # cage either. This is the shape of a real activation hold pose.
+    hold = [0.7] * n
+    hold_rows = 50
+    out = [header]
+    for k in range(hold_rows):
+        cells = [f"{(k + 1) * DT:.9f}"]
+        cells += [f"{v:.12g}" for v in hold]  # actual_pos
+        cells += ["0"] * n * 2  # actual_vel, effort
+        cells += [f"{v:.12g}" for v in hold]  # command
+        cells += [f"{v:.12g}" for v in hold]  # joint_goal
+        out.append(",".join(cells))
+    for row in rows:  # shift the real run past the hold
+        cells = row.split(",")
+        cells[0] = f"{float(cells[0]) + hold_rows * DT:.9f}"
+        out.append(",".join(cells))
+    csv.write_text("\n".join(out) + "\n")
+
+    stats = analyse(csv, profile)
+    assert len(stats.trials) == 3, "the activation hold pose opened a phantom trial"
+    # The damage is not only the count: a hold classified "close" runs straight
+    # into the first real step, so that trial's t_cmd is the HOLD row and its
+    # T_close is inflated by the whole hold.
+    expected = analytic_t_close()
+    assert stats.trials[0].t_close_steady_s >= expected - 1e-12
+    assert stats.trials[0].t_close_steady_s <= expected + DT + 1e-12
+
+
+def test_an_assumed_dt_makes_the_tick_axis_untrusted(tmp_path):
+    # dt scales the tick axis AND the gap threshold that guards it, so an
+    # assumed dt cannot police itself: at 1 kHz a 2 ms drop gap would be
+    # compared against a 3 ms threshold and the run called clean.
+    sidecar = tmp_path / "run.json"
+    profile = make_profile()
+    payload = {
+        "joint_names": list(profile.joint_names),
+        "q_pre": list(profile.q_pre),
+        "q_close": list(profile.q_close),
+        "caging_mask": list(profile.caging_mask),
+        "eta_close": profile.eta_close,
+        "rho_eps": profile.rho_eps,
+    }
+    sidecar.write_text(json.dumps(payload))
+    loaded = load_profile(sidecar)
+    assert loaded.dt_is_assumed is True
+
+    csv = write_csv(tmp_path / "hand_state.csv", loaded)
+    stats = analyse(csv, loaded)
+    assert stats.tick_axis_trusted is False
+    assert "ASSUMED" in stats.spacing_note
+
+    payload["dt"] = DT
+    sidecar.write_text(json.dumps(payload))
+    assert load_profile(sidecar).dt_is_assumed is False
 
 
 def test_a_closure_that_never_reaches_eta_is_a_nan_not_a_number(tmp_path):

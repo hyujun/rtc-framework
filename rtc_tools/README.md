@@ -270,11 +270,18 @@ ros2 run rtc_tools analyze_hand_close <session>/controllers/demo_catching_contro
 - **시간축 2개를 모두 보고한다**: `steady` (`t_relative_s`, L6 정의 — lock-step sim 에서는 호스트 스톨 포함)
   와 `tick × dt` (sim 시간, 결정적). 둘의 차이가 곧 스톨이다. CSV 행이 하나라도 드롭되면 tick 축이 어긋나므로
   샘플 간격을 검사해 신뢰할 수 없으면 그렇게 말한다
+- **`dt` 도 컨트롤러에서 읽는다** (`control.dt` 미러 = 1/`control_rate`). tick 축과 드롭 판정이 **둘 다** dt 로
+  스케일되므로 추정한 dt 는 자기를 검사하지 못한다 — 1 kHz 에서 2 ms 드롭 간격을 3 ms 임계와 비교해 깨끗하다고
+  말한다. sidecar 에 `dt` 가 없으면 기본값을 쓰되 tick 축을 **신뢰 불가**로 찍는다
+- **시행 구간은 세 갈래로 분류한다** (`pre` / `close` / `other`). 두 자세 중 가까운 쪽을 고르는 투표는 "둘 다
+  아니다" 를 말할 수 없어서, 활성화 시점의 hold 자세나 `q_open` 계단이 근접만으로 `close` 가 되면 유령 시행이
+  열린다. 출하 p1b 에서 그 투표는 **0.107 % 차이**로 갈린다. 자기 travel 의 25 % 밖이면 `other` 이고, `other` 는
+  시행을 끝낼 수는 있어도 시작하지는 못한다
 - ρ 는 **최소**다. 한 손가락만 늦어도 손 전체가 못 감싼 것이고 평균은 그것을 지운다. caging 집합은 프로파일이
   정한다 — p1b 출하 자세는 닫힐 때 index DIP 가 오히려 펴지므로 그 관절을 넣으면 진행으로 오독한다
 - p99 는 **순서통계량**이다. 성공 시행이 100 미만이면 p99 는 곧 최댓값이고 도구가 그렇게 말한다
 - 테스트 `test/test_hand_close.py`: 1차 응답의 해석해 t = −τ·ln(1−η) 복원, ρ 의 min 거동, mask 제외, 역방향
-  관절 부호, 드롭 행 탐지, 순서통계량
+  관절 부호, 드롭 행 탐지, 순서통계량, `other` 자세가 시행을 열지 않음, 추정 dt 의 tick 축 불신
 
 ### `vision_lane.py` · `vision_lane_probe.py` · `camera_relay.py` — 예측 lane 실측 (dynamic_catching S3.4)
 
