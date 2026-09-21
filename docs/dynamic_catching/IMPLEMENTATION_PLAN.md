@@ -1,7 +1,7 @@
 # dynamic_catching — 전체 구현 계획 (living document)
 
-- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541), **S2 완료** (2026-09-20, PR #545~#549 — S2.3b 는 S4.1 후), **S1.9 완료** (2026-09-20), **S3a 완료** (2026-09-20, PR #553), **S4a 진행 중** (2026-09-20 착수). 그 뒤 S3.5a (S3.2·S1.9·S2.3a 충족, S2.3b 는 S4.1 후). S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
-- 최종 갱신: 2026-09-20 (S4a 착수 전 코드 대조·범위 결정 §4.4 S4a; S3a 게이트 결과 §4.4 S3a·§5.1·§11, D-3 ε 하한 §7.3)
+- 상태: **S0 완료**, **S1.1~S1.8 완료** (2026-09-19, PR #541), **S2 완료** (2026-09-20, PR #545~#549 — S2.3b 는 S4.1 후), **S1.9 완료** (2026-09-20), **S3a 완료** (2026-09-20, PR #553), **S4a 완료** (2026-09-21, 브랜치 `feat/s4a-hand-timing` — S4.3 실기는 S10). 그 뒤 S3.5a (S3.2·S1.9·S2.3a 충족, S2.3b 는 S4.1 후). S0 은 S0.1~S0.9 게이트 PASS. S0.7 이 0.5 s profile 부족을 보고해 sim profile 지평을 0.8 s 로 정했고 (D-15), 지평 요구는 R1·대기 자세는 겨냥점 근처·`kCap` 40 으로 정했다 (§7.1). 남은 승인은 S5·S6 착수 전 E-8·E-7. 승인이 막는 단계는 승인 전에 착수하지 않는다 (§4.1)
+- 최종 갱신: 2026-09-21 (P1b 손 자세 탐색·S4.5 재실행·D-3 P1b 판정 §4.4 S4a·§5.1; S4a 착수 전 코드 대조·범위 결정 §4.4 S4a; S3a 게이트 결과 §4.4 S3a·§5.1·§11, D-3 ε 하한 §7.3)
 - Epic: [#537](https://github.com/hyujun/rtc-framework/issues/537)
 - 수명: 구현 완료 시 prune 한다. 이 문서는 **전체 계획과 결정의 SSoT** 이고, 단계별 상세 작업(sub-plan)은 각 에이전트의 private plan 에서 관리한다 ([AGENTS.md](../../AGENTS.md) §6.6).
 - 저장 위치: [handoff.md](../../agent_docs/handoff.md) §5 는 plan 파일을 커밋하지 않는다. 이 문서는 같은 폴더의 설계 문서(v0.5)와 함께 리뷰되어야 하는 결정 로그라서 설계 문서와 같은 브랜치에 커밋한다 — 사용자 결정 P-2 (§7.1). cross-tool 인계면은 여전히 issue #537 이다.
@@ -164,7 +164,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 | S1 순수 수치 코어 | S1.1~S1.8 완료 (2026-09-19, PR #541), S1.9 는 S2.1 후 | 이식·회귀·RT·시간 PASS, 검증기 PASS, S1.8 PASS (G7-C 임계 NOT_EVALUATED), backfill NOT_EVALUATED(S3.6) — §4.4 S1 결과 |
 | S2 기존 rtc_* 일반화 | 완료 (2026-09-20, PR #545~#549 + 마감 PR) — S2.3b 는 S4.1 후 | se3·동등성·CLIK·extra frame PASS, 가속 도출 PASS(provisional), G5-C solve time 예산 NOT_EVALUATED — §4.4 S2 결과 |
 | S3a 시뮬레이션 기반 | 완료 (2026-09-20, PR #553) | e2e·frame·PROC-3·GUI·plot PASS, D-3 무부하 NOT_EVALUATED (분포 §5.1, ε 하한 49.8 mm 채택, r_cap 후 판정) — §4.4 S3a 결과. S3.7·S3.8 은 범위 밖 (결정 B·C) |
-| S4a 손 타이밍 측정 | S4.0·S4.1·S4.2·S4.5 완료 (2026-09-20, 브랜치 `feat/s4a-hand-timing`) | 결정 Q1~Q10 확정. $T_{close,e2e}$ (η=0.5) P1b 282.7 ms · LEAP 103.7 ms. S4.5: **LEAP** $r_{cap}$ 31.0 mm · $d_{eff}$ 80 mm, **P1b 는 현 자세가 테니스공을 파지하지 못해 미충족** (자세 재설정 대기). S4.3 은 S10 으로 — §4.4 S4a |
+| S4a 손 타이밍 측정 | S4.0·S4.1·S4.2·S4.5 완료 (2026-09-21, 브랜치 `feat/s4a-hand-timing`) | 결정 Q1~Q10 확정. $T_{close,e2e}$ P1b 280.5 ms (η=0.7) · LEAP 103.7 ms (η=0.5). S4.5: **LEAP** $r_{cap}$ 31.0 mm · $d_{eff}$ 80 mm, **P1b** $r_{cap}$ 24 mm · $d_{eff}$ ≥ 95 mm — P1b 는 사용자 제공 자세 두 벌이 테니스공을 파지하지 못해 (851 중 0) **자세를 탐색으로 다시 정했다** (2026-09-21). 놓인 공은 잡지만 날아드는 공은 0.5 m/s 부터 거의 못 잡는다 (폐쇄 속도) → S4.4. S4.3 은 S10 으로 — §4.4 S4a |
 | S3b·S4.4 지도·go/no-go·vision 사양 | 대기 | — |
 | S5 포구 컨트롤러 골격·입력·추종 | 대기 | — |
 | S6 계획기 스레드 | 대기 | — |
@@ -410,7 +410,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
 | e2e | 발사 → PointCloud2 수신 end-to-end, 같은 seed 재발사 시 truth 궤적 동일. **PASS 2026-09-20**: 두 로봇 모두 발사 → `prediction/trajectory` 수신 (p1b 856 · iiwa 427). 같은 seed (42) 로 sim 재시작 후 첫 발사 truth: `ur5e_p1b` 222 샘플 max \|Δ\| **7.9e-11 m**; `iiwa7_leap` 는 t = 0.9 s 까지 **0.0**, 제어 중인 팔에 맞고 튄 뒤 (t ≥ 1.33 s) 7.95 mm — 발사·자유비행은 동일하고 차이는 팔 제어의 run 간 비결정성 | **확정** |
-| D-3 무부하 | §5 판정 (구성별 무효율 상한). **측정 완료 2026-09-20 (§5.1)**: 로봇 2종 × 200 발사, 거부 0, lane drop 0. δ_max max 는 `ur5e_p1b` 18.212 ms · `iiwa7_leap` 8.671 ms. 95 % 를 덮는 ε_clk,alloc 제안 **49.8 mm** (p1b 가 구속) | ε_clk 할당 (r_cap, TBD-HAND-04) → **NOT_EVALUATED 유지**, 분포는 §5.1 에 기록됨. 할당 비율 **사용자 확인 대기** |
+| D-3 무부하 | §5 판정 (구성별 무효율 상한). **측정 완료 2026-09-20 (§5.1)**: 로봇 2종 × 200 발사, 거부 0, lane drop 0. δ_max max 는 `ur5e_p1b` 18.212 ms · `iiwa7_leap` 8.671 ms. 95 % 를 덮는 ε_clk,alloc 제안 **49.8 mm** (p1b 가 구속) | ε_clk 할당 (r_cap, TBD-HAND-04) → **r_cap 확정 후 §5.1 에서 재판정**: LEAP PASS, P1b PASS(provisional) (각 손의 $\Vert v\Vert_{\max}$ 기준). 할당 비율은 사용자 확정 2026-09-20 (§5.1) |
 | frame | world ↔ base FK 대조 잔차 < 1e-6 m, 결과가 §11 에 기록됨. **측정 완료 2026-09-20 (§11)**: `iiwa7_leap` **PASS** (항등, 4.5e-16 m) · `ur5e_p1b` **FAIL 8.3e-4 m** — 프레임은 `Rz(180°)` 로 확정됐고 잔차는 MJCF↔URDF 치수 차이라 **sim 에서 줄일 수 없다**. 임계는 낮추지 않는다 — **사용자 결정 2026-09-20: `hand_description` 을 고치지 않고 sim 바닥값으로 받아 오차 예산의 모델 항으로 센다** | **확정** |
 | PROC-3 | S3.2 의 `rtc_msgs` 변경 후 전체 빌드·테스트 — **PASS** (S3.2 직후 22 패키지 5147 tests; S3a 마감 시점 재실행 5198 tests, 0 failures) | **확정** |
 | GUI·plot | §13 S3 행 — **PASS** (GUI 공 발사 패널 `test_demo_gui_ball_launch.py` 15, δ·pause 플롯 `analyze_clock_phase --plot`; §13 S3 행에 기록) | **확정** |
@@ -423,9 +423,9 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 > - **코드 대조로 정정된 서술**: (1) S4.1 은 백지가 아니다 — S1.7 의 `rtc::catching::HandProfile` 파서·검증기가 이미 있고 S4.1 은 `q_open`·`eta_close`·`T_close_e2e` 3 필드만 더한다 (`T_pre`·`T_hold`·`T_close_timeout`·`hold.*` 는 S7.1). 출하 `catching:` YAML 은 S4.1 이 첫 생산자다. (2) "CSV 만" 은 **새 CSV 가 아니다** — 기존 `DeviceStateLog` (`<hand>_state.csv`) 가 tick 마다 `command_*`·`actual_pos_*`·`t_relative_s` (tick 시작 steady clock, L6 §4.2 충족) 를 남긴다. ρ(t)·T_close 는 오프라인 분석기가 계산하고 C++ ρ 함수는 S7.1 이다. (3) G6-B 의 CM 반쪽 (`ControllerOutput` → `WriteCommand` 무성형 복사) 은 `test_rt_loop_pipeline` 이 이미 고정하므로 S4.0 은 바인딩 반쪽만 새로 단언한다. (4) L6.2 의 "≥20 회" 로는 99 % 를 말할 수 없어 **손당 200 회**로 한다. (5) sim lock-step 에서 steady 값은 호스트 스톨 (§5.1) 을 포함하므로 T_close 는 **steady 와 tick×dt 두 축**으로 보고한다 (YAML 에는 L6 정의대로 steady p99)
 
 - S4.0 포구 컨트롤러 최소 골격 (S5.1 에서 앞당김): `demo_catching_controller` (`integrated_bringup`, YAML 은 `config/<robot>/controllers/demo_catching_controller.yaml` — L8 §5 가 S5.1 로 미뤘던 이름을 여기서 정한다). `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 로 등록하고 YAML 은 `ur5e_p1b`·`iiwa7_leap` 에만 싣는다. 등록·lifecycle·config 로드와 **손 계단 진단 모드**만: 기존 손 `joint_goal` (`RobotTarget`) 을 YAML `diagnostic.hand_step: true` 일 때만 **무성형** (한계 clamp 만) 으로 손 device slot 에 통과시킨다 — `rtc_msgs` 변경 없음. 팔은 활성 첫 tick 자세 hold, 상태 메시지 없음. **sim 전용은 코드로 강제한다**: claim 한 device 의 `backend.type` 이 `mujoco_native` 가 아니면 configure 를 거부하고, 이 가드는 S5.1 에서 E-8 승인과 함께 없앤다. E-STOP 훅은 base 기본 동작과 CM 측 hold 방어선에 맡긴다 — 팔 명령 경로·CLIK 앵커가 생기는 S5.1 이 E-8 대상이다
-- S4.1 손 프로파일 YAML (P1b 10 DoF, LEAP 16 DoF): `robot.hand.{q_open,q_pre,q_close,caging_mask,eta_close,rho_eps}`, 전부 provisional. 자세는 에이전트 초안 (P1b 는 `force_pi_grasp` 자세, LEAP 은 FK 유도) → sim 에서 **사용자 확인 후** S4.2 측정 (TBD-HAND-05)
+- S4.1 손 프로파일 YAML (P1b 10 DoF, LEAP 16 DoF): `robot.hand.{q_open,q_pre,q_close,caging_mask,eta_close,rho_eps}`, 전부 provisional. 자세는 에이전트 초안 (P1b 는 `force_pi_grasp` 자세, LEAP 은 FK 유도) → sim 에서 **사용자 확인 후** S4.2 측정 (TBD-HAND-05). **결과**: LEAP 은 사용자 제공 자세, P1b 는 사용자 제공 자세 두 벌이 출하 공을 파지하지 못해 그것을 seed 로 **탐색한 자세** (2026-09-21, L6 §4.5)
 - S4.2 T_close 식별 도구 (`rtc_tools`): pre→close 계단 반복 러너 + `<hand>_state.csv` → ρ(t)·T_close,e2e(η) 분포 분석기 (sim, 손당 200 회)
-- S4.5 `d_eff`·`r_cap` 산정 (L6 §4.5 step 1·3) — **완료 2026-09-20, 사용자 승인**. 기하만으로는 답이 안 나와 (빈 `q_close` 는 주먹이라 아무것도 둘러싸지 않는다) **접촉 시뮬레이션**으로 했다: 공을 preshape 손바닥에 놓고 닫은 뒤 ±g 로 흔든다. LEAP 793 중 216 파지 → `r_cap` 31.0 mm · `d_eff` 80 mm. **P1b 851 중 0** — 손가락 하나가 ρ 0.01–0.15 에서 먼저 닿아 공을 밀어낸다 (반지름 20 mm 라야 잡힌다). `r_cap` 으로 §5.1 D-3 를 재판정했다 (LEAP PASS, P1b NOT_EVALUATED)
+- S4.5 `d_eff`·`r_cap` 산정 (L6 §4.5 step 1·3) — **완료 2026-09-20, 사용자 승인**. 기하만으로는 답이 안 나와 (빈 `q_close` 는 주먹이라 아무것도 둘러싸지 않는다) **접촉 시뮬레이션**으로 했다: 공을 preshape 손바닥에 놓고 닫은 뒤 ±g 로 흔든다. LEAP 793 중 216 파지 → `r_cap` 31.0 mm · `d_eff` 80 mm. **P1b 는 사용자 제공 자세로 851 중 0** — 손가락 하나가 ρ 0.01–0.15 에서 먼저 닿아 공을 밀어낸다 (반지름 20 mm 라야 잡힌다). 두 번째 사용자 자세와 손으로 만든 후보 40 여 개도 0 이어서 **2026-09-21 에 `q_pre`/`q_close` 20 개 값을 같은 시험에 대고 진화 탐색**했고 (사용자 자세가 seed), 탐색에 쓰지 않은 격자에서 445 중 214 파지 → `r_cap` 24 mm · `d_eff` ≥ 95 mm (스캔 상한), 정지 ρ 0.74 → η 0.7, `T_close_e2e` 재실측 280.5 ms (L6 §4.5). `r_cap` 으로 §5.1 D-3 를 재판정했다 (LEAP PASS, P1b PASS(provisional))
 
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
@@ -433,7 +433,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 | 골격 | 두 sim 프로파일에서 configure→activate, `ur5e_p1a` bring-up 불변 (`test_registered_controllers_have_shipped_config`), 비-`mujoco_native` backend 에서 configure 거부, 진단 플래그 off 에서 손 목표 거부, 비활성 중 받은 목표가 재활성 첫 tick 에 안 쓰임 | — |
 | 프로파일 | 출하 YAML 이 sim 구성 검증 에러 0, dof == 손 device 채널 수, 전 값이 YAML ∩ URDF 한계 안 | 사용자 자세 확인 |
 | T_close | 두 손의 T_close,e2e(η) 분포(평균·최대·99%) 를 steady·tick×dt 두 축으로 산출, log drop 0 (G6-C 의 산출 부분) | — |
-| d_eff·r_cap | G6-F: **LEAP PASS(provisional)** — 산정식·실측값·provisional 표시가 `planner.hand.*` 와 L6 §4.5 에 기록, D-3 갱신. **P1b 미충족** (파지 불가). 투척 보정은 `NOT_EVALUATED(S7.1 후)` | 사용자 승인 2026-09-20 |
+| d_eff·r_cap | G6-F: **LEAP·P1b PASS(provisional)** — 산정식·실측값·provisional 표시가 `planner.hand.*` 와 L6 §4.5 에 기록, D-3 갱신. P1b 는 탐색한 자세 기준 (2026-09-21). 투척 보정은 `NOT_EVALUATED(S7.1 후)` | 사용자 승인 2026-09-20 (LEAP) · 2026-09-21 (P1b 탐색 자세 적용) |
 | GUI·plot | §13 S4 행 | — |
 
 #### S3b·S4.4 지도·go/no-go·vision 사양
@@ -577,15 +577,16 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 #### D-3 재판정 (2026-09-20, r_cap 확정 후)
 
-위 49.8 / 23.0 mm 는 **`v_max` = 8.4 m/s (S0.7 가정값) 에서 역산한 값**이고 (`clock_phase.py` `DEFAULT_V_MAX_M_S`), ε_clk = ‖v‖δ 는 **속력에 비례**한다. S4.2·S4.5 가 받을 수 있는 최대 속력을 **2.26 m/s** 로 내렸으므로 (L6 §4.5) 필요한 ε 도 ×0.269 로 줄어든다. 예산 우변은 L3 §4.6 의 `n_σ`=2 로 `r_cap/n_σ` 다.
+위 49.8 / 23.0 mm 는 **`v_max` = 8.4 m/s (S0.7 가정값) 에서 역산한 값**이고 (`clock_phase.py` `DEFAULT_V_MAX_M_S`), ε_clk = ‖v‖δ 는 **속력에 비례**한다. S4.2·S4.5 가 받을 수 있는 최대 속력을 LEAP **2.26 m/s** · P1b **1.84 m/s** 로 내렸으므로 (L6 §4.5) 필요한 ε 도 ×0.269 · ×0.219 로 줄어든다. 예산 우변은 L3 §4.6 의 `n_σ`=2 로 `r_cap/n_σ` 다. 각 손은 **자기 $\Vert v\Vert_{\max}$** 에서 판정한다 — 그보다 빠른 공은 시계와 무관하게 손이 못 받는다.
 
-| 구성 | ε_clk,alloc @8.4 m/s | @2.26 m/s | r_cap | 예산 `r_cap/n_σ` | 시계 항 비중 | 판정 |
-|---|---|---|---|---|---|---|
-| `iiwa7_leap` | 22.989 mm | **6.19 mm** | 31.0 mm | 15.5 mm | 40 % (분산 16 %) | **PASS** |
-| `ur5e_p1b` | 49.808 mm | 13.40 mm | **없음** | — | — | **NOT_EVALUATED 유지** |
+| 구성 | ε_clk,alloc @8.4 m/s | 손의 $\Vert v\Vert_{\max}$ | 그 속력에서 필요한 ε | r_cap | 예산 `r_cap/n_σ` | 시계 항 비중 | 판정 |
+|---|---|---|---|---|---|---|---|
+| `iiwa7_leap` | 22.989 mm | 2.26 m/s | **6.19 mm** | 31.0 mm | 15.5 mm | 40 % (분산 16 %) | **PASS** |
+| `ur5e_p1b` | 49.808 mm | 1.84 m/s | **10.9 mm** | 24 mm | 12.0 mm | 91 % (분산 82 %) | **PASS(provisional)** — 2026-09-21 |
 
 - **LEAP 은 PASS 다.** 시계 항을 뺀 나머지 (vision σ_c·σ_ℓ, 추종 σ_trk) 에 √(15.5² − 6.19²) = **14.2 mm** 가 남는다
-- **P1b 는 판정이 열리지 않는다** — 판정을 여는 것이 r_cap 인데 현 자세로는 포획 영역이 비어 있어 r_cap 이 존재하지 않는다 (L6 §4.5). 종전에 D-3 을 구속하던 쪽이 p1b 이므로, **D-3 전체는 p1b 자세 재설정 후에야 닫힌다**
+- **P1b 는 통과하지만 여유가 없다 (2026-09-21).** 사용자 제공 자세로는 포획 영역이 비어 r_cap 이 존재하지 않았고, 자세를 탐색으로 다시 정한 뒤 r_cap 24 mm 가 생겨 판정이 열렸다 (L6 §4.5). 시계 항이 예산의 91 % 를 쓰므로 나머지 (vision·추종) 에 √(12.0² − 10.9²) = **5.0 mm** 만 남는다. 공통 속력 2.26 m/s 에서는 필요 13.4 mm > 예산 12.0 mm 로 **FAIL** 이다
+- ⚠️ **P1b 의 1.84 m/s 는 공식값이지 시연된 값이 아니다.** L3 §4.5 식은 폐쇄가 제때 시작되면 $d_{eff}$ 구간 안에서 공이 잡힌다고 가정하는데, 손끝 평면 통과 시 폐쇄를 발동한 fly-in sim 에서 P1b 는 0.25 m/s 130 중 9, 0.5 m/s 3, 1 m/s 이상 0 이었다 (L6 §4.5). 실제로 받을 수 있는 속력이 더 낮으면 필요한 ε 은 그만큼 더 줄어들므로 **D-3 판정 자체는 그대로 PASS 쪽**이고, P1b 의 목표 속력을 얼마로 둘지는 S4.4 의 몫이다
 - ⚠️ 판정이 목표 속력에 묶여 있다. S4.4 가 속력을 다시 정하면 이 표를 다시 계산한다 — 8.4 m/s 를 그대로 노리면 LEAP 도 FAIL (필요 23.0 mm > 예산 15.5 mm) 이다
 - `analyze_clock_phase` 는 여전히 `NOT_EVALUATED` 를 출력한다 (판정 문자열이 하드코딩돼 있고 r_cap 을 읽지 않는다). 도구 갱신은 S4.4 가 목표 속력을 확정한 뒤로 미룬다 — 지금 고치면 임계가 다시 바뀐다
 - ⚠️ **두 구성은 완전히 동등하지 않다** — `ur5e_p1b` 는 컨트롤러 5개 (비활성 `demo_inference_controller` 포함), `iiwa7_leap` 은 4개를 인스턴스화한다 (그 프로파일은 정책 config 를 싣지 않아 CM 이 건너뛴다). 차이의 일부는 로봇이 아니라 bring-up 에서 올 수 있다
@@ -593,7 +594,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 | 항목 | 방법 | 기준 |
 |---|---|---|
-| 무부하 (S3.1a) | 구성별 (로봇 2종) 발사 ≥ 200 회 | 무효율 ≤ 5 % — **실측 완료 2026-09-20 (§5.1). LEAP PASS, P1b NOT_EVALUATED** (r_cap 부재) |
+| 무부하 (S3.1a) | 구성별 (로봇 2종) 발사 ≥ 200 회 | 무효율 ≤ 5 % — **실측 완료 2026-09-20 (§5.1). LEAP PASS, P1b PASS(provisional)** (2026-09-21, 각 손의 $\Vert v\Vert_{\max}$ 기준) |
 | 부하 (S3.1b) | 포구 컨트롤러 + 계획기 + `sim_estimator_node` 동시 구동, 구성별 발사 ≥ 200 회 | 무효율 ≤ 5 % |
 | 예측 일관성 | vision 예측 궤적 대 ground truth (같은 wall 시각 축) | 오차가 δ 가 큰 구간에서만 커지는지 확인 (기록) |
 | stamp 도메인 | `sim_estimator_node` 의 stamp 가 wall 인지 | `use_sim_time=false` 에서 wall — **확인 2026-09-20** (S3.4: 예측 origin stamp = 카메라 capture stamp = sim 의 wall `now()`; sim 재시작에도 역행 없음) |
@@ -698,8 +699,8 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | D-24 결정 | 지문 센서 freshness 경로 (a)/(b) | S5 전 |
 | D-12 손 토크 | P1b 손 관절 한계: 설정·모델값은 모두 3.0 N·m (YAML `max_torque`, URDF `effort`, MJCF `forcerange`) 이고, 1.5 N·m 는 작성 시점 사용자 진술 (CATCHING_MASTER §1.3). nominal·continuous·peak·설정값 중 무엇을 운용 한계로 쓸지와 그 출처 | S7.3 충격 게이트 전 |
 | D-12 나머지 | 공 사양, 실기 T_close,tot 측정 시점, 성공률 floor·시행 수 | S4.4, S8 |
-| ~~D-3 제안값~~ | 닫힘 (2026-09-20): 시행 수 200 확정. **r_cap 확정 후 재판정 완료 (§5.1)** — LEAP PASS (필요 6.19 mm ≤ 예산 15.5 mm, 목표 속력 2.26 m/s 기준), P1b 는 r_cap 부재로 NOT_EVALUATED 유지. 판정이 목표 속력에 묶여 있으므로 S4.4 가 속력을 확정하면 재계산 | ~~S3.1a~~ → ~~r_cap~~ → S4.4 |
-| ~~d_eff · r_cap~~ | 닫힘 (2026-09-20 사용자 승인): LEAP `d_eff` 0.080 m · `r_cap` 0.031 m (접촉 sim, provisional). P1b 는 파지 불가로 미산정 — **자세 재설정이 선행 항목이 됐다**. 투척 보정은 S7.1 후 | ~~S4.4~~ |
+| ~~D-3 제안값~~ | 닫힘 (2026-09-20): 시행 수 200 확정. **r_cap 확정 후 재판정 완료 (§5.1)** — LEAP PASS (필요 6.19 mm ≤ 예산 15.5 mm, 2.26 m/s 기준), P1b PASS(provisional) (필요 10.9 mm ≤ 예산 12.0 mm, 1.84 m/s 기준 — 2026-09-21, 자세 탐색 후). 판정이 목표 속력에 묶여 있으므로 S4.4 가 속력을 확정하면 재계산 | ~~S3.1a~~ → ~~r_cap~~ → S4.4 |
+| ~~d_eff · r_cap~~ | 닫힘 (2026-09-20 사용자 승인): LEAP `d_eff` 0.080 m · `r_cap` 0.031 m (접촉 sim, provisional). P1b 는 사용자 제공 자세로 파지 불가여서 자세를 탐색으로 다시 정한 뒤 (2026-09-21) `d_eff` ≥ 0.095 m (스캔 상한) · `r_cap` 0.024 m. 투척 보정은 S7.1 후 | ~~S4.4~~ |
 | D-18 T_f 상한 | 하한 1.0 s 는 확정. 상한(정점 높이·포구 속력이 커진다)은 S3.5a 지도 결과로 제안 | S3.5b |
 
 **단계에서 정할 것 (결정은 해당 단계)**

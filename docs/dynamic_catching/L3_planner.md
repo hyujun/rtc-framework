@@ -28,7 +28,7 @@
 | G3-1 | 모델 로드 경로와 FK/Jacobian API (폐쇄 체인 손 포함 시 팔 부분만 쓰는 방법) | 닫힘 — CM 이 공유하는 `PinocchioModelBuilder` 1개 + 계획기 스레드 전용 `RtModelHandle` 1개 (스레드별 1개, heap-free, LOCAL/LWA/WORLD). P1b 손바닥 frame 은 폐쇄 루프 상류라 팔 관절 열만 쓴다 (W, D-18) |
 | G3-2 | RT → 계획기 상태 전달 경로(현재 $q_c,\dot q_c$, L4 기준 상태) | 닫힘 — `rtc::SeqLock` 사용. payload 는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지) (W, plan §6) |
 | G3-3 | 계획기 스레드 생성·우선순위 규약 | 닫힘 — D-7: MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), 새 thread layout role, 초기 FIFO, 정책은 D-7a 측정으로 확정 (plan §6, §7) |
-| G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | LEAP 닫힘(provisional) — 80 mm / 31.0 mm (S4.5, L6 §4.5). P1b 는 TBD-HAND-04 (W7-4) 로 남는다 — 현 자세가 파지 불가 |
+| G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | 닫힘(provisional) — LEAP 80 mm / 31.0 mm, P1b ≥ 95 mm / 24 mm (S4.5, L6 §4.5). P1b 는 사용자 제공 자세가 파지 불가여서 2026-09-21 에 탐색한 자세 기준. 투척 보정은 S7.1 후 (TBD-HAND-04) |
 | G3-5 | 포구 허용 작업공간, 감속 여유 공간 | TBD-BALL-02 (W7-3) |
 | G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | sim 실측 간격 0.05 s · 지평 0.80 s · N 16 (S3.4 2026-09-20, TBD-VIS-04). 요구 사양은 제어기가 정한다 (D-15, S3.6) |
 | G3-7 | **독립 IK/포즈 해석기가 있는지**와 그 API | 닫힘 — 독립 IK 없음. `rtc::compliance::DifferentialIk` (σ_min 적응 λ, heap-free) 를 m=5 로 재사용 (D-7d). 수렴은 G3-G 로 검증 |
@@ -444,8 +444,8 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.catchability.definition` | string | – | `"arm_5row"` | `arm_5row` \| `arm_6row` | §4.2 게이트에 쓸 정의. w₅·w₆ 는 정의와 무관하게 둘 다 기록 |
 | `planner.time.margin` | double | s | 0.03 | 0–0.2 | §4.3 |
 | `planner.unc.kappa_sigma` | double | – | 0.3 | 0.05–1 | §4.4 |
-| `planner.hand.d_eff` | double | m | LEAP **0.080** / P1b `TBD` | >0 | S4.5 실측 (L6 §4.5), provisional. **소비자 없음** — 파서는 이 키를 읽지 않는다 (S6 의 γ 창이 첫 소비자) |
-| `planner.hand.r_cap` | double | m | LEAP **0.031** / P1b `TBD` | >0 | S4.5 실측 (L6 §4.5), provisional. 측면 허용량이며 공 중심 좌표계라 공 반지름이 이미 포함돼 있다 |
+| `planner.hand.d_eff` | double | m | LEAP **0.080** / P1b **0.095** (스캔 상한에 걸린 하한) | >0 | S4.5 실측 (L6 §4.5), provisional. **소비자 없음** — 파서는 이 키를 읽지 않는다 (S6 의 γ 창이 첫 소비자) |
+| `planner.hand.r_cap` | double | m | LEAP **0.031** / P1b **0.024** | >0 | S4.5 실측 (L6 §4.5), provisional. 측면 허용량이며 공 중심 좌표계라 공 반지름이 이미 포함돼 있다 |
 | `planner.gamma.grid` | double[] | – | [0.0, 0.1, …, 0.6] | 0–1 | §4.8 |
 | `planner.gamma.window_grid` | double[] | s | [0.3, 0.45, 0.6] | >0 | §4.8 |
 | `planner.gamma.eta_a`, `eta_v` | double | – | 0.8, 0.9 | (0, 1] | 여유율. `eta_v` 는 D-9 의 $\eta_v$ — `gammaWindow` 와 rollout 수락이 같은 값을 쓴다 (§4.5, §4.8) |
@@ -506,7 +506,7 @@ L3.1·L3.3·L3.4는 `test_l3.cpp`가 참조 구현을 이미 돌리고 있다. *
 
 ## 10. 미확정 항목
 
-TBD-HAND-01, TBD-HAND-04 (**P1b 만** — LEAP 은 S4.5 로 provisional 닫힘), TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max`, `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `planner.ik` 의 S1.9 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol` — 값은 S3.5a 지도 실측으로 제안하고 사용자가 확정), 점수 가중치 (S6~S8), D-7a 정책 (S6.5), NLP 전환 여부 (§4.1, S6·S8 후). TBD-RTC-14~16 은 닫힘 (§2).
+TBD-HAND-01, TBD-HAND-04 (투척 보정만 — 기하값은 두 손 모두 S4.5 로 provisional 닫힘), TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max`, `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `planner.ik` 의 S1.9 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol` — 값은 S3.5a 지도 실측으로 제안하고 사용자가 확정), 점수 가중치 (S6~S8), D-7a 정책 (S6.5), NLP 전환 여부 (§4.1, S6·S8 후). TBD-RTC-14~16 은 닫힘 (§2).
 
 ---
 

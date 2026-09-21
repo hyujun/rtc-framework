@@ -105,7 +105,7 @@ sim 은 wall clock 을 유지한다 (D-3). D-2 변환이 실기와 같은 경로
 
 **측정.** S3.3 이 추가하는 per-step `(sim_time, steady_now)` 진단 lane 이 데이터 원천이다. 발사 시각을 원점으로 비행 구간 매 step 에서 δ(t) = (steady(t) − steady₀) − (sim(t) − sim₀) 를 구하고, 시행별 δ_max = max|δ| 와 max pause(한 step 의 Δwall − Δsim 최댓값)를 기록한다 (양방향).
 
-**시행 유효 조건.** v_max·δ_max + ½·a_bound·δ_max² ≤ ε_clk,alloc **이고** max pause ≤ ε_clk,alloc / v_max. v_max 는 목표 투척 분포의 최대 공 속력(S3.5b 전에는 S0.7 가정값), a_bound 는 g + 항력 가속 상한(항력 k — **S3.8 이 2026-09-20 결정으로 빠졌으므로** L0 §4.1 의 문서 대표값 0.0229 1/m 를 쓴다). **ε_clk,alloc 은 L3 §4.6 오차 예산 중 시계 항에 할당한 몫이고, 예산 우변은 `r_cap/n_σ` 다.** r_cap 은 S4.5 가 닫았고 (LEAP 31.0 mm, P1b 는 파지 불가로 미산정 — L6 §4.5) 재판정 결과는 plan §5.1 에 있다: **LEAP PASS, P1b NOT_EVALUATED**. ε_clk 는 ‖v‖δ 라 **목표 속력에 비례**하므로 판정은 S4.4 의 목표 속력과 함께 읽는다.
+**시행 유효 조건.** v_max·δ_max + ½·a_bound·δ_max² ≤ ε_clk,alloc **이고** max pause ≤ ε_clk,alloc / v_max. v_max 는 목표 투척 분포의 최대 공 속력(S3.5b 전에는 S0.7 가정값), a_bound 는 g + 항력 가속 상한(항력 k — **S3.8 이 2026-09-20 결정으로 빠졌으므로** L0 §4.1 의 문서 대표값 0.0229 1/m 를 쓴다). **ε_clk,alloc 은 L3 §4.6 오차 예산 중 시계 항에 할당한 몫이고, 예산 우변은 `r_cap/n_σ` 다.** r_cap 은 S4.5 가 닫았고 (LEAP 31.0 mm, P1b 24 mm — L6 §4.5) 재판정 결과는 plan §5.1 에 있다: **LEAP PASS, P1b PASS(provisional)** (각 손의 $\Vert v\Vert_{\max}$ 기준). ε_clk 는 ‖v‖δ 라 **목표 속력에 비례**하므로 판정은 S4.4 의 목표 속력과 함께 읽는다.
 
 **시행 수·무효율.** 구성별(로봇 2종) 발사 ≥ 200 회, 무효율 ≤ 5 %. 이 두 값은 **제안값**이다(사용자 확인, plan §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다.
 
