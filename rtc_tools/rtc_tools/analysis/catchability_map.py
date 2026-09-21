@@ -27,7 +27,10 @@ The parts that are pure functions of numbers:
    by flight time and by a reachability pre-filter the caller supplies.
 5. **Aggregation** — per-throw outcome, reason histogram, w₅/w₆ and θ
    distributions, the ``sim.throw_region`` proposal, the seed comparison and the
-   ε-perturbation boundary count.
+   ε-perturbation boundary count. Every one of these except the seed comparison
+   describes ONE wait-pose seed (the best of the ranking): a robot waits in one
+   pose, so a throw "some seed accepts" is not a throw the robot catches. The
+   union over seeds is reported only as ``accepted_throws_any_seed``.
 
 **THE JUDGE'S FRAME IS THE PINOCCHIO MODEL WORLD, NOT THE ARM BASE.**
 ``catch_pose_ik_batch`` documents ``p_c`` / ``v`` as *model world*, i.e. the
@@ -73,14 +76,16 @@ import argparse
 import csv
 import datetime as _dt
 import hashlib
+import io
 import itertools
+import json
 import math
 import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -1136,8 +1141,13 @@ def find_judge(override: Path | None = None) -> Path:
     return path
 
 
-def write_candidate_csv(path: Path, candidates: Sequence[JudgeCandidate]) -> int:
-    """Write the judge's candidate CSV and return the row count.
+def candidate_csv_bytes(candidates: Sequence[JudgeCandidate]) -> bytes:
+    """The judge's candidate CSV, as the exact bytes that go on disk.
+
+    Split out of :func:`write_candidate_csv` because those bytes are also an
+    input of :func:`shard_fingerprint`: the resume check has to hash what the
+    judge would READ, and hashing a re-rendering of it would be a second
+    encoder that can drift from the first.
 
     The header is written in :data:`CANDIDATE_CSV_HEADER` order, which the judge
     reads the column order OUT of rather than assuming — so this order is a
@@ -1146,15 +1156,21 @@ def write_candidate_csv(path: Path, candidates: Sequence[JudgeCandidate]) -> int
     ids = [c.id for c in candidates]
     if len(set(ids)) != len(ids):
         raise ValueError("candidate ids must be unique — the result join is on id")
-    with Path(path).open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(CANDIDATE_CSV_HEADER)
-        for c in candidates:
-            p = np.asarray(c.p_c_model_m, dtype=float).reshape(3)
-            v = np.asarray(c.v_model_m_s, dtype=float).reshape(3)
-            if not (np.all(np.isfinite(p)) and np.all(np.isfinite(v))):
-                raise ValueError(f"candidate id {c.id} has a non-finite p_c or v")
-            writer.writerow([c.id, c.seed_id, *(repr(float(x)) for x in (*p, *v))])
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(CANDIDATE_CSV_HEADER)
+    for c in candidates:
+        p = np.asarray(c.p_c_model_m, dtype=float).reshape(3)
+        v = np.asarray(c.v_model_m_s, dtype=float).reshape(3)
+        if not (np.all(np.isfinite(p)) and np.all(np.isfinite(v))):
+            raise ValueError(f"candidate id {c.id} has a non-finite p_c or v")
+        writer.writerow([c.id, c.seed_id, *(repr(float(x)) for x in (*p, *v))])
+    return buffer.getvalue().encode()
+
+
+def write_candidate_csv(path: Path, candidates: Sequence[JudgeCandidate]) -> int:
+    """Write the judge's candidate CSV and return the row count."""
+    Path(path).write_bytes(candidate_csv_bytes(candidates))
     return len(candidates)
 
 
@@ -1264,6 +1280,11 @@ def shard_is_complete(out_path: Path, expected_ids: Sequence[int]) -> bool:
     would report those throws as "not catchable". Row count alone would already
     catch the truncation; the id set is compared as well so a stale file from a
     different shard cannot pass.
+
+    **NECESSARY, NOT SUFFICIENT, FOR REUSE.** Candidate ids are always
+    ``0..N-1``, so a file that passes this check may still hold the verdicts of
+    a different params file, seed, model or grid. Whether an existing shard may
+    be REUSED is :func:`shard_is_reusable`, which adds the input fingerprint.
     """
     path = Path(out_path)
     if not path.is_file():
@@ -1273,6 +1294,135 @@ def shard_is_complete(out_path: Path, expected_ids: Sequence[int]) -> bool:
     except (ValueError, OSError):
         return False
     return [r.id for r in rows] == list(expected_ids)
+
+
+# Bumped whenever the set or the encoding of the fingerprinted inputs changes,
+# so a sidecar written under an older rule never matches a newer one.
+SHARD_FINGERPRINT_SCHEMA = "rtc_tools.catchability_map/shard-fingerprint/1"
+
+# Keys of the model config whose VALUE is a path to a file the judge loads. The
+# config's own bytes only name these files; their content is what decides the
+# model, so each is hashed as well.
+_MODEL_CONFIG_FILE_KEYS = ("urdf_path", "closure_yaml_path")
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def invocation_fingerprint_parts(
+    invocation: JudgeInvocation, *, extra_env: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """Everything that decides a verdict and is the SAME for every shard of a run.
+
+    One labelled entry per input, so a mismatch can say WHICH input changed:
+
+    * ``model_config`` — sha256 of the model config file's bytes,
+    * ``urdf_path`` / ``closure_yaml_path`` — sha256 of the bytes of each file
+      the model config points at (the expanded URDF; the closure YAML when one
+      is declared). A relative path is resolved against the model config's
+      directory,
+    * ``seeds`` — sha256 of the seed file's bytes,
+    * ``params`` — sha256 of the params file's bytes, or the literal ``none``
+      when the judge runs on its in-code defaults,
+    * ``sub_model`` / ``catch_frame`` — the names, verbatim,
+    * ``judge`` — the executable's IDENTITY: resolved path, size in bytes and
+      ``st_mtime_ns``. **This is identity, not content**: a multi-megabyte
+      binary is not re-hashed per run, and a rebuild that changes behaviour
+      changes size or mtime in practice. The blind spot is a rebuild that
+      preserves both (or a shared library the judge links changing underneath
+      it); after such a change, delete the shard directories,
+    * ``extra_env`` — the caller's extra child environment, sorted.
+
+    Raises ``OSError`` / ``ValueError`` when an input cannot be read. The caller
+    must treat that as "nothing is reusable" — see :func:`run_judge_batch`.
+    """
+    model_config = Path(invocation.model_config)
+    model_bytes = model_config.read_bytes()
+    parts: dict[str, str] = {
+        "schema": SHARD_FINGERPRINT_SCHEMA,
+        "model_config": _sha256(model_bytes),
+    }
+    doc = yaml.safe_load(model_bytes)
+    if not isinstance(doc, Mapping):
+        raise ValueError(f"model config {model_config} is not a YAML map")
+    for key in _MODEL_CONFIG_FILE_KEYS:
+        ref = doc.get(key)
+        if ref is None or str(ref) == "":
+            if key == "urdf_path":
+                raise ValueError(f"model config {model_config} names no urdf_path")
+            parts[key] = "none"
+            continue
+        target = Path(str(ref))
+        if not target.is_absolute():
+            target = model_config.parent / target
+        parts[key] = _sha256(target.read_bytes())
+    parts["seeds"] = _sha256(Path(invocation.seeds).read_bytes())
+    parts["params"] = (
+        "none" if invocation.params is None else _sha256(Path(invocation.params).read_bytes())
+    )
+    parts["sub_model"] = invocation.sub_model
+    parts["catch_frame"] = invocation.catch_frame
+    judge = Path(invocation.judge).resolve()
+    stat = judge.stat()
+    parts["judge"] = f"{judge}|size={stat.st_size}|mtime_ns={stat.st_mtime_ns}"
+    parts["extra_env"] = json.dumps(sorted((extra_env or {}).items()))
+    return parts
+
+
+def shard_fingerprint(invocation_parts: Mapping[str, str], candidate_bytes: bytes) -> dict:
+    """The sidecar document for one shard: the labelled parts and their digest.
+
+    ``candidate_bytes`` are the shard's candidate CSV exactly as written
+    (:func:`candidate_csv_bytes`), which is where a changed grid VALUE shows up:
+    the ids of a re-run are the same ``0..N-1`` whatever the coordinates are.
+    """
+    parts = {**dict(invocation_parts), "candidates": _sha256(candidate_bytes)}
+    canonical = json.dumps(parts, sort_keys=True, separators=(",", ":")).encode()
+    return {"fingerprint": _sha256(canonical), "parts": parts}
+
+
+def read_shard_fingerprint(path: Path) -> dict | None:
+    """The sidecar at ``path``, or None when it is absent or unreadable."""
+    try:
+        doc = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("fingerprint"), str):
+        return None
+    return doc
+
+
+def shard_is_reusable(
+    out_path: Path,
+    expected_ids: Sequence[int],
+    fingerprint_path: Path,
+    expected: Mapping | None,
+) -> bool:
+    """True iff the shard is complete AND was produced from these very inputs.
+
+    ``expected`` is this run's :func:`shard_fingerprint` document, or None when
+    the inputs could not be fingerprinted. A None, a missing sidecar (an output
+    directory written before fingerprints existed), an unreadable one and a
+    mismatching one all mean the same thing: NOT reusable, re-judge and
+    overwrite. The failure this guards is silent by construction — a stale shard
+    has the right ids, the right seed ids and plausible numbers, so nothing
+    downstream can contradict it.
+    """
+    if expected is None:
+        return False
+    stored = read_shard_fingerprint(fingerprint_path)
+    if stored is None or stored["fingerprint"] != expected["fingerprint"]:
+        return False
+    return shard_is_complete(out_path, expected_ids)
+
+
+def _changed_fingerprint_parts(stored: Mapping | None, expected: Mapping) -> list[str]:
+    old = (stored or {}).get("parts")
+    if not isinstance(old, Mapping):
+        return ["<no fingerprint sidecar>"]
+    new = expected["parts"]
+    return sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
 
 
 def _judge_argv(invocation: JudgeInvocation, candidates_in: Path, out: Path) -> list[str]:
@@ -1364,11 +1514,21 @@ def run_judge_batch(
 ) -> list[JudgeResult]:
     """Judge every candidate, sharded across at most :data:`MAX_WORKERS` processes.
 
-    Resumable: a shard whose output file is already complete
-    (:func:`shard_is_complete`) is not re-run. Fails closed: a non-zero exit, an
-    unparseable file or a short file raises with that shard's stderr attached,
-    because a silently short shard reads as "those throws were not catchable"
-    and there is no later signal that would contradict it.
+    Resumable: a shard is not re-run when its output is complete AND its
+    fingerprint sidecar (``<prefix>_<n>_fingerprint.json``) matches this run's
+    inputs (:func:`shard_is_reusable`, :func:`invocation_fingerprint_parts`).
+    Completeness alone is not enough — ids are ``0..N-1`` on every run, so a
+    re-run into the same directory after changing the params file, a seed, the
+    robot config or a grid value would otherwise be answered with the OLD
+    verdicts. If this run's inputs cannot be fingerprinted (a file is
+    unreadable), nothing is reused and no sidecar is written. The sidecar is
+    removed before the judge starts and written only after its output has been
+    validated, so a sidecar on disk always vouches for the file next to it.
+
+    Fails closed: a non-zero exit, an unparseable file or a short file raises
+    with that shard's stderr attached, because a silently short shard reads as
+    "those throws were not catchable" and there is no later signal that would
+    contradict it.
 
     Results come back in the input order, not in completion order.
     """
@@ -1381,6 +1541,14 @@ def run_judge_batch(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     chunks = [candidates[i : i + shard_size] for i in range(0, len(candidates), shard_size)]
+    try:
+        invocation_parts: dict[str, str] | None = invocation_fingerprint_parts(
+            invocation, extra_env=extra_env
+        )
+    except (OSError, ValueError, yaml.YAMLError):
+        # The judge will say what is wrong with its inputs; all that matters
+        # here is that an unfingerprintable run reuses nothing.
+        invocation_parts = None
 
     def run_one(job: tuple[int, Sequence[JudgeCandidate]]) -> list[JudgeResult]:
         shard, chunk = job
@@ -1388,10 +1556,31 @@ def run_judge_batch(
         in_path = stem.with_name(stem.name + "_in.csv")
         out_path = stem.with_name(stem.name + "_out.csv")
         err_path = stem.with_name(stem.name + "_err.txt")
+        fingerprint_path = stem.with_name(stem.name + "_fingerprint.json")
         expected_ids = [c.id for c in chunk]
-        if shard_is_complete(out_path, expected_ids):
+        candidate_bytes = candidate_csv_bytes(chunk)
+        expected = (
+            None
+            if invocation_parts is None
+            else shard_fingerprint(invocation_parts, candidate_bytes)
+        )
+        if shard_is_reusable(out_path, expected_ids, fingerprint_path, expected):
             return parse_result_csv(out_path.read_text())
-        write_candidate_csv(in_path, chunk)
+        if expected is not None and out_path.is_file():
+            changed = _changed_fingerprint_parts(
+                read_shard_fingerprint(fingerprint_path), expected
+            )
+            print(
+                f"{prefix} {shard}: existing output is not reusable, re-judging "
+                f"(changed or incomplete: {changed})",
+                file=sys.stderr,
+            )
+        # Both go before the judge starts: a judge that exits 0 without writing
+        # would otherwise leave the STALE output to be parsed below, and its ids
+        # would match.
+        fingerprint_path.unlink(missing_ok=True)
+        out_path.unlink(missing_ok=True)
+        in_path.write_bytes(candidate_bytes)
         argv = _judge_argv(invocation, in_path, out_path)
         proc = subprocess.run(
             argv, capture_output=True, text=True, env=_child_env(extra_env), check=False
@@ -1415,6 +1604,8 @@ def run_judge_batch(
                 f"{len(expected_ids)} candidates (ids do not match) — a short shard would "
                 f"read as 'not catchable'\nargv: {' '.join(argv)}\nstderr:\n{proc.stderr}"
             )
+        if expected is not None:
+            fingerprint_path.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n")
         return rows
 
     jobs = list(enumerate(chunks))
@@ -1570,10 +1761,35 @@ class ThrowOutcome:
     best_theta: float | None = None
 
 
+def judged_for_seed(judged: Sequence[JudgedCandidate], seed_id: int) -> list[JudgedCandidate]:
+    """The rows one wait-pose seed produced — the unit every headline figure is over."""
+    return [i for i in judged if i.result.seed_id == int(seed_id)]
+
+
 def summarize_throws(
-    judged: Sequence[JudgedCandidate], *, manip_column: str = "w5"
+    judged: Sequence[JudgedCandidate],
+    *,
+    manip_column: str = "w5",
+    seed_id: int | None = None,
+    throw_count: int | None = None,
 ) -> list[ThrowOutcome]:
-    """Per throw: was anything accepted, and the max-w accepted candidate.
+    """Per throw, FOR ONE WAIT-POSE SEED: was anything accepted, and the max-w pose.
+
+    **One seed, never a union.** A robot waits in ONE pose, so "this throw is
+    catchable" only means something for a fixed seed. Grouping rows of several
+    seeds by throw would call a throw accepted when ANY seed accepts it, which
+    overstates every figure built on it (the headline, the ``throw_region``
+    proposal, the azimuth plot). So: ``seed_id`` selects the seed, and rows of
+    more than one seed WITHOUT a ``seed_id`` are refused rather than pooled. The
+    any-seed count exists only under its own name,
+    :func:`count_throws_accepted_by_any_seed`.
+
+    ``throw_count`` is the size of the throw grid. When given, the result has
+    exactly one outcome per grid throw, in index order: a throw whose every
+    catch instant was dropped before the judge (reach pre-filter, flight-time
+    floor) never appears in ``judged``, and it is reported as ``candidates = 0``
+    / ``accepted = False`` instead of being absent. Without it only the throws
+    that reached the judge are listed, which is NOT the grid.
 
     ``manip_column`` selects which manipulability ranks the accepted candidates.
     It is a parameter because the GATE's definition is a YAML choice
@@ -1582,12 +1798,35 @@ def summarize_throws(
     coherent. A candidate whose chosen measure is invalid ranks last rather than
     being dropped.
     """
+    present = sorted({i.result.seed_id for i in judged})
+    if seed_id is None:
+        if len(present) > 1:
+            raise ValueError(
+                f"rows of {len(present)} wait-pose seeds {present} and no seed_id: a throw is "
+                "catchable from ONE wait pose, and pooling seeds would count a throw any seed "
+                "accepts (use count_throws_accepted_by_any_seed for that figure, by name)"
+            )
+        rows = list(judged)
+    else:
+        if present and int(seed_id) not in present:
+            raise ValueError(f"seed_id {seed_id} is not among the judged seeds {present}")
+        rows = judged_for_seed(judged, seed_id)
+
     groups: dict[int, list[JudgedCandidate]] = {}
-    for item in judged:
+    for item in rows:
         groups.setdefault(item.candidate.throw_index, []).append(item)
+    if throw_count is None:
+        indices = sorted(groups)
+    else:
+        outside = sorted(i for i in groups if not 0 <= i < int(throw_count))
+        if outside:
+            raise ValueError(
+                f"throw_index {outside[:5]} lies outside the grid of {throw_count} throws"
+            )
+        indices = list(range(int(throw_count)))
     out: list[ThrowOutcome] = []
-    for throw_index in sorted(groups):
-        items = groups[throw_index]
+    for throw_index in indices:
+        items = groups.get(throw_index, [])
         accepted = [i for i in items if i.result.accepted]
         if not accepted:
             out.append(
@@ -1620,6 +1859,23 @@ def summarize_throws(
             )
         )
     return out
+
+
+ANY_SEED_NOTE = (
+    "union over wait-pose seeds: a throw counts when AT LEAST ONE seed accepts it. NOT "
+    "coverage — no single wait pose achieves it. accepted_throws is the one-seed figure."
+)
+
+
+def count_throws_accepted_by_any_seed(judged: Sequence[JudgedCandidate]) -> int:
+    """Throws that AT LEAST ONE seed accepts — a union over wait poses.
+
+    **NOT COVERAGE.** No single wait pose achieves this number; it is an upper
+    bound on what a better-chosen pose could reach, and it is only ever reported
+    under a name that says ``any_seed``. The figure a robot can actually deliver
+    is the per-seed one (:func:`summarize_throws` with a ``seed_id``).
+    """
+    return len({i.candidate.throw_index for i in judged if i.result.accepted})
 
 
 def reason_histogram(judged: Sequence[JudgedCandidate]) -> dict[str, int]:
@@ -1678,6 +1934,287 @@ def manipulability_distributions(judged: Sequence[JudgedCandidate]) -> dict:
     }
 
 
+# Mirror of the judge's in-code provisional default, used ONLY when neither the
+# params file nor the caller states a value. A mirror can rot, which is why it
+# is never applied silently: :func:`resolve_alpha_max` labels it as a mirror,
+# with this source, in the provenance.
+JUDGE_DEFAULT_ALPHA_MAX_RAD = 0.26
+JUDGE_DEFAULT_ALPHA_MAX_SOURCE = (
+    "rtc_controllers/include/rtc_controllers/catching/catch_pose_ik.hpp "
+    "CatchPoseIkOptions::alpha_max (the judge's in-code provisional default; this tool "
+    "MIRRORS it, it does not read it back from the binary)"
+)
+ALPHA_MAX_KEY = "planner.ik.alpha_max"
+TBD_LITERAL = "TBD"
+
+PARAMS_SHAPE_CATCHING_AT_ROOT = "`catching:` at the document root"
+PARAMS_SHAPE_CONTROLLER_CONFIG = (
+    "the shipped controller-config shape, `<controller_name>: {catching: ...}`"
+)
+PARAMS_SHAPE_TREE_ITSELF = "the catching tree itself (`planner:` at the document root)"
+
+
+@dataclass(frozen=True)
+class AlphaMaxResolution:
+    """The ``alpha_max`` the θ report is computed against, and where it came from."""
+
+    value_rad: float
+    origin: str  # "params" | "flag" | "judge_default"
+    source: str
+    params_shape: str | None = None
+    params_value_rad: float | None = None
+    flag_value_rad: float | None = None
+    warning: str | None = None
+    judge_reported_rad: float | None = None
+
+    def as_provenance(self) -> dict:
+        return {
+            "alpha_max_rad": self.value_rad,
+            "origin": self.origin,
+            "source": self.source,
+            "params_shape": self.params_shape,
+            "params_value_rad": self.params_value_rad,
+            "flag_value_rad": self.flag_value_rad,
+            "judge_default_mirror_rad": JUDGE_DEFAULT_ALPHA_MAX_RAD,
+            "judge_reported_rad": self.judge_reported_rad,
+            "judge_report": (
+                "confirmed by the judge's own --print-options"
+                if self.judge_reported_rad is not None
+                else "NOT cross-checked — this judge binary does not offer --print-options"
+            ),
+            "warning": self.warning,
+        }
+
+
+def catching_tree_from_params(doc: object, *, label: str = "params") -> tuple[Mapping, str]:
+    """The ``catching`` tree out of a params document, plus which shape it had.
+
+    Three shapes are accepted — the same three, under the same rules, as the
+    judge's own params loader, so the two cannot locate different trees in one
+    file:
+
+    1. a ``catching:`` map at the document root,
+    2. the catching tree itself, recognised by a ``planner:`` map at the root
+       (both 1 and 2 at once is refused as ambiguous),
+    3. the shipped controller-config shape, ``<controller_name>: {catching: ...}``
+       — the document's ONLY top-level entry, whose value carries a ``catching``
+       map.
+
+    Anything else raises. It must not fall through to "no alpha_max here, use
+    the default": a file whose tree was not FOUND is not a file that leaves the
+    value open, and treating it as one reports θ against a bound nobody chose.
+    """
+    if not isinstance(doc, Mapping):
+        raise ValueError(f"{label}: the document root must be a map (got {type(doc).__name__})")
+
+    def has_map(node: object, key: str) -> bool:
+        return isinstance(node, Mapping) and isinstance(node.get(key), Mapping)
+
+    if has_map(doc, "catching") and has_map(doc, "planner"):
+        raise ValueError(
+            f"{label}: both a top-level `catching:` and a top-level `planner:` map — which "
+            "one is the catching tree is ambiguous"
+        )
+    if has_map(doc, "catching"):
+        return doc["catching"], PARAMS_SHAPE_CATCHING_AT_ROOT
+    if has_map(doc, "planner"):
+        return doc, PARAMS_SHAPE_TREE_ITSELF
+    if len(doc) == 1:
+        (only,) = doc.values()
+        if has_map(only, "catching"):
+            return only["catching"], PARAMS_SHAPE_CONTROLLER_CONFIG
+    raise ValueError(
+        f"{label}: no `catching` tree found. Accepted shapes: "
+        f"{PARAMS_SHAPE_CATCHING_AT_ROOT}; {PARAMS_SHAPE_TREE_ITSELF}; "
+        f"{PARAMS_SHAPE_CONTROLLER_CONFIG} (as the ONLY top-level entry). Top-level keys "
+        f"were {sorted(map(str, doc))}"
+    )
+
+
+def alpha_max_from_catching_tree(tree: Mapping, *, label: str = "params") -> float | None:
+    """``planner.ik.alpha_max`` [rad], or None when the tree leaves it open.
+
+    "Open" is: the key (or a section above it) absent or null, the literal
+    string ``TBD``, or a non-finite number — the same three the judge's parser
+    treats as TBD before falling back to its in-code default. Any other
+    non-number raises, as it does in the judge.
+    """
+    node: object = tree
+    walked = ""
+    for key in ("planner", "ik"):
+        if node is None:
+            return None
+        if not isinstance(node, Mapping):
+            raise ValueError(f"{label}: section '{walked}' must be a map")
+        node = node.get(key)
+        walked = f"{walked}.{key}" if walked else key
+    if node is None:
+        return None
+    if not isinstance(node, Mapping):
+        raise ValueError(f"{label}: section '{walked}' must be a map")
+    raw = node.get("alpha_max")
+    if raw is None or (isinstance(raw, str) and raw.strip() == TBD_LITERAL):
+        return None
+    if isinstance(raw, bool):
+        raise ValueError(f"{label}: {ALPHA_MAX_KEY} must be a number or '{TBD_LITERAL}'")
+    try:
+        # A str is allowed through float(): YAML 1.1 reads `2.6e-1` without a
+        # dot as a string, and the judge's parser reads the same text as a number.
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{label}: {ALPHA_MAX_KEY} must be a number or '{TBD_LITERAL}' (got {raw!r})"
+        ) from exc
+    if not math.isfinite(value):
+        return None
+    if value <= 0.0:
+        raise ValueError(f"{label}: {ALPHA_MAX_KEY} must be > 0 (got {value!r})")
+    return value
+
+
+def resolve_alpha_max(
+    params_path: Path | None, flag_value_rad: float | None = None
+) -> AlphaMaxResolution:
+    """The ``alpha_max`` the JUDGE applied — one source of truth, named.
+
+    The θ report is the evidence plan §11 names for closing
+    ``planner.ik.alpha_max``, so it has to be computed against the bound the
+    judge actually accepted candidates under, not against a number this tool
+    happens to default to.
+
+    * the params file specifies it → that value. A ``--alpha-max-rad`` that
+      AGREES is redundant and accepted; one that DIFFERS is an error — two
+      sources of truth, and whichever "won" the report would be wrong about the
+      other,
+    * only ``--alpha-max-rad`` → that value. The judge was then NOT handed an
+      alpha_max and applied its in-code default, so the flag is the caller's
+      statement of that default; if it differs from this tool's mirror
+      (:data:`JUDGE_DEFAULT_ALPHA_MAX_RAD`) a ``warning`` says what has to be
+      true for the report to be right,
+    * neither → the mirror, labelled as the judge's in-code default with its
+      source.
+
+    A params file whose ``catching`` tree cannot be located raises
+    (:func:`catching_tree_from_params`).
+    """
+    if flag_value_rad is not None and not (
+        math.isfinite(float(flag_value_rad)) and float(flag_value_rad) > 0.0
+    ):
+        raise ValueError(f"--alpha-max-rad must be finite and > 0 (got {flag_value_rad!r})")
+    flag = None if flag_value_rad is None else float(flag_value_rad)
+
+    shape: str | None = None
+    from_params: float | None = None
+    if params_path is not None:
+        label = str(params_path)
+        tree, shape = catching_tree_from_params(
+            yaml.safe_load(Path(params_path).read_text()), label=label
+        )
+        from_params = alpha_max_from_catching_tree(tree, label=label)
+
+    if from_params is not None:
+        if flag is not None and not math.isclose(flag, from_params, rel_tol=1e-12, abs_tol=0.0):
+            raise ValueError(
+                f"two sources of truth for alpha_max: {params_path} sets {ALPHA_MAX_KEY} = "
+                f"{from_params!r} (which is what the judge applied) and --alpha-max-rad says "
+                f"{flag!r}. Drop the flag, or make the two agree."
+            )
+        return AlphaMaxResolution(
+            value_rad=from_params,
+            origin="params",
+            source=f"{params_path}:{ALPHA_MAX_KEY} ({shape}) — the file the judge read",
+            params_shape=shape,
+            params_value_rad=from_params,
+            flag_value_rad=flag,
+        )
+    open_note = (
+        "no --params was given"
+        if params_path is None
+        else f"{params_path} leaves {ALPHA_MAX_KEY} open (absent or '{TBD_LITERAL}')"
+    )
+    if flag is not None:
+        differs = not math.isclose(flag, JUDGE_DEFAULT_ALPHA_MAX_RAD, rel_tol=1e-12, abs_tol=0.0)
+        return AlphaMaxResolution(
+            value_rad=flag,
+            origin="flag",
+            source=(
+                f"--alpha-max-rad; {open_note}, so the judge applied its in-code default and "
+                "this flag is the caller's statement of it"
+            ),
+            params_shape=shape,
+            flag_value_rad=flag,
+            warning=(
+                f"--alpha-max-rad {flag!r} differs from this tool's mirror of the judge's "
+                f"in-code default ({JUDGE_DEFAULT_ALPHA_MAX_RAD!r}); the judge was not handed "
+                "an alpha_max, so the theta report is right only if the judge binary was "
+                f"built with {flag!r}. To CHANGE the bound, set {ALPHA_MAX_KEY} in --params."
+                if differs
+                else None
+            ),
+        )
+    return AlphaMaxResolution(
+        value_rad=JUDGE_DEFAULT_ALPHA_MAX_RAD,
+        origin="judge_default",
+        source=f"{open_note}; {JUDGE_DEFAULT_ALPHA_MAX_SOURCE}",
+        params_shape=shape,
+    )
+
+
+def judge_reported_alpha_max(judge: Path, params_path: Path | None) -> float | None:
+    """``planner.ik.alpha_max`` as the JUDGE resolves it, or None if it cannot say.
+
+    Asks the binary itself (``--print-options``, with the same ``--params``)
+    instead of trusting this module's reading of the file or its mirror of the
+    in-code default. The capability is OPTIONAL: a judge that does not offer it,
+    exits non-zero, or prints no parseable ``planner.ik.alpha_max`` line gives
+    None, and the caller records that the value was not cross-checked.
+    """
+    argv = [str(judge), "--print-options"]
+    if params_path is not None:
+        argv += ["--params", str(params_path)]
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, env=_child_env(), check=False, timeout=60
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == ALPHA_MAX_KEY:
+            try:
+                value = float(parts[1])
+            except ValueError:
+                return None
+            return value if math.isfinite(value) else None
+    return None
+
+
+def confirm_alpha_max_with_judge(
+    resolution: AlphaMaxResolution, judge_reported_rad: float | None
+) -> AlphaMaxResolution:
+    """Hold the resolved ``alpha_max`` against what the judge says it applied.
+
+    None (the judge cannot say) leaves the resolution as it is. A value that
+    agrees confirms it and retires the mirror warning. A value that DIFFERS
+    raises: the θ report would be computed against a bound the judge did not
+    use, which is the one thing this whole resolution exists to prevent — e.g. a
+    lone ``--alpha-max-rad`` that is not the judge's in-code default, or this
+    module's mirror of that default having rotted.
+    """
+    if judge_reported_rad is None:
+        return resolution
+    reported = float(judge_reported_rad)
+    if not math.isclose(reported, resolution.value_rad, rel_tol=1e-9, abs_tol=0.0):
+        raise ValueError(
+            f"the judge reports {ALPHA_MAX_KEY} = {reported!r} but this tool resolved "
+            f"{resolution.value_rad!r} from {resolution.source}. The theta report must use the "
+            f"bound the judge applied; to change the bound, set {ALPHA_MAX_KEY} in --params."
+        )
+    return replace(resolution, judge_reported_rad=reported, warning=None)
+
+
 def theta_report(
     judged: Sequence[JudgedCandidate], *, alpha_max: float, near_fraction: float = 0.9
 ) -> dict:
@@ -1685,7 +2222,10 @@ def theta_report(
 
     θ is ‖e_a^C‖ [rad], the approach-axis cone angle at q*, and ``alpha_max`` is
     the acceptance bound ``planner.ik.alpha_max`` (still provisional, and this
-    distribution is the evidence meant to close it — plan §11).
+    distribution is the evidence meant to close it — plan §11). It MUST be the
+    bound the judge applied: take it from :func:`resolve_alpha_max`, never from
+    a constant. Against a smaller number than the judge used,
+    ``max_over_alpha_max`` exceeds 1 and ``fraction_near_limit`` is inflated.
 
     "Within a fraction of ``alpha_max``" is ambiguous in a way that would invert
     the conclusion, so BOTH readings are returned under names that cannot be
@@ -1721,9 +2261,28 @@ def theta_report(
     }
 
 
+# What an "accepted fraction" is a fraction OF. Written into every output that
+# carries one, because the two candidates differ by exactly the throws the
+# pre-filters emptied, and a fraction without its denominator cannot be compared
+# with another one.
+DENOMINATOR_GRID_THROWS = (
+    "grid_throws — every throw of the grid, including those left with no catch instant by "
+    "the reach / flight-time pre-filters"
+)
+DENOMINATOR_THROWS_WITH_CANDIDATES = (
+    "throws_with_candidates — only the throws that reached the judge; NOT the grid, so not "
+    "comparable with a grid fraction"
+)
+
+
 @dataclass(frozen=True)
 class SeedRanking:
-    """One wait-pose seed's coverage of the throw set."""
+    """One wait-pose seed's coverage of the throw set.
+
+    ``throws`` is the DENOMINATOR of ``accepted_fraction`` and ``denominator``
+    says which one it is; ``throws_with_candidates`` is how many of them reached
+    the judge at all.
+    """
 
     seed_id: int
     throws: int
@@ -1731,6 +2290,8 @@ class SeedRanking:
     accepted_fraction: float
     mean_log_w5: float
     accepted_candidates: int
+    throws_with_candidates: int = 0
+    denominator: str = DENOMINATOR_THROWS_WITH_CANDIDATES
 
 
 @dataclass(frozen=True)
@@ -1742,10 +2303,21 @@ class SeedComparison:
     runner_up: SeedRanking | None
     coverage_gap: float | None
     throws: int
+    throws_with_candidates: int = 0
+    denominator: str = DENOMINATOR_THROWS_WITH_CANDIDATES
 
 
-def rank_wait_pose_seeds(judged: Sequence[JudgedCandidate]) -> SeedComparison:
+def rank_wait_pose_seeds(
+    judged: Sequence[JudgedCandidate], *, throw_count: int | None = None
+) -> SeedComparison:
     """Rank wait-pose seeds over the SAME throw set, coverage first.
+
+    ``throw_count`` is the size of the throw grid and, when given, the
+    denominator of every ``accepted_fraction`` here — the SAME denominator the
+    headline and the ``throw_region`` proposal use, so the figures can be put
+    side by side. Pass it whenever a grid exists. Without it the denominator
+    falls back to the throws that reached the judge, and the result says so in
+    ``denominator`` rather than leaving the reader to guess.
 
     Order: accepted-throw fraction DESCENDING, ties broken by mean ``log w5``
     over that seed's accepted candidates (descending), then by ``seed_id`` for
@@ -1764,8 +2336,19 @@ def rank_wait_pose_seeds(judged: Sequence[JudgedCandidate]) -> SeedComparison:
         per_seed.setdefault(item.result.seed_id, {}).setdefault(
             item.candidate.throw_index, []
         ).append(item)
+    denominator_label = (
+        DENOMINATOR_THROWS_WITH_CANDIDATES if throw_count is None else DENOMINATOR_GRID_THROWS
+    )
     if not per_seed:
-        return SeedComparison(ranking=(), best=None, runner_up=None, coverage_gap=None, throws=0)
+        return SeedComparison(
+            ranking=(),
+            best=None,
+            runner_up=None,
+            coverage_gap=None,
+            throws=0 if throw_count is None else int(throw_count),
+            throws_with_candidates=0,
+            denominator=denominator_label,
+        )
 
     throw_sets = {seed_id: frozenset(groups) for seed_id, groups in per_seed.items()}
     reference = next(iter(throw_sets.values()))
@@ -1774,6 +2357,14 @@ def rank_wait_pose_seeds(judged: Sequence[JudgedCandidate]) -> SeedComparison:
             raise ValueError(
                 f"seed {seed_id} covers {len(throws)} throws, another covers {len(reference)} — "
                 "seed ranking compares coverage of the SAME throw set"
+            )
+
+    denominator = len(reference) if throw_count is None else int(throw_count)
+    if throw_count is not None:
+        outside = sorted(i for i in reference if not 0 <= i < denominator)
+        if outside:
+            raise ValueError(
+                f"throw_index {outside[:5]} lies outside the grid of {throw_count} throws"
             )
 
     rankings: list[SeedRanking] = []
@@ -1790,13 +2381,15 @@ def rank_wait_pose_seeds(judged: Sequence[JudgedCandidate]) -> SeedComparison:
         rankings.append(
             SeedRanking(
                 seed_id=seed_id,
-                throws=len(groups),
+                throws=denominator,
                 accepted_throws=accepted_throws,
-                accepted_fraction=accepted_throws / len(groups) if groups else 0.0,
+                accepted_fraction=accepted_throws / denominator if denominator else 0.0,
                 mean_log_w5=float(np.mean(logs)) if logs else float("-inf"),
                 accepted_candidates=sum(
                     1 for items in groups.values() for i in items if i.result.accepted
                 ),
+                throws_with_candidates=len(groups),
+                denominator=denominator_label,
             )
         )
     rankings.sort(key=lambda r: (-r.accepted_fraction, -r.mean_log_w5, r.seed_id))
@@ -1809,7 +2402,9 @@ def rank_wait_pose_seeds(judged: Sequence[JudgedCandidate]) -> SeedComparison:
         coverage_gap=(
             None if runner_up is None else best.accepted_fraction - runner_up.accepted_fraction
         ),
-        throws=len(reference),
+        throws=denominator,
+        throws_with_candidates=len(reference),
+        denominator=denominator_label,
     )
 
 
@@ -1885,12 +2480,23 @@ def propose_throw_region(
     judged: Sequence[JudgedCandidate],
     *,
     base_frame: str,
+    wait_pose_seed_id: int | None = None,
+    wait_pose_q: Sequence[float] | None = None,
+    accepted_throws_any_seed: int | None = None,
 ) -> dict:
     """The ``sim.throw_region`` proposal: the axis-aligned box covering accepted throws.
 
     The keys are the ones plan §11 reserves for this block, in radians where the
     plan uses radians, with the grid's own degree values mirrored under
     ``covered_axes_deg``.
+
+    **The region of ONE wait pose.** ``outcomes`` and ``judged`` must both be
+    one seed's (:func:`summarize_throws` with a ``seed_id``,
+    :func:`judged_for_seed`); ``judged`` carrying several seeds is refused,
+    because ``flight_time_s`` is read from it and would silently become a union
+    over wait poses. ``wait_pose_seed_id`` / ``wait_pose_q`` name that pose in
+    the block. ``accepted_throws_any_seed`` is the union, carried ONLY under that
+    name and next to a note saying it is not coverage.
 
     **A box is a superset.** The accepted set is not axis-aligned, so the box
     contains rejected throws too. That is reported rather than hidden:
@@ -1901,6 +2507,12 @@ def propose_throw_region(
     ``aim_point_base_m`` is NOT proposed — it needs the wait pose's catch-frame
     position, which is the judge's model, not the grid's.
     """
+    judged_seeds = sorted({i.result.seed_id for i in judged})
+    if len(judged_seeds) > 1:
+        raise ValueError(
+            f"propose_throw_region was handed rows of {len(judged_seeds)} seeds {judged_seeds}: "
+            "the region describes ONE wait pose — pass judged_for_seed(...)"
+        )
     accepted_indices = [o.throw_index for o in outcomes if o.accepted]
     accepted = [throws[i] for i in accepted_indices]
     flight_times = [
@@ -1914,7 +2526,15 @@ def propose_throw_region(
         "throws": len(throws),
         "accepted_throws": len(accepted),
         "accepted_fraction": len(accepted) / len(throws) if throws else None,
+        "accepted_fraction_denominator": DENOMINATOR_GRID_THROWS,
     }
+    if wait_pose_seed_id is not None:
+        region["wait_pose_seed_id"] = int(wait_pose_seed_id)
+    if wait_pose_q is not None:
+        region["wait_pose_q"] = [float(v) for v in wait_pose_q]
+    if accepted_throws_any_seed is not None:
+        region["accepted_throws_any_seed"] = int(accepted_throws_any_seed)
+        region["accepted_throws_any_seed_note"] = ANY_SEED_NOTE
     if not accepted:
         region["note"] = "no throw was accepted — nothing to propose"
         return {"sim": {"throw_region": region}}
@@ -1989,10 +2609,22 @@ def _pyplot():
     return plt
 
 
+def _seed_suffix(seed_id: int | None) -> str:
+    return "" if seed_id is None else f" — wait-pose seed {int(seed_id)}"
+
+
 def plot_azimuth_coverage(
-    throws: Sequence[Throw], outcomes: Sequence[ThrowOutcome], out_path: Path
+    throws: Sequence[Throw],
+    outcomes: Sequence[ThrowOutcome],
+    out_path: Path,
+    *,
+    seed_id: int | None = None,
 ) -> Path:
-    """ "방위별 포구 가능 구간" (plan §11): accepted fraction and count per azimuth."""
+    """ "방위별 포구 가능 구간" (plan §11): accepted fraction and count per azimuth.
+
+    ``outcomes`` are ONE seed's (:func:`summarize_throws`); ``seed_id`` goes into
+    the title so the figure says which wait pose it is about.
+    """
     plt = _pyplot()
     accepted = {o.throw_index for o in outcomes if o.accepted}
     per_azimuth: dict[float, list[int]] = {}
@@ -2009,7 +2641,9 @@ def plot_azimuth_coverage(
     top.set_ylabel("accepted fraction")
     top.set_ylim(0.0, 1.05)
     top.grid(True, alpha=0.3)
-    top.set_title("catchable throws by release azimuth (S3.5a kinematic map)")
+    top.set_title(
+        f"catchable throws by release azimuth (S3.5a kinematic map){_seed_suffix(seed_id)}"
+    )
     bottom.bar(
         azimuths, hits, width=max(1.0, _bar_width(azimuths)), color="#2ca02c", label="accepted"
     )
@@ -2031,8 +2665,14 @@ def _bar_width(values: Sequence[float]) -> float:
     return 0.8 * float(gaps.min())
 
 
-def plot_manipulability(judged: Sequence[JudgedCandidate], out_path: Path) -> Path:
-    """w₅ and w₆ over accepted candidates, in two panels — never one pooled axis."""
+def plot_manipulability(
+    judged: Sequence[JudgedCandidate], out_path: Path, *, seed_id: int | None = None
+) -> Path:
+    """w₅ and w₆ over accepted candidates, in two panels — never one pooled axis.
+
+    Pass one seed's rows (:func:`judged_for_seed`) and its ``seed_id`` for the
+    title: a histogram pooled over wait poses describes no pose.
+    """
     plt = _pyplot()
     accepted = [i.result for i in judged if i.result.accepted]
     w5 = [r.w5 for r in accepted if r.w5_valid]
@@ -2049,7 +2689,10 @@ def plot_manipulability(judged: Sequence[JudgedCandidate], out_path: Path) -> Pa
         axis.set_xlabel(label)
         axis.set_ylabel("accepted candidates")
         axis.grid(True, alpha=0.3)
-    fig.suptitle("manipulability at q* (mixed units, different dimensions — not pooled)")
+    fig.suptitle(
+        "manipulability at q* (mixed units, different dimensions — not pooled)"
+        + _seed_suffix(seed_id)
+    )
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -2150,15 +2793,37 @@ def write_candidate_result_csv(path: Path, judged: Sequence[JudgedCandidate]) ->
 
 
 def write_throw_summary_csv(
-    path: Path, throws: Sequence[Throw], outcomes: Sequence[ThrowOutcome]
+    path: Path,
+    throws: Sequence[Throw],
+    outcomes: Sequence[ThrowOutcome],
+    *,
+    seed_id: int | None = None,
 ) -> Path:
-    """One row per grid throw: its axes, whether it is catchable, and the best pose."""
+    """One row per GRID throw: its axes, whether it is catchable, and the best pose.
+
+    "Per grid throw" is enforced here rather than assumed of the caller: a throw
+    with no entry in ``outcomes`` — every catch instant dropped by the reach /
+    flight-time pre-filters, so nothing reached the judge — is written with
+    ``candidates = 0`` and ``accepted = 0``, not left out. Leaving it out makes
+    the file's row count a function of the pre-filter, and "rows accepted / rows"
+    a different fraction from the headline.
+
+    ``outcomes`` are ONE wait-pose seed's; ``seed_id`` is written on every row
+    as ``wait_pose_seed_id`` so the file says which pose it is about.
+    """
+    by_index = {o.throw_index: o for o in outcomes}
+    if len(by_index) != len(outcomes):
+        raise ValueError("outcomes name a throw twice — they must be ONE seed's, one per throw")
+    outside = sorted(i for i in by_index if not 0 <= i < len(throws))
+    if outside:
+        raise ValueError(f"outcome throw_index {outside[:5]} is outside the {len(throws)} throws")
     nv = max((o.best_q.size for o in outcomes if o.best_q is not None), default=0)
     with Path(path).open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             [
                 "throw_index",
+                "wait_pose_seed_id",
                 "distance_m",
                 "azimuth_deg",
                 "release_height_m",
@@ -2182,8 +2847,10 @@ def write_throw_summary_csv(
                 *(f"best_q{i}" for i in range(nv)),
             ]
         )
-        for outcome in outcomes:
-            throw = throws[outcome.throw_index]
+        for throw_index, throw in enumerate(throws):
+            outcome = by_index.get(throw_index) or ThrowOutcome(
+                throw_index=throw_index, candidates=0, accepted_candidates=0, accepted=False
+            )
             point = (
                 ["", "", ""]
                 if outcome.best_p_c_world_m is None
@@ -2196,6 +2863,7 @@ def write_throw_summary_csv(
             writer.writerow(
                 [
                     outcome.throw_index,
+                    "" if seed_id is None else int(seed_id),
                     throw.distance_m,
                     throw.azimuth_deg,
                     throw.release_height_m,
@@ -2277,7 +2945,12 @@ def main(argv: list[str] | None = None) -> int:
         "downrange",
     )
     ap.add_argument("--urdf", type=Path, help="URDF/xacro override (default: urdf.package/path)")
-    ap.add_argument("--params", type=Path, help="YAML with the `catching:` tree for the judge")
+    ap.add_argument(
+        "--params",
+        type=Path,
+        help="YAML with the `catching:` tree for the judge. planner.ik.alpha_max, when it is "
+        "set there, is also the bound the theta report is computed against",
+    )
     ap.add_argument("--judge", type=Path, help=f"path to {JUDGE_EXECUTABLE} (default: ament)")
 
     # ── aerodynamics: no defaults, by module policy ──
@@ -2358,7 +3031,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     ap.add_argument("--shard-size", type=int, default=200)
     ap.add_argument("--manip-column", choices=["w5", "w6"], default="w5")
-    ap.add_argument("--alpha-max-rad", type=float, default=0.26, help="planner.ik.alpha_max")
+    ap.add_argument(
+        "--alpha-max-rad",
+        type=float,
+        default=None,
+        help=f"{ALPHA_MAX_KEY} for the theta report, ONLY for when --params does not set it "
+        "(then the judge ran on its in-code default and this states that default). Differing "
+        "from a value --params does set is an error. Default: the params value, else the "
+        f"mirror of the judge's in-code default {JUDGE_DEFAULT_ALPHA_MAX_RAD}",
+    )
     ap.add_argument("--theta-near-fraction", type=float, default=0.9)
     ap.add_argument(
         "--epsilon-m",
@@ -2373,6 +3054,13 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     workers = max(1, min(int(args.workers), MAX_WORKERS))
 
+    # Before anything is judged: a params file whose tree cannot be located, or
+    # a flag that contradicts it, should not cost a sweep to find out.
+    try:
+        alpha_max = resolve_alpha_max(args.params, args.alpha_max_rad)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise SystemExit(f"alpha_max: {exc}") from exc
+
     artifacts = write_model_config(
         args.robot_config,
         out_dir,
@@ -2381,6 +3069,16 @@ def main(argv: list[str] | None = None) -> int:
         urdf_override=args.urdf,
     )
     judge = find_judge(args.judge)
+    # ... and against the judge's own account of what it will apply, when this
+    # binary can give one. Still before the sweep.
+    try:
+        alpha_max = confirm_alpha_max_with_judge(
+            alpha_max, judge_reported_alpha_max(judge, args.params)
+        )
+    except ValueError as exc:
+        raise SystemExit(f"alpha_max: {exc}") from exc
+    if alpha_max.warning:
+        print(f"WARNING: {alpha_max.warning}", file=sys.stderr)
     seeds_path = out_dir / "seeds.csv"
     probe = dump_catch_frame(
         JudgeInvocation(
@@ -2472,17 +3170,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     judged = join_results(candidates, results)
 
-    outcomes = summarize_throws(judged, manip_column=args.manip_column)
-    histogram = reason_histogram(judged)
-    manip = manipulability_distributions(judged)
-    theta = theta_report(
-        judged, alpha_max=args.alpha_max_rad, near_fraction=args.theta_near_fraction
+    # ONE wait pose. Every headline figure below — accepted throws, the region
+    # proposal, the per-throw CSV, the distributions, the plots — describes the
+    # best seed of the ranking, because a robot waits in one pose. The union over
+    # seeds survives only as `accepted_throws_any_seed`.
+    seed_comparison = rank_wait_pose_seeds(judged, throw_count=len(throws))
+    headline_seed_id = None if seed_comparison.best is None else seed_comparison.best.seed_id
+    headline = [] if headline_seed_id is None else judged_for_seed(judged, headline_seed_id)
+    accepted_throws_any_seed = count_throws_accepted_by_any_seed(judged)
+
+    outcomes = summarize_throws(
+        headline, manip_column=args.manip_column, seed_id=headline_seed_id, throw_count=len(throws)
     )
-    seed_comparison = rank_wait_pose_seeds(judged)
+    histogram = reason_histogram(headline)
+    manip = manipulability_distributions(headline)
+    theta = theta_report(
+        headline, alpha_max=alpha_max.value_rad, near_fraction=args.theta_near_fraction
+    )
 
     boundary: dict | None = None
     if args.epsilon_m is not None:
-        accepted_candidates = [i.candidate for i in judged if i.result.accepted]
+        accepted_candidates = [i.candidate for i in headline if i.result.accepted]
         if accepted_candidates:
             perturbed, sources = perturb_candidates(
                 accepted_candidates,
@@ -2498,7 +3206,7 @@ def main(argv: list[str] | None = None) -> int:
                 prefix="eps",
             )
             boundary = count_boundary_candidates(
-                [i.result for i in judged],
+                [i.result for i in headline],
                 perturbed_results,
                 sources,
                 epsilon_m=args.epsilon_m,
@@ -2507,7 +3215,9 @@ def main(argv: list[str] | None = None) -> int:
             boundary = {"epsilon_m": float(args.epsilon_m), "accepted": 0, "on_boundary": 0}
 
     write_candidate_result_csv(out_dir / "candidates.csv", judged)
-    write_throw_summary_csv(out_dir / "throw_summary.csv", throws, outcomes)
+    write_throw_summary_csv(
+        out_dir / "throw_summary.csv", throws, outcomes, seed_id=headline_seed_id
+    )
     write_reason_histogram_csv(out_dir / "reason_histogram.csv", histogram)
 
     provenance = build_provenance(
@@ -2521,7 +3231,20 @@ def main(argv: list[str] | None = None) -> int:
                 "executable": str(judge),
                 "sub_model": artifacts.catch_sub_model,
                 "catch_frame": artifacts.catch_frame,
+                "executable_identity": {
+                    "size_bytes": judge.stat().st_size,
+                    "mtime_ns": judge.stat().st_mtime_ns,
+                },
                 "params": None if args.params is None else str(args.params),
+                "params_sha256": (
+                    None if args.params is None else _sha256(Path(args.params).read_bytes())
+                ),
+                "resume": (
+                    "a shard is reused only when its fingerprint sidecar matches: candidate "
+                    "CSV, model config, the URDF / closure YAML it names, seeds and params by "
+                    "sha256; sub-model and catch-frame by name; the judge by path+size+mtime "
+                    f"({SHARD_FINGERPRINT_SCHEMA})"
+                ),
                 "dump_frame": {k: v for k, v in probe.items() if k != "stdout"},
                 "omp_num_threads": "1",
                 "workers": workers,
@@ -2555,14 +3278,40 @@ def main(argv: list[str] | None = None) -> int:
             },
             "seeds": [list(map(float, s)) for s in seeds],
             "results": {
-                "accepted_candidates": sum(1 for i in judged if i.result.accepted),
+                "scope": (
+                    "ONE wait pose: every figure in this block except the *_any_seed / "
+                    "*_all_seeds ones and seed_ranking is over the headline seed only"
+                ),
+                "headline_seed": {
+                    "seed_id": headline_seed_id,
+                    "q": None
+                    if headline_seed_id is None
+                    else [float(v) for v in seeds[headline_seed_id]],
+                    "selection": (
+                        "rank_wait_pose_seeds best: accepted-throw fraction over the full "
+                        "grid, ties by mean log w5, then seed_id"
+                    ),
+                },
+                "accepted_candidates": sum(1 for i in headline if i.result.accepted),
+                "judged_candidates": len(headline),
                 "accepted_throws": sum(1 for o in outcomes if o.accepted),
                 "throws": len(throws),
+                "accepted_fraction": (
+                    sum(1 for o in outcomes if o.accepted) / len(throws) if throws else None
+                ),
+                "accepted_fraction_denominator": DENOMINATOR_GRID_THROWS,
+                "throws_with_candidates": seed_comparison.throws_with_candidates,
+                "accepted_throws_any_seed": accepted_throws_any_seed,
+                "accepted_throws_any_seed_note": ANY_SEED_NOTE,
+                "accepted_candidates_all_seeds": sum(1 for i in judged if i.result.accepted),
+                "judged_candidates_all_seeds": len(judged),
                 "manip_column": args.manip_column,
                 "reason_histogram": histogram,
                 "manipulability": manip,
                 "theta": theta,
+                "alpha_max": alpha_max.as_provenance(),
                 "seed_ranking": [vars(r) for r in seed_comparison.ranking],
+                "seed_ranking_denominator": seed_comparison.denominator,
                 "seed_coverage_gap": seed_comparison.coverage_gap,
                 "boundary": boundary,
             },
@@ -2570,20 +3319,47 @@ def main(argv: list[str] | None = None) -> int:
     )
     (out_dir / "throw_region.yaml").write_text(
         render_generated_yaml(
-            propose_throw_region(throws, outcomes, judged, base_frame=args.arm_base_frame),
+            propose_throw_region(
+                throws,
+                outcomes,
+                headline,
+                base_frame=args.arm_base_frame,
+                wait_pose_seed_id=headline_seed_id,
+                wait_pose_q=None
+                if headline_seed_id is None
+                else [float(v) for v in seeds[headline_seed_id]],
+                accepted_throws_any_seed=accepted_throws_any_seed,
+            ),
             provenance,
         )
     )
     (out_dir / "provenance.yaml").write_text(render_generated_yaml({"provenance": provenance}))
 
     if not args.no_plots:
-        plot_azimuth_coverage(throws, outcomes, out_dir / "azimuth_coverage.png")
-        plot_manipulability(judged, out_dir / "manipulability.png")
+        plot_azimuth_coverage(
+            throws, outcomes, out_dir / "azimuth_coverage.png", seed_id=headline_seed_id
+        )
+        plot_manipulability(headline, out_dir / "manipulability.png", seed_id=headline_seed_id)
 
     accepted_throws = sum(1 for o in outcomes if o.accepted)
     print(
-        f"accepted {accepted_throws}/{len(throws)} throws, "
-        f"{sum(1 for i in judged if i.result.accepted)}/{len(judged)} candidates",
+        f"wait-pose seed {headline_seed_id}: accepted {accepted_throws}/{len(throws)} grid "
+        f"throws, {sum(1 for i in headline if i.result.accepted)}/{len(headline)} candidates",
+        file=sys.stderr,
+    )
+    if len(seeds) > 1:
+        print(
+            f"accepted_throws_any_seed = {accepted_throws_any_seed}/{len(throws)} — union over "
+            f"{len(seeds)} seeds, NOT coverage (no single wait pose achieves it)",
+            file=sys.stderr,
+        )
+    confirmed = (
+        "confirmed by the judge"
+        if alpha_max.judge_reported_rad is not None
+        else "not cross-checked"
+    )
+    print(
+        f"alpha_max = {alpha_max.value_rad} rad [{alpha_max.origin}; {confirmed}]",
         file=sys.stderr,
     )
     print(f"reason histogram: {histogram}", file=sys.stderr)

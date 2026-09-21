@@ -327,10 +327,21 @@ ros2 run rtc_tools catchability_map \
   --workers 6 --epsilon-m 0.01 --out-dir <out>
 ```
 
-출력: `candidates.csv` (후보별 verdict·q\*), `throw_summary.csv` (throw 별 포구 가능·최대 w 후보),
-`reason_histogram.csv`, `throw_region.yaml` (`sim.throw_region` 제안 + provenance),
+출력: `candidates.csv` (후보별 verdict·q\*, **모든 seed**), `throw_summary.csv` (**격자 throw 당 1행** —
+후보가 0 개인 throw 도 `candidates=0`·`accepted=0` 으로 나온다; `wait_pose_seed_id` 열이 어느 대기 자세의
+표인지 말한다), `reason_histogram.csv`, `throw_region.yaml` (`sim.throw_region` 제안 + provenance),
 `provenance.yaml`, `azimuth_coverage.png` (방위별 포구 가능 구간), `manipulability.png`,
-그리고 `model_config.yaml` / `model.urdf` / `seeds.csv` / `shards/` (재개용).
+그리고 `model_config.yaml` / `model.urdf` / `seeds.csv` / `shards/` (재개용; shard 마다
+`*_fingerprint.json` sidecar).
+
+**headline 은 seed 하나의 수치다.** `--seed` 를 여러 개 줘도 로봇은 **한 자세**에서 기다리므로,
+`accepted_throws`·`throw_region.yaml`·`throw_summary.csv`·사유 히스토그램·w/θ 분포·ε 경계·플롯·stderr
+요약은 전부 seed 순위 1위 (`rank_wait_pose_seeds` best) **하나**를 기술하고, 그 seed 의 id 와 관절 벡터를
+`results.headline_seed` · `throw_region.wait_pose_seed_id`/`wait_pose_q` 에 적는다. "어느 seed 든 하나라도
+받으면 accepted" 인 합집합은 `accepted_throws_any_seed` 라는 **이름으로만** 남는다 — coverage 가 아니다
+(어떤 단일 자세도 그 수를 내지 못한다). 비율의 분모는 어디서나 **전체 격자** 이고
+(`accepted_fraction_denominator`, `seed_ranking[].denominator`), 후보가 judge 까지 간 throw 수는
+`throws_with_candidates` 로 따로 적는다.
 
 ```python
 from rtc_tools.analysis import catchability_map as cm
@@ -349,7 +360,9 @@ cand = cm.sample_catch_candidates(traj, window_s=(1.0, 1.8), stride_s=0.05,
                                   reach_filter=cm.max_distance_filter(base_xyz, 1.1))
 rows = cm.run_judge_batch(inv, cm.to_judge_candidates(cand, model_world_t_world=mwTb @ bTw),
                           work_dir=out_dir / "shards", shard_size=200, workers=6)
-outc = cm.summarize_throws(cm.join_results(candidates, rows))
+judged = cm.join_results(candidates, rows)
+best = cm.rank_wait_pose_seeds(judged, throw_count=len(throws)).best        # 분모 = 전체 격자
+outc = cm.summarize_throws(judged, seed_id=best.seed_id, throw_count=len(throws))  # seed 하나
 ```
 
 - ⚠️ **judge 의 프레임은 arm base 가 아니라 Pinocchio MODEL WORLD (= URDF 모델 root) 다.**
@@ -365,8 +378,15 @@ outc = cm.summarize_throws(cm.join_results(candidates, rows))
   손바닥이 손의 폐쇄 루프 상류라 catch frame 의 FK·팔 관절 Jacobian 은 **정확하다**. 스키마 차이도
   여기서 번역한다 (`urdf_path`, `sub_models` 는 map 이 아니라 **sequence**; `extra_frames` 만 같은 map)
 - **샤딩·재개**: 후보를 chunk 로 나눠 최대 6 프로세스 (이 머신 상한) 로 돌리고 자식 env 에
-  `OMP_NUM_THREADS=1` 을 준다. 완료된 shard 출력은 **행/ID 대조로 검사**해 재실행을 건너뛴다.
-  비정상 종료·짧은 CSV 는 그 shard 의 stderr 를 달아 raise 한다 — 조용히 짧은 shard 는
+  `OMP_NUM_THREADS=1` 을 준다. shard 출력은 **행/ID 가 맞고 + 입력 fingerprint sidecar 가 일치할 때만**
+  재사용한다 (`shard_is_reusable`). 후보 id 는 실행마다 `0..N-1` 이라 ID 대조만으로는 같은 `--out-dir` 에
+  `--params`·`--seed`·robot config·격자 **값**을 바꿔 재실행해도 옛 verdict 가 그대로 재생된다. fingerprint
+  는 그 shard 의 후보 CSV · model config · 그것이 가리키는 URDF/closure YAML · seeds · params (없으면
+  `none`) 의 sha256, sub-model·catch frame 이름, judge 실행파일의 **정체** (경로+크기+mtime — 내용 해시가
+  아니다; 둘을 보존하는 재빌드나 judge 가 링크한 공유 라이브러리 변경은 못 잡으므로 그때는 `shards*/` 를
+  지운다) 로 만든다. sidecar 가 없거나 (fingerprint 이전의 출력 디렉토리) 다르면 재판정·덮어쓰기이고, 무엇이
+  바뀌었는지 stderr 에 적는다. `shards_eps/` 도 같다. provenance 는 params 의 경로와 **sha256** 을 함께
+  기록한다. 비정상 종료·짧은 CSV 는 그 shard 의 stderr 를 달아 raise 한다 — 조용히 짧은 shard 는
   "그 투척들은 못 잡는다" 로 읽혀 나중에 반증되지 않는다
 - **`q*` 열이 비는 것은 세 번째 상태다** (pose 없음 ≠ q = 0). judge 는 `none`/`below_manip_min`/
   `rank_deficient` 에만 pose 를 쓰므로 나머지 사유는 `q*` 가 공란이고, 파서는 이를 `None` 으로
@@ -374,8 +394,21 @@ outc = cm.summarize_throws(cm.join_results(candidates, rows))
 - **w₅·w₆ 는 따로 보고한다** (같은 q\* 의 두 측정이지만 차원이 달라 pooling 하지 않는다, plan §11 C-3).
   θ 분포는 `fraction_below` 와 `fraction_near_limit` 을 **둘 다** 낸다 — "α_max 의 몇 % 안"이
   양쪽으로 읽히고 결론이 뒤집히기 때문. 접근축 cone 이 binding 하는지는 `fraction_near_limit` 이 답한다
+- **θ 보고의 `alpha_max` 는 judge 가 실제로 적용한 값이다** (`resolve_alpha_max`). `--params` 가
+  `planner.ik.alpha_max` 를 주면 그 값을 쓴다. 파일 형태는 judge 의 loader 와 같은 세 가지만 받는다 —
+  root 의 `catching:` map / root 에 `planner:` 가 있는 catching tree 자체 / 출하 controller config 형태
+  `<controller_name>: {catching: ...}` (유일한 top-level 항목일 때) — 그 밖은 기본값으로 떨어지지 않고
+  **에러**다. `"TBD"`·키 부재는 "미지정" 이다. `--alpha-max-rad` 는 **기본값이 없는** 선택 인자로, params 가
+  값을 주는데 다른 값을 넘기면 에러 (진실의 출처가 둘), 같으면 허용, params 가 미지정일 때만 단독으로 쓰인다
+  (그때 judge 는 in-code 기본값으로 돌았으므로 이 인자는 그 기본값에 대한 호출자의 진술이다). 둘 다 없으면
+  judge 의 in-code 기본값 0.26 의 **미러**를 쓰고 provenance 에 미러임과 출처를 적는다. judge 가
+  `--print-options` 를 제공하면 그 출력의 `planner.ik.alpha_max` 와 대조해 **다르면 sweep 전에 에러**이고,
+  제공하지 않으면 provenance 에 "not cross-checked" 로 남는다
 - **seed 비교**는 포구 가능 throw 비율 내림차순, 동률이면 평균 `log w5` 로 가른다. 서로 다른 throw
-  집합을 비교하려 하면 거부한다. runner-up 의 coverage 차이가 대기 자세 민감도 수치다
+  집합을 비교하려 하면 거부한다. runner-up 의 coverage 차이가 대기 자세 민감도 수치다. 비율의 분모는
+  `throw_count` (전체 격자) 이며 headline 과 같다 — 주지 않으면 judge 까지 간 throw 수로 떨어지고 결과의
+  `denominator` 가 그렇게 적는다. `summarize_throws` 는 여러 seed 의 행을 `seed_id` 없이 받으면 **거부**한다
+  (합집합을 실수로 만들 수 없게); `propose_throw_region` 도 같다 (`flight_time_s` 가 합집합이 된다)
 - **ε 경계 개수**의 "경계" 는 후보 생성 단계로 정의된다: 받아들여진 후보의 p_c 를 축별 ±ε 로 옮긴
   6 사본을 **다시 judge 에 넣어** 하나라도 거부되면 그 후보는 경계 위다 (w₅ 여유 같은 대용값 추정 아님)
 - **힘 법칙은 sim 과 같다**: 중력 + 이차 항력 `-½ρC_dA|v|v` (`ComputeProjectileBallAeroForce`).
@@ -391,14 +424,18 @@ outc = cm.summarize_throws(cm.join_results(candidates, rows))
   로봇별 값을 모듈에 박지 않으며, 호출자가 (같은 q 에서 MuJoCo FK ↔ Pinocchio FK 로 확정한) 변환을 넘긴다
 - 각 throw 는 world 기준 release position·velocity 를 들고 있어 `rtc_msgs/srv/LaunchBall` 요청 필드로
   1:1 대응된다 (`throw_to_launch_request`)
-- 테스트 `test/test_catchability_map.py` (49 케이스): 무항력 닫힌해 + **적분 차수** (스텝 절반 → 오차
+- 테스트 `test/test_catchability_map.py` (66 케이스): 무항력 닫힌해 + **적분 차수** (스텝 절반 → 오차
   1/16; Euler 2, substage 속도를 고정한 RK4 2.1 로 실측 반증), 항력 부호·상승 중 속력 단조감소·종단속도
   √(g/k), 프레임 변환 longhand oracle·transpose·Rz(180°) 함정 pin·round trip, grid 개수·속력/고도각
   역산·downrange 부호, provenance 출처 라벨·파생 k, 손으로 계산한 후보 샘플링 (비행시간 하한이 제거 +
   재-anchor 하는 것까지)·reach prefilter, **`q*` 공란 행과 정상 행이 섞인 결과 CSV**·절반만 찬 pose 거부,
   짧은 shard 탐지, 출하 스키마 → ModelConfig 번역 (`arm_catch` tip = catch frame 부모), 모델 world 변환
   rigid 검사, seed 순위 tie-break (두 기준이 어긋나게 구성), `throw_region` 박스 (초과 포함 비율까지 손
-  계산), 사유 히스토그램, ε 경계 개수. **실제 `catch_pose_ik_batch` 왕복** (출하 ur5e_p1b config →
+  계산), 사유 히스토그램, ε 경계 개수. **대역 judge** (같은 CLI·CSV, verdict 가 입력의 순수 함수라 stale 재사용이
+  *틀린 verdict* 로 드러난다) 로 shard 재개 — 무변경 시 재사용 (같은 bytes 재기록 포함) · params 내용 / seed
+  값 / 같은 id 의 좌표 / URDF / judge 정체 변경·sidecar 부재 시 재판정 —, **서로소인 두 seed 가 headline 에
+  합산되지 않음**, 후보 0 개 throw 의 요약 행, 두 비율의 분모 일치, `alpha_max` 해석 6 경우 (params / 인자 /
+  일치 / 불일치 에러 / 둘 다 없음 / controller-config 형태) + judge 보고와의 대조, CLI 전 구간. **실제 `catch_pose_ik_batch` 왕복** (출하 ur5e_p1b config →
   `--dump-frame` nv 6 · `base` 가 Rz(180°) 임을 pin → 2-shard 실행 → poseless 행 · 재개) 은 바이너리·출하
   config·URDF 툴체인이 없으면 이유를 적고 skip 한다
 

@@ -14,9 +14,13 @@ The oracles are independent of the module under test:
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import json
 import math
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -1093,6 +1097,608 @@ def test_csv_outputs_leave_a_poseless_row_empty(tmp_path: Path):
     histogram = cm.reason_histogram(rows)
     hist_path = cm.write_reason_histogram_csv(tmp_path / "hist.csv", histogram)
     assert hist_path.read_text().splitlines()[1].startswith("not_converged,1,")
+
+
+# ── A stand-in judge: same CLI and CSV, a verdict that is a pure function of its inputs ──
+
+# The point of the stand-in is that a STALE verdict is observable as a WRONG
+# verdict, not only as a missing subprocess call: every input the fingerprint
+# covers moves a number in the output.
+#
+#   accepted  <=>  |p_c.xy| <= fake_reach (params file, default 1.0)
+#                  and sign(v_y) == sign(seed q0)
+#   w5        =    |seed q0|
+#   theta     =    0.30 on every accepted row
+_FAKE_JUDGE = r"""#!{python}
+import csv
+import sys
+from pathlib import Path
+
+argv = sys.argv[1:]
+if "--print-options" in argv:
+    # Optional capability: offered only when the test drops this file next to it.
+    report = Path(__file__).with_name("print_options.txt")
+    if not report.is_file():
+        sys.exit(2)
+    print(report.read_text(), end="")
+    sys.exit(0)
+if "--dump-frame" in argv:
+    print("frame catch_frame parent tip nv 2")
+    print("residual_translation_m 0.0")
+    print("residual_rotation_fro 0.0")
+    sys.exit(0)
+args = dict(zip(argv[::2], argv[1::2]))
+with Path(__file__).with_name("calls.log").open("a") as log:
+    log.write(args["--candidates"] + "\n")
+reach = 1.0
+if "--params" in args:
+    for line in Path(args["--params"]).read_text().splitlines():
+        if line.strip().startswith("fake_reach:"):
+            reach = float(line.split(":")[1])
+seeds = {{}}
+with open(args["--seeds"], newline="") as handle:
+    for row in csv.DictReader(handle):
+        seeds[int(row["seed_id"])] = float(row["q0"])
+lines = [
+    "id,seed_id,accepted,reason,reason_name,iterations,pos_error,theta,w5,w6,w5_valid,"
+    "w6_valid,manip_converged,manip_grad_norm,manip_grad_failures,sigma_min,lambda_sq,"
+    "qp_status,qp_iterations,qp_failures,nv,q0,q1"
+]
+with open(args["--candidates"], newline="") as handle:
+    for row in csv.DictReader(handle):
+        q0 = seeds[int(row["seed_id"])]
+        radius = (float(row["p_c_x"]) ** 2 + float(row["p_c_y"]) ** 2) ** 0.5
+        ok = radius <= reach and (float(row["v_y"]) > 0.0) == (q0 > 0.0)
+        head = f"{{row['id']}},{{row['seed_id']}},"
+        if ok:
+            tail = "0.05,1,1,1,0,0,0.2,0,0,4,0,2,0.1,0.2"
+            lines.append(head + f"1,0,none,5,0.001,0.3,{{abs(q0)}}," + tail)
+        else:
+            lines.append(head + "0,11,not_converged,20,0,0,0,0,0,0,1,0,0,0.03,0,0,18,0,2,,")
+Path(args["--out"]).write_text("\n".join(lines) + "\n")
+"""
+
+
+def _fake_judge(tmp_path: Path) -> Path:
+    path = tmp_path / "fake_judge.py"
+    path.write_text(_FAKE_JUDGE.format(python=sys.executable))
+    path.chmod(0o755)
+    return path
+
+
+def _judge_calls(judge: Path) -> int:
+    log = judge.with_name("calls.log")
+    return len(log.read_text().splitlines()) if log.is_file() else 0
+
+
+class _FakeRun:
+    """One judge invocation's worth of input files, each rewritable in place."""
+
+    def __init__(self, tmp_path: Path):
+        self.judge = _fake_judge(tmp_path)
+        self.urdf = tmp_path / "model.urdf"
+        self.model_config = tmp_path / "model_config.yaml"
+        self.seeds = tmp_path / "seeds.csv"
+        self.params = tmp_path / "params.yaml"
+        self.work = tmp_path / "shards"
+        self.urdf.write_text(TINY_URDF)
+        self.model_config.write_text(yaml.safe_dump({"urdf_path": str(self.urdf)}))
+        cm.write_seed_csv(self.seeds, [[0.5, 0.0]])
+        self.params.write_text("fake_reach: 1.0\n")
+        self.x = (0.4, 2.0)
+
+    def candidates(self) -> list[cm.JudgeCandidate]:
+        return [
+            cm.JudgeCandidate(
+                id=i,
+                seed_id=0,
+                p_c_model_m=np.array([x, 0.0, 0.5]),
+                v_model_m_s=np.array([-4.0, 1.0, -2.0]),
+                throw_index=i,
+            )
+            for i, x in enumerate(self.x)
+        ]
+
+    def run(self) -> list[cm.JudgeResult]:
+        invocation = cm.JudgeInvocation(
+            judge=self.judge,
+            model_config=self.model_config,
+            seeds=self.seeds,
+            params=self.params,
+        )
+        return cm.run_judge_batch(invocation, self.candidates(), work_dir=self.work, workers=1)
+
+
+def test_a_completed_shard_is_reused_when_no_input_changed(tmp_path: Path):
+    run = _FakeRun(tmp_path)
+    first = run.run()
+    assert [r.accepted for r in first] == [True, False]
+    assert _judge_calls(run.judge) == 1
+    sidecar = run.work / "shard_00000_fingerprint.json"
+    assert set(json.loads(sidecar.read_text())["parts"]) >= {
+        "candidates",
+        "model_config",
+        "urdf_path",
+        "seeds",
+        "params",
+        "sub_model",
+        "catch_frame",
+        "judge",
+    }
+
+    # The CLI rewrites the model config, the URDF and the seed file on EVERY
+    # run, so reuse has to survive a rewrite with identical bytes (new mtime):
+    # a fingerprint on mtimes would make resume a no-op.
+    for path in (run.urdf, run.model_config, run.seeds, run.params):
+        path.write_bytes(path.read_bytes())
+    again = run.run()
+    assert _judge_calls(run.judge) == 1, "an unchanged shard must not be re-judged"
+    assert [(r.id, r.accepted, r.w5) for r in again] == [(r.id, r.accepted, r.w5) for r in first]
+
+
+def test_a_shard_is_not_reused_when_only_the_params_file_content_changes(tmp_path: Path):
+    run = _FakeRun(tmp_path)
+    assert [r.accepted for r in run.run()] == [True, False]
+    # Same PATH, different content: the 2.0 m candidate is now within reach.
+    run.params.write_text("fake_reach: 3.0\n")
+    again = run.run()
+    assert _judge_calls(run.judge) == 2
+    assert [r.accepted for r in again] == [True, True], "stale verdicts of the old params"
+
+
+def test_a_shard_is_not_reused_when_only_a_seed_value_changes(tmp_path: Path):
+    run = _FakeRun(tmp_path)
+    assert [r.w5 for r in run.run() if r.accepted] == [0.5]
+    cm.write_seed_csv(run.seeds, [[0.75, 0.0]])
+    again = run.run()
+    assert _judge_calls(run.judge) == 2
+    assert [r.w5 for r in again if r.accepted] == [0.75], "stale verdicts of the old seed"
+
+
+def test_a_shard_is_not_reused_when_coordinates_change_under_the_same_ids(tmp_path: Path):
+    run = _FakeRun(tmp_path)
+    assert [r.accepted for r in run.run()] == [True, False]
+    # The ids are 0 and 1 on both runs — which is exactly why an id comparison
+    # cannot tell these two grids apart.
+    run.x = (1.5, 0.2)
+    assert [c.id for c in run.candidates()] == [0, 1]
+    again = run.run()
+    assert _judge_calls(run.judge) == 2
+    assert [r.accepted for r in again] == [False, True], "stale verdicts of the old grid"
+
+
+def test_a_shard_is_not_reused_across_a_model_a_judge_or_a_missing_sidecar(tmp_path: Path):
+    run = _FakeRun(tmp_path)
+    run.run()
+    sidecar = run.work / "shard_00000_fingerprint.json"
+
+    # The model config's BYTES are unchanged here; only the URDF it names moved.
+    run.urdf.write_text(TINY_URDF.replace('xyz="0.5 0 0"', 'xyz="0.6 0 0"'))
+    run.run()
+    assert _judge_calls(run.judge) == 2
+
+    # The judge is identified by path + size + mtime, not by content.
+    stat = run.judge.stat()
+    os.utime(run.judge, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    run.run()
+    assert _judge_calls(run.judge) == 3
+
+    # An output directory written before fingerprints existed has no sidecar,
+    # and "cannot tell" has to mean "re-judge".
+    out = run.work / "shard_00000_out.csv"
+    assert cm.shard_is_complete(out, [0, 1]) is True
+    sidecar.unlink()
+    assert cm.shard_is_reusable(out, [0, 1], sidecar, {"fingerprint": "x", "parts": {}}) is False
+    run.run()
+    assert _judge_calls(run.judge) == 4
+    assert sidecar.is_file()
+
+    # A sidecar is only as good as the file next to it: a truncated output is
+    # not reusable even under a matching fingerprint.
+    expected = json.loads(sidecar.read_text())
+    assert cm.shard_is_reusable(out, [0, 1], sidecar, expected) is True
+    out.write_text("\n".join(out.read_text().splitlines()[:-1]) + "\n")
+    assert cm.shard_is_reusable(out, [0, 1], sidecar, expected) is False
+    # ... and inputs that cannot be fingerprinted reuse nothing.
+    assert cm.shard_is_reusable(out, [0, 1], sidecar, None) is False
+
+
+# ── One wait pose, not a union over seeds ─────────────────────────────────────
+
+
+def _two_disjoint_seeds() -> list[cm.JudgedCandidate]:
+    """4 throws x 2 seeds: seed 0 catches throws 0,1 and seed 1 catches throw 2 only."""
+    plan = {0: {0, 1}, 1: {2}}
+    rows = []
+    cid = 0
+    for throw in range(4):
+        for seed, accepted_throws in plan.items():
+            rows.append(judged(cid, throw, seed, accepted=throw in accepted_throws, time_s=1.1))
+            cid += 1
+    return rows
+
+
+def test_the_headline_is_one_seed_and_never_the_sum_of_disjoint_seeds():
+    rows = _two_disjoint_seeds()
+    # The defect: grouping by throw alone called 3 of 4 throws accepted, a
+    # number no wait pose delivers. It is now refused outright ...
+    with pytest.raises(ValueError, match="ONE wait pose"):
+        cm.summarize_throws(rows)
+    # ... and available only under a name that says what it is.
+    assert cm.count_throws_accepted_by_any_seed(rows) == 3
+
+    best = cm.rank_wait_pose_seeds(rows, throw_count=4).best
+    assert best.seed_id == 0
+    outcomes = cm.summarize_throws(rows, seed_id=best.seed_id, throw_count=4)
+    assert [o.accepted for o in outcomes] == [True, True, False, False]
+    assert sum(o.accepted for o in outcomes) == 2 == best.accepted_throws
+    assert {o.best_seed_id for o in outcomes if o.accepted} == {0}
+    assert [o.accepted for o in cm.summarize_throws(rows, seed_id=1)] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    with pytest.raises(ValueError, match="not among the judged seeds"):
+        cm.summarize_throws(rows, seed_id=7)
+
+
+def test_the_throw_region_describes_one_wait_pose_and_names_it():
+    throws = cm.generate_throw_grid(
+        distances_m=(4.0,),
+        azimuths_deg=(-30.0, 0.0, 30.0, 60.0),
+        release_heights_m=(1.8,),
+        aim_deviations_deg=(0.0,),
+        speeds_m_s=(5.0,),
+        elevations_deg=(20.0,),
+    )
+    rows = _two_disjoint_seeds()
+    outcomes = cm.summarize_throws(rows, seed_id=0, throw_count=len(throws))
+    # `judged` feeds flight_time_s, so rows of several seeds would make THAT a union.
+    with pytest.raises(ValueError, match="ONE wait pose"):
+        cm.propose_throw_region(throws, outcomes, rows, base_frame="base")
+
+    region = cm.propose_throw_region(
+        throws,
+        outcomes,
+        cm.judged_for_seed(rows, 0),
+        base_frame="base",
+        wait_pose_seed_id=0,
+        wait_pose_q=[0.1, 0.2],
+        accepted_throws_any_seed=cm.count_throws_accepted_by_any_seed(rows),
+    )["sim"]["throw_region"]
+    assert region["accepted_throws"] == 2
+    assert region["accepted_fraction"] == pytest.approx(0.5)
+    assert region["accepted_fraction_denominator"] == cm.DENOMINATOR_GRID_THROWS
+    assert region["wait_pose_seed_id"] == 0
+    assert region["wait_pose_q"] == [0.1, 0.2]
+    # Seed 1's throw (azimuth 30) is NOT in seed 0's box.
+    assert region["covered_axes_deg"]["azimuth_base_deg"] == pytest.approx([-30.0, 0.0])
+    assert region["accepted_throws_any_seed"] == 3
+    assert "NOT coverage" in region["accepted_throws_any_seed_note"]
+
+
+def test_a_throw_with_no_candidate_still_has_a_summary_row(tmp_path: Path):
+    throws = cm.generate_throw_grid(
+        distances_m=(4.0,),
+        azimuths_deg=(-30.0, 0.0, 30.0, 60.0),
+        release_heights_m=(1.8,),
+        aim_deviations_deg=(0.0,),
+        speeds_m_s=(5.0,),
+        elevations_deg=(20.0,),
+    )
+    # Throw 2 lost every catch instant to the pre-filters: it never reached the
+    # judge, so it is simply absent from `judged`.
+    rows = [
+        judged(0, 0, 0, accepted=True, pose=[0.1, 0.2, 0.3]),
+        judged(1, 1, 0, accepted=False),
+        judged(2, 3, 0, accepted=True, pose=[0.4, 0.5, 0.6]),
+    ]
+    assert [o.throw_index for o in cm.summarize_throws(rows)] == [0, 1, 3]
+
+    outcomes = cm.summarize_throws(rows, throw_count=len(throws))
+    assert [o.throw_index for o in outcomes] == [0, 1, 2, 3]
+    assert (outcomes[2].candidates, outcomes[2].accepted, outcomes[2].best_q) == (0, False, None)
+    with pytest.raises(ValueError, match="outside the grid"):
+        cm.summarize_throws(rows, throw_count=3)
+
+    # The writer holds the "one row per grid throw" contract on its own, so it
+    # is fed the outcomes WITHOUT the fill-in here.
+    path = cm.write_throw_summary_csv(
+        tmp_path / "throw_summary.csv", throws, cm.summarize_throws(rows), seed_id=0
+    )
+    with path.open(newline="") as handle:
+        written = list(csv.DictReader(handle))
+    assert [int(r["throw_index"]) for r in written] == [0, 1, 2, 3]
+    assert (written[2]["candidates"], written[2]["accepted"]) == ("0", "0")
+    assert written[2]["azimuth_deg"] == "30.0"
+    assert written[2]["best_q0"] == ""
+    assert {r["wait_pose_seed_id"] for r in written} == {"0"}
+    assert sum(int(r["accepted"]) for r in written) == 2
+
+
+def test_the_seed_fraction_and_the_headline_fraction_share_the_full_grid():
+    throws = cm.generate_throw_grid(
+        distances_m=(4.0,),
+        azimuths_deg=(-30.0, 0.0, 30.0, 60.0),
+        release_heights_m=(1.8,),
+        aim_deviations_deg=(0.0,),
+        speeds_m_s=(5.0,),
+        elevations_deg=(20.0,),
+    )
+    # 4 grid throws, 3 reached the judge, 2 accepted: 2/3 over the judged throws
+    # against 2/4 over the grid — the disagreement this pins.
+    rows = [
+        judged(0, 0, 0, accepted=True),
+        judged(1, 1, 0, accepted=False),
+        judged(2, 3, 0, accepted=True),
+    ]
+    legacy = cm.rank_wait_pose_seeds(rows)
+    assert legacy.best.accepted_fraction == pytest.approx(2 / 3)
+    assert legacy.denominator == cm.DENOMINATOR_THROWS_WITH_CANDIDATES
+
+    comparison = cm.rank_wait_pose_seeds(rows, throw_count=len(throws))
+    outcomes = cm.summarize_throws(rows, seed_id=0, throw_count=len(throws))
+    region = cm.propose_throw_region(throws, outcomes, rows, base_frame="base")["sim"][
+        "throw_region"
+    ]
+    assert comparison.best.accepted_fraction == pytest.approx(0.5)
+    assert comparison.best.accepted_fraction == pytest.approx(region["accepted_fraction"])
+    assert comparison.best.throws == comparison.throws == region["throws"] == 4
+    assert comparison.best.throws_with_candidates == 3
+    assert comparison.denominator == cm.DENOMINATOR_GRID_THROWS
+    assert comparison.best.denominator == region["accepted_fraction_denominator"]
+    with pytest.raises(ValueError, match="outside the grid"):
+        cm.rank_wait_pose_seeds(rows, throw_count=2)
+
+
+# ── alpha_max: the bound the judge applied, from one source ───────────────────
+
+
+def _params_file(tmp_path: Path, doc: object, name: str = "params.yaml") -> Path:
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(doc))
+    return path
+
+
+def test_alpha_max_comes_from_the_params_file_when_it_sets_one(tmp_path: Path):
+    path = _params_file(tmp_path, {"catching": {"planner": {"ik": {"alpha_max": 0.35}}}})
+    resolved = cm.resolve_alpha_max(path, None)
+    assert resolved.value_rad == pytest.approx(0.35)
+    assert resolved.origin == "params"
+    assert str(path) in resolved.source
+    assert resolved.params_shape == cm.PARAMS_SHAPE_CATCHING_AT_ROOT
+
+    # What the fix is FOR: theta up to 0.35 was accepted, so against the old
+    # hardcoded 0.26 the report claimed a theta 1.27x past its own bound.
+    rows = [judged(0, 0, 0, accepted=True, theta=0.33), judged(1, 1, 0, accepted=True, theta=0.1)]
+    report = cm.theta_report(rows, alpha_max=resolved.value_rad)
+    assert report["alpha_max_rad"] == pytest.approx(0.35)
+    assert report["max_over_alpha_max"] == pytest.approx(0.33 / 0.35)
+    assert report["max_over_alpha_max"] <= 1.0
+
+
+def test_alpha_max_reads_the_controller_config_shape_and_the_bare_tree(tmp_path: Path):
+    wrapped = _params_file(
+        tmp_path,
+        {
+            "some_controller": {
+                "gains": [1.0],
+                "catching": {"planner": {"ik": {"alpha_max": 0.31}}},
+            }
+        },
+        "wrapped.yaml",
+    )
+    resolved = cm.resolve_alpha_max(wrapped, None)
+    assert resolved.value_rad == pytest.approx(0.31)
+    assert resolved.params_shape == cm.PARAMS_SHAPE_CONTROLLER_CONFIG
+
+    bare = _params_file(tmp_path, {"planner": {"ik": {"alpha_max": 0.29}}}, "bare.yaml")
+    resolved = cm.resolve_alpha_max(bare, None)
+    assert resolved.value_rad == pytest.approx(0.29)
+    assert resolved.params_shape == cm.PARAMS_SHAPE_TREE_ITSELF
+
+    # A file whose tree cannot be FOUND is not a file that leaves the value open.
+    for name, doc in (
+        ("ros.yaml", {"/**": {"ros__parameters": {"planner": {"ik": {"alpha_max": 0.3}}}}}),
+        ("list.yaml", [1, 2]),
+        ("two.yaml", {"a": {"catching": {}}, "b": {"catching": {}}}),
+        ("both.yaml", {"catching": {"planner": {}}, "planner": {"ik": {"alpha_max": 0.3}}}),
+    ):
+        with pytest.raises(ValueError, match="no `catching` tree|root must be a map|ambiguous"):
+            cm.resolve_alpha_max(_params_file(tmp_path, doc, name), None)
+    with pytest.raises(ValueError, match="must be a number"):
+        cm.resolve_alpha_max(
+            _params_file(tmp_path, {"planner": {"ik": {"alpha_max": "wide"}}}, "bad.yaml"), None
+        )
+
+
+def test_alpha_max_flag_alone_and_neither_source(tmp_path: Path):
+    flag_only = cm.resolve_alpha_max(None, 0.26)
+    assert (flag_only.value_rad, flag_only.origin, flag_only.warning) == (0.26, "flag", None)
+    # The judge was handed nothing, so it ran on its in-code default: a flag
+    # that says otherwise is reported, not silently believed.
+    off_default = cm.resolve_alpha_max(None, 0.3)
+    assert off_default.value_rad == pytest.approx(0.3)
+    assert "in-code default" in off_default.warning
+
+    neither = cm.resolve_alpha_max(None, None)
+    assert neither.value_rad == cm.JUDGE_DEFAULT_ALPHA_MAX_RAD == 0.26
+    assert neither.origin == "judge_default"
+    assert "in-code provisional default" in neither.source
+    assert "catch_pose_ik.hpp" in neither.source
+    assert neither.as_provenance()["origin"] == "judge_default"
+
+    # "TBD" — and a tree with no planner.ik at all — leave the value open, which
+    # is NOT the same as the tree being missing.
+    for name, ik in (("tbd.yaml", {"alpha_max": "TBD"}), ("absent.yaml", {"max_iter": 40})):
+        path = _params_file(tmp_path, {"catching": {"planner": {"ik": ik}}}, name)
+        resolved = cm.resolve_alpha_max(path, None)
+        assert (resolved.value_rad, resolved.origin) == (0.26, "judge_default")
+        assert str(path) in resolved.source
+        assert cm.resolve_alpha_max(path, 0.26).origin == "flag"
+    with pytest.raises(ValueError, match="finite and > 0"):
+        cm.resolve_alpha_max(None, 0.0)
+
+
+def test_alpha_max_from_both_sources_must_agree(tmp_path: Path):
+    path = _params_file(tmp_path, {"catching": {"planner": {"ik": {"alpha_max": 0.35}}}})
+    agreed = cm.resolve_alpha_max(path, 0.35)
+    assert (agreed.value_rad, agreed.origin, agreed.flag_value_rad) == (0.35, "params", 0.35)
+    # Neither side wins silently: whichever did, the report would be wrong
+    # about the other.
+    with pytest.raises(ValueError, match="two sources of truth"):
+        cm.resolve_alpha_max(path, 0.26)
+
+
+# ── The CLI, end to end on the stand-in judge ─────────────────────────────────
+
+
+def _run_cli(tmp_path: Path, judge: Path, params: Path, *extra: str) -> Path:
+    config = _shipped_style_config(tmp_path)
+    urdf = tmp_path / "tiny.urdf"
+    urdf.write_text(TINY_URDF)
+    ball = tmp_path / "ball.yaml"
+    ball.write_text(
+        yaml.safe_dump(
+            {
+                "sim": {
+                    "ros__parameters": {
+                        "projectile_ball": {"radius_m": RADIUS_M, "mass_kg": MASS_KG}
+                    }
+                }
+            }
+        )
+    )
+    out_dir = tmp_path / "map"
+    argv = [
+        *("--robot-config", str(config), "--ball-config", str(ball), "--out-dir", str(out_dir)),
+        *("--urdf", str(urdf), "--arm-base-frame", "mount", "--judge", str(judge)),
+        *("--params", str(params)),
+        *("--drag-coefficient", str(CD_TENNIS), "--drag-coefficient-source", CD_SOURCE),
+        *("--air-density", str(RHO_AIR), "--air-density-source", RHO_SOURCE),
+        # 3 azimuths x 2 aims = 6 throws. Aim 80 deg misses the base axis by
+        # 4 sin(80) = 3.9 m, outside --max-reach-m: those 3 throws produce NO
+        # candidate. Of the other 3, the stand-in's verdict follows sign(v_y), so
+        # seed 0 (q0 > 0) takes azimuths 30 and 60 and seed 1 takes -30: disjoint.
+        *("--azimuths-deg", "-30 30 60", "--aim-deviations-deg", "0 80"),
+        *("--release-heights-m", "1.2", "--speeds-m-s", "7", "--elevations-deg", "20"),
+        *("--window-s", "0.3", "0.9", "--min-flight-time-s", "0.3", "--max-reach-m", "2.0"),
+        *("--seed", "1.0 0.0", "--seed", "-1.0 0.0", "--shard-size", "4", "--no-plots"),
+        *extra,
+    ]
+    assert cm.main(argv) == 0
+    return out_dir
+
+
+def test_cli_headline_is_the_best_single_seed_with_the_union_named_apart(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    pytest.importorskip("pinocchio")
+    judge = _fake_judge(tmp_path)
+    params = tmp_path / "params.yaml"
+    params.write_text("catching:\n  planner:\n    ik:\n      alpha_max: 0.35\nfake_reach: 10.0\n")
+    out_dir = _run_cli(tmp_path, judge, params)
+    stderr = capsys.readouterr().err
+
+    results = yaml.safe_load((out_dir / "provenance.yaml").read_text())["provenance"]["results"]
+    assert results["throws"] == 6
+    assert results["headline_seed"]["seed_id"] == 0
+    assert results["headline_seed"]["q"] == [1.0, 0.0]
+    # 2, not 3: the union over the two wait poses is not something a robot does.
+    assert results["accepted_throws"] == 2
+    assert results["accepted_throws_any_seed"] == 3
+    assert "wait-pose seed 0: accepted 2/6 grid throws" in stderr
+    assert "accepted_throws_any_seed = 3/6" in stderr
+
+    # One denominator: the ranking and the headline both divide by the 6-throw
+    # grid (the ranking used to divide by the 3 throws that reached the judge).
+    assert results["throws_with_candidates"] == 3
+    best = results["seed_ranking"][0]
+    assert best["seed_id"] == 0
+    assert best["accepted_fraction"] == pytest.approx(2 / 6)
+    assert best["accepted_fraction"] == pytest.approx(results["accepted_fraction"])
+    assert best["denominator"] == results["accepted_fraction_denominator"]
+
+    region = yaml.safe_load((out_dir / "throw_region.yaml").read_text())["sim"]["throw_region"]
+    assert region["accepted_throws"] == 2
+    assert region["wait_pose_seed_id"] == 0
+    assert region["wait_pose_q"] == [1.0, 0.0]
+    assert region["accepted_throws_any_seed"] == 3
+    assert region["covered_axes_deg"]["azimuth_base_deg"] == pytest.approx([30.0, 60.0])
+
+    with (out_dir / "throw_summary.csv").open(newline="") as handle:
+        summary = list(csv.DictReader(handle))
+    assert len(summary) == 6, "one row per GRID throw, the empty ones included"
+    assert sorted(int(r["candidates"]) == 0 for r in summary) == [False] * 3 + [True] * 3
+    assert sum(int(r["accepted"]) for r in summary) == 2
+    assert {r["wait_pose_seed_id"] for r in summary} == {"0"}
+    assert {r["best_seed_id"] for r in summary if r["accepted"] == "1"} == {"0"}
+
+    # alpha_max is the params file's, in the report AND in the provenance.
+    assert results["alpha_max"]["origin"] == "params"
+    assert results["theta"]["alpha_max_rad"] == pytest.approx(0.35)
+    assert results["theta"]["max_over_alpha_max"] == pytest.approx(0.30 / 0.35)
+    judge_block = yaml.safe_load((out_dir / "provenance.yaml").read_text())["provenance"]["judge"]
+    assert judge_block["params_sha256"] == hashlib.sha256(params.read_bytes()).hexdigest()
+
+    # Same --out-dir, same params PATH, different content: nothing is within
+    # reach any more, and the map has to say so rather than replay the shards.
+    params.write_text("catching:\n  planner:\n    ik:\n      alpha_max: 0.35\nfake_reach: 0.0\n")
+    calls = _judge_calls(judge)
+    _run_cli(tmp_path, judge, params)
+    assert _judge_calls(judge) > calls
+    results = yaml.safe_load((out_dir / "provenance.yaml").read_text())["provenance"]["results"]
+    assert results["accepted_throws"] == 0
+    assert results["accepted_throws_any_seed"] == 0
+    # ... while an unchanged re-run replays every shard.
+    calls = _judge_calls(judge)
+    _run_cli(tmp_path, judge, params)
+    assert _judge_calls(judge) == calls
+
+
+def test_alpha_max_is_held_against_the_judges_own_report(tmp_path: Path):
+    judge = _fake_judge(tmp_path)
+    # A judge that cannot say leaves the resolution alone, and says so.
+    assert cm.judge_reported_alpha_max(judge, None) is None
+    unchecked = cm.confirm_alpha_max_with_judge(cm.resolve_alpha_max(None, None), None)
+    assert unchecked.judge_reported_rad is None
+    assert "NOT cross-checked" in unchecked.as_provenance()["judge_report"]
+
+    judge.with_name("print_options.txt").write_text(
+        "params_tree catching\nplanner.ik.max_iter 40\nplanner.ik.alpha_max 0.26000000000000001\n"
+    )
+    reported = cm.judge_reported_alpha_max(judge, None)
+    assert reported == 0.26
+    confirmed = cm.confirm_alpha_max_with_judge(cm.resolve_alpha_max(None, None), reported)
+    assert confirmed.judge_reported_rad == 0.26
+    assert "confirmed" in confirmed.as_provenance()["judge_report"]
+
+    # The hole a lone flag leaves: the judge ran on ITS default, whatever the
+    # flag says. With the judge's report in hand that is an error, not a warning.
+    lone_flag = cm.resolve_alpha_max(None, 0.3)
+    assert lone_flag.warning is not None
+    with pytest.raises(ValueError, match="the judge reports"):
+        cm.confirm_alpha_max_with_judge(lone_flag, reported)
+
+
+def test_cli_refuses_an_alpha_max_the_judge_does_not_report(tmp_path: Path):
+    judge = _fake_judge(tmp_path)
+    judge.with_name("print_options.txt").write_text("planner.ik.alpha_max 0.26\n")
+    params = tmp_path / "params.yaml"
+    params.write_text("catching:\n  planner:\n    ik:\n      alpha_max: 0.35\n")
+    with pytest.raises(SystemExit, match="the judge reports"):
+        _run_cli(tmp_path, judge, params)
+    assert _judge_calls(judge) == 0
+
+
+def test_cli_refuses_an_alpha_max_flag_that_contradicts_the_params_file(tmp_path: Path):
+    judge = _fake_judge(tmp_path)
+    params = tmp_path / "params.yaml"
+    params.write_text("catching:\n  planner:\n    ik:\n      alpha_max: 0.35\n")
+    with pytest.raises(SystemExit, match="two sources of truth"):
+        _run_cli(tmp_path, judge, params, "--alpha-max-rad", "0.26")
+    assert _judge_calls(judge) == 0, "the contradiction must not cost a sweep to find"
 
 
 # ── The real judge (skipped cleanly when it is not built) ─────────────────────
