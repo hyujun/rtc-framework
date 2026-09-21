@@ -2060,19 +2060,35 @@ class DemoControllerGUI(Node):
         future = client.get_parameters(list(PROFILE_PARAMETERS))
 
         def _on_done(fut):
+            # rclpy executor thread. Parse here, but marshal the panel mutation
+            # and the paint onto the Tk thread with root.after(0, ...) like every
+            # other done-callback in this file: Tk is not thread-safe, and the
+            # 200 ms _schedule_refresh is touching the same object from the Tk
+            # thread. Painting from here loses repaints at best (the two threads
+            # race the _prev_hand_step_text dirty-check) and corrupts Tcl state
+            # at worst — and the exception would be swallowed by the executor
+            # task, so it would surface as a panel that silently stops updating.
             try:
                 resp = fut.result()
             except Exception as exc:  # noqa: BLE001 - surfaced in the panel
-                self._hand_step.last_error = f"get_parameters failed: {exc}"
-                self._refresh_hand_step_panel()
+                self.root.after(0, self._hand_step_load_failed, f"get_parameters failed: {exc}")
                 return
             values = {}
             for name, value in zip(PROFILE_PARAMETERS, resp.values, strict=False):
                 values[name] = parameter_value_to_python(value)
-            self._hand_step.load(values, list(self._shape.hand_motor_names))
-            self._refresh_hand_step_panel()
+            self.root.after(0, self._apply_hand_step_profile, values)
 
         future.add_done_callback(_on_done)
+
+    def _hand_step_load_failed(self, message: str) -> None:
+        """Tk thread only — see ``_load_hand_step_profile``."""
+        self._hand_step.last_error = message
+        self._refresh_hand_step_panel()
+
+    def _apply_hand_step_profile(self, values: dict) -> None:
+        """Tk thread only — see ``_load_hand_step_profile``."""
+        self._hand_step.load(values, list(self._shape.hand_motor_names))
+        self._refresh_hand_step_panel()
 
     def _send_hand_step(self, pose: StepPose) -> None:
         try:
@@ -2083,6 +2099,29 @@ class DemoControllerGUI(Node):
             return
         if self.hand_cmd_pub is None:
             self._hand_step.last_error = "hand_cmd_pub not bound — no active controller"
+            self._refresh_hand_step_panel()
+            return
+        # The profile and the hand_step gate are read from the catching
+        # controller unconditionally, but hand_cmd_pub is bound to whichever
+        # controller is ACTIVE. Without this check a step issued while
+        # demo_joint_controller is active goes to ITS joint_goal, which
+        # interpolates the hand through a quintic trajectory — the panel reports
+        # success, rho rises (it is fed from the controller-agnostic joint
+        # states), and the closing edge measured is the controller's, not the
+        # hand's. That is the exact confusion this controller exists to prevent,
+        # and it fails silently, so refuse instead of publishing.
+        #
+        # Keyed on _owned_topics_ns, not _active_ctrl: _active_ctrl changes
+        # before the rewire runs, so it can name a controller the publisher is
+        # not bound to yet.
+        with self._owned_topics_lock:
+            bound_ns = self._owned_topics_ns
+        if bound_ns != "/" + CATCHING_CONFIG_KEY:
+            self._hand_step.last_error = (
+                f"step refused: the hand publisher is bound to '{bound_ns or 'nothing'}', not "
+                f"/{CATCHING_CONFIG_KEY}. A step sent there is SHAPED, not a step — switch to "
+                f"{CATCHING_CONFIG_KEY} first"
+            )
             self._refresh_hand_step_panel()
             return
         msg = RobotTarget()

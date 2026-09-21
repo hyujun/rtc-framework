@@ -140,7 +140,14 @@ class HandStepPanel:
         """Adopt a controller profile. Returns False and records why on refusal."""
         try:
             profile = profile_from_parameters(values)
-        except ValueError as exc:
+        # TypeError as well as ValueError: a PARAMETER_NOT_SET value arrives as
+        # None, which passes the "is the key present" check and then raises
+        # TypeError out of float(). rclcpp's own service returns an EMPTY list
+        # for an undeclared name rather than a NOT_SET entry, so no shipped path
+        # reaches this today — but the cost of being wrong is an exception
+        # swallowed by the executor task, i.e. a panel that stops updating with
+        # nothing logged, and the cost of the guard is this line.
+        except (ValueError, TypeError) as exc:
             self.profile = None
             self.last_error = str(exc)
             return False

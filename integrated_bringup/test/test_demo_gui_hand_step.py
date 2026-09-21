@@ -125,3 +125,14 @@ def test_readout_names_the_caging_verdict():
     assert "caged" in panel.lines()[2]
     panel.update_rho([0.6, 0.6, 0.1])
     assert "closing" in panel.lines()[2]
+
+
+def test_a_not_set_parameter_is_reported_not_raised():
+    # A PARAMETER_NOT_SET value arrives from rclpy as None. It passes the "is
+    # the key present" check, so the refusal has to come out of float() — as a
+    # TypeError, which load() must turn into the panel's error line rather than
+    # let escape into the rclpy executor task, where nothing reads it.
+    panel = HandStepPanel()
+    assert not panel.load(make_values(**{"hand.q_pre": None}), JOINTS)
+    assert panel.profile is None
+    assert panel.last_error
