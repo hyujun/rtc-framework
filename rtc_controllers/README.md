@@ -136,7 +136,9 @@ rtc_controllers/
 │   │   ├── time_feasibility.hpp              -- 도달시간 `TMinChecked` (한계 무효 → flag + t=+∞)·γ 창 (η_v·v_max, D-9)·방향 속력·정지거리·오차 예산
 │   │   ├── decel_target.hpp · transition_table.hpp · contact_debounce.hpp -- L7 순수 조각: 가상 감속 목표, (상태 × 사유) 전이표 + 완전성 검사, 지문 접촉 debounce
 │   │   ├── catch_pose_ik.hpp                 -- 포구 자세 IK + catchability 게이트 `CatchPoseIk` (L3 §4.2, S1.9). 5행 과제 = 병진 3 (LOCAL_WORLD_ALIGNED) + 접근축 2 (LOCAL x·y). 갱신은 관절속도의 합 `q̇_d = q̇_clik + q̇_n` 이고, `q̇_clik` 은 관절 한계·스텝 제한을 부등식 제약으로 갖는 **QP** 가 푼다 (ProxQP, D-26 — `DifferentialIk` 는 영공간 투영 N 전용). roll 은 영공간 log w₅ 상승에 쓴다 (D-25). `Resize()` 뒤 할당 0·noexcept·무로깅, 호출 간 상태 없음 — 후보마다 `ResetWarmStart()` 로 QP 를 cold start 하므로 오프라인 지도 S3.5a 와 런타임 계획기 S6.2 가 같은 q\* 를 얻는다. 랭크 결손은 `DifferentialIk` 의 `ok` 가 아니라 w 의 LDLT 피벗에서 판정한다. 핸들에 device 관절 순서(`SetJointOrder`)가 걸려 있으면 **거부**한다 — `ComputeJacobians` 는 입력만 재배열하고 열·한계·q̇ 는 Pinocchio 순서라, 섞이면 결과가 유한·수렴한 채로 틀린다
-│   │   └── catching_params.hpp               -- 파라미터 검증기 (`ParseCatchingParams` + `ValidateCatchingParams` → `armable`): 활성 구성 TBD, D-9·a_dec 교차제약, ω·dt 안정 경계, ζ≠1, provisional 은 실기에서 차단. `CheckCatchFrameProvisional` 은 robot config 의 `urdf.extra_frames.<catch_frame>.provisional` 에 같은 규칙 적용. 손 프로파일 `HandProfile` 은 S4.1 에서 `q_open`·`eta_close`(0.5–1)·`T_close_e2e`(≥0) 를 더했다 — `q_open` 은 §4.2 caging 쌍이 아니라 따로 세므로 (`q_open_tbd`) 쌍을 준 채 그것만 빠진 프로파일은 parse 되고 검증기가 그 키를 지목한다
+│   │   ├── catching_params.hpp               -- 파라미터 검증기 (`ParseCatchingParams` + `ValidateCatchingParams` → `armable`): 활성 구성 TBD, D-9·a_dec 교차제약, ω·dt 안정 경계, ζ≠1, provisional 은 실기에서 차단. `CheckCatchFrameProvisional` 은 robot config 의 `urdf.extra_frames.<catch_frame>.provisional` 에 같은 규칙 적용. 손 프로파일 `HandProfile` 은 S4.1 에서 `q_open`·`eta_close`(0.5–1)·`T_close_e2e`(≥0) 를 더했다 — `q_open` 은 §4.2 caging 쌍이 아니라 따로 세므로 (`q_open_tbd`) 쌍을 준 채 그것만 빠진 프로파일은 parse 되고 검증기가 그 키를 지목한다
+│   │   ├── catch_pose_ik_params.hpp          -- `CatchPoseIkOptions` 의 YAML 스키마 (`ParseCatchPoseIkParams` → `CatchPoseIkConfig`, S3.5a). L3 §6 의 `planner.ik.*` + `planner.catchability.definition`·`manipulability_min.*` 를 읽고, `definition` 이 고른 행을 `options.manipulability_min` 에 담는다 — 두 행은 단위가 달라 (C-3) 한 호출로 묶어 짝이 어긋날 수 없게 한다. 없는 키는 구조체 기본값, **`planner.ik` 의 모르는 키는 거부** (그 섹션을 이 파서가 통째로 소유하므로 오타 외 가능성이 없다), 은퇴 키 (`lambda`·`manip_min`) 는 `CatchPoseIkRetiredKeys` 로 보고. `alpha_max` 는 L3 가 TBD 라 `TbdDouble` 로 개방 여부를 남기고 값은 코드의 provisional 기본값을 쓰며, 반대로 **활성 정의의 문턱이 TBD 면** `options.manipulability_min` 을 비유한값으로 남겨 `Solve` 가 `kOptionsInvalid` 로 막는다 (다른 정의의 수치로 게이트하지 않는다). `fd_step` 은 L3 §6 에 키가 없어 YAML 로 도달할 수 없는 유일한 필드다
+│   │   └── catch_pose_ik_batch.hpp           -- 오프라인 catchability 지도(S3.5a)의 배치 계층: 후보/seed CSV I/O (`ParseCandidateCsv`·`ParseSeedCsv`), 결과 CSV (`BatchCsvHeader`·`BatchCsvRow`), 사유 이름 (`CatchPoseReasonName`), 배치 루프 (`RunBatch`). 실행파일이 아니라 라이브러리에 있는 이유는 두 계약이 gtest 로 닿아야 하기 때문이다 — 결과 열이 solver 의 double 을 **bit-exact** 로 싣고 (S6.2 의 G3-I 동치 비교가 반올림된 열로는 성립하지 않는다), 후보 **순서를 바꿔도 판정이 같다** (python 이 격자를 샤딩·재개한다). `p_c`·`v_ball` 은 `Solve` 와 같이 **모델 world** 좌표이고 base→world 변환은 호출자 몫이다. 후보 CSV 의 열 순서는 헤더에서 읽고 (가정하면 p_c 와 v 가 바뀌어도 그럴듯한 지도가 나온다), 비유한 값은 거부한다 (`kTargetNonFinite` 로 사유 분포에 섞이면 깨진 생성기가 물리로 보인다)
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
@@ -170,9 +172,11 @@ rtc_controllers/
 │       └── grasp_state.hpp                   -- GraspStateData POD (SeqLock-호환). contact_flag 는 capability-aware: sensor A → native sigmoid prob, sensor B → derived binary (rtc_msgs/GraspState.msg 참조)
 ├── src/
 │   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
-│   ├── params/                               -- 위 스키마 파서 구현
+│   ├── params/                               -- 위 스키마 파서 구현 (`catch_pose_ik_params.cpp` 포함 — S1.9 IK 옵션의 YAML 반쪽)
 │   ├── catching/
-│   │   └── catch_pose_ik.cpp                 -- 위 `catch_pose_ik.hpp` 구현 (Pinocchio + Eigen, ROS 비의존)
+│   │   ├── catch_pose_ik.cpp                 -- 위 `catch_pose_ik.hpp` 구현 (Pinocchio + Eigen, ROS 비의존)
+│   │   ├── catch_pose_ik_batch.cpp           -- 위 `catch_pose_ik_batch.hpp` 구현
+│   │   └── catch_pose_ik_batch_main.cpp      -- `catch_pose_ik_batch` 실행파일의 `main` (ARCH-7-exempt 오프라인 검사 도구)
 │   └── controllers/
 │       ├── estimation/
 │       │   ├── inertial_estimator.cpp
