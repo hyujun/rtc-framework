@@ -29,6 +29,7 @@ rtc_tools/
 │   │   ├── clock_phase_trials.py        ← 지정 발사 N회 러너 (D-3 시행 생성)
 │   │   ├── catchability_map.py          ← catchability 지도: 공 비행 모델·투척 grid·프레임 변환
 │   │   │                                   + C++ judge 배치 드라이버·집계·CLI (S3.5a)
+│   │   ├── catch_speed_budget.py        ← 수락 후보별 팔 속도·토크 한계 방향 가속 → γ 창 판정표 (S4.4)
 │   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
 │   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4)
 │   │   └── camera_relay.py              ← 카메라 lane 릴레이 + 드롭·지연 주입 (S3.4)
@@ -71,6 +72,7 @@ rtc_tools/
 | `ros2 run rtc_tools urdf_to_mjcf` | `conversion.urdf_to_mjcf` | URDF/XACRO → MJCF 변환 |
 | `ros2 run rtc_tools derive_accel_limits` | `analysis.derive_accel_limits` | 토크 한계에서 관절 가속 상수 box 도출 (provenance YAML) |
 | `ros2 run rtc_tools catchability_map` | `analysis.catchability_map` | catchability 지도 (grid → 비행 → C++ judge → 집계·플롯) |
+| `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
 
 **Python 의존성**: `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `numpy`, `matplotlib`, `pandas`, `scipy`, `mujoco`
 
@@ -438,6 +440,50 @@ outc = cm.summarize_throws(judged, seed_id=best.seed_id, throw_count=len(throws)
   일치 / 불일치 에러 / 둘 다 없음 / controller-config 형태) + judge 보고와의 대조, CLI 전 구간. **실제 `catch_pose_ik_batch` 왕복** (출하 ur5e_p1b config →
   `--dump-frame` nv 6 · `base` 가 Rz(180°) 임을 pin → 2-shard 실행 → poseless 행 · 재개) 은 바이너리·출하
   config·URDF 툴체인이 없으면 이유를 적고 skip 한다
+
+### `catch_speed_budget.py` — 포구 속력 예산 (dynamic_catching S4.4)
+
+`catchability_map` 이 "팔이 그 자세에 **갈 수 있는가**" 를 답한다면 이 도구는 그 수락 후보에 대해
+"거기서 공과 **함께 움직일 수 있는가**" 를 답한다. 계획기 γ 창 (L3 §4.5) 은
+`‖v‖ + margin ≤ v_arm + v_rel` 일 때 열린다 — `v_arm` 은 포구 자세 q\* 에서 공 진행 방향 v̂ 로 낼 수
+있는 팔 속력, `v_rel` 은 손이 흡수하는 상대속도 (공식 `d_eff / T_close,tot` 또는 실측값) 다.
+
+후보별로 (1) `v_dir_max_lp` — 접근축을 유지한 채 관절 속도 box 안에서 v̂ 로 낼 수 있는 최대 속력
+(선형계획, 물리 상한), (2) `v_dir_max_dls` — L3 §4.5 의 최소노름 추정 (런타임 `DirectionalSpeedMax` 가
+받는 값의 거울; LP 이하이며 그 차이가 최소노름 해가 버리는 여유 자유도다), (3) **토크 한계 방향 가속**
+`max a  s.t.  J₅q̈ + J̇₅q̇ = [a v̂; 0 0],  |M q̈ + h| ≤ η_τ τ_max` 를 속력 ramp 를 따라 풀고
+stroke·시간을 적분한 `v_arm` 을 낸다. 전부 **낙관적 상한**이므로 (bang-bang, 자세 고정, 도달 구)
+창이 비면 결론은 확정적이고 열리면 provisional 이다.
+
+```bash
+ros2 run rtc_tools catch_speed_budget \
+  --robot-config <config>/<robot>/_base.yaml --group <arm_group> \
+  --map-dir <catchability_map out-dir> --out-dir <out> \
+  --velocity-source model --eta-v 0.9 --eta-tau 0.8 \
+  --rotor-inertia '0.1 0.1 0.1 0.1 0.1 0.1' --rotor-inertia-source '<mjcf>:<line> armature' \
+  --arm-base-frame <base_frame> --max-reach-m 1.1 --floor-world-z-m 0.1 \
+  --detection-s 0.10 --latency-s 0.14 --close-total-s 0.2815 --arm-delay-s 0.05 --time-margin-s 0.02 \
+  --relative-speed-m-s '0.34 1.0'
+```
+
+- 출력: `speed_budget.csv` (후보별), `drop_table.csv` (행 = **낙차** `z_catch − z_release` 구간, 열 =
+  `v_rel`, 셀 = 창이 열리는 후보 비율), `cell_table.csv` (행 = (릴리스 높이, 거리) 셀, 값 = **투척 수**;
+  분모는 항상 `throw_summary.csv` 의 전체 격자), `speed_budget_summary.yaml` (provenance)
+- **기본값이 없는 인자는 전부 결정이다.** `--velocity-source` (`config` = 실행이 강제하는
+  `joint_limits.max_velocity`, `model` = URDF `<limit velocity>` 정격), `--rotor-inertia` (URDF 에는
+  회전자 반사관성이 없다 — 빼면 모든 가속이 과대평가되므로 0 을 주려면 **명시**해야 한다), 선행시간
+  다섯 항. 최소 비행시간 `T_det + L + T_close,tot + T_arm + T_margin` (plan S0.7 R1) 에는 **손 폐쇄
+  시간이 들어간다**; ramp 에 쓸 수 있는 시간은 `t_c − (T_det + L)` 다
+- **프레임.** judge 의 `p_model`·`v_model` 은 모델 world (URDF root) 이고 `LOCAL_WORLD_ALIGNED`
+  Jacobian 이 쓰는 프레임과 같아 그대로 쓴다. 바닥 높이만 world 열을 쓴다
+- **자체 검증 (fail-closed).** 모든 수락 q\* 에서 catch frame FK 가 `p_model` 과
+  `--fk-tolerance-m` (기본 2.5 mm = judge `eps_pos` + 여유) 안에 들어와야 한다. 벗어나면 관절 순서·
+  frame·모델 중 하나가 judge 와 다른 것이므로 **보고하지 않고 종료**한다. 최소노름 속력이 LP 를 넘어도 종료
+- 테스트 `test/test_catch_speed_budget.py` (23 케이스): 2-관절 LP 닫힌해, LP ≥ 최소노름 (6·7 축),
+  투영 분자, 한계 무효 플래그, 속력 해의 유한차분 FK 대조 (접근축 고정 포함), **프레임 비대칭**
+  (base 가 모델 root 에서 반 바퀴 돈 fixture), **관절 이름 순서 ≠ 모델 순서**, 가속 LP 의 RNEA·2차 FK
+  재대입 (한계가 어딘가에서 tight), 회전자 관성 효과, 중력만으로 한계 초과 시 NaN, stroke·ramp 닫힌해,
+  전체 격자 분모, CLI end-to-end 와 FK 불일치 거부. pinocchio·scipy 가 없으면 skip
 
 ### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환
 
