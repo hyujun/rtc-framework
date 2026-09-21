@@ -1,0 +1,173 @@
+# demo_catching_controller — UR5e + Proto-1b variant (dynamic_catching S4.0/S4.1)
+#
+# SIM ONLY. The controller refuses to configure unless every device it claims
+# is bound to the `mujoco_native` backend: it holds the arm by commanding it
+# every tick, and doing that on real hardware is a change on the E-STOP path
+# (E-8), pending approval before S5. This file is therefore loaded by
+# sim_ur5e_p1b.launch.py only in practice; the guard, not the file's location,
+# is what enforces it (plan §4.4 S4a Q3).
+#
+# S4.0 scope: arm hold + unshaped hand step. No catching law (S5), no hand
+# sequencer (S7.1). The `catching:` tree below carries only what this step
+# needs; the keys owned by other steps (reference.*, planner.*, supervisor.*)
+# are deliberately absent and their TBDs are logged as warnings rather than
+# refused — this controller never arms, so G0-C's arming gate is not its gate.
+demo_catching_controller:
+  command_type: "position"
+
+  # ── S4a diagnostic mode ────────────────────────────────────────────────────
+  # Accept unshaped step position targets on the hand group's joint_goal, so
+  # S4.2 can identify T_close,e2e from the device CSV. False from S7.1 on: the
+  # hand sequencer owns the hand then, and an operator step would race it.
+  diagnostic:
+    hand_step: true
+
+  catching:
+    # ── D-12 ball (L0 §6) ───────────────────────────────────────────────────
+    # The SIM ball, which is what the sim gates are judged against. It mirrors
+    # `mujoco_simulator.yaml`'s `projectile_ball` (radius 0.0335 m, mass
+    # 0.057 kg) and the `tennis` physics preset's restitution (0.75, ITF drop
+    # test 0.745) — a real ITF Type 2 ball as of 2026-09-20, where this file
+    # previously carried a 50 mm / 50 g ball and a restitution of 0.8 that
+    # matched no preset. Keep the three in sync: S4.5's d_eff / r_cap are
+    # derived FOR this diameter, so changing it invalidates them.
+    # provisional: the real D-12 spec is still open (this is the sim ball, not
+    # a decision about the hardware one), and S4.5 re-derives d_eff / r_cap
+    # when it closes (plan §4.4 S4a Q10).
+    core:
+      ball:
+        diameter: 0.067
+        mass: 0.057
+        restitution: 0.75
+        provisional: true
+
+    # ── Hand profile (L6 §5.1/§6) ───────────────────────────────────────────
+    # 10 actuated joints, in the `devices.p1b.joint_state_names` order:
+    #   0 thumb_cmc_aa   1 thumb_cmc_fe  2 thumb_mcp      3 thumb_dip_fe
+    #   4 index_mcp_aa   5 index_mcp_fe  6 index_dip_fe
+    #   7 middle_mcp_fe  8 middle_dip_fe 9 ring_mcp_fe
+    #
+    # PROVISIONAL, and provisional in the L0 §5.3 sense: this warns in sim and
+    # blocks a real-arm configuration.
+    #
+    # q_pre / q_close are SEARCHED, not posed (2026-09-21). Two user-posed
+    # pairs — and 40 hand-built ones — held the shipped 67 mm ball in 0 of
+    # ~3000 sim closures, and the traces said why: the three parallel fingers
+    # arrive at different times and squirt the sphere out along +-x, where this
+    # hand has nothing to contain it; and a q_close past the posture the
+    # fingers stall in lets the joints that are not touching yet carry on
+    # curling and wedge the ball back out. So the 20 numbers were evolved
+    # directly against the honest test (ball placed on the preshape palm, step
+    # to q_close, shake along +-g on all three catch-frame axes), seeded with
+    # the user's pairs. What it found differs from every posed pair in three
+    # ways: the fingers close HALF as far (MCP -30..-43 deg, not -60..-80);
+    # index_mcp_aa — the one joint no posed pair used — swings the index in
+    # to block the x escape; and the thumb does not pinch, it rolls back
+    # (cmc_fe -60 -> +30) so its BASE backstops the ball at -y. The thumb tip
+    # never reaches a ball on this palm (it rides 8-11 cm above it).
+    # Validated on conditions the search never saw (5 mm grid, 445 placements):
+    # 214 held, see `planner.hand` below. It is a posture for THIS ball: it
+    # holds 50-67 mm and nothing at 40 mm or below (the fingers no longer reach)
+    # — one q_close cannot serve both under a bare position step; that needs
+    # the S7.1 hold rule (L6 §4.4). q_open is unchanged. Every value is inside
+    # `devices.p1b.joint_limits` ∩ URDF — index_mcp_aa sits AT the URDF/MJCF
+    # bound (17 deg): the search asked for 20 and the joint stops at 17.
+    robot:
+      hand:
+        provisional: true
+        rho_eps: 0.02
+
+        # Flat open palm: the four flexion joints extended (thumb 90/-30/0/-5,
+        # index 0/0/-15, middle 0/-10, ring 0 deg).
+        q_open:  [1.570796, -0.523599,      0.0, -0.087266, 0.0,       0.0, -0.261799,       0.0, -0.174533,       0.0]
+        # Preshape, searched (deg: thumb 66.5/-60/18.5/-11.2, index 8.4/-10.6/-23.5,
+        # middle -14.7/-7, ring -21.6): a nearly OPEN hand. The posed preshapes
+        # curled the fingers into a cup, and the ball came to rest on top of it.
+        q_pre:   [ 1.160644, -1.047198,  0.322886, -0.195477,  0.146608, -0.185005, -0.410152, -0.256563, -0.122173, -0.376991]
+        # Closed, searched (deg: thumb 37.3/30/7.7/-24.9, index 17/-30/-30,
+        # middle -30.8/-46.4, ring -42.5): about where the fingers stall on a
+        # 67 mm ball plus a little squeeze. NOT a fist — see the header.
+        q_close: [ 0.651008,  0.523599,  0.134390, -0.434587,  0.296706, -0.523599, -0.523599, -0.537561, -0.809833, -0.741765]
+        # C (L6 §4.2): every joint travels more than rho_eps between these two
+        # postures (the smallest is index_dip_fe, 6.5 deg = 0.113 rad), and the
+        # stall rho below was measured over all ten, so all ten are in C —
+        # index_mcp_aa included, now that it moves.
+        caging_mask: [true, true, true, true, true, true, true, true, true, true]
+
+        # eta is "the progress at which the ball can no longer escape"
+        # (L6 §4.2), MEASURED for this hand with these postures: over the 214
+        # placements that held, closure stalls at rho = 0.74 (median). eta sits
+        # just under it so that rho >= eta is actually reached with a ball in
+        # the hand; above 0.74 it would time a motion that never completes.
+        eta_close: 0.7
+
+        # MEASURED, S4.2 re-run (2026-09-21) WITH the searched postures above:
+        # 200 step trials on the full sim bring-up, 0 CSV drops, at the eta
+        # above. steady axis (L6 §4.2's definition) mean 278.6 ms, max 280.7 ms,
+        # p99 280.5 ms — a 2 ms spread, which is what a deterministic
+        # position-servo step response looks like. The value below is the p99.
+        # It is a property of THIS posture pair (the travel set changes with
+        # the postures), so it was re-measured rather than carried over.
+        # Authority for the closure torque is the sim MJCF forcerange
+        # (3.0 N·m); this hand is torque-saturation dominated, so an operating
+        # limit of 1.5 N·m would stretch T_close by roughly √2.
+        # The analyser's tick axis is NOT usable here — see L6 §4.2.
+        T_close_e2e: 0.2805
+
+    # ── Pocket geometry (L3 §6 `planner.hand.*`, TBD-HAND-04) ────────────────
+    # NOTHING READS THESE TWO KEYS YET. `ParseCatchingParams` puts
+    # `planner.hand.*` out of scope on purpose (see the header of
+    # rtc_controllers/include/rtc_controllers/catching/catching_params.hpp):
+    # their consumers are the L3 planner's gamma window and §4.6 budget gate,
+    # which land in S6. They are recorded here because G6-F asks for the
+    # derivation and the value to live together with the profile they were
+    # derived from — read them as documentation, not as configuration.
+    #
+    # MEASURED, S4.5 (2026-09-21), with the searched postures above and the
+    # shipped 67 mm ball: ball PLACED on the preshape palm on a 5 mm lateral
+    # grid, step to q_close, shake along +-g on each catch-frame axis.
+    # 445 placements, 214 held.
+    #   r_cap 0.024 m = lateral inscribed radius of that capture region (best
+    #                   catch point (+0.015, +0.145, 0.052) in the catch frame).
+    #   d_eff 0.095 m = approach-axis span still caught at that point, from
+    #                   resting on the palm (z 0.052) upward. SCAN-LIMITED: the
+    #                   scan stopped at +0.095 with the ball still held, so
+    #                   this is a lower bound, not the edge.
+    # Both are ball-CENTRE quantities (the radius is already inside them) and
+    # both are derived FOR core.ball above.
+    # What these numbers do NOT say: this hand catches a ball that ARRIVES
+    # poorly. With closure fired as the ball crosses the fingertip plane it
+    # holds 9/130 at 0.25 m/s, 3/130 at 0.5 and none at 1 m/s (LEAP peaks at
+    # 1 m/s), because its closure is ~2.7x slower than LEAP's and the ball has
+    # rebounded off the palm before the fingers arrive — L6 §4.2's first
+    # suspect, joint speed, now that the second (posture) is dealt with.
+    # With the two user-posed pairs this block was TBD: 0 held of 851.
+    planner:
+      hand:
+        d_eff: 0.095
+        r_cap: 0.024
+        provisional: true
+
+  # ── Topic configuration ────────────────────────────────────────────────────
+  # Group order IS the controller's device index order: ur5e = 0 (held),
+  # p1b = 1 (stepped). No publishers: S4.0 emits no state message (D-20).
+  topics:
+    ur5e:
+      subscribe:
+        - topic: "ur5e/joint_goal"
+          role: "target"
+    p1b:
+      subscribe:
+        - topic: "p1b/joint_goal"
+          role: "target"
+
+  # ── Controller-owned CSV logs ──────────────────────────────────────────────
+  # The S4.2 measurement reads `p1b_state.csv` — `command_*` gives t_cmd (the
+  # tick the step was accepted), `actual_pos_*` gives rho(t), and
+  # `t_relative_s` is the RT steady clock L6 §4.2 asks for. No dedicated
+  # diagnostic channel: these columns already carry everything rho needs.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: ur5e_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p1b_state

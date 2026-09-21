@@ -1,0 +1,148 @@
+# demo_catching_controller — iiwa7 + LEAP variant (dynamic_catching S4.0/S4.1)
+#
+# SIM ONLY — see the ur5e_p1b copy of this file for why (E-8 / plan §4.4 S4a
+# Q3): the controller refuses to configure unless every claimed device is on
+# the `mujoco_native` backend.
+#
+# S4.0 scope: arm hold + unshaped hand step. Keys owned by other steps
+# (reference.*, planner.*, supervisor.*) are deliberately absent; this
+# controller never arms, so G0-C's arming gate is not its gate.
+demo_catching_controller:
+  command_type: "position"
+
+  diagnostic:
+    hand_step: true
+
+  catching:
+    # Same sim ball as the p1b profile, deliberately: S3.1a compares the two
+    # robots, and a different ball would make the difference unattributable.
+    # ITF Type 2 (radius 0.0335 m, mass 0.057 kg, restitution 0.75 from the
+    # `tennis` preset) as of 2026-09-20 — see the p1b copy for what changed.
+    # provisional until D-12 closes; S4.5's d_eff / r_cap are derived for this
+    # diameter and do not survive a change to it.
+    core:
+      ball:
+        diameter: 0.067
+        mass: 0.057
+        restitution: 0.75
+        provisional: true
+
+    # ── Hand profile (L6 §5.1/§6) ───────────────────────────────────────────
+    # 16 actuated joints in the `devices.leap.joint_state_names` order, which
+    # is the CONTROLLER-facing order (thumb first), not the URDF's:
+    #   0-3   thumb  (URDF joints 12,13,14,15)
+    #   4-7   index  (URDF joints 0,1,2,3)  = [mcp_aa, mcp_fe, pip, dip]
+    #   8-11  middle (URDF joints 4,5,6,7)
+    #   12-15 ring   (URDF joints 8,9,10,11)
+    #
+    # PROVISIONAL (L0 §5.3: warns in sim, blocks a real-arm configuration), but
+    # no longer a guess. q_pre / q_close are USER-SUPPLIED, which is what
+    # TBD-HAND-05 asks for (MASTER §9): posed in the demo GUI against the sim
+    # hand and handed back as `catch_q_pre` / `catch_q_close` in
+    # `logging_data/hand_presets_leap.json`. They replace the geometric first
+    # draft this file shipped, which had the abduction joints stay put and no
+    # source to tune against — LEAP ships no grasp posture anywhere in this
+    # repo. Every value is inside `devices.leap.joint_limits` ∩ URDF. S4.5
+    # closed the hand on a ball with these poses and it grasps (216 of 793
+    # placements) — see `planner.hand` below for what that yielded.
+    robot:
+      hand:
+        provisional: true
+        rho_eps: 0.02
+
+        #                   thumb                                     index                                    middle                                     ring
+        q_open:  [     0.0,      0.0,       0.0,      0.0,        0.0,      0.0,      0.0,      0.0,        0.0,      0.0,      0.0,      0.0,        0.0,      0.0,      0.0,      0.0]
+        q_pre:   [1.664695, 0.003316, -0.444361, 0.200015,  -0.349066, 1.063255, 0.300022, 0.200015,        0.0, 0.801455, 0.300022, 0.200015,   0.174533, 1.325054, 0.300022, 0.200015]
+        q_close: [1.664695, 0.788714,  0.182561, 1.055226,  -0.174533, 1.412320, 0.875981, 1.491558,        0.0, 1.237788, 0.875981, 1.491558,   0.174533, 1.499587, 1.050514, 1.491558]
+        # deg, same order: q_pre  thumb 95.38/0.19/-25.46/11.46  index -20/60.92/17.19/11.46
+        #                         middle 0/45.92/17.19/11.46     ring 10/75.92/17.19/11.46
+        #                  q_close thumb 95.38/45.19/10.46/60.46 index -10/80.92/50.19/85.46
+        #                         middle 0/70.92/50.19/85.46     ring 10/85.92/60.19/85.46
+
+        # C (L6 §4.2) = the joints needed to cage, which here is every joint
+        # that travels. Unlike the earlier draft the abduction joints are no
+        # longer uniformly still: index (slot 4) swings in by 10 deg and is
+        # masked, while thumb (0), middle (8) and ring (12) hold their preshape
+        # and are excluded — a masked joint with no travel is a division by
+        # zero in rho and the validator refuses it (kHandCagingGapTooSmall).
+        caging_mask: [false, true, true, true,
+                      true,  true, true, true,
+                      false, true, true, true,
+                      false, true, true, true]
+
+        # eta is "the progress at which the ball can no longer escape"
+        # (L6 §4.2), and S4.5 MEASURED it rather than judging it. Closing this
+        # hand on a placed ITF ball stalls at rho = 0.50 (median over the 216
+        # placements that held; 0.67 over any of them) -- q_close is a command,
+        # not a posture, and the fingers stop on the ball long before it.
+        # 0.9 was not conservative, it was UNREACHABLE: across 793 placements
+        # rho never passed 0.96, so a T_close defined at 0.9 timed a motion this
+        # hand only ever completes through empty air.
+        eta_close: 0.5
+
+        # MEASURED, S4.2 (2026-09-20): 200 step trials on this hand in this
+        # sim, 0 CSV drops, re-read at the eta above. steady axis (L6 §4.2's
+        # definition) mean 98.6 ms, max 195.9 ms, p99 103.7 ms; the value below
+        # is the p99. At the eta this file shipped first (0.9) the same 200
+        # trials give 230.6 ms — the hand is not faster, the threshold is now
+        # the one at which it actually holds the ball.
+        # LEAP closes in about half the p1b time despite a forcerange an order
+        # of magnitude smaller (0.95 vs 3.0 N·m), because its joints are far
+        # lighter (armature 0.003-0.006 vs 0.05) — this hand is stiffness
+        # dominated, not torque-saturation dominated.
+        # The analyser's tick axis is NOT usable here — see L6 §4.2.
+        T_close_e2e: 0.1037
+
+    # ── Pocket geometry (L3 §6 `planner.hand.*`, TBD-HAND-04) ────────────────
+    # NOTHING READS THESE TWO KEYS YET. `ParseCatchingParams` puts
+    # `planner.hand.*` out of scope on purpose (see the header of
+    # rtc_controllers/include/rtc_controllers/catching/catching_params.hpp):
+    # their consumers are the L3 planner's gamma window and §4.6 budget gate,
+    # which land in S6. They are recorded here because G6-F asks for the
+    # derivation and the value to live together with the profile they were
+    # derived from — read them as documentation, not as configuration, and do
+    # not infer from their presence that the running system honours them.
+    #
+    # MEASURED, S4.5 (2026-09-20), by closing this hand on a ball PLACED on the
+    # preshape palm and shaking the result under +-g along each catch-frame
+    # axis — geometry alone cannot answer this, because an empty q_close is a
+    # fist that encloses nothing and measuring free space at it measures the
+    # fingers' swept volume. 793 placements on a 5 mm lateral grid, 216 held.
+    #   r_cap 0.031 m = the lateral inscribed radius of that capture region
+    #                   (54 cm², best catch point (-0.035, +0.015, 0.069) in the
+    #                   catch frame — which is also S2.3b's offset candidate,
+    #                   still provisional 0 in sim.yaml).
+    #   d_eff 0.080 m = the approach-axis (catch frame +z) span over which the
+    #                   ball is still caught at that point, from resting on the
+    #                   palm (z 0.069) to the preshape fingertip plane (z 0.149,
+    #                   where it stops being contained and is knocked away).
+    # Both are ball-CENTRE quantities, so the ball radius is already inside
+    # them; L6 §4.5's "subtract the ball radius" is a surface-to-surface
+    # correction and applying it here would subtract it twice. Derived FOR
+    # core.ball above — a different diameter invalidates them.
+    # L6 §4.5 step 2 (low-speed throw correction) stays deferred to S7.1.
+    planner:
+      hand:
+        d_eff: 0.080
+        r_cap: 0.031
+        provisional: true
+
+  # Group order IS the device index order: iiwa7 = 0 (held), leap = 1
+  # (stepped). No publishers — S4.0 emits no state message (D-20).
+  topics:
+    iiwa7:
+      subscribe:
+        - topic: "iiwa7/joint_goal"
+          role: "target"
+    leap:
+      subscribe:
+        - topic: "leap/joint_goal"
+          role: "target"
+
+  # S4.2 reads `leap_state.csv`: `command_*` gives t_cmd, `actual_pos_*` gives
+  # rho(t), `t_relative_s` is the RT steady clock L6 §4.2 asks for.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: iiwa7_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: leap_state

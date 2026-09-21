@@ -81,6 +81,10 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/inference/compute.cpp
   src/controllers/inference/lifecycle.cpp
   src/controllers/inference/parameters.cpp
+  # dynamic_catching S4.0 binding: arm hold + unshaped hand step, sim-only.
+  # No law half in rtc_controllers yet — the catching law lands with S5.
+  src/controllers/catching/controller.cpp
+  src/controllers/catching/lifecycle.cpp
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
@@ -674,6 +678,55 @@ if(BUILD_TESTING)
     pinocchio
     Eigen3
   )
+
+  # ── dynamic_catching S4.0/S4.1: catching controller skeleton ───────────────
+  # URDF-free: this controller runs no model, so the suite needs neither
+  # pinocchio nor a robot description. It DOES build a LifecycleNode (the
+  # configure-time refusals are half of what it pins), hence ROS_DOMAIN_ID, and
+  # it reads the shipped profiles, hence RTC_DEMO_SHARED_CONFIG_DIR.
+  ament_add_gtest(test_demo_catching_controller test/test_demo_catching_controller.cpp
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_demo_catching_controller PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_demo_catching_controller PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_demo_catching_controller
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_catching_controller
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # Separate binary: alloc_gate.hpp replaces global operator new, which is one
+  # TU per binary (alloc_gate.hpp contract item 1).
+  ament_add_gtest(test_demo_catching_alloc test/test_demo_catching_alloc.cpp)
+  target_include_directories(test_demo_catching_alloc PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_link_libraries(test_demo_catching_alloc
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_catching_alloc
+    ament_index_cpp
+    rclcpp
+    rtc_controller_interface
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+  # alloc_gate.hpp pairs new→malloc with delete→free, which makes GCC
+  # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
+  target_compile_options(test_demo_catching_alloc PRIVATE -Wno-mismatched-new-delete)
 
   # ── #282 two-tier DLS convergence harness ──────────────────────────────────
   # Pure numerics: the pre-#282 inline block (oracle) against
@@ -1386,6 +1439,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_task_frame test/test_demo_gui_task_frame.py)
   ament_add_pytest_test(test_demo_gui_ball_launch test/test_demo_gui_ball_launch.py)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
+  ament_add_pytest_test(test_demo_gui_hand_step test/test_demo_gui_hand_step.py)
 endif()
 
 ament_package()

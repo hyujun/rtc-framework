@@ -113,8 +113,13 @@ mujoco_simulator:
       body_name: "projectile_ball"
       # 물성 (관성 분포·반발·마찰·항력·양력) 은 preset 이 정한다. 형상·질량만 여기서.
       ball_type: "tennis"          # tennis | beanbag | hard
-      radius_m: 0.025
-      mass_kg: 0.05
+      # ITF Type 2 규격: 지름 6.54-6.86 cm, 질량 56.0-59.4 g. 아래는 그 중앙값이고
+      # rtc_mujoco_sim 의 코드 기본값 (`projectile_ball.hpp`) 과 README 의 preset
+      # 표가 이미 쓰던 값이다 — 종전 출하값 0.025 m / 0.05 kg 은 규격보다 작고
+      # 가벼운 공이라 이 두 YAML 에만 있던 덮어쓰기였다 (2026-09-20 사용자 지시).
+      # 물성 preset (반발 0.75, Cd 0.55, C_L) 은 이 형상·질량 기준이다.
+      radius_m: 0.0335
+      mass_kg: 0.057
       # p1b fingertip collision meshes use contype=1, conaffinity=2. MuJoCo
       # requires the projectile masks to be complementary for both directions.
       collision_contype: 2

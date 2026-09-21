@@ -28,6 +28,8 @@ setup(
             "derive_accel_limits = rtc_tools.analysis.derive_accel_limits:main",
             "analyze_clock_phase = rtc_tools.analysis.clock_phase:main",
             "run_clock_phase_trials = rtc_tools.analysis.clock_phase_trials:main",
+            "analyze_hand_close = rtc_tools.analysis.hand_close:main",
+            "run_hand_close_trials = rtc_tools.analysis.hand_close_trials:main",
             "analyze_vision_lane = rtc_tools.analysis.vision_lane:main",
             "vision_lane_probe = rtc_tools.analysis.vision_lane_probe:main",
             "camera_relay = rtc_tools.analysis.camera_relay:main",

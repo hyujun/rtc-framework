@@ -105,7 +105,7 @@ sim 은 wall clock 을 유지한다 (D-3). D-2 변환이 실기와 같은 경로
 
 **측정.** S3.3 이 추가하는 per-step `(sim_time, steady_now)` 진단 lane 이 데이터 원천이다. 발사 시각을 원점으로 비행 구간 매 step 에서 δ(t) = (steady(t) − steady₀) − (sim(t) − sim₀) 를 구하고, 시행별 δ_max = max|δ| 와 max pause(한 step 의 Δwall − Δsim 최댓값)를 기록한다 (양방향).
 
-**시행 유효 조건.** v_max·δ_max + ½·a_bound·δ_max² ≤ ε_clk,alloc **이고** max pause ≤ ε_clk,alloc / v_max. v_max 는 목표 투척 분포의 최대 공 속력(S3.5b 전에는 S0.7 가정값), a_bound 는 g + 항력 가속 상한(항력 k — **S3.8 이 2026-09-20 결정으로 빠졌으므로** L0 §4.1 의 문서 대표값 0.0229 1/m 를 쓴다). **ε_clk,alloc 은 L3 §4.6 오차 예산 중 시계 항에 할당한 몫이고, r_cap(TBD-HAND-04)과 할당 비율이 정해지기 전까지 이 판정은 `NOT_EVALUATED` 이며 δ_max·pause 분포만 기록한다.** 할당 비율은 S3.1a 에서 제안하고 사용자가 확인한다.
+**시행 유효 조건.** v_max·δ_max + ½·a_bound·δ_max² ≤ ε_clk,alloc **이고** max pause ≤ ε_clk,alloc / v_max. v_max 는 목표 투척 분포의 최대 공 속력(S3.5b 전에는 S0.7 가정값), a_bound 는 g + 항력 가속 상한(항력 k — **S3.8 이 2026-09-20 결정으로 빠졌으므로** L0 §4.1 의 문서 대표값 0.0229 1/m 를 쓴다). **ε_clk,alloc 은 L3 §4.6 오차 예산 중 시계 항에 할당한 몫이고, 예산 우변은 `r_cap/n_σ` 다.** r_cap 은 S4.5 가 닫았고 (LEAP 31.0 mm, P1b 24 mm — L6 §4.5) 재판정 결과는 plan §5.1 에 있다: **LEAP PASS, P1b PASS(provisional)** (각 손의 $\Vert v\Vert_{\max}$ 기준). ε_clk 는 ‖v‖δ 라 **목표 속력에 비례**하므로 판정은 S4.4 의 목표 속력과 함께 읽는다.
 
 **시행 수·무효율.** 구성별(로봇 2종) 발사 ≥ 200 회, 무효율 ≤ 5 %. 이 두 값은 **제안값**이다(사용자 확인, plan §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다.
 
@@ -187,7 +187,7 @@ struct TickRecord {                   // 고정 크기, POD
 
 ### 5.4 YAML 파일
 
-- 포구 컨트롤러 설정: 로봇별 `integrated_bringup/config/<robot>/controllers/` 아래 (기존 `demo_*_controller.yaml` 과 같은 자리). 파일명은 S5.1 에서 정한다
+- 포구 컨트롤러 설정: 로봇별 `integrated_bringup/config/<robot>/controllers/` 아래 (기존 `demo_*_controller.yaml` 과 같은 자리). 파일명은 `demo_catching_controller.yaml` (config_key `demo_catching_controller`, S4.0 에서 확정 — plan §4.4 S4a)
 - catch frame (`extra_frames`, D-10·D-17) 은 로봇 config 의 모델 절 (plan §10)
 - 투척·catchability (`sim.throw_region`, `planner.catchability.*`) 는 plan §11 스키마
 - sim 공 설정 (projectile, truth 주기)은 로봇별 `mujoco_simulator.yaml`
@@ -207,7 +207,7 @@ struct TickRecord {                   // 고정 크기, POD
 | `sim.ekf.q_acc` | — | – | – | – | v0.5 에서 삭제 — 자체 fixture EKF 없음 (§4.3) |
 | `sim.vision.layout` | — | – | – | – | v0.5 에서 삭제 — 실제 발행기 레이아웃 사용 (D-4) |
 | `sim.rtf_min` | — | – | – | – | v0.5 에서 삭제 — RTF 비율 판정은 §4.5 clock 위상 오차 판정으로 대체 (D-3, plan §5) |
-| `sim.clock.eps_alloc_m` | double | m | `TBD` | >0 | §4.5 ε_clk,alloc — r_cap(TBD-HAND-04) 확정 전까지 `NOT_EVALUATED`, S3.1a 제안 |
+| `sim.clock.eps_alloc_m` | double | m | `TBD` | >0 | §4.5 ε_clk,alloc — r_cap 확정 후 재판정 완료 (plan §5.1). 값은 **목표 속력에 비례**하므로 S4.4 가 속력을 확정한 뒤에 박는다 |
 | `sim.clock.min_launches` | int | – | 200 | ≥1 | §4.5 구성별 최소 발사 수 (제안값, plan §7.3) |
 | `sim.clock.max_invalid_rate` | double | – | 0.05 | (0, 1] | §4.5 무효율 상한 (제안값, plan §7.3) |
 | `sim.trials` | int | – | D-12 | ≥30 | 신뢰구간 폭과 연동, 성공률 하한 D-12 |
@@ -223,7 +223,7 @@ struct TickRecord {                   // 고정 크기, POD
 ## 7. 단위 기술 구현 순서
 
 - **L8.1** G8 게이트 — 닫힘 (W, §2).
-- **L8.2** (S4.0 → S5.1) 컨트롤러 골격 + §4.1 순서 + lifecycle + 기존 launch 인자. S4.0 은 손 계단 진단 모드·팔 hold 뿐인 최소 골격이고, 팔 명령 경로·CLIK 앵커·E-8 최소 계약을 포함한 완성은 S5.1.
+- **L8.2** (S4.0 → S5.1) 컨트롤러 골격 + §4.1 순서 + lifecycle + 기존 launch 인자. S4.0 은 손 계단 진단 모드·팔 hold 뿐인 최소 골격이고 (sim 전용을 `backend.type` 가드로 강제 — S5.1 에서 E-8 승인과 함께 제거), 팔 명령 경로·CLIK 앵커·E-8 최소 계약을 포함한 완성은 S5.1.
 - **L8.3** (S5.4) 기록 레코드 → 기존 CSV 인프라, 상태 publisher, 플롯 스크립트.
 - **L8.4** (S3.1a·S3.2·S3.3, 부하 재검증은 S3.1b — S6 에서 계획기·`sim_estimator_node` 동시 구동으로) D-3 검증, 발사 srv, iiwa7_leap projectile, 접촉 truth·truth 주기·sim time 진단.
 - **L8.5** (S3.4·S3.5a/b·S3.6) `sim_estimator_node` 연결, catchability 지도(kinematic → gate-catchable), vision 요구 사양, 오프라인 NEES.

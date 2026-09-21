@@ -14,12 +14,20 @@
 //   - supervisor.decel.a_dec                (L7 §6)
 //   - core.ball.diameter/mass/restitution   (L0 §6, D-12)
 //   - sim.ball.drag_k                       (L0 §6 — sim-fixture-only, see below)
-//   - robot.hand.q_pre/q_close/caging_mask/rho_eps (L6 §6, §4.2)
+//   - robot.hand.q_open/q_pre/q_close/caging_mask/rho_eps (L6 §6, §4.2)
+//   - robot.hand.eta_close/T_close_e2e       (L6 §6, added by S4.1)
 // `planner.ik.*`, `planner.hand.d_eff/r_cap`, catch frame (D-17), and the D-16
 // joint-accel box are out of scope: none of them appear in G0-C or the §6
 // cross-constraint table, and their owning steps (S2.3a, S2.5) have not
 // landed. See the .cpp for the YAML keys this file had to invent (the docs
 // name the physical relationship but not a schema field) and why.
+//
+// S4a SCOPE (2026-09-20). The three L6 §5.1 fields the hand-timing step needs
+// — `q_open` (the pose a trial starts from), `eta_close` (the §4.2 closure
+// threshold η) and `T_close_e2e` (the identified end-to-end closure time) —
+// are parsed and validated here. The rest of the L6 §5.1/§6 table
+// (`T_pre`, `T_hold`, `T_close_timeout`, `hold.*`) belongs to the hand
+// sequencer (S7.1) and is deliberately still absent: it has no consumer.
 //
 // ACTIVE CONFIGURATION. G0-C requires "TBD in an active-config key blocks
 // arming; TBD in an inactive-config key passes" (L0 §5.3: "sim/실기 ... 에
@@ -60,18 +68,25 @@ struct TbdDouble {
 inline constexpr std::size_t kMaxHandDof = 16;
 
 /// One hand profile (L6 §6 `robot.hand.*`, scope limited to what the L6 §4.2
-/// caging check needs). `dof` is the number of valid entries in the arrays;
-/// `tbd` is true while the whole profile is still the `TBD` placeholder
-/// (S4.1 has not produced a robot-specific profile yet). `provisional` reads
-/// an invented `robot.hand.provisional` key (see .cpp) because L6 §6 marks
-/// "손 프로파일 값은 전부 provisional 이다" in prose, with no schema field.
+/// caging check and the S4a timing measurement need). `dof` is the number of
+/// valid entries in the arrays; `tbd` is true while the `q_pre`/`q_close` pair
+/// is still the `TBD` placeholder. `q_open_tbd` tracks the third pose array
+/// separately: it is not part of the §4.2 caging pair, so a profile that gives
+/// the pair but omits `q_open` parses (and the validator reports the one key)
+/// rather than being refused wholesale. `provisional` reads an invented
+/// `robot.hand.provisional` key (see .cpp) because L6 §6 marks "손 프로파일
+/// 값은 전부 provisional 이다" in prose, with no schema field.
 struct HandProfile {
+  std::array<double, kMaxHandDof> q_open{};  // trial start pose (L6 §5.1)
   std::array<double, kMaxHandDof> q_pre{};
   std::array<double, kMaxHandDof> q_close{};
   std::array<bool, kMaxHandDof> caging_mask{};  // which joints L6 §4.2 checks
   int dof{0};
-  double rho_eps{0.02};  // L6 §6 default [rad]
+  double rho_eps{0.02};   // L6 §6 default [rad]
+  TbdDouble eta_close;    // –, [0.5, 1]   — L6 §4.2 closure threshold η
+  TbdDouble T_close_e2e;  // s, >= 0       — L6 §4.2 end-to-end closure time
   bool tbd{true};
+  bool q_open_tbd{true};
   bool provisional{true};
 };
 
@@ -117,9 +132,9 @@ struct CatchingParams {
 /// only that) on: a missing/non-map root; a present section that is not a
 /// map; a present scalar that is neither a finite number nor the literal
 /// `"TBD"`; hand `q_pre`/`q_close` given inconsistently (one TBD, the other an
-/// array; arrays of different length; empty arrays; a `caging_mask` of the
-/// wrong length); a hand array longer than `kMaxHandDof`. A present-but-malformed key is refused
-/// rather than defaulted — defaulting would read a typo as "still TBD".
+/// array; arrays of different length; empty arrays; a `caging_mask` or a
+/// `q_open` of the wrong length); a hand array longer than `kMaxHandDof`. A present-but-malformed
+/// key is refused rather than defaulted — defaulting would read a typo as "still TBD".
 [[nodiscard]] CatchingParams ParseCatchingParams(const YAML::Node& node);
 
 // ── Validation report ────────────────────────────────────────────────────

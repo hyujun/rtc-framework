@@ -42,7 +42,7 @@ from tkinter import font as tkfont, messagebox, ttk
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.parameter import Parameter
+from rclpy.parameter import Parameter, parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.utilities import remove_ros_args
@@ -109,6 +109,12 @@ from .config import (
     target_panel_states,
 )
 from .discovery import RobotProfile, RobotShape
+from .hand_step import (
+    CATCHING_CONFIG_KEY,
+    PROFILE_PARAMETERS,
+    HandStepPanel,
+    StepPose,
+)
 from .preset_toggle import (
     PresetToggleState,
     format_keysym,
@@ -218,6 +224,12 @@ class DemoControllerGUI(Node):
         # nothing serves them and the panel stays on "never received", which is
         # the honest readout rather than a hidden error.
         self._ball_status = BallStatus()
+
+        # Hand step (dynamic_catching §13 S4). The panel holds only what the
+        # CATCHING controller reported; with no such controller configured it
+        # stays empty and says so, which is the honest readout on a profile
+        # that ships no catching YAML.
+        self._hand_step = HandStepPanel()
         self._launch_ball_client = self.create_client(LaunchBall, "/sim/launch_ball_at")
         self._reset_ball_client = self.create_client(Trigger, "/sim/reset_ball")
         self.create_subscription(
@@ -1055,6 +1067,7 @@ class DemoControllerGUI(Node):
         """Periodic GUI refresh scheduled on the Tk event loop (thread-safe)."""
         self._refresh_current_display()
         self._refresh_ball_panel()
+        self._refresh_hand_step_panel()
         self.root.after(200, self._schedule_refresh)
 
     def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
@@ -1858,6 +1871,7 @@ class DemoControllerGUI(Node):
         ).pack(side="left", padx=4)
 
         self._build_ball_panel(control_tab)
+        self._build_hand_step_panel(control_tab)
 
         # ══════════════════════════════════════════════════════════════════
         #  GRASP TAB
@@ -1992,6 +2006,140 @@ class DemoControllerGUI(Node):
         if getattr(self, "_prev_ball_text", None) == text:
             return
         self._prev_ball_text = text
+        label.config(text=text)
+
+    # ---- Hand step panel (dynamic_catching §13 S4) ---------------------------
+
+    def _build_hand_step_panel(self, parent: tk.Frame) -> None:
+        """Preshape/closed step buttons for the S4.0 catching controller.
+
+        The poses are NOT entered here and not read from YAML: "Load profile"
+        asks the catching controller for the read-only parameters it mirrored
+        from the config it actually loaded. A pose typed into this panel could
+        differ from the one the run used, and the screenshot taken to confirm
+        the posture would then confirm the wrong thing.
+        """
+        frame = ttk.LabelFrame(parent, text="Hand Step (catching, sim)", padding=4)
+        frame.pack(fill="x", padx=8, pady=(2, 2))
+
+        btn_row = tk.Frame(frame, bg="#1e1e2e")
+        btn_row.pack(fill="x")
+        ttk.Button(btn_row, text="Load profile", command=self._load_hand_step_profile).pack(
+            side="left", padx=4
+        )
+        for label, pose in (
+            ("Step -> open", StepPose.OPEN),
+            ("Step -> preshape", StepPose.PRESHAPE),
+            ("Step -> closed", StepPose.CLOSED),
+        ):
+            ttk.Button(btn_row, text=label, command=lambda p=pose: self._send_hand_step(p)).pack(
+                side="left", padx=4
+            )
+
+        self._hand_step_label = tk.Label(
+            frame,
+            text="\n".join(self._hand_step.lines()),
+            bg="#1e1e2e",
+            fg="#a6adc8",
+            font=("Courier New", 8),
+            justify="left",
+            anchor="w",
+        )
+        self._hand_step_label.pack(fill="x", padx=4, pady=(4, 0))
+
+    def _load_hand_step_profile(self) -> None:
+        client = self._get_param_client(CATCHING_CONFIG_KEY)
+        if not client.wait_for_services(timeout_sec=1.0):
+            self._hand_step.last_error = (
+                f"/{CATCHING_CONFIG_KEY} parameter services unavailable — the catching "
+                "controller is sim-only and is skipped where no YAML ships"
+            )
+            self._refresh_hand_step_panel()
+            return
+
+        future = client.get_parameters(list(PROFILE_PARAMETERS))
+
+        def _on_done(fut):
+            # rclpy executor thread. Parse here, but marshal the panel mutation
+            # and the paint onto the Tk thread with root.after(0, ...) like every
+            # other done-callback in this file: Tk is not thread-safe, and the
+            # 200 ms _schedule_refresh is touching the same object from the Tk
+            # thread. Painting from here loses repaints at best (the two threads
+            # race the _prev_hand_step_text dirty-check) and corrupts Tcl state
+            # at worst — and the exception would be swallowed by the executor
+            # task, so it would surface as a panel that silently stops updating.
+            try:
+                resp = fut.result()
+            except Exception as exc:  # noqa: BLE001 - surfaced in the panel
+                self.root.after(0, self._hand_step_load_failed, f"get_parameters failed: {exc}")
+                return
+            values = {}
+            for name, value in zip(PROFILE_PARAMETERS, resp.values, strict=False):
+                values[name] = parameter_value_to_python(value)
+            self.root.after(0, self._apply_hand_step_profile, values)
+
+        future.add_done_callback(_on_done)
+
+    def _hand_step_load_failed(self, message: str) -> None:
+        """Tk thread only — see ``_load_hand_step_profile``."""
+        self._hand_step.last_error = message
+        self._refresh_hand_step_panel()
+
+    def _apply_hand_step_profile(self, values: dict) -> None:
+        """Tk thread only — see ``_load_hand_step_profile``."""
+        self._hand_step.load(values, list(self._shape.hand_motor_names))
+        self._refresh_hand_step_panel()
+
+    def _send_hand_step(self, pose: StepPose) -> None:
+        try:
+            target = self._hand_step.step_target(pose)
+        except ValueError as exc:
+            self._hand_step.last_error = str(exc)
+            self._refresh_hand_step_panel()
+            return
+        if self.hand_cmd_pub is None:
+            self._hand_step.last_error = "hand_cmd_pub not bound — no active controller"
+            self._refresh_hand_step_panel()
+            return
+        # The profile and the hand_step gate are read from the catching
+        # controller unconditionally, but hand_cmd_pub is bound to whichever
+        # controller is ACTIVE. Without this check a step issued while
+        # demo_joint_controller is active goes to ITS joint_goal, which
+        # interpolates the hand through a quintic trajectory — the panel reports
+        # success, rho rises (it is fed from the controller-agnostic joint
+        # states), and the closing edge measured is the controller's, not the
+        # hand's. That is the exact confusion this controller exists to prevent,
+        # and it fails silently, so refuse instead of publishing.
+        #
+        # Keyed on _owned_topics_ns, not _active_ctrl: _active_ctrl changes
+        # before the rewire runs, so it can name a controller the publisher is
+        # not bound to yet.
+        with self._owned_topics_lock:
+            bound_ns = self._owned_topics_ns
+        if bound_ns != "/" + CATCHING_CONFIG_KEY:
+            self._hand_step.last_error = (
+                f"step refused: the hand publisher is bound to '{bound_ns or 'nothing'}', not "
+                f"/{CATCHING_CONFIG_KEY}. A step sent there is SHAPED, not a step — switch to "
+                f"{CATCHING_CONFIG_KEY} first"
+            )
+            self._refresh_hand_step_panel()
+            return
+        msg = RobotTarget()
+        msg.goal_type = "joint"
+        msg.joint_names = list(self._shape.hand_motor_names)
+        msg.joint_target = [float(v) for v in target]
+        self.hand_cmd_pub.publish(msg)
+        self._refresh_hand_step_panel()
+
+    def _refresh_hand_step_panel(self) -> None:
+        label = getattr(self, "_hand_step_label", None)
+        if label is None:
+            return
+        self._hand_step.update_rho(list(self.current_hand_positions))
+        text = "\n".join(self._hand_step.lines())
+        if getattr(self, "_prev_hand_step_text", None) == text:
+            return
+        self._prev_hand_step_text = text
         label.config(text=text)
 
     def _build_pull_panel(self, parent: tk.Frame, mono_font) -> None:

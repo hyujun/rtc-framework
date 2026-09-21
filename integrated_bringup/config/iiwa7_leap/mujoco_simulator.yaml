@@ -73,8 +73,13 @@ mujoco_simulator:
       # ur5e_p1b 와 **같은 공**을 일부러 쓴다. S3.1a 는 로봇 2종을 비교하는데,
       # 공까지 다르면 차이가 로봇 탓인지 공 탓인지 갈라낼 수 없다.
       ball_type: "tennis"          # tennis | beanbag | hard
-      radius_m: 0.025
-      mass_kg: 0.05
+      # ITF Type 2 규격: 지름 6.54-6.86 cm, 질량 56.0-59.4 g. 아래는 그 중앙값이고
+      # rtc_mujoco_sim 의 코드 기본값 (`projectile_ball.hpp`) 과 README 의 preset
+      # 표가 이미 쓰던 값이다 — 종전 출하값 0.025 m / 0.05 kg 은 규격보다 작고
+      # 가벼운 공이라 이 두 YAML 에만 있던 덮어쓰기였다 (2026-09-20 사용자 지시).
+      # 물성 preset (반발 0.75, Cd 0.55, C_L) 은 이 형상·질량 기준이다.
+      radius_m: 0.0335
+      mass_kg: 0.057
       # 이 모델의 충돌 geom 은 103 개 전부가 contype=1 / conaffinity=1 이다 (컴파일된
       # 모델에서 확인). ur5e_p1b 와 다른 점이 여기다 — 거기는 손 geom 21 개가
       # conaffinity=2 라서 공에 contype=2 를 줘야 손과 짝이 맞지만, 이 모델에는
