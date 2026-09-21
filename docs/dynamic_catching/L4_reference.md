@@ -320,8 +320,8 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 |---|---|---|---|---|---|
 | `reference.omega` | double | rad/s | 10.0 | 1–25 | §4.7. 검증기가 실제 $h$ = `ControllerState::dt` 로 $s=\omega h$ 를 검사 (경계 0.828 이상 armable=false, 0.05 초과 경고) |
 | `reference.zeta` | double | – | 1.0 | v1: 1 만 허용 | 닫힌해(§4.4)·이산 경계(§4.7)가 1에서만 유효 — ≠1 이면 검증기가 armable=false (L0 §5.3) |
-| `reference.a_max` | double | m/s² | `TBD` | >0 | TBD-ARM-02, 로봇·자세 의존 |
-| `reference.v_max` | double | m/s | `TBD` | >0 | 로봇 TCP 속도 한계. L3 `gammaWindow` 는 $\eta_v\cdot$ 이 값을 쓴다 `[확정 D-9]` (L3 §4.5) |
+| `reference.a_max` | double | m/s² | `TBD` | >0 | TBD-ARM-02, 로봇·자세 의존. S4.4 (2026-09-22): 포구 자세에서 토크 한계로 푼 $\hat v$ 방향 가속은 중앙값 43 (`ur5e_p1b`) · 79 (`iiwa7_leap`) m/s², 회전자 관성 10 배 가정에서 21–23 · 35–36 — D-16 box 가 주는 0.74 · 6.8 과 자릿수가 다르다 (plan §9). 값은 D-16 개정과 함께 정한다 |
+| `reference.v_max` | double | m/s | `TBD` | >0 | 로봇 TCP 속도 한계. L3 `gammaWindow` 는 $\eta_v\cdot$ 이 값을 쓴다 `[확정 D-9]` (L3 §4.5). **`[제안]` S4.4: 실측이 아니라 도출값** — URDF·제조사 자료에는 관절 정격만 있다. 수락 후보의 LP $v_{dir,\max}$ 최대 (정격, $\eta_v$ 0.9: `ur5e_p1b` 3.5 · `iiwa7_leap` 1.8 m/s) 로 두면 포화는 관절 정격 안에서는 발화하지 않는다. 실기 컨트롤러의 TCP 안전 한계는 S10 에서 식별하고 이 값을 **낮출 수만** 있다 |
 | `reference.axis.k_axis` | double | 1/s | 8.0 | 1–30 | 튜닝. $\Vert\omega_{ref}\Vert=K_a\theta$ 이므로 $\theta=\pi$ 에서 $K_a\pi$ |
 | `reference.axis.w_max` | double | rad/s | `TBD` | >0 | 손목 관절 한계에서 산정 |
 | `reference.axis.sin_eps` | double | – | 1e-6 | 1e-9–1e-3 | 반평행 축 정의 하한 $\Vert z\times a_d\Vert$ (§4.5) |
