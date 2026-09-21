@@ -112,6 +112,15 @@ demo_catching_controller:
         # (3.0 N·m); this hand is torque-saturation dominated, so an operating
         # limit of 1.5 N·m would stretch T_close by roughly √2.
         # The analyser's tick axis is NOT usable here — see L6 §4.2.
+        #
+        # This hand is the reason `analyze_hand_close` classifies a command row
+        # as pre / close / OTHER instead of taking the nearer of two. With the
+        # postures above, the pose this controller holds at activation (every
+        # joint at zero in sim) sits 0.107% from being read as a q_close step —
+        # 3.033 vs 3.036 in squared joint distance. A nearest-of-two vote that
+        # fell the other way would open a trial on the hold pose, run it into
+        # the first real step, and inflate that trial's T_close by the whole
+        # hold. Re-check this margin whenever these two postures move.
         T_close_e2e: 0.2805
 
     # ── Pocket geometry (L3 §6 `planner.hand.*`, TBD-HAND-04) ────────────────
