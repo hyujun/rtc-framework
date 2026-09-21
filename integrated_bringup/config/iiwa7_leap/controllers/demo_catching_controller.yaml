@@ -127,6 +127,54 @@ demo_catching_controller:
         r_cap: 0.031
         provisional: true
 
+      # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
+      # NOT READ AT RUNTIME YET, like `planner.hand` above: the consumer is the
+      # L3 planner's binding, which lands in S6.2. `ParseCatchPoseIkParams`
+      # (rtc_controllers) already parses exactly these keys, and the offline
+      # catchability map drives them through it, so they are live values under
+      # test — just not yet on a tick. Recorded here because G6-F asks the
+      # derivation and the value to live together.
+      #
+      # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1499 throws
+      # accepted from the best single wait pose at the old shared threshold 0.1,
+      # 1158 at the robot-specific 0.174 below (reproduced by running the map
+      # tool with THIS file as --params),
+      # T_f >= 1.0 s. Details and the rejected alternatives: plan §11.
+      ik:
+        # k_manip > 0 is NOT optional. It enables the D-25 null-space log w5
+        # ascent, and without it (the in-code default 0) the 5-row task leaves
+        # the arm wherever the seed put it: w5 came out 0.06-0.09 at plausible
+        # wait poses, i.e. BELOW the gate, so every candidate in the map was
+        # rejected as below_manip_min. With the ascent on, w5 reaches
+        # 0.100-0.273 (median 0.226) and the gate is passable. A config that carries the
+        # threshold but leaves this at 0 rejects everything at runtime.
+        k_manip: 0.5
+        # 20 (the L3 default) was not enough to let the ascent settle; 40 left
+        # 1366 candidates `not_converged`, which is confounded with
+        # genuinely unreachable points and is a follow-up sweep, not a bound.
+        max_iter: 40
+      catchability:
+        # 5-row, per plan §11: the 6-row definition would need a threshold ~30x
+        # smaller (w6 bottoms out at 0.0013 over the SAME accepted set) and it
+        # collapses at the wrist singularities of a 6-axis arm, which are fine
+        # poses for catching. w6 is recorded per candidate either way (C-3).
+        definition: "arm_5row"
+        manipulability_min:
+          # ROBOT-SPECIFIC ON PURPOSE (user decision 2026-09-21). w5 =
+          # sqrt(det(J5 J5^T)) scales with the arm's link lengths, so one number
+          # means different strictness on different arms: the shipped 0.1 sat at
+          # roughly the 40th percentile of the 6-axis arm's task-feasible w5 but
+          # only ~the 10th of the 7-axis arm's, i.e. the two arms were being held
+          # to different standards and the map's coverage comparison was not
+          # like-for-like. Each value is 0.1 scaled by that arm's task-feasible
+          # median w5 (gate off, same grid): 0.2176 vs the 6-axis arm's 0.1249, so 0.1 * 0.2176/0.1249 = 0.174. Tightening costs coverage - 77% of the previously accepted throws survive - and that cost is the point: it is what equal strictness actually looks like.
+          arm_5row: 0.174
+          # No value: the 6-row gate is not the definition above, and 0.1 is not
+          # a conservative stand-in for a different-dimension quantity — the
+          # parser leaves a TBD threshold non-finite so Solve fails closed.
+          arm_6row: "TBD"
+          provisional: true
+
   # Group order IS the device index order: iiwa7 = 0 (held), leap = 1
   # (stepped). No publishers — S4.0 emits no state message (D-20).
   topics:

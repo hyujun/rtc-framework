@@ -68,11 +68,22 @@ add_library(rtc_controllers STATIC
   # yaml-cpp parser, non-RT, called once at configure time — plus a fixed-
   # capacity, allocation-free ValidateCatchingParams() (L0 §5.3, §9 G0-C).
   src/params/catching_params.cpp
+  # dynamic_catching S3.5a: the `planner.ik.*` / `planner.catchability.*` half
+  # of the schema, producing the CatchPoseIkOptions S1.9 left without a parser.
+  # Sibling of catching_params.cpp, not part of it — the G0-C validator subset
+  # declares planner.ik.* out of its scope. Strict on unknown keys under the
+  # section it wholly owns; retired keys are reported, as elsewhere in params/.
+  src/params/catch_pose_ik_params.cpp
   # dynamic_catching S1.9: 5-row catch-pose IK + the catchability gate
   # (L3 §4.2). Pinocchio + Eigen only, no ROS and no controller types — the
   # offline catchability map (S3.5a) links the same object the planner will, so
   # this deliberately stays a plain library unit rather than a controller.
   src/catching/catch_pose_ik.cpp
+  # dynamic_catching S3.5a: candidate/seed CSV I/O and the batch loop the
+  # offline map's judge is built on. In the library, not the executable, so
+  # the CSV contract (bit-exact columns) and the batch's order-independence
+  # are reachable from a gtest instead of only from a subprocess.
+  src/catching/catch_pose_ik_batch.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -92,12 +103,27 @@ target_link_libraries(rtc_controllers pinocchio::pinocchio yaml-cpp Eigen3::Eige
 # Position-independent code for static library (needed when linked into shared libs)
 set_target_properties(rtc_controllers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# ── Offline tools ─────────────────────────────────────────────────────────────
+# ARCH-7-exempt: an offline inspection tool, the category design-principles.md
+# §"ARCH-7 의 범위" names (cf. rtc_inference_check). It knows no robot — model,
+# frame, options and candidates all arrive by argv — owns no RT loop and no ROS
+# node, and appears in no launch file or bringup chain. It exists so the S3.5a
+# catchability map and the S6.2 runtime planner reach their verdict through the
+# SAME CatchPoseIk::Solve and the same YAML keys (S1.9); re-deriving the
+# judgement in the python map tool is what this replaces.
+add_executable(catch_pose_ik_batch src/catching/catch_pose_ik_batch_main.cpp)
+target_link_libraries(catch_pose_ik_batch rtc_controllers)
+
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS rtc_controllers
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
+)
+
+install(TARGETS catch_pose_ik_batch
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY include/
@@ -456,6 +482,26 @@ if(BUILD_TESTING)
   # gating. Model-free — no URDF fixture needed.
   ament_add_gtest(test_catching_params test/test_catching_params.cpp)
   target_link_libraries(test_catching_params rtc_controllers)
+
+  # Catch-pose IK schema (S3.5a): every planner.ik.* / planner.catchability.*
+  # key reaches CatchPoseIkOptions, an absent section resolves to the struct's
+  # own defaults (which is also how the doc-vs-code default agreement is
+  # pinned), and a typo under planner.ik is refused rather than defaulted.
+  # Model-free — the parser touches no URDF and no solver.
+  ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)
+  target_link_libraries(test_catch_pose_ik_params rtc_controllers)
+
+  # Batch layer for the S3.5a map (S1.9's Solve is tested in test_catch_pose_ik).
+  # Two claims the solver's own suite cannot make: the CSV carries the solver's
+  # doubles bit-exactly (the S6.2 equivalence oracle needs that), and a
+  # candidate's verdict is independent of batch order (python shards the grid).
+  # Drives the real 6R arm, hence the URDF fixture include dirs and the same
+  # program-wide -Wmismatched-new-delete false positive as its sibling.
+  ament_add_gtest(test_catch_pose_ik_batch test/test_catch_pose_ik_batch.cpp)
+  target_link_libraries(test_catch_pose_ik_batch rtc_controllers)
+  target_include_directories(test_catch_pose_ik_batch PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catch_pose_ik_batch PRIVATE -Wno-mismatched-new-delete)
 endif()
 
 ament_package()

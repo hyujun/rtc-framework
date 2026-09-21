@@ -75,13 +75,38 @@
       extra_frames:
         catch_frame:
           parent: "palm_lower"
-          # Pocket-centre offset: provisional 0 until S2.3b (preshape fingertip
-          # centroid, after S4.1).
-          xyz: [0.0, 0.0, 0.0]
-          # palm_lower −z is the palm outward normal (flexing moves the tip
-          # centroid toward −z, FK 2026-09-19); a π turn about x makes it +z.
+          # Pocket-centre offset (S2.3b, 2026-09-21) = the S4.5 MEASURED catch
+          # point, not the preshape fingertip centroid plan §10 first proposed
+          # (rationale and the rejected alternative: plan §10).
+          # ⚠️ SIGN: L6 §4.5 gives the point in CATCH-frame coordinates
+          # (−0.035, +0.015, 0.069), and this key is in the PARENT frame. The
+          # rpy below is a π turn about x, so y and z flip on the way in:
+          #   xyz = R(rpy) · p_catch = diag(1,−1,−1) · (−0.035, 0.015, 0.069).
+          # Copying the L6 triple verbatim would put the frame on the wrong side
+          # of the palm, 138 mm off along the approach axis.
+          # Verified end to end against the source of the measurement: the
+          # Pinocchio catch-frame origin and the MuJoCo pocket point agree to
+          # 1e-7 m over 16 random arm poses (this robot has no ε_model term —
+          # plan §11 records it as identity, 4.5e-16 m).
+          xyz: [-0.035, -0.015, -0.069]
+          # palm_lower −z is the palm outward normal, and a π turn about x makes
+          # the catch frame's +z the approach axis. Evidence (2026-09-21,
+          # shipped postures): the backstop under the pocket sits at catch
+          # z 0.0345 and the measured ball centre rests one ball radius above it
+          # (0.0345 + 0.0335 = 0.068, measured 0.069); the preshape fingertip
+          # centroid is on the same side (catch z 0.146).
+          # NOT the evidence, despite the older wording here: between the
+          # shipped q_pre and q_close the tip centroid moves toward palm +z
+          # (catch −z, cos −0.83) — fingers curl back toward the palm. The
+          # monotone +z rise asserted by test_catch_frame_models is a different
+          # motion (straight → far joint limit), not this posture pair.
           rpy: [3.141592653589793, 0.0, 0.0]
-          provisional: true # unconfirmed in sim — blocks a real-arm catching config
+          # CONFIRMED by the user in sim, 2026-09-21 (D-17): the offset above was
+          # rendered onto the preshape hand with a ball-radius sphere at the frame
+          # origin and accepted. This no longer blocks a real-arm catching config —
+          # the sim-only guard that still does is the catching controller's own
+          # backend check (E-8, unapproved), not this flag.
+          provisional: false
 
     # ── Device configuration ──────────────────────────────────────────────────
     # Phase 4: devices.<group>.backend is the SSoT for HW/sim adapter type +

@@ -120,7 +120,15 @@ void CheckRobot(const RobotCase& rc) {
   const rub::ModelConfig cfg = MakeConfig(rc);
   const rub::ExtraFrameConfig* cf = FindCatchFrame(cfg);
   ASSERT_NE(cf, nullptr) << rc.label << ": no urdf.extra_frames.catch_frame in " << rc.config_rel;
-  EXPECT_TRUE(cf->provisional) << rc.label << ": catch frame confirmed before S2.3b / user check";
+  // SPEC CHANGE 2026-09-21 (PROC-6): this asserted `provisional == true`, as a
+  // tripwire against shipping a confirmed-looking catch frame before S2.3b had
+  // produced an offset and the user had checked it in sim. Both happened — the
+  // offset is the S4.5 measured catch point (plan §10) and the user confirmed the
+  // rendered frame — so the tripwire now points the other way: what ships must be
+  // the confirmed state. A new robot profile copied from these, or a revert to the
+  // placeholder, goes red here and has to be thought about rather than inherited.
+  EXPECT_FALSE(cf->provisional)
+      << rc.label << ": catch frame back to provisional — S2.3b and the user check are done";
 
   const rub::PinocchioModelBuilder builder(cfg);
   std::vector<std::pair<std::string, std::shared_ptr<const pinocchio::Model>>> models = {

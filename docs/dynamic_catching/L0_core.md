@@ -36,7 +36,7 @@
 | G0-2 | 시간 타입 규약 (ns 정수 / double s, clock type) | 소스 확인 (W2-3) | 닫힘 `[확정 D-2 (1)(2)]` — 내부 표현은 절대 steady `int64` ns, 타입 `BallTime`/`NowReal`/`NowLead` (plan §3, §4.5). RT 의 `ControllerState::t_relative_s` 는 steady 기반 세션 상대시각, `ControllerState::dt` = 1/`control_rate` 고정. `header.stamp` 를 수신 경계에서 1회 변환하는 것은 D-2 (3) 이며 E-1 기록된 예외로 승인됐다 (2026-09-19, S0.6, plan §3.1). stale 판정에는 쓰지 않는다 (W2-3) |
 | G0-3 | 기존 YAML 파라미터 로딩 패턴 | 소스 확인 (W2-6) | 닫힘 — `LoadConfig(YAML)` + `ParseXxxParams` (non-RT, `on_configure`) + runtime gain 만 `declare_parameter`. `generate_parameter_library` 는 쓰지 않는다 (W2-6) |
 | G0-4 | 포구 코드 배치·이름 | 사용자 결정 (W1-5) | 닫힘 `[확정 D-1]` — rtc_controllers `catching` 하위 디렉토리, namespace `rtc::catching` |
-| G0-5 | sim 의 공 유체 모델 — fixture 한정 | sim 확인 (W6-3) | 닫힘 — `rtc_mujoco_sim` 이 항력 $\tfrac12\rho C_dA\Vert v\Vert v$ + Magnus 를 자체 구현한다(MJCF 유체 모델 아님, tennis preset r 0.025 m, m 0.05 kg). 본 모델(§4.1)은 Magnus 가 없으므로 $k$ 식별 잔차에 회전 효과가 남는다 (W6-3) |
+| G0-5 | sim 의 공 유체 모델 — fixture 한정 | sim 확인 (W6-3) | 닫힘 — `rtc_mujoco_sim` 이 항력 $\tfrac12\rho C_dA\Vert v\Vert v$ + Magnus 를 자체 구현한다(MJCF 유체 모델 아님, tennis preset $C_d$ 0.55; 제원은 YAML `projectile_ball.radius_m`·`mass_kg` = **r 0.0335 m, m 0.057 kg** — ITF Type 2, 2026-09-20 갱신. 여기 적혀 있던 r 0.025 / m 0.05 는 갱신 전 값이었고, 그 값으로 환산하면 $k$ 가 0.0130 대 0.0205 로 **37 % 틀어진다** — 제원은 이 문서에 박지 말고 YAML 에서 읽는다). 본 모델(§4.1)은 Magnus 가 없으므로 $k$ 식별 잔차에 회전 효과가 남는다 (W6-3) |
 
 게이트 결과가 본 문서 가정과 다르면, 본 문서를 먼저 수정한 뒤 구현한다.
 

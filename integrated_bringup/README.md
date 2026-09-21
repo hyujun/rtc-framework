@@ -118,7 +118,7 @@ integrated_bringup/
 
 | 설정 영역 | 위치 | 역할 |
 |----------|------|------|
-| `urdf:` (최상위) | `ur5e_p1a/_base.yaml` | URDF 경로, 모델 토폴로지 (sub_models/tree_models/passive_joints), 추가 frame (`extra_frames.<name>.{parent,xyz,rpy,provisional}` — ur5e_p1b·iiwa7_leap 의 provisional `catch_frame`, dynamic_catching plan §10) |
+| `urdf:` (최상위) | `ur5e_p1a/_base.yaml` | URDF 경로, 모델 토폴로지 (sub_models/tree_models/passive_joints), 추가 frame (`extra_frames.<name>.{parent,xyz,rpy,provisional}` — ur5e_p1b·iiwa7_leap 의 `catch_frame`. `xyz` 는 S4.5 실측 포구점을 **부모 frame** 으로 옮긴 값이고 (`rpy` 가 π 회전인 손에서는 부호가 뒤집힌다), 2026-09-21 사용자 sim 확인 후 `provisional: false` 로 전환됐다 — dynamic_catching plan §10) |
 | `devices:` (roster/limits) | `ur5e_p1a/_base.yaml` | 디바이스별 joint_names, joint_limits, sensor_names, sensor_layout 카운트 |
 | `devices.<g>.backend` + `has_native_*` | `ur5e_p1a/{robot,sim}.yaml` | mode-specific: backend/wire 토픽, joint_command/motor 로스터, native-signal 플래그 |
 | `demo_*_controller.yaml` | 컨트롤러별 YAML | 제어 게인, 토픽 라우팅 |
