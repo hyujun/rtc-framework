@@ -183,10 +183,11 @@ def _nearest_pose(command: list[float], profile: HandProfile) -> str:
     the p99 (those filter NaN) but it inflates the trial count and the
     exclusion count, which is exactly the success rate S4.2 hands onward.
 
-    The margin is not hypothetical. On the shipped ur5e_p1b profile the
-    activation hold pose (all joints at zero in sim) sits 0.107% from being
+    The margin is not hypothetical. On a shipped 10-joint hand profile the
+    activation hold pose (every joint at zero in sim) sat 0.107% from being
     classified 'close' — 3.033 vs 3.036 in squared distance — against poses
-    the YAML itself marks provisional.
+    the profile itself marks provisional. The named case and its numbers live
+    with that profile, in its controller YAML.
 
     The band is a fraction of the profile's OWN travel, so it scales with the
     hand rather than assuming a joint count or a unit.
