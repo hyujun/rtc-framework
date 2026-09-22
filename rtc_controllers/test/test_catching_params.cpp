@@ -789,6 +789,27 @@ TEST(CatchingParams, ClikWeightsMustKeepTheirOrdering) {
   }
 }
 
+TEST(CatchingParams, EveryUnresolvedWeightIsReportedInOnePass) {
+  // The three TBD checks used to be chained with `&&`, which short-circuits.
+  // A profile with all three unresolved reported only `w_task`; the operator
+  // resolved it, re-configured, and was told about `w_a`; resolved that,
+  // re-configured, and was told about `w_arm`. Three bring-ups for one report,
+  // while every other block in this validator lists its failures in full. The
+  // checks are here for their SIDE EFFECT on the report, so evaluation order
+  // is not a detail.
+  YAML::Node root = ValidRoot();
+  root["joint_cmd"]["w_task"] = "TBD";
+  root["joint_cmd"]["w_a"] = "TBD";
+  root["joint_cmd"]["w_arm"] = "TBD";
+  const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "joint_cmd.w_task"));
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "joint_cmd.w_a"))
+      << "the second weight was hidden behind the first";
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "joint_cmd.w_arm"))
+      << "the third weight was hidden behind the first";
+}
+
 TEST(CatchingParams, TheSupervisorKeysTheJointLayerReportsToAreActive) {
   // L7 owns both keys, but the joint command layer is what reports to them, so
   // they become active with it. A TBD `track_err_abort` would mean the tracking

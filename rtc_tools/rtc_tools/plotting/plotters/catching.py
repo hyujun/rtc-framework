@@ -227,7 +227,19 @@ def print_catching_diag_statistics(df):
             f" | expired: {_pct(df.get('input_expired', df['input_stale'] * 0)):.1f}%"
         )
     if "input_age_s" in df.columns:
-        fresh = df[df["input_stale"].astype(float) < 0.5] if "input_stale" in df.columns else df
+        # A NEGATIVE age is the "never received" sentinel, not a measurement --
+        # it must never reach a median or a max. The staleness filter below
+        # happens to exclude those rows too (an unreceived lane is always
+        # stale), but the two are different questions and a reader of this
+        # block should not have to know they coincide.
+        received = df[df["input_age_s"].astype(float) >= 0.0]
+        never = len(df) - len(received)
+        if "input_stale" in df.columns:
+            fresh = received[received["input_stale"].astype(float) < 0.5]
+        else:
+            fresh = received
+        if never > 0:
+            print(f"Input never received on {never} tick(s) ({100.0 * never / len(df):.1f}%)")
         if len(fresh) > 0:
             ages = fresh["input_age_s"].astype(float) * 1e3
             print(

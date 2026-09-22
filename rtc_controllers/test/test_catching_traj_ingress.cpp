@@ -116,7 +116,7 @@ TEST(CatchingIngressOrder, AnInvalidMessageIsRefusedAndRecordsNothing) {
 
 TEST(CatchingIngressRead, FreshSnapshotIsUsableAndCountsAsNewExactlyOnce) {
   const TrajectorySnapshot snap = MakeSnapshot(/*recv=*/1000 * kMs, /*t0=*/1000 * kMs);
-  std::uint64_t last_seq = 0;
+  rtc::catching::ConsumedToken last_seq{};
   const NowReal now{1010 * kMs};
   const NowLead lead{now.ns + kTArmNs};
 
@@ -135,13 +135,78 @@ TEST(CatchingIngressRead, FreshSnapshotIsUsableAndCountsAsNewExactlyOnce) {
   EXPECT_FALSE(second.is_new);
 }
 
+TEST(CatchingIngressRead, ALaneThatNeverReceivedReportsTheNeverSentinelNotTheUptime) {
+  // `traj_recv_ns` is 0 before the first message. An age computed against it
+  // is `now - 0`, i.e. the steady clock's own origin distance — 373966 s on
+  // the box this was caught on, written to every row of every run until a
+  // prediction arrives (2026-09-23, 28476 rows of one session). The number is
+  // not merely wrong, it is plausible-looking and unbounded, so a consumer
+  // that thresholds or averages it cannot tell it apart from a real age.
+  TrajectorySnapshot never{};
+  never.valid = false;
+  never.token.activation_generation = kActivation;
+  rtc::catching::ConsumedToken consumed{};
+  const NowReal now{999'999 * kMs};
+
+  const auto view = ReadTraj(never, now, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation, consumed);
+  EXPECT_EQ(view.age_ns, -1) << "an unreceived lane reported an age instead of the sentinel";
+  EXPECT_TRUE(view.stale) << "the sentinel must not read as the freshest possible sample";
+}
+
+TEST(CatchingIngressRead, TheFirstSnapshotIsNewEvenWhenItIsNumberedZero) {
+  // 0 is a legal `snapshot_sequence` — it is read straight off the wire and
+  // nothing in this repo constrains the publisher's numbering. When the
+  // consumed memory was a bare integer, 0 meant both "nothing consumed yet"
+  // and "consumed number zero", so this snapshot read as already seen and the
+  // once-per-snapshot work (planner wake, track-change comparison) never ran
+  // for it. The same collision happens after every trial reset.
+  const TrajectorySnapshot snap =
+      MakeSnapshot(/*recv=*/1000 * kMs, /*t0=*/1000 * kMs, /*n=*/8, /*sequence=*/0);
+  rtc::catching::ConsumedToken consumed{};
+  const NowReal now{1010 * kMs};
+
+  const auto view = ReadTraj(snap, now, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation, consumed);
+  EXPECT_TRUE(view.is_new) << "sequence 0 on a fresh lane read as already consumed";
+  EXPECT_TRUE(consumed.seen);
+
+  // And it is new exactly once, like any other number.
+  const auto again =
+      ReadTraj(snap, NowReal{now.ns + kMs}, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation,
+               consumed);
+  EXPECT_FALSE(again.is_new);
+}
+
+TEST(CatchingIngressRead, ANewEpochReusingTheLastNumberIsStillNew) {
+  // A-S5-4: a new track epoch may restart its numbering at ANY value,
+  // including one the previous epoch already used. Judging newness on the
+  // number alone then reads the first snapshot of the new ball as a repeat of
+  // the last snapshot of the old one — and because the supervisor's
+  // TRACK_CHANGED comparison lives inside the `is_new` branch, the controller
+  // keeps following the OLD ball's plan while consuming the NEW ball's
+  // samples. Newness is a property of the (epoch, number) pair.
+  rtc::catching::ConsumedToken consumed{};
+  const NowReal now{1010 * kMs};
+  const NowLead lead{now.ns + kTArmNs};
+
+  const TrajectorySnapshot track_a = MakeSnapshot(/*recv=*/1000 * kMs, /*t0=*/1000 * kMs, /*n=*/8,
+                                                  /*sequence=*/7, /*generation=*/100);
+  ASSERT_TRUE(ReadTraj(track_a, now, lead, kStaleNs, kActivation, consumed).is_new);
+
+  const TrajectorySnapshot track_b = MakeSnapshot(/*recv=*/1002 * kMs, /*t0=*/1002 * kMs, /*n=*/8,
+                                                  /*sequence=*/7, /*generation=*/101);
+  const auto view =
+      ReadTraj(track_b, NowReal{now.ns + 2 * kMs}, lead, kStaleNs, kActivation, consumed);
+  EXPECT_TRUE(view.is_new) << "a different track reusing sequence 7 read as a repeat";
+  EXPECT_EQ(consumed.generation, 101U);
+}
+
 TEST(CatchingIngressRead, StalenessIsJudgedOnTheRECEIVEAxis) {
   // The snapshot's PREDICTION still covers the present — only its arrival is
   // old. A staleness check that looked at the sample instants (or at a header
   // stamp) would call this fresh, which is the failure the repo's clock rule
   // exists to prevent: vision stopped publishing and nobody noticed.
   const TrajectorySnapshot snap = MakeSnapshot(/*recv=*/1000 * kMs, /*t0=*/1000 * kMs);
-  std::uint64_t last_seq = 0;
+  rtc::catching::ConsumedToken last_seq{};
 
   const NowReal now{1000 * kMs + kStaleNs + 1};
   const auto view = ReadTraj(snap, now, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation, last_seq);
@@ -159,7 +224,7 @@ TEST(CatchingIngressRead, HorizonExhaustionIsJudgedOnTheLEADAxis) {
   // `expired` is the only thing this case can be measuring.
   const TrajectorySnapshot snap = MakeSnapshot(/*recv=*/1300 * kMs, /*t0=*/1000 * kMs, /*n=*/8);
   const std::int64_t last_sample = snap.s[7].t_ns;  // t0 + 350 ms
-  std::uint64_t last_seq = 0;
+  rtc::catching::ConsumedToken last_seq{};
 
   const NowReal now{last_sample - 10 * kMs};
   const auto view = ReadTraj(snap, now, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation, last_seq);
@@ -173,7 +238,7 @@ TEST(CatchingIngressRead, HorizonExhaustionIsJudgedOnTheLEADAxis) {
 }
 
 TEST(CatchingIngressRead, AnUnfilledOrNonPositiveThresholdFailsClosed) {
-  std::uint64_t last_seq = 0;
+  rtc::catching::ConsumedToken last_seq{};
   const NowReal now{1000 * kMs};
 
   // Never filled: valid=false, and a zero receive instant means "no claim".
@@ -197,7 +262,7 @@ TEST(CatchingIngressRead, ASnapshotFromAnEarlierActivationIsRefused) {
   // consumes a trajectory received while another controller had the arm.
   TrajectorySnapshot snap = MakeSnapshot(/*recv=*/1000 * kMs, /*t0=*/1000 * kMs);
   snap.token.activation_generation = kActivation - 1;
-  std::uint64_t last_seq = 0;
+  rtc::catching::ConsumedToken last_seq{};
 
   const NowReal now{1001 * kMs};
   const auto view = ReadTraj(snap, now, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation, last_seq);
@@ -312,7 +377,7 @@ TEST(CatchingIngressSeqLock, EveryStoreIsSeenExactlyOnceByAReaderThatLoadsEveryT
   // repeats. ReadTraj cannot make that mistake — it is handed the payload —
   // and this pins the consequence rather than the mechanism.
   rtc::SeqLock<TrajectorySnapshot> box{};
-  std::uint64_t last_seq = 0;
+  rtc::catching::ConsumedToken last_seq{};
   const NowReal now{10'000 * kMs};
 
   int seen_new = 0;

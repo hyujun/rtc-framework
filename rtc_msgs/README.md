@@ -224,7 +224,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | | `tick` / `t_relative_s` / `t_arm_s` | `uint64` / `float64` | RT iteration · 세션 상대 시각 (CSV join 키) · T_arm |
 | **입력 (L1)** | `input_valid` / `input_stale` / `input_expired` / `input_new` | `bool` | 이 tick 이 스냅샷에 내린 판정. stale 은 **steady 수신축** 기준 (D-2) |
 | | `input_n` / `input_generation` / `input_snapshot_sequence` / `input_activation_generation` | `int32` / `uint64` | 표본 수와 provenance token (D-22) |
-| | `input_age_s` / `input_horizon_s` | `float64` | 수신축 나이 · 예측 지평 |
+| | `input_age_s` / `input_horizon_s` | `float64` | 수신축 나이 · 예측 지평. **`input_age_s` 는 미수신이면 음수** (`tip_age_s` 와 같은 "never") — 센티넬이 없으면 `now − 0` 이라 발행자의 steady-clock uptime 이 나이로 실린다 |
 | | `input_accept_count` / `input_reject_counts` / `input_reject_names` | `uint64` / `uint64[]` / `string[]` | **메시지 도착 시점** 갱신. 거부되는 lane 과 조용한 lane 은 RT 쪽에서 구분되지 않으므로, "전부 stale" 일 때 처음 읽을 값 |
 | | `input_layout_rebuilds` / `input_origin_delay_s` / `input_jump_m` | `uint64` / `float64` | 레이아웃 변경 추종 횟수 · `recv_wall − stamp` (진단 전용, 판정 금지) · 직전 예측과의 점프 J (< 0 = 비교 안 함) |
 | **plan (L3)** | `plan_valid` / `plan_id` / `plan_t_c_s` / `plan_age_s` | `bool` / `uint32` / `float64` | 포구 시각까지 남은 시간과 plan 나이 |
@@ -238,7 +238,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | | `clik_status` / `clik_iterations` / `clik_solve_us` / `clik_conflict_mask` | `int32` / `float64` / `uint64` | ProxQP 상태 (0 = SOLVED, −1 = 미해결) · 반복 · solve 시간 (G5-C 예산의 입력) · 충돌 비트 |
 | | `qp_fail_streak` | `int32` | 연속 실패 수. `supervisor.n_qp` 회에서 fault 래치 |
 | **추종** | `track_err_rad` | `float64` | ‖q_meas − q_cmd‖. D-6 이 측정값을 CLIK 밖에 두므로 **팔이 명령 위치에 없다는 것을 아는 유일한 감시자** |
-| | `q_cmd` / `q_meas` / `arm_joint_names` | `float64[]` / `string[]` | device 순서, 이름은 configure 에서 한 번 박힌다 |
+| | `q_cmd` / `q_meas` / `arm_joint_names` | `float64[]` / `string[]` | device 순서, 이름은 configure 에서 한 번 박힌다. `q_cmd` 는 **그 tick 에 실제로 나간 명령** (법칙 비활성 구간의 hold latch 포함) 이고, 명령이 없는 tick (latch 전 침묵) 은 **NaN** 이다 — 0.0 을 쓰면 위 `track_err_rad` 을 오프라인으로 재계산하는 소비자가 존재하지 않는 수 rad 오차를 본다 |
 | | `abort_stopped` | `bool` | QP 비의존 관절공간 정지가 완료됐는가 |
 | **손 (L6)** | `hand_phase_valid` / `hand_phase` / `hand_rho` / `hand_timeout` | `bool` / `uint8` / `float64` | S7.1 시퀀서가 손을 가져가기 전까지 `hand_phase_valid` 는 false. `HAND_PHASE_OPEN=0` … `HAND_PHASE_RELEASE=4` |
 | **지문 센서 (D-24)** | `tip_names` / `tip_force` / `tip_contact` / `tip_fresh` / `tip_age_s` | `string[]` / `float64[]` / `bool[]` | `tip_fresh` 는 backend 의 유효 플래그 **와** 이 컨트롤러의 시한을 둘 다 요구한다 — 값이 유효한 것과 소비자의 시한을 만족하는 것은 다르다. `tip_age_s < 0` = 미수신 |

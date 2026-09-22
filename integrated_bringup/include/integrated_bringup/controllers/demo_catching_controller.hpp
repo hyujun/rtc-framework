@@ -295,6 +295,17 @@ class DemoCatchingController final : public RTControllerInterface {
     catching_diag_log_handle_ = std::move(handle);
   }
 
+  /// The ARM's position box as the solver received it — margined, device
+  /// order, empty when the box is incomplete. Exposed so a test can assert
+  /// that the abort ramp and CLIK were handed the SAME box rather than
+  /// re-deriving the margin at the call site and comparing a copy to a copy.
+  [[nodiscard]] const std::vector<double>& GetArmPositionBoxLowerForTesting() const noexcept {
+    return arm_q_min_margined_;
+  }
+  [[nodiscard]] const std::vector<double>& GetArmPositionBoxUpperForTesting() const noexcept {
+    return arm_q_max_margined_;
+  }
+
   [[nodiscard]] int GetArmDof() const noexcept { return arm_dof_; }
 
   [[nodiscard]] int GetHandDof() const noexcept { return hand_dof_; }
@@ -645,9 +656,11 @@ class DemoCatchingController final : public RTControllerInterface {
   rtc::SeqLock<rtc::catching::TrajectorySnapshot> traj_box_{};
   rtc::SeqLock<rtc::catching::CovarianceSnapshot> cov_box_{};
 
-  /// RT-owned. `last_consumed_sequence_` is the payload-side "have I seen
-  /// this" memory D-21 requires (never SeqLock::sequence()).
-  std::uint64_t last_consumed_sequence_{0};
+  /// RT-owned. The payload-side "have I seen this" memory D-21 requires
+  /// (never SeqLock::sequence()). It carries the epoch and an explicit `seen`
+  /// flag as well as the number — see `ConsumedToken` for why the number
+  /// alone cannot express "nothing consumed yet".
+  rtc::catching::ConsumedToken consumed_{};
   std::uint64_t last_track_generation_{0};
   bool track_seen_{false};
   /// Latched on the tick a snapshot from a DIFFERENT track arrives, consumed
@@ -670,6 +683,16 @@ class DemoCatchingController final : public RTControllerInterface {
   std::string accel_limits_path_;
   std::string accel_limits_group_;
   std::vector<double> arm_qdd_max_;  // device order, from the derived file
+  /// The ARM's position box after `limit_margin_`, device order — the same
+  /// box handed to CLIK, cached here because the abort ramp needs it too.
+  /// `JointSpaceDecelStep` documents its bounds as "the caller's box, already
+  /// margined"; passing the raw device limits instead lets a stop integrate
+  /// out to the limit CLIK was kept away from, and the backend then clamps it
+  /// invisibly — the unattributable command/solution mismatch the margin was
+  /// introduced to prevent. Empty when the box is incomplete, which is the
+  /// same all-or-nothing rule CLIK's box follows.
+  std::vector<double> arm_q_min_margined_;
+  std::vector<double> arm_q_max_margined_;
 
   bool oracle_enabled_{false};
   std::array<double, 3> oracle_p_c_{};

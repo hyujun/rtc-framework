@@ -155,9 +155,7 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
   // about to use", so a dropped NaN message (above) must not refresh it — the
   // early return leaves the previous stamp with the previous force, which is
   // the pair that is actually still in the mirror (D-24).
-  tip.recv_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
-                           .count();
+  tip.recv_steady_ns = rtc::SteadyNowNs();
   if (finger_idx + 1 > mirror.num_tips) {
     mirror.num_tips = finger_idx + 1;
   }

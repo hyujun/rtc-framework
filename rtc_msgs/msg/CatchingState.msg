@@ -108,7 +108,11 @@ int32 input_n           # samples in the snapshot
 uint64 input_generation            # vision track epoch (L1 §4.4, D-4)
 uint64 input_snapshot_sequence     # provenance token (D-22)
 uint64 input_activation_generation # provenance token (D-22)
-float64 input_age_s     # age on the steady receive axis — the only staleness axis
+float64 input_age_s     # age on the steady receive axis — the only staleness axis.
+                        # NEGATIVE means nothing has ever been received, the same
+                        # 'never' tip_age_s below uses. Without the sentinel this
+                        # field is now-minus-zero, i.e. the publisher's steady-clock
+                        # uptime, on every tick before the first prediction.
 float64 input_horizon_s # prediction horizon carried by the snapshot
 
 # Ingress counters, updated on MESSAGE ARRIVAL rather than per tick. A lane
@@ -186,7 +190,11 @@ int32 qp_fail_streak       # consecutive failures; supervisor.n_qp of them latch
 # (D-6 keeps it out of CLIK), which makes it the only watchdog that notices
 # the arm is not where it was told to be.
 float64 track_err_rad
-float64[] q_cmd          # commanded arm configuration, DEVICE order
+float64[] q_cmd          # commanded arm configuration, DEVICE order — what actually
+                         # went out on the wire this tick, including the hold latch
+                         # while the law is not driving. NaN on a tick that commanded
+                         # nothing (the output is silenced until the latch is set),
+                         # so a reader cannot average a placeholder into the error.
 float64[] q_meas         # measured arm configuration, same order
 string[] arm_joint_names # names the two arrays are in, stamped once at configure
 bool abort_stopped       # the QP-independent joint-space stop has brought the arm to rest

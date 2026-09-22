@@ -201,10 +201,20 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 [[nodiscard]] TrajView ReadTraj(const rtc::SeqLock<TrajectorySnapshot>& box, NowReal now,
                                 NowLead now_lead, std::int64_t t_stale_ns,
                                 std::uint32_t current_generation,  // 호출부: ActivationGeneration()
-                                std::uint64_t& last_snapshot_seq, TrajectorySnapshot& buf) noexcept {
+                                ConsumedToken& consumed, TrajectorySnapshot& buf) noexcept {
   buf = box.Load();                                // 매 tick 무조건 (D-21) — 재시도 상한 없음 (G1-8)
-  const bool is_new = buf.snapshot_sequence != last_snapshot_seq;  // payload 안 token 으로 판정 (D-22)
-  if (is_new) { last_snapshot_seq = buf.snapshot_sequence; }
+  // payload 안 token 으로 판정 (D-22). 판정 대상은 번호가 아니라 **(epoch, 번호) 쌍 + seen** 이다:
+  //  ㄱ. A-S5-4 로 새 track epoch 은 번호를 아무 값에서나 다시 시작할 수 있으므로, 번호가 같다는
+  //      것만으로는 반복의 근거가 못 된다 (새 공의 첫 스냅샷이 옛 공의 마지막 번호와 겹치면
+  //      TRACK_CHANGED 가 안 뜬 채 새 공의 표본이 소비된다).
+  //  ㄴ. 0 은 합법적인 `snapshot_sequence` 다 — 값은 vision 노드에서 그대로 오고 이 repo 가
+  //      제약하지 않는다. 그래서 `last_snapshot_seq == 0` 하나로는 "아직 아무것도 안 봤다" 와
+  //      "0번을 봤다" 를 구별할 수 없고, 0번으로 시작하는 lane 의 첫 스냅샷이 이미 소비된 것으로
+  //      읽힌다 (trial reset 직후에도 같다). track 축이 `track_seen_` 으로 푼 문제를 sequence
+  //      축에도 똑같이 둔다.
+  const bool is_new = !consumed.seen || buf.snapshot_sequence != consumed.sequence ||
+                      buf.generation != consumed.generation;
+  if (is_new) { consumed = {buf.snapshot_sequence, buf.generation, true}; }
   const bool current_gen = buf.activation_generation == current_generation;  // D-23
   const bool stale = !current_gen || !buf.valid || (now.ns - buf.recv_steady_ns) > t_stale_ns;  // steady 수신 나이
   const bool expired = buf.n > 0 && now_lead > buf.LastBallTime();              // 선행축 (§4.1)

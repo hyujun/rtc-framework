@@ -120,6 +120,7 @@ rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 | 열거형 | 값 | 설명 |
 |--------|---|------|
 | `StateLane` | `kPosition`, `kVelocity`, `kEffort` | `DeviceState` 의 세 조인트공간 lane 중 어느 것의 freshness 를 묻는지. 짝 헬퍼 `LaneHoleMask(dev, lane)` 가 lane→필드 매핑의 유일한 소유자이고, 판정은 `rtc::IsLaneReadable` 이 한다 |
+| `SteadyNowNs` | (열거형 아님 — 수신축 읽기) | `*_recv_steady_ns` 와 아래 나이 헬퍼가 재는 **그 clock** 을 한 곳에서 읽는다. `steady_clock` 고정 (wall 시각이 점프해도 안 움직여야 freshness 가 수신축에서 성립한다), RT-safe (vDSO). 생산자마다 `std::chrono` 세 줄을 다시 쓰면 "backend 와 같은 시계" 라는 주석이 우연으로만 참이 되고, 축을 바꿀 때 사본을 전부 찾아야 한다 |
 | `SensorGroupAgeNs` / `IsSensorGroupFresh` | (열거형 아님 — `DeviceState` 짝 헬퍼) | fingertip lane 의 그룹별 나이와 freshness. 나이는 미수신을 음수로 구분해 돌려주고, `IsSensorGroupFresh` 는 backend 의 `inference_enable` **와** 호출자 deadline 을 **둘 다** 요구한다 (앞은 값의 유효성, 뒤는 소비자의 시한이라 서로를 대신하지 못한다) |
 | `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` | 커맨드 모드. `kPdFeedforward`는 PD 위치 서보(`values`) + per-joint feedforward 토크(`DeviceOutput::feedforward`) 오버레이 — arm=kPosition, hand=kPdFeedforward 같은 mixed-command 출력에 사용 |
 | `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |

@@ -5,6 +5,7 @@
 // in the RTC framework.
 
 #include <array>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -249,6 +250,27 @@ struct DeviceState {
   std::array<uint64_t, kMaxSensorGroups> inference_sequence{};
   bool valid{false};
 };
+
+// Read the RECEIVE AXIS — the one clock every `*_recv_steady_ns` field and
+// every age helper below is measured against.
+//
+// It exists so the axis has a single spelling. The expression is three lines
+// of `std::chrono` that every producer of a receipt stamp has to write, and
+// by 2026-09-23 there were five copies of it across three packages, each with
+// a comment claiming to use "the same clock the backends use" — true only by
+// coincidence, and unverifiable without reading all five. A consumer that
+// compares a stamp from one copy against `SensorGroupAgeNs` here is relying on
+// that coincidence, so the read belongs next to the helpers that interpret it.
+//
+// steady_clock, never system_clock: this axis must not move when wall time is
+// stepped, which is the whole reason freshness is judged on receipt rather
+// than on `header.stamp` (invariants.md). RT-safe — a vDSO read, no allocation
+// and no lock, so it is callable from a tick and from a driver callback alike.
+[[nodiscard]] inline int64_t SteadyNowNs() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 // Age of one sensor group's most recent sample, or a negative value when that
 // group has never reported (dynamic_catching D-24).

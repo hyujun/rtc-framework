@@ -142,9 +142,7 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
   // only add jitter between values that arrived in one packet. Groups NOT in
   // this message keep their previous stamp and counter, which is what makes a
   // lane that goes quiet on one finger observable.
-  const int64_t recv_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                     std::chrono::steady_clock::now().time_since_epoch())
-                                     .count();
+  const int64_t recv_steady_ns = rtc::SteadyNowNs();
 
   const int n_ft = static_cast<int>(msg->fingertips.size());
   for (int f = 0; f < n_ft && f < kMaxSensorGroups; ++f) {

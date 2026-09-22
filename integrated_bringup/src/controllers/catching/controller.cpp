@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -31,13 +32,10 @@ inline constexpr double kFallbackMaxVelocity = 2.0;
 /// Read per tick rather than accumulated as `iteration * dt` (plan §3): the
 /// two diverge by exactly the jitter and overrun this controller's deadlines
 /// are about, and the accumulated version cannot see a missed tick at all.
-/// RT-safe — a vDSO read, no allocation and no lock, which is the same thing
-/// the device backends do on their own RT-priority callback lane.
-[[nodiscard]] std::int64_t SteadyNowNs() noexcept {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+/// The axis itself is `rtc::SteadyNowNs` — the same read the device backends
+/// use for their receipt stamps, which is what makes an age computed here
+/// comparable to one computed there.
+[[nodiscard]] std::int64_t SteadyNowNs() noexcept { return rtc::SteadyNowNs(); }
 
 }  // namespace
 
@@ -605,8 +603,14 @@ void DemoCatchingController::RunJointSpaceAbort(const ControllerState& state) no
     return;
   }
   const auto n = static_cast<std::size_t>(std::min(arm_dof_, kDemoCatchingMaxArmDof));
-  const auto& lower = device_position_lower_[kCatchingArmDeviceIdx];
-  const auto& upper = device_position_upper_[kCatchingArmDeviceIdx];
+  // The MARGINED box, not the device limits. `JointSpaceDecelStep` documents
+  // its bounds as "the caller's box, already margined" and means it: ramping
+  // against the raw limits ends the stop at a value CLIK was kept away from,
+  // and the backend's clamp of it is invisible to everything upstream. Empty
+  // when the box was incomplete, which the size guard below then catches as
+  // "no honest ramp" — the same answer it already gave for a missing limit.
+  const auto& lower = arm_q_min_margined_;
+  const auto& upper = arm_q_max_margined_;
   if (arm_qdd_max_.size() < n || lower.size() < n || upper.size() < n) {
     // Without a limit there is no honest ramp. Freezing the command is the
     // conservative answer: the arm holds what it was last told, which is a
@@ -755,9 +759,19 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     //
     // kParamsTbd is the DOCUMENTED reuse for "an ARMED precondition stopped
     // holding" (L7 §4.5 has no dedicated reason; transition_table.hpp's header
-    // records the reuse). It is a self-loop in IDLE and sends ARMED back to
-    // IDLE, which is exactly the two behaviours wanted here.
-    return {Reason::kParamsTbd, true};
+    // records the reuse). It self-loops in IDLE, sends ARMED and RETREAT to
+    // IDLE, and sends every mode that can be CARRYING MOTION to ABORT_SAFE.
+    //
+    // ABORT_SAFE is the one mode that must NOT answer it. Its exit is the
+    // completion of the stop (`abort_stopped_` below), and returning a reason
+    // here would pre-empt that check every tick — the ramp would keep running
+    // and the machine would never reach RETREAT, so a disarm during an abort
+    // would strand the controller in the state it was trying to leave. Falling
+    // through is what closes the cycle: APPROACH → ABORT_SAFE → (stopped) →
+    // RETREAT → IDLE, with the arm ramped down rather than frozen.
+    if (mode_ != Mode::kAbortSafe) {
+      return {Reason::kParamsTbd, true};
+    }
   }
   // ── Modes that do not ask vision anything ────────────────────────────────
   // BEFORE the vision lane, because an abort is not a question about the ball.
@@ -822,7 +836,16 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
   // which is exactly what it means here: the ball is seen, and no plan exists
   // for it. S6 replaces this with a real plan check rather than adding one.
   if (mode_ == Mode::kTracking) {
-    if (!plan_active_ && oracle_enabled_ && clik_enabled_) {
+    // `arm_readable_` gates the EDGE, not just the law. SeedArmCommand ties
+    // the command to the measurement and that is the only moment the two are
+    // tied, so seeding off an unreadable device latches whatever the mirror
+    // happens to hold — zeros for a device that never reported, the previous
+    // sample for a hole — and `arm_cmd_seeded_` then makes it permanent. The
+    // arm is silenced while unreadable, so the damage only appears on the
+    // first readable tick, as a step away from the pose the arm is actually
+    // in. Waiting self-loops in TRACKING, which is where a controller that
+    // can see the ball but not its own arm belongs.
+    if (!plan_active_ && oracle_enabled_ && clik_enabled_ && arm_readable_) {
       // The oracle stands in for the planner (A-S5-8). Building it HERE, on
       // the tick the supervisor is ready for one, is what makes the
       // TRACKING → APPROACH edge the real edge rather than a special case.
@@ -900,7 +923,7 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   track_err_ = 0.0;
   traj_hint_ = 0;
   std::fill(arm_qd_cmd_.begin(), arm_qd_cmd_.end(), 0.0);
-  last_consumed_sequence_ = 0;
+  consumed_ = rtc::catching::ConsumedToken{};
   last_track_generation_ = 0;
   track_seen_ = false;
   traj_new_track_ = false;
@@ -1192,11 +1215,29 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
   // Filled on every tick including the holding ones: a hold is a command, and
   // a reader that saw nothing could not tell it from a tick that produced no
   // command at all.
+  //
+  // The selection MIRRORS WriteDeviceCommand above, because the only useful
+  // reading of this column is "what went out on the wire this tick". Writing
+  // 0.0 whenever the law has not taken over reported "commanded to the
+  // origin" for every holding tick while the latch was really commanding the
+  // activation pose, and ‖q_meas − q_cmd‖ computed offline from these columns
+  // then showed a multi-radian error that does not exist (2026-09-23 review).
+  // Before the latch is set the output is SILENCED — no command exists — and
+  // that case is NaN rather than a number, so a reader cannot average it away.
   const auto n_arm = static_cast<std::size_t>(
       std::min<int>(arm_dof_, static_cast<int>(CatchingDiagLogPod::kMaxArmJoints)));
   tick_record_.num_arm_joints = static_cast<std::uint8_t>(n_arm);
+  const bool arm_driven = arm_cmd_seeded_ && !estop_active_;
+  const auto latched_width = static_cast<std::size_t>(std::max(arm_hold_.width, 0));
   for (std::size_t i = 0; i < n_arm; ++i) {
-    tick_record_.q_cmd[i] = arm_cmd_seeded_ ? arm_q_cmd_[i] : 0.0;
+    if (!arm_hold_.IsLatched()) {
+      tick_record_.q_cmd[i] = std::numeric_limits<double>::quiet_NaN();
+    } else if (arm_driven) {
+      tick_record_.q_cmd[i] = arm_q_cmd_[i];
+    } else {
+      tick_record_.q_cmd[i] =
+          i < latched_width ? arm_hold_.commands[i] : std::numeric_limits<double>::quiet_NaN();
+    }
   }
   if (arm_readable_ && state.num_devices > kCatchingArmDeviceIdx) {
     const auto& dev = state.devices[kCatchingArmDeviceIdx];
@@ -1308,7 +1349,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   const rtc::catching::NowReal now{SteadyNowNs()};
   traj_view_ =
       rtc::catching::ReadTraj(snapshot, now, rtc::catching::MakeNowLead(now, t_arm_ns_),
-                              t_stale_ns_, ActivationGeneration(), last_consumed_sequence_);
+                              t_stale_ns_, ActivationGeneration(), consumed_);
   RecordInputLane(snapshot);
   if (traj_view_.is_new) {
     // A track change is latched here rather than compared in EvaluateReason:

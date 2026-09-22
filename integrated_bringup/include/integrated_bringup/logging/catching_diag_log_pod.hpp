@@ -78,7 +78,9 @@ struct CatchingDiagLogPod {
   std::uint64_t input_generation{0};
   std::uint64_t input_snapshot_sequence{0};
   std::uint64_t input_activation_generation{0};
-  double input_age_s{0.0};
+  /// Negative = never received (see CatchingState.msg). NOT 0, which on this
+  /// wire means "arrived this instant".
+  double input_age_s{-1.0};
   double input_horizon_s{0.0};
 
   // ── Plan (L3; the S5 oracle stands in for the planner) ───────────────────
@@ -125,6 +127,8 @@ struct CatchingDiagLogPod {
   // ── Tracking ─────────────────────────────────────────────────────────────
   double track_err_rad{0.0};
   std::uint8_t num_arm_joints{0};
+  /// What went out on the wire, hold latch included; NaN on a tick that
+  /// commanded nothing. Mirrors the controller's own command selection.
   std::array<double, kMaxArmJoints> q_cmd{};
   std::array<double, kMaxArmJoints> q_meas{};
   bool abort_stopped{false};

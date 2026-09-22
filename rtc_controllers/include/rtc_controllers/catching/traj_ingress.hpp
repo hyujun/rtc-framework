@@ -116,10 +116,38 @@ struct TrajView {
   /// two, pairing a new counter with an old payload and hiding the newest
   /// snapshot for as long as the pattern repeats.
   bool is_new{false};
-  /// Age on the receive axis. Published as a diagnostic even when the snapshot
-  /// is usable, because a horizon that is always fresh and always short is a
-  /// vision problem that a boolean cannot express.
-  std::int64_t age_ns{0};
+  /// Age on the receive axis, or **-1 when nothing has ever been received**.
+  /// Published as a diagnostic even when the snapshot is usable, because a
+  /// horizon that is always fresh and always short is a vision problem that a
+  /// boolean cannot express.
+  ///
+  /// The sentinel is not cosmetic. `traj_recv_ns` is 0 before the first
+  /// message, so a plain `now - recv` reports the STEADY-CLOCK UPTIME as the
+  /// age — 373966 s on the box this was caught on (2026-09-23), on every row
+  /// of every run until the first prediction arrives. Any consumer that
+  /// thresholds on the number, or averages it, silently eats the uptime. -1
+  /// is the same "never" the fingertip lane uses for `tip_age_s`, so the two
+  /// receive-axis lanes read the same way.
+  std::int64_t age_ns{-1};
+};
+
+/// What the caller has already consumed off the payload lane.
+///
+/// `sequence` alone cannot carry this. 0 is a legal `snapshot_sequence` — the
+/// value comes straight off the wire from the vision node and nothing in this
+/// repo forbids it — so a bare `last_consumed_sequence == 0` means both
+/// "nothing consumed yet" and "consumed number zero", and the first snapshot
+/// of a lane that happens to be numbered 0 reads as already seen. The track
+/// axis solved this with an explicit `seen` flag; this is the same flag for
+/// the sequence axis.
+///
+/// `generation` is carried for the OTHER half: A-S5-4 lets a new track epoch
+/// restart its numbering at any value, so a sequence that merely repeats the
+/// last one is not evidence of a repeat unless the epoch also matches.
+struct ConsumedToken {
+  std::uint64_t sequence{0};
+  std::uint64_t generation{0};
+  bool seen{false};
 };
 
 /// Judge a snapshot the caller has already loaded.
@@ -137,19 +165,34 @@ struct TrajView {
 [[nodiscard]] inline TrajView ReadTraj(const TrajectorySnapshot& snap, NowReal now,
                                        NowLead now_lead, std::int64_t t_stale_ns,
                                        std::uint64_t current_activation,
-                                       std::uint64_t& last_consumed_sequence) noexcept {
+                                       ConsumedToken& consumed) noexcept {
   TrajView view{};
-  view.age_ns = AgeNs(now, NowReal{snap.token.traj_recv_ns});
-  view.is_new = snap.valid && snap.token.snapshot_sequence != last_consumed_sequence;
+  // `traj_recv_ns == 0` is "never received" (the same 0-is-absent polarity the
+  // hole mask and the sensor lane use), and an age measured against it would
+  // be the uptime rather than an age — see `TrajView::age_ns`.
+  view.age_ns =
+      snap.token.traj_recv_ns > 0 ? AgeNs(now, NowReal{snap.token.traj_recv_ns}) : -1;
+  // Newness is a property of the (epoch, number) PAIR, not of the number. A
+  // repeat is only a repeat within one epoch, and nothing at all has been
+  // consumed until `seen` says so.
+  view.is_new = snap.valid && (!consumed.seen ||
+                               snap.token.snapshot_sequence != consumed.sequence ||
+                               snap.token.generation != consumed.generation);
   if (view.is_new) {
-    last_consumed_sequence = snap.token.snapshot_sequence;
+    consumed.sequence = snap.token.snapshot_sequence;
+    consumed.generation = snap.token.generation;
+    consumed.seen = true;
   }
 
   const bool current = snap.token.activation_generation == current_activation;
   // A non-positive threshold is a configuration error, and the safe reading of
   // "no sample can satisfy this" is to withhold the lane rather than to treat
   // it as "no limit" — the same fail-closed convention as IsSensorGroupFresh.
-  const bool fresh = t_stale_ns > 0 && snap.token.traj_recv_ns > 0 && view.age_ns <= t_stale_ns;
+  // `traj_recv_ns > 0` stays even though `age_ns` is now -1 without it: the
+  // sentinel is smaller than any threshold, so dropping this term would make
+  // "never received" read as the freshest possible sample.
+  const bool fresh = t_stale_ns > 0 && snap.token.traj_recv_ns > 0 && view.age_ns >= 0 &&
+                     view.age_ns <= t_stale_ns;
   view.stale = !snap.valid || !current || !fresh;
 
   // Horizon exhaustion is judged on the LEAD axis and only when there is a

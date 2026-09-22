@@ -585,10 +585,18 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   // result is a controller that tracks its posture and treats the catch point
   // as a suggestion — plausible motion, missed ball, nothing in any log that
   // says why.
-  const bool weights_resolved =
-      CheckActiveTbd(report, params.joint_cmd_w_task, "joint_cmd.w_task", true) &&
-      CheckActiveTbd(report, params.joint_cmd_w_axis, "joint_cmd.w_a", true) &&
-      CheckActiveTbd(report, params.joint_cmd_w_arm, "joint_cmd.w_arm", true);
+  //
+  // The three checks are evaluated into locals FIRST. Written as a chained
+  // `&&` they short-circuit, so a profile with all three TBD reported only
+  // `w_task` — the operator resolves it, re-configures, and is told about
+  // `w_a`; resolves that, re-configures, and is told about `w_arm`. Three
+  // round trips for one report, while every other block in this validator
+  // lists its failures in full. `CheckActiveTbd` is here for its side effect
+  // on `report`, so the ordering of the AND is not a detail.
+  const bool task_known = CheckActiveTbd(report, params.joint_cmd_w_task, "joint_cmd.w_task", true);
+  const bool axis_known = CheckActiveTbd(report, params.joint_cmd_w_axis, "joint_cmd.w_a", true);
+  const bool arm_known = CheckActiveTbd(report, params.joint_cmd_w_arm, "joint_cmd.w_arm", true);
+  const bool weights_resolved = task_known && axis_known && arm_known;
   if (weights_resolved) {
     CheckPositive(report, "joint_cmd.w_task", params.joint_cmd_w_task.value);
     CheckPositive(report, "joint_cmd.w_a", params.joint_cmd_w_axis.value);

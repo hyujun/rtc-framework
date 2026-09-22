@@ -291,6 +291,8 @@ void DemoCatchingController::BuildClikBoxes(int nv,
   // reads "position limits on".
   Eigen::VectorXd q_min = Eigen::VectorXd::Zero(nv);
   Eigen::VectorXd q_max = Eigen::VectorXd::Zero(nv);
+  arm_q_min_margined_.assign(static_cast<std::size_t>(arm_dof_), 0.0);
+  arm_q_max_margined_.assign(static_cast<std::size_t>(arm_dof_), 0.0);
   bool box_complete = true;
   for (int dev = 0; dev < 2 && box_complete; ++dev) {
     const int dof = (dev == kCatchingArmDeviceIdx) ? arm_dof_ : hand_dof_;
@@ -315,12 +317,26 @@ void DemoCatchingController::BuildClikBoxes(int nv,
       const double hi = std::max(upper[ui] - limit_margin_, mid);
       place(base + i, q_min, lo);
       place(base + i, q_max, hi);
+      // The arm half is kept in device order too: the QP-independent abort
+      // ramp (A-S5-10) has to clamp against the SAME box, and deriving it a
+      // second time there would be a second copy of this formula to keep in
+      // step. Filled here rather than in a separate loop so a future edit
+      // cannot narrow one and not the other.
+      if (dev == kCatchingArmDeviceIdx) {
+        arm_q_min_margined_[ui] = lo;
+        arm_q_max_margined_[ui] = hi;
+      }
     }
   }
   if (box_complete) {
     cfg.q_min = q_min;
     cfg.q_max = q_max;
   } else {
+    // All-or-nothing, and the abort ramp's copy goes with it: a half-filled
+    // margined box would clamp some joints to the margin and leave the rest
+    // at whatever the loop had reached when it bailed.
+    arm_q_min_margined_.clear();
+    arm_q_max_margined_.clear();
     RCLCPP_WARN(logger_,
                 "device position limits incomplete — the CLIK position box is OFF (the backend "
                 "clamp is then the only bound, and its clamp is invisible to the solver)");

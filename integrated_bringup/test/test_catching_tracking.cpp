@@ -24,6 +24,7 @@
 
 #include "arm_lag_fixture.hpp"
 #include "catching_cloud_fixture.hpp"
+#include "catching_tracking_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
@@ -41,6 +42,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -55,179 +58,15 @@ using integrated_bringup::testfx::kUr5eArmDof;
 using integrated_bringup::testfx::kUr5eHome;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
+// Moved to catching_tracking_fixture.hpp so the CLIK sweep shares ONE profile.
+using integrated_bringup::testfx::CatchFrameOracle;
+using integrated_bringup::testfx::kCatchFrame;
+using integrated_bringup::testfx::kCatchXyz;
+using integrated_bringup::testfx::kDt;
+using integrated_bringup::testfx::MakeConfigWithCatchFrame;
+using integrated_bringup::testfx::TrackingYaml;
 
 using namespace std::chrono_literals;
-
-constexpr double kDt = 0.002;  // 500 Hz, the shipped control_rate
-constexpr const char* kCatchFrame = "catch_frame";
-/// The shipped offset (config/ur5e_p1b/_base.yaml urdf.extra_frames).
-const Eigen::Vector3d kCatchXyz{0.015, 0.145, 0.052};
-
-/// The fixture's model config plus the catch frame, which the shared fixture
-/// does not carry (it predates D-10). Built here rather than added to the
-/// shared fixture so the other suites keep the model they were written for.
-rtc_urdf_bridge::ModelConfig MakeConfigWithCatchFrame() {
-  rtc_urdf_bridge::ModelConfig cfg = integrated_bringup::testfx::MakeUr5eP1bModelConfig();
-  rtc_urdf_bridge::ExtraFrameConfig frame;
-  frame.name = kCatchFrame;
-  frame.parent = "l_palm_link";
-  frame.xyz = kCatchXyz;
-  frame.provisional = false;
-  cfg.extra_frames.push_back(frame);
-  return cfg;
-}
-
-/// The INDEPENDENT oracle: a second model, driven at the joints the controller
-/// commanded, answering "where is the catch frame really".
-class CatchFrameOracle {
- public:
-  explicit CatchFrameOracle(rtc_urdf_bridge::PinocchioModelBuilder& builder) {
-    // The ACTUATED model, which is what CombinedModelCache selects for a
-    // closed-chain hand — and therefore what the controller's commands are
-    // expressed against.
-    //
-    // Independence here means "not reading the controller's own cache", not
-    // "a different model": a reduced model places an inherited frame at the
-    // world pose it had in the REFERENCE configuration the reduction was taken
-    // at, so the full model and the actuated one disagree about the catch
-    // frame by a few millimetres at the same arm angles. Judging the
-    // controller against a model it is not driving would measure that
-    // disagreement and call it a tracking error (measured: 2.7 mm).
-    model_ = builder.GetActuatedModel();
-    if (!model_) {
-      model_ = builder.GetFullModel();
-    }
-    data_ = std::make_unique<pinocchio::Data>(*model_);
-    frame_id_ = rtc::catching::ResolveCatchFrame(*model_, kCatchFrame);
-    q_ = Eigen::VectorXd::Zero(model_->nq);
-  }
-
-  /// `arm` is in device (joint_state_names) order; the hand stays at zero,
-  /// which is where this test's measured hand sits.
-  pinocchio::SE3 PoseAt(const std::vector<std::string>& arm_names,
-                        const std::array<double, 64>& arm_values, int arm_dof) {
-    q_.setZero();
-    for (int i = 0; i < arm_dof; ++i) {
-      const auto jid = model_->getJointId(arm_names[static_cast<std::size_t>(i)]);
-      const auto idx = model_->joints[jid].idx_q();
-      q_[idx] = arm_values[static_cast<std::size_t>(i)];
-    }
-    pinocchio::forwardKinematics(*model_, *data_, q_);
-    pinocchio::updateFramePlacement(*model_, *data_, frame_id_);
-    return data_->oMf[frame_id_];
-  }
-
- private:
-  std::shared_ptr<const pinocchio::Model> model_;
-  std::unique_ptr<pinocchio::Data> data_;
-  pinocchio::FrameIndex frame_id_{0};
-  Eigen::VectorXd q_;
-};
-
-std::string TrackingYaml(const std::string& topic, const Eigen::Vector3d& p_c,
-                         const Eigen::Vector3d& a_d, double gamma_f, double t_c_offset_s) {
-  std::ostringstream os;
-  os.precision(12);
-  os << R"(
-command_type: "position"
-diagnostic:
-  hand_step: false
-  oracle_plan:
-    enabled: true
-    p_c: [)"
-     << p_c.x() << ", " << p_c.y() << ", " << p_c.z() << R"(]
-    a_d: [)"
-     << a_d.x() << ", " << a_d.y() << ", " << a_d.z() << R"(]
-    t_c_offset_s: )"
-     << t_c_offset_s << R"(
-    gamma_f: )"
-     << gamma_f << R"(
-catching:
-  catch_frame: ")"
-     << kCatchFrame << R"("
-  io:
-    traj_topic: ")"
-     << topic << R"("
-    expected_frame: "world"
-    n_min: 7
-    t_stale: 0.2
-    future_tol: 0.01
-    horizon_min: 0.3
-    track:
-      eval_offset: 0.05
-  prediction:
-    dt_expected: 0.05
-  sim:
-    io:
-      future_tol: 0.2
-  reference:
-    # Cleared, like every other provisional flag in this fixture: the profile
-    # below fixes all four values, and this suite is judged on the REAL-ARM
-    # axis (its device configs declare no backend), where a provisional block
-    # parks the controller before it can command anything.
-    provisional: false
-    omega: 20.0
-    zeta: 1.0
-    v_max: 3.0
-    a_max: 30.0
-  joint_cmd:
-    K_p: 20.0
-    K_a: 8.0
-    K_n: 1.0
-    w_task: 1.0
-    w_a: 0.5
-    w_arm: 0.01
-    w_smooth: 0.001
-    damping_sq: 0.0001
-    qp:
-      max_iter: 30
-    lag:
-      T_arm: 0.0
-  supervisor:
-    track_err_abort: 0.5
-    n_qp: 3
-    decel:
-      a_dec: 10.0
-  robot:
-    arm:
-      limit_margin: 0.05
-      accel_limits_package: "integrated_bringup"
-      accel_limits_path: "config/ur5e_p1b/derived_accel_limits.yaml"
-      accel_limits_group: "ur5e"
-    hand:
-      provisional: false
-      rho_eps: 0.02
-      q_open:  [0,0,0,0,0,0,0,0,0,0]
-      q_pre:   [0,0,0,0,0,0,0,0,0,0]
-      q_close: [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]
-      caging_mask: [true,true,true,true,true,true,true,true,true,true]
-      eta_close: 0.9
-      T_close_e2e: 0.28
-  core:
-    ball:
-      diameter: 0.067
-      mass: 0.057
-      restitution: 0.75
-      provisional: false
-  planner:
-    gamma:
-      eta_v: 0.9
-    catchability:
-      manipulability_min:
-        arm_5row: 0.1
-        provisional: false
-topics:
-  ur5e:
-    subscribe:
-      - topic: "ur5e/joint_goal"
-        role: "target"
-  p1b:
-    subscribe:
-      - topic: "p1b/joint_goal"
-        role: "target"
-)";
-  return os.str();
-}
 
 class CatchingTrackingTest : public ::testing::Test {
  protected:
@@ -262,11 +101,20 @@ class CatchingTrackingTest : public ::testing::Test {
   /// key without restating the profile — and so the thing it varies is visible
   /// at the call site rather than buried in a second copy of the config.
   void BringUp(const Eigen::Vector3d& p_c, const Eigen::Vector3d& a_d, double gamma_f = 0.0,
-               double t_c_offset_s = 1.0, const std::function<void(YAML::Node&)>& tweak = nullptr) {
+               double t_c_offset_s = 1.0, const std::function<void(YAML::Node&)>& tweak = nullptr,
+               const std::function<void(std::map<std::string, rtc::DeviceNameConfig>&)>&
+                   device_tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
-    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+    // `device_tweak` edits the DEVICE limits, which the catching YAML cannot
+    // reach: the position box comes from the device, and a case about that box
+    // has to be able to put it somewhere the arm actually goes.
+    auto devices = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
+    if (device_tweak) {
+      device_tweak(devices);
+    }
+    ctrl_->SetDeviceNameConfigs(std::move(devices));
     const rclcpp_lifecycle::State prev;
     // on_configure runs LoadConfig itself (CM's 3-pass contract), so the YAML
     // goes in here rather than through a separate call — passing an empty node
@@ -306,10 +154,11 @@ class CatchingTrackingTest : public ::testing::Test {
     return state;
   }
 
-  void PublishPrediction(std::uint64_t sequence) {
+  void PublishPrediction(std::uint64_t sequence, std::uint64_t generation = 42) {
     integrated_bringup::testing::CloudSpec spec;
     spec.n = 8;
     spec.sequence = sequence;
+    spec.generation = generation;
     spec.p0 = ball_p0_;
     spec.vel = ball_vel_;
     auto msg = integrated_bringup::testing::MakeCloud(spec);
@@ -645,6 +494,169 @@ TEST_F(CatchingTrackingTest, LeadCompensationReducesTheErrorUnderAnActuationDela
 }
 
 // ── The abort ends, even after the lane goes quiet ──────────────────────────
+
+// ── Readiness lost while the arm is moving (code review 2026-09-23) ─────────
+
+TEST_F(CatchingTrackingTest, DisarmingMidApproachRampsTheArmDownAndEndsInIdle) {
+  // The operator lowers `catching.enable` during an approach. Before this was
+  // fixed the supervisor answered kParamsTbd, the table had no row for it from
+  // APPROACH, and so the mode did not move — which meant the driver stopped
+  // calling the law while `WriteDeviceCommand` kept sending the carried
+  // command. The arm's commanded velocity went to zero in ONE tick: the
+  // one-tick infinite deceleration `decel_target.hpp` says this controller
+  // must never emit. And the machine never returned to IDLE, so the disarm had
+  // no visible effect at all.
+  const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.10, 0.08, 0.05);
+  const Eigen::Vector3d a_d = start_pose_.rotation().col(2);
+  ASSERT_NO_FATAL_FAILURE(BringUp(p_c, a_d));
+  RunClosedLoop(4);
+  ASSERT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kApproach);
+
+  // Get the arm genuinely moving, then measure the speed it is moving at.
+  RunClosedLoop(60);
+  std::array<double, 64> before = commanded_;
+  RunClosedLoop(1);
+  double moving_step = 0.0;
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    moving_step = std::max(moving_step, std::abs(commanded_[ui] - before[ui]));
+  }
+  ASSERT_GT(moving_step, 1e-5) << "the arm was not moving, so this case cannot show a freeze";
+
+  node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, false));
+  executor_->spin_some(2ms);
+
+  // The very next tick must route the readiness loss through the stop, not
+  // drop the command where it stood.
+  before = commanded_;
+  RunClosedLoop(1);
+  EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kAbortSafe)
+      << "readiness lost in APPROACH did not reach the ramp";
+  double first_stop_step = 0.0;
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    first_stop_step = std::max(first_stop_step, std::abs(commanded_[ui] - before[ui]));
+  }
+  // A ramp bounded by qdd_max cannot shed a whole tick's motion in one tick,
+  // so the first stopping step is still a large fraction of the moving one.
+  // A freeze would make this exactly zero.
+  EXPECT_GT(first_stop_step, 0.2 * moving_step)
+      << "the command stopped in one tick (" << first_stop_step << " vs " << moving_step
+      << ") — that is a velocity step, not a deceleration";
+
+  // And the cycle terminates: ABORT_SAFE holds until the arm has stopped, then
+  // RETREAT, and from RETREAT readiness-lost goes to IDLE. A disarm that does
+  // not end in IDLE is one the operator cannot see.
+  RunClosedLoop(400, /*publish=*/false);
+  EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kIdle)
+      << "the machine never returned to IDLE after the disarm";
+}
+
+TEST_F(CatchingTrackingTest, TheStopStaysInsideTheBoxTheSolverWasGiven) {
+  // `JointSpaceDecelStep` documents its bounds as "the caller's box, already
+  // narrowed by limit_margin". Handing it the raw device limits instead lets
+  // the ramp integrate out past the value CLIK was kept away from, and the
+  // backend's clamp of that is invisible to the solver — the unattributable
+  // command/solution mismatch the margin exists to prevent.
+  //
+  // The difference is only OBSERVABLE where the two boxes differ, so this case
+  // has to manufacture that: the shipped UR5e limits are +/-6.28 and a 0.05
+  // margin is nowhere near the arm in this fixture, which is why a first
+  // version of this test passed against the defect. Here `shoulder_pan` is
+  // fenced 0.12 rad above home, so the margined bound sits 0.05 rad inside a
+  // bound the ramp can actually reach, and the catch point pushes that joint
+  // straight at it.
+  constexpr double kMargin = 0.05;
+  constexpr double kFence = 0.12;
+  const double pan_home = kUr5eHome[0];
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      start_pose_.translation() + Eigen::Vector3d(0.02, 0.22, 0.0), start_pose_.rotation().col(2),
+      /*gamma_f=*/0.0, /*t_c_offset_s=*/1.0,
+      [kMargin](YAML::Node& y) {
+        y["demo_catching_controller"]["catching"]["robot"]["arm"]["limit_margin"] = kMargin;
+      },
+      [pan_home, kFence](std::map<std::string, rtc::DeviceNameConfig>& devices) {
+        auto& lim = devices["ur5e"].joint_limits;
+        ASSERT_TRUE(lim.has_value()) << "precondition: the fixture arm declares joint limits";
+        lim->position_lower[0] = pan_home - kFence;
+        lim->position_upper[0] = pan_home + kFence;
+      }));
+  RunClosedLoop(4);
+  ASSERT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kApproach);
+
+  const auto lo = ctrl_->GetArmPositionBoxLowerForTesting();
+  const auto hi = ctrl_->GetArmPositionBoxUpperForTesting();
+  ASSERT_EQ(static_cast<int>(lo.size()), kUr5eArmDof) << "the margined box was never built";
+  ASSERT_NEAR(hi[0], pan_home + kFence - kMargin, 1e-12) << "precondition: the box is margined";
+
+  // Drive the pan joint at the fence, then pull readiness out from under it so
+  // the QP-independent ramp — not CLIK — is what finishes the motion.
+  RunClosedLoop(120);
+  node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, false));
+  executor_->spin_some(2ms);
+  RunClosedLoop(400, /*publish=*/false);
+
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_GE(commanded_[ui], lo[ui] - 1e-9) << "joint " << i << " stopped below the solver's box";
+    EXPECT_LE(commanded_[ui], hi[ui] + 1e-9) << "joint " << i << " stopped above the solver's box";
+  }
+}
+
+TEST_F(CatchingTrackingTest, ANewBallReusingTheOldSequenceStillRetreats) {
+  // TRACK_CHANGED had no test anywhere before this one, which is how a
+  // sequence-only newness rule survived: A-S5-4 lets a new epoch restart its
+  // numbering at any value, and the supervisor's epoch comparison lives inside
+  // the `is_new` branch. So a new ball whose first snapshot happened to reuse
+  // the last number was consumed — the controller tracked the NEW ball's
+  // samples — while the supervisor was never told the track had changed.
+  const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.04, 0.03, 0.02);
+  ASSERT_NO_FATAL_FAILURE(BringUp(p_c, start_pose_.rotation().col(2)));
+  RunClosedLoop(4);
+  ASSERT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kApproach);
+
+  // A different ball, first snapshot, numbered exactly like the last one of
+  // the previous track.
+  const std::uint64_t reused = static_cast<std::uint64_t>(3 / 15) + 1;
+  PublishPrediction(reused, /*generation=*/43);
+  state_.iteration += 1;
+  state_.t_relative_s = static_cast<double>(state_.iteration) * kDt;
+  (void)ctrl_->Compute(state_);
+
+  EXPECT_EQ(ctrl_->GetLastReason(), rtc::catching::Reason::kTrackChanged)
+      << "a new track reusing the last sequence was read as a repeat";
+  EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kRetreat)
+      << "APPROACH did not drop the plan built for the previous ball";
+}
+
+TEST_F(CatchingTrackingTest, TheTrajectorySubscriptionStaysOnTheNodesDefaultGroup) {
+  // The ingress's thread-safety is NOT enforced by a lock: `CatchingTrajInput`
+  // has no synchronisation at all, and `ingress_diag_box_` is a single-writer
+  // SeqLock. on_activate is a SECOND writer to both, and what makes that safe
+  // today is only that the subscription callback and the lifecycle call land
+  // on the same thread — the CM attaches every controller LifecycleNode's
+  // DEFAULT callback group to one SingleThreadedExecutor, and runs
+  // switch_controller (hence on_activate) as a callback on that same executor.
+  //
+  // Nothing asserted that before this test. Giving the subscription an
+  // explicit callback group, or moving it to a reentrant one, would put a
+  // genuine data race into a lane whose only symptom is a torn snapshot. This
+  // locks the half that lives in this package: the sub is created with no
+  // SubscriptionOptions, so rclcpp routes it to the default group.
+  const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.04, 0.03, 0.02);
+  ASSERT_NO_FATAL_FAILURE(BringUp(p_c, start_pose_.rotation().col(2)));
+
+  bool found = false;
+  node_->get_node_base_interface()->get_default_callback_group()->find_subscription_ptrs_if(
+      [&](const rclcpp::SubscriptionBase::SharedPtr& sub) {
+        if (std::string(sub->get_topic_name()).find(topic_) != std::string::npos) {
+          found = true;
+        }
+        return false;
+      });
+  EXPECT_TRUE(found) << "the vision subscription is no longer on the node's default callback "
+                        "group — on_activate's Reset()/Store() are then a real second writer";
+}
 
 TEST_F(CatchingTrackingTest, AnAbortCompletesAndReArmsWithNoVisionLeft) {
   // The state after every real abort: the ball has landed, vision stops

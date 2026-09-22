@@ -1402,6 +1402,30 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
+  # ── QP CLIK task-space characterisation across the ball envelope ─────────
+  # 36 closed-loop cases (speed x descent angle x azimuth) on the SHIPPED
+  # reference gains, writing clik_sweep.csv. Its assertions are about solver
+  # HEALTH only — convergence and the solve budget, which must hold at every
+  # speed; the position and axis errors are the measurement and are read from
+  # the CSV rather than pinned here. Own domain: it runs 36 activations and a
+  # participant collision with the tracking suite would show up as a lane that
+  # goes quiet mid-sweep. ~2 min (one control period of sleep per tick).
+  ament_add_gtest(test_catching_clik_sweep test/test_catching_clik_sweep.cpp
+    ENV ROS_DOMAIN_ID=53
+    TIMEOUT 600)
+  target_link_libraries(test_catching_clik_sweep
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_clik_sweep
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    sensor_msgs
+    ament_index_cpp
+  )
+
   # ── UdpHandNativeBackend sensor lane test ─────────────────────────────────
   # The other producer of the fingertip lane's per-group receipt time and
   # sample counter (dynamic_catching D-24 (a)), plus the inference-block decode

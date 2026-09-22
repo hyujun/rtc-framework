@@ -44,6 +44,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <map>
@@ -1538,6 +1539,64 @@ TEST(DemoCatchingRecord, AHoldingTickStillCarriesTheArmCommandAndTheMeasurement)
     const auto u = static_cast<std::size_t>(i);
     EXPECT_DOUBLE_EQ(rec.q_meas[u], state.devices[0].positions[u]);
   }
+}
+
+TEST(DemoCatchingRecord, AHoldingTicksCommandColumnIsTheCommandThatWentOut) {
+  // The row above proves the MEASUREMENT is carried. This one is about the
+  // COMMAND, and it is the half that was wrong: `q_cmd` was written as 0.0
+  // whenever the law had not taken over, while `WriteDeviceCommand` was
+  // really sending the hold latch. Every holding row therefore claimed the
+  // arm was commanded to the origin, and ‖q_meas − q_cmd‖ computed offline
+  // from these two columns showed a multi-radian error that does not exist
+  // on the wire (2026-09-23 review). The column has to equal the output.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  const ControllerState state = MakeStateAt(3, 0.25);
+  const ControllerOutput out = ctrl.Compute(state);
+  const auto rec = ctrl.GetLastTickRecord();
+  ASSERT_EQ(rec.num_arm_joints, kArmDof);
+  ASSERT_GE(out.devices[0].num_channels, kArmDof) << "precondition: the arm was commanded";
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(rec.q_cmd[u], out.devices[0].commands[u])
+        << "joint " << i << ": the record and the wire disagree about the command";
+    EXPECT_NE(rec.q_cmd[u], 0.0) << "joint " << i << " still reports the old 0.0 placeholder";
+  }
+}
+
+TEST(DemoCatchingRecord, ATickWithNoCommandOnTheWireReportsNaNRatherThanZero) {
+  // Before the hold latch is set the output is SILENCED — the drive keeps its
+  // own setpoint and no command exists. 0.0 would be a number a reader can
+  // average; NaN is the only encoding that says "there was nothing here".
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ControllerState state = MakeStateAt(1);
+  // An unreadable arm is what keeps the latch unset: it only latches on a
+  // readable tick, precisely so it never freezes "go to the origin".
+  state.devices[0].valid = false;
+  const ControllerOutput out = ctrl.Compute(state);
+  ASSERT_EQ(out.devices[0].num_channels, 0) << "precondition: the arm output is silenced";
+  const auto rec = ctrl.GetLastTickRecord();
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_TRUE(std::isnan(rec.q_cmd[static_cast<std::size_t>(i)]))
+        << "joint " << i << " reported a command on a tick that sent none";
+  }
+}
+
+TEST(DemoCatchingRecord, AVisionLaneThatNeverReceivedReportsTheNeverSentinel) {
+  // `traj_recv_ns` is 0 before the first prediction, so an age measured
+  // against it is the steady clock's own origin distance. Measured on a real
+  // session 2026-09-23: 373966.66 s on all 28476 rows before the first
+  // prediction — a number that is unbounded, plausible, and indistinguishable
+  // from an age to anything that thresholds or averages it. -1 is the same
+  // "never" the fingertip lane already uses.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  (void)ctrl.Compute(MakeStateAt(5));
+  const auto rec = ctrl.GetLastTickRecord();
+  ASSERT_FALSE(rec.input_valid) << "precondition: no prediction has arrived";
+  EXPECT_LT(rec.input_age_s, 0.0) << "an unreceived lane reported an age of " << rec.input_age_s
+                                  << " s instead of the sentinel";
 }
 
 TEST(DemoCatchingRecord, TheLawBlocksStayEmptyWhileTheLawIsNotWired) {
