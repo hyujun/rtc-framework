@@ -302,6 +302,7 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] const std::vector<double>& GetArmPositionBoxLowerForTesting() const noexcept {
     return arm_q_min_margined_;
   }
+
   [[nodiscard]] const std::vector<double>& GetArmPositionBoxUpperForTesting() const noexcept {
     return arm_q_max_margined_;
   }

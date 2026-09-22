@@ -132,6 +132,7 @@ rtc_controllers/
 │   │   ├── time_types.hpp                    -- 시간축 강한 타입 `BallTime`·`NowReal`·`NowLead` (절대 steady ns). 섞은 비교 연산자가 없고 plan §3 의 판정마다 자기 축만 받는 함수 (`DecelDue`·`CommitDue`…) — 축을 잘못 고르면 컴파일되지 않는다. `ConvertRemoteStamp` 는 D-2 (3) E-1 기록된 예외 (미래 stamp 거부)
 │   │   ├── trajectory.hpp                    -- SeqLock payload POD: `TrajectorySnapshot` (용량 `kCap` 40, provisional) · `ProvenanceToken` (D-22) · `PlanSnapshot` (L3 §5.2)
 │   │   ├── traj_sampler.hpp                  -- 5차 Hermite 샘플러 `SampleAt(snapshot, NowLead)` + 수신 검사 `Check` (개수는 인덱싱 전에, NaN·비단조·dt_min 미만 거부)
+│   │   ├── traj_ingress.hpp                  -- tick 쪽 수신 판정 `ReadTraj(snapshot, …, ConsumedToken&) → TrajView` (stale · expired · is_new · age_ns) 와 발행자 순서 검사 `CheckOrder`. **나이는 미수신이면 -1** (`tip_age_s` 와 같은 "never") — `traj_recv_ns` 가 0 이라 센티넬 없이는 `now − 0`, 즉 발행자의 uptime 이 나이로 나간다. **newness 는 번호가 아니라 `(generation, sequence)` 쌍 + `seen`** 으로 판정한다 (`ConsumedToken`): A-S5-4 로 새 epoch 은 번호를 다시 시작할 수 있어 겹친 번호가 반복의 근거가 못 되고, 0 은 합법 번호라 "아직 아무것도 안 봤다" 를 번호 하나로 표현할 수 없다
 │   │   ├── soft_catch.hpp                    -- soft-catch 병진 기준 `SoftCatchTranslation` (γ 프로파일, NaN 가드 — 비유한 입력에서 상태 보존). γ derate 없음 (D-8)
 │   │   ├── time_feasibility.hpp              -- 도달시간 `TMinChecked` (한계 무효 → flag + t=+∞)·γ 창 (η_v·v_max, D-9)·방향 속력·정지거리·오차 예산
 │   │   ├── decel_target.hpp · transition_table.hpp · contact_debounce.hpp -- L7 순수 조각: 가상 감속 목표, (상태 × 사유) 전이표 + 완전성 검사, 지문 접촉 debounce

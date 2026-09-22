@@ -35,7 +35,9 @@ inline constexpr double kFallbackMaxVelocity = 2.0;
 /// The axis itself is `rtc::SteadyNowNs` — the same read the device backends
 /// use for their receipt stamps, which is what makes an age computed here
 /// comparable to one computed there.
-[[nodiscard]] std::int64_t SteadyNowNs() noexcept { return rtc::SteadyNowNs(); }
+[[nodiscard]] std::int64_t SteadyNowNs() noexcept {
+  return rtc::SteadyNowNs();
+}
 
 }  // namespace
 
@@ -1347,9 +1349,8 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   // as the pattern repeats.
   const rtc::catching::TrajectorySnapshot snapshot = traj_box_.Load();
   const rtc::catching::NowReal now{SteadyNowNs()};
-  traj_view_ =
-      rtc::catching::ReadTraj(snapshot, now, rtc::catching::MakeNowLead(now, t_arm_ns_),
-                              t_stale_ns_, ActivationGeneration(), consumed_);
+  traj_view_ = rtc::catching::ReadTraj(snapshot, now, rtc::catching::MakeNowLead(now, t_arm_ns_),
+                                       t_stale_ns_, ActivationGeneration(), consumed_);
   RecordInputLane(snapshot);
   if (traj_view_.is_new) {
     // A track change is latched here rather than compared in EvaluateReason:

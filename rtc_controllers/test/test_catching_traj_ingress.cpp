@@ -148,7 +148,8 @@ TEST(CatchingIngressRead, ALaneThatNeverReceivedReportsTheNeverSentinelNotTheUpt
   rtc::catching::ConsumedToken consumed{};
   const NowReal now{999'999 * kMs};
 
-  const auto view = ReadTraj(never, now, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation, consumed);
+  const auto view =
+      ReadTraj(never, now, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation, consumed);
   EXPECT_EQ(view.age_ns, -1) << "an unreceived lane reported an age instead of the sentinel";
   EXPECT_TRUE(view.stale) << "the sentinel must not read as the freshest possible sample";
 }
@@ -170,9 +171,8 @@ TEST(CatchingIngressRead, TheFirstSnapshotIsNewEvenWhenItIsNumberedZero) {
   EXPECT_TRUE(consumed.seen);
 
   // And it is new exactly once, like any other number.
-  const auto again =
-      ReadTraj(snap, NowReal{now.ns + kMs}, NowLead{now.ns + kTArmNs}, kStaleNs, kActivation,
-               consumed);
+  const auto again = ReadTraj(snap, NowReal{now.ns + kMs}, NowLead{now.ns + kTArmNs}, kStaleNs,
+                              kActivation, consumed);
   EXPECT_FALSE(again.is_new);
 }
 

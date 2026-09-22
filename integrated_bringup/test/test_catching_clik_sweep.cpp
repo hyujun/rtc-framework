@@ -112,7 +112,7 @@ struct CaseResult {
   double elevation_deg{};
   double azimuth_deg{};
   double t_c_s{};
-  double axis_demand_deg{};  // the reorientation the case asks for
+  double axis_demand_deg{};   // the reorientation the case asks for
   double catch_err_m{};       // ‖catch frame − p_c‖ at the catch instant
   double axis_err_deg{};      // ∠(catch frame z, a_d) at the catch instant
   double clik_err_max_m{};    // worst ‖catch frame − reference‖ over the run
@@ -186,7 +186,8 @@ class ClikSweepTest : public ::testing::Test {
     ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
     const rclcpp_lifecycle::State prev;
     YAML::Node yaml = YAML::Load(TrackingYaml(topic_, p_c, a_d, kGammaF, t_c, kShipped));
-    EXPECT_EQ(ctrl_->on_configure(prev, node_, yaml), DemoCatchingController::CallbackReturn::SUCCESS);
+    EXPECT_EQ(ctrl_->on_configure(prev, node_, yaml),
+              DemoCatchingController::CallbackReturn::SUCCESS);
     EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
     node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
 
@@ -233,8 +234,7 @@ class ClikSweepTest : public ::testing::Test {
         // the ball jump backwards every 10 ticks and the measured error would
         // be an artefact of the fixture.
         const std::int64_t now = SteadyNs();
-        const double to_catch =
-            t_c_abs == 0 ? t_c : static_cast<double>(t_c_abs - now) * 1e-9;
+        const double to_catch = t_c_abs == 0 ? t_c : static_cast<double>(t_c_abs - now) * 1e-9;
         const Eigen::Vector3d p0 = p_c - v_ball * to_catch;
         integrated_bringup::testing::CloudSpec spec;
         spec.n = 16;  // 16 x 50 ms = 0.8 s, longer than the slowest t_c here
@@ -242,11 +242,10 @@ class ClikSweepTest : public ::testing::Test {
         spec.p0 = {p0.x(), p0.y(), p0.z()};
         spec.vel = {v_ball.x(), v_ball.y(), v_ball.z()};
         auto msg = integrated_bringup::testing::MakeCloud(spec);
-        const std::int64_t wall =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count() -
-            5'000'000;
+        const std::int64_t wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                      std::chrono::system_clock::now().time_since_epoch())
+                                      .count() -
+                                  5'000'000;
         msg.header.stamp.sec = static_cast<std::int32_t>(wall / 1'000'000'000LL);
         msg.header.stamp.nanosec = static_cast<std::uint32_t>(wall % 1'000'000'000LL);
         pub_->publish(msg);
@@ -293,11 +292,11 @@ class ClikSweepTest : public ::testing::Test {
         r.clik_err_final_m = e;
         if (trace_ != nullptr) {
           const Eigen::Vector3d refd{rec.ref_xd[0], rec.ref_xd[1], rec.ref_xd[2]};
-          *trace_ << state.t_relative_s << ',' << ref.x() << ',' << ref.y() << ',' << ref.z()
-                  << ',' << pose.translation().x() << ',' << pose.translation().y() << ','
+          *trace_ << state.t_relative_s << ',' << ref.x() << ',' << ref.y() << ',' << ref.z() << ','
+                  << pose.translation().x() << ',' << pose.translation().y() << ','
                   << pose.translation().z() << ',' << refd.norm() << ',' << e << ','
-                  << rec.ref_gamma << ',' << (rec.ref_saturated ? 1 : 0) << ','
-                  << rec.track_err_rad << '\n';
+                  << rec.ref_gamma << ',' << (rec.ref_saturated ? 1 : 0) << ',' << rec.track_err_rad
+                  << '\n';
         }
       }
 
@@ -356,7 +355,8 @@ TEST_F(ClikSweepTest, TheSolverStaysHealthyAcrossTheBallEnvelope) {
       }
     }
   }
-  ASSERT_EQ(results.size(), std::size(kSpeeds) * std::size(kElevationsDeg) * std::size(kAzimuthsDeg));
+  ASSERT_EQ(results.size(),
+            std::size(kSpeeds) * std::size(kElevationsDeg) * std::size(kAzimuthsDeg));
 
   // The CSV is the deliverable; the assertions below are the regression.
   const char* out_dir = std::getenv("CATCHING_SWEEP_DIR");
@@ -364,14 +364,15 @@ TEST_F(ClikSweepTest, TheSolverStaysHealthyAcrossTheBallEnvelope) {
       std::filesystem::path(out_dir != nullptr ? out_dir : ".") / "clik_sweep.csv";
   std::ofstream csv(path);
   csv.precision(9);
-  csv << "speed_m_s,elevation_deg,azimuth_deg,t_c_s,axis_demand_deg,catch_err_m,axis_err_deg,clik_err_max_m,"
+  csv << "speed_m_s,elevation_deg,azimuth_deg,t_c_s,axis_demand_deg,catch_err_m,axis_err_deg,clik_"
+         "err_max_m,"
          "clik_err_final_m,ticks,non_converged,bound_conflict,ref_saturated,solve_us_mean,"
          "solve_us_max,end_mode\n";
   for (const CaseResult& r : results) {
     csv << r.speed << ',' << r.elevation_deg << ',' << r.azimuth_deg << ',' << r.t_c_s << ','
-        << r.axis_demand_deg << ',' << r.catch_err_m << ',' << r.axis_err_deg << ',' << r.clik_err_max_m << ','
-        << r.clik_err_final_m << ',' << r.ticks << ',' << r.non_converged << ','
-        << r.bound_conflict << ',' << r.ref_saturated << ',' << r.solve_us_mean << ','
+        << r.axis_demand_deg << ',' << r.catch_err_m << ',' << r.axis_err_deg << ','
+        << r.clik_err_max_m << ',' << r.clik_err_final_m << ',' << r.ticks << ',' << r.non_converged
+        << ',' << r.bound_conflict << ',' << r.ref_saturated << ',' << r.solve_us_mean << ','
         << r.solve_us_max << ',' << r.end_mode << '\n';
   }
   csv.close();
@@ -426,7 +427,8 @@ TEST_F(ClikSweepTest, HowLongTheShippedLawNeedsForOneCatchPose) {
   // static attractor. Leaving it in would measure the chase as well.
   YAML::Node yaml = YAML::Load(TrackingYaml(topic_, p_c, a_d, /*gamma_f=*/0.0,
                                             /*t_c_offset_s=*/1.0, kShipped));
-  ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS);
   ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();

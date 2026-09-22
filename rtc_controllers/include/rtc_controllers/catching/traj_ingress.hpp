@@ -170,14 +170,13 @@ struct ConsumedToken {
   // `traj_recv_ns == 0` is "never received" (the same 0-is-absent polarity the
   // hole mask and the sensor lane use), and an age measured against it would
   // be the uptime rather than an age — see `TrajView::age_ns`.
-  view.age_ns =
-      snap.token.traj_recv_ns > 0 ? AgeNs(now, NowReal{snap.token.traj_recv_ns}) : -1;
+  view.age_ns = snap.token.traj_recv_ns > 0 ? AgeNs(now, NowReal{snap.token.traj_recv_ns}) : -1;
   // Newness is a property of the (epoch, number) PAIR, not of the number. A
   // repeat is only a repeat within one epoch, and nothing at all has been
   // consumed until `seen` says so.
-  view.is_new = snap.valid && (!consumed.seen ||
-                               snap.token.snapshot_sequence != consumed.sequence ||
-                               snap.token.generation != consumed.generation);
+  view.is_new =
+      snap.valid && (!consumed.seen || snap.token.snapshot_sequence != consumed.sequence ||
+                     snap.token.generation != consumed.generation);
   if (view.is_new) {
     consumed.sequence = snap.token.snapshot_sequence;
     consumed.generation = snap.token.generation;
