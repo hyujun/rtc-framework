@@ -277,6 +277,43 @@ def test_cell_table_keeps_the_full_grid_in_the_denominator():
     assert (high["grid_throws"], high["kinematic_throws"], high["open_throws_torque"]) == (1, 0, 0)
 
 
+def test_open_candidate_stats_take_the_window_per_throw_and_only_open_rows():
+    def row(throw, t_c, speed, torque):
+        return {
+            "throw_index": throw,
+            "t_c_s": t_c,
+            "speed_m_s": speed,
+            "reason_box": "reach_time",
+            "reason_torque": torque,
+        }
+
+    rows = [
+        row(0, 0.60, 3.0, "none"),
+        row(0, 0.80, 2.0, "none"),
+        row(0, 0.95, 1.5, "gamma_window_empty"),
+        row(1, 0.70, 2.5, "none"),
+        row(2, 0.50, 4.0, "reach_time_torque"),
+    ]
+    stats = cgm.open_candidate_stats(rows, "torque")
+    assert (stats["candidates"], stats["throws"]) == (3, 2)
+
+    def spread(block):
+        return (block["n"], block["min"], block["median"], block["max"])
+
+    # the rejected 0.95 s / 0.50 s rows are not in the spread
+    assert spread(stats["t_c_s"]) == pytest.approx((3, 0.60, 0.70, 0.80))
+    assert spread(stats["speed_m_s"]) == pytest.approx((3, 2.0, 2.5, 3.0))
+    # windows: throw 0 = [0.60, 0.80], throw 1 = [0.70, 0.70]
+    assert spread(stats["window_start_s"]) == pytest.approx((2, 0.60, 0.65, 0.70))
+    assert spread(stats["window_end_s"]) == pytest.approx((2, 0.70, 0.75, 0.80))
+    assert cgm.open_candidate_stats(rows, "box") is None  # no reason_box == none
+    # a non-finite value is dropped, not propagated into a self-contradicting triple
+    rows.append(row(1, float("nan"), 2.5, "none"))
+    assert spread(cgm.open_candidate_stats(rows, "torque")["t_c_s"]) == pytest.approx(
+        (3, 0.60, 0.70, 0.80)
+    )
+
+
 # ── CLI, through the real judge ───────────────────────────────────────────────
 
 
@@ -341,6 +378,14 @@ def test_cli_runs_the_real_judge_and_reports_both_layers(tmp_path, arm):
     # ≤ 0.25 rad from the wait pose with 0.7 s to go: both reach layers pass, and
     # the ball (2.5 m/s, d_eff/T_close = 2 m/s) is inside the γ window
     assert summary["open_throws"] == {"box": 2, "torque": 2}
+    # the fixture's four candidates all catch at t_c = 0.7 s: the window is a point per throw
+    for layer in ("box", "torque"):
+        stats = summary["open_candidates"][layer]
+        assert (stats["candidates"], stats["throws"]) == (4, 2)
+        assert (stats["window_end_s"]["min"], stats["window_end_s"]["max"]) == pytest.approx(
+            (0.7, 0.7)
+        )
+        assert stats["speed_m_s"]["max"] == pytest.approx(2.5)
     with (tmp_path / "out" / "gate_map.csv").open() as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 4
@@ -390,6 +435,7 @@ def test_each_constant_reaches_its_own_gate(tmp_path, arm):
         assert cgm.main(_write_run(run, arm, **override)) == 0
         summary = _summary(run)
         assert summary["open_throws"]["box"] == 0, gate
+        assert summary["open_candidates"]["box"] is None, gate
         assert summary["candidate_reasons"]["box"] == {reason: 4}, gate
         alone = summary["candidates_stopped_by_each_gate_alone"]
         assert alone[gate] == 4, gate

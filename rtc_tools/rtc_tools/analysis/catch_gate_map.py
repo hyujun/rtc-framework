@@ -60,6 +60,7 @@ from rtc_tools.analysis.catch_speed_budget import (
     dls_unit_velocity,
     extra_frame_from_params,
 )
+from rtc_tools.analysis.catchability_map import distribution
 from rtc_tools.analysis.derive_accel_limits import (
     arm_spec_from_params,
     load_robot_params,
@@ -369,6 +370,32 @@ def cell_table(rows: Sequence[Mapping], throws: Mapping[int, Mapping[str, str]])
     ]
 
 
+def open_candidate_stats(rows: Sequence[Mapping], layer: str) -> dict | None:
+    """Where the OPEN candidates of one layer sit in time — the vision-horizon input (S3.6).
+
+    ``t_c_s`` is the catch time after release, i.e. the flight time the vision
+    horizon has to cover; ``speed_m_s`` the ball speed at that point. The per-throw
+    catch window is [min t_c, max t_c] over that throw's open candidates, and its
+    end is what the horizon requirement (plan §4.4 S3.6) is read from. Spreads are
+    ``catchability_map.distribution`` (finite values only, same keys as the
+    kinematic map's summary). ``None`` when the layer opened nothing.
+    """
+    opened = [r for r in rows if r[f"reason_{layer}"] == REASON_NONE]
+    if not opened:
+        return None
+    windows: dict = defaultdict(list)
+    for r in opened:
+        windows[r["throw_index"]].append(float(r["t_c_s"]))
+    return {
+        "candidates": len(opened),
+        "throws": len(windows),
+        "t_c_s": distribution(r["t_c_s"] for r in opened),
+        "speed_m_s": distribution(r["speed_m_s"] for r in opened),
+        "window_start_s": distribution(min(w) for w in windows.values()),
+        "window_end_s": distribution(max(w) for w in windows.values()),
+    }
+
+
 def gate_alone_counts(rows: Sequence[Mapping]) -> dict[str, int]:
     """How many candidates EACH gate stops on its own, regardless of the others."""
     return {
@@ -637,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
             for layer in LAYERS
         },
         "candidates_stopped_by_each_gate_alone": gate_alone_counts(rows),
+        "open_candidates": {layer: open_candidate_stats(rows, layer) for layer in LAYERS},
         "open_but_for_reach_candidates": len(reachable_targets),
         "proposed_wait_pose": None if proposal is None else [float(x) for x in proposal],
         "note": "rollout (L3 §4.8) is not judged: an open cell is PASS(provisional), an empty "
