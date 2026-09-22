@@ -126,6 +126,15 @@ def directional_speed_lp(
     return DirectionalSpeed(v_dir_max=float(res.x[n])), np.asarray(res.x[:n])
 
 
+def dls_unit_velocity(
+    jp: np.ndarray, jw: np.ndarray, v_hat: np.ndarray, damping: float = DEFAULT_DLS_DAMPING
+) -> np.ndarray:
+    """q̇ᵘ of L3 §4.5: damped least squares for unit speed along v̂, approach axis held."""
+    j5 = np.vstack([jp, jw])
+    rhs = np.concatenate([v_hat, [0.0, 0.0]])
+    return j5.T @ np.linalg.solve(j5 @ j5.T + damping**2 * np.eye(5), rhs)
+
+
 def directional_speed_dls(
     jp: np.ndarray,
     jw: np.ndarray,
@@ -140,9 +149,7 @@ def directional_speed_dls(
         return DirectionalSpeed(limits_invalid=True)
     if not _direction_ok(v_hat) or not (np.all(np.isfinite(jp)) and np.all(np.isfinite(jw))):
         return DirectionalSpeed(input_invalid=True)
-    j5 = np.vstack([jp, jw])
-    rhs = np.concatenate([v_hat, [0.0, 0.0]])
-    qd_unit = j5.T @ np.linalg.solve(j5 @ j5.T + damping**2 * np.eye(5), rhs)
+    qd_unit = dls_unit_velocity(jp, jw, v_hat, damping)
     denom = float(np.max(np.abs(qd_unit) / qd_max))
     if not (denom > 0.0) or not math.isfinite(denom):
         return DirectionalSpeed(undetermined=True)
@@ -384,14 +391,24 @@ class ArmKinematics:
             "drift_angular_xy": np.array(drift_ang)[:2],
         }
 
+    def _acceleration(self, qdd_arm) -> np.ndarray:
+        acc = np.zeros(self.model.nv)
+        for i, value in zip(self.iv, qdd_arm, strict=True):
+            acc[i] = value
+        return acc
+
+    def joint_torques(self, q_arm, qd_arm, qdd_arm) -> np.ndarray:
+        """Arm joint torques for (q, q̇, q̈): RNEA plus the rotor inertia the URDF lacks."""
+        q, v = self._full(q_arm, qd_arm)
+        tau = self._pin.rnea(self.model, self.data, q, v, self._acceleration(qdd_arm))
+        return np.asarray(tau)[self.iv] + self.rotor_inertia * np.asarray(qdd_arm)
+
     def inverse_dynamics(self, q_arm, qd_arm, qdd_arm) -> tuple[np.ndarray, np.ndarray]:
         """(arm joint torques incl. rotor inertia, frame linear acceleration) — the LP's oracle."""
         pin, m, d = self._pin, self.model, self.data
         q, v = self._full(q_arm, qd_arm)
-        acc = np.zeros(m.nv)
-        for i, value in zip(self.iv, qdd_arm, strict=True):
-            acc[i] = value
-        tau = pin.rnea(m, d, q, v, acc)[self.iv] + self.rotor_inertia * np.asarray(qdd_arm)
+        acc = self._acceleration(qdd_arm)
+        tau = self.joint_torques(q_arm, qd_arm, qdd_arm)
         pin.forwardKinematics(m, d, q, v, acc)
         lin = pin.getFrameClassicalAcceleration(
             m, d, self.frame_id, pin.LOCAL_WORLD_ALIGNED
