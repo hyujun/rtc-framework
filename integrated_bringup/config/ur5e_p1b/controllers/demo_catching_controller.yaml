@@ -75,6 +75,21 @@ demo_catching_controller:
     # `devices.p1b.joint_limits` ∩ URDF — index_mcp_aa sits AT the URDF/MJCF
     # bound (17 deg): the search asked for 20 and the joint stops at 17.
     robot:
+      arm:
+        # CLIK's position box sits this far INSIDE the device limits, so the
+        # backend's own clamp never fires: if it did, the solver's answer and
+        # the command actually written would differ, and the difference would
+        # surface as a tracking error with no attributable cause (L5 §4.3).
+        limit_margin: 0.05
+        # The D-16 acceleration box, DERIVED from the torque limits by
+        # `rtc_tools.analysis.derive_accel_limits` — not the
+        # `max_acceleration` placeholder in the device roster, which no
+        # controller reads. Package-relative because a controller cannot learn
+        # which config variant it was loaded from. `adopted: false` in that
+        # file is refused rather than defaulted (A-S5-6).
+        accel_limits_package: "integrated_bringup"
+        accel_limits_path: "config/ur5e_p1b/derived_accel_limits.yaml"
+        accel_limits_group: "ur5e"
       hand:
         provisional: true
         rho_eps: 0.02
@@ -185,6 +200,31 @@ demo_catching_controller:
       io:
         future_tol: 0.1
 
+    # ── The CLIK step (L5 §6, S5.3) ─────────────────────────────────────────
+    # Gains and weights, all provisional: they are the documented defaults
+    # (L5 §6) and have not been tuned on this robot. The ORDERING is not a
+    # preference — the validator refuses a profile where the posture weight
+    # reaches the task weight, because that produces a controller which tracks
+    # its own posture and treats the catch point as a suggestion.
+    joint_cmd:
+      K_p: 20.0      # 1/s, position rows
+      K_a: 8.0       # 1/s, approach-axis rows (L4 §6 reference.axis.k_axis)
+      K_n: 1.0       # 1/s, posture
+      w_task: 1.0
+      w_a: 0.5
+      w_arm: 0.01
+      w_smooth: 0.001
+      damping_sq: 0.0001
+      qp:
+        max_iter: 20
+      lag:
+        # SIM IS ZERO (2026-09-20): nothing injects an actuation lag, and
+        # leading a delay that does not exist moves the command EARLY by
+        # exactly T_arm. `lead_enable` turns the compensation on once S10 has
+        # identified the real value.
+        T_arm: 0.0
+        lead_enable: false
+
     # ── Deceleration (L7 §6 `supervisor.decel.a_dec`, single-source key) ──────
     # `ParseCatchingParams` reads this (TbdDouble) but nothing consumes it yet:
     # the L3 §4.9 stopping-point reservation lands in S6, the L7 DECEL target in
@@ -192,6 +232,17 @@ demo_catching_controller:
     # 2026-09-22 (plan §7.3); provisional until reference.a_max exists
     # (a_dec <= a_max, L7 §4.3).
     supervisor:
+      # ── Thresholds the joint command layer reports to (L7 §6, S5.3) ───────
+      # ‖q_meas − q_cmd‖. D-6 keeps the measured state out of CLIK, so this
+      # watchdog is the ONLY thing that notices the arm is not where it was
+      # told to be. PROVISIONAL: a placeholder until a run on this robot shows
+      # what the real tracking gap looks like.
+      track_err_abort: 0.3
+      # Consecutive failed solves before the controller latches a fault
+      # (L7 §4.2). Three ticks of a solve that cannot succeed is not a
+      # transient, and retrying it forever is how a controller ends up
+      # aborting in a loop with nothing in the log that escalates.
+      n_qp: 3
       decel:
         a_dec: 10.0
 

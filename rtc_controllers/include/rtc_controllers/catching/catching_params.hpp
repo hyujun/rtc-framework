@@ -145,6 +145,41 @@ struct CatchingParams {
   // prediction: (L1 §6 / L2) — what the vision profile is expected to produce.
   TbdDouble prediction_dt_expected{TbdDouble::Resolved(0.05)};  // s, (0, 1]
 
+  // joint_cmd: (L5 §6) — the CLIK step. Consumed from S5.3.
+  //
+  // The weights keep the documented ordering w_task >> w_arm >> damping_sq
+  // (L5 §4.3): the task must win, the posture must only resolve the redundant
+  // degree of freedom, and the damping must only regularise. The validator
+  // checks the ORDERING, not just the ranges — three individually sensible
+  // weights in the wrong order produce a controller that tracks posture and
+  // treats the catch point as a suggestion.
+  TbdDouble joint_cmd_k_p{TbdDouble::Resolved(20.0)};         // 1/s, [1, 100]
+  TbdDouble joint_cmd_k_axis{TbdDouble::Resolved(8.0)};       // 1/s, (0, 30]
+  TbdDouble joint_cmd_k_posture{TbdDouble::Resolved(1.0)};    // 1/s, [0, 10]
+  TbdDouble joint_cmd_w_task{TbdDouble::Resolved(1.0)};       // –, > 0
+  TbdDouble joint_cmd_w_axis{TbdDouble::Resolved(0.5)};       // –, > 0
+  TbdDouble joint_cmd_w_arm{TbdDouble::Resolved(1e-2)};       // –, >= 0
+  TbdDouble joint_cmd_w_smooth{TbdDouble::Resolved(1e-3)};    // –, >= 0
+  TbdDouble joint_cmd_damping_sq{TbdDouble::Resolved(1e-4)};  // –, > 0
+  int joint_cmd_max_iter{20};                                 // –, >= 1
+  /// L5 §4.4/§4.5. **sim is 0** (2026-09-20: no lag is injected), and the
+  /// lead axis then coincides with the real one. A non-zero value is the
+  /// hardware identification (S10) or the axis-confusion fixture.
+  TbdDouble joint_cmd_lag_t_arm{TbdDouble::Resolved(0.0)};  // s, >= 0
+  bool joint_cmd_lag_lead_enable{false};
+
+  // robot.arm: (L5 §6) — the boxes CLIK is given.
+  /// How far INSIDE the device's own position limits the CLIK box sits. The
+  /// backend clamps commands to the device limits; if CLIK were given the same
+  /// box, its solution and the command actually written would differ whenever
+  /// it touched a bound, and the difference would surface as a tracking error
+  /// nobody can attribute (L5 §4.3 "중복 방지").
+  TbdDouble robot_arm_limit_margin{TbdDouble::Resolved(0.05)};  // rad, [0, 0.3]
+
+  // supervisor: (L7 §6) — the two keys the joint command layer reports to.
+  TbdDouble supervisor_track_err_abort;  // rad, > 0 — L7 owns this key, L5 only reads it
+  int supervisor_n_qp{0};                // consecutive QP failures before FAULT, >= 1
+
   // core / sim: (L0 §6)
   BallSpec ball;
   TbdDouble sim_ball_drag_k;  // 1/m, [0, 0.2] — sim-fixture-only (active iff !real_arm_config)
@@ -178,6 +213,7 @@ enum class CatchingValidationReason : std::uint8_t {
   kHandCagingGapTooSmall,    // |q_close[i] - q_pre[i]| <= rho_eps on a caging joint (L6 §4.2)
   kProvisionalOnRealArm,     // a provisional value blocks the real-arm configuration (L0 §5.3)
   kProvisionalWarning,       // same value, but the sim configuration only warns — WARNING only
+  kWeightOrdering,           // CLIK weights violate w_task/w_a >> w_arm >> damping_sq (L5 §4.3)
 };
 
 /// One report line: which rule fired, on which key, and (for the per-joint

@@ -76,22 +76,22 @@ YAML::Node ReadSection(const YAML::Node& parent, const char* key) {
 /// ValidateCatchingParams reports it (kRangeViolation) — unlike the sibling
 /// parser, which throws. That difference is by design and is pinned by
 /// test_catch_pose_ik_params.cpp (SharedKey* cases).
-/// A point COUNT. Absent or the literal `TBD` → 0, which the validator reports
-/// as an active TBD; anything else that is not a positive whole number is
-/// refused here.
+/// A positive whole COUNT (points, iterations, retries). Absent or the literal
+/// `TBD` → `fallback` (0 where the validator should report an active TBD);
+/// anything else that is not a positive whole number is refused here.
 ///
 /// Refused rather than defaulted, like every other malformed key in this file:
 /// defaulting reads a typo as "still TBD", and the operator then sees a config
 /// that will not arm with no mention of the key they got wrong. Read as a
 /// double and checked for integrality because `as<int>` would accept `10.9`
 /// by truncation — a point count is not a value to round.
-int ReadPointCount(const YAML::Node& node, const char* key) {
+int ReadPositiveCount(const YAML::Node& node, const char* key, int fallback = 0) {
   const params_detail::TbdRead read = params_detail::ReadTbdScalar(node, key);
   switch (read.kind) {
     case params_detail::TbdReadKind::kAbsent:
-      return 0;
+      return fallback;
     case params_detail::TbdReadKind::kNotANumber:
-      Reject("'", key, "' must be a positive whole number of points or the literal 'TBD'");
+      Reject("'", key, "' must be a positive whole number or the literal 'TBD'");
     case params_detail::TbdReadKind::kRead:
       break;
   }
@@ -100,8 +100,7 @@ int ReadPointCount(const YAML::Node& node, const char* key) {
   }
   const double v = read.value.value;
   if (!(v > 0.0) || std::floor(v) != v) {
-    Reject("'", key, "' must be a positive whole number of points, got ",
-           params_detail::Spelling(read.node));
+    Reject("'", key, "' must be a positive whole number, got ", params_detail::Spelling(read.node));
   }
   return static_cast<int>(v);
 }
@@ -274,7 +273,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", out.supervisor_decel_a_dec);
 
   const YAML::Node io = ReadSection(node, "io");
-  out.io_n_min = ReadPointCount(io, "n_min");
+  out.io_n_min = ReadPositiveCount(io, "n_min");
   out.io_t_stale = ReadTbdDouble(io, "t_stale", out.io_t_stale);
   out.io_future_tol = ReadTbdDouble(io, "future_tol", out.io_future_tol);
   out.io_horizon_min = ReadTbdDouble(io, "horizon_min", out.io_horizon_min);
@@ -284,6 +283,28 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
 
   const YAML::Node prediction = ReadSection(node, "prediction");
   out.prediction_dt_expected = ReadTbdDouble(prediction, "dt_expected", out.prediction_dt_expected);
+
+  const YAML::Node joint_cmd = ReadSection(node, "joint_cmd");
+  out.joint_cmd_k_p = ReadTbdDouble(joint_cmd, "K_p", out.joint_cmd_k_p);
+  out.joint_cmd_k_axis = ReadTbdDouble(joint_cmd, "K_a", out.joint_cmd_k_axis);
+  out.joint_cmd_k_posture = ReadTbdDouble(joint_cmd, "K_n", out.joint_cmd_k_posture);
+  out.joint_cmd_w_task = ReadTbdDouble(joint_cmd, "w_task", out.joint_cmd_w_task);
+  out.joint_cmd_w_axis = ReadTbdDouble(joint_cmd, "w_a", out.joint_cmd_w_axis);
+  out.joint_cmd_w_arm = ReadTbdDouble(joint_cmd, "w_arm", out.joint_cmd_w_arm);
+  out.joint_cmd_w_smooth = ReadTbdDouble(joint_cmd, "w_smooth", out.joint_cmd_w_smooth);
+  out.joint_cmd_damping_sq = ReadTbdDouble(joint_cmd, "damping_sq", out.joint_cmd_damping_sq);
+  const YAML::Node qp = ReadSection(joint_cmd, "qp");
+  out.joint_cmd_max_iter = ReadPositiveCount(qp, "max_iter", out.joint_cmd_max_iter);
+  const YAML::Node lag = ReadSection(joint_cmd, "lag");
+  out.joint_cmd_lag_t_arm = ReadTbdDouble(lag, "T_arm", out.joint_cmd_lag_t_arm);
+  out.joint_cmd_lag_lead_enable = ReadOptional(lag, "lead_enable", false);
+
+  const YAML::Node robot_arm = ReadSection(ReadSection(node, "robot"), "arm");
+  out.robot_arm_limit_margin = ReadTbdDouble(robot_arm, "limit_margin", out.robot_arm_limit_margin);
+
+  out.supervisor_track_err_abort =
+      ReadTbdDouble(supervisor, "track_err_abort", out.supervisor_track_err_abort);
+  out.supervisor_n_qp = ReadPositiveCount(supervisor, "n_qp", out.supervisor_n_qp);
 
   const YAML::Node core = ReadSection(node, "core");
   out.ball = ReadBallSpec(ReadSection(core, "ball"));
@@ -519,6 +540,68 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     if (std::isfinite(needed) && static_cast<double>(params.io_n_min) < std::ceil(needed)) {
       AddFailure(report, CatchingValidationReason::kRangeViolation, "io.n_min");
     }
+  }
+
+  // joint_cmd.* / robot.arm.* — the CLIK step, active from S5.3.
+  if (CheckActiveTbd(report, params.joint_cmd_k_p, "joint_cmd.K_p", true)) {
+    CheckRange(report, "joint_cmd.K_p", params.joint_cmd_k_p.value, 1.0, 100.0);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_k_axis, "joint_cmd.K_a", true)) {
+    CheckRange(report, "joint_cmd.K_a", params.joint_cmd_k_axis.value, 1e-3, 30.0);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_k_posture, "joint_cmd.K_n", true)) {
+    CheckRange(report, "joint_cmd.K_n", params.joint_cmd_k_posture.value, 0.0, 10.0);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_damping_sq, "joint_cmd.damping_sq", true)) {
+    CheckPositive(report, "joint_cmd.damping_sq", params.joint_cmd_damping_sq.value);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_w_smooth, "joint_cmd.w_smooth", true)) {
+    CheckRange(report, "joint_cmd.w_smooth", params.joint_cmd_w_smooth.value, 0.0, 1.0);
+  }
+  if (params.joint_cmd_max_iter < 1) {
+    AddFailure(report, CatchingValidationReason::kRangeViolation, "joint_cmd.qp.max_iter");
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_lag_t_arm, "joint_cmd.lag.T_arm", true)) {
+    CheckRange(report, "joint_cmd.lag.T_arm", params.joint_cmd_lag_t_arm.value, 0.0, 0.5);
+  }
+  if (CheckActiveTbd(report, params.robot_arm_limit_margin, "robot.arm.limit_margin", true)) {
+    CheckRange(report, "robot.arm.limit_margin", params.robot_arm_limit_margin.value, 0.0, 0.3);
+  }
+
+  // The WEIGHT ORDERING, not just three ranges (L5 §4.3: w_task ≫ w_arm ≫ μ²).
+  // Each weight can be individually sensible while the set is wrong, and the
+  // result is a controller that tracks its posture and treats the catch point
+  // as a suggestion — plausible motion, missed ball, nothing in any log that
+  // says why.
+  const bool weights_resolved =
+      CheckActiveTbd(report, params.joint_cmd_w_task, "joint_cmd.w_task", true) &&
+      CheckActiveTbd(report, params.joint_cmd_w_axis, "joint_cmd.w_a", true) &&
+      CheckActiveTbd(report, params.joint_cmd_w_arm, "joint_cmd.w_arm", true);
+  if (weights_resolved) {
+    CheckPositive(report, "joint_cmd.w_task", params.joint_cmd_w_task.value);
+    CheckPositive(report, "joint_cmd.w_a", params.joint_cmd_w_axis.value);
+    if (!(params.joint_cmd_w_arm.value >= 0.0)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "joint_cmd.w_arm");
+    }
+    const bool task_dominates = params.joint_cmd_w_task.value > params.joint_cmd_w_arm.value;
+    const bool axis_dominates = params.joint_cmd_w_axis.value > params.joint_cmd_w_arm.value;
+    if (!task_dominates || !axis_dominates) {
+      AddFailure(report, CatchingValidationReason::kWeightOrdering, "joint_cmd.w_arm");
+    }
+    if (!params.joint_cmd_damping_sq.tbd &&
+        !(params.joint_cmd_w_arm.value > params.joint_cmd_damping_sq.value)) {
+      AddFailure(report, CatchingValidationReason::kWeightOrdering, "joint_cmd.damping_sq");
+    }
+  }
+
+  // supervisor.track_err_abort / n_qp — L7 owns both keys; the joint command
+  // layer reports to them, so they are active as soon as it exists.
+  if (CheckActiveTbd(report, params.supervisor_track_err_abort, "supervisor.track_err_abort",
+                     true)) {
+    CheckPositive(report, "supervisor.track_err_abort", params.supervisor_track_err_abort.value);
+  }
+  if (params.supervisor_n_qp <= 0) {
+    AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "supervisor.n_qp");
   }
 
   // robot.hand.* — active in every configuration.

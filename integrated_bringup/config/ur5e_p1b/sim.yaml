@@ -23,6 +23,20 @@
     # ── Device backends (MuJoCo bridge) ───────────────────────────────────────
     devices:
       ur5e:
+        # ── Joint speed rating, SIM ONLY (dynamic_catching 결정 D, 2026-09-22)
+        # The UR5e data sheet rates every joint at 180 deg/s (3.1416 rad/s);
+        # `_base.yaml` carries a deliberately conservative 2.0 / 3.0 for the
+        # real arm. The catchability maps (S3.5b, S4.4) were computed at the
+        # RATING times eta_v, and a sim that runs below it cannot reach the
+        # catch points those maps say are reachable — the study and the run
+        # would then disagree for a reason that has nothing to do with the
+        # control law.
+        #
+        # An overlay rather than an edit: overlays replace a key, so the real
+        # `robot.yaml` bring-up keeps `_base.yaml`'s value untouched. Raising
+        # the real arm's rating is a hardware decision (S10), not this file's.
+        joint_limits:
+          max_velocity: [3.1416, 3.1416, 3.1416, 3.1416, 3.1416, 3.1416]
         backend:
           type: "mujoco_native"            # sim mode: MuJoCo bridge
           state_topic: "/ur5e/joint_states"     # sim publishes full URDF joints here

@@ -71,7 +71,43 @@ diagnostic:
   hand_step: )") +
          (hand_step ? "true" : "false") + R"(
 catching:
+  io:
+    expected_frame: "world"
+    n_min: 6
+    t_stale: 0.2
+    future_tol: 0.01
+    horizon_min: 0.3
+    track:
+      eval_offset: 0.05
+  prediction:
+    dt_expected: 0.05
+  sim:
+    io:
+      future_tol: 0.2
+  reference:
+    omega: 10.0
+    zeta: 1.0
+    v_max: 2.0
+    a_max: 15.0
+  joint_cmd:
+    K_p: 20.0
+    K_a: 8.0
+    K_n: 1.0
+    w_task: 1.0
+    w_a: 0.5
+    w_arm: 0.01
+    w_smooth: 0.001
+    damping_sq: 0.0001
+    qp:
+      max_iter: 20
+    lag:
+      T_arm: 0.0
+  supervisor:
+    track_err_abort: 0.3
+    n_qp: 3
   robot:
+    arm:
+      limit_margin: 0.05
     hand:
       provisional: true
       rho_eps: 0.02
@@ -695,31 +731,13 @@ class CatchingVisionTest : public CatchingConfigureTest {
  protected:
   /// The profile plus a vision lane pointed at this test's own topic.
   ///
-  /// INSERTED into the `catching:` map rather than appended to the document:
-  /// appending would have continued whatever block the profile ends with
-  /// (`topics:`), which parses fine and silently leaves this controller with
-  /// no vision configuration at all.
-  static std::string VisionYaml(const std::string& topic) {
-    const std::string lane = R"(catching:
-  io:
-    traj_topic: ")" + topic + R"("
-    expected_frame: "world"
-    n_min: 4
-    t_stale: 0.2
-    future_tol: 0.01
-    horizon_min: 0.3
-    track:
-      eval_offset: 0.05
-  prediction:
-    dt_expected: 0.05
-  sim:
-    io:
-      future_tol: 0.2
-)";
-    std::string yaml = ClearedYaml(/*hand_step=*/true);
-    const auto at = yaml.find("catching:\n");
-    EXPECT_NE(at, std::string::npos) << "the profile fixture no longer has a catching: block";
-    yaml.replace(at, std::string("catching:\n").size(), lane);
+  /// The topic is set on the PARSED node rather than spliced into the text:
+  /// the profile already carries the rest of the `io:` block, and appending a
+  /// second one would leave the document with two keys of the same name —
+  /// which parses, silently keeps one, and makes the test depend on which.
+  static YAML::Node VisionYaml(const std::string& topic) {
+    YAML::Node yaml = YAML::Load(ClearedYaml(/*hand_step=*/true));
+    yaml["catching"]["io"]["traj_topic"] = topic;
     return yaml;
   }
 
@@ -727,7 +745,7 @@ class CatchingVisionTest : public CatchingConfigureTest {
     topic_ = "/test_catching_vision/prediction";
     ctrl_.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
     const rclcpp_lifecycle::State prev;
-    ASSERT_EQ(ctrl_.on_configure(prev, node_, YAML::Load(VisionYaml(topic_))),
+    ASSERT_EQ(ctrl_.on_configure(prev, node_, VisionYaml(topic_)),
               DemoCatchingController::CallbackReturn::SUCCESS);
     ASSERT_EQ(ctrl_.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
     node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));

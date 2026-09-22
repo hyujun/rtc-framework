@@ -1381,6 +1381,27 @@ if(BUILD_TESTING)
     sensor_msgs
   )
 
+  # ── Catching tracking law, closed loop on the real model (S5.3) ───────────
+  # G4-H / G5-A / G5-B. Drives the shipped ur5e_p1b model with a perfect servo
+  # and judges the result with a SECOND pinocchio model, so no assertion here
+  # is the controller agreeing with itself. Sleeps one control period per tick
+  # (the controller reads the steady clock, plan §3), so it runs in about a
+  # second rather than instantly.
+  ament_add_gtest(test_catching_tracking test/test_catching_tracking.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_catching_tracking
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_tracking
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    sensor_msgs
+    ament_index_cpp
+  )
+
   # ── UdpHandNativeBackend sensor lane test ─────────────────────────────────
   # The other producer of the fingertip lane's per-group receipt time and
   # sample counter (dynamic_catching D-24 (a)), plus the inference-block decode

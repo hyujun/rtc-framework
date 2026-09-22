@@ -71,12 +71,17 @@
 
 #include "integrated_bringup/controllers/catching/traj_input.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
+#include "rtc_controllers/catching/decel_target.hpp"
+#include "rtc_controllers/catching/soft_catch.hpp"
+#include "rtc_controllers/catching/traj_sampler.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
+#include "rtc_tsid/kinematics/clik_reference.hpp"
 
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/clock.hpp>
@@ -90,6 +95,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -131,6 +137,14 @@ inline constexpr const char* kCatchingEnableParam = "catching.enable";
 /// A tenth leaves room for a publisher that doubles its rate without warning
 /// while still refusing the degenerate spacings the Hermite basis divides by.
 inline constexpr double kTrajSpacingFloorFraction = 0.1;
+
+/// Velocity bound [rad/s] the hand's joints get in the CLIK solve.
+///
+/// Not zero, because the solver's box requires strictly positive limits, and
+/// not a "small" number chosen for feel: it is below the resolution of any
+/// joint this controller commands, so a solution that uses it is numerically
+/// indistinguishable from one that does not move the hand at all.
+inline constexpr double kLockedJointVelocity = 1e-9;
 
 /// Controller-local device indices. This controller claims exactly two groups
 /// in `topics:` order: the arm it holds and the hand it steps. Indices rather
@@ -228,6 +242,22 @@ class DemoCatchingController final : public RTControllerInterface {
   /// What the last RT tick concluded about the trajectory snapshot it held.
   [[nodiscard]] rtc::catching::TrajView GetTrajView() const noexcept { return traj_view_; }
 
+  /// The last CLIK solve's diagnostics — status, iteration count, solve time,
+  /// `bound_conflict`. Read off the RT thread; this is the input to the S5.4
+  /// state message and to the G5-C timing gate.
+  [[nodiscard]] const rtc::tsid::ClikReferenceGenerator::SolveDiagnostics& GetLastSolve()
+      const noexcept {
+    return clik_.LastSolve();
+  }
+
+  /// ‖q_meas − q_cmd‖ [rad] of the last tick (the TRACK_ERR watchdog's input).
+  [[nodiscard]] double GetTrackError() const noexcept { return track_err_; }
+
+  /// Whether a plan is being followed, and whether the law is wired at all.
+  [[nodiscard]] bool IsPlanActive() const noexcept { return plan_active_; }
+
+  [[nodiscard]] bool IsClikEnabled() const noexcept { return clik_enabled_; }
+
   /// Ticks that ran with the global E-STOP request raised.
   [[nodiscard]] std::uint64_t GetEstopTickCount() const noexcept {
     return estop_tick_count_.load(std::memory_order_relaxed);
@@ -318,6 +348,38 @@ class DemoCatchingController final : public RTControllerInterface {
   /// install the set-parameter callback. Non-RT.
   void DeclareArmParameter();
 
+  /// Build the model, register the catch frame, size the CLIK boxes and
+  /// initialise the generator. Non-RT; leaves `clik_enabled_` false (and logs
+  /// why) rather than throwing, so a profile that cannot run the law still
+  /// configures and still holds the arm.
+  void SetupArmCommand();
+
+  /// Read the D-16 acceleration box (A-S5-6) from the file the YAML names.
+  /// Returns false and logs when the file is missing, not adopted, or does not
+  /// cover the arm — the box is a DERIVED artefact, so an absent one is a
+  /// configuration error and not something to substitute a default for.
+  [[nodiscard]] bool LoadDerivedAccelLimits();
+
+  /// Assemble the position / velocity / acceleration boxes CLIK is given, in
+  /// Pinocchio order. Non-RT.
+  void BuildClikBoxes(int nv, rtc::tsid::ClikReferenceGenerator::Config& cfg);
+
+  /// One tick of the tracking law: sample → reference → CLIK → arm command.
+  /// Returns the reason to report, `kNone` when the tick was healthy. RT only.
+  [[nodiscard]] rtc::catching::Reason RunTrackingTick(const ControllerState& state) noexcept;
+
+  /// Walk the arm command to a stop without the QP (A-S5-10). RT only.
+  void RunJointSpaceAbort(const ControllerState& state) noexcept;
+
+  /// Seed the command state, the CLIK anchor and the reference generator from
+  /// the measured pose. RT only — called on the tick that starts following a
+  /// plan and on every reset.
+  void SeedArmCommand(const ControllerState& state) noexcept;
+
+  /// Build the fixed plan the `diagnostic.oracle_plan` block describes
+  /// (A-S5-8). RT only; the planner that replaces this is S6.
+  void MakeOraclePlan(rtc::catching::NowReal now) noexcept;
+
   /// Create the prediction subscription and configure the ingress. Non-RT.
   void SetupTrajInput();
 
@@ -332,8 +394,13 @@ class DemoCatchingController final : public RTControllerInterface {
   bool ServiceResetRequests(const ControllerState& state) noexcept;
 
   /// Put every piece of per-trial state back to its start-of-trial value
-  /// (L7 §4.8's re-arm list, restricted to what exists at S5.1). RT tick only.
-  void ResetTrialState() noexcept;
+  /// (L7 §4.8's re-arm list, restricted to what exists so far). RT tick only.
+  ///
+  /// `reset_mode` says whether the supervisor mode is part of the reset. It is
+  /// for an ACTIVATION (a fresh controller starts in IDLE) and it is not for
+  /// an E-STOP, where the transition table decides — and where forcing IDLE
+  /// would erase a latched FAULT the table keeps through a stop (P-1 (d)).
+  void ResetTrialState(bool reset_mode) noexcept;
 
   /// What this tick tells the supervisor: a reason, and whether to take an
   /// edge at all.
@@ -539,6 +606,78 @@ class DemoCatchingController final : public RTControllerInterface {
   std::int64_t t_stale_ns_{0};
   std::int64_t t_arm_ns_{0};
   std::int64_t traj_horizon_min_ns_{0};
+  double track_err_abort_rad_{0.0};
+  int n_qp_fault_{0};
+  double limit_margin_{0.05};
+
+  // ── Oracle plan (A-S5-8, the S5.3/S5.5 stand-in for the S6 planner) ──────
+  std::string accel_limits_package_{"integrated_bringup"};
+  std::string accel_limits_path_;
+  std::string accel_limits_group_;
+  std::vector<double> arm_qdd_max_;  // device order, from the derived file
+
+  bool oracle_enabled_{false};
+  std::array<double, 3> oracle_p_c_{};
+  std::array<double, 3> oracle_a_d_{0.0, 0.0, -1.0};
+  double oracle_t_c_offset_s_{1.0};
+  double oracle_gamma_f_{0.3};
+
+  // ── Arm command path (S5.3) ──────────────────────────────────────────────
+  // The model is the COMBINED arm+hand one, because the catch frame hangs off
+  // the hand: a frame on a link the arm-only model does not contain cannot be
+  // registered, let alone driven.
+  std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
+  CombinedModelCache combined_cache_;
+  /// Indices into `cache().registered_frames`. −1 means "not registered", and
+  /// for the base it also means "universe", which is what this robot uses.
+  int catch_frame_idx_{-1};
+  int base_frame_idx_{-1};
+  std::string catch_frame_name_{"catch_frame"};
+  int full_dof_{0};
+
+  rtc::tsid::ClikReferenceGenerator clik_;
+  /// False when anything the law needs is missing. The controller still
+  /// configures and still holds the arm — a robot that cannot catch is not a
+  /// robot that should refuse to start.
+  bool clik_enabled_{false};
+  Eigen::VectorXd q_posture_;  // [nq] posture target handed to CLIK
+  Eigen::VectorXd q_eval_;     // [nq] evaluation state: q_c on the arm, measured on the hand
+  Eigen::VectorXd v_eval_;     // [nv]
+  /// D-16 box in PINOCCHIO order, or empty when the file did not provide one.
+  Eigen::VectorXd qdd_max_pin_;
+
+  /// L4's soft-catch translational reference. Constructed at configure because
+  /// its parameters are validated in the constructor — an optional rather than
+  /// a default-constructed member so "not configured" is a state the tick can
+  /// see instead of a silently wrong gain set.
+  std::optional<rtc::catching::SoftCatchTranslation> reference_;
+
+  // ── RT-owned command state ───────────────────────────────────────────────
+  /// The commanded arm configuration and its velocity, in DEVICE order. These
+  /// are the controller's own carry-forward state: CLIK integrates its anchor
+  /// internally, and these mirror it so the abort path can keep going when
+  /// CLIK cannot.
+  std::array<double, kDemoCatchingMaxArmDof> arm_q_cmd_{};
+  std::array<double, kDemoCatchingMaxArmDof> arm_qd_cmd_{};
+  bool arm_cmd_seeded_{false};
+  /// The L4 generator is reset from the measured TCP pose on the first tick of
+  /// a plan — not at seed time, because the pose it needs comes from the model
+  /// cache and the cache is only current inside the tick.
+  bool reference_seeded_{false};
+  /// Consecutive failed CLIK solves. `supervisor.n_qp` of them latch a fault.
+  int qp_fail_streak_{0};
+  /// Whether the joint-space stop has brought every joint to rest. The
+  /// supervisor holds ABORT_SAFE until it has.
+  bool abort_stopped_{false};
+  /// ‖q_meas − q_cmd‖ of the last tick, the TRACK_ERR watchdog's input.
+  double track_err_{0.0};
+
+  // ── The plan being followed ──────────────────────────────────────────────
+  // S6 replaces this member's WRITER (a planner thread through a SeqLock); the
+  // reader below is what that planner will feed.
+  rtc::catching::PlanSnapshot plan_{};
+  bool plan_active_{false};
+  int traj_hint_{0};  // L2 sampler cursor, reset when the snapshot changes
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────
   // The hand step arrives on the group's `joint_goal`, which only exists if

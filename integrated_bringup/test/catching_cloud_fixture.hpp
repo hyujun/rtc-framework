@@ -67,6 +67,11 @@ struct CloudSpec {
   bool drop_validity{false};   // omit the `validity` field entirely
   std::uint8_t validity_type{PointField::UINT8};
   std::uint32_t covariance_count{CovarianceSnapshot::kElems};
+  /// Ball position at the message origin [m] and its (constant) velocity
+  /// [m/s]. The defaults reproduce the diagonal the decode suite asserts on;
+  /// a test that needs the ball inside a robot's workspace supplies its own.
+  std::array<double, 3> p0{0.0, 0.0, 0.0};
+  std::array<double, 3> vel{1.0, 2.0, 3.0};
 };
 
 inline void PutField(std::vector<PointField>& fields, const char* name, std::uint32_t offset,
@@ -136,14 +141,15 @@ inline sensor_msgs::msg::PointCloud2 MakeCloud(const CloudSpec& spec) {
     Put(msg.data, i, kPointStep, off_hor, horizon);
 
     const double t = static_cast<double>(horizon) * 1e-9;
+    const double px = spec.p0[0] + spec.vel[0] * t;
     const double x =
-        (static_cast<int>(i) == spec.nan_point) ? std::numeric_limits<double>::quiet_NaN() : t;
+        (static_cast<int>(i) == spec.nan_point) ? std::numeric_limits<double>::quiet_NaN() : px;
     Put(msg.data, i, kPointStep, off_x, x);
-    Put(msg.data, i, kPointStep, off_x + 8, 2.0 * t);
-    Put(msg.data, i, kPointStep, off_x + 16, 3.0 * t);
-    Put(msg.data, i, kPointStep, off_v, 1.0);
-    Put(msg.data, i, kPointStep, off_v + 8, 2.0);
-    Put(msg.data, i, kPointStep, off_v + 16, 3.0);
+    Put(msg.data, i, kPointStep, off_x + 8, spec.p0[1] + spec.vel[1] * t);
+    Put(msg.data, i, kPointStep, off_x + 16, spec.p0[2] + spec.vel[2] * t);
+    Put(msg.data, i, kPointStep, off_v, spec.vel[0]);
+    Put(msg.data, i, kPointStep, off_v + 8, spec.vel[1]);
+    Put(msg.data, i, kPointStep, off_v + 16, spec.vel[2]);
     Put(msg.data, i, kPointStep, off_a, 0.0);
     Put(msg.data, i, kPointStep, off_a + 8, 0.0);
     Put(msg.data, i, kPointStep, off_a + 16, -9.81);

@@ -51,8 +51,9 @@ constexpr double kControlRateHz = 500.0;  // repo default (rtc::kDefaultControlR
 // Fully resolved, non-provisional, in-range config — every check below
 // mutates one field of this baseline rather than restating the whole tree.
 //
-// The `io:` / `prediction:` sections joined it with S5.2, when the vision
-// ingress made them active keys. The baseline grows with the schema; the
+// The `io:` / `prediction:` sections joined it with S5.2 and
+// `joint_cmd:` / `robot.arm:` / the two `supervisor:` keys with S5.3, as each
+// step made its own keys active. The baseline grows with the schema; the
 // assertions on it (armable, zero failures, zero warnings) are unchanged,
 // which is what keeps "a clean config arms cleanly" meaning the same thing
 // before and after.
@@ -72,6 +73,22 @@ planner:
 supervisor:
   decel:
     a_dec: 3.0
+  track_err_abort: 0.3
+  n_qp: 3
+joint_cmd:
+  K_p: 20.0
+  K_a: 8.0
+  K_n: 1.0
+  w_task: 1.0
+  w_a: 0.5
+  w_arm: 0.01
+  w_smooth: 0.001
+  damping_sq: 0.0001
+  qp:
+    max_iter: 20
+  lag:
+    T_arm: 0.0
+    lead_enable: false
 io:
   n_min: 11
   t_stale: 0.10
@@ -94,6 +111,8 @@ sim:
   io:
     future_tol: 0.1
 robot:
+  arm:
+    limit_margin: 0.05
   hand:
     provisional: false
     rho_eps: 0.02
@@ -594,7 +613,7 @@ TEST(CatchingParams, IoNMinMustBeResolvedAndWholeAndWithinCapacity) {
      // than truncated — a count is not a value to round.
     YAML::Node root = ValidRoot();
     root["io"]["n_min"] = 10.5;
-    ExpectRejectMentioning(root, "whole number of points");
+    ExpectRejectMentioning(root, "whole number");
   }
   {  // above the snapshot capacity the requirement can never be met, and the
     // lane would close permanently with the rejection counter blaming vision.
@@ -685,6 +704,67 @@ TEST(CatchingParams, TheSimOverrideIsNotJudgedOnARealArmConfig) {
   EXPECT_FALSE(sim.armable);
   EXPECT_TRUE(
       ReportHasFailure(sim, CatchingValidationReason::kRangeViolation, "sim.io.future_tol"));
+}
+
+// ── joint_cmd / robot.arm / supervisor: the CLIK step (S5.3) ────────────────
+
+TEST(CatchingParams, ClikWeightsMustKeepTheirOrdering) {
+  // Each weight below is individually in range. The SET is wrong, and the
+  // result is a controller that tracks its posture and treats the catch point
+  // as a suggestion — plausible motion, missed ball, and nothing in any log
+  // that says why. Three range checks cannot see this.
+  {
+    YAML::Node root = ValidRoot();
+    root["joint_cmd"]["w_arm"] = 2.0;  // above w_task (1.0) and w_a (0.5)
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kWeightOrdering, "joint_cmd.w_arm"));
+  }
+  {
+    // The regulariser must stay below the posture term, or the damping is what
+    // decides the redundant degree of freedom.
+    YAML::Node root = ValidRoot();
+    root["joint_cmd"]["damping_sq"] = 0.5;  // above w_arm (0.01)
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(
+        ReportHasFailure(r, CatchingValidationReason::kWeightOrdering, "joint_cmd.damping_sq"));
+  }
+  {
+    // And the ordering check does not fire on the shipped ordering.
+    const auto r = ValidateCatchingParams(ParseCatchingParams(ValidRoot()), kControlRateHz, false);
+    EXPECT_TRUE(r.armable);
+  }
+}
+
+TEST(CatchingParams, TheSupervisorKeysTheJointLayerReportsToAreActive) {
+  // L7 owns both keys, but the joint command layer is what reports to them, so
+  // they become active with it. A TBD `track_err_abort` would mean the tracking
+  // watchdog has no threshold — the one thing standing between a diverging
+  // command and the hardware.
+  {
+    YAML::Node root = ValidRoot();
+    root["supervisor"].remove("track_err_abort");
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd,
+                                 "supervisor.track_err_abort"));
+  }
+  {
+    YAML::Node root = ValidRoot();
+    root["supervisor"].remove("n_qp");
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "supervisor.n_qp"));
+  }
+}
+
+TEST(CatchingParams, TheQpIterationCapMustBeAtLeastOne) {
+  YAML::Node root = ValidRoot();
+  root["joint_cmd"]["qp"]["max_iter"] = 0;
+  // A zero cap is refused at PARSE time (a count must be positive), which is
+  // the stricter of the two answers and the one that names the key.
+  ExpectRejectMentioning(root, "whole number");
 }
 
 // ── Absent sections: defaults, never a foreign exception type ────────────────
