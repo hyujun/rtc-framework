@@ -10,6 +10,7 @@ notice.
 import csv
 import math
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -23,7 +24,9 @@ from rtc_tools.analysis.vision_lane import (
     LayoutMismatch,
     check_layout,
     decode_trajectory,
+    detection_latencies,
     first_flight,
+    flight_spans,
     max_abs_difference,
     snapshot_row,
     summarise_ghost,
@@ -240,3 +243,172 @@ def test_first_flight_is_cut_at_the_receive_gap_and_compared_over_the_overlap():
     assert first_flight(pos, recv) == pos[:4]
     n, worst = max_abs_difference(pos[:4], [(0.0, 0, 0), (1.0, 0, 0), (2.0, 0, 0), (3.5, 0, 0)])
     assert n == 4 and worst == pytest.approx(0.5)
+
+
+# ── T_det (detection latency, plan §7.3) ─────────────────────────────────────
+
+MS = 1_000_000
+
+
+def write_truth(path, rows):
+    from rtc_tools.analysis.vision_lane import TRUTH_COLUMNS
+
+    with path.open("w", newline="") as h:
+        w = csv.DictWriter(h, fieldnames=TRUTH_COLUMNS)
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+
+def truth_row(recv_ns, stamp_offset_ns=-2 * MS):
+    return {
+        "recv_ns": recv_ns,
+        "stamp_ns": recv_ns + stamp_offset_ns,
+        "frame_id": "world",
+        "child_frame_id": "projectile_ball",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.5,
+        "vx": 1.0,
+        "vy": 0.0,
+        "vz": 2.0,
+    }
+
+
+def flight_truth(launch_ns, samples=60, period_ns=10 * MS):
+    """One flight of the 100 Hz ball lane, which is silent while parked."""
+    return [truth_row(launch_ns + i * period_ns) for i in range(samples)]
+
+
+def test_flight_spans_split_at_the_receive_gap_only():
+    recv = [0, 10 * MS, 20 * MS, 3_000 * MS, 3_010 * MS]
+    assert flight_spans(recv, gap_s=0.3) == [(0, 2), (3, 4)]
+    # a gap shorter than the threshold is not a new flight
+    assert flight_spans([0, 100 * MS, 200 * MS], gap_s=0.3) == [(0, 2)]
+    assert flight_spans([], gap_s=0.3) == []
+
+
+def test_t_det_is_measured_per_flight_on_both_clocks(tmp_path):
+    truth = tmp_path / "p_truth.csv"
+    pred = tmp_path / "p_prediction.csv"
+    write_truth(truth, flight_truth(1_000 * MS) + flight_truth(5_000 * MS))
+    write_pred(
+        pred,
+        [
+            pred_row(1_120 * MS, seq=1, gen=1),  # flight 0: 120 ms after launch
+            pred_row(1_153 * MS, seq=2, gen=1),
+            pred_row(5_090 * MS, seq=3, gen=2),  # flight 1: 90 ms, a new track
+        ],
+    )
+    lat = detection_latencies(truth, pred)
+    assert [d.flight_index for d in lat] == [0, 1]
+    assert lat[0].t_det_recv_s == pytest.approx(0.120)
+    assert lat[1].t_det_recv_s == pytest.approx(0.090)
+    # the stamp axis is the publishers' own: truth stamps 2 ms early, predictions 5 ms
+    assert lat[0].t_det_stamp_s == pytest.approx(0.120 - 0.003)
+    assert all(d.predictions_before_valid == 0 for d in lat)
+
+
+def test_a_flight_without_a_valid_prediction_is_reported_not_borrowed(tmp_path):
+    truth = tmp_path / "p_truth.csv"
+    pred = tmp_path / "p_prediction.csv"
+    write_truth(truth, flight_truth(1_000 * MS) + flight_truth(5_000 * MS))
+    write_pred(pred, [pred_row(5_090 * MS, seq=3)])  # only the SECOND flight is detected
+    lat = detection_latencies(truth, pred)
+    assert math.isnan(lat[0].t_det_recv_s) and lat[0].first_valid_recv_ns == -1
+    assert lat[1].t_det_recv_s == pytest.approx(0.090)
+
+
+def test_the_previous_flights_tail_is_not_counted_as_a_detection(tmp_path):
+    truth = tmp_path / "p_truth.csv"
+    pred = tmp_path / "p_prediction.csv"
+    write_truth(truth, flight_truth(1_000 * MS) + flight_truth(5_000 * MS))
+    late = pred_row(5_010 * MS, seq=9)
+    late["stamp_ns"] = 4_900 * MS  # produced before the second launch, delivered after
+    write_pred(pred, [late, pred_row(5_200 * MS, seq=10)])
+    lat = detection_latencies(truth, pred)
+    assert lat[1].t_det_recv_s == pytest.approx(0.200)
+
+
+def test_non_valid_snapshots_before_the_first_valid_are_counted(tmp_path):
+    truth = tmp_path / "p_truth.csv"
+    pred = tmp_path / "p_prediction.csv"
+    write_truth(truth, flight_truth(1_000 * MS))
+    write_pred(
+        pred,
+        [
+            pred_row(1_040 * MS, n=0),  # empty INVALID clear
+            pred_row(1_070 * MS, validity="NOT_EVALUATED", seq=2),
+            pred_row(1_100 * MS, seq=3),
+        ],
+    )
+    lat = detection_latencies(truth, pred)
+    assert lat[0].predictions_before_valid == 2
+    assert lat[0].t_det_recv_s == pytest.approx(0.100)
+
+
+def test_only_the_summarised_subscription_contributes(tmp_path):
+    truth = tmp_path / "p_truth.csv"
+    pred = tmp_path / "p_prediction.csv"
+    write_truth(truth, flight_truth(1_000 * MS))
+    write_pred(
+        pred,
+        [
+            pred_row(1_050 * MS, sub="reliable", seq=1),
+            pred_row(1_130 * MS, sub="best_effort", seq=1),
+        ],
+    )
+    assert detection_latencies(truth, pred, "best_effort")[0].t_det_recv_s == pytest.approx(0.130)
+    assert detection_latencies(truth, pred, "reliable")[0].t_det_recv_s == pytest.approx(0.050)
+
+
+def test_a_ghost_track_from_the_previous_flight_is_not_this_flights_detection():
+    """TBD-VIS-07: a track that was already VALID keeps its generation."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        truth = Path(d) / "p_truth.csv"
+        pred = Path(d) / "p_prediction.csv"
+        write_truth(truth, flight_truth(1_000 * MS) + flight_truth(5_000 * MS))
+        ghost = pred_row(5_010 * MS, seq=80, gen=7)  # same track as before the launch
+        ghost["stamp_ns"] = 5_005 * MS  # stamped after the launch, so the stamp guard passes
+        write_pred(
+            pred,
+            [
+                pred_row(1_120 * MS, seq=1, gen=7),  # flight 0 detected on generation 7
+                ghost,
+                pred_row(5_180 * MS, seq=81, gen=8),  # the NEW track
+            ],
+        )
+        lat = detection_latencies(truth, pred)
+        assert lat[1].t_det_recv_s == pytest.approx(0.180)
+        assert lat[1].predictions_before_valid == 1  # the ghost was counted, not taken
+
+
+def test_a_flight_with_no_detection_is_left_out_of_the_histogram(capsys, tmp_path):
+    from rtc_tools.analysis import vision_lane as vl
+
+    write_truth(tmp_path / "p_truth.csv", flight_truth(1_000 * MS) + flight_truth(5_000 * MS))
+    write_pred(
+        tmp_path / "p_prediction.csv",
+        [pred_row(1_040 * MS, n=0), pred_row(1_100 * MS, seq=2, gen=3)],
+    )
+    assert vl.main([str(tmp_path / "p")]) == 0
+    out = capsys.readouterr().out
+    assert "2 flights, 1 with a VALID prediction" in out
+    assert "flights with NO VALID   : [1]" in out
+    assert "predictions before VALID: 1×1" in out  # only the detected flight
+
+
+def test_the_flight_gap_is_its_own_flag_not_the_camera_loss_gap(capsys, tmp_path):
+    from rtc_tools.analysis import vision_lane as vl
+
+    write_truth(tmp_path / "p_truth.csv", flight_truth(1_000 * MS) + flight_truth(5_000 * MS))
+    write_pred(
+        tmp_path / "p_prediction.csv",
+        [pred_row(1_120 * MS, seq=1, gen=1), pred_row(5_090 * MS, seq=2, gen=2)],
+    )
+    assert vl.main([str(tmp_path / "p"), "--loss-gap-s", "10.0"]) == 0
+    assert "2 flights, 2 with a VALID prediction" in capsys.readouterr().out
+    assert vl.main([str(tmp_path / "p"), "--flight-gap-s", "10.0"]) == 0
+    assert "1 flights, 1 with a VALID prediction" in capsys.readouterr().out

@@ -296,8 +296,8 @@ ros2 run rtc_tools analyze_hand_close <session>/controllers/demo_catching_contro
 `ball_perception` `sim_estimator_node` 의 `prediction/trajectory` (PointCloud2, D-4 레이아웃) 를
 **필드 이름으로** 디코딩하고 (이름·offset·datatype·count·`point_step`·endianness 가 하나라도 다르면
 **거부**), 프로브가 기록한 CSV 에서 S3.4 의 질문 — 발행 주기·N·지평 (TBD-VIS-04), `frame_id` (VIS-06),
-측정 손실 뒤 `validity` (VIS-07), best_effort vs reliable 구독 손실 (VIS-08) — 에 답한다. **측정만** 한다;
-정책은 S5.2 몫이다.
+측정 손실 뒤 `validity` (VIS-07), best_effort vs reliable 구독 손실 (VIS-08) — 에 답한다. 여기에
+**T_det** (발사 → 첫 VALID 예측, plan §7.3 · S3.6) 이 더해진다. **측정만** 한다; 정책은 S5.2 몫이다.
 
 ```bash
 ros2 run rtc_tools vision_lane_probe <prefix>            # <prefix>_{prediction,camera,truth,diag}.csv
@@ -308,7 +308,8 @@ ros2 run rtc_tools analyze_vision_lane <prefix>
 - 프로브는 예측 토픽을 best_effort·reliable **둘 다** KEEP_LAST(1) 로 구독해 각각 받은 것을 identity 로 비교한다 — 개수가 같아도 다른 메시지일 수 있다
 - 릴레이는 stamp 를 건드리지 않는다 (지연은 전송 지연으로 보이게). estimator 프로파일의 `input.topic` 을 릴레이 출력으로 돌린다
 - ⚠️ `sim_estimator_node` 는 `debug.enabled_topics` 에 `prediction/trajectory` **만** 있으면 샘플을 기록하지 않아 토픽만 있고 **발행이 0건**이다 (`needs_samples()` 가 그 토픽을 빼놓는다). 다른 debug 토픽을 하나 이상 같이 켠다
-- 테스트 `test/test_vision_lane.py`: near-miss 레이아웃 거부 (필드 이동·타입·count·누락·초과·point_step·endian), uint64 재조립, 빈 INVALID 스냅샷, 요약 (주기·되감김·identity 비교·유령 트랙)
+- **T_det (`detection_latencies`)**: 비행은 **truth lane 의 침묵**이 가른다 (`--flight-gap-s`, 기본 0.3 s — 시뮬레이터는 공이 park 상태면 아무것도 발행하지 않는다). 발사 시각은 그 비행의 첫 ground-truth 샘플이고 양자화는 공 발행 주기 하나다. 두 축을 **각각 한 시계 안에서** 낸다 (D-2): `recv` (프로브 steady, 전송 포함 = 소비자 체감) 와 `stamp` (발행자 stamp, 전송 제외). **stamp 축은 sim rig 전제 위에서만 한 시계다** — 시뮬레이터가 truth·camera 를 같은 문장에서 stamp 하고 estimator 가 그 capture stamp 를 예측에 복사하는 경우 (S3.4 실측). 발사 전부터 VALID 이던 트랙 (유령, VIS-07) 은 **generation 이 그때 것**이라 검출로 세지 않는다. 검출이 없던 비행은 버리지 않고 그대로 보고한다 (NaN)
+- 테스트 `test/test_vision_lane.py` (26 케이스): near-miss 레이아웃 거부 (필드 이동·타입·count·누락·초과·point_step·endian), uint64 재조립, 빈 INVALID 스냅샷, 요약 (주기·되감김·identity 비교·유령 트랙), T_det (비행 분리·두 축·유령 배제·미검출 비행·`--flight-gap-s` 가 `--loss-gap-s` 와 별개임)
 
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 
