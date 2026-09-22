@@ -73,7 +73,7 @@ diagnostic:
 catching:
   io:
     expected_frame: "world"
-    n_min: 6
+    n_min: 7
     t_stale: 0.2
     future_tol: 0.01
     horizon_min: 0.3

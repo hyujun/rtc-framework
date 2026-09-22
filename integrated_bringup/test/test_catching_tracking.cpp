@@ -149,7 +149,7 @@ catching:
     traj_topic: ")"
      << topic << R"("
     expected_frame: "world"
-    n_min: 6
+    n_min: 7
     t_stale: 0.2
     future_tol: 0.01
     horizon_min: 0.3
@@ -322,9 +322,9 @@ class CatchingTrackingTest : public ::testing::Test {
   /// Run `ticks` closed-loop control periods, re-publishing a prediction about
   /// every 30 ms so the lane never goes stale, and sleeping one period each
   /// tick so the controller's clock and its `dt` agree.
-  void RunClosedLoop(int ticks) {
+  void RunClosedLoop(int ticks, bool publish = true) {
     for (int t = 0; t < ticks; ++t) {
-      if (t % 15 == 0) {
+      if (publish && t % 15 == 0) {
         PublishPrediction(static_cast<std::uint64_t>(t / 15) + 1);
       }
       const ControllerOutput out = ctrl_->Compute(state_);
@@ -635,6 +635,43 @@ TEST_F(CatchingTrackingTest, LeadCompensationReducesTheErrorUnderAnActuationDela
 
   EXPECT_LT(with_lead, without_lead)
       << "lead off " << without_lead * 1e3 << " mm, lead on " << with_lead * 1e3 << " mm";
+}
+
+// ── The abort ends, even after the lane goes quiet ──────────────────────────
+
+TEST_F(CatchingTrackingTest, AnAbortCompletesAndReArmsWithNoVisionLeft) {
+  // The state after every real abort: the ball has landed, vision stops
+  // publishing, and the snapshot goes stale within `io.t_stale`. If the
+  // supervisor asked vision about it, the stale answer would decide for
+  // ABORT_SAFE — which holds, never drops the plan and never re-arms. The arm
+  // is stopped and nothing says so.
+  //
+  // `n_qp` is raised so the failure aborts WITHOUT latching a fault: what is
+  // under test is the ordinary abort path, not the escalation.
+  const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.05, 0.0, 0.0);
+  ASSERT_NO_FATAL_FAILURE(BringUp(p_c, Eigen::Vector3d::UnitZ(), 0.0, 1.0, [](YAML::Node& yaml) {
+    yaml["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
+    yaml["catching"]["supervisor"]["n_qp"] = 1000;
+  }));
+  RunClosedLoop(4);
+  ASSERT_TRUE(ctrl_->IsPlanActive());
+  // Watch for the abort rather than asserting on one tick: with the arm
+  // already at rest the stop completes immediately, so ABORT_SAFE can come and
+  // go inside a couple of ticks. What this test needs to know is that it
+  // HAPPENED — otherwise the assertions below would pass on a controller that
+  // never aborted at all.
+  bool saw_abort = false;
+  for (int t = 0; t < 8 && !saw_abort; ++t) {
+    RunClosedLoop(1);
+    saw_abort = ctrl_->GetMode() == rtc::catching::Mode::kAbortSafe;
+  }
+  ASSERT_TRUE(saw_abort) << "precondition: the degenerate plan never aborted";
+
+  // No more predictions: the lane goes stale (t_stale is 0.2 s here).
+  RunClosedLoop(150, /*publish=*/false);
+  EXPECT_NE(ctrl_->GetMode(), rtc::catching::Mode::kAbortSafe)
+      << "the abort never completed with a stale vision lane";
+  EXPECT_FALSE(ctrl_->IsPlanActive()) << "the aborted plan was never dropped";
 }
 
 }  // namespace

@@ -169,12 +169,23 @@ void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
   // L3 under CM::ReadDeviceState — RT-tick fingertip-wrench mirror load (not the
   // OnWrench callback lane, which is the non-RT write side).
   RTC_TRACE_SCOPE("MujocoNativeBackend::ReadSensorState");
+  // The counters are read BEFORE the mirror, and the order is load-bearing.
+  // OnWrench stores the mirror and THEN increments its counter, so a counter
+  // read afterwards can be one ahead of the payload it is about to be paired
+  // with — the same counter/payload hazard D-21 documents on the catching
+  // ingress. Reading it first can only pair a counter with a payload at least
+  // as new, which under-reports newness for one tick instead of claiming a
+  // sample that is not there.
+  std::array<uint64_t, kMaxSensorGroups> seq_before{};
+  for (std::size_t i = 0; i < seq_before.size(); ++i) {
+    seq_before[i] = wrench_seq_[i].load(std::memory_order_acquire);
+  }
   const auto mirror = sensor_mirror_.Load();
   cache.num_inference_groups = mirror.num_tips;
 
   for (int f = 0; f < mirror.num_tips; ++f) {
     const auto fu = static_cast<std::size_t>(f);
-    const uint64_t cur_seq = wrench_seq_[fu].load(std::memory_order_acquire);
+    const uint64_t cur_seq = seq_before[fu];
 
     if (cur_seq != rt_last_seen_seq_[fu]) {
       rt_last_seen_seq_[fu] = cur_seq;

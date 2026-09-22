@@ -536,7 +536,11 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   // fault rather than as a configuration one.
   if (params.io_n_min >= 2 && !params.io_horizon_min.tbd && !params.prediction_dt_expected.tbd &&
       params.prediction_dt_expected.value > 0.0) {
-    const double needed = params.io_horizon_min.value / params.prediction_dt_expected.value;
+    // n samples spaced dt apart span (n-1)*dt, NOT n*dt. The off-by-one is not
+    // academic: with the shipped 0.51 s / 0.05 s it is the difference between
+    // 11 points (0.50 s — short, so every minimal message trips the horizon
+    // warning this check exists to prevent) and 12.
+    const double needed = params.io_horizon_min.value / params.prediction_dt_expected.value + 1.0;
     if (std::isfinite(needed) && static_cast<double>(params.io_n_min) < std::ceil(needed)) {
       AddFailure(report, CatchingValidationReason::kRangeViolation, "io.n_min");
     }

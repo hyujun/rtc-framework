@@ -164,6 +164,12 @@ struct JointDecelStep {
   bool valid{false};
   bool stopped{false};  // every joint's |q̇| reached zero
   bool clamped{false};  // at least one joint hit its position box this step
+  /// At least one joint's command, velocity or limit was not a finite number.
+  /// That joint was left untouched and the stop is reported INCOMPLETE — the
+  /// caller decides what to do about a command it can no longer integrate
+  /// (the supervisor's answer is to stay in the abort, which is also what
+  /// keeps the value from being treated as a finished stop).
+  bool non_finite{false};
 };
 
 /// One tick of the joint-space stop. `q_cmd` and `qd_cmd` are updated IN
@@ -191,8 +197,14 @@ struct JointDecelStep {
       // One bad joint does not invalidate the others' stop — but it does mean
       // this joint has no honest step, so it is frozen where it is and the
       // result says the stop is not complete.
-      qd_cmd[i] = 0.0;
-      all_stopped = all_stopped && true;
+      // NOT counted as stopped, and the joint is left ALONE. `stopped` is the
+      // caller's cue to LEAVE the abort, and a joint whose command is not a
+      // number has not been brought anywhere — ending the stop would carry
+      // that value into the next trial. Zeroing the velocity would also be the
+      // one-tick stop this function exists to avoid, on a joint whose state is
+      // unknown.
+      out.non_finite = true;
+      all_stopped = false;
       continue;
     }
     const double speed = std::abs(qd_cmd[i]);

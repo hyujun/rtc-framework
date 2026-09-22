@@ -366,7 +366,8 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// One tick of the tracking law: sample → reference → CLIK → arm command.
   /// Returns the reason to report, `kNone` when the tick was healthy. RT only.
-  [[nodiscard]] rtc::catching::Reason RunTrackingTick(const ControllerState& state) noexcept;
+  [[nodiscard]] rtc::catching::Reason RunTrackingTick(
+      const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept;
 
   /// Walk the arm command to a stop without the QP (A-S5-10). RT only.
   void RunJointSpaceAbort(const ControllerState& state) noexcept;
@@ -417,7 +418,8 @@ class DemoCatchingController final : public RTControllerInterface {
   };
 
   /// Decide this tick's (reason, advance). RT tick only.
-  [[nodiscard]] ReasonDecision EvaluateReason(const ControllerState& state) noexcept;
+  [[nodiscard]] ReasonDecision EvaluateReason(
+      const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept;
 
   /// Apply one (mode, reason) edge from S1.8's table. A reason with no row in
   /// the current mode is inapplicable there and leaves the mode alone — that
@@ -606,6 +608,8 @@ class DemoCatchingController final : public RTControllerInterface {
   std::int64_t t_stale_ns_{0};
   std::int64_t t_arm_ns_{0};
   std::int64_t traj_horizon_min_ns_{0};
+  /// L1 §4.4's J threshold [m]; <= 0 disables the warning.
+  double traj_jump_warn_m_{-1.0};
   double track_err_abort_rad_{0.0};
   int n_qp_fault_{0};
   double limit_margin_{0.05};

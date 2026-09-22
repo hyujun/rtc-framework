@@ -90,7 +90,7 @@ joint_cmd:
     T_arm: 0.0
     lead_enable: false
 io:
-  n_min: 11
+  n_min: 12
   t_stale: 0.10
   future_tol: 0.001
   horizon_min: 0.51
@@ -632,10 +632,31 @@ TEST(CatchingParams, IoNMinMustBeAbleToCoverTheRequiredHorizon) {
   // the configuration mistake it is.
   YAML::Node root = ValidRoot();
   root["io"]["horizon_min"] = 0.51;
-  root["io"]["n_min"] = 6;  // 0.51 / 0.05 needs 11
+  root["io"]["n_min"] = 6;
   const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
   EXPECT_FALSE(r.armable);
   EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.n_min"));
+}
+
+TEST(CatchingParams, TheHorizonGateCountsINTERVALSNotSamples) {
+  // n samples spaced dt apart span (n-1)*dt. The off-by-one is worth its own
+  // case because it is invisible in the shipped numbers: 0.51 s at 0.05 s
+  // spacing "needs 11" by the wrong arithmetic and 12 by the right one, and 11
+  // produces a 0.50 s window that trips the horizon warning on every minimal
+  // message — the exact symptom this gate claims to prevent (found by
+  // /code-review, 2026-09-22).
+  YAML::Node root = ValidRoot();
+  root["io"]["horizon_min"] = 0.51;
+  root["prediction"]["dt_expected"] = 0.05;
+
+  root["io"]["n_min"] = 11;
+  const auto eleven = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(eleven.armable) << "11 points span 0.50 s, not 0.51";
+  EXPECT_TRUE(ReportHasFailure(eleven, CatchingValidationReason::kRangeViolation, "io.n_min"));
+
+  root["io"]["n_min"] = 12;
+  const auto twelve = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_TRUE(twelve.armable);
 }
 
 TEST(CatchingParams, IoStalenessAndOffsetRangesAreChecked) {

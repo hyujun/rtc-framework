@@ -379,11 +379,24 @@ void DemoCatchingController::OnTrajectoryCloud(const sensor_msgs::msg::PointClou
   cov_box_.Store(cov);
   traj_box_.Store(snap);
 
-  if (traj_input_.LastDiagnostics().horizon_short) {
+  const auto& diag = traj_input_.LastDiagnostics();
+  if (diag.jump_m >= 0.0 && traj_jump_warn_m_ > 0.0 && diag.jump_m > traj_jump_warn_m_) {
+    // L1 §4.4's J: how far two consecutive predictions of the SAME track
+    // disagree at one instant. A warning, never a gate — the plan says so, and
+    // the reason is that a jump is information about VISION, while the
+    // supervisor's business is what to do about the ball. Without this the key
+    // was parsed, validated and plumbed through to a comparison nobody made.
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "vision prediction jumped %.1f mm between consecutive snapshots "
+                         "(warning threshold %.1f mm)",
+                         diag.jump_m * 1000.0, traj_jump_warn_m_ * 1000.0);
+  }
+
+  if (diag.horizon_short) {
     RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
                          "vision horizon %ld ms is shorter than the %ld ms this controller needs "
                          "(D-15): late catch points are not reaching the planner",
-                         static_cast<long>(traj_input_.LastDiagnostics().horizon_ns / 1000000),
+                         static_cast<long>(diag.horizon_ns / 1000000),
                          static_cast<long>(traj_horizon_min_ns_ / 1000000));
   }
 }
@@ -430,7 +443,7 @@ void DemoCatchingController::SeedArmCommand(const ControllerState& state) noexce
 }
 
 rtc::catching::Reason DemoCatchingController::RunTrackingTick(
-    const ControllerState& state) noexcept {
+    const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept {
   using rtc::catching::Reason;
   if (!clik_enabled_ || !reference_.has_value() || catch_frame_idx_ < 0 || !arm_readable_) {
     return Reason::kNone;  // nothing to run; the hold latch keeps the arm still
@@ -483,7 +496,10 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
   const rtc::catching::NowLead now_lead = rtc::catching::MakeNowLead(now, t_arm_ns_);
 
   // ── The ball at the LEAD instant ────────────────────────────────────────
-  const rtc::catching::TrajectorySnapshot snapshot = traj_box_.Load();
+  // The snapshot is the one THIS tick already loaded (D-21: one Load per
+  // tick). Loading again here would let a writer land between the two and
+  // judge freshness on one snapshot while sampling another — with
+  // `traj_hint_`, the sampler's cursor, carried across the pair.
   const rtc::catching::SampleEval sample = rtc::catching::SampleAt(snapshot, now_lead, traj_hint_);
   if (!sample.valid) {
     return Reason::kBallStale;
@@ -681,7 +697,7 @@ void DemoCatchingController::AdvanceMode(rtc::catching::Reason reason) noexcept 
 }
 
 DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
-    const ControllerState& state) noexcept {
+    const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept {
   using rtc::catching::Mode;
   using rtc::catching::Reason;
   static_cast<void>(state);
@@ -721,6 +737,27 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     // IDLE, which is exactly the two behaviours wanted here.
     return {Reason::kParamsTbd, true};
   }
+  // ── Modes that do not ask vision anything ────────────────────────────────
+  // BEFORE the vision lane, because an abort is not a question about the ball.
+  // Asking first would strand the controller: after any abort the ball has
+  // landed, the lane goes quiet within `io.t_stale`, and a stale snapshot
+  // would then answer for ABORT_SAFE — which holds, never drops the plan, and
+  // never re-arms. The arm is stopped and nobody says so.
+  if (mode_ == Mode::kAbortSafe) {
+    // Leave only when the arm has actually stopped (L7 §4.1). Advancing on the
+    // tick the abort STARTS would make ABORT_SAFE a label rather than a state,
+    // and the next trial would begin while the arm is still moving. (A latched
+    // fault is handled above: it escalates instead of retreating.)
+    return {Reason::kNone, abort_stopped_};
+  }
+  if (mode_ == Mode::kRetreat) {
+    // RETREAT is over as soon as it is entered at S5.3 — there is no return
+    // motion yet (L4 §5.3's retreat reference is S7). Advancing keeps the
+    // re-arm cycle turning; holding here would strand the controller for the
+    // same reason the abort would.
+    return {Reason::kNone, true};
+  }
+
   // ── The vision lane (S5.2) ───────────────────────────────────────────────
   // From here the controller is armed and the profile is clean, so what is
   // left to decide is what the prediction says. The ORDER matters: a track
@@ -777,19 +814,18 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     return {Reason::kNoCatchablePlan, true};
   }
 
-  if (mode_ == Mode::kAbortSafe) {
-    // Leave only when the arm has actually stopped (L7 §4.1). Advancing on the
-    // tick the abort STARTS would make ABORT_SAFE a label rather than a state,
-    // and the next trial would begin while the arm is still moving. (A latched
-    // fault is handled above, before this: it escalates instead of retreating.)
-    return {Reason::kNone, abort_stopped_};
-  }
-
   if (mode_ == Mode::kApproach) {
     // Following a plan. The law runs here and its verdict IS this tick's
     // reason: a healthy tick reports nothing and holds APPROACH.
-    const Reason law = RunTrackingTick(state);
-    if (law == Reason::kQpFailed && qp_fail_streak_ >= n_qp_fault_ && n_qp_fault_ > 0) {
+    const Reason law = RunTrackingTick(state, snapshot);
+    // BOTH CLIK failure reasons count toward the streak, because both increment
+    // it: `kJointConflict` is a solve that could not honour its own boxes, and a
+    // box that keeps conflicting is exactly as unrecoverable as a solver that
+    // keeps failing. Counting only one of them leaves a controller that loops
+    // APPROACH → ABORT_SAFE → RETREAT → ARMED → TRACKING forever without ever
+    // escalating.
+    const bool clik_failed = (law == Reason::kQpFailed || law == Reason::kJointConflict);
+    if (clik_failed && n_qp_fault_ > 0 && qp_fail_streak_ >= n_qp_fault_) {
       // L7 §4.2: a streak of QP failures is not a transient. The latch is what
       // stops the controller from retrying forever against a solve that is
       // never going to succeed.
@@ -1102,7 +1138,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     track_seen_ = true;
   }
 
-  const ReasonDecision decision = EvaluateReason(state);
+  const ReasonDecision decision = EvaluateReason(state, snapshot);
   if (decision.advance) {
     AdvanceMode(decision.reason);
   } else {

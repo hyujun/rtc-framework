@@ -531,9 +531,13 @@ void DemoCatchingController::SetupTrajInput() {
   const auto to_ns = [](double seconds) { return static_cast<std::int64_t>(seconds * 1e9); };
   TrajInputConfig cfg;
   cfg.n_min = params_.io_n_min > 0 ? params_.io_n_min : 2;
-  // n_max is the RUNTIME bound S3.6 set (20 for the shipped profile), not the
-  // snapshot capacity: a message longer than the profile is a profile change
-  // nobody asked for, and accepting it silently would hide that.
+  // The snapshot capacity, because that is the only upper bound this schema
+  // carries: S3.6's 20 points is a property of the PROFILE (it is what
+  // `ball_perception_sim_profile.json` is set to), not a limit the controller
+  // is given a key for. A longer message is accepted up to the capacity and
+  // refused above it — the capacity is what the decode can physically hold,
+  // and the profile change would show up as a point count in the diagnostics
+  // rather than as a rejection.
   cfg.n_max = rtc::catching::kCap;
   if (!params_.prediction_dt_expected.tbd && params_.prediction_dt_expected.value > 0.0) {
     // The spacing floor is derived, not configured: a fraction of the expected
@@ -552,6 +556,7 @@ void DemoCatchingController::SetupTrajInput() {
   traj_input_.Configure(cfg);
 
   traj_horizon_min_ns_ = cfg.horizon_min_ns;
+  traj_jump_warn_m_ = cfg.j_warn_m;
   t_stale_ns_ = params_.io_t_stale.tbd ? 0 : to_ns(params_.io_t_stale.value);
   // The lead axis (L5 §4.5). OFF unless the profile says otherwise, because
   // the sim has no actuation lag to lead (2026-09-20) and leading a delay that

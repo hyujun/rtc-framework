@@ -580,8 +580,29 @@ TEST(JointSpaceDecel, FailsClosedOnGarbageInput) {
   a.qdd_max[1] = std::numeric_limits<double>::quiet_NaN();
   const auto step = a.Step(0.002);
   EXPECT_TRUE(step.valid) << "one bad joint must not void the others' stop";
-  EXPECT_DOUBLE_EQ(a.qd[1], 0.0) << "the unusable joint is frozen, not integrated";
+  EXPECT_TRUE(step.non_finite);
   EXPECT_LT(a.qd[0], 1.0) << "the usable joints still decelerated";
+  // NOT stopped, and the bad joint is left ALONE. `stopped` is the caller's
+  // cue to leave the abort, so claiming it here would end the stop with a
+  // value that is not a number still latched in the command — and the
+  // supervisor would carry it into the next trial. Zeroing the velocity would
+  // also be the one-tick stop this function exists to avoid.
+  EXPECT_FALSE(step.stopped);
+  EXPECT_DOUBLE_EQ(a.qd[1], 1.0) << "the unusable joint was integrated anyway";
+}
+
+TEST(JointSpaceDecel, ANonFiniteCommandNeverReportsACompletedStop) {
+  // The path that matters on hardware: a solver that returned NaN (ProxQP
+  // reports SOLVED on a NaN problem) leaves it in the command, and the abort
+  // is what is supposed to bring the arm to rest FROM there. It cannot, and
+  // saying it did would hand the next trial a NaN.
+  DecelArrays a;
+  a.q = {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0};
+  a.qd = {0.0, 0.0, 0.0};  // every other joint is already stopped
+  const auto step = a.Step(0.002);
+  EXPECT_TRUE(step.valid);
+  EXPECT_TRUE(step.non_finite);
+  EXPECT_FALSE(step.stopped) << "a NaN command was reported as a completed stop";
 }
 
 TEST(GateG7D, DecelTargetAndContactDebounceAllocateNothing) {

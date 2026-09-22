@@ -155,10 +155,12 @@ demo_catching_controller:
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
-      # = ceil(horizon_min / dt_expected) = ceil(0.51 / 0.05). A message with
-      # fewer points cannot cover the window a commit decision needs, whatever
-      # its spacing.
-      n_min: 11
+      # = ceil(horizon_min / dt_expected) + 1 = ceil(0.51 / 0.05) + 1. The +1 is
+      # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
+      # cover 0.50 s and fall 10 ms SHORT of the window a commit decision
+      # needs — every minimal message would then trip the horizon warning
+      # (found by /code-review, 2026-09-22; S3.6's arithmetic dropped the term).
+      n_min: 12
       # Three publish periods at the measured 30 Hz. S3.4: a 30 % drop
       # injection thins publishing to ~15 Hz at p95 (67 ms), so one dropped
       # message must not read as stale — and the ghost-track silence after a
