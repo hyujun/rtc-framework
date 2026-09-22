@@ -256,7 +256,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.stale_committed_max_s` | double | s | `TBD` (제안: vision 발행 주기 × 3, 물리적 유도 없음) | ≥0 | §4.2 `[확정 A-6]`. 조일 물리량은 S7 착수 시 결정 (plan §7.3), S8 조정 |
 | `supervisor.n_qp` | int | – | `TBD` | ≥1 | §4.1 `FAULT` 진입 연속 `QP_FAILED` 수 |
 | `supervisor.track_err_abort` | double | rad | `TBD` | >0 | **단일 원천.** L5 는 이 키를 참조만 한다 |
-| `supervisor.decel.a_dec` | double | m/s² | `TBD` | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3) |
+| `supervisor.decel.a_dec` | double | m/s² | **10.0** (provisional — 2026-09-22 사용자 확정, S3.5b gate 지도가 돌린 값; `reference.a_max` 확정 시 ≤ 재검, plan §7.3) | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3). 두 로봇 `demo_catching_controller.yaml` 에 기록 — 파서는 읽지만 소비자 (S6 정지점 예약·S7 DECEL) 는 아직 없다 |
 | `supervisor.decel.ramp_time` | double | s | 0.0 | 0–0.1 | §4.3 |
 | `supervisor.contact.f_min` | double | N | `TBD` | >0 | G7-3 |
 | `supervisor.contact.k_sigma` | double | – | 3.0 | 2–6 | §4.4 |

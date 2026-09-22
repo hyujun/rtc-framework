@@ -77,7 +77,9 @@
           # (rationale and the rejected alternative: plan §10). In short: r_cap
           # is the lateral allowance measured AROUND this point, and t_c is the
           # instant the closing hand holds the ball, so the origin has to be
-          # where the ball ends up — not the pocket mouth, which is d_eff away.
+          # where the ball ends up — not the pocket mouth, which is the S4.5
+          # pocket depth (0.095 m) away. (Not `planner.hand.d_eff`: since
+          # 2026-09-22 that key is a speed allowance x T_close,tot, L6 §4.5.)
           # L6 §4.5 states the point in CATCH-frame coordinates and this key is
           # in the PARENT frame; rpy is zero here so the two coincide for this
           # robot (they do NOT for iiwa7_leap, which carries a π turn).

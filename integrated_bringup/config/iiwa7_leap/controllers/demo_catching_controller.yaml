@@ -4,9 +4,11 @@
 # Q3): the controller refuses to configure unless every claimed device is on
 # the `mujoco_native` backend.
 #
-# S4.0 scope: arm hold + unshaped hand step. Keys owned by other steps
-# (reference.*, planner.*, supervisor.*) are deliberately absent; this
-# controller never arms, so G0-C's arming gate is not its gate.
+# S4.0 scope: arm hold + unshaped hand step. Of the keys owned by other steps
+# (reference.*, planner.*, supervisor.*) only the values already decided are
+# recorded (planner.hand.*, planner.ik.*, supervisor.decel.a_dec — none
+# consumed yet); the rest are absent. This controller never arms, so G0-C's
+# arming gate is not its gate.
 demo_catching_controller:
   command_type: "position"
 
@@ -112,20 +114,43 @@ demo_catching_controller:
     #                   (54 cm², best catch point (-0.035, +0.015, 0.069) in the
     #                   catch frame — which is also S2.3b's offset candidate,
     #                   still provisional 0 in sim.yaml).
-    #   d_eff 0.080 m = the approach-axis (catch frame +z) span over which the
-    #                   ball is still caught at that point, from resting on the
-    #                   palm (z 0.069) to the preshape fingertip plane (z 0.149,
-    #                   where it stops being contained and is knocked away).
+    #   pocket depth 0.080 m = the approach-axis (catch frame +z) span over
+    #                   which the ball is still caught at that point, from
+    #                   resting on the palm (z 0.069) to the preshape fingertip
+    #                   plane (z 0.149, where it stops being contained and is
+    #                   knocked away). A contact quantity (L6 §4.5, MASTER
+    #                   TBD-HAND-04) — it is NOT this file's d_eff, see below.
     # Both are ball-CENTRE quantities, so the ball radius is already inside
     # them; L6 §4.5's "subtract the ball radius" is a surface-to-surface
     # correction and applying it here would subtract it twice. Derived FOR
     # core.ball above — a different diameter invalidates them.
     # L6 §4.5 step 2 (low-speed throw correction) stays deferred to S7.1.
+    #
+    # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, plan §7.3). The L3 §4.5
+    # gamma window only ever uses d_eff / T_close,tot — the relative speed the
+    # hand can absorb — so the key holds that speed times T_close,tot:
+    #   d_eff 0.1047 m = 1.0 m/s x (T_close_e2e 0.1037 + h/2 0.001) s.
+    #                    1.0 m/s is the time-triggered fly-in figure (L6 §4.5,
+    #                    S4.4): closure fired at t_c - T_close_e2e, 50/81 held
+    #                    over the +-40 mm lateral grid at 1.0 m/s, 9/9 centred.
+    # For this hand the change is small (pocket depth gives 0.76 m/s); it is
+    # ur5e_p1b's map that the definition opens. Valid only under that same
+    # time-triggered closure rule, hand frame at constant velocity — provisional.
     planner:
       hand:
-        d_eff: 0.080
+        d_eff: 0.1047
         r_cap: 0.031
         provisional: true
+
+    # ── Deceleration (L7 §6 `supervisor.decel.a_dec`, single-source key) ──────
+    # `ParseCatchingParams` reads this (TbdDouble) but nothing consumes it yet:
+    # the L3 §4.9 stopping-point reservation lands in S6, the L7 DECEL target in
+    # S7. 10 m/s^2 is the value the S3.5b gate map ran with, confirmed
+    # 2026-09-22 (plan §7.3); provisional until reference.a_max exists
+    # (a_dec <= a_max, L7 §4.3).
+    supervisor:
+      decel:
+        a_dec: 10.0
 
       # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
       # NOT READ AT RUNTIME YET, like `planner.hand` above: the consumer is the
