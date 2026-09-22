@@ -1,0 +1,103 @@
+{
+ "schema": {
+  "name": "ball_perception.sim_profile",
+  "major": 0,
+  "minor": 1
+ },
+ "input": {
+  "topic": "/sim/ball/camera_position",
+  "qos": {
+   "reliability": "best_effort",
+   "depth": 1
+  },
+  "expected_frame_id": "world",
+  "frame_transform": {
+   "source": "identity"
+  }
+ },
+ "time": {
+  "clock_domain": "ros_system_time",
+  "stamp_is_capture_time": true,
+  "max_future_skew_s": 0.01,
+  "max_backward_jump_s": 0.05,
+  "max_input_gap_s": 0.1
+ },
+ "estimation": {
+  "frame_id": "world",
+  "frame_is_inertial": true,
+  "gravity_mps2": [
+   0.0,
+   0.0,
+   -9.81
+  ]
+ },
+ "measurement": {
+  "position_covariance_m2": [
+   2.5e-05,
+   0,
+   0,
+   0,
+   2.5e-05,
+   0,
+   0,
+   0,
+   2.5e-05
+  ]
+ },
+ "process": {
+  "accel_psd_m2_per_s3": 1.0
+ },
+ "init": {
+  "min_points": 5,
+  "max_span_s": 0.1,
+  "max_condition_number": 100000000.0
+ },
+ "gating": {
+  "nis_gate_probability": 0.997,
+  "discontinuity_consecutive_rejects": 3,
+  "coasting_timeout_s": 0.1,
+  "lost_timeout_s": 0.5
+ },
+ "runtime": {
+  "queue_capacity": 64,
+  "max_queue_age_s": 0.05,
+  "reorder_window_s": 0.02
+ },
+ "prediction": {
+  "horizon_s": 1.0,
+  "step_s": 0.05,
+  "max_points": 20
+ },
+ "debug": {
+  "enabled_topics": [
+   "input/point_estimation_frame",
+   "state/pose",
+   "state/twist",
+   "state/covariance_marker",
+   "prediction/path",
+   "prediction/covariance_markers",
+   "events/markers",
+   "innovation",
+   "nis",
+   "diagnostics",
+   "prediction/trajectory"
+  ],
+  "max_publish_rate_hz": 30.0
+ },
+ "evaluation": {
+  "gt_topic": "/sim/ball/ground_truth",
+  "gt_qos": {
+   "reliability": "best_effort",
+   "depth": 10
+  },
+  "gt_frame_id": "world",
+  "gt_child_frame_id": "projectile_ball",
+  "gt_twist_frame": "header",
+  "time_alignment_tolerance_s": 0.005,
+  "horizons_s": [
+   0.1,
+   0.25,
+   0.5
+  ]
+ }
+}

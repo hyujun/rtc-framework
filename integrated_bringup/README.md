@@ -777,6 +777,12 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 > [rtc_msgs/srv/LaunchBall.srv](../rtc_msgs/srv/LaunchBall.srv) 와
 > [rtc_mujoco_sim/README.md](../rtc_mujoco_sim/README.md) §Projectile Ball 이다.
 >
+> ball_perception 의 `sim_estimator_node` 를 이 씬에 붙일 때의 profile 은 `config/ur5e_p1b/ball_perception_sim_profile.json`
+> (지평 1.0 s / 간격 0.05 s / 20 점, 측정 공분산 (5 mm)² 대각 — `projectile_ball.publish.position_noise_stddev_m` 과 짝) 이다:
+> `ros2 launch ball_perception_sim sim_estimator.launch.py profile_path:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json`.
+> 값의 근거 (포구 제어기의 요구 사양, D-15) 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) §4.4 S3.6 결과이고,
+> 공 토픽의 stamp 규약은 rtc_mujoco_sim README §Projectile Ball 의 stamp 항목이다.
+>
 > † 표시한 `object_pool` / `object` / `object_seed` 세 인자는 **`sim_ur5e_p1b.launch.py` 에만** 있다. `object_pool` 블록을 config 에 가진 프로필이 현재 `ur5e_p1b` 뿐이라, 다른 launch 에 인자만 달면 켜는 순간 `directory` 가 비어 Initialize 가 실패한다. 다른 프로필에 pool 을 쓰려면 그 프로필의 `mujoco_simulator.yaml` 에 블록을 먼저 넣는다 (키 전체의 SSoT 는 [rtc_mujoco_sim/config/mujoco_default.yaml](../rtc_mujoco_sim/config/mujoco_default.yaml)).
 
 **Launch 순서:**

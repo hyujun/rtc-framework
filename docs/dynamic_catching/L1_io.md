@@ -34,7 +34,7 @@
 | G1-6 | subscription callback이 도는 executor / callback group | 닫힘 — 컨트롤러 소유 구독은 LifecycleNode default group → `nrt_callback_executor` (단일 스레드, lifecycle 서비스와 공유) (W2-5) |
 | G1-7 | RT tick 시각과 스탬프 clock 의 관계 (sim) | 닫힘 `[확정 D-2, D-3]` — RT tick 은 `RTControllerInterface::Compute(const ControllerState&)`, 시각은 steady. 스탬프는 wall (`rtc_mujoco_sim`·`sim_estimator_node` 모두 `use_sim_time=false`, `/clock` 없음). wall→steady 는 §4.1 변환 1회. D-3 은 S3.1a 검증 후 재검토 (W2-3) |
 | G1-8 | SeqLock/SPSC 원시형 API와 재시도 정책 | 닫힘 — `rtc::SeqLock::Store`/`Load`/`sequence`. `Load` 는 **재시도 상한 없이** 일관된 사본을 얻을 때까지 반복한다(단일 writer·유한 쓰기 시간이 설계 불변식). 비-RT writer(nrt 콜백) → RT reader 는 backend 3종이 관절 상태에 이미 쓰는 경로이므로 새 primitive 가 아니다 — 최악 재시도 시간은 G1-C 로 측정한다(D-21). payload 는 trivially copyable (L0 §5.2) (W2-2) |
-| G1-9 | 지문 센서·손 상태 경로와 규약 | 닫힘 — 실기 P1b `HandSensorState` 250 Hz, sim `WrenchStamped`. 두 경로 모두 finger-on-object 부호 (0fcc1d23 이후; `FingertipSensor.msg` 주석도 PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 같은 부호로 고쳐졌고 이 브랜치에 병합됨, plan §7.3). 센서 lane 에는 수신 시각·sequence 가 없다 — freshness 경로는 **D-24 결정 대기**(S5 착수 전) (W4-6, TBD-HAND-03) |
+| G1-9 | 지문 센서·손 상태 경로와 규약 | 닫힘 — 실기 P1b `HandSensorState` 250 Hz, sim `WrenchStamped`. 두 경로 모두 finger-on-object 부호 (0fcc1d23 이후; `FingertipSensor.msg` 주석도 PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 같은 부호로 고쳐졌고 이 브랜치에 병합됨, plan §7.3). 센서 lane 에는 수신 시각·sequence 가 없다 — freshness 경로는 **D-24 (a) 확정** (2026-09-22 사용자: `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid`, 배선 S5.2e) (W4-6, TBD-HAND-03) |
 
 ## 3. 참고자료
 
@@ -53,7 +53,7 @@ $$t_{ref}^{steady}=t_{recv}^{steady}-\big(t_{recv}^{wall}-t_{stamp}\big),\qquad 
 - 원점 지연 $t_{recv}^{wall}-t_{stamp}$ 는 **진단**(분포 기록)이다. 음수가 $T_{future}$ 보다 크면(미래 스탬프) 변환 결과가 틀리므로 시계 이상으로 거부한다.
 - stale 임계 $T_{stale}$: 발행 주기 + 여유(예시 profile ≤ 30 Hz). YAML, S3.4·S8 실측 후.
 - 지평 끝 소진: 마지막 점 `BallTime` 을 **now_lead** 와 비교한다(plan §3 "궤적 지평 끝 경고 = now_lead"). 샘플링이 선행축으로 읽으므로 소진 판정도 같은 축이어야 한다 — v0.4 `readTraj` 는 실제 나이를 지평 상대시각과 비교해 두 축을 섞었다.
-- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 S3.6 이 정하고 sim profile 을 그에 맞춘다 — `io.horizon_min` 0.51 s (R1, §6), sim profile 권장 1.05 s / 0.05 s / 21 점 (기구학 reachable 창 + T_det 실측 기준, plan D-27·§4.4 S3.6 결과; 현 설정 0.8 s / 16 점은 계획기가 보는 창 끝이 0.78 s 라 늦게 잡는 후보가 빠진다. ball_perception 의 예시 profile 0.5 s / 최대 10 점은 그대로는 부족하다).
+- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 S3.6 이 정하고 sim profile 을 그에 맞춘다 — `io.horizon_min` 0.51 s (R1, §6), sim profile **1.0 s / 0.05 s / 20 점** (기구학 reachable 창 + T_det 재실측 기준, plan D-27·§4.4 S3.6 결과 — `integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json`, 2026-09-22 설정; 종전 0.8 s / 16 점은 계획기가 보는 창 끝이 0.78 s 라 늦게 잡는 후보가 빠진다. ball_perception 의 예시 profile 0.5 s / 최대 10 점은 그대로는 부족하다).
 
 ### 4.2 시계 오차의 영향
 
@@ -139,7 +139,7 @@ struct FieldMap {                                  // 해시가 바뀔 때만 �
 메시지 형식 검사 — **점을 복사하기 전에** 모두 통과해야 한다:
 
 - `is_bigendian == false` (바이트 스왑 미지원)
-- `height == 1`, `width` ∈ [`io.n_min`, `n_max`] (S3.6 이 정한 11·21, `n_max ≤ kCap`) — 상한 검사를 복사 전에, **인덱싱 전에** 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 에서 `kCap` 검사로 수정)
+- `height == 1`, `width` ∈ [`io.n_min`, `n_max`] (S3.6 이 정한 11·20, `n_max ≤ kCap`) — 상한 검사를 복사 전에, **인덱싱 전에** 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 에서 `kCap` 검사로 수정)
 - `data.size() == point_step × width`, `row_step == point_step × width`
 - 필드 값은 `std::memcpy` 로 읽는다(정렬·aliasing UB 방지)
 
@@ -222,7 +222,7 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 
 - 필드: `NowReal` 시각, 팔 q·q̇ (측정), 직전 명령 q_c, 손 구동 좌표, 지문 wrench·스탬프 — 모두 `std::array<double, kMax…>` + 사용 차원 `n_arm`/`n_hand`/`n_tip`
 - 채우는 곳: `Compute` 안에서 `ControllerState` 로부터. 지문 wrench 부호는 sim·실기 모두 finger-on-object (0fcc1d23), S7.3 에서 재확인 (G1-9)
-- **지문 센서 freshness (D-24, S5 착수 전 결정 대기, S5.2e).** 옵션 (a) 가 채택되면 이 POD 에 지문 wrench 의 `recv_steady_ns`·`sequence`·`valid` 를 추가로 싣는다. 결정 전에는 필드를 확정하지 않는다
+- **지문 센서 freshness (D-24 (a) 확정 2026-09-22, 배선 S5.2e).** 이 POD 에 지문 wrench 의 `recv_steady_ns`·`sequence`·`valid` 를 싣는다 — `rtc_base` `DeviceState` 센서 lane 에 추가되어 backend 3종이 채우는 값 (PROC-3, plan §7.3)
 
 ## 6. YAML 파라미터
 
@@ -233,8 +233,8 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | `io.expected_frame` | string | – | `world` | – | 마스터 §3. sim 실측 `world` (TBD-VIS-06 닫힘). 다르면 §4.3 변환 |
 | `io.n_min` | int | – | **11** (provisional, S3.6) | ≥2 | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3). = ⌈`io.horizon_min` / `prediction.dt_expected`⌉ = ⌈0.51 / 0.05⌉ (plan §4.4 S3.6 결과) |
 | `io.t_stale` | double | s | `TBD` — **[제안] 0.10** (S3.6) | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후). 제안 근거: S3.4 실측 발행 30 Hz (33 ms), 드롭 30 % 주입에서 p95 15 Hz (67 ms) 이므로 3 주기 = 0.10 s 면 드롭 한 건은 stale 이 아니고 유령 트랙 침묵 (마지막 VALID 뒤 ≤ 34 ms 한 건, 이후 침묵) 은 0.10 s 안에 소실로 읽힌다. **확정은 S5.2** (S8 부하 실측 후) |
-| `io.future_tol` | double | s | `TBD` — **[제안] 1e-3** (S3.6) | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2). 제안 근거: sim 은 같은 호스트 wall clock (S3.4: stamp = capture wall `now()`, stamp→수신 p50 32 ms 로 음수 없음) 이라 예산은 변환 반올림뿐. 실기는 카메라 PC 와의 동기 실측 (TBD-NET-01, S10) 후 — **확정은 S5.2** |
-| `io.horizon_min` | double | s | **0.51** (provisional, S3.6) | >0 | D-15 지평 요구. S3.6 산출 — **R1 (commit 조건) 기준**, R2 (정지 출발) 로 잡지 않는다 (plan §4.4 S0 결과, 2026-09-19): $T_{freeze}+L$ = ($T_{close,tot}$ 0.2815 + $T_{arm}$ 0.05 + $T_{margin}$ 0.03) + L 0.14 = 0.5015 → 10 ms 로 **올림** 0.51 s (내림 0.50 은 R1 을 1.5 ms 미달하는 궤적을 통과시킨다; 0.05 s 간격에서 11 점 = 0.55 s). L 0.14 s 는 S0.7 가정값이라 provisional. sim profile 지평은 이 게이트가 아니라 목표 분포 요구 H_req 가 정한다 — 기구학 reachable 창 + T_det 실측 기준 1.00 s → 권장 1.05 s / 21 점 (plan D-27·§4.4 S3.6 결과) |
+| `io.future_tol` | double | s | `TBD` — **[제안] 1e-3** (S3.6) | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2). 제안 근거: sim 은 같은 호스트 wall clock (S3.4: stamp→수신 p50 32 ms 로 음수 없음; 2026-09-22 부터 공 lane stamp 는 throttle 기준 wall 순간이라 wall 을 앞서지 않는다 — `rtc_mujoco_sim` README §Projectile Ball stamp) 이라 예산은 변환 반올림뿐. 실기는 카메라 PC 와의 동기 실측 (TBD-NET-01, S10) 후 — **확정은 S5.2** |
+| `io.horizon_min` | double | s | **0.51** (provisional, S3.6) | >0 | D-15 지평 요구. S3.6 산출 — **R1 (commit 조건) 기준**, R2 (정지 출발) 로 잡지 않는다 (plan §4.4 S0 결과, 2026-09-19): $T_{freeze}+L$ = ($T_{close,tot}$ 0.2815 + $T_{arm}$ 0.05 + $T_{margin}$ 0.03) + L 0.14 = 0.5015 → 10 ms 로 **올림** 0.51 s (내림 0.50 은 R1 을 1.5 ms 미달하는 궤적을 통과시킨다; 0.05 s 간격에서 11 점 = 0.55 s). L 0.14 s 는 S0.7 가정값이라 provisional. sim profile 지평은 이 게이트가 아니라 목표 분포 요구 H_req 가 정한다 — 기구학 reachable 창 + T_det 재실측 기준 0.99 s → 설정 1.0 s / 20 점 (plan D-27·§4.4 S3.6 결과) |
 | `io.track.eval_offset` | double | s | 0.05 | 0–0.3 | §4.4 비교 시각 오프셋 |
 | `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 점프 경고 |
 | `io.pred.nu_window` | int | – | 30 | 5–300 | §4.5 창 길이 |

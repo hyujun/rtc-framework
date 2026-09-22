@@ -250,7 +250,7 @@ $$\Vert v(t_c)\Vert>\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 
 **v0.4 의 결손이 닫혔다.** 트랙 식별·상태는 `generation`·`validity`·`snapshot_sequence` 로 판정한다(TBD-VIS-07 닫힘). 레이아웃 변경은 필드 이름·datatype 검사와 **레이아웃 해시 진단**이 감지한다(P-3, L1 §5.1). NIS 같은 추정기 건강도 필드는 여전히 없다.
 
-**요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. **S3.6 산출 (2026-09-22, provisional — plan §4.4 "S3.6 결과"·"T_det 실측")**: `ur5e_p1b` 기구학 reachable 창 (plan D-27) 과 T_det 실측에서 $H_{req}$ **1.00 s**, 간격 **0.05 s**, **n 21** → sim profile 권장 **1.05 s / 0.05 s / 21 점 / ≤ 30 Hz**. 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다 (2026-09-20 정정). 현 설정은 0.8 s / 16 점이고 (S3.4 가 그 값으로 실측했다) 설정 변경은 사용자 몫이다. 궤적 용량 `kCap` 은 S0.7 제안값(40)으로 S1.2 가 provisional 로 두고, 런타임 상한은 **`n_max` = 21 ≤ `kCap`** 이다 (L0 §5, L2 §6).
+**요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. **S3.6 산출 (2026-09-22, provisional — plan §4.4 "S3.6 결과"·"T_det 실측")**: `ur5e_p1b` 기구학 reachable 창 (plan D-27) 과 T_det 실측에서 $H_{req}$ **0.99 s**, 간격 **0.05 s**, **n 20** → sim profile **1.0 s / 0.05 s / 20 점 / ≤ 30 Hz** (공 lane stamp 수정 + T_det 재실측 후). 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다 (2026-09-20 정정). **설정됨 (2026-09-22 사용자)**: `integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json` — 종전 0.8 s / 16 점은 S3.4 가 실측한 값이다. 궤적 용량 `kCap` 은 S0.7 제안값(40)으로 S1.2 가 provisional 로 두고, 런타임 상한은 **`n_max` = 20 ≤ `kCap`** 이다 (L0 §5, L2 §6).
 
 QoS는 vision 노드가 정한 것을 따른다 — publisher RELIABLE/VOLATILE, 구독은 `best_effort` KEEP_LAST(1) 로 손실 0 실측(`TBD-VIS-08` 닫힘, S3.4). 제어 PC는 수신 나이(`now_steady − recv_steady`) 검사를 기본 감시로 쓴다(L1).
 
@@ -262,7 +262,7 @@ vision의 예측을 그대로 신뢰한다. 제어 PC는 $(p,v,a)$ 샘플 열 �
 
 ### 5.3 시계
 
-실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../agent_docs/invariants.md) 에 E-1 기록된 예외로 명문화됐다 (S0.6 승인 2026-09-19, plan §3.1). 실기 적용 조건(PTP 동기)은 S10 에서 재확인한다. sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall stamp 를 쓴다(D-3, S3.4).
+실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../agent_docs/invariants.md) 에 E-1 기록된 예외로 명문화됐다 (S0.6 승인 2026-09-19, plan §3.1). 실기 적용 조건(PTP 동기)은 S10 에서 재확인한다. sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall epoch 의 stamp 를 쓴다(D-3, S3.4; 2026-09-22 부터 공 lane stamp 는 throttle 이 sim 시각을 대응시키는 wall 순간이라 stepper 의 wake 지터가 없다 — `rtc_mujoco_sim` README §Projectile Ball stamp).
 
 ---
 
@@ -405,7 +405,7 @@ catching:
 | TBD-VIS-01 | vision 토픽 이름 | L1, L8 | sim 은 debug 토픽 `/ball_perception/debug/prediction/trajectory` (W). 제품 토픽은 미정 (ball_perception E6-F02) |
 | TBD-VIS-02 | `PointField` 실제 레이아웃(offset·datatype·count), `point_step` 372 B의 미설명 4–8 B | L1 | 닫힘 — 384 B, §5.1 표 (W, D-4) |
 | TBD-VIS-03 | `t` 필드 타입·기준 (float64 초 / uint32 ns) | L1, L2 | 닫힘 — `horizon_ns` UINT32, `header.stamp`(예측 원점) 기준 상대 ns (W, D-4) |
-| TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15), sim 실측은 S3.4. **sim 실측 (S3.4 2026-09-20)**: 30.0 Hz (p05 30.3 / p95 29.7), N = 16, 지평 0.05…0.80 s — 당시 프로파일 그대로; stamp→수신 지연 p50 32 / p95 41 / max 430 ms (30 Hz 발행 주기 포함). **요구 사양 확정 (S3.6, 2026-09-22)**: 권장 profile **1.05 s · 0.05 s · 21 점 · ≤ 30 Hz**, 런타임 `n_max` 21 (plan §4.4 S3.6 결과). ⚠️ 같은 rig 에서 공 lane 의 **wall stamp 간격**이 p05 2.7 / p50 10.0 / p95 33.6 / max 52 ms 로 흔들린다 (plan §4.4 T_det 실측) |
+| TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15), sim 실측은 S3.4. **sim 실측 (S3.4 2026-09-20)**: 30.0 Hz (p05 30.3 / p95 29.7), N = 16, 지평 0.05…0.80 s — 당시 프로파일 그대로; stamp→수신 지연 p50 32 / p95 41 / max 430 ms (30 Hz 발행 주기 포함). **요구 사양 확정 (S3.6, 2026-09-22)**: 설정 profile **1.0 s · 0.05 s · 20 점 · ≤ 30 Hz**, 런타임 `n_max` 20 (plan §4.4 S3.6 결과). 같은 rig 에서 공 lane 의 wall stamp 간격이 p95 33.6 ms 로 흔들리던 결함은 2026-09-22 에 고쳤다 (stamp = throttle 기준 wall 순간; 재실측 p95 10.00 ms — plan §4.4 T_det 재실측) |
 | TBD-VIS-05 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | L0, L2, L4 | 닫힘 — 상수 $g$ (W) |
 | TBD-VIS-06 | `header.frame_id`와 `world`의 관계 | L1 | **닫힘** — `world`, 변환 없음 (S3.4 실측 2026-09-20) |
 | TBD-VIS-07 | 트랙 식별·상태(소실) 판정 수단 | L1, L3, L7 | 닫힘 — `generation`·`validity`·`snapshot_sequence` 필드 존재 (W, D-4) |
@@ -459,7 +459,7 @@ v0.3의 `TBD-RTC-06`(결번)과 `TBD-RTC-15`(W2-2가 01로 이미 다룸)는 폐
 | 시뮬레이션과 실기 손 차이 | 성공률 과대평가 | `[SIM-P1B]`/`[HW-P1B]` 태그 분리, `T_close` 실측 반영, 지문 부호는 두 경로 동일(0fcc1d23) — S7.3 재확인 |
 | **vision 토픽이 stable ABI 가 아님** (D-4) | 필드·의미가 예고 없이 바뀔 수 있음 | 필드 이름·datatype 검사, 레이아웃 해시 진단(L1 §5.1, P-3). 제품 ABI 는 ball_perception E6-F02 |
 | **vision 메시지의 의미 변경** (레이아웃은 그대로, `horizon_ns` 기준·`a` 정의·공분산 순서·단위가 바뀜) | 해시가 못 잡는다 | L1 §5.1 물리 일관성 검사(가속도 잔차, 속도 잔차, `frame_id` 매 메시지 비교), L1 §4.5 $\bar\nu$ 추세 |
-| **vision 지평이 짧음** (현 sim profile 0.8 s, S3.6 권장은 1.05 s) | 계획 가능한 포구 창이 줄어듦 — 0.8 s 면 계획기가 보는 창 끝이 0.78 s 라 늦게 잡는 자세가 시도 대상에서 빠진다 | D-15: 요구 사양을 제어기가 정하고(S3.6 완료) sim profile 을 맞춘다. 짧은 궤적은 후보 제외·진단 |
+| **vision 지평이 짧음** (S0.7 profile 0.8 s → S3.6 이 1.0 s / 20 점으로 설정) | 계획 가능한 포구 창이 줄어듦 — 0.8 s 면 계획기가 보는 창 끝이 0.78 s 라 늦게 잡는 자세가 시도 대상에서 빠진다 | D-15: 요구 사양을 제어기가 정하고(S3.6 완료) sim profile 을 맞춘다. 짧은 궤적은 후보 제외·진단 |
 | **유령 트랙** (vision이 공을 놓치고 관성 예측만 발행) | 스탬프는 신선하고 궤적 점프는 작아져 대체 지표가 반대로 움직인다 | **완화됨** — `generation`·`validity`·`snapshot_sequence` 로 트랙 교체·무효를 판별(D-4, S5.2). 관성 예측 구간을 `validity` 가 표시하는지는 S3.4 에서 발행기 동작으로 확인 |
 | **실기 공분산 미검증** | $\kappa_\sigma$, $n_\sigma$ 가 보정 불가 | 실기에는 $p_{true}$ 가 없다. L8 §6의 세 대체 수단(포획률 회귀, 접촉 시각 편차, 1회 외부 계측) 중 하나는 해야 한다 (S10) |
 | 재무장 상태 오염 | 두 번째 투척이 다르게 동작 (옛 plan 재사용, 직전 포구점 복귀, 첫 틱 `bound_conflict`) | L7 §4.8 재무장 리셋 목록 + G8-A2 연속 투척 시나리오 (S7.4) |

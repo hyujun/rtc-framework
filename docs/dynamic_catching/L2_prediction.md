@@ -31,7 +31,7 @@ vision 노드가 이미 예측 궤적을 발행하고(마스터 §5, D-4), 제�
 
 | ID | 확인 항목 | 기록 |
 |---|---|---|
-| G2-1 | 발행 주기, $N$ 범위, 지평 길이 → `kCap`(컴파일타임)·`n_max`(런타임)와 L3 슬라이스 범위 | 전환 `[확정 D-15]` — vision 사양은 **제어기가 요구를 정하고** sim profile 을 맞춘다. 현 sim profile: 지평 0.8 s, 간격 0.05 s, **16 점** (지평 0.05…0.80 s — 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다, 2026-09-20 정정), ≤ 30 Hz (plan D-15). `kCap` 은 S0.7 손계산 제안값으로 S1.2 가 정해 provisional 로 두고, **런타임 상한은 S3.6 이 `n_max` = 21 로 산출했다** (2026-09-22, 권장 profile 1.05 s / 21 점 — §6, plan §4.4 S3.6 결과). 21 ≤ 40 이라 S1.2 backfill 은 PASS 다 (넘었다면 backfill 후 S1 게이트 재실행, plan §4.2) (W5-6, TBD-VIS-04). **S3.4 실측 (2026-09-20)**: 30.0 Hz · N 16 · 지평 0.05…0.80 s 로 프로파일과 일치, 드롭 30 % 주입 시 발행 p95 15 Hz 로 얇아진다 (예측은 입력 step 마다 나온다) |
+| G2-1 | 발행 주기, $N$ 범위, 지평 길이 → `kCap`(컴파일타임)·`n_max`(런타임)와 L3 슬라이스 범위 | 전환 `[확정 D-15]` — vision 사양은 **제어기가 요구를 정하고** sim profile 을 맞춘다. S0.7 채택 profile (S3.6 이 1.0 s / 20 점으로 갱신): 지평 0.8 s, 간격 0.05 s, **16 점** (지평 0.05…0.80 s — 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다, 2026-09-20 정정), ≤ 30 Hz (plan D-15). `kCap` 은 S0.7 손계산 제안값으로 S1.2 가 정해 provisional 로 두고, **런타임 상한은 S3.6 이 `n_max` = 20 으로 산출했다** (2026-09-22, T_det 재실측 후; 설정 profile 1.0 s / 20 점 — §6, plan §4.4 S3.6 결과). 20 ≤ 40 이라 S1.2 backfill 은 PASS 다 (넘었다면 backfill 후 S1 게이트 재실행, plan §4.2) (W5-6, TBD-VIS-04). **S3.4 실측 (2026-09-20)**: 30.0 Hz · N 16 · 지평 0.05…0.80 s 로 프로파일과 일치, 드롭 30 % 주입 시 발행 p95 15 Hz 로 얇아진다 (예측은 입력 step 마다 나온다) |
 | G2-2 | 점 시각 필드 타입·기준 → 시각 정렬 식 | 닫힘 — `horizon_ns` UINT32 (`header.stamp` 기준 상대 ns). L1 이 수신 시 절대 `BallTime` 으로 변환한다(D-2, L1 §4.1). 샘플러는 절대 시각만 받는다 (W5-3, TBD-VIS-03) |
 | G2-3 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | 닫힘 — 상수 $g$ (W5-4, TBD-VIS-05) |
 | G2-4 | 공분산을 RT까지 넘길지 | 닫힘 `[확정 A-3]` — RT 스냅샷에서 분리, 계획기 버퍼에만 (TBD-COV-01) |
@@ -136,7 +136,7 @@ ball_perception 은 $a$ 를 상수 $g$ 로 준다(G2-3). 그러면 점별 $(p,v,
 
 v0.5 에서 코드 복사본(v0.2 그대로였음)을 삭제했다. **SSoT 는 같은 폴더의 `traj_sampler.hpp` (v0.4)** 다 — `before_horizon`/`after_horizon` 분리, `track_epoch` 필드 등 v0.4 변경은 헤더에만 있다. S1.2 이식 시 변경:
 
-- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `check`·`sampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). 런타임 상한 `n_max` (S3.6 이 21 로 정했다, ≤ `kCap`) 로 더 좁혀 검사한다
+- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `check`·`sampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). 런타임 상한 `n_max` (S3.6 이 20 으로 정했다, ≤ `kCap`) 로 더 좁혀 검사한다
 - **NaN 거부.** NaN 시각·값은 `check` 에서 거부, `sampleAt(NaN)` 은 invalid 를 반환한다(참조 구현은 valid 반환)
 - **`dt_min` 거부.** 최소 샘플 간격 미만 구간은 경고가 아니라 거부한다 — `interpolate` 가 극소 $h$ 를 받아 $1/h^2$ 로 폭주하는 것을 막는다
 - **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — `Sample` 의 `Eigen::Vector3d` 멤버를 `std::array<double, 3>` 으로 바꾸고, 계산은 `Eigen::Map` 으로 한다(L0 §5.2, plan §6). `static_assert(std::is_trivially_copyable_v<…>)`
@@ -159,7 +159,7 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `prediction.max_samples` | int | – | 40 (provisional, S0.7 제안) | 16–512 | `kCap` (컴파일 상수와 일치 검사, S0.7 제안값 — plan §4.4 S0 결과). 런타임 상한 `n_max ≤ kCap` 은 S3.6 요구 사양으로 정한다 (D-15) — **`n_max` = 21** (provisional, S3.6: 기구학 reachable 창 기준 (plan D-27) 과 T_det 실측으로 H_req 1.00 s → ⌈1.00/0.05⌉ = 21, 권장 sim profile 1.05 s 의 21 점과 같게 — 상한이므로 현 0.8 s / 16 점도 통과한다; plan §4.4 S3.6 결과·T_det 실측). 21 ≤ 40 이라 S1.2 backfill 은 PASS |
+| `prediction.max_samples` | int | – | 40 (provisional, S0.7 제안) | 16–512 | `kCap` (컴파일 상수와 일치 검사, S0.7 제안값 — plan §4.4 S0 결과). 런타임 상한 `n_max ≤ kCap` 은 S3.6 요구 사양으로 정한다 (D-15) — **`n_max` = 20** (provisional, S3.6: 기구학 reachable 창 기준 (plan D-27) 과 T_det 재실측으로 H_req 0.99 s → ⌈0.988/0.05⌉ = 20, 설정 sim profile 1.0 s 의 20 점과 같게; plan §4.4 S3.6 결과·T_det 재실측). 20 ≤ 40 이라 S1.2 backfill 은 PASS |
 | `prediction.n_min` | – | – | – | – | v0.5 삭제 — 단일 키 `io.n_min` (L1 §6) 을 쓴다 (plan S0.3) |
 | `prediction.t_horizon_margin` | double | s | 0.05 | 0–0.3 | §4.6 지평 끝 여유 |
 | `prediction.dt_expected` | double | s | **0.05** (provisional, S3.6) | >0 | vision 점 간격. 검사용. S1.2 실측 0.05 s 간격 보간 오차 2.0e-11 m (G2-C 1e-10 m 안, plan §4.4 S1 결과) 이라 더 촘촘할 이유가 없고, ball_perception 은 `horizon % step == 0` 을 요구한다 (plan §4.4 S3.6 결과) |
@@ -203,4 +203,4 @@ v0.2의 `prediction.rt.*`, `prediction.rollout.*`, `q_acc`, `q_k`는 전부 삭�
 
 ## 10. 미확정 항목
 
-TBD-WS-01 (닫는 단계 미지정), `kCap` 제안값 (S0.7 → S1.2), `prediction.dt_min` (S1.2), `prediction.lead` 의 $T_{arm}$ (S10). 런타임 `n_max` 21·`prediction.dt_expected` 0.05 s·`io.n_min` 11 은 S3.6 이 provisional 로 정했다 (§6, L1 §6, plan §4.4 S3.6 결과) — `n_max` 는 T_det 실측 (2026-09-22) 을 이미 반영했고, `io.n_min` 은 L 이 정해지는 S5–S6 후 재검.
+TBD-WS-01 (닫는 단계 미지정), `kCap` 제안값 (S0.7 → S1.2), `prediction.dt_min` (S1.2), `prediction.lead` 의 $T_{arm}$ (S10). 런타임 `n_max` 20·`prediction.dt_expected` 0.05 s·`io.n_min` 11 은 S3.6 이 provisional 로 정했다 (§6, L1 §6, plan §4.4 S3.6 결과) — `n_max` 는 T_det 재실측 (2026-09-22, 공 lane stamp 수정 후) 을 이미 반영했고, `io.n_min` 은 L 이 정해지는 S5–S6 후 재검.
