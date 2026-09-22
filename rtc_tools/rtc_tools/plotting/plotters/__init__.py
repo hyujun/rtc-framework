@@ -8,6 +8,10 @@ Note: matplotlib backend must be configured (`layout.configure_backend(...)`)
 at import time.
 """
 
+from .catching import (
+    plot_catching_diag,
+    print_catching_diag_statistics,
+)
 from .compliance import (
     print_compliance_diag_statistics,
 )
@@ -87,6 +91,9 @@ __all__ = [
     "plot_motor_positions",
     "plot_motor_velocities",
     "print_motor_statistics",
+    # dynamic-catching per-tick diagnostics (S5.4)
+    "plot_catching_diag",
+    "print_catching_diag_statistics",
     # task-admittance diagnostics (#469 S4)
     "print_compliance_diag_statistics",
     # grasp diagnostics

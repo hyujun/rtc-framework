@@ -104,6 +104,9 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "momentum_observer": [
         PlotEntry("print_momentum_stats", plotters.print_momentum_observer_statistics),
     ],
+    "catching_diag": [
+        PlotEntry("print_catching_diag_stats", plotters.print_catching_diag_statistics),
+    ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
 }
@@ -224,6 +227,9 @@ PIPELINES: dict[str, list[PlotEntry]] = {
             plotters.plot_momentum_payload,
             available=has_payload_estimate,
         ),
+    ],
+    "catching_diag": [
+        PlotEntry("catching_diag", plotters.plot_catching_diag),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

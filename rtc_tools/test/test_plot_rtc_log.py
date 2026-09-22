@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import math
 import re
 
 import numpy as np
@@ -2871,6 +2872,365 @@ class TestComplianceDiagStatistics:
         print_compliance_diag_statistics(_compliance_diag_frame(n=10, valid=0))
         out = capsys.readouterr().out
         assert "every row is a held tick" in out, out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# catching_diag (S5.4) — 동적 포구 컨트롤러의 tick 레코드
+#
+# 이 채널의 특수성은 **모든 tick 이 한 행**이라는 것이다 (PROC-7). 법칙이 돌지
+# 않은 tick 도 `*_valid` 를 내린 채 행을 남기므로, 여기 통계는 그 플래그로 먼저
+# 거른다 — 거르지 않으면 무장 해제로 보낸 절반이 "기준 0" 이라는 측정으로 섞인다.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# WriteCatchingDiagLogHeader 가 내보내는 **고정** 컬럼, 그 순서 그대로. 관절별·
+# 지문별 블록은 로봇 config 에서 폭이 나오므로 뒤에 따로 붙인다. 이 목록은 C++ 이
+# 쓴 헤더를 읽기 위해서만 존재하고, 둘이 갈라지면 감지는 통과하는데 통계가 빈 값을
+# 뱉는 형태로만 드러난다 — 그래서 아래 oracle 이 C++ 과 직접 대조한다.
+_CATCHING_DIAG_FIXED_COLUMNS = [
+    "t_relative_s",
+    "tick",
+    "t_arm_s",
+    "mode",
+    "mode_name",
+    "reason",
+    "reason_name",
+    "outcome",
+    "armed",
+    "estop_active",
+    "fault_latched",
+    "armable",
+    "law_enabled",
+    "real_arm_config",
+    "input_valid",
+    "input_stale",
+    "input_expired",
+    "input_new",
+    "input_n",
+    "input_generation",
+    "input_snapshot_sequence",
+    "input_activation_generation",
+    "input_age_s",
+    "input_horizon_s",
+    "plan_valid",
+    "plan_id",
+    "plan_t_c_s",
+    "plan_age_s",
+    "plan_p_c_x",
+    "plan_p_c_y",
+    "plan_p_c_z",
+    "plan_a_d_x",
+    "plan_a_d_y",
+    "plan_a_d_z",
+    "plan_v_c_x",
+    "plan_v_c_y",
+    "plan_v_c_z",
+    "plan_gamma_f",
+    "plan_w5",
+    "plan_w6",
+    "plan_sigma_c",
+    "plan_score",
+    "plan_reason",
+    "ref_valid",
+    "ref_saturated",
+    "ref_x_x",
+    "ref_x_y",
+    "ref_x_z",
+    "ref_xd_x",
+    "ref_xd_y",
+    "ref_xd_z",
+    "ref_xdd_x",
+    "ref_xdd_y",
+    "ref_xdd_z",
+    "ref_u_des_x",
+    "ref_u_des_y",
+    "ref_u_des_z",
+    "ref_e_x",
+    "ref_e_y",
+    "ref_e_z",
+    "ref_ed_x",
+    "ref_ed_y",
+    "ref_ed_z",
+    "ref_gamma",
+    "ref_gamma_d",
+    "ref_gamma_dd",
+    "clik_ran",
+    "clik_converged",
+    "clik_bound_conflict",
+    "clik_command_mismatch",
+    "clik_status",
+    "clik_iterations",
+    "clik_solve_us",
+    "clik_conflict_mask",
+    "qp_fail_streak",
+    "track_err_rad",
+    "abort_stopped",
+    "hand_phase_valid",
+    "hand_phase",
+    "hand_rho",
+    "hand_timeout",
+]
+
+# 헤더 writer 가 마지막에 붙이는 가변 폭 블록의 접두. 순서까지 계약이다.
+_CATCHING_DIAG_BLOCK_PREFIXES = [
+    "q_cmd_",
+    "q_meas_",
+    "tip_force_",
+    "tip_contact_",
+    "tip_fresh_",
+    "tip_age_s_",
+]
+
+_CATCHING_ARM_JOINTS = ["a0", "a1", "a2", "a3", "a4", "a5"]
+_CATCHING_TIPS = ["thumb", "index"]
+
+
+def _catching_diag_columns(joints=None, tips=None):
+    joints = _CATCHING_ARM_JOINTS if joints is None else joints
+    tips = _CATCHING_TIPS if tips is None else tips
+    cols = list(_CATCHING_DIAG_FIXED_COLUMNS)
+    for prefix in ("q_cmd_", "q_meas_"):
+        cols += [prefix + j for j in joints]
+    for prefix in ("tip_force_", "tip_contact_", "tip_fresh_", "tip_age_s_"):
+        cols += [prefix + t for t in tips]
+    return cols
+
+
+def _catching_diag_row(
+    tick,
+    *,
+    mode=3,
+    mode_name="approach",
+    reason=0,
+    reason_name="none",
+    ref_valid=1,
+    clik_ran=1,
+    solve_us=180.0,
+    track_err=0.01,
+    stale=0,
+    columns=None,
+):
+    """C++ writer 가 내보내는 한 행. 법칙이 안 돈 tick 은 0 으로 남긴다(동결 아님)."""
+    columns = _catching_diag_columns() if columns is None else columns
+    row = dict.fromkeys(columns, 0.0)
+    row["t_relative_s"] = tick * 0.0005
+    row["tick"] = tick
+    row["t_arm_s"] = 0.02
+    row["mode"] = mode
+    row["mode_name"] = mode_name
+    row["reason"] = reason
+    row["reason_name"] = reason_name
+    row["armed"] = 1
+    row["armable"] = 1
+    row["law_enabled"] = 1
+    row["input_stale"] = stale
+    row["input_valid"] = 0 if stale else 1
+    row["input_n"] = 0 if stale else 8
+    row["input_age_s"] = 0.25 if stale else 0.012
+    row["input_horizon_s"] = 0.0 if stale else 0.55
+    if ref_valid:
+        row["ref_valid"] = 1
+        row["plan_valid"] = 1
+        row["plan_p_c_x"] = 0.5
+        row["plan_gamma_f"] = 0.3
+        row["ref_x_x"] = 0.4 + tick * 1e-4
+        row["ref_xdd_z"] = -1.0
+        row["ref_u_des_z"] = -1.2
+        row["ref_gamma"] = 0.1
+    if clik_ran:
+        row["clik_ran"] = 1
+        row["clik_converged"] = 1
+        row["clik_solve_us"] = solve_us
+        row["track_err_rad"] = track_err
+    else:
+        row["clik_status"] = -1
+    return [row[c] for c in columns]
+
+
+def _catching_diag_frame(n=40, columns=None, **kw):
+    columns = _catching_diag_columns() if columns is None else columns
+    rows = [_catching_diag_row(i + 1, columns=columns, **kw) for i in range(n)]
+    return pd.DataFrame(rows, columns=columns)
+
+
+class TestCatchingDiagDetection:
+    def test_filename_detection(self):
+        assert (
+            detect_log_type("/s/controllers/demo_catching_controller/catching_diag.csv")
+            == "catching_diag"
+        )
+
+    def test_column_detection(self):
+        assert detect_log_type_by_columns(_catching_diag_columns()) == "catching_diag"
+
+    def test_is_registered_in_both_dispatch_tables(self):
+        """감지만 되고 파이프라인 행이 없으면 `unknown` 은 아닌데 아무것도 안 나온다."""
+        from rtc_tools.plotting.pipelines.registry import PIPELINES, STATS_PRINTERS
+
+        assert "catching_diag" in STATS_PRINTERS
+        assert "catching_diag" in PIPELINES
+
+    def test_fingerprint_is_unique_to_this_pod(self):
+        """지문이 `track_err_rad` + `ref_gamma` 인 근거 — 다른 POD 는 둘 다 안 낸다.
+
+        지문이 지워지면 이 파일은 fallback 끝의 unknown 으로 떨어져 plot_rtc_log
+        가 exit(1) 한다. 지문이 *다른* POD 와 겹치면 증상은 그보다 나쁘다 — 파일이
+        조용히 엉뚱한 파이프라인을 탄다.
+        """
+        from pathlib import Path
+
+        logging_dir = (
+            Path(__file__).resolve().parents[2]
+            / "integrated_bringup"
+            / "include"
+            / "integrated_bringup"
+            / "logging"
+        )
+        if not logging_dir.exists():  # pragma: no cover - 단독 배포 시
+            pytest.skip(f"C++ logging headers not present at {logging_dir}")
+        for token in ("track_err_rad", "ref_gamma"):
+            offenders = [
+                p.name
+                for p in sorted(logging_dir.glob("*_log_pod.hpp"))
+                if p.name != "catching_diag_log_pod.hpp" and token in p.read_text()
+            ]
+            assert not offenders, f"`{token}` 를 다른 POD 도 낸다: {offenders}"
+
+    def test_no_column_carries_a_sensor_log_token(self):
+        bad = [c for c in _catching_diag_columns() if "_raw_" in c or "_filt_" in c]
+        assert not bad, f"sensor_log 토큰을 가진 컬럼: {bad} — 지문 순서가 load-bearing 이 됐다"
+
+    def test_cpp_header_matches_this_list(self):
+        """C++ writer 의 고정 컬럼과 위 상수가 어긋나면 실패한다.
+
+        가변 폭 블록은 리터럴이 접두뿐이라 접두와 그 순서를 대조한다 — 블록이
+        하나 빠지거나 순서가 바뀌면 행은 여전히 헤더 폭과 맞으면서 **다른 관절의
+        값을 읽게** 되고, 그것이 #440 이 138,248 행을 흘려보낸 형태다.
+        """
+        from pathlib import Path
+
+        hdr = (
+            Path(__file__).resolve().parents[2]
+            / "integrated_bringup"
+            / "include"
+            / "integrated_bringup"
+            / "logging"
+            / "catching_diag_log_pod.hpp"
+        )
+        if not hdr.exists():  # pragma: no cover - 단독 배포 시
+            pytest.skip(f"C++ header not present at {hdr}")
+        body = (
+            hdr.read_text().split("const CatchingDiagLogColumns& cols) {", 1)[1].split("\n}", 1)[0]
+        )
+        joined = "".join(re.findall(r'os << "([^"]*)"', body))
+        cpp_columns = [c for c in joined.split(",") if c]
+        n_fixed = len(_CATCHING_DIAG_FIXED_COLUMNS)
+        assert cpp_columns[:n_fixed] == _CATCHING_DIAG_FIXED_COLUMNS, (
+            "C++ WriteCatchingDiagLogHeader 의 고정 컬럼과 이 테스트의 목록이 다르다"
+        )
+        assert cpp_columns[n_fixed:] == _CATCHING_DIAG_BLOCK_PREFIXES, (
+            "가변 폭 블록의 접두 또는 순서가 달라졌다"
+        )
+
+
+class TestCatchingDiagRoundTrip:
+    def _df(self, tmp_path, **kw):
+        columns = _catching_diag_columns()
+        rows = [_catching_diag_row(i + 1, columns=columns, **kw) for i in range(12)]
+        path = tmp_path / "catching_diag.csv"
+        _write_csv(str(path), columns, rows)
+        return load_log_csv(str(path), "catching_diag")
+
+    def test_mode_and_reason_names_stay_strings(self, tmp_path):
+        """범주형 컬럼 — 로더가 NaN 으로 강제 변환하면 통계가 조용히 빈다."""
+        df = self._df(tmp_path)
+        assert df["mode_name"].iloc[0] == "approach"
+        assert df["reason_name"].iloc[0] == "none"
+        # 짝이 되는 숫자 컬럼은 숫자로 남아야 한다 — 이름이 바뀌어도 읽히는 쪽.
+        assert float(df["mode"].iloc[0]) == 3.0
+
+    def test_timestamp_is_derived(self, tmp_path):
+        df = self._df(tmp_path)
+        assert "timestamp" in df.columns
+
+    def test_a_tick_that_computed_nothing_is_a_gap_not_a_zero(self, tmp_path):
+        """PROC-7 zeroes the block, so the raw column would draw a line down to
+        the origin on every disarmed tick — which reads as the hand having gone
+        there. That is what the first live run looked like (2026-09-22)."""
+        from rtc_tools.plotting.plotters.catching import plot_catching_diag
+
+        columns = _catching_diag_columns()
+        rows = [_catching_diag_row(1, columns=columns)]
+        rows.append(
+            _catching_diag_row(
+                2, columns=columns, ref_valid=0, clik_ran=0, mode=1, mode_name="armed"
+            )
+        )
+        rows.append(_catching_diag_row(3, columns=columns))
+        path = tmp_path / "catching_diag.csv"
+        _write_csv(str(path), columns, rows)
+        df = load_log_csv(str(path), "catching_diag")
+
+        import matplotlib.pyplot as plt
+
+        plot_catching_diag(df, save_dir=str(tmp_path))
+        # plot_catching_diag closes its figure, so the check runs on the data
+        # the masking helper produces rather than on the artist.
+        from rtc_tools.plotting.plotters.catching import _masked
+
+        ref = _masked(df, "ref_x_x", "ref_valid")
+        assert math.isnan(float(ref.iloc[1])), "the disarmed tick was plotted as a value"
+        assert not math.isnan(float(ref.iloc[0]))
+        solve = _masked(df, "clik_solve_us", "clik_ran")
+        assert math.isnan(float(solve.iloc[1])), "a tick with no solve was plotted as 0 µs"
+        plt.close("all")
+
+    def test_plot_renders(self, tmp_path):
+        from rtc_tools.plotting.plotters.catching import plot_catching_diag
+
+        plot_catching_diag(self._df(tmp_path), save_dir=str(tmp_path))
+        assert (tmp_path / "catching_diag.png").exists()
+
+
+class TestCatchingDiagStatistics:
+    def test_reports_solve_budget_and_mode_occupancy(self, capsys):
+        from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+
+        print_catching_diag_statistics(_catching_diag_frame(n=50))
+        out = capsys.readouterr().out
+        assert "Dynamic Catching" in out
+        assert "approach" in out
+        assert "CLIK solve" in out
+        assert "budget p99" in out
+
+    def test_a_run_where_the_law_never_ran_says_so(self, capsys):
+        from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+
+        print_catching_diag_statistics(
+            _catching_diag_frame(n=20, ref_valid=0, clik_ran=0, mode=0, mode_name="idle")
+        )
+        out = capsys.readouterr().out
+        assert "the law never ran" in out, out
+
+    def test_stale_input_is_reported_and_excluded_from_the_age_statistic(self, capsys):
+        from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+
+        # 모든 tick 이 stale 이면 나이 통계는 아예 나오지 않아야 한다 — stale 한
+        # 스냅샷의 나이를 평균내면 "vision 이 느리다" 가 아니라 "vision 이 없다" 를
+        # 지연으로 보고하게 된다.
+        print_catching_diag_statistics(_catching_diag_frame(n=20, stale=1))
+        out = capsys.readouterr().out
+        assert "Input stale: 100.0%" in out, out
+        assert "Input age on the receive axis" not in out, out
+
+    def test_dropped_rows_are_named(self, capsys):
+        from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+
+        columns = _catching_diag_columns()
+        rows = [_catching_diag_row(t, columns=columns) for t in (1, 2, 7, 8)]
+        df = pd.DataFrame(rows, columns=columns)
+        print_catching_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "Dropped rows (tick gaps): 4" in out, out
 
 
 # ═══════════════════════════════════════════════════════════════════════════

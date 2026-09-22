@@ -49,6 +49,11 @@ def detect_log_type(filepath):
         # (#135 Layer 1b/2A, #455 Layer 2B) — fixed instance stem
         # (kMomentumObserverLogInstance) shared by the three demo controllers.
         return "momentum_observer"
+    elif stem == "catching_diag" or stem.endswith("catching_diag"):
+        # Per-tick dynamic-catching record (S5.4): input snapshot token, L4
+        # reference, CLIK state, q_c vs q. Fixed instance stem, written only
+        # by the catching controller.
+        return "catching_diag"
     elif stem.endswith("state_log"):
         return "state_log"
     elif stem.endswith("sensor_log"):
@@ -113,6 +118,16 @@ def detect_log_type_by_columns(columns):
     # cannot quietly reclassify the file.
     if any(c.startswith("x_tilde_") for c in cols):
         return "compliance_diag"
+
+    # Dynamic-catching diagnostics: per-tick catching_diag.csv. `track_err_rad`
+    # + `ref_gamma` is the discriminating pair — no other POD emits either, and
+    # two are used rather than one so a single column being renamed downgrades
+    # this to a detection failure (visible: plot_rtc_log exits 1) instead of a
+    # near-miss that silently reaches another pipeline. No column here carries
+    # the generic `_raw_` / `_filt_` token the sensor_log fallback matches, so
+    # the ordering below it is defence rather than necessity.
+    if "track_err_rad" in cols and "ref_gamma" in cols:
+        return "catching_diag"
     # WBC device state: superset of state_log with TSID a_opt acceleration.
     # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the
     # WBC arm/hand state CSVs from the generic state_log before that branch.

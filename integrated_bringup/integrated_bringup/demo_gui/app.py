@@ -55,6 +55,7 @@ from tf2_ros import Buffer, TransformException
 from rtc_msgs.msg import (
     CalibrationCommand,
     CalibrationStatus,
+    CatchingState,
     GraspState,
     RobotTarget,
     WbcState,
@@ -68,6 +69,11 @@ from .ball_launch import (
     parse_launch_condition,
 )
 from .catalog import ControllerCatalog
+from .catching import (
+    CATCHING_ENABLE_PARAM,
+    CATCHING_STATE_TOPIC,
+    CatchingStatus,
+)
 from .config import (
     _CALIB_STATE_COLORS,
     _CALIB_STATE_NAMES,
@@ -230,6 +236,20 @@ class DemoControllerGUI(Node):
         # stays empty and says so, which is the honest readout on a profile
         # that ships no catching YAML.
         self._hand_step = HandStepPanel()
+
+        # Catching controller state (dynamic_catching §13 S5). Subscribed on the
+        # CATCHING controller's own namespace, not on the active one: the topic
+        # is lifecycle-gated, so a profile that never runs this controller sees
+        # "never received" — which is the honest readout — and switching away
+        # from it lets the feed go stale rather than silently reusing whatever
+        # the active controller happens to publish.
+        self._catching = CatchingStatus()
+        self.create_subscription(
+            CatchingState,
+            f"/{CATCHING_CONFIG_KEY}/{CATCHING_STATE_TOPIC}",
+            self._catching_state_cb,
+            1,
+        )
         self._launch_ball_client = self.create_client(LaunchBall, "/sim/launch_ball_at")
         self._reset_ball_client = self.create_client(Trigger, "/sim/reset_ball")
         self.create_subscription(
@@ -1068,6 +1088,7 @@ class DemoControllerGUI(Node):
         self._refresh_current_display()
         self._refresh_ball_panel()
         self._refresh_hand_step_panel()
+        self._refresh_catching_panel()
         self.root.after(200, self._schedule_refresh)
 
     def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
@@ -1872,6 +1893,7 @@ class DemoControllerGUI(Node):
 
         self._build_ball_panel(control_tab)
         self._build_hand_step_panel(control_tab)
+        self._build_catching_panel(control_tab)
 
         # ══════════════════════════════════════════════════════════════════
         #  GRASP TAB
@@ -2009,6 +2031,112 @@ class DemoControllerGUI(Node):
         label.config(text=text)
 
     # ---- Hand step panel (dynamic_catching §13 S4) ---------------------------
+
+    def _catching_state_cb(self, msg: CatchingState) -> None:
+        """CatchingState handler — published by demo_catching_controller.
+
+        Executor thread: this writes plain python attributes and never touches
+        Tk, like every other subscription callback in this file. The 200 ms
+        refresh is what paints.
+
+        EVERY TICK IS A BODY (PROC-7), including the E-STOP and stale-input
+        ones, so this callback does not filter: a tick that computed nothing
+        still says which tick it was, and that is what tells a late publisher
+        apart from a controller that repeated itself.
+        """
+        self._catching.update(msg, time.monotonic())
+
+    def _build_catching_panel(self, parent: tk.Frame) -> None:
+        """Supervisor mode, input lane, tracking error, CLIK state, arm/disarm.
+
+        THE TWO ARMING BUTTONS ARE NOT A TOGGLE. `catching.enable` is lowered by
+        the RT tick itself on E-STOP and on a latched fault (A-S5-3), so the
+        operator's request and the controller's answer can differ — and a single
+        toggle would have to pick one of them to display. Two explicit buttons
+        plus a line that shows both keeps the disagreement visible, which is the
+        state worth noticing.
+        """
+        frame = ttk.LabelFrame(parent, text="Catching (dynamic_catching)", padding=4)
+        frame.pack(fill="x", padx=8, pady=(2, 2))
+
+        btn_row = tk.Frame(frame, bg="#1e1e2e")
+        btn_row.pack(fill="x")
+        ttk.Button(btn_row, text="Arm", command=lambda: self._set_catching_enable(True)).pack(
+            side="left", padx=4
+        )
+        ttk.Button(btn_row, text="Disarm", command=lambda: self._set_catching_enable(False)).pack(
+            side="left", padx=4
+        )
+
+        self._catching_label = tk.Label(
+            frame,
+            text="\n".join(self._catching.lines(time.monotonic())),
+            bg="#1e1e2e",
+            fg="#a6adc8",
+            font=("Courier New", 8),
+            justify="left",
+            anchor="w",
+        )
+        self._catching_label.pack(fill="x", padx=4, pady=(4, 0))
+
+    def _set_catching_enable(self, value: bool) -> None:
+        """Ask the catching controller to arm or disarm.
+
+        A successful set is NOT proof the controller armed — the tick owns the
+        latch and lowers it on E-STOP or a fault. So the request is recorded as
+        pending and the panel keeps showing the OBSERVED latch from the state
+        topic until the two agree, rather than painting what was asked for.
+        """
+        client = self._get_param_client(CATCHING_CONFIG_KEY)
+        if not client.wait_for_services(timeout_sec=1.0):
+            self._catching.last_error = (
+                f"/{CATCHING_CONFIG_KEY} parameter services unavailable — is the "
+                "catching controller configured on this profile?"
+            )
+            self._refresh_catching_panel()
+            return
+
+        self._catching.note_request(value)
+        self._refresh_catching_panel()
+        future = client.set_parameters_atomically(
+            [Parameter(name=CATCHING_ENABLE_PARAM, type_=Parameter.Type.BOOL, value=value)]
+        )
+
+        def _on_done(fut):
+            # rclpy executor thread — marshal onto Tk, like the hand-step load.
+            try:
+                resp = fut.result()
+            except Exception as exc:  # noqa: BLE001 - surfaced in the panel
+                self.root.after(0, self._catching_request_failed, f"set failed: {exc}")
+                return
+            result = resp.result
+            if not result.successful:
+                # The controller's own reason, verbatim: inventing a friendlier
+                # sentence here would decouple the panel from the gate it is
+                # reporting on.
+                self.root.after(0, self._catching_request_failed, str(result.reason))
+
+        future.add_done_callback(_on_done)
+
+    def _catching_request_failed(self, message: str) -> None:
+        """Tk thread only — see ``_set_catching_enable``."""
+        self._catching.request_pending = False
+        self._catching.last_error = message
+        self._refresh_catching_panel()
+
+    def _refresh_catching_panel(self) -> None:
+        label = getattr(self, "_catching_label", None)
+        if label is None:
+            return
+        text = "\n".join(self._catching.lines(time.monotonic()))
+        alarm = self._catching.alarm()
+        if getattr(self, "_prev_catching_text", None) == text and (
+            getattr(self, "_prev_catching_alarm", None) == alarm
+        ):
+            return
+        self._prev_catching_text = text
+        self._prev_catching_alarm = alarm
+        label.config(text=text, fg="#f38ba8" if alarm else "#a6adc8")
 
     def _build_hand_step_panel(self, parent: tk.Frame) -> None:
         """Preshape/closed step buttons for the S4.0 catching controller.

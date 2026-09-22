@@ -100,7 +100,17 @@ DUAL_TARGET_SPACE = {"demo_wbc_controller"}
 # unreachable parameter service. That fail-open exists so the GUI never becomes a
 # second gate in front of a controller that WOULD have acted. Here there is
 # nothing to gate — the absence is structural, not a failed query.
-NO_EXTERNAL_COMMAND_CONTROLLERS = frozenset({"demo_inference_controller"})
+NO_EXTERNAL_COMMAND_CONTROLLERS = frozenset(
+    {
+        "demo_inference_controller",
+        # The catching controller REFUSES a target on both lanes: the arm
+        # slot has one writer (the law) and counts goals sent to it as
+        # mistakes, and the hand takes a step only through the Hand Step
+        # panel with `diagnostic.hand_step` on. A target panel here would
+        # offer a send button whose only outcome is a reject counter.
+        "demo_catching_controller",
+    }
+)
 
 
 def target_panel_states(ctrl_idx: str) -> tuple[bool, bool]:
