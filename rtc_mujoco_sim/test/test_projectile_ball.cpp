@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <mutex>
 #include <random>
@@ -1252,6 +1254,226 @@ TEST(BallContactLane, ImpulseMatchesTheMomentumChangeItCauses) {
       << "reported " << e.impulse_world[2] << " vs momentum-derived " << expected << " over ["
       << trace.sim_time[before] << ", " << trace.sim_time[after] << "]";
   EXPECT_GT(std::abs(expected), 1e-4) << "the bounce must be big enough for this to mean anything";
+}
+
+// ── Sample stamp axis ───────────────────────────────────────────────────────
+// The publish gate is on sim time, so samples are one period apart on that
+// axis; the stamp must say so too, whatever rhythm the stepper woke with.
+
+TEST(ProjectileBall, StampMapsSimTimeFromTheLaunchAnchorOnEitherSideOfTheWall) {
+  const std::int64_t anchor = 5'000'000'000;
+  const std::int64_t far_ahead = 7'000'000'000;  // wall well past the axis
+  // Behind the wall, at RTF 1.0: sim time advances map 1:1 onto the axis and
+  // the actual instant is not consulted — that is the whole point.
+  EXPECT_EQ(ProjectileBallStampSteadyNs(3.0, 3.0, anchor, 1.0, far_ahead), anchor);
+  EXPECT_EQ(ProjectileBallStampSteadyNs(3.010, 3.0, anchor, 1.0, far_ahead), anchor + 10'000'000);
+  EXPECT_EQ(ProjectileBallStampSteadyNs(3.010, 3.0, anchor, 1.0, far_ahead + 40'000'000),
+            anchor + 10'000'000);
+  // Half real time: 10 ms of sim time is 20 ms of wall time.
+  EXPECT_EQ(ProjectileBallStampSteadyNs(3.010, 3.0, anchor, 0.5, far_ahead), anchor + 20'000'000);
+  // The sim ran ahead of its launch pace: the stamp stays on the axis and
+  // leads the wall by that much. Clamping it to the wall was tried and
+  // rejected — it hands the wake jitter straight back whenever the stepper
+  // catches up — so the lead is the consumer's future-skew tolerance to
+  // cover (profile max_future_skew_s), not this function's to hide.
+  EXPECT_EQ(ProjectileBallStampSteadyNs(3.010, 3.0, anchor, 1.0, anchor + 4'000'000),
+            anchor + 10'000'000);
+  // Unthrottled there is no axis; the actual instant passes through.
+  EXPECT_EQ(ProjectileBallStampSteadyNs(3.010, 3.0, anchor, 0.0, far_ahead), far_ahead);
+  EXPECT_EQ(ProjectileBallStampSteadyNs(3.010, 3.0, anchor, -1.0, far_ahead), far_ahead);
+  EXPECT_EQ(ProjectileBallStampSteadyNs(std::numeric_limits<double>::quiet_NaN(), 3.0, anchor, 1.0,
+                                        far_ahead),
+            far_ahead);
+  // An rtf near zero maps seconds of sim time outside the int64 range: no
+  // undefined llround, the actual instant passes through.
+  EXPECT_EQ(ProjectileBallStampSteadyNs(13.0, 3.0, anchor, 1e-12, far_ahead), far_ahead);
+}
+
+namespace {
+
+struct SeenStamp {
+  bool active;
+  double sim_time_sec;
+  std::int64_t stamp_ns;
+  std::int64_t actual_ns;  // steady clock when the callback ran
+};
+
+// Every sample the SimLoop hands to the ball callback, with the instant the
+// callback saw it.
+class StampRecorder {
+ public:
+  explicit StampRecorder(MuJoCoSimulator& sim) {
+    sim.SetProjectileBallCallback([this](const ProjectileBallSample& sample) {
+      const std::int64_t now = SteadyNowNs();
+      std::lock_guard lock(mutex_);
+      seen_.push_back({sample.active, sample.sim_time_sec, sample.stamp_steady_ns, now});
+    });
+  }
+
+  std::vector<SeenStamp> Take() {
+    std::lock_guard lock(mutex_);
+    return seen_;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::vector<SeenStamp> seen_;
+};
+
+MuJoCoSimulator::Config MakeThrottledBallConfig(double max_rtf) {
+  auto config = test::MakeMinimalConfig();
+  config.projectile_ball.enabled = true;
+  config.projectile_ball.spawn_position_m = {0.0, 0.0, 0.5};
+  config.max_rtf = max_rtf;
+  return config;
+}
+
+}  // namespace
+
+TEST(ProjectileBall, SampleStampsFollowSimTimeNotTheStepperRhythm) {
+  MuJoCoSimulator sim(MakeThrottledBallConfig(1.0));
+  ASSERT_TRUE(sim.Initialize());
+  ASSERT_TRUE(sim.HasProjectileBall());
+  StampRecorder recorder(sim);
+
+  sim.Start();
+  sim.RequestProjectileBallLaunch();
+  // Feed commands in bursts with pauses between them. The loop steps on every
+  // command (or on its sync timeout), so the stepper's wall rhythm here is
+  // deliberately irregular — the situation the stamp must be immune to — and
+  // the sim falls a little further behind the wall with every cycle.
+  for (int burst = 0; burst < 20; ++burst) {
+    for (int i = 0; i < 6; ++i) {
+      sim.SetCommand(0, {0.0, 0.0});
+      std::this_thread::sleep_for(200us);
+    }
+    std::this_thread::sleep_for(15ms);
+  }
+  sim.Stop();
+
+  std::vector<SeenStamp> seen;
+  for (const auto& s : recorder.Take()) {
+    if (s.active) {
+      seen.push_back(s);
+    }
+  }
+  ASSERT_GE(seen.size(), 40u) << "the loop must have produced a run of in-flight samples";
+  const double dt = sim.GetModel()->opt.timestep;
+  constexpr std::int64_t kOffsetSlackNs = 2'000'000;
+  std::int64_t max_lag_ns = 0;
+  std::int64_t max_lead_ns = 0;
+  for (std::size_t i = 0; i < seen.size(); ++i) {
+    // The stamp is off the wall by exactly the sim-vs-wall deficit THIS flight
+    // accumulated since its first sample — the phase error the D-3 clock lane
+    // measures — behind it while the stepper stalls, ahead while it catches
+    // up. An offset larger than that would be a deficit carried in from
+    // before the launch, and every catch time the controller derives from the
+    // stamp would be stale by that much.
+    const std::int64_t offset = seen[i].actual_ns - seen[i].stamp_ns;
+    const std::int64_t flight_deficit =
+        (seen[i].actual_ns - seen[0].actual_ns) -
+        static_cast<std::int64_t>((seen[i].sim_time_sec - seen[0].sim_time_sec) * 1e9);
+    EXPECT_NEAR(static_cast<double>(offset - flight_deficit), 0.0,
+                static_cast<double>(kOffsetSlackNs))
+        << "sample " << i;
+    max_lag_ns = std::max(max_lag_ns, offset);
+    max_lead_ns = std::max(max_lead_ns, -offset);
+    if (i == 0) {
+      continue;
+    }
+    const double sim_gap = seen[i].sim_time_sec - seen[i - 1].sim_time_sec;
+    EXPECT_NEAR(sim_gap, dt, 1e-9) << "one physics step per sample";
+    // Spacing on the stamp axis equals spacing on the sim axis to the
+    // nanosecond, for every pair: this is what a consumer trusting the stamp
+    // as capture time gets instead of the wake jitter.
+    EXPECT_NEAR(static_cast<double>(seen[i].stamp_ns - seen[i - 1].stamp_ns), sim_gap * 1e9, 1.0)
+        << "sample " << i;
+  }
+  ::testing::Test::RecordProperty("samples", static_cast<int>(seen.size()));
+  ::testing::Test::RecordProperty("max_lag_us", static_cast<int>(max_lag_ns / 1000));
+  ::testing::Test::RecordProperty("max_lead_us", static_cast<int>(max_lead_ns / 1000));
+}
+
+TEST(ProjectileBall, StampAxisRestartsAtLaunchSoAParkedDeficitDoesNotShiftIt) {
+  MuJoCoSimulator sim(MakeThrottledBallConfig(1.0));
+  ASSERT_TRUE(sim.Initialize());
+  StampRecorder recorder(sim);
+
+  const auto fly = [&](int commands) {
+    for (int i = 0; i < commands; ++i) {
+      sim.SetCommand(0, {0.0, 0.0});
+      std::this_thread::sleep_for(2ms);
+    }
+  };
+  sim.Start();
+  sim.RequestProjectileBallLaunch();
+  fly(50);
+  sim.RequestProjectileBallReset();
+  // Parked and idle: no commands, so the loop steps only on its sync timeout
+  // and the sim falls far behind the wall — as it does in bringup before the
+  // controller activates, or across a pause.
+  std::this_thread::sleep_for(300ms);
+  sim.RequestProjectileBallLaunch();
+  fly(50);
+  sim.Stop();
+
+  const auto seen = recorder.Take();
+  // Locate the parked stretch between the two flights.
+  std::size_t park_begin = seen.size();
+  std::size_t park_end = seen.size();
+  for (std::size_t i = 1; i < seen.size(); ++i) {
+    if (seen[i - 1].active && !seen[i].active && park_begin == seen.size()) {
+      park_begin = i;
+    }
+    if (park_begin < seen.size() && !seen[i - 1].active && seen[i].active) {
+      park_end = i;
+      break;
+    }
+  }
+  ASSERT_LT(park_begin, seen.size()) << "the ball must have been parked between the flights";
+  ASSERT_LT(park_end, seen.size()) << "the second launch must have produced samples";
+  ASSERT_GT(park_end, park_begin + 1);
+
+  const double wall_s =
+      static_cast<double>(seen[park_end - 1].actual_ns - seen[park_begin].actual_ns) * 1e-9;
+  const double sim_s = seen[park_end - 1].sim_time_sec - seen[park_begin].sim_time_sec;
+  const double deficit_s = wall_s - sim_s;
+  ASSERT_GT(deficit_s, 0.15) << "the parked stretch must have put the sim well behind the wall, "
+                                "or this test cannot tell a launch anchor from a fixed one";
+
+  // With a fixed (loop-start) anchor the second flight's stamps would lag the
+  // wall by that whole deficit; anchored at launch they are off the wall by
+  // at most what the flight itself accumulates.
+  constexpr std::int64_t kOffsetBoundNs = 30'000'000;
+  int checked = 0;
+  for (std::size_t i = park_end; i < seen.size() && checked < 10; ++i) {
+    EXPECT_LE(std::abs(seen[i].actual_ns - seen[i].stamp_ns), kOffsetBoundNs)
+        << "sample " << i << " carries the parked deficit (" << deficit_s << " s)";
+    ++checked;
+  }
+  EXPECT_EQ(checked, 10);
+  ::testing::Test::RecordProperty("parked_deficit_ms", static_cast<int>(deficit_s * 1e3));
+}
+
+TEST(ProjectileBall, SampleStampIsTheActualInstantWhenUnthrottled) {
+  MuJoCoSimulator sim(MakeThrottledBallConfig(0.0));
+  ASSERT_TRUE(sim.Initialize());
+
+  // StepForTest never runs the throttle, so this path is unthrottled: the
+  // in-flight sample must carry the steady instant it was read at, nothing
+  // invented — and a parked sample carries no stamp at all.
+  sim.StepForTest();
+  EXPECT_FALSE(sim.GetProjectileBallSampleForTest().active);
+  EXPECT_EQ(sim.GetProjectileBallSampleForTest().stamp_steady_ns, 0);
+
+  sim.RequestProjectileBallLaunch();
+  const std::int64_t before = SteadyNowNs();
+  sim.StepForTest();
+  const std::int64_t after = SteadyNowNs();
+  const auto& sample = sim.GetProjectileBallSampleForTest();
+  ASSERT_TRUE(sample.active);
+  EXPECT_GE(sample.stamp_steady_ns, before);
+  EXPECT_LE(sample.stamp_steady_ns, after);
 }
 
 }  // namespace

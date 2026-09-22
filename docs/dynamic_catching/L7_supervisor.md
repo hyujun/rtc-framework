@@ -106,7 +106,7 @@
 | `HAND_TIMEOUT` | L6 폐쇄 타임아웃 | `CLOSING`, `DECEL` | 기록, 계속 |
 | `TIP_STALE` | 지문 센서 stale | `COMMITTED` 이후 | 판정 불가로 기록 |
 
-**`TIP_STALE` 판정 경로는 미결정이다 (D-24, S5 전 결정).** 지문 센서 lane 에는 수신 시각도 sequence 도 없다 — RT backend 3종 중 관절 상태 콜백만 `last_state_ns_` (backend watchdog stamp) 를 갱신하고, 지문 센서 자체의 freshness 는 아직 관측할 수 없다. 관절이 fresh 한 채 센서만 멈추면 옛 힘을 새 접촉으로 오판할 수 있다. D-24 의 두 경로 (a) `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid` 를 추가 (PROC-3, P5 — grasp 에도 같은 gap), (b) 포구 컨트롤러 소유 mailbox 로 센서 토픽을 별도 구독 — 중 하나를 S5 착수 전에 정한다.
+**`TIP_STALE` 판정 경로는 D-24 (a) 다 (2026-09-22 사용자 확정, 배선은 S5.2e).** 지문 센서 lane 에는 수신 시각도 sequence 도 없었다 — RT backend 3종 중 관절 상태 콜백만 `last_state_ns_` (backend watchdog stamp) 를 갱신하고, 지문 센서 자체의 freshness 는 관측할 수 없다. 관절이 fresh 한 채 센서만 멈추면 옛 힘을 새 접촉으로 오판할 수 있다. 채택한 경로는 (a) `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid` 를 추가하고 backend 3종이 채워 `ControllerState` 로 전달 (PROC-3, P5 — grasp 에도 같은 gap 이라 함께 닫힌다); (b) 포구 컨트롤러 소유 mailbox 는 device 경로와 공존하는 중복 lane 이라 기각했다 (plan §7.3). `TIP_STALE` 은 그 `recv_steady_ns` 의 수신 나이로 판정한다.
 
 `BALL_STALE_COMMITTED` 는 A-6 으로 확정됐다. 동결 후에는 짧은 누락으로 포기하는 것보다 동결 plan으로 진행하는 편이 안전하다고 본다. stale 지속 시간 상한 `supervisor.stale_committed_max_s` 의 초기 제안값 **vision 발행 주기의 3배**(예: 30 Hz 발행이면 0.1 s)는 물리적 유도가 없는 제안일 뿐이다 — 어느 물리량(공분산 성장, 포획 반경 오차 할당, abort 정지거리 $\Vert\dot x\Vert^2/(2a_{dec})$)으로 이 값을 조일지는 **S7 착수 시** 정한다(plan §7.3).
 

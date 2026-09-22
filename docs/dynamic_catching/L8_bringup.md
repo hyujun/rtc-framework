@@ -66,12 +66,12 @@
 
 v0.4 의 자체 vision 발행기(측정 모사 + 참조 EKF + `PointCloud2`)는 v0.5 에서 삭제했다. ball_perception 의 `sim_estimator_node` 가 `/sim/ball/camera_position` 을 구독해 `/ball_perception/debug/prediction/trajectory` (`PointCloud2`) 를 발행하므로, L1 파서는 sim 과 실기에서 **실제 발행기와 같은 레이아웃**을 탄다 (D-4).
 
-- 연결 (S3.4, **완료 2026-09-20** — 결과는 plan §4.4 S3.4): clock domain `ros_system_time` + `use_sim_time=false` (rtc 에 `/clock` 없음, stamp = wall — 설정으로 닫힘), `frame_id` = `world`, 30 Hz · N 16 · 지평 0.8 s (TBD-VIS-04/06 닫힘), 지연·드롭 주입은 `rtc_tools camera_relay` 로 입력 토픽 앞에서 한다. sim 재시작 시 `clock_reset` 은 wall stamp 에서는 **발동하지 않는다** — `/clock` 전환(S5/S6) 뒤에 다시 본다
+- 연결 (S3.4, **완료 2026-09-20** — 결과는 plan §4.4 S3.4): clock domain `ros_system_time` + `use_sim_time=false` (rtc 에 `/clock` 없음, stamp = wall epoch — 2026-09-22 부터 공 lane 은 발사 기준 sim 시간축을 wall 에 얹은 값을 찍는다, `rtc_mujoco_sim` README §Projectile Ball stamp — 설정으로 닫힘), `frame_id` = `world`, 당시 profile 로 30 Hz · N 16 · 지평 0.8 s (TBD-VIS-04/06 닫힘; 현 설정은 아래 vision 요구 사양의 1.0 s / 20 점), 지연·드롭 주입은 `rtc_tools camera_relay` 로 입력 토픽 앞에서 한다. sim 재시작 시 `clock_reset` 은 wall stamp 에서는 **발동하지 않는다** — `/clock` 전환(S5/S6) 뒤에 다시 본다
 - 측정 잡음은 `rtc_mujoco_sim` 의 `publish.position_noise_stddev_m` 이 준다
 - 제어 경로에서 truth 토픽을 쓰지 않는다. truth 는 지표·NEES 전용
 - 자체 fixture EKF 는 만들지 않는다. `ball_dynamics` 는 test fixture 전용 위치로 옮긴다 (S1.6)
 
-**vision 요구 사양 `[확정 D-15]` — S3.6 완료 (2026-09-22).** 목표 투척 분포에서 "검출 이후 포구 창 종료까지 최대 비행 시간" → 필요 지평, L2 보간 게이트를 만족하는 간격 → 점 수 → 런타임 상한 `n_max` 를 산출했다: $H_{req}$ **1.00 s** · 간격 **0.05 s** · **n 21** → **sim profile 권장 1.05 s / 0.05 s / 21 점 / ≤ 30 Hz** (현 설정 0.8 s / 16 점, 설정은 사용자). 값·유도·한계는 plan §4.4 "S3.6 결과"·"T_det 실측" 이 SSoT 다. 수신 궤적의 지평이 요구 (`io.horizon_min` 0.51 s, L1 §6) 보다 짧으면 제어기는 계획 후보에서 제외하고 진단한다.
+**vision 요구 사양 `[확정 D-15]` — S3.6 완료 (2026-09-22).** 목표 투척 분포에서 "검출 이후 포구 창 종료까지 최대 비행 시간" → 필요 지평, L2 보간 게이트를 만족하는 간격 → 점 수 → 런타임 상한 `n_max` 를 산출했다: $H_{req}$ **0.99 s** · 간격 **0.05 s** · **n 20** → **sim profile 1.0 s / 0.05 s / 20 점 / ≤ 30 Hz — 설정됨** (`integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json`, `sim_estimator.launch.py profile_path:=` 에 준다; 2026-09-22 사용자 결정, 공 lane stamp 수정 + T_det 재실측 후). 값·유도·한계는 plan §4.4 "S3.6 결과"·"T_det 실측" 이 SSoT 다. 수신 궤적의 지평이 요구 (`io.horizon_min` 0.51 s, L1 §6) 보다 짧으면 제어기는 계획 후보에서 제외하고 진단한다.
 
 ### 4.4 지표
 
@@ -259,7 +259,7 @@ struct TickRecord {                   // 고정 크기, POD
 | G8-C3 | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8). 대신 `REF_SATURATED` 빈도를 기록해 D-8 재검토 입력으로 쓴다 | `[SIM-ANY]` |
 | G8-D | `ur5e_p1b`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포. 전체 발사 수·무효 시행 수·무효 사유를 함께 보고하고, 무효율이 plan §5 상한을 넘으면 그 run 은 `NOT_EVALUATED` | `[SIM-P1B]` |
 | G8-D2 | `iiwa7_leap`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포. 전체 발사 수·무효 시행 수·무효 사유를 함께 보고하고, 무효율이 plan §5 상한을 넘으면 그 run 은 `NOT_EVALUATED`. **평가 대상 여부는 plan §1a 의 조건부 규칙이 정하고, T_det 실측 (2026-09-22) 으로 조건은 충족됐다** — 그 lead 에서 gate 지도가 11 / 2835 로 비어 있지 않다 | `[SIM-ANY]` |
-| G8-E | `ur5e_p1b` + position 지연 에뮬레이션에서 선행 보상 유무 비교. ⚠️ **substrate 없음** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없다 (L5 §4.6). 지연 0 에서는 유무 비교가 공허하므로 fixture 전용 주입을 S5 착수 시 결정해야 한다 | `[SIM-P1B]` |
+| G8-E | `ur5e_p1b` + position 지연 에뮬레이션에서 선행 보상 유무 비교. ⚠️ **substrate 없음** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없다 (L5 §4.6). 지연 0 에서는 유무 비교가 공허하므로 **fixture 전용 지연 주입** 위에서 판정한다 (2026-09-22 사용자 확정 — L5 §9 G5-E, plan §7.3) | `[SIM-P1B]` |
 
 모든 sim 게이트는 §4.5 clock 위상 게이트를 통과한 시행만 집계하고 무효 비율을 함께 보고한다. 처리량은 §4.5 (200 시행 ≈ 12 분 이상).
 

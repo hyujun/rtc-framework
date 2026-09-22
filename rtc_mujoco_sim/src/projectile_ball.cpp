@@ -345,4 +345,20 @@ bool ShouldPublishProjectileBallSample(double sim_time_sec, double period_sec,
   return true;
 }
 
+std::int64_t ProjectileBallStampSteadyNs(double sim_time_sec, double anchor_sim_sec,
+                                         std::int64_t anchor_wall_ns, double rtf,
+                                         std::int64_t actual_steady_ns) noexcept {
+  if (!(rtf > 0.0) || !std::isfinite(sim_time_sec) || !std::isfinite(anchor_sim_sec)) {
+    return actual_steady_ns;
+  }
+  const double offset_ns = (sim_time_sec - anchor_sim_sec) / rtf * 1e9;
+  // llround is undefined outside the int64 range, and an rtf near zero gets
+  // there within seconds of sim time: an unrepresentable mapping is no mapping.
+  constexpr double kMaxOffsetNs = 4.0e18;
+  if (!std::isfinite(offset_ns) || std::abs(offset_ns) > kMaxOffsetNs) {
+    return actual_steady_ns;
+  }
+  return anchor_wall_ns + static_cast<std::int64_t>(std::llround(offset_ns));
+}
+
 }  // namespace rtc

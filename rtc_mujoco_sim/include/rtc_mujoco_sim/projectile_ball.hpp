@@ -2,6 +2,7 @@
 #define RTC_MUJOCO_SIM_PROJECTILE_BALL_HPP_
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <random>
 #include <string>
@@ -144,6 +145,32 @@ inline constexpr double kProjectileBallAirDensity = 1.204;
 /// than the recorded stamp (sim reset) re-opens the gate immediately.
 [[nodiscard]] bool ShouldPublishProjectileBallSample(double sim_time_sec, double period_sec,
                                                      double& last_publish_time_sec) noexcept;
+
+/// steady_clock now as ns since its epoch — the axis the RT path and the D-3
+/// clock lane use.
+[[nodiscard]] inline std::int64_t SteadyNowNs() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+/// Steady instant [ns] to stamp a ball sample with: the sim-time axis laid
+/// onto the wall from the launch instant,
+/// `anchor_wall_ns + (sim_time_sec − anchor_sim_sec) / rtf`. Consecutive
+/// samples spaced evenly in sim time get evenly spaced stamps whatever
+/// burst-and-sleep rhythm the stepper ran with. The stamp differs from the
+/// wall by the phase error the flight accumulates after launch — behind it
+/// while the stepper stalls, ahead of it while it catches up — which is the
+/// quantity the D-3 clock lane measures, in both signs; consumers' future-skew
+/// tolerances must cover the lead in sim. (Clamping the stamp to the wall was
+/// tried and rejected: it re-introduces the wake jitter every time the sim
+/// runs ahead of its launch pace.) Anchoring at launch keeps any sim-vs-wall
+/// deficit accumulated BEFORE the launch (idle stepping without a controller,
+/// a pause) out of the flight's stamps. Unthrottled (`rtf` ≤ 0), or when the
+/// mapping is not representable, `actual_steady_ns` is returned unchanged.
+[[nodiscard]] std::int64_t ProjectileBallStampSteadyNs(double sim_time_sec, double anchor_sim_sec,
+                                                       std::int64_t anchor_wall_ns, double rtf,
+                                                       std::int64_t actual_steady_ns) noexcept;
 
 }  // namespace rtc
 

@@ -353,6 +353,21 @@ void MuJoCoSimulator::ReadProjectileBallState() noexcept {
         static_cast<double>(data_->qpos[projectile_ball_qpos_adr_ + 3 + i]);
   }
   projectile_ball_sample_.sim_time_sec = data_->time;
+  projectile_ball_sample_.stamp_steady_ns = 0;
+  if (projectile_ball_active_) {
+    // Throttle and anchor members are owned by this (physics) thread; the
+    // callback that consumes the sample runs on it too.
+    const std::int64_t now_ns = SteadyNowNs();
+    if (throttle_rtf_ != projectile_ball_stamp_anchor_rtf_) {
+      // max_rtf changed mid-flight: the axis rate changes, so restart it here.
+      projectile_ball_stamp_anchor_wall_ns_ = now_ns;
+      projectile_ball_stamp_anchor_sim_sec_ = data_->time;
+      projectile_ball_stamp_anchor_rtf_ = throttle_rtf_;
+    }
+    projectile_ball_sample_.stamp_steady_ns =
+        ProjectileBallStampSteadyNs(data_->time, projectile_ball_stamp_anchor_sim_sec_,
+                                    projectile_ball_stamp_anchor_wall_ns_, throttle_rtf_, now_ns);
+  }
 }
 
 void MuJoCoSimulator::InvokeProjectileBallCallback() noexcept {
@@ -758,6 +773,14 @@ void MuJoCoSimulator::WriteProjectileBallState(
   RefreshNgravcomp();
   projectile_ball_active_ = active;
   projectile_ball_sample_.active = active;
+  if (active) {
+    // Stamp-axis anchor (ProjectileBallStampSteadyNs): the flight's stamps are
+    // measured from this instant, so a sim-vs-wall deficit built up while the
+    // ball was parked does not shift them.
+    projectile_ball_stamp_anchor_wall_ns_ = SteadyNowNs();
+    projectile_ball_stamp_anchor_sim_sec_ = data_->time;
+    projectile_ball_stamp_anchor_rtf_ = throttle_rtf_;
+  }
 }
 
 void MuJoCoSimulator::ApplyProjectileBallAerodynamics() noexcept {

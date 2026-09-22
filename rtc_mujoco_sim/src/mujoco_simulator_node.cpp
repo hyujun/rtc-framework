@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -1017,7 +1018,24 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                                                  projectile_ball_last_publish_time_)) {
       return;
     }
-    const auto stamp = now();
+    // The publish gate above is on SIM time, so the samples are 1/sample_rate
+    // apart on that axis. Stamping them with now() would put the stepper's
+    // burst-and-sleep rhythm into header.stamp (measured 2026-09-22 at RTF 1.0:
+    // gaps p05 2.7 / p95 33.6 ms for a 10 ms period), which a consumer that
+    // reads the stamp as capture time turns into estimator init failures. The
+    // stamp is therefore the sim-time axis laid onto the wall from the launch
+    // instant (ProjectileBallSample::stamp_steady_ns): the same axis (ROS
+    // system time, no /clock), off the wall only by the phase error the
+    // flight accumulates — what the D-3 clock lane measures, either sign —
+    // never by the wake jitter. Both ball topics carry the same
+    // stamp, so ball_perception's stamp pairing of truth and camera is
+    // untouched. The guard keeps a clock that reads near zero (use_sim_time
+    // without /clock) from underflowing rclcpp::Time in this noexcept frame.
+    const std::int64_t lag_ns = urtc::SteadyNowNs() - sample.stamp_steady_ns;  // either sign
+    const rclcpp::Time ros_now = now();
+    const rclcpp::Time stamp = (lag_ns <= 0 || ros_now.nanoseconds() >= lag_ns)
+                                   ? ros_now - rclcpp::Duration::from_nanoseconds(lag_ns)
+                                   : ros_now;
 
     auto& ground_truth = ground_truth_msg_;
     ground_truth.header.stamp = stamp;
