@@ -353,6 +353,16 @@ void MuJoCoSimulator::ReadProjectileBallState() noexcept {
         static_cast<double>(data_->qpos[projectile_ball_qpos_adr_ + 3 + i]);
   }
   projectile_ball_sample_.sim_time_sec = data_->time;
+  // Throttle members are owned by this (physics) thread; the callback that
+  // consumes the sample runs on it too.
+  projectile_ball_sample_.nominal_steady_ns = ProjectileBallNominalSteadyNs(
+      data_->time, throttle_sim_start_,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(throttle_wall_start_.time_since_epoch())
+          .count(),
+      throttle_rtf_,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
 }
 
 void MuJoCoSimulator::InvokeProjectileBallCallback() noexcept {

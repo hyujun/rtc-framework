@@ -145,6 +145,19 @@ inline constexpr double kProjectileBallAirDensity = 1.204;
 [[nodiscard]] bool ShouldPublishProjectileBallSample(double sim_time_sec, double period_sec,
                                                      double& last_publish_time_sec) noexcept;
 
+/// Steady instant [ns] the sim-time throttle maps `sim_time_sec` to:
+/// `throttle_wall_start_ns + (sim_time_sec − throttle_sim_start_sec) / throttle_rtf`.
+/// That is the wall instant at which the throttle lets the loop reach this sim
+/// time, so consecutive samples spaced evenly in sim time map to instants
+/// spaced evenly in wall time — whatever burst-and-sleep rhythm the stepper
+/// actually ran with. Unthrottled (`throttle_rtf` ≤ 0) there is no such
+/// mapping and the actual instant is returned unchanged.
+[[nodiscard]] std::int64_t ProjectileBallNominalSteadyNs(double sim_time_sec,
+                                                         double throttle_sim_start_sec,
+                                                         std::int64_t throttle_wall_start_ns,
+                                                         double throttle_rtf,
+                                                         std::int64_t actual_steady_ns) noexcept;
+
 }  // namespace rtc
 
 #endif  // RTC_MUJOCO_SIM_PROJECTILE_BALL_HPP_

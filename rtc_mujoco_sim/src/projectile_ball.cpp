@@ -345,4 +345,15 @@ bool ShouldPublishProjectileBallSample(double sim_time_sec, double period_sec,
   return true;
 }
 
+std::int64_t ProjectileBallNominalSteadyNs(double sim_time_sec, double throttle_sim_start_sec,
+                                           std::int64_t throttle_wall_start_ns, double throttle_rtf,
+                                           std::int64_t actual_steady_ns) noexcept {
+  if (!(throttle_rtf > 0.0) || !std::isfinite(sim_time_sec) ||
+      !std::isfinite(throttle_sim_start_sec)) {
+    return actual_steady_ns;
+  }
+  const double offset_ns = (sim_time_sec - throttle_sim_start_sec) / throttle_rtf * 1e9;
+  return throttle_wall_start_ns + static_cast<std::int64_t>(std::llround(offset_ns));
+}
+
 }  // namespace rtc

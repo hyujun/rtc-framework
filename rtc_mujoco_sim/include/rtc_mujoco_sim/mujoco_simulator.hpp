@@ -160,14 +160,18 @@ using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo
 // writes per-step state: there is no file writer anywhere in it. So the
 // measurement substrate for D-3 (and therefore S3.1a) did not exist.
 //
-// WHY NOT JUST STAMP THE BALL TRUTH WITH SIM TIME. That was the obvious move
-// and it is unsafe: ball_perception's recorder_node and evaluator_node both
-// pair /sim/ball/ground_truth with the camera topic BY TIMESTAMP (0.2 ms
-// alignment tolerance), so moving one topic's clock axis and not the other
-// silently breaks both. Moving BOTH needs rtc to publish /clock and the whole
-// stack to run use_sim_time — an S5/S6 decision, not an S3a one. This lane
-// gives the sim↔steady mapping instead, which is what "interpolate on the sim
-// axis" actually needs, and breaks no existing contract.
+// WHY NOT JUST STAMP THE BALL TRUTH WITH SIM TIME. Putting mjData::time into
+// header.stamp would change the stamp's EPOCH, and ball_perception's
+// recorder_node and evaluator_node pair /sim/ball/ground_truth with the camera
+// topic BY TIMESTAMP (0.2 ms alignment tolerance), so moving one topic's clock
+// axis and not the other silently breaks both; moving the stack onto a sim
+// epoch needs rtc to publish /clock and everything to run use_sim_time — an
+// S5/S6 decision. What the ball publisher does instead (2026-09-22) keeps the
+// wall epoch and only removes the stepper's wake jitter: both ball topics are
+// stamped with the wall instant the max_rtf throttle maps the sample's sim
+// time to (ProjectileBallSample::nominal_steady_ns), so consumers still see
+// ROS system time, paired as before. This lane remains the sim↔steady
+// correspondence table that the D-3 phase error is measured from.
 struct SimClockSample {
   std::uint64_t step{0};
   double sim_time_sec{0.0};
@@ -219,6 +223,16 @@ struct ProjectileBallSample {
   std::array<double, 3> linear_velocity{0.0, 0.0, 0.0};   ///< world frame
   std::array<double, 3> angular_velocity{0.0, 0.0, 0.0};  ///< world frame (qvel is body frame)
   double sim_time_sec{0.0};
+  /// Steady instant this sim time maps to on the max_rtf throttle's reference
+  /// (ProjectileBallNominalSteadyNs). The publisher derives header.stamp from
+  /// it instead of the wall clock at publish time: the sample is taken when
+  /// the physics reaches sim_time_sec, not when the stepper happened to wake,
+  /// and a consumer that trusts the stamp as capture time (ball_perception's
+  /// `stamp_is_capture_time`) sees the sim-time spacing rather than the
+  /// stepper's burst-and-sleep rhythm. The sample is published right after the
+  /// throttle sleep, so this instant never leads the wall unless the loop is
+  /// unthrottled (then it is the actual instant, as before).
+  std::int64_t nominal_steady_ns{0};
 };
 
 using ProjectileBallCallback = std::function<void(const ProjectileBallSample& sample)>;

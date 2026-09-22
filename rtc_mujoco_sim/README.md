@@ -231,7 +231,7 @@ solver:
 | `<contact_wrench.topic_prefix>/<target>/contact_point` | `geometry_msgs/PointStamped` | 매 물리 스텝 | `contact_wrench.publish_debug: true` 일 때만. **world frame** (`frame_id: "world"`) 접촉점 — wrench 와 달리 손끝 프레임이 아니다. 아래 [디버그 lane](#publish_debug--접촉점접촉깊이-디버그-lane) 절 |
 | `<contact_wrench.topic_prefix>/<target>/contact_depth` | `std_msgs/Float64` | 매 물리 스텝 | 〃. MuJoCo 의 부호 있는 contact distance — **음수가 관통** |
 | `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
-| `<projectile_ball.publish.ground_truth_topic>` (예: `/sim/ball/ground_truth`) | `nav_msgs/Odometry` | `publish.sample_rate_hz` (sim 시간 기준) | 씬 전체: 발사된 공의 참값 pose·twist. twist 는 선속도·각속도 모두 **world 프레임** (Odometry 의 child frame 관례와 다르다). **park 중에는 발행하지 않는다**. 아래 [Projectile Ball](#projectile-ball-발사-공) 절 |
+| `<projectile_ball.publish.ground_truth_topic>` (예: `/sim/ball/ground_truth`) | `nav_msgs/Odometry` | `publish.sample_rate_hz` (sim 시간 기준) | 씬 전체: 발사된 공의 참값 pose·twist. twist 는 선속도·각속도 모두 **world 프레임** (Odometry 의 child frame 관례와 다르다). **park 중에는 발행하지 않는다**. stamp 는 발행 순간이 아니라 **그 sim 시각을 throttle 이 대응시키는 wall 순간** (간격이 sim 축과 같다 — 아래 [stamp](#stamp--sim-시간축을-wall-에-사상한-값) 항목). 아래 [Projectile Ball](#projectile-ball-발사-공) 절 |
 | `<projectile_ball.publish.camera_topic>` (예: `/sim/ball/camera_position`) | `geometry_msgs/PointStamped` | 〃 | 〃 위치에 축별 가우시안 노이즈 (`position_noise_stddev_m`) — 카메라 관측 모사 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
@@ -854,6 +854,25 @@ MuJoCo 는 `(contype_A & conaffinity_B) || (contype_B & conaffinity_A)` 이면 �
 
 `seed` 는 발사 샘플링과 카메라 노이즈에 함께 쓰이지만 노이즈 쪽은 stream tag 를 섞어 두 난수열이 겹치지 않습니다. variation 이 0 인 항목은 난수를 소비하지 않습니다.
 
+#### stamp — sim 시간축을 wall 에 사상한 값
+
+발행 gate 는 **sim 시간** 기준이라 (`ShouldPublishProjectileBallSample`) 샘플은 sim 축에서 정확히 `1/sample_rate_hz` 간격입니다.
+`header.stamp` 도 그 간격을 말해야 합니다 — 발행 순간의 `now()` 를 찍으면 stepper 가 여러 스텝을 몰아 돌고 자는
+리듬이 stamp 에 그대로 실립니다 (2026-09-22 실측, `max_rtf` 1.0 · RTF 1.0x: 10 ms 주기의 stamp 간격이 p05 2.7 /
+p95 33.6 / max 52 ms). stamp 를 capture time 으로 믿는 소비자 (ball_perception `stamp_is_capture_time: true` 의 init 창
+"5 점을 0.1 s 안에") 는 그 지터를 초기화 실패로 겪습니다. 그래서 두 공 토픽의 stamp 는 **`max_rtf` throttle 이 그 sim
+시각을 대응시키는 wall 순간** (`ProjectileBallSample::nominal_steady_ns` → 발행 시점의 steady↔system 오프셋으로
+ROS 시각 변환) 입니다.
+
+- **epoch 은 그대로 wall (ROS system time, `/clock` 없음)** 이고, 바뀐 것은 지터뿐입니다. 실제 wall 과의 차이는 stepper 의
+  위상 오차 (D-3, [Clock phase lane](#clock-phase-lane-d-3-측정) 이 재는 양) 이지 wake 지터가 아닙니다.
+- 샘플은 throttle sleep **직후**에 발행되므로 stamp 는 wall 을 앞서지 않습니다 — ball_perception 의 `max_future_skew_s`
+  와 컨트롤러의 `FutureStamp` 거부에 걸리지 않습니다. RTF 가 1 보다 낮게 밀리면 stamp 가 wall 보다 뒤처지지만, 소비자의
+  stale 판정은 수신 steady 시각 기준 (D-2) 이라 계약에 어긋나지 않습니다.
+- **`max_rtf: 0` (무제한) 이면** 대응 기준이 없어 종전처럼 발행 순간의 `now()` 입니다 — 이때는 RTF 가 1 이 아니라
+  stamp 축의 동역학 자체가 틀리므로, 추정기를 붙이는 run 은 `max_rtf: 1.0` 으로 돌립니다.
+- 두 토픽이 **같은 stamp** 를 받으므로 ball_perception 의 truth↔camera stamp 짝짓기는 영향이 없습니다.
+
 #### 지정 상태 발사 (`/sim/launch_ball_at`)
 
 위 표의 `spawn_position_m`·각도·속도·spin 은 **샘플링 경로**의 입력입니다. 측정을 하려면 한 투척을 고정한 채
@@ -906,11 +925,13 @@ ros2 service call /sim/reset_ball std_srvs/srv/Trigger   # 이후 발행이 멈�
   `dropped_total > 0` 이면 분포의 꼬리를 신뢰할 수 없으므로 `drain_rate_hz` 를 올리고 다시 잽니다.
 - `csv_path` 가 비면 lane 을 **거부**합니다. 측정 run 의 유일한 산출물을 아무도 지정하지 않은 경로에 쓰지 않습니다.
 
-> ⚠️ **공 truth 토픽의 stamp 를 sim 시각으로 바꾸는 쪽이 아닙니다.** ball_perception 의 `recorder_node` 와
+> ⚠️ **공 토픽의 stamp 를 sim 시각 (epoch) 으로 바꾸는 쪽이 아닙니다.** ball_perception 의 `recorder_node` 와
 > `evaluator_node` 가 `/sim/ball/ground_truth` 와 카메라 토픽을 **stamp 로 짝짓기** 때문에(허용오차 0.2 ms)
-> 한쪽만 클럭 축을 바꾸면 둘 다 조용히 깨집니다. 둘 다 바꾸려면 rtc 가 `/clock` 을 내고 스택 전체가
-> `use_sim_time` 으로 돌아야 하며, 그건 S5/S6 결정입니다. 이 lane 은 그 대신 **sim↔steady 대응표**를 주고,
-> "sim 축으로 보간" 에 실제로 필요한 것이 그것입니다.
+> 한쪽만 클럭 축을 바꾸면 둘 다 조용히 깨집니다. 스택 전체를 sim epoch 으로 옮기려면 rtc 가 `/clock` 을 내고
+> 모두가 `use_sim_time` 으로 돌아야 하며, 그건 S5/S6 결정입니다. 공 토픽이 하는 것은 그것이 아니라
+> **wall epoch 을 유지한 채 stepper 의 wake 지터만 걷어내는 것**입니다 ([Projectile Ball](#projectile-ball-발사-공)
+> 의 stamp 항목) — 두 토픽이 같은 stamp 를 받으므로 짝짓기는 그대로입니다. 이 lane 은 **sim↔steady 대응표**를
+> 주고, "sim 축으로 보간" 에 실제로 필요한 것과 D-3 위상 오차의 측정이 그것입니다.
 
 ---
 

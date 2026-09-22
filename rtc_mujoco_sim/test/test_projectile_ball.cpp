@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <mutex>
 #include <random>
@@ -1252,6 +1254,125 @@ TEST(BallContactLane, ImpulseMatchesTheMomentumChangeItCauses) {
       << "reported " << e.impulse_world[2] << " vs momentum-derived " << expected << " over ["
       << trace.sim_time[before] << ", " << trace.sim_time[after] << "]";
   EXPECT_GT(std::abs(expected), 1e-4) << "the bounce must be big enough for this to mean anything";
+}
+
+// ── Sample stamp axis ───────────────────────────────────────────────────────
+// The publish gate is on sim time, so samples are one period apart on that
+// axis; the stamp must say so too, whatever rhythm the stepper woke with.
+
+TEST(ProjectileBall, NominalSteadyMapsSimTimeOnTheThrottleReference) {
+  const std::int64_t wall_start = 5'000'000'000;
+  const std::int64_t actual = 7'000'000'000;
+  // On pace at RTF 1.0: sim time advances map 1:1 onto the wall reference.
+  EXPECT_EQ(ProjectileBallNominalSteadyNs(3.0, 3.0, wall_start, 1.0, actual), wall_start);
+  EXPECT_EQ(ProjectileBallNominalSteadyNs(3.010, 3.0, wall_start, 1.0, actual),
+            wall_start + 10'000'000);
+  // Half real time: 10 ms of sim time is 20 ms of wall time.
+  EXPECT_EQ(ProjectileBallNominalSteadyNs(3.010, 3.0, wall_start, 0.5, actual),
+            wall_start + 20'000'000);
+  // The mapping is a pure function of sim time — it does not look at the
+  // actual instant, which is the whole point.
+  EXPECT_EQ(ProjectileBallNominalSteadyNs(3.010, 3.0, wall_start, 1.0, actual + 40'000'000),
+            wall_start + 10'000'000);
+  // Unthrottled there is no reference; the actual instant passes through.
+  EXPECT_EQ(ProjectileBallNominalSteadyNs(3.010, 3.0, wall_start, 0.0, actual), actual);
+  EXPECT_EQ(ProjectileBallNominalSteadyNs(3.010, 3.0, wall_start, -1.0, actual), actual);
+  EXPECT_EQ(ProjectileBallNominalSteadyNs(std::numeric_limits<double>::quiet_NaN(), 3.0, wall_start,
+                                          1.0, actual),
+            actual);
+}
+
+TEST(ProjectileBall, SampleStampsFollowSimTimeNotTheStepperRhythm) {
+  auto config = test::MakeMinimalConfig();
+  config.projectile_ball.enabled = true;
+  config.projectile_ball.spawn_position_m = {0.0, 0.0, 0.5};
+  config.max_rtf = 1.0;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  ASSERT_TRUE(sim.HasProjectileBall());
+
+  struct Seen {
+    double sim_time_sec;
+    std::int64_t nominal_ns;
+    std::int64_t actual_ns;  // steady clock when the callback ran
+  };
+
+  std::mutex seen_mutex;
+  std::vector<Seen> seen;
+  sim.SetProjectileBallCallback([&](const ProjectileBallSample& sample) {
+    const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    std::lock_guard lock(seen_mutex);
+    seen.push_back({sample.sim_time_sec, sample.nominal_steady_ns, now});
+  });
+
+  sim.SetMaxRtf(1.0);
+  sim.Start();
+  sim.RequestProjectileBallLaunch();
+  // Feed commands in bursts with pauses between them. The loop steps on every
+  // command (or on its sync timeout), so the stepper's wall rhythm here is
+  // deliberately irregular — the situation the stamp must be immune to.
+  for (int burst = 0; burst < 12; ++burst) {
+    for (int i = 0; i < 6; ++i) {
+      sim.SetCommand(0, {0.0, 0.0});
+      std::this_thread::sleep_for(200us);
+    }
+    std::this_thread::sleep_for(15ms);
+  }
+  sim.Stop();
+
+  std::lock_guard lock(seen_mutex);
+  ASSERT_GE(seen.size(), 20u) << "the loop must have produced a run of samples";
+  const double dt = sim.GetModel()->opt.timestep;
+  std::int64_t max_lead_ns = std::numeric_limits<std::int64_t>::min();
+  for (std::size_t i = 0; i < seen.size(); ++i) {
+    // The throttle sleeps until the wall reaches the reference for the sim
+    // time just stepped, and the sample is read right after that sleep — so
+    // the nominal instant never leads the wall. A future stamp would be
+    // rejected by ball_perception's future-skew gate and by the controller's
+    // FutureStamp check, so this is the property that keeps the fix safe.
+    EXPECT_LE(seen[i].nominal_ns, seen[i].actual_ns) << "sample " << i;
+    max_lead_ns = std::max(max_lead_ns, seen[i].nominal_ns - seen[i].actual_ns);
+    if (i == 0) {
+      continue;
+    }
+    const double sim_gap = seen[i].sim_time_sec - seen[i - 1].sim_time_sec;
+    if (sim_gap <= 0.0) {
+      continue;  // a reset rewinds sim time; the reference is re-anchored then
+    }
+    EXPECT_NEAR(sim_gap, dt, 1e-9) << "one physics step per sample";
+    // Spacing on the stamp axis equals spacing on the sim axis, to the
+    // nanosecond: this is what a consumer trusting the stamp as capture time
+    // gets instead of the wake jitter.
+    EXPECT_NEAR(static_cast<double>(seen[i].nominal_ns - seen[i - 1].nominal_ns), sim_gap * 1e9,
+                1.0)
+        << "sample " << i;
+  }
+  ::testing::Test::RecordProperty("samples", static_cast<int>(seen.size()));
+  ::testing::Test::RecordProperty("max_nominal_lead_us", static_cast<int>(max_lead_ns / 1000));
+}
+
+TEST(ProjectileBall, SampleStampIsTheActualInstantWhenUnthrottled) {
+  auto config = test::MakeMinimalConfig();
+  config.projectile_ball.enabled = true;
+  config.projectile_ball.spawn_position_m = {0.0, 0.0, 0.5};
+  config.max_rtf = 0.0;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+
+  // StepForTest never runs the throttle, so the loop is unthrottled here: the
+  // sample must carry the steady instant it was read at, nothing invented.
+  const auto before = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  sim.StepForTest();
+  const auto after = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+  const auto& sample = sim.GetProjectileBallSampleForTest();
+  EXPECT_GE(sample.nominal_steady_ns, before);
+  EXPECT_LE(sample.nominal_steady_ns, after);
 }
 
 }  // namespace
