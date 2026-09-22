@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <exception>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -408,7 +409,24 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
     // parameter would still read `true` from a previous run while the tick is
     // disarmed — and the next thing anyone does is set it to true, which is a
     // no-op change that fires no callback.
-    node_->set_parameter(rclcpp::Parameter(kCatchingEnableParam, false));
+    //
+    // Guarded because this override is `noexcept` and `set_parameter` throws:
+    // any OTHER on-set callback registered on this node may reject the change,
+    // and an immutable-parameter or not-declared exception here would be
+    // std::terminate rather than a failed activation. The latch above is what
+    // actually governs the tick, so a parameter that could not be written back
+    // is a display inconsistency to report, not a reason to take the process
+    // down. (Lifecycle callback — non-RT, so RT-2's try/catch ban
+    // does not apply here.)
+    try {
+      node_->set_parameter(rclcpp::Parameter(kCatchingEnableParam, false));
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(logger_,
+                  "could not write '%s' back to false on activation (%s) — the controller is "
+                  "DISARMED regardless; the parameter's displayed value may disagree until it is "
+                  "set again",
+                  kCatchingEnableParam, e.what());
+    }
   }
   return CallbackReturn::SUCCESS;
 }

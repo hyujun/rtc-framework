@@ -417,6 +417,16 @@ bool DemoCatchingController::ServiceResetRequests(const ControllerState& state) 
     }
   }
 
+  // A latched fault disarms too, and it does so on EVERY tick the latch is up
+  // rather than on the edge that raised it: the latch outlives the reset that
+  // noticed it, so an operator setting `catching.enable` while faulted must not
+  // find the controller armed the moment the fault is cleared. (Nothing raises
+  // this latch before S5.3's QP-failure streak — this is the rule being in
+  // place before the cause exists, not dead code for its own sake.)
+  if (fault_latched_.load(std::memory_order_relaxed)) {
+    arm_requested_.store(false, std::memory_order_relaxed);
+  }
+
   if (reset) {
     ResetTrialState();
     rt_reset_count_.fetch_add(1, std::memory_order_relaxed);
@@ -507,7 +517,11 @@ void DemoCatchingController::WriteDeviceCommand(const ControllerState& state,
     out.goal_positions[i] = latch.commands[i];
   }
 
-  if (!is_hand || hand_target_width_ == 0) {
+  if (!is_hand || hand_target_width_ == 0 || estop_active_) {
+    // `estop_active_`: a stop holds the pose it was stopped in. Without this
+    // the overlay below would keep re-applying the last accepted step on every
+    // tick of the stop — the value is latched in `hand_target_raw_`, so it
+    // does not need a NEW target to reach the output.
     return;
   }
 
@@ -558,10 +572,24 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   // has just decided not to trust.
   (void)ServiceResetRequests(state);
 
-  // Drained before the write, not after: WriteDeviceCommand seeds the hold
-  // latch and then overlays the step, so a step arriving on the same tick as
-  // the first readable state is honoured on that tick instead of a tick later.
-  (void)DrainPendingTargets();
+  if (estop_active_) {
+    // Drained AND DISCARDED while stopped. Not skipped: the mailbox is a
+    // fixed-capacity SPSC, so leaving entries in it would hand the hand a step
+    // issued mid-stop as soon as the stop cleared — later, and with no
+    // operator expecting it. Discarding says what the stop means.
+    //
+    // The CM substitutes its own hold for this controller's entire output
+    // while the global latch is up, so nothing here reaches an actuator either
+    // way. That is exactly why this is worth doing rather than relying on it:
+    // a second layer costs one branch, and the layer that is doing the work
+    // today belongs to a different component.
+    DiscardPendingTargets();
+  } else {
+    // Drained before the write, not after: WriteDeviceCommand seeds the hold
+    // latch and then overlays the step, so a step arriving on the same tick as
+    // the first readable state is honoured on that tick instead of a tick later.
+    (void)DrainPendingTargets();
+  }
 
   AdvanceMode(EvaluateReason(state));
   // Published every tick, including the early ones and the estopped ones. The

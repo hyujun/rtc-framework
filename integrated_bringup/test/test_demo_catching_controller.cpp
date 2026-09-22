@@ -971,6 +971,43 @@ TEST(DemoCatchingEstop, AQueuedHandStepDoesNotSurviveAnEstop) {
   }
 }
 
+TEST(DemoCatchingEstop, AStepIssuedDuringAStopNeverReachesTheHand) {
+  // The second layer on the target lane. CM substitutes its own hold for this
+  // controller's whole output while the global latch is up, so this cannot be
+  // observed on an actuator today — which is the point: the layer doing the
+  // work belongs to another component, and this asserts the one this
+  // controller owns. It is also what makes a step issued mid-stop not arrive
+  // LATE, once the stop clears.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.Compute(MakeState(0.0));
+
+  ctrl.TriggerEstop();
+  ctrl.Compute(MakeState(0.0));  // services the trigger
+
+  // Now a step arrives while the stop is up, on a tick that performs no reset.
+  const std::array<double, kHandDof> step{0.4, 0.4, 0.4, 0.4};
+  ctrl.SetDeviceTarget(kCatchingHandDeviceIdx, step);
+  const ControllerState held = MakeState(0.0);
+  const ControllerOutput during = ctrl.Compute(held);
+  ASSERT_EQ(during.devices[1].num_channels, kHandDof);
+  for (int i = 0; i < kHandDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(during.devices[1].commands[idx], held.devices[1].positions[idx])
+        << "hand joint " << i << " moved on a stopped tick";
+  }
+
+  // And it does not arrive after the clear either: the stop discarded it.
+  ctrl.ClearEstop();
+  const ControllerState after = MakeState(0.0);
+  const ControllerOutput out = ctrl.Compute(after);
+  for (int i = 0; i < kHandDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(out.devices[1].commands[idx], after.devices[1].positions[idx])
+        << "hand joint " << i << " took a step issued during the stop, one clear later";
+  }
+}
+
 TEST(DemoCatchingEstop, ResetFaultDoesNotClearTheEstopAndNoFaultIsLatchedByDefault) {
   // P-1 (d), the half that is reachable at S5.1. The two paths are separate:
   // a fault reset must not lower the global stop. The other half — a LATCHED

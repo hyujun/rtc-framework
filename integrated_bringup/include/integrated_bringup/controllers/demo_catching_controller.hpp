@@ -436,8 +436,17 @@ class DemoCatchingController final : public RTControllerInterface {
   /// G0-C verdict for the ACTIVE configuration, decided at configure. The tick
   /// reads it rather than the report so the arming question is one bool.
   bool armable_{false};
-  /// True while this tick's E-STOP request is up, so the command writer can
-  /// keep the hold honest without re-reading the atomic mid-tick.
+  /// True while this tick's E-STOP request is up. Read once at the top of
+  /// Compute and then used by the target lane (drain → discard) and by the
+  /// command writer (no step overlay), so one tick cannot act on two different
+  /// answers.
+  ///
+  /// This is a SECOND layer and it knows it: while the global latch is up, CM
+  /// substitutes its own hold for this controller's entire output, so nothing
+  /// computed here reaches an actuator either way. It is kept because the
+  /// layer doing the work belongs to a different component, and because
+  /// discarding rather than queueing is what stops a step issued mid-stop from
+  /// arriving late once the stop clears.
   bool estop_active_{false};
 
   std::atomic<std::uint64_t> arm_target_reject_count_{0};
