@@ -53,7 +53,7 @@ $$t_{ref}^{steady}=t_{recv}^{steady}-\big(t_{recv}^{wall}-t_{stamp}\big),\qquad 
 - 원점 지연 $t_{recv}^{wall}-t_{stamp}$ 는 **진단**(분포 기록)이다. 음수가 $T_{future}$ 보다 크면(미래 스탬프) 변환 결과가 틀리므로 시계 이상으로 거부한다.
 - stale 임계 $T_{stale}$: 발행 주기 + 여유(예시 profile ≤ 30 Hz). YAML, S3.4·S8 실측 후.
 - 지평 끝 소진: 마지막 점 `BallTime` 을 **now_lead** 와 비교한다(plan §3 "궤적 지평 끝 경고 = now_lead"). 샘플링이 선행축으로 읽으므로 소진 판정도 같은 축이어야 한다 — v0.4 `readTraj` 는 실제 나이를 지평 상대시각과 비교해 두 축을 섞었다.
-- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 S3.6 이 정하고 sim profile 을 그에 맞춘다(예시 profile: 0.5 s / 0.05 s 간격 / 최대 10 점).
+- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 S3.6 이 정하고 sim profile 을 그에 맞춘다 — `io.horizon_min` 0.51 s (R1, §6), sim profile 권장 0.95 s / 0.05 s / 19 점 (기구학 reachable 창 기준, plan D-27·§4.4 S3.6 결과; 현 설정 0.8 s / 16 점은 계획기가 보는 창 끝이 0.78 s 라 늦게 잡는 후보가 빠진다. ball_perception 의 예시 profile 0.5 s / 최대 10 점은 그대로는 부족하다).
 
 ### 4.2 시계 오차의 영향
 
@@ -231,10 +231,10 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | `io.traj_topic` | string | – | ball_perception debug 예측 궤적 토픽 | – | G1-2, D-4 (stable ABI 아님) |
 | `io.qos_reliability` | enum | – | `best_effort` | – | S3.4 실측으로 확정 (TBD-VIS-08 닫힘, G1-2). depth 는 `KEEP_LAST(1)` 고정(ARCH-6)이라 설정 키가 아니다 |
 | `io.expected_frame` | string | – | `world` | – | 마스터 §3. sim 실측 `world` (TBD-VIS-06 닫힘). 다르면 §4.3 변환 |
-| `io.n_min` | int | – | `TBD` | ≥2 | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3) |
-| `io.t_stale` | double | s | `TBD` | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후) |
-| `io.future_tol` | double | s | `TBD` | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2) |
-| `io.horizon_min` | double | s | `TBD` | >0 | D-15 지평 요구. S3.6 산출 — **R1 (commit 조건) 기준**, R2 (정지 출발) 로 잡지 않는다 (plan §4.4 S0 결과, 2026-09-19). sim profile 지평 0.8 s (plan D-15) |
+| `io.n_min` | int | – | **11** (provisional, S3.6) | ≥2 | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3). = ⌈`io.horizon_min` / `prediction.dt_expected`⌉ = ⌈0.51 / 0.05⌉ (plan §4.4 S3.6 결과) |
+| `io.t_stale` | double | s | `TBD` — **[제안] 0.10** (S3.6) | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후). 제안 근거: S3.4 실측 발행 30 Hz (33 ms), 드롭 30 % 주입에서 p95 15 Hz (67 ms) 이므로 3 주기 = 0.10 s 면 드롭 한 건은 stale 이 아니고 유령 트랙 침묵 (마지막 VALID 뒤 ≤ 34 ms 한 건, 이후 침묵) 은 0.10 s 안에 소실로 읽힌다. **확정은 S5.2** (S8 부하 실측 후) |
+| `io.future_tol` | double | s | `TBD` — **[제안] 1e-3** (S3.6) | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2). 제안 근거: sim 은 같은 호스트 wall clock (S3.4: stamp = capture wall `now()`, stamp→수신 p50 32 ms 로 음수 없음) 이라 예산은 변환 반올림뿐. 실기는 카메라 PC 와의 동기 실측 (TBD-NET-01, S10) 후 — **확정은 S5.2** |
+| `io.horizon_min` | double | s | **0.51** (provisional, S3.6) | >0 | D-15 지평 요구. S3.6 산출 — **R1 (commit 조건) 기준**, R2 (정지 출발) 로 잡지 않는다 (plan §4.4 S0 결과, 2026-09-19): $T_{freeze}+L$ = ($T_{close,tot}$ 0.2815 + $T_{arm}$ 0.05 + $T_{margin}$ 0.03) + L 0.14 = 0.5015 → 10 ms 로 **올림** 0.51 s (내림 0.50 은 R1 을 1.5 ms 미달하는 궤적을 통과시킨다; 0.05 s 간격에서 11 점 = 0.55 s). L 0.14 s 는 S0.7 가정값이라 provisional. sim profile 지평은 이 게이트가 아니라 목표 분포 요구 H_req 가 정한다 — 기구학 reachable 창 기준 0.93 s → 권장 0.95 s / 19 점 (plan D-27·§4.4 S3.6 결과) |
 | `io.track.eval_offset` | double | s | 0.05 | 0–0.3 | §4.4 비교 시각 오프셋 |
 | `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 점프 경고 |
 | `io.pred.nu_window` | int | – | 30 | 5–300 | §4.5 창 길이 |

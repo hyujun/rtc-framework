@@ -159,10 +159,10 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `prediction.max_samples` | int | – | 40 (provisional, S0.7 제안) | 16–512 | `kCap` (컴파일 상수와 일치 검사, S0.7 제안값 — plan §4.4 S0 결과). 런타임 상한 `n_max ≤ kCap` 은 S3.6 요구 사양으로 정한다 (D-15) |
+| `prediction.max_samples` | int | – | 40 (provisional, S0.7 제안) | 16–512 | `kCap` (컴파일 상수와 일치 검사, S0.7 제안값 — plan §4.4 S0 결과). 런타임 상한 `n_max ≤ kCap` 은 S3.6 요구 사양으로 정한다 (D-15) — **`n_max` = 19** (provisional, S3.6: 기구학 reachable 창 기준 (plan D-27) H_req 0.93 s → ⌈0.93/0.05⌉ = 19, 권장 sim profile 0.95 s 의 19 점과 같게 — 상한이므로 현 0.8 s / 16 점도 통과한다; plan §4.4 S3.6 결과). 19 ≤ 40 이라 S1.2 backfill 은 PASS |
 | `prediction.n_min` | – | – | – | – | v0.5 삭제 — 단일 키 `io.n_min` (L1 §6) 을 쓴다 (plan S0.3) |
 | `prediction.t_horizon_margin` | double | s | 0.05 | 0–0.3 | §4.6 지평 끝 여유 |
-| `prediction.dt_expected` | double | s | `TBD` | >0 | vision 점 간격. 검사용. 예시 profile 0.05 (S3.6 에서 확정) |
+| `prediction.dt_expected` | double | s | **0.05** (provisional, S3.6) | >0 | vision 점 간격. 검사용. S1.2 실측 0.05 s 간격 보간 오차 2.0e-11 m (G2-C 1e-10 m 안, plan §4.4 S1 결과) 이라 더 촘촘할 이유가 없고, ball_perception 은 `horizon % step == 0` 을 요구한다 (plan §4.4 S3.6 결과) |
 | `prediction.dt_tol` | double | – | 0.2 | 0–1 | 샘플 간격 허용 상대편차 (경고) |
 | `prediction.dt_min` | double | s | `TBD` | >0 | 이 미만 간격은 **거부** (S1.2) |
 | `prediction.z_floor` | double | m | `TBD` | – | G2-5 |
@@ -203,4 +203,4 @@ v0.2의 `prediction.rt.*`, `prediction.rollout.*`, `q_acc`, `q_k`는 전부 삭�
 
 ## 10. 미확정 항목
 
-TBD-WS-01 (닫는 단계 미지정), `kCap` 제안값 (S0.7 → S1.2)·런타임 `n_max`·`prediction.dt_expected` (S3.6, D-15), `prediction.dt_min` (S1.2), `io.n_min` (L1), `prediction.lead` 의 $T_{arm}$ (S10).
+TBD-WS-01 (닫는 단계 미지정), `kCap` 제안값 (S0.7 → S1.2), `prediction.dt_min` (S1.2), `prediction.lead` 의 $T_{arm}$ (S10). 런타임 `n_max` 19·`prediction.dt_expected` 0.05 s·`io.n_min` 11 은 S3.6 이 provisional 로 정했다 (§6, L1 §6, plan §4.4 S3.6 결과) — T_det 실측 (plan §7.3) 후 재검.
