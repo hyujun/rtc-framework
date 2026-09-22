@@ -35,6 +35,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 
 namespace integrated_bringup {
 
@@ -118,6 +119,28 @@ struct TrajInputDiagnostics {
   std::uint64_t layout_rebuilds{0};
 };
 
+/// Everything the ingress knows, in one trivially-copyable object.
+///
+/// WHY A SNAPSHOT RATHER THAN ACCESSORS. The counters below are written by the
+/// SUBSCRIPTION callback and read by the CM publish thread (they ride the
+/// state message). Reading the members directly across those two threads is a
+/// race — a benign-looking one that TSAN flags and that can tear a 64-bit
+/// counter on a 32-bit build. So the callback publishes this through a SeqLock
+/// after every message, accepted or not, and the publish thread loads it.
+///
+/// It is deliberately NOT part of the per-tick record: these numbers advance
+/// on MESSAGE ARRIVAL, and putting them in a per-tick row would repeat each
+/// value for however many ticks pass between messages while looking like a
+/// per-tick measurement.
+struct CatchingIngressSnapshot {
+  TrajInputDiagnostics diag{};
+  std::array<std::uint64_t, kCloudRejectCount> rejects{};
+  std::uint64_t accept_count{0};
+};
+
+static_assert(std::is_trivially_copyable_v<CatchingIngressSnapshot>,
+              "CatchingIngressSnapshot must be trivially copyable for the SeqLock");
+
 /// Non-RT ingress. One instance per subscription, called only from the
 /// controller's non-RT callback group.
 class CatchingTrajInput {
@@ -141,6 +164,12 @@ class CatchingTrajInput {
   [[nodiscard]] std::uint64_t AcceptCount() const noexcept { return accept_count_; }
 
   [[nodiscard]] const TrajInputDiagnostics& LastDiagnostics() const noexcept { return diag_; }
+
+  /// Everything above in one copy, for the cross-thread hand-off. Callable
+  /// only from the subscription thread — see CatchingIngressSnapshot.
+  [[nodiscard]] CatchingIngressSnapshot Snapshot() const noexcept {
+    return CatchingIngressSnapshot{diag_, rejects_, accept_count_};
+  }
 
   [[nodiscard]] const TrajFieldMap& FieldMap() const noexcept { return map_; }
 

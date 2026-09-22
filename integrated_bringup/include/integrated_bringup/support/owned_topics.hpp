@@ -10,12 +10,15 @@
 // Every controller-YAML topic entry is controller-owned (issue #138); CM's
 // own fixed publishers and DeviceBackend device-wire lanes are separate.
 
+#include "integrated_bringup/controllers/catching/traj_input.hpp"
 #include "integrated_bringup/controllers/tof_snapshot.hpp"
 #include "integrated_bringup/controllers/wbc/wbc_state.hpp"
+#include "integrated_bringup/logging/catching_diag_log_pod.hpp"
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include <rtc_base/threading/publish_buffer.hpp>
 #include <rtc_controller_interface/rt_controller_interface.hpp>
 #include <rtc_controllers/grasp/grasp_state.hpp>
+#include <rtc_msgs/msg/catching_state.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/payload_estimate.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
@@ -83,6 +86,13 @@ struct ControllerTopicHandles {
   // Created by the controller via SetupWbcStatePublisher.
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::WbcState>::SharedPtr wbc_pub{};
   rtc_msgs::msg::WbcState wbc_msg{};
+
+  // Catching state publisher (dynamic_catching D-20) — at most one per demo
+  // (the catching controller). Created via SetupCatchingStatePublisher, which
+  // pre-sizes every per-joint / per-tip / per-reject array so the publish path
+  // writes into existing elements only.
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::CatchingState>::SharedPtr catching_pub{};
+  rtc_msgs::msg::CatchingState catching_msg{};
 
   // Payload estimate publisher (#135 D12) — one per controller that wires a
   // MomentumObserverWiring. Created via SetupPayloadEstimatePublisher, which
@@ -182,6 +192,36 @@ void SetupWbcStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHan
 
 void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
                                const std::string& topic_name);
+
+// Create the catching state publisher (D-20) and pre-fill everything that is
+// fixed for the life of the configuration: the arm joint names the `q_cmd` /
+// `q_meas` arrays are in, the fingertip names, and the CloudReject names the
+// `input_reject_counts` histogram is indexed by. Every variable-length array
+// is sized HERE and never resized afterwards.
+//
+// The names ride on the wire rather than being assumed by consumers for the
+// same reason PayloadEstimate carries `joint_names`: device order and model
+// order coincide on some robots and not others, and a consumer that pairs
+// them wrongly gets a finite, smooth, wrong answer with no symptom.
+void SetupCatchingStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                                 const std::string& topic_name,
+                                 const std::vector<std::string>& arm_joint_names,
+                                 const std::vector<std::string>& tip_names);
+
+// Publish the catching state from one tick's record plus the ingress
+// snapshot. Called from the controller's PublishNonRtSnapshot (CM publish
+// thread) — must be noexcept.
+//
+// A SEPARATE ENTRY POINT rather than two more optional parameters on
+// PublishOwnedTopicsFromSnapshot: that function's argument list is already
+// five roles long, and the catching controller publishes none of the other
+// five. `ingress` may be null when the ingress never ran; the input counters
+// are then left at whatever the previous message put there, which is what
+// they mean.
+void PublishCatchingStateFromSnapshot(const rtc::PublishSnapshot& snap,
+                                      ControllerTopicHandles& handles,
+                                      const CatchingDiagLogPod& tick,
+                                      const CatchingIngressSnapshot* ingress) noexcept;
 
 // Create the PayloadEstimate publisher (#135 D12) and pre-fill the two fields
 // that are fixed for the life of the configuration: `joint_names` — the arm

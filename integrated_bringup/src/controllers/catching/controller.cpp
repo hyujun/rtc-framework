@@ -175,9 +175,10 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
       if (entry["instance"]) {
         e.instance = entry["instance"].as<std::string>();
       }
-      // Closed set: this controller owns exactly one channel type. A typo is a
-      // hard fail at parse time rather than a CSV that never appears.
-      if (e.msg_type != "rtc_msgs/DeviceStateLog") {
+      // Closed set: two channel types — the per-device state logs and the
+      // per-tick record (S5.4). A typo is a hard fail at parse time rather
+      // than a CSV that never appears.
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != kCatchingDiagLogMsgType) {
         throw std::runtime_error("DemoCatchingController: unknown msg_type in `logs`: " +
                                  e.msg_type);
       }
@@ -199,6 +200,7 @@ void DemoCatchingController::ResolveDevices() {
   arm_joint_names_.clear();
   hand_joint_names_.clear();
   hand_motor_names_.clear();
+  hand_sensor_names_.clear();
   non_sim_groups_.clear();
   device_configs_seen_ = false;
 
@@ -211,6 +213,7 @@ void DemoCatchingController::ResolveDevices() {
       hand_dof_ = static_cast<int>(cfg->joint_state_names.size());
       hand_joint_names_ = cfg->joint_state_names;
       hand_motor_names_ = cfg->motor_state_names;
+      hand_sensor_names_ = cfg->sensor_names;
     }
   }
   arm_dof_ = std::min(arm_dof_, kDemoCatchingMaxArmDof);
@@ -361,6 +364,14 @@ void DemoCatchingController::OnTrajectoryCloud(const sensor_msgs::msg::PointClou
   // whether an activation will happen before the next tick.
   const CloudReject reject =
       traj_input_.OnCloud(msg, recv_steady, recv_wall, ActivationGeneration(), snap, cov);
+  // Published on EVERY message, accepted or refused, and BEFORE the early
+  // return below — OnCloud has already filled the diagnostics either way. A
+  // lane that is being refused and a lane that is silent look identical from
+  // the RT side, so these counters are the only thing that tells them apart,
+  // and they would be missing from exactly the case that needs them if this
+  // sat after the return.
+  ingress_diag_box_.Store(traj_input_.Snapshot());
+
   if (reject != CloudReject::kNone) {
     // Counted inside the ingress. Throttled here so a publisher that has
     // started producing garbage is visible without a per-message log on the
@@ -521,6 +532,7 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
   const rtc::catching::BallTime origin{plan_.gamma_t0_ns};
   const double t_rel = rtc::catching::ProfileSeconds(now_lead, origin);
   const rtc::catching::TranslationOutput ref = reference_->Step(target, t_rel, dt);
+  RecordReference(ref);
   if (!ref.valid) {
     // The generator refuses non-finite input and keeps its state. Reporting
     // saturation as an abort would be wrong (it is a real, bounded reference),
@@ -539,6 +551,7 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
   const bool ok = clik_.Compute(combined_cache_.cache(), catch_frame_idx_, base_frame_idx_,
                                 clik_target, q_posture_, dt, /*reseed_anchor=*/false);
   const auto& solve = clik_.LastSolve();
+  RecordClikSolve(solve);
   if (!ok) {
     ++qp_fail_streak_;
     // `bound_conflict` is a DIFFERENT failure from a solver that did not
@@ -573,6 +586,10 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
     err_sq += d * d;
   }
   track_err_ = std::sqrt(err_sq);
+  // Recorded HERE and nowhere else: this is the only tick shape that computes
+  // it, so a record filled outside would republish the last tracking tick's
+  // number on every hold tick that followed (PROC-7).
+  tick_record_.track_err_rad = track_err_;
   if (track_err_abort_rad_ > 0.0 && track_err_ > track_err_abort_rad_) {
     return Reason::kTrackErr;
   }
@@ -621,6 +638,11 @@ void DemoCatchingController::MakeOraclePlan(rtc::catching::NowReal now) noexcept
   // makes the initial error independent of how far away the ball is.
   plan_.gamma_t0_ns = now.ns;
   plan_.gamma_t1_ns = plan_.t_c_ns;
+  // The instant this plan came into being. S6's planner fills the same field
+  // from its own publish, so `plan_age_s` means one thing in both eras — an
+  // oracle that left it at zero would report an age of "seconds since the
+  // epoch" the moment a consumer subtracted.
+  plan_.publish_ns = now.ns;
   plan_.valid = true;
   plan_active_ = true;
 }
@@ -883,6 +905,9 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   track_seen_ = false;
   traj_new_track_ = false;
   traj_view_ = rtc::catching::TrajView{};
+  // `tick_record_` is deliberately absent from this list: it is
+  // default-constructed at the top of EVERY tick including this one (PROC-7),
+  // which is a stronger guarantee than anything enumerated here could give.
 }
 
 bool DemoCatchingController::ServiceResetRequests(const ControllerState& state) noexcept {
@@ -1071,12 +1096,167 @@ void DemoCatchingController::WriteDeviceCommand(const ControllerState& state,
                          kFallbackPositionLower, kFallbackPositionUpper);
 }
 
+// ── The tick record (S5.4, D-20 + L8 §5.2) ─────────────────────────────────
+//
+// Three fillers, each called at the point its values EXIST. That placement is
+// the whole PROC-7 mechanism: a tick that never reached the reference
+// generator never calls RecordReference, and the block stays zero because the
+// record was default-constructed at the top of the tick.
+
+void DemoCatchingController::RecordInputLane(
+    const rtc::catching::TrajectorySnapshot& snapshot) noexcept {
+  tick_record_.input_valid = snapshot.valid;
+  tick_record_.input_stale = traj_view_.stale;
+  tick_record_.input_expired = traj_view_.expired;
+  tick_record_.input_new = traj_view_.is_new;
+  tick_record_.input_n = snapshot.n;
+  tick_record_.input_generation = snapshot.token.generation;
+  tick_record_.input_snapshot_sequence = snapshot.token.snapshot_sequence;
+  tick_record_.input_activation_generation = snapshot.token.activation_generation;
+  tick_record_.input_age_s = static_cast<double>(traj_view_.age_ns) * 1e-9;
+  // The horizon the snapshot actually carries — last sample minus first, not
+  // the configured minimum. Reporting the requirement instead would make a
+  // publisher that is one sample short look exactly like one that is not.
+  if (snapshot.valid && snapshot.n > 1) {
+    const auto last = static_cast<std::size_t>(snapshot.n - 1);
+    tick_record_.input_horizon_s =
+        static_cast<double>(snapshot.s[last].t_ns - snapshot.s[0].t_ns) * 1e-9;
+  }
+}
+
+void DemoCatchingController::RecordReference(const rtc::catching::TranslationOutput& ref) noexcept {
+  tick_record_.ref_valid = ref.valid;
+  tick_record_.ref_saturated = ref.saturated;
+  for (int i = 0; i < 3; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    tick_record_.ref_x[u] = ref.x[i];
+    tick_record_.ref_xd[u] = ref.xd[i];
+    tick_record_.ref_xdd[u] = ref.xdd[i];
+    tick_record_.ref_u_des[u] = ref.u_des[i];
+    tick_record_.ref_e[u] = ref.e[i];
+    tick_record_.ref_ed[u] = ref.ed[i];
+  }
+  tick_record_.ref_gamma = ref.gamma;
+  tick_record_.ref_gamma_d = ref.gamma_d;
+  tick_record_.ref_gamma_dd = ref.gamma_dd;
+}
+
+void DemoCatchingController::RecordClikSolve(
+    const rtc::tsid::ClikReferenceGenerator::SolveDiagnostics& solve) noexcept {
+  tick_record_.clik_ran = solve.reached_solve;
+  tick_record_.clik_converged = solve.converged;
+  tick_record_.clik_bound_conflict = solve.bound_conflict;
+  tick_record_.clik_command_mismatch = solve.command_mismatch;
+  tick_record_.clik_status = solve.status;
+  tick_record_.clik_iterations = solve.iterations;
+  tick_record_.clik_solve_us = solve.solve_time_us;
+  tick_record_.clik_conflict_mask = solve.conflict_mask;
+}
+
+void DemoCatchingController::PublishTickRecord(const ControllerState& state) noexcept {
+  const std::int64_t now_ns = SteadyNowNs();
+
+  // ── Supervisor and controller-level state ───────────────────────────────
+  // All of these are CURRENT on every tick — they are states, not per-tick
+  // measurements, so filling them here rather than where they changed is what
+  // the field means.
+  tick_record_.mode = static_cast<std::uint8_t>(mode_);
+  tick_record_.reason = static_cast<std::uint8_t>(last_reason_);
+  tick_record_.armed = arm_requested_.load(std::memory_order_relaxed);
+  tick_record_.estop_active = estop_active_;
+  tick_record_.fault_latched = fault_latched_.load(std::memory_order_relaxed);
+  tick_record_.armable = armable_;
+  tick_record_.law_enabled = clik_enabled_;
+  tick_record_.real_arm_config = real_arm_config_;
+  tick_record_.qp_fail_streak = qp_fail_streak_;
+  tick_record_.abort_stopped = abort_stopped_;
+
+  // ── The plan ────────────────────────────────────────────────────────────
+  if (plan_active_ && plan_.valid) {
+    tick_record_.plan_valid = true;
+    tick_record_.plan_id = plan_.plan_id;
+    tick_record_.plan_t_c_s = static_cast<double>(plan_.t_c_ns - now_ns) * 1e-9;
+    tick_record_.plan_age_s = static_cast<double>(now_ns - plan_.publish_ns) * 1e-9;
+    tick_record_.plan_p_c = plan_.p_c;
+    tick_record_.plan_a_d = plan_.a_d;
+    tick_record_.plan_v_c = plan_.v_c;
+    tick_record_.plan_gamma_f = plan_.gamma_gf;
+    tick_record_.plan_w5 = plan_.w5;
+    tick_record_.plan_w6 = plan_.w6;
+    tick_record_.plan_sigma_c = plan_.sigma_c;
+    tick_record_.plan_score = plan_.score;
+    tick_record_.plan_reason = static_cast<std::uint8_t>(plan_.reason);
+  }
+
+  // ── The arm, commanded against measured ─────────────────────────────────
+  // Filled on every tick including the holding ones: a hold is a command, and
+  // a reader that saw nothing could not tell it from a tick that produced no
+  // command at all.
+  const auto n_arm = static_cast<std::size_t>(
+      std::min<int>(arm_dof_, static_cast<int>(CatchingDiagLogPod::kMaxArmJoints)));
+  tick_record_.num_arm_joints = static_cast<std::uint8_t>(n_arm);
+  for (std::size_t i = 0; i < n_arm; ++i) {
+    tick_record_.q_cmd[i] = arm_cmd_seeded_ ? arm_q_cmd_[i] : 0.0;
+  }
+  if (arm_readable_ && state.num_devices > kCatchingArmDeviceIdx) {
+    const auto& dev = state.devices[kCatchingArmDeviceIdx];
+    for (std::size_t i = 0; i < n_arm; ++i) {
+      tick_record_.q_meas[i] = dev.positions[i];
+    }
+  }
+
+  // ── Fingertip ages (D-24) ───────────────────────────────────────────────
+  // The age is a measurement; `tip_fresh` / `tip_contact` / `tip_force` wait
+  // for S7's threshold and its force layout — see the POD header.
+  // EVERY slot starts at "never received", including the ones past the
+  // runtime count. The POD's zero-init would leave them at 0.0, which on this
+  // wire means "arrived this instant" — and the message's arrays are sized
+  // from the device's SENSOR NAMES while this loop is bounded by
+  // `num_inference_groups`, so a backend that reports no groups (mujoco with
+  // no `fingertip_wrench_topics`) would publish four fingertips as fresh.
+  tick_record_.tip_age_s.fill(-1.0);
+  if (state.num_devices > kCatchingHandDeviceIdx) {
+    const auto& hand = state.devices[kCatchingHandDeviceIdx];
+    const auto n_tip = static_cast<std::size_t>(
+        std::min<int>(hand.num_inference_groups, static_cast<int>(CatchingDiagLogPod::kMaxTips)));
+    tick_record_.num_tips = static_cast<std::uint8_t>(n_tip);
+    for (std::size_t i = 0; i < n_tip; ++i) {
+      const std::int64_t age = rtc::SensorGroupAgeNs(hand, static_cast<int>(i), now_ns);
+      // Negative means never received, and that is what the wire says too —
+      // a zero would read as "arrived this instant".
+      tick_record_.tip_age_s[i] = age < 0 ? -1.0 : static_cast<double>(age) * 1e-9;
+    }
+  }
+
+  catching_state_lock_.Store(tick_record_);
+  if (catching_diag_log_handle_) {
+    catching_diag_log_handle_.Push(tick_record_);
+  }
+}
+
+void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
+  // CM's publish jthread (SCHED_OTHER), not the RT tick. Both loads are
+  // SeqLock reads of single-writer payloads.
+  const auto tick = catching_state_lock_.Load();
+  const auto ingress = ingress_diag_box_.Load();
+  PublishCatchingStateFromSnapshot(snap, owned_topics_, tick, &ingress);
+}
+
 ControllerOutput DemoCatchingController::Compute(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoCatchingController::Compute");
   ControllerOutput output;
   output.num_devices = state.num_devices;
   output.command_type = CommandType::kPosition;
   output.valid = true;
+
+  // PROC-7, by construction. A FRESH record every tick, so a block this tick
+  // does not compute is zero rather than the previous tick's value — and no
+  // helper has to remember to clear its own fields. The three stamps below are
+  // the only things true of every tick regardless of what it decides.
+  tick_record_ = CatchingDiagLogPod{};
+  tick_record_.t_relative_s = state.t_relative_s;
+  tick_record_.tick = state.iteration;
+  tick_record_.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
 
   // Read ONCE per tick, into a tick-local bool. Re-reading the atomic further
   // down would let one tick act on two different answers — the command written
@@ -1129,6 +1309,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   traj_view_ =
       rtc::catching::ReadTraj(snapshot, now, rtc::catching::MakeNowLead(now, t_arm_ns_),
                               t_stale_ns_, ActivationGeneration(), last_consumed_sequence_);
+  RecordInputLane(snapshot);
   if (traj_view_.is_new) {
     // A track change is latched here rather than compared in EvaluateReason:
     // the comparison is only meaningful on the tick the snapshot arrives, and
@@ -1144,9 +1325,10 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   } else {
     last_reason_ = decision.reason;
   }
-  // Published every tick, including the early ones and the estopped ones. The
-  // state message (S5.4) inherits this discipline as a PROC-7 requirement; the
-  // two atomics here are its S5.1 stand-in.
+  // Published every tick, including the early ones and the estopped ones —
+  // the discipline the state message inherits as PROC-7. These two atomics
+  // are the in-process read path (tests, and anything holding the controller
+  // directly); the record below is the one that leaves the process.
   mode_observed_.store(static_cast<std::uint8_t>(mode_), std::memory_order_relaxed);
   reason_observed_.store(static_cast<std::uint8_t>(last_reason_), std::memory_order_relaxed);
 
@@ -1176,6 +1358,11 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     FillDeviceStateLogPod(state, output, kCatchingHandDeviceIdx, pod);
     hand_state_log_handle_.Push(pod);
   }
+
+  // LAST, and unconditional. Every branch above reaches here — Compute() has a
+  // single exit on purpose, so "Store on every early-return branch" (PROC-7)
+  // is a structural property rather than a list of places to remember.
+  PublishTickRecord(state);
 
   return output;
 }

@@ -267,6 +267,20 @@ demo_catching_controller:
           # parser leaves a TBD threshold non-finite so Solve fails closed.
           arm_6row: "TBD"
 
+    # ── The L4 soft-catch reference (L4 §6, S5.3 consumes all four) ──────────
+    # See the ur5e_p1b profile for why the block carries `provisional: true`
+    # rather than leaving `a_max` at TBD.
+    reference:
+      provisional: true
+      omega: 10.0
+      zeta: 1.0
+      # m/s. L4 §6's derived value for this robot (eta_v = 0.9).
+      v_max: 1.8
+      # m/s^2. Provisional, pending the D-16 revision. S4.4 measured a median
+      # of 79 here and 35-36 under the 10x rotor-inertia assumption; 35 is the
+      # conservative end.
+      a_max: 35.0
+
     # ── The CLIK step (L5 §6, S5.3) ─────────────────────────────────────────
     # Gains and weights, all provisional: they are the documented defaults
     # (L5 §6) and have not been tuned on this robot. The ORDERING is not a
@@ -380,3 +394,8 @@ demo_catching_controller:
       instance: iiwa7_state
     - msg_type: rtc_msgs/DeviceStateLog
       instance: leap_state
+    # Per-tick record (S5.4, L8 §5.2). One row per tick including the ticks
+    # that decide to do nothing — a gap in this file means a dropped row
+    # and nothing else (#234 P-20).
+    - msg_type: integrated_bringup/CatchingDiagLog
+      instance: catching_diag

@@ -108,6 +108,18 @@ struct CatchingParams {
   TbdDouble reference_zeta{TbdDouble::Resolved(1.0)};    // –, v1 requires exactly 1
   TbdDouble reference_v_max;                             // m/s, > 0
   TbdDouble reference_a_max;                             // m/s², > 0
+  /// L0 §5.3 flag for the whole L4 reference block, read from an invented
+  /// `reference.provisional` key (see the .cpp header for why these keys are
+  /// invented and why they default to true).
+  ///
+  /// It exists because `reference.a_max` is a DERIVED bound whose derivation
+  /// L4 §6 defers to the D-16 revision, while `v_max` is decided — so the two
+  /// cannot share a TBD. A profile that left `a_max` at TBD instead would be
+  /// refused outright in sim, and because CM latches `bring_up_failed` on any
+  /// controller's configure failure that takes EVERY controller on the robot
+  /// down with it (observed 2026-09-22, ur5e_p1b sim). The provisional rule
+  /// says the right thing instead: sim warns, a real arm is blocked.
+  bool reference_provisional{true};
 
   // planner: (L3 §6)
   TbdDouble planner_gamma_eta_v{TbdDouble::Resolved(0.9)};                     // –, (0, 1] (D-9)

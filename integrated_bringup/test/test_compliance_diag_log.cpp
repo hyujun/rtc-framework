@@ -20,6 +20,7 @@
 // verdict that gated ITS OWN wrench, which is why every field is staged inside
 // ComputeControl. That test drives the two apart deliberately and pins which
 // one lands in the file.
+#include "csv_log_fixture.hpp"
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/logging/compliance_diag_log_pod.hpp"
@@ -68,102 +69,9 @@ constexpr const char* kProfile = "iiwa7_leap";
 // Same shape test_momentum_observer_embedding uses; kept local because the two
 // suites are separate binaries and a shared header would couple their fixtures.
 
-class ScopedSessionDir {
- public:
-  ScopedSessionDir() {
-    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
-      had_prev_ = true;
-      prev_value_ = prev;
-    }
-    auto base = fs::temp_directory_path() / "rtc_compliance_diag_test";
-    fs::create_directories(base);
-    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFU));
-    fs::remove_all(dir_);
-    fs::create_directories(dir_);
-    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
-  }
-
-  ~ScopedSessionDir() {
-    if (had_prev_) {
-      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
-    } else {
-      ::unsetenv("RTC_SESSION_DIR");
-    }
-    std::error_code ec;
-    fs::remove_all(dir_, ec);
-  }
-
-  ScopedSessionDir(const ScopedSessionDir&) = delete;
-  ScopedSessionDir& operator=(const ScopedSessionDir&) = delete;
-
- private:
-  fs::path dir_;
-  bool had_prev_{false};
-  std::string prev_value_;
-};
-
-std::vector<std::string> SplitCsv(const std::string& line) {
-  std::vector<std::string> out;
-  std::string cur;
-  for (char c : line) {
-    if (c == ',') {
-      out.push_back(cur);
-      cur.clear();
-    } else {
-      cur.push_back(c);
-    }
-  }
-  out.push_back(cur);
-  return out;
-}
-
-struct CsvFile {
-  std::vector<std::string> header;
-  std::vector<std::vector<std::string>> rows;
-
-  [[nodiscard]] std::size_t Column(const std::string& name) const {
-    for (std::size_t i = 0; i < header.size(); ++i) {
-      if (header[i] == name) {
-        return i;
-      }
-    }
-    return header.size();
-  }
-
-  /// Same cell as At(), narrowed to float. The POD stores these as float and
-  /// the logger prints float::max_digits10 digits, so the round trip is exact —
-  /// comparing at double width would fail on the digits the file never had.
-  [[nodiscard]] float AtF(std::size_t row, const std::string& name) const {
-    return static_cast<float>(At(row, name));
-  }
-
-  [[nodiscard]] double At(std::size_t row, const std::string& name) const {
-    const std::size_t c = Column(name);
-    EXPECT_LT(c, header.size()) << "missing column " << name;
-    if (c >= header.size() || row >= rows.size()) {
-      return 0.0;
-    }
-    EXPECT_EQ(rows[row].size(), header.size())
-        << "row " << row << " does not match the header width";
-    return std::stod(rows[row][c]);
-  }
-};
-
-CsvFile ReadCsv(const fs::path& path) {
-  CsvFile out;
-  std::ifstream in(path);
-  std::string line;
-  if (!std::getline(in, line)) {
-    return out;
-  }
-  out.header = SplitCsv(line);
-  while (std::getline(in, line)) {
-    if (!line.empty()) {
-      out.rows.push_back(SplitCsv(line));
-    }
-  }
-  return out;
-}
+using integrated_bringup::testfx::CsvFile;
+using integrated_bringup::testfx::ReadCsv;
+using integrated_bringup::testfx::ScopedSessionDir;
 
 // ── Bring-up ────────────────────────────────────────────────────────────────
 
@@ -297,7 +205,7 @@ constexpr int kSettleTicks = 400;  // 100 bias samples + the 0.5 s ramp, with sl
 // ── The channel itself ──────────────────────────────────────────────────────
 
 TEST(ComplianceDiagLog, EveryTickIsARowAndTheHeaderMatchesTheRowWidth) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"compliance_diag"};
   rtc::ControllerLogSet log_set{"compliance_diag_rows"};
   auto ctrl = BringUp();
   auto ch = BindDiagChannel(log_set);
@@ -326,7 +234,7 @@ TEST(ComplianceDiagLog, EveryTickIsARowAndTheHeaderMatchesTheRowWidth) {
 }
 
 TEST(ComplianceDiagLog, AHeldTickIsAZeroedValidZeroRowRatherThanAGap) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"compliance_diag"};
   rtc::ControllerLogSet log_set{"compliance_diag_held"};
   auto ctrl = BringUp();
   auto ch = BindDiagChannel(log_set);
@@ -368,7 +276,7 @@ TEST(ComplianceDiagLog, AHeldTickIsAZeroedValidZeroRowRatherThanAGap) {
 }
 
 TEST(ComplianceDiagLog, TheParameterSnapshotRidesEveryRow) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"compliance_diag"};
   rtc::ControllerLogSet log_set{"compliance_diag_params"};
   auto ctrl = BringUp();
   auto ch = BindDiagChannel(log_set);
@@ -406,7 +314,7 @@ TEST(ComplianceDiagLog, TheParameterSnapshotRidesEveryRow) {
 }
 
 TEST(ComplianceDiagLog, EveryRowCarriesTheVerdictThatGatedItsOwnWrench) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"compliance_diag"};
   rtc::ControllerLogSet log_set{"compliance_diag_skew"};
   auto ctrl = BringUp();
   auto ch = BindDiagChannel(log_set);
@@ -465,7 +373,7 @@ TEST(ComplianceDiagLog, EveryRowCarriesTheVerdictThatGatedItsOwnWrench) {
 }
 
 TEST(ComplianceDiagLog, TheConsumedWrenchAndTheDeviationLandOnTheSameRow) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"compliance_diag"};
   rtc::ControllerLogSet log_set{"compliance_diag_values"};
   auto ctrl = BringUp();
   auto ch = BindDiagChannel(log_set);

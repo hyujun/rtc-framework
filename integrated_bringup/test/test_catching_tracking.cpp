@@ -161,6 +161,11 @@ catching:
     io:
       future_tol: 0.2
   reference:
+    # Cleared, like every other provisional flag in this fixture: the profile
+    # below fixes all four values, and this suite is judged on the REAL-ARM
+    # axis (its device configs declare no backend), where a provisional block
+    # parks the controller before it can command anything.
+    provisional: false
     omega: 20.0
     zeta: 1.0
     v_max: 3.0
@@ -327,6 +332,8 @@ class CatchingTrackingTest : public ::testing::Test {
       if (publish && t % 15 == 0) {
         PublishPrediction(static_cast<std::uint64_t>(t / 15) + 1);
       }
+      state_.iteration += 1;
+      state_.t_relative_s = static_cast<double>(state_.iteration) * kDt;
       const ControllerOutput out = ctrl_->Compute(state_);
       last_output_ = out;
       if (out.devices[0].num_channels >= kUr5eArmDof) {
@@ -672,6 +679,60 @@ TEST_F(CatchingTrackingTest, AnAbortCompletesAndReArmsWithNoVisionLeft) {
   EXPECT_NE(ctrl_->GetMode(), rtc::catching::Mode::kAbortSafe)
       << "the abort never completed with a stale vision lane";
   EXPECT_FALSE(ctrl_->IsPlanActive()) << "the aborted plan was never dropped";
+}
+
+// ── PROC-7: the per-tick record is rebuilt, not carried forward (S5.4) ──────
+
+TEST_F(CatchingTrackingTest, ATickThatDoesNotRunTheLawClearsTheBlocksItDidNotCompute) {
+  // The one assertion that needs a real model: only a tick that actually
+  // reaches the reference generator and the QP can FILL those blocks, so only
+  // here can "cleared on the next tick" be told apart from "never written".
+  //
+  // The failure this pins is the one PROC-7 exists for. A record that carried
+  // the last tracking tick's reference and solve time forward would make an
+  // E-STOP look, in the file and on the operator's screen, like a tick that
+  // solved normally — with a γ, a task reference and a solve time that were
+  // computed for a command nobody sent.
+  const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.04, 0.03, 0.02);
+  const Eigen::Vector3d a_d = start_pose_.rotation().col(2);
+  ASSERT_NO_FATAL_FAILURE(BringUp(p_c, a_d));
+  RunClosedLoop(20);
+  ASSERT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kApproach);
+
+  const auto tracking = ctrl_->GetLastTickRecord();
+  ASSERT_TRUE(tracking.ref_valid) << "precondition: the law ran on this tick";
+  ASSERT_TRUE(tracking.clik_ran);
+  ASSERT_GT(tracking.clik_solve_us, 0.0);
+  ASSERT_GT(Eigen::Vector3d(tracking.ref_x[0], tracking.ref_x[1], tracking.ref_x[2]).norm(), 0.0);
+  ASSERT_TRUE(tracking.plan_valid);
+  ASSERT_NEAR(tracking.plan_p_c[0], p_c.x(), 1e-9);
+  ASSERT_GT(tracking.track_err_rad, 0.0);
+  const std::uint64_t tracking_tick = tracking.tick;
+
+  // A stop. The law does not run, and CM substitutes its own hold anyway —
+  // so what the row says about this tick is the only record of it.
+  ctrl_->TriggerEstop();
+  RunClosedLoop(1, /*publish=*/false);
+
+  const auto stopped = ctrl_->GetLastTickRecord();
+  EXPECT_GT(stopped.tick, tracking_tick) << "the record is still the tracking tick's";
+  EXPECT_TRUE(stopped.estop_active);
+  EXPECT_FALSE(stopped.ref_valid);
+  EXPECT_DOUBLE_EQ(stopped.ref_x[0], 0.0);
+  EXPECT_DOUBLE_EQ(stopped.ref_gamma, 0.0);
+  EXPECT_DOUBLE_EQ(stopped.ref_u_des[2], 0.0);
+  EXPECT_FALSE(stopped.clik_ran);
+  EXPECT_EQ(stopped.clik_status, -1) << "0 is ProxQP's SOLVED — a stopped tick must not claim it";
+  EXPECT_DOUBLE_EQ(stopped.clik_solve_us, 0.0);
+  EXPECT_DOUBLE_EQ(stopped.track_err_rad, 0.0);
+  // And the plan is GONE, which is a different mechanism from the one above:
+  // the stop's reset (P-1 (b)) invalidates it, so the record shows the
+  // invalidation rather than a plan the controller is no longer following.
+  // Asserting it here is what keeps the two apart — the reference and solve
+  // blocks are empty because this tick did not compute them, the plan block is
+  // empty because there is no longer a plan.
+  EXPECT_FALSE(stopped.plan_valid) << "the stop did not invalidate the plan";
+  EXPECT_DOUBLE_EQ(stopped.plan_p_c[0], 0.0);
 }
 
 }  // namespace

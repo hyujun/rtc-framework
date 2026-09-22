@@ -27,7 +27,9 @@
 // the law those suites are about.
 
 #include "catching_cloud_fixture.hpp"
+#include "csv_log_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "shipped_config_test_fixture.hpp"
 
@@ -58,6 +60,11 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 
 constexpr int kArmDof = 6;
+/// The shipped `control_rate` both catching profiles run at (`_base.yaml` /
+/// `sim.yaml`). Stated rather than read because the validator needs a rate
+/// before the config is parsed; a profile that changed it would show up as a
+/// discretisation warning in the shipped-profile test below.
+constexpr double kShippedControlRateHz = 500.0;
 constexpr int kHandDof = 4;
 constexpr double kHandLower = -1.0;
 constexpr double kHandUpper = 1.0;
@@ -85,6 +92,7 @@ catching:
     io:
       future_tol: 0.2
   reference:
+    provisional: true
     omega: 10.0
     zeta: 1.0
     v_max: 2.0
@@ -136,10 +144,16 @@ topics:
 /// the shipped profile, and neither blocks this step).
 std::string ClearedYaml(bool hand_step) {
   std::string yaml = MinimalYaml(hand_step);
+  // Replaces EVERY occurrence: the profile carries more than one provisional
+  // flag (the hand profile and the L4 reference block), and clearing only the
+  // first leaves a "cleared" profile that a real arm still refuses — which
+  // reads as the controller being broken rather than as the fixture being
+  // half-written.
   const auto replace = [&yaml](std::string_view from, std::string_view to) {
-    const auto at = yaml.find(from);
-    if (at != std::string::npos) {
+    std::size_t at = 0;
+    while ((at = yaml.find(from, at)) != std::string::npos) {
       yaml.replace(at, from.size(), to);
+      at += to.size();
     }
   };
   replace("provisional: true", "provisional: false");
@@ -651,7 +665,7 @@ TEST_F(CatchingConfigureTest, ActivationDoesNotArmTheController) {
   ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 
   EXPECT_FALSE(ctrl.IsArmRequested());
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
 }
 
@@ -668,19 +682,19 @@ TEST_F(CatchingConfigureTest, TheEnableParameterArmsTheSupervisor) {
   ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   ASSERT_TRUE(node_->has_parameter(integrated_bringup::kCatchingEnableParam));
 
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
   ASSERT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
 
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
   EXPECT_TRUE(ctrl.IsArmRequested());
-  ctrl.Compute(MakeState(0.01));
+  (void)ctrl.Compute(MakeState(0.01));
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kArmed);
   EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kNone);
 
   // Disarming sends it back to IDLE through the documented reuse of
   // kParamsTbd for "an ARMED precondition stopped holding" (L7 §4.5).
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, false));
-  ctrl.Compute(MakeState(0.02));
+  (void)ctrl.Compute(MakeState(0.02));
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
   EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kParamsTbd);
 }
@@ -697,25 +711,25 @@ TEST_F(CatchingConfigureTest, EstopDisarmsAndClearingItDoesNotResume) {
             DemoCatchingController::CallbackReturn::SUCCESS);
   ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
   ASSERT_EQ(ctrl.GetMode(), rtc::catching::Mode::kArmed) << "precondition: it was armed";
 
   ctrl.TriggerEstop();
-  ctrl.Compute(MakeState(0.05));
+  (void)ctrl.Compute(MakeState(0.05));
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
   EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kEstop);
   EXPECT_FALSE(ctrl.IsArmRequested()) << "the stop did not disarm";
 
   ctrl.ClearEstop();
   for (int i = 0; i < 20; ++i) {
-    ctrl.Compute(MakeState(0.05 + 0.01 * static_cast<double>(i)));
+    (void)ctrl.Compute(MakeState(0.05 + 0.01 * static_cast<double>(i)));
     ASSERT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle) << "resumed on its own at tick " << i;
   }
   EXPECT_FALSE(ctrl.IsArmRequested());
 
   // Re-arming is a deliberate act, and it works.
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
-  ctrl.Compute(MakeState(0.3));
+  (void)ctrl.Compute(MakeState(0.3));
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kArmed);
 }
 
@@ -809,20 +823,20 @@ TEST_F(CatchingVisionTest, APublishedPredictionArmsAndThenTracks) {
 
   // Armed, no ball: ARMED is the waiting state, and it must be reachable
   // without vision — readiness is about the robot.
-  ctrl_.Compute(MakeState(0.0));
+  (void)ctrl_.Compute(MakeState(0.0));
   ASSERT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kArmed);
 
   PublishPrediction(/*sequence=*/1);
   Spin();
   ASSERT_EQ(ctrl_.GetTrajInput().AcceptCount(), 1U) << "the message never reached the callback";
 
-  ctrl_.Compute(MakeState(0.01));
+  (void)ctrl_.Compute(MakeState(0.01));
   EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kTracking);
   EXPECT_FALSE(ctrl_.GetTrajView().stale);
   EXPECT_TRUE(ctrl_.GetTrajView().is_new);
 
   // Same snapshot on the next tick: still usable, no longer new.
-  ctrl_.Compute(MakeState(0.02));
+  (void)ctrl_.Compute(MakeState(0.02));
   EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kTracking);
   EXPECT_FALSE(ctrl_.GetTrajView().is_new);
 }
@@ -835,17 +849,17 @@ TEST_F(CatchingVisionTest, AStaleLaneSendsTrackingBackToArmed) {
   BringUpWithVision();
   // One tick to leave IDLE: the supervisor takes ONE edge per tick, so
   // reaching TRACKING from IDLE is two ticks whatever vision does.
-  ctrl_.Compute(MakeState(0.0));
+  (void)ctrl_.Compute(MakeState(0.0));
   ASSERT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kArmed);
   PublishPrediction(/*sequence=*/1, /*generation=*/42, /*origin_delay_ns=*/5'000'000);
   Spin();
-  ctrl_.Compute(MakeState(0.005));
+  (void)ctrl_.Compute(MakeState(0.005));
   ASSERT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kTracking);
   ASSERT_EQ(ctrl_.GetTrajInput().RejectCount(integrated_bringup::CloudReject::kMalformed), 0U);
 
   // Nothing new arrives; t_stale is 0.2 s in this profile.
   std::this_thread::sleep_for(std::chrono::milliseconds(250));
-  ctrl_.Compute(MakeState(0.01));
+  (void)ctrl_.Compute(MakeState(0.01));
   EXPECT_TRUE(ctrl_.GetTrajView().stale);
   EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kArmed);
   EXPECT_EQ(ctrl_.GetLastReason(), rtc::catching::Reason::kBallStale);
@@ -857,7 +871,7 @@ TEST_F(CatchingVisionTest, ABacklogIsCollapsedToTheNewestSnapshot) {
   // queue keeps the LAST one. A deeper queue would make the controller work
   // through stale predictions after any hiccup, each one arriving as "new".
   BringUpWithVision();
-  ctrl_.Compute(MakeState(0.0));  // IDLE → ARMED (one edge per tick)
+  (void)ctrl_.Compute(MakeState(0.0));  // IDLE → ARMED (one edge per tick)
   PublishPrediction(/*sequence=*/1);
   PublishPrediction(/*sequence=*/2);
   PublishPrediction(/*sequence=*/3);
@@ -869,7 +883,7 @@ TEST_F(CatchingVisionTest, ABacklogIsCollapsedToTheNewestSnapshot) {
   // would also deliver exactly one here, so the sequence is what separates
   // "depth 1" from "depth 1, wrong end".
   EXPECT_EQ(ctrl_.GetTrajInput().LastDiagnostics().accepted_sequence, 3U);
-  ctrl_.Compute(MakeState(0.005));
+  (void)ctrl_.Compute(MakeState(0.005));
   EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kTracking);
 }
 
@@ -889,7 +903,7 @@ TEST_F(CatchingVisionTest, ATrajectoryReceivedWhileInactiveIsNotConsumedOnReacti
 
   ASSERT_EQ(ctrl_.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
-  ctrl_.Compute(MakeState(0.0));
+  (void)ctrl_.Compute(MakeState(0.0));
   EXPECT_TRUE(ctrl_.GetTrajView().stale)
       << "a trajectory received while inactive was consumed by the new activation";
   EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kArmed);
@@ -1041,6 +1055,129 @@ TEST_P(ShippedCatchingProfile, ParsesWithinLimitsAndMatchesTheHandWidth) {
   }
 }
 
+/// Device configs built FROM the shipped YAML for the two groups the
+/// controller's own `topics:` block claims, tagged as the simulator.
+///
+/// Read rather than restated: a copy of the joint names here would pass while
+/// the shipped config said something else, which is the whole failure mode the
+/// test below exists to catch.
+std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std::string& profile,
+                                                               const YAML::Node& node) {
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+  const std::string base = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile + "/";
+  YAML::Node devices;
+  for (const char* candidate : {"_base.yaml", "sim.yaml"}) {
+    if (!std::filesystem::exists(base + candidate)) {
+      continue;
+    }
+    const YAML::Node root = YAML::LoadFile(base + candidate);
+    const YAML::Node d = root["/**"]["ros__parameters"]["devices"];
+    if (d && d.IsMap()) {
+      devices = d;
+      break;
+    }
+  }
+  if (!devices) {
+    return configs;
+  }
+  for (auto it = node["topics"].begin(); it != node["topics"].end(); ++it) {
+    const auto group = it->first.as<std::string>();
+    const YAML::Node dev = devices[group];
+    if (!dev || !dev["joint_state_names"]) {
+      continue;
+    }
+    rtc::DeviceNameConfig cfg;
+    cfg.device_name = group;
+    cfg.joint_state_names = dev["joint_state_names"].as<std::vector<std::string>>();
+    if (dev["motor_state_names"]) {
+      cfg.motor_state_names = dev["motor_state_names"].as<std::vector<std::string>>();
+    }
+    if (const YAML::Node limits = dev["joint_limits"]; limits) {
+      rtc::DeviceJointLimits jl;
+      jl.position_lower = limits["position_lower"].as<std::vector<double>>();
+      jl.position_upper = limits["position_upper"].as<std::vector<double>>();
+      cfg.joint_limits = jl;
+    }
+    rtc::DeviceBackendBinding backend;
+    backend.type = integrated_bringup::kCatchingSimBackendType;
+    cfg.backend = backend;
+    configs[group] = std::move(cfg);
+  }
+  return configs;
+}
+
+// The sensor whose absence let a bring-up-killing profile ship.
+//
+// Every other case in this suite configures a profile the TEST wrote, and
+// those all passed on 2026-09-22 while the shipped `ur5e_p1b` sim profile
+// refused to configure at all — S5.3 moved `reference.*` into the consumed
+// subset and the shipped file had no `reference:` block, so a consumed TBD
+// refused the configure. CM latches `bring_up_failed` on ANY controller's
+// configure failure and then refuses to configure EVERY controller, so the
+// symptom was not "no catching" but "no robot".
+//
+// This runs the same on_configure the CM runs, on the file that ships, with
+// the devices the file declares, on the SIM axis — which is the one that
+// refuses rather than parks.
+TEST_P(ShippedCatchingProfile, ConfiguresAndIsArmableOnTheSimAxis) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  ASSERT_TRUE(node["catching"]);
+
+  auto configs = ShippedSimConfigs(profile, node);
+  ASSERT_EQ(configs.size(), 2U) << profile << ": could not build both device configs";
+
+  auto node_handle =
+      std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_shipped_" + profile);
+  DemoCatchingController ctrl{""};
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(configs);
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile
+      << ": the shipped profile does not configure in sim. CM refuses EVERY controller "
+         "when one fails, so this is a robot-wide bring-up failure";
+  EXPECT_FALSE(ctrl.IsRealArmConfig()) << profile << ": precondition — judged on the sim axis";
+  EXPECT_FALSE(ctrl.IsSimOnlyDisabled());
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile << ": the shipped profile configures but cannot activate";
+  ASSERT_EQ(ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// A REAL arm is still blocked by the same profile — the provisional values are
+// what does it, and a profile that stopped blocking would be indistinguishable
+// from one that had been cleared for hardware.
+TEST_P(ShippedCatchingProfile, IsStillParkedOnTheRealArmAxis) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  auto configs = ShippedSimConfigs(profile, node);
+  ASSERT_EQ(configs.size(), 2U);
+  for (auto& [name, cfg] : configs) {
+    static_cast<void>(name);
+    cfg.backend->type = "ur_driver_native";
+  }
+  auto node_handle =
+      std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_shipped_real_" + profile);
+  DemoCatchingController ctrl{""};
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(configs);
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile << ": a real-arm configuration is PARKED, never refused (A-S5-1)";
+  EXPECT_TRUE(ctrl.IsRealArmConfig());
+  EXPECT_TRUE(ctrl.IsSimOnlyDisabled())
+      << profile << ": the provisional values stopped blocking a real arm";
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
 INSTANTIATE_TEST_SUITE_P(BothCatchingRobots, ShippedCatchingProfile,
                          ::testing::Values(std::pair<std::string, int>{"ur5e_p1b", 10},
                                            std::pair<std::string, int>{"iiwa7_leap", 16}),
@@ -1060,7 +1197,7 @@ TEST(DemoCatchingEstop, HooksOnlyRequestAndTheTickIsTheWriter) {
   // on these lines, before any Compute().
   DemoCatchingController ctrl{""};
   BringUp(ctrl);
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
   const std::uint64_t resets_before = ctrl.GetRtResetCount();
 
   ctrl.TriggerEstop();
@@ -1069,7 +1206,7 @@ TEST(DemoCatchingEstop, HooksOnlyRequestAndTheTickIsTheWriter) {
   EXPECT_EQ(ctrl.GetRtResetCount(), resets_before)
       << "a hook performed a reset instead of requesting one";
 
-  ctrl.Compute(MakeState(0.1));
+  (void)ctrl.Compute(MakeState(0.1));
   EXPECT_GT(ctrl.GetRtResetCount(), resets_before) << "the tick never serviced the request";
 }
 
@@ -1123,10 +1260,10 @@ TEST(DemoCatchingEstop, EstopCycleReseedsTheHoldFromTheMeasuredPose) {
   // command after the cycle must come from the pose the arm is actually in.
   DemoCatchingController ctrl{""};
   BringUp(ctrl);
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
 
   ctrl.TriggerEstop();
-  ctrl.Compute(MakeState(0.2));  // the tick that services the trigger
+  (void)ctrl.Compute(MakeState(0.2));  // the tick that services the trigger
   ctrl.ClearEstop();
 
   const ControllerState recovered = MakeState(0.9);
@@ -1146,7 +1283,7 @@ TEST(DemoCatchingEstop, ATriggerAndClearBetweenTwoTicksStillReseeds) {
   // q_c straight across a stop.
   DemoCatchingController ctrl{""};
   BringUp(ctrl);
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
   const std::uint64_t resets_before = ctrl.GetRtResetCount();
 
   ctrl.TriggerEstop();
@@ -1169,7 +1306,7 @@ TEST(DemoCatchingEstop, AQueuedHandStepDoesNotSurviveAnEstop) {
   // the hand just after it.
   DemoCatchingController ctrl{""};
   BringUp(ctrl);
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
 
   const std::array<double, kHandDof> step{0.3, 0.3, 0.3, 0.3};
   ctrl.SetDeviceTarget(kCatchingHandDeviceIdx, step);
@@ -1194,10 +1331,10 @@ TEST(DemoCatchingEstop, AStepIssuedDuringAStopNeverReachesTheHand) {
   // LATE, once the stop clears.
   DemoCatchingController ctrl{""};
   BringUp(ctrl);
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
 
   ctrl.TriggerEstop();
-  ctrl.Compute(MakeState(0.0));  // services the trigger
+  (void)ctrl.Compute(MakeState(0.0));  // services the trigger
 
   // Now a step arrives while the stop is up, on a tick that performs no reset.
   const std::array<double, kHandDof> step{0.4, 0.4, 0.4, 0.4};
@@ -1234,7 +1371,7 @@ TEST(DemoCatchingEstop, ResetFaultDoesNotClearTheEstopAndNoFaultIsLatchedByDefau
 
   ctrl.TriggerEstop();
   ctrl.ResetFault();
-  ctrl.Compute(MakeState(0.0));
+  (void)ctrl.Compute(MakeState(0.0));
   EXPECT_TRUE(ctrl.IsEstopped()) << "a fault reset lowered the global E-STOP";
   EXPECT_FALSE(ctrl.HasLatchedFault());
 }
@@ -1300,10 +1437,357 @@ TEST(DemoCatchingSupervisor, StaysIdleWhileTheProfileIsNotArmable) {
   DemoCatchingController ctrl{""};
   BringUp(ctrl);
   for (int i = 0; i < 10; ++i) {
-    ctrl.Compute(MakeState(0.01 * static_cast<double>(i)));
+    (void)ctrl.Compute(MakeState(0.01 * static_cast<double>(i)));
   }
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
   EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kParamsTbd);
+}
+
+// ── 9. The per-tick record (S5.4, D-20 + PROC-7) ────────────────────────────
+//
+// PROC-7 says every tick publishes a body — including the ones that decide to
+// do nothing — and that a block the tick did not compute is CLEARED rather
+// than left holding the previous tick's value. The mechanism is that the
+// record is default-constructed at the top of Compute(), so these tests are
+// written to fail if that line goes away: each one drives a tick that fills a
+// block and then a tick that does not, and asserts the second one is empty.
+//
+// THE IDENTITY FIELDS ARE THE POINT of the "this tick's body" naming (the
+// EstopTickPublishesThisTicksBody precedent). A publisher that skipped a tick
+// and a publisher that republished the previous tick's numbers are
+// indistinguishable downstream unless the row says WHICH tick it is.
+
+/// A state whose iteration and session time move, so a record that belonged to
+/// a different tick is visible rather than plausible.
+ControllerState MakeStateAt(std::uint64_t tick, double bias = 0.0) {
+  ControllerState state = MakeState(bias);
+  state.iteration = tick;
+  state.t_relative_s = static_cast<double>(tick) * state.dt;
+  return state;
+}
+
+TEST(DemoCatchingRecord, EveryTickPublishesItsOwnBody) {
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  for (std::uint64_t tick = 1; tick <= 20; ++tick) {
+    const ControllerState state = MakeStateAt(tick, 0.001 * static_cast<double>(tick));
+    (void)ctrl.Compute(state);
+    const auto rec = ctrl.GetLastTickRecord();
+    ASSERT_EQ(rec.tick, tick) << "the record is not from this tick";
+    EXPECT_DOUBLE_EQ(rec.t_relative_s, state.t_relative_s);
+    EXPECT_EQ(rec.mode, static_cast<std::uint8_t>(ctrl.GetMode()));
+    EXPECT_EQ(rec.reason, static_cast<std::uint8_t>(ctrl.GetLastReason()));
+  }
+}
+
+TEST(DemoCatchingRecord, EstopTickPublishesThisTicksBody) {
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  (void)ctrl.Compute(MakeStateAt(1));
+  ASSERT_FALSE(ctrl.GetLastTickRecord().estop_active) << "precondition: not stopped";
+
+  ctrl.TriggerEstop();
+  (void)ctrl.Compute(MakeStateAt(2));
+  const auto rec = ctrl.GetLastTickRecord();
+  EXPECT_EQ(rec.tick, 2U) << "the stop tick did not publish a body of its own";
+  EXPECT_TRUE(rec.estop_active);
+  EXPECT_EQ(rec.reason, static_cast<std::uint8_t>(rtc::catching::Reason::kEstop));
+  EXPECT_FALSE(rec.armed) << "the tick must lower the arm latch on a stop (P-1 (c))";
+}
+
+TEST(DemoCatchingRecord, AStaleInputTickPublishesThisTicksBody) {
+  // No vision has ever arrived, which is the shape every bring-up starts in
+  // and the one a reader is most likely to mistake for "the publisher is
+  // late". The row has to say the snapshot is stale AND be this tick's.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  (void)ctrl.Compute(MakeStateAt(7));
+  const auto rec = ctrl.GetLastTickRecord();
+  EXPECT_EQ(rec.tick, 7U);
+  EXPECT_TRUE(rec.input_stale);
+  EXPECT_FALSE(rec.input_valid);
+  EXPECT_EQ(rec.input_n, 0);
+  EXPECT_EQ(rec.input_generation, 0U);
+}
+
+TEST(DemoCatchingRecord, ANoPlanTickCarriesAnEmptyPlanBlock) {
+  // There is no planner before S6 and no oracle in this profile, so the plan
+  // block must be empty on every tick — not merely absent from the topic.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  for (std::uint64_t tick = 1; tick <= 5; ++tick) {
+    (void)ctrl.Compute(MakeStateAt(tick));
+    const auto rec = ctrl.GetLastTickRecord();
+    ASSERT_FALSE(rec.plan_valid);
+    EXPECT_DOUBLE_EQ(rec.plan_p_c[0], 0.0);
+    EXPECT_DOUBLE_EQ(rec.plan_gamma_f, 0.0);
+    EXPECT_EQ(rec.plan_id, 0U);
+  }
+}
+
+TEST(DemoCatchingRecord, AHoldingTickStillCarriesTheArmCommandAndTheMeasurement) {
+  // A hold IS a command. A reader that saw an empty q_cmd here could not tell
+  // a held arm from a tick that produced no command at all.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  const ControllerState state = MakeStateAt(3, 0.25);
+  (void)ctrl.Compute(state);
+  const auto rec = ctrl.GetLastTickRecord();
+  ASSERT_EQ(rec.num_arm_joints, kArmDof);
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(rec.q_meas[u], state.devices[0].positions[u]);
+  }
+}
+
+TEST(DemoCatchingRecord, TheLawBlocksStayEmptyWhileTheLawIsNotWired) {
+  // This binding runs with no URDF, so CLIK never configures. The record must
+  // say so rather than publish a zeroed solve that reads as "status 0".
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  (void)ctrl.Compute(MakeStateAt(1));
+  const auto rec = ctrl.GetLastTickRecord();
+  EXPECT_FALSE(rec.law_enabled);
+  EXPECT_FALSE(rec.clik_ran);
+  EXPECT_FALSE(rec.ref_valid);
+  EXPECT_EQ(rec.clik_status, -1) << "-1 is 'not solved'; 0 is ProxQP's SOLVED";
+  EXPECT_DOUBLE_EQ(rec.track_err_rad, 0.0);
+}
+
+TEST(DemoCatchingRecord, AFingertipLaneThatNeverReportedIsNeverReadAsFresh) {
+  // The message contract says `tip_age_s < 0` means "never received" and 0
+  // means "arrived this instant". A POD's zero-init gives the second for free,
+  // and the wire arrays are sized from the device's SENSOR NAMES while the
+  // fill loop is bounded by `num_inference_groups` — so a backend that reports
+  // no groups (mujoco with no `fingertip_wrench_topics`, which is the shipped
+  // sim) would publish every configured fingertip as fresh.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ControllerState state = MakeStateAt(1);
+  ASSERT_EQ(state.devices[kCatchingHandDeviceIdx].num_inference_groups, 0)
+      << "precondition: this fixture's hand reports no inference groups";
+  (void)ctrl.Compute(state);
+  const auto rec = ctrl.GetLastTickRecord();
+  for (std::size_t i = 0; i < integrated_bringup::CatchingDiagLogPod::kMaxTips; ++i) {
+    EXPECT_LT(rec.tip_age_s[i], 0.0) << "slot " << i << " reads as just-received";
+  }
+}
+
+TEST_F(CatchingVisionTest, ReActivationForgetsThePreviousActivationsIngressDiagnostics) {
+  // `traj_input_.Reset()` puts the jump back to "not compared" and forgets the
+  // accepted sequence, but the BOX the publish thread reads is a separate
+  // object — so without a re-Store the topic keeps reporting a jump measured
+  // against a trajectory this activation has no reason to think is relevant.
+  BringUpWithVision();
+  PublishPrediction(/*sequence=*/1);
+  Spin();
+  ASSERT_EQ(ctrl_.GetIngressSnapshot().accept_count, 1U);
+  ASSERT_EQ(ctrl_.GetIngressSnapshot().diag.accepted_sequence, 1U);
+
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  const auto after = ctrl_.GetIngressSnapshot();
+  EXPECT_EQ(after.diag.accepted_sequence, 0U)
+      << "the previous activation's accepted sequence is still on the wire";
+  EXPECT_LT(after.diag.jump_m, 0.0) << "a jump from the previous activation is still published";
+  // The CUMULATIVE counters are NOT reset, and that is the contract: they are
+  // lifetime totals like the CSV drop counts, and an operator reading "how
+  // many messages has this lane refused" wants the run, not the activation.
+  // Asserting it here stops a future reset from being added quietly.
+  EXPECT_EQ(after.accept_count, 1U) << "the lifetime accept counter was reset";
+}
+
+TEST_F(CatchingVisionTest, AnAcceptedPredictionShowsUpInThisTicksInputBlock) {
+  BringUpWithVision();
+  (void)ctrl_.Compute(MakeStateAt(1));
+  PublishPrediction(/*sequence=*/11, /*generation=*/77);
+  Spin();
+  ASSERT_EQ(ctrl_.GetTrajInput().AcceptCount(), 1U);
+
+  (void)ctrl_.Compute(MakeStateAt(2, 0.01));
+  const auto rec = ctrl_.GetLastTickRecord();
+  EXPECT_EQ(rec.tick, 2U);
+  EXPECT_TRUE(rec.input_valid);
+  EXPECT_FALSE(rec.input_stale);
+  EXPECT_TRUE(rec.input_new);
+  EXPECT_EQ(rec.input_generation, 77U);
+  EXPECT_EQ(rec.input_snapshot_sequence, 11U);
+  EXPECT_EQ(rec.input_n, 8);
+  // The horizon the message actually carries, not the configured minimum: a
+  // publisher one sample short has to look different from one that is not.
+  EXPECT_GT(rec.input_horizon_s, 0.0);
+  EXPECT_GE(rec.input_age_s, 0.0);
+}
+
+TEST_F(CatchingVisionTest, TheIngressCountersReachThePublishSideWhetherOrNotAMessageIsAccepted) {
+  // A lane being REFUSED and a lane being SILENT are the same thing from the
+  // RT side, so these counters are the only way to tell them apart — and they
+  // are published from the subscription thread through their own SeqLock
+  // because reading the ingress members across threads is a race.
+  BringUpWithVision();
+  ASSERT_EQ(ctrl_.GetIngressSnapshot().accept_count, 0U);
+
+  // A message from the wrong frame: decoded far enough to be judged, then
+  // refused. The counters must move even though nothing was stored.
+  integrated_bringup::testing::CloudSpec spec;
+  spec.n = 8;
+  spec.sequence = 1;
+  spec.frame_id = "not_the_configured_frame";
+  auto bad = integrated_bringup::testing::MakeCloud(spec);
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  const std::int64_t wall = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+  bad.header.stamp.sec = static_cast<std::int32_t>(wall / 1'000'000'000LL);
+  bad.header.stamp.nanosec = static_cast<std::uint32_t>(wall % 1'000'000'000LL);
+  pub_->publish(bad);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+  while (std::chrono::steady_clock::now() < deadline &&
+         ctrl_.GetIngressSnapshot()
+                 .rejects[static_cast<std::size_t>(integrated_bringup::CloudReject::kFrameId)] ==
+             0U) {
+    executor_->spin_some(std::chrono::milliseconds(20));
+  }
+  const auto refused = ctrl_.GetIngressSnapshot();
+  EXPECT_EQ(refused.accept_count, 0U);
+  EXPECT_EQ(refused.rejects[static_cast<std::size_t>(integrated_bringup::CloudReject::kFrameId)],
+            1U)
+      << "a refused message left no trace on the publish side";
+
+  PublishPrediction(/*sequence=*/2);
+  Spin();
+  const auto accepted = ctrl_.GetIngressSnapshot();
+  EXPECT_EQ(accepted.accept_count, 1U);
+  EXPECT_EQ(accepted.diag.accepted_sequence, 2U);
+}
+
+// ── 10. catching_diag.csv (L8 §5.2) ─────────────────────────────────────────
+//
+// A BOUND HANDLE AND A REAL FILE. These fixtures bring the controller up
+// through LoadConfig, which leaves every production log handle unbound — and a
+// row assertion written against that state passes with the push deleted
+// outright (#424). So the channel is registered here through the SHARED
+// registration helper (which puts its `catching_diag_enabled` gate under test
+// too) and read back off disk.
+
+struct CatchingDiagChannel {
+  rtc::LogHandle<integrated_bringup::CatchingDiagLogPod> handle;
+  std::filesystem::path path;
+};
+
+struct CatchingLogEntry {
+  std::string msg_type;
+  std::string instance;
+};
+
+CatchingDiagChannel BindCatchingDiagChannel(rtc::ControllerLogSet& log_set,
+                                            const std::vector<std::string>& arm_joints,
+                                            const std::vector<std::string>& tips) {
+  const std::vector<CatchingLogEntry> entries{
+      {std::string(integrated_bringup::kCatchingDiagLogMsgType),
+       std::string(integrated_bringup::kCatchingDiagLogInstance)}};
+  integrated_bringup::LogRegistrationContext ctx{
+      .logger = rclcpp::get_logger("catching_diag_test"),
+      .log_set = log_set,
+      .catching_diag_enabled = true,
+      .catching_diag_arm_joint_names = arm_joints,
+      .catching_diag_tip_names = tips,
+  };
+  auto reg = integrated_bringup::RegisterControllerLogs(entries, ctx);
+  EXPECT_EQ(reg.status, integrated_bringup::LogRegistrationStatus::kSuccess);
+  CatchingDiagChannel out;
+  out.handle = std::move(reg.handles.catching_diag);
+  for (const auto& ch : log_set.Channels()) {
+    if (ch.first == integrated_bringup::kCatchingDiagLogInstance) {
+      out.path = ch.second;
+    }
+  }
+  return out;
+}
+
+const std::vector<std::string> kArmJointNames{"a0", "a1", "a2", "a3", "a4", "a5"};
+const std::vector<std::string> kTipNames{"thumb", "index"};
+
+TEST(CatchingDiagLog, EveryTickIsARowAndTheHeaderMatchesTheRowWidth) {
+  integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
+  rtc::ControllerLogSet log_set{"catching_diag_rows"};
+  auto ch = BindCatchingDiagChannel(log_set, kArmJointNames, kTipNames);
+  ASSERT_TRUE(ch.handle) << "the catching_diag channel did not bind";
+
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.SetCatchingDiagLogHandleForTesting(std::move(ch.handle));
+
+  constexpr int kTicks = 37;
+  for (std::uint64_t tick = 1; tick <= kTicks; ++tick) {
+    (void)ctrl.Compute(MakeStateAt(tick, 0.001 * static_cast<double>(tick)));
+  }
+  log_set.DrainAll();
+  EXPECT_EQ(log_set.TotalDropCount(), 0U) << "the ring overflowed; rows are missing";
+
+  const auto csv = integrated_bringup::testfx::ReadCsv(ch.path);
+  ASSERT_EQ(csv.rows.size(), static_cast<std::size_t>(kTicks))
+      << "a tick did not produce a row (PROC-7)";
+  for (std::size_t r = 0; r < csv.rows.size(); ++r) {
+    ASSERT_EQ(csv.rows[r].size(), csv.header.size())
+        << "row " << r << " does not line up with the header";
+  }
+  // The tick column is what makes a gap readable as a dropped row rather than
+  // as a tick the controller chose not to log.
+  for (std::size_t r = 0; r < csv.rows.size(); ++r) {
+    EXPECT_DOUBLE_EQ(csv.At(r, "tick"), static_cast<double>(r + 1));
+  }
+}
+
+TEST(CatchingDiagLog, TheHeaderNamesTheJointsAndTipsItsColumnsAreIn) {
+  // A stored file has to decode without that run's YAML (#234 P-14). Column
+  // POSITION cannot carry that: the arm width comes from the robot's config.
+  integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
+  rtc::ControllerLogSet log_set{"catching_diag_names"};
+  auto ch = BindCatchingDiagChannel(log_set, kArmJointNames, kTipNames);
+  ASSERT_TRUE(ch.handle);
+
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.SetCatchingDiagLogHandleForTesting(std::move(ch.handle));
+  (void)ctrl.Compute(MakeStateAt(1));
+  log_set.DrainAll();
+
+  const auto csv = integrated_bringup::testfx::ReadCsv(ch.path);
+  for (const auto& j : kArmJointNames) {
+    EXPECT_TRUE(csv.Has("q_cmd_" + j)) << "no commanded column for " << j;
+    EXPECT_TRUE(csv.Has("q_meas_" + j)) << "no measured column for " << j;
+  }
+  for (const auto& t : kTipNames) {
+    EXPECT_TRUE(csv.Has("tip_force_" + t));
+    EXPECT_TRUE(csv.Has("tip_age_s_" + t));
+  }
+  EXPECT_FALSE(csv.Has("q_cmd_a6")) << "a column exists for a joint the device does not have";
+}
+
+TEST(CatchingDiagLog, AStoppedTickIsARowLikeAnyOtherAndSaysSo) {
+  integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
+  rtc::ControllerLogSet log_set{"catching_diag_estop"};
+  auto ch = BindCatchingDiagChannel(log_set, kArmJointNames, kTipNames);
+  ASSERT_TRUE(ch.handle);
+
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.SetCatchingDiagLogHandleForTesting(std::move(ch.handle));
+  (void)ctrl.Compute(MakeStateAt(1));
+  ctrl.TriggerEstop();
+  (void)ctrl.Compute(MakeStateAt(2));
+  (void)ctrl.Compute(MakeStateAt(3));
+  log_set.DrainAll();
+
+  const auto csv = integrated_bringup::testfx::ReadCsv(ch.path);
+  ASSERT_EQ(csv.rows.size(), 3U) << "the stopped ticks are missing from the file";
+  EXPECT_DOUBLE_EQ(csv.At(0, "estop_active"), 0.0);
+  EXPECT_DOUBLE_EQ(csv.At(1, "estop_active"), 1.0);
+  // Both spellings on purpose: the raw value survives an enum gaining a
+  // member, the name makes the file readable without this build's header.
+  EXPECT_EQ(csv.Text(1, "reason_name"), "estop");
+  EXPECT_DOUBLE_EQ(csv.At(1, "reason"), static_cast<double>(rtc::catching::Reason::kEstop));
 }
 
 }  // namespace

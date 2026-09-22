@@ -91,6 +91,11 @@ namespace {
   if (k == "sim.io.future_tol") {
     return true;
   }
+  // Same shape as `robot.hand` below: `reference` WITHOUT a trailing dot is
+  // the block-wide provisional flag's own key (L4 §6, L0 §5.3).
+  if (k == "reference") {
+    return true;
+  }
   // `robot.hand` WITHOUT a trailing dot is the provisional flag's own key
   // (catching_params.cpp reports the profile as a whole, not a field of it).
   // Matching only the dotted prefix silently let a provisional hand profile
@@ -726,6 +731,13 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                 {hand_key, {hand_joint_names_, hand_motor_names_}},
             },
     };
+    // The per-tick record (S5.4). Always registered when the YAML asks for it:
+    // unlike grasp_diag there is no optional block to gate on — every tick of
+    // this controller produces a row, including the ones that decide to do
+    // nothing, which is the whole of PROC-7.
+    ctx.catching_diag_enabled = true;
+    ctx.catching_diag_arm_joint_names = arm_joint_names_;
+    ctx.catching_diag_tip_names = hand_sensor_names_;
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       ResetLogState();
@@ -737,6 +749,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     if (auto it = reg.handles.state.find(hand_key); it != reg.handles.state.end()) {
       hand_state_log_handle_ = it->second;
     }
+    catching_diag_log_handle_ = reg.handles.catching_diag;
 
     // Drain timer on a non-RT callback group (10 Hz), same as every other
     // binding: the RT tick only pushes into the SPSC ring.
@@ -758,6 +771,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // then vanishes with no error anywhere (the step path is what S4.2
     // measures through, so it fails as silence, not as a failure).
     CreateOwnedTopics(*this, owned_topics_);
+    // The state topic (D-20) sits directly under the controller's own
+    // namespace rather than under a device group's: it describes the
+    // CONTROLLER, not one device's lane, and the two groups it drives would
+    // both have an equal claim to the prefix.
+    SetupCatchingStatePublisher(*this, owned_topics_, catching_state_topic_, arm_joint_names_,
+                                hand_sensor_names_);
     SetupTrajInput();
     // After the topics and before the parameters: the arm path needs the
     // device configs (resolved above) and it must not be half-built if a
@@ -819,6 +838,16 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
   // restart) and would compare this activation's first prediction against a
   // trajectory the operator has no reason to think is still relevant.
   traj_input_.Reset();
+  // And republish what the reset left behind. Reset() puts `jump_m` back to
+  // "not compared" and forgets the accepted sequence, but the BOX still holds
+  // the previous activation's numbers — so without this the topic keeps
+  // reporting a jump and an origin delay measured against a trajectory this
+  // activation has no reason to think is still relevant.
+  ingress_diag_box_.Store(traj_input_.Snapshot());
+  // The state publisher has to be activated or every Store this activation
+  // makes goes nowhere — a lifecycle gate applies to publishers, and an
+  // inactive one drops the message while returning perfectly normally.
+  ActivateOwnedTopics(prev, owned_topics_);
   if (node_ && node_->has_parameter(kCatchingEnableParam)) {
     // Bring the parameter back in line with the latch, so the value an
     // operator reads is the value the tick will act on. Without this the
@@ -847,6 +876,13 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
   return CallbackReturn::SUCCESS;
 }
 
+RTControllerInterface::CallbackReturn DemoCatchingController::on_deactivate(
+    const rclcpp_lifecycle::State& prev) noexcept {
+  DeactivateOwnedTopics(prev, owned_topics_);
+  log_set_.DrainAll();  // flush in-flight log SPSC residue
+  return RTControllerInterface::on_deactivate(prev);
+}
+
 void DemoCatchingController::ResetLogState() noexcept {
   log_set_.Reset();
   // Reset() destroys every channel's drop counter, so the high-water mark has
@@ -854,6 +890,7 @@ void DemoCatchingController::ResetLogState() noexcept {
   log_drops_reported_ = 0;
   arm_state_log_handle_ = {};
   hand_state_log_handle_ = {};
+  catching_diag_log_handle_ = {};
 }
 
 void DemoCatchingController::TearDownConfiguredResources() noexcept {

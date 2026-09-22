@@ -204,6 +204,160 @@ void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopic
   handles.tof_pub = node->create_publisher<rtc_msgs::msg::ToFSnapshot>(topic_name, tof_qos);
 }
 
+void SetupCatchingStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                                 const std::string& topic_name,
+                                 const std::vector<std::string>& arm_joint_names,
+                                 const std::vector<std::string>& tip_names) {
+  if (handles.catching_pub) {
+    return;
+  }
+  auto node = ctrl.get_lifecycle_node();
+  if (!node) {
+    throw std::runtime_error(
+        "SetupCatchingStatePublisher: controller has no LifecycleNode (on_configure "
+        "not yet called?)");
+  }
+  rclcpp::QoS catching_qos{1};
+  handles.catching_pub =
+      node->create_publisher<rtc_msgs::msg::CatchingState>(topic_name, catching_qos);
+
+  auto& msg = handles.catching_msg;
+  // Sized ONCE. The publish path writes into existing elements and never
+  // resizes — the same discipline the payload publisher's `residual` follows,
+  // and the reason `PublishCatchingStateFromSnapshot` bounds every loop by the
+  // MESSAGE's width rather than by the POD's.
+  const auto n_arm = std::min(arm_joint_names.size(), CatchingDiagLogPod::kMaxArmJoints);
+  msg.arm_joint_names.assign(arm_joint_names.begin(),
+                             arm_joint_names.begin() + static_cast<std::ptrdiff_t>(n_arm));
+  msg.q_cmd.assign(n_arm, 0.0);
+  msg.q_meas.assign(n_arm, 0.0);
+
+  const auto n_tip = std::min(tip_names.size(), CatchingDiagLogPod::kMaxTips);
+  msg.tip_names.assign(tip_names.begin(), tip_names.begin() + static_cast<std::ptrdiff_t>(n_tip));
+  msg.tip_force.assign(n_tip, 0.0);
+  msg.tip_contact.assign(n_tip, false);
+  msg.tip_fresh.assign(n_tip, false);
+  msg.tip_age_s.assign(n_tip, -1.0);
+
+  // The reject histogram is indexed by the CloudReject enum, so the names are
+  // stamped in the enum's own order. A stored bag then decodes without this
+  // build's header — the same reason the pull estimator's mask columns carry
+  // their role names (#234 P-14).
+  msg.input_reject_counts.assign(kCloudRejectCount, 0);
+  msg.input_reject_names.clear();
+  msg.input_reject_names.reserve(kCloudRejectCount);
+  for (std::size_t i = 0; i < kCloudRejectCount; ++i) {
+    msg.input_reject_names.emplace_back(CloudRejectName(static_cast<CloudReject>(i)));
+  }
+}
+
+void PublishCatchingStateFromSnapshot(const rtc::PublishSnapshot& snap,
+                                      ControllerTopicHandles& handles,
+                                      const CatchingDiagLogPod& tick,
+                                      const CatchingIngressSnapshot* ingress) noexcept {
+  if (!handles.catching_pub) {
+    return;
+  }
+  RTC_TRACE_SCOPE("catching_state_publish");
+  auto& msg = handles.catching_msg;
+  msg.header.stamp.sec = static_cast<int32_t>(snap.stamp_ns / 1'000'000'000L);
+  msg.header.stamp.nanosec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
+
+  msg.mode = tick.mode;
+  msg.reason = tick.reason;
+  msg.outcome = tick.outcome;
+  msg.armed = tick.armed;
+  msg.estop_active = tick.estop_active;
+  msg.fault_latched = tick.fault_latched;
+  msg.armable = tick.armable;
+  msg.law_enabled = tick.law_enabled;
+  msg.real_arm_config = tick.real_arm_config;
+  msg.tick = tick.tick;
+  msg.t_relative_s = tick.t_relative_s;
+  msg.t_arm_s = tick.t_arm_s;
+
+  msg.input_valid = tick.input_valid;
+  msg.input_stale = tick.input_stale;
+  msg.input_expired = tick.input_expired;
+  msg.input_new = tick.input_new;
+  msg.input_n = tick.input_n;
+  msg.input_generation = tick.input_generation;
+  msg.input_snapshot_sequence = tick.input_snapshot_sequence;
+  msg.input_activation_generation = tick.input_activation_generation;
+  msg.input_age_s = tick.input_age_s;
+  msg.input_horizon_s = tick.input_horizon_s;
+
+  msg.plan_valid = tick.plan_valid;
+  msg.plan_id = tick.plan_id;
+  msg.plan_t_c_s = tick.plan_t_c_s;
+  msg.plan_age_s = tick.plan_age_s;
+  msg.plan_p_c = tick.plan_p_c;
+  msg.plan_a_d = tick.plan_a_d;
+  msg.plan_v_c = tick.plan_v_c;
+  msg.plan_gamma_f = tick.plan_gamma_f;
+  msg.plan_w5 = tick.plan_w5;
+  msg.plan_w6 = tick.plan_w6;
+  msg.plan_sigma_c = tick.plan_sigma_c;
+  msg.plan_score = tick.plan_score;
+  msg.plan_reason = tick.plan_reason;
+
+  msg.ref_valid = tick.ref_valid;
+  msg.ref_saturated = tick.ref_saturated;
+  msg.ref_x = tick.ref_x;
+  msg.ref_xd = tick.ref_xd;
+  msg.ref_xdd = tick.ref_xdd;
+  msg.ref_u_des = tick.ref_u_des;
+  msg.ref_e = tick.ref_e;
+  msg.ref_ed = tick.ref_ed;
+  msg.ref_gamma = tick.ref_gamma;
+  msg.ref_gamma_d = tick.ref_gamma_d;
+  msg.ref_gamma_dd = tick.ref_gamma_dd;
+
+  msg.clik_ran = tick.clik_ran;
+  msg.clik_converged = tick.clik_converged;
+  msg.clik_bound_conflict = tick.clik_bound_conflict;
+  msg.clik_command_mismatch = tick.clik_command_mismatch;
+  msg.clik_status = tick.clik_status;
+  msg.clik_iterations = tick.clik_iterations;
+  msg.clik_solve_us = tick.clik_solve_us;
+  msg.clik_conflict_mask = tick.clik_conflict_mask;
+  msg.qp_fail_streak = tick.qp_fail_streak;
+
+  msg.track_err_rad = tick.track_err_rad;
+  msg.abort_stopped = tick.abort_stopped;
+  // Bounded by the MESSAGE's own pre-filled width, not by the POD's: the
+  // arrays were sized from the joint names at configure and must stay in
+  // lockstep with them, so a POD that reports a wider runtime count must not
+  // grow the wire arrays behind the names.
+  for (std::size_t i = 0; i < msg.q_cmd.size() && i < CatchingDiagLogPod::kMaxArmJoints; ++i) {
+    msg.q_cmd[i] = tick.q_cmd[i];
+    msg.q_meas[i] = tick.q_meas[i];
+  }
+
+  msg.hand_phase_valid = tick.hand_phase_valid;
+  msg.hand_phase = tick.hand_phase;
+  msg.hand_rho = tick.hand_rho;
+  msg.hand_timeout = tick.hand_timeout;
+  for (std::size_t i = 0; i < msg.tip_force.size() && i < CatchingDiagLogPod::kMaxTips; ++i) {
+    msg.tip_force[i] = tick.tip_force[i];
+    msg.tip_contact[i] = tick.tip_contact[i];
+    msg.tip_fresh[i] = tick.tip_fresh[i];
+    msg.tip_age_s[i] = tick.tip_age_s[i];
+  }
+
+  if (ingress != nullptr) {
+    msg.input_accept_count = ingress->accept_count;
+    for (std::size_t i = 0; i < msg.input_reject_counts.size() && i < kCloudRejectCount; ++i) {
+      msg.input_reject_counts[i] = ingress->rejects[i];
+    }
+    msg.input_layout_rebuilds = ingress->diag.layout_rebuilds;
+    msg.input_origin_delay_s = static_cast<double>(ingress->diag.origin_delay_ns) * 1e-9;
+    msg.input_jump_m = ingress->diag.jump_m;
+  }
+
+  handles.catching_pub->publish(msg);
+}
+
 void SetupPayloadEstimatePublisher(rtc::RTControllerInterface& ctrl,
                                    ControllerTopicHandles& handles, const std::string& topic_name,
                                    const std::vector<std::string>& joint_names,
@@ -315,6 +469,9 @@ void ActivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
   if (handles.payload_pub) {
     handles.payload_pub->on_activate();
   }
+  if (handles.catching_pub) {
+    handles.catching_pub->on_activate();
+  }
   if (handles.tf_pub) {
     handles.tf_pub->on_activate();
   }
@@ -334,6 +491,9 @@ void DeactivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
   if (handles.payload_pub) {
     handles.payload_pub->on_deactivate();
   }
+  if (handles.catching_pub) {
+    handles.catching_pub->on_deactivate();
+  }
   if (handles.tf_pub) {
     handles.tf_pub->on_deactivate();
   }
@@ -347,6 +507,7 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
   handles.tof_pub.reset();
   handles.wbc_pub.reset();
   handles.payload_pub.reset();
+  handles.catching_pub.reset();
   handles.tf_pub.reset();
   handles.tf_msg.transforms.clear();
   for (auto& slot : handles.tf_slots) {

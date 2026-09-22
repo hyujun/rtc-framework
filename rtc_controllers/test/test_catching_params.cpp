@@ -59,6 +59,7 @@ constexpr double kControlRateHz = 500.0;  // repo default (rtc::kDefaultControlR
 // before and after.
 constexpr const char* kValidYaml = R"(
 reference:
+  provisional: false
   omega: 10.0
   zeta: 1.0
   v_max: 2.0
@@ -551,6 +552,36 @@ TEST(CatchingParams, ProvisionalHandSimWarnsRealBlocks) {
   EXPECT_FALSE(real.armable);
   EXPECT_TRUE(
       ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm, "robot.hand"));
+}
+
+TEST(CatchingParams, ProvisionalReferenceSimWarnsRealBlocks) {
+  // Same rule, fourth flag (L4 §6). It exists because `reference.a_max` is
+  // deferred to the D-16 revision while `v_max` is decided, and one TBD in a
+  // consumed key refuses the configure in sim — which takes every controller
+  // on the robot down with it, because CM latches `bring_up_failed` on any
+  // controller's failure. The shipped ur5e_p1b sim did exactly that on
+  // 2026-09-22 before this flag existed.
+  YAML::Node root = ValidRoot();
+  root["reference"]["provisional"] = true;
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_TRUE(p.reference_provisional);
+
+  const CatchingValidationReport sim = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_TRUE(sim.armable);
+  EXPECT_TRUE(ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "reference"));
+
+  const CatchingValidationReport real = ValidateCatchingParams(p, kControlRateHz, true);
+  EXPECT_FALSE(real.armable);
+  EXPECT_TRUE(ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm, "reference"));
+}
+
+TEST(CatchingParams, ReferenceProvisionalDefaultsToTrueWhenTheKeyIsAbsent) {
+  // Same polarity as every other invented provisional key: a profile that says
+  // nothing is NOT cleared. The opposite default would make an omission read
+  // as a clearance, which is the one direction that fails open on hardware.
+  YAML::Node root = ValidRoot();
+  root["reference"].remove("provisional");
+  EXPECT_TRUE(ParseCatchingParams(root).reference_provisional);
 }
 
 // ── ParseCatchingParams rejection paths ──────────────────────────────────────

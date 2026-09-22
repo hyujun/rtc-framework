@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CalibrationCommand.msg"
   "msg/CalibrationStatus.msg"
   "msg/ControllerState.msg"
+  "msg/CatchingState.msg"
   "srv/ListControllers.srv"
   "srv/SwitchController.srv"
   "srv/GraspCommand.srv"

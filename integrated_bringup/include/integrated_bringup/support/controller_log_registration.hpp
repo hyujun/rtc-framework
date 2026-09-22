@@ -25,6 +25,7 @@
 //   - virtual-TCP setup
 // See agent_docs handoff: `~/.claude/plans/demo-controller-refactor.md`.
 
+#include "integrated_bringup/logging/catching_diag_log_pod.hpp"
 #include "integrated_bringup/logging/compliance_diag_log_pod.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
@@ -184,6 +185,17 @@ struct LogRegistrationContext {
   // which is visible rather than mislabelled.
   std::vector<std::string> momentum_observer_joint_names{};
 
+  // CatchingDiagLog (dynamic_catching S5.4) — the per-tick record of the
+  // catching controller. Single fixed instance (kCatchingDiagLogInstance),
+  // gated on the controller having resolved its devices: the arm joint names
+  // and the fingertip names NAME and COUNT the per-joint / per-tip column
+  // blocks, so a stored CSV decodes without that run's YAML. Empty lists are
+  // tolerated — the header then emits no such columns at all, which is visible
+  // rather than mislabelled.
+  bool catching_diag_enabled{false};
+  std::vector<std::string> catching_diag_arm_joint_names{};
+  std::vector<std::string> catching_diag_tip_names{};
+
   // InferenceDiagLog — per-tick hold reason / reach gate / tracking for the
   // learned-policy controller. Single fixed instance (kInferenceDiagLogInstance),
   // gated by the only controller that fills it. `inference_diag_tip_names` are
@@ -282,6 +294,8 @@ struct RegisteredLogHandles {
   rtc::LogHandle<integrated_bringup::ComplianceDiagLogPod> compliance_diag;
   // Single fixed instance (kInferenceDiagLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::InferenceDiagLogPod> inference_diag;
+  // Single fixed instance (kCatchingDiagLogInstance), same reason.
+  rtc::LogHandle<integrated_bringup::CatchingDiagLogPod> catching_diag;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -552,11 +566,35 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.inference_diag = std::move(handle);
+    } else if (entry.msg_type == kCatchingDiagLogMsgType) {
+      if (!ctx.catching_diag_enabled || entry.instance != kCatchingDiagLogInstance) {
+        continue;
+      }
+      const auto arm_joint_names = ctx.catching_diag_arm_joint_names;
+      const auto tip_names = ctx.catching_diag_tip_names;
+      // One derivation, both writers (#440): the header is written before any
+      // pod exists, so a row sized from the pod's own runtime widths would
+      // diverge the moment the two disagree.
+      const auto cols = integrated_bringup::CatchingDiagLogColumnsFor(arm_joint_names, tip_names);
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::CatchingDiagLogPod>(
+          entry.instance,
+          [arm_joint_names, tip_names, cols](std::ostream& os) {
+            integrated_bringup::WriteCatchingDiagLogHeader(os, arm_joint_names, tip_names, cols);
+          },
+          [cols](std::ostream& os, const integrated_bringup::CatchingDiagLogPod& pod) {
+            integrated_bringup::WriteCatchingDiagLogRow(os, pod, cols);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open catching_diag CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.catching_diag = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
     // PullEstimatorLog, TaskDiagLog, GraspDiagLog, MomentumObserverLog,
-    // ComplianceDiagLog, InferenceDiagLog}; reaching here is a YAML parser
+    // ComplianceDiagLog, InferenceDiagLog, CatchingDiagLog}; reaching here is a YAML parser
     // bug. Silently ignore.
   }
 

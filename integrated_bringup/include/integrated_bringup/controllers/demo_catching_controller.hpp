@@ -70,6 +70,7 @@
 // operator step a refusal rather than a race.
 
 #include "integrated_bringup/controllers/catching/traj_input.hpp"
+#include "integrated_bringup/logging/catching_diag_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
@@ -164,6 +165,10 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
+  /// Publish the catching state (D-20). Runs on CM's publish jthread —
+  /// SCHED_OTHER, NOT the RT tick, despite the name.
+  void PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept override;
+
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "DemoCatchingController"; }
@@ -174,6 +179,7 @@ class DemoCatchingController final : public RTControllerInterface {
                               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                               const YAML::Node& yaml) noexcept override;
   CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
 
   // ── E-STOP and fault (P-1 minimum contract, E-8) ─────────────────────────
@@ -261,6 +267,32 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Ticks that ran with the global E-STOP request raised.
   [[nodiscard]] std::uint64_t GetEstopTickCount() const noexcept {
     return estop_tick_count_.load(std::memory_order_relaxed);
+  }
+
+  /// The record the last RT tick left behind — the SAME object the CSV row and
+  /// the state message are built from, so a test that reads it is reading what
+  /// the operator sees. PROC-7: it is rebuilt from scratch every tick, so a
+  /// field that is still zero is a field this tick did not compute.
+  [[nodiscard]] CatchingDiagLogPod GetLastTickRecord() const noexcept {
+    return catching_state_lock_.Load();
+  }
+
+  /// The ingress counters as the subscription last published them. Loaded off
+  /// the RT thread; see CatchingIngressSnapshot for why this is a SeqLock
+  /// rather than a direct read of `traj_input_`.
+  [[nodiscard]] CatchingIngressSnapshot GetIngressSnapshot() const noexcept {
+    return ingress_diag_box_.Load();
+  }
+
+  /// Bind the CSV channel from a test-owned ControllerLogSet.
+  ///
+  /// The unit fixtures bring the controller up through LoadConfig, which never
+  /// reaches on_configure and therefore leaves every production log handle
+  /// UNBOUND — and a row assertion written against that state passes with the
+  /// push deleted outright (#424). Same seam, same reason, as
+  /// DemoComplianceController::SetComplianceDiagLogHandleForTesting.
+  void SetCatchingDiagLogHandleForTesting(rtc::LogHandle<CatchingDiagLogPod> handle) noexcept {
+    catching_diag_log_handle_ = std::move(handle);
   }
 
   [[nodiscard]] int GetArmDof() const noexcept { return arm_dof_; }
@@ -380,6 +412,25 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Build the fixed plan the `diagnostic.oracle_plan` block describes
   /// (A-S5-8). RT only; the planner that replaces this is S6.
   void MakeOraclePlan(rtc::catching::NowReal now) noexcept;
+
+  /// Copy this tick's verdict on the vision snapshot into the record. RT only.
+  void RecordInputLane(const rtc::catching::TrajectorySnapshot& snapshot) noexcept;
+
+  /// Copy one L4 reference step into this tick's record. RT only — called
+  /// from the tracking tick at the moment the value exists, so a tick that
+  /// never reached the generator leaves the block zero.
+  void RecordReference(const rtc::catching::TranslationOutput& ref) noexcept;
+
+  /// Copy one CLIK solve's diagnostics into this tick's record. RT only, same
+  /// reason as RecordReference.
+  void RecordClikSolve(const rtc::tsid::ClikReferenceGenerator::SolveDiagnostics& solve) noexcept;
+
+  /// Fill `tick_record_` from the state this tick computed and hand it to both
+  /// the CSV ring and the state-message SeqLock. RT tick only, called ONCE at
+  /// the end of Compute() — PROC-7: every tick publishes a body, and the
+  /// record was default-constructed at the top of the tick so anything this
+  /// tick did not compute is zero rather than last tick's value.
+  void PublishTickRecord(const ControllerState& state) noexcept;
 
   /// Create the prediction subscription and configure the ingress. Non-RT.
   void SetupTrajInput();
@@ -676,6 +727,28 @@ class DemoCatchingController final : public RTControllerInterface {
   /// ‖q_meas − q_cmd‖ of the last tick, the TRACK_ERR watchdog's input.
   double track_err_{0.0};
 
+  // ── The tick record (S5.4, D-20 + L8 §5.2) ───────────────────────────────
+  // ONE object feeds the CSV row and the state message, so the file and the
+  // operator's screen cannot disagree about a tick. It is a member rather than
+  // a tick-local so Compute()'s helpers can fill their own blocks without
+  // threading it through five signatures — and it is ASSIGNED A FRESH
+  // default-constructed value at the top of every tick, which is what makes
+  // "not computed this tick" indistinguishable from "zero" by construction
+  // (PROC-7) instead of by everybody remembering to clear their own fields.
+  CatchingDiagLogPod tick_record_{};
+  /// RT writer, publish-thread reader.
+  rtc::SeqLock<CatchingDiagLogPod> catching_state_lock_{};
+  /// Subscription writer, publish-thread reader. The counters advance on
+  /// message arrival, so they cannot ride the per-tick record.
+  rtc::SeqLock<CatchingIngressSnapshot> ingress_diag_box_{};
+  /// Relative, so it resolves under the controller's own node namespace
+  /// (`/<config_key>/catching_state`). Not a YAML key: one controller, one
+  /// state topic, and a configurable name is a name two tools can disagree on.
+  std::string catching_state_topic_{"catching_state"};
+  /// Fingertip sensor names of the hand group — they NAME and COUNT the
+  /// per-tip columns and wire arrays.
+  std::vector<std::string> hand_sensor_names_;
+
   // ── The plan being followed ──────────────────────────────────────────────
   // S6 replaces this member's WRITER (a planner thread through a SeqLock); the
   // reader below is what that planner will feed.
@@ -685,16 +758,18 @@ class DemoCatchingController final : public RTControllerInterface {
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────
   // The hand step arrives on the group's `joint_goal`, which only exists if
-  // CreateOwnedTopics runs — the YAML entry alone creates no endpoint. Holds
-  // the target subscription only: this controller publishes nothing (D-20), so
-  // there is no lifecycle publisher to gate and no on_activate/on_deactivate
-  // pair to add.
+  // CreateOwnedTopics runs — the YAML entry alone creates no endpoint. Since
+  // S5.4 it also holds the catching state publisher (D-20), which is why this
+  // controller has an on_activate/on_deactivate pair: a lifecycle gate applies
+  // to publishers, and an inactive one drops every message while returning
+  // normally.
   ControllerTopicHandles owned_topics_;
 
   // ── Logging (Phase C `logs:` block) ──────────────────────────────────────
   rtc::ControllerLogSet log_set_{"demo_catching_controller"};
   rtc::LogHandle<DeviceStateLogPod> arm_state_log_handle_;
   rtc::LogHandle<DeviceStateLogPod> hand_state_log_handle_;
+  rtc::LogHandle<CatchingDiagLogPod> catching_diag_log_handle_;
   rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
   rclcpp::TimerBase::SharedPtr log_drain_timer_;
   std::uint64_t log_drops_reported_{0};

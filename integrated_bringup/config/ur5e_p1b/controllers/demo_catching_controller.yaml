@@ -24,6 +24,33 @@ demo_catching_controller:
   diagnostic:
     hand_step: true
 
+    # ── S5.5 oracle plan (A-S5-8) ───────────────────────────────────────────
+    # The stand-in for the S6 planner: ONE fixed catch point, so the tracking
+    # chain (sample -> soft-catch reference -> CLIK -> arm) can be exercised in
+    # sim before a planner exists. S6 removes this block.
+    #
+    # It is NOT a hazard on its own: the supervisor still needs a usable vision
+    # prediction to leave ARMED, and the operator still has to raise
+    # `catching.enable` (default false). Two deliberate acts, neither of them
+    # this file.
+    #
+    # `p_c` is in the CLIK base frame (= world for this robot). Measured
+    # 2026-09-22 from the shipped sim start pose: the catch frame sits at
+    # (0.570, 0.127, 0.361), so this asks for a 7.5 cm move. `a_d` points
+    # straight down — a 20 deg tilt from the start axis, so the approach-axis
+    # rows have work to do as well as the position rows.
+    #
+    # `gamma_f: 0.0` makes the catch point the attractor for the whole run
+    # (L4 §5.3: with gamma == 0 the ball drops out of the DS), which is what
+    # turns this into the FIXED-catch-point check S5.5 asks for rather than a
+    # moving-target one.
+    oracle_plan:
+      enabled: true
+      p_c: [0.570, 0.190, 0.400]
+      a_d: [0.0, 0.0, -1.0]
+      t_c_offset_s: 1.5
+      gamma_f: 0.0
+
   catching:
     # ── D-12 ball (L0 §6) ───────────────────────────────────────────────────
     # The SIM ball, which is what the sim gates are judged against. It mirrors
@@ -202,6 +229,34 @@ demo_catching_controller:
       io:
         future_tol: 0.1
 
+    # ── The L4 soft-catch reference (L4 §6, S5.3 consumes all four) ──────────
+    # `provisional: true` covers the BLOCK, which is the honest state: `v_max`
+    # is decided and `a_max` is not, and one TBD in a consumed key refuses the
+    # configure in sim — which, because CM latches `bring_up_failed` on ANY
+    # controller's configure failure, takes every other controller on the robot
+    # down with it. That is what the shipped p1b sim did on 2026-09-22 before
+    # this block existed. The provisional rule says the right thing instead:
+    # warn in sim, block a real arm (L0 §5.3).
+    reference:
+      provisional: true
+      # rad/s. L5/L4 §6 default; omega*h = 0.02 << 0.828, so the discretisation
+      # gate is nowhere near its bound at 500 Hz.
+      omega: 10.0
+      # v1 requires exactly critically damped — the planner's closed-form
+      # terminal error assumes it (L4 §4.7).
+      zeta: 1.0
+      # m/s. NOT provisional in itself: L4 §6 records this as DERIVED and
+      # confirmed 2026-09-22 — the max LP v_dir,max over accepted catch
+      # candidates at the joint ratings, times eta_v = 0.9. S10 may only LOWER
+      # it once the real controller's TCP limit is identified.
+      v_max: 3.5
+      # m/s^2. THE provisional one. L4 §6 defers the decision to the D-16
+      # revision; S4.4 measured torque-limited acceleration along v_hat at the
+      # catch pose as median 43, and 21-23 under a 10x rotor-inertia
+      # assumption. 21 is the conservative end of that measurement and stays
+      # above `supervisor.decel.a_dec` = 10, which the validator requires.
+      a_max: 21.0
+
     # ── The CLIK step (L5 §6, S5.3) ─────────────────────────────────────────
     # Gains and weights, all provisional: they are the documented defaults
     # (L5 §6) and have not been tuned on this robot. The ORDERING is not a
@@ -362,3 +417,8 @@ demo_catching_controller:
       instance: ur5e_state
     - msg_type: rtc_msgs/DeviceStateLog
       instance: p1b_state
+    # Per-tick record (S5.4, L8 §5.2). One row per tick including the ticks
+    # that decide to do nothing — a gap in this file means a dropped row
+    # and nothing else (#234 P-20).
+    - msg_type: integrated_bringup/CatchingDiagLog
+      instance: catching_diag

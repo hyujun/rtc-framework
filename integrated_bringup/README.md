@@ -581,7 +581,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 
 ## 로깅 (Logging)
 
-### DemoCatchingController (dynamic_catching S5.1)
+### DemoCatchingController (dynamic_catching S5)
 
 설계·결정의 SSoT 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) 이고 (충돌 시 그 문서가 우선), 여기에는 **운용 표면**만 적는다.
 
@@ -592,6 +592,9 @@ ros2 service call /demo_wbc_controller/grasp_command \
 - **팔 추종 (S5.3)**: plan 이 있으면 `SampleAt(now_lead)` → soft-catch 기준 → 확장 CLIK (위치 3행 + 접근축 2행) → `devices[0]`. 모델은 팔+손 결합 모델이고 목표 frame 은 `urdf.extra_frames.catch_frame` 이다. **손은 solve 안에서 잠근다** — catch frame 이 손바닥에 달려 있어 손 관절이 Jacobian 에 들어오지만 이 컨트롤러는 손을 명령하지 않는다. CLIK 은 **명령값**에서 평가하므로 (D-6) 측정 상태는 루프에 들어오지 않고, 실추종은 `supervisor.track_err_abort` 가 감시한다. QP 실패·box 충돌은 **QP 없이** 관절별 가속 한계로 감속해 멈추고 (`supervisor.n_qp` 연속 실패면 fault 래치), E-STOP 중에는 아무것도 명령하지 않는다
 - **plan 원천 (S5.3/S5.5 임시)**: `diagnostic.oracle_plan` — 사용자가 ground-truth 로 잰 고정 포구점 하나. 계획기는 S6 이고, 그때 이 블록의 자리에 들어간다
 - **vision 입력 (S5.2)**: `catching.io.traj_topic` 의 `PointCloud2` 예측 궤적을 컨트롤러가 **직접 구독**한다 (`topics:` 의 `role:` 표에 없는 lane 이라 role 을 늘리지 않는다). best_effort · `KEEP_LAST(1)` — depth 는 ARCH-6 고정이고, 백로그가 생기면 **가장 최신** 예측만 소비한다. 필드는 이름으로 찾으므로 publisher 가 offset 을 바꿔도 따라가고, 이름·타입·개수가 다르면 거부하며 사유별 카운터가 남는다 (거부와 침묵은 RT 쪽에서 구별되지 않으므로 그 카운터가 유일한 진단이다). 수신 시 한 번 `t_ref = recv_steady − (recv_wall − stamp)` 로 옮기고 (D-2), stale 은 **steady 수신 나이**로만 판정한다
+- **상태 토픽 (S5.4, D-20)**: `/<config_key>/catching_state` (`rtc_msgs/CatchingState`, `KEEP_LAST(1)`). 소유 형태는 `WbcState`·`GraspState` 와 같고 `PublishRole` 은 늘리지 않는다 (E-11). **필드는 S5~S9 superset 으로 한 번 동결**돼 있으며 이후 단계는 값만 채운다 — 단계마다 열이 늘면 한 단계 전 bag 을 못 읽는다. **모든 tick 이 body 를 싣는다** (PROC-7): E-STOP·stale·plan 없음·abort tick 도 발행하고, 그 tick 에 계산하지 않은 블록은 직전 값을 남기지 않고 지운다. 그래서 값이 고정돼 보이면 컨트롤러가 정말 같은 값을 다시 계산한 것이다
+- **tick 레코드 CSV (S5.4)**: `catching_diag.csv` (`logs:` 의 `integrated_bringup/CatchingDiagLog`). 상태 토픽과 **같은 POD 한 벌**에서 나오므로 파일의 숫자와 화면의 숫자가 갈릴 수 없다. tick 마다 한 행이라 **tick 간극은 드롭된 행**을 뜻한다 (#234 P-20). `plot_rtc_log catching_diag.csv` 가 기준 vs 실현 가속도·추종 오차·solve time·슈퍼바이저 모드를 한 시간축에 그린다
+- **GUI**: `demo_controller_gui` Control 탭의 Catching 패널 — 모드·사유, 입력 lane (n·generation·sequence·수신 나이·지평, 거부 카운터는 0 이 아닌 것만), plan, 추종 오차·CLIK 상태, 그리고 Arm/Disarm. **관측된 무장과 요청된 무장을 따로 보여준다** — tick 이 E-STOP·fault 에서 latch 를 내리므로 파라미터 set 이 성공해도 무장됐다는 증거가 아니고, 둘이 갈리는 순간이 봐야 할 상태다
 - **읽기 전용 미러 파라미터**: `hand.q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`/`rho_eps`/`T_close_e2e`·`control.dt`·`diagnostic.hand_step` — 오프프로세스 분석기가 YAML 이 아니라 **컨트롤러가 읽은 값**을 쓰게 하려는 것이다
 
 ### 로깅 레벨
@@ -621,7 +624,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 | `integrated_bringup.demo_task_controller` | `DemoTaskController` (task-space 데모 컨트롤러, 500 Hz 핫패스) |
 | `integrated_bringup.demo_compliance_controller` | `DemoComplianceController` (task-space admittance 바인딩, 500 Hz 핫패스) |
 | `integrated_bringup.demo_wbc_controller` | `DemoWbcController` (WBC + MPC 데모 컨트롤러, 500 Hz 핫패스) |
-| `integrated_bringup.demo_catching_controller` | `DemoCatchingController` (dynamic_catching S5.1 골격, 500 Hz 핫패스) |
+| `integrated_bringup.demo_catching_controller` | `DemoCatchingController` (dynamic_catching S5, 500 Hz 핫패스) |
 | `integrated_bringup.demo_shared_config` | `demo_shared_config` YAML 로더 (init-time, non-RT) |
 
 ### THROTTLE 주기 표준

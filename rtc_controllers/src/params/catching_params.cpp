@@ -26,6 +26,7 @@ namespace {
 // model config. For the three provisional groups this validator DOES own,
 // the chosen key sits as a sibling of the group's other fields, mirroring
 // the catch frame's own placement:
+//   - `reference.provisional`                              (L4 §6, whole block)
 //   - `core.ball.provisional`                              (D-12 공 사양)
 //   - `planner.catchability.manipulability_min.provisional` (D-18)
 //   - `robot.hand.provisional`                              (L6 §6, whole profile)
@@ -257,6 +258,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.reference_zeta = ReadTbdDouble(reference, "zeta", out.reference_zeta);
   out.reference_v_max = ReadTbdDouble(reference, "v_max", out.reference_v_max);
   out.reference_a_max = ReadTbdDouble(reference, "a_max", out.reference_a_max);
+  out.reference_provisional = ReadOptional(reference, "provisional", true);
 
   const YAML::Node planner = ReadSection(node, "planner");
   const YAML::Node gamma = ReadSection(planner, "gamma");
@@ -422,6 +424,12 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   if (CheckActiveTbd(report, params.reference_v_max, "reference.v_max", true)) {
     CheckPositive(report, "reference.v_max", params.reference_v_max.value);
   }
+  // The block as a whole (L0 §5.3). Keyed on `reference` without a trailing
+  // dot — the flag is a property of the profile, not of a field of it, exactly
+  // as `robot.hand` and `core.ball` are. A consumer's gate has to match the
+  // dotless key too, or a provisional reference reaches a real arm unnoticed
+  // (the hand profile shipped with that hole once).
+  CheckProvisional(report, "reference", params.reference_provisional, real_arm_config);
   const bool a_max_ok = CheckActiveTbd(report, params.reference_a_max, "reference.a_max", true);
   if (a_max_ok) {
     CheckPositive(report, "reference.a_max", params.reference_a_max.value);
