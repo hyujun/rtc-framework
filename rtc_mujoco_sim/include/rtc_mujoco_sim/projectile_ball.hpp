@@ -1,6 +1,8 @@
 #ifndef RTC_MUJOCO_SIM_PROJECTILE_BALL_HPP_
 #define RTC_MUJOCO_SIM_PROJECTILE_BALL_HPP_
 
+#include <rtc_base/types/types.hpp>
+
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -146,13 +148,12 @@ inline constexpr double kProjectileBallAirDensity = 1.204;
 [[nodiscard]] bool ShouldPublishProjectileBallSample(double sim_time_sec, double period_sec,
                                                      double& last_publish_time_sec) noexcept;
 
-/// steady_clock now as ns since its epoch — the axis the RT path and the D-3
-/// clock lane use.
-[[nodiscard]] inline std::int64_t SteadyNowNs() noexcept {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+// `SteadyNowNs` — the axis the RT path and the D-3 clock lane use — lives in
+// rtc_base/types/types.hpp, next to the age helpers that interpret it. This
+// header carried its own identical copy in the SAME namespace until
+// 2026-09-23, which is why the one in rtc_base could not be added without a
+// redefinition: six spellings of one clock read had accumulated across three
+// packages. Use `rtc::SteadyNowNs()`; it is declared by the include above.
 
 /// Steady instant [ns] to stamp a ball sample with: the sim-time axis laid
 /// onto the wall from the launch instant,

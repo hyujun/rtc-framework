@@ -150,6 +150,12 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
   tip.fy = static_cast<float>(fy_d);
   tip.fz = static_cast<float>(fz_d);
   tip.received_at_least_once = true;
+  // Stamped HERE rather than at the RT read, and only for an ACCEPTED sample:
+  // the question this answers is "how old is the force the controller is
+  // about to use", so a dropped NaN message (above) must not refresh it — the
+  // early return leaves the previous stamp with the previous force, which is
+  // the pair that is actually still in the mirror (D-24).
+  tip.recv_steady_ns = rtc::SteadyNowNs();
   if (finger_idx + 1 > mirror.num_tips) {
     mirror.num_tips = finger_idx + 1;
   }
@@ -161,12 +167,23 @@ void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
   // L3 under CM::ReadDeviceState — RT-tick fingertip-wrench mirror load (not the
   // OnWrench callback lane, which is the non-RT write side).
   RTC_TRACE_SCOPE("MujocoNativeBackend::ReadSensorState");
+  // The counters are read BEFORE the mirror, and the order is load-bearing.
+  // OnWrench stores the mirror and THEN increments its counter, so a counter
+  // read afterwards can be one ahead of the payload it is about to be paired
+  // with — the same counter/payload hazard D-21 documents on the catching
+  // ingress. Reading it first can only pair a counter with a payload at least
+  // as new, which under-reports newness for one tick instead of claiming a
+  // sample that is not there.
+  std::array<uint64_t, kMaxSensorGroups> seq_before{};
+  for (std::size_t i = 0; i < seq_before.size(); ++i) {
+    seq_before[i] = wrench_seq_[i].load(std::memory_order_acquire);
+  }
   const auto mirror = sensor_mirror_.Load();
   cache.num_inference_groups = mirror.num_tips;
 
   for (int f = 0; f < mirror.num_tips; ++f) {
     const auto fu = static_cast<std::size_t>(f);
-    const uint64_t cur_seq = wrench_seq_[fu].load(std::memory_order_acquire);
+    const uint64_t cur_seq = seq_before[fu];
 
     if (cur_seq != rt_last_seen_seq_[fu]) {
       rt_last_seen_seq_[fu] = cur_seq;
@@ -178,6 +195,15 @@ void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
     const auto& tip = mirror.tips[fu];
     const bool fresh = tip.received_at_least_once && (rt_miss_count_[fu] < max_missed_ticks_);
     cache.inference_enable[fu] = fresh;
+    // D-24 (a): the age and the counter travel BESIDE the verdict, not
+    // instead of it. `cur_seq` is the accepted-sample count this backend
+    // already maintains for its own miss accounting, so it is the honest
+    // sequence rather than a second counter that could disagree with it.
+    // Both are published even when `fresh` is false — a consumer deciding
+    // TIP_STALE needs to know HOW stale, and a consumer that only trusts the
+    // flag is unaffected.
+    cache.inference_recv_steady_ns[fu] = tip.recv_steady_ns;
+    cache.inference_sequence[fu] = cur_seq;
 
     // Stride 7 mirror — slot 0 contact_flag / 4..6 displacement intentionally
     // 0-filled (controller does not consume them; udp_hand backend remains

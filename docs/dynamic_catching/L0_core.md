@@ -132,7 +132,7 @@ v0.4 의 `types.hpp` 스케치를 대체한다. 헤더 이름·배치는 S1.1 �
 - **범위 검사.** 각 필드 `(name, value, lo, hi, unit)` 표(층별 §6).
 - **교차제약.** 마스터 §6 표를 구현한다. v0.5 변경: `v_tcp_max = η_v · reference.v_max` ($0<\eta_v\le1$) `[확정 D-9]` 가 "같은 값" 행을 대체하고, 이름이 둘이던 값 5쌍(`n_min`, `derate_step`, `ed_jump_max`, `a_dec`, ramp)은 단일 키가 되어 일치 검사 대상에서 빠진다(plan S0.3). γ derate 키는 v1 범위 밖이다(D-8).
 - **ζ·ω·h 검사 (`dt` 기준).** $h$ = configure 시 `control_rate`(100–5000 Hz)로 정해지는 `ControllerState::dt`. $s=\omega h$ 가 이산 안정 경계 $2\sqrt2-2\approx0.828$ 이상이면 `armable=false`, 정확도 권장 $s\le0.05$ 초과면 경고(L4 §4.7). 500 Hz 고정 가정은 쓰지 않는다. `reference.omega` 범위 [1, 25] rad/s 안에서는 100 Hz 에서도 $s\le0.25$ 라 안정 경계에 닿지 않는다 — 범위 검사가 안정을 함의하고, 경계 검사는 범위가 바뀔 때를 대비한 심층 방어다. 실제 구성에서 발동하는 것은 경고다 (100 Hz 에서 $\omega>5$). `reference.zeta` ≠ 1 이면 `armable=false` — 계획기의 종단 오차 닫힌해가 $\zeta=1$ 에서만 유효하다(L4 §4.4 임계감쇠 닫힌해).
-- **provisional 처리.** D-12 사용자 값(공 사양 등), D-17 catch frame(`provisional: true`), D-18 `planner.catchability.manipulability_min` 처럼 YAML 에 provisional 표시된 값은 sim 구성에서는 경고와 함께 허용하고, **실기 구성에서는 `armable=false`** 로 arm 을 막는다(plan §7.1 D-12, §10).
+- **provisional 처리.** D-12 사용자 값(공 사양 등), D-17 catch frame(`provisional: true`), D-18 `planner.catchability.manipulability_min`, 그리고 L4 reference 블록(`reference.provisional`, S5.4 신설 — `v_max` 는 확정이고 `a_max` 는 D-16 개정 소관이라 블록 단위로 표시한다) 처럼 YAML 에 provisional 표시된 값은 sim 구성에서는 경고와 함께 허용하고, **실기 구성에서는 `armable=false`** 로 arm 을 막는다(plan §7.1 D-12, §10).
 - **결과.** `ValidationReport{bool armable; 고정 용량 실패 키 목록; 경고 목록}`. `armable=false`면 L7이 `ARMED` 진입을 거부한다.
 
 ### 5.4 메시지 — 없음

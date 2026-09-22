@@ -108,6 +108,20 @@ struct CatchingParams {
   TbdDouble reference_zeta{TbdDouble::Resolved(1.0)};    // –, v1 requires exactly 1
   TbdDouble reference_v_max;                             // m/s, > 0
   TbdDouble reference_a_max;                             // m/s², > 0
+  /// L0 §5.3 flag for the whole L4 reference block, read from an invented
+  /// `reference.provisional` key (see the .cpp header for why these keys are
+  /// invented and why they default to true).
+  ///
+  /// It exists because `reference.a_max` is a DERIVED bound whose derivation
+  /// L4 §6 defers to the D-16 revision, while `v_max` is decided — so the two
+  /// cannot share a TBD. A profile that left `a_max` at TBD instead would be
+  /// refused outright in sim, and because CM latches `bring_up_failed` on any
+  /// controller's configure failure that takes EVERY controller on the robot
+  /// down with it — observed on a shipped sim profile 2026-09-22 (the robot and
+  /// the session are named in plan §7.3 A-S5-11, which owns the incident; this
+  /// header is robot-agnostic and stays that way). The provisional rule says
+  /// the right thing instead: sim warns, a real arm is blocked.
+  bool reference_provisional{true};
 
   // planner: (L3 §6)
   TbdDouble planner_gamma_eta_v{TbdDouble::Resolved(0.9)};                     // –, (0, 1] (D-9)
@@ -116,6 +130,69 @@ struct CatchingParams {
 
   // supervisor: (L7 §6)
   TbdDouble supervisor_decel_a_dec;  // m/s², > 0 and <= reference_a_max (L7 §4.3)
+
+  // io: (L1 §6) — vision ingress. Consumed from S5.2.
+  //
+  // `io_n_min` is a COUNT, so it is an int with 0 meaning "absent" rather than
+  // a TbdDouble: the schema's TBD placeholder exists for values a decision has
+  // not produced yet, and a point count that arrived as 10.5 is a malformed
+  // key, not an open one. 0 is reported as an active TBD.
+  int io_n_min{0};           // points, [2, kCap]
+  TbdDouble io_t_stale;      // s, [0.02, 0.2]  — steady RECEIVE age limit
+  TbdDouble io_future_tol;   // s, [1e-4, 1e-2] — real-arm clock-sync budget
+  TbdDouble io_horizon_min;  // s, > 0        — D-15 usable-window requirement
+  TbdDouble io_track_eval_offset{TbdDouble::Resolved(0.05)};  // s, [0, 0.3]
+  TbdDouble io_track_j_warn;  // m, > 0 — DIAGNOSTIC threshold, never a gate
+  /// The sim configuration's own `future_tol` (A-S5-2). Active only when
+  /// `real_arm_config` is false, exactly like `sim.ball.drag_k`.
+  ///
+  /// It exists because the two numbers are two orders of magnitude apart and
+  /// the controller YAML is shared between sim and hardware: the sim ball
+  /// lane's stamps ride the SIM time axis and legitimately lead wall by the
+  /// in-flight phase error (D-3, `rtc_mujoco_sim` §Projectile Ball stamp),
+  /// while a camera on real hardware stamps at capture and may lead wall only
+  /// by the clock-sync error. One key with one range could serve only one of
+  /// them, and the sim value inside the real-arm range would silently accept a
+  /// 100 ms clock offset on hardware.
+  TbdDouble sim_io_future_tol;  // s, (0, 0.5]
+
+  // prediction: (L1 §6 / L2) — what the vision profile is expected to produce.
+  TbdDouble prediction_dt_expected{TbdDouble::Resolved(0.05)};  // s, (0, 1]
+
+  // joint_cmd: (L5 §6) — the CLIK step. Consumed from S5.3.
+  //
+  // The weights keep the documented ordering w_task >> w_arm >> damping_sq
+  // (L5 §4.3): the task must win, the posture must only resolve the redundant
+  // degree of freedom, and the damping must only regularise. The validator
+  // checks the ORDERING, not just the ranges — three individually sensible
+  // weights in the wrong order produce a controller that tracks posture and
+  // treats the catch point as a suggestion.
+  TbdDouble joint_cmd_k_p{TbdDouble::Resolved(20.0)};         // 1/s, [1, 100]
+  TbdDouble joint_cmd_k_axis{TbdDouble::Resolved(8.0)};       // 1/s, (0, 30]
+  TbdDouble joint_cmd_k_posture{TbdDouble::Resolved(1.0)};    // 1/s, [0, 10]
+  TbdDouble joint_cmd_w_task{TbdDouble::Resolved(1.0)};       // –, > 0
+  TbdDouble joint_cmd_w_axis{TbdDouble::Resolved(0.5)};       // –, > 0
+  TbdDouble joint_cmd_w_arm{TbdDouble::Resolved(1e-2)};       // –, >= 0
+  TbdDouble joint_cmd_w_smooth{TbdDouble::Resolved(1e-3)};    // –, >= 0
+  TbdDouble joint_cmd_damping_sq{TbdDouble::Resolved(1e-4)};  // –, > 0
+  int joint_cmd_max_iter{20};                                 // –, >= 1
+  /// L5 §4.4/§4.5. **sim is 0** (2026-09-20: no lag is injected), and the
+  /// lead axis then coincides with the real one. A non-zero value is the
+  /// hardware identification (S10) or the axis-confusion fixture.
+  TbdDouble joint_cmd_lag_t_arm{TbdDouble::Resolved(0.0)};  // s, >= 0
+  bool joint_cmd_lag_lead_enable{false};
+
+  // robot.arm: (L5 §6) — the boxes CLIK is given.
+  /// How far INSIDE the device's own position limits the CLIK box sits. The
+  /// backend clamps commands to the device limits; if CLIK were given the same
+  /// box, its solution and the command actually written would differ whenever
+  /// it touched a bound, and the difference would surface as a tracking error
+  /// nobody can attribute (L5 §4.3 "중복 방지").
+  TbdDouble robot_arm_limit_margin{TbdDouble::Resolved(0.05)};  // rad, [0, 0.3]
+
+  // supervisor: (L7 §6) — the two keys the joint command layer reports to.
+  TbdDouble supervisor_track_err_abort;  // rad, > 0 — L7 owns this key, L5 only reads it
+  int supervisor_n_qp{0};                // consecutive QP failures before FAULT, >= 1
 
   // core / sim: (L0 §6)
   BallSpec ball;
@@ -150,6 +227,7 @@ enum class CatchingValidationReason : std::uint8_t {
   kHandCagingGapTooSmall,    // |q_close[i] - q_pre[i]| <= rho_eps on a caging joint (L6 §4.2)
   kProvisionalOnRealArm,     // a provisional value blocks the real-arm configuration (L0 §5.3)
   kProvisionalWarning,       // same value, but the sim configuration only warns — WARNING only
+  kWeightOrdering,           // CLIK weights violate w_task/w_a >> w_arm >> damping_sq (L5 §4.3)
 };
 
 /// One report line: which rule fired, on which key, and (for the per-joint
@@ -187,6 +265,24 @@ struct CatchingValidationReport {
 [[nodiscard]] CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
                                                               double control_rate_hz,
                                                               bool real_arm_config) noexcept;
+
+/// Which `future_tol` applies to a configuration (A-S5-2).
+///
+/// The rule lives here rather than at the call site because getting it
+/// backwards is silent in both directions: the sim value on hardware accepts a
+/// clock offset no real link should have, and the hardware value in sim
+/// rejects most of the ball lane as future-stamped and the controller simply
+/// never sees a trajectory. Returns the sim key when `real_arm_config` is
+/// false AND that key is resolved; otherwise the shared key, so a sim
+/// configuration that does not override it inherits the strict value rather
+/// than silently getting no limit.
+[[nodiscard]] constexpr TbdDouble EffectiveFutureTol(const CatchingParams& params,
+                                                     bool real_arm_config) noexcept {
+  if (!real_arm_config && !params.sim_io_future_tol.tbd) {
+    return params.sim_io_future_tol;
+  }
+  return params.io_future_tol;
+}
 
 /// Key reported for the catch frame's provisional flag (D-17).
 inline constexpr const char* kCatchFrameProvisionalKey =

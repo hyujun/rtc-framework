@@ -50,8 +50,16 @@ constexpr double kControlRateHz = 500.0;  // repo default (rtc::kDefaultControlR
 
 // Fully resolved, non-provisional, in-range config — every check below
 // mutates one field of this baseline rather than restating the whole tree.
+//
+// The `io:` / `prediction:` sections joined it with S5.2 and
+// `joint_cmd:` / `robot.arm:` / the two `supervisor:` keys with S5.3, as each
+// step made its own keys active. The baseline grows with the schema; the
+// assertions on it (armable, zero failures, zero warnings) are unchanged,
+// which is what keeps "a clean config arms cleanly" meaning the same thing
+// before and after.
 constexpr const char* kValidYaml = R"(
 reference:
+  provisional: false
   omega: 10.0
   zeta: 1.0
   v_max: 2.0
@@ -66,6 +74,32 @@ planner:
 supervisor:
   decel:
     a_dec: 3.0
+  track_err_abort: 0.3
+  n_qp: 3
+joint_cmd:
+  K_p: 20.0
+  K_a: 8.0
+  K_n: 1.0
+  w_task: 1.0
+  w_a: 0.5
+  w_arm: 0.01
+  w_smooth: 0.001
+  damping_sq: 0.0001
+  qp:
+    max_iter: 20
+  lag:
+    T_arm: 0.0
+    lead_enable: false
+io:
+  n_min: 12
+  t_stale: 0.10
+  future_tol: 0.001
+  horizon_min: 0.51
+  track:
+    eval_offset: 0.05
+    j_warn: 0.05
+prediction:
+  dt_expected: 0.05
 core:
   ball:
     diameter: 0.065
@@ -75,7 +109,11 @@ core:
 sim:
   ball:
     drag_k: 0.02
+  io:
+    future_tol: 0.1
 robot:
+  arm:
+    limit_margin: 0.05
   hand:
     provisional: false
     rho_eps: 0.02
@@ -516,6 +554,36 @@ TEST(CatchingParams, ProvisionalHandSimWarnsRealBlocks) {
       ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm, "robot.hand"));
 }
 
+TEST(CatchingParams, ProvisionalReferenceSimWarnsRealBlocks) {
+  // Same rule, fourth flag (L4 §6). It exists because `reference.a_max` is
+  // deferred to the D-16 revision while `v_max` is decided, and one TBD in a
+  // consumed key refuses the configure in sim — which takes every controller
+  // on the robot down with it, because CM latches `bring_up_failed` on any
+  // controller's failure. The shipped ur5e_p1b sim did exactly that on
+  // 2026-09-22 before this flag existed.
+  YAML::Node root = ValidRoot();
+  root["reference"]["provisional"] = true;
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_TRUE(p.reference_provisional);
+
+  const CatchingValidationReport sim = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_TRUE(sim.armable);
+  EXPECT_TRUE(ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "reference"));
+
+  const CatchingValidationReport real = ValidateCatchingParams(p, kControlRateHz, true);
+  EXPECT_FALSE(real.armable);
+  EXPECT_TRUE(ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm, "reference"));
+}
+
+TEST(CatchingParams, ReferenceProvisionalDefaultsToTrueWhenTheKeyIsAbsent) {
+  // Same polarity as every other invented provisional key: a profile that says
+  // nothing is NOT cleared. The opposite default would make an omission read
+  // as a clearance, which is the one direction that fails open on hardware.
+  YAML::Node root = ValidRoot();
+  root["reference"].remove("provisional");
+  EXPECT_TRUE(ParseCatchingParams(root).reference_provisional);
+}
+
 // ── ParseCatchingParams rejection paths ──────────────────────────────────────
 
 TEST(CatchingParams, RejectsNonMapRoot) {
@@ -560,6 +628,216 @@ TEST(CatchingParams, RejectsEmptyHandArrays) {
   root["robot"]["hand"]["q_close"] = YAML::Load("[]");
   root["robot"]["hand"].remove("caging_mask");
   ExpectRejectMentioning(root, "must not be empty");
+}
+
+// ── io / prediction: the vision ingress (S5.2) ──────────────────────────────
+
+TEST(CatchingParams, IoNMinMustBeResolvedAndWholeAndWithinCapacity) {
+  {  // absent → active TBD, not a silent default
+    YAML::Node root = ValidRoot();
+    root["io"].remove("n_min");
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "io.n_min"));
+  }
+  {  // a fraction of a point is a malformed key, refused at parse time rather
+     // than truncated — a count is not a value to round.
+    YAML::Node root = ValidRoot();
+    root["io"]["n_min"] = 10.5;
+    ExpectRejectMentioning(root, "whole number");
+  }
+  {  // above the snapshot capacity the requirement can never be met, and the
+    // lane would close permanently with the rejection counter blaming vision.
+    YAML::Node root = ValidRoot();
+    root["io"]["n_min"] = 41;  // kCap is 40
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.n_min"));
+  }
+}
+
+TEST(CatchingParams, IoNMinMustBeAbleToCoverTheRequiredHorizon) {
+  // Both keys are individually in range here; only the PAIR is wrong. Nothing
+  // else catches it, and the symptom would be messages accepted on count and
+  // then rejected on horizon — which reads as a vision fault rather than as
+  // the configuration mistake it is.
+  YAML::Node root = ValidRoot();
+  root["io"]["horizon_min"] = 0.51;
+  root["io"]["n_min"] = 6;
+  const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.n_min"));
+}
+
+TEST(CatchingParams, TheHorizonGateCountsINTERVALSNotSamples) {
+  // n samples spaced dt apart span (n-1)*dt. The off-by-one is worth its own
+  // case because it is invisible in the shipped numbers: 0.51 s at 0.05 s
+  // spacing "needs 11" by the wrong arithmetic and 12 by the right one, and 11
+  // produces a 0.50 s window that trips the horizon warning on every minimal
+  // message — the exact symptom this gate claims to prevent (found by
+  // /code-review, 2026-09-22).
+  YAML::Node root = ValidRoot();
+  root["io"]["horizon_min"] = 0.51;
+  root["prediction"]["dt_expected"] = 0.05;
+
+  root["io"]["n_min"] = 11;
+  const auto eleven = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(eleven.armable) << "11 points span 0.50 s, not 0.51";
+  EXPECT_TRUE(ReportHasFailure(eleven, CatchingValidationReason::kRangeViolation, "io.n_min"));
+
+  root["io"]["n_min"] = 12;
+  const auto twelve = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_TRUE(twelve.armable);
+}
+
+TEST(CatchingParams, IoStalenessAndOffsetRangesAreChecked) {
+  {
+    YAML::Node root = ValidRoot();
+    root["io"]["t_stale"] = 0.5;  // range is [0.02, 0.2]
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.t_stale"));
+  }
+  {
+    YAML::Node root = ValidRoot();
+    root["io"]["track"]["eval_offset"] = 1.0;  // range is [0, 0.3]
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(
+        ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.track.eval_offset"));
+  }
+}
+
+TEST(CatchingParams, JWarnIsDiagnosticAndDoesNotBlockArming) {
+  // Nothing decides on it — it is the threshold of a printed warning. Gating
+  // arming on it would make an operator resolve a number to get a message
+  // they may not want.
+  YAML::Node root = ValidRoot();
+  root["io"]["track"].remove("j_warn");
+  const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_TRUE(r.armable);
+  EXPECT_EQ(r.failure_count, 0u);
+}
+
+TEST(CatchingParams, TheSimFutureToleranceIsAnOverlayNotASecondRange) {
+  // A-S5-2. The two numbers are two orders of magnitude apart because they
+  // measure different things: the sim ball lane's stamps ride the SIM time
+  // axis and legitimately lead wall by the in-flight phase error, while a
+  // camera stamps at capture and may lead wall only by the clock-sync error.
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_NEAR(rtc::catching::EffectiveFutureTol(p, /*real_arm=*/false).value, 0.1, 1e-12);
+  EXPECT_NEAR(rtc::catching::EffectiveFutureTol(p, /*real_arm=*/true).value, 0.001, 1e-12);
+
+  // The sim value would be far out of range for the shared key, and it is not
+  // judged against it — that is the whole reason the override exists.
+  const auto sim = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/false);
+  EXPECT_TRUE(sim.armable);
+  EXPECT_EQ(sim.failure_count, 0u);
+}
+
+TEST(CatchingParams, ASimConfigWithNoOverrideInheritsTheStrictTolerance) {
+  // The fail-closed direction: an absent override must not read as "no limit".
+  YAML::Node root = ValidRoot();
+  root["sim"].remove("io");
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_TRUE(p.sim_io_future_tol.tbd);
+  EXPECT_NEAR(rtc::catching::EffectiveFutureTol(p, /*real_arm=*/false).value, 0.001, 1e-12);
+  const auto r = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/false);
+  EXPECT_TRUE(r.armable) << "an absent sim override is not a failure";
+}
+
+TEST(CatchingParams, TheSimOverrideIsNotJudgedOnARealArmConfig) {
+  // It is inactive there, like sim.ball.drag_k: a hardware bring-up loading
+  // the same file must not be blocked by a key that only sim reads.
+  YAML::Node root = ValidRoot();
+  root["sim"]["io"]["future_tol"] = 9.0;  // out of range even for the sim key
+  const CatchingParams p = ParseCatchingParams(root);
+  const auto real = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/true);
+  EXPECT_TRUE(real.armable);
+  const auto sim = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/false);
+  EXPECT_FALSE(sim.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(sim, CatchingValidationReason::kRangeViolation, "sim.io.future_tol"));
+}
+
+// ── joint_cmd / robot.arm / supervisor: the CLIK step (S5.3) ────────────────
+
+TEST(CatchingParams, ClikWeightsMustKeepTheirOrdering) {
+  // Each weight below is individually in range. The SET is wrong, and the
+  // result is a controller that tracks its posture and treats the catch point
+  // as a suggestion — plausible motion, missed ball, and nothing in any log
+  // that says why. Three range checks cannot see this.
+  {
+    YAML::Node root = ValidRoot();
+    root["joint_cmd"]["w_arm"] = 2.0;  // above w_task (1.0) and w_a (0.5)
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kWeightOrdering, "joint_cmd.w_arm"));
+  }
+  {
+    // The regulariser must stay below the posture term, or the damping is what
+    // decides the redundant degree of freedom.
+    YAML::Node root = ValidRoot();
+    root["joint_cmd"]["damping_sq"] = 0.5;  // above w_arm (0.01)
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(
+        ReportHasFailure(r, CatchingValidationReason::kWeightOrdering, "joint_cmd.damping_sq"));
+  }
+  {
+    // And the ordering check does not fire on the shipped ordering.
+    const auto r = ValidateCatchingParams(ParseCatchingParams(ValidRoot()), kControlRateHz, false);
+    EXPECT_TRUE(r.armable);
+  }
+}
+
+TEST(CatchingParams, EveryUnresolvedWeightIsReportedInOnePass) {
+  // The three TBD checks used to be chained with `&&`, which short-circuits.
+  // A profile with all three unresolved reported only `w_task`; the operator
+  // resolved it, re-configured, and was told about `w_a`; resolved that,
+  // re-configured, and was told about `w_arm`. Three bring-ups for one report,
+  // while every other block in this validator lists its failures in full. The
+  // checks are here for their SIDE EFFECT on the report, so evaluation order
+  // is not a detail.
+  YAML::Node root = ValidRoot();
+  root["joint_cmd"]["w_task"] = "TBD";
+  root["joint_cmd"]["w_a"] = "TBD";
+  root["joint_cmd"]["w_arm"] = "TBD";
+  const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "joint_cmd.w_task"));
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "joint_cmd.w_a"))
+      << "the second weight was hidden behind the first";
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "joint_cmd.w_arm"))
+      << "the third weight was hidden behind the first";
+}
+
+TEST(CatchingParams, TheSupervisorKeysTheJointLayerReportsToAreActive) {
+  // L7 owns both keys, but the joint command layer is what reports to them, so
+  // they become active with it. A TBD `track_err_abort` would mean the tracking
+  // watchdog has no threshold — the one thing standing between a diverging
+  // command and the hardware.
+  {
+    YAML::Node root = ValidRoot();
+    root["supervisor"].remove("track_err_abort");
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd,
+                                 "supervisor.track_err_abort"));
+  }
+  {
+    YAML::Node root = ValidRoot();
+    root["supervisor"].remove("n_qp");
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "supervisor.n_qp"));
+  }
+}
+
+TEST(CatchingParams, TheQpIterationCapMustBeAtLeastOne) {
+  YAML::Node root = ValidRoot();
+  root["joint_cmd"]["qp"]["max_iter"] = 0;
+  // A zero cap is refused at PARSE time (a count must be positive), which is
+  // the stricter of the two answers and the one that names the key.
+  ExpectRejectMentioning(root, "whole number");
 }
 
 // ── Absent sections: defaults, never a foreign exception type ────────────────

@@ -84,6 +84,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   # dynamic_catching S4.0 binding: arm hold + unshaped hand step, sim-only.
   # No law half in rtc_controllers yet — the catching law lands with S5.
   src/controllers/catching/controller.cpp
+  src/controllers/catching/traj_input.cpp
   src/controllers/catching/lifecycle.cpp
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
@@ -1364,6 +1365,84 @@ if(BUILD_TESTING)
     geometry_msgs
   )
 
+  # ── Vision ingress decode (S5.2, G1-A / G1-B) ─────────────────────────────
+  # Owns the wire format: the ball_perception layout is reproduced in the
+  # fixture on purpose, so this suite is what fails when the publisher moves.
+  # The judgement half (order, staleness, the two time axes) is rtc_controllers'
+  # test_catching_traj_ingress — no ROS, no message.
+  ament_add_gtest(test_catching_traj_input test/test_catching_traj_input.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_catching_traj_input
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_traj_input
+    rtc_controllers
+    rtc_base
+    sensor_msgs
+  )
+
+  # ── Catching tracking law, closed loop on the real model (S5.3) ───────────
+  # G4-H / G5-A / G5-B. Drives the shipped ur5e_p1b model with a perfect servo
+  # and judges the result with a SECOND pinocchio model, so no assertion here
+  # is the controller agreeing with itself. Sleeps one control period per tick
+  # (the controller reads the steady clock, plan §3), so it runs in about a
+  # second rather than instantly.
+  ament_add_gtest(test_catching_tracking test/test_catching_tracking.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_catching_tracking
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_tracking
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    sensor_msgs
+    ament_index_cpp
+  )
+
+  # ── QP CLIK task-space characterisation across the ball envelope ─────────
+  # 36 closed-loop cases (speed x descent angle x azimuth) on the SHIPPED
+  # reference gains, writing clik_sweep.csv. Its assertions are about solver
+  # HEALTH only — convergence and the solve budget, which must hold at every
+  # speed; the position and axis errors are the measurement and are read from
+  # the CSV rather than pinned here. Own domain: it runs 36 activations and a
+  # participant collision with the tracking suite would show up as a lane that
+  # goes quiet mid-sweep. ~2 min (one control period of sleep per tick).
+  ament_add_gtest(test_catching_clik_sweep test/test_catching_clik_sweep.cpp
+    ENV ROS_DOMAIN_ID=53
+    TIMEOUT 600)
+  target_link_libraries(test_catching_clik_sweep
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_clik_sweep
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    sensor_msgs
+    ament_index_cpp
+  )
+
+  # ── UdpHandNativeBackend sensor lane test ─────────────────────────────────
+  # The other producer of the fingertip lane's per-group receipt time and
+  # sample counter (dynamic_catching D-24 (a)), plus the inference-block decode
+  # those assertions stand on. Same domain as its mujoco counterpart.
+  ament_add_gtest(test_udp_hand_native_backend test/test_udp_hand_native_backend.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_udp_hand_native_backend
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_udp_hand_native_backend
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_manager
+    rtc_base
+    rtc_msgs
+  )
+
   # ── Controller-owned RobotTarget cb_group invariant test ───────────────────
   # Spec §0d follow-up to Issue #100: locks that CreateOwnedTopics() routes
   # the controller-owned RobotTarget sub onto the LifecycleNode default
@@ -1440,6 +1519,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_ball_launch test/test_demo_gui_ball_launch.py)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
   ament_add_pytest_test(test_demo_gui_hand_step test/test_demo_gui_hand_step.py)
+  ament_add_pytest_test(test_demo_gui_catching test/test_demo_gui_catching.py)
 endif()
 
 ament_package()

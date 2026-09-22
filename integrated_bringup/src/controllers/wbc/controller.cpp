@@ -522,20 +522,10 @@ void DemoWbcController::BuildClikJointIndexSets(int arm_dof, int full_dof, int n
                                                 const std::array<int, kMaxFullDof>& ext_to_pin_v,
                                                 std::vector<int>& arm_v_idx,
                                                 std::vector<int>& hand_v_idx) noexcept {
-  arm_v_idx.clear();
-  hand_v_idx.clear();
-  const int n = std::min(full_dof, static_cast<int>(kMaxFullDof));
-  for (int i = 0; i < n; ++i) {
-    const int pv = ext_to_pin_v[static_cast<std::size_t>(i)];
-    if (pv < 0 || pv >= nv) {
-      continue;
-    }
-    if (i < arm_dof) {
-      arm_v_idx.push_back(pv);
-    } else {
-      hand_v_idx.push_back(pv);
-    }
-  }
+  // Delegates since a second CLIK caller appeared (the catching controller,
+  // S5.3). The rule is one rule; this entry point stays because this suite's
+  // tests and this controller's call sites are written against it.
+  BuildArmHandVelocityIndexSets(arm_dof, full_dof, nv, ext_to_pin_v, arm_v_idx, hand_v_idx);
 }
 
 void DemoWbcController::InitClik() noexcept {

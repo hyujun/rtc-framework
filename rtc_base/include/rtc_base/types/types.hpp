@@ -5,6 +5,7 @@
 // in the RTC framework.
 
 #include <array>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -211,8 +212,111 @@ struct DeviceState {
   std::array<float, kMaxInferenceValues> inference_data{};  // device-specific layout × groups
   std::array<bool, kMaxSensorGroups> inference_enable{};    // per-group enable flag
   int num_inference_groups{0};
+  // Per-group receipt time and sample counter of the inference (fingertip
+  // sensor) lane — dynamic_catching D-24 (a).
+  //
+  // WHY, given `inference_enable` already exists. That flag is each backend's
+  // OWN verdict, reached by its own rule (mujoco: a per-tip miss counter
+  // against `max_consecutive_missed_ticks`; udp_hand: the firmware's
+  // `inference_enable` bit copied through). A consumer that needs a DIFFERENT
+  // staleness horizon than the backend's — one derived from a deadline rather
+  // than a tick count — cannot express it, because the age the flag was
+  // computed from is not in the POD. Before these fields, the only receipt
+  // time anywhere on this path was the backend's `last_state_ns_`, which the
+  // JOINT callback stamps: a device whose joints keep arriving while the
+  // sensor lane stops looks fresh by every timestamp a controller can reach,
+  // and an old force reads as a new contact.
+  //
+  // `inference_recv_steady_ns[g]` is CLOCK_MONOTONIC (steady) nanoseconds at
+  // the moment the backend accepted that group's most recent sample, and 0
+  // means "never received" — the same "no claim" zero-init polarity the hole
+  // masks use, so a producer that predates these fields reports exactly what
+  // it knows. `header.stamp` is NOT used here: the repo's clock rule keeps
+  // freshness on the steady receipt axis (agent_docs/invariants.md).
+  //
+  // `inference_sequence[g]` counts accepted samples for that group and is
+  // monotonic within a run. It answers "did a NEW sample land" without a clock
+  // comparison, which is what a consumer needs when two ticks fall inside one
+  // sensor period. It is not a wire field — a backend that has no counter of
+  // its own leaves it at 0, and a consumer must then fall back to the age.
+  //
+  // Both are per GROUP (fingertip), not per value: a lane can go quiet on one
+  // finger while the others keep reporting, and that is the case D-24 is
+  // about. Same mirror-seam caveat as the hole masks — DeviceStateCache holds
+  // the twin of each field and RtControllerNode copies them across; a field
+  // dropped there compiles and hands controllers a permanent 0, which here
+  // reads as "never received" and fails closed rather than silently fresh.
+  std::array<int64_t, kMaxSensorGroups> inference_recv_steady_ns{};
+  std::array<uint64_t, kMaxSensorGroups> inference_sequence{};
   bool valid{false};
 };
+
+// Read the RECEIVE AXIS — the one clock every `*_recv_steady_ns` field and
+// every age helper below is measured against.
+//
+// It exists so the axis has a single spelling. The expression is three lines
+// of `std::chrono` that every producer of a receipt stamp has to write, and
+// by 2026-09-23 there were five copies of it across three packages, each with
+// a comment claiming to use "the same clock the backends use" — true only by
+// coincidence, and unverifiable without reading all five. A consumer that
+// compares a stamp from one copy against `SensorGroupAgeNs` here is relying on
+// that coincidence, so the read belongs next to the helpers that interpret it.
+//
+// steady_clock, never system_clock: this axis must not move when wall time is
+// stepped, which is the whole reason freshness is judged on receipt rather
+// than on `header.stamp` (invariants.md). RT-safe — a vDSO read, no allocation
+// and no lock, so it is callable from a tick and from a driver callback alike.
+[[nodiscard]] inline int64_t SteadyNowNs() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// Age of one sensor group's most recent sample, or a negative value when that
+// group has never reported (dynamic_catching D-24).
+//
+// The "never received" answer is deliberately NOT "infinitely old": those two
+// states differ in what they license. An age says a sample existed and has
+// since gone stale; the absence of one says the lane may not exist at all on
+// this device, which is a configuration question, not a timing one. Callers
+// that only need "is it fresh enough" use IsSensorGroupFresh below, which
+// folds both into a single fail-closed bool.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+[[nodiscard]] constexpr int64_t SensorGroupAgeNs(const DeviceState& dev, int group,
+                                                 int64_t now_steady_ns) noexcept {
+  if (group < 0 || group >= static_cast<int>(kMaxSensorGroups)) {
+    return -1;
+  }
+  const int64_t recv = dev.inference_recv_steady_ns[static_cast<size_t>(group)];
+  if (recv <= 0) {
+    return -1;
+  }
+  return now_steady_ns - recv;
+}
+
+// Whether a sensor group is both enabled by its backend AND younger than
+// `max_age_ns` on the steady receipt axis.
+//
+// BOTH terms are required and neither subsumes the other: the flag carries the
+// backend's own validity (firmware bit, miss counter) which a timestamp cannot
+// reconstruct, and the age carries the CONSUMER's deadline, which the flag was
+// never computed against. A group that never reported is not fresh, and a
+// non-positive `max_age_ns` is treated as "no sample can satisfy this" rather
+// than as "no limit" — a deadline of zero is a caller error and the safe
+// reading of it is to withhold the lane.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+[[nodiscard]] constexpr bool IsSensorGroupFresh(const DeviceState& dev, int group,
+                                                int64_t now_steady_ns,
+                                                int64_t max_age_ns) noexcept {
+  if (group < 0 || group >= static_cast<int>(kMaxSensorGroups) || max_age_ns <= 0) {
+    return false;
+  }
+  if (!dev.inference_enable[static_cast<size_t>(group)]) {
+    return false;
+  }
+  const int64_t age = SensorGroupAgeNs(dev, group, now_steady_ns);
+  return age >= 0 && age <= max_age_ns;
+}
 
 // Which of the three joint-space lanes a freshness question is about (#446).
 //

@@ -1,6 +1,9 @@
 #include "rtc_controllers/catching/catching_params.hpp"
 
+// For kCap: `io.n_min` above the snapshot capacity is unsatisfiable, and the
+// capacity is owned by trajectory.hpp (one definition, not a second literal).
 #include "catching_yaml_read.hpp"
+#include "rtc_controllers/catching/trajectory.hpp"
 #include <rtc_base/types/types.hpp>
 
 #include <cmath>
@@ -23,6 +26,7 @@ namespace {
 // model config. For the three provisional groups this validator DOES own,
 // the chosen key sits as a sibling of the group's other fields, mirroring
 // the catch frame's own placement:
+//   - `reference.provisional`                              (L4 §6, whole block)
 //   - `core.ball.provisional`                              (D-12 공 사양)
 //   - `planner.catchability.manipulability_min.provisional` (D-18)
 //   - `robot.hand.provisional`                              (L6 §6, whole profile)
@@ -73,6 +77,35 @@ YAML::Node ReadSection(const YAML::Node& parent, const char* key) {
 /// ValidateCatchingParams reports it (kRangeViolation) — unlike the sibling
 /// parser, which throws. That difference is by design and is pinned by
 /// test_catch_pose_ik_params.cpp (SharedKey* cases).
+/// A positive whole COUNT (points, iterations, retries). Absent or the literal
+/// `TBD` → `fallback` (0 where the validator should report an active TBD);
+/// anything else that is not a positive whole number is refused here.
+///
+/// Refused rather than defaulted, like every other malformed key in this file:
+/// defaulting reads a typo as "still TBD", and the operator then sees a config
+/// that will not arm with no mention of the key they got wrong. Read as a
+/// double and checked for integrality because `as<int>` would accept `10.9`
+/// by truncation — a point count is not a value to round.
+int ReadPositiveCount(const YAML::Node& node, const char* key, int fallback = 0) {
+  const params_detail::TbdRead read = params_detail::ReadTbdScalar(node, key);
+  switch (read.kind) {
+    case params_detail::TbdReadKind::kAbsent:
+      return fallback;
+    case params_detail::TbdReadKind::kNotANumber:
+      Reject("'", key, "' must be a positive whole number or the literal 'TBD'");
+    case params_detail::TbdReadKind::kRead:
+      break;
+  }
+  if (read.value.tbd) {
+    return 0;
+  }
+  const double v = read.value.value;
+  if (!(v > 0.0) || std::floor(v) != v) {
+    Reject("'", key, "' must be a positive whole number, got ", params_detail::Spelling(read.node));
+  }
+  return static_cast<int>(v);
+}
+
 TbdDouble ReadTbdDouble(const YAML::Node& node, const char* key, TbdDouble fallback) {
   const params_detail::TbdRead read = params_detail::ReadTbdScalar(node, key);
   switch (read.kind) {
@@ -225,6 +258,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.reference_zeta = ReadTbdDouble(reference, "zeta", out.reference_zeta);
   out.reference_v_max = ReadTbdDouble(reference, "v_max", out.reference_v_max);
   out.reference_a_max = ReadTbdDouble(reference, "a_max", out.reference_a_max);
+  out.reference_provisional = ReadOptional(reference, "provisional", true);
 
   const YAML::Node planner = ReadSection(node, "planner");
   const YAML::Node gamma = ReadSection(planner, "gamma");
@@ -240,11 +274,51 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   const YAML::Node decel = ReadSection(supervisor, "decel");
   out.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", out.supervisor_decel_a_dec);
 
+  const YAML::Node io = ReadSection(node, "io");
+  out.io_n_min = ReadPositiveCount(io, "n_min");
+  out.io_t_stale = ReadTbdDouble(io, "t_stale", out.io_t_stale);
+  out.io_future_tol = ReadTbdDouble(io, "future_tol", out.io_future_tol);
+  out.io_horizon_min = ReadTbdDouble(io, "horizon_min", out.io_horizon_min);
+  const YAML::Node track = ReadSection(io, "track");
+  out.io_track_eval_offset = ReadTbdDouble(track, "eval_offset", out.io_track_eval_offset);
+  out.io_track_j_warn = ReadTbdDouble(track, "j_warn", out.io_track_j_warn);
+
+  const YAML::Node prediction = ReadSection(node, "prediction");
+  out.prediction_dt_expected = ReadTbdDouble(prediction, "dt_expected", out.prediction_dt_expected);
+
+  const YAML::Node joint_cmd = ReadSection(node, "joint_cmd");
+  out.joint_cmd_k_p = ReadTbdDouble(joint_cmd, "K_p", out.joint_cmd_k_p);
+  out.joint_cmd_k_axis = ReadTbdDouble(joint_cmd, "K_a", out.joint_cmd_k_axis);
+  out.joint_cmd_k_posture = ReadTbdDouble(joint_cmd, "K_n", out.joint_cmd_k_posture);
+  out.joint_cmd_w_task = ReadTbdDouble(joint_cmd, "w_task", out.joint_cmd_w_task);
+  out.joint_cmd_w_axis = ReadTbdDouble(joint_cmd, "w_a", out.joint_cmd_w_axis);
+  out.joint_cmd_w_arm = ReadTbdDouble(joint_cmd, "w_arm", out.joint_cmd_w_arm);
+  out.joint_cmd_w_smooth = ReadTbdDouble(joint_cmd, "w_smooth", out.joint_cmd_w_smooth);
+  out.joint_cmd_damping_sq = ReadTbdDouble(joint_cmd, "damping_sq", out.joint_cmd_damping_sq);
+  const YAML::Node qp = ReadSection(joint_cmd, "qp");
+  out.joint_cmd_max_iter = ReadPositiveCount(qp, "max_iter", out.joint_cmd_max_iter);
+  const YAML::Node lag = ReadSection(joint_cmd, "lag");
+  out.joint_cmd_lag_t_arm = ReadTbdDouble(lag, "T_arm", out.joint_cmd_lag_t_arm);
+  out.joint_cmd_lag_lead_enable = ReadOptional(lag, "lead_enable", false);
+
+  const YAML::Node robot_arm = ReadSection(ReadSection(node, "robot"), "arm");
+  out.robot_arm_limit_margin = ReadTbdDouble(robot_arm, "limit_margin", out.robot_arm_limit_margin);
+
+  out.supervisor_track_err_abort =
+      ReadTbdDouble(supervisor, "track_err_abort", out.supervisor_track_err_abort);
+  out.supervisor_n_qp = ReadPositiveCount(supervisor, "n_qp", out.supervisor_n_qp);
+
   const YAML::Node core = ReadSection(node, "core");
   out.ball = ReadBallSpec(ReadSection(core, "ball"));
 
   const YAML::Node sim = ReadSection(node, "sim");
   out.sim_ball_drag_k = ReadTbdDouble(ReadSection(sim, "ball"), "drag_k", out.sim_ball_drag_k);
+  // The sim OVERLAY of a shared key (A-S5-2). Nested under `sim:` for the same
+  // reason `sim.ball.drag_k` is: this YAML is loaded by both the sim and the
+  // hardware bring-up, so "sim only" has to be said in the schema rather than
+  // in which file the value happens to sit.
+  out.sim_io_future_tol =
+      ReadTbdDouble(ReadSection(sim, "io"), "future_tol", out.sim_io_future_tol);
 
   const YAML::Node robot = ReadSection(node, "robot");
   out.hand = ReadHandProfile(ReadSection(robot, "hand"));
@@ -350,6 +424,12 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   if (CheckActiveTbd(report, params.reference_v_max, "reference.v_max", true)) {
     CheckPositive(report, "reference.v_max", params.reference_v_max.value);
   }
+  // The block as a whole (L0 §5.3). Keyed on `reference` without a trailing
+  // dot — the flag is a property of the profile, not of a field of it, exactly
+  // as `robot.hand` and `core.ball` are. A consumer's gate has to match the
+  // dotless key too, or a provisional reference reaches a real arm unnoticed
+  // (the hand profile shipped with that hole once).
+  CheckProvisional(report, "reference", params.reference_provisional, real_arm_config);
   const bool a_max_ok = CheckActiveTbd(report, params.reference_a_max, "reference.a_max", true);
   if (a_max_ok) {
     CheckPositive(report, "reference.a_max", params.reference_a_max.value);
@@ -406,6 +486,142 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   // sim.ball.drag_k — active ONLY in the sim configuration (fixture-only, L0 §1/§6).
   if (CheckActiveTbd(report, params.sim_ball_drag_k, "sim.ball.drag_k", !real_arm_config)) {
     CheckRange(report, "sim.ball.drag_k", params.sim_ball_drag_k.value, 0.0, 0.2);
+  }
+
+  // io.* / prediction.* — the vision ingress, active in every configuration
+  // from S5.2 (the controller cannot judge a message's order, age or usable
+  // window without them, and every one of those judgements is fail-closed).
+  if (params.io_n_min >= 2) {
+    if (params.io_n_min > kCap) {
+      // A requirement above the snapshot capacity can never be met, so the
+      // lane would be permanently closed with the rejection counter blaming
+      // the publisher.
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "io.n_min");
+    }
+  } else if (params.io_n_min <= 0) {
+    AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "io.n_min");
+  } else {
+    AddFailure(report, CatchingValidationReason::kRangeViolation, "io.n_min");
+  }
+
+  if (CheckActiveTbd(report, params.io_t_stale, "io.t_stale", true)) {
+    CheckRange(report, "io.t_stale", params.io_t_stale.value, 0.02, 0.2);
+  }
+  if (CheckActiveTbd(report, params.io_horizon_min, "io.horizon_min", true)) {
+    CheckPositive(report, "io.horizon_min", params.io_horizon_min.value);
+  }
+  if (CheckActiveTbd(report, params.io_track_eval_offset, "io.track.eval_offset", true)) {
+    CheckRange(report, "io.track.eval_offset", params.io_track_eval_offset.value, 0.0, 0.3);
+  }
+  // j_warn is NOT active: it is the threshold of a printed diagnostic, and no
+  // decision is taken on it. Gating arming on a value nothing consumes would
+  // make the operator resolve a number to get a warning they may not want.
+  if (!params.io_track_j_warn.tbd) {
+    CheckPositive(report, "io.track.j_warn", params.io_track_j_warn.value);
+  }
+  if (CheckActiveTbd(report, params.prediction_dt_expected, "prediction.dt_expected", true)) {
+    CheckRange(report, "prediction.dt_expected", params.prediction_dt_expected.value, 1e-3, 1.0);
+  }
+
+  // future_tol: the shared key is active on both axes; the sim override is
+  // active only in sim (A-S5-2), exactly like sim.ball.drag_k.
+  if (CheckActiveTbd(report, params.io_future_tol, "io.future_tol", true)) {
+    CheckRange(report, "io.future_tol", params.io_future_tol.value, 1e-4, 1e-2);
+  }
+  if (!real_arm_config && !params.sim_io_future_tol.tbd) {
+    // Its own, much wider range: the sim ball lane's stamps ride the sim time
+    // axis and lead wall by the in-flight phase error (D-3), which is two
+    // orders of magnitude above any clock-sync budget. An absent override is
+    // not a failure — the configuration then inherits the strict shared value,
+    // which is the fail-closed direction.
+    CheckRange(report, "sim.io.future_tol", params.sim_io_future_tol.value, 1e-4, 0.5);
+  }
+
+  // Consistency: a point-count floor below what the window requires cannot
+  // enforce it. Both keys are individually in range in that case, so nothing
+  // else catches a pair that disagrees — and the symptom would be messages
+  // accepted on count and then rejected on horizon, which reads as a vision
+  // fault rather than as a configuration one.
+  if (params.io_n_min >= 2 && !params.io_horizon_min.tbd && !params.prediction_dt_expected.tbd &&
+      params.prediction_dt_expected.value > 0.0) {
+    // n samples spaced dt apart span (n-1)*dt, NOT n*dt. The off-by-one is not
+    // academic: with the shipped 0.51 s / 0.05 s it is the difference between
+    // 11 points (0.50 s — short, so every minimal message trips the horizon
+    // warning this check exists to prevent) and 12.
+    const double needed = params.io_horizon_min.value / params.prediction_dt_expected.value + 1.0;
+    if (std::isfinite(needed) && static_cast<double>(params.io_n_min) < std::ceil(needed)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "io.n_min");
+    }
+  }
+
+  // joint_cmd.* / robot.arm.* — the CLIK step, active from S5.3.
+  if (CheckActiveTbd(report, params.joint_cmd_k_p, "joint_cmd.K_p", true)) {
+    CheckRange(report, "joint_cmd.K_p", params.joint_cmd_k_p.value, 1.0, 100.0);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_k_axis, "joint_cmd.K_a", true)) {
+    CheckRange(report, "joint_cmd.K_a", params.joint_cmd_k_axis.value, 1e-3, 30.0);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_k_posture, "joint_cmd.K_n", true)) {
+    CheckRange(report, "joint_cmd.K_n", params.joint_cmd_k_posture.value, 0.0, 10.0);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_damping_sq, "joint_cmd.damping_sq", true)) {
+    CheckPositive(report, "joint_cmd.damping_sq", params.joint_cmd_damping_sq.value);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_w_smooth, "joint_cmd.w_smooth", true)) {
+    CheckRange(report, "joint_cmd.w_smooth", params.joint_cmd_w_smooth.value, 0.0, 1.0);
+  }
+  if (params.joint_cmd_max_iter < 1) {
+    AddFailure(report, CatchingValidationReason::kRangeViolation, "joint_cmd.qp.max_iter");
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_lag_t_arm, "joint_cmd.lag.T_arm", true)) {
+    CheckRange(report, "joint_cmd.lag.T_arm", params.joint_cmd_lag_t_arm.value, 0.0, 0.5);
+  }
+  if (CheckActiveTbd(report, params.robot_arm_limit_margin, "robot.arm.limit_margin", true)) {
+    CheckRange(report, "robot.arm.limit_margin", params.robot_arm_limit_margin.value, 0.0, 0.3);
+  }
+
+  // The WEIGHT ORDERING, not just three ranges (L5 §4.3: w_task ≫ w_arm ≫ μ²).
+  // Each weight can be individually sensible while the set is wrong, and the
+  // result is a controller that tracks its posture and treats the catch point
+  // as a suggestion — plausible motion, missed ball, nothing in any log that
+  // says why.
+  //
+  // The three checks are evaluated into locals FIRST. Written as a chained
+  // `&&` they short-circuit, so a profile with all three TBD reported only
+  // `w_task` — the operator resolves it, re-configures, and is told about
+  // `w_a`; resolves that, re-configures, and is told about `w_arm`. Three
+  // round trips for one report, while every other block in this validator
+  // lists its failures in full. `CheckActiveTbd` is here for its side effect
+  // on `report`, so the ordering of the AND is not a detail.
+  const bool task_known = CheckActiveTbd(report, params.joint_cmd_w_task, "joint_cmd.w_task", true);
+  const bool axis_known = CheckActiveTbd(report, params.joint_cmd_w_axis, "joint_cmd.w_a", true);
+  const bool arm_known = CheckActiveTbd(report, params.joint_cmd_w_arm, "joint_cmd.w_arm", true);
+  const bool weights_resolved = task_known && axis_known && arm_known;
+  if (weights_resolved) {
+    CheckPositive(report, "joint_cmd.w_task", params.joint_cmd_w_task.value);
+    CheckPositive(report, "joint_cmd.w_a", params.joint_cmd_w_axis.value);
+    if (!(params.joint_cmd_w_arm.value >= 0.0)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "joint_cmd.w_arm");
+    }
+    const bool task_dominates = params.joint_cmd_w_task.value > params.joint_cmd_w_arm.value;
+    const bool axis_dominates = params.joint_cmd_w_axis.value > params.joint_cmd_w_arm.value;
+    if (!task_dominates || !axis_dominates) {
+      AddFailure(report, CatchingValidationReason::kWeightOrdering, "joint_cmd.w_arm");
+    }
+    if (!params.joint_cmd_damping_sq.tbd &&
+        !(params.joint_cmd_w_arm.value > params.joint_cmd_damping_sq.value)) {
+      AddFailure(report, CatchingValidationReason::kWeightOrdering, "joint_cmd.damping_sq");
+    }
+  }
+
+  // supervisor.track_err_abort / n_qp — L7 owns both keys; the joint command
+  // layer reports to them, so they are active as soon as it exists.
+  if (CheckActiveTbd(report, params.supervisor_track_err_abort, "supervisor.track_err_abort",
+                     true)) {
+    CheckPositive(report, "supervisor.track_err_abort", params.supervisor_track_err_abort.value);
+  }
+  if (params.supervisor_n_qp <= 0) {
+    AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "supervisor.n_qp");
   }
 
   // robot.hand.* — active in every configuration.

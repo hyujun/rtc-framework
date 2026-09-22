@@ -315,7 +315,12 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # (config/ur5e_p1b/controllers/). It has no gain panel — the policy owns
         # every command and it declares no ROS parameters — so GAIN_DEFS is the
         # wrong place to name it and this is the right one.
-        extra_switchable_controllers=("demo_inference_controller",),
+        # demo_catching_controller ships for ur5e_p1b and iiwa7_leap
+        # (config/<variant>/controllers/). Like the inference controller it has
+        # no gain panel — it takes no external target at all (its arm lane
+        # refuses goals by design and its hand lane has the Hand Step panel), so
+        # GAIN_DEFS is the wrong place to name it and this is the right one.
+        extra_switchable_controllers=("demo_inference_controller", "demo_catching_controller"),
     ),
     "iiwa7_leap": RobotProfile(
         shape=RobotShape.default_iiwa7_leap(),
@@ -326,6 +331,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         tcp_child="ee_link_actual",
         hand_group="leap",
         arm_group="iiwa7",
+        extra_switchable_controllers=("demo_catching_controller",),
     ),
 }
 

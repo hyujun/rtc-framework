@@ -30,7 +30,7 @@ integrated_bringup/
 │   │   ├── demo_compliance_controller.hpp <- 태스크 공간 admittance 바인딩 (§7 법칙 결합)
 │   │   ├── demo_inference_controller.hpp <- 학습 정책(ONNX) 바인딩. 코어는 `rtc_controllers/inference/{policy_io,reach_gate}.hpp`. link pose (cache / closed-chain FK, `policy_frame` 기준) · 관절 규약 · reach gate · object pose(TFMessage) 레인을 스스로 소유한다 — object 는 device lane 이 아니라 프레임워크 freshness 게이트가 안 걸리므로 `object_pose.timeout_sec` 이 그 책임을 진다
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
-│   │   ├── demo_catching_controller.hpp <- dynamic_catching S4.0 골격: 팔 hold + 손 무성형 계단 (sim 전용 — 비-sim backend 면 DISABLED 로 configure 되고 활성화를 거부, E-8 승인 전)
+│   │   ├── demo_catching_controller.hpp <- dynamic_catching S5.1 골격: 팔 hold + 손 무성형 계단 + P-1 최소 E-STOP 계약 (훅은 요청만, reset writer 는 RT tick) + 무장 파라미터 `catching.enable`. 실기 config (claim 한 device 가 전부 `mujoco_native` 임을 증명 못 함) 에서 소비 키에 provisional·TBD 가 있으면 DISABLED 로 configure 되고 활성화를 거부한다 (L0 §5.3)
 │   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
 │   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum
@@ -581,6 +581,22 @@ ros2 service call /demo_wbc_controller/grasp_command \
 
 ## 로깅 (Logging)
 
+### DemoCatchingController (dynamic_catching S5)
+
+설계·결정의 SSoT 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) 이고 (충돌 시 그 문서가 우선), 여기에는 **운용 표면**만 적는다.
+
+- **팔은 활성화 첫 tick 자세를 hold 한다** — 추종 법칙(CLIK)은 S5.3 이다. 손은 `diagnostic.hand_step: true` 일 때만 무성형 계단 목표를 받는다 (S4.2 측정용, S7.1 에서 시퀀서가 손을 가져가면 false 가 기본)
+- **무장 채널**: 컨트롤러 노드의 읽기·쓰기 파라미터 `catching.enable` (기본 `false`). `ros2 param set /demo_catching_controller catching.enable true`. **컨트롤러가 스스로 내린다** — E-STOP 발동·해제와 fault 래치에서 RT tick 이 latch 를 내리므로, 해제 후 재개는 다시 `true` 로 올리는 명시적 행위를 요구한다 (P-1 (c)). 활성화도 무장이 아니다
+- **E-STOP·fault**: `TriggerEstop`/`ClearEstop`/`ResetFault`/`ResetTargetInitialization` 는 atomic 요청·epoch 만 갱신하고, 되돌리는 동작의 유일 writer 는 `Compute()` 다. `ClearEstop` 은 컨트롤러 fault 래치를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않는다 (`/rtc_cm/reset_fault` ↔ `/rtc_cm/clear_estop` 이 서로 다른 경로다)
+- **실기 config 에서의 park**: claim 한 device 가 전부 `mujoco_native` 임을 증명하지 못하면 이 configure 는 **real-arm** 으로 판정되고, 이 컨트롤러가 소비하는 키 (`control_rate`·`robot.hand.*`) 에 provisional·TBD 가 있으면 `on_configure` 는 SUCCESS 를 내되 인스턴스를 DISABLED 로 두고 `on_activate` 가 거부한다 (L0 §5.3). configure 를 실패시키지 않는 이유는 CM 이 한 컨트롤러의 configure 실패로 **전체 bring-up** 을 거부하기 때문이다. 출하 프로파일은 아직 provisional 이므로 실기에서는 이 상태가 정상이다
+- **팔 추종 (S5.3)**: plan 이 있으면 `SampleAt(now_lead)` → soft-catch 기준 → 확장 CLIK (위치 3행 + 접근축 2행) → `devices[0]`. 모델은 팔+손 결합 모델이고 목표 frame 은 `urdf.extra_frames.catch_frame` 이다. **손은 solve 안에서 잠근다** — catch frame 이 손바닥에 달려 있어 손 관절이 Jacobian 에 들어오지만 이 컨트롤러는 손을 명령하지 않는다. CLIK 은 **명령값**에서 평가하므로 (D-6) 측정 상태는 루프에 들어오지 않고, 실추종은 `supervisor.track_err_abort` 가 감시한다. QP 실패·box 충돌은 **QP 없이** 관절별 가속 한계로 감속해 멈추고 (`supervisor.n_qp` 연속 실패면 fault 래치), E-STOP 중에는 아무것도 명령하지 않는다
+- **plan 원천 (S5.3/S5.5 임시)**: `diagnostic.oracle_plan` — 사용자가 ground-truth 로 잰 고정 포구점 하나. 계획기는 S6 이고, 그때 이 블록의 자리에 들어간다
+- **vision 입력 (S5.2)**: `catching.io.traj_topic` 의 `PointCloud2` 예측 궤적을 컨트롤러가 **직접 구독**한다 (`topics:` 의 `role:` 표에 없는 lane 이라 role 을 늘리지 않는다). best_effort · `KEEP_LAST(1)` — depth 는 ARCH-6 고정이고, 백로그가 생기면 **가장 최신** 예측만 소비한다. 필드는 이름으로 찾으므로 publisher 가 offset 을 바꿔도 따라가고, 이름·타입·개수가 다르면 거부하며 사유별 카운터가 남는다 (거부와 침묵은 RT 쪽에서 구별되지 않으므로 그 카운터가 유일한 진단이다). 수신 시 한 번 `t_ref = recv_steady − (recv_wall − stamp)` 로 옮기고 (D-2), stale 은 **steady 수신 나이**로만 판정한다
+- **상태 토픽 (S5.4, D-20)**: `/<config_key>/catching_state` (`rtc_msgs/CatchingState`, `KEEP_LAST(1)`). 소유 형태는 `WbcState`·`GraspState` 와 같고 `PublishRole` 은 늘리지 않는다 (E-11). **필드는 S5~S9 superset 으로 한 번 동결**돼 있으며 이후 단계는 값만 채운다 — 단계마다 열이 늘면 한 단계 전 bag 을 못 읽는다. **모든 tick 이 body 를 싣는다** (PROC-7): E-STOP·stale·plan 없음·abort tick 도 발행하고, 그 tick 에 계산하지 않은 블록은 직전 값을 남기지 않고 지운다. 그래서 값이 고정돼 보이면 컨트롤러가 정말 같은 값을 다시 계산한 것이다
+- **tick 레코드 CSV (S5.4)**: `catching_diag.csv` (`logs:` 의 `integrated_bringup/CatchingDiagLog`). 상태 토픽과 **같은 POD 한 벌**에서 나오므로 파일의 숫자와 화면의 숫자가 갈릴 수 없다. tick 마다 한 행이라 **tick 간극은 드롭된 행**을 뜻한다 (#234 P-20). `plot_rtc_log catching_diag.csv` 가 기준 vs 실현 가속도·추종 오차·solve time·슈퍼바이저 모드를 한 시간축에 그린다
+- **GUI**: `demo_controller_gui` Control 탭의 Catching 패널 — 모드·사유, 입력 lane (n·generation·sequence·수신 나이·지평, 거부 카운터는 0 이 아닌 것만), plan, 추종 오차·CLIK 상태, 그리고 Arm/Disarm. **관측된 무장과 요청된 무장을 따로 보여준다** — tick 이 E-STOP·fault 에서 latch 를 내리므로 파라미터 set 이 성공해도 무장됐다는 증거가 아니고, 둘이 갈리는 순간이 봐야 할 상태다
+- **읽기 전용 미러 파라미터**: `hand.q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`/`rho_eps`/`T_close_e2e`·`control.dt`·`diagnostic.hand_step` — 오프프로세스 분석기가 YAML 이 아니라 **컨트롤러가 읽은 값**을 쓰게 하려는 것이다
+
 ### 로깅 레벨
 
 레벨 분류 기준·공통 규칙(THROTTLE 매크로, 핫패스 포맷 인자, non-RT INFO 풍부화, 서브-로거 네이밍)은 [agent_docs/conventions.md](../agent_docs/conventions.md#logging) 가 SSoT. 이 패키지의 예시:
@@ -608,7 +624,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 | `integrated_bringup.demo_task_controller` | `DemoTaskController` (task-space 데모 컨트롤러, 500 Hz 핫패스) |
 | `integrated_bringup.demo_compliance_controller` | `DemoComplianceController` (task-space admittance 바인딩, 500 Hz 핫패스) |
 | `integrated_bringup.demo_wbc_controller` | `DemoWbcController` (WBC + MPC 데모 컨트롤러, 500 Hz 핫패스) |
-| `integrated_bringup.demo_catching_controller` | `DemoCatchingController` (dynamic_catching S4.0 골격, 500 Hz 핫패스) |
+| `integrated_bringup.demo_catching_controller` | `DemoCatchingController` (dynamic_catching S5, 500 Hz 핫패스) |
 | `integrated_bringup.demo_shared_config` | `demo_shared_config` YAML 로더 (init-time, non-RT) |
 
 ### THROTTLE 주기 표준

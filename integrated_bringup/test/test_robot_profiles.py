@@ -215,7 +215,7 @@ def test_switchable_is_gain_keys_plus_profile_extras():
     gain_keys = ("demo_joint_controller", "demo_task_controller")
     p1b = RobotProfile.for_robot("ur5e_p1b").switchable_controllers(gain_keys)
     # gain keys keep their order and come first; extras follow
-    assert p1b == (*gain_keys, "demo_inference_controller")
+    assert p1b == (*gain_keys, "demo_inference_controller", "demo_catching_controller")
     # a profile with no extras is exactly the gain keys — unchanged behaviour
     assert RobotProfile.for_robot("ur5e_p1a").switchable_controllers(gain_keys) == gain_keys
 
@@ -226,7 +226,9 @@ def test_switchable_does_not_duplicate_a_key_already_in_the_gain_tables():
     the same variable."""
     gain_keys = ("demo_joint_controller", "demo_inference_controller")
     got = RobotProfile.for_robot("ur5e_p1b").switchable_controllers(gain_keys)
-    assert got == gain_keys
+    # demo_inference_controller is in BOTH lists here and must appear once;
+    # demo_catching_controller is only in the extras and must still appear.
+    assert got == (*gain_keys, "demo_catching_controller")
     assert len(got) == len(set(got))
 
 

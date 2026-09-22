@@ -33,6 +33,7 @@ rtc_msgs/
 │   ├── HandSensorState.msg    <- 전체 핸드 센서 상태 (핑거팁 집계)
 │   ├── GraspState.msg         <- 파지 상태 판정 (접촉/힘/grasp 감지)
 │   ├── WbcState.msg           <- TSID 기반 WBC 컨트롤러 파지 상태 (GraspState의 WBC 대응)
+│   ├── CatchingState.msg      <- 동적 포구 컨트롤러 상태 (슈퍼바이저·입력·plan·기준·CLIK·손)
 │   ├── RobotTarget.msg        <- 관절/태스크 공간 목표
 │   ├── ControllerState.msg    <- 컨트롤러 lifecycle 상태 + 진단 4필드 (list_controllers 응답용)
 │   ├── DeviceStateLog.msg     <- 디바이스 상태 종합 로그
@@ -200,6 +201,49 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | **Pull estimate** | `pull` | `PullEstimate` | In-plane pull-force estimate — 하위 필드는 위 `GraspState.msg` 의 `PullEstimate.msg` 표와 동일 (measured R_i·f_i 기반, TSID λ_opt 아님) |
 
 - Per-controller 토픽: `/<config_key>/hand/wbc_state` (컨트롤러 RT tick 에서 계산, ~50 Hz publish thread).
+
+---
+
+### `CatchingState.msg`
+
+동적 포구 컨트롤러 (`DemoCatchingController`) 가 publish 하는 tick 상태입니다. 소유 형태는 `WbcState`·`GraspState` 와 같습니다 — 컨트롤러가 `SeqLock` 을 소유하고 CM publish thread 가 읽어 발행하며, `PublishRole` 은 늘리지 않습니다.
+
+**필드 집합은 S5 에서 S5~S9 전체의 superset 으로 동결**되어 있습니다 (dynamic_catching D-20). 이후 단계는 값만 채웁니다 — 단계마다 열이 늘어나면 한 단계 전에 녹화한 bag 을 읽을 수 없기 때문입니다. 아직 구현되지 않은 블록은 짝이 되는 `*_valid` 를 false 로 두고 발행하며, 이는 "그 tick 에 계산하지 않았다" 와 같은 표현입니다. 둘 다 "이 숫자를 읽지 말라" 는 뜻이라 구분할 이유가 없습니다.
+
+**모든 tick 이 body 를 싣습니다 (PROC-7).** E-STOP·입력 stale·generation 불일치·지평 부족·plan 없음·abort tick 을 포함해 매 tick Store 하고, 그 tick 에 계산하지 않은 블록은 직전 값을 남기지 않고 지웁니다. 그래서 녹화에서 값이 고정돼 보이면 그것은 컨트롤러가 정말 같은 값을 다시 계산한 것이지, publisher 가 tick 을 건너뛴 것이 아닙니다.
+
+| 카테고리 | 필드 | 타입 | 설명 |
+|---------|------|------|------|
+| **헤더** | `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
+| **슈퍼바이저** | `mode` | `uint8` | `MODE_IDLE=0` … `MODE_FAULT=10` (`rtc::catching::Mode` 와 동일 순서) |
+| | `reason` | `uint8` | `REASON_NONE=0` … `REASON_TIP_STALE=20` (`rtc::catching::Reason`) |
+| | `outcome` | `uint8` | 시행 결과 — `OUTCOME_NONE=0` … `OUTCOME_ABORTED=4` (S8 부터) |
+| **컨트롤러 상태** | `armed` | `bool` | **RT tick 이 보는** 무장 latch. `catching.enable` 파라미터 값이 아니다 — tick 이 E-STOP·fault 에서 내리므로 둘이 갈리는 순간이 관측 대상이다 |
+| | `estop_active` / `fault_latched` | `bool` | 이 tick 의 E-STOP 요청 / fault 래치 |
+| | `armable` / `law_enabled` / `real_arm_config` | `bool` | 소비 키 게이트 통과 여부 / 추종 법칙 배선 여부 / 실기 config 축 |
+| | `tick` / `t_relative_s` / `t_arm_s` | `uint64` / `float64` | RT iteration · 세션 상대 시각 (CSV join 키) · T_arm |
+| **입력 (L1)** | `input_valid` / `input_stale` / `input_expired` / `input_new` | `bool` | 이 tick 이 스냅샷에 내린 판정. stale 은 **steady 수신축** 기준 (D-2) |
+| | `input_n` / `input_generation` / `input_snapshot_sequence` / `input_activation_generation` | `int32` / `uint64` | 표본 수와 provenance token (D-22) |
+| | `input_age_s` / `input_horizon_s` | `float64` | 수신축 나이 · 예측 지평. **`input_age_s` 는 미수신이면 음수** (`tip_age_s` 와 같은 "never") — 센티넬이 없으면 `now − 0` 이라 발행자의 steady-clock uptime 이 나이로 실린다 |
+| | `input_accept_count` / `input_reject_counts` / `input_reject_names` | `uint64` / `uint64[]` / `string[]` | **메시지 도착 시점** 갱신. 거부되는 lane 과 조용한 lane 은 RT 쪽에서 구분되지 않으므로, "전부 stale" 일 때 처음 읽을 값 |
+| | `input_layout_rebuilds` / `input_origin_delay_s` / `input_jump_m` | `uint64` / `float64` | 레이아웃 변경 추종 횟수 · `recv_wall − stamp` (진단 전용, 판정 금지) · 직전 예측과의 점프 J (< 0 = 비교 안 함) |
+| **plan (L3)** | `plan_valid` / `plan_id` / `plan_t_c_s` / `plan_age_s` | `bool` / `uint32` / `float64` | 포구 시각까지 남은 시간과 plan 나이 |
+| | `plan_p_c` / `plan_a_d` / `plan_v_c` | `float64[3]` | 포구점 · 접근축 (단위) · 예상 공 속도 |
+| | `plan_gamma_f` / `plan_w5` / `plan_w6` / `plan_sigma_c` / `plan_score` | `float64` | 종단 γ · 조작성 (게이트 정의와 6행 변형, C-3) · 불확실성 · 점수 |
+| | `plan_reason` | `uint8` | `PLAN_REASON_NONE=0` … `PLAN_REASON_INPUT_NON_FINITE=13` |
+| **기준 (L4)** | `ref_valid` / `ref_saturated` | `bool` | 이 tick 에 기준이 나왔는가 / 포화했는가 |
+| | `ref_x` / `ref_xd` / `ref_xdd` / `ref_u_des` | `float64[3]` | `ref_xdd` 는 **실현** 가속도, `ref_u_des` 는 포화 전 요구값 — 포화 구간은 둘이 함께 있어야 해석된다 |
+| | `ref_e` / `ref_ed` / `ref_gamma` / `ref_gamma_d` / `ref_gamma_dd` | `float64[3]` / `float64` | DS 오차 (한 tick 이전 기준) 와 γ 프로파일 |
+| **관절 명령 (L5)** | `clik_ran` / `clik_converged` / `clik_bound_conflict` / `clik_command_mismatch` | `bool` | solve 도달 여부 · 수렴 · box 충돌 · `evaluate_at_command` 불일치 |
+| | `clik_status` / `clik_iterations` / `clik_solve_us` / `clik_conflict_mask` | `int32` / `float64` / `uint64` | ProxQP 상태 (0 = SOLVED, −1 = 미해결) · 반복 · solve 시간 (G5-C 예산의 입력) · 충돌 비트 |
+| | `qp_fail_streak` | `int32` | 연속 실패 수. `supervisor.n_qp` 회에서 fault 래치 |
+| **추종** | `track_err_rad` | `float64` | ‖q_meas − q_cmd‖. D-6 이 측정값을 CLIK 밖에 두므로 **팔이 명령 위치에 없다는 것을 아는 유일한 감시자** |
+| | `q_cmd` / `q_meas` / `arm_joint_names` | `float64[]` / `string[]` | device 순서, 이름은 configure 에서 한 번 박힌다. `q_cmd` 는 **그 tick 에 실제로 나간 명령** (법칙 비활성 구간의 hold latch 포함) 이고, 명령이 없는 tick (latch 전 침묵) 은 **NaN** 이다 — 0.0 을 쓰면 위 `track_err_rad` 을 오프라인으로 재계산하는 소비자가 존재하지 않는 수 rad 오차를 본다 |
+| | `abort_stopped` | `bool` | QP 비의존 관절공간 정지가 완료됐는가 |
+| **손 (L6)** | `hand_phase_valid` / `hand_phase` / `hand_rho` / `hand_timeout` | `bool` / `uint8` / `float64` | S7.1 시퀀서가 손을 가져가기 전까지 `hand_phase_valid` 는 false. `HAND_PHASE_OPEN=0` … `HAND_PHASE_RELEASE=4` |
+| **지문 센서 (D-24)** | `tip_names` / `tip_force` / `tip_contact` / `tip_fresh` / `tip_age_s` | `string[]` / `float64[]` / `bool[]` | `tip_fresh` 는 backend 의 유효 플래그 **와** 이 컨트롤러의 시한을 둘 다 요구한다 — 값이 유효한 것과 소비자의 시한을 만족하는 것은 다르다. `tip_age_s < 0` = 미수신 |
+
+- Per-controller 토픽: `/<config_key>/catching_state` (컨트롤러 RT tick 에서 계산, ~50 Hz publish thread).
 
 ---
 
@@ -585,6 +629,15 @@ colcon test --packages-select rtc_msgs
     ├── phase: WBC FSM (PHASE_*)
     ├── 핑거팁별: force/contact/displacement
     └── TSID 진단: tsid_solve_us/tsid_solver_ok/qp_fail_count
+
+동적 포구 (컨트롤러에서 계산)
+└── CatchingState
+    ├── 슈퍼바이저: mode/reason/outcome + 무장·E-STOP·fault
+    ├── 입력 (L1): n/generation/sequence/나이/지평 + 거부 카운터
+    ├── plan (L3): t_c/p_c/a_d/γ_f/w5/w6/사유
+    ├── 기준 (L4): x/xd/xdd/u_des/e/ed/γ
+    ├── 관절 명령 (L5): CLIK status/iterations/solve_us/conflict + 추종 오차
+    └── 손 (L6)·지문 (D-24): phase/ρ/force/contact/freshness
 
 (GUI/외부 도구는 sensor_msgs/JointState `/rtc_cm/<group>/joint_states` +
  tf2_msgs/TFMessage `<config_key>/transforms` 표준 토픽으로 위치 정보를 받음.)

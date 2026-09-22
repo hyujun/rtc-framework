@@ -253,7 +253,7 @@ def equivalent_delay(tau, T, f):
 | `joint_cmd.w_smooth` | double | – | 1e-3 | ≥0 | 평활 항 $w_s$ (S2.2b 옵션) |
 | `joint_cmd.qp.max_iter` | int | – | 20 | >0 | 기존 하드코딩값을 기본으로, S2.2b 에서 설정화 |
 | `joint_cmd.K_n` | double | 1/s | 1.0 | 0–10 | posture (기존 `SetPostureGains`) |
-| `joint_cmd.lag.T_arm` | double | s | `TBD` | ≥0 | §4.4 식별 (S10). **sim 은 0** — 주입하지 않는다 (2026-09-20). 0 이 아닌 값은 §4.5 의 축 혼동 fixture 에서만 쓴다 |
+| `joint_cmd.lag.T_arm` | double | s | **0.0** (sim, S5.3) | 0–0.5 | §4.4 식별 (S10). **sim 은 0** — 주입하지 않는다 (2026-09-20). 0 이 아닌 값은 §4.5 의 축 혼동 fixture 와 G5-E 지연 fixture 에서만 쓴다. `lead_enable` 이 false 면 읽히지 않는다 (선행축 = 실제축) |
 | `joint_cmd.lag.per_joint` | double[n] | s | `TBD` | ≥0 | §4.4 |
 | `joint_cmd.lag.lead_enable` | bool | – | false | – | 식별 전에는 false |
 | `supervisor.track_err_abort` | double | rad | `TBD` | >0 | **L7 §6 단일 원천.** L5 는 참조만 한다 |
@@ -268,7 +268,7 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 - **L5.3** (S2.2b) 접근축 2행, twist feedforward, q_c 평가 모드와 재앵커.
 - **L5.4** (S2.2b) 정지 목표 수렴 테스트, 유한차분 Jacobian 테스트.
 - **L5.5** (S2.2b·S2.4) RT 검사: QP 차원 고정, 할당 0, solve time 분포, DemoWbc 회귀.
-- **L5.6** (S5.3) 컨트롤러 바인딩: `devices[0]` 쓰기, 관절공간 abort 경로.
+- **L5.6** (S5.3) 컨트롤러 바인딩: `devices[0]` 쓰기, 관절공간 abort 경로. **완료 2026-09-22** — 구현에서 정해진 것 넷: (1) **손은 solve 안에서 잠근다** (속도 box 를 1e-9 로). catch frame 이 손바닥에 달려 있어 손 관절이 frame Jacobian 에 들어오는데 이 컨트롤러는 손을 명령하지 않는다 (L6 가 한다) — 풀어 두면 QP 가 일어나지 않을 운동으로 과제의 일부를 만족시키고 팔이 그만큼 덜 간다. (2) **posture 목표는 시행 시작 자세** (`robot.arm.q_nominal` 은 TBD 이고 wait_pose 는 S7 소유). (3) **가속 box 는 팔만 derived 값**이고 손 항은 잠금 속도/dt 로 파생한다 (CLIK 은 전 nv 를 요구한다). (4) QP 실패 streak 은 **성공한 solve 만** 지운다 — abort→재시도 사이클에는 solve 가 없으므로 seed 에서 지우면 래치가 영원히 안 선다
 - **L5.7** ~~(S3.7)~~ → **S10 으로 이동 (2026-09-20)**, L5.9 에 흡수한다. 지연 식별 도구: 순수 지연 + 시상수 분리 식별. ~~σ_trk sim 초기값 산출~~·~~시뮬레이션 주입 지연 회복 테스트~~ 는 **sim 지연 0 결정으로 소멸** — `planner.budget.sigma_trk` (L3 §6) 는 sim 초기값 출처를 잃고 S10 까지 TBD 로 남는다.
 - **L5.8** (S5.3) 예측 선행 보상(now_lead, L2 연동). ~~+ 에뮬레이션에서 효과 측정~~ — **substrate 를 잃었다** (§4.6). 보상 자체는 그대로 구현하고 효과 측정 (G5-E) 은 **fixture 전용 지연 주입** 위에서 한다 (2026-09-22 사용자 확정, §9 G5-E).
 - **L5.9** 실기 식별 `[HW-P1B]` (S10).
@@ -296,7 +296,7 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 | G5-C3 | `max_iter` 설정값 준수, 초과 시 status 노출 + 관절공간 abort 경로(가속 box 준수), L7 `QP_FAILED` 전이. RT tick 에 try/catch 없음, `Compute` noexcept | `[SIM-ANY]` |
 | G5-C4 | 재무장·E-STOP 해제 reseed 후 첫 틱에 `bound_conflict` 미발생, 자동 재개 없음, `ClearEstop` 후에도 latched fault 유지 (P-1, S5 E-8 최소 계약) | `[SIM-ANY]` |
 | ~~G5-D~~ | **은퇴 (2026-09-20)** — S3.7 이 빠지고 sim 에 지연이 없어 주입할 대상이 없다. 식별 오차 판정은 S10 의 G5-F 로 간다 | — |
-| G5-E | (**S5 게이트**) 에뮬레이션 지연 하에서 선행 보상 전후 $t_c$ 위치 오차 비교 기록. ⚠️ **판정 입력이 없다** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없고, 지연 0 에서는 전후가 같아 **측정이 공허하다**. **확정 (2026-09-22 사용자): §4.5 의 fixture 전용 지연 주입으로 살린다** — 테스트 전용 지연 큐, 런타임 경로 불변 (plan §7.3 G5-E substrate 행). S5.3 에서 fixture 를 만들고 이 게이트를 그 위에서 판정한다 | `[SIM-P1B]` |
+| G5-E | (**S5 게이트**) **PASS (2026-09-22, S5.3)** — `integrated_bringup/test/arm_lag_fixture.hpp` 의 순수 지연 큐 (50 ms) 위에서 같은 공·같은 plant 로 보상 off/on 두 번 돌려 $t_c$ 측정 자세의 위치 오차를 기록: **77 mm → 71 mm**. 방향은 일치하고 크기는 작다 — 0.4 s 지평에서 0.75 m/s 로 움직이는 γ-스케일 목표를 쫓는 절대 오차가 지배하므로, 이 수치는 "보상이 작동한다" 이지 "보상으로 충분하다" 가 아니다. 순수 지연 모델이라 L5 §4.4 의 1차 성분은 빠져 있다 (S10). 이하 원문: ⚠️ **판정 입력이 없다** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없고, 지연 0 에서는 전후가 같아 **측정이 공허하다**. **확정 (2026-09-22 사용자): §4.5 의 fixture 전용 지연 주입으로 살린다** — 테스트 전용 지연 큐, 런타임 경로 불변 (plan §7.3 G5-E substrate 행). S5.3 에서 fixture 를 만들고 이 게이트를 그 위에서 판정한다 | `[SIM-P1B]` |
 | G5-F | 실기 `T_arm` 식별 및 YAML 확정 (S10) | `[HW-P1B]` |
 
 ## 10. 미확정 항목

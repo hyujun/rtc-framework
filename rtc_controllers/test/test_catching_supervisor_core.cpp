@@ -488,6 +488,123 @@ TEST_F(ContactDebounceTest, GaussianNoiseFalseAlarmRateAtTheDocDefaultKSigmaIsRe
 // G7-D — zero RT allocation for the two per-tick pure pieces.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ── QP-independent joint-space stop (A-S5-10, S5.3) ─────────────────────────
+//
+// The path ABORT_SAFE takes when the abort was CAUSED by the joint command
+// layer (QP_FAILED / JOINT_CONFLICT), where routing the stop back through that
+// layer is the one thing that cannot be done.
+
+namespace {
+
+struct DecelArrays {
+  std::array<double, 3> q{0.0, 0.0, 0.0};
+  std::array<double, 3> qd{0.0, 0.0, 0.0};
+  std::array<double, 3> qdd_max{10.0, 10.0, 10.0};
+  std::array<double, 3> q_min{-3.0, -3.0, -3.0};
+  std::array<double, 3> q_max{3.0, 3.0, 3.0};
+
+  rtc::catching::JointDecelStep Step(double dt) {
+    return rtc::catching::JointSpaceDecelStep(q, qd, qdd_max, q_min, q_max, 3, dt);
+  }
+};
+
+}  // namespace
+
+TEST(JointSpaceDecel, RampsEachJointDownAtItsOwnLimitAndIntegratesTheCommand) {
+  // Per-joint limits, not a shared scalar: the wrist and the shoulder stop at
+  // different rates, and a stop that used one number for both would either
+  // over-brake one joint or under-brake the other.
+  DecelArrays a;
+  a.qd = {1.0, -0.5, 0.2};
+  a.qdd_max = {10.0, 5.0, 100.0};
+  const double dt = 0.002;
+
+  const auto first = a.Step(dt);
+  ASSERT_TRUE(first.valid);
+  EXPECT_FALSE(first.stopped);
+  EXPECT_DOUBLE_EQ(a.qd[0], 1.0 - 10.0 * dt);
+  EXPECT_DOUBLE_EQ(a.qd[1], -(0.5 - 5.0 * dt));
+  EXPECT_DOUBLE_EQ(a.qd[2], 0.0) << "0.2 rad/s at 100 rad/s^2 stops within one 2 ms tick";
+  // The command is INTEGRATED from the reduced velocity, not jumped anywhere:
+  // the whole point is that q_cmd stays continuous through the abort.
+  EXPECT_DOUBLE_EQ(a.q[0], (1.0 - 10.0 * dt) * dt);
+}
+
+TEST(JointSpaceDecel, ReachesAFullStopInTheTimeTheLimitAllows) {
+  // |q̇|/q̈max is the shortest stop the joint can perform; anything faster is
+  // a number the drive will not honour.
+  DecelArrays a;
+  a.qd = {1.0, 0.0, 0.0};
+  a.qdd_max = {10.0, 10.0, 10.0};
+  const double dt = 0.002;
+
+  int ticks = 0;
+  for (; ticks < 1000; ++ticks) {
+    if (a.Step(dt).stopped) {
+      break;
+    }
+  }
+  EXPECT_LT(ticks, 1000);
+  EXPECT_DOUBLE_EQ(a.qd[0], 0.0);
+  // 1.0 / 10.0 = 0.1 s = 50 ticks, give or take the final partial step.
+  EXPECT_NEAR(static_cast<double>(ticks) * dt, 0.1, 2.0 * dt);
+  // And the distance travelled is the ramp's area, not a jump.
+  EXPECT_NEAR(a.q[0], 0.5 * 1.0 * 0.1, 0.01);
+}
+
+TEST(JointSpaceDecel, StopsAtThePositionBoxRatherThanPastIt) {
+  // The box handed in is the one CLIK was given, already narrowed by
+  // limit_margin. A stop that overshot it would put the backend's own clamp in
+  // the loop, and then the command and the motion disagree.
+  DecelArrays a;
+  a.q = {2.999, 0.0, 0.0};
+  a.qd = {1.0, 0.0, 0.0};
+  const auto step = a.Step(0.002);
+  ASSERT_TRUE(step.valid);
+  EXPECT_TRUE(step.clamped);
+  EXPECT_DOUBLE_EQ(a.q[0], 3.0);
+  EXPECT_DOUBLE_EQ(a.qd[0], 0.0) << "a joint parked on its limit still reports motion";
+}
+
+TEST(JointSpaceDecel, FailsClosedOnGarbageInput) {
+  // "Where should this joint go" has no honest answer when the inputs are not
+  // finite, and the safe answer is "nowhere new" — NOT the measured pose,
+  // which is the jump this path exists to avoid.
+  DecelArrays a;
+  a.q = {0.5, 0.5, 0.5};
+  a.qd = {1.0, 1.0, 1.0};
+  const auto bad_dt = a.Step(0.0);
+  EXPECT_FALSE(bad_dt.valid);
+  EXPECT_DOUBLE_EQ(a.q[0], 0.5) << "a bad dt moved the command";
+
+  a.qdd_max[1] = std::numeric_limits<double>::quiet_NaN();
+  const auto step = a.Step(0.002);
+  EXPECT_TRUE(step.valid) << "one bad joint must not void the others' stop";
+  EXPECT_TRUE(step.non_finite);
+  EXPECT_LT(a.qd[0], 1.0) << "the usable joints still decelerated";
+  // NOT stopped, and the bad joint is left ALONE. `stopped` is the caller's
+  // cue to leave the abort, so claiming it here would end the stop with a
+  // value that is not a number still latched in the command — and the
+  // supervisor would carry it into the next trial. Zeroing the velocity would
+  // also be the one-tick stop this function exists to avoid.
+  EXPECT_FALSE(step.stopped);
+  EXPECT_DOUBLE_EQ(a.qd[1], 1.0) << "the unusable joint was integrated anyway";
+}
+
+TEST(JointSpaceDecel, ANonFiniteCommandNeverReportsACompletedStop) {
+  // The path that matters on hardware: a solver that returned NaN (ProxQP
+  // reports SOLVED on a NaN problem) leaves it in the command, and the abort
+  // is what is supposed to bring the arm to rest FROM there. It cannot, and
+  // saying it did would hand the next trial a NaN.
+  DecelArrays a;
+  a.q = {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0};
+  a.qd = {0.0, 0.0, 0.0};  // every other joint is already stopped
+  const auto step = a.Step(0.002);
+  EXPECT_TRUE(step.valid);
+  EXPECT_TRUE(step.non_finite);
+  EXPECT_FALSE(step.stopped) << "a NaN command was reported as a completed stop";
+}
+
 TEST(GateG7D, DecelTargetAndContactDebounceAllocateNothing) {
   ContactDebouncer d;
   ContactDebounceConfig cfg;

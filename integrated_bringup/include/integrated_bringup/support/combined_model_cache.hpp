@@ -51,6 +51,34 @@ namespace integrated_bringup {
 /// arm TCP tip/base frame 은 컨트롤러가 @ref cache() 의 `RegisterFrame` 으로 등록하고 그
 /// 인덱스를 소유한다. @ref ArmTcpPoseFromCache 는 그 인덱스를 인자로 받는다 — 헬퍼는
 /// 컨트롤러별 frame 이름(arm_tcp / task_tcp / clik_tcp)에 무관하다.
+/// Split the device-order joint range into the arm and hand VELOCITY index
+/// sets Pinocchio uses, through a reorder map.
+///
+/// Shared rather than copied: two controllers now hand these sets to
+/// `ClikReferenceGenerator::Config`, and the rule they encode — device index
+/// below `arm_dof` is arm, the rest is hand, anything the map does not place
+/// is dropped — is one rule. A second copy would be the place the next
+/// reorder change fails to land (P5).
+///
+/// Entries the map reports outside `[0, nv)` are skipped rather than clamped:
+/// a joint the model does not carry has no velocity index, and inventing one
+/// would put another joint's column in its place.
+inline void BuildArmHandVelocityIndexSets(int arm_dof, int full_dof, int nv,
+                                          const std::array<int, 64>& ext_to_pin_v,
+                                          std::vector<int>& arm_v_idx,
+                                          std::vector<int>& hand_v_idx) noexcept {
+  arm_v_idx.clear();
+  hand_v_idx.clear();
+  const int n = std::min(full_dof, static_cast<int>(ext_to_pin_v.size()));
+  for (int i = 0; i < n; ++i) {
+    const int pv = ext_to_pin_v[static_cast<std::size_t>(i)];
+    if (pv < 0 || pv >= nv) {
+      continue;
+    }
+    (i < arm_dof ? arm_v_idx : hand_v_idx).push_back(pv);
+  }
+}
+
 class CombinedModelCache {
  public:
   /// arm+hand 합산 DoF 상한 (ext→pin reorder 버퍼 고정 용량). 세 컨트롤러의 기존

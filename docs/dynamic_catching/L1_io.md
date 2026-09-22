@@ -201,10 +201,20 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 [[nodiscard]] TrajView ReadTraj(const rtc::SeqLock<TrajectorySnapshot>& box, NowReal now,
                                 NowLead now_lead, std::int64_t t_stale_ns,
                                 std::uint32_t current_generation,  // 호출부: ActivationGeneration()
-                                std::uint64_t& last_snapshot_seq, TrajectorySnapshot& buf) noexcept {
+                                ConsumedToken& consumed, TrajectorySnapshot& buf) noexcept {
   buf = box.Load();                                // 매 tick 무조건 (D-21) — 재시도 상한 없음 (G1-8)
-  const bool is_new = buf.snapshot_sequence != last_snapshot_seq;  // payload 안 token 으로 판정 (D-22)
-  if (is_new) { last_snapshot_seq = buf.snapshot_sequence; }
+  // payload 안 token 으로 판정 (D-22). 판정 대상은 번호가 아니라 **(epoch, 번호) 쌍 + seen** 이다:
+  //  ㄱ. A-S5-4 로 새 track epoch 은 번호를 아무 값에서나 다시 시작할 수 있으므로, 번호가 같다는
+  //      것만으로는 반복의 근거가 못 된다 (새 공의 첫 스냅샷이 옛 공의 마지막 번호와 겹치면
+  //      TRACK_CHANGED 가 안 뜬 채 새 공의 표본이 소비된다).
+  //  ㄴ. 0 은 합법적인 `snapshot_sequence` 다 — 값은 vision 노드에서 그대로 오고 이 repo 가
+  //      제약하지 않는다. 그래서 `last_snapshot_seq == 0` 하나로는 "아직 아무것도 안 봤다" 와
+  //      "0번을 봤다" 를 구별할 수 없고, 0번으로 시작하는 lane 의 첫 스냅샷이 이미 소비된 것으로
+  //      읽힌다 (trial reset 직후에도 같다). track 축이 `track_seen_` 으로 푼 문제를 sequence
+  //      축에도 똑같이 둔다.
+  const bool is_new = !consumed.seen || buf.snapshot_sequence != consumed.sequence ||
+                      buf.generation != consumed.generation;
+  if (is_new) { consumed = {buf.snapshot_sequence, buf.generation, true}; }
   const bool current_gen = buf.activation_generation == current_generation;  // D-23
   const bool stale = !current_gen || !buf.valid || (now.ns - buf.recv_steady_ns) > t_stale_ns;  // steady 수신 나이
   const bool expired = buf.n > 0 && now_lead > buf.LastBallTime();              // 선행축 (§4.1)
@@ -231,15 +241,17 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | `io.traj_topic` | string | – | ball_perception debug 예측 궤적 토픽 | – | G1-2, D-4 (stable ABI 아님) |
 | `io.qos_reliability` | enum | – | `best_effort` | – | S3.4 실측으로 확정 (TBD-VIS-08 닫힘, G1-2). depth 는 `KEEP_LAST(1)` 고정(ARCH-6)이라 설정 키가 아니다 |
 | `io.expected_frame` | string | – | `world` | – | 마스터 §3. sim 실측 `world` (TBD-VIS-06 닫힘). 다르면 §4.3 변환 |
-| `io.n_min` | int | – | **11** (provisional, S3.6) | ≥2 | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3). = ⌈`io.horizon_min` / `prediction.dt_expected`⌉ = ⌈0.51 / 0.05⌉ (plan §4.4 S3.6 결과) |
-| `io.t_stale` | double | s | `TBD` — **[제안] 0.10** (S3.6) | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후). 제안 근거: S3.4 실측 발행 30 Hz (33 ms), 드롭 30 % 주입에서 p95 15 Hz (67 ms) 이므로 3 주기 = 0.10 s 면 드롭 한 건은 stale 이 아니고 유령 트랙 침묵 (마지막 VALID 뒤 ≤ 34 ms 한 건, 이후 침묵) 은 0.10 s 안에 소실로 읽힌다. **확정은 S5.2** (S8 부하 실측 후) |
-| `io.future_tol` | double | s | `TBD` — **[제안] 1e-3** (S3.6) | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2). 제안 근거: sim 은 같은 호스트 wall clock (S3.4: stamp→수신 p50 32 ms 로 음수 없음; **2026-09-22 부터 공 lane stamp 는 발사 기준 sim 시간축을 wall 에 얹은 값이라 stepper 가 따라잡는 동안 wall 을 수십 ms 앞선다** (D-3 위상 오차 δ 의 양방향, `rtc_mujoco_sim` README §Projectile Ball stamp) — 예측 origin stamp 도 그 축이므로 **sim overlay 에서는 0.1 s 가 필요**하고 1e-3 은 실기 (카메라 capture time) 값이다; ball_perception profile 의 `max_future_skew_s` 도 같은 이유로 0.1) 이라 예산은 변환 반올림뿐. 실기는 카메라 PC 와의 동기 실측 (TBD-NET-01, S10) 후 — **확정은 S5.2** |
+| `io.n_min` | int | – | **12** (provisional, S3.6 정정) | 2–`kCap` | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3). = ⌈`io.horizon_min` / `prediction.dt_expected`⌉ **+ 1** = ⌈0.51/0.05⌉ + 1. **+1 은 여유가 아니다** — 간격 dt 로 놓인 n 점이 덮는 창은 (n−1)·dt 이므로 11 점은 0.50 s 로 요구보다 10 ms 짧고, 그러면 최소 길이 메시지마다 지평 경고가 뜬다 (`/code-review` 2026-09-22 — S3.6 산식이 이 항을 빠뜨렸다). 검증기가 `horizon_min`·`dt_expected` 와의 정합을 검사한다 |
+| `io.t_stale` | double | s | **0.10** (확정 S5.2) | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후). 제안 근거: S3.4 실측 발행 30 Hz (33 ms), 드롭 30 % 주입에서 p95 15 Hz (67 ms) 이므로 3 주기 = 0.10 s 면 드롭 한 건은 stale 이 아니고 유령 트랙 침묵 (마지막 VALID 뒤 ≤ 34 ms 한 건, 이후 침묵) 은 0.10 s 안에 소실로 읽힌다. **확정은 S5.2** (S8 부하 실측 후) |
+| `io.future_tol` | double | s | **1e-3** (확정 S5.2, 실기값) | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2). 제안 근거: sim 은 같은 호스트 wall clock (S3.4: stamp→수신 p50 32 ms 로 음수 없음; **2026-09-22 부터 공 lane stamp 는 발사 기준 sim 시간축을 wall 에 얹은 값이라 stepper 가 따라잡는 동안 wall 을 수십 ms 앞선다** (D-3 위상 오차 δ 의 양방향, `rtc_mujoco_sim` README §Projectile Ball stamp) — 예측 origin stamp 도 그 축이므로 **sim overlay 에서는 0.1 s 가 필요**하고 1e-3 은 실기 (카메라 capture time) 값이다; ball_perception profile 의 `max_future_skew_s` 도 같은 이유로 0.1) 이라 예산은 변환 반올림뿐. 실기는 카메라 PC 와의 동기 실측 (TBD-NET-01, S10) 후 — **확정은 S5.2** |
 | `io.horizon_min` | double | s | **0.51** (provisional, S3.6) | >0 | D-15 지평 요구. S3.6 산출 — **R1 (commit 조건) 기준**, R2 (정지 출발) 로 잡지 않는다 (plan §4.4 S0 결과, 2026-09-19): $T_{freeze}+L$ = ($T_{close,tot}$ 0.2815 + $T_{arm}$ 0.05 + $T_{margin}$ 0.03) + L 0.14 = 0.5015 → 10 ms 로 **올림** 0.51 s (내림 0.50 은 R1 을 1.5 ms 미달하는 궤적을 통과시킨다; 0.05 s 간격에서 11 점 = 0.55 s). L 0.14 s 는 S0.7 가정값이라 provisional. sim profile 지평은 이 게이트가 아니라 목표 분포 요구 H_req 가 정한다 — 기구학 reachable 창 + T_det 재실측 기준 0.99 s → 설정 1.0 s / 20 점 (plan D-27·§4.4 S3.6 결과) |
 | `io.track.eval_offset` | double | s | 0.05 | 0–0.3 | §4.4 비교 시각 오프셋 |
 | `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 점프 경고 |
 | `io.pred.nu_window` | int | – | 30 | 5–300 | §4.5 창 길이 |
 | `io.pred.nu_alpha` | double | – | 0.05 | 0.001–0.2 | §4.5 |
-| `io.pred.nu_reg` | double | m² | `TBD` | >0 | §4.5 정규화 λ (NUM-1), S5.2 |
+| `io.pred.nu_reg` | double | m² | `TBD` | >0 | §4.5 정규화 λ (NUM-1) — **S7 로 이월** (A-S5-5: 소비자 `PRED_INCONSISTENT` 가 L7 이고 공분산 시각 보간 규칙이 아직 없다) |
+| `sim.io.future_tol` | double | s | **0.1** (확정 S5.2) | 1e-4–0.5 | **A-S5-2 sim 전용 overlay**. sim config 에서만 활성이고 `io.future_tol` 을 덮는다 (`sim.ball.drag_k` 와 같은 활성 규칙). 두 값이 두 자릿수 다른 이유는 재는 대상이 다르기 때문이다 — sim 공 lane 의 stamp 는 sim 시간축이라 비행 안 위상 오차만큼 wall 을 앞서고 (D-3), 실기 카메라는 capture 시각이라 시계 동기 오차뿐이다. 한 키에 한 범위로는 둘 중 하나만 지킬 수 있고, sim 값을 실기 범위 안에 넣으면 하드웨어에서 100 ms 시계 오차를 조용히 수락한다. 부재는 실패가 아니다 — 그 경우 엄격한 공용 키를 물려받는다 (fail-closed) |
+| `prediction.dt_expected` | double | s | **0.05** | 1e-3–1.0 | vision profile 의 간격. `io.n_min` 이 이 값에서 유도되고 (⌈horizon_min / dt_expected⌉), 디코더의 간격 하한도 이 값의 1/10 로 파생된다 — 두 곳에 같은 수를 박지 않는다 |
 
 v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.1), `io.track.t_gap`·`io.track.j_new` (트랙 판정은 `generation`, §4.4), `io.seqlock_max_retries` (`rtc::SeqLock` 에 재시도 상한 없음, G1-8), `io.tip_topic_prefix`·`io.tip_t_stale` (지문 센서는 `ControllerState` 경로, 규약은 S7.3).
 
@@ -282,4 +294,6 @@ v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.
 
 ## 10. 미확정 항목
 
-~~TBD-VIS-06·07·08~~ (S3.4 에서 닫힘 — G1-2·G1-4·G1-5), `snapshot_sequence` 되감김 처리·`validity` 부분 수용 (S5.2), $\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (S5.2), 계획기 공분산 버퍼 전달 수단 (S5.2/S6), `io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min` (S3.4·S3.6), `io.track.j_warn`, D-24 지문 센서 freshness 경로 (S5 착수 전).
+~~TBD-VIS-06·07·08~~ (S3.4 에서 닫힘 — G1-2·G1-4·G1-5). ~~`snapshot_sequence` 되감김 처리~~ (S5.2, A-S5-4: generation 이 바뀌면 기대값을 리셋하고 같은 track 안에서는 ≤ 직전값을 거부). ~~`validity` 부분 수용~~ (S5.2: C-1 유지 — S3.4 가 부분 무효 0 건이라 비용 없이 fail-closed). ~~`io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min`~~ (S5.2 에서 §6 표에 확정, `future_tol` 은 sim overlay 와 쌍). ~~계획기 공분산 버퍼 전달 수단~~ (S5.2: `CovarianceSnapshot` SeqLock, 같은 token — **소비자는 S6**).
+
+남은 것: $\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (**S7 로 이월**, A-S5-5), `io.track.j_warn` (분포 미측정 — 진단 전용이라 무장을 막지 않는다), ~~D-24 지문 센서 freshness 경로~~ (S5.2e 에서 배선).

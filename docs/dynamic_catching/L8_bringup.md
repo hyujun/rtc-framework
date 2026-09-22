@@ -139,7 +139,10 @@ class CatchingController final : public rtc::RTControllerInterface {
   //  on_deactivate: 계획기 Pause (join 은 소멸자에서만)
   // RT
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;  // §4.1
-  // E-STOP·fault: TriggerEstop/ClearEstop/SetHandEstop, ResetFault/HasLatchedFault — P-1 임시 기준(S5.1 최소 계약, L7 §4.1), 정책은 S9
+  // E-STOP·fault: TriggerEstop/ClearEstop/SetHandEstop, ResetFault/HasLatchedFault — P-1 임시 기준(S5.1 최소 계약, L7 §4.1), 정책은 S9.
+  //   S5.1 구현: 네 훅은 atomic 요청·epoch 만 갱신하고, 되돌리는 동작의 유일 writer 는 Compute() 다.
+  //   운용자 무장 채널은 파라미터 `catching.enable` (A-S5-3) — 콜백은 atomic 만 쓰고 tick 이 소비하며,
+  //   tick 이 E-STOP·fault 에서 그 latch 를 내린다 (P-1 (c) 를 메커니즘으로 만든다).
 };
 ```
 
@@ -147,6 +150,7 @@ class CatchingController final : public rtc::RTControllerInterface {
 - 계획기 스레드: `rtc::PeriodicRtThread` 의 형제 subclass, event 구동 (D-7c), slot·스케줄러는 D-7b·D-7a (plan §6·§7). 배치 변경은 E-7 이며 Adding a New Thread 절차를 따른다
 - SeqLock payload (`RtStatePod`, `PlanSnapshotPod`, 궤적 스냅샷, 상태 스냅샷)는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지)
 - 상태 publisher (L8.3, D-20): `rtc_msgs` 새 포구 상태 메시지, controller 소유 `rtc::SeqLock<T>` + `Setup*Publisher` 패턴 (`WbcState`·`GraspState` 선례). `PublishRole` 에 추가하지 않는다 (E-11). **필드는 S5 에서 S5~S9 superset 을 한 번에 동결**하고 이후 단계는 값만 채운다. `Compute()` 의 **모든 tick 에서 Store** 한다 — E-STOP·stale·generation 불일치·지평 부족·plan 없음·abort 를 포함한 **모든 early-return 분기**에서도 Store 하고, 그 tick 에 계산하지 않은 필드는 무효화한다 (PROC-7, agent_docs/invariants.md). DemoWbc 의 `!target_initialized_` early-return 이 `wbc_state_lock_.Store` 를 빠뜨리는 것은 **알려진 gap 이지 선례가 아니다** — 새 컨트롤러가 그대로 이식하지 않는다
+- **S5.4 구현 (2026-09-22)**: `rtc_msgs/CatchingState` + `SetupCatchingStatePublisher` + `PublishCatchingStateFromSnapshot`. `Compute()` 는 **단일 exit** 이고 마지막에 한 번 Store 하므로 "모든 early-return 분기에서 Store" 가 열거가 아니라 **구조적 성질**이다. 무효화도 마찬가지로 구조적이다 — 레코드를 tick 머리에서 기본 생성하므로 계산하지 않은 블록은 0 이고, 각 filler 가 자기 필드를 지우는 것을 기억할 필요가 없다. ingress 카운터만은 이 레코드에 없다: **메시지 도착**에 움직이는 값이라 tick 마다 반복하면 per-tick 측정처럼 보이고, 구독 스레드 소유라 RT 에서 읽으면 race 다 — 별도 SeqLock (`CatchingIngressSnapshot`) 으로 발행 스레드가 읽는다
 - v0.4 의 손 명령 포트 추상화(in_loop/async)는 D-11 로 삭제 — 손은 device slot 에 직접 쓴다
 
 ### 5.2 기록 레코드
@@ -171,7 +175,7 @@ struct TickRecord {                   // 고정 크기, POD
 ```
 
 - 기록 경로: RT 는 SPSC 에 push 만 하고, drain 과 CSV 쓰기는 기존 CSV 인프라(`rtc::ThreadCsvProducer`/`rtc::ThreadCsvLogger`)가 맡는다. **새 기록 스레드를 만들지 않는다.** 계획기 timing 은 DemoWbc 관용구대로 aux 타이머가 drain 한다 (plan §6)
-- 레코드 필드 확정은 S5.4 (L4·L5 타입 확정 후)
+- 레코드 필드 확정 **완료 (S5.4, 2026-09-22)** — 구현은 `integrated_bringup/include/integrated_bringup/logging/catching_diag_log_pod.hpp` 의 `CatchingDiagLogPod` 이고 위 초안과 두 가지가 다르다. (1) 상태 메시지와 **같은 POD 한 벌**을 쓴다 — 파일의 숫자와 화면의 숫자가 갈릴 수 없게 하려는 것이고, 그래서 float 이 아니라 double 로 싣는다. (2) `flags` 비트필드 대신 이름 있는 bool 을 쓴다: CSV 헤더가 비트 이름을 실을 수 없어 저장된 파일이 그 run 의 헤더 없이는 해독 불가가 된다. `q_meas`·`ball_p`·`ball_v` 중 공 항목은 컨트롤러에 truth 가 없으므로 빠졌다 (§8 오프라인 평가 소관). 지문 힘·접촉은 임계가 S7 이라 `tip_age_s` (정책 불필요한 측정) 만 채운다
 - 토픽 기록: rosbag2로 vision `PointCloud2`, truth(시뮬레이션), 상태 토픽을 기록한다
 
 ### 5.3 launch 구성

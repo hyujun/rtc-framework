@@ -136,6 +136,14 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
 
   auto ds = sensor_cache_.Load();
 
+  // One stamp for the whole message (dynamic_catching D-24 (a)). This lane is
+  // one `HandSensorState` carrying every fingertip, so the groups it touches
+  // are all exactly as old as each other — a per-tip clock read here would
+  // only add jitter between values that arrived in one packet. Groups NOT in
+  // this message keep their previous stamp and counter, which is what makes a
+  // lane that goes quiet on one finger observable.
+  const int64_t recv_steady_ns = rtc::SteadyNowNs();
+
   const int n_ft = static_cast<int>(msg->fingertips.size());
   for (int f = 0; f < n_ft && f < kMaxSensorGroups; ++f) {
     const auto& fs = msg->fingertips[static_cast<std::size_t>(f)];
@@ -160,6 +168,15 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
     }
 
     ds.inference_enable[static_cast<std::size_t>(f)] = fs.inference_enable;
+    // Receipt is recorded for every fingertip the message carries, INCLUDING
+    // the ones whose `inference_enable` bit is clear. The two answer different
+    // questions — the bit is the firmware's verdict on the value, the stamp is
+    // when a sample last arrived — and folding them would make a disabled-but-
+    // live lane indistinguishable from a dead one, which is the exact
+    // confusion D-24 exists to remove. The counter increments on the cached
+    // value so it is monotonic per group across the run.
+    ds.inference_recv_steady_ns[static_cast<std::size_t>(f)] = recv_steady_ns;
+    ++ds.inference_sequence[static_cast<std::size_t>(f)];
     if (fs.inference_enable && infer_values_per_group >= 7) {
       const int ft_base = f * infer_values_per_group;
       ds.inference_data[static_cast<std::size_t>(ft_base)] = fs.contact_flag;
@@ -202,6 +219,12 @@ void UdpHandNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
   cache.inference_data = s.inference_data;
   cache.inference_enable = s.inference_enable;
   cache.num_inference_groups = s.num_inference_groups;
+  // D-24 (a) — same lane, same copy. Dropping either of these two here is the
+  // failure this backend can produce on its own (the CM copy is the other
+  // one), and it looks like a permanently stale fingertip rather than a build
+  // error.
+  cache.inference_recv_steady_ns = s.inference_recv_steady_ns;
+  cache.inference_sequence = s.inference_sequence;
 }
 
 void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,

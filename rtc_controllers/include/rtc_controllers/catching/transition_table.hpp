@@ -41,6 +41,23 @@
 //     constraint the doc places on Reason applicability. Revisit in S7.2 if
 //     a dedicated readiness-lost Reason is added later.
 //
+//     The same reuse covers the MID-CYCLE modes, and there it is not a
+//     labelling choice but a safety one. Readiness can be lost while the arm
+//     is moving — the operator lowers `catching.enable` during an approach —
+//     and the supervisor has to answer something. With no row the mode simply
+//     stays, the driver stops calling the law, and the carried joint command
+//     freezes at whatever it held: a velocity step, i.e. exactly the one-tick
+//     infinite deceleration decel_target.hpp says the controller must never
+//     emit (observed 2026-09-23, code review of this branch). So every mode
+//     that can be carrying motion routes readiness-lost through ABORT_SAFE,
+//     which owns the ramp and already knows how to leave once the arm has
+//     stopped. RETREAT is the exception: the arm is stopped by the time it is
+//     reached and RETREAT is the re-arm boundary, so there readiness-lost
+//     goes straight to IDLE and the cycle ends where a disarm should end it.
+//     ABORT_SAFE deliberately has NO row — its exit is the completion of the
+//     stop, and answering kParamsTbd there would strand the very stop that
+//     makes leaving safe (the driver must let it fall through).
+//
 // Every row below is grouped by its FROM state with an inline pointer to the
 // doc line it encodes, so a future reconciliation with a design doc edit can
 // find its counterpart without re-deriving this table from scratch.
@@ -147,7 +164,7 @@ struct TransitionRow {
 
 // ── The merged (Mode × Reason) → Mode table ─────────────────────────────────
 // clang-format off
-inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
+inline constexpr std::array<TransitionRow, 93> kTransitionTable = {{
     // IDLE (§4.1 row 1; §4.2 PARAMS_TBD, CLOCK_UNHEALTHY "IDLE 진입 거부")
     {Mode::kIdle, Reason::kNone, Mode::kArmed},
     {Mode::kIdle, Reason::kParamsTbd, Mode::kIdle},
@@ -175,6 +192,7 @@ inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
     {Mode::kTracking, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kEstop, Mode::kIdle},
+    {Mode::kTracking, Reason::kParamsTbd, Mode::kAbortSafe},
 
     // APPROACH (§4.1 row 4; §4.2 BALL_STALE/TRACK_CHANGED/HORIZON_EXTRAP/
     // PRED_INCONSISTENT/PLAN_INVALID/REF_SATURATED "APPROACH면 RETREAT",
@@ -192,6 +210,7 @@ inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
     {Mode::kApproach, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kApproach, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kApproach, Reason::kEstop, Mode::kIdle},
+    {Mode::kApproach, Reason::kParamsTbd, Mode::kAbortSafe},
 
     // COMMITTED (§4.1 row 5; §4.2 BALL_STALE_LONG/REF_SATURATED "동결 후
     // ABORT_SAFE", BALL_STALE_COMMITTED/HORIZON_EXTRAP/TIP_STALE self-loop +
@@ -208,6 +227,7 @@ inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
     {Mode::kCommitted, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kCommitted, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kCommitted, Reason::kEstop, Mode::kIdle},
+    {Mode::kCommitted, Reason::kParamsTbd, Mode::kAbortSafe},
 
     // CLOSING (§4.1 row 6; §4.2 same "동결 후" set as COMMITTED plus
     // HAND_TIMEOUT self-loop + record, "전 구간" fatal reasons, ESTOP clear)
@@ -224,6 +244,7 @@ inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
     {Mode::kClosing, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kClosing, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kClosing, Reason::kEstop, Mode::kIdle},
+    {Mode::kClosing, Reason::kParamsTbd, Mode::kAbortSafe},
 
     // DECEL (§4.1 row 7; §4.2 HAND_TIMEOUT/TIP_STALE self-loop + record —
     // REF_SATURATED/BALL_STALE_LONG do NOT apply here per their own
@@ -238,6 +259,7 @@ inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
     {Mode::kDecel, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kDecel, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kDecel, Reason::kEstop, Mode::kIdle},
+    {Mode::kDecel, Reason::kParamsTbd, Mode::kAbortSafe},
 
     // HOLD (§4.1 row 8; TIP_STALE self-loop, "전 구간" fatal reasons, ESTOP
     // clear)
@@ -249,6 +271,7 @@ inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
     {Mode::kHold, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kHold, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kHold, Reason::kEstop, Mode::kIdle},
+    {Mode::kHold, Reason::kParamsTbd, Mode::kAbortSafe},
 
     // RETREAT (§4.1 row 9; "전 구간" fatal reasons, ESTOP clear)
     {Mode::kRetreat, Reason::kNone, Mode::kArmed},
@@ -258,6 +281,7 @@ inline constexpr std::array<TransitionRow, 86> kTransitionTable = {{
     {Mode::kRetreat, Reason::kSpeedScaling, Mode::kAbortSafe},
     {Mode::kRetreat, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kRetreat, Reason::kEstop, Mode::kIdle},
+    {Mode::kRetreat, Reason::kParamsTbd, Mode::kIdle},
 
     // ABORT_SAFE (§4.1 row 10; ABORT_ESCALATED → FAULT, ESTOP clear)
     {Mode::kAbortSafe, Reason::kNone, Mode::kRetreat},

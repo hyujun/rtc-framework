@@ -53,6 +53,18 @@ struct DeviceStateCache {
   std::array<float, kMaxInferenceValues> inference_data{};
   std::array<bool, kMaxSensorGroups> inference_enable{};
   int num_inference_groups{0};
+  // Per-group receipt time and sample counter of the inference lane
+  // (dynamic_catching D-24 (a)). Mirrors DeviceState::inference_recv_steady_ns
+  // and ::inference_sequence; that declaration owns the contract, including
+  // the "0 = never received" polarity and why `header.stamp` is not used.
+  //
+  // The mirror-seam warning on `hole_mask` above applies identically, and with
+  // a sharper edge: dropping these from RtControllerNode's copy leaves a
+  // permanent 0, which this polarity spells "never received" — the consumer
+  // then withholds the lane forever, and the symptom is a catching controller
+  // that always reports TIP_STALE rather than a crash.
+  std::array<int64_t, kMaxSensorGroups> inference_recv_steady_ns{};
+  std::array<uint64_t, kMaxSensorGroups> inference_sequence{};
   bool valid{false};
 };
 

@@ -36,7 +36,7 @@ paths:
 
 ## 판정
 
-**ARCH-1 — "robot-specific" 인지**: 상수가 *특정 로봇에서만 참* 이면 위반이다. `ur5e` · `panda` 같은 이름, `num_joints = 6`, HW ID 리터럴. 같은 값이라도 **YAML/URDF 에서 읽어 런타임에 정해지면** 위반이 아니다. 판정이 애매하면 "이 패키지를 다른 로봇에 그대로 쓸 수 있는가" 를 묻는다. 산문·주석의 로봇 이름은 위반이 아니다 (알려진 gate 오탐).
+**ARCH-1 — "robot-specific" 인지**: 상수가 *특정 로봇에서만 참* 이면 위반이다. `ur5e` · `panda` 같은 이름, `num_joints = 6`, HW ID 리터럴. 같은 값이라도 **YAML/URDF 에서 읽어 런타임에 정해지면** 위반이 아니다. 판정이 애매하면 "이 패키지를 다른 로봇에 그대로 쓸 수 있는가" 를 묻는다. **주석·docstring 의 로봇 이름도 대상이다** — 이름은 rename 에서 썩고, agnostic 헤더에 "이 패키지는 저 로봇 것" 이라는 문서를 남긴다. gate 가 그것을 잡으면 오탐이 아니라 정상 발화이므로 robot-neutral 하게 고쳐 쓰고 (구체 예시는 소비 패키지의 README·config·plan 으로 내린다), 그 turn 이 **추가하지 않은** 줄은 애초에 스코프 밖이라 잡히지 않는다. 차단형 sensor 라 "오탐이니 그대로 둔다" 로는 종결되지 않는다 ([invariants.md](../../agent_docs/invariants.md) §False-positive 처리).
 
 **ARCH-3 — "두 번째" 세는 법**: 같은 역할을 하는 구현이 이미 하나 있는데 두 번째를 추가하려는 순간이 트리거다. `#ifdef` 나 하드코딩 switch 로 분기하려는 충동이 곧 신호다 — 그 자리에 pure-virtual base 또는 concept 를 먼저 만든다. 세 번째에서 고치면 이미 늦다. 단일 backend 의 key 확장처럼 **아직 두 번째가 아닌** 경우는 대상이 아니다.
 
