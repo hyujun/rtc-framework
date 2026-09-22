@@ -254,6 +254,47 @@ TEST_F(RtLoopPipelineTest, PerLaneFreshnessReachesTheControllerUnclipped) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// The same seam for the fingertip lane's receipt time and sample counter
+// (dynamic_catching D-24 (a)).
+//
+// A THIRD test rather than more assertions in the two above, because this pair
+// fails differently from the masks. A mask dropped from ControlLoop's copy
+// reads as "no holes" — permissive, and the gate silently opens. These two
+// read as "never received", which is the fail-CLOSED direction: the consumer
+// withholds the lane forever and the symptom is a catching controller stuck
+// reporting a stale fingertip, with nothing in any build or ingress test to
+// say why. Both failures are invisible without an assertion on this exact
+// field at this exact end, and they are not the same bug.
+//
+// GROUP 1 is read on both sides on purpose. The copy is bounded by the group
+// count, so a version that fills only element 0 — or that copies one scalar
+// where an array was meant — would pass an assertion on group 0 and lose every
+// other finger, which on a four-finger hand is the defect that matters.
+TEST_F(RtLoopPipelineTest, SensorLaneReceiptReachesTheControllerPerGroup) {
+  constexpr int64_t kRecvNs = 1'234'567'890LL;
+  constexpr uint64_t kSeq = 99U;
+  PipelineStubBackend::sensor_recv_steady_ns_g1.store(kRecvNs, std::memory_order_relaxed);
+  PipelineStubBackend::sensor_sequence_g1.store(kSeq, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(kRecvNs,
+            PipelineTestController::observed_inference_recv_ns_g1.load(std::memory_order_relaxed));
+  EXPECT_EQ(kSeq,
+            PipelineTestController::observed_inference_sequence_g1.load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // ── Out-of-contract channel counts are bounded before any copy (issue #196) ──
 //
 // ControllerOutput::num_channels and DeviceStateCache::num_channels are filled

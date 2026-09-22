@@ -150,6 +150,14 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
   tip.fy = static_cast<float>(fy_d);
   tip.fz = static_cast<float>(fz_d);
   tip.received_at_least_once = true;
+  // Stamped HERE rather than at the RT read, and only for an ACCEPTED sample:
+  // the question this answers is "how old is the force the controller is
+  // about to use", so a dropped NaN message (above) must not refresh it — the
+  // early return leaves the previous stamp with the previous force, which is
+  // the pair that is actually still in the mirror (D-24).
+  tip.recv_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
   if (finger_idx + 1 > mirror.num_tips) {
     mirror.num_tips = finger_idx + 1;
   }
@@ -178,6 +186,15 @@ void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
     const auto& tip = mirror.tips[fu];
     const bool fresh = tip.received_at_least_once && (rt_miss_count_[fu] < max_missed_ticks_);
     cache.inference_enable[fu] = fresh;
+    // D-24 (a): the age and the counter travel BESIDE the verdict, not
+    // instead of it. `cur_seq` is the accepted-sample count this backend
+    // already maintains for its own miss accounting, so it is the honest
+    // sequence rather than a second counter that could disagree with it.
+    // Both are published even when `fresh` is false — a consumer deciding
+    // TIP_STALE needs to know HOW stale, and a consumer that only trusts the
+    // flag is unaffected.
+    cache.inference_recv_steady_ns[fu] = tip.recv_steady_ns;
+    cache.inference_sequence[fu] = cur_seq;
 
     // Stride 7 mirror — slot 0 contact_flag / 4..6 displacement intentionally
     // 0-filled (controller does not consume them; udp_hand backend remains

@@ -138,6 +138,13 @@ class PipelineTestController : public RTControllerInterface {
   // combined value would let one survivor mask two losses.
   static inline std::atomic<uint64_t> observed_velocity_hole_mask{0};
   static inline std::atomic<uint64_t> observed_effort_hole_mask{0};
+  // The fingertip lane's per-group receipt time and sample counter as seen by
+  // Compute (dynamic_catching D-24 (a)) — the read end of
+  // PipelineStubBackend::sensor_recv_steady_ns / sensor_sequence. Group 1
+  // rather than group 0 so a copy that fills only the first element, or one
+  // that copies a scalar instead of the array, is visible.
+  static inline std::atomic<int64_t> observed_inference_recv_ns_g1{0};
+  static inline std::atomic<uint64_t> observed_inference_sequence_g1{0};
 
   // Not noexcept: the base RTControllerInterface ctor is not, and marking this
   // one noexcept would turn a throwing base subobject into std::terminate
@@ -167,6 +174,8 @@ class PipelineTestController : public RTControllerInterface {
     observed_hole_mask.store(0, std::memory_order_relaxed);
     observed_velocity_hole_mask.store(0, std::memory_order_relaxed);
     observed_effort_hole_mask.store(0, std::memory_order_relaxed);
+    observed_inference_recv_ns_g1.store(0, std::memory_order_relaxed);
+    observed_inference_sequence_g1.store(0, std::memory_order_relaxed);
   }
 
   void LoadConfig(const YAML::Node& cfg) override {
@@ -214,6 +223,10 @@ class PipelineTestController : public RTControllerInterface {
     observed_velocity_hole_mask.store(state.devices[0].velocity_hole_mask,
                                       std::memory_order_relaxed);
     observed_effort_hole_mask.store(state.devices[0].effort_hole_mask, std::memory_order_relaxed);
+    observed_inference_recv_ns_g1.store(state.devices[0].inference_recv_steady_ns[1],
+                                        std::memory_order_relaxed);
+    observed_inference_sequence_g1.store(state.devices[0].inference_sequence[1],
+                                         std::memory_order_relaxed);
     const int sleep_us = compute_sleep_us.load(std::memory_order_relaxed);
     if (sleep_us > 0) {
       std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
@@ -374,12 +387,21 @@ class PipelineStubBackend : public DeviceBackend {
   static inline std::atomic<uint64_t> state_velocity_hole_mask{0};
   static inline std::atomic<uint64_t> state_effort_hole_mask{0};
 
+  // Fingertip-lane receipt time and sample counter this backend reports for
+  // sensor GROUP 1 (dynamic_catching D-24 (a)). Defaults are 0 — "never
+  // received" — so tests that predate these fields keep the state they
+  // already asserted against.
+  static inline std::atomic<int64_t> sensor_recv_steady_ns_g1{0};
+  static inline std::atomic<uint64_t> sensor_sequence_g1{0};
+
   static void ResetStateChannels() {
     state_num_channels.store(2, std::memory_order_relaxed);
     state_position_nan.store(false, std::memory_order_relaxed);
     state_hole_mask.store(0, std::memory_order_relaxed);
     state_velocity_hole_mask.store(0, std::memory_order_relaxed);
     state_effort_hole_mask.store(0, std::memory_order_relaxed);
+    sensor_recv_steady_ns_g1.store(0, std::memory_order_relaxed);
+    sensor_sequence_g1.store(0, std::memory_order_relaxed);
   }
 
   // Full per-test reset for this backend — the counterpart to
@@ -424,9 +446,14 @@ class PipelineStubBackend : public DeviceBackend {
     cache.sensor_data[1] = kSensor0 + 1;
     cache.sensor_data_raw[0] = kSensor0 + 2;
     cache.sensor_data_raw[1] = kSensor0 + 3;
-    cache.num_inference_groups = 1;
+    // TWO groups, not one: the receipt/sequence assertions below read group 1,
+    // and a copy bounded by `num_inference_groups` would silently drop it if
+    // this stub kept claiming a single group.
+    cache.num_inference_groups = 2;
     cache.inference_data[0] = kInfer0;
     cache.inference_enable[0] = true;
+    cache.inference_recv_steady_ns[1] = sensor_recv_steady_ns_g1.load(std::memory_order_relaxed);
+    cache.inference_sequence[1] = sensor_sequence_g1.load(std::memory_order_relaxed);
   }
 
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,

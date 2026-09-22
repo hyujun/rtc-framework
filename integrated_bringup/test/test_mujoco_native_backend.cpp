@@ -461,6 +461,102 @@ TEST(MujocoNativeBackendReorderTest, NamedShuffledJointState_ReadsBackInDeviceOr
   exec.remove_node(node->get_node_base_interface());
 }
 
+// ── Sensor-lane receipt time and sample counter (dynamic_catching D-24 (a)) ──
+//
+// These four pin the fields that let a consumer apply its OWN staleness
+// deadline instead of inheriting this backend's `max_consecutive_missed_ticks`.
+// The distinction they defend: `inference_enable` is this backend's verdict,
+// the stamp is when a sample last arrived, and a catching controller needs the
+// second to decide TIP_STALE against a catch deadline measured in
+// milliseconds rather than in ticks of whatever rate the loop happens to run.
+
+TEST_F(MujocoNativeBackendTest, ReadSensorState_BeforeAnyMessage_ClaimsNoReceipt) {
+  rtc::DeviceStateCache cache{};
+  backend_->ReadSensorState(cache);
+  // Zero is "never received", not "received at time zero" — the same no-claim
+  // polarity the hole masks use, so a consumer fails closed on a lane that was
+  // never wired rather than computing an age against an epoch.
+  for (std::size_t i = 0; i < cache.inference_recv_steady_ns.size(); ++i) {
+    EXPECT_EQ(cache.inference_recv_steady_ns[i], 0) << "fingertip " << i;
+    EXPECT_EQ(cache.inference_sequence[i], 0U) << "fingertip " << i;
+  }
+}
+
+TEST_F(MujocoNativeBackendTest, ReadSensorState_StampsReceiptAndAdvancesSequence) {
+  const int64_t before = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+  PublishWrench(0, 1.0F, 0.0F, 0.0F);
+  const int64_t after = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+
+  rtc::DeviceStateCache first{};
+  backend_->ReadSensorState(first);
+  // Bracketed by two reads of the same clock the field claims to be on. A
+  // stamp taken from any other clock (wall, ROS time) would land outside this
+  // window, which is the failure that makes an age silently meaningless.
+  EXPECT_GE(first.inference_recv_steady_ns[0], before);
+  EXPECT_LE(first.inference_recv_steady_ns[0], after);
+  EXPECT_EQ(first.inference_sequence[0], 1U);
+  // Untouched fingertips stay unclaimed — the lane is per tip, which is the
+  // whole point of D-24 (one finger can go quiet while the others report).
+  EXPECT_EQ(first.inference_recv_steady_ns[1], 0);
+  EXPECT_EQ(first.inference_sequence[1], 0U);
+
+  PublishWrench(0, 2.0F, 0.0F, 0.0F);
+  rtc::DeviceStateCache second{};
+  backend_->ReadSensorState(second);
+  EXPECT_EQ(second.inference_sequence[0], 2U);
+  EXPECT_GE(second.inference_recv_steady_ns[0], first.inference_recv_steady_ns[0]);
+}
+
+TEST_F(MujocoNativeBackendTest, DroppedNaNWrench_DoesNotRefreshReceipt) {
+  PublishWrench(0, 7.0F, 8.0F, 9.0F);
+  rtc::DeviceStateCache before{};
+  backend_->ReadSensorState(before);
+  ASSERT_GT(before.inference_recv_steady_ns[0], 0);
+
+  PublishWrench(0, std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F);
+
+  rtc::DeviceStateCache after{};
+  backend_->ReadSensorState(after);
+  // EXACT equality, deliberately: the force that is still in the mirror is the
+  // one from the accepted message, so the age must be that message's age. A
+  // stamp refreshed by the rejected sample would report a fresh force that is
+  // in fact as old as the last good packet — the precise misreading D-24
+  // exists to prevent, and it would still pass an inequality-only assertion.
+  EXPECT_EQ(after.inference_recv_steady_ns[0], before.inference_recv_steady_ns[0]);
+  // The sequence counts ACCEPTED samples, so it does not move either. (It is
+  // sourced from the same counter the miss detector uses, which is why a
+  // dropped message must not bump it — that would also hide the miss.)
+  EXPECT_EQ(after.inference_sequence[0], before.inference_sequence[0]);
+}
+
+TEST_F(MujocoNativeBackendTest, StaleTip_KeepsReceiptSoAgeStaysComputable) {
+  PublishWrench(0, 10.0F, 0.0F, 0.0F);
+  rtc::DeviceStateCache fresh{};
+  backend_->ReadSensorState(fresh);
+  ASSERT_TRUE(fresh.inference_enable[0]);
+  // Guards this test against being vacuous: the comparison below is an
+  // equality, so with a backend that never stamps at all it would compare two
+  // zeros and pass while proving nothing.
+  ASSERT_GT(fresh.inference_recv_steady_ns[0], 0);
+
+  rtc::DeviceStateCache stale{};
+  for (int i = 0; i <= kMaxMissedTicks; ++i) {
+    stale = rtc::DeviceStateCache{};
+    backend_->ReadSensorState(stale);
+  }
+  ASSERT_FALSE(stale.inference_enable[0]) << "miss counter did not trip";
+  // Published even once the backend has given up on the tip: a consumer
+  // deciding what to do about a stale fingertip needs to know HOW stale, and
+  // zeroing the stamp alongside the flag would collapse "went quiet 20 ms ago"
+  // into "never existed".
+  EXPECT_EQ(stale.inference_recv_steady_ns[0], fresh.inference_recv_steady_ns[0]);
+  EXPECT_EQ(stale.inference_sequence[0], fresh.inference_sequence[0]);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

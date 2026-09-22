@@ -1364,6 +1364,23 @@ if(BUILD_TESTING)
     geometry_msgs
   )
 
+  # ── UdpHandNativeBackend sensor lane test ─────────────────────────────────
+  # The other producer of the fingertip lane's per-group receipt time and
+  # sample counter (dynamic_catching D-24 (a)), plus the inference-block decode
+  # those assertions stand on. Same domain as its mujoco counterpart.
+  ament_add_gtest(test_udp_hand_native_backend test/test_udp_hand_native_backend.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_udp_hand_native_backend
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_udp_hand_native_backend
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_manager
+    rtc_base
+    rtc_msgs
+  )
+
   # ── Controller-owned RobotTarget cb_group invariant test ───────────────────
   # Spec §0d follow-up to Issue #100: locks that CreateOwnedTopics() routes
   # the controller-owned RobotTarget sub onto the LifecycleNode default

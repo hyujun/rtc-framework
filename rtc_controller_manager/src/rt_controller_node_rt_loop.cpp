@@ -415,6 +415,14 @@ void RtControllerNode::ControlLoop() {
         dev.num_inference_groups = static_cast<int>(ngrp);
         std::copy_n(cache.inference_data.data(), nif, dev.inference_data.data());
         std::copy_n(cache.inference_enable.data(), ngrp, dev.inference_enable.data());
+        // Per-group receipt time and sample counter (D-24 (a)). Copied on the
+        // GROUP count like `inference_enable`, not on the value count `nif`:
+        // these are per fingertip, not per value. A backend that does not fill
+        // them leaves zeros, which the consumer side reads as "never
+        // received" and fails closed.
+        std::copy_n(cache.inference_recv_steady_ns.data(), ngrp,
+                    dev.inference_recv_steady_ns.data());
+        std::copy_n(cache.inference_sequence.data(), ngrp, dev.inference_sequence.data());
       }
       dev.valid = cache.valid;
       ++di;

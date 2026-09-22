@@ -99,6 +99,12 @@ class MujocoNativeBackend : public DeviceBackend {
     float fy{0.0F};
     float fz{0.0F};
     bool received_at_least_once{false};
+    // Steady-clock receipt time of the sample above (dynamic_catching D-24).
+    // Stamped by OnWrench on the same lane that stamps `last_state_ns_` for
+    // the joint callback, and carried out through DeviceStateCache so a
+    // consumer can apply its OWN staleness deadline instead of inheriting
+    // `max_missed_ticks_`. 0 = this tip has never reported.
+    int64_t recv_steady_ns{0};
   };
 
   struct SensorMirror {
