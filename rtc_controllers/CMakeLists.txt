@@ -84,6 +84,10 @@ add_library(rtc_controllers STATIC
   # the CSV contract (bit-exact columns) and the batch's order-independence
   # are reachable from a gtest instead of only from a subprocess.
   src/catching/catch_pose_ik_batch.cpp
+  # dynamic_catching S3.5b: the rest of the planner's gate chain (reach time,
+  # γ window, stopping point) over CSV. In the library for the same reason as
+  # the file above — the CSV contract and the verdicts are gtest-reachable.
+  src/catching/catch_gate_batch.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -114,6 +118,13 @@ set_target_properties(rtc_controllers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_executable(catch_pose_ik_batch src/catching/catch_pose_ik_batch_main.cpp)
 target_link_libraries(catch_pose_ik_batch rtc_controllers)
 
+# ARCH-7-exempt: same category as above (an offline inspection tool) — the
+# S3.5b gate-catchable map's judge. It loads no model at all (limits and
+# constants arrive by argv, postures by CSV) and calls the runtime gate
+# functions of time_feasibility.hpp.
+add_executable(catch_gate_batch src/catching/catch_gate_batch_main.cpp)
+target_link_libraries(catch_gate_batch rtc_controllers)
+
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS rtc_controllers
   EXPORT export_${PROJECT_NAME}
@@ -122,7 +133,7 @@ install(TARGETS rtc_controllers
   RUNTIME DESTINATION bin
 )
 
-install(TARGETS catch_pose_ik_batch
+install(TARGETS catch_pose_ik_batch catch_gate_batch
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -502,6 +513,11 @@ if(BUILD_TESTING)
   target_include_directories(test_catch_pose_ik_batch PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catch_pose_ik_batch PRIVATE -Wno-mismatched-new-delete)
+
+  # dynamic_catching S3.5b: gate batch — CSV contract, verdict == direct call
+  # of the runtime gate functions, order independence, fail-closed settings.
+  ament_add_gtest(test_catch_gate_batch test/test_catch_gate_batch.cpp)
+  target_link_libraries(test_catch_gate_batch rtc_controllers)
 endif()
 
 ament_package()

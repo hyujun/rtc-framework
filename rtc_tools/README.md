@@ -30,6 +30,7 @@ rtc_tools/
 │   │   ├── catchability_map.py          ← catchability 지도: 공 비행 모델·투척 grid·프레임 변환
 │   │   │                                   + C++ judge 배치 드라이버·집계·CLI (S3.5a)
 │   │   ├── catch_speed_budget.py        ← 수락 후보별 팔 속도·토크 한계 방향 가속 → γ 창 판정표 (S4.4)
+│   │   ├── catch_gate_map.py            ← kinematic 지도 위의 나머지 게이트 (도달시간·γ 창·정지점) → gate-catchable 지도 (S3.5b)
 │   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
 │   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4)
 │   │   └── camera_relay.py              ← 카메라 lane 릴레이 + 드롭·지연 주입 (S3.4)
@@ -73,6 +74,7 @@ rtc_tools/
 | `ros2 run rtc_tools derive_accel_limits` | `analysis.derive_accel_limits` | 토크 한계에서 관절 가속 상수 box 도출 (provenance YAML) |
 | `ros2 run rtc_tools catchability_map` | `analysis.catchability_map` | catchability 지도 (grid → 비행 → C++ judge → 집계·플롯) |
 | `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
+| `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
 
 **Python 의존성**: `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `numpy`, `matplotlib`, `pandas`, `scipy`, `mujoco`
 
@@ -484,6 +486,55 @@ ros2 run rtc_tools catch_speed_budget \
   (base 가 모델 root 에서 반 바퀴 돈 fixture), **관절 이름 순서 ≠ 모델 순서**, 가속 LP 의 RNEA·2차 FK
   재대입 (한계가 어딘가에서 tight), 회전자 관성 효과, 중력만으로 한계 초과 시 NaN, stroke·ramp 닫힌해,
   전체 격자 분모, CLI end-to-end 와 FK 불일치 거부. pinocchio·scipy 가 없으면 skip
+
+### `catch_gate_map.py` — gate-catchable 지도 (dynamic_catching S3.5b)
+
+`catchability_map` 의 수락 후보 (포구 자세가 있는 후보) 에 계획기의 나머지 게이트를 건다 — 도달시간
+(L3 §4.3), γ 창 (§4.5), 정지점 (§4.9), 그리고 그 앞의 commit 선행 (§4.11: $t_c-t_{plan}\ge T_{close,tot}+T_{arm}+T_{margin}$ — 런타임
+함수가 없어 python 이 건다). **나머지 판정은 python 이 하지 않는다**: `rtc_controllers` 의
+`catch_gate_batch` 가 `time_feasibility.hpp` 의 런타임 함수를 그대로 부르고 (G3-I), python 은 그 입력과
+출력만 맡는다.
+
+- **python 이 만드는 입력**: q̇ᵘ (L3 §4.5 의 DLS 단위 속도 — 런타임 생산자가 S6.2 전에는 없다) 와 그것이
+  내는 속도 `J_p q̇ᵘ`. `reference.v_max` 는 `--v-max-m-s derived` 면 수락 후보의 LP v_dir,max 최대 / η_v
+  (S4.4 결정: TCP 항은 관절 정격 안에서 구속하지 않는다)
+- **python 이 거는 경계**: p_stop 이 도달 구·바닥 안인가 (`planner.workspace.catch_box` 가 TBD 라 지도와
+  같은 경계를 쓴다)
+- **도달시간은 두 층**을 항상 같이 낸다. `box` = 출하 가속 box (`--accel-limits`, plan §9) 로 C++ 가
+  판정. `torque` = **그 이동**이 토크 한계 안에 드는가 — 전 관절이 하나의 bang-bang/사다리꼴 경로
+  프로파일을 따라 대기 자세 → q\* 로 가고, 경로 전체에서 |M q̈ + h| ≤ η_τ τ_max (회전자 관성 포함) 인
+  최대 경로 가속을 이분 탐색한다. 충분조건이고 런타임 대응물이 아직 없어 **provisional** 이다 (D-16 개정)
+- **대기 자세는 하나다.** 지도가 여러 seed 로 판정됐으면 `--seed-id` 가 필수다 (합집합은 과대평가).
+  `proposed_wait_pose` 는 γ·정지 게이트를 통과한 q\* 의 관절별 midrange — 새 seed 로 `catchability_map`
+  부터 다시 돌리는 고정점 반복의 입력이다 (q\* 가 seed 에 의존한다)
+- rollout (L3 §4.8) 은 판정하지 않는다 (함수가 S6.3 전에는 없다) — 열린 셀은 `PASS(provisional)`,
+  빈 지도는 확정적이다
+
+```bash
+ros2 run rtc_tools catch_gate_map \
+  --robot-config <config>/<robot>/_base.yaml --group <arm_group> \
+  --map-dir <catchability_map out-dir> --out-dir <out> --velocity-source model \
+  --accel-limits <config>/<robot>/derived_accel_limits.yaml --eta-v 0.9 --eta-tau 0.8 \
+  --rotor-inertia '0.1 0.1 0.1 0.1 0.1 0.1' --rotor-inertia-source '<mjcf>:<line> armature' \
+  --v-max-m-s derived --d-eff-m 0.095 --d-eff-source 'planner.hand.d_eff' \
+  --close-total-s 0.2815 --gamma-margin-m-s 0.1 \
+  --a-dec-m-s2 10.0 --a-dec-source 'provisional' \
+  --detection-s 0.10 --latency-s 0.14 --arm-delay-s 0.05 --time-margin-s 0.03 \
+  --arm-base-frame base --max-reach-m 1.1 --floor-world-z-m 0.1
+```
+
+출력: `gate_candidates.csv` (judge 입력) · `gate_judged.csv` (judge 출력 그대로) · `gate_map.csv` (후보별 두
+층의 사유·t_min·γ 창·q\*) · `gate_cell_table.csv` (릴리스 높이 × 거리, 분모는 전체 격자) ·
+`gate_map_summary.yaml` (인자 provenance, 층별 열린 투척 수·사유 분포, **각 게이트가 단독으로 거르는 후보
+수**, 대기 자세 제안). FK(q\*) 가 `p_model` 과 어긋나면 보고하지 않고 종료한다 (`catch_speed_budget` 와 같은 검사).
+
+- 테스트 `test/test_catch_gate_map.py` (21 케이스): 경로 프로파일, 토크 도달시간의 단일 관절 닫힌해
+  (삼각·사다리꼴), **움직이는 관절의 한계만** 결과를 바꾸는지, 회전자 관성, 찾은 이동의 RNEA 재검사와
+  더 빠른 이동의 위반, 중력만으로 한계 초과 시 NaN, 층별 사유의 순서, 전체 격자 분모, 그리고 **실제
+  `catch_gate_batch` 를 부르는** CLI end-to-end — 상수 하나가 자기 게이트만 뒤집는지, 가속 box 가 box
+  층만 구속하는지, seed 합집합 거부, FK 불일치 거부, judge 에 넘기는 `J_p q̇ᵘ` 가 요청값 v̂ 이 아니라
+  달성값인지 (큰 damping 에서), 속도 0 인 수락 행 거부. 변이 18 종 전부 검출
+
 
 ### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환
 

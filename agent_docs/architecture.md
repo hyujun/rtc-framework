@@ -176,5 +176,6 @@ rtc_tools (analysis tools, top of stack) <-- <exec_depend> rtc_msgs, pinocchio, 
                  rtc_controllers  [2026-09-21: catchability_map 이 rtc_controllers 의
                  catch_pose_ik_batch 를 subprocess 로 부른다 — 오프라인 지도(S3.5a)와
                  런타임 계획기(S6.2)가 같은 판정 함수를 써야 하기 때문이다. exec 전용이고
-                 rtc_controllers 는 rtc_tools 를 의존하지 않으므로 순환은 없다]
+                 rtc_controllers 는 rtc_tools 를 의존하지 않으므로 순환은 없다.
+                 2026-09-22: catch_gate_map 도 같은 이유로 catch_gate_batch (S3.5b) 를 부른다]
 ```

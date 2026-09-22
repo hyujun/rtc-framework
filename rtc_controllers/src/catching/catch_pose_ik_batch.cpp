@@ -1,10 +1,9 @@
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 
+#include "batch_csv.hpp"
+
 #include <algorithm>
 #include <array>
-#include <charconv>
-#include <cmath>
-#include <cstdio>
 #include <istream>
 #include <stdexcept>
 #include <string>
@@ -13,83 +12,11 @@
 namespace rtc::catching {
 namespace {
 
-// %.17g round-trips every finite double exactly, which is the point: the map's
-// numbers must be the solver's numbers. Shortest-round-trip would be prettier
-// but std::to_chars for doubles is not uniformly available in this toolchain.
-[[nodiscard]] std::string Num(double v) {
-  std::array<char, 32> buf{};
-  const int n = std::snprintf(buf.data(), buf.size(), "%.17g", v);
-  if (n <= 0) {
-    return "nan";
-  }
-  return std::string(buf.data(), static_cast<std::size_t>(n));
-}
-
-/// Split on ',' KEEPING every field, including empty ones at the end.
-///
-/// `std::getline(ss, cell, ',')` silently drops a trailing empty field, so a
-/// row whose last columns are blank — which is exactly what a poseless result
-/// writes — parses one column short and the width check then rejects a row
-/// that is in fact well formed.
-[[nodiscard]] std::vector<std::string> SplitCsv(const std::string& line) {
-  std::vector<std::string> out;
-  std::size_t start = 0;
-  while (true) {
-    const std::size_t comma = line.find(',', start);
-    const std::string cell =
-        line.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-    const auto b = cell.find_first_not_of(" \t\r\n");
-    const auto e = cell.find_last_not_of(" \t\r\n");
-    out.push_back(b == std::string::npos ? std::string() : cell.substr(b, e - b + 1));
-    if (comma == std::string::npos) {
-      return out;
-    }
-    start = comma + 1;
-  }
-}
-
-/// True for a line that carries no data (blank, or a `#` comment).
-[[nodiscard]] bool IsSkippable(const std::string& line) {
-  const auto b = line.find_first_not_of(" \t\r\n");
-  return b == std::string::npos || line[b] == '#';
-}
-
-[[nodiscard]] double ParseFinite(const std::string& cell, std::string_view what, int line_no) {
-  double v = 0.0;
-  try {
-    std::size_t used = 0;
-    v = std::stod(cell, &used);
-    if (used != cell.size()) {
-      throw std::invalid_argument("trailing characters");
-    }
-  } catch (const std::exception&) {
-    throw std::invalid_argument("line " + std::to_string(line_no) + ": '" + std::string(what) +
-                                "' is not a number: '" + cell + "'");
-  }
-  if (!std::isfinite(v)) {
-    // A non-finite candidate would be judged kTargetNonFinite and land in the
-    // map as a legitimate rejection, hiding a broken generator as physics.
-    throw std::invalid_argument("line " + std::to_string(line_no) + ": '" + std::string(what) +
-                                "' is not finite: '" + cell + "'");
-  }
-  return v;
-}
-
-/// Whole-cell integer of the DESTINATION's width: `BatchCandidate::id` is
-/// 64-bit, and reading it through an `int` would refuse every id ≥ 2³¹ that the
-/// field can in fact hold.
-template <typename Int>
-[[nodiscard]] Int ParseIntCell(const std::string& cell, std::string_view what, int line_no) {
-  Int v = 0;
-  const char* first = cell.data();
-  const char* last = cell.data() + cell.size();
-  const auto res = std::from_chars(first, last, v);
-  if (res.ec != std::errc() || res.ptr != last) {
-    throw std::invalid_argument("line " + std::to_string(line_no) + ": '" + std::string(what) +
-                                "' is not an integer: '" + cell + "'");
-  }
-  return v;
-}
+using batch_csv::IsSkippable;
+using batch_csv::Num;
+using batch_csv::ParseFinite;
+using batch_csv::ParseIntCell;
+using batch_csv::SplitCsv;
 
 }  // namespace
 
@@ -128,56 +55,28 @@ std::string_view CatchPoseReasonName(CatchPoseReason reason) noexcept {
 }
 
 std::vector<BatchCandidate> ParseCandidateCsv(std::istream& in) {
-  static constexpr std::array<const char*, 6> kRequired = {"p_c_x", "p_c_y", "p_c_z",
-                                                           "v_x",   "v_y",   "v_z"};
+  static const std::vector<std::string> kAxes = {"x", "y", "z"};
+  std::vector<std::string> required = {"id"};
+  for (const std::string& a : kAxes) {
+    required.push_back("p_c_" + a);
+  }
+  for (const std::string& a : kAxes) {
+    required.push_back("v_" + a);
+  }
   std::vector<BatchCandidate> out;
-  std::string line;
-  int line_no = 0;
-  std::vector<std::string> header;
-  while (std::getline(in, line)) {
-    ++line_no;
-    if (IsSkippable(line)) {
-      continue;
-    }
-    if (header.empty()) {
-      header = SplitCsv(line);
-      for (const char* name : kRequired) {
-        if (std::find(header.begin(), header.end(), std::string(name)) == header.end()) {
-          throw std::invalid_argument("candidate CSV header lacks column '" + std::string(name) +
-                                      "'");
-        }
-      }
-      if (std::find(header.begin(), header.end(), "id") == header.end()) {
-        throw std::invalid_argument("candidate CSV header lacks column 'id'");
-      }
-      continue;
-    }
-    const std::vector<std::string> cells = SplitCsv(line);
-    if (cells.size() != header.size()) {
-      throw std::invalid_argument("line " + std::to_string(line_no) + ": expected " +
-                                  std::to_string(header.size()) + " columns, got " +
-                                  std::to_string(cells.size()));
-    }
-    const auto cell = [&](std::string_view name) -> const std::string& {
-      const auto it = std::find(header.begin(), header.end(), std::string(name));
-      return cells.at(static_cast<std::size_t>(std::distance(header.begin(), it)));
-    };
+  batch_csv::ReadHeadered(in, "candidate CSV", required, [&](const batch_csv::Row& row) {
     BatchCandidate c;
-    c.id = ParseIntCell<std::int64_t>(cell("id"), "id", line_no);
-    if (std::find(header.begin(), header.end(), "seed_id") != header.end()) {
-      c.seed_id = ParseIntCell<int>(cell("seed_id"), "seed_id", line_no);
+    c.id = row.Integer<std::int64_t>("id");
+    if (row.Has("seed_id")) {
+      c.seed_id = row.Integer<int>("seed_id");
     }
     for (int i = 0; i < 3; ++i) {
-      c.p_c(i) = ParseFinite(cell(kRequired.at(static_cast<std::size_t>(i))),
-                             kRequired.at(static_cast<std::size_t>(i)), line_no);
-      c.v_ball(i) = ParseFinite(cell(kRequired.at(static_cast<std::size_t>(i) + 3)),
-                                kRequired.at(static_cast<std::size_t>(i) + 3), line_no);
+      const std::string& a = kAxes.at(static_cast<std::size_t>(i));
+      c.p_c(i) = row.Finite("p_c_" + a);
+      c.v_ball(i) = row.Finite("v_" + a);
     }
     out.push_back(c);
-  }
-  if (header.empty()) {
-    throw std::invalid_argument("candidate CSV is empty (a header line is required)");
-  }
+  });
   return out;
 }
 

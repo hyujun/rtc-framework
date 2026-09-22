@@ -28,6 +28,7 @@ setup(
             "derive_accel_limits = rtc_tools.analysis.derive_accel_limits:main",
             "catchability_map = rtc_tools.analysis.catchability_map:main",
             "catch_speed_budget = rtc_tools.analysis.catch_speed_budget:main",
+            "catch_gate_map = rtc_tools.analysis.catch_gate_map:main",
             "analyze_clock_phase = rtc_tools.analysis.clock_phase:main",
             "run_clock_phase_trials = rtc_tools.analysis.clock_phase_trials:main",
             "analyze_hand_close = rtc_tools.analysis.hand_close:main",

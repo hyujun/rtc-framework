@@ -92,7 +92,10 @@
 #          report. Claude Code overrides the hook after 8 CONSECUTIVE blocks
 #          (documented: code.claude.com/docs/en/best-practices) -- that cap
 #          is an unverified stop, not an exit; do not lean on it.
-# Limits : per-package bounds: 180s build + 60s test. PROC-3 path: 300s build +
+# Limits : per-package bounds: 180s build + 120s test (60s until 2026-09-22:
+#          rtc_tools' suite alone takes ~66s unloaded, 48s of it
+#          test_plot_rtc_log, so a legitimate change there was always
+#          UNVERIFIED). PROC-3 path: 300s build +
 #          180s test. A build OR test that hits its timeout (exit 124) or fails
 #          to launch (exit >=125) blocks as UNVERIFIED -- overrun is no longer
 #          silent -- and says so in a message DISTINCT from a real failure's.
@@ -1195,7 +1198,7 @@ if [ -n "$RIVALS" ]; then
   # Backslashes doubled for the `echo -e` report, as build_log_tail does.
   TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(sed -n '1,3p' <<<"$RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/      /')\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then end the turn again.\n"
 elif [ -n "$PROC3" ]; then
-  # PROC-3: broad rebuild + full test (60s * count would still time out, so use
+  # PROC-3: broad rebuild + full test (120s * count would still time out, so use
   # a generous bound on the build and a per-package test timeout).
   # All colcon invocations run from $WORKSPACE so build/install/log land in the
   # colcon ws root (AGENTS.md §9.1), not in this repo's cwd.
@@ -1252,11 +1255,11 @@ else
     # Preserve the exit code (see PROC-3 path above): distinguish timeout /
     # launch failure / real test failure instead of inferring from test-result.
     TEST_RC=0
-    timeout 60 bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
+    timeout 120 bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
     RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)
 
     if [ "$TEST_RC" -eq 124 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test TIMED OUT after 60s — UNVERIFIED, treat as failure (raise the bound in verify-changes.sh or run 'colcon test' manually)\n"
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test TIMED OUT after 120s — UNVERIFIED, treat as failure (raise the bound in verify-changes.sh or run 'colcon test' manually)\n"
     elif [ "$TEST_RC" -ge 125 ]; then
       TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
     elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then

@@ -1112,12 +1112,13 @@ class JudgeInvocation:
     params: Path | None = None
 
 
-def find_judge(override: Path | None = None) -> Path:
-    """Locate ``catch_pose_ik_batch``, or fail saying what to build.
+def find_judge(override: Path | None = None, executable: str | None = None) -> Path:
+    """Locate ``catch_pose_ik_batch`` (or a sibling ``executable``), or fail saying what to build.
 
     ``override`` wins if given. Otherwise the executable is looked up under the
     ament prefix of ``rtc_controllers``, which is where colcon installs it.
     """
+    name = executable or JUDGE_EXECUTABLE
     if override is not None:
         path = Path(override)
         if not path.is_file():
@@ -1130,9 +1131,9 @@ def find_judge(override: Path | None = None) -> Path:
     except Exception as exc:  # noqa: BLE001 — any lookup failure means the same thing
         raise SystemExit(
             f"cannot find the ament prefix of {JUDGE_PACKAGE} ({exc}) — source the workspace "
-            f"env, or pass --judge with the path to {JUDGE_EXECUTABLE}"
+            f"env, or pass --judge with the path to {name}"
         ) from exc
-    path = prefix / "lib" / JUDGE_PACKAGE / JUDGE_EXECUTABLE
+    path = prefix / "lib" / JUDGE_PACKAGE / name
     if not path.is_file():
         raise SystemExit(
             f"{path} is missing — build it with "
