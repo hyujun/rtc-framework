@@ -381,6 +381,8 @@ S1.5 이식 시 변경:
 
 **RT 소비자의 fail-closed 판정 (D-21, D-22, D-23).** 매 tick `Load()` 를 무조건 한 번 하고(D-21), payload 안에서 다음을 모두 검사한다: `activation_generation` 이 `IsCurrentGeneration()` 과 일치하는가, `generation` 이 RT 가 아는 vision epoch 과 일치하는가, `snapshot_sequence` 가 이전에 소비한 값보다 단조 증가했는가, `traj_recv_ns`·`rt_state_ns` 로 계산한 source 나이·state 나이가 각각의 상한 이내인가. 하나라도 실패하면 그 tick 은 새 payload 를 쓰지 않고 이전 유효 plan(또는 무효 상태)을 유지한다.
 
+**S6 구현 (2026-09-23).** 새 plan 판정은 `snapshot_sequence` 가 아니라 **`plan_id`** 로 한다 — `snapshot_sequence` 는 궤적의 것이라 같은 궤적에서 계산한 두 plan 을 가르지 못한다. `plan_id` 는 writer (계획기, 또는 테스트·sim 용 oracle) 의 단조 카운터이고, RT 는 (a) `valid` · (b) `activation_generation` 일치 · (c) `generation` 이 RT 가 마지막으로 받은 궤적의 트랙 epoch 과 일치 · (d) `plan_id` 가 이미 받은 값과 다름 · (e) 게시 나이 (`now − publish_ns`) ≤ `io.t_stale` · (f) `publish_ns` 가 RT 의 마지막 리셋 시각 이후 — 를 모두 만족할 때만 받는다. (f) 는 E-STOP 처럼 activation generation 을 올리지 않는 리셋을 덮는다. **token 불일치·나이 초과를 위한 새 `Reason` 은 만들지 않는다** (값 하나가 enum·`kAllReasons`·문자열·`CatchingState.msg` 네 곳에 걸리고 msg 는 D-20 동결): TRACKING 에서는 `kNoCatchablePlan` 으로 읽는다. RT 는 `plan_box_` 에 쓰지 않는다 — writer 는 하나뿐이다 (계획기와 oracle 이 함께 켜진 설정은 park).
+
 계획기 쪽도 대칭으로 검사한다: 계산 시작 시 최신 token 을 한 번 읽고, 게시 직전에 다시 읽어 그 사이 대체됐으면 게시를 버린다. 궤적 스냅샷의 token 과 공분산 버퍼의 token 이 다르면(궤적 N ↔ 공분산 N−1 혼합 포함) 그 조합은 쓰지 않는다.
 
 ### 5.3 계획 루프 (계획기 스레드, D-7)
@@ -390,9 +392,9 @@ S1.5 이식 시 변경:
 - 클래스: `rtc::PeriodicRtThread` 의 **형제 subclass** (`rtc::mpc::MPCThread` 를 상속하지 않는다 — PlanSnapshot 을 `MPCSolution` 에 억지로 넣게 된다). 탐색 코어는 rtc_controllers `catching`, 스레드 소유는 `integrated_bringup` 바인딩 (D-1)
 - 기동 `[확정 D-7c]`: event 구동 — nrt 파서가 새 궤적을 게시하면 eventfd 로 깨운다. `WaitForNextTick` 을 eventfd 대기 + 제한 시간으로 override, `JitterMeaningful()` 은 false. eventfd 는 여러 신호를 한 번으로 합치므로(coalescing), 깨어난 신호 횟수와 무관하게 **항상 최신 스냅샷을 읽는다**
 - 수명: DemoWbc 관용구 — configure 에서 전 버퍼(궤적·공분산 버퍼, IK 작업 공간, rollout 상태, 진단 큐) 할당, activate 에서 layout profile 게이트 → lazy spawn → `Resume`, deactivate 에서 `Pause`, **join 은 소멸자에서만**. `Pause()` 는 요청 플래그만 세우고 진행 중인 iteration 을 멈추지 않으므로, `on_deactivate` 이후에도 plan 이 한 번 더 게시될 수 있다 — RT 쪽은 그 payload 의 `activation_generation` 이 `IsCurrentGeneration()` 과 다르면 소비하지 않는다 (D-23, §5.2)
-- 데이터: RT → 계획기 `rtc::SeqLock` (POD: $q_c,\dot q_c$, L4 기준 상태, 모드), 궤적 스냅샷은 nrt 파서가 게시한 SeqLock, **공분산은 계획기 쪽 버퍼에만** (A-3 — NaN(모름) 처리도 계획기 한 곳에서), 출력은 `rtc::SeqLock<PlanSnapshot>`
+- 데이터: RT → 계획기 `rtc::SeqLock` (POD: $q_c,\dot q_c$, L4 기준 상태, 모드), 궤적 스냅샷은 nrt 파서가 게시한 SeqLock, **공분산은 계획기 쪽 버퍼에만** (A-3 — NaN(모름) 처리도 계획기 한 곳에서), 출력은 `rtc::SeqLock<PlanSnapshot>` — **S6 구현**: RT → 계획기는 `PlannerRtState` (activation generation · tick · 시각 · mode · 팔 명령 $q_c,\dot q_c$ · L4 기준 상태 $x,\dot x,\gamma,\dot\gamma$ · 현재 `plan_id` · 리셋 epoch) 를 RT tick 이 **매 tick** Store 한다. 깨우는 쪽은 nrt 파서 (새 궤적 수락 시 eventfd write) 이고 RT tick 은 eventfd 에 손대지 않는다. 재무장 리셋 (L7 §4.8) 은 RT 가 리셋 epoch 을 올리는 것뿐이고, 계획기가 그것을 보고 eventfd 잔여 신호를 비운다 (writer 하나 규칙)
 - **RT-1~10 준수 코드** (plan §7.2 결정 방식 1): 할당 0, `noexcept`, 락·블로킹 I/O 없음, 로깅 금지. 진단(후보 수, 게이트별 탈락, 실행시간, 선택 결과)은 `rtc::SpscQueue` 로 넘기고 aux 타이머가 drain 해 CSV 로 쓴다. 그러면 FIFO/OTHER 는 thread layout 값 하나로 바뀌고 코드가 바뀌지 않는다 — 단, RT 쪽 `PlanSnapshot` 읽기는 writer 가 SCHED_OTHER 여도 D-21 의 측정(최악 재시도 시간)을 통과해야 한다 (plan §7.2 결정 방식 1)
-- 배치 `[확정 D-7b]`: 빈 slot 에 새 thread layout role (dev PC tier 6 = slot 5), **초기값 FIFO** (rt_callback 보다 낮은 우선순위 — 그 검사를 planner role 에도 추가). E-7 이며 Adding a New Thread 절차를 따른다
+- 배치 `[확정 D-7b → E-7 결정 J 로 대체, 2026-09-23]`: ~~빈 slot 에 새 thread layout role~~ → **기존 `mpc` role 재사용** (`SelectThreadConfigs().mpc.main`, 스레드 이름 `mpc_main`, tier ≥ 6 slot 3 FIFO 60 · tier 4 OTHER). 계획기는 MPC 와 같은 역할이고 CM 이 active 컨트롤러를 하나만 두므로 같은 코어에 동시에 도는 FIFO 는 하나다 (plan §6). activate 게이트: `planner.enabled` && profile `mpc_off` 면 `on_activate` 첫 문장 FAILURE
 - 스케줄러 D-7a: S6.5 에서 제어 PC 부하 상태로 FIFO·OTHER 각각 측정 (수신 → plan 게시 지연 p50·p99·최대, 예산 초과율, ≥ 1000 시행). FIFO 가 p99 를 `budget_s` 의 10% 이상 줄이거나 예산 초과율을 줄이면 FIFO 유지, 아니면 SCHED_OTHER (A-2)
 - 복사하지 않을 것: 현 MPC 경로의 `MPCSolutionManager::PublishSolution` mutex·try/catch, `HandlerMPCThread` 의 `fprintf` (plan §6)
 
@@ -424,10 +426,13 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `planner.budget_s` | double | s | 0.010 | 0.001–0.016 | 60 Hz 주기 내 |
-| `planner.slice.dt` | double | s | `TBD` | 0.005–0.05 | vision 샘플 간격의 정수배. **S3.6 이 `prediction.dt_expected` 를 0.05 s 로 정했다** (2026-09-22, provisional — L2 §6); 이 키 자체의 값은 후보 격자 설계와 함께 S6 |
-| `planner.slice.t_lead_min` | double | s | `TBD` | >0 | $T_{freeze}$ 이상 |
-| `planner.slice.t_max` | double | s | `TBD` | 0.2–1.5 | vision 지평 − `prediction.t_horizon_margin` 이하 (S3.6 설정 profile 1.0 s 면 ≤ 0.95 s) |
+| `planner.enabled` | bool | – | false | – | 계획기 스레드를 띄운다 (S6-A). `diagnostic.oracle_plan.enabled` 와 동시 true 면 park — `plan_box_` 의 writer 는 하나다 |
+| `planner.wake_timeout_s` | double | s | 0.05 | 0.005–0.5 | 새 궤적이 없어도 깨어나는 상한 (결정 H). `PeriodicRtThread` 가 양수 주기를 요구하므로 이 값이 그 주기다 |
+| `planner.budget_s` | double | s | **0.020** | 0.001–0.05 | 한 사이클 계산 예산. 2026-09-23 **R-2**: 후보당 IK 가 개발 PC 6R p50 1.8 ms · 7R 2.2 ms 라 0.010 으로는 후보 5 개도 못 본다 → 0.020 + 사전 필터 (IK 후보 ≤ 8). vision 주기 0.05 s 안 |
+| `planner.wait_pose` | double[] | rad | provisional | 관절 한계 안, 길이 = arm dof | IK seed 이자 대기 자세 (결정 L, arm 관절 순서). p1b `[0.212, −1.376, 1.107, −1.978, −3.296, 0.121]` · leap `[0, 1.0, 0, −1.2, 0, 1.2, 0]` (S3.5a/b 지도의 대기 자세). homing 은 S7.2 |
+| `planner.slice.dt` | double | s | **0.05** | 0.005–0.05 | vision 샘플 간격의 정수배. **S3.6 이 `prediction.dt_expected` 를 0.05 s 로 정했다** (2026-09-22, provisional — L2 §6). S6 착수 시 (2026-09-23) vision 간격 그대로로 정함 — 후보는 vision 격자 그대로라 공분산 시각 보간이 필요 없다 |
+| `planner.slice.t_lead_min` | double | s | = `planner.freeze.T_freeze` | >0 | $T_{freeze}$ 이상 (2026-09-23: 같은 값으로 정함) |
+| `planner.slice.t_max` | double | s | = 지평 − margin | 0.2–1.5 | vision 지평 − `prediction.t_horizon_margin` 이하 (S3.6 설정 profile 1.0 s 면 ≤ 0.95 s). 2026-09-23: 그 상한 그대로로 정함 |
 | `planner.n_settle` | int | – | 3 | 0–20 | §4.4 트랙 epoch 변경 후 대기 메시지 수 |
 | `planner.gamma.margin` | double | m/s | 0.1 | 0–1 | §4.5 `maxCatchableSpeed` 경계 여유 (1 ulp 엇갈림 방지) |
 | `planner.ik.max_iter` | int | – | 20 | 1–100 | 연산 예산 |
@@ -465,9 +470,9 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.switch.e_jump_max` | double | m | 0.01 | >0 | §4.7 |
 | `planner.switch.ed_jump_max` | double | m/s | 0.05 | >0 | §4.7 교체 시 $\dot e$ 점프 한계. 단일 키 (L7 은 γ 하향용으로 읽었으나 v1 범위 밖, D-8) |
 | `planner.gamma.derate_step` | – | – | – | – | v1 범위 밖 (D-8) — γ derate 재도입 시 단일 키로 다시 정한다 |
-| `planner.freeze.T_freeze` | double | s | `TBD` | ≥ §4.11 하한 | §4.11 |
+| `planner.freeze.T_freeze` | double | s | p1b **0.36** · leap **0.19** (provisional) | ≥ §4.11 하한 | §4.11 하한식 (결정 G, 2026-09-23) |
 | `planner.score.w_sigma`, `w_t`, `w_q`, `w_late`, `w_gamma` | double | – | 1, 1, 0.1, 0, 5 | ≥0 | §4.10 튜닝. `w_gamma`를 크게 잡으면 사전식 선택과 같아진다 |
-| `planner.workspace.catch_box` | box | m | `TBD` | – | TBD-BALL-02 |
+| `planner.workspace.catch_box` | box | m | sim: S3.5b 외접 상자 + 0.1 m / 실기 provisional | – | TBD-BALL-02. 모양 (결정 I, 2026-09-23): base 원점 기준 축정렬 상자 `{min: [x,y,z], max: [x,y,z]}`. 판정 게이트 — $p_c$ 와 $p_{stop}$ 이 모두 안에 있어야 한다 |
 
 ## 7. 단위 기술 구현 순서
 
