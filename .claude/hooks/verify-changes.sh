@@ -658,6 +658,18 @@ if [ -n "$RTC_TOUCHED" ]; then
   # (that is the 2026-07-16 regression above) and do not add a
   # measurement-prose exemption marker — rewording cost two comment edits and
   # improved both.
+  #
+  # Confirmed a third time 2026-09-22 on a NEW rtc_controllers field comment
+  # (catching_params.hpp) that named the robot whose shipped profile triggered
+  # the incident: rewording pushed the incident record down to the plan and
+  # left a header that is agnostic, which is what the rule asks for. That turn
+  # also found the real defect, and it was NOT here — .claude/rules/arch-source.md
+  # carried a judgment line reading "robot names in prose are not a violation
+  # (known gate false positive)", contradicting this SSoT. An agent following
+  # it leaves the line in place, and because a blocked run does not advance the
+  # watermark, the next turn blocks on the same line — forever. The rule file
+  # was corrected instead of this scope. Do not re-derive the comment exemption
+  # from that sentence; it no longer exists.
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ -f "$f" ] || continue

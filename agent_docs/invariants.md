@@ -423,4 +423,6 @@ False-positive 판정이면:
 - 한 줄 보고: `false-positive: <rule-id> at <file:line>, reason=<RT path 외 / one-shot / scalar auto / ...>`
 - 동일 패턴이 반복 false-positive로 보고되면 [anti-patterns.md](anti-patterns.md) 또는 본 문서의 grep 명령을 좁히는 별도 task 후보
 
+**단 이 절차는 사람이 돌리는 grep 을 전제한다 — 차단형 sensor 에는 종결력이 없다.** 차단하는 gate 는 통과 watermark 를 전진시키지 않으므로, "false-positive 이니 코드는 그대로" 로 판정해도 **다음 turn 이 같은 자리에서 다시 막힌다** (2026-09-22 ARCH-1 실측: 같은 주석 한 줄에 두 turn 연속 차단). 종결 수단은 둘뿐이다 — (a) 지적된 줄을 고친다, (b) gate 자체의 수정을 `[CONCERN]` 으로 제안하고 컨펌을 받는다. 어느 쪽도 아닌 보고는 진행이 아니라 교착이다.
+
 **금지**: false-positive 추정이라며 사용자 보고 없이 invariant 우회. 의심스러우면 §"이 파일의 규칙을 건드려야 할 것 같을 때" 의 `[CONCERN]` 절차를 따른다.
