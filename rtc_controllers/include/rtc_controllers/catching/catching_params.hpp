@@ -117,8 +117,10 @@ struct CatchingParams {
   /// cannot share a TBD. A profile that left `a_max` at TBD instead would be
   /// refused outright in sim, and because CM latches `bring_up_failed` on any
   /// controller's configure failure that takes EVERY controller on the robot
-  /// down with it (observed 2026-09-22, ur5e_p1b sim). The provisional rule
-  /// says the right thing instead: sim warns, a real arm is blocked.
+  /// down with it — observed on a shipped sim profile 2026-09-22 (the robot and
+  /// the session are named in plan §7.3 A-S5-11, which owns the incident; this
+  /// header is robot-agnostic and stays that way). The provisional rule says
+  /// the right thing instead: sim warns, a real arm is blocked.
   bool reference_provisional{true};
 
   // planner: (L3 §6)
