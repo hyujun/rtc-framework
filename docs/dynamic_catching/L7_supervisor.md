@@ -74,7 +74,7 @@
 - fault 는 E-STOP 과 분리된 컨트롤러 래치다. `ClearEstop` 은 fault 를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않는다. RT 경로의 try/catch·deactivate 는 쓰지 않는다 (RT-2).
 - 손 자세 유지로 인한 파지력 소실 등 부작용 검토와 정책 전체는 S9 (D-13).
 
-**S5.1 최소 E-STOP 계약 (plan §4.4 S5.1, `[CONCERN] E-8` — S5 착수 전 승인 필요).** 이 계약은 위 P-1 임시 기준을 구현 수준에서 좁힌 것이다.
+**S5.1 최소 E-STOP 계약 (plan §4.4 S5.1, `[CONCERN] E-8` — 2026-09-22 승인, S5 에서 구현 — PR #564).** 이 계약은 위 P-1 임시 기준을 구현 수준에서 좁힌 것이다.
 - (a) `TriggerEstop`·`ClearEstop`·`ResetFault`·`ResetTargetInitialization` 훅은 **atomic 요청·epoch 만 갱신**한다. reset 자체(값을 되돌리는 동작)의 **유일한 writer 는 RT tick** 이다 — 훅이 직접 상태를 되돌리지 않는다.
 - (b) plan·궤적·공분산·손·FSM·타이머 무효화는 D-23 순서(activation generation 판정)로 RT tick 이 수행한다.
 - (c) 해제 후 자동 재개는 하지 않는다.
