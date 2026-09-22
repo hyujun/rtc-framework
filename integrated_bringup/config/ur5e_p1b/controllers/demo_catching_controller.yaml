@@ -9,9 +9,11 @@
 #
 # S4.0 scope: arm hold + unshaped hand step. No catching law (S5), no hand
 # sequencer (S7.1). The `catching:` tree below carries only what this step
-# needs; the keys owned by other steps (reference.*, planner.*, supervisor.*)
-# are deliberately absent and their TBDs are logged as warnings rather than
-# refused — this controller never arms, so G0-C's arming gate is not its gate.
+# needs; of the keys owned by other steps (reference.*, planner.*,
+# supervisor.*) only the values already decided are recorded (planner.hand.*,
+# planner.ik.*, supervisor.decel.a_dec — none consumed yet), the rest are
+# absent and their TBDs are logged as warnings rather than refused — this
+# controller never arms, so G0-C's arming gate is not its gate.
 demo_catching_controller:
   command_type: "position"
 
@@ -123,7 +125,17 @@ demo_catching_controller:
         # hold. Re-check this margin whenever these two postures move.
         T_close_e2e: 0.2805
 
-    # ── Pocket geometry (L3 §6 `planner.hand.*`, TBD-HAND-04) ────────────────
+    # ── Deceleration (L7 §6 `supervisor.decel.a_dec`, single-source key) ──────
+    # `ParseCatchingParams` reads this (TbdDouble) but nothing consumes it yet:
+    # the L3 §4.9 stopping-point reservation lands in S6, the L7 DECEL target in
+    # S7. 10 m/s^2 is the value the S3.5b gate map ran with, confirmed
+    # 2026-09-22 (plan §7.3); provisional until reference.a_max exists
+    # (a_dec <= a_max, L7 §4.3).
+    supervisor:
+      decel:
+        a_dec: 10.0
+
+    # ── Hand allowance (L3 §6 `planner.hand.*`, TBD-HAND-04) ─────────────────
     # NOTHING READS THESE TWO KEYS YET. `ParseCatchingParams` puts
     # `planner.hand.*` out of scope on purpose (see the header of
     # rtc_controllers/include/rtc_controllers/catching/catching_params.hpp):
@@ -132,28 +144,38 @@ demo_catching_controller:
     # derivation and the value to live together with the profile they were
     # derived from — read them as documentation, not as configuration.
     #
+    # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, plan §7.3). The L3 §4.5
+    # gamma window only ever uses d_eff / T_close,tot — the relative speed the
+    # hand can absorb — so the key holds that speed times T_close,tot:
+    #   d_eff 0.2815 m = 1.0 m/s x (T_close_e2e 0.2805 + h/2 0.001) s.
+    #                    1.0 m/s is the time-triggered fly-in figure (L6 §4.5,
+    #                    S4.4): closure fired at t_c - T_close_e2e, ball centred
+    #                    on the catch point, 7/9 held at 1.0 m/s, 5/9 at 1.5.
+    # With the pocket depth below instead (0.34 m/s) the S3.5b gate map of this
+    # robot is empty for every wait pose; everything that opens stands on the
+    # fly-in figure. Valid only under that same time-triggered closure rule,
+    # and measured with the hand frame at constant velocity — provisional.
+    #
     # MEASURED, S4.5 (2026-09-21), with the searched postures above and the
     # shipped 67 mm ball: ball PLACED on the preshape palm on a 5 mm lateral
     # grid, step to q_close, shake along +-g on each catch-frame axis.
     # 445 placements, 214 held.
     #   r_cap 0.024 m = lateral inscribed radius of that capture region (best
     #                   catch point (+0.015, +0.145, 0.052) in the catch frame).
-    #   d_eff 0.095 m = approach-axis span still caught at that point, from
-    #                   resting on the palm (z 0.052) upward. SCAN-LIMITED: the
-    #                   scan stopped at +0.095 with the ball still held, so
-    #                   this is a lower bound, not the edge.
+    #   pocket depth 0.095 m = approach-axis span still caught at that point,
+    #                   from resting on the palm (z 0.052) upward. SCAN-LIMITED:
+    #                   the scan stopped at +0.095 with the ball still held, so
+    #                   this is a lower bound. A contact quantity (L6 §4.5,
+    #                   MASTER TBD-HAND-04) — it is NOT this file's d_eff.
     # Both are ball-CENTRE quantities (the radius is already inside them) and
     # both are derived FOR core.ball above.
-    # What these numbers do NOT say: this hand catches a ball that ARRIVES
-    # poorly. With closure fired as the ball crosses the fingertip plane it
-    # holds 9/130 at 0.25 m/s, 3/130 at 0.5 and none at 1 m/s (LEAP peaks at
-    # 1 m/s), because its closure is ~2.7x slower than LEAP's and the ball has
-    # rebounded off the palm before the fingers arrive — L6 §4.2's first
-    # suspect, joint speed, now that the second (posture) is dealt with.
+    # Position-triggered closure (fired as the ball crosses the fingertip plane)
+    # held 9/130 at 0.25 m/s and none at 1 m/s — that was the trigger rule's
+    # bias for a slow-closing hand, not the hand's limit (L6 §4.5).
     # With the two user-posed pairs this block was TBD: 0 held of 851.
     planner:
       hand:
-        d_eff: 0.095
+        d_eff: 0.2815
         r_cap: 0.024
         provisional: true
 

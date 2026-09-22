@@ -390,7 +390,7 @@ catching:
 | TBD-HAND-01 | P1b `T_close` | L3, L6 | S4 식별 도구(sim) + S4.3 실기 $T_{close,tot}$ `[HW-P1B]` |
 | TBD-HAND-02 | P1b 명령 경로(메시지·노드)와 `T_link` | L6 | 닫힘 — 손 device slot → `udp_hand_native` → `/p1b/joint_command` → `udp_hand_node`(250 Hz). 명령 stamp 미사용이라 $T_{link}$ 대신 종단 간 $T_{close,tot}$ 를 잰다 (W, D-11) |
 | TBD-HAND-03 | 지문 센서 인터페이스·주기·부호·frame | L6, L7 | 인터페이스·주기·부호 닫힘 — 실기 `HandSensorState` 250 Hz finger-on-object, sim `WrenchStamped` 도 finger-on-object (0fcc1d23). S7.3 에서 재확인 |
-| TBD-HAND-04 | 포켓 유효 깊이 $d_{eff}$ · 포획 반경 $r_{cap}$ (두 손) | L3 | **LEAP 닫힘(provisional) — $r_{cap}$ 31.0 mm · $d_{eff}$ 80 mm** (S4.5 접촉 sim, 사용자 승인 2026-09-20, L6 §4.5). **P1b 닫힘(provisional) — $r_{cap}$ 24 mm · $d_{eff}$ ≥ 95 mm** (2026-09-21): 사용자 제공 자세는 테니스공을 파지하지 못해 (851 중 0) 자세를 탐색으로 다시 정한 뒤 재실행했다. S7.1 후 투척 보정 |
+| TBD-HAND-04 | 포켓 유효 깊이 $d_{eff}$ · 포획 반경 $r_{cap}$ (두 손) | L3 | **LEAP 닫힘(provisional) — $r_{cap}$ 31.0 mm · $d_{eff}$ 80 mm** (S4.5 접촉 sim, 사용자 승인 2026-09-20, L6 §4.5). **P1b 닫힘(provisional) — $r_{cap}$ 24 mm · $d_{eff}$ ≥ 95 mm** (2026-09-21): 사용자 제공 자세는 테니스공을 파지하지 못해 (851 중 0) 자세를 탐색으로 다시 정한 뒤 재실행했다. S7.1 후 투척 보정. **`planner.hand.d_eff` 키의 뜻은 2026-09-22 확정** — 위 포켓 깊이가 아니라 시각 발동 fly-in 허용 상대속도 × $T_{close,tot}$ (P1b 0.2815 · LEAP 0.1047 m, L3 §4.5·L6 §4.5). 깊이는 접촉 물리량으로 여기 남는다 |
 | TBD-HAND-05 | P1b preshape/폐쇄 자세, 전류(토크) 한계 | L6 | 사용자 제공, S4.1 손 프로파일 YAML |
 | TBD-ARM-01 | 명령을 싣는 자리(인터페이스 형태·필드·단위), 실기/sim 전환, backend가 이미 보상하는 지연이 있는지 | L3, L5 | 닫힘 — `ControllerOutput` device 0, `CommandType` kPosition, backend 가 실기/sim 전환(`ur_driver_native`/`mujoco_native`), 지연 보상 없음 (W) |
 | TBD-WS-02 | 포구 코드를 새 패키지로 둘지 기존 패키지에 넣을지, 패키지 이름 확정 | 전체 | 닫힘 — **→ D-1** (새 패키지 없음, §4) |

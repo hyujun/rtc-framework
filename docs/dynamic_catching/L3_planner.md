@@ -184,7 +184,7 @@ vision 공분산의 신뢰성은 시뮬레이션에서 참값 대비 NEES로 확
 
 $$\gamma\ge\gamma_{\min}=1-\frac{d_{eff}}{\Vert v(t_k)\Vert\,T_{close,tot}},\qquad T_{close,tot}=T_{close,e2e}+T_{tick}$$
 
-$d_{eff}$는 손바닥 접촉 전 폐쇄를 요구하면 포켓 깊이 $d$, 반발계수 $e$로 튕겨 나오기 전까지 허용하면 $d(1+1/e)$다(TBD-HAND-04). **S4.5 는 전자를 쓴다** — 접촉 시뮬레이션이 공을 손바닥에 앉힌 상태에서 재므로 반발 여유를 세지 않는다 (보수적, L6 §4.5). **S3.5b (2026-09-22): 그 값으로는 `ur5e_p1b` 의 gate 지도가 비어 있다** — 열린 투척은 전부 시각 발동 fly-in 으로 잰 상대속도 1.0 m/s (등가 $d_{eff}=v_{rel}T_{close,tot}$) 위에 있다. 어느 쪽을 `planner.hand.d_eff` 로 둘지는 사용자 결정 (plan §7.3).
+$d_{eff}$는 손바닥 접촉 전 폐쇄를 요구하면 포켓 깊이 $d$, 반발계수 $e$로 튕겨 나오기 전까지 허용하면 $d(1+1/e)$다(TBD-HAND-04). **S4.5 는 전자를 쓴다** — 접촉 시뮬레이션이 공을 손바닥에 앉힌 상태에서 재므로 반발 여유를 세지 않는다 (보수적, L6 §4.5). **S3.5b (2026-09-22): 그 값으로는 `ur5e_p1b` 의 gate 지도가 비어 있다** — 열린 투척은 전부 시각 발동 fly-in 으로 잰 상대속도 1.0 m/s (등가 $d_{eff}=v_{rel}T_{close,tot}$) 위에 있다. **`[확정 2026-09-22 사용자]` `planner.hand.d_eff` 는 둘 중 어느 것도 아닌 시각 발동 fly-in 으로 잰 허용 상대속도 × $T_{close,tot}$ 다** — P1b 0.2815 · LEAP 0.1047 m (L6 §4.5). 이 절은 $d_{eff}$ 를 $d_{eff}/T_{close,tot}$ 로만 쓰므로 식·코드는 그대로고, 포켓 깊이는 접촉 물리량으로 L6 에 남는다. 유효 조건 (런타임 손 발동도 시각 발동) 과 남긴 대안 (`planner.hand.v_rel_max` [m/s], S6 배선 시 재검토) 은 plan §7.3.
 
 **상한 (팔 속도).** 포구 자세 $q^\ast$에서 방향 $\hat v$로 낼 수 있는 최대 속력 $v_{dir,\max}$와 TCP 속도 한계 $v_{\max}$(= L4 `reference.v_max`)로 제한한다.
 
@@ -450,7 +450,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.catchability.definition` | string | – | `"arm_5row"` | `arm_5row` \| `arm_6row` | §4.2 게이트에 쓸 정의. w₅·w₆ 는 정의와 무관하게 둘 다 기록 |
 | `planner.time.margin` | double | s | 0.03 | 0–0.2 | §4.3 |
 | `planner.unc.kappa_sigma` | double | – | 0.3 | 0.05–1 | §4.4 |
-| `planner.hand.d_eff` | double | m | LEAP **0.080** / P1b **0.095** (스캔 상한에 걸린 하한) | >0 | S4.5 실측 (L6 §4.5), provisional. **소비자 없음** — 파서는 이 키를 읽지 않는다 (S6 의 γ 창이 첫 소비자) |
+| `planner.hand.d_eff` | double | m | LEAP **0.1047** / P1b **0.2815** | >0 | **시각 발동 fly-in 허용 상대속도 1.0 m/s × $T_{close,tot}$** (2026-09-22 확정 — §4.5, L6 §4.5, plan §7.3). 포켓 깊이 (0.080 / 0.095 m, S4.5) 가 아니다. provisional. **소비자 없음** — 파서는 이 키를 읽지 않는다 (S6 의 γ 창이 첫 소비자) |
 | `planner.hand.r_cap` | double | m | LEAP **0.031** / P1b **0.024** | >0 | S4.5 실측 (L6 §4.5), provisional. 측면 허용량이며 공 중심 좌표계라 공 반지름이 이미 포함돼 있다 |
 | `planner.gamma.grid` | double[] | – | [0.0, 0.1, …, 0.6] | 0–1 | §4.8 |
 | `planner.gamma.window_grid` | double[] | s | [0.3, 0.45, 0.6] | >0 | §4.8 |
