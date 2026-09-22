@@ -139,7 +139,7 @@ struct FieldMap {                                  // 해시가 바뀔 때만 �
 메시지 형식 검사 — **점을 복사하기 전에** 모두 통과해야 한다:
 
 - `is_bigendian == false` (바이트 스왑 미지원)
-- `height == 1`, `width` ∈ [`io.n_min`, `n_max`] (`n_max ≤ kCap`, S3.6) — 상한 검사를 복사 전에, **인덱싱 전에** 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 에서 `kCap` 검사로 수정)
+- `height == 1`, `width` ∈ [`io.n_min`, `n_max`] (S3.6 이 정한 11·21, `n_max ≤ kCap`) — 상한 검사를 복사 전에, **인덱싱 전에** 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 에서 `kCap` 검사로 수정)
 - `data.size() == point_step × width`, `row_step == point_step × width`
 - 필드 값은 `std::memcpy` 로 읽는다(정렬·aliasing UB 방지)
 
