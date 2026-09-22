@@ -262,7 +262,7 @@ vision의 예측을 그대로 신뢰한다. 제어 PC는 $(p,v,a)$ 샘플 열 �
 
 ### 5.3 시계
 
-실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../agent_docs/invariants.md) 에 E-1 기록된 예외로 명문화됐다 (S0.6 승인 2026-09-19, plan §3.1). 실기 적용 조건(PTP 동기)은 S10 에서 재확인한다. sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall epoch 의 stamp 를 쓴다(D-3, S3.4; 2026-09-22 부터 공 lane stamp 는 throttle 이 sim 시각을 대응시키는 wall 순간이라 stepper 의 wake 지터가 없다 — `rtc_mujoco_sim` README §Projectile Ball stamp).
+실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../agent_docs/invariants.md) 에 E-1 기록된 예외로 명문화됐다 (S0.6 승인 2026-09-19, plan §3.1). 실기 적용 조건(PTP 동기)은 S10 에서 재확인한다. sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall epoch 의 stamp 를 쓴다(D-3, S3.4; 2026-09-22 부터 공 lane stamp 는 발사 기준 sim 시간축을 wall 에 얹은 값이라 stepper 의 wake 지터가 없다 — `rtc_mujoco_sim` README §Projectile Ball stamp).
 
 ---
 
@@ -405,7 +405,7 @@ catching:
 | TBD-VIS-01 | vision 토픽 이름 | L1, L8 | sim 은 debug 토픽 `/ball_perception/debug/prediction/trajectory` (W). 제품 토픽은 미정 (ball_perception E6-F02) |
 | TBD-VIS-02 | `PointField` 실제 레이아웃(offset·datatype·count), `point_step` 372 B의 미설명 4–8 B | L1 | 닫힘 — 384 B, §5.1 표 (W, D-4) |
 | TBD-VIS-03 | `t` 필드 타입·기준 (float64 초 / uint32 ns) | L1, L2 | 닫힘 — `horizon_ns` UINT32, `header.stamp`(예측 원점) 기준 상대 ns (W, D-4) |
-| TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15), sim 실측은 S3.4. **sim 실측 (S3.4 2026-09-20)**: 30.0 Hz (p05 30.3 / p95 29.7), N = 16, 지평 0.05…0.80 s — 당시 프로파일 그대로; stamp→수신 지연 p50 32 / p95 41 / max 430 ms (30 Hz 발행 주기 포함). **요구 사양 확정 (S3.6, 2026-09-22)**: 설정 profile **1.0 s · 0.05 s · 20 점 · ≤ 30 Hz**, 런타임 `n_max` 20 (plan §4.4 S3.6 결과). 같은 rig 에서 공 lane 의 wall stamp 간격이 p95 33.6 ms 로 흔들리던 결함은 2026-09-22 에 고쳤다 (stamp = throttle 기준 wall 순간; 재실측 p95 10.00 ms — plan §4.4 T_det 재실측) |
+| TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15), sim 실측은 S3.4. **sim 실측 (S3.4 2026-09-20)**: 30.0 Hz (p05 30.3 / p95 29.7), N = 16, 지평 0.05…0.80 s — 당시 프로파일 그대로; stamp→수신 지연 p50 32 / p95 41 / max 430 ms (30 Hz 발행 주기 포함). **요구 사양 확정 (S3.6, 2026-09-22)**: 설정 profile **1.0 s · 0.05 s · 20 점 · ≤ 30 Hz**, 런타임 `n_max` 20 (plan §4.4 S3.6 결과). 같은 rig 에서 공 lane 의 wall stamp 간격이 p95 33.6 ms 로 흔들리던 결함은 2026-09-22 에 고쳤다 (stamp = 발사 기준 sim 시간축을 wall 에 얹은 값; 재실측 p95 10.00 ms — plan §4.4 T_det 재실측) |
 | TBD-VIS-05 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | L0, L2, L4 | 닫힘 — 상수 $g$ (W) |
 | TBD-VIS-06 | `header.frame_id`와 `world`의 관계 | L1 | **닫힘** — `world`, 변환 없음 (S3.4 실측 2026-09-20) |
 | TBD-VIS-07 | 트랙 식별·상태(소실) 판정 수단 | L1, L3, L7 | 닫힘 — `generation`·`validity`·`snapshot_sequence` 필드 존재 (W, D-4) |

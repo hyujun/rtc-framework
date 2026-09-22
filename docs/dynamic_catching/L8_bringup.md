@@ -66,7 +66,7 @@
 
 v0.4 의 자체 vision 발행기(측정 모사 + 참조 EKF + `PointCloud2`)는 v0.5 에서 삭제했다. ball_perception 의 `sim_estimator_node` 가 `/sim/ball/camera_position` 을 구독해 `/ball_perception/debug/prediction/trajectory` (`PointCloud2`) 를 발행하므로, L1 파서는 sim 과 실기에서 **실제 발행기와 같은 레이아웃**을 탄다 (D-4).
 
-- 연결 (S3.4, **완료 2026-09-20** — 결과는 plan §4.4 S3.4): clock domain `ros_system_time` + `use_sim_time=false` (rtc 에 `/clock` 없음, stamp = wall epoch — 2026-09-22 부터 공 lane 은 throttle 이 sim 시각을 대응시키는 wall 순간을 찍는다, `rtc_mujoco_sim` README §Projectile Ball stamp — 설정으로 닫힘), `frame_id` = `world`, 당시 profile 로 30 Hz · N 16 · 지평 0.8 s (TBD-VIS-04/06 닫힘; 현 설정은 아래 vision 요구 사양의 1.0 s / 20 점), 지연·드롭 주입은 `rtc_tools camera_relay` 로 입력 토픽 앞에서 한다. sim 재시작 시 `clock_reset` 은 wall stamp 에서는 **발동하지 않는다** — `/clock` 전환(S5/S6) 뒤에 다시 본다
+- 연결 (S3.4, **완료 2026-09-20** — 결과는 plan §4.4 S3.4): clock domain `ros_system_time` + `use_sim_time=false` (rtc 에 `/clock` 없음, stamp = wall epoch — 2026-09-22 부터 공 lane 은 발사 기준 sim 시간축을 wall 에 얹은 값을 찍는다, `rtc_mujoco_sim` README §Projectile Ball stamp — 설정으로 닫힘), `frame_id` = `world`, 당시 profile 로 30 Hz · N 16 · 지평 0.8 s (TBD-VIS-04/06 닫힘; 현 설정은 아래 vision 요구 사양의 1.0 s / 20 점), 지연·드롭 주입은 `rtc_tools camera_relay` 로 입력 토픽 앞에서 한다. sim 재시작 시 `clock_reset` 은 wall stamp 에서는 **발동하지 않는다** — `/clock` 전환(S5/S6) 뒤에 다시 본다
 - 측정 잡음은 `rtc_mujoco_sim` 의 `publish.position_noise_stddev_m` 이 준다
 - 제어 경로에서 truth 토픽을 쓰지 않는다. truth 는 지표·NEES 전용
 - 자체 fixture EKF 는 만들지 않는다. `ball_dynamics` 는 test fixture 전용 위치로 옮긴다 (S1.6)

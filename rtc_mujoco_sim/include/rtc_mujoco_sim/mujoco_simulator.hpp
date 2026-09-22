@@ -163,15 +163,16 @@ using ObjectStateCallback = std::function<void(const std::vector<ObjectStateInfo
 // WHY NOT JUST STAMP THE BALL TRUTH WITH SIM TIME. Putting mjData::time into
 // header.stamp would change the stamp's EPOCH, and ball_perception's
 // recorder_node and evaluator_node pair /sim/ball/ground_truth with the camera
-// topic BY TIMESTAMP (0.2 ms alignment tolerance), so moving one topic's clock
-// axis and not the other silently breaks both; moving the stack onto a sim
-// epoch needs rtc to publish /clock and everything to run use_sim_time — an
-// S5/S6 decision. What the ball publisher does instead (2026-09-22) keeps the
-// wall epoch and only removes the stepper's wake jitter: both ball topics are
-// stamped with the wall instant the max_rtf throttle maps the sample's sim
-// time to (ProjectileBallSample::nominal_steady_ns), so consumers still see
-// ROS system time, paired as before. This lane remains the sim↔steady
-// correspondence table that the D-3 phase error is measured from.
+// topic BY TIMESTAMP (tolerance: the profile's
+// evaluation.time_alignment_tolerance_s), so moving one topic's clock axis and
+// not the other silently breaks both; moving the stack onto a sim epoch needs
+// rtc to publish /clock and everything to run use_sim_time — an S5/S6
+// decision. What the ball publisher does instead (2026-09-22) keeps the wall
+// epoch and only removes the stepper's wake jitter: both ball topics are
+// stamped with the sim-time axis laid onto the wall from the launch instant
+// (ProjectileBallSample::stamp_steady_ns), so
+// consumers still see ROS system time, paired as before. This lane remains the
+// sim↔steady correspondence table that the D-3 phase error is measured from.
 struct SimClockSample {
   std::uint64_t step{0};
   double sim_time_sec{0.0};
@@ -223,16 +224,17 @@ struct ProjectileBallSample {
   std::array<double, 3> linear_velocity{0.0, 0.0, 0.0};   ///< world frame
   std::array<double, 3> angular_velocity{0.0, 0.0, 0.0};  ///< world frame (qvel is body frame)
   double sim_time_sec{0.0};
-  /// Steady instant this sim time maps to on the max_rtf throttle's reference
-  /// (ProjectileBallNominalSteadyNs). The publisher derives header.stamp from
-  /// it instead of the wall clock at publish time: the sample is taken when
-  /// the physics reaches sim_time_sec, not when the stepper happened to wake,
-  /// and a consumer that trusts the stamp as capture time (ball_perception's
+  /// Steady instant to stamp this sample with (ProjectileBallStampSteadyNs):
+  /// the sim-time axis laid onto the wall from the launch instant (its offset
+  /// from the wall is the flight's phase error, either sign). The publisher
+  /// derives header.stamp from it instead of
+  /// the wall clock at publish time: the sample is taken when the physics
+  /// reaches sim_time_sec, not when the stepper happened to wake, and a
+  /// consumer that trusts the stamp as capture time (ball_perception's
   /// `stamp_is_capture_time`) sees the sim-time spacing rather than the
-  /// stepper's burst-and-sleep rhythm. The sample is published right after the
-  /// throttle sleep, so this instant never leads the wall unless the loop is
-  /// unthrottled (then it is the actual instant, as before).
-  std::int64_t nominal_steady_ns{0};
+  /// stepper's burst-and-sleep rhythm. Zero while the ball is parked (nothing
+  /// is published then); the actual instant when the loop is unthrottled.
+  std::int64_t stamp_steady_ns{0};
 };
 
 using ProjectileBallCallback = std::function<void(const ProjectileBallSample& sample)>;
@@ -1137,6 +1139,12 @@ class MuJoCoSimulator {
   ProjectileBallSample projectile_ball_sample_{};
   std::mt19937_64 projectile_ball_rng_{};
   bool projectile_ball_active_{false};
+  // Stamp-axis anchor for the flight in progress (ProjectileBallStampSteadyNs):
+  // set by WriteProjectileBallState on launch, restarted when max_rtf changes.
+  // Physics-thread owned, like the throttle members.
+  std::int64_t projectile_ball_stamp_anchor_wall_ns_{0};
+  double projectile_ball_stamp_anchor_sim_sec_{0.0};
+  double projectile_ball_stamp_anchor_rtf_{0.0};
 
   // Stated launch state, handed to the physics thread.
   //

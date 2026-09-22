@@ -18,7 +18,7 @@
  "time": {
   "clock_domain": "ros_system_time",
   "stamp_is_capture_time": true,
-  "max_future_skew_s": 0.01,
+  "max_future_skew_s": 0.1,
   "max_backward_jump_s": 0.05,
   "max_input_gap_s": 0.1
  },
