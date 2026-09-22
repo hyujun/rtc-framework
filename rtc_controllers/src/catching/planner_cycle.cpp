@@ -1,0 +1,118 @@
+// One planner wake (S6). See planner_cycle.hpp.
+#include "rtc_controllers/catching/planner_cycle.hpp"
+
+#include "rtc_base/types/types.hpp"  // rtc::SteadyNowNs
+
+namespace rtc::catching {
+
+PlannerCycle::PlannerCycle() noexcept : clock_(&rtc::SteadyNowNs) {}
+
+bool PlannerCycle::Bind(const PlannerCycleIo& io) noexcept {
+  bound_ = io.traj != nullptr && io.cov != nullptr && io.rt != nullptr && io.plan != nullptr;
+  io_ = bound_ ? io : PlannerCycleIo{};
+  return bound_;
+}
+
+PlanSnapshot PlannerCycle::PlanOnce(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
+                                    bool cov_matched, const PlannerRtState& rt,
+                                    NowReal now) noexcept {
+  static_cast<void>(cov);
+  static_cast<void>(cov_matched);
+  static_cast<void>(now);
+  // S6-A stub: provenance filled, no candidate. `reason` stays kNone — "no
+  // plan, and no gate is being named", because no gate ran. A stub that
+  // reported a real gate's code would send the operator looking for a
+  // bottleneck that does not exist.
+  PlanSnapshot plan{};
+  plan.token = traj.token;
+  // The plan belongs to the activation the RT is in, which is the one the
+  // caller has already checked the trajectory against.
+  plan.token.activation_generation = rt.activation_generation;
+  plan.rt_iteration = rt.rt_iteration;
+  plan.rt_state_ns = rt.rt_state_ns;
+  plan.valid = false;
+  plan.reason = PlanReason::kNone;
+  return plan;
+}
+
+PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
+  PlannerCycleRecord rec{};
+  rec.wake_ns = wake.ns;
+  if (!bound_) {
+    return rec;
+  }
+
+  // ── 1. The RT state (L3 §5.3 step 2, read first: it says whether to plan) ─
+  const PlannerRtState rt = io_.rt->Load();
+  if (!rt.valid) {
+    return rec;
+  }
+  rec.mode = rt.mode;
+  // A trial reset since the last wake. The planner has no per-trial state at
+  // S6-A, so noticing is all there is to do here; the THREAD drains its wake
+  // signal on this flag (L7 §4.8). Recorded before the activity gate so a
+  // reset is seen even when the new mode has nothing to plan for.
+  if (rt.reset_epoch != seen_reset_epoch_) {
+    seen_reset_epoch_ = rt.reset_epoch;
+    rec.reset_seen = true;
+  }
+  if (ActivityFor(static_cast<Mode>(rt.mode)) != PlannerActivity::kSearch) {
+    // kMonitor (COMMITTED/CLOSING) is monitorOnly — S6-B. Publishing nothing
+    // there is safe: the RT keeps the plan it committed to.
+    return rec;
+  }
+
+  // ── 2. The trajectory, then its covariance (L3 §5.2 read order) ──────────
+  traj_ = io_.traj->Load();
+  if (!traj_.valid || traj_.token.activation_generation != rt.activation_generation) {
+    rec.outcome = CycleOutcome::kNoInput;
+    return rec;
+  }
+  rec.snapshot_sequence = traj_.token.snapshot_sequence;
+  rec.track_generation = traj_.token.generation;
+  rec.traj_recv_ns = traj_.token.traj_recv_ns;
+
+  // The ingress stores covariance FIRST and trajectory second, so the window
+  // in which the two disagree is one where the covariance is the newer one.
+  // One re-read closes the common case (the writer landed between the two
+  // loads); a second mismatch means the pair is not a pair, and it is not
+  // used (L3 §5.2: "그 조합은 쓰지 않는다").
+  cov_ = io_.cov->Load();
+  rec.cov_matched = cov_.valid && SameSnapshot(cov_.token, traj_.token);
+  if (!rec.cov_matched) {
+    cov_ = io_.cov->Load();
+    rec.cov_matched = cov_.valid && SameSnapshot(cov_.token, traj_.token);
+  }
+
+  // ── 3. Search (A-4 single entry) ─────────────────────────────────────────
+  PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, wake);
+  if (post_search_hook_ != nullptr) {
+    post_search_hook_(post_search_context_);
+  }
+
+  // ── 4. Provenance re-check before publishing (L3 §5.2, planner side) ─────
+  // A newer trajectory means the eventfd has already been signalled for it,
+  // so the next wake plans against it; publishing this one would hand the RT
+  // a plan for a prediction that is no longer the latest. A moved reset epoch
+  // means the trial this was computed for is over.
+  traj_recheck_ = io_.traj->Load();
+  const PlannerRtState rt_now = io_.rt->Load();
+  if (!SameSnapshot(traj_recheck_.token, traj_.token) || rt_now.reset_epoch != rt.reset_epoch ||
+      rt_now.activation_generation != rt.activation_generation) {
+    rec.outcome = CycleOutcome::kSuperseded;
+    return rec;
+  }
+
+  // ── 5. Publish ───────────────────────────────────────────────────────────
+  plan.plan_id = ++last_plan_id_;
+  plan.publish_ns = clock_();
+  io_.plan->Store(plan);
+  rec.outcome = CycleOutcome::kPublished;
+  rec.plan_id = plan.plan_id;
+  rec.plan_valid = plan.valid;
+  rec.reason = plan.reason;
+  rec.publish_ns = plan.publish_ns;
+  return rec;
+}
+
+}  // namespace rtc::catching
