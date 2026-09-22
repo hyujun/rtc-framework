@@ -178,7 +178,7 @@ rtc_controllers/
 │   │   ├── catch_pose_ik.cpp                 -- 위 `catch_pose_ik.hpp` 구현 (Pinocchio + Eigen, ROS 비의존)
 │   │   ├── catch_pose_ik_batch.cpp           -- 위 `catch_pose_ik_batch.hpp` 구현
 │   │   ├── catch_pose_ik_batch_main.cpp      -- `catch_pose_ik_batch` 실행파일의 `main` (ARCH-7-exempt 오프라인 검사 도구)
-│   │   ├── batch_csv.hpp                     -- 두 배치 도구가 공유하는 CSV 읽기·쓰기 (private: 빈 끝 필드 보존, 유한값·정수 폭 검사, `%.17g`)
+│   │   ├── batch_csv.hpp                     -- 두 배치 도구가 공유하는 CSV 읽기·쓰기 (private): 헤더가 열 순서를 정하는 `ReadHeadered`/`Row` (중복 헤더·필수 열·행 폭 검사), 빈 끝 필드 보존, 유한값·정수 폭 검사, `%.17g`
 │   │   ├── catch_gate_batch.cpp              -- 위 `catch_gate_batch.hpp` 구현
 │   │   └── catch_gate_batch_main.cpp         -- `catch_gate_batch` 실행파일의 `main` (ARCH-7-exempt 오프라인 검사 도구, 모든 인자 필수)
 │   └── controllers/

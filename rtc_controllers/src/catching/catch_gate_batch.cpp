@@ -4,7 +4,6 @@
 #include "rtc_controllers/catching/time_types.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <istream>
 #include <span>
@@ -15,11 +14,7 @@
 namespace rtc::catching {
 namespace {
 
-using batch_csv::IsSkippable;
 using batch_csv::Num;
-using batch_csv::ParseFinite;
-using batch_csv::ParseIntCell;
-using batch_csv::SplitCsv;
 
 constexpr double kSToNs = 1e9;
 
@@ -98,73 +93,51 @@ std::vector<GateCandidate> ParseGateCandidateCsv(std::istream& in, int nv) {
   if (nv <= 0) {
     throw std::invalid_argument("gate candidate CSV: posture width must be positive");
   }
-  std::vector<std::string> required = {"id",  "t_c_s", "p_c_x", "p_c_y", "p_c_z", "v_x",
-                                       "v_y", "v_z",   "jpu_x", "jpu_y", "jpu_z"};
+  static const std::vector<std::string> kAxes = {"x", "y", "z"};
+  std::vector<std::string> required = {"id", "t_c_s"};
+  for (const char* prefix : {"p_c_", "v_", "jpu_"}) {
+    for (const std::string& a : kAxes) {
+      required.push_back(prefix + a);
+    }
+  }
   for (int i = 0; i < nv; ++i) {
     required.push_back("qs" + std::to_string(i));
     required.push_back("qu" + std::to_string(i));
   }
   std::vector<GateCandidate> out;
-  std::string line;
-  int line_no = 0;
-  std::vector<std::string> header;
-  while (std::getline(in, line)) {
-    ++line_no;
-    if (IsSkippable(line)) {
-      continue;
-    }
-    if (header.empty()) {
-      header = SplitCsv(line);
-      for (const std::string& name : required) {
-        if (std::find(header.begin(), header.end(), name) == header.end()) {
-          throw std::invalid_argument("gate candidate CSV header lacks column '" + name + "'");
+  bool width_checked = false;
+  batch_csv::ReadHeadered(in, "gate candidate CSV", required, [&](const batch_csv::Row& row) {
+    if (!width_checked) {
+      // A posture or joint-velocity block one column wider than the seed is a
+      // different arm, not a column to ignore.
+      for (const char* prefix : {"qs", "qu"}) {
+        if (row.Has(prefix + std::to_string(nv))) {
+          throw std::invalid_argument("gate candidate CSV carries more than " + std::to_string(nv) +
+                                      " '" + prefix + "' columns");
         }
       }
-      // A posture one column wider than the seed is a different arm, not a
-      // column to ignore.
-      if (std::find(header.begin(), header.end(), "qs" + std::to_string(nv)) != header.end()) {
-        throw std::invalid_argument("gate candidate CSV carries more than " + std::to_string(nv) +
-                                    " posture columns");
-      }
-      continue;
+      width_checked = true;
     }
-    const std::vector<std::string> cells = SplitCsv(line);
-    if (cells.size() != header.size()) {
-      throw std::invalid_argument("line " + std::to_string(line_no) + ": expected " +
-                                  std::to_string(header.size()) + " columns, got " +
-                                  std::to_string(cells.size()));
-    }
-    const auto cell = [&](const std::string& name) -> const std::string& {
-      const auto it = std::find(header.begin(), header.end(), name);
-      return cells.at(static_cast<std::size_t>(std::distance(header.begin(), it)));
-    };
-    const auto number = [&](const std::string& name) {
-      return ParseFinite(cell(name), name, line_no);
-    };
     GateCandidate c;
-    c.id = ParseIntCell<std::int64_t>(cell("id"), "id", line_no);
-    if (std::find(header.begin(), header.end(), "seed_id") != header.end()) {
-      c.seed_id = ParseIntCell<int>(cell("seed_id"), "seed_id", line_no);
+    c.id = row.Integer<std::int64_t>("id");
+    if (row.Has("seed_id")) {
+      c.seed_id = row.Integer<int>("seed_id");
     }
-    c.t_c_s = number("t_c_s");
-    static constexpr std::array<const char*, 3> kAxis = {"x", "y", "z"};
+    c.t_c_s = row.Finite("t_c_s");
     for (int i = 0; i < 3; ++i) {
-      const std::string axis = kAxis.at(static_cast<std::size_t>(i));
-      c.p_c(i) = number("p_c_" + axis);
-      c.v_ball(i) = number("v_" + axis);
-      c.jp_qdot_u(i) = number("jpu_" + axis);
+      const std::string& a = kAxes.at(static_cast<std::size_t>(i));
+      c.p_c(i) = row.Finite("p_c_" + a);
+      c.v_ball(i) = row.Finite("v_" + a);
+      c.jp_qdot_u(i) = row.Finite("jpu_" + a);
     }
     c.q_star.resize(nv);
     c.qdot_u.resize(nv);
     for (int i = 0; i < nv; ++i) {
-      c.q_star(i) = number("qs" + std::to_string(i));
-      c.qdot_u(i) = number("qu" + std::to_string(i));
+      c.q_star(i) = row.Finite("qs" + std::to_string(i));
+      c.qdot_u(i) = row.Finite("qu" + std::to_string(i));
     }
     out.push_back(std::move(c));
-  }
-  if (header.empty()) {
-    throw std::invalid_argument("gate candidate CSV is empty (a header line is required)");
-  }
+  });
   return out;
 }
 
@@ -230,7 +203,11 @@ GateRow JudgeGates(const GateCandidate& candidate, const Eigen::VectorXd& q_wait
         std::span<const double>(candidate.qdot_u.data(),
                                 static_cast<std::size_t>(candidate.qdot_u.size())),
         w_plan);
-    if (!row.direction.limits_invalid && !row.direction.input_invalid) {
+    // `undetermined` (q̇ᵘ = 0: no joint motion asks for unit speed) is not a
+    // speed of 0 — it is a speed the estimate could not produce, so it must not
+    // enter the window as physics.
+    if (!row.direction.limits_invalid && !row.direction.input_invalid &&
+        !row.direction.undetermined) {
       row.window = ComputeGammaWindow(speed, row.direction.v_dir_max, row.v_tcp_plan,
                                       settings.d_eff, settings.t_close_total);
       row.max_catchable = MaxCatchableSpeed(row.direction.v_dir_max, row.v_tcp_plan, settings.d_eff,

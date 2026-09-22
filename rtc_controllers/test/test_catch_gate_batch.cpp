@@ -229,6 +229,16 @@ TEST(CatchGateBatch, UnusableInputsFailClosedNotOpen) {
   nan_pose.q_star(1) = std::numeric_limits<double>::quiet_NaN();
   EXPECT_EQ(rc::JudgeGates(nan_pose, Wait(), s).reason, rc::GateReason::kReachInvalid);
 
+  // q̇ᵘ = 0 is "undetermined", not a speed of 0: it must not enter the window
+  // as physics (a zero v_dir,max could still pass for a slow ball).
+  rc::GateCandidate no_motion = Passing();
+  no_motion.qdot_u.setZero();
+  no_motion.jp_qdot_u.setZero();
+  const rc::GateRow undetermined = rc::JudgeGates(no_motion, Wait(), s);
+  EXPECT_TRUE(undetermined.direction.undetermined);
+  EXPECT_TRUE(undetermined.window.input_invalid);
+  EXPECT_EQ(undetermined.reason, rc::GateReason::kGammaInvalid);
+
   rc::GateSettings bad = s;
   bad.qddot_max[2] = 0.0;  // JudgeGates itself must not read this as "instant"
   EXPECT_EQ(rc::JudgeGates(Passing(), Wait(), bad).reason, rc::GateReason::kReachInvalid);
@@ -346,8 +356,29 @@ TEST(CatchGateBatch, CandidateCsvRejectsWhatItCannotRead) {
   EXPECT_THROW((void)parse("", kNv), std::invalid_argument);
   EXPECT_THROW((void)parse(good, kNv + 1), std::invalid_argument) << "a posture column is missing";
   EXPECT_THROW((void)parse(good, kNv - 1), std::invalid_argument) << "an extra posture column";
-  std::string nan_cell = good;
-  nan_cell.replace(nan_cell.rfind("0.9"), 3, "nan");
+  // A whole cell that reads as a number but is not finite: this is the
+  // `!std::isfinite` branch, not the "trailing characters" one.
+  rc::GateCandidate nan_time = Passing();
+  nan_time.t_c_s = std::numeric_limits<double>::quiet_NaN();
+  const std::string nan_cell = CandidateCsv({nan_time});
+  EXPECT_NE(nan_cell.find(",nan,"), std::string::npos);
   EXPECT_THROW((void)parse(nan_cell, kNv), std::invalid_argument);
+  // A q̇ᵘ block wider than q*: a different arm, not a column to ignore.
+  std::string wide_qu = good;
+  wide_qu.replace(0, 3, "qu3");  // header starts with "qu2": rename to qu3 → qu2 missing
+  EXPECT_THROW((void)parse(wide_qu, kNv), std::invalid_argument);
+  std::string extra_qu =
+      "qu3," + good.substr(0, good.find('\n')) + "\n" + "0.5," + good.substr(good.find('\n') + 1);
+  EXPECT_THROW((void)parse(extra_qu, kNv), std::invalid_argument) << "qu3 with nv = 3";
+  std::string dup = "id," + good;  // header now names `id` twice
+  dup.replace(dup.find('\n') + 1, 0, "7,");
+  // Without the header check a duplicate would still be refused — by the row
+  // width check, with a message about column counts — so the MESSAGE is pinned.
+  try {
+    (void)parse(dup, kNv);
+    ADD_FAILURE() << "duplicate header column accepted";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string(e.what()).find("repeats column 'id'"), std::string::npos) << e.what();
+  }
   EXPECT_THROW((void)parse(good + "1,2,3\n", kNv), std::invalid_argument) << "ragged row";
 }

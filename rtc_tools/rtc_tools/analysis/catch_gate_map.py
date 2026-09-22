@@ -69,7 +69,7 @@ from rtc_tools.analysis.derive_accel_limits import (
 GATE_EXECUTABLE = "catch_gate_batch"
 DEFAULT_FK_TOLERANCE_M = 2.5e-3
 DEFAULT_PROFILE_SAMPLES = 16
-DEFAULT_BISECTIONS = 40
+DEFAULT_ACCEL_TOLERANCE = 1e-3  # relative, on the path acceleration (~0.05 % on time)
 PATH_ACCEL_BOUNDS = (1e-3, 1e5)  # [1/s²] on the normalised path; the bracket of the bisection
 _TRUE = ("1", "True", "true")
 
@@ -120,7 +120,7 @@ def torque_reach_time(
     qd_limit: np.ndarray,
     tau_limit: np.ndarray,
     samples: int = DEFAULT_PROFILE_SAMPLES,
-    bisections: int = DEFAULT_BISECTIONS,
+    tolerance: float = DEFAULT_ACCEL_TOLERANCE,
 ) -> float:
     """Shortest synchronised rest-to-rest move inside the torque and speed limits [s].
 
@@ -147,7 +147,7 @@ def torque_reach_time(
         return float("nan")
     if feasible(hi):
         return profile_duration(hi, speed_cap)
-    for _ in range(bisections):
+    while hi / lo > 1.0 + tolerance:
         mid = math.sqrt(lo * hi)
         if feasible(mid):
             lo = mid
@@ -180,7 +180,12 @@ def gate_inputs(
     q = np.array([float(row[f"q{i}"]) for i in range(n)])
     v = np.array([float(row[f"v_model_{a}"]) for a in "xyz"])
     p = np.array([float(row[f"p_model_{a}"]) for a in "xyz"])
-    v_hat = v / float(np.linalg.norm(v))
+    speed = float(np.linalg.norm(v))
+    if not speed > 0.0:
+        # The kinematic judge rejects a resting ball (kSpeedTooLow), so an accepted
+        # row without a velocity is a broken generator, not a candidate.
+        raise SystemExit(f"candidate {row['id']}: accepted with zero ball velocity")
+    v_hat = v / speed
     terms = arm.terms(q, np.zeros(n))
     qd_unit = dls_unit_velocity(terms["jp"], terms["jw"], v_hat, damping)
     lp, _ = directional_speed_lp(terms["jp"], terms["jw"], v_hat, qd_plan)
@@ -302,6 +307,7 @@ def layer_reasons(
         if judged["window_input_invalid"] in _TRUE
         or judged["dir_limits_invalid"] in _TRUE
         or judged["dir_input_invalid"] in _TRUE
+        or judged["dir_undetermined"] in _TRUE
         else "gamma_window_empty"
     )
 

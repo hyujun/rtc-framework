@@ -147,6 +147,17 @@ def test_the_found_move_really_is_inside_the_limits_and_a_faster_one_is_not(arm)
         assert worst(1.3 * accel) > 1.0  # torque, not speed, is what binds
 
 
+def test_gate_inputs_refuse_an_accepted_row_without_a_velocity(arm):
+    q = base.Q_GENERIC
+    row = {"id": "42", "nv": "6", **{f"q{i}": repr(float(x)) for i, x in enumerate(q)}}
+    row.update({f"v_model_{a}": "0.0" for a in "xyz"})
+    row.update(
+        {f"p_model_{a}": repr(float(x)) for a, x in zip("xyz", arm.frame_position(q), strict=True)}
+    )
+    with pytest.raises(SystemExit, match="42"):
+        cgm.gate_inputs(arm, row, 0.9 * base.QD_MAX, damping=1e-3)
+
+
 def test_torque_reach_time_is_nan_when_gravity_alone_is_over_the_limit(arm):
     q0 = base.Q_GENERIC.copy()
     q1 = q0 + 0.2
@@ -188,7 +199,7 @@ def test_stop_bound_is_the_reach_sphere_and_the_floor_in_world_height():
     assert not cgm.stop_inside_workspace(np.array([np.nan, 0.0, 0.5]), 0.5, 0.9, **inside)
 
 
-def judged(reason="none", gamma_ok=True, stop_valid=True, invalid=False):
+def judged(reason="none", gamma_ok=True, stop_valid=True, invalid=False, undetermined=False):
     return {
         "reason_name": reason,
         "gamma_ok": "1" if gamma_ok else "0",
@@ -196,6 +207,7 @@ def judged(reason="none", gamma_ok=True, stop_valid=True, invalid=False):
         "window_input_invalid": "1" if invalid else "0",
         "dir_limits_invalid": "0",
         "dir_input_invalid": "0",
+        "dir_undetermined": "1" if undetermined else "0",
     }
 
 
@@ -222,6 +234,9 @@ def test_reasons_follow_planner_order_after_the_reach_gate():
     assert cgm.layer_reasons(judged(gamma_ok=False, invalid=True), True, 0.1, 0.3)["box"] == (
         "gamma_invalid"
     )
+    # q̇ᵘ = 0 is "speed not determinable", never an empty window
+    undetermined = judged(gamma_ok=False, undetermined=True)
+    assert cgm.layer_reasons(undetermined, True, 0.1, 0.3)["torque"] == "gamma_invalid"
     assert cgm.layer_reasons(judged(), False, 0.1, 0.3) == {
         "box": "stop_outside_workspace",
         "torque": "stop_outside_workspace",

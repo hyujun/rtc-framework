@@ -528,12 +528,12 @@ ros2 run rtc_tools catch_gate_map \
 `gate_map_summary.yaml` (인자 provenance, 층별 열린 투척 수·사유 분포, **각 게이트가 단독으로 거르는 후보
 수**, 대기 자세 제안). FK(q\*) 가 `p_model` 과 어긋나면 보고하지 않고 종료한다 (`catch_speed_budget` 와 같은 검사).
 
-- 테스트 `test/test_catch_gate_map.py` (20 케이스): 경로 프로파일, 토크 도달시간의 단일 관절 닫힌해
+- 테스트 `test/test_catch_gate_map.py` (21 케이스): 경로 프로파일, 토크 도달시간의 단일 관절 닫힌해
   (삼각·사다리꼴), **움직이는 관절의 한계만** 결과를 바꾸는지, 회전자 관성, 찾은 이동의 RNEA 재검사와
   더 빠른 이동의 위반, 중력만으로 한계 초과 시 NaN, 층별 사유의 순서, 전체 격자 분모, 그리고 **실제
   `catch_gate_batch` 를 부르는** CLI end-to-end — 상수 하나가 자기 게이트만 뒤집는지, 가속 box 가 box
   층만 구속하는지, seed 합집합 거부, FK 불일치 거부, judge 에 넘기는 `J_p q̇ᵘ` 가 요청값 v̂ 이 아니라
-  달성값인지 (큰 damping 에서). 변이 15 종 전부 검출
+  달성값인지 (큰 damping 에서), 속도 0 인 수락 행 거부. 변이 18 종 전부 검출
 
 
 ### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환

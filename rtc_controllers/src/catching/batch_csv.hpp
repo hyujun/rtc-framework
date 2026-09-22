@@ -8,6 +8,9 @@
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <functional>
+#include <istream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -92,6 +95,81 @@ template <typename Int>
                                 "' is not an integer: '" + cell + "'");
   }
   return v;
+}
+
+/// One row of a header-driven CSV: cells addressed by column NAME.
+class Row {
+ public:
+  Row(const std::map<std::string, std::size_t>& index, std::vector<std::string> cells, int line_no)
+      : index_(index), cells_(std::move(cells)), line_no_(line_no) {}
+
+  [[nodiscard]] int line() const noexcept { return line_no_; }
+
+  [[nodiscard]] bool Has(const std::string& name) const { return index_.count(name) != 0; }
+
+  [[nodiscard]] const std::string& Cell(const std::string& name) const {
+    return cells_.at(index_.at(name));
+  }
+
+  [[nodiscard]] double Finite(const std::string& name) const {
+    return ParseFinite(Cell(name), name, line_no_);
+  }
+
+  template <typename Int>
+  [[nodiscard]] Int Integer(const std::string& name) const {
+    return ParseIntCell<Int>(Cell(name), name, line_no_);
+  }
+
+ private:
+  const std::map<std::string, std::size_t>& index_;
+  std::vector<std::string> cells_;
+  int line_no_;
+};
+
+/// Read a CSV whose column ORDER IS TAKEN FROM THE HEADER, calling `on_row` for
+/// each data row. Blank lines and `#` comments are skipped. Throws
+/// `std::invalid_argument` naming `what` when: there is no header at all, the
+/// header repeats a name (which of the two columns is meant is a guess), a
+/// required column is absent, or a row's width differs from the header's.
+inline void ReadHeadered(std::istream& in, std::string_view what,
+                         const std::vector<std::string>& required,
+                         const std::function<void(const Row&)>& on_row) {
+  std::map<std::string, std::size_t> index;
+  std::string line;
+  int line_no = 0;
+  bool have_header = false;
+  while (std::getline(in, line)) {
+    ++line_no;
+    if (IsSkippable(line)) {
+      continue;
+    }
+    if (!have_header) {
+      const std::vector<std::string> header = SplitCsv(line);
+      for (std::size_t i = 0; i < header.size(); ++i) {
+        if (!index.emplace(header[i], i).second) {
+          throw std::invalid_argument(std::string(what) + " header repeats column '" + header[i] +
+                                      "'");
+        }
+      }
+      for (const std::string& name : required) {
+        if (index.count(name) == 0) {
+          throw std::invalid_argument(std::string(what) + " header lacks column '" + name + "'");
+        }
+      }
+      have_header = true;
+      continue;
+    }
+    std::vector<std::string> cells = SplitCsv(line);
+    if (cells.size() != index.size()) {
+      throw std::invalid_argument("line " + std::to_string(line_no) + ": expected " +
+                                  std::to_string(index.size()) + " columns, got " +
+                                  std::to_string(cells.size()));
+    }
+    on_row(Row(index, std::move(cells), line_no));
+  }
+  if (!have_header) {
+    throw std::invalid_argument(std::string(what) + " is empty (a header line is required)");
+  }
 }
 
 }  // namespace rtc::catching::batch_csv

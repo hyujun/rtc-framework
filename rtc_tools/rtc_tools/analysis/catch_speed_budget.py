@@ -397,18 +397,21 @@ class ArmKinematics:
             acc[i] = value
         return acc
 
+    def _torques(self, q, v, acc, qdd_arm) -> np.ndarray:
+        tau = self._pin.rnea(self.model, self.data, q, v, acc)
+        return np.asarray(tau)[self.iv] + self.rotor_inertia * np.asarray(qdd_arm)
+
     def joint_torques(self, q_arm, qd_arm, qdd_arm) -> np.ndarray:
         """Arm joint torques for (q, q̇, q̈): RNEA plus the rotor inertia the URDF lacks."""
         q, v = self._full(q_arm, qd_arm)
-        tau = self._pin.rnea(self.model, self.data, q, v, self._acceleration(qdd_arm))
-        return np.asarray(tau)[self.iv] + self.rotor_inertia * np.asarray(qdd_arm)
+        return self._torques(q, v, self._acceleration(qdd_arm), qdd_arm)
 
     def inverse_dynamics(self, q_arm, qd_arm, qdd_arm) -> tuple[np.ndarray, np.ndarray]:
         """(arm joint torques incl. rotor inertia, frame linear acceleration) — the LP's oracle."""
         pin, m, d = self._pin, self.model, self.data
         q, v = self._full(q_arm, qd_arm)
         acc = self._acceleration(qdd_arm)
-        tau = self.joint_torques(q_arm, qd_arm, qdd_arm)
+        tau = self._torques(q, v, acc, qdd_arm)
         pin.forwardKinematics(m, d, q, v, acc)
         lin = pin.getFrameClassicalAcceleration(
             m, d, self.frame_id, pin.LOCAL_WORLD_ALIGNED

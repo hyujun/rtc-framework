@@ -4,9 +4,6 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
-#include <cmath>
-#include <cstdio>
 #include <istream>
 #include <stdexcept>
 #include <string>
@@ -58,56 +55,28 @@ std::string_view CatchPoseReasonName(CatchPoseReason reason) noexcept {
 }
 
 std::vector<BatchCandidate> ParseCandidateCsv(std::istream& in) {
-  static constexpr std::array<const char*, 6> kRequired = {"p_c_x", "p_c_y", "p_c_z",
-                                                           "v_x",   "v_y",   "v_z"};
+  static const std::vector<std::string> kAxes = {"x", "y", "z"};
+  std::vector<std::string> required = {"id"};
+  for (const std::string& a : kAxes) {
+    required.push_back("p_c_" + a);
+  }
+  for (const std::string& a : kAxes) {
+    required.push_back("v_" + a);
+  }
   std::vector<BatchCandidate> out;
-  std::string line;
-  int line_no = 0;
-  std::vector<std::string> header;
-  while (std::getline(in, line)) {
-    ++line_no;
-    if (IsSkippable(line)) {
-      continue;
-    }
-    if (header.empty()) {
-      header = SplitCsv(line);
-      for (const char* name : kRequired) {
-        if (std::find(header.begin(), header.end(), std::string(name)) == header.end()) {
-          throw std::invalid_argument("candidate CSV header lacks column '" + std::string(name) +
-                                      "'");
-        }
-      }
-      if (std::find(header.begin(), header.end(), "id") == header.end()) {
-        throw std::invalid_argument("candidate CSV header lacks column 'id'");
-      }
-      continue;
-    }
-    const std::vector<std::string> cells = SplitCsv(line);
-    if (cells.size() != header.size()) {
-      throw std::invalid_argument("line " + std::to_string(line_no) + ": expected " +
-                                  std::to_string(header.size()) + " columns, got " +
-                                  std::to_string(cells.size()));
-    }
-    const auto cell = [&](std::string_view name) -> const std::string& {
-      const auto it = std::find(header.begin(), header.end(), std::string(name));
-      return cells.at(static_cast<std::size_t>(std::distance(header.begin(), it)));
-    };
+  batch_csv::ReadHeadered(in, "candidate CSV", required, [&](const batch_csv::Row& row) {
     BatchCandidate c;
-    c.id = ParseIntCell<std::int64_t>(cell("id"), "id", line_no);
-    if (std::find(header.begin(), header.end(), "seed_id") != header.end()) {
-      c.seed_id = ParseIntCell<int>(cell("seed_id"), "seed_id", line_no);
+    c.id = row.Integer<std::int64_t>("id");
+    if (row.Has("seed_id")) {
+      c.seed_id = row.Integer<int>("seed_id");
     }
     for (int i = 0; i < 3; ++i) {
-      c.p_c(i) = ParseFinite(cell(kRequired.at(static_cast<std::size_t>(i))),
-                             kRequired.at(static_cast<std::size_t>(i)), line_no);
-      c.v_ball(i) = ParseFinite(cell(kRequired.at(static_cast<std::size_t>(i) + 3)),
-                                kRequired.at(static_cast<std::size_t>(i) + 3), line_no);
+      const std::string& a = kAxes.at(static_cast<std::size_t>(i));
+      c.p_c(i) = row.Finite("p_c_" + a);
+      c.v_ball(i) = row.Finite("v_" + a);
     }
     out.push_back(c);
-  }
-  if (header.empty()) {
-    throw std::invalid_argument("candidate CSV is empty (a header line is required)");
-  }
+  });
   return out;
 }
 

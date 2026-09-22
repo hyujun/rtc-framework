@@ -142,9 +142,6 @@ int main(int argc, char** argv) {
       Die("cannot open seeds '" + args.seeds + "'");
     }
     const auto seeds = rtc::catching::ParseSeedCsv(seed_file);
-    if (seeds.empty()) {
-      Die("seeds '" + args.seeds + "' holds no wait pose");
-    }
     const int nv = static_cast<int>(seeds.begin()->second.size());
 
     std::vector<rtc::catching::GateCandidate> candidates;

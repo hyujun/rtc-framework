@@ -1198,7 +1198,7 @@ if [ -n "$RIVALS" ]; then
   # Backslashes doubled for the `echo -e` report, as build_log_tail does.
   TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(sed -n '1,3p' <<<"$RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/      /')\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then end the turn again.\n"
 elif [ -n "$PROC3" ]; then
-  # PROC-3: broad rebuild + full test (60s * count would still time out, so use
+  # PROC-3: broad rebuild + full test (120s * count would still time out, so use
   # a generous bound on the build and a per-package test timeout).
   # All colcon invocations run from $WORKSPACE so build/install/log land in the
   # colcon ws root (AGENTS.md §9.1), not in this repo's cwd.
