@@ -117,6 +117,34 @@ struct CatchingParams {
   // supervisor: (L7 §6)
   TbdDouble supervisor_decel_a_dec;  // m/s², > 0 and <= reference_a_max (L7 §4.3)
 
+  // io: (L1 §6) — vision ingress. Consumed from S5.2.
+  //
+  // `io_n_min` is a COUNT, so it is an int with 0 meaning "absent" rather than
+  // a TbdDouble: the schema's TBD placeholder exists for values a decision has
+  // not produced yet, and a point count that arrived as 10.5 is a malformed
+  // key, not an open one. 0 is reported as an active TBD.
+  int io_n_min{0};           // points, [2, kCap]
+  TbdDouble io_t_stale;      // s, [0.02, 0.2]  — steady RECEIVE age limit
+  TbdDouble io_future_tol;   // s, [1e-4, 1e-2] — real-arm clock-sync budget
+  TbdDouble io_horizon_min;  // s, > 0        — D-15 usable-window requirement
+  TbdDouble io_track_eval_offset{TbdDouble::Resolved(0.05)};  // s, [0, 0.3]
+  TbdDouble io_track_j_warn;  // m, > 0 — DIAGNOSTIC threshold, never a gate
+  /// The sim configuration's own `future_tol` (A-S5-2). Active only when
+  /// `real_arm_config` is false, exactly like `sim.ball.drag_k`.
+  ///
+  /// It exists because the two numbers are two orders of magnitude apart and
+  /// the controller YAML is shared between sim and hardware: the sim ball
+  /// lane's stamps ride the SIM time axis and legitimately lead wall by the
+  /// in-flight phase error (D-3, `rtc_mujoco_sim` §Projectile Ball stamp),
+  /// while a camera on real hardware stamps at capture and may lead wall only
+  /// by the clock-sync error. One key with one range could serve only one of
+  /// them, and the sim value inside the real-arm range would silently accept a
+  /// 100 ms clock offset on hardware.
+  TbdDouble sim_io_future_tol;  // s, (0, 0.5]
+
+  // prediction: (L1 §6 / L2) — what the vision profile is expected to produce.
+  TbdDouble prediction_dt_expected{TbdDouble::Resolved(0.05)};  // s, (0, 1]
+
   // core / sim: (L0 §6)
   BallSpec ball;
   TbdDouble sim_ball_drag_k;  // 1/m, [0, 0.2] — sim-fixture-only (active iff !real_arm_config)
@@ -187,6 +215,24 @@ struct CatchingValidationReport {
 [[nodiscard]] CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
                                                               double control_rate_hz,
                                                               bool real_arm_config) noexcept;
+
+/// Which `future_tol` applies to a configuration (A-S5-2).
+///
+/// The rule lives here rather than at the call site because getting it
+/// backwards is silent in both directions: the sim value on hardware accepts a
+/// clock offset no real link should have, and the hardware value in sim
+/// rejects most of the ball lane as future-stamped and the controller simply
+/// never sees a trajectory. Returns the sim key when `real_arm_config` is
+/// false AND that key is resolved; otherwise the shared key, so a sim
+/// configuration that does not override it inherits the strict value rather
+/// than silently getting no limit.
+[[nodiscard]] constexpr TbdDouble EffectiveFutureTol(const CatchingParams& params,
+                                                     bool real_arm_config) noexcept {
+  if (!real_arm_config && !params.sim_io_future_tol.tbd) {
+    return params.sim_io_future_tol;
+  }
+  return params.io_future_tol;
+}
 
 /// Key reported for the catch frame's provisional flag (D-17).
 inline constexpr const char* kCatchFrameProvisionalKey =

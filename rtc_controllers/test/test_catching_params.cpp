@@ -50,6 +50,12 @@ constexpr double kControlRateHz = 500.0;  // repo default (rtc::kDefaultControlR
 
 // Fully resolved, non-provisional, in-range config — every check below
 // mutates one field of this baseline rather than restating the whole tree.
+//
+// The `io:` / `prediction:` sections joined it with S5.2, when the vision
+// ingress made them active keys. The baseline grows with the schema; the
+// assertions on it (armable, zero failures, zero warnings) are unchanged,
+// which is what keeps "a clean config arms cleanly" meaning the same thing
+// before and after.
 constexpr const char* kValidYaml = R"(
 reference:
   omega: 10.0
@@ -66,6 +72,16 @@ planner:
 supervisor:
   decel:
     a_dec: 3.0
+io:
+  n_min: 11
+  t_stale: 0.10
+  future_tol: 0.001
+  horizon_min: 0.51
+  track:
+    eval_offset: 0.05
+    j_warn: 0.05
+prediction:
+  dt_expected: 0.05
 core:
   ball:
     diameter: 0.065
@@ -75,6 +91,8 @@ core:
 sim:
   ball:
     drag_k: 0.02
+  io:
+    future_tol: 0.1
 robot:
   hand:
     provisional: false
@@ -560,6 +578,113 @@ TEST(CatchingParams, RejectsEmptyHandArrays) {
   root["robot"]["hand"]["q_close"] = YAML::Load("[]");
   root["robot"]["hand"].remove("caging_mask");
   ExpectRejectMentioning(root, "must not be empty");
+}
+
+// ── io / prediction: the vision ingress (S5.2) ──────────────────────────────
+
+TEST(CatchingParams, IoNMinMustBeResolvedAndWholeAndWithinCapacity) {
+  {  // absent → active TBD, not a silent default
+    YAML::Node root = ValidRoot();
+    root["io"].remove("n_min");
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "io.n_min"));
+  }
+  {  // a fraction of a point is a malformed key, refused at parse time rather
+     // than truncated — a count is not a value to round.
+    YAML::Node root = ValidRoot();
+    root["io"]["n_min"] = 10.5;
+    ExpectRejectMentioning(root, "whole number of points");
+  }
+  {  // above the snapshot capacity the requirement can never be met, and the
+    // lane would close permanently with the rejection counter blaming vision.
+    YAML::Node root = ValidRoot();
+    root["io"]["n_min"] = 41;  // kCap is 40
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.n_min"));
+  }
+}
+
+TEST(CatchingParams, IoNMinMustBeAbleToCoverTheRequiredHorizon) {
+  // Both keys are individually in range here; only the PAIR is wrong. Nothing
+  // else catches it, and the symptom would be messages accepted on count and
+  // then rejected on horizon — which reads as a vision fault rather than as
+  // the configuration mistake it is.
+  YAML::Node root = ValidRoot();
+  root["io"]["horizon_min"] = 0.51;
+  root["io"]["n_min"] = 6;  // 0.51 / 0.05 needs 11
+  const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.n_min"));
+}
+
+TEST(CatchingParams, IoStalenessAndOffsetRangesAreChecked) {
+  {
+    YAML::Node root = ValidRoot();
+    root["io"]["t_stale"] = 0.5;  // range is [0.02, 0.2]
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.t_stale"));
+  }
+  {
+    YAML::Node root = ValidRoot();
+    root["io"]["track"]["eval_offset"] = 1.0;  // range is [0, 0.3]
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(
+        ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "io.track.eval_offset"));
+  }
+}
+
+TEST(CatchingParams, JWarnIsDiagnosticAndDoesNotBlockArming) {
+  // Nothing decides on it — it is the threshold of a printed warning. Gating
+  // arming on it would make an operator resolve a number to get a message
+  // they may not want.
+  YAML::Node root = ValidRoot();
+  root["io"]["track"].remove("j_warn");
+  const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_TRUE(r.armable);
+  EXPECT_EQ(r.failure_count, 0u);
+}
+
+TEST(CatchingParams, TheSimFutureToleranceIsAnOverlayNotASecondRange) {
+  // A-S5-2. The two numbers are two orders of magnitude apart because they
+  // measure different things: the sim ball lane's stamps ride the SIM time
+  // axis and legitimately lead wall by the in-flight phase error, while a
+  // camera stamps at capture and may lead wall only by the clock-sync error.
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_NEAR(rtc::catching::EffectiveFutureTol(p, /*real_arm=*/false).value, 0.1, 1e-12);
+  EXPECT_NEAR(rtc::catching::EffectiveFutureTol(p, /*real_arm=*/true).value, 0.001, 1e-12);
+
+  // The sim value would be far out of range for the shared key, and it is not
+  // judged against it — that is the whole reason the override exists.
+  const auto sim = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/false);
+  EXPECT_TRUE(sim.armable);
+  EXPECT_EQ(sim.failure_count, 0u);
+}
+
+TEST(CatchingParams, ASimConfigWithNoOverrideInheritsTheStrictTolerance) {
+  // The fail-closed direction: an absent override must not read as "no limit".
+  YAML::Node root = ValidRoot();
+  root["sim"].remove("io");
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_TRUE(p.sim_io_future_tol.tbd);
+  EXPECT_NEAR(rtc::catching::EffectiveFutureTol(p, /*real_arm=*/false).value, 0.001, 1e-12);
+  const auto r = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/false);
+  EXPECT_TRUE(r.armable) << "an absent sim override is not a failure";
+}
+
+TEST(CatchingParams, TheSimOverrideIsNotJudgedOnARealArmConfig) {
+  // It is inactive there, like sim.ball.drag_k: a hardware bring-up loading
+  // the same file must not be blocked by a key that only sim reads.
+  YAML::Node root = ValidRoot();
+  root["sim"]["io"]["future_tol"] = 9.0;  // out of range even for the sim key
+  const CatchingParams p = ParseCatchingParams(root);
+  const auto real = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/true);
+  EXPECT_TRUE(real.armable);
+  const auto sim = ValidateCatchingParams(p, kControlRateHz, /*real_arm=*/false);
+  EXPECT_FALSE(sim.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(sim, CatchingValidationReason::kRangeViolation, "sim.io.future_tol"));
 }
 
 // ── Absent sections: defaults, never a foreign exception type ────────────────

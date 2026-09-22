@@ -84,6 +84,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   # dynamic_catching S4.0 binding: arm hold + unshaped hand step, sim-only.
   # No law half in rtc_controllers yet — the catching law lands with S5.
   src/controllers/catching/controller.cpp
+  src/controllers/catching/traj_input.cpp
   src/controllers/catching/lifecycle.cpp
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
@@ -1362,6 +1363,22 @@ if(BUILD_TESTING)
     rtc_controller_manager
     rtc_base
     geometry_msgs
+  )
+
+  # ── Vision ingress decode (S5.2, G1-A / G1-B) ─────────────────────────────
+  # Owns the wire format: the ball_perception layout is reproduced in the
+  # fixture on purpose, so this suite is what fails when the publisher moves.
+  # The judgement half (order, staleness, the two time axes) is rtc_controllers'
+  # test_catching_traj_ingress — no ROS, no message.
+  ament_add_gtest(test_catching_traj_input test/test_catching_traj_input.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_catching_traj_input
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_traj_input
+    rtc_controllers
+    rtc_base
+    sensor_msgs
   )
 
   # ── UdpHandNativeBackend sensor lane test ─────────────────────────────────

@@ -6,6 +6,7 @@
 #include "rtc_controller_interface/device_readability.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -22,6 +23,19 @@ namespace {
 inline constexpr double kFallbackPositionLower = -6.2832;
 inline constexpr double kFallbackPositionUpper = 6.2832;
 inline constexpr double kFallbackMaxVelocity = 2.0;
+
+/// The tick's own reading of the steady clock.
+///
+/// Read per tick rather than accumulated as `iteration * dt` (plan §3): the
+/// two diverge by exactly the jitter and overrun this controller's deadlines
+/// are about, and the accumulated version cannot see a missed tick at all.
+/// RT-safe — a vDSO read, no allocation and no lock, which is the same thing
+/// the device backends do on their own RT-priority callback lane.
+[[nodiscard]] std::int64_t SteadyNowNs() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 }  // namespace
 
@@ -65,6 +79,27 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   catching_section_present_ = static_cast<bool>(catching);
   if (catching_section_present_) {
     params_ = rtc::catching::ParseCatchingParams(catching);
+  }
+
+  // ── io: the two keys the numeric core does not carry ────────────────────
+  // `CatchingParams` is deliberately numbers-only (it is the schema the
+  // validator judges), so the topic and frame names are read here — the same
+  // split `diagnostic.hand_step` already uses. They live under `catching.io`
+  // with the rest of the lane so the operator reads one block, not two.
+  traj_topic_.clear();
+  expected_frame_ = "world";
+  if (catching_section_present_) {
+    if (const YAML::Node io = catching["io"]; io) {
+      if (!io.IsMap()) {
+        throw std::runtime_error("DemoCatchingController: 'catching.io' must be a map");
+      }
+      if (const YAML::Node topic = io["traj_topic"]; topic) {
+        traj_topic_ = topic.as<std::string>();
+      }
+      if (const YAML::Node frame = io["expected_frame"]; frame) {
+        expected_frame_ = frame.as<std::string>();
+      }
+    }
   }
 
   // ── logs: (Phase C) ─────────────────────────────────────────────────────
@@ -244,6 +279,57 @@ void DemoCatchingController::ResetTargetInitialization() noexcept {
   reset_requested_.fetch_add(1, std::memory_order_release);
 }
 
+// ── Vision ingress (S5.2) ───────────────────────────────────────────────────
+
+void DemoCatchingController::OnTrajectoryCloud(const sensor_msgs::msg::PointCloud2& msg) noexcept {
+  // Non-RT: the controller LifecycleNode's default callback group, which CM
+  // runs on `nrt_callback_executor` — shared with the lifecycle services, so
+  // this must stay small. It does exactly three things: stamp, decode, store.
+  //
+  // The two instants are sampled TOGETHER and FIRST. They are the pair the
+  // D-2 conversion stands on, and any work between them lands in the origin
+  // delay as if the publisher had been slow.
+  const std::int64_t recv_steady = SteadyNowNs();
+  const std::int64_t recv_wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+
+  rtc::catching::TrajectorySnapshot snap{};
+  rtc::catching::CovarianceSnapshot cov{};
+  // The snapshot is stamped with the CURRENT activation generation (D-23).
+  // The subscription outlives deactivation, so a message that arrives while
+  // the controller is inactive is decoded and stored — and then refused by the
+  // RT read, which is where the judgement belongs: the callback cannot know
+  // whether an activation will happen before the next tick.
+  const CloudReject reject =
+      traj_input_.OnCloud(msg, recv_steady, recv_wall, ActivationGeneration(), snap, cov);
+  if (reject != CloudReject::kNone) {
+    // Counted inside the ingress. Throttled here so a publisher that has
+    // started producing garbage is visible without a per-message log on the
+    // executor the lifecycle services share.
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "vision message refused (%s); check the reject counters",
+                         CloudRejectName(reject));
+    return;
+  }
+
+  // Covariance first. The two locks are written in the order the planner will
+  // read them in, so the window in which they disagree is the one where the
+  // covariance is NEWER than the trajectory — and the token check rejects
+  // that pairing, while the reverse would let an old covariance pass as the
+  // current one (D-22).
+  cov_box_.Store(cov);
+  traj_box_.Store(snap);
+
+  if (traj_input_.LastDiagnostics().horizon_short) {
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                         "vision horizon %ld ms is shorter than the %ld ms this controller needs "
+                         "(D-15): late catch points are not reaching the planner",
+                         static_cast<long>(traj_input_.LastDiagnostics().horizon_ns / 1000000),
+                         static_cast<long>(traj_horizon_min_ns_ / 1000000));
+  }
+}
+
 // ── E-STOP and fault hooks (P-1 (a): request only) ──────────────────────────
 //
 // Every body here is a store. None of them touches the hold latches, the step
@@ -306,8 +392,9 @@ void DemoCatchingController::AdvanceMode(rtc::catching::Reason reason) noexcept 
   last_reason_ = reason;
 }
 
-rtc::catching::Reason DemoCatchingController::EvaluateReason(
+DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     const ControllerState& state) noexcept {
+  using rtc::catching::Mode;
   using rtc::catching::Reason;
   static_cast<void>(state);
 
@@ -315,20 +402,20 @@ rtc::catching::Reason DemoCatchingController::EvaluateReason(
   // because it is the one condition whose handling must not depend on what
   // else is true this tick.
   if (estop_active_) {
-    return Reason::kEstop;
+    return {Reason::kEstop, true};
   }
   if (fault_reset_serviced_) {
     // Consumed here rather than in ServiceResetRequests so the FSM edge and
     // the state reset happen on the same tick and in the table's order.
     fault_reset_serviced_ = false;
-    return Reason::kFaultReset;
+    return {Reason::kFaultReset, true};
   }
   if (fault_latched_.load(std::memory_order_relaxed)) {
     // No reason at all: in Mode::kFault the table has rows only for
     // kFaultReset and kEstop, so anything else leaves the latch standing.
-    // Returning kNone rather than inventing a "still faulted" reason keeps
-    // the latch's persistence a property of the table.
-    return Reason::kNone;
+    // Holding rather than inventing a "still faulted" reason keeps the
+    // latch's persistence a property of the driver, not of a reason code.
+    return {Reason::kNone, false};
   }
   if (!armable_ || !arm_requested_.load(std::memory_order_relaxed)) {
     // §4.5's readiness conditions are not met — either the profile is not
@@ -338,13 +425,53 @@ rtc::catching::Reason DemoCatchingController::EvaluateReason(
     // holding" (L7 §4.5 has no dedicated reason; transition_table.hpp's header
     // records the reuse). It is a self-loop in IDLE and sends ARMED back to
     // IDLE, which is exactly the two behaviours wanted here.
-    return Reason::kParamsTbd;
+    return {Reason::kParamsTbd, true};
   }
-  // Nothing wrong and the preconditions hold. In IDLE this advances to ARMED;
-  // in ARMED it would advance to TRACKING, which S5.2 gates on an actual
-  // trajectory — until that lands there is no traffic on this edge because
-  // EvaluateReason cannot yet return kNone from ARMED with a ball in flight.
-  return Reason::kNone;
+  // ── The vision lane (S5.2) ───────────────────────────────────────────────
+  // From here the controller is armed and the profile is clean, so what is
+  // left to decide is what the prediction says. The ORDER matters: a track
+  // change outranks staleness because it says the old plan was about a
+  // different ball, and a stale snapshot of the right ball is a reason to
+  // stop planning, not to plan against something else.
+  const bool tracking = (mode_ == Mode::kTracking || mode_ == Mode::kApproach);
+
+  if (tracking && traj_new_track_) {
+    traj_new_track_ = false;
+    return {Reason::kTrackChanged, true};
+  }
+  traj_new_track_ = false;
+
+  // Whether there is a prediction worth acting on. `expired` is grouped with
+  // `stale` for the ARMING question and kept apart for the ABORT question:
+  // both mean "do not start tracking on this", but they call for different
+  // reasons once tracking has started, and the fixes differ (a publisher that
+  // stopped against a horizon that is too short, D-15).
+  const bool usable = !traj_view_.stale && !traj_view_.expired;
+
+  if (!usable) {
+    if (tracking) {
+      return traj_view_.stale ? ReasonDecision{Reason::kBallStale, true}
+                              : ReasonDecision{Reason::kHorizonExtrap, true};
+    }
+    // Not tracking yet, and nothing to report: waiting for a ball IS the
+    // ARMED state. IDLE still advances — readiness is about the ROBOT, and
+    // gating it on vision would leave the arm un-homed until a ball appeared,
+    // which is backwards.
+    return {Reason::kNone, mode_ == Mode::kIdle};
+  }
+
+  // A usable prediction. From IDLE this advances to ARMED and from ARMED to
+  // TRACKING — the edge the ball lane exists to drive.
+  //
+  // From TRACKING, `kNone` would advance to APPROACH, and APPROACH means "a
+  // valid plan is being followed". There is no planner until S6, so the honest
+  // answer is `kNoCatchablePlan` — which the table self-loops in TRACKING and
+  // which is exactly what it means here: the ball is seen, and no plan exists
+  // for it. S6 replaces this with a real plan check rather than adding one.
+  if (mode_ == Mode::kTracking) {
+    return {Reason::kNoCatchablePlan, true};
+  }
+  return {Reason::kNone, true};
 }
 
 // ── Reset service (P-1 (a)/(b): the tick is the only writer) ────────────────
@@ -367,6 +494,16 @@ void DemoCatchingController::ResetTrialState() noexcept {
   DiscardPendingTargets();
   mode_ = rtc::catching::Mode::kIdle;
   last_reason_ = rtc::catching::Reason::kNone;
+  // L7 §4.8's list, vision half: the consumed-sequence memory and the track
+  // identity. Without the first, the snapshot in the box reads as "already
+  // seen" after the reset and the trial starts by ignoring the only
+  // prediction it has; without the second, the first snapshot of the new
+  // trial looks like a track CHANGE and aborts it.
+  last_consumed_sequence_ = 0;
+  last_track_generation_ = 0;
+  track_seen_ = false;
+  traj_new_track_ = false;
+  traj_view_ = rtc::catching::TrajView{};
 }
 
 bool DemoCatchingController::ServiceResetRequests(const ControllerState& state) noexcept {
@@ -591,7 +728,31 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     (void)DrainPendingTargets();
   }
 
-  AdvanceMode(EvaluateReason(state));
+  // D-21: Load() unconditionally, once per tick, BEFORE anything decides
+  // anything. Not gated on SeqLock::sequence() — reading the counter and the
+  // payload as two steps lets a writer land between them and pair a new
+  // counter with an old payload, which hides the newest snapshot for as long
+  // as the pattern repeats.
+  const rtc::catching::TrajectorySnapshot snapshot = traj_box_.Load();
+  const rtc::catching::NowReal now{SteadyNowNs()};
+  traj_view_ =
+      rtc::catching::ReadTraj(snapshot, now, rtc::catching::MakeNowLead(now, t_arm_ns_),
+                              t_stale_ns_, ActivationGeneration(), last_consumed_sequence_);
+  if (traj_view_.is_new) {
+    // A track change is latched here rather than compared in EvaluateReason:
+    // the comparison is only meaningful on the tick the snapshot arrives, and
+    // the supervisor may need a tick or two to act on it.
+    traj_new_track_ = track_seen_ && snapshot.token.generation != last_track_generation_;
+    last_track_generation_ = snapshot.token.generation;
+    track_seen_ = true;
+  }
+
+  const ReasonDecision decision = EvaluateReason(state);
+  if (decision.advance) {
+    AdvanceMode(decision.reason);
+  } else {
+    last_reason_ = decision.reason;
+  }
   // Published every tick, including the early ones and the estopped ones. The
   // state message (S5.4) inherits this discipline as a PROC-7 requirement; the
   // two atomics here are its S5.1 stand-in.

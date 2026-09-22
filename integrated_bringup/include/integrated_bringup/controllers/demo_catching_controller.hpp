@@ -69,8 +69,10 @@
 // From S7.1 the sequencer owns the hand and the default false makes an
 // operator step a refusal rather than a race.
 
+#include "integrated_bringup/controllers/catching/traj_input.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
@@ -81,7 +83,9 @@
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/node_interfaces/node_parameters_interface.hpp>
+#include <rclcpp/subscription.hpp>
 #include <rclcpp/timer.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <array>
 #include <atomic>
@@ -118,6 +122,15 @@ inline constexpr const char* kCatchingSimBackendType = "mujoco_native";
 /// what acts on it, and the tick also LOWERS it on E-STOP and on a fault
 /// latch, which is what makes "no automatic resume" mechanical.
 inline constexpr const char* kCatchingEnableParam = "catching.enable";
+
+/// The spacing floor, as a fraction of the expected prediction interval.
+///
+/// A derived floor rather than a configured one: the number that matters is
+/// "much denser than vision can possibly be", and expressing it against the
+/// interval the profile already declares keeps the two from drifting apart.
+/// A tenth leaves room for a publisher that doubles its rate without warning
+/// while still refusing the degenerate spacings the Hermite basis divides by.
+inline constexpr double kTrajSpacingFloorFraction = 0.1;
 
 /// Controller-local device indices. This controller claims exactly two groups
 /// in `topics:` order: the arm it holds and the hand it steps. Indices rather
@@ -206,6 +219,14 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] std::uint64_t GetRtResetCount() const noexcept {
     return rt_reset_count_.load(std::memory_order_relaxed);
   }
+
+  /// The vision ingress, for the counters and the last message's diagnostics.
+  /// Read off the RT thread; the ingress itself is only ever touched by the
+  /// subscription callback.
+  [[nodiscard]] const CatchingTrajInput& GetTrajInput() const noexcept { return traj_input_; }
+
+  /// What the last RT tick concluded about the trajectory snapshot it held.
+  [[nodiscard]] rtc::catching::TrajView GetTrajView() const noexcept { return traj_view_; }
 
   /// Ticks that ran with the global E-STOP request raised.
   [[nodiscard]] std::uint64_t GetEstopTickCount() const noexcept {
@@ -297,6 +318,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// install the set-parameter callback. Non-RT.
   void DeclareArmParameter();
 
+  /// Create the prediction subscription and configure the ingress. Non-RT.
+  void SetupTrajInput();
+
+  /// The subscription callback (non-RT). Samples the receive instants, hands
+  /// the message to the ingress and, on acceptance, publishes both snapshots.
+  void OnTrajectoryCloud(const sensor_msgs::msg::PointCloud2& msg) noexcept;
+
   /// Service any reset a lifecycle or E-STOP hook requested since the last
   /// tick, and return true if one was performed. RT tick only — this is the
   /// single writer P-1 (a) names. The order is D-23's: decide on the
@@ -307,9 +335,22 @@ class DemoCatchingController final : public RTControllerInterface {
   /// (L7 §4.8's re-arm list, restricted to what exists at S5.1). RT tick only.
   void ResetTrialState() noexcept;
 
-  /// The reason this tick hands the transition table, and `Reason::kNone`
-  /// when nothing is wrong and the mode may advance on its own. RT tick only.
-  [[nodiscard]] rtc::catching::Reason EvaluateReason(const ControllerState& state) noexcept;
+  /// What this tick tells the supervisor: a reason, and whether to take an
+  /// edge at all.
+  ///
+  /// The second field exists because `Reason::kNone` means two different
+  /// things depending on where the controller is. In IDLE it is "ready,
+  /// proceed to ARMED"; in ARMED with no ball in sight it is "nothing is
+  /// wrong AND nothing should happen". Collapsing them would need a
+  /// nothing-to-report reason code in the table, which is a change to S1.8's
+  /// data for a decision that belongs to the driver.
+  struct ReasonDecision {
+    rtc::catching::Reason reason{rtc::catching::Reason::kNone};
+    bool advance{false};
+  };
+
+  /// Decide this tick's (reason, advance). RT tick only.
+  [[nodiscard]] ReasonDecision EvaluateReason(const ControllerState& state) noexcept;
 
   /// Apply one (mode, reason) edge from S1.8's table. A reason with no row in
   /// the current mode is inapplicable there and leaves the mode alone — that
@@ -454,6 +495,50 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint64_t> hand_target_width_reject_count_{0};
   std::atomic<std::uint64_t> task_target_reject_count_{0};
   std::atomic<std::uint64_t> hand_step_applied_count_{0};
+
+  // ── Vision ingress (S5.2) ────────────────────────────────────────────────
+  // The subscription is created by on_configure and lives on the controller
+  // LifecycleNode's DEFAULT callback group, so it runs on the CM's non-RT
+  // executor (G1-6). It is NOT declared in the `topics:` block: that block's
+  // `role:` vocabulary is a closed set owned by rtc_controller_interface, and
+  // a PointCloud2 prediction lane is not one of its roles. Adding a role for a
+  // single consumer is the same kind of change E-11 refuses on the publish
+  // side, so this follows the inference controller's precedent and subscribes
+  // directly.
+  //
+  // It also stays alive while the controller is INACTIVE (lifecycle gates
+  // publishers, not subscriptions), which is exactly why the snapshot carries
+  // an activation generation (D-23).
+  std::string traj_topic_;
+  /// Compared against every message's `frame_id`. A publisher that changes
+  /// frame mid-run keeps publishing entirely plausible numbers in a different
+  /// space; S3.4 measured `world` on both robots, so this guards against a
+  /// change rather than performing a conversion (L1 §4.3's transform is not
+  /// implemented because nothing needs it).
+  std::string expected_frame_{"world"};
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr traj_sub_;
+  CatchingTrajInput traj_input_;
+
+  /// Non-RT writer (the callback), RT reader (the tick). The payloads are
+  /// trivially copyable PODs; the covariance rides its own lock because the
+  /// tick never needs it and would otherwise copy 11.5 KB per cycle (A-3).
+  rtc::SeqLock<rtc::catching::TrajectorySnapshot> traj_box_{};
+  rtc::SeqLock<rtc::catching::CovarianceSnapshot> cov_box_{};
+
+  /// RT-owned. `last_consumed_sequence_` is the payload-side "have I seen
+  /// this" memory D-21 requires (never SeqLock::sequence()).
+  std::uint64_t last_consumed_sequence_{0};
+  std::uint64_t last_track_generation_{0};
+  bool track_seen_{false};
+  /// Latched on the tick a snapshot from a DIFFERENT track arrives, consumed
+  /// by the next EvaluateReason. Latched rather than compared in place
+  /// because the comparison is only meaningful on the arrival tick, while the
+  /// supervisor may take another tick to act on it.
+  bool traj_new_track_{false};
+  rtc::catching::TrajView traj_view_{};
+  std::int64_t t_stale_ns_{0};
+  std::int64_t t_arm_ns_{0};
+  std::int64_t traj_horizon_min_ns_{0};
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────
   // The hand step arrives on the group's `joint_goal`, which only exists if

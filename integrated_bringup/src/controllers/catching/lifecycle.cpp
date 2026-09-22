@@ -180,6 +180,57 @@ void DemoCatchingController::DeclareArmParameter() {
       });
 }
 
+void DemoCatchingController::SetupTrajInput() {
+  // Resolve the ingress configuration from the parsed params. Every number
+  // comes from the same `catching:` tree the validator judged, so a value that
+  // reaches the wire decode is one the report has already had an opinion on.
+  const auto to_ns = [](double seconds) { return static_cast<std::int64_t>(seconds * 1e9); };
+  TrajInputConfig cfg;
+  cfg.n_min = params_.io_n_min > 0 ? params_.io_n_min : 2;
+  // n_max is the RUNTIME bound S3.6 set (20 for the shipped profile), not the
+  // snapshot capacity: a message longer than the profile is a profile change
+  // nobody asked for, and accepting it silently would hide that.
+  cfg.n_max = rtc::catching::kCap;
+  if (!params_.prediction_dt_expected.tbd && params_.prediction_dt_expected.value > 0.0) {
+    // The spacing floor is derived, not configured: a fraction of the expected
+    // interval. Anything at or below this is not a denser prediction, it is a
+    // malformed one, and the sampler's Hermite basis divides by h².
+    cfg.dt_min_ns = std::max<std::int64_t>(
+        1, to_ns(params_.prediction_dt_expected.value * kTrajSpacingFloorFraction));
+  }
+  const auto future_tol = rtc::catching::EffectiveFutureTol(params_, real_arm_config_);
+  cfg.future_tol_ns = future_tol.tbd ? 0 : to_ns(future_tol.value);
+  cfg.horizon_min_ns = params_.io_horizon_min.tbd ? 0 : to_ns(params_.io_horizon_min.value);
+  cfg.track_eval_offset_ns =
+      params_.io_track_eval_offset.tbd ? 0 : to_ns(params_.io_track_eval_offset.value);
+  cfg.j_warn_m = params_.io_track_j_warn.tbd ? -1.0 : params_.io_track_j_warn.value;
+  cfg.expected_frame = expected_frame_;
+  traj_input_.Configure(cfg);
+
+  traj_horizon_min_ns_ = cfg.horizon_min_ns;
+  t_stale_ns_ = params_.io_t_stale.tbd ? 0 : to_ns(params_.io_t_stale.value);
+  // T_arm is S5.3's (the lead compensation is the tracking law's). Until then
+  // the lead axis coincides with the real axis, which is honest: with no arm
+  // motion there is no actuation delay to lead.
+  t_arm_ns_ = 0;
+
+  if (!node_ || traj_topic_.empty()) {
+    return;
+  }
+  // best_effort KEEP_LAST(1), measured rather than assumed: S3.4 compared a
+  // best_effort subscription against a reliable one over 856 messages on two
+  // robots and found them identical, including under 50 ms delay and 30 %
+  // drop injection. Depth 1 is not a choice — ARCH-6 fixes it, and it is also
+  // what G1-I asserts: under a backlog the controller must take the NEWEST
+  // prediction, not work through a queue of old ones.
+  rclcpp::QoS qos{rclcpp::KeepLast(1)};
+  qos.best_effort();
+  traj_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
+      traj_topic_, qos,
+      [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) { OnTrajectoryCloud(*msg); });
+  RCLCPP_INFO(logger_, "vision prediction lane: '%s' (best_effort, depth 1)", traj_topic_.c_str());
+}
+
 RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     const rclcpp_lifecycle::State& prev, rclcpp_lifecycle::LifecycleNode::SharedPtr node,
     const YAML::Node& yaml) noexcept {
@@ -353,6 +404,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // then vanishes with no error anywhere (the step path is what S4.2
     // measures through, so it fails as silence, not as a failure).
     CreateOwnedTopics(*this, owned_topics_);
+    SetupTrajInput();
 
     DeclareProfileParameters();
     DeclareArmParameter();
@@ -403,6 +455,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
   // itself on activation would resume catching after any deactivate/activate
   // cycle — including the one an E-STOP recovery goes through.
   arm_requested_.store(false, std::memory_order_release);
+  // The accepted-sequence memory and the previous prediction belong to the
+  // previous activation. Keeping them would refuse the first message of this
+  // one (its sequence is below the old high-water mark after a vision
+  // restart) and would compare this activation's first prediction against a
+  // trajectory the operator has no reason to think is still relevant.
+  traj_input_.Reset();
   if (node_ && node_->has_parameter(kCatchingEnableParam)) {
     // Bring the parameter back in line with the latch, so the value an
     // operator reads is the value the tick will act on. Without this the
@@ -448,6 +506,10 @@ void DemoCatchingController::TearDownConfiguredResources() noexcept {
   log_drain_cb_group_.reset();
   ResetLogState();
   ResetOwnedTopics(owned_topics_);
+  // The subscription captures `this`; dropping it here is what keeps a
+  // callback from arriving against a half-torn-down controller.
+  traj_sub_.reset();
+  traj_input_.Reset();
 }
 
 RTControllerInterface::CallbackReturn DemoCatchingController::on_cleanup(

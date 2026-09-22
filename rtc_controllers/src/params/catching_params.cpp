@@ -1,6 +1,9 @@
 #include "rtc_controllers/catching/catching_params.hpp"
 
+// For kCap: `io.n_min` above the snapshot capacity is unsatisfiable, and the
+// capacity is owned by trajectory.hpp (one definition, not a second literal).
 #include "catching_yaml_read.hpp"
+#include "rtc_controllers/catching/trajectory.hpp"
 #include <rtc_base/types/types.hpp>
 
 #include <cmath>
@@ -73,6 +76,36 @@ YAML::Node ReadSection(const YAML::Node& parent, const char* key) {
 /// ValidateCatchingParams reports it (kRangeViolation) — unlike the sibling
 /// parser, which throws. That difference is by design and is pinned by
 /// test_catch_pose_ik_params.cpp (SharedKey* cases).
+/// A point COUNT. Absent or the literal `TBD` → 0, which the validator reports
+/// as an active TBD; anything else that is not a positive whole number is
+/// refused here.
+///
+/// Refused rather than defaulted, like every other malformed key in this file:
+/// defaulting reads a typo as "still TBD", and the operator then sees a config
+/// that will not arm with no mention of the key they got wrong. Read as a
+/// double and checked for integrality because `as<int>` would accept `10.9`
+/// by truncation — a point count is not a value to round.
+int ReadPointCount(const YAML::Node& node, const char* key) {
+  const params_detail::TbdRead read = params_detail::ReadTbdScalar(node, key);
+  switch (read.kind) {
+    case params_detail::TbdReadKind::kAbsent:
+      return 0;
+    case params_detail::TbdReadKind::kNotANumber:
+      Reject("'", key, "' must be a positive whole number of points or the literal 'TBD'");
+    case params_detail::TbdReadKind::kRead:
+      break;
+  }
+  if (read.value.tbd) {
+    return 0;
+  }
+  const double v = read.value.value;
+  if (!(v > 0.0) || std::floor(v) != v) {
+    Reject("'", key, "' must be a positive whole number of points, got ",
+           params_detail::Spelling(read.node));
+  }
+  return static_cast<int>(v);
+}
+
 TbdDouble ReadTbdDouble(const YAML::Node& node, const char* key, TbdDouble fallback) {
   const params_detail::TbdRead read = params_detail::ReadTbdScalar(node, key);
   switch (read.kind) {
@@ -240,11 +273,29 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   const YAML::Node decel = ReadSection(supervisor, "decel");
   out.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", out.supervisor_decel_a_dec);
 
+  const YAML::Node io = ReadSection(node, "io");
+  out.io_n_min = ReadPointCount(io, "n_min");
+  out.io_t_stale = ReadTbdDouble(io, "t_stale", out.io_t_stale);
+  out.io_future_tol = ReadTbdDouble(io, "future_tol", out.io_future_tol);
+  out.io_horizon_min = ReadTbdDouble(io, "horizon_min", out.io_horizon_min);
+  const YAML::Node track = ReadSection(io, "track");
+  out.io_track_eval_offset = ReadTbdDouble(track, "eval_offset", out.io_track_eval_offset);
+  out.io_track_j_warn = ReadTbdDouble(track, "j_warn", out.io_track_j_warn);
+
+  const YAML::Node prediction = ReadSection(node, "prediction");
+  out.prediction_dt_expected = ReadTbdDouble(prediction, "dt_expected", out.prediction_dt_expected);
+
   const YAML::Node core = ReadSection(node, "core");
   out.ball = ReadBallSpec(ReadSection(core, "ball"));
 
   const YAML::Node sim = ReadSection(node, "sim");
   out.sim_ball_drag_k = ReadTbdDouble(ReadSection(sim, "ball"), "drag_k", out.sim_ball_drag_k);
+  // The sim OVERLAY of a shared key (A-S5-2). Nested under `sim:` for the same
+  // reason `sim.ball.drag_k` is: this YAML is loaded by both the sim and the
+  // hardware bring-up, so "sim only" has to be said in the schema rather than
+  // in which file the value happens to sit.
+  out.sim_io_future_tol =
+      ReadTbdDouble(ReadSection(sim, "io"), "future_tol", out.sim_io_future_tol);
 
   const YAML::Node robot = ReadSection(node, "robot");
   out.hand = ReadHandProfile(ReadSection(robot, "hand"));
@@ -406,6 +457,68 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   // sim.ball.drag_k — active ONLY in the sim configuration (fixture-only, L0 §1/§6).
   if (CheckActiveTbd(report, params.sim_ball_drag_k, "sim.ball.drag_k", !real_arm_config)) {
     CheckRange(report, "sim.ball.drag_k", params.sim_ball_drag_k.value, 0.0, 0.2);
+  }
+
+  // io.* / prediction.* — the vision ingress, active in every configuration
+  // from S5.2 (the controller cannot judge a message's order, age or usable
+  // window without them, and every one of those judgements is fail-closed).
+  if (params.io_n_min >= 2) {
+    if (params.io_n_min > kCap) {
+      // A requirement above the snapshot capacity can never be met, so the
+      // lane would be permanently closed with the rejection counter blaming
+      // the publisher.
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "io.n_min");
+    }
+  } else if (params.io_n_min <= 0) {
+    AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "io.n_min");
+  } else {
+    AddFailure(report, CatchingValidationReason::kRangeViolation, "io.n_min");
+  }
+
+  if (CheckActiveTbd(report, params.io_t_stale, "io.t_stale", true)) {
+    CheckRange(report, "io.t_stale", params.io_t_stale.value, 0.02, 0.2);
+  }
+  if (CheckActiveTbd(report, params.io_horizon_min, "io.horizon_min", true)) {
+    CheckPositive(report, "io.horizon_min", params.io_horizon_min.value);
+  }
+  if (CheckActiveTbd(report, params.io_track_eval_offset, "io.track.eval_offset", true)) {
+    CheckRange(report, "io.track.eval_offset", params.io_track_eval_offset.value, 0.0, 0.3);
+  }
+  // j_warn is NOT active: it is the threshold of a printed diagnostic, and no
+  // decision is taken on it. Gating arming on a value nothing consumes would
+  // make the operator resolve a number to get a warning they may not want.
+  if (!params.io_track_j_warn.tbd) {
+    CheckPositive(report, "io.track.j_warn", params.io_track_j_warn.value);
+  }
+  if (CheckActiveTbd(report, params.prediction_dt_expected, "prediction.dt_expected", true)) {
+    CheckRange(report, "prediction.dt_expected", params.prediction_dt_expected.value, 1e-3, 1.0);
+  }
+
+  // future_tol: the shared key is active on both axes; the sim override is
+  // active only in sim (A-S5-2), exactly like sim.ball.drag_k.
+  if (CheckActiveTbd(report, params.io_future_tol, "io.future_tol", true)) {
+    CheckRange(report, "io.future_tol", params.io_future_tol.value, 1e-4, 1e-2);
+  }
+  if (!real_arm_config && !params.sim_io_future_tol.tbd) {
+    // Its own, much wider range: the sim ball lane's stamps ride the sim time
+    // axis and lead wall by the in-flight phase error (D-3), which is two
+    // orders of magnitude above any clock-sync budget. An absent override is
+    // not a failure — the configuration then inherits the strict shared value,
+    // which is the fail-closed direction.
+    CheckRange(report, "sim.io.future_tol", params.sim_io_future_tol.value, 1e-4, 0.5);
+  }
+
+  // Consistency: a point-count floor below what the window requires cannot
+  // enforce it. Both keys are individually in range in that case, so nothing
+  // else catches a pair that disagrees — and the symptom would be messages
+  // accepted on count and then rejected on horizon, which reads as a vision
+  // fault rather than as a configuration one.
+  if (params.io_n_min >= 2 && !params.io_horizon_min.tbd && !params.prediction_dt_expected.tbd &&
+      params.prediction_dt_expected.value > 0.0) {
+    const double needed = params.io_horizon_min.value / params.prediction_dt_expected.value;
+    if (std::isfinite(needed) && static_cast<double>(params.io_n_min) < std::ceil(needed)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "io.n_min");
+    }
   }
 
   // robot.hand.* — active in every configuration.

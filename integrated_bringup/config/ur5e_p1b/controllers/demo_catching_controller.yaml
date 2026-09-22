@@ -125,6 +125,66 @@ demo_catching_controller:
         # hold. Re-check this margin whenever these two postures move.
         T_close_e2e: 0.2805
 
+    # ── Vision ingress (L1 §6, S5.2) ────────────────────────────────────────
+    # The prediction lane this controller subscribes to, and the numbers it
+    # judges each message against. Values are S3.6's (plan §4.4 "S3.6 결과"),
+    # all PROVISIONAL in the sense that they are derived from the sim profile
+    # and one measured detection latency — they are re-derived, not re-guessed,
+    # when either changes.
+    io:
+      # ball_perception `sim_estimator_node`'s debug prediction topic. A DEBUG
+      # topic with no stable ABI (W5-2), which is why the parser locates fields
+      # by name rather than by offset.
+      traj_topic: "/ball_perception/debug/prediction/trajectory"
+      # Measured, not assumed: S3.4 saw `world` on 856 messages across both
+      # robots. Compared on every message — a publisher that changes frame
+      # keeps producing entirely plausible numbers in a different space.
+      expected_frame: "world"
+      # = ceil(horizon_min / dt_expected) = ceil(0.51 / 0.05). A message with
+      # fewer points cannot cover the window a commit decision needs, whatever
+      # its spacing.
+      n_min: 11
+      # Three publish periods at the measured 30 Hz. S3.4: a 30 % drop
+      # injection thins publishing to ~15 Hz at p95 (67 ms), so one dropped
+      # message must not read as stale — and the ghost-track silence after a
+      # lost ball (the last VALID prediction arrives within 34 ms, then
+      # nothing) is read as loss inside this window.
+      t_stale: 0.10
+      # REAL-ARM value: the budget for clock disagreement between the vision PC
+      # and this one, which on hardware is a PTP/NTP question (TBD-NET-01, S10
+      # confirms it). The sim value is the `sim.io` override below.
+      future_tol: 0.001
+      # R1 (the commit condition): T_close,tot 0.2815 + T_arm 0.05 + margin
+      # 0.03 + L 0.14 = 0.5015, rounded UP to 10 ms. Rounding down would admit
+      # a prediction that misses R1 by 1.5 ms.
+      horizon_min: 0.51
+      track:
+        # How far past the later origin two consecutive predictions are
+        # compared (L1 §4.4). Inside both windows, so neither is extrapolated.
+        eval_offset: 0.05
+        # TBD: the jump distribution has not been measured on this profile, and
+        # a threshold invented here would warn about nothing or about
+        # everything. Diagnostic only — it does not block arming.
+        j_warn: TBD
+
+    # ── What the vision profile is expected to produce ──────────────────────
+    # Must match `ball_perception_sim_profile.json`'s step (0.05 s): the
+    # spacing floor the decoder refuses below is derived from it, and `n_min`
+    # above is derived from it too.
+    prediction:
+      dt_expected: 0.05
+
+    # ── Sim-only overrides (active iff every claimed device is the simulator)
+    # The sim ball lane's stamps ride the SIM time axis anchored at launch, so
+    # they lead wall by the in-flight phase error — two orders of magnitude
+    # above any clock-sync budget (D-3, `rtc_mujoco_sim` README §Projectile
+    # Ball stamp). 0.1 s is the same width `ball_perception_sim_profile.json`
+    # allows with `max_future_skew_s`. On hardware this key is not read and
+    # `io.future_tol` above applies.
+    sim:
+      io:
+        future_tol: 0.1
+
     # ── Deceleration (L7 §6 `supervisor.decel.a_dec`, single-source key) ──────
     # `ParseCatchingParams` reads this (TbdDouble) but nothing consumes it yet:
     # the L3 §4.9 stopping-point reservation lands in S6, the L7 DECEL target in

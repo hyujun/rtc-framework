@@ -26,10 +26,12 @@
 // registers no observer. Both are revisited in S5.1, when the controller grows
 // the law those suites are about.
 
+#include "catching_cloud_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "shipped_config_test_fixture.hpp"
 
+#include <rclcpp/executors.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/state.hpp>
@@ -679,6 +681,200 @@ TEST_F(CatchingConfigureTest, EstopDisarmsAndClearingItDoesNotResume) {
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
   ctrl.Compute(MakeState(0.3));
   EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kArmed);
+}
+
+// ── The vision lane, end to end (S5.2: G1-B, G1-I, G1-J) ───────────────────
+//
+// These go through a REAL subscription rather than calling the decoder: what
+// they are about is the path — a message published on the configured topic,
+// decoded on the non-RT callback group, handed across a SeqLock, and judged by
+// the tick — and every one of those steps has its own way of being wired
+// wrong while the decoder stays correct.
+
+class CatchingVisionTest : public CatchingConfigureTest {
+ protected:
+  /// The profile plus a vision lane pointed at this test's own topic.
+  ///
+  /// INSERTED into the `catching:` map rather than appended to the document:
+  /// appending would have continued whatever block the profile ends with
+  /// (`topics:`), which parses fine and silently leaves this controller with
+  /// no vision configuration at all.
+  static std::string VisionYaml(const std::string& topic) {
+    const std::string lane = R"(catching:
+  io:
+    traj_topic: ")" + topic + R"("
+    expected_frame: "world"
+    n_min: 4
+    t_stale: 0.2
+    future_tol: 0.01
+    horizon_min: 0.3
+    track:
+      eval_offset: 0.05
+  prediction:
+    dt_expected: 0.05
+  sim:
+    io:
+      future_tol: 0.2
+)";
+    std::string yaml = ClearedYaml(/*hand_step=*/true);
+    const auto at = yaml.find("catching:\n");
+    EXPECT_NE(at, std::string::npos) << "the profile fixture no longer has a catching: block";
+    yaml.replace(at, std::string("catching:\n").size(), lane);
+    return yaml;
+  }
+
+  void BringUpWithVision() {
+    topic_ = "/test_catching_vision/prediction";
+    ctrl_.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
+    const rclcpp_lifecycle::State prev;
+    ASSERT_EQ(ctrl_.on_configure(prev, node_, YAML::Load(VisionYaml(topic_))),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_EQ(ctrl_.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+    node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
+
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_node(node_->get_node_base_interface());
+    rclcpp::QoS qos{rclcpp::KeepLast(1)};
+    qos.best_effort();
+    pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(topic_, qos);
+  }
+
+  void TearDown() override {
+    pub_.reset();
+    if (executor_) {
+      executor_->remove_node(node_->get_node_base_interface());
+      executor_.reset();
+    }
+    CatchingConfigureTest::TearDown();
+  }
+
+  /// Publish and let the callback run. The message's stamp is built from the
+  /// CURRENT wall clock so the D-2 conversion sees a plausible origin delay —
+  /// a fixed stamp would be hundreds of seconds in the past by the time the
+  /// test runs and would be refused as malformed rather than decoded.
+  void PublishPrediction(std::uint64_t sequence, std::uint64_t generation = 42,
+                         std::int64_t origin_delay_ns = 5'000'000) {
+    integrated_bringup::testing::CloudSpec spec;
+    spec.n = 8;
+    spec.sequence = sequence;
+    spec.generation = generation;
+    spec.origin_delay_ns = origin_delay_ns;
+    auto msg = integrated_bringup::testing::MakeCloud(spec);
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const std::int64_t wall =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count() - origin_delay_ns;
+    msg.header.stamp.sec = static_cast<std::int32_t>(wall / 1'000'000'000LL);
+    msg.header.stamp.nanosec = static_cast<std::uint32_t>(wall % 1'000'000'000LL);
+    pub_->publish(msg);
+  }
+
+  void Spin() {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+    while (std::chrono::steady_clock::now() < deadline) {
+      executor_->spin_some(std::chrono::milliseconds(20));
+      if (ctrl_.GetTrajInput().AcceptCount() > accepted_before_) {
+        break;
+      }
+    }
+    accepted_before_ = ctrl_.GetTrajInput().AcceptCount();
+  }
+
+  DemoCatchingController ctrl_{""};
+  std::string topic_;
+  rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
+  std::uint64_t accepted_before_{0};
+};
+
+TEST_F(CatchingVisionTest, APublishedPredictionArmsAndThenTracks) {
+  BringUpWithVision();
+
+  // Armed, no ball: ARMED is the waiting state, and it must be reachable
+  // without vision — readiness is about the robot.
+  ctrl_.Compute(MakeState(0.0));
+  ASSERT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kArmed);
+
+  PublishPrediction(/*sequence=*/1);
+  Spin();
+  ASSERT_EQ(ctrl_.GetTrajInput().AcceptCount(), 1U) << "the message never reached the callback";
+
+  ctrl_.Compute(MakeState(0.01));
+  EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kTracking);
+  EXPECT_FALSE(ctrl_.GetTrajView().stale);
+  EXPECT_TRUE(ctrl_.GetTrajView().is_new);
+
+  // Same snapshot on the next tick: still usable, no longer new.
+  ctrl_.Compute(MakeState(0.02));
+  EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kTracking);
+  EXPECT_FALSE(ctrl_.GetTrajView().is_new);
+}
+
+TEST_F(CatchingVisionTest, AStaleLaneSendsTrackingBackToArmed) {
+  // The lane going quiet is the failure mode `t_stale` exists for, and it is
+  // indistinguishable from a lane being refused — which is why the reject
+  // counters are asserted to be empty here: this test would otherwise pass on
+  // a controller that was rejecting every message for an unrelated reason.
+  BringUpWithVision();
+  // One tick to leave IDLE: the supervisor takes ONE edge per tick, so
+  // reaching TRACKING from IDLE is two ticks whatever vision does.
+  ctrl_.Compute(MakeState(0.0));
+  ASSERT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kArmed);
+  PublishPrediction(/*sequence=*/1, /*generation=*/42, /*origin_delay_ns=*/5'000'000);
+  Spin();
+  ctrl_.Compute(MakeState(0.005));
+  ASSERT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kTracking);
+  ASSERT_EQ(ctrl_.GetTrajInput().RejectCount(integrated_bringup::CloudReject::kMalformed), 0U);
+
+  // Nothing new arrives; t_stale is 0.2 s in this profile.
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  ctrl_.Compute(MakeState(0.01));
+  EXPECT_TRUE(ctrl_.GetTrajView().stale);
+  EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kArmed);
+  EXPECT_EQ(ctrl_.GetLastReason(), rtc::catching::Reason::kBallStale);
+}
+
+TEST_F(CatchingVisionTest, ABacklogIsCollapsedToTheNewestSnapshot) {
+  // G1-I / ARCH-6. The callback is not spun while three predictions are
+  // published, so they queue in the subscription — and a depth-1 KEEP_LAST
+  // queue keeps the LAST one. A deeper queue would make the controller work
+  // through stale predictions after any hiccup, each one arriving as "new".
+  BringUpWithVision();
+  ctrl_.Compute(MakeState(0.0));  // IDLE → ARMED (one edge per tick)
+  PublishPrediction(/*sequence=*/1);
+  PublishPrediction(/*sequence=*/2);
+  PublishPrediction(/*sequence=*/3);
+  Spin();
+
+  EXPECT_EQ(ctrl_.GetTrajInput().AcceptCount(), 1U)
+      << "more than one queued prediction was delivered — the depth is not 1";
+  // And the one that survived is the NEWEST. A queue that kept the oldest
+  // would also deliver exactly one here, so the sequence is what separates
+  // "depth 1" from "depth 1, wrong end".
+  EXPECT_EQ(ctrl_.GetTrajInput().LastDiagnostics().accepted_sequence, 3U);
+  ctrl_.Compute(MakeState(0.005));
+  EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kTracking);
+}
+
+TEST_F(CatchingVisionTest, ATrajectoryReceivedWhileInactiveIsNotConsumedOnReactivation) {
+  // G1-J / D-23. The subscription outlives deactivation — lifecycle gates
+  // publishers, not subscriptions — so the message IS decoded and stored while
+  // the controller is inactive. The refusal has to happen at the RT read, on
+  // the activation generation the snapshot carries.
+  BringUpWithVision();
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  PublishPrediction(/*sequence=*/1);
+  Spin();
+  ASSERT_EQ(ctrl_.GetTrajInput().AcceptCount(), 1U)
+      << "precondition: the subscription is still alive while inactive";
+
+  ASSERT_EQ(ctrl_.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
+  ctrl_.Compute(MakeState(0.0));
+  EXPECT_TRUE(ctrl_.GetTrajView().stale)
+      << "a trajectory received while inactive was consumed by the new activation";
+  EXPECT_EQ(ctrl_.GetMode(), rtc::catching::Mode::kArmed);
 }
 
 TEST_F(CatchingConfigureTest, RefusesAProfileWhoseHandWidthDisagreesWithTheDevice) {
