@@ -35,6 +35,7 @@ import math
 import struct
 import sys
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -479,6 +480,109 @@ def first_flight(
     return out
 
 
+@dataclass(frozen=True)
+class DetectionLatency:
+    """One flight's T_det: launch → the first VALID prediction (plan §7.3, S3.6).
+
+    Two axes, each computed WITHIN one clock, never across the two (D-2):
+
+    - ``t_det_recv_s`` — probe-side steady receive of the first ground-truth
+      sample of the flight → probe-side steady receive of the first VALID
+      prediction. One clock by construction (the probe's), transport included.
+    - ``t_det_stamp_s`` — the two messages' own header stamps. Transport is
+      excluded, so the pair brackets T_det. This axis is ONE clock only under
+      the sim rig's precondition: the simulator stamps ground truth and the
+      camera sample in the same statement (``PublishProjectileBall``), and the
+      estimator copies that capture stamp onto the prediction it produces
+      (``stamp_is_capture_time``, measured in S3.4). If a producer ever stamps
+      predictions with its own clock instead, this axis becomes a cross-clock
+      subtraction and must not be read — the recv axis stays valid either way.
+
+    The launch instant is the flight's FIRST ground-truth sample because the
+    simulator publishes nothing while the ball is parked
+    (``PublishProjectileBall``), so the truth lane's silence separates flights.
+    Its quantisation is one ball sample period (``publish.sample_rate_hz``).
+
+    ``first_valid_*`` are NaN/-1 for a flight in which no VALID prediction
+    arrived — that flight is reported, not dropped, because a silent flight is
+    the observation that matters most.
+    """
+
+    flight_index: int
+    launch_recv_ns: int
+    launch_stamp_ns: int
+    first_valid_recv_ns: int
+    first_valid_stamp_ns: int
+    t_det_recv_s: float
+    t_det_stamp_s: float
+    predictions_before_valid: int
+
+
+def flight_spans(recv_ns: Sequence[int], gap_s: float = 0.3) -> list[tuple[int, int]]:
+    """Index ranges [start, end] of each flight, split at receive gaps > gap_s."""
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for i in range(1, len(recv_ns)):
+        if (recv_ns[i] - recv_ns[i - 1]) * 1e-9 > gap_s:
+            spans.append((start, i - 1))
+            start = i
+    if recv_ns:
+        spans.append((start, len(recv_ns) - 1))
+    return spans
+
+
+def detection_latencies(
+    truth_csv: Path, pred_csv: Path, sub: str = "best_effort", gap_s: float = 0.3
+) -> list[DetectionLatency]:
+    """T_det per flight. Flights come from the truth lane, predictions from one sub."""
+    truth = _read_csv(truth_csv)
+    if not truth:
+        return []
+    truth_recv = [int(r["recv_ns"]) for r in truth]
+    preds = [r for r in _read_csv(pred_csv) if r["sub"] == sub]
+    generations = [(int(r["recv_ns"]), r["generation"]) for r in preds if r["generation"] != ""]
+    spans = flight_spans(truth_recv, gap_s)
+    out: list[DetectionLatency] = []
+    for k, (start, _end) in enumerate(spans):
+        launch_recv = truth_recv[start]
+        launch_stamp = int(truth[start]["stamp_ns"])
+        # The next launch bounds this flight: a prediction that arrived after it
+        # belongs to the next flight, not to a late detection of this one.
+        limit = truth_recv[spans[k + 1][0]] if k + 1 < len(spans) else None
+        # A track that was already VALID before this launch is a ghost (TBD-VIS-07),
+        # not a detection of this flight, and it carries the generation it had then.
+        # Requiring a generation never seen before the launch is what separates the
+        # two; a new flight forces a new track, so it always has one.
+        seen = {g for recv, g in generations if recv < launch_recv}
+        before = 0
+        hit = None
+        for r in preds:
+            recv = int(r["recv_ns"])
+            if recv < launch_recv or (limit is not None and recv >= limit):
+                continue
+            # Both comparisons stay inside one clock; a message stamped before
+            # this launch is the previous flight's tail however late it arrived.
+            if int(r["stamp_ns"]) < launch_stamp:
+                continue
+            if r["validity"] == "VALID" and r["generation"] not in seen:
+                hit = r
+                break
+            before += 1
+        out.append(
+            DetectionLatency(
+                flight_index=k,
+                launch_recv_ns=launch_recv,
+                launch_stamp_ns=launch_stamp,
+                first_valid_recv_ns=int(hit["recv_ns"]) if hit else -1,
+                first_valid_stamp_ns=int(hit["stamp_ns"]) if hit else -1,
+                t_det_recv_s=(int(hit["recv_ns"]) - launch_recv) * 1e-9 if hit else math.nan,
+                t_det_stamp_s=(int(hit["stamp_ns"]) - launch_stamp) * 1e-9 if hit else math.nan,
+                predictions_before_valid=before,
+            )
+        )
+    return out
+
+
 def max_abs_difference(
     a: list[tuple[float, float, float]], b: list[tuple[float, float, float]]
 ) -> tuple[int, float]:
@@ -507,6 +611,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("prefix", help="CSV prefix the probe wrote (<prefix>_prediction.csv …)")
     parser.add_argument("--sub", default="best_effort", choices=("best_effort", "reliable"))
     parser.add_argument("--loss-gap-s", type=float, default=0.3)
+    parser.add_argument(
+        "--flight-gap-s",
+        type=float,
+        default=0.3,
+        help="truth-lane silence that separates two flights (T_det); not the camera-loss gap",
+    )
     args = parser.parse_args(argv)
 
     prefix = Path(args.prefix)
@@ -567,6 +677,35 @@ def main(argv: list[str] | None = None) -> int:
             f"generations {sorted(diag.generations)}; snapshot_sequence "
             f"{diag.snapshot_sequence_min}..{diag.snapshot_sequence_max}"
         )
+    truth_csv = Path(f"{prefix}_truth.csv")
+    if truth_csv.exists():
+        lat = detection_latencies(truth_csv, pred_csv, args.sub, args.flight_gap_s)
+        seen = [d.t_det_recv_s for d in lat if not math.isnan(d.t_det_recv_s)]
+        stamped = [d.t_det_stamp_s for d in lat if not math.isnan(d.t_det_stamp_s)]
+        silent = [d.flight_index for d in lat if math.isnan(d.t_det_recv_s)]
+        print()
+        print(f"T_det (plan §7.3)  : {len(lat)} flights, {len(seen)} with a VALID prediction")
+        if seen:
+            print(
+                f"  recv axis  [s]          : min {min(seen):.3f}  p50 {quantile(seen, 0.5):.3f}  "
+                f"p95 {quantile(seen, 0.95):.3f}  max {max(seen):.3f}"
+            )
+            print(
+                f"  stamp axis [s]          : min {min(stamped):.3f}  p50 "
+                f"{quantile(stamped, 0.5):.3f}  p95 {quantile(stamped, 0.95):.3f}  "
+                f"max {max(stamped):.3f}"
+            )
+            print(
+                "  predictions before VALID: "
+                f"{_fmt_counter(Counter(d.predictions_before_valid for d in lat if not math.isnan(d.t_det_recv_s)))}"
+            )
+        if silent:
+            print(f"  flights with NO VALID   : {silent}")
+        print(
+            "  launch instant = the flight's first ground-truth sample (the ball lane is "
+            "silent while parked);"
+        )
+        print("  its quantisation is one ball sample period (publish.sample_rate_hz).")
     print()
     print("  This is a MEASUREMENT (S3.4). No threshold is applied here; the policy for")
     print("  rewinds, partial validity and ghost tracks is S5.2's (plan §4.4, L1 §10).")
