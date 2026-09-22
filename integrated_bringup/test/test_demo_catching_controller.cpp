@@ -38,6 +38,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -88,6 +89,24 @@ topics:
       - topic: "hand/joint_goal"
         role: "target"
 )";
+}
+
+/// The same profile with the consumed subset RESOLVED: not provisional, and
+/// `T_close_e2e` filled in. Used for the cases that need the controller to be
+/// armable — which is the consumed subset's verdict, not the whole schema's
+/// (`reference.*` and `planner.*` are still TBD here, exactly as they are in
+/// the shipped profile, and neither blocks this step).
+std::string ClearedYaml(bool hand_step) {
+  std::string yaml = MinimalYaml(hand_step);
+  const auto replace = [&yaml](std::string_view from, std::string_view to) {
+    const auto at = yaml.find(from);
+    if (at != std::string::npos) {
+      yaml.replace(at, from.size(), to);
+    }
+  };
+  replace("provisional: true", "provisional: false");
+  replace("T_close_e2e: TBD", "T_close_e2e: 0.28");
+  return yaml;
 }
 
 std::map<std::string, rtc::DeviceNameConfig> MakeConfigs(const std::string& arm_backend,
@@ -456,16 +475,33 @@ TEST_F(CatchingConfigureTest, ConfiguresOnAnAllMujocoProfile) {
   EXPECT_EQ(ctrl.GetHandDof(), kHandDof);
 }
 
-// The sim-only guard (E-8) refuses ACTIVATION, not configuration. These three
-// tests replaced a pair that asserted `on_configure == FAILURE`: that verdict
-// took the whole robot down with it, because sim and real share
-// `config/<variant>/controllers/` and CM latches `bring_up_failed` on any
-// controller's configure failure. The property being pinned is unchanged and
-// now checked further in — a real backend commands nothing — so each of these
-// asserts MORE than the assertion it replaced, not less.
+// ── Parking a real-arm configuration (A-S5-1) ───────────────────────────────
+//
+// WHAT CHANGED AT S5.1, and why these tests keep their assertions. Through
+// S4.0 the rule was "refuse to activate unless every claimed device has proven
+// it is the simulator", standing in for the then-pending E-8 decision about
+// commanding a real arm at all. E-8 was approved on 2026-09-22, so the
+// stand-in is gone and what remains is the rule it stood in for: a provisional
+// or still-TBD value blocks a REAL-ARM configuration and only warns in sim
+// (L0 §5.3, L8 §5.4).
+//
+// The profile these tests load is provisional, so the OUTCOME for a real
+// backend is the same as before — parked at configure, activation refused —
+// and the assertions are unchanged. What the reason change costs is a
+// distinction these tests could not previously express, so a new one is added
+// below for it: a real-arm configuration whose profile is CLEARED now
+// configures and activates, which is the entire content of the E-8 approval.
+// Deleting that case would leave the suite passing on a controller that still
+// refuses hardware outright.
+//
+// Activation is still where the refusal bites: nothing is commanded until a
+// controller is active, and refusing the CONFIGURE would take the whole robot
+// down with it (sim and real share `config/<variant>/controllers/`, and CM
+// latches `bring_up_failed` on any controller's configure failure).
 
 TEST_F(CatchingConfigureTest, ConfiguresDisabledOnARealDriverBackend) {
-  // E-8: holding a real arm is an E-STOP-path change pending approval.
+  // The profile is provisional (`robot.hand.provisional: true`), which on the
+  // real-arm axis is a failure on a key this controller consumes.
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("ur_driver_native", "udp_hand_native"));
   const rclcpp_lifecycle::State prev;
@@ -477,8 +513,11 @@ TEST_F(CatchingConfigureTest, ConfiguresDisabledOnARealDriverBackend) {
 }
 
 TEST_F(CatchingConfigureTest, RefusesToActivateOnARealDriverBackend) {
-  // This is where the guard bites: nothing is commanded until a controller is
-  // active, so a controller that cannot activate cannot reach the arm.
+  // Where the refusal bites: nothing is commanded until a controller is
+  // active, so a parked controller cannot reach the arm. The generation
+  // assertion is what says the base activation did not run anyway — a refusal
+  // that still bumped it would leave the RT tick believing an activation
+  // boundary was crossed.
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("ur_driver_native", "udp_hand_native"));
   const rclcpp_lifecycle::State prev;
@@ -489,7 +528,8 @@ TEST_F(CatchingConfigureTest, RefusesToActivateOnARealDriverBackend) {
 }
 
 TEST_F(CatchingConfigureTest, ConfiguresDisabledOnADeviceThatDeclaresNoBackendAtAll) {
-  // Silence does not prove the device is the simulator.
+  // Silence does not prove the device is the simulator, so the strict axis
+  // applies and the provisional profile parks the instance.
   DemoCatchingController ctrl{""};
   ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", ""));
   const rclcpp_lifecycle::State prev;
@@ -542,6 +582,103 @@ TEST_F(CatchingConfigureTest, ADisabledInstanceRecoversWhenTheBackendsBecomeSim)
             DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_FALSE(ctrl.IsSimOnlyDisabled());
   EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// The case the previous rule could not express: E-8 is approved, so a real
+// arm whose profile is CLEARED configures and activates. Without this test the
+// suite would still pass on a controller that refuses hardware outright, which
+// is what S4.0 did and what S5.1 exists to stop doing.
+TEST_F(CatchingConfigureTest, RealArmWithAClearedProfileConfiguresAndActivates) {
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("ur_driver_native", "udp_hand_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(ClearedYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl.IsRealArmConfig()) << "precondition: judged on the strict axis";
+  EXPECT_FALSE(ctrl.IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// ── The arm latch (A-S5-3) and P-1 (c) ──────────────────────────────────────
+
+TEST_F(CatchingConfigureTest, ActivationDoesNotArmTheController) {
+  // An activation is not an arming. A controller that armed itself here would
+  // resume catching after any deactivate/activate cycle — including the one an
+  // E-STOP recovery goes through, which is precisely the resume P-1 (c) bans.
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(ClearedYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  EXPECT_FALSE(ctrl.IsArmRequested());
+  ctrl.Compute(MakeState(0.0));
+  EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
+}
+
+TEST_F(CatchingConfigureTest, TheEnableParameterArmsTheSupervisor) {
+  // The operator channel end to end: the parameter is what moves the latch,
+  // and the TICK is what acts on it. Asserting the mode rather than the latch
+  // is deliberate — a callback that stored the flag somewhere the tick never
+  // reads would pass an IsArmRequested()-only check.
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(ClearedYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(node_->has_parameter(integrated_bringup::kCatchingEnableParam));
+
+  ctrl.Compute(MakeState(0.0));
+  ASSERT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
+
+  node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
+  EXPECT_TRUE(ctrl.IsArmRequested());
+  ctrl.Compute(MakeState(0.01));
+  EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kArmed);
+  EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kNone);
+
+  // Disarming sends it back to IDLE through the documented reuse of
+  // kParamsTbd for "an ARMED precondition stopped holding" (L7 §4.5).
+  node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, false));
+  ctrl.Compute(MakeState(0.02));
+  EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
+  EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kParamsTbd);
+}
+
+TEST_F(CatchingConfigureTest, EstopDisarmsAndClearingItDoesNotResume) {
+  // G7-H (c). The point is what does NOT happen after the clear: the latch
+  // stays down and the supervisor stays in IDLE for as long as anyone cares to
+  // tick it. A controller that resumed on the clear would show kArmed here,
+  // and on a real robot that is a catching attempt nobody asked for.
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(MakeConfigs("mujoco_native", "mujoco_native"));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_, YAML::Load(ClearedYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
+  ctrl.Compute(MakeState(0.0));
+  ASSERT_EQ(ctrl.GetMode(), rtc::catching::Mode::kArmed) << "precondition: it was armed";
+
+  ctrl.TriggerEstop();
+  ctrl.Compute(MakeState(0.05));
+  EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
+  EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kEstop);
+  EXPECT_FALSE(ctrl.IsArmRequested()) << "the stop did not disarm";
+
+  ctrl.ClearEstop();
+  for (int i = 0; i < 20; ++i) {
+    ctrl.Compute(MakeState(0.05 + 0.01 * static_cast<double>(i)));
+    ASSERT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle) << "resumed on its own at tick " << i;
+  }
+  EXPECT_FALSE(ctrl.IsArmRequested());
+
+  // Re-arming is a deliberate act, and it works.
+  node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
+  ctrl.Compute(MakeState(0.3));
+  EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kArmed);
 }
 
 TEST_F(CatchingConfigureTest, RefusesAProfileWhoseHandWidthDisagreesWithTheDevice) {
@@ -694,6 +831,229 @@ INSTANTIATE_TEST_SUITE_P(BothCatchingRobots, ShippedCatchingProfile,
                          ::testing::Values(std::pair<std::string, int>{"ur5e_p1b", 10},
                                            std::pair<std::string, int>{"iiwa7_leap", 16}),
                          [](const auto& info) { return info.param.first; });
+
+// ── 5. S5.1: the P-1 minimum E-STOP/fault contract (E-8) ────────────────────
+//
+// The four parts are tested separately because they fail separately: (a) is
+// about WHO writes, (b) about WHEN, (c) about what a clear does NOT do, and
+// (d) about two latches staying independent. A single "estop works" test would
+// pass with three of them broken.
+
+TEST(DemoCatchingEstop, HooksOnlyRequestAndTheTickIsTheWriter) {
+  // P-1 (a). The hooks are called here the way CM calls them — off the tick,
+  // between ticks — and then NOTHING is allowed to have changed until a tick
+  // runs. A hook that reset state directly would move the counter and the mode
+  // on these lines, before any Compute().
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.Compute(MakeState(0.0));
+  const std::uint64_t resets_before = ctrl.GetRtResetCount();
+
+  ctrl.TriggerEstop();
+  ctrl.ClearEstop();
+  ctrl.ResetFault();
+  EXPECT_EQ(ctrl.GetRtResetCount(), resets_before)
+      << "a hook performed a reset instead of requesting one";
+
+  ctrl.Compute(MakeState(0.1));
+  EXPECT_GT(ctrl.GetRtResetCount(), resets_before) << "the tick never serviced the request";
+}
+
+TEST(DemoCatchingEstop, IsEstoppedTracksTheRequestWithoutATick) {
+  // The CM polls this from off the RT thread and must not need a tick to get a
+  // true answer — it is the REQUEST's observable, not the tick's.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  EXPECT_FALSE(ctrl.IsEstopped());
+  ctrl.TriggerEstop();
+  EXPECT_TRUE(ctrl.IsEstopped());
+  ctrl.ClearEstop();
+  EXPECT_FALSE(ctrl.IsEstopped());
+}
+
+TEST(DemoCatchingEstop, ReactivationCommandsTheNewPoseNotTheOldOne) {
+  // G7-H (a). The controller is activated, holds a pose, is deactivated, the
+  // arm is then moved by something else, and is reactivated. The first tick of
+  // the new activation must command where the arm IS, not where it was.
+  //
+  // This is the failure the activation-generation reset exists for: the hold
+  // latch survives the object, so without a reset keyed to the activation
+  // boundary the first command of the second activation is the first
+  // activation's pose — a step of whatever distance the other controller moved.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+
+  const ControllerState first_pose = MakeState(0.0);
+  const ControllerOutput first = ctrl.Compute(first_pose);
+  ASSERT_EQ(first.devices[0].num_channels, kArmDof);
+
+  // Deactivate, someone else moves the arm, reactivate. on_activate is the
+  // real path: the base bumps the activation generation and calls
+  // ResetTargetInitialization, and the generation bump is what the tick reads.
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  const ControllerState moved = MakeState(0.75);
+  const ControllerOutput after = ctrl.Compute(moved);
+  ASSERT_EQ(after.devices[0].num_channels, kArmDof);
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(after.devices[0].commands[idx], moved.devices[0].positions[idx])
+        << "arm joint " << i << " was commanded to the PREVIOUS activation's pose";
+  }
+}
+
+TEST(DemoCatchingEstop, EstopCycleReseedsTheHoldFromTheMeasuredPose) {
+  // P-1 (b) on the arm command lane. An E-STOP is not an activation, so the
+  // generation does not move — the epoch is what carries the reset, and the
+  // command after the cycle must come from the pose the arm is actually in.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.Compute(MakeState(0.0));
+
+  ctrl.TriggerEstop();
+  ctrl.Compute(MakeState(0.2));  // the tick that services the trigger
+  ctrl.ClearEstop();
+
+  const ControllerState recovered = MakeState(0.9);
+  const ControllerOutput out = ctrl.Compute(recovered);
+  ASSERT_EQ(out.devices[0].num_channels, kArmDof);
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(out.devices[0].commands[idx], recovered.devices[0].positions[idx])
+        << "arm joint " << i << " carried a pre-E-STOP command across the stop";
+  }
+}
+
+TEST(DemoCatchingEstop, ATriggerAndClearBetweenTwoTicksStillReseeds) {
+  // The reason the E-STOP request is an EPOCH and not a flag. A stop that is
+  // raised and cleared inside one tick period leaves the flag back at false —
+  // a tick that only looked at the flag would see nothing happened and carry
+  // q_c straight across a stop.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.Compute(MakeState(0.0));
+  const std::uint64_t resets_before = ctrl.GetRtResetCount();
+
+  ctrl.TriggerEstop();
+  ctrl.ClearEstop();
+  EXPECT_FALSE(ctrl.IsEstopped()) << "precondition: the flag is back to false";
+
+  const ControllerState after_pose = MakeState(0.4);
+  const ControllerOutput out = ctrl.Compute(after_pose);
+  EXPECT_GT(ctrl.GetRtResetCount(), resets_before);
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(out.devices[0].commands[idx], after_pose.devices[0].positions[idx]);
+  }
+}
+
+TEST(DemoCatchingEstop, AQueuedHandStepDoesNotSurviveAnEstop) {
+  // P-1 (b) on the target lane. The base's generation gate drops goals queued
+  // across an ACTIVATION, but an E-STOP does not bump that generation — so
+  // without DiscardPendingTargets a step issued just before the stop lands on
+  // the hand just after it.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.Compute(MakeState(0.0));
+
+  const std::array<double, kHandDof> step{0.3, 0.3, 0.3, 0.3};
+  ctrl.SetDeviceTarget(kCatchingHandDeviceIdx, step);
+  ctrl.TriggerEstop();
+
+  const ControllerState state = MakeState(0.0);
+  const ControllerOutput out = ctrl.Compute(state);
+  ASSERT_EQ(out.devices[1].num_channels, kHandDof);
+  for (int i = 0; i < kHandDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(out.devices[1].commands[idx], state.devices[1].positions[idx])
+        << "hand joint " << i << " took a step queued before the E-STOP";
+  }
+}
+
+TEST(DemoCatchingEstop, ResetFaultDoesNotClearTheEstopAndNoFaultIsLatchedByDefault) {
+  // P-1 (d), the half that is reachable at S5.1. The two paths are separate:
+  // a fault reset must not lower the global stop. The other half — a LATCHED
+  // fault surviving ClearEstop — needs a fault source, and the only one in the
+  // design is the QP failure streak that arrives with S5.3; this test would be
+  // asserting on a latch nothing can raise.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  EXPECT_FALSE(ctrl.HasLatchedFault());
+
+  ctrl.TriggerEstop();
+  ctrl.ResetFault();
+  ctrl.Compute(MakeState(0.0));
+  EXPECT_TRUE(ctrl.IsEstopped()) << "a fault reset lowered the global E-STOP";
+  EXPECT_FALSE(ctrl.HasLatchedFault());
+}
+
+// ── 6. S5.1: the supervisor mode and the arm latch ──────────────────────────
+
+TEST(DemoCatchingEstop, ConcurrentHooksNeverResetOutsideATick) {
+  // G7-H (b). Hooks are hammered from other threads while ticks run, which is
+  // what CM actually does: the E-STOP propagation and the reset service run on
+  // executor threads with no relationship to the RT loop.
+  //
+  // The invariant that makes this test mean something is RESETS <= TICKS. The
+  // tick performs at most one reset per tick by construction, so a count that
+  // outran the ticks could only have come from a hook doing the work itself —
+  // which is the P-1 (a) violation, and the one that no single-threaded test
+  // can see. (Run under TSAN as well: this asserts the COUNT, and TSAN is what
+  // judges the accesses.)
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+
+  std::atomic<bool> stop{false};
+  std::thread trigger([&] {
+    while (!stop.load(std::memory_order_relaxed)) {
+      ctrl.TriggerEstop();
+      ctrl.ClearEstop();
+    }
+  });
+  std::thread faults([&] {
+    while (!stop.load(std::memory_order_relaxed)) {
+      ctrl.ResetFault();
+      static_cast<void>(ctrl.HasLatchedFault());
+      static_cast<void>(ctrl.IsEstopped());
+    }
+  });
+
+  constexpr int kTicks = 2000;
+  for (int i = 0; i < kTicks; ++i) {
+    static_cast<void>(ctrl.Compute(MakeState(0.001 * static_cast<double>(i))));
+  }
+  stop.store(true, std::memory_order_relaxed);
+  trigger.join();
+  faults.join();
+
+  EXPECT_LE(ctrl.GetRtResetCount(), static_cast<std::uint64_t>(kTicks))
+      << "more resets than ticks — something other than the tick performed one";
+
+  // And the controller is still coherent afterwards: one more tick with the
+  // stop cleared commands the pose the arm is in.
+  ctrl.ClearEstop();
+  const ControllerState settled = MakeState(0.5);
+  const ControllerOutput out = ctrl.Compute(settled);
+  ASSERT_EQ(out.devices[0].num_channels, kArmDof);
+  for (int i = 0; i < kArmDof; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(out.devices[0].commands[idx], settled.devices[0].positions[idx]);
+  }
+}
+
+TEST(DemoCatchingSupervisor, StaysIdleWhileTheProfileIsNotArmable) {
+  // G0-C on the consumed subset: BringUp never runs on_configure, so nothing
+  // has cleared the profile and the supervisor must not advance out of IDLE
+  // however many ticks it gets.
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  for (int i = 0; i < 10; ++i) {
+    ctrl.Compute(MakeState(0.01 * static_cast<double>(i)));
+  }
+  EXPECT_EQ(ctrl.GetMode(), rtc::catching::Mode::kIdle);
+  EXPECT_EQ(ctrl.GetLastReason(), rtc::catching::Reason::kParamsTbd);
+}
 
 }  // namespace
 

@@ -123,20 +123,26 @@ void DemoCatchingController::ResolveDevices() {
   arm_dof_ = std::min(arm_dof_, kDemoCatchingMaxArmDof);
   hand_dof_ = std::min(hand_dof_, kDemoCatchingMaxHandDof);
 
-  // ── Sim-only guard (Q3) ─────────────────────────────────────────────────
+  // ── Which validator axis this configure is judged on (A-S5-1) ───────────
   // Fail-closed on BOTH "wrong backend" and "no backend block": the question
   // is not "is this a real arm" but "has this device PROVEN it is the
-  // simulator", and silence does not prove it.
+  // simulator", and silence does not prove it. Since E-8 was approved this no
+  // longer gates activation by itself — it selects `real_arm_config`, and the
+  // provisional/TBD rule (L0 §5.3) is what can then park the instance.
   for (const auto& group : topic_config_.groups) {
     const auto* cfg = GetDeviceNameConfig(group.first);
     if (cfg == nullptr) {
       continue;  // no config for this group yet — nothing claimed, nothing to prove
     }
     device_configs_seen_ = true;
-    if (!cfg->backend.has_value() || cfg->backend->type != kCatchingRequiredBackendType) {
+    if (!cfg->backend.has_value() || cfg->backend->type != kCatchingSimBackendType) {
       non_sim_groups_.push_back(group.first);
     }
   }
+  // No device config resolved yet ⇒ nothing has proven anything, so the strict
+  // axis applies. ResolveDevices runs twice (hook, then on_configure), and the
+  // first run can legitimately see no groups.
+  real_arm_config_ = !device_configs_seen_ || !non_sim_groups_.empty();
 
   LoadDeviceLimitsFromConfig(device_position_lower_, device_position_upper_, device_max_velocity_,
                              kFallbackPositionLower, kFallbackPositionUpper, kFallbackMaxVelocity);
@@ -219,13 +225,203 @@ void DemoCatchingController::ApplyPendingTarget(int device_idx, std::span<const 
 }
 
 void DemoCatchingController::ResetTargetInitialization() noexcept {
-  // Lifecycle thread, from the base's on_activate, while no tick runs. Drop
-  // both latches so the first tick after activation re-seeds the hold from the
-  // pose the robot is actually in, and drop the step target with them: a step
-  // the operator issued before this activation is not a goal for this one.
+  // Lifecycle thread, from the base's on_activate. Under P-1 (a) this hook
+  // may REQUEST a reset and must not perform one: the single writer of the
+  // values is the RT tick.
+  //
+  // It needs no request of its own. The base bumped the activation generation
+  // immediately before calling this, and ServiceResetRequests keys off exactly
+  // that (D-23) — so the first tick of the new activation already reseeds the
+  // hold latches from the pose the robot is actually in and drops a step the
+  // operator issued before this activation.
+  //
+  // WHY NOT JUST CLEAR THEM HERE, as S4.0 did. It worked, because CM calls
+  // on_activate with no tick running. It stops working the moment anything
+  // else can request a reset — and E-STOP can, from a service callback, with
+  // a tick mid-flight. Two writers of the same state under two different
+  // synchronisation stories is the arrangement P-1 (a) exists to forbid, so
+  // the one path that could have kept its shortcut gives it up too.
+  reset_requested_.fetch_add(1, std::memory_order_release);
+}
+
+// ── E-STOP and fault hooks (P-1 (a): request only) ──────────────────────────
+//
+// Every body here is a store. None of them touches the hold latches, the step
+// target, the supervisor mode or any counter the tick owns — that is the whole
+// of P-1 (a), and it is also what makes these safe to call from a service
+// callback while a tick is mid-flight.
+//
+// The base's own comment warns that an override must not branch on the global
+// latch, because CM propagates both directions while the latch still reads
+// true. None of these reads it.
+
+void DemoCatchingController::TriggerEstop() noexcept {
+  estop_requested_.store(true, std::memory_order_release);
+  // The epoch moves on the TRIGGER as well as on the clear. A trigger→clear
+  // pair that lands entirely between two ticks would otherwise be invisible:
+  // the flag is back to false and the tick would have nothing to tell it that
+  // a stop happened at all, so q_c would carry on from before the stop.
+  estop_epoch_.fetch_add(1, std::memory_order_release);
+}
+
+void DemoCatchingController::ClearEstop() noexcept {
+  estop_requested_.store(false, std::memory_order_release);
+  estop_epoch_.fetch_add(1, std::memory_order_release);
+  // NOT cleared here: fault_latched_ (P-1 (d) — the fault path is separate and
+  // a global clear must not launder it) and arm_requested_, which the tick
+  // lowered on the stop. Leaving the arm latch down is what makes "no
+  // automatic resume" (P-1 (c)) a property of the mechanism rather than of
+  // whoever is holding the clear button.
+}
+
+bool DemoCatchingController::IsEstopped() const noexcept {
+  return estop_requested_.load(std::memory_order_acquire);
+}
+
+void DemoCatchingController::ResetFault() noexcept {
+  // A request, not a clear: the tick decides whether the cause is gone. The
+  // base's contract says exactly this ("the clear happens on the RT thread,
+  // one tick later, and can be refused there"), and HasLatchedFault is how the
+  // caller finds out.
+  fault_reset_epoch_.fetch_add(1, std::memory_order_release);
+}
+
+bool DemoCatchingController::HasLatchedFault() const noexcept {
+  return fault_latched_.load(std::memory_order_acquire);
+}
+
+// ── Supervisor (S1.8 transition table, S5.1 subset) ─────────────────────────
+
+void DemoCatchingController::AdvanceMode(rtc::catching::Reason reason) noexcept {
+  rtc::catching::Mode next = mode_;
+  // A reason with no row in this mode is INAPPLICABLE here, which the table
+  // expresses by having no row — not an error and not a fallback. Leaving the
+  // mode alone is the documented contract of LookupTransition, and it is why
+  // this driver can be this small: every "may I go there from here" question
+  // is already answered by the data, and S7.2 grows the driver rather than
+  // the table.
+  if (rtc::catching::LookupTransition(rtc::catching::kTransitionTable, mode_, reason, next)) {
+    mode_ = next;
+  }
+  last_reason_ = reason;
+}
+
+rtc::catching::Reason DemoCatchingController::EvaluateReason(
+    const ControllerState& state) noexcept {
+  using rtc::catching::Reason;
+  static_cast<void>(state);
+
+  // Ordered by authority, not by likelihood. E-STOP outranks everything
+  // because it is the one condition whose handling must not depend on what
+  // else is true this tick.
+  if (estop_active_) {
+    return Reason::kEstop;
+  }
+  if (fault_reset_serviced_) {
+    // Consumed here rather than in ServiceResetRequests so the FSM edge and
+    // the state reset happen on the same tick and in the table's order.
+    fault_reset_serviced_ = false;
+    return Reason::kFaultReset;
+  }
+  if (fault_latched_.load(std::memory_order_relaxed)) {
+    // No reason at all: in Mode::kFault the table has rows only for
+    // kFaultReset and kEstop, so anything else leaves the latch standing.
+    // Returning kNone rather than inventing a "still faulted" reason keeps
+    // the latch's persistence a property of the table.
+    return Reason::kNone;
+  }
+  if (!armable_ || !arm_requested_.load(std::memory_order_relaxed)) {
+    // §4.5's readiness conditions are not met — either the profile is not
+    // armable (G0-C) or the operator has not armed this controller.
+    //
+    // kParamsTbd is the DOCUMENTED reuse for "an ARMED precondition stopped
+    // holding" (L7 §4.5 has no dedicated reason; transition_table.hpp's header
+    // records the reuse). It is a self-loop in IDLE and sends ARMED back to
+    // IDLE, which is exactly the two behaviours wanted here.
+    return Reason::kParamsTbd;
+  }
+  // Nothing wrong and the preconditions hold. In IDLE this advances to ARMED;
+  // in ARMED it would advance to TRACKING, which S5.2 gates on an actual
+  // trajectory — until that lands there is no traffic on this edge because
+  // EvaluateReason cannot yet return kNone from ARMED with a ball in flight.
+  return Reason::kNone;
+}
+
+// ── Reset service (P-1 (a)/(b): the tick is the only writer) ────────────────
+
+void DemoCatchingController::ResetTrialState() noexcept {
+  // L7 §4.8's re-arm list, restricted to the state that exists at S5.1. The
+  // list grows with the controller, and the rule that comes with it is that a
+  // new stateful member is added HERE in the same change that adds it — a
+  // member missing from this function is a trial that starts with the previous
+  // trial's state, which is the failure mode §4.8 was written for.
   arm_hold_ = HoldLatch{};
   hand_hold_ = HoldLatch{};
+  hand_target_raw_.fill(0.0);
   hand_target_width_ = 0;
+  // Queued goals are dropped rather than carried over: a target issued before
+  // this reset was issued against the state the reset just discarded. The
+  // base's generation gate already stops goals from a previous ACTIVATION, but
+  // an E-STOP does not bump that generation, so this is the half of the
+  // problem the gate does not cover.
+  DiscardPendingTargets();
+  mode_ = rtc::catching::Mode::kIdle;
+  last_reason_ = rtc::catching::Reason::kNone;
+}
+
+bool DemoCatchingController::ServiceResetRequests(const ControllerState& state) noexcept {
+  static_cast<void>(state);
+  bool reset = false;
+
+  // D-23: the activation boundary is decided from the generation, not from a
+  // quiescence wait. PeriodicRtThread::Pause does not stop an iteration
+  // already in flight, so "no tick is running" is not something on_activate
+  // can establish — but "the generation changed" is something this tick can
+  // observe, and it is true exactly once per activation.
+  const std::uint32_t generation = ActivationGeneration();
+  if (!activation_seen_ || generation != serviced_activation_generation_) {
+    serviced_activation_generation_ = generation;
+    activation_seen_ = true;
+    reset = true;
+  }
+
+  const std::uint32_t reset_epoch = reset_requested_.load(std::memory_order_acquire);
+  if (reset_epoch != serviced_reset_epoch_) {
+    serviced_reset_epoch_ = reset_epoch;
+    reset = true;
+  }
+
+  const std::uint32_t estop_epoch = estop_epoch_.load(std::memory_order_acquire);
+  if (estop_epoch != serviced_estop_epoch_) {
+    serviced_estop_epoch_ = estop_epoch;
+    reset = true;
+    // Both edges disarm. On the trigger it is the stop itself; on the clear it
+    // is P-1 (c), and doing it on BOTH is what covers the trigger→clear pair
+    // that lands between two ticks — the tick then sees one epoch move, and
+    // that single reset must still leave the controller disarmed.
+    arm_requested_.store(false, std::memory_order_relaxed);
+  }
+
+  const std::uint32_t fault_epoch = fault_reset_epoch_.load(std::memory_order_acquire);
+  if (fault_epoch != serviced_fault_reset_epoch_) {
+    serviced_fault_reset_epoch_ = fault_epoch;
+    // The cause is gone as soon as it is asked about, at S5.1: the only thing
+    // that can raise this latch is the supervisor reaching Mode::kFault, and
+    // no S5.1 path reaches it (the QP failure streak that does is S5.3). When
+    // that path lands, this is where "refuse the clear while the cause is
+    // still present" belongs.
+    if (fault_latched_.load(std::memory_order_relaxed)) {
+      fault_latched_.store(false, std::memory_order_release);
+      fault_reset_serviced_ = true;
+      reset = true;
+    }
+  }
+
+  if (reset) {
+    ResetTrialState();
+    rt_reset_count_.fetch_add(1, std::memory_order_relaxed);
+  }
+  return reset;
 }
 
 // ── RT tick ─────────────────────────────────────────────────────────────────
@@ -340,6 +536,14 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   output.command_type = CommandType::kPosition;
   output.valid = true;
 
+  // Read ONCE per tick, into a tick-local bool. Re-reading the atomic further
+  // down would let one tick act on two different answers — the command written
+  // for a stop the supervisor did not see, or the reverse.
+  estop_active_ = estop_requested_.load(std::memory_order_acquire);
+  if (estop_active_) {
+    estop_tick_count_.fetch_add(1, std::memory_order_relaxed);
+  }
+
   arm_readable_ = state.num_devices > kCatchingArmDeviceIdx &&
                   rtc::IsDeviceReadable(state.devices[kCatchingArmDeviceIdx], arm_dof_);
   hand_readable_ = state.num_devices > kCatchingHandDeviceIdx &&
@@ -347,10 +551,24 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   ReportGateClosure(state, kCatchingArmDeviceIdx, arm_dof_, "arm");
   ReportGateClosure(state, kCatchingHandDeviceIdx, hand_dof_, "hand");
 
+  // BEFORE the target drain and before the command write (P-1 (b)): a reset
+  // discards queued goals and drops the hold latches, so anything that
+  // consumed a goal first would apply state the reset is about to throw away,
+  // and anything that wrote a command first would command the pose the reset
+  // has just decided not to trust.
+  (void)ServiceResetRequests(state);
+
   // Drained before the write, not after: WriteDeviceCommand seeds the hold
   // latch and then overlays the step, so a step arriving on the same tick as
   // the first readable state is honoured on that tick instead of a tick later.
   (void)DrainPendingTargets();
+
+  AdvanceMode(EvaluateReason(state));
+  // Published every tick, including the early ones and the estopped ones. The
+  // state message (S5.4) inherits this discipline as a PROC-7 requirement; the
+  // two atomics here are its S5.1 stand-in.
+  mode_observed_.store(static_cast<std::uint8_t>(mode_), std::memory_order_relaxed);
+  reason_observed_.store(static_cast<std::uint8_t>(last_reason_), std::memory_order_relaxed);
 
   if (state.num_devices > kCatchingArmDeviceIdx) {
     WriteDeviceCommand(state, output, kCatchingArmDeviceIdx, arm_readable_);

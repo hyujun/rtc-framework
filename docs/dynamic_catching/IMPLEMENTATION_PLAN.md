@@ -834,6 +834,23 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 - S7 homing 을 IDLE 하위 단계로 둘지 별도 Mode 로 둘지, `REF_SATURATED` 판정식, 손 hold 힘 한계를 position 목표로 표현하는 규칙, `stale_committed_max_s` 를 조일 물리량 (공분산 성장·포획 반경 오차 할당·abort 정지거리)
 - TBD-WS-01 (바닥·작업셀 경계) — S3.5a catchability 지도에서 작업셀 경계를 입력으로 쓸 때 함께 정한다
 
+**S5 착수 시 확정 (2026-09-22 사용자, 권장안 그대로 — #537 코멘트 5773959608)**
+
+착수 전 코드 대조에서 계획 서술의 정정 8건이 함께 나왔다 (D-24 의 `valid` 는 `DeviceState::inference_enable` 로 이미 있고 추가분은 `recv_steady_ns`·`sequence` 둘 · 센서 lane 을 채우는 backend 는 3종이 아니라 2종 + CM 복사 (`ur_driver_native` 는 lane 자체가 없다) · 슈퍼바이저 본체는 S7.2 라 S5 는 S1.8 전이표 위의 얇은 driver · 컨트롤러 YAML 에는 sim overlay 가 없다 · §13 의 arm/disarm 채널이 없다 · `PinocchioCache::RegisterFrame` 호출부가 아직 없다 · `WbcState` 는 aux 타이머가 아니라 `PublishNonRtSnapshot` 로 발행한다 · `derived_accel_limits.yaml` 에 런타임 소비자가 없다).
+
+| ID | 결정 | 근거 |
+|---|---|---|
+| A-S5-1 | S4.0 의 sim 전용 activation 가드를 **provisional 값의 실기 차단**으로 교체한다. backend 판정은 `ValidateCatchingParams` 의 `real_arm_config` 축을 고르는 데만 쓰고, 실기 config 에서 **소비 키**에 provisional·TBD 가 있으면 S4.0 과 같은 DISABLED (configure SUCCESS · activate 거부) 로 park 한다. sim 은 종전대로 configure FAILURE | E-8 승인으로 가드의 근거가 사라졌고 남는 규칙은 L0 §5.3 · L8 §5.4 다. park 인 이유는 2026-09-21 정정 그대로 (실기 p1b bring-up 이 같은 config dir 에서 이 컨트롤러를 인스턴스화하고, CM 은 한 컨트롤러의 configure 실패로 전체를 거부한다) |
+| A-S5-2 | `io.future_tol` 은 실기값 **1e-3** 를 본 키에, sim 값 **0.1** 은 `sim.io.future_tol` 에 둔다 (sim config 에서만 활성·본 키를 덮음). `io.t_stale` 은 **0.10** 단일 키 | 컨트롤러 YAML 은 sim·실기가 한 파일을 공유하므로 sim 전용 값은 `sim:` 섹션 키여야 한다 (`sim.ball.drag_k` 선례). 값 자체는 공 lane stamp 가 sim 축이라는 D-3·⑤ 에서 온다 (profile `max_future_skew_s` 0.1 과 짝) |
+| A-S5-3 | 조작 채널은 컨트롤러 노드의 읽기·쓰기 파라미터 **`catching.enable`** (기본 false). 파라미터 콜백은 atomic 만 갱신하고 RT tick 이 소비하며, **tick 이 E-STOP·fault 때 이 latch 를 내린다** | §13 GUI 의 arm/disarm 이 채널 없이 적혀 있었다. msg·srv 신설은 E-3 대상이고 파라미터로 표현되는 것에 쓸 이유가 없다. tick 이 내리므로 P-1 (c) "자동 재개 금지" 가 운용 규율이 아니라 메커니즘이 된다 |
+| A-S5-4 | `snapshot_sequence` 되감김: 같은 generation 안에서 직전 수락값 이하이면 거부·카운트, **generation 이 바뀌면 last_seq 리셋**. 회복 경로는 generation 변화 또는 재활성화 | S3.4 에서 되감김 0 회 — 정책은 fail-closed 최소형 (L1 §4.4 그대로) |
+| A-S5-5 | S5.2d 의 $\bar\nu$ 는 **S7 로 미룬다**. S5.2 는 $J$ (같은 generation 직전 궤적과의 점프) 만 진단으로 계산하고, 공분산은 token 을 실은 `CovarianceSnapshot` 으로 계획기(S6)에만 | 소비자 `PRED_INCONSISTENT` 가 L7 이고 **공분산의 시각 보간 규칙이 아직 없다** (L1 §4.5 미결) — 규칙 없이 구현하면 임의 정의가 박제된다. $J$ 는 규칙이 이미 있다 |
+| A-S5-6 | D-16 가속 box 는 컨트롤러 YAML 키 `robot.arm.accel_limits_file` (변형 dir 상대, 기본 `derived_accel_limits.yaml`) + `robot.arm.accel_limits_group` 으로 **읽는다**. `adopted: false` 또는 파일 부재는 거부 | 도구 산출 파일이 SSoT 이고 값 복사는 금지 (L5 §6: `max_acceleration` placeholder 사용 금지). S5.3 이 첫 런타임 소비자 |
+| A-S5-7 | CLIK 의 `q_min`/`q_max` 는 device config ∩ URDF 에서 `robot.arm.limit_margin` 만큼 안쪽, `qd_max` 는 device config `max_velocity` (관절별). `ur5e_p1b` 정격 상향은 `sim.yaml` overlay 로만 (결정 D) | L5 §6 "사본 금지" — 같은 값의 두 번째 출처를 만들지 않는다 |
+| A-S5-8 | S5.5 의 oracle plan 은 `diagnostic.oracle_plan:` (`enabled`·`p_c`·`a_d`·`t_c_offset_s`·`gamma_f`) 로 주고, RT tick 이 고정 `PlanSnapshot` 을 만들어 소비한다 | §13 S5 의 "기준 vs 실제 추종 오차" 를 sim 에서 보이려면 런타임 plan 원천이 필요한데 계획기는 S6 다 |
+| A-S5-9 | G5-E 의 지연 주입은 `test/include` 아래 fixture (설치되지 않음) 의 폐루프 plant 로 한다 — 런타임 경로 불변 | 확정 (ㄱ) 의 구현 형태. `catching_ball_fixture.hpp` 와 같은 격리 (미설치 → 프로덕션 타깃이 include 할 수 없다) |
+| A-S5-10 | QP 비의존 abort 감속식: 관절별 $\dot q_i\leftarrow\mathrm{sign}(\dot q_i)\max(\lvert\dot q_i\rvert-\ddot q_{\max,i}\Delta t,\,0)$, $q_c\leftarrow\mathrm{clamp}(q_c+\dot q\Delta t)$ — 순수 코어 함수 (할당·QP 없음) | L7 §4.1 이 "정확한 식은 S5.3" 으로 남긴 자리 |
+
 **repo drift (이 작업 범위 밖 — 별도 브랜치로 처리)**
 
 - PR [#538](https://github.com/hyujun/rtc-framework/pull/538) 로 세 항목(FingertipSensor 주석, controllers.md DemoWbc 행, p1b `index_mcp_aa_joint` 주석)이 main 에 반영됐고 (2026-09-19, 값 변경 없음) — 닫힘

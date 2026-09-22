@@ -135,6 +135,40 @@ TEST(DemoCatchingAlloc, ComputeAllocatesNothingOnTheStepPath) {
   EXPECT_EQ(worst, 0U);
 }
 
+TEST(DemoCatchingAlloc, ComputeAllocatesNothingWhileServicingResets) {
+  // The S5.1 reset path is inside the tick (P-1 (a)), so it is inside the
+  // gate: the epoch reads, ResetTrialState, DiscardPendingTargets' mailbox
+  // drain and the FSM lookup all run here. The hooks themselves are called
+  // OUTSIDE the gate — they run off the RT thread on the real system, and
+  // measuring them here would be measuring the wrong thread's budget.
+  DemoCatchingController ctrl{""};
+  ctrl.LoadConfig(YAML::Load(MinimalYaml()));
+  ctrl.SetDeviceNameConfigs(MakeConfigs());
+  const ControllerState state = MakeState();
+  static_cast<void>(ctrl.Compute(state));
+
+  const std::array<double, kHandDof> target{0.5, -0.5, 0.25, 0.75};
+  std::size_t worst = 0;
+  for (int i = 0; i < 20; ++i) {
+    // A queued goal AND an E-STOP cycle, so the tick under the gate both
+    // drains the mailbox and discards it.
+    ctrl.SetDeviceTarget(1, std::span<const double>(target));
+    ctrl.TriggerEstop();
+    {
+      rtc::testing::ScopedAllocGate gate;
+      static_cast<void>(ctrl.Compute(state));
+      worst = std::max(worst, gate.count());
+    }
+    ctrl.ClearEstop();
+    {
+      rtc::testing::ScopedAllocGate gate;
+      static_cast<void>(ctrl.Compute(state));
+      worst = std::max(worst, gate.count());
+    }
+  }
+  EXPECT_EQ(worst, 0U);
+}
+
 TEST(DemoCatchingAlloc, PositiveControlTheGateIsArmed) {
   rtc::testing::ScopedAllocGate gate;
   std::vector<double> v;

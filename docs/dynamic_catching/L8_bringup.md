@@ -139,7 +139,10 @@ class CatchingController final : public rtc::RTControllerInterface {
   //  on_deactivate: 계획기 Pause (join 은 소멸자에서만)
   // RT
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;  // §4.1
-  // E-STOP·fault: TriggerEstop/ClearEstop/SetHandEstop, ResetFault/HasLatchedFault — P-1 임시 기준(S5.1 최소 계약, L7 §4.1), 정책은 S9
+  // E-STOP·fault: TriggerEstop/ClearEstop/SetHandEstop, ResetFault/HasLatchedFault — P-1 임시 기준(S5.1 최소 계약, L7 §4.1), 정책은 S9.
+  //   S5.1 구현: 네 훅은 atomic 요청·epoch 만 갱신하고, 되돌리는 동작의 유일 writer 는 Compute() 다.
+  //   운용자 무장 채널은 파라미터 `catching.enable` (A-S5-3) — 콜백은 atomic 만 쓰고 tick 이 소비하며,
+  //   tick 이 E-STOP·fault 에서 그 latch 를 내린다 (P-1 (c) 를 메커니즘으로 만든다).
 };
 ```
 

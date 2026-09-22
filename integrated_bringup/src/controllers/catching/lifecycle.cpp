@@ -3,6 +3,8 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
+#include <rclcpp/parameter.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -47,25 +49,35 @@ namespace {
   return "unknown";
 }
 
-/// Whether a validation entry names a key this S4.0 skeleton actually
-/// consumes.
+/// Whether a validation entry names a key this controller actually consumes.
 ///
-/// G0-C (L0 §5.3) blocks ARMING on a TBD active key, and S5's controller gates
-/// on the whole report for exactly that reason. This one never arms: it holds
-/// the arm still and steps the hand so S4.2 can time the closure. Refusing to
-/// run that measurement because `reference.v_max` (TBD-ARM-02) or
-/// `supervisor.decel.a_dec` is still open would invert the dependency — those
-/// values are decided BY the measurement chain this controller feeds (plan
-/// §4.2 DAG: S4.2 → S4.4 → S3.5b). So the gate is the consumed subset and
-/// everything else is reported as a warning naming the step that owns it.
+/// G0-C (L0 §5.3) blocks ARMING on a TBD active key. This controller does arm
+/// now, so the gate matters — but the key set it consumes at S5.1 is still
+/// small, and refusing to configure over a value that a LATER step decides
+/// would invert the dependency the plan's own DAG records (S4.2 → S4.4 →
+/// S3.5b: the measurement chain this controller feeds is what decides
+/// `reference.v_max`, `supervisor.decel.a_dec` and the planner's values).
 ///
-/// `robot.hand.T_close_e2e` is the sharpest case of that inversion and is
-/// excluded by name: it is the very number S4.2 produces with this controller,
-/// so gating on it would make the measurement its own precondition. S7.1 (the
-/// sequencer, which derives T_close_timeout from it) is the first consumer.
+/// So the gate is the consumed subset and everything else is reported as a
+/// warning naming the step that owns it. The subset grows with the
+/// controller: S5.2 adds `io.*` / `prediction.*`, S5.3 adds `joint_cmd.*`,
+/// `reference.*` and `robot.arm.*`, S6 adds `planner.*`, S7 the rest of
+/// `supervisor.*`.
+///
+/// `robot.hand.T_close_e2e` is excluded BY NAME and stays excluded until S7.1:
+/// it is the number S4.2 produces with this controller, so gating on it would
+/// make the measurement its own precondition. The hand sequencer that derives
+/// `T_close_timeout` from it is its first consumer.
 [[nodiscard]] bool ConsumedByCatchingSkeleton(const char* key) noexcept {
   const std::string_view k{key};
   if (k == "control_rate") {
+    return true;
+  }
+  // `robot.hand` WITHOUT a trailing dot is the provisional flag's own key
+  // (catching_params.cpp reports the profile as a whole, not a field of it).
+  // Matching only the dotted prefix silently let a provisional hand profile
+  // through the real-arm gate — the one thing L0 §5.3 asks this gate to stop.
+  if (k == "robot.hand") {
     return true;
   }
   return k.starts_with("robot.hand.") && k != "robot.hand.T_close_e2e";
@@ -123,6 +135,50 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("diagnostic.hand_step", hand_step_enabled_, "accept unshaped hand step targets (S4a)");
 }
 
+void DemoCatchingController::DeclareArmParameter() {
+  if (!node_) {
+    return;
+  }
+  // Read-WRITE, unlike the mirrored profile parameters: this one is an input.
+  // Declared with `false` so a bring-up never starts armed.
+  if (!node_->has_parameter(kCatchingEnableParam)) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description =
+        "Arm the catching supervisor (A-S5-3). The controller lowers this itself on E-STOP and on "
+        "a latched fault — P-1 (c), no automatic resume.";
+    node_->declare_parameter(kCatchingEnableParam, false, d);
+  }
+  // Mirror whatever the declaration left behind (a parameter override on the
+  // command line can make that `true`), so the tick and the parameter agree
+  // from the first tick rather than from the first CHANGE.
+  arm_requested_.store(node_->get_parameter(kCatchingEnableParam).as_bool(),
+                       std::memory_order_release);
+
+  if (arm_param_cb_handle_) {
+    return;  // a re-configure keeps the one callback; registering twice would double-handle
+  }
+  arm_param_cb_handle_ =
+      node_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto& p : params) {
+          if (p.get_name() != kCatchingEnableParam) {
+            continue;
+          }
+          if (p.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+            result.successful = false;
+            result.reason = "catching.enable must be a bool";
+            continue;
+          }
+          // The ONLY thing this callback does. Not a reset, not a mode change,
+          // not a command — the tick owns all three (P-1 (a)). It runs on the
+          // controller's non-RT callback group.
+          arm_requested_.store(p.as_bool(), std::memory_order_release);
+        }
+        return result;
+      });
+}
+
 RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     const rclcpp_lifecycle::State& prev, rclcpp_lifecycle::LifecycleNode::SharedPtr node,
     const YAML::Node& yaml) noexcept {
@@ -148,38 +204,32 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       return CallbackReturn::FAILURE;
     }
 
-    // ── Sim-only guard (plan §4.4 S4a Q3) ────────────────────────────────
-    // Refuse rather than degrade. This controller holds the arm by commanding
-    // it every tick; doing that on real hardware is a change on the E-STOP
-    // path (E-8), which is pending approval before S5. S5.1 removes this
-    // guard together with that approval.
-    // A disabled instance returns SUCCESS and stops here: it creates no step
-    // subscription, no log channels, no drain timer and no profile parameters,
-    // and on_activate refuses. Returning FAILURE instead would take the whole
-    // bring-up down with it (see the header) — the real p1b robot instantiates
-    // this controller from the same config dir as the sim.
-    if (!device_configs_seen_) {
-      sim_only_disabled_ = true;
-      RCLCPP_ERROR(logger_,
-                   "DISABLED: no device config resolved for any declared group, so no device has "
-                   "proven it is the simulator (E-8: this controller is sim-only until the E-STOP "
-                   "path is approved). It will refuse to activate.");
-      return CallbackReturn::SUCCESS;
-    }
-    if (!non_sim_groups_.empty()) {
+    // ── Which axis this configure is judged on (A-S5-1) ──────────────────
+    // S4.0 refused to ACTIVATE here unless every claimed device was the
+    // simulator, standing in for the then-pending E-8 decision. That decision
+    // was made on 2026-09-22, so the stand-in is gone and what is left is the
+    // rule it was standing in for: a provisional or still-TBD value blocks a
+    // REAL-ARM configuration and only warns in sim (L0 §5.3, L8 §5.4).
+    //
+    // ResolveDevices has already set `real_arm_config_` from the backends —
+    // fail-closed, so a group whose config has not resolved yet counts as
+    // unproven and gets the strict rule.
+    if (real_arm_config_) {
       for (const auto& group : non_sim_groups_) {
         const auto* cfg = GetDeviceNameConfig(group);
-        RCLCPP_ERROR(logger_,
-                     "DISABLED: device group '%s' is bound to backend '%s', not '%s'. This "
-                     "controller is SIM-ONLY until E-8 (the E-STOP path) is approved in S5.1 — it "
-                     "holds the arm by commanding it every tick. It will refuse to activate.",
-                     group.c_str(),
-                     (cfg != nullptr && cfg->backend.has_value()) ? cfg->backend->type.c_str()
-                                                                  : "<none declared>",
-                     kCatchingRequiredBackendType);
+        RCLCPP_INFO(logger_,
+                    "device group '%s' is bound to backend '%s' (not '%s') — this configure is "
+                    "judged as a REAL-ARM configuration: provisional and TBD values block it.",
+                    group.c_str(),
+                    (cfg != nullptr && cfg->backend.has_value()) ? cfg->backend->type.c_str()
+                                                                 : "<none declared>",
+                    kCatchingSimBackendType);
       }
-      sim_only_disabled_ = true;
-      return CallbackReturn::SUCCESS;
+      if (!device_configs_seen_) {
+        RCLCPP_INFO(logger_,
+                    "no device config resolved for any declared group — judged as a REAL-ARM "
+                    "configuration (silence does not prove the simulator).");
+      }
     }
 
     // ── Hand profile (G0-C, L0 §5.3) ─────────────────────────────────────
@@ -189,8 +239,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "defensible default — see L6 §6 and plan §4.4 S4.1.");
       return CallbackReturn::FAILURE;
     }
-    report_ = rtc::catching::ValidateCatchingParams(params_, 1.0 / GetDefaultDt(),
-                                                    /*real_arm_config=*/false);
+    report_ =
+        rtc::catching::ValidateCatchingParams(params_, 1.0 / GetDefaultDt(), real_arm_config_);
     for (std::size_t i = 0; i < report_.warning_count; ++i) {
       const auto& w = report_.warnings[i];
       RCLCPP_WARN(logger_, "catching config warning: %s — %s", w.key, ReasonText(w.reason));
@@ -214,8 +264,40 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       }
     }
     if (consumed_failure) {
+      // A real-arm configuration is PARKED, not refused (A-S5-1). The failure
+      // there is "this profile is not cleared for hardware", and refusing the
+      // configure would take the whole robot down with it — sim and real share
+      // `config/<variant>/controllers/`, and CM latches `bring_up_failed` on
+      // ANY controller's configure failure and then refuses to configure EVERY
+      // controller. Nothing is commanded until a controller is active, so an
+      // instance that can never activate can never command.
+      //
+      // In sim the same failures ARE a refusal: there is no other bring-up
+      // riding on this instance, and a profile that cannot arm in sim is a
+      // configuration mistake to be fixed now rather than discovered as a
+      // controller that silently will not start.
+      if (real_arm_config_) {
+        sim_only_disabled_ = true;
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: real-arm configuration with values this controller consumes that "
+                     "are provisional or still TBD (L0 §5.3). It will refuse to activate; nothing "
+                     "was commanded.");
+        return CallbackReturn::SUCCESS;
+      }
       return CallbackReturn::FAILURE;
     }
+    // One bool for the tick's arming question (§4.5-1).
+    //
+    // NOT `report_.armable`: that verdict covers every key the schema knows,
+    // including the ones a LATER step decides (`reference.v_max`,
+    // `planner.*`, `supervisor.decel.*`). Arming on it would mean this
+    // controller can never arm until S7 is finished, which inverts the plan's
+    // own DAG — the measurements that decide those values are taken WITH this
+    // controller. The gate is the same consumed subset the configure refusal
+    // uses, so the two cannot drift apart: what refuses a sim configure is
+    // exactly what refuses to arm.
+    armable_ = !consumed_failure;
+
     if (params_.hand.dof != hand_dof_) {
       RCLCPP_ERROR(logger_,
                    "refusing to configure: hand profile declares %d joints but the hand device "
@@ -272,12 +354,15 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     CreateOwnedTopics(*this, owned_topics_);
 
     DeclareProfileParameters();
+    DeclareArmParameter();
 
     RCLCPP_INFO(logger_,
-                "configured: arm=%s(%d) hand=%s(%d), hand_step=%s, backend=%s (sim-only until E-8)",
+                "configured: arm=%s(%d) hand=%s(%d), hand_step=%s, config=%s, armable=%s "
+                "(arm it with the '%s' parameter)",
                 GetPrimaryDeviceName().c_str(), arm_dof_, GetSecondaryDeviceName().c_str(),
                 hand_dof_, hand_step_enabled_ ? "enabled" : "disabled",
-                kCatchingRequiredBackendType);
+                real_arm_config_ ? "real-arm" : "sim", armable_ ? "yes" : "no",
+                kCatchingEnableParam);
   } catch (const std::exception& e) {
     // Undo everything this function may already have built. Without this a
     // throw past the log registration leaves a half-configured instance —
@@ -294,19 +379,38 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
 
 RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
     const rclcpp_lifecycle::State& prev) noexcept {
-  // The sim-only guard (E-8) lives here, not in on_configure: refusing to
-  // configure took the whole robot down with it (see the header). Nothing is
-  // commanded until a controller is active, so refusing here is what the
-  // guard actually needs to do.
+  // The park check lives here, not in on_configure: refusing to configure took
+  // the whole robot down with it (see the header). Nothing is commanded until
+  // a controller is active, so refusing here is what the check actually needs
+  // to do.
   if (sim_only_disabled_) {
     RCLCPP_ERROR(logger_,
-                 "refusing to activate: this controller is SIM-ONLY until E-8 (the E-STOP path) "
-                 "is approved in S5.1, and configure could not prove every claimed device is the "
-                 "'%s' simulator backend. Nothing was commanded.",
-                 kCatchingRequiredBackendType);
+                 "refusing to activate: this instance was parked at configure because it is a "
+                 "real-arm configuration carrying provisional or TBD values this controller "
+                 "consumes (L0 §5.3). Nothing was commanded.");
     return CallbackReturn::FAILURE;
   }
-  return RTControllerInterface::on_activate(prev);
+  // Base first, always: it bumps the activation generation and calls
+  // ResetTargetInitialization, and the generation bump is what the first tick
+  // reads to know an activation boundary was crossed (D-23, #196 §3).
+  const auto ret = RTControllerInterface::on_activate(prev);
+  if (ret != CallbackReturn::SUCCESS) {
+    return ret;
+  }
+  // An activation does NOT arm the controller (P-1 (c) in spirit, A-S5-3): the
+  // operator arms it through `catching.enable`, and a controller that armed
+  // itself on activation would resume catching after any deactivate/activate
+  // cycle — including the one an E-STOP recovery goes through.
+  arm_requested_.store(false, std::memory_order_release);
+  if (node_ && node_->has_parameter(kCatchingEnableParam)) {
+    // Bring the parameter back in line with the latch, so the value an
+    // operator reads is the value the tick will act on. Without this the
+    // parameter would still read `true` from a previous run while the tick is
+    // disarmed — and the next thing anyone does is set it to true, which is a
+    // no-op change that fires no callback.
+    node_->set_parameter(rclcpp::Parameter(kCatchingEnableParam, false));
+  }
+  return CallbackReturn::SUCCESS;
 }
 
 void DemoCatchingController::ResetLogState() noexcept {

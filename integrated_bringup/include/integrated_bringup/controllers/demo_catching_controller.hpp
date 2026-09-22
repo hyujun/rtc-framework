@@ -1,58 +1,86 @@
 #ifndef UR5E_BRINGUP_CONTROLLERS_DEMO_CATCHING_CONTROLLER_H_
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_CATCHING_CONTROLLER_H_
 
-// ── Catching controller, S4.0 minimal skeleton (dynamic_catching) ────────────
+// ── Catching controller, S5.1 skeleton + E-STOP contract (dynamic_catching) ──
 //
-// WHAT THIS IS. The first slice of the catching controller (plan §4.4 S4a):
-// the arm holds the pose it was activated in, and the hand accepts UNSHAPED
-// step position targets so S4.2 can identify T_close,e2e from the device CSVs
-// (L6 §4.2). It exists because no shipped controller can command a step —
-// DemoJointController interpolates every goal through a quintic trajectory and
-// DemoInference rate-bounds it, so the closing edge would be the controller's
-// own, not the hand's.
+// WHAT THIS IS. The catching controller's frame: lifecycle, the P-1 minimum
+// E-STOP/fault contract (E-8, approved 2026-09-22), the supervisor mode driven
+// off S1.8's transition table, the operator arm/disarm latch, and the re-arm
+// reset. The arm still HOLDS the pose it was activated in — the tracking law
+// (CLIK, reference generation) is S5.3 — and the hand still accepts unshaped
+// step targets so S4.2's measurement rig keeps working until the sequencer
+// takes the hand in S7.1.
 //
-// WHAT THIS IS NOT. There is no catching law here — no CLIK, no trajectory, no
-// hand sequencer, no ρ, no state message. Those land with S5 / S7.1. The arm
-// never moves under this controller, by construction.
+// WHY THE ARM STILL HOLDS. S5.1 is the step that opens the arm command path,
+// and opening it is the E-8 change. The contract has to be in place and
+// testable BEFORE a law is writing to it, or the first thing exercising the
+// E-STOP path would also be the first thing moving the arm.
 //
-// SIM ONLY (2026-09-20 decision, plan §4.4 S4a Q3). Unless every device this
-// controller claims is bound to the `mujoco_native` backend, it configures into
-// a DISABLED state and then REFUSES on_activate. Commanding a real arm — even
-// to hold it — is a change on the E-STOP path (E-8) that is pending approval
-// before S5, and this controller must not be the way that path opens by
-// accident. The guard is removed in S5.1 together with that approval. For the
-// same reason this class overrides NONE of the E-STOP hooks: the base no-ops
-// plus the CM's hold/substitution lane are the whole defence here, and adding a
-// hook now would be the E-8 change itself.
+// THE P-1 CONTRACT (plan §4.4 S5.1, L7 §4.1), in the four parts it was
+// approved in:
+//   (a) TriggerEstop / ClearEstop / ResetFault / ResetTargetInitialization
+//       update an atomic REQUEST or epoch and nothing else. The one writer of
+//       the reset itself — the code that puts values back — is the RT tick.
+//   (b) Invalidation (plan, trajectory, covariance, hand, FSM, timers) is
+//       performed by that tick in D-23 order, keyed off the activation
+//       generation rather than off a quiescence wait: PeriodicRtThread::Pause
+//       does not stop an iteration already in flight, so "no tick is running"
+//       is not a state a lifecycle hook can establish.
+//   (c) No automatic resume. A clear returns the supervisor to IDLE and LOWERS
+//       the operator's arm latch, so restarting requires a deliberate act.
+//   (d) ClearEstop does not touch the controller fault latch, and ResetFault
+//       does not touch the global E-STOP. They are separate paths on purpose
+//       (base contract, issue #260): one clear must not launder the other.
 //
-// WHY DISABLED RATHER THAN A CONFIGURE REFUSAL (2026-09-21). The refusal used
-// to be `on_configure` returning FAILURE, and that took the whole robot down
-// with it: sim and real share `config/<variant>/controllers/`, so the real p1b
-// bring-up instantiates this controller too, and CM's Pass 3 latches
-// `bring_up_failed` on ANY controller's configure failure and then refuses to
-// configure EVERY controller (rt_controller_node_params.cpp). The intent was
-// "this controller must not run on real hardware", never "the real robot must
-// not boot". Refusing activation is what actually carries that intent: nothing
-// is commanded until a controller is active, so a controller that can never
-// activate can never command. A disabled instance also stops short of creating
-// its step subscription, log channels, drain timer and profile parameters —
-// on real hardware the diagnostic lane does not exist at all.
+// WHY EPOCHS RATHER THAN FLAGS. A flag cannot distinguish "still estopped"
+// from "estopped, cleared and estopped again between two ticks", and the
+// second case must still reseed. Counters make the tick's question "has the
+// count moved since I last looked", which is answerable without a lock and
+// without the hook ever touching controller state.
 //
-// THE HAND STEP IS A DIAGNOSTIC MODE. Hand targets are accepted only while the
-// YAML says `diagnostic.hand_step: true`. From S7.1 the sequencer owns the
-// hand, so the default is false and an operator-issued step is then a refusal
-// rather than a race with the sequencer.
+// SIM-ONLY GUARD, REPLACED (A-S5-1, 2026-09-22). S4.0 refused to ACTIVATE
+// unless every claimed device was the `mujoco_native` backend, because
+// commanding a real arm at all was the pending E-8 decision. That decision has
+// been made, so the guard that stood in for it is gone. What remains is the
+// rule it was standing in for: L0 §5.3 / L8 §5.4 — a provisional value blocks
+// a REAL-ARM configuration and only warns in sim. So the backend check now
+// selects the validator's `real_arm_config` axis instead of gating activation
+// by itself, and a real-arm bring-up whose profile is still provisional lands
+// in the same DISABLED state (configure SUCCESS, activate refused) for a
+// reason that is about the VALUES rather than about the backend.
+//
+// WHY DISABLED RATHER THAN A CONFIGURE REFUSAL (2026-09-21, unchanged). A
+// configure failure takes the whole robot down: sim and real share
+// `config/<variant>/controllers/`, so the real p1b bring-up instantiates this
+// controller too, and CM's Pass 3 latches `bring_up_failed` on ANY
+// controller's configure failure and then refuses to configure EVERY
+// controller (rt_controller_node_params.cpp). Nothing is commanded until a
+// controller is active, so refusing activation carries the intent exactly.
+//
+// THE ARM/DISARM CHANNEL (A-S5-3) is the read-write ROS parameter
+// `catching.enable` on this controller's node. It is not a message or a
+// service: §13's GUI needs one channel, and a new msg/srv here would be an E-3
+// decision for something a parameter already expresses. The parameter callback
+// stores an atomic; the RT tick is what acts on it, and the tick LOWERS it on
+// E-STOP and on a fault latch, which is what makes (c) mechanical rather than
+// a property of operator discipline.
+//
+// THE HAND STEP IS STILL A DIAGNOSTIC MODE, gated on `diagnostic.hand_step`.
+// From S7.1 the sequencer owns the hand and the default false makes an
+// operator step a refusal rather than a race.
 
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
+#include "rtc_controllers/catching/transition_table.hpp"
 
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
+#include <rclcpp/node_interfaces/node_parameters_interface.hpp>
 #include <rclcpp/timer.hpp>
 
 #include <array>
@@ -71,10 +99,25 @@ using rtc::ControllerState;
 using rtc::kMaxDeviceChannels;
 using rtc::RTControllerInterface;
 
-/// Backend tag every claimed device must carry for this controller to
-/// configure (see the sim-only note above). A registry tag, not a device name
-/// — robot-agnostic (ARCH-1).
-inline constexpr const char* kCatchingRequiredBackendType = "mujoco_native";
+/// Backend tag that marks a claimed device as the simulator. A registry tag,
+/// not a device name — robot-agnostic (ARCH-1).
+///
+/// Since A-S5-1 this no longer gates activation: it selects the validator's
+/// `real_arm_config` axis (L0 §5.3 — provisional values warn in sim and block
+/// a real arm). A device that declares no backend at all counts as NOT proven
+/// to be the simulator, so an unprovable config is judged by the stricter
+/// rule rather than the laxer one.
+inline constexpr const char* kCatchingSimBackendType = "mujoco_native";
+
+/// The operator arm/disarm channel (A-S5-3): a read-write ROS parameter on
+/// this controller's own LifecycleNode (`/<config_key>/catching.enable`).
+///
+/// A parameter rather than a message or a service because §13's GUI needs one
+/// channel and a new msg/srv would be an E-3 decision for something a
+/// parameter already expresses. The callback stores an atomic; the RT tick is
+/// what acts on it, and the tick also LOWERS it on E-STOP and on a fault
+/// latch, which is what makes "no automatic resume" mechanical.
+inline constexpr const char* kCatchingEnableParam = "catching.enable";
 
 /// Controller-local device indices. This controller claims exactly two groups
 /// in `topics:` order: the arm it holds and the hand it steps. Indices rather
@@ -106,6 +149,18 @@ class DemoCatchingController final : public RTControllerInterface {
   CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
 
+  // ── E-STOP and fault (P-1 minimum contract, E-8) ─────────────────────────
+  // All four are called OFF the RT thread (CM service callbacks / the global
+  // E-STOP propagation) and all four are wait-free stores. None of them
+  // resets anything: they raise a request or bump an epoch, and Compute()
+  // is the single writer that acts on it — P-1 (a).
+
+  void TriggerEstop() noexcept override;
+  void ClearEstop() noexcept override;
+  [[nodiscard]] bool IsEstopped() const noexcept override;
+  void ResetFault() noexcept override;
+  [[nodiscard]] bool HasLatchedFault() const noexcept override;
+
   // ── Observation surface (tools, GUI, tests) ──────────────────────────────
   // The measurement tools read the profile the CONTROLLER loaded, never the
   // shipped YAML directly: a run whose controller read something else must not
@@ -123,6 +178,40 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] bool IsHandStepEnabled() const noexcept { return hand_step_enabled_; }
 
+  /// The supervisor mode the last RT tick left behind, and the reason that put
+  /// it there. Read off the RT thread (tests, and the state message from
+  /// S5.4): a relaxed load of a value one writer stores, which is all a
+  /// diagnostic read needs. Mode::kIdle until the first tick runs.
+  [[nodiscard]] rtc::catching::Mode GetMode() const noexcept {
+    return static_cast<rtc::catching::Mode>(mode_observed_.load(std::memory_order_relaxed));
+  }
+
+  [[nodiscard]] rtc::catching::Reason GetLastReason() const noexcept {
+    return static_cast<rtc::catching::Reason>(reason_observed_.load(std::memory_order_relaxed));
+  }
+
+  /// The operator arm latch (`catching.enable`) as the RT tick currently sees
+  /// it. NOT the parameter's value: the tick lowers this on E-STOP and on a
+  /// fault latch (P-1 (c)), so the two disagree exactly when something has
+  /// disarmed the controller out from under the operator — which is the case
+  /// worth being able to observe.
+  [[nodiscard]] bool IsArmRequested() const noexcept {
+    return arm_requested_.load(std::memory_order_relaxed);
+  }
+
+  /// How many times the RT tick has performed a reset because a hook moved an
+  /// epoch (P-1 (a)/(b)). The counter exists so a race test can assert that a
+  /// burst of concurrent Trigger/Clear/deactivate calls produced resets only
+  /// on tick boundaries, and that the reset writer is the tick.
+  [[nodiscard]] std::uint64_t GetRtResetCount() const noexcept {
+    return rt_reset_count_.load(std::memory_order_relaxed);
+  }
+
+  /// Ticks that ran with the global E-STOP request raised.
+  [[nodiscard]] std::uint64_t GetEstopTickCount() const noexcept {
+    return estop_tick_count_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] int GetArmDof() const noexcept { return arm_dof_; }
 
   [[nodiscard]] int GetHandDof() const noexcept { return hand_dof_; }
@@ -133,11 +222,20 @@ class DemoCatchingController final : public RTControllerInterface {
     return non_sim_groups_;
   }
 
-  /// True once on_configure has parked this instance because it could not prove
-  /// every claimed device is the simulator (E-8). A disabled instance holds no
-  /// step lane, no log channels and no profile parameters, and on_activate
-  /// refuses — so it commands nothing, ever.
+  /// True once on_configure has parked this instance: a REAL-ARM configuration
+  /// (no proof that every claimed device is the simulator) whose profile still
+  /// carries a value this controller consumes as provisional or TBD (L0 §5.3,
+  /// A-S5-1). A disabled instance holds no step lane, no log channels and no
+  /// profile parameters, and on_activate refuses — so it commands nothing.
+  ///
+  /// The name is kept from S4.0, where the same state meant "not the
+  /// simulator" on its own; today the backend only chooses which rule is
+  /// applied. See IsRealArmConfig().
   [[nodiscard]] bool IsSimOnlyDisabled() const noexcept { return sim_only_disabled_; }
+
+  /// Whether the claimed devices failed to prove they are all the simulator —
+  /// the validator's `real_arm_config` axis for this configure.
+  [[nodiscard]] bool IsRealArmConfig() const noexcept { return real_arm_config_; }
 
   /// Targets refused because they addressed the arm. The arm slot has exactly
   /// one writer here (the activation latch), so a goal sent to it is a mistake
@@ -195,6 +293,29 @@ class DemoCatchingController final : public RTControllerInterface {
   /// by on_configure's own catch, so a throw cannot leave a half-built instance.
   void TearDownConfiguredResources() noexcept;
 
+  /// Declare / update the `catching.enable` parameter channel (A-S5-3) and
+  /// install the set-parameter callback. Non-RT.
+  void DeclareArmParameter();
+
+  /// Service any reset a lifecycle or E-STOP hook requested since the last
+  /// tick, and return true if one was performed. RT tick only — this is the
+  /// single writer P-1 (a) names. The order is D-23's: decide on the
+  /// activation generation and the epochs first, then invalidate, then reseed.
+  bool ServiceResetRequests(const ControllerState& state) noexcept;
+
+  /// Put every piece of per-trial state back to its start-of-trial value
+  /// (L7 §4.8's re-arm list, restricted to what exists at S5.1). RT tick only.
+  void ResetTrialState() noexcept;
+
+  /// The reason this tick hands the transition table, and `Reason::kNone`
+  /// when nothing is wrong and the mode may advance on its own. RT tick only.
+  [[nodiscard]] rtc::catching::Reason EvaluateReason(const ControllerState& state) noexcept;
+
+  /// Apply one (mode, reason) edge from S1.8's table. A reason with no row in
+  /// the current mode is inapplicable there and leaves the mode alone — that
+  /// is the table's contract, not a silent failure.
+  void AdvanceMode(rtc::catching::Reason reason) noexcept;
+
   /// One tick's worth of per-device command writing, shared by both axes.
   /// `latch` supplies the held command; an unreadable device is SILENCED
   /// (zero-length = "no update") rather than commanded to zeros.
@@ -237,6 +358,9 @@ class DemoCatchingController final : public RTControllerInterface {
   bool device_configs_seen_{false};
   /// Set by on_configure, cleared by on_cleanup. See IsSimOnlyDisabled().
   bool sim_only_disabled_{false};
+  /// Which validator axis this configure used (A-S5-1). Decided from the
+  /// claimed devices' backends, re-decided on every configure.
+  bool real_arm_config_{true};
   std::vector<std::string> non_sim_groups_;
   std::vector<std::string> arm_joint_names_;
   std::vector<std::string> hand_joint_names_;
@@ -257,6 +381,64 @@ class DemoCatchingController final : public RTControllerInterface {
   int hand_target_width_{0};
   bool arm_readable_{false};
   bool hand_readable_{false};
+
+  // ── E-STOP / fault / arm request (non-RT writers, RT reader) ─────────────
+  // Every one of these is a REQUEST. None of them is the state it asks about:
+  // the tick owns that, and the tick is the only writer of anything these
+  // lead to (P-1 (a)).
+  //
+  // The two epochs are counters rather than booleans so a trigger→clear pair
+  // that lands entirely between two ticks is still seen: the tick compares
+  // against the value it last serviced, so it observes "moved", not "is set".
+  std::atomic<bool> estop_requested_{false};
+  std::atomic<std::uint32_t> estop_epoch_{0};
+  /// Bumped by ResetTargetInitialization. Redundant with the activation
+  /// generation in the path CM drives today, and kept anyway: it is the hook's
+  /// own record that it ran, so a future caller that does NOT come with a
+  /// generation bump still gets its reset instead of silently getting none.
+  std::atomic<std::uint32_t> reset_requested_{0};
+  std::atomic<std::uint32_t> fault_reset_epoch_{0};
+  /// Raised by Compute() alone; the fault path is a latch, so nothing off the
+  /// RT thread may lower it except through fault_reset_epoch_ (P-1 (d)).
+  std::atomic<bool> fault_latched_{false};
+  /// The operator arm latch (`catching.enable`). Written by the parameter
+  /// callback (non-RT) AND by the tick, which lowers it on E-STOP or fault so
+  /// that a clear cannot resume anything by itself (P-1 (c)).
+  std::atomic<bool> arm_requested_{false};
+
+  // Observation surface for off-RT readers (tests now, the S5.4 state message
+  // later). Stored by the tick, read with relaxed loads: one writer, and a
+  // diagnostic that is one tick stale is still the truth about a tick.
+  std::atomic<std::uint8_t> mode_observed_{static_cast<std::uint8_t>(rtc::catching::Mode::kIdle)};
+  std::atomic<std::uint8_t> reason_observed_{
+      static_cast<std::uint8_t>(rtc::catching::Reason::kNone)};
+  std::atomic<std::uint64_t> rt_reset_count_{0};
+  std::atomic<std::uint64_t> estop_tick_count_{0};
+
+  // ── RT-owned supervisor state ────────────────────────────────────────────
+  // Read and written by Compute() only. Not atomics: a second writer is
+  // exactly what P-1 (a) forbids, so making them atomic would advertise a
+  // sharing that must not exist.
+  rtc::catching::Mode mode_{rtc::catching::Mode::kIdle};
+  rtc::catching::Reason last_reason_{rtc::catching::Reason::kNone};
+  /// The epoch values the tick has already acted on.
+  std::uint32_t serviced_estop_epoch_{0};
+  std::uint32_t serviced_fault_reset_epoch_{0};
+  std::uint32_t serviced_reset_epoch_{0};
+  /// Set when a fault reset was actually performed, consumed by the next
+  /// EvaluateReason so the FSM edge and the state reset land on one tick.
+  bool fault_reset_serviced_{false};
+  /// The activation generation the tick last reseeded for. D-23: a change here
+  /// is how the tick learns an activation boundary was crossed, without
+  /// waiting for a quiescence the lifecycle thread cannot establish.
+  std::uint32_t serviced_activation_generation_{0};
+  bool activation_seen_{false};
+  /// G0-C verdict for the ACTIVE configuration, decided at configure. The tick
+  /// reads it rather than the report so the arming question is one bool.
+  bool armable_{false};
+  /// True while this tick's E-STOP request is up, so the command writer can
+  /// keep the hold honest without re-reading the atomic mid-tick.
+  bool estop_active_{false};
 
   std::atomic<std::uint64_t> arm_target_reject_count_{0};
   std::atomic<std::uint64_t> hand_step_disabled_reject_count_{0};
@@ -279,6 +461,11 @@ class DemoCatchingController final : public RTControllerInterface {
   rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
   rclcpp::TimerBase::SharedPtr log_drain_timer_;
   std::uint64_t log_drops_reported_{0};
+
+  /// Kept alive for as long as the parameter channel exists — dropping the
+  /// handle silently unregisters the callback, which would leave a
+  /// `catching.enable` the operator can set and the tick never sees.
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr arm_param_cb_handle_;
 
   rclcpp::Logger logger_{rclcpp::get_logger("integrated_bringup.demo_catching_controller")};
   rclcpp::Clock log_clock_{RCL_STEADY_TIME};
