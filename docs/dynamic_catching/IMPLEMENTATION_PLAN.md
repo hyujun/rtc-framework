@@ -872,11 +872,11 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | C | **판정 게이트** = 입력 유한성 · IK 수렴 · manipulability (`arm_5row`) · 작업공간 `catch_box` + 정지점 `p_stop` 포함. **순위·진단** = 불확실성 · 도달시간 · γ 창 · commit 선행 · rollout · 오차 예산 (D-27) | S6-B |
 | D | 점수 J (L3 §4.10) + 순위 게이트 탈락마다 벌점 → 최소 J. 판정 통과 0 일 때만 plan 없음 (`PlanReason` = 첫 병목) | S6-B |
 | E | `PlanSnapshot::reason` 은 plan 없음 사유 전용. 시도했으나 순위 게이트 탈락은 계획기 CSV 의 게이트 비트마스크 (msg 는 D-20 동결) | S6-B |
-| F | box 층 `TMinChecked` 는 순위 항. 토크 층 런타임은 `NOT_EVALUATED(runtime)` — K 의 dynamic 부등식이 들어오면 그것이 겸한다 | S6-B · S6-C2 |
+| F | box 층 `TMinChecked` 는 순위 항. 토크 층 런타임은 `NOT_EVALUATED(runtime)` — K 의 dynamic 부등식이 들어오면 그것이 겸한다. **S6-C2 재판정 (2026-09-23)**: 계획 시점의 토크 층은 여전히 `NOT_EVALUATED(runtime)` 이고 (계획기의 도달시간 순위 항은 box 층), 실행 시점의 토크 한계는 `joint_cmd.accel_constraint: dynamic` 이 **실행층에서 강제**한다 (L5 §4.3). 둘은 다른 질문이다 — 계획기는 "그 시간 안에 갈 수 있는가" 를 보수적으로 순위에 반영하고, CLIK 은 "이 tick 의 명령이 토크 안인가" 를 hard 로 지킨다 | S6-B · S6-C2 |
 | G | `planner.freeze.T_freeze` p1b 0.36 s · leap 0.19 s (§4.11 하한식, provisional) | S6-B |
 | H | `planner.wake_timeout_s` 0.05 s | S6-A |
 | I | `planner.workspace.catch_box` = base 축정렬 상자, sim 은 S3.5b 열린 후보의 p_c·p_stop 외접 상자 + 0.1 m, 실기 provisional | S6-B |
-| K | CLIK QP 가속 제약을 YAML 선택형 `joint_cmd.accel_constraint: box\|kinematic\|dynamic` 으로 — kinematic 은 $\dot J$, dynamic 은 $M(q)(v-v_{prev})/\Delta t + h(q,v_{prev}) \le \eta_\tau\tau_{\max}$ (둘 다 $v$ 에 선형). `rtc_tsid` 일반화 → `/code-review`, 기본 `box` 면 기존 출력 비트 동일 | S6-C2 |
+| K | CLIK QP 가속 제약을 YAML 선택형 `joint_cmd.accel_constraint: box\|kinematic\|dynamic` 으로 — kinematic 은 $\dot J$, dynamic 은 $M(q)(v-v_{prev})/\Delta t + h(q,v_{prev}) \le \eta_\tau\tau_{\max}$ (둘 다 $v$ 에 선형). `rtc_tsid` 일반화 → `/code-review`, 기본 `box` 면 기존 출력 비트 동일. **구현 (S6-C2, `73b8ca49`·`64dc47e1`)**: $v_{prev}$ 는 cache 가 평가된 명령 속도의 팔 성분 (h·J̇ 와 같은 상태), 행은 단위 norm·hard (못 지키면 호출 실패 → QP 비의존 abort), $\tau_{\max}$ 는 팔 device `max_torque`, $\eta_\tau$ 기본 0.8. kinematic 은 추종 과제 행만 묶어 영공간은 속도 box 뿐이다 (문서화). box 비트 일치 (golden). 출하 형태는 sim 비교 후 (L5 §4.3) | S6-C2 |
 | L | `planner.wait_pose` 신설 (rad, arm 관절 순서, provisional) — p1b `[0.212, −1.376, 1.107, −1.978, −3.296, 0.121]` · leap `[0, 1.0, 0, −1.2, 0, 1.2, 0]`. IK seed 전용 (homing 은 S7.2) | 키 S6-A · 소비 S6-B |
 | 3-1 | `reference.a_max` 21 / 35 채택 (provisional 해제는 S8 실측 후) | — |
 | 3-2 | A-S5-12 채택 — sim 도 park | S6-A |

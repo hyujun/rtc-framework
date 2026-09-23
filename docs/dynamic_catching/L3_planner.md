@@ -274,6 +274,14 @@ $\sigma$ 는 스칼라로 썼지만 실제는 3×3이다. §4.4의 $\lambda_{\ma
 2. 오차 점프 한계 (L4 §4.3): $(1-\gamma(t))\Vert\Delta p_c\Vert\le e_{jump,\max}$, $|\dot\gamma(t)|\,\Vert\Delta p_c\Vert\le\dot e_{jump,\max}$.
 3. `COMMITTED` 이후에는 포구점을 교체하지 않는다(L7).
 
+**S6 런타임 (2026-09-23, `/code-review` 반영).**
+
+- **현재 plan 은 RT 가 따르는 plan 이다.** 계획기는 최근 게시 몇 개를 기억하고, RT 가 `PlannerRtState` 로 보고한 `plan_id` 로 "현재" 를 찾는다. RT 가 거부한 게시 (freeze·나이·더 새 게시) 는 현재가 되지 않는다.
+- **현재 plan 의 후보를 먼저 평가한다.** 1 의 "불가능 판정" 이 `max_ik`·예산에 밀려 평가 안 된 것을 뜻하지 않도록, 따라가는 plan 의 $t_c$ (반 slice 안) 후보를 IK 순서 맨 앞에 둔다.
+- **갱신 (`refreshed`).** 따라가는 후보가 여전히 최선인데 예측된 $p_c$ 가 `planner.gamma.eps_term` 을 넘게 움직였으면 새 $p_c$ 로 재게시한다 (2·freeze 적용). 히스테리시스는 "다른 후보로 바꾸는가" 의 규칙이지 "옛 예측을 붙잡는가" 가 아니다 — 붙잡으면 soft catch 가 $(1-\gamma_f)\Vert\delta\Vert$ 만큼 빗나간다.
+- **후보가 없는 사이클은 게시하지 않는다.** 따라가는 중 settle·후보 0·입력 무효로 끝난 사이클은 "plan 없음" 을 게시하지 않는다 (`held_no_candidate`) — 게시하면 RT 가 아직 안 읽은 교체를 덮는다.
+- **교체의 γ 는 연속이다.** RT 는 교체 plan 의 γ 램프를 **채택 tick 의 기준 γ** 에서, **그 tick 이후에** 시작한다. 계획 시점의 γ 나 이미 지난 램프 시작을 쓰면 γ 계단이 $\gamma\,(o-p_c)$·$\ddot\gamma\,(o-p_c)$ 를 통해 $e$·$u_{des}$ 의 계단이 된다.
+
 `COMMITTED` 진입(commit 조건은 §4.11)부터 $p_c$, $t_c$, $\gamma$ 프로파일은 동결된다. 실행 중 포화가 예상·발생하면 `COMMITTED` 이전은 RETREAT, 이후는 ABORT_SAFE 다 `[확정 D-8]`.
 
 **`COMMITTED` 이후 γ 하향 — v0.5 에서 v1 범위 밖 (D-8) — S8 포화 빈도 측정 후 재검토.** 아래는 v0.4 의 설계 근거로, 재도입 검토 시의 입력으로만 남긴다. 참조 구현 `derateGamma` 의 결함(Frozen 분기 γ_min 미보장, 완화 분기 무효, 기본 램프가 가속 피크를 키움, 램프가 $t_c$ 초과 가능)과 재설계 요구사항은 L4 §5.2.1 에 있다. v0.4 원문: $p_c$, $t_c$ 는 동결한 채 $\gamma_f$ 만 낮추는 것은 허용한다(L4 §5.2.1, L7 §4.6). 근거는 셋이다.

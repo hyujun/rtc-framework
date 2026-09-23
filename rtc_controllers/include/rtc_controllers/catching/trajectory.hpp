@@ -39,7 +39,8 @@ inline constexpr int kMaxPlanNv = 32;
 /// axis, converted once on receipt by ConvertRemoteStamp + SampleBallTime).
 /// Position, velocity and acceleration are in the MODEL world (the Pinocchio
 /// universe the planner and CLIK work in): the ingress converts the vision
-/// frame once on receipt (plan §11 — the two differ on ur5e_p1b).
+/// frame once on receipt (plan §11 — the two can differ by a rigid transform,
+/// e.g. a model rooted at a frame rotated from the vision world).
 struct TrajSample {
   std::int64_t t_ns{0};
   std::array<double, 3> p{};  // [m]   model world
