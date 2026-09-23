@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -126,6 +127,13 @@ struct ObjectStateConfig {
   /// "world" when reference_body is empty. Overriding matters when the MJCF
   /// body name and the URDF link name for the same frame differ.
   std::string frame_id;
+
+  /// Publish on every Nth simulator step only (step % N == 0), N >= 1. The
+  /// physics still runs every step; only the refresh is decimated, which is
+  /// how a sensor slower than the control rate looks to its consumer. The
+  /// rate is therefore control_rate / N — a rate that does not divide the
+  /// control rate (60 Hz against 500 Hz) is not expressible (issue #566).
+  int publish_divisor{1};
 };
 
 // ── ObjectStateInfo / ObjectStateSample ──────────────────────────────────────
@@ -300,6 +308,17 @@ struct JointGroupConfig {
   // truncated home pose is a robot that starts somewhere nobody chose.
   std::vector<double> initial_qpos;
 
+  // ── Publish decimation (robot groups only) ──────────────────────────────
+  // Publish this group's joint state, sensors and contact wrenches on every
+  // Nth simulator step only (step % N == 0, so step 0 always publishes);
+  // N >= 1. Physics and command intake still run every step — this models a
+  // device whose state refreshes slower than the control rate (a hand at
+  // 100 Hz under a 500 Hz arm: N = 5). The rate is control_rate / N. A group
+  // with N > 1 must be left out of the controller manager's
+  // `sim_sync_tick_devices`, or every tick waits for it (issue #566). A
+  // fake_response group must keep 1 (Initialize rejects anything else).
+  int state_publish_divisor{1};
+
   // ── Sensor publishing (optional) ──────────────────────────────
   std::string sensor_topic;               // 빈 문자열이면 센서 publish 안 함
   std::vector<std::string> sensor_names;  // XML sensor names (빈 경우 = 그룹에 센서 없음)
@@ -384,7 +403,8 @@ struct JointGroup {
   std::vector<std::string> state_joint_names;
   int num_state_joints{0};
 
-  bool is_robot{true};  // robot_response 여부
+  bool is_robot{true};           // robot_response 여부
+  int state_publish_divisor{1};  // JointGroupConfig::state_publish_divisor
   bool is_primary{false};  // 첫 robot group — 기동 로그 라벨뿐. step 은 모든 robot group 의 명령을
                            // 기다린다 (#566)
 
@@ -1318,6 +1338,15 @@ class MuJoCoSimulator {
   void ReadObjectStates() noexcept;
   void ReadProjectileBallState() noexcept;
   void ReadSolverStats() noexcept;
+  // The step the Invoke*Callback publish gates judge (the state published at
+  // the top of an iteration belongs to this many completed steps). SimLoop
+  // thread only.
+  std::uint64_t publish_step_{0};
+
+  [[nodiscard]] static bool PublishesOnStep(int divisor, std::uint64_t step) noexcept {
+    return divisor <= 1 || step % static_cast<std::uint64_t>(divisor) == 0;
+  }
+
   void InvokeStateCallback() noexcept;
   void InvokeSensorCallback() noexcept;
   void InvokeContactWrenchCallback() noexcept;

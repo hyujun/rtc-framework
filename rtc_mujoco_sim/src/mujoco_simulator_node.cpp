@@ -617,11 +617,14 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("object_state.topic", std::string("object_transforms"));
     declare_parameter("object_state.reference_body", std::string(""));
     declare_parameter("object_state.frame_id", std::string(""));
+    declare_parameter("object_state.publish_divisor", 1);
 
     object_state_config_.enabled = get_parameter("object_state.enabled").as_bool();
     object_state_config_.topic = get_parameter("object_state.topic").as_string();
     object_state_config_.reference_body = get_parameter("object_state.reference_body").as_string();
     object_state_config_.frame_id = get_parameter("object_state.frame_id").as_string();
+    object_state_config_.publish_divisor =
+        static_cast<int>(get_parameter("object_state.publish_divisor").as_int());
 
     if (object_state_config_.enabled && object_state_config_.topic.empty()) {
       // An empty topic reaches create_publisher as an invalid name and throws
@@ -662,6 +665,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       // pose this key exists to replace.
       gc.initial_qpos =
           get_parameter("robot_response." + gname + ".initial_qpos").as_double_array();
+      gc.state_publish_divisor = static_cast<int>(
+          get_parameter("robot_response." + gname + ".state_publish_divisor").as_int());
 
       LoadContactWrenchConfig("robot_response", gname, gc.contact_wrench);
 
@@ -690,6 +695,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       // qpos to initialise, so silently dropping the value here would leave a
       // config that looks honoured and is not.
       gc.initial_qpos = get_parameter("fake_response." + gname + ".initial_qpos").as_double_array();
+      gc.state_publish_divisor = static_cast<int>(
+          get_parameter("fake_response." + gname + ".state_publish_divisor").as_int());
 
       group_configs_.push_back(std::move(gc));
     }
@@ -730,6 +737,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // key an unknown parameter, whose error names the parameter rather than
     // the reason it cannot apply.
     declare_parameter(prefix + "initial_qpos", std::vector<double>{});
+    // Publish decimation: this group's state/sensor/wrench topics refresh every
+    // Nth step (issue #566). Declared for both sections for the same reason
+    // as initial_qpos — a fake group's value is read and rejected by reason.
+    declare_parameter(prefix + "state_publish_divisor", 1);
     // Contact wrench publishing (opt-in). enabled+topic_prefix are required
     // to activate; suffix lists default to the "_tip_contact"/"_tip_ft_site"
     // convention but are fully YAML-overridable for any MJCF naming scheme.

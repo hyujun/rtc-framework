@@ -223,14 +223,14 @@ solver:
 
 | 토픽 | 타입 | 주기 | 설명 |
 |------|------|------|------|
-| `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 | robot 그룹: 위치/속도/토크 |
+| `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: 위치/속도/토크 |
 | `<group.state_topic>` (예: `/hand/joint_states`) | `sensor_msgs/JointState` | 100Hz | fake 그룹: LPF 필터링된 상태 |
-| `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
-| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. **부호는 link-on-environment** (아래 참조). 비접촉 시 0 발행 (stale 방지). |
+| `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
+| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. **부호는 link-on-environment** (아래 참조). 비접촉 시 0 발행 (stale 방지). |
 | `<contact_wrench.topic_prefix>/<target>/contact_state` | `std_msgs/Bool` | 접촉 전이 시 | `contact_wrench.publish_state: true` 일 때만. edge-triggered — 값이 바뀔 때만 발행 |
 | `<contact_wrench.topic_prefix>/<target>/contact_point` | `geometry_msgs/PointStamped` | 매 물리 스텝 | `contact_wrench.publish_debug: true` 일 때만. **world frame** (`frame_id: "world"`) 접촉점 — wrench 와 달리 손끝 프레임이 아니다. 아래 [디버그 lane](#publish_debug--접촉점접촉깊이-디버그-lane) 절 |
 | `<contact_wrench.topic_prefix>/<target>/contact_depth` | `std_msgs/Float64` | 매 물리 스텝 | 〃. MuJoCo 의 부호 있는 contact distance — **음수가 관통** |
-| `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
+| `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 ÷ `object_state.publish_divisor` | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
 | `<projectile_ball.publish.ground_truth_topic>` (예: `/sim/ball/ground_truth`) | `nav_msgs/Odometry` | `publish.sample_rate_hz` (sim 시간 기준) | 씬 전체: 발사된 공의 참값 pose·twist. twist 는 선속도·각속도 모두 **world 프레임** (Odometry 의 child frame 관례와 다르다). **park 중에는 발행하지 않는다**. stamp 는 발행 순간이 아니라 **발사 순간부터 sim 시간축을 wall 에 얹은 값** (간격이 sim 축과 같다 — 아래 [stamp](#stamp--sim-시간축을-wall-에-사상한-값) 항목). 아래 [Projectile Ball](#projectile-ball-발사-공) 절 |
 | `<projectile_ball.publish.camera_topic>` (예: `/sim/ball/camera_position`) | `geometry_msgs/PointStamped` | 〃 | 〃 위치에 축별 가우시안 노이즈 (`position_noise_stddev_m`) — 카메라 관측 모사 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
@@ -542,6 +542,7 @@ mujoco_simulator:
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
 | `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
 | `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
+| `state_publish_divisor` | int | 기본 `1`. 이 그룹의 joint state · sensor · contact wrench 를 **N step 에 한 번** (step % N == 0) 발행한다 — 물리와 명령 수신은 매 step 이고 **발행만** 솎는다 (실기에서 control rate 보다 느리게 갱신되는 device, 예: 500 Hz 팔 아래 100 Hz 손 = 5). rate 는 `control_rate / N` 만 표현된다. **N > 1 인 그룹은 CM 의 `sim_sync_tick_devices` 에서 빼야 한다** — 넣으면 tick 이 그 그룹을 기다리느라 N−1 step 을 멈춘다 (#566). ≥ 1, fake 그룹은 1 만 (그 외 Initialize 실패) |
 
 ### 초기 자세 (`initial_qpos`)
 
@@ -766,6 +767,7 @@ object_state:
   topic: "/sim/object_transforms"   # 상대 이름이면 노드 네임스페이스 아래로 해석
   reference_body: ""                # "" = MuJoCo world
   frame_id: ""                      # "" = reference_body 이름 (world 면 "world")
+  publish_divisor: 1                # N step 에 한 번 발행 (물리는 매 step) — rate = control_rate / N (#566)
 ```
 
 `frame_id` override 는 같은 프레임을 MJCF body 이름과 URDF 링크 이름이 다르게 부를 때만 씁니다.

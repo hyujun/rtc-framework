@@ -135,6 +135,8 @@ void MuJoCoSimulator::InvokeSensorCallback() noexcept {
       continue;
     if (g->sensor_infos.empty() || !g->sensor_cb)
       continue;
+    if (!PublishesOnStep(g->state_publish_divisor, publish_step_))
+      continue;
     g->sensor_cb(g->sensor_infos, g->sensor_buffer);
   }
 }
@@ -325,6 +327,9 @@ void MuJoCoSimulator::InvokeObjectStateCallback() noexcept {
   if (object_state_infos_.empty() || !object_state_cb_) {
     return;
   }
+  if (!PublishesOnStep(cfg_.object_state.publish_divisor, publish_step_)) {
+    return;
+  }
   object_state_cb_(object_state_infos_, object_state_buffer_);
 }
 
@@ -383,6 +388,8 @@ void MuJoCoSimulator::InvokeContactWrenchCallback() noexcept {
       continue;
     if (g->contact_wrench_infos.empty() || !g->contact_wrench_cb)
       continue;
+    if (!PublishesOnStep(g->state_publish_divisor, publish_step_))
+      continue;
     g->contact_wrench_cb(g->contact_wrench_infos, g->contact_wrench_buffer);
   }
 }
@@ -412,6 +419,8 @@ void MuJoCoSimulator::InvokeStateCallback() noexcept {
     if (!g->is_robot)
       continue;
     if (!g->state_cb)
+      continue;
+    if (!PublishesOnStep(g->state_publish_divisor, publish_step_))
       continue;
     std::vector<double> pos, vel, eff;
     {
@@ -1076,6 +1085,7 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     // the explicit sim_wait_command span between the state-publish spans and
     // the ApplyCommand/substep spans.
     RTC_TRACE_SCOPE("sim_step");
+    publish_step_ = step;
     ReadState();
     ReadSensors();
     ReadContactWrenches();

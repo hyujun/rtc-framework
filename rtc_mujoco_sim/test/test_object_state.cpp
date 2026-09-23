@@ -22,8 +22,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef OBJECT_STATE_MJCF_PATH
@@ -287,6 +290,36 @@ TEST(ObjectState, ActivePoolObjectCarriesTheReferenceFramePose) {
     checked = true;
   }
   EXPECT_TRUE(checked) << "pool_cube_a was not among the discovered objects";
+}
+
+// ── Publish decimation (issue #566) ─────────────────────────────────────────
+TEST(ObjectState, PublishDivisorDecimatesTheObjectLane) {
+  auto cfg = MakeConfig(true, "", /*with_pool=*/false);
+  cfg.sync_timeout_ms = 1.0;
+  cfg.object_state.publish_divisor = 3;
+  MuJoCoSimulator sim(std::move(cfg));
+  ASSERT_TRUE(sim.Initialize());
+
+  std::atomic<int> state_n{0};
+  std::atomic<int> object_n{0};
+  sim.SetStateCallback(0, [&](const std::vector<double>&, const std::vector<double>&,
+                              const std::vector<double>&) { state_n.fetch_add(1); });
+  sim.SetObjectStateCallback([&](const std::vector<ObjectStateInfo>&,
+                                 const std::vector<ObjectStateSample>&) { object_n.fetch_add(1); });
+  sim.Start();
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  sim.Stop();
+
+  const int steps = state_n.load();
+  ASSERT_GE(steps, 20);
+  EXPECT_EQ((steps + 2) / 3, object_n.load()) << "state published " << steps << " times";
+}
+
+TEST(ObjectState, PublishDivisorBelowOneFailsInitialize) {
+  auto cfg = MakeConfig(true, "", /*with_pool=*/false);
+  cfg.object_state.publish_divisor = 0;
+  MuJoCoSimulator sim(std::move(cfg));
+  EXPECT_FALSE(sim.Initialize());
 }
 
 }  // namespace
