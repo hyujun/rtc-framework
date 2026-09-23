@@ -66,6 +66,10 @@ class PipelineTestController : public RTControllerInterface {
   // configs that are legal at the configured rate. -1 = LoadConfig never ran.
   static inline double captured_dt_at_load_config{-1.0};
 
+  // `rt_layout_profile` as this controller's OWN node saw it at on_configure —
+  // the node a controller reads it from. "<absent>" = not declared there.
+  static inline std::string captured_layout_profile{};
+
   static inline std::atomic<int> compute_sleep_us{0};
 
   // Channel count Compute() reports. Tests set an out-of-contract value
@@ -158,6 +162,7 @@ class PipelineTestController : public RTControllerInterface {
     captured_count = -1;
     captured_deep_b = -1.0;
     captured_dt_at_load_config = -1.0;
+    captured_layout_profile.clear();
     captured_vals.clear();
     captured_tags.clear();
     captured_ids.clear();
@@ -176,6 +181,17 @@ class PipelineTestController : public RTControllerInterface {
     observed_effort_hole_mask.store(0, std::memory_order_relaxed);
     observed_inference_recv_ns_g1.store(0, std::memory_order_relaxed);
     observed_inference_sequence_g1.store(0, std::memory_order_relaxed);
+  }
+
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
+                              rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+                              const YAML::Node& yaml) noexcept override {
+    const auto ret = RTControllerInterface::on_configure(prev, node, yaml);
+    const auto lc = get_lifecycle_node();
+    captured_layout_profile = (lc && lc->has_parameter("rt_layout_profile"))
+                                  ? lc->get_parameter("rt_layout_profile").as_string()
+                                  : std::string("<absent>");
+    return ret;
   }
 
   void LoadConfig(const YAML::Node& cfg) override {

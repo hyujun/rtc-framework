@@ -122,6 +122,29 @@ TEST_F(CmConfigPipelineTest, ParamOverridesReachControllerYaml) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// Issue #350's profile reaches each controller's OWN node. The launches set it
+// on the CM node, and controller LifecycleNodes ignore the process's global
+// arguments, so without an explicit forward every profile-keyed activation
+// gate read its default — found by dynamic_catching S6 R-1.
+TEST_F(CmConfigPipelineTest, LayoutProfileReachesTheControllersOwnNode) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("rt_layout_profile", std::string("mpc_off"));
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ("mpc_off", PipelineTestController::captured_layout_profile);
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(CmConfigPipelineTest, AnUnsetLayoutProfileIsNotInventedOnTheControllerNode) {
+  // A bring-up that predates the profile keeps the controller's own default:
+  // the CM forwards what the launch set and nothing else.
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ("<absent>", PipelineTestController::captured_layout_profile);
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 TEST_F(CmConfigPipelineTest, YamlDefaultsSurviveWithoutOverrides) {
   auto node = MakeNode();
   DeclareArmDevice(*node);
