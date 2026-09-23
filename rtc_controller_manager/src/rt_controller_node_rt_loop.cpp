@@ -12,6 +12,7 @@
 #include <cmath>  // std::abs
 #include <cstddef>
 #include <cstdio>  // std::snprintf
+#include <string>
 
 namespace urtc = rtc;
 
@@ -443,10 +444,19 @@ void RtControllerNode::ControlLoop() {
     // of enable_logging_, never reset on controller switch). Controllers
     // read state.t_relative_s for any timestamp embedded in their own
     // logs/telemetry instead of calling chrono::*::now().
+    //
+    // In sim-sync mode the CM's own time is the tick count (issue #566): one
+    // tick is one simulator step of state.dt, so the session time is
+    // iteration × dt from 0 — the wall time the loop spent waiting on the
+    // simulator (RTF, host stalls) is not time the controlled world lived
+    // through. Interval measurements (phase timings, watchdog, message ages)
+    // stay on the steady clock in both modes.
     if (iteration == 0) {
       log_start_time_ = t0;
     }
-    state.t_relative_s = std::chrono::duration<double>(t0 - log_start_time_).count();
+    state.t_relative_s = use_sim_time_sync_
+                             ? static_cast<double>(iteration) * state.dt
+                             : std::chrono::duration<double>(t0 - log_start_time_).count();
   }
 
   rt_loop_.StampStateAcquired();
@@ -894,6 +904,27 @@ void RtControllerNode::DrainLog() {
         static_cast<unsigned long>(overruns), static_cast<unsigned long>(skips),
         static_cast<unsigned long>(nrt_pub_drops), static_cast<unsigned long>(timing_drops),
         static_cast<unsigned long>(rt_callback_timing_drops));
+
+    // Sim-sync barrier health (issue #566): steps whose partner state came
+    // more than a period late. A handful from dropped messages is noise; a
+    // steady stream names a group that should not be in the tick mask.
+    const auto slow = sim_slow_steps_.load(std::memory_order_relaxed);
+    if (use_sim_time_sync_ && slow != sim_slow_steps_reported_) {
+      const std::uint32_t late = sim_slow_mask_.exchange(0, std::memory_order_relaxed);
+      std::string names;
+      for (std::size_t slot = 0; slot < slot_to_group_name_.size(); ++slot) {
+        if (((late >> slot) & 1U) != 0U) {
+          names += (names.empty() ? "'" : ", '") + slot_to_group_name_[slot] + "'";
+        }
+      }
+      RCLCPP_WARN(get_logger(),
+                  "sim sync: %lu step(s) waited more than one period for %s — a group published "
+                  "at a decimated rate or as fake_response must be left out of "
+                  "sim_sync_tick_devices; occasional ones are dropped state messages",
+                  static_cast<unsigned long>(slow - sim_slow_steps_reported_),
+                  names.empty() ? "a device" : names.c_str());
+      sim_slow_steps_reported_ = slow;
+    }
     timing_profiler_.Reset();
   }
 }
@@ -945,29 +976,100 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
     return WaitResult::kAbort;
   }
 
-  const int timeout_ms = static_cast<int>(owner_->sim_sync_timeout_sec_ * 1000.0);
-
-  struct pollfd pfd {};
-
-  pfd.fd = sim_fd;
-  pfd.events = POLLIN;
-  const int rc = poll(&pfd, 1, timeout_ms);
-  if (rc <= 0) {
-    // 0 = the simulator went quiet for the whole timeout; <0 = poll error
-    // (EINTR included — shutdown takes the same abort path as before).
+  // One tick per simulator STEP, not per state message (issue #566). The
+  // simulator publishes every device group's joint state as a separate
+  // message, so a wake is only a prompt to look: proceed once every slot in
+  // the tick mask has a sequence the last tick did not consume, otherwise
+  // poll again for what is left of the timeout. The non-semaphore read still
+  // collapses a burst into one look, and the sequences — not the eventfd
+  // count — decide, so neither an early nor a late partner message can split
+  // a step into two ticks.
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                            std::chrono::duration<double>(owner_->sim_sync_timeout_sec_));
+  const std::uint32_t mask = owner_->sim_tick_slot_mask_;
+  // Slots of the mask that have / have not moved past the last tick.
+  const auto advanced_slots = [this, mask](std::array<std::uint32_t, rtc::kMaxDevices>& seq) {
+    std::uint32_t adv = 0;
+    for (std::size_t slot = 0; slot < seq.size(); ++slot) {
+      if (((mask >> slot) & 1U) == 0U) {
+        continue;
+      }
+      seq[slot] = owner_->sim_state_seq_[slot].load(std::memory_order_acquire);
+      if (seq[slot] != sim_seen_seq_[slot]) {
+        adv |= 1U << slot;
+      }
+    }
+    return adv;
+  };
+  std::array<std::uint32_t, rtc::kMaxDevices> seq{};
+  // First wake of this step that saw some but not all of the mask.
+  bool partial = false;
+  std::chrono::steady_clock::time_point partial_since{};
+  std::uint32_t late = 0;
+  const auto abort_naming_missing = [&]() noexcept {
+    owner_->sim_missing_mask_.store(mask & ~advanced_slots(seq), std::memory_order_release);
     return WaitResult::kAbort;
-  }
+  };
 
-  // Non-semaphore read drains the counter to zero, so a burst that arrived
-  // while the previous tick was computing collapses into this single wake
-  // instead of queueing up spare ticks.
-  eventfd_t val{};
-  static_cast<void>(eventfd_read(sim_fd, &val));
+  for (;;) {
+    const auto left_ms =
+        std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now())
+            .count();
+    if (left_ms <= 0) {
+      return abort_naming_missing();  // the step never completed
+    }
 
-  if (!rclcpp::ok()) {
-    return WaitResult::kAbort;
+    struct pollfd pfd {};
+
+    pfd.fd = sim_fd;
+    pfd.events = POLLIN;
+    const int rc = poll(&pfd, 1, static_cast<int>(left_ms));
+    if (rc <= 0) {
+      // 0 = the simulator went quiet for the whole timeout; <0 = poll error
+      // (EINTR included — shutdown takes the same abort path as before).
+      return abort_naming_missing();
+    }
+
+    eventfd_t val{};
+    static_cast<void>(eventfd_read(sim_fd, &val));
+
+    if (!rclcpp::ok()) {
+      return WaitResult::kAbort;
+    }
+    if (stop_nudged_.load(std::memory_order_acquire)) {
+      // RequestStop() has already requested the jthread stop; the base loop
+      // observes it right after this returns and exits without a tick.
+      return WaitResult::kProceed;
+    }
+
+    const std::uint32_t adv = advanced_slots(seq);
+    if (adv == mask) {
+      for (std::size_t slot = 0; slot < seq.size(); ++slot) {
+        if (((mask >> slot) & 1U) != 0U) {
+          sim_seen_seq_[slot] = seq[slot];
+        }
+      }
+      if (partial && std::chrono::steady_clock::now() - partial_since >
+                         std::chrono::nanoseconds(static_cast<std::int64_t>(PeriodNs()))) {
+        owner_->sim_slow_steps_.fetch_add(1, std::memory_order_relaxed);
+        owner_->sim_slow_mask_.fetch_or(late, std::memory_order_relaxed);
+      }
+      return WaitResult::kProceed;
+    }
+    if (adv != 0U && !partial) {
+      partial = true;
+      partial_since = std::chrono::steady_clock::now();
+      late = mask & ~adv;
+    }
   }
-  return WaitResult::kProceed;
+}
+
+void RtControllerNode::ControlLoopThread::ArmSimSync() noexcept {
+  for (std::size_t slot = 0; slot < sim_seen_seq_.size(); ++slot) {
+    sim_seen_seq_[slot] = owner_->sim_state_seq_[slot].load(std::memory_order_acquire);
+  }
+  stop_nudged_.store(false, std::memory_order_release);
 }
 
 void RtControllerNode::ControlLoopThread::OnOverrun(std::uint64_t consecutive) noexcept {
@@ -980,10 +1082,26 @@ void RtControllerNode::ControlLoopThread::OnLoopAborted() noexcept {
   if (!owner_->use_sim_time_sync_) {
     return;
   }
+  // Terminal one-shot (the loop has exited): name the device groups whose
+  // state never completed the step, so a single silent group is not reported
+  // as a crashed simulator (issue #566).
+  std::array<char, 160> missing{};
+  std::size_t used = 0;
+  const std::uint32_t miss = owner_->sim_missing_mask_.load(std::memory_order_acquire);
+  for (std::size_t slot = 0; slot < owner_->slot_to_group_name_.size(); ++slot) {
+    if (((miss >> slot) & 1U) != 0U && used < missing.size()) {
+      const int n = std::snprintf(missing.data() + used, missing.size() - used, "%s'%s'",
+                                  used == 0 ? "" : ", ", owner_->slot_to_group_name_[slot].c_str());
+      used += n > 0 ? static_cast<std::size_t>(n) : 0;
+    }
+  }
   RCLCPP_FATAL(owner_->get_logger(),
-               "Simulation sync timeout (%.1f s): no /joint_states received — "
-               "simulator may have crashed. Shutting down.",
-               owner_->sim_sync_timeout_sec_);
+               "Simulation sync timeout (%.1f s): no complete step — state never arrived from "
+               "%s. %s Shutting down.",
+               owner_->sim_sync_timeout_sec_, used == 0 ? "any device group" : missing.data(),
+               used == 0 ? "The simulator may have crashed."
+                         : "A group the simulator publishes at a decimated rate or as "
+                           "fake_response must be left out of sim_sync_tick_devices.");
   owner_->TriggerGlobalEstop("sim_sync_timeout");
   rclcpp::shutdown();
 }
@@ -991,6 +1109,9 @@ void RtControllerNode::ControlLoopThread::OnLoopAborted() noexcept {
 void RtControllerNode::ControlLoopThread::OnRequestStop() noexcept {
   // Sim mode wait blocks on sim_wake_eventfd_; nudge it so RequestStop / Join
   // observe the stop_token without waiting out sim_sync_timeout_sec_.
+  // The flag first: the barrier re-polls on a wake that did not complete a
+  // step, and it must tell this wake from a state arrival (issue #566).
+  stop_nudged_.store(true, std::memory_order_release);
   const int sim_fd = owner_->sim_wake_eventfd_.load(std::memory_order_acquire);
   if (sim_fd >= 0) {
     static_cast<void>(eventfd_write(sim_fd, 1));
@@ -1012,12 +1133,13 @@ bool RtControllerNode::ControlLoopThread::JitterMeaningful() const noexcept {
 void RtControllerNode::StartRtLoop(const urtc::ThreadConfig& rt_cfg) {
   rt_loop_.SetTimingProducer<urtc::kCmTimingBufferCapacity>(&cm_timing_producer_);
   if (use_sim_time_sync_) {
-    RCLCPP_INFO(get_logger(), "RT loop: simulation sync mode (CV wakeup, timeout=%.1f s)",
+    RCLCPP_INFO(get_logger(), "RT loop: simulation sync mode (one tick per step, timeout=%.1f s)",
                 sim_sync_timeout_sec_);
   }
   urtc::PeriodicRtThreadConfig pcfg{};
   pcfg.thread_config = rt_cfg;
   pcfg.frequency_hz = control_rate_;
+  rt_loop_.ArmSimSync();
   rt_loop_.Start(pcfg);
 }
 

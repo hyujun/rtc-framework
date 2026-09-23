@@ -851,6 +851,12 @@ bool MuJoCoSimulator::DiscoverObjectStates() noexcept {
 bool MuJoCoSimulator::Initialize() noexcept {
   char error[1000] = {};
 
+  if (cfg_.object_state.publish_divisor < 1) {
+    fprintf(stderr, "[MuJoCoSimulator] ERROR: object_state.publish_divisor must be >= 1 (got %d)\n",
+            cfg_.object_state.publish_divisor);
+    return false;
+  }
+
   // mj_loadXML is parse-then-compile in one call. It is split here because the
   // object pool has to attach its candidate bodies into the spec BETWEEN the
   // two halves — that is the whole reason the pool needs no runtime recompile.
@@ -1001,6 +1007,16 @@ bool MuJoCoSimulator::Initialize() noexcept {
     g->command_joint_names = cmd_names;
     g->num_command_joints = static_cast<int>(cmd_names.size());
     g->is_robot = gc.is_robot;
+    if (gc.state_publish_divisor < 1 || (!gc.is_robot && gc.state_publish_divisor != 1)) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] ERROR: group '%s' state_publish_divisor %d — must be >= 1, "
+              "and 1 for a fake_response group (it publishes on its own wall timer, not per "
+              "step, so a step divisor cannot apply)\n",
+              gc.name.c_str(), gc.state_publish_divisor);
+      return false;
+    }
+    g->state_publish_divisor = gc.state_publish_divisor;
+    g->wait_for_command = gc.wait_for_command;
     g->command_topic = gc.command_topic;
     g->state_topic = gc.state_topic;
     g->sensor_topic = gc.sensor_topic;
@@ -1687,9 +1703,7 @@ void MuJoCoSimulator::SetCommand(std::size_t group_idx, const std::vector<double
     g.pending_cmd = cmd;
   }
   g.cmd_pending.store(true, std::memory_order_release);
-  if (g.is_primary) {
-    sync_cv_.notify_one();
-  }
+  NotifyCommandArrived();
 }
 
 void MuJoCoSimulator::StageCommand(std::size_t group_idx, JointControlMode mode,
@@ -1733,9 +1747,7 @@ void MuJoCoSimulator::StageCommand(std::size_t group_idx, JointControlMode mode,
   // cmd_pending is the publish gate — release-store LAST so the SimLoop's
   // acquire-load sees the mode store and the cmd_mutex-protected staging above.
   g.cmd_pending.store(true, std::memory_order_release);
-  if (g.is_primary) {
-    sync_cv_.notify_one();
-  }
+  NotifyCommandArrived();
 }
 
 void MuJoCoSimulator::SetStateCallback(std::size_t group_idx, StateCallback cb) noexcept {
