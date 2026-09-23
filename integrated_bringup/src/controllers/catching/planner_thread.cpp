@@ -11,13 +11,14 @@
 namespace integrated_bringup {
 
 CatchingPlannerThread::CatchingPlannerThread(rtc::catching::PlannerCycle& cycle, int wake_fd,
-                                             double wake_timeout_s) noexcept
+                                             double wake_timeout_s, TimingBuffer& timing) noexcept
     : cycle_(cycle),
       wake_fd_(wake_fd),
       // Rounded UP to whole milliseconds (poll's unit), never below one: a
       // zero timeout would turn the wait into a busy loop on a FIFO thread.
       timeout_ms_(std::max(1, static_cast<int>(std::ceil(wake_timeout_s * 1000.0)))),
-      frequency_hz_(wake_timeout_s > 0.0 ? 1.0 / wake_timeout_s : 0.0) {}
+      frequency_hz_(wake_timeout_s > 0.0 ? 1.0 / wake_timeout_s : 0.0),
+      timing_(timing) {}
 
 CatchingPlannerThread::~CatchingPlannerThread() {
   Join();
@@ -74,11 +75,12 @@ void CatchingPlannerThread::OnTick() noexcept {
   MarkStateAcquired();
   const rtc::catching::PlannerCycleRecord rec = cycle_.Run(wake);
   MarkComputeDone();
+  // No drain on a reset (L7 §4.8's "drain the wake signal"): signals raised
+  // for the ended trial were consumed by this wake's own wait, and anything
+  // pending NOW was raised during this wake — i.e. for the new trial, whose
+  // first plan it would delay by a whole wake timeout. A plan computed for the
+  // ended trial is refused by the RT's reset floor (JudgePlan (f)).
   if (rec.reset_seen) {
-    // L7 §4.8: a signal raised for the trial the reset just ended must not
-    // wake the planner into the next one. Whatever is pending now predates
-    // this wake's view of the reset.
-    static_cast<void>(Drain());
     resets_seen_.fetch_add(1, std::memory_order_relaxed);
   }
   if (rec.outcome == rtc::catching::CycleOutcome::kPublished) {

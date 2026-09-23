@@ -53,11 +53,14 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
   static constexpr std::size_t kTimingCapacity = 512;
   using TimingBuffer = rtc::ThreadTimingProducer<rtc::RtTickTimingPayload, kTimingCapacity>;
 
-  /// `cycle` and the eventfd are owned by the controller and outlive this
-  /// thread (the controller joins it before destroying either). `wake_fd`
-  /// must be a valid non-blocking eventfd.
-  CatchingPlannerThread(rtc::catching::PlannerCycle& cycle, int wake_fd,
-                        double wake_timeout_s) noexcept;
+  /// `cycle`, the eventfd and the timing ring are owned by the controller and
+  /// outlive this thread (the controller joins it before destroying any of
+  /// them). The ring lives with the controller, not here, so the aux drain
+  /// timer never has to touch this object — it can be joined and replaced
+  /// while the timer keeps running. `wake_fd` must be a valid non-blocking
+  /// eventfd.
+  CatchingPlannerThread(rtc::catching::PlannerCycle& cycle, int wake_fd, double wake_timeout_s,
+                        TimingBuffer& timing) noexcept;
 
   /// Joins BEFORE the members go: the base destructor also joins, but by then
   /// this class's members — and its OnRequestStop override — are gone, and the
@@ -80,8 +83,6 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
   /// closed fd).
   static bool Signal(int wake_fd) noexcept;
 
-  [[nodiscard]] TimingBuffer& Timing() noexcept { return timing_; }
-
   // ── Observation (any thread, relaxed) ────────────────────────────────────
   /// Wakes caused by the eventfd, and by the timeout.
   [[nodiscard]] std::uint64_t SignalWakeCount() const noexcept {
@@ -100,6 +101,7 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
     return superseded_.load(std::memory_order_relaxed);
   }
 
+  /// Wakes that saw a trial reset in the RT state (L7 §4.8).
   [[nodiscard]] std::uint64_t ResetSeenCount() const noexcept {
     return resets_seen_.load(std::memory_order_relaxed);
   }
@@ -127,7 +129,7 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
   int wake_fd_;
   int timeout_ms_;
   double frequency_hz_;
-  TimingBuffer timing_{};
+  TimingBuffer& timing_;
   rtc::SeqLock<rtc::catching::PlannerCycleRecord> last_record_{};
   std::atomic<std::uint64_t> signal_wakes_{0};
   std::atomic<std::uint64_t> timeout_wakes_{0};

@@ -49,9 +49,11 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   }
   rec.mode = rt.mode;
   // A trial reset since the last wake. The planner has no per-trial state at
-  // S6-A, so noticing is all there is to do here; the THREAD drains its wake
-  // signal on this flag (L7 §4.8). Recorded before the activity gate so a
-  // reset is seen even when the new mode has nothing to plan for.
+  // S6-A, so noticing it is all there is to do; S6-B drops its per-trial
+  // search state here. Recorded before the activity gate so a reset is seen
+  // even when the new mode has nothing to plan for. (Signals raised for the
+  // ended trial need no draining here: the wait already consumed them, and a
+  // plan from that trial is refused by the RT's reset floor, JudgePlan (f).)
   if (rt.reset_epoch != seen_reset_epoch_) {
     seen_reset_epoch_ = rt.reset_epoch;
     rec.reset_seen = true;
@@ -63,7 +65,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   }
 
   // ── 2. The trajectory, then its covariance (L3 §5.2 read order) ──────────
-  traj_ = io_.traj->Load();
+  io_.traj->LoadInto(traj_);
   if (!traj_.valid || traj_.token.activation_generation != rt.activation_generation) {
     rec.outcome = CycleOutcome::kNoInput;
     return rec;
@@ -77,10 +79,10 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   // One re-read closes the common case (the writer landed between the two
   // loads); a second mismatch means the pair is not a pair, and it is not
   // used (L3 §5.2: "그 조합은 쓰지 않는다").
-  cov_ = io_.cov->Load();
+  io_.cov->LoadInto(cov_);
   rec.cov_matched = cov_.valid && SameSnapshot(cov_.token, traj_.token);
   if (!rec.cov_matched) {
-    cov_ = io_.cov->Load();
+    io_.cov->LoadInto(cov_);
     rec.cov_matched = cov_.valid && SameSnapshot(cov_.token, traj_.token);
   }
 
@@ -95,7 +97,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   // so the next wake plans against it; publishing this one would hand the RT
   // a plan for a prediction that is no longer the latest. A moved reset epoch
   // means the trial this was computed for is over.
-  traj_recheck_ = io_.traj->Load();
+  io_.traj->LoadInto(traj_recheck_);
   const PlannerRtState rt_now = io_.rt->Load();
   if (!SameSnapshot(traj_recheck_.token, traj_.token) || rt_now.reset_epoch != rt.reset_epoch ||
       rt_now.activation_generation != rt.activation_generation) {

@@ -548,6 +548,7 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 | `use_sim_time_sync` | bool | `false` | MuJoCo 동기 루프 CV 기반 wakeup 모드 |
 | `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) |
 | `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 — `<pkg_share>/config/<config_variant>/controllers/<config_key>.yaml`. 빈 값이면 `config/controllers/`. 파일이 **없을 때**의 거동 세 갈래는 아래 참조 |
+| `rt_layout_profile` | string | (미선언) | launch 의 thread-layout profile id (#350, `mpc_on`/`mpc_off`). CM 은 쓰지 않고 **각 컨트롤러의 LifecycleNode 로 전달만** 한다 — 컨트롤러 노드는 `use_global_arguments(false)` 라 launch 파라미터를 직접 못 본다. launch 가 설정했을 때만 전달하므로 미설정이면 컨트롤러 자신의 기본값이 적용된다 |
 | `kp` | double | `5.0` | (레거시) 기본 P 게인 |
 | `kd` | double | `0.5` | (레거시) 기본 D 게인 |
 

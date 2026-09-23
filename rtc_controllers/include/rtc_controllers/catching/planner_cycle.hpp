@@ -9,8 +9,8 @@
 //
 // RT-1~10. The planner may run SCHED_FIFO (D-7a, shares the `mpc_main` role —
 // E-7 decision J), so `Run` allocates nothing, takes no lock, logs nothing and
-// throws nothing. Buffers are members sized at construction: the covariance
-// snapshot alone is 11.5 KB and is held as a member rather than on the stack.
+// throws nothing. Buffers are members sized at construction and filled with
+// SeqLock::LoadInto: the covariance snapshot alone is 11.5 KB.
 //
 // WHAT S6-A IMPLEMENTS. The cycle, the provenance handling and a STUB search:
 // `PlanOnce` never produces a candidate, so every search wake publishes a
@@ -136,8 +136,9 @@ class PlannerCycle {
   std::uint32_t seen_reset_epoch_{0};
   PostSearchHook post_search_hook_{nullptr};
   void* post_search_context_{nullptr};
-  // Scratch copies, members so a wake does not put 11.5 KB (covariance) and
-  // ~13 KB (trajectory) on the stack twice over.
+  // Scratch copies, filled with SeqLock::LoadInto so a wake copies each
+  // snapshot once, straight into these, rather than building a by-value
+  // Load() on the stack first (covariance 11.5 KB, trajectory ~13 KB).
   TrajectorySnapshot traj_{};
   TrajectorySnapshot traj_recheck_{};
   CovarianceSnapshot cov_{};

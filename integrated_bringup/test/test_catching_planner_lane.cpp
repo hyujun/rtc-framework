@@ -4,9 +4,9 @@
 //
 // THE THREAD (no controller). The wake source is an eventfd, and what G3-L
 // asks of it is coalescing: any number of signals between two wakes is ONE
-// wake, and that wake reads the newest snapshot. Also: a reset seen by a wake
-// drains a signal raised for the trial it ended (L7 §4.8), and Join does not
-// wait out the wake timeout.
+// wake, and that wake reads the newest snapshot. Also: a signal raised during
+// the wake that sees a trial reset is kept for the next wake (it belongs to the
+// new trial), and Join does not wait out the wake timeout.
 //
 // THE LANE (real UR5e+P1b model, CM's configure path). The RT loads the plan
 // box every tick and adopts a plan only when JudgePlan admits it. The cases
@@ -100,6 +100,7 @@ struct ThreadRig {
   rtc::SeqLock<PlannerRtState> rt{};
   rtc::SeqLock<PlanSnapshot> plan{};
   PlannerCycle cycle;
+  CatchingPlannerThread::TimingBuffer timing{};
   int fd{-1};
 
   ThreadRig() {
@@ -145,7 +146,7 @@ TEST(CatchingPlannerThread, ABurstOfSignalsIsOneWakeThatReadsTheNewestSnapshot) 
     ASSERT_TRUE(CatchingPlannerThread::Signal(rig->fd));
   }
   // A long timeout, so every wake inside the observation window is a signal.
-  CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.5);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.5, rig->timing);
   thread.StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread.PublishedCount() >= 1; }));
   std::this_thread::sleep_for(50ms);
@@ -158,7 +159,7 @@ TEST(CatchingPlannerThread, EachSignalAfterAWakeIsItsOwnWakeAndNeverMoreThanTheS
   auto rig = std::make_unique<ThreadRig>();
   rig->Tracking();
   rig->Trajectory(1);
-  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.5);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.5, rig->timing);
   thread.StartWith(PlainThread());
   constexpr int kSignals = 10;
   for (int i = 0; i < kSignals; ++i) {
@@ -175,7 +176,7 @@ TEST(CatchingPlannerThread, TheTimeoutWakesThePlannerWithoutASignal) {
   auto rig = std::make_unique<ThreadRig>();
   rig->Tracking();
   rig->Trajectory(1);
-  CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.01);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.01, rig->timing);
   thread.StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread.TimeoutWakeCount() >= 3; }));
   EXPECT_EQ(thread.SignalWakeCount(), 0U);
@@ -196,31 +197,33 @@ void SignalDuringSearch(void* raw) noexcept {
   }
 }
 
-TEST(CatchingPlannerThread, AWakeThatSeesAResetDrainsTheSignalRaisedForTheEndedTrial) {
-  // L7 §4.8. The reset is already in the RT state when the wake starts, and a
-  // signal lands while the wake is computing — i.e. a trajectory accepted for
-  // the trial the reset ended. Without the drain it would be the NEXT wake's
-  // cause.
+TEST(CatchingPlannerThread, ASignalRaisedDuringAResetWakeIsNotLost) {
+  // L7 §4.8's "drain the wake signal on re-arm" is satisfied by the wait
+  // itself: every signal raised BEFORE a wake is consumed by that wake's read.
+  // A signal raised DURING the wake that first sees a reset belongs to the new
+  // trial (a trajectory accepted after the reset), and dropping it would delay
+  // that trial's first plan by a whole wake timeout — /code-review 2026-09-23
+  // found an earlier version doing exactly that. It must cause the next wake.
   auto rig = std::make_unique<ThreadRig>();
   rig->Tracking(/*reset_epoch=*/7);
   rig->Trajectory(1);
   ResetDuringSearch ctx;
   ctx.fd = rig->fd;
   rig->cycle.SetPostSearchHookForTesting(&SignalDuringSearch, &ctx);
-  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.5);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.5, rig->timing);
   ASSERT_TRUE(CatchingPlannerThread::Signal(rig->fd));  // the wake that sees the reset
   thread.StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread.ResetSeenCount() == 1; }));
-  ASSERT_TRUE(ctx.fired);
-  std::this_thread::sleep_for(50ms);
-  EXPECT_EQ(thread.SignalWakeCount(), 1U) << "the signal raised during the reset wake survived";
-  eventfd_t leftover = 0;
-  EXPECT_NE(eventfd_read(rig->fd, &leftover), 0) << "the counter was not drained";
+  ASSERT_TRUE(ctx.fired.load());
+  // Well inside the 0.5 s timeout: only the surviving signal can cause this.
+  EXPECT_TRUE(WaitUntil([&] { return thread.SignalWakeCount() == 2; }, 200ms))
+      << "the signal raised during the reset wake was dropped";
+  EXPECT_EQ(thread.TimeoutWakeCount(), 0U);
 }
 
 TEST(CatchingPlannerThread, JoinDoesNotWaitOutTheTimeout) {
   auto rig = std::make_unique<ThreadRig>();
-  auto thread = std::make_unique<CatchingPlannerThread>(rig->cycle, rig->fd, 0.5);
+  auto thread = std::make_unique<CatchingPlannerThread>(rig->cycle, rig->fd, 0.5, rig->timing);
   thread->StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread->Running(); }));
   std::this_thread::sleep_for(20ms);  // well inside a poll
@@ -233,7 +236,7 @@ TEST(CatchingPlannerThread, APausedThreadStopsPublishingAfterAtMostOneWake) {
   auto rig = std::make_unique<ThreadRig>();
   rig->Tracking();
   rig->Trajectory(1);
-  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.005);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.005, rig->timing);
   thread.StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread.PublishedCount() >= 3; }));
   thread.Pause();
@@ -492,6 +495,47 @@ TEST_F(CatchingPlanLaneTest, WithThePlannerEnabledTheStubKeepsTrackingOnNoCatcha
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_TRUE(thread->Paused());
+}
+
+// ── The thread lives for one configuration (/code-review 2026-09-23) ────────
+
+TEST(CatchingPlannerLifecycle, ACleanupJoinsThePlannerAndAnOracleReconfigureHasNoSecondWriter) {
+  // A thread that survived on_cleanup used to be RESUMED by the next
+  // activation whatever the new configuration said — with the oracle enabled
+  // instead, the plan box then had two writers, and interleaved SeqLock
+  // stores can leave its sequence odd and hang the RT tick's Load forever.
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_planner_reconf");
+  DemoCatchingController ctrl{""};
+  ctrl.SetDeviceNameConfigs(integrated_bringup::testfx::PlannerSimDevices());
+  const rclcpp_lifecycle::State prev;
+  using integrated_bringup::testfx::PlannerMinimalYaml;
+
+  ASSERT_EQ(ctrl.on_configure(prev, node, YAML::Load(PlannerMinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  const auto* first = ctrl.GetPlannerThread();
+  ASSERT_NE(first, nullptr);
+  ASSERT_EQ(ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_EQ(ctrl.GetPlannerThread(), nullptr) << "the thread outlived its configuration";
+
+  // Oracle only: the RT is the box's one writer, and no planner may resume.
+  ASSERT_EQ(ctrl.on_configure(prev, node, YAML::Load(PlannerMinimalYaml(false, true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_FALSE(ctrl.IsSimOnlyDisabled());
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_EQ(ctrl.GetPlannerThread(), nullptr) << "a planner runs beside the oracle";
+  ASSERT_EQ(ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  // And back to the planner: a FRESH thread under the new configuration.
+  ASSERT_EQ(ctrl.on_configure(prev, node, YAML::Load(PlannerMinimalYaml(true))),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_NE(ctrl.GetPlannerThread(), nullptr);
+  EXPECT_TRUE(ctrl.GetPlannerThread()->Running());
+  EXPECT_FALSE(ctrl.GetPlannerThread()->Paused());
+  ASSERT_EQ(ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
 }  // namespace

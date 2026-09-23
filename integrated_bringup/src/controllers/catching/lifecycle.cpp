@@ -944,7 +944,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
   // After the base bumped the activation generation, so the planner's first
   // wake of this activation can only publish against it.
   SpawnPlannerThreadIfNeeded();
-  if (planner_thread_) {
+  if (planner_thread_ && planner_params_.enabled) {
     planner_thread_->Resume();
   }
   if (node_ && node_->has_parameter(kCatchingEnableParam)) {
@@ -999,12 +999,17 @@ void DemoCatchingController::ResetLogState() noexcept {
 }
 
 void DemoCatchingController::TearDownConfiguredResources() noexcept {
-  // The planner timing timer captures `this`; the thread itself is kept (paused)
-  // until the destructor — DemoWbc's idiom, and the reason is the same: a join
-  // here would race a wake that is mid-publish into boxes this object still
-  // owns, and nothing is gained by it.
+  // The planner timing timer captures `this`. The thread is JOINED here —
+  // unlike DemoWbc's MPC thread, which lives until the destructor. Keeping it
+  // across a cleanup lets it resume under a configuration that did not ask for
+  // it, and if that configuration enables the oracle the plan box gets a
+  // second writer. Join is safe: it waits for any wake in flight to finish
+  // publishing into boxes this object still owns.
   planner_timing_timer_.reset();
   planner_timing_cb_group_.reset();
+  // The planner thread belongs to this configuration: joined here, respawned
+  // by the next activation under the next configuration's parameters.
+  StopPlannerThread();
   log_set_.DrainAll();
   // Tear the timer down BEFORE Reset() so no drain callback runs against
   // channels that are being destroyed.
@@ -1029,7 +1034,16 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_cleanup(
 
 // ── Planner thread (S6-A) ───────────────────────────────────────────────────
 
+void DemoCatchingController::StopPlannerThread() noexcept {
+  planner_thread_.reset();
+}
+
 bool DemoCatchingController::SetupPlanner() {
+  // No thread may be running while the cycle is re-bound: Pause does not stop
+  // a wake in flight, and Bind/Configure write what Run reads. on_cleanup has
+  // already joined it on the normal path; this covers a configure that did not
+  // go through one.
+  StopPlannerThread();
   // Bound on every configure, enabled or not: the boxes are members and the
   // binding costs nothing, and a re-configure that turns the planner on must
   // not depend on the previous configure having done it.
@@ -1043,9 +1057,9 @@ bool DemoCatchingController::SetupPlanner() {
   }
   if (arm_dof_ > static_cast<int>(rtc::catching::kMaxPlanNv)) {
     RCLCPP_ERROR(logger_,
-                 "planner: the arm has %d joints but a plan carries at most %zu (kMaxPlanNv) — "
+                 "planner: the arm has %d joints but a plan carries at most %d (kMaxPlanNv) — "
                  "set planner.enabled: false or raise the capacity",
-                 arm_dof_, rtc::catching::kMaxPlanNv);
+                 arm_dof_, static_cast<int>(rtc::catching::kMaxPlanNv));
     return false;
   }
   if (planner_params_.wait_pose_n != 0 && planner_params_.wait_pose_n != arm_dof_) {
@@ -1084,8 +1098,8 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
     // The `mpc` layout role, exactly as DemoWbc's SpawnMpcThreadIfNeeded takes
     // it (E-7 decision J): same slot, same scheduling, same thread name.
     const auto thread_configs = rtc::SelectThreadConfigs();
-    planner_thread_ =
-        std::make_unique<CatchingPlannerThread>(planner_cycle_, fd, planner_params_.wake_timeout_s);
+    planner_thread_ = std::make_unique<CatchingPlannerThread>(
+        planner_cycle_, fd, planner_params_.wake_timeout_s, planner_timing_);
     planner_thread_->StartWith(thread_configs.mpc.main);
     RCLCPP_INFO(logger_, "planner thread started: %s on slot %d, policy %d prio %d",
                 thread_configs.mpc.main.name, thread_configs.mpc.main.cpu_core,
@@ -1123,10 +1137,9 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
 }
 
 void DemoCatchingController::DrainPlannerTiming() noexcept {
-  if (!planner_thread_) {
-    return;
-  }
-  planner_thread_->Timing().Drain(
+  // Touches only members that live as long as this object — never the thread,
+  // which a cleanup may be joining on another executor thread right now.
+  planner_timing_.Drain(
       [this](const rtc::RtTickTimingSample& s) { planner_timing_logger_.Log(s); });
 }
 

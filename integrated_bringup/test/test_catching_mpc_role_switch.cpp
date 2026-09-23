@@ -173,8 +173,12 @@ TEST(CatchingMpcRoleSwitch, TheTwoSolverThreadsShareTheRoleAndOnlyOneRunsAcrossA
   EXPECT_FALSE(catching.ctrl->GetPlannerThread()->Paused());
   ExpectPinnedToRole(planner_tid, "planner");
   ExpectRolePolicy(planner_tid, "planner");
-  // Same core for both — the premise of reusing the role rather than adding one.
-  EXPECT_EQ(AllowedCpus(planner_tid), AllowedCpus(wbc_tid));
+  // Same core for both — the premise of reusing the role rather than adding
+  // one. Only meaningful when the role is pinned: two unpinned threads share
+  // the process mask and would compare equal for no reason.
+  if (RoleLogicalCpu() >= 0) {
+    EXPECT_EQ(AllowedCpus(planner_tid), AllowedCpus(wbc_tid));
+  }
 
   // ── and back: catching → wbc ──────────────────────────────────────────────
   ASSERT_EQ(catching.ctrl->on_deactivate(Inactive()),

@@ -50,10 +50,13 @@ DemoCatchingController::DemoCatchingController(std::string_view urdf_path) : urd
 }
 
 DemoCatchingController::~DemoCatchingController() {
-  // Thread first: it holds references to planner_cycle_ and the boxes, and it
+  // The drain timer first — its callback captures `this`. Then the thread: it
+  // holds references to planner_cycle_, the boxes and the timing ring, and it
   // may be inside poll() on the eventfd. Join wakes it (OnRequestStop writes
   // the fd) and waits for the loop to leave; only then is the fd closed, so a
   // recycled fd number can never be polled by a thread that outlived it.
+  planner_timing_timer_.reset();
+  planner_timing_cb_group_.reset();
   planner_thread_.reset();
   const int fd = planner_wake_fd_.exchange(-1, std::memory_order_acq_rel);
   if (fd >= 0) {
@@ -1010,7 +1013,7 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   // every plan published before this instant (JudgePlan (f) — an E-STOP does
   // not move the activation generation, so (b) alone would let a plan from
   // the stopped trial into the next one), and tell the planner a reset
-  // happened so it drains its pending wake (L7 §4.8).
+  // happened (L7 §4.8) through PlannerRtState::reset_epoch.
   admitted_plan_ = rtc::catching::AdmittedPlan{};
   reset_floor_ns_ = SteadyNowNs();
   ++planner_reset_epoch_;
@@ -1471,7 +1474,11 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     ctx.activation_generation = ActivationGeneration();
     ctx.track_seen = track_seen_;
     ctx.track_generation = last_track_generation_;
-    ctx.now = now;
+    // Sampled AFTER the load, not the tick's `now` (taken before the vision
+    // read): a planner on the same steady clock may publish between the two,
+    // and judging its plan against the earlier instant would call a brand-new
+    // plan "from the future" (JudgePlan (e)) and slip its adoption a tick.
+    ctx.now = rtc::catching::NowReal{SteadyNowNs()};
     // A plan older than the ingress staleness bound was computed against a
     // prediction this tick would itself refuse as stale.
     ctx.max_age_ns = t_stale_ns_;

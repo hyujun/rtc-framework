@@ -68,14 +68,15 @@
 // THE PLANNER THREAD (S6-A, D-7, E-7 decision J). With `planner.enabled` the
 // controller owns a CatchingPlannerThread on the `mpc` layout role — thread name
 // `mpc_main`, the same core and scheduling as DemoWbc's MPC solver, because the
-// planner plays the same role. Lifecycle is DemoWbc's MPC idiom: buffers and
-// the wake eventfd at configure, layout-profile gate as on_activate's first
-// statement, lazy spawn + Resume at activate, Pause at deactivate, join only in
-// the destructor. The RT tick stores `PlannerRtState` every tick and loads the
-// plan box every tick (D-21); a published plan is taken only when
-// rtc::catching::JudgePlan admits it (L3 §5.2 (a)-(f)). The oracle plan
-// (A-S5-8) writes the SAME box from the RT tick, so there is one consumption
-// path — and a profile enabling both writers is parked.
+// planner plays the same role. Lifecycle: buffers and the wake eventfd at
+// configure, layout-profile gate as on_activate's first statement, lazy spawn +
+// Resume at activate, Pause at deactivate, JOIN at cleanup — unlike DemoWbc's
+// MPC thread, which lives to the destructor, because a planner that outlived
+// its configuration would resume beside an oracle as a second box writer. The RT tick stores
+// `PlannerRtState` every tick and loads the plan box every tick (D-21); a published plan is taken
+// only when rtc::catching::JudgePlan admits it (L3 §5.2 (a)-(f)). The oracle plan (A-S5-8) writes
+// the SAME box from the RT tick, so there is one consumption path — and a profile enabling both
+// writers is parked.
 //
 // THE HAND STEP IS STILL A DIAGNOSTIC MODE, gated on `diagnostic.hand_step`.
 // From S7.1 the sequencer owns the hand and the default false makes an
@@ -545,9 +546,15 @@ class DemoCatchingController final : public RTControllerInterface {
   /// the planner cannot run with.
   [[nodiscard]] bool SetupPlanner();
 
-  /// Spawn the planner thread on the `mpc` role (E-7 J) once, and open its
-  /// timing CSV + 1 Hz drain timer. Non-RT (on_activate). Idempotent.
+  /// Spawn the planner thread on the `mpc` role (E-7 J) once per
+  /// configuration, and open its timing CSV + 1 Hz drain timer. Non-RT
+  /// (on_activate). Idempotent within a configuration.
   void SpawnPlannerThreadIfNeeded() noexcept;
+
+  /// Join and drop the planner thread. Non-RT (lifecycle). Join wakes the
+  /// poll (OnRequestStop) and waits for a wake already in flight, which is
+  /// bounded by one PlannerCycle::Run.
+  void StopPlannerThread() noexcept;
 
   /// 1 Hz aux timer: drain the planner timing ring into the CSV. Non-RT.
   void DrainPlannerTiming() noexcept;
@@ -925,7 +932,17 @@ class DemoCatchingController final : public RTControllerInterface {
   /// thread see a recycled fd number. Atomic because the subscription reads it
   /// from the executor thread.
   std::atomic<int> planner_wake_fd_{-1};
+  /// Lives for ONE configuration: spawned at the first activation of a
+  /// configure that enabled the planner, joined in on_cleanup (and before any
+  /// re-bind in on_configure). A thread that outlived its configuration would
+  /// resume under the next one — and if that one enables the oracle instead,
+  /// the plan box would have two writers (SeqLock::Store is not RMW-safe:
+  /// interleaved writers can leave the sequence odd and hang every Load).
   std::unique_ptr<CatchingPlannerThread> planner_thread_;
+  /// The per-wake timing ring, owned HERE rather than by the thread so the
+  /// 1 Hz drain timer never dereferences planner_thread_ (which is joined and
+  /// replaced across configurations while the timer may be mid-callback).
+  CatchingPlannerThread::TimingBuffer planner_timing_{};
   /// Launch layout profile dropped the `mpc` role's core (#350). Read at
   /// configure; see SetLayoutProfile.
   bool layout_profile_drops_mpc_{false};
