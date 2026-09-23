@@ -10,6 +10,7 @@ at import time.
 
 from .catching import (
     plot_catching_diag,
+    plot_catching_hand,
     print_catching_diag_statistics,
 )
 from .compliance import (
@@ -97,6 +98,7 @@ __all__ = [
     "print_motor_statistics",
     # dynamic-catching per-tick diagnostics (S5.4)
     "plot_catching_diag",
+    "plot_catching_hand",
     "print_catching_diag_statistics",
     # planner-events per-non-idle-wake search record (S6-B)
     "plot_planner_events",
