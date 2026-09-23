@@ -20,6 +20,7 @@ import pytest
 from integrated_bringup.demo_gui.ball_launch import FEED_STALE_AFTER_S
 from integrated_bringup.demo_gui.catching import (
     MODE_NAMES,
+    PLAN_REASON_NAMES,
     REASON_NAMES,
     CatchingStatus,
     mode_name,
@@ -69,9 +70,14 @@ def make_msg(**overrides):
         input_reject_counts=[0] * len(REJECT_NAMES),
         input_reject_names=list(REJECT_NAMES),
         plan_valid=True,
+        plan_id=5,
+        plan_age_s=0.031,
         plan_p_c=[0.5, -0.2, 0.9],
         plan_t_c_s=0.42,
         plan_gamma_f=0.3,
+        plan_w5=0.147,
+        plan_w6=0.0042,
+        plan_reason=0,
         ref_valid=True,
         ref_saturated=False,
         track_err_rad=0.0123,
@@ -349,6 +355,41 @@ def test_no_plan_is_said_rather_than_drawn_as_the_origin():
     assert "p_c=" not in out
 
 
+def test_no_plan_names_the_planners_reason_once_it_has_spoken():
+    # §13 S6: "탈락 사유". The planner's no-plan reason (its first bottleneck,
+    # decision E) rides plan_reason with plan_valid false; before the planner
+    # has published anything this activation (plan_id 0) there is no reason to
+    # name, and "NONE" would read as "nothing wrong".
+    status = CatchingStatus()
+    status.update(make_msg(plan_valid=False, plan_id=0, plan_reason=0), now_s=100.0)
+    plan_lines = [line for line in status.lines(100.0) if line.startswith("plan")]
+    assert plan_lines == ["plan: none"]
+    status.update(
+        make_msg(plan_valid=False, plan_id=9, plan_reason=7, plan_age_s=0.012), now_s=100.0
+    )
+    out = text(status)
+    assert "plan: none — STOPPING_DISTANCE" in out
+    assert "#9" in out
+    assert "12 ms ago" in out
+
+
+def test_plan_reason_names_follow_the_message_constants():
+    # The tuple is the only place the GUI learns the codes; a code added to the
+    # message without a name here would print as "?(n)".
+    import re
+    from pathlib import Path
+
+    from ament_index_python.packages import get_package_share_directory
+
+    msg = Path(get_package_share_directory("rtc_msgs")) / "msg" / "CatchingState.msg"
+    codes = {
+        int(m.group(2)): m.group(1)
+        for m in re.finditer(r"^uint8 PLAN_REASON_(\w+)\s*=\s*(\d+)", msg.read_text(), re.M)
+    }
+    assert codes, "no PLAN_REASON_* constants found in CatchingState.msg"
+    assert tuple(codes[i] for i in range(len(codes))) == PLAN_REASON_NAMES
+
+
 def test_a_plan_reports_its_catch_point_and_instant():
     status = CatchingStatus()
     status.update(make_msg(), now_s=100.0)
@@ -356,3 +397,7 @@ def test_a_plan_reports_its_catch_point_and_instant():
     assert "p_c=(+0.500, -0.200, +0.900)" in out
     assert "t_c=+0.420 s" in out
     assert "gamma_f=0.30" in out
+    # §13 S6: w5, w6 and the plan's age as well.
+    assert "w5=0.147" in out
+    assert "w6=0.0042" in out
+    assert "age=31 ms" in out

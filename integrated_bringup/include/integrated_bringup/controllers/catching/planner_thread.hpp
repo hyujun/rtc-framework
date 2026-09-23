@@ -33,6 +33,8 @@
 // its activation generation (D-23, JudgePlan (b)), which is why this thread
 // does not try to make Pause synchronous.
 
+#include "integrated_bringup/logging/planner_events_csv.hpp"
+#include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
@@ -52,6 +54,10 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
   /// wakes, several drain periods.
   static constexpr std::size_t kTimingCapacity = 512;
   using TimingBuffer = rtc::ThreadTimingProducer<rtc::RtTickTimingPayload, kTimingCapacity>;
+  /// Per-wake records for planner_events.csv (decision E). Same drain as the
+  /// timing ring; a full ring drops the NEWEST row and counts it.
+  static constexpr std::size_t kEventCapacity = 512;
+  using EventQueue = rtc::SpscQueue<rtc::catching::PlannerCycleRecord, kEventCapacity>;
 
   /// `cycle`, the eventfd and the timing ring are owned by the controller and
   /// outlive this thread (the controller joins it before destroying any of
@@ -60,7 +66,7 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
   /// while the timer keeps running. `wake_fd` must be a valid non-blocking
   /// eventfd.
   CatchingPlannerThread(rtc::catching::PlannerCycle& cycle, int wake_fd, double wake_timeout_s,
-                        TimingBuffer& timing) noexcept;
+                        TimingBuffer& timing, EventQueue& events) noexcept;
 
   /// Joins BEFORE the members go: the base destructor also joins, but by then
   /// this class's members — and its OnRequestStop override — are gone, and the
@@ -106,6 +112,11 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
     return resets_seen_.load(std::memory_order_relaxed);
   }
 
+  /// Event rows the ring had no room for.
+  [[nodiscard]] std::uint64_t EventDropCount() const noexcept {
+    return event_drops_.load(std::memory_order_relaxed);
+  }
+
   /// The last wake's record (SeqLock: a torn read is impossible).
   [[nodiscard]] rtc::catching::PlannerCycleRecord LastRecord() const noexcept {
     return last_record_.Load();
@@ -130,6 +141,8 @@ class CatchingPlannerThread final : public rtc::PeriodicRtThread {
   int timeout_ms_;
   double frequency_hz_;
   TimingBuffer& timing_;
+  EventQueue& events_;
+  std::atomic<std::uint64_t> event_drops_{0};
   rtc::SeqLock<rtc::catching::PlannerCycleRecord> last_record_{};
   std::atomic<std::uint64_t> signal_wakes_{0};
   std::atomic<std::uint64_t> timeout_wakes_{0};

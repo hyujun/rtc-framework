@@ -11,14 +11,16 @@
 namespace integrated_bringup {
 
 CatchingPlannerThread::CatchingPlannerThread(rtc::catching::PlannerCycle& cycle, int wake_fd,
-                                             double wake_timeout_s, TimingBuffer& timing) noexcept
+                                             double wake_timeout_s, TimingBuffer& timing,
+                                             EventQueue& events) noexcept
     : cycle_(cycle),
       wake_fd_(wake_fd),
       // Rounded UP to whole milliseconds (poll's unit), never below one: a
       // zero timeout would turn the wait into a busy loop on a FIFO thread.
       timeout_ms_(std::max(1, static_cast<int>(std::ceil(wake_timeout_s * 1000.0)))),
       frequency_hz_(wake_timeout_s > 0.0 ? 1.0 / wake_timeout_s : 0.0),
-      timing_(timing) {}
+      timing_(timing),
+      events_(events) {}
 
 CatchingPlannerThread::~CatchingPlannerThread() {
   Join();
@@ -89,6 +91,9 @@ void CatchingPlannerThread::OnTick() noexcept {
     superseded_.fetch_add(1, std::memory_order_relaxed);
   }
   last_record_.Store(rec);
+  if (PlannerEventWorthRecording(rec) && !events_.Push(rec)) {
+    event_drops_.fetch_add(1, std::memory_order_relaxed);
+  }
 }
 
 }  // namespace integrated_bringup

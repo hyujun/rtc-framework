@@ -1342,6 +1342,17 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
     tick_record_.plan_sigma_c = plan_.sigma_c;
     tick_record_.plan_score = plan_.score;
     tick_record_.plan_reason = static_cast<std::uint8_t>(plan_.reason);
+  } else if (plan_refusal_ == rtc::catching::PlanRefusal::kInvalid &&
+             plan_in_.token.activation_generation == ActivationGeneration() &&
+             plan_in_.publish_ns > 0) {
+    // Following nothing, and the planner's latest word for THIS activation is
+    // "no plan": carry its reason (the first bottleneck, decision E) and its
+    // id and age, so the operator sees WHY there is no plan rather than just
+    // that there is none (§13 S6). `plan_valid` stays false — there is no plan
+    // to describe, and the other plan fields stay zero (PROC-7).
+    tick_record_.plan_id = plan_in_.plan_id;
+    tick_record_.plan_age_s = static_cast<double>(now_ns - plan_in_.publish_ns) * 1e-9;
+    tick_record_.plan_reason = static_cast<std::uint8_t>(plan_in_.reason);
   }
 
   // ── The arm, commanded against measured ─────────────────────────────────

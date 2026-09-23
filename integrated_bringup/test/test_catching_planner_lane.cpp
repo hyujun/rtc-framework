@@ -34,11 +34,13 @@
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -103,6 +105,7 @@ struct ThreadRig {
   rtc::SeqLock<PlanSnapshot> plan{};
   PlannerCycle cycle;
   CatchingPlannerThread::TimingBuffer timing{};
+  CatchingPlannerThread::EventQueue events{};
   int fd{-1};
 
   ThreadRig() {
@@ -148,7 +151,8 @@ TEST(CatchingPlannerThread, ABurstOfSignalsIsOneWakeThatReadsTheNewestSnapshot) 
     ASSERT_TRUE(CatchingPlannerThread::Signal(rig->fd));
   }
   // A long timeout, so every wake inside the observation window is a signal.
-  CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.5, rig->timing);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.5, rig->timing,
+                               rig->events);
   thread.StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread.PublishedCount() >= 1; }));
   std::this_thread::sleep_for(50ms);
@@ -161,7 +165,7 @@ TEST(CatchingPlannerThread, EachSignalAfterAWakeIsItsOwnWakeAndNeverMoreThanTheS
   auto rig = std::make_unique<ThreadRig>();
   rig->Tracking();
   rig->Trajectory(1);
-  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.5, rig->timing);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.5, rig->timing, rig->events);
   thread.StartWith(PlainThread());
   constexpr int kSignals = 10;
   for (int i = 0; i < kSignals; ++i) {
@@ -178,7 +182,8 @@ TEST(CatchingPlannerThread, TheTimeoutWakesThePlannerWithoutASignal) {
   auto rig = std::make_unique<ThreadRig>();
   rig->Tracking();
   rig->Trajectory(1);
-  CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.01, rig->timing);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, /*wake_timeout_s=*/0.01, rig->timing,
+                               rig->events);
   thread.StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread.TimeoutWakeCount() >= 3; }));
   EXPECT_EQ(thread.SignalWakeCount(), 0U);
@@ -212,7 +217,7 @@ TEST(CatchingPlannerThread, ASignalRaisedDuringAResetWakeIsNotLost) {
   ResetDuringSearch ctx;
   ctx.fd = rig->fd;
   rig->cycle.SetPostSearchHookForTesting(&SignalDuringSearch, &ctx);
-  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.5, rig->timing);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.5, rig->timing, rig->events);
   ASSERT_TRUE(CatchingPlannerThread::Signal(rig->fd));  // the wake that sees the reset
   thread.StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread.ResetSeenCount() == 1; }));
@@ -225,7 +230,8 @@ TEST(CatchingPlannerThread, ASignalRaisedDuringAResetWakeIsNotLost) {
 
 TEST(CatchingPlannerThread, JoinDoesNotWaitOutTheTimeout) {
   auto rig = std::make_unique<ThreadRig>();
-  auto thread = std::make_unique<CatchingPlannerThread>(rig->cycle, rig->fd, 0.5, rig->timing);
+  auto thread =
+      std::make_unique<CatchingPlannerThread>(rig->cycle, rig->fd, 0.5, rig->timing, rig->events);
   thread->StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread->Running(); }));
   std::this_thread::sleep_for(20ms);  // well inside a poll
@@ -238,7 +244,7 @@ TEST(CatchingPlannerThread, APausedThreadStopsPublishingAfterAtMostOneWake) {
   auto rig = std::make_unique<ThreadRig>();
   rig->Tracking();
   rig->Trajectory(1);
-  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.005, rig->timing);
+  CatchingPlannerThread thread(rig->cycle, rig->fd, 0.005, rig->timing, rig->events);
   thread.StartWith(PlainThread());
   ASSERT_TRUE(WaitUntil([&] { return thread.PublishedCount() >= 3; }));
   thread.Pause();
@@ -250,6 +256,26 @@ TEST(CatchingPlannerThread, APausedThreadStopsPublishingAfterAtMostOneWake) {
   EXPECT_EQ(thread.PublishedCount(), settled) << "a paused planner kept publishing";
   thread.Resume();
   EXPECT_TRUE(WaitUntil([&] { return thread.PublishedCount() > settled; }));
+}
+
+TEST(PlannerEventsCsv, EveryRowHasTheHeadersWidthAndIdleWakesAreSkipped) {
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  rtc::catching::PlannerCycleRecord rec{};
+  rec.outcome = CycleOutcome::kPublished;
+  rec.traj_recv_ns = 100;
+  rec.publish_ns = 2'000'100;
+  rec.search.chosen_rank_mask = rtc::catching::kRankReach | rtc::catching::kRankGamma;
+  std::ostringstream row;
+  integrated_bringup::WritePlannerEventsRow(row, rec);
+  const auto columns = [](const std::string& s) { return std::count(s.begin(), s.end(), ',') + 1; };
+  EXPECT_EQ(columns(header.str()), columns(row.str()));
+  EXPECT_NE(row.str().find(",2,published,"), std::string::npos) << "latency 2 ms: " << row.str();
+  EXPECT_TRUE(integrated_bringup::PlannerEventWorthRecording(rec));
+  rtc::catching::PlannerCycleRecord idle{};
+  EXPECT_FALSE(integrated_bringup::PlannerEventWorthRecording(idle));
+  idle.reset_seen = true;
+  EXPECT_TRUE(integrated_bringup::PlannerEventWorthRecording(idle));
 }
 
 // ── The lane ────────────────────────────────────────────────────────────────
@@ -524,6 +550,12 @@ TEST_F(CatchingPlanLaneTest, WithNoCatchablePointThePlannerKeepsTrackingOnNoCatc
   EXPECT_EQ(ctrl_->GetLastPlanRefusal(), PlanRefusal::kInvalid);
   EXPECT_EQ(ctrl_->GetMode(), Mode::kTracking);
   EXPECT_EQ(ctrl_->GetLastReason(), rtc::catching::Reason::kNoCatchablePlan);
+  // §13 S6: the tick record (hence the state message) says WHY — the
+  // planner's first bottleneck — with the planner's id, and no plan.
+  const auto record = ctrl_->GetLastTickRecord();
+  EXPECT_FALSE(record.plan_valid);
+  EXPECT_GT(record.plan_id, 0U);
+  EXPECT_NE(record.plan_reason, static_cast<std::uint8_t>(rtc::catching::PlanReason::kNone));
 
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);

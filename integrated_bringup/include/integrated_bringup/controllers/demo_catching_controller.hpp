@@ -117,6 +117,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -969,6 +970,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// 1 Hz drain timer never dereferences planner_thread_ (which is joined and
   /// replaced across configurations while the timer may be mid-callback).
   CatchingPlannerThread::TimingBuffer planner_timing_{};
+  /// Per-wake planner records → planner_events.csv (decision E). Owned here
+  /// for the same reason as the timing ring.
+  CatchingPlannerThread::EventQueue planner_events_{};
+  std::ofstream planner_events_file_;
   /// `planner.ik.*` / `planner.catchability.*` — the same parser and keys the
   /// offline catchability map uses (S3.5a), so map and runtime solve alike.
   rtc::catching::CatchPoseIkConfig catch_pose_ik_config_{};

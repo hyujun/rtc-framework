@@ -1254,7 +1254,7 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
     // it (E-7 decision J): same slot, same scheduling, same thread name.
     const auto thread_configs = rtc::SelectThreadConfigs();
     planner_thread_ = std::make_unique<CatchingPlannerThread>(
-        planner_cycle_, fd, planner_params_.wake_timeout_s, planner_timing_);
+        planner_cycle_, fd, planner_params_.wake_timeout_s, planner_timing_, planner_events_);
     planner_thread_->StartWith(thread_configs.mpc.main);
     RCLCPP_INFO(logger_, "planner thread started: %s on slot %d, policy %d prio %d",
                 thread_configs.mpc.main.name, thread_configs.mpc.main.cpu_core,
@@ -1283,6 +1283,21 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
       RCLCPP_WARN(logger_, "planner timing CSV disabled: %s", e.what());
     }
   }
+  if (!planner_events_file_.is_open()) {
+    try {
+      const auto dir = rtc::ResolveSessionDir() / "controllers" / "demo_catching_controller";
+      std::error_code ec;
+      std::filesystem::create_directories(dir, ec);
+      const auto path = dir / "planner_events.csv";
+      const bool fresh = !std::filesystem::exists(path);
+      planner_events_file_.open(path, std::ios::app);
+      if (planner_events_file_.is_open() && fresh) {
+        WritePlannerEventsHeader(planner_events_file_);
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(logger_, "planner_events.csv disabled: %s", e.what());
+    }
+  }
   if (node_ && !planner_timing_timer_) {
     planner_timing_cb_group_ =
         node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -1294,6 +1309,15 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
 void DemoCatchingController::DrainPlannerTiming() noexcept {
   // Touches only members that live as long as this object — never the thread,
   // which a cleanup may be joining on another executor thread right now.
+  rtc::catching::PlannerCycleRecord rec{};
+  while (planner_events_.Pop(rec)) {
+    if (planner_events_file_.is_open()) {
+      WritePlannerEventsRow(planner_events_file_, rec);
+    }
+  }
+  if (planner_events_file_.is_open()) {
+    planner_events_file_.flush();
+  }
   planner_timing_.Drain(
       [this](const rtc::RtTickTimingSample& s) { planner_timing_logger_.Log(s); });
 }
