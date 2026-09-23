@@ -283,8 +283,11 @@ demo_catching_controller:
         clock_err: 0.0
       switch:
         delta_J: 0.1
-        e_jump_max: 0.01
-        ed_jump_max: 0.05
+        # A switch may step u_des by at most eta_jump * reference.a_max (L3 §4.7,
+        # decision 6 2026-09-23 — replaced e_jump_max/ed_jump_max, whose 10 mm
+        # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= omega 10, a_max 35: 88 mm.
+        # Provisional until the sim remeasure.
+        eta_jump: 0.25
       freeze:
         # Decision G (2026-09-23): the L3 §4.11 lower bound T_close,tot 0.1047 +
         # T_arm (0, sim) + margin 0.03 = 0.135, rounded up with room. Provisional.

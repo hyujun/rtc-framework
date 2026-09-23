@@ -72,14 +72,26 @@ struct PlannerRtState {
   std::array<double, kMaxPlanNv> q_cmd{};
   std::array<double, kMaxPlanNv> qd_cmd{};
 
-  /// The L4 reference state (x, ẋ, γ, γ̇) the tracking law produced on this
-  /// tick — the input to the §4.7 switching hysteresis. `ref_valid` false on
+  /// The L4 reference state (x, ẋ, γ, γ̇, γ̈) the tracking law produced on
+  /// this tick — the input to the §4.7 switching rule (γ̇ and γ̈ size the step
+  /// a replacement's restarted γ ramp puts into u_des). `ref_valid` false on
   /// every tick that did not run the law.
   bool ref_valid{false};
   std::array<double, 3> ref_x{};
   std::array<double, 3> ref_xd{};
   double gamma{0.0};
   double gamma_d{0.0};
+  double gamma_dd{0.0};
+  /// The γ ramp the law is running (the followed plan's, as the RT adopted
+  /// it — g0 and t0 are the RT's, not the planner's), lead axis. The switch
+  /// rule evaluates it over the instants the RT may adopt a new plan: γ̇ and
+  /// γ̈ above are this tick's and may be 0 just before the ramp starts
+  /// (2026-09-23 /code-review). `ramp_valid` false with no plan followed.
+  bool ramp_valid{false};
+  double ramp_g0{0.0};
+  double ramp_gf{0.0};
+  std::int64_t ramp_t0_ns{0};
+  std::int64_t ramp_t1_ns{0};
 
   /// The plan the RT is following, if any.
   bool plan_active{false};

@@ -87,7 +87,11 @@ $$\xi(t_c)=0=\xi^O(t_c),\qquad \dot\xi(t_c)=\gamma\dot\xi^O(t_c)$$
 
 $$e'=e-(1-\gamma)\Delta p_c,\qquad \dot e'=\dot e+\dot\gamma\,\Delta p_c$$
 
-기준 상태 $(x,\dot x)$는 연속이고 오차만 점프한다. L3의 교체 히스테리시스(L3 §4.7)가 이 두 크기를 제한한다.
+기준 상태 $(x,\dot x)$는 연속이고 오차만 점프한다. 위 식은 γ 프로파일이 그대로일 때다. 런타임 교체는 γ 를 이어 받되 램프를 새로 시작하므로 ($\dot\gamma'=\ddot\gamma'=0$) $u_{des}$ 의 계단은
+
+$$\Delta u_{des}=\omega^2(1-\gamma)\Delta p_c-(2\zeta\omega\dot\gamma+\ddot\gamma)\,\xi^O-2\dot\gamma\,v_o$$
+
+이다 ($\xi^O=o-p_c$, 옛 포구점 기준). L3 의 교체 규칙 (L3 §4.7 규칙 2) 이 이 계단의 상계를 $\eta_{jump}a_{\max}$ 로 제한한다.
 
 ### 4.4 수렴 한계 `[논문 외 유도]`
 
@@ -274,7 +278,7 @@ S1 이식 시 변경:
 1. 결과 γ 를 항상 $\gamma\ge\gamma_{\min}$ 으로 clamp (`Applied`·`Frozen` 모두)
 2. 램프 끝 $\le t_c$ (남은 시간에 맞춰 램프 길이를 줄이거나 거부)
 3. **forward rollout 수락** — 하향 후 궤적을 L3 §4.8 과 같은 rollout 으로 $t_c$ 까지 굴려 $\max\Vert u_{des}\Vert$ 가 실제로 줄어드는 경우에만 적용
-4. 키는 단일 키로 (`derate_step`, ramp, `ed_jump_max` 공유 — S0.3)
+4. 키는 단일 키로 (`derate_step`, ramp — S0.3). $\dot e$ 점프 한계로 공유하던 `planner.switch.ed_jump_max` 는 결정 ⑥ (2026-09-23) 으로 삭제됐다 — 재도입 시 L3 §4.7 의 가속 예산 형태를 따를지 새로 정한다
 
 **v0.4 분석 (재도입 검토용 기록).** 아래는 v0.4 설계와 그 연속성 분석이다. L7 §4.6 이 참조하던 내용이며, 재설계의 출발점으로만 남긴다.
 

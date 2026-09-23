@@ -286,7 +286,7 @@ catching:
 
 모든 키는 layer 문서 §6 표에 `이름 / 타입 / 단위 / 기본값 / 허용 범위 / 근거`로 정의한다. 관절 위치·속도·토크 한계는 로봇 config 의 `devices.<group>.joint_limits`(URDF 와 교집합)를 쓰고 포구 YAML 에 복제하지 않는다.
 
-**한 물리량 = 한 키 `[확정]` (S0.3).** v0.4 에서 이름이 둘이던 같은 값 5쌍을 단일 키로 합친다: `io.n_min`/`prediction.n_min`, `planner.gamma.derate_step`/`supervisor.gamma.derate_step`, `planner.switch.ed_jump_max`/L7 `ed_jump_max`, `planner.stop.a_dec`/`supervisor.decel.a_dec`, `reference.gamma_derate.ramp`/`supervisor.gamma.ramp`. 남는 이름: `io.n_min` (L1 §6), `supervisor.decel.a_dec` (L7 §6, L3 가 읽음), `planner.switch.ed_jump_max` (L3 §6 — v1 에서는 plan 교체 점프 한계로만 쓴다). `derate_step`·ramp 는 D-8 로 v1 에서 쓰이지 않으며 재도입 시 단일 키로 다시 정한다.
+**한 물리량 = 한 키 `[확정]` (S0.3).** v0.4 에서 이름이 둘이던 같은 값 5쌍을 단일 키로 합친다: `io.n_min`/`prediction.n_min`, `planner.gamma.derate_step`/`supervisor.gamma.derate_step`, `planner.switch.ed_jump_max`/L7 `ed_jump_max`, `planner.stop.a_dec`/`supervisor.decel.a_dec`, `reference.gamma_derate.ramp`/`supervisor.gamma.ramp`. 남는 이름: `io.n_min` (L1 §6), `supervisor.decel.a_dec` (L7 §6, L3 가 읽음). `planner.switch.ed_jump_max` 도 L3 §6 에 남았다가 결정 ⑥ (2026-09-23) 으로 교체 가속 예산 `planner.switch.eta_jump` 에 흡수돼 삭제됐다 (L3 §4.7). `derate_step`·ramp 는 D-8 로 v1 에서 쓰이지 않으며 재도입 시 단일 키로 다시 정한다.
 
 **새 키 (plan 이 SSoT).**
 

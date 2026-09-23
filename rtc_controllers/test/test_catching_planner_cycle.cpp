@@ -231,7 +231,7 @@ planner:
   gamma: {margin: 0.2, eta_v: 0.9}
   budget: {n_sigma: 2.5, sigma_trk: 0.001, clock_err: 0.002}
   hand: {d_eff: 0.28, r_cap: 0.024, provisional: true}
-  switch: {delta_J: 0.2, e_jump_max: 0.02, ed_jump_max: 0.1}
+  switch: {delta_J: 0.2, eta_jump: 0.4}
   freeze: {T_freeze: 0.36}
   score: {w_sigma: 2, w_t: 3, w_q: 0.5, w_late: 0.1, w_gamma: 4, penalty: 20}
   workspace: {catch_box: {min: [0.1, -0.3, 0.2], max: [1.0, 0.3, 0.9]}}
@@ -251,8 +251,7 @@ planner:
   EXPECT_DOUBLE_EQ(p.d_eff, 0.28);
   EXPECT_DOUBLE_EQ(p.r_cap, 0.024);
   EXPECT_DOUBLE_EQ(p.switch_delta_j, 0.2);
-  EXPECT_DOUBLE_EQ(p.switch_e_jump_max, 0.02);
-  EXPECT_DOUBLE_EQ(p.switch_ed_jump_max, 0.1);
+  EXPECT_DOUBLE_EQ(p.switch_eta_jump, 0.4);
   EXPECT_DOUBLE_EQ(p.t_freeze, 0.36);
   EXPECT_DOUBLE_EQ(p.score.w_sigma, 2.0);
   EXPECT_DOUBLE_EQ(p.score.penalty, 20.0);
@@ -290,6 +289,12 @@ TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
            "planner: {workspace: {catch_box: {min: [1, 0, 0], max: [0, 1, 1]}}}",
            "planner: {workspace: {catch_box: {min: [0, 0], max: [1, 1, 1]}}}",
            "planner: {score: {penalty: -1}}",
+           "planner: {switch: {eta_jump: 0}}",
+           "planner: {switch: {eta_jump: 1.5}}",
+           // Retired by the acceleration budget (decision ⑥): refused, never
+           // silently run on the eta_jump default.
+           "planner: {switch: {e_jump_max: 0.01}}",
+           "planner: {switch: {ed_jump_max: 0.05}}",
        }) {
     EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
         << bad;

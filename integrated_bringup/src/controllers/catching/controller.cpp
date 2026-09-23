@@ -768,9 +768,18 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
     s.ref_xd = tick_record_.ref_xd;
     s.gamma = tick_record_.ref_gamma;
     s.gamma_d = tick_record_.ref_gamma_d;
+    s.gamma_dd = tick_record_.ref_gamma_dd;
   }
   s.plan_active = plan_active_;
   s.plan_id = plan_active_ ? plan_.plan_id : 0U;
+  // The ramp SetIntercept was given (first adoption and replacements alike).
+  s.ramp_valid = s.ref_valid && plan_active_;
+  if (s.ramp_valid) {
+    s.ramp_g0 = plan_.gamma_g0;
+    s.ramp_gf = plan_.gamma_gf;
+    s.ramp_t0_ns = plan_.gamma_t0_ns;
+    s.ramp_t1_ns = plan_.gamma_t1_ns;
+  }
   s.track_seen = track_seen_;
   s.track_generation = last_track_generation_;
   planner_rt_box_.Store(s);

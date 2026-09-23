@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <random>
 #include <vector>
@@ -414,6 +415,152 @@ TEST(PlannerSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall) {
   static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats));
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldJump);
   EXPECT_FALSE(stats.publish);
+}
+
+// ── 4a. The switch's acceleration budget (§4.7, decision ⑥) ─────────────────
+
+/// Δu_des the RT's adoption actually produces: the L4 law evaluated before and
+/// after re-targeting at the same state and instant, the new ramp restarted
+/// from the current γ (what controller.cpp does on adoption).
+Eigen::Vector3d AdoptionStep(const Eigen::Vector3d& p_c, const Eigen::Vector3d& dp,
+                             const rtc::catching::TargetState& o, double t,
+                             rtc::catching::GammaProfile ramp) {
+  rtc::catching::SoftCatchTranslation law({10.0, 1.0, 1e9, 1e9});
+  EXPECT_TRUE(law.Reset(Eigen::Vector3d(0.1, -0.2, 0.3), Eigen::Vector3d(0.4, 0.1, -0.2)));
+  EXPECT_TRUE(law.SetIntercept(p_c, ramp));
+  const auto before = law.Evaluate(o, t);
+  ramp.g0 = before.gamma;
+  ramp.t0 = t;
+  EXPECT_TRUE(law.SetIntercept(p_c + dp, ramp));
+  const auto after = law.Evaluate(o, t);
+  EXPECT_EQ(after.gamma, before.gamma) << "γ must be continuous across the adoption";
+  return after.u_des - before.u_des;
+}
+
+TEST(PlannerSwitchBudget, TheBoundIsTheLawsOwnStepWhenTheTermsAlign) {
+  // Every term along +x: Δp_c along +x, o − p_c and v_o along −x, γ̇, γ̈ > 0
+  // (a third of the way up the ramp). The triangle bound is then exact, so
+  // dropping or mis-weighting any term moves it off the law's own step.
+  const rtc::catching::GammaProfile ramp{0.0, 0.6, 0.0, 0.6};
+  const double t = 0.2;
+  double g = 0.0;
+  double gd = 0.0;
+  double gdd = 0.0;
+  ramp.Eval(t, g, gd, gdd);
+  ASSERT_GT(gd, 0.0);
+  ASSERT_GT(gdd, 0.0);
+  const Eigen::Vector3d p_c(0.5, 0.0, 0.4);
+  const Eigen::Vector3d dp(0.03, 0.0, 0.0);
+  rtc::catching::TargetState o;
+  o.p = p_c + Eigen::Vector3d(-0.8, 0.0, 0.0);
+  o.v = Eigen::Vector3d(-3.0, 0.0, 0.0);
+  o.a = Eigen::Vector3d(0.0, 0.0, -9.81);
+  const Eigen::Vector3d du = AdoptionStep(p_c, dp, o, t, ramp);
+  const double bound = rtc::catching::SwitchAccelStepBound(10.0, 1.0, g, gd, gdd, dp.norm(),
+                                                           (o.p - p_c).norm(), o.v.norm());
+  EXPECT_NEAR(du.norm(), bound, 1e-9);
+  EXPECT_NEAR(du.y(), 0.0, 1e-12);
+  EXPECT_NEAR(du.z(), 0.0, 1e-12);
+  // The ramp terms dominate here: a switch that moves nothing still steps u.
+  const Eigen::Vector3d du0 = AdoptionStep(p_c, Eigen::Vector3d::Zero(), o, t, ramp);
+  EXPECT_GT(du0.norm(), 0.25 * 21.0);
+}
+
+TEST(PlannerSwitchBudget, TheBoundCoversTheLawsStepInAnyDirection) {
+  std::mt19937 rng(537);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  std::uniform_real_distribution<double> when(0.0, 0.7);
+  const rtc::catching::GammaProfile ramp{0.05, 0.5, 0.1, 0.55};
+  for (int trial = 0; trial < 200; ++trial) {
+    const double t = when(rng);
+    double g = 0.0;
+    double gd = 0.0;
+    double gdd = 0.0;
+    ramp.Eval(t, g, gd, gdd);
+    const Eigen::Vector3d p_c(u(rng), u(rng), 0.5 + u(rng));
+    const Eigen::Vector3d dp = 0.1 * Eigen::Vector3d(u(rng), u(rng), u(rng));
+    rtc::catching::TargetState o;
+    o.p = p_c + Eigen::Vector3d(u(rng), u(rng), u(rng));
+    o.v = 4.0 * Eigen::Vector3d(u(rng), u(rng), u(rng));
+    o.a = Eigen::Vector3d(0.0, 0.0, -9.81);
+    const double step = AdoptionStep(p_c, dp, o, t, ramp).norm();
+    const double bound = rtc::catching::SwitchAccelStepBound(10.0, 1.0, g, gd, gdd, dp.norm(),
+                                                             (o.p - p_c).norm(), o.v.norm());
+    EXPECT_LE(step, bound + 1e-9) << "trial " << trial << " t " << t;
+  }
+}
+
+TEST(PlannerSwitchBudget, AnUnknownTargetFailsTheBudgetClosed) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double b = rtc::catching::SwitchAccelStepBound(10.0, 1.0, 0.1, 0.5, 0.0, 0.001, nan, 3.0);
+  EXPECT_FALSE(b <= 0.25 * 21.0);
+}
+
+/// A followed plan (γ, γ̇ given) and the same ball predicted `dy` further
+/// along y; returns the second cycle's decision. `ramp_t0_ns` ≠ 0 also reports
+/// the ramp the RT runs: 0 → 0.7 over 0.45 s from that instant.
+SwitchDecision RefreshDecision(double dy, double gamma, double gamma_d,
+                               std::int64_t ramp_t0_ns = 0) {
+  auto rig = std::make_unique<Rig>();
+  EXPECT_TRUE(rig->Configure());
+  const auto traj = rig->Traj();
+  SearchStats stats;
+  PlanSnapshot first =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  EXPECT_TRUE(first.valid);
+  first.plan_id = 41;
+  rig->search.NotePublished(first);
+  auto rt = rig->Rt();
+  rt.plan_active = true;
+  rt.plan_id = 41;
+  rt.ref_valid = true;
+  rt.gamma = gamma;
+  rt.gamma_d = gamma_d;
+  if (ramp_t0_ns != 0) {
+    rt.ramp_valid = true;
+    rt.ramp_g0 = 0.0;
+    rt.ramp_gf = 0.7;
+    rt.ramp_t0_ns = ramp_t0_ns;
+    rt.ramp_t1_ns = ramp_t0_ns + 450 * kMs;
+  }
+  auto moved = rig->Traj(2);
+  for (int k = 0; k < moved.n; ++k) {
+    moved.s[static_cast<std::size_t>(k)].p[1] += dy;
+  }
+  const PlanSnapshot next =
+      rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, NowReal{kNow}, stats);
+  if (stats.decision == SwitchDecision::kRefreshed) {
+    EXPECT_EQ(next.t_c_ns, first.t_c_ns) << "the same candidate, not a different one";
+    EXPECT_NEAR(next.p_c[1] - first.p_c[1], dy, 1e-12);
+  }
+  EXPECT_EQ(stats.publish, stats.decision == SwitchDecision::kRefreshed);
+  return stats.decision;
+}
+
+TEST(PlannerSwitchBudget, AtRestTheRefreshLimitIsEtaJumpAMaxOverOmegaSquared) {
+  // γ = 0, ramp at rest: ω²‖Δp‖ ≤ η_jump a_max → ‖Δp‖ ≤ 0.25·21/100 = 52.5 mm.
+  // The old 10 mm distance limit refused all of these (refreshed 0 in sim).
+  const double limit = 0.25 * 21.0 / 100.0;
+  EXPECT_EQ(RefreshDecision(0.9 * limit, 0.0, 0.0), SwitchDecision::kRefreshed);
+  EXPECT_EQ(RefreshDecision(1.1 * limit, 0.0, 0.0), SwitchDecision::kHeldJump);
+}
+
+TEST(PlannerSwitchBudget, AMovingRampRefusesEvenASmallRefresh) {
+  // 5 mm at γ 0.2 is 0.4 m/s² of Δp term — far inside 5.25. But with γ̇ = 0.5
+  // the restarted ramp adds 2ζωγ̇‖o − p_c‖ + 2γ̇‖v_o‖: the ball is at least
+  // T_freeze·3 m/s = 0.6 m from p_c, so ≥ 6 + 3 m/s².
+  EXPECT_EQ(RefreshDecision(0.005, 0.2, 0.0), SwitchDecision::kRefreshed);
+  EXPECT_EQ(RefreshDecision(0.005, 0.2, 0.5), SwitchDecision::kHeldJump);
+}
+
+TEST(PlannerSwitchBudget, ARampStartingBeforeAdoptionIsJudgedAtAdoption) {
+  // The snapshot's tick is just before the followed ramp starts (γ = γ̇ = γ̈
+  // = 0), but the RT adopts this cycle's publish up to budget_s + 2 ticks
+  // (54 ms) later, 44 ms into the ramp: γ̈ ≈ 15 s⁻² against a ball ≥ 0.47 m
+  // from p_c is ≥ 7 m/s² on its own (2026-09-23 /code-review).
+  EXPECT_EQ(RefreshDecision(0.005, 0.0, 0.0, kNow + 10 * kMs), SwitchDecision::kHeldJump);
+  // The same ramp a second away never starts inside the window.
+  EXPECT_EQ(RefreshDecision(0.005, 0.0, 0.0, kNow + 1000 * kMs), SwitchDecision::kRefreshed);
 }
 
 // ── 4b. /code-review 2026-09-23 regressions ─────────────────────────────────

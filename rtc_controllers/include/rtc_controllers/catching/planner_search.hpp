@@ -49,6 +49,7 @@
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -114,10 +115,12 @@ inline constexpr std::size_t kJudgeRejectCount = 6;
 
 /// What the switching rule decided about the plan the RT is following.
 enum class SwitchDecision : std::uint8_t {
-  kNoCurrent = 0,    ///< the RT follows no plan of ours — publish the best
-  kReplaced,         ///< a better candidate replaced it (§4.7)
-  kHeldHysteresis,   ///< not better by delta_J
-  kHeldJump,         ///< better, but the jump limits refuse the switch
+  kNoCurrent = 0,   ///< the RT follows no plan of ours — publish the best
+  kReplaced,        ///< a better candidate replaced it (§4.7)
+  kHeldHysteresis,  ///< not better by delta_J
+  /// Better — or the followed candidate with a moved prediction — but the
+  /// step the switch would put into u_des is over the budget (§4.7).
+  kHeldJump,
   kHeldFreeze,       ///< within T_freeze of the current t_c (decision G)
   kHeldNoCandidate,  ///< no candidate passed; the RT keeps what it has
   /// The followed candidate is still the best, but its predicted catch point
@@ -145,6 +148,28 @@ enum class SwitchDecision : std::uint8_t {
       return "refreshed";
   }
   return "unknown";
+}
+
+/// The largest step a plan switch can put into the L4 reference's u_des
+/// (L3 §4.7, decision ⑥): the RT adopts a replacement with γ continuous but
+/// its quintic ramp restarted (γ̇ = γ̈ = 0, controller.cpp's adoption), so
+///
+///   Δu = ω²(1−γ) Δp_c − (2ζωγ̇ + γ̈)(o − p_c) − 2γ̇ v_o
+///
+/// with γ, γ̇, γ̈ the reference's before the switch, p_c the OLD catch point and
+/// (o, v_o) the ball target at the switch. Returned is the triangle bound
+///
+///   ω²|1−γ| ‖Δp_c‖ + (2ζω|γ̇| + |γ̈|) ‖o − p_c‖ + 2|γ̇| ‖v_o‖,
+///
+/// which the rule holds to η_jump·a_max. The ramp terms carry ‖o − p_c‖, not
+/// ‖Δp_c‖: mid-ramp they are nonzero even for a switch that moves nothing.
+/// A NaN argument gives NaN, which fails every `<=` budget test.
+[[nodiscard]] inline double SwitchAccelStepBound(double omega, double zeta, double gamma,
+                                                 double gamma_d, double gamma_dd, double dp_norm,
+                                                 double xo_norm, double v_o_norm) noexcept {
+  const double ramp = 2.0 * zeta * omega * std::fabs(gamma_d) + std::fabs(gamma_dd);
+  return omega * omega * std::fabs(1.0 - gamma) * dp_norm + ramp * xo_norm +
+         2.0 * std::fabs(gamma_d) * v_o_norm;
 }
 
 /// One cycle's search diagnostics (L3 §8) — the planner CSV's body.
@@ -265,6 +290,11 @@ class PlannerSearch {
   };
 
   [[nodiscard]] Current Followed(const PlannerRtState& rt) const noexcept;
+  /// The §4.7 switch step bound (SwitchAccelStepBound) at its worst over the
+  /// instants the RT may adopt this cycle's publish, on the ramp it runs.
+  [[nodiscard]] double SwitchStep(const TrajectorySnapshot& traj, const PlannerRtState& rt,
+                                  NowLead now_lead, double dp) const noexcept;
+  static constexpr int kSwitchSamples = 9;
   static constexpr std::size_t kPublishedRing = 8;
   std::array<Current, kPublishedRing> published_{};
   std::size_t published_next_{0};

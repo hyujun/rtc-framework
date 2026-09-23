@@ -234,10 +234,17 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
 
   const YAML::Node sw = Section(planner, "switch", "switch");
   out.switch_delta_j = ReadBounded(sw, "delta_J", "switch.delta_J", out.switch_delta_j, 0.0, 1e6);
-  out.switch_e_jump_max =
-      ReadBounded(sw, "e_jump_max", "switch.e_jump_max", out.switch_e_jump_max, 1e-6, 1.0);
-  out.switch_ed_jump_max =
-      ReadBounded(sw, "ed_jump_max", "switch.ed_jump_max", out.switch_ed_jump_max, 1e-6, 10.0);
+  // The distance limits the acceleration budget replaced (decision ⑥): a
+  // profile still carrying them was tuned for the old rule, so it is refused
+  // rather than silently run on the eta_jump default.
+  for (const char* retired : {"e_jump_max", "ed_jump_max"}) {
+    if (sw && sw.IsMap() && sw[retired]) {
+      Reject(Key(std::string("switch.") + retired) +
+             " was replaced by switch.eta_jump (L3 §4.7, an acceleration budget)");
+    }
+  }
+  out.switch_eta_jump =
+      ReadBounded(sw, "eta_jump", "switch.eta_jump", out.switch_eta_jump, 1e-6, 1.0);
 
   const YAML::Node freeze = Section(planner, "freeze", "freeze");
   out.t_freeze = ReadDecision(freeze, "T_freeze", "freeze.T_freeze", 1e-3, 2.0);

@@ -271,14 +271,18 @@ $\sigma$ 는 스칼라로 썼지만 실제는 3×3이다. §4.4의 $\lambda_{\ma
 현재 plan이 유효하면 새 후보는 다음을 모두 만족할 때만 채택한다.
 
 1. 점수 개선 $J_{cur}-J_{new}>\Delta_J$, 또는 현재 plan이 이번 검사에서 불가능 판정.
-2. 오차 점프 한계 (L4 §4.3): $(1-\gamma(t))\Vert\Delta p_c\Vert\le e_{jump,\max}$, $|\dot\gamma(t)|\,\Vert\Delta p_c\Vert\le\dot e_{jump,\max}$.
+2. 가속 예산 (L4 §4.3, 결정 ⑥ 2026-09-23): 교체가 $u_{des}$ 에 넣는 계단의 상계가 $\eta_{jump}\,a_{\max}$ 이하.
+
+$$\omega^2(1-\gamma)\Vert\Delta p_c\Vert+\bigl(2\zeta\omega|\dot\gamma|+|\ddot\gamma|\bigr)\Vert o-p_c\Vert+2|\dot\gamma|\,\Vert v_o\Vert\;\le\;\eta_{jump}\,a_{\max}$$
+
+   $p_c$ 는 **옛** 포구점, $\omega,\zeta,a_{\max}$ 는 L4 기준의 값이다. 좌변은 **RT 가 이 사이클의 게시를 채택할 수 있는 구간** $[now_{lead},\,now_{lead}+$`budget_s`$+2h]$ 의 최악값으로 판정한다: $\gamma,\dot\gamma,\ddot\gamma$ 는 RT 가 실제로 돌리는 램프 (`PlannerRtState.ramp_*` — RT 가 채택하며 바꾼 g0·t0 포함) 를 그 구간에서 평가한 값, $(o,v_o)$ 는 같은 시각의 공 대상 (rollout 과 같은 샘플러) 이다. 스냅샷 tick 의 $\dot\gamma=\ddot\gamma=0$ 은 램프 시작 직전일 수 있어 채택 시점의 값이 아니다 (2026-09-23 `/code-review`). 따라가는 plan 이 없으면 스냅샷 값을 쓴다. RT 는 교체 plan 을 γ 는 이어서, 5차 램프는 **다시 시작해서** ($\dot\gamma=\ddot\gamma=0$) 채택하므로 실제 계단은 $\Delta u=\omega^2(1-\gamma)\Delta p_c-(2\zeta\omega\dot\gamma+\ddot\gamma)(o-p_c)-2\dot\gamma v_o$ 이고, 위 식은 그 삼각 상계다. 램프 항은 $\Vert\Delta p_c\Vert$ 가 아니라 $\Vert o-p_c\Vert$ 에 비례하므로 **램프가 도는 동안의 교체는 거의 다 거부된다** — 램프를 이어 붙이는 채택 ($\dot\gamma,\ddot\gamma$ 연속) 은 S8 후속이다. 램프가 멈춘 구간 ($\dot\gamma=\ddot\gamma=0$) 에서는 $\Vert\Delta p_c\Vert\le\eta_{jump}a_{\max}/(\omega^2(1-\gamma))$ — 출하 p1b 52 mm, leap 88 mm (γ=0). 이전 규칙 (거리 한계 `e_jump_max` 0.01 m · `ed_jump_max`) 은 γ≈0 에서 "예측이 10 mm 넘게 움직이면 갱신 안 함" 이 되어 sim 에서 `refreshed` 가 0 이었다 (스냅샷당 $p(t_c)$ 이동 중앙 98 mm, #537).
 3. `COMMITTED` 이후에는 포구점을 교체하지 않는다(L7).
 
 **S6 런타임 (2026-09-23, `/code-review` 반영).**
 
 - **현재 plan 은 RT 가 따르는 plan 이다.** 계획기는 최근 게시 몇 개를 기억하고, RT 가 `PlannerRtState` 로 보고한 `plan_id` 로 "현재" 를 찾는다. RT 가 거부한 게시 (freeze·나이·더 새 게시) 는 현재가 되지 않는다.
 - **현재 plan 의 후보를 먼저 평가한다.** 1 의 "불가능 판정" 이 `max_ik`·예산에 밀려 평가 안 된 것을 뜻하지 않도록, 따라가는 plan 의 $t_c$ (반 slice 안) 후보를 IK 순서 맨 앞에 둔다.
-- **갱신 (`refreshed`).** 따라가는 후보가 여전히 최선인데 예측된 $p_c$ 가 `planner.gamma.eps_term` 을 넘게 움직였으면 새 $p_c$ 로 재게시한다 (2·freeze 적용). 히스테리시스는 "다른 후보로 바꾸는가" 의 규칙이지 "옛 예측을 붙잡는가" 가 아니다 — 붙잡으면 soft catch 가 $(1-\gamma_f)\Vert\delta\Vert$ 만큼 빗나간다.
+- **갱신 (`refreshed`).** 따라가는 후보가 여전히 최선인데 예측된 $p_c$ 가 `planner.gamma.eps_term` 을 넘게 움직였으면 새 $p_c$ 로 재게시한다 (2·freeze 적용 — 2 가 거부하면 `held_jump`). 히스테리시스는 "다른 후보로 바꾸는가" 의 규칙이지 "옛 예측을 붙잡는가" 가 아니다 — 붙잡으면 soft catch 가 $(1-\gamma_f)\Vert\delta\Vert$ 만큼 빗나간다.
 - **후보가 없는 사이클은 게시하지 않는다.** 따라가는 중 settle·후보 0·입력 무효로 끝난 사이클은 "plan 없음" 을 게시하지 않는다 (`held_no_candidate`) — 게시하면 RT 가 아직 안 읽은 교체를 덮는다.
 - **교체의 γ 는 연속이다.** RT 는 교체 plan 의 γ 램프를 **채택 tick 의 기준 γ** 에서, **그 tick 이후에** 시작한다. 계획 시점의 γ 나 이미 지난 램프 시작을 쓰면 γ 계단이 $\gamma\,(o-p_c)$·$\ddot\gamma\,(o-p_c)$ 를 통해 $e$·$u_{des}$ 의 계단이 된다.
 
@@ -481,8 +485,8 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.stop.a_dec` | – | – | – | – | v0.5 에서 삭제 — 단일 키 `supervisor.decel.a_dec` (L7 §6) 를 읽는다 (§4.9) |
 | `planner.stop.check_ik` | bool | – | true | – | §4.9 |
 | `planner.switch.delta_J` | double | – | 0.1 | ≥0 | §4.7 |
-| `planner.switch.e_jump_max` | double | m | 0.01 | >0 | §4.7 |
-| `planner.switch.ed_jump_max` | double | m/s | 0.05 | >0 | §4.7 교체 시 $\dot e$ 점프 한계. 단일 키 (L7 은 γ 하향용으로 읽었으나 v1 범위 밖, D-8) |
+| `planner.switch.eta_jump` | double | – | 0.25 | (0, 1] | §4.7 규칙 2: 교체가 $u_{des}$ 에 넣는 계단 ≤ `eta_jump` × `reference.a_max` (결정 ⑥, 2026-09-23). provisional |
+| `planner.switch.e_jump_max`, `ed_jump_max` | – | – | – | – | 결정 ⑥ 으로 삭제 — `eta_jump` 가 대체. 파서가 **거부**한다 (옛 값으로 튜닝된 profile 을 기본값으로 조용히 돌리지 않는다) |
 | `planner.gamma.derate_step` | – | – | – | – | v1 범위 밖 (D-8) — γ derate 재도입 시 단일 키로 다시 정한다 |
 | `planner.freeze.T_freeze` | double | s | p1b **0.36** · leap **0.19** (provisional) | ≥ §4.11 하한 | §4.11 하한식 (결정 G, 2026-09-23) |
 | `planner.score.w_sigma`, `w_t`, `w_q`, `w_late`, `w_gamma` | double | – | 1, 1, 0.1, 0, 5 | ≥0 | §4.10 튜닝. `w_gamma`를 크게 잡으면 사전식 선택과 같아진다 |

@@ -41,6 +41,52 @@ constexpr double kSecondsToNs = 1e9;
 
 }  // namespace
 
+double PlannerSearch::SwitchStep(const TrajectorySnapshot& traj, const PlannerRtState& rt,
+                                 NowLead now_lead, double dp) const noexcept {
+  const Eigen::Vector3d p_c(current_.p_c[0], current_.p_c[1], current_.p_c[2]);
+  // The ramp terms need the ball target at the adoption instant; a target the
+  // sampler cannot give fails the rule closed (NaN).
+  const auto bound_at = [&](std::int64_t t_ns, double g, double gd, double gdd) noexcept {
+    double xo_norm = 0.0;
+    double v_o_norm = 0.0;
+    if (gd != 0.0 || gdd != 0.0) {
+      const SampleEval o = SampleAt(traj, NowLead{t_ns});
+      xo_norm = o.valid ? (o.p - p_c).norm() : std::numeric_limits<double>::quiet_NaN();
+      v_o_norm = o.valid ? o.v.norm() : 0.0;
+    }
+    return SwitchAccelStepBound(constants_.ref_omega, constants_.ref_zeta, g, gd, gdd, dp, xo_norm,
+                                v_o_norm);
+  };
+  if (!rt.ref_valid) {
+    return bound_at(now_lead.ns, 0.0, 0.0, 0.0);
+  }
+  if (!rt.ramp_valid || !(rt.ramp_t1_ns > rt.ramp_t0_ns)) {
+    return bound_at(now_lead.ns, rt.gamma, rt.gamma_d, rt.gamma_dd);
+  }
+  // The RT adopts a publish of THIS cycle on its first tick after it: within
+  // the search budget of the cycle's start, plus two ticks of slack. Over
+  // that window the followed ramp can start — γ̇ = γ̈ = 0 on the snapshot's
+  // tick is not the adoption's (2026-09-23 /code-review) — so the bound is
+  // the worst over kSwitchSamples instants of the ramp the RT is running.
+  const GammaProfile ramp{rt.ramp_g0, rt.ramp_gf, 0.0,
+                          static_cast<double>(rt.ramp_t1_ns - rt.ramp_t0_ns) * kNsToS};
+  const std::int64_t span = SecondsToNs(params_.budget_s + 2.0 * constants_.control_dt);
+  double worst = 0.0;
+  for (int i = 0; i < kSwitchSamples; ++i) {
+    const std::int64_t t_ns = now_lead.ns + span * i / (kSwitchSamples - 1);
+    double g = 0.0;
+    double gd = 0.0;
+    double gdd = 0.0;
+    ramp.Eval(static_cast<double>(t_ns - rt.ramp_t0_ns) * kNsToS, g, gd, gdd);
+    const double b = bound_at(t_ns, g, gd, gdd);
+    if (std::isnan(b)) {
+      return b;  // unjudgeable at one instant = unjudgeable
+    }
+    worst = std::max(worst, b);
+  }
+  return worst;
+}
+
 bool PlannerSearch::Configure(const PlannerModel& model, const PlannerConstants& constants,
                               const PlannerParams& params, const CatchPoseIkOptions& ik,
                               ClockFn clock) {
@@ -553,18 +599,18 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
       const double dp = std::sqrt((bs.p[0] - current_.p_c[0]) * (bs.p[0] - current_.p_c[0]) +
                                   (bs.p[1] - current_.p_c[1]) * (bs.p[1] - current_.p_c[1]) +
                                   (bs.p[2] - current_.p_c[2]) * (bs.p[2] - current_.p_c[2]));
-      const double g = rt.ref_valid ? rt.gamma : 0.0;
-      const double gd = rt.ref_valid ? rt.gamma_d : 0.0;
-      const bool jump_ok = (1.0 - g) * dp <= params_.switch_e_jump_max &&
-                           std::fabs(gd) * dp <= params_.switch_ed_jump_max;
+      // The step the switch puts into u_des, held to η_jump·a_max (§4.7,
+      // decision ⑥), at its worst over the instants the RT may adopt it.
+      const double step = SwitchStep(traj, rt, now_lead, dp);
+      const bool jump_ok = step <= params_.switch_eta_jump * constants_.ref_a_max;
       const bool best_is_current =
           std::fabs(static_cast<double>(bs.t_ns - current_.t_c_ns)) <= half;
       if (!better) {
         // Same candidate, moved prediction: refresh it so the RT does not
         // keep aiming at where the ball was predicted to be.
-        if (best_is_current && dp > params_.eps_term && jump_ok) {
-          stats.decision = SwitchDecision::kRefreshed;
-          stats.publish = true;
+        if (best_is_current && dp > params_.eps_term) {
+          stats.decision = jump_ok ? SwitchDecision::kRefreshed : SwitchDecision::kHeldJump;
+          stats.publish = jump_ok;
         } else {
           stats.decision = SwitchDecision::kHeldHysteresis;
         }

@@ -121,10 +121,11 @@ struct PlannerParams {
   /// constants (first runtime consumer). NaN = unset.
   double d_eff{std::numeric_limits<double>::quiet_NaN()};
   double r_cap{std::numeric_limits<double>::quiet_NaN()};
-  /// `planner.switch.*` (§4.7).
+  /// `planner.switch.*` (§4.7). `eta_jump`: the fraction of the reference's
+  /// `a_max` a switch may step u_des by (decision ⑥, 2026-09-23 — replaces the
+  /// distance limits `e_jump_max` / `ed_jump_max`, which the parser refuses).
   double switch_delta_j{0.1};
-  double switch_e_jump_max{0.01};
-  double switch_ed_jump_max{0.05};
+  double switch_eta_jump{0.25};
   /// `planner.freeze.T_freeze` [s] (decision G). NaN = unset.
   double t_freeze{std::numeric_limits<double>::quiet_NaN()};
   /// `planner.score.*` (§4.10 + decision D).
