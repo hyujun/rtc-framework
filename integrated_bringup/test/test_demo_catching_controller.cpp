@@ -1310,6 +1310,46 @@ TEST_P(ShippedCatchingProfile, ThePlannerAndTheOracleTogetherPark) {
   EXPECT_EQ(ctrl.GetPlannerThread(), nullptr);
 }
 
+TEST_P(ShippedCatchingProfile, AnUnsetPlannerDecisionParksInsteadOfGuessing) {
+  // S6-B: sub_model, T_freeze, catch_box, d_eff and r_cap are decisions with
+  // no default. Each one removed parks the controller and names the key; the
+  // robot still comes up. Positive control: the shipped file itself does not
+  // park (RunsThePlannerThroughTheWholeLifecycle).
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const std::vector<std::pair<const char*, const char*>> keys{{"sub_model", nullptr},
+                                                              {"freeze", "T_freeze"},
+                                                              {"workspace", "catch_box"},
+                                                              {"hand", "d_eff"},
+                                                              {"hand", "r_cap"}};
+  int n = 0;
+  for (const auto& [section, key] : keys) {
+    YAML::Node node = ShippedWithPlanner(profile, true, false);
+    YAML::Node planner = node["catching"]["planner"];
+    ASSERT_TRUE(key == nullptr ? static_cast<bool>(planner[section])
+                               : static_cast<bool>(planner[section][key]))
+        << profile << ": precondition — the shipped file sets " << section;
+    if (key == nullptr) {
+      planner.remove(section);
+    } else {
+      planner[section].remove(key);
+    }
+    auto node_handle =
+        NodeWithProfile("catching_shipped_unset_" + profile + "_" + std::to_string(n++), "mpc_on");
+    DemoCatchingController ctrl{""};
+    ctrl.SetControlRate(kShippedControlRateHz);
+    ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+    const rclcpp_lifecycle::State prev;
+    ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << profile << " without " << section;
+    EXPECT_TRUE(ctrl.IsSimOnlyDisabled()) << profile << " without " << section;
+    EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kPlannerUnset)
+        << profile << " without " << section;
+    EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  }
+}
+
 TEST_P(ShippedCatchingProfile, TheWaitPoseIsOnePerArmJointAndInsideTheArmLimits) {
   // Decision L: arm joint order. Read against the arm device's own limits
   // rather than restated numbers.

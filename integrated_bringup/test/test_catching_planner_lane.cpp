@@ -34,6 +34,7 @@
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -45,6 +46,7 @@ namespace {
 
 using integrated_bringup::CatchingPlannerThread;
 using integrated_bringup::DemoCatchingController;
+using integrated_bringup::testfx::CatchFrameOracle;
 using integrated_bringup::testfx::kDt;
 using integrated_bringup::testfx::kP1bHandDof;
 using integrated_bringup::testfx::kUr5eArmDof;
@@ -282,6 +284,24 @@ class CatchingPlanLaneTest : public ::testing::Test {
         TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
     yaml["diagnostic"]["oracle_plan"]["enabled"] = oracle;
     yaml["catching"]["planner"]["enabled"] = planner;
+    if (planner) {
+      // The shipped ur5e_p1b planner values (S6-B). The fixture's model config
+      // mirrors the shipped robot config, `ur5e_catch` included (R-3).
+      YAML::Node pl = yaml["catching"]["planner"];
+      pl["sub_model"] = "ur5e_catch";
+      pl["wait_pose"] = std::vector<double>{0.212, -1.376, 1.107, -1.978, -3.296, 0.121};
+      pl["freeze"]["T_freeze"] = 0.36;
+      pl["hand"]["d_eff"] = 0.2815;
+      pl["hand"]["r_cap"] = 0.024;
+      pl["workspace"]["catch_box"]["min"] = std::vector<double>{0.19, -0.30, 0.21};
+      pl["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
+      pl["wake_timeout_s"] = 0.02;
+      pl["n_settle"] = 1;
+      // Cleared like every other provisional flag in TrackingYaml: this
+      // fixture is judged on the REAL-ARM axis (its devices declare no
+      // backend), where a provisional planner block parks the controller.
+      pl["provisional"] = false;
+    }
     const rclcpp_lifecycle::State prev;
     ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
               DemoCatchingController::CallbackReturn::SUCCESS);
@@ -316,9 +336,13 @@ class CatchingPlanLaneTest : public ::testing::Test {
 
   void Publish(std::uint64_t sequence, std::uint64_t generation = 42) {
     integrated_bringup::testing::CloudSpec spec;
-    spec.n = 8;
+    spec.n = static_cast<std::uint32_t>(cloud_n_);
     spec.sequence = sequence;
     spec.generation = generation;
+    if (ball_set_) {
+      spec.p0 = ball_p0_;
+      spec.vel = ball_vel_;
+    }
     auto msg = integrated_bringup::testing::MakeCloud(spec);
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     const std::int64_t wall =
@@ -377,6 +401,12 @@ class CatchingPlanLaneTest : public ::testing::Test {
   std::string topic_;
   ControllerState state_{};
   std::uint64_t next_seq_{1};
+  /// The ball the published prediction carries. Default: the decode suite's
+  /// diagonal, nowhere near the arm — there is no catch point on it.
+  bool ball_set_{false};
+  std::array<double, 3> ball_p0_{};
+  std::array<double, 3> ball_vel_{};
+  int cloud_n_{8};
   static inline int counter_ = 0;
 };
 
@@ -465,11 +495,14 @@ TEST_F(CatchingPlanLaneTest, APlanPublishedBeforeAnEstopResetIsNotTakenAfterIt) 
   EXPECT_EQ(ctrl_->GetPlanAdmittedCount(), 0U);
 }
 
-TEST_F(CatchingPlanLaneTest, WithThePlannerEnabledTheStubKeepsTrackingOnNoCatchablePlan) {
-  // Wiring the thread changes no behaviour at S6-A: the stub publishes
-  // "no plan", the RT refuses it as invalid, and TRACKING self-loops exactly as
-  // it did before a planner existed.
+TEST_F(CatchingPlanLaneTest, WithNoCatchablePointThePlannerKeepsTrackingOnNoCatchablePlan) {
+  // S6-A wrote this case against the stub search. Since S6-B the search is
+  // real, and the default prediction (the decode suite's diagonal) carries no
+  // catch point: every candidate is outside the catch box or the horizon. The
+  // outcome the RT sees is the same as the stub's — "no plan", refused as
+  // invalid, TRACKING self-looping on NO_CATCHABLE_PLAN — now for a reason.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true));
+  ASSERT_TRUE(ctrl_->IsPlannerSearchConfigured()) << "the real model gave the search no model";
   const CatchingPlannerThread* thread = ctrl_->GetPlannerThread();
   ASSERT_NE(thread, nullptr);
   EXPECT_TRUE(thread->Running());
@@ -495,6 +528,62 @@ TEST_F(CatchingPlanLaneTest, WithThePlannerEnabledTheStubKeepsTrackingOnNoCatcha
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_TRUE(thread->Paused());
+}
+
+TEST_F(CatchingPlanLaneTest, ThePlannerFindsAReachableCatchPointAndTheRtFollowsIt) {
+  // End to end on the real UR5e+P1b model (S6-B): a ball whose prediction
+  // passes through a point the catch frame can reach, facing the palm. The
+  // planner's search must publish a valid plan for it and the RT must adopt
+  // it (TRACKING → APPROACH) through the same admission path the oracle uses.
+  const pinocchio::SE3 pose = [&] {
+    CatchFrameOracle oracle(*builder_);
+    std::array<double, 64> home{};
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      home[static_cast<std::size_t>(i)] = kUr5eHome[static_cast<std::size_t>(i)];
+    }
+    return oracle.PoseAt(
+        integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names, home,
+        kUr5eArmDof);
+  }();
+  // Ball moving INTO the palm (against the catch frame's +z) at 1.5 m/s,
+  // passing 3 cm in front of the current catch point 0.5 s after the stamp.
+  const Eigen::Vector3d z = pose.rotation().col(2);
+  const Eigen::Vector3d target = pose.translation() + 0.03 * z;
+  const Eigen::Vector3d vel = -1.5 * z;
+  const Eigen::Vector3d p0 = target - 0.5 * vel;
+  ball_set_ = true;
+  ball_p0_ = {p0.x(), p0.y(), p0.z()};
+  ball_vel_ = {vel.x(), vel.y(), vel.z()};
+  cloud_n_ = 20;  // 0.95 s of prediction: the slice window is [T_freeze, 0.95]
+
+  ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true));
+  ASSERT_TRUE(ctrl_->IsPlannerSearchConfigured());
+  bool approached = false;
+  for (int t = 0; t < 600 && !approached; ++t) {
+    if (t % 10 == 0) {
+      Publish(next_seq_++);
+    }
+    static_cast<void>(Tick());
+    std::this_thread::sleep_for(1ms);
+    approached = ctrl_->GetMode() == Mode::kApproach;
+  }
+  const auto record = ctrl_->GetPlannerThread()->LastRecord();
+  ASSERT_TRUE(approached) << "no plan was adopted; last planner record: outcome "
+                          << rtc::catching::CycleOutcomeName(record.outcome) << ", reason "
+                          << static_cast<int>(record.reason) << ", in window "
+                          << record.search.n_in_window << ", IK " << record.search.n_ik
+                          << ", passed " << record.search.n_pass;
+  EXPECT_EQ(ctrl_->GetPlanAdmittedCount(), 1U);
+  const PlanSnapshot followed = ctrl_->GetFollowedPlanForTesting();
+  EXPECT_TRUE(followed.valid);
+  EXPECT_EQ(followed.token.generation, 42U);
+  // The chosen catch point is ON the predicted line (a vision sample), inside
+  // the catch box, with the approach axis against the ball.
+  const Eigen::Vector3d p_c(followed.p_c[0], followed.p_c[1], followed.p_c[2]);
+  const Eigen::Vector3d off = p_c - p0;
+  EXPECT_LT((off - off.dot(vel.normalized()) * vel.normalized()).norm(), 1e-9);
+  const Eigen::Vector3d a_d(followed.a_d[0], followed.a_d[1], followed.a_d[2]);
+  EXPECT_NEAR(a_d.dot(z), 1.0, 1e-9);
 }
 
 // ── The thread lives for one configuration (/code-review 2026-09-23) ────────

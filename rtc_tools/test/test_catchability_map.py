@@ -557,6 +557,43 @@ def test_model_config_translation_adds_a_sub_model_reaching_the_catch_frame(tmp_
     assert str(config) in artifacts.provenance["robot_config_sha256"]
 
 
+def _with_shipped_catch_sub_model(tmp_path: Path, tip: str) -> Path:
+    """The shipped config, renamed arm, plus a shipped `<arm>_catch` entry (S6-B R-3)."""
+    path = _shipped_style_config(tmp_path)
+    doc = yaml.safe_load(path.read_text())
+    urdf = doc["/**"]["ros__parameters"]["urdf"]
+    urdf["sub_models"] = {
+        "robo": {"root_link": "mount", "tip_link": "moving"},
+        "robo_catch": {"root_link": "mount", "tip_link": tip},
+    }
+    path.write_text(yaml.safe_dump(doc))
+    return path
+
+
+def test_model_config_uses_the_shipped_catch_sub_model_by_name(tmp_path: Path):
+    # The runtime planner plans in `urdf.sub_models.<arm>_catch`; the map must
+    # judge in the SAME sub-model (G3-I), so it takes the shipped one by name
+    # instead of emitting its own under another name.
+    config = _with_shipped_catch_sub_model(tmp_path, tip="tip")
+    urdf = tmp_path / "tiny.urdf"
+    urdf.write_text(TINY_URDF)
+    artifacts = cm.write_model_config([config], tmp_path / "out", urdf_override=urdf)
+    assert artifacts.catch_sub_model == "robo_catch"
+    doc = yaml.safe_load(artifacts.model_config_path.read_text())
+    names = [entry["name"] for entry in doc["sub_models"]]
+    assert names == ["robo", "robo_catch"]
+
+
+def test_model_config_refuses_a_shipped_catch_sub_model_that_misses_the_catch_parent(
+    tmp_path: Path,
+):
+    config = _with_shipped_catch_sub_model(tmp_path, tip="moving")
+    urdf = tmp_path / "tiny.urdf"
+    urdf.write_text(TINY_URDF)
+    with pytest.raises(SystemExit, match="catch frame's parent"):
+        cm.write_model_config([config], tmp_path / "out", urdf_override=urdf)
+
+
 def test_model_config_translation_refuses_an_undeclared_catch_frame(tmp_path: Path):
     config = _shipped_style_config(tmp_path)
     urdf = tmp_path / "tiny.urdf"

@@ -25,9 +25,10 @@ demo_catching_controller:
     hand_step: true
 
     # ── S5.5 oracle plan (A-S5-8) ───────────────────────────────────────────
-    # The stand-in for the S6 planner: ONE fixed catch point, so the tracking
-    # chain (sample -> soft-catch reference -> CLIK -> arm) can be exercised in
-    # sim before a planner exists. S6 removes this block.
+    # The stand-in for the planner: ONE fixed catch point, so the tracking
+    # chain (sample -> soft-catch reference -> CLIK -> arm) can be exercised
+    # without a planner. Kept (off) as the S5.5 fixed-point check; it writes
+    # the same plan box the planner does, so only one of the two may be on.
     #
     # It is NOT a hazard on its own: the supervisor still needs a usable vision
     # prediction to leave ARMED, and the operator still has to raise
@@ -45,7 +46,9 @@ demo_catching_controller:
     # turns this into the FIXED-catch-point check S5.5 asks for rather than a
     # moving-target one.
     oracle_plan:
-      enabled: true
+      # OFF since S6-B (R-4): the planner writes the plan box. Turn this on
+      # (and planner.enabled off) to rerun the fixed-point S5.5 check.
+      enabled: false
       p_c: [0.570, 0.190, 0.400]
       a_d: [0.0, 0.0, -1.0]
       t_c_offset_s: 1.5
@@ -343,10 +346,9 @@ demo_catching_controller:
     # With the two user-posed pairs this block was TBD: 0 held of 851.
     planner:
       # ── Planner thread (L3 §6, S6-A) ──────────────────────────────────────
-      # OFF while `diagnostic.oracle_plan` is on: both write the ONE plan box,
-      # and a profile enabling both is parked. S6-B turns the oracle off and
-      # this on (R-4).
-      enabled: false
+      # ON since S6-B (R-4): the planner is the plan box's only writer — the
+      # oracle plan above is off (a profile enabling both is parked).
+      enabled: true
       # The longest the planner sleeps without a new trajectory (decision H,
       # 2026-09-23). It also re-plans on this cadence while vision is quiet.
       wake_timeout_s: 0.05
@@ -358,6 +360,62 @@ demo_catching_controller:
       # the S3.5b gate map's wait pose for this arm. PROVISIONAL. Consumed from S6-B (the IK seed); homing to it
       # is S7.2.
       wait_pose: [0.212, -1.376, 1.107, -1.978, -3.296, 0.121]
+      # ── Search (L3 §4, S6-B) ──────────────────────────────────────────────
+      # The robot config's catch sub-model (R-3): arm root → catch frame parent.
+      sub_model: "ur5e_catch"
+      # IK candidates per cycle after the pre-filter (R-2: one IK ≈ 2–3 ms on the
+      # development PC, so 8 fit budget_s with room; the cycle can overrun the
+      # budget by at most one IK — the budget is checked BEFORE each solve).
+      max_ik: 8
+      # Snapshots to skip after a track change (L3 §4.4).
+      n_settle: 3
+      slice:
+        # = the vision spacing (prediction.dt_expected): candidates are the
+        # vision samples themselves, so the covariance needs no interpolation.
+        dt: 0.05
+        # vision horizon 1.0 s − prediction.t_horizon_margin 0.05 s.
+        t_max: 0.95
+        # t_lead_min defaults to freeze.T_freeze (decided 2026-09-23).
+      time:
+        margin: 0.03
+      unc:
+        kappa_sigma: 0.3
+      gamma:
+        eta_v: 0.9
+        margin: 0.1
+      budget:
+        n_sigma: 2.0
+        # 0 until measured (S10) — they only RANK candidates (decision 2026-09-23).
+        sigma_trk: 0.0
+        clock_err: 0.0
+      switch:
+        delta_J: 0.1
+        e_jump_max: 0.01
+        ed_jump_max: 0.05
+      freeze:
+        # Decision G (2026-09-23): the L3 §4.11 lower bound T_close,tot 0.2815 +
+        # T_arm (0, sim) + margin 0.03 = 0.31, rounded up with room. Provisional.
+        T_freeze: 0.36
+      score:
+        # L3 §6 defaults; `penalty` is per failed RANK gate (decision D) and must
+        # dominate the continuous terms. Tuning is S6-C/S8.
+        w_sigma: 1.0
+        w_t: 1.0
+        w_q: 0.1
+        w_late: 0.0
+        w_gamma: 5.0
+        penalty: 10.0
+      workspace:
+        # Decision I (2026-09-23), model world frame (= this robot's base): the box
+        # around the S3.5b fine grid's gate-open candidates — their p_c and their
+        # stopping points at both ends of the γ window, 967 candidates, recomputed
+        # 2026-09-23 with the shipped wait pose — plus 0.1 m. A JUDGEMENT gate:
+        # p_c and p_stop must both lie inside. Provisional.
+        catch_box:
+          min: [0.19, -0.30, 0.21]
+          max: [1.04, 0.31, 0.96]
+      # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
+      provisional: true
       hand:
         d_eff: 0.2815
         r_cap: 0.024

@@ -182,6 +182,9 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   // configure through LoadConfig's own try/catch rather than defaulting.
   planner_params_ = catching_section_present_ ? rtc::catching::ParsePlannerParams(catching)
                                               : rtc::catching::PlannerParams{};
+  catch_pose_ik_config_ = catching_section_present_
+                              ? rtc::catching::ParseCatchPoseIkParams(catching)
+                              : rtc::catching::CatchPoseIkConfig{};
 
   // ── logs: (Phase C) ─────────────────────────────────────────────────────
   parsed_log_entries_.clear();
@@ -718,6 +721,14 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
       s.q_cmd[u] = arm_q_cmd_[u];
       s.qd_cmd[u] = arm_qd_cmd_[u];
     }
+  } else if (arm_readable_ && state.num_devices > kCatchingArmDeviceIdx) {
+    // Not yet tied to a command (TRACKING before a plan): the arm is where it
+    // is measured, at rest as far as the planner's reach time is concerned.
+    // `cmd_seeded` false tells the planner the velocity is not a command's.
+    const auto& dev = state.devices[kCatchingArmDeviceIdx];
+    for (int i = 0; i < nv && i < kDemoCatchingMaxArmDof; ++i) {
+      s.q_cmd[static_cast<std::size_t>(i)] = dev.positions[static_cast<std::size_t>(i)];
+    }
   }
   // The reference block of THIS tick's record: RecordReference fills it only on
   // a tick that ran the generator, and the record is fresh every tick.
@@ -951,6 +962,28 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
   }
 
   if (mode_ == Mode::kApproach) {
+    // A replacement plan (§4.7, S6-B). The planner already applied the
+    // switching rule; the RT adds its own freeze check (decision G) so a late
+    // publish cannot move a catch point the supervisor is about to commit to.
+    // Re-targeted in place — no Reset — so the reference state is continuous;
+    // the new plan's γ ramp starts from the γ the reference is at.
+    if (plan_active_ && plan_refusal_ == rtc::catching::PlanRefusal::kNone &&
+        plan_in_.plan_id != plan_.plan_id) {
+      const std::int64_t to_tc = plan_.t_c_ns - SteadyNowNs();
+      if (plan_freeze_ns_ <= 0 || to_tc > plan_freeze_ns_) {
+        AdoptPlan(plan_in_);
+        plan_replaced_count_.fetch_add(1, std::memory_order_relaxed);
+        if (reference_seeded_ && reference_.has_value()) {
+          const rtc::catching::BallTime t0{plan_.gamma_t0_ns};
+          const rtc::catching::BallTime t1{plan_.gamma_t1_ns};
+          if (!reference_->SetIntercept(
+                  Eigen::Vector3d(plan_.p_c[0], plan_.p_c[1], plan_.p_c[2]),
+                  rtc::catching::MakeGammaProfile(plan_.gamma_g0, plan_.gamma_gf, t0, t1, t0))) {
+            return {Reason::kPlanInvalid, true};
+          }
+        }
+      }
+    }
     // Following a plan. The law runs here and its verdict IS this tick's
     // reason: a healthy tick reports nothing and holds APPROACH.
     const Reason law = RunTrackingTick(state, snapshot);

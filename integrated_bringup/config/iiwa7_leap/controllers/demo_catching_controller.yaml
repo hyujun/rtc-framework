@@ -231,6 +231,63 @@ demo_catching_controller:
       # the S3.5a map's wait pose for this arm. PROVISIONAL. Consumed from S6-B (the IK seed); homing to it
       # is S7.2.
       wait_pose: [0.0, 1.0, 0.0, -1.2, 0.0, 1.2, 0.0]
+      # ── Search (L3 §4, S6-B) ──────────────────────────────────────────────
+      # The robot config's catch sub-model (R-3): arm root → catch frame parent.
+      sub_model: "iiwa7_catch"
+      # IK candidates per cycle after the pre-filter (R-2: one IK ≈ 2–3 ms on the
+      # development PC, so 8 fit budget_s with room; the cycle can overrun the
+      # budget by at most one IK — the budget is checked BEFORE each solve).
+      max_ik: 8
+      # Snapshots to skip after a track change (L3 §4.4).
+      n_settle: 3
+      slice:
+        # = the vision spacing (prediction.dt_expected): candidates are the
+        # vision samples themselves, so the covariance needs no interpolation.
+        dt: 0.05
+        # vision horizon 1.0 s − prediction.t_horizon_margin 0.05 s.
+        t_max: 0.95
+        # t_lead_min defaults to freeze.T_freeze (decided 2026-09-23).
+      time:
+        margin: 0.03
+      unc:
+        kappa_sigma: 0.3
+      gamma:
+        eta_v: 0.9
+        margin: 0.1
+      budget:
+        n_sigma: 2.0
+        # 0 until measured (S10) — they only RANK candidates (decision 2026-09-23).
+        sigma_trk: 0.0
+        clock_err: 0.0
+      switch:
+        delta_J: 0.1
+        e_jump_max: 0.01
+        ed_jump_max: 0.05
+      freeze:
+        # Decision G (2026-09-23): the L3 §4.11 lower bound T_close,tot 0.1047 +
+        # T_arm (0, sim) + margin 0.03 = 0.135, rounded up with room. Provisional.
+        T_freeze: 0.19
+      score:
+        # L3 §6 defaults; `penalty` is per failed RANK gate (decision D) and must
+        # dominate the continuous terms. Tuning is S6-C/S8.
+        w_sigma: 1.0
+        w_t: 1.0
+        w_q: 0.1
+        w_late: 0.0
+        w_gamma: 5.0
+        penalty: 10.0
+      workspace:
+        # Decision I (2026-09-23), model world frame. This arm's S3.5b gate map is
+        # EMPTY (no gate-open candidate), so the box is the kinematically
+        # accepted catch points of a 2534-candidate map (2026-09-23, shipped wait
+        # pose) plus 0.1 m in x and z; that map sampled one azimuth, so the
+        # lateral extent is p1b's ±0.30 m (both arms are symmetric about base z,
+        # S3.5b). Provisional — a guess with a stated source, not a measurement.
+        catch_box:
+          min: [-0.96, -0.30, 0.00]
+          max: [1.05, 0.30, 1.10]
+      # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
+      provisional: true
       hand:
         d_eff: 0.1047
         r_cap: 0.031

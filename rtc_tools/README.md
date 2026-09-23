@@ -383,6 +383,9 @@ outc = cm.summarize_throws(judged, seed_id=best.seed_id, throw_count=len(throws)
   sub-model `arm_catch` 를 **추가로** 선언한다. 그 뒤(손 전체)는 `buildReducedModel` 이 잠그는데,
   손바닥이 손의 폐쇄 루프 상류라 catch frame 의 FK·팔 관절 Jacobian 은 **정확하다**. 스키마 차이도
   여기서 번역한다 (`urdf_path`, `sub_models` 는 map 이 아니라 **sequence**; `extra_frames` 만 같은 map)
+  - **S6-B (2026-09-23)**: 로봇 config 가 `urdf.sub_models.<arm>_catch` 를 이미 선언하면 (출하 두 로봇 —
+    런타임 계획기의 `planner.sub_model`) 그 항목을 **이름 그대로** 쓴다. 그 root/tip 이 arm root →
+    catch frame 부모가 아니면 거부한다 — 지도와 런타임 계획기가 다른 모델에서 판정하게 되기 때문이다 (G3-I)
 - **샤딩·재개**: 후보를 chunk 로 나눠 최대 6 프로세스 (이 머신 상한) 로 돌리고 자식 env 에
   `OMP_NUM_THREADS=1` 을 준다. shard 출력은 **행/ID 가 맞고 + 입력 fingerprint sidecar 가 일치할 때만**
   재사용한다 (`shard_is_reusable`). 후보 id 는 실행마다 `0..N-1` 이라 ID 대조만으로는 같은 `--out-dir` 에

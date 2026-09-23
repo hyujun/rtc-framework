@@ -13,10 +13,13 @@
 
 #include <sys/eventfd.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -691,7 +694,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     bool consumed_tbd_only = true;
     for (std::size_t i = 0; i < report_.failure_count; ++i) {
       const auto& f = report_.failures[i];
-      if (!ConsumedByCatchingSkeleton(f.key)) {
+      // S6 joins `planner.*` to the consumed set — but only when the planner
+      // runs: a profile with the planner off consumes none of it, and gating
+      // on a value nothing reads is how a gate stops meaning anything.
+      const bool planner_key =
+          planner_params_.enabled && std::string_view(f.key).starts_with("planner.");
+      if (!ConsumedByCatchingSkeleton(f.key) && !planner_key) {
         RCLCPP_WARN(logger_,
                     "catching config: %s — %s. Not consumed at this step; the step that owns "
                     "the value decides it.",
@@ -763,6 +771,28 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "true — the plan box would have two writers. Turn one of them off. This "
                    "controller will refuse to activate; the robot still comes up.");
       return CallbackReturn::SUCCESS;
+    }
+    // The planner's DECISION values (S6-B) — values nobody may guess. Same rule
+    // as a consumed TBD: park, name the key, keep the robot up (A-S5-12).
+    if (planner_params_.enabled) {
+      if (const char* missing = PlannerDecisionMissing(); missing != nullptr) {
+        sim_only_disabled_ = true;
+        park_reason_ = CatchingParkReason::kPlannerUnset;
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: planner.enabled is true but '%s' is unset or TBD — the planner "
+                     "cannot guess it. This controller will refuse to activate; the robot still "
+                     "comes up.",
+                     missing);
+        return CallbackReturn::SUCCESS;
+      }
+      if (real_arm_config_ && planner_params_.provisional) {
+        sim_only_disabled_ = true;
+        park_reason_ = CatchingParkReason::kConsumedValues;
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: real-arm configuration with `planner.provisional: true` (L0 "
+                     "§5.3). Nothing was commanded.");
+        return CallbackReturn::SUCCESS;
+      }
     }
     // One bool for the tick's arming question (§4.5-1).
     //
@@ -1038,6 +1068,26 @@ void DemoCatchingController::StopPlannerThread() noexcept {
   planner_thread_.reset();
 }
 
+const char* DemoCatchingController::PlannerDecisionMissing() const noexcept {
+  const auto& p = planner_params_;
+  if (p.sub_model.empty()) {
+    return "planner.sub_model";
+  }
+  if (!std::isfinite(p.t_freeze)) {
+    return "planner.freeze.T_freeze";
+  }
+  if (!p.catch_box.set) {
+    return "planner.workspace.catch_box";
+  }
+  if (!std::isfinite(p.d_eff)) {
+    return "planner.hand.d_eff";
+  }
+  if (!std::isfinite(p.r_cap)) {
+    return "planner.hand.r_cap";
+  }
+  return nullptr;
+}
+
 bool DemoCatchingController::SetupPlanner() {
   // No thread may be running while the cycle is re-bound: Pause does not stop
   // a wake in flight, and Bind/Configure write what Run reads. on_cleanup has
@@ -1077,12 +1127,117 @@ bool DemoCatchingController::SetupPlanner() {
     }
     planner_wake_fd_.store(fd, std::memory_order_release);
   }
+  // ── The search's model (S6-B, R-3) ────────────────────────────────────────
+  planner_cycle_.ClearSearch();
+  planner_handle_.reset();
+  plan_freeze_ns_ = std::isfinite(planner_params_.t_freeze)
+                        ? static_cast<std::int64_t>(std::llround(planner_params_.t_freeze * 1e9))
+                        : 0;
+  if (!builder_) {
+    RCLCPP_WARN(logger_,
+                "planner: no system model — the thread runs, but its search is the stub "
+                "(it publishes \"no plan\")");
+  } else if (!SetupPlannerSearch()) {
+    return false;
+  }
   RCLCPP_INFO(logger_,
               "planner enabled: wake timeout %.3f s, budget %.3f s, wait pose %s — the thread "
               "spawns on the `mpc` layout role (mpc_main) at activation%s",
               planner_params_.wake_timeout_s, planner_params_.budget_s,
               planner_params_.wait_pose_n > 0 ? "set" : "absent",
               layout_profile_drops_mpc_ ? ", which this launch's profile will REFUSE" : "");
+  return true;
+}
+
+bool DemoCatchingController::SetupPlannerSearch() {
+  const std::string& name = planner_params_.sub_model;
+  std::shared_ptr<const pinocchio::Model> model;
+  try {
+    model = builder_->GetReducedModel(name);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_,
+                 "planner: urdf.sub_models has no '%s' (%s) — declare the catch sub-model in the "
+                 "robot config (arm root → the catch frame's parent link, R-3)",
+                 name.c_str(), e.what());
+    return false;
+  }
+  if (!model || model->nq != model->nv || model->nv <= 0 ||
+      model->nv > static_cast<int>(rtc::catching::kMaxPlanNv)) {
+    RCLCPP_ERROR(logger_, "planner: sub-model '%s' is unusable (nq %d, nv %d, capacity %d)",
+                 name.c_str(), model ? model->nq : -1, model ? model->nv : -1,
+                 static_cast<int>(rtc::catching::kMaxPlanNv));
+    return false;
+  }
+  // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
+  // Jacobian columns and box rows are model order). The model↔device mapping
+  // is carried explicitly instead.
+  planner_handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model);
+  pinocchio::FrameIndex frame = 0;
+  try {
+    frame = rtc::catching::ResolveCatchFrame(*model, catch_frame_name_);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "planner: catch frame '%s' is not in sub-model '%s': %s",
+                 catch_frame_name_.c_str(), name.c_str(), e.what());
+    return false;
+  }
+
+  rtc::catching::PlannerModel pm;
+  pm.handle = planner_handle_.get();
+  pm.catch_frame = frame;
+  pm.nv = model->nv;
+  const auto& vmax = device_max_velocity_[static_cast<std::size_t>(kCatchingArmDeviceIdx)];
+  for (pinocchio::JointIndex jid = 1; jid < static_cast<pinocchio::JointIndex>(model->njoints);
+       ++jid) {
+    const int qi = model->joints[jid].idx_q();
+    const std::string& jname = model->names[jid];
+    const auto it = std::find(arm_joint_names_.begin(), arm_joint_names_.end(), jname);
+    if (it == arm_joint_names_.end() || qi < 0 || qi >= pm.nv) {
+      RCLCPP_ERROR(logger_,
+                   "planner: sub-model '%s' joint '%s' is not an arm joint of this controller — "
+                   "the catch sub-model must contain the arm's joints only (the hand locked)",
+                   name.c_str(), jname.c_str());
+      return false;
+    }
+    const auto d = static_cast<std::size_t>(std::distance(arm_joint_names_.begin(), it));
+    const auto q = static_cast<std::size_t>(qi);
+    pm.device_of_model[q] = static_cast<int>(d);
+    pm.qdot_max[q] = d < vmax.size() ? vmax[d] : 0.0;
+    pm.qddot_max[q] = d < arm_qdd_max_.size() ? arm_qdd_max_[d] : 0.0;
+  }
+  if (pm.nv != arm_dof_) {
+    RCLCPP_ERROR(logger_, "planner: sub-model '%s' has %d joints, the arm %d", name.c_str(), pm.nv,
+                 arm_dof_);
+    return false;
+  }
+  pm.accel_box = static_cast<int>(arm_qdd_max_.size()) == arm_dof_;
+
+  // Profile constants outside planner.* — NaN where the profile says TBD, so
+  // the gate that needs one fails instead of using a guess.
+  const auto val = [](const rtc::catching::TbdDouble& v) {
+    return v.tbd ? std::numeric_limits<double>::quiet_NaN() : v.value;
+  };
+  rtc::catching::PlannerConstants pc;
+  pc.eta_v = params_.planner_gamma_eta_v.tbd ? 0.9 : params_.planner_gamma_eta_v.value;
+  pc.v_max = val(params_.reference_v_max);
+  pc.a_dec = val(params_.supervisor_decel_a_dec);
+  pc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
+  pc.t_close_e2e = val(params_.hand.T_close_e2e);
+  // T_close,tot = T_close,e2e + h/2 (L3 §4.5): the tick quantisation budget.
+  pc.t_close_total = pc.t_close_e2e + 0.5 * GetDefaultDt();
+  pc.ball_mass = val(params_.ball.mass);
+
+  if (!planner_cycle_.ConfigureSearch(pm, pc, catch_pose_ik_config_.options)) {
+    RCLCPP_ERROR(logger_,
+                 "planner: the search refused its model (nv %d, wait pose %d entries — "
+                 "planner.wait_pose must give one per arm joint)",
+                 pm.nv, planner_params_.wait_pose_n);
+    return false;
+  }
+  RCLCPP_INFO(logger_,
+              "planner search ready: sub-model '%s' (nv %d), catch frame '%s', accel box %s, "
+              "T_freeze %.3f s, max_ik %d",
+              name.c_str(), pm.nv, catch_frame_name_.c_str(), pm.accel_box ? "on" : "OFF",
+              planner_params_.t_freeze, planner_params_.max_ik);
   return true;
 }
 

@@ -58,6 +58,10 @@ inline rtc_urdf_bridge::ModelConfig MakeUr5eP1bModelConfig() {
   // just another serial robot and every closed-chain assertion would be vacuous.
   cfg.closure_yaml_path = share + "/robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml";
   cfg.sub_models.push_back({"ur5e", "base", "tool0"});
+  // Mirrors the shipped `_base.yaml` (dynamic_catching S6-B, R-3): the catching
+  // planner's sub-model, arm root → catch frame parent. After `ur5e`, which
+  // controllers take as the arm (sub_models.front()).
+  cfg.sub_models.push_back({"ur5e_catch", "base", "l_palm_link"});
   cfg.tree_models.push_back({"p1b",
                              "base_adapter",
                              {"l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket",

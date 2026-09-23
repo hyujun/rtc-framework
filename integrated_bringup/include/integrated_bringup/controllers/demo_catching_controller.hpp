@@ -94,6 +94,7 @@
 #include "rtc_base/timing/thread_timing_csv_logger.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/decel_target.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
@@ -180,6 +181,10 @@ enum class CatchingParkReason : std::uint8_t {
   /// `planner.enabled` and `diagnostic.oracle_plan.enabled` are both true: the
   /// plan box would have two writers (S6-A).
   kPlannerOracleConflict,
+  /// The planner is enabled but a value it cannot guess is unset or TBD
+  /// (`planner.sub_model`, `freeze.T_freeze`, `workspace.catch_box`,
+  /// `hand.d_eff`, `hand.r_cap`) — S6-B.
+  kPlannerUnset,
 };
 
 /// Controller-local device indices. This controller claims exactly two groups
@@ -301,6 +306,17 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] rtc::catching::PlanRefusal GetLastPlanRefusal() const noexcept {
     return static_cast<rtc::catching::PlanRefusal>(
         plan_refusal_observed_.load(std::memory_order_relaxed));
+  }
+
+  /// Plans that replaced the one being followed in APPROACH (§4.7, S6-B).
+  [[nodiscard]] std::uint64_t GetPlanReplacedCount() const noexcept {
+    return plan_replaced_count_.load(std::memory_order_relaxed);
+  }
+
+  /// Whether the planner has a model to search in (S6-B). False = the S6-A
+  /// stub ("no plan") — a profile with no system model, e.g. a unit fixture.
+  [[nodiscard]] bool IsPlannerSearchConfigured() const noexcept {
+    return planner_cycle_.SearchConfigured();
   }
 
   /// Plans the RT has adopted (TRACKING → APPROACH edges it took on a plan).
@@ -542,9 +558,19 @@ class DemoCatchingController final : public RTControllerInterface {
   void StorePlannerRtState(const ControllerState& state, rtc::catching::NowReal now) noexcept;
 
   /// Configure-time planner setup: arm-width checks, the wake eventfd, the
-  /// cycle's box binding. Non-RT. Returns false (and logs) on a configuration
-  /// the planner cannot run with.
+  /// cycle's box binding, and (S6-B) the search's model on the catch
+  /// sub-model. Non-RT. Returns false (and logs) on a configuration the
+  /// planner cannot run with.
   [[nodiscard]] bool SetupPlanner();
+
+  /// Build the search's model: a reorder-free handle on `planner.sub_model`,
+  /// the catch frame, the model↔device joint map, velocity/acceleration
+  /// limits and the profile constants. Non-RT; false (and logged) on a model
+  /// the planner cannot use.
+  [[nodiscard]] bool SetupPlannerSearch();
+
+  /// The first planner value that is a decision and is unset, or nullptr.
+  [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
 
   /// Spawn the planner thread on the `mpc` role (E-7 J) once per
   /// configuration, and open its timing CSV + 1 Hz drain timer. Non-RT
@@ -943,6 +969,15 @@ class DemoCatchingController final : public RTControllerInterface {
   /// 1 Hz drain timer never dereferences planner_thread_ (which is joined and
   /// replaced across configurations while the timer may be mid-callback).
   CatchingPlannerThread::TimingBuffer planner_timing_{};
+  /// `planner.ik.*` / `planner.catchability.*` — the same parser and keys the
+  /// offline catchability map uses (S3.5a), so map and runtime solve alike.
+  rtc::catching::CatchPoseIkConfig catch_pose_ik_config_{};
+  /// The planner thread's OWN model handle on `planner.sub_model` (R-3,
+  /// thread-per-handle). Replaced only while no planner thread exists.
+  std::unique_ptr<rtc_urdf_bridge::RtModelHandle> planner_handle_;
+  /// `planner.freeze.T_freeze` in ns (0 = no freeze), the RT's own defence
+  /// against replacing a plan inside the freeze window (decision G).
+  std::int64_t plan_freeze_ns_{0};
   /// Launch layout profile dropped the `mpc` role's core (#350). Read at
   /// configure; see SetLayoutProfile.
   bool layout_profile_drops_mpc_{false};
@@ -966,6 +1001,7 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint8_t> plan_refusal_observed_{
       static_cast<std::uint8_t>(rtc::catching::PlanRefusal::kInvalid)};
   std::atomic<std::uint64_t> plan_admitted_count_{0};
+  std::atomic<std::uint64_t> plan_replaced_count_{0};
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────
   // The hand step arrives on the group's `joint_goal`, which only exists if

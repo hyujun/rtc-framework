@@ -53,6 +53,19 @@
         iiwa7:
           root_link: "link_0"
           tip_link: "ee_link"
+        # The catching planner's model (dynamic_catching S6-B, R-3): the arm
+        # from its root to the catch frame's PARENT. `iiwa7` stops at the
+        # flange, upstream of the palm, so the catch frame is not in it; the
+        # reduced model locks everything past `palm_lower` (the whole hand),
+        # which is exact for the planner — the palm is upstream of the hand's
+        # joints, so the catch frame's FK and Jacobian in the arm joints do not
+        # depend on them. The offline catchability map uses this entry by name
+        # too, so map and runtime judge in one model (G3-I). Named by the
+        # catching controller's `planner.sub_model`. Listed after `iiwa7`:
+        # controllers take the FIRST entry as the arm.
+        iiwa7_catch:
+          root_link: "link_0"
+          tip_link: "palm_lower"
       tree_models:
         leap:
           root_link: "base"
