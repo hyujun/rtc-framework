@@ -502,7 +502,8 @@ ros2 run rtc_tools catch_speed_budget \
 `catch_gate_batch` 가 `time_feasibility.hpp` 의 런타임 함수를 그대로 부르고 (G3-I), python 은 그 입력과
 출력만 맡는다.
 
-- **python 이 만드는 입력**: q̇ᵘ (L3 §4.5 의 DLS 단위 속도 — 런타임 생산자가 S6.2 전에는 없다) 와 그것이
+- **python 이 만드는 입력**: q̇ᵘ (L3 §4.5 의 DLS 단위 속도 — 이 도구는 python 으로 직접 계산한다. 런타임 생산자는 S6.2 의
+  `rtc_controllers` `UnitSpeedSolver` 이고, 두 식의 일치는 `PlannerUnitSpeed` 테스트가 고정한다 — G3-I) 와 그것이
   내는 속도 `J_p q̇ᵘ`. `reference.v_max` 는 `--v-max-m-s derived` 면 수락 후보의 LP v_dir,max 최대 / η_v
   (S4.4 결정: TCP 항은 관절 정격 안에서 구속하지 않는다)
 - **python 이 거는 경계**: p_stop 이 도달 구·바닥 안인가 (`planner.workspace.catch_box` 가 TBD 라 지도와
@@ -514,7 +515,8 @@ ros2 run rtc_tools catch_speed_budget \
 - **대기 자세는 하나다.** 지도가 여러 seed 로 판정됐으면 `--seed-id` 가 필수다 (합집합은 과대평가).
   `proposed_wait_pose` 는 γ·정지 게이트를 통과한 q\* 의 관절별 midrange — 새 seed 로 `catchability_map`
   부터 다시 돌리는 고정점 반복의 입력이다 (q\* 가 seed 에 의존한다)
-- rollout (L3 §4.8) 은 판정하지 않는다 (함수가 S6.3 전에는 없다) — 열린 셀은 `PASS(provisional)`,
+- rollout (L3 §4.8) 은 판정하지 않는다 (런타임 rollout 은 S6.3 의 `gamma_rollout.hpp` 에 있으나 이
+  도구에는 배선하지 않았다) — 열린 셀은 `PASS(provisional)`,
   빈 지도는 확정적이다
 
 ```bash

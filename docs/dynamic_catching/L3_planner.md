@@ -27,7 +27,7 @@
 |---|---|---|
 | G3-1 | 모델 로드 경로와 FK/Jacobian API (폐쇄 체인 손 포함 시 팔 부분만 쓰는 방법) | 닫힘 — CM 이 공유하는 `PinocchioModelBuilder` 1개 + 계획기 스레드 전용 `RtModelHandle` 1개 (스레드별 1개, heap-free, LOCAL/LWA/WORLD). P1b 손바닥 frame 은 폐쇄 루프 상류라 팔 관절 열만 쓴다 (W, D-18) |
 | G3-2 | RT → 계획기 상태 전달 경로(현재 $q_c,\dot q_c$, L4 기준 상태) | 닫힘 — `rtc::SeqLock` 사용. payload 는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지) (W, plan §6) |
-| G3-3 | 계획기 스레드 생성·우선순위 규약 | 닫힘 — D-7: MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), 새 thread layout role, 초기 FIFO, 정책은 D-7a 측정으로 확정 (plan §6, §7) |
+| G3-3 | 계획기 스레드 생성·우선순위 규약 | 닫힘 — D-7: MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), ~~새 thread layout role~~ → 기존 `mpc` role 재사용 (E-7 결정 J, 2026-09-23), 초기 FIFO. D-7a 측정은 사용자 결정으로 생략 — 초기값 유지 (plan §6, §7.2) |
 | G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | 닫힘(provisional) — LEAP 80 mm / 31.0 mm, P1b ≥ 95 mm / 24 mm (S4.5, L6 §4.5). P1b 는 사용자 제공 자세가 파지 불가여서 2026-09-21 에 탐색한 자세 기준. 투척 보정은 S7.1 후 (TBD-HAND-04) |
 | G3-5 | 포구 허용 작업공간, 감속 여유 공간 | TBD-BALL-02 (W7-3) |
 | G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | sim 실측 간격 0.05 s · 지평 0.80 s · N 16 (S3.4 2026-09-20, TBD-VIS-04). **요구 사양 (S3.6, 2026-09-22)**: 간격 0.05 s · 지평 1.0 s (설정) · `n_max` 20 (plan §4.4 S3.6 결과) |
