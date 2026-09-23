@@ -214,6 +214,12 @@ install(
   RENAME motion_editor_gui
 )
 
+install(
+  PROGRAMS scripts/catching_sim_trials.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME catching_sim_trials
+)
+
 # ── Export ─────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
@@ -1575,6 +1581,7 @@ if(BUILD_TESTING)
   # Behavioural twin of the two AST tests above: evaluates every launch
   # description instead of reading it.
   ament_add_pytest_test(test_sim_overlay test/test_sim_overlay.py)
+  ament_add_pytest_test(test_catching_sim_trials test/test_catching_sim_trials.py)
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
   ament_add_pytest_test(test_launch_session_wiring
