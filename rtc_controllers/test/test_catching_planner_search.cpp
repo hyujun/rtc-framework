@@ -416,6 +416,127 @@ TEST(PlannerSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall) {
   EXPECT_FALSE(stats.publish);
 }
 
+// ── 4b. /code-review 2026-09-23 regressions ─────────────────────────────────
+
+std::int64_t g_slow_ns = 0;
+int g_slow_calls = 0;
+
+/// 1 µs per read, except that the FOURTH read of the first cycle lands 30 ms
+/// later — the read that closes the first IK (t_start, the budget check, the
+/// IK start, the IK end). One slow solve, longer than the whole budget.
+std::int64_t OneSlowIkClock() noexcept {
+  ++g_slow_calls;
+  g_slow_ns += (g_slow_calls == 4) ? 30 * kMs : 1'000;
+  return g_slow_ns;
+}
+
+TEST(PlannerSearchReview, OneSlowSolveDoesNotStopThePlannerForGood) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.budget_s = 0.020;  // the shipped budget; the spike is 1.5× it
+  g_slow_ns = 0;
+  g_slow_calls = 0;
+  ASSERT_TRUE(rig->Configure(&OneSlowIkClock));
+  const auto traj = rig->Traj();
+  SearchStats stats;
+  static_cast<void>(
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats));
+  ASSERT_GE(stats.ik_ns_max, 30 * kMs) << "premise: the first cycle saw one 30 ms solve";
+  // Every later cycle still runs IK, and the search widens again as the
+  // estimate relaxes — it used to stop at the first check forever.
+  int widest = 0;
+  for (int cycle = 0; cycle < 40; ++cycle) {
+    static_cast<void>(
+        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats));
+    EXPECT_GE(stats.n_ik, 1) << "cycle " << cycle;
+    widest = std::max(widest, static_cast<int>(stats.n_ik));
+  }
+  EXPECT_GT(widest, 1) << "the estimate never relaxed";
+}
+
+TEST(PlannerSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
+  auto rig = std::make_unique<Rig>();
+  ASSERT_TRUE(rig->Configure());
+  const auto traj = rig->Traj();
+  SearchStats stats;
+  PlanSnapshot first =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  ASSERT_TRUE(first.valid);
+  first.plan_id = 21;
+  rig->search.NotePublished(first);
+  auto rt = rig->Rt();
+  rt.plan_active = true;
+  rt.plan_id = 21;
+  rt.ref_valid = true;
+  rt.gamma = 1.0;  // the jump limits cannot refuse (see the replacement case)
+  rt.gamma_d = 0.0;
+  // The same ball, predicted 5 mm further along y — more than eps_term (2 mm).
+  auto moved = rig->Traj(2);
+  for (int k = 0; k < moved.n; ++k) {
+    moved.s[static_cast<std::size_t>(k)].p[1] += 0.005;
+  }
+  const PlanSnapshot next =
+      rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, NowReal{kNow}, stats);
+  EXPECT_EQ(stats.decision, SwitchDecision::kRefreshed);
+  EXPECT_TRUE(stats.publish);
+  ASSERT_TRUE(next.valid);
+  EXPECT_EQ(next.t_c_ns, first.t_c_ns) << "the same candidate, not a different one";
+  EXPECT_NEAR(next.p_c[1] - first.p_c[1], 0.005, 1e-12);
+}
+
+TEST(PlannerSearchReview, TheCurrentPlanIsWhatTheRtFollowsNotTheLastPublish) {
+  // P1 is followed; P2 was published but the RT refused it (freeze, age). The
+  // planner must keep treating P1 as current, not fall back to "no current"
+  // and republish every cycle without hysteresis.
+  auto rig = std::make_unique<Rig>();
+  ASSERT_TRUE(rig->Configure());
+  const auto traj = rig->Traj();
+  SearchStats stats;
+  PlanSnapshot p1 =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  ASSERT_TRUE(p1.valid);
+  p1.plan_id = 31;
+  rig->search.NotePublished(p1);
+  PlanSnapshot p2 = p1;
+  p2.plan_id = 32;
+  p2.t_c_ns += 50 * kMs;
+  rig->search.NotePublished(p2);
+  auto rt = rig->Rt();
+  rt.plan_active = true;
+  rt.plan_id = 31;
+  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats));
+  EXPECT_NE(stats.decision, SwitchDecision::kNoCurrent);
+  EXPECT_EQ(stats.decision, SwitchDecision::kHeldHysteresis);
+  EXPECT_FALSE(stats.publish);
+}
+
+TEST(PlannerSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.n_settle = 1;
+  ASSERT_TRUE(rig->Configure());
+  SearchStats stats;
+  const auto settle = rig->Traj(1);
+  static_cast<void>(
+      rig->search.Plan(settle, Rig::Cov(settle, 0.002), true, rig->Rt(), NowReal{kNow}, stats));
+  ASSERT_TRUE(stats.settling) << "premise: the first snapshot of a track settles";
+  const auto traj = rig->Traj(2);
+  PlanSnapshot first =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  ASSERT_TRUE(first.valid);
+  first.plan_id = 41;
+  rig->search.NotePublished(first);
+  auto rt = rig->Rt();
+  rt.plan_active = true;
+  rt.plan_id = 41;
+  // A new track generation restarts the settle count.
+  const auto other = rig->Traj(1, 8);
+  const PlanSnapshot next =
+      rig->search.Plan(other, Rig::Cov(other, 0.002), true, rt, NowReal{kNow}, stats);
+  ASSERT_TRUE(stats.settling);
+  EXPECT_FALSE(next.valid);
+  EXPECT_FALSE(stats.publish) << "a no-plan publish would overwrite the followed plan's box";
+  EXPECT_EQ(stats.decision, SwitchDecision::kHeldNoCandidate);
+}
+
 // ── 5. G3-K ──────────────────────────────────────────────────────────────────
 
 TEST(PlannerSearchPlan, AFullSearchAllocatesNothing) {

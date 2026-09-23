@@ -53,9 +53,6 @@
 
 namespace rtc::catching {
 
-inline constexpr std::size_t kMaxGammaGrid = 16;
-inline constexpr std::size_t kMaxWindowGrid = 8;
-
 /// What one rollout measured.
 struct RolloutPeaks {
   double u_max{0.0};         ///< max ‖u_des‖ over [start, t_c] [m/s²]
@@ -136,6 +133,14 @@ struct RolloutSettings {
   std::span<const double> window_grid;  ///< `planner.gamma.window_grid` [s]
 };
 
+/// The longest window of the grid — "the least the hand needs" when no
+/// combination is accepted (ChooseGamma) and the planner's fallback T_w for a
+/// candidate whose γ window is unusable. One rule, one place (the grid is not
+/// required to be sorted). 0 for an empty grid.
+[[nodiscard]] inline double LongestWindow(std::span<const double> window_grid) noexcept {
+  return window_grid.empty() ? 0.0 : *std::max_element(window_grid.begin(), window_grid.end());
+}
+
 struct RolloutChoice {
   bool accepted{false};     ///< a combination passed on the WHOLE interval (fine-confirmed)
   bool window_only{false};  ///< γ_f chosen on window peaks — the approach saturates
@@ -176,8 +181,7 @@ struct RolloutChoice {
   RolloutChoice best;
   const double lo = std::clamp(g_min, 0.0, 1.0);
   const double hi = std::clamp(g_max, 0.0, 1.0);
-  const double t_w_longest =
-      s.window_grid.empty() ? 0.0 : *std::max_element(s.window_grid.begin(), s.window_grid.end());
+  const double t_w_longest = LongestWindow(s.window_grid);
   best.gamma_f = lo;
   best.t_w = t_w_longest;
 

@@ -1045,7 +1045,9 @@ class DemoCatchingController final : public RTControllerInterface {
   ControllerTopicHandles owned_topics_;
 
   // ── Logging (Phase C `logs:` block) ──────────────────────────────────────
-  rtc::ControllerLogSet log_set_{"demo_catching_controller"};
+  /// `<session>/controllers/<key>/` for the tick record AND planner_events.csv.
+  static constexpr const char* kCatchingLogKey = "demo_catching_controller";
+  rtc::ControllerLogSet log_set_{kCatchingLogKey};
   rtc::LogHandle<DeviceStateLogPod> arm_state_log_handle_;
   rtc::LogHandle<DeviceStateLogPod> hand_state_log_handle_;
   rtc::LogHandle<CatchingDiagLogPod> catching_diag_log_handle_;

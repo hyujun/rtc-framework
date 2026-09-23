@@ -55,6 +55,7 @@ DECISION_ORDER = (
     "held_jump",
     "held_freeze",
     "held_no_candidate",
+    "refreshed",
     "unknown",
 )
 

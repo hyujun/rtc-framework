@@ -120,6 +120,11 @@ enum class SwitchDecision : std::uint8_t {
   kHeldJump,         ///< better, but the jump limits refuse the switch
   kHeldFreeze,       ///< within T_freeze of the current t_c (decision G)
   kHeldNoCandidate,  ///< no candidate passed; the RT keeps what it has
+  /// The followed candidate is still the best, but its predicted catch point
+  /// moved by more than `planner.gamma.eps_term`: republished with the new
+  /// p_c (jump limits and freeze still apply) — hysteresis must not pin a
+  /// catch point the prediction has left (2026-09-23 /code-review).
+  kRefreshed,
 };
 
 [[nodiscard]] constexpr const char* SwitchDecisionName(SwitchDecision d) noexcept {
@@ -136,6 +141,8 @@ enum class SwitchDecision : std::uint8_t {
       return "held_freeze";
     case SwitchDecision::kHeldNoCandidate:
       return "held_no_candidate";
+    case SwitchDecision::kRefreshed:
+      return "refreshed";
   }
   return "unknown";
 }
@@ -185,12 +192,15 @@ class PlannerSearch {
                                   bool cov_matched, const PlannerRtState& rt, NowReal now,
                                   SearchStats& stats) noexcept;
 
-  /// monitorOnly (§4.6): σ_ℓ at the current plan's t_c. RT-safe.
+  /// monitorOnly (§4.6): σ_ℓ at the t_c of the plan the RT follows
+  /// (`rt.plan_id`). RT-safe.
   void Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
-               SearchStats& stats) const noexcept;
+               const PlannerRtState& rt, SearchStats& stats) const noexcept;
 
-  /// The cycle published `plan` (after its provenance re-check): remember it
-  /// as the plan the switching rule compares against.
+  /// The cycle published `plan` (after its provenance re-check): remember it.
+  /// It becomes "the current plan" only once the RT reports following it
+  /// (`rt.plan_id`) — a publish the RT refused (freeze, age, a newer one)
+  /// must not stand in for what the arm is actually doing.
   void NotePublished(const PlanSnapshot& plan) noexcept;
 
   /// A trial reset (the RT's reset epoch moved): forget the current plan and
@@ -245,13 +255,20 @@ class PlannerSearch {
   bool sequence_seen_{false};
   int settle_seen_{0};
 
-  // The plan the RT is following, as this search published it.
+  // The plan the RT is following, as this search published it: resolved per
+  // call from the RT's plan id against the recent publishes.
   struct Current {
     bool valid{false};
     std::uint32_t plan_id{0};
     std::int64_t t_c_ns{0};
     std::array<double, 3> p_c{};
-  } current_{};
+  };
+
+  [[nodiscard]] Current Followed(const PlannerRtState& rt) const noexcept;
+  static constexpr std::size_t kPublishedRing = 8;
+  std::array<Current, kPublishedRing> published_{};
+  std::size_t published_next_{0};
+  Current current_{};
 };
 
 }  // namespace rtc::catching

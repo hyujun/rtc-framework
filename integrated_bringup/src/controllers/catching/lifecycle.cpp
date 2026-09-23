@@ -1185,6 +1185,14 @@ void DemoCatchingController::TearDownConfiguredResources() noexcept {
   // The planner thread belongs to this configuration: joined here, respawned
   // by the next activation under the next configuration's parameters.
   StopPlannerThread();
+  // Closed with the configuration: the next configure may run in a new
+  // session, and a stream left open would keep appending to the old one's
+  // file (2026-09-23 /code-review). Anything left in the ring is this
+  // configuration's and goes to this file first.
+  DrainPlannerTiming();
+  if (planner_events_file_.is_open()) {
+    planner_events_file_.close();
+  }
   log_set_.DrainAll();
   // Tear the timer down BEFORE Reset() so no drain callback runs against
   // channels that are being destroyed.
@@ -1436,7 +1444,9 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
   }
   if (!planner_events_file_.is_open()) {
     try {
-      const auto dir = rtc::ResolveSessionDir() / "controllers" / "demo_catching_controller";
+      // The tick record's directory (log_set_'s key), so the two files of
+      // one session sit side by side.
+      const auto dir = rtc::ResolveSessionDir() / "controllers" / kCatchingLogKey;
       std::error_code ec;
       std::filesystem::create_directories(dir, ec);
       const auto path = dir / "planner_events.csv";

@@ -728,7 +728,6 @@ void DemoCatchingController::AdoptPlan(const rtc::catching::PlanSnapshot& plan) 
   plan_ = plan;
   plan_active_ = true;
   admitted_plan_ = rtc::catching::AdmittedPlan{true, plan.plan_id};
-  plan_admitted_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
@@ -979,6 +978,9 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
       // one, is what makes the TRACKING → APPROACH edge the real edge rather
       // than a special case.
       AdoptPlan(plan_in_);
+      // An ATTEMPT (S8 counts attempts against successes): only this edge.
+      // A replacement in APPROACH is the same attempt and counts separately.
+      plan_admitted_count_.fetch_add(1, std::memory_order_relaxed);
       SeedArmCommand(state);
       reference_seeded_ = false;
       return {Reason::kNone, true};
@@ -1002,7 +1004,29 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
         plan_in_.plan_id != plan_.plan_id) {
       const std::int64_t to_tc = plan_.t_c_ns - SteadyNowNs();
       if (plan_freeze_ns_ <= 0 || to_tc > plan_freeze_ns_) {
+        // The new ramp starts from the γ the reference is at THIS tick, and not
+        // before this tick: the planner's gamma_g0 is the γ it saw when it
+        // planned (one search earlier), and a ramp whose start is already in
+        // the past would be part-way up on its first step — either is a step
+        // in γ, which reaches e and u_des through γ·(o − p_c) and γ̈·(o − p_c)
+        // (2026-09-23 /code-review).
+        const rtc::catching::NowLead now_lead =
+            rtc::catching::MakeNowLead(rtc::catching::NowReal{SteadyNowNs()}, t_arm_ns_);
+        double g_now = plan_in_.gamma_g0;
+        if (reference_seeded_ && reference_.has_value()) {
+          double g = 0.0;
+          double gd = 0.0;
+          double gdd = 0.0;
+          reference_->Gamma().Eval(
+              rtc::catching::ProfileSeconds(now_lead, rtc::catching::BallTime{plan_.gamma_t0_ns}),
+              g, gd, gdd);
+          if (std::isfinite(g)) {
+            g_now = g;
+          }
+        }
         AdoptPlan(plan_in_);
+        plan_.gamma_g0 = g_now;
+        plan_.gamma_t0_ns = std::max(plan_.gamma_t0_ns, now_lead.ns);
         plan_replaced_count_.fetch_add(1, std::memory_order_relaxed);
         if (reference_seeded_ && reference_.has_value()) {
           const rtc::catching::BallTime t0{plan_.gamma_t0_ns};

@@ -70,7 +70,8 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     // committed, and σ_ℓ's consumer (L7 abort) is S7.2.
     io_.traj->LoadInto(traj_);
     io_.cov->LoadInto(cov_);
-    search_.Monitor(traj_, cov_, cov_.valid && SameSnapshot(cov_.token, traj_.token), rec.search);
+    search_.Monitor(traj_, cov_, cov_.valid && SameSnapshot(cov_.token, traj_.token), rt,
+                    rec.search);
     return rec;
   }
   if (activity != PlannerActivity::kSearch) {

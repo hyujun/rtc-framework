@@ -27,6 +27,9 @@ constexpr double kSecondsToNs = 1e9;
     case JudgeReject::kManipulability:
       return PlanReason::kManipulability;
     case JudgeReject::kWorkspace:
+      // The W_catch gate (L3 §4.9 — p_c AND p_stop inside catch_box). The
+      // frozen message (D-20) has no separate workspace reason; which of the
+      // two left the box is in planner_events.csv (rej_workspace).
       return PlanReason::kStoppingDistance;
     case JudgeReject::kNotEvaluated:
       return PlanReason::kBudgetExceeded;
@@ -87,6 +90,8 @@ bool PlannerSearch::Configure(const PlannerModel& model, const PlannerConstants&
 
 void PlannerSearch::ResetTrial() noexcept {
   current_ = Current{};
+  published_.fill(Current{});
+  published_next_ = 0;
   track_known_ = false;
   track_generation_ = 0;
   sequence_seen_ = false;
@@ -98,10 +103,26 @@ void PlannerSearch::NotePublished(const PlanSnapshot& plan) noexcept {
   if (!plan.valid) {
     return;  // "no plan" leaves the RT's current plan (if any) where it was
   }
-  current_.valid = true;
-  current_.plan_id = plan.plan_id;
-  current_.t_c_ns = plan.t_c_ns;
-  current_.p_c = plan.p_c;
+  Current& slot = published_[published_next_];
+  published_next_ = (published_next_ + 1) % kPublishedRing;
+  slot.valid = true;
+  slot.plan_id = plan.plan_id;
+  slot.t_c_ns = plan.t_c_ns;
+  slot.p_c = plan.p_c;
+}
+
+PlannerSearch::Current PlannerSearch::Followed(const PlannerRtState& rt) const noexcept {
+  if (!rt.plan_active) {
+    return Current{};
+  }
+  // Newest first: a re-publish of the same id (tests do this) wins.
+  for (std::size_t i = 0; i < kPublishedRing; ++i) {
+    const std::size_t idx = (published_next_ + kPublishedRing - 1 - i) % kPublishedRing;
+    if (published_[idx].valid && published_[idx].plan_id == rt.plan_id) {
+      return published_[idx];
+    }
+  }
+  return Current{};  // the RT follows a plan we did not publish (the oracle)
 }
 
 double PlannerSearch::SigmaMax(const CovarianceSnapshot& cov, int k) noexcept {
@@ -128,10 +149,12 @@ double PlannerSearch::SigmaMax(const CovarianceSnapshot& cov, int k) noexcept {
 }
 
 void PlannerSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                            bool cov_matched, SearchStats& stats) const noexcept {
+                            bool cov_matched, const PlannerRtState& rt,
+                            SearchStats& stats) const noexcept {
   stats = SearchStats{};
   stats.publish = false;
-  if (!current_.valid || !cov_matched || !traj.valid) {
+  const Current followed = Followed(rt);
+  if (!followed.valid || !cov_matched || !traj.valid) {
     return;
   }
   // The sample nearest the committed t_c — the covariance is on the vision
@@ -140,7 +163,7 @@ void PlannerSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSnap
   int best = -1;
   std::int64_t best_d = std::numeric_limits<std::int64_t>::max();
   for (int k = 0; k < n; ++k) {
-    const std::int64_t d = std::llabs(traj.s[static_cast<std::size_t>(k)].t_ns - current_.t_c_ns);
+    const std::int64_t d = std::llabs(traj.s[static_cast<std::size_t>(k)].t_ns - followed.t_c_ns);
     if (d < best_d) {
       best_d = d;
       best = k;
@@ -163,7 +186,19 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   plan.rt_state_ns = rt.rt_state_ns;
   plan.valid = false;
   plan.reason = PlanReason::kNone;
+  current_ = Followed(rt);
+  // While the RT follows one of our plans, a cycle that ends without a
+  // candidate HOLDS rather than publishing "no plan": that publish would
+  // overwrite a replacement the RT has not loaded yet and log a no_current
+  // decision against a plan being followed (2026-09-23 /code-review).
+  const auto hold_if_following = [this, &stats] {
+    if (current_.valid) {
+      stats.publish = false;
+      stats.decision = SwitchDecision::kHeldNoCandidate;
+    }
+  };
   if (!configured_ || !traj.valid) {
+    hold_if_following();
     return plan;
   }
 
@@ -182,6 +217,7 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   if (settle_seen_ <= params_.n_settle) {
     stats.settling = true;
     plan.reason = PlanReason::kUncertainty;
+    hold_if_following();
     stats.search_ns = clock_() - t_start;
     return plan;
   }
@@ -233,6 +269,7 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   }
   if (m == 0) {
     plan.reason = PlanReason::kHorizonShort;
+    hold_if_following();
     stats.search_ns = clock_() - t_start;
     return plan;
   }
@@ -248,6 +285,24 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     return cands_[static_cast<std::size_t>(a)].pre_score <
            cands_[static_cast<std::size_t>(b)].pre_score;
   });
+  // Half a slice: how close a candidate's instant must be to count as "the
+  // same" catch instant (the grid moves with every snapshot).
+  const double half_slice_ns =
+      0.5 * static_cast<double>(stride) *
+      (n >= 2 ? static_cast<double>(traj.s[1].t_ns - traj.s[0].t_ns) : 0.0);
+  // The followed plan's candidate goes FIRST: the switching rule needs its
+  // verdict, and left to the pre-score it can fall outside max_ik or the
+  // budget and read as "infeasible" (2026-09-23 /code-review).
+  if (current_.valid) {
+    for (int oi = 0; oi < n_order; ++oi) {
+      const auto& c = cands_[static_cast<std::size_t>(order_[static_cast<std::size_t>(oi)])];
+      const auto t_k = traj.s[static_cast<std::size_t>(c.k)].t_ns;
+      if (std::fabs(static_cast<double>(t_k - current_.t_c_ns)) <= half_slice_ns) {
+        std::rotate(order_.begin(), order_.begin() + oi, order_.begin() + oi + 1);
+        break;
+      }
+    }
+  }
   const int n_ik_max = std::min(n_order, params_.max_ik);
 
   // RT state into model order.
@@ -281,8 +336,7 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     model_.handle->ComputeForwardKinematics(q0);
     x0 = model_.handle->GetFramePosition(model_.catch_frame);
   }
-  const bool following_now = current_.valid && rt.plan_active && rt.plan_id == current_.plan_id;
-  const double g0 = (following_now && rt.ref_valid) ? rt.gamma : 0.0;
+  const double g0 = (current_.valid && rt.ref_valid) ? rt.gamma : 0.0;
 
   // Best so far.
   int best = -1;
@@ -300,8 +354,11 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     // Does the NEXT candidate still fit? Its cost is estimated from recent
     // ones (IK + rollout), so the cycle overruns by at most the estimate's
     // error, not by a whole candidate (G3-C: p99 < budget_s).
+    // The first candidate always runs: the estimates only decay when an IK
+    // runs, so a single slow solve (> budget) would otherwise stop every later
+    // cycle at the first check and never relax (2026-09-23 /code-review).
     const std::int64_t elapsed = clock_() - t_start;
-    if (elapsed + ik_cost_ns_ + rollout_cost_ns_ > budget_ns) {
+    if (oi > 0 && elapsed + ik_cost_ns_ + rollout_cost_ns_ > budget_ns) {
       stats.budget_hit = true;
       break;
     }
@@ -361,7 +418,7 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     // the γ window; an EMPTY window (g_min > g_max) is searched at the arm's
     // limit g_max — the most the arm can give, already a rank failure.
     double gamma_f = 0.0;
-    double t_w = rollout_.window_grid.empty() ? 0.0 : rollout_.window_grid.back();
+    double t_w = LongestWindow(rollout_.window_grid);
     bool rollout_ok = false;
     bool window_only = false;
     if (r.gamma_usable && rollout_ds_.has_value()) {
@@ -455,14 +512,18 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     const auto r = cands_[static_cast<std::size_t>(i)].reject;
     const auto idx = static_cast<std::size_t>(r);
     ++stats.judge_rejects[idx];
-    if (r != JudgeReject::kNone && stats.judge_rejects[idx] > most_n) {
+    // "Not evaluated" is a bottleneck only when the budget cut the search;
+    // cut by max_ik alone, it is not why nothing passed.
+    const bool counts =
+        r != JudgeReject::kNone && (r != JudgeReject::kNotEvaluated || stats.budget_hit);
+    if (counts && stats.judge_rejects[idx] > most_n) {
       most_n = stats.judge_rejects[idx];
       most = r;
     }
   }
 
   // ── Switching (§4.7) and freeze (decision G) ──────────────────────────────
-  const bool following = current_.valid && rt.plan_active && rt.plan_id == current_.plan_id;
+  const bool following = current_.valid;
   if (following) {
     stats.publish = false;
     const double to_tc = static_cast<double>(current_.t_c_ns - now.ns) * kNsToS;
@@ -474,8 +535,7 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
       // The current plan's score this cycle: the candidate at its t_c, if one
       // passed (the grid moves with every snapshot, so "at" means within half
       // a slice).
-      const double half = 0.5 * static_cast<double>(stride) *
-                          (n >= 2 ? static_cast<double>(traj.s[1].t_ns - traj.s[0].t_ns) : 0.0);
+      const double half = half_slice_ns;
       bool cur_feasible = false;
       double cur_score = 0.0;
       for (int i = 0; i < m; ++i) {
@@ -497,8 +557,17 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
       const double gd = rt.ref_valid ? rt.gamma_d : 0.0;
       const bool jump_ok = (1.0 - g) * dp <= params_.switch_e_jump_max &&
                            std::fabs(gd) * dp <= params_.switch_ed_jump_max;
+      const bool best_is_current =
+          std::fabs(static_cast<double>(bs.t_ns - current_.t_c_ns)) <= half;
       if (!better) {
-        stats.decision = SwitchDecision::kHeldHysteresis;
+        // Same candidate, moved prediction: refresh it so the RT does not
+        // keep aiming at where the ball was predicted to be.
+        if (best_is_current && dp > params_.eps_term && jump_ok) {
+          stats.decision = SwitchDecision::kRefreshed;
+          stats.publish = true;
+        } else {
+          stats.decision = SwitchDecision::kHeldHysteresis;
+        }
       } else if (!jump_ok) {
         stats.decision = SwitchDecision::kHeldJump;
       } else {
