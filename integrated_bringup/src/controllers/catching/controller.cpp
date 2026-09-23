@@ -937,19 +937,16 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       if (prev != Mode::kHold && trial_active_) {
         outcome_ = Outcome::kAborted;
       }
-      // Q12 / Q14: a hand that may be holding the ball keeps it until the arm
-      // is back at the wait pose — dropping it at the catch point is the worse
-      // failure on hardware. "May be": Captured, Undetermined (no sensor
-      // verdict either way), or an abort after contact was confirmed.
-      const bool may_hold_ball = outcome_ == Outcome::kCaptured ||
-                                 (prev == Mode::kHold && outcome_ == Outcome::kUndetermined) ||
-                                 contact_confirmed_seen_;
-      if (hand_seq_enabled_) {
-        if (may_hold_ball && trial_committed_) {
-          release_deferred_ = true;
-        } else {
-          hand_seq_.Release();
-        }
+      // RETREAT never moves the hand (#537 S7, 2026-09-24; this replaces the
+      // Q12/Q14 split by verdict). A hand that closed stays closed until the
+      // arm is back at the wait pose, and RunRetreatMotion releases it there,
+      // whatever the verdict. The verdict comes from the fingertips only, and
+      // a ball lying on the links or the palm reads Missed (sim 260923_2336).
+      // Opening at the catch point drops it. A close that is armed but not yet
+      // issued is cancelled here. The hand is still at q_pre, so the Release
+      // moves nothing: it only stops the close from firing during the return.
+      if (hand_seq_enabled_ && !hand_seq_.CloseIssued()) {
+        hand_seq_.Release();
       }
       break;
     }
@@ -1076,11 +1073,13 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateRetreat()
     return {Reason::kNone, false};
   }
   // Back at the wait pose; re-arm once the hand is at q_pre and settled (the
-  // sequencer's Release ends in Preshape exactly then).
+  // sequencer's Release ends in Preshape exactly then). hand_out_ is last
+  // tick's hand stage, which ran after the arrival tick's Release, so it can
+  // never show the pre-release Hold as ready.
   const bool hand_ready =
       !hand_seq_enabled_ ||
       (hand_out_.active && hand_out_.phase == rtc::catching::HandPhase::kPreshape &&
-       hand_out_.at_target && !release_deferred_);
+       hand_out_.at_target);
   return {Reason::kNone, hand_ready};
 }
 
@@ -1515,8 +1514,6 @@ void DemoCatchingController::ResetForRearm() noexcept {
   sat_streak_ = 0;
   law_horizon_extrap_ = false;
   retreat_stage_ = RetreatStage::kStop;
-  release_deferred_ = false;
-  contact_confirmed_seen_ = false;
   contact_.ResetForRearm();
   tip_baseline_n_.fill(0);
   window_confirmed_seen_ = false;
@@ -1589,7 +1586,6 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   homing_ = false;
   homing_done_ = false;
   retreat_stage_ = RetreatStage::kStop;
-  release_deferred_ = false;
   trial_committed_ = false;
   committed_t_c_ns_ = 0;
   committed_t_cmd_ns_ = 0;
@@ -1608,7 +1604,6 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   outcome_ = (!reset_mode && trial_active_) ? rtc::catching::Outcome::kAborted
                                             : rtc::catching::Outcome::kNone;
   trial_active_ = false;
-  contact_confirmed_seen_ = false;
   contact_.ResetForRearm();
   tip_baseline_n_.fill(0);
   tip_last_seq_.fill(0);
@@ -1682,9 +1677,6 @@ void DemoCatchingController::RunContactLane(const ControllerState& state) noexce
   }
   if (!contact_mode) {
     return;
-  }
-  if (tip_confirmed_now_ >= contact_m_min_) {
-    contact_confirmed_seen_ = true;  // Q14: the hand keeps it through an abort
   }
   if (trial_committed_ && rtc::catching::InContactWindow(
                               tick_now_, rtc::catching::BallTime{committed_t_cmd_ns_},
@@ -1839,11 +1831,12 @@ void DemoCatchingController::RunRetreatMotion(const ControllerState& state) noex
       }
       if (StepTowardWaitPose(state)) {
         retreat_stage_ = RetreatStage::kRelease;
-        // Q12 / Q14: the ball comes back with the arm and is let go here.
-        if (release_deferred_ && hand_seq_enabled_) {
+        // The ball comes back with the arm and is let go here, whatever the
+        // verdict (OnModeEntered, RETREAT). A hand that never closed is already
+        // at q_pre, and its Release ends in Preshape on the next hand stage.
+        if (hand_seq_enabled_) {
           hand_seq_.Release();
         }
-        release_deferred_ = false;
       }
       break;
     case RetreatStage::kRelease:

@@ -112,7 +112,7 @@
 | `NO_CATCHABLE_PLAN` | 계획기가 plan 없음을 게시 (catchability manipulability 미달 D-18, IK 실패, 도달 불가 — 세부 사유는 L3 plan 사유 코드) | `TRACKING` | 비치명. `TRACKING` 유지, 기록 |
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
 | `QP_FAILED` | L5 QP 실패 status | 전 구간 | `ABORT_SAFE` (QP 비의존 경로, §4.1). 연속 $N_{qp}$회면 `FAULT` |
-| `REF_SATURATED` | L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick (기본 **100** = 0.2 s @ 500 Hz, provisional — S7 설계 확정, D-8: γ 하향 없음. 처음 제안한 5 는 정지 상태에서 접근을 시작한 reference 의 정상 포화 (단위 fixture 실측 10·76 tick) 를 잘랐다) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]`. `sat_ticks` 는 sim 정상 시행의 연속 길이 분포로 확인 후 확정한다 (D-S7-4, plan §7.3) |
+| `REF_SATURATED` | L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick (기본 **50** = 0.1 s @ 500 Hz, provisional — S7 설계 확정, D-8: γ 하향 없음. 처음 제안한 5 는 정지 상태에서 접근을 시작한 reference 의 정상 포화 (단위 fixture 실측 10·76 tick) 를 잘랐다. 100 으로 올린 뒤 sim 25 투척 (`260923_2336`) 의 정상 연속 길이가 max 44 · p99 42.5 로 나와 50 으로 내렸다, #537 결정 2026-09-24) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]`. `sat_ticks` 는 sim 정상 시행의 연속 길이 분포로 확인 후 확정한다 (D-S7-4, plan §7.3) |
 | `GAMMA_DERATED` | v0.5 에서 삭제 — γ 하향은 v1 범위 밖 (D-8, §4.6) | – | – |
 | `SAT_NEAR_TC` | v0.5 에서 삭제 — `REF_SATURATED` 로 대체 (D-8) | – | – |
 | `JOINT_CONFLICT` | L5 `bound_conflict` | 전 구간 | `ABORT_SAFE` (QP 비의존 경로) |
@@ -246,7 +246,7 @@ $$\Delta p=m_{ball}\,(1-\gamma_f)\Vert v(t_c)\Vert$$
 
 L7이 plan 을 받아들일 때 §4.1 R-ADMIT 조건(g) $t_c-now\le T_{freeze}$ 이면 `kTooLate` 로 거부한다 — 마지막 조건이 과거·너무 이른 plan 을 걸러낸다.
 
-**RETREAT 순서 (Q12·Q13·Q14 반영, #537 S7 결정 2026-09-23).** 진입 → 정지 램프(`JointSpaceDecelStep`; `ABORT_SAFE` 경유면 no-op) → Missed/Aborted 면 손 Release(`q_pre`) 즉시, Captured 면 유지 → 관절공간 복귀(팔이 이미 `pose_tol` 안이면 생략) → Captured 면 여기서 Release(`q_pre`) → 손 `q_tol` 도달 → `ResetForRearm` → `ARMED`. 접촉이 확정된 뒤 abort 된 경우(예: 충격 후 `TRACK_ERR`)도 손은 **Captured 규칙**(쥔 채 복귀 후 release)을 따르되 결과는 `Aborted` 로 기록한다(Q14) — 구현은 RETREAT 진입 시 `contact_confirmed_seen` 이 참이면 Release 를 복귀 완료 뒤로 미루는 것이다. LEAP 처럼 `q_pre` 도달로 손이 열려도 공이 남는 경우는 sim 드라이버의 `/sim/reset_ball`, 실기는 운용자가 처리한다.
+**RETREAT 순서 (Q13, #537 S7 결정 2026-09-23 · release 규칙은 2026-09-24 결정으로 교체).** 진입 → 정지 램프(`JointSpaceDecelStep`; `ABORT_SAFE` 경유면 no-op) → 관절공간 복귀(팔이 이미 `pose_tol` 안이면 생략) → 대기 자세 도착에서 손 Release(`q_pre`) → 손 `q_tol` 도달 → `ResetForRearm` → `ARMED`. **RETREAT 는 손을 움직이지 않는다.** 닫힌 손은 판정(Captured·Missed·Undetermined·Aborted)과 무관하게 복귀 내내 닫힌 채이고 대기 자세에서만 열린다. 아직 닫힘 명령이 나가지 않은 commit 은 진입 시 취소한다 — 손은 이미 `q_pre` 이므로 움직임은 없다. 근거: 판정은 지문만 보므로 공이 링크·손바닥에 얹힌 경우도 Missed 로 나온다 (sim `260923_2336` 25 투척 중 1건). 이전 규칙(Q12: Missed/Aborted 는 진입 즉시 Release, Q14: 접촉 확정 후 abort 만 예외)은 그 공을 포구 지점에서 떨어뜨렸다. LEAP 처럼 `q_pre` 도달로 손이 열려도 공이 남는 경우는 sim 드라이버의 `/sim/reset_ball`, 실기는 운용자가 처리한다.
 
 **IDLE 순서.** 검증 통과 + 무장 → 팔이 `pose_tol` 밖이면 손 `q_open` → homing → 도착 → 손 `q_pre` 지시; 안이면(Q13) 손만 `q_pre` → 손 도달 + §4.5 → `ARMED`.
 
@@ -310,7 +310,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.homing.eta_a` | double | – | **0.5** (provisional) | 0–1 | §4.1. 가속 한계 = `qdd_max` × 이 값 |
 | `supervisor.homing.qd_tol` | double | rad/s | **0.02** (provisional) | >0 | §4.1 homing/retreat 도착 판정(‖q̇‖∞) |
 | `supervisor.ready.pose_tol` | double | rad | 0.02 | – | §4.5 |
-| `supervisor.sat_ticks` | int | – | **100** (provisional — 5 는 정상 접근의 포화 구간 10–76 tick 을 잘랐다) | ≥1 | §4.2 `REF_SATURATED` 연속 tick 판정 (D-S7-4, sim 시행 분포로 확인 후 확정) |
+| `supervisor.sat_ticks` | int | – | **50** (provisional — 5 는 정상 접근의 포화 구간 10–76 tick 을 잘랐고, sim 정상 시행 max 44 · p99 42.5 로 100 에서 내렸다) | ≥1 | §4.2 `REF_SATURATED` 연속 tick 판정 (D-S7-4, sim 시행 분포로 확인 후 확정) |
 
 `supervisor.ready.wait_pose` 는 두지 않는다 (C-10) — `L3 §6 planner.wait_pose` 와 중복이었다(repo 에 0 hit). `IDLE` homing 목표·`ARMED` 대기 자세는 그 키를 그대로 참조한다.
 
@@ -371,4 +371,4 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 
 ## 10. 미확정 항목
 
-TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(값 0.10 provisional 로 닫힘, 조일 물리량은 S8), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`(값은 provisional 로 닫힘, S8 튜닝), `supervisor.impact.dp_max`, `supervisor.sat_ticks`(100 provisional, D-S7-4 sim 확인 대기), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). homing 은 `IDLE` 하위 단계로 닫혔다(S1.8 헤더 해석, §4.1). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).
+TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(값 0.10 provisional 로 닫힘, 조일 물리량은 S8), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`(값은 provisional 로 닫힘, S8 튜닝), `supervisor.impact.dp_max`, `supervisor.sat_ticks`(50 provisional, sim 재측정 후 조정 — 최종값은 S8), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). homing 은 `IDLE` 하위 단계로 닫혔다(S1.8 헤더 해석, §4.1). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).

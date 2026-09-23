@@ -1094,9 +1094,9 @@ class DemoCatchingController final : public RTControllerInterface {
   bool homing_{false};       // IDLE: the homing law drives the arm
   bool homing_done_{false};  // IDLE: at the wait pose, hand told Ready
   enum class RetreatStage : std::uint8_t { kStop, kReturn, kRelease };
+  /// kStop, then kReturn, then kRelease. The hand is released only on
+  /// arrival at kRelease, whatever the verdict (#537 S7, 2026-09-24).
   RetreatStage retreat_stage_{RetreatStage::kStop};
-  /// Q12/Q14: the hand keeps the ball until the arm is back.
-  bool release_deferred_{false};
   /// A plan was adopted this trial (an abort from here on is an attempt).
   bool trial_active_{false};
   bool trial_committed_{false};
@@ -1119,8 +1119,6 @@ class DemoCatchingController final : public RTControllerInterface {
   /// and CLOSING continue on the extrapolation — R-ORDER).
   bool law_horizon_extrap_{false};
   rtc::catching::Outcome outcome_{rtc::catching::Outcome::kNone};
-  /// Q14: m_min fingertips confirmed contact at some point of this trial.
-  bool contact_confirmed_seen_{false};
   // RT-OWNED END
 
   // ── S7.3 contact lane ────────────────────────────────────────────────────
@@ -1174,7 +1172,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   hand_seq_ (phase/commit)                   R (Ready), T (Deactivate)
   //   hand_out_                                  T; exempt from R: the hand stage rewrites it every tick
   //   homing_, homing_done_                      R (done), T
-  //   retreat_stage_, release_deferred_          R, T
+  //   retreat_stage_                             R, T
   //   trial_active_, trial_committed_, committed_t_c_ns_, committed_t_cmd_ns_, committed_generation_
   //                                              R, T
   //   law_snapshot_                              R, T
@@ -1183,7 +1181,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   sat_streak_, law_horizon_extrap_           R, T
   //   outcome_                                   T (Aborted when an E-STOP ends an attempt);
   //                                              exempt from R: it reports the LAST attempt
-  //   contact_confirmed_seen_, contact_          R, T
+  //   contact_                                   R, T
   //   tip_baseline_n_, window_confirmed_seen_, window_stale_seen_     R, T
   //   tip_last_seq_                              T; exempt from R: a sample fed before the re-arm is not new
   //   tip_count_, tip_force_now_, tip_fresh_now_, tip_contact_now_, tip_confirmed_now_, tip_stale_now_

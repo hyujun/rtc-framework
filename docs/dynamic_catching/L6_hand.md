@@ -247,7 +247,7 @@ v0.5 에서 삭제 — 손은 `ControllerOutput` 손 device slot (D-11). `HandCo
 - `Open → Preshape`: 팔이 `wait_pose` 에 도착했다는 L7 지시(`Ready`)에서 — **시각 조건이 아니다** (`T_pre`·`PreshapeDue` 폐기)
 - `Preshape → Close`: `now_real ≥ t_{cmd}-h/2` (`HandCommandDueRounded`, §4.3), **COMMITTED 에서만**
 - `Close → Hold`: $\rho\ge\eta$ 또는 `T_close_timeout` 경과(타임아웃이면 플래그)
-- `Hold → Release`: L7 지시(시각은 L7 §4.8 "RETREAT 순서" — Captured 는 복귀 후, Missed/Aborted 는 즉시)
+- `Hold → Release`: L7 지시(시각은 L7 §4.8 "RETREAT 순서" — 판정과 무관하게 팔이 대기 자세에 도착한 뒤. RETREAT 복귀 중에는 손을 열지 않는다, #537 결정 2026-09-24)
 - `Release` 목표는 **`q_pre`** 다(`q_open` 은 homing 전용) — 도달하면 `Preshape` 로 복귀해 다음 시행의 ARMED 준비를 마친다
 - `Abort` 지시: COMMITTED 이후면 `t_cmd` 규칙대로 마저 닫고 `Hold` 로, 그 전이면 `q_pre` 유지
 
