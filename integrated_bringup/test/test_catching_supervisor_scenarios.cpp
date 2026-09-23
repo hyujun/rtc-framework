@@ -612,6 +612,26 @@ class SupervisorScenarioTest : public ::testing::Test {
     return true;
   }
 
+  /// The RETREAT release rule (#537 S7, 2026-09-24, replacing Q12/Q14's
+  /// outcome split): a hand that closed stays closed through the whole return
+  /// and lets go only once the arm is back at the wait pose — WHATEVER the
+  /// verdict. `r` is the RETREAT entry; the log must already run to the re-arm.
+  void ExpectHeldUntilTheWaitPose(int r) const {
+    ASSERT_GT(r, 0);
+    int release = -1;
+    for (std::size_t i = static_cast<std::size_t>(r); i < log_.size(); ++i) {
+      if (log_[i].phase != HandPhase::kHold) {
+        release = static_cast<int>(i);
+        break;
+      }
+    }
+    ASSERT_GT(release, r) << "the hand let go on RETREAT entry\n" << Window(r, 3);
+    EXPECT_EQ(log_[static_cast<std::size_t>(release)].phase, HandPhase::kRelease);
+    EXPECT_TRUE(ArmMeasuredAtWait(log_[static_cast<std::size_t>(release)]))
+        << "the hand released before the arm was back at the wait pose\n"
+        << Window(release, 2);
+  }
+
   /// DECEL at t_c on the LEAD axis (R-DECEL-ENTRY): the tick before did not
   /// see now_lead ≥ t_c and the entry tick did. Bounded by the stamps around
   /// the controller's own clock read, so it is exact rather than grid-based.
@@ -692,24 +712,12 @@ TEST_F(SupervisorScenarioTest, NormalTrialIsCapturedAndReArms) {
   EXPECT_LT(e, 1e-9) << "|e| at DECEL entry " << e;
   EXPECT_LT(ed, 1e-9) << "|ė| at DECEL entry " << ed;
 
-  // Q12: Captured keeps the hand closed until the arm is back, then releases.
+  // The hand keeps the ball until the arm is back, then releases.
   const int r = Entry(Mode::kRetreat);
   const int armed = Entry(Mode::kArmed, 1);
   ASSERT_GT(r, 0);
   ASSERT_GT(armed, r);
-  int release = -1;
-  for (int i = r; i < armed; ++i) {
-    const auto& t = log_[static_cast<std::size_t>(i)];
-    if (t.phase != HandPhase::kHold) {
-      release = i;
-      break;
-    }
-  }
-  ASSERT_GT(release, r) << "the hand did not hold through the start of RETREAT\n" << Window(r, 3);
-  EXPECT_EQ(log_[static_cast<std::size_t>(release)].phase, HandPhase::kRelease);
-  EXPECT_TRUE(ArmMeasuredAtWait(log_[static_cast<std::size_t>(release)]))
-      << "the hand released before the arm was back at the wait pose\n"
-      << Window(release, 2);
+  ASSERT_NO_FATAL_FAILURE(ExpectHeldUntilTheWaitPose(r));
   // Re-armed at the wait pose, hand at q_pre.
   const auto& back = log_[static_cast<std::size_t>(armed)];
   EXPECT_TRUE(ArmMeasuredAtWait(back));
@@ -744,7 +752,7 @@ TEST_F(SupervisorScenarioTest, ActivatedOutsideTheWaitPoseHomesThenArms) {
   EXPECT_EQ(ctrl_->GetHandOutputForTesting().phase, HandPhase::kPreshape);
 }
 
-TEST_F(SupervisorScenarioTest, AMissedBallIsJudgedMissedAndReleasesAtOnce) {
+TEST_F(SupervisorScenarioTest, AMissedBallIsJudgedMissedAndTheHandStillWaitsForTheWaitPose) {
   ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
   tips_enabled_ = true;
   ball_in_hand_ = false;  // the fingertips see only their bias
@@ -752,11 +760,13 @@ TEST_F(SupervisorScenarioTest, AMissedBallIsJudgedMissedAndReleasesAtOnce) {
   ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
   const int r = static_cast<int>(log_.size()) - 1;
   EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kMissed) << Transitions();
-  // Q12: Missed releases on RETREAT entry, before the return.
-  EXPECT_EQ(log_[static_cast<std::size_t>(r)].phase, HandPhase::kRelease) << Window(r, 3);
   ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
   ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
              Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
+  // A Missed verdict is only what the fingertips saw: a ball lying on the
+  // links or the palm reads Missed too (sim 260923_2336, 1 of 25). So Missed
+  // does not open the hand either — it opens at the wait pose.
+  ASSERT_NO_FATAL_FAILURE(ExpectHeldUntilTheWaitPose(r));
 }
 
 TEST_F(SupervisorScenarioTest, StaleBeforeTheFreezeRetreatsOnBallStale) {
@@ -1136,49 +1146,58 @@ TEST_F(SupervisorScenarioTest, ATrackErrAbortReturnsAndReArms) {
              Mode::kRetreat, Mode::kArmed});
 }
 
-TEST_F(SupervisorScenarioTest, AnAbortAfterConfirmedContactKeepsTheBallUntilTheReturn) {
-  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
-    y["catching"]["robot"]["hand"]["T_hold"] = 0.3;
-  }));
-  tips_enabled_ = true;
-  ball_in_hand_ = true;
-  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
-  ASSERT_TRUE(TickUntilMode(Mode::kHold, 1000)) << Transitions();
-  Ticks(3);
-  ASSERT_EQ(ctrl_->GetMode(), Mode::kHold) << Transitions();
-  const auto& now_rec = log_.back();
-  ASSERT_GE(std::count(now_rec.tip_contact.begin(), now_rec.tip_contact.end(), true), 2)
-      << "precondition: contact is confirmed before the abort\n"
-      << Window(static_cast<int>(log_.size()) - 1, 3);
-  // TRACK_ERR: the measured arm the next tick sees is 0.6 rad off its command
-  // (> track_err_abort 0.5) — one tick only; the servo puts it back after.
-  state_.devices[0].positions[1] += 0.6;
-  const std::size_t kick = log_.size();
-  Ticks(1);
-  EXPECT_EQ(log_[kick].mode, Mode::kAbortSafe) << Window(static_cast<int>(kick), 3);
-  EXPECT_EQ(log_[kick].reason, Reason::kTrackErr);
-  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
-  const int r = static_cast<int>(log_.size()) - 1;
-  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kAborted);
-  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
-  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
-             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kAbortSafe, Mode::kRetreat,
-             Mode::kArmed});
-  // Q14: the hand stays closed through the return, and lets go only at the pose.
-  int release = -1;
-  for (std::size_t i = static_cast<std::size_t>(r); i < log_.size(); ++i) {
-    if (log_[i].phase != HandPhase::kHold) {
-      release = static_cast<int>(i);
-      break;
+// An abort in HOLD, after the close: the verdict is Aborted, and the hand
+// keeps what it closed on until the arm is back — with or without confirmed
+// contact. Q14 made the contact the condition; the 2026-09-24 rule does not
+// ask (the fingertips' "no contact" is not "no ball"), so both runs below
+// must hold to the wait pose.
+class AbortInHoldTest : public SupervisorScenarioTest {
+ protected:
+  void AbortInHoldThenReturn(bool ball_in_hand) {
+    ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+      y["catching"]["robot"]["hand"]["T_hold"] = 0.3;
+    }));
+    tips_enabled_ = true;
+    ball_in_hand_ = ball_in_hand;
+    ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+    ASSERT_TRUE(TickUntilMode(Mode::kHold, 1000)) << Transitions();
+    Ticks(3);
+    ASSERT_EQ(ctrl_->GetMode(), Mode::kHold) << Transitions();
+    const auto& now_rec = log_.back();
+    const auto confirmed = std::count(now_rec.tip_contact.begin(), now_rec.tip_contact.end(), true);
+    if (ball_in_hand) {
+      ASSERT_GE(confirmed, 2) << "precondition: contact is confirmed before the abort\n"
+                              << Window(static_cast<int>(log_.size()) - 1, 3);
+    } else {
+      ASSERT_EQ(confirmed, 0) << "precondition: no fingertip is in contact\n"
+                              << Window(static_cast<int>(log_.size()) - 1, 3);
     }
+    // TRACK_ERR: the measured arm the next tick sees is 0.6 rad off its
+    // command (> track_err_abort 0.5) — one tick only; the servo puts it back.
+    state_.devices[0].positions[1] += 0.6;
+    const std::size_t kick = log_.size();
+    Ticks(1);
+    EXPECT_EQ(log_[kick].mode, Mode::kAbortSafe) << Window(static_cast<int>(kick), 3);
+    EXPECT_EQ(log_[kick].reason, Reason::kTrackErr);
+    ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
+    const int r = static_cast<int>(log_.size()) - 1;
+    EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kAborted);
+    ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+    ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+               Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kAbortSafe, Mode::kRetreat,
+               Mode::kArmed});
+    ASSERT_NO_FATAL_FAILURE(ExpectHeldUntilTheWaitPose(r));
+    EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kAborted)
+        << "the verdict must survive the re-arm (reset table: outcome_ exempt from R)";
   }
-  ASSERT_GT(release, r) << "the hand let go on RETREAT entry (Q14)\n" << Window(r, 3);
-  EXPECT_EQ(log_[static_cast<std::size_t>(release)].phase, HandPhase::kRelease);
-  EXPECT_TRUE(ArmMeasuredAtWait(log_[static_cast<std::size_t>(release)]))
-      << "released before the arm was back\n"
-      << Window(release, 2);
-  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kAborted)
-      << "the verdict must survive the re-arm (reset table: outcome_ exempt from R)";
+};
+
+TEST_F(AbortInHoldTest, AnAbortAfterConfirmedContactKeepsTheBallUntilTheReturn) {
+  AbortInHoldThenReturn(true);
+}
+
+TEST_F(AbortInHoldTest, AnAbortWithNoContactStillKeepsTheHandClosedUntilTheReturn) {
+  AbortInHoldThenReturn(false);
 }
 
 TEST_F(SupervisorScenarioTest, TheHandClosesAtTcmdOnTheRealAxisUnderAnArmLag) {
@@ -1353,7 +1372,7 @@ TEST_F(SupervisorScenarioTest, AStaleFingertipIsNeverContactAndMakesTheOutcomeUn
   EXPECT_GT(CountTicks([](const TickRec& t) { return t.reason == Reason::kTipStale; }, frozen), 0)
       << "TIP_STALE was never recorded\n"
       << Transitions();
-  // Undetermined from HOLD keeps the hand closed into RETREAT (Q12).
+  // Undetermined from HOLD keeps the hand closed into RETREAT, like every verdict.
   EXPECT_EQ(log_.back().phase, HandPhase::kHold);
 }
 

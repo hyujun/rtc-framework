@@ -60,7 +60,6 @@ class DemoCatchingControllerResetProbe {
     c_.homing_ = true;
     c_.homing_done_ = false;
     c_.retreat_stage_ = DemoCatchingController::RetreatStage::kRelease;
-    c_.release_deferred_ = true;
     c_.trial_active_ = true;
     c_.trial_committed_ = true;
     c_.committed_t_c_ns_ = kNs;
@@ -76,7 +75,6 @@ class DemoCatchingControllerResetProbe {
     c_.sat_streak_ = 4;
     c_.law_horizon_extrap_ = true;
     c_.outcome_ = rtc::catching::Outcome::kCaptured;
-    c_.contact_confirmed_seen_ = true;
     rtc::catching::ContactDebounceConfig cfg;
     cfg.n_debounce = 1;
     static_cast<void>(c_.contact_.Configure(cfg));
@@ -112,7 +110,6 @@ class DemoCatchingControllerResetProbe {
     EXPECT_FALSE(c.homing_);
     EXPECT_TRUE(c.homing_done_) << "RETREAT ends at the wait pose";
     EXPECT_EQ(c.retreat_stage_, DemoCatchingController::RetreatStage::kStop);
-    EXPECT_FALSE(c.release_deferred_);
     EXPECT_FALSE(c.trial_active_);
     EXPECT_FALSE(c.trial_committed_);
     EXPECT_EQ(c.committed_t_c_ns_, 0);
@@ -125,7 +122,6 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c.hold_entry_ns_, 0);
     EXPECT_EQ(c.sat_streak_, 0);
     EXPECT_FALSE(c.law_horizon_extrap_);
-    EXPECT_FALSE(c.contact_confirmed_seen_);
     EXPECT_FALSE(c.contact_.Baseline(0).initialized);
     EXPECT_FALSE(c.contact_.IsConfirmed(0));
     EXPECT_EQ(c.tip_baseline_n_[0], 0);
@@ -182,7 +178,6 @@ class DemoCatchingControllerResetProbe {
     EXPECT_FALSE(c.homing_);
     EXPECT_FALSE(c.homing_done_);
     EXPECT_EQ(c.retreat_stage_, DemoCatchingController::RetreatStage::kStop);
-    EXPECT_FALSE(c.release_deferred_);
     EXPECT_FALSE(c.trial_active_);
     EXPECT_FALSE(c.trial_committed_);
     EXPECT_EQ(c.committed_generation_, 0U);
@@ -194,7 +189,6 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c.sat_streak_, 0);
     EXPECT_FALSE(c.law_horizon_extrap_);
     EXPECT_EQ(c.outcome_, rtc::catching::Outcome::kNone);
-    EXPECT_FALSE(c.contact_confirmed_seen_);
     EXPECT_FALSE(c.contact_.Baseline(0).initialized);
     EXPECT_EQ(c.tip_baseline_n_[0], 0);
     EXPECT_EQ(c.tip_last_seq_[0], 0U);
