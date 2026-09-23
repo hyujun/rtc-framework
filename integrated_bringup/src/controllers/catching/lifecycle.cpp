@@ -61,6 +61,11 @@ namespace {
     case R::kWeightOrdering:
       return "CLIK weight ordering broken (w_task/w_a must dominate w_arm, w_arm must dominate "
              "damping_sq)";
+    case R::kCloseTimeoutNotAboveE2e:
+      return "T_close_timeout must exceed T_close_e2e";
+    case R::kFreezeShorterThanClose:
+      return "T_freeze is shorter than T_close_e2e + T_arm + one tick — the close command would "
+             "be due before the commit";
   }
   return "unknown";
 }
@@ -83,7 +88,9 @@ namespace {
 /// `robot.hand.T_close_e2e` is excluded BY NAME and stays excluded until S7.1:
 /// it is the number S4.2 produces with this controller, so gating on it would
 /// make the measurement its own precondition. The hand sequencer that derives
-/// `T_close_timeout` from it is its first consumer.
+/// `T_close_timeout` from it is its first consumer — and until that sequencer
+/// is bound, `T_close_timeout` (TBD exactly when T_close_e2e is, being derived
+/// from it) is excluded with it.
 [[nodiscard]] bool ConsumedByCatchingSkeleton(const char* key) noexcept {
   const std::string_view k{key};
   if (k == "control_rate") {
@@ -112,7 +119,8 @@ namespace {
   if (k == "robot.hand") {
     return true;
   }
-  return k.starts_with("robot.hand.") && k != "robot.hand.T_close_e2e";
+  return k.starts_with("robot.hand.") && k != "robot.hand.T_close_e2e" &&
+         k != "robot.hand.T_close_timeout";
 }
 
 /// Read-only descriptor for the mirrored profile parameters. They exist so an

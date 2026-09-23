@@ -158,6 +158,39 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   out.eta_close = ReadTbdDouble(hand_node, "eta_close", out.eta_close);
   out.T_close_e2e = ReadTbdDouble(hand_node, "T_close_e2e", out.T_close_e2e);
 
+  // ── Sequencer keys (S7.1) ─────────────────────────────────────────────────
+  // `T_pre` is refused by name: #537 S7 decision Q4 removed the time-based
+  // preshape (the hand waits at q_pre from the moment the arm is at its wait
+  // pose), and a profile still carrying the key was written for a sequencer
+  // that no longer exists — its author should hear that, not have it ignored.
+  if (hand_node["T_pre"]) {
+    Reject(
+        "robot.hand.T_pre was removed (S7: the hand waits at q_pre, there is no timed "
+        "preshape) — delete the key");
+  }
+  out.T_hold = ReadTbdDouble(hand_node, "T_hold", out.T_hold);
+  // Absent → the documented rule, 2 × T_close_e2e (#537 S7 D-S7-1), derived
+  // here rather than stored in the profile so a re-measured T_close_e2e moves
+  // the timeout with it. An explicit value (or an explicit `TBD`) overrides.
+  if (hand_node["T_close_timeout"]) {
+    out.T_close_timeout = ReadTbdDouble(hand_node, "T_close_timeout", out.T_close_timeout);
+  } else if (!out.T_close_e2e.tbd) {
+    out.T_close_timeout = TbdDouble::Resolved(kCloseTimeoutPerE2e * out.T_close_e2e.value);
+  }
+  out.q_tol = ReadOptional(hand_node, "q_tol", out.q_tol);
+  out.qd_tol = ReadOptional(hand_node, "qd_tol", out.qd_tol);
+  const YAML::Node hold = ReadSection(hand_node, "hold");
+  const std::string hold_mode = ReadOptional<std::string>(hold, "mode", "close_target");
+  if (hold_mode == "close_target") {
+    out.hold_mode = HandHoldMode::kCloseTarget;
+  } else if (hold_mode == "measured_offset") {
+    out.hold_mode = HandHoldMode::kMeasuredOffset;
+  } else {
+    Reject("robot.hand.hold.mode must be 'close_target' or 'measured_offset', got '", hold_mode,
+           "'");
+  }
+  out.hold_delta_rad = ReadOptional(hold, "delta_rad", out.hold_delta_rad);
+
   const YAML::Node q_pre = hand_node["q_pre"];
   const YAML::Node q_close = hand_node["q_close"];
   const bool pre_is_seq = q_pre && q_pre.IsSequence();
@@ -424,6 +457,19 @@ void CheckProvisional(CatchingValidationReport& report, const char* key, bool pr
 void CheckCatchFrameProvisional(CatchingValidationReport& report, bool catch_frame_provisional,
                                 bool real_arm_config) noexcept {
   CheckProvisional(report, kCatchFrameProvisionalKey, catch_frame_provisional, real_arm_config);
+}
+
+void CheckFreezeCoversClose(CatchingValidationReport& report, const CatchingParams& params,
+                            double t_freeze_s, double control_rate_hz) noexcept {
+  if (!std::isfinite(t_freeze_s) || params.hand.T_close_e2e.tbd || params.joint_cmd_lag_t_arm.tbd ||
+      !std::isfinite(control_rate_hz) || !(control_rate_hz > 0.0)) {
+    return;  // an unset value is reported by the check that owns it
+  }
+  const double h = 1.0 / control_rate_hz;
+  const double need = params.hand.T_close_e2e.value + params.joint_cmd_lag_t_arm.value + h;
+  if (!(t_freeze_s >= need)) {
+    AddFailure(report, CatchingValidationReason::kFreezeShorterThanClose, kFreezeWindowKey);
+  }
 }
 
 CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
@@ -699,6 +745,27 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
       }
     }
     CheckProvisional(report, "robot.hand", params.hand.provisional, real_arm_config);
+  }
+  // The sequencer's keys (S7.1, L6 §6). Independent report lines, like η and
+  // T_close_e2e above, so one missing value does not hide the next.
+  if (CheckActiveTbd(report, params.hand.T_hold, "robot.hand.T_hold", true)) {
+    CheckRange(report, "robot.hand.T_hold", params.hand.T_hold.value, 0.0, 5.0);
+  }
+  if (CheckActiveTbd(report, params.hand.T_close_timeout, "robot.hand.T_close_timeout", true)) {
+    CheckPositive(report, "robot.hand.T_close_timeout", params.hand.T_close_timeout.value);
+    // Strictly above: a timeout equal to the identified closure time fires on
+    // every nominal close, which turns the flag into noise.
+    if (!params.hand.T_close_e2e.tbd &&
+        !(params.hand.T_close_timeout.value > params.hand.T_close_e2e.value)) {
+      AddFailure(report, CatchingValidationReason::kCloseTimeoutNotAboveE2e,
+                 "robot.hand.T_close_timeout");
+    }
+  }
+  CheckPositive(report, "robot.hand.q_tol", params.hand.q_tol);
+  CheckPositive(report, "robot.hand.qd_tol", params.hand.qd_tol);
+  if (params.hand.hold_mode == HandHoldMode::kMeasuredOffset &&
+      (!std::isfinite(params.hand.hold_delta_rad) || params.hand.hold_delta_rad < 0.0)) {
+    AddFailure(report, CatchingValidationReason::kRangeViolation, "robot.hand.hold.delta_rad");
   }
 
   // ζ·ω·h (`dt` 기준, L4 §4.7): only meaningful once control_rate and omega

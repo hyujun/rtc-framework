@@ -23,11 +23,16 @@
 // name the physical relationship but not a schema field) and why.
 //
 // S4a SCOPE (2026-09-20). The three L6 §5.1 fields the hand-timing step needs
-// — `q_open` (the pose a trial starts from), `eta_close` (the §4.2 closure
-// threshold η) and `T_close_e2e` (the identified end-to-end closure time) —
-// are parsed and validated here. The rest of the L6 §5.1/§6 table
-// (`T_pre`, `T_hold`, `T_close_timeout`, `hold.*`) belongs to the hand
-// sequencer (S7.1) and is deliberately still absent: it has no consumer.
+// — `q_open` (the pose homing opens the hand to), `eta_close` (the §4.2
+// closure threshold η) and `T_close_e2e` (the identified end-to-end closure
+// time) — are parsed and validated here.
+//
+// S7.1 SCOPE (2026-09-23). The hand sequencer's own keys join: `T_hold`,
+// `T_close_timeout`, `hold.mode` / `hold.delta_rad` (L6 §4.4's hold rule) and
+// the arrival test `q_tol` / `qd_tol`. `T_pre` does NOT: the hand waits at
+// `q_pre` from the moment the arm reaches its wait pose (#537 S7 decision Q4),
+// so there is no time-based preshape, and a leftover `T_pre` key is refused by
+// name rather than silently ignored.
 //
 // ACTIVE CONFIGURATION. G0-C requires "TBD in an active-config key blocks
 // arming; TBD in an inactive-config key passes" (L0 §5.3: "sim/실기 ... 에
@@ -73,6 +78,20 @@ struct TbdDouble {
 // because that header does not exist yet; unify when it does.
 inline constexpr std::size_t kMaxHandDof = 16;
 
+/// `robot.hand.T_close_timeout` when the profile omits it: this many
+/// T_close_e2e (#537 S7 D-S7-1, provisional — S8). Twice the p99 closure time
+/// is late enough that a nominal close never trips it and early enough that a
+/// hand that stalled short of η is noticed within one more closure.
+inline constexpr double kCloseTimeoutPerE2e = 2.0;
+
+/// L6 §4.4's hold rule (`robot.hand.hold.mode`): what the hand is commanded to
+/// once closure is reached. `kCloseTarget` keeps commanding `q_close` (the
+/// posture pair already includes "a little squeeze" past the stall); the
+/// `kMeasuredOffset` form commands the measured pose at Hold entry plus
+/// `hold.delta_rad` toward `q_close` on every caging joint, for a hand whose
+/// `q_close` would squeeze too hard once it is a real one.
+enum class HandHoldMode : std::uint8_t { kCloseTarget, kMeasuredOffset };
+
 /// One hand profile (L6 §6 `robot.hand.*`, scope limited to what the L6 §4.2
 /// caging check and the S4a timing measurement need). `dof` is the number of
 /// valid entries in the arrays; `tbd` is true while the `q_pre`/`q_close` pair
@@ -83,7 +102,7 @@ inline constexpr std::size_t kMaxHandDof = 16;
 /// `robot.hand.provisional` key (see .cpp) because L6 §6 marks "손 프로파일
 /// 값은 전부 provisional 이다" in prose, with no schema field.
 struct HandProfile {
-  std::array<double, kMaxHandDof> q_open{};  // trial start pose (L6 §5.1)
+  std::array<double, kMaxHandDof> q_open{};  // homing pose (L6 §5.1, #537 S7 Q4)
   std::array<double, kMaxHandDof> q_pre{};
   std::array<double, kMaxHandDof> q_close{};
   std::array<bool, kMaxHandDof> caging_mask{};  // which joints L6 §4.2 checks
@@ -91,6 +110,22 @@ struct HandProfile {
   double rho_eps{0.02};   // L6 §6 default [rad]
   TbdDouble eta_close;    // –, [0.5, 1]   — L6 §4.2 closure threshold η
   TbdDouble T_close_e2e;  // s, >= 0       — L6 §4.2 end-to-end closure time
+  // ── Sequencer (S7.1, L6 §5.3/§6) ─────────────────────────────────────────
+  /// How long HOLD lasts before RETREAT [s], [0, 5]. 0.5 s, not L6's original
+  /// 1.0: a trial cycle is dominated by this wait and the ball is caged well
+  /// before it (provisional, S8).
+  TbdDouble T_hold{TbdDouble::Resolved(0.5)};
+  /// Close → Hold without reaching η [s], > T_close_e2e. Absent from the YAML
+  /// it is DERIVED at parse, kCloseTimeoutPerE2e × T_close_e2e — a stored
+  /// default would outlive the measurement it was derived from.
+  TbdDouble T_close_timeout;
+  HandHoldMode hold_mode{HandHoldMode::kCloseTarget};
+  double hold_delta_rad{0.0};  // rad, >= 0 — read only by kMeasuredOffset
+  /// "At the target": max |q − target| ≤ q_tol AND max |q̇| ≤ qd_tol. The
+  /// velocity half is what makes it SETTLED rather than passing through —
+  /// the contact baseline is learned from a hand at rest.
+  double q_tol{0.01};   // rad, > 0
+  double qd_tol{0.05};  // rad/s, > 0
   bool tbd{true};
   bool q_open_tbd{true};
   bool provisional{true};
@@ -246,6 +281,8 @@ enum class CatchingValidationReason : std::uint8_t {
   kProvisionalOnRealArm,     // a provisional value blocks the real-arm configuration (L0 §5.3)
   kProvisionalWarning,       // same value, but the sim configuration only warns — WARNING only
   kWeightOrdering,           // CLIK weights violate w_task/w_a >> w_arm >> damping_sq (L5 §4.3)
+  kCloseTimeoutNotAboveE2e,  // robot.hand.T_close_timeout <= T_close_e2e (L6 §6)
+  kFreezeShorterThanClose,   // T_freeze < T_close_e2e + T_arm + h (L3 §4.11, #537 S7)
 };
 
 /// One report line: which rule fired, on which key, and (for the per-joint
@@ -301,6 +338,25 @@ struct CatchingValidationReport {
   }
   return params.io_future_tol;
 }
+
+/// Key reported when the freeze window cannot contain the hand's closure.
+inline constexpr const char* kFreezeWindowKey = "planner.freeze.T_freeze";
+
+/// L3 §4.11's lower bound on the freeze window: T_freeze ≥ T_close_e2e + T_arm
+/// + h. COMMITTED starts at t_c − T_freeze and the close command goes out at
+/// t_cmd = t_c − T_close_e2e, so a window shorter than the closure has already
+/// missed its own close command on the tick it commits; T_arm is the servo
+/// lead the reference runs ahead by, and one tick h is the rounding of both
+/// instants onto the tick grid.
+///
+/// `t_freeze_s` is `planner.freeze.T_freeze` (the planner's key, parsed by
+/// planner_params.hpp — this header does not depend on that one, so the
+/// caller passes the number, the same arrangement as
+/// CheckCatchFrameProvisional). A NaN `t_freeze_s` or an unresolved
+/// T_close_e2e / T_arm is not judged here: an unset value is reported by the
+/// check that owns it. Allocation-free, noexcept.
+void CheckFreezeCoversClose(CatchingValidationReport& report, const CatchingParams& params,
+                            double t_freeze_s, double control_rate_hz) noexcept;
 
 /// Key reported for the catch frame's provisional flag (D-17).
 inline constexpr const char* kCatchFrameProvisionalKey =
