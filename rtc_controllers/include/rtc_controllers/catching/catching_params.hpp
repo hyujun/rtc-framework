@@ -266,6 +266,19 @@ struct CatchingParams {
   double supervisor_homing_qd_tol{0.02};
   /// "At the wait pose": max |q − wait_pose| [rad] > 0 (Q13's skip test too).
   double supervisor_ready_pose_tol{0.02};
+  /// Contact judgement (L7 §4.4, S7.3; #537 S7 Q1 / D-S7-3). A fingertip is
+  /// in contact when |F − b| > max(f_min, k_sigma·σ̂) for n_debounce samples
+  /// in a row; the attempt holds the ball when m_min fingertips agree. b and
+  /// σ̂ are an EMA (baseline_alpha) learned at q_pre in ARMED/TRACKING, and
+  /// fewer than n_baseline_min samples makes the verdict Undetermined.
+  double supervisor_contact_f_min{0.2};            // N, >= 0 (Q1: the user's value)
+  double supervisor_contact_k_sigma{3.0};          // –, >= 0
+  int supervisor_contact_n_debounce{3};            // samples, >= 1
+  int supervisor_contact_m_min{2};                 // fingertips, >= 1
+  double supervisor_contact_t_confirm{0.2};        // s, [0, 1] — window [t_cmd, t_c + T_confirm]
+  double supervisor_contact_t_stale{0.02};         // s, (0, 0.5] — TIP_STALE age limit
+  double supervisor_contact_baseline_alpha{0.02};  // –, (0, 1]
+  int supervisor_contact_n_baseline_min{20};       // samples, >= 1
 
   // core / sim: (L0 §6)
   BallSpec ball;

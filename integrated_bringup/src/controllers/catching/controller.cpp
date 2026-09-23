@@ -1197,6 +1197,9 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
   if (closing && hand_out_.timeout) {
     return {Reason::kHandTimeout, false};
   }
+  if (tip_stale_now_) {
+    return {Reason::kTipStale, false};
+  }
   return {Reason::kNone, false};
 }
 
@@ -1219,14 +1222,18 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHo
     if (hand_out_.timeout) {
       return {Reason::kHandTimeout, false};
     }
+    if (tip_stale_now_) {
+      return {Reason::kTipStale, false};
+    }
     return {Reason::kNone, false};
   }
-  // HOLD for T_hold, then judge the attempt and retreat. The verdict is the
-  // contact judgement's (S7.3); without a sensor verdict it is Undetermined —
-  // never Missed, which would release a ball that may be in the hand.
+  // HOLD for T_hold, then judge the attempt (S7.3) and retreat.
   if (tick_now_.ns - hold_entry_ns_ >= t_hold_ns_) {
-    outcome_ = Outcome::kUndetermined;
+    outcome_ = JudgeOutcome();
     return {Reason::kNone, true};
+  }
+  if (tip_stale_now_) {
+    return {Reason::kTipStale, false};
   }
   return {Reason::kNone, false};
 }
@@ -1510,6 +1517,10 @@ void DemoCatchingController::ResetForRearm() noexcept {
   retreat_stage_ = RetreatStage::kStop;
   release_deferred_ = false;
   contact_confirmed_seen_ = false;
+  contact_.ResetForRearm();
+  tip_baseline_n_.fill(0);
+  window_confirmed_seen_ = false;
+  window_stale_seen_ = false;
   homing_ = false;
   homing_done_ = true;  // RETREAT ended at the wait pose
   if (hand_seq_enabled_) {
@@ -1579,7 +1590,6 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   homing_done_ = false;
   retreat_stage_ = RetreatStage::kStop;
   release_deferred_ = false;
-  trial_active_ = false;
   trial_committed_ = false;
   committed_t_c_ns_ = 0;
   committed_t_cmd_ns_ = 0;
@@ -1593,11 +1603,119 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   hold_entry_ns_ = 0;
   sat_streak_ = 0;
   law_horizon_extrap_ = false;
-  outcome_ = rtc::catching::Outcome::kNone;
+  // An E-STOP that lands on an attempt ends it (L7 §4.1): the verdict says so.
+  // An activation starts with no attempt behind it.
+  outcome_ = (!reset_mode && trial_active_) ? rtc::catching::Outcome::kAborted
+                                            : rtc::catching::Outcome::kNone;
+  trial_active_ = false;
   contact_confirmed_seen_ = false;
+  contact_.ResetForRearm();
+  tip_baseline_n_.fill(0);
+  tip_last_seq_.fill(0);
+  window_confirmed_seen_ = false;
+  window_stale_seen_ = false;
   // `tick_record_` is deliberately absent from this list: it is
   // default-constructed at the top of EVERY tick including this one (PROC-7),
   // which is a stronger guarantee than anything enumerated here could give.
+}
+
+// ── Contact lane (S7.3, L7 §4.4) ────────────────────────────────────────────
+
+void DemoCatchingController::RunContactLane(const ControllerState& state) noexcept {
+  using rtc::catching::Mode;
+  tip_count_ = 0;
+  tip_confirmed_now_ = 0;
+  tip_stale_now_ = false;
+  tip_force_now_.fill(0.0);
+  tip_fresh_now_.fill(false);
+  tip_contact_now_.fill(false);
+  if (!contact_configured_ || state.num_devices <= kCatchingHandDeviceIdx) {
+    return;
+  }
+  const auto& dev = state.devices[kCatchingHandDeviceIdx];
+  tip_count_ = std::clamp(dev.num_inference_groups, 0, static_cast<int>(kTips));
+  const bool contact_mode = mode_ == Mode::kCommitted || mode_ == Mode::kClosing ||
+                            mode_ == Mode::kDecel || mode_ == Mode::kHold;
+  // The baseline is learned from a hand that is AT q_pre and not moving
+  // (§4.5-6, Q4): contact at rest on the preshape is the bias, anything on top
+  // of it later is the ball.
+  const bool learning = (mode_ == Mode::kArmed || mode_ == Mode::kTracking) && hand_out_.active &&
+                        hand_out_.phase == rtc::catching::HandPhase::kPreshape &&
+                        hand_out_.at_target;
+  for (int g = 0; g < tip_count_; ++g) {
+    const auto u = static_cast<std::size_t>(g);
+    // BOTH the backend's flag and this controller's deadline (D-24):
+    // IsSensorGroupFresh requires each.
+    tip_fresh_now_[u] = rtc::IsSensorGroupFresh(dev, g, tick_now_.ns, contact_t_stale_ns_);
+    const std::uint64_t seq = dev.inference_sequence[u];
+    const bool is_new = seq != tip_last_seq_[u];
+    tip_last_seq_[u] = seq;
+    // Slots 1..3 are the force (hand_sensor_layout.hpp); only its MAGNITUDE
+    // above the bias is judged, so the sensor's sign convention drops out.
+    const auto base = u * static_cast<std::size_t>(tip_stride_);
+    if (base + 3 >= dev.inference_data.size()) {
+      continue;
+    }
+    const Eigen::Vector3d f(static_cast<double>(dev.inference_data[base + 1]),
+                            static_cast<double>(dev.inference_data[base + 2]),
+                            static_cast<double>(dev.inference_data[base + 3]));
+    const auto& baseline = contact_.Baseline(u);
+    tip_force_now_[u] = baseline.initialized ? (f - baseline.bias).norm() : f.norm();
+    // Fed per SAMPLE: a 250 Hz lane read by a 500 Hz tick would otherwise
+    // count every sample twice toward the debounce and the baseline.
+    if (is_new && dev.inference_enable[u]) {
+      if (learning) {
+        if (contact_.UpdateBaseline(u, f)) {
+          ++tip_baseline_n_[u];
+        }
+      } else if (contact_mode) {
+        static_cast<void>(contact_.UpdateContact(u, f));
+      }
+    }
+    tip_contact_now_[u] = contact_mode && contact_.IsConfirmed(u) && tip_fresh_now_[u];
+    if (tip_contact_now_[u]) {
+      ++tip_confirmed_now_;
+    }
+    if (contact_mode && !tip_fresh_now_[u]) {
+      tip_stale_now_ = true;
+    }
+  }
+  if (!contact_mode) {
+    return;
+  }
+  if (tip_confirmed_now_ >= contact_m_min_) {
+    contact_confirmed_seen_ = true;  // Q14: the hand keeps it through an abort
+  }
+  if (trial_committed_ && rtc::catching::InContactWindow(
+                              tick_now_, rtc::catching::BallTime{committed_t_cmd_ns_},
+                              rtc::catching::BallTime{committed_t_c_ns_}, contact_t_confirm_ns_)) {
+    window_confirmed_seen_ = window_confirmed_seen_ || tip_confirmed_now_ >= contact_m_min_;
+    window_stale_seen_ = window_stale_seen_ || tip_stale_now_;
+  }
+}
+
+rtc::catching::Outcome DemoCatchingController::JudgeOutcome() const noexcept {
+  using rtc::catching::Outcome;
+  // No verdict without the lane: no fingertips, fewer than m_min of them, or a
+  // bias learned from too few samples (never Missed — that would release a
+  // ball that may be in the hand, and count a success as a failure).
+  if (!contact_configured_ || tip_count_ < contact_m_min_) {
+    return Outcome::kUndetermined;
+  }
+  for (int g = 0; g < tip_count_; ++g) {
+    if (tip_baseline_n_[static_cast<std::size_t>(g)] < contact_n_baseline_min_) {
+      return Outcome::kUndetermined;
+    }
+  }
+  if (window_stale_seen_) {
+    return Outcome::kUndetermined;
+  }
+  // Caught: m_min fingertips agreed inside the window AND still agree now.
+  // Agreeing in the window and not at the end is a ball that left the hand.
+  if (window_confirmed_seen_ && tip_confirmed_now_ >= contact_m_min_) {
+    return Outcome::kCaptured;
+  }
+  return Outcome::kMissed;
 }
 
 // ── Motion and hand stages (S7, after the decision) ─────────────────────────
@@ -1705,6 +1823,14 @@ void DemoCatchingController::RunRetreatMotion(const ControllerState& state) noex
       // ABORT_SAFE, which already stopped the arm). The return starts from rest.
       if (RampArmToStop(state)) {
         retreat_stage_ = RetreatStage::kReturn;
+      }
+      // Measured on EVERY tick of the stop, not just the return's: the error
+      // EvaluateRetreat judges must be this motion's. A TRACK_ERR abort leaves
+      // its own (large) value behind, and judging the return on it sent the
+      // controller back to ABORT_SAFE and round again, forever, with the arm
+      // standing still (found by the S7 scenario suite).
+      if (arm_cmd_seeded_ && arm_readable_) {
+        UpdateTrackError(state);
       }
       break;
     case RetreatStage::kReturn:
@@ -2152,6 +2278,14 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
       // Negative means never received, and that is what the wire says too —
       // a zero would read as "arrived this instant".
       tick_record_.tip_age_s[i] = age < 0 ? -1.0 : static_cast<double>(age) * 1e-9;
+      // S7.3's verdicts, as the contact lane computed them this tick. `tip_force`
+      // is |F − bias| once a bias exists (|F| before); `tip_contact` is the
+      // debounced verdict, true only while the lane is judging contact.
+      if (i < kTips && static_cast<int>(i) < tip_count_) {
+        tick_record_.tip_force[i] = tip_force_now_[i];
+        tick_record_.tip_fresh[i] = tip_fresh_now_[i];
+        tick_record_.tip_contact[i] = tip_contact_now_[i];
+      }
     }
   }
 
@@ -2260,6 +2394,10 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
       law_snapshot_ = snapshot;
     }
   }
+
+  // The fingertips, before anything decides: the decision reads this tick's
+  // contact verdict and freshness (S7.3).
+  RunContactLane(state);
 
   // ── The plan lane (S6-A, L3 §5.2) ───────────────────────────────────────
   // The oracle stand-in writes first (it is this box's writer only when the

@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -381,6 +382,19 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
     Reject("supervisor.ready.wait_pose was removed — the wait pose is planner.wait_pose");
   }
   out.supervisor_ready_pose_tol = ReadOptional(ready, "pose_tol", out.supervisor_ready_pose_tol);
+  const YAML::Node contact = ReadSection(supervisor, "contact");
+  out.supervisor_contact_f_min = ReadOptional(contact, "f_min", out.supervisor_contact_f_min);
+  out.supervisor_contact_k_sigma = ReadOptional(contact, "k_sigma", out.supervisor_contact_k_sigma);
+  out.supervisor_contact_n_debounce =
+      ReadPositiveCount(contact, "n_debounce", out.supervisor_contact_n_debounce);
+  out.supervisor_contact_m_min = ReadPositiveCount(contact, "m_min", out.supervisor_contact_m_min);
+  out.supervisor_contact_t_confirm =
+      ReadOptional(contact, "T_confirm", out.supervisor_contact_t_confirm);
+  out.supervisor_contact_t_stale = ReadOptional(contact, "t_stale", out.supervisor_contact_t_stale);
+  out.supervisor_contact_baseline_alpha =
+      ReadOptional(contact, "baseline_alpha", out.supervisor_contact_baseline_alpha);
+  out.supervisor_contact_n_baseline_min =
+      ReadPositiveCount(contact, "n_baseline_min", out.supervisor_contact_n_baseline_min);
 
   const YAML::Node core = ReadSection(node, "core");
   out.ball = ReadBallSpec(ReadSection(core, "ball"));
@@ -743,6 +757,29 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   }
   CheckPositive(report, "supervisor.homing.qd_tol", params.supervisor_homing_qd_tol);
   CheckPositive(report, "supervisor.ready.pose_tol", params.supervisor_ready_pose_tol);
+  CheckRange(report, "supervisor.contact.f_min", params.supervisor_contact_f_min, 0.0,
+             std::numeric_limits<double>::infinity());
+  CheckRange(report, "supervisor.contact.k_sigma", params.supervisor_contact_k_sigma, 0.0,
+             std::numeric_limits<double>::infinity());
+  CheckRange(report, "supervisor.contact.T_confirm", params.supervisor_contact_t_confirm, 0.0, 1.0);
+  if (!std::isfinite(params.supervisor_contact_t_stale) ||
+      !(params.supervisor_contact_t_stale > 0.0) || params.supervisor_contact_t_stale > 0.5) {
+    AddFailure(report, CatchingValidationReason::kRangeViolation, "supervisor.contact.t_stale");
+  }
+  if (!std::isfinite(params.supervisor_contact_baseline_alpha) ||
+      !(params.supervisor_contact_baseline_alpha > 0.0) ||
+      params.supervisor_contact_baseline_alpha > 1.0) {
+    AddFailure(report, CatchingValidationReason::kRangeViolation,
+               "supervisor.contact.baseline_alpha");
+  }
+  for (const auto& [value, key] :
+       {std::pair{params.supervisor_contact_n_debounce, "supervisor.contact.n_debounce"},
+        std::pair{params.supervisor_contact_m_min, "supervisor.contact.m_min"},
+        std::pair{params.supervisor_contact_n_baseline_min, "supervisor.contact.n_baseline_min"}}) {
+    if (value <= 0) {
+      AddFailure(report, CatchingValidationReason::kActiveConfigTbd, key);
+    }
+  }
 
   // robot.hand.* — active in every configuration.
   //

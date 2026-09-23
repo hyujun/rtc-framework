@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
+#include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/logging/session_dir.hpp"
@@ -1300,6 +1301,28 @@ void DemoCatchingController::SetupSupervisor() {
     hand_seq_enabled_ =
         hand_seq_.Configure(rtc::catching::HandSequencerConfig::FromProfile(params_.hand));
   }
+  // The contact lane (S7.3). The stride is the hand device's own sensor
+  // layout — the runtime SSoT (hand_sensor_layout.hpp) — or the 7-value union
+  // when the device declares none.
+  rtc::catching::ContactDebounceConfig contact_cfg;
+  contact_cfg.f_min = params_.supervisor_contact_f_min;
+  contact_cfg.k_sigma = params_.supervisor_contact_k_sigma;
+  contact_cfg.n_debounce =
+      static_cast<std::uint32_t>(std::max(params_.supervisor_contact_n_debounce, 1));
+  contact_cfg.baseline_alpha = params_.supervisor_contact_baseline_alpha;
+  contact_configured_ = contact_.Configure(contact_cfg);
+  tip_stride_ = static_cast<int>(kHandInferenceValuesPerFingertipCapacity);
+  if (const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
+      hand_cfg != nullptr && hand_cfg->sensor_layout.has_value() &&
+      hand_cfg->sensor_layout->inference_values_per_group >= 4) {
+    tip_stride_ = hand_cfg->sensor_layout->inference_values_per_group;
+  }
+  contact_m_min_ = params_.supervisor_contact_m_min;
+  contact_n_baseline_min_ = params_.supervisor_contact_n_baseline_min;
+  contact_t_stale_ns_ =
+      static_cast<std::int64_t>(std::llround(params_.supervisor_contact_t_stale * 1e9));
+  contact_t_confirm_ns_ =
+      static_cast<std::int64_t>(std::llround(params_.supervisor_contact_t_confirm * 1e9));
   trials_enabled_ = clik_enabled_ && SupervisorValueMissing() == nullptr;
   if (trials_enabled_) {
     RCLCPP_INFO(logger_,

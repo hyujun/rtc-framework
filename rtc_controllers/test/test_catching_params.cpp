@@ -602,6 +602,46 @@ TEST(CatchingParams, SupervisorDriverKeysOutsideTheirRangeFail) {
   fails("ready", "pose_tol", 0.0, "supervisor.ready.pose_tol");
 }
 
+TEST(CatchingParams, ContactKeysTakeTheDecidedDefaults) {
+  // #537 S7 Q1 / D-S7-3, provisional (S8).
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_f_min, 0.2);
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_k_sigma, 3.0);
+  EXPECT_EQ(p.supervisor_contact_n_debounce, 3);
+  EXPECT_EQ(p.supervisor_contact_m_min, 2);
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_t_confirm, 0.2);
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_t_stale, 0.02);
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_baseline_alpha, 0.02);
+  EXPECT_EQ(p.supervisor_contact_n_baseline_min, 20);
+}
+
+TEST(CatchingParams, ContactKeysOutsideTheirRangeFail) {
+  const auto fails = [](const char* key, double value) {
+    YAML::Node root = ValidRoot();
+    root["supervisor"]["contact"][key] = value;
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable) << key;
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation,
+                                 std::string("supervisor.contact.") + key))
+        << key;
+  };
+  fails("f_min", -0.1);
+  fails("k_sigma", -1.0);
+  fails("T_confirm", 1.5);
+  fails("t_stale", 0.0);
+  fails("baseline_alpha", 0.0);
+  fails("baseline_alpha", 1.5);
+}
+
+TEST(CatchingParams, ContactCountsMustBePositiveWholeNumbers) {
+  for (const char* key : {"n_debounce", "m_min", "n_baseline_min"}) {
+    YAML::Node root = ValidRoot();
+    root["supervisor"]["contact"][key] = 1.5;
+    ExpectRejectMentioning(root, key);
+  }
+}
+
 TEST(CatchingParams, SupervisorSatTicksMustBeAPositiveCount) {
   YAML::Node root = ValidRoot();
   root["supervisor"]["sat_ticks"] = 2.5;
