@@ -1424,6 +1424,27 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
+  # ── dynamic_catching S6-C G3-C: 1000 synthetic throws through the planner ──
+  # The shipped ur5e_p1b planner profile on the real catch sub-model: p99 of
+  # the planning cycle < planner.budget_s (asserted), rejection distribution and
+  # rank-gate counts recorded.
+  ament_add_gtest(test_catching_planner_g3c test/test_catching_planner_g3c.cpp
+    TIMEOUT 300)
+  target_include_directories(test_catching_planner_g3c PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_catching_planner_g3c PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_catching_planner_g3c
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_catching_planner_g3c
+    rclcpp
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    ament_index_cpp
+  )
+
   # ── dynamic_catching S6-A R-1: the planner shares the `mpc` layout role ────
   # DemoWbc's MPC thread and the catching planner in one process, switched in
   # CM's order (deactivate, activate): thread count by name, affinity against
