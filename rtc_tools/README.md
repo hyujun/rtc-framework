@@ -108,8 +108,8 @@ ros2 run rtc_tools plot_rtc_log planner_events.csv              # 계획기 sear
 # 한 파일에 두 런이 있을 때 (같은 분 재기동) 특정 런 선택 — 기본은 마지막 런
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --run-id 260808143052
 
-# 플롯 파일로 저장
-ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --save-dir /tmp/plots
+# 플롯 파일로만 저장 (창 없이 — --no-show 가 없으면 저장 뒤 창을 띄우고 기다린다)
+ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --save-dir /tmp/plots --no-show
 
 # 통계만 출력 (플롯 없이)
 ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --stats
@@ -125,7 +125,9 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 > 현재 ws `logging_data` 의 최신 세션 순으로 폴백하고, 그것도 없으면
 > 저장 없이 GUI 표시만 합니다.
 >
-> `--save-dir` 지정 시 Agg backend 자동 사용 (GUI 없이 렌더링).
+> GUI 창은 기본으로 뜬다 (`--show`). `--save-dir` 는 저장 위치만 정하므로, 그것만 주면
+> PNG 를 쓴 뒤 창을 띄우고 **창을 닫을 때까지 종료하지 않는다** — 스크립트·백그라운드에서
+> 부르면 멈춘 것처럼 보인다. 창 없이 PNG 만 쓰려면 `--no-show` 를 준다 (그때 Agg backend).
 >
 > 타이밍 CSV 가 `run_id` 를 여러 개 담고 있으면 (세션 디렉토리는 분 해상도라
 > 같은 분의 재기동이 같은 파일에 append 된다) **마지막 런만** 그리고 무엇을

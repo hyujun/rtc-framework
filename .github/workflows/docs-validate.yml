@@ -125,6 +125,9 @@ jobs:
       # reads *other* packages' CMakeLists, so two integrated_bringup tests that
       # opened DDS without a ROS_DOMAIN_ID reached main (fixed in #513), and the
       # shell regression tests were local-only. None of them needs ROS.
+      # The hook now also runs the domain and fixture gates itself (its Phase
+      # 1d, after #571 met the same gap on a PR); these steps stay as the
+      # backstop for commits made outside Claude Code.
 
       # The Stop hook lints every changed .sh as a whole file rather than just the
       # added lines, because shellcheck reports a finding where the symptom is,
