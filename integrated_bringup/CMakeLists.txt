@@ -741,7 +741,7 @@ if(BUILD_TESTING)
   # HOLD, return, joint-space stop). Own binary: alloc_gate.hpp replaces the
   # global operator new (one TU per binary).
   ament_add_gtest(test_demo_catching_alloc_s7 test/test_demo_catching_alloc_s7.cpp
-    ENV ROS_DOMAIN_ID=54)
+    ENV ROS_DOMAIN_ID=52)
   target_include_directories(test_demo_catching_alloc_s7 PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
   target_link_libraries(test_demo_catching_alloc_s7
