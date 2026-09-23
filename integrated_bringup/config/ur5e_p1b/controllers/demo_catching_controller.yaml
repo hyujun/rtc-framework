@@ -1,19 +1,16 @@
-# demo_catching_controller — UR5e + Proto-1b variant (dynamic_catching S4.0/S4.1)
+# demo_catching_controller — UR5e + Proto-1b variant (dynamic_catching)
 #
-# SIM ONLY. The controller refuses to configure unless every device it claims
-# is bound to the `mujoco_native` backend: it holds the arm by commanding it
-# every tick, and doing that on real hardware is a change on the E-STOP path
-# (E-8), pending approval before S5. This file is therefore loaded by
-# sim_ur5e_p1b.launch.py only in practice; the guard, not the file's location,
-# is what enforces it (plan §4.4 S4a Q3).
+# The whole catching cycle as of S7 (L7 §4.1): armed, the controller homes the
+# arm to `planner.wait_pose` in joint space with the hand at q_pre, follows the
+# planner's plan, freezes it at t_c − T_freeze, closes the hand at t_cmd,
+# decelerates after t_c, holds for T_hold and returns to the wait pose.
 #
-# S4.0 scope: arm hold + unshaped hand step. No catching law (S5), no hand
-# sequencer (S7.1). The `catching:` tree below carries only what this step
-# needs; of the keys owned by other steps (reference.*, planner.*,
-# supervisor.*) only the values already decided are recorded (planner.hand.*,
-# planner.ik.*, supervisor.decel.a_dec — none consumed yet), the rest are
-# absent and their TBDs are logged as warnings rather than refused — this
-# controller never arms, so G0-C's arming gate is not its gate.
+# Loaded by sim_ur5e_p1b.launch.py; the real p1b bring-up instantiates it too
+# (sim and real share config/<variant>/controllers/). Since E-8 (2026-09-22)
+# the backend no longer gates activation: a value this controller consumes
+# that is provisional or TBD PARKS a real-arm configuration (configure SUCCESS,
+# activation refused) and only warns in sim (L0 §5.3, A-S5-1). The `provisional`
+# flags below are why a real arm does not run this file yet.
 demo_catching_controller:
   command_type: "position"
 

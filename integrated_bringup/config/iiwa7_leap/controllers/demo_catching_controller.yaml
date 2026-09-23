@@ -1,14 +1,8 @@
-# demo_catching_controller — iiwa7 + LEAP variant (dynamic_catching S4.0/S4.1)
+# demo_catching_controller — iiwa7 + LEAP variant (dynamic_catching)
 #
-# SIM ONLY — see the ur5e_p1b copy of this file for why (E-8 / plan §4.4 S4a
-# Q3): the controller refuses to configure unless every claimed device is on
-# the `mujoco_native` backend.
-#
-# S4.0 scope: arm hold + unshaped hand step. Of the keys owned by other steps
-# (reference.*, planner.*, supervisor.*) only the values already decided are
-# recorded (planner.hand.*, planner.ik.*, supervisor.decel.a_dec — none
-# consumed yet); the rest are absent. This controller never arms, so G0-C's
-# arming gate is not its gate.
+# The same S7 catching cycle as the ur5e_p1b copy (see its header): homing to
+# `planner.wait_pose`, plan → freeze → close → decel → hold → return. The
+# provisional flags park a real-arm configuration (L0 §5.3, A-S5-1).
 demo_catching_controller:
   command_type: "position"
 

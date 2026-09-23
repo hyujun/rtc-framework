@@ -93,7 +93,7 @@ integrated_bringup/
 │   ├── sim_ur5e_p1b.launch.py          <- MuJoCo 시뮬레이션 launch (ur5e_p1b, closed-chain)
 │   └── sim_iiwa7_leap.launch.py        <- MuJoCo 시뮬레이션 launch (iiwa7 + LEAP Hand)
 ├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈 · sim 도구)
-│   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 (투척마다 대기 자세 정렬, §Catching sim trials)
+│   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 (투척마다 한 S7 순환, §Catching sim trials)
 │   ├── sim_overlay.py                  <- `sim_overlay:=` 해석 (sim launch 공용)
 │   └── demo_gui/
 │       ├── app.py                      <- DemoControllerGUI Tk 클래스 + main()
@@ -832,17 +832,16 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 모든 원소에 **소수점을 찍으십시오** — 정수 리터럴이 하나라도 있으면 시퀀스 전체가 정수 배열로 추론되어 노드 생성 시점에 죽습니다. `test_shipped_sim_config` 가 이 타입을 rclcpp 로더로 고정합니다.
 
-### Catching sim trials — 투척 전 대기 자세 정렬
+### Catching sim trials — 한 투척 = 한 S7 순환
 
-S6·S8 의 포구 sim 측정은 **투척마다 팔을 `planner.wait_pose` 에 정렬한 뒤** 던진다 (#537 결정 ④, 2026-09-23). 컨트롤러가 스스로 대기 자세로 돌아가는 것은 S7.2 이고 그 전까지는 이 절차가 표준이다. 정렬하지 않으면 각 투척이 직전 투척이 끝난 자세에서 시작한다. 첫 투척은 활성화 자세에서, 이후 투척은 바닥 위 8 cm 까지 내려간 자세에서 시작했다. 2026-09-23 실측에서 시작 자세가 대기 자세와 4.6–6.3 rad 벌어져 있었고, 추종 오차·포화·포구 오차가 컨트롤러가 아니라 시작 자세를 재고 있었다.
+S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED). 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
 
 `catching_sim_trials` 는 떠 있는 sim 을 구동만 한다. 투척마다 다음을 한다.
 
-1. 무장 해제 → IDLE 확인
-2. `demo_joint_controller` 로 전환 → `wait_pose` 관절 목표
-3. `max|q−wait_pose|` < 0.01 rad 이고 `max|q̇|` < 0.01 rad/s 인 상태가 0.5 s 유지될 때까지 대기
-4. 포구 컨트롤러로 복귀 → 무장 → ARMED → 이탈 재확인
-5. `/sim/launch_ball_at` 으로 투척
+1. FAULT 면 리셋 → 무장 (`catching.enable`) → ARMED 대기 (컨트롤러의 homing). ARMED 순간의 측정 자세가 대기 자세에서 `--tol-q` / `--tol-qd` 를 넘으면 시행을 거부한다.
+2. `/sim/launch_ball_at` 으로 투척하고 ground truth 와 모드 전이를 기록한다.
+3. 순환이 닫히면 (RETREAT 뒤 ARMED) 끝낸다. IDLE·FAULT 로 가거나 `--record-s` (기본 12 s) 가 지나도 끝낸다. 시행의 판정은 RETREAT 진입 때 발행된 `outcome` 이다 (L7 §4.7).
+4. 공을 리셋한다.
 
 관절 이름·상태 토픽·대기 자세는 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). 투척은 기준 투척 `--n-ref` 번 뒤에 섭동 투척 `--n-pert` 번이다 (속력 ×U(0.9, 1.1), 측방 U(−0.3, 0.3) m/s, `--seed`).
 
@@ -853,11 +852,11 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false use_c
 # 3) 포구 컨트롤러로 전환
 ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
   "{activate_controllers: [demo_catching_controller], deactivate_controllers: [demo_joint_controller], strictness: 1, timeout: {sec: 3}}"
-# 4) 투척 — <out>/truth_trial_NN.csv (공 ground truth) + trial_results.json (모드 전이·정렬 오차)
+# 4) 투척 — <out>/truth_trial_NN.csv (공 ground truth) + trial_results.json (모드 전이·판정·정렬 오차)
 ros2 run integrated_bringup catching_sim_trials <out> --n-ref 15 --n-pert 10
 ```
 
-`trial_results.json` 의 `err_q_at_throw` 가 투척 순간의 정렬 오차이고, `wall_t_relative_offset` 이 이 기록을 `catching_diag.csv` 의 시간축에 잇는다. 정렬 구간은 포구 컨트롤러가 비활성이라 `catching_diag.csv` 에 행이 없다. 그 구간의 tick 간극은 드롭이 아니다.
+`trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다. 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다.
 
 ---
 

@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from integrated_bringup.catching_sim_trials import (
+    _cycle_closed,
     alignment_error,
     load_arm_profile,
     trial_throws,
@@ -72,3 +73,11 @@ def test_the_throw_series_is_reference_first_then_seeded_perturbations():
     # Replayable: the same seed gives the same series; another seed does not.
     assert trial_throws(3, 4, 42, pos, vel) == throws
     assert trial_throws(3, 4, 7, pos, vel) != throws
+
+
+def test_a_cycle_is_closed_by_a_re_arm_after_retreat_whatever_follows():
+    # Measured 2026-09-23: after the re-arm the controller sees the next track
+    # and goes on to TRACKING — the cycle is still closed.
+    assert _cycle_closed(["TRACKING", "APPROACH", "HOLD", "RETREAT", "ARMED", "TRACKING"])
+    assert not _cycle_closed(["TRACKING", "APPROACH", "RETREAT"])
+    assert not _cycle_closed(["ARMED", "TRACKING", "APPROACH"])
