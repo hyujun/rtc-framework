@@ -95,6 +95,7 @@ add_library(rtc_controllers STATIC
   # SeqLocks; the thread that calls it lives in integrated_bringup (D-1).
   src/params/planner_params.cpp
   src/catching/planner_cycle.cpp
+  src/catching/planner_search.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -543,6 +544,16 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_planner_cycle PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_planner_cycle PRIVATE -Wno-mismatched-new-delete)
+
+  # dynamic_catching S6-B: the planner's search on the 6R wrist fixture — q̇ᵘ
+  # against an independent DLS (G3-I runtime half), judgement vs rank gates,
+  # settle, budget, switching/freeze, G3-K (a full search allocates nothing),
+  # and the R-2 timing record. Needs the URDF fixtures, hence the extra dir.
+  ament_add_gtest(test_catching_planner_search test/test_catching_planner_search.cpp)
+  target_link_libraries(test_catching_planner_search rtc_controllers)
+  target_include_directories(test_catching_planner_search PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_planner_search PRIVATE -Wno-mismatched-new-delete)
 endif()
 
 ament_package()

@@ -14,8 +14,12 @@ bool PlannerCycle::Bind(const PlannerCycleIo& io) noexcept {
 }
 
 PlanSnapshot PlannerCycle::PlanOnce(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                    bool cov_matched, const PlannerRtState& rt,
-                                    NowReal now) noexcept {
+                                    bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                    SearchStats& stats) noexcept {
+  if (search_.Configured()) {
+    return search_.Plan(traj, cov, cov_matched, rt, now, stats);
+  }
+  stats = SearchStats{};
   static_cast<void>(cov);
   static_cast<void>(cov_matched);
   static_cast<void>(now);
@@ -57,10 +61,19 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   if (rt.reset_epoch != seen_reset_epoch_) {
     seen_reset_epoch_ = rt.reset_epoch;
     rec.reset_seen = true;
+    search_.ResetTrial();
   }
-  if (ActivityFor(static_cast<Mode>(rt.mode)) != PlannerActivity::kSearch) {
-    // kMonitor (COMMITTED/CLOSING) is monitorOnly — S6-B. Publishing nothing
-    // there is safe: the RT keeps the plan it committed to.
+  const PlannerActivity activity = ActivityFor(static_cast<Mode>(rt.mode));
+  if (activity == PlannerActivity::kMonitor) {
+    // monitorOnly (§4.6): σ_ℓ at the committed t_c from the newest covariance.
+    // Recorded, never published: the RT does not take a new plan once
+    // committed, and σ_ℓ's consumer (L7 abort) is S7.2.
+    io_.traj->LoadInto(traj_);
+    io_.cov->LoadInto(cov_);
+    search_.Monitor(traj_, cov_, cov_.valid && SameSnapshot(cov_.token, traj_.token), rec.search);
+    return rec;
+  }
+  if (activity != PlannerActivity::kSearch) {
     return rec;
   }
 
@@ -87,7 +100,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   }
 
   // ── 3. Search (A-4 single entry) ─────────────────────────────────────────
-  PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, wake);
+  PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, wake, rec.search);
   if (post_search_hook_ != nullptr) {
     post_search_hook_(post_search_context_);
   }
@@ -105,10 +118,18 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     return rec;
   }
 
+  // The switching rule decided to keep the plan the RT is following (§4.7,
+  // freeze G): publishing nothing IS the decision.
+  if (!rec.search.publish) {
+    rec.outcome = CycleOutcome::kHeld;
+    return rec;
+  }
+
   // ── 5. Publish ───────────────────────────────────────────────────────────
   plan.plan_id = ++last_plan_id_;
   plan.publish_ns = clock_();
   io_.plan->Store(plan);
+  search_.NotePublished(plan);
   rec.outcome = CycleOutcome::kPublished;
   rec.plan_id = plan.plan_id;
   rec.plan_valid = plan.valid;

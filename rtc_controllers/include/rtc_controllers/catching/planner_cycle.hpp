@@ -23,6 +23,7 @@
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/planner_search.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 
@@ -37,6 +38,7 @@ enum class CycleOutcome : std::uint8_t {
   kNoInput,     ///< no trajectory of the current activation
   kPublished,   ///< a PlanSnapshot (valid or "no plan") was stored
   kSuperseded,  ///< the trajectory or the trial moved during compute — dropped
+  kHeld,        ///< the switching rule kept the RT's current plan (§4.7, G)
 };
 
 [[nodiscard]] constexpr const char* CycleOutcomeName(CycleOutcome o) noexcept {
@@ -49,6 +51,8 @@ enum class CycleOutcome : std::uint8_t {
       return "published";
     case CycleOutcome::kSuperseded:
       return "superseded";
+    case CycleOutcome::kHeld:
+      return "held";
   }
   return "unknown";
 }
@@ -73,6 +77,9 @@ struct PlannerCycleRecord {
   /// receive → publish latency D-7a is judged on (plan §7.2).
   std::int64_t wake_ns{0};
   std::int64_t publish_ns{0};
+  /// The search's own account (S6-B): candidate counts, judgement rejects,
+  /// the chosen candidate's rank-gate bitmask, the switching decision, timing.
+  SearchStats search{};
 };
 
 static_assert(std::is_trivially_copyable_v<PlannerCycleRecord>);
@@ -100,18 +107,30 @@ class PlannerCycle {
   [[nodiscard]] bool Bound() const noexcept { return bound_; }
 
   /// Non-RT. Take the thread parameters (budget, wait pose).
-  void Configure(const PlannerParams& params) noexcept { params_ = params; }
+  void Configure(const PlannerParams& params) { params_ = params; }
+
+  /// Non-RT. Give the search its model (S6-B). Without it `PlanOnce` is the
+  /// S6-A stub ("no plan"). False if the binding is unusable.
+  bool ConfigureSearch(const PlannerModel& model, const PlannerConstants& constants,
+                       const CatchPoseIkOptions& ik) {
+    return search_.Configure(model, constants, params_, ik, clock_);
+  }
+
+  /// Drop the search's model (a configuration without one).
+  void ClearSearch() noexcept { search_ = PlannerSearch{}; }
+
+  [[nodiscard]] bool SearchConfigured() const noexcept { return search_.Configured(); }
 
   void SetClock(ClockFn clock) noexcept { clock_ = clock; }
 
   /// One wake. RT-safe. `wake` is the instant the thread woke.
   [[nodiscard]] PlannerCycleRecord Run(NowReal wake) noexcept;
 
-  /// The single search entry point (A-4, S6.6). S6-A: a stub that never
-  /// yields a candidate — see the file header.
+  /// The single search entry point (A-4, S6.6): `PlannerSearch::Plan` once a
+  /// model is configured, the S6-A stub ("no plan") otherwise.
   [[nodiscard]] PlanSnapshot PlanOnce(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                      bool cov_matched, const PlannerRtState& rt,
-                                      NowReal now) noexcept;
+                                      bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                      SearchStats& stats) noexcept;
 
   /// The id the next publish will carry minus one — i.e. the last id used.
   [[nodiscard]] std::uint32_t LastPlanId() const noexcept { return last_plan_id_; }
@@ -139,6 +158,7 @@ class PlannerCycle {
   // Scratch copies, filled with SeqLock::LoadInto so a wake copies each
   // snapshot once, straight into these, rather than building a by-value
   // Load() on the stack first (covariance 11.5 KB, trajectory ~13 KB).
+  PlannerSearch search_;
   TrajectorySnapshot traj_{};
   TrajectorySnapshot traj_recheck_{};
   CovarianceSnapshot cov_{};

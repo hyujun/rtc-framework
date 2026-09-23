@@ -26,6 +26,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -216,6 +217,83 @@ TEST(PlannerParams, AWaitPoseLongerThanThePlanCapacityIsRefused) {
   }
   pose += "]}";
   EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(pose))), std::invalid_argument);
+}
+
+TEST(PlannerParams, ReadsTheSearchKeys) {
+  const auto p = ParsePlannerParams(YAML::Load(R"(
+planner:
+  sub_model: "arm_catch"
+  max_ik: 5
+  n_settle: 2
+  slice: {dt: 0.05, t_lead_min: 0.3, t_max: 0.9}
+  time: {margin: 0.02}
+  unc: {kappa_sigma: 0.4}
+  gamma: {margin: 0.2, eta_v: 0.9}
+  budget: {n_sigma: 2.5, sigma_trk: 0.001, clock_err: 0.002}
+  hand: {d_eff: 0.28, r_cap: 0.024, provisional: true}
+  switch: {delta_J: 0.2, e_jump_max: 0.02, ed_jump_max: 0.1}
+  freeze: {T_freeze: 0.36}
+  score: {w_sigma: 2, w_t: 3, w_q: 0.5, w_late: 0.1, w_gamma: 4, penalty: 20}
+  workspace: {catch_box: {min: [0.1, -0.3, 0.2], max: [1.0, 0.3, 0.9]}}
+)"));
+  EXPECT_EQ(p.sub_model, "arm_catch");
+  EXPECT_EQ(p.max_ik, 5);
+  EXPECT_EQ(p.n_settle, 2);
+  EXPECT_DOUBLE_EQ(p.slice_t_lead_min, 0.3);
+  EXPECT_DOUBLE_EQ(p.LeadMin(), 0.3);
+  EXPECT_DOUBLE_EQ(p.slice_t_max, 0.9);
+  EXPECT_DOUBLE_EQ(p.time_margin, 0.02);
+  EXPECT_DOUBLE_EQ(p.kappa_sigma, 0.4);
+  EXPECT_DOUBLE_EQ(p.gamma_margin, 0.2);
+  EXPECT_DOUBLE_EQ(p.n_sigma, 2.5);
+  EXPECT_DOUBLE_EQ(p.sigma_trk, 0.001);
+  EXPECT_DOUBLE_EQ(p.clock_err, 0.002);
+  EXPECT_DOUBLE_EQ(p.d_eff, 0.28);
+  EXPECT_DOUBLE_EQ(p.r_cap, 0.024);
+  EXPECT_DOUBLE_EQ(p.switch_delta_j, 0.2);
+  EXPECT_DOUBLE_EQ(p.switch_e_jump_max, 0.02);
+  EXPECT_DOUBLE_EQ(p.switch_ed_jump_max, 0.1);
+  EXPECT_DOUBLE_EQ(p.t_freeze, 0.36);
+  EXPECT_DOUBLE_EQ(p.score.w_sigma, 2.0);
+  EXPECT_DOUBLE_EQ(p.score.penalty, 20.0);
+  ASSERT_TRUE(p.catch_box.set);
+  EXPECT_TRUE(p.catch_box.Contains(0.5, 0.0, 0.5));
+  EXPECT_FALSE(p.catch_box.Contains(0.5, 0.31, 0.5));
+}
+
+TEST(PlannerParams, ADecisionLeftOutOrTbdIsUnsetNotDefaulted) {
+  // T_freeze, catch_box, d_eff/r_cap are decisions (L3 §6 TBD): absent or TBD
+  // must read as UNSET so the binding parks, never as a plausible number.
+  for (const char* yaml : {"planner: {enabled: true}",
+                           "planner: {freeze: {T_freeze: TBD}, workspace: {catch_box: TBD}, "
+                           "hand: {d_eff: TBD, r_cap: TBD}}"}) {
+    const auto p = ParsePlannerParams(YAML::Load(yaml));
+    EXPECT_TRUE(std::isnan(p.t_freeze)) << yaml;
+    EXPECT_TRUE(std::isnan(p.LeadMin())) << yaml << ": t_lead_min falls back to T_freeze";
+    EXPECT_FALSE(p.catch_box.set) << yaml;
+    EXPECT_TRUE(std::isnan(p.d_eff)) << yaml;
+    EXPECT_TRUE(std::isnan(p.r_cap)) << yaml;
+    EXPECT_TRUE(p.sub_model.empty()) << yaml;
+  }
+}
+
+TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
+  for (const char* bad : {
+           "planner: {sub_model: TBD}",
+           "planner: {sub_model: ''}",
+           "planner: {max_ik: 0}",
+           "planner: {max_ik: 41}",
+           "planner: {slice: {t_max: 2.0}}",
+           "planner: {slice: 3}",
+           "planner: {freeze: {T_freeze: -0.1}}",
+           "planner: {workspace: {catch_box: {min: [0, 0, 0]}}}",
+           "planner: {workspace: {catch_box: {min: [1, 0, 0], max: [0, 1, 1]}}}",
+           "planner: {workspace: {catch_box: {min: [0, 0], max: [1, 1, 1]}}}",
+           "planner: {score: {penalty: -1}}",
+       }) {
+    EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
+        << bad;
+  }
 }
 
 // ── 4. The cycle ────────────────────────────────────────────────────────────
