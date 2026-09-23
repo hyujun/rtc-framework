@@ -71,7 +71,21 @@ def _check_header_matches_data(filepath: str) -> None:
 
 # Columns whose values are intentionally string/categorical — never coerce.
 # `phase` is the WbcDiagLog FSM-phase name (idle/approach/.../fallback).
-_STR_COLS = {"goal_type", "command_type", "phase", "mode_name", "reason_name", "timestamp"}
+# `outcome`/`decision` are planner_events.csv's CycleOutcomeName/
+# SwitchDecisionName text (S6-B) — catching_diag.csv also has an `outcome`
+# column, but that one is an integer enum code that pandas already reads as
+# numeric dtype, so listing the name here is a no-op for that file (only
+# object-dtype columns are coerced below).
+_STR_COLS = {
+    "goal_type",
+    "command_type",
+    "phase",
+    "mode_name",
+    "reason_name",
+    "outcome",
+    "decision",
+    "timestamp",
+}
 
 # Bitmask columns stamp their bit order into the column name, e.g.
 # `contact_mask[thumb|index|middle]` (#234 P-14 — the contact→role mapping used

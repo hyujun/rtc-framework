@@ -54,6 +54,12 @@ def detect_log_type(filepath):
         # reference, CLIK state, q_c vs q. Fixed instance stem, written only
         # by the catching controller.
         return "catching_diag"
+    elif stem == "planner_events" or stem.endswith("planner_events"):
+        # Per-non-idle-wake planner search record (S6-B): candidate funnel,
+        # judgement rejects, rank-gate bitmask, switching decision. Fixed
+        # instance stem, written only by the catching controller's planner
+        # thread (drained by the 1 Hz aux timer).
+        return "planner_events"
     elif stem.endswith("state_log"):
         return "state_log"
     elif stem.endswith("sensor_log"):
@@ -128,6 +134,13 @@ def detect_log_type_by_columns(columns):
     # the ordering below it is defence rather than necessity.
     if "track_err_rad" in cols and "ref_gamma" in cols:
         return "catching_diag"
+    # Planner-events (S6-B): per-non-idle-wake planner_events.csv. `n_in_window`
+    # + `rank_error_budget` is the discriminating pair — no other POD emits
+    # either. Neither carries the generic `_raw_`/`_filt_` token the
+    # sensor_log fallback matches, so the ordering below it is defence rather
+    # than necessity, same as catching_diag above.
+    if "n_in_window" in cols and "rank_error_budget" in cols:
+        return "planner_events"
     # WBC device state: superset of state_log with TSID a_opt acceleration.
     # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the
     # WBC arm/hand state CSVs from the generic state_log before that branch.

@@ -103,6 +103,7 @@ ros2 run rtc_tools plot_rtc_log mpc_timing_log.csv
 # 컨트롤러 소유 진단 CSV (<session>/controllers/<config_key>/ 아래)
 ros2 run rtc_tools plot_rtc_log momentum_observer.csv
 ros2 run rtc_tools plot_rtc_log momentum_observer.csv --stats   # ‖r‖∞ 통계만
+ros2 run rtc_tools plot_rtc_log planner_events.csv              # 계획기 search 기록
 
 # 한 파일에 두 런이 있을 때 (같은 분 재기동) 특정 런 선택 — 기본은 마지막 런
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --run-id 260808143052
@@ -166,6 +167,7 @@ GUI 로 뜬 figure 의 **subplot 을 우클릭**하면 x/y 범위를 숫자로 �
 | `compliance_diag.csv` | compliance_diag (ComplianceDiagLog — §7 task-admittance 진단: 소비된 wrench / source verdict / FSM·α / x̃·ν_c / 파라미터 스냅샷. 컬럼 지문은 `x_tilde_`. **통계 전용, figure 없음** — envelope·freshness·bias 숫자가 산출물이라 `grasp_diag` 와 같은 판단) |
 | `momentum_observer.csv` | momentum_observer (MomentumObserverLog — 일반화 운동량 관측기 잔차 `r_<joint>`·‖r‖∞·게이트, Layer 2A payload wrench/질량, Layer 2B 관성 회귀. `momentum_observer.png` + (2A/2B 가 구성된 run 에서만) `momentum_payload.png` + 통계) |
 | `catching_diag.csv` | catching_diag (CatchingDiagLog — 동적 포구 tick 레코드: 슈퍼바이저 mode/reason, 입력 스냅샷 token·나이·지평, plan, L4 기준(실현 가속도와 포화 전 요구값 둘 다), CLIK status/solve_us/conflict, q_c vs q. 컬럼 지문은 `track_err_rad` + `ref_gamma`. `catching_diag.png` + 통계 — **모든 tick 이 한 행**이라 tick 간극은 드롭된 행을 뜻한다) |
+| `planner_events.csv` | planner_events (계획기 스레드의 non-idle wake 당 한 행 — 후보 funnel `n_in_window`/`n_ik`/`n_pass`, judgement-reject 히스토그램, 선택 후보의 rank-gate 실패 비트마스크(§4.8 rollout gate 포함), 스위칭 `decision`, `recv_to_publish_ms` (publish 된 행만). 컬럼 지문은 `n_in_window` + `rank_error_budget`. 시간축은 `wake_ns` 기준 첫 행 이후 경과초(이 채널에 `t_relative_s`/`t_wall_ns` 가 없음). `planner_events.png` (search/IK/rollout 시간·latency·funnel·reject 히스토그램·outcome/decision 이벤트·rank-gate 실패 6단) + 통계) |
 
 > WBC `<dev>_state.csv` 는 파일명만으로 generic state_log 와 구분 불가 (둘 다 `_state`)
 > → `accel_*` 컬럼 fingerprint 로 컬럼 fallback 단계에서 wbc_log 로 분류된다. wbc_log

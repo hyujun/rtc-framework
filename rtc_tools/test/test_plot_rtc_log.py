@@ -3234,6 +3234,320 @@ class TestCatchingDiagStatistics:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# planner_events (S6-B) — 계획기 스레드의 non-idle wake 당 한 행
+#
+# catching_diag.csv 와 달리 **fixed 폭** 헤더다 (관절·지문 블록이 없음) — 계획기가
+# 다루는 값은 후보 funnel·rank-gate 비트마스크·switching decision 이지 관절
+# 벡터가 아니기 때문. `WritePlannerEventsHeader` 가 내보내는 순서 그대로.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_PLANNER_EVENTS_COLUMNS = [
+    "wake_ns",
+    "publish_ns",
+    "recv_to_publish_ms",
+    "outcome",
+    "mode",
+    "reset_seen",
+    "cov_matched",
+    "plan_id",
+    "plan_valid",
+    "plan_reason",
+    "snapshot_sequence",
+    "track_generation",
+    "settling",
+    "n_in_window",
+    "n_ik",
+    "n_pass",
+    "rej_input",
+    "rej_ik",
+    "rej_manipulability",
+    "rej_workspace",
+    "rej_not_evaluated",
+    "budget_hit",
+    "search_us",
+    "ik_us_max",
+    "rank_mask",
+    "rank_uncertainty",
+    "rank_reach",
+    "rank_gamma",
+    "rank_commit_lead",
+    "rank_error_budget",
+    "score",
+    "lead_s",
+    "gamma_f",
+    "decision",
+    "sigma_l",
+    "rank_rollout",
+    "t_w",
+    "rollout_window_only",
+    "n_rollouts",
+    "rollout_us_max",
+]
+
+# RankGateBit order (rtc_controllers/catching/planner_search.hpp) — bit
+# position k = index k here, so `rank_mask` below can be built from it.
+_PLANNER_EVENTS_RANK_BITS = [
+    "rank_uncertainty",
+    "rank_reach",
+    "rank_gamma",
+    "rank_commit_lead",
+    "rank_error_budget",
+    "rank_rollout",
+]
+
+
+def _planner_events_columns():
+    return list(_PLANNER_EVENTS_COLUMNS)
+
+
+def _planner_events_row(
+    i,
+    *,
+    outcome="published",
+    decision="replaced",
+    rank_bits=None,
+    search_us=120.0,
+    ik_us_max=80.0,
+    rollout_us_max=40.0,
+    n_in_window=5,
+    n_ik=4,
+    n_pass=3,
+    n_rollouts=6,
+    columns=None,
+):
+    """C++ writer 가 내보내는 한 행 (planner_events_csv.hpp WritePlannerEventsRow)."""
+    columns = _planner_events_columns() if columns is None else columns
+    rank_bits = dict.fromkeys(_PLANNER_EVENTS_RANK_BITS, 0) if rank_bits is None else rank_bits
+    wake_ns = 1_000_000_000 + i * 20_000_000  # 50 Hz-ish wake spacing
+    row = dict.fromkeys(columns, 0.0)
+    row["wake_ns"] = wake_ns
+    row["outcome"] = outcome
+    row["decision"] = decision
+    row["mode"] = 3
+    row["plan_valid"] = 1 if outcome == "published" else 0
+    row["plan_reason"] = 0
+    row["n_in_window"] = n_in_window
+    row["n_ik"] = n_ik
+    row["n_pass"] = n_pass
+    row["search_us"] = search_us
+    row["ik_us_max"] = ik_us_max
+    row["score"] = 0.8
+    row["lead_s"] = 0.5
+    row["gamma_f"] = 0.3
+    row["sigma_l"] = float("nan")
+    row["t_w"] = 0.3
+    row["rollout_window_only"] = 0
+    row["n_rollouts"] = n_rollouts
+    row["rollout_us_max"] = rollout_us_max
+    for bit_col, val in rank_bits.items():
+        row[bit_col] = val
+    row["rank_mask"] = sum(
+        (1 << k) for k, c in enumerate(_PLANNER_EVENTS_RANK_BITS) if rank_bits.get(c, 0)
+    )
+    if outcome == "published":
+        row["publish_ns"] = wake_ns + 2_000_000
+        row["recv_to_publish_ms"] = 5.0 + i * 0.01
+    else:
+        row["publish_ns"] = 0
+        row["recv_to_publish_ms"] = float("nan")
+    return [row[c] for c in columns]
+
+
+def _planner_events_frame(n=20, columns=None, **kw):
+    columns = _planner_events_columns() if columns is None else columns
+    rows = [_planner_events_row(i + 1, columns=columns, **kw) for i in range(n)]
+    return pd.DataFrame(rows, columns=columns)
+
+
+class TestPlannerEventsDetection:
+    def test_filename_detection(self):
+        assert (
+            detect_log_type("/s/controllers/demo_catching_controller/planner_events.csv")
+            == "planner_events"
+        )
+
+    def test_column_detection(self):
+        assert detect_log_type_by_columns(_planner_events_columns()) == "planner_events"
+
+    def test_is_registered_in_both_dispatch_tables(self):
+        from rtc_tools.plotting.pipelines.registry import PIPELINES, STATS_PRINTERS
+
+        assert "planner_events" in STATS_PRINTERS
+        assert "planner_events" in PIPELINES
+
+    def test_fingerprint_is_unique_to_this_pod(self):
+        """지문이 `n_in_window` + `rank_error_budget` 인 근거 — 다른 producer 헤더는
+        둘 다 안 낸다. catching_diag 의 동형 테스트와 같은 취지 (S6-B)."""
+        from pathlib import Path
+
+        logging_dir = (
+            Path(__file__).resolve().parents[2]
+            / "integrated_bringup"
+            / "include"
+            / "integrated_bringup"
+            / "logging"
+        )
+        if not logging_dir.exists():  # pragma: no cover - 단독 배포 시
+            pytest.skip(f"C++ logging headers not present at {logging_dir}")
+        for token in ("n_in_window", "rank_error_budget"):
+            offenders = [
+                p.name
+                for p in sorted(logging_dir.glob("*.hpp"))
+                if p.name != "planner_events_csv.hpp" and token in p.read_text()
+            ]
+            assert not offenders, f"`{token}` 를 다른 producer 헤더도 낸다: {offenders}"
+
+    def test_no_column_carries_a_sensor_log_token(self):
+        bad = [c for c in _planner_events_columns() if "_raw_" in c or "_filt_" in c]
+        assert not bad, f"sensor_log 토큰을 가진 컬럼: {bad}"
+
+    def test_cpp_header_matches_this_list(self):
+        """C++ `WritePlannerEventsHeader` 와 위 상수가 어긋나면 실패한다."""
+        from pathlib import Path
+
+        hdr = (
+            Path(__file__).resolve().parents[2]
+            / "integrated_bringup"
+            / "include"
+            / "integrated_bringup"
+            / "logging"
+            / "planner_events_csv.hpp"
+        )
+        if not hdr.exists():  # pragma: no cover - 단독 배포 시
+            pytest.skip(f"C++ header not present at {hdr}")
+        body = (
+            hdr.read_text()
+            .split("WritePlannerEventsHeader(std::ostream& os) {", 1)[1]
+            .split("\n}", 1)[0]
+        )
+        joined = "".join(re.findall(r'"([^"]*)"', body))
+        # The header is one `os << "...\n";` statement, so the extracted text
+        # ends in the literal two-character escape `\n` (not an actual
+        # newline) rather than the per-line `os <<` breaks catching_diag's
+        # oracle test parses — strip it before splitting.
+        joined = joined.replace("\\n", "")
+        cpp_columns = [c for c in joined.strip().split(",") if c]
+        assert cpp_columns == _PLANNER_EVENTS_COLUMNS, (
+            "C++ WritePlannerEventsHeader 의 컬럼과 이 테스트의 목록이 다르다"
+        )
+
+
+class TestPlannerEventsRoundTrip:
+    def _df(self, tmp_path, n=20, **kw):
+        columns = _planner_events_columns()
+        rows = [_planner_events_row(i + 1, columns=columns, **kw) for i in range(n)]
+        path = tmp_path / "planner_events.csv"
+        _write_csv(str(path), columns, rows)
+        return load_log_csv(str(path), "planner_events")
+
+    def test_outcome_and_decision_stay_strings(self, tmp_path):
+        df = self._df(tmp_path)
+        assert df["outcome"].iloc[0] == "published"
+        assert df["decision"].iloc[0] == "replaced"
+
+    def test_recv_to_publish_is_nan_off_the_published_row(self, tmp_path):
+        df = self._df(tmp_path, outcome="held", decision="held_hysteresis")
+        assert math.isnan(float(df["recv_to_publish_ms"].iloc[0]))
+
+    def test_no_timestamp_column_is_derived(self, tmp_path):
+        """이 채널은 `t_relative_s`/`t_wall_ns` 가 없다 — 시간축은 plotter 가
+        `wake_ns` 로 직접 계산한다 (io/csv_loader.py 의 일반 경계를 타지 않음)."""
+        df = self._df(tmp_path)
+        assert "timestamp" not in df.columns
+        assert "wake_ns" in df.columns
+
+    def test_plot_renders(self, tmp_path):
+        from rtc_tools.plotting.plotters.planner_events import plot_planner_events
+
+        plot_planner_events(self._df(tmp_path), save_dir=str(tmp_path))
+        assert (tmp_path / "planner_events.png").exists()
+
+    def test_header_only_file_does_not_crash(self, tmp_path):
+        """헤더만 있고 행이 없는 파일 — load·plot·통계 셋 다 예외 없이 끝나야 한다."""
+        from rtc_tools.plotting.plotters.planner_events import (
+            plot_planner_events,
+            print_planner_events_statistics,
+        )
+
+        columns = _planner_events_columns()
+        path = tmp_path / "planner_events.csv"
+        _write_csv(str(path), columns, [])
+        df = load_log_csv(str(path), "planner_events")
+        assert len(df) == 0
+
+        plot_planner_events(df, save_dir=str(tmp_path))
+        print_planner_events_statistics(df)
+        assert not (tmp_path / "planner_events.png").exists()
+
+
+class TestPlannerEventsStatistics:
+    def test_reports_outcome_decision_and_search_time(self, capsys):
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        print_planner_events_statistics(_planner_events_frame(n=30))
+        out = capsys.readouterr().out
+        assert "Planner Events" in out
+        assert "Outcome: published" in out
+        assert "Decision: replaced" in out
+        assert "Search time" in out
+        assert "IK max time" in out
+
+    def test_latency_is_reported_only_over_published_rows(self, capsys):
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        rows = [
+            _planner_events_row(1, outcome="published", decision="replaced"),
+            _planner_events_row(2, outcome="held", decision="held_hysteresis"),
+            _planner_events_row(3, outcome="held", decision="held_hysteresis"),
+        ]
+        df = pd.DataFrame(rows, columns=_planner_events_columns())
+        print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        assert "published wakes only, n=1" in out, out
+
+    def test_rank_gate_failures_are_named(self, capsys):
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        rows = [
+            _planner_events_row(
+                1,
+                rank_bits={
+                    "rank_uncertainty": 1,
+                    "rank_reach": 0,
+                    "rank_gamma": 0,
+                    "rank_commit_lead": 0,
+                    "rank_error_budget": 0,
+                },
+            ),
+            _planner_events_row(2),
+        ]
+        df = pd.DataFrame(rows, columns=_planner_events_columns())
+        print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        assert "rank_uncertainty×1" in out, out
+
+    def test_judgement_rejects_fired_are_named(self, capsys):
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        columns = _planner_events_columns()
+        row = _planner_events_row(1, columns=columns)
+        idx = columns.index("rej_workspace")
+        row[idx] = 2
+        df = pd.DataFrame([row], columns=columns)
+        print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        assert "rej_workspace×2" in out, out
+
+    def test_zero_wakes_says_so_and_does_not_crash(self, capsys):
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        df = pd.DataFrame(columns=_planner_events_columns())
+        print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        assert "Samples (non-idle wakes): 0" in out, out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # zoom_dialog — 우클릭 "정확한 범위로 확대" 팝업
 #
 # GUI 기능이지만 검증은 전부 Agg 에서 돈다: 대화상자를 여는 `opener` 가

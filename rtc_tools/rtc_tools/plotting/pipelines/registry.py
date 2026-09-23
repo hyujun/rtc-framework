@@ -107,6 +107,9 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "catching_diag": [
         PlotEntry("print_catching_diag_stats", plotters.print_catching_diag_statistics),
     ],
+    "planner_events": [
+        PlotEntry("print_planner_events_stats", plotters.print_planner_events_statistics),
+    ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
 }
@@ -230,6 +233,9 @@ PIPELINES: dict[str, list[PlotEntry]] = {
     ],
     "catching_diag": [
         PlotEntry("catching_diag", plotters.plot_catching_diag),
+    ],
+    "planner_events": [
+        PlotEntry("planner_events", plotters.plot_planner_events),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

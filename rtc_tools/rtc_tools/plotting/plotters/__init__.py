@@ -35,6 +35,10 @@ from .motor import (
     plot_motor_velocities,
     print_motor_statistics,
 )
+from .planner_events import (
+    plot_planner_events,
+    print_planner_events_statistics,
+)
 from .pull import (
     plot_pull_estimator,
     print_pull_estimator_statistics,
@@ -94,6 +98,9 @@ __all__ = [
     # dynamic-catching per-tick diagnostics (S5.4)
     "plot_catching_diag",
     "print_catching_diag_statistics",
+    # planner-events per-non-idle-wake search record (S6-B)
+    "plot_planner_events",
+    "print_planner_events_statistics",
     # task-admittance diagnostics (#469 S4)
     "print_compliance_diag_statistics",
     # grasp diagnostics
