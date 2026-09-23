@@ -573,7 +573,7 @@ TEST(CatchingParams, HandPreshapeTimeKeyIsRefusedByName) {
 TEST(CatchingParams, SupervisorDriverKeysTakeTheDecidedDefaults) {
   const CatchingParams p = ParseCatchingParams(ValidRoot());
   EXPECT_DOUBLE_EQ(p.supervisor_stale_committed_max_s.value, 0.10);
-  EXPECT_EQ(p.supervisor_sat_ticks, 50);
+  EXPECT_EQ(p.supervisor_sat_ticks, 60);
   EXPECT_DOUBLE_EQ(p.supervisor_homing_v_max, 0.5);
   EXPECT_DOUBLE_EQ(p.supervisor_homing_eta_a, 0.5);
   EXPECT_DOUBLE_EQ(p.supervisor_homing_qd_tol, 0.02);
