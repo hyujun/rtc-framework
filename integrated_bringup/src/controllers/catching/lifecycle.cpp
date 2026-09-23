@@ -420,10 +420,75 @@ void DemoCatchingController::BuildClikBoxes(int nv,
       }
     }
     if (all_positive) {
-      cfg.a_max = a_max;
+      // The QP-free abort ramp decelerates on this box whatever form the QP
+      // carries; the QP itself carries it only as the `box` form (decision K
+      // — the constraint is one of box | kinematic | dynamic).
       qdd_max_pin_ = a_max;
+      if (params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kBox) {
+        cfg.a_max = a_max;
+      }
     }
   }
+}
+
+bool DemoCatchingController::ConfigureAccelConstraint(
+    int nv, rtc::tsid::ClikReferenceGenerator::Config& cfg) {
+  using Form = rtc::catching::CatchingAccelConstraint;
+  using Clik = rtc::tsid::ClikReferenceGenerator;
+  switch (params_.joint_cmd_accel_constraint) {
+    case Form::kBox:
+      cfg.accel_constraint = Clik::AccelConstraint::kBox;
+      RCLCPP_INFO(logger_, "CLIK acceleration constraint: box (D-16 per-joint window%s)",
+                  cfg.a_max.size() == nv ? "" : " — no derived box, so none");
+      return true;
+    case Form::kKinematic:
+      cfg.accel_constraint = Clik::AccelConstraint::kKinematic;
+      cfg.task_accel_max_linear = params_.joint_cmd_task_accel_max_linear.value;
+      cfg.task_accel_max_angular = params_.joint_cmd_task_accel_max_angular.value;
+      RCLCPP_INFO(logger_,
+                  "CLIK acceleration constraint: kinematic (task rows ≤ %.3g m/s², %.3g rad/s²)",
+                  cfg.task_accel_max_linear, cfg.task_accel_max_angular);
+      return true;
+    case Form::kDynamic:
+      break;
+  }
+  // dynamic: τ_max is the ARM device's own `joint_limits.max_torque` — the
+  // same numbers the D-16 derivation spent (provenance in the derived file).
+  // The hand entries are never read (the rows sit on the arm indices).
+  const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+  const std::vector<double>* torque = nullptr;
+  if (arm_cfg != nullptr && arm_cfg->joint_limits.has_value()) {
+    torque = &arm_cfg->joint_limits->max_torque;
+  }
+  if (torque == nullptr || static_cast<int>(torque->size()) < arm_dof_) {
+    RCLCPP_ERROR(logger_,
+                 "joint_cmd.accel_constraint is dynamic but the arm device has no "
+                 "joint_limits.max_torque for its %d joints — the arm will be held",
+                 arm_dof_);
+    return false;
+  }
+  Eigen::VectorXd tau_max = Eigen::VectorXd::Zero(nv);
+  const auto& map = combined_cache_.ext_to_pin_v_map();
+  for (int i = 0; i < arm_dof_; ++i) {
+    const double value = (*torque)[static_cast<std::size_t>(i)];
+    const int pv = map[static_cast<std::size_t>(i)];
+    if (!std::isfinite(value) || !(value > 0.0) || pv < 0 || pv >= nv) {
+      RCLCPP_ERROR(logger_,
+                   "joint_cmd.accel_constraint is dynamic but arm joint %d has max_torque %g "
+                   "(or no model index) — the arm will be held",
+                   i, value);
+      return false;
+    }
+    tau_max[pv] = value;
+  }
+  cfg.accel_constraint = Clik::AccelConstraint::kDynamic;
+  cfg.tau_max = tau_max;
+  cfg.eta_tau = params_.joint_cmd_eta_tau.value;
+  RCLCPP_INFO(logger_,
+              "CLIK acceleration constraint: dynamic (|M·v̇ + h| ≤ %.2f·max_torque on %d arm "
+              "joints; no rotor inertia in M)",
+              cfg.eta_tau, arm_dof_);
+  return true;
 }
 
 void DemoCatchingController::SetupArmCommand() {
@@ -519,6 +584,9 @@ void DemoCatchingController::SetupArmCommand() {
   const int nv = model.nv;
   static_cast<void>(LoadDerivedAccelLimits());
   BuildClikBoxes(nv, cfg);
+  if (!ConfigureAccelConstraint(nv, cfg)) {
+    return;  // logged; the arm is held
+  }
   try {
     clik_.Init(nv, cfg);
   } catch (const std::exception& e) {
@@ -551,7 +619,10 @@ void DemoCatchingController::SetupArmCommand() {
   clik_enabled_ = true;
   RCLCPP_INFO(logger_, "arm command path ready: nv=%d, catch frame '%s' (idx %d), accel box %s", nv,
               catch_frame_name_.c_str(), catch_frame_idx_,
-              qdd_max_pin_.size() > 0 ? "from the derived file" : "OFF");
+              qdd_max_pin_.size() == 0 ? "OFF"
+              : params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kBox
+                  ? "from the derived file"
+                  : "from the derived file (abort ramp only — the QP carries the selected form)");
 }
 
 void DemoCatchingController::SetupTrajInput() {

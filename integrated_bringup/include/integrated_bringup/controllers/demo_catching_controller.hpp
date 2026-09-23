@@ -531,6 +531,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Assemble the position / velocity / acceleration boxes CLIK is given, in
   /// Pinocchio order. Non-RT.
   void BuildClikBoxes(int nv, rtc::tsid::ClikReferenceGenerator::Config& cfg);
+  /// Decision K (S6-C2): puts `joint_cmd.accel_constraint`'s form into `cfg`
+  /// after BuildClikBoxes. False (logged) when `dynamic` is selected but the
+  /// arm device has no usable `joint_limits.max_torque` — the arm is then held.
+  [[nodiscard]] bool ConfigureAccelConstraint(int nv,
+                                              rtc::tsid::ClikReferenceGenerator::Config& cfg);
 
   /// One tick of the tracking law: sample → reference → CLIK → arm command.
   /// Returns the reason to report, `kNone` when the tick was healthy. RT only.

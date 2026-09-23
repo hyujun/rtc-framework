@@ -115,6 +115,16 @@ $$\ell_i=\upsilon_i=\mathrm{clamp}\Big(\mathrm{proj}_{[p_{lo,i},\,p_{hi,i}]}(\do
 
 위치 한계를 1틱 더 정확히 지키려고 가속 항을 빼면 $\dot q^\ast$ 가 한 틱에 $\pm\ddot q_{\max}\Delta t$ 를 넘어 점프한다. position 인터페이스에서 $q_c$ 기울기 불연속이고 UR 제어기가 보호 정지를 걸 수 있다. 이 상황은 어차피 abort 대상이므로 **abort 경로로 안전하게 빠져나가는 것**이 우선이다. 위치 한계 침범은 `limit_margin` 이 흡수한다.
 
+**가속 제약의 세 형태 `[확정 결정 K, S6-C2]`.** 위 가속 box 는 `joint_cmd.accel_constraint` 의 한 형태 (`box`, 기본) 다. $\dot v\approx(v-\dot q_c)/\Delta t$ 로 두면 나머지 두 형태도 $v$ 에 **선형**이라 box 아래에 부등식 행으로 붙는다 ($C=[I;\,C_a]$). $\dot q_c$ 는 cache 가 평가된 속도 (명령값 평가 모드에서 명령 속도, D-6 — $h$·$\dot J$ 가 평가된 같은 상태) 의 **팔 성분**이다. 손은 다른 곳에서 명령되므로 그 가속은 이 solve 의 것이 아니다. 셋 중 하나만 고른다 — 다른 형태의 키를 함께 주면 YAML 파서가 거부하고 (`Init` 도 같은 규칙).
+
+- `box` — 관절별 창 $\dot q_{prev}\pm\ddot q_{\max}\Delta t$ (D-16 상수 box). 행을 더하지 않아 기존 출력과 **비트 일치** (golden)
+- `kinematic` — 비용이 추종하는 과제 행의 가속 $J\dot v+\dot J\dot q_c$ 를 행마다 $\pm$`task_accel_max_linear` (위치 행) · `task_accel_max_angular` (회전·접근축 행). $\dot J\dot q_c$ 는 등록 frame 의 classical drift (`dJv`), 접근축 행은 LOCAL x, y 에서 ($\tfrac{d}{dt}(R^\top\omega)=R^\top\dot\omega$). **그 행만** 묶는다 — 영공간 운동 (5행 오버로드의 접근축 roll 등) 은 속도 box 외에 가속 한계가 없어 한 tick 에 속도 한계까지 뛸 수 있다 (2026-09-23 `/code-review`). 관절마다 묶는 것은 `dynamic` 이다
+- `dynamic` — 팔 관절 토크 $M_{arm}(q)\dot v_{arm}+h(q,\dot q_c)$ 를 $\pm\eta_\tau\tau_{\max}$. $M,h$ 는 cache 의 값 (명령값 평가 모드에서 $q_c,\dot q_c$, D-6), $\tau_{\max}$ 는 팔 device 의 `joint_limits.max_torque` (D-16 도출이 쓴 같은 수), $\eta_\tau$ 기본 0.8 (D-16). **URDF 에 회전자 관성이 없어 $M$ 에 빠져 있다** — $\eta_\tau<1$ 이 그것을 덮는다고 가정한다 (D-16 도출은 MuJoCo `mj_inverse` 로 armature 포함 교차 검증했다). 실기 전 (S10) 재확인
+
+행은 **단위 norm** 으로 스케일한다 — 가능 집합은 그대로이고, $M/\Delta t$·$J/\Delta t$ 행이 box 행보다 $10^2$–$10^5$ 배 커서 ProxQP 가 가능한 문제에 PRIMAL_INFEASIBLE 을 냈던 것을 막는다. 행이 있으면 실패한 solve 와 `ResetAnchor()` 뒤에 warm start 를 버린다 (한 번 실패한 dual 에서 시작하면 infeasible 이 이어졌다). 행은 hard 다. 속도∩위치 box 와 동시에 만족할 수 없으면 (예: 한계 근처에서 중력 토크를 못 버티는 경우) box 의 관절별 충돌 규칙 같은 해소가 없다 — 행이 관절을 결합하기 때문이다. 그때 호출은 **실패**하고 (`LastSolve().accel_rows_violated` + `converged` false — status 는 SOLVED 일 수 있다, 또는 수렴 실패 status) 아래 QP 비의존 abort 경로로 간다. 행을 깨는 명령을 돌려주지 않는다. 진단: `accel_rows` (조립한 행 수) · `accel_rows_binding` (해가 경계에 닿은 행 수). abort 경로의 감속은 형태와 무관하게 D-16 box 를 쓴다.
+
+결정 K 의 근거 (#537 코멘트 5785720197): D-16 상수 box 는 포구 자세에서 토크가 허락하는 가속보다 약 50 배 (p1b) 보수적이라 γ 창을 닫는다 (plan §9 S4.4 판정). `dynamic` 은 자세 의존 $M,h$ 로 그 보수성을 실행층에서 없애고, L3 도달시간 게이트의 **토크 층 런타임 대응물**을 겸한다 (결정 F) — 계획기의 도달시간 순위 항은 여전히 box 층이다.
+
 **반복 상한과 상태 노출 (S2.2b).** 차원만 고정하면 최악 실행시간이 묶이지 않는다. 기존 하드코딩 `max_iter` 20 을 설정 가능하게 하고, solver status·반복 수·solve time 을 노출한다. 초과·수렴 실패·비유한 결과는 `Compute` 가 false 를 돌려주는 기존 경로로 합쳐진다.
 
 **실패 경로 — QP 비의존 관절공간 abort (S5.3).** 기존 CLIK 은 실패 시 `q_ref = q_meas`, `v_ref = 0`, false 를 돌려준다. 포구 컨트롤러는 **이 출력을 소비하지 않는다** — $q_{meas}$ 로 점프하면 $q_c$ 불연속이고 $v=0$ 은 가속 한계를 무시한 즉시 정지다. v0.4 의 $\dot q^\ast=\beta_{qp}\dot q_{prev}$ 감쇠 폴백은 QP 없이 동작하는 관절공간 경로로 흡수한다: 직전 $\dot q_{prev}$ 에서 관절별로 $\ddot q_{\max}\Delta t$ 씩 0 으로 감속하며 $q_c$ 를 적분하고(위치 한계 clamp 포함), L7 `QP_FAILED` → `ABORT_SAFE` 로 넘긴다. 감속 법칙의 세부는 S5.3 에서 확정한다. 연속 `QP_FAILED` 횟수가 **L7 소유의 단일 키** `supervisor.n_qp` (L7 §4.1) 에 이르면 L7 FAULT 래치 (`HasLatchedFault`) — L5 는 이 카운터를 새로 두지 않고 L7 판정을 참조만 한다.
@@ -252,6 +262,10 @@ def equivalent_delay(tau, T, f):
 | `joint_cmd.damping_sq` | double | – | 1e-4 | >0 | 기존 CLIK μ² |
 | `joint_cmd.w_smooth` | double | – | 1e-3 | ≥0 | 평활 항 $w_s$ (S2.2b 옵션) |
 | `joint_cmd.qp.max_iter` | int | – | 20 | >0 | 기존 하드코딩값을 기본으로, S2.2b 에서 설정화 |
+| `joint_cmd.accel_constraint` | string | – | `box` | `box`·`kinematic`·`dynamic` | 결정 K (S6-C2, §4.3). 셋 중 하나 — 선택하지 않은 형태의 키가 있으면 파서가 거부한다 |
+| `joint_cmd.task_accel_max_linear` | double | m/s² | `TBD` | 1e-3–500 | `kinematic` 전용 — 위치 행 가속 한계 |
+| `joint_cmd.task_accel_max_angular` | double | rad/s² | `TBD` | 1e-3–1000 | `kinematic` 전용 — 회전·접근축 행 가속 한계 |
+| `joint_cmd.eta_tau` | double | – | 0.8 | (0, 1] | `dynamic` 전용 — D-16 의 $\eta_\tau$. $\tau_{\max}$ 는 팔 device `joint_limits.max_torque` (사본 금지) |
 | `joint_cmd.K_n` | double | 1/s | 1.0 | 0–10 | posture (기존 `SetPostureGains`) |
 | `joint_cmd.lag.T_arm` | double | s | **0.0** (sim, S5.3) | 0–0.5 | §4.4 식별 (S10). **sim 은 0** — 주입하지 않는다 (2026-09-20). 0 이 아닌 값은 §4.5 의 축 혼동 fixture 와 G5-E 지연 fixture 에서만 쓴다. `lead_enable` 이 false 면 읽히지 않는다 (선행축 = 실제축) |
 | `joint_cmd.lag.per_joint` | double[n] | s | `TBD` | ≥0 | §4.4 |

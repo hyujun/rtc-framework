@@ -35,9 +35,11 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
+using rtc::catching::CatchingAccelConstraint;
 using rtc::catching::CatchingParams;
 using rtc::catching::CatchingValidationReason;
 using rtc::catching::CatchingValidationReport;
@@ -215,6 +217,78 @@ TEST(CatchingParams, InactiveConfigTbdPasses) {
   EXPECT_TRUE(real.armable);
   EXPECT_FALSE(
       ReportHasFailure(real, CatchingValidationReason::kActiveConfigTbd, "sim.ball.drag_k"));
+}
+
+// ── decision K: joint_cmd.accel_constraint ──────────────────────────────────
+
+TEST(CatchingParams, AccelConstraintDefaultsToBoxAndReadsEachForm) {
+  EXPECT_EQ(ParseCatchingParams(ValidRoot()).joint_cmd_accel_constraint,
+            CatchingAccelConstraint::kBox);
+  for (const auto& [text, form] : {std::pair{"box", CatchingAccelConstraint::kBox},
+                                   std::pair{"kinematic", CatchingAccelConstraint::kKinematic},
+                                   std::pair{"dynamic", CatchingAccelConstraint::kDynamic}}) {
+    YAML::Node root = ValidRoot();
+    root["joint_cmd"]["accel_constraint"] = text;
+    EXPECT_EQ(ParseCatchingParams(root).joint_cmd_accel_constraint, form) << text;
+  }
+}
+
+TEST(CatchingParams, AccelConstraintRejectsAnUnknownForm) {
+  YAML::Node root = ValidRoot();
+  root["joint_cmd"]["accel_constraint"] = "torque";
+  ExpectRejectMentioning(root, "joint_cmd.accel_constraint");
+}
+
+TEST(CatchingParams, KinematicFormNeedsItsBoundsAndOnlyThen) {
+  // Unset bounds are TBD: refused when kinematic is selected, silent otherwise.
+  const CatchingParams box = ParseCatchingParams(ValidRoot());
+  EXPECT_TRUE(ValidateCatchingParams(box, kControlRateHz, false).armable);
+
+  YAML::Node root = ValidRoot();
+  root["joint_cmd"]["accel_constraint"] = "kinematic";
+  const CatchingValidationReport unset =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(unset.armable);
+  EXPECT_TRUE(ReportHasFailure(unset, CatchingValidationReason::kActiveConfigTbd,
+                               "joint_cmd.task_accel_max_linear"));
+  EXPECT_TRUE(ReportHasFailure(unset, CatchingValidationReason::kActiveConfigTbd,
+                               "joint_cmd.task_accel_max_angular"));
+
+  root["joint_cmd"]["task_accel_max_linear"] = 20.0;
+  root["joint_cmd"]["task_accel_max_angular"] = 40.0;
+  const CatchingParams set = ParseCatchingParams(root);
+  EXPECT_DOUBLE_EQ(set.joint_cmd_task_accel_max_linear.value, 20.0);
+  EXPECT_TRUE(ValidateCatchingParams(set, kControlRateHz, false).armable);
+
+  root["joint_cmd"]["task_accel_max_linear"] = -1.0;
+  EXPECT_TRUE(ReportHasFailure(
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false),
+      CatchingValidationReason::kRangeViolation, "joint_cmd.task_accel_max_linear"));
+}
+
+TEST(CatchingParams, DynamicFormTakesTheD16EtaByDefaultAndRangeChecksIt) {
+  YAML::Node root = ValidRoot();
+  root["joint_cmd"]["accel_constraint"] = "dynamic";
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_DOUBLE_EQ(p.joint_cmd_eta_tau.value, 0.8);
+  EXPECT_TRUE(ValidateCatchingParams(p, kControlRateHz, false).armable);
+
+  root["joint_cmd"]["eta_tau"] = 1.2;
+  EXPECT_TRUE(
+      ReportHasFailure(ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false),
+                       CatchingValidationReason::kRangeViolation, "joint_cmd.eta_tau"));
+}
+
+TEST(CatchingParams, AFormsKeysUnderAnotherFormAreRefused) {
+  // Written but not selected, the key would read as if it were in force.
+  YAML::Node box = ValidRoot();
+  box["joint_cmd"]["eta_tau"] = 0.7;
+  ExpectRejectMentioning(box, "joint_cmd.eta_tau");
+
+  YAML::Node dynamic = ValidRoot();
+  dynamic["joint_cmd"]["accel_constraint"] = "dynamic";
+  dynamic["joint_cmd"]["task_accel_max_linear"] = 20.0;
+  ExpectRejectMentioning(dynamic, "joint_cmd.task_accel_max_linear");
 }
 
 // ── L6 §4.2: q_close != q_pre on caging joints ──────────────────────────────
