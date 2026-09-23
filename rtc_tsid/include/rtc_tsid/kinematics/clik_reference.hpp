@@ -82,10 +82,40 @@ namespace rtc::tsid {
 // failure branch leaves q_ref = q_meas, v_ref = 0, and forces the next call to
 // re-anchor to measured).
 //
+// Acceleration constraint (Config::accel_constraint, dynamic_catching decision
+// K). With v̇ ≈ (v − v_c)/dt every form is LINEAR in v, so each is a set of
+// extra inequality rows below the box (C = [Iₙ; C_a]). v_c is the velocity the
+// cache was evaluated at (cache.v — the command velocity under D-6, the same
+// state h and J̇ are evaluated at); only its ARM entries enter, because the
+// hand is commanded elsewhere and its acceleration is not this solve's:
+//   kBox       — the per-joint window v_prev ± a_max·dt folded into the box
+//                (the legacy option; no extra rows, bit-identical output);
+//   kKinematic — the task acceleration J·v̇ + J̇·v_c of the rows the cost
+//                tracks, |·| ≤ task_accel_max_{linear,angular} per row
+//                (J̇·v_c = the registered frame's classical drift dJv). ONLY
+//                those rows: null-space motion (e.g. roll about the approach
+//                axis in the 5-row overload) has no acceleration bound but the
+//                velocity box — a joint may still step to its velocity limit
+//                in one tick. The dynamic form bounds every arm joint;
+//   kDynamic   — the arm joint torque M_arm(q)·v̇_arm + h(q, v_c) on the ARM
+//                indices, |·| ≤ eta_tau·tau_max (M and h are the cache's).
+// Each row is scaled to unit norm (the feasible set is unchanged; rows of M/dt
+// or J/dt are 10²–10⁵ against the box's 1, which made ProxQP report
+// PRIMAL_INFEASIBLE on feasible problems). The rows are hard: when they cannot
+// hold together with the velocity ∩ position box the call FAILS
+// (LastSolve().accel_rows_violated, converged false) rather than return a
+// command that breaks them — there is no per-joint resolution as the box has,
+// because the rows couple joints. With rows, a failure and ResetAnchor() also
+// drop the solver's warm start. M carries no rotor inertia (a URDF has none):
+// the margin eta_tau < 1 is what covers it.
+//
 // All allocations happen in Init(); Compute() is RT-safe and noexcept.
 // ────────────────────────────────────────────────
 class ClikReferenceGenerator {
  public:
+  /// Which acceleration constraint the QP carries (see the file header).
+  enum class AccelConstraint : std::uint8_t { kBox, kKinematic, kDynamic };
+
   struct Config {
     std::vector<int> arm_v_idx;   // arm velocity indices, Pinocchio order (≥1)
     std::vector<int> hand_v_idx;  // hand velocity indices (may be empty)
@@ -154,6 +184,22 @@ class ClikReferenceGenerator {
     // Weight of the two approach-axis rows of the position + axis Compute()
     // overload (L5 §4.3 w_a; finite and > 0). Unused by the SE3 overload.
     double w_axis{0.5};
+    // The acceleration constraint (file header). kBox reads `a_max` above;
+    // the other two refuse a set `a_max` (the constraint is ONE of the three)
+    // and read their own fields, which kBox in turn refuses when set.
+    AccelConstraint accel_constraint{AccelConstraint::kBox};
+    // kKinematic: bound on each tracked task row's acceleration — the
+    // position rows [m/s²] and the rotation / approach-axis rows [rad/s²].
+    // Finite and > 0 when kKinematic, 0 otherwise.
+    double task_accel_max_linear{0.0};
+    double task_accel_max_angular{0.0};
+    // kDynamic: torque limits [nv] (N·m or N), finite and > 0 on the arm
+    // indices, finite and >= 0 elsewhere (read only on the arm); empty
+    // otherwise. The bound is eta_tau·tau_max with eta_tau in (0, 1] — 0
+    // (unset) otherwise, so a margin set for a form that is not selected is
+    // refused rather than silently unused.
+    Eigen::VectorXd tau_max;
+    double eta_tau{0.0};
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -262,6 +308,13 @@ class ClikReferenceGenerator {
     bool command_mismatch{false};  ///< evaluate_at_command: cache.q (arm) ≠ previous QRef()
     bool bound_conflict{false};    ///< acceleration box overrode velocity ∩ position
     std::uint64_t conflict_mask{0};  ///< bit i = velocity index i conflicted
+    /// kKinematic / kDynamic: rows assembled this call, how many the solution
+    /// sits on (within tolerance), and whether it broke one — then the call
+    /// failed (the rows could not hold with the velocity ∩ position box) and
+    /// `converged` is false although `status` may read SOLVED.
+    int accel_rows{0};
+    int accel_rows_binding{0};
+    bool accel_rows_violated{false};
   };
 
   [[nodiscard]] const SolveDiagnostics& LastSolve() const noexcept { return last_solve_; }
@@ -275,6 +328,9 @@ class ClikReferenceGenerator {
     anchor_initialized_ = false;
     command_check_armed_ = false;
     v_prev_.setZero();
+    if (n_accel_rows_max_ > 0) {
+      qp_solver_.ResetWarmStart();  // a new trial's rows start cold (kBox: legacy)
+    }
   }
 
  private:
@@ -291,6 +347,17 @@ class ClikReferenceGenerator {
   // H/g must already hold the task terms.
   void AddPostureAndDamping() noexcept;
   void AssembleBox(const Eigen::VectorXd& q, double dt) noexcept;
+  // kKinematic / kDynamic rows below the box (no-op for kBox). `axis_rows`
+  // selects the position + axis overload's task rows (j_pos_ / j_axis_) over
+  // the SE3 overload's (j_task_). Returns false on a non-finite row.
+  [[nodiscard]] bool AssembleAccelRows(const PinocchioCache& cache,
+                                       const PinocchioCache::RegisteredFrame& rf, double dt,
+                                       bool axis_rows) noexcept;
+  // Post-solve: every accel row holds at v (within tolerance); counts binding.
+  [[nodiscard]] bool AccelRowsHold(const Eigen::VectorXd& v) noexcept;
+  // The failure outputs: q_ref = cache.q, v_ref = 0, re-anchor, v_prev = 0,
+  // and (with accel rows) a cold solver start. Returns false for the caller.
+  bool Fail(const PinocchioCache& cache) noexcept;
   [[nodiscard]] bool SolveAndIntegrate(const PinocchioCache& cache, double dt,
                                        bool reseed_anchor) noexcept;
 
@@ -305,9 +372,15 @@ class ClikReferenceGenerator {
   Eigen::VectorXd a_max_;              // [nv] or empty (acceleration box off)
   Eigen::VectorXd v_prev_;             // [nv] v_ref of the last successful Compute()
   double w_smooth_{0.0};               // smoothing weight, 0 → off
-  bool evaluate_at_command_{false};    // cache.q is the command state q_c
-  double w_axis_{0.5};                 // approach-axis rows weight
-  double k_axis_{0.0};                 // approach-axis gain K_a
+  AccelConstraint accel_constraint_{AccelConstraint::kBox};
+  double task_a_lin_{0.0};  // kKinematic row bounds
+  double task_a_ang_{0.0};
+  Eigen::VectorXd tau_bound_;        // [nv] eta_tau·tau_max (kDynamic)
+  int n_accel_rows_max_{0};          // extra QP rows allocated below the box
+  int n_accel_rows_{0};              // rows assembled by the current call
+  bool evaluate_at_command_{false};  // cache.q is the command state q_c
+  double w_axis_{0.5};               // approach-axis rows weight
+  double k_axis_{0.0};               // approach-axis gain K_a
   rtc::math::se3::AxisAlignRegion axis_region_{rtc::math::se3::AxisAlignRegion::kInvalidInput};
   double position_error_norm_{0.0};
   double axis_error_angle_{0.0};
