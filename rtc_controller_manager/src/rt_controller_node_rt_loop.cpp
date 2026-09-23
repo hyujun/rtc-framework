@@ -12,6 +12,7 @@
 #include <cmath>  // std::abs
 #include <cstddef>
 #include <cstdio>  // std::snprintf
+#include <string>
 
 namespace urtc = rtc;
 
@@ -903,6 +904,27 @@ void RtControllerNode::DrainLog() {
         static_cast<unsigned long>(overruns), static_cast<unsigned long>(skips),
         static_cast<unsigned long>(nrt_pub_drops), static_cast<unsigned long>(timing_drops),
         static_cast<unsigned long>(rt_callback_timing_drops));
+
+    // Sim-sync barrier health (issue #566): steps whose partner state came
+    // more than a period late. A handful from dropped messages is noise; a
+    // steady stream names a group that should not be in the tick mask.
+    const auto slow = sim_slow_steps_.load(std::memory_order_relaxed);
+    if (use_sim_time_sync_ && slow != sim_slow_steps_reported_) {
+      const std::uint32_t late = sim_slow_mask_.exchange(0, std::memory_order_relaxed);
+      std::string names;
+      for (std::size_t slot = 0; slot < slot_to_group_name_.size(); ++slot) {
+        if (((late >> slot) & 1U) != 0U) {
+          names += (names.empty() ? "'" : ", '") + slot_to_group_name_[slot] + "'";
+        }
+      }
+      RCLCPP_WARN(get_logger(),
+                  "sim sync: %lu step(s) waited more than one period for %s — a group published "
+                  "at a decimated rate or as fake_response must be left out of "
+                  "sim_sync_tick_devices; occasional ones are dropped state messages",
+                  static_cast<unsigned long>(slow - sim_slow_steps_reported_),
+                  names.empty() ? "a device" : names.c_str());
+      sim_slow_steps_reported_ = slow;
+    }
     timing_profiler_.Reset();
   }
 }
@@ -966,13 +988,36 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
                         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                             std::chrono::duration<double>(owner_->sim_sync_timeout_sec_));
   const std::uint32_t mask = owner_->sim_tick_slot_mask_;
+  // Slots of the mask that have / have not moved past the last tick.
+  const auto advanced_slots = [this, mask](std::array<std::uint32_t, rtc::kMaxDevices>& seq) {
+    std::uint32_t adv = 0;
+    for (std::size_t slot = 0; slot < seq.size(); ++slot) {
+      if (((mask >> slot) & 1U) == 0U) {
+        continue;
+      }
+      seq[slot] = owner_->sim_state_seq_[slot].load(std::memory_order_acquire);
+      if (seq[slot] != sim_seen_seq_[slot]) {
+        adv |= 1U << slot;
+      }
+    }
+    return adv;
+  };
+  std::array<std::uint32_t, rtc::kMaxDevices> seq{};
+  // First wake of this step that saw some but not all of the mask.
+  bool partial = false;
+  std::chrono::steady_clock::time_point partial_since{};
+  std::uint32_t late = 0;
+  const auto abort_naming_missing = [&]() noexcept {
+    owner_->sim_missing_mask_.store(mask & ~advanced_slots(seq), std::memory_order_release);
+    return WaitResult::kAbort;
+  };
 
   for (;;) {
     const auto left_ms =
         std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now())
             .count();
     if (left_ms <= 0) {
-      return WaitResult::kAbort;  // the step never completed — same as no state at all
+      return abort_naming_missing();  // the step never completed
     }
 
     struct pollfd pfd {};
@@ -983,7 +1028,7 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
     if (rc <= 0) {
       // 0 = the simulator went quiet for the whole timeout; <0 = poll error
       // (EINTR included — shutdown takes the same abort path as before).
-      return WaitResult::kAbort;
+      return abort_naming_missing();
     }
 
     eventfd_t val{};
@@ -998,24 +1043,24 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
       return WaitResult::kProceed;
     }
 
-    std::array<std::uint32_t, rtc::kMaxDevices> seq{};
-    bool complete = true;
-    for (std::size_t slot = 0; slot < seq.size(); ++slot) {
-      if (((mask >> slot) & 1U) == 0U) {
-        continue;
-      }
-      seq[slot] = owner_->sim_state_seq_[slot].load(std::memory_order_acquire);
-      if (seq[slot] == sim_seen_seq_[slot]) {
-        complete = false;
-      }
-    }
-    if (complete) {
+    const std::uint32_t adv = advanced_slots(seq);
+    if (adv == mask) {
       for (std::size_t slot = 0; slot < seq.size(); ++slot) {
         if (((mask >> slot) & 1U) != 0U) {
           sim_seen_seq_[slot] = seq[slot];
         }
       }
+      if (partial && std::chrono::steady_clock::now() - partial_since >
+                         std::chrono::nanoseconds(static_cast<std::int64_t>(PeriodNs()))) {
+        owner_->sim_slow_steps_.fetch_add(1, std::memory_order_relaxed);
+        owner_->sim_slow_mask_.fetch_or(late, std::memory_order_relaxed);
+      }
       return WaitResult::kProceed;
+    }
+    if (adv != 0U && !partial) {
+      partial = true;
+      partial_since = std::chrono::steady_clock::now();
+      late = mask & ~adv;
     }
   }
 }
@@ -1037,10 +1082,26 @@ void RtControllerNode::ControlLoopThread::OnLoopAborted() noexcept {
   if (!owner_->use_sim_time_sync_) {
     return;
   }
+  // Terminal one-shot (the loop has exited): name the device groups whose
+  // state never completed the step, so a single silent group is not reported
+  // as a crashed simulator (issue #566).
+  std::array<char, 160> missing{};
+  std::size_t used = 0;
+  const std::uint32_t miss = owner_->sim_missing_mask_.load(std::memory_order_acquire);
+  for (std::size_t slot = 0; slot < owner_->slot_to_group_name_.size(); ++slot) {
+    if (((miss >> slot) & 1U) != 0U && used < missing.size()) {
+      const int n = std::snprintf(missing.data() + used, missing.size() - used, "%s'%s'",
+                                  used == 0 ? "" : ", ", owner_->slot_to_group_name_[slot].c_str());
+      used += n > 0 ? static_cast<std::size_t>(n) : 0;
+    }
+  }
   RCLCPP_FATAL(owner_->get_logger(),
-               "Simulation sync timeout (%.1f s): no /joint_states received — "
-               "simulator may have crashed. Shutting down.",
-               owner_->sim_sync_timeout_sec_);
+               "Simulation sync timeout (%.1f s): no complete step — state never arrived from "
+               "%s. %s Shutting down.",
+               owner_->sim_sync_timeout_sec_, used == 0 ? "any device group" : missing.data(),
+               used == 0 ? "The simulator may have crashed."
+                         : "A group the simulator publishes at a decimated rate or as "
+                           "fake_response must be left out of sim_sync_tick_devices.");
   owner_->TriggerGlobalEstop("sim_sync_timeout");
   rclcpp::shutdown();
 }

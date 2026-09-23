@@ -656,6 +656,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // is then read latest-value like any sensor lane.
   std::array<std::atomic<std::uint32_t>, kMaxDevices> sim_state_seq_{};
   std::uint32_t sim_tick_slot_mask_{0};
+  // What the barrier waited on — so a misconfigured mask is loud rather than
+  // just slow. A step whose last state arrived more than one period after its
+  // first is a "slow step": a group published at a decimated rate, a
+  // fake_response group (100 Hz wall timer) left in the mask, or a dropped
+  // best-effort message. The RT thread counts them and ORs in the slots that
+  // were late; DrainLog (aux) names them. On abort the slots that never
+  // arrived are left for OnLoopAborted to name.
+  std::atomic<std::uint64_t> sim_slow_steps_{0};
+  std::atomic<std::uint32_t> sim_slow_mask_{0};
+  std::atomic<std::uint32_t> sim_missing_mask_{0};
+  std::uint64_t sim_slow_steps_reported_{0};  // DrainLog only
   static_assert(kMaxDevices <= 32, "sim_tick_slot_mask_ holds one bit per device slot");
 
   // ── Parameters ────────────────────────────────────────────────────────────

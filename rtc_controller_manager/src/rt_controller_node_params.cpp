@@ -978,9 +978,12 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // every slot in this mask. The default is every device group, which is
   // right while the simulator publishes all of them every step; a group it
   // publishes at a decimated rate must be left out, or the barrier waits for
-  // it for (divisor − 1) steps out of every divisor. An unknown name refuses
-  // to configure: a typo that drops the arm from the mask would bring back
-  // the very over-ticking this exists to stop, silently.
+  // it for (divisor − 1) steps out of every divisor — and so must a
+  // fake_response group, whose state comes from a 100 Hz wall timer rather
+  // than the step. In sim-sync mode an unknown name refuses to configure: a
+  // typo that drops the arm from the mask would bring back the very
+  // over-ticking this exists to stop, silently. Outside it the key is never
+  // read, so a shared overlay naming a sim-only group is not an error.
   {
     const auto tick_names = get_parameter("sim_sync_tick_devices").as_string_array();
     sim_tick_slot_mask_ = 0;
@@ -991,6 +994,9 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     } else {
       for (const auto& name : tick_names) {
         const auto it = group_slot_map_.find(name);
+        if (it == group_slot_map_.end() && !use_sim_time_sync_) {
+          continue;  // the real-robot path never reads the key — a shared overlay is not an error
+        }
         if (it == group_slot_map_.end()) {
           RCLCPP_ERROR(get_logger(),
                        "sim_sync_tick_devices['%s'] names no configured device group — refusing "

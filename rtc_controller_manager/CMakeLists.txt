@@ -376,6 +376,7 @@ if(BUILD_TESTING)
       rtc_msgs rtc_urdf_bridge)
     target_link_libraries(test_sim_sync_barrier
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+    rtc_base_add_test_includes(test_sim_sync_barrier)  # rtc::testing::WaitUntil
   endif()
 
   # Separate binary: CM instantiates every registered controller, so a

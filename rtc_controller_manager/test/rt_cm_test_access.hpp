@@ -180,6 +180,18 @@ class ControllerLifecycleTestAccess {
   // barrier tests count steps with it (issue #566).
   static std::uint64_t RtTickCount(const RtControllerNode& node) { return node.RtTickCount(); }
 
+  static std::uint64_t SimSlowSteps(const RtControllerNode& node) {
+    return node.sim_slow_steps_.load(std::memory_order_relaxed);
+  }
+
+  static std::uint32_t SimSlowMask(const RtControllerNode& node) {
+    return node.sim_slow_mask_.load(std::memory_order_relaxed);
+  }
+
+  static std::uint32_t SimMissingMask(const RtControllerNode& node) {
+    return node.sim_missing_mask_.load(std::memory_order_acquire);
+  }
+
   static std::string GetEstopReason(const RtControllerNode& node) {
     return std::string(node.estop_reason_.data());
   }

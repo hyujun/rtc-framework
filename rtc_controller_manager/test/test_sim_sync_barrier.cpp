@@ -17,6 +17,7 @@
 
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rt_cm_test_access.hpp"
+#include "rtc_base/testing/wait_until.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -79,17 +80,7 @@ rclcpp_lifecycle::State StateActive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "active");
 }
 
-template <typename Pred>
-bool WaitFor(Pred pred, std::chrono::milliseconds budget) {
-  const auto deadline = std::chrono::steady_clock::now() + budget;
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (pred()) {
-      return true;
-    }
-    std::this_thread::sleep_for(1ms);
-  }
-  return pred();
-}
+using rtc::testing::WaitUntil;
 
 // Long enough to separate "the loop looked and declined" from "the loop has
 // not looked yet" on a loaded CI host, short against sim_sync_timeout_sec.
@@ -110,7 +101,8 @@ class SimSyncBarrierTest : public ::testing::Test {
 
   // Slots follow group_slot_map_'s ordering: arm=0, hand=1.
   static std::shared_ptr<RtControllerNode> MakeNode(
-      const std::vector<std::string>& tick_devices = {}) {
+      const std::vector<std::string>& tick_devices = {}, bool sim_sync = true,
+      double sim_sync_timeout_sec = 5.0) {
     auto node = std::make_shared<RtControllerNode>("test_sim_sync_barrier_node");
     node->declare_parameter("enable_logging", false);
     node->declare_parameter("enable_timing_log", false);
@@ -118,8 +110,8 @@ class SimSyncBarrierTest : public ::testing::Test {
     node->declare_parameter("control_rate", 500.0);
     node->declare_parameter("config_variant", std::string("test_fixtures"));
     node->declare_parameter("initial_controller", std::string(TwoDeviceTestController::kName));
-    node->declare_parameter("use_sim_time_sync", true);
-    node->declare_parameter("sim_sync_timeout_sec", 5.0);
+    node->declare_parameter("use_sim_time_sync", sim_sync);
+    node->declare_parameter("sim_sync_timeout_sec", sim_sync_timeout_sec);
     if (!tick_devices.empty()) {
       node->declare_parameter("sim_sync_tick_devices", tick_devices);
     }
@@ -160,7 +152,7 @@ TEST_F(SimSyncBarrierTest, OneTickPerStepWhenEveryDeviceCompletesTheStep) {
   // The step completes: exactly one tick.
   hand->FireStateReady();
   ASSERT_TRUE(
-      WaitFor([&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 1; }, 2000ms));
+      WaitUntil([&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 1; }, 2000ms));
   std::this_thread::sleep_for(kSettle);
   EXPECT_EQ(1U, ControllerLifecycleTestAccess::RtTickCount(*node));
 
@@ -176,8 +168,8 @@ TEST_F(SimSyncBarrierTest, OneTickPerStepWhenEveryDeviceCompletesTheStep) {
     }
     std::this_thread::sleep_for(kPartnerGap);
     second->FireStateReady();
-    ASSERT_TRUE(
-        WaitFor([&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 2 + i; }, 2000ms))
+    ASSERT_TRUE(WaitUntil(
+        [&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 2 + i; }, 2000ms))
         << "step " << i;
     // Settle before the next step: otherwise its first message lands on the
     // heels of this step's second and the two collapse into one eventfd read,
@@ -213,8 +205,8 @@ TEST_F(SimSyncBarrierTest, ADeviceLeftOutOfTheBarrierIsReadLatestValue) {
       std::this_thread::sleep_for(kPartnerGap);
     }
     arm->FireStateReady();
-    ASSERT_TRUE(
-        WaitFor([&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 1 + i; }, 2000ms))
+    ASSERT_TRUE(WaitUntil(
+        [&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 1 + i; }, 2000ms))
         << "step " << i;
     std::this_thread::sleep_for(kPartnerGap);  // see the settle note above
     ASSERT_EQ(1 + i, ControllerLifecycleTestAccess::RtTickCount(*node)) << "step " << i;
@@ -263,8 +255,8 @@ TEST_F(SimSyncBarrierTest, CmTimeIsTickCountTimesDtNotWallTime) {
   for (std::uint64_t i = 0; i < kSteps; ++i) {
     arm->FireStateReady();
     hand->FireStateReady();
-    ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 1 + i; },
-                        2000ms));
+    ASSERT_TRUE(WaitUntil(
+        [&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 1 + i; }, 2000ms));
     const auto it = TwoDeviceTestController::last_iteration.load(std::memory_order_acquire);
     EXPECT_EQ(i, it);
     EXPECT_DOUBLE_EQ(static_cast<double>(it) * kDt,
@@ -280,6 +272,59 @@ TEST_F(SimSyncBarrierTest, CmTimeIsTickCountTimesDtNotWallTime) {
 TEST_F(SimSyncBarrierTest, AnUnknownTickDeviceRefusesToConfigure) {
   auto node = MakeNode({"arm", "hnad"});
   EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+}
+
+TEST_F(SimSyncBarrierTest, AnUnknownTickDeviceIsIgnoredOutsideSimSync) {
+  // The real-robot path never reads the key; a shared overlay that names a
+  // sim-only group must not stop hardware bring-up.
+  auto node = MakeNode({"arm", "hnad"}, /*sim_sync=*/false);
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(SimSyncBarrierTest, AStepWhosePartnerIsLateIsCountedAndNamed) {
+  auto node = MakeNode();
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* arm = BackendAt(*node, 0);
+  auto* hand = BackendAt(*node, 1);
+  ASSERT_NE(nullptr, arm);
+  ASSERT_NE(nullptr, hand);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+
+  // A step whose two states land together is not slow.
+  arm->FireStateReady();
+  hand->FireStateReady();
+  ASSERT_TRUE(WaitUntil([&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 1; }));
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::SimSlowSteps(*node));
+
+  // The hand 20 ms (ten periods) behind the arm — the signature of a
+  // decimated or fake_response group left in the mask.
+  arm->FireStateReady();
+  std::this_thread::sleep_for(20ms);
+  hand->FireStateReady();
+  ASSERT_TRUE(WaitUntil([&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 2; }));
+  EXPECT_EQ(1U, ControllerLifecycleTestAccess::SimSlowSteps(*node));
+  EXPECT_EQ(0b10U, ControllerLifecycleTestAccess::SimSlowMask(*node))
+      << "the hand (slot 1) was late";
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// Declared last: the abort path calls rclcpp::shutdown() (gtest runs in
+// declaration order within a TU).
+TEST_F(SimSyncBarrierTest, ATimeoutNamesTheGroupThatNeverCompletedTheStep) {
+  auto node = MakeNode({}, /*sim_sync=*/true, /*sim_sync_timeout_sec=*/0.3);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* arm = BackendAt(*node, 0);
+  ASSERT_NE(nullptr, arm);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+
+  arm->FireStateReady();  // the hand never reports
+  ASSERT_TRUE(WaitUntil([&] { return ControllerLifecycleTestAccess::IsEstopped(*node); }, 5000ms));
+  EXPECT_EQ("sim_sync_timeout", ControllerLifecycleTestAccess::GetEstopReason(*node));
+  EXPECT_EQ(0b10U, ControllerLifecycleTestAccess::SimMissingMask(*node));
+  EXPECT_TRUE(WaitUntil([] { return !rclcpp::ok(); }, 2000ms));
 }
 
 }  // namespace
