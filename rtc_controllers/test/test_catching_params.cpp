@@ -436,8 +436,14 @@ TEST(CatchingParams, HandTCloseE2eNegativeFails) {
 
 TEST(CatchingParams, HandTCloseE2eZeroPasses) {
   // L6 §6 bounds it at >= 0; zero is a degenerate but in-range identification.
+  //
+  // `T_close_timeout` is given explicitly because this case is about the e2e
+  // key's own range: from S7.1 an absent timeout is DERIVED as a multiple of
+  // T_close_e2e, and a multiple of zero is a zero timeout — refused for being
+  // a timeout, which is a different rule than the one this case pins.
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["T_close_e2e"] = 0.0;
+  root["robot"]["hand"]["T_close_timeout"] = 0.1;
   const CatchingParams p = ParseCatchingParams(root);
   const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
   EXPECT_TRUE(r.armable);
