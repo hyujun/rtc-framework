@@ -1225,6 +1225,12 @@ bool DemoCatchingController::SetupPlannerSearch() {
   // T_close,tot = T_close,e2e + h/2 (L3 §4.5): the tick quantisation budget.
   pc.t_close_total = pc.t_close_e2e + 0.5 * GetDefaultDt();
   pc.ball_mass = val(params_.ball.mass);
+  // The L4 reference the rollout replays (§4.8): the controller's own ω, ζ and
+  // a_max, and the control period as the confirmation step.
+  pc.ref_omega = val(params_.reference_omega);
+  pc.ref_zeta = val(params_.reference_zeta);
+  pc.ref_a_max = val(params_.reference_a_max);
+  pc.control_dt = GetDefaultDt();
 
   if (!planner_cycle_.ConfigureSearch(pm, pc, catch_pose_ik_config_.options)) {
     RCLCPP_ERROR(logger_,

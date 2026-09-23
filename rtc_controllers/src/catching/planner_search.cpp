@@ -56,6 +56,23 @@ bool PlannerSearch::Configure(const PlannerModel& model, const PlannerConstants&
   clock_ = clock;
   ik_.Resize(model.nv);
   unit_speed_.Resize(model.nv);
+  // The rollout's reference: the profile's ω and ζ, NO saturation (§4.8 —
+  // the peaks are what is judged against η_a a_max / η_v v_max).
+  rollout_ds_.emplace(
+      SoftCatchTranslation::Params{constants.ref_omega, constants.ref_zeta, 1e9, 1e9});
+  rollout_ = RolloutSettings{};
+  rollout_.a_max = constants.ref_a_max;
+  rollout_.v_max = constants.v_max;
+  rollout_.eta_a = params.eta_a;
+  rollout_.eta_v = constants.eta_v;
+  rollout_.eps_term = params.eps_term;
+  rollout_.dt_coarse = params.rollout_dt_coarse;
+  rollout_.dt_fine = constants.control_dt;
+  // Spans into params_ (this object's copy), never into the argument.
+  rollout_.gamma_grid = std::span<const double>(params_.gamma_grid.data(), params_.gamma_grid_n);
+  rollout_.window_grid = std::span<const double>(params_.window_grid.data(), params_.window_grid_n);
+  ik_cost_ns_ = 0;
+  rollout_cost_ns_ = 0;
   // The wait pose arrives in DEVICE order (the YAML is written against the
   // arm's joint list); the IK seed is in model order.
   seed_.setZero(model.nv);
@@ -252,10 +269,27 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   const double commit_lead = constants_.t_close_total + constants_.t_arm_s + params_.time_margin;
   const std::int64_t budget_ns = SecondsToNs(params_.budget_s);
 
+  // Where the reference starts (§4.8): its own state when it is running (a
+  // replacement continues from it), else the catch frame at the current
+  // command, at rest — what the RT seeds the reference with on adoption.
+  Eigen::Vector3d x0 = Eigen::Vector3d::Zero();
+  Eigen::Vector3d xd0 = Eigen::Vector3d::Zero();
+  if (rt.ref_valid) {
+    x0 = Eigen::Vector3d(rt.ref_x[0], rt.ref_x[1], rt.ref_x[2]);
+    xd0 = Eigen::Vector3d(rt.ref_xd[0], rt.ref_xd[1], rt.ref_xd[2]);
+  } else {
+    model_.handle->ComputeForwardKinematics(q0);
+    x0 = model_.handle->GetFramePosition(model_.catch_frame);
+  }
+  const bool following_now = current_.valid && rt.plan_active && rt.plan_id == current_.plan_id;
+  const double g0 = (following_now && rt.ref_valid) ? rt.gamma : 0.0;
+
   // Best so far.
   int best = -1;
   double best_score = 0.0;
   double best_gamma = 0.0;
+  double best_tw = 0.0;
+  bool best_window_only = false;
   double best_gmin = 0.0;
   std::uint16_t best_mask = 0;
   std::array<double, kMaxPlanNv> best_q{};
@@ -263,8 +297,11 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   double best_w6 = 0.0;
 
   for (int oi = 0; oi < n_ik_max; ++oi) {
+    // Does the NEXT candidate still fit? Its cost is estimated from recent
+    // ones (IK + rollout), so the cycle overruns by at most the estimate's
+    // error, not by a whole candidate (G3-C: p99 < budget_s).
     const std::int64_t elapsed = clock_() - t_start;
-    if (elapsed > budget_ns) {
+    if (elapsed + ik_cost_ns_ + rollout_cost_ns_ > budget_ns) {
       stats.budget_hit = true;
       break;
     }
@@ -276,7 +313,11 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     const std::int64_t ik_t0 = clock_();
     const CatchPoseIkResult ik =
         ik_.Solve(*model_.handle, model_.catch_frame, p, v, seed_, ik_options_);
-    stats.ik_ns_max = std::max(stats.ik_ns_max, clock_() - ik_t0);
+    const std::int64_t ik_ns = clock_() - ik_t0;
+    stats.ik_ns_max = std::max(stats.ik_ns_max, ik_ns);
+    // A decaying maximum: one slow solve raises the estimate at once, and it
+    // relaxes back over a few cycles rather than pinning the budget forever.
+    ik_cost_ns_ = std::max(ik_ns, ik_cost_ns_ - ik_cost_ns_ / 8);
     ++stats.n_ik;
     if (!ik.accepted) {
       c.reject = ik.reason == CatchPoseReason::kBelowManipMin ? JudgeReject::kManipulability
@@ -316,11 +357,26 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     in.a_dec = constants_.a_dec;
     const RankGateResult r = JudgeRankGates(in);
 
-    // γ_f before the rollout (S6-C): the window's lower end, clipped to what
-    // the arm can do when the window is empty; 0 when unjudgeable.
+    // γ_f and T_w from the rollout (§4.8, S6-C). The grid is restricted to
+    // the γ window; an EMPTY window (g_min > g_max) is searched at the arm's
+    // limit g_max — the most the arm can give, already a rank failure.
     double gamma_f = 0.0;
-    if (r.gamma_usable) {
-      gamma_f = std::clamp(std::min(r.window.g_min, r.window.g_max), 0.0, 1.0);
+    double t_w = rollout_.window_grid.empty() ? 0.0 : rollout_.window_grid.back();
+    bool rollout_ok = false;
+    bool window_only = false;
+    if (r.gamma_usable && rollout_ds_.has_value()) {
+      const double g_lo = std::min(r.window.g_min, r.window.g_max);
+      const std::int64_t ro_t0 = clock_();
+      const RolloutChoice rc = ChooseGamma(*rollout_ds_, traj, x0, xd0, p, now_lead,
+                                           BallTime{s.t_ns}, g0, g_lo, r.window.g_max, rollout_);
+      const std::int64_t ro_ns = clock_() - ro_t0;
+      stats.rollout_ns_max = std::max(stats.rollout_ns_max, ro_ns);
+      stats.n_rollouts = static_cast<std::uint16_t>(stats.n_rollouts + rc.rollouts);
+      rollout_cost_ns_ = std::max(ro_ns, rollout_cost_ns_ - rollout_cost_ns_ / 8);
+      gamma_f = std::clamp(rc.gamma_f, 0.0, 1.0);
+      t_w = rc.t_w;
+      rollout_ok = rc.accepted;
+      window_only = rc.window_only;
     }
     // Judgement: where the arm stops after the catch must be in the box.
     const StoppingReservation stop = StoppingPoint(p, v, gamma_f, constants_.a_dec);
@@ -351,6 +407,9 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     if (!(params_.n_sigma * sigma_gap <= r_cap)) {
       mask |= kRankErrorBudget;
     }
+    if (!rollout_ok) {
+      mask |= kRankRollout;
+    }
 
     // ── Score (§4.10 + penalties) ───────────────────────────────────────────
     double score = w.w_late * (lead_max - c.lead_s) - w.w_gamma * gamma_f;
@@ -376,6 +435,8 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
       best = static_cast<int>(&c - cands_.data());
       best_score = score;
       best_gamma = gamma_f;
+      best_tw = t_w;
+      best_window_only = window_only;
       best_gmin = r.gamma_usable ? r.window.g_min : 0.0;
       best_mask = mask;
       for (int j = 0; j < nv; ++j) {
@@ -466,12 +527,13 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   plan.p_c = bs.p;
   plan.a_d = {-v.x() / speed, -v.y() / speed, -v.z() / speed};
   plan.v_c = bs.v;
-  // γ continues from where the reference is when replacing (no step in γ),
-  // and ramps over the whole remaining lead (the rollout picks the window in
-  // S6-C). The profile is evaluated against now_lead (plan §3).
-  plan.gamma_g0 = (following && rt.ref_valid) ? rt.gamma : 0.0;
+  // γ continues from where the reference is when replacing (no step in γ)
+  // and ramps over the window the rollout chose, [t_c − T_w, t_c] clipped to
+  // now_lead — the exact profile the rollout judged. Evaluated against
+  // now_lead (plan §3).
+  plan.gamma_g0 = g0;
   plan.gamma_gf = best_gamma;
-  plan.gamma_t0_ns = now_lead.ns;
+  plan.gamma_t0_ns = std::max(now_lead.ns, bs.t_ns - SecondsToNs(best_tw));
   plan.gamma_t1_ns = bs.t_ns;
   plan.gamma_min = best_gmin;
   plan.nv = nv;
@@ -492,6 +554,8 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   stats.chosen_score = best_score;
   stats.chosen_lead_s = bc.lead_s;
   stats.chosen_gamma_f = best_gamma;
+  stats.chosen_t_w = best_tw;
+  stats.chosen_rollout_window_only = best_window_only;
   stats.search_ns = clock_() - t_start;
   return plan;
 }

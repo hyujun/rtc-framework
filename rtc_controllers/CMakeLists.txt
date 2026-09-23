@@ -554,6 +554,14 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_planner_search PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_planner_search PRIVATE -Wno-mismatched-new-delete)
+
+  # dynamic_catching S6-C: γ rollout — the L3 §4.8 table through the runtime
+  # sampler (G3-B), the choice rule, coarse-to-fine, and no allocation (G3-K).
+  ament_add_gtest(test_catching_gamma_rollout test/test_catching_gamma_rollout.cpp)
+  target_link_libraries(test_catching_gamma_rollout rtc_controllers)
+  target_include_directories(test_catching_gamma_rollout PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_gamma_rollout PRIVATE -Wno-mismatched-new-delete)
 endif()
 
 ament_package()

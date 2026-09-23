@@ -38,6 +38,7 @@
 #pragma once
 
 #include "rtc_controllers/catching/catch_pose_ik.hpp"
+#include "rtc_controllers/catching/gamma_rollout.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/rank_gates.hpp"
@@ -50,6 +51,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 namespace rtc::catching {
 
@@ -81,6 +83,12 @@ struct PlannerConstants {
   double t_close_e2e{std::numeric_limits<double>::quiet_NaN()};
   double t_close_total{std::numeric_limits<double>::quiet_NaN()};
   double ball_mass{0.0};  ///< `core.ball.mass` [kg] — the impulse estimate
+  /// The L4 reference (§4.8 rollout): ω, ζ, and the limits it is judged
+  /// against. NaN a_max → the rollout is unjudgeable (a rank failure).
+  double ref_omega{10.0};
+  double ref_zeta{1.0};
+  double ref_a_max{std::numeric_limits<double>::quiet_NaN()};
+  double control_dt{0.002};  ///< the rollout's confirmation step [s]
 };
 
 /// Rank-gate failure bits (decision E: the gate bitmask the CSV carries).
@@ -90,6 +98,7 @@ enum RankGateBit : std::uint16_t {
   kRankGamma = 1U << 2,        ///< γ window empty or unjudgeable (§4.5)
   kRankCommitLead = 1U << 3,   ///< lead < T_close,tot + T_arm + margin (§4.11)
   kRankErrorBudget = 1U << 4,  ///< n_σ σ_gap > r_cap (§4.6)
+  kRankRollout = 1U << 5,      ///< no (γ_f, T_w) passes the whole-interval rollout (§4.8)
 };
 
 /// Why a JUDGEMENT gate removed a candidate.
@@ -140,12 +149,16 @@ struct SearchStats {
   std::array<std::uint16_t, kJudgeRejectCount> judge_rejects{};
   bool budget_hit{false};  ///< budget_s ran out with IK candidates left
   std::int64_t search_ns{0};
-  std::int64_t ik_ns_max{0};  ///< the slowest single IK this cycle
+  std::int64_t ik_ns_max{0};       ///< the slowest single IK this cycle
+  std::int64_t rollout_ns_max{0};  ///< the slowest single candidate's rollout choice
+  std::uint16_t n_rollouts{0};     ///< rollouts run this cycle (coarse + fine)
   /// The chosen candidate (valid only if a plan was produced).
   std::uint16_t chosen_rank_mask{0};
   double chosen_score{0.0};
   double chosen_lead_s{0.0};
   double chosen_gamma_f{0.0};
+  double chosen_t_w{0.0};                  ///< the γ window the rollout chose [s]
+  bool chosen_rollout_window_only{false};  ///< γ_f chosen on window peaks (approach saturates)
   SwitchDecision decision{SwitchDecision::kNoCurrent};
   /// Whether the caller should publish the returned snapshot. False when the
   /// switching rule holds the RT's current plan.
@@ -208,6 +221,14 @@ class PlannerSearch {
 
   CatchPoseIk ik_;
   UnitSpeedSolver unit_speed_;
+  /// The unsaturated reference the rollout runs (constructed in Configure).
+  std::optional<SoftCatchTranslation> rollout_ds_;
+  RolloutSettings rollout_{};
+  /// Recent per-candidate cost estimates [ns] — the budget check asks whether
+  /// the NEXT candidate still fits, so the cycle overruns by at most the
+  /// estimate's error rather than by one whole candidate (G3-C).
+  std::int64_t ik_cost_ns_{0};
+  std::int64_t rollout_cost_ns_{0};
   Eigen::VectorXd seed_;  // model order, sized in Configure
   std::array<double, kMaxPlanNv> q_star_{};
   std::array<double, kMaxPlanNv> qdot_u_{};

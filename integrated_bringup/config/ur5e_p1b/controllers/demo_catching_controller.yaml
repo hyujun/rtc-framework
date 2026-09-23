@@ -383,6 +383,18 @@ demo_catching_controller:
       gamma:
         eta_v: 0.9
         margin: 0.1
+        # The γ rollout (L3 §4.8, S6-C): γ_f and T_w candidates, the demanded-
+        # acceleration margin η_a against reference.a_max, and the terminal
+        # error the reference must reach by t_c. L3 §6 defaults.
+        grid: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        window_grid: [0.3, 0.45, 0.6]
+        eta_a: 0.8
+        eps_term: 0.002
+      rollout:
+        # Coarse-to-fine: every (γ_f, T_w) is screened at this step, only the
+        # winner re-run at the control period (invented key — §4.8 left the
+        # method to S6.3).
+        dt_coarse: 0.01
       budget:
         n_sigma: 2.0
         # 0 until measured (S10) — they only RANK candidates (decision 2026-09-23).

@@ -30,7 +30,7 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "n_in_window,n_ik,n_pass,rej_input,rej_ik,rej_manipulability,rej_workspace,"
         "rej_not_evaluated,budget_hit,search_us,ik_us_max,rank_mask,rank_uncertainty,"
         "rank_reach,rank_gamma,rank_commit_lead,rank_error_budget,score,lead_s,gamma_f,"
-        "decision,sigma_l\n";
+        "decision,sigma_l,rank_rollout,t_w,rollout_window_only,n_rollouts,rollout_us_max\n";
 }
 
 /// Whether a wake is worth a row (see the file header).
@@ -63,7 +63,9 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
      << bit(rtc::catching::kRankGamma) << ',' << bit(rtc::catching::kRankCommitLead) << ','
      << bit(rtc::catching::kRankErrorBudget) << ',' << s.chosen_score << ',' << s.chosen_lead_s
      << ',' << s.chosen_gamma_f << ',' << rtc::catching::SwitchDecisionName(s.decision) << ','
-     << s.sigma_l << '\n';
+     << s.sigma_l << ',' << bit(rtc::catching::kRankRollout) << ',' << s.chosen_t_w << ','
+     << (s.chosen_rollout_window_only ? 1 : 0) << ',' << s.n_rollouts << ','
+     << s.rollout_ns_max / 1000 << '\n';
 }
 
 }  // namespace integrated_bringup

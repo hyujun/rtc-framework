@@ -39,6 +39,9 @@ inline constexpr double kPlannerBudgetMaxS = 0.05;
 /// capacity (fixed-size scratch), not a tuning default; the default is 8.
 inline constexpr int kPlannerMaxIkCapacity = 40;
 
+inline constexpr std::size_t kPlannerMaxGammaGrid = 16;
+inline constexpr std::size_t kPlannerMaxWindowGrid = 8;
+
 /// Axis-aligned box in the model world frame (decision I).
 struct CatchBox {
   std::array<double, 3> min{};
@@ -99,6 +102,17 @@ struct PlannerParams {
   double kappa_sigma{0.3};
   /// `planner.gamma.margin` [m/s] (§4.5).
   double gamma_margin{0.1};
+  /// The rollout (§4.8, S6-C): `planner.gamma.grid` (γ_f candidates),
+  /// `window_grid` [s] (T_w candidates), `eta_a`, `eps_term` [m], and the
+  /// screening step `planner.rollout.dt_coarse` [s] (invented key: §4.8 left
+  /// the coarse-to-fine method to S6.3).
+  std::array<double, kPlannerMaxGammaGrid> gamma_grid{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6};
+  std::size_t gamma_grid_n{7};
+  std::array<double, kPlannerMaxWindowGrid> window_grid{0.3, 0.45, 0.6};
+  std::size_t window_grid_n{3};
+  double eta_a{0.8};
+  double eps_term{0.002};
+  double rollout_dt_coarse{0.01};
   /// `planner.budget.*` (§4.6). σ_trk and δ are 0 until measured (S10).
   double n_sigma{2.0};
   double sigma_trk{0.0};

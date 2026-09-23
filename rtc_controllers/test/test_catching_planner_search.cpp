@@ -91,6 +91,10 @@ struct Rig {
     constants.t_close_e2e = 0.1;
     constants.t_close_total = 0.101;
     constants.ball_mass = 0.057;
+    constants.ref_omega = 10.0;
+    constants.ref_zeta = 1.0;
+    constants.ref_a_max = 21.0;
+    constants.control_dt = 0.002;
 
     params.enabled = true;
     params.wait_pose_n = arm.nv;
@@ -225,6 +229,12 @@ TEST(PlannerSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
   EXPECT_GE(plan.gamma_gf, 0.0);
   EXPECT_LE(plan.gamma_gf, 1.0);
   EXPECT_EQ(plan.gamma_t1_ns, plan.t_c_ns);
+  // S6-C: the rollout ran and chose the γ window the plan carries.
+  EXPECT_GT(stats.n_rollouts, 0);
+  EXPECT_GT(stats.chosen_t_w, 0.0);
+  EXPECT_EQ(plan.gamma_t0_ns,
+            std::max<std::int64_t>(kNow, plan.t_c_ns - static_cast<std::int64_t>(
+                                                           std::llround(stats.chosen_t_w * 1e9))));
 }
 
 TEST(PlannerSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {

@@ -297,7 +297,7 @@ $\sigma$ 는 스칼라로 썼지만 실제는 3×3이다. §4.4의 $\lambda_{\ma
 
 수락 조합 중 $\gamma_f$ 최대를 고르고, 동률이면 최대 가속이 작은 것을 고른다. 수락 조합이 없으면 $\gamma_{\min}$을 한 번 더 검사한다. 그것도 실패하면 후보를 탈락시킨다.
 
-**연산 예산 (S6.3).** 참조 구현 기준 추정으로 전 격자 rollout 이 약 26 ms 로 `planner.budget_s` (10 ms) 를 넘는다. 전 격자 × 전 후보 × 매 tick 적분을 그대로 돌릴 수 없으므로 **coarse-to-fine 이 필수**다 — 거친 단계로 먼저 거르고 통과한 조합만 세밀하게 재검사한다. 구체 방식과 실측 시간은 S6.3 에서 정한다.
+**연산 예산 (S6.3).** 참조 구현 기준 추정으로 전 격자 rollout 이 약 26 ms 로 `planner.budget_s` (10 ms) 를 넘는다. 전 격자 × 전 후보 × 매 tick 적분을 그대로 돌릴 수 없으므로 **coarse-to-fine 이 필수**다 — 거친 단계로 먼저 거르고 통과한 조합만 세밀하게 재검사한다. **S6.3 구현** (`gamma_rollout.hpp`): 격자 전체를 `planner.rollout.dt_coarse` (10 ms) 로 거르고, 고른 조합 하나만 제어 주기로 확인한다. **거친 단계는 최대치 ($u$, $\dot x$) 만 판정하고 $\Vert e(t_k)\Vert$ 는 확인 단계만 판정한다** — semi-implicit Euler 가 거친 간격에서 움직이는 대상을 약 $\gamma\Vert v\Vert\,dt$ 만큼 뒤따르므로, 2026-09-23 G3-C 투구에서 10 ms 의 잔여 오차가 3–11 mm (제어 주기에서는 0.2–1.5 mm, 최대치 차이는 3 % 이내) 였고 거친 단계에서 $\epsilon_{term}$ 을 판정하면 모든 soft catch 가 자기 이산화 오차로 탈락했다. 전 구간 수락이 없을 때 γ 는 창 안의 최대치로 고르고 판정은 "실패" 로 둔다 (접근 구간이 포화한다는 뜻 — §4.1 의 순위 벌점). 실측 사이클 시간은 G3-C (`test_catching_planner_g3c`) 가 기록한다.
 
 참고 수치(`test_l3.cpp`, 한 시나리오, 포화 없는 rollout의 창 내 최대 $\Vert u_{des}\Vert$ [m/s²]):
 
@@ -466,6 +466,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.gamma.window_grid` | double[] | s | [0.3, 0.45, 0.6] | >0 | §4.8 |
 | `planner.gamma.eta_a`, `eta_v` | double | – | 0.8, 0.9 | (0, 1] | 여유율. `eta_v` 는 D-9 의 $\eta_v$ — `gammaWindow` 와 rollout 수락이 같은 값을 쓴다 (§4.5, §4.8) |
 | `planner.gamma.eps_term` | double | m | 0.002 | – | §4.8 |
+| `planner.rollout.dt_coarse` | double | s | 0.01 | 1e-4–0.05 | 발명 키 (S6.3): rollout 거친 단계 간격. 확인 단계는 제어 주기 (§4.8) |
 | `planner.budget.n_sigma` | double | – | 2.0 | 1–3 | §4.6 |
 | `planner.budget.sigma_trk` | double | m | `TBD` | ≥0 | L5 실측. ⚠️ **sim 초기값 출처가 없다** — S3.7 이 2026-09-20 결정으로 빠져 (L5 §7 L5.7) **S10 실기 식별까지 TBD 로 남는다** |
 | `planner.budget.clock_err` | double | s | `TBD` | ≥0 | 인프라 실측 |

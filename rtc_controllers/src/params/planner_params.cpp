@@ -189,6 +189,39 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
 
   const YAML::Node gamma = Section(planner, "gamma", "gamma");
   out.gamma_margin = ReadBounded(gamma, "margin", "gamma.margin", out.gamma_margin, 0.0, 1.0);
+  out.eta_a = ReadBounded(gamma, "eta_a", "gamma.eta_a", out.eta_a, 1e-3, 1.0);
+  out.eps_term = ReadBounded(gamma, "eps_term", "gamma.eps_term", out.eps_term, 1e-6, 1.0);
+  const auto read_grid = [](const YAML::Node& sec, const char* key, const std::string& path,
+                            auto& dst, std::size_t& n, double lo, double hi) {
+    const YAML::Node v = sec[key];
+    if (!v) {
+      return;
+    }
+    if (!v.IsSequence() || v.size() == 0 || v.size() > dst.size()) {
+      Reject(Key(path) + " must be a sequence of 1.." + std::to_string(dst.size()) +
+             " numbers, got " + Spelling(v));
+    }
+    for (std::size_t i = 0; i < v.size(); ++i) {
+      double d = 0.0;
+      try {
+        d = v[i].as<double>();
+      } catch (const YAML::Exception&) {
+        Reject(Key(path) + "[" + std::to_string(i) + "] must be a number");
+      }
+      if (!std::isfinite(d) || d < lo || d > hi) {
+        Reject(Key(path) + "[" + std::to_string(i) + "] is outside [" + std::to_string(lo) + ", " +
+               std::to_string(hi) + "]");
+      }
+      dst[i] = d;
+    }
+    n = v.size();
+  };
+  read_grid(gamma, "grid", "gamma.grid", out.gamma_grid, out.gamma_grid_n, 0.0, 1.0);
+  read_grid(gamma, "window_grid", "gamma.window_grid", out.window_grid, out.window_grid_n, 1e-3,
+            2.0);
+  const YAML::Node rollout = Section(planner, "rollout", "rollout");
+  out.rollout_dt_coarse =
+      ReadBounded(rollout, "dt_coarse", "rollout.dt_coarse", out.rollout_dt_coarse, 1e-4, 0.05);
 
   const YAML::Node budget = Section(planner, "budget", "budget");
   out.n_sigma = ReadBounded(budget, "n_sigma", "budget.n_sigma", out.n_sigma, 1.0, 3.0);
