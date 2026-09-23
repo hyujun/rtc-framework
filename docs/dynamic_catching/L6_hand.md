@@ -95,6 +95,8 @@ $$\rho(t)=\min_{i\in\mathcal C}\frac{(q_i(t)-q_i^{pre})\,s_i}{|q_i^{cls}-q_i^{pr
 
 **tick×dt 축은 이 설정에서 쓸 수 없다.** 분석기는 CSV 한 행 = 한 tick = `dt` 로 보지만, sim 에서 RT 루프가 `control_rate` 보다 빠르게 돈다 (실측 P1b 810 Hz · LEAP 581 Hz, 설정은 둘 다 500 Hz). 그래서 행 간격이 `dt` 가 아니고 tick 축이 실제보다 길게 나온다. 대신 **sim 의 rtf 가 정확히 1.0000** 임을 sim 자체 로그로 확인했으므로 (steps/s 500.0, sim_time = wall) steady 값이 곧 물리 시간이고, 호스트 스톨 보정이 따로 필요 없다. 분석기가 띄우는 "tick axis NOT trusted — dropped CSV row" 경고는 **원인 진단이 틀렸다**: 드롭은 0 이었고 (`Controller CSV logging dropped` 0 건), 실제 원인은 루프 과속과 activity-gated 로깅의 구간 공백이다.
 
+**원인과 수정 (2026-09-23, #566).** 위 810 / 581 Hz 는 설정이 아니라 버그였다: sim 은 device group 마다 joint state 를 따로 발행하고 CM 은 메시지마다 tick 했으므로 팔+손 씬은 한 step 에 tick 을 최대 2 회 돌았다. 이제 CM 은 모든 device 의 state 가 새로 도착했을 때 한 번 tick 하고 (`sim_sync_tick_devices`), `t_relative_s` 도 sim 에서 `iteration × dt` 다 — 이후 측정에서는 tick×dt 축이 쓸 수 있고 steady 축과 rtf 1.0 에서 일치해야 한다. 위 표 (steady 축) 는 손 응답의 sim 물리 시간이라 tick 이중화의 직접 영향은 없다고 본다 — 다만 sim 이 팔 명령만 기다리고 step 해 손 명령이 한 step 늦게 적용될 수 있던 부수 결함 (≤ 1 step = 2 ms) 이 섞여 있을 수 있고, **재측정은 하지 않았다**.
+
 #### 잡히지 않을 때 무엇을 의심하는가 `[사용자, 2026-09-20]`
 
 공이 palm 에 **닿았는데** 파지가 성립하지 않으면 원인은 둘 중 하나다 — **손 관절 속도** (곧 $T_{close,e2e}$: 공이 튕겨 나가기 전에 닫히지 못한다) 또는 **`q_pre` / `q_close` 자세** (닫히기는 하는데 그 형상이 공을 가두지 못한다). 접촉 자체가 없으면 그건 손 문제가 아니라 L2/L3 의 조준 문제이므로 이 계층을 먼저 의심하지 않는다. 이 둘이 S4.2 와 S4.5 가 각각 재는 양이고, 그래서 두 값이 S4.4 go/no-go 의 입력이다.
@@ -106,7 +108,7 @@ $$\rho(t)=\min_{i\in\mathcal C}\frac{(q_i(t)-q_i^{pre})\,s_i}{|q_i^{cls}-q_i^{pr
 - Preshape: now_real ≥ $t_c-T_{pre}$
 - Close: now_real ≥ $t_{cmd}$ 판정을 아래 양자화 규칙으로 한다. $t_{cmd}=t_c-T_{close,e2e}$ (L3 §4.11 의 $T_{close}+T_{link}$ 를 종단 간 값으로 대체)
 
-RT 틱 $h$ 단위로만 명령할 수 있으므로 $t_{cmd}$를 넘지 않는 마지막 틱이 아니라 **처음으로 now_real ≥ $t_{cmd}-h/2$ 인 틱**에서 명령한다(가장 가까운 틱으로 반올림). 오차는 $\pm h/2$의 영평균이다. $h$ 는 `ControllerState::dt` (= 1/`control_rate`, 500 Hz 고정이 아니다) 이고, sim lock-step 에서는 실제 tick 간격이 이와 다를 수 있으므로 G6-A 는 실측 tick 간격으로 판정한다.
+RT 틱 $h$ 단위로만 명령할 수 있으므로 $t_{cmd}$를 넘지 않는 마지막 틱이 아니라 **처음으로 now_real ≥ $t_{cmd}-h/2$ 인 틱**에서 명령한다(가장 가까운 틱으로 반올림). 오차는 $\pm h/2$의 영평균이다. $h$ 는 `ControllerState::dt` (= 1/`control_rate`, 500 Hz 고정이 아니다) 이고, G6-A 는 실측 tick 간격으로 판정한다. sim lock-step 에서 tick 한 번은 sim step 한 번 ($h$) 이다 — #566 이전에는 device 마다 state 가 tick 을 따로 깨워 tick 이 $h$ 보다 촘촘했다 (아래 §4.2 의 810 / 581 Hz).
 
 $T_{tick}=h/2$는 그 오차의 **worst case를 γ 창 예산에 넣는 값**이지, 명령 시각을 당기는 값이 아니다. $t_{cmd}$ 식에서 $T_{tick}$ 을 빼지 않는 것과 일관된다.
 

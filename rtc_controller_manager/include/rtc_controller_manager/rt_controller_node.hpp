@@ -30,6 +30,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstring>  // ::strnlen — bounded read of the fixed-size E-STOP reason buffer
 #include <filesystem>
 #include <map>
@@ -228,6 +229,13 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     // post-publish tail instead of being identically zero (issue #222).
     void StampPublishDone() noexcept { MarkPublishDone(); }
 
+    // Re-arms the sim-sync tick barrier (issue #566) for a fresh loop thread:
+    // the barrier's "seen" sequences restart from what has already arrived,
+    // so a state that landed before activation cannot pay for the first tick
+    // twice, and a stop nudge from the previous run is forgotten. Call from
+    // StartRtLoop() only — before the thread exists, so there is no race.
+    void ArmSimSync() noexcept;
+
    protected:
     void OnTick() noexcept override;
     WaitResult WaitForNextTick() noexcept override;
@@ -237,6 +245,14 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     [[nodiscard]] bool JitterMeaningful() const noexcept override;
 
    private:
+    // Sim-sync barrier bookkeeping (issue #566). sim_seen_seq_ is the
+    // per-slot state sequence the last tick consumed — touched by this loop
+    // thread only (ArmSimSync runs before it starts). stop_nudged_ lets the
+    // barrier's re-poll tell OnRequestStop's wake from a state arrival: the
+    // nudge is a single eventfd write, and waiting on for the rest of the
+    // step would hold a stop until sim_sync_timeout_sec.
+    std::array<std::uint32_t, rtc::kMaxDevices> sim_seen_seq_{};
+    std::atomic<bool> stop_nudged_{false};
     RtControllerNode* owner_;
   };
 
@@ -629,6 +645,29 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   double sim_sync_timeout_sec_{5.0};
   // Atomic for the same reason as nrt_publish_eventfd_ — see there.
   std::atomic<int> sim_wake_eventfd_{-1};
+  // One tick per simulator step (issue #566). The simulator publishes each
+  // device group's joint state as its own message, so waking on every one of
+  // them ran the loop up to N times per step — and every law that integrates
+  // state.dt ran up to N× fast. The state callback bumps its slot's sequence
+  // (before the eventfd write); WaitForNextTick() proceeds only once every
+  // slot in sim_tick_slot_mask_ has moved past what the last tick consumed.
+  // The mask is `sim_sync_tick_devices` (default: every device group) — a
+  // group the simulator publishes at a decimated rate must be left out, and
+  // is then read latest-value like any sensor lane.
+  std::array<std::atomic<std::uint32_t>, kMaxDevices> sim_state_seq_{};
+  std::uint32_t sim_tick_slot_mask_{0};
+  // What the barrier waited on — so a misconfigured mask is loud rather than
+  // just slow. A step whose last state arrived more than one period after its
+  // first is a "slow step": a group published at a decimated rate, a
+  // fake_response group (100 Hz wall timer) left in the mask, or a dropped
+  // best-effort message. The RT thread counts them and ORs in the slots that
+  // were late; DrainLog (aux) names them. On abort the slots that never
+  // arrived are left for OnLoopAborted to name.
+  std::atomic<std::uint64_t> sim_slow_steps_{0};
+  std::atomic<std::uint32_t> sim_slow_mask_{0};
+  std::atomic<std::uint32_t> sim_missing_mask_{0};
+  std::uint64_t sim_slow_steps_reported_{0};  // DrainLog only
+  static_assert(kMaxDevices <= 32, "sim_tick_slot_mask_ holds one bit per device slot");
 
   // ── Parameters ────────────────────────────────────────────────────────────
   // RT loop rate [Hz]. Loaded from the YAML `control_rate` parameter in

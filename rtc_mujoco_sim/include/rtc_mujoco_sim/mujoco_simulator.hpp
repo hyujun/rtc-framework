@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -126,6 +127,13 @@ struct ObjectStateConfig {
   /// "world" when reference_body is empty. Overriding matters when the MJCF
   /// body name and the URDF link name for the same frame differ.
   std::string frame_id;
+
+  /// Publish on every Nth simulator step only (step % N == 0), N >= 1. The
+  /// physics still runs every step; only the refresh is decimated, which is
+  /// how a sensor slower than the control rate looks to its consumer. The
+  /// rate is therefore control_rate / N — a rate that does not divide the
+  /// control rate (60 Hz against 500 Hz) is not expressible (issue #566).
+  int publish_divisor{1};
 };
 
 // ── ObjectStateInfo / ObjectStateSample ──────────────────────────────────────
@@ -300,6 +308,26 @@ struct JointGroupConfig {
   // truncated home pose is a robot that starts somewhere nobody chose.
   std::vector<double> initial_qpos;
 
+  // ── Publish decimation (robot groups only) ──────────────────────────────
+  // Publish this group's joint state, sensors and contact wrenches on every
+  // Nth simulator step only (step % N == 0, so step 0 always publishes);
+  // N >= 1. Physics and command intake still run every step — this models a
+  // device whose state refreshes slower than the control rate (a hand at
+  // 100 Hz under a 500 Hz arm: N = 5). The rate is control_rate / N. A group
+  // with N > 1 must be left out of the controller manager's
+  // `sim_sync_tick_devices`, or every tick waits for it (issue #566). A
+  // fake_response group must keep 1 (Initialize rejects anything else).
+  int state_publish_divisor{1};
+
+  // Whether the lock-step waits for this group's command before stepping
+  // (robot groups only; default true). Every robot group is waited on so a
+  // hand's command is not applied a step late (issue #566); a group the
+  // controller does not command — a scene modelling a device the controller
+  // manager does not own, or a controller that drives only some groups —
+  // must opt out, or every step waits the whole sync_timeout_ms for it. An
+  // opted-out group still takes a command whenever one arrives.
+  bool wait_for_command{true};
+
   // ── Sensor publishing (optional) ──────────────────────────────
   std::string sensor_topic;               // 빈 문자열이면 센서 publish 안 함
   std::vector<std::string> sensor_names;  // XML sensor names (빈 경우 = 그룹에 센서 없음)
@@ -384,8 +412,11 @@ struct JointGroup {
   std::vector<std::string> state_joint_names;
   int num_state_joints{0};
 
-  bool is_robot{true};     // robot_response 여부
-  bool is_primary{false};  // sync_step 대기 대상
+  bool is_robot{true};           // robot_response 여부
+  int state_publish_divisor{1};  // JointGroupConfig::state_publish_divisor
+  bool wait_for_command{true};   // JointGroupConfig::wait_for_command
+  bool is_primary{false};  // 첫 robot group — 기동 로그 라벨뿐. step 은 모든 robot group 의 명령을
+                           // 기다린다 (#566)
 
   // ── MuJoCo 인덱스: command용 (is_robot==true, 이름 기반 비연속 가능)
   std::vector<int> qpos_indices;
@@ -1060,6 +1091,13 @@ class MuJoCoSimulator {
 
   [[nodiscard]] uint64_t StepCount() const noexcept { return step_count_.load(); }
 
+  /// Steps that ran on sync_timeout_ms with SOME awaited group's command in
+  /// and another's missing — a group the controller does not command, or a
+  /// command lost in transit (issue #566). Also reported on stderr, named.
+  [[nodiscard]] uint64_t PartialCommandSteps() const noexcept {
+    return partial_command_steps_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] double SimTimeSec() const noexcept { return sim_time_sec_.load(); }
 
   // model_->nq became mjtSize (int64_t) in MuJoCo 3.7 — explicit narrowing.
@@ -1089,6 +1127,7 @@ class MuJoCoSimulator {
 
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> step_count_{0};
+  std::atomic<uint64_t> partial_command_steps_{0};
   std::atomic<double> sim_time_sec_{0.0};
 
   // ── Multi-group storage ─────────────────────────────────────────────────
@@ -1199,6 +1238,17 @@ class MuJoCoSimulator {
   std::mutex sync_mutex_;
   std::condition_variable sync_cv_;
 
+  /// Wakes the step's command wait. Takes sync_mutex_ before notifying: the
+  /// waiter checks cmd_pending under that lock and then blocks, and a
+  /// notify that lands between the two is lost — the step then idles out the
+  /// whole sync_timeout_ms. With every robot group waited on (issue #566)
+  /// there are as many notifies per step as groups, so the gap is closed
+  /// rather than left to the timeout.
+  void NotifyCommandArrived() noexcept {
+    { std::lock_guard lock(sync_mutex_); }
+    sync_cv_.notify_one();
+  }
+
   // ── Viewer double-buffer ──────────────────────────────────────────────────
   mutable std::mutex viz_mutex_;
   std::vector<double> viz_qpos_{};
@@ -1306,6 +1356,15 @@ class MuJoCoSimulator {
   void ReadObjectStates() noexcept;
   void ReadProjectileBallState() noexcept;
   void ReadSolverStats() noexcept;
+  // The step the Invoke*Callback publish gates judge (the state published at
+  // the top of an iteration belongs to this many completed steps). SimLoop
+  // thread only.
+  std::uint64_t publish_step_{0};
+
+  [[nodiscard]] static bool PublishesOnStep(int divisor, std::uint64_t step) noexcept {
+    return divisor <= 1 || step % static_cast<std::uint64_t>(divisor) == 0;
+  }
+
   void InvokeStateCallback() noexcept;
   void InvokeSensorCallback() noexcept;
   void InvokeContactWrenchCallback() noexcept;

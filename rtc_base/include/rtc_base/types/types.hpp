@@ -358,8 +358,11 @@ struct ControllerState {
   double dt{kDefaultControlDtSec};
   uint64_t iteration{0};
 
-  // Session-relative wall time in seconds (current_tick - first-tick origin),
-  // filled by CM RT loop before each Compute() dispatch. Controllers must
+  // Session-relative time in seconds, filled by CM RT loop before each
+  // Compute() dispatch. Real robot: steady time since the first tick. Sim
+  // (use_sim_time_sync): iteration × dt — one tick is one simulator step, and
+  // the wall time spent waiting on the simulator is not time the controlled
+  // world lived through (issue #566). Controllers must
   // read this for any timestamp embedded in logs/telemetry — calling
   // chrono::*::now() inside Compute() bypasses the shared session origin
   // and breaks cross-controller log alignment. The origin is captured at

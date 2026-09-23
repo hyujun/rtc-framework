@@ -696,9 +696,12 @@ void RtControllerNode::CreateDeviceBackends() {
       }
 
       // Sim-sync wake-up. Counter accumulates, so a message that lands while
-      // the RT thread is mid-tick still wakes the following wait.
+      // the RT thread is mid-tick still wakes the following wait. The slot's
+      // sequence goes first: the wait decides "is this step complete" from
+      // the sequences, and the eventfd only tells it to look (issue #566).
       const int sim_fd = sim_wake_eventfd_.load(std::memory_order_acquire);
       if (use_sim_time_sync_ && sim_fd >= 0) {
+        sim_state_seq_[static_cast<std::size_t>(slot)].fetch_add(1, std::memory_order_release);
         static_cast<void>(eventfd_write(sim_fd, 1));
       }
     });

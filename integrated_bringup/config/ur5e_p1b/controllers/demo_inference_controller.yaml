@@ -75,7 +75,8 @@ demo_inference_controller:
     # ── 정책 주기 ────────────────────────────────────────────────────────────
     # 학습 제어주기 100 Hz (sim.dt 0.005 × decimation 2). 500 Hz / 5 = 100 Hz 이고, sim 은
     # lock-step 이라 1 tick = physics_timestep (2 ms) 의 sim-time 이므로 5 tick = 정책
-    # 1 step 이 정확히 10 ms 다. 팔 slew (0.005 rad/step) 와 reach gate 의 hold 디바운스
+    # 1 step 이 정확히 10 ms 다 (#566 이후 — 그 전에는 팔·손 state 가 tick 을 따로 깨워
+    # 한 step 에 최대 2 tick 이 돌았고 정책 주기가 그만큼 짧았다). 팔 slew (0.005 rad/step) 와 reach gate 의 hold 디바운스
     # (5 / 100 step) 가 모두 이 step 단위라, 주기가 다르면 둘 다 다른 시간이 된다.
     # control_rate 를 낮추는 대안을 쓰지 않는 이유: ControllerState::dt 는
     # 1/control_rate 인데 sim 이 실제로 진행시키는 시간은 physics_timestep 이라 둘이

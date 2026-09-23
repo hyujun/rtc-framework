@@ -225,6 +225,7 @@ if(mujoco_FOUND)
       if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/${t}.cpp")
         ament_add_gtest(${t} test/${t}.cpp)
         target_link_libraries(${t} mujoco_simulator_lib)
+        rtc_base_add_test_includes(${t})  # rtc::testing::WaitUntil
         target_compile_definitions(${t} PRIVATE
           MINIMAL_MJCF_PATH="${MJCF_FIXTURE}")
       endif()

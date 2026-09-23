@@ -350,7 +350,8 @@ latch 가 서면 controller 가 계산한 output 은 **`DeviceBackend::WriteComm
 
 - Robot 모드: `clock_nanosleep` 다음 tick에 `rclcpp::ok()` 검사 → 2 ms 내 종료
 - Sim 모드 (`use_sim_time_sync=true`): `WaitForNextTick()` 이 `sim_wake_eventfd_` 를 `sim_sync_timeout_sec` (기본 5 s) 만큼 `poll()` 한다. `OnRequestStop()` 이 그 fd 에 한 번 write 하므로 destructor / on_deactivate / on_shutdown 경로는 타임아웃을 기다리지 않고 즉시 join
-- producer 는 device state 콜백(rt_callback, FIFO 70), consumer 는 rt_control (FIFO 90) — 두 SCHED_FIFO 스레드가 mutex 를 공유하면 RT-4 위반이므로 wait-free write + fd wait 를 쓴다. eventfd 는 counter 라 wake edge 유실이 없고, non-semaphore read 가 counter 를 0 으로 비우므로 state 버스트는 tick 을 여분으로 만들지 않고 하나로 합쳐진다
+- producer 는 device state 콜백(rt_callback, FIFO 70), consumer 는 rt_control (FIFO 90) — 두 SCHED_FIFO 스레드가 mutex 를 공유하면 RT-4 위반이므로 wait-free write + fd wait 를 쓴다. eventfd 는 counter 라 wake edge 유실이 없다
+- **tick 은 state 메시지가 아니라 sim step 마다 한 번이다 (#566)**. sim 은 device group 마다 joint state 를 **따로** 발행하므로, 메시지마다 tick 하던 이전 구현은 group 이 2 개인 씬 (ur5e_p1b) 에서 한 step 에 tick 을 최대 2 회 돌렸다 (실측 838 Hz / 500 Hz step — `state.dt` 를 적분하는 법칙이 sim 보다 ~1.67× 빨리 흘렀다). eventfd 의 drain 은 **tick 중에** 도착한 메시지만 합칠 뿐, 대기 중에 따로 도착한 두 메시지는 두 wake 가 된다. 지금은 콜백이 slot 별 sequence 를 올리고 (eventfd write 전에), wait 는 wake 마다 `sim_sync_tick_devices` 의 모든 slot 이 직전 tick 이 소비한 값에서 전진했는지 보고 아니면 남은 timeout 으로 다시 `poll()` 한다. 원시 요소는 atomic + eventfd 뿐이다. stop nudge 는 step 을 완성하지 않는 wake 이므로 `OnRequestStop()` 이 플래그를 먼저 세워 재-`poll` 이 그것을 삼키지 않게 한다
 
 ### SeqLock 기반 디바이스 상태 공유 (backend 내부)
 
@@ -401,7 +402,7 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 | 히스토그램 | 200개 버킷 (10 us 간격, 0-2000 us) + 오버플로 버킷 |
 | 수집 통계 (`GetStats()`) | count, min, max, mean, stddev, p95, p99, over_budget — `cm_timing_log.csv`로도 복원 가능 |
 | 예산 | `1e6 / control_rate` µs (예: 500 Hz → 2000 µs) — sim 모드 `elapsed` 계산에 사용 |
-| `elapsed` 의미 | **robot**: 직전 print와의 wall-clock delta (CM 측정 실제 시간). **sim** (`use_sim_time_sync=true`): `count × period` (컨트롤러가 sim step과 lock-step이라 dt 기준 가상 시간이 컨트롤러 관점의 진실). 첫 print는 fallback으로 sim과 동일 식 |
+| `elapsed` 의미 | **robot**: 직전 print와의 wall-clock delta (CM 측정 실제 시간). **sim** (`use_sim_time_sync=true`): `count × period` (컨트롤러가 sim step과 lock-step이라 dt 기준 가상 시간이 컨트롤러 관점의 진실). 첫 print는 fallback으로 sim과 동일 식. 같은 이유로 sim 에서는 `ControllerState::t_relative_s` 도 `iteration × dt` 다 (#566) — 구간 측정 (phase timing·watchdog·메시지 나이) 은 두 모드 모두 steady clock |
 | 리셋 주기 | RT 루프가 1 000 tick(≈ 2 s @ 500 Hz)마다 로그 스레드에 Summary 출력 요청 → 로그 스레드는 `RCLCPP_INFO` 직후 `timing_profiler_.Reset()`을 호출. 따라서 각 출력은 **직전 윈도우**(elapsed로 표시)의 mean/max이며, 세션 시작 시점의 스파이크가 영구 반영되지 않음 |
 | Console summary 형식 | `<ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N  rt_cb_timing_drops=N` — 의도적으로 슬림. 상세 percentile / over_budget / per-tick 값은 `cm_timing_log.csv`에서 사후 분석 |
 
@@ -545,8 +546,9 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 | `enable_device_log` | bool | `true` | 디바이스별 CSV 로깅 활성화 |
 | `log_dir` | string | `""` | 로그 디렉토리 (빈 문자열이면 자동 생성) |
 | `max_log_sessions` | int | `10` | 최대 로그 세션 보관 수. `on_configure` 가 `log_dir` 의 부모를 루트로 삼아 정리한다. **bringup launch 도 같은 트리를 정리하므로** launch 는 이 값을 자기 `max_log_sessions` 인자의 default 로 읽어 노드에도 다시 넘긴다 — 두 정리 주체가 항상 같은 수를 보게 하기 위해서다. 따라서 이 YAML 값이 SSoT 이고, CLI `max_log_sessions:=N` 은 양쪽을 함께 움직인다 |
-| `use_sim_time_sync` | bool | `false` | MuJoCo 동기 루프 CV 기반 wakeup 모드 |
-| `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) |
+| `use_sim_time_sync` | bool | `false` | MuJoCo lock-step 모드 — RT tick 을 시계가 아니라 sim step 완료로 깨운다 (eventfd wakeup) |
+| `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) — step 이 이 시간 안에 완성되지 않으면 `sim_sync_timeout` E-STOP |
+| `sim_sync_tick_devices` | string[] | `[]` (= 모든 device group) | sim step 을 완성하는 device group (#566). tick 은 여기 든 group **전부**가 직전 tick 이후 새 joint state 를 냈을 때만 돈다. sim 이 decimated rate 로 발행하는 group 과 **`fake_response` group** (sim 의 100 Hz wall timer 로 발행 — step 과 무관) 은 빼야 한다 (넣으면 그 group 을 기다리느라 step 이 느려진다) — 빠진 group 은 sensor lane 처럼 latest-value 로 읽힌다. 한 주기 넘게 기다린 step 은 세어 두었다가 타이밍 요약 때 늦은 group 이름과 함께 WARN 하고, `sim_sync_timeout_sec` abort 는 끝내 안 온 group 을 FATAL 에 적는다. sim-sync 에서 모르는 이름은 configure 거부, `use_sim_time_sync: false` 면 키 전체를 읽지 않는다 (공유 overlay 에 sim 전용 이름이 있어도 실기 bring-up 은 통과) |
 | `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 — `<pkg_share>/config/<config_variant>/controllers/<config_key>.yaml`. 빈 값이면 `config/controllers/`. 파일이 **없을 때**의 거동 세 갈래는 아래 참조 |
 | `kp` | double | `5.0` | (레거시) 기본 P 게인 |
 | `kd` | double | `0.5` | (레거시) 기본 D 게인 |

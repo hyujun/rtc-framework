@@ -56,7 +56,7 @@ integrated_bringup 등      ← robot YAML + launch에서 mujoco_simulator_node�
 - `state_joint_names`로 state publish 시 관절 이름/순서를 별도 지정 가능 (빈 배열 = XML 전체)
 - 이름 기반 qpos/qvel/actuator 인덱스 매핑 (비연속 인덱스 지원)
 - 그룹별 독립 command/state 버퍼, control mode, servo gains
-- 첫 번째 robot 그룹이 동기 루프의 primary 대기 대상
+- 동기 루프는 **모든 robot 그룹**의 command 를 기다린다 (#566 — 이전에는 첫 그룹만 기다려, 손 명령이 한 step 늦게 적용될 수 있었다). controller 가 명령하지 않는 그룹은 `wait_for_command: false` 로 빼야 한다 — 안 빼면 매 step 이 `sync_timeout_ms` 를 기다리고, 일부 그룹만 명령이 온 채 timeout 된 step 은 stderr 에 그룹 이름과 함께 경고된다 (초당 1 회). 첫 그룹은 기동 로그의 `[PRIMARY]` 라벨로만 남는다
 
 ### fake_response (LPF 에코백)
 
@@ -83,7 +83,10 @@ integrated_bringup 등      ← robot YAML + launch에서 mujoco_simulator_node�
 ```
 SimLoop → 모든 robot 그룹의 state 퍼블리시
         → 모든 robot 그룹의 sensor 퍼블리시 (sensor_topic 설정 시)
-        → primary 그룹의 command 대기 (sync_timeout_ms)
+        → 모든 robot 그룹의 command 대기 (sync_timeout_ms — 넘기면 받은 것만 적용하고 step)
+        │     reset 요청은 이 대기를 끊지 않는다 — 이번 step 의 명령이 다 온 뒤 reset 하므로
+        │     pre-reset state 에 대한 명령이 reset 뒤로 새지 않는다. 대기 중 도착한 공 reset·
+        │     object refresh 는 적용한 뒤 받은 명령으로 그대로 step 한다 (#566)
         → 모든 robot 그룹의 command 적용 (ApplyCommand, 1회)
         → for sub in [0, n_substeps):
         │     PreparePhysicsStep() (actuator 모드/solver 파라미터/중력/외력)
@@ -110,7 +113,7 @@ SimLoop → 모든 robot 그룹의 state 퍼블리시
 - `StepOnce` (`>` 버튼)은 N substeps 전부 실행 = 1 제어 주기 진행
 - **Physics Load** = substep 루프 wall time / 제어 주기 (뷰어 상단에 표시, >100%면 실시간 유지 불가)
 
-rtc_controller_manager는 `use_sim_time_sync: true` 설정 시 `condition_variable` 기반으로 state 도착 즉시 wakeup하여 ControlLoop를 실행합니다. 기존 `clock_nanosleep` 대비 round-trip 지연이 ~1ms → ~0.35ms로 감소합니다. 이 모드의 RT tick 은 `control_rate` 가 아니라 device state **도착**에 구동되므로 tick 수 기대값을 rate 로 계산하면 틀립니다 — device group 이 2개면 tick 은 ~2×`control_rate` 이고, wake eventfd 가 카운터라 tick 중 도착분이 합쳐져(coalescing) state 콜백 대비 tick 비율은 2 가 아니라 ≈1 입니다. 발행 레이트 자체는 별도 구독자로 실측해 대조합니다.
+rtc_controller_manager는 `use_sim_time_sync: true` 설정 시 state 도착 즉시 eventfd 로 wakeup하여 ControlLoop를 실행합니다. 기존 `clock_nanosleep` 대비 round-trip 지연이 ~1ms → ~0.35ms로 감소합니다. **tick 은 state 메시지가 아니라 sim step 마다 한 번**입니다 (#566): 이 sim 은 group 마다 joint state 를 따로 발행하므로, CM 은 `sim_sync_tick_devices` (기본: 모든 device group) 의 state 가 전부 새로 도착했을 때 한 번 tick 합니다. 이전에는 메시지마다 tick 해 group 이 2 개인 씬 (ur5e_p1b) 에서 838 Hz / 500 Hz step 으로 돌았고, `state.dt` 를 적분하는 법칙이 sim 보다 ~1.67× 빨리 흘렀습니다 — 그 시기의 sim 측정 (궤적 시간·서보 지연·포구 기준 오프셋 등) 은 이 오차를 품고 있습니다. 같은 이유로 sim 에서 CM 의 `t_relative_s` 는 `iteration × dt` 입니다. 반대 방향으로는 sim 이 모든 robot group 의 command 를 기다리므로 (위 루프), 한 tick = 한 step 이 양쪽에서 성립합니다.
 
 ### Constraint Solver 설정 (`solver_param.yaml`)
 
@@ -223,14 +226,14 @@ solver:
 
 | 토픽 | 타입 | 주기 | 설명 |
 |------|------|------|------|
-| `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 | robot 그룹: 위치/속도/토크 |
+| `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: 위치/속도/토크 |
 | `<group.state_topic>` (예: `/hand/joint_states`) | `sensor_msgs/JointState` | 100Hz | fake 그룹: LPF 필터링된 상태 |
-| `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
-| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. **부호는 link-on-environment** (아래 참조). 비접촉 시 0 발행 (stale 방지). |
+| `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
+| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 ÷ `state_publish_divisor` | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→reference frame transform + torque shift. **부호는 link-on-environment** (아래 참조). 비접촉 시 0 발행 (stale 방지). |
 | `<contact_wrench.topic_prefix>/<target>/contact_state` | `std_msgs/Bool` | 접촉 전이 시 | `contact_wrench.publish_state: true` 일 때만. edge-triggered — 값이 바뀔 때만 발행 |
 | `<contact_wrench.topic_prefix>/<target>/contact_point` | `geometry_msgs/PointStamped` | 매 물리 스텝 | `contact_wrench.publish_debug: true` 일 때만. **world frame** (`frame_id: "world"`) 접촉점 — wrench 와 달리 손끝 프레임이 아니다. 아래 [디버그 lane](#publish_debug--접촉점접촉깊이-디버그-lane) 절 |
 | `<contact_wrench.topic_prefix>/<target>/contact_depth` | `std_msgs/Float64` | 매 물리 스텝 | 〃. MuJoCo 의 부호 있는 contact distance — **음수가 관통** |
-| `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
+| `<object_state.topic>` (예: `/sim/object_transforms`) | `tf2_msgs/TFMessage` | 매 물리 스텝 ÷ `object_state.publish_divisor` | 씬 전체 (그룹별 아님): free body 들의 이름·프레임·pose. 아래 [Object State](#object-state-object-이름프레임pose-발행) 절 참조 |
 | `<projectile_ball.publish.ground_truth_topic>` (예: `/sim/ball/ground_truth`) | `nav_msgs/Odometry` | `publish.sample_rate_hz` (sim 시간 기준) | 씬 전체: 발사된 공의 참값 pose·twist. twist 는 선속도·각속도 모두 **world 프레임** (Odometry 의 child frame 관례와 다르다). **park 중에는 발행하지 않는다**. stamp 는 발행 순간이 아니라 **발사 순간부터 sim 시간축을 wall 에 얹은 값** (간격이 sim 축과 같다 — 아래 [stamp](#stamp--sim-시간축을-wall-에-사상한-값) 항목). 아래 [Projectile Ball](#projectile-ball-발사-공) 절 |
 | `<projectile_ball.publish.camera_topic>` (예: `/sim/ball/camera_position`) | `geometry_msgs/PointStamped` | 〃 | 〃 위치에 축별 가우시안 노이즈 (`position_noise_stddev_m`) — 카메라 관측 모사 |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
@@ -373,7 +376,7 @@ mujoco_simulator_node
     ├── SimLoop 스레드 (jthread)
     │     └── SimLoop (동기식: state→wait→step→throttle)
     │         ├── 그룹별 cmd_mutex + cmd_pending (atomic) — 명령 전달
-    │         ├── sync_cv_ — primary 그룹 명령 대기
+    │         ├── sync_cv_ — 모든 robot 그룹 명령 대기
     │         ├── 그룹별 state_mutex — 최신 상태 스냅샷 보호
     │         ├── pert_mutex_ (try_lock 전용 — 퍼튜베이션/외부힘 보호)
     │         └── solver_stats_mutex_ — solver 통계 보호
@@ -507,9 +510,9 @@ mujoco_simulator:
 | `model_path` | string | `""` | MJCF 모델 경로 (필수). 빈 값이면 노드 configure 시 `runtime_error`. robot-specific bringup이 `package://<pkg>/path/to/scene.xml` 형태로 전달. |
 | `enable_viewer` | bool | `true` | GLFW 3D 뷰어 활성화 |
 | `viewer_refresh_rate` | double | `60.0` | 뷰어 목표 refresh rate (Hz) |
-| `sync_timeout_ms` | double | `50.0` | primary 그룹 command 대기 타임아웃 (ms) |
+| `sync_timeout_ms` | double | `50.0` | 모든 robot 그룹 command 대기 타임아웃 (ms). 넘기면 도착한 group 의 command 만 적용하고 step 한다 — 한 group 이 명령을 안 보내는 동안 sim 은 step 마다 이만큼 멈춘다 |
 | `max_rtf` | double | `0.0` | 최대 실시간 비율 (0.0 = 무제한) |
-| `control_rate` | double | `500.0` | 런치 파일에서 전달. physics_timestep 검증용 |
+| `control_rate` | double | `500.0` | 런치 파일에서 전달. lock-step 은 step 하나가 controller tick 하나이므로 `physics_timestep == 1/control_rate` 를 요구한다 (다르면 기동 FATAL — #566 이전에는 physics 가 더 빠른 쪽을 허용해 `dt` 적분이 sim 시간과 어긋났다) |
 | `physics_timestep` | double | `0.0` | 0.0이면 XML 값 사용. 양수면 XML과 불일치 시 경고. 제어 주기를 의미 |
 | `n_substeps` | int | `1` | 제어 주기당 물리 서브스텝 수. `substep_dt = physics_timestep / n_substeps`. 1이면 기존 동작 |
 | `use_yaml_servo_gains` | bool | `false` | `true`=YAML servo_kp/kd, `false`=XML gainprm/biasprm |
@@ -542,6 +545,8 @@ mujoco_simulator:
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
 | `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
 | `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
+| `wait_for_command` | bool | 기본 `true`. lock-step 이 이 그룹의 command 를 기다리는가. controller 가 명령하지 않는 그룹 (controller manager 가 소유하지 않는 device, 일부 그룹만 구동하는 controller) 은 `false` — 명령이 오면 여전히 적용한다 (#566) |
+| `state_publish_divisor` | int | 기본 `1`. 이 그룹의 joint state · sensor · contact wrench 를 **N step 에 한 번** (step % N == 0) 발행한다 — 물리와 명령 수신은 매 step 이고 **발행만** 솎는다 (실기에서 control rate 보다 느리게 갱신되는 device, 예: 500 Hz 팔 아래 100 Hz 손 = 5). rate 는 `control_rate / N` 만 표현된다. **N > 1 인 그룹은 CM 의 `sim_sync_tick_devices` 에서 빼야 한다** — 넣으면 tick 이 그 그룹을 기다리느라 N−1 step 을 멈춘다 (#566). ≥ 1, fake 그룹은 1 만 (그 외 Initialize 실패 — fake 그룹은 step 이 아니라 자기 100 Hz wall timer 로 발행한다. 같은 이유로 **fake 그룹은 CM 의 `sim_sync_tick_devices` 에서도 빼야 한다**) |
 
 ### 초기 자세 (`initial_qpos`)
 
@@ -766,6 +771,7 @@ object_state:
   topic: "/sim/object_transforms"   # 상대 이름이면 노드 네임스페이스 아래로 해석
   reference_body: ""                # "" = MuJoCo world
   frame_id: ""                      # "" = reference_body 이름 (world 면 "world")
+  publish_divisor: 1                # N step 에 한 번 발행 (물리는 매 step) — rate = control_rate / N (#566)
 ```
 
 `frame_id` override 는 같은 프레임을 MJCF body 이름과 URDF 링크 이름이 다르게 부를 때만 씁니다.
