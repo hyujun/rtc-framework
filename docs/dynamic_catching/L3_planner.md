@@ -54,6 +54,8 @@ $$\text{§4.4 불확실성}\to\text{§4.2 IK}\to\text{§4.2 manipulability (D-18
 
 앞 단계에서 탈락하면 뒤 단계는 계산하지 않고 탈락 사유를 기록한다. 통과한 후보 중 §4.10 규칙으로 하나를 고르고, **§4.7 히스테리시스**로 현재 plan과 비교한다. 후보가 하나도 남지 않으면 plan 없음(포기)이며, 사유 코드를 함께 기록한다 (S6.2).
 
+**런타임 판정/순위 분리 `[확정 2026-09-23, 결정 C·D — D-27]`.** 위 순서는 오프라인 지도의 **엄격한** 필터 순서다. 런타임 계획기 (`PlannerSearch`, S6-B) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) · `planner.workspace.catch_box` 안의 $p_c$ 와 $p_{stop}$ — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가, 어디서 멈추는가의 문제). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) (+ rollout, S6-C) — 는 제거하지 않고 실패마다 `planner.score.penalty` 를 점수에 더한다. 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트 (결정 E), 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·작업공간·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (예산은 IK 전에 확인하므로 초과 폭은 IK 한 번 이하). 도달시간·γ 창·정지점은 지도와 **같은 함수** (`JudgeRankGates`, rank_gates.hpp) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태).
+
 **탐색 방식 `[확정 A-4]`.** [R1]은 $(q_c,t_c)$를 동시에 푸는 NLP를 썼다. 본 구현은 1차원 시간 탐색 + IK로 시작하되, NLP 전환을 염두에 둔 경계를 유지한다 (plan §8, S6.6).
 
 - 계획기 코어는 "입력 스냅샷(궤적 + 공분산 + 로봇 상태) → `PlanSnapshot`" **단일 진입 함수**다. 스레드(§5.3), 입출력 SeqLock, RT 쪽 소비(L4·L7), 게이트 앞단(불확실성·도달시간 사전 필터)은 탐색 전략과 독립이다
@@ -429,6 +431,9 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.enabled` | bool | – | false | – | 계획기 스레드를 띄운다 (S6-A). `diagnostic.oracle_plan.enabled` 와 동시 true 면 park — `plan_box_` 의 writer 는 하나다 |
 | `planner.wake_timeout_s` | double | s | 0.05 | 0.005–0.5 | 새 궤적이 없어도 깨어나는 상한 (결정 H). `PeriodicRtThread` 가 양수 주기를 요구하므로 이 값이 그 주기다 |
 | `planner.budget_s` | double | s | **0.020** | 0.001–0.05 | 한 사이클 계산 예산. 2026-09-23 **R-2**: 후보당 IK 가 개발 PC 6R p50 1.8 ms · 7R 2.2 ms 라 0.010 으로는 후보 5 개도 못 본다 → 0.020 + 사전 필터 (IK 후보 ≤ 8). vision 주기 0.05 s 안 |
+| `planner.sub_model` | string | – | (결정값) | 로봇 config `urdf.sub_models` 의 이름 | 계획기 모델 (R-3): arm root → catch frame 부모. 출하 `ur5e_catch`·`iiwa7_catch`. 오프라인 지도도 같은 항목을 이름으로 쓴다 (G3-I). 비었으면 park |
+| `planner.max_ik` | int | – | 8 | 1–40 | 한 cycle 의 IK 후보 수 (사전 점수 상위, R-2). IK 한 번이 dev PC 에서 2–3 ms (6R) |
+| `planner.provisional` | bool | – | true | – | 발명 키 (`reference.provisional` 과 같은 모양): 블록 전체가 provisional — sim 경고, 실기 park |
 | `planner.wait_pose` | double[] | rad | provisional | 관절 한계 안, 길이 = arm dof | IK seed 이자 대기 자세 (결정 L, arm 관절 순서). p1b `[0.212, −1.376, 1.107, −1.978, −3.296, 0.121]` · leap `[0, 1.0, 0, −1.2, 0, 1.2, 0]` (S3.5a/b 지도의 대기 자세). homing 은 S7.2 |
 | `planner.slice.dt` | double | s | **0.05** | 0.005–0.05 | vision 샘플 간격의 정수배. **S3.6 이 `prediction.dt_expected` 를 0.05 s 로 정했다** (2026-09-22, provisional — L2 §6). S6 착수 시 (2026-09-23) vision 간격 그대로로 정함 — 후보는 vision 격자 그대로라 공분산 시각 보간이 필요 없다 |
 | `planner.slice.t_lead_min` | double | s | = `planner.freeze.T_freeze` | >0 | $T_{freeze}$ 이상 (2026-09-23: 같은 값으로 정함) |
@@ -455,8 +460,8 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.catchability.definition` | string | – | `"arm_5row"` | `arm_5row` \| `arm_6row` | §4.2 게이트에 쓸 정의. w₅·w₆ 는 정의와 무관하게 둘 다 기록 |
 | `planner.time.margin` | double | s | 0.03 | 0–0.2 | §4.3 |
 | `planner.unc.kappa_sigma` | double | – | 0.3 | 0.05–1 | §4.4 |
-| `planner.hand.d_eff` | double | m | LEAP **0.1047** / P1b **0.2815** | >0 | **시각 발동 fly-in 허용 상대속도 1.0 m/s × $T_{close,tot}$** (2026-09-22 확정 — §4.5, L6 §4.5, plan §7.3). 포켓 깊이 (0.080 / 0.095 m, S4.5) 가 아니다. provisional. **소비자 없음** — 파서는 이 키를 읽지 않는다 (S6 의 γ 창이 첫 소비자) |
-| `planner.hand.r_cap` | double | m | LEAP **0.031** / P1b **0.024** | >0 | S4.5 실측 (L6 §4.5), provisional. 측면 허용량이며 공 중심 좌표계라 공 반지름이 이미 포함돼 있다 |
+| `planner.hand.d_eff` | double | m | LEAP **0.1047** / P1b **0.2815** | >0 | **시각 발동 fly-in 허용 상대속도 1.0 m/s × $T_{close,tot}$** (2026-09-22 확정 — §4.5, L6 §4.5, plan §7.3). 포켓 깊이 (0.080 / 0.095 m, S4.5) 가 아니다. provisional. **S6-B 가 첫 소비자** (`ParsePlannerParams`, γ 창) — 결정값이라 비었거나 TBD 면 park |
+| `planner.hand.r_cap` | double | m | LEAP **0.031** / P1b **0.024** | >0 | S4.5 실측 (L6 §4.5), provisional. 측면 허용량이며 공 중심 좌표계라 공 반지름이 이미 포함돼 있다. S6-B 소비 (불확실성·오차 예산), 결정값 |
 | `planner.gamma.grid` | double[] | – | [0.0, 0.1, …, 0.6] | 0–1 | §4.8 |
 | `planner.gamma.window_grid` | double[] | s | [0.3, 0.45, 0.6] | >0 | §4.8 |
 | `planner.gamma.eta_a`, `eta_v` | double | – | 0.8, 0.9 | (0, 1] | 여유율. `eta_v` 는 D-9 의 $\eta_v$ — `gammaWindow` 와 rollout 수락이 같은 값을 쓴다 (§4.5, §4.8) |
@@ -472,7 +477,8 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.gamma.derate_step` | – | – | – | – | v1 범위 밖 (D-8) — γ derate 재도입 시 단일 키로 다시 정한다 |
 | `planner.freeze.T_freeze` | double | s | p1b **0.36** · leap **0.19** (provisional) | ≥ §4.11 하한 | §4.11 하한식 (결정 G, 2026-09-23) |
 | `planner.score.w_sigma`, `w_t`, `w_q`, `w_late`, `w_gamma` | double | – | 1, 1, 0.1, 0, 5 | ≥0 | §4.10 튜닝. `w_gamma`를 크게 잡으면 사전식 선택과 같아진다 |
-| `planner.workspace.catch_box` | box | m | sim: S3.5b 외접 상자 + 0.1 m / 실기 provisional | – | TBD-BALL-02. 모양 (결정 I, 2026-09-23): base 원점 기준 축정렬 상자 `{min: [x,y,z], max: [x,y,z]}`. 판정 게이트 — $p_c$ 와 $p_{stop}$ 이 모두 안에 있어야 한다 |
+| `planner.score.penalty` | double | – | 10 | ≥0 | 발명 키 (결정 D, 2026-09-23): 실패한 **순위** 게이트 하나당 점수에 더한다. 연속 항을 압도해야 한다 (§4.1 런타임 판정/순위 분리) |
+| `planner.workspace.catch_box` | box | m | p1b `[0.19, −0.30, 0.21]`–`[1.04, 0.31, 0.96]` · leap `[−0.96, −0.30, 0.00]`–`[1.05, 0.30, 1.10]` (둘 다 provisional) | min ≤ max | TBD-BALL-02. 모양 (결정 I, 2026-09-23): 모델 world 축정렬 상자 `{min: [x,y,z], max: [x,y,z]}`. 판정 게이트 — $p_c$ 와 $p_{stop}$ 이 모두 안에 있어야 한다. p1b 값은 S3.5b 세밀 격자 gate-open 967 후보의 $p_c$·$p_{stop}$(γ 창 양 끝) 외접 + 0.1 m (2026-09-23 재계산). leap 은 gate 지도가 비어 kinematic 후보 $p_c$ 외접 + 0.1 m (x, z), 측방은 p1b 의 ±0.30 m (그 지도가 방위 하나만 표본) |
 
 ## 7. 단위 기술 구현 순서
 
