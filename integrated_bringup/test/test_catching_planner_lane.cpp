@@ -317,7 +317,11 @@ class CatchingPlanLaneTest : public ::testing::Test {
       // mirrors the shipped robot config, `ur5e_catch` included (R-3).
       YAML::Node pl = yaml["catching"]["planner"];
       pl["sub_model"] = "ur5e_catch";
-      pl["wait_pose"] = std::vector<double>{0.212, -1.376, 1.107, -1.978, -3.296, 0.121};
+      // NOT the shipped wait pose: from S7 the supervisor HOMES to it, and
+      // this fixture holds the measured arm at kUr5eHome without a servo, so
+      // the homing could never arrive. TrackingYaml's wait pose is that home
+      // (the arm waits where it is), which is also the pose the reachable-
+      // ball cases below build their ball from.
       pl["freeze"]["T_freeze"] = 0.36;
       pl["hand"]["d_eff"] = 0.2815;
       pl["hand"]["r_cap"] = 0.024;

@@ -101,8 +101,13 @@ class CatchingTrackingTest : public ::testing::Test {
   /// `tweak` edits the parsed YAML before configure, so a case can vary ONE
   /// key without restating the profile — and so the thing it varies is visible
   /// at the call site rather than buried in a second copy of the config.
+  ///
+  /// `t_c_offset_s` defaults to 5 s. These cases are about the APPROACH law,
+  /// and from S7 the catch instant ENDS the approach — COMMITTED at t_c −
+  /// T_freeze, DECEL at t_c — so the default puts it beyond every run below.
+  /// (It was 1 s while nothing happened at t_c.)
   void BringUp(const Eigen::Vector3d& p_c, const Eigen::Vector3d& a_d, double gamma_f = 0.0,
-               double t_c_offset_s = 1.0, const std::function<void(YAML::Node&)>& tweak = nullptr,
+               double t_c_offset_s = 5.0, const std::function<void(YAML::Node&)>& tweak = nullptr,
                const std::function<void(std::map<std::string, rtc::DeviceNameConfig>&)>&
                    device_tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
@@ -323,7 +328,16 @@ class CatchingTorqueTest : public CatchingTrackingTest {
     }
     const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.45, -0.35, 0.30);
     const Eigen::Vector3d a_d = start_pose_.rotation().col(2);
-    BringUp(p_c, a_d, 0.0, 1.0, tweak);
+    // t_c 5 s out, like BringUp's default: 300 ticks of APPROACH (see there).
+    // And no REF_SATURATED abort: the far target saturates the reference for
+    // most of the run BY DESIGN — that is the load this case measures — and
+    // S7's streak rule (L7 §4.2) would end the approach it is measuring.
+    BringUp(p_c, a_d, 0.0, 5.0, [&tweak](YAML::Node& y) {
+      y["catching"]["supervisor"]["sat_ticks"] = 1000000;
+      if (tweak) {
+        tweak(y);
+      }
+    });
     if (::testing::Test::HasFatalFailure() || !model) {
       return 0.0;  // BringUp's ASSERT returned from BringUp only
     }
@@ -375,12 +389,24 @@ class CatchingTorqueTest : public CatchingTrackingTest {
 };
 
 TEST_F(CatchingTorqueTest, WithoutAnAccelerationConstraintTheFarTargetBreaksTheBound) {
-  // The premise of the next case: with no acceleration constraint at all (box
-  // form, no derived box) this run demands more than η·τ_max, so a green
-  // dynamic run is the rows' doing.
+  // The premise of the next case: with no BINDING acceleration constraint this
+  // run demands more than η·τ_max, so a green dynamic run is the rows' doing.
+  //
+  // "No binding constraint" is the kinematic form with bounds no run can
+  // reach, not a missing derived box: from S7 the supervisor's joint-space
+  // stop and homing ramp with that box, so a profile without it cannot run a
+  // trial and is parked (SupervisorValueMissing) — and the kinematic form's
+  // task rows replace the per-joint box in the solve, which is the absence
+  // this premise needs.
   int failures = 0;
   const double worst = WorstTorqueRatio(
-      [](YAML::Node& y) { y["catching"]["robot"]["arm"].remove("accel_limits_path"); }, failures);
+      [](YAML::Node& y) {
+        y["catching"]["joint_cmd"]["accel_constraint"] = "kinematic";
+        // The validator's ceilings, far above what this run asks for.
+        y["catching"]["joint_cmd"]["task_accel_max_linear"] = 500.0;
+        y["catching"]["joint_cmd"]["task_accel_max_angular"] = 500.0;
+      },
+      failures);
   // Measured 1.10 (deterministic: the servo is perfect and the clock only
   // moves the reference's time axis). The case needs "breaks it", not "by how
   // much"; 1.05 keeps it clear of the dynamic case's ≤ 1.001.
@@ -488,12 +514,31 @@ TEST_F(CatchingTrackingTest, AQpFailureStreakLatchesAFaultThatClearEstopDoesNotR
   ASSERT_NO_FATAL_FAILURE(BringUp(p_c, Eigen::Vector3d::UnitZ(), 0.0, 1.0, [](YAML::Node& yaml) {
     yaml["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
   }));
-  RunClosedLoop(4);
-  ASSERT_TRUE(ctrl_->IsPlanActive()) << "the oracle plan was never built";
-
   // Each failure costs a cycle — APPROACH, ABORT_SAFE, RETREAT, ARMED,
-  // TRACKING, a fresh plan — so three of them take a few dozen ticks.
-  RunClosedLoop(60);
+  // TRACKING, a fresh plan. From S7 each cycle also needs a NEW BALL: after a
+  // re-arm the supervisor refuses the track the last attempt was on (#537 S7
+  // Q15, R-TRACK), so the same prediction would park it in ARMED and the
+  // streak would never complete. The fixture throws a new ball (a new track
+  // generation) for every attempt, which is what a thrower retrying does.
+  bool planned = false;
+  std::uint64_t generation = 42;
+  std::uint64_t sequence = 1;
+  bool was_aborting = false;
+  for (int t = 0; t < 400 && !ctrl_->HasLatchedFault(); ++t) {
+    if (t % 15 == 0) {
+      PublishPrediction(sequence++, generation);
+    }
+    RunClosedLoop(1, /*publish=*/false);
+    planned = planned || ctrl_->IsPlanActive();
+    const bool aborting = ctrl_->GetMode() == rtc::catching::Mode::kAbortSafe;
+    if (aborting && !was_aborting) {
+      ++generation;  // the next attempt is at a new ball
+    }
+    was_aborting = aborting;
+  }
+  ASSERT_TRUE(planned) << "the oracle plan was never built";
+  // The latch is raised in ABORT_SAFE; the escalation edge is the next tick's.
+  RunClosedLoop(2, /*publish=*/false);
   EXPECT_TRUE(ctrl_->HasLatchedFault());
   EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kFault);
 
@@ -773,18 +818,21 @@ TEST_F(CatchingTrackingTest, AnAbortCompletesAndReArmsWithNoVisionLeft) {
     yaml["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
     yaml["catching"]["supervisor"]["n_qp"] = 1000;
   }));
-  RunClosedLoop(4);
-  ASSERT_TRUE(ctrl_->IsPlanActive());
   // Watch for the abort rather than asserting on one tick: with the arm
   // already at rest the stop completes immediately, so ABORT_SAFE can come and
   // go inside a couple of ticks. What this test needs to know is that it
   // HAPPENED — otherwise the assertions below would pass on a controller that
-  // never aborted at all.
+  // never aborted at all. Watched from the FIRST tick: the degenerate plan
+  // fails on the first law tick, which is the fourth tick of the bring-up,
+  // and a window that opened after it would miss the abort it is waiting for.
+  bool saw_plan = false;
   bool saw_abort = false;
-  for (int t = 0; t < 8 && !saw_abort; ++t) {
+  for (int t = 0; t < 12 && !saw_abort; ++t) {
     RunClosedLoop(1);
+    saw_plan = saw_plan || ctrl_->IsPlanActive();
     saw_abort = ctrl_->GetMode() == rtc::catching::Mode::kAbortSafe;
   }
+  ASSERT_TRUE(saw_plan);
   ASSERT_TRUE(saw_abort) << "precondition: the degenerate plan never aborted";
 
   // No more predictions: the lane goes stale (t_stale is 0.2 s here).
