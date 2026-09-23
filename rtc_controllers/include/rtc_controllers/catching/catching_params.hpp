@@ -253,14 +253,16 @@ struct CatchingParams {
   /// before it is BALL_STALE_LONG (A-6) [s], [0, 1].
   TbdDouble supervisor_stale_committed_max_s{TbdDouble::Resolved(0.10)};
   /// REF_SATURATED: this many consecutive saturated reference ticks (Q6).
-  /// 50 (0.1 s at 500 Hz). The 5 first proposed was too short: a reference
+  /// 60 (0.12 s at 500 Hz). The 5 first proposed was too short: a reference
   /// that starts an approach from rest saturates while it catches up with the
   /// plan. The unit fixtures measured runs of 10 ticks (a 14 cm approach) and
   /// 76 (the 60 cm G5-B target, which runs with the check off), and 5 cut both.
   /// The sim throws (260923_2336, 25 trials) had a longest normal streak of
-  /// 44 and a p99 of 42.5. 50 was chosen from those numbers on 2026-09-24 and
-  /// stays provisional until it is measured in sim.
-  int supervisor_sat_ticks{50};
+  /// 44 and a p99 of 42.5, so 50 was tried. The re-run at 50 (260924_0013)
+  /// fired once, in CLOSING on a ball that had already missed; the longest
+  /// streaks that did not fire were 40 and 33. 60 was chosen on 2026-09-24
+  /// for a margin above those. Provisional: S8 sets the final value.
+  int supervisor_sat_ticks{60};
   /// Joint-space homing / return (Q3): speed cap [rad/s] > 0, fraction of
   /// the derived q̈_max (0, 1], and the arrival velocity bound [rad/s] > 0.
   double supervisor_homing_v_max{0.5};
