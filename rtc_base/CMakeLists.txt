@@ -142,6 +142,13 @@ if(BUILD_TESTING)
     target_include_directories(test_mpc_thread_config PRIVATE include)
   endif()
 
+  # ApplyThreadConfig names the thread before anything that can fail, so a
+  # thread refused RT scheduling (EPERM) is still findable by name.
+  ament_add_gtest(test_apply_thread_config test/test_apply_thread_config.cpp)
+  if(TARGET test_apply_thread_config)
+    target_include_directories(test_apply_thread_config PRIVATE include)
+  endif()
+
   # C++ value oracle for the generated tier table (issue #153 M1). Pins every
   # role's slot/policy/priority/nice on every core count in 1..17 and 24, which
   # test_mpc_thread_config.cpp does not: that file pins relations plus the MPC
