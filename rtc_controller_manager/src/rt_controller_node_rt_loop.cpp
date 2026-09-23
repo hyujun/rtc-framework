@@ -945,29 +945,77 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
     return WaitResult::kAbort;
   }
 
-  const int timeout_ms = static_cast<int>(owner_->sim_sync_timeout_sec_ * 1000.0);
+  // One tick per simulator STEP, not per state message (issue #566). The
+  // simulator publishes every device group's joint state as a separate
+  // message, so a wake is only a prompt to look: proceed once every slot in
+  // the tick mask has a sequence the last tick did not consume, otherwise
+  // poll again for what is left of the timeout. The non-semaphore read still
+  // collapses a burst into one look, and the sequences — not the eventfd
+  // count — decide, so neither an early nor a late partner message can split
+  // a step into two ticks.
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                            std::chrono::duration<double>(owner_->sim_sync_timeout_sec_));
+  const std::uint32_t mask = owner_->sim_tick_slot_mask_;
 
-  struct pollfd pfd {};
+  for (;;) {
+    const auto left_ms =
+        std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now())
+            .count();
+    if (left_ms <= 0) {
+      return WaitResult::kAbort;  // the step never completed — same as no state at all
+    }
 
-  pfd.fd = sim_fd;
-  pfd.events = POLLIN;
-  const int rc = poll(&pfd, 1, timeout_ms);
-  if (rc <= 0) {
-    // 0 = the simulator went quiet for the whole timeout; <0 = poll error
-    // (EINTR included — shutdown takes the same abort path as before).
-    return WaitResult::kAbort;
+    struct pollfd pfd {};
+
+    pfd.fd = sim_fd;
+    pfd.events = POLLIN;
+    const int rc = poll(&pfd, 1, static_cast<int>(left_ms));
+    if (rc <= 0) {
+      // 0 = the simulator went quiet for the whole timeout; <0 = poll error
+      // (EINTR included — shutdown takes the same abort path as before).
+      return WaitResult::kAbort;
+    }
+
+    eventfd_t val{};
+    static_cast<void>(eventfd_read(sim_fd, &val));
+
+    if (!rclcpp::ok()) {
+      return WaitResult::kAbort;
+    }
+    if (stop_nudged_.load(std::memory_order_acquire)) {
+      // RequestStop() has already requested the jthread stop; the base loop
+      // observes it right after this returns and exits without a tick.
+      return WaitResult::kProceed;
+    }
+
+    std::array<std::uint32_t, rtc::kMaxDevices> seq{};
+    bool complete = true;
+    for (std::size_t slot = 0; slot < seq.size(); ++slot) {
+      if (((mask >> slot) & 1U) == 0U) {
+        continue;
+      }
+      seq[slot] = owner_->sim_state_seq_[slot].load(std::memory_order_acquire);
+      if (seq[slot] == sim_seen_seq_[slot]) {
+        complete = false;
+      }
+    }
+    if (complete) {
+      for (std::size_t slot = 0; slot < seq.size(); ++slot) {
+        if (((mask >> slot) & 1U) != 0U) {
+          sim_seen_seq_[slot] = seq[slot];
+        }
+      }
+      return WaitResult::kProceed;
+    }
   }
+}
 
-  // Non-semaphore read drains the counter to zero, so a burst that arrived
-  // while the previous tick was computing collapses into this single wake
-  // instead of queueing up spare ticks.
-  eventfd_t val{};
-  static_cast<void>(eventfd_read(sim_fd, &val));
-
-  if (!rclcpp::ok()) {
-    return WaitResult::kAbort;
+void RtControllerNode::ControlLoopThread::ArmSimSync() noexcept {
+  for (std::size_t slot = 0; slot < sim_seen_seq_.size(); ++slot) {
+    sim_seen_seq_[slot] = owner_->sim_state_seq_[slot].load(std::memory_order_acquire);
   }
-  return WaitResult::kProceed;
+  stop_nudged_.store(false, std::memory_order_release);
 }
 
 void RtControllerNode::ControlLoopThread::OnOverrun(std::uint64_t consecutive) noexcept {
@@ -991,6 +1039,9 @@ void RtControllerNode::ControlLoopThread::OnLoopAborted() noexcept {
 void RtControllerNode::ControlLoopThread::OnRequestStop() noexcept {
   // Sim mode wait blocks on sim_wake_eventfd_; nudge it so RequestStop / Join
   // observe the stop_token without waiting out sim_sync_timeout_sec_.
+  // The flag first: the barrier re-polls on a wake that did not complete a
+  // step, and it must tell this wake from a state arrival (issue #566).
+  stop_nudged_.store(true, std::memory_order_release);
   const int sim_fd = owner_->sim_wake_eventfd_.load(std::memory_order_acquire);
   if (sim_fd >= 0) {
     static_cast<void>(eventfd_write(sim_fd, 1));
@@ -1012,12 +1063,13 @@ bool RtControllerNode::ControlLoopThread::JitterMeaningful() const noexcept {
 void RtControllerNode::StartRtLoop(const urtc::ThreadConfig& rt_cfg) {
   rt_loop_.SetTimingProducer<urtc::kCmTimingBufferCapacity>(&cm_timing_producer_);
   if (use_sim_time_sync_) {
-    RCLCPP_INFO(get_logger(), "RT loop: simulation sync mode (CV wakeup, timeout=%.1f s)",
+    RCLCPP_INFO(get_logger(), "RT loop: simulation sync mode (one tick per step, timeout=%.1f s)",
                 sim_sync_timeout_sec_);
   }
   urtc::PeriodicRtThreadConfig pcfg{};
   pcfg.thread_config = rt_cfg;
   pcfg.frequency_hz = control_rate_;
+  rt_loop_.ArmSimSync();
   rt_loop_.Start(pcfg);
 }
 

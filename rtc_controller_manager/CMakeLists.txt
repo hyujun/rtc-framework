@@ -363,6 +363,21 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
 
+  # Separate binary, same reason as test_device_readiness_gate: the two-group
+  # controller that the sim-sync tick barrier needs (issue #566).
+  ament_add_gtest(test_sim_sync_barrier
+    test/test_sim_sync_barrier.cpp
+    ENV ROS_DOMAIN_ID=44)
+  if(TARGET test_sim_sync_barrier)
+    target_include_directories(test_sim_sync_barrier PRIVATE include test)
+    ament_target_dependencies(test_sim_sync_barrier
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_sim_sync_barrier
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
   # Separate binary: CM instantiates every registered controller, so a
   # torque-mode controller here would be command-type-checked against the
   # position-only stub backend in every node of the pipeline TU.

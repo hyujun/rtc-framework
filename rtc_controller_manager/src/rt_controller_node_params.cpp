@@ -274,6 +274,9 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   safe_declare("initial_controller", rclcpp::ParameterValue(std::string("")));
   safe_declare("use_sim_time_sync", rclcpp::ParameterValue(false));
   safe_declare("sim_sync_timeout_sec", rclcpp::ParameterValue(5.0));
+  // Device groups whose state completes a simulator step (issue #566). Empty
+  // = every device group. Only consulted when use_sim_time_sync is true.
+  safe_declare("sim_sync_tick_devices", rclcpp::ParameterValue(std::vector<std::string>{}));
 
   // Robot config variant directory.  Path is composed as
   // <pkg_share>/config/<config_variant>/controllers/<config_key>.yaml.
@@ -965,6 +968,45 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                   group_name.c_str(), slot,
                   state_topic.empty() ? "<no backend state topic>" : state_topic.c_str(),
                   static_cast<int>(timeout_ms));
+    }
+  }
+
+  // ── Sim-sync tick barrier (issue #566) ───────────────────────────────────
+  //
+  // In lock-step the simulator publishes one joint state per device group per
+  // step, and the loop used to tick on each of them. A tick now waits for
+  // every slot in this mask. The default is every device group, which is
+  // right while the simulator publishes all of them every step; a group it
+  // publishes at a decimated rate must be left out, or the barrier waits for
+  // it for (divisor − 1) steps out of every divisor. An unknown name refuses
+  // to configure: a typo that drops the arm from the mask would bring back
+  // the very over-ticking this exists to stop, silently.
+  {
+    const auto tick_names = get_parameter("sim_sync_tick_devices").as_string_array();
+    sim_tick_slot_mask_ = 0;
+    if (tick_names.empty()) {
+      for (const auto& [group_name, slot] : group_slot_map_) {
+        sim_tick_slot_mask_ |= 1U << static_cast<unsigned>(slot);
+      }
+    } else {
+      for (const auto& name : tick_names) {
+        const auto it = group_slot_map_.find(name);
+        if (it == group_slot_map_.end()) {
+          RCLCPP_ERROR(get_logger(),
+                       "sim_sync_tick_devices['%s'] names no configured device group — refusing "
+                       "to configure",
+                       name.c_str());
+          return false;
+        }
+        sim_tick_slot_mask_ |= 1U << static_cast<unsigned>(it->second);
+      }
+    }
+    if (use_sim_time_sync_) {
+      for (const auto& [group_name, slot] : group_slot_map_) {
+        const bool ticks = (sim_tick_slot_mask_ >> static_cast<unsigned>(slot)) & 1U;
+        RCLCPP_INFO(get_logger(), "Sim sync: '%s' (slot %d) %s", group_name.c_str(), slot,
+                    ticks ? "completes a step (tick barrier)" : "latest-value (not in barrier)");
+      }
     }
   }
 

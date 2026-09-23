@@ -176,6 +176,10 @@ class ControllerLifecycleTestAccess {
 
   static bool IsEstopped(const RtControllerNode& node) { return node.IsGlobalEstopped(); }
 
+  // Completed control ticks (gate-idle ticks excluded) — the sim-sync
+  // barrier tests count steps with it (issue #566).
+  static std::uint64_t RtTickCount(const RtControllerNode& node) { return node.RtTickCount(); }
+
   static std::string GetEstopReason(const RtControllerNode& node) {
     return std::string(node.estop_reason_.data());
   }

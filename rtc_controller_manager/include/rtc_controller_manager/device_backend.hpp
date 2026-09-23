@@ -247,9 +247,13 @@ class DeviceBackend {
   /// override to stash the layout before Configure().
   virtual void SetSensorLayout(const DeviceSensorLayout& /*layout*/) noexcept {}
 
-  /// Callback fired by the backend on every fresh state arrival (joint /
-  /// motor / sensor lanes — all routed through the same hook). Slot identity
-  /// is supplied via lambda capture by the caller.
+  /// Callback fired by the backend on every fresh JOINT-state arrival. Every
+  /// shipped backend calls NotifyStateReady() from its joint lane only; motor,
+  /// sensor and wrench lanes are read latest-value and never fire it. In
+  /// sim-sync mode this is what completes a simulator step for the slot —
+  /// CM ticks once every slot in `sim_sync_tick_devices` has fired (issue
+  /// #566) — so a backend must fire it exactly once per joint state it
+  /// publishes. Slot identity is supplied via lambda capture by the caller.
   ///
   /// It runs on the callback group handed to Configure() — CM passes its
   /// `cb_group_rt_callback_` (SCHED_FIFO 70), so this is the RT boundary and
