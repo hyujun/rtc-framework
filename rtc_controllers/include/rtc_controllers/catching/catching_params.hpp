@@ -247,6 +247,26 @@ struct CatchingParams {
   TbdDouble supervisor_track_err_abort;  // rad, > 0 — L7 owns this key, L5 only reads it
   int supervisor_n_qp{0};                // consecutive QP failures before FAULT, >= 1
 
+  // supervisor: (L7 §6) — the S7.2 driver's keys. Defaults are the #537 S7
+  // decisions (2026-09-23, D-S7-2 / Q6 / Q8), all provisional until S8.
+  /// How long COMMITTED/CLOSING may run on a stale prediction past io.t_stale
+  /// before it is BALL_STALE_LONG (A-6) [s], [0, 1].
+  TbdDouble supervisor_stale_committed_max_s{TbdDouble::Resolved(0.10)};
+  /// REF_SATURATED: this many consecutive saturated reference ticks (Q6).
+  /// 100 (0.2 s at 500 Hz), not the 5 first proposed: a reference that starts
+  /// an approach from rest saturates while it catches up with the plan, and
+  /// the unit fixtures measured runs of 10 ticks (a 14 cm approach) and 76 (the
+  /// 60 cm G5-B target) on approaches that go on to converge — 5 cut every
+  /// one of them. Provisional until the sim streak distribution (D-S7-4).
+  int supervisor_sat_ticks{100};
+  /// Joint-space homing / return (Q3): speed cap [rad/s] > 0, fraction of
+  /// the derived q̈_max (0, 1], and the arrival velocity bound [rad/s] > 0.
+  double supervisor_homing_v_max{0.5};
+  double supervisor_homing_eta_a{0.5};
+  double supervisor_homing_qd_tol{0.02};
+  /// "At the wait pose": max |q − wait_pose| [rad] > 0 (Q13's skip test too).
+  double supervisor_ready_pose_tol{0.02};
+
   // core / sim: (L0 §6)
   BallSpec ball;
   TbdDouble sim_ball_drag_k;  // 1/m, [0, 0.2] — sim-fixture-only (active iff !real_arm_config)

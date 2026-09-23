@@ -367,6 +367,20 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.supervisor_track_err_abort =
       ReadTbdDouble(supervisor, "track_err_abort", out.supervisor_track_err_abort);
   out.supervisor_n_qp = ReadPositiveCount(supervisor, "n_qp", out.supervisor_n_qp);
+  out.supervisor_stale_committed_max_s =
+      ReadTbdDouble(supervisor, "stale_committed_max_s", out.supervisor_stale_committed_max_s);
+  out.supervisor_sat_ticks = ReadPositiveCount(supervisor, "sat_ticks", out.supervisor_sat_ticks);
+  const YAML::Node homing = ReadSection(supervisor, "homing");
+  out.supervisor_homing_v_max = ReadOptional(homing, "v_max", out.supervisor_homing_v_max);
+  out.supervisor_homing_eta_a = ReadOptional(homing, "eta_a", out.supervisor_homing_eta_a);
+  out.supervisor_homing_qd_tol = ReadOptional(homing, "qd_tol", out.supervisor_homing_qd_tol);
+  const YAML::Node ready = ReadSection(supervisor, "ready");
+  if (ready["wait_pose"]) {
+    // L7 §6 once named the wait pose here as well as under `planner`. Two
+    // keys for one pose is how they end up different (#537 S7, C-10).
+    Reject("supervisor.ready.wait_pose was removed — the wait pose is planner.wait_pose");
+  }
+  out.supervisor_ready_pose_tol = ReadOptional(ready, "pose_tol", out.supervisor_ready_pose_tol);
 
   const YAML::Node core = ReadSection(node, "core");
   out.ball = ReadBallSpec(ReadSection(core, "ball"));
@@ -713,6 +727,22 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   if (params.supervisor_n_qp <= 0) {
     AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "supervisor.n_qp");
   }
+  // The S7.2 driver's keys (L7 §6).
+  if (CheckActiveTbd(report, params.supervisor_stale_committed_max_s,
+                     "supervisor.stale_committed_max_s", true)) {
+    CheckRange(report, "supervisor.stale_committed_max_s",
+               params.supervisor_stale_committed_max_s.value, 0.0, 1.0);
+  }
+  if (params.supervisor_sat_ticks <= 0) {
+    AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "supervisor.sat_ticks");
+  }
+  CheckPositive(report, "supervisor.homing.v_max", params.supervisor_homing_v_max);
+  if (!std::isfinite(params.supervisor_homing_eta_a) || !(params.supervisor_homing_eta_a > 0.0) ||
+      params.supervisor_homing_eta_a > 1.0) {
+    AddFailure(report, CatchingValidationReason::kRangeViolation, "supervisor.homing.eta_a");
+  }
+  CheckPositive(report, "supervisor.homing.qd_tol", params.supervisor_homing_qd_tol);
+  CheckPositive(report, "supervisor.ready.pose_tol", params.supervisor_ready_pose_tol);
 
   // robot.hand.* — active in every configuration.
   //

@@ -19,10 +19,12 @@ demo_catching_controller:
 
   # ── S4a diagnostic mode ────────────────────────────────────────────────────
   # Accept unshaped step position targets on the hand group's joint_goal, so
-  # S4.2 can identify T_close,e2e from the device CSV. False from S7.1 on: the
-  # hand sequencer owns the hand then, and an operator step would race it.
+  # S4.2 can identify T_close,e2e from the device CSV. False from S7.1: the
+  # hand sequencer owns the hand, and an operator step would race it. To
+  # re-measure T_close,e2e (rtc_tools hand_close_trials), turn this on for that
+  # run — the controller then runs WITHOUT the sequencer, never both.
   diagnostic:
-    hand_step: true
+    hand_step: false
 
     # ── S5.5 oracle plan (A-S5-8) ───────────────────────────────────────────
     # The stand-in for the planner: ONE fixed catch point, so the tracking

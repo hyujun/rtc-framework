@@ -837,7 +837,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 |---|---|
 | D-12 손 토크 (S7.3 게이트 입력) | sim G7-B3 는 설정·모델값 그대로 **3.0 N·m**, 실기는 **1.5 N·m** provisional 병기 — 운용 한계(nominal·continuous·peak·설정값 중 무엇을 쓸지)의 최종 확정은 **S10**. 그 전까지 토크 비교는 `NOT_EVALUATED` (L6 §4.2 실측 2 N·m 은 1.5 N·m 와 양립하지 않음을 이미 기록) |
 | homing 위치 | **관절공간** (per-joint 사다리꼴, QP/CLIK 비의존) — `retreat_reference.hpp` 는 코드에 없다. **무장 latch 아래에서만** 실행한다 (활성화는 무장이 아니다, P-1 (e)) — L4 §5.3·L7 §4.1 |
-| `REF_SATURATED` 판정식 | `ref.saturated` 가 연속 `supervisor.sat_ticks` tick (기본 **5**, provisional) 이면 승격 — sim 기준 15 + 변형 10 투척에서 `ref_saturated` 연속 길이 최대·p99 를 기록해 정상 시행에서 발화 0 인지 확인 후 확정한다 (D-S7-4) |
+| `REF_SATURATED` 판정식 | `ref.saturated` 가 연속 `supervisor.sat_ticks` tick (기본 **100**, provisional — 5 는 단위 fixture 의 정상 접근 포화 10·76 tick 을 잘라 올렸다) 이면 승격 — sim 기준 15 + 변형 10 투척에서 `ref_saturated` 연속 길이 최대·p99 를 기록해 정상 시행에서 발화 0 인지 확인 후 확정한다 (D-S7-4) |
 | hold 규칙 | `robot.hand.hold.mode: close_target \| measured_offset` + `hold.delta_rad` — 출하 기본은 `close_target` |
 | `supervisor.stale_committed_max_s` | 출하 **0.10 s** provisional. 조일 물리량(정지거리·공분산 성장 등)은 S8 에서 정해 조인다 |
 | ν̄ / `PRED_INCONSISTENT` | S7 에서도 **미구현** — 생산자가 없다 (A-S5-5). `Reason` 은 표에 남고 발화는 0 (명시 면제). S8 이월 |

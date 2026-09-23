@@ -85,12 +85,13 @@ namespace {
 /// `reference.*` and `robot.arm.*`, S6 adds `planner.*`, S7 the rest of
 /// `supervisor.*`.
 ///
-/// `robot.hand.T_close_e2e` is excluded BY NAME and stays excluded until S7.1:
-/// it is the number S4.2 produces with this controller, so gating on it would
-/// make the measurement its own precondition. The hand sequencer that derives
-/// `T_close_timeout` from it is its first consumer — and until that sequencer
-/// is bound, `T_close_timeout` (TBD exactly when T_close_e2e is, being derived
-/// from it) is excluded with it.
+/// `robot.hand.T_close_e2e` is excluded BY NAME: it is the number S4.2
+/// produces with this controller, so gating the CONFIGURE on it would make the
+/// measurement its own precondition. `T_close_timeout` (TBD exactly when
+/// T_close_e2e is, being derived from it) is excluded with it. Their consumer
+/// from S7.1 is the hand sequencer, and SupervisorValueMissing() parks a
+/// configuration whose law is wired but whose closure time is not decided —
+/// the step rig (`diagnostic.hand_step`) needs neither.
 [[nodiscard]] bool ConsumedByCatchingSkeleton(const char* key) noexcept {
   const std::string_view k{key};
   if (k == "control_rate") {
@@ -1040,6 +1041,24 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       return CallbackReturn::FAILURE;
     }
 
+    // The S7 supervisor's values (commit instant, wait pose, stop box, hand
+    // sequencer). A configuration whose law is wired but which cannot run a
+    // TRIAL is parked, exactly like a consumed TBD (A-S5-12): the robot comes
+    // up, this controller refuses to activate, and the log names the value.
+    SetupSupervisor();
+    if (clik_enabled_ && !trials_enabled_) {
+      const char* missing = SupervisorValueMissing();
+      sim_only_disabled_ = true;
+      park_reason_ = CatchingParkReason::kSupervisorUnset;
+      RCLCPP_ERROR(logger_,
+                   "DISABLED: the tracking law is wired but '%s' is unset or invalid — a trial "
+                   "cannot run without it (S7 supervisor). This controller will refuse to "
+                   "activate; the robot still comes up.",
+                   missing != nullptr ? missing : "<unknown>");
+      TearDownConfiguredResources();
+      return CallbackReturn::SUCCESS;
+    }
+
     DeclareProfileParameters();
     DeclareArmParameter();
 
@@ -1249,6 +1268,94 @@ const char* DemoCatchingController::PlannerDecisionMissing() const noexcept {
   return nullptr;
 }
 
+void DemoCatchingController::SetupSupervisor() {
+  // T_freeze is the SUPERVISOR's commit instant as well as the planner's
+  // replacement freeze (decision G), so it is resolved whether or not the
+  // planner runs — an oracle profile commits on it too.
+  plan_freeze_ns_ = std::isfinite(planner_params_.t_freeze)
+                        ? static_cast<std::int64_t>(std::llround(planner_params_.t_freeze * 1e9))
+                        : 0;
+  wait_pose_.fill(0.0);
+  for (int i = 0; i < planner_params_.wait_pose_n && i < kDemoCatchingMaxArmDof; ++i) {
+    wait_pose_[static_cast<std::size_t>(i)] =
+        planner_params_.wait_pose[static_cast<std::size_t>(i)];
+  }
+  pose_tol_ = params_.supervisor_ready_pose_tol;
+  homing_v_max_ = params_.supervisor_homing_v_max;
+  homing_eta_a_ = params_.supervisor_homing_eta_a;
+  homing_qd_tol_ = params_.supervisor_homing_qd_tol;
+  decel_a_dec_ = params_.supervisor_decel_a_dec.tbd ? 0.0 : params_.supervisor_decel_a_dec.value;
+  const auto to_ns = [](const rtc::catching::TbdDouble& v) -> std::int64_t {
+    return (v.tbd || !std::isfinite(v.value))
+               ? 0
+               : static_cast<std::int64_t>(std::llround(v.value * 1e9));
+  };
+  t_hold_ns_ = to_ns(params_.hand.T_hold);
+  t_close_e2e_ns_ = to_ns(params_.hand.T_close_e2e);
+  stale_committed_max_ns_ = to_ns(params_.supervisor_stale_committed_max_s);
+  sat_ticks_ = params_.supervisor_sat_ticks;
+  // The sequencer owns the hand unless the S4 step rig does (never both).
+  hand_seq_enabled_ = false;
+  if (!hand_step_enabled_ && params_.hand.dof == hand_dof_) {
+    hand_seq_enabled_ =
+        hand_seq_.Configure(rtc::catching::HandSequencerConfig::FromProfile(params_.hand));
+  }
+  trials_enabled_ = clik_enabled_ && SupervisorValueMissing() == nullptr;
+  if (trials_enabled_) {
+    RCLCPP_INFO(logger_,
+                "supervisor: trials enabled — commit at t_c − %.3f s, wait pose (%d joints, tol "
+                "%.3f rad), hand %s, T_hold %.3f s",
+                static_cast<double>(plan_freeze_ns_) * 1e-9, planner_params_.wait_pose_n, pose_tol_,
+                hand_seq_enabled_ ? "sequenced" : "on the step rig",
+                static_cast<double>(t_hold_ns_) * 1e-9);
+  }
+}
+
+const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
+  if (!clik_enabled_) {
+    return nullptr;  // no trial can start: nothing here is consumed
+  }
+  if (!std::isfinite(planner_params_.t_freeze) || plan_freeze_ns_ <= 0) {
+    return "planner.freeze.T_freeze";
+  }
+  rtc::catching::CatchingValidationReport freeze{};
+  rtc::catching::CheckFreezeCoversClose(freeze, params_, planner_params_.t_freeze,
+                                        1.0 / GetDefaultDt());
+  if (freeze.failure_count > 0) {
+    return "planner.freeze.T_freeze (shorter than T_close_e2e + T_arm + one tick)";
+  }
+  if (planner_params_.wait_pose_n != arm_dof_) {
+    return "planner.wait_pose";
+  }
+  const auto n = static_cast<std::size_t>(arm_dof_);
+  if (arm_qdd_max_.size() < n) {
+    return "robot.arm.accel_limits_path (the derived acceleration box the stop and homing ramp "
+           "with)";
+  }
+  if (arm_q_min_margined_.size() < n || arm_q_max_margined_.size() < n) {
+    return "the arm's joint_limits (the position box the stop and homing stay inside)";
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (wait_pose_[i] < arm_q_min_margined_[i] || wait_pose_[i] > arm_q_max_margined_[i]) {
+      return "planner.wait_pose (outside the margined position box)";
+    }
+  }
+  if (!(decel_a_dec_ > 0.0)) {
+    return "supervisor.decel.a_dec";
+  }
+  if (t_hold_ns_ <= 0 && params_.hand.T_hold.tbd) {
+    return "robot.hand.T_hold";
+  }
+  if (!hand_step_enabled_ && !hand_seq_enabled_) {
+    return "robot.hand (a profile the sequencer can run: poses, eta_close, T_close_e2e, "
+           "T_close_timeout)";
+  }
+  if (!hand_step_enabled_ && params_.hand.T_close_e2e.tbd) {
+    return "robot.hand.T_close_e2e";
+  }
+  return nullptr;
+}
+
 bool DemoCatchingController::SetupPlanner() {
   // No thread may be running while the cycle is re-bound: Pause does not stop
   // a wake in flight, and Bind/Configure write what Run reads. on_cleanup has
@@ -1291,9 +1398,6 @@ bool DemoCatchingController::SetupPlanner() {
   // ── The search's model (S6-B, R-3) ────────────────────────────────────────
   planner_cycle_.ClearSearch();
   planner_handle_.reset();
-  plan_freeze_ns_ = std::isfinite(planner_params_.t_freeze)
-                        ? static_cast<std::int64_t>(std::llround(planner_params_.t_freeze * 1e9))
-                        : 0;
   if (!builder_) {
     RCLCPP_WARN(logger_,
                 "planner: no system model — the thread runs, but its search is the stub "

@@ -12,8 +12,10 @@
 demo_catching_controller:
   command_type: "position"
 
+  # S4a step rig — off from S7.1 (the sequencer owns the hand); see the
+  # ur5e_p1b copy for how to re-measure T_close,e2e with it.
   diagnostic:
-    hand_step: true
+    hand_step: false
 
   catching:
     # Same sim ball as the p1b profile, deliberately: S3.1a compares the two

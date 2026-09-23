@@ -36,6 +36,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -565,6 +566,52 @@ TEST(CatchingParams, HandPreshapeTimeKeyIsRefusedByName) {
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["T_pre"] = 0.3;
   ExpectRejectMentioning(root, "robot.hand.T_pre");
+}
+
+// ── Supervisor driver keys (S7.2, L7 §6) ────────────────────────────────────
+
+TEST(CatchingParams, SupervisorDriverKeysTakeTheDecidedDefaults) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_DOUBLE_EQ(p.supervisor_stale_committed_max_s.value, 0.10);
+  EXPECT_EQ(p.supervisor_sat_ticks, 100);
+  EXPECT_DOUBLE_EQ(p.supervisor_homing_v_max, 0.5);
+  EXPECT_DOUBLE_EQ(p.supervisor_homing_eta_a, 0.5);
+  EXPECT_DOUBLE_EQ(p.supervisor_homing_qd_tol, 0.02);
+  EXPECT_DOUBLE_EQ(p.supervisor_ready_pose_tol, 0.02);
+}
+
+TEST(CatchingParams, SupervisorDriverKeysOutsideTheirRangeFail) {
+  const auto fails = [](const char* section, const char* key, double value,
+                        const char* report_key) {
+    YAML::Node root = ValidRoot();
+    if (section[0] == '\0') {
+      root["supervisor"][key] = value;
+    } else {
+      root["supervisor"][section][key] = value;
+    }
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable) << report_key;
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, report_key))
+        << report_key;
+  };
+  fails("", "stale_committed_max_s", 1.5, "supervisor.stale_committed_max_s");
+  fails("homing", "v_max", 0.0, "supervisor.homing.v_max");
+  fails("homing", "eta_a", 1.2, "supervisor.homing.eta_a");
+  fails("homing", "qd_tol", -0.1, "supervisor.homing.qd_tol");
+  fails("ready", "pose_tol", 0.0, "supervisor.ready.pose_tol");
+}
+
+TEST(CatchingParams, SupervisorSatTicksMustBeAPositiveCount) {
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["sat_ticks"] = 2.5;
+  ExpectRejectMentioning(root, "sat_ticks");
+}
+
+TEST(CatchingParams, TheDuplicateWaitPoseKeyIsRefusedByName) {
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["ready"]["wait_pose"] = std::vector<double>{0.0, 0.0};
+  ExpectRejectMentioning(root, "planner.wait_pose");
 }
 
 // ── Freeze window vs. closure (L3 §4.11, #537 S7) ───────────────────────────

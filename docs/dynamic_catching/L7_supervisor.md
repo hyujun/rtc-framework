@@ -112,7 +112,7 @@
 | `NO_CATCHABLE_PLAN` | 계획기가 plan 없음을 게시 (catchability manipulability 미달 D-18, IK 실패, 도달 불가 — 세부 사유는 L3 plan 사유 코드) | `TRACKING` | 비치명. `TRACKING` 유지, 기록 |
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
 | `QP_FAILED` | L5 QP 실패 status | 전 구간 | `ABORT_SAFE` (QP 비의존 경로, §4.1). 연속 $N_{qp}$회면 `FAULT` |
-| `REF_SATURATED` | L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick (기본 **5**, provisional — S7 설계 확정, D-8: γ 하향 없음) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]`. `sat_ticks` 는 sim 정상 시행의 연속 길이 분포로 확인 후 확정한다 (D-S7-4, plan §7.3) |
+| `REF_SATURATED` | L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick (기본 **100** = 0.2 s @ 500 Hz, provisional — S7 설계 확정, D-8: γ 하향 없음. 처음 제안한 5 는 정지 상태에서 접근을 시작한 reference 의 정상 포화 (단위 fixture 실측 10·76 tick) 를 잘랐다) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]`. `sat_ticks` 는 sim 정상 시행의 연속 길이 분포로 확인 후 확정한다 (D-S7-4, plan §7.3) |
 | `GAMMA_DERATED` | v0.5 에서 삭제 — γ 하향은 v1 범위 밖 (D-8, §4.6) | – | – |
 | `SAT_NEAR_TC` | v0.5 에서 삭제 — `REF_SATURATED` 로 대체 (D-8) | – | – |
 | `JOINT_CONFLICT` | L5 `bound_conflict` | 전 구간 | `ABORT_SAFE` (QP 비의존 경로) |
@@ -310,7 +310,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.homing.eta_a` | double | – | **0.5** (provisional) | 0–1 | §4.1. 가속 한계 = `qdd_max` × 이 값 |
 | `supervisor.homing.qd_tol` | double | rad/s | **0.02** (provisional) | >0 | §4.1 homing/retreat 도착 판정(‖q̇‖∞) |
 | `supervisor.ready.pose_tol` | double | rad | 0.02 | – | §4.5 |
-| `supervisor.sat_ticks` | int | – | **5** (provisional) | ≥1 | §4.2 `REF_SATURATED` 연속 tick 판정 (D-S7-4, sim 시행 분포로 확인 후 확정) |
+| `supervisor.sat_ticks` | int | – | **100** (provisional — 5 는 정상 접근의 포화 구간 10–76 tick 을 잘랐다) | ≥1 | §4.2 `REF_SATURATED` 연속 tick 판정 (D-S7-4, sim 시행 분포로 확인 후 확정) |
 
 `supervisor.ready.wait_pose` 는 두지 않는다 (C-10) — `L3 §6 planner.wait_pose` 와 중복이었다(repo 에 0 hit). `IDLE` homing 목표·`ARMED` 대기 자세는 그 키를 그대로 참조한다.
 
@@ -371,4 +371,4 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 
 ## 10. 미확정 항목
 
-TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(값 0.10 provisional 로 닫힘, 조일 물리량은 S8), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`(값은 provisional 로 닫힘, S8 튜닝), `supervisor.impact.dp_max`, `supervisor.sat_ticks`(5 provisional, D-S7-4 sim 확인 대기), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). homing 은 `IDLE` 하위 단계로 닫혔다(S1.8 헤더 해석, §4.1). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).
+TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(값 0.10 provisional 로 닫힘, 조일 물리량은 S8), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`(값은 provisional 로 닫힘, S8 튜닝), `supervisor.impact.dp_max`, `supervisor.sat_ticks`(100 provisional, D-S7-4 sim 확인 대기), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). homing 은 `IDLE` 하위 단계로 닫혔다(S1.8 헤더 해석, §4.1). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).
