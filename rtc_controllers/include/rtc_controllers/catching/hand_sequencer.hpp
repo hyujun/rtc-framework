@@ -83,7 +83,10 @@ struct HandSequencerConfig {
     if (!std::isfinite(q_tol) || !(q_tol > 0.0) || !std::isfinite(qd_tol) || !(qd_tol > 0.0)) {
       return false;
     }
-    if (!std::isfinite(hold_delta_rad) || hold_delta_rad < 0.0) {
+    // Only the offset form reads it; a stray value under close_target must not
+    // refuse a profile the validator passed (it checks the same mode only).
+    if (hold_mode == HandHoldMode::kMeasuredOffset &&
+        (!std::isfinite(hold_delta_rad) || hold_delta_rad < 0.0)) {
       return false;
     }
     bool any_caging = false;
@@ -327,6 +330,11 @@ class HandSequencer {
     }
     for (std::size_t i = 0; i < static_cast<std::size_t>(cfg_.dof); ++i) {
       if (!cfg_.caging_mask[i]) {
+        continue;
+      }
+      // A non-finite reading (the Close ended on its timeout) has no pose to
+      // offset from: that joint keeps q_close, like the no-reading case above.
+      if (!std::isfinite(q[i])) {
         continue;
       }
       const double s = (cfg_.q_close[i] - cfg_.q_pre[i]) > 0.0 ? 1.0 : -1.0;

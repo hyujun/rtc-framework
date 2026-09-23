@@ -75,7 +75,7 @@
 **감속은 시각 기준으로 시작한다 `[확정 A-5]`.** 실기 접촉 신호가 지문 센서뿐이라, 공이 손바닥에 먼저 닿으면 손가락이 닫히기 전까지 검출이 늦을 수 있다. 따라서 `DECEL` 진입은 $now_{lead}\ge t_c$ 로 하고, 지문 센서는 결과 판정과 abort에만 쓴다.
 
 **E-STOP·fault 임시 기준 `[확정 P-1]` (S9 전까지).**
-- E-STOP 중 출력은 CM 이 `BuildHoldOutput` 으로 대체한다. 슈퍼바이저는 출력을 만들지 않고 **상태만 정리**한다 (`TriggerEstop` 에서 진행 중 시행을 `Aborted` 로 종결, plan·손 시퀀스 무효화).
+- E-STOP 중 출력은 CM 이 `BuildHoldOutput` 으로 대체한다. 슈퍼바이저는 출력을 만들지 않고 **상태만 정리**한다 (`TriggerEstop` 에서 진행 중 시행을 `Aborted` 로 종결, plan·손 시퀀스 무효화). HOLD 끝에서 이미 판정된 시행은 진행 중이 아니다 — 복귀 중 E-STOP 이나 `ABORT_SAFE` 재진입은 그 판정을 `Aborted` 로 덮지 않는다.
 - `ClearEstop` 후 **자동 재개 금지** — `IDLE` 로 가고, $q_c$ 와 CLIK 앵커를 $q_{meas}$ 로 reseed 한다. 다음 시행은 homing 부터 다시 한다.
 - fault 는 E-STOP 과 분리된 컨트롤러 래치다. `ClearEstop` 은 fault 를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않는다. RT 경로의 try/catch·deactivate 는 쓰지 않는다 (RT-2).
 - 손 자세 유지로 인한 파지력 소실 등 부작용 검토와 정책 전체는 S9 (D-13).
@@ -246,7 +246,7 @@ $$\Delta p=m_{ball}\,(1-\gamma_f)\Vert v(t_c)\Vert$$
 
 L7이 plan 을 받아들일 때 §4.1 R-ADMIT 조건(g) $t_c-now\le T_{freeze}$ 이면 `kTooLate` 로 거부한다 — 마지막 조건이 과거·너무 이른 plan 을 걸러낸다.
 
-**RETREAT 순서 (Q13, #537 S7 결정 2026-09-23 · release 규칙은 2026-09-24 결정으로 교체).** 진입 → 정지 램프(`JointSpaceDecelStep`; `ABORT_SAFE` 경유면 no-op) → 관절공간 복귀(팔이 이미 `pose_tol` 안이면 생략) → 대기 자세 도착에서 손 Release(`q_pre`) → 손 `q_tol` 도달 → `ResetForRearm` → `ARMED`. **RETREAT 는 손을 움직이지 않는다.** 닫힌 손은 판정(Captured·Missed·Undetermined·Aborted)과 무관하게 복귀 내내 닫힌 채이고 대기 자세에서만 열린다. 아직 닫힘 명령이 나가지 않은 commit 은 진입 시 취소한다 — 손은 이미 `q_pre` 이므로 움직임은 없다. 근거: 판정은 지문만 보므로 공이 링크·손바닥에 얹힌 경우도 Missed 로 나온다 (sim `260923_2336` 25 투척 중 1건). 이전 규칙(Q12: Missed/Aborted 는 진입 즉시 Release, Q14: 접촉 확정 후 abort 만 예외)은 그 공을 포구 지점에서 떨어뜨렸다. LEAP 처럼 `q_pre` 도달로 손이 열려도 공이 남는 경우는 sim 드라이버의 `/sim/reset_ball`, 실기는 운용자가 처리한다.
+**RETREAT 순서 (Q13, #537 S7 결정 2026-09-23 · release 규칙은 2026-09-24 결정으로 교체).** 진입 → 정지 램프(`JointSpaceDecelStep`; `ABORT_SAFE` 경유면 no-op. 측정 팔이 정지 명령을 `track_err_abort` 안으로 따라잡을 때까지 머문다 — 안 그러면 `TRACK_ERR` abort 직후 서보 지연이 복귀 첫 tick 에 다시 `TRACK_ERR` 를 내 `ABORT_SAFE` ↔ `RETREAT` 를 돈다) → 관절공간 복귀(팔이 이미 `pose_tol` 안이면 생략) → 대기 자세 도착에서 손 Release(`q_pre`) → 손 `q_tol` 도달 → `ResetForRearm` → `ARMED`. **RETREAT 는 손을 움직이지 않는다.** 닫힌 손은 판정(Captured·Missed·Undetermined·Aborted)과 무관하게 복귀 내내 닫힌 채이고 대기 자세에서만 열린다. 아직 닫힘 명령이 나가지 않은 commit 은 진입 시 취소한다 — 손은 이미 `q_pre` 이므로 움직임은 없다. 근거: 판정은 지문만 보므로 공이 링크·손바닥에 얹힌 경우도 Missed 로 나온다 (sim `260923_2336` 25 투척 중 1건). 이전 규칙(Q12: Missed/Aborted 는 진입 즉시 Release, Q14: 접촉 확정 후 abort 만 예외)은 그 공을 포구 지점에서 떨어뜨렸다. LEAP 처럼 `q_pre` 도달로 손이 열려도 공이 남는 경우는 sim 드라이버의 `/sim/reset_ball`, 실기는 운용자가 처리한다.
 
 **IDLE 순서.** 검증 통과 + 무장 → 팔이 `pose_tol` 밖이면 손 `q_open` → homing → 도착 → 손 `q_pre` 지시; 안이면(Q13) 손만 `q_pre` → 손 도달 + §4.5 → `ARMED`.
 

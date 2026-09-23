@@ -264,7 +264,7 @@ v0.5 에서 삭제 — 손은 `ControllerOutput` 손 device slot (D-11). `HandCo
 | `robot.hand.eta_close` | double | – | `TBD` | 0.5–1 | §4.2 |
 | `robot.hand.rho_eps` | double | rad | 0.02 | >0 | §4.2 $|q^{cls}_i-q^{pre}_i|$ 하한 (L0 검증기가 강제) |
 | `robot.hand.hold.mode` | string | – | **`close_target`** (provisional, #537 S7 결정 2026-09-23) | `close_target` \| `measured_offset` | §4.4 유지 목표 규칙 (S7.1) |
-| `robot.hand.hold.delta_rad` | double | rad | `TBD` | – | §4.4. `measured_offset` 모드에서만 쓰는 여유량 |
+| `robot.hand.hold.delta_rad` | double | rad | `TBD` | – | §4.4. `measured_offset` 모드에서만 쓰는 여유량 (그 모드에서만 ≥0 검사). Close 가 timeout 으로 끝나 측정이 비유한인 관절은 `q_close` 를 쓴다 |
 | `robot.hand.T_close_e2e` | double | s | `TBD` | ≥0 | §4.2 종단 간 실측 (sim S4.2, 실기 S4.3·S10) |
 | `robot.hand.T_hold` | double | s | **0.5** (provisional, D-S7-1) | 0–5 | 튜닝. 재무장·시퀀서 도착 판정과 함께 확인 (S7.2) |
 | `robot.hand.T_close_timeout` | double | s | **= 2 × `T_close_e2e`** (provisional — p1b 0.56 s · leap 0.21 s, D-S7-1) | > `T_close_e2e` | 검증기: `T_close_timeout > T_close_e2e` |

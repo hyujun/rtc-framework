@@ -1146,6 +1146,126 @@ TEST_F(SupervisorScenarioTest, ATrackErrAbortReturnsAndReArms) {
              Mode::kRetreat, Mode::kArmed});
 }
 
+TEST_F(SupervisorScenarioTest, AServoStillLaggingAfterATrackErrAbortDoesNotCycleTheAbort) {
+  // The measured arm stays 0.6 rad off its command for 60 ticks, well past the
+  // stop. RETREAT waits in its stop for the servo instead of starting the
+  // return, tripping TRACK_ERR and going round ABORT_SAFE ↔ RETREAT.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 1.0));
+  ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();
+  Ticks(20);
+  int lagging = 60;
+  pre_tick_ = [this, &lagging] {
+    if (lagging > 0) {
+      state_.devices[0].positions[1] += 0.6;
+      --lagging;
+    }
+  };
+  ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 5)) << Transitions();
+  const bool rearmed = TickUntilMode(Mode::kArmed, 800);
+  pre_tick_ = nullptr;
+  EXPECT_TRUE(rearmed) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kRetreat, Mode::kArmed});
+}
+
+TEST_F(SupervisorScenarioTest, AnAbortDuringTheReturnKeepsTheJudgedVerdict) {
+  // HOLD judged the attempt Captured; a TRACK_ERR during the return goes
+  // RETREAT → ABORT_SAFE → RETREAT. That second RETREAT entry must not
+  // rewrite the verdict as Aborted: the attempt ended at HOLD.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(2.0), StartAxis(), 0.0, 0.6));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kCaptured) << Transitions();
+  // The return, not the stop: the carried speed RISING past 0.05 (the stop
+  // only brings the HOLD's residual speed down, so the first tick seen here
+  // is never "rising").
+  double prev_speed = std::numeric_limits<double>::infinity();
+  ASSERT_TRUE(TickUntil(
+      [this, &prev_speed] {
+        double s = 0.0;
+        for (double v : ctrl_->GetArmVelocityCommandForTesting()) {
+          s = std::max(s, std::abs(v));
+        }
+        const bool rising = s > prev_speed;
+        prev_speed = s;
+        return ctrl_->GetMode() == Mode::kRetreat && rising && s > 0.05;
+      },
+      800))
+      << "the return never reached speed\n"
+      << Transitions();
+  // RETREAT judges the error its motion stage measured on the tick before,
+  // so the abort lands one tick after the kick.
+  state_.devices[0].positions[1] += 0.6;
+  const std::size_t kick = log_.size();
+  ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 3)) << Window(static_cast<int>(kick), 3);
+  EXPECT_EQ(ctrl_->GetLastReason(), Reason::kTrackErr);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
+  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kCaptured)
+      << "an abort after the verdict rewrote it\n"
+      << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kCaptured);
+}
+
+TEST_F(SupervisorScenarioTest, ADisarmInTrackingWithAnAlignedArmLeavesAbortSafe) {
+  // The arm starts at the wait pose, so IDLE takes the Q13 skip and nothing
+  // seeds the arm command before APPROACH. A disarm in TRACKING goes to
+  // ABORT_SAFE with no command to ramp; its exit must still open.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+    y["diagnostic"]["oracle_plan"]["enabled"] = false;  // TRACKING, and no plan to leave it
+  }));
+  ASSERT_TRUE(TickUntilMode(Mode::kTracking, 200)) << Transitions();
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.homing; }), 0)
+      << "precondition: the Q13 skip, not a homing";
+  SetArmed(false);
+  ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 5)) << Transitions();
+  EXPECT_TRUE(TickUntilMode(Mode::kIdle, 200)) << "stranded in ABORT_SAFE\n" << Transitions();
+  ExpectSeq(
+      {Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kAbortSafe, Mode::kRetreat, Mode::kIdle});
+}
+
+TEST_F(SupervisorScenarioTest, AnArmGateClosedMidHomingIsNotATrackingError) {
+  // Mid-homing the arm reads as unreadable for 10 ticks, its position slots
+  // zeroed. Those slots are not a measurement: the homing neither disarms on
+  // TRACK_ERR nor stops, and arms once the gate reopens.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[0] += 0.06;
+  off[2] -= 0.05;
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, nullptr, off));
+  publishing_ = false;
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->IsHomingForTesting(); }, 50)) << Transitions();
+  Ticks(10);
+  std::array<double, kUr5eArmDof> saved{};
+  int closed = 10;
+  pre_tick_ = [this, &saved, &closed] {
+    auto& a = state_.devices[0];
+    if (closed == 10) {
+      for (int i = 0; i < kUr5eArmDof; ++i) {
+        saved[static_cast<std::size_t>(i)] = a.positions[static_cast<std::size_t>(i)];
+      }
+    }
+    if (closed > 0) {
+      a.valid = false;
+      a.positions.fill(0.0);
+      --closed;
+    } else if (closed == 0) {
+      a.valid = true;
+      for (int i = 0; i < kUr5eArmDof; ++i) {
+        a.positions[static_cast<std::size_t>(i)] = saved[static_cast<std::size_t>(i)];
+      }
+      --closed;
+    }
+  };
+  Ticks(12);
+  pre_tick_ = nullptr;
+  EXPECT_TRUE(ctrl_->IsArmRequested()) << "a closed gate disarmed the homing\n" << Transitions();
+  EXPECT_NE(ctrl_->GetLastReason(), Reason::kTrackErr);
+  EXPECT_TRUE(TickUntilMode(Mode::kArmed, 800)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed});
+}
+
 // An abort in HOLD, after the close: the verdict is Aborted, and the hand
 // keeps what it closed on until the arm is back — with or without confirmed
 // contact. Q14 made the contact the condition; the 2026-09-24 rule does not

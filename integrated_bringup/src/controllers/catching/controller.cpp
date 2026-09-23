@@ -1229,6 +1229,10 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHo
   // HOLD for T_hold, then judge the attempt (S7.3) and retreat.
   if (tick_now_.ns - hold_entry_ns_ >= t_hold_ns_) {
     outcome_ = JudgeOutcome();
+    // The attempt is over and judged. An abort during the return (RETREAT →
+    // ABORT_SAFE → RETREAT) or an E-STOP must not rewrite it as Aborted.
+    // R-TRACK still refuses this ball: HOLD implies trial_committed_.
+    trial_active_ = false;
     return {Reason::kNone, true};
   }
   if (tip_stale_now_) {
@@ -1722,10 +1726,12 @@ void DemoCatchingController::RunArmMotion(const ControllerState& state) noexcept
     case Mode::kFault:
       // Only a stop caused by the joint command layer takes the QP-independent
       // route (L7 §4.1) — and, recorded as an exemption (C-35), every
-      // ABORT_SAFE does.
-      if (arm_cmd_seeded_) {
-        RunJointSpaceAbort(state);
-      }
+      // ABORT_SAFE does. Run on every tick, seeded or not: `abort_stopped_` is
+      // ABORT_SAFE's only exit, and an arm that armed by the Q13 skip carries
+      // no command until APPROACH, so a disarm in TRACKING reaches here with
+      // nothing to ramp (RampArmToStop then answers "stopped"). Skipping the
+      // call left the exit at its last value and the controller in ABORT_SAFE.
+      RunJointSpaceAbort(state);
       break;
     case Mode::kIdle:
       RunIdleMotion(state);
@@ -1752,7 +1758,11 @@ bool DemoCatchingController::StepTowardWaitPose(const ControllerState& state) no
       std::span<const double>(arm_qdd_max_.data(), n), homing_eta_a_, homing_v_max_,
       std::span<const double>(arm_q_min_margined_.data(), n),
       std::span<const double>(arm_q_max_margined_.data(), n), n, state.dt);
-  UpdateTrackError(state);
+  // Only a readable arm has a tracking error: a closed gate leaves stale or
+  // zero slots, which would read as a TRACK_ERR (ArmAtWaitPose is false then).
+  if (arm_readable_) {
+    UpdateTrackError(state);
+  }
   return step.valid && step.arrived && ArmAtWaitPose(state);
 }
 
@@ -1810,21 +1820,29 @@ void DemoCatchingController::RunIdleMotion(const ControllerState& state) noexcep
 
 void DemoCatchingController::RunRetreatMotion(const ControllerState& state) noexcept {
   switch (retreat_stage_) {
-    case RetreatStage::kStop:
+    case RetreatStage::kStop: {
       // The stop first, at the full acceleration box (a no-op after
       // ABORT_SAFE, which already stopped the arm). The return starts from rest.
-      if (RampArmToStop(state)) {
-        retreat_stage_ = RetreatStage::kReturn;
-      }
+      const bool stopped = RampArmToStop(state);
       // Measured on EVERY tick of the stop, not just the return's: the error
       // EvaluateRetreat judges must be this motion's. A TRACK_ERR abort leaves
       // its own (large) value behind, and judging the return on it sent the
       // controller back to ABORT_SAFE and round again, forever, with the arm
       // standing still (found by the S7 scenario suite).
+      bool caught_up = true;
       if (arm_cmd_seeded_ && arm_readable_) {
         UpdateTrackError(state);
+        // The return starts once the arm has also caught up with the stopped
+        // command. A servo still lagging after a TRACK_ERR abort would
+        // otherwise trip TRACK_ERR on the first return tick and cycle
+        // ABORT_SAFE ↔ RETREAT until it converged.
+        caught_up = !(track_err_abort_rad_ > 0.0 && track_err_ > track_err_abort_rad_);
+      }
+      if (stopped && caught_up) {
+        retreat_stage_ = RetreatStage::kReturn;
       }
       break;
+    }
     case RetreatStage::kReturn:
       if (!arm_cmd_seeded_) {
         SeedArmCommand(state);

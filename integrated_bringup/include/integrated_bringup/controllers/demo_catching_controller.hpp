@@ -1098,6 +1098,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// arrival at kRelease, whatever the verdict (#537 S7, 2026-09-24).
   RetreatStage retreat_stage_{RetreatStage::kStop};
   /// A plan was adopted this trial (an abort from here on is an attempt).
+  /// Cleared once HOLD has judged it, so a later abort keeps the verdict.
   bool trial_active_{false};
   bool trial_committed_{false};
   std::int64_t committed_t_c_ns_{0};
@@ -1166,7 +1167,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   reference_seeded_, traj_hint_              R, T
   //   qp_fail_streak_                            T; exempt from R (C-29: a retry cycle has no solve in it)
   //   track_err_                                 R, T
-  //   abort_stopped_                             exempt: written on ABORT_SAFE entry
+  //   abort_stopped_                             exempt: written on every ABORT_SAFE / FAULT tick
   //   consumed_, last_track_generation_, track_seen_, traj_new_track_, traj_view_
   //                                              T; exempt from R: the next ball is judged against them
   //   hand_seq_ (phase/commit)                   R (Ready), T (Deactivate)

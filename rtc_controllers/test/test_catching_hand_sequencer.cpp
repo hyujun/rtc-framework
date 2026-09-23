@@ -395,6 +395,43 @@ TEST(HandSequencer, HoldMeasuredOffsetSqueezesFromWhereTheFingersStopped) {
   EXPECT_NEAR(next.target[0], caged.q[0] + 0.05, 1e-12);
 }
 
+TEST(HandSequencer, HoldMeasuredOffsetFromANonFiniteReadingFallsBackToTheClosedPosture) {
+  // The Close ends on its timeout (ρ from a NaN never reads as closed); the
+  // offset form then has no measured pose for that joint, and a NaN target
+  // would reach the hand — the device clamp passes NaN through.
+  HandSequencerConfig c = MakeConfig();
+  c.hold_mode = HandHoldMode::kMeasuredOffset;
+  c.hold_delta_rad = 0.05;
+  HandSequencer seq = Ready(c);
+  ASSERT_TRUE(seq.Commit(BallTime{150 * kMs}));
+  const HandState pre = At(c.q_pre);
+  ASSERT_TRUE(seq.Update(NowReal{0}, kH, pre.Q(), pre.Qd()).close_issued_now);
+  HandState bad = Between(c, 0.5);
+  bad.q[1] = std::numeric_limits<double>::quiet_NaN();
+  const HandSequencerOutput end = seq.Update(NowReal{c.t_close_timeout_ns}, kH, bad.Q(), bad.Qd());
+  ASSERT_EQ(end.phase, HandPhase::kHold);
+  ASSERT_TRUE(end.timeout);
+  EXPECT_NEAR(end.target[0], bad.q[0] + 0.05, 1e-12);  // a finite joint still offsets
+  EXPECT_DOUBLE_EQ(end.target[1], c.q_close[1]);       // the NaN joint: the profile's posture
+  for (int i = 0; i < kDof; ++i) {
+    EXPECT_TRUE(std::isfinite(end.target[static_cast<std::size_t>(i)])) << "joint " << i;
+  }
+}
+
+TEST(HandSequencer, HoldDeltaIsCheckedOnlyInTheModeThatReadsIt) {
+  // The validator checks hold.delta_rad under measured_offset only; the
+  // sequencer must not refuse, under close_target, a profile it passed.
+  HandSequencerConfig c = MakeConfig();
+  c.hold_mode = HandHoldMode::kCloseTarget;
+  c.hold_delta_rad = -0.05;
+  HandSequencer seq;
+  EXPECT_TRUE(seq.Configure(c));
+  c.hold_mode = HandHoldMode::kMeasuredOffset;
+  EXPECT_FALSE(seq.Configure(c));
+  c.hold_delta_rad = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(seq.Configure(c));
+}
+
 // ── Release (#537 S7 Q4/Q12) ────────────────────────────────────────────────
 
 TEST(HandSequencer, ReleaseOpensToPreAndWaitsThereOnlyOnceSettled) {
