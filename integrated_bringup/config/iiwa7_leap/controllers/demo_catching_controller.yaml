@@ -45,6 +45,16 @@ demo_catching_controller:
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
+      # Vision world → MODEL world (plan §11). `link_0` is this URDF's model
+      # root and base_T_world is the identity the sim measured (§11), so the
+      # composed transform is the identity and the ingress leaves the
+      # prediction as is. Stated anyway: the frame is a per-robot fact, and a
+      # key the next robot has to think about. Real arm: the camera
+      # calibration (S10).
+      arm_base_frame: "link_0"
+      base_T_world:
+        yaw_deg: 0.0
+        translation: [0.0, 0.0, 0.0]
       # = ceil(horizon_min / dt_expected) + 1 = ceil(0.51 / 0.05) + 1. The +1 is
       # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
       # cover 0.50 s and fall 10 ms SHORT of the window a commit decision

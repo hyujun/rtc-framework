@@ -310,6 +310,13 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   /// Plans that replaced the one being followed in APPROACH (§4.7, S6-B).
+  /// The vision → model-world transform the ingress applies (plan §11),
+  /// resolved at configure from `catching.io.arm_base_frame` +
+  /// `catching.io.base_T_world` and the model.
+  [[nodiscard]] const TrajInputConfig& GetTrajInputConfig() const noexcept {
+    return traj_input_.Config();
+  }
+
   [[nodiscard]] std::uint64_t GetPlanReplacedCount() const noexcept {
     return plan_replaced_count_.load(std::memory_order_relaxed);
   }
@@ -612,6 +619,14 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Create the prediction subscription and configure the ingress. Non-RT.
   void SetupTrajInput();
+  /// The model builder: CM's shared one, else one of our own (fixtures). Left
+  /// null (logged) without a system model config. Acquired at the start of the
+  /// ingress setup, because the vision-frame transform needs the model BEFORE
+  /// the subscription exists.
+  void AcquireModelBuilder();
+  /// Fills `cfg`'s vision → model-world transform (plan §11). False (logged)
+  /// on a named frame the model lacks or that is not rigid to its root.
+  [[nodiscard]] bool ResolveVisionFrame(TrajInputConfig& cfg);
 
   /// The subscription callback (non-RT). Samples the receive instants, hands
   /// the message to the ingress and, on acceptance, publishes both snapshots.
@@ -815,6 +830,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// change rather than performing a conversion (L1 §4.3's transform is not
   /// implemented because nothing needs it).
   std::string expected_frame_{"world"};
+  /// `catching.io.arm_base_frame` — the URDF frame the vision world is
+  /// measured against — and `catching.io.base_T_world` (p_base = Rz(yaw)·p_world
+  /// + t, the map tool's `--world-yaw-deg` / `--world-translation-m`). Empty
+  /// frame ⇒ the vision frame is taken AS the model world (warned).
+  std::string vision_base_frame_;
+  double vision_yaw_deg_{0.0};
+  std::array<double, 3> vision_translation_{0.0, 0.0, 0.0};
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr traj_sub_;
   CatchingTrajInput traj_input_;
 

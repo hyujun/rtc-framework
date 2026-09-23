@@ -110,6 +110,51 @@ TEST_F(TrajInputTest, DecodesAWellFormedMessage) {
   EXPECT_EQ(input_.AcceptCount(), 1U);
 }
 
+TEST_F(TrajInputTest, TheVisionFrameIsTakenIntoTheModelWorld) {
+  // 90° about z plus a translation: a swapped axis, a wrong sign and a missing
+  // offset each show (a 180° turn would not catch a swapped axis). The oracle
+  // is the SAME message decoded with the identity, rotated here by hand.
+  CloudSpec spec;
+  spec.cov_diag = {1e-4, 4e-4, 9e-4, 1.6e-3, 2.5e-3, 3.6e-3};
+  const auto msg = MakeCloud(spec);
+  TrajectorySnapshot raw{};
+  CovarianceSnapshot raw_cov{};
+  ASSERT_EQ(Feed(input_, msg, raw, raw_cov), CloudReject::kNone);
+
+  TrajInputConfig cfg = MakeConfig();
+  cfg.to_model = true;
+  cfg.r_model_world = {0, -1, 0, 1, 0, 0, 0, 0, 1};  // x' = −y, y' = x
+  cfg.t_model_world = {1.0, 2.0, 3.0};
+  CatchingTrajInput in;
+  in.Configure(cfg);
+  ASSERT_EQ(Feed(in, msg, snap_, cov_), CloudReject::kNone);
+
+  for (int i = 0; i < raw.n; ++i) {
+    const auto& r = raw.s[static_cast<std::size_t>(i)];
+    const auto& m = snap_.s[static_cast<std::size_t>(i)];
+    EXPECT_DOUBLE_EQ(m.p[0], -r.p[1] + 1.0) << i;
+    EXPECT_DOUBLE_EQ(m.p[1], r.p[0] + 2.0) << i;
+    EXPECT_DOUBLE_EQ(m.p[2], r.p[2] + 3.0) << i;
+    EXPECT_DOUBLE_EQ(m.v[0], -r.v[1]) << i;  // directions: no translation
+    EXPECT_DOUBLE_EQ(m.v[1], r.v[0]) << i;
+    EXPECT_DOUBLE_EQ(m.a[2], r.a[2]) << i;
+    EXPECT_EQ(m.t_ns, r.t_ns) << i;
+  }
+  // Covariance of point 1 (fully known): x and y variances swap in both blocks.
+  const auto& c = cov_.c[1];
+  EXPECT_DOUBLE_EQ(c[0 * 6 + 0], 4e-4);
+  EXPECT_DOUBLE_EQ(c[1 * 6 + 1], 1e-4);
+  EXPECT_DOUBLE_EQ(c[2 * 6 + 2], 9e-4);
+  EXPECT_DOUBLE_EQ(c[3 * 6 + 3], 2.5e-3);
+  EXPECT_DOUBLE_EQ(c[4 * 6 + 4], 1.6e-3);
+  EXPECT_DOUBLE_EQ(c[0 * 6 + 1], 0.0);
+  // Point 0 carries an unknown vz variance: it stays unknown, and it does not
+  // leak into the vx / vy entries a z-rotation never mixes it with.
+  EXPECT_TRUE(std::isnan(cov_.c[0][5 * 6 + 5]));
+  EXPECT_DOUBLE_EQ(cov_.c[0][3 * 6 + 3], 2.5e-3);
+  EXPECT_DOUBLE_EQ(cov_.c[0][4 * 6 + 4], 1.6e-3);
+}
+
 TEST_F(TrajInputTest, AnOffsetOnlyLayoutChangeIsFollowed) {
   // The whole reason fields are found by name. The publisher is a debug topic
   // with no stable ABI; a parser that assumed offsets would keep decoding and

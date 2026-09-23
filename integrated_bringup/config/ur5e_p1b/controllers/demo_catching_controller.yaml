@@ -185,6 +185,18 @@ demo_catching_controller:
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
+      # Vision world → MODEL world (plan §11). The planner, its catch_box and
+      # CLIK all work in the Pinocchio universe, whose root on this URDF is
+      # `base_link` — 180° about z from `base`. Vision is measured against
+      # `base`, and base_T_world is the identity the sim measured (§11: same-q
+      # MuJoCo vs Pinocchio FK, 2026-09-20/21). The ingress composes the two
+      # and applies Rz(180°) to every prediction (S6-C: without it every
+      # candidate landed behind the arm). Real arm: base_T_world is the camera
+      # calibration (S10).
+      arm_base_frame: "base"
+      base_T_world:
+        yaw_deg: 0.0
+        translation: [0.0, 0.0, 0.0]
       # = ceil(horizon_min / dt_expected) + 1 = ceil(0.51 / 0.05) + 1. The +1 is
       # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
       # cover 0.50 s and fall 10 ms SHORT of the window a commit decision

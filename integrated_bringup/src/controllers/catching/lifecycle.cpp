@@ -504,22 +504,11 @@ void DemoCatchingController::SetupArmCommand() {
   catch_frame_idx_ = -1;
   base_frame_idx_ = -1;
 
-  const auto* sys_cfg = GetSystemModelConfig();
-  if (sys_cfg == nullptr || sys_cfg->urdf_path.empty()) {
-    RCLCPP_WARN(logger_, "no system model config: the arm will be held, not driven");
+  // The builder was acquired by SetupTrajInput (the vision frame needs the
+  // model before the subscription exists); null means no model to drive.
+  if (!builder_) {
+    RCLCPP_WARN(logger_, "no system model: the arm will be held, not driven");
     return;
-  }
-  // Prefer the builder CM injected so the URDF is parsed once for the whole
-  // bring-up; build our own only when running outside CM (fixtures).
-  if (auto shared = GetSharedModelBuilder()) {
-    builder_ = std::move(shared);
-  } else {
-    try {
-      builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(*sys_cfg);
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR(logger_, "model build failed: %s", e.what());
-      return;
-    }
   }
   if (!combined_cache_.InitModel(*builder_, /*contact_frame_ids=*/{}, "[catching]", logger_)) {
     RCLCPP_ERROR(logger_, "combined model/cache init failed");
@@ -625,6 +614,87 @@ void DemoCatchingController::SetupArmCommand() {
                   : "from the derived file (abort ramp only — the QP carries the selected form)");
 }
 
+void DemoCatchingController::AcquireModelBuilder() {
+  builder_.reset();
+  const auto* sys_cfg = GetSystemModelConfig();
+  if (sys_cfg == nullptr || sys_cfg->urdf_path.empty()) {
+    return;  // SetupArmCommand reports what that means for the arm
+  }
+  // Prefer the builder CM injected so the URDF is parsed once for the whole
+  // bring-up; build our own only when running outside CM (fixtures).
+  if (auto shared = GetSharedModelBuilder()) {
+    builder_ = std::move(shared);
+    return;
+  }
+  try {
+    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(*sys_cfg);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "model build failed: %s", e.what());
+    builder_.reset();
+  }
+}
+
+bool DemoCatchingController::ResolveVisionFrame(TrajInputConfig& cfg) {
+  cfg.to_model = false;
+  if (vision_base_frame_.empty()) {
+    RCLCPP_WARN(logger_,
+                "catching.io.arm_base_frame is not set: the vision frame '%s' is taken AS the "
+                "model world. That is wrong on a robot whose URDF root is not the frame vision "
+                "is measured against (plan §11 — ur5e_p1b's root is base_link, 180° from base)",
+                expected_frame_.c_str());
+    return true;
+  }
+  if (!builder_) {
+    // No model means no arm to drive (SetupArmCommand holds it) and no
+    // planner model either — nothing downstream consumes model coordinates.
+    RCLCPP_WARN(logger_,
+                "catching.io.arm_base_frame '%s' is set but there is no robot model: the vision "
+                "frame is left as is (the arm is held)",
+                vision_base_frame_.c_str());
+    return true;
+  }
+  const auto model =
+      builder_->GetActuatedModel() ? builder_->GetActuatedModel() : builder_->GetFullModel();
+  if (!model || !model->existFrame(vision_base_frame_)) {
+    RCLCPP_ERROR(logger_, "catching.io.arm_base_frame '%s' is not a frame of the robot model",
+                 vision_base_frame_.c_str());
+    return false;
+  }
+  const auto& frame = model->frames[model->getFrameId(vision_base_frame_)];
+  if (frame.parentJoint != 0) {
+    // A frame behind a moving joint would make the transform a function of q.
+    RCLCPP_ERROR(logger_,
+                 "catching.io.arm_base_frame '%s' is not rigid to the model root (it hangs off "
+                 "joint %zu)",
+                 vision_base_frame_.c_str(), static_cast<std::size_t>(frame.parentJoint));
+    return false;
+  }
+  // model_world_T_world = model_world_T_base · base_T_world. On the universe,
+  // a frame's placement IS model_world_T_frame.
+  const Eigen::Matrix3d r_mb = frame.placement.rotation();
+  const Eigen::Vector3d t_mb = frame.placement.translation();
+  const Eigen::Matrix3d r_bw =
+      Eigen::AngleAxisd(vision_yaw_deg_ * M_PI / 180.0, Eigen::Vector3d::UnitZ())
+          .toRotationMatrix();
+  const Eigen::Vector3d t_bw(vision_translation_[0], vision_translation_[1],
+                             vision_translation_[2]);
+  const Eigen::Matrix3d r = r_mb * r_bw;
+  const Eigen::Vector3d t = r_mb * t_bw + t_mb;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      cfg.r_model_world[static_cast<std::size_t>(i * 3 + j)] = r(i, j);
+    }
+    cfg.t_model_world[static_cast<std::size_t>(i)] = t(i);
+  }
+  cfg.to_model = !(r.isIdentity(1e-12) && t.norm() < 1e-12);
+  const double yaw = std::atan2(r(1, 0), r(0, 0)) * 180.0 / M_PI;
+  RCLCPP_INFO(logger_,
+              "vision frame '%s' → model world via '%s': yaw %.1f deg, t [%.3f %.3f %.3f] m%s",
+              expected_frame_.c_str(), vision_base_frame_.c_str(), yaw, t.x(), t.y(), t.z(),
+              cfg.to_model ? "" : " (identity — not applied)");
+  return true;
+}
+
 void DemoCatchingController::SetupTrajInput() {
   // Resolve the ingress configuration from the parsed params. Every number
   // comes from the same `catching:` tree the validator judged, so a value that
@@ -654,6 +724,10 @@ void DemoCatchingController::SetupTrajInput() {
       params_.io_track_eval_offset.tbd ? 0 : to_ns(params_.io_track_eval_offset.value);
   cfg.j_warn_m = params_.io_track_j_warn.tbd ? -1.0 : params_.io_track_j_warn.value;
   cfg.expected_frame = expected_frame_;
+  AcquireModelBuilder();
+  if (!ResolveVisionFrame(cfg)) {
+    throw std::runtime_error("DemoCatchingController: the vision frame could not be resolved");
+  }
   traj_input_.Configure(cfg);
 
   traj_horizon_min_ns_ = cfg.horizon_min_ns;

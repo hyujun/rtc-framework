@@ -39,6 +39,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -301,7 +302,8 @@ class CatchingPlanLaneTest : public ::testing::Test {
 
   /// CM's configure path on the tracking suite's profile. `oracle` false
   /// leaves the box without a writer, so a case can play the planner.
-  void BringUp(bool oracle, bool planner = false) {
+  void BringUp(bool oracle, bool planner = false,
+               const std::function<void(YAML::Node&)>& tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
@@ -327,6 +329,9 @@ class CatchingPlanLaneTest : public ::testing::Test {
       // fixture is judged on the REAL-ARM axis (its devices declare no
       // backend), where a provisional planner block parks the controller.
       pl["provisional"] = false;
+    }
+    if (tweak) {
+      tweak(yaml);
     }
     const rclcpp_lifecycle::State prev;
     ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
@@ -616,6 +621,105 @@ TEST_F(CatchingPlanLaneTest, ThePlannerFindsAReachableCatchPointAndTheRtFollowsI
   EXPECT_LT((off - off.dot(vel.normalized()) * vel.normalized()).norm(), 1e-9);
   const Eigen::Vector3d a_d(followed.a_d[0], followed.a_d[1], followed.a_d[2]);
   EXPECT_NEAR(a_d.dot(z), 1.0, 1e-9);
+}
+
+// ── Vision world → model world (plan §11, S6-C sim finding) ─────────────────
+
+class CatchingVisionFrameTest : public CatchingPlanLaneTest {
+ protected:
+  /// The reachable-throw case of the test above, with the prediction written
+  /// in the VISION world the sim publishes in. On ur5e_p1b the model root is
+  /// `base_link`, a 180° turn about z from `base`, and `base` is the sim world
+  /// (§11): p_world = (−x, −y, z) of the model-world point.
+  void SetUpWorldFrameBall() {
+    CatchFrameOracle oracle(*builder_);
+    std::array<double, 64> home{};
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      home[static_cast<std::size_t>(i)] = kUr5eHome[static_cast<std::size_t>(i)];
+    }
+    const pinocchio::SE3 pose = oracle.PoseAt(
+        integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names, home,
+        kUr5eArmDof);
+    const Eigen::Vector3d z = pose.rotation().col(2);
+    vel_model_ = -1.5 * z;
+    p0_model_ = pose.translation() + 0.03 * z - 0.5 * vel_model_;
+    const auto to_world = [](const Eigen::Vector3d& m) {
+      return Eigen::Vector3d(-m.x(), -m.y(), m.z());
+    };
+    const Eigen::Vector3d p0_w = to_world(p0_model_);
+    const Eigen::Vector3d vel_w = to_world(vel_model_);
+    ball_set_ = true;
+    ball_p0_ = {p0_w.x(), p0_w.y(), p0_w.z()};
+    ball_vel_ = {vel_w.x(), vel_w.y(), vel_w.z()};
+    cloud_n_ = 20;
+  }
+
+  bool RunUntilApproach() {
+    for (int t = 0; t < 600; ++t) {
+      if (t % 10 == 0) {
+        Publish(next_seq_++);
+      }
+      static_cast<void>(Tick());
+      std::this_thread::sleep_for(1ms);
+      if (ctrl_->GetMode() == Mode::kApproach) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Eigen::Vector3d p0_model_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d vel_model_{Eigen::Vector3d::Zero()};
+};
+
+TEST_F(CatchingVisionFrameTest, AWorldFramePredictionReachesThePlannerInModelCoordinates) {
+  SetUpWorldFrameBall();
+  // The shipped ur5e_p1b keys: vision is measured against `base`, and
+  // base_T_world is the identity the sim measured (§11).
+  ASSERT_NO_FATAL_FAILURE(BringUp(false, true, [](YAML::Node& y) {
+    y["catching"]["io"]["arm_base_frame"] = "base";
+    y["catching"]["io"]["base_T_world"]["yaw_deg"] = 0.0;
+    y["catching"]["io"]["base_T_world"]["translation"] = std::vector<double>{0.0, 0.0, 0.0};
+  }));
+  const auto& cfg = ctrl_->GetTrajInputConfig();
+  ASSERT_TRUE(cfg.to_model);
+  const std::array<double, 9> rz180{-1, 0, 0, 0, -1, 0, 0, 0, 1};
+  for (std::size_t k = 0; k < 9; ++k) {
+    EXPECT_NEAR(cfg.r_model_world[k], rz180[k], 1e-12) << k;
+  }
+  for (std::size_t k = 0; k < 3; ++k) {
+    EXPECT_NEAR(cfg.t_model_world[k], 0.0, 1e-12) << k;
+  }
+
+  ASSERT_TRUE(RunUntilApproach()) << "the world-frame prediction produced no plan";
+  const PlanSnapshot followed = ctrl_->GetFollowedPlanForTesting();
+  const Eigen::Vector3d p_c(followed.p_c[0], followed.p_c[1], followed.p_c[2]);
+  const Eigen::Vector3d off = p_c - p0_model_;
+  const Eigen::Vector3d dir = vel_model_.normalized();
+  EXPECT_LT((off - off.dot(dir) * dir).norm(), 1e-9) << "p_c is not on the MODEL-world line";
+}
+
+TEST_F(CatchingVisionFrameTest, WithoutTheFrameKeysTheSamePredictionIsBehindTheArm) {
+  // The premise of the case above, and the S6-C sim symptom: the same
+  // world-frame numbers read as model coordinates put every candidate on the
+  // far side of the robot, and no plan is ever adopted.
+  SetUpWorldFrameBall();
+  ASSERT_NO_FATAL_FAILURE(BringUp(false, true));
+  EXPECT_FALSE(ctrl_->GetTrajInputConfig().to_model);
+  EXPECT_FALSE(RunUntilApproach());
+}
+
+TEST_F(CatchingVisionFrameTest, AFrameTheModelLacksRefusesTheConfiguration) {
+  ctrl_ = std::make_unique<DemoCatchingController>("");
+  ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+  ctrl_->SetSharedModelBuilder(builder_);
+  ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+  YAML::Node yaml = YAML::Load(
+      TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
+  yaml["catching"]["io"]["arm_base_frame"] = "no_such_frame";
+  const rclcpp_lifecycle::State prev;
+  EXPECT_EQ(ctrl_->on_configure(prev, node_, yaml),
+            DemoCatchingController::CallbackReturn::FAILURE);
 }
 
 // ── The thread lives for one configuration (/code-review 2026-09-23) ────────

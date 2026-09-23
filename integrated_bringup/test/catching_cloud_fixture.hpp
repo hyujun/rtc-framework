@@ -72,6 +72,10 @@ struct CloudSpec {
   /// a test that needs the ball inside a robot's workspace supplies its own.
   std::array<double, 3> p0{0.0, 0.0, 0.0};
   std::array<double, 3> vel{1.0, 2.0, 3.0};
+  /// Covariance diagonal [px py pz vx vy vz]. Isotropic by default (the
+  /// shipped profile's (5 mm)²); a frame-rotation case needs it anisotropic,
+  /// or an unrotated covariance would pass.
+  std::array<double, 6> cov_diag{2.5e-5, 2.5e-5, 2.5e-5, 2.5e-5, 2.5e-5, 2.5e-5};
 };
 
 inline void PutField(std::vector<PointField>& fields, const char* name, std::uint32_t offset,
@@ -169,7 +173,7 @@ inline sensor_msgs::msg::PointCloud2 MakeCloud(const CloudSpec& spec) {
     // the "unknown stays unknown" property has something to assert on.
     for (std::size_t k = 0; k < CovarianceSnapshot::kElems; ++k) {
       const bool diagonal = (k % 7) == 0;
-      double value = diagonal ? 2.5e-5 : 0.0;
+      double value = diagonal ? spec.cov_diag[k / 7] : 0.0;
       if (i == 0 && k == CovarianceSnapshot::kElems - 1) {
         value = std::numeric_limits<double>::quiet_NaN();
       }
