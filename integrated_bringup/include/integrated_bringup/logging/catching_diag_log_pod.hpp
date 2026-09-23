@@ -145,8 +145,8 @@ struct CatchingDiagLogPod {
   // `tip_contact` are not, because both need a threshold L7 §4's TIP_STALE
   // has not fixed yet, and a threshold invented here would be the one every
   // later stage inherits (the same reason A-S5-5 deferred the ν̄ metric).
-  // They stay false until S7 supplies it; `tip_age_s` tells the truth in the
-  // meantime.
+  // S7.3's contact lane fills them now (`supervisor.contact.*`, L7 §4.4);
+  // before it, only `tip_age_s` was filled.
   std::uint8_t num_tips{0};
   std::array<double, kMaxTips> tip_force{};
   std::array<bool, kMaxTips> tip_contact{};

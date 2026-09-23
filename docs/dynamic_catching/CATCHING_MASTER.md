@@ -71,7 +71,7 @@
 - 제어 주기: `control_rate` YAML (default 500 Hz, 범위 100–5000 Hz — SSoT 는 [invariants.md](../../agent_docs/invariants.md) §RT Path). 틱 간격 $h$ 는 `ControllerState::dt` 로 읽고 500 Hz 를 가정하지 않는다
 - 관절 명령: **전부 position** `[확정]`. 팔은 `ControllerOutput` device 0 에 $q_c$ 를 싣는다(§1.2). 실기 UR 은 vendor `forward_position_controller` 토픽 경유이며 지연 보상이 없다
 - 손 명령: `ControllerOutput` 의 **손 device slot**(device 1)에 직접 기록한다 `[확정 D-11]`. P1b 실기는 `udp_hand_native` → `/p1b/joint_command` → 별도 프로세스 `udp_hand_node`(250 Hz, 팔 RT 루프 밖). 명령 `header.stamp` 는 쓰이지 않고, 실기 손은 feedforward 를 무시한다(= position only)
-- 실기 접촉 신호: **지문(fingertip) 센서만** `[확정]` (UR5e 툴 플랜지 F/T는 사용하지 않음). 실기 `HandSensorState` 는 finger-on-object 부호·250 Hz, sim `WrenchStamped` 도 같은 finger-on-object 부호다 (커밋 0fcc1d23 부터 — `rtc_msgs` FingertipSensor 주석의 반대 부호 서술은 stale). S7.3 에서 재확인
+- 실기 접촉 신호: **지문(fingertip) 센서만** `[확정]` (UR5e 툴 플랜지 F/T는 사용하지 않음). 실기 `HandSensorState` 는 finger-on-object 부호·250 Hz, sim `WrenchStamped` 도 같은 finger-on-object 부호다 (커밋 0fcc1d23 부터 — `rtc_msgs` FingertipSensor 주석의 반대 부호 서술은 stale). S7.3 의 접촉 판정은 바이어스를 뺀 크기 ‖F − b‖ 만 쓰므로 부호에 의존하지 않는다 (L7 §4.4)
 - 코드 기반: **기존 `rtc-framework` workspace + `rtc_tsid` CLIK 확장** `[확정 D-1, D-5]`
 - 입력: vision 노드의 **`sensor_msgs/PointCloud2` 예측 궤적** `[확정 D-4]` (§5). 제어 PC는 궤적을 재전파하지 않는다
 - Pinocchio: **4.0** `[확정]`
@@ -336,7 +336,7 @@ catching:
 | γ 하향(동결 후 유일한 계획 변경) | 논문 외 설계 | L3 §4.7, L7 §4.6 | **v1 범위 밖** (D-8). `derateGamma` 는 이식하지 않는다 |
 | 팔 추종 지연 식별·선행 보상 | 논문 외 설계 | L5 §4.4–4.5 | 식별 도구 (S10). backend 에 지연 보상 없음(W4) |
 | 가상 감속 대상(연속 전환) | 논문 외 유도 | L7 §4.3 | `catching` (S1.8) |
-| 충격량 예산 | [R16][R17][R18] + 논문 외 유도 | L7 §4.7 | 계획기 코어, L8 지표 (S7.3) |
+| 충격량 예산 | [R16][R17][R18] + 논문 외 유도 | L7 §4.7 | 계획기 코어, L8 지표 (S8 — G7-B3 이월, #537 결정 2026-09-24) |
 | 투척 생성·발사 | 논문 외 설계 | L8 §4.2 | `rtc_mujoco_sim` 발사 srv (D-14, S3.2) + catchability 지도 (S3.5a/b) |
 | catch frame | 논문 외 설계 | plan §10 | `rtc_urdf_bridge` 모델 빌더 추가 frame (S2.3a, D-10·D-17) |
 | 관절 가속 한계 도출 | 논문 외 설계 | plan §9 | 오프라인 도구 (S2.5, D-16) |
@@ -389,8 +389,8 @@ catching:
 | TBD-BALL-02 | 투척 속도·거리 범위, 포구 허용 작업공간 | L3, L8 | **→ D-18** — catchability 판정으로 정한다. 발사 영역은 base 수평 거리 4 m 원호, world z 1.5–2.0 m, 비행시간 T_f ≥ 1.0 s. 속도·앙각·방위 범위는 S3.5a/b 지도 결과, threshold 0.1 provisional |
 | TBD-HAND-01 | P1b `T_close` | L3, L6 | S4 식별 도구(sim) + S4.3 실기 $T_{close,tot}$ `[HW-P1B]` |
 | TBD-HAND-02 | P1b 명령 경로(메시지·노드)와 `T_link` | L6 | 닫힘 — 손 device slot → `udp_hand_native` → `/p1b/joint_command` → `udp_hand_node`(250 Hz). 명령 stamp 미사용이라 $T_{link}$ 대신 종단 간 $T_{close,tot}$ 를 잰다 (W, D-11) |
-| TBD-HAND-03 | 지문 센서 인터페이스·주기·부호·frame | L6, L7 | 인터페이스·주기·부호 닫힘 — 실기 `HandSensorState` 250 Hz finger-on-object, sim `WrenchStamped` 도 finger-on-object (0fcc1d23). S7.3 에서 재확인 |
-| TBD-HAND-04 | 포켓 유효 깊이 $d_{eff}$ · 포획 반경 $r_{cap}$ (두 손) | L3 | **LEAP 닫힘(provisional) — $r_{cap}$ 31.0 mm · $d_{eff}$ 80 mm** (S4.5 접촉 sim, 사용자 승인 2026-09-20, L6 §4.5). **P1b 닫힘(provisional) — $r_{cap}$ 24 mm · $d_{eff}$ ≥ 95 mm** (2026-09-21): 사용자 제공 자세는 테니스공을 파지하지 못해 (851 중 0) 자세를 탐색으로 다시 정한 뒤 재실행했다. S7.1 후 투척 보정. **`planner.hand.d_eff` 키의 뜻은 2026-09-22 확정** — 위 포켓 깊이가 아니라 시각 발동 fly-in 허용 상대속도 × $T_{close,tot}$ (P1b 0.2815 · LEAP 0.1047 m, L3 §4.5·L6 §4.5). 깊이는 접촉 물리량으로 여기 남는다 |
+| TBD-HAND-03 | 지문 센서 인터페이스·주기·부호·frame | L6, L7 | 인터페이스·주기·부호 닫힘 — 실기 `HandSensorState` 250 Hz finger-on-object, sim `WrenchStamped` 도 finger-on-object (0fcc1d23). S7.3 판정은 ‖F − b‖ 크기만 써 부호·frame 무관 — 남은 것은 실기 잡음 (L6 §10) |
+| TBD-HAND-04 | 포켓 유효 깊이 $d_{eff}$ · 포획 반경 $r_{cap}$ (두 손) | L3 | **LEAP 닫힘(provisional) — $r_{cap}$ 31.0 mm · $d_{eff}$ 80 mm** (S4.5 접촉 sim, 사용자 승인 2026-09-20, L6 §4.5). **P1b 닫힘(provisional) — $r_{cap}$ 24 mm · $d_{eff}$ ≥ 95 mm** (2026-09-21): 사용자 제공 자세는 테니스공을 파지하지 못해 (851 중 0) 자세를 탐색으로 다시 정한 뒤 재실행했다. 투척 보정은 S7.1 로 선행조건이 풀렸고 아직 하지 않았다 (sim S8 · 실기 S10). **`planner.hand.d_eff` 키의 뜻은 2026-09-22 확정** — 위 포켓 깊이가 아니라 시각 발동 fly-in 허용 상대속도 × $T_{close,tot}$ (P1b 0.2815 · LEAP 0.1047 m, L3 §4.5·L6 §4.5). 깊이는 접촉 물리량으로 여기 남는다 |
 | TBD-HAND-05 | P1b preshape/폐쇄 자세, 전류(토크) 한계 | L6 | 사용자 제공, S4.1 손 프로파일 YAML |
 | TBD-ARM-01 | 명령을 싣는 자리(인터페이스 형태·필드·단위), 실기/sim 전환, backend가 이미 보상하는 지연이 있는지 | L3, L5 | 닫힘 — `ControllerOutput` device 0, `CommandType` kPosition, backend 가 실기/sim 전환(`ur_driver_native`/`mujoco_native`), 지연 보상 없음 (W) |
 | TBD-WS-02 | 포구 코드를 새 패키지로 둘지 기존 패키지에 넣을지, 패키지 이름 확정 | 전체 | 닫힘 — **→ D-1** (새 패키지 없음, §4) |
@@ -456,7 +456,7 @@ v0.3의 `TBD-RTC-06`(결번)과 `TBD-RTC-15`(W2-2가 01로 이미 다룸)는 폐
 | 팔 추종 지연 미보상 | 포구 시각 편향 | backend 보상 없음(W4). `NowLead` 선행(§3), 실기 $T_{arm}$ 식별은 S10 |
 | soft catch 중 포화 | 간극 급증 (hard catch보다 나빠짐) | L3 γ rollout, η_v 여유(D-9). γ 하향은 v1 에서 제외(D-8) → COMMITTED 전 RETREAT, 이후 ABORT_SAFE. abort 가 늘 수 있어 S8 에서 포화 빈도 측정 |
 | 지문 센서만으로 접촉 판정 | 손바닥 선접촉 시 검출 지연 | 감속은 시각 기준, 센서는 판정·abort 전용(A-5) |
-| 시뮬레이션과 실기 손 차이 | 성공률 과대평가 | `[SIM-P1B]`/`[HW-P1B]` 태그 분리, `T_close` 실측 반영, 지문 부호는 두 경로 동일(0fcc1d23) — S7.3 재확인 |
+| 시뮬레이션과 실기 손 차이 | 성공률 과대평가 | `[SIM-P1B]`/`[HW-P1B]` 태그 분리, `T_close` 실측 반영, 지문 부호는 두 경로 동일(0fcc1d23) — S7.3 판정은 크기만 써 부호 무관 |
 | **vision 토픽이 stable ABI 가 아님** (D-4) | 필드·의미가 예고 없이 바뀔 수 있음 | 필드 이름·datatype 검사, 레이아웃 해시 진단(L1 §5.1, P-3). 제품 ABI 는 ball_perception E6-F02 |
 | **vision 메시지의 의미 변경** (레이아웃은 그대로, `horizon_ns` 기준·`a` 정의·공분산 순서·단위가 바뀜) | 해시가 못 잡는다 | L1 §5.1 물리 일관성 검사(가속도 잔차, 속도 잔차, `frame_id` 매 메시지 비교), L1 §4.5 $\bar\nu$ 추세 |
 | **vision 지평이 짧음** (S0.7 profile 0.8 s → S3.6 이 1.0 s / 20 점으로 설정) | 계획 가능한 포구 창이 줄어듦 — 0.8 s 면 계획기가 보는 창 끝이 0.78 s 라 늦게 잡는 자세가 시도 대상에서 빠진다 | D-15: 요구 사양을 제어기가 정하고(S3.6 완료) sim profile 을 맞춘다. 짧은 궤적은 후보 제외·진단 |

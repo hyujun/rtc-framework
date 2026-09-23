@@ -586,11 +586,11 @@ ros2 service call /demo_wbc_controller/grasp_command \
 
 ## 로깅 (Logging)
 
-### DemoCatchingController (dynamic_catching S5)
+### DemoCatchingController (dynamic_catching S5–S7)
 
 설계·결정의 SSoT 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) 이고 (충돌 시 그 문서가 우선), 여기에는 **운용 표면**만 적는다.
 
-- **팔은 활성화 첫 tick 자세를 hold 한다** — 추종 법칙(CLIK)은 S5.3 이다. 손은 `diagnostic.hand_step: true` 일 때만 무성형 계단 목표를 받는다 (S4.2 측정용, S7.1 에서 시퀀서가 손을 가져가면 false 가 기본)
+- **무장되면 팔은 스스로 `planner.wait_pose` 로 관절공간 homing 하고 한 투척마다 한 순환을 돈다** (S7, 아래 §Catching sim trials·L7 §4.1). 손은 S7.1 부터 시퀀서가 소유한다. `diagnostic.hand_step: true` (출하 false) 인 프로파일만 시퀀서 없이 무성형 계단 목표를 받는다 (S4.2 측정용)
 - **무장 채널**: 컨트롤러 노드의 읽기·쓰기 파라미터 `catching.enable` (기본 `false`). `ros2 param set /demo_catching_controller/demo_catching_controller catching.enable true` (노드 이름은 네임스페이스·이름이 모두 `demo_catching_controller` 다 — 앞의 절반만 쓰면 "Node not found"). **컨트롤러가 스스로 내린다** — E-STOP 발동·해제와 fault 래치에서 RT tick 이 latch 를 내리므로, 해제 후 재개는 다시 `true` 로 올리는 명시적 행위를 요구한다 (P-1 (c)). 활성화도 무장이 아니다
 - **E-STOP·fault**: `TriggerEstop`/`ClearEstop`/`ResetFault`/`ResetTargetInitialization` 는 atomic 요청·epoch 만 갱신하고, 되돌리는 동작의 유일 writer 는 `Compute()` 다. `ClearEstop` 은 컨트롤러 fault 래치를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않는다 (`/rtc_cm/reset_fault` ↔ `/rtc_cm/clear_estop` 이 서로 다른 경로다)
 - **실기 config 에서의 park**: claim 한 device 가 전부 `mujoco_native` 임을 증명하지 못하면 이 configure 는 **real-arm** 으로 판정되고, 이 컨트롤러가 소비하는 키 (`control_rate`·`robot.hand.*`) 에 provisional·TBD 가 있으면 `on_configure` 는 SUCCESS 를 내되 인스턴스를 DISABLED 로 두고 `on_activate` 가 거부한다 (L0 §5.3). configure 를 실패시키지 않는 이유는 CM 이 한 컨트롤러의 configure 실패로 **전체 bring-up** 을 거부하기 때문이다. 출하 프로파일은 아직 provisional 이므로 실기에서는 이 상태가 정상이다

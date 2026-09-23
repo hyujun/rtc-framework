@@ -38,8 +38,8 @@
 //     inventing a Reason absent from the closed enum. §4.2's own
 //     "발생 가능 상태: IDLE" column is read as "where this is currently
 //     OBSERVED", not a closed set, since it is not itself a completeness
-//     constraint the doc places on Reason applicability. Revisit in S7.2 if
-//     a dedicated readiness-lost Reason is added later.
+//     constraint the doc places on Reason applicability. S7.2 kept this
+//     reuse (no dedicated readiness-lost Reason; plan §7.3).
 //
 //     The same reuse covers the MID-CYCLE modes, and there it is not a
 //     labelling choice but a safety one. Readiness can be lost while the arm
