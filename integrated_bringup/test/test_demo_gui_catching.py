@@ -102,6 +102,9 @@ def test_a_feed_that_never_started_says_so_and_does_not_invent_a_mode():
     status = CatchingStatus()
     out = text(status)
     assert "never received" in out
+    # A parked controller also never publishes (A-S5-12): the panel names that
+    # cause too, so a parked bring-up does not read as a dead topic.
+    assert "parked" in out
     assert "IDLE" not in out
 
 

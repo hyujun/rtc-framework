@@ -342,6 +342,22 @@ demo_catching_controller:
     # bias for a slow-closing hand, not the hand's limit (L6 §4.5).
     # With the two user-posed pairs this block was TBD: 0 held of 851.
     planner:
+      # ── Planner thread (L3 §6, S6-A) ──────────────────────────────────────
+      # OFF while `diagnostic.oracle_plan` is on: both write the ONE plan box,
+      # and a profile enabling both is parked. S6-B turns the oracle off and
+      # this on (R-4).
+      enabled: false
+      # The longest the planner sleeps without a new trajectory (decision H,
+      # 2026-09-23). It also re-plans on this cadence while vision is quiet.
+      wake_timeout_s: 0.05
+      # One cycle's compute budget (R-2, 2026-09-23): per-candidate IK measured
+      # p50 1.8 ms on this 6-axis arm (dev PC), so 20 ms with a pre-filter to at
+      # most 8 IK candidates per cycle.
+      budget_s: 0.020
+      # IK seed and wait pose, ARM joint order [rad] (decision L, 2026-09-23):
+      # the S3.5b gate map's wait pose for this arm. PROVISIONAL. Consumed from S6-B (the IK seed); homing to it
+      # is S7.2.
+      wait_pose: [0.212, -1.376, 1.107, -1.978, -3.296, 0.121]
       hand:
         d_eff: 0.2815
         r_cap: 0.024

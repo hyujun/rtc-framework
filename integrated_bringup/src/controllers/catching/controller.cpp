@@ -5,6 +5,8 @@
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
 
+#include <unistd.h>  // close (planner wake eventfd)
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -45,6 +47,18 @@ DemoCatchingController::DemoCatchingController(std::string_view urdf_path) : urd
   // Nothing to build: this skeleton runs no model. urdf_path_ is stored so the
   // signature matches the registry factory and S5.1 can build one here without
   // changing the registration.
+}
+
+DemoCatchingController::~DemoCatchingController() {
+  // Thread first: it holds references to planner_cycle_ and the boxes, and it
+  // may be inside poll() on the eventfd. Join wakes it (OnRequestStop writes
+  // the fd) and waits for the loop to leave; only then is the fd closed, so a
+  // recycled fd number can never be polled by a thread that outlived it.
+  planner_thread_.reset();
+  const int fd = planner_wake_fd_.exchange(-1, std::memory_order_acq_rel);
+  if (fd >= 0) {
+    static_cast<void>(::close(fd));
+  }
 }
 
 // ── Configuration ───────────────────────────────────────────────────────────
@@ -159,6 +173,12 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
       }
     }
   }
+
+  // ── planner.* thread keys (S6-A) ────────────────────────────────────────
+  // Parsed here, like the rest of the tree, so a malformed key refuses the
+  // configure through LoadConfig's own try/catch rather than defaulting.
+  planner_params_ = catching_section_present_ ? rtc::catching::ParsePlannerParams(catching)
+                                              : rtc::catching::PlannerParams{};
 
   // ── logs: (Phase C) ─────────────────────────────────────────────────────
   parsed_log_entries_.clear();
@@ -389,6 +409,12 @@ void DemoCatchingController::OnTrajectoryCloud(const sensor_msgs::msg::PointClou
   // current one (D-22).
   cov_box_.Store(cov);
   traj_box_.Store(snap);
+  // Wake the planner (D-7c). After BOTH stores, so the wake it causes reads a
+  // matched pair. Non-blocking; the RT tick never does this.
+  if (planner_params_.enabled) {
+    static_cast<void>(
+        CatchingPlannerThread::Signal(planner_wake_fd_.load(std::memory_order_acquire)));
+  }
 
   const auto& diag = traj_input_.LastDiagnostics();
   if (diag.jump_m >= 0.0 && traj_jump_warn_m_ > 0.0 && diag.jump_m > traj_jump_warn_m_) {
@@ -628,29 +654,82 @@ void DemoCatchingController::RunJointSpaceAbort(const ControllerState& state) no
   abort_stopped_ = step.valid && step.stopped;
 }
 
-void DemoCatchingController::MakeOraclePlan(rtc::catching::NowReal now) noexcept {
+void DemoCatchingController::StoreOraclePlan(rtc::catching::NowReal now) noexcept {
   // A-S5-8. One fixed catch point, from the operator's ground-truth
   // measurement, with the γ ramp spanning from now to the catch instant.
-  plan_ = rtc::catching::PlanSnapshot{};
-  plan_.token.activation_generation = ActivationGeneration();
-  plan_.p_c = oracle_p_c_;
-  plan_.a_d = oracle_a_d_;
-  plan_.t_c_ns = now.ns + static_cast<std::int64_t>(oracle_t_c_offset_s_ * 1e9);
-  plan_.t_cmd_ns = plan_.t_c_ns;
-  plan_.gamma_g0 = 0.0;
-  plan_.gamma_gf = oracle_gamma_f_;
+  //
+  // Stored in the plan box rather than written to plan_ directly (S6-A), so
+  // the oracle and the planner reach the tracking law through ONE path —
+  // JudgePlan → AdoptPlan — and an oracle run exercises the code a planner run
+  // depends on. The RT is this box's writer only because the profile enabled
+  // the oracle; a profile enabling the planner as well is parked at configure.
+  rtc::catching::PlanSnapshot plan{};
+  plan.token.activation_generation = ActivationGeneration();
+  // The track the RT is holding: the plan is FOR this ball, and JudgePlan (c)
+  // refuses a plan for any other.
+  plan.token.generation = last_track_generation_;
+  plan.plan_id = ++oracle_plan_id_;
+  plan.p_c = oracle_p_c_;
+  plan.a_d = oracle_a_d_;
+  plan.t_c_ns = now.ns + static_cast<std::int64_t>(oracle_t_c_offset_s_ * 1e9);
+  plan.t_cmd_ns = plan.t_c_ns;
+  plan.gamma_g0 = 0.0;
+  plan.gamma_gf = oracle_gamma_f_;
   // The ramp starts NOW and ends at the catch instant: γ(t_c) = γ_f with
   // γ̇ = γ̈ = 0 there is what L4 §4.2's corollary needs, and starting at 0
   // makes the initial error independent of how far away the ball is.
-  plan_.gamma_t0_ns = now.ns;
-  plan_.gamma_t1_ns = plan_.t_c_ns;
-  // The instant this plan came into being. S6's planner fills the same field
-  // from its own publish, so `plan_age_s` means one thing in both eras — an
-  // oracle that left it at zero would report an age of "seconds since the
-  // epoch" the moment a consumer subtracted.
-  plan_.publish_ns = now.ns;
-  plan_.valid = true;
+  plan.gamma_t0_ns = now.ns;
+  plan.gamma_t1_ns = plan.t_c_ns;
+  // The instant this plan came into being — `plan_age_s` means one thing for
+  // both writers, and JudgePlan's age bound applies to both.
+  plan.publish_ns = now.ns;
+  plan.valid = true;
+  plan_box_.Store(plan);
+}
+
+void DemoCatchingController::AdoptPlan(const rtc::catching::PlanSnapshot& plan) noexcept {
+  plan_ = plan;
   plan_active_ = true;
+  admitted_plan_ = rtc::catching::AdmittedPlan{true, plan.plan_id};
+  plan_admitted_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
+                                                 rtc::catching::NowReal now) noexcept {
+  // Built from scratch every tick (PROC-7 in spirit): a field this tick did
+  // not compute is zero, never a previous tick's value.
+  rtc::catching::PlannerRtState s{};
+  s.valid = true;
+  s.activation_generation = ActivationGeneration();
+  s.rt_iteration = state.iteration;
+  s.rt_state_ns = now.ns;
+  s.reset_epoch = planner_reset_epoch_;
+  s.mode = static_cast<std::uint8_t>(mode_);
+  s.armed = arm_requested_.load(std::memory_order_relaxed);
+  const int nv = std::min<int>(arm_dof_, static_cast<int>(rtc::catching::kMaxPlanNv));
+  s.nv = nv;
+  s.cmd_seeded = arm_cmd_seeded_;
+  if (arm_cmd_seeded_) {
+    for (int i = 0; i < nv && i < kDemoCatchingMaxArmDof; ++i) {
+      const auto u = static_cast<std::size_t>(i);
+      s.q_cmd[u] = arm_q_cmd_[u];
+      s.qd_cmd[u] = arm_qd_cmd_[u];
+    }
+  }
+  // The reference block of THIS tick's record: RecordReference fills it only on
+  // a tick that ran the generator, and the record is fresh every tick.
+  s.ref_valid = tick_record_.ref_valid;
+  if (s.ref_valid) {
+    s.ref_x = tick_record_.ref_x;
+    s.ref_xd = tick_record_.ref_xd;
+    s.gamma = tick_record_.ref_gamma;
+    s.gamma_d = tick_record_.ref_gamma_d;
+  }
+  s.plan_active = plan_active_;
+  s.plan_id = plan_active_ ? plan_.plan_id : 0U;
+  s.track_seen = track_seen_;
+  s.track_generation = last_track_generation_;
+  planner_rt_box_.Store(s);
 }
 
 // ── E-STOP and fault hooks (P-1 (a): request only) ──────────────────────────
@@ -847,17 +926,24 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     // first readable tick, as a step away from the pose the arm is actually
     // in. Waiting self-loops in TRACKING, which is where a controller that
     // can see the ball but not its own arm belongs.
-    if (!plan_active_ && oracle_enabled_ && clik_enabled_ && arm_readable_) {
-      // The oracle stands in for the planner (A-S5-8). Building it HERE, on
-      // the tick the supervisor is ready for one, is what makes the
-      // TRACKING → APPROACH edge the real edge rather than a special case.
-      MakeOraclePlan(rtc::catching::NowReal{SteadyNowNs()});
+    if (!plan_active_ && clik_enabled_ && arm_readable_ &&
+        plan_refusal_ == rtc::catching::PlanRefusal::kNone) {
+      // The plan in the box passed every admission check this tick (L3 §5.2
+      // (a)-(f)) — the planner's, or the oracle's stand-in (A-S5-8), through
+      // the same path. Taking it HERE, on the tick the supervisor is ready for
+      // one, is what makes the TRACKING → APPROACH edge the real edge rather
+      // than a special case.
+      AdoptPlan(plan_in_);
       SeedArmCommand(state);
       reference_seeded_ = false;
       return {Reason::kNone, true};
     }
-    // No planner, no oracle: the ball is seen and no plan exists for it, which
-    // is exactly what NO_CATCHABLE_PLAN says. S6 replaces this.
+    // The ball is seen and no admissible plan exists for it — none published,
+    // or one this tick refused (stale activation, another track, too old,
+    // already taken, or from before the last reset). All of those are "no
+    // plan" to the supervisor, which is exactly what NO_CATCHABLE_PLAN says; a
+    // reason per refusal would be a change to the frozen message (D-20), and
+    // the refusal itself is observable through GetLastPlanRefusal().
     return {Reason::kNoCatchablePlan, true};
   }
 
@@ -919,6 +1005,15 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   // trial looks like a track CHANGE and aborts it.
   plan_ = rtc::catching::PlanSnapshot{};
   plan_active_ = false;
+  // The plan lane (S6-A). The box is NOT cleared here — the RT is not its
+  // writer when a planner runs. Instead: forget which plan was taken, refuse
+  // every plan published before this instant (JudgePlan (f) — an E-STOP does
+  // not move the activation generation, so (b) alone would let a plan from
+  // the stopped trial into the next one), and tell the planner a reset
+  // happened so it drains its pending wake (L7 §4.8).
+  admitted_plan_ = rtc::catching::AdmittedPlan{};
+  reset_floor_ns_ = SteadyNowNs();
+  ++planner_reset_epoch_;
   arm_cmd_seeded_ = false;
   reference_seeded_ = false;
   qp_fail_streak_ = 0;
@@ -1361,6 +1456,31 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     track_seen_ = true;
   }
 
+  // ── The plan lane (S6-A, L3 §5.2) ───────────────────────────────────────
+  // The oracle stand-in writes first (it is this box's writer only when the
+  // profile has no planner), then the box is loaded ONCE, unconditionally
+  // (D-21), and judged against what this tick knows. The verdict is what
+  // EvaluateReason's TRACKING branch consults; nothing else reads plan_in_.
+  if (oracle_enabled_ && mode_ == rtc::catching::Mode::kTracking && !plan_active_ &&
+      clik_enabled_ && arm_readable_ && track_seen_) {
+    StoreOraclePlan(now);
+  }
+  plan_in_ = plan_box_.Load();
+  {
+    rtc::catching::PlanAdmissionContext ctx{};
+    ctx.activation_generation = ActivationGeneration();
+    ctx.track_seen = track_seen_;
+    ctx.track_generation = last_track_generation_;
+    ctx.now = now;
+    // A plan older than the ingress staleness bound was computed against a
+    // prediction this tick would itself refuse as stale.
+    ctx.max_age_ns = t_stale_ns_;
+    ctx.reset_floor_ns = reset_floor_ns_;
+    plan_refusal_ = rtc::catching::JudgePlan(plan_in_, ctx, admitted_plan_);
+    plan_refusal_observed_.store(static_cast<std::uint8_t>(plan_refusal_),
+                                 std::memory_order_relaxed);
+  }
+
   const ReasonDecision decision = EvaluateReason(state, snapshot);
   if (decision.advance) {
     AdvanceMode(decision.reason);
@@ -1400,6 +1520,10 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     FillDeviceStateLogPod(state, output, kCatchingHandDeviceIdx, pod);
     hand_state_log_handle_.Push(pod);
   }
+
+  // Every tick, after the decision and the law, so the planner sees the mode
+  // and the reference state this tick left behind.
+  StorePlannerRtState(state, now);
 
   // LAST, and unconditional. Every branch above reaches here — Compute() has a
   // single exit on purpose, so "Store on every early-return branch" (PROC-7)

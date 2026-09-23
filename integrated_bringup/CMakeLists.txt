@@ -86,6 +86,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/catching/controller.cpp
   src/controllers/catching/traj_input.cpp
   src/controllers/catching/lifecycle.cpp
+  src/controllers/catching/planner_thread.cpp
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
@@ -1400,6 +1401,52 @@ if(BUILD_TESTING)
     rtc_base
     sensor_msgs
     ament_index_cpp
+  )
+
+  # ── dynamic_catching S6-A: the planner thread and the RT plan lane ────────
+  # Thread half: eventfd coalescing, the reset drain, Join under a long
+  # timeout, Pause. Lane half on the real UR5e+P1b model through CM's configure
+  # path: the oracle reaching the law through the plan box, PlannerRtState
+  # every tick, a previous-activation plan and a pre-E-STOP plan never
+  # consumed (G3-L), and the stub planner leaving TRACKING on NO_CATCHABLE_PLAN.
+  ament_add_gtest(test_catching_planner_lane test/test_catching_planner_lane.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_catching_planner_lane
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_planner_lane
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    sensor_msgs
+    ament_index_cpp
+  )
+
+  # ── dynamic_catching S6-A R-1: the planner shares the `mpc` layout role ────
+  # DemoWbc's MPC thread and the catching planner in one process, switched in
+  # CM's order (deactivate, activate): thread count by name, affinity against
+  # the role's slot, Paused/Running per thread, policy when the host allows it
+  # (NOT_EVALUATED(EPERM) recorded otherwise), and the mpc_off refusal.
+  ament_add_gtest(test_catching_mpc_role_switch test/test_catching_mpc_role_switch.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_catching_mpc_role_switch
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  target_compile_definitions(test_catching_mpc_role_switch PRIVATE
+    RTC_UR5E_URDF_PATH="${RTC_UR5E_URDF_PATH}"
+    RTC_WBC_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/ur5e_p1a/controllers/demo_wbc_controller.yaml")
+  ament_target_dependencies(test_catching_mpc_role_switch
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_base
+    pinocchio
+    rtc_tsid
+    rtc_mpc
+    Eigen3
   )
 
   # ── QP CLIK task-space characterisation across the ball envelope ─────────

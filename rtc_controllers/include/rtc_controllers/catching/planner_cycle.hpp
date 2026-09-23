@@ -121,6 +121,7 @@ class PlannerCycle {
   /// re-check to matter. Production never sets it; without the seam the only
   /// way to hit that window is a timing race, and a race is not a test.
   using PostSearchHook = void (*)(void* context) noexcept;
+
   void SetPostSearchHookForTesting(PostSearchHook hook, void* context) noexcept {
     post_search_hook_ = hook;
     post_search_context_ = context;

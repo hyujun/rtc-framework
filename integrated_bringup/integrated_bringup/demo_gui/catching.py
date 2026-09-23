@@ -257,6 +257,13 @@ class CatchingStatus:
         if state is FeedState.NEVER:
             return [
                 f"catching_state: never received (is /{CATCHING_CONFIG_KEY} active?)",
+                # A controller PARKED at configure (A-S5-1 / A-S5-12, or the
+                # planner and the oracle both enabled) refuses activation and
+                # so never publishes: the robot is up, catching is not. Say
+                # where the reason is rather than leave "never received" to
+                # read as a dead topic.
+                "  parked? a controller parked at configure refuses to activate — "
+                "its configure log names the values (DISABLED: ...)",
                 f"arm: requested {self._requested_text()}",
             ]
 

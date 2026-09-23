@@ -31,6 +31,7 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
+#include "rtc_controllers/catching/planner_params.hpp"
 #include "shipped_config_test_fixture.hpp"
 
 #include <rclcpp/executors.hpp>
@@ -1177,6 +1178,161 @@ TEST_P(ShippedCatchingProfile, IsStillParkedOnTheRealArmAxis) {
       << profile << ": the provisional values stopped blocking a real arm";
   EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// ── S6-A: the shipped profiles with the planner thread ──────────────────────
+//
+// The planner is ON in these cases whatever the file says (and the oracle
+// OFF), because the property under test is "the shipped profile runs the
+// planner through the whole lifecycle" — the ur5e_p1b file keeps its oracle on
+// until S6-B, and testing only what each file enables today would leave that
+// profile's planner path unexercised.
+
+YAML::Node ShippedWithPlanner(const std::string& profile, bool planner, bool oracle) {
+  YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  node["catching"]["planner"]["enabled"] = planner;
+  node["diagnostic"]["oracle_plan"]["enabled"] = oracle;
+  return node;
+}
+
+rclcpp_lifecycle::LifecycleNode::SharedPtr NodeWithProfile(const std::string& name,
+                                                           const std::string& layout_profile) {
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter("rt_layout_profile", layout_profile)});
+  return std::make_shared<rclcpp_lifecycle::LifecycleNode>(name, options);
+}
+
+TEST_P(ShippedCatchingProfile, RunsThePlannerThroughTheWholeLifecycle) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, /*planner=*/true, /*oracle=*/false);
+  auto configs = ShippedSimConfigs(profile, node);
+  ASSERT_EQ(configs.size(), 2U);
+  auto node_handle = NodeWithProfile("catching_shipped_planner_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(configs);
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_FALSE(ctrl.IsSimOnlyDisabled());
+  EXPECT_TRUE(ctrl.GetPlannerParams().enabled);
+  EXPECT_GE(ctrl.GetPlannerWakeFd(), 0) << "configure made no wake eventfd";
+  EXPECT_EQ(ctrl.GetPlannerThread(), nullptr) << "the thread is spawned at activation, not before";
+
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  const auto* thread = ctrl.GetPlannerThread();
+  ASSERT_NE(thread, nullptr);
+  EXPECT_TRUE(thread->Running());
+  EXPECT_FALSE(thread->Paused());
+
+  ASSERT_EQ(ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(thread->Paused());
+  // Re-activation reuses the thread (lazy spawn is once per controller).
+  ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_EQ(ctrl.GetPlannerThread(), thread);
+  EXPECT_FALSE(thread->Paused());
+  ASSERT_EQ(ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_P(ShippedCatchingProfile, RefusesToActivateThePlannerUnderTheMpcOffProfile) {
+  // Same gate, same place as DemoWbc's (#350): on_activate's first statement,
+  // before any side effect — above all, no planner thread on a core the
+  // shield no longer holds.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  auto node_handle = NodeWithProfile("catching_shipped_mpc_off_" + profile, "mpc_off");
+  DemoCatchingController ctrl{""};
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << "the profile gate refuses ACTIVATION; configure must still succeed";
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  EXPECT_EQ(ctrl.GetPlannerThread(), nullptr);
+
+  // The planner OFF under the same profile is a normal activation: the gate
+  // refuses a configuration, not a controller.
+  YAML::Node off = ShippedWithPlanner(profile, false, false);
+  auto node_off = NodeWithProfile("catching_shipped_mpc_off_noplan_" + profile, "mpc_off");
+  DemoCatchingController ctrl_off{""};
+  ctrl_off.SetControlRate(kShippedControlRateHz);
+  ctrl_off.SetDeviceNameConfigs(ShippedSimConfigs(profile, off));
+  ASSERT_EQ(ctrl_off.on_configure(prev, node_off, off),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_EQ(ctrl_off.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_off.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_P(ShippedCatchingProfile, AConsumedKeyLeftTbdParksTheSimProfileInsteadOfFailingIt) {
+  // A-S5-12, positive control: the shipped sim profile with one consumed key
+  // removed. Before A-S5-12 this refused the configure, and CM then refused
+  // EVERY controller — no robot. Now the robot comes up and only this
+  // controller declines to activate.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, false, false);
+  ASSERT_TRUE(node["catching"]["io"]["t_stale"]) << "precondition: the key is shipped";
+  node["catching"]["io"].remove("t_stale");
+  auto node_handle = NodeWithProfile("catching_shipped_tbd_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile << ": a consumed TBD in sim must park, not refuse (A-S5-12)";
+  EXPECT_FALSE(ctrl.IsRealArmConfig()) << "precondition: judged on the sim axis";
+  EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kConsumedValues);
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_P(ShippedCatchingProfile, ThePlannerAndTheOracleTogetherPark) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, /*planner=*/true, /*oracle=*/true);
+  auto node_handle = NodeWithProfile("catching_shipped_both_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kPlannerOracleConflict);
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  EXPECT_EQ(ctrl.GetPlannerThread(), nullptr);
+}
+
+TEST_P(ShippedCatchingProfile, TheWaitPoseIsOnePerArmJointAndInsideTheArmLimits) {
+  // Decision L: arm joint order. Read against the arm device's own limits
+  // rather than restated numbers.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  const auto configs = ShippedSimConfigs(profile, node);
+  const auto arm_group = node["topics"].begin()->first.as<std::string>();
+  const auto it = configs.find(arm_group);
+  ASSERT_NE(it, configs.end());
+  const auto& arm = it->second;
+  ASSERT_EQ(planner.wait_pose_n, static_cast<int>(arm.joint_state_names.size()))
+      << profile << ": planner.wait_pose must carry one value per arm joint";
+  ASSERT_TRUE(arm.joint_limits.has_value()) << profile << ": arm declares no joint_limits";
+  for (int i = 0; i < planner.wait_pose_n; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    EXPECT_GE(planner.wait_pose[u], arm.joint_limits->position_lower[u])
+        << profile << "[" << i << "]";
+    EXPECT_LE(planner.wait_pose[u], arm.joint_limits->position_upper[u])
+        << profile << "[" << i << "]";
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(BothCatchingRobots, ShippedCatchingProfile,

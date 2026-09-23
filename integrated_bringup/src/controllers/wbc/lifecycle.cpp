@@ -15,7 +15,7 @@ namespace integrated_bringup {
 
 // ── Launch layout profile (issue #350) ────────────────────────────────────
 bool DemoWbcController::LayoutProfileDropsMpc(std::string_view profile) noexcept {
-  return profile == kMpcOffLayoutProfile;
+  return ::integrated_bringup::LayoutProfileDropsMpc(profile);
 }
 
 void DemoWbcController::SetLayoutProfile(std::string_view profile) noexcept {
@@ -44,14 +44,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
   // declared with has_parameter() guarded re-entry like the gains are.
   // Unknown or absent means the historical layout, with the MPC cores
   // reserved — the same thing every launch got before the profile existed.
-  {
-    constexpr const char* kProfileParam = "rt_layout_profile";
-    const std::string profile = node->has_parameter(kProfileParam)
-                                    ? node->get_parameter(kProfileParam).as_string()
-                                    : node->declare_parameter<std::string>(
-                                          kProfileParam, std::string(kDefaultLayoutProfile));
-    SetLayoutProfile(profile);
-  }
+  SetLayoutProfile(ReadLayoutProfile(*node));
   try {
     CreateOwnedTopics(*this, owned_topics_);
 
