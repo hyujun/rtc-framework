@@ -9,6 +9,7 @@
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/catching/contact_debounce.hpp"
 #include "rtc_controllers/catching/decel_target.hpp"
+#include "rtc_controllers/catching/joint_home.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 
@@ -34,6 +35,8 @@ using rtc::catching::ContactDebouncer;
 using rtc::catching::DecelEntryState;
 using rtc::catching::DecelTarget;
 using rtc::catching::EvaluateDecelTarget;
+using rtc::catching::JointHomeStep;
+using rtc::catching::JointSpaceHomeStep;
 using rtc::catching::kAllModes;
 using rtc::catching::kAllReasons;
 using rtc::catching::kMaxFingertips;
@@ -633,6 +636,167 @@ TEST(GateG7D, DecelTargetAndContactDebounceAllocateNothing) {
     EXPECT_EQ(heap_gate.count(), 0u);
     EXPECT_EQ(eigen_gate.violations(), 0u);
   }
+}
+
+// ── Joint-space homing / return law (S7.2, #537 S7 Q3) ──────────────────────
+
+namespace home {
+
+constexpr std::size_t kN = 6;
+constexpr double kDt = 0.002;
+constexpr double kEtaA = 0.5;
+constexpr double kVMax = 0.5;
+const std::array<double, kN> kQddMax{3.0, 3.0, 3.0, 5.0, 5.0, 5.0};
+const std::array<double, kN> kLo{-3.0, -3.0, -3.0, -3.0, -3.0, -3.0};
+const std::array<double, kN> kHi{3.0, 3.0, 3.0, 3.0, 3.0, 3.0};
+
+struct Run {
+  int steps{-1};
+  double max_speed{0.0};
+  double max_dqd_over_limit{0.0};  // max over steps/joints of |Δq̇| − a·Δt
+};
+
+/// Step the law until it reports arrival (or a cap), checking the two bounds
+/// the law exists to keep on every step.
+Run HomeUntilArrived(std::array<double, kN>& q, std::array<double, kN>& qd,
+                     const std::array<double, kN>& target, int cap = 20000) {
+  Run r;
+  for (int k = 0; k < cap; ++k) {
+    const std::array<double, kN> qd_prev = qd;
+    const JointHomeStep step =
+        JointSpaceHomeStep(q, qd, target, kQddMax, kEtaA, kVMax, kLo, kHi, kN, kDt);
+    EXPECT_TRUE(step.valid);
+    for (std::size_t i = 0; i < kN; ++i) {
+      r.max_speed = std::max(r.max_speed, std::abs(qd[i]));
+      r.max_dqd_over_limit =
+          std::max(r.max_dqd_over_limit, std::abs(qd[i] - qd_prev[i]) - kEtaA * kQddMax[i] * kDt);
+      EXPECT_GE(q[i], kLo[i]);
+      EXPECT_LE(q[i], kHi[i]);
+    }
+    if (step.arrived) {
+      r.steps = k;
+      return r;
+    }
+  }
+  return r;
+}
+
+}  // namespace home
+
+TEST(JointSpaceHome, FromRestArrivesExactlyWithinTheSpeedAndAccelerationBounds) {
+  std::array<double, home::kN> q{0.0, -1.2, 1.4, -1.7, -1.5, 0.0};
+  std::array<double, home::kN> qd{};
+  const std::array<double, home::kN> target{0.212, -1.376, 1.107, -1.978, -3.296 + 1.0, 0.121};
+  const home::Run r = home::HomeUntilArrived(q, qd, target);
+  ASSERT_GE(r.steps, 0) << "never arrived";
+  for (std::size_t i = 0; i < home::kN; ++i) {
+    EXPECT_EQ(q[i], target[i]) << "arrival is exact, not approximate: joint " << i;
+    EXPECT_EQ(qd[i], 0.0) << i;
+  }
+  EXPECT_LE(r.max_speed, home::kVMax + 1e-12);
+  EXPECT_LE(r.max_dqd_over_limit, 1e-12);
+  // Not faster than v_max allows: the farthest joint's distance at v_max is a
+  // lower bound on the duration (a law that skipped the cap would beat it).
+  const std::array<double, home::kN> start{0.0, -1.2, 1.4, -1.7, -1.5, 0.0};
+  double farthest = 0.0;
+  for (std::size_t i = 0; i < home::kN; ++i) {
+    farthest = std::max(farthest, std::abs(target[i] - start[i]));
+  }
+  EXPECT_GE(r.steps, static_cast<int>(farthest / home::kVMax / home::kDt));
+}
+
+TEST(JointSpaceHome, ACarriedVelocityAwayFromTheTargetTurnsAroundAtTheLimit) {
+  // A RETREAT that starts from a moving command, or a homing that starts
+  // before the ramp finished: the velocity must not reverse in one tick.
+  std::array<double, home::kN> q{};
+  std::array<double, home::kN> qd{-0.8, -0.8, -0.8, 0.8, 0.8, 0.8};
+  const std::array<double, home::kN> target{0.5, 0.5, 0.5, -0.5, -0.5, -0.5};
+  const home::Run r = home::HomeUntilArrived(q, qd, target);
+  ASSERT_GE(r.steps, 0);
+  EXPECT_LE(r.max_dqd_over_limit, 1e-12);
+  for (std::size_t i = 0; i < home::kN; ++i) {
+    EXPECT_EQ(q[i], target[i]);
+  }
+}
+
+TEST(JointSpaceHome, ApproachFromRestNeverOvershootsByMoreThanTheSnapBand) {
+  std::array<double, home::kN> q{};
+  std::array<double, home::kN> qd{};
+  const std::array<double, home::kN> target{1.0, 0.3, 0.01, -1.0, -0.3, -0.01};
+  for (int k = 0; k < 20000; ++k) {
+    const JointHomeStep step =
+        JointSpaceHomeStep(q, qd, target, home::kQddMax, home::kEtaA, home::kVMax, home::kLo,
+                           home::kHi, home::kN, home::kDt);
+    for (std::size_t i = 0; i < home::kN; ++i) {
+      // From rest the discrete brake overshoots by at most a·Δt²/8; the snap
+      // band a·Δt² is the bound the law promises, with that margin inside it.
+      const double band = home::kEtaA * home::kQddMax[i] * home::kDt * home::kDt;
+      const double past = target[i] > 0.0 ? q[i] - target[i] : target[i] - q[i];
+      EXPECT_LE(past, band) << "joint " << i << " step " << k;
+    }
+    if (step.arrived) {
+      return;
+    }
+  }
+  ADD_FAILURE() << "never arrived";
+}
+
+TEST(JointSpaceHome, ATargetOutsideTheBoxEndsAtTheBox) {
+  std::array<double, home::kN> q{};
+  std::array<double, home::kN> qd{};
+  std::array<double, home::kN> target{};
+  target[0] = 4.0;  // box is ±3
+  const home::Run r = home::HomeUntilArrived(q, qd, target);
+  ASSERT_GE(r.steps, 0);
+  EXPECT_EQ(q[0], home::kHi[0]);
+}
+
+TEST(JointSpaceHome, ANonFiniteJointIsLeftAloneAndTheStepIsNotArrived) {
+  std::array<double, home::kN> q{};
+  std::array<double, home::kN> qd{};
+  q[2] = std::numeric_limits<double>::quiet_NaN();
+  const std::array<double, home::kN> target{};  // every finite joint already there
+  const JointHomeStep step =
+      JointSpaceHomeStep(q, qd, target, home::kQddMax, home::kEtaA, home::kVMax, home::kLo,
+                         home::kHi, home::kN, home::kDt);
+  EXPECT_TRUE(step.valid);
+  EXPECT_TRUE(step.non_finite);
+  EXPECT_FALSE(step.arrived);
+  EXPECT_TRUE(std::isnan(q[2]));
+}
+
+TEST(JointSpaceHome, InvalidArgumentsChangeNothing) {
+  std::array<double, home::kN> q{0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
+  std::array<double, home::kN> qd{};
+  const std::array<double, home::kN> target{};
+  const std::array<double, home::kN> q0 = q;
+  EXPECT_FALSE(JointSpaceHomeStep(q, qd, target, home::kQddMax, 0.0, home::kVMax, home::kLo,
+                                  home::kHi, home::kN, home::kDt)
+                   .valid);  // eta_a
+  EXPECT_FALSE(JointSpaceHomeStep(q, qd, target, home::kQddMax, home::kEtaA, 0.0, home::kLo,
+                                  home::kHi, home::kN, home::kDt)
+                   .valid);  // v_max
+  EXPECT_FALSE(JointSpaceHomeStep(q, qd, target, home::kQddMax, home::kEtaA, home::kVMax, home::kLo,
+                                  home::kHi, home::kN, 0.0)
+                   .valid);  // dt
+  EXPECT_FALSE(JointSpaceHomeStep(q, qd, target, home::kQddMax, home::kEtaA, home::kVMax, home::kLo,
+                                  home::kHi, home::kN + 1, home::kDt)
+                   .valid);  // n wider than the spans
+  EXPECT_EQ(q, q0);
+}
+
+TEST(JointSpaceHome, StepDoesNotAllocate) {
+  std::array<double, home::kN> q{};
+  std::array<double, home::kN> qd{};
+  const std::array<double, home::kN> target{0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
+  rtc::testing::ScopedAllocGate heap_gate;
+  for (int k = 0; k < 500; ++k) {
+    const JointHomeStep step =
+        JointSpaceHomeStep(q, qd, target, home::kQddMax, home::kEtaA, home::kVMax, home::kLo,
+                           home::kHi, home::kN, home::kDt);
+    ASSERT_TRUE(step.valid);
+  }
+  EXPECT_EQ(heap_gate.count(), 0u);
 }
 
 }  // namespace
