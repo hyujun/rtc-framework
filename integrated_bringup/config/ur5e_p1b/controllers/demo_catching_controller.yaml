@@ -289,6 +289,13 @@ demo_catching_controller:
       damping_sq: 0.0001
       qp:
         max_iter: 20
+      # Decision K form (L5 §4.3), chosen 2026-09-23 on a sim A/B with the arm
+      # aligned to planner.wait_pose before every throw (#537 comment
+      # 5789708503): ‖FK(q_cmd) − ref_x‖ p50 / p95 was 3.2 / 68 mm under
+      # `dynamic` against 163 / 624 mm under `box` — the constant D-16 box is
+      # the one that cannot keep up with the reference. eta_tau 0.8 is D-16's.
+      accel_constraint: dynamic
+      eta_tau: 0.8
       lag:
         # SIM IS ZERO (2026-09-20): nothing injects an actuation lag, and
         # leading a delay that does not exist moves the command EARLY by
@@ -307,9 +314,12 @@ demo_catching_controller:
       # ── Thresholds the joint command layer reports to (L7 §6, S5.3) ───────
       # ‖q_meas − q_cmd‖. D-6 keeps the measured state out of CLIK, so this
       # watchdog is the ONLY thing that notices the arm is not where it was
-      # told to be. PROVISIONAL: a placeholder until a run on this robot shows
-      # what the real tracking gap looks like.
-      track_err_abort: 0.3
+      # told to be. PROVISIONAL (plan §7.3 3-3: twice the observed peak): the
+      # sim run of 2026-09-23 (25 throws, dynamic form, arm aligned to
+      # wait_pose first) peaked at 0.864 rad before t_c — sim position-servo
+      # lag with no T_arm lead (lag.lead_enable false). S10 sets the real-arm
+      # value; the controller is parked on the real arm until then (A-S5-1).
+      track_err_abort: 1.73
       # Consecutive failed solves before the controller latches a fault
       # (L7 §4.2). Three ticks of a solve that cannot succeed is not a
       # transient, and retrying it forever is how a controller ends up

@@ -876,11 +876,11 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | G | `planner.freeze.T_freeze` p1b 0.36 s · leap 0.19 s (§4.11 하한식, provisional) | S6-B |
 | H | `planner.wake_timeout_s` 0.05 s | S6-A |
 | I | `planner.workspace.catch_box` = base 축정렬 상자, sim 은 S3.5b 열린 후보의 p_c·p_stop 외접 상자 + 0.1 m, 실기 provisional | S6-B |
-| K | CLIK QP 가속 제약을 YAML 선택형 `joint_cmd.accel_constraint: box\|kinematic\|dynamic` 으로 — kinematic 은 $\dot J$, dynamic 은 $M(q)(v-v_{prev})/\Delta t + h(q,v_{prev}) \le \eta_\tau\tau_{\max}$ (둘 다 $v$ 에 선형). `rtc_tsid` 일반화 → `/code-review`, 기본 `box` 면 기존 출력 비트 동일. **구현 (S6-C2, `73b8ca49`·`64dc47e1`)**: $v_{prev}$ 는 cache 가 평가된 명령 속도의 팔 성분 (h·J̇ 와 같은 상태), 행은 단위 norm·hard (못 지키면 호출 실패 → QP 비의존 abort), $\tau_{\max}$ 는 팔 device `max_torque`, $\eta_\tau$ 기본 0.8. kinematic 은 추종 과제 행만 묶어 영공간은 속도 box 뿐이다 (문서화). box 비트 일치 (golden). 출하 형태는 sim 비교 후 (L5 §4.3) | S6-C2 |
+| K | CLIK QP 가속 제약을 YAML 선택형 `joint_cmd.accel_constraint: box\|kinematic\|dynamic` 으로 — kinematic 은 $\dot J$, dynamic 은 $M(q)(v-v_{prev})/\Delta t + h(q,v_{prev}) \le \eta_\tau\tau_{\max}$ (둘 다 $v$ 에 선형). `rtc_tsid` 일반화 → `/code-review`, 기본 `box` 면 기존 출력 비트 동일. **구현 (S6-C2, `73b8ca49`·`64dc47e1`)**: $v_{prev}$ 는 cache 가 평가된 명령 속도의 팔 성분 (h·J̇ 와 같은 상태), 행은 단위 norm·hard (못 지키면 호출 실패 → QP 비의존 abort), $\tau_{\max}$ 는 팔 device `max_torque`, $\eta_\tau$ 기본 0.8. kinematic 은 추종 과제 행만 묶어 영공간은 속도 box 뿐이다 (문서화). box 비트 일치 (golden). **출하 형태 (2026-09-23 사용자)**: p1b `dynamic` — 대기 자세 정렬 sim A/B 에서 CLIK 추종 p95 68 mm (box 624 mm), leap 은 측정 없어 `box` (L5 §4.3) | S6-C2 |
 | L | `planner.wait_pose` 신설 (rad, arm 관절 순서, provisional) — p1b `[0.212, −1.376, 1.107, −1.978, −3.296, 0.121]` · leap `[0, 1.0, 0, −1.2, 0, 1.2, 0]`. IK seed 전용 (homing 은 S7.2) | 키 S6-A · 소비 S6-B |
 | 3-1 | `reference.a_max` 21 / 35 채택 (provisional 해제는 S8 실측 후) | — |
 | 3-2 | A-S5-12 채택 — sim 도 park | S6-A |
-| 3-3 | `supervisor.track_err_abort` 는 S6-C 재관측 후 **여유 있게** (관측 피크의 2 배 이상, provisional) | S6-C |
+| 3-3 | `supervisor.track_err_abort` 는 S6-C 재관측 후 **여유 있게** (관측 피크의 2 배 이상, provisional). **적용 (2026-09-23 사용자)**: p1b **1.73 rad** — 대기 자세 정렬 sim (dynamic, 공 25회) t_c 전 최대 0.864 rad × 2. sim 위치 서보 lag 포함 (T_arm 선행 없음), 실기 값은 S10. leap 은 측정 없어 0.3 유지 | S6-C |
 | 3-4 | A-S5-13 ok | — |
 | R-1 | `mpc_main` 재사용 + **WBC ↔ 포구 switch 테스트로 실제 적용 검증** (단위: 같은 프로세스에서 두 TID·affinity·Paused/Running, launch_testing: sim `SwitchController` 왕복 + `verify_rt_runtime.sh`) | S6-A |
 | R-2 | `planner.budget_s` **0.020** + 사전 필터 (IK 후보 ≤ 8) + **계획기 연산시간 실측·보고**. baseline (2026-09-23 개발 PC): 후보당 IK 6R p50 1789 · p99 2197 µs, 7R p50 2224 · p99 2415 µs → 20 점 격자 전부면 36–44 ms | S6-B · S6-C |

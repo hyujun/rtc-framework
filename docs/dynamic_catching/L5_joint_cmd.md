@@ -125,6 +125,8 @@ $$\ell_i=\upsilon_i=\mathrm{clamp}\Big(\mathrm{proj}_{[p_{lo,i},\,p_{hi,i}]}(\do
 
 결정 K 의 근거 (#537 코멘트 5785720197): D-16 상수 box 는 포구 자세에서 토크가 허락하는 가속보다 약 50 배 (p1b) 보수적이라 γ 창을 닫는다 (plan §9 S4.4 판정). `dynamic` 은 자세 의존 $M,h$ 로 그 보수성을 실행층에서 없애고, L3 도달시간 게이트의 **토크 층 런타임 대응물**을 겸한다 (결정 F) — 계획기의 도달시간 순위 항은 여전히 box 층이다.
 
+**출하 형태 (2026-09-23 사용자 결정, #537 코멘트 5789708503).** `ur5e_p1b` 는 `dynamic` ($\eta_\tau$ 0.8). 근거는 투척마다 팔을 `planner.wait_pose` 에 정렬한 뒤 잰 sim A/B (공 25회씩): APPROACH 중 $\Vert FK(q_c)-x_{ref}\Vert$ p50 / p95 가 `dynamic` 3.2 / 68 mm, `box` 163 / 624 mm 이다. `iiwa7_leap` 은 측정이 없어 파서 기본값 `box` 로 둔다.
+
 **반복 상한과 상태 노출 (S2.2b).** 차원만 고정하면 최악 실행시간이 묶이지 않는다. 기존 하드코딩 `max_iter` 20 을 설정 가능하게 하고, solver status·반복 수·solve time 을 노출한다. 초과·수렴 실패·비유한 결과는 `Compute` 가 false 를 돌려주는 기존 경로로 합쳐진다.
 
 **실패 경로 — QP 비의존 관절공간 abort (S5.3).** 기존 CLIK 은 실패 시 `q_ref = q_meas`, `v_ref = 0`, false 를 돌려준다. 포구 컨트롤러는 **이 출력을 소비하지 않는다** — $q_{meas}$ 로 점프하면 $q_c$ 불연속이고 $v=0$ 은 가속 한계를 무시한 즉시 정지다. v0.4 의 $\dot q^\ast=\beta_{qp}\dot q_{prev}$ 감쇠 폴백은 QP 없이 동작하는 관절공간 경로로 흡수한다: 직전 $\dot q_{prev}$ 에서 관절별로 $\ddot q_{\max}\Delta t$ 씩 0 으로 감속하며 $q_c$ 를 적분하고(위치 한계 clamp 포함), L7 `QP_FAILED` → `ABORT_SAFE` 로 넘긴다. 감속 법칙의 세부는 S5.3 에서 확정한다. 연속 `QP_FAILED` 횟수가 **L7 소유의 단일 키** `supervisor.n_qp` (L7 §4.1) 에 이르면 L7 FAULT 래치 (`HasLatchedFault`) — L5 는 이 카운터를 새로 두지 않고 L7 판정을 참조만 한다.
