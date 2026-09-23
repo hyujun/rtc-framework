@@ -384,7 +384,7 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 
 | 함수 | 설명 | RT-safe | `[[nodiscard]]` |
 |------|------|---------|-----------------|
-| `ApplyThreadConfig()` | CPU 어피니티, 스케줄러, 우선순위 설정 | N/A (초기화) | Yes |
+| `ApplyThreadConfig()` | 스레드 이름 → CPU 어피니티 → 스케줄러·우선순위. **이름을 먼저** 붙이므로 어피니티(EINVAL)·스케줄러(EPERM) 가 실패해도 `ps -L`·검증기가 그 스레드를 이름으로 찾는다 | N/A (초기화) | Yes |
 | `ApplyThreadConfigWithFallback()` | RT 실패 시 SCHED_OTHER 폴백 | N/A (초기화) | Yes |
 | `ApplyThreadConfigVerbose()` | `ApplyThreadConfig()` + 표준 성공/실패 로그 1줄 — 런타임 스레드 진입점의 기동 announce 단일 출처 | N/A (초기화) | No (반환값 discard 허용) |
 | `ValidateThreadConfig()` | 단일 ThreadConfig 유효성 검증 (코어 범위, 정책, 우선순위, 이름) | No | - |
@@ -429,6 +429,8 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 |--------|---------|------|
 | `Store` | `void Store(const T& val) noexcept` | Wait-free 쓰기 (단일 producer) |
 | `Load` | `[[nodiscard]] T Load() const noexcept` | Lock-free 읽기 (torn read 시 재시도) |
+| `LoadInto` | `void LoadInto(T& out) const noexcept` | 같은 읽기를 호출자 저장소로 직접 — 큰 payload 를 멤버로 받을 때 `Load()` 의 스택 사본을 없앤다. 재시도 중 `out` 이 잠시 torn 일 수 있으므로 다른 스레드가 읽는 저장소면 안 된다 |
+| (주의) | — | **writer 는 하나**여야 한다. `Store` 는 seq 를 RMW 없이 읽고 쓰므로 두 writer 가 겹치면 payload 가 찢기거나 seq 가 홀수로 남아 이후 모든 `Load` 가 영원히 재시도한다 |
 | `sequence` | `[[nodiscard]] uint32_t sequence() const noexcept` | 현재 시퀀스 번호 조회 |
 
 ```cpp

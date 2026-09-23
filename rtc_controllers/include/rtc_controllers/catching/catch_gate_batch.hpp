@@ -11,14 +11,16 @@
 //   - the γ rollout (§4.8) — no such function exists before S6.3;
 //   - membership of p_stop in the catch workspace — `planner.workspace.catch_box`
 //     is still TBD, so p_stop is reported and the caller applies its own bound;
-//   - q̇ᵘ itself. The damped least-squares joint velocity behind v_dir,max has no
-//     runtime producer yet (S6.2), so it arrives as an input column and the
-//     equivalence claim (G3-I) covers the gate functions only.
+//   - q̇ᵘ itself. It arrives as an input column (the map's python produces it);
+//     the runtime planner produces it with `UnitSpeedJointVelocity` (S6-B), the
+//     same DLS formula, and the gate verdict itself is one shared core —
+//     `JudgeRankGates` (rank_gates.hpp) — so G3-I holds by construction.
 //
 // It knows no robot and no model: limits, timing and hand constants all come
 // from the caller, and a candidate row carries its own postures.
 #pragma once
 
+#include "rtc_controllers/catching/rank_gates.hpp"
 #include "rtc_controllers/catching/time_feasibility.hpp"
 
 #include <Eigen/Core>
@@ -64,17 +66,8 @@ struct GateCandidate {
   Eigen::Vector3d jp_qdot_u{Eigen::Vector3d::Zero()};  ///< J_p q̇ᵘ, what q̇ᵘ achieves [m/s]
 };
 
-/// First gate, in planner order, that turned the candidate away.
-enum class GateReason : std::uint8_t {
-  kNone = 0,          ///< every gate judged here passed
-  kReachInvalid,      ///< reach-time inputs or limits unusable (fail closed)
-  kReachTime,         ///< the arm cannot be at q* by t_c (L3 §4.3)
-  kGammaInvalid,      ///< v_dir,max or the window inputs unusable (fail closed)
-  kGammaWindowEmpty,  ///< g_min > g_max, or the ball is inside the speed margin (§4.5)
-  kStopInvalid,       ///< the stopping point could not be formed (§4.9)
-};
-
-[[nodiscard]] std::string_view GateReasonName(GateReason reason) noexcept;
+// `GateReason` / `GateReasonName` live in rank_gates.hpp with the core that
+// produces them (S6-B) — the map and the runtime planner share both.
 
 /// Every gate's own result, not just the first failure: the map's histogram has
 /// to be able to say how many candidates EACH gate would stop on its own.

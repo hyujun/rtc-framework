@@ -21,6 +21,7 @@ CSV 컬럼 카테고리:
   - pull_estimator.csv                 → in-plane pull-force estimate
   - momentum_observer.csv              → momentum-observer residual + payload
   - catching_diag.csv                  → dynamic-catching per-tick record
+  - planner_events.csv                 → dynamic-catching planner per-wake search record
 
 이 파일은 thin orchestration layer다 — actual implementations live in:
   - io/         CSV load, log-type detect, save-dir resolve
@@ -62,7 +63,7 @@ def main():
         help="Path to *_state_log.csv, *_sensor_log.csv, cm_timing_log*.csv, "
         "mpc_timing_log*.csv, or a controller-owned diagnostics CSV "
         "(wbc_diag / grasp_diag / pull_estimator / momentum_observer / compliance_diag / "
-        "catching_diag)",
+        "catching_diag / planner_events)",
     )
     parser.add_argument(
         "--save-dir",
@@ -171,7 +172,7 @@ def main():
             "cm_timing_log*.csv, mpc_timing_log*.csv, or a controller-owned "
             "diagnostics CSV (wbc_diag.csv, grasp_diag.csv, "
             "pull_estimator.csv, momentum_observer.csv, compliance_diag.csv, "
-            "catching_diag.csv)"
+            "catching_diag.csv, planner_events.csv)"
         )
         sys.exit(1)
 

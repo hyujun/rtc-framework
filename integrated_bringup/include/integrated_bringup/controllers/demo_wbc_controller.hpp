@@ -14,6 +14,7 @@
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
+#include "integrated_bringup/support/layout_profile.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
@@ -387,8 +388,12 @@ class DemoWbcController final : public RTControllerInterface {
   /// `profiles:` block — the launch resolves the id (rtc_tools.launch.cpu_shield
   /// ::mpc_layout_profile) and hands the same string to both the cset shield and
   /// this controller, so the two cannot disagree about what is reserved.
-  static constexpr std::string_view kDefaultLayoutProfile = "mpc_on";
-  static constexpr std::string_view kMpcOffLayoutProfile = "mpc_off";
+  /// Aliases of the shared definitions in support/layout_profile.hpp — the
+  /// catching planner reads the same profile for the same role (E-7 J).
+  static constexpr std::string_view kDefaultLayoutProfile =
+      ::integrated_bringup::kDefaultLayoutProfile;
+  static constexpr std::string_view kMpcOffLayoutProfile =
+      ::integrated_bringup::kMpcOffLayoutProfile;
 
   /// Record this run's layout profile (issue #350).
   ///
@@ -406,6 +411,16 @@ class DemoWbcController final : public RTControllerInterface {
   /// while treating an unrecognised id as an opt-out would refuse activation
   /// on a box whose shield still holds those cores.
   [[nodiscard]] static bool LayoutProfileDropsMpc(std::string_view profile) noexcept;
+
+  /// The MPC solve thread, or null before the first activation that spawned
+  /// it. Read-only observation for tests that check where the `mpc` layout
+  /// role's threads are and whether they run (dynamic_catching S6 R-1: the
+  /// catching planner shares this role, and a controller switch must leave
+  /// exactly one of the two running).
+  [[nodiscard]] const rtc::mpc::MPCThread* GetMpcThread() const noexcept {
+    return mpc_thread_.get();
+  }
+
   void OnDeviceConfigsSet() override;
 
   [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }

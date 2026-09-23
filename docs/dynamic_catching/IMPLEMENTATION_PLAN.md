@@ -173,9 +173,9 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 | S3.5b gate 지도 | 완료 (2026-09-22) — **`ur5e_p1b` PASS(provisional) · `iiwa7_leap` 지도 빔** | 현 씬·릴리스 0.2–0.5 m. `ur5e_p1b`: 기준 투척 (1.0 m · 0.2 m · 4.75 m/s · 60°) 주변 590 / 2835, 90 % 상자는 속력 4.65–4.85 m/s · 앙각 62–64° — **fly-in 실측 상대속도 + 토크 검사 도달시간 + 다시 고른 대기 자세** 아래에서만 (출하 `d_eff`·출하 가속 box·출하 대기 자세 각각으로는 0). `iiwa7_leap`: 0 — 선행시간이 막는다 (첫 계획 0.24 → 0.14 s 면 65 / 2835). rollout 은 `NOT_EVALUATED(S6)`, q̇ᵘ 동치는 `NOT_EVALUATED(S6.2)` — §4.4 S3.5b 결과 |
 | S3.6 vision 사양 | 완료 (2026-09-22) — **PASS(provisional)**: `ur5e_p1b` **기구학 reachable 창** (D-27) 에서 H_req **0.99 s** (T_det **재실측** min 0.040 s — 공 lane stamp 수정 후), 간격 0.05 s, n 20 → `n_max` 20, sim profile **1.0 s / 20 점 설정** (gate 통과 창만 보면 0.84 s · n 17), `io.horizon_min` 0.51 s (R1, 올림) · `io.n_min` **12** (S5.2 정정: ⌈H/step⌉ **+1** — n 점이 덮는 창은 (n−1)·step 이라 11 점은 0.50 s 로 10 ms 짧다; `/code-review` 2026-09-22) · `prediction.dt_expected` 0.05. `io.t_stale`·`io.future_tol` 은 [제안]. `iiwa7_leap` 은 실측 선행시간에서 지도가 열려 G8-D2 평가 대상. T_det 실측·재실측 완료 (§4.4) | — §4.4 S3.6 결과·T_det 재실측 |
 | S5 포구 컨트롤러 골격·입력·추종 | **완료** (2026-09-23 머지, PR #564 → `4c0fb751`) | S5.2e: D-24 (a) 센서 lane (PROC-3 전체 5518/0). S5.1: P-1 (a)~(d) · 무장 latch `catching.enable` · A-S5-1 실기 park · TSAN clean (positive control 로 검출 확인). S5.2: 이름 기반 PointCloud2 파서 + SeqLock + D-2 + A-S5-4 되감김 정책, G1-A~C·E·F·H·I·J green, ASan/UBSan clean (경계 제거 사본에서 stack-buffer-overflow 검출). S5.3: 실 모델 폐루프에서 G5-A (정지 목표 1.4 s 에 위치 < 1 mm · 축 < 0.5°, 독립 pinocchio 오라클) · G5-B (위치·속도 box 200 tick 위반 0) · **G5-C PASS** (실측 p99·max 가 예산 400/1500 µs 안, XML 기록) · **G5-E PASS** (지연 fixture 50 ms 에서 77 → 71 mm, 방향 일치) · **G7-H (d) PASS** (QP 실패 streak → FAULT 래치, `ClearEstop` 이 안 푼다 — S5.1 에서 미룬 절반). S5.4: `rtc_msgs/CatchingState` (S5~S9 superset 동결) + `catching_diag.csv` — 상태 메시지와 CSV 가 **같은 POD 한 벌**에서 나오므로 화면과 파일이 갈릴 수 없다. `Compute()` 가 단일 exit 이고 레코드를 tick 머리에서 기본 생성하므로 PROC-7 이 열거가 아니라 구조적 성질이다 (G8-H). **S5.5 PASS** — sim 폐루프 실측 (`260922_2249`, 공 6회): 포구 frame 이 oracle 포구점에서 **0.48 mm · 축 0.057°** (독립 pinocchio FK 로 로그된 관절값에서 재계산), 241639 행 **tick 간극 0**, solve time median 21.7 / p99 79.4 / max 1411.5 µs (G5-C 예산 안), CLIK 미수렴 0. §13 S5 PASS (패널 육안 + Disarm 이 컨트롤러에 반영, `test_demo_gui_catching.py` 23 · `test_plot_rtc_log.py` 14). **착수 중 발견한 블로커 1건**: S5.3 이 `reference.*` 를 소비 부분집합에 넣었는데 출하 프로파일에 `reference:` 블록이 없어 sim configure 가 실패했고, CM 이 한 컨트롤러 실패로 전체를 거부하므로 **ur5e_p1b sim 로봇 전체가 안 떴다**. `reference.provisional` (신설 invented key) 로 닫았다. **머지 전 `/code-review` 9건 전부 실제 결함** — 가장 큰 것은 운동 중 무장 해제가 관절 명령을 한 tick 만에 세우던 전이표 간극 (A-S5-13; 나머지 A-S5-14~16). **`headless=false` 재실행** (`260923_0021`): 포구 frame 이 oracle 포구점에서 0.36 mm 로 정착하지만 콜드 스타트 3회 중 2회 첫 approach 에서 `track_err_abort` 0.3 을 넘겨 ABORT_SAFE 를 거친다 (sim 위치 서보 lag — 사용자 결정 대기, #537). **QP CLIK 과제공간 스윕** (`test_catching_clik_sweep`, 공 속도 4 × 강하각 3 × 방위 3, 출하 gain): solver 는 전 구간 건강 (미수렴 0 · bound conflict 0 · solve max 72 µs), 포구 자세 하나를 1 mm 에 놓는 데 **1.43 s** (축 1° 0.85 s) 인데 공 예산은 **0.25–0.6 s** 다 — 제약은 solver 가 아니라 시간이고 S6 의 t_c·대기 자세 선택 입력이다. (`260922_2249` 세션은 삭제됐고 위 수치는 #537 코멘트에 남아 있다.) 남은 게이트: G5-C2 (backend 왕복) |
-| S6 계획기 스레드 | 대기 | — |
+| S6 계획기 스레드 | **구현 완료 — S6-D (제어 PC 측정, 사용자) 만 남음** (브랜치 `feat/s6-planner-thread`, PR 전). **S6-B** 탐색 (판정/순위 게이트 분리·점수 J·교체·동결, catch sub-model, 계획기 이벤트 CSV·GUI) · **S6-C** γ rollout (coarse-to-fine) · G3-C 합성 1000 투구 p99 < `budget_s` · vision world → 모델 world 변환을 궤적 수신에서 · **S6-C2** CLIK 가속 제약 `box|kinematic|dynamic` (결정 K) · L3 §4.7 런타임 전환 규칙. **#537 결정 반영 (2026-09-23)**: ① p1b `track_err_abort` (1.73 → #566 뒤 재측정으로 **1.54 rad**) · ② p1b `accel_constraint: dynamic` (`eta_tau` 0.8; leap 은 box·0.3 유지) · ③a 오프라인 진단 (#537 코멘트 5789859038) · ④ sim 투척 드라이버 `catching_sim_trials` (투척마다 wait_pose 정렬). **③a 가 찾은 sim 버그 #566 은 main 에 머지됨 (PR #567)** — 팔+손 sim 에서 한 step 에 tick 이 최대 2 회 돌아 `dt` 적분 법칙이 ~1.67× 빨랐으므로 **① 1.73 rad 의 근거 (0.864 rad peak) 와 S6 sim 수치 전부가 재측정 대상**. **⑥ (2026-09-23)**: `planner.switch.e_jump_max`·`ed_jump_max` → 가속 예산 `planner.switch.eta_jump` (L3 §4.7 규칙 2 — 교체가 $u_{des}$ 에 넣는 계단의 상계, RT 가 γ 램프를 재시작하며 채택하는 항 포함; 옛 키는 파서가 거부). **#566 위 재측정** (dynamic 50투 · box 25투, #537 코멘트 5793765020): CLIK 추종 p50/p95 dynamic 2.7/72 mm vs box 128/561 mm → ② 유지, 단 t_c 합계 오차는 비슷하다 (dynamic 은 sim 서보 지연 ~125 mm 가 지배). ① 은 t_c 전 최대 0.772 rad × 2 = 1.54. **결정 ⑦ (a)**: ⑥ 뒤에도 `refreshed` 0 — 첫 plan lead 0.42 s < T_w 0.6 s 라 채택 때 이미 램프 중이고, 램프 재시작 계단 ≈ 11 m/s² 가 예산 5.25 를 넘는다 (규칙이 맞게 거부). 램프 연속 채택은 **S8 로 이월**. **남은 것**: S6-D 제어 PC D-7a 측정 (사용자 CLI, §7.2) | E-7 승인 (결정 J: 새 layout role 없이 `mpc` role 재사용). 착수 시 확정 결정은 §7.3 "S6 착수 시 확정". **S6-A**: 계획기 스레드 골격 (mpc role · eventfd 대기 · stub `PlanOnce`) · `PlannerRtState`/`plan_box_` (oracle 도 같은 box) · `JudgePlan` (a)~(f) · A-S5-12 sim park · 키 4개. **R-1**: 단위 (`test_catching_mpc_role_switch`: 두 `mpc_main` 이 같은 CPU, switch 뒤 하나만 running, policy `NOT_EVALUATED(EPERM)`) + sim 실측 (`sim_iiwa7_leap` wbc↔catching: 계획기만 ~20 Hz wake, 역전환 시 반대, `enable_mpc:=false` 면 catching switch `ok=False`). 검증기 rc=2 는 dev PC 권한 (FAIL/WARN 집합이 wbc·catching active 어느 쪽이든 동일) 이고, 같은 이름 `mpc_main` 중 **유휴 OpenMP 워커 TID** 를 골랐다. **착수 중 발견·수정 3건**: `ApplyThreadConfig` 가 EPERM 이면 이름을 안 붙임 (rtc_base) · launch 의 `rt_layout_profile` 이 컨트롤러 노드에 안 닿아 **#350 activate 게이트가 실배선에서 죽어 있었음** (CM) · leap YAML 의 안 읽히던 `planner.ik` 사본. `/code-review` 10건 반영 (스레드를 configuration 에 묶음 — on_cleanup join). PROC-3 전체 **5711 / 0 실패** (77 skip) |
 | S7 손 시퀀서·슈퍼바이저 | 대기 | — |
-| S8 sim 통합 평가 | 대기 | — |
+| S8 sim 통합 평가 | 대기. **S6 에서 이월 (결정 ⑦, #537 코멘트 5793765020)**: 교체 채택 시 γ 램프 연속 ($\dot\gamma,\ddot\gamma$ 이어 받기) — RT 채택부·γ 프로파일 형태·계획기 rollout 동시 변경 (RT-1~10, `/code-review`). 이것 없이는 `refreshed` 가 램프 중 거부돼 첫 plan 만 쓴다 (L3 §4.7). sim 서보 지연 (`joint_cmd.lag` 가 sim 0) 이 t_c 오차를 지배하는 것도 여기서 본다 | — |
 | S9 E-STOP·fault 정책 (D-13) | 대기 | — |
 | S10 실기 단계 도입 | 대기 | — |
 
@@ -583,7 +583,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 
 - **D-27 의 런타임 설계 (2026-09-22 추가).** 실행은 기구학적으로 reachable 하면 도전한다 — 성능 게이트 (γ 창·도달시간·commit 선행) 탈락을 후보 제거로 쓰지 않고 **순위·진단**으로 쓴다. 정해야 할 것: ① 어느 게이트가 판정으로 남는가 (정지점·작업공간은 팔이 어디에 멈추는지의 문제라 E-8 접점) · ② 통과 후보가 없을 때의 순위 함수와 `[CONCERN]` 보고 · ③ 시도했으나 놓친 시행의 진단 코드 (S8 성공률은 **시도/성공을 분리 보고**한다). 지도 쪽 기준은 바꾸지 않는다 (D-27: 분석은 정교하게).
 
-- S6.1 스레드 골격: MPC 스레드 생성 방식 그대로 (§6). RT-1~10 준수 코드, 초기 FIFO, thread layout role 추가 (Adding a New Thread), `ValidateSystemThreadConfigs` 의 `all_configs` 와 이름 목록 등록, absent-role 필터, `catching_on/off` profile, activate 게이트
+- S6.1 스레드 골격: MPC 스레드 생성 방식 그대로 (§6). **새 layout role 을 만들지 않고 `mpc` role 을 재사용한다** (E-7 결정 J, 2026-09-23) — `SelectThreadConfigs().mpc.main` 을 받아 스레드 이름도 `mpc_main` 이다. CM 이 active 컨트롤러를 하나만 두고 전환 시 이전 것을 deactivate (`Pause`) 하므로 같은 slot 에서 동시에 도는 FIFO 는 하나다. RT-1~10 준수 코드, activate 게이트 (`planner.enabled` && profile `mpc_off` 면 첫 문장 FAILURE — DemoWbc 와 같은 형태), RT → 계획기 `PlannerRtState` SeqLock, 계획기 → RT `plan_box_` SeqLock (oracle 은 같은 box 의 대체 writer 로 이전, 두 writer 가 동시에 켜지는 설정은 park), A-S5-12 (sim park)
 - S6.2 포구 자세 IK·catchability: S1.9 함수를 스레드 전용 모델 handle 로 배선. 후보가 모두 탈락하면 plan 없음(포기)을 사유 코드와 함께 기록
 - S6.3 γ 창·rollout (S1 코드 호출), 예산 초과 시 coarse-to-fine
 - S6.4 후보 선택·hysteresis·commit/freeze, `PlanSnapshot` SeqLock (token·`publish_ns`, D-22), 계산 시작·게시 직전 token 재검사
@@ -593,11 +593,11 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
-| 계획 | G3-A~E, G3-C 예산 준수 | `planner.budget_s` (L3) |
+| 계획 | G3-A~E, G3-C 예산 준수, **R-2 계획기 연산시간 실측·보고** (후보당 IK · 사전 필터 후 후보 수 · `PlanOnce` 한 사이클 p50/p99/max · 예산 초과율) | `planner.budget_s` 0.020 (R-2, L3 §6) |
 | IK·catchability | G3-G (수렴률 기록), G3-I (런타임과 지도 동치) | — |
 | RT | G3-K (한 사이클 할당 0·noexcept·로깅 없음) | — |
 | token·race | G3-L: eventfd coalescing, 계산 중 새 스냅샷 도착, 같은 generation 의 옛 plan 게시, deactivate·Pause race 에서 대체된 plan 소비 0 (D-22, D-23) | — |
-| 스레드 | Adding a New Thread 3 oracle, `all_configs` 등록 (누락 시 그 role 만 전 규칙에서 빠진다 — #349 D15), 전 tier × profile `gen_thread_layout.py --check` | — |
+| 스레드 | **결정 J 로 layout 변경 0** (manifest·generator·3 oracle·`all_configs`·검증기 표 불변). 대신 **R-1**: WBC ↔ 포구 컨트롤러 `SwitchController` 로 `mpc_main` 두 TID 의 affinity·Paused/Running 을 직접 검사 (단위 + launch_testing). 검증기는 같은 이름의 스레드 중 하나만 검사하므로 그것에 기대지 않는다 | — |
 | D-7a | G3-J — 제어 PC 에서만 판정. 개발 PC 결과는 NOT_EVALUATED(제어 PC) | 제어 PC |
 | D-3 부하 | §5 판정 (부하 구성) | ε_clk 할당 |
 | GUI·plot | §13 S6 행 | — |
@@ -710,14 +710,18 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 
 ## 6. D-7 계획기 스레드 구성
 
-기존 MPC 스레드와 같은 방식으로 생성하고 기능만 planner 로 한다. 분석 결과 (2026-09-19):
+기존 MPC 스레드와 같은 방식으로 생성하고 기능만 planner 로 한다.
+
+**E-7 결과 (2026-09-23 사용자 승인, 결정 J).** 계획기는 MPC 와 **같은 역할** (RT 루프에 해를 공급하는 solver 스레드) 이므로 **새 layout role 을 만들지 않고 기존 `mpc` role 을 그대로 쓴다** — `SelectThreadConfigs().mpc.main` 을 `SpawnMpcThreadIfNeeded` 와 같은 방식으로 받는다. 레이아웃 값·manifest·generator·3 oracle·`all_configs`·`rt_cores()`·검증기 표 변경 0, profile 은 `mpc_on`/`mpc_off` 그대로 (결정 B — launch 의 `enable_mpc` 하나). 스레드 이름은 `mpc_main` 이라 검증기의 기대 표가 포구 컨트롤러가 active 일 때도 성립한다. 두 컨트롤러가 함께 configure 돼 `mpc_main` 이 둘 존재할 수 있지만 CM 은 active 컨트롤러를 하나만 두고 이전 것을 deactivate (`Pause`, CV 블록) 하므로 같은 코어에 동시에 도는 FIFO 는 하나다 — 이것을 R-1 switch 테스트가 확인한다. D-7a (FIFO/OTHER) 판정은 `mpc_main` 값을 바꾸는 것이라 MPC 에도 적용되고, 둘이 갈리면 그때 role 을 분리한다 (별 E-7). 아래 2026-09-19 분석의 "E-7 `[CONCERN]` 에 담을 것" 목록은 새 role 을 전제한 것이라 **J 로 대체**됐다 (기록으로 남긴다).
+
+분석 결과 (2026-09-19):
 
 **MPC 스레드의 실체.** 공용 기반은 `rtc::PeriodicRtThread` (rtc_base threading, 헤더 전용)다: jthread + stop token, 스레드 진입 시 `ApplyThreadConfigVerbose` (실패해도 무시하고 계속 실행), `clock_nanosleep` 주기, overrun 카운터, Pause/Resume, t0..t3 timing payload. `WaitForNextTick`·`JitterMeaningful` 은 virtual 이다. `rtc::mpc::MPCThread` 는 그 위의 얇은 subclass 이고 (`OnTick` = 상태 읽기 → `Solve` → 결과 게시), DemoWbc 가 `std::unique_ptr` 로 소유한다. 수명: `on_activate` 에서 layout profile 게이트 → lazy spawn → `Resume`, `on_deactivate` 에서 `Pause`, **join 은 소멸자에서만** (use-after-free 수정 이력). 배치는 `repo_scripts/config/thread_layout.yaml` 의 `mpc_main` role (tier 6 이상 slot 3 FIFO 60, tier 4 는 slot 3 OTHER).
 
 **planner 구성 (권장).**
 
 - 클래스: `PeriodicRtThread` 의 **형제 subclass** (catching planner thread). `MPCThread`/`MPCHandlerBase` 를 상속하면 PlanSnapshot 을 `MPCSolution` 에 억지로 넣게 되므로 쓰지 않는다. 같은 기반을 쓰는 4번째 소비자라 P5·ARCH-3 을 만족한다. 탐색 코어는 rtc_controllers `catching`, 스레드 소유는 `integrated_bringup` 바인딩 (D-1)
-- 수명: DemoWbc 관용구 그대로 (configure 에서 전 버퍼 할당, activate 게이트 → spawn → resume, deactivate pause, 소멸자 join, aux 타이머로 `planner_timing_log.csv` drain). `Pause()` 는 진행 중 iteration 을 멈추지 않으므로 deactivate 뒤에도 한 번 게시될 수 있다 — RT 쪽이 `PlanSnapshot` 의 activation generation 으로 거른다 (D-23). DemoWbc 가 MPC 해에 이 장치를 두지 않은 것은 선례가 아니라 미해결 gap 이다
+- 수명: DemoWbc 관용구 (configure 에서 전 버퍼 할당, activate 게이트 → spawn → resume, deactivate pause, aux 타이머로 `planner_timing_log.csv` drain) — **단 join 은 `on_cleanup` 에서** (S6-A 구현 시 `/code-review` 정정: 소멸자까지 살려 두면 oracle 로 재구성한 설정에서 resume 돼 plan box writer 가 둘이 된다). `Pause()` 는 진행 중 iteration 을 멈추지 않으므로 deactivate 뒤에도 한 번 게시될 수 있다 — RT 쪽이 `PlanSnapshot` 의 activation generation 으로 거른다 (D-23). DemoWbc 가 MPC 해에 이 장치를 두지 않은 것은 선례가 아니라 미해결 gap 이다
 - 데이터: RT → planner `rtc::SeqLock<RtStatePod>`, planner → RT `rtc::SeqLock<PlanSnapshotPod>`. **SeqLock payload 는 trivially copyable 이어야 하고 `Eigen::Vector3d` 는 아니다** (Eigen 3.4 에서 확인) → PlanSnapshot·궤적 스냅샷은 `std::array<double, N>` 기반 POD (S1.2). 소비는 D-21, 출처는 D-22
 - 기동: L3 는 새 궤적마다 깨어나는 event 구동이다 → `WaitForNextTick` 을 eventfd 대기 + 제한 시간으로 override, `JitterMeaningful()` false. eventfd 는 여러 신호가 한 번으로 합쳐지므로 깨어난 뒤 항상 최신 스냅샷을 읽는다
 - 배치 (E-7, Adding a New Thread): manifest role·전 tier·profile, `gen_thread_layout.py --write`, `SystemThreadConfigs` 필드, `ValidateSystemThreadConfigs` 의 `all_configs` 고정 크기 배열·이름 목록, rt_callback 보다 낮은 우선순위 검사 (현재 `mpc.main` 에만 코드로 있음), generator 의 shield 코어 도출(누락 시 cpuset 밖 pin 이 EINVAL 로 조용히 실패), 3 oracle, launch profile 배선과 activate 게이트 테스트
@@ -802,7 +806,7 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | 항목 | 내용 | 필요 시점 |
 |---|---|---|
 | ~~E-8 승인~~ | **승인 (2026-09-22 사용자)**: P-1 최소 계약 (a)~(d) 를 문구 그대로 (§4.4 S5). S5 게이트의 G7-H 4종 + `/security-review` 는 그대로 | ~~S5 전~~ |
-| E-7 승인 | §6 의 배치표·tier 4 정책·profile | S6 전 |
+| ~~E-7 승인~~ | **승인 (2026-09-23 사용자, 결정 J)**: 새 role 없이 `mpc` role 재사용 (§6) | ~~S6 전~~ |
 | ~~D-24 결정~~ | **확정 (2026-09-22 사용자): (a)** `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid` (P5 — grasp 의 같은 gap 도 닫힌다, PROC-3 전체 회귀). (b) 는 포구 전용 mailbox 가 device 경로와 공존하는 중복 lane 이라 기각 | ~~S5 전~~ → S5.2e |
 | ~~G5-E substrate~~ | **확정 (2026-09-22 사용자): (ㄱ)** fixture 전용 지연 주입 (테스트 전용 지연 큐, 런타임 불변) — `prediction.lead` = $T_{arm}$ 의 효과를 S6 전에 한 번은 관측한다. (ㄴ) `NOT_EVALUATED(substrate)` 는 선행 보상의 부호·크기를 S10 실기에서 처음 보게 되므로 기각 (§4.3 S5, L5 §9 G5-E, L8 §9 G8-E) | ~~S5 착수 시~~ → S5.3 |
 | ~~QP solve time 예산~~ | **확정 (2026-09-22 사용자, provisional)**: tick 2000 µs (`control_rate` 500 Hz) 기준 **p99 ≤ 400 µs (20 %) · 최대 ≤ 1500 µs (75 %)**. 분위수로 거는 이유는 L8 의 "총량이 아니라 분산의 꼬리" 이고, 20 % 는 backend 왕복·로깅·계획기 스냅샷이 같은 tick 을 나눠 쓰는 것을 감안한 값. S5 실측이 훨씬 작으면 조인다 (§4.3 S5 RT 행, L5 §9 G5-C) | ~~S5 게이트~~ → S5 실측 후 재검 |
@@ -851,11 +855,39 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | A-S5-9 | G5-E 의 지연 주입은 `test/include` 아래 fixture (설치되지 않음) 의 폐루프 plant 로 한다 — 런타임 경로 불변 | 확정 (ㄱ) 의 구현 형태. `catching_ball_fixture.hpp` 와 같은 격리 (미설치 → 프로덕션 타깃이 include 할 수 없다) |
 | A-S5-10 | QP 비의존 abort 감속식: 관절별 $\dot q_i\leftarrow\mathrm{sign}(\dot q_i)\max(\lvert\dot q_i\rvert-\ddot q_{\max,i}\Delta t,\,0)$, $q_c\leftarrow\mathrm{clamp}(q_c+\dot q\Delta t)$ — 순수 코어 함수 (할당·QP 없음) | L7 §4.1 이 "정확한 식은 S5.3" 으로 남긴 자리 |
 | A-S5-11 `[제안]` | **`reference.provisional` 신설** (invented key, 기존 셋과 같은 모양·같은 기본값 true) + 출하 프로파일에 `reference:` 블록 — `v_max` 는 L4 §6 의 확정 도출값을 전사 (p1b 3.5 · leap 1.8 m/s), `a_max` 는 **미결**이라 블록 전체를 provisional 로 두어 sim 은 경고, 실기는 차단한다. 값은 S4.4 실측의 보수적 끝 (p1b 21 · leap 35 m/s², 10× 회전자 관성 가정) 이고 `supervisor.decel.a_dec` = 10 위에 있다 (검증기 요구) | S5.3 이 `reference.*` 를 소비 부분집합에 넣었는데 출하 프로파일에 그 블록이 없었다. 소비 키의 TBD 는 sim 에서 configure 를 **거부**하고, CM 은 한 컨트롤러의 configure 실패로 **전체 컨트롤러**를 거부하므로 2026-09-22 실측에서 ur5e_p1b sim 로봇 전체가 안 떴다. **`a_max` 값 자체는 사용자 확정이 필요하다** (L4 §6 은 D-16 개정과 함께 정한다고 남겨 둠) |
-| A-S5-12 `[CONCERN]` | A-S5-1 의 "sim 은 configure FAILURE" 를 **sim 도 park** 로 바꿀 것을 제안 | 실기를 park 로 바꾼 근거 ("CM 이 한 컨트롤러 실패로 전체를 거부한다") 가 sim 에서 **동일하게** 성립하고, 2026-09-22 에 그 결과를 실제로 관측했다 — 증상이 "포구가 안 된다" 가 아니라 "로봇이 안 뜬다" 였다. A-S5-11 이 이번 발현은 막았지만 규칙은 그대로다. **사용자 결정 (A-S5-1 변경)** |
+| A-S5-12 | A-S5-1 의 "sim 은 configure FAILURE" 를 **sim 도 park** 로 바꿀 것을 제안 | 실기를 park 로 바꾼 근거 ("CM 이 한 컨트롤러 실패로 전체를 거부한다") 가 sim 에서 **동일하게** 성립하고, 2026-09-22 에 그 결과를 실제로 관측했다 — 증상이 "포구가 안 된다" 가 아니라 "로봇이 안 뜬다" 였다. A-S5-11 이 이번 발현은 막았지만 규칙은 그대로다. **채택 (2026-09-23 사용자, S6 착수 시 결정 3-2)** — S6-A 가 구현한다: sim 에서 소비 키의 TBD 는 configure FAILURE 가 아니라 park (activate 거부, 로봇은 뜬다). 범위·일관성 위반 (범위 밖 값, caging 간극) 은 여전히 sim configure FAILURE — 그것은 "아직 안 정한 값" 이 아니라 설정 실수다 |
 | A-S5-13 | 준비(ARMED) 조건 상실을 **운동 중인 모드에서는 `ABORT_SAFE` 로** 보낸다 (전이표 7행 추가; `ABORT_SAFE` 자신은 행 없음 — 드라이버가 그 한 모드에서만 통과시킨다) | 전이 행이 없으면 모드가 그대로 남고, 드라이버가 법칙 호출을 멈춘 채 `WriteDeviceCommand` 는 실려 있던 명령을 계속 내보내 **관절 명령이 그 자리에서 언다** — L5 감속 계약이 금지하는 1-tick 무한 감속이다. 그리고 `IDLE` 로 안 돌아와 운전자의 disarm 이 화면에서 무효다. 실측: disarm 후 4 s·3240 tick 전부 `mode=APPROACH armed=false` (2026-09-23 `/code-review`) |
 | A-S5-14 | 스냅샷 newness 는 번호가 아니라 **(epoch, 번호) 쌍 + `seen` 플래그**로 판정한다 (L1 §5.3 갱신) | ㄱ. A-S5-4 로 새 epoch 은 번호를 다시 시작할 수 있어, 겹친 번호의 첫 스냅샷이 반복으로 읽히면 **새 공의 표본을 소비하면서 TRACK_CHANGED 를 안 낸다**. ㄴ. 0 은 합법 `snapshot_sequence` 인데 `last_consumed == 0` 이 "미소비" 센티넬을 겸해, 0번으로 시작하는 lane 과 trial reset 직후가 이미 소비된 것으로 읽힌다. track 축의 `track_seen_` 과 같은 비대칭을 sequence 축에서 해소 |
 | A-S5-16 | 수신축 clock 읽기를 `rtc::SteadyNowNs` (rtc_base/types.hpp, 나이 헬퍼 옆) 하나로 모은다 | 이 브랜치가 같은 `std::chrono` 표현을 3벌 새로 더했고, 전수 확인에서 **6벌**이 세 패키지에 흩어져 있었다 — 그중 `rtc_mujoco_sim/projectile_ball.hpp` 는 **이미 `rtc` 네임스페이스에** 있어서, rtc_base 에 넣는 순간 `redefinition` 으로 전체 빌드가 깨졌다. 즉 중복이 "정리하면 좋은 것" 이 아니라 **이미 컴파일 단위를 나눠야만 공존하던 상태**였다. 사본마다 "backend 와 같은 시계" 라는 주석이 붙어 있었고 그 주장은 우연으로만 참이었다 |
 | A-S5-15 | 진단 두 필드의 **센티넬 정착** — `input_age_s` 미수신은 음수, `q_cmd` 는 실제 나간 명령(hold latch 포함)이고 명령이 없는 tick 은 NaN | 전자는 `now − 0` 이라 **steady-clock uptime** 을 나이로 실었다 (실측 373966.66 s × 28476행). 후자는 hold 중 0.0 을 실어 `‖q_meas − q_cmd‖` 를 오프라인으로 계산하면 존재하지 않는 수 rad 오차가 나왔다. 둘 다 그럴듯한 수라 소비자가 걸러낼 수 없다 |
+
+**S6 착수 시 확정 (2026-09-23 사용자 — #537 코멘트 5785207660 → 5785720197 → 5785863361 → 5785978354 → 5786035728)**
+
+착수 전 코드 대조에서 계획 서술의 정정 19건이 나왔다. 구현에 영향을 준 것: `SeqLock<PlanSnapshot>` 은 없었고 `plan_` 은 RT tick 소유 멤버였다 (→ `plan_box_` 신설) · RT → 계획기 상태 POD 가 전무했다 (→ `PlannerRtState`) · `cov_box_` 는 독자가 0 이었다 (계획기가 첫 독자) · `PeriodicRtThread::Start` 는 `frequency_hz ≤ 0` 이면 no-op 이다 (→ `planner.wake_timeout_s` 가 주기 상한) · `planner.budget_s` 는 실재 키가 아니었다 · `EvaluateReason` 에 plan 검사가 없었다 (→ 새 `Reason` 없이 token 불일치·나이 초과를 "plan 없음" 으로 읽는다) · `PlanOnce`·rollout·점수·히스테리시스 함수는 C++ 에 없다 (S6 가 신규 작성) · $\dot q^u$ 런타임 생산자가 없다 · 공분산 시각 보간 규칙이 없다 (→ 후보는 vision 격자 그대로).
+
+| ID | 결정 | 반영 |
+|---|---|---|
+| E-7 · J | 승인. 계획기는 mpc role 재사용, 이름 `mpc_main` (§6) | S6-A |
+| B | profile 은 `mpc_on`/`mpc_off` 그대로 — launch `enable_mpc` 하나, `enable_catching` 없음 | S6-A |
+| C | **판정 게이트** = 입력 유한성 · IK 수렴 · manipulability (`arm_5row`) · 작업공간 `catch_box` + 정지점 `p_stop` 포함. **순위·진단** = 불확실성 · 도달시간 · γ 창 · commit 선행 · rollout · 오차 예산 (D-27) | S6-B |
+| D | 점수 J (L3 §4.10) + 순위 게이트 탈락마다 벌점 → 최소 J. 판정 통과 0 일 때만 plan 없음 (`PlanReason` = 첫 병목) | S6-B |
+| E | `PlanSnapshot::reason` 은 plan 없음 사유 전용. 시도했으나 순위 게이트 탈락은 계획기 CSV 의 게이트 비트마스크 (msg 는 D-20 동결) | S6-B |
+| F | box 층 `TMinChecked` 는 순위 항. 토크 층 런타임은 `NOT_EVALUATED(runtime)` — K 의 dynamic 부등식이 들어오면 그것이 겸한다. **S6-C2 재판정 (2026-09-23)**: 계획 시점의 토크 층은 여전히 `NOT_EVALUATED(runtime)` 이고 (계획기의 도달시간 순위 항은 box 층), 실행 시점의 토크 한계는 `joint_cmd.accel_constraint: dynamic` 이 **실행층에서 강제**한다 (L5 §4.3). 둘은 다른 질문이다 — 계획기는 "그 시간 안에 갈 수 있는가" 를 보수적으로 순위에 반영하고, CLIK 은 "이 tick 의 명령이 토크 안인가" 를 hard 로 지킨다 | S6-B · S6-C2 |
+| G | `planner.freeze.T_freeze` p1b 0.36 s · leap 0.19 s (§4.11 하한식, provisional) | S6-B |
+| H | `planner.wake_timeout_s` 0.05 s | S6-A |
+| I | `planner.workspace.catch_box` = base 축정렬 상자, sim 은 S3.5b 열린 후보의 p_c·p_stop 외접 상자 + 0.1 m, 실기 provisional | S6-B |
+| K | CLIK QP 가속 제약을 YAML 선택형 `joint_cmd.accel_constraint: box\|kinematic\|dynamic` 으로 — kinematic 은 $\dot J$, dynamic 은 $M(q)(v-v_{prev})/\Delta t + h(q,v_{prev}) \le \eta_\tau\tau_{\max}$ (둘 다 $v$ 에 선형). `rtc_tsid` 일반화 → `/code-review`, 기본 `box` 면 기존 출력 비트 동일. **구현 (S6-C2, `73b8ca49`·`64dc47e1`)**: $v_{prev}$ 는 cache 가 평가된 명령 속도의 팔 성분 (h·J̇ 와 같은 상태), 행은 단위 norm·hard (못 지키면 호출 실패 → QP 비의존 abort), $\tau_{\max}$ 는 팔 device `max_torque`, $\eta_\tau$ 기본 0.8. kinematic 은 추종 과제 행만 묶어 영공간은 속도 box 뿐이다 (문서화). box 비트 일치 (golden). **출하 형태 (2026-09-23 사용자)**: p1b `dynamic` — 대기 자세 정렬 sim A/B 에서 CLIK 추종 p95 68 mm (box 624 mm), leap 은 측정 없어 `box` (L5 §4.3) | S6-C2 |
+| L | `planner.wait_pose` 신설 (rad, arm 관절 순서, provisional) — p1b `[0.212, −1.376, 1.107, −1.978, −3.296, 0.121]` · leap `[0, 1.0, 0, −1.2, 0, 1.2, 0]`. IK seed 전용 (homing 은 S7.2) | 키 S6-A · 소비 S6-B |
+| 3-1 | `reference.a_max` 21 / 35 채택 (provisional 해제는 S8 실측 후) | — |
+| 3-2 | A-S5-12 채택 — sim 도 park | S6-A |
+| 3-3 | `supervisor.track_err_abort` 는 S6-C 재관측 후 **여유 있게** (관측 피크의 2 배 이상, provisional). **적용 (2026-09-23 사용자, 같은 날 재측정으로 갱신)**: p1b **1.54 rad** — #566 lock-step sim 재측정 (dynamic, 대기 자세 정렬, 공 50회) t_c 전 최대 0.772 rad × 2. 처음 값 1.73 (0.864 × 2) 은 한 step 에 tick 이 최대 2 번 돌던 sim (#566) 에서 잰 것이라 폐기. sim 위치 서보 lag 포함 (T_arm 선행 없음), 실기 값은 S10. leap 은 측정 없어 0.3 유지 | S6-C |
+| 3-4 | A-S5-13 ok | — |
+| R-1 | `mpc_main` 재사용 + **WBC ↔ 포구 switch 테스트로 실제 적용 검증** (단위: 같은 프로세스에서 두 TID·affinity·Paused/Running, launch_testing: sim `SwitchController` 왕복 + `verify_rt_runtime.sh`) | S6-A |
+| R-2 | `planner.budget_s` **0.020** + 사전 필터 (IK 후보 ≤ 8) + **계획기 연산시간 실측·보고**. baseline (2026-09-23 개발 PC): 후보당 IK 6R p50 1789 · p99 2197 µs, 7R p50 2224 · p99 2415 µs → 20 점 격자 전부면 36–44 ms | S6-B · S6-C |
+| R-3 | 계획기 전용 sub-model: `_base.yaml` `urdf.sub_models.<arm>_catch` + 컨트롤러 키 `planner.sub_model` | S6-B |
+| R-4 | 출하 p1b YAML 은 S6-B 에서 oracle off · planner on (동시 on 은 park) | S6-B |
+
+정한 것 (묻지 않음): `planner.slice.dt` = vision 간격 0.05 · `slice.t_lead_min` = `T_freeze` · `slice.t_max` = 지평 − `prediction.t_horizon_margin` · `budget.sigma_trk`·`clock_err` 0 provisional (순위 항) · 계획기는 mode ∈ {TRACKING, APPROACH} 에서만 탐색하고 COMMITTED 이후는 `monitorOnly`, 그 외 mode 에서는 깨어나도 게시하지 않는다 · `plan_id` 는 계획기 단조 카운터이고 RT 는 `plan_id` 변화 + token 일치 + 게시 나이 ≤ `io.t_stale` 로 새 plan 을 받는다 (L3 §5.2).
 
 **repo drift (이 작업 범위 밖 — 별도 브랜치로 처리)**
 

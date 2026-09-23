@@ -45,6 +45,16 @@ demo_catching_controller:
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
+      # Vision world → MODEL world (plan §11). `link_0` is this URDF's model
+      # root and base_T_world is the identity the sim measured (§11), so the
+      # composed transform is the identity and the ingress leaves the
+      # prediction as is. Stated anyway: the frame is a per-robot fact, and a
+      # key the next robot has to think about. Real arm: the camera
+      # calibration (S10).
+      arm_base_frame: "link_0"
+      base_T_world:
+        yaw_deg: 0.0
+        translation: [0.0, 0.0, 0.0]
       # = ceil(horizon_min / dt_expected) + 1 = ceil(0.51 / 0.05) + 1. The +1 is
       # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
       # cover 0.50 s and fall 10 ms SHORT of the window a commit decision
@@ -215,6 +225,94 @@ demo_catching_controller:
     # ur5e_p1b's map that the definition opens. Valid only under that same
     # time-triggered closure rule, hand frame at constant velocity — provisional.
     planner:
+      # ── Planner thread (L3 §6, S6-A) ──────────────────────────────────────
+      # ON: this profile has no oracle plan, so the planner is the plan box's
+      # only writer. Its search is a stub until S6-B (it publishes "no plan"),
+      # so TRACKING still self-loops on NO_CATCHABLE_PLAN as before.
+      enabled: true
+      # The longest the planner sleeps without a new trajectory (decision H,
+      # 2026-09-23). It also re-plans on this cadence while vision is quiet.
+      wake_timeout_s: 0.05
+      # One cycle's compute budget (R-2, 2026-09-23): per-candidate IK measured
+      # p50 2.2 ms on this 7-axis arm (dev PC), so 20 ms with a pre-filter to at
+      # most 8 IK candidates per cycle.
+      budget_s: 0.020
+      # IK seed and wait pose, ARM joint order [rad] (decision L, 2026-09-23):
+      # the S3.5a map's wait pose for this arm. PROVISIONAL. Consumed from S6-B (the IK seed); homing to it
+      # is S7.2.
+      wait_pose: [0.0, 1.0, 0.0, -1.2, 0.0, 1.2, 0.0]
+      # ── Search (L3 §4, S6-B) ──────────────────────────────────────────────
+      # The robot config's catch sub-model (R-3): arm root → catch frame parent.
+      sub_model: "iiwa7_catch"
+      # IK candidates per cycle after the pre-filter (R-2: one IK ≈ 2–3 ms on the
+      # development PC, so 8 fit budget_s with room; the cycle can overrun the
+      # budget by at most one IK — the budget is checked BEFORE each solve).
+      max_ik: 8
+      # Snapshots to skip after a track change (L3 §4.4).
+      n_settle: 3
+      slice:
+        # = the vision spacing (prediction.dt_expected): candidates are the
+        # vision samples themselves, so the covariance needs no interpolation.
+        dt: 0.05
+        # vision horizon 1.0 s − prediction.t_horizon_margin 0.05 s.
+        t_max: 0.95
+        # t_lead_min defaults to freeze.T_freeze (decided 2026-09-23).
+      time:
+        margin: 0.03
+      unc:
+        kappa_sigma: 0.3
+      gamma:
+        eta_v: 0.9
+        margin: 0.1
+        # The γ rollout (L3 §4.8, S6-C): γ_f and T_w candidates, the demanded-
+        # acceleration margin η_a against reference.a_max, and the terminal
+        # error the reference must reach by t_c. L3 §6 defaults.
+        grid: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        window_grid: [0.3, 0.45, 0.6]
+        eta_a: 0.8
+        eps_term: 0.002
+      rollout:
+        # Coarse-to-fine: every (γ_f, T_w) is screened at this step, only the
+        # winner re-run at the control period (invented key — §4.8 left the
+        # method to S6.3).
+        dt_coarse: 0.01
+      budget:
+        n_sigma: 2.0
+        # 0 until measured (S10) — they only RANK candidates (decision 2026-09-23).
+        sigma_trk: 0.0
+        clock_err: 0.0
+      switch:
+        delta_J: 0.1
+        # A switch may step u_des by at most eta_jump * reference.a_max (L3 §4.7,
+        # decision 6 2026-09-23 — replaced e_jump_max/ed_jump_max, whose 10 mm
+        # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= omega 10, a_max 35: 88 mm.
+        # Provisional until the sim remeasure.
+        eta_jump: 0.25
+      freeze:
+        # Decision G (2026-09-23): the L3 §4.11 lower bound T_close,tot 0.1047 +
+        # T_arm (0, sim) + margin 0.03 = 0.135, rounded up with room. Provisional.
+        T_freeze: 0.19
+      score:
+        # L3 §6 defaults; `penalty` is per failed RANK gate (decision D) and must
+        # dominate the continuous terms. Tuning is S6-C/S8.
+        w_sigma: 1.0
+        w_t: 1.0
+        w_q: 0.1
+        w_late: 0.0
+        w_gamma: 5.0
+        penalty: 10.0
+      workspace:
+        # Decision I (2026-09-23), model world frame. This arm's S3.5b gate map is
+        # EMPTY (no gate-open candidate), so the box is the kinematically
+        # accepted catch points of a 2534-candidate map (2026-09-23, shipped wait
+        # pose) plus 0.1 m in x and z; that map sampled one azimuth, so the
+        # lateral extent is p1b's ±0.30 m (both arms are symmetric about base z,
+        # S3.5b). Provisional — a guess with a stated source, not a measurement.
+        catch_box:
+          min: [-0.96, -0.30, 0.00]
+          max: [1.05, 0.30, 1.10]
+      # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
+      provisional: true
       hand:
         d_eff: 0.1047
         r_cap: 0.031
@@ -266,6 +364,7 @@ demo_catching_controller:
           # a conservative stand-in for a different-dimension quantity — the
           # parser leaves a TBD threshold non-finite so Solve fails closed.
           arm_6row: "TBD"
+          provisional: true
 
     # ── The L4 soft-catch reference (L4 §6, S5.3 consumes all four) ──────────
     # See the ur5e_p1b profile for why the block carries `provisional: true`
@@ -326,54 +425,6 @@ demo_catching_controller:
       n_qp: 3
       decel:
         a_dec: 10.0
-
-      # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
-      # NOT READ AT RUNTIME YET, like `planner.hand` above: the consumer is the
-      # L3 planner's binding, which lands in S6.2. `ParseCatchPoseIkParams`
-      # (rtc_controllers) already parses exactly these keys, and the offline
-      # catchability map drives them through it, so they are live values under
-      # test — just not yet on a tick. Recorded here because G6-F asks the
-      # derivation and the value to live together.
-      #
-      # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1499 throws
-      # accepted from the best single wait pose at the old shared threshold 0.1,
-      # 1158 at the robot-specific 0.174 below (reproduced by running the map
-      # tool with THIS file as --params),
-      # T_f >= 1.0 s. Details and the rejected alternatives: plan §11.
-      ik:
-        # k_manip > 0 is NOT optional. It enables the D-25 null-space log w5
-        # ascent, and without it (the in-code default 0) the 5-row task leaves
-        # the arm wherever the seed put it: w5 came out 0.06-0.09 at plausible
-        # wait poses, i.e. BELOW the gate, so every candidate in the map was
-        # rejected as below_manip_min. With the ascent on, w5 reaches
-        # 0.100-0.273 (median 0.226) and the gate is passable. A config that carries the
-        # threshold but leaves this at 0 rejects everything at runtime.
-        k_manip: 0.5
-        # 20 (the L3 default) was not enough to let the ascent settle; 40 left
-        # 1366 candidates `not_converged`, which is confounded with
-        # genuinely unreachable points and is a follow-up sweep, not a bound.
-        max_iter: 40
-      catchability:
-        # 5-row, per plan §11: the 6-row definition would need a threshold ~30x
-        # smaller (w6 bottoms out at 0.0013 over the SAME accepted set) and it
-        # collapses at the wrist singularities of a 6-axis arm, which are fine
-        # poses for catching. w6 is recorded per candidate either way (C-3).
-        definition: "arm_5row"
-        manipulability_min:
-          # ROBOT-SPECIFIC ON PURPOSE (user decision 2026-09-21). w5 =
-          # sqrt(det(J5 J5^T)) scales with the arm's link lengths, so one number
-          # means different strictness on different arms: the shipped 0.1 sat at
-          # roughly the 40th percentile of the 6-axis arm's task-feasible w5 but
-          # only ~the 10th of the 7-axis arm's, i.e. the two arms were being held
-          # to different standards and the map's coverage comparison was not
-          # like-for-like. Each value is 0.1 scaled by that arm's task-feasible
-          # median w5 (gate off, same grid): 0.2176 vs the 6-axis arm's 0.1249, so 0.1 * 0.2176/0.1249 = 0.174. Tightening costs coverage - 77% of the previously accepted throws survive - and that cost is the point: it is what equal strictness actually looks like.
-          arm_5row: 0.174
-          # No value: the 6-row gate is not the definition above, and 0.1 is not
-          # a conservative stand-in for a different-dimension quantity — the
-          # parser leaves a TBD threshold non-finite so Solve fails closed.
-          arm_6row: "TBD"
-          provisional: true
 
   # Group order IS the device index order: iiwa7 = 0 (held), leap = 1
   # (stepped). No publishers — S4.0 emits no state message (D-20).

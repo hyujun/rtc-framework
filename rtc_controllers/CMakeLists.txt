@@ -88,6 +88,14 @@ add_library(rtc_controllers STATIC
   # γ window, stopping point) over CSV. In the library for the same reason as
   # the file above — the CSV contract and the verdicts are gtest-reachable.
   src/catching/catch_gate_batch.cpp
+  # dynamic_catching S6: the planner thread's `planner.*` keys (sibling of the
+  # two parsers above — this one describes how the thread runs, not what a
+  # catch pose is) and one planner wake: inputs → PlanOnce → provenance
+  # re-check → publish. ROS-free so the whole cycle is testable against plain
+  # SeqLocks; the thread that calls it lives in integrated_bringup (D-1).
+  src/params/planner_params.cpp
+  src/catching/planner_cycle.cpp
+  src/catching/planner_search.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -525,6 +533,35 @@ if(BUILD_TESTING)
   # of the runtime gate functions, order independence, fail-closed settings.
   ament_add_gtest(test_catch_gate_batch test/test_catch_gate_batch.cpp)
   target_link_libraries(test_catch_gate_batch rtc_controllers)
+
+  # dynamic_catching S6-A: planner data contract + one planner wake. The RT
+  # admission rule (L3 §5.2 (a)-(f)), `planner.*` parsing, the cycle's
+  # provenance handling (G3-L: superseded trajectory, reset, activation) and
+  # its RT contract (G3-K: one cycle allocates nothing) — both allocation
+  # sensors, hence both test include dirs.
+  ament_add_gtest(test_catching_planner_cycle test/test_catching_planner_cycle.cpp)
+  target_link_libraries(test_catching_planner_cycle rtc_controllers)
+  target_include_directories(test_catching_planner_cycle PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_planner_cycle PRIVATE -Wno-mismatched-new-delete)
+
+  # dynamic_catching S6-B: the planner's search on the 6R wrist fixture — q̇ᵘ
+  # against an independent DLS (G3-I runtime half), judgement vs rank gates,
+  # settle, budget, switching/freeze, G3-K (a full search allocates nothing),
+  # and the R-2 timing record. Needs the URDF fixtures, hence the extra dir.
+  ament_add_gtest(test_catching_planner_search test/test_catching_planner_search.cpp)
+  target_link_libraries(test_catching_planner_search rtc_controllers)
+  target_include_directories(test_catching_planner_search PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_planner_search PRIVATE -Wno-mismatched-new-delete)
+
+  # dynamic_catching S6-C: γ rollout — the L3 §4.8 table through the runtime
+  # sampler (G3-B), the choice rule, coarse-to-fine, and no allocation (G3-K).
+  ament_add_gtest(test_catching_gamma_rollout test/test_catching_gamma_rollout.cpp)
+  target_link_libraries(test_catching_gamma_rollout rtc_controllers)
+  target_include_directories(test_catching_gamma_rollout PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_gamma_rollout PRIVATE -Wno-mismatched-new-delete)
 endif()
 
 ament_package()

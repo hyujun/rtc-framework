@@ -1,6 +1,8 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "rtc_base/logging/session_dir.hpp"
+#include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
@@ -9,11 +11,18 @@
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/parameter.hpp>
 
+#include <sys/eventfd.h>
+
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <exception>
+#include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -411,10 +420,75 @@ void DemoCatchingController::BuildClikBoxes(int nv,
       }
     }
     if (all_positive) {
-      cfg.a_max = a_max;
+      // The QP-free abort ramp decelerates on this box whatever form the QP
+      // carries; the QP itself carries it only as the `box` form (decision K
+      // — the constraint is one of box | kinematic | dynamic).
       qdd_max_pin_ = a_max;
+      if (params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kBox) {
+        cfg.a_max = a_max;
+      }
     }
   }
+}
+
+bool DemoCatchingController::ConfigureAccelConstraint(
+    int nv, rtc::tsid::ClikReferenceGenerator::Config& cfg) {
+  using Form = rtc::catching::CatchingAccelConstraint;
+  using Clik = rtc::tsid::ClikReferenceGenerator;
+  switch (params_.joint_cmd_accel_constraint) {
+    case Form::kBox:
+      cfg.accel_constraint = Clik::AccelConstraint::kBox;
+      RCLCPP_INFO(logger_, "CLIK acceleration constraint: box (D-16 per-joint window%s)",
+                  cfg.a_max.size() == nv ? "" : " — no derived box, so none");
+      return true;
+    case Form::kKinematic:
+      cfg.accel_constraint = Clik::AccelConstraint::kKinematic;
+      cfg.task_accel_max_linear = params_.joint_cmd_task_accel_max_linear.value;
+      cfg.task_accel_max_angular = params_.joint_cmd_task_accel_max_angular.value;
+      RCLCPP_INFO(logger_,
+                  "CLIK acceleration constraint: kinematic (task rows ≤ %.3g m/s², %.3g rad/s²)",
+                  cfg.task_accel_max_linear, cfg.task_accel_max_angular);
+      return true;
+    case Form::kDynamic:
+      break;
+  }
+  // dynamic: τ_max is the ARM device's own `joint_limits.max_torque` — the
+  // same numbers the D-16 derivation spent (provenance in the derived file).
+  // The hand entries are never read (the rows sit on the arm indices).
+  const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+  const std::vector<double>* torque = nullptr;
+  if (arm_cfg != nullptr && arm_cfg->joint_limits.has_value()) {
+    torque = &arm_cfg->joint_limits->max_torque;
+  }
+  if (torque == nullptr || static_cast<int>(torque->size()) < arm_dof_) {
+    RCLCPP_ERROR(logger_,
+                 "joint_cmd.accel_constraint is dynamic but the arm device has no "
+                 "joint_limits.max_torque for its %d joints — the arm will be held",
+                 arm_dof_);
+    return false;
+  }
+  Eigen::VectorXd tau_max = Eigen::VectorXd::Zero(nv);
+  const auto& map = combined_cache_.ext_to_pin_v_map();
+  for (int i = 0; i < arm_dof_; ++i) {
+    const double value = (*torque)[static_cast<std::size_t>(i)];
+    const int pv = map[static_cast<std::size_t>(i)];
+    if (!std::isfinite(value) || !(value > 0.0) || pv < 0 || pv >= nv) {
+      RCLCPP_ERROR(logger_,
+                   "joint_cmd.accel_constraint is dynamic but arm joint %d has max_torque %g "
+                   "(or no model index) — the arm will be held",
+                   i, value);
+      return false;
+    }
+    tau_max[pv] = value;
+  }
+  cfg.accel_constraint = Clik::AccelConstraint::kDynamic;
+  cfg.tau_max = tau_max;
+  cfg.eta_tau = params_.joint_cmd_eta_tau.value;
+  RCLCPP_INFO(logger_,
+              "CLIK acceleration constraint: dynamic (|M·v̇ + h| ≤ %.2f·max_torque on %d arm "
+              "joints; no rotor inertia in M)",
+              cfg.eta_tau, arm_dof_);
+  return true;
 }
 
 void DemoCatchingController::SetupArmCommand() {
@@ -430,22 +504,11 @@ void DemoCatchingController::SetupArmCommand() {
   catch_frame_idx_ = -1;
   base_frame_idx_ = -1;
 
-  const auto* sys_cfg = GetSystemModelConfig();
-  if (sys_cfg == nullptr || sys_cfg->urdf_path.empty()) {
-    RCLCPP_WARN(logger_, "no system model config: the arm will be held, not driven");
+  // The builder was acquired by SetupTrajInput (the vision frame needs the
+  // model before the subscription exists); null means no model to drive.
+  if (!builder_) {
+    RCLCPP_WARN(logger_, "no system model: the arm will be held, not driven");
     return;
-  }
-  // Prefer the builder CM injected so the URDF is parsed once for the whole
-  // bring-up; build our own only when running outside CM (fixtures).
-  if (auto shared = GetSharedModelBuilder()) {
-    builder_ = std::move(shared);
-  } else {
-    try {
-      builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(*sys_cfg);
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR(logger_, "model build failed: %s", e.what());
-      return;
-    }
   }
   if (!combined_cache_.InitModel(*builder_, /*contact_frame_ids=*/{}, "[catching]", logger_)) {
     RCLCPP_ERROR(logger_, "combined model/cache init failed");
@@ -510,6 +573,9 @@ void DemoCatchingController::SetupArmCommand() {
   const int nv = model.nv;
   static_cast<void>(LoadDerivedAccelLimits());
   BuildClikBoxes(nv, cfg);
+  if (!ConfigureAccelConstraint(nv, cfg)) {
+    return;  // logged; the arm is held
+  }
   try {
     clik_.Init(nv, cfg);
   } catch (const std::exception& e) {
@@ -542,7 +608,91 @@ void DemoCatchingController::SetupArmCommand() {
   clik_enabled_ = true;
   RCLCPP_INFO(logger_, "arm command path ready: nv=%d, catch frame '%s' (idx %d), accel box %s", nv,
               catch_frame_name_.c_str(), catch_frame_idx_,
-              qdd_max_pin_.size() > 0 ? "from the derived file" : "OFF");
+              qdd_max_pin_.size() == 0 ? "OFF"
+              : params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kBox
+                  ? "from the derived file"
+                  : "from the derived file (abort ramp only — the QP carries the selected form)");
+}
+
+void DemoCatchingController::AcquireModelBuilder() {
+  builder_.reset();
+  const auto* sys_cfg = GetSystemModelConfig();
+  if (sys_cfg == nullptr || sys_cfg->urdf_path.empty()) {
+    return;  // SetupArmCommand reports what that means for the arm
+  }
+  // Prefer the builder CM injected so the URDF is parsed once for the whole
+  // bring-up; build our own only when running outside CM (fixtures).
+  if (auto shared = GetSharedModelBuilder()) {
+    builder_ = std::move(shared);
+    return;
+  }
+  try {
+    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(*sys_cfg);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "model build failed: %s", e.what());
+    builder_.reset();
+  }
+}
+
+bool DemoCatchingController::ResolveVisionFrame(TrajInputConfig& cfg) {
+  cfg.to_model = false;
+  if (vision_base_frame_.empty()) {
+    RCLCPP_WARN(logger_,
+                "catching.io.arm_base_frame is not set: the vision frame '%s' is taken AS the "
+                "model world. That is wrong on a robot whose URDF root is not the frame vision "
+                "is measured against (plan §11 — ur5e_p1b's root is base_link, 180° from base)",
+                expected_frame_.c_str());
+    return true;
+  }
+  if (!builder_) {
+    // No model means no arm to drive (SetupArmCommand holds it) and no
+    // planner model either — nothing downstream consumes model coordinates.
+    RCLCPP_WARN(logger_,
+                "catching.io.arm_base_frame '%s' is set but there is no robot model: the vision "
+                "frame is left as is (the arm is held)",
+                vision_base_frame_.c_str());
+    return true;
+  }
+  const auto model =
+      builder_->GetActuatedModel() ? builder_->GetActuatedModel() : builder_->GetFullModel();
+  if (!model || !model->existFrame(vision_base_frame_)) {
+    RCLCPP_ERROR(logger_, "catching.io.arm_base_frame '%s' is not a frame of the robot model",
+                 vision_base_frame_.c_str());
+    return false;
+  }
+  const auto& frame = model->frames[model->getFrameId(vision_base_frame_)];
+  if (frame.parentJoint != 0) {
+    // A frame behind a moving joint would make the transform a function of q.
+    RCLCPP_ERROR(logger_,
+                 "catching.io.arm_base_frame '%s' is not rigid to the model root (it hangs off "
+                 "joint %zu)",
+                 vision_base_frame_.c_str(), static_cast<std::size_t>(frame.parentJoint));
+    return false;
+  }
+  // model_world_T_world = model_world_T_base · base_T_world. On the universe,
+  // a frame's placement IS model_world_T_frame.
+  const Eigen::Matrix3d r_mb = frame.placement.rotation();
+  const Eigen::Vector3d t_mb = frame.placement.translation();
+  const Eigen::Matrix3d r_bw =
+      Eigen::AngleAxisd(vision_yaw_deg_ * M_PI / 180.0, Eigen::Vector3d::UnitZ())
+          .toRotationMatrix();
+  const Eigen::Vector3d t_bw(vision_translation_[0], vision_translation_[1],
+                             vision_translation_[2]);
+  const Eigen::Matrix3d r = r_mb * r_bw;
+  const Eigen::Vector3d t = r_mb * t_bw + t_mb;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      cfg.r_model_world[static_cast<std::size_t>(i * 3 + j)] = r(i, j);
+    }
+    cfg.t_model_world[static_cast<std::size_t>(i)] = t(i);
+  }
+  cfg.to_model = !(r.isIdentity(1e-12) && t.norm() < 1e-12);
+  const double yaw = std::atan2(r(1, 0), r(0, 0)) * 180.0 / M_PI;
+  RCLCPP_INFO(logger_,
+              "vision frame '%s' → model world via '%s': yaw %.1f deg, t [%.3f %.3f %.3f] m%s",
+              expected_frame_.c_str(), vision_base_frame_.c_str(), yaw, t.x(), t.y(), t.z(),
+              cfg.to_model ? "" : " (identity — not applied)");
+  return true;
 }
 
 void DemoCatchingController::SetupTrajInput() {
@@ -574,6 +724,10 @@ void DemoCatchingController::SetupTrajInput() {
       params_.io_track_eval_offset.tbd ? 0 : to_ns(params_.io_track_eval_offset.value);
   cfg.j_warn_m = params_.io_track_j_warn.tbd ? -1.0 : params_.io_track_j_warn.value;
   cfg.expected_frame = expected_frame_;
+  AcquireModelBuilder();
+  if (!ResolveVisionFrame(cfg)) {
+    throw std::runtime_error("DemoCatchingController: the vision frame could not be resolved");
+  }
   traj_input_.Configure(cfg);
 
   traj_horizon_min_ns_ = cfg.horizon_min_ns;
@@ -622,6 +776,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // Owned by this function alone, and re-decided on every configure: a
     // reconfigure after the backends changed must not inherit the old verdict.
     sim_only_disabled_ = false;
+    park_reason_ = CatchingParkReason::kNone;
+    // Launch layout profile (#350): the planner thread runs on the `mpc` role
+    // (E-7 J), so the same opt-out that stops DemoWbc's MPC thread stops it.
+    if (node_) {
+      SetLayoutProfile(ReadLayoutProfile(*node_));
+    }
 
     if (topic_config_.groups.size() < 2) {
       RCLCPP_ERROR(logger_,
@@ -673,9 +833,18 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       RCLCPP_WARN(logger_, "catching config warning: %s — %s", w.key, ReasonText(w.reason));
     }
     bool consumed_failure = false;
+    // Whether every consumed failure is "not decided yet" (a TBD) rather than
+    // "decided wrongly" (a range, ordering or consistency violation). Only the
+    // first kind parks a SIM configuration — A-S5-12, see below.
+    bool consumed_tbd_only = true;
     for (std::size_t i = 0; i < report_.failure_count; ++i) {
       const auto& f = report_.failures[i];
-      if (!ConsumedByCatchingSkeleton(f.key)) {
+      // S6 joins `planner.*` to the consumed set — but only when the planner
+      // runs: a profile with the planner off consumes none of it, and gating
+      // on a value nothing reads is how a gate stops meaning anything.
+      const bool planner_key =
+          planner_params_.enabled && std::string_view(f.key).starts_with("planner.");
+      if (!ConsumedByCatchingSkeleton(f.key) && !planner_key) {
         RCLCPP_WARN(logger_,
                     "catching config: %s — %s. Not consumed at this step; the step that owns "
                     "the value decides it.",
@@ -683,6 +852,9 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
         continue;
       }
       consumed_failure = true;
+      if (f.reason != rtc::catching::CatchingValidationReason::kActiveConfigTbd) {
+        consumed_tbd_only = false;
+      }
       if (f.index >= 0) {
         RCLCPP_ERROR(logger_, "catching config error: %s[%d] — %s", f.key, f.index,
                      ReasonText(f.reason));
@@ -699,19 +871,73 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       // controller. Nothing is commanded until a controller is active, so an
       // instance that can never activate can never command.
       //
-      // In sim the same failures ARE a refusal: there is no other bring-up
-      // riding on this instance, and a profile that cannot arm in sim is a
-      // configuration mistake to be fixed now rather than discovered as a
-      // controller that silently will not start.
-      if (real_arm_config_) {
+      // SIM PARKS TOO, for a TBD (A-S5-12, adopted 2026-09-23). The reason a
+      // real arm parks — CM refuses EVERY controller when one fails configure —
+      // holds in sim word for word, and it was observed there: on 2026-09-22 a
+      // shipped sim profile whose consumed key was still TBD took the whole
+      // robot down, and the symptom was "the robot does not start", not "the
+      // catching controller does not start" (plan §7.3 A-S5-11). A TBD is the
+      // normal state of a key whose owning step has not landed yet, and every
+      // step that widens the consumed set can produce one.
+      //
+      // A value that is decided and WRONG — out of range, weights out of
+      // order, a caging joint that does not travel — still refuses the sim
+      // configure. That is a configuration mistake with a fix available now,
+      // and parking it would hide it behind a controller that quietly never
+      // activates.
+      if (real_arm_config_ || consumed_tbd_only) {
         sim_only_disabled_ = true;
-        RCLCPP_ERROR(logger_,
-                     "DISABLED: real-arm configuration with values this controller consumes that "
-                     "are provisional or still TBD (L0 §5.3). It will refuse to activate; nothing "
-                     "was commanded.");
+        park_reason_ = CatchingParkReason::kConsumedValues;
+        if (real_arm_config_) {
+          RCLCPP_ERROR(logger_,
+                       "DISABLED: real-arm configuration with values this controller consumes "
+                       "that are provisional or still TBD (L0 §5.3). It will refuse to activate; "
+                       "nothing was commanded.");
+        } else {
+          RCLCPP_ERROR(logger_,
+                       "DISABLED: a value this controller consumes is still TBD (listed above). "
+                       "The robot still comes up — this controller will refuse to activate "
+                       "(A-S5-12). Decide the value to enable catching.");
+        }
         return CallbackReturn::SUCCESS;
       }
       return CallbackReturn::FAILURE;
+    }
+    // Two writers for one plan box (S6-A). The oracle stand-in and the planner
+    // both STORE into it, and a SeqLock with two writers can hand the RT a
+    // torn plan. Parked rather than refused for the same reason as above: the
+    // mistake is in this controller's profile, and it must not take the rest
+    // of the robot down with it.
+    if (planner_params_.enabled && oracle_enabled_) {
+      sim_only_disabled_ = true;
+      park_reason_ = CatchingParkReason::kPlannerOracleConflict;
+      RCLCPP_ERROR(logger_,
+                   "DISABLED: `planner.enabled` and `diagnostic.oracle_plan.enabled` are both "
+                   "true — the plan box would have two writers. Turn one of them off. This "
+                   "controller will refuse to activate; the robot still comes up.");
+      return CallbackReturn::SUCCESS;
+    }
+    // The planner's DECISION values (S6-B) — values nobody may guess. Same rule
+    // as a consumed TBD: park, name the key, keep the robot up (A-S5-12).
+    if (planner_params_.enabled) {
+      if (const char* missing = PlannerDecisionMissing(); missing != nullptr) {
+        sim_only_disabled_ = true;
+        park_reason_ = CatchingParkReason::kPlannerUnset;
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: planner.enabled is true but '%s' is unset or TBD — the planner "
+                     "cannot guess it. This controller will refuse to activate; the robot still "
+                     "comes up.",
+                     missing);
+        return CallbackReturn::SUCCESS;
+      }
+      if (real_arm_config_ && planner_params_.provisional) {
+        sim_only_disabled_ = true;
+        park_reason_ = CatchingParkReason::kConsumedValues;
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: real-arm configuration with `planner.provisional: true` (L0 "
+                     "§5.3). Nothing was commanded.");
+        return CallbackReturn::SUCCESS;
+      }
     }
     // One bool for the tick's arming question (§4.5-1).
     //
@@ -798,6 +1024,13 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // device configs (resolved above) and it must not be half-built if a
     // later step throws — the catch block below tears everything down.
     SetupArmCommand();
+    // After the devices are resolved (the planner checks the arm's width) and
+    // before anything is declared, so a planner that cannot run fails the
+    // configure before the node grows parameters.
+    if (!SetupPlanner()) {
+      TearDownConfiguredResources();
+      return CallbackReturn::FAILURE;
+    }
 
     DeclareProfileParameters();
     DeclareArmParameter();
@@ -831,9 +1064,28 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
   // to do.
   if (sim_only_disabled_) {
     RCLCPP_ERROR(logger_,
-                 "refusing to activate: this instance was parked at configure because it is a "
-                 "real-arm configuration carrying provisional or TBD values this controller "
-                 "consumes (L0 §5.3). Nothing was commanded.");
+                 "refusing to activate: this instance was parked at configure (%s). Nothing was "
+                 "commanded — see the configure log for the values involved.",
+                 park_reason_ == CatchingParkReason::kPlannerOracleConflict
+                     ? "planner and oracle plan both enabled"
+                     : "a consumed value is provisional or TBD");
+    return CallbackReturn::FAILURE;
+  }
+  // Launch-profile gate (#350, E-7 J). Before the first side effect, for the
+  // reason DemoWbc's gate gives: on a failed on_activate the controller
+  // manager leaves the previous controller active and never calls
+  // on_deactivate for this one, so anything done before a FAILURE leaks.
+  // Under `mpc_off` the shield has handed the `mpc` role's core back to the
+  // system cpuset, and the planner thread would put SCHED_FIFO on a core
+  // arbitrary user work now shares.
+  if (planner_params_.enabled && layout_profile_drops_mpc_) {
+    RCLCPP_ERROR(logger_,
+                 "DemoCatchingController on_activate refused: this launch ran with layout profile "
+                 "'%s' (enable_mpc:=false), which returned the MPC cores to the system cpuset, "
+                 "but this controller's config has planner.enabled: true. Activating would spawn "
+                 "the planner (mpc_main, SCHED_FIFO) onto a core the CPU shield no longer "
+                 "protects. Relaunch without enable_mpc:=false, or set planner.enabled: false.",
+                 std::string(kMpcOffLayoutProfile).c_str());
     return CallbackReturn::FAILURE;
   }
   // Base first, always: it bumps the activation generation and calls
@@ -864,6 +1116,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
   // makes goes nowhere — a lifecycle gate applies to publishers, and an
   // inactive one drops the message while returning perfectly normally.
   ActivateOwnedTopics(prev, owned_topics_);
+  // After the base bumped the activation generation, so the planner's first
+  // wake of this activation can only publish against it.
+  SpawnPlannerThreadIfNeeded();
+  if (planner_thread_ && planner_params_.enabled) {
+    planner_thread_->Resume();
+  }
   if (node_ && node_->has_parameter(kCatchingEnableParam)) {
     // Bring the parameter back in line with the latch, so the value an
     // operator reads is the value the tick will act on. Without this the
@@ -894,6 +1152,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
 
 RTControllerInterface::CallbackReturn DemoCatchingController::on_deactivate(
     const rclcpp_lifecycle::State& prev) noexcept {
+  // Stop the planner burning its core while this controller is inactive. A
+  // wake already in flight may still publish once; the RT refuses it by its
+  // activation generation (D-23), so Pause need not be synchronous.
+  if (planner_thread_) {
+    planner_thread_->Pause();
+  }
   DeactivateOwnedTopics(prev, owned_topics_);
   log_set_.DrainAll();  // flush in-flight log SPSC residue
   return RTControllerInterface::on_deactivate(prev);
@@ -910,6 +1174,25 @@ void DemoCatchingController::ResetLogState() noexcept {
 }
 
 void DemoCatchingController::TearDownConfiguredResources() noexcept {
+  // The planner timing timer captures `this`. The thread is JOINED here —
+  // unlike DemoWbc's MPC thread, which lives until the destructor. Keeping it
+  // across a cleanup lets it resume under a configuration that did not ask for
+  // it, and if that configuration enables the oracle the plan box gets a
+  // second writer. Join is safe: it waits for any wake in flight to finish
+  // publishing into boxes this object still owns.
+  planner_timing_timer_.reset();
+  planner_timing_cb_group_.reset();
+  // The planner thread belongs to this configuration: joined here, respawned
+  // by the next activation under the next configuration's parameters.
+  StopPlannerThread();
+  // Closed with the configuration: the next configure may run in a new
+  // session, and a stream left open would keep appending to the old one's
+  // file (2026-09-23 /code-review). Anything left in the ring is this
+  // configuration's and goes to this file first.
+  DrainPlannerTiming();
+  if (planner_events_file_.is_open()) {
+    planner_events_file_.close();
+  }
   log_set_.DrainAll();
   // Tear the timer down BEFORE Reset() so no drain callback runs against
   // channels that are being destroyed.
@@ -928,7 +1211,276 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_cleanup(
   TearDownConfiguredResources();
   // The next configure re-decides this from the backends it is given.
   sim_only_disabled_ = false;
+  park_reason_ = CatchingParkReason::kNone;
   return RTControllerInterface::on_cleanup(prev);
+}
+
+// ── Planner thread (S6-A) ───────────────────────────────────────────────────
+
+void DemoCatchingController::StopPlannerThread() noexcept {
+  planner_thread_.reset();
+}
+
+const char* DemoCatchingController::PlannerDecisionMissing() const noexcept {
+  const auto& p = planner_params_;
+  if (p.sub_model.empty()) {
+    return "planner.sub_model";
+  }
+  if (!std::isfinite(p.t_freeze)) {
+    return "planner.freeze.T_freeze";
+  }
+  if (!p.catch_box.set) {
+    return "planner.workspace.catch_box";
+  }
+  if (!std::isfinite(p.d_eff)) {
+    return "planner.hand.d_eff";
+  }
+  if (!std::isfinite(p.r_cap)) {
+    return "planner.hand.r_cap";
+  }
+  return nullptr;
+}
+
+bool DemoCatchingController::SetupPlanner() {
+  // No thread may be running while the cycle is re-bound: Pause does not stop
+  // a wake in flight, and Bind/Configure write what Run reads. on_cleanup has
+  // already joined it on the normal path; this covers a configure that did not
+  // go through one.
+  StopPlannerThread();
+  // Bound on every configure, enabled or not: the boxes are members and the
+  // binding costs nothing, and a re-configure that turns the planner on must
+  // not depend on the previous configure having done it.
+  planner_cycle_.Configure(planner_params_);
+  if (!planner_cycle_.Bind({&traj_box_, &cov_box_, &planner_rt_box_, &plan_box_})) {
+    RCLCPP_ERROR(logger_, "planner: could not bind the plan/trajectory boxes");
+    return false;
+  }
+  if (!planner_params_.enabled) {
+    return true;
+  }
+  if (arm_dof_ > static_cast<int>(rtc::catching::kMaxPlanNv)) {
+    RCLCPP_ERROR(logger_,
+                 "planner: the arm has %d joints but a plan carries at most %d (kMaxPlanNv) — "
+                 "set planner.enabled: false or raise the capacity",
+                 arm_dof_, static_cast<int>(rtc::catching::kMaxPlanNv));
+    return false;
+  }
+  if (planner_params_.wait_pose_n != 0 && planner_params_.wait_pose_n != arm_dof_) {
+    RCLCPP_ERROR(logger_,
+                 "planner.wait_pose has %d entries but the arm has %d joints (arm joint order, "
+                 "decision L)",
+                 planner_params_.wait_pose_n, arm_dof_);
+    return false;
+  }
+  if (planner_wake_fd_.load(std::memory_order_acquire) < 0) {
+    const int fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (fd < 0) {
+      RCLCPP_ERROR(logger_, "planner: eventfd() failed (errno %d)", errno);
+      return false;
+    }
+    planner_wake_fd_.store(fd, std::memory_order_release);
+  }
+  // ── The search's model (S6-B, R-3) ────────────────────────────────────────
+  planner_cycle_.ClearSearch();
+  planner_handle_.reset();
+  plan_freeze_ns_ = std::isfinite(planner_params_.t_freeze)
+                        ? static_cast<std::int64_t>(std::llround(planner_params_.t_freeze * 1e9))
+                        : 0;
+  if (!builder_) {
+    RCLCPP_WARN(logger_,
+                "planner: no system model — the thread runs, but its search is the stub "
+                "(it publishes \"no plan\")");
+  } else if (!SetupPlannerSearch()) {
+    return false;
+  }
+  RCLCPP_INFO(logger_,
+              "planner enabled: wake timeout %.3f s, budget %.3f s, wait pose %s — the thread "
+              "spawns on the `mpc` layout role (mpc_main) at activation%s",
+              planner_params_.wake_timeout_s, planner_params_.budget_s,
+              planner_params_.wait_pose_n > 0 ? "set" : "absent",
+              layout_profile_drops_mpc_ ? ", which this launch's profile will REFUSE" : "");
+  return true;
+}
+
+bool DemoCatchingController::SetupPlannerSearch() {
+  const std::string& name = planner_params_.sub_model;
+  std::shared_ptr<const pinocchio::Model> model;
+  try {
+    model = builder_->GetReducedModel(name);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_,
+                 "planner: urdf.sub_models has no '%s' (%s) — declare the catch sub-model in the "
+                 "robot config (arm root → the catch frame's parent link, R-3)",
+                 name.c_str(), e.what());
+    return false;
+  }
+  if (!model || model->nq != model->nv || model->nv <= 0 ||
+      model->nv > static_cast<int>(rtc::catching::kMaxPlanNv)) {
+    RCLCPP_ERROR(logger_, "planner: sub-model '%s' is unusable (nq %d, nv %d, capacity %d)",
+                 name.c_str(), model ? model->nq : -1, model ? model->nv : -1,
+                 static_cast<int>(rtc::catching::kMaxPlanNv));
+    return false;
+  }
+  // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
+  // Jacobian columns and box rows are model order). The model↔device mapping
+  // is carried explicitly instead.
+  planner_handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model);
+  pinocchio::FrameIndex frame = 0;
+  try {
+    frame = rtc::catching::ResolveCatchFrame(*model, catch_frame_name_);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "planner: catch frame '%s' is not in sub-model '%s': %s",
+                 catch_frame_name_.c_str(), name.c_str(), e.what());
+    return false;
+  }
+
+  rtc::catching::PlannerModel pm;
+  pm.handle = planner_handle_.get();
+  pm.catch_frame = frame;
+  pm.nv = model->nv;
+  const auto& vmax = device_max_velocity_[static_cast<std::size_t>(kCatchingArmDeviceIdx)];
+  for (pinocchio::JointIndex jid = 1; jid < static_cast<pinocchio::JointIndex>(model->njoints);
+       ++jid) {
+    const int qi = model->joints[jid].idx_q();
+    const std::string& jname = model->names[jid];
+    const auto it = std::find(arm_joint_names_.begin(), arm_joint_names_.end(), jname);
+    if (it == arm_joint_names_.end() || qi < 0 || qi >= pm.nv) {
+      RCLCPP_ERROR(logger_,
+                   "planner: sub-model '%s' joint '%s' is not an arm joint of this controller — "
+                   "the catch sub-model must contain the arm's joints only (the hand locked)",
+                   name.c_str(), jname.c_str());
+      return false;
+    }
+    const auto d = static_cast<std::size_t>(std::distance(arm_joint_names_.begin(), it));
+    const auto q = static_cast<std::size_t>(qi);
+    pm.device_of_model[q] = static_cast<int>(d);
+    pm.qdot_max[q] = d < vmax.size() ? vmax[d] : 0.0;
+    pm.qddot_max[q] = d < arm_qdd_max_.size() ? arm_qdd_max_[d] : 0.0;
+  }
+  if (pm.nv != arm_dof_) {
+    RCLCPP_ERROR(logger_, "planner: sub-model '%s' has %d joints, the arm %d", name.c_str(), pm.nv,
+                 arm_dof_);
+    return false;
+  }
+  pm.accel_box = static_cast<int>(arm_qdd_max_.size()) == arm_dof_;
+
+  // Profile constants outside planner.* — NaN where the profile says TBD, so
+  // the gate that needs one fails instead of using a guess.
+  const auto val = [](const rtc::catching::TbdDouble& v) {
+    return v.tbd ? std::numeric_limits<double>::quiet_NaN() : v.value;
+  };
+  rtc::catching::PlannerConstants pc;
+  pc.eta_v = params_.planner_gamma_eta_v.tbd ? 0.9 : params_.planner_gamma_eta_v.value;
+  pc.v_max = val(params_.reference_v_max);
+  pc.a_dec = val(params_.supervisor_decel_a_dec);
+  pc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
+  pc.t_close_e2e = val(params_.hand.T_close_e2e);
+  // T_close,tot = T_close,e2e + h/2 (L3 §4.5): the tick quantisation budget.
+  pc.t_close_total = pc.t_close_e2e + 0.5 * GetDefaultDt();
+  pc.ball_mass = val(params_.ball.mass);
+  // The L4 reference the rollout replays (§4.8): the controller's own ω, ζ and
+  // a_max, and the control period as the confirmation step.
+  pc.ref_omega = val(params_.reference_omega);
+  pc.ref_zeta = val(params_.reference_zeta);
+  pc.ref_a_max = val(params_.reference_a_max);
+  pc.control_dt = GetDefaultDt();
+
+  if (!planner_cycle_.ConfigureSearch(pm, pc, catch_pose_ik_config_.options)) {
+    RCLCPP_ERROR(logger_,
+                 "planner: the search refused its model (nv %d, wait pose %d entries — "
+                 "planner.wait_pose must give one per arm joint)",
+                 pm.nv, planner_params_.wait_pose_n);
+    return false;
+  }
+  RCLCPP_INFO(logger_,
+              "planner search ready: sub-model '%s' (nv %d), catch frame '%s', accel box %s, "
+              "T_freeze %.3f s, max_ik %d",
+              name.c_str(), pm.nv, catch_frame_name_.c_str(), pm.accel_box ? "on" : "OFF",
+              planner_params_.t_freeze, planner_params_.max_ik);
+  return true;
+}
+
+void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
+  if (!planner_params_.enabled || planner_thread_ || !planner_cycle_.Bound()) {
+    return;
+  }
+  const int fd = planner_wake_fd_.load(std::memory_order_acquire);
+  if (fd < 0) {
+    return;
+  }
+  try {
+    // The `mpc` layout role, exactly as DemoWbc's SpawnMpcThreadIfNeeded takes
+    // it (E-7 decision J): same slot, same scheduling, same thread name.
+    const auto thread_configs = rtc::SelectThreadConfigs();
+    planner_thread_ = std::make_unique<CatchingPlannerThread>(
+        planner_cycle_, fd, planner_params_.wake_timeout_s, planner_timing_, planner_events_);
+    planner_thread_->StartWith(thread_configs.mpc.main);
+    RCLCPP_INFO(logger_, "planner thread started: %s on slot %d, policy %d prio %d",
+                thread_configs.mpc.main.name, thread_configs.mpc.main.cpu_core,
+                thread_configs.mpc.main.sched_policy, thread_configs.mpc.main.sched_priority);
+  } catch (const std::exception& e) {
+    // Lifecycle callback, non-RT. The controller keeps running without a
+    // planner — which is what it did before S6 — rather than taking the
+    // activation down with a thread-spawn failure.
+    RCLCPP_ERROR(logger_, "planner thread spawn failed: %s — no plans will be published", e.what());
+    planner_thread_.reset();
+    return;
+  }
+
+  // Timing CSV + 1 Hz drain, one-shot per controller lifetime (a re-activation
+  // must not truncate the file or re-register the timer).
+  if (!planner_timing_logger_.IsOpen()) {
+    try {
+      const auto timing_dir = rtc::TimingDir(rtc::ResolveSessionDir());
+      std::error_code ec;
+      std::filesystem::create_directories(timing_dir, ec);
+      if (!planner_timing_logger_.Open(timing_dir / "planner_timing_log.csv",
+                                       &rtc::WriteRtTickTimingHeader, &rtc::WriteRtTickTimingRow)) {
+        RCLCPP_WARN(logger_, "planner timing CSV could not be opened — timing not recorded");
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(logger_, "planner timing CSV disabled: %s", e.what());
+    }
+  }
+  if (!planner_events_file_.is_open()) {
+    try {
+      // The tick record's directory (log_set_'s key), so the two files of
+      // one session sit side by side.
+      const auto dir = rtc::ResolveSessionDir() / "controllers" / kCatchingLogKey;
+      std::error_code ec;
+      std::filesystem::create_directories(dir, ec);
+      const auto path = dir / "planner_events.csv";
+      const bool fresh = !std::filesystem::exists(path);
+      planner_events_file_.open(path, std::ios::app);
+      if (planner_events_file_.is_open() && fresh) {
+        WritePlannerEventsHeader(planner_events_file_);
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(logger_, "planner_events.csv disabled: %s", e.what());
+    }
+  }
+  if (node_ && !planner_timing_timer_) {
+    planner_timing_cb_group_ =
+        node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    planner_timing_timer_ = node_->create_wall_timer(
+        std::chrono::seconds(1), [this]() { DrainPlannerTiming(); }, planner_timing_cb_group_);
+  }
+}
+
+void DemoCatchingController::DrainPlannerTiming() noexcept {
+  // Touches only members that live as long as this object — never the thread,
+  // which a cleanup may be joining on another executor thread right now.
+  rtc::catching::PlannerCycleRecord rec{};
+  while (planner_events_.Pop(rec)) {
+    if (planner_events_file_.is_open()) {
+      WritePlannerEventsRow(planner_events_file_, rec);
+    }
+  }
+  if (planner_events_file_.is_open()) {
+    planner_events_file_.flush();
+  }
+  planner_timing_.Drain(
+      [this](const rtc::RtTickTimingSample& s) { planner_timing_logger_.Log(s); });
 }
 
 }  // namespace integrated_bringup

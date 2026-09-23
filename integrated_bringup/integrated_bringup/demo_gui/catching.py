@@ -29,7 +29,7 @@ absent reference are different facts and only one of them is a measurement.
 
 Public surface (imported by app.py):
 - CATCHING_CONFIG_KEY, CATCHING_ENABLE_PARAM, CATCHING_STATE_TOPIC
-- MODE_NAMES, REASON_NAMES
+- MODE_NAMES, REASON_NAMES, PLAN_REASON_NAMES
 - CatchingStatus
 """
 
@@ -93,6 +93,25 @@ REASON_NAMES = (
     "TIP_STALE",
 )
 
+# rtc::catching::PlanReason (rtc_msgs/CatchingState PLAN_REASON_*): why there is
+# no plan — the planner's first bottleneck (dynamic_catching S6, decision E).
+PLAN_REASON_NAMES = (
+    "NONE",
+    "UNCERTAINTY",
+    "IK_FAILED",
+    "MANIPULABILITY",
+    "REACH_TIME",
+    "LIMITS_INVALID",
+    "GAMMA_WINDOW",
+    "STOPPING_DISTANCE",
+    "ROLLOUT",
+    "ERROR_BUDGET",
+    "IMPULSE",
+    "HORIZON_SHORT",
+    "BUDGET_EXCEEDED",
+    "INPUT_NON_FINITE",
+)
+
 # Modes the operator should be able to spot without reading the word.
 _ALARM_MODES = frozenset({"ABORT_SAFE", "FAULT"})
 
@@ -107,6 +126,12 @@ def mode_name(value: int) -> str:
     if 0 <= value < len(MODE_NAMES):
         return MODE_NAMES[value]
     return f"mode:{value}"
+
+
+def plan_reason_name(value: int) -> str:
+    if 0 <= value < len(PLAN_REASON_NAMES):
+        return PLAN_REASON_NAMES[value]
+    return f"?({value})"
 
 
 def reason_name(value: int) -> str:
@@ -143,6 +168,11 @@ class CatchingStatus:
     input_reject_names: tuple[str, ...] = ()
 
     plan_valid: bool = False
+    plan_id: int = 0
+    plan_age_s: float = 0.0
+    plan_w5: float = 0.0
+    plan_w6: float = 0.0
+    plan_reason: int = 0
     plan_p_c: tuple[float, float, float] = (0.0, 0.0, 0.0)
     plan_t_c_s: float = 0.0
     plan_gamma_f: float = 0.0
@@ -194,6 +224,11 @@ class CatchingStatus:
         self.input_reject_names = tuple(str(n) for n in msg.input_reject_names)
 
         self.plan_valid = bool(msg.plan_valid)
+        self.plan_id = int(msg.plan_id)
+        self.plan_age_s = float(msg.plan_age_s)
+        self.plan_w5 = float(msg.plan_w5)
+        self.plan_w6 = float(msg.plan_w6)
+        self.plan_reason = int(msg.plan_reason)
         self.plan_p_c = tuple(float(v) for v in msg.plan_p_c)
         self.plan_t_c_s = float(msg.plan_t_c_s)
         self.plan_gamma_f = float(msg.plan_gamma_f)
@@ -257,6 +292,13 @@ class CatchingStatus:
         if state is FeedState.NEVER:
             return [
                 f"catching_state: never received (is /{CATCHING_CONFIG_KEY} active?)",
+                # A controller PARKED at configure (A-S5-1 / A-S5-12, or the
+                # planner and the oracle both enabled) refuses activation and
+                # so never publishes: the robot is up, catching is not. Say
+                # where the reason is rather than leave "never received" to
+                # read as a dead topic.
+                "  parked? a controller parked at configure refuses to activate — "
+                "its configure log names the values (DISABLED: ...)",
                 f"arm: requested {self._requested_text()}",
             ]
 
@@ -324,11 +366,20 @@ class CatchingStatus:
 
     def _plan_line(self) -> str:
         if not self.plan_valid:
+            # The planner's reason for "no plan" rides the same message when it
+            # has spoken this activation (plan_id > 0); before that there is
+            # nothing to name, and NONE would read as "no problem".
+            if self.plan_id > 0:
+                return (
+                    f"plan: none — {plan_reason_name(self.plan_reason)} "
+                    f"(planner #{self.plan_id}, {self.plan_age_s * 1e3:.0f} ms ago)"
+                )
             return "plan: none"
         px, py, pz = self.plan_p_c
         return (
-            f"plan: p_c=({px:+.3f}, {py:+.3f}, {pz:+.3f}) m  "
-            f"t_c={self.plan_t_c_s:+.3f} s  gamma_f={self.plan_gamma_f:.2f}"
+            f"plan #{self.plan_id}: p_c=({px:+.3f}, {py:+.3f}, {pz:+.3f}) m  "
+            f"t_c={self.plan_t_c_s:+.3f} s  gamma_f={self.plan_gamma_f:.2f}  "
+            f"w5={self.plan_w5:.3f} w6={self.plan_w6:.4f}  age={self.plan_age_s * 1e3:.0f} ms"
         )
 
     def _law_line(self) -> str:

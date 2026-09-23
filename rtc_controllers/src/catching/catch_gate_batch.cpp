@@ -44,24 +44,6 @@ void AppendPoint(std::string& out, const StoppingReservation& stop) {
 
 }  // namespace
 
-std::string_view GateReasonName(GateReason reason) noexcept {
-  switch (reason) {
-    case GateReason::kNone:
-      return "none";
-    case GateReason::kReachInvalid:
-      return "reach_invalid";
-    case GateReason::kReachTime:
-      return "reach_time";
-    case GateReason::kGammaInvalid:
-      return "gamma_invalid";
-    case GateReason::kGammaWindowEmpty:
-      return "gamma_window_empty";
-    case GateReason::kStopInvalid:
-      return "stop_invalid";
-  }
-  return "unknown";
-}
-
 std::string ValidateGateSettings(const GateSettings& s, int nv) {
   if (nv <= 0) {
     return "posture width must be positive";
@@ -178,69 +160,43 @@ GateRow JudgeGates(const GateCandidate& candidate, const Eigen::VectorXd& q_wait
   for (double& w : w_plan) {
     w *= settings.eta_v;
   }
-
-  // ── reach time (L3 §4.3): wait pose at rest → (q*, 0) ──────────────────────
+  // The map starts from the wait pose AT REST; the runtime planner passes the
+  // RT's current command instead. Everything after this is the shared core.
   const std::vector<double> w0(static_cast<std::size_t>(q_wait.size()), 0.0);
-  row.reach = MaxJointTMin(
-      std::span<const double>(q_wait.data(), static_cast<std::size_t>(q_wait.size())), w0,
-      std::span<const double>(candidate.q_star.data(),
-                              static_cast<std::size_t>(candidate.q_star.size())),
-      w_plan, settings.qddot_max);
-  const BallTime t_k{ToNs(candidate.t_c_s)};
-  const NowLead now_lead =
-      MakeNowLead(NowReal{ToNs(settings.first_plan_s)}, ToNs(settings.t_arm_s));
-  row.lead_s = LeadSecondsUntil(now_lead, t_k);
-  row.reach_ok = ReachTimeFeasible(t_k, now_lead, ToNs(settings.t_margin_s), row.reach);
-
-  // ── γ window (L3 §4.5) ─────────────────────────────────────────────────────
-  const double speed = candidate.v_ball.norm();
   row.v_tcp_plan = PlanningTcpSpeed(settings.eta_v, settings.v_max);
-  bool gamma_usable = false;
-  if (speed > 0.0 && std::isfinite(speed)) {
-    const Eigen::Vector3d v_hat = candidate.v_ball / speed;
-    row.direction = DirectionalSpeedMax(
-        v_hat, candidate.jp_qdot_u,
-        std::span<const double>(candidate.qdot_u.data(),
-                                static_cast<std::size_t>(candidate.qdot_u.size())),
-        w_plan);
-    // `undetermined` (q̇ᵘ = 0: no joint motion asks for unit speed) is not a
-    // speed of 0 — it is a speed the estimate could not produce, so it must not
-    // enter the window as physics.
-    if (!row.direction.limits_invalid && !row.direction.input_invalid &&
-        !row.direction.undetermined) {
-      row.window = ComputeGammaWindow(speed, row.direction.v_dir_max, row.v_tcp_plan,
-                                      settings.d_eff, settings.t_close_total);
-      row.max_catchable = MaxCatchableSpeed(row.direction.v_dir_max, row.v_tcp_plan, settings.d_eff,
-                                            settings.t_close_total);
-      gamma_usable = !row.window.input_invalid;
-    }
-  } else {
-    row.direction.input_invalid = true;
-  }
-  row.gamma_ok =
-      gamma_usable && row.window.Feasible() && speed + settings.gamma_margin <= row.max_catchable;
 
-  // ── stopping point (L3 §4.9), at both ends of the window ───────────────────
-  if (gamma_usable) {
-    row.stop_gamma_min =
-        StoppingPoint(candidate.p_c, candidate.v_ball, row.window.g_min, settings.a_dec);
-    row.stop_gamma_max =
-        StoppingPoint(candidate.p_c, candidate.v_ball, row.window.g_max, settings.a_dec);
-  }
+  RankGateInputs in;
+  in.q0 = std::span<const double>(q_wait.data(), static_cast<std::size_t>(q_wait.size()));
+  in.w0 = w0;
+  in.q_star = std::span<const double>(candidate.q_star.data(),
+                                      static_cast<std::size_t>(candidate.q_star.size()));
+  in.qdot_plan = w_plan;
+  in.qddot_max = settings.qddot_max;
+  in.qdot_u = std::span<const double>(candidate.qdot_u.data(),
+                                      static_cast<std::size_t>(candidate.qdot_u.size()));
+  in.p_c = candidate.p_c;
+  in.v_ball = candidate.v_ball;
+  in.jp_qdot_u = candidate.jp_qdot_u;
+  in.t_k = BallTime{ToNs(candidate.t_c_s)};
+  in.now_lead = MakeNowLead(NowReal{ToNs(settings.first_plan_s)}, ToNs(settings.t_arm_s));
+  in.t_margin_ns = ToNs(settings.t_margin_s);
+  in.v_tcp_plan = row.v_tcp_plan;
+  in.d_eff = settings.d_eff;
+  in.t_close_total = settings.t_close_total;
+  in.gamma_margin = settings.gamma_margin;
+  in.a_dec = settings.a_dec;
 
-  if (!row.reach.Usable() || !std::isfinite(row.reach.t)) {
-    row.reason = GateReason::kReachInvalid;
-  } else if (!row.reach_ok) {
-    row.reason = GateReason::kReachTime;
-  } else if (!gamma_usable) {
-    row.reason = GateReason::kGammaInvalid;
-  } else if (!row.gamma_ok) {
-    row.reason = GateReason::kGammaWindowEmpty;
-  } else if (!row.stop_gamma_min.valid) {
-    row.reason = GateReason::kStopInvalid;
-  } else {
-    row.reason = GateReason::kNone;
-  }
+  const RankGateResult r = JudgeRankGates(in);
+  row.lead_s = r.lead_s;
+  row.reach = r.reach;
+  row.reach_ok = r.reach_ok;
+  row.direction = r.direction;
+  row.window = r.window;
+  row.max_catchable = r.max_catchable;
+  row.gamma_ok = r.gamma_ok;
+  row.stop_gamma_min = r.stop_gamma_min;
+  row.stop_gamma_max = r.stop_gamma_max;
+  row.reason = r.reason;
   return row;
 }
 

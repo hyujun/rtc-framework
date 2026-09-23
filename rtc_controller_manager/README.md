@@ -550,6 +550,7 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 | `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) — step 이 이 시간 안에 완성되지 않으면 `sim_sync_timeout` E-STOP |
 | `sim_sync_tick_devices` | string[] | `[]` (= 모든 device group) | sim step 을 완성하는 device group (#566). tick 은 여기 든 group **전부**가 직전 tick 이후 새 joint state 를 냈을 때만 돈다. sim 이 decimated rate 로 발행하는 group 과 **`fake_response` group** (sim 의 100 Hz wall timer 로 발행 — step 과 무관) 은 빼야 한다 (넣으면 그 group 을 기다리느라 step 이 느려진다) — 빠진 group 은 sensor lane 처럼 latest-value 로 읽힌다. 한 주기 넘게 기다린 step 은 세어 두었다가 타이밍 요약 때 늦은 group 이름과 함께 WARN 하고, `sim_sync_timeout_sec` abort 는 끝내 안 온 group 을 FATAL 에 적는다. sim-sync 에서 모르는 이름은 configure 거부, `use_sim_time_sync: false` 면 키 전체를 읽지 않는다 (공유 overlay 에 sim 전용 이름이 있어도 실기 bring-up 은 통과) |
 | `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 — `<pkg_share>/config/<config_variant>/controllers/<config_key>.yaml`. 빈 값이면 `config/controllers/`. 파일이 **없을 때**의 거동 세 갈래는 아래 참조 |
+| `rt_layout_profile` | string | (미선언) | launch 의 thread-layout profile id (#350, `mpc_on`/`mpc_off`). CM 은 쓰지 않고 **각 컨트롤러의 LifecycleNode 로 전달만** 한다 — 컨트롤러 노드는 `use_global_arguments(false)` 라 launch 파라미터를 직접 못 본다. launch 가 설정했을 때만 전달하므로 미설정이면 컨트롤러 자신의 기본값이 적용된다 |
 | `kp` | double | `5.0` | (레거시) 기본 P 게인 |
 | `kd` | double | `0.5` | (레거시) 기본 D 게인 |
 

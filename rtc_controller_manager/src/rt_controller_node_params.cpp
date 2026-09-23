@@ -25,6 +25,10 @@
 
 namespace urtc = rtc;
 
+/// Node parameter carrying the launch's thread-layout profile id (issue #350).
+/// Owned by the launches; the CM only forwards it to each controller's node.
+constexpr const char* kRtLayoutProfileParam = "rt_layout_profile";
+
 namespace {
 
 // Resolve `<pkg_share>/<rel>` for a package-share-relative resource path.
@@ -682,6 +686,21 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     // controllers can pass it to LoadDemoSharedYamlFile() without re-declaring
     // it themselves.  Reads back the CM's current value.
     ctrl_lc_node->declare_parameter<std::string>("config_variant", variant);
+
+    // Same for the launch's thread-layout profile (issue #350). The launches
+    // set `rt_layout_profile` on THIS node, but a per-controller LifecycleNode
+    // is built with use_global_arguments(false) (above), so it never sees the
+    // launch's parameter file — and a controller that declares the parameter
+    // itself then reads its default. That made every activation gate keyed on
+    // the profile (DemoWbc's MPC gate, the catching planner's) inert in a real
+    // bring-up: an `enable_mpc:=false` launch activated SCHED_FIFO solver
+    // threads onto cores the shield had handed back. Found by dynamic_catching
+    // S6 R-1. Only propagated when the launch set it, so a controller's own
+    // default still applies to bring-ups that predate the profile.
+    if (has_parameter(kRtLayoutProfileParam)) {
+      ctrl_lc_node->declare_parameter<std::string>(
+          kRtLayoutProfileParam, get_parameter(kRtLayoutProfileParam).as_string());
+    }
 
     // PreConfigure: stores node_ + parses yaml so GetTopicConfig() is valid
     // before Pass 2 builds active_groups_. No RegisterLog or resource

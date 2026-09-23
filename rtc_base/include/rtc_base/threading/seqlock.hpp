@@ -56,16 +56,26 @@ class SeqLock {
   // ── Reader (multi-consumer, lock-free with retry) ────────────────────
   [[nodiscard]] T Load() const noexcept {
     T result;
+    LoadInto(result);
+    return result;
+  }
+
+  // Same read, copied straight into caller-owned storage. For payloads large
+  // enough that the by-value Load() matters — Load() builds the copy in a
+  // local and returns it, so a caller assigning it to a member pays the
+  // payload once more on the stack. `out` holds a consistent snapshot on
+  // return; between retries it may briefly hold a torn one, so it must not be
+  // storage another thread reads.
+  void LoadInto(T& out) const noexcept {
     uint32_t s0, s1;
     do {
       s0 = seq_.load(std::memory_order_acquire);
 
-      std::memcpy(&result, &data_, sizeof(T));
+      std::memcpy(&out, &data_, sizeof(T));
 
       s1 = seq_.load(std::memory_order_acquire);
     } while (s0 != s1 || (s0 & 1u));
     // Retry if: sequence changed during read, or writer was active (odd)
-    return result;
   }
 
   // ── Sequence number (for external staleness checks) ──────────────────

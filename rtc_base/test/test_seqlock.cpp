@@ -176,4 +176,41 @@ TEST(SeqLockTest, ConcurrentReadDuringWrite) {
   }
 }
 
+// LoadInto is the same read into caller storage: consistent under a
+// concurrent writer, and equal to Load() once the writer is done.
+TEST(SeqLockTest, LoadIntoIsConsistentUnderAConcurrentWriter) {
+  rtc::SeqLock<TestData> sl;
+  constexpr int kNumWrites = 1000;
+  std::atomic<bool> writer_done{false};
+  std::atomic<int> inconsistency_count{0};
+  std::jthread writer([&](std::stop_token /*st*/) {
+    for (int n = 1; n <= kNumWrites; ++n) {
+      TestData d{};
+      d.counter = n;
+      d.values.fill(static_cast<double>(n));
+      sl.Store(d);
+    }
+    writer_done.store(true, std::memory_order_release);
+  });
+  std::jthread reader([&](std::stop_token /*st*/) {
+    TestData snapshot{};
+    while (!writer_done.load(std::memory_order_acquire)) {
+      sl.LoadInto(snapshot);
+      for (const auto& v : snapshot.values) {
+        if (v != static_cast<double>(snapshot.counter)) {
+          inconsistency_count.fetch_add(1, std::memory_order_relaxed);
+          return;
+        }
+      }
+    }
+  });
+  writer.join();
+  reader.join();
+  EXPECT_EQ(inconsistency_count.load(), 0) << "LoadInto returned torn data";
+  TestData out{};
+  sl.LoadInto(out);
+  EXPECT_EQ(out.counter, kNumWrites);
+  EXPECT_EQ(out.counter, sl.Load().counter);
+}
+
 }  // namespace

@@ -295,6 +295,33 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.joint_cmd_w_arm = ReadTbdDouble(joint_cmd, "w_arm", out.joint_cmd_w_arm);
   out.joint_cmd_w_smooth = ReadTbdDouble(joint_cmd, "w_smooth", out.joint_cmd_w_smooth);
   out.joint_cmd_damping_sq = ReadTbdDouble(joint_cmd, "damping_sq", out.joint_cmd_damping_sq);
+  {
+    const std::string form = ReadOptional<std::string>(joint_cmd, "accel_constraint", "box");
+    if (form == "box") {
+      out.joint_cmd_accel_constraint = CatchingAccelConstraint::kBox;
+    } else if (form == "kinematic") {
+      out.joint_cmd_accel_constraint = CatchingAccelConstraint::kKinematic;
+    } else if (form == "dynamic") {
+      out.joint_cmd_accel_constraint = CatchingAccelConstraint::kDynamic;
+    } else {
+      Reject("'joint_cmd.accel_constraint' must be box, kinematic or dynamic, got '", form, "'");
+    }
+    // A form's keys under another form would read as if they were in force.
+    const auto form_key = [&](const char* key, CatchingAccelConstraint owner, const char* name) {
+      if (joint_cmd[key] && out.joint_cmd_accel_constraint != owner) {
+        Reject("'joint_cmd.", key, "' belongs to accel_constraint ", name,
+               " but the selected form is ", form);
+      }
+    };
+    form_key("task_accel_max_linear", CatchingAccelConstraint::kKinematic, "kinematic");
+    form_key("task_accel_max_angular", CatchingAccelConstraint::kKinematic, "kinematic");
+    form_key("eta_tau", CatchingAccelConstraint::kDynamic, "dynamic");
+  }
+  out.joint_cmd_task_accel_max_linear =
+      ReadTbdDouble(joint_cmd, "task_accel_max_linear", out.joint_cmd_task_accel_max_linear);
+  out.joint_cmd_task_accel_max_angular =
+      ReadTbdDouble(joint_cmd, "task_accel_max_angular", out.joint_cmd_task_accel_max_angular);
+  out.joint_cmd_eta_tau = ReadTbdDouble(joint_cmd, "eta_tau", out.joint_cmd_eta_tau);
   const YAML::Node qp = ReadSection(joint_cmd, "qp");
   out.joint_cmd_max_iter = ReadPositiveCount(qp, "max_iter", out.joint_cmd_max_iter);
   const YAML::Node lag = ReadSection(joint_cmd, "lag");
@@ -572,6 +599,23 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   }
   if (params.joint_cmd_max_iter < 1) {
     AddFailure(report, CatchingValidationReason::kRangeViolation, "joint_cmd.qp.max_iter");
+  }
+  // decision K: each acceleration form's keys are active only when it is the
+  // selected form (an unselected form's TBD is not a reason to refuse).
+  const bool kinematic = params.joint_cmd_accel_constraint == CatchingAccelConstraint::kKinematic;
+  const bool dynamic = params.joint_cmd_accel_constraint == CatchingAccelConstraint::kDynamic;
+  if (CheckActiveTbd(report, params.joint_cmd_task_accel_max_linear,
+                     "joint_cmd.task_accel_max_linear", kinematic)) {
+    CheckRange(report, "joint_cmd.task_accel_max_linear",
+               params.joint_cmd_task_accel_max_linear.value, 1e-3, 500.0);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_task_accel_max_angular,
+                     "joint_cmd.task_accel_max_angular", kinematic)) {
+    CheckRange(report, "joint_cmd.task_accel_max_angular",
+               params.joint_cmd_task_accel_max_angular.value, 1e-3, 1000.0);
+  }
+  if (CheckActiveTbd(report, params.joint_cmd_eta_tau, "joint_cmd.eta_tau", dynamic)) {
+    CheckRange(report, "joint_cmd.eta_tau", params.joint_cmd_eta_tau.value, 1e-3, 1.0);
   }
   if (CheckActiveTbd(report, params.joint_cmd_lag_t_arm, "joint_cmd.lag.T_arm", true)) {
     CheckRange(report, "joint_cmd.lag.T_arm", params.joint_cmd_lag_t_arm.value, 0.0, 0.5);

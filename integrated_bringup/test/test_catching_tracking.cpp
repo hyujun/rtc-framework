@@ -37,6 +37,7 @@
 #include <gtest/gtest.h>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/algorithm/rnea.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -295,6 +296,106 @@ TEST_F(CatchingTrackingTest, RespectsTheJointAndStepLimitsThroughout) {
       previous[ui] = q;
     }
   }
+}
+
+// ── Decision K (S6-C2): the dynamic form bounds the arm torque ──────────────
+
+class CatchingTorqueTest : public CatchingTrackingTest {
+ protected:
+  static constexpr double kEta = 0.8;  // joint_cmd.eta_tau default (D-16)
+
+  /// Worst |τ_i| / (η·τ_max,i) over the arm across 300 ticks toward the G5-B
+  /// far target. The oracle is RNEA on the ACTUATED model (the one the
+  /// controller drives, see CatchFrameOracle), fed the commanded arm path:
+  /// τ = RNEA(q_{n−1}, v_{n−1}, (v_n − v_{n−1})/dt), v_n = (q_n − q_{n−1})/dt —
+  /// what the perfect servo would have to deliver. The hand sits at zero.
+  double WorstTorqueRatio(const std::function<void(YAML::Node&)>& tweak, int& clik_failures) {
+    const auto model =
+        builder_->GetActuatedModel() ? builder_->GetActuatedModel() : builder_->GetFullModel();
+    EXPECT_TRUE(model);
+    pinocchio::Data data(*model);
+    const auto limits =
+        integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_limits.value();
+    std::array<Eigen::Index, kUr5eArmDof> vidx{};
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      const auto jid = model->getJointId(arm_names_[static_cast<std::size_t>(i)]);
+      vidx[static_cast<std::size_t>(i)] = model->joints[jid].idx_v();
+    }
+    const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.45, -0.35, 0.30);
+    const Eigen::Vector3d a_d = start_pose_.rotation().col(2);
+    BringUp(p_c, a_d, 0.0, 1.0, tweak);
+    if (::testing::Test::HasFatalFailure() || !model) {
+      return 0.0;  // BringUp's ASSERT returned from BringUp only
+    }
+    RunClosedLoop(4);  // IDLE → ARMED → TRACKING → APPROACH
+    EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kApproach);
+
+    Eigen::VectorXd q0 = Eigen::VectorXd::Zero(model->nq);
+    Eigen::VectorXd q1 = q0;
+    Eigen::VectorXd q2 = q0;
+    const auto load = [&](Eigen::VectorXd& q) {
+      for (int i = 0; i < kUr5eArmDof; ++i) {
+        q[vidx[static_cast<std::size_t>(i)]] = commanded_[static_cast<std::size_t>(i)];
+      }
+    };
+    // One tick at a time with our OWN publishing: RunClosedLoop(1) would
+    // republish sequence 1 every tick, which the lane de-duplicates, and the
+    // ball would go stale 0.2 s in (APPROACH → RETREAT holds the arm, a stop
+    // no torque bound describes).
+    std::uint64_t sequence = 2;  // RunClosedLoop(4) above used 1
+    const auto tick = [&](int t) {
+      if (t % 15 == 0) {
+        PublishPrediction(sequence++);
+      }
+      RunClosedLoop(1, /*publish=*/false);
+    };
+    load(q1);
+    tick(0);
+    load(q2);
+    double worst = 0.0;
+    clik_failures = 0;
+    for (int t = 1; t <= 300; ++t) {
+      q0 = q1;
+      q1 = q2;
+      tick(t);
+      load(q2);
+      EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kApproach) << "tick " << t;
+      clik_failures += ctrl_->GetLastSolve().converged ? 0 : 1;
+      const Eigen::VectorXd v_prev = (q1 - q0) / kDt;
+      const Eigen::VectorXd v = (q2 - q1) / kDt;
+      const Eigen::VectorXd a = (v - v_prev) / kDt;
+      const Eigen::VectorXd tau = pinocchio::rnea(*model, data, q1, v_prev, a);
+      for (int i = 0; i < kUr5eArmDof; ++i) {
+        const auto ui = static_cast<std::size_t>(i);
+        worst = std::max(worst, std::abs(tau[vidx[ui]]) / (kEta * limits.max_torque[ui]));
+      }
+    }
+    return worst;
+  }
+};
+
+TEST_F(CatchingTorqueTest, WithoutAnAccelerationConstraintTheFarTargetBreaksTheBound) {
+  // The premise of the next case: with no acceleration constraint at all (box
+  // form, no derived box) this run demands more than η·τ_max, so a green
+  // dynamic run is the rows' doing.
+  int failures = 0;
+  const double worst = WorstTorqueRatio(
+      [](YAML::Node& y) { y["catching"]["robot"]["arm"].remove("accel_limits_path"); }, failures);
+  // Measured 1.10 (deterministic: the servo is perfect and the clock only
+  // moves the reference's time axis). The case needs "breaks it", not "by how
+  // much"; 1.05 keeps it clear of the dynamic case's ≤ 1.001.
+  EXPECT_GT(worst, 1.05) << "worst " << worst;
+}
+
+TEST_F(CatchingTorqueTest, TheDynamicFormKeepsTheArmTorqueInsideItsBound) {
+  int failures = 0;
+  const double worst = WorstTorqueRatio(
+      [](YAML::Node& y) { y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic"; }, failures);
+  EXPECT_EQ(failures, 0) << "the torque rows made the QP fail";
+  EXPECT_LE(worst, 1.0 + 1e-3) << "the arm torque left its bound";
+  EXPECT_GT(worst, 0.8) << "the bound should be active in this run";
+  EXPECT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kApproach)
+      << "the run aborted; last reason = " << static_cast<int>(ctrl_->GetLastReason());
 }
 
 // ── The command is continuous across the start of tracking ──────────────────

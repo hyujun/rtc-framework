@@ -351,6 +351,59 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
                 sizeof(double) * CovarianceSnapshot::kElems);
   }
 
+  // ── Vision world → model world (plan §11) ─────────────────────────────────
+  // Before the format check so the check, the jump diagnostic and every
+  // consumer see one frame. A rotation of the covariance skips exact-zero
+  // rotation coefficients: an unknown (NaN) element must stay confined to the
+  // elements it actually feeds, and 0·NaN would otherwise spread it over its
+  // whole 3×3 block (a rotation about z would turn one unknown vz variance into
+  // an unknown vx and vy).
+  if (cfg_.to_model) {
+    const auto& r = cfg_.r_model_world;
+    const auto& tr = cfg_.t_model_world;
+    const auto rot = [&r](const std::array<double, 3>& x) {
+      return std::array<double, 3>{r[0] * x[0] + r[1] * x[1] + r[2] * x[2],
+                                   r[3] * x[0] + r[4] * x[1] + r[5] * x[2],
+                                   r[6] * x[0] + r[7] * x[1] + r[8] * x[2]};
+    };
+    for (std::int64_t i = 0; i < width; ++i) {
+      auto& s = decoded.s[static_cast<std::size_t>(i)];
+      s.p = rot(s.p);
+      for (std::size_t k = 0; k < 3; ++k) {
+        s.p[k] += tr[k];
+      }
+      s.v = rot(s.v);
+      s.a = rot(s.a);
+      const auto& c_in = decoded_cov.c[static_cast<std::size_t>(i)];
+      std::array<double, CovarianceSnapshot::kElems> c_out{};
+      // R6 = blockdiag(R, R): element (a, b) of R6 is r[(a%3)*3 + b%3] when
+      // a and b are in the same 3-block, else 0.
+      const auto r6 = [&r](std::size_t a, std::size_t b) {
+        return (a / 3 == b / 3) ? r[(a % 3) * 3 + (b % 3)] : 0.0;
+      };
+      for (std::size_t a = 0; a < 6; ++a) {
+        for (std::size_t b = 0; b < 6; ++b) {
+          double sum = 0.0;
+          for (std::size_t k = 0; k < 6; ++k) {
+            const double rak = r6(a, k);
+            if (rak == 0.0) {
+              continue;
+            }
+            for (std::size_t l = 0; l < 6; ++l) {
+              const double rbl = r6(b, l);
+              if (rbl == 0.0) {
+                continue;
+              }
+              sum += rak * c_in[k * 6 + l] * rbl;
+            }
+          }
+          c_out[a * 6 + b] = sum;
+        }
+      }
+      decoded_cov.c[static_cast<std::size_t>(i)] = c_out;
+    }
+  }
+
   // ── Format check (L2's gate, the single owner of these rules) ────────────
   const rtc::catching::TrajLimits limits{cfg_.n_min, cfg_.n_max, cfg_.dt_min_ns};
   const rtc::catching::TrajCheck check = rtc::catching::Check(decoded, limits);

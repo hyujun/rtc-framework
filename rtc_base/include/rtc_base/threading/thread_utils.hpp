@@ -140,6 +140,25 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
     return false;
   }
 
+  // 0. Name the thread FIRST. Naming needs no privilege, and every later step
+  //    can fail and return early — affinity with EINVAL outside the process
+  //    cpuset, the scheduler with EPERM on a host without RLIMIT_RTPRIO /
+  //    CAP_SYS_NICE. Naming last (as this function once did) left exactly the
+  //    misconfigured threads anonymous: `ps -L` and verify_rt_runtime.sh key
+  //    threads by name, so the thread whose config failed was the one they
+  //    could not find, and two roles sharing a slot could not be told apart
+  //    (dynamic_catching S6 R-1 found this on an unprivileged development host).
+  {
+    char name_buf[16];
+    std::strncpy(name_buf, cfg.name, sizeof(name_buf) - 1);
+    name_buf[sizeof(name_buf) - 1] = '\0';
+#ifdef __APPLE__
+    pthread_setname_np(name_buf);
+#else
+    pthread_setname_np(pthread_self(), name_buf);
+#endif
+  }
+
   // 1. Set CPU affinity (skip when cpu_core == -1: the calling process's
   //    taskset already constrains this thread's affinity — typical for RT
   //    receive threads that piggy-back on a launch-level driver taskset).
@@ -189,15 +208,7 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
     pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
   }
 
-  // 3. Set thread name for debugging (max 15 chars + null terminator)
-  char name_buf[16];
-  std::strncpy(name_buf, cfg.name, sizeof(name_buf) - 1);
-  name_buf[sizeof(name_buf) - 1] = '\0';
-#ifdef __APPLE__
-  pthread_setname_np(name_buf);
-#else
-  pthread_setname_np(pthread_self(), name_buf);
-#endif
+  // (3. The thread name is set at step 0, before anything that can fail.)
 
   return true;
 }

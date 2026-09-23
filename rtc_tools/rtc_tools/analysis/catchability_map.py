@@ -758,6 +758,22 @@ def write_model_config(
         )
     catch_parent = str(frames[catch_frame]["parent"])
 
+    # The runtime planner plans in a SHIPPED sub-model (`urdf.sub_models.<arm>_catch`,
+    # dynamic_catching S6-B R-3, named by the controller key `planner.sub_model`). When the
+    # robot config declares one that runs from this arm's root to the catch frame's parent,
+    # the map uses it by name — the map and the runtime then judge in the same model by
+    # construction (G3-I). One that runs anywhere else is refused: the two would disagree.
+    shipped_catch = f"{arm_sub_model}_catch"
+    if shipped_catch in shipped_subs:
+        entry = shipped_subs[shipped_catch]
+        if str(entry["root_link"]) != arm_root or str(entry["tip_link"]) != catch_parent:
+            raise SystemExit(
+                f"urdf.sub_models.{shipped_catch} runs {entry['root_link']} -> "
+                f"{entry['tip_link']}, but the catch sub-model must run {arm_root} -> "
+                f"{catch_parent} (the arm root to the catch frame's parent)"
+            )
+        catch_sub_model = shipped_catch
+
     urdf_text, urdf_label = resolve_urdf_text(params, urdf_override)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

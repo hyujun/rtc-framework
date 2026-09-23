@@ -15,6 +15,7 @@
 
 비범위:
 - 좌표 변환 조회를 RT에서 수행하는 것(금지 — RT 경로에 tf2 없음). `frame_id`→`world` 가 다르면 configure 에서 한 번 읽어 캐시한 정적 변환을 nrt 콜백에서 적용한다. sim 에서는 불필요 — 실측 `frame_id` = `world` (TBD-VIS-06 닫힘, S3.4 2026-09-20); 실기 카메라 프로파일이 다른 frame 을 내면 그때 켠다.
+  - **`world` → 모델 world 는 별개이고 항상 필요하다 (S6-C 2026-09-23, plan §11).** 계획기·catch_box·CLIK 은 pinocchio universe (URDF 모델 root) 좌표를 쓰는데, ur5e_p1b 의 root 는 `base_link` 라 `world` (= `base`) 와 z 둘레 180° 다르다. 이 변환 없이 sim 21 투구 전부 후보가 팔 뒤로 가 plan 이 0 이었다. nrt 수신 시 한 번 $p,v,a$ 와 6×6 공분산 ($R_6\Sigma R_6^\top$, 정확히 0 인 회전 계수는 건너뛰어 NaN(모름) 이 섞이지 않게) 에 적용하고, 그 뒤의 모든 소비자는 모델 world 를 본다. 변환은 `model_world_T_world` = (모델에서 읽은 `io.arm_base_frame` 배치) · `io.base_T_world` — 지도 도구의 `--arm-base-frame`·`--world-yaw-deg`·`--world-translation-m` 과 같은 분해. 항등이면 적용하지 않는다 (iiwa7_leap)
 - 궤적 예측·전파(vision 노드, 마스터 §5.2).
 - RT 원시형 구현 — `rtc::SeqLock`·`rtc::SpscQueue` 를 쓴다(G1-8).
 
@@ -241,6 +242,8 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | `io.traj_topic` | string | – | ball_perception debug 예측 궤적 토픽 | – | G1-2, D-4 (stable ABI 아님) |
 | `io.qos_reliability` | enum | – | `best_effort` | – | S3.4 실측으로 확정 (TBD-VIS-08 닫힘, G1-2). depth 는 `KEEP_LAST(1)` 고정(ARCH-6)이라 설정 키가 아니다 |
 | `io.expected_frame` | string | – | `world` | – | 마스터 §3. sim 실측 `world` (TBD-VIS-06 닫힘). 다르면 §4.3 변환 |
+| `io.arm_base_frame` | string | – | (없음 → 경고 후 vision frame 을 모델 world 로 취급) | 모델의 frame, root 에 강체 | §1 비범위 주석 (S6-C). p1b `base`, leap `link_0`. 모델에 없거나 움직이는 관절 뒤면 configure 거부 |
+| `io.base_T_world` | map | deg, m | `{yaw_deg: 0, translation: [0,0,0]}` | 유한 | $p_{base}=R_z(\text{yaw})\,p_{world}+t$. sim 실측 항등 (plan §11). 실기는 카메라 보정 (S10). `arm_base_frame` 없이 주면 거부 |
 | `io.n_min` | int | – | **12** (provisional, S3.6 정정) | 2–`kCap` | 형식 검사 하한. **단일 키** — L2 검사도 이 값을 쓴다 (plan S0.3). = ⌈`io.horizon_min` / `prediction.dt_expected`⌉ **+ 1** = ⌈0.51/0.05⌉ + 1. **+1 은 여유가 아니다** — 간격 dt 로 놓인 n 점이 덮는 창은 (n−1)·dt 이므로 11 점은 0.50 s 로 요구보다 10 ms 짧고, 그러면 최소 길이 메시지마다 지평 경고가 뜬다 (`/code-review` 2026-09-22 — S3.6 산식이 이 항을 빠뜨렸다). 검증기가 `horizon_min`·`dt_expected` 와의 정합을 검사한다 |
 | `io.t_stale` | double | s | **0.10** (확정 S5.2) | 0.02–0.2 | steady 수신 나이 임계. 발행 주기 + 여유 (S3.4·S8 실측 후). 제안 근거: S3.4 실측 발행 30 Hz (33 ms), 드롭 30 % 주입에서 p95 15 Hz (67 ms) 이므로 3 주기 = 0.10 s 면 드롭 한 건은 stale 이 아니고 유령 트랙 침묵 (마지막 VALID 뒤 ≤ 34 ms 한 건, 이후 침묵) 은 0.10 s 안에 소실로 읽힌다. **확정은 S5.2** (S8 부하 실측 후) |
 | `io.future_tol` | double | s | **1e-3** (확정 S5.2, 실기값) | 1e-4–1e-2 | 원점 지연 음수 허용치 = 시계 동기 오차 예산 (§4.1, §4.2). 제안 근거: sim 은 같은 호스트 wall clock (S3.4: stamp→수신 p50 32 ms 로 음수 없음; **2026-09-22 부터 공 lane stamp 는 발사 기준 sim 시간축을 wall 에 얹은 값이라 stepper 가 따라잡는 동안 wall 을 수십 ms 앞선다** (D-3 위상 오차 δ 의 양방향, `rtc_mujoco_sim` README §Projectile Ball stamp) — 예측 origin stamp 도 그 축이므로 **sim overlay 에서는 0.1 s 가 필요**하고 1e-3 은 실기 (카메라 capture time) 값이다; ball_perception profile 의 `max_future_skew_s` 도 같은 이유로 0.1) 이라 예산은 변환 반올림뿐. 실기는 카메라 PC 와의 동기 실측 (TBD-NET-01, S10) 후 — **확정은 S5.2** |

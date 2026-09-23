@@ -65,20 +65,41 @@
 // E-STOP and on a fault latch, which is what makes (c) mechanical rather than
 // a property of operator discipline.
 //
+// THE PLANNER THREAD (S6-A, D-7, E-7 decision J). With `planner.enabled` the
+// controller owns a CatchingPlannerThread on the `mpc` layout role — thread name
+// `mpc_main`, the same core and scheduling as DemoWbc's MPC solver, because the
+// planner plays the same role. Lifecycle: buffers and the wake eventfd at
+// configure, layout-profile gate as on_activate's first statement, lazy spawn +
+// Resume at activate, Pause at deactivate, JOIN at cleanup — unlike DemoWbc's
+// MPC thread, which lives to the destructor, because a planner that outlived
+// its configuration would resume beside an oracle as a second box writer. The RT tick stores
+// `PlannerRtState` every tick and loads the plan box every tick (D-21); a published plan is taken
+// only when rtc::catching::JudgePlan admits it (L3 §5.2 (a)-(f)). The oracle plan (A-S5-8) writes
+// the SAME box from the RT tick, so there is one consumption path — and a profile enabling both
+// writers is parked.
+//
 // THE HAND STEP IS STILL A DIAGNOSTIC MODE, gated on `diagnostic.hand_step`.
 // From S7.1 the sequencer owns the hand and the default false makes an
 // operator step a refusal rather than a race.
 
+#include "integrated_bringup/controllers/catching/planner_thread.hpp"
 #include "integrated_bringup/controllers/catching/traj_input.hpp"
 #include "integrated_bringup/logging/catching_diag_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
+#include "integrated_bringup/support/layout_profile.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_base/timing/rt_tick_timing_sample.hpp"
+#include "rtc_base/timing/thread_timing_csv_logger.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/decel_target.hpp"
+#include "rtc_controllers/catching/planner_cycle.hpp"
+#include "rtc_controllers/catching/planner_io.hpp"
+#include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/soft_catch.hpp"
 #include "rtc_controllers/catching/traj_sampler.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
@@ -96,6 +117,8 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -147,6 +170,24 @@ inline constexpr double kTrajSpacingFloorFraction = 0.1;
 /// indistinguishable from one that does not move the hand at all.
 inline constexpr double kLockedJointVelocity = 1e-9;
 
+/// Why an instance was parked at configure (configure SUCCESS, activation
+/// refused). A park commands nothing and keeps the rest of the robot up — CM
+/// refuses EVERY controller when one fails configure, so parking is how this
+/// controller says "not me" without saying "not the robot".
+enum class CatchingParkReason : std::uint8_t {
+  kNone = 0,
+  /// A value this controller consumes is provisional or still TBD on a real
+  /// arm (L0 §5.3, A-S5-1), or still TBD in sim (A-S5-12).
+  kConsumedValues,
+  /// `planner.enabled` and `diagnostic.oracle_plan.enabled` are both true: the
+  /// plan box would have two writers (S6-A).
+  kPlannerOracleConflict,
+  /// The planner is enabled but a value it cannot guess is unset or TBD
+  /// (`planner.sub_model`, `freeze.T_freeze`, `workspace.catch_box`,
+  /// `hand.d_eff`, `hand.r_cap`) — S6-B.
+  kPlannerUnset,
+};
+
 /// Controller-local device indices. This controller claims exactly two groups
 /// in `topics:` order: the arm it holds and the hand it steps. Indices rather
 /// than names because that is what ControllerState / ControllerOutput are
@@ -162,6 +203,15 @@ inline constexpr int kDemoCatchingMaxHandDof = static_cast<int>(rtc::catching::k
 class DemoCatchingController final : public RTControllerInterface {
  public:
   explicit DemoCatchingController(std::string_view urdf_path);
+
+  /// Joins the planner thread and closes its wake eventfd. The thread reads
+  /// boxes this object owns, so it must be gone before they are.
+  ~DemoCatchingController() override;
+
+  DemoCatchingController(const DemoCatchingController&) = delete;
+  DemoCatchingController& operator=(const DemoCatchingController&) = delete;
+  DemoCatchingController(DemoCatchingController&&) = delete;
+  DemoCatchingController& operator=(DemoCatchingController&&) = delete;
 
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
@@ -210,6 +260,82 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   [[nodiscard]] bool IsHandStepEnabled() const noexcept { return hand_step_enabled_; }
+
+  // ── Planner (S6-A) ───────────────────────────────────────────────────────
+
+  [[nodiscard]] const rtc::catching::PlannerParams& GetPlannerParams() const noexcept {
+    return planner_params_;
+  }
+
+  /// Record this run's layout profile (issue #350). on_configure reads it from
+  /// the `rt_layout_profile` node parameter; this setter exists for fixtures
+  /// that bring the controller up through LoadConfig, which never reaches
+  /// on_configure. Same shape as DemoWbcController::SetLayoutProfile.
+  void SetLayoutProfile(std::string_view profile) noexcept {
+    layout_profile_drops_mpc_ = LayoutProfileDropsMpc(profile);
+  }
+
+  /// The planner thread, or null before the first activation that spawned it
+  /// (and always null with `planner.enabled: false`).
+  [[nodiscard]] const CatchingPlannerThread* GetPlannerThread() const noexcept {
+    return planner_thread_.get();
+  }
+
+  /// The wake eventfd, -1 until a configure with the planner enabled made one.
+  [[nodiscard]] int GetPlannerWakeFd() const noexcept {
+    return planner_wake_fd_.load(std::memory_order_acquire);
+  }
+
+  /// What the RT stored for the planner on its last tick.
+  [[nodiscard]] rtc::catching::PlannerRtState GetPlannerRtState() const noexcept {
+    return planner_rt_box_.Load();
+  }
+
+  /// The plan box as the RT will load it next tick.
+  [[nodiscard]] rtc::catching::PlanSnapshot GetPublishedPlan() const noexcept {
+    return plan_box_.Load();
+  }
+
+  /// The box itself, for a test that plays the planner — ONLY with the planner
+  /// and the oracle both disabled, or the box has two writers.
+  [[nodiscard]] rtc::SeqLock<rtc::catching::PlanSnapshot>& PlanBoxForTesting() noexcept {
+    return plan_box_;
+  }
+
+  /// Why the last tick did not take the plan in the box (`kNone` = it did, or
+  /// it took one earlier and is following it).
+  [[nodiscard]] rtc::catching::PlanRefusal GetLastPlanRefusal() const noexcept {
+    return static_cast<rtc::catching::PlanRefusal>(
+        plan_refusal_observed_.load(std::memory_order_relaxed));
+  }
+
+  /// Plans that replaced the one being followed in APPROACH (§4.7, S6-B).
+  /// The vision → model-world transform the ingress applies (plan §11),
+  /// resolved at configure from `catching.io.arm_base_frame` +
+  /// `catching.io.base_T_world` and the model.
+  [[nodiscard]] const TrajInputConfig& GetTrajInputConfig() const noexcept {
+    return traj_input_.Config();
+  }
+
+  [[nodiscard]] std::uint64_t GetPlanReplacedCount() const noexcept {
+    return plan_replaced_count_.load(std::memory_order_relaxed);
+  }
+
+  /// Whether the planner has a model to search in (S6-B). False = the S6-A
+  /// stub ("no plan") — a profile with no system model, e.g. a unit fixture.
+  [[nodiscard]] bool IsPlannerSearchConfigured() const noexcept {
+    return planner_cycle_.SearchConfigured();
+  }
+
+  /// Plans the RT has adopted (TRACKING → APPROACH edges it took on a plan).
+  [[nodiscard]] std::uint64_t GetPlanAdmittedCount() const noexcept {
+    return plan_admitted_count_.load(std::memory_order_relaxed);
+  }
+
+  /// The plan being followed (RT-owned; read off the RT thread by tests only).
+  [[nodiscard]] const rtc::catching::PlanSnapshot& GetFollowedPlanForTesting() const noexcept {
+    return plan_;
+  }
 
   /// The supervisor mode the last RT tick left behind, and the reason that put
   /// it there. Read off the RT thread (tests, and the state message from
@@ -317,16 +443,21 @@ class DemoCatchingController final : public RTControllerInterface {
     return non_sim_groups_;
   }
 
-  /// True once on_configure has parked this instance: a REAL-ARM configuration
-  /// (no proof that every claimed device is the simulator) whose profile still
-  /// carries a value this controller consumes as provisional or TBD (L0 §5.3,
-  /// A-S5-1). A disabled instance holds no step lane, no log channels and no
-  /// profile parameters, and on_activate refuses — so it commands nothing.
+  /// True once on_configure has parked this instance (GetParkReason() says
+  /// why): a REAL-ARM configuration (no proof that every claimed device is the
+  /// simulator) whose profile still carries a value this controller consumes as
+  /// provisional or TBD (L0 §5.3, A-S5-1); a SIM configuration whose consumed
+  /// value is still TBD (A-S5-12); or a profile that enables both the planner
+  /// and the oracle plan (S6-A). A disabled instance holds no step lane, no log
+  /// channels and no profile parameters, and on_activate refuses — so it
+  /// commands nothing.
   ///
   /// The name is kept from S4.0, where the same state meant "not the
-  /// simulator" on its own; today the backend only chooses which rule is
-  /// applied. See IsRealArmConfig().
+  /// simulator" on its own; today it is about the VALUES. See IsRealArmConfig().
   [[nodiscard]] bool IsSimOnlyDisabled() const noexcept { return sim_only_disabled_; }
+
+  /// Why IsSimOnlyDisabled() is true — kNone while it is false.
+  [[nodiscard]] CatchingParkReason GetParkReason() const noexcept { return park_reason_; }
 
   /// Whether the claimed devices failed to prove they are all the simulator —
   /// the validator's `real_arm_config` axis for this configure.
@@ -407,6 +538,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Assemble the position / velocity / acceleration boxes CLIK is given, in
   /// Pinocchio order. Non-RT.
   void BuildClikBoxes(int nv, rtc::tsid::ClikReferenceGenerator::Config& cfg);
+  /// Decision K (S6-C2): puts `joint_cmd.accel_constraint`'s form into `cfg`
+  /// after BuildClikBoxes. False (logged) when `dynamic` is selected but the
+  /// arm device has no usable `joint_limits.max_torque` — the arm is then held.
+  [[nodiscard]] bool ConfigureAccelConstraint(int nv,
+                                              rtc::tsid::ClikReferenceGenerator::Config& cfg);
 
   /// One tick of the tracking law: sample → reference → CLIK → arm command.
   /// Returns the reason to report, `kNone` when the tick was healthy. RT only.
@@ -422,8 +558,45 @@ class DemoCatchingController final : public RTControllerInterface {
   void SeedArmCommand(const ControllerState& state) noexcept;
 
   /// Build the fixed plan the `diagnostic.oracle_plan` block describes
-  /// (A-S5-8). RT only; the planner that replaces this is S6.
-  void MakeOraclePlan(rtc::catching::NowReal now) noexcept;
+  /// (A-S5-8) and STORE it in the plan box — the same box the planner writes,
+  /// so an oracle run exercises the same consumption path. RT only; called on
+  /// every TRACKING tick without a plan, so the box always holds this tick's
+  /// oracle plan rather than one built for an earlier instant.
+  void StoreOraclePlan(rtc::catching::NowReal now) noexcept;
+
+  /// Take an admitted plan: it becomes the plan being followed. RT only.
+  void AdoptPlan(const rtc::catching::PlanSnapshot& plan) noexcept;
+
+  /// Fill and store this tick's PlannerRtState. RT only, every tick.
+  void StorePlannerRtState(const ControllerState& state, rtc::catching::NowReal now) noexcept;
+
+  /// Configure-time planner setup: arm-width checks, the wake eventfd, the
+  /// cycle's box binding, and (S6-B) the search's model on the catch
+  /// sub-model. Non-RT. Returns false (and logs) on a configuration the
+  /// planner cannot run with.
+  [[nodiscard]] bool SetupPlanner();
+
+  /// Build the search's model: a reorder-free handle on `planner.sub_model`,
+  /// the catch frame, the model↔device joint map, velocity/acceleration
+  /// limits and the profile constants. Non-RT; false (and logged) on a model
+  /// the planner cannot use.
+  [[nodiscard]] bool SetupPlannerSearch();
+
+  /// The first planner value that is a decision and is unset, or nullptr.
+  [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
+
+  /// Spawn the planner thread on the `mpc` role (E-7 J) once per
+  /// configuration, and open its timing CSV + 1 Hz drain timer. Non-RT
+  /// (on_activate). Idempotent within a configuration.
+  void SpawnPlannerThreadIfNeeded() noexcept;
+
+  /// Join and drop the planner thread. Non-RT (lifecycle). Join wakes the
+  /// poll (OnRequestStop) and waits for a wake already in flight, which is
+  /// bounded by one PlannerCycle::Run.
+  void StopPlannerThread() noexcept;
+
+  /// 1 Hz aux timer: drain the planner timing ring into the CSV. Non-RT.
+  void DrainPlannerTiming() noexcept;
 
   /// Copy this tick's verdict on the vision snapshot into the record. RT only.
   void RecordInputLane(const rtc::catching::TrajectorySnapshot& snapshot) noexcept;
@@ -446,6 +619,14 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Create the prediction subscription and configure the ingress. Non-RT.
   void SetupTrajInput();
+  /// The model builder: CM's shared one, else one of our own (fixtures). Left
+  /// null (logged) without a system model config. Acquired at the start of the
+  /// ingress setup, because the vision-frame transform needs the model BEFORE
+  /// the subscription exists.
+  void AcquireModelBuilder();
+  /// Fills `cfg`'s vision → model-world transform (plan §11). False (logged)
+  /// on a named frame the model lacks or that is not rigid to its root.
+  [[nodiscard]] bool ResolveVisionFrame(TrajInputConfig& cfg);
 
   /// The subscription callback (non-RT). Samples the receive instants, hands
   /// the message to the ingress and, on acceptance, publishes both snapshots.
@@ -531,6 +712,7 @@ class DemoCatchingController final : public RTControllerInterface {
   bool device_configs_seen_{false};
   /// Set by on_configure, cleared by on_cleanup. See IsSimOnlyDisabled().
   bool sim_only_disabled_{false};
+  CatchingParkReason park_reason_{CatchingParkReason::kNone};
   /// Which validator axis this configure used (A-S5-1). Decided from the
   /// claimed devices' backends, re-decided on every configure.
   bool real_arm_config_{true};
@@ -648,6 +830,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// change rather than performing a conversion (L1 §4.3's transform is not
   /// implemented because nothing needs it).
   std::string expected_frame_{"world"};
+  /// `catching.io.arm_base_frame` — the URDF frame the vision world is
+  /// measured against — and `catching.io.base_T_world` (p_base = Rz(yaw)·p_world
+  /// + t, the map tool's `--world-yaw-deg` / `--world-translation-m`). Empty
+  /// frame ⇒ the vision frame is taken AS the model world (warned).
+  std::string vision_base_frame_;
+  double vision_yaw_deg_{0.0};
+  std::array<double, 3> vision_translation_{0.0, 0.0, 0.0};
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr traj_sub_;
   CatchingTrajInput traj_input_;
 
@@ -774,11 +963,77 @@ class DemoCatchingController final : public RTControllerInterface {
   std::vector<std::string> hand_sensor_names_;
 
   // ── The plan being followed ──────────────────────────────────────────────
-  // S6 replaces this member's WRITER (a planner thread through a SeqLock); the
-  // reader below is what that planner will feed.
+  // Written only by AdoptPlan (RT), from a plan the box delivered and
+  // JudgePlan admitted — the planner's or the oracle's, through one path.
   rtc::catching::PlanSnapshot plan_{};
   bool plan_active_{false};
   int traj_hint_{0};  // L2 sampler cursor, reset when the snapshot changes
+
+  // ── Planner thread (S6-A, D-7, E-7 decision J) ───────────────────────────
+  rtc::catching::PlannerParams planner_params_{};
+  /// The iteration body the thread calls. Owned here so it outlives the
+  /// thread (which holds a reference to it).
+  rtc::catching::PlannerCycle planner_cycle_;
+  /// RT writer (every tick), planner reader.
+  rtc::SeqLock<rtc::catching::PlannerRtState> planner_rt_box_;
+  /// ONE writer — the planner thread, or the RT's oracle stand-in, never both
+  /// (a profile enabling both is parked). RT reader, every tick (D-21).
+  rtc::SeqLock<rtc::catching::PlanSnapshot> plan_box_;
+  /// Non-blocking eventfd. Written by the vision subscription (non-RT) on every
+  /// accepted trajectory, drained by the planner thread. Created at the first
+  /// configure that enables the planner and closed only in the destructor,
+  /// after the thread is joined: closing it earlier would let a still-polling
+  /// thread see a recycled fd number. Atomic because the subscription reads it
+  /// from the executor thread.
+  std::atomic<int> planner_wake_fd_{-1};
+  /// Lives for ONE configuration: spawned at the first activation of a
+  /// configure that enabled the planner, joined in on_cleanup (and before any
+  /// re-bind in on_configure). A thread that outlived its configuration would
+  /// resume under the next one — and if that one enables the oracle instead,
+  /// the plan box would have two writers (SeqLock::Store is not RMW-safe:
+  /// interleaved writers can leave the sequence odd and hang every Load).
+  std::unique_ptr<CatchingPlannerThread> planner_thread_;
+  /// The per-wake timing ring, owned HERE rather than by the thread so the
+  /// 1 Hz drain timer never dereferences planner_thread_ (which is joined and
+  /// replaced across configurations while the timer may be mid-callback).
+  CatchingPlannerThread::TimingBuffer planner_timing_{};
+  /// Per-wake planner records → planner_events.csv (decision E). Owned here
+  /// for the same reason as the timing ring.
+  CatchingPlannerThread::EventQueue planner_events_{};
+  std::ofstream planner_events_file_;
+  /// `planner.ik.*` / `planner.catchability.*` — the same parser and keys the
+  /// offline catchability map uses (S3.5a), so map and runtime solve alike.
+  rtc::catching::CatchPoseIkConfig catch_pose_ik_config_{};
+  /// The planner thread's OWN model handle on `planner.sub_model` (R-3,
+  /// thread-per-handle). Replaced only while no planner thread exists.
+  std::unique_ptr<rtc_urdf_bridge::RtModelHandle> planner_handle_;
+  /// `planner.freeze.T_freeze` in ns (0 = no freeze), the RT's own defence
+  /// against replacing a plan inside the freeze window (decision G).
+  std::int64_t plan_freeze_ns_{0};
+  /// Launch layout profile dropped the `mpc` role's core (#350). Read at
+  /// configure; see SetLayoutProfile.
+  bool layout_profile_drops_mpc_{false};
+  rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> planner_timing_logger_;
+  rclcpp::CallbackGroup::SharedPtr planner_timing_cb_group_;
+  rclcpp::TimerBase::SharedPtr planner_timing_timer_;
+
+  // RT-owned plan lane state (Compute() only).
+  /// This tick's Load of the plan box (D-21: once per tick, unconditionally).
+  rtc::catching::PlanSnapshot plan_in_{};
+  rtc::catching::PlanRefusal plan_refusal_{rtc::catching::PlanRefusal::kInvalid};
+  /// Payload-side memory of the plan last adopted (never SeqLock::sequence()).
+  rtc::catching::AdmittedPlan admitted_plan_{};
+  /// Steady instant of the last trial reset — plans published before it
+  /// belong to the trial it ended (JudgePlan (f)).
+  std::int64_t reset_floor_ns_{0};
+  /// Bumped on every trial reset and carried to the planner in PlannerRtState.
+  std::uint32_t planner_reset_epoch_{0};
+  /// The oracle stand-in's own monotone plan id (A-S5-8).
+  std::uint32_t oracle_plan_id_{0};
+  std::atomic<std::uint8_t> plan_refusal_observed_{
+      static_cast<std::uint8_t>(rtc::catching::PlanRefusal::kInvalid)};
+  std::atomic<std::uint64_t> plan_admitted_count_{0};
+  std::atomic<std::uint64_t> plan_replaced_count_{0};
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────
   // The hand step arrives on the group's `joint_goal`, which only exists if
@@ -790,7 +1045,9 @@ class DemoCatchingController final : public RTControllerInterface {
   ControllerTopicHandles owned_topics_;
 
   // ── Logging (Phase C `logs:` block) ──────────────────────────────────────
-  rtc::ControllerLogSet log_set_{"demo_catching_controller"};
+  /// `<session>/controllers/<key>/` for the tick record AND planner_events.csv.
+  static constexpr const char* kCatchingLogKey = "demo_catching_controller";
+  rtc::ControllerLogSet log_set_{kCatchingLogKey};
   rtc::LogHandle<DeviceStateLogPod> arm_state_log_handle_;
   rtc::LogHandle<DeviceStateLogPod> hand_state_log_handle_;
   rtc::LogHandle<CatchingDiagLogPod> catching_diag_log_handle_;
