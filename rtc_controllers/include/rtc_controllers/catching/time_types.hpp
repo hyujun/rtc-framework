@@ -20,8 +20,8 @@
 //   | CLOSING→DECEL                         | NowLead  | DecelDue            |
 //   | trajectory horizon exhausted          | NowLead  | HorizonExceeded     |
 //   | APPROACH→COMMITTED                    | NowReal  | CommitDue           |
-//   | COMMITTED→CLOSING, hand close         | NowReal  | HandCommandDue      |
-//   | hand preshape                         | NowReal  | PreshapeDue         |
+//   | COMMITTED→CLOSING, hand close         | NowReal  | HandCommandDueRounded |
+//   | hand preshape (unused since S7 Q4)    | NowReal  | PreshapeDue         |
 //   | contact window [t_cmd, t_c + T_conf]  | NowReal  | InContactWindow     |
 //   | message age / stale                   | NowReal  | AgeNs               |
 //
@@ -125,10 +125,21 @@ static_assert(std::is_trivially_copyable_v<NowLead>);
   return detail::SatSub(t_c.ns, now.ns) <= t_freeze_ns;
 }
 
-/// COMMITTED→CLOSING and the hand close command: now ≥ t_cmd. The hand has no
-/// lead compensation, so this is the real axis.
+/// now ≥ t_cmd, unrounded. The hand has no lead compensation, so this is the
+/// real axis. The sequencer issues the close on the ROUNDED form below; this
+/// one is the axis-table predicate the rounding is defined against.
 [[nodiscard]] constexpr bool HandCommandDue(NowReal now, BallTime t_cmd) noexcept {
   return now.ns >= t_cmd.ns;
+}
+
+/// The hand close command and COMMITTED→CLOSING (L6 §4.3, S7.1): now ≥ t_cmd −
+/// h/2, i.e. the tick NEAREST t_cmd rather than the first one at or after it —
+/// on a regular grid the error is then at most h/2 either side instead of up
+/// to h late. `h_ns` ≤ 0 degenerates to HandCommandDue.
+[[nodiscard]] constexpr bool HandCommandDueRounded(NowReal now, BallTime t_cmd,
+                                                   std::int64_t h_ns) noexcept {
+  const std::int64_t half = h_ns > 0 ? h_ns / 2 : 0;
+  return now.ns >= detail::SatSub(t_cmd.ns, half);
 }
 
 /// Hand preshape: now ≥ t_c − T_pre (real axis).

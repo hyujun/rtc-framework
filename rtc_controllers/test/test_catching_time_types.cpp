@@ -26,6 +26,7 @@ using rtc::catching::CommitDue;
 using rtc::catching::ConvertRemoteStamp;
 using rtc::catching::DecelDue;
 using rtc::catching::HandCommandDue;
+using rtc::catching::HandCommandDueRounded;
 using rtc::catching::HorizonExceeded;
 using rtc::catching::InContactWindow;
 using rtc::catching::LeadSecondsUntil;
@@ -80,6 +81,8 @@ static_assert(std::is_invocable_v<decltype(&CommitDue), NowReal, BallTime, std::
 static_assert(!std::is_invocable_v<decltype(&CommitDue), NowLead, BallTime, std::int64_t>);
 static_assert(std::is_invocable_v<decltype(&HandCommandDue), NowReal, BallTime>);
 static_assert(!std::is_invocable_v<decltype(&HandCommandDue), NowLead, BallTime>);
+static_assert(
+    !std::is_invocable_v<decltype(&HandCommandDueRounded), NowLead, BallTime, std::int64_t>);
 static_assert(!std::is_invocable_v<decltype(&PreshapeDue), NowLead, BallTime, std::int64_t>);
 static_assert(
     !std::is_invocable_v<decltype(&InContactWindow), NowLead, BallTime, BallTime, std::int64_t>);
@@ -151,6 +154,19 @@ TEST(CatchingTimeTypes, HandCommandsOnRealAxis) {
   const std::int64_t t_pre = 150 * kMs;
   EXPECT_FALSE(PreshapeDue(NowReal{t_c.ns - t_pre - 1}, t_c, t_pre));
   EXPECT_TRUE(PreshapeDue(NowReal{t_c.ns - t_pre}, t_c, t_pre));
+}
+
+// The close the sequencer issues (S7.1): the tick NEAREST t_cmd — up to h/2
+// early, never more. h ≤ 0 is the unrounded predicate.
+TEST(CatchingTimeTypes, HandCommandRoundsToTheNearestTick) {
+  const BallTime t_cmd{1'940 * kMs};
+  const std::int64_t h = 2 * kMs;
+  EXPECT_FALSE(HandCommandDueRounded(NowReal{t_cmd.ns - h / 2 - 1}, t_cmd, h));
+  EXPECT_TRUE(HandCommandDueRounded(NowReal{t_cmd.ns - h / 2}, t_cmd, h));
+  EXPECT_FALSE(HandCommandDueRounded(NowReal{t_cmd.ns - 1}, t_cmd, 0));
+  EXPECT_TRUE(HandCommandDueRounded(NowReal{t_cmd.ns}, t_cmd, 0));
+  EXPECT_EQ(HandCommandDueRounded(NowReal{t_cmd.ns - 1}, t_cmd, -h),
+            HandCommandDue(NowReal{t_cmd.ns - 1}, t_cmd));
 }
 
 TEST(CatchingTimeTypes, ContactWindowClosedOnRealAxis) {
