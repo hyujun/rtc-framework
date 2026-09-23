@@ -56,7 +56,7 @@ integrated_bringup 등      ← robot YAML + launch에서 mujoco_simulator_node�
 - `state_joint_names`로 state publish 시 관절 이름/순서를 별도 지정 가능 (빈 배열 = XML 전체)
 - 이름 기반 qpos/qvel/actuator 인덱스 매핑 (비연속 인덱스 지원)
 - 그룹별 독립 command/state 버퍼, control mode, servo gains
-- 첫 번째 robot 그룹이 동기 루프의 primary 대기 대상
+- 동기 루프는 **모든 robot 그룹**의 command 를 기다린다 (#566 — 이전에는 첫 그룹만 기다려, 손 명령이 한 step 늦게 적용될 수 있었다). 첫 그룹은 기동 로그의 `[PRIMARY]` 라벨로만 남는다
 
 ### fake_response (LPF 에코백)
 
@@ -83,7 +83,7 @@ integrated_bringup 등      ← robot YAML + launch에서 mujoco_simulator_node�
 ```
 SimLoop → 모든 robot 그룹의 state 퍼블리시
         → 모든 robot 그룹의 sensor 퍼블리시 (sensor_topic 설정 시)
-        → primary 그룹의 command 대기 (sync_timeout_ms)
+        → 모든 robot 그룹의 command 대기 (sync_timeout_ms — 넘기면 받은 것만 적용하고 step)
         → 모든 robot 그룹의 command 적용 (ApplyCommand, 1회)
         → for sub in [0, n_substeps):
         │     PreparePhysicsStep() (actuator 모드/solver 파라미터/중력/외력)
@@ -110,7 +110,7 @@ SimLoop → 모든 robot 그룹의 state 퍼블리시
 - `StepOnce` (`>` 버튼)은 N substeps 전부 실행 = 1 제어 주기 진행
 - **Physics Load** = substep 루프 wall time / 제어 주기 (뷰어 상단에 표시, >100%면 실시간 유지 불가)
 
-rtc_controller_manager는 `use_sim_time_sync: true` 설정 시 `condition_variable` 기반으로 state 도착 즉시 wakeup하여 ControlLoop를 실행합니다. 기존 `clock_nanosleep` 대비 round-trip 지연이 ~1ms → ~0.35ms로 감소합니다. 이 모드의 RT tick 은 `control_rate` 가 아니라 device state **도착**에 구동되므로 tick 수 기대값을 rate 로 계산하면 틀립니다 — device group 이 2개면 tick 은 ~2×`control_rate` 이고, wake eventfd 가 카운터라 tick 중 도착분이 합쳐져(coalescing) state 콜백 대비 tick 비율은 2 가 아니라 ≈1 입니다. 발행 레이트 자체는 별도 구독자로 실측해 대조합니다.
+rtc_controller_manager는 `use_sim_time_sync: true` 설정 시 state 도착 즉시 eventfd 로 wakeup하여 ControlLoop를 실행합니다. 기존 `clock_nanosleep` 대비 round-trip 지연이 ~1ms → ~0.35ms로 감소합니다. **tick 은 state 메시지가 아니라 sim step 마다 한 번**입니다 (#566): 이 sim 은 group 마다 joint state 를 따로 발행하므로, CM 은 `sim_sync_tick_devices` (기본: 모든 device group) 의 state 가 전부 새로 도착했을 때 한 번 tick 합니다. 이전에는 메시지마다 tick 해 group 이 2 개인 씬 (ur5e_p1b) 에서 838 Hz / 500 Hz step 으로 돌았고, `state.dt` 를 적분하는 법칙이 sim 보다 ~1.67× 빨리 흘렀습니다 — 그 시기의 sim 측정 (궤적 시간·서보 지연·포구 기준 오프셋 등) 은 이 오차를 품고 있습니다. 같은 이유로 sim 에서 CM 의 `t_relative_s` 는 `iteration × dt` 입니다. 반대 방향으로는 sim 이 모든 robot group 의 command 를 기다리므로 (위 루프), 한 tick = 한 step 이 양쪽에서 성립합니다.
 
 ### Constraint Solver 설정 (`solver_param.yaml`)
 
@@ -373,7 +373,7 @@ mujoco_simulator_node
     ├── SimLoop 스레드 (jthread)
     │     └── SimLoop (동기식: state→wait→step→throttle)
     │         ├── 그룹별 cmd_mutex + cmd_pending (atomic) — 명령 전달
-    │         ├── sync_cv_ — primary 그룹 명령 대기
+    │         ├── sync_cv_ — 모든 robot 그룹 명령 대기
     │         ├── 그룹별 state_mutex — 최신 상태 스냅샷 보호
     │         ├── pert_mutex_ (try_lock 전용 — 퍼튜베이션/외부힘 보호)
     │         └── solver_stats_mutex_ — solver 통계 보호
@@ -507,9 +507,9 @@ mujoco_simulator:
 | `model_path` | string | `""` | MJCF 모델 경로 (필수). 빈 값이면 노드 configure 시 `runtime_error`. robot-specific bringup이 `package://<pkg>/path/to/scene.xml` 형태로 전달. |
 | `enable_viewer` | bool | `true` | GLFW 3D 뷰어 활성화 |
 | `viewer_refresh_rate` | double | `60.0` | 뷰어 목표 refresh rate (Hz) |
-| `sync_timeout_ms` | double | `50.0` | primary 그룹 command 대기 타임아웃 (ms) |
+| `sync_timeout_ms` | double | `50.0` | 모든 robot 그룹 command 대기 타임아웃 (ms). 넘기면 도착한 group 의 command 만 적용하고 step 한다 — 한 group 이 명령을 안 보내는 동안 sim 은 step 마다 이만큼 멈춘다 |
 | `max_rtf` | double | `0.0` | 최대 실시간 비율 (0.0 = 무제한) |
-| `control_rate` | double | `500.0` | 런치 파일에서 전달. physics_timestep 검증용 |
+| `control_rate` | double | `500.0` | 런치 파일에서 전달. lock-step 은 step 하나가 controller tick 하나이므로 `physics_timestep == 1/control_rate` 를 요구한다 (다르면 기동 FATAL — #566 이전에는 physics 가 더 빠른 쪽을 허용해 `dt` 적분이 sim 시간과 어긋났다) |
 | `physics_timestep` | double | `0.0` | 0.0이면 XML 값 사용. 양수면 XML과 불일치 시 경고. 제어 주기를 의미 |
 | `n_substeps` | int | `1` | 제어 주기당 물리 서브스텝 수. `substep_dt = physics_timestep / n_substeps`. 1이면 기존 동작 |
 | `use_yaml_servo_gains` | bool | `false` | `true`=YAML servo_kp/kd, `false`=XML gainprm/biasprm |

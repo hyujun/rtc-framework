@@ -815,13 +815,20 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       throw std::runtime_error("MuJoCo initialization failed");
     }
 
+    // Lock-step makes one simulator step one controller tick, and the
+    // controller integrates ControllerState::dt = 1/control_rate per tick. So
+    // the control period must EQUAL the step, not merely fit in it: a step of
+    // half the period (physics faster than control_rate, which this used to
+    // accept) runs every dt-integrating law at twice the simulated time
+    // (issue #566). Relative tolerance only for the 1/x round trip.
     const double xml_dt = sim_->GetPhysicsTimestep();
     if (xml_dt > 0.0 && control_rate_ > 0.0) {
       const double physics_freq = 1.0 / xml_dt;
-      if (physics_freq < control_rate_) {
+      if (std::abs(xml_dt * control_rate_ - 1.0) > 1e-6) {
         RCLCPP_FATAL(get_logger(),
-                     "[MuJoCoSimulatorNode] Physics frequency (%.1f Hz) < "
-                     "control_rate (%.1f Hz)",
+                     "[MuJoCoSimulatorNode] Physics frequency (%.1f Hz) != "
+                     "control_rate (%.1f Hz) — lock-step needs physics_timestep = "
+                     "1/control_rate",
                      physics_freq, control_rate_);
         throw std::runtime_error("physics_timestep vs control_rate mismatch");
       }

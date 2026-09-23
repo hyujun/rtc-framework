@@ -384,8 +384,9 @@ struct JointGroup {
   std::vector<std::string> state_joint_names;
   int num_state_joints{0};
 
-  bool is_robot{true};     // robot_response 여부
-  bool is_primary{false};  // sync_step 대기 대상
+  bool is_robot{true};  // robot_response 여부
+  bool is_primary{false};  // 첫 robot group — 기동 로그 라벨뿐. step 은 모든 robot group 의 명령을
+                           // 기다린다 (#566)
 
   // ── MuJoCo 인덱스: command용 (is_robot==true, 이름 기반 비연속 가능)
   std::vector<int> qpos_indices;
@@ -1198,6 +1199,17 @@ class MuJoCoSimulator {
   // ── Sync step ─────────────────────────────────────────────────────────────
   std::mutex sync_mutex_;
   std::condition_variable sync_cv_;
+
+  /// Wakes the step's command wait. Takes sync_mutex_ before notifying: the
+  /// waiter checks cmd_pending under that lock and then blocks, and a
+  /// notify that lands between the two is lost — the step then idles out the
+  /// whole sync_timeout_ms. With every robot group waited on (issue #566)
+  /// there are as many notifies per step as groups, so the gap is closed
+  /// rather than left to the timeout.
+  void NotifyCommandArrived() noexcept {
+    { std::lock_guard lock(sync_mutex_); }
+    sync_cv_.notify_one();
+  }
 
   // ── Viewer double-buffer ──────────────────────────────────────────────────
   mutable std::mutex viz_mutex_;

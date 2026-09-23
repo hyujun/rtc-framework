@@ -998,14 +998,28 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       static_cast<int64_t>(cfg_.sync_timeout_ms > 0.0 ? cfg_.sync_timeout_ms : 50.0));
   uint64_t step = 0;
 
-  // Find primary group index
-  std::size_t primary_idx = 0;
+  // The step waits for a command from EVERY robot group (issue #566). The
+  // controller sends one command per device per tick, and waiting on the
+  // first group alone let the step run on as soon as the arm's command
+  // landed — the hand's, still in flight, was then applied a step late.
+  // Fake-response groups take no command and are not waited on.
+  std::vector<std::size_t> robot_idx;
   for (std::size_t i = 0; i < groups_.size(); ++i) {
-    if (groups_[i]->is_primary) {
-      primary_idx = i;
-      break;
+    if (groups_[i]->is_robot) {
+      robot_idx.push_back(i);
     }
   }
+  const auto all_commands_in = [this, &robot_idx]() noexcept {
+    if (robot_idx.empty()) {
+      return false;  // nothing to wait for: step on the timeout, as before
+    }
+    for (const std::size_t i : robot_idx) {
+      if (!groups_[i]->cmd_pending.load(std::memory_order_relaxed)) {
+        return false;
+      }
+    }
+    return true;
+  };
 
   const auto loop_start = std::chrono::steady_clock::now();
   rtf_wall_start_ = loop_start;
@@ -1073,13 +1087,12 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     InvokeObjectStateCallback();
     InvokeProjectileBallCallback();
 
-    // 2. Wait for command from PRIMARY group
+    // 2. Wait for this step's command from every robot group
     {
       RTC_TRACE_SCOPE("sim_wait_command");
       std::unique_lock lock(sync_mutex_);
-      sync_cv_.wait_for(lock, timeout, [this, &stop, primary_idx] {
-        return groups_[primary_idx]->cmd_pending.load(std::memory_order_relaxed) ||
-               stop.stop_requested() || !running_.load() ||
+      sync_cv_.wait_for(lock, timeout, [this, &stop, &all_commands_in] {
+        return all_commands_in() || stop.stop_requested() || !running_.load() ||
                reset_requested_.load(std::memory_order_relaxed);
       });
     }

@@ -1687,9 +1687,7 @@ void MuJoCoSimulator::SetCommand(std::size_t group_idx, const std::vector<double
     g.pending_cmd = cmd;
   }
   g.cmd_pending.store(true, std::memory_order_release);
-  if (g.is_primary) {
-    sync_cv_.notify_one();
-  }
+  NotifyCommandArrived();
 }
 
 void MuJoCoSimulator::StageCommand(std::size_t group_idx, JointControlMode mode,
@@ -1733,9 +1731,7 @@ void MuJoCoSimulator::StageCommand(std::size_t group_idx, JointControlMode mode,
   // cmd_pending is the publish gate — release-store LAST so the SimLoop's
   // acquire-load sees the mode store and the cmd_mutex-protected staging above.
   g.cmd_pending.store(true, std::memory_order_release);
-  if (g.is_primary) {
-    sync_cv_.notify_one();
-  }
+  NotifyCommandArrived();
 }
 
 void MuJoCoSimulator::SetStateCallback(std::size_t group_idx, StateCallback cb) noexcept {
