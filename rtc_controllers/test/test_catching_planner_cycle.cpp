@@ -130,6 +130,24 @@ TEST(PlanAdmission, EachCheckRefusesOnItsOwn) {
   }
 }
 
+TEST(PlanAdmission, APlanWhoseCatchIsInsideTheFreezeWindowIsTooLate) {
+  // (g), S7: the boundary is exclusive — t_c − now == T_freeze would commit on
+  // the tick the plan is taken.
+  auto c = Context();
+  c.t_freeze_ns = 360 * kMs;
+  auto p = AdmissiblePlan();
+  p.t_c_ns = c.now.ns + c.t_freeze_ns;
+  EXPECT_EQ(JudgePlan(p, c, {}), PlanRefusal::kTooLate);
+  p.t_c_ns = c.now.ns - 1;  // already past
+  EXPECT_EQ(JudgePlan(p, c, {}), PlanRefusal::kTooLate);
+  p.t_c_ns = c.now.ns + c.t_freeze_ns + 1;
+  EXPECT_EQ(JudgePlan(p, c, {}), PlanRefusal::kNone);
+  // A profile with no freeze window does not judge it at all.
+  c.t_freeze_ns = 0;
+  p.t_c_ns = 0;
+  EXPECT_EQ(JudgePlan(p, c, {}), PlanRefusal::kNone);
+}
+
 TEST(PlanAdmission, TheAgeBoundIsInclusiveAndADifferentIdIsNew) {
   auto p = AdmissiblePlan();
   p.publish_ns = Context().now.ns - Context().max_age_ns;

@@ -80,7 +80,17 @@
 //
 // THE HAND STEP IS STILL A DIAGNOSTIC MODE, gated on `diagnostic.hand_step`.
 // From S7.1 the sequencer owns the hand and the default false makes an
-// operator step a refusal rather than a race.
+// operator step a refusal rather than a race. A profile that turns the step
+// on runs WITHOUT the sequencer (S4's measurement rig), so the two never
+// command the hand at once.
+//
+// THE S7 CYCLE (L7 §4.1, #537 S7). Armed, the arm homes to `planner.wait_pose`
+// in joint space and the hand waits at q_pre (IDLE → ARMED); a plan is
+// followed (APPROACH), frozen at t_c − T_freeze (COMMITTED), the hand closes at
+// t_cmd (CLOSING), the reference decelerates to rest after t_c (DECEL), holds
+// for T_hold (HOLD), and the arm returns to the wait pose (RETREAT) and re-arms
+// through ResetForRearm. Which member each reset puts back, and which it
+// leaves, is the table below the RT members (G8-A2).
 
 #include "integrated_bringup/controllers/catching/planner_thread.hpp"
 #include "integrated_bringup/controllers/catching/traj_input.hpp"
@@ -96,7 +106,10 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
+#include "rtc_controllers/catching/contact_debounce.hpp"
 #include "rtc_controllers/catching/decel_target.hpp"
+#include "rtc_controllers/catching/hand_sequencer.hpp"
+#include "rtc_controllers/catching/joint_home.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
@@ -186,6 +199,13 @@ enum class CatchingParkReason : std::uint8_t {
   /// (`planner.sub_model`, `freeze.T_freeze`, `workspace.catch_box`,
   /// `hand.d_eff`, `hand.r_cap`) — S6-B.
   kPlannerUnset,
+  /// The tracking law is wired, so trials can run, but a value the S7
+  /// supervisor needs for one is unset or wrong: `planner.freeze.T_freeze`
+  /// (the commit instant, and at least T_close_e2e + T_arm + h), the
+  /// `planner.wait_pose` homing target, the derived acceleration box the
+  /// joint-space motions ramp with, `supervisor.decel.a_dec`, or a hand profile
+  /// the sequencer can run.
+  kSupervisorUnset,
 };
 
 /// Controller-local device indices. This controller claims exactly two groups
@@ -200,7 +220,13 @@ inline constexpr int kCatchingHandDeviceIdx = 1;
 inline constexpr int kDemoCatchingMaxArmDof = 32;
 inline constexpr int kDemoCatchingMaxHandDof = static_cast<int>(rtc::catching::kMaxHandDof);
 
+class DemoCatchingControllerResetProbe;  // test_catching_reset_probe.cpp (G8-A2)
+
 class DemoCatchingController final : public RTControllerInterface {
+  // The reset table's runtime check: poisons the RT-owned members, runs a
+  // reset, and holds each member to its row. Test-only; the one friend.
+  friend class DemoCatchingControllerResetProbe;
+
  public:
   explicit DemoCatchingController(std::string_view urdf_path);
 
@@ -347,6 +373,36 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] rtc::catching::Reason GetLastReason() const noexcept {
     return static_cast<rtc::catching::Reason>(reason_observed_.load(std::memory_order_relaxed));
+  }
+
+  // ── S7 supervisor (RT-owned; read off the RT thread by tests only) ───────
+
+  /// The hand sequencer's output on the last tick (`active` false = the hand
+  /// is on the controller's latch).
+  [[nodiscard]] const rtc::catching::HandSequencerOutput& GetHandOutputForTesting() const noexcept {
+    return hand_out_;
+  }
+
+  /// How the last attempt ended (L7 §4.7). Kept across a re-arm — it is the
+  /// LAST attempt's verdict — and cleared by an activation or E-STOP reset.
+  [[nodiscard]] rtc::catching::Outcome GetOutcomeForTesting() const noexcept { return outcome_; }
+
+  /// Whether trials can run at all: the law is wired and every supervisor
+  /// value it needs is present (false = the S6 behaviour: hold arm and hand).
+  [[nodiscard]] bool AreTrialsEnabled() const noexcept { return trials_enabled_; }
+
+  [[nodiscard]] bool IsHomingForTesting() const noexcept { return homing_; }
+
+  /// The carried arm command (device order) — what the joint-space motions
+  /// integrate and what the wire carries once the controller drives the arm.
+  [[nodiscard]] const std::array<double, kDemoCatchingMaxArmDof>& GetArmCommandForTesting()
+      const noexcept {
+    return arm_q_cmd_;
+  }
+
+  [[nodiscard]] const std::array<double, kDemoCatchingMaxArmDof>& GetArmVelocityCommandForTesting()
+      const noexcept {
+    return arm_qd_cmd_;
   }
 
   /// The operator arm latch (`catching.enable`) as the RT tick currently sees
@@ -670,6 +726,65 @@ class DemoCatchingController final : public RTControllerInterface {
   /// is the table's contract, not a silent failure.
   void AdvanceMode(rtc::catching::Reason reason) noexcept;
 
+  // ── S7 supervisor pieces (RT only unless noted) ──────────────────────────
+
+  /// One tick of JointSpaceDecelStep on the carried command. True once every
+  /// joint's commanded velocity is zero (or there is no command to ramp).
+  [[nodiscard]] bool RampArmToStop(const ControllerState& state) noexcept;
+  /// Evaluation-state prelude shared by every CLIK tick (D-6). False = the law
+  /// cannot run this tick (nothing wired, arm unreadable).
+  [[nodiscard]] bool PrepareLawTick(const ControllerState& state) noexcept;
+  /// L4 step toward `target` at profile time `t_rel`, then CLIK, command and
+  /// TRACK_ERR — the half every CLIK tick shares. `count_saturation` feeds the
+  /// REF_SATURATED streak (ball ticks only; DECEL/HOLD have no row for it).
+  [[nodiscard]] rtc::catching::Reason StepReferenceAndSolve(
+      const ControllerState& state, const rtc::catching::TargetState& target, double t_rel,
+      bool count_saturation) noexcept;
+  /// The DECEL/HOLD law tick: the virtual target at τ = now_lead − t_s.
+  [[nodiscard]] rtc::catching::Reason RunDecelLawTick(const ControllerState& state) noexcept;
+  /// Freeze the reference state as DECEL's entry and take the τ = 0 step.
+  [[nodiscard]] rtc::catching::Reason EnterDecel(const ControllerState& state) noexcept;
+  /// Per-mode decisions split out of EvaluateReason (R-ORDER).
+  [[nodiscard]] ReasonDecision EvaluateIdle(const ControllerState& state) noexcept;
+  [[nodiscard]] ReasonDecision EvaluateRetreat() noexcept;
+  [[nodiscard]] ReasonDecision EvaluateCommitted(const ControllerState& state) noexcept;
+  [[nodiscard]] ReasonDecision EvaluateDecelOrHold(const ControllerState& state) noexcept;
+  /// A CLIK failure this tick counts toward the n_qp fault latch.
+  void NoteLawVerdict(rtc::catching::Reason law) noexcept;
+  /// Edge actions of a mode change (freeze, hold stamp, retreat, re-arm).
+  void OnModeEntered(rtc::catching::Mode prev) noexcept;
+  /// The post-decision motion stage: the joint-space stop, homing and return
+  /// (IDLE, RETREAT, ABORT_SAFE, FAULT). The CLIK modes moved in EvaluateReason.
+  void RunArmMotion(const ControllerState& state) noexcept;
+  void RunIdleMotion(const ControllerState& state) noexcept;
+  void RunRetreatMotion(const ControllerState& state) noexcept;
+  /// One homing-law tick toward the wait pose; true once the command and the
+  /// measured arm are both there.
+  [[nodiscard]] bool StepTowardWaitPose(const ControllerState& state) noexcept;
+  /// The hand stage: sequencer Update (or the latch), after the motion stage.
+  void RunHandStage(const ControllerState& state) noexcept;
+  /// Copy the sequencer's last target into the hand latch, so handing the
+  /// hand back to the latch does not snap it to an older pose.
+  void LatchHandFromSequencer() noexcept;
+  [[nodiscard]] bool ArmAtWaitPose(const ControllerState& state) const noexcept;
+  [[nodiscard]] bool ArmCommandStopped() const noexcept;
+  [[nodiscard]] bool HandSettledAtPre(const ControllerState& state) const noexcept;
+  /// ‖q_meas − q_cmd‖ into `track_err_` (and this tick's record).
+  void UpdateTrackError(const ControllerState& state) noexcept;
+  /// Configure-time: resolve the supervisor's values and the sequencer. Non-RT.
+  void SetupSupervisor();
+  /// The first supervisor value a trial needs that is missing, or nullptr.
+  [[nodiscard]] const char* SupervisorValueMissing() const noexcept;
+  /// RETREAT → ARMED (L7 §4.8, S7.4). RT only, from OnModeEntered.
+  void ResetForRearm() noexcept;
+  /// The fingertip lane (L7 §4.4, S7.3): baseline in ARMED/TRACKING at q_pre,
+  /// debounced contact from COMMITTED to HOLD, freshness (TIP_STALE) and the
+  /// window [t_cmd, t_c + T_confirm]. Fed per SAMPLE (inference_sequence),
+  /// not per tick. RT only, before the decision.
+  void RunContactLane(const ControllerState& state) noexcept;
+  /// The attempt's verdict at the end of HOLD (L7 §4.4).
+  [[nodiscard]] rtc::catching::Outcome JudgeOutcome() const noexcept;
+
   /// One tick's worth of per-device command writing, shared by both axes.
   /// `latch` supplies the held command; an unreadable device is SILENCED
   /// (zero-length = "no update") rather than commanded to zeros.
@@ -727,6 +842,7 @@ class DemoCatchingController final : public RTControllerInterface {
   // ── RT state ─────────────────────────────────────────────────────────────
   // Written and read by the RT tick only, except the latch clear in
   // ResetTargetInitialization (lifecycle thread, while no tick runs).
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   HoldLatch arm_hold_{};
   HoldLatch hand_hold_{};
   /// Last accepted step target, UNCLAMPED — the CSV's joint_goal lane. Kept
@@ -736,6 +852,7 @@ class DemoCatchingController final : public RTControllerInterface {
   int hand_target_width_{0};
   bool arm_readable_{false};
   bool hand_readable_{false};
+  // RT-OWNED END
 
   // ── E-STOP / fault / arm request (non-RT writers, RT reader) ─────────────
   // Every one of these is a REQUEST. None of them is the state it asks about:
@@ -745,6 +862,7 @@ class DemoCatchingController final : public RTControllerInterface {
   // The two epochs are counters rather than booleans so a trigger→clear pair
   // that lands entirely between two ticks is still seen: the tick compares
   // against the value it last serviced, so it observes "moved", not "is set".
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   std::atomic<bool> estop_requested_{false};
   std::atomic<std::uint32_t> estop_epoch_{0};
   /// Bumped by ResetTargetInitialization. Redundant with the activation
@@ -769,11 +887,13 @@ class DemoCatchingController final : public RTControllerInterface {
       static_cast<std::uint8_t>(rtc::catching::Reason::kNone)};
   std::atomic<std::uint64_t> rt_reset_count_{0};
   std::atomic<std::uint64_t> estop_tick_count_{0};
+  // RT-OWNED END
 
   // ── RT-owned supervisor state ────────────────────────────────────────────
   // Read and written by Compute() only. Not atomics: a second writer is
   // exactly what P-1 (a) forbids, so making them atomic would advertise a
   // sharing that must not exist.
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   rtc::catching::Mode mode_{rtc::catching::Mode::kIdle};
   rtc::catching::Reason last_reason_{rtc::catching::Reason::kNone};
   /// The epoch values the tick has already acted on.
@@ -809,6 +929,7 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint64_t> hand_target_width_reject_count_{0};
   std::atomic<std::uint64_t> task_target_reject_count_{0};
   std::atomic<std::uint64_t> hand_step_applied_count_{0};
+  // RT-OWNED END
 
   // ── Vision ingress (S5.2) ────────────────────────────────────────────────
   // The subscription is created by on_configure and lives on the controller
@@ -850,6 +971,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// (never SeqLock::sequence()). It carries the epoch and an explicit `seen`
   /// flag as well as the number — see `ConsumedToken` for why the number
   /// alone cannot express "nothing consumed yet".
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   rtc::catching::ConsumedToken consumed_{};
   std::uint64_t last_track_generation_{0};
   bool track_seen_{false};
@@ -859,6 +981,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// supervisor may take another tick to act on it.
   bool traj_new_track_{false};
   rtc::catching::TrajView traj_view_{};
+  // RT-OWNED END
   std::int64_t t_stale_ns_{0};
   std::int64_t t_arm_ns_{0};
   std::int64_t traj_horizon_min_ns_{0};
@@ -925,6 +1048,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// are the controller's own carry-forward state: CLIK integrates its anchor
   /// internally, and these mirror it so the abort path can keep going when
   /// CLIK cannot.
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   std::array<double, kDemoCatchingMaxArmDof> arm_q_cmd_{};
   std::array<double, kDemoCatchingMaxArmDof> arm_qd_cmd_{};
   bool arm_cmd_seeded_{false};
@@ -939,6 +1063,146 @@ class DemoCatchingController final : public RTControllerInterface {
   bool abort_stopped_{false};
   /// ‖q_meas − q_cmd‖ of the last tick, the TRACK_ERR watchdog's input.
   double track_err_{0.0};
+  // RT-OWNED END
+
+  // ── S7 supervisor: configuration (SetupSupervisor, non-RT) ───────────────
+  rtc::catching::HandSequencer hand_seq_;
+  /// The sequencer owns the hand: configured, and `diagnostic.hand_step` off.
+  bool hand_seq_enabled_{false};
+  /// A trial can run: the law is wired and every value below is present.
+  bool trials_enabled_{false};
+  std::array<double, kDemoCatchingMaxArmDof> wait_pose_{};
+  double pose_tol_{0.02};
+  double homing_v_max_{0.5};
+  double homing_eta_a_{0.5};
+  double homing_qd_tol_{0.02};
+  double decel_a_dec_{0.0};
+  std::int64_t t_hold_ns_{0};
+  std::int64_t t_close_e2e_ns_{0};
+  std::int64_t stale_committed_max_ns_{0};
+  int sat_ticks_{5};
+
+  // ── S7 supervisor: RT-owned state ────────────────────────────────────────
+  // Every member here is in the reset table below.
+  /// This tick's clock, read ONCE after the vision load (R-DECEL-ENTRY): the
+  /// law, the sequencer and every edge judge the same instant. The plan
+  /// admission alone reads its own (see Compute).
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
+  rtc::catching::NowReal tick_now_{};
+  rtc::catching::NowLead tick_now_lead_{};
+  rtc::catching::HandSequencerOutput hand_out_{};
+  bool homing_{false};       // IDLE: the homing law drives the arm
+  bool homing_done_{false};  // IDLE: at the wait pose, hand told Ready
+  enum class RetreatStage : std::uint8_t { kStop, kReturn, kRelease };
+  /// kStop, then kReturn, then kRelease. The hand is released only on
+  /// arrival at kRelease, whatever the verdict (#537 S7, 2026-09-24).
+  RetreatStage retreat_stage_{RetreatStage::kStop};
+  /// A plan was adopted this trial (an abort from here on is an attempt).
+  /// Cleared once HOLD has judged it, so a later abort keeps the verdict.
+  bool trial_active_{false};
+  bool trial_committed_{false};
+  std::int64_t committed_t_c_ns_{0};
+  std::int64_t committed_t_cmd_ns_{0};
+  /// R-TRACK (Q15): the track the frozen plan is about, and the last snapshot
+  /// of it — sampled after the freeze whatever the box holds.
+  std::uint64_t committed_generation_{0};
+  rtc::catching::TrajectorySnapshot law_snapshot_{};
+  /// R-TRACK (Q15): the previous trial's track, refused by ARMED until a new
+  /// one arrives.
+  std::uint64_t last_trial_generation_{0};
+  bool last_trial_generation_valid_{false};
+  rtc::catching::DecelEntryState decel_entry_{};
+  std::int64_t decel_t_s_ns_{0};
+  bool decel_stopped_{false};
+  std::int64_t hold_entry_ns_{0};
+  int sat_streak_{0};
+  /// The law ran past the prediction's horizon this tick (recorded, COMMITTED
+  /// and CLOSING continue on the extrapolation — R-ORDER).
+  bool law_horizon_extrap_{false};
+  rtc::catching::Outcome outcome_{rtc::catching::Outcome::kNone};
+  // RT-OWNED END
+
+  // ── S7.3 contact lane ────────────────────────────────────────────────────
+  // Configuration (SetupSupervisor, non-RT).
+  rtc::catching::ContactDebouncer contact_;
+  bool contact_configured_{false};
+  int tip_stride_{7};
+  int contact_m_min_{2};
+  int contact_n_baseline_min_{20};
+  std::int64_t contact_t_stale_ns_{0};
+  std::int64_t contact_t_confirm_ns_{0};
+  // RT-owned (reset table below).
+  static constexpr std::size_t kTips = rtc::catching::kMaxFingertips;
+  /// The last sample of each fingertip already fed — the "is it new" memory.
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
+  std::array<std::uint64_t, kTips> tip_last_seq_{};
+  /// Baseline samples learned this trial, per fingertip.
+  std::array<int, kTips> tip_baseline_n_{};
+  /// This tick's lane (recorded, and read by the decision).
+  int tip_count_{0};
+  std::array<double, kTips> tip_force_now_{};
+  std::array<bool, kTips> tip_fresh_now_{};
+  std::array<bool, kTips> tip_contact_now_{};
+  int tip_confirmed_now_{0};
+  bool tip_stale_now_{false};
+  /// Inside [t_cmd, t_c + T_confirm]: m_min fingertips confirmed at once / a
+  /// fingertip went stale.
+  bool window_confirmed_seen_{false};
+  bool window_stale_seen_{false};
+  // RT-OWNED END
+
+  // ── Reset table (L7 §4.8, G8-A2) ─────────────────────────────────────────
+  // Every RT-owned member (the RT-OWNED ranges of this header), and which
+  // reset puts it back. R = ResetForRearm (RETREAT → ARMED), T =
+  // ResetTrialState (activation / E-STOP / explicit). "exempt" names why it
+  // survives. test_catching_reset_table.py checks every member has a row;
+  // test_catching_reset_probe.cpp checks the rows are true.
+  // clang-format off
+  //   arm_hold_, hand_hold_, hand_target_raw_, hand_target_width_     T
+  //   mode_, last_reason_                        T (activation only; an E-STOP leaves the mode to the table)
+  //   plan_, plan_active_, admitted_plan_        R, T
+  //   reset_floor_ns_, planner_reset_epoch_      R, T (same place, C-7)
+  //   arm_cmd_seeded_, arm_q_cmd_                T; exempt from R: the carried command IS the wait pose
+  //   arm_qd_cmd_                                R, T
+  //   reference_seeded_, traj_hint_              R, T
+  //   qp_fail_streak_                            T; exempt from R (C-29: a retry cycle has no solve in it)
+  //   track_err_                                 R, T
+  //   abort_stopped_                             exempt: written on every ABORT_SAFE / FAULT tick
+  //   consumed_, last_track_generation_, track_seen_, traj_new_track_, traj_view_
+  //                                              T; exempt from R: the next ball is judged against them
+  //   hand_seq_ (phase/commit)                   R (Ready), T (Deactivate)
+  //   hand_out_                                  T; exempt from R: the hand stage rewrites it every tick
+  //   homing_, homing_done_                      R (done), T
+  //   retreat_stage_                             R, T
+  //   trial_active_, trial_committed_, committed_t_c_ns_, committed_t_cmd_ns_, committed_generation_
+  //                                              R, T
+  //   law_snapshot_                              R, T
+  //   last_trial_generation_, last_trial_generation_valid_   R writes, T clears
+  //   decel_entry_, decel_t_s_ns_, decel_stopped_, hold_entry_ns_     R, T
+  //   sat_streak_, law_horizon_extrap_           R, T
+  //   outcome_                                   T (Aborted when an E-STOP ends an attempt);
+  //                                              exempt from R: it reports the LAST attempt
+  //   contact_                                   R, T
+  //   tip_baseline_n_, window_confirmed_seen_, window_stale_seen_     R, T
+  //   tip_last_seq_                              T; exempt from R: a sample fed before the re-arm is not new
+  //   tip_count_, tip_force_now_, tip_fresh_now_, tip_contact_now_, tip_confirmed_now_, tip_stale_now_
+  //                                              exempt: rewritten every tick
+  //   tick_now_, tick_now_lead_, tick_record_, plan_in_, plan_refusal_, arm_readable_, hand_readable_,
+  //   estop_active_                              exempt: rewritten every tick
+  //   serviced_estop_epoch_, serviced_fault_reset_epoch_, serviced_reset_epoch_, fault_reset_serviced_,
+  //   serviced_activation_generation_, activation_seen_
+  //                                              exempt: the reset's own bookkeeping
+  //   armable_                                   exempt: the configure's G0-C verdict, read-only on the tick
+  //   oracle_plan_id_                            exempt: monotone across trials (JudgePlan (d) never repeats)
+  //   estop_requested_, estop_epoch_, reset_requested_, fault_reset_epoch_, arm_requested_
+  //                                              exempt: hook REQUESTS (P-1 (a)); the tick lowers arm_requested_
+  //   fault_latched_                             cleared only by a fault reset (P-1 (d))
+  //   mode_observed_, reason_observed_, rt_reset_count_, estop_tick_count_, arm_target_reject_count_,
+  //   hand_step_disabled_reject_count_, hand_target_width_reject_count_, task_target_reject_count_,
+  //   hand_step_applied_count_, plan_refusal_observed_, plan_admitted_count_, plan_replaced_count_
+  //                                              exempt: observation counters
+  //   planner wake eventfd                       exempt: never drained on any reset (C-7)
+  // clang-format on
 
   // ── The tick record (S5.4, D-20 + L8 §5.2) ───────────────────────────────
   // ONE object feeds the CSV row and the state message, so the file and the
@@ -948,7 +1212,9 @@ class DemoCatchingController final : public RTControllerInterface {
   // default-constructed value at the top of every tick, which is what makes
   // "not computed this tick" indistinguishable from "zero" by construction
   // (PROC-7) instead of by everybody remembering to clear their own fields.
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   CatchingDiagLogPod tick_record_{};
+  // RT-OWNED END
   /// RT writer, publish-thread reader.
   rtc::SeqLock<CatchingDiagLogPod> catching_state_lock_{};
   /// Subscription writer, publish-thread reader. The counters advance on
@@ -965,9 +1231,11 @@ class DemoCatchingController final : public RTControllerInterface {
   // ── The plan being followed ──────────────────────────────────────────────
   // Written only by AdoptPlan (RT), from a plan the box delivered and
   // JudgePlan admitted — the planner's or the oracle's, through one path.
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   rtc::catching::PlanSnapshot plan_{};
   bool plan_active_{false};
   int traj_hint_{0};  // L2 sampler cursor, reset when the snapshot changes
+  // RT-OWNED END
 
   // ── Planner thread (S6-A, D-7, E-7 decision J) ───────────────────────────
   rtc::catching::PlannerParams planner_params_{};
@@ -1019,6 +1287,7 @@ class DemoCatchingController final : public RTControllerInterface {
 
   // RT-owned plan lane state (Compute() only).
   /// This tick's Load of the plan box (D-21: once per tick, unconditionally).
+  // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
   rtc::catching::PlanSnapshot plan_in_{};
   rtc::catching::PlanRefusal plan_refusal_{rtc::catching::PlanRefusal::kInvalid};
   /// Payload-side memory of the plan last adopted (never SeqLock::sequence()).
@@ -1034,6 +1303,7 @@ class DemoCatchingController final : public RTControllerInterface {
       static_cast<std::uint8_t>(rtc::catching::PlanRefusal::kInvalid)};
   std::atomic<std::uint64_t> plan_admitted_count_{0};
   std::atomic<std::uint64_t> plan_replaced_count_{0};
+  // RT-OWNED END
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────
   // The hand step arrives on the group's `joint_goal`, which only exists if

@@ -186,6 +186,19 @@ class ClikSweepTest : public ::testing::Test {
     ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
     const rclcpp_lifecycle::State prev;
     YAML::Node yaml = YAML::Load(TrackingYaml(topic_, p_c, a_d, kGammaF, t_c, kShipped));
+    // This sweep measures the SOLVER across the ball envelope, up to the catch
+    // instant; the S7 supervisor's own gates are not what it is about, and
+    // two of them would end cases before they measured anything:
+    //  - admission (g) refuses a plan whose t_c is inside T_freeze, and the
+    //    fast balls here are caught 0.25 s after detection — inside the
+    //    fixture's 0.36 s. The hand's closure time is what sets that window
+    //    (T_freeze >= T_close_e2e + T_arm + h), and the hand plays no part in
+    //    a CLIK sweep, so both are shortened to fit the fastest ball;
+    //  - REF_SATURATED would abort the approaches whose saturation this sweep
+    //    RECORDS (r.ref_saturated) rather than obeys.
+    yaml["catching"]["robot"]["hand"]["T_close_e2e"] = 0.1;
+    yaml["catching"]["planner"]["freeze"]["T_freeze"] = 0.2;
+    yaml["catching"]["supervisor"]["sat_ticks"] = 1000000;
     EXPECT_EQ(ctrl_->on_configure(prev, node_, yaml),
               DemoCatchingController::CallbackReturn::SUCCESS);
     EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
@@ -425,8 +438,10 @@ TEST_F(ClikSweepTest, HowLongTheShippedLawNeedsForOneCatchPose) {
   // gamma_f = 0 here: this case is about the LAW's settling time, so the ball
   // is taken out of the dynamics (L4 section 5.3) and the catch point is a
   // static attractor. Leaving it in would measure the chase as well.
+  // t_c beyond the 3 s run: from S7 the catch instant ends the approach
+  // (DECEL at t_c), and this case measures how long the law needs to arrive.
   YAML::Node yaml = YAML::Load(TrackingYaml(topic_, p_c, a_d, /*gamma_f=*/0.0,
-                                            /*t_c_offset_s=*/1.0, kShipped));
+                                            /*t_c_offset_s=*/5.0, kShipped));
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
   ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);

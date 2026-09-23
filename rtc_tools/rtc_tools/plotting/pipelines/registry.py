@@ -233,6 +233,7 @@ PIPELINES: dict[str, list[PlotEntry]] = {
     ],
     "catching_diag": [
         PlotEntry("catching_diag", plotters.plot_catching_diag),
+        PlotEntry("catching_hand", plotters.plot_catching_hand),
     ],
     "planner_events": [
         PlotEntry("planner_events", plotters.plot_planner_events),

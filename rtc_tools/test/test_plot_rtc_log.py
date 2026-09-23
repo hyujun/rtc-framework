@@ -3191,6 +3191,88 @@ class TestCatchingDiagRoundTrip:
         assert (tmp_path / "catching_diag.png").exists()
 
 
+class TestCatchingS7:
+    """S7 (plan §13): mode transitions over every panel, the hand/contact
+    figure, and one verdict per attempt."""
+
+    def _cycle_frame(self, outcomes=(1,)):
+        columns = _catching_diag_columns()
+        modes = []
+        for k, verdict in enumerate(outcomes):
+            prev = outcomes[k - 1] if k > 0 else 0
+            seq = [(1, prev), (2, prev), (3, prev), (4, prev), (5, prev), (6, prev), (7, prev)]
+            seq += [(8, verdict), (8, verdict), (1, verdict)]
+            modes += seq
+        rows = []
+        for i, (mode, verdict) in enumerate(modes):
+            row = dict(zip(columns, _catching_diag_row(i + 1, columns=columns), strict=True))
+            row["mode"] = mode
+            row["mode_name"] = (
+                "idle",
+                "armed",
+                "tracking",
+                "approach",
+                "committed",
+                "closing",
+                "decel",
+                "hold",
+                "retreat",
+            )[mode]
+            row["outcome"] = verdict
+            row["hand_phase_valid"] = 1
+            row["hand_phase"] = 2 if mode in (5, 6) else (3 if mode == 7 else 1)
+            row["hand_rho"] = 0.8 if mode >= 5 else 0.0
+            row["tip_force_" + _CATCHING_TIPS[0]] = 0.9 if mode in (6, 7) else 0.01
+            row["tip_contact_" + _CATCHING_TIPS[0]] = 1 if mode in (6, 7) else 0
+            row["tip_fresh_" + _CATCHING_TIPS[0]] = 1
+            rows.append([row[c] for c in columns])
+        return pd.DataFrame(rows, columns=columns)
+
+    def test_transitions_are_derived_from_the_mode_column(self):
+        from rtc_tools.plotting.plotters.catching import mode_transitions
+
+        edges = mode_transitions(self._cycle_frame())
+        assert [(a, b) for _, a, b in edges] == [
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 8),
+            (8, 1),
+        ]
+        # Each edge sits on the FIRST tick of the new mode.
+        assert edges[0][0] < edges[1][0]
+
+    def test_one_verdict_per_attempt_even_when_two_attempts_agree(self, capsys):
+        """The verdict is kept across a re-arm, so its CHANGES would count two
+        consecutive catches as one."""
+        from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+
+        print_catching_diag_statistics(self._cycle_frame(outcomes=(1, 1, 2)))
+        out = capsys.readouterr().out
+        assert "Attempt verdicts: captured×2, missed×1" in out, out
+        assert "Mode transitions" in out, out
+
+    def test_the_hand_figure_renders(self, tmp_path):
+        from rtc_tools.plotting.plotters.catching import plot_catching_hand
+
+        df = self._cycle_frame()
+        df["timestamp"] = df["t_relative_s"]
+        plot_catching_hand(df, save_dir=str(tmp_path))
+        assert (tmp_path / "catching_hand.png").exists()
+
+    def test_the_hand_figure_is_skipped_when_the_sequencer_never_ran(self, tmp_path, capsys):
+        from rtc_tools.plotting.plotters.catching import plot_catching_hand
+
+        df = _catching_diag_frame(n=10)
+        df["timestamp"] = df["t_relative_s"]
+        plot_catching_hand(df, save_dir=str(tmp_path))
+        assert not (tmp_path / "catching_hand.png").exists()
+        assert "never owned the hand" in capsys.readouterr().out
+
+
 class TestCatchingDiagStatistics:
     def test_reports_solve_budget_and_mode_occupancy(self, capsys):
         from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics

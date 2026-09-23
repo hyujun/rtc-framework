@@ -105,10 +105,10 @@ $$\rho(t)=\min_{i\in\mathcal C}\frac{(q_i(t)-q_i^{pre})\,s_i}{|q_i^{cls}-q_i^{pr
 
 시간 비교는 plan §3 규약을 따른다 `[확정 D-2]`. 손 명령에는 팔 지연 선행($T_{arm}$)을 적용하지 않는다 — 비교 대상은 **now_real** (매 tick steady 실측) 이다.
 
-- Preshape: now_real ≥ $t_c-T_{pre}$
-- Close: now_real ≥ $t_{cmd}$ 판정을 아래 양자화 규칙으로 한다. $t_{cmd}=t_c-T_{close,e2e}$ (L3 §4.11 의 $T_{close}+T_{link}$ 를 종단 간 값으로 대체)
+- Preshape: **시각 조건이 아니다 (Q4, 2026-09-23 사용자 확정 — `T_pre` 폐기).** 팔이 `wait_pose` 에 도착하면(또는 재무장으로 `Ready` 에 놓이면) 손은 즉시 `q_pre` 를 지시받는다 — ARMED~COMMITTED 내내 그 상태가 유지된다(L7 §4.1).
+- Close: now_real ≥ $t_{cmd}$ 판정을 아래 양자화 규칙으로 한다. $t_{cmd}=t_c-T_{close,e2e}$ (L3 §4.11 의 $T_{close}+T_{link}$ 를 종단 간 값으로 대체, 시퀀서가 동결된 $t_c$ 와 프로파일에서 계산하는 **단일 출처**다 — C-14, L3 §4.11)
 
-RT 틱 $h$ 단위로만 명령할 수 있으므로 $t_{cmd}$를 넘지 않는 마지막 틱이 아니라 **처음으로 now_real ≥ $t_{cmd}-h/2$ 인 틱**에서 명령한다(가장 가까운 틱으로 반올림). 오차는 $\pm h/2$의 영평균이다. $h$ 는 `ControllerState::dt` (= 1/`control_rate`, 500 Hz 고정이 아니다) 이고, G6-A 는 실측 tick 간격으로 판정한다. sim lock-step 에서 tick 한 번은 sim step 한 번 ($h$) 이다 — #566 이전에는 device 마다 state 가 tick 을 따로 깨워 tick 이 $h$ 보다 촘촘했다 (아래 §4.2 의 810 / 581 Hz).
+RT 틱 $h$ 단위로만 명령할 수 있으므로 $t_{cmd}$를 넘지 않는 마지막 틱이 아니라 **처음으로 now_real ≥ $t_{cmd}-h/2$ 인 틱**에서 명령한다(가장 가까운 틱으로 반올림, `HandCommandDueRounded` — L7 §4.1 R-CLOSE). 오차는 $\pm h/2$의 영평균이다. $h$ 는 `ControllerState::dt` (= 1/`control_rate`, 500 Hz 고정이 아니다) 이고, G6-A 는 실측 tick 간격으로 판정한다. sim lock-step 에서 tick 한 번은 sim step 한 번 ($h$) 이다 — #566 이전에는 device 마다 state 가 tick 을 따로 깨워 tick 이 $h$ 보다 촘촘했다 (아래 §4.2 의 810 / 581 Hz).
 
 $T_{tick}=h/2$는 그 오차의 **worst case를 γ 창 예산에 넣는 값**이지, 명령 시각을 당기는 값이 아니다. $t_{cmd}$ 식에서 $T_{tick}$ 을 빼지 않는 것과 일관된다.
 
@@ -224,11 +224,12 @@ P1b 는 같은 식으로 $1.5+0.095/(0.2805+0.001)=$ **1.84 m/s** 인데, 이것
 |---|---|
 | `n` | 구동 관절 수 (P1b 10, LEAP 16) — 손 device 의 채널 수와 일치해야 한다 (검증기) |
 | `q_open`, `q_pre`, `q_close` | 구동 좌표 position 목표 [rad] |
-| 유지 목표 규칙 파라미터 | §4.4, S7.1 에서 확정 (v0.4 의 `effort_limit_hold` 는 삭제) |
+| `hold.mode`, `hold.delta_rad` | 유지 목표 규칙 (§4.4, S7.1 — v0.4 의 `effort_limit_hold` 는 삭제) |
 | `caging_mask` | $\mathcal C$ |
 | `eta_close` | §4.2 $\eta$ |
 | `T_close_e2e` | 종단 간 식별값 [s] (v0.4 의 `T_close`·`T_link` 두 필드를 대체) |
-| `T_pre`, `T_hold`, `T_close_timeout` | [s] |
+| `T_hold`, `T_close_timeout` | [s] (`T_pre` 는 없다 — Q4, §4.3) |
+| `q_tol`, `qd_tol` | 시퀀서 `at_target`·정착 판정 [rad], [rad/s] (§5.3) |
 
 ### 5.2 명령 포트 (RT에서 호출)
 
@@ -236,16 +237,19 @@ v0.5 에서 삭제 — 손은 `ControllerOutput` 손 device slot (D-11). `HandCo
 
 ### 5.3 시퀀서
 
-- 입력: plan 스냅샷의 $t_c$, $t_{cmd}$ (L3, 동결 전 갱신 허용), now_real, $h$ = `ControllerState::dt`, 손 device 측정 관절 위치, L7 지시 (abort·release)
-- 출력: 손 device slot (device 1) 의 position 목표 (`devices[1].commands`, `CommandType::kPosition`), 현재 phase, $\rho(t)$, 타임아웃 플래그
-- phase: Open, Preshape, Close, Hold, Release
+- 입력: plan 스냅샷의 $t_c$, $t_{cmd}$ (L3, 동결 전 갱신 허용), now_real, $h$ = `ControllerState::dt`, 손 device 측정 관절 위치, L7 지시 (`Home`/`Ready`/`Commit(t_c)`/`Abort`/`Release`)
+- 출력: 손 device slot (device 1) 의 position 목표 (`devices[1].commands`, `CommandType::kPosition`), 현재 phase, $\rho(t)$, `close_issued`, `at_target`(`robot.hand.q_tol` 판정), 타임아웃 플래그
+- phase: Open, Preshape, Close, Hold, Release (msg 상수 그대로)
 - 포구 컨트롤러 `Compute` 안에서 매 tick 호출 (RT). 진단은 SPSC 로 aux drain
+- ROS 비의존 순수 조각 `hand_sequencer.hpp` (`rtc::catching`, 할당 0, noexcept, `now` 를 인자로 받아 자체 시계를 갖지 않는다 — S7.1)
 
-전이 규칙:
-- `Open → Preshape`: now_real ≥ $t_c-T_{pre}$
-- `Preshape → Close`: §4.3 규칙의 틱
+전이 규칙 (Q4 확정 반영, §4.3):
+- `Open → Preshape`: 팔이 `wait_pose` 에 도착했다는 L7 지시(`Ready`)에서 — **시각 조건이 아니다** (`T_pre`·`PreshapeDue` 폐기)
+- `Preshape → Close`: `now_real ≥ t_{cmd}-h/2` (`HandCommandDueRounded`, §4.3), **COMMITTED 에서만**
 - `Close → Hold`: $\rho\ge\eta$ 또는 `T_close_timeout` 경과(타임아웃이면 플래그)
-- `Hold → Release`: L7 지시
+- `Hold → Release`: L7 지시(시각은 L7 §4.8 "RETREAT 순서" — 판정과 무관하게 팔이 대기 자세에 도착한 뒤. RETREAT 복귀 중에는 손을 열지 않는다, #537 결정 2026-09-24)
+- `Release` 목표는 **`q_pre`** 다(`q_open` 은 homing 전용) — 도달하면 `Preshape` 로 복귀해 다음 시행의 ARMED 준비를 마친다
+- `Abort` 지시: COMMITTED 이후면 `t_cmd` 규칙대로 마저 닫고 `Hold` 로, 그 전이면 `q_pre` 유지
 
 ## 6. YAML 파라미터 (손별 `robot.hand.*`)
 
@@ -259,13 +263,15 @@ v0.5 에서 삭제 — 손은 `ControllerOutput` 손 device slot (D-11). `HandCo
 | `robot.hand.caging_mask` | bool[n] | – | `TBD` | – | 손 형상 |
 | `robot.hand.eta_close` | double | – | `TBD` | 0.5–1 | §4.2 |
 | `robot.hand.rho_eps` | double | rad | 0.02 | >0 | §4.2 $|q^{cls}_i-q^{pre}_i|$ 하한 (L0 검증기가 강제) |
-| `robot.hand.hold.*` | – | – | `TBD` | – | §4.4 유지 목표 규칙 (S7.1) |
+| `robot.hand.hold.mode` | string | – | **`close_target`** (provisional, #537 S7 결정 2026-09-23) | `close_target` \| `measured_offset` | §4.4 유지 목표 규칙 (S7.1) |
+| `robot.hand.hold.delta_rad` | double | rad | `TBD` | – | §4.4. `measured_offset` 모드에서만 쓰는 여유량 (그 모드에서만 ≥0 검사). Close 가 timeout 으로 끝나 측정이 비유한인 관절은 `q_close` 를 쓴다 |
 | `robot.hand.T_close_e2e` | double | s | `TBD` | ≥0 | §4.2 종단 간 실측 (sim S4.2, 실기 S4.3·S10) |
-| `robot.hand.T_pre` | double | s | 0.3 | 0–1 | 튜닝 |
-| `robot.hand.T_hold` | double | s | 1.0 | 0–5 | 튜닝 |
-| `robot.hand.T_close_timeout` | double | s | `TBD` | > `T_close_e2e` | 실측 후 |
+| `robot.hand.T_hold` | double | s | **0.5** (provisional, D-S7-1) | 0–5 | 튜닝. 재무장·시퀀서 도착 판정과 함께 확인 (S7.2) |
+| `robot.hand.T_close_timeout` | double | s | **= 2 × `T_close_e2e`** (provisional — p1b 0.56 s · leap 0.21 s, D-S7-1) | > `T_close_e2e` | 검증기: `T_close_timeout > T_close_e2e` |
+| `robot.hand.q_tol` | double | rad | **0.01** (provisional, #537 S7 결정 2026-09-23) | >0 | §5.3 `at_target` 판정 — 최소 caging 이동량의 ~0.1 (p1b `index_dip_fe` 0.113 rad) |
+| `robot.hand.qd_tol` | double | rad/s | **0.05** (provisional) | >0 | §5.3 정착 검사 ‖q̇‖∞ — 바이어스 학습 창(L7 §4.4)은 손 정지 후에만 연다 |
 
-v0.4 의 `robot.hand.effort_limit_hold`, `robot.hand.T_link`, `robot.hand.port`, `robot.hand.async.*` 는 삭제한다 (D-11).
+v0.4 의 `robot.hand.effort_limit_hold`, `robot.hand.T_link`, `robot.hand.port`, `robot.hand.async.*` 는 삭제한다 (D-11). `robot.hand.T_pre` 도 쓰지 않는다 (Q4, 2026-09-23 사용자 확정 — 시각 기반 preshape 폐기, §4.3·§5.3). `PreshapeDue` 순수 조각(S1.3)은 호출부 없이 남긴다.
 
 ## 7. 단위 기술 구현 순서
 

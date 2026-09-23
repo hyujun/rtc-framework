@@ -17,9 +17,16 @@ reference realised and `ref_u_des` is what it wanted before saturation; a
 saturated interval is uninterpretable from either one alone, and `ref_saturated`
 alone says it happened without saying by how much.
 
+THE S7 CYCLE (plan §13 S7). Every panel carries the supervisor's mode
+transitions as thin vertical lines (derived from the per-tick `mode` column —
+there is no separate transition log, L7 §5.2), so an edge can be read against
+the reference and the error it happened on. A second figure, `catching_hand`,
+stacks the hand sequencer (phase, ρ, timeout) and the fingertip lane (|F − b|,
+debounced contact, freshness) with the attempt's verdict.
+
 WHAT IS NOT HERE. There is no ball-truth column in this file — the controller
-does not have one — so "did it catch" is not a question this plot answers. The
-offline evaluation scripts own that (plan §8).
+does not have one — so whether the verdict was RIGHT is not a question this
+plot answers. The sim trial analysis owns that (G7-E, plan §8).
 """
 
 from pathlib import Path
@@ -41,6 +48,57 @@ MODE_NAMES = (
     "abort_safe",
     "fault",
 )
+
+
+# rtc::catching::HandPhase / Outcome wire values (rtc_msgs/CatchingState).
+HAND_PHASE_NAMES = ("open", "preshape", "close", "hold", "release")
+OUTCOME_NAMES = ("none", "captured", "missed", "undetermined", "aborted")
+
+
+def mode_transitions(df):
+    """(t, from_mode, to_mode) for every tick whose mode differs from the last.
+
+    Derived from the per-tick column rather than logged separately (L7 §5.2):
+    the CSV already carries the mode on every row, and a second log would be a
+    second account of the same fact that could disagree with the first.
+    """
+    time_col = "timestamp" if "timestamp" in df.columns else "t_relative_s"
+    if "mode" not in df.columns or time_col not in df.columns or len(df) < 2:
+        return []
+    mode = df["mode"].astype(float)
+    t = df[time_col].astype(float)
+    changed = mode.ne(mode.shift()).to_numpy()
+    changed[0] = False
+    out = []
+    for i in changed.nonzero()[0]:
+        out.append((float(t.iloc[i]), int(mode.iloc[i - 1]), int(mode.iloc[i])))
+    return out
+
+
+def _mode_label(value):
+    return MODE_NAMES[value] if 0 <= value < len(MODE_NAMES) else str(value)
+
+
+def _draw_transitions(axes, transitions, label_axis=None):
+    for t_edge, _, to_mode in transitions:
+        for ax in axes:
+            ax.axvline(t_edge, color="0.6", linewidth=0.6, linestyle="-", alpha=0.7, zorder=0)
+        if label_axis is not None:
+            label_axis.annotate(
+                _mode_label(to_mode),
+                xy=(t_edge, 1.0),
+                xycoords=("data", "axes fraction"),
+                fontsize=6,
+                rotation=90,
+                va="top",
+                ha="right",
+                color="0.35",
+            )
+
+
+def _tip_names(df):
+    prefix = "tip_force_"
+    return [c[len(prefix) :] for c in df.columns if c.startswith(prefix)]
 
 
 def _live(df):
@@ -177,10 +235,113 @@ def plot_catching_diag(df, save_dir=None):
     axes[3].set_ylabel("supervisor mode")
     axes[3].set_xlabel("Time (s)")
     axes[3].grid(True, alpha=0.3)
+    _draw_transitions(axes, mode_transitions(df), label_axis=axes[0])
 
     plt.tight_layout()
     if save_dir:
         path = Path(save_dir) / "catching_diag.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
+    else:
+        plt.show()
+    plt.close()
+
+
+def plot_catching_hand(df, save_dir=None):
+    """Hand sequencer and fingertip lane against the mode transitions (S7)."""
+    if "hand_phase" not in df.columns:
+        print("  Skipping catching hand plot (hand_phase not found)")
+        return
+    valid = (
+        df["hand_phase_valid"].astype(float) > 0.5 if "hand_phase_valid" in df.columns else None
+    )
+    if valid is not None and not valid.any():
+        print("  Skipping catching hand plot (the sequencer never owned the hand)")
+        return
+
+    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
+    fig.suptitle(
+        "Dynamic Catching — hand sequencer and fingertips",
+        fontsize=16,
+        fontweight="bold",
+    )
+    t = df["timestamp"]
+
+    # ── 1. Phase (NaN while the latch owns the hand) ─────────────────────────
+    axes[0].step(t, _masked(df, "hand_phase", "hand_phase_valid"), where="post", color="C0")
+    axes[0].set_yticks(range(len(HAND_PHASE_NAMES)))
+    axes[0].set_yticklabels(HAND_PHASE_NAMES, fontsize=7)
+    axes[0].set_ylabel("hand phase")
+    axes[0].grid(True, alpha=0.3)
+
+    # ── 2. Closure ρ, with the timeout flag ─────────────────────────────────
+    if "hand_rho" in df.columns:
+        axes[1].plot(t, _masked(df, "hand_rho", "hand_phase_valid"), color="C1", label="ρ")
+    if "hand_timeout" in df.columns:
+        timed_out = df["hand_timeout"].astype(float) > 0.5
+        if timed_out.any():
+            axes[1].plot(
+                t[timed_out],
+                df.loc[timed_out, "hand_rho"].astype(float),
+                "x",
+                color="C3",
+                markersize=3,
+                label="close timeout",
+            )
+    axes[1].set_ylim(-0.05, 1.05)
+    axes[1].set_ylabel("closure ρ")
+    axes[1].legend(fontsize=7)
+    axes[1].grid(True, alpha=0.3)
+
+    # ── 3. Fingertip force above the bias; contact ticks marked ─────────────
+    for i, name in enumerate(_tip_names(df)):
+        colour = f"C{i % 10}"
+        axes[2].plot(
+            t, df[f"tip_force_{name}"].astype(float), linewidth=1.0, color=colour, label=name
+        )
+        contact = f"tip_contact_{name}"
+        if contact in df.columns:
+            on = df[contact].astype(float) > 0.5
+            if on.any():
+                axes[2].plot(
+                    t[on],
+                    df.loc[on, f"tip_force_{name}"].astype(float),
+                    ".",
+                    color=colour,
+                    markersize=3,
+                )
+    axes[2].set_ylabel("|F − b| (N)")
+    axes[2].legend(fontsize=7, ncol=4)
+    axes[2].grid(True, alpha=0.3)
+
+    # ── 4. Freshness and the verdict ────────────────────────────────────────
+    for i, name in enumerate(_tip_names(df)):
+        fresh = f"tip_fresh_{name}"
+        if fresh in df.columns:
+            # Offset per fingertip so the bands do not overlap.
+            axes[3].step(
+                t,
+                df[fresh].astype(float) * 0.8 + i,
+                where="post",
+                linewidth=0.9,
+                color=f"C{i % 10}",
+                label=f"{name} fresh",
+            )
+    if "outcome" in df.columns:
+        ax_out = axes[3].twinx()
+        ax_out.step(t, df["outcome"].astype(float), where="post", color="k", linewidth=1.3)
+        ax_out.set_yticks(range(len(OUTCOME_NAMES)))
+        ax_out.set_yticklabels(OUTCOME_NAMES, fontsize=7)
+        ax_out.set_ylabel("last attempt")
+    axes[3].set_ylabel("fingertip fresh")
+    axes[3].set_xlabel("Time (s)")
+    axes[3].legend(fontsize=6, ncol=4, loc="upper left")
+    axes[3].grid(True, alpha=0.3)
+    _draw_transitions(axes, mode_transitions(df), label_axis=axes[0])
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / "catching_hand.png"
         plt.savefig(path, dpi=300, bbox_inches="tight")
         print(f"Saved: {path}")
     else:
@@ -211,6 +372,30 @@ def print_catching_diag_statistics(df):
         counts = df["mode_name"].value_counts()
         share = ", ".join(f"{k} {100.0 * v / n:.1f}%" for k, v in counts.items())
         print(f"Mode occupancy: {share}")
+    transitions = mode_transitions(df)
+    if transitions:
+        path = " → ".join(
+            _mode_label(m) for m in [transitions[0][1]] + [e[2] for e in transitions]
+        )
+        if len(path) > 400:
+            path = path[:400] + " …"
+        print(f"Mode transitions ({len(transitions)}): {path}")
+    if "outcome" in df.columns and transitions:
+        # One verdict per attempt: the value on the tick RETREAT is entered —
+        # HOLD judges on that edge and every abort sets it there. Counting the
+        # column's changes instead would merge two consecutive catches into one.
+        retreat = MODE_NAMES.index("retreat")
+        verdicts = {}
+        t = df["timestamp" if "timestamp" in df.columns else "t_relative_s"].astype(float)
+        out = df["outcome"].astype(float)
+        for t_edge, _, to_mode in transitions:
+            if to_mode != retreat:
+                continue
+            k = int(out[t == t_edge].iloc[0])
+            name = OUTCOME_NAMES[k] if 0 <= k < len(OUTCOME_NAMES) else str(k)
+            verdicts[name] = verdicts.get(name, 0) + 1
+        if verdicts:
+            print("Attempt verdicts: " + ", ".join(f"{k}×{v}" for k, v in verdicts.items()))
     if "reason_name" in df.columns:
         # NONE dominates every healthy run, so it is dropped: what is worth
         # reading is which reasons FIRED and how often.

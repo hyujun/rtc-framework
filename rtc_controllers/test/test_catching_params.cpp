@@ -36,6 +36,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -44,7 +45,11 @@ using rtc::catching::CatchingParams;
 using rtc::catching::CatchingValidationReason;
 using rtc::catching::CatchingValidationReport;
 using rtc::catching::CheckCatchFrameProvisional;
+using rtc::catching::CheckFreezeCoversClose;
+using rtc::catching::HandHoldMode;
 using rtc::catching::kCatchFrameProvisionalKey;
+using rtc::catching::kCloseTimeoutPerE2e;
+using rtc::catching::kFreezeWindowKey;
 using rtc::catching::ParseCatchingParams;
 using rtc::catching::ValidateCatchingParams;
 
@@ -436,11 +441,260 @@ TEST(CatchingParams, HandTCloseE2eNegativeFails) {
 
 TEST(CatchingParams, HandTCloseE2eZeroPasses) {
   // L6 §6 bounds it at >= 0; zero is a degenerate but in-range identification.
+  //
+  // `T_close_timeout` is given explicitly because this case is about the e2e
+  // key's own range: from S7.1 an absent timeout is DERIVED as a multiple of
+  // T_close_e2e, and a multiple of zero is a zero timeout — refused for being
+  // a timeout, which is a different rule than the one this case pins.
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["T_close_e2e"] = 0.0;
+  root["robot"]["hand"]["T_close_timeout"] = 0.1;
   const CatchingParams p = ParseCatchingParams(root);
   const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
   EXPECT_TRUE(r.armable);
+}
+
+// ── Hand sequencer keys (S7.1, L6 §6) ───────────────────────────────────────
+
+TEST(CatchingParams, HandSequencerKeysTakeTheirDefaultsAndDeriveTheTimeout) {
+  // The baseline names none of the S7.1 keys: each takes its documented
+  // default, and the timeout is DERIVED from the measured closure time.
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_FALSE(p.hand.T_hold.tbd);
+  EXPECT_DOUBLE_EQ(p.hand.T_hold.value, 0.5);
+  ASSERT_FALSE(p.hand.T_close_timeout.tbd);
+  EXPECT_DOUBLE_EQ(p.hand.T_close_timeout.value, kCloseTimeoutPerE2e * 0.15);
+  EXPECT_EQ(p.hand.hold_mode, HandHoldMode::kCloseTarget);
+  EXPECT_DOUBLE_EQ(p.hand.q_tol, 0.01);
+  EXPECT_DOUBLE_EQ(p.hand.qd_tol, 0.05);
+  EXPECT_TRUE(ValidateCatchingParams(p, kControlRateHz, false).armable);
+}
+
+TEST(CatchingParams, HandCloseTimeoutExplicitValueOverridesTheDerivation) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_timeout"] = 0.4;
+  const CatchingParams p = ParseCatchingParams(root);
+  ASSERT_FALSE(p.hand.T_close_timeout.tbd);
+  EXPECT_DOUBLE_EQ(p.hand.T_close_timeout.value, 0.4);
+}
+
+TEST(CatchingParams, HandCloseTimeoutIsTbdWhenTheClosureTimeIs) {
+  // Nothing to derive from: the timeout stays TBD and says so under its own
+  // key, next to (not hidden behind) the e2e key's own failure.
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_e2e"] = "TBD";
+  const CatchingParams p = ParseCatchingParams(root);
+  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd,
+                               "robot.hand.T_close_timeout"));
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.T_close_e2e"));
+}
+
+TEST(CatchingParams, HandCloseTimeoutEqualToTheClosureTimeFails) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_timeout"] = 0.15;  // == T_close_e2e
+  const CatchingValidationReport r =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kCloseTimeoutNotAboveE2e,
+                               "robot.hand.T_close_timeout"));
+}
+
+TEST(CatchingParams, HandCloseTimeoutJustAboveTheClosureTimePasses) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_timeout"] = 0.1501;
+  EXPECT_TRUE(ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false).armable);
+}
+
+TEST(CatchingParams, HandHoldTimeOutsideItsRangeFails) {
+  for (const double t_hold : {-0.01, 5.01}) {
+    YAML::Node root = ValidRoot();
+    root["robot"]["hand"]["T_hold"] = t_hold;
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable) << t_hold;
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "robot.hand.T_hold"))
+        << t_hold;
+  }
+}
+
+TEST(CatchingParams, HandArrivalTolerancesMustBePositive) {
+  for (const char* key : {"q_tol", "qd_tol"}) {
+    YAML::Node root = ValidRoot();
+    root["robot"]["hand"][key] = 0.0;
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable) << key;
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation,
+                                 std::string("robot.hand.") + key))
+        << key;
+  }
+}
+
+TEST(CatchingParams, HandHoldMeasuredOffsetReadsItsDelta) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["hold"]["mode"] = "measured_offset";
+  root["robot"]["hand"]["hold"]["delta_rad"] = 0.05;
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_EQ(p.hand.hold_mode, HandHoldMode::kMeasuredOffset);
+  EXPECT_DOUBLE_EQ(p.hand.hold_delta_rad, 0.05);
+  EXPECT_TRUE(ValidateCatchingParams(p, kControlRateHz, false).armable);
+}
+
+TEST(CatchingParams, HandHoldMeasuredOffsetNegativeDeltaFails) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["hold"]["mode"] = "measured_offset";
+  root["robot"]["hand"]["hold"]["delta_rad"] = -0.01;
+  const CatchingValidationReport r =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "robot.hand.hold.delta_rad"));
+}
+
+TEST(CatchingParams, HandHoldUnknownModeIsRefused) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["hold"]["mode"] = "squeeze_harder";
+  ExpectRejectMentioning(root, "robot.hand.hold.mode");
+}
+
+TEST(CatchingParams, HandPreshapeTimeKeyIsRefusedByName) {
+  // #537 S7 Q4: no timed preshape. A profile written for it is refused, not
+  // quietly half-applied.
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_pre"] = 0.3;
+  ExpectRejectMentioning(root, "robot.hand.T_pre");
+}
+
+// ── Supervisor driver keys (S7.2, L7 §6) ────────────────────────────────────
+
+TEST(CatchingParams, SupervisorDriverKeysTakeTheDecidedDefaults) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_DOUBLE_EQ(p.supervisor_stale_committed_max_s.value, 0.10);
+  EXPECT_EQ(p.supervisor_sat_ticks, 60);
+  EXPECT_DOUBLE_EQ(p.supervisor_homing_v_max, 0.5);
+  EXPECT_DOUBLE_EQ(p.supervisor_homing_eta_a, 0.5);
+  EXPECT_DOUBLE_EQ(p.supervisor_homing_qd_tol, 0.02);
+  EXPECT_DOUBLE_EQ(p.supervisor_ready_pose_tol, 0.02);
+}
+
+TEST(CatchingParams, SupervisorDriverKeysOutsideTheirRangeFail) {
+  const auto fails = [](const char* section, const char* key, double value,
+                        const char* report_key) {
+    YAML::Node root = ValidRoot();
+    if (section[0] == '\0') {
+      root["supervisor"][key] = value;
+    } else {
+      root["supervisor"][section][key] = value;
+    }
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable) << report_key;
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, report_key))
+        << report_key;
+  };
+  fails("", "stale_committed_max_s", 1.5, "supervisor.stale_committed_max_s");
+  fails("homing", "v_max", 0.0, "supervisor.homing.v_max");
+  fails("homing", "eta_a", 1.2, "supervisor.homing.eta_a");
+  fails("homing", "qd_tol", -0.1, "supervisor.homing.qd_tol");
+  fails("ready", "pose_tol", 0.0, "supervisor.ready.pose_tol");
+}
+
+TEST(CatchingParams, ContactKeysTakeTheDecidedDefaults) {
+  // #537 S7 Q1 / D-S7-3, provisional (S8).
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_f_min, 0.2);
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_k_sigma, 3.0);
+  EXPECT_EQ(p.supervisor_contact_n_debounce, 3);
+  EXPECT_EQ(p.supervisor_contact_m_min, 2);
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_t_confirm, 0.2);
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_t_stale, 0.02);
+  EXPECT_DOUBLE_EQ(p.supervisor_contact_baseline_alpha, 0.02);
+  EXPECT_EQ(p.supervisor_contact_n_baseline_min, 20);
+}
+
+TEST(CatchingParams, ContactKeysOutsideTheirRangeFail) {
+  const auto fails = [](const char* key, double value) {
+    YAML::Node root = ValidRoot();
+    root["supervisor"]["contact"][key] = value;
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_FALSE(r.armable) << key;
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation,
+                                 std::string("supervisor.contact.") + key))
+        << key;
+  };
+  fails("f_min", -0.1);
+  fails("k_sigma", -1.0);
+  fails("T_confirm", 1.5);
+  fails("t_stale", 0.0);
+  fails("baseline_alpha", 0.0);
+  fails("baseline_alpha", 1.5);
+}
+
+TEST(CatchingParams, ContactCountsMustBePositiveWholeNumbers) {
+  for (const char* key : {"n_debounce", "m_min", "n_baseline_min"}) {
+    YAML::Node root = ValidRoot();
+    root["supervisor"]["contact"][key] = 1.5;
+    ExpectRejectMentioning(root, key);
+  }
+}
+
+TEST(CatchingParams, SupervisorSatTicksMustBeAPositiveCount) {
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["sat_ticks"] = 2.5;
+  ExpectRejectMentioning(root, "sat_ticks");
+}
+
+TEST(CatchingParams, TheDuplicateWaitPoseKeyIsRefusedByName) {
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["ready"]["wait_pose"] = std::vector<double>{0.0, 0.0};
+  ExpectRejectMentioning(root, "planner.wait_pose");
+}
+
+// ── Freeze window vs. closure (L3 §4.11, #537 S7) ───────────────────────────
+// T_freeze >= T_close_e2e + T_arm + h. Baseline: e2e 0.15, T_arm 0, h 2 ms.
+
+TEST(CatchingParams, FreezeWindowCoveringTheClosurePasses) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  CheckFreezeCoversClose(r, p, 0.1525, kControlRateHz);
+  EXPECT_FALSE(
+      ReportHasFailure(r, CatchingValidationReason::kFreezeShorterThanClose, kFreezeWindowKey));
+  EXPECT_TRUE(r.armable);
+}
+
+TEST(CatchingParams, FreezeWindowShorterThanTheClosureFails) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  CheckFreezeCoversClose(r, p, 0.151, kControlRateHz);  // one tick short by 1 ms
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kFreezeShorterThanClose, kFreezeWindowKey));
+}
+
+TEST(CatchingParams, FreezeWindowCountsTheServoLead) {
+  // T_arm moves the bound: the same window that covers a lag-free closure
+  // does not cover it once the reference runs 0.1 s ahead.
+  YAML::Node root = ValidRoot();
+  root["joint_cmd"]["lag"]["T_arm"] = 0.1;
+  const CatchingParams p = ParseCatchingParams(root);
+  CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  CheckFreezeCoversClose(r, p, 0.2, kControlRateHz);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kFreezeShorterThanClose, kFreezeWindowKey));
+}
+
+TEST(CatchingParams, FreezeWindowUnsetIsLeftToItsOwnCheck) {
+  // NaN = `planner.freeze.T_freeze` unset: whoever consumes the key reports
+  // it, and this check adds no second, differently worded line.
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  const std::size_t before = r.failure_count;
+  CheckFreezeCoversClose(r, p, std::nan(""), kControlRateHz);
+  EXPECT_EQ(r.failure_count, before);
 }
 
 // ── D-9: 0 < eta_v <= 1 ──────────────────────────────────────────────────────

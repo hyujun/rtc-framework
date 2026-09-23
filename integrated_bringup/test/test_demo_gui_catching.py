@@ -19,11 +19,14 @@ import pytest
 
 from integrated_bringup.demo_gui.ball_launch import FEED_STALE_AFTER_S
 from integrated_bringup.demo_gui.catching import (
+    HAND_PHASE_NAMES,
     MODE_NAMES,
+    OUTCOME_NAMES,
     PLAN_REASON_NAMES,
     REASON_NAMES,
     CatchingStatus,
     mode_name,
+    outcome_name,
     reason_name,
 )
 
@@ -401,3 +404,62 @@ def test_a_plan_reports_its_catch_point_and_instant():
     assert "w5=0.147" in out
     assert "w6=0.0042" in out
     assert "age=31 ms" in out
+
+
+# ── S7: outcome, hand sequencer, fingertips ─────────────────────────────────
+
+
+def test_the_last_attempt_is_named_on_the_mode_line():
+    status = CatchingStatus()
+    status.update(make_msg(mode=1, outcome=1), now_s=100.0)
+    first = text(status).splitlines()[0]
+    assert "ARMED" in first
+    assert "last attempt: CAPTURED" in first
+
+
+def test_outcome_names_follow_the_message_constants():
+    # rtc_msgs/CatchingState OUTCOME_*, dense.
+    assert OUTCOME_NAMES == ("NONE", "CAPTURED", "MISSED", "UNDETERMINED", "ABORTED")
+    assert outcome_name(9) == "outcome:9"
+
+
+def test_a_message_from_before_s7_reads_as_not_computed():
+    # make_msg carries no S7 fields: nothing about the hand or the tips is
+    # invented from their absence.
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=100.0)
+    body = text(status)
+    assert "hand: on the latch" in body
+    assert "tips: no fingertip lane" in body
+    assert "last attempt: NONE" in body
+
+
+def test_the_hand_line_names_the_phase_and_calls_out_a_timeout():
+    status = CatchingStatus()
+    status.update(
+        make_msg(hand_phase_valid=True, hand_phase=3, hand_rho=0.58, hand_timeout=True),
+        now_s=100.0,
+    )
+    body = text(status)
+    assert "hand: HOLD" in body
+    assert "rho 0.58" in body
+    assert "CLOSE TIMEOUT" in body
+    assert HAND_PHASE_NAMES == ("OPEN", "PRESHAPE", "CLOSE", "HOLD", "RELEASE")
+
+
+def test_the_tips_line_marks_contact_staleness_and_never_received():
+    status = CatchingStatus()
+    status.update(
+        make_msg(
+            tip_names=["thumb", "index", "middle"],
+            tip_force=[0.73, 0.05, 0.0],
+            tip_contact=[True, False, False],
+            tip_fresh=[True, False, False],
+            tip_age_s=[0.004, 0.035, -1.0],
+        ),
+        now_s=100.0,
+    )
+    line = [ln for ln in text(status).splitlines() if ln.startswith("tips:")][0]
+    assert "thumb: CONTACT 0.73 N (4 ms)" in line
+    assert "index: 0.05 N STALE (35 ms)" in line
+    assert "middle: never" in line

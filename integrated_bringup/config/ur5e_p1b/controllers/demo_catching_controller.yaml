@@ -1,28 +1,27 @@
-# demo_catching_controller — UR5e + Proto-1b variant (dynamic_catching S4.0/S4.1)
+# demo_catching_controller — UR5e + Proto-1b variant (dynamic_catching)
 #
-# SIM ONLY. The controller refuses to configure unless every device it claims
-# is bound to the `mujoco_native` backend: it holds the arm by commanding it
-# every tick, and doing that on real hardware is a change on the E-STOP path
-# (E-8), pending approval before S5. This file is therefore loaded by
-# sim_ur5e_p1b.launch.py only in practice; the guard, not the file's location,
-# is what enforces it (plan §4.4 S4a Q3).
+# The whole catching cycle as of S7 (L7 §4.1): armed, the controller homes the
+# arm to `planner.wait_pose` in joint space with the hand at q_pre, follows the
+# planner's plan, freezes it at t_c − T_freeze, closes the hand at t_cmd,
+# decelerates after t_c, holds for T_hold and returns to the wait pose.
 #
-# S4.0 scope: arm hold + unshaped hand step. No catching law (S5), no hand
-# sequencer (S7.1). The `catching:` tree below carries only what this step
-# needs; of the keys owned by other steps (reference.*, planner.*,
-# supervisor.*) only the values already decided are recorded (planner.hand.*,
-# planner.ik.*, supervisor.decel.a_dec — none consumed yet), the rest are
-# absent and their TBDs are logged as warnings rather than refused — this
-# controller never arms, so G0-C's arming gate is not its gate.
+# Loaded by sim_ur5e_p1b.launch.py; the real p1b bring-up instantiates it too
+# (sim and real share config/<variant>/controllers/). Since E-8 (2026-09-22)
+# the backend no longer gates activation: a value this controller consumes
+# that is provisional or TBD PARKS a real-arm configuration (configure SUCCESS,
+# activation refused) and only warns in sim (L0 §5.3, A-S5-1). The `provisional`
+# flags below are why a real arm does not run this file yet.
 demo_catching_controller:
   command_type: "position"
 
   # ── S4a diagnostic mode ────────────────────────────────────────────────────
   # Accept unshaped step position targets on the hand group's joint_goal, so
-  # S4.2 can identify T_close,e2e from the device CSV. False from S7.1 on: the
-  # hand sequencer owns the hand then, and an operator step would race it.
+  # S4.2 can identify T_close,e2e from the device CSV. False from S7.1: the
+  # hand sequencer owns the hand, and an operator step would race it. To
+  # re-measure T_close,e2e (rtc_tools hand_close_trials), turn this on for that
+  # run — the controller then runs WITHOUT the sequencer, never both.
   diagnostic:
-    hand_step: true
+    hand_step: false
 
     # ── S5.5 oracle plan (A-S5-8) ───────────────────────────────────────────
     # The stand-in for the planner: ONE fixed catch point, so the tracking
@@ -331,13 +330,17 @@ demo_catching_controller:
         a_dec: 10.0
 
     # ── Hand allowance (L3 §6 `planner.hand.*`, TBD-HAND-04) ─────────────────
-    # NOTHING READS THESE TWO KEYS YET. `ParseCatchingParams` puts
-    # `planner.hand.*` out of scope on purpose (see the header of
-    # rtc_controllers/include/rtc_controllers/catching/catching_params.hpp):
-    # their consumers are the L3 planner's gamma window and §4.6 budget gate,
-    # which land in S6. They are recorded here because G6-F asks for the
-    # derivation and the value to live together with the profile they were
-    # derived from — read them as documentation, not as configuration.
+    # STALE COMMENT FIXED (docs correction, S7 commit 1): as of S6,
+    # `ParsePlannerParams` DOES read both keys into `PlannerParams::d_eff` /
+    # `r_cap` (rtc_controllers/include/rtc_controllers/catching/
+    # planner_params.hpp) and `lifecycle.cpp` requires both finite before the
+    # controller can configure. `ParseCatchingParams` still keeps
+    # `planner.hand.*` out of the generic L0 §5.3 macro-list validation (see
+    # the header of catching_params.hpp) — that is a different, narrower
+    # scope check, not "nothing reads these". Consumers: the L3 planner's
+    # gamma window (`rank_gates.hpp`) and the §4.6 budget gate. Recorded here
+    # because G6-F asks for the derivation and the value to live together
+    # with the profile they were derived from.
     #
     # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, plan §7.3). The L3 §4.5
     # gamma window only ever uses d_eff / T_close,tot — the relative speed the
@@ -461,12 +464,11 @@ demo_catching_controller:
         provisional: true
 
       # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
-      # NOT READ AT RUNTIME YET, like `planner.hand` above: the consumer is the
-      # L3 planner's binding, which lands in S6.2. `ParseCatchPoseIkParams`
-      # (rtc_controllers) already parses exactly these keys, and the offline
-      # catchability map drives them through it, so they are live values under
-      # test — just not yet on a tick. Recorded here because G6-F asks the
-      # derivation and the value to live together.
+      # Read at configure by `ParseCatchPoseIkParams` (rtc_controllers) — the
+      # same parser the offline catchability map drives — and handed to the
+      # planner thread's search (S6-B, `ConfigureSearch`), so the map and the
+      # runtime solve alike. Recorded here because G6-F asks the derivation and
+      # the value to live together.
       #
       # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1418 throws
       # accepted from the best single wait pose (reproduced by running the map

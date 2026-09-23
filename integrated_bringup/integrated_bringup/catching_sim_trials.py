@@ -1,26 +1,25 @@
-"""Throw trials at the catching controller in sim, with the arm aligned first.
+"""Throw trials at the catching controller in sim, one full S7 cycle each.
 
-The procedure is the standard one for S6/S8 sim measurements until the
-controller homes by itself (S7.2) — #537 decision ④, 2026-09-23. Before every
-throw the arm is sent to ``planner.wait_pose`` and the throw waits until it is
-there. Without that, each trial starts wherever the previous one ended (the
-first from the activation pose, later ones as low as 8 cm above the floor):
-2026-09-23 measured 4.6-6.3 rad of start-pose spread, and the tracking error,
-saturation and catch error of those runs described the start pose as much as
-the controller.
+From S7.2 the controller homes itself: armed, it moves the arm to
+``planner.wait_pose`` in joint space and waits there with the hand at q_pre
+(IDLE → ARMED), and after every trial it returns there (RETREAT → ARMED). The
+external alignment this driver used to do (#537 decision ④, "until S7.2" —
+switch to ``demo_joint_controller``, send the wait pose, switch back) is gone:
+a trial that starts elsewhere is now the controller's bug to show, not the
+driver's to hide.
 
 Per trial:
 
-1. Disarm (``catching.enable`` false), wait for IDLE. A latched FAULT is reset
-   first.
-2. Switch to ``demo_joint_controller`` and send it ``wait_pose`` as a joint goal.
-3. Wait until ``max|q - wait_pose|`` < ``tol_q`` and ``max|qd|`` < ``tol_qd``
-   hold together for ``hold_s``.
-4. Switch back to ``demo_catching_controller``, arm, wait for ARMED, and check
-   the arm did not drift during the hand-over.
-5. Launch the ball at a stated release state (``/sim/launch_ball_at`` — a stated
-   launch does not consume the sim's RNG, so the series replays exactly), record
-   ground truth and mode transitions, reset the ball.
+1. A latched FAULT is reset; the controller is armed (``catching.enable``) if
+   it is not; wait for ARMED — the controller's own homing — and record how far
+   the measured arm is from the wait pose at that moment.
+2. Launch the ball at a stated release state (``/sim/launch_ball_at`` — a stated
+   launch does not consume the sim's RNG, so the series replays exactly) and
+   record ground truth and every mode transition.
+3. The trial ends when the controller is back in ARMED after a RETREAT (the
+   cycle closed), or in IDLE / FAULT, or after ``record_s``. The attempt's
+   verdict is the ``outcome`` published on the RETREAT entry (L7 §4.7).
+4. Reset the ball.
 
 This drives an already-running sim. It launches nothing: the sim, the ball
 estimator and the switch into the catching controller are the caller's
@@ -180,6 +179,13 @@ def trial_throws(n_ref: int, n_pert: int, seed: int, pos, vel):
     return throws
 
 
+def _cycle_closed(modes: list[str]) -> bool:
+    """Whether a trial's mode sequence re-armed after its RETREAT (one S7 cycle)."""
+    if "RETREAT" not in modes:
+        return False
+    return "ARMED" in modes[modes.index("RETREAT") + 1 :]
+
+
 def _make_driver(profile: ArmProfile, args):
     # ROS imports stay here so the helpers above are importable without a
     # sourced ROS environment.
@@ -192,8 +198,8 @@ def _make_driver(profile: ArmProfile, args):
     from sensor_msgs.msg import JointState
     from std_srvs.srv import Trigger
 
-    from rtc_msgs.msg import CatchingState, RobotTarget
-    from rtc_msgs.srv import LaunchBall, ResetFault, SwitchController
+    from rtc_msgs.msg import CatchingState
+    from rtc_msgs.srv import LaunchBall, ResetFault
 
     class TrialDriver(Node):
         def __init__(self) -> None:
@@ -206,11 +212,9 @@ def _make_driver(profile: ArmProfile, args):
             self.launch_cli = self.create_client(LaunchBall, "/sim/launch_ball_at")
             self.reset_ball_cli = self.create_client(Trigger, "/sim/reset_ball")
             self.reset_fault_cli = self.create_client(ResetFault, "/rtc_cm/reset_fault")
-            self.switch_cli = self.create_client(SwitchController, "/rtc_cm/switch_controller")
             self.param_cli = self.create_client(
                 SetParameters, f"/{CATCHING}/{CATCHING}/set_parameters"
             )
-            self.goal_pub = self.create_publisher(RobotTarget, profile.goal_topic, 1)
             self.create_subscription(
                 CatchingState, f"/{CATCHING}/catching_state", self._on_state, 10
             )
@@ -220,6 +224,7 @@ def _make_driver(profile: ArmProfile, args):
             self.create_subscription(JointState, profile.state_topic, self._on_joints, best_effort)
             self.mode = None
             self.outcome = None
+            self.retreat_outcome = None
             self.mode_log = []
             self.truth_rows = []
             self.offsets = []
@@ -235,6 +240,10 @@ def _make_driver(profile: ArmProfile, args):
                 name = MODE_NAMES[msg.mode] if msg.mode < len(MODE_NAMES) else str(msg.mode)
                 self.mode_log.append((now, name, msg.reason))
                 self.mode = msg.mode
+                if name == "RETREAT" and self.recording:
+                    # The verdict the controller published on the RETREAT entry
+                    # (HOLD judges on that edge; an abort sets it there).
+                    self.retreat_outcome = msg.outcome
             self.outcome = msg.outcome
             if self.recording:
                 if self.tick_range[0] is None:
@@ -292,20 +301,10 @@ def _make_driver(profile: ArmProfile, args):
             res = self.call(self.param_cli, req)
             return res is not None and all(r.successful for r in res.results)
 
-        def switch(self, activate: str, deactivate: str) -> bool:
-            req = SwitchController.Request()
-            req.activate_controllers = [activate]
-            req.deactivate_controllers = [deactivate]
-            req.strictness = 1
-            req.timeout.sec = 3
-            res = self.call(self.switch_cli, req, timeout_s=10.0)
-            return res is not None and res.ok
-
         def wait_for_services(self, timeout_s: float = 10.0) -> None:
             for client, name in (
                 (self.launch_cli, "/sim/launch_ball_at"),
                 (self.reset_ball_cli, "/sim/reset_ball"),
-                (self.switch_cli, "/rtc_cm/switch_controller"),
                 (self.param_cli, f"/{CATCHING}/{CATCHING}/set_parameters"),
             ):
                 if not client.wait_for_service(timeout_sec=timeout_s):
@@ -313,63 +312,32 @@ def _make_driver(profile: ArmProfile, args):
 
         # ── the procedure ────────────────────────────────────────────────
         def home(self) -> dict:
-            """Steps 1-4 of the module docstring. Raises when a step fails."""
+            """Step 1 of the module docstring. Raises when it fails."""
             t0 = time.time()
             self.spin_for(0.1)
             if self.mode_name() == "FAULT":
                 req = ResetFault.Request()
                 req.controller_name = CATCHING
                 res = self.call(self.reset_fault_cli, req)
-                self.get_logger().warn(f"reset_fault before homing -> {res}")
-            if not self.set_enable(False):
-                raise RuntimeError("disarm failed")
-            if not self.wait_for_mode("IDLE", 10.0):
-                raise RuntimeError(f"not IDLE after disarm (mode {self.mode_name()})")
-            if not self.switch(JOINT, CATCHING):
-                raise RuntimeError(f"switch to {JOINT} failed")
-            end = time.time() + 5.0
-            while self.goal_pub.get_subscription_count() == 0 and time.time() < end:
-                self.spin_for(0.05)
-            goal = RobotTarget()
-            goal.goal_type = "joint"
-            goal.joint_names = list(profile.joint_names)
-            goal.joint_target = list(profile.wait_pose)
-            self.goal_pub.publish(goal)
+                self.get_logger().warn(f"reset_fault before the trial -> {res}")
+                self.spin_for(0.2)
             start_q = list(self.q) if self.q else None
-
-            in_tol_since = None
-            end = time.time() + args.home_timeout
-            while True:
-                if time.time() > end:
-                    err = alignment_error(self.q, self.qd, profile.wait_pose) if self.q else None
-                    raise RuntimeError(f"homing timeout, error {err}")
-                rclpy.spin_once(self, timeout_sec=0.02)
-                if self.q is None:
-                    continue
-                eq, eqd = alignment_error(self.q, self.qd, profile.wait_pose)
-                if eq < args.tol_q and eqd < args.tol_qd:
-                    in_tol_since = in_tol_since or time.time()
-                    if time.time() - in_tol_since >= args.hold_s:
-                        break
-                else:
-                    in_tol_since = None
-            home_s = time.time() - t0
-
-            if not self.switch(CATCHING, JOINT):
-                raise RuntimeError(f"switch back to {CATCHING} failed")
-            if not self.set_enable(True):
+            if self.mode_name() != "ARMED" and not self.set_enable(True):
                 raise RuntimeError("arm failed")
-            if not self.wait_for_mode("ARMED", 8.0):
-                raise RuntimeError(f"not ARMED after re-arm (mode {self.mode_name()})")
-            self.spin_for(0.5)
-            # The catching controller latches the pose it finds at activation;
-            # a hand-over that let the arm sag would show up here.
+            # The controller homes itself (S7.2); ARMED means it says it is at
+            # the wait pose with the hand at q_pre.
+            if not self.wait_for_mode("ARMED", args.home_timeout):
+                err = alignment_error(self.q, self.qd, profile.wait_pose) if self.q else None
+                raise RuntimeError(f"not ARMED (mode {self.mode_name()}), error {err}")
+            self.spin_for(0.2)
             eq, eqd = alignment_error(self.q, self.qd, profile.wait_pose)
-            if eq > 2 * args.tol_q or eqd > 2 * args.tol_qd:
-                raise RuntimeError(f"drifted after re-arm: {eq:.4f} rad, {eqd:.4f} rad/s")
+            if eq > args.tol_q or eqd > args.tol_qd:
+                # Recorded AND refused: the controller's own arrival test is
+                # `supervisor.ready.pose_tol`, and an ARMED arm outside this gate
+                # is a finding about the homing, not a start pose to accept.
+                raise RuntimeError(f"ARMED away from the wait pose: {eq:.4f} rad, {eqd:.4f} rad/s")
             return {
                 "home_start_q": start_q,
-                "home_s": round(home_s, 2),
                 "home_total_s": round(time.time() - t0, 2),
                 "q_at_throw": [round(v, 5) for v in self.q],
                 "err_q_at_throw": round(eq, 5),
@@ -379,6 +347,7 @@ def _make_driver(profile: ArmProfile, args):
         def throw(self, idx: int, throw: dict) -> dict:
             """Step 5. Returns the trial record written to trial_results.json."""
             self.mode_log, self.truth_rows, self.offsets = [], [], []
+            self.retreat_outcome = None
             self.tick_range = [None, None]
             self.recording = True
             req = LaunchBall.Request()
@@ -392,7 +361,17 @@ def _make_driver(profile: ArmProfile, args):
                 self.recording = False
                 self.get_logger().error(f"trial {idx}: launch refused: {record['message']}")
                 return record
-            self.spin_for(args.record_s)
+            # Until the cycle closes (RETREAT → ARMED), the controller gives up
+            # (IDLE, FAULT), or the window runs out.
+            end = time.time() + args.record_s
+            while time.time() < end:
+                rclpy.spin_once(self, timeout_sec=0.02)
+                names = [m[1] for m in self.mode_log]
+                if "RETREAT" in names and names[-1] in ("ARMED", "IDLE", "FAULT"):
+                    break
+                if names and names[-1] == "FAULT":
+                    break
+            self.spin_for(0.1)
             self.recording = False
 
             truth_csv = os.path.join(args.out_dir, f"truth_trial_{idx:02d}.csv")
@@ -410,6 +389,15 @@ def _make_driver(profile: ArmProfile, args):
                     "final_outcome": (
                         OUTCOME_NAMES[self.outcome] if self.outcome is not None else None
                     ),
+                    # The attempt's verdict (L7 §4.7): published on RETREAT entry.
+                    "outcome": (
+                        OUTCOME_NAMES[self.retreat_outcome]
+                        if self.retreat_outcome is not None
+                        else None
+                    ),
+                    # RETREAT followed by ARMED — the controller re-armed. What
+                    # comes after (a new ball seen, TRACKING) does not reopen it.
+                    "cycle_closed": _cycle_closed([m[1] for m in self.mode_log]),
                     "final_mode": self.mode_name(),
                     "launch_wall_time": launch_wall_time,
                     "tick_min": self.tick_range[0],
@@ -421,7 +409,7 @@ def _make_driver(profile: ArmProfile, args):
             )
             self.get_logger().info(
                 f"trial {idx}: modes={[m[1] for m in self.mode_log]} "
-                f"outcome={record['final_outcome']} final_mode={record['final_mode']}"
+                f"outcome={record['outcome']} final_mode={record['final_mode']}"
             )
             return record
 
@@ -440,11 +428,16 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=42, help="perturbation RNG seed")
     parser.add_argument("--release-pos", type=float, nargs=3, default=REFERENCE_RELEASE_POS)
     parser.add_argument("--release-vel", type=float, nargs=3, default=REFERENCE_RELEASE_VEL)
-    parser.add_argument("--tol-q", type=float, default=0.01, help="alignment gate, rad")
-    parser.add_argument("--tol-qd", type=float, default=0.01, help="alignment gate, rad/s")
-    parser.add_argument("--hold-s", type=float, default=0.5, help="time inside the gate, s")
-    parser.add_argument("--home-timeout", type=float, default=30.0, help="s")
-    parser.add_argument("--record-s", type=float, default=3.0, help="recording window per throw")
+    parser.add_argument(
+        "--tol-q", type=float, default=0.03, help="alignment check at ARMED, rad (pose_tol 0.02)"
+    )
+    parser.add_argument(
+        "--tol-qd", type=float, default=0.05, help="alignment check at ARMED, rad/s"
+    )
+    parser.add_argument("--home-timeout", type=float, default=30.0, help="s to reach ARMED")
+    parser.add_argument(
+        "--record-s", type=float, default=12.0, help="longest window per throw (cycle end first)"
+    )
     return parser.parse_args(argv)
 
 
@@ -473,6 +466,14 @@ def main(argv=None) -> int:
             record.update(alignment)
             results.append(record)
             node.spin_for(0.3)
+        verdicts: dict[str, int] = {}
+        for r in results:
+            key = str(r.get("outcome"))
+            verdicts[key] = verdicts.get(key, 0) + 1
+        node.get_logger().info(
+            f"{len(results)} trials, cycles closed "
+            f"{sum(1 for r in results if r.get('cycle_closed'))}, verdicts {verdicts}"
+        )
     finally:
         with open(os.path.join(args.out_dir, "trial_results.json"), "w") as f:
             json.dump(results, f, indent=2, default=str)

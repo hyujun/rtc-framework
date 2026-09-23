@@ -152,6 +152,7 @@ enum class PlanRefusal : std::uint8_t {
   kRepeat,       ///< (d) the plan the RT already took
   kAged,         ///< (e) published longer ago than the admission age bound
   kBeforeReset,  ///< (f) published before the RT's last trial reset
+  kTooLate,      ///< (g) its catch instant is already inside the freeze window (S7)
 };
 
 /// What the RT knows when it judges a plan. All of it is the RT's own state.
@@ -169,6 +170,12 @@ struct PlanAdmissionContext {
   /// Steady instant of the RT's last trial reset; plans published before it
   /// belong to the trial the reset ended. 0 = no reset yet.
   std::int64_t reset_floor_ns{0};
+  /// (g) T_freeze [ns] (L7 §4.8's third admission condition, #537 S7): a plan
+  /// whose t_c − now is not ABOVE this would commit on the tick it is taken —
+  /// and with t_c ≤ now, decelerate the tick after — so the controller would
+  /// commit to a catch it never approached. 0 disables the check (a profile
+  /// with no freeze window has nothing to be inside of).
+  std::int64_t t_freeze_ns{0};
 };
 
 /// The RT's memory of the last plan it admitted (payload-side, D-21 — never
@@ -206,6 +213,9 @@ struct AdmittedPlan {
   if (plan.publish_ns < ctx.reset_floor_ns) {
     return PlanRefusal::kBeforeReset;
   }
+  if (ctx.t_freeze_ns > 0 && detail::SatSub(plan.t_c_ns, ctx.now.ns) <= ctx.t_freeze_ns) {
+    return PlanRefusal::kTooLate;
+  }
   return PlanRefusal::kNone;
 }
 
@@ -225,6 +235,8 @@ struct AdmittedPlan {
       return "aged";
     case PlanRefusal::kBeforeReset:
       return "before_reset";
+    case PlanRefusal::kTooLate:
+      return "too_late";
   }
   return "unknown";
 }

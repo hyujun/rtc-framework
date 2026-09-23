@@ -302,7 +302,9 @@ S1 이식 시 변경:
 
 맞는 것은 극한 주장뿐이다: $t\to t_c$ 에서 점프 $\to0$. 필요 가속도는 $\gamma_f$ 에 거의 선형으로 줄어든다(L3 §4.8 표: $T_w=0.30$ s에서 $\gamma_f$ 0.4→0.2가 33.0→16.4 m/s²).
 
-### 5.3 복귀 기준 `retreat_reference.hpp`
+### 5.3 복귀 기준 — 채택하지 않음 (C-13, S7.2 설계 확정 2026-09-23)
+
+**`retreat_reference.hpp` 는 repo 에 없다.** 아래는 v0.4 가 세운 task-space soft-catch DS 기반( γ≡0 ) 복귀 설계이고, 참고로 남기지만 **S7 은 이 경로를 쓰지 않는다**. 이유 둘: (a) `supervisor.ready.pose_tol` 는 rad 단위이고 `planner.wait_pose` 는 관절 벡터이므로 도달 판정 자체가 관절공간이다, (b) `QP_FAILED`/`JOINT_CONFLICT` 로 들어온 abort 뒤 `RETREAT` 는 실패한 CLIK 에 의존할 수 없다. **채택안**: homing·retreat 는 순수 조각 `joint_home.hpp` 의 관절공간 법칙(per-joint 사다리꼴, `supervisor.homing.v_max`·`qdd_max`×`supervisor.homing.eta_a`, QP/CLIK 비의존, `arm_q_cmd_`/`arm_qd_cmd_` 에 직접 적분 — abort 램프와 같은 carried command 형태)이다 — L7 §4.1·§4.8. 도달 판정은 `supervisor.ready.pose_tol` ∧ ‖q̇‖∞ ≤ `supervisor.homing.qd_tol`.
 
 **주의: $\gamma\equiv0$ 이면 대상 $o$ 는 결과에 전혀 영향을 주지 않는다.**
 
@@ -314,7 +316,7 @@ $$\texttt{setIntercept}(p_{home},\ \texttt{GammaProfile}\{0,0,\cdot,\cdot\})$$
 
 v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적었는데 이것은 **no-op** 이다. 실측하면 대상을 홈으로 주든 임의의 점으로 주든 똑같이 **직전 포구점**으로 수렴한다. 그러면 L7 §4.5 조건 4(대기 자세 허용오차)가 영원히 거짓이라 `RETREAT → ARMED` 전이가 막힌다. `test_l4.cpp` 의 `A5` 가 회귀 검사한다.
 
-같은 이유로 `reset(x, xd)` 는 $p_c\leftarrow x$, $\gamma$ 프로파일 초기화까지 수행한다 — 그래야 활성화 직후 현재 자세 유지가 되고, 재무장 시 직전 시행의 포구점·γ 프로파일이 남지 않는다(L7 §4.8 재무장 리셋 목록). 같은 기준이 IDLE 의 wait_pose homing 에도 쓰인다 (L7).
+같은 이유로 `reset(x, xd)` 는 $p_c\leftarrow x$, $\gamma$ 프로파일 초기화까지 수행한다 — 그래야 활성화 직후 현재 자세 유지가 되고, 재무장 시 직전 시행의 포구점·γ 프로파일이 남지 않는다(L7 §4.8 재무장 리셋 목록). **IDLE 의 `wait_pose` homing 은 이 기준을 쓰지 않는다** — 위 정정대로 관절공간 `joint_home.hpp` 를 쓴다(L7 §4.1).
 
 회전은 홈 자세로의 SO(3) 오차로, 기존 U1 헬퍼 `rtc_tsid` se3_error (`ComputeTaskPoseError`) 를 쓴다(G4-2). 별도 파일로 둘지 병진 기준 코어에 함께 둘지는 S1.4 에서 정한다.
 

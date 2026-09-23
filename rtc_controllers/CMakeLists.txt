@@ -503,6 +503,14 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_supervisor_core PRIVATE -Wno-mismatched-new-delete)
 
+  # Hand sequencer (S7.1, L6 §5.3): G6-A close-tick rounding, phase rules,
+  # ρ, hold rule, no allocation in Update. alloc_gate.hpp → its own binary.
+  ament_add_gtest(test_catching_hand_sequencer test/test_catching_hand_sequencer.cpp)
+  target_link_libraries(test_catching_hand_sequencer rtc_controllers)
+  target_include_directories(test_catching_hand_sequencer PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_hand_sequencer PRIVATE -Wno-mismatched-new-delete)
+
   # Parameter validator (S1.7, G0-C): active-config TBD, D-9/L7 §4.3 cross-
   # constraints, ζ·ω·h discretization, hand caging gap (L6 §4.2), provisional
   # gating. Model-free — no URDF fixture needed.

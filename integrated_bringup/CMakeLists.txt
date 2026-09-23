@@ -736,6 +736,42 @@ if(BUILD_TESTING)
   # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
   target_compile_options(test_demo_catching_alloc PRIVATE -Wno-mismatched-new-delete)
 
+  # dynamic_catching S7 (G7-D): one gated tick in every ARMED mode of a trial
+  # on the real UR5e+P1b model (homing, law, freeze, hand sequencer, DECEL,
+  # HOLD, return, joint-space stop). Own binary: alloc_gate.hpp replaces the
+  # global operator new (one TU per binary).
+  ament_add_gtest(test_demo_catching_alloc_s7 test/test_demo_catching_alloc_s7.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_include_directories(test_demo_catching_alloc_s7 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_link_libraries(test_demo_catching_alloc_s7
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_catching_alloc_s7
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    sensor_msgs
+    ament_index_cpp
+    pinocchio
+    Eigen3
+  )
+  target_compile_options(test_demo_catching_alloc_s7 PRIVATE -Wno-mismatched-new-delete)
+
+  # S7 G8-A2 (truth half): the reset table's rows hold at run time — every
+  # RT-owned member poisoned, a reset run, each member checked against its row.
+  ament_add_gtest(test_catching_reset_probe test/test_catching_reset_probe.cpp)
+  target_link_libraries(test_catching_reset_probe ${PROJECT_NAME}_demo_controllers)
+  ament_target_dependencies(test_catching_reset_probe
+    rclcpp
+    rtc_controllers
+    rtc_base
+    Eigen3
+  )
+
   # ── #282 two-tier DLS convergence harness ──────────────────────────────────
   # Pure numerics: the pre-#282 inline block (oracle) against
   # compliance::DifferentialIk. Its own binary because it installs the Eigen
@@ -1409,6 +1445,29 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
+  # ── dynamic_catching S7: the supervisor scenario table (L7 §9, G7-A/B/G) ──
+  # The whole trial cycle closed loop on the real model: each case asserts the
+  # mode sequence and the reason/outcome that names its scenario — normal,
+  # homing, missed, the stale/saturation/QP aborts, E-STOP, fault reset, and
+  # the S7 additions (disarm mid-return, stale across t_cmd..t_c, hand timeout
+  # in HOLD, Q14 contact-then-abort, T_arm close timing, two trials, re-throw,
+  # stale fingertip). Real-time ticks, ~20 s.
+  ament_add_gtest(test_catching_supervisor_scenarios test/test_catching_supervisor_scenarios.cpp
+    TIMEOUT 120
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_catching_supervisor_scenarios
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_supervisor_scenarios
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    sensor_msgs
+    ament_index_cpp
+  )
+
   # ── dynamic_catching S6-A: the planner thread and the RT plan lane ────────
   # Thread half: eventfd coalescing, the reset drain, Join under a long
   # timeout, Pause. Lane half on the real UR5e+P1b model through CM's configure
@@ -1595,6 +1654,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
   ament_add_pytest_test(test_demo_gui_hand_step test/test_demo_gui_hand_step.py)
   ament_add_pytest_test(test_demo_gui_catching test/test_demo_gui_catching.py)
+  # S7 G8-A2 (existence half): every RT-owned member of the catching
+  # controller has a row in its header's reset table.
+  ament_add_pytest_test(test_catching_reset_table test/test_catching_reset_table.py)
 endif()
 
 ament_package()

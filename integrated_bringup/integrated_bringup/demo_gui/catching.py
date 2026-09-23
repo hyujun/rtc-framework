@@ -112,6 +112,25 @@ PLAN_REASON_NAMES = (
     "INPUT_NON_FINITE",
 )
 
+# rtc::catching::Outcome (rtc_msgs/CatchingState OUTCOME_*): how the LAST
+# attempt ended (S7.3). Kept across a re-arm by the controller.
+OUTCOME_NAMES = (
+    "NONE",
+    "CAPTURED",
+    "MISSED",
+    "UNDETERMINED",
+    "ABORTED",
+)
+
+# rtc::catching::HandPhase (rtc_msgs/CatchingState HAND_PHASE_*), S7.1.
+HAND_PHASE_NAMES = (
+    "OPEN",
+    "PRESHAPE",
+    "CLOSE",
+    "HOLD",
+    "RELEASE",
+)
+
 # Modes the operator should be able to spot without reading the word.
 _ALARM_MODES = frozenset({"ABORT_SAFE", "FAULT"})
 
@@ -132,6 +151,18 @@ def plan_reason_name(value: int) -> str:
     if 0 <= value < len(PLAN_REASON_NAMES):
         return PLAN_REASON_NAMES[value]
     return f"?({value})"
+
+
+def outcome_name(value: int) -> str:
+    if 0 <= value < len(OUTCOME_NAMES):
+        return OUTCOME_NAMES[value]
+    return f"outcome:{value}"
+
+
+def hand_phase_name(value: int) -> str:
+    if 0 <= value < len(HAND_PHASE_NAMES):
+        return HAND_PHASE_NAMES[value]
+    return f"phase:{value}"
 
 
 def reason_name(value: int) -> str:
@@ -188,6 +219,18 @@ class CatchingStatus:
     clik_bound_conflict: bool = False
     qp_fail_streak: int = 0
 
+    # S7: the attempt's verdict, the hand sequencer, the fingertips.
+    outcome: int = 0
+    hand_phase_valid: bool = False
+    hand_phase: int = 0
+    hand_rho: float = 0.0
+    hand_timeout: bool = False
+    tip_names: tuple[str, ...] = ()
+    tip_force: tuple[float, ...] = ()
+    tip_contact: tuple[bool, ...] = ()
+    tip_fresh: tuple[bool, ...] = ()
+    tip_age_s: tuple[float, ...] = ()
+
     #: What the operator last asked ``catching.enable`` to be, and whether that
     #: request is still in flight. ``None`` means nothing has been requested in
     #: this session, so there is nothing to compare the observed latch against.
@@ -243,6 +286,20 @@ class CatchingStatus:
         self.clik_solve_us = float(msg.clik_solve_us)
         self.clik_bound_conflict = bool(msg.clik_bound_conflict)
         self.qp_fail_streak = int(msg.qp_fail_streak)
+
+        # S7 fields. Read with defaults so a recording from before S7 (whose
+        # values were published but always zero) and a duck-typed test message
+        # without them both read as "not computed" rather than failing.
+        self.outcome = int(getattr(msg, "outcome", 0))
+        self.hand_phase_valid = bool(getattr(msg, "hand_phase_valid", False))
+        self.hand_phase = int(getattr(msg, "hand_phase", 0))
+        self.hand_rho = float(getattr(msg, "hand_rho", 0.0))
+        self.hand_timeout = bool(getattr(msg, "hand_timeout", False))
+        self.tip_names = tuple(str(n) for n in getattr(msg, "tip_names", ()))
+        self.tip_force = tuple(float(v) for v in getattr(msg, "tip_force", ()))
+        self.tip_contact = tuple(bool(v) for v in getattr(msg, "tip_contact", ()))
+        self.tip_fresh = tuple(bool(v) for v in getattr(msg, "tip_fresh", ()))
+        self.tip_age_s = tuple(float(v) for v in getattr(msg, "tip_age_s", ()))
 
         # A request stops being in flight once a LATER TICK has published, not
         # once the latch happens to match. The tick is what decides, and it can
@@ -305,11 +362,13 @@ class CatchingStatus:
         feed_note = "" if state is FeedState.LIVE else "  [STALE FEED]"
         out = [
             f"mode: {mode_name(self.mode)}  reason: {reason_name(self.reason)}"
-            f"  tick {self.tick}{feed_note}",
+            f"  last attempt: {outcome_name(self.outcome)}  tick {self.tick}{feed_note}",
             self._arm_line(),
             self._input_line(),
             self._plan_line(),
             self._law_line(),
+            self._hand_line(),
+            self._tips_line(),
         ]
         rejects = self.reject_summary()
         if rejects:
@@ -400,3 +459,32 @@ class CatchingStatus:
         if self.qp_fail_streak > 0:
             parts.append(f"QP fail streak {self.qp_fail_streak}")
         return "  |  ".join(parts)
+
+    def _hand_line(self) -> str:
+        if not self.hand_phase_valid:
+            # The latch commands the hand: not armed, E-STOP, the step rig, or a
+            # configuration that cannot run a trial.
+            return "hand: on the latch (sequencer inactive)"
+        parts = [f"hand: {hand_phase_name(self.hand_phase)}", f"rho {self.hand_rho:.2f}"]
+        if self.hand_timeout:
+            parts.append("CLOSE TIMEOUT (rho < eta)")
+        return "  |  ".join(parts)
+
+    def _tips_line(self) -> str:
+        n = len(self.tip_age_s)
+        if n == 0:
+            return "tips: no fingertip lane"
+        cells = []
+        for i in range(n):
+            name = self.tip_names[i] if i < len(self.tip_names) else f"#{i}"
+            age = self.tip_age_s[i]
+            if age < 0:
+                cells.append(f"{name}: never")
+                continue
+            fresh = i < len(self.tip_fresh) and self.tip_fresh[i]
+            force = self.tip_force[i] if i < len(self.tip_force) else 0.0
+            contact = i < len(self.tip_contact) and self.tip_contact[i]
+            tag = "CONTACT " if contact else ""
+            stale = "" if fresh else " STALE"
+            cells.append(f"{name}: {tag}{force:.2f} N{stale} ({age * 1e3:.0f} ms)")
+        return "tips: " + "  ".join(cells)

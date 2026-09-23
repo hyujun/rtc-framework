@@ -482,30 +482,38 @@ void DemoCatchingController::SeedArmCommand(const ControllerState& state) noexce
   // (D-6 evaluates along the commanded path), so this is the only moment the
   // two are tied together, and getting it wrong means the first commanded tick
   // is a step of whatever the initial gap happened to be.
+  //
+  // A command that is ALREADY carried is kept (#537 S7, C-32). From S7 the arm
+  // is driven before the first plan — homed to the wait pose and held there
+  // by the command, not the latch — so re-seeding at the measurement would
+  // step the command by whatever servo error it had, which is the very jump
+  // this function exists to prevent.
   const auto& dev = state.devices[kCatchingArmDeviceIdx];
-  for (int i = 0; i < arm_dof_ && i < kDemoCatchingMaxArmDof; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    arm_q_cmd_[ui] = dev.positions[ui];
-    arm_qd_cmd_[ui] = 0.0;
+  if (!arm_cmd_seeded_) {
+    for (int i = 0; i < arm_dof_ && i < kDemoCatchingMaxArmDof; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      arm_q_cmd_[ui] = dev.positions[ui];
+      arm_qd_cmd_[ui] = 0.0;
+    }
+    arm_cmd_seeded_ = true;
   }
-  arm_cmd_seeded_ = true;
   // NOT the QP failure streak. "Consecutive" (L7 §4.2) means "with no
   // successful solve in between", and the retry cycle an abort goes through —
   // ABORT_SAFE, RETREAT, ARMED, TRACKING, a fresh plan — contains no solve at
   // all. Clearing the streak here would make the fault latch unreachable: the
   // controller would retry a solve that cannot succeed, forever, one abort at
   // a time. It is cleared by a solve that works, and by a real reset.
-  // The posture target is the pose the trial STARTS from (`robot.arm.q_nominal`
-  // is still TBD and belongs to L7's wait pose, which S7 owns). It carries a
-  // small weight and only resolves the redundant degree of freedom, so the
-  // choice matters for which elbow the arm keeps, not for where the hand goes
-  // — and "the pose the operator armed in" is the one nobody is surprised by.
+  // The posture target is the command the trial STARTS from — the wait pose
+  // once S7 has homed the arm there, else the pose the operator armed in. It
+  // carries a small weight and only resolves the redundant degree of freedom,
+  // so the choice matters for which elbow the arm keeps, not for where the
+  // hand goes.
   if (combined_cache_.reorder_valid() && q_posture_.size() == combined_cache_.q().size()) {
     q_posture_ = combined_cache_.q();
     for (int i = 0; i < arm_dof_; ++i) {
       const int pq = combined_cache_.ext_to_pin_q(i);
       if (pq >= 0 && pq < q_posture_.size()) {
-        q_posture_[pq] = dev.positions[static_cast<std::size_t>(i)];
+        q_posture_[pq] = arm_q_cmd_[static_cast<std::size_t>(i)];
       }
     }
   }
@@ -516,13 +524,10 @@ void DemoCatchingController::SeedArmCommand(const ControllerState& state) noexce
   clik_.ResetAnchor();
 }
 
-rtc::catching::Reason DemoCatchingController::RunTrackingTick(
-    const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept {
-  using rtc::catching::Reason;
+bool DemoCatchingController::PrepareLawTick(const ControllerState& state) noexcept {
   if (!clik_enabled_ || !reference_.has_value() || catch_frame_idx_ < 0 || !arm_readable_) {
-    return Reason::kNone;  // nothing to run; the hold latch keeps the arm still
+    return false;  // nothing to run; the hold latch keeps the arm still
   }
-
   // ── The evaluation state (D-6) ───────────────────────────────────────────
   // CLIK is configured `evaluate_at_command`, so the cache it reads must carry
   // the COMMANDED arm configuration — its own previous QRef(). The hand
@@ -544,6 +549,16 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
     }
   }
   combined_cache_.cache().Update(q_eval_, v_eval_);
+  return true;
+}
+
+rtc::catching::Reason DemoCatchingController::RunTrackingTick(
+    const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept {
+  using rtc::catching::Mode;
+  using rtc::catching::Reason;
+  if (!PrepareLawTick(state)) {
+    return Reason::kNone;
+  }
 
   // The reference generator starts AT the current catch-frame pose, so the
   // first commanded step is the DS's own first step rather than a jump from
@@ -553,33 +568,41 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
   if (!reference_seeded_) {
     const pinocchio::SE3 pose = combined_cache_.ArmTcpPoseFromCache(catch_frame_idx_, -1);
     if (!reference_->Reset(pose.translation(), Eigen::Vector3d::Zero())) {
-      return rtc::catching::Reason::kRefSaturated;
+      return Reason::kRefSaturated;
     }
     const rtc::catching::BallTime t0{plan_.gamma_t0_ns};
     const rtc::catching::BallTime t1{plan_.gamma_t1_ns};
     if (!reference_->SetIntercept(
             Eigen::Vector3d(plan_.p_c[0], plan_.p_c[1], plan_.p_c[2]),
             rtc::catching::MakeGammaProfile(plan_.gamma_g0, plan_.gamma_gf, t0, t1, t0))) {
-      return rtc::catching::Reason::kPlanInvalid;
+      return Reason::kPlanInvalid;
     }
     reference_seeded_ = true;
   }
 
-  const double dt = state.dt;
-  const rtc::catching::NowReal now{SteadyNowNs()};
-  const rtc::catching::NowLead now_lead = rtc::catching::MakeNowLead(now, t_arm_ns_);
+  // After the freeze (COMMITTED, CLOSING) the law does not stop for the ball
+  // lane (R-ORDER): the sampler reads the committed track's last snapshot
+  // whatever its age, and past the horizon it extrapolates — recorded, not
+  // obeyed. Before it, the same two facts are reasons to give the plan up.
+  const bool committed = (mode_ == Mode::kCommitted || mode_ == Mode::kClosing);
 
   // ── The ball at the LEAD instant ────────────────────────────────────────
   // The snapshot is the one THIS tick already loaded (D-21: one Load per
   // tick). Loading again here would let a writer land between the two and
   // judge freshness on one snapshot while sampling another — with
   // `traj_hint_`, the sampler's cursor, carried across the pair.
-  const rtc::catching::SampleEval sample = rtc::catching::SampleAt(snapshot, now_lead, traj_hint_);
+  const rtc::catching::SampleEval sample =
+      rtc::catching::SampleAt(snapshot, tick_now_lead_, traj_hint_);
   if (!sample.valid) {
-    return Reason::kBallStale;
+    // Frozen, a snapshot that cannot be sampled at all leaves no trajectory to
+    // finish the catch on: that is the long-stale case, not a pause.
+    return committed ? Reason::kBallStaleLong : Reason::kBallStale;
   }
   if (sample.after_horizon) {
-    return Reason::kHorizonExtrap;
+    if (!committed) {
+      return Reason::kHorizonExtrap;
+    }
+    law_horizon_extrap_ = true;
   }
 
   rtc::catching::TargetState target;
@@ -587,13 +610,20 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
   target.v = sample.v;
   target.a = sample.a;
 
-  // ── The reference ───────────────────────────────────────────────────────
   // The γ profile and the sample share ONE origin so the two never drift: the
   // profile's own t0, expressed in the relative seconds the numeric core
   // takes. Mixing origins here is the bug plan §3 exists to prevent, and it
   // would look like a reference that is subtly early or late rather than wrong.
   const rtc::catching::BallTime origin{plan_.gamma_t0_ns};
-  const double t_rel = rtc::catching::ProfileSeconds(now_lead, origin);
+  const double t_rel = rtc::catching::ProfileSeconds(tick_now_lead_, origin);
+  return StepReferenceAndSolve(state, target, t_rel, /*count_saturation=*/true);
+}
+
+rtc::catching::Reason DemoCatchingController::StepReferenceAndSolve(
+    const ControllerState& state, const rtc::catching::TargetState& target, double t_rel,
+    bool count_saturation) noexcept {
+  using rtc::catching::Reason;
+  const double dt = state.dt;
   const rtc::catching::TranslationOutput ref = reference_->Step(target, t_rel, dt);
   RecordReference(ref);
   if (!ref.valid) {
@@ -601,6 +631,17 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
     // saturation as an abort would be wrong (it is a real, bounded reference),
     // but an invalid step means there is no reference at all this tick.
     return Reason::kRefSaturated;
+  }
+  // REF_SATURATED (#537 S7 Q6): a reference that stays on its bounds for
+  // `supervisor.sat_ticks` ticks in a row is not following the ball any more.
+  // One saturated tick is normal at a plan switch; a run of them is the
+  // generator admitting the plan asks for more than it may give.
+  bool saturated_too_long = false;
+  if (count_saturation) {
+    sat_streak_ = ref.saturated ? sat_streak_ + 1 : 0;
+    saturated_too_long = sat_ticks_ > 0 && sat_streak_ >= sat_ticks_;
+  } else {
+    sat_streak_ = 0;
   }
 
   // ── CLIK ────────────────────────────────────────────────────────────────
@@ -641,6 +682,14 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
   // The ONLY place the measured state enters the loop. D-6 keeps it out of
   // CLIK so the servo lag is not compensated twice; that makes this watchdog
   // the only thing that notices the arm is not where it was told to be.
+  UpdateTrackError(state);
+  if (track_err_abort_rad_ > 0.0 && track_err_ > track_err_abort_rad_) {
+    return Reason::kTrackErr;
+  }
+  return saturated_too_long ? Reason::kRefSaturated : Reason::kNone;
+}
+
+void DemoCatchingController::UpdateTrackError(const ControllerState& state) noexcept {
   const auto& dev = state.devices[kCatchingArmDeviceIdx];
   double err_sq = 0.0;
   for (int i = 0; i < arm_dof_; ++i) {
@@ -649,23 +698,23 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
     err_sq += d * d;
   }
   track_err_ = std::sqrt(err_sq);
-  // Recorded HERE and nowhere else: this is the only tick shape that computes
-  // it, so a record filled outside would republish the last tracking tick's
-  // number on every hold tick that followed (PROC-7).
+  // Recorded HERE and nowhere else: only the ticks that move the command
+  // compute it, so a record filled outside would republish the last such
+  // tick's number on every hold tick that followed (PROC-7).
   tick_record_.track_err_rad = track_err_;
-  if (track_err_abort_rad_ > 0.0 && track_err_ > track_err_abort_rad_) {
-    return Reason::kTrackErr;
-  }
-  return Reason::kNone;
 }
 
 void DemoCatchingController::RunJointSpaceAbort(const ControllerState& state) noexcept {
   // The QP-independent stop (A-S5-10). Reached when the abort was CAUSED by
   // the joint command layer, where routing the stop back through it is the one
-  // thing that cannot be done.
+  // thing that cannot be done. (L7 records the exemption: ABORT_SAFE takes
+  // this stop whatever the cause, #537 S7 C-35.)
+  abort_stopped_ = RampArmToStop(state);
+}
+
+bool DemoCatchingController::RampArmToStop(const ControllerState& state) noexcept {
   if (!arm_cmd_seeded_) {
-    abort_stopped_ = true;
-    return;
+    return true;
   }
   const auto n = static_cast<std::size_t>(std::min(arm_dof_, kDemoCatchingMaxArmDof));
   // The MARGINED box, not the device limits. `JointSpaceDecelStep` documents
@@ -681,14 +730,13 @@ void DemoCatchingController::RunJointSpaceAbort(const ControllerState& state) no
     // conservative answer: the arm holds what it was last told, which is a
     // pose it was already at or moving toward.
     std::fill(arm_qd_cmd_.begin(), arm_qd_cmd_.end(), 0.0);
-    abort_stopped_ = true;
-    return;
+    return true;
   }
   const auto step = rtc::catching::JointSpaceDecelStep(
       std::span<double>(arm_q_cmd_.data(), n), std::span<double>(arm_qd_cmd_.data(), n),
       std::span<const double>(arm_qdd_max_.data(), n), std::span<const double>(lower.data(), n),
       std::span<const double>(upper.data(), n), n, state.dt);
-  abort_stopped_ = step.valid && step.stopped;
+  return step.valid && step.stopped;
 }
 
 void DemoCatchingController::StoreOraclePlan(rtc::catching::NowReal now) noexcept {
@@ -831,7 +879,7 @@ bool DemoCatchingController::HasLatchedFault() const noexcept {
   return fault_latched_.load(std::memory_order_acquire);
 }
 
-// ── Supervisor (S1.8 transition table, S5.1 subset) ─────────────────────────
+// ── Supervisor (S1.8 transition table, S7 driver) ───────────────────────────
 
 void DemoCatchingController::AdvanceMode(rtc::catching::Reason reason) noexcept {
   rtc::catching::Mode next = mode_;
@@ -842,29 +890,366 @@ void DemoCatchingController::AdvanceMode(rtc::catching::Reason reason) noexcept 
   // is already answered by the data, and S7.2 grows the driver rather than
   // the table.
   if (rtc::catching::LookupTransition(rtc::catching::kTransitionTable, mode_, reason, next)) {
-    const bool changed = next != mode_;
+    const rtc::catching::Mode prev = mode_;
     mode_ = next;
-    // RETREAT is the re-arm boundary (L7 §4.8): the plan that was being
-    // followed is over, whether it ended in a catch or an abort. Dropping it
-    // here is what lets the next trial build its own — and what stops a plan
-    // whose t_c is now in the past from being picked up again.
-    if (changed && mode_ == rtc::catching::Mode::kRetreat) {
-      plan_active_ = false;
-      reference_seeded_ = false;
+    if (next != prev) {
+      OnModeEntered(prev);
     }
   }
   last_reason_ = reason;
+}
+
+void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
+  using rtc::catching::Mode;
+  using rtc::catching::Outcome;
+  switch (mode_) {
+    case Mode::kArmed:
+      // RETREAT → ARMED is the re-arm boundary (L7 §4.8). IDLE → ARMED is not
+      // a reset: nothing of a trial exists yet.
+      if (prev == Mode::kRetreat) {
+        ResetForRearm();
+      }
+      break;
+    case Mode::kCommitted:
+      // The freeze (L3 §4.11, R-TRACK). From here the catch instant, the hand's
+      // close instant and the track are fixed: the planner may keep publishing,
+      // and none of it is taken.
+      trial_committed_ = true;
+      committed_t_c_ns_ = plan_.t_c_ns;
+      committed_t_cmd_ns_ = rtc::catching::detail::SatSub(plan_.t_c_ns, t_close_e2e_ns_);
+      committed_generation_ = plan_.token.generation;
+      if (hand_seq_enabled_) {
+        static_cast<void>(hand_seq_.Commit(rtc::catching::BallTime{plan_.t_c_ns}));
+      }
+      break;
+    case Mode::kHold:
+      hold_entry_ns_ = tick_now_.ns;
+      break;
+    case Mode::kRetreat: {
+      // The plan is over, whether it ended in a catch or an abort. Dropping it
+      // here is what lets the next trial build its own — and what stops a plan
+      // whose t_c is now in the past from being picked up again.
+      plan_active_ = false;
+      reference_seeded_ = false;
+      retreat_stage_ = RetreatStage::kStop;
+      // A HOLD that ends has already judged the attempt (EvaluateDecelOrHold).
+      // Any other way in is an abort of an attempt, if one was under way.
+      if (prev != Mode::kHold && trial_active_) {
+        outcome_ = Outcome::kAborted;
+      }
+      // RETREAT never moves the hand (#537 S7, 2026-09-24; this replaces the
+      // Q12/Q14 split by verdict). A hand that closed stays closed until the
+      // arm is back at the wait pose, and RunRetreatMotion releases it there,
+      // whatever the verdict. The verdict comes from the fingertips only, and
+      // a ball lying on the links or the palm reads Missed (sim 260923_2336).
+      // Opening at the catch point drops it. A close that is armed but not yet
+      // issued is cancelled here. The hand is still at q_pre, so the Release
+      // moves nothing: it only stops the close from firing during the return.
+      if (hand_seq_enabled_ && !hand_seq_.CloseIssued()) {
+        hand_seq_.Release();
+      }
+      break;
+    }
+    case Mode::kIdle:
+      homing_ = false;
+      homing_done_ = false;
+      break;
+    case Mode::kTracking:
+    case Mode::kApproach:
+    case Mode::kClosing:
+    case Mode::kDecel:
+    case Mode::kAbortSafe:
+    case Mode::kFault:
+      break;
+  }
+}
+
+void DemoCatchingController::NoteLawVerdict(rtc::catching::Reason law) noexcept {
+  using rtc::catching::Reason;
+  // BOTH CLIK failure reasons count toward the streak, because both increment
+  // it: `kJointConflict` is a solve that could not honour its own boxes, and a
+  // box that keeps conflicting is exactly as unrecoverable as a solver that
+  // keeps failing. Counting only one of them leaves a controller that loops
+  // APPROACH → ABORT_SAFE → RETREAT → ARMED → TRACKING forever without ever
+  // escalating. Checked in every mode the law runs in (#537 S7), not only in
+  // APPROACH: a streak that completes after the freeze is the same streak.
+  const bool clik_failed = (law == Reason::kQpFailed || law == Reason::kJointConflict);
+  if (clik_failed && n_qp_fault_ > 0 && qp_fail_streak_ >= n_qp_fault_) {
+    // L7 §4.2: a streak of QP failures is not a transient. The latch is what
+    // stops the controller from retrying forever against a solve that is
+    // never going to succeed.
+    fault_latched_.store(true, std::memory_order_release);
+  }
+}
+
+namespace {
+
+/// The law verdicts that end a trial (R-PREC's "law failure / fatal" tier).
+[[nodiscard]] bool IsFatalLawReason(rtc::catching::Reason r) noexcept {
+  using rtc::catching::Reason;
+  return r == Reason::kQpFailed || r == Reason::kJointConflict || r == Reason::kTrackErr ||
+         r == Reason::kRefSaturated || r == Reason::kBallStaleLong || r == Reason::kPlanInvalid ||
+         r == Reason::kParamsTbd;
+}
+
+}  // namespace
+
+bool DemoCatchingController::ArmCommandStopped() const noexcept {
+  for (int i = 0; i < arm_dof_ && i < kDemoCatchingMaxArmDof; ++i) {
+    if (arm_qd_cmd_[static_cast<std::size_t>(i)] != 0.0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool DemoCatchingController::ArmAtWaitPose(const ControllerState& state) const noexcept {
+  if (!arm_readable_ || state.num_devices <= kCatchingArmDeviceIdx) {
+    return false;
+  }
+  const auto& dev = state.devices[kCatchingArmDeviceIdx];
+  for (int i = 0; i < arm_dof_ && i < kDemoCatchingMaxArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    // Written as "within" so a NaN reading is not at the pose.
+    if (!(std::abs(dev.positions[u] - wait_pose_[u]) <= pose_tol_) ||
+        !(std::abs(dev.velocities[u]) <= homing_qd_tol_)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool DemoCatchingController::HandSettledAtPre(const ControllerState& state) const noexcept {
+  if (!hand_readable_ || state.num_devices <= kCatchingHandDeviceIdx) {
+    return false;
+  }
+  const auto& dev = state.devices[kCatchingHandDeviceIdx];
+  const auto& hand = params_.hand;
+  for (int i = 0; i < hand_dof_ && i < hand.dof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    if (!(std::abs(dev.positions[u] - hand.q_pre[u]) <= hand.q_tol) ||
+        !(std::abs(dev.velocities[u]) <= hand.qd_tol)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateIdle(
+    const ControllerState& state) noexcept {
+  using rtc::catching::Reason;
+  if (!trials_enabled_) {
+    // No law, no homing: nothing moves in this configuration, so readiness is
+    // the operator's latch alone — the S5/S6 behaviour, kept for the
+    // configurations that cannot run a trial (no model, a unit fixture).
+    return {Reason::kNone, true};
+  }
+  // Q13: an arm that is already at the wait pose skips homing — only the hand
+  // is told to wait at q_pre. Decided HERE, on the measured state, so an
+  // aligned arm arms on its first armed tick rather than one tick later.
+  if (!homing_ && !homing_done_ && ArmCommandStopped() && ArmAtWaitPose(state)) {
+    homing_done_ = true;
+    if (hand_seq_enabled_) {
+      hand_seq_.Ready();
+    }
+  }
+  const bool arm_ready = homing_done_ && !homing_ && ArmCommandStopped() && ArmAtWaitPose(state);
+  // §4.5-6 (Q4): the hand is AT q_pre and at rest — the contact baseline is
+  // learned from a hand that is not moving. A hand-step profile has no
+  // sequencer and makes no claim about the hand.
+  const bool hand_ready = !hand_seq_enabled_ || HandSettledAtPre(state);
+  return {Reason::kNone, arm_ready && hand_ready};
+}
+
+DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateRetreat() noexcept {
+  using rtc::catching::Reason;
+  // R-WATCHDOG: the return is a motion like any other, and TRACK_ERR has a row
+  // out of RETREAT. (Measured by the motion stage's previous tick.)
+  if (retreat_stage_ == RetreatStage::kReturn && track_err_abort_rad_ > 0.0 &&
+      track_err_ > track_err_abort_rad_) {
+    return {Reason::kTrackErr, true};
+  }
+  if (retreat_stage_ != RetreatStage::kRelease) {
+    return {Reason::kNone, false};
+  }
+  // Back at the wait pose; re-arm once the hand is at q_pre and settled (the
+  // sequencer's Release ends in Preshape exactly then). hand_out_ is last
+  // tick's hand stage, which ran after the arrival tick's Release, so it can
+  // never show the pre-release Hold as ready.
+  const bool hand_ready =
+      !hand_seq_enabled_ ||
+      (hand_out_.active && hand_out_.phase == rtc::catching::HandPhase::kPreshape &&
+       hand_out_.at_target);
+  return {Reason::kNone, hand_ready};
+}
+
+rtc::catching::Reason DemoCatchingController::RunDecelLawTick(
+    const ControllerState& state) noexcept {
+  using rtc::catching::Reason;
+  if (!PrepareLawTick(state)) {
+    return Reason::kNone;
+  }
+  // τ on the lead axis from the entry instant (plan §3). Floored at 0: the
+  // entry tick evaluates τ = 0 exactly, and a later tick whose clock read
+  // jittered below the entry's must not ask the target for a negative τ.
+  const double tau =
+      std::max(0.0, static_cast<double>(tick_now_lead_.ns - decel_t_s_ns_) * rtc::catching::kNsToS);
+  const rtc::catching::DecelTarget tgt =
+      rtc::catching::EvaluateDecelTarget(decel_entry_, decel_a_dec_, tau);
+  if (!tgt.valid) {
+    // a_dec is refused at configure and the entry is the reference's own
+    // (finite) state, so this is a value the law needs that is not there.
+    return Reason::kParamsTbd;
+  }
+  decel_stopped_ = tgt.stopped;
+  rtc::catching::TargetState target;
+  target.p = tgt.p_v;
+  target.v = tgt.v_v;
+  target.a = tgt.a_v;
+  return StepReferenceAndSolve(state, target, tau, /*count_saturation=*/false);
+}
+
+rtc::catching::Reason DemoCatchingController::EnterDecel(const ControllerState& state) noexcept {
+  // L7 §4.3 / R-DECEL-ENTRY. The entry state is the reference's CURRENT state
+  // — the previous tick's step output, i.e. the reference for THIS tick — and
+  // t_s is this tick's lead instant, so the τ = 0 step taken below sees
+  // e = x_s − p_v(0) = 0 and ė = ẋ_s − v_v(0) = 0 exactly (G7-B): the
+  // generator is not reset, only its target changes.
+  decel_entry_.x_s = reference_->Position();
+  decel_entry_.xdot_s = reference_->Velocity();
+  decel_t_s_ns_ = tick_now_lead_.ns;
+  decel_stopped_ = false;
+  // γ ≡ 1: the reference follows the virtual target itself, not a blend of it
+  // with the catch point (L7 §4.3). The ramp is a formality of the profile's
+  // shape — g0 = gf — so its length only has to be positive.
+  constexpr std::int64_t kFlatRampNs = 1'000'000;
+  const rtc::catching::BallTime t_s{decel_t_s_ns_};
+  if (!reference_->SetIntercept(
+          reference_->Intercept(),
+          rtc::catching::MakeGammaProfile(1.0, 1.0, t_s,
+                                          rtc::catching::BallTime{t_s.ns + kFlatRampNs}, t_s))) {
+    return rtc::catching::Reason::kParamsTbd;
+  }
+  return RunDecelLawTick(state);
+}
+
+DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted(
+    const ControllerState& state) noexcept {
+  using rtc::catching::Mode;
+  using rtc::catching::Reason;
+  const bool closing = (mode_ == Mode::kClosing);
+
+  // CLOSING → DECEL at t_c on the lead axis. The first DECEL step is taken on
+  // this tick, so the reference never sees a tick with no target.
+  if (closing &&
+      rtc::catching::DecelDue(tick_now_lead_, rtc::catching::BallTime{committed_t_c_ns_})) {
+    const Reason law = EnterDecel(state);
+    NoteLawVerdict(law);
+    if (IsFatalLawReason(law)) {
+      return {law, true};
+    }
+    return {Reason::kNone, true};
+  }
+
+  // R-TRACK (Q15): after the freeze the law samples the COMMITTED track. A box
+  // holding another generation is stale for this catch — the frozen plan goes
+  // on (recorded), and the committed snapshot ages until it is too old.
+  const std::int64_t recv = law_snapshot_.token.traj_recv_ns;
+  const std::int64_t age = recv > 0 ? rtc::catching::AgeNs(tick_now_, rtc::catching::NowReal{recv})
+                                    : std::numeric_limits<std::int64_t>::max();
+  const bool other_track = traj_view_.age_ns >= 0 && !traj_view_.stale &&
+                           last_track_generation_ != committed_generation_;
+  const bool stale = other_track || age > t_stale_ns_;
+  const bool stale_long = age > t_stale_ns_ + stale_committed_max_ns_;
+
+  // R-ORDER: the law runs whatever the ball lane says.
+  const Reason law = RunTrackingTick(state, law_snapshot_);
+  NoteLawVerdict(law);
+  // R-PREC: a law failure outranks the long-stale abort, which outranks time.
+  if (IsFatalLawReason(law)) {
+    return {law, true};
+  }
+  if (stale_long) {
+    return {Reason::kBallStaleLong, true};
+  }
+  // COMMITTED → CLOSING once the close command has gone out (R-CLOSE). The
+  // sequencer owns that instant; a hand-step profile has no sequencer and
+  // uses the same rule on the same t_cmd.
+  if (!closing) {
+    const bool close_out = hand_seq_enabled_
+                               ? hand_seq_.CloseIssued()
+                               : rtc::catching::HandCommandDueRounded(
+                                     tick_now_, rtc::catching::BallTime{committed_t_cmd_ns_},
+                                     static_cast<std::int64_t>(state.dt * 1e9));
+    if (close_out) {
+      return {Reason::kNone, true};
+    }
+  }
+  // Record-only (R-PREC's last tier): only on a tick with no edge, and each
+  // has a self-loop row in both modes.
+  if (stale) {
+    return {Reason::kBallStaleCommitted, false};
+  }
+  if (law_horizon_extrap_) {
+    return {Reason::kHorizonExtrap, false};
+  }
+  if (closing && hand_out_.timeout) {
+    return {Reason::kHandTimeout, false};
+  }
+  if (tip_stale_now_) {
+    return {Reason::kTipStale, false};
+  }
+  return {Reason::kNone, false};
+}
+
+DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHold(
+    const ControllerState& state) noexcept {
+  using rtc::catching::Mode;
+  using rtc::catching::Outcome;
+  using rtc::catching::Reason;
+  const Reason law = RunDecelLawTick(state);
+  NoteLawVerdict(law);
+  // DECEL and HOLD have no REF_SATURATED row: a saturated reference while
+  // stopping is the stop taking longer, not a failed catch.
+  if (IsFatalLawReason(law) && law != Reason::kRefSaturated) {
+    return {law, true};
+  }
+  if (mode_ == Mode::kDecel) {
+    if (decel_stopped_) {
+      return {Reason::kNone, true};
+    }
+    if (hand_out_.timeout) {
+      return {Reason::kHandTimeout, false};
+    }
+    if (tip_stale_now_) {
+      return {Reason::kTipStale, false};
+    }
+    return {Reason::kNone, false};
+  }
+  // HOLD for T_hold, then judge the attempt (S7.3) and retreat.
+  if (tick_now_.ns - hold_entry_ns_ >= t_hold_ns_) {
+    outcome_ = JudgeOutcome();
+    // The attempt is over and judged. An abort during the return (RETREAT →
+    // ABORT_SAFE → RETREAT) or an E-STOP must not rewrite it as Aborted.
+    // R-TRACK still refuses this ball: HOLD implies trial_committed_.
+    trial_active_ = false;
+    return {Reason::kNone, true};
+  }
+  if (tip_stale_now_) {
+    return {Reason::kTipStale, false};
+  }
+  return {Reason::kNone, false};
 }
 
 DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept {
   using rtc::catching::Mode;
   using rtc::catching::Reason;
-  static_cast<void>(state);
 
-  // Ordered by authority, not by likelihood. E-STOP outranks everything
-  // because it is the one condition whose handling must not depend on what
-  // else is true this tick.
+  // R-PREC (#537 S7): ESTOP > fault reset / escalation > readiness lost >
+  // law failure > time advance > record-only. Ordered by authority, not by
+  // likelihood — E-STOP is the one condition whose handling must not depend
+  // on what else is true this tick.
   if (estop_active_) {
     return {Reason::kEstop, true};
   }
@@ -895,6 +1280,8 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     // holding" (L7 §4.5 has no dedicated reason; transition_table.hpp's header
     // records the reuse). It self-loops in IDLE, sends ARMED and RETREAT to
     // IDLE, and sends every mode that can be CARRYING MOTION to ABORT_SAFE.
+    // A RETREAT that was moving lands in IDLE with its command still carried:
+    // IDLE owns the stop ramp (R-IDLE, RunIdleMotion).
     //
     // ABORT_SAFE is the one mode that must NOT answer it. Its exit is the
     // completion of the stop (`abort_stopped_` below), and returning a reason
@@ -907,25 +1294,35 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
       return {Reason::kParamsTbd, true};
     }
   }
-  // ── Modes that do not ask vision anything ────────────────────────────────
-  // BEFORE the vision lane, because an abort is not a question about the ball.
-  // Asking first would strand the controller: after any abort the ball has
-  // landed, the lane goes quiet within `io.t_stale`, and a stale snapshot
-  // would then answer for ABORT_SAFE — which holds, never drops the plan, and
-  // never re-arms. The arm is stopped and nobody says so.
-  if (mode_ == Mode::kAbortSafe) {
-    // Leave only when the arm has actually stopped (L7 §4.1). Advancing on the
-    // tick the abort STARTS would make ABORT_SAFE a label rather than a state,
-    // and the next trial would begin while the arm is still moving. (A latched
-    // fault is handled above: it escalates instead of retreating.)
-    return {Reason::kNone, abort_stopped_};
-  }
-  if (mode_ == Mode::kRetreat) {
-    // RETREAT is over as soon as it is entered at S5.3 — there is no return
-    // motion yet (L4 §5.3's retreat reference is S7). Advancing keeps the
-    // re-arm cycle turning; holding here would strand the controller for the
-    // same reason the abort would.
-    return {Reason::kNone, true};
+  // ── Modes that do not ask vision anything (R-ORDER) ──────────────────────
+  // BEFORE the vision lane, because none of them is a question about the
+  // ball. Asking first would strand the controller: after a catch or an abort
+  // the ball has landed, the lane goes quiet within `io.t_stale`, and a stale
+  // snapshot would then answer for them — a DECEL that never stops, a HOLD
+  // that never ends, a RETREAT that never returns.
+  switch (mode_) {
+    case Mode::kAbortSafe:
+      // Leave only when the arm has actually stopped (L7 §4.1). Advancing on
+      // the tick the abort STARTS would make ABORT_SAFE a label rather than a
+      // state, and the next trial would begin while the arm is still moving.
+      return {Reason::kNone, abort_stopped_};
+    case Mode::kIdle:
+      return EvaluateIdle(state);
+    case Mode::kRetreat:
+      return EvaluateRetreat();
+    case Mode::kDecel:
+    case Mode::kHold:
+      return EvaluateDecelOrHold(state);
+    case Mode::kCommitted:
+    case Mode::kClosing:
+      // Frozen: the law runs on the committed track whatever the lane says.
+      traj_new_track_ = false;
+      return EvaluateCommitted(state);
+    case Mode::kArmed:
+    case Mode::kTracking:
+    case Mode::kApproach:
+    case Mode::kFault:
+      break;
   }
 
   // ── The vision lane (S5.2) ───────────────────────────────────────────────
@@ -955,20 +1352,25 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
                               : ReasonDecision{Reason::kHorizonExtrap, true};
     }
     // Not tracking yet, and nothing to report: waiting for a ball IS the
-    // ARMED state. IDLE still advances — readiness is about the ROBOT, and
-    // gating it on vision would leave the arm un-homed until a ball appeared,
-    // which is backwards.
-    return {Reason::kNone, mode_ == Mode::kIdle};
+    // ARMED state.
+    return {Reason::kNone, false};
   }
 
-  // A usable prediction. From IDLE this advances to ARMED and from ARMED to
-  // TRACKING — the edge the ball lane exists to drive.
-  //
-  // From TRACKING, `kNone` would advance to APPROACH, and APPROACH means "a
-  // valid plan is being followed". There is no planner until S6, so the honest
-  // answer is `kNoCatchablePlan` — which the table self-loops in TRACKING and
-  // which is exactly what it means here: the ball is seen, and no plan exists
-  // for it. S6 replaces this with a real plan check rather than adding one.
+  if (mode_ == Mode::kArmed) {
+    // R-TRACK (Q15): after a re-arm the previous trial's ball is not a new
+    // one. Wait for a track number the last trial did not use — a lane that
+    // keeps publishing the ball that was just caught (or missed) must not
+    // start another trial on it.
+    if (last_trial_generation_valid_ && snapshot.token.generation == last_trial_generation_) {
+      return {Reason::kNone, false};
+    }
+    return {Reason::kNone, true};
+  }
+
+  // A usable prediction. From TRACKING, `kNone` would advance to APPROACH,
+  // and APPROACH means "a valid plan is being followed" — so the edge is taken
+  // only on a plan this tick admitted, and otherwise the honest answer is
+  // `kNoCatchablePlan`, which the table self-loops in TRACKING.
   if (mode_ == Mode::kTracking) {
     // `arm_readable_` gates the EDGE, not just the law. SeedArmCommand ties
     // the command to the measurement and that is the only moment the two are
@@ -982,7 +1384,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     if (!plan_active_ && clik_enabled_ && arm_readable_ &&
         plan_refusal_ == rtc::catching::PlanRefusal::kNone) {
       // The plan in the box passed every admission check this tick (L3 §5.2
-      // (a)-(f)) — the planner's, or the oracle's stand-in (A-S5-8), through
+      // (a)-(g)) — the planner's, or the oracle's stand-in (A-S5-8), through
       // the same path. Taking it HERE, on the tick the supervisor is ready for
       // one, is what makes the TRACKING → APPROACH edge the real edge rather
       // than a special case.
@@ -990,16 +1392,19 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
       // An ATTEMPT (S8 counts attempts against successes): only this edge.
       // A replacement in APPROACH is the same attempt and counts separately.
       plan_admitted_count_.fetch_add(1, std::memory_order_relaxed);
+      trial_active_ = true;
+      law_snapshot_ = snapshot;
       SeedArmCommand(state);
       reference_seeded_ = false;
       return {Reason::kNone, true};
     }
     // The ball is seen and no admissible plan exists for it — none published,
     // or one this tick refused (stale activation, another track, too old,
-    // already taken, or from before the last reset). All of those are "no
-    // plan" to the supervisor, which is exactly what NO_CATCHABLE_PLAN says; a
-    // reason per refusal would be a change to the frozen message (D-20), and
-    // the refusal itself is observable through GetLastPlanRefusal().
+    // already taken, from before the last reset, or already inside the freeze
+    // window). All of those are "no plan" to the supervisor, which is exactly
+    // what NO_CATCHABLE_PLAN says; a reason per refusal would be a change to
+    // the frozen message (D-20), and the refusal itself is observable through
+    // GetLastPlanRefusal().
     return {Reason::kNoCatchablePlan, true};
   }
 
@@ -1011,7 +1416,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     // the new plan's γ ramp starts from the γ the reference is at.
     if (plan_active_ && plan_refusal_ == rtc::catching::PlanRefusal::kNone &&
         plan_in_.plan_id != plan_.plan_id) {
-      const std::int64_t to_tc = plan_.t_c_ns - SteadyNowNs();
+      const std::int64_t to_tc = plan_.t_c_ns - tick_now_.ns;
       if (plan_freeze_ns_ <= 0 || to_tc > plan_freeze_ns_) {
         // The new ramp starts from the γ the reference is at THIS tick, and not
         // before this tick: the planner's gamma_g0 is the γ it saw when it
@@ -1019,23 +1424,21 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
         // the past would be part-way up on its first step — either is a step
         // in γ, which reaches e and u_des through γ·(o − p_c) and γ̈·(o − p_c)
         // (2026-09-23 /code-review).
-        const rtc::catching::NowLead now_lead =
-            rtc::catching::MakeNowLead(rtc::catching::NowReal{SteadyNowNs()}, t_arm_ns_);
         double g_now = plan_in_.gamma_g0;
         if (reference_seeded_ && reference_.has_value()) {
           double g = 0.0;
           double gd = 0.0;
           double gdd = 0.0;
-          reference_->Gamma().Eval(
-              rtc::catching::ProfileSeconds(now_lead, rtc::catching::BallTime{plan_.gamma_t0_ns}),
-              g, gd, gdd);
+          reference_->Gamma().Eval(rtc::catching::ProfileSeconds(
+                                       tick_now_lead_, rtc::catching::BallTime{plan_.gamma_t0_ns}),
+                                   g, gd, gdd);
           if (std::isfinite(g)) {
             g_now = g;
           }
         }
         AdoptPlan(plan_in_);
         plan_.gamma_g0 = g_now;
-        plan_.gamma_t0_ns = std::max(plan_.gamma_t0_ns, now_lead.ns);
+        plan_.gamma_t0_ns = std::max(plan_.gamma_t0_ns, tick_now_lead_.ns);
         plan_replaced_count_.fetch_add(1, std::memory_order_relaxed);
         if (reference_seeded_ && reference_.has_value()) {
           const rtc::catching::BallTime t0{plan_.gamma_t0_ns};
@@ -1049,33 +1452,87 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
       }
     }
     // Following a plan. The law runs here and its verdict IS this tick's
-    // reason: a healthy tick reports nothing and holds APPROACH.
+    // reason: a healthy tick reports nothing.
     const Reason law = RunTrackingTick(state, snapshot);
-    // BOTH CLIK failure reasons count toward the streak, because both increment
-    // it: `kJointConflict` is a solve that could not honour its own boxes, and a
-    // box that keeps conflicting is exactly as unrecoverable as a solver that
-    // keeps failing. Counting only one of them leaves a controller that loops
-    // APPROACH → ABORT_SAFE → RETREAT → ARMED → TRACKING forever without ever
-    // escalating.
-    const bool clik_failed = (law == Reason::kQpFailed || law == Reason::kJointConflict);
-    if (clik_failed && n_qp_fault_ > 0 && qp_fail_streak_ >= n_qp_fault_) {
-      // L7 §4.2: a streak of QP failures is not a transient. The latch is what
-      // stops the controller from retrying forever against a solve that is
-      // never going to succeed.
-      fault_latched_.store(true, std::memory_order_release);
+    NoteLawVerdict(law);
+    if (law != Reason::kNone) {
+      return {law, true};
     }
-    return {law, law != Reason::kNone};
+    // APPROACH → COMMITTED at t_c − now ≤ T_freeze (real axis). Only on a
+    // healthy tick (R-PREC: a failure outranks time). `plan_freeze_ns_` is
+    // positive whenever trials are enabled — SetupSupervisor parks otherwise.
+    if (plan_freeze_ns_ > 0 &&
+        rtc::catching::CommitDue(tick_now_, rtc::catching::BallTime{plan_.t_c_ns},
+                                 plan_freeze_ns_)) {
+      return {Reason::kNone, true};
+    }
+    return {Reason::kNone, false};
   }
 
-  return {Reason::kNone, true};
+  // Mode::kFault is handled above (latched) or by the fault reset; nothing
+  // here moves it.
+  return {Reason::kNone, false};
 }
 
 // ── Reset service (P-1 (a)/(b): the tick is the only writer) ────────────────
 
+void DemoCatchingController::ResetForRearm() noexcept {
+  // L7 §4.8's re-arm list (S7.4), RETREAT → ARMED. The table in the header is
+  // the authority on which member is here and which is exempt, and why.
+  //
+  // R-TRACK (Q15): this trial's ball is refused until a new track arrives —
+  // taken before the plan is forgotten, since the plan names the track.
+  if (trial_committed_) {
+    last_trial_generation_ = committed_generation_;
+    last_trial_generation_valid_ = true;
+  } else if (trial_active_) {
+    last_trial_generation_ = plan_.token.generation;
+    last_trial_generation_valid_ = true;
+  }
+  // The plan lane, as on every reset: forget which plan was taken, refuse
+  // every plan published before this instant (JudgePlan (f)) and tell the
+  // planner (reset_epoch) — in the SAME place, because admission is decided by
+  // the floor and the planner by the epoch, and a re-arm that moved only one
+  // of them lets a plan published just before the stop into the next trial.
+  plan_ = rtc::catching::PlanSnapshot{};
+  plan_active_ = false;
+  admitted_plan_ = rtc::catching::AdmittedPlan{};
+  reset_floor_ns_ = tick_now_.ns;
+  ++planner_reset_epoch_;
+  reference_seeded_ = false;
+  traj_hint_ = 0;
+  // The carried command stays (it IS the wait pose); only its velocity is
+  // zeroed, which the return has already brought to rest.
+  std::fill(arm_qd_cmd_.begin(), arm_qd_cmd_.end(), 0.0);
+  track_err_ = 0.0;
+  trial_active_ = false;
+  trial_committed_ = false;
+  committed_t_c_ns_ = 0;
+  committed_t_cmd_ns_ = 0;
+  committed_generation_ = 0;
+  law_snapshot_ = rtc::catching::TrajectorySnapshot{};
+  decel_entry_ = rtc::catching::DecelEntryState{};
+  decel_t_s_ns_ = 0;
+  decel_stopped_ = false;
+  hold_entry_ns_ = 0;
+  sat_streak_ = 0;
+  law_horizon_extrap_ = false;
+  retreat_stage_ = RetreatStage::kStop;
+  contact_.ResetForRearm();
+  tip_baseline_n_.fill(0);
+  window_confirmed_seen_ = false;
+  window_stale_seen_ = false;
+  homing_ = false;
+  homing_done_ = true;  // RETREAT ended at the wait pose
+  if (hand_seq_enabled_) {
+    hand_seq_.Ready();
+  }
+}
+
 void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
-  // L7 §4.8's re-arm list, restricted to the state that exists at S5.1. The
-  // list grows with the controller, and the rule that comes with it is that a
-  // new stateful member is added HERE in the same change that adds it — a
+  // L7 §4.8's list for an activation, an E-STOP or an explicit reset. The
+  // header's reset table is the authority; the rule that comes with it is that
+  // a new stateful member is added THERE and HERE in the same change — a
   // member missing from this function is a trial that starts with the previous
   // trial's state, which is the failure mode §4.8 was written for.
   arm_hold_ = HoldLatch{};
@@ -1098,19 +1555,14 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
     mode_ = rtc::catching::Mode::kIdle;
     last_reason_ = rtc::catching::Reason::kNone;
   }
-  // L7 §4.8's list, vision half: the consumed-sequence memory and the track
-  // identity. Without the first, the snapshot in the box reads as "already
-  // seen" after the reset and the trial starts by ignoring the only
-  // prediction it has; without the second, the first snapshot of the new
-  // trial looks like a track CHANGE and aborts it.
-  plan_ = rtc::catching::PlanSnapshot{};
-  plan_active_ = false;
   // The plan lane (S6-A). The box is NOT cleared here — the RT is not its
   // writer when a planner runs. Instead: forget which plan was taken, refuse
   // every plan published before this instant (JudgePlan (f) — an E-STOP does
   // not move the activation generation, so (b) alone would let a plan from
   // the stopped trial into the next one), and tell the planner a reset
   // happened (L7 §4.8) through PlannerRtState::reset_epoch.
+  plan_ = rtc::catching::PlanSnapshot{};
+  plan_active_ = false;
   admitted_plan_ = rtc::catching::AdmittedPlan{};
   reset_floor_ns_ = SteadyNowNs();
   ++planner_reset_epoch_;
@@ -1120,14 +1572,341 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   track_err_ = 0.0;
   traj_hint_ = 0;
   std::fill(arm_qd_cmd_.begin(), arm_qd_cmd_.end(), 0.0);
+  // L7 §4.8's list, vision half: the consumed-sequence memory and the track
+  // identity. Without the first, the snapshot in the box reads as "already
+  // seen" after the reset and the trial starts by ignoring the only
+  // prediction it has; without the second, the first snapshot of the new
+  // trial looks like a track CHANGE and aborts it.
   consumed_ = rtc::catching::ConsumedToken{};
   last_track_generation_ = 0;
   track_seen_ = false;
   traj_new_track_ = false;
   traj_view_ = rtc::catching::TrajView{};
+  // The S7 supervisor (header table). The hand goes back to the latch, which
+  // the next readable tick re-seeds at the MEASURED pose (C-17): after a stop
+  // the hand is not opened, and not squeezed either.
+  hand_seq_.Deactivate();
+  hand_out_ = rtc::catching::HandSequencerOutput{};
+  homing_ = false;
+  homing_done_ = false;
+  retreat_stage_ = RetreatStage::kStop;
+  trial_committed_ = false;
+  committed_t_c_ns_ = 0;
+  committed_t_cmd_ns_ = 0;
+  committed_generation_ = 0;
+  law_snapshot_ = rtc::catching::TrajectorySnapshot{};
+  last_trial_generation_ = 0;
+  last_trial_generation_valid_ = false;
+  decel_entry_ = rtc::catching::DecelEntryState{};
+  decel_t_s_ns_ = 0;
+  decel_stopped_ = false;
+  hold_entry_ns_ = 0;
+  sat_streak_ = 0;
+  law_horizon_extrap_ = false;
+  // An E-STOP that lands on an attempt ends it (L7 §4.1): the verdict says so.
+  // An activation starts with no attempt behind it.
+  outcome_ = (!reset_mode && trial_active_) ? rtc::catching::Outcome::kAborted
+                                            : rtc::catching::Outcome::kNone;
+  trial_active_ = false;
+  contact_.ResetForRearm();
+  tip_baseline_n_.fill(0);
+  tip_last_seq_.fill(0);
+  window_confirmed_seen_ = false;
+  window_stale_seen_ = false;
   // `tick_record_` is deliberately absent from this list: it is
   // default-constructed at the top of EVERY tick including this one (PROC-7),
   // which is a stronger guarantee than anything enumerated here could give.
+}
+
+// ── Contact lane (S7.3, L7 §4.4) ────────────────────────────────────────────
+
+void DemoCatchingController::RunContactLane(const ControllerState& state) noexcept {
+  using rtc::catching::Mode;
+  tip_count_ = 0;
+  tip_confirmed_now_ = 0;
+  tip_stale_now_ = false;
+  tip_force_now_.fill(0.0);
+  tip_fresh_now_.fill(false);
+  tip_contact_now_.fill(false);
+  if (!contact_configured_ || state.num_devices <= kCatchingHandDeviceIdx) {
+    return;
+  }
+  const auto& dev = state.devices[kCatchingHandDeviceIdx];
+  tip_count_ = std::clamp(dev.num_inference_groups, 0, static_cast<int>(kTips));
+  const bool contact_mode = mode_ == Mode::kCommitted || mode_ == Mode::kClosing ||
+                            mode_ == Mode::kDecel || mode_ == Mode::kHold;
+  // The baseline is learned from a hand that is AT q_pre and not moving
+  // (§4.5-6, Q4): contact at rest on the preshape is the bias, anything on top
+  // of it later is the ball.
+  const bool learning = (mode_ == Mode::kArmed || mode_ == Mode::kTracking) && hand_out_.active &&
+                        hand_out_.phase == rtc::catching::HandPhase::kPreshape &&
+                        hand_out_.at_target;
+  for (int g = 0; g < tip_count_; ++g) {
+    const auto u = static_cast<std::size_t>(g);
+    // BOTH the backend's flag and this controller's deadline (D-24):
+    // IsSensorGroupFresh requires each.
+    tip_fresh_now_[u] = rtc::IsSensorGroupFresh(dev, g, tick_now_.ns, contact_t_stale_ns_);
+    const std::uint64_t seq = dev.inference_sequence[u];
+    const bool is_new = seq != tip_last_seq_[u];
+    tip_last_seq_[u] = seq;
+    // Slots 1..3 are the force (hand_sensor_layout.hpp); only its MAGNITUDE
+    // above the bias is judged, so the sensor's sign convention drops out.
+    const auto base = u * static_cast<std::size_t>(tip_stride_);
+    if (base + 3 >= dev.inference_data.size()) {
+      continue;
+    }
+    const Eigen::Vector3d f(static_cast<double>(dev.inference_data[base + 1]),
+                            static_cast<double>(dev.inference_data[base + 2]),
+                            static_cast<double>(dev.inference_data[base + 3]));
+    const auto& baseline = contact_.Baseline(u);
+    tip_force_now_[u] = baseline.initialized ? (f - baseline.bias).norm() : f.norm();
+    // Fed per SAMPLE: a 250 Hz lane read by a 500 Hz tick would otherwise
+    // count every sample twice toward the debounce and the baseline.
+    if (is_new && dev.inference_enable[u]) {
+      if (learning) {
+        if (contact_.UpdateBaseline(u, f)) {
+          ++tip_baseline_n_[u];
+        }
+      } else if (contact_mode) {
+        static_cast<void>(contact_.UpdateContact(u, f));
+      }
+    }
+    tip_contact_now_[u] = contact_mode && contact_.IsConfirmed(u) && tip_fresh_now_[u];
+    if (tip_contact_now_[u]) {
+      ++tip_confirmed_now_;
+    }
+    if (contact_mode && !tip_fresh_now_[u]) {
+      tip_stale_now_ = true;
+    }
+  }
+  if (!contact_mode) {
+    return;
+  }
+  if (trial_committed_ && rtc::catching::InContactWindow(
+                              tick_now_, rtc::catching::BallTime{committed_t_cmd_ns_},
+                              rtc::catching::BallTime{committed_t_c_ns_}, contact_t_confirm_ns_)) {
+    window_confirmed_seen_ = window_confirmed_seen_ || tip_confirmed_now_ >= contact_m_min_;
+    window_stale_seen_ = window_stale_seen_ || tip_stale_now_;
+  }
+}
+
+rtc::catching::Outcome DemoCatchingController::JudgeOutcome() const noexcept {
+  using rtc::catching::Outcome;
+  // No verdict without the lane: no fingertips, fewer than m_min of them, or a
+  // bias learned from too few samples (never Missed — that would release a
+  // ball that may be in the hand, and count a success as a failure).
+  if (!contact_configured_ || tip_count_ < contact_m_min_) {
+    return Outcome::kUndetermined;
+  }
+  for (int g = 0; g < tip_count_; ++g) {
+    if (tip_baseline_n_[static_cast<std::size_t>(g)] < contact_n_baseline_min_) {
+      return Outcome::kUndetermined;
+    }
+  }
+  if (window_stale_seen_) {
+    return Outcome::kUndetermined;
+  }
+  // Caught: m_min fingertips agreed inside the window AND still agree now.
+  // Agreeing in the window and not at the end is a ball that left the hand.
+  if (window_confirmed_seen_ && tip_confirmed_now_ >= contact_m_min_) {
+    return Outcome::kCaptured;
+  }
+  return Outcome::kMissed;
+}
+
+// ── Motion and hand stages (S7, after the decision) ─────────────────────────
+
+void DemoCatchingController::RunArmMotion(const ControllerState& state) noexcept {
+  using rtc::catching::Mode;
+  if (estop_active_) {
+    return;  // CM holds the robot; nothing here may move the command
+  }
+  switch (mode_) {
+    case Mode::kAbortSafe:
+    case Mode::kFault:
+      // Only a stop caused by the joint command layer takes the QP-independent
+      // route (L7 §4.1) — and, recorded as an exemption (C-35), every
+      // ABORT_SAFE does. Run on every tick, seeded or not: `abort_stopped_` is
+      // ABORT_SAFE's only exit, and an arm that armed by the Q13 skip carries
+      // no command until APPROACH, so a disarm in TRACKING reaches here with
+      // nothing to ramp (RampArmToStop then answers "stopped"). Skipping the
+      // call left the exit at its last value and the controller in ABORT_SAFE.
+      RunJointSpaceAbort(state);
+      break;
+    case Mode::kIdle:
+      RunIdleMotion(state);
+      break;
+    case Mode::kRetreat:
+      RunRetreatMotion(state);
+      break;
+    case Mode::kArmed:
+    case Mode::kTracking:
+    case Mode::kApproach:
+    case Mode::kCommitted:
+    case Mode::kClosing:
+    case Mode::kDecel:
+    case Mode::kHold:
+      break;  // held by the carried command, or moved by the law already
+  }
+}
+
+bool DemoCatchingController::StepTowardWaitPose(const ControllerState& state) noexcept {
+  const auto n = static_cast<std::size_t>(std::min(arm_dof_, kDemoCatchingMaxArmDof));
+  const auto step = rtc::catching::JointSpaceHomeStep(
+      std::span<double>(arm_q_cmd_.data(), n), std::span<double>(arm_qd_cmd_.data(), n),
+      std::span<const double>(wait_pose_.data(), n),
+      std::span<const double>(arm_qdd_max_.data(), n), homing_eta_a_, homing_v_max_,
+      std::span<const double>(arm_q_min_margined_.data(), n),
+      std::span<const double>(arm_q_max_margined_.data(), n), n, state.dt);
+  // Only a readable arm has a tracking error: a closed gate leaves stale or
+  // zero slots, which would read as a TRACK_ERR (ArmAtWaitPose is false then).
+  if (arm_readable_) {
+    UpdateTrackError(state);
+  }
+  return step.valid && step.arrived && ArmAtWaitPose(state);
+}
+
+void DemoCatchingController::RunIdleMotion(const ControllerState& state) noexcept {
+  if (!trials_enabled_) {
+    return;
+  }
+  const bool armed = armable_ && arm_requested_.load(std::memory_order_relaxed);
+  if (!armed) {
+    // R-IDLE: a command that was still moving when IDLE took over (a RETREAT
+    // disarmed mid-return, a homing disarmed mid-way) is ramped to rest here,
+    // never frozen in one tick.
+    homing_ = false;
+    homing_done_ = false;
+    if (!ArmCommandStopped()) {
+      static_cast<void>(RampArmToStop(state));
+    }
+    return;
+  }
+  // Armed. First bring any carried motion to rest; homing starts from rest.
+  if (!homing_ && !ArmCommandStopped()) {
+    static_cast<void>(RampArmToStop(state));
+    return;
+  }
+  if (!homing_ && !homing_done_) {
+    if (!arm_readable_) {
+      return;
+    }
+    // Not at the wait pose (EvaluateIdle would have taken the Q13 skip): home.
+    SeedArmCommand(state);
+    homing_ = true;
+    if (hand_seq_enabled_) {
+      hand_seq_.Home();  // Q4: q_open while the arm moves
+    }
+  }
+  if (!homing_) {
+    return;
+  }
+  if (StepTowardWaitPose(state)) {
+    homing_ = false;
+    homing_done_ = true;
+    if (hand_seq_enabled_) {
+      hand_seq_.Ready();
+    }
+    return;
+  }
+  // R-WATCHDOG. IDLE has no TRACK_ERR row: the answer is to stop and disarm —
+  // the operator re-arms deliberately (P-1 (c)) — and to say why.
+  if (track_err_abort_rad_ > 0.0 && track_err_ > track_err_abort_rad_) {
+    arm_requested_.store(false, std::memory_order_relaxed);
+    homing_ = false;
+    last_reason_ = rtc::catching::Reason::kTrackErr;
+  }
+}
+
+void DemoCatchingController::RunRetreatMotion(const ControllerState& state) noexcept {
+  switch (retreat_stage_) {
+    case RetreatStage::kStop: {
+      // The stop first, at the full acceleration box (a no-op after
+      // ABORT_SAFE, which already stopped the arm). The return starts from rest.
+      const bool stopped = RampArmToStop(state);
+      // Measured on EVERY tick of the stop, not just the return's: the error
+      // EvaluateRetreat judges must be this motion's. A TRACK_ERR abort leaves
+      // its own (large) value behind, and judging the return on it sent the
+      // controller back to ABORT_SAFE and round again, forever, with the arm
+      // standing still (found by the S7 scenario suite).
+      bool caught_up = true;
+      if (arm_cmd_seeded_ && arm_readable_) {
+        UpdateTrackError(state);
+        // The return starts once the arm has also caught up with the stopped
+        // command. A servo still lagging after a TRACK_ERR abort would
+        // otherwise trip TRACK_ERR on the first return tick and cycle
+        // ABORT_SAFE ↔ RETREAT until it converged.
+        caught_up = !(track_err_abort_rad_ > 0.0 && track_err_ > track_err_abort_rad_);
+      }
+      if (stopped && caught_up) {
+        retreat_stage_ = RetreatStage::kReturn;
+      }
+      break;
+    }
+    case RetreatStage::kReturn:
+      if (!arm_cmd_seeded_) {
+        SeedArmCommand(state);
+      }
+      if (StepTowardWaitPose(state)) {
+        retreat_stage_ = RetreatStage::kRelease;
+        // The ball comes back with the arm and is let go here, whatever the
+        // verdict (OnModeEntered, RETREAT). A hand that never closed is already
+        // at q_pre, and its Release ends in Preshape on the next hand stage.
+        if (hand_seq_enabled_) {
+          hand_seq_.Release();
+        }
+      }
+      break;
+    case RetreatStage::kRelease:
+      break;  // waiting for the hand (EvaluateRetreat)
+  }
+}
+
+void DemoCatchingController::LatchHandFromSequencer() noexcept {
+  if (!hand_out_.active || !hand_hold_.IsLatched()) {
+    return;
+  }
+  const int n = std::min(hand_out_.dof, hand_hold_.width);
+  for (int i = 0; i < n; ++i) {
+    hand_hold_.commands[static_cast<std::size_t>(i)] =
+        hand_out_.target[static_cast<std::size_t>(i)];
+  }
+  rtc::utils::ClampRange(hand_hold_.commands, n,
+                         std::span<const double>(device_position_lower_[kCatchingHandDeviceIdx]),
+                         std::span<const double>(device_position_upper_[kCatchingHandDeviceIdx]),
+                         kFallbackPositionLower, kFallbackPositionUpper);
+}
+
+void DemoCatchingController::RunHandStage(const ControllerState& state) noexcept {
+  using rtc::catching::Mode;
+  if (!hand_seq_enabled_ || !trials_enabled_ || estop_active_) {
+    hand_out_ = rtc::catching::HandSequencerOutput{};
+    return;
+  }
+  const bool armed = armable_ && arm_requested_.load(std::memory_order_relaxed);
+  if (mode_ == Mode::kIdle && !armed) {
+    // A disarmed IDLE holds the hand where the sequencer last put it: the
+    // latch takes over from the sequencer's last target, not from a pose the
+    // hand left long ago (and a hand holding a ball keeps holding it).
+    if (hand_seq_.Active()) {
+      LatchHandFromSequencer();
+      hand_seq_.Deactivate();
+    }
+    hand_out_ = rtc::catching::HandSequencerOutput{};
+    return;
+  }
+  if (mode_ == Mode::kFault) {
+    return;  // FAULT holds the last output (L7 hand policy)
+  }
+  std::span<const double> q{};
+  std::span<const double> qd{};
+  if (hand_readable_ && state.num_devices > kCatchingHandDeviceIdx) {
+    const auto& dev = state.devices[kCatchingHandDeviceIdx];
+    const auto n = static_cast<std::size_t>(hand_dof_);
+    q = std::span<const double>(dev.positions.data(), n);
+    qd = std::span<const double>(dev.velocities.data(), n);
+  }
+  hand_out_ = hand_seq_.Update(tick_now_, static_cast<std::int64_t>(state.dt * 1e9), q, qd);
 }
 
 bool DemoCatchingController::ServiceResetRequests(const ControllerState& state) noexcept {
@@ -1274,20 +2053,43 @@ void DemoCatchingController::WriteDeviceCommand(const ControllerState& state,
 
   // Once the law owns the arm, the latch is no longer what is commanded: it
   // stays as the value the controller falls back to, and the law's carried
-  // command takes over. The hand is untouched by this — it is still the
-  // activation latch plus the diagnostic step.
+  // command takes over. The hand is the same shape from S7.1: the sequencer's
+  // target while it is active, the latch otherwise — and on an E-STOP tick
+  // the latch in both cases, like the arm.
   const bool arm_driven = !is_hand && arm_cmd_seeded_ && !estop_active_;
+  const bool hand_driven = is_hand && hand_out_.active && !estop_active_;
 
   out.num_channels = latch.width;
   for (std::size_t i = 0; i < static_cast<std::size_t>(latch.width); ++i) {
-    out.commands[i] =
-        (arm_driven && static_cast<int>(i) < arm_dof_) ? arm_q_cmd_[i] : latch.commands[i];
+    const auto ii = static_cast<int>(i);
+    if (arm_driven && ii < arm_dof_) {
+      out.commands[i] = arm_q_cmd_[i];
+    } else if (hand_driven && ii < hand_out_.dof) {
+      out.commands[i] = hand_out_.target[i];
+    } else {
+      out.commands[i] = latch.commands[i];
+    }
     // The reference lanes carry the same value the command does: this
     // controller integrates one command state, so there is no second
-    // trajectory to report.
+    // trajectory to report. The hand's goal lane is the UNCLAMPED target
+    // (below), so a clamp shows in the CSV instead of rewriting the target.
     out.target_positions[i] = out.commands[i];
     out.trajectory_positions[i] = out.commands[i];
     out.goal_positions[i] = out.commands[i];
+  }
+  if (hand_driven) {
+    // Clamped against YAML ∩ URDF here, for the same reason as the step
+    // below: the CM copies `commands` to the backend verbatim.
+    const int width = std::min(hand_out_.dof, latch.width);
+    rtc::utils::ClampRange(out.commands, width,
+                           std::span<const double>(device_position_lower_[idx]),
+                           std::span<const double>(device_position_upper_[idx]),
+                           kFallbackPositionLower, kFallbackPositionUpper);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(width); ++i) {
+      out.target_positions[i] = out.commands[i];
+      out.trajectory_positions[i] = out.commands[i];
+    }
+    return;
   }
 
   if (!is_hand || hand_target_width_ == 0 || estop_active_) {
@@ -1374,7 +2176,9 @@ void DemoCatchingController::RecordClikSolve(
 }
 
 void DemoCatchingController::PublishTickRecord(const ControllerState& state) noexcept {
-  const std::int64_t now_ns = SteadyNowNs();
+  // The tick's own instant (R-DECEL-ENTRY): the record describes the tick the
+  // decisions were taken on, not the moment it was written.
+  const std::int64_t now_ns = tick_now_.ns;
 
   // ── Supervisor and controller-level state ───────────────────────────────
   // All of these are CURRENT on every tick — they are states, not per-tick
@@ -1390,6 +2194,17 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
   tick_record_.real_arm_config = real_arm_config_;
   tick_record_.qp_fail_streak = qp_fail_streak_;
   tick_record_.abort_stopped = abort_stopped_;
+  tick_record_.outcome = static_cast<std::uint8_t>(outcome_);
+
+  // ── The hand (L6, S7.1) ─────────────────────────────────────────────────
+  // `hand_phase_valid` false = the latch commands the hand this tick (not
+  // armed, E-STOP, a hand-step profile, or a configuration with no trials).
+  if (hand_out_.active) {
+    tick_record_.hand_phase_valid = true;
+    tick_record_.hand_phase = static_cast<std::uint8_t>(hand_out_.phase);
+    tick_record_.hand_rho = hand_out_.rho;
+    tick_record_.hand_timeout = hand_out_.timeout;
+  }
 
   // ── The plan ────────────────────────────────────────────────────────────
   if (plan_active_ && plan_.valid) {
@@ -1474,6 +2289,14 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
       // Negative means never received, and that is what the wire says too —
       // a zero would read as "arrived this instant".
       tick_record_.tip_age_s[i] = age < 0 ? -1.0 : static_cast<double>(age) * 1e-9;
+      // S7.3's verdicts, as the contact lane computed them this tick. `tip_force`
+      // is |F − bias| once a bias exists (|F| before); `tip_contact` is the
+      // debounced verdict, true only while the lane is judging contact.
+      if (i < kTips && static_cast<int>(i) < tip_count_) {
+        tick_record_.tip_force[i] = tip_force_now_[i];
+        tick_record_.tip_fresh[i] = tip_fresh_now_[i];
+        tick_record_.tip_contact[i] = tip_contact_now_[i];
+      }
     }
   }
 
@@ -1554,9 +2377,16 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   // counter with an old payload, which hides the newest snapshot for as long
   // as the pattern repeats.
   const rtc::catching::TrajectorySnapshot snapshot = traj_box_.Load();
-  const rtc::catching::NowReal now{SteadyNowNs()};
-  traj_view_ = rtc::catching::ReadTraj(snapshot, now, rtc::catching::MakeNowLead(now, t_arm_ns_),
-                                       t_stale_ns_, ActivationGeneration(), consumed_);
+  // The tick's ONE clock read (R-DECEL-ENTRY), after the load so the
+  // snapshot's receive instant cannot be later than `now`. Everything below —
+  // the vision verdict, the law, the sequencer, every edge — judges this
+  // instant; the plan admission alone takes its own (see there).
+  tick_now_ = rtc::catching::NowReal{SteadyNowNs()};
+  tick_now_lead_ = rtc::catching::MakeNowLead(tick_now_, t_arm_ns_);
+  law_horizon_extrap_ = false;
+  const rtc::catching::NowReal now = tick_now_;
+  traj_view_ = rtc::catching::ReadTraj(snapshot, now, tick_now_lead_, t_stale_ns_,
+                                       ActivationGeneration(), consumed_);
   RecordInputLane(snapshot);
   if (traj_view_.is_new) {
     // A track change is latched here rather than compared in EvaluateReason:
@@ -1565,7 +2395,20 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     traj_new_track_ = track_seen_ && snapshot.token.generation != last_track_generation_;
     last_track_generation_ = snapshot.token.generation;
     track_seen_ = true;
+    // The followed track's latest snapshot, which the law samples once the
+    // plan is frozen (R-TRACK): the plan's track before the freeze, the
+    // committed one after — never a different ball's.
+    const bool frozen =
+        mode_ == rtc::catching::Mode::kCommitted || mode_ == rtc::catching::Mode::kClosing;
+    const std::uint64_t followed = frozen ? committed_generation_ : plan_.token.generation;
+    if (plan_active_ && snapshot.valid && snapshot.token.generation == followed) {
+      law_snapshot_ = snapshot;
+    }
   }
+
+  // The fingertips, before anything decides: the decision reads this tick's
+  // contact verdict and freshness (S7.3).
+  RunContactLane(state);
 
   // ── The plan lane (S6-A, L3 §5.2) ───────────────────────────────────────
   // The oracle stand-in writes first (it is this box's writer only when the
@@ -1591,6 +2434,8 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     // prediction this tick would itself refuse as stale.
     ctx.max_age_ns = t_stale_ns_;
     ctx.reset_floor_ns = reset_floor_ns_;
+    // (g) R-ADMIT: a plan already inside the freeze window is too late.
+    ctx.t_freeze_ns = plan_freeze_ns_;
     plan_refusal_ = rtc::catching::JudgePlan(plan_in_, ctx, admitted_plan_);
     plan_refusal_observed_.store(static_cast<std::uint8_t>(plan_refusal_),
                                  std::memory_order_relaxed);
@@ -1609,14 +2454,14 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   mode_observed_.store(static_cast<std::uint8_t>(mode_), std::memory_order_relaxed);
   reason_observed_.store(static_cast<std::uint8_t>(last_reason_), std::memory_order_relaxed);
 
-  // The abort path runs AFTER the supervisor has decided, because it is the
-  // decision that selects it: only a stop caused by the joint command layer
-  // takes the QP-independent route (L7 §4.1).
-  const bool aborting =
-      mode_ == rtc::catching::Mode::kAbortSafe || mode_ == rtc::catching::Mode::kFault;
-  if (aborting && arm_cmd_seeded_ && !estop_active_) {
-    RunJointSpaceAbort(state);
-  }
+  // The joint-space motions (stop ramp, homing, return) run AFTER the
+  // supervisor has decided, because it is the decision that selects them. The
+  // hand follows, so an edge taken this tick (a Release on RETREAT, a Commit)
+  // is on the wire this tick.
+  RunArmMotion(state);
+  RunHandStage(state);
+  // A motion-stage verdict (IDLE's homing watchdog) is recorded too.
+  reason_observed_.store(static_cast<std::uint8_t>(last_reason_), std::memory_order_relaxed);
 
   if (state.num_devices > kCatchingArmDeviceIdx) {
     WriteDeviceCommand(state, output, kCatchingArmDeviceIdx, arm_readable_);
