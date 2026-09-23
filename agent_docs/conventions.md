@@ -104,7 +104,7 @@ RT path logging 금지 규칙과 SPSC 우회 패턴은 [invariants.md](invariant
 - `topic` (옵션, 현재는 unused): 향후 `rtc_msgs/*Log` 를 DDS 로 publish 하는 옵션을 위해 예약. Q-MSG-1(a) lock 으로 현재는 schema-only POD→SPSC→CSV
 - POD 미러 정의 위치 (Q-MSG-2(d)): `<robot>_bringup/include/<robot>_bringup/logging/<msg>_pod.hpp`. `kMaxJoints` 등 capacity 는 *그 robot 의 hardware* 에 맞게 선정 — `rtc_base` 에 robot constant 금지 (ARCH-1)
 - Push site 제약 (Q-ACTIVITY-GATING): controller 는 **`Compute()` 에서만** push 한다. parameter callback / BT bridge / 비-RT thread 에서 push 금지 — inactive controller 의 CSV 에 row 가 쌓이는 것을 방지
-- Timestamp (Q-TIME): 첫 numeric column 은 `state.t_relative_s` (CM RT loop 가 `t0 - log_start_time_` 으로 채움). controller 는 `chrono::*::now()` 호출 금지
+- Timestamp (Q-TIME): 첫 numeric column 은 `state.t_relative_s` (CM RT loop 가 채움 — 실기는 `t0 - log_start_time_` (steady), sim (`use_sim_time_sync`) 은 `iteration × dt` (#566)). controller 는 `chrono::*::now()` 호출 금지
 
 세부 결정 / 구현 phase 는 `~/.claude/plans/csv-logging-cleanup.md` (Phase C handoff) 참조.
 

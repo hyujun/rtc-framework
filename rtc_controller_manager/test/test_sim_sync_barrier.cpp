@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -43,7 +44,13 @@ class TwoDeviceTestController : public PipelineTestController {
 
   std::string_view Name() const noexcept override { return kName; }
 
-  ControllerOutput Compute(const ControllerState& /*state*/) noexcept override {
+  // What the last Compute() was told the time was (issue #566, CM time).
+  static inline std::atomic<double> last_t_relative_s{-1.0};
+  static inline std::atomic<std::uint64_t> last_iteration{0};
+
+  ControllerOutput Compute(const ControllerState& state) noexcept override {
+    last_t_relative_s.store(state.t_relative_s, std::memory_order_relaxed);
+    last_iteration.store(state.iteration, std::memory_order_release);
     ControllerOutput out{};
     out.num_devices = 2;
     for (std::size_t d = 0; d < 2; ++d) {
@@ -237,6 +244,36 @@ TEST_F(SimSyncBarrierTest, StopIsNotHeldByAnIncompleteStep) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_LT(std::chrono::steady_clock::now() - t0, 1s);
   EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(SimSyncBarrierTest, CmTimeIsTickCountTimesDtNotWallTime) {
+  auto node = MakeNode();
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* arm = BackendAt(*node, 0);
+  auto* hand = BackendAt(*node, 1);
+  ASSERT_NE(nullptr, arm);
+  ASSERT_NE(nullptr, hand);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+
+  // Steps 20 ms of wall apart, ten times dt (500 Hz): a wall-derived time
+  // would read ~10× the tick-derived one.
+  constexpr double kDt = 1.0 / 500.0;
+  constexpr std::uint64_t kSteps = 8;
+  for (std::uint64_t i = 0; i < kSteps; ++i) {
+    arm->FireStateReady();
+    hand->FireStateReady();
+    ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::RtTickCount(*node) >= 1 + i; },
+                        2000ms));
+    const auto it = TwoDeviceTestController::last_iteration.load(std::memory_order_acquire);
+    EXPECT_EQ(i, it);
+    EXPECT_DOUBLE_EQ(static_cast<double>(it) * kDt,
+                     TwoDeviceTestController::last_t_relative_s.load(std::memory_order_relaxed))
+        << "step " << i;
+    std::this_thread::sleep_for(20ms);
+  }
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 

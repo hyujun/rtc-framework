@@ -402,7 +402,7 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 | 히스토그램 | 200개 버킷 (10 us 간격, 0-2000 us) + 오버플로 버킷 |
 | 수집 통계 (`GetStats()`) | count, min, max, mean, stddev, p95, p99, over_budget — `cm_timing_log.csv`로도 복원 가능 |
 | 예산 | `1e6 / control_rate` µs (예: 500 Hz → 2000 µs) — sim 모드 `elapsed` 계산에 사용 |
-| `elapsed` 의미 | **robot**: 직전 print와의 wall-clock delta (CM 측정 실제 시간). **sim** (`use_sim_time_sync=true`): `count × period` (컨트롤러가 sim step과 lock-step이라 dt 기준 가상 시간이 컨트롤러 관점의 진실). 첫 print는 fallback으로 sim과 동일 식 |
+| `elapsed` 의미 | **robot**: 직전 print와의 wall-clock delta (CM 측정 실제 시간). **sim** (`use_sim_time_sync=true`): `count × period` (컨트롤러가 sim step과 lock-step이라 dt 기준 가상 시간이 컨트롤러 관점의 진실). 첫 print는 fallback으로 sim과 동일 식. 같은 이유로 sim 에서는 `ControllerState::t_relative_s` 도 `iteration × dt` 다 (#566) — 구간 측정 (phase timing·watchdog·메시지 나이) 은 두 모드 모두 steady clock |
 | 리셋 주기 | RT 루프가 1 000 tick(≈ 2 s @ 500 Hz)마다 로그 스레드에 Summary 출력 요청 → 로그 스레드는 `RCLCPP_INFO` 직후 `timing_profiler_.Reset()`을 호출. 따라서 각 출력은 **직전 윈도우**(elapsed로 표시)의 mean/max이며, 세션 시작 시점의 스파이크가 영구 반영되지 않음 |
 | Console summary 형식 | `<ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N  rt_cb_timing_drops=N` — 의도적으로 슬림. 상세 percentile / over_budget / per-tick 값은 `cm_timing_log.csv`에서 사후 분석 |
 

@@ -443,10 +443,19 @@ void RtControllerNode::ControlLoop() {
     // of enable_logging_, never reset on controller switch). Controllers
     // read state.t_relative_s for any timestamp embedded in their own
     // logs/telemetry instead of calling chrono::*::now().
+    //
+    // In sim-sync mode the CM's own time is the tick count (issue #566): one
+    // tick is one simulator step of state.dt, so the session time is
+    // iteration × dt from 0 — the wall time the loop spent waiting on the
+    // simulator (RTF, host stalls) is not time the controlled world lived
+    // through. Interval measurements (phase timings, watchdog, message ages)
+    // stay on the steady clock in both modes.
     if (iteration == 0) {
       log_start_time_ = t0;
     }
-    state.t_relative_s = std::chrono::duration<double>(t0 - log_start_time_).count();
+    state.t_relative_s = use_sim_time_sync_
+                             ? static_cast<double>(iteration) * state.dt
+                             : std::chrono::duration<double>(t0 - log_start_time_).count();
   }
 
   rt_loop_.StampStateAcquired();
