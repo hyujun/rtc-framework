@@ -386,9 +386,12 @@ TEST(PlannerSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall) {
       rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
   ASSERT_TRUE(first.valid);
   // Pretend the current plan was for an instant no candidate matches now:
-  // further than half a slice (25 ms) from every sample.
+  // further than half a slice (25 ms) from every sample. Beyond the whole
+  // prediction, not +30 ms: on a 50 ms grid +30 ms is 20 ms from the next
+  // sample, which the planner now evaluates first (the followed candidate
+  // leads the IK order, 2026-09-23 /code-review) and finds feasible.
   first.plan_id = 13;
-  first.t_c_ns += 30 * kMs;
+  first.t_c_ns = kNow + 5000 * kMs;
   rig->search.NotePublished(first);
   auto rt = rig->Rt();
   rt.plan_active = true;
