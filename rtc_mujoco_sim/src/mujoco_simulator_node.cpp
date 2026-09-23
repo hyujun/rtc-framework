@@ -667,6 +667,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           get_parameter("robot_response." + gname + ".initial_qpos").as_double_array();
       gc.state_publish_divisor = static_cast<int>(
           get_parameter("robot_response." + gname + ".state_publish_divisor").as_int());
+      gc.wait_for_command =
+          get_parameter("robot_response." + gname + ".wait_for_command").as_bool();
 
       LoadContactWrenchConfig("robot_response", gname, gc.contact_wrench);
 
@@ -741,6 +743,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // Nth step (issue #566). Declared for both sections for the same reason
     // as initial_qpos — a fake group's value is read and rejected by reason.
     declare_parameter(prefix + "state_publish_divisor", 1);
+    // Lock-step command wait opt-out (robot groups; issue #566).
+    declare_parameter(prefix + "wait_for_command", true);
     // Contact wrench publishing (opt-in). enabled+topic_prefix are required
     // to activate; suffix lists default to the "_tip_contact"/"_tip_ft_site"
     // convention but are fully YAML-overridable for any MJCF naming scheme.

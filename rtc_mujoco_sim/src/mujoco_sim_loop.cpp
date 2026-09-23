@@ -1018,13 +1018,45 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
   // controller sends one command per device per tick, and waiting on the
   // first group alone let the step run on as soon as the arm's command
   // landed — the hand's, still in flight, was then applied a step late.
-  // Fake-response groups take no command and are not waited on.
+  // Fake-response groups take no command and are not waited on, nor is a
+  // robot group that opted out (wait_for_command: false).
   std::vector<std::size_t> robot_idx;
   for (std::size_t i = 0; i < groups_.size(); ++i) {
-    if (groups_[i]->is_robot) {
+    if (groups_[i]->is_robot && groups_[i]->wait_for_command) {
       robot_idx.push_back(i);
     }
   }
+  // Partial-command timeouts, reported at most once a second (sim thread,
+  // not RT). A step with NO command in is the normal startup / no-controller
+  // case and is not reported.
+  auto last_partial_report = std::chrono::steady_clock::time_point{};
+  std::uint64_t partial_reported = 0;
+  const auto report_partial_timeout = [this, &robot_idx, &last_partial_report,
+                                       &partial_reported]() {
+    std::string missing;
+    bool any_in = false;
+    for (const std::size_t i : robot_idx) {
+      if (groups_[i]->cmd_pending.load(std::memory_order_relaxed)) {
+        any_in = true;
+      } else {
+        missing += (missing.empty() ? "'" : ", '") + groups_[i]->name + "'";
+      }
+    }
+    if (!any_in || missing.empty()) {
+      return;
+    }
+    const auto n = partial_command_steps_.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_partial_report >= std::chrono::seconds(1)) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] WARN: %lu step(s) ran on sync_timeout_ms without a command "
+              "from %s — set wait_for_command: false on a group the controller does not "
+              "command\n",
+              static_cast<unsigned long>(n - partial_reported), missing.c_str());
+      last_partial_report = now;
+      partial_reported = n;
+    }
+  };
   const auto all_commands_in = [this, &robot_idx]() noexcept {
     if (robot_idx.empty()) {
       return false;  // nothing to wait for: step on the timeout, as before
@@ -1108,27 +1140,36 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     {
       RTC_TRACE_SCOPE("sim_wait_command");
       std::unique_lock lock(sync_mutex_);
+      // A reset request does NOT cut this wait short (issue #566): the
+      // controller is already computing its reply to the state just
+      // published, and a reply that lands after the reset would drive the
+      // first post-reset step. Waiting for it (at most sync_timeout_ms)
+      // leaves no command in flight when the reset clears them below.
       sync_cv_.wait_for(lock, timeout, [this, &stop, &all_commands_in] {
-        return all_commands_in() || stop.stop_requested() || !running_.load() ||
-               reset_requested_.load(std::memory_order_relaxed);
+        return all_commands_in() || stop.stop_requested() || !running_.load();
       });
     }
     if (stop.stop_requested() || !running_.load()) {
       break;
     }
+    if (!all_commands_in()) {
+      report_partial_timeout();
+    }
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
-      HandleReset();
+      HandleReset();  // drops this step's commands — computed on the pre-reset state
       step = 0;
       continue;
     }
+    // A ball reset or an object refresh that landed during the wait is
+    // applied and the step goes ON with the commands just received. It used
+    // to `continue`, which republished this step's state with the commands
+    // still pending: the controller ticked twice on one physics step and the
+    // command stream stayed a step behind from then on (issue #566).
     if (projectile_ball_reset_requested_.exchange(false, std::memory_order_acq_rel)) {
       HandleProjectileBallReset();
       mj_forward(model_, data_);
-      continue;
     }
-    if (DrainPendingObjectRefresh()) {
-      continue;
-    }
+    static_cast<void>(DrainPendingObjectRefresh());
     // 3. Apply commands from ALL robot groups and substep
     ApplyCommand();
     const auto step_start = std::chrono::steady_clock::now();

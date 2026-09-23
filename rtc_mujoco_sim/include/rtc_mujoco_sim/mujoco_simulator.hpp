@@ -319,6 +319,15 @@ struct JointGroupConfig {
   // fake_response group must keep 1 (Initialize rejects anything else).
   int state_publish_divisor{1};
 
+  // Whether the lock-step waits for this group's command before stepping
+  // (robot groups only; default true). Every robot group is waited on so a
+  // hand's command is not applied a step late (issue #566); a group the
+  // controller does not command — a scene modelling a device the controller
+  // manager does not own, or a controller that drives only some groups —
+  // must opt out, or every step waits the whole sync_timeout_ms for it. An
+  // opted-out group still takes a command whenever one arrives.
+  bool wait_for_command{true};
+
   // ── Sensor publishing (optional) ──────────────────────────────
   std::string sensor_topic;               // 빈 문자열이면 센서 publish 안 함
   std::vector<std::string> sensor_names;  // XML sensor names (빈 경우 = 그룹에 센서 없음)
@@ -405,6 +414,7 @@ struct JointGroup {
 
   bool is_robot{true};           // robot_response 여부
   int state_publish_divisor{1};  // JointGroupConfig::state_publish_divisor
+  bool wait_for_command{true};   // JointGroupConfig::wait_for_command
   bool is_primary{false};  // 첫 robot group — 기동 로그 라벨뿐. step 은 모든 robot group 의 명령을
                            // 기다린다 (#566)
 
@@ -1081,6 +1091,13 @@ class MuJoCoSimulator {
 
   [[nodiscard]] uint64_t StepCount() const noexcept { return step_count_.load(); }
 
+  /// Steps that ran on sync_timeout_ms with SOME awaited group's command in
+  /// and another's missing — a group the controller does not command, or a
+  /// command lost in transit (issue #566). Also reported on stderr, named.
+  [[nodiscard]] uint64_t PartialCommandSteps() const noexcept {
+    return partial_command_steps_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] double SimTimeSec() const noexcept { return sim_time_sec_.load(); }
 
   // model_->nq became mjtSize (int64_t) in MuJoCo 3.7 — explicit narrowing.
@@ -1110,6 +1127,7 @@ class MuJoCoSimulator {
 
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> step_count_{0};
+  std::atomic<uint64_t> partial_command_steps_{0};
   std::atomic<double> sim_time_sec_{0.0};
 
   // ── Multi-group storage ─────────────────────────────────────────────────

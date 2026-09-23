@@ -1010,11 +1010,13 @@ bool MuJoCoSimulator::Initialize() noexcept {
     if (gc.state_publish_divisor < 1 || (!gc.is_robot && gc.state_publish_divisor != 1)) {
       fprintf(stderr,
               "[MuJoCoSimulator] ERROR: group '%s' state_publish_divisor %d — must be >= 1, "
-              "and 1 for a fake_response group (it publishes no simulated state)\n",
+              "and 1 for a fake_response group (it publishes on its own wall timer, not per "
+              "step, so a step divisor cannot apply)\n",
               gc.name.c_str(), gc.state_publish_divisor);
       return false;
     }
     g->state_publish_divisor = gc.state_publish_divisor;
+    g->wait_for_command = gc.wait_for_command;
     g->command_topic = gc.command_topic;
     g->state_topic = gc.state_topic;
     g->sensor_topic = gc.sensor_topic;

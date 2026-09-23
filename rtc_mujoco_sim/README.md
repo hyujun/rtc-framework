@@ -56,7 +56,7 @@ integrated_bringup 등      ← robot YAML + launch에서 mujoco_simulator_node�
 - `state_joint_names`로 state publish 시 관절 이름/순서를 별도 지정 가능 (빈 배열 = XML 전체)
 - 이름 기반 qpos/qvel/actuator 인덱스 매핑 (비연속 인덱스 지원)
 - 그룹별 독립 command/state 버퍼, control mode, servo gains
-- 동기 루프는 **모든 robot 그룹**의 command 를 기다린다 (#566 — 이전에는 첫 그룹만 기다려, 손 명령이 한 step 늦게 적용될 수 있었다). 첫 그룹은 기동 로그의 `[PRIMARY]` 라벨로만 남는다
+- 동기 루프는 **모든 robot 그룹**의 command 를 기다린다 (#566 — 이전에는 첫 그룹만 기다려, 손 명령이 한 step 늦게 적용될 수 있었다). controller 가 명령하지 않는 그룹은 `wait_for_command: false` 로 빼야 한다 — 안 빼면 매 step 이 `sync_timeout_ms` 를 기다리고, 일부 그룹만 명령이 온 채 timeout 된 step 은 stderr 에 그룹 이름과 함께 경고된다 (초당 1 회). 첫 그룹은 기동 로그의 `[PRIMARY]` 라벨로만 남는다
 
 ### fake_response (LPF 에코백)
 
@@ -84,6 +84,9 @@ integrated_bringup 등      ← robot YAML + launch에서 mujoco_simulator_node�
 SimLoop → 모든 robot 그룹의 state 퍼블리시
         → 모든 robot 그룹의 sensor 퍼블리시 (sensor_topic 설정 시)
         → 모든 robot 그룹의 command 대기 (sync_timeout_ms — 넘기면 받은 것만 적용하고 step)
+        │     reset 요청은 이 대기를 끊지 않는다 — 이번 step 의 명령이 다 온 뒤 reset 하므로
+        │     pre-reset state 에 대한 명령이 reset 뒤로 새지 않는다. 대기 중 도착한 공 reset·
+        │     object refresh 는 적용한 뒤 받은 명령으로 그대로 step 한다 (#566)
         → 모든 robot 그룹의 command 적용 (ApplyCommand, 1회)
         → for sub in [0, n_substeps):
         │     PreparePhysicsStep() (actuator 모드/solver 파라미터/중력/외력)
@@ -542,7 +545,8 @@ mujoco_simulator:
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
 | `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
 | `initial_qpos` | double[] | 기동·리셋 자세 (rad, `command_joint_names` 순서). **robot_response 전용** — fake 그룹에 주면 Initialize 실패. 아래 [초기 자세](#초기-자세-initial_qpos) 절 참조. |
-| `state_publish_divisor` | int | 기본 `1`. 이 그룹의 joint state · sensor · contact wrench 를 **N step 에 한 번** (step % N == 0) 발행한다 — 물리와 명령 수신은 매 step 이고 **발행만** 솎는다 (실기에서 control rate 보다 느리게 갱신되는 device, 예: 500 Hz 팔 아래 100 Hz 손 = 5). rate 는 `control_rate / N` 만 표현된다. **N > 1 인 그룹은 CM 의 `sim_sync_tick_devices` 에서 빼야 한다** — 넣으면 tick 이 그 그룹을 기다리느라 N−1 step 을 멈춘다 (#566). ≥ 1, fake 그룹은 1 만 (그 외 Initialize 실패) |
+| `wait_for_command` | bool | 기본 `true`. lock-step 이 이 그룹의 command 를 기다리는가. controller 가 명령하지 않는 그룹 (controller manager 가 소유하지 않는 device, 일부 그룹만 구동하는 controller) 은 `false` — 명령이 오면 여전히 적용한다 (#566) |
+| `state_publish_divisor` | int | 기본 `1`. 이 그룹의 joint state · sensor · contact wrench 를 **N step 에 한 번** (step % N == 0) 발행한다 — 물리와 명령 수신은 매 step 이고 **발행만** 솎는다 (실기에서 control rate 보다 느리게 갱신되는 device, 예: 500 Hz 팔 아래 100 Hz 손 = 5). rate 는 `control_rate / N` 만 표현된다. **N > 1 인 그룹은 CM 의 `sim_sync_tick_devices` 에서 빼야 한다** — 넣으면 tick 이 그 그룹을 기다리느라 N−1 step 을 멈춘다 (#566). ≥ 1, fake 그룹은 1 만 (그 외 Initialize 실패 — fake 그룹은 step 이 아니라 자기 100 Hz wall timer 로 발행한다. 같은 이유로 **fake 그룹은 CM 의 `sim_sync_tick_devices` 에서도 빼야 한다**) |
 
 ### 초기 자세 (`initial_qpos`)
 
