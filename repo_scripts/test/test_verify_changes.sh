@@ -457,6 +457,55 @@ expect_not_contains "a partially matching rule is not reported" "$out" "can neve
 expect_exit "a partially matching rule does not block" "$rc" 0
 rm -rf "$dir"
 
+# --- test isolation gates (Phase 1d) -----------------------------------------
+
+# The gate scripts judge the tree they live in, so each case copies them into
+# the fixture (the hook resolves them in PROJECT_DIR) and gives it a second
+# package. $1 and $2 are the two packages' ROS_DOMAIN_ID claims.
+make_testgate_fixture() {
+  local dir
+  dir=$(make_fixture)
+  mkdir -p "$dir/repo_scripts/scripts" "$dir/rtc_other"
+  cp "$REPO_ROOT/repo_scripts/scripts/validate_test_domains.py" \
+    "$REPO_ROOT/repo_scripts/scripts/validate_test_fixtures.py" "$dir/repo_scripts/scripts/"
+  sed 's/rtc_demo/rtc_other/' "$dir/rtc_demo/package.xml" >"$dir/rtc_other/package.xml"
+  printf 'project(rtc_other)\nament_add_gtest(t_other test/t.cpp\n  ENV ROS_DOMAIN_ID=%s)\n' \
+    "$2" >"$dir/rtc_other/CMakeLists.txt"
+  git -C "$dir" add -A && git -C "$dir" commit -qm "second package and the gates"
+  printf 'ament_add_gtest(t_demo test/t.cpp\n  ENV ROS_DOMAIN_ID=%s)\n' "$1" \
+    >>"$dir/rtc_demo/CMakeLists.txt"
+  echo "$dir"
+}
+
+# 15i. A claim that collides with another package's must BLOCK at turn end, not
+#      first on the PR. #513 and #571 both passed every local check and failed
+#      CI: the gate ran only in CI, and Phase 2 runs repo_scripts' tests only
+#      when repo_scripts changed.
+dir=$(make_testgate_fixture 60 60)
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a colliding ROS_DOMAIN_ID claim is reported" "$out" "ROS_DOMAIN_ID=60 is claimed by 2 packages"
+expect_exit "a colliding ROS_DOMAIN_ID claim blocks the turn" "$rc" 2
+rm -rf "$dir"
+
+# 15j. ...while distinct claims are silent. Without this the gate could be a
+#      constant blocker and 15i would still pass.
+dir=$(make_testgate_fixture 60 61)
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "distinct ROS_DOMAIN_ID claims are not reported" "$out" "Test isolation gates"
+expect_exit "distinct ROS_DOMAIN_ID claims do not block" "$rc" 0
+rm -rf "$dir"
+
+# 15k. The trigger is a relevance filter: a turn that touches no build file,
+#      conftest or test source does not run the gates. The collision is
+#      committed here so that only the trigger stands between it and a block.
+dir=$(make_testgate_fixture 60 60)
+git -C "$dir" commit -qam "collision at HEAD"
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "a src-only turn does not run the test gates" "$out" "Test isolation gates"
+expect_exit "a src-only turn is not blocked by the test gates" "$rc" 0
+rm -rf "$dir"
+
 # --- ARCH-7 target-name scope ------------------------------------------------
 
 # 16. Re-touching an existing target must not read as introducing one. CMake

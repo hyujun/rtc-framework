@@ -47,6 +47,10 @@
 #          soon as the agent touched it for an unrelated reason.
 #        - changed *.yaml -> parse check (config/** had no gate at all). Verdict
 #          is the interpreter exit status, and a missing PyYAML fails OPEN.
+#   1c. changed .claude/rules/*.md -> validate_claude_rules.py (globs can fire)
+#   1d. changed CMakeLists.txt / conftest.py / test sources -> the CI test
+#        gates validate_test_domains.py + validate_test_fixtures.py, WHOLE repo
+#        (a domain collision spans two packages; CI keeps main clean)
 #   2. Build + test on changed packages
 #        - rtc_base / rtc_msgs change -> ./build.sh full + colcon test all
 #          (PROC-3: broad downstream impact)
@@ -1098,6 +1102,44 @@ if [ -n "$CHANGED_RULES" ]; then
   fi
 fi
 
+# --- Phase 1d: test isolation gates (CI's test-domain and fixture checks) ---
+# validate_test_domains.py (#401: one ROS_DOMAIN_ID per package, and every
+# participant-opening test claims one) and validate_test_fixtures.py (#454: no
+# fixture resolves a package outside the repo and deps.repos) ran only in CI.
+# Phase 2 runs repo_scripts' own tests only when repo_scripts changed, but
+# both gates judge OTHER packages' CMakeLists and test sources. So a claim
+# that collided passed every local check and first failed on the PR, twice:
+# #513 (two integrated_bringup tests with no claim) and #571 (a new test on
+# udp_hand_driver's domain 54).
+#
+# Whole-repo verdicts, unlike the doc gate's changed-lines scope: a collision
+# is between two packages, and the one this turn did not touch is half of it.
+# That cannot block an unrelated turn on inherited debt, because CI keeps main
+# clean on both. Each run takes about 0.5 s, so the trigger is only a
+# relevance filter: a build file, a pytest conftest, or a test source or
+# fixture header.
+#
+# Resolved in PROJECT_DIR only, not next to the hook as Phase 1b/1c do. These
+# scripts judge the tree they live in (repo root = their parents[2]), so a copy
+# beside the hook would judge the hook's repo, not the checkout under test. The
+# routing tests rely on this: they copy the scripts into a fixture.
+TESTGATE_FAILURES=""
+CHANGED_TESTGATE=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|conftest\.py)$|(^|/)test(ing)?/' || true)
+if [ -n "$CHANGED_TESTGATE" ]; then
+  for gate in validate_test_domains validate_test_fixtures; do
+    gate_py="$PROJECT_DIR/repo_scripts/scripts/${gate}.py"
+    if [ ! -f "$gate_py" ]; then
+      echo "verify-changes: ${gate}.py not found; that test gate skipped." >&2
+      continue
+    fi
+    GATE_RC=0
+    GATE_OUT=$(python3 "$gate_py" 2>&1) || GATE_RC=$?
+    if [ "$GATE_RC" -ne 0 ]; then
+      TESTGATE_FAILURES="${TESTGATE_FAILURES}  - repo_scripts/scripts/${gate}.py (exit ${GATE_RC}):\n$(echo "$GATE_OUT" | sed 's/^/      /')\n"
+    fi
+  done
+fi
+
 # --- Phase 2: Build + test, with PROC-3 fallback for rtc_base / rtc_msgs ---
 # RTC_VERIFY_SKIP_BUILD lets repo_scripts/test/test_verify_changes.sh exercise
 # the routing without a colcon workspace. It is never set in normal operation.
@@ -1415,6 +1457,9 @@ if [ -n "$YAML_FAILURES" ]; then
 fi
 if [ -n "$RULES_FAILURES" ]; then
   REPORT="${REPORT}Path-scoped rule cannot fire (repo_scripts/scripts/validate_claude_rules.py):\n${RULES_FAILURES}\n"
+fi
+if [ -n "$TESTGATE_FAILURES" ]; then
+  REPORT="${REPORT}Test isolation gates (the CI checks, run whole-repo):\n${TESTGATE_FAILURES}\n"
 fi
 if [ -n "$TEST_FAILURES" ]; then
   REPORT="${REPORT}Test/build failures:\n${TEST_FAILURES}\n"
