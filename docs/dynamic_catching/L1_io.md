@@ -232,7 +232,7 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 계획기 입력용 로봇 상태는 `rtc::SeqLock<RtStatePod>` 로 넘긴다(plan §6). v0.4 의 Eigen 멤버 `RobotSnapshot` 은 SeqLock 에 실을 수 없어 대체한다.
 
 - 필드: `NowReal` 시각, 팔 q·q̇ (측정), 직전 명령 q_c, 손 구동 좌표, 지문 wrench·스탬프 — 모두 `std::array<double, kMax…>` + 사용 차원 `n_arm`/`n_hand`/`n_tip`
-- 채우는 곳: `Compute` 안에서 `ControllerState` 로부터. 지문 wrench 부호는 sim·실기 모두 finger-on-object (0fcc1d23), S7.3 에서 재확인 (G1-9)
+- 채우는 곳: `Compute` 안에서 `ControllerState` 로부터. 지문 wrench 부호는 sim·실기 모두 finger-on-object (0fcc1d23). S7.3 판정은 바이어스를 뺀 크기 ‖F − b‖ 만 써 부호에 의존하지 않는다 (G1-9, L7 §4.4)
 - **지문 센서 freshness (D-24 (a) 확정 2026-09-22, 배선 S5.2e).** 이 POD 에 지문 wrench 의 `recv_steady_ns`·`sequence`·`valid` 를 싣는다 — `rtc_base` `DeviceState` 센서 lane 에 추가되어 backend 3종이 채우는 값 (PROC-3, plan §7.3)
 
 ## 6. YAML 파라미터
@@ -252,7 +252,7 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 점프 경고 |
 | `io.pred.nu_window` | int | – | 30 | 5–300 | §4.5 창 길이 |
 | `io.pred.nu_alpha` | double | – | 0.05 | 0.001–0.2 | §4.5 |
-| `io.pred.nu_reg` | double | m² | `TBD` | >0 | §4.5 정규화 λ (NUM-1) — **S7 로 이월** (A-S5-5: 소비자 `PRED_INCONSISTENT` 가 L7 이고 공분산 시각 보간 규칙이 아직 없다) |
+| `io.pred.nu_reg` | double | m² | `TBD` | >0 | §4.5 정규화 λ (NUM-1) — **S8 이월** (A-S5-5 에서 S7 로 미뤘고 S7 에서도 미구현: 소비자 `PRED_INCONSISTENT` 가 L7 이고 공분산 시각 보간 규칙이 아직 없다, plan §7.3) |
 | `sim.io.future_tol` | double | s | **0.1** (확정 S5.2) | 1e-4–0.5 | **A-S5-2 sim 전용 overlay**. sim config 에서만 활성이고 `io.future_tol` 을 덮는다 (`sim.ball.drag_k` 와 같은 활성 규칙). 두 값이 두 자릿수 다른 이유는 재는 대상이 다르기 때문이다 — sim 공 lane 의 stamp 는 sim 시간축이라 비행 안 위상 오차만큼 wall 을 앞서고 (D-3), 실기 카메라는 capture 시각이라 시계 동기 오차뿐이다. 한 키에 한 범위로는 둘 중 하나만 지킬 수 있고, sim 값을 실기 범위 안에 넣으면 하드웨어에서 100 ms 시계 오차를 조용히 수락한다. 부재는 실패가 아니다 — 그 경우 엄격한 공용 키를 물려받는다 (fail-closed) |
 | `prediction.dt_expected` | double | s | **0.05** | 1e-3–1.0 | vision profile 의 간격. `io.n_min` 이 이 값에서 유도되고 (⌈horizon_min / dt_expected⌉), 디코더의 간격 하한도 이 값의 1/10 로 파생된다 — 두 곳에 같은 수를 박지 않는다 |
 

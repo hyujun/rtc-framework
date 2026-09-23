@@ -36,7 +36,7 @@
 | G6-2 | P1b 드라이브 경로의 메시지·모드·주기·스탬프 | 닫힘 — `udp_hand_native` backend 가 `/p1b/joint_command` 발행, `udp_hand_node` 250 Hz, position 만, **명령 `header.stamp` 미사용** → $T_{link}$ 분리 불가, 종단 간 측정 (D-11) |
 | G6-3 | P1b 명령 가능한 토크 한계 | 닫힘 — 설정·모델값은 일치: 관절당 `max_torque` 3.0 N·m (로봇 config YAML = URDF effort), MJCF forcerange ±3 N·m. 실기 명령은 position 만이므로 토크 한계를 직접 명령할 수 없다 (§4.4). CATCHING_MASTER §1.3 의 1.5 N·m 는 작성 시점 사용자 진술이며, 이 값을 그대로 운용 한계로 쓸 수 없다 — nominal·continuous·peak·설정값(3.0 N·m) 중 무엇을 운용 한계로 쓸지와 그 출처는 **D-12 미결정** (plan §7.3) |
 | G6-4 | sim 두 손 MJCF actuator·폐쇄 체인 | 닫힘 — P1b: `<position>` kp 6000 (kv 250), forcerange ±3, `<equality><connect>` 5개 (MJCF 는 형제 저장소 hand-description). LEAP: `<general>` 16개, equality 없음 |
-| G6-5 | 지문 센서 frame·부호 규약 | 부호 닫힘 — 실기 `HandSensorState` (250 Hz) 와 sim `WrenchStamped` 모두 finger-on-object (커밋 0fcc1d23, 변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 하나). `rtc_msgs` FingertipSensor 주석의 반대 부호 서술은 stale. frame 세부는 S7.3 에서 확인 (TBD-HAND-03 의 frame·잡음 부분 유지) |
+| G6-5 | 지문 센서 frame·부호 규약 | 부호 닫힘 — 실기 `HandSensorState` (250 Hz) 와 sim `WrenchStamped` 모두 finger-on-object (커밋 0fcc1d23, 변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 하나). `rtc_msgs` FingertipSensor 주석의 반대 부호 서술은 stale. S7.3 의 접촉 판정은 바이어스를 뺀 크기 $\Vert F-b\Vert$ 만 쓰므로 frame·부호에 의존하지 않는다 (L7 §4.4). TBD-HAND-03 은 잡음 (실기 σ) 부분만 남는다 |
 | G6-6 | 기존 WBC 손 명령 경로와의 충돌 | 닫힘 — 활성 컨트롤러는 한 번에 하나다. 포구 컨트롤러가 활성이면 DemoWbc 의 손 τ_ff 경로(`kPdFeedforward`)는 무관하다. 실기 손은 position 만 받으므로 손 명령은 position 목표로만 표현한다 |
 
 ## 3. 참고자료
@@ -116,7 +116,7 @@ $T_{tick}=h/2$는 그 오차의 **worst case를 γ 창 예산에 넣는 값**이
 
 $T_{close}$를 최소화하려면 폐쇄 자세로의 계단 position 명령 + actuator 속도 한계가 기본이다.
 
-**폐쇄 후 파지력 제한은 position 목표로 표현한다.** 실기 P1b 는 position 만 받고 feedforward 를 무시하므로(G6-2, G6-6) v0.4 의 "전류(토크) 한계로 유지" 는 명령할 수 없다. 유지 단계에서는 목표 위치를 조정해 servo 오차 × 게인으로 힘을 제한한다 (예: 폐쇄 완료 시점 측정 자세 쪽으로 목표를 되돌림). 구체적 규칙은 S7.1 에서 정하고 sim·실기 각각의 servo 게인 차이를 기록한다 `[권장]`. 모터 자체 토크 한계(3.0 N·m, sim forcerange ±3)는 최종 상한이다.
+**폐쇄 후 파지력 제한은 position 목표로 표현한다.** 실기 P1b 는 position 만 받고 feedforward 를 무시하므로(G6-2, G6-6) v0.4 의 "전류(토크) 한계로 유지" 는 명령할 수 없다. 유지 단계에서는 목표 위치를 조정해 servo 오차 × 게인으로 힘을 제한한다 (예: 폐쇄 완료 시점 측정 자세 쪽으로 목표를 되돌림). 규칙은 S7.1 에서 `robot.hand.hold.mode` (`close_target` \| `measured_offset` + `hold.delta_rad`, 출하 `close_target`) 로 정했다. sim·실기 각각의 servo 게인 차이 기록은 남은 항목이다 (G6-E, 실기) `[권장]`. 모터 자체 토크 한계(3.0 N·m, sim forcerange ±3)는 최종 상한이다.
 
 폐쇄 체인 P1b는 구동 좌표에서 명령한다. 수동 관절은 폐쇄 제약으로 결정된다(기존 `rtc_urdf_bridge`, Pinocchio `RigidConstraintModel`).
 
@@ -125,7 +125,7 @@ $T_{close}$를 최소화하려면 폐쇄 자세로의 계단 position 명령 + a
 ### 4.5 포켓 유효 깊이 $d_{eff}$ 산정 `[권장]` (S4.5, TBD-HAND-04)
 
 1. 기하 추정: preshape 자세에서 FK로 손바닥 평면과 폐쇄 시 손가락이 형성하는 차단선 사이 거리를 접근축(catch frame +z) 방향으로 측정한다. 공 반지름을 뺀다. 같은 FK 에서 포획 반경 $r_{cap}$ (L3 §4.6 게이트 우변, 같은 TBD-HAND-04) 도 함께 산정한다 — S4.5 (plan §4.4 S4a, 2026-09-20).
-2. 실험 보정: 시뮬레이션과 실기에서 저속 투척으로 "폐쇄 늦음" 경계를 찾는다. **S7.1 (손 시퀀서) 이후에 한다** — 시퀀서 없이 비-RT 러너의 지연으로 폐쇄 시각을 맞추면 지터 × 공 속력이 $d_{eff}$ 와 같은 자릿수다 (plan §4.4 S4a).
+2. 실험 보정: 시뮬레이션과 실기에서 저속 투척으로 "폐쇄 늦음" 경계를 찾는다. **S7.1 (손 시퀀서) 이후에 한다** — S7.1 완료 (2026-09-24) 로 선행조건은 풀렸고 아직 하지 않았다 (sim 은 S8, 실기는 S10) — 시퀀서 없이 비-RT 러너의 지연으로 폐쇄 시각을 맞추면 지터 × 공 속력이 $d_{eff}$ 와 같은 자릿수다 (plan §4.4 S4a).
 3. 반발 허용 여부(L3 §4.5)에 따라 $d$ 또는 $d(1+1/e)$를 쓴다.
 
 산출값은 **provisional** 이며 사용자 승인 대상이다 (plan §4.4 S4a). 산정식·실험값·provisional 표시를 YAML (L3 §6 `planner.hand.*` — **§6 의 `robot.hand.*` 가 아니다**) 과 이 문서에 함께 기록한다 (G6-F).
@@ -311,10 +311,10 @@ v0.4 의 `robot.hand.effort_limit_hold`, `robot.hand.T_link`, `robot.hand.port`,
 
 ## 10. 미확정 항목
 
-- TBD-HAND-01, TBD-HAND-04 의 투척 보정 (S7.1 후 — 기하값은 두 손 모두 S4.5 로 provisional 닫힘), `index_mcp_aa_joint` 위치 한계 불일치, 손 프로파일 값 (provisional)
+- TBD-HAND-01, TBD-HAND-04 의 투척 보정 (S7.1 로 선행조건 해소, 미수행 — sim S8 · 실기 S10; 기하값은 두 손 모두 S4.5 로 provisional 닫힘), `index_mcp_aa_joint` 위치 한계 불일치, 손 프로파일 값 (provisional)
 - **P1b 의 폐쇄 속도** — 자세는 2026-09-21 에 다시 정했고, 시각 발동이면 중심에서 1.0 m/s 까지 잡는다 (§4.5). 남은 문제는 $T_{close,e2e}$ 0.28 s 가 **최소 비행시간에 그대로 들어간다**는 것이다 (0.59 s, plan §4.4 S4.4 결과) — 폐쇄 병목은 `thumb_cmc_fe` 의 이동량 1.57 rad (§4.2) 이므로 자세를 다시 찾을 때 $T_{close}$ 를 목적함수에 넣는다. P1b $d_{eff}$ 는 스캔 상한에 걸린 하한값이다
 - **S4.5 시험 도구는 저장소에 없다** — 접촉 스캔·fly-in·자세 탐색 스크립트는 작업용으로만 있었다. 자세나 공을 바꾸면 다시 필요하므로 `rtc_tools` 편입이 후속 항목이다
 - 닫힘: TBD-HAND-05 (S4.1, 사용자 제공 자세)
-- TBD-HAND-03 지문 부호: sim 발행 부호 재확인 후 정규화 필요 여부 (S7.3)
-- 유지 단계 position 목표 규칙 (S7.1)
+- TBD-HAND-03 지문 잡음 (실기 σ) — 부호·frame 은 닫힘 (S7.3 은 $\Vert F-b\Vert$ 만 판정, sim 잡음 0 이라 `f_min` 만 유효, S8·S10)
+- 닫힘: 유지 단계 position 목표 규칙 (S7.1, `robot.hand.hold.mode`)
 - 닫힘: TBD-HAND-02 (D-11, 종단 간 측정), TBD-SIM-01 (G6-4), TBD-RTC-17 (G6-6)

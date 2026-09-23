@@ -1,20 +1,18 @@
 #ifndef UR5E_BRINGUP_CONTROLLERS_DEMO_CATCHING_CONTROLLER_H_
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_CATCHING_CONTROLLER_H_
 
-// ── Catching controller, S5.1 skeleton + E-STOP contract (dynamic_catching) ──
+// ── Catching controller: supervisor, laws, hand sequencer (dynamic_catching) ──
 //
-// WHAT THIS IS. The catching controller's frame: lifecycle, the P-1 minimum
+// WHAT THIS IS. The catching controller: lifecycle, the P-1 minimum
 // E-STOP/fault contract (E-8, approved 2026-09-22), the supervisor mode driven
-// off S1.8's transition table, the operator arm/disarm latch, and the re-arm
-// reset. The arm still HOLDS the pose it was activated in — the tracking law
-// (CLIK, reference generation) is S5.3 — and the hand still accepts unshaped
-// step targets so S4.2's measurement rig keeps working until the sequencer
-// takes the hand in S7.1.
+// off S1.8's transition table, the operator arm/disarm latch, the tracking law
+// (CLIK, S5.3), the planner thread (S6) and, from S7, the whole trial cycle
+// with the hand sequencer owning the hand (THE S7 CYCLE below).
 //
-// WHY THE ARM STILL HOLDS. S5.1 is the step that opens the arm command path,
-// and opening it is the E-8 change. The contract has to be in place and
-// testable BEFORE a law is writing to it, or the first thing exercising the
-// E-STOP path would also be the first thing moving the arm.
+// WHY THE CONTRACT CAME FIRST. S5.1 opened the arm command path, and opening
+// it was the E-8 change. The contract had to be in place and testable BEFORE a
+// law wrote to it, or the first thing exercising the E-STOP path would also
+// have been the first thing moving the arm.
 //
 // THE P-1 CONTRACT (plan §4.4 S5.1, L7 §4.1), in the four parts it was
 // approved in:
@@ -1080,7 +1078,7 @@ class DemoCatchingController final : public RTControllerInterface {
   std::int64_t t_hold_ns_{0};
   std::int64_t t_close_e2e_ns_{0};
   std::int64_t stale_committed_max_ns_{0};
-  int sat_ticks_{5};
+  int sat_ticks_{0};  // 0 = off until configure (supervisor.sat_ticks)
 
   // ── S7 supervisor: RT-owned state ────────────────────────────────────────
   // Every member here is in the reset table below.

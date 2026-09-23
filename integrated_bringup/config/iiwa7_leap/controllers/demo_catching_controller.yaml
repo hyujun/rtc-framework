@@ -211,7 +211,8 @@ demo_catching_controller:
     # them; L6 §4.5's "subtract the ball radius" is a surface-to-surface
     # correction and applying it here would subtract it twice. Derived FOR
     # core.ball above — a different diameter invalidates them.
-    # L6 §4.5 step 2 (low-speed throw correction) stays deferred to S7.1.
+    # L6 §4.5 step 2 (low-speed throw correction) needed the sequencer (S7.1,
+    # done). It has not run yet: sim in S8, hardware in S10.
     #
     # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, plan §7.3). The L3 §4.5
     # gamma window only ever uses d_eff / T_close,tot — the relative speed the

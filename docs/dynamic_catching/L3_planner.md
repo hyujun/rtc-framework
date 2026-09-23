@@ -28,7 +28,7 @@
 | G3-1 | 모델 로드 경로와 FK/Jacobian API (폐쇄 체인 손 포함 시 팔 부분만 쓰는 방법) | 닫힘 — CM 이 공유하는 `PinocchioModelBuilder` 1개 + 계획기 스레드 전용 `RtModelHandle` 1개 (스레드별 1개, heap-free, LOCAL/LWA/WORLD). P1b 손바닥 frame 은 폐쇄 루프 상류라 팔 관절 열만 쓴다 (W, D-18) |
 | G3-2 | RT → 계획기 상태 전달 경로(현재 $q_c,\dot q_c$, L4 기준 상태) | 닫힘 — `rtc::SeqLock` 사용. payload 는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지) (W, plan §6) |
 | G3-3 | 계획기 스레드 생성·우선순위 규약 | 닫힘 — D-7: MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), ~~새 thread layout role~~ → 기존 `mpc` role 재사용 (E-7 결정 J, 2026-09-23), 초기 FIFO. D-7a 측정은 사용자 결정으로 생략 — 초기값 유지 (plan §6, §7.2) |
-| G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | 닫힘(provisional) — LEAP 80 mm / 31.0 mm, P1b ≥ 95 mm / 24 mm (S4.5, L6 §4.5). P1b 는 사용자 제공 자세가 파지 불가여서 2026-09-21 에 탐색한 자세 기준. 투척 보정은 S7.1 후 (TBD-HAND-04) |
+| G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | 닫힘(provisional) — LEAP 80 mm / 31.0 mm, P1b ≥ 95 mm / 24 mm (S4.5, L6 §4.5). P1b 는 사용자 제공 자세가 파지 불가여서 2026-09-21 에 탐색한 자세 기준. 투척 보정은 미수행 — S7.1 로 선행조건 해소, sim S8 · 실기 S10 (TBD-HAND-04) |
 | G3-5 | 포구 허용 작업공간, 감속 여유 공간 | TBD-BALL-02 (W7-3) |
 | G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | sim 실측 간격 0.05 s · 지평 0.80 s · N 16 (S3.4 2026-09-20, TBD-VIS-04). **요구 사양 (S3.6, 2026-09-22)**: 간격 0.05 s · 지평 1.0 s (설정) · `n_max` 20 (plan §4.4 S3.6 결과) |
 | G3-7 | **독립 IK/포즈 해석기가 있는지**와 그 API | 닫힘 — 독립 IK 없음. `rtc::compliance::DifferentialIk` (σ_min 적응 λ, heap-free) 를 m=5 로 재사용 (D-7d). 수렴은 G3-G 로 검증 |
@@ -349,7 +349,7 @@ $\gamma_f$ 를 사실상 절대 우선으로 두고 싶으면 $w_\gamma$ 를 크
 ### 4.11 commit과 손 명령 시각
 
 - commit 조건 (APPROACH→COMMITTED, plan §3): $t_c-now_{real}\le T_{freeze}$, $T_{freeze}\ge T_{close,tot}+T_{arm}+T_{margin}$. 비교 대상은 **실제 시각**이고, 팔 선행분은 $T_{freeze}$ 하한의 $T_{arm}$ 항이 흡수한다.
-- 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다. **단일 출처 (C-14, S7.1 설계 확정 2026-09-23).** 현재 계획기(`planner_search.cpp`)와 oracle(`StoreOraclePlan`)이 이 식을 각자 계산해 두 출처가 생긴다(oracle 은 $t_{cmd}=t_c$). S7 은 **손 시퀀서**가 동결된 $t_c$ 와 손 프로파일로 $t_{cmd}$ 를 계산하는 쪽을 단일 출처로 삼는다 — `PlanSnapshot::t_cmd_ns` 는 그대로 계획기 기록·진단용이고, oracle 도 같은 식으로 맞춘다. 손 명령 발동은 L6 §4.3/§5.3 의 `HandCommandDueRounded`(R-CLOSE, L7 §4.1) 로 한다.
+- 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다. **단일 출처 (C-14, S7.1 설계 확정 2026-09-23).** 계획기(`planner_search.cpp`)와 oracle(`StoreOraclePlan`)은 `PlanSnapshot::t_cmd_ns` 를 각자 채운다 (oracle 은 지금도 $t_{cmd}=t_c$). S7 에서 손 명령에 쓰는 값은 **손 시퀀서**가 COMMITTED 에서 동결된 $t_c$ 와 손 프로파일로 계산한 것 하나다 (`HandSequencer::Commit`, 접촉 판정 창도 같은 값) — `PlanSnapshot::t_cmd_ns` 는 계획기 기록·진단용일 뿐 손 명령에 쓰이지 않으므로 oracle 값은 맞추지 않았다. 손 명령 발동은 L6 §4.3/§5.3 의 `HandCommandDueRounded`(R-CLOSE, L7 §4.1) 로 한다.
 - **$T_{tick}$은 여기에 넣지 않는다.** §4.5의 $T_{close,tot}=T_{close,e2e}+T_{tick}$ 에서 $T_{tick}=h/2$ 는 틱 양자화 오차의 **worst-case 예산**이다. L6 §4.3의 반올림 규칙(가장 가까운 틱)을 쓰면 오차는 $\pm h/2$ 로 영평균이라 명령 시각 자체를 당길 이유가 없다. γ 창(예산)에는 들어가고 $t_{cmd}$(명령)에는 들어가지 않는다 — 두 곳의 역할이 다르다.
 - **시간 규약 `[확정 D-2]`.** $t_c$ 와 $t_{cmd}$ 는 모두 공의 **물리 시각** `BallTime` (절대 steady ns) 단일 정의다. "선행축 시각" 이나 "실제시각축 시각" 이라는 별도의 $t_c$ 는 없다 — 축은 시각 값이 아니라 **판정마다 비교하는 '지금'** 에 붙는다 (plan §3): 손 명령은 $now\ge t_{cmd}$ (실제, 손은 선행 보상 없음), DECEL 진입은 $now_{lead}\ge t_c$, rollout·γ 프로파일은 $now_{lead}$. v0.4 의 §4.11 ("실제 시각 축") 과 §5.2 주석 ("$t_c$ 는 선행축, $t_{cmd}$ 는 실제시각축") 의 모순은 이 규약으로 해소한다.
 - [R2]는 접촉 직전 일정 시간부터 예측 갱신을 멈췄다. 본 구현의 동결은 포구점·γ에만 적용하고, L2의 실시간 추정은 계속 사용한다(§4.6 둘째 항).

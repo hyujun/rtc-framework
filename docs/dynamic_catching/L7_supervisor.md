@@ -70,7 +70,7 @@
 
 **QP 비의존 관절공간 감속 `[확정 S5.3]`.** `ABORT_SAFE` 의 기본 경로(§4.3 감속 대상 → L4 → L5)는 L5 QP 가 정상일 때만 성립한다. 원인이 `QP_FAILED`·`JOINT_CONFLICT` 이면 실패한 L5 에 의존할 수 없으므로, 직전 명령 $q_c$·$\dot q_c$ 에서 관절별 가속 한계(D-16 도출값) 이내로 $\dot q_c\to0$ 까지 감속하는 관절공간 경로를 쓴다 (할당·QP 없음, `dt` 기준 적분, 관절 위치 한계 clamp). 정확한 식은 S5.3 에서 확정한다.
 
-**명시적 면제 (C-35).** 구현(controller.cpp)은 원인과 무관하게 `ABORT_SAFE` 를 **항상** 이 관절공간 정지 경로로 처리한다 — L5 가 정상인 원인(예: `TRACK_ERR`)에서도 §4.3 의 task-space 감속 대상 경로는 쓰이지 않는다. task-space 정지의 이득이 불명확하고 QP 의존을 늘리므로 이 현행 동작을 그대로 유지하고 (S7 착수 시 바꾸지 않는다), 위 문단의 "L5 가 정상이면 §4.3 감속 대상을 L4→L5 로" 서술은 설계 의도이지 현재 구현이 아님을 여기 기록한다.
+**명시적 면제 (C-35).** 구현(controller.cpp)은 원인과 무관하게 `ABORT_SAFE` 를 **항상** 이 관절공간 정지 경로로 처리한다 — L5 가 정상인 원인(예: `TRACK_ERR`)에서도 §4.3 의 task-space 감속 대상 경로는 쓰이지 않는다. task-space 정지의 이득이 불명확하고 QP 의존을 늘리므로 이 현행 동작을 그대로 유지하고 (S7 에서도 바꾸지 않았다), 위 문단의 "L5 가 정상이면 §4.3 감속 대상을 L4→L5 로" 서술은 설계 의도이지 현재 구현이 아님을 여기 기록한다.
 
 **감속은 시각 기준으로 시작한다 `[확정 A-5]`.** 실기 접촉 신호가 지문 센서뿐이라, 공이 손바닥에 먼저 닿으면 손가락이 닫히기 전까지 검출이 늦을 수 있다. 따라서 `DECEL` 진입은 $now_{lead}\ge t_c$ 로 하고, 지문 센서는 결과 판정과 abort에만 쓴다.
 
@@ -89,7 +89,7 @@
 - 구현 노트 (S5.1): 요청은 **flag 가 아니라 epoch** 이다. 두 tick 사이에 발동→해제가 모두 끝나면 flag 는 false 로 돌아와 있어 tick 이 "아무 일도 없었다" 로 읽고 $q_c$ 를 정지 너머로 이어가기 때문이다. tick 은 "지금 켜져 있는가" 가 아니라 "내가 마지막으로 처리한 값에서 움직였는가" 를 묻는다
 - 이 계약은 팔 명령 경로·CLIK 앵커가 아직 없는 S4.0 에는 적용되지 않는다(S4.0 은 base 기본 동작과 CM 의 hold 방어선에 맡긴다) — E-8 대상은 그것들이 생기는 **S5.1** 부터다. 전체 물리 정책(D-13)은 S9.
 
-**S7.2 driver 규칙 (설계 확정, #537 S7 결정 2026-09-23 — 코드 미착수).** FSM driver(`Compute` 안의 매 tick 진행)가 지켜야 할 규칙을 전이표와 별도로 둔다. 전이표(§4.1 표, §5.1)는 그대로다.
+**S7.2 driver 규칙 (설계 확정 #537 S7 결정 2026-09-23, 구현 PR #571).** FSM driver(`Compute` 안의 매 tick 진행)가 지켜야 할 규칙을 전이표와 별도로 둔다. 전이표(§4.1 표, §5.1)는 그대로다.
 
 - **R-PREC (사유 우선순위).** 한 tick 에 사유는 하나이므로 순서를 고정한다: `ESTOP` > fault reset/escalation > 준비 상실(`kParamsTbd`) > 법칙 실패·치명(`kQpFailed`/`kJointConflict`/`kTrackErr`/`kBallStaleLong`/`kRefSaturated`) > 시간 전진(`kNone` — commit/close/decel 정지/T_hold 경과/복귀 완료) > 기록 전용(`kBallStaleCommitted`·`kHorizonExtrap`·`kTipStale`·`kHandTimeout`). 기록 전용 사유는 **전진이 없는 tick 에만**, 그리고 그 모드에 §4.2 행이 있을 때만 낸다(행이 없는 모드는 플래그로만 기록).
 - **R-ORDER (분기 위치, C-33).** `IDLE`(homing)·`DECEL`·`HOLD`·`RETREAT` 는 vision lane **앞**(`ABORT_SAFE` 와 같은 자리)에서 판정한다. `COMMITTED`/`CLOSING` 은 vision 판정과 무관하게 항상 추종 법칙을 돌리고, 샘플러는 나이와 무관하게 마지막 스냅샷을 쓰며 지평 밖은 외삽으로 계속한다 — `kBallStaleCommitted`/`kHorizonExtrap` 은 기록만 한다.
@@ -158,7 +158,7 @@ $$e=x_s-p_v(0)=0,\qquad \dot e=\dot x_s-v_v(0)=0$$
 
 ### 4.4 접촉 판정
 
-**부호 규약.** sim 과 실기 두 경로 모두 **finger-on-object** 부호다 — 실기 P1b `HandSensorState` (250 Hz) 와 같게 `rtc_mujoco_sim` 이 커밋 0fcc1d23 부터 fingertip-on-environment 로 발행한다 (코드 확인. repo 규약상 sim 쪽 부호 스위치를 다시 넣지 않는다. 부호 변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 한 곳). `rtc_msgs` 메시지 주석의 "sim 은 반대 부호" 서술은 stale 이다. 따라서 접촉 판정은 힘의 크기·법선 성분을 **그대로** 쓰고 별도 정규화를 두지 않는다. S7.3 착수 시 부호를 다시 확인한다. 센서 주기·스탬프는 입력단에서 기록한다 (판정 시각은 수신 steady 시각, `header.stamp` 는 staleness 판단에 쓰지 않는다).
+**부호 규약.** sim 과 실기 두 경로 모두 **finger-on-object** 부호다 — 실기 P1b `HandSensorState` (250 Hz) 와 같게 `rtc_mujoco_sim` 이 커밋 0fcc1d23 부터 fingertip-on-environment 로 발행한다 (코드 확인. repo 규약상 sim 쪽 부호 스위치를 다시 넣지 않는다. 부호 변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 한 곳). `rtc_msgs` 메시지 주석의 "sim 은 반대 부호" 서술은 stale 이다. 따라서 접촉 판정은 힘의 크기·법선 성분을 **그대로** 쓰고 별도 정규화를 두지 않는다. S7.3 구현은 바이어스를 뺀 크기 $\Vert F-b\Vert$ 만 판정하므로 (§4.4) 이 부호 규약에 의존하지 않는다. 센서 주기·스탬프는 입력단에서 기록한다 (판정 시각은 수신 steady 시각, `header.stamp` 는 staleness 판단에 쓰지 않는다).
 
 센서 $i$의 바이어스 $b_i$는 **`ARMED`/`TRACKING` 구간(손 `q_pre` 정지 중 — Q4, §4.1)** 의 **지수이동평균(EMA, `supervisor.contact.baseline_alpha`)** 으로 추정한다 — 원형 버퍼가 아니다(C-6, §4.8 정정). 잡음 표준편차 $\hat\sigma_i$도 같은 창·같은 EMA 로 구한다. v0.2는 창을 `COMMITTED` 구간으로 잡았는데 그 길이가 $T_{freeze}-T_{close,tot}\approx T_{arm}+T_{margin}$(수십 ms)뿐이라, 센서 주기 100 Hz면 표본 2–5개로 $\hat\sigma_i$ 를 추정하게 된다. 창은 `RETREAT → ARMED`(`ResetForRearm`)에서 비운다(§4.8). **바이어스 표본 수가 `supervisor.contact.n_baseline_min`(기본 20) 미만이면 결과는 `Undetermined`** 로 기록한다 — `Missed` 로 오판하지 않는다.
 
@@ -218,11 +218,11 @@ $$\Delta p=m_{ball}\,(1-\gamma_f)\Vert v(t_c)\Vert$$
 **본 설계가 하지 않는 것.** [R16]의 강성·접촉력 동시 최적화와 접촉점 선택, [R18]의 reference spreading(충격 순간 기준 궤적 불연속 처리)은 **범위 밖**이다. 둘 다 토크 또는 임피던스 인터페이스를 전제하는데 UR5e는 position으로 확정돼 있다(마스터 §1.1). 저속 구간에서 성공률이 확보되지 않으면 이 제약을 재검토해야 한다 — 그때의 선택지가 위 두 문헌이다.
 
 
-### 4.8 재무장 리셋 목록 `[권장, S7.4 에서 함수로 분리]`
+### 4.8 재무장 리셋 목록 `[확정, S7.4 에서 함수로 분리]`
 
 `RETREAT → ARMED` 전이에서 **다음을 전부 초기화한다.** 하나라도 빠지면 직전 시행의 상태가 남아 두 번째 투척이 다르게 동작한다. v0.2는 이 목록이 없었고, §9 시나리오가 전부 단발 시행이라 게이트에서도 잡히지 않았다. 아래는 소유 layer 별로 정리한 **단일 표**다.
 
-**두 함수로 분리한다 (S7.4, C-7/C-29/C-30 — 현재 코드는 `ResetTrialState` 하나뿐이다).** `ResetForRearm()` 은 `RETREAT → ARMED` 에서만 돈다. `ResetTrialState()` = `ResetForRearm()` + activation/E-STOP 몫이고, 무장 latch 해제·E-STOP·명시적 리셋에서 돈다. 아래 표의 "함수" 열은 어느 쪽(들)이 그 대상을 리셋하는지를 가리킨다 — **면제**로 적은 대상은 어느 쪽도 손대지 않는다(의도적).
+**두 함수로 분리했다 (S7.4, C-7/C-29/C-30).** 멤버마다 어느 리셋이 되돌리는지는 컨트롤러 헤더의 리셋 표가 SSoT 이고, `test_catching_reset_table.py` (행 존재) 와 `test_catching_reset_probe.cpp` (행의 진위) 가 검사한다. `ResetForRearm()` 은 `RETREAT → ARMED` 에서만 돈다. `ResetTrialState()` = `ResetForRearm()` + activation/E-STOP 몫이고, 무장 latch 해제·E-STOP·명시적 리셋에서 돈다. 아래 표의 "함수" 열은 어느 쪽(들)이 그 대상을 리셋하는지를 가리킨다 — **면제**로 적은 대상은 어느 쪽도 손대지 않는다(의도적).
 
 | 대상 | 소유 layer | 함수 | 리셋 내용 | 빠뜨렸을 때 |
 |---|---|---|---|---|
@@ -254,7 +254,7 @@ L7이 plan 을 받아들일 때 §4.1 R-ADMIT 조건(g) $t_c-now\le T_{freeze}$ 
 
 ## 5. C++ 구현
 
-v0.4 의 입출력 구조체·슈퍼바이저 클래스 스케치는 삭제했다 — repo 에 없는 tick API 와 아직 정해지지 않은 타입에 기대고 있었다. 입출력 구조체의 모양은 L4·L5 의 S1·S2 타입이 정해진 뒤 **S7 에서 확정**한다. 여기서는 확정된 것만 적는다.
+v0.4 의 입출력 구조체·슈퍼바이저 클래스 스케치는 삭제했다 — repo 에 없는 tick API 와 아직 정해지지 않은 타입에 기대고 있었다. 입출력 구조체의 모양은 L4·L5 의 S1·S2 타입이 정해진 뒤 **S7 에서 확정**했다. 여기서는 확정된 것만 적는다.
 
 ### 5.1 인터페이스
 
@@ -296,7 +296,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.stale_committed_max_s` | double | s | **0.10** (provisional, #537 S7 결정 2026-09-23) | ≥0 | §4.2 `[확정 A-6]`. 조일 물리량(정지거리·공분산 성장 등)은 S8 에서 정해 조인다 (plan §7.3) |
 | `supervisor.n_qp` | int | – | `TBD` | ≥1 | §4.1 `FAULT` 진입 연속 `QP_FAILED` 수 |
 | `supervisor.track_err_abort` | double | rad | `TBD` | >0 | **단일 원천.** L5 는 이 키를 참조만 한다 |
-| `supervisor.decel.a_dec` | double | m/s² | **10.0** (provisional — 2026-09-22 사용자 확정, S3.5b gate 지도가 돌린 값; `reference.a_max` 확정 시 ≤ 재검, plan §7.3) | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3). 두 로봇 `demo_catching_controller.yaml` 에 기록 — 파서는 읽지만 소비자 (S6 정지점 예약·S7 DECEL) 는 아직 없다 |
+| `supervisor.decel.a_dec` | double | m/s² | **10.0** (provisional — 2026-09-22 사용자 확정, S3.5b gate 지도가 돌린 값; `reference.a_max` 확정 시 ≤ 재검, plan §7.3) | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3). 두 로봇 `demo_catching_controller.yaml` 에 기록 — 소비자는 S6 계획기의 정지점 예약 (`planner_search.cpp`) 과 S7 DECEL 이다 |
 | `supervisor.decel.ramp_time` | double | s | 0.0 | 0–0.1 | §4.3 |
 | `supervisor.contact.f_min` | double | N | **0.2** (provisional, 사용자 값) | >0 | G7-3. sim fingertip lane 은 잡음이 없어(C-20) 이 값만 유효하고, `k_sigma` 는 실기 전용이다 |
 | `supervisor.contact.k_sigma` | double | – | 3.0 | 2–6 | §4.4. 실기 전용 (sim σ̂≈0) |
@@ -321,7 +321,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 - **L7.3** (S1.8·S7.3) 접촉 판정기(debounce, 부호 재확인) + 합성 잡음 오경보 테스트.
 - **L7.4** v0.5 에서 삭제 — γ 하향 경로 v1 범위 밖 (D-8).
 - **L7.5** (S7.2) 슈퍼바이저 본체 + IDLE homing + QP 비의존 abort 경로 연결 + 시나리오 테스트(§9).
-- **L7.6** (S7.3) 충격량 예산(§4.7): 시뮬레이션 접촉 참값(S3.3)으로 $\Delta t_{imp}$, $\bar F$, 관절 토크 산출 → `TBD-IMP-01` 확정 → L3 게이트 연결.
+- **L7.6** (S8 — G7-B3 충격량 상관과 함께 이월, #537 결정 2026-09-24) 충격량 예산(§4.7): 시뮬레이션 접촉 참값(S3.3)으로 $\Delta t_{imp}$, $\bar F$, 관절 토크 산출 → `TBD-IMP-01` 확정 → L3 게이트 연결.
 - **L7.7** (S10) 실기 전용 조건 연결: speed scaling, 시계 (신호 출처 확보 후), 지문 센서 stale.
 - **L7.8** (S5.1 임시 → S9) E-STOP·fault 훅: P-1 임시 기준 (S5.1, `[CONCERN] E-8`) → D-13 정책 (S9).
 

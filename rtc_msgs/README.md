@@ -240,7 +240,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | **추종** | `track_err_rad` | `float64` | ‖q_meas − q_cmd‖. D-6 이 측정값을 CLIK 밖에 두므로 **팔이 명령 위치에 없다는 것을 아는 유일한 감시자** |
 | | `q_cmd` / `q_meas` / `arm_joint_names` | `float64[]` / `string[]` | device 순서, 이름은 configure 에서 한 번 박힌다. `q_cmd` 는 **그 tick 에 실제로 나간 명령** (법칙 비활성 구간의 hold latch 포함) 이고, 명령이 없는 tick (latch 전 침묵) 은 **NaN** 이다 — 0.0 을 쓰면 위 `track_err_rad` 을 오프라인으로 재계산하는 소비자가 존재하지 않는 수 rad 오차를 본다 |
 | | `abort_stopped` | `bool` | QP 비의존 관절공간 정지가 완료됐는가 |
-| **손 (L6)** | `hand_phase_valid` / `hand_phase` / `hand_rho` / `hand_timeout` | `bool` / `uint8` / `float64` | S7.1 시퀀서가 손을 가져가기 전까지 `hand_phase_valid` 는 false. `HAND_PHASE_OPEN=0` … `HAND_PHASE_RELEASE=4` |
+| **손 (L6)** | `hand_phase_valid` / `hand_phase` / `hand_rho` / `hand_timeout` | `bool` / `uint8` / `float64` | `hand_phase_valid` 는 시퀀서가 손을 소유할 때만 true 다 (S7.1 부터 기본). `diagnostic.hand_step` 프로파일처럼 시퀀서가 꺼져 있으면 false. `HAND_PHASE_OPEN=0` … `HAND_PHASE_RELEASE=4` |
 | **지문 센서 (D-24)** | `tip_names` / `tip_force` / `tip_contact` / `tip_fresh` / `tip_age_s` | `string[]` / `float64[]` / `bool[]` | `tip_fresh` 는 backend 의 유효 플래그 **와** 이 컨트롤러의 시한을 둘 다 요구한다 — 값이 유효한 것과 소비자의 시한을 만족하는 것은 다르다. `tip_age_s < 0` = 미수신 |
 
 - Per-controller 토픽: `/<config_key>/catching_state` (컨트롤러 RT tick 에서 계산, ~50 Hz publish thread).
