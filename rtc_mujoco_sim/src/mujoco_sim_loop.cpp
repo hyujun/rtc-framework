@@ -704,6 +704,13 @@ void MuJoCoSimulator::HandleReset() noexcept {
       data_->qpos[g->qpos_indices[i]] = g->initial_qpos[i];
       data_->ctrl[g->actuator_indices[i]] = g->initial_qpos[i];
     }
+    // A command staged before the reset was computed against the pre-reset
+    // state; applied now it would drive the first post-reset step. Only
+    // ApplyCommand() clears the flag and the reset skips it, so a group whose
+    // command beat the reset used to leave it armed — and with the step
+    // waiting on every robot group (issue #566), the first post-reset step
+    // then needed only the OTHER groups to arrive before applying it.
+    g->cmd_pending.store(false, std::memory_order_release);
   }
 
   model_->opt.gravity[2] = world_gravity_enabled_.load(std::memory_order_relaxed)

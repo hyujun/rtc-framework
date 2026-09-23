@@ -178,6 +178,30 @@ TEST(Lifecycle, StepWaitsForACommandFromEveryRobotGroup) {
   sim.Stop();
 }
 
+TEST(Lifecycle, ACommandFromBeforeAResetDoesNotCountForTheNextStep) {
+  MuJoCoSimulator sim(test::MakeTwoGroupConfig());
+  ASSERT_TRUE(sim.Initialize());
+  sim.Start();
+
+  // The arm's command lands, then a reset arrives while the step waits for
+  // the hand's.
+  sim.SetCommand(0, {0.5});
+  std::this_thread::sleep_for(20ms);
+  sim.RequestReset();
+  std::this_thread::sleep_for(50ms);
+  ASSERT_EQ(0U, sim.StepCount());
+
+  // The hand's command alone must not complete the first post-reset step:
+  // the arm's pre-reset command no longer counts.
+  sim.SetCommand(1, {0.0});
+  std::this_thread::sleep_for(50ms);
+  EXPECT_EQ(0U, sim.StepCount()) << "a pre-reset command drove the first post-reset step";
+
+  sim.SetCommand(0, {0.0});
+  EXPECT_TRUE(WaitFor([&] { return sim.StepCount() >= 1; }, 1000ms));
+  sim.Stop();
+}
+
 TEST(Lifecycle, TwoGroupSyncTimeoutStillStepsWithoutCommands) {
   auto cfg = test::MakeTwoGroupConfig();
   cfg.sync_timeout_ms = 5.0;
