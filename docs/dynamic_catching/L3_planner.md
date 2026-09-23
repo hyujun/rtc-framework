@@ -349,7 +349,7 @@ $\gamma_f$ 를 사실상 절대 우선으로 두고 싶으면 $w_\gamma$ 를 크
 ### 4.11 commit과 손 명령 시각
 
 - commit 조건 (APPROACH→COMMITTED, plan §3): $t_c-now_{real}\le T_{freeze}$, $T_{freeze}\ge T_{close,tot}+T_{arm}+T_{margin}$. 비교 대상은 **실제 시각**이고, 팔 선행분은 $T_{freeze}$ 하한의 $T_{arm}$ 항이 흡수한다.
-- 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다.
+- 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다. **단일 출처 (C-14, S7.1 설계 확정 2026-09-23).** 현재 계획기(`planner_search.cpp`)와 oracle(`StoreOraclePlan`)이 이 식을 각자 계산해 두 출처가 생긴다(oracle 은 $t_{cmd}=t_c$). S7 은 **손 시퀀서**가 동결된 $t_c$ 와 손 프로파일로 $t_{cmd}$ 를 계산하는 쪽을 단일 출처로 삼는다 — `PlanSnapshot::t_cmd_ns` 는 그대로 계획기 기록·진단용이고, oracle 도 같은 식으로 맞춘다. 손 명령 발동은 L6 §4.3/§5.3 의 `HandCommandDueRounded`(R-CLOSE, L7 §4.1) 로 한다.
 - **$T_{tick}$은 여기에 넣지 않는다.** §4.5의 $T_{close,tot}=T_{close,e2e}+T_{tick}$ 에서 $T_{tick}=h/2$ 는 틱 양자화 오차의 **worst-case 예산**이다. L6 §4.3의 반올림 규칙(가장 가까운 틱)을 쓰면 오차는 $\pm h/2$ 로 영평균이라 명령 시각 자체를 당길 이유가 없다. γ 창(예산)에는 들어가고 $t_{cmd}$(명령)에는 들어가지 않는다 — 두 곳의 역할이 다르다.
 - **시간 규약 `[확정 D-2]`.** $t_c$ 와 $t_{cmd}$ 는 모두 공의 **물리 시각** `BallTime` (절대 steady ns) 단일 정의다. "선행축 시각" 이나 "실제시각축 시각" 이라는 별도의 $t_c$ 는 없다 — 축은 시각 값이 아니라 **판정마다 비교하는 '지금'** 에 붙는다 (plan §3): 손 명령은 $now\ge t_{cmd}$ (실제, 손은 선행 보상 없음), DECEL 진입은 $now_{lead}\ge t_c$, rollout·γ 프로파일은 $now_{lead}$. v0.4 의 §4.11 ("실제 시각 축") 과 §5.2 주석 ("$t_c$ 는 선행축, $t_{cmd}$ 는 실제시각축") 의 모순은 이 규약으로 해소한다.
 - [R2]는 접촉 직전 일정 시간부터 예측 갱신을 멈췄다. 본 구현의 동결은 포구점·γ에만 적용하고, L2의 실시간 추정은 계속 사용한다(§4.6 둘째 항).
@@ -396,6 +396,8 @@ S1.5 이식 시 변경:
 **RT 소비자의 fail-closed 판정 (D-21, D-22, D-23).** 매 tick `Load()` 를 무조건 한 번 하고(D-21), payload 안에서 다음을 모두 검사한다: `activation_generation` 이 `IsCurrentGeneration()` 과 일치하는가, `generation` 이 RT 가 아는 vision epoch 과 일치하는가, `snapshot_sequence` 가 이전에 소비한 값보다 단조 증가했는가, `traj_recv_ns`·`rt_state_ns` 로 계산한 source 나이·state 나이가 각각의 상한 이내인가. 하나라도 실패하면 그 tick 은 새 payload 를 쓰지 않고 이전 유효 plan(또는 무효 상태)을 유지한다.
 
 **S6 구현 (2026-09-23).** 새 plan 판정은 `snapshot_sequence` 가 아니라 **`plan_id`** 로 한다 — `snapshot_sequence` 는 궤적의 것이라 같은 궤적에서 계산한 두 plan 을 가르지 못한다. `plan_id` 는 writer (계획기, 또는 테스트·sim 용 oracle) 의 단조 카운터이고, RT 는 (a) `valid` · (b) `activation_generation` 일치 · (c) `generation` 이 RT 가 마지막으로 받은 궤적의 트랙 epoch 과 일치 · (d) `plan_id` 가 이미 받은 값과 다름 · (e) 게시 나이 (`now − publish_ns`) ≤ `io.t_stale` · (f) `publish_ns` 가 RT 의 마지막 리셋 시각 이후 — 를 모두 만족할 때만 받는다. (f) 는 E-STOP 처럼 activation generation 을 올리지 않는 리셋을 덮는다. **token 불일치·나이 초과를 위한 새 `Reason` 은 만들지 않는다** (값 하나가 enum·`kAllReasons`·문자열·`CatchingState.msg` 네 곳에 걸리고 msg 는 D-20 동결): TRACKING 에서는 `kNoCatchablePlan` 으로 읽는다. RT 는 `plan_box_` 에 쓰지 않는다 — writer 는 하나뿐이다 (계획기와 oracle 이 함께 켜진 설정은 park).
+
+**S7.2 추가 — R-ADMIT (C-31, 설계 확정 2026-09-23).** 위 (a)~(f) 에는 $t_c$ 가 이미 지나쳤거나 너무 임박했는지를 보는 조건이 없다. **(g)** `t_c-now\le T_{freeze}` 이면 거부한다(`kTooLate`) — 이 조건이 없으면 $T_{freeze}$ 안의 $t_c$ 를 가진 plan 도 채택 다음 tick 에 곧바로 commit 하고, $t_c\le now$ 인 plan 은 몇 tick 만에 `DECEL` 까지 통과해 버린다. 파라미터 검증기는 `T_freeze ≥ T_close_e2e + T_arm + margin` 을 강제한다(§4.11 하한과 같은 식). fixture 는 `planner.freeze`(`T_freeze`)를 명시해야 한다 — 미지정이면 $T_{freeze}=0$ 이 되어 이 조건이 사실상 무력화된다.
 
 계획기 쪽도 대칭으로 검사한다: 계산 시작 시 최신 token 을 한 번 읽고, 게시 직전에 다시 읽어 그 사이 대체됐으면 게시를 버린다. 궤적 스냅샷의 token 과 공분산 버퍼의 token 이 다르면(궤적 N ↔ 공분산 N−1 혼합 포함) 그 조합은 쓰지 않는다.
 

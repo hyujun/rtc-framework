@@ -184,14 +184,17 @@ demo_catching_controller:
         T_close_e2e: 0.1037
 
     # ── Pocket geometry (L3 §6 `planner.hand.*`, TBD-HAND-04) ────────────────
-    # NOTHING READS THESE TWO KEYS YET. `ParseCatchingParams` puts
-    # `planner.hand.*` out of scope on purpose (see the header of
-    # rtc_controllers/include/rtc_controllers/catching/catching_params.hpp):
-    # their consumers are the L3 planner's gamma window and §4.6 budget gate,
-    # which land in S6. They are recorded here because G6-F asks for the
-    # derivation and the value to live together with the profile they were
-    # derived from — read them as documentation, not as configuration, and do
-    # not infer from their presence that the running system honours them.
+    # STALE COMMENT FIXED (docs correction, S7 commit 1): as of S6,
+    # `ParsePlannerParams` DOES read both keys into `PlannerParams::d_eff` /
+    # `r_cap` (rtc_controllers/include/rtc_controllers/catching/
+    # planner_params.hpp) and `lifecycle.cpp` requires both finite before the
+    # controller can configure. `ParseCatchingParams` still keeps
+    # `planner.hand.*` out of the generic L0 §5.3 macro-list validation (see
+    # the header of catching_params.hpp) — that is a different, narrower
+    # scope check, not "nothing reads these". Consumers: the L3 planner's
+    # gamma window (`rank_gates.hpp`) and the §4.6 budget gate. Recorded here
+    # because G6-F asks for the derivation and the value to live together
+    # with the profile they were derived from.
     #
     # MEASURED, S4.5 (2026-09-20), by closing this hand on a ball PLACED on the
     # preshape palm and shaking the result under +-g along each catch-frame
@@ -319,12 +322,11 @@ demo_catching_controller:
         provisional: true
 
       # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
-      # NOT READ AT RUNTIME YET, like `planner.hand` above: the consumer is the
-      # L3 planner's binding, which lands in S6.2. `ParseCatchPoseIkParams`
-      # (rtc_controllers) already parses exactly these keys, and the offline
-      # catchability map drives them through it, so they are live values under
-      # test — just not yet on a tick. Recorded here because G6-F asks the
-      # derivation and the value to live together.
+      # Read at configure by `ParseCatchPoseIkParams` (rtc_controllers) — the
+      # same parser the offline catchability map drives — and handed to the
+      # planner thread's search (S6-B, `ConfigureSearch`), so the map and the
+      # runtime solve alike. Recorded here because G6-F asks the derivation and
+      # the value to live together.
       #
       # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1499 throws
       # accepted from the best single wait pose at the old shared threshold 0.1,
