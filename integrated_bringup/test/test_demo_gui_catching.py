@@ -463,3 +463,51 @@ def test_the_tips_line_marks_contact_staleness_and_never_received():
     assert "thumb: CONTACT 0.73 N (4 ms)" in line
     assert "index: 0.05 N STALE (35 ms)" in line
     assert "middle: never" in line
+
+
+# ── S8 progress tally (plan §13 S8) ──────────────────────────────────────────
+RETREAT = MODE_NAMES.index("RETREAT")
+ARMED = MODE_NAMES.index("ARMED")
+HOLD = MODE_NAMES.index("HOLD")
+ABORT_SAFE = MODE_NAMES.index("ABORT_SAFE")
+
+
+def _feed(status, sequence):
+    """Feed (mode, outcome) pairs as consecutive ticks."""
+    for i, (mode, outcome) in enumerate(sequence):
+        status.update(make_msg(mode=mode, outcome=outcome, tick=100 + i), now_s=float(i) * 0.01)
+
+
+def test_each_retreat_entry_counts_one_attempt_under_the_verdict_it_carries():
+    missed = OUTCOME_NAMES.index("MISSED")
+    captured = OUTCOME_NAMES.index("CAPTURED")
+    status = CatchingStatus()
+    # Two Missed in a row: the verdict value never changes between them, so
+    # only the mode edge can tell them apart.
+    _feed(
+        status,
+        [
+            (HOLD, 0),
+            (RETREAT, missed),
+            (RETREAT, missed),  # still in RETREAT — not a new attempt
+            (ARMED, missed),
+            (HOLD, missed),
+            (RETREAT, missed),
+            (ARMED, missed),
+            (ABORT_SAFE, missed),
+            (RETREAT, captured),
+        ],
+    )
+    assert status.attempt_tally == {"MISSED": 2, "CAPTURED": 1}
+    assert status.tally_summary() == "attempts 3: CAPTURED 1 · MISSED 2"
+    assert any(
+        line == "this panel: attempts 3: CAPTURED 1 · MISSED 2" for line in status.lines(0.05)
+    )
+
+
+def test_a_panel_that_starts_inside_retreat_does_not_count_an_edge_it_did_not_see():
+    status = CatchingStatus()
+    _feed(status, [(RETREAT, OUTCOME_NAMES.index("MISSED")), (ARMED, 2)])
+    assert status.attempt_tally == {}
+    assert status.tally_summary() == ""
+    assert not any(line.startswith("this panel:") for line in status.lines(0.02))

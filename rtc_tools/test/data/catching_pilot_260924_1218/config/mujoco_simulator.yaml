@@ -1,0 +1,6 @@
+# Cut by make_fixture.py from ur5e_p1b/mujoco_simulator.yaml
+mujoco_simulator:
+  ros__parameters:
+    projectile_ball:
+      mass_kg: 0.057
+      radius_m: 0.0335

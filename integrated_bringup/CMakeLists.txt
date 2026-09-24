@@ -1641,6 +1641,7 @@ if(BUILD_TESTING)
   # description instead of reading it.
   ament_add_pytest_test(test_sim_overlay test/test_sim_overlay.py)
   ament_add_pytest_test(test_catching_sim_trials test/test_catching_sim_trials.py)
+  ament_add_pytest_test(test_catching_sim_trials_s8 test/test_catching_sim_trials_s8.py)
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
   ament_add_pytest_test(test_launch_session_wiring

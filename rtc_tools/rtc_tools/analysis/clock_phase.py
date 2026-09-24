@@ -25,19 +25,28 @@ between throws as clock error and delta_max would grow with the gap rather than
 with the defect. Trials are cut by ``launch_seq`` and ``ball_active``, which the
 lane records for this reason.
 
-**The verdict is NOT_EVALUATED and this tool does not change that.** The
-validity condition
+**delta is a COVARIATE, not a pass/fail (D-S8-4 (c), superseding the earlier
+NOT_EVALUATED-verdict stance).** The validity condition
 
     v_max * delta_max + 0.5 * a_bound * delta_max^2 <= eps_clk_alloc
     max pause                                       <= eps_clk_alloc / v_max
 
-needs ``eps_clk_alloc``, the share of the L3 §4.6 error budget given to the clock
-term, and that share depends on ``r_cap`` (TBD-HAND-04), which is not decided.
-So the tool reports the distributions and *inverts* the condition instead: for
-the observed trials it prints the smallest ``eps_clk_alloc`` that would admit a
-given fraction of them. That number is a **proposal for the user to confirm**
-(plan §5, §7.3) — reading it back as a measured threshold would be circular, and
-the tool says so in its own output rather than leaving the reader to remember.
+still needs ``eps_clk_alloc``, the share of the L3 §4.6 error budget given to
+the clock term. That share is ``r_cap / n_sigma`` at the target speed and is
+provisional (plan §5.1 re-judgement) — this tool does not pick it, and there is
+no verdict here. What changed is what the numbers are *for*: D-S8-4 (c) found
+that a direct delta-vs-outcome correlation has no power at the trial counts
+S8 collects (n 25-50; r 0.3 needs n ~85), so instead of chasing a threshold
+this tool reports the **distributions** — per-trial ``delta_max``, max-pause
+percentiles — as covariates that S8-B/E correlate against catch outcomes and
+against a same-seed load A/B (affinity-on vs artificial load), and, only when
+the caller supplies a candidate ``eps_clk_alloc`` on the CLI, the fraction of
+observed trials that would satisfy the condition under it — reported as
+"valid under eps", explicitly not a verdict. The tool also still prints the
+smallest ``eps_clk_alloc`` that would admit a given fraction of the observed
+trials (the S3.1a inversion); that number remains a **proposal for the user to
+confirm** (plan §5, §7.3), not something this run adopts, and the output says
+so.
 """
 
 from __future__ import annotations
@@ -155,6 +164,60 @@ def quantile(values: list[float], q: float) -> float:
     return ordered[idx]
 
 
+@dataclass
+class CovariateSummary:
+    """D-S8-4 (c): what this tool reports about clock phase error now that it is
+    a covariate rather than a pass/fail. ``valid_fraction`` is populated only
+    when the caller supplies a candidate ``eps_clk_alloc`` (``eps_mm``) — it is
+    explicitly NOT a verdict: D-3 is judged by a same-seed load A/B, not a threshold.
+    """
+
+    n_trials: int
+    delta_max_p50_s: float
+    delta_max_p95_s: float
+    delta_max_max_s: float
+    max_pause_p50_s: float
+    max_pause_p95_s: float
+    max_pause_max_s: float
+    eps_mm: float | None = None
+    valid_count: int | None = None
+    valid_fraction: float | None = None
+
+
+def covariate_summary(
+    trials: list[Trial], v_max: float, a_bound: float, eps_mm: float | None = None
+) -> CovariateSummary:
+    """Per-trial delta_max / max-pause distributions, plus an optional
+    valid-under-eps fraction (plan §5's condition, ``required_eps``).
+
+    This does not decide anything. The distributions are what S8-B/E correlate
+    against catch outcomes and against a same-seed load A/B (D-S8-4 (c) —
+    a direct delta-vs-outcome correlation has no statistical power at the
+    trial counts S8 collects). The fraction, when computed, describes the
+    OBSERVED trials under a CANDIDATE eps; reading it back as a pass rate
+    would make the threshold a restatement of the measurement that produced
+    it, which is exactly what D-S8-4 (c) moved away from.
+    """
+    deltas = [t.delta_max_s for t in trials]
+    pauses = [t.max_pause_s for t in trials]
+    out = CovariateSummary(
+        n_trials=len(trials),
+        delta_max_p50_s=quantile(deltas, 0.5),
+        delta_max_p95_s=quantile(deltas, 0.95),
+        delta_max_max_s=max(deltas) if deltas else math.nan,
+        max_pause_p50_s=quantile(pauses, 0.5),
+        max_pause_p95_s=quantile(pauses, 0.95),
+        max_pause_max_s=max(pauses) if pauses else math.nan,
+    )
+    if eps_mm is not None and trials:
+        eps_m = eps_mm * 1e-3
+        valid = [t for t in trials if required_eps(t, v_max, a_bound) <= eps_m]
+        out.eps_mm = eps_mm
+        out.valid_count = len(valid)
+        out.valid_fraction = len(valid) / len(trials)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("csv", type=Path, help="clock lane CSV (clock_lane.csv_path)")
@@ -175,6 +238,16 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=0.95,
         help="fraction of trials the proposed eps must admit (plan: 1 - 5%%)",
+    )
+    parser.add_argument(
+        "--eps-mm",
+        type=float,
+        default=None,
+        help=(
+            "candidate eps_clk_alloc [mm] to report a 'valid under eps' COVARIATE "
+            "fraction against (D-S8-4 (c)); omit to skip that line — this is never "
+            "a verdict (D-S8-4 (c))"
+        ),
     )
     parser.add_argument("--plot", type=Path, default=None, help="write a delta/pause plot here")
     args = parser.parse_args(argv)
@@ -225,11 +298,23 @@ def main(argv: list[str] | None = None) -> int:
         f"  eps_clk_alloc that admits {args.admit * 100:.0f}% of trials : "
         f"{proposal * 1e3:.3f} mm  (v_max {args.v_max} m/s, a_bound {args.a_bound:.2f} m/s^2)"
     )
+    print("  (a PROPOSAL for the user to confirm — plan §5, §7.3 — not a threshold")
+    print("  this run adopts)")
+
+    summary = covariate_summary(stats.trials, args.v_max, args.a_bound, eps_mm=args.eps_mm)
+    if summary.valid_fraction is not None:
+        print()
+        print(
+            f"  valid under eps_clk_alloc {args.eps_mm:.3f} mm (v_max {args.v_max} m/s) : "
+            f"{summary.valid_count}/{summary.n_trials} trials "
+            f"({summary.valid_fraction * 100:.1f}%)  — COVARIATE, not a verdict"
+        )
     print()
-    print("  VERDICT: NOT_EVALUATED — eps_clk_alloc is not decided (it needs r_cap,")
-    print("  TBD-HAND-04). The number above is a PROPOSAL for the user to confirm")
-    print("  (plan §5, §7.3); adopting it because this run produced it would make the")
-    print("  threshold a restatement of the measurement rather than a budget.")
+    print("  S3.1a / D-3: clock phase error is a COVARIATE (D-S8-4 (c)), not a")
+    print("  pass/fail — eps_clk_alloc is a provisional budget (plan §5.1), and")
+    print("  a direct delta-vs-outcome correlation has no power at S8's trial counts.")
+    print("  The distributions above are what S8-B/E correlate against catch outcomes")
+    print("  and against a same-seed load A/B; nothing here is a gate.")
 
     if args.plot is not None:
         _write_plot(args.plot, stats.trials)
@@ -270,7 +355,7 @@ def _write_plot(path: Path, trials: list[Trial]) -> None:
     for row in axes:
         for ax in row:
             ax.grid(alpha=0.3)
-    fig.suptitle("D-3 clock phase error per launch trial (verdict: NOT_EVALUATED)")
+    fig.suptitle("D-3 clock phase error per launch trial (covariate, not a verdict — D-S8-4 (c))")
     fig.tight_layout()
     fig.savefig(path, dpi=120)
     plt.close(fig)

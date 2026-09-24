@@ -1237,6 +1237,50 @@ TEST_P(ShippedCatchingProfile, RunsThePlannerThroughTheWholeLifecycle) {
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
+TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
+  // S8-A: the trial runner reads the wait pose, T_freeze and the lead axis
+  // from these read-only parameters instead of the installed YAML, because a
+  // sim overlay changes them without changing the file. So the loaded values
+  // are MOVED off the shipped ones here: a mirror that re-read the file (or a
+  // default) would still pass an equality check against the file.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);  // the hand's; the wait pose is the arm's
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  YAML::Node planner = node["catching"]["planner"];
+  std::vector<double> wait = planner["wait_pose"].as<std::vector<double>>();
+  ASSERT_FALSE(wait.empty()) << profile;
+  wait[0] += 0.01;
+  planner["wait_pose"] = wait;
+  const double t_freeze = planner["freeze"]["T_freeze"].as<double>() + 0.01;
+  planner["freeze"]["T_freeze"] = t_freeze;
+  // Lead on with the shipped T_arm (0): the freeze-window check is unchanged,
+  // so this is the only mirrored value that moves the lead switch alone.
+  node["catching"]["joint_cmd"]["lag"]["lead_enable"] = true;
+  const double t_arm = node["catching"]["joint_cmd"]["lag"]["T_arm"].as<double>();
+
+  auto node_handle = NodeWithProfile("catching_shipped_mirror_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_FALSE(ctrl.IsSimOnlyDisabled());
+
+  const auto mirrored = node_handle->get_parameter("planner.wait_pose").as_double_array();
+  ASSERT_EQ(mirrored.size(), wait.size());
+  for (std::size_t i = 0; i < wait.size(); ++i) {
+    EXPECT_DOUBLE_EQ(mirrored[i], wait[i]) << profile << " joint " << i;
+  }
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.freeze.T_freeze").as_double(), t_freeze);
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("joint_cmd.lag.T_arm").as_double(), t_arm);
+  EXPECT_TRUE(node_handle->get_parameter("joint_cmd.lag.lead_enable").as_bool());
+  // Read-only, like the hand profile: the runner must not be able to "fix" a
+  // mismatch by writing the value it expected.
+  const auto result = node_handle->set_parameter(rclcpp::Parameter("planner.freeze.T_freeze", 0.5));
+  EXPECT_FALSE(result.successful);
+}
+
 TEST_P(ShippedCatchingProfile, RefusesToActivateThePlannerUnderTheMpcOffProfile) {
   // Same gate, same place as DemoWbc's (#350): on_activate's first statement,
   // before any side effect — above all, no planner thread on a core the

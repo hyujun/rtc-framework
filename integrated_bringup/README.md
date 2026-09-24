@@ -605,7 +605,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 - **상태 토픽 (S5.4, D-20)**: `/<config_key>/catching_state` (`rtc_msgs/CatchingState`, `KEEP_LAST(1)`). 소유 형태는 `WbcState`·`GraspState` 와 같고 `PublishRole` 은 늘리지 않는다 (E-11). **필드는 S5~S9 superset 으로 한 번 동결**돼 있으며 이후 단계는 값만 채운다 — 단계마다 열이 늘면 한 단계 전 bag 을 못 읽는다. **모든 tick 이 body 를 싣는다** (PROC-7): E-STOP·stale·plan 없음·abort tick 도 발행하고, 그 tick 에 계산하지 않은 블록은 직전 값을 남기지 않고 지운다. 그래서 값이 고정돼 보이면 컨트롤러가 정말 같은 값을 다시 계산한 것이다
 - **tick 레코드 CSV (S5.4)**: `catching_diag.csv` (`logs:` 의 `integrated_bringup/CatchingDiagLog`). 상태 토픽과 **같은 POD 한 벌**에서 나오므로 파일의 숫자와 화면의 숫자가 갈릴 수 없다. tick 마다 한 행이라 **tick 간극은 드롭된 행**을 뜻한다 (#234 P-20). `plot_rtc_log catching_diag.csv` 가 기준 vs 실현 가속도·추종 오차·solve time·슈퍼바이저 모드를 한 시간축에 그린다
 - **GUI**: `demo_controller_gui` Control 탭의 Catching 패널 — 모드·사유, 입력 lane (n·generation·sequence·수신 나이·지평, 거부 카운터는 0 이 아닌 것만), plan, 추종 오차·CLIK 상태, 그리고 Arm/Disarm. **관측된 무장과 요청된 무장을 따로 보여준다** — tick 이 E-STOP·fault 에서 latch 를 내리므로 파라미터 set 이 성공해도 무장됐다는 증거가 아니고, 둘이 갈리는 순간이 봐야 할 상태다
-- **읽기 전용 미러 파라미터**: `hand.q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`/`rho_eps`/`T_close_e2e`·`control.dt`·`diagnostic.hand_step` — 오프프로세스 분석기가 YAML 이 아니라 **컨트롤러가 읽은 값**을 쓰게 하려는 것이다
+- **읽기 전용 미러 파라미터**: `hand.q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`/`rho_eps`/`T_close_e2e`·`control.dt`·`diagnostic.hand_step`·`planner.wait_pose`·`planner.freeze.T_freeze`·`joint_cmd.lag.T_arm`·`joint_cmd.lag.lead_enable` (뒤 넷은 S8-A 시행 러너용 — §Catching sim trials) — 오프프로세스 분석기가 YAML 이 아니라 **컨트롤러가 읽은 값**을 쓰게 하려는 것이다
 
 ### 로깅 레벨
 
@@ -838,25 +838,36 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 
 `catching_sim_trials` 는 떠 있는 sim 을 구동만 한다. 투척마다 다음을 한다.
 
-1. FAULT 면 리셋 → 무장 (`catching.enable`) → ARMED 대기 (컨트롤러의 homing). ARMED 순간의 측정 자세가 대기 자세에서 `--tol-q` / `--tol-qd` 를 넘으면 시행을 거부한다.
-2. `/sim/launch_ball_at` 으로 투척하고 ground truth 와 모드 전이를 기록한다.
+1. FAULT 면 리셋 → 무장 (`catching.enable` 을 false → true 로 — 컨트롤러가 E-STOP·fault 에서 스스로 latch 를 내려도 파라미터는 true 로 남을 수 있어 같은 값의 재설정은 요청이 되지 않는다) → ARMED 대기 (컨트롤러의 homing). ARMED 순간의 측정 자세가 대기 자세에서 `--tol-q` / `--tol-qd` 를 넘으면 시행을 거부한다.
+2. `/sim/launch_ball_at` 으로 투척하고 (spin ω 도 명시 — 기본 0) ground truth 와 모드 전이를 기록한다.
 3. 순환이 닫히면 (RETREAT 뒤 ARMED) 끝낸다. IDLE·FAULT 로 가거나 `--record-s` (기본 12 s) 가 지나도 끝낸다. 시행의 판정은 RETREAT 진입 때 발행된 `outcome` 이다 (L7 §4.7).
 4. 공을 리셋한다.
 
-관절 이름·상태 토픽·대기 자세는 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). 투척은 기준 투척 `--n-ref` 번 뒤에 섭동 투척 `--n-pert` 번이다 (속력 ×U(0.9, 1.1), 측방 U(−0.3, 0.3) m/s, `--seed`).
+관절 이름·상태 토픽은 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). **대기 자세·`T_freeze`·`T_arm`·`lead_enable`·`control.dt` 는 떠 있는 컨트롤러의 read-only 미러 파라미터에서 읽는다** (S8-A) — `sim_overlay:=` 가 이 값들을 바꿔도 설치된 YAML 은 그대로이기 때문이다. 미러가 없으면 (컨트롤러가 configure 에서 park 됨 — 그 로그가 값을 댄다) 시작하지 않는다. 미러 값은 `<out>/run_meta.json` 과 시행 기록마다 `controller_mirror` 로 남는다.
+
+투척 계열은 `--dist` 가 고른다.
+
+| `--dist` | 투척 | 용도 |
+|---|---|---|
+| `reference` (기본, S6-C 이후 불변) | 기준 투척 `--n-ref` 번 뒤에 섭동 투척 `--n-pert` 번 (속력 ×U(0.9, 1.1), 측방 U(−0.3, 0.3) m/s, `--seed`) | 회귀 세트. 같은 투척의 반복은 iid 표본이 아니므로 성공률 입력이 아니다 |
+| `s35b` (`ur5e_p1b` 만) | S3.5b 90 % 상자 (거리 0.9–1.0 m · 릴리스 0.15–0.25 m · 방향 ±6° · 속력 4.65–4.85 m/s · 앙각 62–64°) 에서 `--n` 번 균등 iid, `--seed` 로 재현 | 동결 분포 (dynamic_catching plan §4.4 S8, D-S8-2). 발사 상태는 `rtc_tools.analysis.catchability_map` 의 격자 기하 그대로다. 표본의 축 값·seed·순번이 시행 기록에 남는다 |
+
+**측정 lane (`sim_lanes:=true`).** sim 의 clock 위상 lane 과 공 접촉 truth lane 은 노드 파라미터라 기동 때만 읽힌다. `sim_lanes:=true` 는 둘을 켜고 `<session>/sim/{clock_lane,ball_contact_lane}.csv` 에 쓴다 — 시행의 lane 이 그 세션의 컨트롤러 CSV 옆에 남아 `catching_trials` (`rtc_tools`) 가 둘을 잇는다. 기본은 off (YAML 그대로).
 
 ```bash
 # 1) sim (계획기는 enable_mpc:=true 가 필요하다 — mpc_off 면 활성화 거부)
-ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false use_cpu_affinity:=false enable_mpc:=true
+ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false use_cpu_affinity:=false enable_mpc:=true sim_lanes:=true
 # 2) 공 추정기 (위 sim_ur5e_p1b 절, ball_perception 의 workspace 를 추가 source)
 # 3) 포구 컨트롤러로 전환
 ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
   "{activate_controllers: [demo_catching_controller], deactivate_controllers: [demo_joint_controller], strictness: 1, timeout: {sec: 3}}"
 # 4) 투척 — <out>/truth_trial_NN.csv (공 ground truth) + trial_results.json (모드 전이·판정·정렬 오차)
 ros2 run integrated_bringup catching_sim_trials <out> --n-ref 15 --n-pert 10
+#    동결 분포에서 25 번 (seed 로 재현)
+ros2 run integrated_bringup catching_sim_trials <out> --dist s35b --n 25 --seed 1
 ```
 
-`trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다. 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다.
+`trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다. 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다. `armed_at_throw` 는 투척 직전 컨트롤러가 발행한 무장 상태다. demo_controller_gui 의 Catching 패널은 같은 기준 (RETREAT 진입 때의 판정) 으로 이 패널이 본 시행 수를 판정별로 센다 (`this panel: attempts N: …`, 패널을 다시 띄우면 새로 센다).
 
 ---
 

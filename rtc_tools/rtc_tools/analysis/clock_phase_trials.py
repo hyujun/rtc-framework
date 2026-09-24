@@ -18,8 +18,10 @@ ball stops being active, and delta accumulates from the launch instant, so a
 trial that ran until the next launch would report the gap between throws as
 clock error.
 
-This does not decide anything. It produces the CSV; the verdict stays
-NOT_EVALUATED until ``eps_clk_alloc`` is chosen (plan §5).
+This does not decide anything. It produces the CSV; ``analyze_clock_phase``
+reports clock phase error as a COVARIATE, not a pass/fail (D-S8-4 (c)) —
+``eps_clk_alloc`` is still not chosen (it needs r_cap, TBD-HAND-04), but the
+tool no longer treats that as a verdict pending a threshold.
 """
 
 from __future__ import annotations

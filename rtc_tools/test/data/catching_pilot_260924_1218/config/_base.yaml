@@ -1,0 +1,18 @@
+# Cut by make_fixture.py from ur5e_p1b/_base.yaml
+/**:
+  ros__parameters:
+    urdf:
+      package: hand_description
+      path: robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro
+      extra_frames:
+        catch_frame:
+          parent: l_palm_link
+          xyz:
+          - 0.015
+          - 0.145
+          - 0.052
+          rpy:
+          - 0.0
+          - 0.0
+          - 0.0
+          provisional: false
