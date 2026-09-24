@@ -224,6 +224,16 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # h
 정확히 출하 씬입니다. `demo_inference_controller` 의 정책이 학습된 씬(바닥 위 원통 1개 + 학습
 reset 자세)은 `inference_pole` 이고, 물체 자산은 `robot_descriptions/objects/pole` 에 있습니다.
 
+dynamic_catching S8-B 의 lead 보상 소거실험은 컨트롤러 섹션 (`integrated_rt_controller`) 을 쓰는 overlay
+네 개로 돕니다: `catch_lead_on` · `catch_lead_off` · `catch_lead_on_gamma0` · `catch_lead_off_gamma0`
+(sim 팔의 1차 지연 0.05 s 를 `joint_cmd.lag.T_arm` 으로 주고, 그 하한에 맞춰 `T_freeze` 를 0.37 로 올립니다.
+γ0 두 개는 `planner.gamma.grid: [0.0]` 에 `planner.hand.d_eff: 10.0` 을 더합니다 — grid 만으로는 γ 창 하한이
+대신 쓰입니다). 컨트롤러 키는 경로가 한 단계만 어긋나도 **경고 없이 무시되고 출하값으로 돌기 때문에**,
+기동 로그의 `commit at t_c − 0.370 s` 로 적용을 확인합니다. sim 팔 지연 0.05 s 자체는 overlay 가 아니라
+`config/ur5e_p1b/mujoco_simulator.yaml` 의 서보 게인 (`use_yaml_servo_gains: true`, kd/kp = 0.05 s) 이 정합니다 —
+MJCF 게인 그대로면 0.2 s 입니다. 근거는 `catch_lead_on.yaml` 헤더, 경로 고정은
+`test/test_catch_lead_overlays.py` 가 갖습니다.
+
 ```bash
 export RTC_POLICY_DIR=/path/to/ObjectHandGraspDeployMulti5-Export-v0   # 모델은 repo 밖
 ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \

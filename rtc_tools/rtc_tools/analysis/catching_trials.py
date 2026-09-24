@@ -15,11 +15,12 @@ them into one row per trial:
   first-order lag (its peak sits well below τ), which is why it is not offered.
 * **t_c decomposition** — at the plan's catch instant ``t_c`` (read on the first
   COMMITTED tick as ``t + plan_t_c_s``; the column is the time REMAINING):
-  CLIK ``‖FK(q_cmd) − ref‖``, servo ``‖FK(q_meas) − FK(q_cmd)‖``, prediction
-  ``‖p_c − p_true(t_c)‖`` and the total; the ball's arrival at the hand relative
-  to t_c; the PLANNED γ_f (``plan_gamma_f`` — ``ref_gamma`` jumps to 1.0 on the
-  DECEL entry tick and is not the plan); first-plan latency; plan switches
-  during APPROACH.
+  CLIK ``‖FK(q_cmd) − ref‖``, servo ``‖FK(q_meas(t_c)) − FK(q_cmd(t_c − T_lead))‖``,
+  prediction ``‖p_c − p_true(t_c)‖`` and the total; the ball's arrival at the
+  hand relative to t_c; the PLANNED γ_f (``plan_gamma_f`` — ``ref_gamma`` jumps
+  to 1.0 on the DECEL entry tick and is not the plan); first-plan latency; plan
+  switches during APPROACH. See :func:`decompose_at_tc` for why the command
+  side is read ``T_lead`` earlier (the actuation-lag lead, diag ``t_arm_s``).
 * **truth success** (G8-D, plan §1a) and the supervisor-vs-truth confusion
   matrix — see :func:`truth_success`.
 * **D-3 covariate** (plan §5, D-S8-4 (c)) from the clock lane, reusing
@@ -603,6 +604,10 @@ DIAG_COLUMNS = (
     "ref_x_z",
     "hand_phase",
 )
+# The actuation-lag lead the RT tick ran with (L5 §4.5, ``t_arm_s``; 0 when
+# ``joint_cmd.lag.lead_enable`` is off). Optional so a diag recorded before the
+# column existed still reads — see :func:`lead_per_tick` for the fallback.
+DIAG_LEAD_COLUMN = "t_arm_s"
 
 
 def diag_columns(header: Sequence[str]) -> list[str]:
@@ -611,7 +616,8 @@ def diag_columns(header: Sequence[str]) -> list[str]:
     if missing:
         raise SystemExit(f"catching diag lacks column(s) {missing}")
     joints = [c for c in header if c.startswith(("q_cmd_", "q_meas_"))]
-    return list(DIAG_COLUMNS) + joints
+    lead = [DIAG_LEAD_COLUMN] if DIAG_LEAD_COLUMN in header else []
+    return list(DIAG_COLUMNS) + lead + joints
 
 
 def arm_joints_from_diag(columns: Sequence[str]) -> list[str]:
@@ -708,6 +714,41 @@ def recorded_dt(doc: Mapping, t: np.ndarray) -> tuple[float, str]:
         if value is not None:
             return value, "trial_results.json control.dt"
     return float(np.median(np.diff(t))), "median diff of t_relative_s"
+
+
+def _mirror_lead(meta: Mapping) -> float | None:
+    """The lead the runner's mirror says the controller was configured with."""
+    mirror = meta.get("controller_mirror")
+    if not isinstance(mirror, Mapping) or "joint_cmd.lag.lead_enable" not in mirror:
+        return None
+    if not mirror["joint_cmd.lag.lead_enable"]:
+        return 0.0
+    return float(mirror.get("joint_cmd.lag.T_arm", math.nan))
+
+
+def lead_per_tick(diag, meta: Mapping) -> tuple[np.ndarray, str]:
+    """``T_lead`` per diag row [s] and where it came from.
+
+    The diag column is what the RT tick actually used, so it wins. Without it
+    (a diag older than the column) the runner's mirror decides, and with
+    neither the lead is 0 — the only configuration such a session can have
+    run, since lead compensation shipped after both. A column that disagrees
+    with the mirror means the trials directory belongs to another session, and
+    every lead-aware number would be read on the wrong axis — refused.
+    """
+    mirror = _mirror_lead(meta)
+    if DIAG_LEAD_COLUMN in diag.columns:
+        lead = diag[DIAG_LEAD_COLUMN].to_numpy(float)
+        if mirror is not None and lead.size and not np.allclose(lead, mirror, atol=1e-6):
+            raise SystemExit(
+                f"diag {DIAG_LEAD_COLUMN} {np.unique(lead)} disagrees with the runner's "
+                f"mirror lead {mirror} — trials directory from another session?"
+            )
+        return lead, f"diag {DIAG_LEAD_COLUMN}"
+    n = len(diag)
+    if mirror is not None:
+        return np.full(n, mirror), "runner mirror joint_cmd.lag (no diag column)"
+    return np.zeros(n), "0 (no diag column, no runner mirror)"
 
 
 @dataclass
@@ -1017,6 +1058,9 @@ class TrialContext:
     q_cmd: np.ndarray
     q_meas: np.ndarray
     fk: CatchFrameFk
+    # Actuation-lag lead per tick [s] (``lead_per_tick``): the command and the
+    # reference written at t are aimed at t + t_lead.
+    t_lead: np.ndarray | None = None
     _cache: dict = field(default_factory=dict)
 
     def fk_meas(self, ticks) -> np.ndarray:
@@ -1042,6 +1086,21 @@ def decompose_at_tc(
 ) -> dict:
     """The t_c gap decomposition of one trial (model world, metres → mm).
 
+    **Lead.** With the actuation-lag lead on, the RT tick samples the reference
+    (and the DECEL and γ-ramp clocks) at ``now + T_lead``, so ``q_cmd`` and
+    ``ref`` written at tick t are aimed at ``t + T_lead`` (L5 §4.5). The command
+    that was meant for t_c is therefore the one written at ``t_c − T_lead``
+    (tick ``kl``), and the decomposition reads the command side there:
+
+        FK(q_meas(t_c)) − p_true(t_c) = [FK(q_meas(t_c)) − FK(q_cmd(kl))]   servo
+                                      + [FK(q_cmd(kl)) − ref(kl)]         CLIK
+                                      + [ref(kl) − p_true(t_c)]           ref_vs_true
+
+    ``cmd_meas_gap_mm`` is the same-tick ``‖FK(q_meas(t_c)) − FK(q_cmd(t_c))‖``,
+    recorded but not a servo error under lead: it adds the intended lead to the
+    residual, so lead-on reads WORSE even when the arm is closer (S8-B pre-check,
+    #537 5808509678). With the lead off ``kl == kc`` and the two are equal.
+
     ``pred`` / ``total`` / ``ref_vs_true`` compare against where the ball WOULD
     be at t_c in free flight: when it has already hit the robot before t_c
     (``t_impact``), the recorded position at t_c is a rebound, not the target.
@@ -1055,8 +1114,10 @@ def decompose_at_tc(
             "t_commit",
             "t_c",
             "gamma_f_planned",
+            "t_lead_s",
             "clik_mm",
             "servo_mm",
+            "cmd_meas_gap_mm",
             "pred_mm",
             "total_mm",
             "ref_vs_true_mm",
@@ -1073,11 +1134,19 @@ def decompose_at_tc(
         return rec
     t_c = float(t[k] + ctx.plan_t_c[k])  # plan_t_c_s is t_c − now
     kc = int(np.argmin(np.abs(t - t_c)))
-    rec.update(t_commit=float(t[k]), t_c=t_c, gamma_f_planned=float(ctx.plan_gamma_f[k]))
-    f_cmd = ctx.fk_cmd(kc)[0]
+    t_lead = 0.0 if ctx.t_lead is None else float(ctx.t_lead[k])
+    kl = int(np.argmin(np.abs(t - (t_c - t_lead)))) if t_lead > 0.0 else kc
+    rec.update(
+        t_commit=float(t[k]),
+        t_c=t_c,
+        gamma_f_planned=float(ctx.plan_gamma_f[k]),
+        t_lead_s=t_lead,
+    )
+    f_cmd = ctx.fk_cmd(kl)[0]
     f_meas = ctx.fk_meas(kc)[0]
-    rec["clik_mm"] = float(np.linalg.norm(f_cmd - ctx.ref[kc]) * 1e3)
+    rec["clik_mm"] = float(np.linalg.norm(f_cmd - ctx.ref[kl]) * 1e3)
     rec["servo_mm"] = float(np.linalg.norm(f_meas - f_cmd) * 1e3)
+    rec["cmd_meas_gap_mm"] = float(np.linalg.norm(f_meas - ctx.fk_cmd(kc)[0]) * 1e3)
     if truth is None:
         return rec
     p_w, v_w, rms, t_last = truth.free_flight([t_c], t_impact)
@@ -1086,7 +1155,7 @@ def decompose_at_tc(
     p_true = ctx.fk.to_model(p_w[0])
     rec["pred_mm"] = float(np.linalg.norm(ctx.plan_p_c[kc] - p_true) * 1e3)
     rec["total_mm"] = float(np.linalg.norm(f_meas - p_true) * 1e3)
-    rec["ref_vs_true_mm"] = float(np.linalg.norm(ctx.ref[kc] - p_true) * 1e3)
+    rec["ref_vs_true_mm"] = float(np.linalg.norm(ctx.ref[kl] - p_true) * 1e3)
     rec["ball_speed_tc"] = float(np.linalg.norm(v_w[0]))
     # Arrival: the instant of closest approach between ball and measured catch
     # frame within ±window of t_c, evaluated on every tick.
@@ -1238,6 +1307,7 @@ def analyse_session(
     trials, doc = load_trials(trials_dir)
     t_all = diag["t_relative_s"].to_numpy(float)
     dt, dt_source = recorded_dt(doc, t_all)
+    lead_all, lead_source = lead_per_tick(diag, doc["meta"])
     fk = CatchFrameFk(urdf_text, joints, profile)
 
     hand_bodies = set(urdf_subtree(urdf_text, profile.catch_frame.parent))
@@ -1277,6 +1347,7 @@ def analyse_session(
             q_cmd=w[[f"q_cmd_{j}" for j in joints]].to_numpy(float),
             q_meas=w[[f"q_meas_{j}" for j in joints]].to_numpy(float),
             fk=fk,
+            t_lead=lead_all[sel],
         )
         lag_t.append(ctx.t)
         lag_cmd.append(ctx.q_cmd)
@@ -1344,6 +1415,8 @@ def analyse_session(
             settings.seed,
         )
     summary = _summarise(rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source)
+    summary["t_lead_s_range"] = _range(rows, "t_lead_s")
+    summary["t_lead_source"] = lead_source
     summary["planner_events"] = _planner_events(ctl)
     return SessionResult(rows, lag, summary)
 
@@ -1444,7 +1517,9 @@ def _summarise(rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_s
             for k in (
                 "clik_mm",
                 "servo_mm",
+                "cmd_meas_gap_mm",
                 "pred_mm",
+                "ref_vs_true_mm",
                 "total_mm",
                 "arrival_ms",
                 "gamma_f_planned",
@@ -1569,8 +1644,10 @@ def report(result: SessionResult) -> str:
             f"{x.ci_high_s * 1e3:6.1f}]  R² {x.r2:.3f}  n {x.n_ticks}"
         )
     lines.append(
-        f"t_c medians [mm]: CLIK {med['clik_mm']:.1f} · servo {med['servo_mm']:.1f} · "
-        f"pred {med['pred_mm']:.1f} · total {med['total_mm']:.1f}; arrival − t_c "
+        f"t_c medians [mm] (T_lead {s.get('t_lead_s_range')} s, {s.get('t_lead_source')}): "
+        f"CLIK {med['clik_mm']:.1f} · servo {med['servo_mm']:.1f} (same-tick cmd–meas gap "
+        f"{med['cmd_meas_gap_mm']:.1f}) · pred {med['pred_mm']:.1f} · total "
+        f"{med['total_mm']:.1f}; arrival − t_c "
         f"{med['arrival_ms']:+.1f} ms; first hand contact − t_c "
         f"{med['contact_t_minus_tc_ms']:+.1f} ms"
     )

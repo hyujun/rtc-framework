@@ -417,6 +417,11 @@ demo_catching_controller:
       # told to be. PROVISIONAL: a placeholder until a run on this robot shows
       # what the real tracking gap looks like.
       track_err_abort: 0.3
+      # The S7 values, written here so this file owns them rather than the
+      # parser defaults. S8-B measured only ur5e_p1b (where sat_ticks is 80);
+      # S8-D re-measures both on this robot.
+      stale_committed_max_s: 0.10
+      sat_ticks: 60
       # Consecutive failed solves before the controller latches a fault
       # (L7 §4.2). Three ticks of a solve that cannot succeed is not a
       # transient, and retrying it forever is how a controller ends up

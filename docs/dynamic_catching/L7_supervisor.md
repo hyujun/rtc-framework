@@ -116,7 +116,7 @@
 | `GAMMA_DERATED` | v0.5 에서 삭제 — γ 하향은 v1 범위 밖 (D-8, §4.6) | – | – |
 | `SAT_NEAR_TC` | v0.5 에서 삭제 — `REF_SATURATED` 로 대체 (D-8) | – | – |
 | `JOINT_CONFLICT` | L5 `bound_conflict` | 전 구간 | `ABORT_SAFE` (QP 비의존 경로) |
-| `TRACK_ERR` | $\Vert q-q_c(now-T_{arm})\Vert>$ 임계. ⚠️ **구현 편차 (2026-09-24 확인)**: `DemoCatchingController::UpdateTrackError` 는 지연 링 없이 $\Vert q_{meas}-q_c(now)\Vert$ 를 쓴다 (§5.2 의 링은 구현되지 않았다) — 선행을 켜도 명령이 측정보다 T_arm 앞서므로 피크가 줄지 않는다 (sim 관측 ~0.77 rad, `track_err_abort` 1.54 가 이 정의 위의 값). 정의를 링으로 바꾸는 것은 RT 변경이라 S8 범위 밖 (S8-B 에서 lead on 피크를 재측정) | 전 구간 | `ABORT_SAFE` |
+| `TRACK_ERR` | $\Vert q-q_c(now-T_{arm})\Vert>$ 임계. ⚠️ **구현 편차 (2026-09-24 확인)**: `DemoCatchingController::UpdateTrackError` 는 지연 링 없이 $\Vert q_{meas}-q_c(now)\Vert$ 를 쓴다 (§5.2 의 링은 구현되지 않았다) — 선행을 켜도 명령이 측정보다 T_arm 앞서므로 피크가 줄지 않는다 (τ 0.2 sim 관측 ~0.77 rad → 종전 `track_err_abort` 1.54). 정의를 링으로 바꾸는 것은 RT 변경이라 S8 범위 밖. S8-B (τ 0.05 sim) 의 t_c 전 피크는 lead on·off 모두 0.21 rad 라 p1b 임계는 0.42 | 전 구간 | `ABORT_SAFE` |
 | `ABORT_ESCALATED` | `ABORT_SAFE` 중 재차 치명 조건 | `ABORT_SAFE` | `FAULT` |
 | `ESTOP` | E-STOP 발동·해제 (§4.1 P-1, S5.1 최소 계약) | 전 구간 | 발동: 상태 정리, 해제: `IDLE`. 단 `FAULT` 에서는 `FAULT` 유지 — 해제가 fault 래치를 풀지 않는다 (P-1, S5.1(d)) |
 | `FAULT_RESET` | `ResetFault` | `FAULT` | `IDLE` |
@@ -128,7 +128,7 @@
 
 **`TIP_STALE` 판정 경로는 D-24 (a) 다 (2026-09-22 사용자 확정, 배선은 S5.2e).** 지문 센서 lane 에는 수신 시각도 sequence 도 없었다 — RT backend 3종 중 관절 상태 콜백만 `last_state_ns_` (backend watchdog stamp) 를 갱신하고, 지문 센서 자체의 freshness 는 관측할 수 없다. 관절이 fresh 한 채 센서만 멈추면 옛 힘을 새 접촉으로 오판할 수 있다. 채택한 경로는 (a) `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid` 를 추가하고 backend 3종이 채워 `ControllerState` 로 전달 (PROC-3, P5 — grasp 에도 같은 gap 이라 함께 닫힌다); (b) 포구 컨트롤러 소유 mailbox 는 device 경로와 공존하는 중복 lane 이라 기각했다 (plan §7.3). `TIP_STALE` 은 그 `recv_steady_ns` 의 수신 나이가 `supervisor.contact.t_stale`(C-16, §6)을 넘으면 판정한다.
 
-`BALL_STALE_COMMITTED` 는 A-6 으로 확정됐다. 동결 후에는 짧은 누락으로 포기하는 것보다 동결 plan으로 진행하는 편이 안전하다고 본다. stale 지속 시간 상한 `supervisor.stale_committed_max_s` 는 **0.10 s (provisional, #537 S7 결정 2026-09-23, §6)** 로 닫혔다 — 어느 물리량(공분산 성장, 포획 반경 오차 할당, abort 정지거리 $\Vert\dot x\Vert^2/(2a_{dec})$)으로 이 값을 조일지는 **S8** 에서 정한다(plan §7.3).
+`BALL_STALE_COMMITTED` 는 A-6 으로 확정됐다. 동결 후에는 짧은 누락으로 포기하는 것보다 동결 plan으로 진행하는 편이 안전하다고 본다. stale 지속 시간 상한 `supervisor.stale_committed_max_s` 는 **0.10 s (provisional, #537 S7 결정 2026-09-23, §6)** 로 닫혔다 — 어느 물리량(공분산 성장, 포획 반경 오차 할당, abort 정지거리 $\Vert\dot x\Vert^2/(2a_{dec})$)으로 이 값을 조일지는 S8 에서 보기로 했고, **S8-B 튜닝 세트 (200 발) 에서 COMMITTED 스냅샷 age 가 최대 65 ms 로 `io.t_stale` 에도 닿지 않아 0.10 을 유지하고 두 로봇 YAML 에 명시했다** (2026-09-24). 조일 물리량은 실기 (S10) 데이터로 다시 본다.
 
 **사유 우선순위·발화 위치 규칙(R-PREC·R-ORDER)은 §4.1 "S7.2 driver 규칙" 을 본다** — 위 표는 어떤 상태에서 어느 사유가 나올 수 있는지만 정의하고, 한 tick 에 여럿이 동시에 성립할 때 어느 것을 내는지는 그 규칙이 정한다.
 
@@ -293,9 +293,9 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.T_sat_guard` | — | – | – | – | v0.5 에서 삭제 — `SAT_NEAR_TC` 삭제 (D-8) |
 | `supervisor.gamma.*` | — | – | – | – | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8). `eta_sat`·`max_derates`·`min_interval`·`ramp`·`derate_step` 전부 |
 | `supervisor.impact.dp_max` | double | kg·m/s | `TBD` | >0 | §4.7 `TBD-IMP-01` |
-| `supervisor.stale_committed_max_s` | double | s | **0.10** (provisional, #537 S7 결정 2026-09-23) | ≥0 | §4.2 `[확정 A-6]`. 조일 물리량(정지거리·공분산 성장 등)은 S8 에서 정해 조인다 (plan §7.3) |
+| `supervisor.stale_committed_max_s` | double | s | **0.10** (provisional, #537 S7 결정 2026-09-23; S8-B 튜닝 세트의 COMMITTED 스냅샷 age 최대 65 ms < `io.t_stale` 라 조일 근거가 없어 유지, 두 로봇 YAML 에 명시) | ≥0 | §4.2 `[확정 A-6]` |
 | `supervisor.n_qp` | int | – | `TBD` | ≥1 | §4.1 `FAULT` 진입 연속 `QP_FAILED` 수 |
-| `supervisor.track_err_abort` | double | rad | `TBD` | >0 | **단일 원천.** L5 는 이 키를 참조만 한다 |
+| `supervisor.track_err_abort` | double | rad | `TBD` (YAML: ur5e_p1b **0.42** — S8-B sim 피크 0.21 의 2 배; iiwa7_leap 0.3 placeholder) | >0 | **단일 원천.** L5 는 이 키를 참조만 한다. 실기 값은 S10 |
 | `supervisor.decel.a_dec` | double | m/s² | **10.0** (provisional — 2026-09-22 사용자 확정, S3.5b gate 지도가 돌린 값; `reference.a_max` 확정 시 ≤ 재검, plan §7.3) | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3). 두 로봇 `demo_catching_controller.yaml` 에 기록 — 소비자는 S6 계획기의 정지점 예약 (`planner_search.cpp`) 과 S7 DECEL 이다 |
 | `supervisor.decel.ramp_time` | double | s | 0.0 | 0–0.1 | §4.3 |
 | `supervisor.contact.f_min` | double | N | **0.2** (provisional, 사용자 값) | >0 | G7-3. sim fingertip lane 은 잡음이 없어(C-20) 이 값만 유효하고, `k_sigma` 는 실기 전용이다 |
@@ -310,7 +310,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.homing.eta_a` | double | – | **0.5** (provisional) | 0–1 | §4.1. 가속 한계 = `qdd_max` × 이 값 |
 | `supervisor.homing.qd_tol` | double | rad/s | **0.02** (provisional) | >0 | §4.1 homing/retreat 도착 판정(‖q̇‖∞) |
 | `supervisor.ready.pose_tol` | double | rad | 0.02 | – | §4.5 |
-| `supervisor.sat_ticks` | int | – | **60** (provisional — 5 는 정상 접근의 포화 구간 10–76 tick 을 잘랐고, sim 정상 시행 max 44 · p99 42.5 로 100 에서 50 으로 내렸다. 50 은 재측정에서 1 회 발화해 60 으로 올렸다) | ≥1 | §4.2 `REF_SATURATED` 연속 tick 판정 (D-S7-4, sim 시행 분포로 확인 후 확정) |
+| `supervisor.sat_ticks` | int | – | 파서 기본 **60**. YAML: ur5e_p1b **80** (S8-B — 60 이 200 발 중 3 회 발화, 그중 2 회는 잡은 공. 판정을 끈 재측정 max 61 · p99 58 · ≥ 70 0/200), iiwa7_leap 60 (S8-D 재측정). 이력: 5 는 정상 접근의 포화 구간 10–76 tick 을 잘랐고, sim 정상 시행 max 44 · p99 42.5 로 100 에서 50 으로 내렸다. 50 은 재측정에서 1 회 발화해 60 으로 올렸다 | ≥1 | §4.2 `REF_SATURATED` 연속 tick 판정 (D-S7-4, sim 시행 분포로 확인 후 확정) |
 
 `supervisor.ready.wait_pose` 는 두지 않는다 (C-10) — `L3 §6 planner.wait_pose` 와 중복이었다(repo 에 0 hit). `IDLE` homing 목표·`ARMED` 대기 자세는 그 키를 그대로 참조한다.
 
@@ -371,4 +371,4 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 
 ## 10. 미확정 항목
 
-TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(값 0.10 provisional 로 닫힘, 조일 물리량은 S8), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`(값은 provisional 로 닫힘, S8 튜닝), `supervisor.impact.dp_max`, `supervisor.sat_ticks`(60 provisional — 최종값은 S8), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). homing 은 `IDLE` 하위 단계로 닫혔다(S1.8 헤더 해석, §4.1). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).
+TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(0.10, S8-B 로 유지·YAML 명시), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`(값은 provisional 로 닫힘, S8 튜닝), `supervisor.impact.dp_max`, `supervisor.sat_ticks`(S8-B: p1b 80, iiwa7_leap 60 — S8-D 재측정), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). homing 은 `IDLE` 하위 단계로 닫혔다(S1.8 헤더 해석, §4.1). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).

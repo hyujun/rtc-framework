@@ -66,6 +66,17 @@ def test_golden_tc_decomposition(pilot):
     assert lo > 0.45 and hi < 0.75
 
 
+def test_golden_is_lead_off_so_the_lead_aware_servo_is_the_same_tick_gap(pilot):
+    """The pilot ran without the lead and predates the diag ``t_arm_s`` column
+    and the runner mirror, so T_lead falls back to 0 and the lead-aware servo
+    residual must equal the recorded same-tick gap on every trial (S8-B)."""
+    assert pilot.summary["t_lead_source"] == "0 (no diag column, no runner mirror)"
+    assert pilot.summary["t_lead_s_range"] == [0.0, 0.0]
+    rows = [r for r in pilot.rows if r.get("accepted")]
+    assert rows and all(r["servo_mm"] == r["cmd_meas_gap_mm"] for r in rows)
+    assert pilot.summary["medians"]["cmd_meas_gap_mm"] == pytest.approx(122.0, abs=5.0)
+
+
 def test_golden_supervisor_verdicts_and_truth(pilot):
     assert pilot.summary["supervisor_verdicts"] == {"MISSED": 25}
     truth = pilot.summary["truth"]
@@ -332,6 +343,107 @@ def test_nees_is_two_sided():
     e, p = _nees_data(cov_scale=4.0)  # underconfident: NEES ≈ 0.75, one-sided would pass
     res = ct.nees_summary(e, p)
     assert not res.passed_raw and res.p_raw < 0.05
+
+
+# ── Lead-aware t_c decomposition (S8-B) ──────────────────────────────────────
+
+
+class _IdentityFk:
+    """ "Joints" that ARE the catch-frame position, in a model world = sim world."""
+
+    def __call__(self, q):
+        return np.asarray(q, dtype=float)
+
+    def to_model(self, p):
+        return np.asarray(p, dtype=float)
+
+
+_P0, _V0, _G = np.array([1.5, 0.0, 0.5]), np.array([-3.0, 0.4, 3.0]), np.array([0.0, 0.0, -9.81])
+_REF_OFF, _CLIK_OFF, _SERVO_OFF = (
+    np.array([0.0, 0.0, -0.010]),
+    np.array([0.002, 0.0, 0.0]),
+    np.array([0.0, 0.003, 0.0]),
+)
+
+
+def _ball(t):
+    t = np.atleast_1d(t)[:, None]
+    return _P0 + _V0 * t + 0.5 * _G * t**2
+
+
+def _lead_trial(lead_s, t_lead_recorded):
+    """A trial whose command side is aimed ``lead_s`` ahead, with KNOWN offsets:
+    ref 10 mm off the ball, CLIK 2 mm, servo 3 mm (three orthogonal axes)."""
+    t = np.arange(0.0, 1.2, 0.002)
+    n = len(t)
+    t_c = 0.8
+    mode = np.full(n, ct.MODE_APPROACH)
+    mode[100:] = ct.MODE_COMMITTED
+    ref = _ball(t + lead_s) + _REF_OFF
+    q_cmd = ref + _CLIK_OFF
+    q_meas = _ball(t) + _REF_OFF + _CLIK_OFF + _SERVO_OFF  # = q_cmd(t − lead) + servo
+    ctx = ct.TrialContext(
+        t=t,
+        mode=mode,
+        hand_phase=np.zeros(n, int),
+        plan_id=np.ones(n, int),
+        plan_t_c=t_c - t,
+        plan_p_c=np.tile(_ball(t_c)[0], (n, 1)),
+        plan_gamma_f=np.full(n, 0.4),
+        ref=ref,
+        ref_valid=np.ones(n, bool),
+        ref_saturated=np.zeros(n, bool),
+        q_cmd=q_cmd,
+        q_meas=q_meas,
+        fk=_IdentityFk(),
+        t_lead=np.full(n, t_lead_recorded),
+    )
+    tt = np.arange(0.0, 1.2, 0.01)
+    truth = ct.Truth(tt, _ball(tt), _V0 + np.outer(tt, _G))
+    return ct.decompose_at_tc(ctx, truth, window_s=0.12)
+
+
+def test_lead_aware_decomposition_recovers_the_injected_parts():
+    rec = _lead_trial(0.2, 0.2)
+    assert rec["t_lead_s"] == 0.2
+    assert rec["servo_mm"] == pytest.approx(3.0, abs=0.05)
+    assert rec["clik_mm"] == pytest.approx(2.0, abs=0.05)
+    assert rec["ref_vs_true_mm"] == pytest.approx(10.0, abs=0.2)
+    assert rec["total_mm"] == pytest.approx(np.linalg.norm([2.0, 3.0, 10.0]), abs=0.2)
+    # The same-tick gap carries the whole 0.2 s lead of a ~3 m/s path.
+    assert rec["cmd_meas_gap_mm"] > 300.0
+
+
+def test_reading_the_same_trial_without_its_lead_is_the_false_fail():
+    """Positive control: ignore the recorded lead and the servo residual is
+    the same-tick gap again — the S8-B pre-check's false G8-E FAIL."""
+    rec = _lead_trial(0.2, 0.0)
+    assert rec["servo_mm"] == rec["cmd_meas_gap_mm"] > 300.0
+    assert rec["ref_vs_true_mm"] > 300.0
+
+
+def test_lead_off_trial_is_unchanged():
+    rec = _lead_trial(0.0, 0.0)
+    assert rec["servo_mm"] == rec["cmd_meas_gap_mm"] == pytest.approx(3.0, abs=0.05)
+    assert rec["ref_vs_true_mm"] == pytest.approx(10.0, abs=0.2)
+
+
+def test_lead_per_tick_sources():
+    pd = pytest.importorskip("pandas")
+    on = {"controller_mirror": {"joint_cmd.lag.lead_enable": True, "joint_cmd.lag.T_arm": 0.2}}
+    off = {"controller_mirror": {"joint_cmd.lag.lead_enable": False, "joint_cmd.lag.T_arm": 0.2}}
+    with_col = pd.DataFrame({"t_arm_s": [0.2, 0.2]})
+    lead, src = ct.lead_per_tick(with_col, on)
+    assert list(lead) == [0.2, 0.2] and src == "diag t_arm_s"
+    # The column is what the RT tick used; a mirror that disagrees means the
+    # trials directory is another session's.
+    with pytest.raises(SystemExit):
+        ct.lead_per_tick(with_col, off)
+    bare = pd.DataFrame({"mode": [0, 0]})
+    assert list(ct.lead_per_tick(bare, on)[0]) == [0.2, 0.2]
+    assert list(ct.lead_per_tick(bare, off)[0]) == [0.0, 0.0]
+    lead, src = ct.lead_per_tick(bare, {})
+    assert list(lead) == [0.0, 0.0] and src.startswith("0 ")
 
 
 # ── Truth success, free flight, streaks ──────────────────────────────────────

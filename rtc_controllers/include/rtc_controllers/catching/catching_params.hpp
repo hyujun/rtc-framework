@@ -261,7 +261,9 @@ struct CatchingParams {
   /// 44 and a p99 of 42.5, so 50 was tried. The re-run at 50 (260924_0013)
   /// fired once, in CLOSING on a ball that had already missed; the longest
   /// streaks that did not fire were 40 and 33. 60 was chosen on 2026-09-24
-  /// for a margin above those. Provisional: S8 sets the final value.
+  /// for a margin above those. Both shipped robot YAMLs set it explicitly
+  /// since S8-B (ur5e_p1b 80 from its 200-throw tuning set, iiwa7_leap 60
+  /// until S8-D), so this default only covers a config without the key.
   int supervisor_sat_ticks{60};
   /// Joint-space homing / return (Q3): speed cap [rad/s] > 0, fraction of
   /// the derived q̈_max (0, 1], and the arrival velocity bound [rad/s] > 0.

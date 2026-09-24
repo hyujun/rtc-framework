@@ -335,14 +335,15 @@ ros2 run rtc_tools catching_trials <session> <trials_dir> --config-dir <install>
 ```
 
 - **서보 지연 τ̂**: 관절별 1차 지연 최소제곱 (`q_cmd − q_meas ≈ τ q̇_meas`, 움직이는 tick) + 시행 클러스터 부트스트랩 CI·R². 속도 상호상관은 1차 지연의 τ 를 주지 않으므로 제공하지 않는다
-- **t_c 분해** (첫 COMMITTED tick 에서 `t + plan_t_c_s`): CLIK `‖FK(q_cmd) − ref‖` · 서보 `‖FK(q_meas) − FK(q_cmd)‖` · 예측 `‖p_c − p_true(t_c)‖` · 합계, 공 도착 − t_c, 계획 γ_f (`plan_gamma_f` — `ref_gamma` 는 DECEL 진입 tick 에 1.0 으로 뛴다), 첫 plan 지연, 시행 순환 안의 APPROACH 교체. 공이 t_c 전에 로봇에 맞으면 truth 를 첫 접촉에서 자르고 직전 0.25 s 이차 적합을 t_c 로 외삽한다 (`truth_extrapolated_ms` 로 거리 기록)
+- **t_c 분해** (첫 COMMITTED tick 에서 `t + plan_t_c_s`): CLIK `‖FK(q_cmd) − ref‖` · 서보 `‖FK(q_meas(t_c)) − FK(q_cmd(t_c − T_lead))‖` · 예측 `‖p_c − p_true(t_c)‖` · `ref_vs_true` · 합계, 공 도착 − t_c, 계획 γ_f (`plan_gamma_f` — `ref_gamma` 는 DECEL 진입 tick 에 1.0 으로 뛴다), 첫 plan 지연, 시행 순환 안의 APPROACH 교체. 공이 t_c 전에 로봇에 맞으면 truth 를 첫 접촉에서 자르고 직전 0.25 s 이차 적합을 t_c 로 외삽한다 (`truth_extrapolated_ms` 로 거리 기록)
+- **lead (S8-B)**: `joint_cmd.lag.lead_enable` 이 켜지면 RT 가 참조를 `now + T_arm` 에서 샘플하므로 tick t 의 `q_cmd`·`ref` 는 t + T_arm 을 겨냥한다. 그래서 명령 쪽 (서보·CLIK·`ref_vs_true`) 은 `t_c − T_lead` tick 에서 읽는다. T_lead 는 diag `t_arm_s` 열 → 없으면 러너 미러 (`joint_cmd.lag.*`) → 둘 다 없으면 0 이고, 열과 미러가 다르면 다른 세션의 trials dir 로 보고 거부한다. 같은 tick 의 `‖FK(q_meas) − FK(q_cmd)‖` 는 `cmd_meas_gap_mm` 로 기록만 한다 — lead on 에서 의도된 선행을 잔여에 더해 서보가 나빠진 것처럼 읽히기 때문이다. lead off 에서는 두 값이 같다
 - **truth 성공** (G8-D, plan §1a): HOLD 끝 (첫 RETREAT tick) 부터 대기 자세 release (손 위상 RELEASE) 까지 모든 truth 샘플이 catch frame 에서 `--hold-radius-m` (기본 프로파일의 공 지름) 안. 슈퍼바이저 판정 대비 혼동행렬, Wilson 구간
 - **D-3 공변량** (`clock_phase` 재사용): δ_max·max pause·δ(t_commit)·δ(t_c), `--eps-mm` 별 유효 수. lane 의 발사는 순서가 아니라 **하나의 시계 오프셋**으로 시행과 짝짓는다 — 한 세션에 러너를 두 번 돌리거나 GUI 로 던진 발사가 섞여도 그 발사는 무시되고, 짝이 없는 시행은 공변량 없이 `unpaired_trials` 로 남는다 (절반 미만이 짝지어지면 다른 run 으로 보고 거부). `--v-max` 는 기본값이 없다 (목표 분포의 최대 포구 속력 — 로봇 상수라 CLI 로 받는다); 없으면 `NOT_EVALUATED(v_max not given)`
 - **첫 손–공 접촉 episode** (접촉 lane): 충격량·최대 접촉력·지속·접촉 속력. 손 토크는 sim forcerange 클램프라 판정하지 않는다
 - `ref_saturated` 시행별 max streak (G8-C3)
 - 라이브러리 함수: `wilson_interval`·S0.9 검정력/필요 n, A⊥B 백색화 교차공분산 (시행 클러스터 부트스트랩, G8-C2), NEES 요약 (raw·centered·coverage, 양측, G8-B) — 둘 다 합성 데이터 positive control 로 테스트. CLI 는 아직 부르지 않는다 (probe 덤프가 있는 세션부터)
 - **로봇 상수 없음** (ARCH-1): catch frame 은 `_base.yaml` `urdf.extra_frames`, sim world ↔ model world 는 `catching.io.arm_base_frame`·`base_T_world` 로 `frame_placement_in_model_world` (컨트롤러와 같은 합성), 관절은 diag 의 `q_cmd_*` 열, device·로그 이름은 컨트롤러 `topics`/`logs`, dt 는 러너가 기록한 미러 `control.dt`
-- 테스트 `test/test_catching_trials.py` (32 케이스) — **골든**: 파일럿 세션 `260924_1218` 에서 자른 fixture (`test/data/catching_pilot_260924_1218/`, 2.6 MB, 재생성 스크립트 `make_fixture.py`) 로 τ̂ 6 관절 200 ± 5 ms · 서보 중앙값 122 ± 5 mm · CLIK 2 ± 1 mm · 25/25 Missed · ε 12 mm 유효 7/25 (v_max 3.85 m/s) 재현
+- 테스트 `test/test_catching_trials.py` (39 케이스) — **골든**: 파일럿 세션 `260924_1218` 에서 자른 fixture (`test/data/catching_pilot_260924_1218/`, 2.6 MB, 재생성 스크립트 `make_fixture.py`) 로 τ̂ 6 관절 200 ± 5 ms · 서보 중앙값 122 ± 5 mm · CLIK 2 ± 1 mm · 25/25 Missed · ε 12 mm 유효 7/25 (v_max 3.85 m/s) 재현 (lead off 라 서보 = `cmd_meas_gap_mm`). lead 는 성분을 아는 합성 시행 (선행 0.2 s, ref 10·CLIK 2·서보 3 mm) 에서 복원하고, 기록된 lead 를 무시하면 거짓 FAIL 로 돌아가는 것을 positive control 로 둔다
 
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 
