@@ -6,9 +6,15 @@
 // binary would leave a timestamped session of test rows among the operator's
 // runs — and prune real sessions past the retention count on the way.
 //
-// Registered once per binary as a gtest Environment: every test in it logs
-// into one fresh temp directory, removed at teardown. `Dir()` is for the test
-// that wants to read a file back.
+// Every gtest binary in this package gets exactly one instance, registered by
+// session_dir_test_env.cpp, which CMakeLists.txt links into each `test_*`
+// executable — a test file does not register it itself. Tests in the binary log
+// into one fresh temp directory, removed at teardown. `SessionDir().Dir()` is
+// for the test that wants to read a file back.
+//
+// Per-file registration was the old contract and seven binaries never did it:
+// every `colcon test` (the Stop hook's included) left sessions in the real
+// logging_data, next to sim runs started the same minute (2026-09-24).
 #pragma once
 
 #include <gtest/gtest.h>
@@ -50,5 +56,9 @@ class IsolatedSessionDir : public ::testing::Environment {
   std::string prev_;
   bool had_prev_{false};
 };
+
+/// The binary's one registered instance (session_dir_test_env.cpp). Its
+/// directory is set up before any test runs.
+IsolatedSessionDir& SessionDir();
 
 }  // namespace integrated_bringup::testfx

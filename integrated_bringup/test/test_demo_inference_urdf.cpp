@@ -133,10 +133,10 @@ class RclcppEnv : public ::testing::Environment {
 };
 
 const auto* const kEnv = ::testing::AddGlobalTestEnvironment(new RclcppEnv);
-// The shipped config opens its CSV logs at configure — keep them out of the
-// workspace's real session tree.
-const auto* const kSession = static_cast<const fx::IsolatedSessionDir*>(
-    ::testing::AddGlobalTestEnvironment(new fx::IsolatedSessionDir));
+
+// The shipped config opens its CSV logs at configure; the package-wide
+// IsolatedSessionDir (session_dir_test_env.cpp) keeps them out of the
+// workspace's real session tree, and fx::SessionDir() is where they land.
 
 /// The production bring-up order on the real model, driven with the SHIPPED
 /// controller config (model_path aside).
@@ -759,7 +759,7 @@ TEST_F(ShippedInference, ShipsItsCsvLogs) {
 
 TEST_F(ShippedInference, TheDiagFileIsOpenedUnderTheSessionWithTheReachTipColumns) {
   namespace fs = std::filesystem;
-  const fs::path dir = kSession->Dir() / "controllers" / "demo_inference_controller";
+  const fs::path dir = fx::SessionDir().Dir() / "controllers" / "demo_inference_controller";
   const fs::path diag = dir / "inference_diag.csv";
   ASSERT_TRUE(fs::exists(diag)) << "configure must open " << diag;
   EXPECT_TRUE(fs::exists(dir / "ur5e_state.csv"));

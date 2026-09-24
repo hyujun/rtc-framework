@@ -1661,6 +1661,21 @@ if(BUILD_TESTING)
   # S7 G8-A2 (existence half): every RT-owned member of the catching
   # controller has a row in its header's reset table.
   ament_add_pytest_test(test_catching_reset_table test/test_catching_reset_table.py)
+
+  # Every gtest binary logs into its own throwaway session directory
+  # (test/session_dir_test_env.cpp). A controller configured from a shipped YAML
+  # opens CSV logs at on_configure, and without RTC_SESSION_DIR they land in the
+  # workspace's real logging_data. Linked here, after every test target exists,
+  # so a new binary gets it without asking. Keep this block last.
+  get_directory_property(_ib_targets BUILDSYSTEM_TARGETS)
+  foreach(_ib_target IN LISTS _ib_targets)
+    if(_ib_target MATCHES "^test_")
+      get_target_property(_ib_type ${_ib_target} TYPE)
+      if(_ib_type STREQUAL "EXECUTABLE")
+        target_sources(${_ib_target} PRIVATE test/session_dir_test_env.cpp)
+      endif()
+    endif()
+  endforeach()
 endif()
 
 ament_package()

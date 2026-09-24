@@ -35,7 +35,6 @@
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "rtc_base/logging/thread_csv_producer.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "session_dir_test_fixture.hpp"
 #include "shipped_config_test_fixture.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
@@ -293,11 +292,10 @@ ControllerState MakeState() {
   return state;
 }
 
-// The shipped config opens its CSV logs at configure. This keeps them out of the
+// The shipped config opens its CSV logs at configure. The package-wide
+// IsolatedSessionDir (session_dir_test_env.cpp) keeps them out of the
 // workspace's real session tree — and is what lets registration succeed, which
 // puts the bound log push inside the shipped gates below.
-const auto* const kSession =
-    ::testing::AddGlobalTestEnvironment(new integrated_bringup::testfx::IsolatedSessionDir);
 
 class InferenceAllocGate : public ::testing::Test {
  protected:
