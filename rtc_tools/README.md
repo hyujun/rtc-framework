@@ -342,7 +342,7 @@ ros2 run rtc_tools catching_trials <session> <trials_dir> --config-dir <install>
 - `ref_saturated` 시행별 max streak (G8-C3)
 - 라이브러리 함수: `wilson_interval`·S0.9 검정력/필요 n, A⊥B 백색화 교차공분산 (시행 클러스터 부트스트랩, G8-C2), NEES 요약 (raw·centered·coverage, 양측, G8-B) — 둘 다 합성 데이터 positive control 로 테스트. CLI 는 아직 부르지 않는다 (probe 덤프가 있는 세션부터)
 - **로봇 상수 없음** (ARCH-1): catch frame 은 `_base.yaml` `urdf.extra_frames`, sim world ↔ model world 는 `catching.io.arm_base_frame`·`base_T_world` 로 `frame_placement_in_model_world` (컨트롤러와 같은 합성), 관절은 diag 의 `q_cmd_*` 열, device·로그 이름은 컨트롤러 `topics`/`logs`, dt 는 러너가 기록한 미러 `control.dt`
-- 테스트 `test/test_catching_trials.py` (31 케이스) — **골든**: 파일럿 세션 `260924_1218` 에서 자른 fixture (`test/data/catching_pilot_260924_1218/`, 2.6 MB, 재생성 스크립트 `make_fixture.py`) 로 τ̂ 6 관절 200 ± 5 ms · 서보 중앙값 122 ± 5 mm · CLIK 2 ± 1 mm · 25/25 Missed · ε 12 mm 유효 7/25 (v_max 3.85 m/s) 재현
+- 테스트 `test/test_catching_trials.py` (32 케이스) — **골든**: 파일럿 세션 `260924_1218` 에서 자른 fixture (`test/data/catching_pilot_260924_1218/`, 2.6 MB, 재생성 스크립트 `make_fixture.py`) 로 τ̂ 6 관절 200 ± 5 ms · 서보 중앙값 122 ± 5 mm · CLIK 2 ± 1 mm · 25/25 Missed · ε 12 mm 유효 7/25 (v_max 3.85 m/s) 재현
 
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 

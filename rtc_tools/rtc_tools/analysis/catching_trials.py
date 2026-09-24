@@ -1311,6 +1311,10 @@ def analyse_session(
             )
         if lane is not None:
             row.update(_clock_covariate(lane, trial, row, settings))
+        # The contact episode is located on the lane's launch segment, so a
+        # trial the lane has no launch for has none — `seg_sim` would otherwise
+        # be the PREVIOUS trial's segment (it is only assigned when paired).
+        if seq is not None:
             row.update(
                 first_hand_contact(
                     contacts,

@@ -153,6 +153,40 @@ def test_an_unpaired_trial_gets_no_clock_covariate_instead_of_a_borrowed_one():
     assert len(lane.trial_to_seq) == len(trials) - 1
 
 
+def test_an_unpaired_trial_has_no_contact_episode_instead_of_a_borrowed_one(monkeypatch):
+    """End to end: a trial the clock lane has no launch for (seen in S8-B,
+    tuning t3) used to reach the contact-episode analysis with no lane segment
+    of its own — a KeyError, and without it the previous trial's segment."""
+    pytest.importorskip("pinocchio")
+    real = ct.load_clock_lane
+    dropped = {}
+
+    def drop_one(path, trials, *args):
+        # A .gz lane re-enters load_clock_lane once decompressed; drop only once.
+        lane = real(path, trials, *args)
+        if "idx" not in dropped:
+            dropped["idx"] = sorted(lane.trial_to_seq)[3]
+            del lane.trial_to_seq[dropped["idx"]]
+        return lane
+
+    monkeypatch.setattr(ct, "load_clock_lane", drop_one)
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    result = ct.analyse_session(
+        FIXTURE / "session",
+        FIXTURE / "trials",
+        profile,
+        (FIXTURE / "robot.urdf").read_text(),
+        ct.Settings(v_max=PILOT_V_MAX_M_S, n_boot=20),
+        LANE,
+        FIXTURE / "session" / "sim" / "ball_contact_lane.csv.gz",
+    )
+    rows = {r["idx"]: r for r in result.rows}
+    assert "contact_impulse_ns" not in rows[dropped["idx"]]
+    assert rows[dropped["idx"]].get("d3_unpaired")
+    paired = [r for i, r in rows.items() if i != dropped["idx"] and r.get("accepted")]
+    assert sum("contact_impulse_ns" in r for r in paired) == len(paired)
+
+
 def test_profile_comes_from_config():
     profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
     assert profile.devices[0] == profile.arm_device
