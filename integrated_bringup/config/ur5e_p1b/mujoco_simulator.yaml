@@ -198,9 +198,6 @@ mujoco_simulator:
         # needs. Measured on this MJCF: palm lands at (-0.492, -0.234, 0.588)
         # with zero floor/table contact.
         initial_qpos: [0.0, -1.5706, 1.5706, 0.3494, 1.6581, -1.5706]
-        # kd/kp = 0.05 s on every joint (see "Position Servo Gains" above).
-        servo_kp: [8000.0, 8000.0, 8000.0, 2000.0, 2000.0, 2000.0]
-        servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]
         # sensor_topic: "/ur5e/sim_sensors"   # uncomment + add sensor_names to enable
         # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
         # sensor_names: ["ft_sensor"]          # example: explicit sensor names

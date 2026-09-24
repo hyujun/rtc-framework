@@ -2,18 +2,8 @@
 #
 # catch_lead_off.yaml with the planner held at γ_f = 0: the catch point is the
 # attractor for the whole run and the ball drops out of the DS (L4 §5.3).
-# catch_lead_on.yaml owns the rationale for the lead keys.
-#
-# `gamma.grid: [0.0]` ALONE DOES NOT GIVE γ 0. The γ window's floor is
-# γ_min = 1 − d_eff / (v_ball · T_close,tot) (time_feasibility.hpp), above 0 for
-# any ball faster than d_eff / T_close,tot = 1.0 m/s, and when every grid value
-# is outside the window the rollout tries γ_min itself (gamma_rollout.hpp) —
-# a 3-throw smoke planned γ_f 0.40–0.46, the planned arm's own range. d_eff 10
-# (the parser's ceiling) puts γ_min at 0. It also lifts the hand's relative-
-# speed gate (MaxCatchableSpeed adds d_eff / T_close,tot), so this arm compares
-# a system that catches at γ 0 with the planned one, not γ alone (#537).
-# The grid stays a float list — a ROS params file cannot write an empty or
-# integer-typed one here.
+# catch_lead_on.yaml owns the rationale for the lead keys, and
+# catch_lead_on_gamma0.yaml the one for the γ keys (why the grid needs d_eff).
 
 integrated_rt_controller:
   ros__parameters:

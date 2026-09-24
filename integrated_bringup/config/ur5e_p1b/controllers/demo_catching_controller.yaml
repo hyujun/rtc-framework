@@ -319,8 +319,10 @@ demo_catching_controller:
       # S8-B sim runs (2026-09-24, #537 5810866922; 0.05 s sim servo, D-S8-13)
       # peaked at 0.21 rad before t_c in every 2x2 arm, lead on or off, and in
       # the 200-throw tuning set; RETREAT peaked at 0.058. The earlier 1.54
-      # was measured on the MJCF's 0.2 s servo. S10 sets the real-arm value;
-      # the controller is parked on the real arm until then (A-S5-1).
+      # was measured on the MJCF's 0.2 s servo, and that servo (a launch with
+      # use_yaml_servo_gains:=false) peaks near 0.77 rad — past this value, so
+      # it would abort almost every throw. S10 sets the real-arm value; the
+      # controller is parked on the real arm until then (A-S5-1).
       track_err_abort: 0.42
       # How long COMMITTED/CLOSING may run on a stale prediction past io.t_stale
       # before BALL_STALE_LONG (A-6). Kept at the S7 value: the tuning set's

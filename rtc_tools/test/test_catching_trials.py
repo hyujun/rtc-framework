@@ -444,6 +444,12 @@ def test_lead_per_tick_sources():
     assert list(ct.lead_per_tick(bare, off)[0]) == [0.0, 0.0]
     lead, src = ct.lead_per_tick(bare, {})
     assert list(lead) == [0.0, 0.0] and src.startswith("0 ")
+    # Lead on with T_arm TBD: the controller leads by 0 (lifecycle.cpp), so the
+    # mirror must say 0 too — not NaN, and not a mismatch with a 0 column.
+    for tbd in (math.nan, None):
+        m = {"controller_mirror": {"joint_cmd.lag.lead_enable": True, "joint_cmd.lag.T_arm": tbd}}
+        assert list(ct.lead_per_tick(bare, m)[0]) == [0.0, 0.0]
+        assert list(ct.lead_per_tick(pd.DataFrame({"t_arm_s": [0.0, 0.0]}), m)[0]) == [0.0, 0.0]
 
 
 # ── Truth success, free flight, streaks ──────────────────────────────────────

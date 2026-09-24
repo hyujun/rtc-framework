@@ -723,7 +723,11 @@ def _mirror_lead(meta: Mapping) -> float | None:
         return None
     if not mirror["joint_cmd.lag.lead_enable"]:
         return 0.0
-    return float(mirror.get("joint_cmd.lag.T_arm", math.nan))
+    # The controller leads by 0 when T_arm is TBD (the mirror declares NaN,
+    # JSON may carry it as null) — the lead switch alone does not move the axis.
+    t_arm = mirror.get("joint_cmd.lag.T_arm")
+    t_arm = math.nan if t_arm is None else float(t_arm)
+    return t_arm if math.isfinite(t_arm) else 0.0
 
 
 def lead_per_tick(diag, meta: Mapping) -> tuple[np.ndarray, str]:
@@ -1645,8 +1649,9 @@ def report(result: SessionResult) -> str:
         )
     lines.append(
         f"t_c medians [mm] (T_lead {s.get('t_lead_s_range')} s, {s.get('t_lead_source')}): "
-        f"CLIK {med['clik_mm']:.1f} · servo {med['servo_mm']:.1f} (same-tick cmd–meas gap "
-        f"{med['cmd_meas_gap_mm']:.1f}) · pred {med['pred_mm']:.1f} · total "
+        f"ref vs truth {med['ref_vs_true_mm']:.1f} · CLIK {med['clik_mm']:.1f} · servo "
+        f"{med['servo_mm']:.1f} (same-tick cmd–meas gap {med['cmd_meas_gap_mm']:.1f}) · "
+        f"pred {med['pred_mm']:.1f} · total "
         f"{med['total_mm']:.1f}; arrival − t_c "
         f"{med['arrival_ms']:+.1f} ms; first hand contact − t_c "
         f"{med['contact_t_minus_tc_ms']:+.1f} ms"

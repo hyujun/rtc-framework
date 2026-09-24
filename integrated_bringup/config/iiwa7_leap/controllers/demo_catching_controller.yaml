@@ -397,10 +397,11 @@ demo_catching_controller:
       qp:
         max_iter: 20
       lag:
-        # SIM IS ZERO (2026-09-20): nothing injects an actuation lag, and
-        # leading a delay that does not exist moves the command EARLY by
-        # exactly T_arm. `lead_enable` turns the compensation on once S10 has
-        # identified the real value.
+        # 0 here because T_arm is the REAL arm's lag, which S10 identifies;
+        # `lead_enable` turns the compensation on once it has. The sim arm is
+        # NOT lag-free (the 2026-09-20 "sim is zero" premise was false): the
+        # MJCF position servo is a first-order lag of kd/kp (0.2 s), which
+        # S8-D measures on this robot before leading it.
         T_arm: 0.0
         lead_enable: false
 
