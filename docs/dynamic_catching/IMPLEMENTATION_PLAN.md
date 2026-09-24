@@ -48,12 +48,13 @@ Epic 기준 하나와, **각 단계 착수 시 그 단계의 `[SPRINT]` 기준**
 ```
 [SPRINT] 1) iiwa7_leap·ur5e_p1b MuJoCo 에서 ball_perception PointCloud2 예측만을 입력으로,
             동결한 목표 투척 분포(D-18 지도, S3.5b)에서 포구 성공률의 Wilson 95% 하한 ≥ floor(D-12),
-            로봇별 게이트 (G8-D·G8-D2). 무효 시행을 포함한 전체 발사 수와 무효 사유를 함께 보고
-         2) 전 RT 경로 할당 0·noexcept·RT-1~10 준수, 기존 컨트롤러 테스트 assertion 무수정 green
+            로봇별 게이트 (G8-D·G8-D2). 무효 시행을 포함한 전체 발사 수와 무효 사유를 함께 보고         2) 전 RT 경로 할당 0·noexcept·RT-1~10 준수, 기존 컨트롤러 테스트 assertion 무수정 green
          3) 설계 문서 v0.5 가 코드와 일치하고, 이 문서에 단계별 게이트 결과가 기록됨
 ```
 
 기준 1 은 D-12 의 floor·시행 수가 정해지기 전까지 **NOT_EVALUATED** 다. 필요한 시행 수는 S0.9 검정력 표로 먼저 정한다. 실기(S10)는 Epic 기준 밖이며 S10 착수 시 별도 기준을 세운다.
+
+**기준 1 의 판정 정의 (2026-09-24 S8 결정, §4.4 S8).** ① **포구 성공은 sim truth 로 판정한다** — HOLD 끝부터 대기 자세 release 까지 공이 손에 있으면 성공이다. 슈퍼바이저 판정 (지문 힘만 보므로 링크·손바닥 위 공을 Missed 로 읽는다, S7) 은 truth 대비 혼동행렬로 병기한다. ② **무효는 rig 실패만** (srv 거부·lane drop·sim stall·미발사) 이고 "plan 없음·abort" 는 실패로 센다. 무효를 실패로 센 ITT 하한을 병기한다. D-3 clock 위상 오차는 무효 사유가 아니라 공변량이다 (D-S8-4 (c), §5). ③ **floor 는 사용 목적에서 사용자가 사전 고정**하고 n_valid 는 200 이다 (D-S8-3) — floor 값이 오기 전 기준 1 은 `NOT_EVALUATED(D-12)` 다.
 
 **G8-D2 는 조건부다 (2026-09-22 사용자 결정, S3.5b 후).** 1차 목표 로봇은 `ur5e_p1b` (G8-D). `iiwa7_leap` 은 S3.5b gate 지도가 가정 선행시간 (T_det + L = 0.24 s) 에서 비어 있어 목표 투척 분포가 없다 — 막는 것은 손이 아니라 선행시간 하나다 (0.14 s 면 65 / 2835 열림). 기준 문구는 그대로 두고 판정 규칙만 정한다: **실측 선행시간에서 `iiwa7_leap` gate 지도가 비어 있지 않으면 G8-D2 를 평가하고, 비어 있으면 `NOT_EVALUATED(선행시간)` 로 그 실측값과 함께 보고한다.** **2026-09-22 실측으로 이 조건은 충족됐다** — T_det 실측 (stamp p50 0.075 s) + L 0.14 = 첫 계획 0.215 s 에서 지도가 `torque` 11 / 2835 로 비지 않는다 (§4.4 T_det 실측). G8-D2 는 평가 대상이고, 창이 좁고 L 이 가정값이라 provisional 이다. 기준에서 빼지 않는다 — LEAP 은 fly-in 에서 더 강한 손이다 (L6 §4.5). 반대로 `ur5e_p1b` 의 열림은 세 가정 (fly-in 등가 `d_eff` · D-16 토크 층 · 다시 고른 대기 자세) 위에 있으므로 그 셋은 S6 착수 조건이다 (§7.3 "1차 목표 로봇").
 
@@ -154,7 +155,7 @@ S4.4 ─► S3.5b (gate-catchable 지도) ─► S3.6 (vision 요구 사양) ─
 S3.6 ─► S1.2 backfill (n_max ≤ kCap 확인, 초과 시 kCap 상향 후 S1 게이트 재실행)
 
 S1, S2, S3a, S4.4(go), S0.6, S0.8, E-8 승인, D-24 ─► S5
-S5, S3.6, E-7 승인 ─► S6 (S3.1b 부하 RTF 포함) ─► S7 ─► S8 ─► S9 ─► S10
+S5, S3.6, E-7 승인 ─► S6 ─► S7 ─► S8 (S3.1b 부하 clock 위상 포함) ─► S9 ─► S10
 ```
 
 S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 골격 일부를 앞당긴 것이다 (손 계단 명령을 낼 컨트롤러가 없으면 S4.2 를 할 수 없고, `DemoJointController` 는 손 목표를 quintic 궤적으로 보간해 계단 응답을 줄 수 없다).
@@ -175,7 +176,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 | S5 포구 컨트롤러 골격·입력·추종 | **완료** (2026-09-23 머지, PR #564 → `4c0fb751`) | S5.2e: D-24 (a) 센서 lane (PROC-3 전체 5518/0). S5.1: P-1 (a)~(d) · 무장 latch `catching.enable` · A-S5-1 실기 park · TSAN clean (positive control 로 검출 확인). S5.2: 이름 기반 PointCloud2 파서 + SeqLock + D-2 + A-S5-4 되감김 정책, G1-A~C·E·F·H·I·J green, ASan/UBSan clean (경계 제거 사본에서 stack-buffer-overflow 검출). S5.3: 실 모델 폐루프에서 G5-A (정지 목표 1.4 s 에 위치 < 1 mm · 축 < 0.5°, 독립 pinocchio 오라클) · G5-B (위치·속도 box 200 tick 위반 0) · **G5-C PASS** (실측 p99·max 가 예산 400/1500 µs 안, XML 기록) · **G5-E PASS** (지연 fixture 50 ms 에서 77 → 71 mm, 방향 일치) · **G7-H (d) PASS** (QP 실패 streak → FAULT 래치, `ClearEstop` 이 안 푼다 — S5.1 에서 미룬 절반). S5.4: `rtc_msgs/CatchingState` (S5~S9 superset 동결) + `catching_diag.csv` — 상태 메시지와 CSV 가 **같은 POD 한 벌**에서 나오므로 화면과 파일이 갈릴 수 없다. `Compute()` 가 단일 exit 이고 레코드를 tick 머리에서 기본 생성하므로 PROC-7 이 열거가 아니라 구조적 성질이다 (G8-H). **S5.5 PASS** — sim 폐루프 실측 (`260922_2249`, 공 6회): 포구 frame 이 oracle 포구점에서 **0.48 mm · 축 0.057°** (독립 pinocchio FK 로 로그된 관절값에서 재계산), 241639 행 **tick 간극 0**, solve time median 21.7 / p99 79.4 / max 1411.5 µs (G5-C 예산 안), CLIK 미수렴 0. §13 S5 PASS (패널 육안 + Disarm 이 컨트롤러에 반영, `test_demo_gui_catching.py` 23 · `test_plot_rtc_log.py` 14). **착수 중 발견한 블로커 1건**: S5.3 이 `reference.*` 를 소비 부분집합에 넣었는데 출하 프로파일에 `reference:` 블록이 없어 sim configure 가 실패했고, CM 이 한 컨트롤러 실패로 전체를 거부하므로 **ur5e_p1b sim 로봇 전체가 안 떴다**. `reference.provisional` (신설 invented key) 로 닫았다. **머지 전 `/code-review` 9건 전부 실제 결함** — 가장 큰 것은 운동 중 무장 해제가 관절 명령을 한 tick 만에 세우던 전이표 간극 (A-S5-13; 나머지 A-S5-14~16). **`headless=false` 재실행** (`260923_0021`): 포구 frame 이 oracle 포구점에서 0.36 mm 로 정착하지만 콜드 스타트 3회 중 2회 첫 approach 에서 `track_err_abort` 0.3 을 넘겨 ABORT_SAFE 를 거친다 (sim 위치 서보 lag — 사용자 결정 대기, #537). **QP CLIK 과제공간 스윕** (`test_catching_clik_sweep`, 공 속도 4 × 강하각 3 × 방위 3, 출하 gain): solver 는 전 구간 건강 (미수렴 0 · bound conflict 0 · solve max 72 µs), 포구 자세 하나를 1 mm 에 놓는 데 **1.43 s** (축 1° 0.85 s) 인데 공 예산은 **0.25–0.6 s** 다 — 제약은 solver 가 아니라 시간이고 S6 의 t_c·대기 자세 선택 입력이다. (`260922_2249` 세션은 삭제됐고 위 수치는 #537 코멘트에 남아 있다.) 남은 게이트: G5-C2 (backend 왕복) |
 | S6 계획기 스레드 | **완료 (2026-09-23)** — PR #568 머지 (`9bf404a8`). S6-D (D-7a 제어 PC 측정) 는 사용자 결정으로 생략. **S6-B** 탐색 (판정/순위 게이트 분리·점수 J·교체·동결, catch sub-model, 계획기 이벤트 CSV·GUI) · **S6-C** γ rollout (coarse-to-fine) · G3-C 합성 1000 투구 p99 < `budget_s` · vision world → 모델 world 변환을 궤적 수신에서 · **S6-C2** CLIK 가속 제약 `box|kinematic|dynamic` (결정 K) · L3 §4.7 런타임 전환 규칙. **#537 결정 반영 (2026-09-23)**: ① p1b `track_err_abort` (1.73 → #566 뒤 재측정으로 **1.54 rad**) · ② p1b `accel_constraint: dynamic` (`eta_tau` 0.8; leap 은 box·0.3 유지) · ③a 오프라인 진단 (#537 코멘트 5789859038) · ④ sim 투척 드라이버 `catching_sim_trials` (투척마다 wait_pose 정렬). **③a 가 찾은 sim 버그 #566 은 main 에 머지됨 (PR #567)** — 팔+손 sim 에서 한 step 에 tick 이 최대 2 회 돌아 `dt` 적분 법칙이 ~1.67× 빨랐으므로 **① 1.73 rad 의 근거 (0.864 rad peak) 와 S6 sim 수치 전부가 재측정 대상**. **⑥ (2026-09-23)**: `planner.switch.e_jump_max`·`ed_jump_max` → 가속 예산 `planner.switch.eta_jump` (L3 §4.7 규칙 2 — 교체가 $u_{des}$ 에 넣는 계단의 상계, RT 가 γ 램프를 재시작하며 채택하는 항 포함; 옛 키는 파서가 거부). **#566 위 재측정** (dynamic 50투 · box 25투, #537 코멘트 5793765020): CLIK 추종 p50/p95 dynamic 2.7/72 mm vs box 128/561 mm → ② 유지, 단 t_c 합계 오차는 비슷하다 (dynamic 은 sim 서보 지연 ~125 mm 가 지배). ① 은 t_c 전 최대 0.772 rad × 2 = 1.54. **결정 ⑦ (a)**: ⑥ 뒤에도 `refreshed` 0 — 첫 plan lead 0.42 s < T_w 0.6 s 라 채택 때 이미 램프 중이고, 램프 재시작 계단 ≈ 11 m/s² 가 예산 5.25 를 넘는다 (규칙이 맞게 거부). 램프 연속 채택은 **S8 로 이월**. **S6-D 생략 (사용자, 2026-09-23)**: D-7a 는 측정 없이 layout 초기값 (tier ≥ 8 `mpc_main` FIFO 60 · slot 3) 을 유지한다. 재판정이 필요해지면 측정 CLI `s6d.sh` (#537 코멘트 5793878042) 로 §7.2 기준을 적용한다 | E-7 승인 (결정 J: 새 layout role 없이 `mpc` role 재사용). 착수 시 확정 결정은 §7.3 "S6 착수 시 확정". **S6-A**: 계획기 스레드 골격 (mpc role · eventfd 대기 · stub `PlanOnce`) · `PlannerRtState`/`plan_box_` (oracle 도 같은 box) · `JudgePlan` (a)~(f) · A-S5-12 sim park · 키 4개. **R-1**: 단위 (`test_catching_mpc_role_switch`: 두 `mpc_main` 이 같은 CPU, switch 뒤 하나만 running, policy `NOT_EVALUATED(EPERM)`) + sim 실측 (`sim_iiwa7_leap` wbc↔catching: 계획기만 ~20 Hz wake, 역전환 시 반대, `enable_mpc:=false` 면 catching switch `ok=False`). 검증기 rc=2 는 dev PC 권한 (FAIL/WARN 집합이 wbc·catching active 어느 쪽이든 동일) 이고, 같은 이름 `mpc_main` 중 **유휴 OpenMP 워커 TID** 를 골랐다. **착수 중 발견·수정 3건**: `ApplyThreadConfig` 가 EPERM 이면 이름을 안 붙임 (rtc_base) · launch 의 `rt_layout_profile` 이 컨트롤러 노드에 안 닿아 **#350 activate 게이트가 실배선에서 죽어 있었음** (CM) · leap YAML 의 안 읽히던 `planner.ik` 사본. `/code-review` 10건 반영 (스레드를 configuration 에 묶음 — on_cleanup join). PROC-3 전체 **5711 / 0 실패** (77 skip) |
 | S7 손 시퀀서·슈퍼바이저 | **완료 (2026-09-24)** — PR #571 머지 (`c61fd32a`). 리뷰: `/security-review` Critical 0, `/code-review` 10 건 중 6 건 수정 (ABORT_SAFE 탈출·판정 덮어쓰기·RETREAT 정지의 서보 대기·읽기 불가 팔의 track_err·hold NaN·`delta_rad` 검사 범위). GUI·plot 육안 확인은 사용자 완료. `sat_ticks` 60 (provisional). 한 투척이 컨트롤러 안에서 한 순환을 돈다: IDLE(관절공간 homing, 손 q_open)→ARMED(손 q_pre)→TRACKING→APPROACH→COMMITTED($t_c-T_{freeze}$)→CLOSING(손 닫힘 $t_{cmd}$)→DECEL($t_c$)→HOLD($T_{hold}$)→RETREAT(정지·복귀·release)→ARMED. **단위**: G6-A (합성 1000 시행 ±h/2, mutation 으로 red 확인) · G7-A (시나리오 21, L7 §9 행 + S7 추가분) · G7-B (DECEL 진입 $e=\dot e=0$) · G7-D (무장 모드 전부 할당 0, 최악 tick 152 µs) · G7-G (지문 dropout → TIP_STALE·Undetermined, 옛 힘 판정 0) · G8-A2 (리셋 표 존재 린터 + poison probe + 빠른 재무장 floor 회귀) PASS. **sim 실측** (`260923_2336`, ur5e_p1b, 기준 15 + 변형 10): 25/25 순환 완료, G6-A 닫힘 명령 $(t_c-now)-T_{close,e2e}$ ∈ [−0.95, −0.55] ms, G7-B 25 진입 $|e|=|\dot e|=0$, `ref_saturated` 연속 길이 max 44 · p99 42.5 · median 11 tick (sat_ticks 100 에서 발화 0 → 사용자 결정으로 50, 재측정 뒤 60, 2026-09-24), 정지 바이어스 잡음 0 (sim 지문 lane 무잡음, C-20: f_min 만 유효), 판정 25 전부 Missed · 공 참값과 일치 24/25 (G7-E). **불일치 1건**: 공이 지문이 아닌 손가락 링크·손바닥에 얹혀 HOLD 를 넘겼는데 m_min 지문 합의가 없어 Missed → RETREAT 진입 즉시 release → 복귀 중 낙하 — 지문만 보는 판정의 한계, S8. **재측정 (`260924_0013`, release 규칙 교체 + sat_ticks 50 후, 같은 25 투척)**: 순환 25/25. 판정 Captured 1 · Missed 23 · Aborted 1, 공 참값과 일치 23/24 (불일치는 다시 손바닥 위 공의 false-Missed 1). RETREAT 진입 25 회 모두 손은 Hold, release 25 회 모두 RETREAT 안·대기 자세에서 (측정 편차 최대 0.0041 rad). Captured 와 false-Missed 두 공 모두 손에 실린 채 복귀했고 대기 자세에서 손이 열리며 떨어졌다. `ref_saturated` 연속 길이 max 50 · p99 47.6 · median 11 — **sat_ticks 50 이 1 회 발화** (trial 14, CLOSING → ABORT_SAFE → Aborted, 공은 이미 빗나감). 발화하지 않은 연속 길이 중 가장 긴 것은 CLOSING 의 40·33. 사용자 결정으로 60 으로 올렸다 (2026-09-24, provisional). G6-A 는 22 회가 [−0.98, −0.55] ms, 3 회가 −3.04 · −4.09 · −4.12 ms 다. 이 3 회는 닫힘 tick 자체가 2.5 ms 늦게 돈 경우다 (실시계 tick 간격 4.5 ms). 이번 호스트의 >3 ms tick 은 411 개로 지난 측정의 87 개보다 많았다 (`use_cpu_affinity:=false`, 비-RT). 규칙은 판정식을 만족한 첫 tick 에 발행했고, h/2 한계는 정규 격자에서만 성립한다 — 단위 G6-A 가 판정한다. **포획 0/25** 는 S6 의 입력 그대로 (공이 $t_c$ 약 40 ms 전에 도달, sim 서보 지연 — S8). G7-B3 충격량 상관은 S8 로 이월했다 (사용자 결정 2026-09-24). 토크 비교는 D-12 전이라 NOT_EVALUATED. 드라이버의 외부 정렬은 제거 (C-12) | — |
-| S8 sim 통합 평가 | 대기. **S7 에서 이월 (#537 코멘트 5804113629)**: 포획 0/25 (공이 $t_c$ 약 40 ms 전 도달 — 아래 sim 서보 지연) · 지문만 보는 판정의 false-Missed (링크·손바닥 위 공) · `supervisor.sat_ticks` (60 provisional)·`stale_committed_max_s` 최종값 · G7-B3 충격량 상관 (사용자 결정 2026-09-24) · RETREAT·IDLE 의 손 $q_{pre}$ 대기에 timeout·사유가 없고 끝내 닫히지 않는 서보 차이가 FAULT 로 승격되지 않는 것 · ν̄ (PRED_INCONSISTENT) · σ_ℓ 모니터 소비자 · CLOSING 이 닫힘 명령보다 1 tick 늦게 기록되는 것 (시각엔 영향 없음). **S6 에서 이월 (결정 ⑦, #537 코멘트 5793765020)**: 교체 채택 시 γ 램프 연속 ($\dot\gamma,\ddot\gamma$ 이어 받기) — RT 채택부·γ 프로파일 형태·계획기 rollout 동시 변경 (RT-1~10, `/code-review`). 이것 없이는 `refreshed` 가 램프 중 거부돼 첫 plan 만 쓴다 (L3 §4.7). sim 서보 지연 (`joint_cmd.lag` 가 sim 0) 이 t_c 오차를 지배하는 것도 여기서 본다 | — |
+| S8 sim 통합 평가 | **착수 (2026-09-24, 브랜치 `feat/s8-sim-evaluation`)** — 커밋 1 docs 정정, S8-A 는 `[SPRINT]` 컨펌 후. **S7 에서 이월 (#537 코멘트 5804113629)**: 포획 0/25 (공이 $t_c$ 약 40 ms 전 도달 — 아래 sim 서보 지연) · 지문만 보는 판정의 false-Missed (링크·손바닥 위 공) · `supervisor.sat_ticks` (60 provisional)·`stale_committed_max_s` 최종값 · G7-B3 충격량 상관 (사용자 결정 2026-09-24) · RETREAT·IDLE 의 손 $q_{pre}$ 대기에 timeout·사유가 없고 끝내 닫히지 않는 서보 차이가 FAULT 로 승격되지 않는 것 · ν̄ (PRED_INCONSISTENT) · σ_ℓ 모니터 소비자 · CLOSING 이 닫힘 명령보다 1 tick 늦게 기록되는 것 (시각엔 영향 없음). **S6 에서 이월 (결정 ⑦, #537 코멘트 5793765020)**: 교체 채택 시 γ 램프 연속 ($\dot\gamma,\ddot\gamma$ 이어 받기) — RT 채택부·γ 프로파일 형태·계획기 rollout 동시 변경 (RT-1~10, `/code-review`). 이것 없이는 `refreshed` 가 램프 중 거부돼 첫 plan 만 쓴다 (L3 §4.7). sim 서보 지연 (`joint_cmd.lag` 가 sim 0) 이 t_c 오차를 지배하는 것도 여기서 본다. **S8 준비 (2026-09-24)**: 코드 대조 C-1~C-24 — sim 팔은 MJCF PD 의 kd/kp = 0.2 s 로 시정수 200 ms 의 1차 지연 ("지연 0" 은 거짓 전제), 러너는 `sim.throw_region` 을 안 읽음, S3.1b 미수행, Wilson·NEES·충격량 도구 부재 (§4.4 S8 준비 대조). **결정 D-S8-1~12 + C-25 확정 (2026-09-24, #537 코멘트 5804952754 → 5807767896)** — 표는 §4.4 S8 (§7.3 "S8 착수 시 확정" 은 그 파급만). **파일럿** (`260924_1218`, 기존 러너 기준 15 + 변형 10, lead off, 개발 PC non-RT): 1차 지연 LS 적합 τ̂ **200 ms** (6 관절 199–204 ms; 속도 xcorr 피크 70–98 ms 는 1차 지연의 τ 가 아니다) · t_c 분해 중앙값 CLIK **2 mm** · 서보 **122 mm** · 공이 t_c 약 40 ms 전 손에 닿음 · 25/25 Missed · 계획 γ_f **0.49–0.69** (DECEL 진입 tick 의 `ref_gamma` 1.0 은 계획값이 아니다) → 동결 p_c 경로 오차 54 mm 의 (1−γ_f) ≈ 22 mm 가 t_c 에 남음 · 첫 plan 0.18–0.24 s · APPROACH 중 교체 3/25 · 손 토크 최대 3.06 N·m = forcerange 클램프 · D-3 부하 δ_max p50 4.5 / p95 10.7 / max 16.7 ms (ε 12 mm 면 유효 7/25). "지연 0 이면 12/25 가 r_cap 안" 은 포구율 예측이 아니라 **필요조건 기하 검사**다 (±120 ms 창 최근접 거리). 단위: **S8-A** 측정 substrate (RT tick 바이트 동일) → **S8-B** lead 보상 (sim overlay) → **S8-C** 조건부 RT (손 timeout · ⑦ · 판정) → **S8-D** leap → **S8-E** 본 평가 → **S8-F** 손 근처 투척 (탐색, 게이트 밖) — §4.4 S8 | — |
 | S9 E-STOP·fault 정책 (D-13) | 대기 | — |
 | S10 실기 단계 도입 | 대기 | — |
 
@@ -387,9 +388,9 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 #### S3a 시뮬레이션 기반 (`rtc_mujoco_sim`, robot-agnostic)
 
 > **2026-09-20 범위 축소 (사용자 결정).** S3a 는 **S3.1a · S3.2 · S3.3 · S3.4** 4 항목이다.
-> - **S3.7 (팔 지연 에뮬레이션·식별) 제외** — **sim 은 지연이 없다고 보고 구현한다.** 주입도 에뮬레이션도 하지 않고 `arm_lag` 파라미터를 신설하지 않는다. 지연 식별은 실기 (S10, L5 §7 L5.9) 몫이고 게이트 `G5-D` 는 여기서 빠진다.
+> - **S3.7 (팔 지연 에뮬레이션·식별) 제외** — **sim 은 지연이 없다고 보고 구현한다.** 주입도 에뮬레이션도 하지 않고 `arm_lag` 파라미터를 신설하지 않는다. 지연 식별은 실기 (S10, L5 §7 L5.9) 몫이고 게이트 `G5-D` 는 여기서 빠진다. **정정 (2026-09-24)**: "지연이 없다" 는 *에뮬레이션 지연을 넣지 않는다* 는 뜻으로만 참이다 — sim 팔 actuator 자체가 시정수 ≈ 200 ms 의 1차 지연이다 (L5 §4.4 정정, §4.4 S8).
 > - **S3.8 (공 항력 k 식별) 제외** — 공 위치 예측은 `ball_perception` 이 준다. rtc 는 자체 탄도 모델로 예측하지 않으므로 `sim.ball.drag_k` 는 **fixture 전용 TBD** 로 남고 (L0 §7 이 이미 "fixture 가 실제로 필요해질 때까지 미뤄도 된다" 고 적었다) 게이트 `G0-D` 는 여기서 빠진다 — L0 §9 표에는 남되 fixture 가 필요해지는 시점 (S3.5a) 으로 이월한다.
-> - **파급 (S5 착수 시 결정, S3a 는 막지 않는다):** `G5-E` (L5 §9) 와 `G8-E` (L8 §9) 는 둘 다 "**에뮬레이션 지연 하에서** 선행 보상 전후를 비교" 하는 게이트라 sim 에 지연이 없으면 **측정이 공허해진다**. 부수로 `planner.budget.sigma_trk` (L3 §6, "L5 실측") 의 sim 초기값 출처가 사라져 S10 까지 TBD 로 남는다. **가장 싼 완화** — 지연 주입을 출하 YAML 파라미터가 아니라 **테스트 fixture 전용**으로 두면 세 게이트가 살아남으면서 sim 런타임은 지연 0 을 유지한다 (`rtc_controllers` 의 `sim.ball.*` 이 이미 그런 fixture 전용 레인이다). **→ 이 완화로 확정 (2026-09-22 사용자, §7.3 G5-E substrate 행).**
+> - **파급 (S5 착수 시 결정, S3a 는 막지 않는다):** `G5-E` (L5 §9) 와 `G8-E` (L8 §9) 는 둘 다 "**에뮬레이션 지연 하에서** 선행 보상 전후를 비교" 하는 게이트라 sim 에 지연이 없으면 **측정이 공허해진다**. 부수로 `planner.budget.sigma_trk` (L3 §6, "L5 실측") 의 sim 초기값 출처가 사라져 S10 까지 TBD 로 남는다. **가장 싼 완화** — 지연 주입을 출하 YAML 파라미터가 아니라 **테스트 fixture 전용**으로 두면 세 게이트가 살아남으면서 sim 런타임은 지연 0 을 유지한다 (`rtc_controllers` 의 `sim.ball.*` 이 이미 그런 fixture 전용 레인이다). **→ 이 완화로 확정 (2026-09-22 사용자, §7.3 G5-E substrate 행).** **정정 (2026-09-24, S8 준비)**: 전제 "sim 에 지연이 없다" 는 거짓이었다 — sim 팔 actuator 자체가 kd/kp = 0.2 s 의 1차 지연이다 (L5 §4.4 정정). G5-E 는 fixture 위 판정 (S5.3 PASS) 그대로이고, **G8-E 는 sim 런타임 lead on/off 로 판정한다** (D-S8-1, §4.4 S8)
 
 - S3.1a D-3 무부하 검증 (§5) — 결과에 따라 D-3 재검토
 - S3.2 발사 srv (D-14, S0.8 E-3 승인 후, PROC-3), iiwa7_leap projectile 설정, 투척용 스폰 위치. **world ↔ arm base 변환을 같은 q 의 MuJoCo FK·Pinocchio FK 대조로 확정**한다 (S3.5a 의 선행)
@@ -589,7 +590,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 - S6.4 후보 선택·hysteresis·commit/freeze, `PlanSnapshot` SeqLock (token·`publish_ns`, D-22), 계산 시작·게시 직전 token 재검사
 - S6.5 D-7a 측정 (§7.2) — **생략 (사용자, 2026-09-23)**: 초기값 FIFO 유지
 - S6.6 NLP 전환 대비 (A-4, §8): 탐색 전략을 계획기 코어의 단일 진입 함수 뒤에 두어, 1차원 탐색 + IK 를 NLP 로 바꿔도 스레드·입출력 스냅샷·RT 쪽 소비 코드는 그대로 두는 경계를 유지. 전환 판단 신호(IK 수렴률 G3-G, 계획 성공률, 예산 초과율)를 S6·S8 에서 기록
-- S3.1b D-3 부하 재검증: 포구 컨트롤러 + 계획기 + `sim_estimator_node` 동시 구동 (§5)
+- ~~S3.1b D-3 부하 재검증: 포구 컨트롤러 + 계획기 + `sim_estimator_node` 동시 구동 (§5)~~ — **S6 에서 수행되지 않았다** (2026-09-24 확인). S8 시행에서 clock lane 을 켜 누적 ≥ 200 으로 수행한다 (§4.4 S8, §5)
 
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
@@ -625,14 +626,44 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 
 #### S8 sim 통합 평가
 
-- iiwa7_leap → ur5e_p1b. Wilson CI, NEES, 소거실험(γ, lead). **γ 포화 빈도 측정 → D-8 재검토 입력**
+- **ur5e_p1b → iiwa7_leap** (2026-09-22 결정으로 `ur5e_p1b` 가 1차, G8-D2 는 조건부 — §1a·§7.3; 종전 "iiwa7_leap → ur5e_p1b" 는 S3.5b 이전 서술). Wilson CI, NEES, 소거실험(γ, lead). **γ 포화 빈도 측정 → D-8 재검토 입력**
+- **S8 준비 대조 (2026-09-24)**: ① sim 팔은 지연 0 이 아니다 — 두 로봇의 팔 관절 MJCF `<general>` PD 가 모두 kd/kp = 0.2 s 라 관성과 무관하게 **시정수 ≈ 200 ms 의 1차 지연**이고 (L5 §4.6), S6 의 서보 성분 ~125 mm 와 포획 0/25 의 원인이다 (보상 방식은 사용자 결정 D-S8-1). ② 시행 러너 `catching_sim_trials` 는 `sim.throw_region` 을 읽지 않는다 — 그 키는 어디에도 없고, 고정 기준 투척 + 섭동만 쓴다 (동결 분포는 D-S8-2). ③ S3.1b (D-3 부하) 는 수행된 적이 없어 S8 시행에서 clock lane 을 켜 함께 잰다. ④ Wilson·소거실험·간극/충격량 짝짓기 도구는 없다 (예측 lane 기록은 첫 점 + `cov_nan` 뿐) — S8-A 가 만든다. 단 NEES 는 새로 만들지 않는다: ball_perception_sim 의 `sim_evaluator_node`/`sim_capture_evaluate` 가 지평별 NEES·부호 있는 항력 편향·coverage 를 이미 낸다 (P5). ⑤ `T_arm` 을 0.2 로 올리면 `CheckFreezeCoversClose` (T_freeze ≥ T_close_e2e + T_arm + h = 0.4825 s) 가 출하 `T_freeze` 0.36 을 거부해 활성이 조용히 실패하고, `io.horizon_min` 0.51 (T_arm 0.05 도출값) 도 0.66 (`n_min` 15) 로 같이 올려야 configure 가 통과한다 (C-25). T_freeze 0.52 는 계획 후보 창 하한을 올려 S3.5b 90 % 상자 (t_c 0.61–0.73 s) 의 중앙값 투척이 열린 후보를 잃을 수 있다 → S8-B 첫 단계로 지도를 재실행한다
+
+**S8 확정 결정 (2026-09-24 사용자, #537 코멘트 5804952754 → 5807767896).**
+
+| ID | 확정 |
+|---|---|
+| D-S8-1 (a) + C-25 (a) | sim 서보 지연은 **L5 §4.5 선행 보상을 sim overlay 로 켜서** 다룬다 — overlay 집합 `joint_cmd.lag.{T_arm: τ̂, lead_enable: true}` + `planner.freeze.T_freeze: 0.52` + `io.{horizon_min: 0.66, n_min: 15}` (출하 YAML 불변). lead-off 비교 arm 도 **같은 T_freeze 0.52** 로 (검증기는 T_arm 을 보고, 선행이 꺼지면 RT·계획기는 0 을 쓴다 — lead 만 다르다). S8-B 첫 단계 = `catch_gate_map --arm-delay-s τ̂` + T_freeze 0.52 로 S3.5b 지도 재실행, 상자가 비면 D-S8-2 재결정. 1차 지연 정확 역보상 $u=q_d+\tau\dot q_d$ (c) 는 기각 — L5 순수지연 선행 기구 (S10 이 쓸 것) 를 검증하지 않는다 |
+| D-S8-2 (a) | 동결 분포 = S3.5b 90 % 상자. 표본은 `catchability_map.Throw`/`generate_throw_grid`/`throw_to_launch_request` 재사용 (P5), seed 로 재현. 기준 투척 반복은 iid 가 아니므로 G8-D 에서 빼고 회귀 세트로만 쓴다 |
+| D-S8-3 | floor 는 **사용 목적에서 사용자가 사전 고정** (값 미회신 — 그 전 G8-D 는 `NOT_EVALUATED(D-12)`), **n_valid 200** (벽시계 ≈ 17 min/로봇/공). "floor = p̂ − 0.2" 는 순환이라 기각 (Monte Carlo 로 참 p 0.3/0.5/0.7/0.9 에서 통과율 0.72/0.71/0.70/0.80). 파일럿·튜닝 데이터는 본 평가에 합치지 않고, 중간 판정·조기 종료 없음 |
+| D-S8-4 (c) | D-3 δ 는 **판정이 아니라 공변량** — δ(t_commit)·δ(t_c)·시행별 tick overrun 수·최대 tick 간격. δ–결과 상관은 n 25–50 에서 검정력이 없어 (r 0.3 에 n 85) **같은 seed 투척의 부하 A/B** 로 D-3 효과를 상계한다. 무효 = rig 실패만 (srv 거부·lane drop·sim stall·미발사), "plan 없음·abort" 는 실패. ITT 하한 (무효 = 실패) 병기 (§5 · 아래 게이트 표) |
+| D-S8-5 (a) | ⑦ 램프 연속은 조건부 — **트리거 = S8-B (lead on) 에서 `held_jump` 로 막힌 갱신의 ‖Δp_c‖ p95 > r_cap/n_σ (12 mm)** 또는 APPROACH 중 교체 요구가 시행의 ≥ 20 % |
+| D-S8-6 (a) | RETREAT 의 손 $q_{pre}$ 대기에 timeout: `{kRetreat, kHandTimeout, kIdle}` + 같은 tick disarm, 키 `robot.hand.T_release_timeout` (S8-C). IDLE 은 hang 이 없어 제외. E-STOP 경로가 아니다 (E-8 비해당, `/security-review` 는 수행) |
+| D-S8-7 (a) | ν̄ (`PRED_INCONSISTENT`)·`io.pred.nu_reg` 은퇴 — 생산자를 만들지 않는다. 예측 일관성은 추정기 `/ball_perception/debug/{innovation,nis}` 를 probe 가 기록해 오프라인으로 본다. σ_ℓ 도 `planner_events.csv` 기록만 (소비자 없음) |
+| D-S8-8 | false-Missed (링크·손바닥 위 공) 는 **측정 후 결정** — 손 관절 q·토크는 device lane `p1b_state.csv` 에 이미 있다 (diag 열 추가 불필요) |
+| D-S8-9 (a) | `ur5e_p1b` 먼저, leap (S8-D) 은 S8-B 뒤 (지도 재실행이 lead 값을 쓴다). G8-C 는 p1b 에서 `planner.gamma.grid: [0.0]` overlay 로 γ = 0 arm |
+| D-S8-10 (a) | CLOSING 이 닫힘 명령보다 1 tick 늦게 기록되는 것은 문서 기록만 (시각 무영향) |
+| D-S8-11 | 공 arm 은 `beanbag` preset 그대로 — preset 은 반발 외에 마찰 0.6→0.5·비틀림 0.05→0.3·구름 0.02→0.5 도 바꾸므로 (공 geom priority 100 이라 손에도 적용) **반발 + 마찰 복합 효과**로 보고한다. `tennis_soft` 는 만들지 않는다 |
+| D-S8-12 | 손 근처 투척 = **S8-F** (탐색, 게이트 밖) — 아래 |
+| 설계 (이의 없음) | G8-C·G8-E 는 **2×2 factorial** (lead × γ) · G8-D 성공 = **truth 기반** (아래) |
+
+**단위와 순서.** A → B → C (B 데이터 필요) → D (B 의 lead 지도) → E (D-12 floor 사전 고정 필요) → F (A 도구·B lead; E 의 문서 마감과 독립).
+
+- **S8-A 측정 substrate — RT tick 바이트 동일.** 허용 변경: lifecycle 의 read-only 파라미터 미러 (`wait_pose`·`T_arm`·`lead_enable`·`T_freeze`), `catching_sim_trials` 의 동결 분포 표본 (`--dist`·seed·ω 기록, 기본 인자 출력 불변)·재무장 False→True, `sim_ur5e_p1b.launch.py` 의 `sim_lanes:=` (접촉 truth·clock lane 을 `<session>/sim/` 에), `rtc_tools` (`catching_trials` 오프라인 평가 신설 — Wilson·τ̂ LS·t_c 분해·D-3 공변량·A⊥B·충격량 짝짓기, `vision_lane_probe` 전 지평·공분산·innovation·nis 덤프, `analyze_clock_phase` verdict), GUI 진행 카운트. 새 rtc_tools 코드는 로봇 상수를 갖지 않는다 (catch frame·프레임 합성·dt 는 config — ARCH-1). 골든 = 파일럿 재현
+- **S8-B lead 보상 (sim overlay).** ① 지도 재실행 ② 2×2 factorial ≈ 100 같은 seed × 4 arm (≈ 400 발, 한 세션·블록 무작위·같은 config hash) → G8-E·G8-C ③ 튜닝 세트 ≥ 200 (별도 seed) → `sat_ticks` (시행당 오발화 ≤ 0.5 %)·`stale_committed_max_s`·`track_err_abort` 제안값을 두 YAML 에 명시 ④ p̂ 보고. G8-A2 sim 시나리오 (연속 2 회·abort 직후 재투척) 도 이 세션에서 기록
+- **S8-C 조건부 RT.** D-S8-6 손 timeout · (트리거 충족 시) ⑦ 램프 연속 — E-6 대상 테스트는 별도 spec 커밋 · (D-S8-8) 판정 변경. RT-1~10, `/code-review`·`/security-review`
+- **S8-D leap.** leap sim profile + 투척 세트, τ̂ 지도 재실행으로 G8-D2 평가 또는 `NOT_EVALUATED(선행시간)` + 실측값, G3-D
+- **S8-E 본 평가.** 사용자 고정 floor · n_valid 200 으로 p1b tennis (+ beanbag arm). 게이트 표 전 항목 PASS/FAIL/`NOT_EVALUATED(<사유>)`, §4.3·§4.4·§7.3·§12·§13·§14·L8 §9.1 갱신
+- **S8-F 손 근처 투척 (탐색, Epic SPRINT·G8-D·D-18 밖).** 질문: 손 반경 ≤ 20 cm 로 오는 공을 작은 보정만으로 더 빠르게 받을 수 있는가. 비행 시간 T 는 중력이 상한 (2·v_z0/g) 이라 (도착 속력 v, T ≥ T_min, 측방 오프셋 r ≤ 0.2 m, 오프셋 각 ψ, Δz) 로 매개화하고 거리·앙각·입사각은 도출·기록한다 (종전 "d = 0.7·v" 는 도달 조건 $v_{min}^2=g(h+\sqrt{h^2+d^2})$ 로 불가능). 설계: 중앙 손 위치 r 0 속력 절벽 40–60 발 → 손 위치 3 곳 (사용자가 viewer 로 정한 `wait_pose` overlay) × LHS ≈ 300 발 → 로지스틱 GLM 의 v50(r) 지도 + 행별 Wilson, 총 ≈ 950 발 ≈ 80–100 min. 러너 `--aim-at-hand` 는 `catchability_map.integrate_flight` 위 shooting, 목표점 통과 오차를 truth 로 ≤ 2 mm 검증. 사전 예상: 허용 v_rel ≈ 1 m/s (L6) 라 v ≳ 2 m/s 에서 성공 ≈ 0. 결과는 별도 docs 커밋 (게이트 표 무영향)
 - 연속 재계획 측정 (S0.7 R1 결정의 확인): 시행마다 발사 → 첫 plan 시각, `APPROACH` 중 교체 횟수·사유, 첫 plan 전 후보 탈락 사유 분포. 첫 plan 이 가장자리 후보 전멸로 늦어져 R2 최악 경우에 가까운 시행 비율을 보고한다
 
 | 게이트 | PASS 기준 | 판정 입력 |
 |---|---|---|
 | 시스템 | G8-A, G8-B, G8-B2, G8-C, G8-C2, G8-C3, G8-E | — |
-| 성공률 | G8-D (ur5e_p1b)·G8-D2 (iiwa7_leap): Wilson 95% 하한 ≥ floor, 로봇별. 전체 발사 수·무효 수·무효 사유를 같이 보고하고, 무효율이 §5 상한을 넘으면 그 run 은 NOT_EVALUATED | floor·시행 수 (D-12, S0.9) |
-| clock 오차 (D-3) | S3.1a·S3.1b 결과가 §5 기준 통과 | — |
+| 성공률 | G8-D (ur5e_p1b)·G8-D2 (iiwa7_leap): **truth 기반 성공** (HOLD 끝부터 대기 자세 release 까지 공이 손에 있음) 의 Wilson 95% 하한 (97.5 % 단측, z 1.96) ≥ floor, 로봇별, n_valid 200. 슈퍼바이저 판정은 truth 대비 혼동행렬로 병기. 무효 = rig 실패만 (srv 거부·lane drop·sim stall·미발사) — "plan 없음·abort" 는 실패. 전체 발사 수·무효 수·무효 사유·ITT 하한 (무효 = 실패)·δ 공변량을 함께 보고 (D-S8-3·D-S8-4 (c)) | floor (D-12 — 사용자 사전 고정, 미회신), n 200 (D-S8-3) |
+| 소거실험 | G8-C (γ)·G8-E (lead) 는 2×2 factorial (lead {off, on} × γ {0, 계획}) 같은 seed 쌍 분석 — 성공 McNemar, t_c 간극·도착 시각 오차·v_rel·충격량 Wilcoxon, 상호작용 보고. **G8-E 판정 = 계획 γ 에서 t_c 서보 성분 ‖FK(q_meas) − FK(q_cmd)‖ 중앙값이 lead on 에서 감소 (부호 일치)**, 잔여 (1차 지연의 비-순수지연분) 보고, 성공률 차는 기록. sim G8-E 는 200 ms 1차 플랜트 위 검증이며 UR5e 이득을 예측하지 않는다 | τ̂ (S8-A) |
+| clock 오차 (D-3) | S3.1a 는 §5.1. **S3.1b (부하) 는 S8-B·S8-E 시행 누적 ≥ 200 으로 수행**하고, ε_clk,alloc 은 **판정이 아니라 공변량**이다 (D-S8-4 (c)) — 무효율 상한으로 run 을 NOT_EVALUATED 로 만들지 않는다 | — |
+| 이월 | G7-B3 (손–공 첫 접촉 episode 만, 예측 Δp 대 측정 ∫F dt 의 기울기·절편 CI, Spearman n ≥ 50; 토크는 `NOT_EVALUATED(sim clamp)` — 손 토크가 forcerange 3.0 에 클램프된다) · G7-E (S8-C 판정 변경 시 재기록) · G8-H (S8-C 의 새 분기 포함 기록 — S7 결과는 표에 PASS 로 기록돼 있지 않다) · G3-D (leap, S8-D) · G3-E = G8-C3 · G3-H = G8-C2 | — |
 | GUI·plot | §13 S8 행 | — |
 
 #### S9 E-STOP·fault 정책 (D-13)
@@ -705,11 +736,11 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | 항목 | 방법 | 기준 |
 |---|---|---|
 | 무부하 (S3.1a) | 구성별 (로봇 2종) 발사 ≥ 200 회 | 무효율 ≤ 5 % — **실측 완료 2026-09-20 (§5.1). LEAP PASS, P1b PASS(provisional)** (2026-09-21, 각 손의 $\Vert v\Vert_{\max}$ 기준) |
-| 부하 (S3.1b) | 포구 컨트롤러 + 계획기 + `sim_estimator_node` 동시 구동, 구성별 발사 ≥ 200 회 | 무효율 ≤ 5 % |
+| 부하 (S3.1b) | 포구 컨트롤러 + 계획기 + `sim_estimator_node` 동시 구동, 구성별 발사 ≥ 200 회. **S6 에서 수행되지 않았고 S8-B·S8-E 시행 누적으로 수행한다** (clock lane 을 `sim_lanes:=true` 로 켬, 2026-09-24) | **D-S8-4 (c) 로 교체**: ε_clk,alloc 은 판정이 아니라 **공변량** — 시행별 δ(t_commit)·δ(t_c)·tick overrun 수·최대 tick 간격을 기록하고, D-3 효과는 같은 seed 투척의 부하 A/B (affinity on·최소 프로세스 대 인위 부하) 로 상계한다. 파일럿 (`260924_1218`, non-RT 개발 PC): δ_max p50 4.5 / p95 10.7 / max 16.7 ms, ε 12 mm 이면 유효 7/25 — 무효율 상한을 그대로 쓰면 개발 PC 에서 run 이 전부 NOT_EVALUATED 가 된다 |
 | 예측 일관성 | vision 예측 궤적 대 ground truth (같은 wall 시각 축) | 오차가 δ 가 큰 구간에서만 커지는지 확인 (기록) |
 | stamp 도메인 | `sim_estimator_node` 의 stamp 가 wall 인지 | `use_sim_time=false` 에서 wall — **확인 2026-09-20** (S3.4: 예측 origin stamp = 카메라 capture stamp = sim 의 wall `now()`; sim 재시작에도 역행 없음) |
 
-시행 수 200·무효율 5 % 는 제안값이다 (사용자 확인, §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다. 성공률 평가(S8)는 유효 시행으로 계산하되 전체 발사 수와 무효 사유를 함께 보고해, 무효 제외가 성공률을 편향하지 않는지 드러낸다.
+시행 수 200·무효율 5 % 는 제안값이다 (사용자 확인, §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다. ~~성공률 평가(S8)는 유효 시행으로 계산하되 전체 발사 수와 무효 사유를 함께 보고해, 무효 제외가 성공률을 편향하지 않는지 드러낸다.~~ **S8 (2026-09-24, D-S8-4 (c))**: 성공률 평가에서 clock 위상 오차는 무효 사유가 아니다 — **무효 = rig 실패만** (srv 거부·lane drop·sim stall·미발사), "plan 없음·abort" 는 실패, δ 는 공변량으로 병기하고 무효를 실패로 센 ITT 하한을 함께 보고한다 (§1a · §4.4 S8). 위 무효율 상한은 S3.1a 무부하 판정에만 남는다.
 
 ## 6. D-7 계획기 스레드 구성
 
@@ -813,12 +844,12 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | ~~E-8 승인~~ | **승인 (2026-09-22 사용자)**: P-1 최소 계약 (a)~(d) 를 문구 그대로 (§4.4 S5). S5 게이트의 G7-H 4종 + `/security-review` 는 그대로 | ~~S5 전~~ |
 | ~~E-7 승인~~ | **승인 (2026-09-23 사용자, 결정 J)**: 새 role 없이 `mpc` role 재사용 (§6) | ~~S6 전~~ |
 | ~~D-24 결정~~ | **확정 (2026-09-22 사용자): (a)** `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid` (P5 — grasp 의 같은 gap 도 닫힌다, PROC-3 전체 회귀). (b) 는 포구 전용 mailbox 가 device 경로와 공존하는 중복 lane 이라 기각 | ~~S5 전~~ → S5.2e |
-| ~~G5-E substrate~~ | **확정 (2026-09-22 사용자): (ㄱ)** fixture 전용 지연 주입 (테스트 전용 지연 큐, 런타임 불변) — `prediction.lead` = $T_{arm}$ 의 효과를 S6 전에 한 번은 관측한다. (ㄴ) `NOT_EVALUATED(substrate)` 는 선행 보상의 부호·크기를 S10 실기에서 처음 보게 되므로 기각 (§4.3 S5, L5 §9 G5-E, L8 §9 G8-E) | ~~S5 착수 시~~ → S5.3 |
+| ~~G5-E substrate~~ | **확정 (2026-09-22 사용자): (ㄱ)** fixture 전용 지연 주입 (테스트 전용 지연 큐, 런타임 불변) — `prediction.lead` = $T_{arm}$ 의 효과를 S6 전에 한 번은 관측한다. (ㄴ) `NOT_EVALUATED(substrate)` 는 선행 보상의 부호·크기를 S10 실기에서 처음 보게 되므로 기각 (§4.3 S5, L5 §9 G5-E, L8 §9 G8-E). **G8-E 부분은 2026-09-24 대체 (D-S8-1)**: sim 팔이 시정수 ≈ 200 ms 의 1차 지연이라 (L5 §4.4 정정) fixture 없이 **sim 런타임 lead on/off 비교**가 가능하다 — G8-E 는 S8-B 2×2 factorial 위에서 판정한다 (§4.4 S8). G5-E (fixture, S5.3 PASS) 는 그대로 | ~~S5 착수 시~~ → S5.3 · G8-E → S8-B |
 | ~~QP solve time 예산~~ | **확정 (2026-09-22 사용자, provisional)**: tick 2000 µs (`control_rate` 500 Hz) 기준 **p99 ≤ 400 µs (20 %) · 최대 ≤ 1500 µs (75 %)**. 분위수로 거는 이유는 L8 의 "총량이 아니라 분산의 꼬리" 이고, 20 % 는 backend 왕복·로깅·계획기 스냅샷이 같은 tick 을 나눠 쓰는 것을 감안한 값. S5 실측이 훨씬 작으면 조인다 (§4.3 S5 RT 행, L5 §9 G5-C) | ~~S5 게이트~~ → S5 실측 후 재검 |
 | ~~sim 공 lane 지터~~ | **확정 (2026-09-22 사용자) · 구현 완료**: 두 공 토픽의 stamp 를 **발사 순간을 기준으로 sim 시간축을 wall 에 얹은 값**으로 (`rtc_mujoco_sim`, epoch 은 wall 그대로, wall 과의 차이는 비행 안 위상 오차 δ 양방향 — D-2·D-3 불변; 첫 구현은 throttle 기준 anchor 였는데 발사 전 누적 지연 (컨트롤러 연결 전 idle·pause, 초 단위) 이 모든 stamp 에 박혀 포구 시각이 그만큼 이르게 틀리는 문제를 `/code-review` 가 잡아 발사 anchor 로 바꿨고, wall 을 안 앞서게 clamp 하는 변형은 sim 이 발사 pace 를 앞설 때마다 지터를 되돌려 (재실측 25 ms 초과 3.8 %) 기각했다 — 대신 sim 의 future 허용치를 δ 폭으로: profile `max_future_skew_s` 0.1). 발행률 상향 (속도 추정을 더 튀게 함) · wall 타이머 (`mjData` 잠금) · `init.max_span_s` 완화 (증상만 덮음) 는 기각. 재실측: stamp 간격 25 ms 초과 9.2 % → 0.02 %, T_det max 0.69 → 0.10 s (§4.4 T_det 재실측) | ~~S7–S8 전~~ |
 | ~~sim profile 설정~~ | **확정·설정 (2026-09-22 사용자, ⑤ 후 한 번)**: `integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json` = **1.0 s / 0.05 s / 20 점 / ≤ 30 Hz**, 측정 공분산 (5 mm)² 대각 (`position_noise_stddev_m` 과 짝), `max_future_skew_s` **0.1** (공 lane stamp 축이 sim 축이라 wall 을 δ 만큼 앞설 수 있다 — ⑤). 수정 전 필요했던 1.05 s / 21 점은 버스트가 만든 0.024 s 검출 때문이었다 (§4.4 S3.6 결과) | ~~S7–S8 전~~ |
 | D-12 손 토크 | P1b 손 관절 한계: 설정·모델값은 모두 3.0 N·m (YAML `max_torque`, URDF `effort`, MJCF `forcerange`) 이고, 1.5 N·m 는 작성 시점 사용자 진술 (CATCHING_MASTER §1.3). **실기 실측 (2026-09-22 사용자): `thumb_cmc_fe` 최대 7 rad/s 에서 약 2 N·m — 운용 한계 1.5 N·m 와 양립하지 않는다** (L6 §4.2). nominal·continuous·peak·설정값 중 무엇을 운용 한계로 쓸지와 그 출처 | S7.3 충격 게이트 전 |
-| D-12 나머지 | 공 사양, 실기 T_close,tot 측정 시점, 성공률 floor·시행 수. S4.4 는 출하 sim 공 (ITF Type 2) 으로 판정했다 — 공 사양이 바뀌면 fly-in (L6 §4.5) 부터 다시 | S3.5b, S8 |
+| D-12 나머지 | 공 사양, 실기 T_close,tot 측정 시점, 성공률 floor·시행 수. S4.4 는 출하 sim 공 (ITF Type 2) 으로 판정했다 — 공 사양이 바뀌면 fly-in (L6 §4.5) 부터 다시. **2026-09-24 (D-S8-3)**: 시행 수는 **n_valid 200** 확정, floor 는 사용자가 사용 목적에서 사전 고정 (**값 미회신**). 공은 tennis 1차 + `beanbag` preset arm (D-S8-11) | S3.5b, **S8-E 전 (floor 값)** |
 | ~~D-18 개정~~ | **확정 (2026-09-22 사용자, S3.5b 결정 A)**: sim 은 **현 씬을 유지하고 릴리스 높이를 0.2–0.5 m** (base 기준 +0.2…+0.5 m) 로 둔다 — 결과가 (릴리스 − base 높이) 에만 의존해 base 를 올린 씬과 같은 셀이다. 거리 1.0–1.5 m. 기존 4 m·T_f ≥ 1.0 s·릴리스 1.5–2.0 m 는 추정기 정확도를 위한 값이었고 제약이 아니다 (2026-09-21 사용자). base 를 올리는 씬은 실기 rig 의 base 높이가 정해질 때 (값 필요) — `ur5e_p1b` 는 hand-description 쪽 sibling scene 이어야 한다 (§4.4 S4.4 정정). 앙각·속력·T_f 범위는 §4.4 "S3.5b 결과" | ~~S3.5b 전~~ |
 | ~~D-16 개정~~ | **확정 (2026-09-22 사용자, 결정 B)**: 도달시간 게이트는 **두 층을 병기**한다 — 출하 상수 box (런타임 함수) 와 **토크 검사 층** (그 이동 wait → q\* 가 $\eta_\tau\tau_{\max}$ 안에 드는가, 회전자 관성 포함). 판정은 토크 층이고 provisional — 런타임 구현 (계획기의 자세 의존 한계, CLIK 의 가중 box) 은 S6 에서 설계한다 (§9). **필요 시점이 "S6 전" 에서 "S3.5b 전" 으로 당겨졌다** — 도달시간 게이트의 $\bar a$ 가 지도를 정한다 | ~~S6 전~~ → S6 (런타임) |
 | ~~1차 목표 로봇~~ | **확정 (2026-09-22 사용자, S3.5b 후)**: 1차 `ur5e_p1b`. G8-D2 (`iiwa7_leap`) 는 **조건부** — 실측 선행시간에서 gate 지도가 비어 있지 않으면 평가, 비어 있으면 `NOT_EVALUATED(선행시간)` 로 실측값과 함께 보고 (§1a). 기준에서 빼지 않는다. **`ur5e_p1b` 의 S6 착수 조건 셋**: fly-in 등가 `d_eff` (아래 행), D-16 토크 층의 런타임 구현 (§9), 다시 고른 대기 자세 (§11) — 이 셋이 빠지면 지도가 0 이었으므로 "1차" 는 무조건이 아니다. D-3 은 3.85 m/s 에서 FAIL (§5.1), 관절 속도 정격은 `sim.yaml` overlay 로만 (결정 D) | ~~S5 전~~ |
@@ -840,8 +871,8 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | `REF_SATURATED` 판정식 | `ref.saturated` 가 연속 `supervisor.sat_ticks` tick (기본 **60**, provisional — 5 는 단위 fixture 의 정상 접근 포화 10·76 tick 을 잘라 100 으로 올렸고, sim 기준 15 + 변형 10 투척 (`260923_2336`) 의 정상 연속 길이 max 44 · p99 42.5 를 보고 50 으로 내렸다. 50 재측정 `260924_0013` 에서 이미 빗나간 공의 CLOSING 에서 1 회 발화, 미발화 최장 40·33 → 60, #537 결정 2026-09-24) 이면 승격 — 최종값은 S8 에서 정한다 (D-S7-4) |
 | hold 규칙 | `robot.hand.hold.mode: close_target \| measured_offset` + `hold.delta_rad` — 출하 기본은 `close_target` |
 | `supervisor.stale_committed_max_s` | 출하 **0.10 s** provisional. 조일 물리량(정지거리·공분산 성장 등)은 S8 에서 정해 조인다 |
-| ν̄ / `PRED_INCONSISTENT` | S7 에서도 **미구현** — 생산자가 없다 (A-S5-5). `Reason` 은 표에 남고 발화는 0 (명시 면제). S8 이월 |
-| σ_ℓ 모니터 소비자 | S7 착수 대상이 아니다 — `planner_cycle.cpp` 가 σ_ℓ 를 갱신은 하지만 소비자가 없다. **S8 이월** (D-8 포화 빈도 측정과 함께) |
+| ν̄ / `PRED_INCONSISTENT` | S7 에서도 **미구현** — 생산자가 없다 (A-S5-5). `Reason` 은 표에 남고 발화는 0 (명시 면제). S8 이월 → **은퇴 (2026-09-24, D-S8-7 (a))**: 생산자를 만들지 않고 `io.pred.nu_reg` 도 은퇴 (L1 §6). 예측 일관성은 추정기 `/ball_perception/debug/{innovation,nis}` 를 `vision_lane_probe` 가 기록해 오프라인으로 본다 (S8-A). `Reason::kPredInconsistent` 는 전이표에 남되 발화 0 인 명시 면제 (L7 §4.2) |
+| σ_ℓ 모니터 소비자 | S7 착수 대상이 아니다 — `planner_cycle.cpp` 가 σ_ℓ 를 갱신은 하지만 소비자가 없다. **S8 이월** (D-8 포화 빈도 측정과 함께) → **기록만 (2026-09-24, D-S8-7 (a))**: RT 소비자를 두지 않는다. `planner_events.csv` 의 `sigma_l` 로 S8-B 튜닝 세트에서 σ_ℓ(age) 를 보고 `stale_committed_max_s` 를 정하는 입력으로만 쓴다. σ_ℓ abort 는 S9 |
 
 **S7 중 확정 (#537 결정 2026-09-24)**
 
@@ -850,6 +881,22 @@ D-3 은 **검증 결과를 바탕으로 추가 검토한다.** 기존 RTF 신호
 | RETREAT release | RETREAT 는 손을 움직이지 않는다 — 닫힌 손은 판정 (Captured·Missed·Undetermined·Aborted) 과 무관하게 대기 자세 도착에서만 `q_pre` 로 연다. 아직 안 나간 commit 은 진입 시 취소 (손은 이미 `q_pre`). Q12 (Missed/Aborted 는 진입 즉시 Release)·Q14 (접촉 확정 후 abort 만 예외) 를 교체 — 지문만 보는 판정이 링크·손바닥 위 공을 Missed 로 읽어 포구 지점에서 떨어뜨렸다 (sim `260923_2336`). L7 §4.1 RETREAT 순서 |
 | `supervisor.sat_ticks` | **60** provisional (100 → 50 → 60): 50 재측정 (`260924_0013`) 에서 이미 빗나간 공의 CLOSING 에서 1 회 발화, 미발화 최장 40·33. 최종값은 S8 (위 `REF_SATURATED` 행) |
 | G7-B3 충격량 상관 | **S8 이월** (사용자 결정) — S7 은 산출하지 않았다 |
+
+**S8 착수 시 확정 (2026-09-24 사용자 — #537 코멘트 5804952754 → 5806998220 → 5807128700 → 5807193226 → 5807451403 → 5807720680 → 5807767896)**
+
+결정 표 (D-S8-1~12 · C-25) 와 단위 분할은 §4.4 S8 이 SSoT 다. 이 절은 다른 §7.3 행에 미친 파급만 적는다.
+
+| 항목 | 파급 |
+|---|---|
+| G8-E substrate | fixture (2026-09-22) → sim 런타임 lead on/off (D-S8-1) — 위 "G5-E substrate" 행 |
+| `joint_cmd.lag.T_arm` (sim) | 출하 YAML 은 0 그대로. S8-B overlay 에서만 τ̂ + `lead_enable` true, 함께 `planner.freeze.T_freeze` 0.52 · `io.horizon_min` 0.66 · `io.n_min` 15 (C-25 — 없으면 활성·configure 실패). 출하 `T_arm` 값은 S10 (L5 §6) |
+| D-3 판정 | 무효율 상한 → 공변량 (D-S8-4 (c), §5 표) |
+| ν̄·σ_ℓ | 위 두 행 (D-S8-7 (a)) |
+| `supervisor.sat_ticks`·`stale_committed_max_s`·`track_err_abort` | S8-B 튜닝 세트 (≥ 200, 별도 seed) 의 시행별 분포로 제안하고 두 로봇 YAML 에 명시 (지금은 YAML 키 없이 기본값) |
+| RETREAT 손 대기 timeout | `robot.hand.T_release_timeout` 신설 (D-S8-6, S8-C) — L6 §5.3·L7 §6 은 S8-C 커밋에서 |
+| G8-D 성공 정의 | truth 기반 + 슈퍼바이저 혼동행렬, 무효 = rig 실패만, ITT 하한 (§1a) |
+| L3 점수 가중치 · NLP 전환 · `reference.a_max` provisional · `budget.sigma_trk` | S8 데이터로 **제안만** — 가중치는 S8-E 뒤, NLP 전환 신호는 기록만 (결정 S9 전), `a_max` provisional 해제는 S8-E 실측 후, `sigma_trk` 는 서보 잔여로 제안 |
+| CLOSING 1 tick 늦은 기록 | 문서 기록만 (D-S8-10 (a)) — 닫힘 명령 시각에 영향 없음 |
 
 **단계에서 정할 것 (결정은 해당 단계)**
 
@@ -1141,6 +1188,8 @@ sim:
     flight_time_s: [1.0, TBD]       # 발사 → 포구 비행시간. 하한 확정 (D-18), 상한은 지도 결과
 ```
 
+> ⚠️ **2026-09-24 확인 (S8 준비 C-3)**: 위 `sim.throw_region` 블록은 제안으로 남았고 **YAML 키로 만들어지지 않았다** — 지도 도구 (`catch_gate_map`) 는 CLI 인자를 쓰고, 시행 러너는 동결 분포를 인자 (`catching_sim_trials --dist`, S8-A) 로 받아 `catchability_map.Throw`/`generate_throw_grid`/`throw_to_launch_request` 로 표본을 뽑는다 (D-S8-2, §4.4 S8).
+
 **지도 도구의 구성 (S3.5a, 2026-09-21 착수).** 판정은 런타임과 같은 `CatchPoseIk::Solve` 여야 하고 (위 S1.9), 격자·비행·집계는 python 관행이다. 그 둘을 잇는 방식을 **C++ 배치 실행파일 + python 오케스트레이터**로 정했다. pybind 는 기각했다 — 저장소에 선례가 없고, venv 의 `FindPython` 함정 (AGENTS.md §9.2) 과 정면으로 부딪치며, pinocchio 4.x 는 전용 컴파일 플래그를 요구한다. python 으로 판정을 다시 구현하는 것은 "같은 함수" 를 어긴다. 선례는 `rtc_math/se3_error_compare` (Eigen-only 오프라인 도구 + python 짝) 다.
 
 - **C++ 옵션 파서** `rtc::catching::ParseCatchPoseIkParams` — `planner.ik.*`·`planner.catchability.*` → `CatchPoseIkOptions`. S1.9 가 "No YAML parser yet (Q4)" 로 남긴 자리이고, S6.2 런타임이 이것을 그대로 쓴다 ("같은 YAML 키" 의 실체). `planner.ik` 아래 미지 키는 **거부**한다 (이 절을 통째로 소유하므로). `alpha_max` 는 L3 §6 이 TBD, 구조체 기본값은 0.26 rad 인 불일치를 이 파서가 드러냈고, **값은 코드 쪽으로 맞췄다** (L3 §6 = `0.26 (provisional)`; 열려 있는 것은 값이 아니라 닫는 근거인 θ 분포다). 활성 `manipulability_min` 이 TBD 면 비유한으로 남겨 `kOptionsInvalid` 로 **fail-closed** 한다 (w₅ 의 0.1 은 차원이 다른 w₆ 게이트의 보수적 대체값이 될 수 없다, C-3).
@@ -1218,8 +1267,10 @@ $$\gamma_{\min}=1-\frac{d_{eff}}{\Vert v\Vert\,T_{close,tot}},\qquad \gamma_{\ma
 | C-1 전체 거부가 포구 직전 기아가 될 수 있다 (지평 끝이 지면·작업셀 밖에 닿을수록 무효 점이 생김) | S3.4 validity 히스토그램 → S5.2 착수 전 재검토 |
 | 실기 시계 오프셋이 미래 방향이면 지평 검사는 통과하고 t_c 만 늦어진다 (6 m/s·10 ms = 6 cm). L3 §4.6 의 ε_clk 는 분산 항이라 bias 를 모델링하지 않는다. sim 은 같은 호스트라 드러나지 않는다 | S10 (D-2 예외 ③ 조건, TBD-NET-01) |
 | sim T_close 는 MJCF 게인에 의존 — 실기 측정 전까지 S4 결론은 잠정 | S4.3, S10 |
-| γ derate 제외(D-8)로 abort 가 늘 수 있다 | S8 측정 |
-| D-3 이 검증에서 떨어지면 S3·S5 시간 경로 재작업 | S3.1a, S3.1b |
+| γ derate 제외(D-8)로 abort 가 늘 수 있다 | S8 측정 (시행별 `ref_saturated` max streak, G8-C3) |
+| sim 팔 actuator 가 시정수 ≈ 200 ms 의 1차 지연이다 — 선행 보상 (순수 지연) 은 비-순수지연분을 남기고, sim 에서 잰 lead 이득은 UR5e 이득을 예측하지 않는다 (L5 §4.4 정정) | S8-B (G8-E 잔여 보고), S10 |
+| T_freeze 0.52 (T_arm 0.2 파급, C-25) 가 S3.5b 목표 분포의 열린 후보를 지울 수 있다 | S8-B 지도 재실행 → 비면 D-S8-2 재결정 |
+| D-3 이 검증에서 떨어지면 S3·S5 시간 경로 재작업 | S3.1a, S3.1b (S8 시행 누적 — δ 는 공변량, D-S8-4 (c)) |
 | 토크에서 도출한 보수적 가속 box (D-16) 가 받을 수 있는 공 속력을 낮출 수 있다 | S4.4 |
 | 1차원 분해가 복잡한 경우를 놓치면 NLP 전환 (§8) 이 필요해 S6 재작업 | S6·S8 신호 |
 | S2.2 CLIK 확장이 출하 컨트롤러 DemoWbc 를 회귀시킬 수 있다 | S2.2a golden-vector, S2.4 |
@@ -1250,7 +1301,7 @@ $$\gamma_{\min}=1-\frac{d_{eff}}{\Vert v\Vert\,T_{close,tot}},\qquad \gamma_{\ma
 | S5 | 포구 컨트롤러 패널 — **완료 2026-09-22**: `demo_controller_gui` Control 탭의 Catching 패널 (`demo_gui/catching.py`, 순수 python). 모드·사유, 입력 lane (n·generation·sequence·수신 나이·지평), plan, 추종 오차·CLIK 상태, Arm/Disarm. **관측된 무장과 요청된 무장을 따로 보여준다** — tick 이 E-STOP·fault 에서 latch 를 내리므로 파라미터 set 성공은 무장의 증거가 아니고, 둘이 갈리는 순간이 봐야 할 상태다. 거부 카운터는 0 이 아닌 것만 이름과 함께 (0 의 행렬이 0 아닌 하나를 가린다). 컨트롤러가 GUI roster 에 없어 **전환 자체가 불가능했던 것**을 함께 닫았다 (`extra_switchable_controllers`; 목표 패널은 `NO_EXTERNAL_COMMAND_CONTROLLERS` — 두 lane 모두 목표를 거부하므로 보내기 버튼의 유일한 결과가 거부 카운터다). 육안: sim 폐루프에서 APPROACH 중 `p_c=(+0.570,+0.190,+0.400) t_c=+1.492 s law: SOLVED 1 it, 48 us track err 0.0001 rad`, Disarm 클릭이 컨트롤러에 반영 (mode IDLE·`armed=false`). 게이트 `test_demo_gui_catching.py` 23 케이스 | `catching_diag.csv` — **완료**: `plot_rtc_log` 의 1급 log type (`catching_diag`, 컬럼 지문 `track_err_rad`+`ref_gamma`), 기준 vs p_c · 실현 가속도 vs 포화 전 요구값 · 추종 오차 vs solve time · 슈퍼바이저 모드의 4단 공유 x축 figure + 통계. **무효 tick 은 NaN 으로 끊는다** — PROC-7 이 0 으로 지우므로 그대로 그리면 매 tick 손이 원점으로 간 것처럼 읽힌다 (첫 실측 플롯이 그랬다). 회귀 `test_plot_rtc_log.py` 14 케이스 (C++ 헤더 ↔ python 컬럼 목록 oracle 포함) |
 | S6 | plan 표시: t_c·p_c·γ_f·w₅·w₆·탈락 사유·plan 나이 | `planner_timing_log.csv` (timing plotter 재사용), plan 이벤트 CSV (후보별 게이트 결과, 수신 → 게시 지연) → plot |
 | S7 | 슈퍼바이저 모드·사유·결과, 손 위상, 접촉 센서·센서 freshness | 전이 로그·손 위상·접촉 CSV → plot (전이 시각선을 추종 플롯에 겹침) — **구현** (2026-09-23): GUI 패널에 결과·손 위상·지문 줄 (`test_demo_gui_catching.py`), `catching_diag` 모든 패널에 모드 전이선 + `catching_hand` figure + 시도별 판정 집계 (`test_plot_rtc_log.py` TestCatchingS7). 육안 확인은 PR 전 |
-| S8 | 연속 투척 진행 표시 | 시행 요약 CSV → 로봇별 성공률 (Wilson 구간, 전체·무효 발사 수)·NEES·소거실험 플롯 (오프라인 평가 스크립트) |
+| S8 | 연속 투척 진행 표시 — **S8-A**: Catching 패널이 결과 엣지를 로컬로 세는 카운트 (시행·판정별; 새 메시지 필드 없음 — `CatchingState` 는 S5 에서 동결) | 시행 요약 CSV → 로봇별 성공률 (truth 기반 Wilson 구간, 전체·무효 발사 수·ITT 하한)·소거실험 (2×2) · t_c 분해 · D-3 공변량 플롯 — **S8-A** `rtc_tools` `catching_trials` (오프라인 평가, 로봇 상수 없음). NEES 는 ball_perception_sim `sim_capture_evaluate` 산출을 쓴다 (P5) |
 | S9 | E-STOP·fault 상태·해제 흐름 | E-STOP/fault 사건이 CSV 와 플롯에 드러나는지 |
 | S10 | 실기 모드 표시 (provisional 값 차단 상태 포함) | 실기 세션 CSV 가 같은 plot 으로 그려지는지 |
 
@@ -1266,7 +1317,7 @@ $$\gamma_{\min}=1-\frac{d_{eff}}{\Vert v\Vert\,T_{close,tot}},\qquad \gamma_{\ma
 |---|---|---|
 | E-1 | S0.6 → S1.3·S5.2 | §3.1 예외 승인 전 D-2 변환 함수 착수 금지 |
 | E-3 | S0.8 → S3.2 (D-14)·S5.4 (D-20) | 승인 기록 없으면 `rtc_msgs` 변경 금지 |
-| E-6·PROC-6 | S2 | 기존 assertion 수정 필요 시 즉시 중단 |
+| E-6·PROC-6 | S2·S8-C | 기존 assertion 수정 필요 시 즉시 중단. S8-C 의 ⑦ 채택 시 `test_catching_planner_search.cpp`·`test_catching_soft_catch.cpp` 의 미분 0 단언은 별도 spec 커밋 |
 | E-7 | S6 착수 전 | §6 배치표 `[CONCERN]`, S6 스레드 게이트 |
 | E-8 | S5 착수 전·S5 게이트·S9 | P-1 최소 계약, race oracle, `/security-review` 2회 (S5 최소 정책, S9 최종) |
 | E-9 | §7.3 | MPC RT 분류 drift |
@@ -1275,7 +1326,7 @@ $$\gamma_{\min}=1-\frac{d_{eff}}{\Vert v\Vert\,T_{close,tot}},\qquad \gamma_{\ma
 | PROC-7 | S5·S7 | early-return 분기별 Store 실패 경로 테스트 |
 | ARCH-3 | S1.9·§8 | 구현 하나뿐인 interface 신설 없음 |
 | ARCH-6 | S5.2 | 구독 `KEEP_LAST(1)` (hook Phase 0b), backlog latest-only 테스트 |
-| RT-1~10 | S1·S5·S6·S7 | G0-B·G1-D·G2-E·G4-G·G5-C·G3-K·G7-D 할당 0 |
+| RT-1~10 | S1·S5·S6·S7·S8-C | G0-B·G1-D·G2-E·G4-G·G5-C·G3-K·G7-D 할당 0 (S8-A·S8-B 는 RT tick 무변경 — `git diff main -- rtc_controllers integrated_bringup/src/controllers/catching/controller.cpp` 비어 있음) |
 | NUM-1·NUM-7 | S1.9·S1.5 | a_d guard, w fail-closed, 한계 무효 flag |
 
 ### 14.2 설계 문서 구현 단위 → 단계
@@ -1304,12 +1355,13 @@ $$\gamma_{\min}=1-\frac{d_{eff}}{\Vert v\Vert\,T_{close,tot}},\qquad \gamma_{\ma
 | L6.3 go/no-go | S4.4 |
 | L6.7·L6.6 | S7.1 |
 | L7.1–L7.3 | S1.8 (L7.3 은 S7.3 에서 결합) |
-| L7.5·L7.6 | S7.2·S7.3 |
+| L7.5 | S7.2 |
+| L7.6 충격량 예산 | S8 (G7-B3 와 함께 이월, #537 결정 2026-09-24) |
 | L7.7 | S10 |
 | L7.8 E-STOP 훅 | S5.1 (P-1) → S9 |
 | L8.2 골격 | S4.0 → S5.1 |
 | L8.3 기록·상태 publisher | S5.4 |
-| L8.4 D-3·발사 srv·truth | S3.1a·S3.2·S3.3 (부하 재검증 S3.1b) |
+| L8.4 D-3·발사 srv·truth | S3.1a·S3.2·S3.3 (부하 재검증 S3.1b 는 S8 시행 누적) |
 | L8.5 vision 연결·지도·사양·NEES | S3.4·S3.5a/b·S3.6 |
 | L8.6·L8.7 폐루프 평가 | S8 |
 | L8.8 실기 | S10 |

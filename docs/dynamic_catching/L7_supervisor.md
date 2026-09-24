@@ -96,7 +96,7 @@
 - **R-WATCHDOG.** homing·retreat 법칙도 `track_err_` 를 계산해 `supervisor.track_err_abort` 를 본다. `RETREAT` 는 `{kRetreat, kTrackErr} → ABORT_SAFE` 행을 그대로 쓰고, `IDLE` 은 행이 없으므로 초과 시 정지 램프 + `arm_requested_` 를 내려(disarm) 기록한다.
 - **R-DECEL-ENTRY.** tick 의 `now` 는 `Compute` 머리에서 **한 번** 읽어 법칙·시퀀서·판정에 같은 값을 넘긴다(`RunTrackingTick` 이 따로 시계를 읽지 않는다). `DECEL` 진입 tick 은 추종 `Step` 을 한 번 더 돌려 그 출력을 §4.3 의 $(x_s,\dot x_s)$·$t_s$ 로 삼고, 다음 tick 부터 $\tau=now_{lead}-t_s$ 로 소비한다.
 - **R-ADMIT (C-31, L3 §4.11).** `JudgePlan` 에 조건 (g) `t_c-now\le T_{freeze}` 거부(`kTooLate`)를 추가한다 — 현재는 이 조건이 없어 $T_{freeze}$ 안의 $t_c$ 를 가진 plan 도 채택 다음 tick 에 commit 해 버린다. 검증기는 `T_freeze ≥ T_close_e2e + T_arm + margin` 을 강제한다.
-- **R-CLOSE.** `COMMITTED→CLOSING` 은 시퀀서의 `close_issued`(규칙 `now ≥ t_cmd-h/2`)로 전이한다 — `HandCommandDue` 대신 `time_types` 에 `HandCommandDueRounded(now, t_cmd, h)` 를 추가해 시간축 표(plan §3)를 참으로 유지한다.
+- **R-CLOSE.** `COMMITTED→CLOSING` 은 시퀀서의 `close_issued`(규칙 `now ≥ t_cmd-h/2`)로 전이한다 — `HandCommandDue` 대신 `time_types` 에 `HandCommandDueRounded(now, t_cmd, h)` 를 추가해 시간축 표(plan §3)를 참으로 유지한다. **기록 1 tick 지연 (D-S8-10 (a), 2026-09-24 문서 기록만)**: `Compute()` 순서상 닫힘 명령이 나간 tick 의 기록에는 아직 `COMMITTED` 가 실리고 `CLOSING` 은 다음 tick 부터 기록된다 — 손 명령 시각 자체 (G6-A) 에는 영향이 없으므로 코드를 바꾸지 않는다. 오프라인 분석은 닫힘 시각을 mode 열이 아니라 손 명령 열에서 읽는다.
 - **R-TRACK (Q15, 2026-09-23 사용자 확정).** 동결 후 샘플은 commit 시점 `committed_generation_` 에 고정한다 — 다른 generation 스냅샷은 stale 로 보고 동결 plan 으로 계속하며 `kBallStaleCommitted` 만 기록한다. 재무장 뒤에는 `last_trial_generation_` 을 기록해 그 generation 은 usable 로 보지 않는다(새 generation 이 올 때까지 대기). 두 멤버 모두 `ResetForRearm` 이 쓰고 `ResetTrialState` 가 지운다(§4.8).
 
 ### 4.2 abort·실패 사유
@@ -108,7 +108,7 @@
 | `BALL_STALE_LONG` | stale 지속 > `supervisor.stale_committed_max_s` | `COMMITTED`, `CLOSING` | `ABORT_SAFE` `[확정 A-6]` |
 | `TRACK_CHANGED` | L1 트랙 변경 판정 (L1 §4.4 — 트랙 epoch. `generation` 을 어떻게 쓰는지는 L1 이 정한다, D-4) | `TRACKING`, `APPROACH` | `ARMED`/`RETREAT`. `PointCloud2`에 트랙 상태가 없어 `STATUS_LOST`를 이것으로 대체 |
 | `HORIZON_EXTRAP` | L2 `after_horizon=true` (지평 **뒤**로 외삽, $now_{lead}$ 기준) | 전 구간 | `APPROACH`면 `RETREAT`, 동결 후면 기록 후 계속 |
-| `PRED_INCONSISTENT` | L1 예측 일관성 지표 $\bar\nu$ 가 임계 초과 (L1 §4.5) | `TRACKING`, `APPROACH` | `RETREAT` (`TRACKING` 이면 `ARMED`). 동결 후에는 기록만 |
+| `PRED_INCONSISTENT` | L1 예측 일관성 지표 $\bar\nu$ 가 임계 초과 (L1 §4.5) | `TRACKING`, `APPROACH` | `RETREAT` (`TRACKING` 이면 `ARMED`). 동결 후에는 기록만. **명시 면제 — 발화 0 (2026-09-24 D-S8-7 (a))**: $\bar\nu$ 생산자를 만들지 않기로 했다 (`io.pred.nu_reg` 은퇴, L1 §6). 전이표 행 (`kPredInconsistent`) 은 남고 완전성 검사 대상이지만 어떤 tick 도 이 사유를 내지 않는다. 예측 일관성은 추정기 innovation/nis 를 오프라인으로 본다 (plan §7.3) |
 | `NO_CATCHABLE_PLAN` | 계획기가 plan 없음을 게시 (catchability manipulability 미달 D-18, IK 실패, 도달 불가 — 세부 사유는 L3 plan 사유 코드) | `TRACKING` | 비치명. `TRACKING` 유지, 기록 |
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
 | `QP_FAILED` | L5 QP 실패 status | 전 구간 | `ABORT_SAFE` (QP 비의존 경로, §4.1). 연속 $N_{qp}$회면 `FAULT` |
@@ -116,7 +116,7 @@
 | `GAMMA_DERATED` | v0.5 에서 삭제 — γ 하향은 v1 범위 밖 (D-8, §4.6) | – | – |
 | `SAT_NEAR_TC` | v0.5 에서 삭제 — `REF_SATURATED` 로 대체 (D-8) | – | – |
 | `JOINT_CONFLICT` | L5 `bound_conflict` | 전 구간 | `ABORT_SAFE` (QP 비의존 경로) |
-| `TRACK_ERR` | $\Vert q-q_c(now-T_{arm})\Vert>$ 임계 | 전 구간 | `ABORT_SAFE` |
+| `TRACK_ERR` | $\Vert q-q_c(now-T_{arm})\Vert>$ 임계. ⚠️ **구현 편차 (2026-09-24 확인)**: `DemoCatchingController::UpdateTrackError` 는 지연 링 없이 $\Vert q_{meas}-q_c(now)\Vert$ 를 쓴다 (§5.2 의 링은 구현되지 않았다) — 선행을 켜도 명령이 측정보다 T_arm 앞서므로 피크가 줄지 않는다 (sim 관측 ~0.77 rad, `track_err_abort` 1.54 가 이 정의 위의 값). 정의를 링으로 바꾸는 것은 RT 변경이라 S8 범위 밖 (S8-B 에서 lead on 피크를 재측정) | 전 구간 | `ABORT_SAFE` |
 | `ABORT_ESCALATED` | `ABORT_SAFE` 중 재차 치명 조건 | `ABORT_SAFE` | `FAULT` |
 | `ESTOP` | E-STOP 발동·해제 (§4.1 P-1, S5.1 최소 계약) | 전 구간 | 발동: 상태 정리, 해제: `IDLE`. 단 `FAULT` 에서는 `FAULT` 유지 — 해제가 fault 래치를 풀지 않는다 (P-1, S5.1(d)) |
 | `FAULT_RESET` | `ResetFault` | `FAULT` | `IDLE` |
@@ -279,7 +279,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 - 전이는 (상태 × 사유) 표 데이터로 판정하고(S1.8), 한 틱에 최대 1회만 일으킨다.
 - **별도 전이 로그(SPSC)는 두지 않는다 (C-27, S5.4 구현과 일치하도록 정정).** 전이만 담는 고정 크기 레코드·SPSC 는 만들지 않는다 — 대신 `Compute()` 가 단일 exit 인 매 tick 마다 `mode`·`reason` 을 포함한 전체 POD 를 기본 생성 후 채워 `catching_diag.csv` 에 싣는다(PROC-7, D-20). 전이는 이 per-tick 기록에서 mode 열이 바뀌는 행으로 **오프라인 도출**하며, 플로터가 그 행에 전이선을 그린다. 트랙 식별은 vision 의 `generation`(uint64, L1 §4.4, D-4)이다.
 - **시각 비교는 plan §3 (D-2) 의 타입으로만 한다.** 내부 시각은 절대 steady ns 이고, 상대시각은 수치 코어 경계에서만 만든다. `BallTime`·`NowReal`·`NowLead` 를 서로 다른 타입으로 두어 혼용을 막는다 — 판정별 비교 대상은 §4.1 표와 plan §3 표가 같다. 매 tick 의 $now$ 는 steady 실측이며 tick 수 × `dt` 로 계산하지 않는다. **$T_{arm}\ne0$ fixture 필수** (0 이면 두 축이 같아져 버그가 숨는다).
-- `TRACK_ERR` 의 $q_c(now-T_{arm})$ 는 고정 길이 지연 링에서 꺼낸다. 링 길이는 **가장 작은 `dt`** 기준 — `kMaxArmDof × ceil(T_arm_max × control_rate_max)` (`control_rate` 상한 5000 Hz) 로 configure 에서 할당한다. 조회는 tick 수가 아니라 저장된 steady 시각으로 한다.
+- `TRACK_ERR` 의 $q_c(now-T_{arm})$ 는 고정 길이 지연 링에서 꺼낸다 — ⚠️ **미구현** (2026-09-24 확인, §4.2 `TRACK_ERR` 행): 현재 코드는 $q_c(now)$ 와 비교한다. 링 길이는 **가장 작은 `dt`** 기준 — `kMaxArmDof × ceil(T_arm_max × control_rate_max)` (`control_rate` 상한 5000 Hz) 로 configure 에서 할당한다. 조회는 tick 수가 아니라 저장된 steady 시각으로 한다.
 - 지문 센서 바이어스·잡음 추정은 **EMA** 로 한다(`ContactDebouncer`, `supervisor.contact.baseline_alpha` — 할당 없음, 고정 길이 원형 버퍼가 아니다, C-6·§4.4).
 - RT 경로에 try/catch·로깅·deactivate 요청을 두지 않는다 (RT-1~10). FAULT 는 컨트롤러 fault 래치로만 표현한다 (§4.1).
 - **상태 출력.** 모드·사유·결과는 controller 소유 `rtc::SeqLock<T>` 스냅샷(trivially copyable POD) + `Setup*Publisher` 패턴의 non-RT publisher 로 낸다. `PublishRole` 에 새 토픽을 추가하지 않는다 (E-11).

@@ -291,7 +291,7 @@ catching:
 **새 키 (plan 이 SSoT).**
 
 - catch frame `[확정 D-17]`: 로봇 config 의 `extra_frames`(이름·부모·`xyz`·`rpy`·`provisional`)를 `rtc_urdf_bridge` 모델 빌더가 Pinocchio 모델에 추가하고, 포구 YAML 은 frame 이름만 참조한다(`catch_frame`). 스키마·초기값 산출: plan §10
-- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(0.1 provisional / TBD), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3), `sim.throw_region.*`(발사 영역·속도·앙각). 정의·스키마: plan §11. S3.5a/b 지도 도구와 S6.2 계획기가 **같은 키**를 쓴다
+- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(0.1 provisional / TBD), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3), `sim.throw_region.*`(발사 영역·속도·앙각 — 제안 스키마, **YAML 키로는 만들어지지 않았다**: S8 동결 분포는 러너 인자, plan §11 ⚠️·D-S8-2). 정의·스키마: plan §11. S3.5a/b 지도 도구와 S6.2 계획기가 **같은 키**를 쓴다
 - 관절 가속 한계 `[확정 D-16]`: 토크 한계에서 도출한 보수적 상수 box 를 provenance(표본 범위·η_τ·모델 버전·일자)와 함께 YAML 로 출력한다(S2.5, plan §9). 기존 `max_acceleration`(5.0 rad/s², placeholder)은 쓰지 않는다. 키 이름은 S2.5 에서 정한다
 
 **TBD 검사는 "현재 활성 구성이 참조하는 키"에만 적용한다 `[권장]`.** 전체 키에 걸면 절대 `ARMED` 가 되지 않는다 — 실기에서 `sim.*` 가 영구히 TBD로 남기 때문이다. L0 검증기는 launch 구성(실기/시뮬, `lead_enable`)에 따라 검사 대상 집합을 정한다. `provisional: true` 인 값(D-12 사용자 값, catch frame)은 실기 arm 을 막는다(D-12, D-17).
@@ -306,7 +306,7 @@ catching:
 | `robot.hand.T_pre` | `planner.freeze.T_freeze` | $T_{pre}\le T_{freeze}$, $T_{freeze}$ 하한에 $T_{arm}$ 포함 (L6 §5.3, plan §3) |
 | `robot.hand.q_close[i]` | `robot.hand.q_pre[i]` | caging 관절에서 $\vert$차$\vert>$ `rho_eps` (L6 §4.2) |
 | `reference.axis.sin_eps` | 축 정렬 Jacobian 인자 | 같은 값 (L4 §4.5) |
-| `sim.throw_region.base_frame` | CLIK `base_frame` | 같은 frame (plan §11) |
+| `sim.throw_region.base_frame` | CLIK `base_frame` | 같은 frame (plan §11) — 키 미생성 (2026-09-24), 러너·지도 도구는 base frame 을 config 에서 읽는다 |
 | ζ, ω, $h$ | `ControllerState::dt` | 이산 안정 범위 (L4 §4.7, S1.7) |
 
 ---
@@ -336,15 +336,15 @@ catching:
 | γ 하향(동결 후 유일한 계획 변경) | 논문 외 설계 | L3 §4.7, L7 §4.6 | **v1 범위 밖** (D-8). `derateGamma` 는 이식하지 않는다 |
 | 팔 추종 지연 식별·선행 보상 | 논문 외 설계 | L5 §4.4–4.5 | 식별 도구 (S10). backend 에 지연 보상 없음(W4) |
 | 가상 감속 대상(연속 전환) | 논문 외 유도 | L7 §4.3 | `catching` (S1.8) |
-| 충격량 예산 | [R16][R17][R18] + 논문 외 유도 | L7 §4.7 | 계획기 코어, L8 지표 (S8 — G7-B3 이월, #537 결정 2026-09-24) |
+| 충격량 예산 | [R16][R17][R18] + 논문 외 유도 | L7 §4.7 | 계획기 코어, L8 지표 (S8 — G7-B3 이월, #537 결정 2026-09-24; 손–공 첫 접촉 episode 만, sim 손 토크는 forcerange 클램프라 `NOT_EVALUATED(sim clamp)`) |
 | 투척 생성·발사 | 논문 외 설계 | L8 §4.2 | `rtc_mujoco_sim` 발사 srv (D-14, S3.2) + catchability 지도 (S3.5a/b) |
 | catch frame | 논문 외 설계 | plan §10 | `rtc_urdf_bridge` 모델 빌더 추가 frame (S2.3a, D-10·D-17) |
 | 관절 가속 한계 도출 | 논문 외 설계 | plan §9 | 오프라인 도구 (S2.5, D-16) |
 | velocity CLIK / QP | [R9][R10] | L5 §4 | `rtc::tsid::ClikReferenceGenerator` **확장** (S2.2, D-5·D-6) |
 | FK / Jacobian / 폐쇄 체인 | [R9] | L3 §4.2, L5 §4.2 | 기존 `PinocchioCache`·`RtModelHandle` 재사용 (W3) |
 | position 명령 전달 | — | L5 §4.3 | `ControllerOutput` → `DeviceBackend::WriteCommand` 재사용 (W4) |
-| NEES/NIS 일관성 | [R8] | L8 §4 | 평가 스크립트 (S8) |
-| Wilson 신뢰구간 | [R13] | L8 §4 | 평가 스크립트 (S8) |
+| NEES/NIS 일관성 | [R8] | L8 §4 | ball_perception_sim `sim_evaluator_node`/`sim_capture_evaluate` 재사용 (S8, P5 — 새 도구 없음). NIS 는 `vision_lane_probe` 덤프 (S8-A) |
+| Wilson 신뢰구간 | [R13] | L8 §4 | `rtc_tools` `catching_trials` 오프라인 평가 (S8-A) — truth 기반 성공, 97.5 % 단측 하한 |
 
 ---
 
@@ -454,7 +454,7 @@ v0.3의 `TBD-RTC-06`(결번)과 `TBD-RTC-15`(W2-2가 01로 이미 다룸)는 폐
 | 시계 오차 | 위치 오차 ≈ $\Vert v\Vert\,\delta$ | PTP, 시작 시 점검, D-2 수신 시 1회 변환, stale 판정 |
 | **sim 시간축 (D-3)** | clock 이 벌어지는 구간에서 wall 기준 예측과 sim 공이 어긋남. D-3 이 검증에서 떨어지면 S3·S5 시간 경로 재작업 | 시행별 clock 위상 오차 게이트(δ_max·pause, plan §5), S3.1a·S3.1b 검증 |
 | 팔 추종 지연 미보상 | 포구 시각 편향 | backend 보상 없음(W4). `NowLead` 선행(§3), 실기 $T_{arm}$ 식별은 S10 |
-| soft catch 중 포화 | 간극 급증 (hard catch보다 나빠짐) | L3 γ rollout, η_v 여유(D-9). γ 하향은 v1 에서 제외(D-8) → COMMITTED 전 RETREAT, 이후 ABORT_SAFE. abort 가 늘 수 있어 S8 에서 포화 빈도 측정 |
+| soft catch 중 포화 | 간극 급증 (hard catch보다 나빠짐) | L3 γ rollout, η_v 여유(D-9). γ 하향은 v1 에서 제외(D-8) → COMMITTED 전 RETREAT, 이후 ABORT_SAFE. abort 가 늘 수 있어 S8 에서 포화 빈도 측정 (시행별 `ref_saturated` max streak — G8-C3, S8-B 튜닝 세트로 `sat_ticks` 확정) |
 | 지문 센서만으로 접촉 판정 | 손바닥 선접촉 시 검출 지연 | 감속은 시각 기준, 센서는 판정·abort 전용(A-5) |
 | 시뮬레이션과 실기 손 차이 | 성공률 과대평가 | `[SIM-P1B]`/`[HW-P1B]` 태그 분리, `T_close` 실측 반영, 지문 부호는 두 경로 동일(0fcc1d23) — S7.3 판정은 크기만 써 부호 무관 |
 | **vision 토픽이 stable ABI 가 아님** (D-4) | 필드·의미가 예고 없이 바뀔 수 있음 | 필드 이름·datatype 검사, 레이아웃 해시 진단(L1 §5.1, P-3). 제품 ABI 는 ball_perception E6-F02 |
