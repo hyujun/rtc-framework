@@ -50,7 +50,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
 
 - **출하 YAML 을 안 고치고 컨트롤러 키를 바꾸려면** overlay 에 `integrated_rt_controller: ros__parameters: demo_inference_controller: <yaml.경로>: <값>` 을 넣는다 — `ApplyControllerParamOverrides` 가 그 ROS 파라미터를 컨트롤러 YAML 트리에 꽂는다. **경로는 YAML 그대로** 여야 한다 (예: `inference.policy_frame` — 한 단계 얕게 쓰면 조용히 무시된다). 반영 여부는 README 의 기동 로그로 확인.
 - 판독: `<session>/controllers/demo_inference_controller/inference_diag.csv` — `held`+`hold_reason` (이 컨트롤러는 **모든 실패가 hold** 라 사유 없이는 정상과 구분 불가), `policy_step`/`inference_count` (decimation 대로인지), `reach_phase`·`tip_distance`, `object_*` (policy_frame 기준 — 프레임이 어긋나면 부호로 드러난다), `arm_lag_max`, `force_<tip>`. 같은 폴더의 `<device>_state.csv` 가 관절 lane.
-- **팔 lag 은 접촉이 지배한다**: 자유 운동 구간의 하한은 sim 위치 서보의 kv/kp (0.2 s) × 명령 속도이고, 물체에 막히면 그 3 배까지 포화한다. lag 수치를 인용할 땐 첫 접촉 시각으로 구간을 갈라 보고한다.
+- **팔 lag 은 접촉이 지배한다**: 자유 운동 구간의 하한은 sim 위치 서보의 kd/kp × 명령 속도이고 (`ur5e_p1b` 는 `mujoco_simulator.yaml` 서보 게인으로 0.05 s — 2026-09-24 전 세션은 MJCF 게인 0.2 s), 물체에 막히면 그 3 배까지 포화한다. lag 수치를 인용할 땐 첫 접촉 시각으로 구간을 갈라 보고한다.
 - 종료는 자식 노드에 SIGINT (`pkill -INT -f integrated_rt_controller; pkill -INT -f mujoco_simulator_node`) — `ros2 launch` 에 한 번 보낸 SIGINT 가 45 s 안에 안 끝난 적이 있다. `-9` 는 CSV flush 를 날린다.
 
 ## Session CSV / plots
