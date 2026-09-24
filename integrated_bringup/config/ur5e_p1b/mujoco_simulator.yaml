@@ -43,6 +43,10 @@ mujoco_simulator:
     # 50.2-50.9 ms on all six joints (least squares, R^2 >= 0.99), peak arm
     # torque 93 of 150 N m, no tick at the forcerange. This is a SIM choice, not
     # the UR5e's lag — that is S10's identification (joint_cmd.lag.T_arm).
+    # The forcerange is the UR5e's max_effort (150 / 28 N m), so a RAW step
+    # above ~19 mrad (arm) / ~14 mrad (wrist) now saturates (was ~75 / 56), and
+    # the sim has no joint velocity cap: a 0.5 rad raw step peaks at ~7.7 rad/s.
+    # No shipped controller sends raw steps (quintic / rate-limited tails).
     #
     # use_yaml_servo_gains applies to EVERY robot group, so the hand's gains are
     # spelled out per group below too — copied unchanged from the MJCF

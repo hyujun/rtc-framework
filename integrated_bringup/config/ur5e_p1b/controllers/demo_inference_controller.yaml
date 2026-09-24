@@ -17,7 +17,8 @@ demo_inference_controller:
   # clamp [q_min+δ, q_max−δ] → **직전 명령** 기준 rate rebound 순서로 적용된다
   # (rtc_controllers/compliance/joint_command_tail.hpp). 측정 q 기준이면 명령이 측정을
   # tick 당 v_max·dt 이상 앞설 수 없어, 추종 지연이 있는 서보에서는 팔이 자기 지연에
-  # 묶여 기어간다 (sim 실측 ≈0.02 rad/s vs 정책 slew 0.5 rad/s). activation 과 hold
+  # 묶여 기어간다 (sim 실측 ≈0.02 rad/s vs 정책 slew 0.5 rad/s — 2026-09-24 이전의
+  # τ 0.2 s sim 서보에서 잰 값, 지금 서보는 0.05 s (mujoco_simulator.yaml)). activation 과 hold
   # 직후에는 측정 q 에서 다시 시작한다. δ=0 은 device 한계를 그대로 쓴다는 뜻이다.
   joint_limit_margin: 0.0
 

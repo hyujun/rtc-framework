@@ -9,9 +9,11 @@
 # any ball faster than d_eff / T_close,tot = 1.0 m/s, and when every grid value
 # is outside the window the rollout tries γ_min itself (gamma_rollout.hpp) —
 # a 3-throw smoke planned γ_f 0.40–0.46, the planned arm's own range. d_eff 10
-# (the parser's ceiling) puts γ_min at 0. It also lifts the hand's relative-
-# speed gate (MaxCatchableSpeed adds d_eff / T_close,tot), so this arm compares
-# a system that catches at γ 0 with the planned one, not γ alone (#537).
+# (the parser's ceiling) puts γ_min at 0. It also raises MaxCatchableSpeed
+# (+ d_eff / T_close,tot), which only removes the γ-window rank penalty
+# (rank_gates.hpp — a +10 score, never a rejection; d_eff is not in the §4.6
+# budget). In the S8-B 2×2 that added no attempts (both γ arms committed on
+# 100/100 paired throws) and did not shift commit time (median −0.1 ms) (#537).
 # The grid stays a float list — a ROS params file cannot write an empty or
 # integer-typed one here.
 
