@@ -41,6 +41,11 @@ PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap"]
 GROUP_BLOCKS = ["contact_wrench"]
 TOPLEVEL_BLOCKS = ["object_state", "object_pool"]
 
+# Nodes a sim overlay is layered onto (the sim launches append it to both nodes'
+# params). A section under any other name matches no node and is dropped
+# without a word — and would also be skipped below as "controller-only".
+OVERLAY_NODES = {"mujoco_simulator", "integrated_rt_controller"}
+
 # Keys that must appear in the scan for it to be considered working. Chosen
 # because they have shipped for a long time and are not what this test is
 # about, so their absence means the scanner broke rather than a real regression.
@@ -163,16 +168,20 @@ def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None
         # The overlay mechanism is exercised by this profile; an empty list here
         # means the directory moved, not that there is nothing to check.
         assert paths, f"{profile}: no sim_overlays/*.yaml found — test is vacuous"
-    checked = 0
     for path in paths:
         with open(path) as handle:
-            section = yaml.safe_load(handle).get("mujoco_simulator")
+            sections = yaml.safe_load(handle)
+        unknown = set(sections) - OVERLAY_NODES
+        assert not unknown, (
+            f"{os.path.basename(path)}: section(s) {sorted(unknown)} name no node the "
+            f"overlay is layered onto ({sorted(OVERLAY_NODES)}) — silently ignored"
+        )
+        section = sections.get("mujoco_simulator")
         if section is None:
             # A controller-only overlay (the S8-B catch_lead_* files write only
             # `integrated_rt_controller`): no sim key to check here, and its
             # controller keys are pinned by test_catch_lead_overlays.py.
             continue
-        checked += 1
         params = section["ros__parameters"]
         for name in _flatten(params):
             parts = name.split(".")
@@ -183,9 +192,6 @@ def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None
                 "mujoco_simulator_node never declares it — the overlay's value is "
                 "silently ignored"
             )
-    if profile == "ur5e_p1b":
-        # Skipping controller-only overlays must not empty the check.
-        assert checked, f"{profile}: no sim overlay has a mujoco_simulator section — vacuous"
 
 
 def test_p1b_fingertip_wrench_frame_is_the_bracket_frame() -> None:
