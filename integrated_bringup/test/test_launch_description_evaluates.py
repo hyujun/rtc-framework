@@ -41,6 +41,7 @@ import os
 from typing import Any
 
 import pytest
+import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchContext, LaunchDescription
 from launch.actions import (
@@ -52,7 +53,8 @@ from launch.actions import (
 from launch.event_handlers import OnProcessExit
 from launch.utilities import perform_substitutions
 
-from rtc_tools.utils.session_dir import resolve_logging_root
+from rtc_tools.launch.session import SESSION_DIR_CONFIG
+from rtc_tools.utils.session_dir import is_session_dir_name, resolve_logging_root
 
 SIM_LAUNCH_FILES = [
     "sim_ur5e_p1a.launch.py",
@@ -113,6 +115,7 @@ ROBOT_COMBOS: list[tuple[str, dict[str, str]]] = [
 EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     "sim_ur5e_p1b.launch.py": [
         ("sim_overlay", {"sim_overlay": "inference_pole"}),
+        ("sim_lanes", {"sim_lanes": "true"}),
     ],
 }
 
@@ -465,6 +468,66 @@ def test_unknown_sim_overlay_is_rejected():
     """A mistyped overlay must stop the launch, not quietly run the shipped scene."""
     with pytest.raises(RuntimeError, match=r"sim_overlay 'no_such_overlay'.*inference_pole"):
         _evaluate(P1B_SIM, {"sim_overlay": "no_such_overlay"})
+
+
+# ── sim_lanes (ur5e_p1b sim, S8-A) ───────────────────────────────────────────
+# The lanes are the measurement substrate of every S8 trial run: the clock lane
+# is the D-3 covariate and the contact lane the G7-B3 impulse. What matters is
+# that `sim_lanes:=true` turns BOTH on and points them INTO this run's session
+# tree (so a run's lanes sit next to the controller CSVs they are joined with),
+# and that the default leaves the sim exactly as it was.
+LANES = ("clock_lane", "ball_contact_lane")
+
+
+def _override_values(node, context) -> dict:
+    """Every dict entry of the node's parameter list, merged, keys and values resolved."""
+    merged: dict = {}
+    for entry in node._Node__parameters:
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            name = perform_substitutions(context, list(key))
+            if (
+                isinstance(value, (list, tuple))
+                and value
+                and not isinstance(value[0], (int, float, bool, str))
+            ):
+                value = perform_substitutions(context, list(value))
+            if isinstance(value, str):
+                # launch_ros keeps a substituted value as the YAML text it will
+                # hand the node ("<path>\n...\n"); read it the way the node does.
+                value = yaml.safe_load(value)
+            merged[name] = value
+    return merged
+
+
+def test_sim_lanes_writes_both_lanes_into_the_session_sim_directory():
+    nodes, context = _nodes_by_name({"sim_lanes": "true", "use_cpu_affinity": "false"})
+    values = _override_values(nodes["mujoco_simulator"], context)
+    session_dir = context.launch_configurations[SESSION_DIR_CONFIG]
+    assert is_session_dir_name(os.path.basename(session_dir)), session_dir
+    paths = []
+    for lane in LANES:
+        assert values.get(f"{lane}.enabled") is True, (lane, values)
+        path = values.get(f"{lane}.csv_path")
+        assert path.endswith(os.path.join("sim", f"{lane}.csv")), path
+        assert os.path.dirname(os.path.dirname(path)) == session_dir, (path, session_dir)
+        paths.append(path)
+    assert len(set(paths)) == 2, "the two lanes must not share a file"
+    # The controller does not read the lanes; they are the sim node's alone.
+    ctrl = _override_values(nodes["integrated_rt_controller"], context)
+    assert not any(k.startswith(LANES) for k in ctrl), sorted(ctrl)
+
+
+def test_no_sim_lanes_leaves_the_lanes_to_the_yaml():
+    nodes, context = _nodes_by_name({"use_cpu_affinity": "false"})
+    values = _override_values(nodes["mujoco_simulator"], context)
+    assert not any(k.startswith(LANES) for k in values), sorted(values)
+
+
+def test_a_misspelled_sim_lanes_value_is_rejected():
+    with pytest.raises(RuntimeError, match="sim_lanes must be true or false"):
+        _evaluate(P1B_SIM, {"sim_lanes": "ture"})
 
 
 # ── Shield-first ordering (issue #405) ───────────────────────────────────────

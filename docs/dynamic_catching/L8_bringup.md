@@ -56,7 +56,7 @@
 
 **발사 API `[확정 D-14]`.** 발사는 (p0, v0, ω) 를 명시하는 srv 를 `rtc_msgs` 에 추가해 부른다 (Adding a New Message, PROC-3, S3.2). 기존 `/sim/launch_ball` (Trigger, YAML 분포 샘플)은 파라미터 설정 + Trigger 조합이 경합·재현성에 약해 평가 경로에 쓰지 않는다.
 
-**발사 조건 `[확정 D-18]`.** 목표 포구점을 표본 추출해 역산하던 v0.4 방식(무항력 초기값 + 상태전이행렬 슈팅)은 v0.5 에서 대체됐다. 발사 조건은 plan §11 의 발사 영역에서 직접 표본 추출한다: arm base frame (CLIK `base_frame`) 기준 수평 거리 4 m 원호 위의 방위 φ, world z 1.5–2.0 m, 속도 크기·앙각, 수평 방향 = (발사점 → 겨냥점) + 편차. 표본 범위는 catchability 지도(§4.6)가 정한 `sim.throw_region` 이다.
+**발사 조건 `[확정 D-18]`.** 목표 포구점을 표본 추출해 역산하던 v0.4 방식(무항력 초기값 + 상태전이행렬 슈팅)은 v0.5 에서 대체됐다. 발사 조건은 plan §11 의 발사 영역에서 직접 표본 추출한다: arm base frame (CLIK `base_frame`) 기준 수평 거리 4 m 원호 위의 방위 φ, world z 1.5–2.0 m, 속도 크기·앙각, 수평 방향 = (발사점 → 겨냥점) + 편차. 표본 범위는 catchability 지도(§4.6)가 정한 분포다 — ⚠️ `sim.throw_region` 이라는 YAML 키는 존재하지 않고 (2026-09-24 확인), 시행 러너 `catching_sim_trials` 는 S3.5b 기준 투척 (1.0 m · 0.2 m · 4.75 m/s · 60°) 을 고정 반복 + 섭동 (속력 ±10 %, 측방 ±0.3 m/s) 으로 발사한다. 동결 분포에서의 표본 추출은 S8-A (plan §4.4 S8, D-S8-2).
 
 - 항력·Magnus 는 `rtc_mujoco_sim` 이 자체 구현한다 (tennis preset). 계획기의 공 모델과 다르므로 도달점 차이는 의도된 모델 불일치로 기록한다
 - iiwa7_leap 에는 projectile 설정이 없다 → S3.2 에서 추가. ur5e_p1b 의 현 스폰 위치는 손바닥 위(낙하 테스트용)라 투척용 스폰을 S3.2 에서 따로 둔다
@@ -107,9 +107,9 @@ sim 은 wall clock 을 유지한다 (D-3). D-2 변환이 실기와 같은 경로
 
 **시행 유효 조건.** v_max·δ_max + ½·a_bound·δ_max² ≤ ε_clk,alloc **이고** max pause ≤ ε_clk,alloc / v_max. v_max 는 목표 투척 분포의 최대 공 속력(S3.5b 전에는 S0.7 가정값), a_bound 는 g + 항력 가속 상한(항력 k — **S3.8 이 2026-09-20 결정으로 빠졌으므로** L0 §4.1 의 문서 대표값 0.0229 1/m 를 쓴다). **ε_clk,alloc 은 L3 §4.6 오차 예산 중 시계 항에 할당한 몫이고, 예산 우변은 `r_cap/n_σ` 다.** r_cap 은 S4.5 가 닫았고 (LEAP 31.0 mm, P1b 24 mm — L6 §4.5) 재판정 결과는 plan §5.1 에 있다: **LEAP PASS, P1b PASS(provisional)** (각 손의 $\Vert v\Vert_{\max}$ 기준). ε_clk 는 ‖v‖δ 라 **목표 속력에 비례**하므로 판정은 S4.4 의 목표 속력과 함께 읽는다.
 
-**시행 수·무효율.** 구성별(로봇 2종) 발사 ≥ 200 회, 무효율 ≤ 5 %. 이 두 값은 **제안값**이다(사용자 확인, plan §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다.
+**시행 수·무효율.** 구성별(로봇 2종) 발사 ≥ 200 회, 무효율 ≤ 5 %. 이 두 값은 **제안값**이다(사용자 확인, plan §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다. **이 상한은 S3.1a (무부하) 판정에만 쓴다 — S8 시행에서는 ε_clk,alloc 이 판정이 아니라 공변량이다** (2026-09-24 D-S8-4 (c), plan §5 표): 시행별 δ(t_commit)·δ(t_c)·tick overrun 수·최대 tick 간격을 기록하고, D-3 효과는 같은 seed 투척의 부하 A/B 로 상계한다.
 
-**이 결정은 S3.1a(무부하) · S3.1b(부하: 포구 컨트롤러 + 계획기 + `sim_estimator_node`) 검증(plan §5) 결과로 다시 검토한다** — 예측 오차가 δ 가 큰 구간에서만 커지는지, `sim_estimator_node` stamp 가 `use_sim_time=false` 에서 wall 인지도 함께 본다. 성공률 평가(S8)는 유효 시행으로 계산하되 전체 발사 수와 무효 사유를 함께 보고한다.
+**이 결정은 S3.1a(무부하) · S3.1b(부하: 포구 컨트롤러 + 계획기 + `sim_estimator_node`) 검증(plan §5) 결과로 다시 검토한다** — 예측 오차가 δ 가 큰 구간에서만 커지는지, `sim_estimator_node` stamp 가 `use_sim_time=false` 에서 wall 인지도 함께 본다. S3.1b 는 S6 에서 수행되지 않았고 **S8-B·S8-E 시행 누적 ≥ 200** 으로 수행한다 (clock lane 은 launch 인자 `sim_lanes:=true`). 성공률 평가(S8)의 무효는 **rig 실패만** (srv 거부·lane drop·sim stall·미발사) 이고 "plan 없음·abort" 는 실패다 — 전체 발사 수·무효 사유·무효를 실패로 센 ITT 하한을 함께 보고한다 (§9.1 G8-D).
 
 처리량: lock-step 에서 `max_rtf` 1.0 은 상한이므로 RTF ≤ 1 이다. 시행당 발사·비행·감속·복귀·재무장을 합쳐 수 초가 걸려 **200 시행에 약 12 분** 이상이 든다 — 평가 일정은 이를 전제로 짠다.
 
@@ -121,7 +121,7 @@ plan §11 이 정의·YAML 의 SSoT 다. 요점:
 - 판정: 궤적 위 포구 후보마다 catch frame +z = −v̂ 자세의 IK (대기 자세에서 시작) → 게이트 정의(기본 `arm_5row`)의 manipulability ≥ 정의별 threshold (w₅ 0.1, provisional). w₅·w₆ 를 모두 기록해 지도에서 두 분포를 비교한다 (C-3). 런타임 계획기(S6.2)와 **같은 함수·같은 YAML 키** (S1.9)
 - **frame 함정:** ur5e_p1b 의 arm base frame 은 URDF `base` 이고 `base_link` 와 z 둘레 180° 다르다 — `base_link` 로 두면 공이 등 뒤에서 날아오는데 결과가 그럴듯해 조용히 틀린다. world ↔ base 변환은 같은 q 에서 MuJoCo FK 와 Pinocchio FK 대조로 **S3.2** 에서 확정한다 (S3.5a 의 선행, plan §4.2 DAG)
 - S3.5a 는 kinematic catchability 지도(IK + w₅/w₆), S3.5b 는 S4.4 go/no-go 값(T_close, d_eff, 가속 box, η_v)으로 전체 게이트 체인을 다시 돌린 gate-catchable 지도다 — 이 지도가 목표 투척 분포가 되고, S3.6 vision 요구 사양 산출로 이어진다
-- 출력: 격자별 포구 가능 여부, 최대 w 와 그 후보의 $t_c$·$p_c$·$q^*$, 탈락 사유 → `sim.throw_region` 제안 (발사 srv 설정으로 사용)
+- 출력: 격자별 포구 가능 여부, 최대 w 와 그 후보의 $t_c$·$p_c$·$q^*$, 탈락 사유 → 목표 투척 분포 제안 (발사 srv 설정으로 사용). ⚠️ `sim.throw_region` YAML 키는 만들어지지 않았다 (2026-09-24 확인) — S8 의 동결 분포는 S3.5b 90 % 상자이고, 러너가 `catchability_map.Throw`/`generate_throw_grid`/`throw_to_launch_request` 를 재사용해 seed 로 표본을 뽑는다 (D-S8-2, S8-A)
 - **도구 (S3.5a 완료 2026-09-21)**: `ros2 run rtc_tools catchability_map` (python — 격자·항력 비행·집계·그림) 이 `ros2 run rtc_controllers catch_pose_ik_batch` (C++ — 판정) 을 샤딩해 부른다. 판정을 python 에서 다시 구현하지 않는 이유가 §4.6 첫 줄의 "같은 함수" 다. 두 함정: 판정기는 `p_c`·`v` 를 **모델 world** (URDF 모델 root) 로 받고 이것은 arm base frame 이 **아니다** (`ur5e_p1b` 에서 Rz(180°) 차이 — plan §11); 출하 `sub_models.<arm>` 은 flange 에서 끝나 catch frame 을 담지 않으므로 지도는 arm root → catch frame 부모까지의 sub-model 을 따로 선언한다. 결과·제안값은 plan §11
 
 ## 5. C++ 구현
@@ -194,7 +194,7 @@ struct TickRecord {                   // 고정 크기, POD
 
 - 포구 컨트롤러 설정: 로봇별 `integrated_bringup/config/<robot>/controllers/` 아래 (기존 `demo_*_controller.yaml` 과 같은 자리). 파일명은 `demo_catching_controller.yaml` (config_key `demo_catching_controller`, S4.0 에서 확정 — plan §4.4 S4a)
 - catch frame (`extra_frames`, D-10·D-17) 은 로봇 config 의 모델 절 (plan §10)
-- 투척·catchability (`sim.throw_region`, `planner.catchability.*`) 는 plan §11 스키마
+- 투척·catchability (`planner.catchability.*`) 는 plan §11 스키마. `sim.throw_region` 은 만들어지지 않았고 투척 분포는 러너 인자 (`catching_sim_trials --dist`, S8-A) 가 갖는다 (§4.2)
 - sim 공 설정 (projectile, truth 주기)은 로봇별 `mujoco_simulator.yaml`
 - 로드 후 L0 검증기를 실행한다. provisional 값(D-12·D-17)은 실기 arm 을 막는다
 
@@ -205,7 +205,7 @@ struct TickRecord {                   // 고정 크기, POD
 | `logging.decimation` | int | – | 1 | 1–50 | 기록 부하 |
 | `logging.ring_capacity` | int | – | 4096 | 256–65536 | SPSC 용량 (drain 지연 흡수) |
 | `logging.dir` | — | – | – | – | v0.5 에서 삭제 — 기존 CSV 인프라의 세션 디렉토리를 쓴다 |
-| `sim.throw.*` | — | – | – | – | v0.5 에서 삭제 — `sim.throw_region` (plan §11, D-18) 로 대체 |
+| `sim.throw.*` | — | – | – | – | v0.5 에서 삭제 — `sim.throw_region` (plan §11, D-18) 로 대체 예정이었으나 그 키도 만들어지지 않았다 (2026-09-24 확인, §4.2 — 분포는 러너 인자) |
 | `sim.meas.rate` | — | – | – | – | v0.5 에서 삭제 — 측정은 `rtc_mujoco_sim` `publish.sample_rate_hz`, 예측 발행률은 ball_perception profile (D-15) |
 | `sim.meas.sigma` | — | – | – | – | v0.5 에서 삭제 — `rtc_mujoco_sim` `publish.position_noise_stddev_m` |
 | `sim.meas.delay`·`dropout`·`outlier_rate` | — | – | – | – | 지연·드롭 주입 위치와 키는 S3.4 에서 정한다 |
@@ -214,7 +214,7 @@ struct TickRecord {                   // 고정 크기, POD
 | `sim.rtf_min` | — | – | – | – | v0.5 에서 삭제 — RTF 비율 판정은 §4.5 clock 위상 오차 판정으로 대체 (D-3, plan §5) |
 | `sim.clock.eps_alloc_m` | double | m | `TBD` | >0 | §4.5 ε_clk,alloc — r_cap 확정 후 재판정 완료 (plan §5.1). 값은 **목표 속력에 비례**하므로 S4.4 가 속력을 확정한 뒤에 박는다 |
 | `sim.clock.min_launches` | int | – | 200 | ≥1 | §4.5 구성별 최소 발사 수 (제안값, plan §7.3) |
-| `sim.clock.max_invalid_rate` | double | – | 0.05 | (0, 1] | §4.5 무효율 상한 (제안값, plan §7.3) |
+| `sim.clock.max_invalid_rate` | double | – | 0.05 | (0, 1] | §4.5 무효율 상한 (제안값, plan §7.3) — S3.1a 무부하 판정 전용. S8 성공률에서는 쓰지 않는다 (D-S8-4 (c): δ 는 공변량) |
 | `sim.trials` | int | – | D-12 | ≥30 | 신뢰구간 폭과 연동, 성공률 하한 D-12 |
 
 **실기에서 검증 불가능한 것 `[권장]`.** 실기에는 $p_{true}(t_c)$ 가 없으므로 "예측 간극 분포"를 직접 잴 수 없다. 관측 가능한 것은 포획/실패 이진 결과와 지문 접촉 시각뿐이다. 따라서 실기 게이트(G8-G)는 다음 중 하나로 대체한다 — **선택은 S10** (plan §7.3).
@@ -230,10 +230,10 @@ struct TickRecord {                   // 고정 크기, POD
 - **L8.1** G8 게이트 — 닫힘 (W, §2).
 - **L8.2** (S4.0 → S5.1) 컨트롤러 골격 + §4.1 순서 + lifecycle + 기존 launch 인자. S4.0 은 손 계단 진단 모드·팔 hold 뿐인 최소 골격이고 (sim 전용을 `backend.type` 가드로 강제 — S5.1 에서 E-8 승인과 함께 제거), 팔 명령 경로·CLIK 앵커·E-8 최소 계약을 포함한 완성은 S5.1.
 - **L8.3** (S5.4) 기록 레코드 → 기존 CSV 인프라, 상태 publisher, 플롯 스크립트.
-- **L8.4** (S3.1a·S3.2·S3.3, 부하 재검증은 S3.1b — S6 에서 계획기·`sim_estimator_node` 동시 구동으로) D-3 검증, 발사 srv, iiwa7_leap projectile, 접촉 truth·truth 주기·sim time 진단.
+- **L8.4** (S3.1a·S3.2·S3.3, 부하 재검증은 S3.1b — S6 에서 수행되지 않았고 S8 시행 누적으로) D-3 검증, 발사 srv, iiwa7_leap projectile, 접촉 truth·truth 주기·sim time 진단.
 - **L8.5** (S3.4·S3.5a/b·S3.6) `sim_estimator_node` 연결, catchability 지도(kinematic → gate-catchable), vision 요구 사양, 오프라인 NEES.
-- **L8.6** (S8) `sim_iiwa7_leap` 폐루프 → 시스템 게이트 G8-A~C.
-- **L8.7** (S8) `sim_ur5e_p1b` 폐루프 → G8-D.
+- **L8.6** (S8-A·B·C·E) `sim_ur5e_p1b` 폐루프 → 시스템 게이트 G8-A~C·G8-E·G8-D (2026-09-22 결정으로 `ur5e_p1b` 가 1차 — 종전 순서 "leap 먼저" 는 S3.5b 이전 서술. G8-C 는 p1b 에서 `planner.gamma.grid: [0.0]` overlay 로, D-S8-9).
+- **L8.7** (S8-D) `sim_iiwa7_leap` 폐루프 → G8-D2 (조건부, plan §1a) · G3-D.
 - **L8.8** (S10) 실기 단계적 도입 (§9.2).
 
 ## 8. 디버깅 방법
@@ -258,14 +258,14 @@ struct TickRecord {                   // 고정 크기, POD
 | G8-B | ball_perception 예측의 NEES 평균이 [R8] 구간 안 (지평별, NaN 공분산 제외, §4.4) | `[SIM-ANY]` |
 | G8-B2 | L1 파서가 ball_perception 실제 레이아웃(필드 이름·datatype)을 검사하고 레이아웃 해시 진단이 변경을 감지 — sim·실기가 같은 발행기 계열이라 복제 레이아웃 대조는 불필요 (D-4, P-3) | `[SIM-ANY]` |
 | G8-B3 | 실기 vision 공분산의 일관성: §6 세 수단 중 S10 에서 고른 방법 (G8-C2와 짝) | `[HW-P1B]` |
-| G8-C | `iiwa7_leap`에서 $\gamma=0$ 고정 대 계획 γ ablation: 간극·상대속도·**충격량**·접촉력 분포 비교 | `[SIM-ANY]` |
+| G8-C | ~~`iiwa7_leap`에서~~ **`ur5e_p1b` 에서** (D-S8-9, 2026-09-24) $\gamma=0$ 고정 (`planner.gamma.grid: [0.0]` + `planner.hand.d_eff: 10.0` overlay — grid 만으로는 γ 창 하한 γ_min 이 대신 쓰인다, D-S8-9 정정) 대 계획 γ ablation: 간극·상대속도·**충격량**·접촉력 분포 비교. G8-E 와 함께 **2×2 factorial** (lead {off, on} × γ {0, 계획}, 4 arm × 4 블록 × 25 seed = 16 기동 — overlay 는 기동 때만 읽혀 arm 마다 재기동, 블록 안 arm 순서 무작위) 의 lead on 에서의 γ 주효과로 판정하고 상호작용을 보고한다 (plan §4.4 S8) | `[SIM-ANY]` |
 | G8-C2 | 오차 예산 모델 검증: L3 §4.6 직교 분해식의 예측 간극 분포와 실제 분포 비교. truth 가 있으므로 $A=p_{true}-\hat p_{live}$, $B=\hat p_{live}-p_c$ 의 직교성도 직접 확인한다 | `[SIM-ANY]` |
 | G8-C3 | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8). 대신 `REF_SATURATED` 빈도를 기록해 D-8 재검토 입력으로 쓴다 | `[SIM-ANY]` |
-| G8-D | `ur5e_p1b`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포. 전체 발사 수·무효 시행 수·무효 사유를 함께 보고하고, 무효율이 plan §5 상한을 넘으면 그 run 은 `NOT_EVALUATED` | `[SIM-P1B]` |
-| G8-D2 | `iiwa7_leap`에서 성공률 Wilson 95% 하한 ≥ floor (D-12), 결과별 사유 분포. 전체 발사 수·무효 시행 수·무효 사유를 함께 보고하고, 무효율이 plan §5 상한을 넘으면 그 run 은 `NOT_EVALUATED`. **평가 대상 여부는 plan §1a 의 조건부 규칙이 정하고, T_det 실측 (2026-09-22) 으로 조건은 충족됐다** — 그 lead 에서 gate 지도가 11 / 2835 로 비어 있지 않다 | `[SIM-ANY]` |
-| G8-E | `ur5e_p1b` + position 지연 에뮬레이션에서 선행 보상 유무 비교. ⚠️ **substrate 없음** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없다 (L5 §4.6). 지연 0 에서는 유무 비교가 공허하므로 **fixture 전용 지연 주입** 위에서 판정한다 (2026-09-22 사용자 확정 — L5 §9 G5-E, plan §7.3) | `[SIM-P1B]` |
+| G8-D | `ur5e_p1b`에서 **truth 기반 성공** (HOLD 끝부터 대기 자세 release 까지 공이 손에 있음) 의 Wilson 95% 하한 (97.5 % 단측, z 1.96) ≥ floor (D-12 — 사용자 사전 고정, n_valid 200), 결과별 사유 분포, 슈퍼바이저 판정의 truth 대비 혼동행렬. 무효 = rig 실패만 (srv 거부·lane drop·sim stall·미발사) — "plan 없음·abort" 는 실패. 전체 발사 수·무효 시행 수·무효 사유·ITT 하한 (무효 = 실패)·δ 공변량을 함께 보고한다 (2026-09-24 D-S8-3·D-S8-4 (c); 종전 "무효율이 plan §5 상한을 넘으면 `NOT_EVALUATED`" 는 교체) | `[SIM-P1B]` |
+| G8-D2 | `iiwa7_leap`에서 G8-D 와 같은 정의 (truth 기반 성공·Wilson 97.5 % 단측 하한 ≥ floor·무효 = rig 실패만·ITT 하한·δ 공변량 — 2026-09-24 교체; 종전 "무효율이 plan §5 상한을 넘으면 `NOT_EVALUATED`" 삭제). S8-D 에서 τ̂ 로 지도를 재실행해 평가하거나 `NOT_EVALUATED(선행시간)` + 실측값. **평가 대상 여부는 plan §1a 의 조건부 규칙이 정하고, T_det 실측 (2026-09-22) 으로 조건은 충족됐다** — 그 lead 에서 gate 지도가 11 / 2835 로 비어 있지 않다 | `[SIM-ANY]` |
+| G8-E | `ur5e_p1b` 에서 선행 보상 유무 비교. **2026-09-24 교체 (D-S8-1)**: sim 팔 actuator 가 1차 지연이라 (L5 §4.4 정정; p1b sim 은 D-S8-13 으로 τ 0.05 s) fixture 없이 **sim 런타임 lead on/off** 로 비교한다 — S8-B overlay `catch_lead_*` (`joint_cmd.lag.{T_arm: 0.05, lead_enable}` + `T_freeze` 0.37, 두 arm 동일 T_freeze). 2×2 factorial (G8-C 행) 의 계획 γ 에서의 lead 주효과. **판정 = lead 반영 t_c 서보 잔여 ‖FK(q_meas(t_c)) − FK(q_cmd(t_c − T_lead))‖ (T_lead = diag `t_arm_s`) 중앙값이 lead on 에서 감소 (부호 일치 + 쌍 Wilcoxon)**, 1차 지연의 비-순수지연분인 잔여를 보고, 성공률 차는 기록. 같은 tick 의 ‖FK(q_meas) − FK(q_cmd)‖ 는 lead on 에서 의도된 선행을 더해 거짓 FAIL 하므로 `cmd_meas_gap_mm` 로 기록만 한다 (2026-09-24 교체, E-9 — plan §4.4 S8). sim G8-E 는 **50 ms 1차 플랜트** (D-S8-13 의 sim 서보 게인) 위 검증이며 UR5e 이득을 예측하지 않는다. ~~substrate 없음 → fixture 전용 지연 주입 위 판정 (2026-09-22)~~ — 그 fixture 판정은 L5 §9 G5-E (S5.3 PASS) 로 남는다 | `[SIM-P1B]` |
 
-모든 sim 게이트는 §4.5 clock 위상 게이트를 통과한 시행만 집계하고 무효 비율을 함께 보고한다. 처리량은 §4.5 (200 시행 ≈ 12 분 이상).
+~~모든 sim 게이트는 §4.5 clock 위상 게이트를 통과한 시행만 집계하고 무효 비율을 함께 보고한다.~~ **2026-09-24 (D-S8-4 (c))**: clock 위상 오차는 시행을 무효로 만들지 않는다 — 모든 sim 게이트는 δ 를 공변량으로 병기하고, 무효는 rig 실패만이다 (§4.5). 처리량은 §4.5 (200 시행 ≈ 12 분 이상).
 
 ### 9.2 실기 단계적 도입 `[권장]` (S10)
 
@@ -283,4 +283,4 @@ S10 착수 전 S9 (E-STOP·fault 정책, D-13) 완료가 필수다. 각 단계 �
 
 ## 10. 미확정 항목
 
-TBD-HAND-03, ~~TBD-VIS-04/06~~ (S3.4 닫힘), D-3 재검토 (S3.1a·S3.1b), `sim.clock.eps_alloc_m`·시행 수·무효율 제안값 (S3.1a), D-12 값 (투척 속도·성공률 하한·시행 수), `sim.throw_region` 값 (S3.5a/b), 지연·드롭 주입 위치 (S3.4), 오프라인 도구 위치 (S3), 포구 launch 인자·컨트롤러 YAML 파일명 (S5), 실기 공분산 검증 수단 (S10), 재스탬프 도구 (S10).
+TBD-HAND-03, ~~TBD-VIS-04/06~~ (S3.4 닫힘), D-3 재검토 (S3.1a·S3.1b), `sim.clock.eps_alloc_m`·시행 수·무효율 제안값 (S3.1a), D-12 값 (투척 속도·성공률 하한 — 시행 수는 n_valid 200 확정, floor 는 사용자 사전 고정 대기, D-S8-3), ~~`sim.throw_region` 값 (S3.5a/b)~~ (키 없음 — 러너 `--dist`, D-S8-2), 지연·드롭 주입 위치 (S3.4), 오프라인 도구 위치 (S3), 포구 launch 인자·컨트롤러 YAML 파일명 (S5), 실기 공분산 검증 수단 (S10), 재스탬프 도구 (S10).

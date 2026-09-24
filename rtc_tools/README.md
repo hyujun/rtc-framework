@@ -32,8 +32,9 @@ rtc_tools/
 │   │   ├── catch_speed_budget.py        ← 수락 후보별 팔 속도·토크 한계 방향 가속 → γ 창 판정표 (S4.4)
 │   │   ├── catch_gate_map.py            ← kinematic 지도 위의 나머지 게이트 (도달시간·γ 창·정지점) → gate-catchable 지도 (S3.5b)
 │   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
-│   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4)
-│   │   └── camera_relay.py              ← 카메라 lane 릴레이 + 드롭·지연 주입 (S3.4)
+│   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4) · `--dump` 전 지평·공분산·innovation·nis (S8-A)
+│   │   ├── camera_relay.py              ← 카메라 lane 릴레이 + 드롭·지연 주입 (S3.4)
+│   │   └── catching_trials.py           ← 포구 sim 시행 오프라인 평가: τ̂·t_c 분해·truth 성공·Wilson·D-3 공변량·접촉 (S8-A)
 │   ├── conversion/
 │   │   ├── urdf_to_mjcf.py             ← URDF/XACRO → MJCF 변환 (관절 분류 + 후처리)
 │   │   └── ctf_to_chrome_trace.py      ← LTTng CTF trace → Chrome Trace JSON (Perfetto UI)
@@ -60,7 +61,7 @@ rtc_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (15개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
+**Entry points** (18개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
 `analysis/` 의 나머지 CLI 는 각 스크립트 절에서 호출 형태를 준다):
 
 | 실행 명령 | 모듈 | 설명 |
@@ -75,6 +76,7 @@ rtc_tools/
 | `ros2 run rtc_tools catchability_map` | `analysis.catchability_map` | catchability 지도 (grid → 비행 → C++ judge → 집계·플롯) |
 | `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
 | `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
+| `ros2 run rtc_tools catching_trials` | `analysis.catching_trials` | `catching_sim_trials` 한 run (세션 CSV + trials dir + sim lane) → 시행별 표·요약 JSON (S8-A) |
 
 **Python 의존성**: `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `numpy`, `matplotlib`, `pandas`, `scipy`, `mujoco`
 
@@ -253,8 +255,10 @@ ros2 run rtc_tools derive_accel_limits \
 D-3 는 비율(RTF)이 아니라 **시행별 clock 위상 오차**로 판정한다 (계획 §5). `rtc_mujoco_sim` 의
 `clock_lane` CSV 에서 발사 시각을 원점으로 `δ(t) = (steady − steady₀) − (sim − sim₀)` 를 쌓아 시행별
 `δ_max = max|δ|` 와 max pause (한 step 의 Δwall − Δsim 최대) 를 낸다. 창은 **비행 구간**이다 — lane 의
-`launch_seq`·`ball_active` 로 자르므로 투척 사이 대기 시간이 오차로 잡히지 않는다. 판정은
-**NOT_EVALUATED** 로 두고 (ε_clk,alloc 이 r_cap 에 달림) 95 % 를 통과시키는 ε 를 **제안값**으로만 낸다.
+`launch_seq`·`ball_active` 로 자르므로 투척 사이 대기 시간이 오차로 잡히지 않는다. **δ 는 판정이 아니라
+공변량이다** (D-S8-4 (c), plan §5): 분포 (δ_max·max pause 의 p50/p95/max) 를 내고, `--eps-mm` 을 주면
+그 ε 에서 §5 유효 조건을 만족하는 시행 비율을 "valid under eps — COVARIATE" 로 병기한다. 95 % 를 통과시키는
+ε 는 여전히 **제안값**으로만 낸다 (측정의 역산이지 예산이 아니다).
 
 ```bash
 ros2 run rtc_tools run_clock_phase_trials --trials 200         # /sim/launch_ball_at 지정 발사 + 회수 반복
@@ -306,6 +310,7 @@ ros2 run rtc_tools analyze_hand_close <session>/controllers/demo_catching_contro
 
 ```bash
 ros2 run rtc_tools vision_lane_probe <prefix>            # <prefix>_{prediction,camera,truth,diag}.csv
+ros2 run rtc_tools vision_lane_probe <prefix> --dump     # + <prefix>_{prediction_dump,innovation,nis}.csv (S8-A)
 ros2 run rtc_tools camera_relay --drop-after-s 0.4       # 또는 --drop-prob p / --delay-s d
 ros2 run rtc_tools analyze_vision_lane <prefix>
 ```
@@ -314,7 +319,31 @@ ros2 run rtc_tools analyze_vision_lane <prefix>
 - 릴레이는 stamp 를 건드리지 않는다 (지연은 전송 지연으로 보이게). estimator 프로파일의 `input.topic` 을 릴레이 출력으로 돌린다
 - ⚠️ `sim_estimator_node` 는 `debug.enabled_topics` 에 `prediction/trajectory` **만** 있으면 샘플을 기록하지 않아 토픽만 있고 **발행이 0건**이다 (`needs_samples()` 가 그 토픽을 빼놓는다). 다른 debug 토픽을 하나 이상 같이 켠다
 - **T_det (`detection_latencies`)**: 비행은 **truth lane 의 침묵**이 가른다 (`--flight-gap-s`, 기본 0.3 s — 시뮬레이터는 공이 park 상태면 아무것도 발행하지 않는다). 발사 시각은 그 비행의 첫 ground-truth 샘플이고 양자화는 공 발행 주기 하나다. 두 축을 **각각 한 시계 안에서** 낸다 (D-2): `recv` (프로브 steady, 전송 포함 = 소비자 체감) 와 `stamp` (발행자 stamp, 전송 제외). **stamp 축은 sim rig 전제 위에서만 한 시계다** — 시뮬레이터가 truth·camera 를 같은 문장에서 stamp 하고 estimator 가 그 capture stamp 를 예측에 복사하는 경우 (S3.4 실측). 발사 전부터 VALID 이던 트랙 (유령, VIS-07) 은 **generation 이 그때 것**이라 검출로 세지 않는다. 검출이 없던 비행은 버리지 않고 그대로 보고한다 (NaN)
+- **`--dump` (S8-A, 기본 off — 위 네 CSV 는 그대로)**: 예측 메시지마다 **모든 지평 점**을 한 행씩 (`point_index`·`generation`·`snapshot_sequence`·점별 `validity`·6×6 공분산 행 우선 `cov_rc`, `vision_lane.dump_prediction_rows`) 과, 추정기 `debug/innovation` (`geometry_msgs/Vector3Stamped`, capture stamp) · `debug/nis` (`std_msgs/Float64`, **stamp 없음** — 프로브의 steady·wall 수신 시각만) 을 각자의 CSV 로. G8-C2 (A⊥B) 의 입력이고, ν̄ 생산자가 아니다 (D-S8-7 (a)). 테스트 `test/test_vision_lane_probe.py` (7 케이스, rclpy 없음)
 - 테스트 `test/test_vision_lane.py` (26 케이스): near-miss 레이아웃 거부 (필드 이동·타입·count·누락·초과·point_step·endian), uint64 재조립, 빈 INVALID 스냅샷, 요약 (주기·되감김·identity 비교·유령 트랙), T_det (비행 분리·두 축·유령 배제·미검출 비행·`--flight-gap-s` 가 `--loss-gap-s` 와 별개임)
+
+### `catching_trials.py` — 포구 sim 시행 평가 (dynamic_catching S8-A)
+
+`integrated_bringup` 의 `catching_sim_trials` 한 run 이 남긴 세 가지 — 컨트롤러 세션 CSV, 러너의 trials
+dir (`trial_results.json` + `run_meta.json` + 시행별 truth CSV), `sim_lanes:=true` 로 켠 clock·접촉 lane —
+를 시행당 한 행으로 잇는다.
+
+```bash
+ros2 run rtc_tools catching_trials <session> <trials_dir> --config-dir <install>/share/integrated_bringup/config/ur5e_p1b \
+    --urdf <xacro 전개한 urdf> --v-max 3.85 --eps-mm 12 22.8 41.8 49.8
+# → <trials_dir>/catching_trials/{catching_trials.csv, catching_trials_summary.json}
+```
+
+- **서보 지연 τ̂**: 관절별 1차 지연 최소제곱 (`q_cmd − q_meas ≈ τ q̇_meas`, 움직이는 tick) + 시행 클러스터 부트스트랩 CI·R². 속도 상호상관은 1차 지연의 τ 를 주지 않으므로 제공하지 않는다
+- **t_c 분해** (첫 COMMITTED tick 에서 `t + plan_t_c_s`): CLIK `‖FK(q_cmd) − ref‖` · 서보 `‖FK(q_meas(t_c)) − FK(q_cmd(t_c − T_lead))‖` · 예측 `‖p_c − p_true(t_c)‖` · `ref_vs_true` · 합계, 공 도착 − t_c, 계획 γ_f (`plan_gamma_f` — `ref_gamma` 는 DECEL 진입 tick 에 1.0 으로 뛴다), 첫 plan 지연, 시행 순환 안의 APPROACH 교체. 공이 t_c 전에 로봇에 맞으면 truth 를 첫 접촉에서 자르고 직전 0.25 s 이차 적합을 t_c 로 외삽한다 (`truth_extrapolated_ms` 로 거리 기록)
+- **lead (S8-B)**: `joint_cmd.lag.lead_enable` 이 켜지면 RT 가 참조를 `now + T_arm` 에서 샘플하므로 tick t 의 `q_cmd`·`ref` 는 t + T_arm 을 겨냥한다. 그래서 명령 쪽 (서보·CLIK·`ref_vs_true`) 은 `t_c − T_lead` tick 에서 읽는다. T_lead 는 diag `t_arm_s` 열 → 없으면 러너 미러 (`joint_cmd.lag.*`) → 둘 다 없으면 0 이고, 열과 미러가 다르면 다른 세션의 trials dir 로 보고 거부한다. 같은 tick 의 `‖FK(q_meas) − FK(q_cmd)‖` 는 `cmd_meas_gap_mm` 로 기록만 한다 — lead on 에서 의도된 선행을 잔여에 더해 서보가 나빠진 것처럼 읽히기 때문이다. lead off 에서는 두 값이 같다
+- **truth 성공** (G8-D, plan §1a): HOLD 끝 (첫 RETREAT tick) 부터 대기 자세 release (손 위상 RELEASE) 까지 모든 truth 샘플이 catch frame 에서 `--hold-radius-m` (기본 프로파일의 공 지름) 안. 슈퍼바이저 판정 대비 혼동행렬, Wilson 구간
+- **D-3 공변량** (`clock_phase` 재사용): δ_max·max pause·δ(t_commit)·δ(t_c), `--eps-mm` 별 유효 수. lane 의 발사는 순서가 아니라 **하나의 시계 오프셋**으로 시행과 짝짓는다 — 한 세션에 러너를 두 번 돌리거나 GUI 로 던진 발사가 섞여도 그 발사는 무시되고, 짝이 없는 시행은 공변량 없이 `unpaired_trials` 로 남는다 (절반 미만이 짝지어지면 다른 run 으로 보고 거부). `--v-max` 는 기본값이 없다 (목표 분포의 최대 포구 속력 — 로봇 상수라 CLI 로 받는다); 없으면 `NOT_EVALUATED(v_max not given)`
+- **첫 손–공 접촉 episode** (접촉 lane): 충격량·최대 접촉력·지속·접촉 속력. 손 토크는 sim forcerange 클램프라 판정하지 않는다
+- `ref_saturated` 시행별 max streak (G8-C3)
+- 라이브러리 함수: `wilson_interval`·S0.9 검정력/필요 n, A⊥B 백색화 교차공분산 (시행 클러스터 부트스트랩, G8-C2), NEES 요약 (raw·centered·coverage, 양측, G8-B) — 둘 다 합성 데이터 positive control 로 테스트. CLI 는 아직 부르지 않는다 (probe 덤프가 있는 세션부터)
+- **로봇 상수 없음** (ARCH-1): catch frame 은 `_base.yaml` `urdf.extra_frames`, sim world ↔ model world 는 `catching.io.arm_base_frame`·`base_T_world` 로 `frame_placement_in_model_world` (컨트롤러와 같은 합성), 관절은 diag 의 `q_cmd_*` 열, device·로그 이름은 컨트롤러 `topics`/`logs`, dt 는 러너가 기록한 미러 `control.dt`
+- 테스트 `test/test_catching_trials.py` (39 케이스) — **골든**: 파일럿 세션 `260924_1218` 에서 자른 fixture (`test/data/catching_pilot_260924_1218/`, 2.6 MB, 재생성 스크립트 `make_fixture.py`) 로 τ̂ 6 관절 200 ± 5 ms · 서보 중앙값 122 ± 5 mm · CLIK 2 ± 1 mm · 25/25 Missed · ε 12 mm 유효 7/25 (v_max 3.85 m/s) 재현 (lead off 라 서보 = `cmd_meas_gap_mm`). lead 는 성분을 아는 합성 시행 (선행 0.2 s, ref 10·CLIK 2·서보 3 mm) 에서 복원하고, 기록된 lead 를 무시하면 거짓 FAIL 로 돌아가는 것을 positive control 로 둔다
 
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 

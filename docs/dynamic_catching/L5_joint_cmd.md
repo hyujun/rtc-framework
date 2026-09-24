@@ -154,6 +154,10 @@ $$\ell_i=\upsilon_i=\mathrm{clamp}\Big(\mathrm{proj}_{[p_{lo,i},\,p_{hi,i}]}(\do
 
 > **2026-09-20 결정 — sim 은 지연이 없다고 보고 구현한다 (사용자 결정, plan §4.4 S3a 각주).**
 > 종전의 "sim 에서는 주입 지연 회복 테스트(G5-D)로 도구를 검증한다" 는 **삭제한다** — 주입도 에뮬레이션도 하지 않고 `arm_lag` (또는 `sim.arm_lag`) 파라미터를 신설하지 않는다. 이 절의 식별 절차는 **실기 전용** (§7 L5.9, S10 `[HW-P1B]`) 이 되고 `G5-D` 는 은퇴한다 (§9).
+>
+> **정정 (2026-09-24, S8 준비).** 위 결정은 *에뮬레이션 지연을 넣지 않는다* 는 뜻이지 sim 에 지연이 없다는 뜻이 아니다. sim 팔의 MJCF actuator 는 §4.6 대로 `<general>` PD 이고 두 로봇 모두 kd/kp = 0.2 s 라 (p1b `size3` 2000/400 · `size1` 500/100, iiwa `proximal` 3000/600 · `distal` 750/150) 느린 극이 kp/kd = 5 rad/s 로 관성과 무관하게 고정된다 (kd² ≫ 4·I·kp) — **시정수 약 200 ms 의 1차 지연**이다 (램프 정상 지연 199 ms, step t63 200 ms). S6 의 t_c 서보 성분 ~125 mm (≈ 0.6 m/s × 0.2 s) 와 S7 포획 0/25 (공이 t_c 약 40 ms 전 도달) 의 원인이다. 그러므로 이 절의 식별 절차는 sim 에도 적용할 수 있다 (`catching_diag.csv` 의 `q_cmd_*`·`q_meas_*`) — 파일럿 (`260924_1218`) 의 1차 지연 **최소제곱 적합이 6 관절 모두 τ̂ 199–204 ms** 다. ⚠️ 위 절차 2 의 속도 상호상관은 **1차 지연에서 τ 를 주지 않는다** — 같은 데이터의 xcorr 피크는 70–98 ms 였다 (피크는 지연이 아니라 저역통과의 위상·대역에 걸린다). xcorr 는 순수 지연 성분의 초기값으로만 쓰고 τ̂ 는 LS 적합 (부트스트랩 CI·R² 병기) 으로 낸다. 보상은 **D-S8-1 (a) 확정 (2026-09-24)** — S8-B 에서 sim overlay 로 선행을 켠다 (§6 `joint_cmd.lag.*` 행, plan §4.4 S8).
+>
+> **개정 (2026-09-24, D-S8-13).** `ur5e_p1b` sim 은 팔 서보 게인을 `config/ur5e_p1b/mujoco_simulator.yaml` 에서 준다 (`use_yaml_servo_gains: true`, kp ×4 = 8000/2000, kd 400/100 그대로) — kd/kp = **0.05 s**, LS τ̂ 50.2–50.9 ms. τ 0.2 는 T_freeze 0.52 를 요구해 S3.5b 목표 분포를 닫았고, 0.05 는 설계가 유도된 T_arm 과 같다. 이것은 sim 의 선택이지 UR5e 의 값이 아니다 (S10 이 식별한다). `iiwa7_leap` 은 MJCF 게인 그대로 (τ 0.2).
 
 ### 4.5 지연 보상: 예측 선행 `[논문 외 설계]`
 
@@ -164,13 +168,13 @@ $$\ell_i=\upsilon_i=\mathrm{clamp}\Big(\mathrm{proj}_{[p_{lo,i},\,p_{hi,i}]}(\do
 
 손 명령 시각 $t_{cmd}$ 와 Preshape 는 **실제 시각(now)** 축이므로 이 선행을 적용하지 않는다 (plan §3, L6).
 
-1차 필터 성분이 크면 선행만으로는 위상이 완전히 맞지 않는다. ~~시뮬레이션 에뮬레이션(§4.6)으로 잔여 오차를 측정해 판정한다~~ — **sim 지연 0 결정 (2026-09-20) 으로 그 판정 수단이 사라졌다.** 잔여 오차 판정은 실기 (S10) 로 간다.
+1차 필터 성분이 크면 선행만으로는 위상이 완전히 맞지 않는다. ~~시뮬레이션 에뮬레이션(§4.6)으로 잔여 오차를 측정해 판정한다~~ — **sim 지연 0 결정 (2026-09-20) 으로 그 판정 수단이 사라졌다.** 잔여 오차 판정은 실기 (S10) 로 간다. **정정 (2026-09-24)**: sim actuator 자체가 순수 지연이 아닌 1차 지연 (MJCF 게인 τ ≈ 200 ms, `ur5e_p1b` sim 은 D-S8-13 으로 50 ms — §4.4 정정) 이므로 sim 에서 선행 보상의 잔여 (비-순수지연분) 를 **런타임에** 잴 수 있다 — S8-B 의 lead on/off 비교가 그것이고 (L8 §9.1 G8-E), 그 수치는 sim 1차 플랜트 (p1b 50 ms) 의 값이지 `servoj` 의 값이 아니다 (§4.6).
 
-**$T_{arm}\neq0$ fixture 는 여전히 필수다** — $T_{arm}=0$ 이면 now 와 now_lead 가 같아져 축 혼동 버그가 숨는다. 이 요구는 sim **런타임** 지연과 무관하며, sim 지연 0 결정은 이것을 면제하지 않는다. (그래서 이 fixture 가 §9 G5-E·L8 G8-E 를 되살리는 가장 싼 경로이기도 하다 — S5 착수 시 결정.)
+**$T_{arm}\neq0$ fixture 는 여전히 필수다** — $T_{arm}=0$ 이면 now 와 now_lead 가 같아져 축 혼동 버그가 숨는다. 이 요구는 sim **런타임** 지연과 무관하며, sim 지연 0 결정은 이것을 면제하지 않는다. (그래서 이 fixture 가 §9 G5-E·L8 G8-E 를 되살리는 가장 싼 경로이기도 하다 — S5 착수 시 결정. 2026-09-24 부터 G8-E 는 sim 런타임 lead on/off 로 판정하고 fixture 는 G5-E 에 남는다.)
 
 ### 4.6 시뮬레이션 동등성
 
-MuJoCo UR 팔 actuator(`<general>` position-PD)는 `servoj` 와 동특성이 다르다. ~~`ur5e_p1b` 시뮬레이션에는 식별된 $G(s)$ 를 명령 경로에 넣는 에뮬레이션 옵션을 둔다(`sim.arm_lag.*`, `[SIM]` 전용)~~ — **2026-09-20 결정으로 두지 않는다. sim 은 지연 0 이다** (plan §4.4 S3a 각주). `iiwa7_leap` 도 같다.
+MuJoCo UR 팔 actuator(`<general>` position-PD)는 `servoj` 와 동특성이 다르다. ~~`ur5e_p1b` 시뮬레이션에는 식별된 $G(s)$ 를 명령 경로에 넣는 에뮬레이션 옵션을 둔다(`sim.arm_lag.*`, `[SIM]` 전용)~~ — **2026-09-20 결정으로 두지 않는다 — 에뮬레이션 지연 0** (plan §4.4 S3a 각주). `iiwa7_leap` 도 같다. 단 actuator 자체가 kd/kp 의 1차 지연이라 sim 팔은 지연 0 이 아니다 (§4.4 정정 2026-09-24) — MJCF 게인은 0.2 s, `ur5e_p1b` sim 은 YAML 게인으로 0.05 s (D-S8-13).
 
 남는 사실은 **동특성이 다르다는 것 자체**다: sim 의 position-PD 응답은 `servoj` 가 아니므로 sim 에서 잰 추종 오차를 실기 예측값으로 쓰면 안 된다. 호스트가 될 명령 경로는 `MuJoCoSimulator::ApplyCommand()` 이고, 나중에 지연 주입이 필요해지면 **출하 YAML 파라미터가 아니라 테스트 fixture 전용**으로 넣는다 (`rtc_controllers` 의 `sim.ball.*` 이 그 선례다).
 
@@ -269,9 +273,9 @@ def equivalent_delay(tau, T, f):
 | `joint_cmd.task_accel_max_angular` | double | rad/s² | `TBD` | 1e-3–1000 | `kinematic` 전용 — 회전·접근축 행 가속 한계 |
 | `joint_cmd.eta_tau` | double | – | 0.8 | (0, 1] | `dynamic` 전용 — D-16 의 $\eta_\tau$. $\tau_{\max}$ 는 팔 device `joint_limits.max_torque` (사본 금지) |
 | `joint_cmd.K_n` | double | 1/s | 1.0 | 0–10 | posture (기존 `SetPostureGains`) |
-| `joint_cmd.lag.T_arm` | double | s | **0.0** (sim, S5.3) | 0–0.5 | §4.4 식별 (S10). **sim 은 0** — 주입하지 않는다 (2026-09-20). 0 이 아닌 값은 §4.5 의 축 혼동 fixture 와 G5-E 지연 fixture 에서만 쓴다. `lead_enable` 이 false 면 읽히지 않는다 (선행축 = 실제축) |
+| `joint_cmd.lag.T_arm` | double | s | **0.0** (sim, S5.3) | 0–0.5 | §4.4 식별 (S10). **출하 sim 값 0** — 에뮬레이션 지연을 주입하지 않는다 (2026-09-20); sim actuator 의 고유 지연 (`ur5e_p1b` 0.05 s — YAML 서보 게인, D-S8-13) 은 **S8-B overlay 에서만** 보상한다 (D-S8-1 (a)) — overlay 는 `T_arm` 0.05 와 함께 `planner.freeze.T_freeze` 0.37 을 넣는다 (L3 §4.11 하한 T_close,tot + T_arm + margin = 0.3615 — 검증기 `CheckFreezeCoversClose` 는 margin 없이 0.3325 만 보므로 출하 0.36 도 활성은 되지만 설계 하한에 못 미친다). `io.horizon_min` 0.51 · `n_min` 12 는 출하값이 이미 T_arm 0.05 로 유도됐다. ⚠️ `lead_enable` 과 무관하게 검증기는 이 값을 T_freeze 하한에 넣는다. 0 이 아닌 값은 §4.5 의 축 혼동 fixture 와 G5-E 지연 fixture 에서만 쓴다. `lead_enable` 이 false 면 읽히지 않는다 (선행축 = 실제축) |
 | `joint_cmd.lag.per_joint` | double[n] | s | `TBD` | ≥0 | §4.4 |
-| `joint_cmd.lag.lead_enable` | bool | – | false | – | 식별 전에는 false |
+| `joint_cmd.lag.lead_enable` | bool | – | false | – | 식별 전에는 false. S8-B sim overlay 에서 lead on arm 만 true (off arm 은 같은 T_arm·T_freeze 로 false — 선행만 다르다). overlay 는 `integrated_bringup/config/ur5e_p1b/sim_overlays/catch_lead_{on,off}{,_gamma0}.yaml` 이고, 키 경로가 출하 YAML 에 있는지는 `test_catch_lead_overlays.py` 가 고정한다 (한 단계 얕은 경로는 경고 없이 출하값으로 돈다) |
 | `supervisor.track_err_abort` | double | rad | `TBD` | >0 | **L7 §6 단일 원천.** L5 는 참조만 한다 |
 
 v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 관절공간 abort). `robot.arm.limit_beta` 도 삭제한다 (§4.3).
@@ -286,7 +290,7 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 - **L5.5** (S2.2b·S2.4) RT 검사: QP 차원 고정, 할당 0, solve time 분포, DemoWbc 회귀.
 - **L5.6** (S5.3) 컨트롤러 바인딩: `devices[0]` 쓰기, 관절공간 abort 경로. **완료 2026-09-22** — 구현에서 정해진 것 넷: (1) **손은 solve 안에서 잠근다** (속도 box 를 1e-9 로). catch frame 이 손바닥에 달려 있어 손 관절이 frame Jacobian 에 들어오는데 이 컨트롤러는 손을 명령하지 않는다 (L6 가 한다) — 풀어 두면 QP 가 일어나지 않을 운동으로 과제의 일부를 만족시키고 팔이 그만큼 덜 간다. (2) **posture 목표는 시행 시작 자세** (`robot.arm.q_nominal` 은 TBD 이고 wait_pose 는 S7 소유). (3) **가속 box 는 팔만 derived 값**이고 손 항은 잠금 속도/dt 로 파생한다 (CLIK 은 전 nv 를 요구한다). (4) QP 실패 streak 은 **성공한 solve 만** 지운다 — abort→재시도 사이클에는 solve 가 없으므로 seed 에서 지우면 래치가 영원히 안 선다
 - **L5.7** ~~(S3.7)~~ → **S10 으로 이동 (2026-09-20)**, L5.9 에 흡수한다. 지연 식별 도구: 순수 지연 + 시상수 분리 식별. ~~σ_trk sim 초기값 산출~~·~~시뮬레이션 주입 지연 회복 테스트~~ 는 **sim 지연 0 결정으로 소멸** — `planner.budget.sigma_trk` (L3 §6) 는 sim 초기값 출처를 잃고 S10 까지 TBD 로 남는다.
-- **L5.8** (S5.3) 예측 선행 보상(now_lead, L2 연동). ~~+ 에뮬레이션에서 효과 측정~~ — **substrate 를 잃었다** (§4.6). 보상 자체는 그대로 구현하고 효과 측정 (G5-E) 은 **fixture 전용 지연 주입** 위에서 한다 (2026-09-22 사용자 확정, §9 G5-E).
+- **L5.8** (S5.3) 예측 선행 보상(now_lead, L2 연동). ~~+ 에뮬레이션에서 효과 측정~~ — **substrate 를 잃었다** (§4.6). 보상 자체는 그대로 구현하고 효과 측정 (G5-E) 은 **fixture 전용 지연 주입** 위에서 한다 (2026-09-22 사용자 확정, §9 G5-E). sim 런타임 효과 (G8-E) 는 S8-B 에서 — sim actuator 가 1차 지연이라 substrate 가 있었다 (§4.4 정정, D-S8-1).
 - **L5.9** 실기 식별 `[HW-P1B]` (S10).
 - **L5.10** (S5.3) backend 왕복 확인: `ControllerOutput` 에 쓴 $q_c$ 와 backend 가 실제로 쓴 값 1:1 대조.
 
@@ -311,8 +315,8 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 | G5-C2 | backend 왕복: `ControllerOutput.devices[0].commands` 와 backend 가 쓴 명령 slot 이 전 틱에서 일치 (backend clamp 미발동) | `[SIM-P1B]` / `[HW-P1B]` |
 | G5-C3 | `max_iter` 설정값 준수, 초과 시 status 노출 + 관절공간 abort 경로(가속 box 준수), L7 `QP_FAILED` 전이. RT tick 에 try/catch 없음, `Compute` noexcept | `[SIM-ANY]` |
 | G5-C4 | 재무장·E-STOP 해제 reseed 후 첫 틱에 `bound_conflict` 미발생, 자동 재개 없음, `ClearEstop` 후에도 latched fault 유지 (P-1, S5 E-8 최소 계약) | `[SIM-ANY]` |
-| ~~G5-D~~ | **은퇴 (2026-09-20)** — S3.7 이 빠지고 sim 에 지연이 없어 주입할 대상이 없다. 식별 오차 판정은 S10 의 G5-F 로 간다 | — |
-| G5-E | (**S5 게이트**) **PASS (2026-09-22, S5.3)** — `integrated_bringup/test/arm_lag_fixture.hpp` 의 순수 지연 큐 (50 ms) 위에서 같은 공·같은 plant 로 보상 off/on 두 번 돌려 $t_c$ 측정 자세의 위치 오차를 기록: **77 mm → 71 mm**. 방향은 일치하고 크기는 작다 — 0.4 s 지평에서 0.75 m/s 로 움직이는 γ-스케일 목표를 쫓는 절대 오차가 지배하므로, 이 수치는 "보상이 작동한다" 이지 "보상으로 충분하다" 가 아니다. 순수 지연 모델이라 L5 §4.4 의 1차 성분은 빠져 있다 (S10). 이하 원문: ⚠️ **판정 입력이 없다** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없고, 지연 0 에서는 전후가 같아 **측정이 공허하다**. **확정 (2026-09-22 사용자): §4.5 의 fixture 전용 지연 주입으로 살린다** — 테스트 전용 지연 큐, 런타임 경로 불변 (plan §7.3 G5-E substrate 행). S5.3 에서 fixture 를 만들고 이 게이트를 그 위에서 판정한다 | `[SIM-P1B]` |
+| ~~G5-D~~ | **은퇴 (2026-09-20)** — S3.7 이 빠지고 sim 에 주입 지연이 없어 주입할 대상이 없다 (actuator 고유 1차 지연은 있다 — §4.4 정정; 그 식별은 §4.4 LS 적합으로 S8-A 도구가 한다). 식별 오차 판정은 S10 의 G5-F 로 간다 | — |
+| G5-E | (**S5 게이트**) **PASS (2026-09-22, S5.3)** — `integrated_bringup/test/arm_lag_fixture.hpp` 의 순수 지연 큐 (50 ms) 위에서 같은 공·같은 plant 로 보상 off/on 두 번 돌려 $t_c$ 측정 자세의 위치 오차를 기록: **77 mm → 71 mm**. 방향은 일치하고 크기는 작다 — 0.4 s 지평에서 0.75 m/s 로 움직이는 γ-스케일 목표를 쫓는 절대 오차가 지배하므로, 이 수치는 "보상이 작동한다" 이지 "보상으로 충분하다" 가 아니다. 순수 지연 모델이라 L5 §4.4 의 1차 성분은 빠져 있다 (S10 · sim 런타임은 S8-B G8-E — 2026-09-24 부터 L8 G8-E 는 이 fixture 가 아니라 sim 런타임 lead on/off 로 판정한다, D-S8-1). 이하 원문: ⚠️ **판정 입력이 없다** — S3.7 이 2026-09-20 결정으로 빠져 sim 에 에뮬레이션 지연이 없고, 지연 0 에서는 전후가 같아 **측정이 공허하다**. **확정 (2026-09-22 사용자): §4.5 의 fixture 전용 지연 주입으로 살린다** — 테스트 전용 지연 큐, 런타임 경로 불변 (plan §7.3 G5-E substrate 행). S5.3 에서 fixture 를 만들고 이 게이트를 그 위에서 판정한다 | `[SIM-P1B]` |
 | G5-F | 실기 `T_arm` 식별 및 YAML 확정 (S10) | `[HW-P1B]` |
 
 ## 10. 미확정 항목

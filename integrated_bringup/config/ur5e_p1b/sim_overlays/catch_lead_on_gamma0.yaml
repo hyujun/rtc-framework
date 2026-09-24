@@ -1,0 +1,34 @@
+# sim overlay — dynamic_catching S8-B, arm "lead on · γ 0" (#537)
+#
+# catch_lead_on.yaml with the planner held at γ_f = 0: the catch point is the
+# attractor for the whole run and the ball drops out of the DS (L4 §5.3).
+# catch_lead_on.yaml owns the rationale for the lead keys.
+#
+# `gamma.grid: [0.0]` ALONE DOES NOT GIVE γ 0. The γ window's floor is
+# γ_min = 1 − d_eff / (v_ball · T_close,tot) (time_feasibility.hpp), above 0 for
+# any ball faster than d_eff / T_close,tot = 1.0 m/s, and when every grid value
+# is outside the window the rollout tries γ_min itself (gamma_rollout.hpp) —
+# a 3-throw smoke planned γ_f 0.40–0.46, the planned arm's own range. d_eff 10
+# (the parser's ceiling) puts γ_min at 0. It also raises MaxCatchableSpeed
+# (+ d_eff / T_close,tot), which only removes the γ-window rank penalty
+# (rank_gates.hpp — a +10 score, never a rejection; d_eff is not in the §4.6
+# budget). In the S8-B 2×2 that added no attempts (both γ arms committed on
+# 100/100 paired throws) and did not shift commit time (median −0.1 ms) (#537).
+# The grid stays a float list — a ROS params file cannot write an empty or
+# integer-typed one here.
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        planner:
+          freeze:
+            T_freeze: 0.37
+          gamma:
+            grid: [0.0]
+          hand:
+            d_eff: 10.0

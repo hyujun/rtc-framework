@@ -94,7 +94,7 @@ $$\nu=J^\top\big(\Sigma_{pp,new}(t^\ast)+\Sigma_{pp,old}(t^\ast)+\lambda I\big)^
 - 두 예측이 독립이고 공분산이 정직하면 $\nu\sim\chi^2_3$, $\mathbb E[\nu]=3$. 창 길이 $N$ 의 평균이 $\bar\nu\notin\big[\tfrac1N\chi^2_{3N}(\alpha/2),\ \tfrac1N\chi^2_{3N}(1-\alpha/2)\big]$ 이면 경고한다([R8], 경계는 configure 에서 미리 계산). 두 예측은 겹치는 관측을 쓰므로 독립이 아니다 — $\bar\nu$ 는 절대 임계보다 **추세**로 본다.
 - 계산은 공분산이 아직 손에 있는 nrt 콜백에서 한다(RT 에는 공분산이 없다, A-3).
 
-$\bar\nu$ 는 세 곳에서 쓴다: L3의 $\kappa_\sigma$ 보정 근거(L3 §4.4), L7의 `PRED_INCONSISTENT` 사유(L7 §4.2), L8 지표.
+$\bar\nu$ 는 세 곳에서 쓴다: L3의 $\kappa_\sigma$ 보정 근거(L3 §4.4), L7의 `PRED_INCONSISTENT` 사유(L7 §4.2), L8 지표. **2026-09-24 (D-S8-7 (a)) 이 절은 구현하지 않는다** — 생산자를 두지 않고 `io.pred.nu_reg` 는 은퇴했다 (§6). L7 `PRED_INCONSISTENT` 는 발화 0 인 명시 면제이고, 같은 목적은 추정기가 발행하는 innovation·NIS (`/ball_perception/debug/{innovation,nis}`) 를 S8 probe 가 기록해 오프라인으로 본다.
 
 **유령 트랙.** vision이 공을 놓치고 관성 예측만 계속 발행하면 스탬프는 신선하고 $J$ 와 $\bar\nu$ 는 오히려 작아진다. v0.5 에서는 `generation`·`validity` 가 이 판별의 1차 수단이다. 측정 손실 뒤에도 `VALID` 예측이 계속 나오는지는 S3.4 드롭 주입으로 확인한다(G1-5).
 
@@ -252,7 +252,7 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 점프 경고 |
 | `io.pred.nu_window` | int | – | 30 | 5–300 | §4.5 창 길이 |
 | `io.pred.nu_alpha` | double | – | 0.05 | 0.001–0.2 | §4.5 |
-| `io.pred.nu_reg` | double | m² | `TBD` | >0 | §4.5 정규화 λ (NUM-1) — **S8 이월** (A-S5-5 에서 S7 로 미뤘고 S7 에서도 미구현: 소비자 `PRED_INCONSISTENT` 가 L7 이고 공분산 시각 보간 규칙이 아직 없다, plan §7.3) |
+| ~~`io.pred.nu_reg`~~ | double | m² | — | — | **은퇴 (2026-09-24, D-S8-7 (a))** — $\bar\nu$ 생산자를 만들지 않는다. A-S5-5 에서 S7 로, S7 에서 S8 로 미뤘던 §4.5 정규화 λ (NUM-1) 는 소비자 (`PRED_INCONSISTENT`, L7 §4.2 명시 면제) 도 공분산 시각 보간 규칙도 없어 파서에 넣지 않는다. 예측 일관성은 추정기 `/ball_perception/debug/{innovation,nis}` 를 오프라인으로 본다 (plan §7.3) |
 | `sim.io.future_tol` | double | s | **0.1** (확정 S5.2) | 1e-4–0.5 | **A-S5-2 sim 전용 overlay**. sim config 에서만 활성이고 `io.future_tol` 을 덮는다 (`sim.ball.drag_k` 와 같은 활성 규칙). 두 값이 두 자릿수 다른 이유는 재는 대상이 다르기 때문이다 — sim 공 lane 의 stamp 는 sim 시간축이라 비행 안 위상 오차만큼 wall 을 앞서고 (D-3), 실기 카메라는 capture 시각이라 시계 동기 오차뿐이다. 한 키에 한 범위로는 둘 중 하나만 지킬 수 있고, sim 값을 실기 범위 안에 넣으면 하드웨어에서 100 ms 시계 오차를 조용히 수락한다. 부재는 실패가 아니다 — 그 경우 엄격한 공용 키를 물려받는다 (fail-closed) |
 | `prediction.dt_expected` | double | s | **0.05** | 1e-3–1.0 | vision profile 의 간격. `io.n_min` 이 이 값에서 유도되고 (⌈horizon_min / dt_expected⌉), 디코더의 간격 하한도 이 값의 1/10 로 파생된다 — 두 곳에 같은 수를 박지 않는다 |
 
@@ -299,4 +299,4 @@ v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.
 
 ~~TBD-VIS-06·07·08~~ (S3.4 에서 닫힘 — G1-2·G1-4·G1-5). ~~`snapshot_sequence` 되감김 처리~~ (S5.2, A-S5-4: generation 이 바뀌면 기대값을 리셋하고 같은 track 안에서는 ≤ 직전값을 거부). ~~`validity` 부분 수용~~ (S5.2: C-1 유지 — S3.4 가 부분 무효 0 건이라 비용 없이 fail-closed). ~~`io.n_min`·`io.t_stale`·`io.future_tol`·`io.horizon_min`~~ (S5.2 에서 §6 표에 확정, `future_tol` 은 sim overlay 와 쌍). ~~계획기 공분산 버퍼 전달 수단~~ (S5.2: `CovarianceSnapshot` SeqLock, 같은 token — **소비자는 S6**).
 
-남은 것: $\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (**S7 로 이월**, A-S5-5), `io.track.j_warn` (분포 미측정 — 진단 전용이라 무장을 막지 않는다), ~~D-24 지문 센서 freshness 경로~~ (S5.2e 에서 배선).
+남은 것: ~~$\nu$ 의 공분산 시각 보간 규칙과 `io.pred.nu_reg` (**S7 로 이월**, A-S5-5)~~ (2026-09-24 은퇴, D-S8-7 (a) — §6), `io.track.j_warn` (분포 미측정 — 진단 전용이라 무장을 막지 않는다), ~~D-24 지문 센서 freshness 경로~~ (S5.2e 에서 배선).

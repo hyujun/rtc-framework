@@ -41,6 +41,11 @@ PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap"]
 GROUP_BLOCKS = ["contact_wrench"]
 TOPLEVEL_BLOCKS = ["object_state", "object_pool"]
 
+# Nodes a sim overlay is layered onto (the sim launches append it to both nodes'
+# params). A section under any other name matches no node and is dropped
+# without a word — and would also be skipped below as "controller-only".
+OVERLAY_NODES = {"mujoco_simulator", "integrated_rt_controller"}
+
 # Keys that must appear in the scan for it to be considered working. Chosen
 # because they have shipped for a long time and are not what this test is
 # about, so their absence means the scanner broke rather than a real regression.
@@ -165,7 +170,19 @@ def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None
         assert paths, f"{profile}: no sim_overlays/*.yaml found — test is vacuous"
     for path in paths:
         with open(path) as handle:
-            params = yaml.safe_load(handle)["mujoco_simulator"]["ros__parameters"]
+            sections = yaml.safe_load(handle)
+        unknown = set(sections) - OVERLAY_NODES
+        assert not unknown, (
+            f"{os.path.basename(path)}: section(s) {sorted(unknown)} name no node the "
+            f"overlay is layered onto ({sorted(OVERLAY_NODES)}) — silently ignored"
+        )
+        section = sections.get("mujoco_simulator")
+        if section is None:
+            # A controller-only overlay (the S8-B catch_lead_* files write only
+            # `integrated_rt_controller`): no sim key to check here, and its
+            # controller keys are pinned by test_catch_lead_overlays.py.
+            continue
+        params = section["ros__parameters"]
         for name in _flatten(params):
             parts = name.split(".")
             grouped = parts[0] in ("robot_response", "fake_response") and len(parts) > 2

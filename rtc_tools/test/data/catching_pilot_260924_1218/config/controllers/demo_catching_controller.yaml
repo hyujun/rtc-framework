@@ -1,0 +1,33 @@
+# Cut by make_fixture.py from ur5e_p1b/controllers/demo_catching_controller.yaml
+demo_catching_controller:
+  catching:
+    core:
+      ball:
+        diameter: 0.067
+        mass: 0.057
+        restitution: 0.75
+        provisional: true
+    io:
+      arm_base_frame: base
+      base_T_world:
+        yaw_deg: 0.0
+        translation:
+        - 0.0
+        - 0.0
+        - 0.0
+  topics:
+    ur5e:
+      subscribe:
+      - topic: ur5e/joint_goal
+        role: target
+    p1b:
+      subscribe:
+      - topic: p1b/joint_goal
+        role: target
+  logs:
+  - msg_type: rtc_msgs/DeviceStateLog
+    instance: ur5e_state
+  - msg_type: rtc_msgs/DeviceStateLog
+    instance: p1b_state
+  - msg_type: integrated_bringup/CatchingDiagLog
+    instance: catching_diag

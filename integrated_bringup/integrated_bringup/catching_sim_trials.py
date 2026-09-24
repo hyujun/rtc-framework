@@ -27,8 +27,21 @@ estimator and the switch into the catching controller are the caller's
 
 Robot constants come from the shipped profile, not from this file: the arm
 device is the first device in the catching controller's ``topics``, its joint
-names and state topic are that device's roster, and the wait pose is
-``planner.wait_pose``.
+names and state topic are that device's roster. The wait pose, the commit lead
+and the lead axis are what the RUNNING controller loaded — its read-only mirror
+parameters (``planner.wait_pose``, ``planner.freeze.T_freeze``,
+``joint_cmd.lag.{T_arm,lead_enable}``, ``control.dt``) — because a sim overlay
+changes them without changing the installed YAML (plan §4.4 S8-A). They are
+written to ``run_meta.json`` and to every trial record.
+
+Two throw series (``--dist``):
+
+* ``reference`` (default, unchanged since S6-C): ``--n-ref`` S3.5b reference
+  throws then ``--n-pert`` seeded perturbations. A regression set — repeated
+  throws are not an iid sample, so not a success-rate input (D-S8-2).
+* ``s35b``: ``--n`` iid throws drawn with ``--seed`` from the frozen S3.5b 90 %
+  box of the profile (D-S8-2), built by ``rtc_tools.analysis.catchability_map``
+  so the geometry is the one the gate map judged.
 """
 
 from __future__ import annotations
@@ -65,6 +78,51 @@ OUTCOME_NAMES = ("NONE", "CAPTURED", "MISSED", "UNDETERMINED", "ABORTED")
 # The S3.5b reference throw for ur5e_p1b (1.0 m out, 0.2 m up, 4.75 m/s at 60°).
 REFERENCE_RELEASE_POS = (1.0, 0.0, 0.2)
 REFERENCE_RELEASE_VEL = (-2.375, 0.0, 4.11362)
+
+# The controller's read-only mirror of what it loaded (lifecycle.cpp
+# DeclareProfileParameters). All must exist: a controller that parked at
+# configure declares none of them, and a run against it is not a trial.
+MIRROR_PARAMETERS = (
+    "planner.wait_pose",
+    "planner.freeze.T_freeze",
+    "joint_cmd.lag.T_arm",
+    "joint_cmd.lag.lead_enable",
+    "control.dt",
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class ThrowBox:
+    """A frozen throw distribution: uniform on each axis of the gate-map grid.
+
+    The axes are :func:`rtc_tools.analysis.catchability_map.generate_throw_grid`'s,
+    in the same frames (sim world; the base axis at ``base_xy_m``).
+    """
+
+    distance_m: tuple[float, float]
+    release_height_m: tuple[float, float]
+    aim_deviation_deg: tuple[float, float]
+    speed_m_s: tuple[float, float]
+    elevation_deg: tuple[float, float]
+    azimuth_deg: float = 0.0
+    base_xy_m: tuple[float, float] = (0.0, 0.0)
+
+
+# D-S8-2 (a): the S3.5b box that opened ≥ 90 % of its throws (plan §4.4 S3.5b
+# result — 163/180 on the torque layer). Per profile, because the box is the
+# gate map's verdict for that robot and wait pose; `iiwa7_leap` has none until
+# S8-D re-runs its map.
+FROZEN_DISTRIBUTIONS: dict[str, dict[str, ThrowBox]] = {
+    "s35b": {
+        "ur5e_p1b": ThrowBox(
+            distance_m=(0.9, 1.0),
+            release_height_m=(0.15, 0.25),
+            aim_deviation_deg=(-6.0, 6.0),
+            speed_m_s=(4.65, 4.85),
+            elevation_deg=(62.0, 64.0),
+        ),
+    },
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -179,6 +237,128 @@ def trial_throws(n_ref: int, n_pert: int, seed: int, pos, vel):
     return throws
 
 
+def frozen_throws(dist: str, profile: str, n: int, seed: int) -> list[dict]:
+    """``n`` iid throws from the profile's frozen distribution ``dist``.
+
+    Deterministic in ``seed`` (``random.Random``, one draw per axis per throw in
+    a fixed order), so a series is replayed from ``(dist, profile, n, seed)``
+    alone. Each throw carries its axis values, its spin (zero — the flight model
+    the gate map judged with has no Magnus term) and its provenance.
+    """
+    boxes = FROZEN_DISTRIBUTIONS.get(dist)
+    if boxes is None:
+        raise ValueError(f"unknown distribution {dist!r} (known: {sorted(FROZEN_DISTRIBUTIONS)})")
+    box = boxes.get(profile)
+    if box is None:
+        raise ValueError(
+            f"distribution {dist!r} has no box for profile {profile!r} "
+            f"(frozen for: {sorted(boxes)})"
+        )
+    if n < 0:
+        raise ValueError(f"n must be >= 0, got {n}")
+    # Imported here: the helpers above stay importable where rtc_tools is not.
+    from rtc_tools.analysis.catchability_map import generate_throw_grid, throw_to_launch_request
+
+    rng = random.Random(seed)
+    throws = []
+    for i in range(n):
+        axes = {
+            "distance_m": rng.uniform(*box.distance_m),
+            "release_height_m": rng.uniform(*box.release_height_m),
+            "aim_deviation_deg": rng.uniform(*box.aim_deviation_deg),
+            "speed_m_s": rng.uniform(*box.speed_m_s),
+            "elevation_deg": rng.uniform(*box.elevation_deg),
+        }
+        (throw,) = generate_throw_grid(
+            base_xy_m=box.base_xy_m,
+            distances_m=(axes["distance_m"],),
+            azimuths_deg=(box.azimuth_deg,),
+            release_heights_m=(axes["release_height_m"],),
+            aim_deviations_deg=(axes["aim_deviation_deg"],),
+            speeds_m_s=(axes["speed_m_s"],),
+            elevations_deg=(axes["elevation_deg"],),
+        )
+        req = throw_to_launch_request(throw)
+        throws.append(
+            {
+                "kind": dist,
+                "pos": tuple(req["position"][k] for k in "xyz"),
+                "vel": tuple(req["velocity"][k] for k in "xyz"),
+                "omega": tuple(req["angular_velocity"][k] for k in "xyz"),
+                "seed": seed,
+                "sample_idx": i,
+                "azimuth_deg": box.azimuth_deg,
+                **axes,
+            }
+        )
+    return throws
+
+
+def build_throws(args, profile: str) -> list[dict]:
+    """The series ``--dist`` selects (module docstring)."""
+    if args.dist == "reference":
+        return trial_throws(args.n_ref, args.n_pert, args.seed, args.release_pos, args.release_vel)
+    return frozen_throws(args.dist, profile, args.n, args.seed)
+
+
+def apply_mirror(profile: ArmProfile, mirror: dict) -> ArmProfile:
+    """``profile`` with the wait pose the running controller loaded.
+
+    Raises ``ValueError`` when a mirror value is missing or its wait pose does
+    not fit the arm: aligning to anything else would refuse every trial of an
+    overlay run, or accept a start pose the controller does not wait at.
+    """
+    missing = [name for name in MIRROR_PARAMETERS if mirror.get(name) is None]
+    if missing:
+        raise ValueError(
+            f"{CATCHING} does not expose {missing} — not configured, or parked at configure "
+            "(its log names the value)"
+        )
+    wait_pose = tuple(float(v) for v in mirror["planner.wait_pose"])
+    if len(wait_pose) != len(profile.joint_names):
+        raise ValueError(
+            f"the controller's planner.wait_pose has {len(wait_pose)} values but device "
+            f"{profile.device} has {len(profile.joint_names)} joints"
+        )
+    return dataclasses.replace(profile, wait_pose=wait_pose)
+
+
+def mirror_from_replies(names, ask) -> dict:
+    """``{name: value | None}`` from a GetParameters caller ``ask(names)``.
+
+    ``ask`` returns one ``(type, value)`` per name. But rclcpp's parameter
+    service answers with an EMPTY list when ANY requested name is undeclared
+    (the node does not allow undeclared parameters, and the whole lookup
+    throws) — exactly the parked-controller case this runner must name. So an
+    answer of the wrong length is re-asked one name at a time, and a name that
+    still has no value is ``None``: ``apply_mirror`` then says which.
+    """
+    names = list(names)
+    replies = ask(names)
+    if len(replies) != len(names):
+        replies = []
+        for name in names:
+            one = ask([name])
+            replies.append(one[0] if len(one) == 1 else (0, None))
+    return {
+        name: (None if kind == 0 else value)
+        for name, (kind, value) in zip(names, replies, strict=True)
+    }
+
+
+def _parameter_value(value):
+    """The Python value of an ``rcl_interfaces/ParameterValue`` the mirror uses."""
+    from rcl_interfaces.msg import ParameterType
+
+    if value.type == ParameterType.PARAMETER_DOUBLE_ARRAY:
+        return list(value.double_array_value)
+    if value.type == ParameterType.PARAMETER_DOUBLE:
+        return value.double_value
+    if value.type == ParameterType.PARAMETER_BOOL:
+        return value.bool_value
+    return None
+
+
 def _cycle_closed(modes: list[str]) -> bool:
     """Whether a trial's mode sequence re-armed after its RETREAT (one S7 cycle)."""
     if "RETREAT" not in modes:
@@ -192,7 +372,7 @@ def _make_driver(profile: ArmProfile, args):
     import rclpy
     from nav_msgs.msg import Odometry
     from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-    from rcl_interfaces.srv import SetParameters
+    from rcl_interfaces.srv import GetParameters, SetParameters
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import JointState
@@ -215,6 +395,9 @@ def _make_driver(profile: ArmProfile, args):
             self.param_cli = self.create_client(
                 SetParameters, f"/{CATCHING}/{CATCHING}/set_parameters"
             )
+            self.get_param_cli = self.create_client(
+                GetParameters, f"/{CATCHING}/{CATCHING}/get_parameters"
+            )
             self.create_subscription(
                 CatchingState, f"/{CATCHING}/catching_state", self._on_state, 10
             )
@@ -222,7 +405,10 @@ def _make_driver(profile: ArmProfile, args):
                 Odometry, "/sim/ball/ground_truth", self._on_truth, best_effort
             )
             self.create_subscription(JointState, profile.state_topic, self._on_joints, best_effort)
+            # Replaced by main() with the controller's mirrored wait pose.
+            self.profile = profile
             self.mode = None
+            self.armed = None
             self.outcome = None
             self.retreat_outcome = None
             self.mode_log = []
@@ -245,6 +431,7 @@ def _make_driver(profile: ArmProfile, args):
                     # (HOLD judges on that edge; an abort sets it there).
                     self.retreat_outcome = msg.outcome
             self.outcome = msg.outcome
+            self.armed = msg.armed
             if self.recording:
                 if self.tick_range[0] is None:
                     self.tick_range[0] = msg.tick
@@ -301,11 +488,25 @@ def _make_driver(profile: ArmProfile, args):
             res = self.call(self.param_cli, req)
             return res is not None and all(r.successful for r in res.results)
 
+        def read_mirror(self) -> dict:
+            """The controller's read-only mirror (``MIRROR_PARAMETERS``); None = absent."""
+
+            def ask(names):
+                req = GetParameters.Request()
+                req.names = list(names)
+                res = self.call(self.get_param_cli, req)
+                if res is None:
+                    raise RuntimeError(f"/{CATCHING}/{CATCHING}/get_parameters did not answer")
+                return [(v.type, _parameter_value(v)) for v in res.values]
+
+            return mirror_from_replies(MIRROR_PARAMETERS, ask)
+
         def wait_for_services(self, timeout_s: float = 10.0) -> None:
             for client, name in (
                 (self.launch_cli, "/sim/launch_ball_at"),
                 (self.reset_ball_cli, "/sim/reset_ball"),
                 (self.param_cli, f"/{CATCHING}/{CATCHING}/set_parameters"),
+                (self.get_param_cli, f"/{CATCHING}/{CATCHING}/get_parameters"),
             ):
                 if not client.wait_for_service(timeout_sec=timeout_s):
                     raise RuntimeError(f"service {name} unavailable")
@@ -322,21 +523,30 @@ def _make_driver(profile: ArmProfile, args):
                 self.get_logger().warn(f"reset_fault before the trial -> {res}")
                 self.spin_for(0.2)
             start_q = list(self.q) if self.q else None
-            if self.mode_name() != "ARMED" and not self.set_enable(True):
-                raise RuntimeError("arm failed")
+            if self.mode_name() != "ARMED":
+                # False → True, not just True: the controller lowers its latch
+                # itself (E-STOP, fault, a supervisor disarm) and the parameter
+                # can still read true, so a bare `true` would re-set the value it
+                # already has. The edge is the request (A-S5-3).
+                if not self.set_enable(False):
+                    raise RuntimeError("disarm before re-arm failed")
+                self.spin_for(0.05)
+                if not self.set_enable(True):
+                    raise RuntimeError("arm failed")
             # The controller homes itself (S7.2); ARMED means it says it is at
             # the wait pose with the hand at q_pre.
             if not self.wait_for_mode("ARMED", args.home_timeout):
-                err = alignment_error(self.q, self.qd, profile.wait_pose) if self.q else None
+                err = alignment_error(self.q, self.qd, self.profile.wait_pose) if self.q else None
                 raise RuntimeError(f"not ARMED (mode {self.mode_name()}), error {err}")
             self.spin_for(0.2)
-            eq, eqd = alignment_error(self.q, self.qd, profile.wait_pose)
+            eq, eqd = alignment_error(self.q, self.qd, self.profile.wait_pose)
             if eq > args.tol_q or eqd > args.tol_qd:
                 # Recorded AND refused: the controller's own arrival test is
                 # `supervisor.ready.pose_tol`, and an ARMED arm outside this gate
                 # is a finding about the homing, not a start pose to accept.
                 raise RuntimeError(f"ARMED away from the wait pose: {eq:.4f} rad, {eqd:.4f} rad/s")
             return {
+                "armed_at_throw": self.armed,
                 "home_start_q": start_q,
                 "home_total_s": round(time.time() - t0, 2),
                 "q_at_throw": [round(v, 5) for v in self.q],
@@ -353,9 +563,13 @@ def _make_driver(profile: ArmProfile, args):
             req = LaunchBall.Request()
             req.position.x, req.position.y, req.position.z = throw["pos"]
             req.velocity.x, req.velocity.y, req.velocity.z = throw["vel"]
+            omega = tuple(throw.get("omega", (0.0, 0.0, 0.0)))
+            req.angular_velocity.x, req.angular_velocity.y, req.angular_velocity.z = omega
             res = self.call(self.launch_cli, req)
             launch_wall_time = time.time()
             record = {"idx": idx, **throw, "accepted": bool(res and res.accepted)}
+            record["omega"] = omega
+            record["seed"] = args.seed
             record["message"] = res.message if res else "no response"
             if not record["accepted"]:
                 self.recording = False
@@ -423,9 +637,16 @@ def parse_args(argv=None):
     parser.add_argument(
         "--config-dir", help="override the profile's config directory (default: installed share)"
     )
+    parser.add_argument(
+        "--dist",
+        choices=("reference", *sorted(FROZEN_DISTRIBUTIONS)),
+        default="reference",
+        help="throw series: the reference regression set, or iid draws from a frozen box",
+    )
+    parser.add_argument("--n", type=int, default=25, help="throws drawn with --dist <box>")
     parser.add_argument("--n-ref", type=int, default=15, help="reference throws")
     parser.add_argument("--n-pert", type=int, default=10, help="perturbed throws after them")
-    parser.add_argument("--seed", type=int, default=42, help="perturbation RNG seed")
+    parser.add_argument("--seed", type=int, default=42, help="perturbation / sampling RNG seed")
     parser.add_argument("--release-pos", type=float, nargs=3, default=REFERENCE_RELEASE_POS)
     parser.add_argument("--release-vel", type=float, nargs=3, default=REFERENCE_RELEASE_VEL)
     parser.add_argument(
@@ -449,21 +670,44 @@ def main(argv=None) -> int:
 
         share = get_package_share_directory("integrated_bringup")
         config_dir = os.path.join(share, "config", args.profile)
-    profile = load_arm_profile(config_dir)
+    file_profile = load_arm_profile(config_dir)
     os.makedirs(args.out_dir, exist_ok=True)
-    throws = trial_throws(args.n_ref, args.n_pert, args.seed, args.release_pos, args.release_vel)
+    throws = build_throws(args, args.profile)
 
-    rclpy, TrialDriver = _make_driver(profile, args)
+    rclpy, TrialDriver = _make_driver(file_profile, args)
     rclpy.init()
     node = TrialDriver()
     results = []
     try:
         node.wait_for_services()
+        mirror = node.read_mirror()
+        profile = apply_mirror(file_profile, mirror)
+        # The driver's closures read the profile it was built with; the homing
+        # gate must use the pose the controller loaded, not the file's.
+        node.profile = profile
+        if profile.wait_pose != file_profile.wait_pose:
+            node.get_logger().warn(
+                f"the controller's wait pose differs from {config_dir} (an overlay?) — "
+                f"aligning to the controller's {profile.wait_pose}"
+            )
+        with open(os.path.join(args.out_dir, "run_meta.json"), "w") as f:
+            json.dump(
+                {
+                    "args": dict(vars(args)),
+                    "config_dir": config_dir,
+                    "controller_mirror": mirror,
+                    "n_throws": len(throws),
+                },
+                f,
+                indent=2,
+                default=str,
+            )
         for idx, throw in enumerate(throws):
             alignment = node.home()
             node.get_logger().info(f"trial {idx}: aligned {alignment}")
             record = node.throw(idx, throw)
             record.update(alignment)
+            record["controller_mirror"] = mirror
             results.append(record)
             node.spin_for(0.3)
         verdicts: dict[str, int] = {}

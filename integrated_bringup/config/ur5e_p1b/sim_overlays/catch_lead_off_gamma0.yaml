@@ -1,0 +1,22 @@
+# sim overlay — dynamic_catching S8-B, arm "lead off · γ 0" (#537)
+#
+# catch_lead_off.yaml with the planner held at γ_f = 0: the catch point is the
+# attractor for the whole run and the ball drops out of the DS (L4 §5.3).
+# catch_lead_on.yaml owns the rationale for the lead keys, and
+# catch_lead_on_gamma0.yaml the one for the γ keys (why the grid needs d_eff).
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: false
+        planner:
+          freeze:
+            T_freeze: 0.37
+          gamma:
+            grid: [0.0]
+          hand:
+            d_eff: 10.0

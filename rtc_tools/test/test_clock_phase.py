@@ -10,7 +10,7 @@ import csv
 
 import pytest
 
-from rtc_tools.analysis.clock_phase import quantile, read_lane, required_eps
+from rtc_tools.analysis.clock_phase import covariate_summary, quantile, read_lane, required_eps
 
 DT = 0.002
 
@@ -133,3 +133,53 @@ def test_quantile_is_inclusive_at_the_top():
     values = [1.0, 2.0, 3.0, 4.0]
     assert quantile(values, 1.0) == 4.0
     assert quantile(values, 0.5) == 2.0
+
+
+# ── covariate summary (D-S8-4 (c): delta is a covariate, not a verdict) ──────
+
+
+def test_covariate_summary_distributions_match_the_lane(tmp_path):
+    csv_path = write_lane(tmp_path / "lane.csv", trials=5, stall_s=0.004)
+    stats = read_lane(csv_path)
+
+    summary = covariate_summary(stats.trials, v_max=8.0, a_bound=12.0)
+
+    assert summary.n_trials == 5
+    assert summary.delta_max_p50_s == pytest.approx(0.004, abs=1e-9)
+    assert summary.delta_max_max_s == pytest.approx(0.004, abs=1e-9)
+    assert summary.max_pause_p50_s == pytest.approx(0.004, abs=1e-9)
+    # No eps given: this is a covariate report, not a verdict — no fraction.
+    assert summary.eps_mm is None
+    assert summary.valid_fraction is None
+    assert summary.valid_count is None
+
+
+def test_covariate_summary_valid_fraction_uses_the_same_condition_as_required_eps(tmp_path):
+    """The eps-driven fraction must agree with required_eps: a trial is 'valid
+    under eps' exactly when required_eps(trial, v_max, a_bound) <= eps."""
+    csv_path = write_lane(tmp_path / "lane.csv", trials=4, stall_s=0.004)
+    stats = read_lane(csv_path)
+    v_max, a_bound = 8.0, 12.0
+
+    eps_each = [required_eps(t, v_max, a_bound) for t in stats.trials]
+    assert len({round(e, 12) for e in eps_each}) == 1, "fixture trials are identical"
+    eps_mm_exact = eps_each[0] * 1e3
+
+    # Just above the exact boundary: every trial is valid.
+    admits_all = covariate_summary(stats.trials, v_max, a_bound, eps_mm=eps_mm_exact + 1e-6)
+    assert admits_all.valid_count == 4
+    assert admits_all.valid_fraction == pytest.approx(1.0)
+
+    # Just below: none are.
+    admits_none = covariate_summary(stats.trials, v_max, a_bound, eps_mm=eps_mm_exact - 1e-6)
+    assert admits_none.valid_count == 0
+    assert admits_none.valid_fraction == pytest.approx(0.0)
+    assert admits_none.eps_mm == pytest.approx(eps_mm_exact - 1e-6)
+
+
+def test_covariate_summary_handles_no_trials():
+    summary = covariate_summary([], v_max=8.0, a_bound=12.0, eps_mm=5.0)
+    assert summary.n_trials == 0
+    # eps was supplied but there is nothing to compute a fraction over.
+    assert summary.eps_mm is None
+    assert summary.valid_fraction is None

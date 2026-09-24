@@ -175,6 +175,26 @@ void DemoCatchingController::DeclareProfileParameters() {
   // tick axis and widens the drop gate on any bring-up that is not 500 Hz.
   declare("control.dt", GetDefaultDt(), "RT tick period [s] = 1/control_rate");
   declare("diagnostic.hand_step", hand_step_enabled_, "accept unshaped hand step targets (S4a)");
+
+  // The S8 trial runner's inputs (plan §4.4 S8-A). A sim overlay can move the
+  // wait pose and switch the lead axis on, and the installed YAML cannot tell
+  // the runner which overlay the controller loaded: a runner that homed to the
+  // file's pose would refuse every trial of an overlay run, and a summary that
+  // named the file's T_arm would attribute a lead-on run to lead-off.
+  const auto wait_n = static_cast<std::size_t>(planner_params_.wait_pose_n);
+  std::vector<double> wait_pose(planner_params_.wait_pose.begin(),
+                                planner_params_.wait_pose.begin() + wait_n);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  declare("planner.wait_pose", wait_pose, "L3 §6 wait pose [rad], arm joint order");
+  declare("planner.freeze.T_freeze", planner_params_.t_freeze, "L3 §4.11 commit lead [s]");
+  // T_arm is mirrored whether or not the lead is on: the freeze-window check
+  // reads it either way (C-25), so a lead-off run with T_arm 0.2 is a
+  // different configuration from one with T_arm 0.
+  declare("joint_cmd.lag.T_arm",
+          params_.joint_cmd_lag_t_arm.tbd ? nan : params_.joint_cmd_lag_t_arm.value,
+          "L5 §6 arm lag T_arm [s] (NaN = TBD)");
+  declare("joint_cmd.lag.lead_enable", params_.joint_cmd_lag_lead_enable,
+          "L5 §4.5 lead axis on (now_lead = now + T_arm)");
 }
 
 void DemoCatchingController::DeclareArmParameter() {
@@ -743,11 +763,12 @@ void DemoCatchingController::SetupTrajInput() {
   traj_horizon_min_ns_ = cfg.horizon_min_ns;
   traj_jump_warn_m_ = cfg.j_warn_m;
   t_stale_ns_ = params_.io_t_stale.tbd ? 0 : to_ns(params_.io_t_stale.value);
-  // The lead axis (L5 §4.5). OFF unless the profile says otherwise, because
-  // the sim has no actuation lag to lead (2026-09-20) and leading a delay that
-  // does not exist moves the command EARLY by exactly T_arm. `lead_enable` is
-  // the switch the identification (S10) turns on once T_arm is measured; the
-  // fixture that exercises the compensation supplies its own delay.
+  // The lead axis (L5 §4.5). OFF unless the profile says otherwise: leading a
+  // delay the arm does not have moves the command EARLY by exactly T_arm, and
+  // the real arm's T_arm is unidentified until S10. The sim arm is a
+  // first-order lag of the servo's kd/kp (0.05 s on ur5e_p1b, #537 D-S8-13),
+  // and S8-B runs it with the lead on through the catch_lead sim overlays; the
+  // G5-E fixture supplies its own pure delay.
   t_arm_ns_ = 0;
   if (params_.joint_cmd_lag_lead_enable && !params_.joint_cmd_lag_t_arm.tbd) {
     t_arm_ns_ = static_cast<std::int64_t>(params_.joint_cmd_lag_t_arm.value * 1e9);

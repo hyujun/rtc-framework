@@ -36,6 +36,7 @@ setup(
             "analyze_vision_lane = rtc_tools.analysis.vision_lane:main",
             "vision_lane_probe = rtc_tools.analysis.vision_lane_probe:main",
             "camera_relay = rtc_tools.analysis.camera_relay:main",
+            "catching_trials = rtc_tools.analysis.catching_trials:main",
         ],
     },
 )

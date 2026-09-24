@@ -16,6 +16,8 @@
 #                           DemoComplianceController consumes a wrench, K_p^a = 0
 #                           hand-guiding walks the arm (4.22 cm measured) and the
 #                           bolted disk cannot follow — contact ends in 0.37 s.
+#                           (Both measured on the 0.2 s arm servo, before
+#                           mujoco_simulator.yaml moved it to 0.05 s; not re-run.)
 #
 #   fingertip_grasp_free  — THIS ONE. The disk is a 6-DOF child body with
 #                           `gravcomp="1"`: free to travel with the hand, and

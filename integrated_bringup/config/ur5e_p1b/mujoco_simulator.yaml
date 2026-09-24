@@ -31,9 +31,29 @@ mujoco_simulator:
     physics_timestep: 0.002 # seconds — control period (constant)
     n_substeps: 3           # physics substeps per control cycle (substep_dt = physics_timestep / n_substeps)
 
-    # ── Position Servo Gains (글로벌 기본값) ──────────────────────────────────
-    use_yaml_servo_gains: false
-    servo_kp: [500.0, 500.0, 500.0, 150.0, 150.0, 150.0]
+    # ── Position Servo Gains ─────────────────────────────────────────────────
+    # The arm's MJCF actuators are position PD (`<general>` affine bias), and a
+    # PD servo tracks a ramp with a lag of exactly kd/kp whatever the inertia:
+    # the hand_description MJCF's 2000/400 (size3) and 500/100 (size1) make the
+    # sim arm a 0.2 s first-order lag. The catching design is derived for an
+    # arm lag of T_arm 0.05 s (the S3.5b gate map, T_freeze, horizon_min), and a
+    # 0.2 s lag shut that map's frozen throw box (0/180 open at commit lead
+    # 0.52) — so this profile runs the arm at kd/kp = 0.05 s instead: kd kept,
+    # kp x4. Decided 2026-09-24 (#537, dynamic_catching S8-B); measured tau-hat
+    # 50.2-50.9 ms on all six joints (least squares, R^2 >= 0.99), peak arm
+    # torque 93 of 150 N m, no tick at the forcerange. This is a SIM choice, not
+    # the UR5e's lag — that is S10's identification (joint_cmd.lag.T_arm).
+    # The forcerange is the UR5e's max_effort (150 / 28 N m), so a RAW step
+    # above ~19 mrad (arm) / ~14 mrad (wrist) now saturates (was ~75 / 56), and
+    # the sim has no joint velocity cap: a 0.5 rad raw step peaks at ~7.7 rad/s.
+    # No shipped controller sends raw steps (quintic / rate-limited tails).
+    #
+    # use_yaml_servo_gains applies to EVERY robot group, so the hand's gains are
+    # spelled out per group below too — copied unchanged from the MJCF
+    # (<position kp 6000 kv 250>). The globals here are the arm's, for any
+    # group that does not name its own.
+    use_yaml_servo_gains: true
+    servo_kp: [8000.0, 8000.0, 8000.0, 2000.0, 2000.0, 2000.0]
     servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]
 
     # ── Object Pool (무작위 object 스폰) ─────────────────────────────────────
@@ -216,6 +236,10 @@ mujoco_simulator:
         # out rather than omitted: an absent key means "fall back", and the day
         # this scene gains a keyframe that would silently take over.
         initial_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        # The MJCF's hand gains (<position kp 6000 kv 250>, all ten actuators),
+        # unchanged — here only because use_yaml_servo_gains is profile-wide.
+        servo_kp: [6000.0, 6000.0, 6000.0, 6000.0, 6000.0, 6000.0, 6000.0, 6000.0, 6000.0, 6000.0]
+        servo_kd: [250.0, 250.0, 250.0, 250.0, 250.0, 250.0, 250.0, 250.0, 250.0, 250.0]
         # ── Fingertip contact wrench ──────────────────────────────────────
         # sensor_names="auto" is REQUIRED for contact wrench discovery: the
         # wrapper only maps a contact sensor that lives in this group's

@@ -1,0 +1,52 @@
+# sim overlay — dynamic_catching S8-B, arm "lead on · planned γ" (#537)
+#
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_mpc:=true \
+#       sim_lanes:=true sim_overlay:=catch_lead_on
+#
+# This file owns the rationale for all four catch_lead_* overlays; the other
+# three differ only where their headers say.
+#
+# WHAT IT IS FOR. The shipped controller runs with `joint_cmd.lag.T_arm: 0`
+# because a real-arm actuation lag is an S10 measurement. The sim arm is not
+# lag-free: ../mujoco_simulator.yaml runs its position servo at kd/kp = 0.05 s
+# (see its "Position Servo Gains"), a first-order lag the S8-A least-squares
+# fit reads as 50 ms on all six joints. These overlays run the S8-B ablation on
+# that plant without touching the shipped controller YAML: lead {off, on} x
+# gamma {0, planned}, the same throws in every arm.
+#
+# WHAT T_arm 0.05 CHANGES. T_arm is not only the lead: the validator derives
+# the commit window from it, so T_freeze moves with it.
+#   T_freeze 0.37 = T_close,tot 0.2815 + T_arm 0.05 + margin 0.03 = 0.3615,
+#                   rounded up (L3 §4.11 lower bound). The shipped 0.36 was
+#                   derived with T_arm 0 and falls short of that bound — the
+#                   validator would still pass it (CheckFreezeCoversClose asks
+#                   only T_close_e2e + T_arm + h = 0.3325), so this is the
+#                   design bound, not a configure requirement.
+#                   Startup log: "commit at t_c − 0.370 s".
+#   io.horizon_min 0.51 / io.n_min 12 are already the shipped values: they were
+#                   derived with T_arm 0.05 (see the shipped file's comments).
+# The lead-off arms keep T_arm 0.05 and T_freeze 0.37 and set only
+# `lead_enable: false` — the validator reads T_arm, the RT path and the planner
+# use 0 when lead is off, so lead is the ONLY difference between the arms.
+#
+# THE PATH IS THE TRAP. The controller config is not a ROS parameter tree:
+# `ApplyControllerParamOverrides` pokes every `demo_catching_controller.*`
+# parameter into the YAML it loaded, creating any key that is not there. One
+# level short (without `catching:`) is written to a key nothing reads and the
+# run is the shipped profile, with no warning. `test_catch_lead_overlays.py`
+# pins every leaf below to a key the shipped YAML has.
+#
+# The sim plant is a choice (#537, 2026-09-24), not the UR5e: nothing measured
+# with these overlays predicts the real arm's lead gain (S10 identifies T_arm).
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        planner:
+          freeze:
+            T_freeze: 0.37

@@ -11,8 +11,9 @@
 // cannot fail.
 //
 // THE LOOP IS CLOSED WITH A PERFECT SERVO: the measured state of tick n+1 is
-// the command of tick n. That is the sim's own assumption (no actuation lag,
-// 2026-09-20), and it is what makes a position-error assertion mean "the law
+// the command of tick n. The sim arm is not that (a first-order lag of the
+// servo's kd/kp, 0.05 s on ur5e_p1b, #537 D-S8-13); the perfect servo is
+// deliberate, because it makes a position-error assertion mean "the law
 // converges" rather than "the plant is slow".
 //
 // REAL TIME IS REAL. The controller reads the steady clock per tick (plan §3
@@ -563,11 +564,12 @@ TEST_F(CatchingTrackingTest, AQpFailureStreakLatchesAFaultThatClearEstopDoesNotR
 // ── G5-E: the lead compensation, measured on an injected delay ──────────────
 
 TEST_F(CatchingTrackingTest, LeadCompensationReducesTheErrorUnderAnActuationDelay) {
-  // What this gate was stuck on: with no actuation lag in the sim (decided
-  // 2026-09-20), leading and not leading produce identical commands and the
-  // "before/after" comparison measures nothing. The delay comes from a FIXTURE
-  // that only this test can reach (plan §7.3, option ㄱ) — the runtime keeps
-  // `T_arm: 0.0`, which is the truth in sim.
+  // What this gate was stuck on: on a plant with no actuation lag (the
+  // 2026-09-20 premise about the sim, corrected 2026-09-24), leading and not
+  // leading produce identical commands and the "before/after" comparison
+  // measures nothing. The delay comes from a FIXTURE that only this test can
+  // reach (plan §7.3, option ㄱ); the shipped `T_arm` stays 0. The sim-runtime
+  // comparison is G8-E (S8-B).
   //
   // The comparison is run TWICE against the same plant and the same ball, with
   // the compensation off and on. Asserting that the compensation HELPS, rather

@@ -14,7 +14,10 @@
 // FIXTURE rather than in the runtime. This file is that fixture. It lives
 // under test/ and is never installed, so no production target can reach it —
 // the same isolation `catching_ball_fixture.hpp` uses for the ball model. The
-// runtime keeps `joint_cmd.lag.T_arm: 0.0` in sim, which is the truth there.
+// shipped `joint_cmd.lag.T_arm` is 0. That premise, "the sim has no lag", was
+// false (corrected 2026-09-24): the sim arm is a first-order lag of the servo's
+// kd/kp (0.05 s on ur5e_p1b), and S8-B leads it through the catch_lead sim
+// overlays. This fixture's pure delay is still what G5-E is judged on.
 //
 // The model is a PURE delay, not the first-order-plus-delay of L5 §4.4: the
 // lead compensation is exactly the inverse of a pure delay, so this fixture

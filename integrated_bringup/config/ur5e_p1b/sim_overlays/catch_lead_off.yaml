@@ -1,0 +1,17 @@
+# sim overlay — dynamic_catching S8-B, arm "lead off · planned γ" (#537)
+#
+# catch_lead_on.yaml with `lead_enable: false`; that file's header owns the
+# rationale. T_arm and the T_freeze derived from it stay, so the commit window
+# is the lead-on arm's and lead is the only difference.
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: false
+        planner:
+          freeze:
+            T_freeze: 0.37

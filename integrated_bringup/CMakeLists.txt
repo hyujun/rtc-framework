@@ -1640,7 +1640,11 @@ if(BUILD_TESTING)
   # Behavioural twin of the two AST tests above: evaluates every launch
   # description instead of reading it.
   ament_add_pytest_test(test_sim_overlay test/test_sim_overlay.py)
+  # S8-B catch_lead_* overlays: a controller key one level off is created,
+  # never read, and the run is silently the shipped profile.
+  ament_add_pytest_test(test_catch_lead_overlays test/test_catch_lead_overlays.py)
   ament_add_pytest_test(test_catching_sim_trials test/test_catching_sim_trials.py)
+  ament_add_pytest_test(test_catching_sim_trials_s8 test/test_catching_sim_trials_s8.py)
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
   ament_add_pytest_test(test_launch_session_wiring

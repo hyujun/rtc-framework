@@ -242,10 +242,23 @@ class CatchingStatus:
     request_tick: int = 0
     last_error: str = ""
 
+    #: S8 progress (plan §13 S8): attempts seen by THIS panel, by verdict. An
+    #: attempt is counted on the tick-published edge into RETREAT, where the
+    #: supervisor publishes the attempt's verdict (L7 §4.7) — the same edge the
+    #: trial runner reads, so the panel and trial_results.json count alike. The
+    #: verdict itself cannot be the edge: it is kept across a re-arm, so two
+    #: Missed in a row would read as one. Local to the panel (no message field —
+    #: CatchingState is frozen since S5); a panel started mid-run counts from
+    #: the first edge it sees, and restarting the panel starts a new count.
+    attempt_tally: dict[str, int] = field(default_factory=dict)
+    _prev_mode: int | None = None
+
     def update(self, msg, now_s: float) -> None:
         """Adopt one CatchingState. Duck-typed so tests need no ROS message."""
         self.feed.mark(now_s)
+        prev_mode = self._prev_mode
         self.mode = int(msg.mode)
+        self._prev_mode = self.mode
         self.reason = int(msg.reason)
         self.armed = bool(msg.armed)
         self.estop_active = bool(msg.estop_active)
@@ -301,6 +314,10 @@ class CatchingStatus:
         self.tip_fresh = tuple(bool(v) for v in getattr(msg, "tip_fresh", ()))
         self.tip_age_s = tuple(float(v) for v in getattr(msg, "tip_age_s", ()))
 
+        if prev_mode is not None and prev_mode != self.mode and mode_name(self.mode) == "RETREAT":
+            verdict = outcome_name(self.outcome)
+            self.attempt_tally[verdict] = self.attempt_tally.get(verdict, 0) + 1
+
         # A request stops being in flight once a LATER TICK has published, not
         # once the latch happens to match. The tick is what decides, and it can
         # decide NO — an arm pressed while a fault is latched is refused
@@ -328,6 +345,17 @@ class CatchingStatus:
         """Worth colouring. E-STOP and a latched fault are not modes, so mode
         alone would miss both."""
         return self.estop_active or self.fault_latched or mode_name(self.mode) in _ALARM_MODES
+
+    def tally_summary(self) -> str:
+        """``attempts N: CAPTURED a · MISSED b …`` in verdict order; empty before
+        the first attempt."""
+        total = sum(self.attempt_tally.values())
+        if total == 0:
+            return ""
+        order = [n for n in OUTCOME_NAMES if n in self.attempt_tally]
+        order += sorted(n for n in self.attempt_tally if n not in OUTCOME_NAMES)
+        parts = " · ".join(f"{name} {self.attempt_tally[name]}" for name in order)
+        return f"attempts {total}: {parts}"
 
     def reject_summary(self) -> str:
         """Non-zero reject counters only, named. Empty string when the lane has
@@ -370,6 +398,9 @@ class CatchingStatus:
             self._hand_line(),
             self._tips_line(),
         ]
+        tally = self.tally_summary()
+        if tally:
+            out.append(f"this panel: {tally}")
         rejects = self.reject_summary()
         if rejects:
             out.append(f"input rejects: {rejects}")

@@ -24,6 +24,12 @@ Two halves, deliberately separable:
   measurement stops (TBD-VIS-07, the ghost-track question) and whether a
   best-effort subscription loses anything a reliable one gets (TBD-VIS-08).
 
+S8-A adds a dump mode: ``dump_prediction_rows`` turns one decoded snapshot into
+one row per horizon point with the full 6x6 covariance, for G8-B (NEES, reusing
+ball_perception's own evaluator, C-5) and G8-C2 (A⊥B). It stays a pure function
+here for the same reason ``decode_trajectory`` does — unit-testable without
+rclpy, and identical whether the probe or a replayed buffer feeds it.
+
 Nothing here decides a threshold. The report says what was observed.
 """
 
@@ -224,6 +230,84 @@ TRUTH_COLUMNS = (
     "vz",
 )
 DIAG_COLUMNS = ("recv_ns", "status", "key", "value")
+
+# ── Dump mode (S8-A): full per-point rows, no summarising ──────────────────
+#
+# ``snapshot_row`` above keeps one row per MESSAGE (first point + a NaN bit)
+# because that is what a rate/frame/validity summary needs. G8-B (NEES) and
+# G8-C2 (A⊥B) need every horizon point's full 6x6 covariance instead, so this
+# is long format: one row per POINT. An empty (INVALID) snapshot contributes
+# no rows here — its absence is already on record as n_points=0 in the
+# default prediction CSV, and a placeholder row of blank fields would look
+# like a decoded point to a reader that did not check n_points first.
+
+DUMP_PREDICTION_COLUMNS = (
+    "recv_ns",  # steady clock at receipt, probe-side (shared with the message)
+    "sub",  # best_effort | reliable
+    "stamp_ns",  # header.stamp (= origin time of the snapshot this point belongs to)
+    "frame_id",
+    "n_points",  # size of the snapshot this point came from
+    "point_index",  # 0-based position of this point within the snapshot
+    "snapshot_sequence",
+    "generation",
+    "horizon_ns",
+    "validity",  # "VALID" | "NOT_EVALUATED" | "<int>" (unknown code)
+    "x",
+    "y",
+    "z",
+    "vx",
+    "vy",
+    "vz",
+    "ax",
+    "ay",
+    "az",
+) + tuple(f"cov_{row}{col}" for row in range(6) for col in range(6))
+
+INNOVATION_COLUMNS = ("recv_ns", "recv_wall_ns", "stamp_ns", "frame_id", "x", "y", "z")
+# nis (std_msgs/Float64) carries no header/stamp (ball_perception_sim README "Debug
+# topics"), so recv time (both clocks) is the only anchor a consumer has.
+NIS_COLUMNS = ("recv_ns", "recv_wall_ns", "value")
+
+
+def dump_prediction_rows(
+    recv_ns: int, sub: str, snap: TrajectorySnapshot
+) -> list[dict[str, object]]:
+    """One row per horizon point with the full 6x6 covariance (S8-A dump mode).
+
+    Covariance is emitted row-major, ``cov_{row}{col}``, matching the layout's
+    own row-major promise (D-4) and ``TrajectoryPoint.covariance`` — a reader
+    joining this against ``ball_perception``'s own NEES evaluator needs the
+    same convention, not a transposed one. NaN entries (unknown, §4.3) pass
+    through unchanged; this function does not interpret them.
+    """
+    rows = []
+    for i, p in enumerate(snap.points):
+        row: dict[str, object] = {
+            "recv_ns": recv_ns,
+            "sub": sub,
+            "stamp_ns": snap.stamp_ns,
+            "frame_id": snap.frame_id,
+            "n_points": snap.n_points,
+            "point_index": i,
+            "snapshot_sequence": p.snapshot_sequence,
+            "generation": p.generation,
+            "horizon_ns": p.horizon_ns,
+            "validity": VALIDITY_NAMES.get(p.validity, str(p.validity)),
+            "x": p.position_m[0],
+            "y": p.position_m[1],
+            "z": p.position_m[2],
+            "vx": p.velocity_m_s[0],
+            "vy": p.velocity_m_s[1],
+            "vz": p.velocity_m_s[2],
+            "ax": p.acceleration_m_s2[0],
+            "ay": p.acceleration_m_s2[1],
+            "az": p.acceleration_m_s2[2],
+        }
+        for r in range(6):
+            for c in range(6):
+                row[f"cov_{r}{c}"] = p.covariance[r * 6 + c]
+        rows.append(row)
+    return rows
 
 
 def snapshot_row(recv_ns: int, sub: str, snap: TrajectorySnapshot) -> dict[str, object]:
