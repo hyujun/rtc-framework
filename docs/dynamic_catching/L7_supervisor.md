@@ -175,6 +175,8 @@ $N_{deb}$개 연속 샘플이 참이면 센서 $i$ 접촉으로 확정한다 (de
 
 오경보 확률은 센서 잡음 분포에 의존한다. $k_\sigma$는 시뮬레이션·실기 잡음 측정 후 정한다(가우시안 가정이면 $k_\sigma=3$에서 단측 약 0.13%, 등급 a).
 
+> **S8-B 측정과 변경 예정 (D-S8-8 (b), 2026-09-25).** 지문 합의만 보는 위 판정은 sim truth 대비 false-Captured 0 이지만 **false-Missed 가 truth 성공의 43–57 %** 다 (공이 지문이 아닌 손가락 링크·손바닥에 얹힌 경우 — plan §4.4 D-S8-8). 사용자 결정으로 S8-C 에서 **손 관절 q·토크 증거를 판정 근거에 더한다** (런타임은 컨트롤러가 받는 손 device 상태, 판정식·임계는 S8-C SPRINT). 바뀌면 G7-E·G7-C 를 다시 기록한다. 성공률 (G8-D) 은 truth 로 판정하고 release 는 판정과 무관해 영향이 없다.
+
 ### 4.5 준비(ARMED) 조건
 
 1. L0 파라미터 검증 통과(TBD 없음)
@@ -329,7 +331,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 
 - 타임라인 그래프: 모드 띠, $t_c$·$t_{cmd}$ 수직선, $\Vert e\Vert$, 포화 플래그, 손 $\rho(t)$, 센서 $f_i$와 임계.
 - 예상치 못한 `RETREAT`: 전이 로그의 사유 코드로 추적한다.
-- 포획했는데 `Missed`: 판정 창과 센서 수신 시각 정렬(실기 async 센서 지연), 부호 규약(§4.4)을 확인한다.
+- 포획했는데 `Missed`: 판정 창과 센서 수신 시각 정렬(실기 async 센서 지연), 부호 규약(§4.4)을 확인한다. sim 에서는 공이 링크·손바닥에 얹힌 구조적 false-Missed 가 흔하다 (§4.4 S8-B 측정).
 - 감속 중 흔들림: `a_dec` 값과 L5 가속 한계의 정합, 램프 적용 여부를 확인한다.
 - `REF_SATURATED` 가 자주 발생: L3 rollout의 여유율(`eta_a`, η_v)이 낮거나 $T_w$ 가 짧은지 확인한다. 빈도는 S8 에서 D-8 재검토 입력으로 기록한다.
 - `ARMED` 에 안 들어감: homing 목표 `wait_pose` 와 `pose_tol`, 손 `q_pre` 도달, `PARAMS_TBD` 를 확인한다.
