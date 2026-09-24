@@ -163,9 +163,17 @@ def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None
         # The overlay mechanism is exercised by this profile; an empty list here
         # means the directory moved, not that there is nothing to check.
         assert paths, f"{profile}: no sim_overlays/*.yaml found — test is vacuous"
+    checked = 0
     for path in paths:
         with open(path) as handle:
-            params = yaml.safe_load(handle)["mujoco_simulator"]["ros__parameters"]
+            section = yaml.safe_load(handle).get("mujoco_simulator")
+        if section is None:
+            # A controller-only overlay (the S8-B catch_lead_* files write only
+            # `integrated_rt_controller`): no sim key to check here, and its
+            # controller keys are pinned by test_catch_lead_overlays.py.
+            continue
+        checked += 1
+        params = section["ros__parameters"]
         for name in _flatten(params):
             parts = name.split(".")
             grouped = parts[0] in ("robot_response", "fake_response") and len(parts) > 2
@@ -175,6 +183,9 @@ def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None
                 "mujoco_simulator_node never declares it — the overlay's value is "
                 "silently ignored"
             )
+    if profile == "ur5e_p1b":
+        # Skipping controller-only overlays must not empty the check.
+        assert checked, f"{profile}: no sim overlay has a mujoco_simulator section — vacuous"
 
 
 def test_p1b_fingertip_wrench_frame_is_the_bracket_frame() -> None:
