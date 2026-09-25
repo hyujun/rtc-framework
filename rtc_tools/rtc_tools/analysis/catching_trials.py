@@ -62,7 +62,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from rtc_tools.analysis import clock_phase
+from rtc_tools.analysis import clock_phase, hand_close
 from rtc_tools.analysis.catch_speed_budget import (
     DEFAULT_CATCH_FRAME,
     ExtraFrame,
@@ -87,6 +87,8 @@ MODE_CLOSING = 5
 MODE_DECEL = 6
 MODE_HOLD = 7
 MODE_RETREAT = 8
+MODE_ABORT_SAFE = 9
+HAND_PHASE_PRESHAPE = 1
 HAND_PHASE_RELEASE = 4
 MOVING_MODES = (MODE_APPROACH, MODE_COMMITTED, MODE_CLOSING, MODE_DECEL)
 
@@ -98,6 +100,7 @@ FREE_FIT_SPAN_S = 0.25
 IMPACT_ACCEL_FACTOR = 2.0  # a contact = acceleration above this × the free-flight bound
 DEFAULT_N_BOOT = 2000
 DEFAULT_SEED = 0
+DEFAULT_HOLD_WINDOW_S = 0.1  # hand-joint capture calibration window before t_hold_end
 TRUTH_TIME_AXES = ("stamp", "recv")
 
 
@@ -408,6 +411,11 @@ class CatchingProfile:
     robot_params: dict
     ball_diameter_m: float | None
     ball_mass_kg: float | None
+    # ``catching.robot.hand`` verbatim (q_pre/q_close/caging_mask/capture/…) —
+    # kept as a raw mapping rather than parsed fields because this tool only
+    # ever reads a handful of keys from it (see :func:`hand_caging_profile`)
+    # and the controller's own YAML schema is the SSoT for the rest.
+    hand_yaml: dict = field(default_factory=dict)
 
     @property
     def arm_device(self) -> str:
@@ -496,6 +504,7 @@ def load_profile(
     sim_yaml = config_dir / "mujoco_simulator.yaml"
     if sim_yaml.is_file():
         mass = (_ros_params(_load_yaml(sim_yaml)).get("projectile_ball") or {}).get("mass_kg")
+    hand_yaml = (node["catching"].get("robot") or {}).get("hand") or {}
     return CatchingProfile(
         controller=name,
         devices=devices,
@@ -508,6 +517,7 @@ def load_profile(
         robot_params=params,
         ball_diameter_m=None if diameter is None else float(diameter),
         ball_mass_kg=None if mass is None else float(mass),
+        hand_yaml=dict(hand_yaml) if isinstance(hand_yaml, Mapping) else {},
     )
 
 
@@ -608,6 +618,11 @@ DIAG_COLUMNS = (
 # ``joint_cmd.lag.lead_enable`` is off). Optional so a diag recorded before the
 # column existed still reads — see :func:`lead_per_tick` for the fallback.
 DIAG_LEAD_COLUMN = "t_arm_s"
+# The hand-joint capture witness (#537 S8-C, D-S8-8 (b)), right after
+# ``hand_timeout`` in the diag schema. Optional like ``DIAG_LEAD_COLUMN`` so a
+# diag recorded before the columns existed still reads — see
+# :func:`hand_witness_at_verdict` for the NaN fallback.
+HAND_WITNESS_COLUMNS = ("hand_stalled_n", "hand_effort_frac", "hand_blocked_s", "outcome_source")
 
 
 def diag_columns(header: Sequence[str]) -> list[str]:
@@ -617,7 +632,8 @@ def diag_columns(header: Sequence[str]) -> list[str]:
         raise SystemExit(f"catching diag lacks column(s) {missing}")
     joints = [c for c in header if c.startswith(("q_cmd_", "q_meas_"))]
     lead = [DIAG_LEAD_COLUMN] if DIAG_LEAD_COLUMN in header else []
-    return list(DIAG_COLUMNS) + lead + joints
+    hand_witness = [c for c in HAND_WITNESS_COLUMNS if c in header]
+    return list(DIAG_COLUMNS) + lead + hand_witness + joints
 
 
 def arm_joints_from_diag(columns: Sequence[str]) -> list[str]:
@@ -1045,6 +1061,120 @@ def truth_success(
     return out
 
 
+def _hold_end_tick(mode: np.ndarray) -> int | None:
+    """The tick HOLD ends — the index of the first RETREAT row — but ONLY when
+    the row immediately before it is HOLD. RETREAT reached any other way (e.g.
+    from ABORT_SAFE, no HOLD in between) never ran ``JudgeOutcome`` or the
+    hand-capture witness for an attempt: it is "no verdict tick", the same as
+    a trial that never reaches RETREAT at all, not a tick whose witness
+    happens to belong to whatever the previous mode was doing.
+    """
+    k_ret = _first(mode == MODE_RETREAT)
+    if k_ret is None or k_ret == 0 or mode[k_ret - 1] != MODE_HOLD:
+        return None
+    return k_ret
+
+
+def hand_witness_at_verdict(
+    mode: np.ndarray,
+    hand_stalled_n: np.ndarray | None,
+    hand_effort_frac: np.ndarray | None,
+    hand_blocked_s: np.ndarray | None,
+    outcome_source_tick: np.ndarray | None,
+    supervisor: str | None,
+) -> dict:
+    """The hand-joint witness the HOLD-end verdict rested on (#537 S8-C, D-S8-8 (b)).
+
+    Two DIFFERENT rows, not one: ``JudgeOutcome`` runs (and decides
+    ``outcome_source``) before the mode changes and before this tick's hand
+    stage runs, so:
+
+    * ``outcome_source`` first becomes the verdict's value on the diag row the
+      CSV already shows as mode RETREAT — the FIRST RETREAT tick, because
+      ``AdvanceMode`` (which flips ``mode_``) runs before ``PublishTickRecord``
+      on the very tick HOLD ends.
+    * ``hand_blocked_s``/``hand_stalled_n``/``hand_effort_frac`` for THAT
+      judgement are the ones the hand stage filled on the tick BEFORE it — the
+      LAST HOLD row — because the current tick's ``RunHandStage`` (which would
+      overwrite them) has not run yet when ``JudgeOutcome`` reads
+      ``hand_blocked_since_ns_``.
+
+    Reading the wrong row for either quietly swaps in the next attempt's
+    witness or the previous attempt's judgement (see the test suite's two
+    mutation checks). NaN (``hand_*_judge``) / empty (``tips_only_verdict``)
+    when the trial never reaches RETREAT, the diag predates these columns, or
+    RETREAT was entered from anywhere but HOLD (:func:`_hold_end_tick`) — an
+    aborted attempt was never judged and ran no witness for one.
+
+    ``hand_blocked_s_judge`` IS THEREFORE ONE CONTROL PERIOD SHORT of what the
+    verdict itself compared against ``t_persist``: the controller's own
+    ``JudgeOutcome`` reads ``hand_blocked_s`` on the tick it runs (the first
+    RETREAT tick, one tick AFTER the last HOLD tick this reads), so the run
+    length it actually compared against ``t_persist`` is
+    ``hand_blocked_s_judge + dt`` (``dt`` = the tick period, e.g.
+    :func:`recorded_dt`'s result), not ``hand_blocked_s_judge`` alone. An
+    offline re-check of the persist gate must use
+    ``hand_blocked_s_judge + dt >= t_persist`` — see :func:`hand_persist_met`.
+    """
+    out: dict = {
+        "outcome_source": math.nan,
+        "hand_blocked_s_judge": math.nan,
+        "hand_stalled_n_judge": math.nan,
+        "hand_effort_frac_judge": math.nan,
+        "tips_only_verdict": "",
+    }
+    k_ret = _hold_end_tick(mode)
+    if k_ret is None:
+        return out
+    if outcome_source_tick is not None:
+        out["outcome_source"] = float(outcome_source_tick[k_ret])
+    k_hold = k_ret - 1
+    if hand_blocked_s is not None:
+        out["hand_blocked_s_judge"] = float(hand_blocked_s[k_hold])
+    if hand_stalled_n is not None:
+        out["hand_stalled_n_judge"] = float(hand_stalled_n[k_hold])
+    if hand_effort_frac is not None:
+        out["hand_effort_frac_judge"] = float(hand_effort_frac[k_hold])
+    src = out["outcome_source"]
+    if np.isfinite(src):
+        out["tips_only_verdict"] = (
+            "MISSED" if supervisor == "CAPTURED" and int(src) == 2 else supervisor
+        )
+    return out
+
+
+def hand_persist_met(hand_blocked_s_judge: float, dt: float, t_persist_s: float) -> float:
+    """Whether the verdict's OWN ``t_persist`` comparison (run on the first
+    RETREAT tick, one tick after ``hand_blocked_s_judge`` was read — see
+    :func:`hand_witness_at_verdict`) would have read True, reconstructed
+    offline: ``hand_blocked_s_judge + dt >= t_persist_s``. Returns ``1.0``/
+    ``0.0`` (not ``bool``, so it stays NaN-able like every other ``_judge``
+    column) and NaN when any input is unavailable — most commonly
+    ``t_persist_s`` itself, which this module never requires a profile to
+    carry (``catching.robot.hand.capture.t_persist`` — see
+    :func:`hand_capture_t_persist_s`).
+    """
+    if not (np.isfinite(hand_blocked_s_judge) and np.isfinite(dt) and np.isfinite(t_persist_s)):
+        return math.nan
+    return float(hand_blocked_s_judge + dt >= t_persist_s)
+
+
+def hand_release_to_preshape_ms(t: np.ndarray, mode: np.ndarray, hand_phase: np.ndarray) -> float:
+    """Time [ms] from the release tick (``truth_success``'s ``t_release``: the
+    first RETREAT tick whose hand phase is RELEASE) to the first LATER tick
+    whose hand phase is PRESHAPE — the hand back at q_pre. NaN if the trial
+    never releases, or releases but never reaches PRESHAPE in the window.
+    """
+    k_rel = _first((mode == MODE_RETREAT) & (hand_phase == HAND_PHASE_RELEASE))
+    if k_rel is None:
+        return math.nan
+    later = _first(hand_phase[k_rel + 1 :] == HAND_PHASE_PRESHAPE)
+    if later is None:
+        return math.nan
+    k_pre = k_rel + 1 + later
+    return float((t[k_pre] - t[k_rel]) * 1e3)
+
+
 @dataclass
 class TrialContext:
     """Arrays of one trial's diag window, with FK cached per tick."""
@@ -1065,6 +1195,13 @@ class TrialContext:
     # Actuation-lag lead per tick [s] (``lead_per_tick``): the command and the
     # reference written at t are aimed at t + t_lead.
     t_lead: np.ndarray | None = None
+    # The hand-joint capture witness per tick (#537 S8-C, D-S8-8 (b); optional
+    # — ``None`` on a diag recorded before the columns existed). See
+    # :func:`hand_witness_at_verdict` for how they are read.
+    hand_stalled_n: np.ndarray | None = None
+    hand_effort_frac: np.ndarray | None = None
+    hand_blocked_s: np.ndarray | None = None
+    outcome_source_tick: np.ndarray | None = None
     _cache: dict = field(default_factory=dict)
 
     def fk_meas(self, ticks) -> np.ndarray:
@@ -1285,6 +1422,7 @@ class Settings:
     n_boot: int = DEFAULT_N_BOOT
     seed: int = DEFAULT_SEED
     window_margin_s: float = 0.05
+    hold_window_s: float = DEFAULT_HOLD_WINDOW_S
 
 
 @dataclass
@@ -1292,6 +1430,7 @@ class SessionResult:
     rows: list[dict]
     lag: list[ServoLag]
     summary: dict
+    hand_window_rows: list[dict] = field(default_factory=list)
 
 
 def analyse_session(
@@ -1323,11 +1462,15 @@ def analyse_session(
     if contact_lane_path is not None:
         contacts = load_contacts(contact_lane_path, robot_links)
     hand_effort = _hand_effort(ctl, profile)
+    hand_profile = hand_caging_profile(profile)
+    hand_kin = _hand_kinematics(ctl, profile, hand_profile) if hand_profile is not None else None
+    t_persist_s = hand_capture_t_persist_s(profile)
     hold_radius = settings.hold_radius_m
     if hold_radius is None:
         hold_radius = profile.ball_diameter_m
 
-    rows, lag_t, lag_cmd, lag_meas, lag_moving, lag_cluster = [], [], [], [], [], []
+    rows, hand_window_rows = [], []
+    lag_t, lag_cmd, lag_meas, lag_moving, lag_cluster = [], [], [], [], []
     for trial in trials:
         row = {"idx": trial.idx, "kind": trial.kind, "supervisor": trial.outcome}
         row["accepted"] = trial.accepted
@@ -1352,6 +1495,18 @@ def analyse_session(
             q_meas=w[[f"q_meas_{j}" for j in joints]].to_numpy(float),
             fk=fk,
             t_lead=lead_all[sel],
+            hand_stalled_n=w["hand_stalled_n"].to_numpy(float)
+            if "hand_stalled_n" in w.columns
+            else None,
+            hand_effort_frac=w["hand_effort_frac"].to_numpy(float)
+            if "hand_effort_frac" in w.columns
+            else None,
+            hand_blocked_s=w["hand_blocked_s"].to_numpy(float)
+            if "hand_blocked_s" in w.columns
+            else None,
+            outcome_source_tick=w["outcome_source"].to_numpy(float)
+            if "outcome_source" in w.columns
+            else None,
         )
         lag_t.append(ctx.t)
         lag_cmd.append(ctx.q_cmd)
@@ -1404,6 +1559,33 @@ def analyse_session(
             )
         if hand_effort is not None:
             row["hand_effort_max"] = _effort_max(hand_effort, trial, m)
+        row.update(
+            hand_witness_at_verdict(
+                ctx.mode,
+                ctx.hand_stalled_n,
+                ctx.hand_effort_frac,
+                ctx.hand_blocked_s,
+                ctx.outcome_source_tick,
+                row.get("supervisor"),
+            )
+        )
+        row["t_release_to_pre_ms"] = hand_release_to_preshape_ms(ctx.t, ctx.mode, ctx.hand_phase)
+        row["hand_persist_met"] = hand_persist_met(
+            row.get("hand_blocked_s_judge", math.nan), dt, t_persist_s
+        )
+        if hand_profile is not None and hand_kin is not None:
+            # Same gate as the judge columns (_hold_end_tick): RETREAT entered
+            # from ABORT_SAFE never ran a HOLD-end hand-capture window either.
+            k_ret = _hold_end_tick(ctx.mode)
+            if k_ret is not None:
+                t_hold_end = float(ctx.t[k_ret])
+                th, tq, tqd, ttau = hand_kin
+                extremes = hand_hold_window_extremes(
+                    th, tq, tqd, ttau, hand_profile, t_hold_end, settings.hold_window_s
+                )
+                hand_window_rows.extend(
+                    {"idx": trial.idx, "supervisor": row.get("supervisor"), **e} for e in extremes
+                )
         rows.append(row)
 
     lag = []
@@ -1422,7 +1604,7 @@ def analyse_session(
     summary["t_lead_s_range"] = _range(rows, "t_lead_s")
     summary["t_lead_source"] = lead_source
     summary["planner_events"] = _planner_events(ctl)
-    return SessionResult(rows, lag, summary)
+    return SessionResult(rows, lag, summary, hand_window_rows)
 
 
 def _csv_header(path: Path) -> list[str]:
@@ -1452,6 +1634,258 @@ def _effort_max(effort, trial: Trial, margin: float) -> float:
     t, e = effort
     sel = (t >= trial.t_launch - margin) & (t <= trial.t_end + margin)
     return float(e[sel].max()) if sel.any() else math.nan
+
+
+# ══ Hand-joint capture calibration (#537 S8-C, D-S8-8 (b)) ════════════════════
+# Offline mirror of rtc_controllers/catching/hand_capture.hpp's per-tick
+# EvaluateHandCapture, over a WINDOW instead of one tick, so rho_min/rho_max/
+# qd_tol/effort_frac_min can be re-derived from real closures rather than
+# guessed. Nothing here is robot-specific: joint names, poses and torque
+# limits all come from the profile's YAML / device roster.
+
+
+@dataclass
+class HandCagingProfile:
+    """``catching.robot.hand``'s caging pair joined to the hand device's torque
+    limit, in the DEVICE's own joint order (a shipped profile's ``q_pre``
+    comment documents this: "in the devices.<group>.joint_state_names
+    order")."""
+
+    joint_names: list[str]
+    q_pre: np.ndarray
+    q_close: np.ndarray
+    caging_mask: np.ndarray  # bool, per joint
+    tau_max: np.ndarray
+
+
+def _calibration_skipped(profile: CatchingProfile, reason: str) -> None:
+    """One-line stderr note + ``None``: the shared "give up on the OPTIONAL
+    hand-hold-window calibration, not on the trial analysis" exit used by
+    every degrade path below (#537 S8-C code review) — the read of
+    ``catching.robot.hand``/the device roster/the hand device CSV can fail in
+    several distinct ways (a length mismatch, a per-joint ``TBD``, a missing
+    torque limit, an older CSV without the newer columns), and every one of
+    them is a reason to skip this one calibration, never to abort
+    ``analyse_session`` for the whole trial table.
+    """
+    print(
+        f"catching_trials: hand-hold-window calibration skipped for '{profile.controller}' — "
+        f"{reason}",
+        file=sys.stderr,
+    )
+    return None
+
+
+def hand_capture_t_persist_s(profile: CatchingProfile) -> float:
+    """``catching.robot.hand.capture.t_persist`` [s], or NaN when the section
+    is absent, still ``TBD``, or not a plain number — read for
+    :func:`hand_persist_met`'s offline re-check only; nothing else in this
+    module requires it, so an unusable value is NaN, never a refusal.
+    """
+    raw = (profile.hand_yaml.get("capture") or {}).get("t_persist")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def hand_caging_profile(profile: CatchingProfile) -> HandCagingProfile | None:
+    """Read ``HandCagingProfile`` from the profile, or ``None`` (via
+    :func:`_calibration_skipped`) when the hand-hold-window calibration cannot
+    run — not an error, since the calibration is an OPTIONAL extra on top of
+    whatever else the profile is used for. Every one of the following degrades
+    the same way, each reported with the specific reason:
+
+    * no hand device, or ``q_pre``/``q_close`` still ``TBD``/absent (the whole
+      block) — most sessions predate this feature;
+    * ``q_pre``/``q_close`` is a list but one of its ELEMENTS is not numeric
+      (a per-joint ``TBD``, the profile mid-search) — would otherwise raise
+      ``ValueError`` out of ``np.asarray``;
+    * ``catching.robot.hand.caging_mask`` present but the wrong length;
+    * the hand device's ``joint_state_names`` (the DOF mapping between
+      ``q_pre`` and the device roster) is absent or a different length;
+    * the hand device's ``joint_limits.max_torque`` is absent or shorter than
+      the caging pair — a real gap in the profile, but one that only this
+      calibration needs, so it is reported (one line, not fatal) rather than
+      aborting the whole session the way ``max_velocity`` would if this read
+      it through ``derive_accel_limits.arm_spec_from_params`` (an earlier
+      version of this function did exactly that).
+
+    ``q_pre``/``q_close`` disagreeing on LENGTH with each other (as opposed to
+    with the device), or being empty, is left a hard ``SystemExit``: the two
+    arrays come from the same YAML block and cannot legitimately differ.
+    """
+    if profile.hand_device is None:
+        return None
+    hand = profile.hand_yaml
+    q_pre_raw, q_close_raw = hand.get("q_pre"), hand.get("q_close")
+    if not isinstance(q_pre_raw, list) or not isinstance(q_close_raw, list):
+        return None
+    try:
+        q_pre = np.asarray(q_pre_raw, dtype=float)
+        q_close = np.asarray(q_close_raw, dtype=float)
+    except (TypeError, ValueError):
+        return _calibration_skipped(
+            profile,
+            "catching.robot.hand.q_pre/q_close has a non-numeric element (a per-joint TBD?)",
+        )
+    if q_pre.shape != q_close.shape or q_pre.size == 0:
+        raise SystemExit(
+            f"{profile.controller}: catching.robot.hand.q_pre/q_close must be equal-length, "
+            "non-empty arrays"
+        )
+    n = q_pre.size
+    mask_raw = hand.get("caging_mask")
+    caging_mask = np.ones(n, dtype=bool) if mask_raw is None else np.asarray(mask_raw, dtype=bool)
+    if caging_mask.shape != (n,):
+        return _calibration_skipped(
+            profile, f"catching.robot.hand.caging_mask does not have {n} entries"
+        )
+    dev = (profile.robot_params.get("devices") or {}).get(profile.hand_device) or {}
+    joint_names = [str(j) for j in dev.get("joint_state_names") or []]
+    if len(joint_names) != n:
+        return _calibration_skipped(
+            profile,
+            f"devices.{profile.hand_device} has {len(joint_names)} joints, "
+            f"catching.robot.hand.q_pre has {n} — they must be the same hand in the same order",
+        )
+    tau_max_raw = ((dev.get("joint_limits") or {}).get("max_torque")) or []
+    if len(tau_max_raw) < n:
+        return _calibration_skipped(
+            profile,
+            f"devices.{profile.hand_device}.joint_limits.max_torque is missing or shorter "
+            f"than {n} joints",
+        )
+    return HandCagingProfile(
+        joint_names, q_pre, q_close, caging_mask, np.asarray(tau_max_raw[:n], dtype=float)
+    )
+
+
+def _hand_kinematics(ctl: Path, profile: CatchingProfile, hand: HandCagingProfile):
+    """(t, q, qd, tau) from the hand device state CSV, columns in ``hand.joint_names``
+    order (``DeviceStateLogPod``'s ``actual_pos_<joint>``/``actual_vel_<joint>``/
+    ``effort_<joint>``). ``None`` when the device log is not recorded at all —
+    the same "not an error" contract as :func:`_hand_effort` — or (via
+    :func:`_calibration_skipped`) when it IS recorded but predates one of
+    those column blocks, e.g. an older session logged before ``actual_vel_*``
+    or ``effort_*`` were added.
+    """
+    dev = profile.hand_device
+    if dev is None or dev not in profile.device_logs:
+        return None
+    path = _exists(ctl / f"{profile.device_logs[dev]}.csv")
+    if path is None:
+        return None
+    pos_cols = [f"actual_pos_{j}" for j in hand.joint_names]
+    vel_cols = [f"actual_vel_{j}" for j in hand.joint_names]
+    eff_cols = [f"effort_{j}" for j in hand.joint_names]
+    header = _csv_header(path)
+    missing = [c for c in (*pos_cols, *vel_cols, *eff_cols) if c not in header]
+    if missing:
+        return _calibration_skipped(profile, f"{path} lacks hand state column(s) {missing}")
+    df = _read_csv(path, usecols=["t_relative_s", *pos_cols, *vel_cols, *eff_cols])
+    return (
+        df["t_relative_s"].to_numpy(float),
+        df[pos_cols].to_numpy(float),
+        df[vel_cols].to_numpy(float),
+        df[eff_cols].to_numpy(float),
+    )
+
+
+def hand_hold_window_extremes(
+    t: np.ndarray,
+    q: np.ndarray,
+    qd: np.ndarray,
+    tau: np.ndarray,
+    hand: HandCagingProfile,
+    t_hold_end: float,
+    window_s: float,
+) -> list[dict]:
+    """Per caging joint, the extremes over ``[t_hold_end - window_s, t_hold_end)``:
+    ``rho_lo``/``rho_hi`` (the ρ band the joint actually sat in), ``qd_absmax``,
+    ``frac_lo`` (the WORST — minimum — signed torque fraction s·τ/τ_max, so a
+    threshold set at or below it would have held for the whole window) and
+    ``n`` samples. ρ and the sign convention are exactly
+    ``rtc_controllers/catching/hand_capture.hpp``'s (ρ_i = (q_i − q_pre_i)·s_i /
+    |q_close_i − q_pre_i|, s_i = sign(q_close_i − q_pre_i)). A non-caging joint
+    is skipped entirely (not in the output); a joint with no finite sample in
+    the window gets NaN extremes and ``n`` = 0.
+    """
+    sel = (t >= t_hold_end - window_s) & (t < t_hold_end)
+    out: list[dict] = []
+    for i, name in enumerate(hand.joint_names):
+        if not hand.caging_mask[i]:
+            continue
+        row = {
+            "joint": name,
+            "rho_lo": math.nan,
+            "rho_hi": math.nan,
+            "qd_absmax": math.nan,
+            "frac_lo": math.nan,
+            "n": 0,
+        }
+        span = hand.q_close[i] - hand.q_pre[i]
+        if np.isfinite(span) and span != 0.0 and sel.any():
+            s = 1.0 if span > 0.0 else -1.0
+            qi, qdi, taui = q[sel, i], qd[sel, i], tau[sel, i]
+            # The sign/progress convention is hand_close's ``joint_progress``
+            # (P5: do not re-derive it) — identical to
+            # ``rtc_controllers/catching/hand_capture.hpp``'s ρ_i.
+            rho = hand_close.joint_progress(qi, hand.q_pre[i], hand.q_close[i])
+            tau_max_i = hand.tau_max[i]
+            if np.isfinite(tau_max_i) and tau_max_i > 0.0:
+                frac = s * taui / tau_max_i
+            else:
+                frac = np.full_like(taui, math.nan)
+            finite = np.isfinite(rho) & np.isfinite(qdi)
+            n = int(finite.sum())
+            if n:
+                row["rho_lo"] = float(rho[finite].min())
+                row["rho_hi"] = float(rho[finite].max())
+                row["qd_absmax"] = float(np.abs(qdi[finite]).max())
+                finite_frac = finite & np.isfinite(frac)
+                row["frac_lo"] = float(frac[finite_frac].min()) if finite_frac.any() else math.nan
+                row["n"] = n
+        out.append(row)
+    return out
+
+
+def capture_would_fire(
+    window_rows_for_one_trial: Sequence[Mapping],
+    rho_min: float,
+    rho_max: float,
+    qd_tol: float,
+    effort_frac_min: float,
+    min_joints: int,
+) -> bool:
+    """The offline mirror of "held unbroken over the window": at least
+    ``min_joints`` caging joints whose window stayed inside
+    ``[rho_min, rho_max]``, ``|q̇| <= qd_tol`` and whose worst-case torque
+    fraction still met ``effort_frac_min`` — the same four clauses
+    ``EvaluateHandCapture`` (hand_capture.hpp) checks per tick, each bound
+    inclusive, evaluated over the whole window (``hand_hold_window_extremes``'
+    rows) instead of one tick so a joint that only glances into range does not
+    count. A row with a NaN extreme (no finite sample) never passes.
+    """
+    n = 0
+    for row in window_rows_for_one_trial:
+        rho_lo, rho_hi = row["rho_lo"], row["rho_hi"]
+        qd_absmax, frac_lo = row["qd_absmax"], row["frac_lo"]
+        if not (
+            np.isfinite(rho_lo)
+            and np.isfinite(rho_hi)
+            and np.isfinite(qd_absmax)
+            and np.isfinite(frac_lo)
+        ):
+            continue
+        if (
+            rho_lo >= rho_min
+            and rho_hi <= rho_max
+            and qd_absmax <= qd_tol
+            and frac_lo >= effort_frac_min
+        ):
+            n += 1
+    return n >= min_joints
 
 
 def _clock_covariate(lane: ClockLane, trial: Trial, row: Mapping, settings: Settings) -> dict:
@@ -1615,7 +2049,19 @@ def _strict(value):
     return value
 
 
-def write_outputs(result: SessionResult, out_dir: Path) -> tuple[Path, Path]:
+HAND_WINDOW_FIELDS = (
+    "idx",
+    "joint",
+    "supervisor",
+    "rho_lo",
+    "rho_hi",
+    "qd_absmax",
+    "frac_lo",
+    "n",
+)
+
+
+def write_outputs(result: SessionResult, out_dir: Path) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     keys: list[str] = []
     for row in result.rows:
@@ -1630,7 +2076,12 @@ def write_outputs(result: SessionResult, out_dir: Path) -> tuple[Path, Path]:
         json.dumps(_strict(result.summary), indent=2, default=_json_default, allow_nan=False)
         + "\n"
     )
-    return csv_path, json_path
+    hand_csv_path = out_dir / "hand_hold_window.csv"
+    with hand_csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=HAND_WINDOW_FIELDS)
+        writer.writeheader()
+        writer.writerows(result.hand_window_rows)
+    return csv_path, json_path, hand_csv_path
 
 
 def report(result: SessionResult) -> str:
@@ -1718,6 +2169,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--eps-mm", type=float, nargs="*", default=[], help="D-3 ε_clk,alloc [mm]")
     ap.add_argument("--n-boot", type=int, default=DEFAULT_N_BOOT)
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    ap.add_argument(
+        "--hold-window-s",
+        type=float,
+        default=DEFAULT_HOLD_WINDOW_S,
+        help="hand-joint capture calibration: window before t_hold_end [s] "
+        f"(default {DEFAULT_HOLD_WINDOW_S})",
+    )
     args = ap.parse_args(argv)
 
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text  # noqa: PLC0415
@@ -1734,13 +2192,16 @@ def main(argv: list[str] | None = None) -> int:
         eps_mm=tuple(args.eps_mm),
         n_boot=args.n_boot,
         seed=args.seed,
+        hold_window_s=args.hold_window_s,
     )
     result = analyse_session(
         args.session, args.trials_dir, profile, urdf_text, settings, clock, contact
     )
-    csv_path, json_path = write_outputs(result, args.out or args.trials_dir / "catching_trials")
+    csv_path, json_path, hand_csv_path = write_outputs(
+        result, args.out or args.trials_dir / "catching_trials"
+    )
     print(report(result))
-    print(f"\n-> {csv_path}\n-> {json_path}")
+    print(f"\n-> {csv_path}\n-> {json_path}\n-> {hand_csv_path}")
     return 0
 
 

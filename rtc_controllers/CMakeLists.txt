@@ -511,6 +511,14 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_hand_sequencer PRIVATE -Wno-mismatched-new-delete)
 
+  # Hand-joint capture witness (#537 S8-C, D-S8-8 (b)): each clause, the
+  # fail-closed paths, no allocation, and G7-C's synthetic-noise false alarms.
+  ament_add_gtest(test_catching_hand_capture test/test_catching_hand_capture.cpp)
+  target_link_libraries(test_catching_hand_capture rtc_controllers)
+  target_include_directories(test_catching_hand_capture PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_hand_capture PRIVATE -Wno-mismatched-new-delete)
+
   # Parameter validator (S1.7, G0-C): active-config TBD, D-9/L7 §4.3 cross-
   # constraints, ζ·ω·h discretization, hand caging gap (L6 §4.2), provisional
   # gating. Model-free — no URDF fixture needed.

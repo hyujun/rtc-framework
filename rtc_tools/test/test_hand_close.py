@@ -23,6 +23,7 @@ import pytest
 from rtc_tools.analysis.hand_close import (
     HandProfile,
     analyse,
+    joint_progress,
     load_profile,
     main,
     quantile,
@@ -249,6 +250,16 @@ def test_rho_is_a_minimum_not_a_mean():
     # Two joints done, one barely started: caging has NOT happened.
     assert rho([1.0, 1.0, 0.1], profile) == pytest.approx(0.1)
     assert rho([0.5, 0.5, 0.5], profile) == pytest.approx(0.5)
+
+
+def test_joint_progress_is_the_per_joint_primitive_rho_minimises_over():
+    # A public helper (P5, shared with rtc_tools.analysis.catching_trials'
+    # hand-hold-window calibration): rho() is just min() over this per joint.
+    assert joint_progress(0.5, 0.0, 1.0) == pytest.approx(0.5)
+    assert joint_progress(1.0, 0.0, 1.0) == pytest.approx(1.0)
+    # A joint whose closed pose is BELOW its preshape closes by decreasing.
+    assert joint_progress(-0.5, 0.0, -1.0) == pytest.approx(0.5)
+    assert joint_progress(0.5, 0.0, -1.0) == pytest.approx(-0.5)
 
 
 # ── Direction ───────────────────────────────────────────────────────────────

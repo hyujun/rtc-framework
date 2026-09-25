@@ -234,6 +234,8 @@ struct TickRec {
   std::array<double, 3> ref_ed{};
   std::array<bool, kTips> tip_contact{};
   std::array<bool, kTips> tip_fresh{};
+  bool hand_blocked{false};        // D-S8-8 (b): the stall has run unbroken
+  std::uint8_t outcome_source{0};  // 0 none, 1 fingertips, 2 hand, 3 both
 };
 
 class SupervisorScenarioTest : public ::testing::Test {
@@ -279,7 +281,15 @@ class SupervisorScenarioTest : public ::testing::Test {
     ctrl_ = std::make_unique<DemoCatchingController>("");
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
-    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+    auto configs = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
+    if (hand_max_torque_) {
+      // Only the torque scale: the empty position/velocity lists keep their
+      // fallbacks, so nothing else about the hand changes.
+      rtc::DeviceJointLimits limits;
+      limits.max_torque = *hand_max_torque_;
+      configs.at("p1b").joint_limits = limits;
+    }
+    ctrl_->SetDeviceNameConfigs(configs);
     YAML::Node yaml = YAML::Load(TrackingYaml(topic_, p_c, a_d, gamma_f, t_c_offset_s));
     yaml["catching"]["robot"]["hand"]["T_hold"] = 0.02;
     if (tweak) {
@@ -444,6 +454,8 @@ class SupervisorScenarioTest : public ::testing::Test {
       rec.tip_contact[u] = record.tip_contact[u];
       rec.tip_fresh[u] = record.tip_fresh[u];
     }
+    rec.hand_blocked = record.hand_blocked_s > 0.0;
+    rec.outcome_source = record.outcome_source;
 
     // ── The plant ───────────────────────────────────────────────────────────
     std::array<double, kUr5eArmDof> cmd{};
@@ -472,6 +484,18 @@ class SupervisorScenarioTest : public ::testing::Test {
         const auto u = static_cast<std::size_t>(i);
         state_.devices[1].positions[u] = out.devices[1].commands[u];
       }
+    }
+    if (hand_stall_) {
+      // One finger stopped on the ball while the sequencer holds q_close: it
+      // stays short of its command and pushes (D-S8-8 (b)). Outside Hold it
+      // follows the servo and carries no load.
+      auto& d = state_.devices[1];
+      const auto j = static_cast<std::size_t>(hand_stall_->joint);
+      const bool holding = hand.active && hand.phase == HandPhase::kHold;
+      if (holding) {
+        d.positions[j] = hand_stall_->q;
+      }
+      d.efforts[j] = holding ? hand_stall_->effort : 0.0;
     }
     log_.push_back(rec);
     std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
@@ -670,6 +694,17 @@ class SupervisorScenarioTest : public ::testing::Test {
 
   // Plant.
   bool servo_hand_{true};
+
+  struct HandStall {
+    int joint{0};
+    double q{0.0};       // where the finger stops
+    double effort{0.0};  // what it pushes with, toward q_close
+  };
+
+  std::optional<HandStall> hand_stall_;
+  /// The hand device's joint_limits.max_torque (none by default, as shipped
+  /// in the fixture): the capture witness's torque scale.
+  std::optional<std::vector<double>> hand_max_torque_;
   std::optional<integrated_bringup::testing::ArmLagPlant<kUr5eArmDof>> lag_;
   std::function<void()> pre_tick_;
 
@@ -1466,6 +1501,220 @@ TEST_F(SupervisorScenarioTest, AnImmediateReThrowRefusesThePlansOfTheAbortedTria
   EXPECT_EQ(ctrl_->GetFollowedPlanForTesting().plan_id, 3U);
   ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kRetreat,
              Mode::kArmed, Mode::kTracking, Mode::kApproach});
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// #537 S8-C — the hand-joint capture witness (D-S8-8 (b)) and RETREAT's
+// release timeout (D-S8-6)
+// ════════════════════════════════════════════════════════════════════════════
+
+constexpr double kHandTauMax = 3.0;
+
+/// A capture block the fixture hand (q_pre 0 → q_close 0.5) can satisfy, with
+/// a HOLD long enough to hold t_persist.
+void CaptureTweak(YAML::Node& y) {
+  YAML::Node hand = y["catching"]["robot"]["hand"];
+  hand["T_hold"] = 0.3;
+  YAML::Node cap = hand["capture"];
+  cap["rho_min"] = 0.2;
+  cap["rho_max"] = 0.9;
+  cap["effort_frac_min"] = 0.5;
+  cap["t_persist"] = 0.1;
+  // This fixture declares no backend, so the configure is judged a REAL-ARM
+  // one — where the default `provisional: true` parks the controller (the
+  // effort lane of a real hand need not be a torque).
+  cap["provisional"] = false;
+}
+
+TEST_F(SupervisorScenarioTest, AStalledHandCapturesABallTheFingertipsMissed) {
+  // The ball rests on the links: no fingertip sees it, but a finger stopped at
+  // ρ 0.6 pushing at 0.9·max_torque. The verdict is Captured — by the hand.
+  hand_max_torque_ = std::vector<double>(kP1bHandDof, kHandTauMax);
+  hand_stall_ = HandStall{5, 0.6 * 0.5, 0.9 * kHandTauMax};
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, CaptureTweak));
+  tips_enabled_ = true;
+  ball_in_hand_ = false;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kCaptured) << Transitions();
+  EXPECT_EQ(log_.back().outcome_source, 2) << "the verdict must name the hand as its witness";
+  EXPECT_GT(CountTicks([](const TickRec& t) { return t.mode == Mode::kHold && t.hand_blocked; }),
+            0);
+  // The release rule does not read the verdict: back at the wait pose, re-armed.
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+}
+
+TEST_F(SupervisorScenarioTest, AFingerStoppedWithoutPushingIsNotACapture) {
+  // Negative control of the case above: the same stall, no load on it.
+  hand_max_torque_ = std::vector<double>(kP1bHandDof, kHandTauMax);
+  hand_stall_ = HandStall{5, 0.6 * 0.5, 0.0};
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, CaptureTweak));
+  tips_enabled_ = true;
+  ball_in_hand_ = false;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kMissed) << Transitions();
+  EXPECT_EQ(log_.back().outcome_source, 0);
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.hand_blocked; }), 0);
+}
+
+TEST_F(SupervisorScenarioTest, AStallShorterThanTPersistIsNotACapture) {
+  // The finger stops only in the last ~0.1 s of a 0.3 s HOLD, against a
+  // t_persist of 0.25 s: blocked at the end, but not for long enough.
+  hand_max_torque_ = std::vector<double>(kP1bHandDof, kHandTauMax);
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+    CaptureTweak(y);
+    y["catching"]["robot"]["hand"]["capture"]["t_persist"] = 0.25;
+  }));
+  tips_enabled_ = true;
+  ball_in_hand_ = false;
+  std::int64_t hold_seen_ns = 0;
+  pre_tick_ = [this, &hold_seen_ns] {
+    if (ctrl_->GetMode() != Mode::kHold) {
+      return;
+    }
+    const std::int64_t now = rtc::SteadyNowNs();
+    if (hold_seen_ns == 0) {
+      hold_seen_ns = now;
+    }
+    if (!hand_stall_ && now - hold_seen_ns >= 200 * kMsNs) {
+      hand_stall_ = HandStall{5, 0.6 * 0.5, 0.9 * kHandTauMax};
+    }
+  };
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  const int r = Entry(Mode::kRetreat);
+  ASSERT_GT(r, 0);
+  EXPECT_TRUE(log_[static_cast<std::size_t>(r - 1)].hand_blocked)
+      << "precondition: the hand was blocked when HOLD ended";
+  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kMissed) << Transitions();
+  EXPECT_EQ(log_.back().outcome_source, 0);
+}
+
+TEST_F(SupervisorScenarioTest, FingertipsAndAStalledHandAreRecordedAsBoth) {
+  hand_max_torque_ = std::vector<double>(kP1bHandDof, kHandTauMax);
+  hand_stall_ = HandStall{5, 0.6 * 0.5, 0.9 * kHandTauMax};
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, CaptureTweak));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kCaptured) << Transitions();
+  EXPECT_EQ(log_.back().outcome_source, 3);
+}
+
+TEST_F(SupervisorScenarioTest, TheHandWitnessDoesNotLiftAStaleFingertipLane) {
+  // G7-G with a stalled hand: a lane that could not judge stays Undetermined —
+  // the hand adds evidence, it does not stand in for a stale fingertip.
+  hand_max_torque_ = std::vector<double>(kP1bHandDof, kHandTauMax);
+  hand_stall_ = HandStall{5, 0.6 * 0.5, 0.9 * kHandTauMax};
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, CaptureTweak));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  contact_tips_ = {true, true, false, false};
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kClosing, 600)) << Transitions();
+  tip_stamp_frozen_[0] = true;
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1000)) << Transitions();
+  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kUndetermined) << Transitions();
+  EXPECT_GT(CountTicks([](const TickRec& t) { return t.hand_blocked; }), 0)
+      << "precondition: the hand witness held";
+}
+
+TEST_F(SupervisorScenarioTest, ACaptureBlockWithoutTheHandTorqueLimitsParksTheTrials) {
+  // Asked for, but unusable: the controller is PARKED (A-S5-12 — the robot
+  // comes up, this controller refuses to activate) rather than silently
+  // judging by the fingertips alone.
+  ctrl_ = std::make_unique<DemoCatchingController>("");
+  ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+  ctrl_->SetSharedModelBuilder(builder_);
+  ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+  YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
+  CaptureTweak(yaml);
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kSupervisorUnset);
+  EXPECT_FALSE(ctrl_->AreTrialsEnabled());
+  EXPECT_NE(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_F(SupervisorScenarioTest, AReleaseTimeoutNotAboveTheCloseTimeParksTheTrials) {
+  // An explicit T_release_timeout at or below T_close_e2e (0.28 here) would
+  // time out every release and disarm after every catch. The validator's line
+  // for the key is only a warning at configure (it shares T_close_e2e's
+  // exemption from the consumed gate), so the supervisor refuses it itself.
+  for (const double t : {0.28, 0.1}) {
+    ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+    ctrl_->SetSharedModelBuilder(builder_);
+    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+    YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
+    yaml["catching"]["robot"]["hand"]["T_release_timeout"] = t;
+    const rclcpp_lifecycle::State prev;
+    ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << t;
+    EXPECT_TRUE(ctrl_->IsSimOnlyDisabled()) << t;
+    EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kSupervisorUnset)
+        << t;
+    EXPECT_FALSE(ctrl_->AreTrialsEnabled()) << t;
+  }
+}
+
+TEST_F(SupervisorScenarioTest, AHandThatNeverReachesQPreEndsTheReturnInIdleDisarmed) {
+  // D-S8-6 (a): the hand freezes the moment it is released, so it never gets
+  // back to q_pre. RETREAT waits T_release_timeout, then ends in IDLE,
+  // disarmed on that same tick — and stays there until the operator re-arms.
+  // Just above the fixture's T_close_e2e (0.28), which the validator requires.
+  constexpr std::int64_t kTimeoutNs = 350 * kMsNs;
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+    y["catching"]["robot"]["hand"]["T_release_timeout"] = 0.35;
+  }));
+  // Frozen from RETREAT entry: RETREAT does not move the hand until the
+  // release, and a servo still running on the release tick would put it at
+  // q_pre before the controller ever waited.
+  pre_tick_ = [this] {
+    if (ctrl_->GetMode() == Mode::kRetreat) {
+      servo_hand_ = false;
+    }
+  };
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kIdle, 1500)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kIdle});
+  const int idle = Entry(Mode::kIdle);
+  ASSERT_GT(idle, 0);
+  const auto& entry = log_[static_cast<std::size_t>(idle)];
+  EXPECT_EQ(entry.reason, Reason::kHandTimeout) << Window(idle, 2);
+  EXPECT_FALSE(entry.armed_latch) << "the timeout must disarm on its own tick";
+  // The clock started at the release: the first RETREAT tick in Release.
+  int release = -1;
+  for (int i = Entry(Mode::kRetreat); i < idle; ++i) {
+    if (log_[static_cast<std::size_t>(i)].phase == HandPhase::kRelease) {
+      release = i;
+      break;
+    }
+  }
+  ASSERT_GT(release, 0) << Transitions();
+  const auto& rel = log_[static_cast<std::size_t>(release)];
+  EXPECT_GE(entry.after_ns - rel.before_ns, kTimeoutNs) << "RETREAT gave up early";
+  EXPECT_LT(entry.before_ns - rel.after_ns, kTimeoutNs + 20 * kMsNs)
+      << "RETREAT gave up " << static_cast<double>(entry.before_ns - rel.after_ns) * 1e-6
+      << " ms after the release";
+  // HOLD judged the attempt; the timeout does not rewrite it as an abort.
+  EXPECT_NE(ctrl_->GetOutcomeForTesting(), Outcome::kAborted);
+
+  // A hand that settles later does not re-arm by itself...
+  pre_tick_ = nullptr;
+  servo_hand_ = true;
+  Ticks(150);
+  EXPECT_EQ(ctrl_->GetMode(), Mode::kIdle) << Transitions();
+  EXPECT_FALSE(ctrl_->IsArmRequested());
+  // ...and the operator's re-arm brings the cycle back.
+  SetArmed(true);
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
 }
 
 TEST_F(SupervisorScenarioTest, AStaleFingertipIsNeverContactAndMakesTheOutcomeUndetermined) {

@@ -35,6 +35,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -51,6 +52,7 @@ using rtc::catching::kCatchFrameProvisionalKey;
 using rtc::catching::kCloseTimeoutPerE2e;
 using rtc::catching::kFreezeWindowKey;
 using rtc::catching::ParseCatchingParams;
+using rtc::catching::ReleaseTimeoutPerE2e;
 using rtc::catching::ValidateCatchingParams;
 
 constexpr double kControlRateHz = 500.0;  // repo default (rtc::kDefaultControlRateHz)
@@ -446,9 +448,13 @@ TEST(CatchingParams, HandTCloseE2eZeroPasses) {
   // key's own range: from S7.1 an absent timeout is DERIVED as a multiple of
   // T_close_e2e, and a multiple of zero is a zero timeout — refused for being
   // a timeout, which is a different rule than the one this case pins.
+  //
+  // `T_release_timeout` likewise (#537 S8-C): it is derived as a multiple of
+  // T_close_e2e too, and the zero it would derive is refused by its own rule.
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["T_close_e2e"] = 0.0;
   root["robot"]["hand"]["T_close_timeout"] = 0.1;
+  root["robot"]["hand"]["T_release_timeout"] = 0.1;
   const CatchingParams p = ParseCatchingParams(root);
   const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
   EXPECT_TRUE(r.armable);
@@ -506,6 +512,225 @@ TEST(CatchingParams, HandCloseTimeoutJustAboveTheClosureTimePasses) {
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["T_close_timeout"] = 0.1501;
   EXPECT_TRUE(ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false).armable);
+}
+
+// ── RETREAT release timeout (#537 S8-C, D-S8-6) ─────────────────────────────
+
+TEST(CatchingParams, ReleaseTimeoutMultipleTakesTheSlowerPlant) {
+  // Torque-saturated plant: travel/η. First-order plant: ln(S/q_tol)/ln(1/(1−η)).
+  // A stiff hand with a long travel is ruled by the second, a short travel by
+  // the first; either way the result is doubled like the close timeout's.
+  EXPECT_NEAR(ReleaseTimeoutPerE2e(0.5, 1.29, 0.01),
+              kCloseTimeoutPerE2e * std::log(129.0) / std::log(2.0), 1e-9);
+  EXPECT_NEAR(ReleaseTimeoutPerE2e(0.7, 0.02, 0.01), kCloseTimeoutPerE2e / 0.7, 1e-12);
+  // η = 1: ln(1/(1−η)) is infinite and the first-order term drops out.
+  EXPECT_NEAR(ReleaseTimeoutPerE2e(1.0, 1.0, 0.01), kCloseTimeoutPerE2e, 1e-12);
+  // No travel beyond the tolerance: nothing to settle.
+  EXPECT_NEAR(ReleaseTimeoutPerE2e(0.5, 0.005, 0.01), kCloseTimeoutPerE2e * 2.0, 1e-12);
+  EXPECT_TRUE(std::isnan(ReleaseTimeoutPerE2e(std::nan(""), 1.0, 0.01)));
+  EXPECT_TRUE(std::isnan(ReleaseTimeoutPerE2e(0.0, 1.0, 0.01)));
+  EXPECT_TRUE(std::isnan(ReleaseTimeoutPerE2e(1.2, 1.0, 0.01)));
+  EXPECT_TRUE(std::isnan(ReleaseTimeoutPerE2e(0.5, 1.0, 0.0)));
+}
+
+TEST(CatchingParams, ReleaseTimeoutIsDerivedFromTheProfileWhenAbsent) {
+  // The baseline profile: η 0.9, widest travel 0.5 rad, q_tol 0.01, e2e 0.15.
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  ASSERT_FALSE(p.hand.T_release_timeout.tbd);
+  EXPECT_NEAR(p.hand.T_release_timeout.value, 0.15 * ReleaseTimeoutPerE2e(0.9, 0.5, 0.01), 1e-12);
+  EXPECT_GT(p.hand.T_release_timeout.value, p.hand.T_close_timeout.value)
+      << "the release settles over a longer travel than the close times";
+  EXPECT_TRUE(ValidateCatchingParams(p, kControlRateHz, false).armable);
+}
+
+TEST(CatchingParams, ReleaseTimeoutReadsTheWidestJointAndTheArrivalTolerance) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["q_close"][2] = -1.5;  // widest travel, negative direction
+  root["robot"]["hand"]["q_tol"] = 0.02;
+  const CatchingParams p = ParseCatchingParams(root);
+  ASSERT_FALSE(p.hand.T_release_timeout.tbd);
+  EXPECT_NEAR(p.hand.T_release_timeout.value, 0.15 * ReleaseTimeoutPerE2e(0.9, 1.5, 0.02), 1e-12);
+}
+
+TEST(CatchingParams, ReleaseTimeoutExplicitValueOverridesTheDerivation) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_release_timeout"] = 1.25;
+  const CatchingParams p = ParseCatchingParams(root);
+  ASSERT_FALSE(p.hand.T_release_timeout.tbd);
+  EXPECT_DOUBLE_EQ(p.hand.T_release_timeout.value, 1.25);
+}
+
+TEST(CatchingParams, ReleaseTimeoutIsTbdWhenTheClosureTimeIs) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_e2e"] = "TBD";
+  const CatchingValidationReport r =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd,
+                               "robot.hand.T_release_timeout"));
+}
+
+TEST(CatchingParams, ReleaseTimeoutNotAboveTheClosureTimeFails) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_release_timeout"] = 0.15;  // == T_close_e2e
+  const CatchingValidationReport r =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kReleaseTimeoutNotAboveE2e,
+                               "robot.hand.T_release_timeout"));
+}
+
+TEST(CatchingParams, AZeroClosureTimeDerivesAZeroReleaseTimeoutThatIsRefused) {
+  // A derived 0 s timeout would disarm every release on its first tick.
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_e2e"] = 0.0;
+  root["robot"]["hand"]["T_close_timeout"] = 0.1;
+  const CatchingValidationReport r =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation,
+                               "robot.hand.T_release_timeout"));
+}
+
+// ── Hand-joint capture witness (#537 S8-C, D-S8-8 (b)) ──────────────────────
+
+YAML::Node CaptureRoot() {
+  YAML::Node root = ValidRoot();
+  YAML::Node cap = root["robot"]["hand"]["capture"];
+  cap["rho_min"] = 0.2;
+  cap["rho_max"] = 0.9;
+  cap["effort_frac_min"] = 0.5;
+  cap["t_persist"] = 0.1;
+  cap["provisional"] = false;
+  return root;
+}
+
+TEST(CatchingParams, CaptureIsOffWithoutItsSection) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_FALSE(p.hand.capture.enabled);
+}
+
+TEST(CatchingParams, CaptureSectionIsReadAndArms) {
+  const CatchingParams p = ParseCatchingParams(CaptureRoot());
+  ASSERT_TRUE(p.hand.capture.enabled);
+  EXPECT_DOUBLE_EQ(p.hand.capture.rho_min.value, 0.2);
+  EXPECT_DOUBLE_EQ(p.hand.capture.rho_max.value, 0.9);
+  EXPECT_DOUBLE_EQ(p.hand.capture.effort_frac_min.value, 0.5);
+  EXPECT_DOUBLE_EQ(p.hand.capture.t_persist.value, 0.1);
+  EXPECT_EQ(p.hand.capture.min_joints, 1);
+  EXPECT_FALSE(p.hand.capture.provisional);
+  EXPECT_TRUE(ValidateCatchingParams(p, kControlRateHz, false).armable);
+  EXPECT_TRUE(ValidateCatchingParams(p, kControlRateHz, true).armable);
+}
+
+TEST(CatchingParams, AHalfWrittenCaptureSectionReportsEachMissingKey) {
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["capture"]["rho_max"] = 0.9;
+  const CatchingValidationReport r =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  for (const char* key : {"robot.hand.capture.rho_min", "robot.hand.capture.effort_frac_min",
+                          "robot.hand.capture.t_persist"}) {
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, key)) << key;
+  }
+}
+
+TEST(CatchingParams, CaptureBandMustStopShortOfTheClosedPose) {
+  // Each bound is reported under the key that is wrong.
+  for (const auto& [lo, hi, key] : {std::tuple{0.2, 1.0, "robot.hand.capture.rho_max"},
+                                    std::tuple{0.5, 0.5, "robot.hand.capture.rho_max"},
+                                    std::tuple{0.6, 0.4, "robot.hand.capture.rho_max"},
+                                    std::tuple{-0.1, 0.9, "robot.hand.capture.rho_min"}}) {
+    YAML::Node root = CaptureRoot();
+    root["robot"]["hand"]["capture"]["rho_min"] = lo;
+    root["robot"]["hand"]["capture"]["rho_max"] = hi;
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_EQ(r.failure_count, 1) << lo << ".." << hi;
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, key))
+        << lo << ".." << hi << " should name " << key;
+  }
+}
+
+TEST(CatchingParams, CaptureNeedsTheCloseTargetHoldRule) {
+  // Under measured_offset an empty hand settles inside the band.
+  YAML::Node root = CaptureRoot();
+  root["robot"]["hand"]["hold"]["mode"] = "measured_offset";
+  root["robot"]["hand"]["hold"]["delta_rad"] = 0.05;
+  const CatchingValidationReport r =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "robot.hand.capture"));
+  YAML::Node no_capture = ValidRoot();
+  no_capture["robot"]["hand"]["hold"]["mode"] = "measured_offset";
+  no_capture["robot"]["hand"]["hold"]["delta_rad"] = 0.05;
+  EXPECT_TRUE(
+      ValidateCatchingParams(ParseCatchingParams(no_capture), kControlRateHz, false).armable)
+      << "the rule binds the capture block, not the hold mode";
+}
+
+TEST(CatchingParams, CaptureEffortFractionMustBeInZeroOne) {
+  for (const double v : {0.0, -0.2, 1.01}) {
+    YAML::Node root = CaptureRoot();
+    root["robot"]["hand"]["capture"]["effort_frac_min"] = v;
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation,
+                                 "robot.hand.capture.effort_frac_min"))
+        << v;
+    EXPECT_EQ(r.failure_count, 1) << v << ": one violation, one report line";
+  }
+  YAML::Node one = CaptureRoot();
+  one["robot"]["hand"]["capture"]["effort_frac_min"] = 1.0;
+  EXPECT_TRUE(ValidateCatchingParams(ParseCatchingParams(one), kControlRateHz, false).armable);
+}
+
+TEST(CatchingParams, CapturePersistenceMustFitInsideHold) {
+  YAML::Node root = CaptureRoot();
+  root["robot"]["hand"]["capture"]["t_persist"] = 0.5;  // == T_hold default
+  const CatchingValidationReport r =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation,
+                               "robot.hand.capture.t_persist"));
+  YAML::Node zero = CaptureRoot();
+  zero["robot"]["hand"]["capture"]["t_persist"] = 0.0;
+  EXPECT_TRUE(ValidateCatchingParams(ParseCatchingParams(zero), kControlRateHz, false).armable);
+}
+
+TEST(CatchingParams, CaptureMinJointsMustBeACountOfCagingJoints) {
+  for (const int v : {0, 4}) {  // the baseline hand has three caging joints
+    YAML::Node root = CaptureRoot();
+    root["robot"]["hand"]["capture"]["min_joints"] = v;
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation,
+                                 "robot.hand.capture.min_joints"))
+        << v;
+  }
+  YAML::Node three = CaptureRoot();
+  three["robot"]["hand"]["capture"]["min_joints"] = 3;
+  EXPECT_TRUE(ValidateCatchingParams(ParseCatchingParams(three), kControlRateHz, false).armable);
+}
+
+TEST(CatchingParams, AProvisionalCaptureBlocksTheRealArmAndWarnsInSim) {
+  // A real hand driver's effort lane need not be a joint torque (S10).
+  YAML::Node root = CaptureRoot();
+  root["robot"]["hand"]["capture"]["provisional"] = true;
+  const CatchingParams p = ParseCatchingParams(root);
+  const CatchingValidationReport real = ValidateCatchingParams(p, kControlRateHz, true);
+  EXPECT_FALSE(real.armable);
+  EXPECT_TRUE(ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm,
+                               "robot.hand.capture"));
+  const CatchingValidationReport sim = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_TRUE(sim.armable);
+  EXPECT_TRUE(
+      ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "robot.hand.capture"));
+}
+
+TEST(CatchingParams, CaptureProvisionalDefaultsToTrue) {
+  YAML::Node root = CaptureRoot();
+  root["robot"]["hand"]["capture"].remove("provisional");
+  EXPECT_TRUE(ParseCatchingParams(root).hand.capture.provisional);
 }
 
 TEST(CatchingParams, HandHoldTimeOutsideItsRangeFails) {

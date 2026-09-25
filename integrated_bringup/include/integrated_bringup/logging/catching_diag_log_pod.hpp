@@ -34,6 +34,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -138,6 +139,17 @@ struct CatchingDiagLogPod {
   std::uint8_t hand_phase{0};
   double hand_rho{0.0};
   bool hand_timeout{false};
+  /// D-S8-8 (b)'s hand-joint witness (#537 S8-C): caging joints stalled part-
+  /// way while pushing toward q_close, the largest signed τ/τ_max over them
+  /// (NaN when not evaluated — not in Hold, a lane not vouched for, or the
+  /// witness off), how long the current unbroken stall has lasted [s] as of
+  /// THIS tick's hand stage (0 when not blocked — the verdict, taken on the
+  /// next tick, compares its own clock: this value plus one period), and which witness
+  /// the recorded `outcome` rests on (0 none, 1 fingertips, 2 hand, 3 both).
+  std::uint8_t hand_stalled_n{0};
+  double hand_effort_frac{std::numeric_limits<double>::quiet_NaN()};
+  double hand_blocked_s{0.0};
+  std::uint8_t outcome_source{0};
 
   // ── Fingertip sensors (D-24) ─────────────────────────────────────────────
   // `tip_age_s` is filled from S5.4 because it is a MEASUREMENT — the D-24
@@ -303,6 +315,7 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   os << ",clik_status,clik_iterations,clik_solve_us,clik_conflict_mask,qp_fail_streak";
   os << ",track_err_rad,abort_stopped";
   os << ",hand_phase_valid,hand_phase,hand_rho,hand_timeout";
+  os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source";
   // Per-joint and per-tip blocks come LAST, so everything above is a fixed
   // column list a reader can rely on without knowing the robot.
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
@@ -362,6 +375,8 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
   os << ',' << p.track_err_rad << ',' << (p.abort_stopped ? 1 : 0);
   os << ',' << (p.hand_phase_valid ? 1 : 0) << ',' << static_cast<int>(p.hand_phase) << ','
      << p.hand_rho << ',' << (p.hand_timeout ? 1 : 0);
+  os << ',' << static_cast<int>(p.hand_stalled_n) << ',' << p.hand_effort_frac << ','
+     << p.hand_blocked_s << ',' << static_cast<int>(p.outcome_source);
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ',' << p.q_cmd[i];
   }

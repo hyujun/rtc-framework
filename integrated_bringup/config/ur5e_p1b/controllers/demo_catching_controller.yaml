@@ -169,6 +169,39 @@ demo_catching_controller:
         # hold. Re-check this margin whenever these two postures move.
         T_close_e2e: 0.2805
 
+        # T_release_timeout is NOT set: absent, it is derived from this profile
+        # (L6 §6 — the slower of a torque-saturated and a first-order release,
+        # doubled): 2.36 s with the poses and eta_close above and q_tol at its
+        # default 0.01 (not set here — a new default moves it). S8-C sim
+        # (seeds 301-304, 200 throws): release -> q_pre 506-516 ms, p99 516 ms,
+        # so twice the p99 is 1.03 s — inside the derived value, no hang.
+
+        # The hand-joint capture witness (L7 §4.4, #537 S8-C): a caging joint
+        # stopped part-way (rho in [rho_min, rho_max], |qd| <= qd_tol) while
+        # pushing toward q_close (effort >= effort_frac_min of the hand device's
+        # max_torque) for t_persist makes the verdict Captured even when no
+        # fingertip saw the ball.
+        # CALIBRATED on seeds 301/302 (100 throws, witness off): every truth
+        # failure ended with all joints at rho >= 0.9999 and effort <= 0.007 of
+        # max_torque; every stalled joint of a truth success sat at rho
+        # 0.797-0.924 with effort >= 0.999 (mostly thumb_cmc_fe, once ring_mcp).
+        # The bounds are the midpoints of those gaps (rho_max between 0.924 and
+        # 1, rho_min between a hand that never closed and 0.797, effort between
+        # 0.007 and 0.999). VALIDATED on seeds 303/304 (100 throws, frozen):
+        # false-Captured 0/52; false-Missed 8/48 (fingertips alone on the same
+        # throws: 22/48; all 14 promotions were truth successes). Of the 8 left,
+        # 6 are a ball the fingers closed over completely (every joint at
+        # q_close — invisible to joint evidence) and 2 a stalled joint still
+        # moving faster than qd_tol. Sim only: the sim hand lanes carry no noise
+        # and a real hand's effort lane need not be a torque (provisional
+        # blocks the real arm).
+        capture:
+          provisional: true
+          rho_min: 0.4
+          rho_max: 0.95
+          effort_frac_min: 0.5
+          t_persist: 0.1
+
     # ── Vision ingress (L1 §6, S5.2) ────────────────────────────────────────
     # The prediction lane this controller subscribes to, and the numbers it
     # judges each message against. Values are S3.6's (plan §4.4 "S3.6 결과"),

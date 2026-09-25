@@ -46,7 +46,9 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -84,6 +86,57 @@ inline constexpr std::size_t kMaxHandDof = 16;
 /// hand that stalled short of η is noticed within one more closure.
 inline constexpr double kCloseTimeoutPerE2e = 2.0;
 
+/// `robot.hand.T_release_timeout` when the profile omits it (#537 S8-C,
+/// D-S8-6): a multiple of T_close_e2e DERIVED from the profile, because one
+/// constant cannot serve a torque-saturated hand and a stiffness-dominated one
+/// alike (3 × T_close_e2e would time out every release of the latter). The
+/// release travels from the hold posture back to q_pre and must SETTLE there
+/// (q_tol), where T_close_e2e only timed ρ reaching η. Of the two limit plants
+///   torque-saturated: time ∝ travel          → 1/η
+///   first-order:      time ∝ ln(travel/q_tol) → ln(S_max/q_tol) / ln(1/(1−η))
+/// the slower is taken and doubled, the margin kCloseTimeoutPerE2e gives the
+/// close. S_max is the widest |q_close − q_pre| over EVERY joint (the arrival
+/// test reads every joint). Returns NaN for an input it cannot use.
+[[nodiscard]] inline double ReleaseTimeoutPerE2e(double eta, double s_max, double q_tol) noexcept {
+  if (!std::isfinite(eta) || !(eta > 0.0) || eta > 1.0 || !std::isfinite(s_max) ||
+      !std::isfinite(q_tol) || !(q_tol > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  double ratio = 1.0 / eta;
+  // η = 1 makes ln(1/(1−η)) infinite: the first-order term then vanishes.
+  if (eta < 1.0 && s_max > q_tol) {
+    ratio = std::max(ratio, std::log(s_max / q_tol) / -std::log1p(-eta));
+  }
+  return kCloseTimeoutPerE2e * ratio;
+}
+
+/// L6 §4.2's per-joint closure progress: 0 at q_pre, 1 at q_close, signed by
+/// the closing DIRECTION (a joint whose q_close is below its q_pre closes by
+/// decreasing). The one definition the sequencer's ρ (its min over C) and the
+/// capture witness (per joint) both use. Non-finite for a zero span.
+[[nodiscard]] inline double JointClosureProgress(double q, double q_pre, double q_close) noexcept {
+  const double span = q_close - q_pre;
+  const double s = span > 0.0 ? 1.0 : -1.0;
+  return (q - q_pre) * s / std::abs(span);
+}
+
+/// `robot.hand.capture` (#537 S8-C, D-S8-8 (b)): the hand-joint evidence the
+/// attempt verdict adds to the fingertip agreement. A caging joint is STALLED
+/// when it stopped part-way — rho_min ≤ ρ_i ≤ rho_max, |q̇_i| ≤ q̇_tol — while
+/// still pushing toward q_close (s_i·τ_i / max_torque_i ≥ effort_frac_min).
+/// `enabled` is the section's presence: without it the verdict is the
+/// fingertips' alone. `provisional` blocks a real-arm configuration, since the
+/// effort lane a real hand driver publishes need not be a joint torque.
+struct HandCaptureParams {
+  bool enabled{false};
+  TbdDouble rho_min;          // –, [0, rho_max)
+  TbdDouble rho_max;          // –, (rho_min, 1)
+  TbdDouble effort_frac_min;  // –, (0, 1]
+  TbdDouble t_persist;        // s, [0, T_hold)
+  int min_joints{1};          // [1, caging joints]
+  bool provisional{true};
+};
+
 /// L6 §4.4's hold rule (`robot.hand.hold.mode`): what the hand is commanded to
 /// once closure is reached. `kCloseTarget` keeps commanding `q_close` (the
 /// posture pair already includes "a little squeeze" past the stall); the
@@ -119,6 +172,11 @@ struct HandProfile {
   /// it is DERIVED at parse, kCloseTimeoutPerE2e × T_close_e2e — a stored
   /// default would outlive the measurement it was derived from.
   TbdDouble T_close_timeout;
+  /// RETREAT's wait for the hand at q_pre [s], > T_close_e2e (D-S8-6). Absent
+  /// from the YAML it is DERIVED at parse, ReleaseTimeoutPerE2e × T_close_e2e.
+  TbdDouble T_release_timeout;
+  bool T_release_timeout_derived{false};  // true when the key was absent
+  HandCaptureParams capture;
   HandHoldMode hold_mode{HandHoldMode::kCloseTarget};
   double hold_delta_rad{0.0};  // rad, >= 0 — read only by kMeasuredOffset
   /// "At the target": max |q − target| ≤ q_tol AND max |q̇| ≤ qd_tol. The
@@ -308,20 +366,21 @@ struct CatchingParams {
 
 // ── Validation report ────────────────────────────────────────────────────
 enum class CatchingValidationReason : std::uint8_t {
-  kActiveConfigTbd,          // an active-config key is still the TBD placeholder
-  kControlRateOutOfRange,    // control_rate_hz outside [kMinControlRateHz, kMaxControlRateHz]
-  kRangeViolation,           // a resolved value is outside its L0/L3/L4/L6/L7 §6 range
-  kZetaNotCriticallyDamped,  // reference.zeta != 1 (v1 requires the closed-form solution)
-  kEtaVOutOfRange,           // planner.gamma.eta_v not in (0, 1] (D-9)
-  kDecelExceedsAMax,         // supervisor.decel.a_dec > reference.a_max (L7 §4.3)
-  kUnstableDiscretization,   // omega*h >= 2*sqrt(2)-2 (L4 §4.7 discrete stability boundary)
-  kDiscretizationAccuracy,   // omega*h > 0.05 (L4 §4.7 accuracy recommendation) — WARNING only
-  kHandCagingGapTooSmall,    // |q_close[i] - q_pre[i]| <= rho_eps on a caging joint (L6 §4.2)
-  kProvisionalOnRealArm,     // a provisional value blocks the real-arm configuration (L0 §5.3)
-  kProvisionalWarning,       // same value, but the sim configuration only warns — WARNING only
-  kWeightOrdering,           // CLIK weights violate w_task/w_a >> w_arm >> damping_sq (L5 §4.3)
-  kCloseTimeoutNotAboveE2e,  // robot.hand.T_close_timeout <= T_close_e2e (L6 §6)
-  kFreezeShorterThanClose,   // T_freeze < T_close_e2e + T_arm + h (L3 §4.11, #537 S7)
+  kActiveConfigTbd,            // an active-config key is still the TBD placeholder
+  kControlRateOutOfRange,      // control_rate_hz outside [kMinControlRateHz, kMaxControlRateHz]
+  kRangeViolation,             // a resolved value is outside its L0/L3/L4/L6/L7 §6 range
+  kZetaNotCriticallyDamped,    // reference.zeta != 1 (v1 requires the closed-form solution)
+  kEtaVOutOfRange,             // planner.gamma.eta_v not in (0, 1] (D-9)
+  kDecelExceedsAMax,           // supervisor.decel.a_dec > reference.a_max (L7 §4.3)
+  kUnstableDiscretization,     // omega*h >= 2*sqrt(2)-2 (L4 §4.7 discrete stability boundary)
+  kDiscretizationAccuracy,     // omega*h > 0.05 (L4 §4.7 accuracy recommendation) — WARNING only
+  kHandCagingGapTooSmall,      // |q_close[i] - q_pre[i]| <= rho_eps on a caging joint (L6 §4.2)
+  kProvisionalOnRealArm,       // a provisional value blocks the real-arm configuration (L0 §5.3)
+  kProvisionalWarning,         // same value, but the sim configuration only warns — WARNING only
+  kWeightOrdering,             // CLIK weights violate w_task/w_a >> w_arm >> damping_sq (L5 §4.3)
+  kCloseTimeoutNotAboveE2e,    // robot.hand.T_close_timeout <= T_close_e2e (L6 §6)
+  kFreezeShorterThanClose,     // T_freeze < T_close_e2e + T_arm + h (L3 §4.11, #537 S7)
+  kReleaseTimeoutNotAboveE2e,  // robot.hand.T_release_timeout <= T_close_e2e (D-S8-6)
 };
 
 /// One report line: which rule fired, on which key, and (for the per-joint

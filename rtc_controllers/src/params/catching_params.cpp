@@ -178,8 +178,30 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   } else if (!out.T_close_e2e.tbd) {
     out.T_close_timeout = TbdDouble::Resolved(kCloseTimeoutPerE2e * out.T_close_e2e.value);
   }
+  // An explicit value (or `TBD`) overrides; absent, the default is derived at
+  // the end, once the poses it depends on are read.
+  const bool release_timeout_given = static_cast<bool>(hand_node["T_release_timeout"]);
+  if (release_timeout_given) {
+    out.T_release_timeout = ReadTbdDouble(hand_node, "T_release_timeout", out.T_release_timeout);
+  }
   out.q_tol = ReadOptional(hand_node, "q_tol", out.q_tol);
   out.qd_tol = ReadOptional(hand_node, "qd_tol", out.qd_tol);
+  // `capture` (D-S8-8 (b)): present = enabled, and then every threshold must
+  // be given — a half-written block is the validator's to report, not a
+  // default to guess.
+  // Presence is tested on the raw key: ReadSection answers an absent section
+  // with an empty (but truthy) map, which would read as "enabled".
+  if (hand_node["capture"]) {
+    const YAML::Node capture = ReadSection(hand_node, "capture");
+    out.capture.enabled = true;
+    out.capture.rho_min = ReadTbdDouble(capture, "rho_min", out.capture.rho_min);
+    out.capture.rho_max = ReadTbdDouble(capture, "rho_max", out.capture.rho_max);
+    out.capture.effort_frac_min =
+        ReadTbdDouble(capture, "effort_frac_min", out.capture.effort_frac_min);
+    out.capture.t_persist = ReadTbdDouble(capture, "t_persist", out.capture.t_persist);
+    out.capture.min_joints = ReadOptional(capture, "min_joints", out.capture.min_joints);
+    out.capture.provisional = ReadOptional(capture, "provisional", true);
+  }
   const YAML::Node hold = ReadSection(hand_node, "hold");
   const std::string hold_mode = ReadOptional<std::string>(hold, "mode", "close_target");
   if (hold_mode == "close_target") {
@@ -267,6 +289,17 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
 
   out.dof = static_cast<int>(dof);
   out.tbd = false;
+  if (!release_timeout_given && !out.T_close_e2e.tbd && !out.eta_close.tbd) {
+    double s_max = 0.0;
+    for (std::size_t i = 0; i < dof; ++i) {
+      s_max = std::max(s_max, std::abs(out.q_close[i] - out.q_pre[i]));
+    }
+    const double m = ReleaseTimeoutPerE2e(out.eta_close.value, s_max, out.q_tol);
+    if (std::isfinite(m)) {
+      out.T_release_timeout = TbdDouble::Resolved(m * out.T_close_e2e.value);
+      out.T_release_timeout_derived = true;
+    }
+  }
   return out;
 }
 
@@ -828,8 +861,66 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
                  "robot.hand.T_close_timeout");
     }
   }
+  // D-S8-6. TBD exactly when T_close_e2e or the poses are (derived from them).
+  if (CheckActiveTbd(report, params.hand.T_release_timeout, "robot.hand.T_release_timeout", true)) {
+    CheckPositive(report, "robot.hand.T_release_timeout", params.hand.T_release_timeout.value);
+    // Strictly above, as for the close: this also refuses the 0 s timeout a
+    // T_close_e2e of 0 would derive, which would disarm on every release.
+    if (!params.hand.T_close_e2e.tbd &&
+        !(params.hand.T_release_timeout.value > params.hand.T_close_e2e.value)) {
+      AddFailure(report, CatchingValidationReason::kReleaseTimeoutNotAboveE2e,
+                 "robot.hand.T_release_timeout");
+    }
+  }
   CheckPositive(report, "robot.hand.q_tol", params.hand.q_tol);
   CheckPositive(report, "robot.hand.qd_tol", params.hand.qd_tol);
+  // D-S8-8 (b): active only when the section is present.
+  if (const HandCaptureParams& cap = params.hand.capture; cap.enabled) {
+    const bool rho_min_ok = CheckActiveTbd(report, cap.rho_min, "robot.hand.capture.rho_min", true);
+    const bool rho_max_ok = CheckActiveTbd(report, cap.rho_max, "robot.hand.capture.rho_max", true);
+    // ρ = 1 is a hand that reached q_close — the empty hand — so the band must
+    // stop short of it, and start at or above the pose it closed from. Each
+    // bound is reported under its own key; the ordering under rho_max.
+    if (rho_min_ok && !(cap.rho_min.value >= 0.0)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "robot.hand.capture.rho_min");
+    }
+    if (rho_max_ok && !(cap.rho_max.value < 1.0)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "robot.hand.capture.rho_max");
+    } else if (rho_min_ok && rho_max_ok && cap.rho_min.value >= 0.0 &&
+               !(cap.rho_max.value > cap.rho_min.value)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "robot.hand.capture.rho_max");
+    }
+    if (CheckActiveTbd(report, cap.effort_frac_min, "robot.hand.capture.effort_frac_min", true) &&
+        !(cap.effort_frac_min.value > 0.0 && cap.effort_frac_min.value <= 1.0)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation,
+                 "robot.hand.capture.effort_frac_min");
+    }
+    // The witness reads "stopped short of q_close" as a ball, which holds only
+    // while Hold commands q_close: under measured_offset an EMPTY hand settles
+    // at its η crossing plus delta_rad — inside the band.
+    if (params.hand.hold_mode != HandHoldMode::kCloseTarget) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation, "robot.hand.capture");
+    }
+    if (CheckActiveTbd(report, cap.t_persist, "robot.hand.capture.t_persist", true)) {
+      // It has to fit inside HOLD, which is when the evidence can accrue.
+      const double t_hold = params.hand.T_hold.tbd ? std::numeric_limits<double>::infinity()
+                                                   : params.hand.T_hold.value;
+      if (!std::isfinite(cap.t_persist.value) || cap.t_persist.value < 0.0 ||
+          !(cap.t_persist.value < t_hold)) {
+        AddFailure(report, CatchingValidationReason::kRangeViolation,
+                   "robot.hand.capture.t_persist");
+      }
+    }
+    int caging = 0;
+    for (int i = 0; i < params.hand.dof; ++i) {
+      caging += params.hand.caging_mask[static_cast<std::size_t>(i)] ? 1 : 0;
+    }
+    if (cap.min_joints < 1 || (!params.hand.tbd && cap.min_joints > caging)) {
+      AddFailure(report, CatchingValidationReason::kRangeViolation,
+                 "robot.hand.capture.min_joints");
+    }
+    CheckProvisional(report, "robot.hand.capture", cap.provisional, real_arm_config);
+  }
   if (params.hand.hold_mode == HandHoldMode::kMeasuredOffset &&
       (!std::isfinite(params.hand.hold_delta_rad) || params.hand.hold_delta_rad < 0.0)) {
     AddFailure(report, CatchingValidationReason::kRangeViolation, "robot.hand.hold.delta_rad");

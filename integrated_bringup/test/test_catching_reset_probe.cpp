@@ -75,6 +75,9 @@ class DemoCatchingControllerResetProbe {
     c_.sat_streak_ = 4;
     c_.law_horizon_extrap_ = true;
     c_.outcome_ = rtc::catching::Outcome::kCaptured;
+    c_.outcome_source_ = DemoCatchingController::OutcomeSource::kBoth;
+    c_.release_start_ns_ = kNs;
+    c_.hand_blocked_since_ns_ = kNs;
     rtc::catching::ContactDebounceConfig cfg;
     cfg.n_debounce = 1;
     static_cast<void>(c_.contact_.Configure(cfg));
@@ -91,24 +94,18 @@ class DemoCatchingControllerResetProbe {
 
   void TrialReset(bool reset_mode) { c_.ResetTrialState(reset_mode); }
 
-  void CheckRearm() {
-    Poison();
-    Rearm();
+  /// The trial-scope rows every R-style reset must put back (ResetTrialScope).
+  void ExpectTrialScopeReset() {
     auto& c = c_;
-
-    // ── R rows: back to their start-of-trial value ──
     EXPECT_FALSE(c.plan_active_);
     EXPECT_EQ(c.plan_.plan_id, 0U);
     EXPECT_FALSE(c.admitted_plan_.seen);
     EXPECT_EQ(c.reset_floor_ns_, DemoCatchingControllerResetProbe::kNs * 2)
-        << "the floor is the re-arm tick's instant";
+        << "the floor is the reset tick's instant";
     EXPECT_EQ(c.planner_reset_epoch_, 11U) << "the floor and the epoch move together";
-    EXPECT_EQ(c.arm_qd_cmd_[0], 0.0);
     EXPECT_FALSE(c.reference_seeded_);
     EXPECT_EQ(c.traj_hint_, 0);
     EXPECT_EQ(c.track_err_, 0.0);
-    EXPECT_FALSE(c.homing_);
-    EXPECT_TRUE(c.homing_done_) << "RETREAT ends at the wait pose";
     EXPECT_EQ(c.retreat_stage_, DemoCatchingController::RetreatStage::kStop);
     EXPECT_FALSE(c.trial_active_);
     EXPECT_FALSE(c.trial_committed_);
@@ -127,9 +124,49 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c.tip_baseline_n_[0], 0);
     EXPECT_FALSE(c.window_confirmed_seen_);
     EXPECT_FALSE(c.window_stale_seen_);
+    EXPECT_EQ(c.release_start_ns_, 0);
+    EXPECT_EQ(c.hand_blocked_since_ns_, 0);
     // R writes this one: the trial that just ended was on the committed track.
     EXPECT_TRUE(c.last_trial_generation_valid_);
     EXPECT_EQ(c.last_trial_generation_, DemoCatchingControllerResetProbe::kGen);
+    // Exempt: it reports the LAST attempt.
+    EXPECT_EQ(c.outcome_, rtc::catching::Outcome::kCaptured);
+    EXPECT_EQ(c.outcome_source_, DemoCatchingController::OutcomeSource::kBoth);
+  }
+
+  /// RETREAT → IDLE (#537 S8-C): the trial's rows go back as on a re-arm, but
+  /// the arm is not claimed to be at the wait pose — IDLE homes first.
+  void CheckIdleFromRetreat() {
+    Poison();
+    c_.mode_ = rtc::catching::Mode::kIdle;
+    c_.OnModeEntered(rtc::catching::Mode::kRetreat);
+    ExpectTrialScopeReset();
+    EXPECT_EQ(c_.arm_qd_cmd_[0], 0.7) << "IDLE ramps a moving return down (R-IDLE): no step";
+    EXPECT_FALSE(c_.homing_);
+    EXPECT_FALSE(c_.homing_done_) << "IDLE re-decides the wait pose on the measured arm";
+  }
+
+  /// Any other way into IDLE has no trial to end, and resets nothing of it.
+  void CheckIdleFromArmedResetsNothing() {
+    Poison();
+    c_.mode_ = rtc::catching::Mode::kIdle;
+    c_.OnModeEntered(rtc::catching::Mode::kArmed);
+    EXPECT_TRUE(c_.window_stale_seen_);
+    EXPECT_TRUE(c_.trial_committed_);
+    EXPECT_EQ(c_.release_start_ns_, DemoCatchingControllerResetProbe::kNs);
+  }
+
+  void CheckRearm() {
+    Poison();
+    Rearm();
+    auto& c = c_;
+
+    // ── R rows: the trial scope (shared with RETREAT → IDLE), plus what only
+    // the re-arm may claim — the arm is at rest at the wait pose ──
+    ExpectTrialScopeReset();
+    EXPECT_EQ(c.arm_qd_cmd_[0], 0.0);
+    EXPECT_FALSE(c.homing_);
+    EXPECT_TRUE(c.homing_done_) << "RETREAT ends at the wait pose";
 
     // ── Exempt from R: untouched ──
     EXPECT_EQ(c.arm_hold_.width, 3) << "the latch is the activation's, not the trial's";
@@ -143,7 +180,6 @@ class DemoCatchingControllerResetProbe {
     EXPECT_TRUE(c.consumed_.seen) << "the next ball is judged against the vision memory";
     EXPECT_EQ(c.last_track_generation_, DemoCatchingControllerResetProbe::kGen);
     EXPECT_TRUE(c.track_seen_);
-    EXPECT_EQ(c.outcome_, rtc::catching::Outcome::kCaptured) << "it reports the LAST attempt";
     EXPECT_EQ(c.tip_last_seq_[0], 99U) << "a sample fed before the re-arm is not new";
   }
 
@@ -189,6 +225,9 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c.sat_streak_, 0);
     EXPECT_FALSE(c.law_horizon_extrap_);
     EXPECT_EQ(c.outcome_, rtc::catching::Outcome::kNone);
+    EXPECT_EQ(c.outcome_source_, DemoCatchingController::OutcomeSource::kNone);
+    EXPECT_EQ(c.release_start_ns_, 0);
+    EXPECT_EQ(c.hand_blocked_since_ns_, 0);
     EXPECT_FALSE(c.contact_.Baseline(0).initialized);
     EXPECT_EQ(c.tip_baseline_n_[0], 0);
     EXPECT_EQ(c.tip_last_seq_[0], 0U);
@@ -236,6 +275,20 @@ TEST(CatchingResetProbe, ResetTrialStatePutsBackEveryTrialRow) {
   DemoCatchingController ctrl{""};
   Probe p(ctrl);
   p.CheckTrialReset();
+}
+
+// ── RETREAT → IDLE (#537 S8-C: a disarm or a release timeout on the return) ─
+
+TEST(CatchingResetProbe, RetreatToIdlePutsBackTheTrialButDoesNotClaimTheWaitPose) {
+  DemoCatchingController ctrl{""};
+  Probe p(ctrl);
+  p.CheckIdleFromRetreat();
+}
+
+TEST(CatchingResetProbe, IdleEnteredFromArmedResetsNoTrialState) {
+  DemoCatchingController ctrl{""};
+  Probe p(ctrl);
+  p.CheckIdleFromArmedResetsNothing();
 }
 
 TEST(CatchingResetProbe, AnEstopResetLeavesTheModeToTheTable) {

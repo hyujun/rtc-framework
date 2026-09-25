@@ -123,7 +123,7 @@
 | `SPEED_SCALING` | speed scaling ≠ 1 | 전 구간 | `ABORT_SAFE`. **repo 에 신호 출처 없음 → sim 비활성, S10** |
 | `CLOCK_UNHEALTHY` | PTP 임계 초과 | 전 구간 | `IDLE`·`ARMED`에서는 진입 거부, 운행 중 `ABORT_SAFE`. **신호 출처 없음 → sim 비활성, S10** |
 | `PARAMS_TBD` | L0 검증 실패 (활성 구성 TBD·provisional) | `IDLE` | 진입 거부 |
-| `HAND_TIMEOUT` | L6 폐쇄 타임아웃 | `CLOSING`, `DECEL` | 기록, 계속 |
+| `HAND_TIMEOUT` | L6 폐쇄 타임아웃 (`CLOSING`·`DECEL`) · **`RETREAT` 의 release 뒤 손이 `robot.hand.T_release_timeout` 안에 `q_pre` 에 정착하지 못함** (S8-C, D-S8-6 (a)) | `CLOSING`, `DECEL`, `RETREAT` | `CLOSING`·`DECEL`: 기록, 계속. `RETREAT`: **`IDLE` + 같은 tick disarm** — 정착 못 한 손이 스스로 재무장하지 않게 하고, 운전자가 다시 무장한다 (P-1 (c)). 시계는 복귀 도착 tick (`kReturn → kRelease`) 에 시작하고, 같은 tick 에 정착했으면 재무장이 이긴다. `IDLE` 에는 행이 없다 — 손을 기다리지 않는다 |
 | `TIP_STALE` | 지문 센서 stale | `COMMITTED` 이후 | 판정 불가로 기록 |
 
 **`TIP_STALE` 판정 경로는 D-24 (a) 다 (2026-09-22 사용자 확정, 배선은 S5.2e).** 지문 센서 lane 에는 수신 시각도 sequence 도 없었다 — RT backend 3종 중 관절 상태 콜백만 `last_state_ns_` (backend watchdog stamp) 를 갱신하고, 지문 센서 자체의 freshness 는 관측할 수 없다. 관절이 fresh 한 채 센서만 멈추면 옛 힘을 새 접촉으로 오판할 수 있다. 채택한 경로는 (a) `rtc_base` `DeviceState` 센서 lane 에 `recv_steady_ns`·`sequence`·`valid` 를 추가하고 backend 3종이 채워 `ControllerState` 로 전달 (PROC-3, P5 — grasp 에도 같은 gap 이라 함께 닫힌다); (b) 포구 컨트롤러 소유 mailbox 는 device 경로와 공존하는 중복 lane 이라 기각했다 (plan §7.3). `TIP_STALE` 은 그 `recv_steady_ns` 의 수신 나이가 `supervisor.contact.t_stale`(C-16, §6)을 넘으면 판정한다.
@@ -175,7 +175,19 @@ $N_{deb}$개 연속 샘플이 참이면 센서 $i$ 접촉으로 확정한다 (de
 
 오경보 확률은 센서 잡음 분포에 의존한다. $k_\sigma$는 시뮬레이션·실기 잡음 측정 후 정한다(가우시안 가정이면 $k_\sigma=3$에서 단측 약 0.13%, 등급 a).
 
-> **S8-B 측정과 변경 예정 (D-S8-8 (b), 2026-09-25).** 지문 합의만 보는 위 판정은 sim truth 대비 false-Captured 0 이지만 **false-Missed 가 truth 성공의 43–57 %** 다 (공이 지문이 아닌 손가락 링크·손바닥에 얹힌 경우 — plan §4.4 D-S8-8). 사용자 결정으로 S8-C 에서 **손 관절 q·토크 증거를 판정 근거에 더한다** (런타임은 컨트롤러가 받는 손 device 상태, 판정식·임계는 S8-C SPRINT). 바뀌면 G7-E·G7-C 를 다시 기록한다. 성공률 (G8-D) 은 truth 로 판정하고 release 는 판정과 무관해 영향이 없다.
+**손 관절 증거 (S8-C, D-S8-8 (b), #537 5823291259).** 지문 합의만 보는 판정은 S8-B sim truth 대비 false-Captured 0 이지만 **false-Missed 가 truth 성공의 43–57 %** 였다 (공이 지문이 아닌 손가락 링크·손바닥에 얹힌 경우 — plan §4.4 D-S8-8). 그래서 두 번째 증인을 더한다: 공을 든 손은 **손가락이 공에 막혀 멈춘다**. caging 관절 $i\in C$ 마다, 같은 관절에서 세 절이 동시에 성립하면 그 관절을 *stalled* 로 본다.
+
+$$\rho_i=\frac{(q_i-q_{pre,i})\,s_i}{|q_{close,i}-q_{pre,i}|},\quad s_i=\operatorname{sign}(q_{close,i}-q_{pre,i})$$
+
+$$\text{stalled}_i=\big[\rho_{\min}\le\rho_i\le\rho_{\max}\big]\wedge\big[|\dot q_i|\le\dot q_{tol}\big]\wedge\big[s_i\tau_i/\tau_{\max,i}\ge\kappa\big]$$
+
+- 손 위상이 `Hold` 이고 (hold 목표는 `q_close` 라 빈 손은 $\rho=1$ 에 닿는다 — 그래서 `hold.mode: close_target` 에서만 허용한다, L6 §6) q·q̇·effort lane 이 모두 readable 할 때, stalled 관절이 `min_joints` 개 이상이면 그 tick 은 *blocked* 다. 이 상태가 **판정 tick 까지 `t_persist` 이상 끊기지 않았으면** 손 증거가 성립한다.
+- **포획 = (위 지문 조건) ∨ 손 증거.** 손 증거는 실패를 포획으로 올리는 데만 쓴다. **미확정 조건이 먼저다** — 지문 lane 이 판정할 수 없는 경우 (stale·바이어스 부족) 에는 손이 막혀 있어도 미확정이다. 손 증거는 lane 을 대신하지 않고 증거를 더할 뿐이다.
+- 관절별로 보는 이유: 공에 닿는 관절은 몇 개뿐이라, min-ρ 에 전 관절 토크 통계를 짝지으면 공에 안 닿은 관절 (τ≈0) 이 통계를 좌우한다. $\rho_{\min}$ 은 닫히지 않은 채 다른 것을 미는 손가락을, 부호 있는 토크는 무언가에 밀려 열리는 손가락을 제외한다.
+- $\tau_{\max,i}$ 는 손 device 의 `joint_limits.max_torque` 다 — 로봇 상수를 코드에 두지 않는다. 키 (`robot.hand.capture.*`, L6 §6) 가 없으면 판정은 지문만 본다. 블록이 있는데 임계가 비었거나 `max_torque` 가 없으면 시행을 park 한다 (조용히 지문만 쓰지 않는다).
+- **실기 한계.** 실기 손 드라이버의 effort lane 은 관절 토크가 아니라 전류다 (`udp_hand` 는 `joint_currents` 를 발행). 그래서 `capture.provisional` 은 실기 구성을 막는다 (S10). 합성 잡음 (σ_q 5 mrad·σ_q̇ 0.02 rad/s·σ_τ 10 %) 에서 빈 손 오경보는 0/20000 이다 (q_close·q_pre 각각, G7-C). 반면 stalled 관절의 샘플별 검출률도 q̇ 절 때문에 0.988 이라, 끊김 없는 `t_persist` 창 (0.1 s @ 500 Hz) 을 통과하는 비율은 약 54 % 다 — 실기의 q̇ 잡음에 맞춘 `qd_tol`·`t_persist` 는 S10 문제다.
+- 기록: `catching_diag.csv` 의 `hand_stalled_n`·`hand_effort_frac` (C 에서 $s_i\tau_i/\tau_{\max,i}$ 의 최대)·`hand_blocked_s` (끊김 없는 막힘의 지속 시간 [s])·`outcome_source` (0 없음·1 지문·2 손·3 둘 다). 그래서 같은 투척에서 "지문만 봤을 때의 판정" 을 재구성할 수 있다. msg 는 바꾸지 않았다.
+- 성공률 (G8-D) 은 truth 로 판정하고 release 는 판정과 무관해 영향이 없다 — 이 판정의 목적은 진단 (혼동행렬) 과, truth 가 없는 실기 (S10) 의 판정이다. 임계 확정과 G7-E 재기록은 plan §4.4 S8-C.
 
 ### 4.5 준비(ARMED) 조건
 
@@ -224,7 +236,7 @@ $$\Delta p=m_{ball}\,(1-\gamma_f)\Vert v(t_c)\Vert$$
 
 `RETREAT → ARMED` 전이에서 **다음을 전부 초기화한다.** 하나라도 빠지면 직전 시행의 상태가 남아 두 번째 투척이 다르게 동작한다. v0.2는 이 목록이 없었고, §9 시나리오가 전부 단발 시행이라 게이트에서도 잡히지 않았다. 아래는 소유 layer 별로 정리한 **단일 표**다.
 
-**두 함수로 분리했다 (S7.4, C-7/C-29/C-30).** 멤버마다 어느 리셋이 되돌리는지는 컨트롤러 헤더의 리셋 표가 SSoT 이고, `test_catching_reset_table.py` (행 존재) 와 `test_catching_reset_probe.cpp` (행의 진위) 가 검사한다. `ResetForRearm()` 은 `RETREAT → ARMED` 에서만 돈다. `ResetTrialState()` = `ResetForRearm()` + activation/E-STOP 몫이고, 무장 latch 해제·E-STOP·명시적 리셋에서 돈다. 아래 표의 "함수" 열은 어느 쪽(들)이 그 대상을 리셋하는지를 가리킨다 — **면제**로 적은 대상은 어느 쪽도 손대지 않는다(의도적).
+**두 함수로 분리했다 (S7.4, C-7/C-29/C-30).** 멤버마다 어느 리셋이 되돌리는지는 컨트롤러 헤더의 리셋 표가 SSoT 이고, `test_catching_reset_table.py` (행 존재) 와 `test_catching_reset_probe.cpp` (행의 진위) 가 검사한다. `ResetForRearm()` 은 `RETREAT → ARMED` 에서만 돈다. `ResetTrialState()` = `ResetForRearm()` + activation/E-STOP 몫이고, 무장 latch 해제·E-STOP·명시적 리셋에서 돈다. **`RETREAT → IDLE` (복귀 중 disarm, E-STOP, release timeout — S8-C) 은 `ResetTrialScope()` 를 돈다** — `ResetForRearm()` 에서 "팔이 대기 자세에 있다" 는 가정 (`homing_done_ = true`·손 `Ready`) 만 뺀 것이다. S8-C 전에는 이 경로가 아무것도 리셋하지 않아, 판정 창의 sticky 플래그·접촉 debouncer·R-TRACK 기억이 다음 시행으로 넘어갔다 (복귀 중 disarm 에 원래 있던 구멍이고, timeout 행이 그것을 자동 경로로 만들 뻔했다). 아래 표의 "함수" 열은 어느 쪽(들)이 그 대상을 리셋하는지를 가리킨다 — **면제**로 적은 대상은 어느 쪽도 손대지 않는다(의도적).
 
 | 대상 | 소유 layer | 함수 | 리셋 내용 | 빠뜨렸을 때 |
 |---|---|---|---|---|
