@@ -788,6 +788,8 @@ ros2 topic echo /sim/object_transforms --once
 
 파지·추적 실험용으로 **공 하나를 던져 주는** 기능입니다. 공은 `projectile_ball.enabled: true` 일 때 `rtc_mujoco_sim` 이 파싱한 MJCF spec 에 직접 붙이므로 씬 XML 을 고칠 필요가 없습니다. **YAML 은 반경·질량만 정하고**, 나머지 물성 (관성 분포·반발·마찰·항력·양력) 은 `ball_type` preset 이 정합니다. 물성은 기동 시 고정이고, 발사는 SimLoop 에서 qpos/qvel 만 바꿉니다.
 
+공 geom 은 씬의 default class 와 무관하게 **group 0 · 노란색** 으로 붙입니다. main default 가 group 3 인 씬 (예: `<default><geom group="3"/></default>`) 에서 이를 물려받으면 viewer 가 기본으로 숨기는 그룹이 되어, 물리는 도는데 공이 그려지지 않습니다. group 과 rgba 는 렌더링에만 쓰입니다.
+
 ### 동작
 
 | 상태 | 위치 | 접촉 | gravcomp | 발행 |

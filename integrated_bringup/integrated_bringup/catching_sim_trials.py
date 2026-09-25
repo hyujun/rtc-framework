@@ -39,9 +39,10 @@ Two throw series (``--dist``):
 * ``reference`` (default, unchanged since S6-C): ``--n-ref`` S3.5b reference
   throws then ``--n-pert`` seeded perturbations. A regression set — repeated
   throws are not an iid sample, so not a success-rate input (D-S8-2).
-* ``s35b``: ``--n`` iid throws drawn with ``--seed`` from the frozen S3.5b 90 %
-  box of the profile (D-S8-2), built by ``rtc_tools.analysis.catchability_map``
-  so the geometry is the one the gate map judged.
+* ``s35b``: ``--n`` iid throws drawn with ``--seed`` from the profile's frozen
+  gate-map box (D-S8-2; ur5e_p1b's is the S3.5b 90 % box, iiwa7_leap's the
+  S8-D re-run's), built by ``rtc_tools.analysis.catchability_map`` so the
+  geometry is the one the gate map judged.
 """
 
 from __future__ import annotations
@@ -108,10 +109,17 @@ class ThrowBox:
     base_xy_m: tuple[float, float] = (0.0, 0.0)
 
 
-# D-S8-2 (a): the S3.5b box that opened ≥ 90 % of its throws (plan §4.4 S3.5b
-# result — 163/180 on the torque layer). Per profile, because the box is the
-# gate map's verdict for that robot and wait pose; `iiwa7_leap` has none until
-# S8-D re-runs its map.
+# D-S8-2 (a): the frozen gate-map box of each profile. Per profile, because the
+# box is the gate map's verdict for that robot and wait pose.
+#   ur5e_p1b   — the S3.5b box that opened ≥ 90 % of its throws (plan §4.4
+#                S3.5b result — 163/180 on the torque layer).
+#   iiwa7_leap — the S8-D map re-run (D-S8-14/15, plan §4.4 S8-D): of the
+#                boxes of ur5e_p1b's width, the one opening the most throws
+#                that ALSO rise clear of the robot parked at the wait pose —
+#                164/180 at a first plan of 0.215 s (115/180 at 0.24 s),
+#                wait pose = the shipped `planner.wait_pose`. The clearance
+#                condition is not in the gate map: steeper lobs (86-88°, 180/180
+#                on the map) rise straight into the waiting hand (S8-D smoke).
 FROZEN_DISTRIBUTIONS: dict[str, dict[str, ThrowBox]] = {
     "s35b": {
         "ur5e_p1b": ThrowBox(
@@ -120,6 +128,13 @@ FROZEN_DISTRIBUTIONS: dict[str, dict[str, ThrowBox]] = {
             aim_deviation_deg=(-6.0, 6.0),
             speed_m_s=(4.65, 4.85),
             elevation_deg=(62.0, 64.0),
+        ),
+        "iiwa7_leap": ThrowBox(
+            distance_m=(0.95, 1.05),
+            release_height_m=(0.10, 0.20),
+            aim_deviation_deg=(-6.0, 6.0),
+            speed_m_s=(2.85, 3.05),
+            elevation_deg=(78.0, 80.0),
         ),
     },
 }

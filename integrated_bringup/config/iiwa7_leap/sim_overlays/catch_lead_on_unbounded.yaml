@@ -1,0 +1,46 @@
+# sim overlay — dynamic_catching S8-D, iiwa7_leap calibration arm (#537)
+#
+# catch_lead_on.yaml (which owns the lead rationale) with the three supervisor
+# thresholds this robot has not been measured for pushed out of reach, so a
+# calibration run records the UNCENSORED distributions they are then chosen
+# from (the S8-B method: a threshold that fires ends the trial and hides the
+# tail it would be set from):
+#   sat_ticks 100000       — REF_SATURATED never fires (a trial is ~1000 ticks)
+#   track_err_abort 100    — ‖q_meas − q_cmd‖ abort never fires
+#   stale_committed_max_s 1.0 — the parser's ceiling; a COMMITTED snapshot
+#                            never ages that far inside one flight
+# The hand-joint capture witness is NOT off in this arm. The calibration set
+# (seeds 501/502) was recorded before the shipped YAML had a
+# `robot.hand.capture` block, so the witness was absent and `catching_trials`
+# replayed it offline from the logged hand state. The block is now shipped,
+# and an overlay can add keys but not remove one (present = enabled), so a
+# rerun of this arm runs the witness at its frozen values. To reproduce the
+# uncensored calibration set exactly, drop that block from the shipped YAML
+# for the run.
+#
+# NOT FOR SUCCESS RATES. These are the calibration seeds only; the validation
+# arm runs catch_lead_on.yaml with the thresholds frozen into the shipped YAML.
+
+mujoco_simulator:
+  ros__parameters:
+    # Bare robot-on-a-floor scene (no table, no objects). The shipped
+    # scene_right_with_object.xml puts a table and two objects at x 0.45-0.95 m,
+    # directly under this profile's wait pose and catch points; the S8-D smoke
+    # measured the rate-limited homing move dipping the fingers onto the apple
+    # and the table top (palm z 0.15 m), blocking A2 until track_err_abort
+    # disarmed. The gate map that chose the throws and the wait pose models a
+    # floor only (min catch height 0.1 m), so this is the scene it judged.
+    model_path: "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        supervisor:
+          sat_ticks: 100000
+          track_err_abort: 100.0
+          stale_committed_max_s: 1.0

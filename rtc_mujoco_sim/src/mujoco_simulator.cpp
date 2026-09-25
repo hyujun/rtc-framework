@@ -129,6 +129,17 @@ bool MuJoCoSimulator::AttachProjectileBall(mjSpec* spec, std::string& error) noe
   }
   geom->type = mjGEOM_SPHERE;
   geom->size[0] = ball.radius_m;
+  // Drawn by default. Added with the spec's main default, the geom inherits
+  // whatever group that default gives — and a scene whose default puts
+  // undeclared geoms in the viewer's hidden collision bucket (group 3) would
+  // simulate the ball but never draw it. Group only affects rendering. The
+  // colour is a tennis-ball yellow: the spec default is mid grey, which a
+  // 3 cm sphere against a blue floor makes easy to miss in flight.
+  geom->group = 0;
+  geom->rgba[0] = 0.85F;
+  geom->rgba[1] = 0.95F;
+  geom->rgba[2] = 0.2F;
+  geom->rgba[3] = 1.0F;
   geom->contype = ball.collision_contype;
   geom->conaffinity = ball.collision_conaffinity;
   // condim 6 so the preset's torsional and rolling friction act (condim 3

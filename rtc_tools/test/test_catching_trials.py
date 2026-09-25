@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from rtc_tools.analysis import catching_trials as ct
 
@@ -875,3 +876,377 @@ def test_cli_writes_csv_and_json(tmp_path, capsys):
     # Without --v-max the D-3 validity is not judged, and says so.
     assert "NOT_EVALUATED(v_max not given)" in summary
     assert "supervisor verdicts" in capsys.readouterr().out
+
+
+# ── G3-D (i): per-trial plan validity ratio (#537 S8-D) ──────────────────────
+
+
+def test_plan_validity_window_counts_cycles_between_launch_and_commit():
+    wake = np.array([0.0, 1.0, 2.0, 3.0, 5.0])
+    valid = np.array([0.0, 1.0, 1.0, 0.0, 1.0])
+    out = ct.plan_validity_window(wake, valid, t_launch=0.5, t_commit=3.5, t_end=10.0)
+    assert out["planner_cycles"] == 3  # wake 1, 2, 3 fall in [0.5, 3.5]
+    assert out["plan_valid_cycles"] == 2
+    assert out["plan_valid_ratio"] == pytest.approx(2 / 3)
+    # The last cycle at or before the commit (wake=3) was invalid.
+    assert out["plan_valid_at_commit"] == 0.0
+
+
+def test_plan_validity_window_falls_back_to_trial_end_without_a_commit():
+    wake = np.array([0.0, 1.0, 2.0, 3.0])
+    valid = np.array([1.0, 1.0, 0.0, 1.0])
+    out = ct.plan_validity_window(wake, valid, t_launch=0.0, t_commit=math.nan, t_end=2.5)
+    assert out["planner_cycles"] == 3  # wake 0, 1, 2 <= 2.5; wake 3 is past the trial's end
+    assert out["plan_valid_cycles"] == 2
+    # Never committed: "at commit" has no meaning, regardless of cycle content.
+    assert math.isnan(out["plan_valid_at_commit"])
+
+
+def test_plan_validity_window_ratio_is_nan_with_zero_cycles():
+    wake = np.array([10.0, 11.0])
+    valid = np.array([1.0, 1.0])
+    out = ct.plan_validity_window(wake, valid, t_launch=0.0, t_commit=1.0, t_end=1.0)
+    assert out["planner_cycles"] == 0
+    assert math.isnan(out["plan_valid_ratio"])
+    # A commit happened, but no recorded cycle falls in the window.
+    assert math.isnan(out["plan_valid_at_commit"])
+
+
+def test_golden_g3d_plan_validity_ratio_in_range_with_positive_cycles(pilot):
+    """The clock-lane mapping in :func:`ct._planner_cycle_times` must place
+    every wake inside its own trial's window (not spill into a neighbour's) —
+    a sanity range check, since there is no independent oracle for the exact
+    count in the golden fixture."""
+    g3d = pilot.summary["g3d"]
+    assert g3d["n_trials_with_cycles"] == 25  # every pilot trial reached APPROACH
+    median, p05, p95 = g3d["plan_valid_ratio_p50_p05_p95"]
+    assert 0.0 <= p05 <= median <= p95 <= 1.0
+    rows = [r for r in pilot.rows if r.get("accepted")]
+    assert all(r["planner_cycles"] > 0 for r in rows)
+    assert all(0.0 <= r["plan_valid_ratio"] <= 1.0 for r in rows)
+    assert g3d["approach_plan_switches_distribution"] == {"0": 25}
+
+
+def test_golden_g3d_pins_the_first_trials_cycle_count(pilot):
+    """A concrete pin (not just a range) on one trial, cross-checked by hand
+    against the fixture's raw ``planner_events.csv.gz``/clock lane."""
+    rows = {r["idx"]: r for r in pilot.rows if r.get("accepted")}
+    assert rows[0]["planner_cycles"] == 5
+    assert rows[0]["plan_valid_cycles"] == 1
+    assert rows[0]["plan_valid_ratio"] == pytest.approx(0.2)
+    assert rows[0]["plan_valid_at_commit"] == 0.0
+
+
+def test_g3d_windows_each_trial_with_its_own_clock_offset(monkeypatch):
+    """Under sim-sync at RTF < 1 the steady − t_relative offset drifts across a
+    session, so the session median is wrong for late trials. Push the median
+    10 s off every trial's own offset: the per-trial windows must not move
+    (trial 0 keeps its hand-checked pin). A trial the lane left without an
+    offset gets no G3-D columns rather than the median's."""
+    pytest.importorskip("pinocchio")
+    real = ct.load_clock_lane
+    state = {}
+
+    def skew(path, trials, *args):
+        # A .gz lane re-enters load_clock_lane once decompressed; skew only once.
+        lane = real(path, trials, *args)
+        if "idx" not in state:
+            state["idx"] = sorted(lane.trial_offsets)[3]
+            del lane.trial_offsets[state["idx"]]
+            lane.steady_offset += 10.0
+        return lane
+
+    monkeypatch.setattr(ct, "load_clock_lane", skew)
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    result = ct.analyse_session(
+        FIXTURE / "session",
+        FIXTURE / "trials",
+        profile,
+        (FIXTURE / "robot.urdf").read_text(),
+        ct.Settings(v_max=PILOT_V_MAX_M_S, n_boot=20),
+        LANE,
+    )
+    rows = {r["idx"]: r for r in result.rows}
+    assert rows[0]["planner_cycles"] == 5
+    assert rows[0]["plan_valid_cycles"] == 1
+    assert "planner_cycles" not in rows[state["idx"]]
+    others = [r for i, r in rows.items() if i != state["idx"] and r.get("accepted")]
+    assert all(r["planner_cycles"] > 0 for r in others)
+
+
+def test_analyse_session_has_no_g3d_without_a_clock_lane():
+    """Without ``--clock-lane`` there is no established wake_ns -> t_relative_s
+    conversion (sim-sync ``t_relative_s`` is a tick count, not a clock reading
+    — see :func:`ct._planner_cycle_times`), so G3-D must be entirely absent,
+    not guessed at."""
+    pytest.importorskip("pinocchio")
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    result = ct.analyse_session(
+        FIXTURE / "session",
+        FIXTURE / "trials",
+        profile,
+        (FIXTURE / "robot.urdf").read_text(),
+        ct.Settings(n_boot=20),
+    )
+    assert "g3d" not in result.summary
+    assert all("planner_cycles" not in r for r in result.rows if r.get("accepted"))
+
+
+# ── Gate-map verdict (S8-D, #537, optional --gate-map) ───────────────────────
+
+
+def _write_csv_rows(path: Path, rows: list[dict]) -> None:
+    import csv
+
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _tiny_gate_map_dirs(tmp_path: Path) -> tuple[Path, Path]:
+    """A 2×2 grid (distance_m × speed_m_s; the other three axes constant, so
+    they must not enter the normalised distance) with throws 0 and 3 open on
+    the torque layer, throws 1 and 2 closed."""
+    map_dir = tmp_path / "catchability_map"
+    map_dir.mkdir()
+    gate_dir = tmp_path / "gate_map"
+    gate_dir.mkdir()
+    grid = []
+    idx = 0
+    for d in (0.9, 1.0):
+        for s in (4.6, 4.8):
+            grid.append(
+                {
+                    "throw_index": idx,
+                    "wait_pose_seed_id": 0,
+                    "distance_m": d,
+                    "azimuth_deg": 0.0,
+                    "release_height_m": 0.2,
+                    "aim_deviation_deg": 0.0,
+                    "speed_m_s": s,
+                    "elevation_deg": 63.0,
+                }
+            )
+            idx += 1
+    _write_csv_rows(map_dir / "throw_summary.csv", grid)
+    _write_csv_rows(
+        gate_dir / "gate_map.csv",
+        [
+            {"id": "c0", "seed_id": 0, "throw_index": 0, "reason_torque": "none"},
+            {"id": "c1", "seed_id": 0, "throw_index": 1, "reason_torque": "reach_time_torque"},
+            {"id": "c2", "seed_id": 0, "throw_index": 2, "reason_torque": "reach_time_torque"},
+            {"id": "c3", "seed_id": 0, "throw_index": 3, "reason_torque": "none"},
+            # A different seed's candidate must never leak into this seed's open set.
+            {"id": "c4", "seed_id": 1, "throw_index": 1, "reason_torque": "none"},
+        ],
+    )
+    import yaml
+
+    (gate_dir / "gate_map_summary.yaml").write_text(
+        yaml.safe_dump({"map_dir": str(map_dir), "seed_id": 0})
+    )
+    return gate_dir, map_dir
+
+
+def test_load_gate_map_reads_the_grid_open_set_and_axis_steps(tmp_path):
+    gate_dir, map_dir = _tiny_gate_map_dirs(tmp_path)
+    gm = ct.load_gate_map(gate_dir)
+    assert gm.seed_id == 0
+    assert gm.map_dir == map_dir
+    assert gm.open_throw_indices == frozenset({0, 3})
+    assert gm.axis_steps == pytest.approx({"distance_m": 0.1, "speed_m_s": 0.2})
+    # release_height_m/aim_deviation_deg/elevation_deg are constant on the grid.
+    assert set(gm.axis_steps) == {"distance_m", "speed_m_s"}
+
+
+def test_nearest_grid_throw_matches_on_azimuth_when_the_grid_varies_it(tmp_path):
+    """A grid over azimuths (-30, 0, 30), as catchability_map builds by
+    default. The throws differ ONLY in azimuth, and the -30 one has the
+    lowest index and is closed. A trial thrown at 0 must match the open
+    azimuth-0 throw, not tie across all three and fall to index 0."""
+    map_dir = tmp_path / "map"
+    map_dir.mkdir()
+    gate_dir = tmp_path / "gate_map"
+    gate_dir.mkdir()
+    base = {
+        "wait_pose_seed_id": 0,
+        "distance_m": 1.0,
+        "release_height_m": 0.15,
+        "aim_deviation_deg": 0.0,
+        "speed_m_s": 2.95,
+        "elevation_deg": 79.0,
+    }
+    _write_csv_rows(
+        map_dir / "throw_summary.csv",
+        [{"throw_index": i, **base, "azimuth_deg": az} for i, az in enumerate((-30.0, 0.0, 30.0))],
+    )
+    _write_csv_rows(
+        gate_dir / "gate_map.csv",
+        [
+            {"id": "c0", "seed_id": 0, "throw_index": 0, "reason_torque": "reach_time_torque"},
+            {"id": "c1", "seed_id": 0, "throw_index": 1, "reason_torque": "none"},
+            {"id": "c2", "seed_id": 0, "throw_index": 2, "reason_torque": "reach_time_torque"},
+        ],
+    )
+    import yaml
+
+    (gate_dir / "gate_map_summary.yaml").write_text(
+        yaml.safe_dump({"map_dir": str(map_dir), "seed_id": 0})
+    )
+    gm = ct.load_gate_map(gate_dir)
+    assert set(gm.axis_steps) == {"azimuth_deg"}
+    verdict = ct.gate_map_verdict({**base, "azimuth_deg": 0.0}, gm)
+    assert verdict["map_throw_index"] == 1
+    assert verdict["map_open"] is True
+    assert verdict["map_distance"] == pytest.approx(0.0)
+
+
+def test_grid_axis_steps_omits_a_single_valued_axis():
+    throw_axes = {0: {"p": 0.0, "q": 5.0}, 1: {"p": 1.0, "q": 5.0}, 2: {"p": 2.0, "q": 5.0}}
+    steps = ct.grid_axis_steps(throw_axes, axes=("p", "q"))
+    assert steps == pytest.approx({"p": 1.0})
+    assert "q" not in steps
+
+
+def test_nearest_grid_throw_ties_go_to_the_lowest_throw_index():
+    """Documents the tie rule: a trial exactly between two grid points ties on
+    normalised distance, and the LOWER ``throw_index`` wins."""
+    throw_axes = {0: {"p": 0.0}, 1: {"p": 1.0}}
+    steps = {"p": 1.0}
+    idx, dist = ct.nearest_grid_throw({"p": 0.5}, throw_axes, steps)
+    assert idx == 0
+    assert dist == pytest.approx(0.5)
+
+
+def test_nearest_grid_throw_normalises_by_each_axis_own_step():
+    """Positive control: axis ``p``'s grid step (1.0) is 10× axis ``q``'s
+    (0.1). The SAME raw offset (0.4) picks throw 0 (the origin) when it sits
+    on ``p`` — 0.4 is less than half a p-step — but picks throw 2 (a q-step
+    away) when it sits on ``q`` instead, because 0.4 is 4 q-steps, well past
+    it. Swapping which axis carries the offset therefore flips the verdict —
+    proof the normalisation uses each axis's OWN step, not a shared one."""
+    throw_axes = {0: {"p": 0.0, "q": 0.0}, 1: {"p": 1.0, "q": 0.0}, 2: {"p": 0.0, "q": 0.1}}
+    steps = {"p": 1.0, "q": 0.1}
+    on_p, _ = ct.nearest_grid_throw({"p": 0.4, "q": 0.0}, throw_axes, steps)
+    on_q, _ = ct.nearest_grid_throw({"p": 0.0, "q": 0.4}, throw_axes, steps)
+    assert on_p == 0
+    assert on_q == 2
+
+
+def test_trial_axis_values_is_none_for_a_reference_series_record():
+    assert ct.trial_axis_values({"kind": "reference", "pos": (1.0, 0.0, 0.2)}) is None
+
+
+def test_trial_axis_values_reads_a_dist_box_record():
+    record = {axis: float(i) for i, axis in enumerate(ct.GATE_MAP_AXES)}
+    record["kind"] = "s35b"
+    assert ct.trial_axis_values(record) == {
+        axis: float(i) for i, axis in enumerate(ct.GATE_MAP_AXES)
+    }
+
+
+def test_gate_map_verdict_open_closed_and_no_axes():
+    gm = ct.GateMap(
+        map_dir=Path("map"),
+        seed_id=0,
+        throw_axes={
+            0: dict.fromkeys(ct.GATE_MAP_AXES, 0.0),
+            1: {**dict.fromkeys(ct.GATE_MAP_AXES, 0.0), "distance_m": 1.0},
+        },
+        open_throw_indices=frozenset({0}),
+        axis_steps={"distance_m": 1.0},
+    )
+    near0 = dict.fromkeys(ct.GATE_MAP_AXES, 0.0)
+    out0 = ct.gate_map_verdict(near0, gm)
+    assert out0 == {"map_open": True, "map_throw_index": 0, "map_distance": pytest.approx(0.0)}
+    near1 = {**near0, "distance_m": 0.9}
+    out1 = ct.gate_map_verdict(near1, gm)
+    assert out1["map_open"] is False and out1["map_throw_index"] == 1
+    assert ct.gate_map_verdict(None, gm) == {
+        "map_open": None,
+        "map_throw_index": None,
+        "map_distance": None,
+    }
+
+
+def test_analyse_session_gate_map_verdict_is_none_for_the_pilots_reference_series():
+    """End to end: the pilot's trials are all `reference` kind (no gate-map
+    axes), so every row must get a `None` verdict, never a guess."""
+    pytest.importorskip("pinocchio")
+    gate_map = ct.GateMap(
+        map_dir=Path("unused"),
+        seed_id=0,
+        throw_axes={0: dict.fromkeys(ct.GATE_MAP_AXES, 0.0)},
+        open_throw_indices=frozenset({0}),
+        axis_steps={"distance_m": 1.0},
+    )
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    result = ct.analyse_session(
+        FIXTURE / "session",
+        FIXTURE / "trials",
+        profile,
+        (FIXTURE / "robot.urdf").read_text(),
+        ct.Settings(n_boot=20),
+        gate_map=gate_map,
+    )
+    rows = [r for r in result.rows if r.get("accepted")]
+    assert rows and all(r["map_open"] is None for r in rows)
+    gm_summary = result.summary["gate_map"]
+    assert gm_summary["verdicted"] == 0 and gm_summary["open"] == 0
+    assert math.isnan(gm_summary["open_fraction"])
+    assert (
+        gm_summary["truth_whole"] != "NOT_EVALUATED(no hold radius)"
+    )  # profile has a ball diameter
+
+
+def test_cli_gate_map_option_wires_through(tmp_path):
+    pytest.importorskip("pinocchio")
+    gate_dir, _map_dir = _tiny_gate_map_dirs(tmp_path)
+    out_dir = tmp_path / "out"
+    rc = ct.main(
+        [
+            str(FIXTURE / "session"),
+            str(FIXTURE / "trials"),
+            "--config-dir",
+            str(FIXTURE / "config"),
+            "--urdf",
+            str(FIXTURE / "robot.urdf"),
+            "--out",
+            str(out_dir),
+            "--n-boot",
+            "20",
+            "--gate-map",
+            str(gate_dir),
+        ]
+    )
+    assert rc == 0
+    summary = (out_dir / "catching_trials_summary.json").read_text()
+    assert '"gate_map"' in summary
+    assert '"map_dir"' in summary
+
+
+# ── robot config lookup (S8-D: a sim-only profile has no _base.yaml) ─────────
+
+
+def _write_params(path, params):
+    path.write_text(yaml.safe_dump({"/**": {"ros__parameters": params}}))
+
+
+def test_robot_config_prefers_base_yaml_and_falls_back_to_sim_yaml(tmp_path):
+    from rtc_tools.analysis.catching_trials import robot_config_params
+
+    _write_params(tmp_path / "sim.yaml", {"urdf": {"from": "sim"}})
+    assert robot_config_params(tmp_path)["urdf"] == {"from": "sim"}
+    _write_params(tmp_path / "_base.yaml", {"urdf": {"from": "base"}})
+    assert robot_config_params(tmp_path)["urdf"] == {"from": "base"}
+
+
+def test_robot_config_skips_a_file_without_urdf_and_refuses_when_none_has_it(tmp_path):
+    from rtc_tools.analysis.catching_trials import robot_config_params
+
+    _write_params(tmp_path / "_base.yaml", {"control_rate": 500.0})
+    with pytest.raises(SystemExit, match="carries a `urdf` block"):
+        robot_config_params(tmp_path)
+    _write_params(tmp_path / "sim.yaml", {"urdf": {"from": "sim"}})
+    assert robot_config_params(tmp_path)["urdf"] == {"from": "sim"}

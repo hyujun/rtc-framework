@@ -95,6 +95,7 @@ integrated_bringup/
 ├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈 · sim 도구)
 │   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 (투척마다 한 S7 순환, §Catching sim trials)
 │   ├── sim_overlay.py                  <- `sim_overlay:=` 해석 (sim launch 공용)
+│   ├── sim_lanes.py                    <- `sim_lanes:=` → clock/ball contact lane 파라미터 (sim launch 공용)
 │   └── demo_gui/
 │       ├── app.py                      <- DemoControllerGUI Tk 클래스 + main()
 │       ├── catalog.py                  <- /rtc_cm/list_controllers 동적 enumerator
@@ -233,6 +234,13 @@ dynamic_catching S8-B 의 lead 보상 소거실험은 컨트롤러 섹션 (`inte
 `config/ur5e_p1b/mujoco_simulator.yaml` 의 서보 게인 (`use_yaml_servo_gains: true`, kd/kp = 0.05 s) 이 정합니다 —
 MJCF 게인 그대로면 0.2 s 입니다. 근거는 `catch_lead_on.yaml` 헤더, 경로 고정은
 `test/test_catch_lead_overlays.py` 가 갖습니다.
+
+`sim_iiwa7_leap.launch.py` 도 같은 규칙으로 `config/iiwa7_leap/sim_overlays/` 를 읽습니다 (S8-D).
+`catch_lead_on` 은 `T_arm` 0.05 · `lead_enable` 을 켜고 (`T_freeze` 는 출하 0.19 가 이미 하한 0.1847 을 덮는다 —
+기동 로그 `commit at t_c − 0.190 s`), 테이블·물체 없는 씬 `scene_right.xml` 로 바꿉니다 — 출하 씬의 테이블 물체가
+대기 자세 바로 아래라 homing 중 손가락이 걸립니다. `catch_lead_on_unbounded` 는 교정 세트용으로
+`supervisor.{sat_ticks, track_err_abort, stale_committed_max_s}` 를 사실상 끈 쌍둥이입니다. 이 로봇의 sim 팔
+지연 0.05 s 도 `config/iiwa7_leap/mujoco_simulator.yaml` 의 서보 게인 (kp ×4) 이 정합니다.
 
 ```bash
 export RTC_POLICY_DIR=/path/to/ObjectHandGraspDeployMulti5-Export-v0   # 모델은 repo 밖
@@ -860,9 +868,9 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 | `--dist` | 투척 | 용도 |
 |---|---|---|
 | `reference` (기본, S6-C 이후 불변) | 기준 투척 `--n-ref` 번 뒤에 섭동 투척 `--n-pert` 번 (속력 ×U(0.9, 1.1), 측방 U(−0.3, 0.3) m/s, `--seed`) | 회귀 세트. 같은 투척의 반복은 iid 표본이 아니므로 성공률 입력이 아니다 |
-| `s35b` (`ur5e_p1b` 만) | S3.5b 90 % 상자 (거리 0.9–1.0 m · 릴리스 0.15–0.25 m · 방향 ±6° · 속력 4.65–4.85 m/s · 앙각 62–64°) 에서 `--n` 번 균등 iid, `--seed` 로 재현 | 동결 분포 (dynamic_catching plan §4.4 S8, D-S8-2). 발사 상태는 `rtc_tools.analysis.catchability_map` 의 격자 기하 그대로다. 표본의 축 값·seed·순번이 시행 기록에 남는다 |
+| `s35b` (`ur5e_p1b`·`iiwa7_leap`) | 프로파일별 동결 상자에서 `--n` 번 균등 iid, `--seed` 로 재현. `ur5e_p1b` = S3.5b 90 % 상자 (거리 0.9–1.0 m · 릴리스 0.15–0.25 m · 방향 ±6° · 속력 4.65–4.85 m/s · 앙각 62–64°). `iiwa7_leap` = S8-D 지도 재실행 상자 (거리 0.95–1.05 m · 릴리스 0.10–0.20 m · 방향 ±6° · 속력 2.85–3.05 m/s · 앙각 78–80°; 지도 열림이면서 공이 상승 중 대기 자세 로봇에 닿지 않는 투척 164/180) | 동결 분포 (dynamic_catching plan §4.4 S8, D-S8-2·D-S8-15). 발사 상태는 `rtc_tools.analysis.catchability_map` 의 격자 기하 그대로다. 표본의 축 값·seed·순번이 시행 기록에 남는다 |
 
-**측정 lane (`sim_lanes:=true`).** sim 의 clock 위상 lane 과 공 접촉 truth lane 은 노드 파라미터라 기동 때만 읽힌다. `sim_lanes:=true` 는 둘을 켜고 `<session>/sim/{clock_lane,ball_contact_lane}.csv` 에 쓴다 — 시행의 lane 이 그 세션의 컨트롤러 CSV 옆에 남아 `catching_trials` (`rtc_tools`) 가 둘을 잇는다. 기본은 off (YAML 그대로).
+**측정 lane (`sim_lanes:=true`).** sim 의 clock 위상 lane 과 공 접촉 truth lane 은 노드 파라미터라 기동 때만 읽힌다. `sim_lanes:=true` (`sim_ur5e_p1b`·`sim_iiwa7_leap`, 공용 `integrated_bringup.sim_lanes`) 는 둘을 켜고 `<session>/sim/{clock_lane,ball_contact_lane}.csv` 에 쓴다 — 시행의 lane 이 그 세션의 컨트롤러 CSV 옆에 남아 `catching_trials` (`rtc_tools`) 가 둘을 잇는다. 기본은 off (YAML 그대로).
 
 ```bash
 # 1) sim (계획기는 enable_mpc:=true 가 필요하다 — mpc_off 면 활성화 거부)
@@ -875,6 +883,15 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
 ros2 run integrated_bringup catching_sim_trials <out> --n-ref 15 --n-pert 10
 #    동결 분포에서 25 번 (seed 로 재현)
 ros2 run integrated_bringup catching_sim_trials <out> --dist s35b --n 25 --seed 1
+
+# iiwa7_leap (S8-D): 같은 순서, launch·profile·overlay 만 다르다. `catch_lead_on`
+# overlay 는 T_arm 0.05 선행을 켜고 테이블·물체 없는 씬 (scene_right.xml) 을 쓴다.
+ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false use_cpu_affinity:=false \
+  enable_mpc:=true sim_lanes:=true sim_overlay:=catch_lead_on
+ros2 launch ball_perception_sim sim_estimator.launch.py \
+  profile_path:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/iiwa7_leap/ball_perception_sim_profile.json \
+  producer_revision:=<rtc-framework 커밋>
+ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dist s35b --n 50 --seed 503
 ```
 
 `trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다. 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다. `armed_at_throw` 는 투척 직전 컨트롤러가 발행한 무장 상태다. demo_controller_gui 의 Catching 패널은 같은 기준 (RETREAT 진입 때의 판정) 으로 이 패널이 본 시행 수를 판정별로 센다 (`this panel: attempts N: …`, 패널을 다시 띄우면 새로 센다).
