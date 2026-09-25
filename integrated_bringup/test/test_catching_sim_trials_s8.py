@@ -98,6 +98,30 @@ def test_an_unknown_distribution_or_a_profile_without_a_box_is_refused():
         frozen_throws("s35b", "ur5e_p1a", 3, 0)
 
 
+def test_the_leap_box_replays_and_stays_inside_its_own_axes():
+    """S8-D froze iiwa7_leap's own box (D-S8-14/15): same contract as ur5e_p1b's."""
+    box = FROZEN_DISTRIBUTIONS["s35b"]["iiwa7_leap"]
+    assert box != BOX, "the two robots' boxes are separate map verdicts"
+    a = frozen_throws("s35b", "iiwa7_leap", 50, 505)
+    assert json.dumps(a) == json.dumps(frozen_throws("s35b", "iiwa7_leap", 50, 505))
+    assert a != frozen_throws("s35b", "ur5e_p1b", 50, 505)
+    for t in a:
+        for axis in (
+            "distance_m",
+            "release_height_m",
+            "aim_deviation_deg",
+            "speed_m_s",
+            "elevation_deg",
+        ):
+            lo, hi = getattr(box, axis)
+            assert lo <= t[axis] <= hi, axis
+        vx, vy, vz = t["vel"]
+        speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+        assert speed == pytest.approx(t["speed_m_s"], abs=1e-9)
+        assert math.degrees(math.asin(vz / speed)) == pytest.approx(t["elevation_deg"], abs=1e-9)
+        assert t["pos"][2] == pytest.approx(t["release_height_m"], abs=1e-12)
+
+
 def test_the_default_arguments_still_build_the_reference_series():
     args = parse_args(["out"])
     assert args.dist == "reference"

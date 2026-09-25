@@ -67,9 +67,12 @@ demo_catching_controller:
       # and this one, which on hardware is a PTP/NTP question (TBD-NET-01, S10
       # confirms it). The sim value is the `sim.io` override below.
       future_tol: 0.001
-      # R1 (the commit condition): T_close,tot 0.2815 + T_arm 0.05 + margin
-      # 0.03 + L 0.14 = 0.5015, rounded UP to 10 ms. Rounding down would admit
-      # a prediction that misses R1 by 1.5 ms.
+      # R1 (the commit condition) for THIS hand: T_close,tot 0.1047 + T_arm
+      # 0.05 + margin 0.03 + L 0.14 = 0.3247, so any value >= 0.33 is safe.
+      # 0.51 is ur5e_p1b's figure (its T_close,tot is 0.2815), kept because it
+      # is stricter and the sim profile's 1.0 s horizon clears it on every
+      # prediction — it rejects nothing here. Re-derive it if the profile
+      # horizon ever drops toward 0.5 s (S8-D, #537).
       horizon_min: 0.51
       track:
         # How far past the later origin two consecutive predictions are
@@ -179,6 +182,44 @@ demo_catching_controller:
         # The analyser's tick axis is NOT usable here — see L6 §4.2.
         T_close_e2e: 0.1037
 
+        # SET, not derived (S8-D, #537). The L6 §6 derivation from this profile
+        # (the slower of a torque-saturated and a first-order release, doubled)
+        # gives 1.454 s, and the S8-D calibration seeds (501/502 + smoke, 109
+        # RETREATs) showed it too short: RETREAT entry -> every hand joint
+        # within q_tol 0.01 of q_pre p50 1.89 s, p99 2.47 s, max 2.66 s, so 37
+        # of 100 cycles ended in HAND_TIMEOUT. The release is slower than the
+        # first-order model because joint damping and armature add to the
+        # servo's kd, and q_tol 0.01 sits inside the MCP/thumb friction
+        # deadband (frictionloss / kp = 0.04 / 2.5 = 0.016 rad): the last
+        # centimetre-radian is a slow creep, not a lag. Twice the p99, rounded
+        # up. q_tol keeps its default — widening it would change what "at
+        # q_pre" means for every other hand-settle check. VALIDATED on seeds
+        # 503/504 (100 throws, this value): release -> q_pre p50 1.39 s, p99
+        # 1.69 s (twice that is 3.38 s, inside 5.0), no HAND_TIMEOUT, no hang.
+        T_release_timeout: 5.0
+
+        # The hand-joint capture witness (L7 §4.4, S8-C mechanism). CALIBRATED
+        # on S8-D seeds 501/502 (100 throws, witness absent): every joint of a
+        # truth failure pushed at <= 0.10 of max_torque (0.95 N m), whatever
+        # its rho (as low as 0.68 — this hand's fingers do not all reach
+        # q_close on an empty close); the stalled joint of a truth success
+        # pushed at >= 0.57 (the index finger's MCP/PIP/DIP "5"/"6"/"7" almost
+        # always). So effort separates the two and rho does not: effort_frac_min
+        # is the midpoint of 0.10-0.57, rho_min / rho_max / t_persist keep the
+        # ur5e_p1b values. On the calibration set: false-Captured 0/51,
+        # false-Missed 7/49 by fingertips alone -> 4/49 combined. VALIDATED on
+        # seeds 503/504 (100 throws, frozen): false-Captured 0/56, false-Missed
+        # 0/44 (fingertips alone on the same throws: 5/44; all 5 promotions
+        # were truth successes). Sim only: the sim hand lanes carry no noise
+        # and a real hand's effort lane need not be a torque (provisional
+        # blocks the real arm).
+        capture:
+          provisional: true
+          rho_min: 0.4
+          rho_max: 0.95
+          effort_frac_min: 0.33
+          t_persist: 0.1
+
     # ── Pocket geometry (L3 §6 `planner.hand.*`, TBD-HAND-04) ────────────────
     # STALE COMMENT FIXED (docs correction, S7 commit 1): as of S6,
     # `ParsePlannerParams` DOES read both keys into `PlannerParams::d_eff` /
@@ -237,10 +278,15 @@ demo_catching_controller:
       # p50 2.2 ms on this 7-axis arm (dev PC), so 20 ms with a pre-filter to at
       # most 8 IK candidates per cycle.
       budget_s: 0.020
-      # IK seed and wait pose, ARM joint order [rad] (decision L, 2026-09-23):
-      # the S3.5a map's wait pose for this arm. PROVISIONAL. Consumed from S6-B (the IK seed); homing to it
-      # is S7.2.
-      wait_pose: [0.0, 1.0, 0.0, -1.2, 0.0, 1.2, 0.0]
+      # IK seed and wait pose, ARM joint order [rad]. S8-D gate map (D-S8-14
+      # D2, 2026-09-26, #537): rounds of catch_gate_map's `proposed_wait_pose`
+      # from the S3.5b pose, T_arm 0.05, first plan 0.215 s; this is the round
+      # that opened the most throws (244 / 840 on the exploration grid vs 67,
+      # 103, 98 for the others — the rounds do not converge, the 7-axis
+      # null-space moves q* each round). The former [0, 1.0, 0, -1.2, 0, 1.2,
+      # 0] (S3.5a) opened 0. PROVISIONAL. Consumed as the IK seed (S6-B) and
+      # homed to (S7.2).
+      wait_pose: [-0.7174, 1.5729, 1.7260, -0.9021, -0.2900, 1.2010, 2.1347]
       # ── Search (L3 §4, S6-B) ──────────────────────────────────────────────
       # The robot config's catch sub-model (R-3): arm root → catch frame parent.
       sub_model: "iiwa7_catch"
@@ -290,7 +336,9 @@ demo_catching_controller:
         eta_jump: 0.25
       freeze:
         # Decision G (2026-09-23): the L3 §4.11 lower bound T_close,tot 0.1047 +
-        # T_arm (0, sim) + margin 0.03 = 0.135, rounded up with room. Provisional.
+        # T_arm (0, shipped) + margin 0.03 = 0.135, rounded up with room.
+        # Also covers the S8-D sim overlays' T_arm 0.05 (bound 0.1847), so
+        # those leave it alone. Provisional.
         T_freeze: 0.19
       score:
         # L3 §6 defaults; `penalty` is per failed RANK gate (decision D) and must
@@ -399,9 +447,9 @@ demo_catching_controller:
       lag:
         # 0 here because T_arm is the REAL arm's lag, which S10 identifies;
         # `lead_enable` turns the compensation on once it has. The sim arm is
-        # NOT lag-free (the 2026-09-20 "sim is zero" premise was false): the
-        # MJCF position servo is a first-order lag of kd/kp (0.2 s), which
-        # S8-D measures on this robot before leading it.
+        # NOT lag-free: its position servo is a first-order lag of kd/kp, set
+        # to 0.05 s in ../mujoco_simulator.yaml (S8-D), and the S8-D sim runs
+        # lead it with ../sim_overlays/catch_lead_on.yaml.
         T_arm: 0.0
         lead_enable: false
 
@@ -415,13 +463,22 @@ demo_catching_controller:
       # ── Thresholds the joint command layer reports to (L7 §6, S5.3) ───────
       # ‖q_meas − q_cmd‖. D-6 keeps the measured state out of CLIK, so this
       # watchdog is the ONLY thing that notices the arm is not where it was
-      # told to be. PROVISIONAL: a placeholder until a run on this robot shows
-      # what the real tracking gap looks like.
-      track_err_abort: 0.3
-      # The S7 values, written here so this file owns them rather than the
-      # parser defaults. S8-B measured only ur5e_p1b (where sat_ticks is 80);
-      # S8-D re-measures both on this robot.
+      # told to be. S8-D (0.05 s sim servo, calibration seeds 501/502 with the
+      # check off): peak 0.096 rad before t_c, 0.142 in DECEL/HOLD, 0.060 in
+      # RETREAT — and 0.238 on the first homing from the sim's start pose to
+      # the wait pose, which is checked too (IDLE, armed) and is the largest
+      # motion this arm makes. Twice that peak, as for ur5e_p1b (plan §7.3
+      # 3-3). The former 0.3 was a placeholder, and it did fire once — on a
+      # homing move blocked by the shipped scene's table objects, which is
+      # the fault it exists for. S10 sets the real-arm value.
+      track_err_abort: 0.48
+      # How long COMMITTED/CLOSING may run on a stale prediction past io.t_stale
+      # before BALL_STALE_LONG (A-6). S8-D: the committed-snapshot age peaked at
+      # 66 ms, under t_stale, so no throw came near it — kept, owned here.
       stale_committed_max_s: 0.10
+      # REF_SATURATED streak (L7 §4.2). S8-D measured no saturated reference
+      # tick at all on 100 calibration throws (longest streak 0), so the data
+      # cannot place a threshold — the S7 value stays, owned here.
       sat_ticks: 60
       # Consecutive failed solves before the controller latches a fault
       # (L7 §4.2). Three ticks of a solve that cannot succeed is not a

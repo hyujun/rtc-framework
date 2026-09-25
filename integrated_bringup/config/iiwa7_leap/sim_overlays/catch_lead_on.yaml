@@ -1,0 +1,52 @@
+# sim overlay — dynamic_catching S8-D, iiwa7_leap "lead on" (#537)
+#
+#   ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_mpc:=true \
+#       sim_lanes:=true sim_overlay:=catch_lead_on
+#
+# This file owns the rationale for both catch_lead_* overlays of this profile;
+# catch_lead_on_unbounded.yaml differs only where its header says.
+#
+# WHAT IT IS FOR. The shipped controller runs with `joint_cmd.lag.T_arm: 0`
+# because a real-arm actuation lag is an S10 measurement. The sim arm is not
+# lag-free: ../mujoco_simulator.yaml runs its position servo at kd/kp = 0.05 s
+# (see its "Position Servo Gains"), a first-order lag. This overlay leads that
+# plant (L5 §4.5) without touching the shipped controller YAML — the ur5e_p1b
+# S8-B "lead on · planned γ" arm, on this robot.
+#
+# WHAT T_arm 0.05 CHANGES. The validator derives the commit window from T_arm,
+# but the shipped T_freeze already covers it:
+#   L3 §4.11 lower bound = T_close,tot 0.1047 + T_arm 0.05 + margin 0.03
+#                        = 0.1847 <= shipped T_freeze 0.19, so T_freeze stays.
+#                          Startup log: "commit at t_c − 0.190 s".
+#   io.horizon_min 0.51 / io.n_min stay shipped (R1 here needs only 0.33).
+#
+# THE PATH IS THE TRAP. The controller config is not a ROS parameter tree:
+# `ApplyControllerParamOverrides` pokes every `demo_catching_controller.*`
+# parameter into the YAML it loaded, creating any key that is not there. One
+# level short (without `catching:`) is written to a key nothing reads and the
+# run is the shipped profile, with no warning. `test_catch_lead_overlays.py`
+# pins every leaf below to a key the shipped YAML has.
+#
+# The sim plant is a choice (#537, 2026-09-26, D-S8-14), not the iiwa: nothing
+# measured with this overlay predicts the real arm's lead gain (S10 identifies
+# T_arm).
+
+mujoco_simulator:
+  ros__parameters:
+    # Bare robot-on-a-floor scene (no table, no objects). The shipped
+    # scene_right_with_object.xml puts a table and two objects at x 0.45-0.95 m,
+    # directly under this profile's wait pose and catch points; the S8-D smoke
+    # measured the rate-limited homing move dipping the fingers onto the apple
+    # and the table top (palm z 0.15 m), blocking A2 until track_err_abort
+    # disarmed. The gate map that chose the throws and the wait pose models a
+    # floor only (min catch height 0.1 m), so this is the scene it judged.
+    model_path: "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true

@@ -37,16 +37,34 @@ mujoco_simulator:
     # ── Position Servo Gains ──────────────────────────────────────────────────
     # iiwa7_leap MJCF actuators reference <default> class PD blocks (ur5e pattern),
     # so MuJoCo itself does the PD: force = gainprm·(ctrl - qpos) + biasprm[2]·qvel.
-    # 현재 MJCF default-class 값 (SSoT — robot_descriptions/.../mjcf/*.xml):
-    #   iiwa7_proximal (A1-A4): kp=3000 kd=600   (ur5e size3 ×1.5)
-    #   iiwa7_distal   (A5-A7): kp=750  kd=150   (ur5e size1 ×1.5)
-    #   leap           (0-15) : kp=2.5  kd=0.125 (forcerange ±0.95 N·m)
-    # Joint properties (armature/damping/frictionloss)도 MJCF의 <default> class
-    # 블록(iiwa7_proximal/iiwa7_distal/leap_mcp/leap_pip/leap_dip/leap_thumb)이
-    # 단일 출처. urdf_to_mjcf 재실행 시 재주입 필요 (robots/iiwa7_leap/README.md).
-    # 아래 servo_kp/kd 블록은 MJCF 값과 1:1 미러 — use_yaml_servo_gains=true 로
-    # 켜면 런타임에 동일 값으로 덮어쓴다 (현재 false → MJCF default-class 활성).
-    use_yaml_servo_gains: false
+    # MJCF default-class values (robot_descriptions/.../mjcf/*.xml):
+    #   iiwa7_proximal (A1-A4): kp=3000 kd=600   (ur5e size3 x1.5)
+    #   iiwa7_distal   (A5-A7): kp=750  kd=150   (ur5e size1 x1.5)
+    #   leap           (0-15) : kp=2.5  kd=0.125 (forcerange +-0.95 N m)
+    # Joint properties (armature/damping/frictionloss) stay in the MJCF <default>
+    # class blocks (iiwa7_proximal/iiwa7_distal/leap_mcp/leap_pip/leap_dip/
+    # leap_thumb); urdf_to_mjcf re-runs must re-inject them (robots/iiwa7_leap/
+    # README.md).
+    #
+    # A position PD tracks a ramp with a lag of exactly kd/kp whatever the
+    # inertia, so the MJCF arm gains make this sim arm a 0.2 s first-order lag.
+    # The catching design assumes an arm lag of T_arm 0.05 s (gate map, T_freeze,
+    # horizon_min), and at 0.2 s the commit lead alone (T_close,tot 0.1047 +
+    # 0.2 + margin 0.03 = 0.335 s) plus the first plan exceeds every flight the
+    # gate map opens. So, as ur5e_p1b did (D-S8-13), this profile runs the arm
+    # at kd/kp = 0.05 s: kd kept, kp x4. Decided 2026-09-26 (#537, dynamic_
+    # catching S8-D, D-S8-14). This is a SIM choice, not the iiwa's servo lag —
+    # that is joint_cmd.lag.T_arm, identified on hardware.
+    # The forcerange is +-200 N m on every arm joint, so a RAW step above
+    # 200/12000 = ~17 mrad (A1-A4) / 200/3000 = ~67 mrad (A5-A7) saturates; no
+    # shipped controller sends raw steps (quintic / rate-limited tails).
+    #
+    # use_yaml_servo_gains applies to EVERY robot group, so the hand's gains are
+    # spelled out per group below too — copied unchanged from the MJCF. The
+    # globals here are the arm's, for any group that does not name its own.
+    use_yaml_servo_gains: true
+    servo_kp: [12000.0, 12000.0, 12000.0, 12000.0, 3000.0, 3000.0, 3000.0]
+    servo_kd: [600.0, 600.0, 600.0, 600.0, 150.0, 150.0, 150.0]
 
     # ── Object state ──────────────────────────────────────────────────────────
     # freejoint 를 가진 body 전부의 pose 를 발행한다 — 이 씬은 테이블 위 물체 2개를
@@ -148,9 +166,9 @@ mujoco_simulator:
         # explicit costs a second copy, which test_shipped_initial_qpos pins
         # against the MJCF so the two cannot drift.
         initial_qpos: [0.0, 0.7, 0.0, -1.0, 0.0, 0.7, 0.0]
-        # PD gains per joint (A1..A7). proximal 3000/600, distal 750/150.
-        # Mirrors MJCF default classes iiwa7_proximal / iiwa7_distal.
-        servo_kp: [3000.0, 3000.0, 3000.0, 3000.0, 750.0, 750.0, 750.0]
+        # PD gains per joint (A1..A7): the MJCF's kd with kp x4, so kd/kp =
+        # 0.05 s (see "Position Servo Gains" above; MJCF 3000/600, 750/150).
+        servo_kp: [12000.0, 12000.0, 12000.0, 12000.0, 3000.0, 3000.0, 3000.0]
         servo_kd: [600.0, 600.0, 600.0, 600.0, 150.0, 150.0, 150.0]
       leap:
         # LEAP joint names are bare numbers — quote in YAML to keep them as strings.
@@ -197,9 +215,9 @@ mujoco_simulator:
         # command_joint_names order; the simulator maps it by name.
         initial_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        # LEAP servo gains in command_joint_names order ("0".."15").
-        # Force range is only ±0.95 Nm; PD kept conservative.
-        # Mirrors MJCF default class "leap" (kp=2.5, kd=0.125).
+        # LEAP servo gains in command_joint_names order ("0".."15"): the MJCF
+        # default class "leap" (kp=2.5, kd=0.125) unchanged — here only because
+        # use_yaml_servo_gains is profile-wide. Force range is only ±0.95 N m.
         servo_kp: [2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5,
                    2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5]
         servo_kd: [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125,

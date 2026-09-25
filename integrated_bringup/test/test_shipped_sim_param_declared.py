@@ -164,8 +164,8 @@ def test_sim_overlay_keys_are_declared(profile: str, declared: set[str]) -> None
     suffix, which is how they are declared.
     """
     paths = _overlay_paths(profile)
-    if profile == "ur5e_p1b":
-        # The overlay mechanism is exercised by this profile; an empty list here
+    if profile in ("ur5e_p1b", "iiwa7_leap"):
+        # Both profiles ship overlays (iiwa7_leap since S8-D); an empty list here
         # means the directory moved, not that there is nothing to check.
         assert paths, f"{profile}: no sim_overlays/*.yaml found — test is vacuous"
     for path in paths:
