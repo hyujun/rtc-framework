@@ -15,7 +15,11 @@ Usage:
 
   # Scene overlay: a params file layered on top of mujoco_simulator.yaml
   # (bare name = config/iiwa7_leap/sim_overlays/<name>.yaml, or a path)
-  ros2 launch integrated_bringup sim_iiwa7_leap.launch.py sim_overlay:=<name>
+  ros2 launch integrated_bringup sim_iiwa7_leap.launch.py sim_overlay:=catch_lead_on
+
+  # Measurement lanes (S8): per-step clock phase + ball contact truth, written
+  # to <session>/sim/{clock_lane,ball_contact_lane}.csv
+  ros2 launch integrated_bringup sim_iiwa7_leap.launch.py sim_lanes:=true
 
 Nodes launched:
   1. mujoco_simulator_node    — MuJoCo physics simulator
@@ -47,6 +51,7 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from integrated_bringup.sim_lanes import sim_lane_overrides, sim_lanes_argument_description
 from integrated_bringup.sim_overlay import (
     resolve_sim_overlay,
     sim_overlay_argument_description,
@@ -118,6 +123,11 @@ def launch_setup(context, *args, **kwargs):
             "1",
             "yes",
         )
+
+    # ── Measurement lanes (S8-D) — integrated_bringup.sim_lanes ─────────────
+    sim_overrides.update(
+        sim_lane_overrides(LaunchConfiguration("sim_lanes").perform(context), session_dir)
+    )
 
     # ── Fake hand response + control_rate ─────────────────────────────────────
     import yaml
@@ -564,6 +574,12 @@ def generate_launch_description():
         ),
     )
 
+    sim_lanes_arg = DeclareLaunchArgument(
+        "sim_lanes",
+        default_value="false",
+        description=sim_lanes_argument_description(),
+    )
+
     sim_overlay_arg = DeclareLaunchArgument(
         "sim_overlay",
         default_value="",
@@ -581,6 +597,7 @@ def generate_launch_description():
             kp_arg,
             kd_arg,
             use_yaml_servo_gains_arg,
+            sim_lanes_arg,
             max_log_sessions_arg,
             use_cpu_affinity_arg,
             initial_controller_arg,

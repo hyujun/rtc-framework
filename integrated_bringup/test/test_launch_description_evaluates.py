@@ -107,14 +107,16 @@ ROBOT_COMBOS: list[tuple[str, dict[str, str]]] = [
 ]
 
 
-# Arguments not every launch can be driven with. `sim_overlay` is declared by
-# the p1b and iiwa7_leap sims (not p1a), but only p1b SHIPS overlays — a bare
-# name on iiwa7_leap correctly raises, which is the contract, not a combo to
-# evaluate. Driving iiwa7_leap's overlay would need a path to a temp file, and
-# that is covered directly in test_sim_overlay.py.
+# Arguments not every launch can be driven with. `sim_overlay` and `sim_lanes`
+# are declared by the p1b and iiwa7_leap sims (not p1a); each drives an overlay
+# that profile ships (iiwa7_leap's since S8-D).
 EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     "sim_ur5e_p1b.launch.py": [
         ("sim_overlay", {"sim_overlay": "inference_pole"}),
+        ("sim_lanes", {"sim_lanes": "true"}),
+    ],
+    "sim_iiwa7_leap.launch.py": [
+        ("sim_overlay", {"sim_overlay": "catch_lead_on"}),
         ("sim_lanes", {"sim_lanes": "true"}),
     ],
 }
@@ -372,6 +374,7 @@ def test_invalid_mpc_engine_is_rejected(filename):
 # `model_path:=`, and one placed before mujoco_simulator.yaml would silently lose
 # to it — both launch fine and run the wrong scene.
 P1B_SIM = "sim_ur5e_p1b.launch.py"
+LEAP_SIM = "sim_iiwa7_leap.launch.py"
 
 
 def _node_parameter_sources(node, context) -> list:
@@ -414,8 +417,8 @@ def _node_parameter_sources(node, context) -> list:
     return out
 
 
-def _nodes_by_name(overrides: dict[str, str]):
-    description = _load_launch_module(P1B_SIM).generate_launch_description()
+def _nodes_by_name(overrides: dict[str, str], filename: str = P1B_SIM):
+    description = _load_launch_module(filename).generate_launch_description()
     context = _seeded_context(description, overrides)
     nodes = {
         entity._Node__node_name: entity
@@ -470,12 +473,14 @@ def test_unknown_sim_overlay_is_rejected():
         _evaluate(P1B_SIM, {"sim_overlay": "no_such_overlay"})
 
 
-# ── sim_lanes (ur5e_p1b sim, S8-A) ───────────────────────────────────────────
+# ── sim_lanes (ur5e_p1b sim S8-A, iiwa7_leap sim S8-D) ───────────────────────
 # The lanes are the measurement substrate of every S8 trial run: the clock lane
 # is the D-3 covariate and the contact lane the G7-B3 impulse. What matters is
 # that `sim_lanes:=true` turns BOTH on and points them INTO this run's session
 # tree (so a run's lanes sit next to the controller CSVs they are joined with),
-# and that the default leaves the sim exactly as it was.
+# and that the default leaves the sim exactly as it was. Both sims that run
+# catching trials share integrated_bringup.sim_lanes, and both are driven here.
+LANED_SIMS = (P1B_SIM, LEAP_SIM)
 LANES = ("clock_lane", "ball_contact_lane")
 
 
@@ -501,8 +506,9 @@ def _override_values(node, context) -> dict:
     return merged
 
 
-def test_sim_lanes_writes_both_lanes_into_the_session_sim_directory():
-    nodes, context = _nodes_by_name({"sim_lanes": "true", "use_cpu_affinity": "false"})
+@pytest.mark.parametrize("filename", LANED_SIMS)
+def test_sim_lanes_writes_both_lanes_into_the_session_sim_directory(filename):
+    nodes, context = _nodes_by_name({"sim_lanes": "true", "use_cpu_affinity": "false"}, filename)
     values = _override_values(nodes["mujoco_simulator"], context)
     session_dir = context.launch_configurations[SESSION_DIR_CONFIG]
     assert is_session_dir_name(os.path.basename(session_dir)), session_dir
@@ -519,15 +525,17 @@ def test_sim_lanes_writes_both_lanes_into_the_session_sim_directory():
     assert not any(k.startswith(LANES) for k in ctrl), sorted(ctrl)
 
 
-def test_no_sim_lanes_leaves_the_lanes_to_the_yaml():
-    nodes, context = _nodes_by_name({"use_cpu_affinity": "false"})
+@pytest.mark.parametrize("filename", LANED_SIMS)
+def test_no_sim_lanes_leaves_the_lanes_to_the_yaml(filename):
+    nodes, context = _nodes_by_name({"use_cpu_affinity": "false"}, filename)
     values = _override_values(nodes["mujoco_simulator"], context)
     assert not any(k.startswith(LANES) for k in values), sorted(values)
 
 
-def test_a_misspelled_sim_lanes_value_is_rejected():
+@pytest.mark.parametrize("filename", LANED_SIMS)
+def test_a_misspelled_sim_lanes_value_is_rejected(filename):
     with pytest.raises(RuntimeError, match="sim_lanes must be true or false"):
-        _evaluate(P1B_SIM, {"sim_lanes": "ture"})
+        _evaluate(filename, {"sim_lanes": "ture"})
 
 
 # ── Shield-first ordering (issue #405) ───────────────────────────────────────

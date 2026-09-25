@@ -57,6 +57,7 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from integrated_bringup.sim_lanes import sim_lane_overrides, sim_lanes_argument_description
 from integrated_bringup.sim_overlay import (
     resolve_sim_overlay,
     sim_overlay_argument_description,
@@ -158,20 +159,10 @@ def launch_setup(context, *args, **kwargs):
             raise RuntimeError(f"object_seed must be >= 0 (0 = seed from the OS), got {seed}")
         sim_overrides["object_pool.seed"] = seed
 
-    # ── Measurement lanes (S8-A) ─────────────────────────────────────────────
-    # The clock-phase and ball-contact truth lanes are node parameters read at
-    # start-up, off by default, and refuse an empty csv_path. Wiring them to the
-    # SESSION tree keeps every trial run's lanes next to the controller CSVs they
-    # are joined with — a path in an overlay file would make every run write the
-    # same file. Placed in the CLI dict, so it wins over an overlay's lane block.
-    sim_lanes = LaunchConfiguration("sim_lanes").perform(context)
-    if sim_lanes.lower() in ("true", "1", "yes"):
-        lane_dir = os.path.join(session_dir, "sim")
-        for lane in ("clock_lane", "ball_contact_lane"):
-            sim_overrides[f"{lane}.enabled"] = True
-            sim_overrides[f"{lane}.csv_path"] = os.path.join(lane_dir, f"{lane}.csv")
-    elif sim_lanes.lower() not in ("", "false", "0", "no"):
-        raise RuntimeError(f"sim_lanes must be true or false, got {sim_lanes!r}")
+    # ── Measurement lanes (S8-A) — integrated_bringup.sim_lanes ─────────────
+    sim_overrides.update(
+        sim_lane_overrides(LaunchConfiguration("sim_lanes").perform(context), session_dir)
+    )
 
     # ── Fake hand response + control_rate ─────────────────────────────────────
     import yaml
@@ -575,11 +566,7 @@ def generate_launch_description():
     sim_lanes_arg = DeclareLaunchArgument(
         "sim_lanes",
         default_value="false",
-        description=(
-            "Write the sim clock-phase lane and the ball contact truth lane to "
-            "<session_dir>/sim/{clock_lane,ball_contact_lane}.csv (S8 trial runs; "
-            "catching_trials joins them with the controller CSVs)."
-        ),
+        description=sim_lanes_argument_description(),
     )
 
     use_cpu_affinity_arg = DeclareLaunchArgument(
