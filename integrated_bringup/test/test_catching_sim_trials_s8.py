@@ -92,8 +92,10 @@ def test_the_reference_throw_is_the_centre_of_the_box_it_was_frozen_around():
 def test_an_unknown_distribution_or_a_profile_without_a_box_is_refused():
     with pytest.raises(ValueError, match="unknown distribution"):
         frozen_throws("uniform", "ur5e_p1b", 3, 0)
-    with pytest.raises(ValueError, match="no box for profile 'iiwa7_leap'"):
-        frozen_throws("s35b", "iiwa7_leap", 3, 0)
+    # ur5e_p1a runs no catching trials, so it has no box. (This was iiwa7_leap
+    # until S8-D froze that robot's box, #537.)
+    with pytest.raises(ValueError, match="no box for profile 'ur5e_p1a'"):
+        frozen_throws("s35b", "ur5e_p1a", 3, 0)
 
 
 def test_the_default_arguments_still_build_the_reference_series():

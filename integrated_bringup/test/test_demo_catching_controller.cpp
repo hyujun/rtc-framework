@@ -1275,11 +1275,18 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.freeze.T_freeze").as_double(), t_freeze);
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("joint_cmd.lag.T_arm").as_double(), t_arm);
   EXPECT_TRUE(node_handle->get_parameter("joint_cmd.lag.lead_enable").as_bool());
-  // S8-C: RETREAT's hand timeout. Neither shipped profile sets the key, so the
-  // value is DERIVED — the mirror is the only place a reader can see it.
+  // S8-C: RETREAT's hand timeout. A profile that does not set the key gets
+  // the DERIVED value (ur5e_p1b); one that sets it from a measurement gets
+  // exactly that (iiwa7_leap since S8-D, #537 — the derived 1.454 s was
+  // shorter than its measured release). Either way the mirror is the only
+  // place a reader can see the value the controller runs with.
   const auto& hand = ctrl.GetCatchingParams().hand;
-  EXPECT_TRUE(hand.T_release_timeout_derived) << profile;
+  const YAML::Node set = node["catching"]["robot"]["hand"]["T_release_timeout"];
+  EXPECT_EQ(hand.T_release_timeout_derived, !set) << profile;
   ASSERT_FALSE(hand.T_release_timeout.tbd) << profile;
+  if (set) {
+    EXPECT_DOUBLE_EQ(hand.T_release_timeout.value, set.as<double>()) << profile;
+  }
   EXPECT_GT(hand.T_release_timeout.value, hand.T_close_e2e.value) << profile;
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("hand.T_release_timeout").as_double(),
                    hand.T_release_timeout.value)
