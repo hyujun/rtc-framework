@@ -228,7 +228,8 @@ P1b 는 같은 식으로 $1.5+0.095/(0.2805+0.001)=$ **1.84 m/s** 인데, 이것
 | `caging_mask` | $\mathcal C$ |
 | `eta_close` | §4.2 $\eta$ |
 | `T_close_e2e` | 종단 간 식별값 [s] (v0.4 의 `T_close`·`T_link` 두 필드를 대체) |
-| `T_hold`, `T_close_timeout` | [s] (`T_pre` 는 없다 — Q4, §4.3) |
+| `T_hold`, `T_close_timeout`, `T_release_timeout` | [s] (`T_pre` 는 없다 — Q4, §4.3) |
+| `capture.*` | 판정의 손 관절 증거 임계 (L7 §4.4, S8-C) |
 | `q_tol`, `qd_tol` | 시퀀서 `at_target`·정착 판정 [rad], [rad/s] (§5.3) |
 
 ### 5.2 명령 포트 (RT에서 호출)
@@ -248,7 +249,7 @@ v0.5 에서 삭제 — 손은 `ControllerOutput` 손 device slot (D-11). `HandCo
 - `Preshape → Close`: `now_real ≥ t_{cmd}-h/2` (`HandCommandDueRounded`, §4.3), **COMMITTED 에서만**
 - `Close → Hold`: $\rho\ge\eta$ 또는 `T_close_timeout` 경과(타임아웃이면 플래그)
 - `Hold → Release`: L7 지시(시각은 L7 §4.8 "RETREAT 순서" — 판정과 무관하게 팔이 대기 자세에 도착한 뒤. RETREAT 복귀 중에는 손을 열지 않는다, #537 결정 2026-09-24)
-- `Release` 목표는 **`q_pre`** 다(`q_open` 은 homing 전용) — 도달하면 `Preshape` 로 복귀해 다음 시행의 ARMED 준비를 마친다
+- `Release` 목표는 **`q_pre`** 다(`q_open` 은 homing 전용) — 도달하면 `Preshape` 로 복귀해 다음 시행의 ARMED 준비를 마친다. 도달을 기다리는 쪽은 L7 이다: `RETREAT` 의 release 뒤 `T_release_timeout` 안에 도달하지 못하면 L7 이 `HAND_TIMEOUT` 으로 `IDLE` 에 가고 disarm 한다 (S8-C, D-S8-6 (a) — 시퀀서 자체는 시계를 추가로 갖지 않는다)
 - `Abort` 지시: COMMITTED 이후면 `t_cmd` 규칙대로 마저 닫고 `Hold` 로, 그 전이면 `q_pre` 유지
 
 ## 6. YAML 파라미터 (손별 `robot.hand.*`)
@@ -268,6 +269,12 @@ v0.5 에서 삭제 — 손은 `ControllerOutput` 손 device slot (D-11). `HandCo
 | `robot.hand.T_close_e2e` | double | s | `TBD` | ≥0 | §4.2 종단 간 실측 (sim S4.2, 실기 S4.3·S10) |
 | `robot.hand.T_hold` | double | s | **0.5** (provisional, D-S7-1) | 0–5 | 튜닝. 재무장·시퀀서 도착 판정과 함께 확인 (S7.2) |
 | `robot.hand.T_close_timeout` | double | s | **= 2 × `T_close_e2e`** (provisional — p1b 0.56 s · leap 0.21 s, D-S7-1) | > `T_close_e2e` | 검증기: `T_close_timeout > T_close_e2e` |
+| `robot.hand.T_release_timeout` | double | s | **= $m\,T_{close,e2e}$**, $m=2\max\!\big(1/\eta,\ \ln(S_{\max}/q_{tol})/\ln\tfrac{1}{1-\eta}\big)$, $S_{\max}=\max_i|q_{close,i}-q_{pre,i}|$ (전 관절) — p1b 2.36 s ($m$ 8.4) · leap 1.45 s ($m$ 14.0) (provisional, S8-C D-S8-6) | > `T_close_e2e` | `RETREAT` 의 `q_pre` 도착 대기 (L7 §4.2 `HAND_TIMEOUT`). $T_{close,e2e}$ 는 ρ 가 η 에 닿는 시각까지만 재지만, release 는 hold 자세에서 `q_pre` 까지 **정착**해야 한다 (`q_tol`). 그래서 두 극한 플랜트 중 느린 쪽에 close timeout 과 같은 2 배를 곱한다: 토크 포화 (이동 ∝ 거리 → $1/\eta$), 1차 선형 (`q_tol` 까지 로그 정착). 상수 배수 3 은 강성 지배인 leap 의 release (1차 지연 추정 ≈ 0.73 s) 를 매번 timeout 시켜 기각했다 (#537 5823291259). 검증기: 유한·> 0·> `T_close_e2e` (0 s 유도값도 막는다). p1b 는 S8-C sim 에서 release→`q_pre` p99 × 2 ≤ 값을 확인하고, leap 은 S8-D 에서 확인한다 |
+| `robot.hand.capture.rho_min`, `rho_max` | double | – | 없음 (블록이 없으면 손 증거 꺼짐) | 0 ≤ `rho_min` < `rho_max` < 1 | L7 §4.4 손 관절 증거: 관절별 ρ 가 이 띠 안이면 "도중에 멈춤". `rho_max` < 1 은 `q_close` 에 닿은 빈 손을 제외하고, `rho_min` 은 닫히지 않은 채 다른 것을 미는 손가락을 제외한다 (S8-C, 값은 교정 세트로 확정) |
+| `robot.hand.capture.effort_frac_min` | double | – | 없음 | (0, 1] | 같은 관절의 $s_i\tau_i/\tau_{\max,i}$ 하한. $\tau_{\max}$ 는 손 device 의 `joint_limits.max_torque` (없으면 시행을 park) |
+| `robot.hand.capture.t_persist` | double | s | 없음 | [0, `T_hold`) | 막힘이 판정 tick 까지 끊기지 않아야 하는 시간. `supervisor.contact.t_confirm` (판정 창 확장) 과 의미가 달라 따로 둔다 |
+| `robot.hand.capture.min_joints` | int | – | 1 | [1, caging 관절 수] | stalled 관절 수 하한 |
+| `robot.hand.capture.provisional` | bool | – | **true** | – | `hold.mode: close_target` 에서만 허용 (검증기) — `measured_offset` 의 빈 손은 η 교차 + `delta_rad` 에 멈춰 띠 안에 들어온다. 실기 구성을 막는다 — 실기 손 드라이버의 effort lane 은 관절 토크가 아닐 수 있다 (`udp_hand` 는 전류). S10 에서 단위를 정한다 |
 | `robot.hand.q_tol` | double | rad | **0.01** (provisional, #537 S7 결정 2026-09-23) | >0 | §5.3 `at_target` 판정 — 최소 caging 이동량의 ~0.1 (p1b `index_dip_fe` 0.113 rad) |
 | `robot.hand.qd_tol` | double | rad/s | **0.05** (provisional) | >0 | §5.3 정착 검사 ‖q̇‖∞ — 바이어스 학습 창(L7 §4.4)은 손 정지 후에만 연다 |
 
