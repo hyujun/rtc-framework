@@ -27,6 +27,15 @@ them into one row per trial:
   :mod:`rtc_tools.analysis.clock_phase`.
 * **first hand–ball contact episode** from the contact lane (G7-B3 input).
 * **``ref_saturated`` max streak** (G8-C3).
+* **plan validity rate** (G3-D (i), #537 S8-D) — the fraction of ``planner_
+  events.csv`` cycles between launch and commit whose ``plan_valid`` is true;
+  see :func:`plan_validity_window` for the metric and :func:`_planner_cycle_times`
+  for how a planner wake (a steady-clock instant) is mapped onto the
+  controller's ``t_relative_s`` axis (needs ``--clock-lane``).
+* **gate-map verdict** (S8-D, #537, optional ``--gate-map``) — whether a
+  ``--dist`` box throw's nearest grid throw is open on the torque layer of a
+  ``catch_gate_map`` output, and truth success over that open subset; see
+  :func:`gate_map_verdict`.
 
 and offers the statistics the S8 gates are judged with: Wilson intervals and
 the S0.9 power / required-n computation, a whitened cross-covariance test with
@@ -63,6 +72,7 @@ import numpy as np
 import yaml
 
 from rtc_tools.analysis import clock_phase, hand_close
+from rtc_tools.analysis.catch_gate_map import REASON_NONE
 from rtc_tools.analysis.catch_speed_budget import (
     DEFAULT_CATCH_FRAME,
     ExtraFrame,
@@ -102,6 +112,15 @@ DEFAULT_N_BOOT = 2000
 DEFAULT_SEED = 0
 DEFAULT_HOLD_WINDOW_S = 0.1  # hand-joint capture calibration window before t_hold_end
 TRUTH_TIME_AXES = ("stamp", "recv")
+# The catchability_map / catch_gate_map throw-grid axes a --dist box trial's
+# raw JSON record carries (S8-D, #537) — see :func:`trial_axis_values`.
+GATE_MAP_AXES = (
+    "distance_m",
+    "release_height_m",
+    "aim_deviation_deg",
+    "speed_m_s",
+    "elevation_deg",
+)
 
 
 # ══ Statistics ════════════════════════════════════════════════════════════════
@@ -439,6 +458,27 @@ def _catching_controllers(config_dir: Path) -> dict[str, dict]:
     return found
 
 
+# Where a profile keeps its robot config (``urdf``, ``urdf.extra_frames``): the
+# shared ``_base.yaml`` when the profile has one, else ``sim.yaml`` — a
+# sim-only profile has no hardware twin to share a base with.
+ROBOT_CONFIG_FILES = ("_base.yaml", "sim.yaml")
+
+
+def robot_config_params(config_dir: Path) -> dict:
+    """The ``/**`` parameters of the first of :data:`ROBOT_CONFIG_FILES` that has ``urdf``."""
+    config_dir = Path(config_dir)
+    for name in ROBOT_CONFIG_FILES:
+        path = config_dir / name
+        if path.is_file():
+            params = _ros_params(_load_yaml(path))
+            if "urdf" in params:
+                return params
+    raise SystemExit(
+        f"{config_dir}: none of {', '.join(ROBOT_CONFIG_FILES)} carries a `urdf` block "
+        "(urdf.extra_frames lives there)"
+    )
+
+
 def load_profile(
     config_dir: Path,
     controller: str | None = None,
@@ -493,10 +533,7 @@ def load_profile(
             f"{name}: catching.io lacks {exc.args[0]} — the sim-world → model-world "
             "composition cannot be read, and guessing it flips the frame silently"
         ) from exc
-    base_yaml = config_dir / "_base.yaml"
-    if not base_yaml.is_file():
-        raise SystemExit(f"{config_dir}: no _base.yaml (urdf.extra_frames lives there)")
-    params = _ros_params(_load_yaml(base_yaml))
+    params = robot_config_params(config_dir)
     frame = extra_frame_from_params(params, catch_frame)
     ball = (node["catching"].get("core") or {}).get("ball") or {}
     diameter = ball.get("diameter")
@@ -519,6 +556,147 @@ def load_profile(
         ball_mass_kg=None if mass is None else float(mass),
         hand_yaml=dict(hand_yaml) if isinstance(hand_yaml, Mapping) else {},
     )
+
+
+# ══ Gate map (S8-D throw-box verdict, #537) ═══════════════════════════════════
+# A ``catch_gate_map`` output judges the ``catchability_map`` throw GRID the
+# S8-D box was drawn from (rtc_tools.analysis.catch_gate_map's module
+# docstring): each grid throw is OPEN on the torque layer when at least one of
+# its accepted candidates (at the map's one wait-pose ``seed_id`` —
+# ``catch_gate_map.py``'s ``accepted = [r for r in accepted if
+# int(r["seed_id"]) == seed_id]`` already narrows ``gate_map.csv`` to it)
+# has ``reason_torque == "none"``. A --dist box trial is drawn continuously
+# inside the grid's box (``catching_sim_trials.frozen_throws``), so it is
+# never exactly one grid throw — this module hands it the NEAREST one, in
+# axis space normalised by each axis's own grid step, so an axis with a
+# coarser grid does not dominate the distance.
+
+
+@dataclass
+class GateMap:
+    """What one ``catch_gate_map`` output + its ``catchability_map`` grid says
+    about the S8-D throw box, read once per run (:func:`load_gate_map`)."""
+
+    map_dir: Path  # the catchability_map dir the gate map was judged from
+    seed_id: int
+    throw_axes: dict[int, dict[str, float]]  # throw_index -> {axis: value}
+    open_throw_indices: frozenset[int]
+    axis_steps: dict[str, float]  # axis -> grid step; an axis with one value is absent
+
+
+def load_gate_map_summary(gate_map_dir: Path) -> tuple[Path, int]:
+    """``(map_dir, seed_id)`` from a ``catch_gate_map`` ``gate_map_summary.yaml``."""
+    doc = _load_yaml(Path(gate_map_dir) / "gate_map_summary.yaml")
+    try:
+        return Path(doc["map_dir"]), int(doc["seed_id"])
+    except KeyError as exc:
+        raise SystemExit(f"{gate_map_dir}: gate_map_summary.yaml lacks {exc.args[0]}") from exc
+
+
+def load_throw_grid_axes(throw_summary_csv: Path) -> dict[int, dict[str, float]]:
+    """``throw_index -> {axis: value}`` from a ``catchability_map`` ``throw_summary.csv`` grid."""
+    out: dict[int, dict[str, float]] = {}
+    with Path(throw_summary_csv).open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            out[int(row["throw_index"])] = {axis: float(row[axis]) for axis in GATE_MAP_AXES}
+    return out
+
+
+def load_open_throw_indices(gate_map_csv: Path, seed_id: int) -> frozenset[int]:
+    """Grid ``throw_index`` values with ≥ 1 candidate open on the torque layer at ``seed_id``."""
+    out: set[int] = set()
+    with Path(gate_map_csv).open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            if int(row["seed_id"]) == seed_id and row["reason_torque"] == REASON_NONE:
+                out.add(int(row["throw_index"]))
+    return frozenset(out)
+
+
+def grid_axis_steps(
+    throw_axes: Mapping[int, Mapping[str, float]], axes: Sequence[str] = GATE_MAP_AXES
+) -> dict[str, float]:
+    """Per-axis grid step: the median spacing of its unique grid values.
+
+    An axis whose grid holds only one value is OMITTED, not given a step of 0
+    — a 0 step would make every trial infinitely far from the grid on that
+    axis (division by 0), when in fact the axis carries no information to
+    normalise by at all.
+    """
+    steps: dict[str, float] = {}
+    for axis in axes:
+        values = sorted({row[axis] for row in throw_axes.values()})
+        if len(values) < 2:
+            continue
+        steps[axis] = float(np.median(np.diff(values)))
+    return steps
+
+
+def nearest_grid_throw(
+    trial_axes: Mapping[str, float],
+    throw_axes: Mapping[int, Mapping[str, float]],
+    axis_steps: Mapping[str, float],
+) -> tuple[int, float]:
+    """The grid throw nearest ``trial_axes``, Euclidean in axis space normalised by
+    ``axis_steps`` (an axis absent from ``axis_steps`` — a single-valued grid,
+    :func:`grid_axis_steps` — does not enter the distance). Ties go to the
+    LOWEST ``throw_index``: throws are visited in ascending index order and a
+    later one must beat, not just match, the best distance so far to replace it.
+    """
+    best_idx, best_d = -1, math.inf
+    for idx in sorted(throw_axes):
+        axes = throw_axes[idx]
+        d = math.sqrt(
+            sum(((trial_axes[axis] - axes[axis]) / step) ** 2 for axis, step in axis_steps.items())
+        )
+        if d < best_d:
+            best_idx, best_d = idx, d
+    return best_idx, best_d
+
+
+def load_gate_map(gate_map_dir: Path) -> GateMap:
+    """Read a ``catch_gate_map`` output dir into a :class:`GateMap`."""
+    gate_map_dir = Path(gate_map_dir)
+    map_dir, seed_id = load_gate_map_summary(gate_map_dir)
+    throw_axes = load_throw_grid_axes(map_dir / "throw_summary.csv")
+    return GateMap(
+        map_dir=map_dir,
+        seed_id=seed_id,
+        throw_axes=throw_axes,
+        open_throw_indices=load_open_throw_indices(gate_map_dir / "gate_map.csv", seed_id),
+        axis_steps=grid_axis_steps(throw_axes),
+    )
+
+
+def trial_axis_values(record: Mapping) -> dict[str, float] | None:
+    """The gate-map axis values a raw ``trial_results.json`` record carries.
+
+    Only a ``--dist`` box throw (``catching_sim_trials.frozen_throws``) writes
+    all of ``GATE_MAP_AXES`` onto its record; the ``reference``/``varied``
+    series (``trial_throws``) writes none of them — ``None``, not a guess, so
+    such a trial gets no gate-map verdict (:func:`gate_map_verdict`).
+    """
+    try:
+        return {axis: float(record[axis]) for axis in GATE_MAP_AXES}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def gate_map_verdict(trial_axes: Mapping[str, float] | None, gate_map: GateMap) -> dict:
+    """``map_open`` / ``map_throw_index`` / ``map_distance`` for one trial.
+
+    All ``None`` when ``trial_axes`` is ``None`` (:func:`trial_axis_values`) —
+    a reference-series trial was never drawn from the gate map's grid, so
+    "nearest grid throw" has no meaning for it.
+    """
+    if trial_axes is None:
+        idx, dist = None, None
+    else:
+        idx, dist = nearest_grid_throw(trial_axes, gate_map.throw_axes, gate_map.axis_steps)
+    return {
+        "map_open": None if idx is None else idx in gate_map.open_throw_indices,
+        "map_throw_index": idx,
+        "map_distance": dist,
+    }
 
 
 def urdf_subtree(urdf_text: str, root_link: str) -> list[str]:
@@ -1323,6 +1501,43 @@ def planner_timing(ctx: TrialContext, t_launch: float) -> dict:
     }
 
 
+def plan_validity_window(
+    wake_t_relative_s: np.ndarray,
+    plan_valid: np.ndarray,
+    t_launch: float,
+    t_commit: float,
+    t_end: float,
+) -> dict:
+    """G3-D (i): per-trial plan validity rate (L3 gate G3-D, #537 S8-D).
+
+    ``wake_t_relative_s``/``plan_valid`` are every ``planner_events.csv`` row's
+    wake instant (mapped onto the controller's ``t_relative_s`` axis — see
+    :func:`_planner_cycle_times` for the mapping and its evidence) and
+    ``plan_valid`` column, for the WHOLE session. The window is
+    ``[t_launch, t_commit]`` when the trial committed (``t_commit`` finite),
+    else ``[t_launch, t_end]`` — a trial that never reaches COMMITTED has no
+    catch to judge plan validity against, so every wake up to RETREAT/timeout
+    counts instead. ``plan_valid_ratio`` is NaN with 0 cycles in the window
+    (nothing to divide by); ``plan_valid_at_commit`` — the LAST cycle at or
+    before the window end — is NaN unless the trial actually committed, kept
+    ``float`` (1.0/0.0) rather than ``bool`` so it stays NaN-able like this
+    module's other ``_judge``-style columns (see :func:`hand_persist_met`).
+    """
+    has_commit = math.isfinite(t_commit)
+    window_end = t_commit if has_commit else t_end
+    sel = np.nonzero((wake_t_relative_s >= t_launch) & (wake_t_relative_s <= window_end))[0]
+    n = int(sel.size)
+    at_commit = math.nan
+    if has_commit and n:
+        at_commit = float(plan_valid[sel[-1]])
+    return {
+        "planner_cycles": n,
+        "plan_valid_cycles": int(plan_valid[sel].sum()) if n else 0,
+        "plan_valid_ratio": float(plan_valid[sel].mean()) if n else math.nan,
+        "plan_valid_at_commit": at_commit,
+    }
+
+
 def first_hand_contact(
     contacts,
     seg_sim: tuple[float, float],
@@ -1441,6 +1656,7 @@ def analyse_session(
     settings: Settings,
     clock_lane_path: Path | None = None,
     contact_lane_path: Path | None = None,
+    gate_map: GateMap | None = None,
 ) -> SessionResult:
     """Join one session's CSVs, trials and lanes into the per-trial table."""
     ctl = Path(session) / "controllers" / profile.controller
@@ -1461,6 +1677,10 @@ def analyse_session(
     contacts = None
     if contact_lane_path is not None:
         contacts = load_contacts(contact_lane_path, robot_links)
+    cycle_times = _planner_cycle_times(ctl, lane)
+    # Raw records (not the trimmed `Trial` dataclass) — the gate-map axis
+    # values (:func:`trial_axis_values`) live only there.
+    records_by_idx = {int(r["idx"]): r for r in doc["records"]} if gate_map is not None else {}
     hand_effort = _hand_effort(ctl, profile)
     hand_profile = hand_caging_profile(profile)
     hand_kin = _hand_kinematics(ctl, profile, hand_profile) if hand_profile is not None else None
@@ -1474,6 +1694,11 @@ def analyse_session(
     for trial in trials:
         row = {"idx": trial.idx, "kind": trial.kind, "supervisor": trial.outcome}
         row["accepted"] = trial.accepted
+        if gate_map is not None:
+            # Independent of `accepted`/diag data — the axis values are the
+            # runner's own launch request, known whether or not it landed.
+            axes = trial_axis_values(records_by_idx.get(trial.idx, {}))
+            row.update(gate_map_verdict(axes, gate_map))
         if not trial.accepted or not np.isfinite(trial.t_launch):
             rows.append(row)
             continue
@@ -1530,6 +1755,16 @@ def analyse_session(
         row["t_first_impact"] = t_impact if np.isfinite(t_impact) else math.nan
         row.update(decompose_at_tc(ctx, truth, settings.arrival_window_s, t_impact))
         row.update(planner_timing(ctx, trial.t_launch))
+        if cycle_times is not None:
+            row.update(
+                plan_validity_window(
+                    cycle_times[0],
+                    cycle_times[1],
+                    trial.t_launch,
+                    row.get("t_commit", math.nan),
+                    trial.t_end,
+                )
+            )
         row["ref_saturated_max_streak"] = max_streak(ctx.ref_valid & ctx.ref_saturated)
 
         def fk_world(ticks, ctx=ctx):
@@ -1600,7 +1835,9 @@ def analyse_session(
             settings.n_boot,
             settings.seed,
         )
-    summary = _summarise(rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source)
+    summary = _summarise(
+        rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source, gate_map
+    )
     summary["t_lead_s_range"] = _range(rows, "t_lead_s")
     summary["t_lead_source"] = lead_source
     summary["planner_events"] = _planner_events(ctl)
@@ -1926,12 +2163,61 @@ def _planner_events(ctl: Path) -> dict | None:
     return out
 
 
+def _planner_cycle_times(
+    ctl: Path, lane: ClockLane | None
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Every ``planner_events.csv`` wake, mapped onto ``t_relative_s`` — the
+    time base G3-D (i) needs (#537 S8-D) to window plan-validity cycles by
+    trial. ``None`` when either input is unavailable: a diag predating the
+    planner, or no ``--clock-lane`` (below).
+
+    **The mapping and its evidence.** ``wake_ns`` is a STEADY-clock instant —
+    ``PlannerCycleRecord::wake_ns`` is documented "Steady instants"
+    (rtc_controllers/include/rtc_controllers/catching/planner_cycle.hpp:75-79)
+    and set from ``rtc::SteadyNowNs()``, i.e. ``std::chrono::steady_clock``
+    (rtc_base/include/rtc_base/types/types.hpp:265-272). But a sim profile can
+    run the RT loop in SIM-SYNC mode (``use_sim_time_sync``, declared at
+    rtc_controller_manager/src/rt_controller_node_params.cpp:279), under which
+    ``t_relative_s`` is NOT a wall/steady clock reading at all: it is
+    ``iteration × dt`` (rtc_controller_manager/src/rt_controller_node_rt_loop.
+    cpp:457-459), a pure simulator tick count decoupled from real elapsed
+    time (the sim can run faster or slower than 1×). A steady-clock instant
+    therefore has no FIXED additive offset to ``t_relative_s`` in general —
+    exactly the clock-drift problem the D-3 clock lane already exists to
+    measure (:class:`ClockLane`, plan §5).
+
+    The clock lane bridges the two clocks by recording ``(sim_time_sec,
+    steady_ns)`` pairs from the SAME ``std::chrono::steady_clock``
+    (rtc_mujoco_sim/src/mujoco_sim_loop.cpp:929-937), and
+    :func:`load_clock_lane` already reduces that correspondence to one
+    session-wide constant, ``ClockLane.steady_offset`` — "steady_s −
+    t_relative_s (median over launches)" — which :meth:`ClockLane.delta_at`
+    treats as the canonical bridge (``steady = t_rel + self.steady_offset``).
+    Inverting it, ``t_rel = steady − steady_offset``, is the same conversion
+    applied here to every ``wake_ns``. It is a SESSION-WIDE constant (not
+    re-estimated per trial), so this needs a lane, not a trial pairing — see
+    the golden test for a numerical check against real fixture data (every
+    ``wake_ns`` of a trial with a commit lands inside that trial's own diag
+    window once converted).
+    """
+    if lane is None:
+        return None
+    path = _exists(ctl / PLANNER_EVENTS_CSV)
+    if path is None:
+        return None
+    df = _read_csv(path, usecols=["wake_ns", "plan_valid"])
+    t_relative_s = df["wake_ns"].to_numpy(float) * 1e-9 - lane.steady_offset
+    return t_relative_s, df["plan_valid"].to_numpy(float)
+
+
 def _median(rows: Sequence[Mapping], key: str) -> float:
     values = [r[key] for r in rows if key in r and np.isfinite(r[key])]
     return float(np.median(values)) if values else math.nan
 
 
-def _summarise(rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source) -> dict:
+def _summarise(
+    rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source, gate_map=None
+) -> dict:
     run = [r for r in rows if r.get("accepted")]
     verdicts: dict[str, int] = {}
     for r in run:
@@ -2007,6 +2293,49 @@ def _summarise(rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_s
         else:
             d3["valid"] = "NOT_EVALUATED(v_max not given)"
         summary["d3"] = d3
+    if any("planner_cycles" in r for r in run):
+        with_cycles = [r for r in run if r.get("planner_cycles", 0) > 0]
+        ratios = [r["plan_valid_ratio"] for r in with_cycles if np.isfinite(r["plan_valid_ratio"])]
+        switches: dict[str, int] = {}
+        for r in run:
+            key = str(int(r.get("approach_plan_switches", 0)))
+            switches[key] = switches.get(key, 0) + 1
+        summary["g3d"] = {
+            "n_trials_with_cycles": len(with_cycles),
+            "plan_valid_ratio_p50_p05_p95": [
+                float(np.median(ratios)),
+                float(clock_phase.quantile(ratios, 0.05)),
+                float(clock_phase.quantile(ratios, 0.95)),
+            ]
+            if ratios
+            else None,
+            "approach_plan_switches_distribution": switches,
+        }
+    if gate_map is not None:
+        verdicted = [r for r in run if r.get("map_open") is not None]
+        open_rows = [r for r in verdicted if r["map_open"]]
+        gm: dict = {
+            "map_dir": str(gate_map.map_dir),
+            "seed_id": gate_map.seed_id,
+            "verdicted": len(verdicted),
+            "open": len(open_rows),
+            "open_fraction": len(open_rows) / len(verdicted) if verdicted else math.nan,
+        }
+        if hold_radius is not None:
+            k_open = sum(1 for r in open_rows if r.get("truth_success"))
+            gm["truth_whole"] = {
+                "successes": summary["truth"]["successes"],
+                "n": summary["truth"]["n"],
+                "wilson95": summary["truth"]["wilson95"],
+            }
+            gm["truth_open"] = {
+                "successes": k_open,
+                "n": len(open_rows),
+                "wilson95": wilson_interval(k_open, len(open_rows)),
+            }
+        else:
+            gm["truth_whole"] = gm["truth_open"] = "NOT_EVALUATED(no hold radius)"
+        summary["gate_map"] = gm
     return summary
 
 
@@ -2127,6 +2456,20 @@ def report(result: SessionResult) -> str:
             f"{d3['delta_commit_ms_p50_p95_max']} · |δ(t_c)| {d3['delta_tc_ms_p50_p95_max']} · "
             f"valid {d3['valid']} (a covariate, not a verdict — D-S8-4 (c))"
         )
+    if "g3d" in s:
+        g3d = s["g3d"]
+        lines.append(
+            f"G3-D: plan validity ratio p50/p05/p95 {g3d['plan_valid_ratio_p50_p05_p95']} over "
+            f"{g3d['n_trials_with_cycles']} trials with ≥1 planner cycle · APPROACH plan "
+            f"switches distribution {g3d['approach_plan_switches_distribution']}"
+        )
+    if "gate_map" in s:
+        gm = s["gate_map"]
+        lines.append(
+            f"gate map {gm['map_dir']} (seed {gm['seed_id']}): {gm['open']}/{gm['verdicted']} "
+            f"trials map-open ({gm['open_fraction']:.2f}) · truth whole {gm['truth_whole']} · "
+            f"truth open {gm['truth_open']}"
+        )
     return "\n".join(lines)
 
 
@@ -2176,6 +2519,13 @@ def main(argv: list[str] | None = None) -> int:
         help="hand-joint capture calibration: window before t_hold_end [s] "
         f"(default {DEFAULT_HOLD_WINDOW_S})",
     )
+    ap.add_argument(
+        "--gate-map",
+        type=Path,
+        help="a catch_gate_map output dir (S8-D): per-trial box-open verdict against its "
+        "catchability_map grid, and truth success over the map-open subset. Only trials drawn "
+        "from a --dist box (catching_sim_trials) carry the axis values a verdict needs",
+    )
     args = ap.parse_args(argv)
 
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text  # noqa: PLC0415
@@ -2184,6 +2534,7 @@ def main(argv: list[str] | None = None) -> int:
     urdf_text, _ = resolve_urdf_text(profile.robot_params, args.urdf)
     clock = args.clock_lane or _exists(args.session / "sim" / "clock_lane.csv")
     contact = args.contact_lane or _exists(args.session / "sim" / "ball_contact_lane.csv")
+    gate_map = load_gate_map(args.gate_map) if args.gate_map else None
     settings = Settings(
         truth_axis=args.truth_time,
         hold_radius_m=args.hold_radius_m,
@@ -2195,7 +2546,7 @@ def main(argv: list[str] | None = None) -> int:
         hold_window_s=args.hold_window_s,
     )
     result = analyse_session(
-        args.session, args.trials_dir, profile, urdf_text, settings, clock, contact
+        args.session, args.trials_dir, profile, urdf_text, settings, clock, contact, gate_map
     )
     csv_path, json_path, hand_csv_path = write_outputs(
         result, args.out or args.trials_dir / "catching_trials"
