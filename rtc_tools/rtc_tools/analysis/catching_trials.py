@@ -100,6 +100,7 @@ FREE_FIT_SPAN_S = 0.25
 IMPACT_ACCEL_FACTOR = 2.0  # a contact = acceleration above this × the free-flight bound
 DEFAULT_N_BOOT = 2000
 DEFAULT_SEED = 0
+DEFAULT_HOLD_WINDOW_S = 0.1  # hand-joint capture calibration window before t_hold_end
 TRUTH_TIME_AXES = ("stamp", "recv")
 
 
@@ -1104,6 +1105,16 @@ def hand_witness_at_verdict(
     when the trial never reaches RETREAT, the diag predates these columns, or
     RETREAT was entered from anywhere but HOLD (:func:`_hold_end_tick`) — an
     aborted attempt was never judged and ran no witness for one.
+
+    ``hand_blocked_s_judge`` IS THEREFORE ONE CONTROL PERIOD SHORT of what the
+    verdict itself compared against ``t_persist``: the controller's own
+    ``JudgeOutcome`` reads ``hand_blocked_s`` on the tick it runs (the first
+    RETREAT tick, one tick AFTER the last HOLD tick this reads), so the run
+    length it actually compared against ``t_persist`` is
+    ``hand_blocked_s_judge + dt`` (``dt`` = the tick period, e.g.
+    :func:`recorded_dt`'s result), not ``hand_blocked_s_judge`` alone. An
+    offline re-check of the persist gate must use
+    ``hand_blocked_s_judge + dt >= t_persist`` — see :func:`hand_persist_met`.
     """
     out: dict = {
         "outcome_source": math.nan,
@@ -1130,6 +1141,22 @@ def hand_witness_at_verdict(
             "MISSED" if supervisor == "CAPTURED" and int(src) == 2 else supervisor
         )
     return out
+
+
+def hand_persist_met(hand_blocked_s_judge: float, dt: float, t_persist_s: float) -> float:
+    """Whether the verdict's OWN ``t_persist`` comparison (run on the first
+    RETREAT tick, one tick after ``hand_blocked_s_judge`` was read — see
+    :func:`hand_witness_at_verdict`) would have read True, reconstructed
+    offline: ``hand_blocked_s_judge + dt >= t_persist_s``. Returns ``1.0``/
+    ``0.0`` (not ``bool``, so it stays NaN-able like every other ``_judge``
+    column) and NaN when any input is unavailable — most commonly
+    ``t_persist_s`` itself, which this module never requires a profile to
+    carry (``catching.robot.hand.capture.t_persist`` — see
+    :func:`hand_capture_t_persist_s`).
+    """
+    if not (np.isfinite(hand_blocked_s_judge) and np.isfinite(dt) and np.isfinite(t_persist_s)):
+        return math.nan
+    return float(hand_blocked_s_judge + dt >= t_persist_s)
 
 
 def hand_release_to_preshape_ms(t: np.ndarray, mode: np.ndarray, hand_phase: np.ndarray) -> float:
@@ -1395,8 +1422,7 @@ class Settings:
     n_boot: int = DEFAULT_N_BOOT
     seed: int = DEFAULT_SEED
     window_margin_s: float = 0.05
-    # Hand-joint capture calibration window before t_hold_end (#537 S8-C).
-    hold_window_s: float = 0.1
+    hold_window_s: float = DEFAULT_HOLD_WINDOW_S
 
 
 @dataclass
@@ -1438,6 +1464,7 @@ def analyse_session(
     hand_effort = _hand_effort(ctl, profile)
     hand_profile = hand_caging_profile(profile)
     hand_kin = _hand_kinematics(ctl, profile, hand_profile) if hand_profile is not None else None
+    t_persist_s = hand_capture_t_persist_s(profile)
     hold_radius = settings.hold_radius_m
     if hold_radius is None:
         hold_radius = profile.ball_diameter_m
@@ -1543,6 +1570,9 @@ def analyse_session(
             )
         )
         row["t_release_to_pre_ms"] = hand_release_to_preshape_ms(ctx.t, ctx.mode, ctx.hand_phase)
+        row["hand_persist_met"] = hand_persist_met(
+            row.get("hand_blocked_s_judge", math.nan), dt, t_persist_s
+        )
         if hand_profile is not None and hand_kin is not None:
             # Same gate as the judge columns (_hold_end_tick): RETREAT entered
             # from ABORT_SAFE never ran a HOLD-end hand-capture window either.
@@ -1628,26 +1658,62 @@ class HandCagingProfile:
     tau_max: np.ndarray
 
 
-def hand_caging_profile(profile: CatchingProfile) -> HandCagingProfile | None:
-    """Read ``HandCagingProfile`` from the profile, or ``None`` when the
-    hand-hold-window calibration cannot run — not an error, since the
-    calibration is an OPTIONAL extra on top of whatever else the profile is
-    used for:
+def _calibration_skipped(profile: CatchingProfile, reason: str) -> None:
+    """One-line stderr note + ``None``: the shared "give up on the OPTIONAL
+    hand-hold-window calibration, not on the trial analysis" exit used by
+    every degrade path below (#537 S8-C code review) — the read of
+    ``catching.robot.hand``/the device roster/the hand device CSV can fail in
+    several distinct ways (a length mismatch, a per-joint ``TBD``, a missing
+    torque limit, an older CSV without the newer columns), and every one of
+    them is a reason to skip this one calibration, never to abort
+    ``analyse_session`` for the whole trial table.
+    """
+    print(
+        f"catching_trials: hand-hold-window calibration skipped for '{profile.controller}' — "
+        f"{reason}",
+        file=sys.stderr,
+    )
+    return None
 
-    * no hand device, or ``q_pre``/``q_close`` still ``TBD``/absent — most
-      sessions predate this feature;
+
+def hand_capture_t_persist_s(profile: CatchingProfile) -> float:
+    """``catching.robot.hand.capture.t_persist`` [s], or NaN when the section
+    is absent, still ``TBD``, or not a plain number — read for
+    :func:`hand_persist_met`'s offline re-check only; nothing else in this
+    module requires it, so an unusable value is NaN, never a refusal.
+    """
+    raw = (profile.hand_yaml.get("capture") or {}).get("t_persist")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def hand_caging_profile(profile: CatchingProfile) -> HandCagingProfile | None:
+    """Read ``HandCagingProfile`` from the profile, or ``None`` (via
+    :func:`_calibration_skipped`) when the hand-hold-window calibration cannot
+    run — not an error, since the calibration is an OPTIONAL extra on top of
+    whatever else the profile is used for. Every one of the following degrades
+    the same way, each reported with the specific reason:
+
+    * no hand device, or ``q_pre``/``q_close`` still ``TBD``/absent (the whole
+      block) — most sessions predate this feature;
+    * ``q_pre``/``q_close`` is a list but one of its ELEMENTS is not numeric
+      (a per-joint ``TBD``, the profile mid-search) — would otherwise raise
+      ``ValueError`` out of ``np.asarray``;
+    * ``catching.robot.hand.caging_mask`` present but the wrong length;
+    * the hand device's ``joint_state_names`` (the DOF mapping between
+      ``q_pre`` and the device roster) is absent or a different length;
     * the hand device's ``joint_limits.max_torque`` is absent or shorter than
       the caging pair — a real gap in the profile, but one that only this
-      calibration needs (unlike ``joint_state_names``, which the rest of the
-      analysis already depends on to read the device CSV at all), so it is
-      reported (one line, not fatal) and skipped rather than aborting the
-      whole session the way ``max_velocity`` would if this read it through
-      ``derive_accel_limits.arm_spec_from_params`` (#537 S8-C code review).
+      calibration needs, so it is reported (one line, not fatal) rather than
+      aborting the whole session the way ``max_velocity`` would if this read
+      it through ``derive_accel_limits.arm_spec_from_params`` (an earlier
+      version of this function did exactly that).
 
-    A profile that HAS the pair but disagrees with the device roster on
-    ``joint_state_names`` length (the DOF mapping every other reader of this
-    profile also needs) is a real config error and is still refused
-    (``SystemExit``).
+    ``q_pre``/``q_close`` disagreeing on LENGTH with each other (as opposed to
+    with the device), or being empty, is left a hard ``SystemExit``: the two
+    arrays come from the same YAML block and cannot legitimately differ.
     """
     if profile.hand_device is None:
         return None
@@ -1655,8 +1721,14 @@ def hand_caging_profile(profile: CatchingProfile) -> HandCagingProfile | None:
     q_pre_raw, q_close_raw = hand.get("q_pre"), hand.get("q_close")
     if not isinstance(q_pre_raw, list) or not isinstance(q_close_raw, list):
         return None
-    q_pre = np.asarray(q_pre_raw, dtype=float)
-    q_close = np.asarray(q_close_raw, dtype=float)
+    try:
+        q_pre = np.asarray(q_pre_raw, dtype=float)
+        q_close = np.asarray(q_close_raw, dtype=float)
+    except (TypeError, ValueError):
+        return _calibration_skipped(
+            profile,
+            "catching.robot.hand.q_pre/q_close has a non-numeric element (a per-joint TBD?)",
+        )
     if q_pre.shape != q_close.shape or q_pre.size == 0:
         raise SystemExit(
             f"{profile.controller}: catching.robot.hand.q_pre/q_close must be equal-length, "
@@ -1666,25 +1738,24 @@ def hand_caging_profile(profile: CatchingProfile) -> HandCagingProfile | None:
     mask_raw = hand.get("caging_mask")
     caging_mask = np.ones(n, dtype=bool) if mask_raw is None else np.asarray(mask_raw, dtype=bool)
     if caging_mask.shape != (n,):
-        raise SystemExit(
-            f"{profile.controller}: catching.robot.hand.caging_mask must have {n} entries"
+        return _calibration_skipped(
+            profile, f"catching.robot.hand.caging_mask does not have {n} entries"
         )
     dev = (profile.robot_params.get("devices") or {}).get(profile.hand_device) or {}
     joint_names = [str(j) for j in dev.get("joint_state_names") or []]
     if len(joint_names) != n:
-        raise SystemExit(
+        return _calibration_skipped(
+            profile,
             f"devices.{profile.hand_device} has {len(joint_names)} joints, "
-            f"catching.robot.hand.q_pre has {n} — they must be the same hand in the same order"
+            f"catching.robot.hand.q_pre has {n} — they must be the same hand in the same order",
         )
     tau_max_raw = ((dev.get("joint_limits") or {}).get("max_torque")) or []
     if len(tau_max_raw) < n:
-        print(
-            f"catching_trials: devices.{profile.hand_device}.joint_limits.max_torque is "
-            f"missing or shorter than {n} joints — hand-hold-window calibration skipped for "
-            f"'{profile.controller}'",
-            file=sys.stderr,
+        return _calibration_skipped(
+            profile,
+            f"devices.{profile.hand_device}.joint_limits.max_torque is missing or shorter "
+            f"than {n} joints",
         )
-        return None
     return HandCagingProfile(
         joint_names, q_pre, q_close, caging_mask, np.asarray(tau_max_raw[:n], dtype=float)
     )
@@ -1694,7 +1765,11 @@ def _hand_kinematics(ctl: Path, profile: CatchingProfile, hand: HandCagingProfil
     """(t, q, qd, tau) from the hand device state CSV, columns in ``hand.joint_names``
     order (``DeviceStateLogPod``'s ``actual_pos_<joint>``/``actual_vel_<joint>``/
     ``effort_<joint>``). ``None`` when the device log is not recorded at all —
-    the same "not an error" contract as :func:`_hand_effort`."""
+    the same "not an error" contract as :func:`_hand_effort` — or (via
+    :func:`_calibration_skipped`) when it IS recorded but predates one of
+    those column blocks, e.g. an older session logged before ``actual_vel_*``
+    or ``effort_*`` were added.
+    """
     dev = profile.hand_device
     if dev is None or dev not in profile.device_logs:
         return None
@@ -1707,7 +1782,7 @@ def _hand_kinematics(ctl: Path, profile: CatchingProfile, hand: HandCagingProfil
     header = _csv_header(path)
     missing = [c for c in (*pos_cols, *vel_cols, *eff_cols) if c not in header]
     if missing:
-        raise SystemExit(f"{path}: missing hand state column(s) {missing}")
+        return _calibration_skipped(profile, f"{path} lacks hand state column(s) {missing}")
     df = _read_csv(path, usecols=["t_relative_s", *pos_cols, *vel_cols, *eff_cols])
     return (
         df["t_relative_s"].to_numpy(float),
@@ -2097,8 +2172,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--hold-window-s",
         type=float,
-        default=0.1,
-        help="hand-joint capture calibration: window before t_hold_end [s] (default 0.1)",
+        default=DEFAULT_HOLD_WINDOW_S,
+        help="hand-joint capture calibration: window before t_hold_end [s] "
+        f"(default {DEFAULT_HOLD_WINDOW_S})",
     )
     args = ap.parse_args(argv)
 

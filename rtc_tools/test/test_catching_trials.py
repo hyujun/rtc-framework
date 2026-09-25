@@ -567,6 +567,41 @@ def test_hand_witness_is_nan_when_retreat_is_entered_from_abort_safe():
     assert out["tips_only_verdict"] == ""
 
 
+def test_hand_persist_met_needs_the_judge_row_plus_one_tick():
+    """``hand_blocked_s_judge`` is read one control period BEFORE the tick that
+    actually compared against ``t_persist`` (the last HOLD row vs. the first
+    RETREAT row that runs ``JudgeOutcome``) — so the offline re-check must add
+    ``dt`` back on. A boundary case that only passes with the ``+ dt`` pins
+    the off-by-one-tick note in the docstring."""
+    # 0.08 + 0.02 == 0.10: meets t_persist only once dt is added back.
+    assert ct.hand_persist_met(0.08, 0.02, 0.10) == 1.0
+    # Without the +dt correction (i.e. comparing 0.08 >= 0.10 directly) this
+    # would read False — the mistake this function exists to prevent.
+    assert ct.hand_persist_met(0.08, 0.01, 0.10) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("hand_blocked_s_judge", "dt", "t_persist_s"),
+    [(math.nan, 0.002, 0.1), (0.08, math.nan, 0.1), (0.08, 0.002, math.nan)],
+)
+def test_hand_persist_met_is_nan_when_any_input_is_unavailable(
+    hand_blocked_s_judge, dt, t_persist_s
+):
+    assert math.isnan(ct.hand_persist_met(hand_blocked_s_judge, dt, t_persist_s))
+
+
+def test_hand_capture_t_persist_s_reads_the_yaml_or_nans():
+    import dataclasses
+
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    with_value = dataclasses.replace(profile, hand_yaml={"capture": {"t_persist": 0.05}})
+    assert ct.hand_capture_t_persist_s(with_value) == pytest.approx(0.05)
+    tbd = dataclasses.replace(profile, hand_yaml={"capture": {"t_persist": "TBD"}})
+    assert math.isnan(ct.hand_capture_t_persist_s(tbd))
+    absent = dataclasses.replace(profile, hand_yaml={})
+    assert math.isnan(ct.hand_capture_t_persist_s(absent))
+
+
 @pytest.mark.parametrize(
     ("supervisor", "source", "expected"),
     [
@@ -705,6 +740,27 @@ def test_hand_caging_profile_degrades_when_joint_limits_are_missing(capsys):
     assert "joint_limits.max_torque" in capsys.readouterr().err
 
 
+def test_hand_caging_profile_degrades_on_a_per_joint_tbd(capsys):
+    """Regression (#537 S8-C code review round 2): a profile mid-search can
+    have ``q_pre``/``q_close`` as LISTS whose elements are not all numbers yet
+    (one joint still literally ``'TBD'``) — ``np.asarray(..., dtype=float)``
+    would otherwise raise ``ValueError`` straight out of
+    ``hand_caging_profile`` and abort the whole session."""
+    import dataclasses
+
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    broken = dataclasses.replace(
+        profile,
+        hand_yaml={"q_pre": [0.0, "TBD", 0.2], "q_close": [1.0, 1.1, 1.2]},
+        robot_params={
+            **profile.robot_params,
+            "devices": {"p1b": {"joint_state_names": ["j0", "j1", "j2"]}},
+        },
+    )
+    assert ct.hand_caging_profile(broken) is None
+    assert "non-numeric" in capsys.readouterr().err
+
+
 def test_analyse_session_survives_a_hand_device_without_joint_limits():
     """End to end: the same broken profile as above must still produce
     ``catching_trials`` rows — the hand-hold-window calibration is skipped,
@@ -727,6 +783,52 @@ def test_analyse_session_survives_a_hand_device_without_joint_limits():
     )
     assert result.rows and any(r.get("accepted") for r in result.rows)
     assert result.hand_window_rows == []
+
+
+def test_analyse_session_survives_a_hand_state_csv_without_velocity_or_effort(tmp_path, capsys):
+    """End to end, the other half of the calibration pipeline:
+    ``hand_caging_profile`` succeeds (q_pre/q_close/joint_limits all fine) but
+    the hand device CSV predates ``actual_vel_*``/``effort_*`` — an older
+    session. ``_hand_kinematics`` must degrade (``None`` + stderr note), not
+    raise ``SystemExit``, and ``analyse_session`` must still produce rows."""
+    pytest.importorskip("pinocchio")
+    import dataclasses
+    import shutil
+
+    session = tmp_path / "session"
+    shutil.copytree(FIXTURE / "session", session)
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    ctl = session / "controllers" / profile.controller
+    hand_log = profile.device_logs[profile.hand_device]
+    (ctl / f"{hand_log}.csv").write_text("t_relative_s,actual_pos_j0\n0.0,0.0\n")
+    broken = dataclasses.replace(
+        profile,
+        hand_yaml={"q_pre": [0.0], "q_close": [1.0], "caging_mask": [True]},
+        robot_params={
+            **profile.robot_params,
+            "devices": {
+                profile.hand_device: {
+                    "joint_state_names": ["j0"],
+                    "joint_limits": {"max_torque": [1.0]},
+                }
+            },
+        },
+    )
+    result = ct.analyse_session(
+        session,
+        FIXTURE / "trials",
+        broken,
+        (FIXTURE / "robot.urdf").read_text(),
+        ct.Settings(n_boot=20),
+    )
+    assert result.rows and any(r.get("accepted") for r in result.rows)
+    assert result.hand_window_rows == []
+    assert "lacks hand state column" in capsys.readouterr().err
+
+
+def test_cli_hold_window_s_default_matches_settings():
+    """Item 2 regression: one source for the default, not two that can drift."""
+    assert ct.Settings().hold_window_s == ct.DEFAULT_HOLD_WINDOW_S
 
 
 def test_recorded_dt_prefers_the_runner_mirror():
