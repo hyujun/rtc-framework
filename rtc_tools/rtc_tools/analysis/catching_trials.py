@@ -113,9 +113,12 @@ DEFAULT_SEED = 0
 DEFAULT_HOLD_WINDOW_S = 0.1  # hand-joint capture calibration window before t_hold_end
 TRUTH_TIME_AXES = ("stamp", "recv")
 # The catchability_map / catch_gate_map throw-grid axes a --dist box trial's
-# raw JSON record carries (S8-D, #537) — see :func:`trial_axis_values`.
+# raw JSON record carries (S8-D, #537) — see :func:`trial_axis_values`. Every
+# axis the map grid can vary must be here: an axis left out makes grid throws
+# that differ only on it tie, and the tie goes to the lowest index.
 GATE_MAP_AXES = (
     "distance_m",
+    "azimuth_deg",
     "release_height_m",
     "aim_deviation_deg",
     "speed_m_s",
@@ -1054,6 +1057,10 @@ class ClockLane:
     offset_spread_s: float
     dropped_total: int
     trial_to_seq: dict[int, int]
+    # trial idx → that trial's own steady_s − t_relative_s at launch. Under
+    # sim-sync the offset drifts when RTF < 1, so a per-trial window uses its
+    # own offset, not the session median (see :func:`_planner_cycle_times`).
+    trial_offsets: dict[int, float] = field(default_factory=dict)
 
     def to_t_relative(self, seq: int, sim_s: float) -> float:
         seg = self.segments[seq]
@@ -1127,6 +1134,7 @@ def load_clock_lane(
         offset_spread_s=float(np.max(np.abs(offsets - np.median(offsets)))),
         dropped_total=stats.dropped_total,
         trial_to_seq={runs[j].idx: lane_all[i].launch_seq for j, i in pairs},
+        trial_offsets={runs[j].idx: float(steady0[i] - t0[j]) for j, i in pairs},
     )
 
 
@@ -1677,7 +1685,7 @@ def analyse_session(
     contacts = None
     if contact_lane_path is not None:
         contacts = load_contacts(contact_lane_path, robot_links)
-    cycle_times = _planner_cycle_times(ctl, lane)
+    planner_wakes = _planner_cycle_times(ctl, lane)
     # Raw records (not the trimmed `Trial` dataclass) — the gate-map axis
     # values (:func:`trial_axis_values`) live only there.
     records_by_idx = {int(r["idx"]): r for r in doc["records"]} if gate_map is not None else {}
@@ -1755,11 +1763,11 @@ def analyse_session(
         row["t_first_impact"] = t_impact if np.isfinite(t_impact) else math.nan
         row.update(decompose_at_tc(ctx, truth, settings.arrival_window_s, t_impact))
         row.update(planner_timing(ctx, trial.t_launch))
-        if cycle_times is not None:
+        if planner_wakes is not None and trial.idx in lane.trial_offsets:
             row.update(
                 plan_validity_window(
-                    cycle_times[0],
-                    cycle_times[1],
+                    planner_wakes[0] - lane.trial_offsets[trial.idx],
+                    planner_wakes[1],
                     trial.t_launch,
                     row.get("t_commit", math.nan),
                     trial.t_end,
@@ -2166,10 +2174,10 @@ def _planner_events(ctl: Path) -> dict | None:
 def _planner_cycle_times(
     ctl: Path, lane: ClockLane | None
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """Every ``planner_events.csv`` wake, mapped onto ``t_relative_s`` — the
-    time base G3-D (i) needs (#537 S8-D) to window plan-validity cycles by
-    trial. ``None`` when either input is unavailable: a diag predating the
-    planner, or no ``--clock-lane`` (below).
+    """Every ``planner_events.csv`` wake as a STEADY-clock second, with its
+    ``plan_valid`` — what G3-D (i) (#537 S8-D) windows by trial after shifting
+    it onto ``t_relative_s``. ``None`` when either input is unavailable: a diag
+    predating the planner, or no ``--clock-lane`` (below).
 
     **The mapping and its evidence.** ``wake_ns`` is a STEADY-clock instant —
     ``PlannerCycleRecord::wake_ns`` is documented "Steady instants"
@@ -2189,16 +2197,17 @@ def _planner_cycle_times(
     The clock lane bridges the two clocks by recording ``(sim_time_sec,
     steady_ns)`` pairs from the SAME ``std::chrono::steady_clock``
     (rtc_mujoco_sim/src/mujoco_sim_loop.cpp:929-937), and
-    :func:`load_clock_lane` already reduces that correspondence to one
-    session-wide constant, ``ClockLane.steady_offset`` — "steady_s −
-    t_relative_s (median over launches)" — which :meth:`ClockLane.delta_at`
-    treats as the canonical bridge (``steady = t_rel + self.steady_offset``).
-    Inverting it, ``t_rel = steady − steady_offset``, is the same conversion
-    applied here to every ``wake_ns``. It is a SESSION-WIDE constant (not
-    re-estimated per trial), so this needs a lane, not a trial pairing — see
-    the golden test for a numerical check against real fixture data (every
-    ``wake_ns`` of a trial with a commit lands inside that trial's own diag
-    window once converted).
+    :func:`load_clock_lane` pairs each trial's launch with its lane launch,
+    which gives that trial's own offset ``ClockLane.trial_offsets[idx]`` =
+    steady_s − t_relative_s at launch. The caller converts with
+    ``t_rel = steady − trial_offsets[idx]`` per trial, NOT with the session
+    median ``steady_offset``: when the sim runs below 1× the offset grows
+    across a session, and a median shifts late trials' windows by that drift.
+    Within one flight (~1 s) the drift is negligible. A trial the lane left
+    unpaired has no offset and gets no G3-D columns, the same rule as the D-3
+    clock covariate. See the golden test for a numerical check against real
+    fixture data (every ``wake_ns`` of a trial with a commit lands inside that
+    trial's own diag window once converted).
     """
     if lane is None:
         return None
@@ -2206,8 +2215,7 @@ def _planner_cycle_times(
     if path is None:
         return None
     df = _read_csv(path, usecols=["wake_ns", "plan_valid"])
-    t_relative_s = df["wake_ns"].to_numpy(float) * 1e-9 - lane.steady_offset
-    return t_relative_s, df["plan_valid"].to_numpy(float)
+    return df["wake_ns"].to_numpy(float) * 1e-9, df["plan_valid"].to_numpy(float)
 
 
 def _median(rows: Sequence[Mapping], key: str) -> float:
@@ -2322,11 +2330,15 @@ def _summarise(
             "open_fraction": len(open_rows) / len(verdicted) if verdicted else math.nan,
         }
         if hold_radius is not None:
+            # Both over the VERDICTED rows: a reference/varied trial carries
+            # no grid axes, so counting it in "whole" would compare the open
+            # subset against a different throw population.
+            k_whole = sum(1 for r in verdicted if r.get("truth_success"))
             k_open = sum(1 for r in open_rows if r.get("truth_success"))
             gm["truth_whole"] = {
-                "successes": summary["truth"]["successes"],
-                "n": summary["truth"]["n"],
-                "wilson95": summary["truth"]["wilson95"],
+                "successes": k_whole,
+                "n": len(verdicted),
+                "wilson95": wilson_interval(k_whole, len(verdicted)),
             }
             gm["truth_open"] = {
                 "successes": k_open,

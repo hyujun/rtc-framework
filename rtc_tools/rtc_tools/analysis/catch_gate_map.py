@@ -625,7 +625,9 @@ def main(argv: list[str] | None = None) -> int:
     proposal = propose_wait_pose(reachable_targets)
     summary = {
         "tool": "rtc_tools.analysis.catch_gate_map",
-        "map_dir": str(args.map_dir),
+        # Absolute: catching_trials --gate-map reads the grid back through
+        # this path, from whatever directory it runs in.
+        "map_dir": str(Path(args.map_dir).resolve()),
         "urdf": urdf_label,
         "arm_joints": spec.joint_names,
         "velocity_source": args.velocity_source,

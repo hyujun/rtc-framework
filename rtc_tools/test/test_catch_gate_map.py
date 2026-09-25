@@ -368,6 +368,19 @@ def _summary(tmp_path: Path) -> dict:
     return yaml.safe_load((tmp_path / "out" / "gate_map_summary.yaml").read_text())
 
 
+def test_summary_map_dir_is_absolute_from_a_relative_argument(tmp_path, arm, monkeypatch):
+    """catching_trials --gate-map reads the grid back through ``map_dir`` from
+    its own working directory, so a relative --map-dir must not be stored as
+    given."""
+    argv = _write_run(tmp_path, arm)
+    i = argv.index("--map-dir")
+    map_dir = Path(argv[i + 1]).resolve()
+    monkeypatch.chdir(map_dir.parent)
+    argv[i + 1] = map_dir.name
+    assert cgm.main(argv) == 0
+    assert _summary(tmp_path)["map_dir"] == str(map_dir)
+
+
 def test_cli_runs_the_real_judge_and_reports_both_layers(tmp_path, arm):
     assert cgm.main(_write_run(tmp_path, arm)) == 0
     summary = _summary(tmp_path)
