@@ -26,6 +26,9 @@
 #ifndef BALL_SCENE_HIGH_PRIORITY_MJCF_PATH
 #error "BALL_SCENE_HIGH_PRIORITY_MJCF_PATH must be defined by CMake"
 #endif
+#ifndef BALL_SCENE_HIDDEN_GROUP_MJCF_PATH
+#error "BALL_SCENE_HIDDEN_GROUP_MJCF_PATH must be defined by CMake"
+#endif
 #ifndef BALL_POOL_OBJECTS_DIR
 #error "BALL_POOL_OBJECTS_DIR must be defined by CMake"
 #endif
@@ -219,6 +222,26 @@ TEST(ProjectileBall, CompilesAndLaunchesGeneratedFreeBody) {
   for (int i = 0; i < 3; ++i) {
     EXPECT_NEAR(data->qvel[ball.dof + i], 0.0, 1e-9) << "axis " << i;
   }
+}
+
+// The viewer hides geom group 3 by default. A scene whose main default puts
+// undeclared geoms there (robot MJCFs that keep visuals in group 1 do) must
+// not hide the generated ball with them.
+TEST(ProjectileBall, IsDrawnEvenWhenTheSceneDefaultHidesGeoms) {
+  auto config = MakeFloorSceneConfigWithBall();
+  config.model_path = BALL_SCENE_HIDDEN_GROUP_MJCF_PATH;
+  MuJoCoSimulator sim(std::move(config));
+  ASSERT_TRUE(sim.Initialize());
+  const auto* model = sim.GetModel();
+  // Positive control: the fixture really does hide undeclared geoms.
+  const int floor = mj_name2id(model, mjOBJ_GEOM, "floor");
+  ASSERT_GE(floor, 0);
+  ASSERT_EQ(model->geom_group[floor], 3);
+  const BallIds ball = FindBall(model);
+  ASSERT_GE(ball.geom, 0);
+  mjvOption opt;
+  mjv_defaultOption(&opt);
+  EXPECT_TRUE(opt.geomgroup[model->geom_group[ball.geom]]) << model->geom_group[ball.geom];
 }
 
 TEST(ProjectileBall, StaysParkedWithoutContactAfterInitialize) {

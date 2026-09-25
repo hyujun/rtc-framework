@@ -180,6 +180,7 @@ if(mujoco_FOUND)
         POOL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/pool_scene.xml"
         BALL_SCENE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/ball_scene.xml"
         BALL_SCENE_HIGH_PRIORITY_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/ball_scene_high_priority.xml"
+        BALL_SCENE_HIDDEN_GROUP_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/ball_scene_hidden_default_group.xml"
         # The ball is attached to the spec BEFORE the pool objects, so a pool
         # object's geoms outrank it by id and a ball-vs-object contact puts the
         # ball on the FIRST side of the pair. Nothing else in these fixtures
