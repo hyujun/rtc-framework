@@ -233,7 +233,7 @@ struct TickRecord {                   // 고정 크기, POD
 - **L8.4** (S3.1a·S3.2·S3.3, 부하 재검증은 S3.1b — S6 에서 수행되지 않았고 S8 시행 누적으로) D-3 검증, 발사 srv, iiwa7_leap projectile, 접촉 truth·truth 주기·sim time 진단.
 - **L8.5** (S3.4·S3.5a/b·S3.6) `sim_estimator_node` 연결, catchability 지도(kinematic → gate-catchable), vision 요구 사양, 오프라인 NEES.
 - **L8.6** (S8-A·B·C·E) `sim_ur5e_p1b` 폐루프 → 시스템 게이트 G8-A~C·G8-E·G8-D (2026-09-22 결정으로 `ur5e_p1b` 가 1차 — 종전 순서 "leap 먼저" 는 S3.5b 이전 서술. G8-C 는 p1b 에서 `planner.gamma.grid: [0.0]` overlay 로, D-S8-9).
-- **L8.7** (S8-D) `sim_iiwa7_leap` 폐루프 → G8-D2 (조건부, plan §1a) · G3-D.
+- **L8.7** (S8-D) `sim_iiwa7_leap` 폐루프 → G8-D2 (조건부, plan §1a) · G3-D. **완료 (2026-09-26)**: `sim_lanes:=true` + overlay `catch_lead_on` (무물체 씬 `scene_right.xml`), 동결 상자 `--profile iiwa7_leap --dist s35b`; G8-D2 평가 대상 (실측 첫 계획 p50 0.195 s 에서 지도 176/180), 검증 44/100 — 판정은 S8-E. 수치는 plan §4.4 S8-D 결과.
 - **L8.8** (S10) 실기 단계적 도입 (§9.2).
 
 ## 8. 디버깅 방법
