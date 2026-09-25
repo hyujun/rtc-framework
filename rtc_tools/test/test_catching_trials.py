@@ -519,6 +519,216 @@ def test_max_streak():
     assert ct.max_streak([]) == 0
 
 
+# ── Hand-joint capture witness (#537 S8-C, D-S8-8 (b)) ───────────────────────
+
+
+def _hold_then_retreat_mode(n_hold=2, n_retreat=2):
+    mode = np.concatenate([np.full(n_hold, ct.MODE_HOLD), np.full(n_retreat, ct.MODE_RETREAT)])
+    return mode
+
+
+def test_hand_witness_reads_the_last_hold_row_and_the_first_retreat_row():
+    """The judge columns and ``outcome_source`` come from DIFFERENT rows: the
+    hand-stage witness is the LAST HOLD tick's (index 1), ``outcome_source``
+    is the FIRST RETREAT tick's (index 2) — the tick ``JudgeOutcome`` runs on,
+    already showing mode RETREAT because ``AdvanceMode`` flips the mode before
+    ``PublishTickRecord``. Swapping either row is a silent regression a
+    mutation must catch (see the mutation check below)."""
+    mode = _hold_then_retreat_mode()
+    stalled = np.array([0.0, 1.0, 5.0, 5.0])  # last HOLD=1, first RETREAT=5
+    effort = np.array([0.1, 0.6, 0.99, 0.99])  # last HOLD=0.6, first RETREAT=0.99
+    blocked_s = np.array([0.0, 0.08, 0.10, 0.12])  # last HOLD=0.08, first RETREAT=0.10
+    src = np.array([0.0, 0.0, 2.0, 2.0])  # only becomes meaningful at RETREAT
+    out = ct.hand_witness_at_verdict(mode, stalled, effort, blocked_s, src, "CAPTURED")
+    assert out["hand_stalled_n_judge"] == 1.0
+    assert out["hand_effort_frac_judge"] == pytest.approx(0.6)
+    assert out["hand_blocked_s_judge"] == pytest.approx(0.08)
+    assert out["outcome_source"] == 2.0
+    assert out["tips_only_verdict"] == "MISSED"
+
+
+def test_hand_witness_is_nan_when_retreat_is_entered_from_abort_safe():
+    """RETREAT reached from ABORT_SAFE (no HOLD) never ran ``JudgeOutcome`` or
+    the hand-capture witness for an attempt — reading ``k_ret - 1`` blindly
+    would silently pick up ABORT_SAFE's row instead. Every witness column must
+    read as unavailable, exactly like a trial that never reaches RETREAT."""
+    mode = np.array(
+        [ct.MODE_DECEL, ct.MODE_ABORT_SAFE, ct.MODE_ABORT_SAFE, ct.MODE_RETREAT, ct.MODE_RETREAT]
+    )
+    stalled = np.array([0.0, 0.0, 0.0, 5.0, 5.0])
+    effort = np.array([0.1, 0.1, 0.1, 0.99, 0.99])
+    blocked_s = np.array([0.0, 0.0, 0.0, 0.10, 0.12])
+    src = np.array([0.0, 0.0, 0.0, 0.0, 0.0])  # OnModeEntered sets kNone on a non-HOLD entry
+    out = ct.hand_witness_at_verdict(mode, stalled, effort, blocked_s, src, "MISSED")
+    assert math.isnan(out["hand_stalled_n_judge"])
+    assert math.isnan(out["hand_effort_frac_judge"])
+    assert math.isnan(out["hand_blocked_s_judge"])
+    assert math.isnan(out["outcome_source"])
+    assert out["tips_only_verdict"] == ""
+
+
+@pytest.mark.parametrize(
+    ("supervisor", "source", "expected"),
+    [
+        ("CAPTURED", 1.0, "CAPTURED"),  # tips alone
+        ("CAPTURED", 2.0, "MISSED"),  # only the hand witness promoted it
+        ("CAPTURED", 3.0, "CAPTURED"),  # tips agreed too
+        ("MISSED", 0.0, "MISSED"),  # no witness at all
+    ],
+)
+def test_tips_only_verdict_reconstruction(supervisor, source, expected):
+    mode = _hold_then_retreat_mode()
+    src = np.array([0.0, 0.0, source, source])
+    out = ct.hand_witness_at_verdict(mode, None, None, None, src, supervisor)
+    assert out["tips_only_verdict"] == expected
+
+
+def test_tips_only_verdict_is_empty_when_outcome_source_is_unavailable():
+    mode = _hold_then_retreat_mode()
+    out = ct.hand_witness_at_verdict(mode, None, None, None, None, "CAPTURED")
+    assert out["tips_only_verdict"] == ""
+    assert math.isnan(out["outcome_source"])
+    out_no_retreat = ct.hand_witness_at_verdict(
+        np.full(4, ct.MODE_HOLD), None, None, None, None, "CAPTURED"
+    )
+    assert out_no_retreat["tips_only_verdict"] == ""
+    assert all(math.isnan(v) for v in out_no_retreat.values() if isinstance(v, float))
+
+
+def test_t_release_to_pre_ms():
+    t = np.arange(0.0, 1.0, 0.01)
+    n = len(t)
+    mode = np.full(n, ct.MODE_RETREAT)
+    mode[:50] = ct.MODE_HOLD
+    phase = np.full(n, 3)
+    phase[60:] = ct.HAND_PHASE_RELEASE
+    phase[80:] = ct.HAND_PHASE_PRESHAPE
+    ms = ct.hand_release_to_preshape_ms(t, mode, phase)
+    assert ms == pytest.approx((t[80] - t[60]) * 1e3)
+
+
+def test_t_release_to_pre_ms_is_nan_when_the_hand_never_comes_back():
+    t = np.arange(0.0, 1.0, 0.01)
+    n = len(t)
+    mode = np.full(n, ct.MODE_RETREAT)
+    mode[:50] = ct.MODE_HOLD
+    phase = np.full(n, 3)
+    phase[60:] = ct.HAND_PHASE_RELEASE  # never reaches PRESHAPE
+    assert math.isnan(ct.hand_release_to_preshape_ms(t, mode, phase))
+    # No release at all either.
+    assert math.isnan(ct.hand_release_to_preshape_ms(t, mode, np.full(n, 3)))
+
+
+def _synthetic_hand(n=100, dt=0.01):
+    t = np.arange(n) * dt
+    q = np.zeros((n, 3))
+    qd = np.zeros((n, 3))
+    tau = np.zeros((n, 3))
+    q_pre = np.array([0.0, 1.0, 0.0])
+    q_close = np.array([1.0, 0.0, 1.0])  # joint 1 travels the NEGATIVE direction
+    caging_mask = np.array([True, True, False])  # joint 2 is not in the caging set
+    tau_max = np.array([1.0, 1.0, 1.0])
+    hand = ct.HandCagingProfile(["j0", "j1", "j2"], q_pre, q_close, caging_mask, tau_max)
+    return t, q, qd, tau, hand
+
+
+def test_hand_hold_window_extremes_negative_direction_and_non_caging():
+    t, q, qd, tau, hand = _synthetic_hand()
+    sel = t >= 0.9
+    q[sel, 0], qd[sel, 0], tau[sel, 0] = 0.8, 0.01, 0.9  # s=+1: frac = 0.9
+    q[sel, 1], qd[sel, 1], tau[sel, 1] = 0.2, 0.02, -0.85  # s=-1: rho=0.8, frac=0.85
+    q[sel, 2] = 5.0  # non-caging: must never show up in the output
+    rows = ct.hand_hold_window_extremes(t, q, qd, tau, hand, t_hold_end=1.0, window_s=0.1)
+    by_joint = {r["joint"]: r for r in rows}
+    assert set(by_joint) == {"j0", "j1"}  # j2 (non-caging) is skipped
+    assert by_joint["j0"]["rho_lo"] == pytest.approx(0.8)
+    assert by_joint["j0"]["frac_lo"] == pytest.approx(0.9)
+    assert by_joint["j1"]["rho_lo"] == pytest.approx(0.8)  # sign folds the negative travel back
+    assert by_joint["j1"]["frac_lo"] == pytest.approx(0.85)
+    assert by_joint["j0"]["n"] == by_joint["j1"]["n"] == 10
+
+
+def test_capture_would_fire_boundaries_are_inclusive_and_respect_min_joints():
+    rows = [
+        {"rho_lo": 0.7, "rho_hi": 0.95, "qd_absmax": 0.05, "frac_lo": 0.8, "n": 10},
+        {"rho_lo": 0.7, "rho_hi": 0.95, "qd_absmax": 0.05, "frac_lo": 0.8, "n": 10},
+    ]
+    assert ct.capture_would_fire(rows, 0.7, 0.95, 0.05, 0.8, min_joints=2)  # every bound exact
+    assert not ct.capture_would_fire(rows, 0.7, 0.95, 0.05, 0.8, min_joints=3)
+    # Nudge one row just outside each bound in turn: min_joints=2 must fail every time.
+    for key, bad in (
+        ("rho_lo", 0.699999),
+        ("rho_hi", 0.950001),
+        ("qd_absmax", 0.050001),
+        ("frac_lo", 0.799999),
+    ):
+        bent = [dict(rows[0]), {**rows[1], key: bad}]
+        assert not ct.capture_would_fire(bent, 0.7, 0.95, 0.05, 0.8, min_joints=2)
+        assert ct.capture_would_fire(bent, 0.7, 0.95, 0.05, 0.8, min_joints=1)
+
+
+def test_capture_would_fire_rejects_a_nan_extreme():
+    rows = [{"rho_lo": math.nan, "rho_hi": 0.95, "qd_absmax": 0.05, "frac_lo": 0.8, "n": 0}]
+    assert not ct.capture_would_fire(rows, 0.7, 0.95, 0.05, 0.8, min_joints=1)
+
+
+def test_hand_caging_profile_is_none_without_q_pre_q_close():
+    """The pilot fixture's controller YAML has a hand device (``p1b``) but no
+    ``catching.robot.hand.q_pre``/``q_close`` — this feature predates it — so
+    there is no caging profile to calibrate against, not an error."""
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    assert profile.hand_device == "p1b"
+    assert profile.hand_yaml.get("q_pre") is None
+    assert ct.hand_caging_profile(profile) is None
+
+
+def test_hand_caging_profile_degrades_when_joint_limits_are_missing(capsys):
+    """Regression (#537 S8-C code review): ``q_pre``/``q_close`` present but
+    the hand device's ``joint_limits`` is entirely absent must NOT abort —
+    this used to read the torque limit through
+    ``derive_accel_limits.arm_spec_from_params``, which also requires
+    ``max_velocity`` and raised ``SystemExit`` for a device that only needs
+    to supply a torque limit for THIS calibration. The calibration is
+    optional and degrades: ``None`` plus a one-line stderr note."""
+    import dataclasses
+
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    broken = dataclasses.replace(
+        profile,
+        hand_yaml={"q_pre": [0.0, 0.1, 0.2], "q_close": [1.0, 1.1, 1.2]},
+        robot_params={
+            **profile.robot_params,
+            "devices": {"p1b": {"joint_state_names": ["j0", "j1", "j2"]}},  # no joint_limits
+        },
+    )
+    assert ct.hand_caging_profile(broken) is None
+    assert "joint_limits.max_torque" in capsys.readouterr().err
+
+
+def test_analyse_session_survives_a_hand_device_without_joint_limits():
+    """End to end: the same broken profile as above must still produce
+    ``catching_trials`` rows — the hand-hold-window calibration is skipped,
+    nothing else is."""
+    pytest.importorskip("pinocchio")
+    import dataclasses
+
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    broken = dataclasses.replace(
+        profile,
+        hand_yaml={"q_pre": [0.0], "q_close": [1.0], "caging_mask": [True]},
+        robot_params={**profile.robot_params, "devices": {"p1b": {"joint_state_names": ["j0"]}}},
+    )
+    result = ct.analyse_session(
+        FIXTURE / "session",
+        FIXTURE / "trials",
+        broken,
+        (FIXTURE / "robot.urdf").read_text(),
+        ct.Settings(n_boot=20),
+    )
+    assert result.rows and any(r.get("accepted") for r in result.rows)
+    assert result.hand_window_rows == []
+
+
 def test_recorded_dt_prefers_the_runner_mirror():
     t = np.arange(10) * 0.004
     assert ct.recorded_dt({"meta": {"control.dt": 0.001}, "records": []}, t)[0] == 0.001

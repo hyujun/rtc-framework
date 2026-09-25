@@ -2968,6 +2968,10 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
     "hand_phase",
     "hand_rho",
     "hand_timeout",
+    "hand_stalled_n",
+    "hand_effort_frac",
+    "hand_blocked_s",
+    "outcome_source",
 ]
 
 # 헤더 writer 가 마지막에 붙이는 가변 폭 블록의 접두. 순서까지 계약이다.

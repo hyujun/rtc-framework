@@ -117,16 +117,22 @@ def load_profile(path: Path) -> HandProfile:
     return profile
 
 
+def joint_progress(q_i: float, q_pre_i: float, q_close_i: float) -> float:
+    """Signed closure progress of ONE joint toward ``q_close_i``, in [.., 1] at
+    q_close (see the module docstring's ``rho`` for the caging-set minimum
+    this feeds). Direction, not magnitude: a joint whose closed pose is BELOW
+    its preshape closes by decreasing, and an unsigned ratio would report it
+    as moving backwards for the whole trial.
+    """
+    span = q_close_i - q_pre_i
+    return (q_i - q_pre_i) * (1.0 if span > 0 else -1.0) / abs(span)
+
+
 def rho(q: list[float], profile: HandProfile) -> float:
     """Closure progress in [.., 1] — see the module docstring. Minimum over C."""
     worst = math.inf
     for i in profile.caging_indices:
-        span = profile.q_close[i] - profile.q_pre[i]
-        # Direction, not magnitude: a joint whose closed pose is BELOW its
-        # preshape closes by decreasing, and an unsigned ratio would report it
-        # as moving backwards for the whole trial.
-        progress = (q[i] - profile.q_pre[i]) * (1.0 if span > 0 else -1.0) / abs(span)
-        worst = min(worst, progress)
+        worst = min(worst, joint_progress(q[i], profile.q_pre[i], profile.q_close[i]))
     return worst
 
 
