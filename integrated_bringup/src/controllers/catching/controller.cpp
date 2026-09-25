@@ -932,10 +932,12 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       plan_active_ = false;
       reference_seeded_ = false;
       retreat_stage_ = RetreatStage::kStop;
+      release_start_ns_ = 0;
       // A HOLD that ends has already judged the attempt (EvaluateDecelOrHold).
       // Any other way in is an abort of an attempt, if one was under way.
       if (prev != Mode::kHold && trial_active_) {
         outcome_ = Outcome::kAborted;
+        outcome_source_ = OutcomeSource::kNone;
       }
       // RETREAT never moves the hand (#537 S7, 2026-09-24; this replaces the
       // Q12/Q14 split by verdict). A hand that closed stays closed until the
@@ -951,6 +953,13 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       break;
     }
     case Mode::kIdle:
+      // RETREAT → IDLE (a disarm, an E-STOP, or the release timeout) ends the
+      // trial without passing the re-arm boundary, so the trial's state is
+      // put back here (#537 S8-C). Without it the contact window's sticky
+      // flags and the R-TRACK memory reached the next trial.
+      if (prev == Mode::kRetreat) {
+        ResetTrialScope();
+      }
       homing_ = false;
       homing_done_ = false;
       break;
@@ -1080,7 +1089,19 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateRetreat()
       !hand_seq_enabled_ ||
       (hand_out_.active && hand_out_.phase == rtc::catching::HandPhase::kPreshape &&
        hand_out_.at_target);
-  return {Reason::kNone, hand_ready};
+  if (hand_ready) {
+    return {Reason::kNone, true};
+  }
+  // D-S8-6 (a): a hand that has not settled at q_pre T_release_timeout after
+  // the release ends the cycle in IDLE, disarmed on this same tick — the
+  // operator re-arms deliberately (P-1 (c)), as after IDLE's watchdog. Ready
+  // wins a tie: it is checked first.
+  if (hand_seq_enabled_ && t_release_timeout_ns_ > 0 && release_start_ns_ > 0 &&
+      tick_now_.ns - release_start_ns_ >= t_release_timeout_ns_) {
+    arm_requested_.store(false, std::memory_order_relaxed);
+    return {Reason::kHandTimeout, true};
+  }
+  return {Reason::kNone, false};
 }
 
 rtc::catching::Reason DemoCatchingController::RunDecelLawTick(
@@ -1228,7 +1249,9 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHo
   }
   // HOLD for T_hold, then judge the attempt (S7.3) and retreat.
   if (tick_now_.ns - hold_entry_ns_ >= t_hold_ns_) {
-    outcome_ = JudgeOutcome();
+    const Judgement judged = JudgeOutcome();
+    outcome_ = judged.outcome;
+    outcome_source_ = judged.source;
     // The attempt is over and judged. An abort during the return (RETREAT →
     // ABORT_SAFE → RETREAT) or an E-STOP must not rewrite it as Aborted.
     // R-TRACK still refuses this ball: HOLD implies trial_committed_.
@@ -1479,6 +1502,20 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
 void DemoCatchingController::ResetForRearm() noexcept {
   // L7 §4.8's re-arm list (S7.4), RETREAT → ARMED. The table in the header is
   // the authority on which member is here and which is exempt, and why.
+  ResetTrialScope();
+  // The return has brought the arm to rest at the wait pose: the carried
+  // command stays (it IS the wait pose) and only its velocity is zeroed.
+  std::fill(arm_qd_cmd_.begin(), arm_qd_cmd_.end(), 0.0);
+  homing_ = false;
+  homing_done_ = true;  // RETREAT ended at the wait pose
+  if (hand_seq_enabled_) {
+    hand_seq_.Ready();
+  }
+}
+
+void DemoCatchingController::ResetTrialScope() noexcept {
+  // The re-arm list less the part that assumes the arm is at the wait pose
+  // (ResetForRearm adds it): shared with RETREAT → IDLE (#537 S8-C).
   //
   // R-TRACK (Q15): this trial's ball is refused until a new track arrives —
   // taken before the plan is forgotten, since the plan names the track.
@@ -1501,9 +1538,9 @@ void DemoCatchingController::ResetForRearm() noexcept {
   ++planner_reset_epoch_;
   reference_seeded_ = false;
   traj_hint_ = 0;
-  // The carried command stays (it IS the wait pose); only its velocity is
-  // zeroed, which the return has already brought to rest.
-  std::fill(arm_qd_cmd_.begin(), arm_qd_cmd_.end(), 0.0);
+  // The carried command and its VELOCITY stay: on RETREAT → IDLE the arm may
+  // still be moving, and IDLE's ramp (R-IDLE) brings that velocity down. Only
+  // the re-arm, which is reached at rest, zeroes it (ResetForRearm).
   track_err_ = 0.0;
   trial_active_ = false;
   trial_committed_ = false;
@@ -1522,11 +1559,8 @@ void DemoCatchingController::ResetForRearm() noexcept {
   tip_baseline_n_.fill(0);
   window_confirmed_seen_ = false;
   window_stale_seen_ = false;
-  homing_ = false;
-  homing_done_ = true;  // RETREAT ended at the wait pose
-  if (hand_seq_enabled_) {
-    hand_seq_.Ready();
-  }
+  release_start_ns_ = 0;
+  hand_blocked_since_ns_ = 0;
 }
 
 void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
@@ -1607,7 +1641,10 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   // An activation starts with no attempt behind it.
   outcome_ = (!reset_mode && trial_active_) ? rtc::catching::Outcome::kAborted
                                             : rtc::catching::Outcome::kNone;
+  outcome_source_ = OutcomeSource::kNone;
   trial_active_ = false;
+  release_start_ns_ = 0;
+  hand_blocked_since_ns_ = 0;
   contact_.ResetForRearm();
   tip_baseline_n_.fill(0);
   tip_last_seq_.fill(0);
@@ -1690,28 +1727,65 @@ void DemoCatchingController::RunContactLane(const ControllerState& state) noexce
   }
 }
 
-rtc::catching::Outcome DemoCatchingController::JudgeOutcome() const noexcept {
+DemoCatchingController::Judgement DemoCatchingController::JudgeOutcome() const noexcept {
   using rtc::catching::Outcome;
   // No verdict without the lane: no fingertips, fewer than m_min of them, or a
   // bias learned from too few samples (never Missed — that would release a
-  // ball that may be in the hand, and count a success as a failure).
+  // ball that may be in the hand, and count a success as a failure). The hand
+  // witness does not lift this: it adds evidence, it does not stand in for a
+  // lane that could not judge (D-S8-8 (b), L7 §4.4).
   if (!contact_configured_ || tip_count_ < contact_m_min_) {
-    return Outcome::kUndetermined;
+    return {Outcome::kUndetermined, OutcomeSource::kNone};
   }
   for (int g = 0; g < tip_count_; ++g) {
     if (tip_baseline_n_[static_cast<std::size_t>(g)] < contact_n_baseline_min_) {
-      return Outcome::kUndetermined;
+      return {Outcome::kUndetermined, OutcomeSource::kNone};
     }
   }
   if (window_stale_seen_) {
-    return Outcome::kUndetermined;
+    return {Outcome::kUndetermined, OutcomeSource::kNone};
   }
   // Caught: m_min fingertips agreed inside the window AND still agree now.
   // Agreeing in the window and not at the end is a ball that left the hand.
-  if (window_confirmed_seen_ && tip_confirmed_now_ >= contact_m_min_) {
-    return Outcome::kCaptured;
+  const bool tips = window_confirmed_seen_ && tip_confirmed_now_ >= contact_m_min_;
+  // Or (D-S8-8 (b)): the hand joints have been stalled on something, pushing
+  // toward q_close, for t_persist up to now. The run is the hand stage's of
+  // the previous tick — this decision runs before this tick's hand stage.
+  const bool hand = hand_capture_enabled_ && hand_blocked_since_ns_ > 0 &&
+                    tick_now_.ns - hand_blocked_since_ns_ >= hand_capture_t_persist_ns_;
+  if (tips || hand) {
+    return {Outcome::kCaptured, tips && hand ? OutcomeSource::kBoth
+                                : tips       ? OutcomeSource::kTips
+                                             : OutcomeSource::kHand};
   }
-  return Outcome::kMissed;
+  return {Outcome::kMissed, OutcomeSource::kNone};
+}
+
+void DemoCatchingController::UpdateHandCapture(const ControllerState& state) noexcept {
+  hand_capture_now_ = rtc::catching::HandCaptureReading{};
+  // Only a hand in Hold can be holding anything: its target is q_close, so an
+  // empty one reaches ρ = 1 and a stall is the ball. Every lane the clauses
+  // read must be vouched for by the device; a stale one is "not blocked".
+  bool readable = hand_capture_enabled_ && hand_out_.active &&
+                  hand_out_.phase == rtc::catching::HandPhase::kHold && hand_readable_ &&
+                  state.num_devices > kCatchingHandDeviceIdx;
+  if (readable) {
+    const auto& dev = state.devices[kCatchingHandDeviceIdx];
+    readable = rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, hand_dof_) &&
+               rtc::IsLaneReadable(dev, rtc::StateLane::kEffort, hand_dof_);
+    if (readable) {
+      const auto n = static_cast<std::size_t>(hand_dof_);
+      hand_capture_now_ = rtc::catching::EvaluateHandCapture(
+          hand_capture_cfg_, std::span<const double>(dev.positions.data(), n),
+          std::span<const double>(dev.velocities.data(), n),
+          std::span<const double>(dev.efforts.data(), n));
+    }
+  }
+  if (!hand_capture_now_.blocked) {
+    hand_blocked_since_ns_ = 0;
+  } else if (hand_blocked_since_ns_ == 0) {
+    hand_blocked_since_ns_ = tick_now_.ns;
+  }
 }
 
 // ── Motion and hand stages (S7, after the decision) ─────────────────────────
@@ -1849,6 +1923,7 @@ void DemoCatchingController::RunRetreatMotion(const ControllerState& state) noex
       }
       if (StepTowardWaitPose(state)) {
         retreat_stage_ = RetreatStage::kRelease;
+        release_start_ns_ = tick_now_.ns;  // T_release_timeout counts from here
         // The ball comes back with the arm and is let go here, whatever the
         // verdict (OnModeEntered, RETREAT). A hand that never closed is already
         // at q_pre, and its Release ends in Preshape on the next hand stage.
@@ -1879,8 +1954,11 @@ void DemoCatchingController::LatchHandFromSequencer() noexcept {
 
 void DemoCatchingController::RunHandStage(const ControllerState& state) noexcept {
   using rtc::catching::Mode;
+  // Every early return leaves the hand witness empty: it is this tick's.
+  hand_capture_now_ = rtc::catching::HandCaptureReading{};
   if (!hand_seq_enabled_ || !trials_enabled_ || estop_active_) {
     hand_out_ = rtc::catching::HandSequencerOutput{};
+    hand_blocked_since_ns_ = 0;
     return;
   }
   const bool armed = armable_ && arm_requested_.load(std::memory_order_relaxed);
@@ -1893,9 +1971,11 @@ void DemoCatchingController::RunHandStage(const ControllerState& state) noexcept
       hand_seq_.Deactivate();
     }
     hand_out_ = rtc::catching::HandSequencerOutput{};
+    hand_blocked_since_ns_ = 0;
     return;
   }
   if (mode_ == Mode::kFault) {
+    hand_blocked_since_ns_ = 0;
     return;  // FAULT holds the last output (L7 hand policy)
   }
   std::span<const double> q{};
@@ -1907,6 +1987,7 @@ void DemoCatchingController::RunHandStage(const ControllerState& state) noexcept
     qd = std::span<const double>(dev.velocities.data(), n);
   }
   hand_out_ = hand_seq_.Update(tick_now_, static_cast<std::int64_t>(state.dt * 1e9), q, qd);
+  UpdateHandCapture(state);
 }
 
 bool DemoCatchingController::ServiceResetRequests(const ControllerState& state) noexcept {
@@ -2205,6 +2286,15 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
     tick_record_.hand_rho = hand_out_.rho;
     tick_record_.hand_timeout = hand_out_.timeout;
   }
+  // D-S8-8 (b): the hand-joint witness as the last hand stage computed it,
+  // and which witness the recorded verdict rests on.
+  tick_record_.hand_stalled_n = static_cast<std::uint8_t>(hand_capture_now_.stalled);
+  tick_record_.hand_effort_frac = hand_capture_now_.effort_frac_max;
+  tick_record_.hand_blocked_s =
+      hand_blocked_since_ns_ > 0
+          ? static_cast<double>(tick_now_.ns - hand_blocked_since_ns_) * rtc::catching::kNsToS
+          : 0.0;
+  tick_record_.outcome_source = static_cast<std::uint8_t>(outcome_source_);
 
   // ── The plan ────────────────────────────────────────────────────────────
   if (plan_active_ && plan_.valid) {

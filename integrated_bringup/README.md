@@ -850,7 +850,7 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 
 1. FAULT 면 리셋 → 무장 (`catching.enable` 을 false → true 로 — 컨트롤러가 E-STOP·fault 에서 스스로 latch 를 내려도 파라미터는 true 로 남을 수 있어 같은 값의 재설정은 요청이 되지 않는다) → ARMED 대기 (컨트롤러의 homing). ARMED 순간의 측정 자세가 대기 자세에서 `--tol-q` / `--tol-qd` 를 넘으면 시행을 거부한다.
 2. `/sim/launch_ball_at` 으로 투척하고 (spin ω 도 명시 — 기본 0) ground truth 와 모드 전이를 기록한다.
-3. 순환이 닫히면 (RETREAT 뒤 ARMED) 끝낸다. IDLE·FAULT 로 가거나 `--record-s` (기본 12 s) 가 지나도 끝낸다. 시행의 판정은 RETREAT 진입 때 발행된 `outcome` 이다 (L7 §4.7).
+3. 순환이 닫히면 (RETREAT 뒤 ARMED) 끝낸다. IDLE·FAULT 로 가거나 `--record-s` (기본 12 s) 가 지나도 끝낸다. 시행의 판정은 RETREAT 진입 때 발행된 `outcome` 이다 (L7 §4.7). RETREAT 에서 손이 `robot.hand.T_release_timeout` 안에 `q_pre` 에 정착하지 못하면 컨트롤러가 IDLE (`HAND_TIMEOUT`) 로 가며 스스로 disarm 한다 (S8-C) — 순환은 닫히지 않은 것으로 기록되고, 다음 투척의 1 단계 재무장이 복구한다.
 4. 공을 리셋한다.
 
 관절 이름·상태 토픽은 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). **대기 자세·`T_freeze`·`T_arm`·`lead_enable`·`control.dt` 는 떠 있는 컨트롤러의 read-only 미러 파라미터에서 읽는다** (S8-A) — `sim_overlay:=` 가 이 값들을 바꿔도 설치된 YAML 은 그대로이기 때문이다. 미러가 없으면 (컨트롤러가 configure 에서 park 됨 — 그 로그가 값을 댄다) 시작하지 않는다. 미러 값은 `<out>/run_meta.json` 과 시행 기록마다 `controller_mirror` 로 남는다.

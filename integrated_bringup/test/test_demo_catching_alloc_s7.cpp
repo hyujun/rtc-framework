@@ -91,16 +91,34 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
     node_.reset();
   }
 
-  void BringUp() {
+  /// `s8c`: the hand-joint capture witness on (the hand device given its
+  /// max_torque) and a short RETREAT release timeout (#537 S8-C).
+  void BringUp(bool s8c = false) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
-    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+    auto configs = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
+    if (s8c) {
+      rtc::DeviceJointLimits limits;
+      limits.max_torque = std::vector<double>(kP1bHandDof, 3.0);
+      configs.at("p1b").joint_limits = limits;
+    }
+    ctrl_->SetDeviceNameConfigs(configs);
     const Eigen::Vector3d p_c = start_.translation() + Eigen::Vector3d(0.04, 0.03, 0.02);
     YAML::Node yaml = YAML::Load(
         TrackingYaml(topic_, p_c, start_.rotation().col(2), /*gamma_f=*/0.3, /*t_c=*/0.7));
     // A short hold, so RETREAT is reached inside a short run.
     yaml["catching"]["robot"]["hand"]["T_hold"] = 0.02;
+    if (s8c) {
+      YAML::Node hand = yaml["catching"]["robot"]["hand"];
+      hand["T_hold"] = 0.2;
+      hand["T_release_timeout"] = 0.35;
+      hand["capture"]["rho_min"] = 0.2;
+      hand["capture"]["rho_max"] = 0.9;
+      hand["capture"]["effort_frac_min"] = 0.5;
+      hand["capture"]["t_persist"] = 0.05;
+      hand["capture"]["provisional"] = false;  // this fixture is judged a real-arm config
+    }
     const rclcpp_lifecycle::State prev;
     ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
               DemoCatchingController::CallbackReturn::SUCCESS);
@@ -151,7 +169,9 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
   }
 
   /// One tick with a perfect servo on both devices. `gated` wraps ONLY the
-  /// Compute() call.
+  /// Compute() call. With `stall_in_hold_`, a hand joint stops part-way in
+  /// Hold and pushes; with `freeze_hand_in_retreat_`, the hand stops following
+  /// its command from RETREAT on (the release never arrives).
   void Tick(bool gated, std::uint64_t& allocations, double& tick_us) {
     state_.iteration += 1;
     state_.t_relative_s = static_cast<double>(state_.iteration) * kDt;
@@ -167,14 +187,30 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
     }
     tick_us =
         std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    const bool hand_frozen = freeze_hand_in_retreat_ && ctrl_->GetMode() == Mode::kRetreat;
     for (int d = 0; d < 2; ++d) {
       const auto& o = out.devices[static_cast<std::size_t>(d)];
       auto& dev = state_.devices[static_cast<std::size_t>(d)];
+      if (d == 1 && hand_frozen) {
+        continue;
+      }
       for (int i = 0; i < o.num_channels; ++i) {
         dev.positions[static_cast<std::size_t>(i)] = o.commands[static_cast<std::size_t>(i)];
       }
     }
+    if (stall_in_hold_) {
+      const auto& h = ctrl_->GetHandOutputForTesting();
+      const bool holding = h.active && h.phase == rtc::catching::HandPhase::kHold;
+      auto& hand = state_.devices[1];
+      if (holding) {
+        hand.positions[5] = 0.3;  // ρ 0.6 of the fixture's 0 → 0.5 travel
+      }
+      hand.efforts[5] = holding ? 2.7 : 0.0;  // 0.9 of max_torque, toward q_close
+    }
   }
+
+  bool stall_in_hold_{false};
+  bool freeze_hand_in_retreat_{false};
 
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
@@ -240,6 +276,44 @@ TEST_F(DemoCatchingAllocS7Test, EveryModeOfATrialTicksWithoutAllocating) {
         << "mode " << static_cast<int>(m) << " was never gated; path: " << seen;
   }
   RecordProperty("worst_tick_us", static_cast<int>(worst_us));
+}
+
+TEST_F(DemoCatchingAllocS7Test, TheHandWitnessAndTheReleaseTimeoutTickWithoutAllocating) {
+  // #537 S8-C: the same trial with the hand-joint witness evaluated on every
+  // Hold tick (a stalled, pushing finger — the full per-joint evaluation, not
+  // its early exit) and a hand that never comes back to q_pre, so RETREAT ends
+  // on the release timeout. Every tick is gated.
+  ASSERT_NO_FATAL_FAILURE(BringUp(/*s8c=*/true));
+  stall_in_hold_ = true;
+  freeze_hand_in_retreat_ = true;
+  std::uint64_t sequence = 1;
+  bool blocked_seen = false;
+  bool timed_out = false;
+  Mode prev = ctrl_->GetMode();
+  for (int t = 0; t < 5000; ++t) {
+    const Mode mode = ctrl_->GetMode();
+    if (t % 15 == 0 &&
+        (mode == Mode::kIdle || mode == Mode::kArmed || mode == Mode::kTracking ||
+         mode == Mode::kApproach || mode == Mode::kCommitted || mode == Mode::kClosing)) {
+      Publish(sequence++);
+    }
+    std::uint64_t allocations = 0;
+    double us = 0.0;
+    Tick(/*gated=*/true, allocations, us);
+    EXPECT_EQ(allocations, 0U) << "mode " << static_cast<int>(mode) << " (the tick's START mode)";
+    blocked_seen =
+        blocked_seen || (mode == Mode::kHold && ctrl_->GetLastTickRecord().hand_blocked_s > 0.0);
+    if (prev == Mode::kRetreat && ctrl_->GetMode() == Mode::kIdle) {
+      timed_out = ctrl_->GetLastReason() == rtc::catching::Reason::kHandTimeout;
+      break;
+    }
+    prev = ctrl_->GetMode();
+    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+  }
+  EXPECT_TRUE(blocked_seen) << "the witness never evaluated a stalled joint — not measured";
+  EXPECT_TRUE(timed_out) << "RETREAT did not end on the release timeout — not measured";
+  // (No fingertip lane in this fixture: the verdict is Undetermined whatever
+  // the hand says — the scenario suite owns the verdict; this case, the heap.)
 }
 
 TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {

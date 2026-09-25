@@ -106,6 +106,7 @@
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/contact_debounce.hpp"
 #include "rtc_controllers/catching/decel_target.hpp"
+#include "rtc_controllers/catching/hand_capture.hpp"
 #include "rtc_controllers/catching/hand_sequencer.hpp"
 #include "rtc_controllers/catching/joint_home.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
@@ -773,15 +774,33 @@ class DemoCatchingController final : public RTControllerInterface {
   void SetupSupervisor();
   /// The first supervisor value a trial needs that is missing, or nullptr.
   [[nodiscard]] const char* SupervisorValueMissing() const noexcept;
-  /// RETREAT → ARMED (L7 §4.8, S7.4). RT only, from OnModeEntered.
+  /// RETREAT → ARMED (L7 §4.8, S7.4): ResetTrialScope, then the arm is at
+  /// the wait pose and the hand is told Ready. RT only, from OnModeEntered.
   void ResetForRearm() noexcept;
+  /// Everything of the trial that just ended (the reset table's R column
+  /// minus the homing flags and the hand's Ready). RETREAT → IDLE runs it too
+  /// (#537 S8-C): a disarm or a release timeout during the return must not
+  /// carry this trial's contact window into the next one. RT only.
+  void ResetTrialScope() noexcept;
   /// The fingertip lane (L7 §4.4, S7.3): baseline in ARMED/TRACKING at q_pre,
   /// debounced contact from COMMITTED to HOLD, freshness (TIP_STALE) and the
   /// window [t_cmd, t_c + T_confirm]. Fed per SAMPLE (inference_sequence),
   /// not per tick. RT only, before the decision.
   void RunContactLane(const ControllerState& state) noexcept;
-  /// The attempt's verdict at the end of HOLD (L7 §4.4).
-  [[nodiscard]] rtc::catching::Outcome JudgeOutcome() const noexcept;
+  /// Which witness a verdict rests on (diag `outcome_source`): the
+  /// fingertip agreement, the stalled hand joints (D-S8-8 (b)), or both.
+  enum class OutcomeSource : std::uint8_t { kNone = 0, kTips = 1, kHand = 2, kBoth = 3 };
+
+  struct Judgement {
+    rtc::catching::Outcome outcome{rtc::catching::Outcome::kNone};
+    OutcomeSource source{OutcomeSource::kNone};
+  };
+
+  /// The attempt's verdict at the end of HOLD (L7 §4.4, + D-S8-8 (b)).
+  [[nodiscard]] Judgement JudgeOutcome() const noexcept;
+  /// The hand-joint witness for this tick, after the sequencer (D-S8-8 (b)):
+  /// `hand_capture_now_` and the run it extends (`hand_blocked_since_ns_`).
+  void UpdateHandCapture(const ControllerState& state) noexcept;
 
   /// One tick's worth of per-device command writing, shared by both axes.
   /// `latch` supplies the held command; an unreadable device is SILENCED
@@ -1077,6 +1096,13 @@ class DemoCatchingController final : public RTControllerInterface {
   double decel_a_dec_{0.0};
   std::int64_t t_hold_ns_{0};
   std::int64_t t_close_e2e_ns_{0};
+  /// RETREAT's wait for the hand at q_pre (D-S8-6); 0 = no timeout.
+  std::int64_t t_release_timeout_ns_{0};
+  /// The hand-joint capture witness (D-S8-8 (b)): the profile's thresholds and
+  /// the hand device's max_torque. Off without a valid `robot.hand.capture`.
+  rtc::catching::HandCaptureConfig hand_capture_cfg_{};
+  bool hand_capture_enabled_{false};
+  std::int64_t hand_capture_t_persist_ns_{0};
   std::int64_t stale_committed_max_ns_{0};
   int sat_ticks_{0};  // 0 = off until configure (supervisor.sat_ticks)
 
@@ -1118,6 +1144,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// and CLOSING continue on the extrapolation — R-ORDER).
   bool law_horizon_extrap_{false};
   rtc::catching::Outcome outcome_{rtc::catching::Outcome::kNone};
+  OutcomeSource outcome_source_{OutcomeSource::kNone};
+  /// RETREAT's release instant (kReturn → kRelease); 0 before it (D-S8-6).
+  std::int64_t release_start_ns_{0};
+  /// This tick's hand-joint witness and the tick its current unbroken run of
+  /// `blocked` began (0 = not blocked) — D-S8-8 (b).
+  rtc::catching::HandCaptureReading hand_capture_now_{};
+  std::int64_t hand_blocked_since_ns_{0};
   // RT-OWNED END
 
   // ── S7.3 contact lane ────────────────────────────────────────────────────
@@ -1153,7 +1186,10 @@ class DemoCatchingController final : public RTControllerInterface {
   // Every RT-owned member (the RT-OWNED ranges of this header), and which
   // reset puts it back. R = ResetForRearm (RETREAT → ARMED), T =
   // ResetTrialState (activation / E-STOP / explicit). "exempt" names why it
-  // survives. test_catching_reset_table.py checks every member has a row;
+  // survives. R also runs on RETREAT → IDLE, minus the homing flags, the
+  // hand's Ready and arm_qd_cmd_ — IDLE ramps a moving return down
+  // (ResetTrialScope, #537 S8-C).
+  // test_catching_reset_table.py checks every member has a row;
   // test_catching_reset_probe.cpp checks the rows are true.
   // clang-format off
   //   arm_hold_, hand_hold_, hand_target_raw_, hand_target_width_     T
@@ -1178,8 +1214,10 @@ class DemoCatchingController final : public RTControllerInterface {
   //   last_trial_generation_, last_trial_generation_valid_   R writes, T clears
   //   decel_entry_, decel_t_s_ns_, decel_stopped_, hold_entry_ns_     R, T
   //   sat_streak_, law_horizon_extrap_           R, T
-  //   outcome_                                   T (Aborted when an E-STOP ends an attempt);
+  //   outcome_, outcome_source_                  T (Aborted when an E-STOP ends an attempt);
   //                                              exempt from R: it reports the LAST attempt
+  //   release_start_ns_, hand_blocked_since_ns_  R, T (and RETREAT → IDLE: ResetTrialScope)
+  //   hand_capture_now_                          exempt: rewritten every tick by the hand stage
   //   contact_                                   R, T
   //   tip_baseline_n_, window_confirmed_seen_, window_stale_seen_     R, T
   //   tip_last_seq_                              T; exempt from R: a sample fed before the re-arm is not new

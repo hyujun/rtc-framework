@@ -164,7 +164,7 @@ struct TransitionRow {
 
 // ── The merged (Mode × Reason) → Mode table ─────────────────────────────────
 // clang-format off
-inline constexpr std::array<TransitionRow, 93> kTransitionTable = {{
+inline constexpr std::array<TransitionRow, 94> kTransitionTable = {{
     // IDLE (§4.1 row 1; §4.2 PARAMS_TBD, CLOCK_UNHEALTHY "IDLE 진입 거부")
     {Mode::kIdle, Reason::kNone, Mode::kArmed},
     {Mode::kIdle, Reason::kParamsTbd, Mode::kIdle},
@@ -282,6 +282,11 @@ inline constexpr std::array<TransitionRow, 93> kTransitionTable = {{
     {Mode::kRetreat, Reason::kClockUnhealthy, Mode::kAbortSafe},
     {Mode::kRetreat, Reason::kEstop, Mode::kIdle},
     {Mode::kRetreat, Reason::kParamsTbd, Mode::kIdle},
+    // #537 S8-C (D-S8-6 (a)): the hand did not reach q_pre within
+    // T_release_timeout of the release. RETREAT ends in IDLE and the driver
+    // disarms on the same tick — a hand that cannot settle must not re-arm on
+    // its own. IDLE has no row: it never waits on the hand.
+    {Mode::kRetreat, Reason::kHandTimeout, Mode::kIdle},
 
     // ABORT_SAFE (§4.1 row 10; ABORT_ESCALATED → FAULT, ESTOP clear)
     {Mode::kAbortSafe, Reason::kNone, Mode::kRetreat},

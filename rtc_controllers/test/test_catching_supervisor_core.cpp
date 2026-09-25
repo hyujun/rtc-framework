@@ -275,6 +275,21 @@ TEST(TransitionTable, BrokenTableWithAnUndefinedAmbiguousCellIsDetected) {
   EXPECT_FALSE(result.Ok());
 }
 
+TEST(TransitionTable, AHandTimeoutEndsTheReturnInIdleAndIsRecordedElsewhere) {
+  // #537 S8-C (D-S8-6 (a)): RETREAT's wait for the hand at q_pre times out
+  // into IDLE. CLOSING and DECEL keep their record-only self-loops, and IDLE
+  // has no row — it never waits on the hand.
+  Mode to = Mode::kArmed;
+  ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kRetreat, Reason::kHandTimeout, to));
+  EXPECT_EQ(to, Mode::kIdle);
+  ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kClosing, Reason::kHandTimeout, to));
+  EXPECT_EQ(to, Mode::kClosing);
+  ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kDecel, Reason::kHandTimeout, to));
+  EXPECT_EQ(to, Mode::kDecel);
+  EXPECT_FALSE(LookupTransition(kTransitionTable, Mode::kIdle, Reason::kHandTimeout, to));
+  EXPECT_FALSE(LookupTransition(kTransitionTable, Mode::kHold, Reason::kHandTimeout, to));
+}
+
 TEST(TransitionTable, LookupFindsEveryShippedRow) {
   for (const TransitionRow& row : kTransitionTable) {
     Mode to{};

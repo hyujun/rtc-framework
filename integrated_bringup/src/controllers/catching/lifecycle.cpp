@@ -64,6 +64,8 @@ namespace {
              "damping_sq)";
     case R::kCloseTimeoutNotAboveE2e:
       return "T_close_timeout must exceed T_close_e2e";
+    case R::kReleaseTimeoutNotAboveE2e:
+      return "T_release_timeout must exceed T_close_e2e";
     case R::kFreezeShorterThanClose:
       return "T_freeze is shorter than T_close_e2e + T_arm + one tick — the close command would "
              "be due before the commit";
@@ -88,8 +90,9 @@ namespace {
 ///
 /// `robot.hand.T_close_e2e` is excluded BY NAME: it is the number S4.2
 /// produces with this controller, so gating the CONFIGURE on it would make the
-/// measurement its own precondition. `T_close_timeout` (TBD exactly when
-/// T_close_e2e is, being derived from it) is excluded with it. Their consumer
+/// measurement its own precondition. `T_close_timeout` and
+/// `T_release_timeout` (TBD exactly when T_close_e2e is, being derived from
+/// it) are excluded with it. Their consumer
 /// from S7.1 is the hand sequencer, and SupervisorValueMissing() parks a
 /// configuration whose law is wired but whose closure time is not decided —
 /// the step rig (`diagnostic.hand_step`) needs neither.
@@ -122,7 +125,7 @@ namespace {
     return true;
   }
   return k.starts_with("robot.hand.") && k != "robot.hand.T_close_e2e" &&
-         k != "robot.hand.T_close_timeout";
+         k != "robot.hand.T_close_timeout" && k != "robot.hand.T_release_timeout";
 }
 
 /// Read-only descriptor for the mirrored profile parameters. They exist so an
@@ -1314,6 +1317,7 @@ void DemoCatchingController::SetupSupervisor() {
   };
   t_hold_ns_ = to_ns(params_.hand.T_hold);
   t_close_e2e_ns_ = to_ns(params_.hand.T_close_e2e);
+  t_release_timeout_ns_ = to_ns(params_.hand.T_release_timeout);
   stale_committed_max_ns_ = to_ns(params_.supervisor_stale_committed_max_s);
   sat_ticks_ = params_.supervisor_sat_ticks;
   // The sequencer owns the hand unless the S4 step rig does (never both).
@@ -1344,6 +1348,30 @@ void DemoCatchingController::SetupSupervisor() {
       static_cast<std::int64_t>(std::llround(params_.supervisor_contact_t_stale * 1e9));
   contact_t_confirm_ns_ =
       static_cast<std::int64_t>(std::llround(params_.supervisor_contact_t_confirm * 1e9));
+  // The hand-joint capture witness (D-S8-8 (b)). Its torque scale is the HAND
+  // device's own joint_limits.max_torque, so no robot constant enters here; a
+  // profile that asks for the witness on a device without those limits is
+  // refused by SupervisorValueMissing, not silently judged by fingertips.
+  hand_capture_cfg_ = rtc::catching::HandCaptureConfig{};
+  hand_capture_enabled_ = false;
+  hand_capture_t_persist_ns_ = to_ns(params_.hand.capture.t_persist);
+  if (params_.hand.capture.enabled && hand_seq_enabled_) {
+    std::span<const double> tau_max{};
+    if (const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
+        hand_cfg != nullptr && hand_cfg->joint_limits.has_value()) {
+      tau_max = hand_cfg->joint_limits->max_torque;
+    }
+    hand_capture_cfg_ = rtc::catching::HandCaptureConfig::FromProfile(params_.hand, tau_max);
+    hand_capture_enabled_ = hand_capture_cfg_.Valid() && !params_.hand.capture.t_persist.tbd;
+    if (hand_capture_enabled_) {
+      RCLCPP_INFO(logger_,
+                  "supervisor: hand-joint capture witness on — rho in [%.3f, %.3f], effort >= "
+                  "%.3f max_torque, >= %d joint(s), %.3f s",
+                  hand_capture_cfg_.rho_min, hand_capture_cfg_.rho_max,
+                  hand_capture_cfg_.effort_frac_min, hand_capture_cfg_.min_joints,
+                  static_cast<double>(hand_capture_t_persist_ns_) * 1e-9);
+    }
+  }
   trials_enabled_ = clik_enabled_ && SupervisorValueMissing() == nullptr;
   if (trials_enabled_) {
     RCLCPP_INFO(logger_,
@@ -1396,6 +1424,13 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
   }
   if (!hand_step_enabled_ && params_.hand.T_close_e2e.tbd) {
     return "robot.hand.T_close_e2e";
+  }
+  if (hand_seq_enabled_ && t_release_timeout_ns_ <= 0) {
+    return "robot.hand.T_release_timeout";
+  }
+  if (hand_seq_enabled_ && params_.hand.capture.enabled && !hand_capture_enabled_) {
+    return "robot.hand.capture (every threshold resolved, and the hand device's "
+           "joint_limits.max_torque for each joint)";
   }
   return nullptr;
 }
