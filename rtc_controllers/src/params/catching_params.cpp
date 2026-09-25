@@ -297,6 +297,7 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
     const double m = ReleaseTimeoutPerE2e(out.eta_close.value, s_max, out.q_tol);
     if (std::isfinite(m)) {
       out.T_release_timeout = TbdDouble::Resolved(m * out.T_close_e2e.value);
+      out.T_release_timeout_derived = true;
     }
   }
   return out;

@@ -1762,7 +1762,7 @@ DemoCatchingController::Judgement DemoCatchingController::JudgeOutcome() const n
 }
 
 void DemoCatchingController::UpdateHandCapture(const ControllerState& state) noexcept {
-  hand_capture_now_ = rtc::catching::HandCaptureReading{};
+  // `hand_capture_now_` is already this tick's empty reading (RunHandStage).
   // Only a hand in Hold can be holding anything: its target is q_close, so an
   // empty one reaches ρ = 1 and a stall is the ball. Every lane the clauses
   // read must be vouched for by the device; a stale one is "not blocked".

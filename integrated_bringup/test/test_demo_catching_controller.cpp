@@ -1275,6 +1275,15 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.freeze.T_freeze").as_double(), t_freeze);
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("joint_cmd.lag.T_arm").as_double(), t_arm);
   EXPECT_TRUE(node_handle->get_parameter("joint_cmd.lag.lead_enable").as_bool());
+  // S8-C: RETREAT's hand timeout. Neither shipped profile sets the key, so the
+  // value is DERIVED — the mirror is the only place a reader can see it.
+  const auto& hand = ctrl.GetCatchingParams().hand;
+  EXPECT_TRUE(hand.T_release_timeout_derived) << profile;
+  ASSERT_FALSE(hand.T_release_timeout.tbd) << profile;
+  EXPECT_GT(hand.T_release_timeout.value, hand.T_close_e2e.value) << profile;
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("hand.T_release_timeout").as_double(),
+                   hand.T_release_timeout.value)
+      << profile;
   // Read-only, like the hand profile: the runner must not be able to "fix" a
   // mismatch by writing the value it expected.
   const auto result = node_handle->set_parameter(rclcpp::Parameter("planner.freeze.T_freeze", 0.5));

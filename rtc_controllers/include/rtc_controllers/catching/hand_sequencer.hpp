@@ -232,9 +232,7 @@ class HandSequencer {
       if (!cfg_.caging_mask[i]) {
         continue;
       }
-      const double span = cfg_.q_close[i] - cfg_.q_pre[i];
-      const double s = span > 0.0 ? 1.0 : -1.0;
-      const double r = (q[i] - cfg_.q_pre[i]) * s / std::abs(span);
+      const double r = JointClosureProgress(q[i], cfg_.q_pre[i], cfg_.q_close[i]);
       if (!std::isfinite(r)) {
         return std::nan("");
       }

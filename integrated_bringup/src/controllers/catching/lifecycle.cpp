@@ -170,6 +170,10 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("hand.eta_close", hand.eta_close.value, "L6 §4.2 closure threshold eta");
   declare("hand.rho_eps", hand.rho_eps, "L6 §4.2 caging gap floor [rad]");
   declare("hand.T_close_e2e", hand.T_close_e2e.value, "L6 §4.2 end-to-end closure time [s]");
+  // What RETREAT actually waits (S8-C): usually DERIVED from the poses, η and
+  // q_tol, so the YAML alone does not show it.
+  declare("hand.T_release_timeout", hand.T_release_timeout.value,
+          "RETREAT wait for the hand at q_pre [s] (derived when the key is absent)");
   // The RT tick period the analyser needs for its tick axis and its dropped-row
   // test. It is mirrored here for the same reason as the poses: the off-process
   // reader must use what the CONTROLLER resolved, not a constant. The runner
@@ -1376,10 +1380,12 @@ void DemoCatchingController::SetupSupervisor() {
   if (trials_enabled_) {
     RCLCPP_INFO(logger_,
                 "supervisor: trials enabled — commit at t_c − %.3f s, wait pose (%d joints, tol "
-                "%.3f rad), hand %s, T_hold %.3f s",
+                "%.3f rad), hand %s, T_hold %.3f s, T_release_timeout %.3f s%s",
                 static_cast<double>(plan_freeze_ns_) * 1e-9, planner_params_.wait_pose_n, pose_tol_,
                 hand_seq_enabled_ ? "sequenced" : "on the step rig",
-                static_cast<double>(t_hold_ns_) * 1e-9);
+                static_cast<double>(t_hold_ns_) * 1e-9,
+                static_cast<double>(t_release_timeout_ns_) * 1e-9,
+                params_.hand.T_release_timeout_derived ? " (derived)" : "");
   }
 }
 
@@ -1425,8 +1431,13 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
   if (!hand_step_enabled_ && params_.hand.T_close_e2e.tbd) {
     return "robot.hand.T_close_e2e";
   }
-  if (hand_seq_enabled_ && t_release_timeout_ns_ <= 0) {
-    return "robot.hand.T_release_timeout";
+  // Above T_close_e2e as well as positive: the validator's own line for this
+  // key is only a warning here (the key is exempt from the consumed gate with
+  // the T_close_e2e it is derived from), and an explicit value at or below the
+  // closure time would disarm after every release.
+  if (hand_seq_enabled_ &&
+      (t_release_timeout_ns_ <= 0 || t_release_timeout_ns_ <= t_close_e2e_ns_)) {
+    return "robot.hand.T_release_timeout (resolved, and above T_close_e2e)";
   }
   if (hand_seq_enabled_ && params_.hand.capture.enabled && !hand_capture_enabled_) {
     return "robot.hand.capture (every threshold resolved, and the hand device's "

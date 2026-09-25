@@ -154,7 +154,7 @@ struct HandCaptureReading {
       out.effort_frac_max =
           std::isfinite(out.effort_frac_max) ? std::max(out.effort_frac_max, frac) : frac;
     }
-    const double rho = (q[i] - cfg.q_pre[i]) * s / std::abs(span);
+    const double rho = JointClosureProgress(q[i], cfg.q_pre[i], cfg.q_close[i]);
     // Each clause written as "within" so a NaN fails it.
     // `frac` also needs isfinite: an infinite torque passes ">=".
     const bool stalled = rho >= cfg.rho_min && rho <= cfg.rho_max &&

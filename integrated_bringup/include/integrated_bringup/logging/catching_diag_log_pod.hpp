@@ -142,8 +142,9 @@ struct CatchingDiagLogPod {
   /// D-S8-8 (b)'s hand-joint witness (#537 S8-C): caging joints stalled part-
   /// way while pushing toward q_close, the largest signed τ/τ_max over them
   /// (NaN when not evaluated — not in Hold, a lane not vouched for, or the
-  /// witness off), how long the current unbroken stall has lasted [s] (0 when
-  /// not blocked — the verdict compares it with t_persist), and which witness
+  /// witness off), how long the current unbroken stall has lasted [s] as of
+  /// THIS tick's hand stage (0 when not blocked — the verdict, taken on the
+  /// next tick, compares its own clock: this value plus one period), and which witness
   /// the recorded `outcome` rests on (0 none, 1 fingertips, 2 hand, 3 both).
   std::uint8_t hand_stalled_n{0};
   double hand_effort_frac{std::numeric_limits<double>::quiet_NaN()};

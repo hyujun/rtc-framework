@@ -1640,6 +1640,29 @@ TEST_F(SupervisorScenarioTest, ACaptureBlockWithoutTheHandTorqueLimitsParksTheTr
   EXPECT_NE(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
+TEST_F(SupervisorScenarioTest, AReleaseTimeoutNotAboveTheCloseTimeParksTheTrials) {
+  // An explicit T_release_timeout at or below T_close_e2e (0.28 here) would
+  // time out every release and disarm after every catch. The validator's line
+  // for the key is only a warning at configure (it shares T_close_e2e's
+  // exemption from the consumed gate), so the supervisor refuses it itself.
+  for (const double t : {0.28, 0.1}) {
+    ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+    ctrl_->SetSharedModelBuilder(builder_);
+    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+    YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
+    yaml["catching"]["robot"]["hand"]["T_release_timeout"] = t;
+    const rclcpp_lifecycle::State prev;
+    ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << t;
+    EXPECT_TRUE(ctrl_->IsSimOnlyDisabled()) << t;
+    EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kSupervisorUnset)
+        << t;
+    EXPECT_FALSE(ctrl_->AreTrialsEnabled()) << t;
+  }
+}
+
 TEST_F(SupervisorScenarioTest, AHandThatNeverReachesQPreEndsTheReturnInIdleDisarmed) {
   // D-S8-6 (a): the hand freezes the moment it is released, so it never gets
   // back to q_pre. RETREAT waits T_release_timeout, then ends in IDLE,

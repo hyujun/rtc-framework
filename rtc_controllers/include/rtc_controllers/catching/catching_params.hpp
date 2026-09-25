@@ -110,6 +110,16 @@ inline constexpr double kCloseTimeoutPerE2e = 2.0;
   return kCloseTimeoutPerE2e * ratio;
 }
 
+/// L6 §4.2's per-joint closure progress: 0 at q_pre, 1 at q_close, signed by
+/// the closing DIRECTION (a joint whose q_close is below its q_pre closes by
+/// decreasing). The one definition the sequencer's ρ (its min over C) and the
+/// capture witness (per joint) both use. Non-finite for a zero span.
+[[nodiscard]] inline double JointClosureProgress(double q, double q_pre, double q_close) noexcept {
+  const double span = q_close - q_pre;
+  const double s = span > 0.0 ? 1.0 : -1.0;
+  return (q - q_pre) * s / std::abs(span);
+}
+
 /// `robot.hand.capture` (#537 S8-C, D-S8-8 (b)): the hand-joint evidence the
 /// attempt verdict adds to the fingertip agreement. A caging joint is STALLED
 /// when it stopped part-way — rho_min ≤ ρ_i ≤ rho_max, |q̇_i| ≤ q̇_tol — while
@@ -165,6 +175,7 @@ struct HandProfile {
   /// RETREAT's wait for the hand at q_pre [s], > T_close_e2e (D-S8-6). Absent
   /// from the YAML it is DERIVED at parse, ReleaseTimeoutPerE2e × T_close_e2e.
   TbdDouble T_release_timeout;
+  bool T_release_timeout_derived{false};  // true when the key was absent
   HandCaptureParams capture;
   HandHoldMode hold_mode{HandHoldMode::kCloseTarget};
   double hold_delta_rad{0.0};  // rad, >= 0 — read only by kMeasuredOffset
