@@ -20,6 +20,7 @@ a lead-on arm plus its calibration twin with the supervisor thresholds off).
 
 from __future__ import annotations
 
+import json
 import math
 import os
 
@@ -258,5 +259,28 @@ def test_leap_calibration_arm_only_lifts_the_supervisor_thresholds(leap_arms, le
     for key in SUPERVISOR_OFF:
         assert off[("catching", "supervisor", key)] > shipped[key], key
     assert off[("catching", "supervisor", "stale_committed_max_s")] <= 1.0
-    # A trial is a few seconds at 500 Hz; the streak must never reach the count.
-    assert off[("catching", "supervisor", "sat_ticks")] >= 10 * 500
+    # A trial is a few seconds; 10 s at this robot's control rate is a streak
+    # no trial can reach, whatever rate the profile ships.
+    base = _load(os.path.join(CONFIG_ROOT, LEAP, RATE_FILE[LEAP]))
+    rate = base["/**"]["ros__parameters"]["control_rate"]
+    assert off[("catching", "supervisor", "sat_ticks")] >= 10 * rate
+
+
+@pytest.mark.parametrize("profile", ("ur5e_p1b", LEAP))
+def test_sim_perception_profile_serves_its_own_controller(profile):
+    """Each robot ships its own copy of ``ball_perception_sim_profile.json``,
+    and its controller YAML says the two "must match". Pinned here so that
+    retuning one robot's copy cannot drift from what its controller expects."""
+    ship = _load(
+        os.path.join(CONFIG_ROOT, profile, "controllers", "demo_catching_controller.yaml")
+    )
+    catching = ship[CONTROLLER]["catching"]
+    with open(
+        os.path.join(CONFIG_ROOT, profile, "ball_perception_sim_profile.json"), encoding="utf-8"
+    ) as f:
+        vision = json.load(f)
+    pred = vision["prediction"]
+    assert pred["step_s"] == catching["prediction"]["dt_expected"]
+    assert pred["horizon_s"] >= catching["io"]["horizon_min"]
+    assert pred["max_points"] >= catching["io"]["n_min"]
+    assert vision["time"]["max_future_skew_s"] == catching["sim"]["io"]["future_tol"]

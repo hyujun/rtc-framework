@@ -9,9 +9,14 @@
 #   track_err_abort 100    — ‖q_meas − q_cmd‖ abort never fires
 #   stale_committed_max_s 1.0 — the parser's ceiling; a COMMITTED snapshot
 #                            never ages that far inside one flight
-# The hand-joint capture witness stays off because the shipped YAML has no
-# `robot.hand.capture` block (present = enabled); `catching_trials` replays it
-# offline from the logged hand state.
+# The hand-joint capture witness is NOT off in this arm. The calibration set
+# (seeds 501/502) was recorded before the shipped YAML had a
+# `robot.hand.capture` block, so the witness was absent and `catching_trials`
+# replayed it offline from the logged hand state. The block is now shipped,
+# and an overlay can add keys but not remove one (present = enabled), so a
+# rerun of this arm runs the witness at its frozen values. To reproduce the
+# uncensored calibration set exactly, drop that block from the shipped YAML
+# for the run.
 #
 # NOT FOR SUCCESS RATES. These are the calibration seeds only; the validation
 # arm runs catch_lead_on.yaml with the thresholds frozen into the shipped YAML.
