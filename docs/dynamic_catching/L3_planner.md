@@ -155,6 +155,8 @@ $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LW
 
 > **S3.5b (2026-09-22).** 이 box 로는 gate 지도가 열리지 않는다 (`ur5e_p1b` 기준 투척 주변 2835 투척 중 6; 그 이동이 토크 한계 안에 드는지를 직접 검사한 층은 590). D-16 개정 (plan §7.3 결정 B, §9) 으로 오프라인 지도는 두 층을 병기하고, 런타임의 자세 의존 한계는 S6 에서 설계한다 — 위 "v1 범위 밖" 은 그때 다시 본다.
 
+> **S8-G (2026-09-26, plan §9·§4.4 S8-G).** 런타임은 이 box 를 도달시간에만 쓰고 있다 — CLIK 은 결정 K (S6-C2) 로 `joint_cmd.accel_constraint: dynamic` (토크) 을 실행하므로 "CLIK 가속 box 와 같은 값" 은 더 이상 성립하지 않는다. S8-F-1 데이터에서 실행된 관절 가속 p95 는 14–37 rad/s² 인데 box 는 2.03 이라, 같은 운동의 도달시간이 box 로는 0.6–0.9 s (가용 lead 0.3–0.5 s) 로 나와 `rank_reach` 가 유효 plan 의 93–100 % 에서 실패했다 — 순위 gate 라 시도는 막지 않지만 penalty 가 균일해져 정보가 없고 §4.10 의 $w_t\,t_{reach}/avail$ 항도 무의미해진다. S8-G 는 sim overlay 로 box 를 **실행 envelope** (`rtc_tools catching_arm_budget --write-envelope-box`) 로 바꿔 같은 투척에서 gate 를 다시 판정한다; 원칙을 "계획기 한계 = 실행이 실제로 내는 envelope" 로 바꾸는 것은 그 결과 뒤의 사용자 결정이다.
+
 **잘못된 한계 입력은 flag 로 보고한다.** 참조 구현 `tMinChecked` 는 $\bar a\le0$ 또는 $\bar\omega\le0$ (또는 NaN) 이면 $t=0$ 을 **아무 표시 없이** 돌려준다 — 도달시간 게이트가 무조건 통과하는 결함이다. S1.5 이식 시 한계 무효 플래그를 추가하고, 플래그가 서면 후보를 탈락시킨다 (clamp 플래그와 같은 처리). 한계 값 자체의 범위 검사는 파라미터 검증(S1.7)이 한다.
 
 검증: 무작위 40개 조건에서 속도·가속 제약 선형계획(시간 이분 탐색) 해와 최대 차이 — python 거울 $8.3\times10^{-6}$ s, C++ `tMin` $9.5\times10^{-6}$ s (LP 격자 이산화 수준). `test_l3.cpp`가 `cases.txt`를 만들고 `verify_l3.py`가 대조한다.
