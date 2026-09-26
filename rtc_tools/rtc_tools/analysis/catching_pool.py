@@ -25,8 +25,8 @@ dirs per arm and judges the arm:
 * with ≥ 2 arms, an exact McNemar test per arm pair over the trials that are
   included and valid in BOTH, paired by ``(seed, idx)`` (D-S8-16 ④);
 * the D-3 S3.1b count (D-S8-16 ⑤): trials with a clock covariate over all
-  arms, plus the ``d3.paired`` counts of ``--extra-d3`` summaries, against the
-  ≥ 200 requirement;
+  arms against the ≥ 200 requirement; ``--extra-d3`` summaries (another
+  population) are listed beside it, not added;
 * G8-B (per-horizon pooled NEES, trial bootstrap) and G8-C2 (A⊥B, n ≥ 100)
   recomputed from the pooled per-trial columns — :mod:`catching_vision` — and
   each unit's ``time_alignment`` and the RTF covariates.
@@ -319,23 +319,35 @@ def load_extra_d3(path: Path) -> dict:
     }
 
 
+EXTRA_D3_COUNT_DEFINITION = (
+    "d3.paired of that summary: accepted trials the lane had a launch for (an older, "
+    "wider population than n_with_clock_covariate — listed, never added)"
+)
+
+
 def d3_s31b_block(arms: Mapping[str, Sequence[Mapping]], extras: Sequence[Mapping]) -> dict:
+    """D-3 S3.1b (plan D-S8-16 ⑤): judged on the arms' own trials only.
+
+    The arms count their included VALID trials with a finite clock covariate;
+    an ``--extra-d3`` summary's ``d3.paired`` counts every accepted trial with
+    a lane launch — another population, so it is listed beside the verdict
+    (S8-B alongside S8-E), not summed into it.
+    """
     per_arm = {
         label: d3_block(_valid(rows))["n_with_clock_covariate"] for label, rows in arms.items()
     }
-    extra = sum(e["paired"] for e in extras)
-    total = sum(per_arm.values()) + extra
+    total = sum(per_arm.values())
     pooled = d3_block([r for rows in arms.values() for r in _valid(rows)])
     return {
         "requirement_n": D3_S31B_N_MIN,
+        "count_definition": "included valid trials with a finite delta_max_ms",
         "per_arm": per_arm,
-        "extra_paired": extra,
         "total": total,
         "met": total >= D3_S31B_N_MIN,
         "pooled_over_arms": pooled,
-        "extra_sources": list(extras),
-        "note": "quantiles of --extra-d3 sources are listed per source — quantiles cannot be "
-        "pooled from summaries; only their paired counts are summed",
+        "extra_sources": [{**e, "paired_definition": EXTRA_D3_COUNT_DEFINITION} for e in extras],
+        "note": "extra sources are listed beside the verdict, not added to it; their quantiles "
+        "cannot be pooled with the arms' from a summary",
     }
 
 
@@ -464,13 +476,13 @@ def report(summary: Mapping) -> str:
         )
     s = summary["d3_s31b"]
     lines.append(
-        f"D-3 S3.1b: {s['total']} trials with a clock covariate (arms {s['per_arm']} + extra "
-        f"{s['extra_paired']}) vs ≥ {s['requirement_n']} → {'met' if s['met'] else 'NOT met'}"
+        f"D-3 S3.1b: {s['total']} trials with a clock covariate (arms {s['per_arm']}) vs ≥ "
+        f"{s['requirement_n']} → {'met' if s['met'] else 'NOT met'}"
     )
     for e in s["extra_sources"]:
         lines.append(
-            f"  extra {e['source']}: paired {e['paired']} · δ_max p50/p95/max "
-            f"{_q(e['delta_max_ms_p50_p95_max'])} ms (not pooled)"
+            f"  alongside (not counted) {e['source']}: d3.paired {e['paired']} (accepted trials "
+            f"with a lane launch) · δ_max p50/p95/max {_q(e['delta_max_ms_p50_p95_max'])} ms"
         )
     return "\n".join(lines)
 
@@ -522,8 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         nargs="*",
         default=[],
         metavar="SUMMARY_JSON",
-        help="other sessions' catching_trials_summary.json: their d3 block is listed and their "
-        "d3.paired summed into the S3.1b count (D-S8-16 ⑤)",
+        help="other sessions' catching_trials_summary.json: their d3 block is listed beside the "
+        "S3.1b verdict, which the arms alone decide (D-S8-16 ⑤)",
     )
     args = ap.parse_args(argv)
     summary, trial_rows = pool(

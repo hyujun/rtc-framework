@@ -384,10 +384,10 @@ ros2 run rtc_tools catching_pool \
 - **보충 절단 (D-S8-16 ①b)**: CT_DIR 은 **준 순서대로** (사전 선언 seed 순, 보충 unit 은 마지막) 읽고 시행은 `idx` 순. 누적 유효 수가 `--n-valid-target` (기본 200) 에 닿는 시행까지 포함하고, 그 뒤 시행은 `beyond_target` 으로 유효·ITT 양쪽에서 뺀다 (수는 보고). 전부 합쳐도 모자라면 `INSUFFICIENT_N`
 - **arm 별**: `n_total`·사유별 무효·`n_valid`·성공·p̂·Wilson 95 %·`lower_975`·`--floor` 판정 PASS / FAIL·ITT (포함된 전 시행, 무효 = 실패)·슈퍼바이저 × truth 혼동행렬·unit 별 표 (dir·seed·n_total·n_valid·성공·beyond). 같은 모집단의 D-3 (|δ(t_commit)|·|δ(t_c)|·δ_max p50/p95/max, clock 공변량 있는 시행 수)·tick overrun·G8-C3 분포·G7-B3 (세션과 같은 함수로 합산 시행에서 다시 계산)·`map_open` 열이 있으면 gate-map 전체 / 지도-열림 부분집합. `--z` (기본 1.96) 는 Wilson z
 - **McNemar** (arm 2 개 이상): 두 arm 에서 모두 포함·유효인 `(seed, idx)` 쌍만으로 A 성공 ∧ B 실패 (b)·A 실패 ∧ B 성공 (c)·정확 이항 양측 p (`scipy.stats.binomtest`). seed 없는 유효 행 수를 따로 적는다. 한 arm 에 같은 `(seed, idx)` 가 두 번 나오면 (원본 unit 과 재실행 unit 을 둘 다 준 경우) 거부
-- **D-3 S3.1b**: arm 들의 clock 공변량 시행 수 + `--extra-d3` 요약 JSON 들의 `d3.paired` 합 vs ≥ 200 (`met`). arm 들의 δ 분위수는 합산하지만, 요약 JSON 의 분위수는 합칠 수 없으므로 출처별로 나란히 적는다
+- **D-3 S3.1b** (D-S8-16 ⑤): arm 들의 clock 공변량 시행 수 (포함·유효·유한 `delta_max_ms`) 만으로 ≥ 200 (`met`) 을 판정한다. `--extra-d3` 요약 JSON 의 `d3.paired` 는 모집단이 다르므로 (그 요약의 lane 발사가 있는 accepted 시행 전부) 정의와 함께 **옆에 나열만** 하고 더하지 않는다 (S8-B 는 S8-E 옆에 병기). 요약 JSON 의 분위수도 합칠 수 없으므로 출처별로 적는다
 - **G8-B·G8-C2·RTF·시각 정렬**: 합산 시행의 행 열에서 다시 계산한다 — G8-B 는 시행별 합·수로 정확한 합산 평균과 시행 부트스트랩, G8-C2 는 시행당 (A, B) 하나라 표본 = 시행 클러스터, n ≥ 100 이면 `independence_test`. unit 별 `time_alignment` 를 옮겨 적는다
 - 통계 함수는 `catching_trials`·`catching_vision` 의 것을 그대로 쓴다 (`truth_block`·`floor_verdict`·`streak_distribution`·`impulse_correlation`·`tick_overrun_summary`·`mcnemar_exact`·`g8b_summary`·`c2_summary`). `invalid_reason` 열이 없는 (검증 규칙 이전) CSV 는 거부 — 그 unit 에 `catching_trials` 를 다시 돌린다
-- 테스트 `test/test_catching_pool.py` (14 케이스): 두 unit 에 걸친 G8-B 합산 평균이 Σ/Σ 인지·C2 n, 손으로 쓴 unit dir 로 절단 (unit 중간에서 목표 도달·순서 뒤집으면 다른 시행이 빠짐)·`INSUFFICIENT_N`·84/200 PASS 대 83/200 FAIL·McNemar 쌍 (한쪽 무효·한쪽에만 있는 idx 제외)·중복 `(seed, idx)` 거부·구 CSV 거부·S3.1b 합산·gate-map 블록·CLI strict JSON
+- 테스트 `test/test_catching_pool.py` (14 케이스): 두 unit 에 걸친 G8-B 합산 평균이 Σ/Σ 인지·C2 n, 손으로 쓴 unit dir 로 절단 (unit 중간에서 목표 도달·순서 뒤집으면 다른 시행이 빠짐)·`INSUFFICIENT_N`·84/200 PASS 대 83/200 FAIL·McNemar 쌍 (한쪽 무효·한쪽에만 있는 idx 제외)·중복 `(seed, idx)` 거부·구 CSV 거부·S3.1b 는 arm 만으로 판정·extra 는 나열만·gate-map 블록·CLI strict JSON
 
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 

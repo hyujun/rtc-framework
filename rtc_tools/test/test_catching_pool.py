@@ -173,7 +173,11 @@ def test_a_unit_from_before_the_validity_rules_is_refused(tmp_path):
         cp.read_unit(u)
 
 
-def test_d3_s31b_sums_the_arms_and_the_extra_summaries(tmp_path):
+def test_d3_s31b_is_judged_on_the_arms_and_lists_the_extra_summaries(tmp_path):
+    """D-S8-16 ⑤: S8-E's own trials decide S3.1b. An --extra-d3 summary's
+    d3.paired counts another population (every accepted trial with a lane
+    launch) — listed with that definition, never added: 100 arm trials + 150
+    extra is NOT met."""
     ua = _unit(tmp_path / "a", [_row(i, 601, delta=0.5 + i) for i in range(60)])
     # One trial without a clock covariate does not count.
     rows_b = [_row(i, 601) for i in range(40)] + [_row(40, 601, delta=math.nan)]
@@ -185,12 +189,17 @@ def test_d3_s31b_sums_the_arms_and_the_extra_summaries(tmp_path):
     )
     s = summary["d3_s31b"]
     assert s["per_arm"] == {"A": 60, "B": 40}
-    assert (s["extra_paired"], s["total"], s["met"]) == (150, 250, True)
+    assert (s["total"], s["met"]) == (100, False)
+    assert s["extra_sources"][0]["paired"] == 150
+    assert "never added" in s["extra_sources"][0]["paired_definition"]
     assert s["extra_sources"][0]["delta_max_ms_p50_p95_max"] == [4, 10, 16]
     assert "cannot be pooled" in s["note"]
     assert summary["arms"]["A"]["d3"]["delta_tc_ms_abs_p50_p95_max"][2] == pytest.approx(59.5)
-    summary, _ = cp.pool({"A": [ua]}, floor=0.1, n_valid_target=100, n_boot=50)
-    assert summary["d3_s31b"]["met"] is False
+    uc = _unit(tmp_path / "c", [_row(i, 602) for i in range(100)])
+    summary, _ = cp.pool(
+        {"A": [ua], "B": [ub], "C": [uc]}, floor=0.1, n_valid_target=100, n_boot=50
+    )
+    assert (summary["d3_s31b"]["total"], summary["d3_s31b"]["met"]) == (200, True)
 
 
 def test_gate_map_block_only_when_rows_carry_map_open(tmp_path):
