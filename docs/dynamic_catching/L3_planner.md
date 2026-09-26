@@ -200,6 +200,8 @@ $$\gamma\le\gamma_{\max}=\frac{\min(v_{dir,\max},\ \eta_vv_{\max})}{\Vert v\Vert
 
 TCP 속도 한계를 빠뜨리면 계획이 통과시킨 γ가 L4에서 속도 포화를 일으킨다. `gammaWindow`는 두 값을 모두 인자로 받는다(v0.1 코드는 $v_{dir,\max}$만 썼다).
 
+> **S8-H 실측 (2026-09-27, plan §4.4 S8-H · D-S8-19).** p1b sim 의 손 근처 투척 391 committed 시행에서 이 상한을 정한 것은 **99 % 가 $v_{dir,\max}$** (포구 자세, p50 2.07 m/s) 이고 $\eta_vv_{\max}$ (3.15) 는 **0 %** 였다. 창은 96 % 가 비었고 ($\gamma_{\min}$ 0.81 > $\gamma_{\max}$ 0.39), 그때 `ChooseGamma` 의 window-rule 은 $\gamma_f=\gamma_{\max}$ (팔 한계) 를 채택해 나머지 상대속도를 손에 넘긴다 — 창이 비어도 계획은 이미 팔 한계에 있으므로 창의 *정의* 를 바꿔 풀 γ 가 없다. 포획 가능 속력은 아래 $\Vert v\Vert_{\max}$ ≈ 2.07 + 1.0 = 3.1 m/s (S8-F-1 v50 3.6 과 같은 급). 지렛대는 포구 자세 ($v_{dir,\max}$ ≤ 1.5 m/s 성공 0 %, 2.5–3.0 20 %) 와 손 흡수 ($d_{eff}/T_{close,tot}$ 1.0 대 sim 손 50 % ≈ 1.5 m/s) 다. 계획기는 $\gamma_{\min}$·$\gamma_{\max}$·$v_{dir,\max}$ 를 기록하지 않아 이 분해는 오프라인 FK 로 했다 — ④ 의 substrate 로 `planner_events` 기록을 제안.
+
 **여유율 `[확정 D-9]`.** `gammaWindow` 의 TCP 속도 인자는 $v_{tcp}=\eta_v\cdot$`reference.v_max` ($0<\eta_v\le1$) 이다. γ 창이 $v_{\max}$ 전체를, rollout 수락(§4.8)이 $\eta_vv_{\max}$ 를 쓰면 창은 통과했는데 rollout 에서만 탈락하는 후보가 구조적으로 생기고, 계획이 한계 끝을 쓰면 실행 중 예측 변화로 L4 가 포화한다. γ derate 가 v1 에서 빠졌으므로(D-8) 이 여유가 실행 중 유일한 완충이다. 마스터 §6 교차제약도 이 식으로 고친다 (검증은 S1.7 교차제약 표).
 
 **입력 방어.** $v_{dir,\max}$ 는 아래 DLS 정규화식의 결과라 수치 문제로 음수가 나올 수 있다. 음수면 clamp 가 $\gamma_{\max}$ 를 0으로 **올려** 판정을 뒤집으므로, `gammaWindow` 가 비물리적 입력을 검사해 플래그를 세운다(`tMinChecked` 가 $|w_0|>\bar\omega$ 를 검사하는 것과 같은 수준).
