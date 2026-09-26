@@ -41,6 +41,19 @@ ARMS = {
     "catch_lead_off_gamma0": {"lead_enable": False, "gamma0": True},
 }
 BEANBAG = "catch_lead_on_beanbag"
+# S8-F-1 (#537, 2026-09-26): catch_lead_on with the widened catch box, with
+# (reach_first) and without (shipped_score) the inverted score weights, and the
+# reach-first arm catching the beanbag preset.
+S8F_ARMS = ("s8f_reach_first", "s8f_shipped_score")
+S8F_BEANBAG = "s8f_reach_first_beanbag"
+S8F_BOX = {
+    ("catching", "planner", "workspace", "catch_box", "min"): [-1.1, -1.1, 0.15],
+    ("catching", "planner", "workspace", "catch_box", "max"): [1.1, 1.1, 1.2],
+}
+S8F_SCORE = {
+    ("catching", "planner", "score", "w_t"): 5.0,
+    ("catching", "planner", "score", "w_gamma"): 1.0,
+}
 SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
 LEAP = "iiwa7_leap"
 LEAP_ARMS = ("catch_lead_on", "catch_lead_on_unbounded")
@@ -245,6 +258,71 @@ def test_beanbag_arm_runs_the_lead_on_controller(arms):
 
 def test_the_commit_window_is_derived_from_t_arm(arms, shipped):
     _check_commit_window(arms["catch_lead_on"]["catching"], shipped["catching"], "ur5e_p1b")
+
+
+# ── ur5e_p1b S8-F-1 (hand-near throws) ───────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def s8f_arms() -> dict[str, dict]:
+    return {
+        name: _controller_tree(_load(os.path.join(OVERLAY_DIR, name + ".yaml")))
+        for name in S8F_ARMS
+    }
+
+
+@pytest.mark.parametrize("name", S8F_ARMS)
+def test_s8f_every_leaf_is_a_shipped_key_of_the_same_type(name, s8f_arms, shipped):
+    assert _unread_leaves(s8f_arms[name], shipped) == []
+
+
+def test_s8f_reach_first_is_lead_on_plus_the_box_and_the_inverted_weights(arms, s8f_arms, shipped):
+    """The arm differs from catch_lead_on ONLY by the widened box and the two
+    score weights — and the weights really are inverted relative to the shipped
+    ones, so the pair measures the priority and nothing else."""
+    base = _leaves(arms["catch_lead_on"])
+    leaves = _leaves(s8f_arms["s8f_reach_first"])
+    extra = {k: v for k, v in leaves.items() if k not in base}
+    assert extra == {**S8F_BOX, **S8F_SCORE}
+    assert {k: v for k, v in leaves.items() if k in base} == base
+    ship = shipped["catching"]["planner"]["score"]
+    assert (ship["w_t"], ship["w_gamma"]) == (1.0, 5.0), "the shipped weights the arm inverts"
+    assert (
+        leaves[("catching", "planner", "score", "w_t")],
+        leaves[("catching", "planner", "score", "w_gamma")],
+    ) == (
+        ship["w_gamma"],
+        ship["w_t"],
+    )
+
+
+def test_s8f_shipped_score_is_reach_first_without_the_score(s8f_arms):
+    reach = _leaves(s8f_arms["s8f_reach_first"])
+    control = _leaves(s8f_arms["s8f_shipped_score"])
+    assert control == {k: v for k, v in reach.items() if k not in S8F_SCORE}
+
+
+def test_s8f_box_contains_the_shipped_one_and_clears_the_table(shipped):
+    ship = shipped["catching"]["planner"]["workspace"]["catch_box"]
+    lo = S8F_BOX[("catching", "planner", "workspace", "catch_box", "min")]
+    hi = S8F_BOX[("catching", "planner", "workspace", "catch_box", "max")]
+    assert all(a <= b for a, b in zip(lo, ship["min"], strict=True))
+    assert all(a >= b for a, b in zip(hi, ship["max"], strict=True))
+    # The stopping point may not be reserved below the work table (top z 0.05,
+    # mujoco_simulator.yaml) — the box floor sits above it.
+    assert lo[2] > 0.05
+
+
+def test_s8f_beanbag_arm_changes_only_the_ball_type(s8f_arms):
+    overlay = _load(os.path.join(OVERLAY_DIR, S8F_BEANBAG + ".yaml"))
+    sim = overlay.pop("mujoco_simulator")
+    assert sim == {"ros__parameters": {"projectile_ball": {"ball_type": "beanbag"}}}
+    assert _controller_tree(overlay) == s8f_arms["s8f_reach_first"]
+
+
+@pytest.mark.parametrize("name", S8F_ARMS)
+def test_s8f_commit_window_is_derived_from_t_arm(name, s8f_arms, shipped):
+    _check_commit_window(s8f_arms[name]["catching"], shipped["catching"], "ur5e_p1b")
 
 
 # ── iiwa7_leap (S8-D) ────────────────────────────────────────────────────────

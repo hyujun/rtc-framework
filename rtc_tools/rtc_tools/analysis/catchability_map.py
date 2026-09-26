@@ -490,6 +490,371 @@ def throw_to_launch_request(
     }
 
 
+# ── Hand-near throws (dynamic_catching S8-F) ──────────────────────────────────
+#
+# A throw is specified by its ARRIVAL, not its release: the ball has to pass a
+# target point beside the waiting hand at a given speed, flight time and
+# incidence. Release position and velocity follow by integrating the same force
+# law BACKWARDS from that arrival state — no shooting, no unknowns. Drag makes
+# the backward integration necessary: at 5 m/s over 0.8 s the vacuum release
+# point is off by 0.13 m (#537 S8-F re-derivation, 2026-09-26).
+
+
+@dataclass(frozen=True)
+class HandNearThrow:
+    """A throw aimed at a point beside the hand, with everything the analysis needs.
+
+    Design factors are what the experiment varies; the derived values are what
+    the release actually is. All positions are in the frame ``p_c`` and
+    ``approach_axis`` were given in (the sim world for the runner).
+    """
+
+    speed_m_s: float  # |v| at the target
+    flight_time_s: float
+    offset_m: float  # r — distance from p_c in the plane normal to the approach axis
+    offset_angle_deg: float  # ψ — 0 along `lateral`, 90 along `up` (see aim_at_hand)
+    incidence_offset_deg: (
+        float  # α — arrival direction off the approach axis, in the vertical plane
+    )
+    target_m: np.ndarray  # p_c + offset
+    position_m: np.ndarray  # release
+    velocity_m_s: np.ndarray  # release
+    arrival_velocity_m_s: np.ndarray
+    incidence_deg: float  # arrival direction below the horizontal
+    release_height_offset_m: float  # Δz = release z − target z
+    horizontal_distance_m: float  # d, release → target
+    release_speed_m_s: float
+    release_elevation_deg: float
+    apex_z_m: float  # highest point of the flight
+    lowest_z_m: float  # lowest point of the flight (release or target, never in between for a lob)
+
+
+def _approach_plane(approach_axis: Sequence[float]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(n, lateral, up): the unit approach axis and an orthonormal pair spanning the plane normal to it.
+
+    ``up`` is the in-plane direction with the largest +z component (the palm's
+    "up"), ``lateral`` completes a right-handed (lateral, up, n) triad. A
+    vertical approach axis has no preferred up and is refused.
+    """
+    n = np.asarray(approach_axis, dtype=float).reshape(3)
+    norm = float(np.linalg.norm(n))
+    if not (math.isfinite(norm) and norm > 0.0):
+        raise ValueError(f"approach_axis must be a finite non-zero vector (got {approach_axis!r})")
+    n = n / norm
+    z = np.array([0.0, 0.0, 1.0])
+    up = z - float(z @ n) * n
+    up_norm = float(np.linalg.norm(up))
+    if up_norm < 1e-6:
+        raise ValueError("approach_axis is vertical — the offset plane has no 'up' direction")
+    up = up / up_norm
+    lateral = np.cross(up, n)
+    return n, lateral, up
+
+
+def aim_at_hand(
+    p_c: Sequence[float],
+    approach_axis: Sequence[float],
+    *,
+    speed_m_s: float,
+    flight_time_s: float,
+    offset_m: float,
+    offset_angle_deg: float,
+    incidence_offset_deg: float,
+    params: BallParams,
+    step_s: float = 1e-3,
+    floor_z_m: float | None = None,
+    gravity_w: Sequence[float] = GRAVITY_W_M_S2,
+) -> HandNearThrow:
+    """The release (position, velocity) that makes the ball ARRIVE as specified.
+
+    ``p_c`` is the catch point and ``approach_axis`` the direction the hand
+    faces (catch frame +z, pointing OUT of the palm); the ball flies against it.
+    The target is ``p_c`` offset by ``offset_m`` in the plane normal to the
+    axis, at ``offset_angle_deg`` from the lateral direction. The arrival
+    velocity has magnitude ``speed_m_s``, lies in the vertical plane through the
+    approach axis, and points ``incidence_offset_deg`` steeper (positive) or
+    shallower than the axis. The release is the arrival state integrated
+    backwards for ``flight_time_s`` under gravity and the ``params`` drag law
+    (RK4, fixed step, the same derivative :func:`integrate_flight` uses).
+
+    ``floor_z_m`` refuses a throw whose ball SURFACE would be at or below that
+    height anywhere along the flight (the release below a work table, or a lob
+    that would bounce first) — the caller decides what to do with the refusal
+    (a Latin-hypercube design redraws). ``None`` skips the check.
+    """
+    for name, value in (
+        ("speed_m_s", speed_m_s),
+        ("flight_time_s", flight_time_s),
+    ):
+        if not (math.isfinite(value) and value > 0.0):
+            raise ValueError(f"{name} must be finite and > 0 (got {value!r})")
+    if not (math.isfinite(offset_m) and offset_m >= 0.0):
+        raise ValueError(f"offset_m must be finite and >= 0 (got {offset_m!r})")
+    if not (math.isfinite(step_s) and step_s > 0.0):
+        raise ValueError(f"step_s must be finite and > 0 (got {step_s!r})")
+    n, lateral, up = _approach_plane(approach_axis)
+    target = np.asarray(p_c, dtype=float).reshape(3) + offset_m * (
+        math.cos(math.radians(offset_angle_deg)) * lateral
+        + math.sin(math.radians(offset_angle_deg)) * up
+    )
+    # Arrival direction: the approach axis, rotated in its vertical plane by
+    # the incidence offset, then reversed (the ball flies INTO the palm).
+    horizontal = n - n[2] * np.array([0.0, 0.0, 1.0])
+    h_norm = float(np.linalg.norm(horizontal))
+    horizontal = horizontal / h_norm
+    axis_elevation = math.atan2(n[2], h_norm)
+    incidence = axis_elevation + math.radians(incidence_offset_deg)
+    if not (0.0 < incidence < math.pi / 2):
+        raise ValueError(
+            f"arrival incidence {math.degrees(incidence):.1f}° is not below the horizontal "
+            "and above the vertical — the ball would have to rise into the hand or drop "
+            "along it"
+        )
+    v_arrival = -speed_m_s * (
+        math.cos(incidence) * horizontal + math.sin(incidence) * np.array([0.0, 0.0, 1.0])
+    )
+
+    gravity = np.asarray(gravity_w, dtype=float).reshape(3)
+    steps = int(math.ceil(flight_time_s / step_s - 1e-12))
+    h = flight_time_s / steps  # exact landing on the flight time
+
+    def deriv(state: np.ndarray) -> np.ndarray:
+        out = np.empty(6)
+        out[:3] = state[3:]
+        out[3:] = gravity + drag_acceleration(state[3:], params)
+        return out
+
+    state = np.concatenate([target, v_arrival])
+    z_max = float(target[2])
+    z_min = float(target[2])
+    for _ in range(steps):
+        # RK4 with a negative step: the flight replayed from arrival to release.
+        k1 = deriv(state)
+        k2 = deriv(state - 0.5 * h * k1)
+        k3 = deriv(state - 0.5 * h * k2)
+        k4 = deriv(state - h * k3)
+        state = state - (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        z_max = max(z_max, float(state[2]))
+        z_min = min(z_min, float(state[2]))
+    release = state[:3].copy()
+    v0 = state[3:].copy()
+    if floor_z_m is not None and z_min - params.radius_m <= floor_z_m:
+        raise ValueError(
+            f"the ball surface reaches z {z_min - params.radius_m:.3f} m, at or below the floor "
+            f"{floor_z_m:.3f} m (release z {release[2]:.3f}, target z {target[2]:.3f})"
+        )
+    horiz = release[:2] - target[:2]
+    return HandNearThrow(
+        speed_m_s=float(speed_m_s),
+        flight_time_s=float(flight_time_s),
+        offset_m=float(offset_m),
+        offset_angle_deg=float(offset_angle_deg),
+        incidence_offset_deg=float(incidence_offset_deg),
+        target_m=target,
+        position_m=release,
+        velocity_m_s=v0,
+        arrival_velocity_m_s=v_arrival,
+        incidence_deg=math.degrees(incidence),
+        release_height_offset_m=float(release[2] - target[2]),
+        horizontal_distance_m=float(np.linalg.norm(horiz)),
+        release_speed_m_s=float(np.linalg.norm(v0)),
+        release_elevation_deg=math.degrees(math.atan2(v0[2], float(np.linalg.norm(v0[:2])))),
+        apex_z_m=z_max,
+        lowest_z_m=z_min,
+    )
+
+
+def hand_near_throw_to_launch_request(throw: HandNearThrow) -> dict:
+    """``rtc_msgs/srv/LaunchBall`` request fields for a hand-near throw (zero spin, as the flight model assumes)."""
+    p, v = throw.position_m, throw.velocity_m_s
+    return {
+        "position": {"x": float(p[0]), "y": float(p[1]), "z": float(p[2])},
+        "velocity": {"x": float(v[0]), "y": float(v[1]), "z": float(v[2])},
+        "angular_velocity": {"x": 0.0, "y": 0.0, "z": 0.0},
+    }
+
+
+def _hermite(seg: tuple, s: float) -> np.ndarray:
+    """Cubic Hermite position on a segment ``(p0, m0, p1, m1)`` at parameter ``s`` in [0, 1]."""
+    p0, m0, p1, m1 = seg
+    s2, s3 = s * s, s * s * s
+    return (
+        (2 * s3 - 3 * s2 + 1) * p0
+        + (s3 - 2 * s2 + s) * m0
+        + (-2 * s3 + 3 * s2) * p1
+        + (s3 - s2) * m1
+    )
+
+
+def _hermite_rate(seg: tuple, s: float) -> np.ndarray:
+    """d/ds of :func:`_hermite` (velocity × segment duration)."""
+    p0, m0, p1, m1 = seg
+    s2 = s * s
+    return (
+        (6 * s2 - 6 * s) * p0
+        + (3 * s2 - 4 * s + 1) * m0
+        + (-6 * s2 + 6 * s) * p1
+        + (3 * s2 - 2 * s) * m1
+    )
+
+
+# Segments on each side of the closest SAMPLE that closest_approach refines.
+# One would do for a convex distance; two absorb a sample landing exactly on a
+# stationary point of the sampled distance.
+CLOSEST_APPROACH_REFINE_SEGMENTS = 2
+
+
+def closest_approach(
+    times_s: Sequence[float],
+    positions_m: np.ndarray,
+    velocities_m_s: np.ndarray,
+    target_m: Sequence[float],
+) -> tuple[float, float, float]:
+    """(distance, time, speed) of a sampled flight's closest pass to ``target_m``.
+
+    The samples are joined by cubic Hermite segments (position and velocity at
+    both ends), so the answer does not depend on where the samples fall. The
+    sampled distance is evaluated everywhere; only the segments within
+    ``CLOSEST_APPROACH_REFINE_SEGMENTS`` of the closest sample are refined by a
+    golden-section search — the distance along a ballistic arc is convex
+    around its minimum at any sampling the callers use (≤ 10 ms), so the true
+    minimum lies in a segment adjacent to the closest sample. This is the
+    experiment's truth check: the ball's recorded trajectory against the point
+    :func:`aim_at_hand` aimed at.
+    """
+    t = np.asarray(times_s, dtype=float)
+    p = np.asarray(positions_m, dtype=float)
+    v = np.asarray(velocities_m_s, dtype=float)
+    target = np.asarray(target_m, dtype=float).reshape(3)
+    if t.ndim != 1 or p.shape != (t.size, 3) or v.shape != (t.size, 3):
+        raise ValueError("times, positions and velocities must be (n,), (n, 3), (n, 3)")
+    if t.size == 0:
+        raise ValueError("no samples")
+    if t.size == 1:
+        return float(np.linalg.norm(p[0] - target)), float(t[0]), float(np.linalg.norm(v[0]))
+    order = np.argsort(t, kind="stable")
+    t, p, v = t[order], p[order], v[order]
+    sampled = np.linalg.norm(p - target, axis=1)
+    k = int(np.argmin(sampled))
+    best = (float(sampled[k]), float(t[k]), float(np.linalg.norm(v[k])))
+    phi = (math.sqrt(5.0) - 1.0) / 2.0
+    lo = max(0, k - CLOSEST_APPROACH_REFINE_SEGMENTS)
+    hi = min(t.size - 1, k + CLOSEST_APPROACH_REFINE_SEGMENTS)
+    for i in range(lo, hi):
+        dt = float(t[i + 1] - t[i])
+        if not dt > 0.0:
+            continue
+        seg = (p[i], v[i] * dt, p[i + 1], v[i + 1] * dt)
+        a, b = 0.0, 1.0
+        c, d = b - phi * (b - a), a + phi * (b - a)
+        for _ in range(40):  # phi**40 ≈ 4e-9 of the segment
+            if np.linalg.norm(_hermite(seg, c) - target) < np.linalg.norm(
+                _hermite(seg, d) - target
+            ):
+                b = d
+            else:
+                a = c
+            c, d = b - phi * (b - a), a + phi * (b - a)
+        s = 0.5 * (a + b)
+        for cand in (0.0, s, 1.0):
+            dist = float(np.linalg.norm(_hermite(seg, cand) - target))
+            if dist < best[0]:
+                best = (
+                    dist,
+                    float(t[i] + cand * dt),
+                    float(np.linalg.norm(_hermite_rate(seg, cand) / dt)),
+                )
+    return best
+
+
+# Free flight ends at the first contact. Between ground-truth samples 10 ms
+# apart gravity and drag change the velocity by ≲ 0.15 m/s; a hand, a link or
+# the table changes it by far more in one step.
+FREE_FLIGHT_MAX_DV_M_S = 0.3
+FREE_FLIGHT_MAX_DV_PER_G = 3.0
+
+
+def free_flight_prefix(
+    times_s: Sequence[float],
+    velocities_m_s: np.ndarray,
+    gravity_w: Sequence[float] = GRAVITY_W_M_S2,
+) -> int:
+    """Number of leading samples that are still free flight (the first contact cuts the rest).
+
+    A sample ends the prefix when the velocity change from its predecessor
+    exceeds ``max(FREE_FLIGHT_MAX_DV_M_S, FREE_FLIGHT_MAX_DV_PER_G · g · Δt)``:
+    more than three times what gravity alone could do in that interval.
+    """
+    t = np.asarray(times_s, dtype=float)
+    v = np.asarray(velocities_m_s, dtype=float)
+    g = float(np.linalg.norm(np.asarray(gravity_w, dtype=float)))
+    for i in range(1, t.size):
+        dt = float(t[i] - t[i - 1])
+        limit = max(FREE_FLIGHT_MAX_DV_M_S, FREE_FLIGHT_MAX_DV_PER_G * g * max(dt, 0.0))
+        if np.linalg.norm(v[i] - v[i - 1]) > limit:
+            return i
+    return int(t.size)
+
+
+def aim_check_from_truth(
+    times_s: Sequence[float],
+    positions_m: np.ndarray,
+    velocities_m_s: np.ndarray,
+    target_m: Sequence[float],
+    params: BallParams,
+    *,
+    horizon_s: float = 2.0,
+    step_s: float = 1e-3,
+    gravity_w: Sequence[float] = GRAVITY_W_M_S2,
+) -> dict:
+    """How close the ball WOULD have passed the aimed point, from the flight the sim actually started.
+
+    The recorded truth ends where the ball meets the hand — often before the
+    aimed point, because that is what catching is — so the passage is not read
+    off the samples. Instead the free-flight law is integrated from the FIRST
+    truth sample (the launch the simulator realised, a few ms after the request)
+    and its closest pass to the target is the aim error; the samples up to the
+    first contact are compared with that model so a disagreement between the
+    simulator's flight and the aiming law shows up as ``model_rms_m``.
+    """
+    t = np.asarray(times_s, dtype=float)
+    p = np.asarray(positions_m, dtype=float)
+    v = np.asarray(velocities_m_s, dtype=float)
+    if t.ndim != 1 or p.shape != (t.size, 3) or v.shape != (t.size, 3) or t.size == 0:
+        raise ValueError(
+            "times, positions and velocities must be (n,), (n, 3), (n, 3) with n >= 1"
+        )
+    order = np.argsort(t, kind="stable")
+    t, p, v = t[order], p[order], v[order]
+    n_free = free_flight_prefix(t, v, gravity_w)
+    model = integrate_flight(
+        p[0], v[0], params, horizon_s=horizon_s, step_s=step_s, gravity_w=gravity_w
+    )
+    dist, at, speed = closest_approach(
+        model.time_s, model.position_m, model.velocity_m_s, target_m
+    )
+    rel = t[:n_free] - t[0]
+    inside = rel <= model.time_s[-1]
+    rms = math.nan
+    if np.any(inside):
+        idx = np.clip(
+            np.round(rel[inside] / model.step_s).astype(int), 0, model.position_m.shape[0] - 1
+        )
+        rms = float(
+            np.sqrt(np.mean(np.sum((p[:n_free][inside] - model.position_m[idx]) ** 2, axis=1)))
+        )
+    return {
+        "aim_error_m": dist,
+        "aim_pass_after_first_truth_s": at,
+        "aim_pass_speed_m_s": speed,
+        "free_flight_samples": int(n_free),
+        "first_contact_after_first_truth_s": float(t[n_free] - t[0])
+        if n_free < t.size
+        else math.nan,
+        "model_rms_m": rms,
+    }
+
+
 # ── Frame conversion ──────────────────────────────────────────────────────────
 
 

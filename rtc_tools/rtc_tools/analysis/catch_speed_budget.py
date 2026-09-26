@@ -355,6 +355,13 @@ class ArmKinematics:
                 v[i] = value
         return q, v
 
+    def frame_placement(self, q_arm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(rotation 3×3, position) of the extra frame in the model world at ``q_arm``."""
+        q, _ = self._full(np.asarray(q_arm, dtype=float))
+        self._pin.framesForwardKinematics(self.model, self.data, q)
+        placement = self.data.oMf[self.frame_id]
+        return np.array(placement.rotation), np.array(placement.translation)
+
     def frame_position(self, q_arm: np.ndarray) -> np.ndarray:
         q, _ = self._full(q_arm)
         self._pin.framesForwardKinematics(self.model, self.data, q)

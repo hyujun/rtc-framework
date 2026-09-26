@@ -843,6 +843,17 @@ class CatchFrameFk:
             return self._arm.frame_position(q)
         return np.array([self._arm.frame_position(row) for row in q])
 
+    def pose_world(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(position, rotation 3×3) of the catch frame in the SIM WORLD at arm posture ``q``.
+
+        The rotation's third column is the catch frame +z — the hand's outward
+        normal, the approach axis a hand-near throw (S8-F) is aimed against.
+        """
+        rotation_model, p_model = self._arm.frame_placement(np.asarray(q, dtype=float))
+        return transform_point(p_model, self.world_t_model), self.world_t_model[
+            :3, :3
+        ] @ rotation_model
+
     def to_model(self, p_world: np.ndarray) -> np.ndarray:
         return transform_point(p_world, self.model_t_world)
 

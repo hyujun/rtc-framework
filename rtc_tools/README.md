@@ -63,7 +63,7 @@ rtc_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (18개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
+**Entry points** (19개 — SSoT 는 `setup.py` 의 `console_scripts`. 아래 표는 주요 항목이고,
 `analysis/` 의 나머지 CLI 는 각 스크립트 절에서 호출 형태를 준다):
 
 | 실행 명령 | 모듈 | 설명 |
@@ -389,6 +389,29 @@ ros2 run rtc_tools catching_pool \
 - 통계 함수는 `catching_trials`·`catching_vision` 의 것을 그대로 쓴다 (`truth_block`·`floor_verdict`·`streak_distribution`·`impulse_correlation`·`tick_overrun_summary`·`mcnemar_exact`·`g8b_summary`·`c2_summary`). `invalid_reason` 열이 없는 (검증 규칙 이전) CSV 는 거부 — 그 unit 에 `catching_trials` 를 다시 돌린다
 - 테스트 `test/test_catching_pool.py` (14 케이스): 두 unit 에 걸친 G8-B 합산 평균이 Σ/Σ 인지·C2 n, 손으로 쓴 unit dir 로 절단 (unit 중간에서 목표 도달·순서 뒤집으면 다른 시행이 빠짐)·`INSUFFICIENT_N`·84/200 PASS 대 83/200 FAIL·McNemar 쌍 (한쪽 무효·한쪽에만 있는 idx 제외)·중복 `(seed, idx)` 거부·구 CSV 거부·S3.1b 는 arm 만으로 판정·extra 는 나열만·gate-map 블록·CLI strict JSON
 
+### `catching_hand_near.py` — 손 근처 투척 2 단계 분석 (dynamic_catching S8-F)
+
+`catching_sim_trials --dist hand_*` 로 던진 unit (S8-F: 손 반경 ≤ 0.2 m 로 오는 공을 얼마나 빠르게까지
+받는가) 을 읽어 **plan 이 있었는가 (COMMIT)** 와 **plan 이 있을 때 잡았는가 (CATCH)** 를 따로 적합한다 —
+성공 하나로 뭉치면 "못 도달" 과 "도달했는데 놓침" 이 섞여 사용자의 우선순위 (시간 내 도달 > 상대속도) 에
+답하지 못한다. unit 은 `<unit>/trials` (러너 출력) + `<unit>/ct` (그 unit 에 `catching_trials` 를 돌린 출력)
+이고, 선택으로 세션의 `planner_events.csv` 를 `<unit>:<csv>` 로 붙인다.
+
+```bash
+ros2 run rtc_tools catching_hand_near \
+    units/cliff_rf units/lhs_rf_911:$SES/controllers/demo_catching_controller/planner_events.csv \
+    units/lhs_ss_911 --ab s8f_reach_first s8f_shipped_score --out hn/
+# → hn/{hand_near_summary.json, hand_near_trials.csv, v50_map.csv, wilson_cells.csv}; rc 1 이면 조준 오차 초과
+```
+
+- **조준 검증**: 시행마다 러너가 남긴 `aim_error_m` 의 최대·p50 과 `--aim-tol-mm` (기본 2) 초과 시행 목록, 그리고 `model_rms_m` (첫 접촉 전 truth 대 모델) 의 최대·초과 목록 — `aim_error_m` 은 조준에 쓴 공 파라미터로 다시 적분한 값이라 항력 법칙이 틀려도 0 이므로 (beanbag unit 을 tennis Cd 로 돌린 경우) 두 번째가 그것을 잡는다. 어느 쪽이든 하나라도 넘으면 rc 1 — 그 unit 은 던진 곳이 설계와 다르다. `aim_error_m` 이 한 시행에도 없으면 `pass: null` ("no data") 로 적고 rc 1
+- **grid arm** (`hand_cliff`·`hand_lob`): 속력별 n·commit·catch 와 Wilson 95 % (catch · plan · catch | plan) 표, 속력 하나에 대한 로지스틱의 v50 (catch / plan / catch | plan) + 시행 부트스트랩 CI (`--n-boot`, 기본 500; 유한 복제 20 미만이면 NaN)
+- **LHS arm** (`hand_lhs`): 설계 인자 [1, v, r, r², T − 0.7, α, v·r, sin ψ, cos ψ] 의 로지스틱 GLM (numpy IRLS, 기울기에 1e-4 ridge — 절벽은 완전 분리라 ridge 없이 발산) 을 commit · catch | commit · 전체 성공 셋에 적합하고, r ∈ {0, 0.05, 0.1, 0.15, 0.2} 에서 **설계 중심 (T 0.7 · 정면 · ψ 평균)** 의 v50(r) 과 두 단계 곱 P(plan)·P(catch | plan) = 0.5 의 v50 (이분법) 을 부트스트랩 CI 와 함께 `v50_map.csv` 로. (r 구간 × v 구간) pooled Wilson (`wilson_cells.csv`) 이 모델 없는 검산. 도달량은 자유도가 아니라 도출량이므로 (Δz·입사각은 (v, T, α) 의 함수) GLM 에 넣지 않는다
+- **v_rel**: commit 된 시행의 **측정** 접촉 상대속도 (`contact_v_rel`) 하나에 대한 로지스틱 → v_rel50 — L6 §4.5 fly-in 허용량의 폐루프 대응값
+- **A/B** (`--ab A B`): 두 arm 라벨 (`run_meta.json` 의 `arm`) 을 `(kind, seed, sample_idx)` 로 짝지어 (설계마다 `sample_idx` 가 0 부터라 `kind` 없이는 같은 seed 의 cliff 와 lhs 가 겹친다) catch 와 commit 각각 McNemar 정확 검정 (`catching_pool` 과 같은 `binomtest`); 짝 없는 시행 수를 따로 적는다
+- **planner_events**: 게시된 plan 중 `rank_reach`·`rank_gamma` 순위 gate 에 걸린 비율과 판정 거부 수 (`rej_workspace` 등). 넓힌 상자에서도 예측 궤적의 바닥 아래·먼 표본은 상자 밖이라 0 이 아니다 — 상자 overlay 의 센서는 P(plan) 이다
+- 합성 positive control (`test/test_catching_hand_near.py`, 10 케이스): 심은 로지스틱 법칙 (plan v50 6.0 → 5.0, catch 4.5 → 3.5 at r 0 → 0.2) 에서 600 발을 뽑아 v50 을 ±0.2 m/s 로 복원, 30 % 뒤집으면 벗어남 (negative control), Wilson 93/200 = [0.397, 0.534], 완전 분리 절벽에서 IRLS 생존, McNemar 짝짓기 (무효·짝 없는 시행 제외), 러너·`catching_trials` 형식으로 쓴 unit 의 round trip + CLI, hand 가 아닌 unit 거부
+
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 
 투척 grid → 항력 비행 → 포구 후보 → **C++ judge** → 집계·제안·플롯. 판정은 재구현하지 않고
@@ -505,6 +528,18 @@ outc = cm.summarize_throws(judged, seed_id=best.seed_id, throw_count=len(throws)
   있으므로 `projectile_ball.radius_m` / `.mass_kg` 에서 읽는다
 - 스칼라 `k = ρC_dA/(2m)` [1/m] 는 **참고용 파생값**으로만 기록한다 — 문서의 대표값과 수치가 다르고
   (출하 tennis preset → 0.02048, L0 §4.1 대표값 0.0229) L0 §7 이 둘을 환산할 수 없다고 명시한다
+- **손 근처 투척 (S8-F)** — `aim_at_hand(p_c, approach_axis, speed_m_s, flight_time_s, offset_m,
+  offset_angle_deg, incidence_offset_deg, params, floor_z_m)`: 도착 상태 (목표점 = p_c + 접근축에 수직한
+  평면의 오프셋, 도착 속도 = 접근축의 연직면에서 α 만큼 돌린 방향으로 v) 에서 같은 힘 법칙을 **RK4 로
+  역적분**해 릴리스 (위치·속도) 와 도출량 (Δz·d·v0·앙각·입사각·정점) 을 돌려준다 — shooting 없이 결정론.
+  진공 해와의 차는 5 m/s · 0.8 s 에서 ≈ 0.1 m 라 항력을 빼면 손을 그만큼 비껴간다. 공 표면이 `floor_z_m`
+  아래로 가는 비행은 `ValueError` 로 거부 (LHS 표본은 다시 뽑는다). `closest_approach` 는 표본 궤적 (위치·속도)
+  을 Hermite 로 이어 목표점 최근접 (거리·시각·속력) 을 내고, `aim_check_from_truth` 는 truth 의 **첫 표본**에서
+  모델을 적분해 목표점 통과 오차를 낸다 (truth 는 손에서 끊기므로 표본 자체로는 통과를 읽을 수 없다;
+  `free_flight_prefix` 가 속도 도약 > max(0.3 m/s, 3 g Δt) 로 첫 접촉을 잘라 그 앞 표본과 모델의 RMS 를 함께 낸다).
+  테스트 `test/test_hand_near_throws.py` (14 케이스): 역적분 릴리스를 순방향으로 날려 도착 속력·방향·목표점
+  일치, scipy 순방향 shooting 과 같은 v0, 무항력 닫힌해, 진공 차 0.08–0.16 m, 바닥 거부 경계, 수평·연직 도착 거부,
+  ψ 0 = 측방 / 90 = 위, 접촉으로 끊긴 합성 truth 에서 모델 통과 오차 < 0.1 mm · 5 cm 어긋난 발사 검출
 - **프레임 변환은 인자로만 받는다.** URDF 가 `base` / `base_link` 를 같은 원점에 z 180° 로 두는 경우
   잘못 고르면 downrange 부호만 뒤집혀 "공이 등 뒤에서 온다" — 그런데 수치는 전부 그럴듯하다.
   로봇별 값을 모듈에 박지 않으며, 호출자가 (같은 q 에서 MuJoCo FK ↔ Pinocchio FK 로 확정한) 변환을 넘긴다
