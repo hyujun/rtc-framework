@@ -191,6 +191,13 @@ struct SearchStats {
   double chosen_gamma_f{0.0};
   double chosen_t_w{0.0};                  ///< the γ window the rollout chose [s]
   bool chosen_rollout_window_only{false};  ///< γ_f chosen on window peaks (approach saturates)
+  /// The chosen candidate's γ window (L3 §4.5) as judged — what an offline
+  /// analysis had to rebuild from FK before S8-I (#537 5847660329). NaN when
+  /// the window was unjudgeable (`gamma_usable` false) or no plan was produced.
+  double chosen_g_min{std::numeric_limits<double>::quiet_NaN()};
+  double chosen_g_max{std::numeric_limits<double>::quiet_NaN()};
+  double chosen_v_dir_max{std::numeric_limits<double>::quiet_NaN()};      ///< [m/s], DLS
+  double chosen_max_catchable{std::numeric_limits<double>::quiet_NaN()};  ///< [m/s]
   SwitchDecision decision{SwitchDecision::kNoCurrent};
   /// Whether the caller should publish the returned snapshot. False when the
   /// switching rule holds the RT's current plan.

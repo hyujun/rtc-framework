@@ -287,6 +287,9 @@ demo_catching_controller:
       # 0] (S3.5a) opened 0. PROVISIONAL. Consumed as the IK seed (S6-B) and
       # homed to (S7.2).
       wait_pose: [-0.7174, 1.5729, 1.7260, -0.9021, -0.2900, 1.2010, 2.1347]
+      # `yaml` = the list above; `current` = the arm's switched-in pose on each
+      # activation's first readable tick (S8-I — see the ur5e_p1b profile).
+      wait_pose_source: yaml
       # ── Search (L3 §4, S6-B) ──────────────────────────────────────────────
       # The robot config's catch sub-model (R-3): arm root → catch frame parent.
       sub_model: "iiwa7_catch"

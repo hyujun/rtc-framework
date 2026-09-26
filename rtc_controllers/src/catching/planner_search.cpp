@@ -233,6 +233,15 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   plan.valid = false;
   plan.reason = PlanReason::kNone;
   current_ = Followed(rt);
+  // S8-I: the IK seed is the wait pose (D-18). With `wait_pose_source:
+  // current` the RT adopts the arm's switched-in pose and hands it over here
+  // (device order); otherwise the configure-time YAML seed stands.
+  if (rt.wait_pose_adopted && rt.nv == model_.nv) {
+    for (int j = 0; j < model_.nv; ++j) {
+      seed_[j] = rt.wait_pose[static_cast<std::size_t>(
+          model_.device_of_model[static_cast<std::size_t>(j)])];
+    }
+  }
   // While the RT follows one of our plans, a cycle that ends without a
   // candidate HOLDS rather than publishing "no plan": that publish would
   // overwrite a replacement the RT has not loaded yet and log a no_current
@@ -391,6 +400,10 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   double best_tw = 0.0;
   bool best_window_only = false;
   double best_gmin = 0.0;
+  double best_gmax = std::numeric_limits<double>::quiet_NaN();
+  double best_gmin_stat = std::numeric_limits<double>::quiet_NaN();
+  double best_v_dir_max = std::numeric_limits<double>::quiet_NaN();
+  double best_max_catchable = std::numeric_limits<double>::quiet_NaN();
   std::uint16_t best_mask = 0;
   std::array<double, kMaxPlanNv> best_q{};
   double best_w5 = 0.0;
@@ -541,6 +554,15 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
       best_tw = t_w;
       best_window_only = window_only;
       best_gmin = r.gamma_usable ? r.window.g_min : 0.0;
+      if (r.gamma_usable) {
+        best_gmin_stat = r.window.g_min;
+        best_gmax = r.window.g_max;
+        best_v_dir_max = r.direction.v_dir_max;
+        best_max_catchable = r.max_catchable;
+      } else {
+        best_gmin_stat = best_gmax = best_v_dir_max = best_max_catchable =
+            std::numeric_limits<double>::quiet_NaN();
+      }
       best_mask = mask;
       for (int j = 0; j < nv; ++j) {
         best_q[static_cast<std::size_t>(j)] = q_star_[static_cast<std::size_t>(j)];
@@ -671,6 +693,10 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   stats.chosen_gamma_f = best_gamma;
   stats.chosen_t_w = best_tw;
   stats.chosen_rollout_window_only = best_window_only;
+  stats.chosen_g_min = best_gmin_stat;
+  stats.chosen_g_max = best_gmax;
+  stats.chosen_v_dir_max = best_v_dir_max;
+  stats.chosen_max_catchable = best_max_catchable;
   stats.search_ns = clock_() - t_start;
   return plan;
 }

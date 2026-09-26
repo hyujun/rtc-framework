@@ -625,7 +625,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 
 설계·결정의 SSoT 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) 이고 (충돌 시 그 문서가 우선), 여기에는 **운용 표면**만 적는다.
 
-- **무장되면 팔은 스스로 `planner.wait_pose` 로 관절공간 homing 하고 한 투척마다 한 순환을 돈다** (S7, 아래 §Catching sim trials·L7 §4.1). 손은 S7.1 부터 시퀀서가 소유한다. `diagnostic.hand_step: true` (출하 false) 인 프로파일만 시퀀서 없이 무성형 계단 목표를 받는다 (S4.2 측정용)
+- **무장되면 팔은 스스로 `planner.wait_pose` 로 관절공간 homing 하고 한 투척마다 한 순환을 돈다** (S7, 아래 §Catching sim trials·L7 §4.1). **`planner.wait_pose_source: current`** (S8-I, 출하 `yaml`) 면 대기 자세는 YAML 목록이 아니라 **이 컨트롤러로 switch 한 순간의 팔 자세** (activation 뒤 첫 팔 판독 tick 의 q_meas) 다 — homing 은 no-op, 계획기 IK seed 도 그 자세; margined 관절 상자 밖이면 거부돼 YAML 값 유지, E-STOP·fault 리셋은 재채택하지 않는다. 채택 자세는 diag `wait_pose_*` 열과 INFO 로그 1 회로 본다 (미러 `planner.wait_pose` 는 YAML 값). `workspace.catch_box` 는 자세를 따라가지 않으니 임의 자세엔 그 주변을 덮는 상자가 필요하다 (L3 §6). 손은 S7.1 부터 시퀀서가 소유한다. `diagnostic.hand_step: true` (출하 false) 인 프로파일만 시퀀서 없이 무성형 계단 목표를 받는다 (S4.2 측정용)
 - **무장 채널**: 컨트롤러 노드의 읽기·쓰기 파라미터 `catching.enable` (기본 `false`). `ros2 param set /demo_catching_controller/demo_catching_controller catching.enable true` (노드 이름은 네임스페이스·이름이 모두 `demo_catching_controller` 다 — 앞의 절반만 쓰면 "Node not found"). **컨트롤러가 스스로 내린다** — E-STOP 발동·해제와 fault 래치에서 RT tick 이 latch 를 내리므로, 해제 후 재개는 다시 `true` 로 올리는 명시적 행위를 요구한다 (P-1 (c)). 활성화도 무장이 아니다
 - **E-STOP·fault**: `TriggerEstop`/`ClearEstop`/`ResetFault`/`ResetTargetInitialization` 는 atomic 요청·epoch 만 갱신하고, 되돌리는 동작의 유일 writer 는 `Compute()` 다. `ClearEstop` 은 컨트롤러 fault 래치를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않는다 (`/rtc_cm/reset_fault` ↔ `/rtc_cm/clear_estop` 이 서로 다른 경로다)
 - **실기 config 에서의 park**: claim 한 device 가 전부 `mujoco_native` 임을 증명하지 못하면 이 configure 는 **real-arm** 으로 판정되고, 이 컨트롤러가 소비하는 키 (`control_rate`·`robot.hand.*`) 에 provisional·TBD 가 있으면 `on_configure` 는 SUCCESS 를 내되 인스턴스를 DISABLED 로 두고 `on_activate` 가 거부한다 (L0 §5.3). configure 를 실패시키지 않는 이유는 CM 이 한 컨트롤러의 configure 실패로 **전체 bring-up** 을 거부하기 때문이다. 출하 프로파일은 아직 provisional 이므로 실기에서는 이 상태가 정상이다
@@ -640,7 +640,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 - **상태 토픽 (S5.4, D-20)**: `/<config_key>/catching_state` (`rtc_msgs/CatchingState`, `KEEP_LAST(1)`). 소유 형태는 `WbcState`·`GraspState` 와 같고 `PublishRole` 은 늘리지 않는다 (E-11). **필드는 S5~S9 superset 으로 한 번 동결**돼 있으며 이후 단계는 값만 채운다 — 단계마다 열이 늘면 한 단계 전 bag 을 못 읽는다. **모든 tick 이 body 를 싣는다** (PROC-7): E-STOP·stale·plan 없음·abort tick 도 발행하고, 그 tick 에 계산하지 않은 블록은 직전 값을 남기지 않고 지운다. 그래서 값이 고정돼 보이면 컨트롤러가 정말 같은 값을 다시 계산한 것이다
 - **tick 레코드 CSV (S5.4)**: `catching_diag.csv` (`logs:` 의 `integrated_bringup/CatchingDiagLog`). 상태 토픽과 **같은 POD 한 벌**에서 나오므로 파일의 숫자와 화면의 숫자가 갈릴 수 없다. tick 마다 한 행이라 **tick 간극은 드롭된 행**을 뜻한다 (#234 P-20). `plot_rtc_log catching_diag.csv` 가 기준 vs 실현 가속도·추종 오차·solve time·슈퍼바이저 모드를 한 시간축에 그린다
 - **GUI**: `demo_controller_gui` Control 탭의 Catching 패널 — 모드·사유, 입력 lane (n·generation·sequence·수신 나이·지평, 거부 카운터는 0 이 아닌 것만), plan, 추종 오차·CLIK 상태, 그리고 Arm/Disarm. **관측된 무장과 요청된 무장을 따로 보여준다** — tick 이 E-STOP·fault 에서 latch 를 내리므로 파라미터 set 이 성공해도 무장됐다는 증거가 아니고, 둘이 갈리는 순간이 봐야 할 상태다
-- **읽기 전용 미러 파라미터**: `hand.q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`/`rho_eps`/`T_close_e2e`·`control.dt`·`diagnostic.hand_step`·`planner.wait_pose`·`planner.freeze.T_freeze`·`joint_cmd.lag.T_arm`·`joint_cmd.lag.lead_enable` (뒤 넷은 S8-A 시행 러너용 — §Catching sim trials) — 오프프로세스 분석기가 YAML 이 아니라 **컨트롤러가 읽은 값**을 쓰게 하려는 것이다
+- **읽기 전용 미러 파라미터**: `hand.q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`/`rho_eps`/`T_close_e2e`·`control.dt`·`diagnostic.hand_step`·`planner.wait_pose`·`planner.wait_pose_source`·`planner.freeze.T_freeze`·`joint_cmd.lag.T_arm`·`joint_cmd.lag.lead_enable` (`wait_pose`·`T_freeze`·`T_arm`·`lead_enable` 은 S8-A 시행 러너용 — §Catching sim trials; `wait_pose_source` 는 S8-I) — 오프프로세스 분석기가 YAML 이 아니라 **컨트롤러가 읽은 값**을 쓰게 하려는 것이다
 
 ### 로깅 레벨
 
@@ -869,7 +869,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 ### Catching sim trials — 한 투척 = 한 S7 순환
 
-S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED). 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
+S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 러너는 미러 `planner.wait_pose` 로 조준·정렬하므로 **`planner.wait_pose_source: yaml` 전제**다 — `current` 로 띄우면 채택 자세와 미러가 달라 ARMED 정렬 gate 가 거부한다; 자세 실험은 overlay `planner.wait_pose` 로 한다 (S8-I). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED). 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
 
 `catching_sim_trials` 는 떠 있는 sim 을 구동만 한다. 투척마다 다음을 한다.
 

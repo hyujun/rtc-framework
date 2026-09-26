@@ -1435,6 +1435,102 @@ TEST_P(ShippedCatchingProfile, TheWaitPoseIsOnePerArmJointAndInsideTheArmLimits)
   }
 }
 
+// ── S8-I: the wait pose the arm was switched in at ───────────────────────────
+namespace {
+
+constexpr int kP1bHandChannels = 10;
+
+/// The p1b sim profile with the planner on and `planner.wait_pose_source` set.
+struct WaitPoseRig {
+  explicit WaitPoseRig(const char* source, const std::string& node_name) {
+    node = ShippedWithPlanner("ur5e_p1b", /*planner=*/true, /*oracle=*/false);
+    if (source != nullptr) {
+      node["catching"]["planner"]["wait_pose_source"] = source;
+    }
+    yaml_wait = node["catching"]["planner"]["wait_pose"].as<std::vector<double>>();
+    handle = NodeWithProfile(node_name, "mpc_on");
+    ctrl.SetControlRate(kShippedControlRateHz);
+    ctrl.SetDeviceNameConfigs(ShippedSimConfigs("ur5e_p1b", node));
+  }
+
+  void ConfigureAndActivate() {
+    ASSERT_EQ(ctrl.on_configure(prev, handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_FALSE(ctrl.IsSimOnlyDisabled());
+    ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+
+  void ExpectWaitPoseIs(const std::vector<double>& expect, const char* why) const {
+    const auto pose = ctrl.GetWaitPoseForTesting();
+    const auto rt = ctrl.GetPlannerRtState();
+    const auto rec = ctrl.GetLastTickRecord();
+    for (std::size_t i = 0; i < expect.size(); ++i) {
+      EXPECT_DOUBLE_EQ(pose[i], expect[i]) << why << " joint " << i;
+      EXPECT_DOUBLE_EQ(rec.wait_pose[i], expect[i]) << why << " diag joint " << i;
+      if (rt.wait_pose_adopted) {
+        EXPECT_DOUBLE_EQ(rt.wait_pose[i], expect[i]) << why << " planner joint " << i;
+      }
+    }
+  }
+
+  YAML::Node node;
+  std::vector<double> yaml_wait;
+  rclcpp_lifecycle::LifecycleNode::SharedPtr handle;
+  DemoCatchingController ctrl{""};
+  const rclcpp_lifecycle::State prev;
+};
+
+std::vector<double> ArmPositionsOf(const ControllerState& s) {
+  return {s.devices[0].positions.begin(), s.devices[0].positions.begin() + kArmDof};
+}
+
+}  // namespace
+
+TEST(DemoCatchingWaitPose, WithoutAnArmBoxTheSwitchedInPoseIsRefusedAndTheYamlPoseStands) {
+  // S8-I, the fail-closed half. This fixture has no arm model, so the arm has
+  // no margined joint box to admit a pose against: `current` must refuse (and
+  // count) rather than adopt an unchecked pose. The adoption, E-STOP and
+  // re-activation semantics run under a model in
+  // test_catching_supervisor_scenarios.cpp.
+  WaitPoseRig rig("current", "catching_wait_pose_current");
+  rig.ConfigureAndActivate();
+  EXPECT_EQ(rig.handle->get_parameter("planner.wait_pose_source").as_string(), "current");
+  // The read-only mirror is the YAML value whatever the source.
+  EXPECT_EQ(rig.handle->get_parameter("planner.wait_pose").as_double_array(), rig.yaml_wait);
+
+  (void)rig.ctrl.Compute(MakeState(0.3, kP1bHandChannels));
+  EXPECT_FALSE(rig.ctrl.IsWaitPoseAdoptedForTesting());
+  EXPECT_FALSE(rig.ctrl.GetPlannerRtState().wait_pose_adopted);
+  EXPECT_FALSE(rig.ctrl.GetLastTickRecord().wait_pose_adopted);
+  EXPECT_EQ(rig.ctrl.GetWaitPoseRefusedCount(), 1U) << "refused once, on the first readable tick";
+  rig.ExpectWaitPoseIs(rig.yaml_wait, "refused → YAML");
+  // Not retried every tick: a refusal is one event per activation, like an
+  // adoption; a new activation asks again.
+  (void)rig.ctrl.Compute(MakeState(0.3, kP1bHandChannels));
+  EXPECT_EQ(rig.ctrl.GetWaitPoseRefusedCount(), 1U);
+  ASSERT_EQ(rig.ctrl.on_deactivate(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(rig.ctrl.on_activate(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  (void)rig.ctrl.Compute(MakeState(0.3, kP1bHandChannels));
+  EXPECT_EQ(rig.ctrl.GetWaitPoseRefusedCount(), 2U);
+  ASSERT_EQ(rig.ctrl.on_deactivate(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(rig.ctrl.on_cleanup(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST(DemoCatchingWaitPose, TheYamlSourceIsTheDefaultAndNeverAdopts) {
+  WaitPoseRig rig(nullptr, "catching_wait_pose_yaml");
+  rig.ConfigureAndActivate();
+  EXPECT_EQ(rig.handle->get_parameter("planner.wait_pose_source").as_string(), "yaml");
+  const ControllerState first = MakeState(0.3, kP1bHandChannels);
+  (void)rig.ctrl.Compute(first);
+  EXPECT_FALSE(rig.ctrl.IsWaitPoseAdoptedForTesting());
+  EXPECT_FALSE(rig.ctrl.GetLastTickRecord().wait_pose_adopted);
+  EXPECT_FALSE(rig.ctrl.GetPlannerRtState().wait_pose_adopted);
+  rig.ExpectWaitPoseIs(rig.yaml_wait, "YAML");
+  EXPECT_EQ(rig.ctrl.GetWaitPoseRefusedCount(), 0U);
+  ASSERT_EQ(rig.ctrl.on_deactivate(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(rig.ctrl.on_cleanup(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
 INSTANTIATE_TEST_SUITE_P(BothCatchingRobots, ShippedCatchingProfile,
                          ::testing::Values(std::pair<std::string, int>{"ur5e_p1b", 10},
                                            std::pair<std::string, int>{"iiwa7_leap", 16}),

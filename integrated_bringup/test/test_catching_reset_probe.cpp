@@ -44,6 +44,10 @@ class DemoCatchingControllerResetProbe {
     c_.reset_floor_ns_ = 5;
     c_.planner_reset_epoch_ = 10;
     c_.arm_cmd_seeded_ = true;
+    c_.wait_pose_adopted_ = true;  // S8-I: an adopted switched-in pose ...
+    c_.wait_pose_decided_ = true;
+    c_.wait_pose_yaml_[0] = 0.25;  // ... over this YAML pose
+    c_.wait_pose_[0] = 9.0;
     c_.arm_q_cmd_[0] = 1.5;
     c_.arm_qd_cmd_[0] = 0.7;
     c_.reference_seeded_ = true;
@@ -199,6 +203,9 @@ class DemoCatchingControllerResetProbe {
     EXPECT_GT(c.reset_floor_ns_, 5);
     EXPECT_EQ(c.planner_reset_epoch_, 11U);
     EXPECT_FALSE(c.arm_cmd_seeded_);
+    EXPECT_FALSE(c.wait_pose_adopted_) << "S8-I: an activation starts from the YAML wait pose";
+    EXPECT_FALSE(c.wait_pose_decided_) << "S8-I: and decides again on its first readable tick";
+    EXPECT_EQ(c.wait_pose_[0], 0.25) << "S8-I: the YAML pose is restored";
     EXPECT_EQ(c.arm_qd_cmd_[0], 0.0);
     EXPECT_FALSE(c.reference_seeded_);
     EXPECT_EQ(c.traj_hint_, 0);
@@ -247,6 +254,10 @@ class DemoCatchingControllerResetProbe {
     // poison left one under way (trial_active_).
     EXPECT_EQ(c_.outcome_, rtc::catching::Outcome::kAborted);
     EXPECT_FALSE(c_.trial_active_);
+    // S8-I: where the arm stopped is not a wait pose — the adopted one stays.
+    EXPECT_TRUE(c_.wait_pose_adopted_);
+    EXPECT_TRUE(c_.wait_pose_decided_);
+    EXPECT_EQ(c_.wait_pose_[0], 9.0);
   }
 
  private:

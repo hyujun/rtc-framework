@@ -150,6 +150,15 @@ struct CatchingDiagLogPod {
   double hand_effort_frac{std::numeric_limits<double>::quiet_NaN()};
   double hand_blocked_s{0.0};
   std::uint8_t outcome_source{0};
+  /// S8-I (`planner.wait_pose_source`): the wait pose the trial homes to and
+  /// the planner seeds from. `wait_pose_adopted` is 1 when it is the arm's
+  /// switched-in pose (source `current`), 0 when it is the YAML's; the
+  /// per-joint values below are the pose in force either way, so a reader
+  /// never has to consult the read-only mirror (which is the YAML value).
+  /// `wait_pose_adopt_seq` moves once per adoption — the non-RT log's edge.
+  bool wait_pose_adopted{false};
+  std::uint32_t wait_pose_adopt_seq{0};
+  std::array<double, kMaxArmJoints> wait_pose{};
 
   // ── Fingertip sensors (D-24) ─────────────────────────────────────────────
   // `tip_age_s` is filled from S5.4 because it is a MEASUREMENT — the D-24
@@ -315,7 +324,7 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   os << ",clik_status,clik_iterations,clik_solve_us,clik_conflict_mask,qp_fail_streak";
   os << ",track_err_rad,abort_stopped";
   os << ",hand_phase_valid,hand_phase,hand_rho,hand_timeout";
-  os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source";
+  os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source,wait_pose_adopted";
   // Per-joint and per-tip blocks come LAST, so everything above is a fixed
   // column list a reader can rely on without knowing the robot.
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
@@ -323,6 +332,9 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   }
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ",q_meas_" << arm_joint_names[i];
+  }
+  for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
+    os << ",wait_pose_" << arm_joint_names[i];
   }
   for (std::size_t i = 0; i < cols.num_tips; ++i) {
     os << ",tip_force_" << tip_names[i];
@@ -376,12 +388,16 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
   os << ',' << (p.hand_phase_valid ? 1 : 0) << ',' << static_cast<int>(p.hand_phase) << ','
      << p.hand_rho << ',' << (p.hand_timeout ? 1 : 0);
   os << ',' << static_cast<int>(p.hand_stalled_n) << ',' << p.hand_effort_frac << ','
-     << p.hand_blocked_s << ',' << static_cast<int>(p.outcome_source);
+     << p.hand_blocked_s << ',' << static_cast<int>(p.outcome_source) << ','
+     << (p.wait_pose_adopted ? 1 : 0);
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ',' << p.q_cmd[i];
   }
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ',' << p.q_meas[i];
+  }
+  for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
+    os << ',' << p.wait_pose[i];
   }
   for (std::size_t i = 0; i < cols.num_tips; ++i) {
     os << ',' << p.tip_force[i];

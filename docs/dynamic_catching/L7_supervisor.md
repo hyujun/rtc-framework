@@ -58,7 +58,7 @@
 
 **전이는 (상태 × 사유) 표를 데이터로 둔다 `[확정 S1.8]`.** 위 표와 §4.2 표는 사람이 읽는 형태이고, 코드는 둘을 합친 표 하나를 단일 출처로 삼는다. 기동 시 완전성을 검사한다 — 모든 상태에 진입·이탈이 최소 1개씩 있고, 모든 `Reason` 이 최소 한 칸에서 쓰이며, 미정의 칸이 없어야 한다(G7-A).
 
-**IDLE homing `[확정 S1.8, 설계 확정 S7.2]`.** v0.4 는 `IDLE` 에서 현재 자세만 유지하면서 `ARMED` 진입 조건에 "대기 자세 허용오차 안"(§4.5-4)을 걸어, 활성화 자세가 `wait_pose` 밖이면 영원히 `ARMED` 에 못 가는 교착이 있었다. 파라미터 검증 통과 후 `wait_pose` 로 이동하는 homing 단계를 둔다. homing 은 `IDLE` 의 하위 단계다(`Reason::kNone` 이 정상 전진, homing 은 `kIdle` 안 — S1.8 전이표 헤더 해석).
+**IDLE homing `[확정 S1.8, 설계 확정 S7.2]`.** v0.4 는 `IDLE` 에서 현재 자세만 유지하면서 `ARMED` 진입 조건에 "대기 자세 허용오차 안"(§4.5-4)을 걸어, 활성화 자세가 `wait_pose` 밖이면 영원히 `ARMED` 에 못 가는 교착이 있었다. 파라미터 검증 통과 후 `wait_pose` 로 이동하는 homing 단계를 둔다. homing 은 `IDLE` 의 하위 단계다(`Reason::kNone` 이 정상 전진, homing 은 `kIdle` 안 — S1.8 전이표 헤더 해석). **S8-I (2026-09-27)**: `planner.wait_pose_source: current` 면 homing 목표는 YAML 이 아니라 activation 의 첫 팔 판독 가능 tick 에 채택한 q_meas 다 — 팔이 이미 거기 있으므로 homing 은 no-op 으로 끝나고, 재무장 (RETREAT → ARMED) 은 그 자세로 돌아온다. 채택은 activation 마다 한 번 (T 리셋이 YAML 로 되돌리고 첫 tick 이 다시 채택), E-STOP·fault 리셋은 유지 (L3 §6).
 
 **homing 은 관절공간이다 `[설계 확정 S7.2, C-13]`.** per-joint 사다리꼴 (v ≤ `supervisor.homing.v_max`, a ≤ `qdd_max`·`supervisor.homing.eta_a`), QP/CLIK 비의존 — `retreat_reference.hpp` 는 코드에 없다(v0.4 가 가정한 task-space soft-catch DS 기반 복귀는 채택하지 않는다, L4 §5.3). 도달 판정은 `supervisor.ready.pose_tol` ∧ ‖q̇‖∞ ≤ `supervisor.homing.qd_tol`. **homing 은 운동이므로 무장 latch 를 요구한다** (P-1 (e): 활성화는 무장이 아니다) — 비무장 `IDLE` 은 활성화 자세를 그대로 유지한다. **팔이 이미 `pose_tol` 안이면 homing 을 생략**하고 손만 `q_pre` 로 지시한다 (Q13, 2026-09-23 사용자 확정).
 

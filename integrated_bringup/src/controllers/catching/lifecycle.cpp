@@ -210,7 +210,17 @@ void DemoCatchingController::DeclareProfileParameters() {
   std::vector<double> wait_pose(planner_params_.wait_pose.begin(),
                                 planner_params_.wait_pose.begin() + wait_n);
   const double nan = std::numeric_limits<double>::quiet_NaN();
-  declare("planner.wait_pose", wait_pose, "L3 §6 wait pose [rad], arm joint order");
+  declare("planner.wait_pose", wait_pose,
+          "L3 §6 wait pose [rad], arm joint order — the YAML value. With "
+          "planner.wait_pose_source 'current' the pose in force is the arm's switched-in pose "
+          "(diag wait_pose_*, adoption log), not this");
+  declare("planner.wait_pose_source",
+          std::string(planner_params_.wait_pose_source ==
+                              rtc::catching::PlannerParams::WaitPoseSource::kCurrent
+                          ? "current"
+                          : "yaml"),
+          "L3 §6 where the wait pose comes from: 'yaml' (planner.wait_pose) or 'current' (the "
+          "arm's pose on each activation's first readable tick, S8-I)");
   declare("planner.freeze.T_freeze", planner_params_.t_freeze, "L3 §4.11 commit lead [s]");
   // T_arm is mirrored whether or not the lead is on: the freeze-window check
   // reads it either way (C-25), so a lead-off run with T_arm 0.2 is a
@@ -1340,11 +1350,15 @@ void DemoCatchingController::SetupSupervisor() {
   plan_freeze_ns_ = std::isfinite(planner_params_.t_freeze)
                         ? static_cast<std::int64_t>(std::llround(planner_params_.t_freeze * 1e9))
                         : 0;
-  wait_pose_.fill(0.0);
+  wait_pose_yaml_.fill(0.0);
   for (int i = 0; i < planner_params_.wait_pose_n && i < kDemoCatchingMaxArmDof; ++i) {
-    wait_pose_[static_cast<std::size_t>(i)] =
+    wait_pose_yaml_[static_cast<std::size_t>(i)] =
         planner_params_.wait_pose[static_cast<std::size_t>(i)];
   }
+  wait_pose_ = wait_pose_yaml_;
+  wait_pose_from_current_ =
+      planner_params_.wait_pose_source == rtc::catching::PlannerParams::WaitPoseSource::kCurrent;
+  wait_pose_adopted_ = false;
   pose_tol_ = params_.supervisor_ready_pose_tol;
   homing_v_max_ = params_.supervisor_homing_v_max;
   homing_eta_a_ = params_.supervisor_homing_eta_a;

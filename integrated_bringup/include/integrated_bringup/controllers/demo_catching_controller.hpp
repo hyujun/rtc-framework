@@ -417,6 +417,17 @@ class DemoCatchingController final : public RTControllerInterface {
   /// epoch (P-1 (a)/(b)). The counter exists so a race test can assert that a
   /// burst of concurrent Trigger/Clear/deactivate calls produced resets only
   /// on tick boundaries, and that the reset writer is the tick.
+  /// S8-I test/diagnostic accessors: the wait pose in force and its origin.
+  [[nodiscard]] bool IsWaitPoseAdoptedForTesting() const noexcept { return wait_pose_adopted_; }
+
+  [[nodiscard]] std::array<double, kDemoCatchingMaxArmDof> GetWaitPoseForTesting() const noexcept {
+    return wait_pose_;
+  }
+
+  [[nodiscard]] std::uint64_t GetWaitPoseRefusedCount() const noexcept {
+    return wait_pose_refused_count_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] std::uint64_t GetRtResetCount() const noexcept {
     return rt_reset_count_.load(std::memory_order_relaxed);
   }
@@ -771,6 +782,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// hand back to the latch does not snap it to an older pose.
   void LatchHandFromSequencer() noexcept;
   [[nodiscard]] bool ArmAtWaitPose(const ControllerState& state) const noexcept;
+  /// S8-I: on the first readable tick of an activation, with
+  /// `planner.wait_pose_source: current`, take the arm's measured pose as the
+  /// wait pose (inside the margined box, else refused and counted). RT only.
+  void AdoptWaitPoseIfConfigured(const rtc::DeviceState& dev) noexcept;
   [[nodiscard]] bool ArmCommandStopped() const noexcept;
   [[nodiscard]] bool HandSettledAtPre(const ControllerState& state) const noexcept;
   /// ‖q_meas − q_cmd‖ into `track_err_` (and this tick's record).
@@ -908,6 +923,8 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint8_t> reason_observed_{
       static_cast<std::uint8_t>(rtc::catching::Reason::kNone)};
   std::atomic<std::uint64_t> rt_reset_count_{0};
+  /// S8-I: switched-in poses refused as the wait pose (outside the margined box).
+  std::atomic<std::uint64_t> wait_pose_refused_count_{0};
   std::atomic<std::uint64_t> estop_tick_count_{0};
   // RT-OWNED END
 
@@ -1074,6 +1091,16 @@ class DemoCatchingController final : public RTControllerInterface {
   std::array<double, kDemoCatchingMaxArmDof> arm_q_cmd_{};
   std::array<double, kDemoCatchingMaxArmDof> arm_qd_cmd_{};
   bool arm_cmd_seeded_{false};
+  /// S8-I: whether `wait_pose_` is the switched-in pose adopted on this
+  /// activation (source `current`). Cleared with the YAML restore on a fresh
+  /// activation only — an E-STOP or fault reset keeps the adopted pose, so the
+  /// arm does not learn "where it stopped" as its wait pose.
+  bool wait_pose_adopted_{false};
+  /// True once this activation's first readable tick has decided (adopted or
+  /// refused) — the decision is one event per activation, not one per tick.
+  bool wait_pose_decided_{false};
+  /// Moves once per adoption; the publish thread logs the pose on its edge.
+  std::uint32_t wait_pose_adopt_seq_{0};
   /// The L4 generator is reset from the measured TCP pose on the first tick of
   /// a plan — not at seed time, because the pose it needs comes from the model
   /// cache and the cache is only current inside the tick.
@@ -1093,7 +1120,15 @@ class DemoCatchingController final : public RTControllerInterface {
   bool hand_seq_enabled_{false};
   /// A trial can run: the law is wired and every value below is present.
   bool trials_enabled_{false};
+  /// The wait pose in force: the YAML's, or (S8-I `planner.wait_pose_source:
+  /// current`) the arm's pose on this activation's first readable tick.
+  /// Written by the RT tick (adoption, and the restore on a fresh activation)
+  /// and read by homing, the ARMED check and the planner hand-over.
   std::array<double, kDemoCatchingMaxArmDof> wait_pose_{};
+  /// The configure-time YAML value — the seed before adoption and the
+  /// fallback when the switched-in pose is refused. Non-RT, set once.
+  std::array<double, kDemoCatchingMaxArmDof> wait_pose_yaml_{};
+  bool wait_pose_from_current_{false};
   double pose_tol_{0.02};
   double homing_v_max_{0.5};
   double homing_eta_a_{0.5};
@@ -1202,6 +1237,9 @@ class DemoCatchingController final : public RTControllerInterface {
   //   plan_, plan_active_, admitted_plan_        R, T
   //   reset_floor_ns_, planner_reset_epoch_      R, T (same place, C-7)
   //   arm_cmd_seeded_, arm_q_cmd_                T; exempt from R: the carried command IS the wait pose
+  //   wait_pose_adopted_, wait_pose_decided_     T (activation only: the YAML pose is restored and the first readable tick decides again; an E-STOP keeps the adopted pose — S8-I)
+  //   wait_pose_adopt_seq_                       exempt: an edge counter the publish thread logs on (S8-I); never reset so no edge is missed
+  //   wait_pose_refused_count_                   exempt: a diagnostic counter (refused switched-in poses, S8-I), like rt_reset_count_
   //   arm_qd_cmd_                                R, T
   //   reference_seeded_, traj_hint_              R, T
   //   qp_fail_streak_                            T; exempt from R (C-29: a retry cycle has no solve in it)
@@ -1258,6 +1296,8 @@ class DemoCatchingController final : public RTControllerInterface {
   // RT-OWNED END
   /// RT writer, publish-thread reader.
   rtc::SeqLock<CatchingDiagLogPod> catching_state_lock_{};
+  /// Publish-thread (non-RT) memory of the last adoption it logged.
+  std::uint32_t wait_pose_logged_seq_{0};
   /// Subscription writer, publish-thread reader. The counters advance on
   /// message arrival, so they cannot ride the per-tick record.
   rtc::SeqLock<CatchingIngressSnapshot> ingress_diag_box_{};
