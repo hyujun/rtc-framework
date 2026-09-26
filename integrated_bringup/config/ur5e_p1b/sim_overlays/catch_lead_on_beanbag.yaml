@@ -1,0 +1,42 @@
+# sim overlay — dynamic_catching S8-E, arm "lead on · beanbag" (#537, D-S8-11)
+#
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_mpc:=true \
+#       sim_lanes:=true sim_overlay:=catch_lead_on_beanbag
+#
+# WHAT IT IS FOR. The S8-E ball arm: the same controller as catch_lead_on (its
+# header owns the T_arm / T_freeze rationale) catching the rtc_mujoco_sim
+# `beanbag` preset instead of the shipped tennis ball, on the same seeds, so the
+# two arms pair throw by throw (McNemar, plan D-S8-16 ④).
+#
+# WHAT THE PRESET CHANGES. Shape and mass stay the shipped ones (radius_m and
+# mass_kg are not preset fields), so the controller's ball model is unchanged.
+# The preset swaps the whole physics row, not only the bounce (rtc_mujoco_sim
+# README, Projectile Ball -> ball_type): restitution 0.75 -> 0.1, sliding
+# friction 0.6 -> 0.5, torsional 0.05 -> 0.3, rolling 0.02 -> 0.5, inertia
+# ratio 0.55 -> 0.4, drag 0.55 -> 0.5 and no Magnus lift. The ball geom has
+# priority 100, so its friction also applies against the hand. Report the arm
+# as that combined effect (D-S8-11); there is no bounce-only `tennis_soft`.
+#
+# ONE FILE, TWO NODES. The launch hands this file to both the simulator and the
+# RT controller; each node reads only its own section. The simulator section
+# carries ball_type and nothing else, and the controller section must stay
+# identical to catch_lead_on.yaml — `test_catch_lead_overlays.py` pins both.
+# The simulator logs no ball type at startup: confirm it on a running sim with
+#   ros2 param get /mujoco_simulator projectile_ball.ball_type
+
+mujoco_simulator:
+  ros__parameters:
+    projectile_ball:
+      ball_type: "beanbag"
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        planner:
+          freeze:
+            T_freeze: 0.37
