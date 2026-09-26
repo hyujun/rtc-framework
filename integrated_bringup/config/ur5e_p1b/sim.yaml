@@ -88,3 +88,24 @@
         sensor_layout:
           has_native_contact:  false
           has_native_displacement: false
+
+    # ── Catching planner: reach-time box, SIM ONLY (dynamic_catching S8-G, 2026-09-27)
+    # The planner judges a candidate's reach time (L3 §4.3) with the D-16 box the
+    # controller profile names in `robot.arm.accel_limits_path`. Since decision K
+    # the CLIK executes a torque (`dynamic`) constraint, not that box, and the
+    # shipped derived_accel_limits.yaml (2.03 rad/s²) failed rank_reach on
+    # 93-100 % of the S8-F-1 plans while the executed joint acceleration ran at
+    # p95 14-37 rad/s². This override points the sim planner at the EXECUTED
+    # envelope of those units (derived_accel_limits_s8g_envelope.yaml, written by
+    # `rtc_tools catching_arm_budget --write-envelope-box`): rank_reach failures
+    # 95 -> 14 % with no change in catches (#537 5847236227). The principle is
+    # "planner limit = what the execution actually delivers" (plan §9). Here and
+    # not in the controller YAML because the real arm's envelope is S10's to
+    # measure — robot.yaml keeps the torque-derived box. The RT node applies
+    # this like a sim_overlay (ApplyControllerParamOverrides); the controller's
+    # read-only mirror `robot.arm.qdd_max` shows which box it loaded.
+    demo_catching_controller:
+      catching:
+        robot:
+          arm:
+            accel_limits_path: "config/ur5e_p1b/derived_accel_limits_s8g_envelope.yaml"

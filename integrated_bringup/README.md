@@ -242,7 +242,7 @@ S8-E 의 공 arm `catch_lead_on_beanbag` 은 컨트롤러 섹션이 `catch_lead_
 
 dynamic_catching S8-G (팔 예산) 는 `s8g_w{10,15,20}_a{21,30}` 여섯 arm 으로 `reference.omega` × `reference.a_max` 를
 스윕합니다 — 각 arm 은 S8-F-1 의 `s8f_reach_first` 에 그 두 잎만 더한 것이라 S8-F-1 의 cliff unit 이 기준 쌍둥이입니다
-(ω 10 · a_max 21 이 출하 쌍). `s8g_w10_a21_envbox` 는 기준 arm 에서 `robot.arm.accel_limits_path` 하나만 바꿔
+(ω 10 · a_max 21 이 S8-G 전 출하 쌍; **결과로 출하 `reference.a_max` 는 30** 이 되어 `s8g_w10_a30` 이 지금 출하 쌍이고, sim 은 `sim.yaml` 이 계획기 box 를 `derived_accel_limits_s8g_envelope.yaml` 로 덮습니다 — 그 파일 헤더가 근거). `s8g_w10_a21_envbox` 는 기준 arm 에서 `robot.arm.accel_limits_path` 하나만 바꿔
 계획기 도달시간 (L3 §4.3) 이 판정하는 D-16 box 를 출하 `derived_accel_limits.yaml` (2.03 rad/s²) 대신
 `derived_accel_limits_s8g_envelope.yaml` — `rtc_tools catching_arm_budget --write-envelope-box` 가 S8-F-1 unit 아홉 개의
 **실행된** 관절 가속 envelope 에서 쓴 sim 전용·provisional 파일 — 로 돌립니다 (결정 K 이후 CLIK 은 dynamic 토크

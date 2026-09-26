@@ -297,12 +297,18 @@ demo_catching_controller:
       # candidates at the joint ratings, times eta_v = 0.9. S10 may only LOWER
       # it once the real controller's TCP limit is identified.
       v_max: 3.5
-      # m/s^2. THE provisional one. L4 §6 defers the decision to the D-16
-      # revision; S4.4 measured torque-limited acceleration along v_hat at the
-      # catch pose as median 43, and 21-23 under a 10x rotor-inertia
-      # assumption. 21 is the conservative end of that measurement and stays
-      # above `supervisor.decel.a_dec` = 10, which the validator requires.
-      a_max: 21.0
+      # m/s^2. Still provisional (the real arm's value is S10's). S4.4 measured
+      # torque-limited acceleration along v_hat at the catch pose as median 43,
+      # and 21-23 under a 10x rotor-inertia assumption; 21 shipped as the
+      # conservative end. dynamic_catching S8-G (2026-09-27, #537 5847236227,
+      # plan §4.4 S8-G) measured 21 against 30 on the sim plant at omega 10:
+      # 21 saturated the reference on 18-25 % of the active ticks and aborted
+      # 7-12 of 56 hand-near throws (REF_SATURATED), 30 saturated 1 % and
+      # aborted none, at the same catch rate (10 vs 11) and torque p99 0.70.
+      # Stays above `supervisor.decel.a_dec` = 10, which the validator requires.
+      # omega stays 10: 15 and 20 halve the reference's own residual but follow
+      # the live prediction's noise and lose 3/4 of the catches.
+      a_max: 30.0
 
     # ── The CLIK step (L5 §6, S5.3) ─────────────────────────────────────────
     # Gains and weights, all provisional: they are the documented defaults
@@ -480,7 +486,7 @@ demo_catching_controller:
         delta_J: 0.1
         # A switch may step u_des by at most eta_jump * reference.a_max (L3 §4.7,
         # decision 6 2026-09-23 — replaced e_jump_max/ed_jump_max, whose 10 mm
-        # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= omega 10, a_max 21: 52 mm.
+        # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= eta_jump*a_max/omega^2 = 0.25*30/100 = 75 mm (was 52 mm at a_max 21, S8-G).
         # Provisional until the sim remeasure.
         eta_jump: 0.25
       freeze:

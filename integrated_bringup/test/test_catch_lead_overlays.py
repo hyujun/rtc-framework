@@ -423,6 +423,22 @@ def test_s8g_envbox_arm_is_the_baseline_with_the_planner_box_swapped(s8g_arms, s
     assert all(e > 2 * s for e, s in zip(entry["qdd_max"], shipped_box, strict=True))
 
 
+def test_sim_yaml_points_the_planner_box_at_the_envelope_file_and_names_shipped_keys(shipped):
+    """R2 (S8-G): the sim robot config overrides ONE controller key — the
+    planner's D-16 box file — and only that, at a shipped key of the same type,
+    at a file that exists and is adopted. The real robot.yaml must not carry it."""
+    sim = _load(os.path.join(CONFIG_DIR, "sim.yaml"))["/**"]["ros__parameters"]
+    tree = sim[CONTROLLER]
+    assert _leaves(tree) == {("catching", "robot", "arm", "accel_limits_path"): S8G_ENVBOX_FILE}
+    assert _unread_leaves(tree, shipped) == []
+    box = _load(os.path.join(CONFIG_ROOT, "..", S8G_ENVBOX_FILE))["derived_accel_limits"]
+    assert box[shipped["catching"]["robot"]["arm"]["accel_limits_group"]]["adopted"] is True
+    robot = _load(os.path.join(CONFIG_DIR, "robot.yaml"))["/**"]["ros__parameters"]
+    assert CONTROLLER not in robot, (
+        "the real arm keeps the torque-derived box (S10 measures its own)"
+    )
+
+
 # ── iiwa7_leap (S8-D) ────────────────────────────────────────────────────────
 
 
