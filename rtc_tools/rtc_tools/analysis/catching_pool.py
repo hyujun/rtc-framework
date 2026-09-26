@@ -26,9 +26,13 @@ dirs per arm and judges the arm:
   included and valid in BOTH, paired by ``(seed, idx)`` (D-S8-16 ④);
 * the D-3 S3.1b count (D-S8-16 ⑤): trials with a clock covariate over all
   arms, plus the ``d3.paired`` counts of ``--extra-d3`` summaries, against the
-  ≥ 200 requirement.
+  ≥ 200 requirement;
+* G8-B (per-horizon pooled NEES, trial bootstrap) and G8-C2 (A⊥B, n ≥ 100)
+  recomputed from the pooled per-trial columns — :mod:`catching_vision` — and
+  each unit's ``time_alignment`` and the RTF covariates.
 
-The statistics are :mod:`catching_trials`' own (one implementation, P5).
+The statistics are :mod:`catching_trials`' / :mod:`catching_vision`'s own (one
+implementation, P5).
 """
 
 from __future__ import annotations
@@ -43,7 +47,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from rtc_tools.analysis import catching_trials as ct
+from rtc_tools.analysis import catching_trials as ct, catching_vision as cv
 
 TRIALS_CSV = "catching_trials.csv"
 SUMMARY_JSON = "catching_trials_summary.json"
@@ -70,10 +74,23 @@ POOL_COLUMNS = (
     "contact_impulse_ns",
     "contact_peak_force_n",
     "map_open",
+    "time_alignment",
 )
 STRING_COLUMNS = frozenset(
-    {"kind", "supervisor", "invalid_reason", "contact_body", "truth_reason"}
+    {
+        "kind",
+        "supervisor",
+        "invalid_reason",
+        "contact_body",
+        "truth_reason",
+        "time_alignment",
+        "stamp_anchor",
+        "c2_join",
+        "c2_tc_source",
+    }
 )
+# Per-trial columns copied into pool_trials.csv when present (G8-B, G8-C2, RTF).
+POOL_COLUMN_PREFIXES = ("nees_h", "err_h", "c2_", "rtf_")
 
 
 def parse_cell(key: str, text: str | None):
@@ -224,6 +241,7 @@ def arm_summary(
             str(u.ct_dir) for u in units if not u.lane_rules_evaluated
         )
     validity["beyond_target"] = beyond
+    alignment = {str(u.ct_dir): u.summary.get("time_alignment", "unknown") for u in units}
     validity["n_valid_target"] = n_valid_target
     return {
         "label": label,
@@ -235,6 +253,12 @@ def arm_summary(
         "ref_saturated_streak": ct.streak_distribution(valid),
         "g7b3": ct.impulse_correlation(valid, n_boot, seed),
         "gate_map": gate_map_block(valid, z),
+        "time_alignment": alignment,
+        "rtf": ct.rtf_summary(valid),
+        # Recomputed from the pooled per-trial columns (exact sums, trials resampled).
+        "g8b": cv.g8b_summary(valid, n_boot, seed),
+        # One (A, B) per trial, so each sample is its own trial cluster.
+        "c2": cv.c2_summary(valid, n_boot, seed),
     }
 
 
@@ -348,6 +372,7 @@ def pool(
         for k, u in enumerate(units):
             for r, inc in zip(u.rows, u.included, strict=True):
                 out = {c: r.get(c) for c in POOL_COLUMNS}
+                out.update({c: v for c, v in r.items() if c.startswith(POOL_COLUMN_PREFIXES)})
                 out.update(
                     arm=label,
                     unit=k,
@@ -374,8 +399,11 @@ def write_outputs(
         json.dumps(ct._strict(summary), indent=2, default=ct._json_default, allow_nan=False) + "\n"
     )
     csv_path = out_dir / "pool_trials.csv"
+    fields = list(POOL_COLUMNS)
+    for row in trial_rows:
+        fields.extend(k for k in row if k not in fields)
     with csv_path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=POOL_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(trial_rows)
     return json_path, csv_path
@@ -418,6 +446,10 @@ def report(summary: Mapping) -> str:
         lines.append("  " + ct.tick_line(arm["tick_overrun"]))
         lines.append("  " + ct.streak_line(arm["ref_saturated_streak"]))
         lines.append("  " + ct.b3_line(arm["g7b3"]))
+        lines.append(f"  time alignment per unit: {arm['time_alignment']}")
+        lines.append("  " + ct.rtf_line(arm["rtf"]))
+        lines.extend("  " + line for line in ct.g8b_lines(arm["g8b"]))
+        lines.append("  " + ct.c2_line(arm["c2"]))
         if arm["gate_map"] is not None:
             gm = arm["gate_map"]
             lines.append(

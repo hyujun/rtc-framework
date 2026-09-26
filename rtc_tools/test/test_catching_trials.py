@@ -1528,3 +1528,362 @@ def test_impulse_correlation_below_50_is_not_evaluated():
     assert b3["ols_slope"] == pytest.approx(0.8, abs=0.05)
     empty = ct.impulse_correlation([], n_boot=50, seed=1)
     assert empty["n"] == 0 and math.isnan(empty["ols_slope"])
+
+
+# ── Lane time alignment (S8-E C3): robust to a sim slower than the wall ──────
+
+DT = 0.002
+C_TRUE = 7 * DT  # sim − t_relative_s: the steps the sim took before the CM's first tick
+K_WALL = 1.7e9  # CLOCK_REALTIME − CLOCK_MONOTONIC
+LAUNCH_SIMS = (2.0, 6.0, 10.0, 14.0, 18.0)
+TRIAL_RTF = (1.0, 0.6, 0.8, 0.5, 1.0)  # wall RTF from launch to the trial's end
+EVENT_SIMS = (0.1, 0.4, 0.5, 2.5)  # mode changes after the launch; the last closes the cycle
+RECV_LATENCY_S = 0.001
+
+
+def _slow_sim_session(tmp: Path):
+    """A lane, trials dir and truth CSVs of a sim that runs at TRIAL_RTF during each
+    trial — what the S8-E loaded unit did (RTF 0.62). Returns (lane path, trials dir,
+    steady(sim) function)."""
+    import json
+
+    import pandas as pd
+
+    n = int(22.0 / DT)
+    sim = np.arange(1, n + 1) * DT
+    rtf = np.ones(n)
+    for launch, r in zip(LAUNCH_SIMS, TRIAL_RTF, strict=True):
+        rtf[(sim > launch) & (sim <= launch + 3.0)] = r
+    steady = 100.0 + np.cumsum(DT / rtf)
+    seq = np.zeros(n, dtype=int)
+    active = np.zeros(n, dtype=int)
+    for k, launch in enumerate(LAUNCH_SIMS):
+        seq[sim > launch + DT / 2] = k + 1
+        active[(sim > launch + DT / 2) & (sim <= launch + 0.7)] = 1
+    lane_path = tmp / "clock_lane.csv"
+    pd.DataFrame(
+        {
+            "step": np.arange(1, n + 1),
+            "sim_time_sec": sim,
+            "steady_ns": (steady * 1e9).astype(np.int64),
+            "launch_seq": seq,
+            "ball_active": active,
+            "dropped_total": 0,
+        }
+    ).to_csv(lane_path, index=False)
+
+    def steady_at(s):
+        return float(np.interp(s, np.concatenate([[0.0], sim]), np.concatenate([[100.0], steady])))
+
+    trials_dir = tmp / "trials"
+    trials_dir.mkdir()
+    records = []
+    for k, launch in enumerate(LAUNCH_SIMS):
+        anchor = K_WALL + steady_at(launch)  # the sim stamps the launch sample at this instant
+        ticks = np.arange(launch, launch + EVENT_SIMS[-1], DT)
+        # The runner's offset: the MEDIAN of (receipt wall − t_relative_s) over the trial.
+        offs = [K_WALL + steady_at(s) + RECV_LATENCY_S - (s - C_TRUE) for s in ticks]
+        truth = [
+            [K_WALL + steady_at(launch + j * 0.01) + RECV_LATENCY_S, anchor + j * 0.01]
+            + [1.0 - j * 0.02, 0.0, 0.2 + j * 0.03, -2.0, 0.0, 3.0]
+            for j in range(60)
+        ]
+        pd.DataFrame(
+            truth, columns=["wall_recv_s", "stamp_s", "x", "y", "z", "vx", "vy", "vz"]
+        ).to_csv(trials_dir / f"truth_trial_{k:02d}.csv", index=False)
+        records.append(
+            {
+                "idx": k,
+                "accepted": True,
+                "pos": [1.0, 0.0, 0.2],
+                "n_truth_rows": 60,
+                "truth_csv": f"/elsewhere/truth_trial_{k:02d}.csv",
+                "launch_wall_time": anchor + 0.0003,
+                "mode_log": [
+                    [K_WALL + steady_at(launch + e) + RECV_LATENCY_S, "M", 0] for e in EVENT_SIMS
+                ],
+                "wall_t_relative_offset": float(np.median(offs)),
+            }
+        )
+    (trials_dir / "trial_results.json").write_text(json.dumps(records))
+    return lane_path, trials_dir, steady_at
+
+
+def test_a_slow_sim_run_pairs_on_the_wall_clock_where_t_relative_pairing_fails(tmp_path):
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    assert sorted(lane.trial_to_seq.items()) == [(k, k + 1) for k in range(5)]
+    assert lane.wall_offset_s == pytest.approx(K_WALL, abs=5e-3)
+    # Positive control: the old key — t_launch from the runner's drifting median
+    # offset — no longer pairs the slow trials under one offset.
+    steady0 = np.array([lane.segments[k + 1][0, 1] for k in range(5)])
+    t_old = np.array([t.t_launch for t in trials])
+    assert len(ct._pair_by_offset(steady0, t_old, 0.05)) < 5
+
+
+def _commit_diag(steady_at, c=C_TRUE):
+    """Diag arrays with one commit per trial 0.3 s after launch; the tick runs 0.5 ms
+    after the lane row of its state. Returns (t, mode, plan_id, plan_t_c, bridge)."""
+    t, mode, pid, ptc = [], [], [], []
+    wake, lead = {}, {}
+    for k, launch in enumerate(LAUNCH_SIMS):
+        sims = np.arange(launch + 0.25, launch + 0.35, DT)
+        commit = int(np.argmin(np.abs(sims - (launch + 0.3))))
+        for i, s in enumerate(sims):
+            t.append(s - c)
+            mode.append(ct.MODE_COMMITTED if i >= commit else ct.MODE_APPROACH)
+            pid.append(k + 1)
+            ptc.append(0.37)
+        tick_steady = steady_at(sims[commit]) + 0.0005
+        lead[k + 1] = 0.47
+        wake[k + 1] = tick_steady + 0.37 - 0.47
+    bridge = ct.PlanBridge(wake_s=wake, lead_s=lead, snapshot={})
+    return np.array(t), np.array(mode), np.array(pid), np.array(ptc), bridge
+
+
+def test_sim_minus_t_relative_is_read_from_the_commit_ticks(tmp_path):
+    lane_path, trials_dir, steady_at = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    t, mode, pid, ptc, bridge = _commit_diag(steady_at)
+    c, info = ct.estimate_sim_minus_t_rel(t, mode, pid, ptc, bridge, lane)
+    assert c == pytest.approx(C_TRUE, abs=1e-9)
+    assert info["n"] == 5 and info["spread_s"] < 1e-9
+    # A diag shifted by one tick is read as a c one tick smaller — the estimate
+    # follows the data, it is not a constant.
+    c2, _ = ct.estimate_sim_minus_t_rel(t + DT, mode, pid, ptc, bridge, lane)
+    assert c2 == pytest.approx(C_TRUE - DT, abs=1e-9)
+    assert ct.estimate_sim_minus_t_rel(t, mode, pid, ptc, None, lane)[0] is None
+
+
+def test_lane_alignment_is_exact_where_the_median_offset_drifts(tmp_path):
+    lane_path, trials_dir, steady_at = _slow_sim_session(tmp_path)
+    trials, doc = ct.load_trials(trials_dir)
+    records = {r["idx"]: r for r in doc["records"]}
+    lane = ct.load_clock_lane(lane_path, trials)
+    lane.c_s = C_TRUE
+    aligned = ct.align_trials_to_lane(trials, records, lane)
+    for old, new, launch, rtf in zip(trials, aligned, LAUNCH_SIMS, TRIAL_RTF, strict=True):
+        assert new.alignment == "lane" and new.stamp_anchor == "truth"
+        assert new.t_launch == pytest.approx(launch - C_TRUE, abs=1e-6)
+        t_end_true = launch + EVENT_SIMS[-1] - C_TRUE
+        # Off only by the runner's receipt latency plus the launch-pairing wall
+        # offset's few-ms bias, both run through the lane at this trial's RTF.
+        assert new.t_end == pytest.approx(t_end_true, abs=5e-3)
+        truth = ct.load_truth(new.truth_path, new.stamp_offset)
+        assert np.allclose(truth.t, launch + np.arange(60) * 0.01 - C_TRUE, atol=1e-6)
+        if rtf < 0.9:
+            # Positive control: the runner's median offset puts the launch and
+            # the end off by (1 − RTF) × a share of the trial.
+            assert abs(old.t_launch - new.t_launch) > 0.1
+            assert abs(ct.load_truth(old.truth_path, old.offset).t[0] - truth.t[0]) > 0.1
+    # The recv axis goes through the same lane map (wall → steady → sim).
+    recv = ct.load_truth(aligned[3].truth_path, math.nan, "recv", lane.wall_to_t_rel)
+    assert recv.t[10] == pytest.approx(LAUNCH_SIMS[3] + 0.1 - C_TRUE, abs=5e-3)
+
+
+def test_rtf_covariates_read_the_lane(tmp_path):
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    for k, rtf in enumerate(TRIAL_RTF):
+        launch = LAUNCH_SIMS[k]
+        out = ct.trial_rtf(lane, k + 1, launch + 0.4, launch + 2.5)
+        assert out["rtf_flight"] == pytest.approx(rtf, rel=1e-3)
+        assert out["rtf_trial_min"] == pytest.approx(rtf, rel=1e-3)
+
+
+def test_truth_of_another_run_is_refused_and_the_local_copy_wins(tmp_path, capsys):
+    import json
+    import shutil
+
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path)
+    doc = json.loads((trials_dir / "trial_results.json").read_text())
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    # The recorded absolute path now holds a DIFFERENT run's file (same throw,
+    # stamps 1606 s later) and the local copy is gone for trial 0.
+    for k, rec in enumerate(doc):
+        rec["truth_csv"] = str(elsewhere / f"truth_trial_{k:02d}.csv")
+        text = (trials_dir / f"truth_trial_{k:02d}.csv").read_text()
+        lines = text.splitlines()
+        shifted = [lines[0]] + [
+            ",".join(
+                [f"{float(v) + 1606.0:.6f}" if i < 2 else v for i, v in enumerate(ln.split(","))]
+            )
+            for ln in lines[1:]
+        ]
+        (elsewhere / f"truth_trial_{k:02d}.csv").write_text("\n".join(shifted) + "\n")
+    (trials_dir / "trial_results.json").write_text(json.dumps(doc))
+    (trials_dir / "truth_trial_00.csv").unlink()
+    trials, _ = ct.load_trials(trials_dir)
+    assert trials[0].truth_path is None
+    assert "another run's truth" in capsys.readouterr().err
+    assert trials[1].truth_path == trials_dir / "truth_trial_01.csv"
+    shutil.copy(trials_dir / "truth_trial_01.csv", elsewhere / "truth_trial_01.csv")
+    assert ct.load_trials(trials_dir)[0][1].truth_path == trials_dir / "truth_trial_01.csv"
+
+
+def _drifted_fixture(tmp: Path, drift_s: float, drifted: tuple[int, ...]):
+    """The pilot's trials dir with the runner's offset pushed by drift_s on some
+    trials — the error a median offset makes when the sim ran slow."""
+    import json
+    import shutil
+
+    trials_dir = tmp / "trials"
+    shutil.copytree(FIXTURE / "trials", trials_dir)
+    records = json.loads((trials_dir / "trial_results.json").read_text())
+    for r in records:
+        if r["idx"] in drifted:
+            r["wall_t_relative_offset"] += drift_s
+    (trials_dir / "trial_results.json").write_text(json.dumps(records))
+    return trials_dir
+
+
+def test_drifted_runner_offsets_do_not_move_the_lane_aligned_analysis(pilot, tmp_path):
+    """End to end on the pilot: the runner's median offset pushed 0.4 s on three
+    trials. The lane path reads only the launch instant and the lane, so every
+    row is the pilot's; the median-offset path (no lane) moves those trials."""
+    drifted = (3, 7, 11)
+    trials_dir = _drifted_fixture(tmp_path, 0.4, drifted)
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    settings = ct.Settings(v_max=PILOT_V_MAX_M_S, n_boot=20)
+    lane = ct.analyse_session(FIXTURE / "session", trials_dir, profile, urdf, settings, LANE)
+    assert lane.summary["time_alignment"] == "lane"
+    detail = lane.summary["time_alignment_detail"]
+    assert detail["sim_minus_t_rel_s"] == pytest.approx(0.014, abs=1e-9)
+    assert detail["stamp_anchor"] == {"truth": 25, "lane_estimate": 0}
+    ref = {r["idx"]: r for r in pilot.rows}
+    for r in lane.rows:
+        for key in ("t_launch", "first_plan_s", "arrival_ms", "pred_mm"):
+            assert r[key] == pytest.approx(ref[r["idx"]][key], abs=1e-9, nan_ok=True), (
+                r["idx"],
+                key,
+            )
+        assert r["truth_success"] == ref[r["idx"]]["truth_success"]
+    old = ct.analyse_session(FIXTURE / "session", trials_dir, profile, urdf, settings)
+    assert old.summary["time_alignment"] == "median_offset"
+    rows = {r["idx"]: r for r in old.rows}
+    for idx in drifted:
+        assert rows[idx]["first_plan_s"] - ref[idx]["first_plan_s"] == pytest.approx(0.4, abs=0.01)
+
+
+def test_golden_g8b_and_c2_end_to_end(pilot, tmp_path):
+    """G8-B binding and G8-C2 through analyse_session on the pilot's own axes.
+
+    Samples: one at the launch (kept), one whose target is after the ball hit
+    the robot and one from before the launch (both NEES 1e6 — they must be
+    dropped). Dump: the planner snapshot holds p_c (mapped into the sim world)
+    at the pilot's t_c, and a snapshot received before the commit (the pilot
+    diag predates the input-key columns → the approximate join) holds p_c + 1 cm
+    in x, so B is exactly (0.01, 0, 0) and |A + B| is the decomposition's pred.
+    """
+    import pandas as pd
+
+    row0 = next(
+        r
+        for r in pilot.rows
+        if np.isfinite(r.get("t_first_impact", math.nan)) and np.isfinite(r.get("t_c", math.nan))
+    )
+    off = row0["stamp_minus_t_rel_s"]
+    launch_ns = int(round((row0["t_launch"] + off) * 1e9))
+    impact_ns = int(round((row0["t_first_impact"] + off) * 1e9))
+    ms = 1_000_000
+    samples = pd.DataFrame(
+        {
+            "record": ["prediction"] * 3,
+            "time_ns": [launch_ns, impact_ns, launch_ns - 1000 * ms],
+            "horizon_ns": [100 * ms] * 3,
+            "ground_truth_stamp_ns": [0] * 3,
+            "position_error_x_m": [0.01, 1.0, 1.0],
+            "position_error_y_m": [0.0, 1.0, 1.0],
+            "position_error_z_m": [0.0, 1.0, 1.0],
+            "position_nees": [2.0, 1e6, 1e6],
+        }
+    )
+    samples_path = tmp_path / "eval_samples.csv"
+    samples.to_csv(samples_path, index=False)
+
+    ctl = FIXTURE / "session" / "controllers" / "demo_catching_controller"
+    diag = ct._read_csv(ctl / "catching_diag.csv")
+    k = int(np.argmin(np.abs(diag["t_relative_s"].to_numpy() - row0["t_commit"])))
+    plan_id = int(diag["plan_id"].iloc[k])
+    p_c_model = diag[["plan_p_c_x", "plan_p_c_y", "plan_p_c_z"]].to_numpy(float)[k]
+    events = ct._read_csv(ctl / "planner_events.csv")
+    ev = events[(events["plan_id"] == plan_id) & (events["publish_ns"] > 0)].iloc[0]
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    fk = ct.CatchFrameFk(urdf, ct.arm_joints_from_diag(ct._csv_header(_diag_path())), profile)
+    p_c_world = ct.transform_point(p_c_model[None], fk.world_t_model)[0]
+    t_c_ns = int(round((row0["t_c"] + off) * 1e9))
+    plan_t_c = float(diag["plan_t_c_s"].iloc[k])
+    commit_steady_ns = int((ev["wake_ns"] + ev["lead_s"] * 1e9) - plan_t_c * 1e9)
+    rows = []
+    for seq, gen, recv, dx in (
+        (
+            int(ev["snapshot_sequence"]),
+            int(ev["track_generation"]),
+            commit_steady_ns - 90 * ms,
+            0.0,
+        ),
+        (99_999, 1, commit_steady_ns - 10 * ms, 0.01),
+    ):
+        for i in range(20):
+            h = (i + 1) * 50 * ms
+            stamp = t_c_ns - 500 * ms
+            p = p_c_world + [dx, 0.0, 0.0]
+            rows.append([recv, "reliable", stamp, "world", seq, gen, h, *p, 0, 0, 0, 0, 0, 0])
+    dump = pd.DataFrame(
+        rows,
+        columns=[
+            "recv_ns",
+            "sub",
+            "stamp_ns",
+            "frame_id",
+            "snapshot_sequence",
+            "generation",
+            "horizon_ns",
+            "x",
+            "y",
+            "z",
+            "vx",
+            "vy",
+            "vz",
+            "ax",
+            "ay",
+            "az",
+        ],
+    )
+    # Only the 500 ms point of the planner snapshot is p_c (the others are
+    # moved away), so the plan-point match picks exactly t_c.
+    planner = dump["snapshot_sequence"] == int(ev["snapshot_sequence"])
+    dump.loc[planner & (dump["horizon_ns"] != 500 * ms), "x"] += 1.0
+    dump_path = tmp_path / "lane_prediction_dump.csv"
+    dump.to_csv(dump_path, index=False)
+
+    settings = ct.Settings(v_max=PILOT_V_MAX_M_S, n_boot=20)
+    res = ct.analyse_session(
+        FIXTURE / "session",
+        FIXTURE / "trials",
+        profile,
+        urdf,
+        settings,
+        LANE,
+        FIXTURE / "session" / "sim" / "ball_contact_lane.csv.gz",
+        eval_samples_path=samples_path,
+        probe_dump_path=dump_path,
+    )
+    r0 = next(r for r in res.rows if r["idx"] == row0["idx"])
+    assert r0["nees_h100ms_n"] == 1 and r0["nees_h100ms_mean"] == pytest.approx(2.0)
+    assert all(r.get("nees_h100ms_n", 0) == 0 for r in res.rows if r["idx"] != row0["idx"])
+    assert r0["c2_tc_source"] == "plan_point" and r0["c2_pc_match_mm"] < 1e-6
+    assert r0["c2_tc_minus_tc_ms"] == pytest.approx(0.0, abs=1e-3)
+    assert r0["c2_join"] == "approx"  # no input-key columns in the pilot diag
+    assert (r0["c2_B_x"], r0["c2_B_y"], r0["c2_B_z"]) == pytest.approx((0.01, 0.0, 0.0))
+    a_plus_b = np.array([r0[f"c2_A_{x}"] + r0[f"c2_B_{x}"] for x in "xyz"])
+    # t_c went through an int ns stamp (~0.2 µs of float resolution at epoch scale).
+    assert np.linalg.norm(a_plus_b) * 1e3 == pytest.approx(r0["pred_mm"], abs=1e-2)
+    c2 = res.summary["c2"]
+    assert c2["n_approx"] >= 1 and c2["independence"] == "NOT_EVALUATED(n < 100)"

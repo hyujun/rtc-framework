@@ -238,3 +238,40 @@ def test_pool_reuses_the_session_statistics():
     """P5: one implementation of the verdict statistics, not a copy."""
     assert cp.ct.truth_block is ct.truth_block
     assert cp.ct.impulse_correlation is ct.impulse_correlation
+
+
+def test_g8b_and_c2_are_recomputed_from_the_pooled_trial_columns(tmp_path):
+    """Two units with different per-trial sample counts: the pooled mean NEES is
+    Σ NEES / Σ n over every trial of both (not a mean of unit means), and the
+    C2 count spans both units."""
+
+    def nees_row(i, seed, n, mean, a=0.01):
+        return _row(
+            i,
+            seed,
+            nees_h100ms_n=n,
+            nees_h100ms_nan=0,
+            nees_h100ms_mean=mean,
+            nees_h100ms_cov95=1.0,
+            err_h100ms_x=0.0,
+            err_h100ms_y=0.0,
+            err_h100ms_z=0.0,
+            c2_A_x=a,
+            c2_A_y=0.0,
+            c2_A_z=0.0,
+            c2_B_x=0.0,
+            c2_B_y=a,
+            c2_B_z=0.0,
+            c2_join="exact",
+        )
+
+    u1 = _unit(tmp_path / "u1", [nees_row(i, 601, 10, 2.0) for i in range(4)])
+    u2 = _unit(tmp_path / "u2", [nees_row(i, 602, 40, 4.0) for i in range(2)])
+    summary, rows = cp.pool({"a": [u1, u2]}, floor=0.1, n_valid_target=6, n_boot=100)
+    g = summary["arms"]["a"]["g8b"]["horizons"]["100"]
+    assert g["n_samples"] == 4 * 10 + 2 * 40
+    assert g["mean_nees"] == pytest.approx((4 * 10 * 2.0 + 2 * 40 * 4.0) / 120)
+    c2 = summary["arms"]["a"]["c2"]
+    assert c2["n"] == 6 and c2["n_exact"] == 6
+    assert c2["independence"] == "NOT_EVALUATED(n < 100)"
+    assert "nees_h100ms_mean" in rows[0] and "c2_A_x" in rows[0]
