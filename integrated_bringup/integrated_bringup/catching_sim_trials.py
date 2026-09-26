@@ -99,6 +99,15 @@ MIRROR_PARAMETERS = (
     "joint_cmd.lag.T_arm",
     "joint_cmd.lag.lead_enable",
     "control.dt",
+    # The arm-budget layers (S8-G, #537): the reference's ω / a_max / v_max, the
+    # planner's speed margin and the D-16 box its reach time judges with. An
+    # overlay moves them, so run_meta.json must carry what the controller ran.
+    "reference.omega",
+    "reference.a_max",
+    "reference.v_max",
+    "planner.gamma.eta_v",
+    "planner.time.margin",
+    "robot.arm.qdd_max",
 )
 
 

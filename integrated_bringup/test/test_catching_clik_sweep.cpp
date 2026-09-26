@@ -28,7 +28,7 @@
 // sweep would measure the same step response 36 times.
 //
 // THE PROFILE IS THE SHIPPED ONE. `ur5e_p1b`'s reference gains (ω = 10, v_max
-// 3.5, a_max 21) rather than the S5.3 suite's faster ω = 20 — the question is
+// 3.5, a_max 30 since S8-G) rather than the S5.3 suite's faster ω = 20 — the question is
 // about the law that is deployed. ω = 10 is a ~0.4 s settling time, and the
 // fast end of this sweep gives it less than that, which is a result and not a
 // test failure. The assertions below are therefore about SOLVER HEALTH
@@ -81,7 +81,7 @@ using rtc::ControllerState;
 using namespace std::chrono_literals;
 
 /// The shipped `ur5e_p1b` reference block (controllers/demo_catching_controller.yaml).
-constexpr ReferenceGains kShipped{/*omega=*/10.0, /*v_max=*/3.5, /*a_max=*/21.0,
+constexpr ReferenceGains kShipped{/*omega=*/10.0, /*v_max=*/3.5, /*a_max=*/30.0,
                                   /*track_err_abort=*/0.3};
 
 /// How far from the catch point the lane is assumed to pick the ball up. The

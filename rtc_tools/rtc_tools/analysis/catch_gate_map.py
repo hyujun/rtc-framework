@@ -421,13 +421,20 @@ def _floats(text: str) -> list[float]:
     return [float(x) for x in text.replace(",", " ").split()]
 
 
-def load_accel_box(path: Path, group: str, n: int) -> np.ndarray:
-    """``derived_accel_limits.<group>.qdd_max`` from a plan §9 limits file."""
+def load_accel_box(path: Path, group: str, n: int, *, require_adopted: bool = False) -> np.ndarray:
+    """``derived_accel_limits.<group>.qdd_max`` from a plan §9 limits file.
+
+    ``require_adopted`` returns an empty array when the entry is not
+    ``adopted: true`` — the controller's rule (it loads no box then).
+    """
     doc = yaml.safe_load(path.read_text())
     try:
-        box = np.asarray(doc["derived_accel_limits"][group]["qdd_max"], dtype=float)
+        entry = doc["derived_accel_limits"][group]
+        box = np.asarray(entry["qdd_max"], dtype=float)
     except (KeyError, TypeError) as exc:
         raise SystemExit(f"{path} has no derived_accel_limits.{group}.qdd_max") from exc
+    if require_adopted and not entry.get("adopted", False):
+        return np.empty(0)
     if box.shape != (n,):
         raise SystemExit(f"{path}: qdd_max has {box.size} entries, the arm has {n} joints")
     return box

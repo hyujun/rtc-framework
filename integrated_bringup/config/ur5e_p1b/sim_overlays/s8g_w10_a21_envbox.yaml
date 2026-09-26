@@ -1,0 +1,39 @@
+# sim overlay — dynamic_catching S8-G, arm "ω 10 · a_max 21 · planner box = executed envelope"
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false enable_mpc:=true \
+#       sim_lanes:=true sim_overlay:=s8g_w10_a21_envbox
+#
+# The baseline cell of the S8-G sweep (s8g_w10_a21.yaml) with ONE leaf changed:
+# the planner's reach time (L3 §4.3) judges with the D-16 box the profile's
+# `robot.arm.accel_limits_path` names. The shipped derived_accel_limits.yaml
+# (2.03 rad/s², S4.4: about 50x conservative) is not what the CLIK executes since
+# decision K (`joint_cmd.accel_constraint: dynamic`), so every S8-F-1 plan failed
+# rank_reach (t_reach 0.6–0.9 s against a 0.3–0.5 s lead) while the executed joint
+# acceleration reached p95 14–37 rad/s² (#537 5846659919). This arm points the box
+# at that executed envelope (derived_accel_limits_s8g_envelope.yaml, written by
+# rtc_tools catching_arm_budget --write-envelope-box from the nine S8-F-1 units) so
+# the gate is re-judged against what the arm actually did. The shipped file is
+# untouched; the envelope file is sim-only and provisional.
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        planner:
+          freeze:
+            T_freeze: 0.37
+          score:
+            w_t: 5.0
+            w_gamma: 1.0
+          workspace:
+            catch_box:
+              min: [-1.1, -1.1, 0.15]
+              max: [1.1, 1.1, 1.2]
+        reference:
+          omega: 10.0
+          a_max: 21.0
+        robot:
+          arm:
+            accel_limits_path: "config/ur5e_p1b/derived_accel_limits_s8g_envelope.yaml"

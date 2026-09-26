@@ -563,6 +563,11 @@ class DemoCatchingController final : public RTControllerInterface {
   void ResolveDevices();
 
   /// Mirror the loaded profile into read-only ROS parameters. Non-RT.
+  /// The L4 reference parameters as RUN: a TBD `a_max` / `v_max` is the struct
+  /// default. Read by SetupArmCommand and mirrored by DeclareProfileParameters.
+  [[nodiscard]] rtc::catching::SoftCatchTranslation::Params ResolvedReferenceParams() const;
+  /// `planner.gamma.eta_v` as RUN (the planner default when TBD) — same two readers.
+  [[nodiscard]] double ResolvedPlannerEtaV() const;
   void DeclareProfileParameters();
 
   /// Close every CSV channel and unbind the handles (#238 — a re-configure
