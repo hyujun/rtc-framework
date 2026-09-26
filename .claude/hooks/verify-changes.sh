@@ -133,7 +133,9 @@
 #          naming it -- running beside it races for CPU and writes the same
 #          build/ and install/ trees. Matched by name + cwd, so a colcon aimed
 #          here from elsewhere with an absolute --build-base is not seen (see
-#          workspace_build_rivals).
+#          workspace_build_rivals). A MuJoCo simulator started from this
+#          workspace's install tree blocks the same way (workspace_sim_rivals):
+#          building beside a timing-sensitive sim run slows it below real time.
 #          Doxygen / cross-package doc consistency NOT checked
 #          (modification-guide.md "Updating an Existing Package" 6 steps cover
 #          these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
@@ -1232,6 +1234,34 @@ workspace_build_rivals() {
     printf '%s: %s\n' "$pid" "$cmd"
   done
 }
+# A simulator running from this workspace -- looked for with the build rivals.
+#
+# Observed 2026-09-26 (dynamic_catching S8-E): the agent ran the success-rate
+# sims as a background SHELL task, which does not defer this hook, and any turn
+# end with a change to grade would have built and tested beside them. A host
+# busy with colcon slows the MuJoCo sim below real time (RTF 0.29-0.74
+# measured when another session's tests overlapped), the sim's ball stamps
+# follow sim time and fall behind the wall clock, and the controller discards
+# the input as stale -- catches fail for a reason that is the rig, not the code
+# (5/28 loaded trials caught vs 13/20 re-run). Same answer as a rival build:
+# build nothing and block, naming the process, so the agent waits for it.
+#
+# Matched by the kernel's 15-character process name, then by command line: the
+# launch execs the node by its absolute install path, so a sim is ours when an
+# argument lies under this workspace. A sim from another workspace is ignored.
+# Prints "<pid>: <cmdline>".
+SIM_PROCESS_NAMES='mujoco_simulato'
+workspace_sim_rivals() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  local ws pid cmd
+  ws=$(cd "$WORKSPACE" 2>/dev/null && pwd -P) || return 0
+  for pid in $(pgrep -x "($SIM_PROCESS_NAMES)" 2>/dev/null || true); do
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || continue
+    case " $cmd" in
+      *" $ws/"*) printf '%s: %s\n' "$pid" "$(cut -c1-120 <<<"$cmd")" ;;
+    esac
+  done
+}
 PROC3=$(echo "$BUILD_PKGS" | tr ' ' '\n' | grep -E '^(rtc_base|rtc_msgs)$' || true)
 if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
   # Emit the routing decision before discarding it. Blanking BUILD_PKGS is what
@@ -1245,10 +1275,14 @@ if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
 fi
 
 RIVALS=""
+SIM_RIVALS=""
 if [ -n "$PROC3$BUILD_PKGS" ]; then
   RIVALS=$(workspace_build_rivals)
+  SIM_RIVALS=$(workspace_sim_rivals)
 fi
-if [ -n "$RIVALS" ]; then
+if [ -n "$SIM_RIVALS" ] && [ -z "$RIVALS" ]; then
+  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a simulator from this colcon workspace (${WORKSPACE}) is running:\n$(sed -n '1,3p' <<<"$SIM_RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/      /')\n    Building beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). Wait for it to finish (if it is your own background run, wait on that task; if it is a sim left idle, stop it), then end the turn again.\n"
+elif [ -n "$RIVALS" ]; then
   # Backslashes doubled for the `echo -e` report, as build_log_tail does.
   TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(sed -n '1,3p' <<<"$RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/      /')\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then end the turn again.\n"
 elif [ -n "$PROC3" ]; then

@@ -942,6 +942,60 @@ kill "$rpid" 2>/dev/null
 wait "$rpid" 2>/dev/null
 rm -rf "$ws" "$stub" "$bin" "$elsewhere"
 
+# --- A simulator running from the workspace ------------------------------------
+#
+# 2026-09-26: the S8-E success-rate sims ran as a background shell task; a hook
+# build beside them slows the sim below real time and the catches fail for the
+# rig's sake. A sim whose command line lies under the workspace blocks like a
+# rival build; one from another workspace does not.
+
+# $1 = directory to hold the stand-in. The kernel truncates the process name to
+# 15 characters, so the stand-in named like the real node shows up as
+# "mujoco_simulato" -- the name the hook matches.
+start_sim_standin() {
+  mkdir -p "$1"
+  write_rival "$1/mujoco_simulator_node"
+  ("$1/mujoco_simulator_node") >/dev/null 2>&1 &
+  echo $!
+}
+
+# 39d. A sim started from this workspace's install tree blocks without building.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+stub=$(make_build_stub 1)
+spid=$(start_sim_standin "$ws/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
+if wait_for_name "$spid" mujoco_simulato; then
+  echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook_build "$dir" "$stub"); rc=$?
+  expect_contains "a sim from the workspace is reported" "$out" "a simulator from this colcon workspace"
+  expect_contains "the report names the sim by pid" "$out" "$spid: /bin/bash $ws/install/rtc_mujoco_sim"
+  expect_not_contains "nothing is built beside a running sim" "$out" "stub-build args"
+  expect_exit "a sim from the workspace blocks the turn" "$rc" 2
+else
+  fail "the sim stand-in never showed up as mujoco_simulato"
+fi
+kill "$spid" 2>/dev/null
+wait "$spid" 2>/dev/null
+rm -rf "$ws" "$stub"
+
+# 39e. ...a sim from another workspace is not: the build runs as before.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+stub=$(make_build_stub 1)
+elsewhere=$(mktemp -d)
+spid=$(start_sim_standin "$elsewhere/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
+if wait_for_name "$spid" mujoco_simulato; then
+  echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook_build "$dir" "$stub"); rc=$?
+  expect_not_contains "a sim from another workspace is not a rival" "$out" "a simulator from this colcon workspace"
+  expect_contains "the build still runs beside a sim elsewhere" "$out" "build FAILED (exit 1)"
+else
+  fail "the other-workspace sim stand-in never showed up as mujoco_simulato"
+fi
+kill "$spid" 2>/dev/null
+wait "$spid" 2>/dev/null
+rm -rf "$ws" "$stub" "$elsewhere"
+
 # --- Phase 5 formatter drift ---------------------------------------------------
 #
 # format-code.sh only sees Edit / Write, so a file written through Bash reached
