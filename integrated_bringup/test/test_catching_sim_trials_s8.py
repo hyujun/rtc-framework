@@ -139,6 +139,11 @@ def _mirror(wait_pose):
         "joint_cmd.lag.T_arm": 0.2,
         "joint_cmd.lag.lead_enable": True,
         "control.dt": 0.002,
+        "reference.omega": 10.0,
+        "reference.a_max": 21.0,
+        "reference.v_max": 3.5,
+        "planner.gamma.eta_v": 0.9,
+        "robot.arm.qdd_max": [2.03] * 6,
     }
 
 

@@ -202,6 +202,24 @@ void DemoCatchingController::DeclareProfileParameters() {
           "L5 §6 arm lag T_arm [s] (NaN = TBD)");
   declare("joint_cmd.lag.lead_enable", params_.joint_cmd_lag_lead_enable,
           "L5 §4.5 lead axis on (now_lead = now + T_arm)");
+  // The arm-budget layers (dynamic_catching S8-G, #537): an overlay moves any
+  // of them, and an off-process analysis must read what THIS controller
+  // loaded, not the file — the lesson the mirror exists for (S8-B: an overlay
+  // one level short ran the shipped profile with no warning).
+  const auto tbd = [nan](const rtc::catching::TbdDouble& v) { return v.tbd ? nan : v.value; };
+  declare("reference.omega", tbd(params_.reference_omega),
+          "L4 §6 reference natural frequency ω [rad/s] (NaN = TBD)");
+  declare("reference.a_max", tbd(params_.reference_a_max),
+          "L4 §6 reference acceleration limit [m/s²] (NaN = TBD)");
+  declare("reference.v_max", tbd(params_.reference_v_max),
+          "L4 §6 reference TCP speed limit [m/s] (NaN = TBD)");
+  declare("planner.gamma.eta_v", tbd(params_.planner_gamma_eta_v),
+          "L3 §4.5 speed margin η_v on v_max and the joint ratings (D-9)");
+  declare("robot.arm.qdd_max", arm_qdd_max_,
+          "D-16 acceleration box the planner's reach time judges with [rad/s²], arm joint "
+          "order (empty = no box loaded)");
+  declare("robot.arm.accel_limits_path", accel_limits_path_,
+          "the profile's package-relative D-16 box file (robot.arm.accel_limits_path)");
 }
 
 void DemoCatchingController::DeclareArmParameter() {

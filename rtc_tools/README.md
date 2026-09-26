@@ -412,6 +412,38 @@ ros2 run rtc_tools catching_hand_near \
 - **planner_events**: 게시된 plan 중 `rank_reach`·`rank_gamma` 순위 gate 에 걸린 비율과 판정 거부 수 (`rej_workspace` 등). 넓힌 상자에서도 예측 궤적의 바닥 아래·먼 표본은 상자 밖이라 0 이 아니다 — 상자 overlay 의 센서는 P(plan) 이다
 - 합성 positive control (`test/test_catching_hand_near.py`, 10 케이스): 심은 로지스틱 법칙 (plan v50 6.0 → 5.0, catch 4.5 → 3.5 at r 0 → 0.2) 에서 600 발을 뽑아 v50 을 ±0.2 m/s 로 복원, 30 % 뒤집으면 벗어남 (negative control), Wilson 93/200 = [0.397, 0.534], 완전 분리 절벽에서 IRLS 생존, McNemar 짝짓기 (무효·짝 없는 시행 제외), 러너·`catching_trials` 형식으로 쓴 unit 의 round trip + CLI, hand 가 아닌 unit 거부
 
+### `catching_arm_budget.py` — 팔 예산 네 층의 귀속 (dynamic_catching S8-G)
+
+"팔이 못 간다" 는 네 층 — **P** 플랜트 (서보 지연 τ·토크 여유·도달 속도) · **R** L4 참조 (ω 수렴, `a_max`/`v_max` 포화) ·
+**C** CLIK (속도 box = device 정격, 가속 제약) · **B** 계획기 (도달시간이 판정하는 D-16 box — 결정 K 이후 CLIK 이 실행하는
+것과 다르다) — 중 어디가 묶였는지를 unit 하나 (`catching_sim_trials` 출력 + 그 `catching_trials` 평가) 와 그 컨트롤러
+세션에서 시행·unit 단위로 나눈다. `<unit>[:<session>]` (세션 기본 `<unit>/session_copy`).
+
+```bash
+ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir $CFG --out ab/ \
+    [--overlay <overlay.yaml>] [--write-envelope-box <derived_accel_limits.yaml>]
+# → ab/{arm_budget_summary.json, arm_budget_trials.csv}; 리포트는 stdout
+```
+
+- **잔여 분해**: 참조 자기 오차 ‖e‖ 를 commit 과 마지막 활성 tick (t_c − T_arm, 그 명령이 t_c 를 겨냥한다) 에서 읽고,
+  `catching_trials` 의 ref_vs_true·hand–ball·d_min 옆에 놓는다 — 차이가 예측 몫 (하한 `pred_live_lb`). 임계감쇠 2차 참조의
+  이론 잔여 $(1+\omega T)e^{-\omega T}$ 를 함께 찍어 ω × T 의 산술을 포화·추종과 구별한다
+- **R**: ‖u_des‖ (포화 전 요구 가속) p50/max, `a_max` 적중·`ref_saturated` 비율, ‖ẋ‖ max 와 η_v·v_max 적중
+- **C**: 실행된 관절 가속 **envelope** (활성 tick 의 5-tick 평균 |q̈_cmd| p95 / max), 속도 box (정격 — `_base.yaml` 위에
+  `sim.yaml` 의 같은 키가 있으면 그것, launch 와 같은 합성) 적중 비율, 계획기 box 초과 tick 비율
+- **P**: τ̂ 관절별 (`catching_trials.servo_lag_ls`), device lane `effort_*` 의 토크 사용률 max/p99 (lane 없으면 NaN), 도달한 관절 속도
+- **B**: 같은 운동 (commit → 마지막 활성 tick 의 Δq, 초기 속도 포함) 의 도달시간을 컨트롤러가 로드한 D-16 box 와 실행 envelope 로
+  **두 번** 재 (L3 §4.3 닫힌해 이식; `test/…` 가 손 유도 케이스로 검사) commit 시점 가용 lead 와 비교 — box 의 비관이 숫자가
+  된다. `planner_events.csv` 의 유효 plan 중 rank gate 실패율도 함께
+- **한계의 출처** (ARCH-1): 관절은 diag `q_cmd_*`, 토크·속도 정격은 프로파일 device 명세, ω/`a_max`/`v_max`/η_v/box 는 러너가
+  `run_meta.json` 에 남긴 컨트롤러 **미러** (S8-G 부터) → 없으면 프로파일 + `--overlay`. 출처를 `budget.source` 로 보고한다
+- `--write-envelope-box`: unit 들의 envelope p95 를 관절별 max 로 모아 `derived_accel_limits` 형식 (`adopted: true`,
+  `provisional: true`, provenance 에 unit 목록·방법) 으로 쓴다 — sim overlay 의 `robot.arm.accel_limits_path` 가 가리킬 파일.
+  토크 도출이 아니라 실행값이므로 sim 전용
+- 합성 positive control (`test/test_catching_arm_budget.py`, 20 케이스): 알려진 τ·ω·포화 구간·램프 가속·토크 비율·rank 비트를
+  심은 unit 에서 각각을 복원 (τ ±5 %, 잔여 = 이론값, envelope = 램프 가속), 닫힌해 도달시간 7 케이스, 미러 없는 경우의
+  profile+overlay 경로, `adopted: false` box 거부, CLI end-to-end
+
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 
 투척 grid → 항력 비행 → 포구 후보 → **C++ judge** → 집계·제안·플롯. 판정은 재구현하지 않고

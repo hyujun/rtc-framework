@@ -1,0 +1,39 @@
+# sim overlay — dynamic_catching S8-G, arm "ω 15 · a_max 21" (#537 5846760878)
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false enable_mpc:=true \
+#       sim_lanes:=true sim_overlay:=s8g_w15_a21
+#
+# One cell of the (reference.omega × reference.a_max) sweep that measures the arm
+# budget the S8-F-1 data showed binding (#537 5846659919): the L4 reference
+# converges as e(t) = e0 (1 + ωt) e^{-ωt}, so ω 10 leaves 17 % of the commit-time
+# error at t_c − T_arm (0.318 s), and its demanded acceleration saturates at
+# a_max 21 m/s² in 3–20 % of the active ticks. The six arms differ in the two
+# `reference` leaves ONLY; everything else is S8-F-1's reach-first arm
+# (s8f_reach_first.yaml — lead on, T_freeze 0.37, the widened catch box, the
+# inverted score weights), so the S8-F-1 cliff_rf unit is this sweep's
+# baseline twin (same seed 901, same 56 throws). test_catch_lead_overlays.py
+# pins the leaves.
+#
+# The validator's cross checks these cells must satisfy: reference.omega in
+# [1, 25] and ω·h < 0.828 (ω 20 · h 0.002 = 0.04), supervisor.decel.a_dec 10
+# ≤ reference.a_max. Sim only — the real arm's a_max is S10's.
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        planner:
+          freeze:
+            T_freeze: 0.37
+          score:
+            w_t: 5.0
+            w_gamma: 1.0
+          workspace:
+            catch_box:
+              min: [-1.1, -1.1, 0.15]
+              max: [1.1, 1.1, 1.2]
+        reference:
+          omega: 15.0
+          a_max: 21.0

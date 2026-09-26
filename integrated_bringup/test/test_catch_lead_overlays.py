@@ -54,6 +54,21 @@ S8F_SCORE = {
     ("catching", "planner", "score", "w_t"): 5.0,
     ("catching", "planner", "score", "w_gamma"): 1.0,
 }
+# S8-G (#537 5846760878): the (reference.omega × reference.a_max) sweep — six
+# arms that are s8f_reach_first plus exactly the two `reference` leaves — and the
+# reach-first arm with the planner's D-16 box pointed at the executed envelope.
+S8G_GRID = {
+    "s8g_w10_a21": (10.0, 21.0),
+    "s8g_w10_a30": (10.0, 30.0),
+    "s8g_w15_a21": (15.0, 21.0),
+    "s8g_w15_a30": (15.0, 30.0),
+    "s8g_w20_a21": (20.0, 21.0),
+    "s8g_w20_a30": (20.0, 30.0),
+}
+S8G_ENVBOX = "s8g_w10_a21_envbox"
+S8G_ENVBOX_FILE = "config/ur5e_p1b/derived_accel_limits_s8g_envelope.yaml"
+OMEGA_RANGE = (1.0, 25.0)  # L4 §6
+OMEGA_H_STABLE = 0.828  # L4 §4.7 discrete stability bound on ω·h
 SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
 LEAP = "iiwa7_leap"
 LEAP_ARMS = ("catch_lead_on", "catch_lead_on_unbounded")
@@ -323,6 +338,89 @@ def test_s8f_beanbag_arm_changes_only_the_ball_type(s8f_arms):
 @pytest.mark.parametrize("name", S8F_ARMS)
 def test_s8f_commit_window_is_derived_from_t_arm(name, s8f_arms, shipped):
     _check_commit_window(s8f_arms[name]["catching"], shipped["catching"], "ur5e_p1b")
+
+
+# ── ur5e_p1b S8-G (arm-budget sweep) ──────────────────────────────────────────
+@pytest.fixture(scope="module")
+def s8g_arms() -> dict[str, dict]:
+    return {
+        name: _controller_tree(_load(os.path.join(OVERLAY_DIR, name + ".yaml")))
+        for name in S8G_GRID
+    }
+
+
+@pytest.mark.parametrize("name", sorted(S8G_GRID))
+def test_s8g_every_leaf_is_a_shipped_key_of_the_same_type(name, s8g_arms, shipped):
+    assert _unread_leaves(s8g_arms[name], shipped) == []
+
+
+@pytest.mark.parametrize("name", sorted(S8G_GRID))
+def test_s8g_cell_is_reach_first_plus_its_two_reference_leaves(name, s8g_arms, s8f_arms):
+    """Each cell differs from s8f_reach_first by ω and a_max ONLY, at the grid
+    values its name says — so the S8-F-1 cliff unit is the sweep's baseline
+    twin and a cell measures the two numbers and nothing else."""
+    omega, a_max = S8G_GRID[name]
+    base = _leaves(s8f_arms["s8f_reach_first"])
+    leaves = _leaves(s8g_arms[name])
+    extra = {k: v for k, v in leaves.items() if k not in base}
+    assert extra == {
+        ("catching", "reference", "omega"): omega,
+        ("catching", "reference", "a_max"): a_max,
+    }
+    assert {k: v for k, v in leaves.items() if k in base} == base
+
+
+@pytest.mark.parametrize("name", sorted(S8G_GRID))
+def test_s8g_cell_satisfies_the_validators_cross_checks(name, s8g_arms, shipped):
+    """The configure-time validator refuses a_dec > a_max, ω outside [1, 25]
+    and ω·h at the stability bound (lifecycle.cpp ReasonText); a cell that
+    trips one would park the controller and the unit would fail at startup."""
+    omega, a_max = S8G_GRID[name]
+    a_dec = shipped["catching"]["supervisor"]["decel"]["a_dec"]
+    assert a_dec <= a_max
+    assert OMEGA_RANGE[0] <= omega <= OMEGA_RANGE[1]
+    rate = _load(os.path.join(CONFIG_DIR, RATE_FILE["ur5e_p1b"]))["/**"]["ros__parameters"][
+        "control_rate"
+    ]
+    assert omega / rate < OMEGA_H_STABLE
+
+
+def test_s8g_grid_covers_the_shipped_cell(shipped):
+    ref = shipped["catching"]["reference"]
+    assert (ref["omega"], ref["a_max"]) in S8G_GRID.values(), (
+        "the baseline cell IS the shipped pair"
+    )
+
+
+def test_s8g_envbox_arm_is_the_baseline_with_the_planner_box_swapped(s8g_arms, shipped):
+    """The envelope arm changes ONE leaf of the baseline cell — where the
+    planner's D-16 box comes from — and that file exists, is `adopted`, is
+    marked provisional and carries the tool's provenance (lifecycle.cpp
+    refuses a box that is not adopted)."""
+    overlay = _controller_tree(_load(os.path.join(OVERLAY_DIR, S8G_ENVBOX + ".yaml")))
+    base = _leaves(s8g_arms["s8g_w10_a21"])
+    leaves = _leaves(overlay)
+    extra = {k: v for k, v in leaves.items() if k not in base}
+    assert extra == {("catching", "robot", "arm", "accel_limits_path"): S8G_ENVBOX_FILE}
+    assert {k: v for k, v in leaves.items() if k in base} == base
+    assert _unread_leaves(overlay, shipped) == []
+    box = _load(os.path.join(CONFIG_ROOT, "..", S8G_ENVBOX_FILE))["derived_accel_limits"]
+    group = shipped["catching"]["robot"]["arm"]["accel_limits_group"]
+    entry = box[group]
+    n = len(
+        _load(os.path.join(CONFIG_DIR, "_base.yaml"))["/**"]["ros__parameters"]["devices"][group][
+            "joint_limits"
+        ]["max_torque"]
+    )
+    assert entry["adopted"] is True and entry["provisional"] is True
+    assert len(entry["qdd_max"]) == n and all(v > 0 for v in entry["qdd_max"])
+    assert entry["provenance"]["tool"] == "rtc_tools.analysis.catching_arm_budget"
+    assert entry["provenance"]["sim_only"] is True
+    # The point of the arm: the envelope is well above the shipped derived box.
+    shipped_box = _load(os.path.join(CONFIG_DIR, "derived_accel_limits.yaml"))[
+        "derived_accel_limits"
+    ][group]["qdd_max"]
+    assert all(e > 2 * s for e, s in zip(entry["qdd_max"], shipped_box, strict=True))
 
 
 # ── iiwa7_leap (S8-D) ────────────────────────────────────────────────────────
