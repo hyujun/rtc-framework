@@ -521,3 +521,21 @@ def test_main_writes_the_outputs_and_the_envelope_box(tmp_path, capsys):
 def test_parse_unit_arg_defaults_the_session_to_session_copy():
     assert ab.parse_unit_arg("/u") == (Path("/u"), Path("/u/session_copy"))
     assert ab.parse_unit_arg("/u:/s") == (Path("/u"), Path("/s"))
+
+
+def test_a_device_lane_with_a_dropped_row_is_matched_by_time_not_position(tmp_path):
+    cfg = make_config(tmp_path / "share")
+    unit, session, _ = make_session(tmp_path, n_trials=1)
+    lane = session / "controllers" / CONTROLLER / f"{ARM}_state.csv"
+    lines = lane.read_text().splitlines()
+    lane.write_text("\n".join(lines[:50] + lines[51:]) + "\n")  # drop one idle row near the start
+    res = ab.analyse_unit(unit, session, cfg, n_boot=5)
+    p = res["summary"]["plant"]
+    assert p["torque_util_max"] == pytest.approx([0.5, 0.5])
+    assert p["torque_matched_ticks"] == N_APPROACH + N_COMMITTED + N_CLOSING
+    lane.write_text(
+        "t_relative_s,effort_j_a,effort_j_b\n99.0,1.0,1.0\n"
+    )  # no row near any active tick
+    res = ab.analyse_unit(unit, session, cfg, n_boot=5)
+    assert all(math.isnan(v) for v in res["summary"]["plant"]["torque_util_max"])
+    assert "no lane row" in res["summary"]["plant"]["torque_source"]

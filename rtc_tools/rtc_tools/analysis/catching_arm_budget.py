@@ -347,31 +347,52 @@ def _effort_utilisation(
     profile: ct.CatchingProfile,
     joints: Sequence[str],
     tau_max: Sequence[float],
+    t: np.ndarray,
     active: np.ndarray,
+    dt: float,
 ) -> dict:
-    """max / p99 of |effort| / τ_max per joint over the active ticks (NaN without a device lane)."""
+    """max / p99 of |effort| / τ_max per joint over the active ticks (NaN without a device lane).
+
+    The device lane is written by the same RT tick as the diag but is its own
+    file, and a row can be missing on either side (one dropped lane row was
+    seen in a 130 k-tick session); rows are therefore matched by
+    ``t_relative_s`` (nearest within half a tick), never by position.
+    """
     log = profile.device_logs.get(profile.arm_device)
-    empty = {"max": [math.nan] * len(joints), "p99": [math.nan] * len(joints), "source": None}
+    n = len(joints)
+    empty = {"max": [math.nan] * n, "p99": [math.nan] * n, "source": None, "matched_ticks": 0}
     if not log:
         return empty
     path = session / "controllers" / profile.controller / f"{log}.csv"
-    if ct._exists(path) is None:
+    found = ct._exists(path)
+    if found is None:
         return empty
     cols = [f"effort_{j}" for j in joints]
-    header = ct._csv_header(ct._exists(path))
-    if any(c not in header for c in cols):
-        return empty
-    lane = ct._read_csv(path, usecols=cols)
-    if len(lane) != len(active):
+    header = ct._csv_header(found)
+    if any(c not in header for c in cols) or "t_relative_s" not in header:
+        return {**empty, "source": f"{path.name}: no effort_* / t_relative_s columns"}
+    lane = ct._read_csv(path, usecols=["t_relative_s", *cols])
+    t_lane = lane["t_relative_s"].to_numpy(dtype=float)
+    t_active = t[active]
+    idx = np.clip(np.searchsorted(t_lane, t_active), 0, max(len(t_lane) - 1, 0))
+    left = np.clip(idx - 1, 0, max(len(t_lane) - 1, 0))
+    take = np.where(np.abs(t_lane[left] - t_active) < np.abs(t_lane[idx] - t_active), left, idx)
+    ok = (
+        np.abs(t_lane[take] - t_active) <= 0.5 * dt
+        if len(t_lane)
+        else np.zeros(len(t_active), dtype=bool)
+    )
+    if not ok.any():
         return {
             **empty,
-            "source": f"{path.name}: {len(lane)} rows vs diag {len(active)} — not tick-aligned",
+            "source": f"{path.name}: no lane row within half a tick of an active tick",
         }
-    util = np.abs(lane[cols].to_numpy(dtype=float)[active]) / np.asarray(tau_max, dtype=float)
+    util = np.abs(lane[cols].to_numpy(dtype=float)[take[ok]]) / np.asarray(tau_max, dtype=float)
     return {
         "max": [float(v) for v in util.max(axis=0)],
         "p99": [float(v) for v in np.percentile(util, 99, axis=0)],
         "source": path.name,
+        "matched_ticks": int(ok.sum()),
     }
 
 
@@ -480,7 +501,7 @@ def analyse_unit(
         qd_meas[s.start : s.end] = np.gradient(q_meas[s.start : s.end], dt, axis=0)
     moving = active & (np.abs(qd_meas).max(axis=1) > MOVING_RAD_S)
     lags = ct.servo_lag_ls(t, q_cmd, q_meas, moving, clusters, joints, n_boot=n_boot, seed=seed)
-    torque = _effort_utilisation(session, profile, joints, budget.tau_max, active)
+    torque = _effort_utilisation(session, profile, joints, budget.tau_max, t, active, dt)
     qd_meas_max = [float(v) for v in np.abs(qd_meas[active]).max(axis=0)]
 
     # ── R: reference ─────────────────────────────────────────────────────────
@@ -590,6 +611,7 @@ def analyse_unit(
             "torque_util_max": torque["max"],
             "torque_util_p99": torque["p99"],
             "torque_source": torque["source"],
+            "torque_matched_ticks": torque["matched_ticks"],
             "qd_meas_max": qd_meas_max,
         },
         "reference": {
