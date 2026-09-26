@@ -104,6 +104,7 @@ from rtc_tools.analysis.catchability_map import (
     transform_direction,
     transform_point,
 )
+from rtc_tools.analysis.table_cells import is_true as _is_true, num as _num
 
 # ── rtc_msgs/CatchingState ABI (framework message constants, not robot values) ─
 MODE_ARMED = 1
@@ -941,6 +942,8 @@ class Trial:
     # runner's drifting wall offset) or "lane" (:func:`align_trials_to_lane`).
     alignment: str = "median_offset"
     stamp_anchor: str = ""  # "truth" / "lane_estimate" (lane alignment only)
+    # (stamp_s, xyz) of the truth CSV's first row, read once by load_trials.
+    truth_first: tuple | None = None
 
     def wall_launch(self) -> float:
         """The launch on the runner's wall clock, as this trial's own fields imply.
@@ -971,6 +974,11 @@ def load_trials(trials_dir: Path) -> tuple[list[Trial], dict]:
         accepted = bool(r.get("accepted"))
         launch_wall = r.get("launch_wall_time")
         launch_wall = math.nan if launch_wall is None else float(launch_wall)
+        truth = (
+            _truth_path(trials_dir, r.get("truth_csv"), launch_wall, r["idx"])
+            if accepted
+            else (None, None)
+        )
         if off is None or not accepted:
             out.append(
                 Trial(
@@ -979,11 +987,10 @@ def load_trials(trials_dir: Path) -> tuple[list[Trial], dict]:
                     r.get("outcome"),
                     accepted,
                     *[math.nan] * 3,
-                    _truth_path(trials_dir, r.get("truth_csv"), launch_wall, r["idx"])
-                    if accepted
-                    else None,
+                    truth[0],
                     list(r.get("mode_log") or []),
                     launch_wall=launch_wall,
+                    truth_first=truth[1],
                 )
             )
             continue
@@ -999,9 +1006,10 @@ def load_trials(trials_dir: Path) -> tuple[list[Trial], dict]:
                 t_launch,
                 t_end,
                 float(off),
-                _truth_path(trials_dir, r.get("truth_csv"), launch_wall, r["idx"]),
+                truth[0],
                 list(r.get("mode_log") or []),
                 launch_wall=launch_wall,
+                truth_first=truth[1],
                 stamp_offset=float(off),
             )
         )
@@ -1013,18 +1021,22 @@ TRUTH_LAUNCH_TOL_S = 5.0  # a trial's first truth stamp sits within ms of its la
 
 def _truth_path(
     trials_dir: Path, recorded: str | None, launch_wall: float = math.nan, idx=None
-) -> Path | None:
-    """The trial's truth CSV — next to ``trial_results.json`` first.
+) -> tuple[Path | None, tuple | None]:
+    """The trial's truth CSV — next to ``trial_results.json`` first — and its first row.
 
-    The runner records an ABSOLUTE path. A trials dir that was renamed after
-    its run and whose old path was reused (a unit re-run into the same
-    ``--out-dir``) points at the OTHER run's file, with the same throw and a
-    plausible shape; so the local copy wins, and a file whose first stamp is
-    not within :data:`TRUTH_LAUNCH_TOL_S` of this trial's ``launch_wall_time``
-    is refused as another run's (seen in the S8-E smoke: 1606 s apart).
+    ``catching_sim_trials`` now records the file name relative to its trials
+    dir, which resolves here directly. Records written before that carry an
+    ABSOLUTE path, and a trials dir that was renamed after its run and whose
+    old path was reused (a unit re-run into the same ``--out-dir``) points at
+    the OTHER run's file, with the same throw and a plausible shape; for those
+    the local copy still wins, and a file whose first stamp is not within
+    :data:`TRUTH_LAUNCH_TOL_S` of this trial's ``launch_wall_time`` is refused
+    as another run's (seen in the S8-E smoke: 1606 s apart). The first row is
+    returned so the stamp anchor (:func:`align_trials_to_lane`) need not
+    read the file again.
     """
     if not recorded:
-        return None
+        return None, None
     path = Path(recorded)
     for candidate in (trials_dir / path.name, trials_dir / path, path):
         found = _exists(candidate)
@@ -1039,8 +1051,8 @@ def _truth_path(
                 file=sys.stderr,
             )
             continue
-        return found
-    return None
+        return found, first
+    return None, None
 
 
 def recorded_dt(doc: Mapping, t: np.ndarray) -> tuple[float, str]:
@@ -1222,6 +1234,8 @@ class ClockLane:
     trials: list  # clock_phase.Trial, in launch order
     segments: dict[int, np.ndarray]  # launch_seq → (n, 2) [sim_s, steady_s] of active rows
     steady_offset: float  # steady_s − t_relative_s (median over launches; fallback path)
+    # Max |steady − t_relative_s − median| over the launches (t_relative_s from
+    # the runner's offset). ~ms at RTF 1; the slow-sim drift shows up here.
     offset_spread_s: float
     dropped_total: int
     trial_to_seq: dict[int, int]
@@ -1243,6 +1257,9 @@ class ClockLane:
     # of srv/step latency) unless refined (``wall_offset_source``).
     wall_offset_s: float = math.nan
     wall_offset_source: str = "launch_pairing"
+    # Max |wall launch − lane launch steady − wall_offset_s|: the srv/step
+    # latency jitter of the pairing itself (not a clock drift).
+    pairing_jitter_s: float = math.nan
     # sim_time_sec − t_relative_s, set by the caller once estimated; None =
     # the fallback (median-offset) path.
     c_s: float | None = None
@@ -1379,8 +1396,15 @@ def load_clock_lane(
     steady_all = df["steady_ns"].to_numpy(float) * 1e-9
     seq_all = df["launch_seq"].to_numpy(int)
     seq_rows, dropped_before = {}, {}
-    for seq in np.unique(seq_all[seq_all > 0]):
-        pos = np.nonzero(seq_all == seq)[0]
+    # One stable sort groups every launch's rows in lane order (O(n log n),
+    # not a scan of the whole lane per launch).
+    order = np.argsort(seq_all, kind="stable")
+    seqs, starts = np.unique(seq_all[order], return_index=True)
+    ends = np.append(starts[1:], len(order))
+    for seq, a, b in zip(seqs, starts, ends, strict=True):
+        if seq <= 0:
+            continue
+        pos = order[a:b]
         seq_rows[int(seq)] = np.column_stack([sim_all[pos], steady_all[pos], dropped_all[pos]])
         dropped_before[int(seq)] = float(dropped_all[pos[0] - 1] if pos[0] > 0 else dropped_all[0])
     nominal = float(np.median(np.diff(sim_all))) if len(sim_all) >= 2 else math.nan
@@ -1412,11 +1436,15 @@ def load_clock_lane(
     # The fallback path's steady − t_relative_s, from the trials that have one.
     rel = [(j, i) for j, i in pairs if np.isfinite(runs[j].t_launch)]
     rel_offsets = np.array([steady0[i] - runs[j].t_launch for j, i in rel])
+    rel_median = float(np.median(rel_offsets)) if rel else math.nan
     return ClockLane(
         trials=[lane_all[i] for _, i in pairs],
         segments=segments,
-        steady_offset=float(np.median(rel_offsets)) if rel else math.nan,
-        offset_spread_s=float(np.max(np.abs(walls - wall_offset))),
+        steady_offset=rel_median,
+        # steady − t_relative_s across the launches, t_relative_s from the
+        # runner's offset: drifts apart when the sim runs slower than the wall.
+        offset_spread_s=float(np.max(np.abs(rel_offsets - rel_median))) if rel else math.nan,
+        pairing_jitter_s=float(np.max(np.abs(walls - wall_offset))),
         dropped_total=stats.dropped_total,
         trial_to_seq={runs[j].idx: lane_all[i].launch_seq for j, i in pairs},
         trial_offsets={runs[j].idx: float(steady0[i] - runs[j].t_launch) for j, i in rel},
@@ -1519,6 +1547,9 @@ def commit_ticks(t: np.ndarray, mode: np.ndarray) -> np.ndarray:
     return np.nonzero(committed & ~prev)[0]
 
 
+C_SPREAD_MAX_STEPS = 1.5  # commits must agree on c within this many physics steps
+
+
 def estimate_sim_minus_t_rel(
     t: np.ndarray,
     mode: np.ndarray,
@@ -1539,7 +1570,10 @@ def estimate_sim_minus_t_rel(
     whole number of ticks — how many steps the sim took before the CM's first
     tick, so it differs between sessions), matching the CM timing lane's
     ``tick_count`` ↔ lane ``step`` offset. ``None`` when no commit carries a
-    planner row.
+    planner row, or when the commits disagree by more than
+    :data:`C_SPREAD_MAX_STEPS` steps — no single constant then maps the
+    session (a sim reset, dropped lane rows), and the caller falls back to
+    the median-offset path with the spread in ``info["source"]``.
     """
     info: dict = {"source": "plan_bridge", "n": 0}
     if bridge is None:
@@ -1559,12 +1593,19 @@ def estimate_sim_minus_t_rel(
         return None, info
     c = float(np.median(values))
     info.update(n=len(values), spread_s=float(np.ptp(values)), value_s=c)
-    if info["spread_s"] > 1.5 * lane.nominal_step_s:
+    bound = C_SPREAD_MAX_STEPS * lane.nominal_step_s
+    if not info["spread_s"] <= bound:
+        info["source"] = (
+            f"none (commits disagree: spread {info['spread_s'] * 1e3:.3f} ms > "
+            f"{bound * 1e3:.3f} ms = {C_SPREAD_MAX_STEPS:g} steps — a sim reset or dropped "
+            "lane rows?)"
+        )
         print(
             f"catching_trials: sim − t_relative_s varies over the session by "
-            f"{info['spread_s'] * 1e3:.1f} ms (a sim reset?); using the median {c:.4f} s",
+            f"{info['spread_s'] * 1e3:.1f} ms; falling back to the runner's median offset",
             file=sys.stderr,
         )
+        return None, info
     return c, info
 
 
@@ -1611,7 +1652,7 @@ def align_trials_to_lane(
         walls = [float(m[0]) for m in trial.mode_log]
         t_end = max(float(np.max(lane.wall_to_t_rel(walls))), t_launch) if walls else t_launch
         anchor, how = math.nan, "lane_estimate"
-        first = _first_truth_row(trial.truth_path)
+        first = trial.truth_first
         pos = records_by_idx.get(trial.idx, {}).get("pos")
         if (
             first is not None
@@ -1640,12 +1681,21 @@ RTF_FLIGHT_S = 0.6  # rtf_flight: launch to first contact, at most this much sim
 RTF_WINDOW_S = 0.25  # rtf_trial_min: sim-time windows
 
 
-def trial_rtf(lane: ClockLane, seq: int, sim_contact: float, sim_end: float) -> dict:
+def trial_rtf(
+    lane: ClockLane,
+    seq: int,
+    sim_contact: float,
+    sim_end: float,
+    steady_end: float = math.inf,
+) -> dict:
     """Wall-clock speed of the sim over one trial (a covariate, not a rule).
 
     ``rtf_flight`` = sim span / steady span from the launch to the first
     contact (or :data:`RTF_FLIGHT_S` of sim time); ``rtf_trial_min`` = the
-    slowest :data:`RTF_WINDOW_S` window from the launch to the trial's end.
+    slowest :data:`RTF_WINDOW_S` window from the launch to the trial's end —
+    cut at ``sim_end`` and at ``steady_end`` (:func:`trial_steady_end`), so
+    the homing and idle rows the launch's ``launch_seq`` also carries do not
+    count.
     """
     out = {"rtf_flight": math.nan, "rtf_trial_min": math.nan}
     rows = lane.seq_rows.get(seq)
@@ -1662,7 +1712,7 @@ def trial_rtf(lane: ClockLane, seq: int, sim_contact: float, sim_end: float) -> 
     if hi > s0:
         out["rtf_flight"] = (hi - s0) / (float(np.interp(hi, sim, steady)) - float(steady[0]))
     end = min(float(sim_end), float(sim[-1])) if np.isfinite(sim_end) else float(sim[-1])
-    sel = sim <= end
+    sel = (sim <= end) & (steady <= steady_end)
     bins = np.floor((sim[sel] - s0) / RTF_WINDOW_S).astype(int)
     rtfs = []
     for b in np.unique(bins):
@@ -2402,7 +2452,8 @@ def analyse_session(
         if lane is not None and seq is not None:
             sim_c = t_impact + lane.c_s if (on_lane and np.isfinite(t_impact)) else math.nan
             sim_end = trial.t_end + lane.c_s if on_lane else math.inf
-            row.update(trial_rtf(lane, seq, sim_c, sim_end))
+            steady_end = trial_steady_end(lane, trial, seq, 0.0)
+            row.update(trial_rtf(lane, seq, sim_c, sim_end, steady_end))
         if timing is not None:
             if on_lane:
                 lo, hi = (
@@ -2770,6 +2821,20 @@ def record_invalid_reason(record: Mapping) -> str:
     return ""
 
 
+def trial_steady_end(lane: ClockLane, trial: Trial, seq: int, margin_s: float) -> float:
+    """The trial's end (+ ``margin_s``) on the steady clock, for cutting its lane rows.
+
+    ``launch_seq`` stays at a launch's number until the NEXT launch, so a
+    trial's rows must be cut here or they run on through the homing and idle
+    before the next throw. Lane-aligned trials go t_relative_s → sim → steady;
+    otherwise the trial's own launch offset; +inf when neither is known.
+    """
+    if lane.aligned and trial.alignment == "lane":
+        return float(lane.t_rel_to_steady(seq, trial.t_end + margin_s))
+    offset = lane.trial_offsets.get(trial.idx)
+    return trial.t_end + margin_s + offset if offset is not None else math.inf
+
+
 def lane_invalid_reason(lane: ClockLane, trial: Trial, margin_s: float) -> tuple[str, dict]:
     """D-S8-16 ① rules 4–5 from the clock lane, and the diagnostics they read.
 
@@ -2788,12 +2853,7 @@ def lane_invalid_reason(lane: ClockLane, trial: Trial, margin_s: float) -> tuple
     seq = lane.trial_to_seq.get(trial.idx)
     if seq is None:
         return "lane_drop", {"lane_dropped_delta": math.nan, "lane_max_sim_gap_s": math.nan}
-    if lane.aligned and trial.alignment == "lane":
-        end = float(lane.t_rel_to_steady(seq, trial.t_end + margin_s))
-    else:
-        offset = lane.trial_offsets.get(trial.idx)
-        end = trial.t_end + margin_s + offset if offset is not None else math.inf
-    dropped, gap = lane.rig_check(seq, end)
+    dropped, gap = lane.rig_check(seq, trial_steady_end(lane, trial, seq, margin_s))
     diag = {"lane_dropped_delta": dropped, "lane_max_sim_gap_s": gap}
     if dropped > 0:
         return "lane_drop", diag
@@ -2869,21 +2929,6 @@ def tick_overrun_summary(
     if dt is not None:
         out["period_us"] = dt * 1e6
     return out
-
-
-def _is_true(value) -> bool:
-    """A real boolean True (a NaN / None / missing cell is not a success)."""
-    return isinstance(value, bool | np.bool_) and bool(value)
-
-
-def _num(value) -> float:
-    """A row cell as a float (None / non-numeric → NaN)."""
-    if value is None or isinstance(value, str):
-        return math.nan
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return math.nan
 
 
 def streak_distribution(rows: Sequence[Mapping], bin_width: int = STREAK_BIN_WIDTH) -> dict:
@@ -3008,6 +3053,31 @@ def truth_block(
         out["verdict"] = floor_verdict(k, n, floor, n_valid_target, z)
     elif n_valid_target is not None:
         out["n_valid_target"] = n_valid_target
+    return out
+
+
+def gate_map_truth(rows: Sequence[Mapping], z: float = 1.96, with_truth: bool = True) -> dict:
+    """Gate-map open share and truth success over the whole / map-open trials.
+
+    One implementation for the session summary and :mod:`catching_pool` (P5).
+    A row is verdicted when it carries a ``map_open`` (``None`` = a reference
+    or varied throw with no grid axes). Both truth counts are over the
+    VERDICTED rows: counting an unverdicted trial in "whole" would compare
+    the open subset against a different throw population.
+    """
+    verdicted = [r for r in rows if r.get("map_open") is not None]
+    open_rows = [r for r in verdicted if _is_true(r["map_open"])]
+    out: dict = {
+        "verdicted": len(verdicted),
+        "open": len(open_rows),
+        "open_fraction": len(open_rows) / len(verdicted) if verdicted else math.nan,
+    }
+    if not with_truth:
+        out["truth_whole"] = out["truth_open"] = "NOT_EVALUATED(no hold radius)"
+        return out
+    for key, sub in (("truth_whole", verdicted), ("truth_open", open_rows)):
+        k = sum(1 for r in sub if _is_true(r.get("truth_success")))
+        out[key] = {"successes": k, "n": len(sub), "wilson95": wilson_interval(k, len(sub), z)}
     return out
 
 
@@ -3343,6 +3413,7 @@ def _summarise(
     if lane is not None:
         d3: dict = {
             "clock_steady_offset_spread_ms": lane.offset_spread_s * 1e3,
+            "launch_pairing_jitter_ms": lane.pairing_jitter_s * 1e3,
             "dropped_total": lane.dropped_total,
             # Trials the lane has a launch for (the rest have no covariate and
             # are not counted as valid — see load_clock_lane).
@@ -3382,34 +3453,11 @@ def _summarise(
             "approach_plan_switches_distribution": switches,
         }
     if gate_map is not None:
-        verdicted = [r for r in valid if r.get("map_open") is not None]
-        open_rows = [r for r in verdicted if r["map_open"]]
-        gm: dict = {
+        summary["gate_map"] = {
             "map_dir": str(gate_map.map_dir),
             "seed_id": gate_map.seed_id,
-            "verdicted": len(verdicted),
-            "open": len(open_rows),
-            "open_fraction": len(open_rows) / len(verdicted) if verdicted else math.nan,
+            **gate_map_truth(valid, with_truth=hold_radius is not None),
         }
-        if hold_radius is not None:
-            # Both over the VERDICTED rows: a reference/varied trial carries
-            # no grid axes, so counting it in "whole" would compare the open
-            # subset against a different throw population.
-            k_whole = sum(1 for r in verdicted if r.get("truth_success"))
-            k_open = sum(1 for r in open_rows if r.get("truth_success"))
-            gm["truth_whole"] = {
-                "successes": k_whole,
-                "n": len(verdicted),
-                "wilson95": wilson_interval(k_whole, len(verdicted)),
-            }
-            gm["truth_open"] = {
-                "successes": k_open,
-                "n": len(open_rows),
-                "wilson95": wilson_interval(k_open, len(open_rows)),
-            }
-        else:
-            gm["truth_whole"] = gm["truth_open"] = "NOT_EVALUATED(no hold radius)"
-        summary["gate_map"] = gm
     return summary
 
 

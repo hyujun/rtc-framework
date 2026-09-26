@@ -1541,17 +1541,17 @@ EVENT_SIMS = (0.1, 0.4, 0.5, 2.5)  # mode changes after the launch; the last clo
 RECV_LATENCY_S = 0.001
 
 
-def _slow_sim_session(tmp: Path):
+def _slow_sim_session(tmp: Path, idle_rtf: float = 1.0):
     """A lane, trials dir and truth CSVs of a sim that runs at TRIAL_RTF during each
-    trial — what the S8-E loaded unit did (RTF 0.62). Returns (lane path, trials dir,
-    steady(sim) function)."""
+    trial — what the S8-E loaded unit did (RTF 0.62) — and at ``idle_rtf`` between
+    trials. Returns (lane path, trials dir, steady(sim) function)."""
     import json
 
     import pandas as pd
 
     n = int(22.0 / DT)
     sim = np.arange(1, n + 1) * DT
-    rtf = np.ones(n)
+    rtf = np.full(n, idle_rtf)
     for launch, r in zip(LAUNCH_SIMS, TRIAL_RTF, strict=True):
         rtf[(sim > launch) & (sim <= launch + 3.0)] = r
     steady = 100.0 + np.cumsum(DT / rtf)
@@ -1887,3 +1887,67 @@ def test_golden_g8b_and_c2_end_to_end(pilot, tmp_path):
     assert np.linalg.norm(a_plus_b) * 1e3 == pytest.approx(r0["pred_mm"], abs=1e-2)
     c2 = res.summary["c2"]
     assert c2["n_approx"] >= 1 and c2["independence"] == "NOT_EVALUATED(n < 100)"
+
+
+def test_commits_that_disagree_on_c_fall_back_to_the_median_offset(tmp_path):
+    """No single sim − t_relative_s maps a session whose commits disagree (a sim
+    reset mid-session, dropped lane rows): the lane path would misplace one side
+    of it, so the whole session falls back, and says why."""
+    lane_path, trials_dir, steady_at = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    t, mode, pid, ptc, bridge = _commit_diag(steady_at)
+    late = t > LAUNCH_SIMS[2] - 1.0  # trials 2–4 read 3 ticks later
+    c, info = ct.estimate_sim_minus_t_rel(
+        np.where(late, t + 3 * DT, t), mode, pid, ptc, bridge, lane
+    )
+    assert c is None
+    assert "spread 6.000 ms" in info["source"] and info["spread_s"] == pytest.approx(3 * DT)
+    summary = ct.time_alignment_summary(trials, lane, info)
+    assert summary["time_alignment"] == "median_offset"
+    assert "commits disagree" in summary["time_alignment_detail"]["sim_minus_t_rel"]["source"]
+    # One tick apart is within the bound (1.5 steps): still one constant.
+    one = np.where(late, t + DT, t)
+    assert ct.estimate_sim_minus_t_rel(one, mode, pid, ptc, bridge, lane)[0] is not None
+
+
+def test_rtf_trial_min_stops_at_the_trial_end_without_lane_alignment(tmp_path):
+    """launch_seq stays at a launch's number until the next launch, so its rows run
+    on through homing and idle. With the sim idling at RTF 0.3 between trials, an
+    uncut scan reports the idle, not the trial (RTF 1.0)."""
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path, idle_rtf=0.3)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    assert not lane.aligned
+    end = ct.trial_steady_end(lane, trials[0], 1, 0.0)
+    cut = ct.trial_rtf(lane, 1, math.nan, math.inf, end)
+    assert cut["rtf_trial_min"] == pytest.approx(TRIAL_RTF[0], rel=1e-2)
+    uncut = ct.trial_rtf(lane, 1, math.nan, math.inf)
+    assert uncut["rtf_trial_min"] == pytest.approx(0.3, rel=1e-2)
+
+
+def test_steady_offset_spread_shows_the_slow_sim_drift_and_pairing_jitter_does_not(tmp_path):
+    """clock_steady_offset_spread_ms keeps its meaning — steady − t_relative_s
+    across the launches, t_relative_s from the runner's offset — so a sim that
+    ran slow shows up there; the wall-launch pairing jitter is its own key."""
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    assert lane.offset_spread_s > 0.1
+    assert lane.pairing_jitter_s < 5e-3
+
+
+def test_gate_map_truth_is_one_predicate_for_session_and_pool():
+    rows = [
+        {"map_open": True, "truth_success": True},
+        {"map_open": True, "truth_success": math.nan},  # not analysed: not a success
+        {"map_open": False, "truth_success": True},
+        {"map_open": None, "truth_success": True},  # reference throw: not verdicted
+        {"truth_success": True},
+    ]
+    gm = ct.gate_map_truth(rows)
+    assert (gm["verdicted"], gm["open"], gm["open_fraction"]) == (3, 2, pytest.approx(2 / 3))
+    assert (gm["truth_whole"]["successes"], gm["truth_whole"]["n"]) == (2, 3)
+    assert (gm["truth_open"]["successes"], gm["truth_open"]["n"]) == (1, 2)
+    no_radius = ct.gate_map_truth(rows, with_truth=False)
+    assert no_radius["truth_whole"] == "NOT_EVALUATED(no hold radius)"

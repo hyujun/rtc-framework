@@ -614,7 +614,12 @@ def _make_driver(profile: ArmProfile, args):
                 {
                     "mode_log": self.mode_log,
                     "n_truth_rows": len(self.truth_rows),
-                    "truth_csv": truth_csv,
+                    # Relative to the trials dir (the file sits next to
+                    # trial_results.json): an absolute path breaks when the dir
+                    # is renamed and silently reads ANOTHER run's file when its
+                    # old path is reused (S8-E smoke). The analyser still
+                    # resolves the absolute paths of older records.
+                    "truth_csv": os.path.basename(truth_csv),
                     "final_outcome": (
                         OUTCOME_NAMES[self.outcome] if self.outcome is not None else None
                     ),

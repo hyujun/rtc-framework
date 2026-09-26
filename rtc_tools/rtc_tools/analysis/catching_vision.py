@@ -42,6 +42,8 @@ from pathlib import Path
 
 import numpy as np
 
+from rtc_tools.analysis.table_cells import num as _num
+
 POSITION_DOF = 3
 CHI2_3_95 = 7.814727903251178  # scipy.stats.chi2.ppf(0.95, 3)
 NEES_NAN_MAX_SHARE = 0.10  # D-S8-16 ②c: a horizon bin with more NaN NEES is not evaluated
@@ -56,15 +58,6 @@ def horizon_label(horizon_ns: float) -> str:
     """``100000000`` → ``"100"`` (ms, no trailing ``.0``)."""
     ms = float(horizon_ns) / 1e6
     return f"{ms:g}"
-
-
-def _num(value) -> float:
-    if value is None or isinstance(value, str):
-        return math.nan
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return math.nan
 
 
 # ══ G8-B ══════════════════════════════════════════════════════════════════════

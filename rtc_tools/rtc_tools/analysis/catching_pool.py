@@ -190,15 +190,9 @@ def d3_block(valid: Sequence[Mapping]) -> dict:
 
 
 def gate_map_block(valid: Sequence[Mapping], z: float) -> dict | None:
-    verdicted = [r for r in valid if isinstance(r.get("map_open"), bool)]
-    if not verdicted:
-        return None
-    open_rows = [r for r in verdicted if r["map_open"]]
-    out = {"verdicted": len(verdicted), "open": len(open_rows)}
-    for key, sub in (("truth_whole", verdicted), ("truth_open", open_rows)):
-        k = sum(1 for r in sub if ct._is_true(r.get("truth_success")))
-        out[key] = {"successes": k, "n": len(sub), "wilson95": ct.wilson_interval(k, len(sub), z)}
-    return out
+    """The session's gate-map block (:func:`catching_trials.gate_map_truth`) over pooled rows."""
+    out = ct.gate_map_truth(valid, z)
+    return out if out["verdicted"] else None
 
 
 def tick_block(valid: Sequence[Mapping]) -> dict | str:
