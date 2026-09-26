@@ -134,8 +134,10 @@
 #          build/ and install/ trees. Matched by name + cwd, so a colcon aimed
 #          here from elsewhere with an absolute --build-base is not seen (see
 #          workspace_build_rivals). A MuJoCo simulator started from this
-#          workspace's install tree blocks the same way (workspace_sim_rivals):
-#          building beside a timing-sensitive sim run slows it below real time.
+#          workspace's install tree DEFERS build/test instead (exit 0 with the
+#          watermark kept, unless another gate blocks; workspace_sim_rivals):
+#          building beside a timing-sensitive sim run slows it below real time,
+#          and a sim does not end on its own the way a rival build does.
 #          Doxygen / cross-package doc consistency NOT checked
 #          (modification-guide.md "Updating an Existing Package" 6 steps cover
 #          these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
@@ -1243,23 +1245,40 @@ workspace_build_rivals() {
 # measured when another session's tests overlapped), the sim's ball stamps
 # follow sim time and fall behind the wall clock, and the controller discards
 # the input as stale -- catches fail for a reason that is the rig, not the code
-# (5/28 loaded trials caught vs 13/20 re-run). Same answer as a rival build:
-# build nothing and block, naming the process, so the agent waits for it.
+# (5/28 loaded trials caught vs 13/20 re-run).
 #
-# Matched by the kernel's 15-character process name, then by command line: the
-# launch execs the node by its absolute install path, so a sim is ours when an
-# argument lies under this workspace. A sim from another workspace is ignored.
-# Prints "<pid>: <cmdline>".
+# DEFER, not block, unlike a rival build: a build ends on its own, a sim does
+# not -- the user may hold one open for a visual check for as long as they
+# like, and a block would push the agent to stop a sim that is not its own.
+# Build/test is skipped, the other gates still run (and still block), and on
+# a pass the watermark is NOT advanced, so the first turn end with no sim
+# grades everything changed meanwhile -- the background-agent deferral's rule.
+#
+# Matched by the kernel's 15-character process name, then by path: the node's
+# executable (/proc/<pid>/exe, physical) under the physical workspace, or any
+# command-line argument under the workspace as either the logical path colcon's
+# setup scripts put in AMENT_PREFIX_PATH or the physical one (a workspace
+# reached through a symlink shows the logical path in argv). A sim from another
+# workspace is ignored. Prints "<pid>: <cmdline>".
 SIM_PROCESS_NAMES='mujoco_simulato'
 workspace_sim_rivals() {
   command -v pgrep >/dev/null 2>&1 || return 0
-  local ws pid cmd
-  ws=$(cd "$WORKSPACE" 2>/dev/null && pwd -P) || return 0
+  local ws_phys ws_logic pid cmd exe
+  ws_phys=$(cd "$WORKSPACE" 2>/dev/null && pwd -P) || return 0
+  ws_logic=${WORKSPACE%/}
   for pid in $(pgrep -x "($SIM_PROCESS_NAMES)" 2>/dev/null || true); do
     cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || continue
-    case " $cmd" in
-      *" $ws/"*) printf '%s: %s\n' "$pid" "$(cut -c1-120 <<<"$cmd")" ;;
+    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
+    case "$exe" in
+      "$ws_phys"/*) ;;
+      *)
+        case " $cmd" in
+          *" $ws_phys/"* | *" $ws_logic/"*) ;;
+          *) continue ;;
+        esac
+        ;;
     esac
+    printf '%s: %s\n' "$pid" "$(cut -c1-120 <<<"$cmd")"
   done
 }
 PROC3=$(echo "$BUILD_PKGS" | tr ' ' '\n' | grep -E '^(rtc_base|rtc_msgs)$' || true)
@@ -1276,12 +1295,14 @@ fi
 
 RIVALS=""
 SIM_RIVALS=""
+SIM_DEFERRED=""
 if [ -n "$PROC3$BUILD_PKGS" ]; then
   RIVALS=$(workspace_build_rivals)
   SIM_RIVALS=$(workspace_sim_rivals)
 fi
 if [ -n "$SIM_RIVALS" ] && [ -z "$RIVALS" ]; then
-  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a simulator from this colcon workspace (${WORKSPACE}) is running:\n$(sed -n '1,3p' <<<"$SIM_RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/      /')\n    Building beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). Wait for it to finish (if it is your own background run, wait on that task; if it is a sim left idle, stop it), then end the turn again.\n"
+  # Deferred, not failed: reported at the end (see workspace_sim_rivals).
+  SIM_DEFERRED=1
 elif [ -n "$RIVALS" ]; then
   # Backslashes doubled for the `echo -e` report, as build_log_tail does.
   TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(sed -n '1,3p' <<<"$RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/      /')\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then end the turn again.\n"
@@ -1539,7 +1560,13 @@ if [ -n "$QOS_VIOLATIONS" ]; then
   CHECKLIST="${CHECKLIST}${QOS_VIOLATIONS}"
 fi
 
+SIM_NOTE=""
+if [ -n "$SIM_DEFERRED" ]; then
+  SIM_NOTE="Build/test deferred -- a simulator from this colcon workspace (${WORKSPACE}) is running:\n$(sed -n '1,3p' <<<"$SIM_RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/  /')\nBuilding beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). Everything changed since $(git rev-parse --short "$VERIFY_BASE" 2>/dev/null || echo "$VERIFY_BASE") is built and tested at the first turn end with no sim running. Do not stop a sim that is not yours to get past this.\n"
+fi
+
 if [ -n "$REPORT" ]; then
+  [ -n "$SIM_NOTE" ] && REPORT="${REPORT}${SIM_NOTE}"
   # A hard failure is blocking. Ride the non-blocking checklist along so the
   # agent sees doc reminders while it is already addressing the real failure.
   if [ -n "$CHECKLIST" ]; then
@@ -1554,6 +1581,12 @@ fi
 # gate -- so it prints but never forces exit 2.
 if [ -n "$CHECKLIST" ]; then
   echo -e "Doc checklist (non-blocking — turn NOT blocked):\n${CHECKLIST}\nSee agent_docs/modification-guide.md. If a public-surface change genuinely needs no README edit, note that in your report." >&2
+fi
+
+if [ -n "$SIM_NOTE" ]; then
+  # Deferral: the turn ends, the watermark stays.
+  echo -e "${SIM_NOTE}" >&2
+  exit 0
 fi
 
 advance_verify_base

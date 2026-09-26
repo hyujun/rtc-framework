@@ -946,8 +946,9 @@ rm -rf "$ws" "$stub" "$bin" "$elsewhere"
 #
 # 2026-09-26: the S8-E success-rate sims ran as a background shell task; a hook
 # build beside them slows the sim below real time and the catches fail for the
-# rig's sake. A sim whose command line lies under the workspace blocks like a
-# rival build; one from another workspace does not.
+# rig's sake. A sim whose executable or command line lies under the workspace
+# DEFERS build/test (a sim, unlike a build, does not end on its own); one from
+# another workspace does not.
 
 # $1 = directory to hold the stand-in. The kernel truncates the process name to
 # 15 characters, so the stand-in named like the real node shows up as
@@ -958,27 +959,85 @@ start_sim_standin() {
   ("$1/mujoco_simulator_node") >/dev/null 2>&1 &
   echo $!
 }
+stop_standin() {
+  kill "$1" 2>/dev/null
+  wait "$1" 2>/dev/null
+}
 
-# 39d. A sim started from this workspace's install tree blocks without building.
+# 39d. A sim started from this workspace's install tree: no build, no block,
+#      watermark kept -- and the first stop after it ends grades the change.
 dir=$(make_nested_fixture)
 ws=$(cd "$dir/../.." && pwd -P)
 stub=$(make_build_stub 1)
+base=$(git -C "$dir" rev-parse HEAD)
+echo "$base" >"$dir/.git/rtc-verify-base"
 spid=$(start_sim_standin "$ws/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
 if wait_for_name "$spid" mujoco_simulato; then
+  # Committed in-turn, as in 51: an uncommitted edit would be graded against
+  # HEAD anyway, so only a commit shows whether the watermark was kept.
   echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+  git -C "$dir" commit -qam "edit committed in-turn while the sim runs"
   out=$(run_hook_build "$dir" "$stub"); rc=$?
-  expect_contains "a sim from the workspace is reported" "$out" "a simulator from this colcon workspace"
-  expect_contains "the report names the sim by pid" "$out" "$spid: /bin/bash $ws/install/rtc_mujoco_sim"
+  expect_contains "a sim from the workspace defers build/test" "$out" "Build/test deferred"
+  expect_contains "the deferral names the sim by pid" "$out" "$spid: /bin/bash $ws/install/rtc_mujoco_sim"
   expect_not_contains "nothing is built beside a running sim" "$out" "stub-build args"
-  expect_exit "a sim from the workspace blocks the turn" "$rc" 2
+  expect_exit "a sim from the workspace does not block the turn" "$rc" 0
+  if [ "$(cat "$dir/.git/rtc-verify-base")" = "$base" ]; then
+    pass "a sim deferral keeps the watermark"
+  else
+    fail "a sim deferral advanced the watermark"
+  fi
+  stop_standin "$spid"
+  out=$(run_hook_build "$dir" "$stub"); rc=$?
+  expect_contains "the change deferred for a sim is built once it ends" "$out" "build FAILED (exit 1)"
+  expect_exit "that deferred build failure blocks once the sim ends" "$rc" 2
+else
+  fail "the sim stand-in never showed up as mujoco_simulato"
+  stop_standin "$spid"
+fi
+rm -rf "$ws" "$stub"
+
+# 39e. Deferring build/test does not switch the other gates off: a blocking
+#      defect elsewhere still blocks, and says build/test was deferred.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+stub=$(make_build_stub 0)
+spid=$(start_sim_standin "$ws/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
+if wait_for_name "$spid" mujoco_simulato; then
+  # add_missing_dep is defined further down; the same edit, inline.
+  sed -i 's/^project(rtc_demo)/project(rtc_demo)\nfind_package(fmt REQUIRED)/' "$dir/rtc_demo/CMakeLists.txt"
+  out=$(run_hook_build "$dir" "$stub"); rc=$?
+  expect_contains "another gate still reports beside a running sim" "$out" "find_package(fmt)"
+  expect_contains "the block says build/test was deferred" "$out" "Build/test deferred"
+  expect_exit "another gate still blocks beside a running sim" "$rc" 2
 else
   fail "the sim stand-in never showed up as mujoco_simulato"
 fi
-kill "$spid" 2>/dev/null
-wait "$spid" 2>/dev/null
+stop_standin "$spid"
 rm -rf "$ws" "$stub"
 
-# 39e. ...a sim from another workspace is not: the build runs as before.
+# 39f. A workspace reached through a symlink: colcon's setup scripts put the
+#      LOGICAL path in AMENT_PREFIX_PATH, so the sim's argv carries it while
+#      `pwd -P` gives the physical one. Both must match.
+real=$(mktemp -d)
+mkdir -p "$real/src"
+mv "$(make_fixture)" "$real/src/repo"
+link="$(mktemp -d)/ws"
+ln -s "$real" "$link"
+stub=$(make_build_stub 1)
+spid=$(start_sim_standin "$link/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
+if wait_for_name "$spid" mujoco_simulato; then
+  echo 'int existing() { return 1; }' >"$link/src/repo/rtc_demo/src/existing.cpp"
+  out=$(run_hook_build "$link/src/repo" "$stub"); rc=$?
+  expect_contains "a sim started through the workspace symlink defers" "$out" "Build/test deferred"
+  expect_not_contains "nothing is built beside a sim on the symlinked path" "$out" "stub-build args"
+else
+  fail "the symlinked sim stand-in never showed up as mujoco_simulato"
+fi
+stop_standin "$spid"
+rm -rf "$real" "$(dirname "$link")" "$stub"
+
+# 39g. ...a sim from another workspace is not ours: the build runs as before.
 dir=$(make_nested_fixture)
 ws=$(cd "$dir/../.." && pwd -P)
 stub=$(make_build_stub 1)
@@ -987,13 +1046,12 @@ spid=$(start_sim_standin "$elsewhere/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
 if wait_for_name "$spid" mujoco_simulato; then
   echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
   out=$(run_hook_build "$dir" "$stub"); rc=$?
-  expect_not_contains "a sim from another workspace is not a rival" "$out" "a simulator from this colcon workspace"
+  expect_not_contains "a sim from another workspace defers nothing" "$out" "Build/test deferred"
   expect_contains "the build still runs beside a sim elsewhere" "$out" "build FAILED (exit 1)"
 else
   fail "the other-workspace sim stand-in never showed up as mujoco_simulato"
 fi
-kill "$spid" 2>/dev/null
-wait "$spid" 2>/dev/null
+stop_standin "$spid"
 rm -rf "$ws" "$stub" "$elsewhere"
 
 # --- Phase 5 formatter drift ---------------------------------------------------
