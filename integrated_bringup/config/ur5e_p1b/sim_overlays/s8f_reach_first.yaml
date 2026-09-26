@@ -1,0 +1,59 @@
+# sim overlay — dynamic_catching S8-F-1, arm "reach first" (#537, 2026-09-26)
+#
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_mpc:=true \
+#       sim_lanes:=true sim_overlay:=s8f_reach_first
+#
+# WHAT IT IS FOR. The S8-F exploration throws balls so that they pass within
+# 0.2 m of the waiting hand (catching_sim_trials --dist hand_*), asking how fast
+# a ball can be and still be caught with a small correction. It runs the
+# catch_lead_on controller (that header owns the T_arm / T_freeze rationale)
+# with two changes the experiment needs. This file owns the rationale for all
+# three s8f_* overlays; the other two differ only where their headers say.
+#
+# 1. THE CATCH BOX IS WIDENED. The shipped `planner.workspace.catch_box` is the
+#    hull of the S3.5b gate-open candidates around the shipped wait pose plus
+#    0.1 m — a JUDGEMENT gate on the catch point AND the stopping point. It is
+#    sized for the D-18 throw distribution, not for a ball that passes 0.2 m
+#    beside the hand, and a rejected candidate is "no plan", which the
+#    experiment would misread as "unreachable". The box below is the reachable
+#    workspace of the arm (UR5e reach 0.85 m + hand, with room) above the work
+#    table (top z 0.05; z_min 0.15 keeps the stopping point clear of it). IK
+#    convergence, manipulability and the joint limits still judge every
+#    candidate — only the axis-aligned box moves. Sim exploration only: the
+#    shipped value is a safety gate and stays (plan §4.4 S8-F).
+#
+# 2. REACH BEFORE VELOCITY MATCH (the user's planning priority, #537
+#    2026-09-26). The runtime planner removes candidates only for finite input,
+#    IK convergence, manipulability and the catch box (L3 §4.1, D-27); reach
+#    time (§4.3) and the γ window (§4.5) are both RANK gates with the same
+#    `score.penalty`, and the continuous score weighs γ_f five times the
+#    reach-time ratio (w_gamma 5.0 vs w_t 1.0, L3 §4.10). This arm inverts the
+#    two weights so a candidate the arm can reach in time outranks one with a
+#    better velocity match. `penalty` is one key for every rank gate, so it
+#    stays. s8f_shipped_score.yaml is the paired control with the shipped
+#    weights and the same box; the difference between the two arms on the same
+#    seeds is the measured effect of the priority (McNemar, plan §4.4 S8-F).
+#
+# THE PATH IS THE TRAP. `ApplyControllerParamOverrides` creates any key that is
+# not in the shipped YAML without a warning (catch_lead_on.yaml header), so
+# every leaf below is pinned to a shipped key by `test_catch_lead_overlays.py`.
+# `catch_box.min/max` are float lists; `w_t`/`w_gamma` are floats.
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        planner:
+          freeze:
+            T_freeze: 0.37
+          score:
+            w_t: 5.0
+            w_gamma: 1.0
+          workspace:
+            catch_box:
+              min: [-1.1, -1.1, 0.15]
+              max: [1.1, 1.1, 1.2]

@@ -1,0 +1,25 @@
+# sim overlay — dynamic_catching S8-F-1, arm "shipped score" (#537, 2026-09-26)
+#
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_mpc:=true \
+#       sim_lanes:=true sim_overlay:=s8f_shipped_score
+#
+# The paired control for s8f_reach_first.yaml (that header owns the rationale):
+# the same widened catch box, the shipped score weights (w_t 1.0, w_gamma 5.0 —
+# not written here, so the shipped YAML supplies them). Run on the same seeds
+# as the reach-first arm; the two differ ONLY in `planner.score`.
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        planner:
+          freeze:
+            T_freeze: 0.37
+          workspace:
+            catch_box:
+              min: [-1.1, -1.1, 0.15]
+              max: [1.1, 1.1, 1.2]

@@ -38,6 +38,7 @@ setup(
             "camera_relay = rtc_tools.analysis.camera_relay:main",
             "catching_trials = rtc_tools.analysis.catching_trials:main",
             "catching_pool = rtc_tools.analysis.catching_pool:main",
+            "catching_hand_near = rtc_tools.analysis.catching_hand_near:main",
         ],
     },
 )
